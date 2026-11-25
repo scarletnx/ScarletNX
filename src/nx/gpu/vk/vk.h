@@ -1427,8 +1427,22 @@ typedef struct Surf {
 enum { VK_LRU_NONE, VK_LRU_TEX, VK_LRU_RT };
 /* resolution= in the .ini: render targets are made this much bigger (read once, at startup) */
 extern float g_vk_scale;
+/* The scene's jitter the runtime adds for a hook module that asks for it (upscale.c, GPU_UPSCALE_RUNTIME_JITTER): the
+   draws that test depth, with a viewport of the render size, into the depth image given or another one of its size,
+   move by px pixels of ours (the frame's sub-pixel offset), while on. A game may draw a depth pass into one image and
+   test a later pass against another: moving only one of them whitened a whole picture */
+extern struct VkJitter {
+    int on;
+    VkImage depth;
+    float px[2];
+    u32 size[2];  /* the render size in our pixels */
+    u32 dsize[2]; /* the depth image's size */
+} g_vk_jitter;
 u32 vk_sc(u32 v);      /* a size or coordinate scaled, at least 1 */
 float vk_scf(float v); /* the same for viewport values */
+/* a resolution multiplier asked for after the renderer started (a hook module's): taken until the first render target
+   (surface.c), then refused. The multiplier in effect after the call */
+float vk_scale_request(float scale);
 /* w in pixels; pitch: bytes per row of a pitch-linear target (the register holds it in place of the width) */
 Surf* vk_rt(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, int depth, u32 pitch);
 /* the array and depth targets: w and h in pixels, of the sample layout msaa (DS_MSAA_) */
@@ -2970,6 +2984,14 @@ int vk_ftz_native(void);
    the file is not this driver's (at the renderer's start only, before any translation) */
 void vk_hmma_pick(const char* cache_dir, const char* driver_tag);
 extern VkShaderStageFlags g_vk_subgroup_stages;
+/* the stages whose subgroups hold whole quads, of any size from 4 lanes, with shuffles: a fragment program's reads
+   inside its quad, where g_vk_subgroup_stages has not the stage. And the lanes of the device's subgroups */
+extern VkShaderStageFlags g_vk_quad_stages;
+extern u32 g_vk_subgroup_lanes;
+/* what a log line says after a refusal for a warp's other lanes, the lanes of the device's subgroups beside the 32 that a
+   warp has, into out, which it returns: nothing after another refusal. The reason itself is kept in the corpus and has a
+   fixed length (ShaderInfo.first_unsupported) */
+const char* vk_lane_note(char out[32], const ShaderInfo* si);
 /* by set, shader_vk_set(stage): [0] without the indexed texture arrays, [1] with them. A set holding 512 array
    descriptors cost the driver twice the time to bind (one game's 6,700 draws a frame), so only an indexed shader's has
    them */
@@ -3560,10 +3582,16 @@ enum {
     VK_SUB_BACKGROUND,
     VK_SUB_N
 };
+/* the one name of each reason for a submission: cmd.c's zone and gpuprof.c's log use it, so a reason reads the same in
+   both */
+extern const char* const g_vk_sub_name[VK_SUB_N];
 /* what the GPU thread waits for the graphics timeline for: a vk_finish, a frame slot's previous use, or one submission
    (a release's gate, a result's landing: vk_wait_submit) */
 enum { VK_WAIT_FINISH, VK_WAIT_RECYCLE, VK_WAIT_SUBMIT, VK_WAIT_N };
 extern u64 g_vk_wait_ns[VK_WAIT_N], g_vk_waits[VK_WAIT_N]; /* cmd.c: the GPU thread's waits, by kind */
+/* the one name of each kind of the CPU's wait for the graphics timeline: cmd.c's zone, gpuprof.c's log and plots all
+   use it, so a kind reads the same in every report */
+extern const char* const g_vk_wait_name[VK_WAIT_N];
 /* Each dispatch recorded into the frame's command buffer, timed (record.c's rec_CmdDispatch): begin before it, 1 when
    it is timed, end after it. tag names the next one: a compute program's key, or the VK_PROF_* of one of the
    renderer's own pipelines */

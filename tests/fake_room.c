@@ -38,7 +38,7 @@ struct FakeRoom {
     uint64_t last_game_id;
     int ldn_count[8];
     size_t ldn_size[8];
-    unsigned delay_ms;
+    unsigned delay_ms, relayed, passes;
     DelayedDatagram* pending;
 };
 
@@ -214,6 +214,7 @@ static void room_message(FakeRoom* f, ENetPeer* peer, const uint8_t* data, size_
         case 5: /* IdProxyPacket: type, domain, ip, port, domain, ip (at 9), port, protocol, broadcast (at 16) */
             snx_lock(&f->lk);
             f->last_datagram_size = size;
+            f->relayed++;
             memcpy(f->last_datagram, data, size < sizeof f->last_datagram ? size : sizeof f->last_datagram);
             unsigned delay_ms = f->delay_ms;
             snx_unlock(&f->lk);
@@ -253,6 +254,7 @@ static void room_thread(void* arg) {
         char kick[64], chat_from[64], chat[512];
         int i, stop, close_now;
         snx_lock(&f->lk);
+        f->passes++;
         stop = f->stop;
         close_now = f->close_now;
         f->close_now = 0;
@@ -384,6 +386,12 @@ int fake_room_ldn_count(FakeRoom* f, int type, size_t* last_size) {
     if (last_size) *last_size = f->ldn_size[type];
     snx_unlock(&f->lk);
     return n;
+}
+void fake_room_work(FakeRoom* f, unsigned* relayed, unsigned* passes) {
+    snx_lock(&f->lk);
+    *relayed = f->relayed;
+    *passes = f->passes;
+    snx_unlock(&f->lk);
 }
 size_t fake_room_last_datagram(FakeRoom* f, uint8_t* out, size_t max) {
     size_t n;

@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# The USSE's vector float instructions (usse_float.sail), which were usse.c's vmad, vmad2, vnmad, vdp, vcomp and vdual
+static DualLayouts
+op VMAD2 U_VMAD2
+op VMAD U_VMAD
+op NMAD U_V32NMAD U_V16NMAD
+op VDP U_VDP
+op VCOMP U_VCOMP
+op VDUAL U_VDUAL

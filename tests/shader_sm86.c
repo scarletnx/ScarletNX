@@ -2269,7 +2269,7 @@ static void test_ffma_fused(void) {
         put(code, fmul, x);
         ShaderInfo si = {0};
         size_t count = 0;
-        u32* spv = sm86_to_spirv_ftz(code, n * 16, ST_CS, NULL, &si, &count, SH_FTZ_MODE);
+        u32* spv = sm86_to_spirv_ftz(code, n * 16, ST_CS, NULL, &si, &count, SH_FTZ_MODE, SM86_LANES_WARP);
         CHECK(spv != NULL);
         u32 fmas = 0, bare = 0;
         for (size_t i = 5; spv && i < count && spv[i] >> 16; i += spv[i] >> 16) {
@@ -2309,7 +2309,7 @@ static void test_ftz_modes(const char* dir) {
         ShaderInfo si = {0};
         size_t count = 0;
         int mode, tests;
-        u32* spv = sm86_to_spirv_ftz(code, n * 16, ST_CS, NULL, &si, &count, cases[k].can_flush);
+        u32* spv = sm86_to_spirv_ftz(code, n * 16, ST_CS, NULL, &si, &count, cases[k].can_flush, SM86_LANES_WARP);
         CHECK(spv != NULL);
         if (!spv) continue;
         spv_ftz_counts(spv, count, &mode, &tests);
@@ -2335,7 +2335,7 @@ static void test_ftz_modes(const char* dir) {
         ShaderInfo si = {0};
         size_t count = 0;
         int mode, tests;
-        u32* spv = sm86_to_spirv_ftz(code, (n + 1) * 16, ST_CS, NULL, &si, &count, SH_FTZ_MODE);
+        u32* spv = sm86_to_spirv_ftz(code, (n + 1) * 16, ST_CS, NULL, &si, &count, SH_FTZ_MODE, SM86_LANES_WARP);
         CHECK(spv != NULL);
         if (spv) {
             spv_ftz_counts(spv, count, &mode, &tests);
@@ -6499,6 +6499,100 @@ static void test_coop_fused_only(const char* dir) {
     CHECK(coop_case(dir, "coop_fused_only", insns, 1, outs, 4));
 }
 
+/* the matrix loads of a program on the cooperative matrices of one shape, 0 when it does not translate */
+static u32 coop_loads(const u8* code, u32 n, u32 bit) {
+    int coop_was = g_spirv_translate.hmma_coop, f16_was = g_spirv_translate.float16;
+    u32 shapes_was = g_spirv_translate.hmma_coop_shapes;
+    g_spirv_translate.hmma_coop = 65536, g_spirv_translate.hmma_coop_shapes = bit;
+    g_spirv_translate.float16 = 1;
+    ShaderInfo si = {0};
+    si.cs_local[0] = 32, si.cs_local[1] = si.cs_local[2] = 1;
+    si.shared_size = 1024;
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
+    const u32 loads = spv ? spv_count(spv, count, 4457) : 0;
+    free(spv);
+    g_spirv_translate.hmma_coop = coop_was, g_spirv_translate.hmma_coop_shapes = shapes_was;
+    g_spirv_translate.float16 = f16_was;
+    return loads;
+}
+/* A straight-line block that stages more fragments than the cooperative matrix cache holds (COOP_FRAGS): each step
+   writes an A register, then multiplies that A with the same two Bs. The A of one step is dead at the next one's write
+   and leaves the cache as room is needed, so a step's second HMMA takes its A from the first's matrices at every step,
+   and the matrix loads grow by the same count a step, before the cache is full and after. A full cache that dropped
+   none kept the first steps' dead As, and both HMMAs of every later step staged their A */
+static u32 coop_cache_loads(u32 steps, u32 bit) {
+    u8 code[16 * 64] = {0};
+    u32 n = 0;
+    for (u32 k = 0; k < steps; k++) {
+        put(code, n++, alu(0x002, 5, 8, 0)); /* MOV R8, c[0x0][0x0] */
+        for (u32 b = 0; b < 2; b++)          /* HMMA.16816.F16 R16 or R20, R8, R12 or R14, RZ */
+            put(code, n++, hmma_insn(16 + 4 * b, 8, 12 + 2 * b, 255, 0x08));
+    }
+    put(code, n++, exit_insn());
+    put(code, n, bra(n, n, 7, 0));
+    return coop_loads(code, n + 1, bit);
+}
+static void test_coop_cache(void) {
+    static const u32 bits[4] = {SH_COOP_16x16x16, SH_COOP_16x8x16, SH_COOP_16x8x8, SH_COOP_8x8x8};
+    for (u32 s = 0; s < 4; s++) {
+        const u32 l2 = coop_cache_loads(2, bits[s]), l3 = coop_cache_loads(3, bits[s]),
+                  l16 = coop_cache_loads(16, bits[s]);
+        if (!l2 || l16 != l3 + 13 * (l3 - l2))
+            fprintf(stderr, "matrix shape %u: %u matrix loads for 2 steps, %u for 3 and %u for 16, expected %u\n", s,
+                    l2, l3, l16, l3 + 13 * (l3 - l2));
+        CHECK(l2 && l3 > l2 && l16 == l3 + 13 * (l3 - l2));
+    }
+}
+/* Runs of 32 steps that fill the cache many times over. A step writes a register of two A tuples (R32-R39) or of two B
+   ones (R40-R43) from the lane's inputs, then multiplies an A and a B of them, .16816 (4 and 2 registers) or .1688 (2
+   and 1 of them), into one of two f32 Ds, chained or not, or of two f16 ones, with a C or none. That is 8 fragments, the
+   cache's bound, so a full one always has a dead entry for a new one, and a fragment is staged again only once one of
+   its own registers is written: one matrix load for each of them where the device's shape is 16x16x16. And the values
+   are the gathers': a fragment the cache moves, or keeps past a write, gives another's matrix or words no longer there */
+static u32 coop_rand(u32* seed, u32 n) {
+    *seed = *seed * 1664525u + 1013904223u;
+    return (*seed >> 16) % n;
+}
+static Word mov_reg(u32 d, u32 a) {
+    Word x = alu(0x002, 1, d, 255);
+    set(&x, 32, 8, a);
+    return x;
+}
+static void test_coop_cache_values(const char* dir) {
+    static const u32 outs[12] = {20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31};
+    for (u32 run = 0; run < 4; run++) {
+        u8 code[16 * 128] = {0};
+        u32 n = coop_prologue(code), seed = 0x2545f491u + run, want = 0;
+        /* [A or B][its tuple][.1688 or .16816]: staged since the last write of its registers; and the f32 Ds that hold
+           a product of the run */
+        int live[2][2][2] = {0}, chain[2] = {0};
+        for (u32 k = 0; k < 12; k++) put(code, n++, mov_reg(32 + k, 8 + coop_rand(&seed, 8)));
+        for (u32 k = 0; k < 32; k++) {
+            u32 r = coop_rand(&seed, 12), of_b = r >= 8, size = of_b ? 2 : 4, at = of_b ? r - 8 : r;
+            put(code, n++, mov_reg(32 + r, 8 + coop_rand(&seed, 8)));
+            live[of_b][at / size][1] = 0;
+            if (at % size < size / 2) live[of_b][at / size][0] = 0;
+            u32 k16 = coop_rand(&seed, 2), f32 = coop_rand(&seed, 2), a = coop_rand(&seed, 2);
+            u32 b = coop_rand(&seed, 2), d = coop_rand(&seed, 2), with_c = coop_rand(&seed, 2);
+            want += !live[0][a][k16] + !live[1][b][k16];
+            live[0][a][k16] = live[1][b][k16] = 1;
+            u32 dst = f32 ? 20 + 4 * d : 28 + 2 * d, cr = 255;
+            if (with_c && !f32) cr = 14;
+            if (with_c && f32 && chain[d]) cr = dst;
+            if (f32) chain[d] = 1;
+            put(code, n++, hmma_insn(dst, 32 + 4 * a, 40 + 2 * b, cr, k16 << 3 | f32 << 4));
+        }
+        n = coop_epilogue(code, n, outs, 12);
+        char name[32];
+        snprintf(name, sizeof name, "coop_cache_values%u", run);
+        const u32 loads = coop_loads(code, n, SH_COOP_16x16x16);
+        if (loads != want) fprintf(stderr, "%s: %u matrix loads, %u fragments staged\n", name, loads, want);
+        CHECK(want > 16 && loads == want);
+        CHECK(coop_agrees(code, n, 12, dir, name));
+    }
+}
+
 /* Jumps around a fused LDSM and HMMA (fuse.c), on the evaluator's 32 lanes with the gathers, against the same program
    with a MOV between the two halves, which no fuse takes: every output the same. After the prologue, a BRX of R40,
    c[2][0x10 + c[2][0]], to the LDSM, the HMMA (R20 = R24 R12 + R16) or the MOV R30, 1.0 after it, and a loop whose
@@ -7792,6 +7886,8 @@ static void test_brx_two_tables(const char* dir) {
     (void)dir;
 }
 
+#include "shader_sm86_lone.inc"
+
 int main(int argc, char** argv) {
     const char* dir = argc > 1 ? argv[1] : ".";
     test_alu_forms();
@@ -7895,6 +7991,12 @@ int main(int argc, char** argv) {
     test_coop_overlap(dir);
     test_coop_flow(dir);
     test_coop_fused_only(dir);
+    test_coop_cache();
+    test_coop_cache_values(dir);
+    test_lone_lanes(dir);
+    test_lone_lanes_refused();
+    test_lone_length();
+    test_lone_stages();
     test_warp_matrix_flush(dir);
     test_hmma_way();
     test_hmma_rule();

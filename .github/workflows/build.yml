@@ -58,11 +58,12 @@ env:
 # and SPIRV-Tools' spirv-opt and spirv-val (cmake/spirv_tools.cmake) are built from the sources cpmfile.json pins, with
 # MSYS2 providing the shell, GNU make and NASM needed by FFmpeg and the Perl OpenSSL's Configure runs on. Downloads are
 # cached in .cache/cpm: one cache for the jobs that fetch the same sources (a Linux architecture's, the four cross
-# builds, a Windows architecture's, Apple, Android), named by cpmfile.json's hash, with the name before the hash as a
-# restore key, so a bump downloads only the packages it changed. Compiles go through ccache, whose .cache/ccache each
-# compiling job restores from the newest one a push saved; a push saves it again, trimmed to what the run used, and a
-# pull request's run saves none: it reads main's (the appimage job says why). The artifacts are what `cmake --install`
-# puts in place: the binaries with the licenses that go with them.
+# builds, a Windows architecture's, Apple, Android), named by the hash of cpmfile.json and of the patches (a patched
+# package's folder is named by its patches), with the name before the hash as a restore key, so a bump downloads only
+# the packages it changed. Compiles go through ccache, whose .cache/ccache each compiling job restores from the newest
+# one a push saved; a push saves it again, trimmed to what the run used, and a pull request's run saves none: it reads
+# main's (the appimage job says why). The artifacts are what `cmake --install` puts in place: the binaries with the
+# licenses that go with them.
 jobs:
   # A scheduled run of a commit that has its nightly already: the run cancels itself, this job with it, which fails
   # nothing
@@ -107,9 +108,9 @@ jobs:
     # Another release or other mode words want its file written again
     env:
       # the release's tag and its NRO's name, which carries the version
-      EDENPROBE_VERSION: v1.0.0
-      EDENPROBE_NRO: amberlith-1.0.0.nro
-      EDENPROBE_SHA256: a5eb634b346ef3f357716b3690e2f21dbc53a14ae1ed08d08ad81b1f91bea018
+      EDENPROBE_VERSION: v1.0.4
+      EDENPROBE_NRO: amberlith-1.0.4.nro
+      EDENPROBE_SHA256: 3271c4af392cd21e842e1ea89b370eb376da154f039dbe9e7f5c5a2193a2bed0
       # every family that needs no person or network: headless, the audio family's sound is never played. Not graphics:
       # its suites write their own GPU command buffers, left out while the runtime had no Maxwell front end, and not
       # added back since it returned (docs/dev/edenprobe.md). hooks: the runtime answers nn::fs, time, pl, ngc and nsd
@@ -160,7 +161,7 @@ jobs:
       - uses: actions/cache@v5
         with:
           path: .cache/cpm
-          key: cpmutil-linux-${{ matrix.arch }}-${{ hashFiles('cpmfile.json') }}
+          key: cpmutil-linux-${{ matrix.arch }}-${{ hashFiles('cpmfile.json', '.patch/**') }}
           restore-keys: cpmutil-linux-${{ matrix.arch }}-
       # ccache under every compile, FFmpeg's, OpenSSL's and SPIRV-Tools' too, of every tree this job builds: from the
       # newest cache of this job on this branch, else on main, as a pull request has none of its own (saved below). Each
@@ -220,7 +221,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           # poppler: pdftotext, which the x86-64 back end's instruction selection is derived with (cmake/sdm.cmake);
-          # without it the back end is left out and LLVM makes every function
+          # without it the configure stops
           for try in 1 2 3; do
             pacman -Syu --noconfirm --needed cmake ninja meson make patch nasm perl python clang llvm sdl3 libx11 mesa vulkan-icd-loader ccache glslang jdk21-openjdk poppler && break
             [ "$try" = 3 ] && exit 1
@@ -372,7 +373,7 @@ jobs:
           cmake --build build/default --parallel "$(getconf _NPROCESSORS_ONLN)"
           ccache --show-stats
           ccache --zero-stats
-          cmake --preset default -B build/headless ${{ env.SNX_HEADLESS_OPTIONS }} \
+          cmake --preset default -B build/headless ${{ env.SNX_HEADLESS_OPTIONS }} -DBUILD_TESTING=ON \
             -DLLVM_DIR="$PWD/.cache/llvm/${{ matrix.arch }}/lib/cmake/llvm" -DSNX_A64_DISASM=OFF \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build build/headless --parallel "$(getconf _NPROCESSORS_ONLN)"
@@ -632,7 +633,7 @@ jobs:
       - uses: actions/cache/restore@v5
         with:
           path: .cache/cpm
-          key: cpmutil-linux-x86_64-${{ hashFiles('cpmfile.json') }}
+          key: cpmutil-linux-x86_64-${{ hashFiles('cpmfile.json', '.patch/**') }}
           restore-keys: cpmutil-linux-x86_64-
       - uses: actions/cache/restore@v5
         with:
@@ -662,7 +663,7 @@ jobs:
         run: |
           git config --global --add safe.directory '*'
           ccache --zero-stats
-          cmake --preset default -B build/sanitizers -DSNX_TEST_SANITIZERS=ON -DSNX_TEST_VP9_VECTORS=ON \
+          cmake --preset default -B build/sanitizers -DBUILD_TESTING=ON -DSNX_TEST_SANITIZERS=ON -DSNX_TEST_VP9_VECTORS=ON \
             -DSNX_DEPLOY=OFF -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build build/sanitizers --parallel "$(getconf _NPROCESSORS_ONLN)"
           ccache --show-stats
@@ -753,11 +754,12 @@ jobs:
           path: /var/cache/pacman/pkg
           key: pacman-${{ github.job }}-${{ steps.week.outputs.week }}
           restore-keys: pacman-${{ github.job }}-
-      # jdk21-openjdk: javac and jni.h, which the Android app driver (src/android) configures with
+      # jdk21-openjdk: javac and jni.h, which the Android app driver (src/android) configures with; poppler: pdftotext
+      # (cmake/sdm.cmake)
       - name: Install tools
         run: |
           for try in 1 2 3; do
-            pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang jdk21-openjdk && break
+            pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang jdk21-openjdk poppler && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
@@ -774,7 +776,7 @@ jobs:
       - uses: actions/cache/restore@v5
         with:
           path: .cache/cpm
-          key: cpmutil-linux-x86_64-${{ hashFiles('cpmfile.json') }}
+          key: cpmutil-linux-x86_64-${{ hashFiles('cpmfile.json', '.patch/**') }}
           restore-keys: cpmutil-linux-x86_64-
       - uses: actions/cache/restore@v5
         with:
@@ -798,7 +800,7 @@ jobs:
           } >> "$GITHUB_ENV"
       - name: Build the differential and its runner
         run: |
-          cmake --preset default -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --preset default -DBUILD_TESTING=ON -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build --preset default --parallel "$(getconf _NPROCESSORS_ONLN)" \
             --target snx-test-llvm-qemu-differential snx_qemu_ref_runner
           ccache --show-stats
@@ -873,7 +875,7 @@ jobs:
       - uses: actions/cache@v5
         with:
           path: .cache/cpm
-          key: cpmutil-linux-cross-${{ hashFiles('cpmfile.json') }}
+          key: cpmutil-linux-cross-${{ hashFiles('cpmfile.json', '.patch/**') }}
           restore-keys: cpmutil-linux-cross-
       # ccache and the dependency builds, as in the appimage job. The container builds as root: what it makes in them
       # goes back to the runner's user before each is saved
@@ -1292,7 +1294,7 @@ jobs:
       - uses: actions/cache@v5
         with:
           path: .cache/cpm
-          key: cpmutil-windows-${{ matrix.arch }}-${{ hashFiles('cpmfile.json') }}
+          key: cpmutil-windows-${{ matrix.arch }}-${{ hashFiles('cpmfile.json', '.patch/**') }}
           restore-keys: cpmutil-windows-${{ matrix.arch }}-
       # ccache, set up as in the appimage job
       - uses: actions/cache/restore@v5
@@ -1319,7 +1321,7 @@ jobs:
             echo "SNX_CCACHE_START=$(date +%s)"
           } >> "$GITHUB_ENV"
       # llvm-mingw alone has no LLVM development libraries. Do not mix its C++ runtime with another LLVM build. meson:
-      # dav1d's build (cmake/dav1d.cmake), as in the appimage job
+      # dav1d's build (cmake/dav1d.cmake), as in the appimage job; poppler: pdftotext (cmake/sdm.cmake), x86-64's alone
       - name: Install Clang, LLVM development files and FFmpeg build tools
         uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
         with:
@@ -1343,6 +1345,7 @@ jobs:
             mingw-w64-clang-${{ matrix.arch }}-pkgconf
             mingw-w64-clang-${{ matrix.arch }}-python
             mingw-w64-clang-${{ matrix.arch }}-ccache
+            ${{ matrix.arch == 'x86_64' && 'mingw-w64-clang-x86_64-poppler' || '' }}
       - name: Check required dependencies
         run: |
           set -euo pipefail
@@ -1368,7 +1371,7 @@ jobs:
             -DSNX_FFMPEG_MAKE="$(cygpath -m /usr/bin/make.exe)" \
             -DPERL_EXECUTABLE="$(cygpath -m /usr/bin/perl.exe)" \
             -DSNX_OPENSSL_MAKE="$(cygpath -m /usr/bin/make.exe)" \
-            -DCMAKE_DISABLE_FIND_PACKAGE_SDL3=ON -DSNX_DEPLOY=OFF -DSNX_TEST_VP9_VECTORS=ON \
+            -DCMAKE_DISABLE_FIND_PACKAGE_SDL3=ON -DSNX_DEPLOY=OFF -DBUILD_TESTING=ON -DSNX_TEST_VP9_VECTORS=ON \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build --preset default --parallel "$(getconf _NPROCESSORS_ONLN)"
           cmake --install build/default --prefix stage
@@ -1519,7 +1522,7 @@ jobs:
       - uses: actions/cache@v5
         with:
           path: .cache/cpm
-          key: cpmutil-android-${{ hashFiles('cpmfile.json') }}
+          key: cpmutil-android-${{ hashFiles('cpmfile.json', '.patch/**') }}
           restore-keys: cpmutil-android-
       # Each ABI's LLVM is saved as soon as it is built, as the apple job saves its own: the hour of one is kept when
       # the other's build or a later step fails, or the run is cancelled
@@ -1747,7 +1750,7 @@ jobs:
       - uses: actions/cache@v5
         with:
           path: .cache/cpm
-          key: cpmutil-apple-${{ hashFiles('cpmfile.json') }}
+          key: cpmutil-apple-${{ hashFiles('cpmfile.json', '.patch/**') }}
           restore-keys: cpmutil-apple-
       # LLVM's libraries for each (scripts/apple-llvm.sh) with AArch64's code generator alone, the one the recompiler
       # uses, built once per script and Xcode. Saved as soon as they are built: actions/cache saves only a job that

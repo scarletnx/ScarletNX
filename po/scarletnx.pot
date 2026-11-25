@@ -452,6 +452,26 @@ msgid "Clear all debug options for performance"
 msgstr ""
 
 #: src/gui/gpu_driver.c
+msgid "Turnip's flags"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "The shader compiler's flags"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "The command stream's dumps"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "What Turnip's choice of GMEM or system memory weighs"
+msgstr ""
+
+#: src/gui/gpu_driver.c
+msgid "How Turnip chooses GMEM or system memory"
+msgstr ""
+
+#: src/gui/gpu_driver.c
 #, c-format
 msgid "Not added: %s is not a zip (%s)"
 msgstr ""
@@ -650,6 +670,12 @@ msgstr ""
 #: src/gui/main.c
 #, snx-keys
 msgid "Mods."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Settings."
 msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
@@ -921,6 +947,12 @@ msgstr ""
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
+msgid "M: settings."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
 msgid "B: AOT pack."
 msgstr ""
 
@@ -1158,6 +1190,12 @@ msgstr ""
 #: src/gui/main.c
 #, snx-keys
 msgid "L3: mods."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "L3: settings."
 msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
@@ -1953,7 +1991,9 @@ msgstr ""
 msgid "Saves"
 msgstr ""
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c src/gui/ui.txt
+#, snx-key
 msgid "Settings"
 msgstr ""
 
@@ -2280,7 +2320,7 @@ msgid "S lists the save states of a recompiled Switch game in focus."
 msgstr ""
 
 #: src/gui/main.c
-msgid "Settings of its own are a recompiled Switch game's, in focus."
+msgid "Settings of its own are a recompiled Switch or 3DS game's, in focus."
 msgstr ""
 
 #: src/gui/main.c
@@ -2339,6 +2379,11 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "SCARLETNX  /  SETTINGS  /  FREEDRENO SETTINGS"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "SCARLETNX  /  SETTINGS  /  FREEDRENO SETTINGS  /  %s"
 msgstr ""
 
 #: src/gui/main.c
@@ -2890,7 +2935,7 @@ msgstr ""
 msgid "%d set"
 msgstr ""
 
-#: src/gui/main.c
+#: src/gui/main.c src/gui/settings.c
 msgid "None"
 msgstr ""
 
@@ -3764,6 +3809,11 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "Not added: the variables take %d at most"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "Not saved: the variables take over %d bytes"
 msgstr ""
 
@@ -3830,7 +3880,80 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "%s is no recompiled Switch game: only one has settings of its own"
+msgid "Recording devices cannot be read: %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Cannot be read"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Room password: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Room password not changed: %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Room password: set"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Room password: none"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Room password not changed: nothing was typed (Del takes it off)"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "the picker could not open: %s. %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Ctrl+V pastes its path"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Enter on its row now types it"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "takes a path of up to %d bytes, not %s: it keeps %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s not changed to %s: its settings were closed while the picker was open"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "not changed: %s is not a folder or file of this device's storage"
+msgstr ""
+
+#: src/gui/main.c
+msgid "No folder was picked."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: a box an item, Enter turns it on or off"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s has no room for another item"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is no recompiled Switch or 3DS game: only they have settings of their own"
 msgstr ""
 
 #: src/gui/main.c
@@ -4107,6 +4230,25 @@ msgid "Player %d keeps %s"
 msgstr ""
 
 #: src/gui/main.c
+msgid "no key"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Press the key for %s (ESC keeps %s, Backspace: its default)"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s already does %s: %s keeps %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s keeps %s"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Looking for controllers..."
 msgstr ""
 
@@ -4135,6 +4277,10 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "%s: %s is its highest"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Paste one local path"
 msgstr ""
 
 #: src/gui/main.c
@@ -4191,6 +4337,10 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "A nickname, 1 to 32 bytes, no control character, no space at either end"
+msgstr ""
+
+#: src/gui/main.c
+msgid "The room's password, 1 to 255 bytes, no control character, no space at either end"
 msgstr ""
 
 #: src/gui/main.c
@@ -4394,10 +4544,6 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "No user written: %s"
-msgstr ""
-
-#: src/gui/main.c
-msgid "No folder was picked."
 msgstr ""
 
 #: src/gui/main.c
@@ -6238,6 +6384,10 @@ msgid "Drop one local folder"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Drop one local path"
+msgstr ""
+
+#: src/gui/main.c
 #, c-format
 msgid "Cannot find the folder ScarletNX runs from: %s"
 msgstr ""
@@ -6692,6 +6842,14 @@ msgid "Every row of this page at once"
 msgstr ""
 
 #: src/gui/settings.c
+msgid "Room password"
+msgstr ""
+
+#: src/gui/settings.c
+msgid "The Eden room's password, kept in users/online.ini, which only you can read; never in the launcher's settings nor on a run's line"
+msgstr ""
+
+#: src/gui/settings.c
 #, c-format
 msgid "%s=.ini is no longer a value of %s: %s=%s now"
 msgstr ""
@@ -6709,6 +6867,16 @@ msgstr ""
 #: src/gui/settings.c
 #, c-format
 msgid "%s=%s is deprecated and no value of %s: %s=%s now"
+msgstr ""
+
+#: src/gui/settings.c
+#, c-format
+msgid "%d on, %d other"
+msgstr ""
+
+#: src/gui/settings.c
+#, c-format
+msgid "%d on"
 msgstr ""
 
 #: src/gui/settings.c

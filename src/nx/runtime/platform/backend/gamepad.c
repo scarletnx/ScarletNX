@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "nx/runtime/platform/gamepad.h"
 #include "nx/runtime/platform/joycon2_sdl.h" /* joycon2_rumble */
+#include "nx/runtime/platform/tracy.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/platform/backend.h"
@@ -332,8 +333,10 @@ void gamepad_detect(u32 id) {
 void gamepad_scan(void) {
     SDL_JoystickID* ids;
     int i, n = 0;
+    SNX_ZONE(z_scan, "plat gamepad scan");
     load_mappings();
     ids = SDL_GetJoysticks(&n);
+    SNX_ZONE_VALUE(z_scan, n); /* how many SDL reported */
     if (!ids || !n) { /* SDL answers with an empty list, not NULL, when it sees no joystick */
         LOG("input: no SDL joysticks detected\n");
         say_hosts();
@@ -385,6 +388,7 @@ static void pad_toast(const char* text, u64 now_ns) { overlay_toast(gui_group_ic
 void gamepad_open(u32 id) {
     int i;
     char guid[33];
+    SNX_ZONE_T(z_open, "plat gamepad open", g_settings.controller_assignment ? "console assignment" : "fixed slot");
     if (is_open(id)) return;
     if (g_settings.controller_assignment) { /* as a console's: opened first, as its serial says who it is */
         SDL_Gamepad* g = SDL_OpenGamepad(id);
@@ -445,6 +449,7 @@ void gamepad_open(u32 id) {
 }
 void gamepad_close(u32 id) {
     int i;
+    SNX_ZONE_T(z_close, "plat gamepad close", g_settings.controller_assignment ? "player kept" : "released");
     for (i = 0; i < SNX_GAMEPADS; i++)
         if (g_gamepad.pads[i] && SDL_GetGamepadID(g_gamepad.pads[i]) == id) {
             g_gamepad.left_type[i] = SDL_GetGamepadType(g_gamepad.pads[i]);

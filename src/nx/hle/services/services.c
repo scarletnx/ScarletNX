@@ -15,6 +15,7 @@
 #include "hle/services/network/dns.swipc.h"
 #include "hle/services/network/nifm.swipc.h"
 #include "hle/services/network/ssl.swipc.h"
+#include "nx/runtime/platform/tracy.h"
 #include <stdatomic.h>
 
 /* ============================================================ events */
@@ -27,6 +28,7 @@ u32 ev_handle(u32 ev) {
 int new_event(u32* event, const char* name, int signaled) {
     KEvent* e = kevent_try_new(name);
     if (!e) {
+        SNX_ZONE_T(z_svc_ev, "svc error", "all %d events in use", KEVENT_MAX);
         WARN_LIMIT(4, "%s: all %d events are in use, the game gets OutOfResource (%#x)\n", name, KEVENT_MAX,
                    SNX_RC_SVC_OUT_OF_RESOURCE);
         R_THROW(SNX_RC_SVC_OUT_OF_RESOURCE);
@@ -37,6 +39,9 @@ int new_event(u32* event, const char* name, int signaled) {
     kobj_ref(&e->o);
     *event = h_new(&e->o);
     kobj_unref(&e->o);
+    if (!*event) {
+        SNX_ZONE_T(z_svc_ev, "svc error", "no handle for event %s", name);
+    }
     R_UNLESS(*event, SNX_RC_SVC_OUT_OF_HANDLES);
     R_SUCCEED();
 }

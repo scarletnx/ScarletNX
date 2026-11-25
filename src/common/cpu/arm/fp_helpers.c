@@ -26,6 +26,10 @@
 #define snx_fp_round_int snx_arm_soft_round_int
 #define snx_fp_jcvt     snx_arm_soft_jcvt
 #define snx_fp_bfcvt    snx_arm_soft_bfcvt
+#define snx_fp_scale    snx_arm_soft_scale
+#define snx_fp8_widen   snx_arm_soft_fp8_widen
+#define snx_fp8_narrow  snx_arm_soft_fp8_narrow
+#define snx_fp8_dot     snx_arm_soft_fp8_dot
 #define urecpe32        snx_arm_soft_urecpe32
 #define ursqrte32       snx_arm_soft_ursqrte32
 #include "common/cpu/aarch64/cpu.h"

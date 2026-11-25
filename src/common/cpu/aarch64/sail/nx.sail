@@ -48,6 +48,14 @@ function AArch64_ESBOperation () = ()
 val HaveGCS : unit -> bool
 function HaveGCS () = false
 
+// No Scalable Matrix Extension: the NX's Cortex-A57 has none (FEAT_SME is Armv9.2's), so it is never in streaming mode
+// and the SIMD&FP loads and stores take the plain path
+val HaveSME : unit -> bool
+function HaveSME () = false
+
+val InStreamingMode : unit -> bool
+function InStreamingMode () = false
+
 // No branch target identification: Horizon maps no guarded page, so no instruction checks the branch type that led to
 // it (BTypeNext, which the back end keeps nowhere)
 let InGuardedPage : bool = false
@@ -187,6 +195,15 @@ function ConstrainUnpredictable which = Constraint_NONE
 val __UNKNOWN_bits : forall 'n, 'n >= 0. int('n) -> bits('n)
 function __UNKNOWN_bits n = Zeros(n)
 
+// and so is an UNKNOWN integer (LD1R's, LD2's... unused element count of a form that has none)
+val __UNKNOWN_integer : unit -> int
+function __UNKNOWN_integer () = 0
+
+// An implementation-defined choice the Cortex-A57 has no part in (the streaming mode's tag checks, an EL it doesn't
+// run): the plain one
+val __IMPDEF_boolean : string -> bool
+function __IMPDEF_boolean s = false
+
 // Guest memory is ScarletNX's own: the host's bytes at CPU.mem plus the address, read and written as the host does
 // (llvm.h). An acquire load and a release store are sequentially consistent host atomics, which order both ways, so
 // RCpc's acquire is the stronger one and LOR's limited ordering the full one (cpu.h)
@@ -283,6 +300,42 @@ function CheckFPAdvSIMDEnabled64 () = ()
 val IsMerging : bits(64) -> bool
 function IsMerging fpcr = false
 
+// and the AArch64 check the crypto and the BF16 instructions make, which asks the profiling of a trapped one
+val AArch64_CheckFPAdvSIMDEnabled : unit -> unit
+function AArch64_CheckFPAdvSIMDEnabled () = ()
+
+// FPSR as the CPU keeps it (cpu.h's CPU.fpsr): the back end sets its cumulative flags, QC among them
+register FPSR : bits(64)
+
+// The comparisons' answers are those of FPCompare's flags, which raises the exceptions theirs do (a signalling NaN's
+// Invalid Operation in an equality, any NaN's in the others): equal 0110, less 1000, greater 0010, unordered 0011
+val FPCompareEQ : forall 'N, 'N in {16, 32, 64}. (bits('N), bits('N), FPCRType) -> bool
+function FPCompareEQ (op1, op2, fpcr) = FPCompare(op1, op2, false, fpcr)[2 .. 2] == 0b1
+
+val FPCompareGE : forall 'N, 'N in {16, 32, 64}. (bits('N), bits('N), FPCRType) -> bool
+function FPCompareGE (op1, op2, fpcr) = FPCompare(op1, op2, true, fpcr)[1 .. 0] == 0b10
+
+val FPCompareGT : forall 'N, 'N in {16, 32, 64}. (bits('N), bits('N), FPCRType) -> bool
+function FPCompareGT (op1, op2, fpcr) = FPCompare(op1, op2, true, fpcr) == 0b0010
+
+// Without FEAT_AFP the alternate floating point's argument is false, and a minimum or a maximum is the plain one
+val FPMax__1 : forall 'N ('altfp : Bool), 'N in {16, 32, 64}. (bits('N), bits('N), FPCRType, bool('altfp)) -> bits('N)
+function FPMax__1 (op1, op2, fpcr, altfp) = FPMax(op1, op2, fpcr)
+
+val FPMin__1 : forall 'N ('altfp : Bool), 'N in {16, 32, 64}. (bits('N), bits('N), FPCRType, bool('altfp)) -> bits('N)
+function FPMin__1 (op1, op2, fpcr, altfp) = FPMin(op1, op2, fpcr)
+
+// A rounded shift right by one more than the rounding's place, the same number: (v + 2^(n - 1)) >> n, a floor, is
+// ((v >> (n - 1)) + 1) >> 1, whose sum needs one bit more than v however far the shift goes
+val RShr : forall ('round : Bool) 'shift 'value_name. (int('value_name), int('shift), bool('round)) -> int
+function RShr (value_name, shift, round) = {
+    if round then {
+        return(((value_name >> (shift - 1)) + 1) >> 1)
+    } else {
+        return((value_name >> shift))
+    }
+}
+
 // The A64 instructions run in AArch64 alone: a 32-bit game's code goes through the A32 recompiler
 val UsingAArch32 : unit -> bool
 function UsingAArch32 () = false
@@ -290,3 +343,55 @@ function UsingAArch32 () = false
 // sail-arm declares HaveFP16Ext and leaves its answer to its runtime: the guest's FEAT_FP16
 val HaveFP16Ext : unit -> bool
 function HaveFP16Ext () = IsFeatureImplemented(FEAT_FP16)
+
+// A bfloat16 is the single of its bits over 16 zeros, so BFMLAL's product is added as the singles' is
+val BFMulAddH : forall 'N, 'N == 32. (bits('N), bits(div('N, 2)), bits(div('N, 2)), FPCRType) -> bits('N)
+function BFMulAddH (addend, op1, op2, fpcr) = FPMulAdd(addend, op1 @ Zeros(16), op2 @ Zeros(16), fpcr)
+
+// EL0's allocation tags are off (SCTLR_EL1.ATA0 clear, as a process without PR_MTE's): the tag IRG, ADDG and SUBG give an
+// address is 0, whatever GCR_EL1 excludes
+val execute_aarch64_instrs_integer_tags_mcaddtag : forall ('ADD : Bool) 'd 'n, (0 <= 'n & 'n <= 31 & 0 <= 'd & 'd <= 31).
+  (bool('ADD), int('d), int('n), bits(64), bits(4)) -> unit
+function execute_aarch64_instrs_integer_tags_mcaddtag (ADD, d, n, offset, tag_offset) = {
+    let operand1 : bits(64) = if n == 31 then SP_read() else X_read(n, 64);
+    let sum : bits(64) = if ADD then operand1 + offset else operand1 - offset;
+    let result : bits(64) = (sum[63 .. 60] @ 0x0) @ sum[55 .. 0];
+    if d == 31 then {
+        SP_set() = result
+    } else {
+        X_set(d, 64) = result
+    }
+}
+
+val execute_aarch64_instrs_integer_tags_mcsubtag : forall ('ADD : Bool) 'd 'n, (0 <= 'n & 'n <= 31 & 0 <= 'd & 'd <= 31).
+  (bool('ADD), int('d), int('n), bits(64), bits(4)) -> unit
+function execute_aarch64_instrs_integer_tags_mcsubtag (ADD, d, n, offset, tag_offset) = {
+    let operand1 : bits(64) = if n == 31 then SP_read() else X_read(n, 64);
+    let sum : bits(64) = if ADD then operand1 + offset else operand1 - offset;
+    let result : bits(64) = (sum[63 .. 60] @ 0x0) @ sum[55 .. 0];
+    if d == 31 then {
+        SP_set() = result
+    } else {
+        X_set(d, 64) = result
+    }
+}
+
+val execute_aarch64_instrs_integer_tags_mcinsertrandomtag : forall 'd 'm 'n, (0 <= 'd & 'd <= 31 & 0 <= 'm & 'm <= 31 & 0 <= 'n & 'n <= 31).
+  (int('d), int('m), int('n)) -> unit
+function execute_aarch64_instrs_integer_tags_mcinsertrandomtag (d, m, n) = {
+    let operand : bits(64) = if n == 31 then SP_read() else X_read(n, 64);
+    let result : bits(64) = (operand[63 .. 60] @ 0x0) @ operand[55 .. 0];
+    if d == 31 then {
+        SP_set() = result
+    } else {
+        X_set(d, 64) = result
+    }
+}
+
+// GMI sets the bit the address's tag numbers: a shift of 1, where the Sail sets a bit of a number only the guest knows
+val execute_aarch64_instrs_integer_tags_mcinserttagmask : forall 'd 'm 'n, (0 <= 'n & 'n <= 31 & 0 <= 'm & 'm <= 31 & 0 <= 'd & 'd <= 31).
+  (int('d), int('m), int('n)) -> unit
+function execute_aarch64_instrs_integer_tags_mcinserttagmask (d, m, n) = {
+    let address : bits(64) = if n == 31 then SP_read() else X_read(n, 64);
+    X_set(d, 64) = X_read(m, 64) | LSL(ZeroExtend(0b1, 64), MOD(UInt(address[59 .. 56]), 64))
+}

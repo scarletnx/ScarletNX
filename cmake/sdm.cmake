@@ -5,13 +5,13 @@
 # the PDF, cut into its instruction pages by sailgen --sdm with the errata's overrides (tools/sailgen/sdm/), then
 # sailgen --isel matches the back end's primitives (tools/sailgen/x64.ops) with the pages' pseudocode. The manual is not
 # kept in the tree: pass its PDF with -DSNX_SDM_PDF=, or it is downloaded once into the CPM cache (cpmfile.json's
-# intel-sdm-vol2); either way its SHA-256 must be 093US's, so every build derives from the same text. Off unless SNX_SAIL_X64 is set
+# intel-sdm-vol2); either way its SHA-256 must be 093US's, so every build derives from the same text
 include_guard(GLOBAL)
 include("${CMAKE_CURRENT_LIST_DIR}/sailgen.cmake")
 
-# on by default where the back end runs (x86-64, not Windows: its objects are COFF); without the manual or pdftotext
-# it is left off, with a warning, and LLVM makes every function
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$" AND NOT WIN32)
+# on by default where the back end runs: x86-64, but Android (its APKs have been made without it). Without the manual or
+# pdftotext the configure stops: SNX_SAIL_X64=OFF is how a build goes without the back end, and LLVM makes every function
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$" AND NOT ANDROID)
     set(snx_sail_x64_default ON)
 else()
     set(snx_sail_x64_default OFF)
@@ -22,7 +22,7 @@ set(SNX_SDM_PDF "" CACHE FILEPATH "Intel SDM Vol. 2 PDF, order no. 325383-093US 
 set(snx_sdm_sha256 d137a7887787bbb06c1a8b8bafd51958d8d2e16b4dff987a03226c845cca1516)
 
 # the manual and pdftotext, found once: where either is missing (no PDF given and no download, a revision other than
-# 093US, no pdftotext) the x86-64 back end is left out with a warning, and LLVM makes every function
+# 093US, no pdftotext) the configure stops and says which
 set(SNX_X64 OFF CACHE INTERNAL "the x86-64 back end is built (SNX_SAIL_X64 and the manual found)")
 if(SNX_SAIL_X64)
     set(snx_sdm_why "")
@@ -36,20 +36,20 @@ if(SNX_SAIL_X64)
     if(NOT snx_sdm_why)
         file(SHA256 "${pdf}" got)
         if(NOT got STREQUAL snx_sdm_sha256)
-            set(snx_sdm_why "${pdf} isn't revision 325383-093US (Intel's link serves the latest): pass the 093US PDF "
-                            "with -DSNX_SDM_PDF=")
+            string(CONCAT snx_sdm_why "${pdf} isn't revision 325383-093US of the Intel SDM (its SHA-256 is ${got}; "
+                                      "Intel's link serves the latest): pass the 093US PDF with -DSNX_SDM_PDF=")
         endif()
     endif()
     find_program(SNX_PDFTOTEXT pdftotext)
     if(NOT snx_sdm_why AND NOT SNX_PDFTOTEXT)
-        set(snx_sdm_why "pdftotext (poppler) is missing")
+        set(snx_sdm_why "pdftotext (poppler's) is missing: install it (docs/dev/build.md)")
     endif()
     if(snx_sdm_why)
-        message(WARNING "The x86-64 back end is left out, LLVM makes every function: the Intel SDM's ${snx_sdm_why}")
-    else()
-        set(SNX_X64 ON CACHE INTERNAL "the x86-64 back end is built (SNX_SAIL_X64 and the manual found)")
-        set(SNX_SDM_PDF_FOUND "${pdf}" CACHE INTERNAL "the Intel SDM's PDF the build derives from")
+        message(FATAL_ERROR "The x86-64 back end (SNX_SAIL_X64=ON) can't be made: ${snx_sdm_why}. "
+                            "-DSNX_SAIL_X64=OFF builds without it, and LLVM makes every function")
     endif()
+    set(SNX_X64 ON CACHE INTERNAL "the x86-64 back end is built (SNX_SAIL_X64 and the manual found)")
+    set(SNX_SDM_PDF_FOUND "${pdf}" CACHE INTERNAL "the Intel SDM's PDF the build derives from")
 endif()
 
 # snx_sdm_isel(<target>): generates x64_isel.inc (the encoders of the selected forms and each primitive's candidates)
@@ -92,41 +92,37 @@ function(snx_sdm_isel target)
 endfunction()
 
 # snx_sailgen_a64_x64(<target>): generates a64_x64.inc (the A64 emitters of a64_x64.roots, with sailgen's x86-64 back
-# end at its top: bits.h, x64.h and x64_a64.h) into the build folder, with the instruction selection it includes
-# (snx_sdm_isel), and gives <target> its include root
+# end at its top: snx_sailgen_machine_backends' files) into the build folder, with the instruction selection it
+# includes (snx_sdm_isel), and gives <target> its include root
 function(snx_sailgen_a64_x64 target)
     snx_sdm_isel(${target})
     set(dir "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/sail")
-    set(back "${PROJECT_SOURCE_DIR}/tools/sailgen")
     set(profile "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/decode/a64.profile")
     set(out "${CMAKE_CURRENT_BINARY_DIR}/sailgen")
+    snx_sailgen_machine_backends(x64 a64 files args)
     add_custom_command(OUTPUT "${out}/a64_x64.inc"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${out}"
-        COMMAND snx-sailgen --generate "${dir}/a64_x64.roots" --backend "${back}/bits.h" --backend "${back}/x64.h"
-                --backend "${back}/x64_a64.h" --profile "${profile}" -o "${out}/a64_x64.inc" "${dir}/a64.sail"
-                --overlay "${dir}/nx.sail"
-        DEPENDS snx-sailgen "${dir}/a64_x64.roots" "${dir}/a64.sail" "${dir}/nx.sail" "${back}/bits.h" "${back}/x64.h"
-                "${back}/x64_a64.h" "${profile}"
+        COMMAND snx-sailgen --generate "${dir}/a64_x64.roots" ${args} --profile "${profile}" -o "${out}/a64_x64.inc"
+                "${dir}/a64.sail" --overlay "${dir}/nx.sail"
+        DEPENDS snx-sailgen "${dir}/a64_x64.roots" "${dir}/a64.sail" "${dir}/nx.sail" ${files} "${profile}"
         COMMENT "Generating the A64 emitters' x86-64 code from Sail" VERBATIM)
     target_sources(${target} PRIVATE "${out}/a64_x64.inc")
     target_include_directories(${target} PRIVATE "${out}")
 endfunction()
 
 # snx_sailgen_a32_x64(<target>): generates a32_x64.inc (the AArch32 emitters of a32.roots, LLVM's own, with sailgen's
-# x86-64 back end at its top: bits.h, x64.h and x64_a32.h) into the build folder, with the instruction selection it
-# includes (snx_sdm_isel), and gives <target> its include root
+# x86-64 back end at its top: snx_sailgen_machine_backends' files) into the build folder, with the instruction
+# selection it includes (snx_sdm_isel), and gives <target> its include root
 function(snx_sailgen_a32_x64 target)
     snx_sdm_isel(${target})
     set(dir "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/sail")
-    set(back "${PROJECT_SOURCE_DIR}/tools/sailgen")
     set(out "${CMAKE_CURRENT_BINARY_DIR}/sailgen")
+    snx_sailgen_machine_backends(x64 a32 files args)
     add_custom_command(OUTPUT "${out}/a32_x64.inc"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${out}"
-        COMMAND snx-sailgen --generate "${dir}/a32.roots" --backend "${back}/bits.h" --backend "${back}/x64.h"
-                --backend "${back}/x64_a32.h" --profile "${dir}/a32.profile" -o "${out}/a32_x64.inc" "${dir}/a32.sail"
-                --overlay "${dir}/arm.sail"
-        DEPENDS snx-sailgen "${dir}/a32.roots" "${dir}/a32.sail" "${dir}/arm.sail" "${dir}/a32.profile" "${back}/bits.h"
-                "${back}/x64.h" "${back}/x64_a32.h"
+        COMMAND snx-sailgen --generate "${dir}/a32.roots" ${args} --profile "${dir}/a32.profile"
+                -o "${out}/a32_x64.inc" "${dir}/a32.sail" --overlay "${dir}/arm.sail"
+        DEPENDS snx-sailgen "${dir}/a32.roots" "${dir}/a32.sail" "${dir}/arm.sail" "${dir}/a32.profile" ${files}
         COMMENT "Generating the AArch32 emitters' x86-64 code from Sail" VERBATIM)
     target_sources(${target} PRIVATE "${out}/a32_x64.inc")
     target_include_directories(${target} PRIVATE "${out}")

@@ -8,6 +8,7 @@
    addrinfo are libnx's resolver.c layout, which Eden verified against the console: big-endian fields, except the
    address and port, which the console passes through htonl once more. */
 #include "nx/hle/services/network/network.h"
+#include "nx/runtime/platform/tracy.h"
 #include "hle/services/network/dns.swipc.inc"
 #ifndef _WIN32
 #include <strings.h>
@@ -71,12 +72,17 @@ static void put_reversed(Out* o, const uint8_t* v, size_t n) { /* a big-endian f
 
 /* the guest's name lookup, 0 or SNX_EAI_*. IPv4 only */
 static int lookup(const char* host, const char* service, int socktype, int protocol, int flags, SnxAddrInfo** out) {
+    u64 t0 = snx_tracy_attached() ? plat_ns() : 0;
     *out = NULL;
     if (blocked(host)) {
+        SNX_ZONE_T(z_net_dns, "hle: net dns error", "blocked host");
         LOG("sfdnsres: %s is blocked, answering EAI_AGAIN\n", host);
         return SNX_EAI_AGAIN;
     }
-    if (!resolvable(host)) return SNX_EAI_AGAIN;
+    if (!resolvable(host)) {
+        SNX_ZONE_T(z_net_dns, "hle: net dns error", "offline and not a number or localhost");
+        return SNX_EAI_AGAIN;
+    }
     SnxAddrInfo hints = {flags & (SNX_AI_PASSIVE | SNX_AI_CANONNAME | SNX_AI_NUMERICHOST | SNX_AI_NUMERICSERV),
                          SNX_AF_INET,
                          socktype,
@@ -85,7 +91,11 @@ static int lookup(const char* host, const char* service, int socktype, int proto
                          NULL,
                          NULL};
     int r = snx_net_getaddrinfo(host[0] ? host : NULL, service && service[0] ? service : NULL, &hints, out);
-    if (r) LOG("sfdnsres: %s: %s\n", host, snx_net_gai_strerror(r));
+    if (t0) SNX_PLOT("net dns ms", (double)(plat_ns() - t0) / 1e6); /* no underflow on attach or detach */
+    if (r) {
+        SNX_ZONE_TV(z_net_dns, "hle: net dns error", (u64)r, "getaddrinfo error %d", r);
+        LOG("sfdnsres: %s: %s\n", host, snx_net_gai_strerror(r));
+    }
     return r;
 }
 

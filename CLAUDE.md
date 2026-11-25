@@ -37,7 +37,9 @@ rules that sessions get wrong, and it points to the skills that hold the procedu
 
   The primary references are Switchbrew and the behavior of the SDK, which you read from the disassembly. Atmosphère
   (the kernel of Mesosphère, the services of Stratosphère) is the reference for how Horizon behaves. It is
-  GPL-2.0-only, so read it, but never port it.
+  GPL-2.0-only, so read it, but never port it. The ARM instruction sets, the Maxwell and Ampere GPUs' instructions and
+  the NVN API have their own manuals at `scarletnx.github.io/manual`. They are the first reference for a decoder, an
+  emitter, a translator or an NVN handler, and `snx-manual` says how to read them.
 - **GPU work stays on the GPU.** Compute shaders do the swizzles, deswizzles, format conversions and decodes of
   surfaces (`docs/layers/gpu/blocklinear.md`), with no CPU fallback. The CPU copies guest memory to and from staging in whole
   ranges and does nothing more. Never read GPU or PCIe-mapped memory from the CPU. A readback is the last resort, for
@@ -183,6 +185,9 @@ The skills in `.claude/skills/`:
   for C in `src/`.
 - `snx-gpu-shader`: how to write and optimize our compute shaders (constant tables, bit operations, uniform branches,
   fewer fetches, workgroup structure). It also tells how to prove that they give the bytes of the CPU reference.
+- `snx-manual`: the published manuals of the ARM instruction sets, the Maxwell and Ampere GPUs and the NVN API. They
+  come from the Sail files in the tree, which hold the operation of each instruction. Read a page before you write a
+  decoder, an emitter, a translator or an NVN handler.
 - `record-lesson`: where a lesson goes, so that the next session finds it.
 - `code-audit`: the audit and fix loop in many passes, with the `snx-*-reviewer` agents in `.claude/agents/review/`.
 - `ste100`: the ASD-STE100 rules for the Claude files and for agent prompts and reports, and the checker that the

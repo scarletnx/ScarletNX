@@ -13,7 +13,8 @@
    key with - for each _ (--aot-threads=4): those names are listed for the drivers (g_setting_args). It is strict ISO C23
    and depends on nothing, so a cross build can build it for the machine it runs on.
 
-   Usage: settingsgen --out DIR [--pipelines FILE] [--llvm-include DIR] [--vk-registry FILE] SETTINGS
+   Usage: settingsgen --out DIR [--pipelines FILE] [--llvm-include DIR] [--vk-registry FILE] [--bans FILE]
+          [--hooks FILE] SETTINGS
    It writes DIR/snx_settings.h, settings.c (g_settings), a settings_<table>.c for each runtime-scope table (whose set
    functions the runtime defines) and settings_runtime.c (the .ini's sections), settings_launch.c (the launcher's and the recompiler's tables
    and sections), settings_llvm.c (LLVM's pipelines, which pass each toggle turns off, and the options set) and
@@ -21,6 +22,7 @@
    only rewritten when it changes. Without --pipelines or --llvm-include, the llvm table has no passes or no options
    of LLVM's; without --vk-registry, a vulkan table's names go unchecked and its help says nothing of the registry. */
 #include <ctype.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,6 +49,10 @@ typedef struct {
     const char* only; /* the systems it does something on, where not every one: ini.h's INI_ONLY_ of them, else NULL */
     int type, size, once, startup, in_game, recompile, step, shift, list, repeat, block, table, line;
     int slider;  /* drawn on a slider (ini.h's INI_SLIDER): an int with words */
+    int open;    /* a text whose words are its common values (ini.h's INI_OPEN) */
+    char* steps; /* an int's values the menus offer, '|' between (ini.h's IniOpt steps), NULL for every step */
+    char* boxes; /* the source of its items (ini.h's INI_BOXES): words, bans, families or commands */
+    char* path;  /* a text that is a path (ini.h's INI_PATH): folder, file or save, the picker it takes */
     int perf;    /* changes how fast the game runs where the player can't see it (ini.h's INI_PERF) */
     char* needs; /* the feature its needs block names, NULL: no build gate on it */
     /* LLVM's: its kind, its ID (a pass's name, a setter's suffix), the pipelines' levels a pass is in (bit per LEVELS
@@ -116,6 +122,85 @@ static void fail(int line, const char* fmt, ...) {
     fputc('\n', stderr);
     free(reading);
     exit(1);
+}
+
+/* steps' values, whole numbers in order a space or a comma between, or a range A..B/S (A, A + S and on to B), as the
+   table keeps them: '|' between two */
+static char* steps_of(const char* text, int line) {
+    size_t cap = strlen(text) * 24 + 64, at = 0; /* a range grows it */
+    char* out = calloc(cap, 1);
+    const char* c = text;
+    long last = LONG_MIN;
+    if (!out) fail(line, "out of memory");
+    while (*c) {
+        char* end;
+        long v, to = 0, by = 0;
+        while (*c == ' ' || *c == ',' || *c == '\t') ++c;
+        if (!*c) break;
+        v = to = strtol(c, &end, 10);
+        if (end != c && !strncmp(end, "..", 2)) {
+            const char* r = end + 2;
+            to = strtol(r, &end, 10);
+            if (end == r) fail(line, "steps: a range is A..B/S: %s", c);
+            by = 1;
+            if (*end == '/') {
+                r = end + 1;
+                by = strtol(r, &end, 10);
+                if (end == r || by < 1) fail(line, "steps: a range is A..B/S: %s", c);
+            }
+        }
+        if (end == c || (*end && *end != ' ' && *end != ',' && *end != '\t'))
+            fail(line, "steps takes whole numbers: %s", c);
+        if (by && to < v) fail(line, "steps: a range goes up: %s", c);
+        for (;; v += by) { /* a range's values, else the one */
+            if (v <= last) fail(line, "steps go up: %ld after %ld", v, last);
+            if (at + 32 > cap) {
+                char* more = realloc(out, cap *= 2);
+                if (!more) fail(line, "out of memory");
+                out = more;
+            }
+            at += (size_t)sprintf(out + at, "%s%ld", at ? "|" : "", v);
+            last = v;
+            if (!by || v + by > to) break;
+        }
+        c = end;
+    }
+    if (!at) fail(line, "steps takes its values");
+    return out;
+}
+/* a setting's steps within its range, where the range is numbers (a constant's, INT_MAX, is taken as it says) */
+static void steps_in_range(const Setting* s) {
+    char *lo_end, *hi_end;
+    long lo = strtol(s->lo, &lo_end, 10), hi = strtol(s->hi, &hi_end, 10);
+    const char* c = s->steps;
+    while (c) {
+        long v = strtol(c, NULL, 10);
+        if ((!*lo_end && v < lo) || (!*hi_end && v > hi))
+            fail(s->line, "%s: step %ld is outside %s..%s", s->name, v, s->lo, s->hi);
+        c = strchr(c, '|');
+        if (c) ++c;
+    }
+}
+
+/* a row of boxes' own words (boxes words): value=Label each, an int's value one bit of it, in its range */
+static void boxes_check(const Setting* s) {
+    const char* c = s->words;
+    if (!c) fail(s->line, "%s: boxes words takes words, value=Label each", s->name);
+    while (c) {
+        const char* end = strchr(c, '|');
+        const char* equal = strchr(c, '=');
+        size_t n = end ? (size_t)(end - c) : strlen(c);
+        char* stop;
+        long v;
+        if (!equal || (size_t)(equal - c) >= n || equal == c)
+            fail(s->line, "%s: boxes words takes value=Label each: %.*s", s->name, (int)n, c);
+        if (s->type == T_INT) {
+            v = strtol(c, &stop, 10);
+            if (stop != equal || v < 1 || (v & (v - 1)) || (double)v > strtod(s->hi, NULL))
+                fail(s->line, "%s: an int's box is one bit of its range: %.*s", s->name, (int)(equal - c), c);
+        }
+        c = end ? end + 1 : NULL;
+    }
 }
 
 static void* alloc(size_t n) {
@@ -592,6 +677,18 @@ static void read_spec(const char* path) {
             s->recompile = 1;
         } else if (!strcmp(word, "slider")) {
             s->slider = 1;
+        } else if (!strcmp(word, "open")) {
+            s->open = 1;
+        } else if (!strcmp(word, "boxes")) {
+            if (strcmp(rest, "words") && strcmp(rest, "bans") && strcmp(rest, "families") && strcmp(rest, "commands"))
+                fail(number, "boxes %s: the items are words, bans, families or commands", rest);
+            s->boxes = dup(rest);
+        } else if (!strcmp(word, "path")) {
+            if (strcmp(rest, "folder") && strcmp(rest, "file") && strcmp(rest, "save"))
+                fail(number, "path %s: a path is a folder, a file, or save (a file to write)", rest);
+            s->path = dup(rest);
+        } else if (!strcmp(word, "steps")) {
+            s->steps = steps_of(rest, number);
         } else if (!strcmp(word, "perf")) {
             s->perf = 1;
         } else if (!strcmp(word, "set")) {
@@ -619,6 +716,20 @@ static void read_spec(const char* path) {
             fail(s->line, "%s: recompile takes a game's setting of one value, without default-if or set", s->name);
         if (s->slider && (s->type != T_INT || !s->words))
             fail(s->line, "%s: slider takes an int with words, the steps its slider shows", s->name);
+        if (s->open && (s->type != T_TEXT || !s->words))
+            fail(s->line, "%s: open takes a text with words, its common values", s->name);
+        if (s->steps && (s->type != T_INT || s->slider))
+            fail(s->line, "%s: steps takes an int, not a slider (whose steps are its words')", s->name);
+        if (s->steps) steps_in_range(s);
+        if (s->path && (s->type != T_TEXT || s->boxes)) fail(s->line, "%s: path takes a text, not boxes", s->name);
+        if (s->boxes && s->type == T_FLOAT)
+            fail(s->line, "%s: boxes takes an int or a text, a float is no set", s->name);
+        if (s->boxes && (s->slider || s->steps || s->open))
+            fail(s->line, "%s: boxes takes no slider, steps or open: its items are the ones of its set", s->name);
+        if (s->boxes && strcmp(s->boxes, "words") && (s->type != T_TEXT || s->words))
+            fail(s->line, "%s: boxes %s takes a text without words: the items are made from %s", s->name, s->boxes,
+                 s->boxes);
+        if (s->boxes && !strcmp(s->boxes, "words")) boxes_check(s);
         if (s->perf && tables[s->table].scope == S_LAUNCHER)
             fail(s->line,
                  "%s: perf takes a game's or the recompile's setting: a launcher table's never reaches the game",
@@ -1156,6 +1267,13 @@ static void out_row(const Setting* s, int index, const char* key, const char* la
         if (s->startup) at = snprintf(flags, sizeof flags, "INI_STARTUP");
         if (s->in_game) at += snprintf(flags + at, sizeof flags - (size_t)at, "%sINI_IN_GAME", at ? " | " : "");
         if (s->slider) at += snprintf(flags + at, sizeof flags - (size_t)at, "%sINI_SLIDER", at ? " | " : "");
+        if (s->open) at += snprintf(flags + at, sizeof flags - (size_t)at, "%sINI_OPEN", at ? " | " : "");
+        if (s->boxes && s->words) at += snprintf(flags + at, sizeof flags - (size_t)at, "%sINI_BOXES", at ? " | " : "");
+        if (s->path)
+            at += snprintf(flags + at, sizeof flags - (size_t)at, "%sINI_PATH_%s", at ? " | " : "",
+                           !strcmp(s->path, "folder") ? "FOLDER"
+                           : !strcmp(s->path, "file") ? "FILE"
+                                                      : "SAVE");
         if (s->perf || scope_of_setting(s) == S_VULKAN || scope_of_setting(s) == S_LLVM)
             at += snprintf(flags + at, sizeof flags - (size_t)at, "%sINI_PERF", at ? " | " : "");
         if (s->only) at += snprintf(flags + at, sizeof flags - (size_t)at, "%s%s", at ? " | " : "", s->only);
@@ -1188,6 +1306,8 @@ static void out_row(const Setting* s, int index, const char* key, const char* la
             out("sizeof g_settings.%s", s->member);
     } else
         outs("0");
+    outs(", ");
+    out_string(s->steps);
     outs("},\n");
 }
 
@@ -1224,7 +1344,7 @@ static void write_table(int t) {
             n++;
         }
     }
-    outs("    {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0}};\n");
+    outs("    {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0, NULL}};\n");
     (void)n;
 }
 
@@ -1236,7 +1356,7 @@ static void write_recompile_game(void) {
     for (i = 0; i < nsettings; i++)
         if (settings[i].recompile)
             out_row(&settings[i], 0, settings[i].key, settings[i].label ? settings[i].label : settings[i].name);
-    outs("    {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0}};\n");
+    outs("    {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0, NULL}};\n");
 }
 
 /* every key, as a command line gives it as it is and with - for each _: letters, digits and _, and a repeat's <N> or
@@ -1441,10 +1561,227 @@ static void write_llvm(const char* dir) {
     flush(dir, "settings_llvm.c");
 }
 
+/* ============================================================ a row of boxes' items */
+
+/* an item of a row of boxes after the others of *words: value=Label~About, '|' between. A label's or an about's own
+   '|', '~' and line ends are written as / - and spaces; an about is cut at ABOUT_MAX, at a word's end */
+enum { ABOUT_MAX = 300 };
+static void item_text(char** words, const char* text, size_t most) {
+    char* t = dup(text);
+    size_t n = strlen(t);
+    char* c;
+    for (c = t; *c; c++)
+        if (*c == '|')
+            *c = '/';
+        else if (*c == '~')
+            *c = '-';
+        else if (*c == '\n' || *c == '\t' || *c == '\r')
+            *c = ' ';
+    if (most && n > most) {
+        n = most - 3;
+        while (n && t[n] != ' ') n--;
+        strcpy(t + n, "...");
+    }
+    append(words, t, "");
+    free(t);
+}
+static void item_add(char** words, const char* value, const char* label, const char* about) {
+    char* none = dup("");
+    if (!*words)
+        *words = none;
+    else
+        free(none);
+    if (**words) append(words, "|", "");
+    append(words, value, "=");
+    item_text(words, label, 0);
+    append(words, "~", "");
+    item_text(words, about, ABOUT_MAX);
+}
+/* text to a line at a time: the next one, cut off, trimmed, its spaces at the ends left out; NULL at the end */
+static char* next_line(char** at) {
+    char* line = *at;
+    char* end;
+    if (!line || !*line) return NULL;
+    end = strchr(line, '\n');
+    if (end) *end = 0;
+    *at = end ? end + 1 : NULL;
+    return trim(line);
+}
+/* the fields of a line between | (a ban's), the spaces around each left out: how many */
+static int line_fields(char* line, char** field, int most) {
+    int n = 0;
+    char* at = line;
+    while (at && n < most) {
+        char* bar = strchr(at, '|');
+        if (bar) *bar = 0;
+        field[n++] = trim(at);
+        at = bar ? bar + 1 : NULL;
+    }
+    return n;
+}
+/* the keys of the extension bans (extension_bans.txt), each once in the table's order, with the lines on it as its
+   about: the driver, its versions and system, and what it breaks */
+enum { BANS_MAX = 512, BAN_FIELDS = 7 };
+static char* bans_items(const char* path) {
+    char* text = read_file(path, 1);
+    char* at = text;
+    char* line;
+    char *words = NULL, *key[BANS_MAX], *about[BANS_MAX];
+    int keys = 0, k;
+    while ((line = next_line(&at)) != NULL) {
+        char* field[BAN_FIELDS];
+        char said[512];
+        if (!*line || *line == '#') continue;
+        if (line_fields(line, field, BAN_FIELDS) < BAN_FIELDS || !strcmp(field[0], "key")) continue;
+        for (k = 0; k < keys && strcmp(key[k], field[0]); k++) {}
+        if (k == keys) {
+            if (keys == BANS_MAX) fail(0, "%s: past %d keys", path, BANS_MAX);
+            key[keys] = dup(field[0]);
+            about[keys++] = dup("");
+        }
+        snprintf(said, sizeof said, "%s%s%s%s%s%s%s %s", *about[k] ? "; " : "", field[2],
+                 strcmp(field[3], "*") ? " " : "", strcmp(field[3], "*") ? field[3] : "",
+                 strcmp(field[4], "any") ? " (" : "", strcmp(field[4], "any") ? field[4] : "",
+                 strcmp(field[4], "any") ? ")" : "", field[6]);
+        append(&about[k], said, "");
+    }
+    for (k = 0; k < keys; k++) {
+        item_add(&words, key[k], key[k], about[k]);
+        free(key[k]);
+        free(about[k]);
+    }
+    release(text);
+    if (!words) fail(0, "%s: no key of a ban", path);
+    return words;
+}
+/* the families of hooks (hooks.hook's family lines), with the comment before each as its about */
+static char* families_items(const char* path) {
+    char* text = read_file(path, 1);
+    char* at = text;
+    char* line;
+    char* words = NULL;
+    char* said = dup("");
+    while ((line = next_line(&at)) != NULL) {
+        if (*line == '#') {
+            const char* c = trim(line + 1);
+            if (*c) append(&said, *said ? " " : "", c);
+            continue;
+        }
+        if (!strncmp(line, "family ", 7)) {
+            const char* name = trim(line + 7);
+            item_add(&words, name, name, said);
+        }
+        free(said); /* a comment is of the line after it */
+        said = dup("");
+    }
+    free(said);
+    release(text);
+    if (!words) fail(0, "%s: no family", path);
+    return words;
+}
+/* where the tag ends that starts at tag (its >) and the text after it, both in text; NULL past the text's end */
+static const char* after_tag(const char* tag) {
+    const char* end = strchr(tag, '>');
+    return end ? end + 1 : NULL;
+}
+/* the first parameter's type of the command the registry defines by name ("VkDevice"), NULL for none; an alias's is
+   that of the command it stands for */
+static char* command_handle(const char* text, const char* name, int depth) {
+    char* needle = cat3("<name>", name, "</name></proto>");
+    const char* at = strstr(text, needle);
+    char* type = NULL;
+    free(needle);
+    if (at) {
+        const char* param = strstr(at, "<param");
+        const char* stop = strstr(at, "</command>");
+        const char* begin = param && stop && param < stop ? strstr(param, "<type>") : NULL;
+        const char* end = begin && begin < stop ? strstr(begin, "</type>") : NULL;
+        if (end) type = dup_n(begin + 6, (size_t)(end - begin - 6));
+    } else if (depth < 8) { /* <command name="X" alias="Y"/> */
+        needle = cat3("<command name=\"", name, "\"");
+        at = strstr(text, needle);
+        free(needle);
+        while (at && !type) {
+            char* alias = tag_attribute(at, "alias");
+            const char* next = after_tag(at);
+            if (alias) type = command_handle(text, alias, depth + 1);
+            free(alias);
+            needle = cat3("<command name=\"", name, "\"");
+            at = type || !next ? NULL : strstr(next, needle);
+            free(needle);
+        }
+    }
+    return type;
+}
+static int device_handle(const char* type) {
+    return type && (!strcmp(type, "VkDevice") || !strcmp(type, "VkQueue") || !strcmp(type, "VkCommandBuffer"));
+}
+/* the device commands of the vulkan table's extensions, as the registry lists them in each extension's blocks, each
+   once, with the extensions that require it as its about: snx_vk_hide_check takes every one
+   (tests/vk_extension_commands.c) */
+enum { COMMANDS_MAX = 2048 };
+static char* commands_items(const char* registry) {
+    char* text = read_file(registry, 1);
+    char *words = NULL, *name[COMMANDS_MAX], *about[COMMANDS_MAX];
+    int names = 0, i, k;
+    for (i = 0; i < nsettings; i++) {
+        const char *tag, *stop, *at;
+        char* needle;
+        if (!settings[i].vk_id) continue;
+        needle = cat3("<extension name=\"", settings[i].vk_id, "\"");
+        tag = strstr(text, needle);
+        free(needle);
+        stop = tag ? strstr(tag, "</extension>") : NULL;
+        if (!tag || !stop) continue; /* one that closes itself requires nothing */
+        for (at = strstr(tag, "<require"); at && at < stop; at = strstr(at + 1, "<require")) {
+            const char* block_end = strstr(at, "</require>");
+            char* api = tag_attribute(at, "api");
+            const char* c;
+            int vulkan = !api || has_word(api, "vulkan");
+            free(api);
+            if (!vulkan || !block_end || block_end > stop) continue;
+            for (c = strstr(at, "<command"); c && c < block_end; c = strstr(c + 1, "<command")) {
+                char* command = tag_attribute(c, "name");
+                char* handle = command ? command_handle(text, command, 0) : NULL;
+                if (device_handle(handle)) {
+                    for (k = 0; k < names && strcmp(name[k], command); k++) {}
+                    if (k == names) {
+                        if (names == COMMANDS_MAX) fail(0, "%s: past %d commands", registry, COMMANDS_MAX);
+                        name[names] = dup(command);
+                        about[names++] = cat3("Of ", settings[i].vk_id, "");
+                    } else if (!strstr(about[k], settings[i].vk_id))
+                        append(&about[k], ", ", settings[i].vk_id);
+                }
+                free(handle);
+                free(command);
+            }
+        }
+    }
+    for (k = 0; k < names; k++) {
+        item_add(&words, name[k], name[k], about[k]);
+        free(name[k]);
+        free(about[k]);
+    }
+    release(text);
+    if (!words) fail(0, "%s: no device command of the vulkan table's extensions", registry);
+    return words;
+}
+/* the items each row of boxes takes from a file made for another reader: without it, the row is typed as before */
+static void fill_boxes(const char* bans, const char* hooks, const char* registry) {
+    int i;
+    for (i = 0; i < nsettings; i++) {
+        Setting* s = &settings[i];
+        if (!s->boxes || s->words) continue;
+        if (!strcmp(s->boxes, "bans") && bans) s->words = bans_items(bans);
+        if (!strcmp(s->boxes, "families") && hooks) s->words = families_items(hooks);
+        if (!strcmp(s->boxes, "commands") && registry) s->words = commands_items(registry);
+    }
+}
+
 int main(int argc, char** argv) {
-    const char *dir = NULL, *pipes = NULL, *include_dir = NULL, *registry = NULL;
+    const char *dir = NULL, *pipes = NULL, *include_dir = NULL, *registry = NULL, *bans = NULL, *hooks = NULL;
     const char* usage = "usage: settingsgen --out DIR [--pipelines FILE] [--llvm-include DIR] [--vk-registry FILE] "
-                        "SETTINGS";
+                        "[--bans FILE] [--hooks FILE] SETTINGS";
     int i;
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--out") && i + 1 < argc)
@@ -1455,6 +1792,10 @@ int main(int argc, char** argv) {
             include_dir = argv[++i];
         else if (!strcmp(argv[i], "--vk-registry") && i + 1 < argc)
             registry = argv[++i];
+        else if (!strcmp(argv[i], "--bans") && i + 1 < argc)
+            bans = argv[++i];
+        else if (!strcmp(argv[i], "--hooks") && i + 1 < argc)
+            hooks = argv[++i];
         else if (argv[i][0] == '-' || spec_path)
             fail(0, "%s", usage);
         else
@@ -1464,6 +1805,7 @@ int main(int argc, char** argv) {
     read_spec(spec_path);
     if (pipes) read_pipelines(pipes);
     fill_vulkan(registry);
+    fill_boxes(bans, hooks, registry);
     fill_llvm(include_dir);
     check_keys();
     write_h(dir);

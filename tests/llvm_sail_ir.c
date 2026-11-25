@@ -61,9 +61,10 @@ static const char* const generated_ops[] = {
     "PACIBZ",   "PACIBSP",  "AUTIAZ",  "AUTIASP",   "AUTIBZ",    "AUTIBSP",   "CLREX",     "DSB_DMB", "ISB",
     "STR_i",    "LDR_i",    "STR",     "LDR",       "LD_lit",    "STP",       "LDP",       "STXR",    "LDXR",
     "STXP",     "LDXP",     "STLR",    "LDAR",      "LDAPR",     "LDAPR_i",   "STLR_i",    "CAS",     "CASP",
-    "LDADD",    "LDCLR",    "LDEOR",   "LDSET",     "LDSMAX",    "LDSMIN",    "LDUMAX",    "LDUMIN",  "SWP"};
+    "LDADD",    "LDCLR",    "LDEOR",   "LDSET",     "LDSMAX",    "LDSMIN",    "LDUMAX",    "LDUMIN",  "SWP",
+    "LDRA"};
 #define GENERATED_OPS (sizeof generated_ops / sizeof *generated_ops)
-#define FIRST_LDST    (GENERATED_OPS - 27)
+#define FIRST_LDST    (GENERATED_OPS - 28)
 /* and the ones ir_fpu.c sends to it: every scalar floating-point instruction */
 static const char* const fp_ops[] = {
     "FADD_s",    "FSUB_s",     "FDIV_s",     "FMUL_s",     "FNMUL_s",    "FMAX_s",    "FMIN_s",    "FMAXNM_s",

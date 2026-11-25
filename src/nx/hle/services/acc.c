@@ -10,6 +10,7 @@
 #include "gui/splash.h"
 #include "nx/hle/filesystem/fs.h"
 #include "common/platform/file.h"
+#include "nx/runtime/platform/tracy.h"
 #include <openssl/rand.h>
 #include <time.h>
 
@@ -322,7 +323,10 @@ static int nn_account_baas_IManagerForSystemService_GetNetworkServiceLicenseCach
 /* the online account's user resource (130) and verification URL (133) caches, which the system's account pages read:
    the online account service is not there, which they show as not available right now (rEden's answer) */
 static int acc_system_manager_other(SvcObj* self, IpcCtx* c) {
-    if (c->cmd == 130 || c->cmd == 133) R_THROW(SNX_RC_ACCOUNT_UNDER_MAINTENANCE);
+    if (c->cmd == 130 || c->cmd == 133) {
+        SNX_ZONE_T(z_acc_err, "svc acc error", "no online account service, cmd %u", c->cmd);
+        R_THROW(SNX_RC_ACCOUNT_UNDER_MAINTENANCE);
+    }
     return stub_ok(self, c);
 }
 
@@ -341,7 +345,10 @@ static int nn_account_baas_IAdministrator_IsLinkedWithNintendoAccount(SvcObj* se
 }
 /* the online account's page (290, GetRequestForNintendoAccountUserResourceView): not available right now, as rEden */
 static int acc_administrator_other(SvcObj* self, IpcCtx* c) {
-    if (c->cmd == 290) R_THROW(SNX_RC_ACCOUNT_UNDER_MAINTENANCE);
+    if (c->cmd == 290) {
+        SNX_ZONE_T(z_acc_err, "svc acc error", "no online account service, cmd %u", c->cmd);
+        R_THROW(SNX_RC_ACCOUNT_UNDER_MAINTENANCE);
+    }
     return stub_ok(self, c);
 }
 
@@ -504,6 +511,7 @@ static int nn_account_IAccountServiceForAdministrator_BeginUserRegistration(SvcO
         v[1] = (snx_ld_be64(bytes + 8) & ~((u64)3 << 62)) | ((u64)2 << 62);
     } while (snx_users_find(v));
     if (snx_users_begin(v, why, sizeof why)) {
+        SNX_ZONE_T(z_acc_err, "svc acc error", "user registration refused: %s", why);
         WARN("acc: no user registered: %s\n", why);
         R_THROW(SNX_RC_ACCOUNT_USER_NOT_EXIST);
     }

@@ -62,7 +62,7 @@ static const unsigned nx_cli = SNX_CLI_BIT(SNX_CLI_GAME) | SNX_CLI_BIT(SNX_CLI_S
                                SNX_CLI_BIT(SNX_CLI_HEADLESS) | SNX_CLI_BIT(SNX_CLI_HELP) | SNX_CLI_RECOMPILE_OPTIONS;
 static void usage(void) {
     puts("Usage: scarletnx [OPTIONS] INPUT [-- GAME_ARGUMENTS...]\n"
-         "  INPUT                  Extract, recompile if needed, then play XCI/NSP/DXCI/DNSP/NRO\n"
+         "  INPUT                  Extract, recompile if needed, then play XCI/NSP/XCZ/NSZ/DXCI/DNSP/NRO\n"
          "  -- GAME_ARGUMENTS...   Everything after the -- goes to the game as given. The options here go\n"
          "                         before it");
     snx_cli_help(stdout, nx_cli);
@@ -91,8 +91,8 @@ static void usage(void) {
          "  --dump-modules PROGRAM DIR\n"
          "                         Write an extracted program's (or an NRO's) modules as laid out\n"
          "                         in guest memory into DIR, for tools/symbols.py and tools/disasm.py;\n"
-         "                         an XCI or NSP of a game or an update is read in place, with the\n"
-         "                         keys of the data folder (--data)");
+         "                         an XCI or NSP (or XCZ, NSZ) of a game or an update is read in place,\n"
+         "                         with the keys of the data folder (--data)");
     puts("  --pack FOLDER|DUMP     Pack a folder of NCAs (or a dump's) into an NSP, or with --xci an XCI,\n"
          "                         whose NCAs are decrypted: an ordinary NSP or XCI, not a DNSP or DXCI\n"
          "                         (--pack -h)");
@@ -104,7 +104,7 @@ static void usage(void) {
          "  -s                     Enable the stub and stop at startup\n"
          "Short options may be combined, for example -rx or -Hs.");
 #endif
-    puts("\nOn the Switch, INPUT and --update take dumps (XCI, NSP, DXCI, DNSP), and the game's folder is\n"
+    puts("\nOn the Switch, INPUT and --update take dumps (XCI, NSP, XCZ, NSZ, DXCI, DNSP), and the game's folder is\n"
          "<outdir>/<title ID>; with --update, INPUT may be a game made already (its program), the updates and DLCs\n"
          "going into its folder. --keys takes prod.keys (default: the data folder, then ~/.switch). Without -f or\n"
          "--fullscreen=0 the game's .ini decides. --headless runs without a window or swapchain. --seconds,\n"
@@ -1541,15 +1541,7 @@ static int takes_value(const char* arg) {
    place. A definition and not a weak declaration tested for null: where the program defines the function, LLVM reads
    that test on Windows on Arm through a slot COFF has not, the function's own first words */
 [[gnu::weak]] int snx_setting_known(const char* key) { return (void)key, 0; }
-static int container_path(const char* path) {
-    const char* ext = strrchr(path, '.');
-    char lower[6];
-    size_t i, size;
-    size = ext ? strlen(ext) : 0;
-    if (size != 4 && size != 5) return 0;
-    for (i = 0; i <= size; ++i) lower[i] = (char)tolower((unsigned char)ext[i]);
-    return !strcmp(lower, ".xci") || !strcmp(lower, ".nsp") || !strcmp(lower, ".dxci") || !strcmp(lower, ".dnsp");
-}
+static int container_path(const char* path) { return snx_switch_dump_name(path); }
 /* The data folder of a run: the one --data (--repo) names, else snx_data_dir's for the program in program_dir, made
    when make is set and it is not there yet, else "." when none can be named. *found is the folder looked up, owned,
    NULL when --data named one. 0, or nonzero said when the folder cannot be made */
@@ -1959,8 +1951,8 @@ int snx_driver(int argc, char** argv) {
         goto done;
     }
     if (!automatic && (flags & SNX_EXTRACT) && (flags & SNX_RECOMP)) {
-        result =
-            snx_error("-rx takes an XCI, NSP, DXCI or DNSP dump, and %s is not one", input ? input : "none was given");
+        result = snx_error("-rx takes an XCI, NSP, XCZ, NSZ, DXCI or DNSP dump, and %s is not one",
+                           input ? input : "none was given");
         goto done;
     }
     if (automatic && (flags & SNX_RECOMP) && separator < argc) {

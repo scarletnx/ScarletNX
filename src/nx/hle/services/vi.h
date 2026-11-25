@@ -26,6 +26,9 @@ u64 vi_vsync_period(void); /* ns from one vsync to the next, as the shown layer'
    another. Any thread */
 void vi_window_size(u32* width, u32* height);
 void vi_vsync_tick(void);  /* one display refresh: signals the vsync event */
+/* the largest picture an Ounce game is told the display takes (vi2's buffer max resolution, gsv.c), width and
+   height: the TV's in TV mode, the console's screen in handheld mode */
+void vi2_buffer_max_size(u32 size[2]);
 /* ---- HLE state in g_hle (hle.h) */
 #define VI_LAYERS 8
 #define VI_SLOTS  64    /* BufferQueueDefs::NUM_BUFFER_SLOTS */

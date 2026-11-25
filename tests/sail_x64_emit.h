@@ -11,11 +11,17 @@
 enum {
     SNX_X64_BMI1 = 1, SNX_X64_BMI2 = 2, SNX_X64_LZCNT = 4, SNX_X64_SSE3 = 8, SNX_X64_SSSE3 = 16, SNX_X64_SSE41 = 32,
     SNX_X64_SSE42 = 64, SNX_X64_PCLMUL = 128, SNX_X64_F16C = 256, SNX_X64_POPCNT = 512, SNX_X64_AVX = 1024,
-    SNX_X64_FMA = 2048
+    SNX_X64_FMA = 2048, SNX_X64_WIN64 = 16384
 };
+/* the calling convention of this host's C, which the test calls the code by */
+#if defined(_WIN32)
+#define SNX_X64_ABI SNX_X64_WIN64
+#else
+#define SNX_X64_ABI 0
+#endif
 /* what the back end needs of every host (snx_x64_available): the 'plain' host of the tests */
 #define SNX_X64_BASELINE \
-    (SNX_X64_SSE3 | SNX_X64_SSSE3 | SNX_X64_SSE41 | SNX_X64_SSE42 | SNX_X64_PCLMUL | SNX_X64_POPCNT)
+    (SNX_X64_SSE3 | SNX_X64_SSSE3 | SNX_X64_SSE41 | SNX_X64_SSE42 | SNX_X64_PCLMUL | SNX_X64_POPCNT | SNX_X64_ABI)
 
 /* word's x86-64 code at pc for a guest of these A64 features, as u64 step(CPU*) returning the next pc: its size in
    code, 0 when the x86-64 back end's roots take no clause of it */
@@ -25,10 +31,13 @@ size_t snx_x64_step(uint32_t word, uint64_t pc, uint64_t features, unsigned host
    snx_x64_step's */
 size_t snx_x64_block(const uint32_t* words, size_t* count, uint64_t pc, uint64_t features, unsigned host_features,
                      unsigned char* code, size_t cap);
-/* the host registers the back end may give values (0: all nine; fewer makes it spill, for the test of spilling) */
+/* the host registers the back end may give values (0: all nine; fewer makes it spill, for the test of spilling), and
+   the vector ones (0: all sixteen) */
 void snx_x64_set_pool(int registers);
-/* the pool snx_x64_set_pool set last, 0 for every register */
+void snx_x64_set_xpool(int registers);
+/* the pools those set last, 0 for every register */
 int snx_x64_pool(void);
+int snx_x64_xpool(void);
 /* the SSA instructions the last step appended, dropped ones counted */
 unsigned snx_x64_instructions(void);
 /* the calls of the floating-point helpers the code made so far */

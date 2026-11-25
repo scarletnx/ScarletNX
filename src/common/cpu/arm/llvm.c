@@ -38,19 +38,8 @@ typedef struct {
     int yields;         /* the instruction being emitted wrote through the bus hook */
 } ArmIR;
 
-static int options_valid(const SnxArmCodegenOptions* o) {
-    return !o || (o->abi == SNX_ARM_CODEGEN_OPTIONS_ABI &&
-                  (o->profile == SNX_ARM_PROFILE_A57 || o->profile == SNX_ARM_PROFILE_ARM11 ||
-                   o->profile == SNX_ARM_PROFILE_A9 ||
-                   ((o->profile == SNX_ARM_PROFILE_ARM7TDMI || o->profile == SNX_ARM_PROFILE_ARM946E) &&
-                    o->memory == SNX_ARM_MEMORY_FLAT)) &&
-                  (o->memory == SNX_ARM_MEMORY_FLAT || o->memory == SNX_ARM_MEMORY_CHECKED ||
-                   o->memory == SNX_ARM_MEMORY_HOSTED) &&
-                  ((!o->trace && !o->skipped) ||
-                   (o->profile == SNX_ARM_PROFILE_ARM7TDMI && o->trace && o->skipped && o->trace != o->skipped)));
-}
-/* llvm.h: flat memory in a window of 2^32 guest addresses with a guard after it, the cpu private to the running block,
-   and the entry state seen to by the dispatch loop */
+/* codegen.h: flat memory in a window of 2^32 guest addresses with a guard after it, the cpu private to the running
+   block, and the entry state seen to by the dispatch loop */
 static int hosted(const ArmIR* a) { return a->memory == SNX_ARM_MEMORY_HOSTED; }
 /* the AGB board's rules (arm.h's SNX_ARM_PROFILE_ARM7TDMI), which no other profile follows */
 static int arm7tdmi(const ArmIR* a) { return a->profile == SNX_ARM_PROFILE_ARM7TDMI; }
@@ -96,14 +85,15 @@ static LLVMValueRef flag(ArmIR* a, unsigned n) { return band(a, lsr(a, GET(a, cp
 static LLVMBasicBlockRef block(ArmIR* a, const char* name) {
     return LLVMAppendBasicBlockInContext(a->ctx, a->fn, name);
 }
-/* void name(SnxArmCPU*, u32...): a call into the runtime library (rt_helpers.c), which may change any of the state */
+/* void name(SnxArmCPU*, u64...): a call into the runtime library (rt_helpers.c), which may change any of the state; the
+   u32 args each in 64 bits, as arm.h has them */
 static void rt_call(ArmIR* a, const char* name, LLVMValueRef* args, unsigned count) {
-    LLVMTypeRef params[3] = {a->ptr, a->i32, a->i32};
+    LLVMTypeRef params[3] = {a->ptr, a->i64, a->i64};
     LLVMTypeRef type = LLVMFunctionType(LLVMVoidTypeInContext(a->ctx), params, count + 1, 0);
     LLVMValueRef fn = LLVMGetNamedFunction(a->mod, name), all[3];
     if (!fn) fn = LLVMAddFunction(a->mod, name, type);
     all[0] = a->cpu;
-    for (unsigned i = 0; i < count; ++i) all[i + 1] = args[i];
+    for (unsigned i = 0; i < count; ++i) all[i + 1] = z64(a, args[i]);
     LLVMBuildCall2(a->b, type, fn, all, count + 1, "");
 }
 /* after a runtime library call: the block ends here when it set an exit */
@@ -359,7 +349,7 @@ static void instruction_fetch(ArmIR* a, uint32_t encoded, unsigned bytes) {
     value = host_order(a, value, bytes);
     require(a, cmp(a, LLVMIntEQ, value, LLVMConstInt(type, encoded, 0)), SNX_ARM_CODE_CHANGED, c32(a, a->pc));
 }
-/* the instruction's trace slot (llvm.h's SnxArmCodegenOptions) gets value */
+/* the instruction's trace slot (codegen.h's SnxArmCodegenOptions) gets value */
 static void trace_value(ArmIR* a, LLVMValueRef value) {
     put(a, a->trace + ((a->pc - a->start) >> (a->thumb ? 1 : 2)) * 4, value);
 }
@@ -388,16 +378,6 @@ static LLVMValueRef memptr(ArmIR* a, LLVMValueRef addr) {
     return LLVMBuildGEP2(a->b, a->i8, a->memory == SNX_ARM_MEMORY_CHECKED ? a->transfer_buffer : a->mem, &offset, 1,
                          "");
 }
-/* The bus hook (SnxArmCPU.io): the BIOS, the I/O window, the palette, VRAM, OAM and the save memory have
-   bus rules a plain access cannot follow (the BIOS's open bus, mirrors finer than a page, byte write
-   widths). The runtime registers a hook the way the A64 side registers a fetch callback; without one every
-   access is direct. The regions are the AGB board's: 0x00 to 0x01 the BIOS, 0x04 to 0x07 the I/O
-   window and video memory, 0x0D the EEPROM a cartridge may have there, 0x0E and 0x0F the save memory. */
-#define SNX_ARM_IO_REGIONS                                                                                             \
-    (1u << 0x00 | 1u << 0x01 | 1u << 0x04 | 1u << 0x05 | 1u << 0x06 | 1u << 0x07 | 1u << 0x0D | 1u << 0x0E | 1u << 0x0F)
-/* Stores reach the hook from the cartridge's ROM, 0x08 to 0x0C, as well: the flat window holds the image there, and the
-   console's ROM takes no writes, so a game's store into a table of its own leaves the table as it was */
-#define SNX_ARM_IO_STORE_REGIONS (SNX_ARM_IO_REGIONS | 1u << 0x08 | 1u << 0x09 | 1u << 0x0A | 1u << 0x0B | 1u << 0x0C)
 /* A write through the hook that returns nonzero ends the block once its instruction is done (yield_check), with R15
    the next instruction's: the board has something to run first, a DMA holding the bus while the CPU waits */
 static void yield_after(ArmIR* a, LLVMValueRef result) {
@@ -566,7 +546,8 @@ static void writemem(ArmIR* a, LLVMValueRef addr, unsigned bytes, LLVMValueRef v
    apply. The bus hook still sees them */
 static LLVMValueRef list_address(ArmIR* a, LLVMValueRef addr) {
     if (arm946e(a)) return band(a, addr, c32(a, ~3u));
-    return LLVMBuildSelect(a->b, cmp(a, LLVMIntULT, addr, c32(a, 0x0E000000)), band(a, addr, c32(a, ~3u)), addr, "");
+    return LLVMBuildSelect(a->b, cmp(a, LLVMIntULT, addr, c32(a, SNX_ARM_SAVE_MEMORY)), band(a, addr, c32(a, ~3u)),
+                           addr, "");
 }
 static LLVMValueRef readmem_list(ArmIR* a, LLVMValueRef addr, unsigned bytes) {
     if (!legacy(a)) return readmem(a, addr, bytes, 0);
@@ -1249,7 +1230,7 @@ static void block_begin(ArmIR* a, LLVMModuleRef module, const char* name, uint32
         a->yield = LLVMBuildAlloca(a->b, a->i32, "yield");
         LLVMBuildStore(a->b, c32(a, 0), a->yield);
     }
-    if (hosted(a)) return; /* the dispatch loop saw to the entry state (llvm.h) */
+    if (hosted(a)) return; /* the dispatch loop saw to the entry state (codegen.h) */
     PUT(a, exit, c32(a, SNX_ARM_OK));
     PUT(a, syndrome, c32(a, 0));
     require(a, cmp(a, LLVMIntEQ, get(a, offsetof(SnxArmCPU, r) + 60, a->i32), c32(a, pc)), SNX_ARM_BAD_ENTRY,
@@ -1359,12 +1340,6 @@ static int instruction(ArmIR* a, SnxA32Kind kind) {
     return 0;
 }
 
-/* an ARM7TDMI instruction whose time depends on whether its condition held (SnxArmCodegenOptions' skipped): any but a
-   data processing one with an immediate or an immediate shift that leaves the PC alone */
-static int timed_condition(uint32_t w) {
-    int plain = (w & 0x0C000000) == 0 && ((w & 1u << 25) || !(w & 0x10));
-    return !plain || (w >> 12 & 15) == 15;
-}
 LLVMValueRef snx_arm_llvm_block(LLVMModuleRef module, const char* name, const uint32_t* words, size_t count,
                                 uint32_t pc, size_t* consumed) {
     return snx_arm_llvm_block_ex(module, name, words, count, pc, consumed, NULL);
@@ -1386,8 +1361,8 @@ static LLVMValueRef arm_block(LLVMModuleRef module, const char* name, const uint
     ArmIR a = {0};
     size_t i;
     if (consumed) *consumed = 0;
-    if (!options_valid(options) || !module || !name || !*name || !words || !count || count > 65536 || (pc & 3) ||
-        LLVMGetNamedFunction(module, name) || LLVMGetNamedGlobal(module, name))
+    if (!snx_arm_codegen_options_valid(options) || !module || !name || !*name || !words || !count || count > 65536 ||
+        (pc & 3) || LLVMGetNamedFunction(module, name) || LLVMGetNamedGlobal(module, name))
         return NULL;
     if (options) {
         a.profile = options->profile;
@@ -1413,7 +1388,7 @@ static LLVMValueRef arm_block(LLVMModuleRef module, const char* name, const uint
         instruction_fetch(&a, a.word, 4);
         if (!reference) {
             int stop = 0;
-            if (sg_emit_a32(&a, a.word, a.skipped && timed_condition(a.word), &stop)) {
+            if (sg_emit_a32(&a, a.word, a.skipped && snx_arm_timed_condition(a.word), &stop)) {
                 LLVMDeleteBasicBlock(execute);
                 LLVMDeleteBasicBlock(skip);
                 LLVMDeleteBasicBlock(next);
@@ -1434,7 +1409,7 @@ static LLVMValueRef arm_block(LLVMModuleRef module, const char* name, const uint
         }
         LLVMPositionBuilderAtEnd(a.b, skip);
         setreg(&a, 15, c32(&a, a.pc + 4));
-        if (a.skipped && a.word >> 28 != 14 && timed_condition(a.word)) {
+        if (a.skipped && a.word >> 28 != 14 && snx_arm_timed_condition(a.word)) {
             uint32_t at = a.skipped + (uint32_t)(i >> 5) * 4;
             put(&a, at, bor(&a, get(&a, at, a.i32), c32(&a, 1u << (i & 31))));
         }

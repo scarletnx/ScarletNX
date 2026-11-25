@@ -21,6 +21,9 @@
          writes PAGES, the instruction pages of Intel's SDM Vol. 2 (opcode table, operand encoding, Operation,
          Flags Affected) out of TEXT, what `pdftotext -layout` makes of its PDF, each override's sections in place of
          its page's (sdm.c): what the x86-64 back end's instruction selection reads
+     sailgen --encoders PREFIX [--roots ROOTS] -o OUT INPUT...
+         writes OUT, an encoder for each clause of the scattered decode function PREFIX (__DecodeA64) of INPUT, or of
+         those that call a root of ROOTS (enc.c): the instruction table of a back end that writes that architecture
 
    OUT is only rewritten when it changes. tools/sailgen/README.md describes the generated code */
 #include "sailgen.h"
@@ -147,7 +150,8 @@ static int usage(const char* why) {
             "       sailgen --generate ROOTS --backend FILE [--backend FILE]... [--profile PROFILE] -o OUT INPUT...\n"
             "               [--overlay FILE]...\n"
             "       sailgen --gpu ROOTS --backend FILE [--backend FILE]... -o OUT INPUT... [--overlay FILE]...\n"
-            "       sailgen --sdm TEXT -o PAGES [--overlay OVERRIDE]...\n",
+            "       sailgen --sdm TEXT -o PAGES [--overlay OVERRIDE]...\n"
+            "       sailgen --encoders PREFIX [--roots ROOTS] -o OUT INPUT...\n",
             why);
     return 2;
 }
@@ -161,22 +165,25 @@ int main(int argc, char** argv) {
     const char* profile = NULL;
     const char* ops = NULL;
     const char* report = NULL;
+    const char* enc_roots = NULL;
     const char* inputs[16];
     int overlays[16], count = 0, i;
     for (i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "--extract") || !strcmp(argv[i], "--generate") || !strcmp(argv[i], "--gpu") ||
-            !strcmp(argv[i], "--sdm") || !strcmp(argv[i], "--isel")) {
+            !strcmp(argv[i], "--sdm") || !strcmp(argv[i], "--isel") || !strcmp(argv[i], "--encoders")) {
             if (mode) return usage("--extract, --generate, --gpu and --sdm are one or another");
-            if (i + 1 >= argc) return usage("--extract, --generate and --gpu take the roots file, --sdm the text");
+            if (i + 1 >= argc) return usage("--extract, --generate and --gpu take the roots file, --sdm the text, --encoders the prefix");
             mode = argv[i];
             roots = argv[++i];
         } else if (!strcmp(argv[i], "--backend")) {
             if (i + 1 >= argc) return usage("--backend takes the back end's file");
             if (backend_count == 16) return usage("more than 16 back end files");
             backends[backend_count++] = argv[++i];
-        } else if (!strcmp(argv[i], "--ops") || !strcmp(argv[i], "--report")) {
-            if (i + 1 >= argc) return usage("--ops and --report take a file");
-            if (argv[i][2] == 'o') ops = argv[++i];
+        } else if (!strcmp(argv[i], "--ops") || !strcmp(argv[i], "--report") || !strcmp(argv[i], "--roots")) {
+            if (i + 1 >= argc) return usage("--ops, --report and --roots take a file");
+            if (argv[i][2] == 'o' && argv[i][3] == 'p') ops = argv[++i];
+            else if (argv[i][2] == 'r' && argv[i][3] == 'o')
+                enc_roots = argv[++i];
             else
                 report = argv[++i];
         } else if (!strcmp(argv[i], "--profile")) {
@@ -201,6 +208,11 @@ int main(int argc, char** argv) {
     if (!strcmp(mode, "--isel")) {
         if (!ops) return usage("--isel takes the back end's primitives (--ops x64.ops)");
         return sg_isel(roots, ops, out, report);
+    }
+    if (!strcmp(mode, "--encoders")) {
+        if (!out || !count) return usage("--encoders writes -o OUT from the Sail's files");
+        if (backend_count || profile) return usage("--encoders takes no back end and no profile");
+        return sg_encoders(roots, enc_roots, inputs, count, out);
     }
     if (!strcmp(mode, "--sdm")) {
         /* the SDM's text, and the overrides: no Sail */

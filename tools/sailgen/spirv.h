@@ -41,6 +41,10 @@ typedef struct {
     int fold;
     /* its translator bitcasts a value each time an operation takes it as another type: no cast is taken again */
     int fresh_casts;
+    /* its translator makes its 32-bit constants and its types with spv_emit_const_* (the module's table of what it
+       declared, as the 3DS's vsgen.c and the Vita's usse.c do), not spv_emit_constant_*: its Sail's are made there
+       too, so that a constant both make is one */
+    int known;
 } SgSpv;
 static SgSpv* sg_spv(SgG* g); /* the ISA's file gives it */
 
@@ -95,6 +99,7 @@ static inline int sg_wide(int w) { return w > 32; }
 static inline SgV sg_const(SgG* g, int w, uint64_t value) {
     SgSpv* s = sg_spv(g);
     if (sg_wide(w)) return sg_v(spv_emit_constant64(s->e, s->t_u64(g), value), SGT_U64);
+    if (s->known) return sg_v(spv_emit_const_u32(s->e, (uint32_t)value), SGT_U32);
     return sg_v(spv_emit_constant_u32(s->e, s->t_u32, (uint32_t)value), SGT_U32);
 }
 static inline SgV sg_bool(SgG* g, int b) {
@@ -316,6 +321,7 @@ static inline SgV sg_FConst(SgG* g, int64_t bits) {
     uint32_t u = (uint32_t)bits;
     float f;
     memcpy(&f, &u, 4);
+    if (sg_spv(g)->known) return sg_fv(spv_emit_const_f32(sg_spv(g)->e, f));
     return sg_fv(spv_emit_constant_f32(sg_spv(g)->e, sg_spv(g)->t_f32, f));
 }
 static inline SgV sg_glsl1(SgG* g, SpvGlsl450Op op, SgV x) {
@@ -441,4 +447,158 @@ static inline SgV sg_QuotS(SgG* g, SgV x, SgV y) {
 }
 /* a capability the instruction needs: declared once */
 static inline void sg_Capability(SgG* g, int64_t cap) { spv_emit_capability(sg_spv(g)->e, (uint32_t)cap); }
+
+static inline SgV sg_FFma(SgG* g, SgV x, SgV y, SgV z) {
+    SgSpv* s = sg_spv(g);
+    uint32_t a = sg_f(g, x), b = sg_f(g, y), c = sg_f(g, z);
+    return sg_fv(spv_emit_glsl_ternary(s->e, s->t_f32, s->glsl, SPV_GLSL_FMA, a, b, c));
+}
+static inline SgV sg_FDdx(SgG* g, SgV x) { return sg_fv(SPV(sg_spv(g)->e, SPV_OP_DPDX, sg_spv(g)->t_f32, sg_f(g, x))); }
+static inline SgV sg_FDdy(SgG* g, SgV x) { return sg_fv(SPV(sg_spv(g)->e, SPV_OP_DPDY, sg_spv(g)->t_f32, sg_f(g, x))); }
+
+/* ---- gpu.sail's integers that keep their type: each operation is of its first operand's type (an i32 or a u32),
+   the other made that type; the constant SConst an i32 (spv_emit_const_i32 where the constants are the module's
+   known ones) ---- */
+static inline SgV sg_SConst(SgG* g, int64_t v) {
+    SgSpv* s = sg_spv(g);
+    if (s->known) return sg_v(spv_emit_const_i32(s->e, (int32_t)v), SGT_I32);
+    return sg_v(spv_emit_constant_u32(s->e, s->t_i32, (uint32_t)v), SGT_I32);
+}
+static inline SgV sg_UConst(SgG* g, int64_t v) { return sg_const(g, 32, (uint64_t)v); }
+static inline int sg_int_t(SgV a) { return a.t == SGT_I32 ? SGT_I32 : SGT_U32; }
+static inline SgV sg_top2(SgG* g, uint32_t op, SgV a, SgV b) {
+    int t = sg_int_t(a);
+    uint32_t x = sg_as(g, a, t), y = sg_as(g, b, t);
+    return sg_v(sg_op2(sg_spv(g)->e, op, sg_type(g, t), x, y), t);
+}
+static inline SgV sg_tcmp(SgG* g, uint32_t op, SgV a, SgV b) {
+    int t = sg_int_t(a);
+    uint32_t x = sg_as(g, a, t), y = sg_as(g, b, t);
+    return sg_v(sg_op2(sg_spv(g)->e, op, sg_spv(g)->t_bool, x, y), SGT_BOOL);
+}
+static inline SgV sg_IAddT(SgG* g, SgV a, SgV b) { return sg_top2(g, SPV_OP_I_ADD, a, b); }
+static inline SgV sg_ISubT(SgG* g, SgV a, SgV b) { return sg_top2(g, SPV_OP_I_SUB, a, b); }
+static inline SgV sg_IMulT(SgG* g, SgV a, SgV b) { return sg_top2(g, SPV_OP_I_MUL, a, b); }
+static inline SgV sg_AndT(SgG* g, SgV a, SgV b) { return sg_top2(g, SPV_OP_BITWISE_AND, a, b); }
+static inline SgV sg_OrT(SgG* g, SgV a, SgV b) { return sg_top2(g, SPV_OP_BITWISE_OR, a, b); }
+static inline SgV sg_XorT(SgG* g, SgV a, SgV b) { return sg_top2(g, SPV_OP_BITWISE_XOR, a, b); }
+static inline SgV sg_ShlT(SgG* g, SgV a, SgV b) { return sg_top2(g, SPV_OP_SHIFT_LEFT_LOGICAL, a, b); }
+static inline SgV sg_ShrT(SgG* g, SgV a, SgV b) { return sg_top2(g, SPV_OP_SHIFT_RIGHT_LOGICAL, a, b); }
+static inline SgV sg_AsrT(SgG* g, SgV a, SgV b) { return sg_top2(g, SPV_OP_SHIFT_RIGHT_ARITHMETIC, a, b); }
+static inline SgV sg_INegT(SgG* g, SgV a) {
+    int t = sg_int_t(a);
+    return sg_v(spv_emit_unary(sg_spv(g)->e, SPV_OP_S_NEGATE, sg_type(g, t), a.id), t);
+}
+static inline SgV sg_SAbsT(SgG* g, SgV a) {
+    SgSpv* s = sg_spv(g);
+    return sg_v(SPV_EXT(s->e, s->t_i32, SPV_GLSL_S_ABS, sg_as(g, a, SGT_I32)), SGT_I32);
+}
+static inline SgV sg_IEqT(SgG* g, SgV a, SgV b) { return sg_tcmp(g, SPV_OP_I_EQUAL, a, b); }
+static inline SgV sg_INeT(SgG* g, SgV a, SgV b) { return sg_tcmp(g, SPV_OP_I_NOT_EQUAL, a, b); }
+static inline SgV sg_SLtT(SgG* g, SgV a, SgV b) { return sg_tcmp(g, SPV_OP_S_LESS_THAN, a, b); }
+static inline SgV sg_SLeT(SgG* g, SgV a, SgV b) { return sg_tcmp(g, SPV_OP_S_LESS_THAN_EQUAL, a, b); }
+static inline SgV sg_SGtT(SgG* g, SgV a, SgV b) { return sg_tcmp(g, SPV_OP_S_GREATER_THAN, a, b); }
+static inline SgV sg_SGeT(SgG* g, SgV a, SgV b) { return sg_tcmp(g, SPV_OP_S_GREATER_THAN_EQUAL, a, b); }
+static inline SgV sg_ULtT(SgG* g, SgV a, SgV b) { return sg_tcmp(g, SPV_OP_U_LESS_THAN, a, b); }
+static inline SgV sg_ULeT(SgG* g, SgV a, SgV b) { return sg_tcmp(g, SPV_OP_U_LESS_THAN_EQUAL, a, b); }
+static inline SgV sg_UGtT(SgG* g, SgV a, SgV b) { return sg_tcmp(g, SPV_OP_U_GREATER_THAN, a, b); }
+static inline SgV sg_UGeT(SgG* g, SgV a, SgV b) { return sg_tcmp(g, SPV_OP_U_GREATER_THAN_EQUAL, a, b); }
+static inline SgV sg_AsI32(SgG* g, SgV a) { return sg_v(sg_as(g, a, SGT_I32), SGT_I32); }
+static inline SgV sg_AsU32(SgG* g, SgV a) { return sg_v(sg_as(g, a, SGT_U32), SGT_U32); }
+
+/* ---- gpu.sail's vectors: a vec2, vec3 or vec4 of f32, a bvec4 of bool, each an opaque value of its SPIR-V type;
+   an operation on two of them is one instruction of their type ---- */
+static inline uint32_t sg_t_vec(SgG* g, uint32_t component, unsigned n) {
+    return spv_emit_type_vector(sg_spv(g)->e, component, n);
+}
+static inline SgV sg_vop1(SgG* g, uint32_t op, SgV a) { return sg_vt(SPV(sg_spv(g)->e, op, a.ty, a.id), a.ty); }
+static inline SgV sg_vop2(SgG* g, uint32_t op, SgV a, SgV b) { return sg_vt(SPV(sg_spv(g)->e, op, a.ty, a.id, b.id), a.ty); }
+static inline SgV sg_vext1(SgG* g, SpvGlsl450Op op, SgV a) { return sg_vt(SPV_EXT(sg_spv(g)->e, a.ty, op, a.id), a.ty); }
+static inline SgV sg_vext2(SgG* g, SpvGlsl450Op op, SgV a, SgV b) {
+    return sg_vt(SPV_EXT(sg_spv(g)->e, a.ty, op, a.id, b.id), a.ty);
+}
+/* the vec4 of four f32 constants (their bits): a constant composite */
+static inline SgV sg_V4Const(SgG* g, int64_t x, int64_t y, int64_t z, int64_t w) {
+    SgSpv* s = sg_spv(g);
+    uint32_t t = sg_t_vec(g, s->t_f32, 4), parts[4] = {sg_FConst(g, x).id, sg_FConst(g, y).id, sg_FConst(g, z).id,
+                                                       sg_FConst(g, w).id};
+    if (s->known) return sg_vt(spv_emit_const_composite(s->e, t, parts, 4), t);
+    return sg_vt(spv_emit_constant_vec4(s->e, t, parts), t);
+}
+/* a vec4 of four floats, and of one four times */
+static inline SgV sg_V4Of(SgG* g, SgV x, SgV y, SgV z, SgV w) {
+    uint32_t t = sg_t_vec(g, sg_spv(g)->t_f32, 4), a = sg_f(g, x), b = sg_f(g, y), c = sg_f(g, z), d = sg_f(g, w);
+    return sg_vt(SPV(sg_spv(g)->e, SPV_OP_COMPOSITE_CONSTRUCT, t, a, b, c, d), t);
+}
+static inline SgV sg_V4Splat(SgG* g, SgV x) {
+    uint32_t t = sg_t_vec(g, sg_spv(g)->t_f32, 4), a = sg_f(g, x);
+    return sg_vt(SPV(sg_spv(g)->e, SPV_OP_COMPOSITE_CONSTRUCT, t, a, a, a, a), t);
+}
+/* component k */
+static inline SgV sg_V4At(SgG* g, SgV v, int64_t k) {
+    return sg_fv(spv_emit_vec4_extract(sg_spv(g)->e, sg_spv(g)->t_f32, v.id, (uint32_t)k));
+}
+/* components of a (0-3) and b (4-7): OpVectorShuffle */
+static inline SgV sg_V4Shuffle(SgG* g, SgV a, SgV b, int64_t x, int64_t y, int64_t z, int64_t w) {
+    uint32_t t = sg_t_vec(g, sg_spv(g)->t_f32, 4);
+    return sg_vt(SPV(sg_spv(g)->e, SPV_OP_VECTOR_SHUFFLE, t, a.id, b.id, (uint32_t)x, (uint32_t)y, (uint32_t)z,
+                     (uint32_t)w),
+                 t);
+}
+/* the first three components */
+static inline SgV sg_V3Of4(SgG* g, SgV a) {
+    uint32_t t = sg_t_vec(g, sg_spv(g)->t_f32, 3);
+    return sg_vt(SPV(sg_spv(g)->e, SPV_OP_VECTOR_SHUFFLE, t, a.id, a.id, 0, 1, 2), t);
+}
+static inline SgV sg_V2Of(SgG* g, SgV x, SgV y) {
+    uint32_t t = sg_t_vec(g, sg_spv(g)->t_f32, 2), a = sg_f(g, x), b = sg_f(g, y);
+    return sg_vt(SPV(sg_spv(g)->e, SPV_OP_COMPOSITE_CONSTRUCT, t, a, b), t);
+}
+static inline SgV sg_V3Of(SgG* g, SgV x, SgV y, SgV z) {
+    uint32_t t = sg_t_vec(g, sg_spv(g)->t_f32, 3), a = sg_f(g, x), b = sg_f(g, y), c = sg_f(g, z);
+    return sg_vt(SPV(sg_spv(g)->e, SPV_OP_COMPOSITE_CONSTRUCT, t, a, b, c), t);
+}
+static inline SgV sg_V4FAdd(SgG* g, SgV a, SgV b) { return sg_vop2(g, SPV_OP_F_ADD, a, b); }
+static inline SgV sg_V4FMul(SgG* g, SgV a, SgV b) { return sg_vop2(g, SPV_OP_F_MUL, a, b); }
+static inline SgV sg_V4FNeg(SgG* g, SgV a) { return sg_vop1(g, SPV_OP_F_NEGATE, a); }
+static inline SgV sg_V4FAbs(SgG* g, SgV a) { return sg_vext1(g, SPV_GLSL_F_ABS, a); }
+static inline SgV sg_V4Floor(SgG* g, SgV a) { return sg_vext1(g, SPV_GLSL_FLOOR, a); }
+static inline SgV sg_V4FMin(SgG* g, SgV a, SgV b) { return sg_vext2(g, SPV_GLSL_F_MIN, a, b); }
+static inline SgV sg_V4FMax(SgG* g, SgV a, SgV b) { return sg_vext2(g, SPV_GLSL_F_MAX, a, b); }
+/* the dot products: OpDot */
+static inline SgV sg_V4Dot(SgG* g, SgV a, SgV b) { return sg_fv(SPV(sg_spv(g)->e, SPV_OP_DOT, sg_spv(g)->t_f32, a.id, b.id)); }
+static inline SgV sg_V3Dot(SgG* g, SgV a, SgV b) { return sg_V4Dot(g, a, b); }
+/* a comparison of each component (FCompare's codes), and the components of a where it holds, else b's */
+static inline SgV sg_V4FCompare(SgG* g, int64_t op, SgV a, SgV b) {
+    SgSpv* s = sg_spv(g);
+    uint32_t t = sg_t_vec(g, s->t_bool, 4);
+    return sg_vt(spv_emit_fcompare(s->e, t, (uint32_t)op, a.id, b.id), t);
+}
+static inline SgV sg_V4Select(SgG* g, SgV c, SgV a, SgV b) {
+    return sg_vt(spv_emit_ternary(sg_spv(g)->e, SPV_OP_SELECT, a.ty, c.id, a.id, b.id), a.ty);
+}
+static inline SgV sg_B4Splat(SgG* g, SgV c) {
+    uint32_t t = sg_t_vec(g, sg_spv(g)->t_bool, 4);
+    return sg_vt(SPV(sg_spv(g)->e, SPV_OP_COMPOSITE_CONSTRUCT, t, c.id, c.id, c.id, c.id), t);
+}
+
+/* ---- gpu.sail's sampled images: OpImageSampleImplicitLod and OpImageSampleExplicitLod of a sampled image's id ---- */
+static inline uint32_t sg_t_v4f(SgG* g) { return sg_t_vec(g, sg_spv(g)->t_f32, 4); }
+static inline SgV sg_SampleImplicit(SgG* g, SgV s, SgV c) {
+    uint32_t t = sg_t_v4f(g);
+    return sg_vt(SPV(sg_spv(g)->e, SPV_OP_IMAGE_SAMPLE_IMPLICIT_LOD, t, s.id, c.id), t);
+}
+static inline SgV sg_SampleBias(SgG* g, SgV s, SgV c, SgV bias) {
+    uint32_t t = sg_t_v4f(g), b = sg_f(g, bias);
+    return sg_vt(SPV(sg_spv(g)->e, SPV_OP_IMAGE_SAMPLE_IMPLICIT_LOD, t, s.id, c.id, SPV_IMAGE_OPERANDS_BIAS, b), t);
+}
+static inline SgV sg_SampleLod(SgG* g, SgV s, SgV c, SgV lod) {
+    uint32_t t = sg_t_v4f(g), l = sg_f(g, lod);
+    return sg_vt(SPV(sg_spv(g)->e, SPV_OP_IMAGE_SAMPLE_EXPLICIT_LOD, t, s.id, c.id, SPV_IMAGE_OPERANDS_LOD, l), t);
+}
+static inline SgV sg_SampleGrad(SgG* g, SgV s, SgV c, SgV dx, SgV dy) {
+    uint32_t t = sg_t_v4f(g);
+    return sg_vt(SPV(sg_spv(g)->e, SPV_OP_IMAGE_SAMPLE_EXPLICIT_LOD, t, s.id, c.id, SPV_IMAGE_OPERANDS_GRAD, dx.id, dy.id),
+                 t);
+}
 #endif

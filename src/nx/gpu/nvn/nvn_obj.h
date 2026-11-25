@@ -569,6 +569,7 @@ enum {
     OP_RATE_IMAGE,
     OP_RATE_PALETTE,
     OP_RATE_MODE,
+    OP_UPSCALE,
     OP_COUNT_
 };
 typedef char NvnOpcodeMaskFits[(OP_COUNT_ <= 128) ? 1 : -1]; /* nvn_replay.h's unknown[2] */
@@ -864,6 +865,29 @@ static inline u64 nvn_rate_palette(const u32* rates, i32 n) {
     }
     return p;
 }
+/* An upscale a hook module's CPU hook recorded (nvn_cmd_record_upscale, hle/hook/snx_hook_module.h), its textures'
+   snapshots after it, tex and view in the order of NVN_UPSCALE_*: given to the renderer's upscaler, and where none
+   takes it, a filtered copy of the color's render rectangle onto the output's rectangle */
+enum {
+    NVN_UPSCALE_COLOR,
+    NVN_UPSCALE_OUTPUT,
+    NVN_UPSCALE_DEPTH,
+    NVN_UPSCALE_MOTION,
+    NVN_UPSCALE_EXPOSURE,
+    NVN_UPSCALE_REACTIVE,
+    NVN_UPSCALE_TEXTURES
+};
+typedef struct {
+    u64 tex[NVN_UPSCALE_TEXTURES];
+    NvnView view[NVN_UPSCALE_TEXTURES];
+    u8 has_view[NVN_UPSCALE_TEXTURES];
+    u8 reset, pad;
+    u32 flags; /* gpu.h's GPU_UPSCALE_ */
+    u32 render[2], out[2], render_max[2];
+    i32 out_base[2];
+    f32 jitter[2], motion_scale[2], pre_exposure;
+    f32 reprojection[16]; /* with GPU_UPSCALE_REPROJECTED_MOTION */
+} NvnPUpscale;
 typedef struct {
     u64 texture;
     NvnView view;

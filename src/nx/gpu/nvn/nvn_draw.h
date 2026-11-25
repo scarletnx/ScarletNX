@@ -97,6 +97,15 @@ void nvn_draw_free(NvnDraw* d);
 /* On the GPU thread, a record a queue replays: its render targets, clears, state, bindings and draws. 0 when the
    record is none of those */
 int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size);
+/* On the GPU thread, what the renderer's dispatch gets for the OP_DISPATCH record at payload, the queue's state taking
+   its grid as the record would: 0 when it dispatches nothing. gpu_hook_trace (nvn_trace.c) logs a dispatch this way */
+int nvn_draw_dispatch_state(NvnDraw* d, u64 payload, DispatchState* x);
+/* Where the bound Ounce compute program's packed c[0] (bank 0 of the state nvn_draw_dispatch_state gives) holds each
+   list: the byte offset of its first entry and how many, the buffers 16 bytes each ({low, high, size, 0}), the handles
+   8 (the handle's 32 bits, then 0). 0 when the bound program isn't an Ounce compute program. An entry past the
+   bank's end (DS_INLINE_BANK0) isn't there */
+enum { NVN_C0_UNIFORM, NVN_C0_STORAGE, NVN_C0_TEXTURES, NVN_C0_SEPARATE, NVN_C0_SAMPLERS, NVN_C0_IMAGES, NVN_C0_LISTS };
+int nvn_draw_c0_layout(const NvnDraw* d, u32 at[NVN_C0_LISTS], u32 count[NVN_C0_LISTS]);
 /* On the GPU thread, a samples-passed report of the queue at address ({count, ticks}), in order with its draws: 0
    when the queue's counter wasn't reset, and the caller writes a count of its own */
 int nvn_draw_samples(NvnDraw* d, u64 address);

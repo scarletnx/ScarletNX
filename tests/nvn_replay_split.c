@@ -9,6 +9,7 @@
 #include "nx/gpu/nvn/nvn_replay.h"
 #include "nx/gpu/nvn/nvn_object.h"
 #include "nx/gpu/nvn/nvn_draw.h"
+#include "nx/gpu/nvn/nvn_trace.h"
 #include "nx/gpu/nvn/nvn_copy.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/gpu_queue.h"
@@ -219,6 +220,12 @@ static const Renderer renderer = {.draw = draw,
 const Renderer* g_renderer = &renderer;
 
 /* ------------------------------------------------ nvn's records: a draw goes to the renderer as nvn_draw.c's do */
+/* gpu_hook_trace (nvn_trace.c's) off */
+int g_nvn_trace_live;
+void nvn_trace_start(void) {}
+void nvn_trace_present(void) {}
+void nvn_trace_record(NvnDraw* d, u32 op, u64 payload) { (void)d, (void)op, (void)payload; }
+void nvn_trace_flush(const NvnDraw* d) { (void)d; }
 void nvn_draw_init(NvnDraw* d, u32 owner) { d->ds.owner = owner; }
 void nvn_draw_free(NvnDraw* d) { (void)d; }
 int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {

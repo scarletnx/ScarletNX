@@ -5,7 +5,9 @@
    loop of ten million turns to the return that leaves it, A32 and Thumb, through an interworking call, without the
    host's stack growing; a poll set stops it at its backward branch, and not at a forward one; a block that sets an
    exit (an SVC) returns at once, and so does one whose branch reaches the next block's address in the other state. Each block its own unit (the next block a declaration, linked from another object),
-   and all in one */
+   and all in one. A host's native back end makes all of them: LLVM never starts */
+#include "common/cpu/recompiler/llvm/ir.h"
+#include "common/cpu/recompiler/mach/native.h"
 #include "common/utilities/common.h"
 #include "nx/loader/loader.h"
 #include "nx/loader/module.h"
@@ -218,6 +220,7 @@ int main(void) {
     check_module(each, "a unit per block");
     CHECK(!build(one, 4096), "the module of one unit does not build");
     check_module(one, "one unit");
+    CHECK(!snx_native_arm_available() || !snx_ir_started(), "LLVM started for blocks the native back end makes");
     remove(each);
     remove(one);
     if (g_arm_module_chain.failures) {

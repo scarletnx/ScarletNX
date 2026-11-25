@@ -76,3 +76,75 @@ val Half2Mul : (half2, half2) -> half2
 val Half2MinN : (half2, half2) -> half2
 val Half2MaxN : (half2, half2) -> half2
 val Half2Clamp01 : half2 -> half2
+
+/* a * b + c rounded once (GLSL.std.450's Fma), and the derivatives along the screen's x and y (a fragment's) */
+val FFma : (bits(32), bits(32), bits(32)) -> bits(32)
+val FDdx : bits(32) -> bits(32)
+val FDdy : bits(32) -> bits(32)
+
+/* ---- integers that keep their type: a translator whose words are each an i32 or a u32 (the USSE's operands, as
+   their register's type reads them) makes an operation of the operands' own type, no bitcast; the Sail chooses a
+   signed or an unsigned comparison ---- */
+/* the i32 and the u32 of this value */
+val SConst : int -> bits(32)
+val UConst : int -> bits(32)
+val IAddT : (bits(32), bits(32)) -> bits(32)
+val ISubT : (bits(32), bits(32)) -> bits(32)
+val IMulT : (bits(32), bits(32)) -> bits(32)
+val INegT : bits(32) -> bits(32)
+val AndT : (bits(32), bits(32)) -> bits(32)
+val OrT : (bits(32), bits(32)) -> bits(32)
+val XorT : (bits(32), bits(32)) -> bits(32)
+val ShlT : (bits(32), bits(32)) -> bits(32)
+val ShrT : (bits(32), bits(32)) -> bits(32)
+val AsrT : (bits(32), bits(32)) -> bits(32)
+/* GLSL.std.450's SAbs of an i32 */
+val SAbsT : bits(32) -> bits(32)
+val IEqT : (bits(32), bits(32)) -> bool
+val INeT : (bits(32), bits(32)) -> bool
+val SLtT : (bits(32), bits(32)) -> bool
+val SLeT : (bits(32), bits(32)) -> bool
+val SGtT : (bits(32), bits(32)) -> bool
+val SGeT : (bits(32), bits(32)) -> bool
+val ULtT : (bits(32), bits(32)) -> bool
+val ULeT : (bits(32), bits(32)) -> bool
+val UGtT : (bits(32), bits(32)) -> bool
+val UGeT : (bits(32), bits(32)) -> bool
+/* a value as an i32 and as a u32: a bitcast, where it has the other type */
+val AsI32 : bits(32) -> bits(32)
+val AsU32 : bits(32) -> bits(32)
+
+/* ---- vectors of floats (vec3, vec4) and of booleans (bvec4): what PICA's registers and the USSE's operands are ---- */
+/* the vec4 of four floats' bits, constant; of four floats; of one float four times */
+val V4Const : (int, int, int, int) -> vec4
+val V4Of : (bits(32), bits(32), bits(32), bits(32)) -> vec4
+val V4Splat : bits(32) -> vec4
+/* component k (0-3) */
+val V4At : (vec4, int) -> bits(32)
+/* four components of a (0-3) and b (4-7) */
+val V4Shuffle : (vec4, vec4, int, int, int, int) -> vec4
+/* the first three components; the vec2 and vec3 of two and three floats */
+val V3Of4 : vec4 -> vec3
+val V2Of : (bits(32), bits(32)) -> vec2
+val V3Of : (bits(32), bits(32), bits(32)) -> vec3
+val V4FAdd : (vec4, vec4) -> vec4
+val V4FMul : (vec4, vec4) -> vec4
+val V4FNeg : vec4 -> vec4
+val V4FAbs : vec4 -> vec4
+val V4Floor : vec4 -> vec4
+/* FMin and FMax, which leave a NaN's result undefined */
+val V4FMin : (vec4, vec4) -> vec4
+val V4FMax : (vec4, vec4) -> vec4
+val V4Dot : (vec4, vec4) -> bits(32)
+val V3Dot : (vec3, vec3) -> bits(32)
+/* FCompare of each component; a's components where c's hold, else b's; a bool four times */
+val V4FCompare : (int, vec4, vec4) -> bvec4
+val V4Select : (bvec4, vec4, vec4) -> vec4
+val B4Splat : bool -> bvec4
+
+/* ---- a sampled image's texels: the vec4 at a coordinate (a vec2 or a vec3), at the implicit level of detail, biased
+   from it, at a level of detail, and with the coordinate's gradients (a vec2 or a vec3 each) ---- */
+val SampleImplicit : (sampler, vec2) -> vec4
+val SampleBias : (sampler, vec2, bits(32)) -> vec4
+val SampleLod : (sampler, vec2, bits(32)) -> vec4
+val SampleGrad : (sampler, vec2, vec2, vec2) -> vec4

@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "nx/runtime/platform/hud.h"
+#include "nx/runtime/platform/tracy.h"
 #include "nx/runtime/platform/stats.h"
 #include "nx/runtime/platform/ui_colors.h"
 #include "common/utilities/slide.h"
@@ -19,6 +20,7 @@ static struct {
         float stats[4];
         u32 gen;
     } laid; /* what the quads are laid out for; gen 0: nothing yet */
+    float box[4]; /* the list as laid out, while rows > 0 */
     SnxUiQuad q[HUD_QUADS];
     int n;
     u32 version;
@@ -126,11 +128,24 @@ static void hud_layout(SnxUiList* l, const int safe[4], int scale, const float* 
         }
     }
     g_hud.rows = rows;
+    g_hud.box[0] = x;
+    g_hud.box[1] = y;
+    g_hud.box[2] = w;
+    g_hud.box[3] = (float)rows * ch + ch / 2;
+}
+int hud_box_drawn(float box[4]) {
+    if (!g_hud.debug[0] || !g_hud.rows) return 0;
+    memcpy(box, g_hud.box, sizeof g_hud.box);
+    return 1;
 }
 void hud_draw(SnxUiList* l, const int safe[4], int scale, const float* stats, u64 now_ms) {
     float none[4] = {0};
     int r, moved = 0;
-    if (!g_hud.debug[0]) return;
+    SNX_ZONE(z_hud, "plat hud draw");
+    if (!g_hud.debug[0]) {
+        SNX_ZONE_VALUE(z_hud, 2); /* empty */
+        return;
+    }
     if (g_hud.laid.gen != g_hud.gen || g_hud.laid.scale != scale ||
         memcmp(g_hud.laid.safe, safe, sizeof g_hud.laid.safe) || g_hud.laid.boxed != (stats != NULL) ||
         memcmp(g_hud.laid.stats, stats ? stats : none, sizeof g_hud.laid.stats)) {
@@ -152,6 +167,8 @@ void hud_draw(SnxUiList* l, const int safe[4], int scale, const float* stats, u6
         row_set(r);
         moved = 1;
     }
+    SNX_ZONE_VALUE(z_hud, moved ? 1 : 0); /* 1: quads changed, 0: kept */
     if (moved) ++g_hud.version;
     ui_append_kept(l, &(SnxUiList){g_hud.q, g_hud.n, (int)HUD_QUADS}, g_hud.version, &g_hud, NULL);
+    SNX_PLOT("plat hud quads", (double)g_hud.n); /* the HUD's own quads, before the other components' are appended */
 }

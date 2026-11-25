@@ -14,6 +14,7 @@
 #include "nx/hle/services/nvdrv.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/tracy.h"
 
 static u64 up(u64 v, u64 a) { return (v + a - 1) / a * a; }
 
@@ -89,6 +90,14 @@ static int blit_fail(const GpuBlit* b, u32 y, u32 n, const char* what, u64 bytes
 
 /* the rectangle's rows [y, y + n) as need says */
 static int blit(const GpuBlit* b, u32 y, u32 n, const BlitNeeds* need) {
+    /* Why this blit was needed: the code is the path taken, the text names it. A source no render target drew needs
+       the buffer cache's copy; a block linear side needs the moves. */
+    static const char* const why[] = {"pitch linear rows", "block linear source rows", "block linear destination rows",
+                                      "block linear on both sides", "filtered columns between two source rows"};
+    int path = linear(b) ? 4 : b->src.bl && b->dst.bl ? 3 : b->src.bl ? 1 : b->dst.bl ? 2 : 0;
+    SNX_ZONE_TV(z_blit, "vk pres blit", path, "%s: %ux%u %u bpp fmt %x, %llu+%llu B", why[path],
+                b->x1 - b->x0, n, (unsigned)GPU_BLIT_DST_BPP(b), (unsigned)b->fmt,
+                (unsigned long long)need->sspan, (unsigned long long)need->dlen);
     u32 w = b->x1 - b->x0, bd = GPU_BLIT_DST_BPP(b), nb = w * bd;
     u32 pa = b->src.bl ? (u32)up(b->src.wb, 16) : b->src.pitch, pb = (u32)up(nb, 4), pc = (u32)up(b->dst.wb, 16);
     u32 sr0 = need->sr0, srows = need->sr1 - need->sr0;
@@ -156,6 +165,7 @@ static int blit(const GpuBlit* b, u32 y, u32 n, const BlitNeeds* need) {
             off += k;
         }
         gpu_mem_written_by(at, dlen, GPU_WRITE_2D, 0, 0);
+        SNX_PLOT("vk pres blit bytes", (double)(sspan + dlen));
     } else
         blit_fail(b, y, n, "takes moves past the device's limits (said above) over", dlen);
     vk_own_res_unref(d);
@@ -172,6 +182,9 @@ static u64 blit_need(const void* user, u32 y, u32 n) {
 }
 static int blit_bands(const GpuBlit* b) {
     u32 rows = b->y1 - b->y0;
+    if (blit_needs(b, 0, rows).used > g_vk.alloc_cap / VK_PART_SHARE)
+        SNX_MSG("vk pres: a blit split into bands, scratch over the allocation's share",
+                sizeof("vk pres: a blit split into bands, scratch over the allocation's share") - 1);
     VkBands bands = {g_vk.alloc_cap,
                      b->dst.bl ? 8u << b->dst.bh : 1,
                      b->y0,

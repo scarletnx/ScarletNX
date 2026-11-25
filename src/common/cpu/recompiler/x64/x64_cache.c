@@ -85,8 +85,17 @@ void snx_x64_cache_sha256(const void* data, size_t size, unsigned char out[32]) 
     sha256_end(&s, out);
 }
 
-#if defined(__x86_64__) && !defined(_WIN32) && defined(SNX_HAVE_X64)
+#if defined(__x86_64__) && defined(SNX_HAVE_X64)
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+typedef SRWLOCK CacheLock;
+#define CACHE_LOCK_INIT SRWLOCK_INIT
+#else
 #include <pthread.h>
+typedef pthread_mutex_t CacheLock;
+#define CACHE_LOCK_INIT PTHREAD_MUTEX_INITIALIZER
+#endif
 
 typedef struct {
     unsigned char key[32];
@@ -96,23 +105,38 @@ typedef struct {
 } Entry;
 
 static struct {
-    pthread_mutex_t lock;
+    CacheLock lock;
     SnxU64 ceiling, memory, tick, bytes;
     Entry* entries;
     size_t count, capacity;
     size_t hits, misses, evicted, too_large;
     int said_memory, said_large;
-} g_x64_cache = {.lock = PTHREAD_MUTEX_INITIALIZER, .ceiling = SNX_X64_CACHE_CEILING_DEFAULT};
+} g_x64_cache = {.lock = CACHE_LOCK_INIT, .ceiling = SNX_X64_CACHE_CEILING_DEFAULT};
+
+static void lock_cache(void) {
+#if defined(_WIN32)
+    AcquireSRWLockExclusive(&g_x64_cache.lock);
+#else
+    pthread_mutex_lock(&g_x64_cache.lock);
+#endif
+}
+static void unlock_cache(void) {
+#if defined(_WIN32)
+    ReleaseSRWLockExclusive(&g_x64_cache.lock);
+#else
+    pthread_mutex_unlock(&g_x64_cache.lock);
+#endif
+}
 
 void snx_x64_cache_ceiling(SnxU64 bytes) {
-    pthread_mutex_lock(&g_x64_cache.lock);
+    lock_cache();
     g_x64_cache.ceiling = bytes;
-    pthread_mutex_unlock(&g_x64_cache.lock);
+    unlock_cache();
 }
 void snx_x64_cache_memory(SnxU64 bytes) {
-    pthread_mutex_lock(&g_x64_cache.lock);
+    lock_cache();
     g_x64_cache.memory = bytes;
-    pthread_mutex_unlock(&g_x64_cache.lock);
+    unlock_cache();
 }
 
 /* the limit, with the lock held */
@@ -128,9 +152,9 @@ static SnxU64 limit_locked(void) {
     return memory / 100 < g_x64_cache.ceiling ? memory / 100 : g_x64_cache.ceiling;
 }
 SnxU64 snx_x64_cache_limit(void) {
-    pthread_mutex_lock(&g_x64_cache.lock);
+    lock_cache();
     SnxU64 limit = limit_locked();
-    pthread_mutex_unlock(&g_x64_cache.lock);
+    unlock_cache();
     return limit;
 }
 
@@ -157,7 +181,9 @@ int snx_x64_cached_object(SnxCodegen* codegen, size_t first, size_t last, const 
                           unsigned char* made, unsigned char** object, size_t* size, int* reused, char* error,
                           size_t error_size) {
     static const char tag[] = "snx-x64-unit";
-    size_t count = last - first;
+    size_t count = last - first, refused = 0;
+    SnxX64Options counting = *options; /* the unit's functions with an instruction the back end has no code for */
+    counting.refused = &refused;
     *reused = 0;
     SnxU64 limit = snx_x64_cache_limit();
     if (!limit) return snx_x64_object(codegen, first, last, options, made, object, size, error, error_size);
@@ -167,7 +193,7 @@ int snx_x64_cached_object(SnxCodegen* codegen, size_t first, size_t last, const 
     snx_x64_unit_facts(codegen, first, last, options, sha256_put, &s);
     unsigned char key[32];
     sha256_end(&s, key);
-    pthread_mutex_lock(&g_x64_cache.lock);
+    lock_cache();
     Entry* e = find_locked(key);
     if (e && e->count == count) {
         memcpy(made, e->bytes, count);
@@ -176,16 +202,17 @@ int snx_x64_cached_object(SnxCodegen* codegen, size_t first, size_t last, const 
         if (e->size) memcpy(*object, e->bytes + count, e->size);
         e->used = ++g_x64_cache.tick;
         ++g_x64_cache.hits;
-        pthread_mutex_unlock(&g_x64_cache.lock);
+        unlock_cache();
         *reused = 1;
         return 0;
     }
     ++g_x64_cache.misses;
-    pthread_mutex_unlock(&g_x64_cache.lock);
-    int rc = snx_x64_object(codegen, first, last, options, made, object, size, error, error_size);
-    if (rc) return rc;
+    unlock_cache();
+    int rc = snx_x64_object(codegen, first, last, &counting, made, object, size, error, error_size);
+    if (options->refused) *options->refused += refused;
+    if (rc || refused) return rc; /* not kept: what it has no code for is said again the next time */
     SnxU64 need = (SnxU64)*size + count;
-    pthread_mutex_lock(&g_x64_cache.lock);
+    lock_cache();
     limit = limit_locked();
     if (need > limit) {
         ++g_x64_cache.too_large;
@@ -211,12 +238,12 @@ int snx_x64_cached_object(SnxCodegen* codegen, size_t first, size_t last, const 
         if (*size) memcpy(e->bytes + count, *object, *size);
         g_x64_cache.bytes += need;
     }
-    pthread_mutex_unlock(&g_x64_cache.lock);
+    unlock_cache();
     return 0;
 }
 
 void snx_x64_cache_stats(SnxX64CacheStats* stats) {
-    pthread_mutex_lock(&g_x64_cache.lock);
+    lock_cache();
     stats->units = g_x64_cache.count;
     stats->bytes = g_x64_cache.bytes;
     stats->limit = limit_locked();
@@ -224,17 +251,17 @@ void snx_x64_cache_stats(SnxX64CacheStats* stats) {
     stats->misses = g_x64_cache.misses;
     stats->evicted = g_x64_cache.evicted;
     stats->too_large = g_x64_cache.too_large;
-    pthread_mutex_unlock(&g_x64_cache.lock);
+    unlock_cache();
 }
 
 void snx_x64_cache_clear(void) {
-    pthread_mutex_lock(&g_x64_cache.lock);
+    lock_cache();
     for (size_t i = 0; i < g_x64_cache.count; ++i) free(g_x64_cache.entries[i].bytes);
     g_x64_cache.count = 0;
     g_x64_cache.bytes = 0;
     g_x64_cache.hits = g_x64_cache.misses = g_x64_cache.evicted = g_x64_cache.too_large = 0;
     g_x64_cache.said_large = 0;
-    pthread_mutex_unlock(&g_x64_cache.lock);
+    unlock_cache();
 }
 
 #else

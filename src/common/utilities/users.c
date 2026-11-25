@@ -8,10 +8,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 #define USERS_FILE       "users.ini"
 #define USERS_PICTURE    0x20000 /* nn::account's largest profile image */
 #define USERS_FIRST_NAME "Player"
+#define ONLINE_FILE      "online.ini"
+#define ONLINE_PASSWORD  255 /* a room password's bytes, at most */
 
 SnxUser g_users[SNX_USERS_MAX];
 int g_user_count;
@@ -820,4 +828,156 @@ int snx_users_choose(const char* dir, const char* uid_text, const char* old_numb
         return 0;
     }
     return snx_users_load(dir, 1, why, why_size);
+}
+
+/* a room password's file: text, made with mode 0600 whatever the umask, so nobody else reads it, not for a moment */
+static int write_private(const char* path, const char* text) {
+#ifdef _WIN32 /* the user's profile is private to the user */
+    return snx_write_file(path, text, strlen(text));
+#else
+    size_t left = strlen(text);
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, 0600), failed;
+    if (fd < 0) return 1;
+    failed = fchmod(fd, 0600) != 0; /* one left over with another mode */
+    while (!failed && left) {
+        ssize_t n = write(fd, text, left);
+        if (n > 0) {
+            text += n;
+            left -= (size_t)n;
+        } else if (n < 0 && errno != EINTR)
+            failed = 1;
+    }
+    return (close(fd) != 0) | failed;
+#endif
+}
+int snx_users_room_password(const char* dir, char* password, size_t size, char* why, size_t why_size) {
+    char *path = snx_path_join(dir, ONLINE_FILE), *text = NULL, *key, *value;
+    size_t length;
+    SnxIni ini;
+    int rc = -1;
+    password[0] = 0;
+    if (!path) {
+        snprintf(why, why_size, "out of memory");
+        goto done;
+    }
+    if (!snx_is_file(path)) {
+        rc = 0;
+        goto done;
+    }
+#ifndef _WIN32
+    {
+        struct stat st;
+        if (stat(path, &st) || (st.st_mode & 077)) {
+            snprintf(why, why_size, "%s can be read by other users of this machine: chmod 600 it", path);
+            goto done;
+        }
+    }
+#endif
+    text = (char*)snx_read_file(path, &length);
+    if (!text) {
+        snprintf(why, why_size, "%s could not be read", path);
+        goto done;
+    }
+    snx_ini_start(&ini, text);
+    while (snx_ini_next(&ini, &key, &value)) {
+        if (ini.section[0]) {
+            snprintf(why, why_size, "%s: [%s] is not a section: the file has none", path, ini.section);
+            goto done;
+        }
+        if (strcmp(key, "room_password")) {
+            snprintf(why, why_size, "%s: %s is not a setting: room_password", path, key);
+            goto done;
+        }
+        if (strlen(value) >= size) {
+            snprintf(why, why_size, "%s: room_password is longer than %u bytes", path, (unsigned)size - 1);
+            goto done;
+        }
+        strcpy(password, value);
+    }
+    rc = 0;
+done:
+    free(text);
+    free(path);
+    return rc;
+}
+/* online.ini's text, as room_password reads it: 1 when it holds nothing but that key, the file missing too, else 0 */
+static int online_is_room(const char* path, char* why, size_t why_size) {
+    size_t length;
+    char *text = snx_is_file(path) ? (char*)snx_read_file(path, &length) : snx_strdup(""), *key, *value;
+    SnxIni ini;
+    int only = 0;
+    if (!text) {
+        snprintf(why, why_size, "%s could not be read", path);
+        return 0;
+    }
+    snx_ini_start(&ini, text);
+    for (only = 1; only && snx_ini_next(&ini, &key, &value);)
+        if (ini.section[0] || strcmp(key, "room_password")) {
+            snprintf(why, why_size, "%s has %s%s%s, which is not room_password: it stays as it is", path,
+                     ini.section[0] ? "[" : "", ini.section[0] ? ini.section : key, ini.section[0] ? "]" : "");
+            only = 0;
+        }
+    free(text);
+    return only;
+}
+int snx_users_room_password_set(const char* dir, const char* password, char* why, size_t why_size) {
+    char *path = snx_path_join(dir, ONLINE_FILE), *staged = NULL, *text = NULL, *again, *key, *value, *c;
+    SnxIni ini;
+    int rc = -1;
+    if (!path || !(staged = snx_format("%s.new", path))) {
+        snprintf(why, why_size, "out of memory");
+        goto done;
+    }
+    if (strlen(password) > ONLINE_PASSWORD) {
+        snprintf(why, why_size, "a room's password is at most %d bytes, not %u", ONLINE_PASSWORD,
+                 (unsigned)strlen(password));
+        goto done;
+    }
+    for (c = (char*)password; *c && (unsigned char)*c >= ' ' && *c != 0x7f; ++c) {}
+    if (*c) {
+        snprintf(why, why_size, "a room's password has no control character, not byte %#x", (unsigned char)*c);
+        goto done;
+    }
+    if (!online_is_room(path, why, why_size)) goto done;
+    if (!*password) { /* none: the file away */
+        if (snx_is_file(path) && remove(path)) {
+            snprintf(why, why_size, "%s could not be taken away", path);
+            goto done;
+        }
+        rc = 0;
+        goto done;
+    }
+    text = snx_format("; the password of the Eden room ldn=room joins (docs/user/settings.md)\nroom_password=%s\n",
+                      password);
+    if (!text) {
+        snprintf(why, why_size, "out of memory");
+        goto done;
+    }
+    /* what its reader reads back: not the spaces at either end, nor a value that is no value of it */
+    again = snx_strdup(text);
+    if (again) {
+        snx_ini_start(&ini, again);
+        if (!snx_ini_next(&ini, &key, &value) || strcmp(value, password)) {
+            snprintf(why, why_size, "a room's password has no space at either end");
+            free(again);
+            goto done;
+        }
+        free(again);
+    }
+    if (snx_mkdirs(dir)) {
+        snprintf(why, why_size, "%s could not be made", dir);
+        goto done;
+    }
+    /* written beside it first: a full disk leaves the one there */
+    if (write_private(staged, text) || plat_replace_file(staged, path)) {
+        snprintf(why, why_size, "%s could not be written", path);
+        remove(staged);
+        goto done;
+    }
+    rc = 0;
+done:
+    free(text);
+    free(staged);
+    free(path);
+    return rc;
 }

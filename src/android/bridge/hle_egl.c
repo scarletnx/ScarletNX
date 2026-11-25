@@ -113,15 +113,20 @@ static const Config configs[] = {
 };
 enum { CONFIGS = sizeof configs / sizeof *configs, CONTEXTS = 64, SURFACES = 16 };
 
+/* current: how many threads have it current, as a thread's draw or read surface each. A destroyed one (doomed) is no
+   handle any more and is freed when the last of them lets go of it, as EGL has it: freed at once, another thread's
+   next call used it */
 typedef struct {
-    bool used;
+    bool used, doomed;
+    unsigned current;
     int version;
     const Config* config; /* NULL: made without one */
     GlesContext* gl;      /* GLES 1.1's state, for version 1 */
     Gles2Context* gl2;    /* GLES 2 and 3's, for versions 2 and 3 */
 } Context;
 typedef struct {
-    bool used;
+    bool used, doomed;
+    unsigned current;
     const Config* config;
     GlesSurface* gles;
 } Surface;
@@ -137,6 +142,10 @@ static struct {
 static _Thread_local Context* t_context; /* the calling thread's current ones */
 static _Thread_local Surface *t_draw, *t_read;
 static _Thread_local int t_error = EGL_SUCCESS_;
+/* the CPUs that Java's GL calls run with (j_gl_call, j_gles_call) */
+static _Thread_local struct {
+    CPU *cpu, *gles_cpu;
+} t_gl_call;
 
 static uint64_t handle(const void* p) {
     return (uint64_t)(uintptr_t)p;
@@ -151,12 +160,12 @@ static const Config* config_of(uint64_t h) {
 }
 static Context* context_of(uint64_t h) {
     for (size_t i = 0; i < CONTEXTS; ++i)
-        if (h == handle(&e.contexts[i]) && e.contexts[i].used) return &e.contexts[i];
+        if (h == handle(&e.contexts[i]) && e.contexts[i].used && !e.contexts[i].doomed) return &e.contexts[i];
     return NULL;
 }
 static Surface* surface_of(uint64_t h) {
     for (size_t i = 0; i < SURFACES; ++i)
-        if (h == handle(&e.surfaces[i]) && e.surfaces[i].used) return &e.surfaces[i];
+        if (h == handle(&e.surfaces[i]) && e.surfaces[i].used && !e.surfaces[i].doomed) return &e.surfaces[i];
     return NULL;
 }
 /* an EGL result, with the error that eglGetError returns next */
@@ -315,20 +324,102 @@ static uint64_t create_context(uint64_t display, uint64_t config, const int32_t*
     pthread_mutex_unlock(&e.lock);
     return x ? done(handle(x), EGL_SUCCESS_) : done(0, EGL_BAD_ALLOC_);
 }
+static void context_free(Context* x) {
+    gles_context_free(x->gl);
+    gles2_context_free(x->gl2);
+    *x = (Context){0};
+}
+static void context_leave(Context* x) {
+    if (x && !--x->current && x->doomed) context_free(x);
+}
+/* the surface to free past e.lock, when a destroyed one's last thread lets go of it, else NULL */
+static GlesSurface* surface_leave(Surface* s) {
+    GlesSurface* gone = s && !--s->current && s->doomed ? s->gles : NULL;
+    if (gone) *s = (Surface){0};
+    return gone;
+}
+/* what the calling thread has current, under e.lock: the ones it had are let go of, *gone the surfaces to free past
+   the lock */
+static void context_end(void* what);
+static void draw_end(void* what);
+static void read_end(void* what);
+static void set_current(Context* x, Surface* draw, Surface* read, GlesSurface* gone[2]) {
+    Context* was = t_context;
+    Surface *was_draw = t_draw, *was_read = t_read;
+    bridge_thread_keep(context_end, x);
+    bridge_thread_keep(draw_end, draw);
+    bridge_thread_keep(read_end, read);
+    if (x) ++x->current;
+    if (draw) ++draw->current;
+    if (read) ++read->current;
+    t_context = x;
+    t_draw = draw;
+    t_read = read;
+    gles_make_current(x ? x->gl : NULL, draw ? draw->gles : NULL);
+    gles2_make_current(x ? x->gl2 : NULL, draw ? draw->gles : NULL, read ? read->gles : NULL);
+    context_leave(was);
+    gone[0] = surface_leave(was_draw);
+    gone[1] = surface_leave(was_read);
+}
+/* the calling thread with nothing current: eglReleaseThread */
+static void release_thread(void) {
+    GlesSurface* gone[2] = {0};
+    pthread_mutex_lock(&e.lock);
+    if (t_context || t_draw || t_read) set_current(NULL, NULL, NULL, gone);
+    pthread_mutex_unlock(&e.lock);
+    if (gone[0]) gles_surface_free(gone[0]);
+    if (gone[1]) gles_surface_free(gone[1]);
+    t_error = EGL_SUCCESS_;
+}
+/* A thread ended with these current (bridge_thread_keep): let go of for it. The GLES state of the calling thread is its
+   own while its thread-locals are, and then the context's last commands go to the GPU */
+static void context_end(void* what) {
+    Context* x = what;
+    if (t_context == x) {
+        t_context = NULL;
+        gles_make_current(NULL, NULL);
+        gles2_make_current(NULL, NULL, NULL);
+    }
+    pthread_mutex_lock(&e.lock);
+    context_leave(x);
+    pthread_mutex_unlock(&e.lock);
+}
+static void surface_end(Surface* s) {
+    pthread_mutex_lock(&e.lock);
+    GlesSurface* gone = surface_leave(s);
+    pthread_mutex_unlock(&e.lock);
+    if (gone) gles_surface_free(gone);
+}
+static void draw_end(void* what) {
+    if (t_draw == what) t_draw = NULL;
+    surface_end(what);
+}
+static void read_end(void* what) {
+    if (t_read == what) t_read = NULL;
+    surface_end(what);
+}
+static void gl_cpu_end(void* what) {
+    if (t_gl_call.cpu == what) t_gl_call.cpu = NULL;
+    free(what);
+}
+static void gles_cpu_end(void* what) {
+    if (t_gl_call.gles_cpu == what) t_gl_call.gles_cpu = NULL;
+    free(what);
+}
 static bool destroy_context(uint64_t display, uint64_t context) {
+    GlesSurface* gone[2] = {0};
     pthread_mutex_lock(&e.lock);
     Context* x = is_display(display) ? context_of(context) : NULL;
     if (x) {
-        if (t_context == x) {
-            t_context = NULL;
-            gles_make_current(NULL, NULL);
-            gles2_make_current(NULL, NULL, NULL);
-        }
-        gles_context_free(x->gl);
-        gles2_context_free(x->gl2);
-        *x = (Context){0};
+        if (t_context == x) set_current(NULL, t_draw, t_read, gone);
+        if (x->current)
+            x->doomed = true; /* another thread's */
+        else
+            context_free(x);
     }
     pthread_mutex_unlock(&e.lock);
+    if (gone[0]) gles_surface_free(gone[0]);
+    if (gone[1]) gles_surface_free(gone[1]);
     return done(x != NULL, x ? EGL_SUCCESS_ : EGL_BAD_CONTEXT_);
 }
 
@@ -373,18 +464,21 @@ static uint64_t add_surface(const Config* c, GlesSurface* gles) {
     return done(handle(s), EGL_SUCCESS_);
 }
 static bool destroy_surface(uint64_t display, uint64_t surface) {
+    GlesSurface* gone[2] = {0};
     pthread_mutex_lock(&e.lock);
     Surface* s = is_display(display) ? surface_of(surface) : NULL;
     GlesSurface* gles = s ? s->gles : NULL;
     if (s) {
-        if (t_draw == s || t_read == s) {
-            t_draw = t_read = NULL;
-            gles_make_current(t_context ? t_context->gl : NULL, NULL);
-            gles2_make_current(t_context ? t_context->gl2 : NULL, NULL, NULL);
-        }
-        *s = (Surface){0};
+        if (t_draw == s || t_read == s) set_current(t_context, NULL, NULL, gone);
+        if (s->current) { /* another thread's */
+            s->doomed = true;
+            gles = NULL;
+        } else
+            *s = (Surface){0};
     }
     pthread_mutex_unlock(&e.lock);
+    if (gone[0] && gone[0] != gles) gles_surface_free(gone[0]);
+    if (gone[1] && gone[1] != gles && gone[1] != gone[0]) gles_surface_free(gone[1]);
     gles_surface_free(gles);
     return done(s != NULL, s ? EGL_SUCCESS_ : EGL_BAD_SURFACE_);
 }
@@ -418,26 +512,24 @@ static bool query_context(uint64_t display, uint64_t context, int32_t attribute,
 
 /* eglMakeCurrent: a context with its surfaces, one without a surface (EGL_KHR_surfaceless_context), or none */
 static bool make_current(uint64_t display, uint64_t draw, uint64_t read, uint64_t context) {
-    if (!context) {
-        if (draw || read) return done(0, EGL_BAD_MATCH_);
-        t_context = NULL;
-        t_draw = t_read = NULL;
-        gles_make_current(NULL, NULL);
-        gles2_make_current(NULL, NULL, NULL);
-        return done(1, EGL_SUCCESS_);
-    }
-    if (!is_display(display)) return done(0, EGL_BAD_DISPLAY_);
-    Context* x = context_of(context);
-    if (!x) return done(0, EGL_BAD_CONTEXT_);
+    GlesSurface* gone[2] = {0};
+    if (!context && (draw || read)) return done(0, EGL_BAD_MATCH_);
+    if (context && !is_display(display)) return done(0, EGL_BAD_DISPLAY_);
+    int32_t error = EGL_SUCCESS_;
+    pthread_mutex_lock(&e.lock);
+    Context* x = context ? context_of(context) : NULL;
     Surface* d = draw ? surface_of(draw) : NULL;
     Surface* r = read ? surface_of(read) : NULL;
-    if ((draw && !d) || (read && !r)) return done(0, EGL_BAD_SURFACE_);
-    t_context = x;
-    t_draw = d;
-    t_read = r;
-    gles_make_current(x->gl, d ? d->gles : NULL);
-    gles2_make_current(x->gl2, d ? d->gles : NULL, r ? r->gles : NULL);
-    return done(1, EGL_SUCCESS_);
+    if (context && !x)
+        error = EGL_BAD_CONTEXT_;
+    else if ((draw && !d) || (read && !r))
+        error = EGL_BAD_SURFACE_;
+    else
+        set_current(x, d, r, gone);
+    pthread_mutex_unlock(&e.lock);
+    if (gone[0]) gles_surface_free(gone[0]);
+    if (gone[1]) gles_surface_free(gone[1]);
+    return done(error == EGL_SUCCESS_, error);
 }
 static bool swap_buffers(uint64_t display, uint64_t surface) {
     Surface* s = is_display(display) ? surface_of(surface) : NULL;
@@ -584,6 +676,11 @@ static void g_true(CPU* c, void* data) {
     (void)data;
     X(0) = done(EGL_TRUE_, EGL_SUCCESS_);
 }
+static void g_release_thread(CPU* c, void* data) {
+    (void)data;
+    release_thread();
+    X(0) = done(EGL_TRUE_, EGL_SUCCESS_);
+}
 static void g_get_error(CPU* c, void* data) {
     (void)data;
     X(0) = (uint64_t)t_error;
@@ -645,7 +742,7 @@ const HleSymbol hle_egl[] = {
     {"eglBindAPI", g_true, NULL},
     {"eglWaitGL", g_true, NULL},
     {"eglWaitClient", g_true, NULL},
-    {"eglReleaseThread", g_true, NULL},
+    {"eglReleaseThread", g_release_thread, NULL},
     {"eglGetError", g_get_error, NULL},
     {"glGetString", g_gl_get_string, NULL},
     {"", NULL, NULL},
@@ -793,8 +890,9 @@ static jboolean JNICALL j_swap_buffers(JNIEnv* env, jclass unused, jlong display
 static jlong JNICALL j_gl_call(JNIEnv* env, jclass unused, jstring name, jstring params, jlongArray ints,
                                jfloatArray floats, jobject pointer, jint offset) {
     (void)unused;
-    static _Thread_local CPU* c;
-    if (!c && !(c = calloc(1, sizeof *c))) return 0;
+    CPU* c = t_gl_call.cpu;
+    if (!c && !(c = t_gl_call.cpu = calloc(1, sizeof *c))) return 0;
+    bridge_thread_keep(gl_cpu_end, c);
     const char* n = (*env)->GetStringUTFChars(env, name, NULL);
     const HleSymbol* fn = NULL;
     for (const HleSymbol* s = hle_gles; n && s->name[0]; ++s)
@@ -846,8 +944,9 @@ enum { GLES_OBJECTS = 8 };
 static jlong JNICALL j_gles_call(JNIEnv* env, jclass unused, jstring name, jstring params, jlongArray ints,
                                  jfloatArray floats, jobjectArray objects, jintArray offsets) {
     (void)unused;
-    static _Thread_local CPU* c;
-    if (!c && !(c = calloc(1, sizeof *c))) return 0;
+    CPU* c = t_gl_call.gles_cpu;
+    if (!c && !(c = t_gl_call.gles_cpu = calloc(1, sizeof *c))) return 0;
+    bridge_thread_keep(gles_cpu_end, c);
     const char* n = (*env)->GetStringUTFChars(env, name, NULL);
     const HleSymbol* fn = n ? hle_find(n) : NULL;
     if (n) (*env)->ReleaseStringUTFChars(env, name, n);

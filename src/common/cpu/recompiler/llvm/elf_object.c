@@ -57,6 +57,66 @@ unsigned char snx_elf_host_data(void) {
     return first ? ELFDATA2LSB : ELFDATA2MSB;
 }
 
+static void sw16(void* p) {
+    unsigned char* b = (unsigned char*)p, t = b[0];
+    b[0] = b[1], b[1] = t;
+}
+static void sw32(void* p) {
+    unsigned char* b = (unsigned char*)p, t;
+    t = b[0], b[0] = b[3], b[3] = t;
+    t = b[1], b[1] = b[2], b[2] = t;
+}
+static void sw64(void* p) {
+    unsigned char* b = (unsigned char*)p, t;
+    for (int k = 0; k < 4; ++k) t = b[k], b[k] = b[7 - k], b[7 - k] = t;
+}
+static void sw_ehdr(Elf64_Ehdr* e) {
+    sw16(&e->e_type), sw16(&e->e_machine), sw32(&e->e_version), sw64(&e->e_entry), sw64(&e->e_phoff);
+    sw64(&e->e_shoff), sw32(&e->e_flags), sw16(&e->e_ehsize), sw16(&e->e_phentsize), sw16(&e->e_phnum);
+    sw16(&e->e_shentsize), sw16(&e->e_shnum), sw16(&e->e_shstrndx);
+}
+static void sw_shdr(Elf64_Shdr* s) {
+    sw32(&s->sh_name), sw32(&s->sh_type), sw64(&s->sh_flags), sw64(&s->sh_addr), sw64(&s->sh_offset);
+    sw64(&s->sh_size), sw32(&s->sh_link), sw32(&s->sh_info), sw64(&s->sh_addralign), sw64(&s->sh_entsize);
+}
+int snx_elf_byteswap(unsigned char* object, size_t size, int to_foreign) {
+    Elf64_Ehdr* eh = (Elf64_Ehdr*)(void*)object;
+    Elf64_Shdr* sh;
+    unsigned machine;
+    size_t k, n, at;
+    if (size < sizeof *eh) return -1;
+    if (!to_foreign) sw_ehdr(eh);
+    machine = eh->e_machine;
+    if (eh->e_shoff > size || (size - eh->e_shoff) / sizeof *sh < eh->e_shnum) return -1;
+    sh = (Elf64_Shdr*)(void*)(object + eh->e_shoff);
+    for (k = 0; k < eh->e_shnum; ++k) {
+        if (!to_foreign) sw_shdr(&sh[k]);
+        if ((sh[k].sh_type == SHT_SYMTAB || sh[k].sh_type == SHT_RELA || sh[k].sh_type == SHT_REL) &&
+            (sh[k].sh_offset > size || sh[k].sh_size > size - sh[k].sh_offset))
+            return -1;
+        if (sh[k].sh_type == SHT_SYMTAB)
+            for (n = 0; n + sizeof(Elf64_Sym) <= sh[k].sh_size; n += sizeof(Elf64_Sym)) {
+                Elf64_Sym* s = (Elf64_Sym*)(void*)(object + sh[k].sh_offset + n);
+                sw32(&s->st_name), sw16(&s->st_shndx), sw64(&s->st_value), sw64(&s->st_size);
+            }
+        if (sh[k].sh_type == SHT_RELA || sh[k].sh_type == SHT_REL) {
+            size_t entry = sh[k].sh_type == SHT_RELA ? sizeof(Elf64_Rela) : sizeof(Elf64_Rel);
+            for (n = 0; n + entry <= sh[k].sh_size; n += entry) {
+                at = sh[k].sh_offset + n;
+                sw64(object + at);
+                /* r_info: n64's symbol a word then four bytes; else one doubleword */
+                if (machine == EM_MIPS) sw32(object + at + 8);
+                else
+                    sw64(object + at + 8);
+                if (entry == sizeof(Elf64_Rela)) sw64(object + at + 16);
+            }
+        }
+        if (to_foreign) sw_shdr(&sh[k]);
+    }
+    if (to_foreign) sw_ehdr(eh);
+    return 0;
+}
+
 int snx_elf_parse(SnxElfObject* o, const SnxLinkInput* input, unsigned* machine, unsigned* abi, char* error,
                   size_t error_size) {
     *o = (SnxElfObject){0};

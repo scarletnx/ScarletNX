@@ -5,7 +5,8 @@
 #define _GNU_SOURCE 1 /* sched_getaffinity: the CPUs this process may run on */
 #endif
 #include "common/cpu/recompiler/llvm/jit_service.h"
-#include "common/cpu/recompiler/x64/x64_cache.h"
+#include "common/cpu/recompiler/mach/native.h"
+#include "common/cpu/recompiler/x64/x64_codegen.h"
 #include "common/cpu/recompiler/compile_thread.h"
 #include "common/utilities/common.h"
 #include "common/utilities/ascii.h"
@@ -494,24 +495,24 @@ static uint64_t aot_toc(const SnxJitConfig* config) {
    loader's table, where every global stays */
 static int emit_unit(SnxJitService* s, SnxCodegen* codegen, const char* table_name, unsigned char** object,
                      size_t* size, char* error, size_t error_size) {
-    if (snx_x64_available() && !s->config.hook_direct_calls && codegen->function_count) {
+    if (snx_native_available() && codegen->function_count) {
         /* the x86-64 back end, where it makes every function of the unit (a unit's are its own locals, so it isn't
            split between two objects): LLVM otherwise */
-        SnxX64Options options = {
+        SnxNativeOptions options = {
             .jit = 1, .table_name = table_name, .direct = direct, .direct_user = s, .llvm_at = snx_ir_dump_pc()};
         unsigned char* made = (unsigned char*)calloc(codegen->function_count, 1);
         if (made) {
-            codegen->hook_direct_calls = 0;
+            codegen->hook_direct_calls = s->config.hook_direct_calls; /* every call through CPU.disp (call_target) */
             codegen->direct_svc = s->config.direct_svc;
             int reused = 0;
-            int rc = snx_x64_cached_object(codegen, 0, codegen->function_count, &options, made, object, size, &reused,
-                                           error, error_size);
+            int rc = snx_native_cached_object(codegen, 0, codegen->function_count, &options, made, object, size,
+                                              &reused, error, error_size);
             free(made);
             if (rc) return -1;
             if (*object) return 0;
         }
     }
-    SnxIr* ir = snx_ir_new_jit("jit", s->config.opt, error, error_size);
+    SnxIr* ir = snx_ir_init(error, error_size) ? NULL : snx_ir_new_jit("jit", s->config.opt, error, error_size);
     if (!ir) return -1;
     LLVMValueRef* functions = (LLVMValueRef*)malloc(codegen->function_count * sizeof(*functions));
     if (!functions) {
@@ -1870,7 +1871,7 @@ static unsigned usable_cpus(void) {
    SNX_JIT_THREADS_AUTO. They run below the game's threads (thread_priority), so a compile only gets a CPU the guest
    threads, the GPU thread and audio leave idle; the miss thread is not one of them and takes no CPU from the game: it
    compiles while the thread it compiles for waits. Keeping six CPUs for the game left one compile thread on
-   hosts with up to 7 CPUs and two on 8, which fell minutes behind Ender Magnolia's misses */
+   hosts with up to 7 CPUs and two on 8, which fell minutes behind one game's misses */
 static unsigned default_threads(void) {
     unsigned cpus = usable_cpus();
     return cpus >= SNX_JIT_THREADS_AUTO + 2 ? SNX_JIT_THREADS_AUTO : cpus > 3 ? cpus - 2 : 1;
@@ -1882,7 +1883,8 @@ SnxJitService* snx_jit_service_new(const SnxJitConfig* config, char* error, size
             snprintf(error, error_size, "the AOT entries are not in ascending order");
             return NULL;
         }
-    if (snx_ir_init(error, error_size)) return NULL;
+    /* LLVM starts at the first unit it has to make, where the host has a native back end (emit_unit) */
+    if (!snx_native_available() && snx_ir_init(error, error_size)) return NULL;
     SnxJitService* s = (SnxJitService*)calloc(1, sizeof(*s));
     if (!s) {
         snprintf(error, error_size, "out of memory");

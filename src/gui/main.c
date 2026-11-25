@@ -3,6 +3,7 @@
 #include <SDL3/SDL.h>
 #include "common/utilities/sdl_desktop.h"
 #include "common/utilities/ini_lines.h"
+#include "common/utilities/key_text.h"
 #ifndef SNX_GUI_NO_MAIN
 #include <SDL3/SDL_main.h>
 #endif
@@ -31,6 +32,7 @@
 #include "common/utilities/font.h"
 #include "common/network/https.h"
 #include "gui/gpu_driver.h"
+#include "gui/jdk.h"
 #include "gui/bluetooth.h"
 #include "gui/gpu_driver_fetch.h"
 #include "gui/gui.h"
@@ -121,7 +123,8 @@ enum {
     GUI_FORM_DRIVERS,   /* Settings > App > GPU Drivers, or a game's own GPU driver */
     GUI_FORM_FREEDRENO, /* Settings > App > Freedreno Settings, or a game's own */
     GUI_FORM_FETCH,     /* GPU Drivers > Download Driver */
-    GUI_FORM_BLUETOOTH  /* Controllers > Bluetooth: the Joy-Con 2 controllers (gui/bluetooth.h) */
+    GUI_FORM_BLUETOOTH, /* Controllers > Bluetooth: the Joy-Con 2 controllers (gui/bluetooth.h) */
+    GUI_FORM_BOXES      /* a setting of boxes (the runtime's list's boxes): a box an item */
 };
 /* Settings > User's values: who the games play as, then each user's nickname as it is typed and Mii (its place in
    the Mii database, common/utilities/mii_db.h) */
@@ -308,7 +311,8 @@ typedef struct {
 } GuiBtForm;
 /* Freedreno Settings' values: the name and value typed, and each variable's value as its row shows it */
 #define GUI_FREEDRENO_PRESETS 16
-#define GUI_FREEDRENO_ROWS    (GUI_FREEDRENO_PRESETS + SNX_FREEDRENO_MAX + 4)
+#define GUI_FREEDRENO_KNOWN   8
+#define GUI_FREEDRENO_ROWS    (GUI_FREEDRENO_PRESETS + GUI_FREEDRENO_KNOWN + SNX_FREEDRENO_MAX + 4)
 typedef struct {
     char name[48], value[192];
     char shown[GUI_FREEDRENO_ROWS][200];
@@ -701,6 +705,14 @@ typedef struct App {
     int peek_rows[GUI_VIEW_ROWS];
     int pad_map, pad_swap, pad_player; /* the button map's settings: its map's row and its swap's, for which player */
     int device_listen; /* a player's Controller row waiting for a press on the controller it takes, + 1; 0 for none */
+    int key_listen;    /* a Shortcuts row waiting for the key it takes, its setting + 1; 0 for none */
+    GuiThemeKey* box_keys; /* a row of boxes' form: its items' rows, their On or Off, and the row (GUI_FORM_BOXES) */
+    char (*box_value)[32];
+    char* box_base; /* the value the row has while it has none of its own: the launcher's for a game's, else NULL */
+    int box_row, box_page; /* the setting, and the page its form returns to (-1 the group) */
+    GuiSettings fd_settings;   /* Freedreno Settings' flag variables as rows of boxes (gui_freedreno_list) */
+    bool box_fd;               /* the open form is one of those, else one of the Settings' */
+    bool fd_changed;           /* and it changed its variable, which Freedreno Settings' Save keeps */
     SDL_Gamepad* listened[16]; /* the controllers open meanwhile: a press comes only from an open one */
     int listened_count;
     bool theme_from_app;       /* the theme editor goes back to the App's rows */
@@ -787,6 +799,8 @@ typedef struct App {
        release each is), a release's downloads in the picks box, the download going and what it said last */
     GuiHttpsGet https_get; /* NULL in a build without OpenSSL */
     Uint32 fetch_event;    /* the threads' answers (fetch_answer) */
+    /* the lists' thread and the download's, waited for at their last answer */
+    SDL_Thread *fetch_thread, *download_thread;
     bool fetching, downloading;
     GuiDriverReleases fetch_lists[GUI_DRIVER_REPOS];
     int fetch_state[GUI_DRIVER_REPOS];
@@ -805,6 +819,7 @@ typedef struct App {
     /* Settings > GBA > Covers: the box being fetched (covering), the games waiting for theirs, those whose box did not
        come, and whether the No-Intro list was fetched in this session */
     Uint32 cover_event;
+    SDL_Thread* cover_thread; /* waited for at its answer */
     bool covering, cover_list_fetched;
     GuiCoverJob* cover_wait[GUI_COVERS_WAIT];
     int cover_waiting;
@@ -863,6 +878,10 @@ typedef struct App {
     GuiWatch watch;
     bool recent_all;        /* every recent game shows, not GUI_RECENT_SHOWN and a row for the rest */
     Uint32 picked_folder;   /* the event a folder from the system's picker comes back as */
+    Uint32 path_picked;     /* a path setting's picker's answer (path_answer) */
+    char path_key[64];      /* the setting it was opened for, and whose: the game's picks, "" the launcher's */
+    char* path_own;
+    bool path_typed;        /* a picker could not open: the path rows are typed from then on, as it said */
     Uint32 pack_picked;     /* and a folder of NCAs to pack (Pack extracted as dXCI/dNSP) */
     char* pack_folder;      /* that folder, asked NSP or XCI (GUI_ASK_PACK) */
     SDL_Texture* preview;   /* the editor's: the menu or a run drawn in its theme, at 1x */
@@ -1048,6 +1067,7 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #define SAY_GAMES_PLAY   SNX_TR_KEYS("Play.")
 #define SAY_GAMES_R      SNX_TR_KEYS("Recompile.")
 #define SAY_GAMES_M      SNX_TR_KEYS("Mods.")
+#define SAY_GAMES_OWN    SNX_TR_KEYS("Settings.")
 #define SAY_GAMES_AOT    SNX_TR_KEYS("AOT pack.")
 #define SAY_GAMES_STATES SNX_TR_KEYS("Save states.")
 #ifdef SDL_PLATFORM_ANDROID
@@ -1136,6 +1156,7 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #define SAY_GAMES_PLAY   SNX_TR_KEYS("L: play.")
 #define SAY_GAMES_R      SNX_TR_KEYS("R: recompile.")
 #define SAY_GAMES_M      SNX_TR_KEYS("M: mods.")
+#define SAY_GAMES_OWN     SNX_TR_KEYS("M: settings.")
 #define SAY_GAMES_AOT    SNX_TR_KEYS("B: AOT pack.")
 #define SAY_GAMES_STATES SNX_TR_KEYS("S: save states.")
 #define SAY_PICK_BOX     SNX_TR_NOOP("click the box (or Enter) to open the file picker")
@@ -1186,6 +1207,7 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #define SAY_PAD_GAMES_PLAY       SNX_TR_KEYS("Right stick: play.")
 #define SAY_PAD_GAMES_R          SNX_TR_KEYS("Y: recompile.")
 #define SAY_PAD_GAMES_M          SNX_TR_KEYS("L3: mods.")
+#define SAY_PAD_GAMES_OWN        SNX_TR_KEYS("L3: settings.")
 #define SAY_PAD_GAMES_AOT        SNX_TR_KEYS("R3: AOT pack.")
 #define SAY_PAD_GAMES_STATES     SNX_TR_KEYS("X: save states.")
 #define SAY_PAD_KEYS_HOW         SNX_TR_KEYS("A: pick a file. B: back.")
@@ -3562,6 +3584,7 @@ static unsigned key_icon(const char* key, const char* what) {
                  {"play", GUI_ICON_PLAY},
                  {"recompile", GUI_ICON_HAMMER},
                  {"mods", GUI_ICON_PACKAGE_PLUS},
+                 {"settings", GUI_ICON_SLIDERS_HORIZONTAL},
                  {"AOT pack", GUI_ICON_PACKAGE},
                  {"save states", GUI_ICON_SAVE},
                  {"save", GUI_ICON_SAVE},
@@ -6707,8 +6730,8 @@ static void states_open(App* app, const char* game, const char* title) {
 static void states_focus(App* app) {
     size_t row = app->browser.selected, head = app->browser.head;
     size_t index = app->browser.page * app->browser.page_size + row - head;
-    bool recent = row && row < head && (int)row - 1 < recent_shown(app), game = row >= head && index < app->games.count;
-    const GuiRecentGame* r = recent ? &app->recent.game[recent_index(app, (int)row - 1)] : NULL;
+    bool recent = row < head && (int)row < recent_shown(app), game = row >= head && index < app->games.count;
+    const GuiRecentGame* r = recent ? &app->recent.game[recent_index(app, (int)row)] : NULL;
     if (r && r->driver == GUI_SWITCH && r->prepared)
         states_open(app, r->path, r->name);
     else if (game && !gui_is_cia(app->games.names[index]) && !gui_is_dump(app->games.names[index]))
@@ -6717,19 +6740,19 @@ static void states_focus(App* app) {
         snprintf(app->message, sizeof app->message, "%s",
                  snx_tr("S lists the save states of a recompiled Switch game in focus."));
 }
-/* the game box's Settings: the focused recompiled Switch game's own Settings, Back to Games; else why not */
+/* the game box's Settings: the focused recompiled Switch or 3DS game's own Settings, Back to Games; else why not */
 static void settings_focus(App* app) {
     size_t row = app->browser.selected, head = app->browser.head;
     size_t index = app->browser.page * app->browser.page_size + row - head;
-    bool recent = row && row < head && (int)row - 1 < recent_shown(app), game = row >= head && index < app->games.count;
-    const GuiRecentGame* r = recent ? &app->recent.game[recent_index(app, (int)row - 1)] : NULL;
-    if (r && r->driver == GUI_SWITCH && r->prepared)
+    bool recent = row < head && (int)row < recent_shown(app), game = row >= head && index < app->games.count;
+    const GuiRecentGame* r = recent ? &app->recent.game[recent_index(app, (int)row)] : NULL;
+    if (r && (r->driver == GUI_SWITCH || r->driver == GUI_3DS) && r->prepared)
         open_game_settings(app, r->path, r->name, false);
     else if (game && !gui_is_cia(app->games.names[index]) && !gui_is_dump(app->games.names[index]))
         open_game_settings(app, app->games.paths[index], app->games.shown[index], false);
     else
         snprintf(app->message, sizeof app->message, "%s",
-                 snx_tr("Settings of its own are a recompiled Switch game's, in focus."));
+                 snx_tr("Settings of its own are a recompiled Switch or 3DS game's, in focus."));
 }
 /* the box over the screen, as wide as its title or the longest row; a row each, ui.txt's scene States, the focused one
    among those shown (the box kept on the screen); the picture's place at its right, or under it, empty when neither
@@ -6921,12 +6944,18 @@ static const char* screen_title(const App* app, char* out, size_t size) {
         snprintf(out, size, "%s", snx_tr("SCARLETNX  /  SETTINGS  /  GPU DRIVERS  /  DOWNLOAD"));
     else if (app->form == GUI_FORM_FREEDRENO)
         snprintf(out, size, "%s", snx_tr("SCARLETNX  /  SETTINGS  /  FREEDRENO SETTINGS"));
-    else if (app->form == GUI_FORM_BLUETOOTH && app->page >= 0) { /* Controllers' page */
+    else if (app->form == GUI_FORM_BOXES && app->box_fd)
+        snprintf(out, size, snx_tr("SCARLETNX  /  SETTINGS  /  FREEDRENO SETTINGS  /  %s"),
+                 app->fd_settings.keys[app->box_row].key);
+    else if (app->form == GUI_FORM_BOXES) { /* a setting's boxes */
+        snprintf(out, size, snx_tr("SCARLETNX  /  SETTINGS  /  %s  /  %s"), snx_tr(app->group_keys[app->group].key),
+                 snx_tr(screen_settings(app)->keys[app->box_row].key));
+        for (c = out; *c; ++c) *c = (char)SDL_toupper((unsigned char)*c);
+    } else if (app->form == GUI_FORM_BLUETOOTH && app->page >= 0) { /* Controllers' page */
         snprintf(out, size, snx_tr("SCARLETNX  /  SETTINGS  /  %s  /  %s"), snx_tr(app->group_keys[app->group].key),
                  snx_tr(app->settings.keys[app->page].key));
         for (c = out; *c; ++c) *c = (char)SDL_toupper((unsigned char)*c);
-    }
-    else if (app->own_picks) { /* a game's own: its name, as its row says it */
+    } else if (app->own_picks) { /* a game's own: its name, as its row says it */
         snprintf(out, size, snx_tr("SCARLETNX  /  SETTINGS  /  %s"), app->game_title);
         for (c = out; *c; ++c) *c = (char)SDL_toupper((unsigned char)*c);
     } else
@@ -9274,7 +9303,7 @@ static void SDLCALL folder_picked(void* userdata, const char* const* files, int 
     SDL_zero(e);
     e.type = *(const Uint32*)userdata;
     e.user.code = files == NULL; /* an error, which SDL_GetError names */
-    e.user.data1 = files && files[0] ? SDL_strdup(files[0]) : NULL;
+    e.user.data1 = files && files[0] && *files[0] ? SDL_strdup(files[0]) : NULL; /* SDL's zenity cancels with "" */
     e.user.data2 = files ? NULL : SDL_strdup(SDL_GetError());
     SDL_PushEvent(&e);
 }
@@ -9307,6 +9336,8 @@ static void settings_groups(App* app) {
         char* about = g >= 0 ? app->group_about[g] : NULL;
         size_t n = about ? strlen(about) : 0;
         if (strchr(s->keys[r].section, '/')) continue; /* a page's: its row in the group opens it */
+        /* a Switch game's runs read none of the 3DS's: kept in its picks as they are, off its screen */
+        if (app->own_picks && s->game == GUI_GAME_SWITCH && !strcmp(s->keys[r].section, "3DS")) continue;
         /* past the most groups the rest go in the last one: every row is still reached */
         if (g < 0 || (g == 0 && !app->own_picks) ||
             (strcmp(s->keys[r].section, s->keys[app->group_first[g]].section) &&
@@ -9534,13 +9565,25 @@ static bool games_play_focus(const App* app) {
     if (row < head) return (int)row < recent_shown(app);
     return index < app->games.count && !gui_games_heading(&app->games, index);
 }
+/* Games' focused row a made 3DS game, recent or of the page: M opens its own Settings, as it has no mods' box */
+static bool games_ctr_focus(const App* app) {
+    size_t row = app->browser.selected, head = app->browser.head;
+    size_t index = app->browser.page * app->browser.page_size + row - head;
+    if (row < head && (int)row < recent_shown(app)) {
+        const GuiRecentGame* r = &app->recent.game[recent_index(app, (int)row)];
+        return r->driver == GUI_3DS && r->prepared && !gui_is_cia(r->path);
+    }
+    return row >= head && index < app->games.count && !gui_games_heading(&app->games, index) &&
+           app->games_drivers[index] == GUI_3DS && !gui_is_cia(app->games.names[index]);
+}
 /* Games' keys the focused row takes, in parts, when it does something there: Play on a game that plays, R on a game,
-   M on a made Switch one */
+   M on a made Switch or 3DS one */
 static void games_said(const App* app, bool pad, const char** parts, int* n) {
     bool mods;
     if (games_play_focus(app)) said_add(parts, n, pad ? SAY_PAD_GAMES_PLAY : SAY_GAMES_PLAY);
     if (!games_game_focus(app, &mods)) return;
     said_add(parts, n, pad ? SAY_PAD_GAMES_R : SAY_GAMES_R);
+    if (games_ctr_focus(app)) said_add(parts, n, pad ? SAY_PAD_GAMES_OWN : SAY_GAMES_OWN);
     if (mods && (pad ? SAY_PAD_GAMES_M : SAY_GAMES_M)) said_add(parts, n, pad ? SAY_PAD_GAMES_M : SAY_GAMES_M);
     if (mods)
         said_add(parts, n, pad ? SAY_PAD_GAMES_STATES : SAY_GAMES_STATES); /* its save states' box: S, a pad's X */
@@ -10944,19 +10987,23 @@ static int SDLCALL download_run(void* data) {
     free(job);
     return 0;
 }
-/* a thread for run with job, detached: 0 when it could not start, said in the note */
-static int fetch_start(App* app, SDL_ThreadFunction run, const char* name, GuiFetchJob* job) {
-    SDL_Thread* t;
+/* a thread that has pushed its last answer: it ends at once, and the handle goes. Not SDL_DetachThread, which reads the
+   thread's handle after it marks the thread detached: a thread that ends in between frees it first (SDL 3.4.18) */
+static void thread_ended(SDL_Thread** thread) {
+    if (*thread) SDL_WaitThread(*thread, NULL);
+    *thread = NULL;
+}
+/* a thread for run with job into *thread: 0 when it could not start, said in the note */
+static int fetch_start(App* app, SDL_Thread** thread, SDL_ThreadFunction run, const char* name, GuiFetchJob* job) {
     if (!app->fetch_event) app->fetch_event = SDL_RegisterEvents(1);
     job->event = app->fetch_event;
     job->get = app->https_get;
-    t = app->fetch_event ? SDL_CreateThread(run, name, job) : NULL;
-    if (!t) {
+    *thread = app->fetch_event ? SDL_CreateThread(run, name, job) : NULL;
+    if (!*thread) {
         snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Download Driver: no thread: %s"), SDL_GetError());
         free(job);
         return 0;
     }
-    SDL_DetachThread(t);
     return 1;
 }
 /* row r of the page, a label, a value and the help the bar shows, of repository repo and release (or GUI_FETCH_*) */
@@ -11111,7 +11158,7 @@ static void open_fetch(App* app) {
         }
         job = (GuiFetchJob*)calloc(1, sizeof *job);
         if (job) job->gpu = fetch_gpu(app);
-        app->fetching = job && fetch_start(app, fetch_run, "driver lists", job);
+        app->fetching = job && fetch_start(app, &app->fetch_thread, fetch_run, "driver lists", job);
     }
     fetch_show(app, 0, app->downloading ? app->download_said : "");
 }
@@ -11157,7 +11204,7 @@ static void fetch_download(App* app, int i) {
     snprintf(app->download_name, sizeof app->download_name, "%s", a->name);
     snprintf(app->download_said, sizeof app->download_said, snx_tr("Downloading %s..."), a->name);
     snprintf(app->editor.note, sizeof app->editor.note, "%s", app->download_said);
-    app->downloading = fetch_start(app, download_run, "driver download", job);
+    app->downloading = fetch_start(app, &app->download_thread, download_run, "driver download", job);
 }
 /* Select on a row: a release's box of its downloads, More opening its repository's releases and Less closing them (the
    focus on its More), a repository that failed fetched again */
@@ -11202,12 +11249,16 @@ static void fetch_answer(App* app, int code, void* data) {
             app->fetch_state[i] = GUI_FETCH_FAILED;
             gui_log("Download Driver: %s: %s", gui_driver_repos[i].path, app->fetch_error[i]);
         }
-        if (a->last) app->fetching = false;
+        if (a->last) {
+            app->fetching = false;
+            thread_ended(&app->fetch_thread);
+        }
         free(a->r.body);
         if (here) fetch_show(app, app->editor.row, app->downloading ? app->download_said : "");
     } else {
         GuiFetchAnswer* a = (GuiFetchAnswer*)data;
         app->downloading = false;
+        thread_ended(&app->download_thread);
         if (a->failed) {
             snprintf(app->download_said, sizeof app->download_said, snx_tr("Not downloaded: %s"), a->why);
             gui_log("Download Driver: %s", a->why);
@@ -11320,22 +11371,20 @@ said:
 /* the next game waiting for its box, on a thread, while none is being fetched */
 static void cover_next(App* app) {
     GuiCoverJob* job;
-    SDL_Thread* t;
     if (app->covering || !app->cover_waiting) return;
     job = app->cover_wait[0];
     memmove(app->cover_wait, app->cover_wait + 1, (size_t)--app->cover_waiting * sizeof *app->cover_wait);
     if (!app->cover_event) app->cover_event = SDL_RegisterEvents(1);
     job->event = app->cover_event;
     job->list_fetched = app->cover_list_fetched;
-    t = app->cover_event ? SDL_CreateThread(cover_run, "box art", job) : NULL;
-    if (!t) {
+    app->cover_thread = app->cover_event ? SDL_CreateThread(cover_run, "box art", job) : NULL;
+    if (!app->cover_thread) {
         snprintf(app->message, sizeof app->message, snx_tr("%s: no box art: no thread: %s"), snx_path_leaf(job->folder),
                  SDL_GetError());
         free(job);
         cover_next(app);
         return;
     }
-    SDL_DetachThread(t);
     app->covering = true;
 }
 /* the failure kept for the game in folder: its index, cover_failed_count for none */
@@ -11371,6 +11420,7 @@ static const char* cover_why(const App* app, const char* path) {
 /* the thread's answer: its game's icon drawn again from its new file, or why none came kept; then the next */
 static void cover_answer(App* app, GuiCoverJob* job) {
     app->covering = false;
+    thread_ended(&app->cover_thread);
     app->cover_list_fetched = app->cover_list_fetched || job->list_fetched;
     if (job->failed)
         cover_said(app, job->folder, job->why);
@@ -11456,8 +11506,73 @@ static void covers_free(App* app) {
     app->cover_waiting = app->cover_failed_count = 0;
 }
 
-/* Freedreno Settings' rows: Eden's presets, a row a variable set (a press removes it, as Eden's delete does),
-   Variable Name and Variable Value typed, Add Variable, Clear All, then Save. How many before Save */
+/* the variable called name among Freedreno Settings', NULL for none */
+static SnxFreedrenoVar* freedreno_var(App* app, const char* name) {
+    for (int i = 0; i < app->fd_count; ++i)
+        if (!strcmp(app->fd_vars[i].name, name)) return &app->fd_vars[i];
+    return NULL;
+}
+/* name set to value, or taken out with "": 1, 0 where there is no room for it */
+static int freedreno_put(App* app, const char* name, const char* value) {
+    SnxFreedrenoVar* v = freedreno_var(app, name);
+    if (strlen(value) >= sizeof v->value) return 0;
+    if (!*value && v) { /* those after it a place up */
+        --app->fd_count;
+        memmove(v, v + 1, (size_t)(app->fd_vars + app->fd_count - v) * sizeof *v);
+        return 1;
+    }
+    if (!*value) return 1;
+    if (!v) {
+        if (app->fd_count == SNX_FREEDRENO_MAX) return 0;
+        v = &app->fd_vars[app->fd_count++];
+        snprintf(v->name, sizeof v->name, "%s", name);
+    }
+    snprintf(v->value, sizeof v->value, "%s", value);
+    return 1;
+}
+static int freedreno_presets(void) {
+    int n = 0;
+    while (gui_freedreno_presets[n].name) ++n;
+    return n;
+}
+static int freedreno_knowns(void) {
+    int n = 0;
+    while (gui_freedreno_known[n].name && n < GUI_FREEDRENO_KNOWN) ++n;
+    return n;
+}
+/* the i-th variable that is none of the known ones, as the rows list them: its place in fd_vars, -1 past the last */
+static int freedreno_other(const App* app, int i) {
+    for (int v = 0; v < app->fd_count; ++v)
+        if (gui_freedreno_find(app->fd_vars[v].name) < 0 && !i--) return v;
+    return -1;
+}
+/* Variable Name's row, after the presets, the known variables and the others: Variable Value, Add Variable and Clear
+   All after it */
+static int freedreno_typed_row(const App* app) {
+    int n = 0;
+    while (freedreno_other(app, n) >= 0) ++n;
+    return freedreno_presets() + freedreno_knowns() + n;
+}
+/* the row of boxes of the flag variable called name, -1 for none */
+static int freedreno_boxes(const App* app, const char* name) {
+    for (int r = 0; r < app->fd_settings.count; ++r)
+        if (app->fd_settings.values[r].items && !strcmp(app->fd_settings.values[r].key, name)) return r;
+    return -1;
+}
+/* known variable k's value as its row says it: how many flags are on, or its one name; None for the driver's own */
+static void freedreno_known_shown(App* app, int k, char* out, size_t size) {
+    const SnxFreedrenoVar* v = freedreno_var(app, gui_freedreno_known[k].name);
+    int row = v ? freedreno_boxes(app, v->name) : -1;
+    if (!v)
+        snprintf(out, size, "%s", snx_tr("None"));
+    else if (row >= 0)
+        gui_settings_items_said(&app->fd_settings, row, v->value, out, size);
+    else
+        snprintf(out, size, "%s", v->value);
+}
+/* Freedreno Settings' rows: Eden's presets, a row a variable Mesa reads out of a set it knows (its boxes, or its one
+   name stepped), a row another variable set (a press removes it, as Eden's delete does), Variable Name and Variable
+   Value typed, Add Variable, Clear All, then Save. How many before Save */
 static int freedreno_fill(App* app) {
     GuiFreedrenoForm* f = &app->fd_form;
     int r = 0, i;
@@ -11467,7 +11582,14 @@ static int freedreno_fill(App* app) {
                                                        : snx_tr("every variable cleared"));
         app->fd_keys[r] = page_row(snx_tr(gui_freedreno_presets[i].name), 0, 0, app->fd_about[r]);
     }
-    for (i = 0; i < app->fd_count; ++i, ++r) {
+    for (i = 0; i < freedreno_knowns(); ++i, ++r) {
+        freedreno_known_shown(app, i, f->shown[r], sizeof f->shown[r]);
+        snprintf(app->fd_about[r], sizeof app->fd_about[r], "%s", snx_tr(gui_freedreno_known[i].about));
+        app->fd_keys[r] =
+            page_row(gui_freedreno_known[i].name, offsetof(GuiFreedrenoForm, shown) + (size_t)r * sizeof f->shown[0],
+                     sizeof f->shown[0], app->fd_about[r]);
+    }
+    for (int other = 0; (i = freedreno_other(app, other)) >= 0; ++other, ++r) {
         snprintf(f->shown[r], sizeof f->shown[r], "%s", app->fd_vars[i].value[0] ? app->fd_vars[i].value : "\"\"");
         snprintf(app->fd_about[r], sizeof app->fd_about[r], snx_tr("%s=%s. A press removes it"), app->fd_vars[i].name,
                  app->fd_vars[i].value);
@@ -11524,6 +11646,11 @@ static void open_freedreno(App* app, const char* game, const char* title) {
     ini = game_ini_of(game);
     text = ini ? snx_ini_value(ini, "freedreno_env") : NULL;
     memset(&app->fd_form, 0, sizeof app->fd_form);
+    if (!app->fd_settings.keys) { /* the flag variables' boxes, the same for every open */
+        char* list = gui_freedreno_list();
+        if (!list || gui_settings_read(&app->fd_settings, list)) say_failure(app, snx_tr("Out of memory"));
+        free(list);
+    }
     app->fd_count = snx_freedreno_parse(ini ? (text ? text : "") : app->freedreno, app->fd_vars, SNX_FREEDRENO_MAX, why,
                                         sizeof why);
     freedreno_show(app, 0);
@@ -11542,14 +11669,40 @@ static void open_freedreno(App* app, const char* game, const char* title) {
     free(text);
     free(ini);
 }
+static void open_boxes(App* app, int row, int page);
+/* known variable k's row pressed (step 0) or stepped: its boxes, or the next of its names, the driver's own choice
+   (none) before its first */
+static void freedreno_known_press(App* app, int k, int step) {
+    const GuiFreedrenoKnown* known = &gui_freedreno_known[k];
+    const SnxFreedrenoVar* v = freedreno_var(app, known->name);
+    char names[16][48] = {""}; /* none, then its names */
+    int n = 1, now = 0;
+    if (!known->one) {
+        app->box_fd = true;
+        app->fd_changed = app->editor.dirty; /* what the form had changed before */
+        open_boxes(app, freedreno_boxes(app, known->name), -1);
+        return;
+    }
+    for (const char* c = known->items; c && n < (int)SDL_arraysize(names);
+         c = strchr(c, '|') ? strchr(c, '|') + 1 : NULL) {
+        snprintf(names[n], sizeof names[n], "%.*s", (int)strcspn(c, "="), c);
+        if (v && !strcmp(names[n], v->value)) now = n;
+        ++n;
+    }
+    now = (now + (step < 0 ? n - 1 : 1)) % n;
+    if (!freedreno_put(app, known->name, names[now]))
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Not added: the variables take %d at most"),
+                 SNX_FREEDRENO_MAX);
+    else
+        snprintf(app->editor.note, sizeof app->editor.note, "%s: %s", known->name,
+                 names[now][0] ? names[now] : snx_tr("None"));
+}
 /* a Freedreno Settings row pressed: a preset applied in the place of the variables, a variable removed, the one typed
    added, every one cleared; Save keeps them, the launcher's in app.ini, a game's in its .ini (none: the launcher's) */
 static void freedreno_action(App* app, int r, bool save) {
     GuiFreedrenoForm* f = &app->fd_form;
-    int presets = 0, vars, i;
+    int presets = freedreno_presets(), known = presets + freedreno_knowns(), typed = freedreno_typed_row(app), i;
     char why[300], text[SNX_FREEDRENO_TEXT];
-    while (gui_freedreno_presets[presets].name) ++presets;
-    vars = presets;
     if (save) {
         char* ini = game_ini_of(app->drivers_game);
         int failed;
@@ -11579,12 +11732,15 @@ static void freedreno_action(App* app, int r, bool save) {
         app->fd_count = n < 0 ? 0 : n;
         snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Preset '%s' applied"),
                  snx_tr(gui_freedreno_presets[r].name));
-    } else if (r < vars + app->fd_count) {
-        i = r - vars;
+    } else if (r < known) { /* its boxes, or its one name stepped, the driver's own choice first */
+        freedreno_known_press(app, r - presets, app->editor.step);
+        if (app->form == GUI_FORM_BOXES) return;
+    } else if (r < typed) {
+        i = freedreno_other(app, r - known);
         snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Variable %s removed"), app->fd_vars[i].name);
         memmove(&app->fd_vars[i], &app->fd_vars[i + 1], (size_t)(app->fd_count - i - 1) * sizeof app->fd_vars[0]);
         --app->fd_count;
-    } else if (r == vars + app->fd_count + 2) { /* Add Variable */
+    } else if (r == typed + 2) { /* Add Variable */
         SnxFreedrenoVar add[SNX_FREEDRENO_MAX];
         if (!f->name[0]) {
             snprintf(app->editor.note, sizeof app->editor.note, "%s", snx_tr("Variable name cannot be empty"));
@@ -11611,7 +11767,7 @@ static void freedreno_action(App* app, int r, bool save) {
         app->fd_count = i;
         snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Variable %s added"), f->name);
         f->name[0] = f->value[0] = 0;
-    } else if (r == vars + app->fd_count + 3) { /* Clear All */
+    } else if (r == typed + 3) { /* Clear All */
         app->fd_count = 0;
         snprintf(app->editor.note, sizeof app->editor.note, "%s", snx_tr("All Freedreno variables cleared"));
     } else
@@ -11669,6 +11825,299 @@ static void users_commit(App* app) {
     users_fill(app); /* the rows as users.ini says */
 }
 static void settings_reset_ask(App* app);
+static void keep_settings(App* app);
+static int setting_row(const App* app, const char* key);
+/* the microphone row's words, after System default and Off: the recording devices by name, read as its group opens, so
+   one plugged in since is there. Where they cannot be read, its two words and the value it has, and why in the note */
+enum { GUI_MICROPHONES = 32 };
+static void mic_words(App* app, int group) {
+    const char* names[GUI_MICROPHONES];
+    SDL_AudioDeviceID* ids = NULL;
+    int n = 0, count = 0, i, row = setting_row(app, "microphone");
+    bool on;
+    if (row < 0 || !in_group(app, group, row)) return; /* another group's */
+    on = SDL_InitSubSystem(SDL_INIT_AUDIO);
+    if (on) ids = SDL_GetAudioRecordingDevices(&count);
+    if (!ids) {
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Recording devices cannot be read: %s"),
+                 SDL_GetError());
+        gui_log("%s", app->editor.note);
+    }
+    for (i = 0; ids && i < count && n < GUI_MICROPHONES; ++i) {
+        const char* name = SDL_GetAudioDeviceName(ids[i]);
+        if (name) names[n++] = name;
+    }
+    if (ids) gui_settings_add_words(screen_settings(app), row, names, n);
+    SDL_free(ids);
+    if (on) SDL_QuitSubSystem(SDL_INIT_AUDIO);
+}
+/* the Java home row's words, after The build's: the JDKs of this machine, read as its group opens */
+static void jdk_words(App* app, int group) {
+    const char* home = SDL_GetUserFolder(SDL_FOLDER_HOME);
+    char **roots, **jdks;
+    size_t n = 0, count = 0;
+    int row = setting_row(app, "java_home");
+    if (row < 0 || !in_group(app, group, row)) return; /* another group's */
+    roots = gui_jdk_roots(home, &n);
+    jdks = roots ? gui_jdks((const char* const*)roots, &count) : NULL;
+    if (count) gui_settings_add_words(screen_settings(app), row, (const char* const*)jdks, (int)count);
+    gui_jdks_free(jdks, count);
+    gui_jdks_free(roots, n);
+}
+/* ---- the Room password (GUI_SETTING_SECRET), kept in users/online.ini: its row says whether there is one and the
+   dialog that takes one draws no letter of it; the typed text is wiped as it goes ---- */
+static int secret_row(const App* app) {
+    int row = setting_row(app, "room_password");
+    return row >= 0 && screen_settings(app)->values[row].kind == GUI_SETTING_SECRET ? row : -1;
+}
+static bool secret_open(const App* app) {
+    return app->form == GUI_FORM_GROUP && app->editing && secret_row(app) >= 0 &&
+           setting_of(app, app->editor.row) == secret_row(app);
+}
+/* what the row says: there is one, none, or why it cannot be told */
+static void secret_shown(App* app, int group) {
+    char password[256] = "", why[512] = "";
+    int row = secret_row(app);
+    GuiSetting* v;
+    if (row < 0 || !in_group(app, group, row)) return; /* another group's */
+    v = &screen_settings(app)->values[row];
+    if (!app->users_dir || snx_users_room_password(app->users_dir, password, sizeof password, why, sizeof why)) {
+        snprintf(v->text, sizeof v->text, "%s", snx_tr("Cannot be read"));
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Room password: %s"),
+                 app->users_dir ? why : snx_tr("no users/ folder"));
+    } else
+        snprintf(v->text, sizeof v->text, "%s", password[0] ? "********" : snx_tr("None"));
+    SDL_memset(password, 0, sizeof password);
+}
+/* the dialog's text gone, its letters with it */
+static void secret_wipe(App* app) {
+    SDL_memset(app->editor.text, 0, sizeof app->editor.text);
+    app->editor.typing = false;
+}
+/* password written for the room, "" for none; its row as it is now, the note said */
+static void secret_write(App* app, const char* password) {
+    char why[512] = "";
+    if (!app->users_dir || snx_users_room_password_set(app->users_dir, password, why, sizeof why)) {
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Room password not changed: %s"),
+                 app->users_dir ? why : snx_tr("no users/ folder"));
+        return;
+    }
+    secret_shown(app, app->group);
+    snprintf(app->editor.note, sizeof app->editor.note, "%s",
+             *password ? snx_tr("Room password: set") : snx_tr("Room password: none"));
+    secret_wipe(app);
+}
+/* Enter on the dialog: what was typed, refused and kept to be mended where it does not fit, and no password typed is
+   no change (Del takes the one there off) */
+static void secret_take(App* app) {
+    if (app->editor.text[0])
+        secret_write(app, app->editor.text);
+    else {
+        snprintf(app->editor.note, sizeof app->editor.note, "%s",
+                 snx_tr("Room password not changed: nothing was typed (Del takes it off)"));
+        secret_wipe(app);
+    }
+}
+/* ---- a path setting (settings.txt's path): Enter opens the system's picker, a folder's, a file's or a save dialog's,
+   its answer an app->path_picked event; Ctrl+V and a drop give it a path too, Del takes it off ---- */
+/* row is a path, which a paste or a drop may give */
+static bool path_takes(const App* app, int row) {
+    const GuiSetting* v = row >= 0 && row < screen_settings(app)->count ? &screen_settings(app)->values[row] : NULL;
+    return v && v->path && !v->needs_build;
+}
+/* row's value is picked with the system's dialog: not on iOS, whose picker's answer a later run cannot open, nor once
+   one could not open */
+static bool path_picks(const App* app, int row) {
+    const GuiSetting* v = &screen_settings(app)->values[row];
+    if (!path_takes(app, row) || app->path_typed) return false;
+#ifdef SDL_PLATFORM_IOS
+    return false;
+#else
+    return v->path != 0;
+#endif
+}
+/* the note the Settings show, or the launcher's message where the Settings are closed */
+static void path_say(App* app, const char* label, const char* what) {
+    if (app->editing && app->form == GUI_FORM_GROUP)
+        snprintf(app->editor.note, sizeof app->editor.note, "%s: %s", label, what);
+    else
+        snprintf(app->message, sizeof app->message, "%s: %s", label, what);
+}
+/* row's picker could not open: why, and how its path is given from now on. A text's row is typed; a list's (Java
+   home's) goes on stepping its words with Enter, so it takes a paste */
+static void path_failed(App* app, int row, const char* why) {
+    const GuiThemeKey* k = &screen_settings(app)->keys[row];
+    char said[sizeof app->editor.note - 64], line[sizeof app->editor.note];
+    app->path_typed = true;
+    snprintf(said, sizeof said, snx_tr("the picker could not open: %s. %s"), why,
+             k->type == GUI_KEY_WORD ? snx_tr("Ctrl+V pastes its path") : snx_tr("Enter on its row now types it"));
+    path_say(app, snx_tr(k->key), said);
+    snprintf(line, sizeof line, "%s: %s", snx_tr(k->key), said);
+    say_failure(app, line);
+}
+/* path given to row (picked, pasted or dropped), kept as the other settings are; one that does not fit is refused,
+   the row keeping what it has */
+static void path_take(App* app, int row, const char* path) {
+    GuiSettings* s = screen_settings(app);
+    char said[2 * GUI_SETTING_TEXT];
+    if (gui_settings_set(s, s->values[row].key, path)) {
+        app->editor.dirty = true;
+        write_settings(app);
+        app->editor.dirty = false;
+        snprintf(said, sizeof said, "%s", path);
+    } else {
+        char now[GUI_SETTING_TEXT];
+        setting_shown(app, row, now, sizeof now);
+        snprintf(said, sizeof said, snx_tr("takes a path of up to %d bytes, not %s: it keeps %s"), GUI_SETTING_TEXT - 1,
+                 path, now);
+    }
+    path_say(app, snx_tr(s->keys[row].key), said);
+}
+/* Enter on row: its picker, over the value it has */
+static void path_pick(App* app, int row) {
+    GuiSettings* s = screen_settings(app);
+    const GuiSetting* v = &s->values[row];
+    const char* own = app->own_picks ? app->own_picks : "";
+    char why[sizeof app->editor.note - 64] = "", *location = NULL;
+    bool opened = true;
+    if (!app->path_picked) app->path_picked = SDL_RegisterEvents(1);
+    if (!app->path_picked) {
+        path_failed(app, row, SDL_GetError());
+        return;
+    }
+    free(app->path_own);
+    app->path_own = snx_strdup(own);
+    snprintf(app->path_key, sizeof app->path_key, "%s", v->key);
+    if (gui_settings_value(s, v->key) && *gui_settings_value(s, v->key))
+        location = snx_strdup(gui_settings_value(s, v->key));
+    else if (v->path == 's') { /* a file to write, named after its setting in Documents */
+        const char* home = SDL_GetUserFolder(SDL_FOLDER_DOCUMENTS);
+        if (!home) home = SDL_GetUserFolder(SDL_FOLDER_HOME);
+        if (home) location = snx_path_join(home, v->key);
+    }
+    /* its answer comes as an event even when it cannot open, which says why */
+#ifdef SDL_PLATFORM_ANDROID /* SDL has no folder picker there: the system's own, through the app */
+    if (v->path == 'd') opened = gui_android_pick_folder(folder_picked, &app->path_picked, why, sizeof why) != 0;
+#else
+    if (v->path == 'd') SDL_ShowOpenFolderDialog(folder_picked, &app->path_picked, app->window, location, false);
+#endif
+    else if (v->path == 'f')
+        SDL_ShowOpenFileDialog(folder_picked, &app->path_picked, app->window, NULL, 0, location, false);
+    else
+        SDL_ShowSaveFileDialog(folder_picked, &app->path_picked, app->window, NULL, 0, location);
+    free(location);
+    if (!opened) path_failed(app, row, why);
+}
+/* the picker's answer: the path, none, or why it could not open; and the settings it was opened for may have closed */
+static void path_answer(App* app, const char* picked, const char* error, bool failed) {
+    const char* own = app->own_picks ? app->own_picks : "";
+    int row = setting_row(app, app->path_key);
+    bool same = app->path_own && !strcmp(app->path_own, own);
+    if (failed && same && row >= 0)
+        path_failed(app, row, error ? error : snx_tr("no reason given"));
+    else if (row < 0 || !same) {
+        snprintf(app->message, sizeof app->message,
+                 snx_tr("%s not changed to %s: its settings were closed while the picker was open"), app->path_key,
+                 picked ? picked : snx_tr("none"));
+    } else if (picked) {
+        char* path = gui_document_path(picked); /* Android's document by its path */
+        if (path)
+            path_take(app, row, path);
+        else {
+            char said[sizeof app->editor.note - 64];
+            snprintf(said, sizeof said, snx_tr("not changed: %s is not a folder or file of this device's storage"),
+                     picked);
+            path_say(app, snx_tr(screen_settings(app)->keys[row].key), said);
+        }
+        free(path);
+    } else
+        path_say(app, snx_tr(screen_settings(app)->keys[row].key),
+                 screen_settings(app)->values[row].path == 'd' ? snx_tr("No folder was picked.")
+                                                               : snx_tr("No file was picked."));
+    free(app->path_own);
+    app->path_own = NULL;
+}
+/* ---- a setting of boxes: a box an item, On or Off, over the row's value (gui_settings_item_toggle) ---- */
+static void boxes_close(App* app) {
+    free(app->box_keys);
+    free(app->box_value);
+    free(app->box_base);
+    app->box_keys = NULL;
+    app->box_value = NULL;
+    app->box_base = NULL;
+}
+/* the settings the open form's row is of: Freedreno Settings' flag variables, else the Settings screen's */
+static GuiSettings* boxes_of(App* app) { return app->box_fd ? &app->fd_settings : screen_settings(app); }
+/* the value the row of boxes has where it has none of its own: the launcher's for a game's own, else its default
+   (NULL) */
+static char* boxes_base(App* app, int row) {
+    if (app->box_fd) return NULL;
+    const char* key = screen_settings(app)->values[row].key;
+    const char* value = app->own_picks ? gui_settings_value(&app->settings, key) : NULL;
+    return value ? snx_strdup(value) : NULL;
+}
+static void boxes_values(App* app) {
+    GuiSettings* s = boxes_of(app);
+    for (int i = 0; i < s->values[app->box_row].items; ++i)
+        snprintf(app->box_value[i], sizeof app->box_value[0], "%s",
+                 gui_settings_item_on(s, app->box_row, i, app->box_base) ? snx_tr("On") : snx_tr("Off"));
+}
+/* the form of the setting row, a page's row or the group's (page -1), its focus coming back to focus */
+static void open_boxes(App* app, int row, int page) {
+    GuiSettings* s = boxes_of(app);
+    GuiSetting* v = &s->values[row];
+    int i;
+    boxes_close(app);
+    if (app->box_fd) { /* what the variable has now */
+        const SnxFreedrenoVar* var = freedreno_var(app, v->key);
+        snprintf(v->text, sizeof v->text, "%s", var ? var->value : "");
+    }
+    app->box_base = boxes_base(app, row);
+    app->box_keys = (GuiThemeKey*)snx_alloc((size_t)v->items * sizeof *app->box_keys);
+    app->box_value = (char (*)[32])snx_alloc((size_t)v->items * sizeof *app->box_value);
+    app->box_row = row;
+    app->box_page = page;
+    boxes_values(app);
+    for (i = 0; i < v->items; ++i)
+        app->box_keys[i] = page_row(v->item_label[i], (size_t)i * sizeof app->box_value[0], sizeof app->box_value[0],
+                                    v->item_about[i]);
+    gui_editor_form(&app->editor, app->box_keys, v->items, app->box_value, NULL);
+    app->editor.flat = true;
+    app->form = GUI_FORM_BOXES;
+    app->editing = true;
+    snprintf(app->editor.note, sizeof app->editor.note, snx_tr("%s: a box an item, Enter turns it on or off"),
+             snx_tr(s->keys[row].key));
+}
+/* item i of the open form turned on or off, the row's value kept at once */
+static void boxes_toggle(App* app, int i) {
+    GuiSettings* s = boxes_of(app);
+    char said[96], was[GUI_SETTING_TEXT];
+    int done;
+    snprintf(was, sizeof was, "%s", s->values[app->box_row].text);
+    done = gui_settings_item_toggle(s, app->box_row, i, app->box_base);
+    if (done && app->box_fd) { /* the variable's, kept with the others by the form's Save; as it was without room */
+        done = freedreno_put(app, s->values[app->box_row].key, s->values[app->box_row].text);
+        if (done)
+            app->fd_changed = true;
+        else
+            snprintf(s->values[app->box_row].text, sizeof s->values[app->box_row].text, "%s", was);
+    } else if (done) {
+        app->editor.dirty = true;
+        keep_settings(app);
+    }
+    if (done) {
+        boxes_values(app);
+        gui_settings_items_said(s, app->box_row,
+                                s->values[app->box_row].text[0] ? s->values[app->box_row].text
+                                : app->box_base                 ? app->box_base
+                                : s->values[app->box_row].def   ? s->values[app->box_row].def
+                                                                : "",
+                                said, sizeof said);
+        snprintf(app->editor.note, sizeof app->editor.note, "%s: %s", snx_tr(s->keys[app->box_row].key), said);
+    } else
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("%s has no room for another item"),
+                 snx_tr(s->keys[app->box_row].key));
+}
 static void open_group(App* app, int g) {
     if (!g && !app->own_picks) {
         open_app(app, 0);
@@ -11690,6 +12139,9 @@ static void open_group(App* app, int g) {
     app->group = g;
     app->first = app->group_first[g];
     app->page = -1;
+    mic_words(app, g);
+    jdk_words(app, g);
+    secret_shown(app, g);
     group_view(app, g);
 }
 static void open_pad(App* app, int row);
@@ -11725,8 +12177,20 @@ static void open_settings(App* app) {
     space_start(app);
 }
 /* ---- a game's own Settings (its boxes' Settings): the Settings screen on its picks file, <name>.picks beside its
-   .ini, which its runtime reads over the launcher's picks; each row Global until picked, Del back to Global, the
-   last group Reset to Global, asked first. Back from its groups goes where it was opened from ---- */
+   .ini, which its runtime reads over the launcher's picks; a Switch game's the Switch's settings, a 3DS game's its
+   console; each row Global until picked, Del back to Global, the last group Reset to Global, asked first. Back from
+   its groups goes where it was opened from ---- */
+/* the made game whose program is at path, of a console whose games have settings of their own: GUI_GAME_*, its folder
+   and its name, owned; 0 for a dump's, a package's or another console's. A 3DS game has no <name>_data folder */
+static int own_game(const char* path, char** folder, char** name) {
+    *folder = path && (gui_game_folder(path) || gui_game_program(path)) ? snx_dirname(path) : NULL;
+    *name = *folder ? aot_leaf(*folder) : NULL;
+    if (!*name) return 0;
+    SnxSystem system = snx_game_system(*folder, *name);
+    return system == SNX_SYSTEM_3DS                               ? GUI_GAME_3DS
+           : system == SNX_SYSTEM_SWITCH && gui_game_folder(path) ? GUI_GAME_SWITCH
+                                                                  : 0;
+}
 static void game_settings_close(App* app) {
     if (!app->own_picks) return;
     if ((app->game_settings.values && app->editor.object == (char*)app->game_settings.values) ||
@@ -11742,20 +12206,20 @@ static void game_settings_close(App* app) {
 }
 /* the game whose program is at program, named title, its Settings open; from_box: Back goes to its M box again */
 static void open_game_settings(App* app, const char* program, const char* title, bool from_box) {
-    char *folder = program && gui_game_folder(program) ? snx_dirname(program) : NULL,
-         *name = folder ? aot_leaf(folder) : NULL, *ini = NULL, old[sizeof app->message], unread[512];
-    if (name && snx_game_system(folder, name) == SNX_SYSTEM_SWITCH) ini = snx_game_ini(folder, name);
+    char *folder, *name, *ini = NULL, old[sizeof app->message], unread[512];
+    int console = own_game(program, &folder, &name);
+    if (console) ini = snx_game_ini(folder, name);
     free(folder);
     free(name);
-    if (!ini) { /* a dump's, a package's, another console's: no runtime of the Switch's reads its picks */
+    if (!ini) { /* a dump's, a package's, another console's: no runtime of its reads picks */
         snprintf(app->message, sizeof app->message,
-                 snx_tr("%s is no recompiled Switch game: only one has settings of its own"), title);
+                 snx_tr("%s is no recompiled Switch or 3DS game: only they have settings of their own"), title);
         say_failure(app, app->message);
         return;
     }
     settings_of(app); /* the list a game's rows are read from */
     game_settings_close(app);
-    if (gui_settings_read_game(&app->game_settings, app->settings_list ? app->settings_list : "")) {
+    if (gui_settings_read_console(&app->game_settings, app->settings_list ? app->settings_list : "", console)) {
         free(ini);
         snprintf(app->message, sizeof app->message, "%s", snx_tr("Out of memory"));
         say_failure(app, app->message);
@@ -11794,7 +12258,22 @@ static void leave_form(App* app) {
     device_stop(app);
     leave_editor(app);
     if (form == GUI_FORM_PAD) pad_close(app);
-    if ((form == GUI_FORM_GROUP || form == GUI_FORM_PAD) && app->page >= 0) { /* a page: back to its row */
+    if (form == GUI_FORM_BOXES && app->box_fd) { /* Freedreno Settings again, on its variable */
+        int k = gui_freedreno_find(app->fd_settings.values[app->box_row].key);
+        app->box_fd = false;
+        boxes_close(app);
+        freedreno_show(app, freedreno_presets() + SDL_max(k, 0));
+        app->editor.dirty = app->fd_changed;
+    } else if (form == GUI_FORM_BOXES) { /* back to its setting's row, in its page or the group */
+        int row = app->box_row, page = app->box_page;
+        if (page >= 0)
+            open_page(app, page);
+        else
+            open_group(app, app->group);
+        app->editor.row = SDL_max(row_of(app, row), 0);
+        app->editing = true;
+        boxes_close(app);
+    } else if ((form == GUI_FORM_GROUP || form == GUI_FORM_PAD) && app->page >= 0) { /* a page: back to its row */
         int row = app->page;
         open_group(app, app->group);
         app->editor.row = SDL_max(row_of(app, row), 0);
@@ -12159,7 +12638,7 @@ static void write_settings(App* app) {
 /* a Settings pick, kept at once */
 static void keep_settings(App* app) {
     if ((app->form != GUI_FORM_GROUP && app->form != GUI_FORM_SETTINGS && app->form != GUI_FORM_PAD &&
-         app->form != GUI_FORM_USERS) ||
+         app->form != GUI_FORM_USERS && app->form != GUI_FORM_BOXES) ||
         !app->editor.dirty)
         return;
     app->editor.dirty = false;
@@ -12877,6 +13356,93 @@ static bool device_event(App* app, const SDL_Event* e) {
                e->type == SDL_EVENT_MOUSE_BUTTON_DOWN || e->type == SDL_EVENT_FINGER_DOWN;
     return true;
 }
+/* ---- a Shortcuts row's key: Enter waits for the one pressed, with the modifiers held, which the row then holds (as the
+   game's menu's Shortcuts page takes one). ESC keeps the one it has, Backspace gives back its default; a key another
+   row has is refused, said ---- */
+static bool shortcut_row(const GuiSettings* s, int row) {
+    return row >= 0 && row < s->count && !s->values[row].kind && s->values[row].key &&
+           !strncmp(s->values[row].key, "hotkey_", 7);
+}
+/* the key row's shortcut has, as its text (its pick's, the launcher's for a game's own, else the default's) */
+static const char* shortcut_text(App* app, int row) {
+    GuiSettings* s = screen_settings(app);
+    const char* key = s->values[row].key;
+    const char* value = gui_settings_value(s, key);
+    if (!value && app->own_picks) value = gui_settings_value(&app->settings, key);
+    return value ? value : s->values[row].def ? s->values[row].def : "";
+}
+static const char* shortcut_shown(App* app, int row) {
+    const char* text = shortcut_text(app, row);
+    return *text ? text : snx_tr("no key");
+}
+static void key_listen(App* app, int row) {
+    app->key_listen = row + 1;
+    snprintf(app->editor.note, sizeof app->editor.note,
+             snx_tr("Press the key for %s (ESC keeps %s, Backspace: its default)"),
+             snx_tr(screen_settings(app)->keys[row].key), shortcut_shown(app, row));
+}
+/* the row of another shortcut with key and mods, -1 for none */
+static int key_taken(App* app, int row, unsigned key, unsigned mods) {
+    GuiSettings* s = screen_settings(app);
+    unsigned k, m;
+    char why[160];
+    for (int r = 0; r < s->count; ++r)
+        if (r != row && shortcut_row(s, r) && !snx_key_parse(shortcut_text(app, r), &k, &m, why, sizeof why) && k &&
+            k == key && m == mods)
+            return r;
+    return -1;
+}
+static void key_stop(App* app) { app->key_listen = 0; }
+/* key with mods into the listening row's shortcut, unless another shortcut has it: the note says */
+static void key_give(App* app, unsigned key, unsigned mods) {
+    GuiSettings* s = screen_settings(app);
+    int row = app->key_listen - 1, other = key_taken(app, row, key, mods);
+    char name[64];
+    snx_key_name(key, mods, name, sizeof name);
+    key_stop(app);
+    if (other >= 0) {
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("%s already does %s: %s keeps %s"), name,
+                 snx_tr(s->keys[other].key), snx_tr(s->keys[row].key), shortcut_shown(app, row));
+        return;
+    }
+    gui_settings_set(s, s->values[row].key, name);
+    app->editor.dirty = true;
+    keep_settings(app);
+    snprintf(app->editor.note, sizeof app->editor.note, "%s: %s", snx_tr(s->keys[row].key), shortcut_shown(app, row));
+}
+/* while a Shortcuts row waits: a key takes it (a modifier waits for one), ESC keeps the row's, and any other input
+   stops the waiting and goes on as itself */
+static bool key_listen_event(App* app, const SDL_Event* e) {
+    unsigned key, mods;
+    if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN || e->type == SDL_EVENT_FINGER_DOWN) {
+        key_stop(app);
+        return false;
+    }
+    if (e->type != SDL_EVENT_KEY_DOWN) return e->type == SDL_EVENT_TEXT_INPUT; /* the key's own text */
+    if (e->key.repeat || snx_key_modifier((unsigned)e->key.key)) return true;
+    key = (unsigned)e->key.key;
+    mods = snx_key_mods((unsigned)e->key.mod);
+    if (key == SDLK_ESCAPE || key == SDLK_AC_BACK) {
+        int row = app->key_listen - 1;
+        key_stop(app);
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("%s keeps %s"),
+                 snx_tr(screen_settings(app)->keys[row].key), shortcut_shown(app, row));
+        return true;
+    }
+    if (key == SDLK_BACKSPACE && !mods) { /* the row's default, as Del puts it back */
+        GuiSettings* s = screen_settings(app);
+        int row = app->key_listen - 1;
+        key_stop(app);
+        gui_settings_reset(s, row);
+        app->editor.dirty = true;
+        keep_settings(app);
+        snprintf(app->editor.note, sizeof app->editor.note, "%s: %s", snx_tr(s->keys[row].key),
+                 shortcut_shown(app, row));
+        return true;
+    }
+    key_give(app, key, mods);
+    return true;
+}
 static bool pad_event(App* app, const SDL_Event* e) {
     SDL_JoystickID ours = app->gamepad ? SDL_GetGamepadID(app->gamepad) : 0;
     switch (e->type) {
@@ -12992,6 +13558,23 @@ static void warn_tick(App* app) {
     app->warn_key[0] = 0;
     app->editor.note[0] = 0;
 }
+/* row of the Settings just set: a resolution scale past 4x, under 0.5x or no whole number warned of */
+static void resolution_check(App* app, int row) {
+    const char* setting = row >= 0 && row < screen_settings(app)->count ? screen_settings(app)->values[row].key : NULL;
+    const char* chosen;
+    double value;
+    int whole;
+    if (!setting || strcmp(setting, "resolution")) return;
+    chosen = gui_settings_value(screen_settings(app), "resolution");
+    value = chosen ? strtod(chosen, NULL) : 0;
+    whole = value == (double)(long long)value;
+    if (value > 4.0)
+        resolution_warn(app, 0, !whole);
+    else if (value < 0.5)
+        resolution_warn(app, 1, !whole);
+    else if (!whole) /* any scale in the range that is no whole number */
+        resolution_warn(app, 2, 1);
+}
 static void typed_keyboard(App* app);
 static bool form_row_off(App* app, const GuiEditor* e, int r);
 static void editor_key(App* app, GuiKey key) {
@@ -13031,6 +13614,36 @@ static void editor_key(App* app, GuiKey key) {
         device_listen(app, setting_of(app, app->editor.row));
         return;
     }
+    /* the Room password: its dialog opens empty, and takes or leaves what was typed */
+    if (secret_open(app) && app->editor.typing && (key == GUI_SELECT || key == GUI_CANCEL)) {
+        if (key == GUI_SELECT)
+            secret_take(app);
+        else
+            secret_wipe(app);
+        typed_keyboard(app);
+        return;
+    }
+    /* a path's row opens the system's picker; typed where a picker answers with no path, or could not open */
+    if (app->form == GUI_FORM_GROUP && key == GUI_SELECT && !app->editor.typing &&
+        app->editor.object == (char*)screen_settings(app)->values &&
+        path_picks(app, setting_of(app, app->editor.row))) {
+        path_pick(app, setting_of(app, app->editor.row));
+        return;
+    }
+    /* a row of boxes opens its form: a box an item */
+    if (app->form == GUI_FORM_GROUP && key == GUI_SELECT && !app->editor.typing &&
+        app->editor.object == (char*)screen_settings(app)->values &&
+        screen_settings(app)->values[setting_of(app, app->editor.row)].items) {
+        open_boxes(app, setting_of(app, app->editor.row), app->page);
+        return;
+    }
+    /* a Shortcuts row takes the key pressed next, as the game's menu's page does */
+    if (app->form == GUI_FORM_GROUP && key == GUI_SELECT && !app->editor.typing &&
+        app->editor.object == (char*)screen_settings(app)->values &&
+        shortcut_row(screen_settings(app), setting_of(app, app->editor.row))) {
+        key_listen(app, setting_of(app, app->editor.row));
+        return;
+    }
     /* a slider's row: Left/Right step it, Enter up as a word's, to its ends and never round (Mute a step from the
        loudest), an end saying so */
     if (app->form == GUI_FORM_GROUP && !app->editor.typing &&
@@ -13050,24 +13663,30 @@ static void editor_key(App* app, GuiKey key) {
                  snx_tr(screen_settings(app)->keys[row].key), value);
         return;
     }
+    /* a number's row: Left/Right step it, a whole number by 1 and a float as the game's menu does, to its ends; Enter
+       still types one */
+    if (app->form == GUI_FORM_GROUP && !app->editor.typing && (key == GUI_LEFT || key == GUI_RIGHT) &&
+        app->editor.object == (char*)screen_settings(app)->values &&
+        screen_settings(app)->keys[setting_of(app, app->editor.row)].numeric) {
+        int row = setting_of(app, app->editor.row);
+        char value[64];
+        app->editor.note[0] = 0;
+        if (gui_settings_step_number(screen_settings(app), row, key == GUI_LEFT ? -1 : 1)) {
+            app->editor.dirty = true;
+            keep_settings(app);
+            resolution_check(app, row);
+            return;
+        }
+        setting_shown(app, row, value, sizeof value);
+        snprintf(app->editor.note, sizeof app->editor.note,
+                 key == GUI_LEFT ? snx_tr("%s: %s is its lowest") : snx_tr("%s: %s is its highest"),
+                 snx_tr(screen_settings(app)->keys[row].key), value);
+        return;
+    }
     what = gui_editor_key(&app->editor, key);
     if (key == GUI_SELECT && was_typing && !app->editor.typing && app->form == GUI_FORM_GROUP &&
-        app->editor.object == (char*)screen_settings(app)->values) {
-        int row = setting_of(app, app->editor.row);
-        const char* setting =
-            row >= 0 && row < screen_settings(app)->count ? screen_settings(app)->values[row].key : NULL;
-        if (setting && !strcmp(setting, "resolution")) {
-            const char* chosen = gui_settings_value(screen_settings(app), "resolution");
-            double value = chosen ? strtod(chosen, NULL) : 0;
-            int whole = value == (double)(long long)value;
-            if (value > 4.0)
-                resolution_warn(app, 0, !whole);
-            else if (value < 0.5)
-                resolution_warn(app, 1, !whole);
-            else if (!whole) /* any scale in the range that is no whole number */
-                resolution_warn(app, 2, 1);
-        }
-    }
+        app->editor.object == (char*)screen_settings(app)->values)
+        resolution_check(app, setting_of(app, app->editor.row));
     if (what == GUI_EDITOR_ACTION && app->form == GUI_FORM_SETTINGS && !app->editor.step) {
         open_group(app, app->editor.row);
         return;
@@ -13079,6 +13698,15 @@ static void editor_key(App* app, GuiKey key) {
             /* the player shown, round All and 1 to 8 */
             app->player = (app->player + (app->editor.step < 0 ? SNX_GUI_PLAYERS : 1)) % (SNX_GUI_PLAYERS + 1);
             group_view(app, app->group);
+            return;
+        }
+        if (screen_settings(app)->values[row].kind == GUI_SETTING_SECRET) { /* typed from nothing, never what it has */
+            if (!app->editor.step) {
+                app->editor.text[0] = 0;
+                app->editor.typing = true;
+                app->editor.note[0] = 0;
+                typed_keyboard(app);
+            }
             return;
         }
         if (screen_settings(app)->values[row].kind == GUI_SETTING_PAGE && !app->editor.step)
@@ -13121,7 +13749,9 @@ static void editor_key(App* app, GuiKey key) {
         if (what != GUI_EDITOR_LEAVE) return;
     }
     if (app->form == GUI_FORM_FREEDRENO) { /* a preset, a variable, Add Variable or Clear All pressed; Save */
-        if (what == GUI_EDITOR_ACTION && !app->editor.step)
+        int known = freedreno_presets() + freedreno_knowns();
+        if (what == GUI_EDITOR_ACTION &&
+            (!app->editor.step || (app->editor.row >= freedreno_presets() && app->editor.row < known)))
             freedreno_action(app, app->editor.row, false);
         else if (what == GUI_EDITOR_SAVE)
             freedreno_action(app, app->editor.row, true);
@@ -13129,6 +13759,10 @@ static void editor_key(App* app, GuiKey key) {
             typed_keyboard(app); /* Variable Name's and Variable Value's dialog */
             return;
         }
+    }
+    if (app->form == GUI_FORM_BOXES) { /* an item pressed, or stepped */
+        if (what == GUI_EDITOR_ACTION) boxes_toggle(app, app->editor.row);
+        if (what != GUI_EDITOR_LEAVE) return;
     }
     if (what == GUI_EDITOR_SAVE && app->form == GUI_FORM_THEME) save_editor(app);
     keep_settings(app);
@@ -13158,6 +13792,10 @@ static void editor_input(App* app, const SDL_Event* e) {
     /* Del, or Backspace when nothing is typed: a setting back to its default */
     if (app->form == GUI_FORM_GROUP && !app->editor.typing &&
         (e->key.key == SDLK_DELETE || e->key.key == SDLK_BACKSPACE)) {
+        if (secret_open(app)) { /* the Room password taken off */
+            secret_write(app, "");
+            return;
+        }
         gui_settings_reset(screen_settings(app), setting_of(app, app->editor.row));
         app->editor.dirty = true;
         keep_settings(app);
@@ -13177,10 +13815,30 @@ static void editor_input(App* app, const SDL_Event* e) {
     }
     if (app->form == GUI_FORM_FREEDRENO && !app->editor.typing &&
         (e->key.key == SDLK_DELETE || e->key.key == SDLK_BACKSPACE)) {
-        int presets = 0;
-        while (gui_freedreno_presets[presets].name) ++presets;
-        if (app->editor.row >= presets && app->editor.row < presets + app->fd_count)
-            freedreno_action(app, app->editor.row, false);
+        int presets = freedreno_presets(), known = presets + freedreno_knowns(), row = app->editor.row;
+        if (row >= known && row < freedreno_typed_row(app))
+            freedreno_action(app, row, false);
+        else if (row >= presets && row < known) { /* the driver's own again */
+            freedreno_put(app, gui_freedreno_known[row - presets].name, "");
+            freedreno_show(app, row);
+            app->editor.dirty = true;
+            snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Variable %s removed"),
+                     gui_freedreno_known[row - presets].name);
+        }
+        return;
+    }
+    /* a path's row: Ctrl+V gives it the path pasted */
+    if (app->form == GUI_FORM_GROUP && !app->editor.typing && e->key.key == SDLK_V && (e->key.mod & SDL_KMOD_CTRL) &&
+        !e->key.repeat && path_takes(app, setting_of(app, app->editor.row))) {
+        char* clipboard = SDL_GetClipboardText();
+        char* path = gui_drop_path(clipboard ? clipboard : "", true);
+        if (path)
+            path_take(app, setting_of(app, app->editor.row), path);
+        else
+            path_say(app, snx_tr(screen_settings(app)->keys[setting_of(app, app->editor.row)].key),
+                     snx_tr("Paste one local path"));
+        free(path);
+        SDL_free(clipboard);
         return;
     }
     /* Folders: Del puts a place back to its default or takes an Extra off, Ctrl+V gives the row the folder pasted */
@@ -13745,7 +14403,10 @@ static const char* const typed_choices[2] = {SNX_TR_NOOP("OK"), SNX_TR_NOOP("Can
 #define SAY_NICKNAME_TAKES SNX_TR_NOOP("A nickname, 1 to 32 bytes, no control character, no space at either end")
 /* what the row typed takes, in out: its key's, a nickname's on Settings > User */
 static void typed_takes(const App* app, char* out, size_t size) {
-    if (app->form == GUI_FORM_USERS && app->editor.row > 0 && !users_row_mii(app->editor.row))
+    if (secret_open(app))
+        snprintf(out, size, "%s",
+                 snx_tr("The room's password, 1 to 255 bytes, no control character, no space at either end"));
+    else if (app->form == GUI_FORM_USERS && app->editor.row > 0 && !users_row_mii(app->editor.row))
         snprintf(out, size, "%s", snx_tr(SAY_NICKNAME_TAKES));
     else
         gui_editor_takes(&app->editor, out, size);
@@ -13800,7 +14461,13 @@ static void render_typed(App* app) {
     gui_editor_label(&app->editor, app->editor.row, title, sizeof title);
     over_box(app, b.c.box, title);
     outline(app, b.field, t->focus);
-    snprintf(line, sizeof line, "%s_", app->editor.text);
+    if (secret_open(app)) { /* a star a letter, as long as the text */
+        size_t at = 0;
+        for (const char* c = app->editor.text; *c && at < sizeof line - 2; ++c)
+            if (((unsigned char)*c & 0xC0) != 0x80) line[at++] = '*'; /* its first byte */
+        snprintf(line + at, sizeof line - at, "_");
+    } else
+        snprintf(line, sizeof line, "%s_", app->editor.text);
     room = (b.field.w - cw) / cw;
     text_in(app, b.field, b.field.x + cw / 2, b.field.y + 2 * app->scale,
             gui_cols_skip(line, SDL_max(gui_text_cols(line) - room, 0)), rgb(t->ink));
@@ -13828,11 +14495,13 @@ static void typed_pointer(App* app, float x, float y, bool click) {
    number pad has no point and no minus), else its letters; none once it is not */
 static void typed_keyboard(App* app) {
     const GuiThemeKey* k = gui_editor_key_of(&app->editor, app->editor.row);
-    bool pad = k && ((k->numeric && k->whole && k->lo >= 0) || k->type == GUI_KEY_NUMBER);
+    bool pad = k && ((k->numeric && k->whole && k->lo >= 0) || k->type == GUI_KEY_NUMBER), secret = secret_open(app);
     if (app->editor.typing && !SDL_TextInputActive(app->window)) {
         SDL_PropertiesID props = SDL_CreateProperties();
         SDL_SetNumberProperty(props, SDL_PROP_TEXTINPUT_TYPE_NUMBER,
-                              pad ? SDL_TEXTINPUT_TYPE_NUMBER : SDL_TEXTINPUT_TYPE_TEXT);
+                              secret ? SDL_TEXTINPUT_TYPE_TEXT_PASSWORD_HIDDEN
+                              : pad  ? SDL_TEXTINPUT_TYPE_NUMBER
+                                     : SDL_TEXTINPUT_TYPE_TEXT);
         SDL_StartTextInputWithProperties(app->window, props);
         SDL_DestroyProperties(props);
     } else if (!app->editor.typing && SDL_TextInputActive(app->window))
@@ -16290,8 +16959,11 @@ typedef struct {
     if (n) argv[0] = first;
     argv[n++] = own->option;
     /* the settings the console's driver takes, as a run of it in a child gets (see run()): the Switch's all of the
-       launcher's, the 3DS's its own, and the others' none, whose drivers refuse a setting they do not have */
-    n += item == GUI_3DS     ? gui_settings_ctr_options(s, argv + n)
+       launcher's, the 3DS's, the Vita's and the DS's their own, and the others' none, whose drivers refuse a setting
+       they do not have */
+    n += item == GUI_3DS      ? gui_settings_ctr_options(s, argv + n)
+         : item == GUI_VITA   ? gui_settings_vita_options(s, argv + n)
+         : item == GUI_NDS    ? gui_settings_nds_options(s, argv + n)
          : item == GUI_SWITCH ? (size_t)gui_settings_options(s, 0, own->ini, argv + n)
                               : 0;
     if ((item == GUI_SWITCH || item == GUI_VITA) && own->driver) argv[n++] = own->driver;
@@ -16898,37 +17570,48 @@ static void clean_keys(App* app, const char* file, const char* unread, int faile
     snprintf(what, sizeof what, failed ? snx_tr("Not written without %s") : snx_tr("Removed %s"), unread);
     gui_cleaned_add(&app->cleaned, !failed, file, what);
 }
-/* each game's own picks (gui_picks_files in ini_folders) holding keys no setting takes, how many keys in *keys; with
-   done, each written again without them, removed with no pick left, an entry each. None while the runtime has listed
-   no settings: every key would look old */
+/* the console of the game whose picks are at path, by the name they share with its folder: a 3DS game's is its title
+   ID, 0004 and 12 hex digits more (3ds/runtime/main.h's snx_ctr_title_name), where a Switch one starts 01 */
+static int picks_console(const char* path) {
+    const char* leaf = snx_path_leaf(path);
+    size_t i = 0;
+    while (i < 16 && snx_is_hex(leaf[i])) ++i;
+    return i == 16 && !strncmp(leaf, "0004", 4) && leaf[16] == '.' ? GUI_GAME_3DS : GUI_GAME_SWITCH;
+}
+/* each game's own picks (gui_picks_files in ini_folders) holding keys no setting of its console takes, how many keys
+   in *keys; with done, each written again without them, removed with no pick left, an entry each. None while the
+   runtime has listed no settings: every key would look old */
 static int clean_picks(App* app, GuiCleaned* done, int* keys) {
     char *folders[GUI_FOLDERS_MAX + 2], **paths, unread[1024], what[1100];
-    GuiSettings game = {0};
+    GuiSettings consoles[GUI_GAME_3DS + 1] = {0}; /* by GUI_GAME_*, 0 unused */
     int got = ini_folders(app, folders), n = got, i, files = 0, failed;
     size_t k, count;
     *keys = 0;
-    if (settings_of(app)->count <= app->settings.own ||
-        gui_settings_read_game(&game, app->settings_list ? app->settings_list : ""))
-        n = 0;
-    gui_settings_mark(&game);
+    for (i = GUI_GAME_SWITCH; i <= GUI_GAME_3DS; ++i) {
+        if (settings_of(app)->count <= app->settings.own ||
+            gui_settings_read_console(&consoles[i], app->settings_list ? app->settings_list : "", i))
+            n = 0;
+        gui_settings_mark(&consoles[i]);
+    }
     for (i = 0; i < n; ++i) {
         count = gui_picks_files(folders[i], &paths);
         for (k = 0; k < count; ++k) {
-            int stale = gui_settings_unread(&game, paths[k], unread, sizeof unread);
+            GuiSettings* game = &consoles[picks_console(paths[k])];
+            int stale = game->count ? gui_settings_unread(game, paths[k], unread, sizeof unread) : 0;
             if (!stale) continue;
             ++files;
             *keys += stale;
             if (!done) continue;
-            gui_settings_reset(&game, -1);
-            gui_settings_load(&game, paths[k], NULL, 0);
-            failed = gui_settings_changed(&game) ? gui_settings_save(&game, paths[k]) : remove(paths[k]) != 0;
+            gui_settings_reset(game, -1);
+            gui_settings_load(game, paths[k], NULL, 0);
+            failed = gui_settings_changed(game) ? gui_settings_save(game, paths[k]) : remove(paths[k]) != 0;
             snprintf(what, sizeof what, failed ? snx_tr("Not written without %s") : snx_tr("Removed %s"), unread);
             gui_cleaned_add(done, !failed, paths[k], what);
         }
         snx_free_strings(paths, count);
     }
     for (i = 0; i < got; ++i) free(folders[i]);
-    gui_settings_free(&game);
+    for (i = GUI_GAME_SWITCH; i <= GUI_GAME_3DS; ++i) gui_settings_free(&consoles[i]);
     return files;
 }
 /* it done, each file an entry of app->cleaned, which shows over the screen; with own, each game's own picks too */
@@ -18072,7 +18755,7 @@ static int game_box_raw(const App* app, const char** path, int* driver) {
            gui_game_program(*path);
 }
 /* the box of the game in focus on Games, which a held finger or a right click opens: its actions (SAY_GAME_*), as
-   its keys have them; none for a row that is no game */
+   its keys have them, a made 3DS game's own Settings among them; none for a row that is no game */
 static void game_box_open(App* app) {
     bool mods = false;
     int n = 0, queued;
@@ -18088,6 +18771,7 @@ static void game_box_open(App* app) {
         const char* path;
         int driver;
         if (game_box_raw(app, &path, &driver)) {
+            if (driver == GUI_3DS) app->game_picks[n++] = SAY_GAME_SETTINGS;
             app->game_picks[n++] = SAY_GAME_EXPORT_SAVES;
             app->game_picks[n++] = SAY_GAME_IMPORT_SAVES;
         }
@@ -18237,7 +18921,6 @@ static bool missing_ask(App* app, const char* program) {
    folder */
 typedef enum { MISSING_DUMP, MISSING_FOLDER, MISSING_ROM, MISSING_CTR, MISSING_VITA } MissingKind;
 static MissingKind missing_kind(const char* program, const char* file) {
-    static const char* const dumps[] = {".nsp", ".xci", ".dnsp", ".dxci"};
     char *folder, *name;
     SnxSystem system;
     game_where(program, &folder, &name);
@@ -18247,8 +18930,7 @@ static MissingKind missing_kind(const char* program, const char* file) {
     if (system == SNX_SYSTEM_GBA || system == SNX_SYSTEM_NDS) return MISSING_ROM;
     if (system == SNX_SYSTEM_3DS) return MISSING_CTR;
     if (system == SNX_SYSTEM_VITA) return MISSING_VITA;
-    for (size_t i = 0; file && i < SDL_arraysize(dumps); ++i)
-        if (snx_ends_with_nocase(file, dumps[i])) return MISSING_DUMP;
+    if (file && snx_switch_dump_name(file)) return MISSING_DUMP;
     if (file && !file[0]) { /* none named: a folder when a copy of its RomFS stopped, which only a folder's leaves */
         char stopped[SNX_PATH_SIZE];
         bool copy;
@@ -19627,6 +20309,9 @@ static void launch(App* app, char* absolute, bool prepared) {
         if (driver_run(app, app->menu.selected, &how) && how.first) argv[n++] = how.first;
     }
     if (make) argv[n++] = "-r";
+    /* the driver's own, before the program: the Linux one's are read up to it and its arguments after it are the
+       guest's */
+    if (!direct && !make && app->menu.selected == GUI_LINUX) n += gui_settings_linux_options(s, argv + n);
     if (!direct) argv[n++] = game_option ? game_option : run ? run : absolute;
     if (app->menu.selected == GUI_ANDROID) n += gui_settings_java_home(s, argv + n);
     /* Switch options only, never guest argv for the CPU-only Linux driver or the 3DS one; R's recompile takes no
@@ -19654,6 +20339,9 @@ static void launch(App* app, char* absolute, bool prepared) {
         argv[n++] = program;
     }
     if (app->menu.selected == GUI_3DS && !make) n += gui_settings_ctr_options(s, argv + n);
+    if (app->menu.selected == GUI_VITA && !make) n += gui_settings_vita_options(s, argv + n);
+    if (app->menu.selected == GUI_ANDROID && !make) n += gui_settings_android_options(s, argv + n);
+    if (app->menu.selected == GUI_NDS && !make) n += gui_settings_nds_options(s, argv + n);
     /* the launcher's GPU driver and Freedreno variables, where the game's .ini has none of its own */
     if ((app->menu.selected == GUI_SWITCH || app->menu.selected == GUI_VITA) && !make) {
         free(app->run_driver);
@@ -20604,11 +21292,10 @@ static int game_debug(App* app, const char* path, int picks, char* out, size_t s
     return n;
 }
 /* what the game at path (its program) has of its own, its picks and its box's GPU driver and Freedreno variables
-   (gui_settings_game_own): how many, said in out. None for a dump, a package or another console's game, whose
-   runtime reads no picks */
+   (gui_settings_game_own): how many, said in out. None for a dump, a package or a game of a console whose runtime
+   reads no picks (own_game) */
 static int game_own(const char* path, char* out, size_t size) {
-    char *folder = path && gui_game_folder(path) ? snx_dirname(path) : NULL, *name = folder ? aot_leaf(folder) : NULL;
-    char* ini = name && snx_game_system(folder, name) == SNX_SYSTEM_SWITCH ? snx_game_ini(folder, name) : NULL;
+    char *folder, *name, *ini = own_game(path, &folder, &name) ? snx_game_ini(folder, name) : NULL;
     int n = gui_settings_game_own(ini, out, size);
     free(ini);
     free(name);
@@ -20816,7 +21503,7 @@ done:
     free(f.name);
 }
 /* M on Games: the box of the focused game's updates, DLCs, mods and cheats, shown even when it has none of them for
-   its Add Mod and Add Cheats; else why not */
+   its Add Mod and Add Cheats; a made 3DS game's own Settings; else why not */
 static void mods_focus(App* app) {
     size_t row = app->browser.selected, head = app->browser.head;
     size_t index = app->browser.page * app->browser.page_size + row - head;
@@ -20824,6 +21511,10 @@ static void mods_focus(App* app) {
          game = row >= head && index < app->games.count && !gui_games_heading(&app->games, index); /* it has no path */
     const char *path = NULL, *title = NULL;
     char* folder = NULL;
+    if (games_ctr_focus(app)) {
+        settings_focus(app);
+        return;
+    }
     if (recent && app->recent.game[recent_index(app, (int)row)].driver == GUI_SWITCH) {
         path = app->recent.game[recent_index(app, (int)row)].path;
         title = app->recent.game[recent_index(app, (int)row)].name;
@@ -22440,6 +23131,7 @@ static const struct {
                  {SNX_TR_KEY("AOT pack"), SDLK_B, 0, false},
                  {SNX_TR_KEY("M"), SDLK_M, 0, false},
                  {SNX_TR_KEY("Mods"), SDLK_M, 0, false},
+                 {SNX_TR_KEY("Settings"), SDLK_M, 0, false}, /* a finger's, on Games' 3DS game */
                  {SNX_TR_KEY("P"), SDLK_P, 0, false},
                  {SNX_TR_KEY("Folders"), SDLK_P, 0, false},
                  {SNX_TR_KEY("Folder"), SDLK_P, 0, false}, /* a finger's, on the Switch's Open screen */
@@ -23353,6 +24045,8 @@ static void event_take(App* app, const SDL_Event* e) {
         return;
     }
     if (app->closing_ms) return; /* closing: nothing else is taken */
+    if (app->key_listen && app->editing && key_listen_event(app, e))
+        return; /* a shortcut row's key, whatever it does */
     /* a drag's first and last event, whatever shows: no screen takes them */
     if (e->type == SDL_EVENT_DROP_BEGIN || e->type == SDL_EVENT_DROP_COMPLETE) {
         app->dropping = e->type == SDL_EVENT_DROP_BEGIN;
@@ -23470,6 +24164,17 @@ static void event_take(App* app, const SDL_Event* e) {
         free(path);
         return;
     }
+    if ((e->type == SDL_EVENT_DROP_FILE || e->type == SDL_EVENT_DROP_TEXT) && app->editing &&
+        app->form == GUI_FORM_GROUP && path_takes(app, setting_of(app, app->editor.row))) {
+        char* path = gui_drop_path(e->drop.data, e->type == SDL_EVENT_DROP_TEXT);
+        if (path)
+            path_take(app, setting_of(app, app->editor.row), path);
+        else
+            path_say(app, snx_tr(screen_settings(app)->keys[setting_of(app, app->editor.row)].key),
+                     snx_tr("Drop one local path"));
+        free(path);
+        return;
+    }
     if (e->type == SDL_EVENT_DROP_FILE || e->type == SDL_EVENT_DROP_TEXT) {
         drop(app, e->drop.data, e->type == SDL_EVENT_DROP_TEXT);
         return; /* SDL3 owns the event's data, unlike SDL2. */
@@ -23535,6 +24240,12 @@ static void event_take(App* app, const SDL_Event* e) {
         return;
     }
     /* the folder picker's answer: a folder, none, or why it could not open */
+    if (app->path_picked && e->type == app->path_picked) {
+        path_answer(app, (const char*)e->user.data1, (const char*)e->user.data2, e->user.code != 0);
+        SDL_free(e->user.data1);
+        SDL_free(e->user.data2);
+        return;
+    }
     if (app->picked_folder && e->type == app->picked_folder) {
         char* error = (char*)e->user.data2;
         int place = app->place_row;
@@ -23921,6 +24632,9 @@ static bool initialize(App* app, const char* self) {
 }
 /* what the menu holds, let go; SDL itself left as it is (cleanup's) */
 static void forget(App* app) {
+    free(app->path_own);
+    boxes_close(app);
+    gui_settings_free(&app->fd_settings);
 #ifdef SDL_PLATFORM_ANDROID
     SDL_RemoveEventWatch(lifecycle, app);
     gui_android_ran(NULL); /* the run goes with the menu */

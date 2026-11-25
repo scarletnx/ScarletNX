@@ -151,8 +151,9 @@ def main():
                 print(f"{name}: exit {result.returncode}, expected 42\n{result.stderr.decode(errors='replace')}")
                 failures += 1
 
-        def run(arguments, environment, status, *lines):
-            # the fork program with options or the variables an older version read: its status, and lines of stderr
+        def run(arguments, environment, status, *lines, absent=()):
+            # the fork program with options or the variables an older version read: its status, and lines of stderr,
+            # none of absent among them
             nonlocal failures
             result = subprocess.run(
                 [runtime, *arguments, os.path.join(folder, "fork")],
@@ -161,7 +162,7 @@ def main():
                 env={**os.environ, **environment},
             )
             text = result.stderr.decode(errors="replace")
-            missing = [line for line in lines if line not in text]
+            missing = [line for line in lines if line not in text] + [f"not {line}" for line in absent if line in text]
             if result.returncode != status or missing:
                 print(f"{arguments} {environment}: exit {result.returncode}, expected {status}, lacking {missing}")
                 print(text)
@@ -173,6 +174,20 @@ def main():
         run(["-L", root, *jit, "--sample-pc", "--host-page=65536"], {}, 42)
         refused = "--host-page=12288 is not a power of two from the host's page"
         run(["-L", root, *jit, "--host-page=12288"], {}, 2, refused)
+        # the Linux group's settings of the launcher, by their keys with a - for each _ (docs/user/settings.md): each
+        # does what the option does, the last of the two given counts, and a value a setting does not take stops the run
+        run(["--linux-root=" + root, *jit, "--linux-strace=1"], {}, 42, "] 59(", "] 64(0x")
+        run(["-L", root, *jit, "--strace", "--linux-strace=0"], {}, 42, absent=("] 59(",))
+        run(["-L", root, *jit, "--linux-strace=0", "--strace"], {}, 42, "] 59(")
+        run(["-L", root, "--linux-jit-cache=0", "--linux-jit-opt=0"], {}, 42)
+        run(["-L", root, *jit, "--linux-sample-pc=1", "--linux-host-page=65536", "--linux-verbose-jit=1"], {}, 42)
+        run(["-L", root, *jit, "--linux-host-page=12288"], {}, 2, refused)
+        run(["-L", root, *jit, "--linux-host-page=0"], {}, 42)  # the host's, as no --host-page is
+        run(["-L", root, *jit, "--linux-strace=2"], {}, 2, "linux_strace=2 is not a whole number from 0 to 1")
+        run(["-L", root, *jit, "--linux-jit-opt=9"], {}, 2, "--jit-opt takes 0, 1, 2, 3, s or z, not 9")
+        run(["-L", root, *jit, "--jit-opt=12"], {}, 2, "--jit-opt takes 0, 1, 2, 3, s or z, not 12")
+        run(["-L", root, *jit, "--linux-nosuch=1"], {}, 2, "unknown option --linux-nosuch=1")
+        run(["-L", root, *jit, "--linux_strace=1"], {}, 42, "--linux_strace is the old spelling of --linux-strace")
         # the recompile's options every driver shares (common/utilities/cli.h): -O is the JIT's level, --jit-cache
         # the folder its code is kept in, in either form, and --jit-only what it does anyway; the others refused, named
         run(["-L", root, "--jit-cache", cache, "-O0", "--jit-only"], {}, 42)

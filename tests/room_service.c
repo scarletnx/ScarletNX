@@ -46,12 +46,12 @@ static unsigned checks;
 
 #define DIR "room_service_users"
 static void put(const char* text, int mode) {
-    FILE* f = fopen(DIR "/" ONLINE_FILE, "w");
+    FILE* f = fopen(DIR "/online.ini", "w");
     CHECK(f != NULL);
     fputs(text, f);
     fclose(f);
 #ifndef _WIN32
-    CHECK(chmod(DIR "/" ONLINE_FILE, (mode_t)mode) == 0);
+    CHECK(chmod(DIR "/online.ini", (mode_t)mode) == 0);
 #else
     (void)mode;
 #endif
@@ -70,24 +70,88 @@ static void addresses(void) {
     CHECK(room_address("host:12ab", host, sizeof host, &port, why, sizeof why) == -1);
     CHECK(room_address(":5000", host, sizeof host, &port, why, sizeof why) == -1 && strstr(why, "names no host"));
 }
+/* online.ini's mode, and its text ("" without it) */
+static unsigned online_mode(void) {
+#ifdef _WIN32
+    return 0600;
+#else
+    struct stat st;
+    return stat(DIR "/online.ini", &st) ? 0 : (unsigned)(st.st_mode & 07777);
+#endif
+}
+/* whether setting password is refused with why naming what, the file's bytes as they were before */
+static int set_refused(const char* password, const char* what) {
+    char why[512];
+    size_t before_size, after_size;
+    char *before = (char*)snx_read_file(DIR "/online.ini", &before_size), *after;
+    int refused = snx_users_room_password_set(DIR, password, why, sizeof why) == -1 && strstr(why, what) != NULL;
+    after = (char*)snx_read_file(DIR "/online.ini", &after_size);
+    refused &= before && after && before_size && before_size == after_size && !memcmp(before, after, before_size);
+    free(before);
+    free(after);
+    return refused;
+}
+static void password_written(void) {
+    char password[256], why[512], long_one[257];
+    snx_remove_tree(DIR);
+    /* kept 0600, whatever the umask and the mode it had, in the users folder made with it */
+#ifndef _WIN32
+    mode_t was = umask(0);
+#endif
+    CHECK(snx_users_room_password_set(DIR, "s3cret = pass; #1", why, sizeof why) == 0 && online_mode() == 0600);
+    CHECK(snx_users_room_password(DIR, password, sizeof password, why, sizeof why) == 0 &&
+          !strcmp(password, "s3cret = pass; #1"));
+    put("room_password=old\n", 0644);
+    CHECK(snx_users_room_password_set(DIR, "new", why, sizeof why) == 0 && online_mode() == 0600);
+    CHECK(!snx_users_room_password(DIR, password, sizeof password, why, sizeof why) && !strcmp(password, "new"));
+#ifndef _WIN32
+    umask(was);
+#endif
+    CHECK(!snx_is_file(DIR "/online.ini.new"));
+    /* text its reader would not give back, longer than a room takes, or with a control character: refused, as is */
+    CHECK(snx_users_room_password_set(DIR, " new", why, sizeof why) == -1 && strstr(why, "space at either end"));
+    CHECK(snx_users_room_password_set(DIR, "new ", why, sizeof why) == -1 && strstr(why, "space at either end"));
+    CHECK(snx_users_room_password_set(DIR, "a\nroom_password=b", why, sizeof why) == -1 &&
+          strstr(why, "control character"));
+    memset(long_one, 'p', sizeof long_one - 1);
+    long_one[sizeof long_one - 1] = 0;
+    CHECK(snx_users_room_password_set(DIR, long_one, why, sizeof why) == -1 &&
+          strstr(why, "at most 255 bytes, not 256"));
+    long_one[255] = 0;
+    CHECK(snx_users_room_password_set(DIR, long_one, why, sizeof why) == 0);
+    CHECK(!snx_users_room_password(DIR, password, sizeof password, why, sizeof why) && strlen(password) == 255);
+    CHECK(snx_users_room_password_set(DIR, "new", why, sizeof why) == 0);
+    /* none: the file away, twice the same */
+    CHECK(snx_users_room_password_set(DIR, "", why, sizeof why) == 0 && !snx_is_file(DIR "/online.ini"));
+    CHECK(snx_users_room_password_set(DIR, "", why, sizeof why) == 0);
+    CHECK(!snx_users_room_password(DIR, password, sizeof password, why, sizeof why) && !password[0]);
+    /* a file with anything else: refused, as it was, what it has named */
+    put("[room]\nroom_password=s3cret\n", 0600);
+    CHECK(set_refused("new", "has [room]"));
+    put("other=1\n", 0600);
+    CHECK(set_refused("new", "has other"));
+    CHECK(set_refused("", "has other"));
+    snx_remove_tree(DIR);
+}
 static void passwords(void) {
     char password[256], why[512];
     snx_remove_tree(DIR);
     CHECK(snx_mkdirs(DIR) == 0);
     /* no file: no password */
     strcpy(password, "x");
-    CHECK(room_password(DIR, password, sizeof password, why, sizeof why) == 0 && !password[0]);
+    CHECK(snx_users_room_password(DIR, password, sizeof password, why, sizeof why) == 0 && !password[0]);
     put("; the rooms\nroom_password=s3cret pass\n", 0600);
-    CHECK(room_password(DIR, password, sizeof password, why, sizeof why) == 0 && !strcmp(password, "s3cret pass"));
+    CHECK(snx_users_room_password(DIR, password, sizeof password, why, sizeof why) == 0 &&
+          !strcmp(password, "s3cret pass"));
 #ifndef _WIN32
     put("room_password=s3cret\n", 0644); /* others may read it */
-    CHECK(room_password(DIR, password, sizeof password, why, sizeof why) == -1 && strstr(why, "chmod 600"));
+    CHECK(snx_users_room_password(DIR, password, sizeof password, why, sizeof why) == -1 && strstr(why, "chmod 600"));
 #endif
     put("room_pasword=s3cret\n", 0600);
-    CHECK(room_password(DIR, password, sizeof password, why, sizeof why) == -1);
+    CHECK(snx_users_room_password(DIR, password, sizeof password, why, sizeof why) == -1);
     CHECK(strstr(why, "room_pasword is not a setting: room_password"));
     put("[room]\nroom_password=s3cret\n", 0600);
-    CHECK(room_password(DIR, password, sizeof password, why, sizeof why) == -1 &&
+    CHECK(snx_users_room_password(DIR, password, sizeof password, why, sizeof why) == -1 &&
           strstr(why, "[room] is not a section"));
     {
         char text[300];
@@ -96,7 +160,7 @@ static void passwords(void) {
         text[sizeof text - 2] = '\n';
         text[sizeof text - 1] = 0;
         put(text, 0600);
-        CHECK(room_password(DIR, password, 16, why, sizeof why) == -1 && strstr(why, "longer than 15 bytes"));
+        CHECK(snx_users_room_password(DIR, password, 16, why, sizeof why) == -1 && strstr(why, "longer than 15 bytes"));
     }
     snx_remove_tree(DIR);
 }
@@ -160,6 +224,7 @@ int main(void) {
     g_hle.kernel.title_id = 0; /* none, as the test was written for */
     addresses();
     passwords();
+    password_written();
     stops();
     refused();
     printf("room_service: %u checks passed\n", checks);

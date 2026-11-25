@@ -14,11 +14,18 @@
 #include "nx/gpu/shader/sm86.h"
 #include "nx/gpu/shader/translator.h"
 #include "nx/gpu/shader/write_log.h"
+#include "nx/gpu/shader/warp_notes.h"
 #include "nx/gpu/shader/fuse.h"
 #include "nx/gpu/shader/minmax_spirv.h"
 #include "common/utilities/spirv_emit.h"
 #include "common/utilities/bits.h"
+#include "nx/runtime/platform/tracy.h"
+#include "common/platform/time.h"
 #include <stdarg.h>
+
+/* The translation phases timed for the trace's dominant-phase detail. */
+enum { P86_DECODE, P86_DATAFLOW, P86_STRUCTURE, P86_ALLOC, P86_EMIT, P86_N };
+static const char* const sm86_phase_name[P86_N] = {"decode", "dataflow", "structure", "alloc", "emit"};
 
 #define MAX_INTERFACES 256
 
@@ -159,6 +166,7 @@ typedef struct {
     BrxTable* brx_table; /* by instruction, the jump table that brx_resolve found for its BRX */
     int brx_resolved;    /* brx_resolve has looked for the tables */
     u32 cur;         /* the instruction being written */
+    u32 nblocks, nbranches; /* the program's blocks and branches, for the trace's plots */
     /* the registers an IPA that ipa_over_w takes writes, and those a MUFU.RCP writes, a bit each, made at the first
        FMUL fmul_over_w looks at: an FMUL of two others needs no search */
     u32 over_w_ipa[8], over_w_rcp[8];
@@ -176,6 +184,10 @@ typedef struct {
     u32 vertex_words, primitive_words; /* the output words of a vertex and of a primitive (omap_words) */
     u32 prim_attr[32];                 /* a mesh program's per-primitive generic outputs */
     int soft_ftz;                      /* FTZ instructions flush their operands and results here (sm86_to_spirv_ftz) */
+    int lanes;                         /* what the stage's subgroups give (SM86_LANES_) */
+    int lone; /* the stage has no warp of 32 lanes: an invocation is one alone, lane 0 (lane_gate) */
+    ShNotes* notes; /* a compute program's, whose proof sm86_lone.c makes: NULL in others */
+    ShNotes lone_notes;
     /* a write of register cap_reg while cap_on is kept in cap_val (cap_n of them) instead of stored: the halves of a
        complementary pair (pair_partner), which become one select */
     int cap_on;
@@ -194,6 +206,8 @@ static void fail(Ctx* c, const char* fmt, ...) {
     vsnprintf(c->si->first_unsupported, sizeof c->si->first_unsupported, fmt, ap);
     va_end(ap);
     c->si->unsupported++;
+    SNX_MSG(c->si->first_unsupported, strlen(c->si->first_unsupported));
+    SNX_PLOT("shader translate failures", 1);
 }
 static void add_interface(Ctx* c, u32 id) {
     if (c->ninterfaces < MAX_INTERFACES)
@@ -268,8 +282,12 @@ static void coop_demote(Ctx* c) {
     coop_flow(c);
     spv_emit_demote(&c->e);
 }
+static void note(Ctx* c, u32 variable, u32 write) {
+    if (c->notes) shader_note(c->notes, variable, write);
+}
 static u32 rd(Ctx* c, u32 r) {
     if (r >= SM86_RZ) return c->zero;
+    note(c, r, 0);
     coop_acc_take(c, r);
     return spv_emit_load(&c->e, c->t_u32, c->reg[r]);
 }
@@ -280,21 +298,31 @@ static void wr(Ctx* c, u32 r, u32 v) {
         return;
     }
     if (r < SM86_RZ) {
+        note(c, r, 1);
         coop_acc_take(c, r);
         c->coop_gen[r]++;
         spv_emit_store(&c->e, c->reg[r], v);
     }
 }
-static u32 urd(Ctx* c, u32 r) { return r >= SM86_URZ ? c->zero : spv_emit_load(&c->e, c->t_u32, c->ureg[r]); }
+static u32 urd(Ctx* c, u32 r) {
+    if (r >= SM86_URZ) return c->zero;
+    note(c, SM86_NOTE_UREG + r, 0);
+    return spv_emit_load(&c->e, c->t_u32, c->ureg[r]);
+}
 static void uwr(Ctx* c, u32 r, u32 v) {
-    if (r < SM86_URZ) { spv_emit_store(&c->e, c->ureg[r], v); }
+    if (r >= SM86_URZ) return;
+    note(c, SM86_NOTE_UREG + r, 1);
+    spv_emit_store(&c->e, c->ureg[r], v);
 }
 static u32 prd(Ctx* c, u32 p, u32 negate, int uniform) {
+    if (p < SM86_PT) note(c, (uniform ? SM86_NOTE_UPRED : SM86_NOTE_PRED) + p, 0);
     u32 v = p >= SM86_PT ? c->true_v : spv_emit_load(&c->e, c->t_bool, uniform ? c->upred[p] : c->pred[p]);
     return negate ? spv_emit_unary(&c->e, SPV_OP_LOGICAL_NOT, c->t_bool, v) : v;
 }
 static void pwr(Ctx* c, u32 p, u32 v, int uniform) {
-    if (p < SM86_PT) spv_emit_store(&c->e, uniform ? c->upred[p] : c->pred[p], v);
+    if (p >= SM86_PT) return;
+    note(c, (uniform ? SM86_NOTE_UPRED : SM86_NOTE_PRED) + p, 1);
+    spv_emit_store(&c->e, uniform ? c->upred[p] : c->pred[p], v);
 }
 /* the destination of an ALU instruction, a register or a uniform register */
 static void dwr(Ctx* c, const Sm86Insn* in, u32 v) {
@@ -3696,6 +3724,7 @@ static void surface(Ctx* c, const Sm86Insn* in) {
 }
 
 static u32 system_value(Ctx* c, u32 sr);
+static u32 native_lane(Ctx* c);
 
 /* ---- the warp's matrix instructions (HMMA, LDSM, MOVM), as the lanes of an invocation's own 32 of a subgroup of 32 or
    64 (NVIDIA's warp: lane l of it is the local invocation index's l % 32), each one's registers spread over the lanes
@@ -3924,9 +3953,22 @@ static int coop_frag_find(Ctx* c, u32 b, u32 first, u32 n, u32 shape) {
     }
     return -1;
 }
-/* the matrices of a staged fragment kept for this block, whatever moved the slot after them */
+/* the matrices of a staged fragment kept for this block, whatever moved the slot after them. A full cache first drops
+   the fragments whose registers were written since, which no HMMA can find again (coop_gen only counts up within a
+   block): a straight-line block stages more than COOP_FRAGS of them, and without this its cache stays full of dead
+   entries after the first ones, so every HMMA after that stages both its fragments again */
 static void coop_frag_hold(Ctx* c, u32 b, u32 first, u32 n, u32 shape, const u32* mat, u32 nmat) {
-    if (c->nfrags == COOP_FRAGS) return;
+    if (c->nfrags == COOP_FRAGS) {
+        u32 keep = 0;
+        for (u32 i = 0; i < c->nfrags; i++) {
+            const CoopFrag* f = &c->coop_frags[i];
+            u32 k = 0;
+            while (k < f->n && f->gen[k] == c->coop_gen[f->first + k]) k++;
+            if (k == f->n) c->coop_frags[keep++] = *f;
+        }
+        c->nfrags = keep;
+        if (keep == COOP_FRAGS) return;
+    }
     CoopFrag* f = &c->coop_frags[c->nfrags++];
     f->b = b, f->first = first, f->n = n, f->shape = shape, f->nmat = nmat;
     for (u32 k = 0; k < n; k++) f->gen[k] = c->coop_gen[first + k];
@@ -4596,6 +4638,7 @@ static void movm(Ctx* c, const Sm86Insn* in) {
 }
 /* the ballot of a predicate over the invocation's 32 lanes, on a subgroup of 32 or 64 */
 static u32 ballot32(Ctx* c, u32 pred) {
+    if (c->lone) return spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, pred, cu(c, 1), c->zero); /* lane 0's bit */
     spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM_BALLOT);
     u32 all = spv_emit_subgroup_ballot(&c->e, c->t_v4u, c->t_u32, pred);
     u32 half = spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, system_value(c, 0), cu(c, 5));
@@ -4771,8 +4814,7 @@ static u32 system_value(Ctx* c, u32 sr) {
             }
             return cu(c, gs_vertices(c) << 16);
         case 0x00: /* LANEID */
-            spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM);
-            return builtin_u32(c, &c->lane_id, SPV_BUILT_IN_SUBGROUP_LOCAL_INVOCATION_ID);
+            return c->lone ? c->zero : native_lane(c);
         case 0x21:
         case 0x22:
         case 0x23: return builtin_vec3(c, &c->local_id, SPV_BUILT_IN_LOCAL_INVOCATION_ID, sr - 0x21);
@@ -4813,6 +4855,65 @@ static u32 system_value(Ctx* c, u32 sr) {
         default: fail(c, "S2R system register 0x%x", sr); return c->zero;
     }
 }
+/* ---- a stage with no warp of 32 lanes ----
+
+   A program reads its warp through VOTE, SHFL, MATCH, REDUX, the tensor core's instructions, LANEID and the lane masks.
+   Where the device's subgroups have not 32 lanes (lanes, sm86.h) a vertex, geometry or fragment program that reads one
+   runs each invocation as a warp whose only lane is lane 0, as the console runs a batch of one vertex or primitive: its
+   ballot is its own bit, SHFL keeps its own value, MATCH finds itself and a reduction is its value, which is the
+   console's for a lane alone or one out of range. A fragment's reads inside its quad keep the quad's lanes where the
+   subgroups hold whole quads. A compute program's warps are whole, so it is refused (lane_gate) */
+enum { LANE_NONE, LANE_PLACE, LANE_QUAD, LANE_WARP, LANE_MATRIX };
+/* a SHFL whose lanes are its own quad's: segments of 4 (c, an immediate, 0x1c03) */
+static int shfl_in_quad(const Sm86Insn* in) {
+    return (in->op == SM86_SHFL_II || in->op == SM86_SHFL_RI) && sm86_field(in, 40, 13) == 0x1c03;
+}
+/* what an instruction takes of the invocation's warp */
+static int lane_use(const Ctx* c, const Sm86Insn* in) {
+    switch (in->op) {
+        case SM86_VOTE:
+        case SM86_UVOTE:
+        case SM86_MATCH:
+        case SM86_REDUX: return LANE_WARP;
+        case SM86_SHFL_II:
+        case SM86_SHFL_RI:
+        case SM86_SHFL_IR:
+        case SM86_SHFL_RR: return c->stage == ST_FS && shfl_in_quad(in) ? LANE_QUAD : LANE_WARP;
+        case SM86_FSWZADD: return LANE_QUAD;
+        case SM86_HMMA:
+        case SM86_LDSM:
+        case SM86_MOVM: return LANE_MATRIX;
+        case SM86_S2R:
+        case SM86_S2UR: {
+            u32 sr = sm86_field(in, 72, 8);
+            return sr == 0 || (sr >= 0x38 && sr <= 0x3c) ? LANE_PLACE : LANE_NONE;
+        }
+        default: return LANE_NONE;
+    }
+}
+/* whether a SHFL reads real lanes: the warp's, or in a lone fragment its quad's */
+static int shfl_native(const Ctx* c, const Sm86Insn* in) { return !c->lone || (c->stage == ST_FS && shfl_in_quad(in)); }
+/* the lane of SHFL and FSWZADD: the device's where the program reads real lanes */
+static u32 native_lane(Ctx* c) {
+    spv_emit_capability(&c->e, SPV_CAPABILITY_GROUP_NON_UNIFORM);
+    return builtin_u32(c, &c->lane_id, SPV_BUILT_IN_SUBGROUP_LOCAL_INVOCATION_ID);
+}
+/* sets lone, or refuses the first instruction that reads what the stage has not */
+static void lane_gate(Ctx* c) {
+    if (c->stage == ST_TS || c->stage == ST_MS || (c->lanes & SM86_LANES_WARP)) return;
+    for (u32 i = 0; i < c->n; i++) {
+        const Sm86Insn* in = &c->in[i];
+        int use = lane_use(c, in);
+        if (use == LANE_NONE || (use == LANE_QUAD && c->stage == ST_FS && (c->lanes & SM86_LANES_QUAD))) continue;
+        if (use == LANE_MATRIX || use == LANE_QUAD) {
+            fail(c, "subgroup ballot/shuffle unavailable: %s at %x", sm86_ops[in->op].name, i * 16);
+            return;
+        }
+        c->lone = 1;
+    }
+    if (c->lone && c->stage == ST_CS) c->notes = &c->lone_notes;
+}
+
 /* A system register as a program reads it. A warp has 32 lanes, so its LANEID is below 32, and a program compares it
    with a bit of its ballots. A GPU may run 64 lanes in a stage whose subgroup size can't be asked for (a vertex program
    on RADV), each half a warp of its own here: its lane in that half. One game's culling programs let the highest lane
@@ -5092,7 +5193,7 @@ static void emit_insn(Ctx* c, const Sm86Insn* in) {
     SgG g;
     if (c->fused && c->cur < c->n && &c->in[c->cur] == in && c->fused[c->cur]) return; /* a fusion before wrote it */
     sg86_begin(&g, c, in);
-    if (emit_fused(c, &g)) return;
+    if (!c->notes && emit_fused(c, &g)) return;
     if (!sg86_emit(&g, in->op)) fail(c, "%s", sm86_ops[in->op].name); /* an instruction sm86.sail does not say */
 }
 
@@ -5715,6 +5816,7 @@ static ShStructure* build_structure(Ctx* c) {
     }
     u32 nb = 0;
     for (u32 i = 0; i < n; i++) nb += leader[i];
+    c->nblocks = nb;
     /* the blocks: their starts, successors (two words each), the switches' first case (nb + 1 words) and
        terminators */
     u32* start = calloc((size_t)nb * 4 + 2, sizeof *start);
@@ -6539,25 +6641,40 @@ static u32 pair_value(Ctx* c, const Sm86Insn* in, u32 i) {
     return c->cap_val;
 }
 u32* sm86_to_spirv(const u8* code, u32 bytes, int stage, const u32* sph, ShaderInfo* si, size_t* word_count) {
-    return sm86_to_spirv_ftz(code, bytes, stage, sph, si, word_count, SH_FTZ_EMULATE);
+    return sm86_to_spirv_ftz(code, bytes, stage, sph, si, word_count, SH_FTZ_EMULATE, SM86_LANES_WARP);
 }
 u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, ShaderInfo* si, size_t* word_count,
-                       int can_flush) {
+                       int can_flush, int lanes) {
+    /* the whole SM86 translation, with the clock read only when a client can take the plot */
+    int trace = snx_tracy_enter();
+    u64 t0 = trace ? plat_ns() : 0;
+    if (trace) snx_tracy_leave();
+    u64 phase[P86_N] = {0}, h = 0, pt = 0;
     if (!code || !si || !word_count || stage < ST_VS || stage > ST_MS || bytes < 16) return NULL;
     if (stage != ST_CS && !sph) return NULL;
     if (stage == ST_TCS && sm86_tcs_empty(sph[2])) {
         si->unsupported = 1;
         snprintf(si->first_unsupported, sizeof si->first_unsupported,
                  "a tessellation control program with no invocation (the passthrough takes its place)");
+        SNX_MSG(si->first_unsupported, strlen(si->first_unsupported));
+        SNX_PLOT("shader translate failures", 1);
         return NULL;
     }
     if (stage != ST_VS && stage != ST_GS && stage != ST_FS && stage != ST_CS && stage != ST_TS && stage != ST_MS) {
         si->unsupported++;
         snprintf(si->first_unsupported, sizeof si->first_unsupported, "stage %d", stage);
+        SNX_MSG(si->first_unsupported, strlen(si->first_unsupported));
+        SNX_PLOT("shader translate failures", 1);
         sm86_debug_dump("program", code, bytes, sph, si->first_unsupported);
         return NULL;
     }
     u32 n = bytes / 16;
+    SNX_ZONE_TV(z_snx_sm86, "shader translate sm86", n, "stage %d, %u insn", stage, n);
+    if (trace) {
+        h = snx_fnv1a(SNX_FNV_BASIS, code, bytes);
+        SNX_ZONE_TEXT(z_snx_sm86, "stage %d, %u insn, hash %016llx", stage, n, (unsigned long long)h);
+        (void)h; /* the text's arguments are dropped without a client */
+    }
     Ctx* c = calloc(1, sizeof *c);
     u64* words = malloc((size_t)n * 16);
     Sm86Insn* insn = malloc((size_t)n * sizeof *insn);
@@ -6570,6 +6687,7 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
     }
     c->si = si;
     c->stage = stage;
+    c->lanes = lanes;
     c->sph = sph ? sph : zero_sph;
     c->in = insn;
     c->n = n;
@@ -6590,6 +6708,8 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
         else if ((sph[4] & 0xfff) > 256 || (sph[2] >> 24) > 32)
             fail(c, "%u geometry output vertices or %u invocations", sph[4] & 0xfff, sph[2] >> 24);
     }
+    pt = trace ? plat_ns() : 0;
+    SNX_ZONE(z_snx_decode, "shader decode");
     sm86_load(code, n, words);
     u32 top = 0;
     for (u32 i = 0; i < n; i++) {
@@ -6597,9 +6717,16 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
             fail(c, "unknown opcode 0x%03x", (u32)(words[2 * i] & 0xfff));
         else if (!stage_ok(c, &insn[i]))
             fail(c, "%s in stage %d", sm86_ops[insn[i].op].name, stage);
+        if (!c->failed && (is_brx(insn[i].op) || insn[i].op == SM86_BRA)) c->nbranches++;
         u32 r = max_register(&insn[i]);
         if (r > top) top = r;
     }
+    SNX_ZONE_END(z_snx_decode);
+    if (trace) phase[P86_DECODE] += plat_ns() - pt;
+    SNX_PLOT("shader instructions", (double)n);
+    SNX_PLOT("shader branches", (double)c->nbranches);
+    pt = trace ? plat_ns() : 0;
+    SNX_ZONE(z_snx_dataflow, "shader dataflow");
     /* FTZ as spirv_translate.c decides it: per instruction without the execution mode, or with it where some FADD,
        FMUL or FFMA keeps subnormals (the mode is the whole module's); never on a device that flushes by itself */
     int ftz_flush = 0, ftz_keep = 0;
@@ -6653,7 +6780,9 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
     /* after the CALLs are inlined and before the passes that move instructions: the pairs of instructions that one
        operation takes the place of (fuse.c), whose spans the array moves invalidate. A pair whose second half a jump
        lands on (a BRA's target, a BRX's case, flow_sources' edges) stays two, as that jump runs the second alone */
-    {
+    /* a lone lane's proof reads what each instruction reads and writes of itself: no pair of two, no fused ones (notes) */
+    if (!c->failed) lane_gate(c);
+    if (!c->notes) {
         u32 nfuse = 0, kept = 0;
         FuseSpan* fuse = sm86_fuse_find(insn, n, &nfuse);
         if (fuse && !flow_sources(c)) fail(c, "out of memory");
@@ -6664,10 +6793,22 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
         sm86_fuse_make(insn, n, fuse, c->failed ? 0 : kept);
     }
     if (!c->failed && !track_globals(c)) fail(c, "out of memory");
+    SNX_ZONE_END(z_snx_dataflow);
+    if (trace) phase[P86_DATAFLOW] += plat_ns() - pt;
+    pt = trace ? plat_ns() : 0;
+    SNX_ZONE(z_snx_structure, "shader structure");
     ShStructure* st = c->failed ? NULL : build_structure(c);
+    SNX_ZONE_TEXT(z_snx_structure, "%s", st ? "structured" : "no structure");
+    if (!st && c->si->first_unsupported[0]) SNX_ZONE_TEXT(z_snx_structure, "why: %.80s", c->si->first_unsupported);
+    SNX_ZONE_VALUE(z_snx_structure, st ? 1 : 0); /* 1 structured, 0 the dispatch loop is needed */
+    SNX_ZONE_END(z_snx_structure);
+    if (trace) phase[P86_STRUCTURE] += plat_ns() - pt;
+    SNX_PLOT("shader blocks", (double)c->nblocks);
     u32* out = NULL;
     if (!c->failed && st) {
         SpvEmitter* e = &c->e;
+        pt = trace ? plat_ns() : 0;
+        SNX_ZONE(z_snx_alloc, "shader alloc");
         spv_emit_init(e, (size_t)n * 40 + 512);
         spv_emit_shader_capability(e);
         /* hmma_coop's matrices, which SPV_KHR_cooperative_matrix allows in a module of the Vulkan memory model only */
@@ -6777,6 +6918,10 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
         }
         for (u32 plane = 0; plane < 8 && c->clip; plane++)
             spv_emit_store(e, spv_emit_output_element_pointer(e, c->t_f32, c->clip, cu(c, plane)), cf(c, 0.0f));
+        SNX_ZONE_END(z_snx_alloc);
+        if (trace) phase[P86_ALLOC] += plat_ns() - pt;
+        pt = trace ? plat_ns() : 0;
+        SNX_ZONE(z_snx_emit, "shader emission");
         while (!c->failed) {
             int step = structure_step(c, &se);
             if (step == SE_DONE) break;
@@ -6789,6 +6934,7 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
             for (u32 i = se.body_start; i < se.body_end && !c->failed; i++) {
                 const Sm86Insn* in = &insn[i];
                 int always = sm86_always(in), never = sm86_never(in);
+                if (c->notes) c->notes->at = i + 1;
                 if (never) continue;
                 if (is_brx(in->op)) { /* the block's end: SHS_SWITCH takes the target's instruction */
                     u32 index = in->op == SM86_BRXU ? urd(c, sm86_field(in, 24, 6)) : rd(c, sm86_field(in, 24, 8));
@@ -6813,7 +6959,7 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
                         wr(c, in->dst, spv_emit_ternary(e, SPV_OP_SELECT, c->t_u32, guard(c, in), b, pair_value_of[i]));
                     continue;
                 }
-                if (!always && in->op != SM86_EXIT) {
+                if (!always && in->op != SM86_EXIT && !c->notes) {
                     u32 j = pair_partner(insn, i, se.body_end);
                     if (j) {
                         pair_value_of[j] = pair_value(c, in, i);
@@ -6840,6 +6986,8 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
                 if (merge) coop_label(c, merge);
             }
         }
+        SNX_ZONE_END(z_snx_emit);
+        if (trace) phase[P86_EMIT] += plat_ns() - pt;
         if (se.open && !c->failed) {
             epilogue(c);
             coop_end(c);
@@ -6906,6 +7054,17 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
         }
         spv_emit_destroy(e);
     }
+    if (out && c->notes) {
+        /* the lone lane's answer, or the reason it is none: the words were written for nothing */
+        char why[sizeof si->first_unsupported];
+        if (!sm86_lone_gives(insn, n, &c->lone_notes, si, why, sizeof why)) {
+            free(out);
+            out = NULL;
+            *word_count = 0;
+            fail(c, "%s", why);
+        }
+    }
+    free(c->lone_notes.word);
     if (!out && si->unsupported) sm86_debug_dump("program", code, bytes, sph, si->first_unsupported);
     free(st);
     free(c->addr_key);
@@ -6923,5 +7082,16 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
     free(insn);
     free(words);
     free(c);
+    if (trace) {
+        int dom = 0;
+        for (int i = 1; i < P86_N; i++)
+            if (phase[i] > phase[dom]) dom = i;
+        SNX_ZONE_VALUE(z_snx_sm86, dom + 1); /* 1 decode, 2 dataflow, 3 structure, 4 alloc, 5 emit */
+        SNX_ZONE_TEXT(z_snx_sm86, "%u spv words, hash %016llx, %s, %s %llu us", out ? (unsigned)*word_count : 0u,
+                      (unsigned long long)h, out ? "made" : "rejected", sm86_phase_name[dom],
+                      (unsigned long long)(phase[dom] / 1000));
+        if (!out && si->first_unsupported[0]) SNX_ZONE_TEXT(z_snx_sm86, "rejected: %.80s", si->first_unsupported);
+        SNX_PLOT("shader sm86 translate us", (double)(plat_ns() - t0) / 1000.0);
+    }
     return out;
 }

@@ -4,8 +4,10 @@
    work and its deferred fence, and repeated temporary queues must release their slots and syncpoints. A sync the game
    frees before the submission that fences it keeps the bytes its heap wrote over it. */
 #include "nx/gpu/nvn/nvn_replay.h"
+void nvn_queue_context_set(const char* fmt, ...) { (void)fmt; }
 #include "nx/gpu/nvn/nvn_object.h"
 #include "nx/gpu/nvn/nvn_draw.h"
+#include "nx/gpu/nvn/nvn_trace.h"
 #include "nx/gpu/nvn/nvn_copy.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/renderer.h"
@@ -38,6 +40,7 @@ static struct {
     u32 head, count, allocated, freed, draws, in_gpu, zero_strides, presents, targets;
     u64 presented[2];
     u64 unfinished;
+    u32 trace_records, trace_flushes, trace_starts; /* the replay's calls of nvn_trace.c */
 } fixture;
 
 void pm_init(PMutex* m) { (void)m; }
@@ -222,6 +225,20 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
     fixture.draws++;
     return 1;
 }
+/* gpu_hook_trace (nvn_trace.c's) on, the replay's calls counted: each record offered, a wait and the end of a
+   submission marked */
+int g_nvn_trace_live = 1;
+void nvn_trace_start(void) { fixture.trace_starts++; }
+void nvn_trace_present(void) {}
+void nvn_trace_record(NvnDraw* d, u32 op, u64 payload) {
+    (void)op, (void)payload;
+    assert(fixture.in_gpu && d);
+    fixture.trace_records++;
+}
+void nvn_trace_flush(const NvnDraw* d) {
+    assert(fixture.in_gpu && d);
+    fixture.trace_flushes++;
+}
 int nvn_copy_record(u32 op, u64 payload, u32 size, i64 stride[2]) {
     (void)size;
     assert(op == OP_COPY_STRIDE);
@@ -371,8 +388,10 @@ static void event_waits(void) {
     *(u64*)(void*)GP(0x508) = 0x400;
     *(NvnRecHdr*)(void*)GP(0x510) = (NvnRecHdr){OP_DRAW | NVN_REC_LAST, 8};
     *(u64*)(void*)GP(0x108) = 0x500;
+    u32 flushes = fixture.trace_flushes;
     nvn_replay_submit(a, 1, 0x108, &ready, &shown);
     assert(!pump() && fixture.draws == draws + 1 && nvn_replay_walked() == before);
+    assert(fixture.trace_flushes == flushes + 1); /* the wait marked */
     *(NvnRecHdr*)(void*)GP(0x600) = (NvnRecHdr){OP_DRAW | NVN_REC_LAST, 8};
     *(u64*)(void*)GP(0x108) = 0x600;
     nvn_replay_submit(a, 1, 0x108, &ready, &shown);
@@ -744,6 +763,7 @@ int main(int argc, char** argv) {
     assert(fixture.draws == 0 && fixture.freed == 0);
     nvn_replay_queue_free(q[3]);
     assert(fixture.draws == 1 && fixture.freed == 1 && !fixture.used[ids[3]]);
+    assert(fixture.trace_starts == 8 && fixture.trace_records >= 1 && fixture.trace_flushes == 1);
     u32 reused = nvn_replay_queue();
     assert(reused == q[3] && nvn_replay_syncpt(reused) == ids[3]);
     submit(reused);

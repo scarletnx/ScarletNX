@@ -61,6 +61,12 @@ void logf_(int lvl, const char* fmt, ...) {
 
 /* the platform's file functions the file uses, over a copy in memory */
 static int fail_map; /* the next maps fail, as one of a file the system won't map */
+/* the renderer's hash (gpu/vk/cmd.c), for the words of a build */
+u64 vk_hash(const void* p, u64 size) {
+    u64 h = 14695981039346656037ull;
+    for (u64 i = 0; i < size; i++) h = (h ^ ((const u8*)p)[i]) * 1099511628211ull;
+    return h;
+}
 int plat_file_map(PFileMap* m, const char* path) {
     FILE* f = fail_map ? NULL : fopen(path, "rb");
     long n = -1;
@@ -1533,11 +1539,52 @@ static void driver_files(void) {
     remove(c);
 }
 
+/* the key's words for what a build's commit does not name. A clean commit names one source: none of them, whatever the
+   program is, where the translator's flags are a normal build's. A tree with changes and a build outside git
+   ("unknown") have one commit for every build of them: the program's bytes, so that two of them have two keys and one
+   build on two copies of itself has one. Other flags are a word of their own, for any commit */
+static void check_build_words(void) {
+    static const u8 one[] = "one program", again[] = "one program", two[] = "another program";
+    static const char* const clean[] = {"7092858", "7092858c59",     "dirty",    "-dirt", "unknown2",
+                                        "unknow",  "7092858-dirtyx", "-dirty 1", ""};
+    static const char* const unnamed[] = {"7092858-dirty", "-dirty", "unknown", "unknown-dirty"};
+    const PFileMap m1 = {.data = one, .size = sizeof one}, m2 = {.data = again, .size = sizeof again},
+                   m3 = {.data = two, .size = sizeof two};
+    char words[64], other[64], want[64], flagged[96];
+    for (size_t i = 0; i < sizeof clean / sizeof *clean; i++) {
+        memset(words, 'x', sizeof words);
+        CHECK(!pf_build_unnamed(clean[i]));
+        pf_build_words(words, sizeof words, clean[i], "", &m1);
+        CHECK(!words[0]);
+        pf_build_words(words, sizeof words, clean[i], "0123456789abcdef", &m1);
+        CHECK(!strcmp(words, " flags=0123456789abcdef"));
+        pf_build_words(other, sizeof other, clean[i], "0123456789abcde0", &m1);
+        CHECK(strcmp(words, other) != 0);
+    }
+    snprintf(want, sizeof want, " exe=%016llx", (unsigned long long)vk_hash(one, sizeof one));
+    for (size_t i = 0; i < sizeof unnamed / sizeof *unnamed; i++) {
+        CHECK(pf_build_unnamed(unnamed[i]));
+        pf_build_words(words, sizeof words, unnamed[i], "", &m1);
+        CHECK(!strcmp(words, want));
+        pf_build_words(other, sizeof other, unnamed[i], "", &m2); /* the same bytes in another copy */
+        CHECK(!strcmp(words, other));
+        pf_build_words(other, sizeof other, unnamed[i], "", &m3);
+        CHECK(strcmp(words, other) != 0);
+        memset(other, 'x', sizeof other);
+        pf_build_words(other, sizeof other, unnamed[i], "", NULL); /* it can't be read: no word, as pf_key warns */
+        CHECK(!other[0]);
+        pf_build_words(other, sizeof other, unnamed[i], "fedcba9876543210", &m1); /* with other flags too, both words */
+        snprintf(flagged, sizeof flagged, "%s flags=fedcba9876543210", want);
+        CHECK(!strcmp(other, flagged));
+    }
+}
+
 int main(void) {
     PFile pf;
     u32 loaded[2];
     long whole, header;
     remove(PATH);
+    check_build_words();
 
     /* a first run: no file, records written as shaders and pipelines are made */
     open_file(&pf, "key one", 0xA0, 0, loaded);

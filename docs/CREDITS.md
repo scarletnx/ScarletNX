@@ -35,7 +35,9 @@ Generated modules include runtime ABI code. Game assets, keys and firmware are e
 | xxHash 0.8.4 (XXH3 and its x86 dispatcher, the renderer's content hashes: `src/nx/gpu/vk/xxh3.c`) | BSD-2-Clause |
 | Vulkan-Headers | Apache 2.0 |
 | volk | MIT |
-| AMD FidelityFX Super Resolution 2.2.1 (the DLSS evaluations of Switch 2 games) | MIT |
+| AMD FidelityFX Super Resolution 2.2.1 (the DLSS evaluations of Switch 2 games), with FSR 1's EASU and RCAS from its archive (the spatial upscaler) | MIT |
+| SMAA 1x by Jorge Jimenez, Jose I. Echevarria, Belen Masia, Fernando Navarro and Diego Gutierrez (iryoku/smaa at 71c806a: its reference shader and its area and search textures, the anti-aliasing before a copy or a spatial upscale) | MIT |
+| NVIDIA Streamline 2.14.16's headers (`include/`, the DLSS backend of a Windows build. NVIDIA's runtime is not included: the user downloads it) | MIT |
 | KosmicKrisp (Mesa's Vulkan driver on Metal, which the macOS app carries with `SNX_KOSMICKRISP`) | MIT |
 | The Vulkan Loader (the macOS app carries it for KosmicKrisp) | Apache 2.0 |
 | AMD FidelityFX Super Resolution 1.0 (`src/common/gpu/vk/fx/ffx_a.h`, `ffx_fsr1.h`, and the EASU and RCAS shaders' constants) | MIT |
@@ -48,8 +50,8 @@ Generated modules include runtime ABI code. Game assets, keys and firmware are e
 | The HD rumble amplitude steps of a Switch controller (`src/nx/runtime/platform/backend/gamepad.c`), from SDL3's `src/joystick/hidapi/SDL_hidapi_switch.c`, Copyright (C) 1997-2026 Sam Lantinga, after dekuNukem's Nintendo_Switch_Reverse_Engineering `rumble_data_table.md` | zlib |
 | The AppImage's runtime (uruntime) and launcher (sharun, with Anylinux-sharun's `anylinux.so` and cross-libc-dlopen) | MIT |
 | Tracy (the profiler client, built only with `SNX_TRACY`) | BSD-3-Clause |
-| [CPMUtil](https://git.crueter.xyz/CMake/CPMUtil), crueter's, with its trimmed CPM.cmake (`cmake/cpmutil`, as Eden carries them, with four changes of ours: the configure fetches the third-party packages through it, not shipped) | LGPL-3.0-or-later ([text](../cmake/cpmutil/LICENSE)), CPM.cmake's MIT (in `cmake/cpmutil/CPM.cmake`) |
-| ENet / zstd (an Eden room's connection and its datagrams, `src/common/network/net_room.c`) | MIT / BSD-3-Clause |
+| [CPMUtil](https://git.crueter.xyz/CMake/CPMUtil), crueter's, with its trimmed CPM.cmake (`cmake/cpmutil`, as Eden carries them, with five changes of ours: the configure fetches the third-party packages through it, not shipped) | LGPL-3.0-or-later ([text](../cmake/cpmutil/LICENSE)), CPM.cmake's MIT (in `cmake/cpmutil/CPM.cmake`) |
+| ENet / zstd (an Eden room's connection and its datagrams, `src/common/network/net_room.c`; zstd also an XCZ's or NSZ's NCZ, `src/nx/runtime/driver/hactool/ncz.c`) | MIT / BSD-3-Clause |
 | miniz 3.1.2 (the zip around the launcher's Share Log, `src/gui/logzip.c`) | MIT |
 | libdeflate 1.26 (every deflate: Share Log's, the Vita driver's VPKs and eboot segments, the Android driver's APKs) | MIT |
 | HarfBuzz 15.0.0 (the Android driver's text shaping, `src/android/hwui/text.c`) | MIT ("Old MIT") |
@@ -74,10 +76,12 @@ a source keep that source's copyright lines and license, most with the revision 
 | --- | --- | --- |
 | `src/nx/gpu/gpu.c` (safe reads of compute-inline payloads) and `src/nx/gpu/shader/emit_thread.c` (constant geometry invocation information) | Citron, Zephyron's Princess Peach: Showtime! fixes in [`acfb1dcc1ad9adf25b960c4f8f25c5bf78849406`](https://github.com/citron-neo/emulator/commit/acfb1dcc1ad9adf25b960c4f8f25c5bf78849406), `video_core/dma_pusher.cpp` and `shader_recompiler/backend/spirv/emit_spirv_context_get_set.cpp`; original code copyright 2018 and 2021 yuzu Emulator Project | GPL-2.0-or-later |
 | `src/nx/runtime/driver/hactool/storage.c` and `storage.h` (the storages added to hactool) | LibHac, as Ryubing maintains it | MIT |
+| `src/nx/runtime/driver/hactool/ncz.c` (an NCZ's layout: its sections, blocks and stream, and the counters its sections are encrypted again with) | [nsz](https://github.com/nicoboss/nsz)'s reading of its own format (`nsz/Decompressor.py`, `nsz/BlockDecompressorReader.py` at `148218ff`), Copyright (c) 2019 Nico Bosshard and Blake Warner; none of its code | MIT |
 | `src/nx/hle/filesystem/fs.c` (a save's commit: its last commit and working copy in the save's folder, the commit by two renames, the open that finishes a commit cut short) | LibHac's reading of the console's class (`FsSystem/DirectorySaveDataFileSystem.cs`, nnSdk 14.3.0), as Hyjinx carries it; none of its code | MIT |
 | `src/3ds/gpu/`, `src/3ds/audio/`, `src/3ds/services/dsp.c`, `src/3ds/services/cfg.c` (the config blocks' defaults), `src/3ds/services/hid.c` (HID's samples, their layout and pace) | Azahar (Citra) | GPL-2.0-or-later |
 | `src/3ds/gpu/present.c` (`snx_ctr_layout_rects`) | Azahar (Citra) at `11eceda5`; none of its code | GPL-3.0-or-later |
 | `src/3ds/services/fs.c` (another title's save data: the path's media and program ID, and the folder they name) | Azahar (Citra) at `6e42de8` (`core/file_sys/archive_other_savedata.cpp` and `archive_source_sd_savedata.cpp`; original code copyright 2014 to 2024 Citra Emulator Project / Azahar Emulator Project) | GPL-2.0-or-later |
+| `src/3ds/services/soc.c` (soc:U: the console's sockaddr, pollfd, addrinfo and hostent, its errno and getaddrinfo numbers, its socket options) and `ac.c` (ac:u's commands and its not-connected result) | Azahar (Citra) at `396b4c3c9`: `src/core/hle/service/soc/soc_u.cpp` and `soc_u.h`, `src/core/hle/service/ac/ac.cpp`; original code copyright 2014 to 2026 Citra Emulator Project / Azahar Emulator Project; the command layouts as libctru's (zlib) | GPL-2.0-or-later |
 | `src/3ds/services/ldr.c` and `ldr.h` (ldr:ro), `cro.c` and `cro.h` (the CRO format, its relocations, imports and exports) | Azahar (Citra) at `a4b335e`: `src/core/hle/service/ldr_ro/ldr_ro.cpp` and `ldr_ro.h`, `cro_helper.cpp` and `cro_helper.h`; original code copyright 2014 to 2025 Citra Emulator Project / Azahar Emulator Project | GPL-2.0-or-later |
 | `src/3ds/services/font.c` (APT's shared font: the LZ11 decompression, the CFNT relocation and the address it is relocated to) | Azahar (Citra) at `a4b335e` (`core/hle/service/apt/apt.cpp`, `core/hle/service/apt/bcfnt/bcfnt.cpp`) | GPL-2.0-or-later |
 | `src/3ds/loader/smdh.c` (the SMDH icon's 8x8 tiles read in Morton order) | Azahar (Citra) at `a4b335e`: `src/video_core/utils.h` (`GetMortonOffset`); original code copyright 2014 to 2025 Citra Emulator Project / Azahar Emulator Project | GPL-2.0-or-later |

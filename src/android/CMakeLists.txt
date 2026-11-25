@@ -55,6 +55,8 @@ target_link_libraries(snx_android_program PUBLIC snx_android_dex snx_zip snx_sql
 if(NOT WIN32)
     target_link_libraries(snx_android_program PUBLIC m)
 endif()
+# the Android group's tables (settings.txt's g_android_ini and g_android_debug_ini), which the command line takes
+target_link_libraries(snx_android_program PUBLIC snx_settings_runtime)
 target_compile_definitions(snx_android_program PRIVATE VK_NO_PROTOTYPES)
 set_source_files_properties("${volk_SOURCE_DIR}/volk.c" TARGET_DIRECTORY snx_android_program PROPERTIES
                             COMPILE_OPTIONS "${snx_third_party_flags}")

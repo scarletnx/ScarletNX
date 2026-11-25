@@ -21,6 +21,7 @@
 #define SNX_SM86_H
 #include "common/utilities/bits.h"
 #include "nx/gpu/shader/shader.h"
+#include "nx/gpu/shader/warp_notes.h"
 #include <stddef.h>
 
 /* the kind of an opcode: an ALU instruction (its sources placed by its form), the same on the uniform datapath, or
@@ -410,19 +411,22 @@ static inline u64 sm86_mesh_output_bytes(const u32* sph, const ShMesh* mesh, u32
 /* sm86_to_spirv, with the device's FP32 flush to zero (can_flush, SH_FTZ_* of shader.h) as shader_to_spirv takes it:
    the DenormFlushToZero execution mode where every FADD, FMUL and FFMA flushes and the device has the mode, nothing on
    a device that flushes by itself, else a flush of each such operand and result. sm86_to_spirv is SH_FTZ_EMULATE */
+/* what the device's subgroups give a stage's programs (bits): the 32 lanes of a warp, in subgroups of 32 or more, which
+   VOTE, SHFL, MATCH, REDUX and the tensor core's instructions read, and quads, whole in one subgroup of any size. A
+   program that needs more than a stage has runs each invocation as a warp of its own where that gives the same, or is
+   refused ("subgroup ballot/shuffle unavailable") */
+enum { SM86_LANES_WARP = 1, SM86_LANES_QUAD = 2 };
+/* sm86_lone.c: whether a compute program gives with each invocation a warp of its own what it gives on the console, 0
+   with the reason in why. notes are the translator's of what each of the n instructions at in reads and writes */
+int sm86_lone_gives(const Sm86Insn* in, u32 n, const ShNotes* notes, const ShaderInfo* si, char* why, size_t size);
 u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, ShaderInfo* si, size_t* word_count,
-                       int can_flush);
+                       int can_flush, int lanes);
 /* The texture handles an Ounce program loads from memory (SNX_TEX_MEMORY in shader.h): the CPU runs the instructions
    the translation kept (ShaderInfo.memh) on what a draw binds, the constant buffer words that io->cbuf reads (bank,
    byte offset) and the guest memory words io->mem reads (address, its words, their count: 0 when no memory is
    there). Each probe (SH_PROBE) takes the value its register has when its instruction has run, into out. Returns 0
    when an instruction is not one sm86_eval_takes, or a load finds no memory (out then holds 0 for the probes after
    it) */
-typedef struct Sm86EvalIo {
-    void* user;
-    u32 (*cbuf)(void* user, u32 bank, u32 offset);
-    int (*mem)(void* user, u64 address, u32* words, u32 count);
-} Sm86EvalIo;
 int sm86_eval(const u64 (*insn)[2], u32 n, const Sm86EvalIo* io, const u32* probes, u32 nprobes, u32* out);
 /* the state sm86_eval runs on: the registers, the uniform registers and the predicates (0 or 1; PT is none of them) */
 typedef struct {

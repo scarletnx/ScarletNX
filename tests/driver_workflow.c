@@ -1276,10 +1276,12 @@ int main(int argc, char** argv) {
         }
         set_env("SNX_WORKFLOW_HEADLESS", "");
     }
-    /* Decrypted containers share the extract/recompile checkpoints, including quoted dump paths. */
+    /* Decrypted containers, and those nsz compressed (NSZ, XCZ), share the extract/recompile checkpoints, including
+       quoted dump paths. */
     {
         const char* names[] = {"My Switch DXCI's/Test [game];.dnsp", "My Switch DXCI's/Test [game];.dNsP",
-                               "My Switch DXCI's/Test [game];.dxci", "My Switch DXCI's/Test [game];.dXcI"};
+                               "My Switch DXCI's/Test [game];.dxci", "My Switch DXCI's/Test [game];.dXcI",
+                               "My Switch DXCI's/Test [game];.nsz",  "My Switch DXCI's/Test [game];.XcZ"};
         unsigned j;
         for (j = 0; j < sizeof names / sizeof names[0]; ++j) {
             char *decrypted = snx_path_join(repo, names[j]), *directory = snx_path_join(repo, "My Switch DXCI's");
@@ -1513,7 +1515,7 @@ int main(int argc, char** argv) {
         run(exe, repo, folder, log, 0, "R", NULL);
 #ifndef _WIN32
         set_env("SNX_WORKFLOW_FLAGS", "-rx");
-        run(exe, repo, game, log, 1, "", "-rx takes an XCI, NSP, DXCI or DNSP dump");
+        run(exe, repo, game, log, 1, "", "-rx takes an XCI, NSP, XCZ, NSZ, DXCI or DNSP dump");
 #endif
         set_env("SNX_WORKFLOW_FLAGS", "--backend=gcc");
         run(exe, repo, game, log, 1, "", "LLVM is the only backend");

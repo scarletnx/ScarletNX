@@ -1,11 +1,12 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* Included by x64_arm.c. Thumb blocks (the Cortex-A57's, what cpu/arm/llvm_thumb.inc's thumb_block makes): the 16-bit
-   instructions are sailgen's emitters of the AArch32 Sail (sg_decode_t16), their condition the IT block's while one is
-   open, as the Sail's CurrentCond has it; the 32-bit ones the Thumb decoder's shapes (thumb.c), made here over the same
-   SSA, and those that are an A32 instruction in another encoding its emitter's (TH_A32: an A32 word whose PC reads
-   Thumb's). ITSTATE is known as the block is made: it advances with each instruction, and an SVC, a BKPT or a block
-   that ends inside one leaves it in CPSR */
+/* Included by mach_arm.inc. Thumb blocks (what cpu/arm/llvm_thumb.inc's thumb_block makes, for any profile and memory
+   mode): the 16-bit instructions are sailgen's emitters of the AArch32 Sail (sg_decode_t16), their condition the IT
+   block's while one is open, as the Sail's CurrentCond has it (before Thumb-2, on the ARM11, the ARM946E-S and the
+   ARM7TDMI, every halfword is one, BL's two halves among them); the 32-bit ones
+   the Thumb decoder's shapes (thumb.c), made here over the same SSA, and those that are an A32 instruction in another
+   encoding its emitter's (TH_A32: an A32 word whose PC reads Thumb's). ITSTATE is known as the block is made: it
+   advances with each instruction, and an SVC, a BKPT or a block that ends inside one leaves it in CPSR */
 
 /* R[r] as a Thumb operand: the PC reads as the instruction's address plus 4, unaligned (Align(PC, 4) of literals and ADR
    is tpcalign) */
@@ -80,21 +81,17 @@ static int tldst(SgCtx* g, const SnxThumb* t) {
     SgD adjusted = t->flags & TH_UP ? sg_d_add(g, base, offset) : sg_d_sub(g, base, offset);
     addr = t->flags & (TH_REG | TH_PRE) ? adjusted : base;
     sgx_a32_commit(g);
-    sgx_a32_bounds(g, addr, bytes, 1);
+    sgx_reg(sgx(g), &addr);
+    sgx_a32_transfer(g, addr, bytes, 1, !load, 0);
     if (load) {
-        SgD value = sgx_a32_load(g, addr, (int)bytes, 0);
-        if (t->flags & TH_SIGN)
-            value = sg_d_sext(g, value, 32);
-        else if (bytes < 4)
-            value = sg_d_zext(g, value, 32);
+        SgD value = sgx_a32_read(g, addr, (int)bytes, 0, !!(t->flags & TH_SIGN));
         if (t->rd == 15)
             write_pc(g, value);
         else
             tset(g, t->rd, value);
     } else {
-        SgD value = treg(g, t->rd);
-        sgx_a32_store(g, addr, (int)bytes, 0, bytes < 4 ? sg_d_slice(g, value, 8 * bytes - 1, 0) : value);
-        sgx_a32_monitor(g, addr, bytes);
+        sgx_a32_write(g, addr, (int)bytes, 0, treg(g, t->rd), 0);
+        sgx_a32_written(g, addr, bytes);
     }
     if (t->flags & TH_WB) tset(g, t->rn, adjusted);
     return load && t->rd == 15;
@@ -107,15 +104,16 @@ static void tdual(SgCtx* g, const SnxThumb* t) {
         t->flags & TH_UP ? sg_d_add(g, base, sgx_const(32, t->imm)) : sg_d_sub(g, base, sgx_const(32, t->imm));
     SgD addr = t->flags & TH_PRE ? adjusted : base;
     sgx_a32_commit(g);
-    sgx_a32_bounds(g, addr, 8, 4);
+    sgx_reg(sgx(g), &addr);
+    sgx_a32_transfer(g, addr, 8, 4, !t->op, 1);
     if (t->op) {
-        SgD first = sgx_a32_load(g, addr, 4, 0), second = sgx_a32_load(g, addr, 4, 4);
+        SgD first = sgx_a32_read(g, addr, 4, 0, 0), second = sgx_a32_read(g, addr, 4, 4, 0);
         tset(g, t->rd, first);
         tset(g, t->rm, second);
     } else {
-        sgx_a32_store(g, addr, 4, 0, treg(g, t->rd));
-        sgx_a32_store(g, addr, 4, 4, treg(g, t->rm));
-        sgx_a32_monitor(g, addr, 8);
+        sgx_a32_write(g, addr, 4, 0, treg(g, t->rd), 0);
+        sgx_a32_write(g, addr, 4, 4, treg(g, t->rm), 0);
+        sgx_a32_written(g, addr, 8);
     }
     if (t->flags & TH_WB) tset(g, t->rn, adjusted);
 }
@@ -234,8 +232,9 @@ static void ttable(SgCtx* g, const SnxThumb* t) {
     SgD base = sg_d_add(g, treg(g, t->rn), t->op ? sg_d_lsl(g, treg(g, t->rm), 1) : treg(g, t->rm));
     unsigned bytes = t->op ? 2 : 1;
     sgx_a32_commit(g);
-    sgx_a32_bounds(g, base, bytes, 1);
-    SgD index = sg_d_zext(g, sgx_a32_load(g, base, (int)bytes, 0), 32);
+    sgx_reg(sgx(g), &base);
+    sgx_a32_transfer(g, base, bytes, 1, 0, 0);
+    SgD index = sgx_a32_read(g, base, (int)bytes, 0, 0);
     sg_branch_to(g, sg_d_add(g, sg_d_lsl(g, index, 1), sgx_const(32, (SnxU32)g->pc + 4)), 0);
 }
 
@@ -290,6 +289,10 @@ static int tbranch(SgCtx* g, const SnxThumb* t) {
 
 /* a 32-bit Thumb instruction (llvm_thumb.inc's thumb_instruction, its 32-bit shapes): 1 where the block ends after it */
 static int thumb32(SgCtx* g, const SnxThumb* t) {
+    if (sgx_a32_checked(g) && t->shape == TH_TABLE) {
+        sgx_a32_trap(g, SNX_ARM_BACKEND_UNSUPPORTED);
+        return 1;
+    }
     switch (t->shape) {
         case TH_LOAD:
         case TH_STORE: return tldst(g, t);
@@ -318,12 +321,14 @@ static int thumb32(SgCtx* g, const SnxThumb* t) {
 static unsigned half_at(const unsigned char* code, size_t i) { return code[2 * i] | (unsigned)code[2 * i + 1] << 8; }
 
 /* the block's halfwords, until an instruction ends it: how many, and ITSTATE after the last (0 where none is open) */
-static size_t thumb_code(SnxX64Arm* c, const unsigned char* code, size_t count, SnxU32 pc, unsigned* it) {
+static size_t thumb_code(MG_ARM* c, const unsigned char* code, size_t count, SnxU32 pc, unsigned* it) {
     SgCtx* g = &c->g;
     SgX* x = &g->x;
     SgXBuf* b = &c->b;
     size_t used = 0;
     unsigned itstate = 0;
+    /* before Thumb-2 every halfword is a 16-bit instruction, its BL's halves (11110, 11111, 11101) among them */
+    unsigned wide = g->profile == SNX_ARM_PROFILE_A57 || g->profile == SNX_ARM_PROFILE_A9 ? 0x1D : 0x20;
     for (;;) {
         unsigned hw1 = half_at(code, used), hw2 = used + 1 < count ? half_at(code, used + 1) : 0;
         size_t len;
@@ -331,20 +336,23 @@ static size_t thumb_code(SnxX64Arm* c, const unsigned char* code, size_t count, 
         if (x->n > SGX_MAXI - SGX_MAXI / 4 || x->nv > SGX_MAXV - SGX_MAXV / 4 || x->nb > SGX_MAXB - SGX_MAXB / 4)
             flush(c);
         g->pc = pc + 2 * (SnxU32)used;
-        g->start = x->n;
+        g->yields = 0;
         g->branched = g->undefined = 0;
+        g->taken = 0;
         g->iset = 0;
         g->skip = -1;
         g->when = 0;
         g->it_set = 0;
         g->itstate = itstate;
-        if ((hw1 >> 11) < 0x1D) {
+        if ((hw1 >> 11) < wide) {
             /* a 16-bit instruction: the Sail's, its condition (the IT block's, a B<c>'s) its own */
             len = 1;
             g->word = hw1;
             g->next = (SnxU32)g->pc + 2;
             itstate = itstate & 7 ? (itstate & 0xE0) | ((itstate << 1) & 0x1F) : 0; /* ITAdvance */
             g->it_after = itstate;
+            sgx_a32_fetch(g, hw1, 2);
+            g->start = x->n;
             if (sg_decode_t16(g))
                 stop = g->branched || (g->undefined && g->skip < 0);
             else { /* no instruction: UNDEFINED, whatever the IT block's condition */
@@ -354,12 +362,13 @@ static size_t thumb_code(SnxX64Arm* c, const unsigned char* code, size_t count, 
             if (g->it_set) itstate = g->it_next;
         } else {
             SnxThumb t;
-            unsigned decoded = snx_thumb_decode((uint16_t)hw1, (uint16_t)hw2, &t), cond = 14;
+            unsigned decoded = snx_thumb_decode_profile(g->profile, (uint16_t)hw1, (uint16_t)hw2, &t), cond = 14;
             if (!decoded || used + 1 >= count) { /* UNDEFINED (the 32-bit word when its second half is here) */
                 len = used + 1 < count ? 2 : 1;
                 g->word = len == 2 ? (SnxU32)hw1 | (SnxU32)hw2 << 16 : hw1;
                 g->next = (SnxU32)g->pc + 2 * (SnxU32)len;
                 g->it_after = 0;
+                sgx_a32_fetch(g, g->word, (unsigned)len * 2);
                 sg_undefined(g);
                 stop = 1;
             } else {
@@ -373,6 +382,8 @@ static size_t thumb_code(SnxX64Arm* c, const unsigned char* code, size_t count, 
                     itstate = itstate & 7 ? (itstate & 0xE0) | ((itstate << 1) & 0x1F) : 0;
                 }
                 g->it_after = itstate;
+                sgx_a32_fetch(g, g->word, 4);
+                g->start = x->n;
                 if (cond != 14) sg_when(g, sgx_a32_condition(g, cond));
                 stop = thumb32(g, &t);
                 if (g->undefined) stop = cond == 14; /* it stopped the block; under a condition the block goes on */
@@ -380,6 +391,7 @@ static size_t thumb_code(SnxX64Arm* c, const unsigned char* code, size_t count, 
         }
         if (x->unmade) sg_fail("a primitive this host has no form of", 0, 0);
         sgx_a32_finish(g);
+        if (!stop) sgx_a32_yield_check(g);
         used += len;
         if (stop || used >= count) break;
         if (g->skip >= 0) {

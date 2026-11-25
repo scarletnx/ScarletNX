@@ -6,6 +6,7 @@
 #include "android/bridge/hle_impl.h"
 #include "android/bridge/hle_signal.h"
 #include "android/bridge/host.h"
+#include "common/cpu/aarch64/a64_decoder.h"
 #include "common/cpu/recompiler/snx_recompiler.h"
 #include "common/utilities/common.h"
 #include "gnuabi/kernel/kernel.h"
@@ -75,7 +76,11 @@ static struct {
     char* keep_ir;     /* bridge_set_keep_ir's folder, NULL for none */
     RtAPI rt;
     pthread_mutex_t lock; /* the JIT, the exports and the ranges */
-} b = {.lock = PTHREAD_MUTEX_INITIALIZER};
+    /* a thread's ThreadState: a key's value, whose destructor runs in a thread of any library's */
+    pthread_once_t end_once;
+    pthread_key_t end_key;
+    int end_error; /* pthread_key_create's */
+} b = {.lock = PTHREAD_MUTEX_INITIALIZER, .end_once = PTHREAD_ONCE_INIT};
 
 /* the state of a host thread that runs guest code */
 typedef struct {
@@ -167,8 +172,10 @@ static void miss(CPU* c, u64 pc) {
 static void undef(CPU* c, u64 pc, u32 word) {
     c->pc = pc;
     if (signals_fault(c, SNX_SIGILL, SNX_ILL_ILLOPC, pc)) return;
-    fprintf(stderr, "scarletnx-android: undefined instruction 0x%08x at 0x%llx\n", (unsigned)word,
-            (unsigned long long)pc);
+    char what[64];
+    snx_a64_word_text(word, what, sizeof what);
+    fprintf(stderr, "scarletnx-android: undefined instruction 0x%08x at 0x%llx: %s\n", (unsigned)word,
+            (unsigned long long)pc, what);
     abort();
 }
 static void guest_brk(CPU* c, u64 pc, u32 imm) {
@@ -357,6 +364,13 @@ uint64_t bridge_stack_guard(void) {
 
 /* ---- threads and calls ---- */
 
+static void thread_end(void* what) {
+    Thread* t = what;
+    signals_thread_end(&t->signals);
+    if (t_thread == t) t_thread = NULL;
+    plat_mem_release(t->stack, STACK_SIZE);
+    free(t);
+}
 CPU* bridge_cpu(void) {
     if (t_thread) return &t_thread->cpu;
     Thread* t = snx_alloc(sizeof *t);
@@ -381,6 +395,7 @@ CPU* bridge_cpu(void) {
     c->x[31] = ((uint64_t)(uintptr_t)t->stack + STACK_SIZE) & ~(uint64_t)15;
     t_thread = t;
     signals_thread_start(&t->signals, c);
+    bridge_thread_keep(thread_end, t);
     return c;
 }
 
@@ -390,13 +405,62 @@ void bridge_stack(uint64_t* base, size_t* size) {
     *size = STACK_SIZE;
 }
 
+/* what the thread keeps (bridge_thread_keep) */
+enum { KEPT = 16 };
+typedef struct {
+    struct {
+        void (*end)(void* what);
+        void* what;
+    } part[KEPT];
+} ThreadState;
+static void state_end(void* p) {
+    ThreadState* s = p;
+    for (size_t i = 0; i < KEPT; ++i) {
+        void* what = s->part[i].what;
+        s->part[i].what = NULL;
+        if (what) s->part[i].end(what);
+    }
+    free(s);
+}
+static void make_end_key(void) {
+    b.end_error = pthread_key_create(&b.end_key, state_end);
+    if (b.end_error)
+        fprintf(stderr,
+                "scarletnx-android: no pthread key for the threads' end (%s): the state of a thread that the "
+                "guest did not make stays after it\n",
+                strerror(b.end_error));
+}
+void bridge_thread_keep(void (*end)(void* what), void* what) {
+    pthread_once(&b.end_once, make_end_key);
+    if (b.end_error) return;
+    ThreadState* s = pthread_getspecific(b.end_key);
+    if (!s && !what) return;
+    if (!s) {
+        s = snx_alloc(sizeof *s);
+        *s = (ThreadState){0};
+        int r = pthread_setspecific(b.end_key, s);
+        if (r) {
+            fprintf(stderr, "scarletnx-android: the end of thread %u is not noted (%s): its state stays after it\n",
+                    (unsigned)plat_tid(), strerror(r));
+            free(s);
+            return;
+        }
+    }
+    size_t i = 0;
+    while (i < KEPT && s->part[i].end && s->part[i].end != end) ++i;
+    if (i == KEPT) {
+        fprintf(stderr, "scarletnx-android: a thread keeps more than %d kinds of state\n", KEPT);
+        abort();
+    }
+    s->part[i].end = end;
+    s->part[i].what = what;
+}
 void bridge_thread_end(void) {
-    Thread* t = t_thread;
-    if (!t) return;
-    signals_thread_end(&t->signals);
-    t_thread = NULL;
-    plat_mem_release(t->stack, STACK_SIZE);
-    free(t);
+    pthread_once(&b.end_once, make_end_key);
+    ThreadState* s = b.end_error ? NULL : pthread_getspecific(b.end_key);
+    if (!s) return;
+    (void)pthread_setspecific(b.end_key, NULL);
+    state_end(s);
 }
 
 uint64_t bridge_call(uint64_t fn, const uint64_t* args, unsigned count) {

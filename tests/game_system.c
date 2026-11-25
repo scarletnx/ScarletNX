@@ -2,11 +2,13 @@
    Copyright 2026 the ScarletNX contributors */
 /* The console a game's folder plays (common/utilities/game_ini.c), which the launcher picks the driver by: system= of
    its .ini, recorded and read back; an older version's folder by its layout (a 3DS one's .ini with model=, a Vita one
-   with ux0/); the source= a driver wrote in the game's folder; and the game's copy of the runtime, placed when missing
-   or another build's */
+   with ux0/); the source= a driver wrote in the game's folder; the step and the system's reason an .ini that cannot be
+   written is said with; and the game's copy of the runtime, placed when missing or another build's */
 #define _POSIX_C_SOURCE 200809L /* setenv */
 #include "common/utilities/game_ini.h"
+#include "common/platform/file.h"
 #include <assert.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,6 +24,91 @@ static char* folder_of(const char* root, const char* name) {
     char* folder = snx_path_join(root, name);
     assert(folder && !snx_mkdirs(folder));
     return folder;
+}
+static struct {
+    char said[2048]; /* the last error line */
+    bool refuse;     /* plat_replace_file refuses */
+} g_test;
+static void said(const char* line) { snprintf(g_test.said, sizeof g_test.said, "%s", line); }
+#ifndef _WIN32
+/* the platform's, refusing when told: a rename over a file beside it has no other way to fail here. Windows' own does
+   over a file that is open */
+int plat_replace_file(const char* src, const char* dst) {
+    if (g_test.refuse) {
+        errno = EACCES;
+        return -1;
+    }
+    return rename(src, dst) ? -1 : 0;
+}
+#endif
+/* the last error line is want, then the system's reason in brackets: error's, but on Windows, which has no errno */
+static void said_reason(const char* want, int error) {
+    const char* line = g_test.said;
+    size_t n = strlen(want);
+    if (strncmp(line, want, n)) fprintf(stderr, "said \"%s\", not \"%s\" and a reason\n", line, want);
+    assert(!strncmp(line, want, n));
+#ifdef _WIN32
+    (void)error;
+    assert(strstr(line + n, "Windows error ") && line[strlen(line) - 1] == ')');
+#else
+    char* reason = snx_format("%s)", strerror(error));
+    if (strcmp(line + n, reason)) fprintf(stderr, "said \"%s\", not its reason \"%s\"\n", line, reason);
+    assert(!strcmp(line + n, reason));
+    free(reason);
+#endif
+}
+/* an .ini that cannot be written says the key and value, which step failed and why; nothing is left of its copy */
+static void unwritten(const char* root) {
+    char *folder = folder_of(root, "unwritten"), *file = snx_path_join(folder, "a file"), *want, *under, *ini, *tmp;
+    size_t size;
+    char* text;
+    snx_error_sink(said);
+    /* its folder cannot be made: a file is where it goes */
+    assert(!snx_write_file(file, "x", 1));
+    under = snx_path_join(file, "game.ini");
+    assert(snx_ini_record(under, "name", "A Name"));
+    want = snx_format("cannot record name=A Name in %s: %s cannot be made (", under, file);
+    said_reason(want, EEXIST);
+    free(want);
+    free(under);
+    free(file);
+    /* its copy cannot be written: a folder has the copy's name */
+    ini = snx_path_join(folder, "game.ini");
+    tmp = snx_format("%s.tmp", ini);
+    assert(!snx_ini_record(ini, "name", "A Name") && !snx_mkdirs(tmp));
+    assert(snx_ini_record(ini, "name", "Another"));
+    want = snx_format("cannot record name=Another in %s: %s cannot be written (", ini, tmp);
+    said_reason(want, EISDIR);
+    free(want);
+    assert(!snx_mkdirs(tmp) && snx_ini_drop(ini, "name"));
+    want = snx_format("cannot take name= out of %s: %s cannot be written (", ini, tmp);
+    said_reason(want, EISDIR);
+    free(want);
+    { /* its copy cannot be moved over it: on Windows a file opened as the C library does is not shared for that */
+        FILE* held = snx_fopen(ini, "rb");
+        g_test.refuse = true;
+        assert(held && snx_ini_record(ini, "name", "Another"));
+        want = snx_format("cannot record name=Another in %s: %s cannot be moved over it (", ini, tmp);
+        said_reason(want, EACCES);
+        free(want);
+        assert(snx_ini_drop(ini, "name"));
+        want = snx_format("cannot take name= out of %s: %s cannot be moved over it (", ini, tmp);
+        said_reason(want, EACCES);
+        free(want);
+        g_test.refuse = false;
+        assert(!fclose(held));
+    }
+    snx_error_sink(NULL);
+    assert(!snx_path_exists(tmp));
+    text = snx_ini_value(ini, "name"); /* as it was */
+    assert(text && !strcmp(text, "A Name"));
+    free(text);
+    text = (char*)snx_read_file(ini, &size);
+    assert(text && strstr(text, "name=A Name\n"));
+    free(text);
+    free(tmp);
+    free(ini);
+    free(folder);
 }
 
 int main(void) {
@@ -63,6 +150,7 @@ int main(void) {
     assert(snx_game_system(folder, "PCSE00000") == SNX_SYSTEM_VITA);
     free(ini);
     free(folder);
+    unwritten(root);
     /* a word it does not know is no console's but the Switch's */
     folder = folder_of(root, "odd");
     ini = snx_format("%s/odd.ini", folder);

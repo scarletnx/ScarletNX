@@ -69,6 +69,9 @@ keeps code in between runs) and `--jit-only`, what it does anyway.
 | `--sample-pc` | The guest's program counter on stderr once a second, for a loop that makes no system call (not on Windows) |
 | `--host-page=N` | Work as a host with N-byte pages, a power of two from the host's page to 1048576 (not on Windows, tests) |
 
+These but `-E`, `-U`, `-0` and `--jit-cache` are settings too, the launcher's Settings > Linux, which it passes to a
+run (`--linux-strace=1`, [Settings](../../user/settings.md#linux-driver)): the last given counts.
+
 ## The sysroot
 
 The guest's file namespace works like QEMU's `-L`. A guest path names the file at that

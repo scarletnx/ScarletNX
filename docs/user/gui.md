@@ -57,7 +57,7 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
 - A gamepad drives the menu as the keys do (`src/gui/pad_menu.c`): the D-pad and the left stick are the arrows, the
   button labelled A (or Cross) is Enter, B (or Circle) ESC, X (or Square) Del and Y (or Triangle) R, wherever the pad
   has them (a Switch pad's A is east, its X north), LB and RB are Shift+Tab and Tab, LT and RT are PgUp and PgDn, L3
-  and R3 are M and B (Games' mods and AOT pack), the right stick pushed any way is L (Games' Play, once until it is
+  and R3 are M and B (Games' mods, a 3DS game's own Settings, and AOT pack), the right stick pushed any way is L (Games' Play, once until it is
   back), Start is F5 and Back (View, Minus, Select) F1. On Games, X opens
   the focused game's save states, as S does, and in that box it deletes one, as Del does. A held arrow or
   page repeats. A press on the pad hides the mouse's cursor and the foot names the pad's buttons, a PlayStation pad's
@@ -247,7 +247,9 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   on the setup's Last Run page ([Setup](#setup)). **Freedreno Settings** sets
   Mesa's Freedreno and Turnip
   variables (`TU_DEBUG`, `FD_MESA_DEBUG`, `IR3_SHADER_DEBUG`, `FD_RD_DUMP`...) every game starts with: Eden's presets
-  first (Debug - CPU Memory, `TU_DEBUG=sysmem`, and the others), a row a variable set (a press, or Del, takes it out),
+  first (Debug - CPU Memory, `TU_DEBUG=sysmem`, and the others), a row a variable Mesa reads out of a set it knows
+  (`TU_DEBUG`, `IR3_SHADER_DEBUG`, `FD_RD_DUMP`, `TU_AUTOTUNE_FLAGS`: Enter opens a box a flag; `TU_AUTOTUNE_ALGO`: Left
+  and Right step its names; Del leaves it to the driver), a row another variable set (a press, or Del, takes it out),
   **Variable Name** and **Variable Value** typed and **Add Variable**, **Clear All**, then **Save**, which keeps them.
   A name is capitals, digits and `_` starting `TU_`, `FD_` or `IR3_`. A game's box has both for that game alone.
 
@@ -304,7 +306,10 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   takes a letter out; a click off the dialog is Cancel. A phone's keyboard comes up with it, its number pad for a whole
   number never under 0 (SDL's pad has no point and no minus). Nothing changes before OK, and OK takes nothing the
   row does not take whole, a number past its range too: the dialog stays, saying the value typed and what holds
-  (`20 is not a number from 0.25 to 16, two decimals at most`, `Ab is not a nickname: ...`). A setting's words are
+  (`20 is not a number from 0.25 to 16, two decimals at most`, `Ab is not a nickname: ...`). A setting that is a path
+  (a shader corpus's folder, a branch profile's file, a stats file to write) is picked: Enter opens the system's
+  folder, file or save dialog over the path it has, Ctrl+V and a drop give it a path too, Del takes it off; on iOS, and
+  after a dialog that could not open (said), Enter types it. A setting's words are
   its values alone, the runtime's default marked `[default]` (*Off [default]*, *On*); one typed shows its default and
   `[default]` while it is empty (*1 [default]*). At its default the run takes the game's `.ini`'s, which starts as
   that. Where a row's default is none of its words (a control not yet shown or hidden, LLVM's own options),
@@ -677,7 +682,8 @@ cannot be read is named and the others still listed.
 - A finger held on a game half a second without moving, or a right click on it, opens its box: **Play** (**View
   Progress** for a game of the queue, which shows it on the Compile tab as Enter does), **Recompile** (R), and for a
   recompiled Switch game **Mods** (M), **Save States** (S) and **Settings**, its own (below), Back from them to
-  Games, then **AOT Pack** (B) where B builds one, and on Android **Add to Home Screen** for a game whose folder its
+  Games, for a made 3DS game its own **Settings** (M, below), **Export Saves** and **Import Saves**, then **AOT Pack**
+  (B) where B builds one, and on Android **Add to Home Screen** for a game whose folder its
   title ID names ([The Android app](../hosts/android-app.md)). The finger's lift then taps nothing.
 - **M** (on Android a tap on *Mods* at the foot) opens the box of the recompiled Switch game in focus, recent or on
   the page, that Enter opens for a game with updates, DLCs, mods, cheats or other programs beside it, and for a game
@@ -690,11 +696,11 @@ cannot be read is named and the others still listed.
   game's own kept as `gpu_driver=` in its `.ini` (nothing: the system's driver); where no package loads the row is
   greyed, saying what the device lacks, unless the game is set to a package, to take that pick back. Freedreno
   Settings with none of its own takes the launcher's. **Settings** opens the Settings of that game alone, Back from
-  its groups to the box: a group a section of the runtime's (none of the launcher's own), each row **Global** and
-  the launcher's value (*Global (60%)*) until picked, a pick marked `*` and kept at once in the game's own picks
-  (`<id>.picks` beside its `.ini`, [Settings](settings.md)), which its runs take over the launcher's; Del puts a row
-  back to Global, the file going with its last pick, and **Reset to Global**, the last group, every row, asked first
-  with how many. A game with settings of its own, there or its GPU Driver and Freedreno Settings, has the sliders
+  its groups to the box: a group a section of the runtime's (none of the launcher's own, nor the 3DS's), each row
+  **Global** and the launcher's value (*Global (60%)*) until picked, a pick marked `*` and kept at once in the game's
+  own picks (`<id>.picks` beside its `.ini`, [Settings](settings.md)), which its runs take over the launcher's; Del puts
+  a row back to Global, the file going with its last pick, and **Reset to Global**, the last group, every row, asked
+  first with how many. A game with settings of its own, there or its GPU Driver and Freedreno Settings, has the sliders
   icon after its name in Games and Recent Games, and the side panel lists them (*Own settings: volume=40,
   gpu_driver=Turnip_v32*). A collection's game ([Usage](usage.md#collections)) has a
   **Play Program N** row for
@@ -704,6 +710,10 @@ cannot be read is named and the others still listed.
   game says how its code was made (`Made with: O2, AOT 81%`, `?` for one an older version made), or, in the failure
   colour, `Needs Recompile` when Play compiles it first: of the program Play runs, the checked update's when it has
   one.
+- On a made 3DS game **M** (on Android a tap on *Settings* at the foot) opens its own Settings, Back from them to
+  Games: **Console**, alone in the 3DS group, **Global** with the launcher's (*Global (Auto [default])*), Old 3DS or
+  New 3DS, which that game then runs on from the launcher and from a terminal ([Settings](settings.md)), and
+  **Reset to Global**, as a Switch game's.
 - The list is one page that scrolls, by pixels: past its height a scroll bar at its right, as every list has (below),
   which a click and a finger take. Up/Down move the focus
   and the rows glide to show it (at once with Animations off); Left/Right and PgUp/PgDn move it a screen of rows,

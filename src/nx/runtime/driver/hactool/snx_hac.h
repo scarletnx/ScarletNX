@@ -16,7 +16,14 @@ typedef struct SnxHac SnxHac;
 typedef struct {
     const char* name;
     uint64_t offset, size; /* in the container's file */
+    /* An NCZ, nsz's compressed NCA (named .ncz, in an NSZ or an XCZ): SNX_HAC_NCZ_SOLID or SNX_HAC_NCZ_BLOCK, read
+       everywhere below as the NCA it holds, of nca_size bytes; SNX_HAC_NCZ_BROKEN for one whose header cannot be read
+       (snx_hac_ncz_error). 0 for any other file, nca_size its size */
+    int ncz;
+    uint64_t nca_size;
 } SnxHacEntry;
+
+enum { SNX_HAC_NCZ_NONE, SNX_HAC_NCZ_SOLID, SNX_HAC_NCZ_BLOCK, SNX_HAC_NCZ_BROKEN };
 
 enum { SNX_HAC_OTHER, SNX_HAC_PROGRAM, SNX_HAC_CONTROL, SNX_HAC_DATA };
 
@@ -50,10 +57,13 @@ int snx_hac_newest_generation(SnxHac* hac);
 /* a container to read NCAs in place from, XCI or NSP: its number for the calls below, or -1. Two at most */
 int snx_hac_open(SnxHac* hac, const char* path, int xci);
 size_t snx_hac_entries(SnxHac* hac, int container, const SnxHacEntry** entries);
+/* why the container's first NCZ whose header cannot be read cannot be, naming where in it, with its entry in *entry:
+   NULL when every one can */
+const char* snx_hac_ncz_error(SnxHac* hac, int container, size_t* entry);
 /* the size of the file the container was opened from, a link's target's, which its entries must lie in, into *size:
    0, or -1 when the system can't tell it */
 int snx_hac_size(SnxHac* hac, int container, uint64_t* size);
-/* the first size bytes of an entry: 0, or -1 */
+/* the first size bytes of an entry, an NCZ's of the NCA it holds: 0, or -1 */
 int snx_hac_read(SnxHac* hac, int container, size_t entry, void* buffer, size_t size);
 /* 0, or -1 when its header cannot be decrypted (the keys are wrong or missing) */
 int snx_hac_nca(SnxHac* hac, int container, size_t entry, SnxHacNca* nca);
@@ -105,6 +115,9 @@ int snx_hac_xci_info(SnxHac* hac, const unsigned char iv[16], const unsigned cha
 void snx_hac_progress(void (*tick)(uint64_t written, void* data), void* data);
 /* cleanup(data) before an exit hactool takes on a dump it cannot read, which ends the process */
 void snx_hac_on_exit(void (*cleanup)(void* data), void* data);
+/* said(line, data) each time a read of a solid NCZ (one zstd stream) lies before where its stream got to: the stream
+   is decoded again from its start, which the line says with how far. NULL for none */
+void snx_hac_on_restart(void (*said)(const char* line, void* data), void* data);
 /* what hactool said last on its error stream, runs of 16 or more hex digits (possible keys) left out, or "" */
 const char* snx_hac_message(void);
 

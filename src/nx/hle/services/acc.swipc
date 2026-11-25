@@ -35,7 +35,7 @@ interface nn::account::IAccountServiceForApplication is acc:u0 {
     @stub [140] InitializeApplicationInfo(pid);
     [141] ListQualifiedUsers(array<nn::account::Uid, 0xa> users);
     [150] IsUserAccountSwitchLocked() -> b8 locked;
-    # 13.0.0+, which Tears of the Kingdom and Super Mario Bros. Wonder call at boot: Eden answers it with success and
+    # 13.0.0+, which two games call at boot: Eden answers it with success and
     # reads nothing (acc.cpp, InitializeApplicationInfoV2)
     @stub [160] InitializeApplicationInfoV2(pid);
 }

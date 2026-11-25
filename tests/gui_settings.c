@@ -39,6 +39,13 @@ static const char list[] =
     "Debug\tlog\t1\tint\t0\t2\tLog detail\t\t0=0|1=1|2=2";
 
 /* a row by its key or name: the runtime's first, then the launcher's (both have an All, the LLVM Internals page's) */
+/* the row of a kind, -1 for none */
+static int find_kind(const GuiSettings* s, int kind) {
+    int i;
+    for (i = 0; i < s->count; ++i)
+        if (s->values[i].kind == kind) return i;
+    return -1;
+}
 static int at(const GuiSettings* s, const char* name) {
     int i, n;
     for (n = 0; n < s->count; ++n) {
@@ -131,20 +138,23 @@ int main(int argc, char** argv) {
            !strcmp(s.values[opt + 3].key, "aot_threads_most") &&
            !strcmp(s.values[opt + 3].def, "0")); /* Auto, the default, which is not passed */
     assert(gui_settings_set(&s, "aot_threads_most", "3") && gui_settings_recompile(&s, 0, NULL, options) == 3 &&
-           !strcmp(options[2], "--aot-threads-most=3") && gui_settings_set(&s, "aot_threads_most", ""));
+           !strcmp(options[2], "--aot-threads-most=3") && gui_settings_set(&s, "aot_threads_most", "0") &&
+           !gui_settings_value(&s, "aot_threads_most")); /* back to Auto, a step of its list */
     assert(!strcmp(s.keys[opt + 4].section, "Launch") && !strcmp(s.keys[opt + 4].key, "Unit size") &&
            !strcmp(s.values[opt + 4].key, "unit_instructions") && !strcmp(s.values[opt + 4].def, "90000"));
     assert(gui_settings_set(&s, "unit_instructions", "20000") && gui_settings_recompile(&s, 0, NULL, options) == 3 &&
-           !strcmp(options[2], "--unit-instructions=20000") && gui_settings_set(&s, "unit_instructions", ""));
+           !strcmp(options[2], "--unit-instructions=20000") && gui_settings_set(&s, "unit_instructions", "90000") &&
+           !gui_settings_value(&s, "unit_instructions"));
     assert(!strcmp(s.keys[opt + 5].section, "Launch") && !strcmp(s.keys[opt + 5].key, "Unit cache ceiling") &&
            !strcmp(s.values[opt + 5].key, "unit_cache_ceil_mb") && strstr(s.keys[opt + 5].about, "0 = none held"));
     assert(!strcmp(s.values[opt + 5].def, "512") &&
            strstr(s.keys[opt + 5].about, "a hundredth of the machine's memory at most")); /* 512 MB */
     assert(gui_settings_set(&s, "unit_cache_ceil_mb", "64") && gui_settings_recompile(&s, 0, NULL, options) == 3 &&
-           !strcmp(options[2], "--unit-cache-ceil-mb=64") && gui_settings_set(&s, "unit_cache_ceil_mb", ""));
+           !strcmp(options[2], "--unit-cache-ceil-mb=64") && gui_settings_set(&s, "unit_cache_ceil_mb", "512") &&
+           !gui_settings_value(&s, "unit_cache_ceil_mb"));
     assert(!strcmp(s.keys[opt + 6].section, "Launch") && s.values[opt + 6].kind == GUI_SETTING_PAGE &&
            !strcmp(s.keys[opt + 6].key, "LLVM Internals"));
-    assert(gui_settings_set(&s, "opt", "2") && gui_settings_set(&s, "aot_threads", "") &&
+    assert(gui_settings_set(&s, "opt", "2") && gui_settings_set(&s, "aot_threads", "0") &&
            !gui_settings_recompile(&s, 0, NULL, options));
     /* Settings > GBA's Covers, the launcher's own after Launch's: None by default, Box art (libretro-thumbnails) when
        picked, an unknown value refused, and never a recompile's option nor a run's */
@@ -801,7 +811,10 @@ int main(int argc, char** argv) {
             next = c + strcspn(c, "\n");
             if (*next) ++next;
         }
-        assert(pages > 0 && !gui_settings_read(&s, output) && s.count == s.own + lines + 2 * pages);
+        /* and the Room password's row, beside the room's */
+        assert(pages > 0 && !gui_settings_read(&s, output) && s.count == s.own + lines + 2 * pages + 1);
+        assert(s.values[find_kind(&s, GUI_SETTING_SECRET)].key &&
+               !strcmp(s.values[find_kind(&s, GUI_SETTING_SECRET)].key, "room_password"));
         /* each player's own, on Controllers' Player page: a word row whose default is every player's */
         assert(words(key(&s, "gamepad_p1_swap_ab")) == 3 && !strcmp(key(&s, "gamepad_p8_swap_ab")->words[0], "As All"));
         assert(!strcmp(on_screen(&s, "gamepad_p8_swap_ab"), "As All [default]"));
@@ -838,8 +851,12 @@ int main(int argc, char** argv) {
         assert(words(key(&s, "fullscreen")) == 2 && words(key(&s, "controls")) == 3);
         assert(!strcmp(on_screen(&s, "fullscreen"), "Off [default]") &&
                !strcmp(on_screen(&s, "controls"), "Auto [default]"));
-        /* a range as settings.txt has it, a large one to the last digit, which a typed value's dialog says */
-        assert(key(&s, "map_limit_mb")->numeric && key(&s, "map_limit_mb")->hi == 1048576.0);
+        /* a range as settings.txt has it, a large one to the last digit, which a typed value's dialog says; a number
+           with steps (settings.txt's steps) a word row of them instead, open to a value between two */
+        assert(key(&s, "vita_lockstep_steps")->numeric && key(&s, "vita_lockstep_steps")->hi == 2147483647.0);
+        assert(key(&s, "map_limit_mb")->type == GUI_KEY_WORD && s.values[at(&s, "map_limit_mb")].open &&
+               !strcmp(key(&s, "map_limit_mb")->words[0], "No limit") && gui_settings_set(&s, "map_limit_mb", "300") &&
+               !strcmp(on_screen(&s, "map_limit_mb"), "300") && gui_settings_set(&s, "map_limit_mb", "0"));
         assert(key(&s, "resolution")->lo == 0.25 && key(&s, "resolution")->hi == 16.0);
         page = at(&s, "Buttons");
         assert(page > 0 && s.values[page].count == 1 + 17 && !strcmp(s.keys[page + 2].key, "L"));
@@ -1029,6 +1046,90 @@ int main(int argc, char** argv) {
         free(ini);
         free(dir);
     }
+    /* a Switch game's own rows are every one of the runtime's, as they were; a 3DS game's its Console alone, in its
+       group, its words Global and the two consoles (Auto is what Global gives, unless the launcher picks one), kept in
+       its picks as the driver reads it and back to Global by a reset. A picks file without it loads all Global, and
+       one that holds what its rows do not take says so */
+    {
+        static const char list[] = "Display\tfullscreen\t0\tint\t0\t1\tWhole screen\tFullscreen\t0=Off|1=On\n"
+                                   "3DS\tctr_top_resolution\t1\tint\t1\t16\tScale\tTop screen resolution\t\n"
+                                   "3DS\tctr_model\tauto\ttext\t\t\tThe console\tConsole\t"
+                                   "auto=Auto|old=Old 3DS|new=New 3DS\t\n"
+                                   "3DS/Debug\tctr_hooks\t1\tint\t0\t1\tStubs\tIPC hooks\t0=Off|1=On\n"
+                                   "Vita/Debug\tvita_hle_trace\t0\tint\t0\t2\tImports\tImport trace\t0=Off|1=On\n"
+                                   "Linux\tlinux_isolated\t0\tint\t0\t1\tNo host\tIsolated\t0=Off|1=On\n"
+                                   "Android\tandroid_jit_opt\t0\tint\t0\t1\tLevel\tJIT level\t0=Off|1=On\n"
+                                   "DS\tnds_aot\t0\tint\t0\t1\tAhead\tAOT\t0=Off|1=On\n"
+                                   "Audio\tvolume\t100\tint\t0\t100\tLoud\tVolume\t0=Mute|50=50%|100=100%";
+        GuiSettings game = {0}, global = {0};
+        char *dir = snx_temp_dir(NULL), *ini = snx_path_join(dir, "game.ini"), *picks = snx_game_picks(ini), *text,
+             out[256];
+        static const char* const console_words[] = {"Global", "Old 3DS", "New 3DS"};
+        static const char* const every[] = {"fullscreen",     "ctr_model",       "ctr_hooks", "vita_hle_trace",
+                                            "linux_isolated", "android_jit_opt", "nds_aot",   "volume"};
+        size_t size;
+        int v, w;
+        /* a Switch game's picks with another console's key are read, kept and said as they were */
+        assert(!gui_settings_read_game(&game, list) && game.game == GUI_GAME_SWITCH);
+        for (w = 0; w < (int)(sizeof every / sizeof *every); ++w) assert(at(&game, every[w]) >= 0);
+        gui_settings_mark(&game);
+        text = snx_strdup("[3DS]\nctr_model=old\n[DS]\nnds_aot=1\n");
+        assert(!snx_write_file(picks, text, strlen(text)) && !gui_settings_load(&game, picks, NULL, 0) &&
+               !gui_settings_unread(&game, picks, out, sizeof out) && gui_settings_changed(&game) == 2);
+        free(text);
+        assert(gui_settings_set(&game, "fullscreen", "1") && !gui_settings_save(&game, picks));
+        assert((text = (char*)snx_read_file(picks, &size)) && strstr(text, "ctr_model=old\n") &&
+               strstr(text, "nds_aot=1\n") && strstr(text, "fullscreen=1\n"));
+        free(text);
+        assert(!remove(picks));
+        gui_settings_free(&game);
+        assert(!gui_settings_read_console(&game, list, GUI_GAME_SWITCH) && at(&game, "ctr_model") >= 0);
+        gui_settings_free(&game);
+        assert(!gui_settings_read(&global, list) && at(&global, "ctr_hooks") >= 0 && at(&global, "nds_aot") >= 0);
+        assert(!gui_settings_read_console(&game, list, GUI_GAME_3DS) && game.game == GUI_GAME_3DS && game.count == 1 &&
+               !game.own);
+        v = at(&game, "ctr_model");
+        assert(v == 0 && !strcmp(key(&game, "ctr_model")->key, "Console") &&
+               !strcmp(key(&game, "ctr_model")->section, "3DS") && !game.values[v].word && !game.values[v].plain);
+        for (w = 0; key(&game, "ctr_model")->words[w]; ++w)
+            assert(w < 3 && !strcmp(key(&game, "ctr_model")->words[w], console_words[w]));
+        assert(w == 3);
+        gui_settings_mark(&game);
+        /* nothing of its own: Global, with what the launcher's is, and no picks to keep; an old game's, with none */
+        assert(!gui_settings_value(&game, "ctr_model") && !gui_settings_changed(&game) &&
+               !gui_settings_load(&game, picks, NULL, 0) && !gui_settings_unread(&game, picks, out, sizeof out));
+        gui_settings_shown_game(&game, &global, v, out, sizeof out);
+        assert(!strcmp(out, "Global (Auto [default])"));
+        assert(gui_settings_set(&global, "ctr_model", "new"));
+        gui_settings_shown_game(&game, &global, v, out, sizeof out);
+        assert(!strcmp(out, "Global (New 3DS)"));
+        /* its own, over it */
+        assert(gui_settings_set(&game, "ctr_model", "old") && !strcmp(gui_settings_value(&game, "ctr_model"), "old"));
+        gui_settings_shown_game(&game, &global, v, out, sizeof out);
+        assert(!strcmp(out, "Old 3DS") && gui_settings_changed(&game) == 1 && !gui_settings_save(&game, picks));
+        assert((text = (char*)snx_read_file(picks, &size)) && strstr(text, "[3DS]\nctr_model=old\n"));
+        free(text);
+        assert(gui_settings_game_own(ini, out, sizeof out) == 1 && !strcmp(out, "ctr_model=old"));
+        gui_settings_free(&game);
+        assert(!gui_settings_read_console(&game, list, GUI_GAME_3DS));
+        gui_settings_mark(&game);
+        assert(!gui_settings_load(&game, picks, NULL, 0) && !strcmp(gui_settings_value(&game, "ctr_model"), "old") &&
+               !gui_settings_unread(&game, picks, out, sizeof out));
+        gui_settings_reset(&game, v);
+        assert(!gui_settings_value(&game, "ctr_model") && !gui_settings_changed(&game));
+        /* an old game's, with keys of its own and no ctr_model: Global; and one that is none of its rows' is said */
+        text = snx_strdup("[3DS]\nother=1\n");
+        assert(!snx_write_file(picks, text, strlen(text)) && !gui_settings_load(&game, picks, NULL, 0));
+        assert(!gui_settings_value(&game, "ctr_model") && gui_settings_unread(&game, picks, out, sizeof out) == 1 &&
+               !strcmp(out, "other=1"));
+        free(text);
+        gui_settings_free(&game);
+        gui_settings_free(&global);
+        assert(!snx_remove_tree(dir));
+        free(picks);
+        free(ini);
+        free(dir);
+    }
     /* a 3DS game's run gets its own table's picks and the Switch's settings the 3DS takes too (vk_memory,
        async_pipelines, pipeline_threads, gamepad_swap_ab, gamepad_deadzone, gamepad_map, touch, vsync, fullscreen,
        anisotropy, fps_limit, volume) only: another Display, Graphics, Debug, Controllers or On-screen controls setting
@@ -1038,6 +1139,7 @@ int main(int argc, char** argv) {
                                   "Display\tdocked\t1\tint\t0\t1\tTV\tDocked\t0=Off|1=On\n"
                                   "3DS\tctr_separate_windows\t0\tint\t0\t1\tTwo windows\tSeparate screens\t0=Off|1=On\n"
                                   "3DS\tctr_top_resolution\t1\tint\t1\t16\tScale\tTop screen resolution\t\n"
+                                  "3DS/Debug\tctr_hooks\t1\tint\t0\t1\tStubs\tIPC hooks\t0=Off|1=On\n"
                                   "Graphics\tvsync\t1\tint\t0\t1\tNo tearing\tVSync\t0=Off|1=On\n"
                                   "Graphics\tshadows\t1\tint\t0\t1\tShadow maps\tShadows\t0=Off|1=On\n"
                                   "Graphics\tanisotropy\t0\tint\t0\t16\tSharper\tAnisotropic filtering\t\n"
@@ -1064,6 +1166,10 @@ int main(int argc, char** argv) {
                gui_settings_set(&s, "shadows", "0") && gui_settings_set(&s, "docked", "0") &&
                gui_settings_set(&s, "anisotropy", "8") && gui_settings_set(&s, "fps_limit", "120"));
         assert(gui_settings_set(&s, "volume", "50"));
+        /* a row of the 3DS group's Debug page, passed as its screens' are */
+        assert(gui_settings_ctr_options(&s, options) == 14 && gui_settings_set(&s, "ctr_hooks", "0") &&
+               gui_settings_ctr_options(&s, options) == 15 && !strcmp(options[3], "--ctr-hooks=0") &&
+               gui_settings_set(&s, "ctr_hooks", "1"));
         assert(gui_settings_ctr_options(&s, options) == 14 && !strcmp(options[0], "--fullscreen=1") &&
                !strcmp(options[1], "--ctr-separate-windows=1") && !strcmp(options[2], "--ctr-top-resolution=2") &&
                !strcmp(options[3], "--vsync=0") && !strcmp(options[4], "--anisotropy=8") &&
@@ -1072,6 +1178,70 @@ int main(int argc, char** argv) {
                !strcmp(options[9], "--gamepad-deadzone=35") && !strcmp(options[10], "--gamepad-map=south:A east:B") &&
                !strcmp(options[11], "--touch=1") && !strcmp(options[12], "--vk-memory=1"));
         assert(!strcmp(options[13], "--volume=50"));
+        gui_settings_free(&s);
+    }
+    /* a Vita game's run gets its Debug page's picks alone (keys that start with vita_): none of the Switch's or the
+       3DS's, which its driver refuses */
+    {
+        static const char vita[] = "Display\tfullscreen\t0\tint\t0\t1\tWhole screen\tFullscreen\t0=Off|1=On\n"
+                                   "3DS/Debug\tctr_hooks\t1\tint\t0\t1\tStubs\tIPC hooks\t0=Off|1=On\n"
+                                   "Vita/Debug\tvita_hle_trace\t0\tint\t0\t2\tImports\tImport trace\t"
+                                   "0=Off|1=Missing|2=All\n"
+                                   "Vita/Debug\tvita_gxm_trace\t0\tint\t0\t1\tScenes\tGXM trace\t0=Off|1=On\n";
+        assert(!gui_settings_read(&s, vita));
+        assert(!gui_settings_vita_options(&s, options) && gui_settings_set(&s, "fullscreen", "1") &&
+               gui_settings_set(&s, "ctr_hooks", "0") && !gui_settings_vita_options(&s, options));
+        assert(gui_settings_set(&s, "vita_hle_trace", "2") && gui_settings_vita_options(&s, options) == 1 &&
+               !strcmp(options[0], "--vita-hle-trace=2"));
+        assert(gui_settings_ctr_options(&s, options) == 2 && !strcmp(options[1], "--ctr-hooks=0"));
+        gui_settings_free(&s);
+    }
+    /* the launcher's Console for a 3DS run: --launcher-picks=1 after the rest, which puts the game's own over it; with
+       no Console picked, or Auto, no mark, the rest as it was */
+    {
+        static const char ctr[] = "Display\tfullscreen\t0\tint\t0\t1\tWhole screen\tFullscreen\t0=Off|1=On\n"
+                                  "3DS\tctr_model\tauto\ttext\t\t\tThe console\tConsole\t"
+                                  "auto=Auto|old=Old 3DS|new=New 3DS\t\n"
+                                  "Audio\tvolume\t100\tint\t0\t100\tLoud\tVolume\t0=Mute|50=50%|100=100%";
+        assert(!gui_settings_read(&s, ctr));
+        assert(gui_settings_set(&s, "fullscreen", "1") && gui_settings_set(&s, "volume", "50"));
+        assert(gui_settings_ctr_options(&s, options) == 2 && !strcmp(options[0], "--fullscreen=1") &&
+               !strcmp(options[1], "--volume=50"));
+        assert(gui_settings_set(&s, "ctr_model", "auto"));
+        assert(gui_settings_ctr_options(&s, options) == 2 && !strcmp(options[1], "--volume=50"));
+        assert(gui_settings_set(&s, "ctr_model", "new"));
+        assert(gui_settings_ctr_options(&s, options) == 4 && !strcmp(options[0], "--fullscreen=1") &&
+               !strcmp(options[1], "--ctr-model=new") && !strcmp(options[2], "--volume=50") &&
+               !strcmp(options[3], "--" SNX_LAUNCHER_PICKS "=1"));
+        gui_settings_free(&s);
+    }
+    /* the Linux, Android and DS drivers': a run's options are its own group's, each only to its own driver; the DS's
+       WFC service, which that driver reads from settings.ini, never */
+    {
+        static const char drivers[] = "Linux\tlinux_isolated\t0\tint\t0\t1\tNo host\tIsolated\t0=Off|1=On\n"
+                                      "Linux\tlinux_root\t\ttext\t0\t0\tRoot\tRoot folder\t\t\t\tfolder\n"
+                                      "Linux/Debug\tlinux_strace\t0\tint\t0\t1\tCalls\tSystem call trace\t0=Off|1=On\n"
+                                      "Android\tandroid_jit_opt\t2\ttext\t0\t0\tLevel\tJIT optimization\t0=O0|2=O2\n"
+                                      "Android/Debug\tandroid_sample\t0\tint\t0\t1\tSamples\tThread sample\t"
+                                      "0=Off|1=On\n"
+                                      "DS\tnds_aot\t1\tint\t0\t1\tFirst\tCompile first\t0=Off|1=On\n"
+                                      "DS/Debug\tnds_trace\t0\tint\t0\t2\tTrace\tTrace\t0=Off|1=One|2=Two\n"
+                                      "Online\tnds_wfc\toff\ttext\t0\t0\tService\tDS WFC service\t"
+                                      "off=Off|kaeru=Kaeru\n";
+        assert(!gui_settings_read(&s, drivers));
+        assert(!gui_settings_linux_options(&s, options) && !gui_settings_android_options(&s, options) &&
+               !gui_settings_nds_options(&s, options));
+        assert(gui_settings_set(&s, "linux_isolated", "1") && gui_settings_set(&s, "linux_strace", "1") &&
+               gui_settings_set(&s, "linux_root", "/a root") && gui_settings_set(&s, "android_jit_opt", "0") &&
+               gui_settings_set(&s, "android_sample", "1") && gui_settings_set(&s, "nds_aot", "0") &&
+               gui_settings_set(&s, "nds_trace", "2") && gui_settings_set(&s, "nds_wfc", "kaeru"));
+        assert(gui_settings_linux_options(&s, options) == 3 && !strcmp(options[0], "--linux-isolated=1") &&
+               !strcmp(options[1], "--linux-root=/a root") && !strcmp(options[2], "--linux-strace=1"));
+        assert(gui_settings_android_options(&s, options) == 2 && !strcmp(options[0], "--android-jit-opt=0") &&
+               !strcmp(options[1], "--android-sample=1"));
+        assert(gui_settings_nds_options(&s, options) == 2 && !strcmp(options[0], "--nds-aot=0") &&
+               !strcmp(options[1], "--nds-trace=2"));
+        assert(gui_settings_vita_options(&s, options) == 0);
         gui_settings_free(&s);
     }
     /* a slider's row (the runtime's twelfth column, settings.txt's slider): a plain word row whose steps stop at its
@@ -1102,6 +1272,180 @@ int main(int argc, char** argv) {
                !strcmp(on_screen(&s, "volume"), "100% [default]"));
         assert(!gui_settings_slide(&s, p, -1) && !gui_settings_slide_to(&s, p, 0) && gui_settings_knob(&s, p) == 0);
         assert(!gui_settings_slide(&s, o, -1) && !strcmp(on_screen(&s, "off_step"), "60 [default]"));
+        gui_settings_free(&s);
+    }
+    /* a value none of a row's words is, from a file of picks or a game's .ini, on a slider's row or an open one (the
+       twelfth column's open): a number in its range kept as a word of its own after them, shown as itself and passed
+       to a run; a slider's knob placed by it and its next step taken from it; a number outside the range, a fraction
+       of a whole number's row, a text of a closed row and any value of a row neither a slider nor open refused */
+    {
+        static const char custom[] =
+            "Audio\tvolume\t100\tint\t0\t100\tHow loud\tVolume\t0=Mute|25=25%|50=50%|75=75%|100=100%\t\t\tslider\n"
+            "Graphics\tbc7_queue\t0\tint\t0\t16384\tQueued\tBC7 queue\t0=Auto|256=256|512=512\t\t\topen\n"
+            "Graphics\tupscaler\toff\ttext\t0\t0\tFilter\tUpscaler\toff=Off|fsr1=AMD FSR 1\n"
+            "Graphics\tmode\t0\tint\t0\t9\tClosed\tMode\t0=Off|1=On\n";
+        char *dir = snx_temp_dir(NULL), *path = snx_path_join(dir, "settings.ini"), unread[128];
+        int v, q, n;
+        assert(!gui_settings_read(&s, custom));
+        gui_settings_mark(&s);
+        v = at(&s, "volume");
+        q = at(&s, "bc7_queue");
+        n = words(&s.keys[q]);
+        assert(gui_settings_set(&s, "volume", "37") && !strcmp(gui_settings_value(&s, "volume"), "37") &&
+               !strcmp(on_screen(&s, "volume"), "37") && gui_settings_knob(&s, v) == 370);
+        assert(gui_settings_options(&s, 0, NULL, options) == 2 && !strcmp(options[0], "--volume=37"));
+        assert(gui_settings_slide(&s, v, 1) && !strcmp(gui_settings_value(&s, "volume"), "50"));
+        assert(gui_settings_set(&s, "volume", "37") && gui_settings_slide(&s, v, -1) &&
+               !strcmp(gui_settings_value(&s, "volume"), "25"));
+        assert(!gui_settings_set(&s, "volume", "101") && !gui_settings_set(&s, "volume", "37.5") &&
+               !gui_settings_set(&s, "upscaler", "nis2") && !gui_settings_set(&s, "bc7_queue", "-1") &&
+               !gui_settings_set(&s, "mode", "5")); /* a row neither a slider nor open: its words alone */
+        assert(gui_settings_set(&s, "bc7_queue", "3000") && words(&s.keys[q]) == n + 1 &&
+               !strcmp(on_screen(&s, "bc7_queue"), "3000") && gui_settings_set(&s, "bc7_queue", "512") &&
+               gui_settings_set(&s, "bc7_queue", "1024") && words(&s.keys[q]) == n + 1); /* one slot, reused */
+        assert(!gui_settings_save(&s, path));
+        gui_settings_free(&s);
+        assert(!gui_settings_read(&s, custom));
+        gui_settings_mark(&s);
+        assert(!gui_settings_load(&s, path, NULL, 0) && !strcmp(gui_settings_value(&s, "bc7_queue"), "1024") &&
+               !strcmp(gui_settings_value(&s, "volume"), "25"));
+        gui_settings_free(&s);
+        /* a try of the file's values leaves no word behind on a row that kept none */
+        assert(!gui_settings_read(&s, custom) && !gui_settings_unread(&s, path, unread, sizeof unread) &&
+               words(&s.keys[at(&s, "bc7_queue")]) == n && !gui_settings_value(&s, "bc7_queue"));
+        gui_settings_free(&s);
+        assert(!snx_remove_tree(dir));
+        free(path);
+        free(dir);
+    }
+    /* a number's typed row stepped as the game's menu steps it: a float by a quarter, or a twentieth within a range of
+       2, onto that grid, a whole number by 1, from the default where nothing is typed, stopping at the ends */
+    {
+        static const char numbers[] = "Graphics\tresolution\t1\tfloat\t0.25\t16\tScale\tResolution scale\t\n"
+                                      "Graphics\tsharp\t0\tfloat\t0\t1\tSharpening\tFSR sharpness\t\n"
+                                      "Debug\tcount\t5\tint\t0\t99999\tCount\tA count\t\n"
+                                      "Debug\tname\t\ttext\t0\t0\tA name\tName\t\n";
+        int r, f, c;
+        assert(!gui_settings_read(&s, numbers));
+        r = at(&s, "resolution");
+        f = at(&s, "sharp");
+        c = at(&s, "count");
+        assert(gui_settings_step_number(&s, r, 1) && !strcmp(gui_settings_value(&s, "resolution"), "1.25"));
+        assert(gui_settings_set(&s, "resolution", "1.3") && gui_settings_step_number(&s, r, -1) &&
+               !strcmp(gui_settings_value(&s, "resolution"), "1.25")); /* onto the quarters' grid */
+        assert(gui_settings_set(&s, "resolution", "0.25") && !gui_settings_step_number(&s, r, -1));
+        assert(gui_settings_set(&s, "resolution", "16") && !gui_settings_step_number(&s, r, 1));
+        assert(!gui_settings_step_number(&s, f, -1) && gui_settings_step_number(&s, f, 1) &&
+               !strcmp(gui_settings_value(&s, "sharp"), "0.05"));
+        assert(gui_settings_step_number(&s, c, -1) && !strcmp(gui_settings_value(&s, "count"), "4"));
+        assert(gui_settings_options(&s, 0, NULL, options) == 4 && !strcmp(options[0], "--resolution=16"));
+        assert(!gui_settings_step_number(&s, at(&s, "name"), 1)); /* a text is no number */
+        gui_settings_free(&s);
+    }
+    /* an open row's words with more the launcher found itself (the recording devices): after its own, none twice, in
+       the place of those a call before added; the value a word of them now, or itself still; System default an empty
+       value, which is a pick, passed and kept */
+    {
+        static const char mic[] =
+            "Game\tmicrophone\toff\ttext\t0\t0\tHears\tMicrophone\t=System default|off=Off\t\t\topen\n"
+            "Game\tclosed\toff\ttext\t0\t0\tClosed\tClosed\toff=Off|on=On\n";
+        static const char* const two[] = {"USB Mic", "Headset", "USB Mic", "off"};
+        static const char* const one[] = {"Headset"};
+        char *dir = snx_temp_dir(NULL), *path = snx_path_join(dir, "settings.ini"), *text;
+        size_t size;
+        int m;
+        assert(!gui_settings_read(&s, mic));
+        gui_settings_mark(&s);
+        m = at(&s, "microphone");
+        assert(words(&s.keys[m]) == 2 && !strcmp(on_screen(&s, "microphone"), "Off [default]"));
+        assert(gui_settings_set(&s, "microphone", "usb")); /* a part of a name, as the .ini takes it */
+        assert(gui_settings_add_words(&s, m, two, 4) && words(&s.keys[m]) == 5 &&
+               !strcmp(s.keys[m].words[2], "USB Mic") && !strcmp(s.keys[m].words[3], "Headset") &&
+               !strcmp(on_screen(&s, "microphone"), "usb") && s.values[m].custom == 4);
+        assert(gui_settings_set(&s, "microphone", "Headset") && gui_settings_options(&s, 0, NULL, options) == 2 &&
+               !strcmp(options[0], "--microphone=Headset"));
+        assert(gui_settings_add_words(&s, m, one, 1) && words(&s.keys[m]) == 3 && !s.values[m].custom &&
+               !strcmp(gui_settings_value(&s, "microphone"), "Headset") && s.values[m].word == 2);
+        assert(gui_settings_add_words(&s, m, NULL, 0) && words(&s.keys[m]) == 3 && s.values[m].custom == 2 &&
+               !strcmp(on_screen(&s, "microphone"), "Headset")); /* unplugged: its value stays */
+        assert(gui_settings_set(&s, "microphone", "") && !strcmp(gui_settings_value(&s, "microphone"), "") &&
+               !strcmp(on_screen(&s, "microphone"), "System default") &&
+               gui_settings_options(&s, 0, NULL, options) == 2 && !strcmp(options[0], "--microphone="));
+        assert(!gui_settings_save(&s, path));
+        text = (char*)snx_read_file(path, &size);
+        assert(text && strstr(text, "microphone=\n"));
+        free(text);
+        assert(!gui_settings_add_words(&s, at(&s, "closed"), one, 1) && !gui_settings_add_words(&s, -1, one, 1));
+        gui_settings_free(&s);
+        assert(!gui_settings_read(&s, mic));
+        gui_settings_mark(&s);
+        assert(!gui_settings_load(&s, path, NULL, 0) && !strcmp(on_screen(&s, "microphone"), "System default"));
+        gui_settings_reset(&s, -1);
+        assert(!gui_settings_value(&s, "microphone"));
+        gui_settings_free(&s);
+        /* a game's own: Global first, which stays the one it starts with */
+        assert(!gui_settings_read_game(&s, mic));
+        gui_settings_mark(&s);
+        m = at(&s, "microphone");
+        assert(gui_settings_add_words(&s, m, one, 1) && words(&s.keys[m]) == 4 &&
+               !strcmp(s.keys[m].words[0], "Global") && !gui_settings_value(&s, "microphone") &&
+               !gui_settings_changed(&s));
+        assert(gui_settings_set(&s, "microphone", "Headset") &&
+               !strcmp(gui_settings_value(&s, "microphone"), "Headset") && gui_settings_changed(&s) == 1);
+        gui_settings_free(&s);
+        assert(!snx_remove_tree(dir));
+        free(path);
+        free(dir);
+    }
+    /* a row of boxes (the twelfth column's boxes): its items' labels and abouts, on or off in the row's value, a text's
+       separated by commas or spaces, an int's a sum of bits; a name the row has not kept where it is, said; an item
+       turned off leaves the others, and nothing on is no value, the default's */
+    {
+        static const char boxes[] =
+            "Debug\thooks_off\t\ttext\t0\t0\tFamilies\tHook families off\t"
+            "libc=libc~the C library|sync=sync~clocks, and sleep|cond_var=cond_var~\t\t\tboxes\n"
+            "Debug\tfsr\t0\tint\t0\t255\tBits\tFSR inputs\t1=Jitter x|2=Jitter y|64=HDR input\t\t\tboxes\n"
+            "Debug\ttyped\t\ttext\t0\t0\tNo items\tTyped\t\n";
+        int h, f;
+        char said[64];
+        assert(!gui_settings_read(&s, boxes));
+        h = at(&s, "hooks_off");
+        f = at(&s, "fsr");
+        assert(s.values[h].items == 3 && !strcmp(s.values[h].item_value[1], "sync") &&
+               !strcmp(s.values[h].item_label[1], "sync") && !strcmp(s.values[h].item_about[1], "clocks, and sleep") &&
+               !strcmp(s.values[h].item_about[2], "") && s.values[f].items == 3 &&
+               !strcmp(s.values[f].item_label[2], "HDR input") && !strcmp(s.values[f].item_about[2], ""));
+        assert(s.values[at(&s, "typed")].items == 0 && s.keys[h].type == GUI_KEY_TEXT && !s.keys[f].numeric);
+        /* none on: the default, a box turned on is the row's own value, in the order turned on */
+        assert(!strcmp(on_screen(&s, "hooks_off"), "None [default]") && !gui_settings_item_on(&s, h, 0, NULL));
+        assert(gui_settings_item_toggle(&s, h, 2, NULL) && gui_settings_item_toggle(&s, h, 0, NULL) &&
+               !strcmp(gui_settings_value(&s, "hooks_off"), "cond_var,libc") && gui_settings_item_on(&s, h, 0, NULL) &&
+               !gui_settings_item_on(&s, h, 1, NULL));
+        assert(!strcmp(on_screen(&s, "hooks_off"), "2 on") && gui_settings_options(&s, 0, NULL, options) == 2 &&
+               !strcmp(options[0], "--hooks-off=cond_var,libc"));
+        /* spaces or commas between, a name the row has not kept and counted as another, a name's box turned off */
+        assert(gui_settings_set(&s, "hooks_off", "libc mine, sync"));
+        assert(gui_settings_item_on(&s, h, 0, NULL) && gui_settings_item_on(&s, h, 1, NULL));
+        assert(!strcmp(on_screen(&s, "hooks_off"), "2 on, 1 other"));
+        assert(gui_settings_item_toggle(&s, h, 0, NULL) && !strcmp(gui_settings_value(&s, "hooks_off"), "mine,sync") &&
+               gui_settings_item_toggle(&s, h, 1, NULL) && !strcmp(gui_settings_value(&s, "hooks_off"), "mine"));
+        assert(gui_settings_item_toggle(&s, h, 1, NULL) && gui_settings_item_toggle(&s, h, 1, NULL) &&
+               !strcmp(on_screen(&s, "hooks_off"), "0 on, 1 other"));
+        assert(gui_settings_set(&s, "hooks_off", "libc") && gui_settings_item_toggle(&s, h, 0, NULL) &&
+               !gui_settings_value(&s, "hooks_off") && !strcmp(on_screen(&s, "hooks_off"), "None [default]"));
+        /* an int's: bits, a bit past its items' kept */
+        assert(gui_settings_item_toggle(&s, f, 2, NULL) && !strcmp(gui_settings_value(&s, "fsr"), "64"));
+        assert(gui_settings_item_toggle(&s, f, 0, NULL) && !strcmp(gui_settings_value(&s, "fsr"), "65") &&
+               !strcmp(on_screen(&s, "fsr"), "2 on"));
+        assert(gui_settings_set(&s, "fsr", "129") && gui_settings_item_toggle(&s, f, 0, NULL) &&
+               !strcmp(gui_settings_value(&s, "fsr"), "128") && !strcmp(on_screen(&s, "fsr"), "0 on, 1 other"));
+        assert(gui_settings_set(&s, "fsr", "1") && gui_settings_item_toggle(&s, f, 0, NULL) &&
+               !gui_settings_value(&s, "fsr") && !gui_settings_item_toggle(&s, f, 3, NULL)); /* no such item */
+        /* a game's own: what it has of the launcher's, until a box of its own */
+        assert(gui_settings_item_on(&s, h, 1, "sync") && !gui_settings_item_on(&s, h, 1, NULL));
+        assert(gui_settings_item_toggle(&s, h, 0, "sync") && !strcmp(gui_settings_value(&s, "hooks_off"), "sync,libc"));
+        gui_settings_items_said(&s, h, "sync,libc", said, sizeof said);
+        assert(!strcmp(said, "2 on"));
         gui_settings_free(&s);
     }
     puts("GUI settings: the runtime's list, picks and a run's options passed");

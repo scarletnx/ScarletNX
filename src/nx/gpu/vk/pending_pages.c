@@ -6,6 +6,7 @@
 #include "nx/gpu/vk/pending_pages.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/tracy.h"
 #include "common/platform/thread.h" /* PMutex */
 
 /* Changes take g_pend_lk as well as the vk_lock their callers hold: a thread without vk_lock (a change of guest memory
@@ -63,6 +64,8 @@ static void leaf_set(PendLeaf** leaf, u64 p, u32 v) {
     if (!l) {
         if (!v) return;
         if (!(l = leaf[p / LEAF_PAGES] = calloc(1, sizeof *l))) fatal("vulkan: out of memory for pending result pages");
+        static const char k_grown[] = "vk mem pending pages leaf made";
+        SNX_MSG(k_grown, sizeof k_grown - 1);
     }
     group_down(l, i / 64);
     before = l->count[i];
@@ -86,7 +89,11 @@ static void leaves_add(PendLeaf** leaf, u64 first, u64 last, int delta) {
     for (u64 p = first; p <= last;) {
         const u64 li = p / LEAF_PAGES, end = li * LEAF_PAGES + LEAF_PAGES - 1, stop = last < end ? last : end;
         PendLeaf* l = leaf[li];
-        if (!l && !(l = leaf[li] = calloc(1, sizeof *l))) fatal("vulkan: out of memory for pending result pages");
+        if (!l) {
+            if (!(l = leaf[li] = calloc(1, sizeof *l))) fatal("vulkan: out of memory for pending result pages");
+            static const char k_grown[] = "vk mem pending pages leaf made";
+            SNX_MSG(k_grown, sizeof k_grown - 1);
+        }
         i64 pages = 0;
         for (u32 i = (u32)(p % LEAF_PAGES), e = (u32)(stop % LEAF_PAGES); i <= e;) {
             const u32 g = i / 64;

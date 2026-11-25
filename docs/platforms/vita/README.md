@@ -16,7 +16,7 @@
 data folder's `recompiled/<title ID>/` (`app/` holds the package, `ux0/` the writable storage), the eboot's code is
 compiled ahead of time into `<title ID>_code.so`, and a copy of the runtime named after the title ID plays it; its
 `<title ID>.ini` says `system=vita`, which the launcher and a build's deploy pick the driver by. Code
-the offline pass didn't find is compiled at run time by the LLVM backend's executor, and the addresses it compiled are
+the offline pass didn't find is compiled at run time by the recompiler's executor, and the addresses it compiled are
 kept as hints (`<title ID>.hints`) for the next offline compile.
 
 ```sh
@@ -61,13 +61,13 @@ and plays its sound test.
 | Part | Files |
 | --- | --- |
 | VPK, SELF and ELF loading (zip and zlib, relocations, imports patched to SVCs by index) | `src/vita/loader/` |
-| The offline compiler and the module it makes (the A57-profile AArch32 backend, `src/common/cpu/arm/`) | `src/vita/aot/` |
+| The offline compiler and the module it makes: the host's native back end's blocks (the A9's, chained: `src/common/cpu/arm/codegen.h`), as discovery finds them, and LLVM's where it refuses one, or all of them on a host without one or with `--keep-ir` (the recompile says how many each made, and why) | `src/vita/aot/` |
 | Process, threads (cooperative, one host thread), waits, memory, the dispatcher, run-time compiles | `src/vita/runtime/` |
 | The system libraries, answered by NID | `src/vita/hle/` (`kernel.c`, `io.c`, `ctrl.c`, `display.c`, `audio.c`, `misc.c`, `gxm.c`, `fiber.c`, `ngs.c`) |
 | The game's own C and C++ libraries (SceLibc, SceLibm, SceLibstdcxx) and the Clib, malloc on a heap in guest memory | `src/vita/hle/libc.c`, `heap.c` |
-| sceGxm on Vulkan: guest memory imported with `VK_EXT_external_memory_host`, USSE programs translated to SPIR-V through `src/common/utilities/spirv_emit.c`, decoded by the decoder `tools/decodetree` makes from `usse.decode` | `src/vita/gpu/` (`render.c`, `usse.c`, `usse.decode`, `vk.c`, `present.c`) |
+| sceGxm on Vulkan: guest memory imported with `VK_EXT_external_memory_host` (a driver without it, as Mali's, works on a host visible copy of each memory block the game maps, which takes the pages the game wrote before the GPU reads them and goes back to guest memory, the rows the GPU wrote alone, when its submission is done), USSE programs translated to SPIR-V through `src/common/utilities/spirv_emit.c`, decoded by the decoder `tools/decodetree` makes from `usse.decode` | `src/vita/gpu/` (`render.c`, `usse.c`, `usse.decode`, `vk.c`, `present.c`) |
 | Movies: SceMp4 (MP4 demuxed from memory with libavformat, the file read through the game's callbacks), sceAvcdec (H.264 with libavcodec, the picture laid out in the guest's buffer on the GPU, `picture.comp`), sceAudiodec (AAC and ATRAC9) and SceCodecEngine's memory | `src/vita/hle/` (`mp4.c`, `videodec.c`, `audiodec.c`) |
-| Guest memory's writes: the pages the renderer copied to the GPU (textures, color surfaces, the framebuffer) write-protected, a fault marking a page written and letting the write through, so unchanged memory isn't copied again (`mprotect` or `VirtualProtect`, and the fault handler) | `src/vita/runtime/watch.c` |
+| Guest memory's writes: the pages the renderer copied to the GPU (textures, color surfaces, the framebuffer; every block the GPU uses where it works on copies) write-protected, a fault marking a page written and letting the write through, so unchanged memory isn't copied again (`mprotect` or `VirtualProtect`, and the fault handler) | `src/vita/runtime/watch.c` |
 | Keyboard, mouse (touch), gamepads and scripted presses (`--script=ms:hex,...`, SceCtrl's button bits, each held for `--press-len=` ms) | `src/vita/platform/input.c` |
 
 Esc twice within 3 seconds ends the game, a first press warning on the terminal and in a line over the game, as a

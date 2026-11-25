@@ -34,6 +34,30 @@ class ArchitectureTests(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn('src/nx/gpu/check.c:2: getenv("SNX_CHECK"): SNX_CHECK is not the system\'s', errors[0])
         self.assertIn('src/nx/runtime/settings.txt', errors[0])
+        self.assertIn('--key=value', errors[0])
+        self.assertNotIn('no settings table', errors[0])
+
+    def test_a_driver_takes_its_settings(self):
+        files = {name: 'int main(void) { return settings_arg(0, 0, 0) != 0; }\n' for name in architecture.DRIVER_MAINS}
+
+        def driver_errors(given):
+            with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
+                root = Path(temporary)
+                for name, text in given.items():
+                    (root / name).parent.mkdir(parents=True, exist_ok=True)
+                    (root / name).write_text(text, encoding='ascii')
+                return architecture.check_driver_settings(root)
+
+        self.assertEqual(driver_errors(files), [])
+        for name in architecture.DRIVER_MAINS:
+            # no settings taken, a comment naming the function, and a main gone
+            bare = {**files, name: 'int main(void) { return 0; } /* settings_arg( */\n'}
+            errors = driver_errors(bare)
+            self.assertEqual(len(errors), 1)
+            self.assertTrue(errors[0].startswith(f'{name}: it takes no setting'))
+            gone = {k: v for k, v in files.items() if k != name}
+            missing = f'{name}: missing: DRIVER_MAINS names the mains that take the settings'
+            self.assertEqual(driver_errors(gone), [missing])
 
     def test_the_systems_variables_pass(self):
         files = {
@@ -90,6 +114,33 @@ class ArchitectureTests(unittest.TestCase):
         )
         both = 'void o(void) { SDL_CreateWindowAndRenderer("t", 1, 1, 0, &w, &r); }\n'
         self.assertEqual(len(self.window_errors({'src/nx/a.c': both})), 1)
+
+    def detach_errors(self, files):
+        with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
+            root = Path(temporary)
+            for name, text in files.items():
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text(text, encoding='ascii')
+            return architecture.check_detached_threads(root)
+
+    def test_a_detached_thread_is_rejected(self):
+        errors = self.detach_errors(
+            {
+                'src/gui/a.c': 'void f(SDL_Thread* t) {\n    SDL_DetachThread(t);\n}\n',
+                'src/gui/b.cpp': 'void g() { SDL_DetachThread (0); }\n',
+                'src/gui/e.m': 'void i(void) { SDL_DetachThread(0); }\n',
+            }
+        )
+        self.assertEqual(len(errors), 3)
+        self.assertIn('src/gui/a.c:2: SDL_DetachThread reads a thread that may have ended and been freed', errors[0])
+        self.assertIn('src/gui/b.cpp:1: SDL_DetachThread', errors[1])
+
+    def test_a_joined_thread_and_a_comment_pass(self):
+        files = {
+            'src/gui/c.c': '/* not SDL_DetachThread(t) */\nvoid h(SDL_Thread* t) { SDL_WaitThread(t, 0); }\n',
+            'src/gui/d.c': 'const char* s = "SDL_DetachThread(t)";\nint My_SDL_DetachThread_count;\n',
+        }
+        self.assertEqual(self.detach_errors(files), [])
 
     def thread_errors(self, files):
         with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:

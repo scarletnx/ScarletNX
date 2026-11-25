@@ -22,6 +22,7 @@
 #include "nx/hle/services/nvdrv.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/tracy.h"
 
 static u64 up(u64 v, u64 a) { return (v + a - 1) / a * a; }
 
@@ -252,6 +253,15 @@ static int dma_fail(const GpuDmaOp* o, const char* what, u64 bytes) {
 
 /* o's lines as need says; a pitch linear source made at submission read from snap_skip bytes into its copy */
 static int dma(const GpuDmaOp* o, const DmaNeeds* need, u64 snap_skip) {
+    /* Why this copy was needed: the code is the path taken, the text names it. */
+    static const char* const why[] = {"lines with their pitch", "a fill of the destination",
+                                      "a copy made at submission", "the submitter's snapshot", "sparse lines packed",
+                                      "block linear source rows", "a component remap"};
+    int path = o->fill ? 1 : o->snap_id ? 2 : o->snap ? 3 : need->sparse ? 4
+               : o->src.bl ? 5 : (o->shuffle && o->remap) ? 6 : 0;
+    SNX_ZONE_TV(z_dma, "vk pres dma", path, "%s: %s/%s %u B/line, %u lines, %llu+%llu B", why[path],
+                o->src.bl ? "BL" : "PL", o->dst.bl ? "BL" : "PL", o->line_out, o->lines,
+                (unsigned long long)need->sspan, (unsigned long long)need->dlen);
     u32 lines = o->lines, sv = need->sv, dv = need->dv;
     u32 pa = need->sgobs * 64, pb = need->dgobs * 64, pc = (u32)up(o->line_out, 4);
     int remap = o->remap && (o->fill || o->shuffle);
@@ -381,6 +391,7 @@ static int dma(const GpuDmaOp* o, const DmaNeeds* need, u64 snap_skip) {
         }
         vk_tex_dma_seen(hit, hits);
         g_dma.moved += (o->src.bl ? need->stiles : sspan) + dlen;
+        SNX_PLOT("vk pres dma bytes", (double)((o->src.bl ? need->stiles : sspan) + dlen));
     } else
         dma_fail(o, "takes moves past the device's limits (said above) over", dlen);
     vk_own_res_unref(d);
@@ -450,6 +461,9 @@ static u64 dma_need(const void* user, u32 y, u32 lines) {
 static int dma_bands(const GpuDmaOp* o) {
     int sparse = src_sparse(o);
     DmaNeeds whole = dma_needs(o, sparse);
+    if (whole.scratch > g_vk.alloc_cap / VK_PART_SHARE)
+        SNX_MSG("vk pres: a DMA copy split into bands, scratch over the allocation's share",
+                sizeof("vk pres: a DMA copy split into bands, scratch over the allocation's share") - 1);
     VkBands bands = {g_vk.alloc_cap,
                      o->dst.bl ? 8u << o->dst.bh : 1,
                      o->dst.bl ? o->dst.oy : 0,

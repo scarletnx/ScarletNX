@@ -4,6 +4,7 @@
    and ui.c's atlas and text */
 #include "nx/runtime/platform/overlay.h"
 #include <math.h>
+#include "nx/runtime/platform/hud.h"
 #include "nx/runtime/platform/stats.h"
 #include "nx/runtime/platform/prepare_screen.h"
 #include "nx/runtime/platform/wait_screen.h"
@@ -100,6 +101,36 @@ static struct {
     char applied[128]; /* key=value, as the Settings page gave it */
     _Atomic int changes;
 } picks;
+/* unattended.c's, as the Save states page asks for them: the slots' recordings in frames, what runs, the last ask */
+static struct {
+    int frames[10], recording, replaying, asked_record, asked_replay;
+    const char* refuse; /* why the next ask is refused, NULL none */
+} tas = {.asked_record = -1, .asked_replay = -1};
+int unattended_recording(void) { return tas.recording; }
+int unattended_replaying(void) { return tas.replaying; }
+int unattended_slot_frames(int slot, char* why, size_t n) {
+    if (n) why[0] = 0;
+    if (tas.frames[slot] < 0) snprintf(why, n, "slot %d's file is no recording: line 1", slot);
+    return tas.frames[slot];
+}
+int unattended_record_from_menu(int slot, char* why, size_t n) {
+    tas.asked_record = slot;
+    if (tas.refuse) {
+        snprintf(why, n, "%s", tas.refuse);
+        return 0;
+    }
+    tas.recording = slot;
+    return 1;
+}
+int unattended_replay_from_menu(int slot, char* why, size_t n) {
+    tas.asked_replay = slot;
+    if (tas.refuse) {
+        snprintf(why, n, "%s", tas.refuse);
+        return 0;
+    }
+    tas.replaying = slot;
+    return 1;
+}
 int ini_picked(const char* k) { return picks.key && !strcmp(picks.key, k); }
 void ini_unpick(const char* k) {
     snprintf(picks.unpicked, sizeof picks.unpicked, "%s", k);
@@ -161,9 +192,9 @@ static int capture(int ask) {
 }
 static const Renderer renderer = {.capture = capture};
 const Renderer* g_renderer = &renderer;
-const IniOpt g_backend_ini[] = {
-    {"touch", "2", NULL, INI_INT, 0, &touch, 0, 2, NULL, "Touch screen", "Off|Fingers|Fingers and mouse", 0, 0, 0},
-    {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0}};
+const IniOpt g_backend_ini[] = {{"touch", "2", NULL, INI_INT, 0, &touch, 0, 2, NULL, "Touch screen",
+                                 "Off|Fingers|Fingers and mouse", 0, 0, 0, NULL},
+                                {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0, NULL}};
 /* each player's own, two of them here: swap and vibration, every player's until picked, and a map */
 static SnxPlayerConfig players[2];
 static int player_maps_stored;
@@ -173,18 +204,19 @@ void gamepad_store_player_map(int p) {
     ++player_maps_stored;
 }
 const IniOpt g_gamepad_players_ini[] = {{"gamepad_p1_swap_ab", "-1", NULL, INI_INT, 0, &g_settings.player_swap_a_b[0],
-                                         -1, 1, NULL, "Swap A/B", "As All|Off|On", 0, 0, 0},
+                                         -1, 1, NULL, "Swap A/B", "As All|Off|On", 0, 0, 0, NULL},
                                         {"gamepad_p1_rumble", "-10", NULL, INI_INT, 0, &g_settings.player_vibration[0],
-                                         -10, 100, NULL, "Vibration", "As All|Off|#%", 10, 0, 0},
-                                        {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0}};
+                                         -10, 100, NULL, "Vibration", "As All|Off|#%", 10, 0, 0, NULL},
+                                        {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0, NULL}};
 const IniOpt g_gamepad_ini[] = {
-    {"gamepad_swap_ab", "0", NULL, INI_INT, 0, &g_settings.swap_a_b, 0, 1, NULL, "Swap A/B", "Off|On", 0, 0, 0},
+    {"gamepad_swap_ab", "0", NULL, INI_INT, 0, &g_settings.swap_a_b, 0, 1, NULL, "Swap A/B", "Off|On", 0, 0, 0, NULL},
     {"gamepad_deadzone", "20", NULL, INI_INT, 0, &g_settings.stick_dead_zone, 0, 90, NULL, "Stick dead zone", "#%", 5,
-     0, 0},
-    {"gamepad_rumble", "100", NULL, INI_INT, 0, &g_settings.vibration, 0, 100, NULL, "Vibration", "Off|#%", 10, 0, 0},
+     0, 0, NULL},
+    {"gamepad_rumble", "100", NULL, INI_INT, 0, &g_settings.vibration, 0, 100, NULL, "Vibration", "Off|#%", 10, 0, 0,
+     NULL},
     {"gamepad_background", "0", NULL, INI_INT, 0, &g_settings.background_input, 0, 1, NULL, "Background input",
-     "Off|On", 0, 0, 0},
-    {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0}};
+     "Off|On", 0, 0, 0, NULL},
+    {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0, NULL}};
 static char stored[64], log_[512]; /* the last key kept, and every key=value since log_ was emptied */
 static void store(const char* key, const char* value) {
     size_t n = strlen(log_);
@@ -341,7 +373,7 @@ static int draw_fades(u64 now_ns, SnxUiFade fades[SNX_UI_FADES]) {
 /* the keys page's first screen: a build with the client holds its capture's row, which takes the last one's place */
 #if defined(SNX_TRACY)
 enum { KEYS_TRACY_ROWS = 1 };
-static const char* const KEYS_LAST = "Tracy, 60 s";
+static const char* const KEYS_LAST = "Tracy capture";
 static const char* const KEYS_UNDER = "quit the game"; /* under the fold, as its icon is */
 #else
 enum { KEYS_TRACY_ROWS = 0 };
@@ -1479,6 +1511,15 @@ int main(void) {
         overlay_move(1); /* Eden room: a text with no words */
         picks.applied[0] = 0;
         assert(overlay_select() == OVERLAY_NONE && overlay_side(1) == OVERLAY_NONE && !picks.applied[0]);
+        assert(overlay_back() == OVERLAY_NONE);
+        overlay_move(
+            1); /* Debug's first, a row of boxes (a set of items): the menu reads its value, the launcher sets it */
+        g_settings.fsr_input_conventions = 9;
+        assert(overlay_select() == OVERLAY_NONE);
+        draw();
+        assert(text_at(1, 3, "\xFE FSR input conventions") && shows("9") && !shows("< 9 >") && !shows("< 9 * >"));
+        assert(overlay_select() == OVERLAY_NONE && overlay_side(1) == OVERLAY_NONE && !picks.applied[0]);
+        g_settings.fsr_input_conventions = 0;
         assert(overlay_back() == OVERLAY_NONE && overlay_back() == OVERLAY_NONE);
         draw();
         assert(text_at(1, 0, "SCARLETNX  /  MENU") && overlay_select() == OVERLAY_NONE); /* on Settings again */
@@ -1882,9 +1923,9 @@ int main(void) {
     pad_names[0] = pad_names[2];
     draw();
     assert(text_at(1, 1, "A controller with a very lo and 2 more"));
-    /* Button map: NieR's CONTROLS over the picture, no presets, the first control focused; its button changed (the map
-       the player's from then on), a press on the pad while waiting swapping two, that press no menu key; Back goes up
-       to its item */
+    /* Button map: the CONTROLS page over the picture, no presets, the first control focused; its button changed (the
+       map the player's from then on), a press on the pad while waiting swapping two, that press no menu key; Back goes
+       up to its item */
     pad_names[0] = "Xbox Wireless Controller";
     pad_names[1] = pad_names[2] = NULL;
     pad_of_player[0] = 0;
@@ -2042,6 +2083,78 @@ int main(void) {
         draw();
         assert(shows("SCARLETNX  /  MENU"));
     }
+    /* the page's rows after the slots: player 1's input recorded and played. The arrows choose a slot, round, and
+       nothing is asked of the recorder before Enter; a slot that has a recording is asked over first, and what is
+       refused is said */
+    {
+        OverlaySlot sl[3];
+        memset(sl, 0, sizeof sl);
+        tas.frames[2] = 60;
+        tas.frames[4] = -1;
+        assert(overlay_select() == OVERLAY_NONE && overlay_states_shown());
+        overlay_slots_set(sl, 3);
+        overlay_move(3); /* Record input */
+        draw();
+        assert(shows("SCARLETNX  /  SAVE STATES") && shows("\xFE Record input") && shows("\xFE Play input") &&
+               shows("Left and Right choose a slot, Enter takes it."));
+        assert(text_at(3, 0, "") || 1);
+        assert(tas.asked_record == -1);
+        overlay_side(1); /* slot 1, free: nothing asked of the recorder yet */
+        draw();
+        assert(shows("Slot 1") && tas.asked_record == -1);
+        overlay_side(1);
+        draw();
+        assert(shows("Slot 2, over its recording") && tas.asked_record == -1);
+        assert(overlay_select() == OVERLAY_NONE); /* it has one: asked, Cancel in focus */
+        draw();
+        assert(shows("SCARLETNX  /  RECORD OVER SLOT 2?") && shows("Its recording, 60 frames, is replaced.") &&
+               shows_as("\xFE Record", 0, FAILURE) && tas.asked_record == -1);
+        assert(overlay_select() == OVERLAY_NONE); /* Cancel */
+        draw();
+        assert(shows("SCARLETNX  /  SAVE STATES") && tas.asked_record == -1 && shows("Off"));
+        overlay_side(1);
+        overlay_side(1);
+        assert(overlay_select() == OVERLAY_NONE);
+        overlay_move(-1);
+        assert(overlay_select() == OVERLAY_NONE && tas.asked_record == 2 && tas.recording == 2);
+        draw();
+        assert(shows("SCARLETNX  /  SAVE STATES") && shows("Slot 2, recording"));
+        assert(overlay_select() == OVERLAY_NONE && tas.asked_record == 0 && !tas.recording); /* Enter again ends it */
+        /* a free slot is recorded at once, and one that is no recording asks */
+        overlay_side(1);
+        assert(overlay_select() == OVERLAY_NONE && tas.recording == 1 && tas.asked_record == 1);
+        tas.recording = 0;
+        overlay_side(1); /* the rows' choices are as the page opened: this one's slot 1 is chosen already */
+        /* Play input: only the slots with a recording, round through none */
+        overlay_move(1);
+        overlay_side(1);
+        draw();
+        assert(shows("Slot 2") && tas.asked_replay == -1);
+        overlay_side(1);
+        draw();
+        assert(shows("Off"));
+        overlay_side(-1);
+        draw();
+        assert(shows("Slot 2"));
+        tas.refuse = "Slot 2's recording ends at frame 59: the game is at frame 90";
+        assert(overlay_select() == OVERLAY_NONE && tas.asked_replay == 2 && !tas.replaying);
+        draw();
+        assert(shows("Slot 2's recording ends at frame 59: the game is at frame 90"));
+        tas.refuse = NULL;
+        overlay_side(1);
+        overlay_side(1);
+        overlay_side(-1);
+        assert(overlay_select() == OVERLAY_NONE && tas.replaying == 2);
+        draw();
+        assert(shows("Slot 2, playing"));
+        overlay_move(1); /* Back */
+        assert(overlay_select() == OVERLAY_NONE && !overlay_states_shown());
+        draw();
+        assert(shows("SCARLETNX  /  MENU"));
+        toasts_gone();
+        memset(&tas, 0, sizeof tas);
+        tas.asked_record = tas.asked_replay = -1;
+    }
     /* a notification over the game, closed or open, until its time is up */
     toasts_gone();
     overlay_state_saved("slot 2", 0, 1000);
@@ -2152,6 +2265,51 @@ int main(void) {
         g_settings.stats = 0;
         draw();
         assert(qv(&list.q[0]).x == cw && qv(&list.q[0]).y == ch);
+    }
+    /* the Debug list, under the stats' box in its column: the band goes under it, half a line apart, and back under the
+       stats' box once the list is empty; with no stats' box the list is at the top's middle, where a short band does not
+       reach it and a long one goes under it; in the top right corner, under the list where that is, when there is no room
+       under it */
+    {
+        static const int all[4] = {0, 0, SW, SH}, narrow[4] = {0, 0, 900, SH};
+        static SnxUiQuad kept[1024], under[1024];
+        SnxUiList box_quads = {kept, 0, 1024}, list_quads = {under, 0, 1024};
+        const IniOpt* corner = ini_find(g_display_ini, "stats_corner");
+        float box[4], debug[4], cw = (float)(8 * stats_scale(s)), ch = (float)(16 * stats_scale(s));
+        int h, short_x, short_y, short_s;
+        assert(!hud_box_drawn(debug));
+        g_settings.stats = 1;
+        stats_corner_set(corner, "tl");
+        stats_draw(&box_quads, all, s, 1000);
+        assert(stats_box_drawn(box));
+        hud_debug_set("log=2, vk_validation=1");
+        hud_draw(&list_quads, all, stats_scale(s), box, 0);
+        assert(hud_box_drawn(debug) && debug[0] == box[0] && debug[1] == box[1] + box[3] + ch / 2);
+        draw();
+        assert(qv(&list.q[0]).x == box[0] && qv(&list.q[0]).y == debug[1] + debug[3] + ch / 2);
+        h = (int)(debug[1] + debug[3]) + 4; /* a picture that ends four pixels under the list */
+        overlay_place(SW, h, &short_x, &short_y, &short_s);
+        list.n = 0;
+        overlay_draw(&list, SW, h, 0);
+        assert(qv(&list.q[list.n - 1]).x + qv(&list.q[list.n - 1]).w == (float)(SW - 8 * stats_scale(short_s)));
+        hud_debug_set("");
+        draw();
+        assert(qv(&list.q[0]).y == box[1] + box[3] + ch / 2);
+        g_settings.stats = 0;
+        hud_debug_set("log=2, vk_validation=1");
+        list_quads.n = 0;
+        hud_draw(&list_quads, all, stats_scale(s), NULL, 0);
+        assert(hud_box_drawn(debug) && debug[0] > cw + 15 * cw);
+        draw();
+        assert(qv(&list.q[0]).x == cw && qv(&list.q[0]).y == ch);
+        list_quads.n = 0;
+        hud_draw(&list_quads, narrow, stats_scale(s), NULL, 0);
+        assert(hud_box_drawn(debug) && debug[0] < 40 * cw);
+        overlay_toast(GUI_ICON_FIRST, "a notification whose words reach the list in the middle", 1000);
+        draw();
+        assert(qv(&list.q[0]).x == cw && qv(&list.q[0]).y == debug[1] + debug[3] + ch / 2);
+        overlay_toast(GUI_ICON_FIRST, "", 1000);
+        hud_debug_set("");
     }
     toasts_gone();
     /* a notice from any thread (RenderDoc's): the notification once the next frame draws it, the last given before
@@ -2460,7 +2618,7 @@ int main(void) {
         float top, row_h;
         int total, i, close_band = -1, share_band = -1;
         unsigned plain, focused;
-        SnxOverlayError panel = panel_of("ENDER MAGNOLIA", "vulkan: the GPU device was lost (driver reset or crash)",
+        SnxOverlayError panel = panel_of("FIXTURE TITLES", "vulkan: the GPU device was lost (driver reset or crash)",
                                          "Share Log sends the game's log, which has what ran last.", NULL, NULL);
         list.n = 0;
         overlay_error_draw(&list, SW, SH, &panel);
@@ -2473,7 +2631,7 @@ int main(void) {
                qv(&list.q[0]).rgba >> 24 == 0xFFu);
         assert(top >= 0 && top + qv(&list.q[0]).h <= (float)SH && qv(&list.q[1]).y == top && qv(&list.q[1]).h == row_h);
         py = (int)top;
-        assert(text_at(1, 0, "SCARLETNX  /  STOPPED") && text_at(1, 1, "ENDER MAGNOLIA"));
+        assert(text_at(1, 0, "SCARLETNX  /  STOPPED") && text_at(1, 1, "FIXTURE TITLES"));
         assert(
             text_at(1, 3, "vulkan: the GPU device was lost (driver reset or crash)")); /* one row, as wide as it is */
         i = glyph_at(1, 3, 'v');

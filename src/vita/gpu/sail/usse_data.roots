@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# The USSE's moves (usse_data.sail), which were usse.c's vmov, vpck, limm, smlsi and smbo
+op VMOV U_VMOV
+op VPCK U_VPCK
+op LIMM U_LIMM
+op SMLSI U_SMLSI
+op SMBO U_SMBO
+op NOTHING U_PHAS U_NOP U_BR U_SPEC

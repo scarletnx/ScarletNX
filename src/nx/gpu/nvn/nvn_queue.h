@@ -5,6 +5,7 @@
 #ifndef SNX_NVN_QUEUE_H
 #define SNX_NVN_QUEUE_H
 #include "common/cpu/aarch64/cpu.h"
+#include "nx/runtime/platform/tracy.h"
 
 /* the file's state, g_nvn.queue (gpu/nvn/nvn_state.h): the submissions made; the window's frame period on the pacer's
    clock (atomic), which bounds a wait for the display; whether the display is stuck (atomic: it didn't show a present
@@ -22,5 +23,16 @@ typedef struct {
    plat_ns, from where a loaded save state's left it. A state from a process that had run longer than this one has
    (plat_ns counts from the process's start) holds times this one's plat_ns hasn't reached yet, a wait for each */
 u64 nvn_now(void);
+
+/* ---- the last NVN queue operation of the calling thread (nvn_queue.c) ----
+   The runtime keeps short text for the last queue operation: present, wait, fence, finish, acquire or submit. The
+   replay zone and the present and wait messages add this text. The setter builds the text only while a profiler
+   client is attached. The text is shorter than 128 bytes. Use it at once: it belongs to this thread and the next
+   call can change it. nvn_replay.c uses both functions for its replay zone. */
+#define NVN_QUEUE_CONTEXT_SIZE 128
+void nvn_queue_context_set(const char* fmt, ...);
+/* the arguments too are read only with a client, so a caller's lookup for the text costs nothing without one */
+#define nvn_queue_context_set(...) (snx_tracy_attached() ? nvn_queue_context_set(__VA_ARGS__) : (void)0)
+const char* nvn_queue_context(void);
 
 #endif

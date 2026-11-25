@@ -24,6 +24,7 @@
 #include "nx/hle/kernel/kernel.h"
 #include "nx/runtime/clock.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/tracy.h"
 #include <stdlib.h>
 #include <stdatomic.h>
 
@@ -96,12 +97,20 @@ static SyncObj* find(u64 addr) {
     pm_unlock(&g_sync.lk);
     return o;
 }
-/* o's mutex, waited for off the core when another thread holds it */
+/* o's mutex, waited for off the core when another thread holds it. The wait is never inside a zone: the thread
+   leaves the core, so its duration is wall time the guest did not spend on the CPU. It is measured and plotted after
+   the thread runs again, which says how long the contention blocked it */
 static void lock(SyncObj* o) {
     if (pm_trylock(&o->m)) return;
+#if defined(SNX_TRACY)
+    u64 waited = plat_ns(); /* a duration: the monotonic clock, not the wall clock */
+#endif
     hook_wait_begin();
     pm_lock(&o->m);
     hook_wait_end();
+#if defined(SNX_TRACY)
+    SNX_PLOT("hook mutex contention ms", (double)(plat_ns() - waited) / 1e6);
+#endif
 }
 
 /* ---- std::mutex */
@@ -110,8 +119,11 @@ void sync_mutex_lock(CPU* c, u64 m) {
     lock(obj(m));
 }
 int sync_mutex_try_lock(CPU* c, u64 m) {
+    int got;
     (void)c;
-    return pm_trylock(&obj(m)->m) != 0;
+    got = pm_trylock(&obj(m)->m) != 0;
+    SNX_ZONE_V(z, "hook mutex try", (u64)got); /* frequent decision: 1 acquired, 0 busy */
+    return got;
 }
 void sync_mutex_unlock(CPU* c, u64 m) {
     (void)c;
@@ -141,14 +153,18 @@ void sync_recursive_lock(CPU* c, u64 m) {
     o->depth = 1;
 }
 int sync_recursive_try_lock(CPU* c, u64 m) {
+    int got;
     (void)c;
     SyncObj* o = obj(m);
     u32 me = plat_tid();
     if (atomic_load_explicit(&o->owner, memory_order_relaxed) == me) {
         o->depth++;
+        SNX_ZONE_T(z, "hook recursive try", "reentrant"); /* rare decision */
         return 1;
     }
-    if (!pm_trylock(&o->m)) return 0;
+    got = pm_trylock(&o->m) != 0;
+    SNX_ZONE_V(z, "hook recursive try", (u64)got); /* frequent: 1 acquired, 0 busy */
+    if (!got) return 0;
     atomic_store_explicit(&o->owner, me, memory_order_relaxed);
     o->depth = 1;
     return 1;
@@ -171,21 +187,45 @@ void sync_cond_notify_all(CPU* c, u64 cv) {
     pc_broadcast(&obj(cv)->c);
 }
 void sync_cond_wait(CPU* c, u64 cv, u64 lk) {
+#if defined(SNX_TRACY)
+    u64 waited; /* only the wait-time plot reads the clock */
+#endif
     SyncObj* o = obj(cv);
     SyncObj* m = obj(snx_ld_le64(hook_host(c, lk)));
+#if defined(SNX_TRACY)
+    waited = plat_ns(); /* a duration: the monotonic clock */
+#endif
     hook_wait_begin();
     pc_wait(&o->c, &m->m, -1);
     hook_wait_end();
+#if defined(SNX_TRACY)
+    SNX_PLOT("hook cv wait ms", (double)(plat_ns() - waited) / 1e6);
+#endif
 }
 /* until the system_clock time point at ns nanoseconds since 1970 (system_clock::now's host clock) */
 void sync_cond_timed_wait(CPU* c, u64 cv, u64 lk, i64 ns) {
+#if defined(SNX_TRACY)
+    u64 waited; /* only the wait-time plot reads the clock */
+#endif
     SyncObj* o = obj(cv);
     SyncObj* m = obj(snx_ld_le64(hook_host(c, lk)));
+    /* the deadline is a system_clock time point and must stay on the wall clock */
     i64 left = ns - plat_unix_ns();
-    if (left <= 0) return;
+    if (left <= 0) {
+        SNX_MSG("hook cv already expired", sizeof("hook cv already expired") - 1); /* rare decision */
+        return;
+    }
+#if defined(SNX_TRACY)
+    waited = plat_ns();
+#endif
     hook_wait_begin();
     pc_wait(&o->c, &m->m, left);
     hook_wait_end();
+#if defined(SNX_TRACY)
+    SNX_PLOT("hook cv timed wait ms", (double)(plat_ns() - waited) / 1e6);
+#endif
+    if (snx_tracy_attached() && plat_unix_ns() >= ns)
+        SNX_MSG("hook cv timed out", sizeof("hook cv timed out") - 1); /* rare outcome */
 }
 
 /* ---- the C library's waits on a std::mutex of the family's (libc++'s inlined waits), on the host as the condition
@@ -239,9 +279,21 @@ i64 sync_steady_now(CPU* c) {
 }
 /* this_thread::sleep_for: the duration's nanoseconds at d, slept off the core */
 void sync_sleep_for(CPU* c, u64 d) {
+#if defined(SNX_TRACY)
+    u64 waited; /* only the sleep-time plot reads the clock */
+#endif
     i64 ns = (i64)snx_ld_le64(hook_host(c, d));
-    if (ns <= 0) return;
+    if (ns <= 0) {
+        SNX_MSG("hook sleep none", sizeof("hook sleep none") - 1); /* rare decision */
+        return;
+    }
+#if defined(SNX_TRACY)
+    waited = plat_ns(); /* a duration: the monotonic clock */
+#endif
     hook_wait_begin();
     plat_sleep_ns(ns);
     hook_wait_end();
+#if defined(SNX_TRACY)
+    SNX_PLOT("hook sleep ms", (double)(plat_ns() - waited) / 1e6);
+#endif
 }

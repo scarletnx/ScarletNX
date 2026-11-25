@@ -72,8 +72,9 @@ def check_sources(repo):
 
 
 # The environment variables the code in src/ reads: the system's, SDL's and the package's (CLAUDE.md, "Settings, not
-# environment variables, in src/"). An option of a program in src/ is a setting of src/nx/runtime/settings.txt, or a
-# command-line option of a driver with no settings table
+# environment variables, in src/"). An option of a program in src/ is a setting of src/nx/runtime/settings.txt, a table
+# a driver for its own, which its command line takes by the key (--key=value) and the launcher passes; a run's inputs
+# (a file, a script of presses) are the driver's command line's alone
 ENV_SYSTEM = {
     'HOME',
     'USERPROFILE',
@@ -183,6 +184,34 @@ def call_arguments(source, start):
     return arguments
 
 
+# the programs of src/ with a command line of their own, each one's main by the path from the repository
+DRIVER_MAINS = (
+    'src/nx/runtime/main.c',
+    'src/gnuabi/runtime/main.c',
+    'src/3ds/runtime/main.c',
+    'src/vita/runtime/main.c',
+    'src/agb/runtime/main.c',
+    'src/nds/runtime/main.c',
+    'src/android/runtime/main.c',
+)
+
+
+def check_driver_settings(repo):
+    """every driver takes the settings of its tables by their keys (settings_arg), which the launcher passes it: no
+    option of a driver waits for a table of settings.txt to show in the menus"""
+    errors = []
+    for name in DRIVER_MAINS:
+        path = repo / name
+        if not path.is_file():
+            errors.append(f'{name}: missing: DRIVER_MAINS names the mains that take the settings')
+        elif 'settings_arg(' not in without_comments(path.read_text(encoding='utf-8', errors='replace')):
+            errors.append(
+                f'{name}: it takes no setting of src/nx/runtime/settings.txt: its options are settings, in a table of '
+                'their own, taken by the key (settings_arg, --key=value) and passed by the launcher'
+            )
+    return errors
+
+
 def check_environment(repo):
     """every read of an environment variable in src/ names one of ENV_SYSTEM, or a deprecated one in its own files"""
     errors = []
@@ -217,8 +246,29 @@ def check_environment(repo):
             )
             errors.append(
                 f'{shown}:{line}: {call}("{name}"): {name} is {where}. An option is a setting of '
-                'src/nx/runtime/settings.txt, or a command-line option of a driver with no settings table (CLAUDE.md, '
-                '"Settings, not environment variables, in src/")'
+                'src/nx/runtime/settings.txt, which every driver takes by its key (--key=value), and a run input its '
+                'command line alone (CLAUDE.md, "Settings, not environment variables, in src/")'
+            )
+    return errors
+
+
+DETACH = re.compile(r'(?<![A-Za-z0-9_])SDL_DetachThread\s*\(')
+
+
+def check_detached_threads(repo):
+    """no SDL_DetachThread in src/: it reads the thread's handle after it marks the thread detached, and a thread that
+    ends in between has freed the handle (SDL 3.4.18). A thread is waited for at its last answer (SDL_WaitThread)"""
+    errors = []
+    for path in sorted((repo / 'src').rglob('*')):
+        if path.suffix not in {'.c', '.h', '.cpp', '.hpp', '.inc', '.m', '.mm'}:
+            continue
+        source = without_comments(path.read_text(encoding='utf-8', errors='replace'), literals=False)
+        shown = path.relative_to(repo).as_posix()
+        for match in DETACH.finditer(source):
+            line = source.count('\n', 0, match.start()) + 1
+            errors.append(
+                f'{shown}:{line}: SDL_DetachThread reads a thread that may have ended and been freed (SDL 3.4.18): keep '
+                'the thread and wait for it when its last answer comes'
             )
     return errors
 
@@ -740,6 +790,9 @@ DRIVER_CHOICES = {
         'if (pstate.vendor == SNX_GPU_VENDOR_NVIDIA && snx_gpu_pstate_wanted(d->pstate, &pstate)) {': (
             "gpu_pstate's boost on NVIDIA needs VK_NV_low_latency2 enabled: the vendor's own interface"
         ),
+    },
+    'src/nx/gpu/vk/upscaler/dlss.cpp': {
+        'if (props.vendorID != 0x10DE) {': "DLSS is NVIDIA's own interface (Streamline): it runs on its GPUs alone",
     },
     'src/nx/gpu/vk/ui.c': {
         'switch (g_vk.props.vendorID) {': "a GPU that renders in tiles, which no Vulkan property tells: the hardware's "
@@ -1326,8 +1379,10 @@ def main():
         + check_driver_choices(args.repo.resolve())
         + check_include_flags(args.repo.resolve())
         + check_environment(args.repo.resolve())
+        + check_driver_settings(args.repo.resolve())
         + check_test_threads(args.repo.resolve())
         + check_window_pixels(args.repo.resolve())
+        + check_detached_threads(args.repo.resolve())
         + check_state_fns(args.repo.resolve())
         + check_dynamic_descriptors(args.repo.resolve())
         + check_packages(args.repo.resolve())

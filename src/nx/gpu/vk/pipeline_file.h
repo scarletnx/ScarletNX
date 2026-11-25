@@ -193,6 +193,14 @@ unsigned pf_pid(void);
    made it finds its cache there, another starts its file over (pf_open). legacy stays where it is. 1 copied (its bytes
    in *bytes), 0 nothing to copy (path there, or no legacy), -1 the copy failed (why) */
 int pf_adopt(const char* path, const char* legacy, u64* bytes, char* why, size_t n);
+/* 1 when commit (snx_build_commit's) names more than one source, so builds under it can differ: a tree with changes
+   ("-dirty"), and a build outside a git checkout ("unknown") */
+int pf_build_unnamed(const char* commit);
+/* the key's words for what snx_build_info leaves out, in out: for a commit that names more than one source, the
+   runtime's own bytes (self, its file mapped; NULL where it can't be read), as exe=<their hash>; and the translator's
+   compile flags, as flags=<their stamp>, where they aren't a normal build's (flags, cmake/shader_flags.cmake: "" for a
+   normal build). "" for a build its commit names whole */
+void pf_build_words(char* out, size_t n, const char* commit, const char* flags, const PFileMap* self);
 /* what differs between a file's key (key, len bytes) and want: "name A in the file, B now" for each, "; " between,
    in out (cut to n), and the count */
 int pf_key_diff(char* out, size_t n, const char* key, size_t len, const char* want);

@@ -7,6 +7,7 @@
    signature, by which the calls with variable arguments read them */
 #define _GNU_SOURCE
 #include "android/bridge/arm32.h"
+#include "android/bridge/bridge.h"
 #include "android/bridge/jni.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
@@ -67,12 +68,28 @@ static JNIEnv* env_of(void) {
     if (!t_env && !(*j.vm)->AttachCurrentThreadAsDaemon(j.vm, (void**)&t_env, NULL)) t_attached = true;
     return t_env;
 }
+static void locals_end(void* what) {
+    if (t_locals.items == what) {
+        t_locals.items = NULL;
+        t_locals.count = t_locals.capacity = 0;
+    }
+    free(what);
+}
+static void frames_end(void* what) {
+    if (t_frames.marks == what) {
+        t_frames.marks = NULL;
+        t_frames.count = t_frames.capacity = 0;
+    }
+    free(what);
+}
 void arm32_jni_thread_end(void) {
     if (t_attached) (*j.vm)->DetachCurrentThread(j.vm);
     t_attached = false;
     t_env = NULL;
-    t_locals.count = 0;
-    t_frames.count = 0;
+    bridge_thread_keep(locals_end, NULL);
+    locals_end(t_locals.items);
+    bridge_thread_keep(frames_end, NULL);
+    frames_end(t_frames.marks);
 }
 
 /* ---- references ---- */
@@ -95,6 +112,7 @@ static uint32_t local_ref(jobject o) {
         if (!items) abort();
         t_locals.items = items;
         t_locals.capacity = n;
+        bridge_thread_keep(locals_end, items);
     }
     t_locals.items[t_locals.count++] = o;
     return t_locals.count << 2 | REF_LOCAL;
@@ -595,6 +613,7 @@ static void jni_function(SnxArmCPU* c, void* data) {
             if (!marks) abort();
             t_frames.marks = marks;
             t_frames.capacity = n;
+            bridge_thread_keep(frames_end, marks);
         }
         t_frames.marks[t_frames.count++] = t_locals.count;
         R(0) = (uint32_t)(*e)->PushLocalFrame(e, (jint)R(1));

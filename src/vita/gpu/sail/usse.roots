@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# The USSE instructions usse.c emits from Sail (sailgen --gpu, usse.sail): each family's roots are its own file,
+# included here. "op FN OPCODE..." runs execute_FN for each of the decoder's patterns (usse.c's USSE_OPS, U_<NAME>),
+# their place in the line its Form()
+prefix sgu
+static Field Form Failed Fragment Secondary BankOf NumOf TypeOf ChannelOf WriteMask Rep Count KindOf
+include usse_data.roots
+include usse_float.roots
+include usse_int.roots
+include usse_test.roots
+include usse_mem.roots

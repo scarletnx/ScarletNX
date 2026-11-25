@@ -122,6 +122,12 @@ if(snx_vk_registry)
     list(APPEND snx_settings_args --vk-registry "${snx_vk_registry}")
 endif()
 
+# what the rows of boxes take their items from (settings.txt's boxes): the extension bans and the hook families, their
+# files as the readers read them
+set(snx_settings_bans "${PROJECT_SOURCE_DIR}/src/common/gpu/vk/extension_bans.txt")
+set(snx_settings_hooks "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
+list(APPEND snx_settings_args --bans "${snx_settings_bans}" --hooks "${snx_settings_hooks}")
+
 # a file for each game's table, runtime or vulkan (settings_<name>.c, settingsgen's table_file), named from
 # settings.txt's table lines
 file(STRINGS "${snx_settings_spec}" snx_settings_tables REGEX "^table ")
@@ -145,6 +151,7 @@ list(APPEND snx_settings_outputs ${snx_settings_runtime_files})
 add_custom_command(OUTPUT ${snx_settings_outputs}
     COMMAND snx-settingsgen --out "${snx_settings_out}" ${snx_settings_args} "${snx_settings_spec}"
     DEPENDS snx-settingsgen "${snx_settings_spec}" $<$<BOOL:${SNX_BUILD_NX}>:${snx_pipelines}> ${snx_vk_registry}
+            "${snx_settings_bans}" "${snx_settings_hooks}"
     COMMENT "Generating the settings" VERBATIM)
 add_custom_target(snx_settings_generated DEPENDS ${snx_settings_outputs})
 
@@ -160,12 +167,18 @@ target_include_directories(snx_settings PUBLIC "${snx_settings_out}" "${PROJECT_
 if(SNX_TRACY)
     target_compile_definitions(snx_settings PRIVATE SNX_TRACY=1)
 endif()
+if(SNX_VITA_LOCKSTEP)
+    target_compile_definitions(snx_settings PRIVATE SNX_VITA_LOCKSTEP=1)
+endif()
 add_dependencies(snx_settings snx_settings_generated)
 # a library, so a program links only the tables it uses (a test, one module's), and their set functions
 add_library(snx_settings_runtime STATIC ${snx_settings_runtime_files})
 set_target_properties(snx_settings_runtime PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS ON)
 if(SNX_TRACY)
     target_compile_definitions(snx_settings_runtime PRIVATE SNX_TRACY=1)
+endif()
+if(SNX_VITA_LOCKSTEP)
+    target_compile_definitions(snx_settings_runtime PRIVATE SNX_VITA_LOCKSTEP=1)
 endif()
 target_link_libraries(snx_settings_runtime PUBLIC snx_settings)
 set(SNX_SETTINGS_LLVM "${snx_settings_out}/settings_llvm.c")

@@ -327,10 +327,14 @@ static void release_thread(void* p) {
                                      memory_order_relaxed);
         pm_unlock(&g_rlock);
         SNX_ZONE(z_release, "vk release");
+        SNX_ZONE_TEXT(z_release, "gate %llu, compute %llu", (unsigned long long)gate, (unsigned long long)cgate);
+        SNX_ZONE_END(z_release); /* the waits below block on the GPU: their cost is in the wait plots, not this zone */
         vk_wait_submit(gate);
         vk_compute_wait(cgate);
         {
-            SNX_ZONE(z, "land and release");
+            /* the gates the release thread waited for name why these releases can go now */
+            SNX_ZONE_TV(z, "vk: land and release", gate, "through submit %llu, compute %llu",
+                        (unsigned long long)gate, (unsigned long long)cgate);
             release_through(gate, cgate);
             SNX_ZONE_END(z);
         }
@@ -369,11 +373,19 @@ static void release(Release* r) {
     if (!r->samples && !vk_buf_pending_any() && !vk_gfx_image_in_flight(0) &&
         !atomic_load_explicit(&r->cgate, memory_order_relaxed))
         atomic_store_explicit(&r->gate, 0, memory_order_relaxed);
-    else
-        atomic_store_explicit(
-            &r->gate,
-            r->samples || vk_buf_pending_unsubmitted() || vk_gfx_image_in_flight(1) ? recording : vk_last_submit(),
-            memory_order_relaxed);
+    else {
+        int unsubmitted = vk_buf_pending_unsubmitted(), img_unsubmitted = vk_gfx_image_in_flight(1);
+        atomic_store_explicit(&r->gate, r->samples || unsubmitted || img_unsubmitted ? recording : vk_last_submit(),
+                              memory_order_relaxed);
+        /* why the release waits for the GPU instead of being performed now: what still holds it */
+        SNX_ZONE_TEXT(z, "%s, gate %llu", r->samples        ? "a samples count waits for its submit"
+                                          : unsubmitted     ? "storage results not submitted"
+                                          : img_unsubmitted ? "fragment writes in flight"
+                                          : atomic_load_explicit(&r->cgate, memory_order_relaxed)
+                                                                ? "a compute batch is pending"
+                                                                : "earlier results still pending",
+                       (unsigned long long)atomic_load_explicit(&r->gate, memory_order_relaxed));
+    }
     int freed = 0; /* the stream's hold ended for the queue: the release thread may perform the rest */
     pm_lock(&g_rlock);
     if (atomic_load_explicit(&g_rhead, memory_order_relaxed) - atomic_load_explicit(&g_rtail, memory_order_relaxed) ==
@@ -440,10 +452,24 @@ void vk_release_write(u64 gva, const void* data, u32 len) {
    gated on the submit being recorded goes to the GPU, as the guest may look at it now */
 _Atomic u64 g_vk_texture_epoch; /* vk.h: the points that make draws' writes visible to texture reads */
 void vk_release_submit(void) {
-    SNX_ZONE(z, "vk release submit");
+    /* the stream stops at the submission's end or a wait, so its held releases go: the text says how many were queued */
+    [[maybe_unused]] u64 queued = atomic_load_explicit(&g_rhead, memory_order_relaxed) -
+                 atomic_load_explicit(&g_rtail, memory_order_relaxed);
+    SNX_ZONE_T(z, "vk release submit", "%llu queued releases go", (unsigned long long)queued);
     atomic_fetch_add_explicit(&g_vk_texture_epoch, 1,
                               memory_order_relaxed); /* the console's GPU idles its caches here */
+    /* contention on vk_lock is part of this zone's cost. The holder's thread id names the phase that had the device
+       lock (the recorder's, a landing's or a game thread's); only a trace reads the clock or formats the extra text */
+    int trace = snx_tracy_attached();
+    u32 held = trace ? vk_lock_owner() : 0;
+    u64 t = trace ? plat_ns() : 0;
     vk_lock();
+    if (trace && held) {
+        u64 us = (plat_ns() - t) / 1000;
+        SNX_ZONE_TEXT(z, "%llu queued, lock %llu us by tid %u", (unsigned long long)queued,
+                      (unsigned long long)us, held);
+        SNX_PLOT("vk submit lock wait us", (double)us);
+    }
     pm_lock(&g_rlock);
     hold_inplace(g_rheld, atomic_load_explicit(&g_rhead, memory_order_relaxed));
     g_rheld = atomic_load_explicit(&g_rhead,
@@ -665,6 +691,9 @@ static void release_match(u64 gva, u64 len, u32 id, int all) {
 static int read_queued(u64 gva, void* dst, u64 len, SamplesCount* counts, u32 max, u32* n) {
     int r = 0;
     u64 sgate = 0, listed[4]; /* the submit the reports read here count up to; the queue numbers of those in counts */
+    /* the report whose gate is sgate: its counter and segment range, named in the stall message */
+    u32 stall_ch = 0;
+    u64 stall_first = 0, stall_end = 0;
     *n = 0;
     if (max > sizeof listed / sizeof *listed) max = sizeof listed / sizeof *listed;
     if (!len || vk_result_landing()) return len ? -1 : 0;
@@ -695,8 +724,12 @@ static int read_queued(u64 gva, void* dst, u64 len, SamplesCount* counts, u32 ma
         if (gpu) {
             listed[*n] = i;
             counts[(*n)++] = (SamplesCount){q->qch, (u32)(q->gva - gva), bytes, q->qfirst, q->qend};
-        } else if (atomic_load_explicit(&q->gate, memory_order_relaxed) > sgate)
+        } else if (atomic_load_explicit(&q->gate, memory_order_relaxed) > sgate) {
             sgate = atomic_load_explicit(&q->gate, memory_order_relaxed);
+            stall_ch = q->qch;
+            stall_first = q->qfirst;
+            stall_end = q->qend;
+        }
     }
     pm_unlock(&g_rlock);
     if (r > 0 && (vk_compute_pending(gva, len) || vk_buf_pending(gva, len) || vk_gfx_image_pending(gva, len) ||
@@ -707,6 +740,17 @@ static int read_queued(u64 gva, void* dst, u64 len, SamplesCount* counts, u32 ma
            thread performs them (and lands the results before them) while the stream goes on. Held to the stream's end,
            a game's threads waited longer for them. They stay queued until this read is done: vk_lock keeps
            release_through from taking them */
+        /* An occlusion count read has to wait for its submit: a rare decision that stalls the CPU. The wait itself is
+           never inside a zone; its cost goes in a plot and its reason in a message. */
+        if (snx_tracy_attached()) {
+            char stall_msg[128];
+            int nmsg = snprintf(stall_msg, sizeof stall_msg,
+                                "vk pres: occlusion count read of counter %u [%llu,%llu) waits for submit %llu",
+                                stall_ch, (unsigned long long)stall_first, (unsigned long long)stall_end,
+                                (unsigned long long)sgate);
+            if (nmsg > 0) SNX_MSG(stall_msg, (size_t)(nmsg < (int)sizeof stall_msg ? nmsg : (int)sizeof stall_msg - 1));
+        }
+        u64 t_stall = snx_tracy_attached() ? plat_ns() : 0; /* a plot's alone */
         pm_lock(&g_rlock);
         hold_inplace(g_rheld, atomic_load_explicit(&g_rhead, memory_order_relaxed));
         g_rheld = atomic_load_explicit(&g_rhead, memory_order_relaxed);
@@ -714,6 +758,8 @@ static int read_queued(u64 gva, void* dst, u64 len, SamplesCount* counts, u32 ma
         pm_unlock(&g_rlock);
         submit_through(sgate);
         vk_wait_submit(sgate);
+        SNX_PLOT("vk pres query read stalls", 1.0);
+        SNX_PLOT("vk pres query read stall ms", (double)(plat_ns() - t_stall) / 1e6);
     }
     if (r > 0) {
         pm_lock(&g_rlock);

@@ -123,7 +123,7 @@ def main():
 
                     state = M.Checked()
                     C.memmove(C.byref(state.cpu), C.byref(cpu), C.sizeof(cpu))
-                    state.abi, state.access = 1, access
+                    state.abi, state.access = M.CHECKED_ABI, access
                     state.cpu.mem = C.cast(1, C.POINTER(C.c_uint8))
                     state.cpu.mem_size = 2**64 - 1
                     functions[index](C.byref(state.cpu))

@@ -92,6 +92,26 @@ static void dump_exit(void* data) {
     snx_hac_error("fs: hactool stopped on the game's dump");
 }
 
+/* a read of a solid NCZ behind where its stream got to, which decodes it again from its start (snx_hac_on_restart):
+   the line that says how far, in the game's log, where a pause it makes is found */
+static void ncz_restart(const char* line, void* data) {
+    (void)data;
+    LOG("fs: %s\n", line);
+}
+
+/* what an NCA read in place, what names it ("The game's Program NCA"), costs when it is a solid NCZ: said once */
+static void solid_said(SnxDump* dump, const SnxNcaRef* nca, const char* what) {
+    const SnxHacEntry* entries;
+    if (!nca->found) return;
+    snx_hac_entries(dump->hac, nca->container, &entries);
+    if (entries[nca->entry].ncz == SNX_HAC_NCZ_SOLID)
+        WARN("fs: %s in %s is a solid NCZ (one zstd stream, nsz's default for an NSZ): a read behind where its "
+             "stream got to, and past the pages of it kept, decodes it again from its start, each said here as "
+             "\"decoded again\". With Extract dump on, or the dump compressed in blocks (nsz -B), it is read without "
+             "that\n",
+             what, dump->opened[nca->container]);
+}
+
 /* the game's title ID, which its folder and data are named by: 0 for a game named otherwise */
 static SnxU64 game_title(void) {
     SnxU64 id = 0;
@@ -111,6 +131,10 @@ static void dump_map(SnxDump* dump, PFileMap* base_map, PFileMap* addon_map, con
         (dump->patch.found && snx_nca_keys(dump, &dump->patch, "The update's Program NCA")) ||
         (dump->aoc.found && snx_nca_keys(dump, &dump->aoc, "The DLC's Data NCA")))
         fatal("A dump the game reads in place needs keys its keys file does not have: the line before says which");
+    snx_hac_on_restart(ncz_restart, NULL);
+    solid_said(dump, &dump->program, "The game's Program NCA");
+    solid_said(dump, &dump->patch, "The update's Program NCA");
+    solid_said(dump, &dump->aoc, "The DLC's Data NCA");
     if (base && (plat_file_map_sized(base_map, base, snx_file_size(base)) ||
                  snx_hac_map(dump->hac, dump->base, base_map->data, base_map->size)))
         fatal("Could not map the game's dump %s", base);
@@ -578,23 +602,33 @@ int fs_map_file(const char* path, PFileMap* map) {
     FsNode* node;
     char host[FS_TREE_PATH_MAX];
     int r = -1;
+    SNX_ZONE(z, "fs map file"); /* rare: why this path was or was not mapped */
     memset(map, 0, sizeof *map);
     if ((map->data = mod_exefs(path, &map->size)) || (map->data = dump_exefs(path, &map->size))) {
+        SNX_ZONE_TEXT(z, "mod or dump heap");
         /* a mod's, or read out of the dump: plat_file_unmap frees it */
         map->heap = 1;
         return 0;
     }
-    if (dump_has_exefs(path)) return -1;
+    if (dump_has_exefs(path)) {
+        SNX_ZONE_TEXT(z, "dump has no such file");
+        return -1;
+    }
     pm_lock(&g_hle.fs.tree.lock);
     if (!fs_tree_lookup(&g_hle.fs.tree, NULL, path, &node) && !node->is_dir) {
         if (fs_tree_mapped(node)) { /* already mapped for the rest of the run: lend that view */
+            SNX_ZONE_TEXT(z, "borrowed mapping");
             map->data = node->map;
             map->size = node->size;
             map->borrowed = 1;
             r = 0;
-        } else if (!node->is_virtual && !fs_tree_path(&g_hle.fs.tree, node, host, sizeof host))
+        } else if (!node->is_virtual && !fs_tree_path(&g_hle.fs.tree, node, host, sizeof host)) {
+            SNX_ZONE_TEXT(z, "mapped host file");
             r = plat_file_map_sized(map, host, node->size);
-    }
+        } else
+            SNX_ZONE_TEXT(z, "virtual or no path");
+    } else
+        SNX_ZONE_TEXT(z, "no file node");
     pm_unlock(&g_hle.fs.tree.lock);
     return r;
 }
@@ -603,24 +637,33 @@ u8* fs_read_file(const char* path, u64* size) {
     FsNode* node;
     u64 got;
     u8* data = NULL;
+    SNX_ZONE(z, "fs read whole"); /* value: 0 mod or dump heap, 2 mapped or virtual, 3 host file, 4 refused */
     if (size) *size = 0;
     if ((data = mod_exefs(path, &got)) || (data = dump_exefs(path, &got))) {
+        SNX_ZONE_VALUE(z, 0); /* a mod's or the dump's ExeFS, read into the heap */
+        SNX_ZONE_TEXT(z, "%s %llu bytes", path, (unsigned long long)got);
         if (size) *size = got;
         return data;
     }
-    if (dump_has_exefs(path)) return NULL;
+    if (dump_has_exefs(path)) {
+        SNX_ZONE_VALUE(z, 4);
+        return NULL;
+    }
     pm_lock(&g_hle.fs.tree.lock);
     if (!fs_tree_lookup(&g_hle.fs.tree, NULL, path, &node) && !node->is_dir && node->size <= SIZE_MAX) {
         data = malloc(node->size ? (size_t)node->size : 1);
         if (data) {
             int ok = 1;
             if (node_in_memory(node)) {
+                SNX_ZONE_VALUE(z, 2);
                 if (node->size) memcpy(data, node_memory(node), (size_t)node->size);
             } else {
+                SNX_ZONE_VALUE(z, 3);
                 FILE* f = node_open(node, "rb");
                 ok = f && fread(data, 1, (size_t)node->size, f) == node->size;
                 if (f) fclose(f);
             }
+            SNX_ZONE_TEXT(z, "%s %llu bytes", path, (unsigned long long)node->size);
             if (!ok) {
                 free(data);
                 data = NULL;
@@ -879,7 +922,12 @@ static void romfs_build(const RNode* dir, const char* what) {
 static int image_read(u64 off, void* dst, u64 size, int locked, int quiet) {
     u8* out = dst;
     int rc;
+    /* one zone per read: the value is a small code for where the bytes came from, the text their count. A code stays
+       readable when the trace is filtered by value, where a formatted count would not be */
+    SNX_ZONE(z, "fs image read");
+    SNX_ZONE_TEXT(z, "%llu bytes", (unsigned long long)size);
     if (g_hle.fs.rimage) {
+        SNX_ZONE_VALUE(z, 0); /* mapped image: no host read */
         memcpy(out, g_hle.fs.rimage->map + off, (size_t)size);
         return 0;
     }
@@ -889,6 +937,7 @@ static int image_read(u64 off, void* dst, u64 size, int locked, int quiet) {
         rc = size > SIZE_MAX ? -1 : snx_hac_fs_read_romfs(g_hle.fs.dfs, off, out, (size_t)size);
         if (rc) snprintf(why, sizeof why, "%s", snx_hac_message()); /* hactool's, which the next read clears */
         pm_unlock(&g_host.fs.dlock);
+        SNX_ZONE_VALUE(z, rc ? 2 : 1); /* 1 dump read, 2 dump read failed */
         if (rc) {
             memset(out, 0, (size_t)size);
             if (!quiet)
@@ -903,11 +952,13 @@ static int image_read(u64 off, void* dst, u64 size, int locked, int quiet) {
         if (!locked) pm_lock(&g_hle.fs.tree.lock);
         got = plat_pread(g_hle.fs.rraw, out, size, off);
         if (!locked) pm_unlock(&g_hle.fs.tree.lock);
+        SNX_ZONE_VALUE(z, got == (i64)size ? 3 : 4); /* 3 raw image read whole, 4 short */
         if (got == (i64)size) return 0;
         if (got < 0) got = 0;
         memset(out + got, 0, (size_t)(size - (u64)got));
         return -1;
     }
+    SNX_ZONE_VALUE(z, 5); /* no source: the read answers zeros */
     memset(out, 0, (size_t)size);
     return -1;
 }
@@ -1146,10 +1197,18 @@ static FILE* rf_open(FsNode* node) {
 static int rfile_read(RFile* rf, u64 rel, u8* dst, u64 size, int quiet) {
     FsNode* node = rf->node;
     i64 got = (i64)size;
-    if (!node) return image_read(rf->base + rel, dst, size, 0, quiet); /* the game's image's, under the mods' */
+    /* why this read did not take the host's path: 0 the image, 1 already mapped, 2 mapped now, 3 virtual,
+       4 the runtime's own open, 5 the game's cached open, 6 a short read. The text carries the bytes */
+    SNX_ZONE(z, "fs romfs read");
+    SNX_ZONE_TEXT(z, "%llu bytes", (unsigned long long)size);
+    if (!node) {
+        SNX_ZONE_VALUE(z, 0);
+        return image_read(rf->base + rel, dst, size, 0, quiet); /* the game's image's, under the mods' */
+    }
     if (!quiet && !atomic_exchange_explicit(&rf->logged, 1, memory_order_relaxed))
         LOG("RomFS: reading %s (%.1f KB)\n", node->name, (double)node->size / 1024.0);
     if (fs_tree_mapped(node)) { /* mapped for the rest of the run, and never changes */
+        SNX_ZONE_VALUE(z, 1);
         memcpy(dst, node->map + rel, (size_t)size);
         return 0;
     }
@@ -1157,10 +1216,12 @@ static int rfile_read(RFile* rf, u64 rel, u8* dst, u64 size, int quiet) {
     if (!quiet) romfs_map(node); /* the game's read: the runtime's own (the shader pass) maps nothing */
     if (fs_tree_mapped(node)) {
         pm_unlock(&g_hle.fs.tree.lock);
+        SNX_ZONE_VALUE(z, 2);
         memcpy(dst, node->map + rel, (size_t)size);
         return 0;
     }
     if (node->is_virtual && node->attached) {
+        SNX_ZONE_VALUE(z, 3);
         memcpy(dst, node->virtual_data + rel, (size_t)size);
         pm_unlock(&g_hle.fs.tree.lock);
     } else if (quiet) {
@@ -1170,13 +1231,16 @@ static int rfile_read(RFile* rf, u64 rel, u8* dst, u64 size, int quiet) {
         pm_unlock(&g_hle.fs.tree.lock);
         got = f ? plat_pread(f, dst, size, rel) : -1;
         if (f) fclose(f);
+        SNX_ZONE_VALUE(z, 4);
     } else {
         FILE* f = rf_open(node);
         got = f ? plat_pread(f, dst, size, rel) : -1;
         pm_unlock(&g_hle.fs.tree.lock);
+        SNX_ZONE_VALUE(z, 5);
     }
     if (got == (i64)size) return 0;
     if (got < 0) got = 0;
+    SNX_ZONE_VALUE(z, 6);
     memset(dst + got, 0, (size_t)(size - (u64)got));
     if (quiet) return -1; /* the runtime's own read says nothing: the game gets no zeros from it */
     if (!atomic_exchange_explicit(&rf->warned, 1, memory_order_relaxed))
@@ -1476,14 +1540,17 @@ u32 fs_file_read(FileData* f, u64 off, u64 a, u64 sz, u64* bytes_read) {
        opens, and stays open until the read is done) */
     own_acquire(a, sz);
     plat_ww_open(GP(a), sz);
-    SNX_ZONE_TV(z, "fs read", sz, "%s", f->node->name);
+    SNX_ZONE_V(z, "fs read", sz);
     u64 n = sz;
     int rc = 0;
     if (node_in_memory(f->node)) {
+        SNX_ZONE_TEXT(z, "%s mapped", f->node->name); /* the cache hit */
         if (sz) memcpy(GP(a), node_memory(f->node) + off, (size_t)sz);
-    } else if (file_seek(f->f, off))
+    } else if (file_seek(f->f, off)) {
+        SNX_ZONE_TEXT(z, "%s seek failed", f->node->name);
         rc = SNX_RC_FS_OUT_OF_RANGE;
-    else {
+    } else {
+        SNX_ZONE_TEXT(z, "%s host file", f->node->name); /* the cache miss */
         clearerr(f->f);
         n = fread(GP(a), 1, (size_t)sz, f->f);
         if (ferror(f->f)) rc = SNX_RC_FS_OUT_OF_RANGE;
@@ -1503,8 +1570,9 @@ u32 fs_file_write(FileData* f, u32 option, u64 off, u64 a, u64 sz) {
     if (off + sz > f->node->size && !(f->mode & 4)) R_THROW(SNX_RC_FS_FILE_EXTENSION_WITHOUT_OPEN_MODE_ALLOW_APPEND);
     R_UNLESS(!file_seek(f->f, off), SNX_RC_FS_OUT_OF_RANGE);
     own_acquire(a, sz); /* write() can't wait on memory the GPU holds: it lands first */
-    SNX_ZONE_TV(z, "fs write", sz, "%s", f->node->name);
+    SNX_ZONE_V(z, "fs write", sz);
     size_t n = fwrite(GP(a), 1, (size_t)sz, f->f);
+    SNX_ZONE_TEXT(z, "%s %s", f->node->name, n == sz ? "whole" : "short");
     atomic_fetch_add_explicit(&g_fs_bytes_written, n, memory_order_relaxed);
     if (n && off + n > f->node->size) f->node->size = off + n;
     R_UNLESS(n == sz && !fflush(f->f), SNX_RC_FS_USABLE_SPACE_NOT_ENOUGH);
@@ -2510,15 +2578,29 @@ u64 fs_storage_size(const FsStorage* st) {
 }
 int fs_storage_read(FsStorage* st, u64 off, void* dst, u64 size) {
     u64 total = fs_storage_size(st);
-    if (off > total || size > total - off || size > SIZE_MAX) return -1;
+    SNX_ZONE(z, "fs storage read"); /* value: 0 DLC image, 1 mapped, 2 host file, 3 failed */
+    SNX_ZONE_TEXT(z, "%llu bytes", (unsigned long long)size);
+    if (off > total || size > total - off || size > SIZE_MAX) {
+        SNX_ZONE_VALUE(z, 3);
+        return -1;
+    }
     if (!size) return 0;
-    if (st->aoc >= 0) return aoc_read(st->aoc, off, dst, size);
+    if (st->aoc >= 0) {
+        SNX_ZONE_VALUE(z, 0);
+        return aoc_read(st->aoc, off, dst, size);
+    }
     pm_lock(&g_hle.fs.tree.lock);
     int rc = 0;
-    if (node_in_memory(st->file.node))
+    if (node_in_memory(st->file.node)) {
+        SNX_ZONE_VALUE(z, 1);
         memcpy(dst, node_memory(st->file.node) + off, (size_t)size);
-    else if (file_seek(st->file.f, off) || fread(dst, 1, (size_t)size, st->file.f) != size)
-        rc = -1;
+    } else {
+        SNX_ZONE_VALUE(z, 2);
+        if (file_seek(st->file.f, off) || fread(dst, 1, (size_t)size, st->file.f) != size) {
+            SNX_ZONE_VALUE(z, 3);
+            rc = -1;
+        }
+    }
     pm_unlock(&g_hle.fs.tree.lock);
     return rc;
 }

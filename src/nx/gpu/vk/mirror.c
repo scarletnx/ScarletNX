@@ -35,6 +35,7 @@
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/pending_pages.h"
 #include "common/utilities/bits.h"
+#include "nx/runtime/platform/tracy.h"
 
 #define MIR_G      (2ull << 20)   /* a granule: memory is bound and kept up to date a granule at a time */
 #define MIR_PAGES  (MIR_G / 4096) /* its 4 KiB pages */
@@ -783,6 +784,7 @@ u32 vk_mirror_fold(VkCommandBuffer cb, VkBuffer log, u64 log_size, const VkMirFo
 /* records into cb the harvest of ranges r (n, joined and sorted, which it copies), with entries of entry words, as a
    batch of submit's */
 static void harvest_batch(VkCommandBuffer cb, u64 submit, const MirRange* r, u32 n, u32 entry) {
+    SNX_ZONE(z_hv, "vk pres mirror harvest");
     MirRange* kept = malloc((size_t)n * sizeof *kept);
     if (!kept) fatal("Out of memory recording the GPU mirror's writes");
     memcpy(kept, r, (size_t)n * sizeof *kept);
@@ -795,6 +797,13 @@ static void harvest_batch(VkCommandBuffer cb, u64 submit, const MirRange* r, u32
     u32* p = (u32*)(void*)vk_stage_back(out_bytes(room, pages, entry), &out, &at, &mem);
     if (!p || !harvest_record(cb, kept, n, out, at, out_bytes(room, pages, entry), room, entry, VK_NULL_HANDLE))
         fatal("vulkan: no memory to land the GPU mirror's writes in");
+    /* The entry code says why: MIR_ENTRY_PAGE brings back only masks of pages the mirror still owns, MIR_ENTRY the
+       bytes too. Pages past the room need a pass of their own when they land, which says why they are left here. The
+       plot is the bytes of readback this harvest asks for. */
+    SNX_ZONE_VALUE(z_hv, pages);
+    SNX_ZONE_TEXT(z_hv, "entry %u, room %u, %llu pages past room: submit wrote more, own pass", entry, room,
+                  (unsigned long long)(pages > g_mir_room ? pages - g_mir_room : 0));
+    SNX_PLOT("vk pres mirror harvest bytes", (double)out_bytes(room, pages, entry));
     if (g_mir_nbatch == g_mir_capbatch) {
         u32 cap = g_mir_capbatch ? g_mir_capbatch * 2 : 16;
         MirBatch* grown = realloc(g_mir_batch, (size_t)cap * sizeof *grown);
@@ -1120,6 +1129,11 @@ void vk_mirror_landed(u64 cpu, u64 size) {
 static VkCommandPool g_mir_pool;
 static VkCommandBuffer g_mir_cb;
 static void harvest_left(const u32* left, u32 n) {
+    /* Rare: the pages past the output's room need a pass of their own, which waits for the GPU. A message names the
+       reason and a plot carries the wait's cost; no zone around a blocking wait. */
+    SNX_MSG("vk pres: mirror harvest past its room, a pass of its own",
+            sizeof("vk pres: mirror harvest past its room, a pass of its own") - 1);
+    u64 t_left = snx_tracy_attached() ? plat_ns() : 0; /* a plot's alone */
     MirRange* r = malloc((size_t)n * sizeof *r);
     if (!r) fatal("Out of memory landing the GPU mirror's writes");
     for (u32 i = 0; i < n; i++) r[i] = (MirRange){left[i], (u64)left[i] + 1};
@@ -1186,6 +1200,8 @@ static void harvest_left(const u32* left, u32 n) {
     for (u32 i = 0; i < w[0] && i < n; i++) land_entry(w + MIR_HEAD + i * MIR_ENTRY);
     vk_devmem_buffer_destroy(out, mem);
     free(r);
+    SNX_PLOT("vk pres mirror harvest wait ms", (double)(plat_ns() - t_left) / 1e6);
+    SNX_PLOT("vk pres mirror harvest left pages", (double)n);
 }
 
 /* whether page lies in batch m's ranges, which are sorted and apart (harvest_batch) */
@@ -1222,6 +1238,7 @@ void vk_mirror_done(u64 done) {
     static int busy;
     if (busy) return;
     busy = 1;
+    u64 t_done = snx_tracy_attached() ? plat_ns() : 0, landed = 0; /* CPU time and pages of taking the harvests in */
     for (;;) {
         u32 b = 0;
         while (b < g_mir_nbatch && g_mir_batch[b].submit > done) b++;
@@ -1259,9 +1276,12 @@ void vk_mirror_done(u64 done) {
         }
         vk_result_end();
         g_mir_stats.pages += n;
+        landed += n;
         for (u32 i = 0; i < m->n; i++) mir_pend_pages(m->r[i].first, m->r[i].end - 1, -1);
         free(m->r);
     }
+    SNX_PLOT("vk pres mirror land ms", (double)(plat_ns() - t_done) / 1e6);
+    SNX_PLOT("vk pres mirror land pages", (double)landed);
     busy = 0;
 }
 
@@ -1271,6 +1291,7 @@ static int mir_pending(u64 gva, u64 len) {
 }
 void vk_mirror_mem_need(u64 gva, u64 len) {
     if (g_mir.on <= 0 || !len || !mir_pending(gva, len)) return;
+    u64 t_need = snx_tracy_attached() ? plat_ns() : 0; /* a plot's alone */
     vk_lock();
     /* the submits the GPU has already finished are landed first, which hands over their pages with no wait at all: a
        finish submits what is being recorded and waits for every submission the game has open, and this game's pages
@@ -1280,9 +1301,14 @@ void vk_mirror_mem_need(u64 gva, u64 len) {
     if (done) vk_land_through(done);
     /* a finish takes what is left in, and publishing them makes them the mirror's: the CPU's touch lands them. The GPU
        thread may record meanwhile: what it submits after is published below, and lands at the CPU's touch */
-    if (mir_pending(gva, len)) vk_finish_letting_go();
+    if (mir_pending(gva, len)) {
+        SNX_MSG("vk pres: a CPU read of pending mirror bytes needs a finish",
+                sizeof("vk pres: a CPU read of pending mirror bytes needs a finish") - 1);
+        vk_finish_letting_go(); /* the wait is outside any zone; only its total cost is plotted */
+    }
     vk_mirror_publish();
     vk_unlock();
+    SNX_PLOT("vk pres mirror mem need ms", (double)(plat_ns() - t_need) / 1e6);
 }
 
 /* Granule g's memory given back, in the batch of sparse binds ahead of the next submission, which waits for the
@@ -1334,6 +1360,11 @@ void vk_mirror_trim(void) {
     u64 usage, budget;
     vk_mem_use(&usage, &budget);
     if (usage < budget / 5 * 4) return;
+    /* Rare maintenance: the device's memory is past four fifths of its budget, so idle mirror granules give their
+       memory back. The tighter cut is a short reason for the shorter idle wait. */
+    SNX_ZONE_T(z_trim, "vk pres mirror trim", "memory past four fifths of budget, idle %u%s",
+               usage >= budget / 10 * 9 ? MIR_IDLE_TIGHT : MIR_IDLE,
+               usage >= budget / 10 * 9 ? " (tight)" : "");
     const u32 idle = usage >= budget / 10 * 9 ? MIR_IDLE_TIGHT : MIR_IDLE;
     u32 done = 0;
     for (u64 n = 0; n < g_mir.granules / 8 && done < MIR_RELEASE; n++) {

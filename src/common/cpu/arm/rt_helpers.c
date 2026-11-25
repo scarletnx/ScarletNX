@@ -10,22 +10,25 @@
 /* The runtime library's calls into the backend (arm.h's SnxArmRt): what generated code can't do itself is decided by
    the runtime running it, as A64 code calls RtAPI's undef. Linked into snx_arm_rt and every 32-bit game module */
 #include "common/cpu/arm/arm.h"
+#include "common/cpu/arm/checked.h"
+#include "common/cpu/arm/codegen.h"
 #include "common/utilities/bits.h"
+#include "common/utilities/endian.h"
 
-void snx_arm_undefined(SnxArmCPU* cpu, uint32_t word, uint32_t reason) {
+void snx_arm_undefined(SnxArmCPU* cpu, uint64_t word, uint64_t reason) {
     if (cpu->rt && cpu->rt->undefined) {
-        cpu->rt->undefined(cpu, word, reason);
+        cpu->rt->undefined(cpu, (uint32_t)word, (uint32_t)reason);
         return;
     }
-    cpu->exit = reason;
-    cpu->syndrome = word;
+    cpu->exit = (uint32_t)reason;
+    cpu->syndrome = (uint32_t)word;
 }
 
-void snx_arm_coproc(SnxArmCPU* cpu, uint32_t word) {
+void snx_arm_coproc(SnxArmCPU* cpu, uint64_t word) {
     if (cpu->rt && cpu->rt->coproc)
-        cpu->rt->coproc(cpu, word);
+        cpu->rt->coproc(cpu, (uint32_t)word);
     else
-        snx_arm_coproc_user(cpu, word);
+        snx_arm_coproc_user(cpu, (uint32_t)word);
 }
 
 void snx_arm_coproc_user(SnxArmCPU* cpu, uint32_t word) {
@@ -119,8 +122,8 @@ static int multiply_carry_hi(uint32_t multiplicand, uint32_t multiplier, uint32_
     return (int)((sum ^ accum) >> 31);
 }
 
-void snx_arm_multiply_carry(SnxArmCPU* cpu, uint32_t word, uint32_t thumb) {
-    uint32_t lhs, rhs, accum = 0, accum_hi = 0;
+void snx_arm_multiply_carry(SnxArmCPU* cpu, uint64_t instruction, uint64_t thumb) {
+    uint32_t word = (uint32_t)instruction, lhs, rhs, accum = 0, accum_hi = 0;
     int full, carry, wide = 0, is_signed = 1;
     if (thumb) { /* MULS Rd, Rm: Rd is the multiplier */
         lhs = cpu->r[(word >> 3) & 7];
@@ -144,4 +147,97 @@ void snx_arm_multiply_carry(SnxArmCPU* cpu, uint32_t word, uint32_t thumb) {
     else
         carry = wide ? multiply_carry_hi(lhs, rhs, accum_hi, is_signed) : multiply_carry_simple(rhs);
     cpu->cpsr = (cpu->cpsr & ~0x20000000u) | (carry ? 0x20000000u : 0); /* C, bit 29 */
+}
+
+/* ---- the native back ends' bus accesses (arm.h), as llvm.c's readmem and writemem make them ---- */
+
+static int io_takes(uint32_t address, uint32_t regions, uint64_t size) {
+    if (size & SNX_ARM_IO_ARM9) return address >> 24 == 0x04; /* the NDS's registers alone */
+    return address >> 28 || (regions >> (address >> 24) & 1);
+}
+static uint32_t io_load(const uint8_t* p, unsigned bytes) {
+    return bytes == 1 ? *p : bytes == 2 ? snx_ld_le16(p) : snx_ld_le32(p);
+}
+/* What a read of an I/O register with nothing to read gives on the GBA: the opcode the ARM7TDMI fetched last, as mGBA's
+   GBALoadBad makes it. ARM: [$+8]. Thumb: [$+4] in both halves, but [$+4] above [$+2] from the BIOS and OAM, and from
+   IWRAM [$+4] above [$+2] or below it by $+4's place in its word */
+static uint32_t io_open_bus(const SnxArmCPU* cpu, uint32_t where) {
+    if (where == ~0u) return 0; /* the NDS's registers answer a read with nothing to give with zero */
+    uint32_t pc = where & ~1u, region = (pc + 4) >> 24, h2, h4;
+    if (!(where & 1)) return snx_ld_le32(cpu->mem + (pc + 8));
+    h2 = snx_ld_le16(cpu->mem + (pc + 2));
+    h4 = snx_ld_le16(cpu->mem + (pc + 4));
+    if (region == 0x00 || region == 0x07 || (region == 0x03 && ((pc + 4) & 2))) return h4 << 16 | h2;
+    return h4 | (region == 0x03 ? h2 : h4) << 16;
+}
+uint64_t snx_arm_io_read(SnxArmCPU* cpu, uint64_t address, uint64_t size, uint64_t where) {
+    uint32_t a = (uint32_t)address;
+    unsigned bytes = (unsigned)size & 7;
+    if (cpu->io && io_takes(a, SNX_ARM_IO_REGIONS, size))
+        return cpu->io(cpu, a, (uint32_t)size & (SNX_ARM_IO_SIGNED | 7), io_open_bus(cpu, (uint32_t)where));
+    if (size & SNX_ARM_IO_SIGNED) /* ARMv4T: a misaligned LDRSH reads a sign extended byte instead */
+        return (uint32_t)(a & 1 ? (int32_t)(int8_t)cpu->mem[a] : (int32_t)(int16_t)io_load(cpu->mem + a, 2));
+    return io_load(cpu->mem + (size & SNX_ARM_IO_LIST ? a : a & ~(uint32_t)(bytes - 1)), bytes);
+}
+uint64_t snx_arm_io_write(SnxArmCPU* cpu, uint64_t address, uint64_t size, uint64_t value) {
+    uint32_t a = (uint32_t)address;
+    unsigned bytes = (unsigned)size & 7;
+    if (cpu->io && io_takes(a, SNX_ARM_IO_STORE_REGIONS, size)) return cpu->io(cpu, a, 0x100u | bytes, (uint32_t)value);
+    uint8_t* p = cpu->mem + (size & SNX_ARM_IO_LIST ? a : a & ~(uint32_t)(bytes - 1));
+    if (bytes == 1)
+        *p = (uint8_t)value;
+    else if (bytes == 2)
+        snx_st_le16(p, (uint16_t)value);
+    else
+        snx_st_le32(p, (uint32_t)value);
+    return 0;
+}
+
+/* ---- checked memory for the native back ends' blocks (arm.h), as llvm.c's bus_access makes it ---- */
+
+/* a transfer's bytes are guest order for the callback, the state's words numbers: a transfer narrower than a word is
+   its low bytes */
+static void checked_bytes(const SnxArmCheckedCPU* c, unsigned char* bytes, unsigned n) {
+    for (unsigned i = 0; i < n; ++i) bytes[i] = (unsigned char)(c->words[i / 4] >> 8 * (i % 4));
+}
+static void checked_words(SnxArmCheckedCPU* c, const unsigned char* bytes, unsigned n) {
+    for (unsigned i = 0; i < n; ++i) {
+        if (!(i % 4)) c->words[i / 4] = 0;
+        c->words[i / 4] |= (uint32_t)bytes[i] << 8 * (i % 4);
+    }
+}
+uint64_t snx_arm_checked_fetch(SnxArmCPU* cpu, uint64_t pc, uint64_t word, uint64_t bytes) {
+    SnxArmCheckedCPU* c = (SnxArmCheckedCPU*)cpu;
+    unsigned char got[4] = {0};
+    if (c->access(c->context, SNX_ARM_ACCESS_FETCH, (uint32_t)pc, (uint32_t)bytes, got)) return SNX_ARM_PREFETCH_ABORT;
+    uint32_t w = bytes == 2 ? snx_ld_le16(got) : snx_ld_le32(got);
+    return w == (uint32_t)word ? 0 : SNX_ARM_CODE_CHANGED;
+}
+uint64_t snx_arm_checked_access(SnxArmCPU* cpu, uint64_t operation, uint64_t address, uint64_t bytes) {
+    SnxArmCheckedCPU* c = (SnxArmCheckedCPU*)cpu;
+    unsigned char moved[sizeof c->words];
+    unsigned n = (unsigned)bytes;
+    int write = ((uint32_t)operation & 3) == SNX_ARM_ACCESS_WRITE;
+    if (write) checked_bytes(c, moved, n);
+    uint32_t status = c->access(c->context, (uint32_t)operation, (uint32_t)address, n, moved);
+    if (!status && !write) checked_words(c, moved, n);
+    return status;
+}
+uint64_t snx_arm_checked_strex(SnxArmCPU* cpu, uint64_t address, uint64_t bytes) {
+    int reserved =
+        cpu->exclusive_valid && cpu->exclusive_address == (uint32_t)address && cpu->exclusive_size == (uint32_t)bytes;
+    cpu->exclusive_valid = 0;
+    if (!reserved) return 1;
+    uint32_t status =
+        (uint32_t)snx_arm_checked_access(cpu, SNX_ARM_ACCESS_WRITE | SNX_ARM_ACCESS_EXCLUSIVE, address, bytes);
+    return !status ? 0 : status == SNX_ARM_EXCLUSIVE_FAILED ? 1 : 2;
+}
+
+uint64_t snx_arm_direct(SnxArmCPU* cpu, uint64_t import, uint64_t at) {
+    typedef uint32_t (*Direct)(SnxArmCPU*, uint32_t);
+    const Direct direct = *(const Direct*)((const char*)cpu + at);
+    if (direct) return direct(cpu, (uint32_t)import);
+    cpu->syndrome = (uint32_t)import;
+    cpu->exit = SNX_ARM_SVC;
+    return 0;
 }

@@ -276,7 +276,7 @@ SnxCtrPicaResult snx_ctr_pica_triangles(SnxCtrPica* p, SnxCtrMemory* m, bool ind
     uint32_t index_address = base + (index_info & 0x0fffffff);
     bool wide = index_info >> 31;
     unsigned char probe;
-    /* an invalid base address draws nothing (Mario & Luigi: Superstar Saga sets one) */
+    /* an invalid base address draws nothing (a game sets one) */
     if (snx_ctr_phys_read(m, index_address, &probe, 1) != SNX_CTR_MEM_OK) return SNX_CTR_PICA_OK;
     const char* why = geometry_reconfigure(p);
     if (!why && p->geometry.need_index && !indexed)

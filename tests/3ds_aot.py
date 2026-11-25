@@ -272,6 +272,18 @@ class Descriptor(C.Structure):
     ]
 
 
+def native_blocks(text):
+    """the line of a recompile's end that says who made its blocks (cpu/arm/aot.c's snx_arm_aot_report): the native back
+    end's name, how many it made and of how many; None where the host has no native back end"""
+    line = re.search(r'^(\S+) back end: (\d+) of (\d+) blocks(, LLVM the rest)?$', text, re.M)
+    if not line:
+        assert re.search(r'^LLVM: \d+ blocks \(no native back end on this host\)$', text, re.M), text
+        return None
+    made, of = int(line[2]), int(line[3])
+    assert (made < of) == bool(line[4]) == bool(re.search(r'made by LLVM, the first the ', text)), text
+    return line[1], made, of
+
+
 def module_of(folder):
     """the game folder's module, named after it as a Switch game's is"""
     return folder / f'{folder.name}_code.{"dll" if sys.platform == "win32" else "so"}'
@@ -303,6 +315,17 @@ def main():
             elif 'Guest ExitProcess' in text:  # a game that ended well says so last, as every driver's
                 assert p.stdout.rstrip().endswith('\nExit.'), (cases, p.stdout)
             return output, text
+
+        def same_through_llvm(text):
+            """the game run() just played, its module compiled by LLVM alone (--keep-ir), ends as its run's text says"""
+            source, output = root / f'input {cases};literal.cia', root / f'out {cases} llvm'
+            for options, says in ((('-r', '--keep-ir', '-O0'), 'LLVM: '), ((), 'Guest ExitProcess')):
+                p = subprocess.run(
+                    [driver, *options, '--output', str(output), str(source)], text=True, capture_output=True, timeout=90
+                )
+                assert p.returncode == 0 and says in p.stdout, (cases, p.stdout + p.stderr)
+            ends = [re.findall(r'^Guest ExitProcess: .*$', t, re.M) for t in (text, p.stdout)]
+            assert ends[0] and ends[0] == ends[1], (cases, ends)
 
         extract = ('--extract-container',)
         basic, text = run(
@@ -381,11 +404,13 @@ def main():
             0x200000,
             0x100041,
         ]
-        workload, _ = run(application(words), message='Guest ExitProcess: r0=43 blocks=17', extra=extract)
+        workload, text = run(application(words), message='Guest ExitProcess: r0=43 blocks=17', extra=extract)
+        same_through_llvm(text)
         subprocess.run([probe, str(workload), 'workload'], check=True, capture_output=True)
         # Legacy BL halves execute as separate precompiled Thumb entries.
         legacy = struct.pack('<II6H', 0xE28F0001, 0xE12FFF10, 0xF000, 0xF802, 0xDF03, 0x46C0, 0x202C, 0x4770)
-        run(application(raw=legacy), message='Guest ExitProcess: r0=44 blocks=7')
+        _, text = run(application(raw=legacy), message='Guest ExitProcess: r0=44 blocks=7')
+        same_through_llvm(text)
         run(application([0xEAFFFFFE]), 3, 'block budget exhausted', extra=('--max-blocks', '3'))
         # a budget across the run's dispatch slices (a million blocks each) is still exact
         run(application([0xEAFFFFFE]), 3, 'blocks=2500001', extra=('--max-blocks', '2500001'))
@@ -426,11 +451,11 @@ def main():
             3,
             'guest blocked (no runnable thread)',
         )
-        run(fp_program(), message='Guest ExitProcess: r0=42')
-        run(fp_program(discover=True), message='Guest ExitProcess: r0=42')
-        run(fs_program(), message='Guest ExitProcess: r0=42')
-        run(thread_program(), message='Guest ExitProcess: r0=42')
-        run(ipc_program(), message='Guest ExitProcess: r0=42')
+        for program in (fp_program(), fp_program(discover=True)):
+            _, text = run(program, message='Guest ExitProcess: r0=42')
+            same_through_llvm(text)
+        for program in (fs_program(), thread_program(), ipc_program()):
+            run(program, message='Guest ExitProcess: r0=42')
         # a service the runtime does not know: a stand-in answering success, the default, else a wait forever as
         # the console's for a service never registered
         run(ipc_program(wait=True), message=('the runtime has no service MISSING: its commands answer success',))
@@ -453,7 +478,10 @@ def main():
         sparse = bytearray(0x2010)
         put(sparse, 0, '<6I', 0xE59F300C, 0xE5933000, 0xE12FFF33, 0xEF000003, 0xE1A00000, 0x200000)
         put(sparse, 0x2000, '<HH', 0x202F, 0x4770)
-        run(application(raw=sparse, ro=struct.pack('<I', 0x102001)), message='Guest ExitProcess: r0=47 blocks=3')
+        _, text = run(
+            application(raw=sparse, ro=struct.pack('<I', 0x102001)), message='Guest ExitProcess: r0=47 blocks=3'
+        )
+        same_through_llvm(text)
         # More than 512 block entries make several LLVM chunks, which the workers compile in parallel.
         chained = bytearray(0x5000)
         for i in range(600):
@@ -502,10 +530,19 @@ def main():
         assert 'define ' in (cut / f'{cut.name}_build' / 'blocks_000.ll').read_text()
         quiet, text = recompile('-q', '-O0')
         assert 'compiled block' not in text and 'Recompiling' not in text and 'Discovered' not in text, text
-        # the level is the setting opt's, 2 unless -O or --opt says another: the same module as -O2's, not -O0's
+        assert 'back end: ' not in text, text
+        # the level is the setting opt's, 2 unless -O or --opt says another: the same module as -O2's. It is LLVM's: of
+        # every block with --keep-ir, and of none where the native back end makes them all
         default, _ = recompile('-q')
         level, _ = recompile('--opt', '2', '-q')
-        assert module_of(default).read_bytes() == module_of(level).read_bytes() != module_of(quiet).read_bytes()
+        assert module_of(default).read_bytes() == module_of(level).read_bytes()
+        kept, _ = recompile('-q', '--keep-ir')
+        unoptimized, _ = recompile('-q', '--keep-ir', '-O0')
+        assert module_of(kept).read_bytes() != module_of(unoptimized).read_bytes()
+        _, text = recompile('--chunk', '100')
+        native = native_blocks(text)
+        assert native is None or native[1] == native[2], text
+        assert (module_of(default).read_bytes() == module_of(quiet).read_bytes()) == (native is not None)
         # --jit-only: a module of no blocks, every one compiled at run time when the game plays
         empty, text = recompile('--jit-only')
         assert 'No code ahead of time (--jit-only)' in text and "the module's index, 0 blocks" in text, text

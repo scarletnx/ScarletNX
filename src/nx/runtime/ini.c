@@ -225,8 +225,34 @@ void ini_word(const IniOpt* o, int v, char* out, size_t n) {
     }
     snprintf(out, n, "%d", v); /* no word for it */
 }
+double ini_float_step(double v, double lo, double hi, int dir) {
+    double unit = hi - lo > 2 ? 0.25 : 0.05, at = v / unit, grid = (double)(long long)(at + (at < 0 ? -0.5 : 0.5));
+    double to;
+    if (at - grid < 1e-9 && grid - at < 1e-9) /* on the grid: the next point of it */
+        to = (grid + (dir < 0 ? -1 : 1)) * unit;
+    else /* between two points: the one that way */
+        to = (dir < 0 ? (double)(long long)(at - (at < 0 ? 1 : 0)) : (double)(long long)(at + (at < 0 ? 0 : 1))) * unit;
+    return to < lo ? lo : to > hi ? hi : to;
+}
+/* the i-th of o's steps (settings.txt's steps), into *v: 1, 0 past the last */
+static int step_at(const IniOpt* o, int i, int* v) {
+    const char* c = o->steps;
+    while (c && i-- > 0 && (c = strchr(c, '|')) != NULL) ++c;
+    if (!c || !*c) return 0;
+    *v = atoi(c);
+    return 1;
+}
 int ini_step(const IniOpt* o, int v, int dir) {
     int step = step_of(o), count;
+    if (o->steps) { /* the next listed value either way, stopping at the ends; from one between two, its neighbour */
+        int i, at, prev = (int)o->lo;
+        for (i = 0; step_at(o, i, &at); ++i) {
+            if (dir > 0 && at > v) return at;
+            if (dir < 0 && at >= v) return i ? prev : at;
+            prev = at;
+        }
+        return dir < 0 ? prev : (i ? prev : v);
+    }
     if (!o->words || strchr(o->words, '#') || (o->flags & INI_SLIDER)) {
         double n = (double)v + (double)dir * step;
         return n < o->lo ? (int)o->lo : n > o->hi ? (int)o->hi : (int)n;
@@ -259,11 +285,25 @@ static void list_help(Listing* l, const char* help) {
 static void list_values(Listing* l, const IniOpt* o) {
     int step = o->step > 0 ? o->step : 1, v, first = 1;
     char word[64];
+    if (o->flags & INI_BOXES) { /* its items, as they are */
+        put(l, "%s", o->words ? o->words : "");
+        return;
+    }
     if (o->type == INI_TEXT && o->words) { /* value=word already */
         put(l, "%s", o->words);
         return;
     }
     if (o->type != INI_INT) return;
+    if (o->steps) { /* the values listed, each with its word */
+        for (int i = 0; step_at(o, i, &v); ++i) {
+            if (o->words)
+                ini_word(o, v, word, sizeof word);
+            else
+                snprintf(word, sizeof word, "%d", v);
+            put(l, "%s%d=%s", i ? "|" : "", v, word);
+        }
+        return;
+    }
     /* typed: a number of no words, or more than the menus step through */
     if (!o->words && (o->lo < 0 || (o->hi - o->lo) / step + 1 > 16)) return;
     if (o->words && strchr(o->words, '#') && (o->hi - o->lo) / step + 1 > 128) return;
@@ -324,6 +364,19 @@ static const char* repeated_help(const IniOpt* table, const IniOpt* o) {
     }
     return "";
 }
+/* a row's marks (ini.h's INI_SLIDER, INI_OPEN, INI_BOXES, INI_PATH), a space between two, into out; empty for none */
+static void list_marks(const IniOpt* o, char* out, size_t size) {
+    const char* path = (o->flags & INI_PATH) == INI_PATH_FOLDER ? "folder"
+                       : (o->flags & INI_PATH) == INI_PATH_FILE ? "file"
+                       : (o->flags & INI_PATH) == INI_PATH_SAVE ? "save"
+                                                                : NULL;
+    const char* marks[] = {o->flags & INI_SLIDER ? "slider" : NULL, (o->flags & INI_OPEN) || o->steps ? "open" : NULL,
+                           o->flags & INI_BOXES ? "boxes" : NULL, path};
+    size_t n = 0;
+    out[0] = 0;
+    for (size_t i = 0; i < sizeof marks / sizeof *marks; ++i)
+        if (marks[i] && n < size) n += (size_t)snprintf(out + n, size - n, "%s%s", n ? " " : "", marks[i]);
+}
 size_t ini_list_text(const IniSection* sections, int count, char* out, size_t size) {
     static const char* const types[] = {"int", "float", "text"};
     Listing l;
@@ -352,9 +405,11 @@ size_t ini_list_text(const IniSection* sections, int count, char* out, size_t si
                 put(&l, "\t%s\t", o->name ? o->name : "");
                 list_values(&l, o);
                 put(&l, "\t%s", ini_only(o) ? ini_only(o) : "");
-                if (o->flags & (INI_NEEDS_BUILD | INI_SLIDER))
+                char marks[64];
+                list_marks(o, marks, sizeof marks);
+                if ((o->flags & INI_NEEDS_BUILD) || marks[0])
                     put(&l, "\t%s", o->flags & INI_NEEDS_BUILD ? "needs-build" : "");
-                if (o->flags & INI_SLIDER) put(&l, "\tslider");
+                if (marks[0]) put(&l, "\t%s", marks);
                 put(&l, "\n");
             }
         }
@@ -372,6 +427,7 @@ static const struct {
                       {"game_dynamic_resolution", "went with the OpenGL renderer"},
                       {"low_priority_shader_compiler", "went with the OpenGL renderer"},
                       {"forced_vsync", "now vsync"},
+                      {"tracy_perf_map", "now perf_map"},
                       {"smooth_recording", "the F7 recorder went with the OpenGL renderer"},
                       {"recording_fps", "the F7 recorder went with the OpenGL renderer"},
                       {"lsfg", "LSFG went with the OpenGL renderer"},
@@ -427,6 +483,8 @@ static const struct {
                       {"compress_shader_cache", "the shader cache is always packed, when the game closes"},
                       {"bc7_cache_gb", "the BC7 cache has no file to bound: it holds the levels used most in "
                                        "memory, up to an eighth of the machine's"},
+                      {"dlss_render_size", "now internal_resolution, of the same values"},
+                      {"dlss_upscaler", "now render_upscaler, whose 3 (None) is dlss_upscaler's 0 (a filtered copy)"},
                       {NULL, NULL}};
 const char* ini_deprecated(const char* k) {
     int i;
@@ -436,7 +494,11 @@ const char* ini_deprecated(const char* k) {
 }
 static const struct {
     const char *key, *now;
-} INI_RENAMED[] = {{"vk_descriptors", "vk_descriptors_mode"}, {"emulated_cores", "emulated_cores_mode"}, {NULL, NULL}};
+} INI_RENAMED[] = {{"vk_descriptors", "vk_descriptors_mode"},
+                   {"emulated_cores", "emulated_cores_mode"},
+                   {"tracy_perf_map", "perf_map"},
+                   {"dlss_render_size", "internal_resolution"},
+                   {NULL, NULL}};
 const char* ini_renamed(const char* k) {
     int i;
     for (i = 0; INI_RENAMED[i].key; i++)

@@ -136,8 +136,8 @@ static void layout_fixed(const char* which) {
    region its bounds, a 6 GiB alias region and an 8 GiB heap region above it, and the kernel's pages in the last GiB.
    What the layout has to guarantee is that every address the game holds fits in 36 bits: the SDK marshals an IPC
    buffer descriptor's address into 4 bits above 32 and 22 above 36 and drops the rest, so an address of the 39-bit
-   layout comes back to the runtime as that address's low 36 bits, which nothing was ever mapped at. Zelda: Breath
-   of the Wild's main stack, at 78 GiB above, came back as 12 GiB and its first RomFS read wrote the header there */
+   layout comes back to the runtime as that address's low 36 bits, which nothing was ever mapped at. One
+   open world game's main stack, at 78 GiB above, came back as 12 GiB and its first RomFS read wrote the header there */
 void mem_layout36(void) {
     layout_fixed("the 36-bit one, which lies below 64 GiB with its code at 128 MiB");
     g_layout.base = 0x8000000ull;
@@ -216,6 +216,13 @@ void mem_layout32(unsigned aspace) {
    Everything here is under g_mem_lk; a change of host memory also holds the renderer's memory lock around it
    (g_gpu_mapping_begin, taken first), which may query the list itself */
 static PMutex g_mem_lk = PMUTEX_INIT;
+/* The context SNX_LOCK_MARK needs is the one g_pm_tracy_snx makes through pm_tracy_make (tracy.c). thread.c keeps it
+   in the PMutex, behind its PmNamed wrapper whose first word is that profiler context; read it as pm_named does. Null
+   until the lock is announced (or a client starts), so a mark is a no-op then. */
+[[maybe_unused]] static SnxTracyLock* mem_lock_context(void) {
+    void* named = atomic_load_explicit(&g_mem_lk.tracy, memory_order_acquire);
+    return named ? *(SnxTracyLock**)named : NULL;
+}
 static u64 g_host_page = PAGE; /* plat_vm_page: set by mem_init, before other threads */
 static MemBlock* g_blk;
 static u32 g_nblk, g_capblk;
@@ -239,6 +246,7 @@ static _Thread_local struct {
 static void runs_stale_nl(void) { atomic_fetch_add_explicit(&g_unmap_gen, 1, memory_order_release); }
 static void mem_lock(void) {
     pm_lock(&g_mem_lk);
+    SNX_LOCK_MARK(mem_lock_context()); /* held here, every other thread's read or write waits */
     t_mem.held = 1;
 }
 static void mem_unlock(void) {

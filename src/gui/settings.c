@@ -34,15 +34,17 @@ static GuiSetting* row(GuiSettings* s, const char* section, const char* key, con
     return v;
 }
 /* a row's values, value=word between '|', split in place: its words (.ini first, a game's Global) from *pool, NULL
-   when one has no =. values gets them by word */
+   when one has no =. values gets them by word. Each list keeps a slot after its last word for a value none of them is
+   (GuiSetting's custom), NULL until one is set */
 static const char** words_of(char* list, const char*** pool, const char*** values, int game) {
     const char** words = *pool;
     int n = 1, i;
     char* c;
     for (c = list; *c; ++c) n += *c == '|';
-    *values = words + n + 2;
+    *values = words + n + 3;
     words[0] = game ? SNX_TR_NOOP("Global") : ".ini";
     (*values)[0] = NULL;
+    words[n + 1] = words[n + 2] = (*values)[n + 1] = NULL;
     for (i = 1, c = list; i <= n; ++i) {
         char *end = c + strcspn(c, "|"), *equals;
         if (*end) *end++ = 0;
@@ -53,9 +55,34 @@ static const char** words_of(char* list, const char*** pool, const char*** value
         words[i] = equals + 1;
         c = end;
     }
-    words[n + 1] = NULL;
-    *pool += 2 * n + 3;
+    *pool += 2 * n + 5;
     return words;
+}
+/* a row of boxes' items, value=Label~About between '|', split in place: into v, its three arrays from *pool */
+static void items_of(char* list, const char*** pool, GuiSetting* v) {
+    int n = 1, i;
+    char* c;
+    for (c = list; *c; ++c) n += *c == '|';
+    v->item_value = *pool;
+    v->item_label = *pool + n;
+    v->item_about = *pool + 2 * n;
+    *pool += 3 * n;
+    for (i = 0, c = list; i < n; ++i) {
+        char *end = c + strcspn(c, "|"), *equals, *about;
+        if (*end) *end++ = 0;
+        v->item_value[i] = v->item_label[i] = c;
+        v->item_about[i] = "";
+        if ((about = strchr(c, '~')) != NULL) {
+            *about++ = 0;
+            v->item_about[i] = about;
+        }
+        if ((equals = strchr(c, '=')) != NULL) {
+            *equals = 0;
+            v->item_label[i] = equals + 1;
+        }
+        c = end;
+    }
+    v->items = n;
 }
 /* row i's words and values past the .ini's, the first: its values alone, its word the same value's */
 static void plain(GuiSettings* s, int i) {
@@ -63,7 +90,14 @@ static void plain(GuiSettings* s, int i) {
     ++s->values[i].values;
     s->values[i].plain = 1;
 }
-/* the rows of the runtime's list; with game, a game's own (gui_settings_read_game) */
+/* 1 when mark is one of the words of a column, a space between two */
+static int has_mark(const char* column, const char* mark) {
+    size_t n = strlen(mark);
+    for (const char* c = column; (c = strstr(c, mark)) != NULL; c += n)
+        if ((c == column || c[-1] == ' ') && (!c[n] || c[n] == ' ')) return 1;
+    return 0;
+}
+/* the rows of the runtime's list; with game, a game's own, of that console (gui_settings_read_console) */
 static int read_list(GuiSettings* s, const char* runtime, int game) {
     /* the launcher's own rows and the recompiler's (settings.txt's launcher sections), listed as the runtime lists the
        game's, then the runtime's; a game's the runtime's alone */
@@ -84,9 +118,10 @@ static int read_list(GuiSettings* s, const char* runtime, int game) {
         n += *c == '\n' ? 3 : 0;
         bars += *c == '|';
     }
-    pool = 2 * bars + 5 * n;
-    if (n > (SIZE_MAX - size) / (sizeof *s->keys + sizeof *s->values + 5 * sizeof(char*)) ||
-        bars > (SIZE_MAX - size) / 4 / sizeof(char*)) {
+    /* a row's words and values, 2 * words + 5 (words_of), or its items' three (items_of): a line's 3 rows hold the 7 */
+    pool = 3 * bars + 10 * n;
+    if (n > (SIZE_MAX - size) / (sizeof *s->keys + sizeof *s->values + 10 * sizeof(char*)) ||
+        bars > (SIZE_MAX - size) / 6 / sizeof(char*)) {
         free(list);
         return 1;
     }
@@ -112,6 +147,7 @@ static int read_list(GuiSettings* s, const char* runtime, int game) {
         field[0] = line;
         while (f < 12 && (field[f] = strchr(field[f - 1], '\t')) != NULL) *field[f++]++ = 0;
         if (f < 7) continue; /* not a setting: another line the runtime printed */
+        if (game == GUI_GAME_3DS && !snx_ctr_game_setting(field[1])) continue;
         for (; f < 12; ++f) field[f] = line + strlen(line); /* an older runtime's, with no last columns */
         if (page && strcmp(page, field[0])) page = NULL;
         if (!page && strchr(field[0], '/')) { /* a page: its row in the section, and its All first on it */
@@ -128,13 +164,19 @@ static int read_list(GuiSettings* s, const char* runtime, int game) {
             all->kind = GUI_SETTING_ALL;
             all->first = s->count;
         }
-        if (*field[8]) words = words_of(field[8], &free_words, &values, game);
+        int boxes = *field[8] && has_mark(field[11], "boxes");
+        if (*field[8] && !boxes) words = words_of(field[8], &free_words, &values, game);
         v = row(s, field[0], field[1], field[7], field[6], words, words ? GUI_KEY_WORD : GUI_KEY_TEXT);
+        if (boxes) items_of(field[8], &free_words, v);
         v->values = values;
         v->type_text = !strcmp(field[3], "text");
+        v->number = field[3][0] == 'i' || field[3][0] == 'f' ? field[3][0] : 0;
+        v->lo = strtod(field[4], NULL);
+        v->hi = strtod(field[5], NULL);
         v->only = *field[9] ? field[9] : NULL;
         v->needs_build = !strcmp(field[10], "needs-build");
-        if (!words && (field[3][0] == 'i' || field[3][0] == 'f')) { /* typed, not picked: a number of its range */
+        if (!words && !boxes &&
+            (field[3][0] == 'i' || field[3][0] == 'f')) { /* typed, not picked: a number of its range */
             GuiThemeKey* k = &s->keys[s->count - 1];
             k->numeric = 1;
             k->whole = field[3][0] == 'i';
@@ -148,13 +190,30 @@ static int read_list(GuiSettings* s, const char* runtime, int game) {
                 v->fallback = words[w];
                 v->word = w;
             }
+        if (values && v->word && game == GUI_GAME_3DS) /* its default is what Global gives, and no word of its own */
+            for (w = v->word; words[w]; ++w) words[w] = words[w + 1], values[w] = values[w + 1];
         if (values && v->word && game) /* a game's starts at Global, which every row has */
             v->word = 0;
         else if (values && v->word) { /* its default a word: no .ini's besides, which would be that value twice */
             plain(s, s->count - 1);
             --v->word;
         }
-        v->slider = v->plain && !strcmp(field[11], "slider"); /* its default a step, as the runtime's list makes it */
+        /* the twelfth column's marks: slider, its default a step as the runtime's list makes it, and open */
+        v->slider = v->plain && has_mark(field[11], "slider");
+        v->open = has_mark(field[11], "open");
+        if (!game && !page && !strcmp(field[1], "room")) { /* the Eden room's password beside its address */
+            GuiSetting* secret =
+                row(s, field[0], "room_password", SNX_TR_NOOP("Room password"),
+                    SNX_TR_NOOP("The Eden room's password, kept in users/online.ini, which only you can "
+                                "read; never in the launcher's settings nor on a run's line"),
+                    NULL, GUI_KEY_ACTION);
+            secret->kind = GUI_SETTING_SECRET;
+            v = &s->values[s->count - 2];
+        }
+        v->path = has_mark(field[11], "folder") ? 'd'
+                  : has_mark(field[11], "file") ? 'f'
+                  : has_mark(field[11], "save") ? 's'
+                                                : 0;
         if (page) {
             link->count = s->count - link->first;
             all->count = s->count - all->first;
@@ -166,8 +225,12 @@ static int read_list(GuiSettings* s, const char* runtime, int game) {
     return 0;
 }
 int gui_settings_read(GuiSettings* s, const char* runtime) { return read_list(s, runtime, 0); }
-int gui_settings_read_game(GuiSettings* s, const char* runtime) { return read_list(s, runtime, 1); }
+int gui_settings_read_game(GuiSettings* s, const char* runtime) { return read_list(s, runtime, GUI_GAME_SWITCH); }
+int gui_settings_read_console(GuiSettings* s, const char* runtime, int console) {
+    return read_list(s, runtime, console);
+}
 void gui_settings_free(GuiSettings* s) {
+    for (int i = 0; i < s->count; ++i) free(s->values[i].grown);
     free(s->keys);
     memset(s, 0, sizeof *s);
 }
@@ -192,6 +255,38 @@ static const char* picked(const GuiSettings* s, int i) {
     if (s->keys[i].type == GUI_KEY_WORD) return v->word ? kept(s, i) : NULL;
     return s->keys[i].type == GUI_KEY_TEXT && v->text[0] ? v->text : NULL;
 }
+/* whether value is one row i keeps beside its words: a number in its range, a text where it is open */
+static int custom_fits(const GuiSetting* v, const char* value) {
+    char* end;
+    double x;
+    if (!*value || strlen(value) >= sizeof v->text || (!v->open && !v->slider)) return 0;
+    if (!v->number) return !strchr(value, '|');
+    x = strtod(value, &end);
+    if (end == value || *end || x != x || x < v->lo || x > v->hi) return 0;
+    return v->number == 'f' || x == (double)(long long)x;
+}
+/* row i set to value, none of its words, kept in its slot after them (words_of) and shown as itself: 1 when it did */
+static int set_custom(GuiSettings* s, int i, const char* value) {
+    GuiSetting* v = &s->values[i];
+    const char** words = (const char**)s->keys[i].words; /* words_of's pool, which the row's keys point into */
+    const char** values = (const char**)v->values;
+    int slot = v->custom;
+    if (!values || !custom_fits(v, value)) return 0;
+    if (!slot)
+        while (words[slot]) ++slot;
+    snprintf(v->text, sizeof v->text, "%s", value);
+    words[slot] = values[slot] = v->text;
+    v->custom = v->word = slot;
+    return 1;
+}
+/* row i's slot after its words emptied where the row keeps no value there (a try put back) */
+static void custom_drop(GuiSettings* s, int i) {
+    const char** words = (const char**)s->keys[i].words;
+    int k;
+    if (s->keys[i].type != GUI_KEY_WORD || !s->values[i].values || s->values[i].custom) return;
+    for (k = 0; words[k]; ++k)
+        if (words[k] == s->values[i].text) words[k] = ((const char**)s->values[i].values)[k] = NULL;
+}
 /* row i set to value, a value of its words or a text: 1 when it did */
 static int set(GuiSettings* s, int i, const char* value) {
     GuiSetting* v = &s->values[i];
@@ -208,7 +303,7 @@ static int set(GuiSettings* s, int i, const char* value) {
         v->word = 0;
         return 1;
     }
-    return 0;
+    return set_custom(s, i, value);
 }
 void gui_settings_mark(GuiSettings* s) {
     int i;
@@ -372,6 +467,7 @@ int gui_settings_unread(GuiSettings* s, const char* path, char* out, size_t size
             was = s->values[i];
             taken = set(s, i, value);
             s->values[i] = was;
+            custom_drop(s, i);
             if (taken) continue;
         }
         if (n < size) n += (size_t)snprintf(out + n, size - n, "%s%s=%s", count ? ", " : "", key, value);
@@ -380,16 +476,178 @@ int gui_settings_unread(GuiSettings* s, const char* path, char* out, size_t size
     free(text);
     return count;
 }
+int gui_settings_add_words(GuiSettings* s, int row, const char* const* values, int count) {
+    GuiSetting* v = row >= 0 && row < s->count ? &s->values[row] : NULL;
+    const char **words, **grown;
+    char now[GUI_SETTING_TEXT];
+    size_t bytes = 0, at;
+    int base, n, i, k;
+    char* text;
+    if (!v || !v->open || s->keys[row].type != GUI_KEY_WORD || !v->values) return 0;
+    words = (const char**)s->keys[row].words;
+    for (base = 0; words[base]; ++base) {}
+    if (v->custom) --base; /* its last, kept in its place after the others */
+    if (v->grown) base = v->base;
+    snprintf(now, sizeof now, "%s", v->word || v->plain ? v->values[v->word] : "");
+    for (i = 0; i < count; ++i) bytes += strlen(values[i]) + 1;
+    /* its words and its values, each with the custom one's slot and the NULL, then the values' text */
+    at = 2 * ((size_t)base + (size_t)count + 2);
+    grown = (const char**)malloc(at * sizeof *grown + bytes);
+    if (!grown) return 0;
+    text = (char*)(grown + at);
+    for (i = 0; i < base; ++i) {
+        grown[i] = words[i];
+        grown[base + count + 2 + i] = v->values[i];
+    }
+    for (n = base, i = 0; i < count; ++i) {
+        for (k = v->plain ? 0 : 1; k < n; ++k) /* past the .ini's or Global's, which has no value */
+            if (!strcmp(grown[base + count + 2 + k], values[i])) break;
+        if (k < n || !*values[i] || strlen(values[i]) >= sizeof v->text) continue;
+        strcpy(text, values[i]);
+        grown[n] = grown[base + count + 2 + n] = text;
+        text += strlen(text) + 1;
+        ++n;
+    }
+    for (i = n; i < base + count + 2; ++i) grown[i] = grown[base + count + 2 + i] = NULL;
+    free(v->grown);
+    v->grown = grown;
+    v->base = base;
+    s->keys[row].words = grown;
+    v->values = grown + base + count + 2;
+    if (v->word || v->plain) { /* the same value, a word now or the custom one again */
+        int was = v->word;
+        v->custom = 0;
+        for (k = v->plain ? 0 : 1; k < n && strcmp(v->values[k], now); ++k) {}
+        if (k < n)
+            v->word = k;
+        else if (!set_custom(s, row, now))
+            v->word = was < n ? was : 0;
+    } else
+        v->custom = 0;
+    return 1;
+}
+/* the next word of *at, a set's separated by commas or spaces (or a sum's digits): its length, 0 at the end */
+static size_t set_word(const char** at) {
+    const char* c = *at + strspn(*at, ", \t");
+    size_t n = strcspn(c, ", \t");
+    *at = c;
+    return n;
+}
+/* the item of v the word word of n bytes names, -1 for none */
+static int item_of(const GuiSetting* v, const char* word, size_t n) {
+    int i;
+    for (i = 0; i < v->items; ++i)
+        if (strlen(v->item_value[i]) == n && !strncmp(v->item_value[i], word, n)) return i;
+    return -1;
+}
+/* what the row's set is: value, else base, else its default */
+static const char* set_value(const GuiSetting* v, const char* base) {
+    return v->text[0] ? v->text : base ? base : v->def ? v->def : "";
+}
+static int set_has(const GuiSetting* v, const char* value, int item) {
+    const char* c = value;
+    size_t n;
+    if (v->number) { /* a sum of bits */
+        long bit = strtol(v->item_value[item], NULL, 10);
+        return (strtol(value, NULL, 10) & bit) != 0;
+    }
+    for (; (n = set_word(&c)) != 0; c += n)
+        if (item_of(v, c, n) == item) return 1;
+    return 0;
+}
+int gui_settings_item_on(const GuiSettings* s, int row, int item, const char* base) {
+    const GuiSetting* v = row >= 0 && row < s->count ? &s->values[row] : NULL;
+    return v && item >= 0 && item < v->items && set_has(v, set_value(v, base), item);
+}
+int gui_settings_item_toggle(GuiSettings* s, int row, int item, const char* base) {
+    GuiSetting* v = row >= 0 && row < s->count ? &s->values[row] : NULL;
+    char text[GUI_SETTING_TEXT] = "", now[GUI_SETTING_TEXT];
+    const char* c;
+    size_t n, at = 0;
+    int on;
+    if (!v || item < 0 || item >= v->items || v->needs_build) return 0;
+    snprintf(now, sizeof now, "%s", set_value(v, base));
+    on = !set_has(v, now, item);
+    if (v->number) {
+        long sum = strtol(now, NULL, 10) ^ strtol(v->item_value[item], NULL, 10);
+        snprintf(text, sizeof text, "%ld", sum);
+    } else {
+        for (c = now; (n = set_word(&c)) != 0; c += n) { /* every word but this item's, as it was */
+            if (item_of(v, c, n) == item) continue;
+            if (at + n + 2 > sizeof text) return 0;
+            at += (size_t)snprintf(text + at, sizeof text - at, "%s%.*s", at ? "," : "", (int)n, c);
+        }
+        if (on) {
+            if (at + strlen(v->item_value[item]) + 2 > sizeof text) return 0; /* no room for another: nothing changes */
+            snprintf(text + at, sizeof text - at, "%s%s", at ? "," : "", v->item_value[item]);
+        }
+    }
+    /* nothing on is the default's or the launcher's again: no value of the row's own */
+    snprintf(v->text, sizeof v->text, "%s", !strcmp(text, v->number ? "0" : "") ? "" : text);
+    return 1;
+}
+void gui_settings_items_said(const GuiSettings* s, int row, const char* value, char* out, size_t size) {
+    const GuiSetting* v = &s->values[row];
+    int on = 0, others = 0, i;
+    size_t n;
+    const char* c = value;
+    if (v->number) {
+        long sum = strtol(value, NULL, 10), known = 0;
+        for (i = 0; i < v->items; ++i) known |= strtol(v->item_value[i], NULL, 10);
+        for (i = 0; i < v->items; ++i) on += (sum & strtol(v->item_value[i], NULL, 10)) != 0;
+        others = (sum & ~known) != 0;
+    } else
+        for (; (n = set_word(&c)) != 0; c += n) {
+            if (item_of(v, c, n) >= 0)
+                ++on;
+            else
+                ++others;
+        }
+    if (!on && !others)
+        snprintf(out, size, "%s", snx_tr("None"));
+    else if (others)
+        snprintf(out, size, snx_tr("%d on, %d other"), on, others);
+    else
+        snprintf(out, size, snx_tr("%d on"), on);
+}
+int gui_settings_step_number(GuiSettings* s, int row, int step) {
+    const GuiThemeKey* k = row >= 0 && row < s->count ? &s->keys[row] : NULL;
+    GuiSetting* v = k ? &s->values[row] : NULL;
+    double now, to;
+    char text[64];
+    if (!k || k->type != GUI_KEY_TEXT || !k->numeric || v->needs_build) return 0;
+    now = strtod(v->text[0] ? v->text : v->def ? v->def : "0", NULL);
+    if (k->whole)
+        to = now + (step < 0 ? -1 : 1);
+    else
+        to = ini_float_step(now, k->lo, k->hi, step);
+    to = to < k->lo ? k->lo : to > k->hi ? k->hi : to;
+    if (to == now) return 0;
+    snprintf(text, sizeof text, k->whole ? "%.0f" : "%g", to);
+    snprintf(v->text, sizeof v->text, "%s", text);
+    return 1;
+}
 /* row's steps, its words: 0 for a row that is no slider's */
 static int steps(const GuiSettings* s, int row) {
     int n = 0;
     if (row < 0 || row >= s->count || !s->values[row].slider) return 0;
     while (s->keys[row].words[n]) ++n;
-    return n;
+    return s->values[row].custom ? s->values[row].custom : n; /* a value no step has comes after them */
+}
+/* the steps of a slider's row past value, a number its steps' values are in order of: how many */
+static int steps_below(const GuiSettings* s, int row, double value) {
+    int n = steps(s, row), k = 0;
+    while (k < n && strtod(s->values[row].values[k], NULL) < value) ++k;
+    return k;
 }
 int gui_settings_slide(GuiSettings* s, int row, int step) {
-    int n = steps(s, row), to;
+    int n = steps(s, row), to, below;
     if (!n) return 0;
+    if (s->values[row].custom && s->values[row].word == s->values[row].custom) { /* off its steps: the next one */
+        below = steps_below(s, row, strtod(s->values[row].text, NULL));
+        s->values[row].word = snx_clamp_int(step < 0 ? below - 1 : below, 0, n - 1);
+        return 1;
+    }
     to = snx_clamp_int(s->values[row].word + (step < 0 ? -1 : 1), 0, n - 1);
     if (to == s->values[row].word) return 0;
     s->values[row].word = to;
@@ -405,6 +663,11 @@ int gui_settings_slide_to(GuiSettings* s, int row, int at) {
 }
 int gui_settings_knob(const GuiSettings* s, int row) {
     int n = steps(s, row);
+    if (n > 1 && s->values[row].custom && s->values[row].word == s->values[row].custom) { /* by its value */
+        double first = strtod(s->values[row].values[0], NULL), last = strtod(s->values[row].values[n - 1], NULL);
+        double at = (strtod(s->values[row].text, NULL) - first) * 1000.0 / (last - first);
+        return last > first ? snx_clamp_int((int)(at + 0.5), 0, 1000) : 0;
+    }
     return n > 1 ? s->values[row].word * 1000 / (n - 1) : 0;
 }
 int gui_settings_step_all(GuiSettings* s, int row, int step) {
@@ -447,6 +710,12 @@ void gui_settings_sync(GuiSettings* s) {
 }
 void gui_settings_shown(const GuiSettings* s, int row, char* out, size_t size) {
     const GuiSetting* v = &s->values[row];
+    if (v->items) {
+        char said[64];
+        gui_settings_items_said(s, row, v->text[0] ? v->text : v->def ? v->def : "", said, sizeof said);
+        snprintf(out, size, "%s%s%s", said, picked(s, row) ? "" : " ", picked(s, row) ? "" : snx_tr("[default]"));
+        return;
+    }
     if (v->kind == GUI_SETTING_ALL && !strcmp(v->text, ".ini"))
         snprintf(out, size, "%s", snx_tr("[default]"));
     else if (v->kind == GUI_SETTING_ALL) /* the word its rows share, [default] while each is at its default */
@@ -648,26 +917,31 @@ size_t gui_settings_one(GuiSettings* s, const char* key, const char** argv) {
     argv[0] = s->values[i].option;
     return 1;
 }
-/* argv's --key=value of each setting picked; with ctr, the 3DS driver's only: its tables' (keys that start with ctr_)
-   and the Switch's it takes too. A Switch run's, the game's .ini at game_ini (NULL: none), are the launcher's picks for
-   every game, said by --launcher-picks=1, under the game's own picks, which the runtime reads; the recompile, which
-   reads none, gets the game's own of its settings (given) */
-static size_t picked_options(GuiSettings* s, const char** argv, int ctr, const char* game_ini) {
-    char* picks = !ctr && game_ini ? snx_game_picks(game_ini) : NULL;
+/* argv's --key=value of each setting picked; with a driver's prefix, that driver's only: its tables' (keys that start
+   with ctr_ or vita_), and for the 3DS the Switch's it takes too. A Switch run's (prefix NULL), the game's .ini at
+   game_ini (NULL: none), are the launcher's picks for every game, said by --launcher-picks=1, under the game's own
+   picks, which the runtime reads; the recompile, which reads none, gets the game's own of its settings (given). So are
+   a 3DS run's, when one of them is a setting a 3DS game has of its own, which its driver reads */
+static size_t picked_options(GuiSettings* s, const char** argv, const char* prefix, const char* game_ini) {
+    char* picks = !prefix && game_ini ? snx_game_picks(game_ini) : NULL;
+    int ctr = prefix && !strcmp(prefix, "ctr_"), over = !prefix; /* what goes over them, said: the game's own picks */
     size_t n = 0;
     int i;
     for (i = s->own; i < s->count; ++i) {
         const char* key = s->values[i].key;
         const char* value;
-        if (!key || (ctr && strncmp(key, "ctr_", 4) && !snx_ctr_shared_setting(key))) continue;
-        if ((value = ctr ? picked(s, i) : given(s, i, picks)) != NULL) argv[n++] = option_of(s, i, value);
+        if (!key || (prefix && strncmp(key, prefix, strlen(prefix)) && !(ctr && snx_ctr_shared_setting(key)))) continue;
+        if (prefix && !strncmp(key, "nds_wfc", 7)) continue; /* the driver reads the launcher's own from settings.ini */
+        if ((value = prefix ? picked(s, i) : given(s, i, picks)) == NULL) continue;
+        argv[n++] = option_of(s, i, value);
+        over = over || (ctr && snx_ctr_game_setting(key));
     }
-    if (n && !ctr) argv[n++] = "--" SNX_LAUNCHER_PICKS "=1";
+    if (n && over) argv[n++] = "--" SNX_LAUNCHER_PICKS "=1";
     free(picks);
     return n;
 }
 size_t gui_settings_options(GuiSettings* s, int launch, const char* game_ini, const char** argv) {
-    size_t n = picked_options(s, argv, 0, game_ini);
+    size_t n = picked_options(s, argv, NULL, game_ini);
     if (launch && gui_settings_tmpfs(s)) argv[n++] = gui_settings_tmpfs(s);
     if (launch && gui_settings_extract(s)) argv[n++] = gui_settings_extract(s);
     if (launch && own_on(s, "gdbstub")) {
@@ -676,4 +950,10 @@ size_t gui_settings_options(GuiSettings* s, int launch, const char* game_ini, co
     }
     return n;
 }
-size_t gui_settings_ctr_options(GuiSettings* s, const char** argv) { return picked_options(s, argv, 1, NULL); }
+size_t gui_settings_ctr_options(GuiSettings* s, const char** argv) { return picked_options(s, argv, "ctr_", NULL); }
+size_t gui_settings_vita_options(GuiSettings* s, const char** argv) { return picked_options(s, argv, "vita_", NULL); }
+size_t gui_settings_linux_options(GuiSettings* s, const char** argv) { return picked_options(s, argv, "linux_", NULL); }
+size_t gui_settings_android_options(GuiSettings* s, const char** argv) {
+    return picked_options(s, argv, "android_", NULL);
+}
+size_t gui_settings_nds_options(GuiSettings* s, const char** argv) { return picked_options(s, argv, "nds_", NULL); }

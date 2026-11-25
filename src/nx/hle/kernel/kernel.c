@@ -11,6 +11,7 @@
 #include "nx/runtime/clock.h"
 #include "nx/runtime/platform/tracy.h"
 #include <stdatomic.h>
+#include <string.h>
 
 /* ============================================================ references */
 void kobj_ref(KObj* o) {
@@ -231,6 +232,31 @@ void kobj_signal_nl(KObj* o) {
     if (kobj_waitable(o) && !kobj_signaled(o)) return;
     wake_waiters_nl(o, 0);
 }
+#if defined(SNX_TRACY)
+/* the plot names: the fiber names the object that blocked the thread, the plot says how long it held it. A message
+   repeats the name, the wait's time and its outcome only for a long wait, so the short waits that are most of them do
+   not flood the trace. No zone: the wait is a fiber, and a blocking wait must not be a zone */
+static const char* const wait_plot[6] = {"kern wait sleep ms", "kern wait objects ms", "kern wait mutex ms",
+                                          "kern wait cv ms",    "kern wait addr ms",    "kern wait pause ms"};
+/* The wait's plot and long-wait message, captured under g_klock by sleep_nl and formatted and emitted by klock_unlock
+   (thread.c) once that lock is let go, so the wait's plot and outcome text are not built under the lock. The fiber's
+   own reason string is still made by kernel_thread_state while the lock is held. 0 ns: nothing to emit */
+static _Thread_local u64 wait_plot_ns;
+static _Thread_local const char* wait_plot_name;
+static _Thread_local char wait_reason[128];
+static _Thread_local int wait_signaled;
+void kernel_wait_plot_flush(void) {
+    if (!wait_plot_ns) return;
+    SNX_PLOT(wait_plot_name, (double)wait_plot_ns / 1e6);
+    if (wait_plot_ns > 10000000ull && snx_tracy_attached()) {
+        char msg[128];
+        int n = snprintf(msg, sizeof msg, "%s, %llu ms, %s", wait_reason,
+                         (unsigned long long)(wait_plot_ns / 1000000u), wait_signaled ? "signaled" : "timed out");
+        if (n > 0) SNX_MSG(msg, (size_t)(n < (int)sizeof msg ? n : (int)sizeof msg - 1));
+    }
+    wait_plot_ns = 0;
+}
+#endif
 /* t (the calling thread, with g_klock held) blocks until it is woken or timeout ns pass (negative: none, 0: it only
    checks). It lets go of its core first, as a console thread leaves the CPU when it blocks: the SVC takes it back on
    the way out (svc_leave), never here, where it would wait for a core with g_klock held. 1 when woken, 0 timed out.
@@ -241,6 +267,11 @@ int sleep_nl(KThread* t, i64 timeout) { return sleep_held(t, &g_host.kernel.kloc
 int sleep_held(KThread* t, PMutex* held, i64 timeout) {
     u64 end = 0;
     int r = 1;
+#if defined(SNX_TRACY)
+    char reason[128] = "";
+    u64 t0 = 0;
+    int wait_kind = t->wait_kind; /* captured before a wake path can reset t->wait_kind */
+#endif
     if (timeout > ((i64)1 << 62)) timeout = -1; /* centuries: no deadline the clock could reach */
     t->wait_timeout = timeout;
     if (timeout > 0) end = guest_ns() + (u64)timeout;
@@ -250,11 +281,9 @@ int sleep_held(KThread* t, PMutex* held, i64 timeout) {
     t->park = PARK_WAIT;
     atomic_store_explicit(&t->stopped, 1, memory_order_seq_cst);
 #if defined(SNX_TRACY)
-    {
-        char reason[128];
-        kernel_thread_state(t, reason, sizeof reason);
-        SNX_FIBER_ENTER(kt_ix(t) - 1, (uint32_t)t->wait_kind, reason);
-    }
+    kernel_thread_state(t, reason, sizeof reason);
+    SNX_FIBER_ENTER(kt_ix(t) - 1, (uint32_t)wait_kind, reason);
+    t0 = plat_ns();
 #endif
     for (;;) {
         u32 seq = kt_seq(t);
@@ -278,6 +307,14 @@ int sleep_held(KThread* t, PMutex* held, i64 timeout) {
         kt_wait(t, seq, held, -1);
     }
     atomic_store_explicit(&t->stopped, 0, memory_order_seq_cst);
+#if defined(SNX_TRACY)
+    {
+        wait_plot_ns = plat_ns() - t0;
+        wait_plot_name = wait_plot[wait_kind < 6 ? wait_kind : 5];
+        memcpy(wait_reason, reason, strlen(reason) + 1);
+        wait_signaled = r;
+    }
+#endif
     SNX_FIBER_LEAVE();
     return r;
 }

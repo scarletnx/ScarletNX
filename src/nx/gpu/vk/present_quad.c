@@ -9,6 +9,7 @@
 #include "nx/gpu/hdr_output.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/ui.h"
+#include "nx/runtime/platform/tracy.h"
 #include "snx_settings.h"
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -128,6 +129,7 @@ int vk_present_quad_source(VkCommandBuffer cb, Surf* source, int linear, int raw
     VkImageView from;
     VkDescriptorSet set;
     if (!source || !initialize()) return 0;
+    SNX_ZONE_V(z_src, "vk pres quad source", raw); /* 1 the window's reusable set, 0 a set from the frame's pool */
     if (raw && !g_present_quad.pool) { /* the window's: a set of its own for each frame in flight */
         VkDescriptorPoolSize size = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_FRAMES};
         VkDescriptorPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
@@ -268,8 +270,10 @@ const char* vk_present_quad_effects_step(int which) {
 }
 int vk_present_quad_effects(VkCommandBuffer cb, SnxPresentSource* s, VkRect2D* crop, VkRect2D to, u32 transform) {
     effects_follow(0);
+    SNX_ZONE(z_fx, "vk pres quad effects");
     int filter = atomic_load_explicit(&g_present_quad.upscaler, memory_order_relaxed);
     int aa = atomic_load_explicit(&g_present_quad.aa, memory_order_relaxed);
+    SNX_ZONE_TEXT(z_fx, "upscaler %d, aa %d", filter, aa);
     int sharpness = atomic_load_explicit((_Atomic int*)&g_settings.upscaler_sharpness, memory_order_relaxed);
     u32 w = transform & 4 ? to.extent.height : to.extent.width, h = transform & 4 ? to.extent.width : to.extent.height;
     SnxFxImage out;
@@ -280,6 +284,8 @@ int vk_present_quad_effects(VkCommandBuffer cb, SnxPresentSource* s, VkRect2D* c
         return 0;
     /* an HDR frame (a game's own, gpu/vk/hdr_swapchain.c) is shown as it is: the passes are for SDR's range */
     if (g_vk.sc_space != SNX_HDR_SPACE_SRGB) {
+        SNX_MSG("vk pres: effects skipped for an HDR frame",
+                sizeof("vk pres: effects skipped for an HDR frame") - 1);
         if (!g_present_quad.hdr_said++)
             LOG("vulkan: upscaler %s and anti-aliasing %s: the game's HDR frames are shown without them\n",
                 snx_fx_upscale_label(filter), snx_fx_aa_label(aa));

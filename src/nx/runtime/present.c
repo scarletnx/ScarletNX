@@ -31,6 +31,7 @@ void vi_show_buffer(u32 nvmap_id, u32 offset, u32 w, u32 h, u32 pitch, u32 layou
                     u32 transform, int slot) {
     u64 a = nvmap_addr_by_id(nvmap_id);
     if (!a) {
+        SNX_ZONE_TV(z_drop, "runtime: present dropped", nvmap_id, "nvmap %u has no memory, slot %d", nvmap_id, slot);
         WARN_LIMIT(5, "vi: buffer of nvmap id %u has no memory, not shown\n", nvmap_id);
         return;
     }
@@ -42,6 +43,7 @@ void vi_show_buffer(u32 nvmap_id, u32 offset, u32 w, u32 h, u32 pitch, u32 layou
     atomic_fetch_add_explicit(&g_frames, 1, memory_order_relaxed);
     cheats_frame(); /* the cheats run once per frame shown, as dmnt's run on the console */
     SNX_FRAME_MARK();
+    SNX_FRAME_MARK_NAMED("present"); /* the presented frames as their own continuous set */
 }
 
 /* The schedule is under g_pace's lock, the wait itself outside it. Called on the game's thread from vi's
@@ -74,13 +76,16 @@ static void released(int slot, u64 period) {
 void present_pace(u32 interval, int slot) {
     int fps = atomic_load_explicit(&g_opt_fps, memory_order_relaxed);
     u64 refresh, period, now, next;
+    int reset = 0; /* why the schedule started again: 0 none, 1 first, 2 behind, 3 late */
     if (!fps || (fps == SNX_FPS_GAME && !interval)) {
+        /* value: 0 fps off, 1 game fps interval 0 */
+        SNX_ZONE_TV(z_free, "runtime: present free", !fps ? 0 : 1, "%s", !fps ? "fps off" : "game fps interval 0");
         released(slot, 0);
         return;
     }
     refresh = 1000000000u / (fps == SNX_FPS_GAME ? (u64)vi_refresh_hz() : (u64)fps);
     period = fps == SNX_FPS_GAME ? refresh * interval : refresh;
-    [[maybe_unused]] u64 started = plat_ns();
+    [[maybe_unused]] u64 started = snx_tracy_attached() ? plat_ns() : 0; /* a plot's alone */
     if (fps == SNX_FPS_GAME && g_renderer->display_wait) {
         int stuck = atomic_load_explicit(&g_pace.display_stuck, memory_order_relaxed);
         u64 shown = 0, start = plat_ns();
@@ -90,9 +95,15 @@ void present_pace(u32 interval, int slot) {
         if (r > 0 && shown) {
             u64 d = present_display_period(period, shown);
             if (d != period) {
+                SNX_ZONE_TV(z_refresh, "runtime: present refresh", (u64)shown, "%llu Hz display, period %llu ns",
+                            (unsigned long long)shown, (unsigned long long)d);
                 refresh = shown;
                 period = d;
             }
+        } else {
+            /* value: 1 no frame, 2 the display wait failed */
+            SNX_ZONE_TV(z_stuck, "runtime: present delayed", r < 0 ? 2 : 1, "%s",
+                        r < 0 ? "display wait failed" : "display took no frame");
         }
     }
     pm_lock(&g_pace.lock);
@@ -101,10 +112,21 @@ void present_pace(u32 interval, int slot) {
     /* a schedule more than a refresh behind (a load, a pause) starts again from now: no burst to catch up. A numeric
        fps_limit is a ceiling, so a frame already late starts it again at once too: the frames after it were let
        through until the schedule caught up, and presents went above the limit */
-    if (!g_pace.last || now > next + refresh || (fps != SNX_FPS_GAME && now >= next)) next = now;
+    if (!g_pace.last)
+        reset = 1;
+    else if (now > next + refresh)
+        reset = 2; /* a load or a pause left the schedule more than a refresh behind */
+    else if (fps != SNX_FPS_GAME && now >= next)
+        reset = 3; /* a numeric fps is a ceiling: a frame already late starts it again */
+    if (reset) next = now;
     g_pace.last = next;
     pm_unlock(&g_pace.lock);
-    if (next > now) plat_sleep_ns((i64)(next - now));
+    if (next > now) {
+        SNX_PLOT("rt present sleep ms", (double)(next - now) / 1e6);
+        plat_sleep_ns((i64)(next - now)); /* the wait stays outside the zone below */
+    }
+    SNX_ZONE_TV(z_sched, "runtime: present schedule", (u64)reset, "%s",
+                reset == 1 ? "first" : reset == 2 ? "behind" : reset == 3 ? "late" : "steady");
     SNX_PLOT("present pace ms", (double)(plat_ns() - started) / 1e6);
     released(slot, fps == SNX_FPS_GAME ? period : 0);
 }

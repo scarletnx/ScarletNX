@@ -7,6 +7,7 @@
   * [GameChat's images and the camera](#gamechats-images-and-the-camera)
 * [Built-in fonts](#built-in-fonts)
 * [Shaders](#shaders)
+  * [Subgroups narrower than a warp](#subgroups-narrower-than-a-warp)
 * [Surfaces](#surfaces)
 * [Driver offsets](#driver-offsets)
 * [Shading rate images](#shading-rate-images)
@@ -266,6 +267,23 @@ A program that still holds f64, which the runtime no longer emits on such a devi
 Metal backend prints itself into the module as `t192 = ALU u2f64` and the Metal compiler rejects the text, so
 KosmicKrisp has no conversion to a double at all. The game shows its title menu on either driver, after the stall on
 KosmicKrisp, and `vulkan_driver=moltenvk` skips the stall.
+
+### Subgroups narrower than a warp
+
+A warp has 32 lanes, and VOTE, VOTEU, MATCH, SHFL, REDUX, LANEID, the lane masks and the tensor core's instructions read
+them. A device serves them with subgroups of 32 or more, or in compute with subgroups of 32 that a pipeline asks for
+(`subgroupSizeControl`). Where its subgroups have fewer (16 on a Mali, 8 on lavapipe), a program that reads other lanes
+runs each invocation as a warp of its own, lane 0, where that gives what the console does:
+
+* A vertex, geometry or fragment program: its ballot is its own bit, MATCH finds itself, REDUX and SHFL keep its value.
+  A fragment's SHFL and FSWZADD inside its quad keep the quad's lanes where the subgroups hold whole quads.
+* A compute program: only the ways a compiler combines a warp's atomics, shown by the proof that the Maxwell programs
+  take (`gpu/shader/warp_idioms.c`), which `gpu/shader/sm86_lone.c` hands the SM86 ones to: a combined add and the rank
+  beside its old value, its leader the highest or the lowest running lane, by a predicate or by a branch over the
+  leader's run, and an address that MATCH.ALL compared, whose other way is each lane's own add of 1.
+
+Any other program is refused, with the instruction and the lanes the device has in the log: `subgroup ballot/shuffle
+unavailable: REDUX at 1040: no combined add's, no reduction's (8 lanes of 32)`. The tensor core's instructions always are.
 
 ## Surfaces
 

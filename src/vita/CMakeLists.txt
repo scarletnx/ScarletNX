@@ -14,6 +14,10 @@ target_link_libraries(snx_vita_usse PUBLIC scarletnx-common)
 include("${PROJECT_SOURCE_DIR}/cmake/decodetree.cmake")
 snx_decodetree(snx_vita_usse OUTPUT decode-usse.inc DECODE "${CMAKE_CURRENT_SOURCE_DIR}/gpu/usse.decode"
                OPTIONS -w 64 --static-decode=decode_usse)
+# and what each instruction computes, which sailgen's GPU mode writes from gpu/sail/usse.sail and its families'
+# (cmake/sailgen.cmake)
+include("${PROJECT_SOURCE_DIR}/cmake/sailgen.cmake")
+snx_sailgen_gpu(snx_vita_usse usse DIR "${CMAKE_CURRENT_SOURCE_DIR}/gpu/sail")
 add_executable(snx-vita-usse "${PROJECT_SOURCE_DIR}/tools/snx_vita_usse.c")
 target_link_libraries(snx-vita-usse PRIVATE snx_vita_usse)
 set_target_properties(snx-vita-usse PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}")

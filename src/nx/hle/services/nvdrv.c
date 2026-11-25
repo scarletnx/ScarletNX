@@ -830,11 +830,21 @@ u32 syncpt_read(u32 id) {
     return id < SYNCPT_IDS ? atomic_load_explicit(&g_hle.nvdrv.syncpt[id], memory_order_seq_cst) : 0;
 }
 u64 g_sync_shim_cpu; /* the syncpoint shim's guest CPU page (GET_SYNC_RO_MAP), 0 until bound */
+/* who last bumped/promised each syncpoint, so a wait-for chain can pass through a syncpoint. The guest id when a
+   guest thread did it, else the host tid: display and queue fences move on the GPU thread, which has no guest
+   thread. Diagnostics only: a plain u32, written under sync_lk with the value's advance and read without the lock. */
+static u32 syncpt_causer[SYNCPT_IDS];
+static void syncpt_causer_mark(u32 id) {
+    if (!snx_tracy_attached()) return; /* syncpt_wait reads it only with a client */
+    KThread* t = kthread_cur();
+    syncpt_causer[id] = t ? (u32)t->id : plat_tid();
+}
 /* the value moved and its waiters woken: 0 for no increment */
 static int syncpt_bump(u32 id, u32 n) {
     if (id >= SYNCPT_IDS || !n) return 0;
     pm_lock(&g_host.nvdrv.sync_lk);
     u32 v = (atomic_fetch_add_explicit(&g_hle.nvdrv.syncpt[id], n, memory_order_seq_cst) + n);
+    syncpt_causer_mark(id);
     if ((i32)(v - g_hle.nvdrv.syncpt_max[id]) > 0) g_hle.nvdrv.syncpt_max[id] = v; /* the CPU promises nothing first */
     pc_broadcast(&g_host.nvdrv.sync_cv);
     pm_unlock(&g_host.nvdrv.sync_lk);
@@ -867,6 +877,7 @@ u32 syncpt_promise(u32 id, u32 n) {
     cur = syncpt_read(id);
     if ((i32)(cur - g_hle.nvdrv.syncpt_max[id]) > 0) g_hle.nvdrv.syncpt_max[id] = cur;
     g_hle.nvdrv.syncpt_max[id] += n;
+    syncpt_causer_mark(id);
     v = g_hle.nvdrv.syncpt_max[id];
     pm_unlock(&g_host.nvdrv.sync_lk);
     return v;
@@ -906,10 +917,18 @@ int syncpt_wait(u32 id, u32 thresh, i64 timeout_ns) {
     atomic_fetch_add_explicit(&g_host.nvdrv.syncpt_waits, 1, memory_order_relaxed);
     [[maybe_unused]] double ms = (double)waited_ns / 1e6;
     SNX_PLOT("syncpt wait ms", ms);
+    char causer[16] = "<none>";
+    if (snx_tracy_attached()) {
+        u32 by = syncpt_causer[id];
+        if (by) snprintf(causer, sizeof causer, "%u", by);
+    }
+    SNX_ZONE_TV(z_nv_sync, "svc nvdrv syncpt", (u64)(waited_ns / 1000), "sync %u to %u at %u, %s, by %s", id, thresh,
+                syncpt_read(id), reached ? "reached" : "timed out", causer);
     if (!reached) atomic_fetch_add_explicit(&g_host.nvdrv.syncpt_timeouts, 1, memory_order_relaxed);
     if (ms > 1.0 && snx_tracy_attached()) {
-        char msg[64];
-        int n = snprintf(msg, sizeof msg, "syncpoint %u waited for %u", id, thresh);
+        char msg[96];
+        int n = snprintf(msg, sizeof msg, "syncpt %u>%u at %u %s %llu us by %s", id, thresh, syncpt_read(id),
+                         reached ? "met" : "timeout", (unsigned long long)(waited_ns / 1000), causer);
         if (n > 0 && n < (int)sizeof msg) SNX_MSG(msg, (size_t)n);
     }
     return reached;
@@ -957,8 +976,11 @@ static int fence_on_gpu_thread(u32 id, u32 val) {
     pm_lock(&g_host.nvdrv.sync_lk);
     int gpu = id < SYNCPT_N && g_hle.nvdrv.syncpt_gpu[id] && (i32)(val - g_hle.nvdrv.syncpt_max[id]) <= 0;
     pm_unlock(&g_host.nvdrv.sync_lk);
-    if (gpu) return 1;
-    [[maybe_unused]] u64 started = plat_ns();
+    if (gpu) {
+        SNX_ZONE_T(z_nv_fence, "svc nvdrv fence", "fence %u>%u at %u on GPU thread", id, val, syncpt_read(id));
+        return 1;
+    }
+    [[maybe_unused]] u64 started = snx_tracy_attached() ? plat_ns() : 0; /* a plot's alone */
     if (!syncpt_wait(id, val, FENCE_WAIT_NS))
         WARN_LIMIT(
             8,
@@ -966,6 +988,12 @@ static int fence_on_gpu_thread(u32 id, u32 val) {
             "on\n",
             (unsigned)(FENCE_WAIT_NS / NS_PER_MS), id, val, syncpt_read(id));
     SNX_PLOT("present fence wait ms", (double)(plat_ns() - started) / 1e6);
+    if (snx_tracy_attached()) {
+        char msg[96];
+        int n = snprintf(msg, sizeof msg, "present fence %u>%u at %u waited on calling thread", id, val,
+                         syncpt_read(id));
+        if (n > 0 && n < (int)sizeof msg) SNX_MSG(msg, (size_t)n);
+    }
     return 0;
 }
 void nv_gpu_call_after(u32 n, u32* id, const u32* val, void (*fn)(void*), void* arg) {

@@ -387,7 +387,7 @@ int main(void) {
         CHECK(size == 0x3c && g_mem[0x1000] == 0xcc);
     }
 
-    /* IManagerDisplayService 6002, SetLayerVisibility: Minecraft calls it at boot. The runtime has one layer and
+    /* IManagerDisplayService 6002, SetLayerVisibility: a game calls it at boot. The runtime has one layer and
        always presents it, so the command succeeds and changes nothing */
     {
         SvcObj* manager = nn_visrv_sf_IManagerDisplayService_new();

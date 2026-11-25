@@ -14,6 +14,7 @@
 #include "nx/gpu/texture/blocklinear_runs_spv.h" /* the same with BL_RUNS: runs read in place by address */
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
+#include "nx/runtime/platform/tracy.h"
 
 /* blocklinear.comp's push constants, member for member */
 typedef struct {
@@ -68,6 +69,8 @@ void vk_bl_scratch_trim(void) {
     u64 usage, budget;
     vk_mem_use(&usage, &budget);
     if (usage < budget / 5 * 4) return;
+    SNX_ZONE_T(z, "vk mem BL scratch trim", "%llu MB freed, heap past four fifths",
+               (unsigned long long)(g_blocklinear.cap >> 20));
     vk_defer_buffer(g_blocklinear.scratch, g_blocklinear.mem); /* once the frame's work that may use it is done */
     g_blocklinear.scratch = VK_NULL_HANDLE;
     g_blocklinear.cap = 0;
@@ -103,6 +106,8 @@ VkBuffer vk_bl_scratch(u64 size, u64* cap_out) {
     }
     vk_mem_track(g_blocklinear.mem, VK_OWN_CONVERT);
     *cap_out = g_blocklinear.cap = cap;
+    static const char k_grown[] = "vk mem BL scratch grew";
+    SNX_MSG(k_grown, sizeof k_grown - 1);
     return g_blocklinear.scratch;
 }
 

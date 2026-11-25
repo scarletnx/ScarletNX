@@ -27,7 +27,8 @@ Run from checkout root. [Extract/AOT/run](../user/usage.md) · [Tests/diagnostic
 - **Linux / FreeBSD:** Clang (CI: 23; FreeBSD's system Clang also works), LLVM's development files
   (`llvm-config`, required by the recompiler), CMake ≥3.28, Ninja, POSIX shell, GNU make (`gmake` on FreeBSD),
   NASM on x86-64, Perl, Python 3 (the menu's languages, SPIRV-Tools' build), Git, pkg-config, `patch` and meson
-  (dav1d's build).
+  (dav1d's build). On x86-64 also `pdftotext` (poppler's), which the x86-64 back end's instruction selection is derived
+  from the Intel SDM with: the configure stops without it, or with `-DSNX_SAIL_X64=OFF` LLVM makes every function.
   Use a system SDL3 development package, or X11/Wayland and audio development libraries for the bundled
   SDL3 build.
 - **macOS:** Apple silicon, macOS 13 or newer, Xcode (its Clang and SDKs), CMake ≥3.28, Ninja, meson, Python 3 and
@@ -69,7 +70,7 @@ system include; Fedora lists it below.
 
 ```sh
 sudo apt update
-sudo apt install build-essential git cmake ninja-build meson clang llvm-dev nasm pkg-config python3 \
+sudo apt install build-essential git cmake ninja-build meson clang llvm-dev nasm poppler-utils pkg-config python3 \
   libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev \
   libasound2-dev libpulse-dev libpipewire-0.3-dev
 ```
@@ -103,7 +104,7 @@ Vulkan-capable NVIDIA driver.
 ### Fedora
 
 ```sh
-sudo dnf install clang cmake ninja-build meson nasm make perl git pkgconf-pkg-config patch llvm-devel python3 \
+sudo dnf install clang cmake ninja-build meson nasm poppler-utils make perl git pkgconf-pkg-config patch llvm-devel python3 \
   libX11-devel libXext-devel libXrandr-devel libXcursor-devel libXi-devel libXfixes-devel \
   libXScrnSaver-devel libXtst-devel alsa-lib-devel pulseaudio-libs-devel pipewire-devel
 ```
@@ -128,7 +129,7 @@ sudo dnf install wayland-devel libxkbcommon-devel wayland-protocols-devel libdec
 ### Arch Linux
 
 ```sh
-sudo pacman -Syu --needed base-devel git cmake ninja meson clang llvm nasm perl pkgconf python sdl3
+sudo pacman -Syu --needed base-devel git cmake ninja meson clang llvm nasm perl pkgconf poppler python sdl3
 ```
 
 ### FreeBSD
@@ -137,7 +138,7 @@ FreeBSD provides Clang in the base system. Install the remaining tools, the SDL3
 HIDAPI loads at run time to read controllers (an Xbox pad is only read that way):
 
 ```sh
-sudo pkg install git cmake ninja meson gmake nasm perl5 pkgconf python3 sdl3 llvm libusb glslang
+sudo pkg install git cmake ninja meson gmake nasm perl5 pkgconf poppler-utils python3 sdl3 llvm libusb glslang
 ```
 
 The build uses that `sdl3` package by default (`SNX_SYSTEM_SDL3`, see [SDL3 troubleshooting](#sdl3-troubleshooting));
@@ -300,13 +301,15 @@ runtime must not mix with another LLVM build.
      mingw-w64-clang-x86_64-clang mingw-w64-clang-x86_64-llvm mingw-w64-clang-x86_64-lld \
      mingw-w64-clang-x86_64-cmake mingw-w64-clang-x86_64-ninja mingw-w64-clang-x86_64-nasm \
      mingw-w64-clang-x86_64-meson mingw-w64-clang-x86_64-pkgconf mingw-w64-clang-x86_64-python \
-     mingw-w64-clang-x86_64-glslang
+     mingw-w64-clang-x86_64-glslang mingw-w64-clang-x86_64-poppler
    ```
 
-   Python builds the menu's languages and runs SPIRV-Tools' build, which optimizes and validates the shaders. CI also
+   Python builds the menu's languages and runs SPIRV-Tools' build, which optimizes and validates the shaders; poppler
+   has `pdftotext`, which the x86-64 back end's instruction selection is derived from the Intel SDM with. CI also
    installs ccache, which is optional here, as sccache is. On Windows on Arm, open the **MSYS2 CLANGARM64** shell
-   instead and install the same packages with `mingw-w64-clang-aarch64-` in place of `mingw-w64-clang-x86_64-`, as the
-   job's AArch64 leg does; the steps below are the same there, and its DLLs are in `/clangarm64/bin`.
+   instead and install the same packages but poppler with `mingw-w64-clang-aarch64-` in place of
+   `mingw-w64-clang-x86_64-`, as the job's AArch64 leg does; the steps below are the same there, and its DLLs are in
+   `/clangarm64/bin`.
 3. Clone to a path without spaces:
 
    ```sh
@@ -324,7 +327,7 @@ runtime must not mix with another LLVM build.
      -DSNX_FFMPEG_MAKE="$(cygpath -m /usr/bin/make.exe)" \
      -DPERL_EXECUTABLE="$(cygpath -m /usr/bin/perl.exe)" \
      -DSNX_OPENSSL_MAKE="$(cygpath -m /usr/bin/make.exe)" \
-     -DCMAKE_DISABLE_FIND_PACKAGE_SDL3=ON
+     -DCMAKE_DISABLE_FIND_PACKAGE_SDL3=ON -DBUILD_TESTING=ON
    cmake --build --preset default
    ```
 
@@ -351,12 +354,14 @@ Default: Ninja + Clang, `RelWithDebInfo` (`-O2 -g`), without ThinLTO
 matching `Game_code.so/.dll`, in the data folder's `recompiled/` ([Usage](../user/usage.md#folders)); no-op builds skip deployment. Recompiler/ABI edits require [module rebuilds](development.md).
 
 CPMUtil downloads each package [cpmfile.json](../../cpmfile.json) pins once into a shared `.cache/cpm` cache, at
-`<package>/<version>`, checked by its SHA-512 ([Third-party packages](#third-party-packages)). Offline configuration
+`<package>/<version>` (`<package>/<version>-<key>` for a patched one, the first 10 characters of the SHA-512 of its
+patches), checked by its SHA-512 ([Third-party packages](#third-party-packages)). Offline configuration
 needs the matching sources already in the cache, or `-D<package>_CUSTOM_DIR=/path` naming a folder that holds one (a
 package of one file is checked against its pin there too; a patched package, FFmpeg's and FidelityFX-FSR2's, is
-refused there, as CPMUtil would take it unpatched). A patched package is kept patched in the cache, extracted and patched
-again when its patches change. With tests on (`BUILD_TESTING`, the default) and the runtime, libvpx's VP9 test vectors download
-there too ([tests](../../tests/CMakeLists.txt)). The Switch runtime's shared font stand-ins download only when it is
+refused there, as CPMUtil would take it unpatched). A patched package is kept patched in the cache, one folder for each
+set of patches: trees of branches that patch it otherwise share the cache and not the folder. A folder of patches no tree
+uses any more stays until it is deleted. With tests on (`BUILD_TESTING`) and the runtime, libvpx's VP9 test
+vectors download there too ([tests](../../tests/CMakeLists.txt)). The Switch runtime's shared font stand-ins download only when it is
 built ([Shared fonts](../platforms/nx/filesystem.md#shared-fonts)), and GNU Unifont's `.hex` (the menu's CJK and Hangul
 letters of game titles) only when the menu is. Override via CMake/env `CPM_SOURCE_CACHE`. SDL3 is
 the system's package when `find_package` finds 3.4.18 or newer, else the pinned static source build;
@@ -410,7 +415,8 @@ To update a package:
    `numeric_version`, as lz4's entry has it, spare that).
 2. Download the file, check it against the digest its release publishes (GitHub shows each asset's SHA-256), and put
    its SHA-512 in `hash`: `cmake -E sha512sum <file>`. Never the hash of what a configure happened to fetch.
-3. Configure: the new version downloads into `CPM_SOURCE_CACHE/<package>/<version>`.
+3. Configure: the new version downloads into `CPM_SOURCE_CACHE/<package>/<version>` (with the patches' key after it
+   where it has patches).
 
 To add one:
 
@@ -491,10 +497,14 @@ cmake --preset default -B build -DSNX_FFMPEG_ASM=OFF && cmake --build build
 - `-DSNX_TOOLS_ONLY=ON`: build the extraction/recompilation driver without the runtime, see below (default OFF).
 - `-DSNX_RECOMPILER_SHARED=ON`, `-DSNX_RECOMPILER_INSTALL=ON`: also build the recompiler as a shared library, and
   install the library, see [Library](library.md) (defaults OFF and the value of `SNX_TOOLS_ONLY`).
+- `-DSNX_SAIL_X64=OFF`: build without the x86-64 back end, and LLVM makes every function. The default is ON on x86-64
+  (not Android), where it needs `pdftotext` and the Intel SDM (downloaded, or `-DSNX_SDM_PDF=`).
+- `-DBUILD_TESTING=ON`: build the tests, which the `default` and `tracy` presets leave out.
 - `-DSNX_BUILD_TESTING=OFF`: leave the tests out whatever `BUILD_TESTING` says. ON by default when ScarletNX is the
   top-level project, OFF when another project adds it with CPM or `add_subdirectory` ([Library](library.md)).
 
-Test options, read when `BUILD_TESTING` is on (CTest's default), all OFF by default:
+Test options, all OFF by default. One that is on without `BUILD_TESTING=ON` stops the configure, as nothing would build
+it:
 
 - `-DSNX_TEST_SANITIZERS=ON`: build the native tests, and the programs and libraries of the repository they run or
   link, with ASan and UBSan (`runtime_architecture` names one left out). The runtime is one, so it is not deployed.
@@ -536,7 +546,7 @@ Offscreen integration test, with an installed Vulkan 1.3 ICD (lavapipe works):
 
 ```sh
 cmake --preset default -B build/headless-vk -DSNX_BUILD_GUI=OFF \
-  -DSNX_DEPLOY=OFF -DSNX_TEST_VULKAN=ON && cmake --build build/headless-vk
+  -DSNX_DEPLOY=OFF -DBUILD_TESTING=ON -DSNX_TEST_VULKAN=ON && cmake --build build/headless-vk
 # Set VK_DRIVER_FILES to your lavapipe manifest to force CPU rendering.
 ctest --test-dir build/headless-vk -R vulkan_headless --output-on-failure
 # the same with the validation layer
@@ -556,7 +566,7 @@ not the build machine's LLVM libraries. Running the `snx-rtlib-gen` build helper
 Host tools only, without SDL/Vulkan/FFmpeg or Python:
 
 ```sh
-cmake --preset default -B build/tools -DSNX_TOOLS_ONLY=ON && cmake --build build/tools
+cmake --preset default -B build/tools -DSNX_TOOLS_ONLY=ON -DBUILD_TESTING=ON && cmake --build build/tools
 build/tools/scarletnx -r -h
 ctest --test-dir build/tools --output-on-failure
 ```

@@ -426,15 +426,23 @@ int snx_path_exists(const char* path) {
     return !lstat(path, &st);
 #endif
 }
+/* the reason a folder is not made stays the system's last (snx_os_error): the look at what is there sets another */
 static int mkdir_one(const char* path) {
 #ifdef _WIN32
     wchar_t* p = snx_wide(path);
     int ok = p && CreateDirectoryW(p, NULL);
+    DWORD error = GetLastError();
     free(p);
-    return !ok && !snx_is_dir(path);
+    if (ok || snx_is_dir(path)) return 0;
+    SetLastError(error);
 #else
-    return mkdir(path, 0700) && !snx_is_dir(path);
+    int error;
+    if (!mkdir(path, 0700)) return 0;
+    error = errno;
+    if (snx_is_dir(path)) return 0;
+    errno = error;
 #endif
+    return 1;
 }
 int snx_mkdirs(const char* path) {
     if (snx_is_dir(path)) return 0;

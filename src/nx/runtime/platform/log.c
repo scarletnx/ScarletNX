@@ -201,6 +201,7 @@ static void log_crash_write(const char* text) {
    a second handle, in binary (Windows' text mode would move a "\r\n" by halves); the first cut for the frontend's
    toast. A crash's line written while a cut runs may land in what the cut drops. Under g_log_lock */
 static void log_cut_nl(long limit) {
+    SNX_ZONE_T(z_cut, "plat log cut", "log_max reached");
     static char buf[1 << 16];
 #if defined(_WIN32)
     static const char eol[] = "\r\n";
@@ -271,6 +272,7 @@ static void log_cut_nl(long limit) {
     fseek(atomic_load_explicit(&g_log, memory_order_relaxed), 0,
           SEEK_END); /* the descriptor's offset too, which crash mode writes at */
     g_log_size = (u64)to;
+    SNX_PLOT("plat log cut bytes", (double)(size - to)); /* the bytes saved; 0 when the cut failed */
     if (!moved)
         fputs(mark, atomic_load_explicit(&g_log, memory_order_relaxed));
     else if (!g_log_cuts++)

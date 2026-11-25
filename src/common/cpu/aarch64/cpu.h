@@ -423,6 +423,11 @@ SnxFpReply snx_fp_round(u64 bits, int width, int rm, int exact, u32 fpcr); /* FR
 SnxFpReply snx_fp_round_int(u64 bits, int width, int rm, int intsize, u32 fpcr); /* FRINT32*, FRINT64*: 32 or 64 */
 SnxFpReply snx_fp_jcvt(u64 bits, u32 fpcr);  /* FJCVTZS: the W result, and Z in bit 32 */
 SnxFpReply snx_fp_bfcvt(u64 bits, u32 fpcr); /* BFCVT: a single's bfloat16 */
+SnxFpReply snx_fp_scale(u64 bits, i64 by, int width, u32 fpcr); /* FSCALE: times 2^by */
+/* FEAT_FP8's, FPMR zero: a byte of E5M2 as a half (or bfloat16), one as a byte, add + the n products of bytes */
+SnxFpReply snx_fp8_widen(u64 byte, int bfloat);
+SnxFpReply snx_fp8_narrow(u64 bits, int width);
+u64 snx_fp8_dot(u64 add, u64 a, u64 b, int n, int width);
 
 /* The same helpers against a CPU structure's FPCR and FPSR: the two steps the generated code emits itself
    (ir_fp.h's ir_fp_call), for the witnesses and oracles that drive the helpers directly. */

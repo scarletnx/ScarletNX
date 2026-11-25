@@ -200,8 +200,8 @@ static PatchRef patch_ref_of(VitaProcess* p, uint32_t handle) {
 static unsigned modules_of(const struct VitaNgs* n, const Voice* v) {
     uint32_t kind = n->racks[v->rack].kind;
     /* Simple Atrac9 has the simple voice's six modules (Vita3K's BUSS_SIMPLE_ATRAC9: Atrac9, equalizer, envelope,
-       pauser, two filters; its SceNgsAT9Params fill a module's 0x60 bytes exactly). Need For Speed Most Wanted bypasses
-       modules 1-5 and locks module 3's params, so fewer made sceNgsVoiceLockParams fail and left the game to read the
+       pauser, two filters; its SceNgsAT9Params fill a module's 0x60 bytes exactly). One racing game bypasses modules
+       1-5 and locks module 3's params, so fewer made sceNgsVoiceLockParams fail and left the game to read the
        SceNgsBufferInfo it never got */
     if (kind == DEF_SIMPLE || kind == DEF_SIMPLE_ATRAC9) return MODULES;
     /* Template1's; the rest (the master buss and the single-effect busses: reverb, compressor, SAS emulation) take

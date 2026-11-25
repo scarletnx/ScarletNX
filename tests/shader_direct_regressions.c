@@ -57,7 +57,7 @@ static const char* legacy_paths[4];
 static const char* rect_paths[3];
 static const char* minmax_paths[2]; /* a TEX and a TXD taking the least of their texels (minmax_samples) */
 static const char* window_paths[3];
-static const char* lone_lane_paths[12];
+static const char* lone_lane_paths[17]; /* the stages' forms, then compute's */
 static const char* quad_read_paths[3];
 static struct {
     char** paths;
@@ -994,14 +994,14 @@ static void global_buffers(void) {
     check(code && !info.unsupported && info.ngbuf == 1 && info.gbuf_cbuf_off[0] == (6u << 16),
           "of an offset and a bare address, the one added last is the base");
     free(code);
-    /* LEA.LO R2, R0, c[0][0x510], 4: the base plus an index, as a 64-bit address's low word (Pokemon Legends Z-A) */
+    /* LEA.LO R2, R0, c[0][0x510], 4: the base plus an index, as a 64-bit address's low word (one game's program) */
     const u64 lea[] = {0x4BD7020014470002ull, 0xEED4200000070200ull};
     code = translate(lea, 2, ST_FS, &info, &words, 1);
     check(code && !info.unsupported && info.ngbuf == 1 && info.gbuf_cbuf_off[0] == 0x510,
           "an LEA of a buffer's base keeps the buffer");
     free(code);
     /* A load and a store through bases the tracking lost (R6 from an FMUL, as a switch's case reaches a base in
-       Pokemon Legends Z-A, issue #440) find their buffer among the tracked one when they run */
+       one game's program, issue #440) find their buffer among the tracked one when they run */
     const u64 dynamic[] = {
         0x4C98078014470002ull, /* MOV R2, c[0][0x510] */
         0xEED4200000070200ull, /* LDG.E R0, [R2] */
@@ -1520,8 +1520,8 @@ static void half_f32_operand_range(void) {
 }
 
 static void fragment_storage_images(void) {
-    /* the same store and atomic on 2D array surfaces (bits 33-35 set to 4), as Pokemon Legends Z-A's fragment
-       programs write them (issue #440): the layer in the coordinates' third register */
+    /* the same store and atomic on 2D array surfaces (bits 33-35 set to 4), as one game's fragment programs
+       write them (issue #440): the layer in the coordinates' third register */
 #define SURFACE_2D_ARRAY(w) (((w) & ~(7ull << 33)) | 4ull << 33)
     static const struct {
         u64 instructions[2];
@@ -1856,7 +1856,7 @@ static void surface_atomic_operations(void) {
    stages have helper invocations to guard. */
 static void draw_buffer_surfaces(void) {
     const u64 store[] = {0x4c9807880487001cull, unguarded(0xeb200e0200f00f18ull, 24, 15, 28)};
-    /* SULD.D.32 on the handle MOV R4, c[0x2][0x128], as Ender Magnolia's compute loads it */
+    /* SULD.D.32 on the handle MOV R4, c[0x2][0x128], as one game's compute program loads it */
     const u64 load[] = {0x4c98078804a70004ull, unguarded(0xeb10020200480370ull, 8, 0, 4)};
     for (int stage = ST_VS; stage <= ST_FS; stage++)
         for (int write = 0; write < 2; write++) {
@@ -2437,13 +2437,13 @@ static void issue126_shader_modes(void) {
     };
     const u64 dynamic_3d_offset[] = {0x4c98078800070004ull,
                                      0xdeb8000000070008ull | (4ull << 28) | (1ull << 36) | (4ull << 20)};
-    /* Ender Magnolia ORs the sampler half in from a constant buffer operand. */
+    /* A game ORs the sampler half in from a constant buffer operand. */
     const u64 split_cbuf_handle[] = {
         0x4c98078805c70006ull, /* MOV R6, c[0x2][0x170] */
         0x4c47020815c70606ull, /* LOP.OR R6, R6, c[0x2][0x570] */
         0xdeb8000000070008ull | (2ull << 28) | (1ull << 37) | (6ull << 20),
     };
-    /* Ender Magnolia's buffer images: SULD.D.32, SUATOM.ADD and SUST.P on the handle MOV R4, c[0x2][0x128] */
+    /* A game's buffer images: SULD.D.32, SUATOM.ADD and SUST.P on the handle MOV R4, c[0x2][0x128] */
     const u64 buffer_surfaces[] = {
         0x4c98078804a70004ull,
         unguarded(0xeb10020200480370ull, 8, 0, 4),
@@ -2573,6 +2573,19 @@ static void issue126_shader_modes(void) {
         if (code) check(count_opcode(code, words, 195, 0xffffffffu) == 0, "a 2D texel fetch keeps its coordinates");
         free(code);
     }
+    /* An unconditional branch jumps over a write to the handle register. The skipped MOV32I is not a source: the
+       handle loaded before the branch is. */
+    {
+        const u64 tld_b = (0xdd3a0007a0070200ull & ~(0xffull << 20)) | (6ull << 20); /* TLD.B R0, R2, R6, 2D */
+        const u64 skip_one = 0xe24000000000000full | (16ull << 20) | (7ull << 16);  /* BRA over one instruction */
+        const u64 vertex_skip[] = {0x4c98078800070006ull, skip_one, mov32i(6, 0x3f800000), tld_b};
+        ShaderInfo info;
+        size_t words = 0;
+        u32* code = translate(vertex_skip, 4, ST_VS, &info, &words, 1);
+        if (!code) fprintf(stderr, "vertex skipped write: '%s'\n", info.first_unsupported);
+        check_translated(code, &info, "a vertex handle survives an unconditional branch over a write");
+        free(code);
+    }
     /* One game's histogram: SURED.ADD into a buffer surface, U32 and then S32 (bit 20), on the handle
        MOV R5, c[0x2][0x128] */
     {
@@ -2676,6 +2689,32 @@ static void issue126_shader_modes(void) {
     check_refused(code, &info, "untracked texture handle",
                   "a handle written in code a branch skips doesn't reach the target");
     free(code);
+    /* A vertex program branches to its sample before a loop. The loop's BRK
+       reaches a constant write, but the branch after that write leaves before
+       the sample. Neither write reaches the sample; the load before the first
+       branch does. Scheduling words put these instructions at 11, 12, 13, 15,
+       16, 17, 18, 20 and 21. */
+    const u64 pbk_to_constant = 0xe2a0000000000000ull | (32ull << 20);
+    const u64 brk = 0xe34000000007000full;
+    u64 after_loop[] = {0x4c98078800070006ull,
+                        0xe24000000000000full | (64ull << 20),
+                        pbk_to_constant,
+                        FMUL_KEEP | 6,
+                        brk,
+                        FMUL_KEEP | 5,
+                        mov32i(6, 0x3f800000u),
+                        0xe24000000007000full | (8ull << 20),
+                        tex_b};
+    code = translate(after_loop, 9, ST_VS, &info, &words, 1);
+    check_translated(code, &info, "a vertex handle load reaches a sample past a loop's non-reaching writes");
+    check(code && info.ntex == 1 && info.tex[0].bindless && info.tex[0].bl_cbuf == 2 && info.tex[0].cbuf_off == 0,
+          "the sample past a loop keeps the handle loaded on the branch path");
+    free(code);
+    after_loop[7] = FMUL_KEEP | 5;
+    code = translate(after_loop, 9, ST_VS, &info, &words, 1);
+    check_refused(code, &info, "untracked texture handle",
+                  "a constant handle reached by a loop break remains unsupported");
+    free(code);
     /* Both sides of a forward branch may independently assemble the same
        split descriptor. The merge is safe only when every source agrees. */
     const u64 choose = 0xe24000000000000full | (32ull << 20);
@@ -2687,6 +2726,12 @@ static void issue126_shader_modes(void) {
     check(code && info.ntex == 1 && info.tex[0].bl2 && info.tex[0].bl_cbuf == 2 && info.tex[0].cbuf_off == 0 &&
               info.tex[0].bl2_cbuf == 2 && info.tex[0].bl2_off == 0x100,
           "a merged split handle retains both descriptor sources");
+    free(code);
+    const u64 pair_or_alt = (pair_or & ~((0x1full << 34) | (0xfull << 16))) | (3ull << 34) | (1ull << 16);
+    const u64 predicated_choice[] = {0x4c98078800070006ull, pair_or, pair_or_alt, tex_b};
+    code = translate(predicated_choice, 4, ST_FS, &info, &words, 1);
+    /* c[2][0] | c[2][0x400], and on P1's path | c[3][0x400] too: three words, and a slot holds two */
+    check_refused(code, &info, "untracked texture handle", "a handle of three words is refused");
     free(code);
     u64 disagree[7];
     memcpy(disagree, joined, sizeof disagree);
@@ -3812,7 +3857,7 @@ static void beyond_eden(void) {
 /* AL2P keeps byte offsets, including bit 10, and adds the register before an attribute access. */
 /* Transform feedback (ShaderInfo.xfb): a vertex program's AST.128 of R0-R3 to generic 0, of which buffer 0 captures y
    and z (from mid-vector, 8 bytes a vertex) and buffer 1 x. Each captured component gets an offset of its own: the
-   module declares TransformFeedback and Xfb, and three captures (Pokemon Legends Z-A skins with them, issue #440) */
+   module declares TransformFeedback and Xfb, and three captures (a game skins with them, issue #440) */
 static void transform_feedback(void) {
     const u64 instructions[] = {mov32i(0, 0x3f800000), mov32i(1, 0x40000000), mov32i(2, 0x40400000),
                                 mov32i(3, 0x40800000), 0xeff000000007ff00ull | (0x80ull << 20) | (3ull << 47)};
@@ -4645,7 +4690,7 @@ static void audit_shader_regressions(void) {
     }
 }
 
-/* Fire Emblem Three Houses fragment shaders sample fp16 surfaces with TLDS.
+/* A game's fragment shaders sample fp16 surfaces with TLDS.
    The f32 forms translate; the fp16 form must translate the same way, with the
    components converted and packed into halves. */
 static void tlds_fp16(void) {
@@ -4898,7 +4943,7 @@ static void scaled_texel_fetch(void) {
     free(code);
 }
 
-/* Fire Emblem Three Houses fragment shaders sample array textures with TXD,
+/* A game's fragment shaders sample array textures with TXD,
    explicit gradients in Rb. It must sample with the Grad operands and write
    the masked components to consecutive registers. */
 static void txd_grad(void) {
@@ -6087,6 +6132,583 @@ static void lone_lane_forms(void) {
     free(code);
 }
 
+/* ---- a compute program's warp idioms on a device whose subgroups are narrower than a warp (warp_idioms.c) ---- */
+
+/* instructions of the programs below, over registers (255 is RZ) and predicates (7 is PT) */
+static u64 cs_s2r(u32 d, u32 sr) { return 0xF0C8000000070000ull | d | (u64)sr << 20; }
+static u64 cs_flo(u32 d, u32 b) { return 0x5C30000000070000ull | d | (u64)b << 20; }
+static u64 cs_popc(u32 d, u32 b) { return 0x5C08000000070000ull | d | (u64)b << 20; }
+static u64 cs_and(u32 d, u32 a, u32 b) { return 0x5C47000000070000ull | d | (u64)a << 8 | (u64)b << 20; }
+static u64 cs_iadd(u32 d, u32 a, u32 b) { return 0x5C10000000070000ull | d | (u64)a << 8 | (u64)b << 20; }
+static u64 cs_shl(u32 d, u32 a, u32 by) { return 0x3848000000070000ull | d | (u64)a << 8 | (u64)by << 20; }
+static u64 cs_mov32(u32 d, u32 value) { return 0x010000000007F000ull | d | (u64)value << 20; }
+static u64 cs_iseq(u32 p, u32 a, u32 b) { return 0x5B64038000070007ull | (u64)p << 3 | (u64)a << 8 | (u64)b << 20; }
+static u64 cs_full(u32 p, u32 a) { return 0x376403FFFFF70007ull | (u64)p << 3 | (u64)a << 8; } /* == 0xffffffff */
+/* IMNMX of unsigned (or signed) a and b: the greater with max */
+static u64 cs_minmax(u32 d, u32 a, u32 b, int max, int is_signed) {
+    return 0x5C20038000070000ull | d | (u64)a << 8 | (u64)b << 20 | (u64)max << 42 | (u64)is_signed << 48;
+}
+static u64 cs_ldc(u32 d, u32 a, u32 bank) { return 0xEF94000000070000ull | d | (u64)a << 8 | (u64)bank << 36; }
+static u64 cs_lds(u32 d, u32 a, u32 at) { return 0xEF4C100000070000ull | d | (u64)a << 8 | (u64)at << 20; }
+static u64 cs_sts(u32 data, u32 a, u32 at) { return 0xEF5C000000070000ull | data | (u64)a << 8 | (u64)at << 20; }
+/* ATOMS of op (0 ADD, 1 MIN, 2 MAX) at [a + at], under guard (a predicate, and 8 for its negation; 7 none) */
+static u64 cs_atoms(u32 op, u32 d, u32 a, u32 at, u32 data, u32 guard, int is_signed) {
+    return 0xEC00000000000000ull | (u64)op << 52 | d | (u64)a << 8 | (u64)guard << 16 | (u64)data << 20 |
+           (u64)is_signed << 28 | (u64)(at / 4) << 30;
+}
+static u64 cs_swap(u32 d, u32 a, u32 lanes) { return 0xEF17007CF0070000ull | d | (u64)a << 8 | (u64)lanes << 20; }
+static u64 cs_from(u32 d, u32 a, u32 lane) { return 0xEF17007C20070000ull | d | (u64)a << 8 | (u64)lane << 20; }
+/* the byte of instruction k of a program of guest_program's */
+static u32 cs_byte(u32 k) { return (k + 1 + k / 3) * 8; }
+/* BRA from instruction k to instruction to, under guard */
+static u64 cs_bra(u32 k, u32 to, u32 guard) {
+    return 0xE24000000000000Full | (u64)guard << 16 | (u64)((cs_byte(to) - cs_byte(k) - 8) & 0xffffffu) << 20;
+}
+#define CS_NOP 0x50B0000000070F00ull
+#define CS_BAR 0xF0A81B8000070000ull
+#define CS_TID 0x21u
+#define CS_LT  0x39u
+#define CS_OUT 64u /* the byte of shared memory each lane's word is at, past the atomics' */
+#define CS_LEN 64u
+typedef struct {
+    u64 w[CS_LEN];
+    u32 n;
+} CsCode;
+static u32 cs_put(CsCode* p, u64 w) {
+    if (p->n < CS_LEN) p->w[p->n] = w;
+    return p->n++;
+}
+/* w under guard (a predicate, and 8 for its negation), and w put before instruction at of a program without branches */
+static u64 cs_if(u64 w, u32 guard) { return (w & ~0xF0000ull) | (u64)guard << 16; }
+static void cs_insert(CsCode* p, u32 at, u64 w) {
+    cs_put(p, w);
+    for (u32 k = p->n - 1; k > at && k < CS_LEN; k--) p->w[k] = p->w[k - 1];
+    p->w[at] = w;
+}
+
+/* A combined add of 1 with its old value, as a compiler makes it: R8 is the lane's own value, kept at CS_OUT + 4 TID */
+static void cs_append(CsCode* p) {
+    cs_put(p, cs_s2r(2, CS_TID));
+    cs_put(p, cs_s2r(14, 0));
+    cs_put(p, vote(0, 3, 7, 7, 0));
+    cs_put(p, cs_s2r(6, CS_LT));
+    cs_put(p, cs_flo(5, 3));
+    cs_put(p, cs_popc(4, 3));
+    cs_put(p, cs_iseq(0, 5, 14));
+    cs_put(p, cs_atoms(0, 4, 255, 0, 4, 0, 0)); /* @P0 ATOMS.ADD R4, [0], R4: R4 is the count before it */
+    cs_put(p, cs_and(6, 6, 3));
+    cs_put(p, cs_popc(7, 6));
+    cs_put(p, cs_from(8, 4, 5));
+    cs_put(p, cs_iadd(8, 8, 7));
+    cs_put(p, cs_shl(2, 2, 2));
+    cs_put(p, cs_sts(8, 2, CS_OUT));
+}
+/* the lanes' values reduced by 1, 2, 4, 8 and 16 from register v, and lane 0's atomic of it at shared byte at */
+static void cs_reduce(CsCode* p, u32 v, int max, int is_signed, u32 at) {
+    u32 from = v;
+    for (u32 s = 0; s < 5; s++) {
+        cs_put(p, cs_swap(20 + s, from, 1u << s));
+        cs_put(p, cs_minmax(30 + s, from, 20 + s, max, is_signed));
+        from = 30 + s;
+    }
+    cs_put(p, cs_s2r(14, 0));
+    cs_put(p, cs_iseq(0, 14, 255));
+    cs_put(p, cs_atoms(max ? 2 : 1, 255, 255, at, from, 0, is_signed));
+}
+/* R4 is the lane's word of c[1]; shared bytes 4 to 15 are 0xffffffff, 0 and 0x7fffffff, behind a barrier */
+static void cs_input(CsCode* p) {
+    cs_put(p, cs_s2r(2, CS_TID));
+    cs_put(p, cs_shl(3, 2, 2));
+    cs_put(p, cs_ldc(4, 3, 1));
+    cs_put(p, cs_mov32(9, 0xffffffffu));
+    cs_put(p, cs_sts(9, 255, 4));
+    cs_put(p, cs_sts(255, 255, 8));
+    cs_put(p, cs_mov32(9, 0x7fffffffu));
+    cs_put(p, cs_sts(9, 255, 12));
+    cs_put(p, CS_BAR);
+}
+/* the minimum and the maximum of the lanes' words, and the least of them as signed ones, at 4, 8 and 12 */
+static void cs_extremes(CsCode* p) {
+    cs_input(p);
+    cs_reduce(p, 4, 0, 0, 4);
+    cs_reduce(p, 4, 1, 0, 8);
+    cs_reduce(p, 4, 0, 1, 12);
+}
+/* a minimum or a maximum at byte at where a ballot tells whether the whole warp runs: a lane's own atomic where it does
+   not, and a branch past the reduction, a BRA (last 0) or an EXIT (1). added: an instruction put before the lane's own
+   atomic, before the branch, behind it and behind lane 0's atomic, 0 for none */
+static void cs_guarded_one(CsCode* p, int max, u32 at, int last, const u64 added[4]) {
+    cs_put(p, vote(0, 3, 7, 7, 0));
+    cs_put(p, cs_full(0, 3));
+    if (added && added[0]) cs_put(p, added[0]);
+    cs_put(p, cs_atoms(max ? 2 : 1, 255, 255, at, 4, 8, 0)); /* @!P0 */
+    if (added && added[1]) cs_put(p, added[1]);
+    u32 leave = cs_put(p, last ? cs_if(EXIT, 8) : CS_NOP);
+    if (added && added[2]) cs_put(p, added[2]);
+    cs_reduce(p, 4, max, 0, at);
+    if (added && added[3]) cs_put(p, added[3]);
+    cs_put(p, last ? EXIT : CS_NOP);
+    if (!last) p->w[leave] = cs_bra(leave, p->n, 8);
+}
+static void cs_guarded(CsCode* p) {
+    cs_input(p);
+    cs_guarded_one(p, 0, 4, 0, NULL);
+    cs_guarded_one(p, 1, 8, 1, NULL);
+}
+/* a word the warp shares, as a maximum at 8: lane 0's atomic of it alone behind the test, as a game's program has it */
+static void cs_guarded_shared(CsCode* p) {
+    cs_input(p);
+    cs_put(p, cs_iseq(1, 2, 255)); /* P1 is thread 0's, for the refusals */
+    cs_put(p, cs_lds(0, 255, 12));
+    cs_put(p, cs_lds(10, 255, 4));
+    cs_put(p, vote(0, 3, 7, 7, 0));
+    cs_put(p, cs_full(0, 3));
+    cs_put(p, cs_atoms(2, 255, 255, 8, 0, 8, 0)); /* @!P0 */
+    u32 leave = cs_put(p, CS_NOP);
+    cs_put(p, cs_s2r(14, 0));
+    cs_put(p, cs_iseq(0, 14, 255));
+    cs_put(p, cs_atoms(2, 255, 255, 8, 0, 0, 0)); /* @P0 */
+    cs_put(p, CS_NOP);
+    p->w[leave] = cs_bra(leave, p->n, 8);
+}
+/* the leader adds the count of lanes times a word they all read, at 8: 69a8's, as XMAD makes a 32-bit product */
+static void cs_scaled(CsCode* p) {
+    cs_put(p, cs_mov32(9, 0x12345u));
+    cs_put(p, cs_sts(9, 255, 4));
+    cs_put(p, CS_BAR);
+    cs_put(p, cs_lds(0, 255, 4));
+    cs_put(p, vote(0, 2, 7, 7, 0));
+    cs_put(p, cs_s2r(5, 0));
+    cs_put(p, cs_flo(3, 2));
+    cs_put(p, cs_popc(1, 2));
+    cs_put(p, cs_iseq(0, 3, 5));
+    cs_put(p, 0x5B007F8000170003ull); /* XMAD R3, R0, R1, RZ */
+    cs_put(p, 0x5B007FA800170005ull); /* XMAD.MRG R5, R0, R1.H1, RZ */
+    cs_put(p, 0x5B30019800570003ull); /* XMAD.PSL.CBCC R3, R0.H1, R5.H1, R3 */
+    cs_put(p, cs_atoms(0, 255, 255, 8, 3, 0, 0));
+}
+static u32* cs_spirv(const CsCode* p, u32 local, int can_subgroup, ShaderInfo* info, size_t* words) {
+    size_t slots;
+    memset(info, 0, sizeof *info);
+    u64* code = p->n <= CS_LEN ? guest_program(p->w, (int)p->n, NULL, &slots) : NULL;
+    if (!code) return NULL;
+    info->cs_local[0] = (int)local, info->cs_local[1] = info->cs_local[2] = 1;
+    info->shared_size = (int)(CS_OUT + 64 * 4);
+    u32* result = spirv_of(code, slots * sizeof *code, ST_CS, info, words, 1, 1, 1, can_subgroup);
+    free(code);
+    return result;
+}
+/* the program's shared memory after lanes invocations of one block, input their words of c[1]: 0 when it stops */
+static int cs_run(const u32* spv, size_t words, u32 lanes, u32* input, u32* shared) {
+    static SpvEvalEnv env[64];
+    memset(env, 0, sizeof env);
+    for (u32 l = 0; l < lanes; l++) {
+        env[l].ubo[SNX_VKB_CB + 1] = input;
+        env[l].ubo_words[SNX_VKB_CB + 1] = 64;
+        env[l].builtin[27][0] = env[l].builtin[29][0] = env[l].builtin[41][0] = l; /* LocalInvocationId.x, Index */
+        env[l].builtin[24][0] = env[l].builtin[24][1] = env[l].builtin[24][2] = 1; /* NumWorkgroups */
+    }
+    const char* why = spv_eval_subgroup(spv, words, env, lanes);
+    if (why) fprintf(stderr, "the evaluator stops at %s\n", why);
+    memcpy(shared, env[0].shared, (CS_OUT / 4 + 64) * 4);
+    return !why;
+}
+
+/* Each idiom of warp_idioms.c, on a device without subgroups of 32 (Mali's are 16 lanes, lavapipe's 8): it translates with
+   no subgroup in its module, and blocks of 32 and 64 lanes, whatever the device groups them in, end as the console's
+   warps do: the same atomics' memory, and for the add the values each lane takes are the same ones, in some order. The
+   references are the warp's: the same module with subgroups of 32 (and of 64, two warps) on the evaluator, and the sums,
+   minima and maxima themselves. The programs of a game whose draws a Mali-G720 left out are of these forms */
+static void compute_lone_lane_forms(void) {
+    static const struct {
+        void (*make)(CsCode* p);
+        const char* what;
+    } forms[] = {{cs_append, "a combined add with its old value"},
+                 {cs_extremes, "a minimum, a maximum and a signed minimum"},
+                 {cs_guarded, "reductions behind a test of the whole warp"},
+                 {cs_scaled, "a combined add of a scaled count"},
+                 {cs_guarded_shared, "a shared word's maximum behind a test of the whole warp"}};
+    char what[160];
+    for (u32 f = 0; f < sizeof forms / sizeof *forms; f++) {
+        CsCode p = {0};
+        forms[f].make(&p);
+        check(p.n <= CS_LEN, "the program fits");
+        for (u32 local = 32; local <= 64; local += 32) {
+            ShaderInfo info;
+            size_t words = 0, warp_words = 0;
+            u32* alone = cs_spirv(&p, local, 0, &info, &words);
+            snprintf(what, sizeof what, "%s, %u lanes: translates without subgroups", forms[f].what, local);
+            check_translated(alone, &info, what);
+            u32* warp = cs_spirv(&p, local, 1, &info, &warp_words);
+            snprintf(what, sizeof what, "%s, %u lanes: uses the subgroup where the stage has it", forms[f].what, local);
+            check_translated(warp, &info, what);
+            if (!alone || !warp) {
+                free(alone);
+                free(warp);
+                continue;
+            }
+            check(!no_subgroup(warp, warp_words), what);
+            snprintf(what, sizeof what, "%s, %u lanes: no subgroup in its module", forms[f].what, local);
+            check(no_subgroup(alone, words), what);
+            if (local == 32) save_fixture(lone_lane_paths[12 + f], alone, words);
+            u32 seed = 0x2545f491u + f;
+            for (u32 run = 0; run < 8; run++) {
+                u32 input[64], lone[CS_OUT / 4 + 64], whole[CS_OUT / 4 + 64];
+                for (u32 l = 0; l < 64; l++) input[l] = seed = seed * 1664525u + 1013904223u;
+                if (run == 0) input[0] = 0x80000000u, input[1] = 0xffffffffu, input[2] = 0;
+                if (!cs_run(alone, words, local, input, lone) || !cs_run(warp, warp_words, local, input, whole)) {
+                    check(0, forms[f].what);
+                    break;
+                }
+                u32 least = 0xffffffffu, most = 0, lowest = 0x7fffffffu, taken[2] = {0, 0}, values[2] = {0, 0};
+                for (u32 l = 0; l < local; l++) {
+                    if (input[l] < least) least = input[l];
+                    if (input[l] > most) most = input[l];
+                    if ((i32)input[l] < (i32)lowest) lowest = input[l];
+                    u32 v = lone[CS_OUT / 4 + l], w = whole[CS_OUT / 4 + l];
+                    taken[0] += v < local && !(values[v / 32] >> (v % 32) & 1);
+                    if (v < local) values[v / 32] |= 1u << v % 32;
+                    taken[1] += w < local;
+                }
+                int same = memcmp(lone, whole, CS_OUT) == 0;
+                int right = f == 0   ? lone[0] == local && taken[0] == local && taken[1] == local
+                            : f == 1 ? lone[1] == least && lone[2] == most && lone[3] == lowest
+                            : f == 2 ? lone[1] == least && lone[2] == most
+                            : f == 3 ? lone[2] == local * 0x12345u
+                                     : lone[2] == 0x7fffffffu;
+                if (!same || !right)
+                    fprintf(stderr, "%s, %u lanes, run %u: words 0 to 3 are %x %x %x %x, the warp's %x %x %x %x\n",
+                            forms[f].what, local, run, lone[0], lone[1], lone[2], lone[3], whole[0], whole[1], whole[2],
+                            whole[3]);
+                snprintf(what, sizeof what, "%s, %u lanes: each lane alone gives the warp's", forms[f].what, local);
+                check(same && right, what);
+            }
+            free(alone);
+            free(warp);
+        }
+    }
+}
+
+/* One instruction of an idiom changed at a time: a program whose lanes alone would give something else, or that nothing
+   proves they do not, is refused with the reason, and so never runs wrong */
+static void compute_lone_lane_refusals(void) {
+    CsCode base[5] = {0};
+    cs_append(&base[0]);
+    cs_extremes(&base[1]);
+    cs_guarded(&base[2]);
+    cs_scaled(&base[3]);
+    cs_guarded_shared(&base[4]);
+    /* where the forms' parts are: the first reduction of cs_extremes and the first test of cs_guarded start at 9 */
+    const struct {
+        u32 form, at;
+        u64 word;
+        const char* what;
+    } changes[] = {
+        {0, 2, vote(0, 3, 7, 0, 0), "a ballot of a predicate"},
+        {0, 2, vote(0, 3, 0, 7, 0), "a ballot whose vote is kept"},
+        {0, 2, cs_if(vote(0, 3, 7, 7, 0), 1), "a ballot under a predicate"},
+        {0, 1, cs_if(cs_s2r(14, 0), 1), "the lane under a predicate"},
+        {0, 3, cs_s2r(6, 0x38), "SR_EQMASK"},
+        {0, 3, cs_s2r(6, 0x3a), "SR_LEMASK"},
+        {0, 6, cs_iseq(0, 5, 255), "lane 0's add, not the leader's"},
+        {0, 7, cs_atoms(0, 4, 255, 0, 2, 0, 0), "the leader's add of another value"},
+        {0, 7, cs_atoms(0, 4, 255, 0, 4, 8, 0), "the other lanes' add"},
+        {0, 7, cs_atoms(0, 4, 255, 0, 4, 7, 0), "every lane's add of the count"},
+        {0, 7, cs_atoms(1, 4, 255, 0, 4, 0, 0), "the leader's minimum of the count"},
+        {0, 7, cs_atoms(5, 4, 255, 0, 4, 0, 0), "the leader's and of the count"},
+        {0, 7, cs_atoms(0, 4, 2, 0, 4, 0, 0), "the leader's add at its own address"},
+        {0, 8, cs_iadd(6, 6, 3), "the lanes below and the ballot added"},
+        {0, 9, cs_iadd(7, 6, 255), "the ballot below the lane, as a number"},
+        {0, 10, cs_from(8, 2, 5), "the leader's thread id"},
+        {0, 10, cs_from(8, 4, 14), "a SHFL from its own lane"},
+        {0, 10, cs_from(8, 4, 7), "a SHFL from the lane of its rank"},
+        {0, 10, 0xEF17007C30070000ull | 8 | 4 << 8 | 3ull << 20, "a SHFL from lane 3"},
+        {0, 10, cs_swap(8, 4, 1), "a SHFL.BFLY of the old value"},
+        {0, 11, cs_iadd(8, 8, 255), "the old value of the warp's add, the same in each lane"},
+        {0, 11, cs_iadd(8, 7, 7), "twice the lane's rank"},
+        {0, 11, cs_iadd(8, 8, 4), "the old value and the count"},
+        {0, 13, cs_sts(5, 2, CS_OUT), "the leader's lane stored"},
+        {0, 13, cs_sts(14, 2, CS_OUT), "the lane stored"},
+        {0, 13, cs_sts(3, 2, CS_OUT), "the ballot stored"},
+        {0, 13, cs_sts(7, 2, CS_OUT), "the rank stored"},
+        {0, 12, cs_shl(2, 14, 2), "the lane as an address"},
+        {1, 9, cs_swap(20, 4, 3), "SHFL.BFLY of two bits"},
+        {1, 10, cs_iadd(30, 4, 20), "a sum of the warp's lanes"},
+        {1, 10, cs_minmax(30, 4, 20, 1, 0), "a minimum of a maximum"},
+        {1, 10, cs_minmax(30, 4, 20, 0, 1), "a minimum of a signed one"},
+        {1, 10, cs_minmax(30, 2, 20, 0, 0), "a minimum of another value's"},
+        {1, 10, cs_minmax(30, 4, 20, 0, 0) | 1ull << 47, "a reduction that writes the flags"},
+        {1, 11, cs_swap(21, 30, 1), "the same lanes reduced twice, others not"},
+        {1, 17, cs_swap(24, 33, 8), "the last step of the warp missing"},
+        {1, 13, cs_swap(22, 4, 4), "a step from the lane's own value"},
+        {1, 20, cs_iseq(0, 2, 255), "thread 0's atomic, not lane 0's"},
+        {1, 21, cs_atoms(2, 255, 255, 4, 34, 0, 0), "a maximum of a minimum"},
+        {1, 21, cs_atoms(1, 255, 255, 4, 34, 0, 1), "a signed minimum of an unsigned one"},
+        {1, 21, cs_atoms(0, 255, 255, 4, 34, 0, 0), "lane 0's sum"},
+        {1, 21, cs_atoms(1, 255, 255, 4, 33, 0, 0), "lane 0's minimum of half the warp"},
+        {1, 21, cs_atoms(1, 255, 255, 4, 4, 0, 0), "lane 0's minimum of its own value"},
+        {1, 21, cs_atoms(1, 5, 255, 4, 34, 0, 0), "lane 0's minimum, with its old value"},
+        {1, 21, cs_atoms(1, 255, 3, 4, 34, 0, 0), "lane 0's minimum at its own address"},
+        {1, 21, cs_atoms(1, 255, 255, 4, 34, 8, 0), "the other lanes' minimum"},
+        {1, 21, cs_sts(34, 3, CS_OUT), "the warp's minimum stored by each lane"},
+        {2, 10, 0x376403FFFFE70007ull | 3 << 8, "a ballot that is not the whole warp"},
+        {2, 11, cs_atoms(1, 255, 255, 8, 4, 8, 0), "a lane's own atomic of another memory"},
+        {2, 11, cs_atoms(2, 255, 255, 4, 4, 8, 0), "a lane's own maximum for a warp's minimum"},
+        {2, 11, cs_atoms(1, 255, 255, 4, 2, 8, 0), "a lane's own atomic of another value"},
+        {2, 11, cs_atoms(1, 255, 255, 4, 4, 0, 0), "the whole warp's own atomics"},
+        {2, 11, cs_atoms(0, 255, 255, 4, 4, 8, 0), "a lane's own add for a warp's minimum"},
+        {2, 12, CS_NOP, "no branch past the reduction"},
+        {2, 12, cs_bra(12, 27, 0), "a branch of the whole warp past the reduction"},
+        {2, 12, cs_bra(12, 28, 8), "a branch past more than the reduction"},
+        {2, 12, (cs_bra(12, 27, 8) & ~0x1Full) | 2, "a branch on the flags too"},
+        {2, 14, cs_minmax(30, 2, 20, 0, 0), "a reduction behind the test of another register's"},
+        {2, 25, cs_atoms(1, 255, 255, 8, 34, 0, 0), "a reduction into another memory"},
+        {2, 25, cs_atoms(1, 255, 255, 4, 4, 0, 0), "lane 0's own value for the warp's"},
+        {2, 25, cs_atoms(1, 255, 255, 4, 34, 8, 0), "the other lanes' atomic of the whole warp's"},
+        {3, 3, cs_s2r(0, CS_TID), "the count times the thread id"},
+        {3, 9, 0x5B007F8000070003ull, "the product of another value"},
+        {3, 10, 0x5B007FA800070005ull, "its middle of another value"},
+        {3, 11, 0x5B30019800570303ull, "its high part of its low part"},
+        {3, 11, 0x5B30019800570903ull, "its high part of another value"},
+        {3, 12, cs_atoms(0, 4, 255, 8, 3, 0, 0), "a scaled add's old value"},
+        {3, 12, cs_atoms(0, 255, 255, 8, 0, 0, 0), "the leader's add of a value not scaled"},
+        {4, 12, vote(0, 3, 7, 0, 0), "a test of a predicate's ballot"},
+        {4, 14, cs_atoms(2, 255, 255, 8, 11, 8, 0), "another word than the whole warp's"},
+        {4, 14, cs_atoms(2, 255, 255, 8, 4, 8, 0), "the lane's own word for the warp's"},
+        {4, 17, cs_iseq(0, 2, 255), "a thread's predicate behind the test"},
+        {4, 18, cs_atoms(2, 255, 255, 8, 0, 8, 0), "every lane's but lane 0"},
+        {4, 18, cs_atoms(2, 255, 255, 8, 0, 1, 0), "a thread's atomic behind the test"},
+        {4, 18, cs_atoms(2, 255, 255, 8, 10, 0, 0), "another word of the whole warp's"},
+    };
+    char what[160];
+    ShaderInfo info;
+    size_t words = 0;
+    for (size_t k = 0; k < sizeof changes / sizeof *changes; k++) {
+        CsCode p = base[changes[k].form];
+        p.w[changes[k].at] = changes[k].word;
+        u32* code = cs_spirv(&p, 32, 0, &info, &words);
+        snprintf(what, sizeof what, "%s is refused without subgroups", changes[k].what);
+        check_refused(code, &info, "subgroup ballot/shuffle unavailable: ", what);
+        free(code);
+    }
+    /* the same with instructions put in, the program changed at up to three places, before instruction at of what it was,
+       the last place first; R40 to R42 another ballot's, and P1 thread 0's */
+    const u64 other = vote(0, 40, 7, 7, 0), p1 = cs_iseq(1, 2, 255), gone = cs_if(EXIT, 1);
+    const struct {
+        u32 form;
+        struct {
+            u32 at;
+            u64 word;
+        } in[4];
+        const char* what;
+    } inserts[] = {
+        {0, {{7, cs_if(cs_mov32(4, 1), 1)}, {1, p1}}, "a count that some lanes replace"},
+        {0, {{7, gone}, {1, p1}}, "an add in another block than its ballot"},
+        {0, {{10, gone}, {1, p1}}, "a combined add that lanes leave"},
+        {0, {{14, cs_if(EXIT, 8)}}, "an exit of the lanes but the leader"},
+        {0, {{14, cs_if(EXIT, 0)}}, "an exit of the leader"},
+        {0, {{8, cs_mov32(4, 9)}}, "the old value written over"},
+        {1, {{10, cs_mov32(4, 5)}}, "a value written between its two halves"},
+        {1, {{21, cs_popc(41, 40)}, {3, other}}, "a ballot's count no one reads"},
+        {3, {{10, cs_mov32(0, 7)}}, "a factor written between the parts of its product"},
+        {3, {{11, cs_mov32(0, 7)}}, "a factor written before the last part of its product"},
+        {3, {{10, cs_mov32(1, 1)}}, "a count written between the parts of its product"},
+    };
+    for (size_t k = 0; k < sizeof inserts / sizeof *inserts; k++) {
+        CsCode p = base[inserts[k].form];
+        for (u32 q = 0; q < 4 && inserts[k].in[q].word; q++) cs_insert(&p, inserts[k].in[q].at, inserts[k].in[q].word);
+        u32* code = cs_spirv(&p, 32, 0, &info, &words);
+        snprintf(what, sizeof what, "%s is refused without subgroups", inserts[k].what);
+        if (inserts[k].form == 1 && inserts[k].in[1].word) /* what nothing reads is no reason */
+            check_translated(code, &info, "a ballot's count that nothing reads is translated");
+        else
+            check_refused(code, &info, "subgroup ballot/shuffle unavailable: ", what);
+        free(code);
+    }
+    /* two ballots of one program, the leader, the rank, the shuffle's lane or a product's count of the other one */
+    static const char* const which[6] = {"the leader of",
+                                         "the rank below",
+                                         "a SHFL from the leader of",
+                                         "the rank and a SHFL from the leader of",
+                                         "the leader of, scaled,",
+                                         "a product of the count of"};
+    for (u32 k = 0; k < 6; k++) {
+        CsCode p = base[k < 4 ? 0 : 3];
+        if (k == 0) p.w[4] = cs_flo(5, 40);
+        if (k == 1 || k == 3) p.w[8] = cs_and(6, 6, 40);
+        if (k == 2 || k == 3) {
+            p.w[10] = cs_from(8, 4, 42);
+            cs_insert(&p, 4, cs_flo(42, 40));
+        }
+        if (k == 4) p.w[6] = cs_flo(3, 40);
+        if (k == 5) {
+            p.w[10] = 0x5B007FA802970005ull; /* XMAD.MRG R5, R0, R41.H1, RZ */
+            cs_insert(&p, 8, cs_popc(41, 40));
+        }
+        cs_insert(&p, k < 4 ? 2 : 4, other);
+        u32* code = cs_spirv(&p, 32, 0, &info, &words);
+        snprintf(what, sizeof what, "a combined add with %s another ballot is refused", which[k]);
+        check_refused(code, &info, "subgroup ballot/shuffle unavailable: ", what);
+        free(code);
+    }
+    /* what a test of the whole warp has around its reduction */
+    const struct {
+        u64 added[4];
+        const char* what;
+    } around[] = {
+        {{cs_if(EXIT, 1)}, "lanes that leave after the test"},
+        {{cs_atoms(1, 255, 255, 12, 4, 8, 0)}, "two atomics of the lane's own"},
+        {{0, cs_mov32(4, 0)}, "a value changed after its own atomic"},
+        {{0, 0, cs_mov32(50, 1)}, "a register written behind the test"},
+        {{0, 0, cs_sts(2, 255, 16)}, "a store behind the test"},
+        {{0, 0, 0, cs_sts(2, 255, 16)}, "a store behind the whole warp's atomic"},
+        {{0, 0, 0, cs_atoms(1, 255, 255, 12, 34, 0, 0)}, "a second atomic of the whole warp's"},
+    };
+    for (size_t k = 0; k < sizeof around / sizeof *around; k++) {
+        CsCode p = {0};
+        cs_input(&p);
+        cs_put(&p, p1);
+        cs_guarded_one(&p, 0, 4, 0, around[k].added);
+        u32* code = cs_spirv(&p, 32, 0, &info, &words);
+        snprintf(what, sizeof what, "%s is refused without subgroups", around[k].what);
+        check_refused(code, &info, "subgroup ballot/shuffle unavailable: ", what);
+        free(code);
+    }
+    /* a reduction whose first step is before the test */
+    CsCode early = {0};
+    cs_input(&early);
+    cs_put(&early, cs_swap(20, 4, 1));
+    cs_put(&early, cs_minmax(30, 4, 20, 0, 0));
+    cs_guarded_one(&early, 0, 4, 0, NULL);
+    for (u32 k = 11; k < early.n; k++)
+        if (early.w[k] == cs_swap(20, 4, 1) || early.w[k] == cs_minmax(30, 4, 20, 0, 0)) early.w[k] = CS_NOP;
+    u32* half = cs_spirv(&early, 32, 0, &info, &words);
+    check_refused(half, &info, "subgroup ballot/shuffle unavailable: ", "a reduction begun before the test is refused");
+    free(half);
+    /* two steps of the same two bits, and no step of the second */
+    CsCode bits = base[1];
+    bits.w[9] = cs_swap(20, 4, 3), bits.w[11] = cs_swap(21, 30, 3);
+    half = cs_spirv(&bits, 32, 0, &info, &words);
+    check_refused(half, &info,
+                  "subgroup ballot/shuffle unavailable: ", "steps of two bits that leave half the warp are refused");
+    free(half);
+    /* a lane's own value and another register's of the other lanes */
+    CsCode mixed = base[2];
+    mixed.w[11] = cs_atoms(1, 255, 255, 4, 2, 8, 0), mixed.w[14] = cs_minmax(30, 2, 20, 0, 0);
+    half = cs_spirv(&mixed, 32, 0, &info, &words);
+    check_refused(half, &info, "subgroup ballot/shuffle unavailable: ", "a reduction of two registers is refused");
+    free(half);
+    /* lane 0's minimum of the count of lanes */
+    CsCode count = base[1];
+    count.w[21] = cs_atoms(1, 255, 255, 4, 41, 0, 0);
+    cs_insert(&count, 3, cs_popc(41, 40));
+    cs_insert(&count, 3, other);
+    half = cs_spirv(&count, 32, 0, &info, &words);
+    check_refused(half, &info, "subgroup ballot/shuffle unavailable: ", "lane 0's minimum of the count is refused");
+    free(half);
+    /* a lane's value that comes round a loop to an instruction before the one that made it */
+    CsCode round = {0};
+    cs_put(&round, cs_s2r(2, CS_TID));
+    cs_put(&round, cs_iseq(1, 2, 255));
+    cs_put(&round, cs_mov32(5, 0));
+    u32 head = cs_put(&round, cs_sts(5, 255, 0));
+    cs_put(&round, vote(0, 3, 7, 7, 0));
+    cs_put(&round, cs_flo(5, 3));
+    u32 back = cs_put(&round, CS_NOP);
+    round.w[back] = cs_bra(back, head, 1);
+    half = cs_spirv(&round, 32, 0, &info, &words);
+    check_refused(half, &info, "subgroup ballot/shuffle unavailable: ", "a lane's value round a loop is refused");
+    free(half);
+    /* lane 0's predicate, which an R2P of the lane's own mask may have kept */
+    CsCode kept = {0};
+    cs_put(&kept, vote(0, 3, 7, 7, 0));
+    cs_put(&kept, cs_s2r(2, CS_TID));
+    cs_put(&kept, cs_s2r(14, 0));
+    cs_put(&kept, cs_iseq(0, 14, 255));
+    cs_put(&kept, R2P_R | 7ull << 16 | 2ull << 8 | 2ull << 20); /* R2P PR, R2, R2 */
+    cs_put(&kept, cs_if(cs_sts(2, 255, 0), 0));
+    half = cs_spirv(&kept, 32, 0, &info, &words);
+    check_refused(half, &info, "subgroup ballot/shuffle unavailable: ", "a predicate an R2P may have kept is refused");
+    free(half);
+    /* a lane's register written under a predicate and under its complement, then read: none of the lane's is left, unless
+       the predicate was written between the two */
+    for (u32 between = 0; between < 2; between++) {
+        CsCode both = base[0];
+        cs_insert(&both, 1, p1);
+        cs_put(&both, cs_if(cs_mov32(14, 1), 1));
+        if (between) cs_put(&both, cs_iseq(1, 8, 255));
+        cs_put(&both, cs_if(cs_mov32(14, 2), 9));
+        cs_put(&both, cs_sts(14, 2, CS_OUT));
+        half = cs_spirv(&both, 32, 0, &info, &words);
+        if (between)
+            check_refused(half, &info,
+                          "subgroup ballot/shuffle unavailable: ", "a lane's register some lanes may keep is refused");
+        else
+            check_translated(half, &info, "a lane's register written under both of a predicate is translated");
+        free(half);
+    }
+    /* a write under a predicate is what a lane under it reads, not one under its complement, and one under !PT no one's */
+    for (u32 k = 0; k < 3; k++) {
+        CsCode lanes = base[0];
+        cs_insert(&lanes, 1, p1);
+        cs_put(&lanes, cs_if(cs_mov32(14, 1), k == 2 ? 15 : 1));
+        cs_put(&lanes, cs_if(cs_sts(14, 2, CS_OUT), k ? 9 : 1));
+        half = cs_spirv(&lanes, 32, 0, &info, &words);
+        if (k)
+            check_refused(half, &info, "subgroup ballot/shuffle unavailable: ",
+                          "a lane's register that the reading lanes keep is refused");
+        else
+            check_translated(half, &info, "a lane's register written for the lanes that read it is translated");
+        free(half);
+    }
+    /* a return, whose way the check does not follow */
+    CsCode call = {0};
+    cs_put(&call, CS_NOP);
+    cs_append(&call);
+    cs_put(&call, RET_T);
+    call.w[0] = push_to(0xE27, flow_word(0), flow_word(call.n));
+    cs_put(&call, CS_NOP);
+    half = cs_spirv(&call, 32, 0, &info, &words);
+    check_refused(half, &info,
+                  "subgroup ballot/shuffle unavailable: ", "a combined add in a program with a PRET is refused");
+    free(half);
+    /* a reduction that no test is before reads all 32 lanes, so every warp of the block must be whole */
+    for (u32 local = 1; local <= 48; local += 47) {
+        u32* code = cs_spirv(&base[1], local, 0, &info, &words);
+        check_refused(code, &info,
+                      "subgroup ballot/shuffle unavailable: ", "a reduction in a block of part warps is refused");
+        free(code);
+    }
+    /* and its lanes run the first block alone: the same reduction, or its atomic alone, past a branch */
+    for (u32 whole = 0; whole < 2; whole++) {
+        CsCode p = {0};
+        cs_input(&p);
+        cs_put(&p, p1);
+        u32 start = p.n;
+        if (whole) cs_put(&p, CS_NOP);
+        cs_reduce(&p, 4, 0, 0, 4);
+        if (!whole) { /* the branch between the chain and lane 0's atomic */
+            cs_put(&p, p.w[p.n - 1]);
+            p.w[p.n - 2] = CS_NOP;
+            start = p.n - 2;
+        }
+        p.w[start] = cs_bra(start, p.n, 1);
+        u32* code = cs_spirv(&p, 32, 0, &info, &words);
+        check_refused(code, &info, "subgroup ballot/shuffle unavailable: ",
+                      whole ? "a reduction under a branch is refused"
+                            : "a reduction's atomic under a branch is refused");
+        free(code);
+    }
+    /* a program that reads its lane and no other lane's, as before */
+    CsCode lane = {0};
+    cs_put(&lane, cs_s2r(14, 0));
+    cs_put(&lane, cs_sts(14, 255, 0));
+    half = cs_spirv(&lane, 32, 0, &info, &words);
+    check_refused(half, &info, "subgroup ballot/shuffle unavailable",
+                  "SR_LANEID alone in a compute program is refused");
+    free(half);
+}
+
 /* SHFL within a fragment program's quad, on a device without fragment subgroups (Turnip on an Adreno 610): the pixel
    the lane would read is read through fine derivatives of the register's 16-bit halves as floats, one OpDPdxFine for
    the pixel beside, one OpDPdyFine for the one above or below and both for the one across; a read of its own value
@@ -6265,6 +6887,73 @@ static int chosen_sample(const u64* program, int count, const u32 c2[4], const u
     memcpy(x, &env.out[0][0], 4);
     return !*why;
 }
+/* A predicated LOP.OR can be the only handle definition that reaches an unguarded TEX.B. Bind its texture and sampler
+   together and select the sample by the complete runtime handle. The other path still executes the sample: a bare
+   texture word must not match the combined handle, and an unrelated handle must keep the zero-sample behavior. */
+static void tex_b_predicated_handle_pair(void) {
+    const u64 tex_b = 0xdeb8000000070000ull | (2ull << 28) | (1ull << 37) | (6ull << 20) | (1ull << 31);
+    const u64 load = 0x4c98078800070007ull; /* MOV R7, c[2][0]: the texture half */
+    const u64 pair_or = 0x4c47020800070006ull | (7ull << 8); /* LOP.OR R6, R7, c[2][...] */
+    const u64 under_p0 = ~(0xfull << 16);
+    const u64 sampler1 = ((pair_or & under_p0 & ~(0x3fffull << 20)) | (1ull << 34) | (1ull << 20));
+    const u32 c2[4] = {0x00100001u, 0x00200002u, 0, 0};
+    for (u32 on = 0; on < 3; on++) {
+        const u64 program[] = {fsetp_cbuf3(0, 0), load, mov32i(6, on == 2 ? c2[0] : 0x777), sampler1, tex_b};
+        const u32 c3[4] = {on == 1 ? 0x3f800000u : 0, 0x00200000u, 0, 0};
+        ShaderInfo info;
+        const char* why;
+        float x = -1.0f;
+        int ran = chosen_sample(program, 5, c2, c3, 0, &info, &x, &why);
+        if (!ran || x != (on == 1 ? 1.0f : 0.0f))
+            fprintf(stderr, "predicated split handle, case %u: %s, %d slots, x %g\n", on, ran ? "ran" : why,
+                    info.ntex, (double)x);
+        check(ran && info.ntex == 1 && x == (on == 1 ? 1.0f : 0.0f),
+              on == 1   ? "a predicated split handle selects the sample by texture OR sampler"
+              : on == 2 ? "the texture word alone does not select the split handle"
+                        : "an unrelated value on the false path keeps the zero-sample behavior");
+        if (ran)
+            check(info.tex[0].bl_cbuf == 2 && info.tex[0].cbuf_off == 0 && info.tex[0].bl2 &&
+                      info.tex[0].bl2_cbuf == 3 && info.tex[0].bl2_off == 1,
+                  "a chosen split handle retains both constant buffer sources");
+    }
+}
+
+/* Handles whose writes the tracking must not take for one: each is right or refused, whatever the flow */
+static void tex_b_handle_writes(void) {
+    const u64 tex_b = 0xdeb8000000070000ull | (2ull << 28) | (1ull << 37) | (6ull << 20) | (1ull << 31);
+    const u64 c2_0 = 0x4c98078800070000ull, c2_4 = c2_0 | (1ull << 20), c2_8 = c2_0 | (2ull << 20);
+    const u64 mov = 0x5c98078000000000ull, lop = 0x4c47020800070000ull, p0 = 0, not_p0 = 8ull << 16, always = 7ull << 16;
+    ShaderInfo info;
+    size_t words = 0;
+    const char* why;
+    float x = -1.0f;
+    /* R8 = 0; R6 = c[2][0]; BRA to the condition; body: R6 = c[2][4]; R8 = 1; condition: P0 = R8 < c[3][0]; @P0 BRA to
+       the body; TEX.B R6. The loop is entered at its condition, so its body is reached from after it alone */
+    const u64 below = (fsetp_cbuf3(0, 0) & ~(0xffull << 8)) | (8ull << 8);
+    const u64 rotated[] = {mov32i(8, 0), c2_0 | 6, flow_bra(2, 5, 7), c2_4 | 6, mov32i(8, 0x3f800000u), below,
+                           flow_bra(6, 3, 0), tex_b};
+    const u32 c2[4] = {0x00100001u, 0x00200002u, 0, 0}, c3[4] = {0x3f000000u, 0, 0, 0};
+    int ran = chosen_sample(rotated, 8, c2, c3, 0, &info, &x, &why);
+    check(ran && x == 2.0f, "a loop entered at its condition leaves its body's handle");
+    /* a copy of a two-word handle refuses the candidates, and the write after it adds none */
+    const u64 copied[] = {fsetp_cbuf3(0, 0), c2_0 | 7, lop | 7 | (7ull << 8) | (1ull << 20), mov | p0 | 6 | (7ull << 20),
+                          ((c2_8 & ~(0xfull << 16)) | not_p0) | 6, tex_b};
+    u32* code = translate(copied, 6, ST_FS, &info, &words, 1);
+    check_refused(code, &info, "untracked texture handle", "a predicated copy of a two-word handle is refused");
+    free(code);
+    /* a loop that copies the handle between two registers ends */
+    const u64 around[] = {mov | always | 7 | (6ull << 20), fsetp_cbuf3(0, 0), mov | always | 6 | (7ull << 20),
+                          ((c2_0 & ~(0xfull << 16)) | p0) | 6, tex_b, flow_bra(5, 0, 0)};
+    code = translate(around, 6, ST_FS, &info, &words, 1);
+    check_refused(code, &info, "untracked texture handle", "a handle copied around a loop is refused");
+    free(code);
+    /* three words: neither two of them is the handle */
+    const u64 three[] = {c2_0 | 7, lop | 7 | (7ull << 8) | (1ull << 20), lop | 6 | (7ull << 8) | (2ull << 20), tex_b};
+    code = translate(three, 4, ST_FS, &info, &words, 1);
+    check_refused(code, &info, "untracked texture handle", "a handle of three words is refused");
+    free(code);
+}
+
 /* A multisample TLD.B takes its handle in Rb and the sample after it, the order of Mesa's compilers since f9d385d77716
    ("nouveau/codegen: Handle/indirect goes before sample index"). uam's codegen predates it and puts the sample first:
    edenprobe's fetch through a table of four sample handles comes with the sample in R4 and the handle in R5 */
@@ -7129,7 +7818,7 @@ int main(int argc, char** argv) {
             snprintf(name, sizeof name, "window_%d", i);
             window_paths[i] = fixture_path(argv[1], name);
         }
-        for (int i = 0; i < 12; i++) {
+        for (int i = 0; i < 17; i++) {
             snprintf(name, sizeof name, "lone_lane_%d", i);
             lone_lane_paths[i] = fixture_path(argv[1], name);
         }
@@ -7220,8 +7909,12 @@ int main(int argc, char** argv) {
     shfl_quad_forms();
     shfl_predicate();
     lone_lane_forms();
+    compute_lone_lane_forms();
+    compute_lone_lane_refusals();
     fragment_quad_reads();
     fragment_flow_derivatives();
+    tex_b_predicated_handle_pair();
+    tex_b_handle_writes();
     tex_b_chosen_handle();
     bindless_multisample_order();
     helper_loop_exit();

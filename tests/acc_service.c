@@ -485,7 +485,7 @@ static void test_ensure_id_token(void) {
     puts("PASS EnsureIdTokenCacheAsync done at once and succeeded, with no token");
 }
 
-/* InitializeApplicationInfoV2, which Tears of the Kingdom and Super Mario Bros. Wonder call at boot (13.0.0+): a
+/* InitializeApplicationInfoV2, which two games call at boot (13.0.0+): a
    pid in, nothing out, as on the console */
 static void test_initialize_application_info_v2(void) {
     SvcObj* acc = new_acc();

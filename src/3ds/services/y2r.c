@@ -14,7 +14,8 @@
 
 #define Y2R_OUT_OF_RANGE  0xe0e053fdu /* OutOfRange, CAM, InvalidArgument, Usage */
 #define Y2R_INVALID_ENUM  0xe0e053edu /* InvalidEnumValue, CAM, InvalidArgument, Usage */
-/* Azahar's MinY2RDelay, 50000 ARM11 cycles at 268111856 Hz: the least a conversion takes, which FIFA's intro needs */
+/* Azahar's MinY2RDelay, 50000 ARM11 cycles at 268111856 Hz: the least a conversion takes, which one game's intro
+   needs */
 #define Y2R_DELAY_NS      186490u
 
 static void reply(SnxCtrIpc* c, unsigned normal) {

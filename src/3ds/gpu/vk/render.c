@@ -301,6 +301,8 @@ static struct {
     /* the target the draws go to, its index plus 1 (0: none), and its open rendering pass (0: none) */
     unsigned open;
     uint8_t rendering;
+    /* the last key whose scaled images the device had no room for: record() makes it at scale 1 (zero: none) */
+    TargetKey scaled_failed;
     Texture textures[TEXTURES];
     unsigned texture_count;
     Shown shown[SHOWN];
@@ -678,7 +680,9 @@ static uint64_t depth_span(const TargetKey* k) {
 /* The 3DS draws a screen's framebuffer into one 240x400 or 240x320 target: the top screen is 400 rows, the bottom
    320. Its 3D rendering is scaled by the setting of that screen, as far as the device's largest image takes. */
 uint8_t snx_ctr_vk_target_scale(unsigned width, unsigned height) {
-    unsigned scale = 1;
+    /* a target of another size can feed either screen or both, so it takes the larger factor */
+    unsigned scale = (unsigned)g_settings.ctr_top_resolution;
+    if (scale < (unsigned)g_settings.ctr_bottom_resolution) scale = (unsigned)g_settings.ctr_bottom_resolution;
     if (height == 400)
         scale = (unsigned)g_settings.ctr_top_resolution;
     else if (height == 320)
@@ -1030,7 +1034,10 @@ static Target* target_find(const TargetKey* k) {
         bury(&t->depth, &t->scratch, &t->scratch_memory);
     }
     *t = (Target){0};
-    if (!target_images(t, k->width * k->scale, k->height * k->scale, k->scale > 1, k->shadow)) return NULL;
+    if (!target_images(t, k->width * k->scale, k->height * k->scale, k->scale > 1, k->shadow)) {
+        if (k->scale > 1) g.scaled_failed = *k; /* record() makes this key at scale 1 without another try */
+        return NULL;
+    }
     t->key = *k;
     if (t == &g.targets[g.target_count]) ++g.target_count;
     return t;
@@ -2665,7 +2672,14 @@ static SnxCtrPicaResult record(SnxCtrPica* p, Source source, bool indexed) {
                 buffers[n] = snx_ctr_vk_work(ram);
             }
     }
-    SnxCtrPicaResult result = target_open(&key);
+    SnxCtrPicaResult result = SNX_CTR_PICA_UNSUPPORTED;
+    if (memcmp(&key, &g.scaled_failed, sizeof key)) result = target_open(&key);
+    /* the device had no room for the scaled images: the target is made at scale 1 instead, and the draw goes on */
+    if (result == SNX_CTR_PICA_UNSUPPORTED && key.scale > 1 && !memcmp(&key, &g.scaled_failed, sizeof key)) {
+        key.scale = 1;
+        key.shadow = 0;
+        result = target_open(&key);
+    }
     if (result != SNX_CTR_PICA_OK) return result;
     VkDescriptorSet sets[3];
     VkDeviceSize defaults;

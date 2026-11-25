@@ -41,4 +41,19 @@ typedef struct {
     const char* variables;
 } GuiFreedrenoPreset;
 extern const GuiFreedrenoPreset gui_freedreno_presets[]; /* a NULL name ends it */
+
+/* the variables Mesa reads as names out of a set it knows (Mesa 26.2.6's tables), which Freedreno Settings picks: flags
+   separated by commas, or with one a single name. items: the names as a row of boxes lists its own (gui/settings.h),
+   value=Label~About between '|'; what Mesa's documentation does not say of a flag is left out of its about */
+typedef struct {
+    const char* name;
+    const char* about;
+    int one;
+    const char* items;
+} GuiFreedrenoKnown;
+extern const GuiFreedrenoKnown gui_freedreno_known[]; /* a NULL name ends it */
+/* the known variable called name: its index, -1 for none */
+int gui_freedreno_find(const char* name);
+/* the flag variables as the runtime lists its settings (gui_settings_read), a row of boxes each: owned */
+char* gui_freedreno_list(void);
 #endif

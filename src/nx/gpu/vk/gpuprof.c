@@ -32,6 +32,7 @@
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
+#include "nx/runtime/platform/tracy.h"
 
 #define GP_QUERIES 16384 /* timestamps per frame slot: two per pass, two per dispatch */
 #define GP_DISP    4096  /* dispatches timed per frame slot */
@@ -395,8 +396,10 @@ static int op_begin(VkCommandBuffer cb, u32 kind, u64 key, i64 site, u64 bytes) 
     x->q0 = x->q1 = 0;
     gp_stamp(cb, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, o->pool, o->used);
     if (snx_tracy_attached()) {
-        char name[64];
-        snprintf(name, sizeof name, "gpu %s %llx", g_kind_name[kind], (unsigned long long)key);
+        char name[80];
+        const char* prefix = ctx == VK_GPU_CTX_COMPUTE ? "gpu compute" : "gpu graphics";
+        /* the queue and the operation's kind and key (hash, or the recording site for a copy) in one name */
+        snprintf(name, sizeof name, "%s: %s %llx", prefix, g_kind_name[kind], (unsigned long long)key);
         x->q0 = snx_tracy_gpu_zone_begin(name, 0x3d8f4a, ctx, &x->ep);
     }
     return 1;
@@ -441,7 +444,7 @@ void vk_gpuprof_compute_begin(GpOps* o, VkCommandBuffer cb) {
     rec_CmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, o->pool, 0);
     o->used = 2;
     if (snx_tracy_attached())
-        o->span0 = snx_tracy_gpu_zone_begin("gpu compute batch", 0x2f9e8f, VK_GPU_CTX_COMPUTE, &o->span_ep);
+        o->span0 = snx_tracy_gpu_zone_begin("gpu compute: batch", 0x2f9e8f, VK_GPU_CTX_COMPUTE, &o->span_ep);
 }
 void vk_gpuprof_compute_submit(GpOps* o, VkCommandBuffer cb) {
     if (!o->used) return;
@@ -462,11 +465,11 @@ static void gpc_times(const u64* ts, u32 n, u16 span0, u16 span1, u64 ep) {
        latches at the announcement, so a context announced without one is never sent calibration events: the
        server would assert on a context it was told is uncalibrated. */
     if (snx_tracy_gpu_context(VK_GPU_CTX_COMPUTE, have ? gpu : last, g_vk.props.limits.timestampPeriod, have,
-                              "compute")) {
-        snx_tracy_gpu_cal_announce(&g_ccs_cal, have, have ? cpu : 0); /* the anchor is the announcement's pair */
+                              "gpu compute")) {
+        snx_tracy_gpu_cal_announce(&g_ccs_cal, have, have ? cpu : 0, have ? gpu : 0); /* the anchor is the announcement's pair */
     }
     if (have) {
-        i64 delta = snx_tracy_gpu_cal_delta(&g_ccs_cal, cpu);
+        i64 delta = snx_tracy_gpu_cal_delta(&g_ccs_cal, cpu, gpu);
         if (delta > 0) snx_tracy_gpu_calibrate(gpu, delta, VK_GPU_CTX_COMPUTE);
     } else
         snx_tracy_gpu_sync(last, VK_GPU_CTX_COMPUTE);
@@ -499,9 +502,31 @@ static GpDKey* gp_dkey(u32 kind, u64 key, i64 site) {
     }
     return NULL;
 }
-/* the CPU waits for the timeline's value (kind: VK_WAIT_*) */
+/* vk.h's one name of each kind of the CPU's wait for the GPU serves the timeline zone's text, the log's waits and
+   the plots, so a kind reads the same in every report */
+static char g_round_plot[VK_WAIT_N][64];
+static const char* round_plot_name(int k) {
+    if (!g_round_plot[k][0]) snprintf(g_round_plot[k], sizeof g_round_plot[k], "gpu round: %s ms", g_vk_wait_name[k]);
+    return g_round_plot[k];
+}
+/* the two stall plots have one series for each kind of wait, named from that same table */
+static char g_stall_ms_plot[VK_WAIT_N][64], g_stalls_plot[VK_WAIT_N][64];
+static const char* stall_ms_plot_name(int k) {
+    if (!g_stall_ms_plot[k][0])
+        snprintf(g_stall_ms_plot[k], sizeof g_stall_ms_plot[k], "vk pres gpu stall ms: %s", g_vk_wait_name[k]);
+    return g_stall_ms_plot[k];
+}
+static const char* stalls_plot_name(int k) {
+    if (!g_stalls_plot[k][0])
+        snprintf(g_stalls_plot[k], sizeof g_stalls_plot[k], "vk pres gpu stalls: %s", g_vk_wait_name[k]);
+    return g_stalls_plot[k];
+}
+/* the CPU waits for the timeline's value (kind: VK_WAIT_*). The reason is the kind: which wait held this present
+   back. This runs before the wait itself, so the zone ends before the blocking semaphore wait in cmd.c. */
 void vk_gpuprof_waited(u64 value, int kind) {
     if (gp_on() <= 0) return; /* worked out here too: the first wait after log changes is classified as well */
+    SNX_ZONE_TV(z_wait_why, "vk pres gpu wait", (u32)(kind >= 0 && kind < VK_WAIT_N ? kind : VK_WAIT_N),
+                "%s", kind >= 0 && kind < VK_WAIT_N ? g_vk_wait_name[kind] : "unknown");
     g_waited[value % GP_WAITS].value = value;
     g_waited[value % GP_WAITS].kind = kind + 1;
 }
@@ -531,8 +556,11 @@ void vk_gpuprof_pass_begin(VkCommandBuffer cb, const Surf* rt, const Surf* zt) {
     g_in_pass = 1;
     p->q0 = p->q1 = 0;
     if (snx_tracy_attached()) {
-        char name[48] = "gpu pass";
-        if (s) snprintf(name, sizeof name, "gpu pass %ux%u fmt %u", s->w, s->h, (u32)s->f.vk);
+        char name[96] = "gpu graphics: pass";
+        /* the target's size, format and address (the key the per-target sums use) say which pass this was */
+        if (s)
+            snprintf(name, sizeof name, "gpu graphics: pass %ux%u fmt %u target %llx", s->w, s->h, (u32)s->f.vk,
+                     (unsigned long long)s->gva);
         p->q0 = snx_tracy_gpu_zone_begin(name, 0x3d8f4a, VK_GPU_CTX_GRAPHICS, &p->ep);
     }
 }
@@ -692,6 +720,7 @@ void vk_gpuprof_frame_done(u32 slot) {
        that very pair; else the GPU clock is anchored at this moment: the last timestamp was written before
        timeline_wait returned, so this is its CPU time. */
     if (snx_tracy_attached()) {
+        SNX_ZONE_V(z_trace, "vk pres gpu trace", g->nsub); /* reading the slot's queries and sending its GPU zones */
         int cal = vk_gpuprof_calibrated();
         i64 cpu = 0, gpu = 0;
         int have = cal && vk_gpuprof_clock(&cpu, &gpu);
@@ -701,11 +730,11 @@ void vk_gpuprof_frame_done(u32 slot) {
            latches at the announcement, so a context announced without one is never sent calibration events:
            the server would assert on a context it was told is uncalibrated. */
         if (snx_tracy_gpu_context(VK_GPU_CTX_GRAPHICS, have ? gpu : (i64)ts[g->ops.used - 1],
-                                  g_vk.props.limits.timestampPeriod, have, "graphics")) {
-            snx_tracy_gpu_cal_announce(&g_cal, have, have ? cpu : 0); /* the anchor is the announcement's pair */
+                                  g_vk.props.limits.timestampPeriod, have, "gpu graphics")) {
+            snx_tracy_gpu_cal_announce(&g_cal, have, have ? cpu : 0, have ? gpu : 0); /* the anchor is the announcement's pair */
         }
         if (have) {
-            i64 delta = snx_tracy_gpu_cal_delta(&g_cal, cpu);
+            i64 delta = snx_tracy_gpu_cal_delta(&g_cal, cpu, gpu);
             if (delta > 0) snx_tracy_gpu_calibrate(gpu, delta, VK_GPU_CTX_GRAPHICS);
         } else
             snx_tracy_gpu_sync((i64)ts[g->ops.used - 1], VK_GPU_CTX_GRAPHICS);
@@ -772,9 +801,6 @@ int vk_gpuprof_clock(i64* cpu, i64* gpu) {
 /* the graphics queue's busy and idle time over the report's window, a frame (present) at a time, and the CPU's waits
    for the GPU by kind (cmd.c) */
 static void gp_idle_report(void) {
-    static const char* const why[VK_SUB_N] = {"other",    "present",   "finish", "1 ms",
-                                              "readback", "frame end", "split",  "background"};
-    static const char* const wait[VK_WAIT_N] = {"finish", "frame slot reuse", "a release or result's submit"};
     static u64 wait0[VK_WAIT_N], waits0[VK_WAIT_N], cs0;
     u64 now = plat_ns(), presents = (u32)(g_vk_present - g_present0), wall = now - g_t0;
     double f = presents ? (double)presents : 1.0;
@@ -807,19 +833,21 @@ static void gp_idle_report(void) {
                     (double)g_idle_ns[c] / 1e6 / f, (double)g_idles[c] / f);
         for (int k = 0; k < VK_WAIT_N; k++)
             at = snx_appendf(line, sizeof line, at, "%s %s %.2f ms (%.1f, idle after them %.2f ms)", k ? "," : "",
-                             wait[k], (double)(g_vk_wait_ns[k] - wait0[k]) / 1e6 / f,
+                             g_vk_wait_name[k], (double)(g_vk_wait_ns[k] - wait0[k]) / 1e6 / f,
                              (double)(g_vk_waits[k] - waits0[k]) / f, (double)g_round_ns[k] / 1e6 / f);
         LOG("vulkan: GPU   the GPU thread's waits for the graphics queue a present:%s; for the compute queue %.2f ms\n",
             line, (double)(atomic_load_explicit(&g_vk_cs_wait_ns, memory_order_relaxed) - cs0) / 1e6 / f);
         at = 0;
         for (int w = 0; w < VK_SUB_N; w++)
-            at = snx_appendf(line, sizeof line, at, "%s %s %.1f", w ? "," : "", why[w], (double)g_sub_why[w] / f);
+            at = snx_appendf(line, sizeof line, at, "%s %s %.1f", w ? "," : "", g_vk_sub_name[w],
+                             (double)g_sub_why[w] / f);
         LOG("vulkan: GPU   submissions a present by why:%s\n", line);
         u64 fill = 0;
         at = 0;
         for (int w = 0; w < VK_SUB_N; w++) {
             fill += g_fill_ns[w];
-            at = snx_appendf(line, sizeof line, at, "%s %s %.2f", w ? "," : "", why[w], (double)g_fill_ns[w] / 1e6 / f);
+            at = snx_appendf(line, sizeof line, at, "%s %s %.2f", w ? "," : "", g_vk_sub_name[w],
+                             (double)g_fill_ns[w] / 1e6 / f);
         }
         LOG("vulkan: GPU   idle while the next submission held commands not yet submitted, up to its GPU time: %.2f "
             "ms a present, %.2f ms of it before a submission the CPU waited for; by its why:%s\n",
@@ -831,7 +859,12 @@ static void gp_idle_report(void) {
     }
     memset(g_hold_ns, 0, sizeof g_hold_ns);
     memset(g_holds, 0, sizeof g_holds);
+    /* Finer than the window's wait totals: the mean time of one stall, and how many stalls a present. Each wait kind
+       has its own series; the zone in vk_gpuprof_waited names which of these held the present back. */
     for (int k = 0; k < VK_WAIT_N; k++) {
+        u64 dns = g_vk_wait_ns[k] - wait0[k], dw = g_vk_waits[k] - waits0[k];
+        SNX_PLOT(stall_ms_plot_name(k), dw ? (double)dns / 1e6 / (double)dw : 0.0);
+        SNX_PLOT(stalls_plot_name(k), presents ? (double)dw / (double)presents : 0.0);
         wait0[k] = g_vk_wait_ns[k];
         waits0[k] = g_vk_waits[k];
     }
@@ -867,14 +900,14 @@ static int slow_cmp(const void* a, const void* b) {
 }
 /* The log's other breakdowns as plots too: why the CPU waited, what the busy time held, and why submissions went
    out. Each is the window's sum divided by the same presents or frames as the log. */
-static const char* const g_round_plot[VK_WAIT_N] = {"gpu round: finish ms", "gpu round: recycle ms",
-                                                    "gpu round: submit ms"};
 static const char* const g_hold_plot[HOLD_N] = {"gpu hold: passes ms", "gpu hold: dispatches ms",
                                                 "gpu hold: copies ms", "gpu hold: nothing ms"};
-static const char* const g_sub_plot[VK_SUB_N] = {"gpu submit: other",    "gpu submit: present",
-                                                 "gpu submit: finish",   "gpu submit: 1 ms",
-                                                 "gpu submit: readback", "gpu submit: frame end",
-                                                 "gpu submit: split",    "gpu submit: background"};
+/* the submission plots name their reason from vk.h's one table, as the log and cmd.c's zone do */
+static char g_sub_plot[VK_SUB_N][64];
+static const char* sub_plot_name(int k) {
+    if (!g_sub_plot[k][0]) snprintf(g_sub_plot[k], sizeof g_sub_plot[k], "gpu submit: %s", g_vk_sub_name[k]);
+    return g_sub_plot[k];
+}
 /* the window's gaps and idle time as plots: the log's sums, so a --tracy run whose setting is off still shows where
    the GPU's time went. The gaps are per frame, the idle time per present, and the busy share of the window's wall */
 static void gp_plots(void) {
@@ -888,9 +921,10 @@ static void gp_plots(void) {
     /* a Memory plot takes bytes and adds the unit itself, so send bytes per frame and let the GUI print MB */
     double p = presents ? (double)presents : 1.0;
     SNX_PLOT("copy MB", (double)(g_mix_bytes[0] + g_mix_bytes[1] + g_mix_bytes[2]) / f);
-    for (int k = 0; k < VK_WAIT_N; k++) SNX_PLOT(g_round_plot[k], (double)g_round_ns[k] / 1e6 / p);
+    /* round_plot_name builds each name from g_vk_wait_name, so a plot's kind reads as in the log */
+    for (int k = 0; k < VK_WAIT_N; k++) SNX_PLOT(round_plot_name(k), (double)g_round_ns[k] / 1e6 / p);
     for (int k = 0; k < HOLD_N; k++) SNX_PLOT(g_hold_plot[k], (double)g_hold_ns[k] / 1e6 / p);
-    for (int k = 0; k < VK_SUB_N; k++) SNX_PLOT(g_sub_plot[k], (double)g_sub_why[k] / p);
+    for (int k = 0; k < VK_SUB_N; k++) SNX_PLOT(sub_plot_name(k), (double)g_sub_why[k] / p);
 }
 /* the pass bookkeeping is file-global: vk_lock serializes recording (record.c) */
 /* the targets that took the most GPU time, then a fresh sum */

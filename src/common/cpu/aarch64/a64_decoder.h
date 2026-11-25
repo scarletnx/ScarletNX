@@ -18,6 +18,13 @@ SnxA64Flow snx_a64_flow(SnxU32 word, SnxU64 features);
 /* where a B, BL or BC (flow) at pc goes */
 SnxU64 snx_a64_branch_target(const SnxA64Insn* insn, SnxU64 pc);
 const char* snx_a64_op_text(SnxA64Op op);
+/* the name of the first of these features (SNX_A64_FEAT_*), as the profile has it */
+const char* snx_a64_feature_text(SnxU64 features);
+/* the name of the target with these features (a64.profile's: "switch", "max"), "?" where none has them */
+const char* snx_a64_target_text(SnxU64 features);
+/* what word is to a decoder that knows every feature, for the text of an undefined instruction: "SM4E, which needs
+   FEAT_SM4", "ADD_v" of a base one, or "no instruction". out of size bytes */
+void snx_a64_word_text(SnxU32 word, char* out, size_t size);
 /* names the decoding (the .decode files and the profile) in the keys of caches of code it decoded */
 SnxU64 snx_a64_decoder_hash(void);
 

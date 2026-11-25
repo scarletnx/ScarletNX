@@ -72,15 +72,43 @@ typedef struct SnxArmRt {
     void (*coproc)(SnxArmCPU* cpu, uint32_t word);
 } SnxArmRt;
 
-/* the runtime library's side (rt_helpers.c, in snx_arm_rt and every 32-bit game module) */
-void snx_arm_undefined(SnxArmCPU* cpu, uint32_t word, uint32_t reason);
-void snx_arm_coproc(SnxArmCPU* cpu, uint32_t word);
+/* the runtime library's side (rt_helpers.c, in snx_arm_rt and every 32-bit game module), which generated code calls:
+   arguments of 64 bits, the numbers in their low 32, as riscv64's, mips64's and loongarch64's ABIs extend a narrower
+   one with its sign and a function compiled there may compare the whole register: the code passes a word with zeros
+   above */
+void snx_arm_undefined(SnxArmCPU* cpu, uint64_t word, uint64_t reason);
+void snx_arm_coproc(SnxArmCPU* cpu, uint64_t word);
 /* the coprocessor registers the architecture gives user mode with no system to ask: TPIDRURW (read and write) and
    TPIDRURO (read) from the cpu's fields; any other is SNX_ARM_UNDEFINED. A backend can end with it */
 void snx_arm_coproc_user(SnxArmCPU* cpu, uint32_t word);
 /* The ARM7TDMI's C after a multiply that sets the flags, word the instruction (a Thumb MULS's halfword when thumb), its
    operands still in r[]: the carry out of its Booth multiplier, which the other profiles leave as it was */
-void snx_arm_multiply_carry(SnxArmCPU* cpu, uint32_t word, uint32_t thumb);
+void snx_arm_multiply_carry(SnxArmCPU* cpu, uint64_t word, uint64_t thumb);
+/* The ARM7TDMI's and the ARM946E's accesses the bus hook may take (SnxArmCPU.io), for the native back ends' blocks,
+   whose hot code makes the others: the hook's where one is there and takes the address (codegen.h's
+   SNX_ARM_IO_REGIONS), else the plain access. size is the hook's size_write, over a width of 1, 2 or 4 bytes: 0x100 a
+   write; SIGNED an ARMv4T LDRSH's, whose value is sign extended, the byte at an odd address; and, for these functions
+   alone, LIST an access whose address is taken as it is (a multiple transfer's, snx_arm_io_*'s caller aligned it as its
+   bus does) and ARM9 the ARM946E's. where is the block's: the address of the instruction, bit 0 set in Thumb, from
+   which an ARM7TDMI's read with nothing to read gets its value (the open bus), or ~0 (zero, the ARM946E's). Arguments
+   of 64 bits and a result of 64, the numbers in their low 32, so that no ABI's extension of a narrower one matters */
+#define SNX_ARM_IO_SIGNED 0x200u
+#define SNX_ARM_IO_LIST   0x400u
+#define SNX_ARM_IO_ARM9   0x800u
+uint64_t snx_arm_io_read(SnxArmCPU* cpu, uint64_t address, uint64_t size, uint64_t where);
+/* what the hook returned (nonzero ends the block after its instruction), 0 for a plain store */
+uint64_t snx_arm_io_write(SnxArmCPU* cpu, uint64_t address, uint64_t size, uint64_t value);
+/* Checked memory (checked.h; cpu is a SnxArmCheckedCPU's) for the native back ends' blocks: the instruction of bytes
+   at pc fetched through the bus, 0 where it is word, else the exit it stops with (PREFETCH_ABORT, CODE_CHANGED); and
+   one transfer of bytes, its data in the state's words (a word's bytes guest order, a narrower one's in the low bits),
+   0 or the bus's fault. The store-exclusive does llvm.c's checked_exclusive: 0 where it took, 1 where it
+   lost, 2 a fault */
+uint64_t snx_arm_checked_fetch(SnxArmCPU* cpu, uint64_t pc, uint64_t word, uint64_t bytes);
+uint64_t snx_arm_checked_access(SnxArmCPU* cpu, uint64_t operation, uint64_t address, uint64_t bytes);
+uint64_t snx_arm_checked_strex(SnxArmCPU* cpu, uint64_t address, uint64_t bytes);
+/* A chained import's stub (codegen.h's SnxArmChainedOptions): the function whose pointer is at bytes past cpu, called with
+   cpu and import, nonzero where the block goes on; with none there, 0 and the SVC's exit, import its syndrome */
+uint64_t snx_arm_direct(SnxArmCPU* cpu, uint64_t import, uint64_t at);
 
 typedef void (*SnxArmBlock)(SnxArmCPU* cpu);
 

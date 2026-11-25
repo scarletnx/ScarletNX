@@ -105,6 +105,8 @@ interface nn::am::service::ISelfController {
     @stub [13] SetFocusHandlingMode(b8 notify, b8 background, b8 suspend);
     @stub [14] SetRestartMessageEnabled(b8 enabled);
     @stub [16] SetOutOfFocusSuspendingEnabled(b8 enabled);
+    # 3.0.0+. How the album turns the game's screenshots, which are written here as they come
+    @stub [19] SetAlbumImageOrientation(u32 orientation);
     [40] CreateManagedDisplayLayer() -> u64 layer_id;
     @stub [41] IsSystemBufferSharingEnabled();
     [44] CreateManagedDisplaySeparableLayer() -> (u64 layer_id, u64 recording_layer_id);

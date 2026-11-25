@@ -19,6 +19,7 @@
 #include <pthread.h>
 #include <unistd.h>
 #endif
+#include "snx_settings.h"
 
 /* the common options scarletnx-gnuabi takes (common/utilities/cli.h): the data folder, whose linux/ is the guest's
    root by default, and the help. A program is run as it is, with no game folder, keys or run of its own; its code
@@ -47,6 +48,8 @@ static const char usage[] =
     "                         1048576 (not on Windows)\n"
     "  -E VAR=VALUE, -U VAR   Set or remove a variable of the guest's environment (the host's otherwise)\n"
     "  -0 ARGV0               The program's argv[0] (default: ELF)\n"
+    "  --linux-KEY=VALUE      A setting of the Linux group of the launcher's Settings, which takes the same as the\n"
+    "                         option above: the last given counts\n"
     "\n"
     "On GNU ABI the code compiles as it runs: -O is its JIT's level, --jit-cache DIR the folder its compiled code is\n"
     "kept in between runs (default: the user's cache folder), and --jit-only what it does anyway.\n";
@@ -228,7 +231,8 @@ int snx_gnuabi_main(int argc, char** argv) {
     int adopted_fd[64], adopted_count = 0;
     unsigned long long adopted_host[64];
     const char* cwd = NULL;
-    int first = 1, isolated = 0, no_cache = 0, verbose = 0, strace = 0, sample = 0;
+    int first = 1;
+    char page_text[16];           /* linux_host_page's, as --host-page's */
     const char* host_page = NULL; /* --host-page's */
     const char* data = NULL;      /* --data's */
     if (!changes) return 2;
@@ -261,6 +265,33 @@ int snx_gnuabi_main(int argc, char** argv) {
             first++;
             break;
         }
+        /* the Linux group's settings, by their keys with a - for each _ (docs/user/settings.md): each is what the
+           option of its own here is, so the last given counts */
+        {
+            char key[64];
+            const char* given = settings_arg(option, key, sizeof key);
+            const IniOpt* o = given ? ini_find(g_linux_ini, key) : NULL;
+            if (given && !o) o = ini_find(g_linux_debug_ini, key);
+            if (o && ini_check(o, given, error, sizeof error)) {
+                fprintf(stderr, "scarletnx-gnuabi: %s\n", error);
+                options_free(changes, change_count, sysroot);
+                return 2;
+            }
+            if (o) {
+                ini_read(o, given);
+                if (!strcmp(key, "linux_jit_opt")) opt = g_settings.linux_jit_level;
+                if (!strcmp(key, "linux_host_page")) {
+                    snprintf(page_text, sizeof page_text, "%d", g_settings.linux_host_page);
+                    host_page = g_settings.linux_host_page ? page_text : NULL;
+                }
+                if (!strcmp(key, "linux_root")) {
+                    free(sysroot);
+                    sysroot = g_settings.linux_root[0] ? snx_absolute(g_settings.linux_root) : NULL;
+                }
+                first++;
+                continue;
+            }
+        }
         if (!strncmp(option, "--sysroot=", 10)) {
             free(sysroot);
             sysroot = snx_absolute(option + 10);
@@ -269,19 +300,19 @@ int snx_gnuabi_main(int argc, char** argv) {
             sysroot = snx_absolute(value);
             first++;
         } else if (!strcmp(option, "--isolated"))
-            isolated = 1;
+            g_settings.linux_isolated = 1;
         else if (!strcmp(option, "--jit")) {
             /* the only mode */
         } else if (!strcmp(option, "--no-jit-cache"))
-            no_cache = 1;
+            g_settings.linux_kept_code = 0;
         else if (!strncmp(option, "--jit-opt=", 10))
             opt = option + 10;
         else if (!strcmp(option, "--verbose-jit"))
-            verbose = 1;
+            g_settings.linux_jit_messages = 1;
         else if (!strcmp(option, "--strace"))
-            strace = 1;
+            g_settings.linux_system_call_trace = 1;
         else if (!strcmp(option, "--sample-pc"))
-            sample = 1;
+            g_settings.linux_pc_sample = 1;
         else if (!strncmp(option, "--host-page=", 12))
             host_page = option + 12;
         else if (!strcmp(option, "-E") && value && strchr(value, '=')) {
@@ -314,6 +345,9 @@ int snx_gnuabi_main(int argc, char** argv) {
     }
     /* what an older version read (docs/user/deprecations.md): still these options for this version, under the command
        line's own, each said. Removed with tests/architecture.py's ENV_DEPRECATED rows */
+    int isolated = g_settings.linux_isolated, no_cache = !g_settings.linux_kept_code,
+        verbose = g_settings.linux_jit_messages, strace = g_settings.linux_system_call_trace,
+        sample = g_settings.linux_pc_sample;
     old_options(&strace, &sample, &host_page);
     if (posix_options(sample, host_page)) {
         options_free(changes, change_count, sysroot);
@@ -340,16 +374,19 @@ int snx_gnuabi_main(int argc, char** argv) {
         }
     }
     process = calloc(1, sizeof *process);
-    if (!process) return 2;
     char error[1024] = {0};
-    if (gnu_jit_init(&process->jit, cache, error, sizeof error)) {
-        fprintf(stderr, "scarletnx-gnuabi: %s\n", error);
+    if (!process || gnu_jit_init(&process->jit, cache, error, sizeof error)) {
+        fprintf(stderr, "scarletnx-gnuabi: %s\n", process ? error : "out of memory");
+        options_free(changes, change_count, sysroot);
+        free(cache);
         return 2;
     }
     process->jit.verbose = verbose;
     snx_recompiler_set_verbose(process->jit.recompiler, verbose);
     if (snx_recompiler_set_optimization(process->jit.recompiler, opt[0]) || opt[1]) {
-        fprintf(stderr, "scarletnx-gnuabi: --jit-opt takes 0, 1, 2, 3, s or z\n");
+        fprintf(stderr, "scarletnx-gnuabi: --jit-opt takes 0, 1, 2, 3, s or z, not %s\n", opt);
+        options_free(changes, change_count, sysroot);
+        free(cache);
         return 2;
     }
     char** env = isolated ? NULL : environment(changes, change_count);

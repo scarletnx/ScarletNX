@@ -1132,6 +1132,77 @@ static void keep_raw(char (*raw)[SNX_LOGSCAN_RAW], unsigned* len, unsigned long*
     ++*seen;
 }
 
+/* a line the launcher writes when it starts where its log holds every start of the day (gui/apple.m):
+   "===== ScarletNX starts, pid <N>, <date>" */
+static int start_line(Span line) {
+    Span rest = line;
+    size_t digits;
+    if (!take_lit(&rest, "===== ScarletNX starts, pid ")) return 0;
+    digits = dec_run(rest);
+    return digits && starts(skip(rest, digits), ", ");
+}
+
+/* whether the lines read since the last start made a run: a game's title or a failure */
+static int ran(const SnxLogScan* s) { return s->title || s->outcome; }
+
+/* how a start that ran ended, in the texts of its own pool: kept for the summary of a later one, the last
+   SNX_LOGSCAN_STARTS of them */
+static void end_kept(SnxLogScan* s, const SnxLogScan* earlier) {
+    const char* text =
+        earlier->signature ? snx_logscan_text(earlier, earlier->signature) : snx_logscan_outcome_name(earlier->outcome);
+    if (s->nended == SNX_LOGSCAN_STARTS) {
+        memmove(s->ended[0], s->ended[1], sizeof s->ended - sizeof s->ended[0]);
+        s->nended--;
+    }
+    snprintf(s->ended[s->nended++], sizeof s->ended[0], "%s", text);
+}
+
+/* a start began (start_line): what the lines before it made goes, so that no run is read as part of another, and the
+   start that ran is kept for the end, until the next one that does. Out of memory, the starts are read as one run */
+static void start_over(SnxLogScan* s) {
+    char ended[SNX_LOGSCAN_STARTS][SNX_LOGSCAN_LINE];
+    SnxLogScan* earlier = s->earlier;
+    SnxLogScan* kept = NULL;
+    unsigned long seen = s->seen, begun = s->starts + 1;
+    int nended = s->nended;
+    char* pool = s->pool;
+    size_t cap = s->cap;
+    if (ran(s)) {
+        char* fresh = malloc(4096);
+        kept = fresh ? malloc(sizeof *kept) : NULL;
+        if (!kept) {
+            free(fresh);
+            s->starts = begun;
+            return;
+        }
+        *kept = *s;
+        kept->earlier = NULL;
+        kept->function = kept->outcome ? culprit(kept) : 0;
+        kept->signature = kept->outcome ? signature(kept) : 0;
+        pool = fresh;
+        cap = 4096;
+    }
+    memcpy(ended, s->ended, sizeof ended);
+    memset(s, 0, sizeof *s);
+    memcpy(s->ended, ended, sizeof ended);
+    s->nended = nended;
+    if (kept && earlier) {
+        end_kept(s, earlier);
+        free(earlier->pool);
+        free(earlier);
+        earlier = NULL;
+    }
+    s->earlier = kept ? kept : earlier;
+    s->pool = pool;
+    s->cap = cap;
+    s->pool[0] = 0; /* offset 0, the empty text */
+    s->used = 1;
+    s->starts = begun;
+    s->seen = seen;
+    s->centiseconds = -1;
+    s->phase = PHASE_LOG;
+}
+
 /* what the run section said goes when the game log's section begins: the launcher's fields stay */
 static void restart(SnxLogScan* s) {
     unsigned build = s->launcher_build, message = s->launcher_message;
@@ -1198,6 +1269,11 @@ void snx_logscan_line(SnxLogScan* s, const char* p, size_t n) {
             }
             break;
         case PHASE_DONE: return;
+    }
+    if (s->phase == PHASE_LOG &&
+        start_line(line)) { /* the launcher's own files, which the Share Log's sections are not */
+        start_over(s);
+        return;
     }
     size_t st = stamp(line, &cs);
     if (st) s->centiseconds = cs;
@@ -1331,6 +1407,25 @@ static int from_ring(SnxLogScan* s, char (*raw)[SNX_LOGSCAN_RAW], const unsigned
 }
 
 void snx_logscan_end(SnxLogScan* s) {
+    SnxLogScan* earlier = s->earlier;
+    s->earlier = NULL;
+    if (earlier && !ran(s)) { /* the last start only opened the launcher: the one before it stands */
+        char ended[SNX_LOGSCAN_STARTS][SNX_LOGSCAN_LINE];
+        unsigned long seen = s->seen, begun = s->starts;
+        int nended = s->nended;
+        memcpy(ended, s->ended, sizeof ended);
+        free(s->pool);
+        *s = *earlier;
+        memcpy(s->ended, ended, sizeof ended);
+        s->nended = nended;
+        s->seen = seen;
+        s->starts = begun;
+        free(earlier);
+    } else if (earlier) {
+        end_kept(s, earlier);
+        free(earlier->pool);
+        free(earlier);
+    }
     SnxLogScan* run = s->run;
     s->run = NULL;
     /* the run's texts are in s's pool, which may have moved since the run's scan was kept: each read through s */
@@ -1409,6 +1504,8 @@ int snx_logscan_file(SnxLogScan* s, FILE* f) {
 }
 
 void snx_logscan_free(SnxLogScan* s) {
+    if (s->earlier) free(s->earlier->pool);
+    free(s->earlier);
     free(s->run);
     free(s->pool);
     memset(s, 0, sizeof *s);
@@ -1661,6 +1758,14 @@ char* snx_logscan_json(const SnxLogScan* s, SnxDemangle demangle) {
     json_list(&b, s, s->output, s->noutput);
     put(&b, ", \"tail\": ");
     json_list(&b, s, s->tail, s->ntail);
+    put(&b, ", \"starts\": ");
+    put_num(&b, s->starts);
+    put(&b, ", \"earlier_starts\": [");
+    for (int i = 0; i < s->nended; i++) {
+        if (i) put(&b, ", ");
+        json_string(&b, s->ended[i]);
+    }
+    put(&b, "]");
     put(&b, ", \"launcher\": ");
     if (s->launcher_build) {
         put(&b, "{");
@@ -1807,6 +1912,15 @@ char* snx_logscan_markdown(const SnxLogScan* s, const char* name, const char* he
     put(&b, snx_logscan_outcome_name(s->outcome));
     if (s->centiseconds >= 0) {
         sprintf(num, " after %ld.%ld s", (s->centiseconds + 5) / 100, (s->centiseconds + 5) % 100 / 10);
+        put(&b, num);
+    }
+    if (s->nended) {
+        put(&b, "\n- **Earlier starts:** ended ");
+        for (int i = 0; i < s->nended; i++) {
+            if (i) put(&b, ", ");
+            md_code(&b, s->ended[i]);
+        }
+        sprintf(num, ", of %lu in this log", s->starts);
         put(&b, num);
     }
     if (s->signature) {

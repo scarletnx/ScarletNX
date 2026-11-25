@@ -3,6 +3,7 @@
 #ifndef SNX_VITA_MODULE_H
 #define SNX_VITA_MODULE_H
 #include "common/cpu/arm/arm.h"
+#include "common/cpu/arm/codegen.h"
 #include "vita/loader/image.h"
 #include "common/utilities/cli.h"
 #include <stdbool.h>
@@ -27,12 +28,9 @@
    Either is null while the blocks must leave to the run loop */
 #define VITA_LOOKUP_OFFSET (VITA_POLL_OFFSET + sizeof(void*))
 #define VITA_DIRECT_OFFSET (VITA_POLL_OFFSET + 2 * sizeof(void*))
-/* the table has this many slots, a power of two, picked by the target's address shifted right once */
-#define VITA_LOOKUP_SLOTS 65536u
-typedef struct {
-    uint32_t key; /* the address, with bit 0 set for Thumb */
-    SnxArmBlock block;
-} VitaLookup;
+/* the table as every chained block reads it (cpu/arm/codegen.h) */
+#define VITA_LOOKUP_SLOTS  SNX_ARM_LOOKUP_SLOTS
+typedef SnxArmLookup VitaLookup;
 #ifdef _WIN32
 #define VITA_MODULE_SUFFIX "_code.dll"
 #else

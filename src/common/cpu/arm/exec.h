@@ -6,7 +6,8 @@
 #include <stddef.h>
 
 /* A runnable AArch32 (A32/Thumb) block image, shared by the GNU ABI and NX
-   runtimes. Blocks compile on demand through the ARM LLVM backend. */
+   runtimes. Blocks compile on demand through this host's own back end (recompiler/mach/native.h), or LLVM where it has
+   none or refuses a block. */
 typedef struct SnxArmExecRange {
     uint64_t address;
     const unsigned char* data;
@@ -20,11 +21,15 @@ typedef int (*SnxArmSyscallFn)(void* context, uint32_t imm, uint64_t number, con
 
 typedef struct SnxArmExec SnxArmExec;
 
-/* Returns NULL with a bounded error on failure. */
+/* Returns NULL with a bounded error on failure. LLVM starts at the first block it has to make, or here on a host without
+   a native back end. Why a block is LLVM's, or nobody's, is said once for each reason (stderr) */
 SnxArmExec* snx_arm_exec_new(char* error, size_t error_size);
 /* The profile the blocks snx_arm_exec_block compiles from now on are for (A57 until set): the Vita's A9 */
 void snx_arm_exec_set_profile(SnxArmExec* exec, SnxArmProfile profile);
 void snx_arm_exec_free(SnxArmExec* exec);
+/* how many blocks LLVM was asked for, the native back end having refused them, or the loader their objects (or none on
+   this host): why, the last of them, in *why where not NULL */
+size_t snx_arm_exec_refused(const SnxArmExec* exec, const char** why);
 /* The block at pc (Thumb when thumb is set), compiled now unless it was before, from base + pc (the guest's
    memory; ranges bound how far it may read). NULL when pc is outside the ranges or the compiler fails. Not thread-safe:
    callers serialize */
@@ -35,13 +40,13 @@ SnxArmBlock snx_arm_exec_block(SnxArmExec* exec, const SnxArmExecRange* ranges, 
    be in one. Not thread-safe: callers serialize */
 void snx_arm_exec_forget(SnxArmExec* exec, uint64_t lo, uint64_t hi);
 /* A block compiled now from the code given (count A32 words, or Thumb halfwords when thumb is set, as host integers)
-   for the profile and memory mode (a SnxArmMemoryMode of llvm.h: 0 flat, 1 checked (checked.h), 2 hosted): the
+   for the profile and memory mode (a SnxArmMemoryMode of codegen.h: 0 flat, 1 checked (checked.h), 2 hosted): the
    caller's to look up and keep, never cached here, each compile a new copy. A hosted block leaves the checks of its
    entry to the caller. *consumed is how many it compiled. NULL when the compiler fails. Not thread-safe: callers
    serialize */
 SnxArmBlock snx_arm_exec_compile(SnxArmExec* exec, const void* code, size_t count, uint32_t pc, int thumb,
                                  SnxArmProfile profile, int memory, size_t* consumed);
-/* The same with the code generation's options (llvm.h), an ARM7TDMI's bus cycles among them */
+/* The same with the code generation's options (codegen.h), an ARM7TDMI's bus cycles among them */
 struct SnxArmCodegenOptions;
 SnxArmBlock snx_arm_exec_compile_ex(SnxArmExec* exec, const void* code, size_t count, uint32_t pc, int thumb,
                                     const struct SnxArmCodegenOptions* options, size_t* consumed);

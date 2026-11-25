@@ -231,6 +231,7 @@ int vk_written_since(const u8* host, u64 len, u32 since) { STUB(); }
 void vk_ww_cool(const u8* host, u64 len) { STUB(); }
 void vk_ww_landed(u64 cpu, u64 size, const u8* bytes) { STUB(); }
 u32 vk_ww_now(void) { STUB(); }
+u32 vk_ww_epoch(void) { return 0; }
 VkFmt vk_zt_format(u32 fmt) { STUB(); }
 
 /* ------------------------------------------------ the checks */

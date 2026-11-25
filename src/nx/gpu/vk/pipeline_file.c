@@ -11,6 +11,7 @@
 #include "common/platform/time.h"
 #include "common/utilities/common.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/tracy.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/pipeline_file.h"
 #if !defined(_WIN32)
@@ -914,7 +915,16 @@ void pf_open(PFile* pf, const char* path, const char* key, size_t guest, PfLoad*
         r.workers = (u32)pf_workers();
 #endif
         r.open = hsize;
-        used = pf_walk(pf, &r, buf, hsize, end, checked, load, loaded);
+        {
+            SNX_ZONE(z_walk, "shader cache records");
+            used = pf_walk(pf, &r, buf, hsize, end, checked, load, loaded);
+            SNX_ZONE_TEXT(z_walk, "%.64s: %zu B read, %zu used, %u shaders, %u pipelines, %s", path, size, used,
+                          loaded[0], loaded[1], checked ? "parallel check" : "unchecked");
+            SNX_ZONE_VALUE(z_walk, used);
+            SNX_ZONE_END(z_walk);
+        }
+        SNX_PLOT("vk pipe shader cache hit bytes", (double)used);
+        SNX_PLOT("vk pipe shader cache read bytes", (double)size);
         pf->nsh = r.n;
         pf_reader_free(&r);
         if (used < size)
@@ -922,12 +932,19 @@ void pf_open(PFile* pf, const char* path, const char* key, size_t guest, PfLoad*
                 (unsigned long)used, (unsigned long)size);
     } else if (buf && (old_head = pf_same_guest(buf, size, key, guest)) != 0) {
         char diff[768];
+        SNX_MSG("shader cache miss: another build or driver", sizeof("shader cache miss: another build or driver") - 1);
+        SNX_PLOT("vk pipe shader cache miss", 1);
+        SNX_PLOT("vk pipe shader cache read bytes", (double)size);
         pf_key_diff(diff, sizeof diff, (const char*)buf + 16, pf_get32(buf + 12), key);
         LOG("vulkan: %s is of another build or driver (%s): its shaders are translated again and its pipelines made "
             "again\n",
             path, diff);
     } else if (length > 0) {
         char diff[768];
+        SNX_MSG("shader cache miss: the key differs, started over",
+                sizeof("shader cache miss: the key differs, started over") - 1);
+        SNX_PLOT("vk pipe shader cache miss", 1);
+        SNX_PLOT("vk pipe shader cache read bytes", (double)size);
         if (buf && size >= 16 && !memcmp(buf, PF_MAGIC, 8) && pf_get32(buf + 12) <= size - 16)
             pf_key_diff(diff, sizeof diff, (const char*)buf + 16, pf_get32(buf + 12), key);
         else
@@ -960,6 +977,13 @@ void pf_open(PFile* pf, const char* path, const char* key, size_t guest, PfLoad*
         pf->f = fopen(path, "wb");
         ok = pf->f && fwrite(used ? buf : head, 1, used ? used : hsize, pf->f) == (used ? used : hsize) &&
              !fflush(pf->f);
+        if (snx_tracy_attached()) {
+            char msg[96];
+            snprintf(msg, sizeof msg, "shader cache write: %zu bytes, %s%s", used ? used : hsize,
+                     !used ? "started over" : "repaired short tail", ok ? "" : ", failed");
+            SNX_MSG(msg, strlen(msg));
+        }
+        SNX_PLOT("vk pipe shader cache write bytes", (double)(used ? used : hsize));
         if (!ok) snx_os_error(why, sizeof why); /* before fclose's */
         if (!ok && pf->f) {
             fclose(pf->f);
@@ -1075,6 +1099,17 @@ static int pf_nth(const PfField* f, int i) {
     int nth = 0;
     for (int k = 0; k < i; k++) nth += !strcmp(f[k].name, f[i].name);
     return nth;
+}
+int pf_build_unnamed(const char* commit) {
+    size_t len = strlen(commit);
+    return !strcmp(commit, "unknown") || (len >= 6 && !strcmp(commit + len - 6, "-dirty"));
+}
+void pf_build_words(char* out, size_t n, const char* commit, const char* flags, const PFileMap* self) {
+    int at = 0;
+    if (n) out[0] = 0;
+    if (pf_build_unnamed(commit) && self && self->data)
+        at = snprintf(out, n, " exe=%016llx", (unsigned long long)vk_hash(self->data, (size_t)self->size));
+    if (flags[0] && at >= 0 && (size_t)at < n) snprintf(out + at, n - (size_t)at, " flags=%s", flags);
 }
 int pf_key_diff(char* out, size_t n, const char* key, size_t len, const char* want) {
     PfField was[32], now[32];

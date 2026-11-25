@@ -112,6 +112,10 @@ static inline unsigned gui_group_icon(const char* name) {
                  {"Display", GUI_ICON_MONITOR},
                  {"Graphics", GUI_ICON_IMAGE},
                  {"3DS", GUI_ICON_SQUARE_SPLIT_VERTICAL},
+                 {"Vita", GUI_ICON_PACKAGE}, /* the menu's Load Vita VPK's */
+                 {"Linux", GUI_ICON_SQUARE_TERMINAL},
+                 {"Android", GUI_ICON_LAYOUT_GRID},
+                 {"DS", GUI_ICON_MEMORY_STICK},
                  {"Performance", GUI_ICON_GAUGE},
                  {"Overlay", GUI_ICON_POINTER},
                  {"Controllers", GUI_ICON_GAMEPAD_2},
@@ -133,6 +137,7 @@ static inline unsigned gui_page_icon(const char* page) {
            : !strcmp(page, "Buttons")           ? GUI_ICON_LAYOUT_GRID
            : !strcmp(page, "Button map")        ? GUI_ICON_GAMEPAD_DIRECTIONAL
            : !strcmp(page, "Bluetooth")         ? GUI_ICON_WIFI
+           : !strcmp(page, "Debug")             ? GUI_ICON_BUG /* a console's own, as the Debug group */
                                                 : GUI_ICON_NONE;
 }
 #endif

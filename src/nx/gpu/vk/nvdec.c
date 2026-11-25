@@ -14,6 +14,7 @@
 #include "nx/memory/mem.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/tracy.h"
 #include <libavutil/buffer.h>
 #include <libavutil/frame.h>
 #include <libavutil/hwcontext.h>
@@ -116,6 +117,12 @@ static void hw_end(HwPic* h) {
 }
 
 static int nvdec_write(const NvdecPic* p, HwPic* hp) {
+    /* Why this picture took its path: a Vulkan Video decode copies planes from an image, a media engine's picture is
+       staged as rows, and a pitch linear surface needs no deswizzle. */
+    SNX_ZONE_TV(z_nvdec, "vk pres nvdec", p->hw ? 1 : p->semi ? 2 : p->pitch_linear ? 3 : 0,
+                "%s", p->hw ? "vulkan video planes" : p->semi ? "media engine rows"
+                                                             : p->pitch_linear ? "pitch linear, no deswizzle"
+                                                                               : "deswizzled CPU planes");
     u32 w = p->w, h = p->h, pairs = (w + 1) / 2, cw = 2 * pairs, ch = (h + 1) / 2;
     u32 ly = (u32)up(p->pitch_y, 16), lc = (u32)up(p->pitch_c, 16); /* the deswizzled rows' pitches */
     u32 up4 = (u32)up(pairs, 4), uv_pitch = up4 * 2;                /* staged U/V rows, interleaved rows */
@@ -124,6 +131,7 @@ static int nvdec_write(const NvdecPic* p, HwPic* hp) {
     /* a Vulkan Video picture's rows go after the surfaces' rows: luma w apart, then chroma cw apart */
     u64 at_hy = at_uv, at_hc = up(at_hy + (u64)w * h, 16);
     u64 used = p->hw ? at_hc + (u64)cw * ch : at_uv + (u64)uv_pitch * ch;
+    SNX_PLOT("vk pres nvdec bytes", (double)used);
     VkBlMove my = {p->pitch_y, p->surf_h, p->bh, 0, 0, h, 0, 1, ly};
     VkBlMove mc = {p->pitch_c, (p->surf_h + 1) / 2, p->bh, 0, 0, ch, 0, 1, lc};
     VkBuffer rows, scratch;
@@ -208,7 +216,9 @@ int vk_nvdec_write(const NvdecPic* p) {
     r = nvdec_write(p, &hp);
     vk_unlock();
     if (p->hw) hw_unlock(&hp);
-    /* the same for the picture's planes as VIC's (vk_vic_compose): copied in on the GPU, done before the syncpoint */
+    /* the same for the picture's planes as VIC's (vk_vic_compose): copied in on the GPU, done before the syncpoint that
+       the guest reads the picture after. The wait lets go of vk_lock (uma.c's wait_out_why): held through it, the thread
+       recording the frame waited behind every picture */
     if (r) {
         vk_uma_mem_need_cpu(p->luma, p->ext_y);
         vk_uma_mem_need_cpu(p->chroma, p->ext_c);

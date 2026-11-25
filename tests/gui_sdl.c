@@ -808,6 +808,14 @@ static char* made_game(const App* app, const char* dump, const char* name) {
     free(data_name);
     return folder;
 }
+/* the program of the game name in its folder, named after it */
+static char* program_in(const char* folder, const char* name) {
+#ifdef _WIN32
+    return snx_format("%s/%s.exe", folder, name);
+#else
+    return snx_path_join(folder, name);
+#endif
+}
 /* the question a dump whose game is made asks (GUI_ASK_MADE), naming the game and where it is: Play, in focus, taken */
 static void play_made(App* app) {
     assert(app->confirm.shown && app->confirm.ask == GUI_ASK_MADE && !app->confirm.selected && app->made_file);
@@ -989,6 +997,247 @@ static void volume_view(App* app) {
     assert(setting_is(app, "volume", NULL));
     key(app, SDLK_ESCAPE);
     leave_editor(app);
+}
+/* Settings > Shortcuts: Enter on a row waits for the key it takes, as the game's menu's page does: the key pressed
+   with the modifiers held is the row's, kept and said; ESC keeps the one it has, Backspace puts its default back, and
+   a key another row has is refused, said with both rows */
+static void shortcuts_capture(App* app) {
+    static const char list[] = "Shortcuts\thotkey_help\tF1\ttext\t0\t0\tHelp\tHelp\t\n"
+                               "Shortcuts\thotkey_menu\tF2\ttext\t0\t0\tMenu\tMenu\t\n"
+                               "Shortcuts\thotkey_quit\tEscape\ttext\t0\t0\tQuit\tQuit\t\n";
+    SDL_Event e = {0};
+    int g, help;
+    settings_forget(app);
+    assert(!gui_settings_read(&app->settings, list));
+    gui_settings_mark(&app->settings);
+    open_settings(app);
+    for (g = 0; g < app->groups && strcmp(app->group_name[g], "Shortcuts"); ++g) {}
+    assert(g < app->groups);
+    app->editor.row = g;
+    key(app, SDLK_RETURN);
+    assert(app->form == GUI_FORM_GROUP && app->group == g);
+    help = row_of(app, setting_row(app, "hotkey_help"));
+    app->editor.row = help;
+    key(app, SDLK_RETURN);
+    assert(app->key_listen && strstr(app->editor.note, "Press the key for Help (ESC keeps F1"));
+    key(app, SDLK_LSHIFT); /* a modifier waits for its key */
+    assert(app->key_listen);
+    key(app, SDLK_ESCAPE);
+    assert(!app->key_listen && !strcmp(app->editor.note, "Help keeps F1") &&
+           !gui_settings_value(&app->settings, "hotkey_help"));
+    key(app, SDLK_RETURN);
+    e.type = SDL_EVENT_KEY_DOWN;
+    e.key.key = SDLK_F9;
+    e.key.mod = SDL_KMOD_LCTRL;
+    assert(SDL_PushEvent(&e));
+    while (SDL_PollEvent(&e)) event(app, &e);
+    assert(!app->key_listen && !strcmp(gui_settings_value(&app->settings, "hotkey_help"), "Ctrl+F9") &&
+           !strcmp(app->editor.note, "Help: Ctrl+F9") && picks_have(app, "hotkey_help="));
+    key(app, SDLK_RETURN);
+    key(app, SDLK_F2); /* Menu's: refused */
+    assert(!app->key_listen && !strcmp(gui_settings_value(&app->settings, "hotkey_help"), "Ctrl+F9") &&
+           !strcmp(app->editor.note, "F2 already does Menu: Help keeps Ctrl+F9"));
+    key(app, SDLK_RETURN);
+    key(app, SDLK_BACKSPACE); /* its default again */
+    assert(!app->key_listen && !gui_settings_value(&app->settings, "hotkey_help") &&
+           !strcmp(app->editor.note, "Help: F1"));
+    leave_editor(app);
+    settings_forget(app);
+}
+/* a setting of boxes (the runtime's list's boxes): its row says how many of its items are on, and Enter on it opens a
+   form with a row an item, On or Off, its about under it; Enter, Left and Right turn one on or off, the picks kept at
+   once; a name the row has not stays in its value; ESC comes back to the row in its group, with what it says now */
+static void microphone_words(App* app) {
+    static const char list[] = "Audio\tmicrophone\toff\ttext\t0\t0\tHears\tMicrophone\t"
+                               "=System default|off=Off\t\t\topen\n"
+                               "Other\tother\t0\tint\t0\t1\tOther\tOther\t0=Off|1=On\n";
+    const char* names[3] = {"", "", ""};
+    SDL_AudioDeviceID* ids;
+    int g, count = 0, row;
+    settings_forget(app);
+    assert(!gui_settings_read(&app->settings, list));
+    gui_settings_mark(&app->settings);
+    open_settings(app);
+    for (g = 0; g < app->groups && strcmp(app->group_name[g], "Audio"); ++g) {}
+    assert(g < app->groups);
+    /* the dummy driver has one recording device, of a name SDL gives it: it is the row's word, after its own two */
+    assert(SDL_SetHintWithPriority(SDL_HINT_AUDIO_DRIVER, "dummy", SDL_HINT_OVERRIDE) &&
+           SDL_InitSubSystem(SDL_INIT_AUDIO));
+    ids = SDL_GetAudioRecordingDevices(&count);
+    assert(ids && count == 1);
+    names[0] = SDL_GetAudioDeviceName(ids[0]);
+    assert(names[0] && *names[0]);
+    app->editor.row = g;
+    key(app, SDLK_RETURN);
+    row = row_of(app, setting_row(app, "microphone"));
+    assert(app->form == GUI_FORM_GROUP && !app->editor.note[0] &&
+           !strcmp(app->settings.keys[setting_row(app, "microphone")].words[2], names[0]));
+    app->editor.row = row;
+    key(app, SDLK_RIGHT); /* from Off, its default */
+    assert(!strcmp(gui_settings_value(&app->settings, "microphone"), names[0]));
+    key(app, SDLK_RIGHT); /* round */
+    assert(!strcmp(gui_settings_value(&app->settings, "microphone"), ""));
+    render(app);
+    SDL_free(ids);
+    SDL_QuitSubSystem(SDL_INIT_AUDIO);
+    /* a driver SDL does not have: said, with SDL's reason, and the row keeps its two words and the value */
+    assert(SDL_SetHintWithPriority(SDL_HINT_AUDIO_DRIVER, "nosuchdriver", SDL_HINT_OVERRIDE));
+    leave_form(app);
+    settings_forget(app);
+    assert(!gui_settings_read(&app->settings, list));
+    gui_settings_mark(&app->settings);
+    open_settings(app);
+    for (g = 0; g < app->groups && strcmp(app->group_name[g], "Audio"); ++g) {}
+    app->editor.row = g;
+    key(app, SDLK_RETURN);
+    assert(app->form == GUI_FORM_GROUP && strstr(app->editor.note, "Recording devices cannot be read: ") &&
+           !app->settings.keys[setting_row(app, "microphone")].words[2]);
+    SDL_ResetHint(SDL_HINT_AUDIO_DRIVER);
+    leave_form(app);
+    settings_forget(app);
+}
+/* the Room password: its row in Network says whether there is one, and the dialog that takes one starts empty, draws
+   stars alone and keeps none of the letters; written 0600 in users/online.ini, never in settings.ini nor a run's
+   options; Del takes it off; refused text is said and can be mended; a file others can read is said */
+static void room_password_row(App* app, const char* temporary) {
+    static const char list[] = "Network\tldn\tlan\ttext\t0\t0\tWireless\tLocal wireless\tlan=LAN|room=Room\n"
+                               "Network\troom\t\ttext\t0\t0\tThe room\tEden room\t\n"
+                               "Network\tother\t0\tint\t0\t1\tOther\tOther\t0=Off|1=On\n";
+    char *users = snx_path_join(temporary, "room-users"), *online = snx_path_join(users, "online.ini");
+    char *was = app->users_dir, password[64], why[512], *argv_text;
+    const char* options[8];
+    int g, row;
+    assert(!snx_mkdirs(users));
+    app->users_dir = users;
+    settings_forget(app);
+    assert(!gui_settings_read(&app->settings, list));
+    gui_settings_mark(&app->settings);
+    open_settings(app);
+    for (g = 0; g < app->groups && strcmp(app->group_name[g], "Network"); ++g) {}
+    assert(g < app->groups);
+    app->editor.row = g;
+    key(app, SDLK_RETURN);
+    row = row_of(app, setting_row(app, "room_password"));
+    assert(app->form == GUI_FORM_GROUP && row >= 0 && app->group == g);
+    app->editor.row = row;
+    render(app);
+    shows(app, "None", yellow);
+    key(app, SDLK_RETURN);
+    assert(app->editor.typing && !app->editor.text[0] && SDL_TextInputActive(app->window));
+    typed(app, "s3cret pass");
+    render(app);
+    shows(app, "***********_", rgb(app->theme.ink));
+    assert(!strcmp(app->editor.text, "s3cret pass"));
+    key(app, SDLK_ESCAPE); /* Cancel: none kept, the text gone */
+    assert(!app->editor.typing && !app->editor.text[0] && !snx_is_file(online));
+    key(app, SDLK_RETURN);
+    key(app, SDLK_RETURN); /* nothing typed: no change, as it says */
+    assert(strstr(app->editor.note, "nothing was typed") && !app->editor.typing && !snx_is_file(online));
+    key(app, SDLK_RETURN);
+    typed(app, "s3cret pass");
+    key(app, SDLK_RETURN);
+    assert(!app->editor.typing && !app->editor.text[0] && !strcmp(app->editor.note, "Room password: set"));
+    assert(!snx_users_room_password(users, password, sizeof password, why, sizeof why) &&
+           !strcmp(password, "s3cret pass"));
+#ifndef _WIN32
+    {
+        struct stat st;
+        assert(!stat(online, &st) && (st.st_mode & 0777) == 0600);
+    }
+#endif
+    render(app);
+    shows(app, "********", yellow);
+    assert(!picks_have(app, "room_password") && !picks_have(app, "s3cret"));
+    argv_text = snx_strdup("");
+    for (size_t i = 0, n = gui_settings_options(&app->settings, 0, NULL, options); i < n; ++i)
+        if (strstr(options[i], "password") || strstr(options[i], "s3cret")) argv_text[0] = 'x';
+    assert(!argv_text[0]);
+    free(argv_text);
+    key(app, SDLK_RETURN); /* what a room could not read back: said, the dialog stays with what was typed */
+    typed(app, " spaced");
+    key(app, SDLK_RETURN);
+    assert(app->editor.typing &&
+           strstr(app->editor.note, "Room password not changed: a room's password has no space at either end"));
+    key(app, SDLK_ESCAPE);
+    key(app, SDLK_DELETE); /* off: the file away */
+    assert(!strcmp(app->editor.note, "Room password: none") && !snx_is_file(online));
+    render(app);
+    shows(app, "None", yellow);
+    /* a file others may read: said where it opens, and the row does not say None */
+#ifndef _WIN32
+    assert(!snx_write_file(online, "room_password=old\n", 18) && !chmod(online, 0644));
+    leave_form(app);
+    app->editor.row = g;
+    key(app, SDLK_RETURN);
+    assert(strstr(app->editor.note, "chmod 600"));
+    app->editor.row = row;
+    render(app);
+    shows(app, "Cannot be read", yellow);
+    key(app, SDLK_RETURN); /* a new one puts it right: its file is the owner's alone */
+    typed(app, "fresh");
+    key(app, SDLK_RETURN);
+    assert(!snx_users_room_password(users, password, sizeof password, why, sizeof why) && !strcmp(password, "fresh"));
+    key(app, SDLK_DELETE);
+#endif
+    leave_editor(app);
+    settings_forget(app);
+    app->users_dir = was;
+    assert(!snx_remove_tree(users));
+    free(online);
+    free(users);
+}
+static void boxes_form(App* app) {
+    static const char list[] = "Debug\tfirst\t0\tint\t0\t1\tFirst\tFirst\t0=Off|1=On\n"
+                               "Debug\thooks_off\t\ttext\t0\t0\tFamilies\tHook families off\t"
+                               "libc=libc~the C library's|sync=sync~clocks and sleep\t\t\tboxes\n"
+                               "Debug\tfsr\t0\tint\t0\t255\tBits\tFSR inputs\t1=Jitter x|64=HDR input\t\t\tboxes\n";
+    int g, row;
+    settings_forget(app);
+    assert(!gui_settings_read(&app->settings, list));
+    gui_settings_mark(&app->settings);
+    open_settings(app);
+    for (g = 0; g < app->groups && strcmp(app->group_name[g], "Debug"); ++g) {}
+    assert(g < app->groups);
+    app->editor.row = g;
+    key(app, SDLK_RETURN);
+    row = row_of(app, setting_row(app, "hooks_off"));
+    app->editor.row = row;
+    render(app);
+    shows(app, "None [default]", yellow); /* focused */
+    key(app, SDLK_RETURN);
+    assert(app->form == GUI_FORM_BOXES && gui_editor_rows(&app->editor) == 2 && !app->editor.typing);
+    render(app);
+    shows(app, "sync", normal);
+    key(app, SDLK_DOWN);
+    key(app, SDLK_RETURN);
+    assert(!strcmp(gui_settings_value(&app->settings, "hooks_off"), "sync") && picks_have(app, "hooks_off=sync") &&
+           !strcmp(app->box_value[1], "On") && !strcmp(app->editor.note, "Hook families off: 1 on"));
+    key(app, SDLK_UP);
+    key(app, SDLK_RIGHT);
+    assert(!strcmp(gui_settings_value(&app->settings, "hooks_off"), "sync,libc"));
+    key(app, SDLK_LEFT);
+    assert(!strcmp(gui_settings_value(&app->settings, "hooks_off"), "sync"));
+    key(app, SDLK_ESCAPE);
+    assert(app->form == GUI_FORM_GROUP && app->group == g && app->editor.row == row && !app->box_keys);
+    /* a name the row has not, kept through a box turned on */
+    assert(gui_settings_set(&app->settings, "hooks_off", "mine"));
+    key(app, SDLK_RETURN);
+    key(app, SDLK_RETURN);
+    assert(!strcmp(gui_settings_value(&app->settings, "hooks_off"), "mine,libc") &&
+           !strcmp(app->editor.note, "Hook families off: 1 on, 1 other"));
+    key(app, SDLK_ESCAPE);
+    key(app, SDLK_DELETE); /* the row back to its default, as any */
+    assert(!gui_settings_value(&app->settings, "hooks_off"));
+    /* an int's: the sum of its bits */
+    app->editor.row = row_of(app, setting_row(app, "fsr"));
+    key(app, SDLK_RETURN);
+    key(app, SDLK_DOWN);
+    key(app, SDLK_RETURN);
+    assert(app->form == GUI_FORM_BOXES && !strcmp(gui_settings_value(&app->settings, "fsr"), "64"));
+    key(app, SDLK_ESCAPE);
+    assert(app->form == GUI_FORM_GROUP);
+    leave_editor(app);
+    settings_forget(app);
 }
 /* Settings > Controllers by player, as Eden's tabs: its Player row goes round All (every player's rows) and 1 to 8
    (the player's own and those no player has its own of); a player's Button map is the button map page on its keys,
@@ -3698,7 +3947,7 @@ static void gpu_drivers(App* app, const char* temporary) {
     /* Freedreno Settings: Eden's presets first, Debug - CPU Memory applied; LD_PRELOAD refused; Save kept */
     app->editor.row = GUI_APP_FREEDRENO;
     key(app, SDLK_RETURN);
-    assert(app->form == GUI_FORM_FREEDRENO && !app->fd_count && gui_editor_rows(&app->editor) == 9 + 4 + 1);
+    assert(app->form == GUI_FORM_FREEDRENO && !app->fd_count && gui_editor_rows(&app->editor) == 9 + 5 + 4 + 1);
     render(app);
     key(app, SDLK_RETURN); /* the first preset */
     assert(app->fd_count == 1 && !strcmp(app->fd_vars[0].name, "TU_DEBUG") &&
@@ -3706,16 +3955,16 @@ static void gpu_drivers(App* app, const char* temporary) {
            !strcmp(app->editor.note, "Preset 'Debug - CPU Memory' applied") && app->editor.dirty);
     { /* Clear All wants care: the warning colour (Save keeps what it did, Back none of it) */
         UiRowInfo all = {0};
-        assert(form_row_info(app, &app->editor, 9 + 1 + 3, form_labels(&app->editor), 0, &all) &&
+        assert(form_row_info(app, &app->editor, freedreno_typed_row(app) + 3, form_labels(&app->editor), 0, &all) &&
                strstr(all.label, "Clear All") && (all.attr & UI_ATTR_CAUTION));
     }
     snprintf(app->fd_form.name, sizeof app->fd_form.name, "%s", "LD_PRELOAD");
     snprintf(app->fd_form.value, sizeof app->fd_form.value, "%s", "/x.so");
-    freedreno_action(app, 9 + app->fd_count + 2, false); /* Add Variable */
+    freedreno_action(app, freedreno_typed_row(app) + 2, false); /* Add Variable */
     assert(app->fd_count == 1 && strstr(app->editor.note, "\"LD_PRELOAD\" is not one of Freedreno's variables"));
     snprintf(app->fd_form.name, sizeof app->fd_form.name, "%s", "FD_RD_DUMP");
     snprintf(app->fd_form.value, sizeof app->fd_form.value, "%s", "enable");
-    freedreno_action(app, 9 + app->fd_count + 2, false);
+    freedreno_action(app, freedreno_typed_row(app) + 2, false);
     assert(app->fd_count == 2 && !strcmp(app->editor.note, "Variable FD_RD_DUMP added") && !app->fd_form.name[0]);
     app->editor.row = gui_editor_rows(&app->editor) - 1; /* Save */
     key(app, SDLK_RETURN);
@@ -3727,7 +3976,7 @@ static void gpu_drivers(App* app, const char* temporary) {
     app->editor.row = 9; /* TU_DEBUG's row: Del takes it out */
     key(app, SDLK_DELETE);
     assert(app->fd_count == 1 && !strcmp(app->fd_vars[0].name, "FD_RD_DUMP"));
-    app->editor.row = 9 + app->fd_count + 3; /* Clear All, then Save */
+    app->editor.row = freedreno_typed_row(app) + 3; /* Clear All, then Save */
     key(app, SDLK_RETURN);
     assert(!app->fd_count && !strcmp(app->editor.note, "All Freedreno variables cleared"));
     app->editor.row = gui_editor_rows(&app->editor) - 1;
@@ -3736,6 +3985,53 @@ static void gpu_drivers(App* app, const char* temporary) {
     kept = (char*)snx_read_file(app->app_file, &size);
     assert(kept && !strstr(kept, "freedreno_env"));
     free(kept);
+    /* a variable Mesa reads out of a set it knows: TU_DEBUG's flags are boxes of its own, kept by the form's Save with
+       a name Mesa may add left as it is; TU_AUTOTUNE_ALGO's one name is stepped, the driver's own (none) before its
+       first; another variable is a row under them, which a press takes out as before */
+    assert(freedreno_put(app, "TU_DEBUG", "sysmem,newer") && freedreno_put(app, "FD_RD_DUMP_FRAMES", "0-100"));
+    freedreno_show(app, 9);
+    assert(freedreno_typed_row(app) == 9 + 5 + 1 && !strcmp(app->fd_form.shown[9], "1 on, 1 other") &&
+           !strcmp(app->fd_form.shown[10], "None") && !strcmp(app->fd_keys[14].key, "FD_RD_DUMP_FRAMES"));
+    key(app, SDLK_RETURN);
+    assert(app->form == GUI_FORM_BOXES && app->box_fd && gui_editor_rows(&app->editor) == 38);
+    render(app);
+    key(app, SDLK_RETURN); /* startup, Mesa's first */
+    assert(!strcmp(freedreno_var(app, "TU_DEBUG")->value, "sysmem,newer,startup"));
+    key(app, SDLK_ESCAPE);
+    assert(app->form == GUI_FORM_FREEDRENO && app->editor.row == 9 && !app->box_fd && app->editor.dirty &&
+           !strcmp(app->fd_form.shown[9], "2 on, 1 other"));
+    app->editor.row = 9 + 4; /* TU_AUTOTUNE_ALGO */
+    key(app, SDLK_RIGHT);
+    assert(!strcmp(freedreno_var(app, "TU_AUTOTUNE_ALGO")->value, "bandwidth") && app->editor.row == 9 + 4);
+    key(app, SDLK_LEFT);
+    assert(!freedreno_var(app, "TU_AUTOTUNE_ALGO"));
+    key(app, SDLK_LEFT);
+    assert(!strcmp(freedreno_var(app, "TU_AUTOTUNE_ALGO")->value, "prefer_gmem"));
+    key(app, SDLK_DELETE);
+    assert(!freedreno_var(app, "TU_AUTOTUNE_ALGO") && !strcmp(app->editor.note, "Variable TU_AUTOTUNE_ALGO removed"));
+    /* no room for another flag: said, the variable as it was */
+    assert(freedreno_put(app, "IR3_SHADER_DEBUG",
+                         "vs,tcs,tes,gs,fs,cs,internal,disasm,optmsgs,forces2en,nouboopt,nofp16,nocache,spillall,"
+                         "nopreamble,fullsync,fullnop,noearlypreamble,nodescprefetch,expandrpt,noaliastex,noaliasrt"));
+    freedreno_show(app, 9 + 1);
+    key(app, SDLK_RETURN);
+    app->editor.row = 22; /* asmroundtrip, which fits */
+    key(app, SDLK_RETURN);
+    assert(strstr(freedreno_var(app, "IR3_SHADER_DEBUG")->value, ",asmroundtrip"));
+    app->editor.row = 23; /* thread64, past a variable's 191 bytes */
+    key(app, SDLK_RETURN);
+    assert(!strcmp(app->editor.note, "IR3_SHADER_DEBUG has no room for another item") &&
+           !strstr(freedreno_var(app, "IR3_SHADER_DEBUG")->value, "thread64") && !strcmp(app->box_value[23], "Off") &&
+           !strcmp(app->box_value[22], "On"));
+    key(app, SDLK_ESCAPE);
+    app->editor.row = 9 + 5; /* FD_RD_DUMP_FRAMES: a press takes it out, as before */
+    key(app, SDLK_RETURN);
+    assert(!freedreno_var(app, "FD_RD_DUMP_FRAMES") && !strcmp(app->editor.note, "Variable FD_RD_DUMP_FRAMES removed"));
+    app->editor.row = freedreno_typed_row(app) + 3; /* Clear All, then Save */
+    key(app, SDLK_RETURN);
+    app->editor.row = gui_editor_rows(&app->editor) - 1;
+    key(app, SDLK_RETURN);
+    assert(!app->freedreno[0] && !app->editor.dirty);
     key(app, SDLK_ESCAPE);
     assert(app->form == GUI_FORM_APP && app->editor.row == GUI_APP_FREEDRENO &&
            !strcmp(app->app_form.freedreno, "None"));
@@ -3849,6 +4145,7 @@ static void gba_remake(App* app, const char* got) {
     assert(strstr(argv, "scarletnx-agb") && strstr(argv, "scarletnx-agb") < strchr(argv, '\n'));
     free(argv);
     pump_until(app, &app->covering);
+    assert(!app->cover_thread); /* waited for, not left to end on its own */
 }
 /* the row of the made game named "made", as Games says it */
 static void made_kind(App* app, char* kind, size_t size) {
@@ -3973,6 +4270,7 @@ static void gba_covers(App* app, const char* rom, const char* folder, const char
         app->queue.job[i].console = GUI_GBA;
         cover_made(app, i);
         pump_until(app, &app->covering);
+        assert(!app->cover_thread); /* waited for, not left to end on its own */
         queue_drop(app, i);
         bytes = (char*)snx_read_file(icon, &size);
         assert(bytes && size == g_covers_net.png_size && !memcmp(bytes, g_covers_net.png, size));
@@ -4019,6 +4317,7 @@ static void download_driver(App* app, const char* temporary) {
     key(app, SDLK_RETURN);
     assert(app->form == GUI_FORM_FETCH);
     pump_until(app, &app->fetching);
+    assert(!app->fetch_thread);
     assert(app->fetch_state[0] == GUI_FETCH_LISTED && app->fetch_lists[0].count == 4);
     assert(app->fetch_state[2] == GUI_FETCH_FAILED && strstr(app->fetch_error[2], "HTTP 403") &&
            strstr(app->fetch_error[2], "API rate limit exceeded"));
@@ -4064,6 +4363,7 @@ static void download_driver(App* app, const char* temporary) {
     render(app);
     key(app, SDLK_RETURN);
     pump_until(app, &app->downloading);
+    assert(!app->download_thread);
     assert(!strcmp(
         app->editor.note + strlen(app->editor.note) -
             strlen("Not downloaded: GET https://example.invalid/blob.zip: the answer stopped coming, 0 bytes in"),
@@ -4075,6 +4375,7 @@ static void download_driver(App* app, const char* temporary) {
     key(app, SDLK_DOWN);
     key(app, SDLK_RETURN);
     pump_until(app, &app->downloading);
+    assert(!app->download_thread);
     assert(strstr(app->editor.note, "Not downloaded: GET https://example.invalid/gone.zip: HTTP 404") &&
            !strstr(app->editor.note, "aaaa"));
     /* a package's: downloaded and added, GPU Drivers showing it picked */
@@ -4083,6 +4384,7 @@ static void download_driver(App* app, const char* temporary) {
            !strstr(pick_label(app, 0), "proprietary"));
     key(app, SDLK_RETURN);
     pump_until(app, &app->downloading);
+    assert(!app->download_thread);
     assert(app->form == GUI_FORM_DRIVERS && app->packages_count == 1 && !strcmp(app->packages[0].id, "turnip") &&
            !strcmp(app->gpu_driver, "turnip") && !strcmp(app->drivers_form.value[1], "(*)"));
     assert(strstr(app->editor.note, "Added Turnip test (Vulkan 1.4.335), in gpu_drivers/turnip. GPU driver for every "
@@ -4096,12 +4398,14 @@ static void download_driver(App* app, const char* temporary) {
     g_fake_net.lists = 0;
     key(app, SDLK_RETURN); /* Download Driver */
     pump_until(app, &app->fetching);
+    assert(!app->fetch_thread);
     assert(g_fake_net.lists == 1 && app->fetch_groups == 1 && !strcmp(app->fetch_label[0], "v1.9.0") &&
            !strcmp(app->fetch_form.value[0], "Latest, Recommended"));
     key(app, SDLK_RETURN);
     assert(app->picks.count == 1 && strstr(pick_label(app, 0), "radv-xclipse-27.0.0-devel-cc87fdf.zip, "));
     key(app, SDLK_RETURN);
     pump_until(app, &app->downloading);
+    assert(!app->download_thread);
     assert(app->packages_count == 1 && !strcmp(app->gpu_driver, "radv-xclipse-27.0.0-devel-cc87fdf"));
     app->driver_off = 0;
     change_answer(app, GUI_ASK_DRIVER, true);
@@ -4446,6 +4750,185 @@ static void message_waited(App* app) {
         while (SDL_PollEvent(&e)) event(app, &e);
         SDL_Delay(5);
     }
+}
+/* note_waited: the answer's, up to 5 s */
+static void note_waited(App* app) {
+    SDL_Event e;
+    Uint64 until = SDL_GetTicks() + 5000;
+    while (!app->editor.note[0] && SDL_GetTicks() < until) {
+        while (SDL_PollEvent(&e)) event(app, &e);
+        SDL_Delay(5);
+    }
+}
+/* a path setting's row: Enter opens the system's picker (the test's zenity) over the value it has, a folder's, a file's
+   or a save dialog's, its answer kept as a pick; none picked, or a picker that cannot open, is said and the value
+   stays; Ctrl+V and a drop give a path; too long a one is refused with the value kept; after a picker that could not open,
+   Enter types it */
+static void paths_asked(App* app, const char* temporary) {
+    static const char list[] = "Debug\tshader_corpus\t\ttext\t0\t0\tKeeps\tShader corpus\t\t\t\tfolder\n"
+                               "Debug\tir_branch_profile\t\ttext\t0\t0\tCounts\tIR branch profile\t\t\t\tfile\n"
+                               "Debug\tpipeline_stats\t\ttext\t0\t0\tStats\tPipeline stats\t\t\t\tsave\n"
+                               "Debug\tjava_home\t\ttext\t0\t0\tJDK\tJava home\t=The build's\t\t\topen folder\n"
+                               "Debug\tother\t\ttext\t0\t0\tOther\tOther\n";
+    char *root = snx_path_join(temporary, "paths"), *bin = snx_path_join(root, "bin");
+    char *zenity = snx_path_join(bin, "zenity"), *asked = snx_path_join(root, "asked.txt");
+    char *cancel = snx_path_join(root, "cancel"), *folder = snx_path_join(root, "a folder");
+    char* broken = snx_path_join(root, "broken");
+    char *file = snx_path_join(root, "in.txt"), *out = snx_path_join(root, "out.csv");
+    char *was = getenv("PATH") ? snx_strdup(getenv("PATH")) : NULL, *script, *path, *text, want[2048], longer[700];
+    size_t size;
+    SDL_Event e;
+    int g, shader, branch, stats;
+    script = snx_format("#!/bin/sh\n"
+                        "[ \"$1\" = --version ] && { echo 3.44.0; exit 0; }\n"
+                        "printf '%%s\\n' \"$@\" > '%s'\n"
+                        "[ -e '%s' ] && exit 1\n"
+                        "[ -e '%s' ] && exit 2\n"
+                        "for a in \"$@\"; do\n"
+                        "  [ \"$a\" = --directory ] && { echo '%s'; exit 0; }\n"
+                        "  [ \"$a\" = --save ] && { echo '%s'; exit 0; }\n"
+                        "done\n"
+                        "echo '%s'\n",
+                        asked, cancel, broken, folder, out, file);
+    assert(!snx_mkdirs(bin) && !snx_mkdirs(folder) && !snx_write_file(file, "x", 1) &&
+           !snx_write_file(zenity, script, strlen(script)) && !snx_make_executable(zenity));
+    path = snx_format("%s:%s", bin, was ? was : "/usr/bin:/bin");
+    assert(!SDL_setenv_unsafe("PATH", path, 1) &&
+           SDL_SetHintWithPriority(SDL_HINT_FILE_DIALOG_DRIVER, "zenity", SDL_HINT_OVERRIDE));
+    settings_forget(app);
+    assert(!gui_settings_read(&app->settings, list));
+    gui_settings_mark(&app->settings);
+    open_settings(app);
+    for (g = 0; g < app->groups && strcmp(app->group_name[g], "Debug"); ++g) {}
+    assert(g < app->groups);
+    app->editor.row = g;
+    key(app, SDLK_RETURN);
+    shader = row_of(app, setting_row(app, "shader_corpus"));
+    branch = row_of(app, setting_row(app, "ir_branch_profile"));
+    stats = row_of(app, setting_row(app, "pipeline_stats"));
+    app->editor.row = shader;
+    key(app, SDLK_RETURN);
+    note_waited(app);
+    snprintf(want, sizeof want, "Shader corpus: %s", folder);
+    assert(!strcmp(app->editor.note, want) && !app->editor.typing &&
+           !strcmp(gui_settings_value(&app->settings, "shader_corpus"), folder) && picks_have(app, "shader_corpus="));
+    text = (char*)snx_read_file(asked, &size);
+    assert(text && strstr(text, "--file-selection\n") && strstr(text, "--directory\n"));
+    free(text);
+    app->editor.row = branch;
+    app->editor.note[0] = 0;
+    key(app, SDLK_RETURN);
+    note_waited(app);
+    assert(!strcmp(gui_settings_value(&app->settings, "ir_branch_profile"), file));
+    app->editor.row = stats;
+    app->editor.note[0] = 0;
+    key(app, SDLK_RETURN);
+    note_waited(app);
+    assert(!strcmp(gui_settings_value(&app->settings, "pipeline_stats"), out));
+    text = (char*)snx_read_file(asked, &size); /* a save dialog, asked for the value it has or the key in Documents */
+    assert(text && strstr(text, "--save\n"));
+    free(text);
+    /* cancelled: said, the value as it was */
+    assert(!snx_write_file(cancel, "", 0));
+    app->editor.row = shader;
+    app->editor.note[0] = 0;
+    key(app, SDLK_RETURN);
+    note_waited(app);
+    assert(!strcmp(app->editor.note, "Shader corpus: No folder was picked.") &&
+           !strcmp(gui_settings_value(&app->settings, "shader_corpus"), folder));
+    app->editor.row = branch;
+    app->editor.note[0] = 0;
+    key(app, SDLK_RETURN);
+    note_waited(app);
+    assert(!strcmp(app->editor.note, "IR branch profile: No file was picked.") && !snx_remove_tree(cancel));
+    /* Del takes it off, Ctrl+V gives the one pasted, a drop another; a text that is no path row's is typed as before */
+    app->editor.row = shader;
+    key(app, SDLK_DELETE);
+    assert(!gui_settings_value(&app->settings, "shader_corpus"));
+    assert(SDL_SetClipboardText("  '/tmp/a pasted folder'\n"));
+    memset(&e, 0, sizeof e);
+    e.type = SDL_EVENT_KEY_DOWN;
+    e.key.key = SDLK_V;
+    e.key.mod = SDL_KMOD_LCTRL;
+    event(app, &e);
+    assert(!strcmp(gui_settings_value(&app->settings, "shader_corpus"), "/tmp/a pasted folder") &&
+           !strcmp(app->editor.note, "Shader corpus: /tmp/a pasted folder"));
+    memset(&e, 0, sizeof e);
+    e.type = SDL_EVENT_DROP_FILE;
+    e.drop.data = "/tmp/dropped";
+    event(app, &e);
+    assert(!strcmp(gui_settings_value(&app->settings, "shader_corpus"), "/tmp/dropped"));
+    app->editor.row = row_of(app, setting_row(app, "other")); /* a text of its own: typed, no picker */
+    key(app, SDLK_RETURN);
+    assert(app->editor.typing);
+    key(app, SDLK_ESCAPE);
+    /* too long: refused, both the value given and the one kept named */
+    app->editor.row = shader;
+    memset(longer, 'x', sizeof longer - 1);
+    longer[0] = '/';
+    longer[sizeof longer - 1] = 0;
+    path_take(app, setting_row(app, "shader_corpus"), longer);
+    assert(strstr(app->editor.note, "Shader corpus: takes a path of up to 511 bytes, not /xxxx") &&
+           strstr(app->editor.note, ": it keeps /tmp/dropped") &&
+           !strcmp(gui_settings_value(&app->settings, "shader_corpus"), "/tmp/dropped"));
+    /* the settings it was opened for are closed: not taken, said with both */
+    free(app->path_own);
+    app->path_own = snx_strdup("/some/game.ini");
+    snprintf(app->path_key, sizeof app->path_key, "shader_corpus");
+    path_answer(app, "/tmp/late", NULL, false);
+    assert(!strcmp(app->message, "shader_corpus not changed to /tmp/late: its settings were closed while the picker "
+                                 "was open") &&
+           !strcmp(gui_settings_value(&app->settings, "shader_corpus"), "/tmp/dropped"));
+    app->message[0] = 0;
+    /* a picker that cannot open (zenity's status is neither a choice's, 0, nor a cancel's, 1): said, with why; Enter
+       types the path from then on, as it says */
+    assert(!snx_write_file(broken, "", 0));
+    app->editor.note[0] = 0;
+    key(app, SDLK_RETURN);
+    note_waited(app);
+    assert(strstr(app->editor.note, "Shader corpus: the picker could not open: ") &&
+           strstr(app->editor.note, "exit code 2. Enter on its row now types it") && app->path_typed);
+    /* and in the box every failure of the system's has, with the row's name: Enter is its OK, then types */
+    assert(app->confirm.shown && app->confirm.ask == GUI_ASK_ERROR && !strcmp(app->error_line, app->editor.note));
+    key(app, SDLK_RETURN);
+    assert(!app->confirm.shown && !app->editor.typing);
+    key(app, SDLK_RETURN);
+    assert(app->editor.typing && !strcmp(app->editor.text, "/tmp/dropped"));
+    key(app, SDLK_ESCAPE);
+    /* a list of paths (Java home's): Enter steps its words, so it names the paste that still gives it one */
+    app->path_typed = false;
+    app->editor.row = row_of(app, setting_row(app, "java_home"));
+    app->editor.note[0] = 0;
+    key(app, SDLK_RETURN);
+    note_waited(app);
+    assert(strstr(app->editor.note, "Java home: the picker could not open: ") &&
+           strstr(app->editor.note, "exit code 2. Ctrl+V pastes its path"));
+    if (app->confirm.shown) key(app, SDLK_RETURN);
+    assert(SDL_SetClipboardText("/opt/a jdk"));
+    memset(&e, 0, sizeof e);
+    e.type = SDL_EVENT_KEY_DOWN;
+    e.key.key = SDLK_V;
+    e.key.mod = SDL_KMOD_LCTRL;
+    event(app, &e);
+    assert(!strcmp(gui_settings_value(&app->settings, "java_home"), "/opt/a jdk"));
+    app->path_typed = false;
+    settings_forget(app);
+    leave_editor(app);
+    SDL_ResetHint(SDL_HINT_FILE_DIALOG_DRIVER);
+    assert(was ? !SDL_setenv_unsafe("PATH", was, 1) : !SDL_unsetenv_unsafe("PATH"));
+    assert(!snx_remove_tree(root));
+    free(path);
+    free(script);
+    free(was);
+    free(out);
+    free(file);
+    free(folder);
+    free(broken);
+    free(cancel);
+    free(asked);
+    free(zenity);
+    free(bin);
+    free(root);
 }
 /* the system's pickers the box's Add rows open, as SDL runs zenity (one of the test's own on PATH, which says what it
    was asked and answers a folder or a file): Add Mod the folder picker, Add Cheats the file picker for a .txt, each
@@ -5979,12 +6462,8 @@ static void sfo_file(const char* folder, const char* id) {
 /* the program of the made game named name in app's games, its .ini (in its folder) holding ini: as a 3DS or a Vita
    driver leaves one. Its folder into *folder, owned */
 static char* console_game(const App* app, const char* name, const char* ini, char** folder) {
-    char *made = made_game(app, "unused", name), *file = snx_format("%s/%s.ini", made, name);
-#ifdef _WIN32
-    char* program = snx_format("%s/%s.exe", made, name);
-#else
-    char* program = snx_path_join(made, name);
-#endif
+    char *made = made_game(app, "unused", name), *file = snx_format("%s/%s.ini", made, name),
+         *program = program_in(made, name);
     assert(!snx_write_file(file, ini, strlen(ini)));
     free(file);
     *folder = made;
@@ -6089,6 +6568,253 @@ static void missing_consoles(App* app, const char* dir) {
     free(notes);
     free(moved);
     free(cia);
+}
+/* a runtime's list with the 3DS's Console among the settings of a Switch game and of other consoles */
+static char* ctr_settings(void) {
+    return snx_strdup("Display\tfullscreen\t0\tint\t0\t1\t1 = start in fullscreen\t\t0=0|1=1\n"
+                      "3DS\tctr_model\tauto\ttext\t\t\tThe console the game runs on\tConsole\t"
+                      "auto=Auto|old=Old 3DS|new=New 3DS\t\n"
+                      "3DS/Debug\tctr_hooks\t1\tint\t0\t1\tStubs\tIPC hooks\t0=Off|1=On\n"
+                      "Vita/Debug\tvita_hle_trace\t0\tint\t0\t2\tImports\tImport trace\t0=Off|1=Missing|2=All\n");
+}
+/* the file at path holding text */
+static void fixture_text(const char* path, const char* text) { assert(!snx_write_file(path, text, strlen(text))); }
+/* the box of the game in focus, its row of Settings, or -1 */
+static int game_settings_row(App* app) {
+    int i;
+    game_box_open(app);
+    assert(app->picks_shown && app->picks_of == GUI_PICKS_GAME && !strcmp(app->game_picks[0], "Play"));
+    for (i = 0; app->game_picks[i]; ++i)
+        if (!strcmp(app->game_picks[i], "Settings")) return i;
+    return -1;
+}
+/* A made 3DS game's own Settings: its Console alone, Global (with the launcher's) until Old or New 3DS is picked, then
+   kept in its picks beside its .ini at once, and Reset to Global; nothing of the Switch's nor another console's, as a
+   Switch game's has none of the 3DS's. M (L3, the foot's Settings on a phone) opens it on a listed and a recent game,
+   and so does its box's Settings, after Recompile; Back goes to Games, its row and the side panel saying its own. A
+   3DS dump and a Vita game have none, said; the launcher's Console goes to a run of the game under its own. Clean Old
+   Settings takes out of a 3DS game's picks what its rows do not take, and keeps its console */
+static void ctr_own_console(App* app, const char* dir) {
+    static const char* const name = "0004000000040000";
+    char *cia = snx_path_join(dir, "own console.cia"), *text, value[256], label[512], said[512];
+    char* ini = snx_format("[Game]\nsource=%s\nmodel=old\nsystem=3ds\n", cia);
+    char *folder, *program, *data, *game_ini, *picks, *absolute, *argv_file = snx_path_join(dir, "console argv");
+    GuiRecent recent_was = app->recent;
+    GuiGames was;
+    size_t size, index;
+    int i, way, row, item = app->menu.selected;
+    ncch_file(cia, 0x0004000000040000ull, "CTR-P-ABCD");
+    program = console_game(app, name, ini, &folder);
+    data = snx_format("%s/%s_data", folder, name); /* a 3DS game's folder has none */
+    assert(!snx_remove_tree(data));
+    game_ini = game_ini_of(program);
+    picks = snx_game_picks(game_ini);
+    absolute = snx_absolute(program);
+    snx_menu_settings = ctr_settings;
+    settings_forget(app);
+    assert(settings_of(app));
+    go_tab(app, GUI_TAB_GAMES);
+    focus_game(app, name);
+    index = listed_at(app, name);
+    /* the foot's word for it, M's, L3's and a finger's */
+    assert(strstr(screen_said(app, true, said, sizeof said), "M: settings.") && !strstr(said, "M: mods."));
+    app->pad_driven = true;
+    assert(strstr(screen_said(app, true, said, sizeof said), "L3: settings."));
+    app->pad_driven = false;
+    i = hint_pick("Settings", 0, false);
+    assert(i >= 0 && hint_keys[i].key == SDLK_M && !hint_keys[i].mod);
+    for (way = 0; way < 4; ++way) { /* M and its box's Settings, listed, then recent */
+        if (way == 2) {
+            app->recent = (GuiRecent){0};
+            assert(!gui_recent_add(&app->recent, "/nonexistent/another game", GUI_SWITCH, 1) &&
+                   !gui_recent_add(&app->recent, absolute, GUI_3DS, 1));
+            recent_changed(app);
+            go_tab(app, GUI_TAB_GAMES);
+            list_games(app);
+            layout(app);
+            assert(recent_shown(app) == 2);
+            app->browser.page = app->browser.selected = 0;
+            assert(strstr(screen_said(app, true, said, sizeof said), "M: settings."));
+        }
+        render(app);
+        if (way & 1) {
+            row = game_settings_row(app);
+            if (way == 1) foot_shot(app, "3ds game box");
+            assert(row == 2 && !strcmp(app->game_picks[1], "Recompile") &&
+                   !strcmp(app->game_picks[3], "Export Saves") && !strcmp(app->game_picks[4], "Import Saves") &&
+                   (!app->game_picks[5] || !strcmp(app->game_picks[5], SAY_GAME_AOT)));
+            for (i = 0; i < row; ++i) key(app, SDLK_DOWN);
+            key(app, SDLK_RETURN);
+        } else
+            key(app, SDLK_M);
+        assert(!app->addons_shown && !app->picks_shown && app->editing && app->form == GUI_FORM_SETTINGS &&
+               app->own_picks && same_path(app->own_picks, picks) && screen_settings(app) == &app->game_settings);
+        /* its own group and Reset to Global, the console's alone */
+        assert(app->groups == 2 && !strcmp(app->group_keys[0].key, "3DS") &&
+               !strcmp(app->group_keys[1].key, "Reset to Global") && app->group_first[1] < 0 &&
+               app->game_settings.count == 1 && !snx_path_exists(picks));
+        key(app, SDLK_RETURN); /* 3DS */
+        assert(app->form == GUI_FORM_GROUP && app->editor.object == (char*)app->game_settings.values);
+        app->editor.row = 0;
+        setting_shown(app, setting_of(app, 0), value, sizeof value);
+        assert(!strcmp(value, "Global (Auto [default])"));
+        if (!way) foot_shot(app, "3ds own console global");
+        key(app, SDLK_RIGHT);
+        setting_shown(app, setting_of(app, 0), value, sizeof value);
+        assert(!strcmp(value, "Old 3DS") && !strcmp(gui_settings_value(&app->game_settings, "ctr_model"), "old"));
+        assert((text = (char*)snx_read_file(picks, &size)) && strstr(text, "[3DS]\nctr_model=old\n"));
+        free(text);
+        key(app, SDLK_RIGHT);
+        setting_shown(app, setting_of(app, 0), value, sizeof value);
+        assert(!strcmp(value, "New 3DS"));
+        if (!way) foot_shot(app, "3ds own console new");
+        assert((text = (char*)snx_read_file(picks, &size)) && strstr(text, "ctr_model=new\n"));
+        free(text);
+        assert(strstr(shown_keys(app, label, sizeof label), "Del: Global."));
+        assert(game_own(program, value, sizeof value) == 1 && !strcmp(value, "ctr_model=new"));
+        key(app, SDLK_DELETE);
+        assert(!gui_settings_value(&app->game_settings, "ctr_model") && !snx_path_exists(picks));
+        assert(gui_settings_set(&app->game_settings, "ctr_model", "old"));
+        write_settings(app);
+        key(app, SDLK_ESCAPE);
+        key(app, SDLK_ESCAPE); /* Games again, the sliders on its row, its own in the side panel */
+        assert(!app->editing && !app->own_picks && !app->addons_shown && app->menu.view == GUI_LOAD_GAMES &&
+               snx_path_exists(picks));
+        if (way < 2) {
+            assert(app->games_own[index]);
+            game_label(app, &app->games, index, label, sizeof label);
+            assert(strstr(label, GUI_OWN_MARK));
+            focus_game(app, name);
+        } else
+            assert(app->recent_own[0]);
+        side_focus_update(app);
+        assert(!strcmp(app->own_focus, "ctr_model=old"));
+        if (!way) foot_shot(app, "3ds game own console");
+        assert(!remove(picks));
+        own_marks_read(app);
+    }
+    app->recent = recent_was;
+    recent_changed(app);
+    /* a Switch game's own has every group but the 3DS's */
+    {
+        char *switch_folder = made_game(app, "unused", "a switch game"),
+             *played = program_in(switch_folder, "a switch game");
+        open_game_settings(app, played, "a switch game", false);
+        assert(app->editing && app->own_picks && app->groups == 3 && !strcmp(app->group_keys[0].key, "Display") &&
+               !strcmp(app->group_keys[1].key, "Vita") && !strcmp(app->group_keys[2].key, "Reset to Global"));
+        key(app, SDLK_ESCAPE);
+        assert(!app->editing);
+        made_gone(app, switch_folder);
+        free(played);
+    }
+    /* a Vita game and a file that is no game have none: said with what does */
+    {
+        char *vita_folder, *played;
+        played = console_game(app, "PCSE00099", "[Game]\nsystem=vita\n", &vita_folder);
+        for (i = 0; i < 2; ++i) {
+            open_game_settings(app, i ? cia : played, i ? "a file" : "a vita game", false);
+            snprintf(value, sizeof value,
+                     "%s is no recompiled Switch or 3DS game: only they have settings of their own",
+                     i ? "a file" : "a vita game");
+            assert(!app->editing && !app->own_picks && !strcmp(app->message, value) && app->confirm.shown &&
+                   app->confirm.ask == GUI_ASK_ERROR);
+            key(app, SDLK_ESCAPE);
+            assert(!app->confirm.shown);
+        }
+        focus_game(app, "PCSE00099");
+        row = game_settings_row(app);
+        assert(row < 0);
+        key(app, SDLK_ESCAPE);
+        assert(!app->picks_shown);
+        app->message[0] = 0;
+        assert(!strstr(screen_said(app, true, said, sizeof said), "M: settings."));
+        made_gone(app, vita_folder);
+        free(played);
+        list_games(app);
+    }
+    /* a 3DS dump in focus on Games: M says whose box it opens */
+    {
+        GuiBrowser browser_was = app->browser;
+        char *names[1] = {"own console.cia"}, *paths[1] = {cia};
+        size_t addons[1] = {0};
+        GuiGames one = {0};
+        int drivers[1] = {GUI_3DS}, *drivers_was = app->games_drivers;
+        was = app->games;
+        one.names = one.shown = names;
+        one.paths = paths;
+        one.addons = addons;
+        one.count = 1;
+        app->games = one;
+        app->games_drivers = drivers;
+        app->browser.count = 1;
+        app->browser.page = 0;
+        app->browser.selected = app->browser.head;
+        assert(!strstr(screen_said(app, true, said, sizeof said), "M: settings."));
+        app->message[0] = 0;
+        mods_focus(app);
+        assert(!strcmp(app->message, "M opens the mods and cheats of a recompiled Switch game in focus.") &&
+               !app->editing);
+        app->games = was;
+        app->games_drivers = drivers_was;
+        app->browser = browser_was;
+    }
+    /* the launcher's Console and the game's run: passed, and marked as the launcher's, under the game's own; with none
+       picked no mark */
+    {
+        char* argv_got;
+        fixture_text(picks, "[3DS]\nctr_model=old\n");
+        assert(gui_settings_set(&app->settings, "fullscreen", "1")); /* as finish() reads a run's */
+        driver_will(argv_file, 0, "own console");
+        for (way = 0; way < 2; ++way) {
+            assert(gui_settings_set(&app->settings, "ctr_model", way ? "new" : "auto"));
+            app->menu.selected = GUI_3DS;
+            launch(app, snx_strdup(program), true);
+            argv_got = ran(app, 0);
+            assert(has_arg(argv_got, "--ctr-model=new", NULL) == way &&
+                   has_arg(argv_got, "--launcher-picks=1", NULL) == way);
+            free(argv_got);
+            leave_run(app);
+        }
+        driver_will(NULL, 0, NULL);
+        app->recent = recent_was;
+        recent_changed(app);
+        assert(!remove(picks));
+    }
+    /* Clean Old Settings, the games' own with them: a 3DS game's picks keep its console and lose the rest; a Switch
+       game's, a console's key in them too, are as they were */
+    {
+        GuiCleaned done = {0};
+        char* other = snx_path_join(app->games_dir, "a switch game.picks");
+        int keys_taken = 0;
+        fixture_text(picks, "[3DS]\nctr_model=old\n[Display]\nfullscreen=1\n");
+        fixture_text(other, "[Display]\nfullscreen=1\n[3DS]\nctr_model=old\n");
+        assert(clean_picks(app, &done, &keys_taken) == 1 && keys_taken == 1 && done.count == 1);
+        assert((text = (char*)snx_read_file(picks, &size)) && strstr(text, "ctr_model=old\n") &&
+               !strstr(text, "fullscreen"));
+        free(text);
+        assert((text = (char*)snx_read_file(other, &size)) &&
+               !strcmp(text, "[Display]\nfullscreen=1\n[3DS]\nctr_model=old\n"));
+        free(text);
+        gui_cleaned_free(&done);
+        assert(!remove(other) && !remove(picks));
+        free(other);
+    }
+    snx_menu_settings = NULL;
+    settings_forget(app);
+    assert(settings_of(app));
+    app->menu.selected = item;
+    made_gone(app, folder);
+    list_games(app);
+    assert(!remove(cia));
+    free(argv_file);
+    free(absolute);
+    free(picks);
+    free(game_ini);
+    free(data);
+    free(program);
+    free(ini);
+    free(cia);
+    puts("a 3DS game's own Settings: its Console, from M, its box, the recent row; a run's and a clean's");
 }
 /* the menu's message is want, the one it is said when not */
 static bool message_is(const App* app, const char* want) {
@@ -12603,6 +13329,31 @@ int main(int argc, char** argv) {
                            !strcmp(app.addons_title, "Folder Quest 2.0") && !strcmp(app.addons_game, absolute));
                     key(&app, SDLK_ESCAPE);
                     assert(!app.addons_shown && !app.menu.running);
+                    { /* S and its box's Settings take the recent game in focus, the newest and the one under it */
+                        char *other = made_game(&app, "unused", "another made game"),
+                             *last = program_in(other, "another made game"), *ini = game_ini_of(absolute),
+                             *picks = snx_game_picks(ini);
+                        assert(!gui_recent_add(&app.recent, last, GUI_SWITCH, 1));
+                        recent_changed(&app);
+                        for (int at = 0; at < 2; ++at) {
+                            char* said =
+                                snx_format("%s has no save states: ", at ? "Folder Quest 2.0" : "another made game");
+                            app.browser.selected = (size_t)at;
+                            app.message[0] = 0;
+                            key(&app, SDLK_S);
+                            assert(!app.states_shown && !strncmp(app.message, said, strlen(said)));
+                            settings_focus(&app);
+                            assert(app.editing && app.form == GUI_FORM_SETTINGS && app.own_picks &&
+                                   (strcmp(app.own_picks, picks) == 0) == (at == 1));
+                            key(&app, SDLK_ESCAPE);
+                            assert(!app.editing && !app.own_picks && app.menu.view == GUI_LOAD_GAMES);
+                            free(said);
+                        }
+                        made_gone(&app, other);
+                        free(last);
+                        free(picks);
+                        free(ini);
+                    }
                     app.recent = was;
                     recent_changed(&app);
                     app.browser.selected = selected;
@@ -14153,7 +14904,7 @@ int main(int argc, char** argv) {
         render(&app);
         page = rgb(app.theme.page);
         ink = rgb(app.theme.ink);
-        shows_big(&app, "SCARLETNX  /  MENU", ink, 2);        /* its head plain, as NieR's titles */
+        shows_big(&app, "SCARLETNX  /  MENU", ink, 2);        /* its head plain, as that theme's titles */
         shows(&app, "\xfe " ICON_SETTINGS " Settings", page); /* the focused box on a band */
         shows(&app, "\xfe " ICON_LOG_OUT " Exit", ink);
         shows_half(&app, "Working folder: ", ink);
@@ -17515,6 +18266,10 @@ int main(int argc, char** argv) {
         leave_editor(&app);
     }
     players_view(&app);
+    shortcuts_capture(&app);
+    microphone_words(&app);
+    room_password_row(&app, temporary);
+    boxes_form(&app);
     volume_view(&app);
     bluetooth_settings(&app, temporary); /* its rows of the runtime's settings */
 #if !defined(_WIN32) && !defined(__APPLE__) && !defined(SDL_PLATFORM_ANDROID) /* where the config folder is XDG's */
@@ -17661,11 +18416,13 @@ int main(int argc, char** argv) {
     relist_keeps_scroll(&app, temporary);
     missing_file(&app, temporary);
     missing_consoles(&app, temporary);
+    ctr_own_console(&app, temporary);
     locate_titles(&app, temporary);
     recompile_queue(&app);
     play_asked_said(&app, temporary);
 #ifdef SNX_XDG /* the last of the test: SDL keeps the picker it found from then on */
     pickers_asked(&app, temporary, self);
+    paths_asked(&app, temporary);
 #endif
     e.type = SDL_EVENT_QUIT;
     event(&app, &e);

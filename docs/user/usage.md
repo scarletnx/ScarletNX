@@ -92,7 +92,7 @@ video, audio or gamepad subsystem, so it needs no display server and only `--scr
 
 ## Extract → AOT → run
 
-Pass a single XCI, NSP, DXCI or DNSP to recompile and play:
+Pass a single XCI, NSP, XCZ, NSZ, DXCI or DNSP to recompile and play:
 
 ```sh
 ./build/scarletnx "Game.xci"
@@ -196,6 +196,16 @@ be used as a base game.
 .\build\scarletnx.exe "C:\Games\Game.dxci"
 .\build\scarletnx.exe --extract "C:\Games\Game.dnsp" --update "C:\Games\Update.dnsp"
 ```
+
+XCZ and NSZ are an XCI and an NSP that [nsz](https://github.com/nicoboss/nsz) compressed: each of their NCZ files is
+read as the NCA it holds, decompressed as it is read and nothing written to disk, everywhere an NCA is (extraction,
+recompile, reading in place, an update or DLC dump). An NCZ in blocks (`nsz -B`, nsz's default for an XCZ) reads any
+part at once. One compressed as one stream (`nsz -S`, its default for an NSZ) is decoded from its start as far as a
+read reaches, and again from its start for a read behind where it got to that the 32 MB of it last read do not hold:
+an extraction says after it how many times that happened, and a game that reads one in place says each in its log
+(`fs: a read at ... decoded again from its start`), where a pause it makes shows. Extract dump, or an NSZ compressed in
+blocks, plays without that. An NCZ whose header cannot be read stops the dump's opening, naming the file in it, where
+and why.
 
 ### Experimental CPU extensions
 
@@ -429,7 +439,8 @@ Remaining examples: POSIX.
   (`%USERPROFILE%\.switch` on Windows).
   Common NSP tickets supplement title keys. Fully decrypted content needs neither key file.
 - **Extraction:** defaults to the data folder's `work/<dump stem>`; `--name`/`--out DIR` override. Refuses existing
-  `exefs`. hactool runs inside the driver and reads each NCA where it lies in the XCI or NSP, so the ExeFS and RomFS
+  `exefs`. hactool runs inside the driver and reads each NCA where it lies in the XCI or NSP (an XCZ's or NSZ's NCZ
+  decompressed as it is read, [`ncz.c`](../../src/nx/runtime/driver/hactool/ncz.c)), so the ExeFS and RomFS
   are written straight into the output and nothing is unpacked beside it
   ([key filtering and cleanup](../../src/nx/runtime/driver/extract.c)).
   Sparse and compressed NCAs, updates with large relocation tables and gamecard dumps that start with the card's key
@@ -893,9 +904,10 @@ pad.
 
 F1 a page of the game's menu with these keys and the buttons above, a row each (Up/Down go over it, any other key goes
 back to the game); F2 the game's menu; F3 screenshot; F4 FPS limit off and on; F5 thread dump; F6 showcase on and off;
-F7 save state; F8 load state; F9 next save state slot; F10 60-second Tracy capture (SNX_TRACY builds); F11/Alt+Enter
-fullscreen; F12 stats on and off; Ctrl+Shift+F12 a RenderDoc capture of the next frame, with RenderDoc in the game
-(`renderdoc`, or a game RenderDoc's program started), as the game's menu's **Capture frame** is, which shows only then;
+F7 save state; F8 load state; F9 next save state slot; F10 Tracy capture for `tracy_capture_seconds` (60 s by
+default, SNX_TRACY builds); F11/Alt+Enter fullscreen; F12 stats on and off; Ctrl+Shift+F12 a RenderDoc capture of the
+next frame, with RenderDoc in the game (`renderdoc`, or a game RenderDoc's program started), as the game's menu's
+**Capture frame** is, which shows only then;
 Pause pauses the whole game and resumes it (the window's title says "(paused)"); Escape twice within 3 seconds quit, the
 first press a warning over the game; Ctrl+D the TV mode On, Off or Auto for the run, as the game's menu's **TV mode**
 is. F4, F6, F12, Ctrl+D and Pause say over the game what the press set (`FPS limit: off`, `Stats: on`), the log

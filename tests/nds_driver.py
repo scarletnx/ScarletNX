@@ -63,6 +63,18 @@ def main():
             failures.append(f'the old spelling refused or not said once:\n{out}')
         run(['-r', '--aot-threads-most=abc', *missing], 2, 'scarletnx-nds: aot_threads_most=abc is not a whole number')
         run(['-r', '--aot-threads=2000', *missing], 2, 'scarletnx-nds: aot_threads=2000 is not a whole number from 0')
+        # the DS group's settings, each what the option of its own is (--aot, --trace, --wav, --dump_ram); the launcher
+        # passes them to a run; the values they do not take stop the run before anything is made
+        for given in (
+            ['--nds-aot=0', '--nds-aot=1'],
+            ['--nds-trace=2', f'--nds-wav={work / "a.wav"}', f'--nds-dump-ram={work / "a.bin"}'],
+            ['--nds_aot=0'],
+        ):
+            out = run(['-r', *given, *missing], 1, 'scarletnx-nds: ')
+            if 'unexpected argument' in out:
+                failures.append(f'{given} refused:\n{out}')
+        run(['-r', '--nds-trace=9', *missing], 2, 'scarletnx-nds: nds_trace=9 is not a whole number from 0 to 2')
+        run(['-r', '--nds-aot=x', *missing], 2, 'scarletnx-nds: nds_aot=x is not a whole number from 0 to 1')
         # the WFC service: a word the list has not, refused with it and the list
         run(['-r', '--nds-wfc=official', *missing], 2, '"official" is none of off, auto, custom, kaeru, wiilink')
         run(['-r', '--nds-wfc=custom', *missing], 2, 'nds_wfc_dns=: the custom DNS server "" is not an IPv4 address')

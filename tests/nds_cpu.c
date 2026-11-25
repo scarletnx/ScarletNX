@@ -1,11 +1,14 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The NDS machine end to end, on a program the test makes (support/nds_image.c): its blocks compiled at run time, then
-   compiled ahead of time into a module and run from it, with the same results. No game's data. */
+   compiled ahead of time into a module and run from it, by the host's native back end and by LLVM alone, with the same
+   results. No game's data. */
 #include "nds/aot/nds_module.h"
 #include "nds/board/nds.h"
 #include "nds/cpu/nds_cpu.h"
 #include "nds/cpu/recomp.h"
+#include "common/cpu/recompiler/mach/native.h"
+#include "common/platform/dl.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
 #include "support/nds_image.h"
@@ -63,6 +66,34 @@ static uint64_t run(const NdsRom* rom, const char* module, unsigned frames) {
     free(cpu);
     free(board);
     return from_module;
+}
+
+/* the index of the module at path: every slot's block or none, and how many units it covers, the same as in the one at
+   other, of the same blocks: how many there are, and how many of more than a unit */
+static unsigned same_index(const char* path, const char* other, unsigned* longer) {
+    void* libraries[2] = {plat_dl_open(path), plat_dl_open(other)};
+    CHECK(libraries[0] && libraries[1]);
+    const NdsModule *a = plat_dl_sym(libraries[0], NDS_MODULE_SYMBOL),
+                    *b = plat_dl_sym(libraries[1], NDS_MODULE_SYMBOL);
+    unsigned blocks = 0;
+    *longer = 0;
+    CHECK(a && b && a != b && a->identity == b->identity && a->region_count == b->region_count);
+    for (uint32_t r = 0; r < a->region_count; ++r) {
+        const NdsModuleRegion *m = &a->regions[r], *l = &b->regions[r];
+        CHECK(m->address == l->address && m->size == l->size && m->hash == l->hash);
+        for (uint32_t i = 0; i < m->size / 2; ++i) {
+            CHECK(!m->thumb[i] == !l->thumb[i] && !m->thumb[i] == !m->thumb_units[i]);
+            CHECK(m->thumb_units[i] == l->thumb_units[i] && m->thumb_units[i] <= NDS_BLOCK_UNITS);
+            blocks += m->thumb[i] != NULL, *longer += m->thumb_units[i] > 1;
+            if (i >= m->size / 4) continue;
+            CHECK(!m->arm[i] == !l->arm[i] && !m->arm[i] == !m->arm_units[i]);
+            CHECK(m->arm_units[i] == l->arm_units[i] && m->arm_units[i] <= NDS_BLOCK_UNITS);
+            blocks += m->arm[i] != NULL, *longer += m->arm_units[i] > 1;
+        }
+    }
+    plat_dl_close(libraries[0]);
+    plat_dl_close(libraries[1]);
+    return blocks;
 }
 
 /* LDM with its base in the list and writeback, as the ARM946E-S (ARMv5) runs it: the base written back when it is the
@@ -130,12 +161,28 @@ int main(void) {
     CHECK(!nds_module_current(module, &rom));
     CHECK(run(&rom, NULL, 12) == 0);
     /* ahead of time: every block the run needs is in the module */
-    if (nds_aot_compile(&rom, module, NULL, 1, 0, error, sizeof error)) {
+    SnxArmAotCount made = {0}, llvm = {0};
+    if (nds_aot_compile(&rom, module, NULL, 1, 0, NULL, &made, error, sizeof error)) {
         fprintf(stderr, "%s\n", error);
         return 1;
     }
     CHECK(nds_module_current(module, &rom));
-    CHECK(run(&rom, module, 12) >= 8);
+    const uint64_t from_module = run(&rom, module, 12);
+    CHECK(from_module >= 8);
+    /* every block the native back end's where the host has one, LLVM's where it has none */
+    CHECK(snx_native_arm_available() ? made.native && !made.llvm : !made.native && made.llvm);
+    /* the same module by LLVM alone: the same blocks, the same results */
+    char* kept = snx_path_join(dir, "llvm" NDS_MODULE_SUFFIX);
+    CHECK(kept);
+    if (nds_aot_compile(&rom, kept, NULL, 1, 0, dir, &llvm, error, sizeof error)) {
+        fprintf(stderr, "%s\n", error);
+        return 1;
+    }
+    CHECK(nds_module_current(kept, &rom) && !llvm.native && llvm.llvm == made.native + made.llvm);
+    CHECK(run(&rom, kept, 12) == from_module);
+    unsigned longer;
+    CHECK(same_index(module, kept, &longer) == llvm.llvm && longer);
+    free(kept);
     nds_rom_close(&rom);
     test_ldm_base_in_list(dir);
     (void)snx_remove_tree(dir);

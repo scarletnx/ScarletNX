@@ -45,6 +45,7 @@
 #include "nx/gpu/vk/query_count_spv.h"
 #include "nx/gpu/vk/query_predicate_spv.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/tracy.h"
 
 #define QN    4096 /* segments the ring holds: queries in the pool, and result slots */
 #define QWAIT 1024 /* a counter's reports queued and not performed yet, at most (the release queue's size) */
@@ -198,6 +199,9 @@ void vk_query_pass_end(VkCommandBuffer cb) {
 }
 void vk_query_flush(VkCommandBuffer cb) {
     if (g_q.copied == g_q.next) return;
+    /* the segment results a report needs are read back here; the value is how many segments this submit copies */
+    SNX_ZONE_TV(z_qcopy, "vk pres query copy", g_q.next - g_q.copied, "segments %llu..%llu read back for reports",
+                (unsigned long long)g_q.copied, (unsigned long long)g_q.next);
     while (g_q.copied < g_q.next) { /* in runs that don't wrap around the ring */
         u32 at = (u32)(g_q.copied % QN), n = QN - at;
         if (n > g_q.next - g_q.copied) n = (u32)(g_q.next - g_q.copied);
@@ -226,6 +230,8 @@ void vk_query_flush(VkCommandBuffer cb) {
    next draw no query reset to begin, and its counter's reports made up */
 static void copy_if_full(void) {
     if (g_q.next - g_q.copied < QN / 2) return;
+    /* Rare: half the segment ring is full, so the copies go out now and the rendering pass ends here. */
+    SNX_ZONE_T(z_qfull, "vk pres query ring half full", "copy %u of %u segments now", QN / 2, QN);
     vk_render_end();
     vk_query_flush(vk_cmd());
 }
@@ -483,6 +489,8 @@ VkBuffer vk_query_pred_buffer(void) { return g_pbuf; }
 int vk_query_pred_flush(void) {
     u32 n = g_pngroups, len = 0, i, at, ci, g;
     if (!n) return 1;
+    /* the counts aren't known yet: the GPU decides them here so a render enable need not wait for a query read */
+    SNX_ZONE_TV(z_qpred, "vk pres query predicate batch", n, "counts not known yet, decided on the GPU");
     for (ci = 0; ci < QCH; ci++) len += g_pb[ci].len;
     VkCommandBuffer cb = vk_cmd();
     u64 size = (u64)(n + len) * sizeof(u32), off;
@@ -705,6 +713,7 @@ int vk_query_counts(VkBuffer buf, u64 off, const SamplesCount* counts, u32 n) {
     VkBuffer jobs;
     if (!n) return 1;
     if (g_vk_scale != 1.0f || !count_init()) return 0;
+    SNX_ZONE_TV(z_qcounts, "vk pres query counts on gpu", n, "counts written where the draw reads them");
     for (k = 0; k < n; k++) {
         const SamplesCount* r = &counts[k];
         if (!count_range(r, &from, &sum)) return 0;

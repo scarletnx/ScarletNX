@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* scarletnx --extract (src/nx/runtime/driver/extract.c) with hactool in its process, on synthetic decrypted dumps:
-   NSPs and gamecards of DNCAs (tests/hac_synth.h), read in place. Each scenario runs in a child, whose output is
+   NSPs and gamecards of DNCAs (tests/hac_synth.h), their program an NCZ in an NSZ and an XCZ too (tests/ncz_synth.h),
+   extracted and read in place. Each scenario runs in a child, whose output is
    checked: what it says, that no key reaches it, and that a failure, an exit of hactool's included, leaves nothing.
    No dumps or console keys */
 #include <stdio.h>
@@ -43,6 +44,7 @@ static void check(int good, const char* expression, int line) {
 #define CHECK(value) check((value) != 0, #value, __LINE__)
 
 #include "hac_synth.h"
+#include "ncz_synth.h"
 
 #define TITLE 0x0100000000AB0000ULL
 #define SECRET "0123456789abcdef0123456789abcdef"
@@ -132,6 +134,35 @@ static blob_t program_acid(uint64_t title, int with_main, uint32_t acid_offset) 
     return nca;
 }
 static blob_t program(uint64_t title, int with_main) { return program_acid(title, with_main, 0); }
+
+/* a file of text with noise every third 0x1000 bytes: blocks of an NCZ that zstd compresses and blocks it keeps as they
+   are */
+static blob_t big_file(void) {
+    blob_t b = {zalloc(0x30123), 0x30123};
+    for (size_t i = 0; i < b.size; i++)
+        b.data[i] =
+            i / 0x1000 % 3 ? (unsigned char)"synthetic big file "[i % 19] : (unsigned char)(i * 2654435761u >> 24);
+    return b;
+}
+/* the game's program with big.bin in its RomFS, its sections from 0x4000 as a console's NCA lays them out, as an NCZ of
+   blocks of 1 << exponent bytes, or one stream for 0 */
+static blob_t program_ncz(uint64_t title, unsigned exponent) {
+    blob_t code = text_blob("synthetic main"), npdm_file = npdm(), data = text_blob("synthetic romfs data");
+    blob_t first = text_blob("first nro"), second = text_blob("the second NRO"), big = big_file(), nca, ncz;
+    romfs_file_t exefs[2] = {{"main.npdm", npdm_file}, {"main", code}};
+    romfs_file_t romfs[5] = {
+        {"boot.nro", first}, {"data.bin", data}, {"Second.NRO", second}, {"nro.txt", data}, {"big.bin", big}};
+    nca = dnca_build_at(0x4000, NCACONTENTTYPE_PROGRAM, title, exefs, 2, romfs, 5, 0, 0);
+    ncz = ncz_of_dnca(&nca, exponent);
+    free(nca.data);
+    free(code.data);
+    free(npdm_file.data);
+    free(data.data);
+    free(first.data);
+    free(second.data);
+    free(big.data);
+    return ncz;
+}
 
 /* the game's icon as a Control NCA holds it: a JPEG's first bytes and some more, under a language past the first */
 static blob_t icon(void) { return text_blob("\xff\xd8\xff synthetic icon"); }
@@ -399,7 +430,7 @@ static int walk_file(void* context, const char* name, SnxU64 offset, SnxU64 size
 /* Extract dump off: the dump read in place, as the runtime and -r read it (container.h), mapped (here read
    into memory) for the file systems to read from: the ExeFS's files, a file of the RomFS and the control.nacp. Nothing
    is written. 0, or 1 after saying what differed */
-static int in_place(const char* base, const SnxPaths* paths) {
+static int in_place(const char* base, const SnxPaths* paths, int big) {
     SnxDump dump;
     SnxHacFs* fs;
     const SnxHacEntry* files;
@@ -434,6 +465,13 @@ static int in_place(const char* base, const SnxPaths* paths) {
     got = snx_romfs_file(fs, "data.bin", &size);
     CHECK(got && size == 20 && !memcmp(got, "synthetic romfs data", 20));
     free(got);
+    if (big) { /* an NCZ's: past its first block */
+        blob_t want_big = big_file();
+        got = snx_romfs_file(fs, "big.bin", &size);
+        CHECK(got && size == want_big.size && !memcmp(got, want_big.data, want_big.size));
+        free(got);
+        free(want_big.data);
+    }
     CHECK(snx_romfs_file(fs, "missing.bin", &size) == NULL);
     { /* the files a suffix names, whatever its case, each with its bytes; a nonzero answer ends the walk with it */
         Walk walk = {0}, one = {0}, none = {0};
@@ -444,8 +482,10 @@ static int in_place(const char* base, const SnxPaths* paths) {
         CHECK(snx_romfs_each(fs, ".nro", walk_file, &one) == 7 && one.count == 1);
         CHECK(!snx_romfs_each(fs, ".nso", walk_file, &none) && !none.count);
     }
-    { /* a file table that ends where its last name does, the name's padding to 4 bytes past its end: the walk ends
-         with that file, and reads no entry after the table. The table's size is a byte less in the mapped dump, whose
+    if (!big) { /* a file table that ends where its last name does, the name's padding to 4 bytes past its end: the
+         walk ends with that file, and reads no entry after the table. Only in a plain dump: an NCZ's bytes are zstd
+         blocks, whose RomFS header is in the clear only where zstd kept that block as it was, which zstd's builds
+         choose differently. The table's size is a byte less in the mapped dump, whose
          RomFS is the one of four files (0x20 each, and their names padded: 8, 8, 12 and 8) */
         static const unsigned char start[24] = {0x50, 0, 0, 0, 0, 0, 0, 0, 0x50, 0, 0, 0, 0, 0, 0, 0, 4};
         unsigned char* header = NULL;
@@ -506,7 +546,9 @@ static int scenario(const char* scratch, const char* mode) {
     char *repo, *home, *switch_dir, *keys, *base, *update, *out, *exefs, *arguments[12];
     int count = 0, result;
     Game game = {{{0}}, 0};
-    const char* kind = strstr(mode, "xci") ? (strstr(mode, "keyarea") ? "xci-keyarea" : "xci") : "nsp";
+    const char* kind =
+        strstr(mode, "xci") || strstr(mode, "xcz") ? (strstr(mode, "keyarea") ? "xci-keyarea" : "xci") : "nsp";
+    int ncz = strstr(mode, "nsz") || strstr(mode, "xcz");
     repo = snx_path_join(scratch, "repo space & ()");
     home = snx_path_join(scratch, "original home");
     switch_dir = snx_path_join(home, ".switch");
@@ -526,7 +568,10 @@ static int scenario(const char* scratch, const char* mode) {
         CHECK(!snx_write_file(titles, user_titles, strlen(user_titles)));
         free(titles);
     }
-    base = snx_path_join(scratch, !strcmp(mode, "renamed") ? "Base Game (&).XCI" : "Base Game (&).NSP");
+    base = snx_path_join(scratch, !strcmp(mode, "renamed") ? "Base Game (&).XCI"
+                                  : strstr(mode, "nsz")    ? "Base Game (&).nsz"
+                                  : strstr(mode, "xcz")    ? "Base Game (&).xcz"
+                                                           : "Base Game (&).NSP");
     update = snx_path_join(scratch, "Update (&).nsp");
     out = snx_path_join(scratch, "out put");
     exefs = snx_path_join(out, "exefs");
@@ -545,7 +590,9 @@ static int scenario(const char* scratch, const char* mode) {
             blob_t nca = program(TITLE, 1);
             nca_encrypt(&nca, header_key, 20);
             game_add(&game, "program.nca", nca);
-        } else
+        } else if (ncz) /* nsz's defaults: an NSZ in one stream, an XCZ in blocks */
+            game_add(&game, "program.ncz", program_ncz(TITLE, strstr(mode, "xcz") ? 14 : 0));
+        else
             game_add(&game, "program.nca",
                      program_acid(TITLE, strcmp(mode, "no-main"), strcmp(mode, "npdm-outside") ? 0 : ACID_FAR));
         if (strcmp(mode, "no-control") && strcmp(mode, "dlc-alone")) game_add(&game, "control.nca", control(TITLE));
@@ -563,7 +610,7 @@ static int scenario(const char* scratch, const char* mode) {
         write_blob(base, card);
     }
     if (!strncmp(mode, "inplace", 7)) {
-        result = in_place(base, &paths);
+        result = in_place(base, &paths, ncz);
         CHECK(!snx_path_exists(out)); /* nothing extracted */
         free(repo);
         free(home);
@@ -629,6 +676,11 @@ static int scenario(const char* scratch, const char* mode) {
         CHECK(file_is(exefs, "main", "synthetic main", 14) && file_is(exefs, "main.npdm", meta.data, meta.size));
         free(meta.data);
         CHECK(file_is(romfs, "data.bin", "synthetic romfs data", 20));
+        if (ncz) {
+            blob_t big = big_file();
+            CHECK(file_is(romfs, "big.bin", big.data, big.size));
+            free(big.data);
+        }
         blob_t picture = icon();
         if (strcmp(mode, "no-control"))
             CHECK(file_is(out, "control.nacp", want.data, want.size) &&
@@ -675,7 +727,7 @@ int main(int argc, char** argv) {
         {"explicit", "prod.keys: line 5 is not a key", 0},
         {"named", "Done: ", 0},
         {"no-control", "The game keeps the name of its file: it has no Control NCA", 0},
-        {"unsupported", "(&).NSP is not an NSP/DNSP (PFS0) or an XCI/DXCI", 1},
+        {"unsupported", "(&).NSP is not an NSP/NSZ/DNSP (PFS0) or an XCI/XCZ/DXCI", 1},
         {"encrypted-no-keys", "encrypted content needs prod.keys", 1},
         /* the master key the dump needs, and the keys file that stops short of it, below */
         {"keys-too-old", "The game's Program NCA is encrypted with master key 20 (a firmware newer than 20.0.0), and ",
@@ -695,6 +747,11 @@ int main(int argc, char** argv) {
         {"inplace-nsp", "Read in place", 0},
         {"inplace-xci", "Read in place", 0},
         {"inplace-xci-keyarea", "Read in place", 0},
+        /* the program an NCZ: an NSZ's in one zstd stream, an XCZ's in blocks */
+        {"nsz", " KB (a solid NCZ of ", 0},
+        {"xcz", " KB (a block NCZ of ", 0},
+        {"inplace-nsz", "Read in place", 0},
+        {"inplace-xcz", "Read in place", 0},
     };
     const char* command[5];
     char *self, *scratch, *directory, *output;

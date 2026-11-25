@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 # what the backends share: function discovery over NX images, chunk labels, progress lines, the entry table
-add_library(snx_nx_module STATIC ../../loader/module.c ../../loader/codegen_view.c ../../loader/hook_routes.c
+add_library(snx_nx_module STATIC ../../loader/module.c ../../loader/codegen_view.c ../../loader/hook_routes.c ../../loader/hook_libs.c
                                   ../nce/nce_patch.c)
 set_target_properties(snx_nx_module PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_compile_options(snx_nx_module PRIVATE -pedantic-errors -Wall -Wextra -Werror=missing-prototypes)
@@ -34,6 +34,9 @@ add_library(snx_driver_llvm STATIC ../../loader/module_llvm.c ../../loader/modul
 set_target_properties(snx_driver_llvm PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS ON)
 target_compile_options(snx_driver_llvm PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 target_link_libraries(snx_driver_llvm PUBLIC snx_llvm snx_arm_llvm snx_nx_module snx_settings)
+# the A64 Sail's encoders: the arm64 host's descriptor functions (module_x64.c)
+include("${PROJECT_SOURCE_DIR}/cmake/sailgen.cmake")
+snx_sailgen_a64_encoders(snx_driver_llvm)
 # scarletnx --mcp's disassembler (disasm.c), where LLVM has its AArch64 target (cmake/llvm.cmake)
 if(SNX_LLVM_A64_DISASM)
     target_compile_definitions(snx_driver_llvm PRIVATE SNX_A64_DISASM)

@@ -10,6 +10,8 @@
 #include "nx/loader/module.h"
 #include "nx/loader/module_llvm.h"
 #include "nx/loader/codegen_view.h"
+#include "nx/loader/hook_libs.h"
+#include "nx/loader/hook_routes.h"
 #include "nx/loader/ounce.h"
 #include "nx/runtime/nce/nce_host.h"
 #include "nx/runtime/nce/nce_patch.h"
@@ -49,9 +51,35 @@ static char* made_off(void) {
     ini_perf_keys(g_llvm_ini, NULL, off + made, llvm + 1);
     return off;
 }
+/* a line of the hook module libraries' (hook_libs.h) */
+static void say_hook_libs(const char* line) { printf("scarletnx: %s\n", line); }
+/* where the hook module libraries' CPU hooks were routed in the program: each one's key in each module whose ID it
+   matched, or that it matched none, so a recompile says what a later run's hooks will find */
+static void say_hook_routes(const SnxProgram* p) {
+    for (size_t i = 0; i < snx_hook_route_build_count(); ++i) {
+        int matched = 0;
+        for (size_t m = 0; m < p->module_count; ++m) {
+            SnxU64 offset;
+            char key[96];
+            if (!snx_hook_route_build_at(i, p->modules[m].build_id, &offset) ||
+                !snx_hook_build_key(p->modules[m].build_id, offset, key, sizeof key))
+                continue;
+            matched = 1;
+            printf("scarletnx: hook module CPU hook %s %s in %s\n", key,
+                   snx_hook_route_listed(key) ? "routed" : "NOT routed (its offset isn't in the module's code)",
+                   p->modules[m].name ? p->modules[m].name : "a module");
+        }
+        SnxU64 offset = 0;
+        const char* build = snx_hook_route_build_entry(i, &offset);
+        if (!matched)
+            printf("scarletnx: hook module CPU hook of build %s at %llx: no module of this program has that build, "
+                   "not routed\n",
+                   build, (unsigned long long)offset);
+    }
+}
 static void usage(void) {
     puts("Usage: scarletnx -r INPUT [NAME] [OPTIONS]\n"
-         "  INPUT                  Game/ExeFS folder, .nro, or an XCI or NSP dump (read in place)\n"
+         "  INPUT                  Game/ExeFS folder, .nro, or an XCI, NSP, XCZ or NSZ dump (read in place)\n"
          "  --name NAME            Output name (default: the title ID, else the NPDM's or input name)\n"
          "  --outdir DIR           Where the game's folder goes (default: recompiled/)\n"
          "  --layout FILE          Put the code of these functions first, in this order (hex PCs, one per line):\n"
@@ -677,6 +705,7 @@ static int make_program(const MakeArgs* a, int index) {
     }
     if (patch_modules(&program, mods, own_mods, mods_off, compile.quiet))
         goto done; /* before any code is made from them */
+    say_hook_routes(&program);
     base = snx_path_join(folder, game);
     /* Invalidate the completion stamp before touching an existing game's data
        or module. Failed recompilation must never leave a trusted checkpoint. */
@@ -1110,6 +1139,13 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         return snx_error("--target %s: modules are built for this host only (%s)", target,
                          host_win ? "win64" : "linux");
     gen.abi = snx_game_abi();
+    /* the CPU hooks of the hook module libraries (hle/hook/snx_hook_module.h): their keys join the route list before
+       the game's modules are read, so each function they hook is a seed called through its dispatch slot */
+    {
+        char* folder = snx_hook_libs_folder(g_settings.hook_modules_folder);
+        if (folder) snx_hook_libs_route(folder, say_hook_libs);
+        free(folder);
+    }
     /* a dump, read in place, else an ExeFS folder or an NRO. An update's dump is its own program; a DLC has none */
     dump = snx_is_file(input) && snx_is_dump(input);
     key_paths = *paths;

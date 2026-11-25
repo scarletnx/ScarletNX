@@ -31,6 +31,17 @@ u64 unattended_buttons(void);
    until the present after its last line's, then a record writes them as a line when they changed, a line a present at
    most. The backend calls it once a poll whose input the game takes (not while it is paused) */
 void unattended_pad(u64* buttons, i32 st[4]);
+/* the same as the game's menu has them (its Save states page): the slot recorded and the one played now, 0 for none */
+int unattended_recording(void);
+int unattended_replaying(void);
+/* slot's recording in frames, the last line's frame and one; 0 for none, -1 for a file that is no recording, with which
+   line and why in why */
+int unattended_slot_frames(int slot, char* why, size_t n);
+/* slot recorded (0 ends it) or played (0 stops it) from the menu: 1, else 0 with why and nothing changed. The recording
+   a slot had is replaced at the next poll. It is the run's own: input_record and input_replay of the .ini, read again
+   as it changes, change it only when they do */
+int unattended_record_from_menu(int slot, char* why, size_t n);
+int unattended_replay_from_menu(int slot, char* why, size_t n);
 const char* unattended_shot(void); /* the shot path without its extension, or NULL */
 /* 1 when shot_every asks for a numbered screenshot now, its path (no extension) written into path */
 int unattended_periodic_shot(char* path, size_t n);

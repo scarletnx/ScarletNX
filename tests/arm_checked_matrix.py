@@ -19,8 +19,18 @@ import arm_test as A
 Access = C.CFUNCTYPE(C.c_uint32, C.c_void_p, C.c_uint32, C.c_uint32, C.c_uint32, C.c_void_p)
 
 
+# checked.h's SnxArmCheckedCPU: SNX_ARM_CHECKED_ABI, and the words a native block moves a transfer through
+CHECKED_ABI = 2
+
+
 class Checked(C.Structure):
-    _fields_ = [('cpu', A.CPU), ('abi', C.c_uint32), ('context', C.c_void_p), ('access', Access)]
+    _fields_ = [
+        ('cpu', A.CPU),
+        ('abi', C.c_uint32),
+        ('context', C.c_void_p),
+        ('access', Access),
+        ('words', C.c_uint32 * 32),
+    ]
 
 
 def snapshot(cpu):
@@ -96,7 +106,7 @@ def main():
 
                         state = Checked()
                         C.memmove(C.byref(state.cpu), C.byref(cpu), C.sizeof(cpu))
-                        state.abi, state.access = 1, access
+                        state.abi, state.access = CHECKED_ABI, access
                         state.cpu.mem = C.cast(1, C.POINTER(C.c_uint8))
                         state.cpu.mem_size = 2**64 - 1
                         flat[index](C.byref(cpu))

@@ -13,13 +13,14 @@
     },
     {
       "name": "default",
-      "displayName": "Clang, for this machine",
+      "displayName": "Clang, for this machine, without the tests (-DBUILD_TESTING=ON builds them)",
       "inherits": "base",
       "cacheVariables": {
         "CMAKE_C_COMPILER": "clang",
         "CMAKE_CXX_COMPILER": "clang++",
         "SNX_TRACY": "OFF",
-        "SNX_DEPLOY": "ON"
+        "SNX_DEPLOY": "ON",
+        "BUILD_TESTING": "OFF"
       }
     },
     {

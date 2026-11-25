@@ -72,6 +72,7 @@ void kt_notify_later(KThread* t);
 void kt_flush(void);
 void kt_wait(KThread* t, u32 seq, PMutex* held, i64 timeout_ns);
 void klock_unlock(void);
+void kernel_wait_plot_flush(void); /* kernel.c's wait plot and long-wait message, emitted after klock_unlock */
 void kobj_signal_nl(KObj* o);
 int sleep_nl(KThread* t, i64 timeout);
 /* sleep_nl's wait with held in place of g_klock: an address wait's, under its bucket lock */
@@ -116,6 +117,9 @@ u32 svc_query(u64 info, u64 addr);
 u32 svc_map_memory(u64 dst, u64 src, u64 size);
 u32 svc_map_process_memory(u64 dst, u32 process, u64 src, u64 size);
 u32 svc_unmap_process_memory(u64 dst, u32 process, u64 src, u64 size);
+u32 svc_set_process_mem_perm(u32 process, u64 addr, u64 size, u32 perm);
+u32 svc_map_process_code_memory(u32 process, u64 dst, u64 src, u64 size);
+u32 svc_unmap_process_code_memory(u32 process, u64 dst, u64 src, u64 size);
 u32 svc_unmap_memory(u64 dst, u64 src, u64 size);
 u32 svc_map_shm(u32 h, u64 addr, u64 size, u32 perm);
 u32 svc_unmap_shm(u32 h, u64 addr, u64 size);

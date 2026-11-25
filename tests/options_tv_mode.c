@@ -723,6 +723,72 @@ static void test_write_tracking_hot_old(void) {
     ini_override("write_tracking_hot", NULL);
     g_test.write = 0;
 }
+/* dlss_render_size and dlss_upscaler, which internal_resolution and render_upscaler took over: an old .ini's pick is
+   carried while the new key has no value, the default every .ini had written is not, a .ini that gives the new key
+   keeps it, said. On the command line the old key is that run's value of the new one. internal_resolution is read
+   at start alone, so its value is checked in the file and the overrides */
+static void test_dlss_old(void) {
+    char *text, *again;
+    CHECK(options_dlss_render_size_old("0", 0) == -1 && options_dlss_render_size_old("0", 1) == 0);
+    CHECK(options_dlss_render_size_old("2", 0) == 2 && options_dlss_render_size_old("5", 1) == 5);
+    CHECK(options_dlss_render_size_old("6", 0) == -2 && options_dlss_render_size_old("x", 1) == -2 &&
+          options_dlss_render_size_old("", 0) == -2);
+    CHECK(options_dlss_upscaler_old("0", 0) == 3 && options_dlss_upscaler_old("1", 1) == -1 &&
+          options_dlss_upscaler_old("2", 0) == -2);
+    g_test.write = 1;
+    text = open_ini("[Graphics]\ndlss_render_size=4\n");
+    CHECK(strstr(g_test.said, "settings: dlss_render_size=4, deprecated, is internal_resolution=4 (Performance) now "
+                              "(docs/user/deprecations.md)\n"));
+    CHECK(text && strstr(text, "\ninternal_resolution=4\n") &&
+          strstr(text, "\n[Deprecated]\n") < strstr(text, "\ndlss_render_size=4\n"));
+    again = open_ini(text); /* the next run: internal_resolution given, dlss_render_size not read again */
+    CHECK(!strstr(g_test.said, "settings: dlss_render_size=") && again && strstr(again, "\ninternal_resolution=4\n"));
+    free(again);
+    free(text);
+    text = open_ini("[Graphics]\ndlss_render_size=0\n");
+    CHECK(strstr(g_test.said, "settings: dlss_render_size=0, deprecated, was its default: internal_resolution takes "
+                              "its own (docs/user/deprecations.md)\n"));
+    CHECK(text && strstr(text, "\ninternal_resolution=0\n"));
+    free(text);
+    text = open_ini("[Graphics]\ndlss_upscaler=0\n");
+    CHECK(strstr(g_test.said, "settings: dlss_upscaler=0, deprecated, is render_upscaler=3 (None) now "
+                              "(docs/user/deprecations.md)\n"));
+    CHECK(g_settings.render_upscaler == 3 && text && strstr(text, "\nrender_upscaler=3\n"));
+    free(text);
+    text = open_ini("[Graphics]\nrender_upscaler=0\ndlss_upscaler=0\n");
+    CHECK(strstr(g_test.said, "settings: dlss_upscaler=0, deprecated, is not read: the .ini's render_upscaler=0 stays "
+                              "(docs/user/deprecations.md)\n"));
+    CHECK(g_settings.render_upscaler == 0 && text && strstr(text, "\nrender_upscaler=0\n"));
+    free(text);
+    text = open_ini("[Graphics]\ndlss_upscaler=1\n");
+    CHECK(strstr(g_test.said, "settings: dlss_upscaler=1, deprecated, was its default: render_upscaler takes its own"));
+    CHECK(g_settings.render_upscaler == 0);
+    free(text);
+    /* --dlss_upscaler=0 and --dlss_render_size=0: None and the game's sizes this run, said. The file keeps its own */
+    ini_override("dlss_upscaler", "0");
+    ini_override("dlss_render_size", "0");
+    text = open_ini("[Graphics]\nrender_upscaler=1\ninternal_resolution=2\n");
+    CHECK(ini_overridden("render_upscaler") && !strcmp(ini_overridden("render_upscaler"), "3") &&
+          g_settings.render_upscaler == 3);
+    CHECK(ini_overridden("internal_resolution") && !strcmp(ini_overridden("internal_resolution"), "0"));
+    CHECK(strstr(g_test.said, "settings: --dlss_upscaler=0 is deprecated: this run reads it as --render_upscaler=3 "
+                              "(None) (docs/user/deprecations.md)\n"));
+    CHECK(text && strstr(text, "\nrender_upscaler=1\n") && strstr(text, "\ninternal_resolution=2\n"));
+    free(text);
+    ini_override("render_upscaler", NULL);
+    ini_override("internal_resolution", NULL);
+    /* the new key given on the command line too: it stands */
+    ini_override("render_upscaler", "1");
+    text = open_ini("[Graphics]\nrender_upscaler=0\n");
+    CHECK(!strcmp(ini_overridden("render_upscaler"), "1") && g_settings.render_upscaler == 1);
+    CHECK(strstr(g_test.said, "settings: --dlss_upscaler=0 is deprecated, and the command line gives "
+                              "--render_upscaler=1 too: render_upscaler=1 this run (docs/user/deprecations.md)\n"));
+    free(text);
+    ini_override("dlss_upscaler", NULL);
+    ini_override("dlss_render_size", NULL);
+    ini_override("render_upscaler", NULL);
+    g_test.write = 0;
+}
 /* a startup setting is read by the process's first ini_open alone, so each of these is a process of its own
    (CMakeLists.txt's options_vk_descriptors_*): what the run plays with and says over its picture. old: an older
    version's .ini with vk_descriptors=0, its default then, plays Automatic with nothing over the picture; pick: its 2,
@@ -1286,6 +1352,7 @@ int main(int argc, char** argv) {
     test_vk_descriptors_old();
     test_write_tracking_hot_old();
     test_emulated_cores_old();
+    test_dlss_old();
     test_key_steps();
     printf("options_tv_mode: ok\n");
     return 0;

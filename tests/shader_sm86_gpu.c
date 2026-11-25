@@ -1085,6 +1085,116 @@ static int run_fadd(Gpu* g) {
     return ok;
 }
 
+/* ---- lone lanes ---- */
+
+/* A combined add as a compiler writes it: VOTEU's ballot, its highest lane by UFLO, its count by POPC; the leader's
+   ATOMG adds the count to word 0 of the output, SHFL hands its old value out, and the lane's rank (POPC of the ballot
+   under LTMASK) beside it is a place, where the invocation stores its number. As lone lanes, with no subgroup in the
+   module, on any device, and as a warp's on one whose subgroups have 32 lanes: word 0 counts every invocation and each
+   has a place of its own */
+#define LONE_WORDS (1u + INVOCATIONS)
+static void lone_program(Prog* p) {
+    Sm86Word w = sm86_fix(0x919); /* S2R R0, TID.X */
+    f(&w, 72, 8, 0x21);
+    emit(p, w);
+    w = sm86_fix(0x919); /* S2R R1, CTAID.X */
+    f(&w, 16, 8, 1);
+    f(&w, 72, 8, 0x25);
+    emit(p, w);
+    emit(p, ri(0x024, 2, 1, LOCAL, 0)); /* IMAD R2, R1, 32, R0 */
+    w = sm86_fix(0xab9);                /* ULDC.64 UR6, c[0x0][0x28] */
+    f(&w, 16, 6, 6);
+    sm86_cbuf(&w, 0, 0x28);
+    f(&w, 73, 3, 5);
+    emit(p, w);
+    w = sm86_fix(0x919); /* S2R R14, LANEID */
+    f(&w, 16, 8, 14);
+    emit(p, w);
+    emit(p, (Sm86Word){{0x0000000000077886ull, 0x000fe400038e0100ull}}); /* VOTEU.ANY UR7 = the running lanes */
+    emit(p, (Sm86Word){{0x00000007000472bdull, 0x000fe200080e0000ull}}); /* UFLO UR4, UR7 */
+    emit(p, (Sm86Word){{0x0000000700047d09ull, 0x000e220008000000ull}}); /* POPC R4, UR7 */
+    emit(p, (Sm86Word){{0x000000040e007c0cull, 0x002fda000bf02070ull}}); /* ISETP.EQ.U32 P0, R14, UR4 */
+    w = sm86_fix(0x9a8);                                                 /* @P0 ATOMG.E.ADD R5, [UR6], R4 */
+    f(&w, 12, 3, 0);
+    f(&w, 16, 8, 5);
+    f(&w, 24, 8, 255);
+    f(&w, 32, 8, 4);
+    f(&w, 64, 6, 6);
+    f(&w, 72, 1, 1);
+    f(&w, 91, 1, 1);
+    emit(p, w);
+    w = sm86_fix(0x919); /* S2R R8, LTMASK */
+    f(&w, 16, 8, 8);
+    f(&w, 72, 8, 0x39);
+    emit(p, w);
+    emit(p, (Sm86Word){{0x0000000708087c12ull, 0x001fe2000f8ec0ffull}}); /* LOP3 R8 = R8 & UR7 */
+    emit(p, (Sm86Word){{0x0000000800097309ull, 0x000e240008000000ull}}); /* POPC R9, R8 */
+    emit(p, (Sm86Word){{0x00000007000a7d00ull, 0x001e7000080e0000ull}}); /* FLO R10, UR7 */
+    emit(p, (Sm86Word){{0x00001f0a050b7589ull, 0x014e2a00000e0000ull}}); /* SHFL.IDX R11, R5, R10, 0x1f */
+    w = rr(0x010, 12, 11, 9);                                            /* IADD3 R12, R11, R9, RZ */
+    f(&w, 77, 4, 7);
+    f(&w, 81, 3, 7);
+    f(&w, 84, 3, 7);
+    f(&w, 87, 4, 7);
+    emit(p, w);
+    emit(p, ri(0x024, 6, 12, 4, 255)); /* IMAD R6, R12, 4, RZ */
+    w = sm86_fix(0x986);               /* STG.E [R6.U32 + UR6 + 4], R2 */
+    f(&w, 24, 8, 6);
+    f(&w, 32, 8, 2);
+    f(&w, 40, 24, 4);
+    f(&w, 64, 6, 6);
+    f(&w, 72, 1, 1);
+    f(&w, 73, 3, 4);
+    f(&w, 91, 1, 1);
+    emit(p, w);
+    epilogue(p);
+}
+static int run_lone(Gpu* g) {
+    static Prog p;
+    memset(&p, 0, sizeof p);
+    lone_program(&p);
+    int ok = 1;
+    /* the module with no subgroup, then the warp's, in the device's own subgroups and in required ones of 32, whole */
+    for (int run = 0; run < 4; run++) {
+        const int lanes = run & 1 ? SM86_LANES_WARP : 0, warp32 = run >> 1;
+        const char *module = lanes ? "a warp's module" : "no subgroup in the module",
+                   *own = warp32 ? "required" : "its own";
+        const u32 size = warp32 ? 32 : g->subgroup;
+        if (warp32 ? !g->warp32 : lanes && g->subgroup < 32) {
+            printf("lone lanes (%s, subgroups of %u, %s): not run, the device cannot\n", module, size, own);
+            continue;
+        }
+        u32 cb0[64] = {0};
+        cb0[0x28 / 4] = (u32)VA_OUT;
+        cb0[0x2c / 4] = (u32)(VA_OUT >> 32);
+        static u32 out[LONE_WORDS], in[2];
+        memset(out, 0, sizeof out);
+        ShaderInfo si = {0};
+        si.cs_local[0] = LOCAL, si.cs_local[1] = si.cs_local[2] = 1;
+        size_t words = 0;
+        u32* spv = sm86_to_spirv_ftz(p.code, p.n * 16, ST_CS, NULL, &si, &words, SH_FTZ_EMULATE, lanes);
+        if (!spv) {
+            fprintf(stderr, "lone lanes: not translated: %s\n", si.first_unsupported);
+            return 0;
+        }
+        g_warp32 = warp32;
+        int ran = si.ngbuf == 1 && gpu_run(g, spv, words, &si, cb0, sizeof cb0, 0x28, in, sizeof in, out, sizeof out);
+        g_warp32 = 0;
+        free(spv);
+        u64 seen = 0;
+        u32 bad = 0;
+        for (u32 i = 0; i < INVOCATIONS; i++)
+            if (out[1 + i] >= INVOCATIONS || (seen >> out[1 + i] & 1))
+                bad++;
+            else
+                seen |= 1ull << out[1 + i];
+        printf("lone lanes (%s, subgroups of %u, %s): %u invocations counted of %u, %u places wrong%s\n", module, size,
+               own, out[0], INVOCATIONS, bad, ran ? "" : ", Vulkan failed");
+        ok &= ran && out[0] == INVOCATIONS && !bad;
+    }
+    return ok;
+}
+
 /* ---- the warp's matrix instructions ---- */
 
 /* HMMA.16816 and .1688 (F16 and F32 C and D), LDSM.16.M88.4 and .MT88.4 and MOVM.16.MT88 against matrices that the
@@ -2055,6 +2165,7 @@ int main(void) {
         ok &= run_program(&g, "stores", stores_program);
         ok &= maxwell_log(&g);
         ok &= run_fadd(&g);
+        ok &= run_lone(&g);
     } else /* a phone's GPU: the warp's instructions below still run there */
         printf("no Vulkan 1.3 device with shaderFloat64 and shaderInt64: the scalar programs skipped\n");
     if (g.device) vkDestroyDevice(g.device, NULL);

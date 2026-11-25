@@ -56,7 +56,8 @@
         "hash": "0a7401431c2c5c4f8c940089c42077e497b62d09b10bd22110e68d49c0d2d27183660a515ea4b1c58942483420c1e6a93ee9bac5f0c0fef5584f590fa238c310",
         "package": "FidelityFX-FSR2",
         "patches": [
-            "0001-memory-types.patch"
+            "0001-memory-types.patch",
+            "0002-fsr1-easu-glsl.patch"
         ],
         "repo": "GPUOpen-Effects/FidelityFX-FSR2",
         "version": "v2.2.1"
@@ -202,6 +203,24 @@
         "package": "SDL3",
         "repo": "libsdl-org/SDL",
         "version": "release-3.4.18"
+    },
+    "smaa-area-tex": {
+        "hash": "78ca339b12976ca4fce8726cd2f927a87f75350286d76a770104ef2ec18e6f1978197388ebb333fc163b23a0a2ad0436c77ee24e60ffda45cfbc4ab7ec5437a5",
+        "package": "SMAAAreaTex",
+        "url": "https://raw.githubusercontent.com/iryoku/smaa/71c806a838bdd7d517df19192a20f0c61b3ca29d/Textures/AreaTex.h",
+        "version": "71c806a838bdd7d517df19192a20f0c61b3ca29d"
+    },
+    "smaa-search-tex": {
+        "hash": "cf26b250536be3a8e1baa7fec1cfc3b31f5f598ced105b6dbedd66693d3cef01976f3499437df0ff897d847f580cea7c693c371e531b6d72389c4f3a43ef95cd",
+        "package": "SMAASearchTex",
+        "url": "https://raw.githubusercontent.com/iryoku/smaa/71c806a838bdd7d517df19192a20f0c61b3ca29d/Textures/SearchTex.h",
+        "version": "71c806a838bdd7d517df19192a20f0c61b3ca29d"
+    },
+    "smaa-shader": {
+        "hash": "3a10efe25b0f7e33d9542159e381456ebd75593dc5e2543b91b0b52c9479588320a792f69b6e2cf7743b3203dabe6acc8592c9130c5dea6f02b0cde6072db3f2",
+        "package": "SMAAShader",
+        "url": "https://raw.githubusercontent.com/iryoku/smaa/71c806a838bdd7d517df19192a20f0c61b3ca29d/SMAA.hlsl",
+        "version": "71c806a838bdd7d517df19192a20f0c61b3ca29d"
     },
     "snx_av1_b8-01-size-66x66": {
         "hash": "d2a617948bfefdd48d652800e7807b284a0069e907326c512d92c394b4127210f539201980da5d3a018c38a7ad96fc5686ea298339429bef43cfd7391e092138",
@@ -419,6 +438,61 @@
         "hash": "70a88503f1a4e287ed2d89157a0c23d9ecc162f2d4604659cea6f783b3c276dada5ee2bb8cbe967e4a2d9f2caba7f9b1529f66332158cb1e9727bf0a34d47f48",
         "url": "https://www.sqlite.org/2026/sqlite-amalgamation-3540100.zip",
         "version": "3.54.1"
+    },
+    "streamline_sl_appidentity_h": {
+        "hash": "74245ab9449d92b3373caadf875f7840c0e6e2dd957b1d4a63f1f86f39d93d91380a3ee29739660a22842e4b8739ab264d71444510b9c32967687fff6e0aebf4",
+        "url": "https://raw.githubusercontent.com/NVIDIA-RTX/Streamline/v2.14.16/include/sl_appidentity.h",
+        "version": "v2.14.16"
+    },
+    "streamline_sl_consts_h": {
+        "hash": "32159196e8c285dd4f462a1ac3bdc7e91d097466d975c503483e1379d68eee35f0b8d6a5d4f73d284faf011aa478e1eb1faeea5eba280ab3f69fe6ae350f6c93",
+        "url": "https://raw.githubusercontent.com/NVIDIA-RTX/Streamline/v2.14.16/include/sl_consts.h",
+        "version": "v2.14.16"
+    },
+    "streamline_sl_core_api_h": {
+        "hash": "602377279bb8aa89b4acbd1599a4ccbb8951425ba01b3ff9aa5a072ed4d2a2db5b8396bbbd6fed0f1c421557d89a8da7f4aecaafc32cd430b6fb9d6d3d3d83ac",
+        "url": "https://raw.githubusercontent.com/NVIDIA-RTX/Streamline/v2.14.16/include/sl_core_api.h",
+        "version": "v2.14.16"
+    },
+    "streamline_sl_core_types_h": {
+        "hash": "83a77b2ad4c12807ecc03bdffb8e599cac345d5cc1313eb52a3f6034ce1213f8acd08e77aea033b4ee2287f4e8b9906a5d27e112ee3d0e95bbb8295ba433d997",
+        "url": "https://raw.githubusercontent.com/NVIDIA-RTX/Streamline/v2.14.16/include/sl_core_types.h",
+        "version": "v2.14.16"
+    },
+    "streamline_sl_device_wrappers_h": {
+        "hash": "bdb67cf2820224630697a25f5ad603f8b20e0fa6d675e882730682d418316aedec59d44d08273ae37f199f8531044c38c27e4df21f79e4c5f104bb555b8b5c0b",
+        "url": "https://raw.githubusercontent.com/NVIDIA-RTX/Streamline/v2.14.16/include/sl_device_wrappers.h",
+        "version": "v2.14.16"
+    },
+    "streamline_sl_dlss_h": {
+        "hash": "1d6ddf0456ec3b29bfbff7a1104220a6828ddeeb52de3810bc7efe664d2299a4f90c0f525dbdde9d11c5808b7750c9a6393244de67b25688352ca30e2820c48a",
+        "url": "https://raw.githubusercontent.com/NVIDIA-RTX/Streamline/v2.14.16/include/sl_dlss.h",
+        "version": "v2.14.16"
+    },
+    "streamline_sl_h": {
+        "hash": "63d44f82af48adffac36eeedaf1b1397d80e358bf5ddb7ff8ac48a24b12b99850410653211a8dd5f56e3475edef749dc78950559e98f90f75a2bda4914dcc452",
+        "url": "https://raw.githubusercontent.com/NVIDIA-RTX/Streamline/v2.14.16/include/sl.h",
+        "version": "v2.14.16"
+    },
+    "streamline_sl_helpers_vk_h": {
+        "hash": "dc04fcdf0433361abaabc3ce53310e10ee328fdc49dc17089af9053e1e8013a4b1b234f03ddfe8a9cf5c225f3d8777548e82a5942d6888d211a3d67e2153d643",
+        "url": "https://raw.githubusercontent.com/NVIDIA-RTX/Streamline/v2.14.16/include/sl_helpers_vk.h",
+        "version": "v2.14.16"
+    },
+    "streamline_sl_result_h": {
+        "hash": "caf714bbba4c85ef24793fd2401f70e4a6061b3781f56d959a76e77fc48ac1f164a490e997f4f9ba1d963c7aeb54ef05b49e6a3fc8f76c06da79504cc988189d",
+        "url": "https://raw.githubusercontent.com/NVIDIA-RTX/Streamline/v2.14.16/include/sl_result.h",
+        "version": "v2.14.16"
+    },
+    "streamline_sl_struct_h": {
+        "hash": "23b18962c1cae9adf63131dba080722bc38307a42c4f1d6d3cea195544897df9eb59b6fad99ed8d081eeaf1d9b27dce3ea4ae4ba57b0b4a731b04c9c314febe1",
+        "url": "https://raw.githubusercontent.com/NVIDIA-RTX/Streamline/v2.14.16/include/sl_struct.h",
+        "version": "v2.14.16"
+    },
+    "streamline_sl_version_h": {
+        "hash": "854f688ad98ba15cbaafe0bc679f6ddc70802e9c48e1b08f7a99adbc71bf487ba3eb9d6407e59d055e7163726472ff90bbad9625b246ff7be5608e517702107e",
+        "url": "https://raw.githubusercontent.com/NVIDIA-RTX/Streamline/v2.14.16/include/sl_version.h",
+        "version": "v2.14.16"
     },
     "tracy": {
         "hash": "a274fbb62ec25ab9b6025eeeb6e0458ba282fe61509dcd0daf824bdbcf3215c25eb992271d33cc88544068f83e00d791833e980eed7c8f4a1cd3ef71841cf38e",

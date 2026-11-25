@@ -455,6 +455,26 @@ msgid "Clear all debug options for performance"
 msgstr "Limpa todas as opções de debug, para desempenho"
 
 #: src/gui/gpu_driver.c
+msgid "Turnip's flags"
+msgstr "Flags do Turnip"
+
+#: src/gui/gpu_driver.c
+msgid "The shader compiler's flags"
+msgstr "Flags do compilador de shaders"
+
+#: src/gui/gpu_driver.c
+msgid "The command stream's dumps"
+msgstr "Os dumps do fluxo de comandos"
+
+#: src/gui/gpu_driver.c
+msgid "What Turnip's choice of GMEM or system memory weighs"
+msgstr "O que pesa na escolha do Turnip entre GMEM e memória do sistema"
+
+#: src/gui/gpu_driver.c
+msgid "How Turnip chooses GMEM or system memory"
+msgstr "Como o Turnip escolhe entre GMEM e memória do sistema"
+
+#: src/gui/gpu_driver.c
 #, c-format
 msgid "Not added: %s is not a zip (%s)"
 msgstr "Não adicionado: %s não é um zip (%s)"
@@ -654,6 +674,12 @@ msgstr "Recompilar."
 #, snx-keys
 msgid "Mods."
 msgstr "Mods."
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Settings."
+msgstr "Configurações."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
@@ -924,6 +950,12 @@ msgstr "M: mods."
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
+msgid "M: settings."
+msgstr "M: configurações."
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
 msgid "B: AOT pack."
 msgstr "B: pacote AOT."
 
@@ -1162,6 +1194,12 @@ msgstr "Y: recompilar."
 #, snx-keys
 msgid "L3: mods."
 msgstr "L3: mods."
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "L3: settings."
+msgstr "L3: configurações."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
@@ -1956,7 +1994,9 @@ msgstr "Jogo"
 msgid "Saves"
 msgstr "Saves"
 
+#. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c src/gui/ui.txt
+#, snx-key
 msgid "Settings"
 msgstr "Configurações"
 
@@ -2283,8 +2323,8 @@ msgid "S lists the save states of a recompiled Switch game in focus."
 msgstr "S lista os save states de um jogo de Switch recompilado em foco."
 
 #: src/gui/main.c
-msgid "Settings of its own are a recompiled Switch game's, in focus."
-msgstr ""
+msgid "Settings of its own are a recompiled Switch or 3DS game's, in focus."
+msgstr "Configurações próprias são de um jogo de Switch ou 3DS recompilado, em foco."
 
 #: src/gui/main.c
 #, c-format
@@ -2343,6 +2383,11 @@ msgstr "SCARLETNX  /  CONFIGURAÇÕES  /  DRIVERS DE GPU  /  DOWNLOAD"
 #: src/gui/main.c
 msgid "SCARLETNX  /  SETTINGS  /  FREEDRENO SETTINGS"
 msgstr "SCARLETNX  /  CONFIGURAÇÕES  /  AJUSTES DO FREEDRENO"
+
+#: src/gui/main.c
+#, c-format
+msgid "SCARLETNX  /  SETTINGS  /  FREEDRENO SETTINGS  /  %s"
+msgstr "SCARLETNX  /  CONFIGURAÇÕES  /  AJUSTES DO FREEDRENO  /  %s"
 
 #: src/gui/main.c
 #, c-format
@@ -2893,7 +2938,7 @@ msgstr "Padrões"
 msgid "%d set"
 msgstr "%d definidas"
 
-#: src/gui/main.c
+#: src/gui/main.c src/gui/settings.c
 msgid "None"
 msgstr "Nenhuma"
 
@@ -3767,6 +3812,11 @@ msgstr "O Freedreno e o Turnip do Mesa leem estas quando um jogo inicia (docs.me
 
 #: src/gui/main.c
 #, c-format
+msgid "Not added: the variables take %d at most"
+msgstr "Não adicionada: cabem no máximo %d variáveis"
+
+#: src/gui/main.c
+#, c-format
 msgid "Not saved: the variables take over %d bytes"
 msgstr "Não salvo: as variáveis passam de %d bytes"
 
@@ -3833,8 +3883,81 @@ msgstr "Usuário %d agora é %s"
 
 #: src/gui/main.c
 #, c-format
-msgid "%s is no recompiled Switch game: only one has settings of its own"
-msgstr ""
+msgid "Recording devices cannot be read: %s"
+msgstr "Os dispositivos de gravação não podem ser lidos: %s"
+
+#: src/gui/main.c
+msgid "Cannot be read"
+msgstr "Não pode ser lida"
+
+#: src/gui/main.c
+#, c-format
+msgid "Room password: %s"
+msgstr "Senha da sala: %s"
+
+#: src/gui/main.c
+#, c-format
+msgid "Room password not changed: %s"
+msgstr "Senha da sala não alterada: %s"
+
+#: src/gui/main.c
+msgid "Room password: set"
+msgstr "Senha da sala: definida"
+
+#: src/gui/main.c
+msgid "Room password: none"
+msgstr "Senha da sala: nenhuma"
+
+#: src/gui/main.c
+msgid "Room password not changed: nothing was typed (Del takes it off)"
+msgstr "Senha da sala não alterada: nada foi digitado (Del a tira)"
+
+#: src/gui/main.c
+#, c-format
+msgid "the picker could not open: %s. %s"
+msgstr "o seletor não abriu: %s. %s"
+
+#: src/gui/main.c
+msgid "Ctrl+V pastes its path"
+msgstr "Ctrl+V cola o caminho"
+
+#: src/gui/main.c
+msgid "Enter on its row now types it"
+msgstr "Enter na linha agora o digita"
+
+#: src/gui/main.c
+#, c-format
+msgid "takes a path of up to %d bytes, not %s: it keeps %s"
+msgstr "aceita um caminho de até %d bytes, não %s: fica %s"
+
+#: src/gui/main.c
+#, c-format
+msgid "%s not changed to %s: its settings were closed while the picker was open"
+msgstr "%s não mudou para %s: as configurações fecharam com o seletor aberto"
+
+#: src/gui/main.c
+#, c-format
+msgid "not changed: %s is not a folder or file of this device's storage"
+msgstr "não mudou: %s não é pasta nem arquivo do armazenamento deste aparelho"
+
+#: src/gui/main.c
+msgid "No folder was picked."
+msgstr "Nenhuma pasta foi escolhida."
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: a box an item, Enter turns it on or off"
+msgstr "%s: uma caixa por item, Enter liga ou desliga"
+
+#: src/gui/main.c
+#, c-format
+msgid "%s has no room for another item"
+msgstr "%s não tem espaço para outro item"
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is no recompiled Switch or 3DS game: only they have settings of their own"
+msgstr "%s não é um jogo de Switch ou 3DS recompilado: só eles têm configurações próprias"
 
 #: src/gui/main.c
 #, c-format
@@ -4110,6 +4233,25 @@ msgid "Player %d keeps %s"
 msgstr "Jogador %d mantém %s"
 
 #: src/gui/main.c
+msgid "no key"
+msgstr "nenhuma tecla"
+
+#: src/gui/main.c
+#, c-format
+msgid "Press the key for %s (ESC keeps %s, Backspace: its default)"
+msgstr "Aperte a tecla de %s (ESC mantém %s, Backspace: o padrão)"
+
+#: src/gui/main.c
+#, c-format
+msgid "%s already does %s: %s keeps %s"
+msgstr "%s já faz %s: %s mantém %s"
+
+#: src/gui/main.c
+#, c-format
+msgid "%s keeps %s"
+msgstr "%s mantém %s"
+
+#: src/gui/main.c
 msgid "Looking for controllers..."
 msgstr "Procurando controles..."
 
@@ -4139,6 +4281,10 @@ msgstr "%s: %s é o mínimo"
 #, c-format
 msgid "%s: %s is its highest"
 msgstr "%s: %s é o máximo"
+
+#: src/gui/main.c
+msgid "Paste one local path"
+msgstr "Cole um caminho local"
 
 #: src/gui/main.c
 msgid "Paste one local folder's path"
@@ -4195,6 +4341,10 @@ msgstr "Ctrl+S também salva"
 #: src/gui/main.c
 msgid "A nickname, 1 to 32 bytes, no control character, no space at either end"
 msgstr "Um apelido, de 1 a 32 bytes, sem caractere de controle, sem espaço nas pontas"
+
+#: src/gui/main.c
+msgid "The room's password, 1 to 255 bytes, no control character, no space at either end"
+msgstr "A senha da sala, de 1 a 255 bytes, sem caractere de controle nem espaço nas pontas"
 
 #: src/gui/main.c
 msgid "Preview"
@@ -4398,10 +4548,6 @@ msgstr "nenhuma pasta para o setup.ini"
 #, c-format
 msgid "No user written: %s"
 msgstr "Nenhum usuário gravado: %s"
-
-#: src/gui/main.c
-msgid "No folder was picked."
-msgstr "Nenhuma pasta foi escolhida."
 
 #: src/gui/main.c
 msgid "Cannot install prod.keys: neither USERPROFILE nor HOME is set"
@@ -6241,6 +6387,10 @@ msgid "Drop one local folder"
 msgstr "Solte uma pasta local"
 
 #: src/gui/main.c
+msgid "Drop one local path"
+msgstr "Solte um caminho local"
+
+#: src/gui/main.c
 #, c-format
 msgid "Cannot find the folder ScarletNX runs from: %s"
 msgstr "Não foi possível achar a pasta de onde o ScarletNX roda: %s"
@@ -6695,6 +6845,14 @@ msgid "Every row of this page at once"
 msgstr "Todas as linhas desta página de uma vez"
 
 #: src/gui/settings.c
+msgid "Room password"
+msgstr "Senha da sala"
+
+#: src/gui/settings.c
+msgid "The Eden room's password, kept in users/online.ini, which only you can read; never in the launcher's settings nor on a run's line"
+msgstr "A senha da sala do Eden, guardada em users/online.ini, que só você lê; nunca nas configurações do launcher nem na linha de execução"
+
+#: src/gui/settings.c
 #, c-format
 msgid "%s=.ini is no longer a value of %s: %s=%s now"
 msgstr "%s=.ini não é mais um valor de %s: agora %s=%s"
@@ -6713,6 +6871,16 @@ msgstr "%s=%s está obsoleto: %s agora é %s=%s"
 #, c-format
 msgid "%s=%s is deprecated and no value of %s: %s=%s now"
 msgstr "%s=%s está obsoleto e não é um valor de %s: agora %s=%s"
+
+#: src/gui/settings.c
+#, c-format
+msgid "%d on, %d other"
+msgstr "%d ligados, %d outros"
+
+#: src/gui/settings.c
+#, c-format
+msgid "%d on"
+msgstr "%d ligados"
 
 #: src/gui/settings.c
 msgid "Mixed"
@@ -7686,6 +7854,8 @@ msgstr ""
 
 #~ msgid "The most the cache of compiled code units may hold, in GB: units/ of the cache folder, where every recompile finds the units it compiled before. Past it the units reused longest ago are removed. 0 = no limit. Either way the cache always leaves a tenth of its disk free, at most 10 GB, removing its oldest units for a new one"
 #~ msgstr "O máximo que o cache de unidades de código compiladas pode ocupar, em GB: units/ da pasta de cache, onde cada recompilação acha as unidades que já compilou. Passando dele, saem as unidades reusadas há mais tempo. 0 = sem limite. De todo jeito o cache sempre deixa um décimo do disco livre, no máximo 10 GB, tirando as unidades mais antigas para caber uma nova"
+#~ msgid "the picker could not open: %s. Enter now types the path"
+#~ msgstr "o seletor não abriu: %s. Enter agora digita o caminho"
 
 #~ msgid "Goes on with the run of edenprobe %s that ended before its summary, from its journal: cases so far %d, on its crash list %d"
 #~ msgstr "Continua a execução do edenprobe %s que terminou antes do resumo, a partir do journal dela: casos até agora %d, na lista de crashes %d"

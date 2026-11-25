@@ -3,9 +3,9 @@
 # Copyright 2026 the ScarletNX contributors
 """Runs a recompiled game unattended, one or more times, and summarizes each run.
 
-    tools/run_game.py 0100DA801624E000                        # one 60 s run of the New Game script
-    tools/run_game.py 0100DA801624E000 --runs 5 --seconds 45  # five runs, for an intermittent bug
-    tools/run_game.py ~/.local/share/scarletnx/recompiled/0100DA801624E000 --script 15000:400 --out /tmp/x
+    tools/run_game.py 0100F00D00042000                        # one 60 s run of the New Game script
+    tools/run_game.py 0100F00D00042000 --runs 5 --seconds 45  # five runs, for an intermittent bug
+    tools/run_game.py ~/.local/share/scarletnx/recompiled/0100F00D00042000 --script 15000:400 --out /tmp/x
     tools/run_game.py Game --fps-limit=0                      # options it doesn't know go to the runtime
 
 The game is its folder in the user's data folder's recompiled/ (where the driver puts it when no --data names
@@ -46,7 +46,7 @@ def data_folder():
 # where the driver puts a game (snx_recompiled_dir), and where an older version did, which still runs from there
 RECOMPILED = os.path.join(data_folder(), 'recompiled')
 OLD_GAMES = os.path.join(data_folder(), 'games')
-# Catherine from boot to the New Game cutscene: skip the intro movie, accept the terms, pick New Game, skip prompts
+# one game from boot to the New Game cutscene: skip the intro movie, accept the terms, pick New Game, skip prompts
 NEW_GAME = '15000:400,16000:1,18000:400,21000:1,31000:1,36000:1,40000:1,44000:1'
 
 

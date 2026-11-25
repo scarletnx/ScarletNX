@@ -28,6 +28,20 @@ enum {
 /* off its default it changes how fast the game runs, and nothing on the screen shows it (settings.txt's perf; every
    Vulkan extension's and LLVM's row): the game names it over its picture as it starts (options_perf_changed) */
 #define INI_PERF        16
+/* a text with words whose words are its common values, not every one (settings.txt's open): the launcher keeps a value
+   none of them is, shown as itself, as it does on a row with steps, which are open too */
+#define INI_OPEN        32
+/* a value that is a set of known items (settings.txt's boxes), a text's separated by commas and an int's the sum of
+   their bits: words are the items, value=Label~About between '|', made by settingsgen from what the items' reader reads
+   (the bans, the hook families, the Vulkan commands) or from the row's own words. The launcher gives a box an item; the
+   game's menu only reads the value */
+#define INI_BOXES       64
+/* a text that is a path (settings.txt's path): the launcher's Settings pick it with the system's dialog, a folder's, a
+   file's that is read, or a save dialog's for one that is written */
+#define INI_PATH_FOLDER (1 << 12)
+#define INI_PATH_FILE   (2 << 12)
+#define INI_PATH_SAVE   (3 << 12)
+#define INI_PATH        (3 << 12)
 
 /* a row a needs FEATURE block names: 0 where the build has FEATURE, INI_NEEDS_BUILD where it has none. One macro per
    feature, resolved by the build that compiles the table (settingsgen writes the block's feature in its place) */
@@ -35,6 +49,11 @@ enum {
 #define INI_NEEDS_TRACY 0
 #else
 #define INI_NEEDS_TRACY INI_NEEDS_BUILD
+#endif
+#if defined(SNX_VITA_LOCKSTEP)
+#define INI_NEEDS_VITA_LOCKSTEP 0
+#else
+#define INI_NEEDS_VITA_LOCKSTEP INI_NEEDS_BUILD
 #endif
 
 /* the systems a setting does something on, where not every one (settings.txt's only): one of these in flags, macOS
@@ -67,6 +86,9 @@ struct IniOpt {
     const char* words;
     int step, shift;
     size_t size; /* INI_TEXT: var's size */
+    /* INI_INT: the values the menus offer, '|' between, in order (settings.txt's steps), NULL for every step of its
+       range: a value between two is still read, and kept */
+    const char* steps;
 };
 /* a section of the .ini (a group of the launcher's Settings): up to INI_SECTION_TABLES tables, a table with a page
    having a page of its own in the menus, listed after the section's other keys. own: the tables options.c applies
@@ -121,12 +143,18 @@ const char* ini_only_words(int flags);
 const char* ini_only(const IniOpt* o);
 /* an INI_INT's value v as the menus read it: its word, or the number */
 void ini_word(const IniOpt* o, int v, char* out, size_t n);
+/* a float's v a step down (dir -1) or up (1) as the menus step one: by a quarter, a twentieth where lo to hi is 2 or
+   less, to the next point of that grid the way it goes (from one between two, the nearer that way), stopping at lo
+   and hi */
+double ini_float_step(double v, double lo, double hi, int dir);
 /* v a step down (dir -1) or up (1): words go round, numbers and a slider's words stop at lo and hi */
 int ini_step(const IniOpt* o, int v, int dir);
 /* the sections' settings but the INI_IN_GAME ones as the launcher reads them (gui/settings.h), a line each: section
    [/page], key, default, int | float | text, lowest, highest, help, name, the values value=word between '|', then
    ini_only's words (empty where the setting does something on this system), needs-build for an INI_NEEDS_BUILD row
-   and slider for an INI_SLIDER one (an empty column before it where the row needs nothing), tabs between. Into out,
+   and its marks, a space between two, for the rest (an empty column before them where the row needs nothing):
+   slider for an INI_SLIDER row, open for an INI_OPEN one or one with steps, boxes for an INI_BOXES one, whose values
+   are its items value=Label~About, and folder, file or save for an INI_PATH_ one, tabs between. Into out,
    NUL-terminated as it fits; the length it needs, without the NUL */
 size_t ini_list_text(const IniSection* sections, int count, char* out, size_t size);
 

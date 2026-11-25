@@ -32,7 +32,9 @@ size_t snx_x64_block(const uint32_t* words, size_t* count, uint64_t pc, uint64_t
 }
 
 void snx_x64_set_pool(int registers) { g_ctx.x.pool = registers; }
+void snx_x64_set_xpool(int registers) { g_ctx.x.xpool = registers; }
 int snx_x64_pool(void) { return g_ctx.x.pool; }
+int snx_x64_xpool(void) { return g_ctx.x.xpool; }
 
 /* the helpers the code calls (x64_helpers.c, linked in), by name */
 u64 snx_x64_fp_binary(CPU* c, u64 a, u64 b, u64 fpcr, u32 desc);
@@ -47,6 +49,11 @@ u64 snx_x64_fp_to_int(CPU* c, u64 a, u64 fpcr, u32 desc);
 u64 snx_x64_fp_from_int(CPU* c, u64 a, u64 fpcr, u32 desc);
 u64 snx_x64_fp_jcvt(CPU* c, u64 a, u64 fpcr);
 u64 snx_x64_fp_bfcvt(CPU* c, u64 a, u64 fpcr);
+u64 snx_x64_aes(u64 x, u32 op);
+u64 snx_x64_estimate(u64 a, u32 sqrt);
+u64 snx_x64_half(u64 a, u64 fpcr);
+u64 snx_x64_bfdot(u64 sum, u64 a, u64 b);
+u64 snx_x64_sm4_box(u64 a);
 extern const u32 snx_x64_crc32_table[256];
 /* the floating-point helpers counted: a hot path's operation calls none */
 static unsigned long g_fp_calls;
@@ -101,6 +108,11 @@ static SnxU64 resolve(const char* sym) {
                  SNX_X64_FN(snx_x64_fp_from_int),
                  SNX_X64_FN(snx_x64_fp_jcvt),
                  SNX_X64_FN(snx_x64_fp_bfcvt),
+                 SNX_X64_FN(snx_x64_aes),
+                 SNX_X64_FN(snx_x64_estimate),
+                 SNX_X64_FN(snx_x64_half),
+                 SNX_X64_FN(snx_x64_bfdot),
+                 SNX_X64_FN(snx_x64_sm4_box),
                  {"snx_x64_crc32_table", (void*)snx_x64_crc32_table}};
     for (size_t i = 0; i < sizeof table / sizeof *table; ++i)
         if (!strcmp(sym, table[i].name)) return (SnxU64)(uintptr_t)table[i].f;

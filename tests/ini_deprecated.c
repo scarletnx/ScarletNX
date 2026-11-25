@@ -40,6 +40,8 @@ int main(void) {
     /* renamed, of the same values: the launcher carries a pick of it over */
     assert(ini_renamed("vk_descriptors") && !strcmp(ini_renamed("vk_descriptors"), "vk_descriptors_mode") &&
            !ini_renamed("memory_fit") && !ini_renamed("vk_descriptors_mode") && !ini_renamed(""));
+    assert(!strcmp(ini_renamed("dlss_render_size"), "internal_resolution") && ini_deprecated("dlss_render_size") &&
+           ini_deprecated("dlss_upscaler") && !ini_renamed("dlss_upscaler") && !ini_deprecated("internal_resolution"));
     /* the NVN and Maxwell paths' switches, the ASTC background's CPU threads and the unattended run's one press */
     assert(!strcmp(ini_deprecated("nvn_direct"), "the runtime always runs the game's NVN calls") &&
            ini_deprecated("mme_verify") && ini_deprecated("astc_background_threads") &&

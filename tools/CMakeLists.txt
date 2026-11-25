@@ -3,6 +3,13 @@
 # snx-shaderc: translates a captured shader corpus directly to SPIR-V.
 add_executable(snx-shaderc snx_shaderc.c)
 target_link_libraries(snx-shaderc PRIVATE snx_shader)
+if(SNX_TRACY)
+    # snx_shader emits zones in a client build; this tool has no runtime tracy.c
+    target_sources(snx-shaderc PRIVATE "${PROJECT_SOURCE_DIR}/tests/tracy_stubs.c")
+    target_include_directories(snx-shaderc SYSTEM PRIVATE
+        $<TARGET_PROPERTY:Tracy::TracyClient,INTERFACE_INCLUDE_DIRECTORIES>)
+    target_link_libraries(snx-shaderc PRIVATE Tracy::TracyClient)
+endif()
 if(NOT WIN32)
     target_link_libraries(snx-shaderc PRIVATE Threads::Threads m)
 endif()
@@ -11,6 +18,12 @@ set_target_properties(snx-shaderc PROPERTIES LINKER_LANGUAGE CXX RUNTIME_OUTPUT_
 # and translates the programs to SPIR-V (src/nx/gpu/shader/sm86.h)
 add_executable(snx-sm86 snx_sm86.c)
 target_link_libraries(snx-sm86 PRIVATE snx_shader)
+if(SNX_TRACY)
+    target_sources(snx-sm86 PRIVATE "${PROJECT_SOURCE_DIR}/tests/tracy_stubs.c")
+    target_include_directories(snx-sm86 SYSTEM PRIVATE
+        $<TARGET_PROPERTY:Tracy::TracyClient,INTERFACE_INCLUDE_DIRECTORIES>)
+    target_link_libraries(snx-sm86 PRIVATE Tracy::TracyClient)
+endif()
 if(NOT WIN32)
     target_link_libraries(snx-sm86 PRIVATE Threads::Threads m)
 endif()

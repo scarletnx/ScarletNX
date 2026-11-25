@@ -110,6 +110,7 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
+#include "nx/runtime/platform/tracy.h"
 #if defined(__ANDROID__)
 #include <vulkan/vulkan_android.h>
 #endif
@@ -892,8 +893,13 @@ static void imp_let_go(u32 i) {
     int dead = m->dead;
     pm_unlock(&g_uma.lk);
     /* the writes in place still pending there land in its buffer first, which the move back copies; a dead one's pages
-       are other pages already, which waited for them (vk_uma_mapping_begin) */
+       are other pages already, and that change waited for those anywhere in it (vk_uma_mapping_begin, vk_uma_owning) */
     if (m->fd >= 0 && !dead) region_writes_land(m->cpu, m->cpu + m->size);
+    if (m->fd >= 0 && dead && region_writes_wait(m->cpu, m->cpu + m->size))
+        LOG_LIMIT(4,
+                  "vulkan: the region over guest memory %llx+%llx goes with writes in place pending: they land in its "
+                  "buffer alone, and memory keeps the bytes from before them\n",
+                  (unsigned long long)m->cpu, (unsigned long long)m->size);
     if (m->fd >= 0 && (r = mem_unmigrate(m->cpu, m->size)) != 0)
         WARN("vulkan: guest memory %llx+%llx stays in the buffer it moved into (error %d) until it is unmapped\n",
              (unsigned long long)m->cpu, (unsigned long long)m->size, r);
@@ -1984,28 +1990,37 @@ static void wait_out_why(const Out* o, int why) {
     const u64 sub = o->sub, t0 = plat_ns();
     atomic_fetch_add_explicit(&g_uma.wait_by[why], 1, memory_order_relaxed);
     g_uma.out_waits++;
+    /* vk_uma_mem_need_cpu's callers (a video decoder's and VIC's picture) hold nothing of the frame across it: the
+       thread that records the frame takes vk_lock meanwhile, where that wait held it up for each picture of a video */
+    const int let_go = why == 2; /* mem-need-cpu */
     if (sub > vk_last_submit()) {
         g_uma.open_waits++;
         g_uma.wait_open[why]++;
         read_soon_add(o->prog);
-        vk_finish();
+        if (let_go)
+            vk_finish_letting_go();
+        else
+            vk_finish();
     } else {
+        const int paused = let_go && vk_lock_pause();
         vk_wait_submit(sub);
+        vk_lock_resume(paused);
         vk_land_through(sub);
     }
     g_uma.wait_ns[why] += plat_ns() - t0;
 }
 /* The writes in place pending in the regions over guest memory [lo, hi) done, before their pages change or move back:
    a region's buffer is the guest's memory until then, and its readers are waited for by nobody (quiesce), as the buffer
-   keeps the bytes they read; a write landing after the change would land in the buffer alone (vk_lock held) */
+   keeps the bytes they read; a write landing after the change would land in the buffer alone (vk_lock held). Those
+   anywhere in such a region, not only over [lo, hi): a page of it that changes takes the whole region with it
+   (pages_replaced), and its other pages move back with the bytes the buffer holds then (imp_let_go) */
 static const Out* region_writes_newest(u64 lo, u64 hi) {
     const Out* newest = NULL;
     if (!atomic_load_explicit(&g_uma_any, memory_order_relaxed)) return NULL;
     for (u32 i = 0; i < g_uma.nimp; i++) {
         const Imp* m = &g_uma.imp[i];
         if (m->fd < 0 || m->cpu >= hi || lo >= m->cpu + m->size) continue;
-        u64 a = m->cpu > lo ? m->cpu : lo, b = m->cpu + m->size < hi ? m->cpu + m->size : hi;
-        newest = newer_out(newest, newest_out(a, b - a));
+        newest = newer_out(newest, newest_out(m->cpu, m->size));
     }
     return newest;
 }
@@ -2063,6 +2078,9 @@ int vk_uma_publish(u64 cpu, u64 len, VkBuffer src, u64 off) {
     VkBuffer ib;
     u64 io;
     if (!vk_uma_held(cpu, len) || !bind(cpu, len, 1, &ib, &io)) return 0; /* no import made for it */
+    /* a landing the import takes instead of a trap: the bytes copied into it, and why there was no trap */
+    SNX_ZONE_T(z, "vk mem uma publish", "%s", "no owner or trap, import holds the bytes");
+    SNX_ZONE_VALUE(z, len);
     vk_render_end();
     VkCommandBuffer cb = vk_cmd();
     vk_all_barrier_by(VK_BAR_UMA,

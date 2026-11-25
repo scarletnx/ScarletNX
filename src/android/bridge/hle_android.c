@@ -132,20 +132,39 @@ static void window_set_geometry(CPU* c, void* data) {
 
 typedef struct {
     int epoll;
-    int32_t refs;
+    _Atomic int32_t refs; /* the thread's own and ALooper_acquire's: the set goes with the last */
 } Looper;
 static _Thread_local Looper* t_looper;
 
+static void looper_put(Looper* l) {
+    if (!l || atomic_fetch_sub_explicit(&l->refs, 1, memory_order_acq_rel) != 1) return;
+    if (l->epoll >= 0) host_close(l->epoll);
+    free(l);
+}
+static void looper_end(void* what) {
+    if (t_looper == what) t_looper = NULL;
+    looper_put(what);
+}
 static void looper_prepare(CPU* c, void* data) {
     (void)data;
     if (!t_looper) {
         t_looper = calloc(1, sizeof *t_looper);
         if (t_looper) {
             t_looper->epoll = host_epoll_create(true);
-            t_looper->refs = 1;
+            atomic_store_explicit(&t_looper->refs, 1, memory_order_relaxed);
+            bridge_thread_keep(looper_end, t_looper);
         }
     }
     X(0) = (uint64_t)(uintptr_t)t_looper;
+}
+static void looper_acquire(CPU* c, void* data) {
+    (void)data;
+    Looper* l = PTR(0);
+    if (l) atomic_fetch_add_explicit(&l->refs, 1, memory_order_relaxed);
+}
+static void looper_release(CPU* c, void* data) {
+    (void)data;
+    looper_put(PTR(0));
 }
 static void looper_for_thread(CPU* c, void* data) {
     (void)data;
@@ -314,8 +333,8 @@ const HleSymbol hle_android[] = {
     {"ANativeWindow_setBuffersGeometry", window_set_geometry, NULL},
     {"ALooper_prepare", looper_prepare, NULL},
     {"ALooper_forThread", looper_for_thread, NULL},
-    {"ALooper_acquire", zero_result, NULL},
-    {"ALooper_release", zero_result, NULL},
+    {"ALooper_acquire", looper_acquire, NULL},
+    {"ALooper_release", looper_release, NULL},
     {"ALooper_addFd", looper_add_fd, NULL},
     {"ALooper_removeFd", looper_remove_fd, NULL},
     {"ASensorManager_getInstance", sensor_get_instance, NULL},

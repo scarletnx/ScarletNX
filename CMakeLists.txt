@@ -180,6 +180,8 @@ if(NOT SNX_BUILD_TESTING)
 endif()
 # Before the dependencies: the tests' network fixtures link ENet and zstd, whatever the build
 include(CTest)
+# a test option given without the tests stops here
+include(cmake/test_options.cmake)
 # ThinLTO in the optimized configurations, where the toolchain links it (cmake/lto.cmake): before the packages, which
 # get it too
 include(cmake/lto.cmake)
@@ -322,6 +324,15 @@ string(FIND "${renderdoc_app}" "*/" renderdoc_app_end)
 string(SUBSTRING "${renderdoc_app}" 0 ${renderdoc_app_end} renderdoc_app)
 file(WRITE "${PROJECT_BINARY_DIR}/renderdoc_app-LICENSE.txt" "${renderdoc_app}*/\n")
 install(FILES "${PROJECT_BINARY_DIR}/renderdoc_app-LICENSE.txt" DESTINATION ${licenses}/renderdoc_app RENAME LICENSE.txt)
+# NVIDIA Streamline's headers (a Windows build's DLSS, cmake/dependencies.cmake): their license is the MIT comment at the
+# top of each, as sl.h has it
+if(WIN32)
+    file(READ "${snx_streamline_include}/sl.h" streamline_sl)
+    string(FIND "${streamline_sl}" "*/" streamline_sl_end)
+    string(SUBSTRING "${streamline_sl}" 0 ${streamline_sl_end} streamline_sl)
+    file(WRITE "${PROJECT_BINARY_DIR}/Streamline-LICENSE.txt" "${streamline_sl}*/\n")
+    install(FILES "${PROJECT_BINARY_DIR}/Streamline-LICENSE.txt" DESTINATION ${licenses}/Streamline RENAME LICENSE.txt)
+endif()
 install(FILES "${OpenSSL_SOURCE_DIR}/LICENSE.txt" DESTINATION ${licenses}/OpenSSL)
 # lib/LICENSE is the library's BSD-2-Clause. The top-level LICENSE covers the rest of LZ4 (GPL-2.0-or-later), none
 # of which is built here

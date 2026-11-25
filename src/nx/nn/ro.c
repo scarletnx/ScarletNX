@@ -17,7 +17,9 @@
 #include "nx/runtime/linker.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/tracy.h"
 #include "common/utilities/endian.h"
+#include <stdio.h>
 #include <string.h>
 
 /* nn::ro's results, module 22: an image that is no NRO (4), a name nothing defines (5), an image that is no NRR (6) */
@@ -37,7 +39,15 @@ enum { INFO_STATE = 0, INFO_NRR = 8, INFO_NODE = 0x10 };
 /* ldr:ro's result as the SDK takes it: nn::ro's own (module 22, descriptions 1 to 1023) go to the game, and on any
    other failure the SDK stops the game */
 static u32 result(const char* function, int r) {
-    if (!r || ((r & 0x1FF) == 22 && (((u32)r >> 9) & 0x1FFF) - 1 < 0x3FF)) return (u32)r;
+    if (!r || ((r & 0x1FF) == 22 && (((u32)r >> 9) & 0x1FFF) - 1 < 0x3FF)) {
+        /* a failure a game may handle is rare: say which call and which result, as the fatal does for the rest */
+        if (r && snx_tracy_attached()) {
+            char text[96];
+            int n = snprintf(text, sizeof text, "nn ro %s error %#x", function, (unsigned)r);
+            if (n > 0) SNX_MSG(text, (size_t)(n < (int)sizeof text ? n : (int)sizeof text - 1));
+        }
+        return (u32)r;
+    }
     fatal("nn::ro::%s: loading the game's modules failed with the result %#x, which the SDK stops the game on",
           function, (unsigned)r);
 }
@@ -114,10 +124,17 @@ u32 nnro_load_module_check(CPU* c, u64 module, u64 image, u64 buffer, u64 size, 
     u64 base = 0, mod0;
     u32 r;
     (void)flag;
-    if (memcmp(nro + RO_NRO_MAGIC, "NRO0", 4)) return RO_NOT_NRO;
+    SNX_ZONE_TV(z, "nn ro load module", size, "image %llu bytes", (unsigned long long)size);
+    if (memcmp(nro + RO_NRO_MAGIC, "NRO0", 4)) {
+        SNX_ZONE_TEXT(z, "not an NRO");
+        return RO_NOT_NRO;
+    }
     r = result("LoadModule",
                (int)linker_nro_load(c, image, snx_ld_le32(nro + RO_NRO_SIZE), buffer, size, check, &base));
-    if (r) return r;
+    if (r) {
+        SNX_ZONE_TEXT(z, "link refused %#x", r);
+        return r;
+    }
     mod0 = base + snx_ld_le32(hook_host(c, base + 4));
     snx_st_le64(hook_host(c, module + MODULE_OBJECT), mod0 + snx_ld_le32(hook_host(c, mod0 + 0x18)));
     snx_st_le32(hook_host(c, module + MODULE_STATE), 1);

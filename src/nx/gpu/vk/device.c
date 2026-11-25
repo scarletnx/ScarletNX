@@ -25,6 +25,7 @@
 #include "common/gpu/vk/device_settings.h"
 #include "common/gpu/vk/gpu_pstate.h"
 #include "nx/gpu/vk/hdr_swapchain.h"
+#include "nx/gpu/vk/upscaler/dlss.h"
 #include "common/gpu/vk/swapchain.h"
 #include "common/gpu/vk/vk_common.h"
 #include "common/utilities/bits.h"
@@ -34,11 +35,19 @@
 int g_vk_preserve_infnan;
 int g_vk_preserve_infnan64;
 int g_vk_flush_denorm;
-VkShaderStageFlags g_vk_subgroup_stages;
+VkShaderStageFlags g_vk_subgroup_stages, g_vk_quad_stages;
+u32 g_vk_subgroup_lanes;
 
 VkState g_vk;
 /* reentrant on the thread that holds it: landing compute results writes guest memory, which can come back here */
 static PMutex g_vklock;
+/* The context SNX_LOCK_MARK needs is the one g_pm_tracy_snx makes through pm_tracy_make (tracy.c). thread.c keeps it
+   in the PMutex, behind its PmNamed wrapper whose first word is that profiler context; read it as pm_named does. Null
+   until the lock is announced (or a client starts), so a mark is a no-op then. */
+static SnxTracyLock* vk_lock_context(void) {
+    void* named = atomic_load_explicit(&g_vklock.tracy, memory_order_acquire);
+    return named ? *(SnxTracyLock**)named : NULL;
+}
 static _Thread_local int t_vkdepth;
 /* from vk_lock_pause to vk_lock_resume: the hold goes on after it, and a hold of the lock in between does not end
    this one's (vk_own_release_held) */
@@ -106,14 +115,16 @@ void vk_lock(void) {
         if (!got) { /* held: the GPU thread says so for the stall report */
             uintptr_t holder = atomic_load_explicit(&g_vk_site, memory_order_relaxed);
             u64 t_wait = plat_ns();
-            /* Only a contended acquisition gets a zone. */
-            SNX_ZONE(z_wait, "vk lock wait");
+            /* Only a contended acquisition gets a zone. The text names the holder, gated by SNX_TRACY_EMIT so
+               vk_lock_owner() is read only when a client is attached. */
+            SNX_ZONE_T(z_wait, "vk lock wait", "holder %u", vk_lock_owner());
             gpu_wait_note("vk_lock, which another thread holds", 0);
             /* the timeout only guards against a wake lost to the store's race: the baton is cleared at each take */
             while (atomic_load_explicit(&g_vk_baton, memory_order_acquire)) plat_wait_word(&g_vk_baton, 1, 1000000);
             if (!pm_trylock(&g_vklock)) {
                 atomic_fetch_add_explicit(&g_vk_waiting, 1, memory_order_seq_cst);
                 pm_lock(&g_vklock);
+                SNX_LOCK_MARK(vk_lock_context()); /* held here, other threads waiting in pm_lock */
                 atomic_fetch_sub_explicit(&g_vk_waiting, 1, memory_order_seq_cst);
             }
             gpu_wait_note(NULL, 0);
@@ -296,13 +307,54 @@ typedef struct {
         separateStencilMaskRef, shaderSampleRateInterpolationFunctions, tessellationIsolines, tessellationPointMode,
         triangleFans, vertexAttributeAccessBeyondStride;
 } PortabilityFeatures;
+/* NVIDIA DLSS (gpu/vk/upscaler/dlss.h), on while Streamline runs: it starts before the instance, when the settings
+   name the folder of NVIDIA's runtime and the render upscaler may be DLSS, says what the instance and the device need,
+   and takes the device and the swapchain's calls once they are made. Where any of that can't be, it stops and the
+   upscalers go on without DLSS */
+static int g_dlss;
+static void dlss_log(int level, const char* text) {
+    if (level)
+        WARN("vulkan: %s\n", text);
+    else
+        LOG("vulkan: %s\n", text);
+}
+static void dlss_off(const char* why) {
+    WARN("vulkan: no DLSS: %s\n", why);
+    g_dlss = 0;
+}
+static void dlss_start(void) {
+    const char* why;
+    int may = g_settings.render_upscaler == 0 || g_settings.render_upscaler == SNX_UPSCALER_DLSS + 1;
+    if (g_opt_headless || !g_settings.dlss_runtime[0] || !may) return;
+    /* the setting's words are NVIDIA's own choice, then the presets J, K, L and M (10 to 13) */
+    g_dlss = snx_dlss_start(g_settings.dlss_runtime, g_settings.dlss_preset ? 9 + g_settings.dlss_preset : 0, dlss_log,
+                            &why);
+    if (!g_dlss) dlss_off(why);
+}
+/* the swapchain's calls through Streamline's, which does its work for each frame in the present */
+static void dlss_hook(void) {
+    PFN_vkVoidFunction f;
+#define DLSS_HOOK(name)                                                                                                \
+    if ((f = snx_dlss_proxy(#name)) != NULL)                                                                           \
+        name = (PFN_##name)f;                                                                                          \
+    else                                                                                                               \
+        WARN("vulkan: Streamline has no " #name ": the driver's is called\n");
+    DLSS_HOOK(vkCreateSwapchainKHR)
+    DLSS_HOOK(vkDestroySwapchainKHR)
+    DLSS_HOOK(vkGetSwapchainImagesKHR)
+    DLSS_HOOK(vkAcquireNextImageKHR)
+    DLSS_HOOK(vkQueuePresentKHR)
+    DLSS_HOOK(vkDeviceWaitIdle)
+#undef DLSS_HOOK
+}
+
 /* MoltenVK (macOS, iOS) is a portability driver: the loader lists it only for an instance that asks for those */
 static int create_instance(void) {
     u32 nbe = 0;
     const char* const* be = g_opt_headless ? NULL : backend_vk_extensions(&nbe);
     /* the window's, and the surface's present timing capabilities (VK_EXT_present_timing) are asked through
-       VK_KHR_get_surface_capabilities2 */
-    const char* ext[18];
+       VK_KHR_get_surface_capabilities2, then DLSS's */
+    const char* ext[26];
     u32 next = 0;
     for (u32 i = 0; i < nbe && next < 16; i++) ext[next++] = be[i];
     if (nbe > 16) WARN("vulkan: the window backend wants %u instance extensions, only 16 are taken\n", nbe);
@@ -314,6 +366,24 @@ static int create_instance(void) {
     if (!g_opt_headless && next < 17 && snx_vk_has_instance_extension(VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME)) {
         ext[next++] = VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME;
         g_vk.has_swapchain_colorspace = 1;
+    }
+    dlss_start();
+    if (g_dlss) {
+        const char* const* dn;
+        u32 nd = snx_dlss_instance_extensions(&dn), before = next;
+        for (u32 i = 0; i < nd && g_dlss; i++) {
+            int there = 0;
+            for (u32 j = 0; j < next && !there; j++) there = !strcmp(ext[j], dn[i]);
+            if (there) continue;
+            if (next < sizeof ext / sizeof *ext && snx_vk_has_instance_extension(dn[i])) {
+                ext[next++] = dn[i];
+                continue;
+            }
+            snx_dlss_stop();
+            dlss_off(next < sizeof ext / sizeof *ext ? "the Vulkan loader lacks an instance extension DLSS needs"
+                                                     : "too many instance extensions");
+            next = before;
+        }
     }
     SnxVkInstanceInfo info = {.app_name = "ScarletNX",
                               .extensions = ext,
@@ -742,7 +812,8 @@ static u32 extension_needs(const SnxVkExtensions* e, int core13, VkExtensionNeed
     return needs;
 }
 
-/* the stages whose programs the translator gives subgroup operations, and what VOTE and SHFL do in the others */
+/* the stages whose programs the translator gives subgroup operations, and what VOTE and SHFL do in the others: after
+   has_cs_warp32, which may add compute */
 static void log_subgroups(u32 size, VkSubgroupFeatureFlags operations, VkShaderStageFlags stages) {
     static const struct {
         VkShaderStageFlags bit;
@@ -761,11 +832,15 @@ static void log_subgroups(u32 size, VkSubgroupFeatureFlags operations, VkShaderS
     }
     LOG("vulkan: subgroups of %u lanes, operations %#x, stages %#x: VOTE and SHFL use them in %s programs%s\n", size,
         (unsigned)operations, (unsigned)stages, with[0] ? with : "no",
-        g_vk_subgroup_stages || !stages ? "" : ", as they need 32 lanes or more, ballot, shuffle and arithmetic");
+        g_vk_subgroup_stages || !stages ? (size < 32 && (g_vk_subgroup_stages & VK_SHADER_STAGE_COMPUTE_BIT)
+                                               ? ", in subgroups of 32 that their pipelines ask for"
+                                               : "")
+                                        : ", as they need 32 lanes or more, ballot, shuffle and arithmetic");
     if (without[0])
         LOG("vulkan: %s programs have no subgroup: a vertex, evaluation, geometry or fragment one among them that "
             "votes or shuffles runs each invocation as one lane alone (a fragment's reads within its quad through fine "
-            "derivatives), and a control or compute one is not translated\n",
+            "derivatives), a compute one too where its adds, minima and maxima come to the same, and a control one or "
+            "any other compute one is not translated\n",
             without);
 }
 
@@ -844,14 +919,15 @@ static bool choose_device(SnxVkChoice* c, void* user) {
                                               .pNext = &subgroup};
     VkPhysicalDeviceProperties2 pp2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &p12};
     vkGetPhysicalDeviceProperties2(g_vk.phys, &pp2);
-    g_vk_subgroup_stages =
-        subgroup.subgroupSize >= 32 &&
-                (subgroup.supportedOperations & (VK_SUBGROUP_FEATURE_BALLOT_BIT | VK_SUBGROUP_FEATURE_SHUFFLE_BIT |
-                                                 VK_SUBGROUP_FEATURE_ARITHMETIC_BIT)) ==
-                    (VK_SUBGROUP_FEATURE_BALLOT_BIT | VK_SUBGROUP_FEATURE_SHUFFLE_BIT |
-                     VK_SUBGROUP_FEATURE_ARITHMETIC_BIT)
-            ? subgroup.supportedStages
-            : 0;
+    const VkSubgroupFeatureFlags warp_operations =
+        VK_SUBGROUP_FEATURE_BALLOT_BIT | VK_SUBGROUP_FEATURE_SHUFFLE_BIT | VK_SUBGROUP_FEATURE_ARITHMETIC_BIT;
+    const int warp_operates = (subgroup.supportedOperations & warp_operations) == warp_operations;
+    g_vk_subgroup_stages = subgroup.subgroupSize >= 32 && warp_operates ? subgroup.supportedStages : 0;
+    g_vk_quad_stages = subgroup.subgroupSize >= 4 &&
+                               (subgroup.supportedOperations & VK_SUBGROUP_FEATURE_SHUFFLE_BIT)
+                           ? subgroup.supportedStages
+                           : 0;
+    g_vk_subgroup_lanes = subgroup.subgroupSize;
     /* a driver that lists the stage and gives wrong ballot and shuffle results there (Turnip's geometry stage, as
        Eden found): its programs take the path of a device that does not list it */
     if (vk_ban("VK_SHADER_STAGE_GEOMETRY_BIT", (g_vk_subgroup_stages & VK_SHADER_STAGE_GEOMETRY_BIT) != 0, ban_say))
@@ -862,7 +938,6 @@ static bool choose_device(SnxVkChoice* c, void* user) {
        quadOperationsInAllStages, is about the other stages) */
     g_spirv_translate.quad_compute = (g_vk_subgroup_stages & VK_SHADER_STAGE_COMPUTE_BIT) &&
                                      (subgroup.supportedOperations & VK_SUBGROUP_FEATURE_QUAD_BIT);
-    log_subgroups(subgroup.subgroupSize, subgroup.supportedOperations, subgroup.supportedStages);
     g_vk_preserve_infnan = p12.shaderSignedZeroInfNanPreserveFloat32 != 0;
     /* a binding's stride as dynamic state, core in Vulkan 1.3, unless a driver is banned from it (MoltenVK's fails every
        pipeline that lists it): pipeline.c puts the stride in the pipeline then */
@@ -1534,6 +1609,13 @@ static bool choose_device(SnxVkChoice* c, void* user) {
                              sizes.maxSubgroupSize >= 32 &&
                              (sizes.requiredSubgroupSizeStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0;
     }
+    /* a device whose own subgroups are narrower and that lets a compute pipeline ask for 32 serves a compute program's
+       VOTE and SHFL so: compute.c asks, for a program that reads other lanes */
+    if (warp_operates && g_vk.has_cs_warp32 && (subgroup.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT)) {
+        g_vk_subgroup_stages |= VK_SHADER_STAGE_COMPUTE_BIT;
+        g_spirv_translate.quad_compute = (subgroup.supportedOperations & VK_SUBGROUP_FEATURE_QUAD_BIT) != 0;
+    }
+    log_subgroups(subgroup.subgroupSize, subgroup.supportedOperations, subgroup.supportedStages);
     /* after has_cs_warp32: the compute-task path's task program needs it (mesh_choose) */
     mesh_choose(has_mesh, &qmesh, &q13, core13 || has_size_control);
     {
@@ -2497,6 +2579,16 @@ static bool choose_device(SnxVkChoice* c, void* user) {
                                               .queueFamilyIndex = g_vk.video_family,
                                               .queueCount = 1,
                                               .pQueuePriorities = prio};
+    if (g_dlss) {
+        /* DLSS's device extensions, which Streamline names at run time, go into the choice past snx_vk_choice_enable:
+           no vk_ext_* setting names them, and the player turns them off with DLSS (dlss_runtime, render_upscaler) */
+        const char* why = "it needs Vulkan 1.3";
+        if (!core13 || !snx_dlss_device(g_vk.phys, c->extensions, &c->extension_count, SNX_VK_CHOICE_EXTENSIONS, &f12,
+                                        &q12, &f13, &q13, &why)) {
+            if (!core13) snx_dlss_stop();
+            dlss_off(why);
+        }
+    }
     if (!snx_vk_choice_create(c, chain, &g_vk.feat, qci, nq)) return false;
     g_vk.gfx_queues = second ? 2 : 1;
     g_vk.feat11 = f11;
@@ -2600,6 +2692,15 @@ static int create_device(void) {
     pm_lock_announce(&g_vklock, "vulkan"); /* the device's calls, every thread's */
     vkGetDeviceQueue(g_vk.dev, g_vk.gfx_family, 0, &g_vk.gfx);
     vkGetDeviceQueue(g_vk.dev, g_vk.compute_family, second ? 1 : 0, &g_vk.compute);
+    if (g_dlss) {
+        /* DLSS records into the frame's command buffers and asks for no queue of its own: the graphics queue's
+           family is the one it is told of, for both */
+        const char* why;
+        if (snx_dlss_attach(g_vk.instance, g_vk.phys, g_vk.dev, g_vk.gfx_family, 0, g_vk.gfx_family, 0, &why))
+            dlss_hook();
+        else
+            dlss_off(why);
+    }
     vk_mem_init(sparse_queue);
     /* the renderer's own allocator (devmem.c): its blocks are 64 MiB at most, and no more than the cap */
     if (!vk_devmem_init(g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support || g_vk.has_copy_indirect ||
@@ -3091,6 +3192,7 @@ int vk_init(void) {
     if (cap) g_vk.api_cap = cap;
     pm_init(&g_vklock);
     pm_init(&g_vk.sc_lock);
+    pm_lock_announce(&g_vk.sc_lock, "vk swapchain"); /* the game's threads and the GPU thread around present */
     if (g_opt_headless) {
         /* Load libvulkan/vulkan-1 directly, or the driver the program's folders carry (an Apple app's MoltenVK): no SDL
            video driver or headless-surface extension is needed. */

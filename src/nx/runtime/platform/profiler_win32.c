@@ -209,6 +209,8 @@ static void write_profile(u64 started) {
     u64 image = (u64)(size_t)&__ImageBase;
     FILE* f;
     int i, j, n = 0, used = atomic_load_explicit(&g_threads_used, memory_order_acquire);
+    SNX_ZONE_T(z_write, "plat profile write", "10s tick");
+    SNX_PLOT("plat profile samples", (double)g_samples);
     slot_names();
     snprintf(path, sizeof path, "%sprofile.txt", g_exedir);
     f = fopen(path, "w");

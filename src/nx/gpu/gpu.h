@@ -187,21 +187,48 @@ typedef struct {
     u64 addr;
 } Surf2D;
 
-/* A temporal upscale: the frame's color at the render size with its depth and motion vectors, onto the output at out
-   from out_base. jitter: the camera's offset in render pixels (the picture moved by +jitter). motion_scale brings a
-   motion vector to pixels of the motion vectors' size: render pixels, or output pixels for vectors at the output's
-   size (DLSS without flag 2). flags: the DLSS network's builder flags, taken as NGX's feature bits (1 HDR, 2 motion
-   vectors at the render size, 4 motion vectors that include the jitter, 8 inverted depth, 0x40 auto exposure).
-   render_max: the largest render size a dynamic resolution may give (the network's), 0 when not known */
+/* An upscale (renderer.h's upscale, docs/layers/gpu/upscalers.md): the frame's color at the render size, with its depth
+   and motion vectors where has_depth and has_motion say so, onto the output at out from out_base. jitter: the camera's
+   offset in render pixels (the picture moved by +jitter). motion_scale brings a motion vector to pixels of the motion
+   vectors' size: render pixels, or output pixels for vectors at the output's size (DLSS without flag 2). flags: below,
+   the low ones a DLSS network's builder flags taken as NGX's feature bits. render_max: the largest render size a dynamic
+   resolution may give (the network's), 0 when not known. near_plane, far_plane and fov_y (radians): the camera, 0 when
+   not known. The renderer picks the upscaler from the settings among those the caller accepts (flags) */
 typedef struct {
     Surf2D color, depth, motion, exposure, reactive, output;
-    int has_exposure, has_reactive;
+    int has_depth, has_motion, has_exposure, has_reactive;
     u32 render[2], out[2], render_max[2];
     i32 out_base[2];
     f32 jitter[2], motion_scale[2], pre_exposure;
+    f32 near_plane, far_plane, fov_y;
     int reset;
     u32 flags;
+    const char** ran; /* where the renderer writes the name of the upscaler that ran, NULL for nowhere */
+    /* with GPU_UPSCALE_REPROJECTED_MOTION: this frame's render pixel (x, y as -1 to 1, y down, depth as stored) to
+       the frame before's, row-major (hle/hook/snx_hook_module.h's SnxHookRecordedUpscale) */
+    f32 reprojection[16];
 } GpuUpscale;
+enum {
+    /* NGX's feature bits, as a DLSS network's builder flags give them */
+    GPU_UPSCALE_HDR = 1,
+    GPU_UPSCALE_RENDER_MOTION = 2,   /* motion vectors at the render size */
+    GPU_UPSCALE_JITTERED_MOTION = 4, /* motion vectors that include the jitter */
+    GPU_UPSCALE_INVERTED_DEPTH = 8,
+    GPU_UPSCALE_AUTO_EXPOSURE = 0x40,
+    /* the runtime's own: motion vectors made from depth and the reprojection matrix (a hook module's, without motion
+       vectors of its own) */
+    GPU_UPSCALE_REPROJECTED_MOTION = 0x100,
+    /* the runtime's own: the runtime jitters the scene's draws (those into the depth given) and the upscaler gets it */
+    GPU_UPSCALE_RUNTIME_JITTER = 0x200,
+    /* the runtime's own: GPU_UPSCALE_HDR says the color's range (else its format does: a float format is HDR) */
+    GPU_UPSCALE_RANGE_GIVEN = 1u << 16,
+    /* a hook module's upscale (docs/platforms/nx/hooks.md), not a DLSS evaluation, which runs no upscaler with the
+       render_upscaler setting at None */
+    GPU_UPSCALE_MODULE = 1u << 17,
+    /* the kinds of upscaler the caller takes besides a temporal one, which every caller takes */
+    GPU_UPSCALE_SPATIAL_OK = 1u << 18,
+    GPU_UPSCALE_COPY_OK = 1u << 19,
+};
 
 /* An Ounce's shading rate image, for the draws after its bind (NVN's BindShadingRateImage): its texture header (tic,
    a TIC entry's words as host numbers, which the renderer looks up as a draw's texture) and its GPU address (addr, 0

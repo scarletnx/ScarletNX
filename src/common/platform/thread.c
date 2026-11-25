@@ -42,6 +42,11 @@ static struct {
 } g_pm_wait[PM_WAITS];
 /* Written once per thread, on its first wait, and read by the hang report. */
 static _Atomic unsigned g_pm_nwait;
+/* The slots of threads that have ended, a bit each, taken again before a new one: a game whose threads come and go
+   would leave the report without the later ones. A thread gives its slot back through a key of its own (pm_slot_end),
+   and not from thread_spawn.c: one that the system or a library made gives it back too, and neither file needs the
+   other */
+static _Atomic uint64_t g_pm_free[(PM_WAITS + 63) / 64];
 /* This thread's own state in the host's lock bookkeeping: the hang report's slot, its id, and the note the crash
    report prints (plat_thread_note). One struct, so the thread takes a single TLS slot for all of it. On Darwin the
    first access may allocate, which a signal handler must not, so each thread touches it (plat_tid) before it can
@@ -60,12 +65,80 @@ void plat_thread_note(const char* fmt, ...) {
 }
 void plat_thread_note_clear(void) { t_pm.note[0] = 0; }
 const char* plat_thread_note_get(void) { return t_pm.note; }
+/* a slot of a thread that has ended, else the next new one: PM_WAITS when there is none */
+static int pm_slot_take(void) {
+    for (int k = 0; k < (int)(sizeof g_pm_free / sizeof *g_pm_free); k++) {
+        uint64_t w = atomic_load_explicit(&g_pm_free[k], memory_order_relaxed);
+        for (int b = 0; w; b++, w >>= 1) {
+            if (!(w & 1)) continue;
+            uint64_t bit = (uint64_t)1 << b;
+            if (atomic_fetch_and_explicit(&g_pm_free[k], ~bit, memory_order_acquire) & bit) return k * 64 + b;
+        }
+    }
+    unsigned n = atomic_fetch_add_explicit(&g_pm_nwait, 1, memory_order_relaxed);
+    return n < PM_WAITS ? (int)n : PM_WAITS;
+}
+/* a thread ended: its slot i is another's to take. The slot is the key's value, as the thread-locals may be gone by now
+   (Darwin frees them first): t_pm is then a new one, and has none */
+static void pm_slot_end(int i) {
+    if (t_pm.slot == i) t_pm.slot = -1;
+    if (i < 0 || i >= PM_WAITS) return;
+    atomic_store_explicit(&g_pm_wait[i].m, NULL, memory_order_release);
+    atomic_fetch_or_explicit(&g_pm_free[i / 64], (uint64_t)1 << (i % 64), memory_order_release);
+}
+/* the key whose destructor is pm_slot_end: without one (none is left), slots are not given back, which is said once */
+#if defined(_WIN32)
+static struct {
+    INIT_ONCE once;
+    DWORD key;
+} g_pm_key = {INIT_ONCE_STATIC_INIT, FLS_OUT_OF_INDEXES};
+static void WINAPI pm_key_end(void* p) {
+    if (p) pm_slot_end((int)(intptr_t)p - 1);
+}
+static BOOL CALLBACK pm_key_make(PINIT_ONCE once, void* param, void** ctx) {
+    (void)once;
+    (void)param;
+    (void)ctx;
+    g_pm_key.key = FlsAlloc(pm_key_end);
+    if (g_pm_key.key == FLS_OUT_OF_INDEXES)
+        fprintf(stderr,
+                "ScarletNX: no fiber-local slot for the threads' ends (error %lu): the hang report keeps the slots of "
+                "the threads that end\n",
+                (unsigned long)GetLastError());
+    return TRUE;
+}
+static void pm_slot_watch(void) {
+    InitOnceExecuteOnce(&g_pm_key.once, pm_key_make, NULL, NULL);
+    if (g_pm_key.key != FLS_OUT_OF_INDEXES) (void)FlsSetValue(g_pm_key.key, (void*)(intptr_t)(t_pm.slot + 1));
+}
+#else
+static struct {
+    pthread_once_t once;
+    pthread_key_t key;
+    int error;
+} g_pm_key = {.once = PTHREAD_ONCE_INIT};
+static void pm_key_end(void* p) { pm_slot_end((int)(intptr_t)p - 1); }
+static void pm_key_make(void) {
+    g_pm_key.error = pthread_key_create(&g_pm_key.key, pm_key_end);
+    if (g_pm_key.error)
+        fprintf(stderr,
+                "ScarletNX: no pthread key for the threads' ends (%s): the hang report keeps the slots of the threads "
+                "that end\n",
+                strerror(g_pm_key.error));
+}
+static void pm_slot_watch(void) {
+    pthread_once(&g_pm_key.once, pm_key_make);
+    if (!g_pm_key.error) (void)pthread_setspecific(g_pm_key.key, (void*)(intptr_t)(t_pm.slot + 1));
+}
+#endif
 void pm_wait_note(const void* m, const void* at, int cond) {
     int i = t_pm.slot;
     if (i < 0) {
-        unsigned n = atomic_fetch_add_explicit(&g_pm_nwait, 1, memory_order_relaxed);
-        i = t_pm.slot = n < PM_WAITS ? (int)n : PM_WAITS;
-        if (i < PM_WAITS) atomic_store_explicit(&g_pm_wait[i].tid, plat_tid(), memory_order_relaxed);
+        i = t_pm.slot = pm_slot_take();
+        if (i < PM_WAITS) {
+            atomic_store_explicit(&g_pm_wait[i].tid, plat_tid(), memory_order_relaxed);
+            pm_slot_watch();
+        }
     }
     if (i >= PM_WAITS) return;
     atomic_store_explicit(&g_pm_wait[i].at, at, memory_order_relaxed);

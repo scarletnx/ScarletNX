@@ -11,6 +11,7 @@
   * [Current limits and trust](#current-limits-and-trust)
   * [Build and test](#build-and-test)
 * [Experimental local wireless over rooms](#experimental-local-wireless-over-rooms)
+* [Online: sockets and Pretendo Network](#online-sockets-and-pretendo-network)
 * [Source provenance and licensing](#source-provenance-and-licensing)
 * [Boundaries and prerequisites for stage 2b](#boundaries-and-prerequisites-for-stage-2b)
 * [Parity roadmap (Azahar)](#parity-roadmap-azahar)
@@ -365,16 +366,17 @@ Implemented:
   zeroed page-appended BSS, guarded stack and one private initial TLS page.
   `TPIDRURO` points at this page. Initial 3b adds per-thread zeroed TLS slots
   and serialized native context scheduling, not a host-thread/multicore scheduler.
-- The offline LLVM compiler and native host linker, part of `scarletnx-3ds`:
+- The offline compiler and native host linker, part of `scarletnx-3ds`:
   private staging/publication, versioned module ABI and exact image
-  identity. Images up to 4096 bytes retain exhaustive one-instruction ARM/Thumb
+  identity. The host's native back end makes the blocks (`src/common/cpu/arm/aot.h`), and LLVM the ones it refuses,
+  or all of them on a host without one or with `--keep-ir`; the recompile says how many each made, and why. Images up to 4096 bytes retain exhaustive one-instruction ARM/Thumb
   entries. Stage 2b3 adds conservative static CFG discovery for larger images:
   direct branches/calls, conditional continuations, literal/ADR code pointers,
   initialized RO/data pointer candidates, legacy Thumb BL pairs and a bounded
   PC-relative ADD jump window. Initial 3b also recognizes adjacent unsigned
   CMP / LDRLS PC-indexed tables with at most 256 entries; no unbounded sweep.
   Blocks contain at most 32 guest instructions;
-  bounded LLVM chunks are disposed between emissions, then statically linked.
+  bounded chunks of them are objects, then statically linked.
   The link is the LLVM backend's own (`src/common/cpu/recompiler/llvm/link.c`),
   with the helpers the blocks call (`armlib.c`), as the Switch's 32-bit modules
   are: an ELF shared object, a PE DLL or a Mach-O dylib, without a C compiler.
@@ -679,6 +681,9 @@ writes the last frame of both screens as one PPM to exactly PATH, the top above 
 bottom as the window shows them.
 
 How a target's render scale is chosen and kept:
+- A target 400 rows high takes the top screen's setting, a target 320 rows high the bottom screen's, and any
+  other target the larger of the two, as far as the device's largest image size allows. A target whose scaled
+  images the device has no room for is drawn at scale 1.
 - A texture without mipmaps, other than a cube or shadow map, that covers a scaled colour target's whole image,
   in the target's format, is filled from the scaled image.
 - A texture without mipmaps, other than a cube or shadow map, that covers a scaled depth buffer is filled from
@@ -852,13 +857,16 @@ A launch runs until the game exits or its window is closed, as a Switch game doe
 `--max-blocks N` stops it after N native blocks instead. A larger-image block may
 execute up to 32 instructions, so this is not a cycle or exact instruction budget.
 Each instruction still checks fetch, identity and permissions.
-`--model old|new` selects RAM backing, not a different ISA or compiler. Without it a
-game runs on the console its `.ini` names (`model=`), and on its first run on the one
-it asks for: a New 3DS when its SMDH marks it New 3DS exclusive (the flags at 0x2028,
-bit 12, which the Home Menu refuses on an Old 3DS) or its ExHeader names the New 3DS's
-178 MiB system mode (0x20D, mode 2), which only a New 3DS has; an Old 3DS otherwise,
-as a title that names the 124 MiB New 3DS mode runs on both. The run says so, and the
-`.ini` keeps the choice. `--board-info` prints physical regions without allocating RAM.
+`--model old|new` selects RAM backing, not a different ISA or compiler. Without it, or
+`--ctr-model=` on the command line, a game runs on the console its own Settings pick
+(`ctr_model=` in `<title ID>.picks` beside its `.ini`), then on the launcher's for every
+game (`--ctr-model=` with `--launcher-picks=1`), then on the one its `.ini` names
+(`model=`), and on its first run on the one it asks for: a New 3DS when its SMDH marks
+it New 3DS exclusive (the flags at 0x2028, bit 12, which the Home Menu refuses on an
+Old 3DS) or its ExHeader names the New 3DS's 178 MiB system mode (0x20D, mode 2), which
+only a New 3DS has; an Old 3DS otherwise, as a title that names the 124 MiB New 3DS mode
+runs on both. The run says so, and the `.ini` keeps the choice, not the game's own pick.
+`--board-info` prints physical regions without allocating RAM.
 `--ipc-stubs L`, with `--ctr-auto-stub-ipc=0`, still answers the unknown commands of
 the services in L (`all`, or a comma list of `srv`, `fs`, `apt`, `ptm`, `hid`, `gsp`,
 `cfg`, `dsp`, `system`, `am`, `y2r`, `ldr`, `ir`, `irrst`, `mic`, `cam`, `csnd`) with
@@ -946,9 +954,9 @@ no static entry, even if its page is executable: it compiles at run time, as any
 code the static graph lacks does. The static graph is bounded by the text itself
 (each instruction slot is visited once in each instruction set). Objects together
 are capped at 1 GiB and the linked module at 1 GiB, and only the module is kept,
-beside the game as `<title ID>_code.so`. The code uses the setting `opt` (`-O`, 2)
-and 512 blocks per LLVM module, compiled on the `aot_threads` threads (75% of the
-physical cores by default).
+beside the game as `<title ID>_code.so`. The chunks are of 512 blocks, compiled on the
+`aot_threads` threads (75% of the physical cores by default); the setting `opt` (`-O`,
+2) is the level of the blocks LLVM compiles.
 
 ### Build and test
 
@@ -1033,6 +1041,28 @@ disconnect, shutdown and caller exit exercise their cleanup and reply ownership.
 `ldn_room` covers a 512-packet socket burst and the 4 MiB low-latency queue bound.
 Optional `snx-test-3ds-uds --public` uses `SNX_TEST_UDS_ROOM=host:port` rather than a
 hardcoded public server. No game data is needed for these tests.
+
+## Online: sockets and Pretendo Network
+
+`soc:U` (`src/3ds/services/soc.c`) is the console's BSD sockets on the emulated network stack
+(`src/common/network/net.h`), its wire Azahar's `soc_u.cpp`'s and libctru's: the console's sockaddr, pollfd, addrinfo
+and hostent, and its errno numbers. Host sockets never block: a call that would block a socket the game left blocking
+parks its thread, and the scheduler's pass answers it once the socket is ready or a poll's time is out, while the
+game's other threads run. Offline (`network=0` or airplane mode) a socket reaches loopback alone. Names go through
+Pretendo's NAT check rewrite with `ctr_online=pretendo`, and the console maker's own domains resolve to nothing.
+
+`ac:u` says the console is connected to the internet when it is online, and not connected otherwise: `ConnectAsync`
+signals its event either way, and `GetConnectResult` gives Azahar's not-connected result offline.
+
+`frd:u` logs a game in to its server as a console with Pretendo's Nimbus does: the console's own account read from
+`ctr_console` (its files laid out as Azahar's NAND folder: `rw/sys/LocalFriendCodeSeed_B`, `rw/sys/SecureInfo_A`,
+and the friends save's local account 2, the one Nimbus makes), `RequestGameAuthentication` posts NASC's LOGIN form to
+Pretendo's NASC (`ctr_nasc_url` for another) on a thread of its own and signals the game's event when the answer
+came, and `GetGameAuthenticationData` gives the game server's address, port and token. A login that cannot go out says
+why once and gives NASC's result 0. The NASC form and reply, the console's files and Nimbus's rewrites are
+`src/common/online`'s (its README.md). Not done yet: `http:C` and `ssl:C`
+(a game's own HTTPS, which Nimbus rewrites to `pretendo.cc`), the friends server itself (presence and the friend
+list), and the NCCH's product and maker codes in the form, which Pretendo's NASC does not read.
 
 ## Source provenance and licensing
 
@@ -1189,7 +1219,7 @@ recorded under [Source provenance and licensing](#source-provenance-and-licensin
 | F4 Software GPU | Procedural textures, VRAM save and restore, the stereo right eye | `renderer_software/{sw_proctex,sw_framebuffer,sw_rasterizer}.cpp` |
 | F5 Dynamic code | ldr:ro CROs compiled ahead of time, with a design for their run-time base and relocations; a log of missed targets for a second discovery pass; an explicit result for self-modifying code | `service/ldr_ro/` |
 | F6 Audio | The DSP's AAC pipe on FFmpeg; CSND; time stretching if gaps remain | `audio_core/hle/aac_decoder.cpp`, `audio_core/csnd.cpp`, `service/csnd/`, `audio_core/time_stretch.cpp` |
-| F7 Peripherals and network | y2r, mic, cam (no camera), ir:USER (its startup, events and the no-accessory answers are in place; a Circle Pad Pro is not emulated), soc:U, then ssl and http | `service/{cam,mic,ir,soc,ssl,http}/`, `hw/y2r.cpp` |
+| F7 Peripherals and network | y2r, mic, cam (no camera), ir:USER (its startup, events and the no-accessory answers are in place; a Circle Pad Pro is not emulated), soc:U, ac:u and frd:u's game login ([Online](#online-sockets-and-pretendo-network)), then ssl and http | `service/{cam,mic,ir,soc,ssl,http}/`, `hw/y2r.cpp` |
 | F8 Loader | Encrypted content with the user's keys; CCI, CXI, 3DSX and ELF; updates and DLC; a complete module cache key | `file_sys/`, `loader/` |
 | F9 Vulkan renderer | A Vulkan device shared with NX; the PICA fragment shader generator on `spirv_emit.c`; the surface cache with page-level coherence in the memory controller; host vertex and geometry shaders. The software renderer stays as the reference and fallback | `renderer_vulkan/`, `rasterizer_cache/`, `shader/generator/` |
 | F10 Performance | Shader JIT if profiles call for it; the syscore CPU limiter; GUI settings for layouts and controls | `shader/shader_jit_*`, `core.cpp` |

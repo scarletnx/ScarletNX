@@ -43,6 +43,7 @@ static inline void test_ctr_vk_extensions(int* argc, char** argv) {
             key[n - 2] = 0;
             o = ini_find(g_vk_extensions_ini, key);
             if (!o) o = ini_find(g_ctr_debug_ini, key);
+            if (!o) o = ini_find(g_ctr_run_ini, key);
         }
         if (o)
             ini_read(o, eq + 1);

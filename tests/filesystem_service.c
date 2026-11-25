@@ -1194,6 +1194,7 @@ static void test_raw_romfs(void) {
 #include "nx/runtime/driver/hactool/sha.h"
 #include "nx/runtime/driver/hactool/xci.h"
 #include "hac_synth.h"
+#include "ncz_synth.h"
 #undef put32
 #undef put64
 #undef romfs_build
@@ -1221,8 +1222,9 @@ static const unsigned char dump_header_key[32] = {0x01, 0x23, 0x45, 0x67, 0x89, 
                                                   0x32, 0x10, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10};
 /* how dump_write_nsp makes the dump: whole; its program NCA encrypted with master key 20, past what
    dump-data/prod.keys (dump_keys) has; its RomFS behind a compression table that lists 0x20 bytes past what it stores,
-   or 64 MiB of zeros past its image (bigger than the dump, and whole); or the file cut 1024 bytes short of its table */
-enum { DUMP_WHOLE, DUMP_SEALED, DUMP_ROMFS_CUT, DUMP_ROMFS_ZEROS, DUMP_CUT_SHORT };
+   or 64 MiB of zeros past its image (bigger than the dump, and whole); the file cut 1024 bytes short of its table; or
+   an NSZ, its program an NCZ in one zstd stream (nsz's default) of the NCA laid out from 0x4000, as a console's are */
+enum { DUMP_WHOLE, DUMP_SEALED, DUMP_ROMFS_CUT, DUMP_ROMFS_ZEROS, DUMP_CUT_SHORT, DUMP_NSZ };
 static u64 dump_table_end; /* where the NSP's table puts its last file's end */
 static void dump_write_nsp(int source, int kind) {
     blob_t code = {zalloc(sizeof dump_code - 1), sizeof dump_code - 1}, asset = {zalloc(sizeof dump_asset - 1), 0};
@@ -1231,9 +1233,16 @@ static void dump_write_nsp(int source, int kind) {
     memcpy(code.data, dump_code, code.size);
     memcpy(asset.data, dump_asset, asset.size);
     romfs_file_t exefs[2] = {{"main.npdm", meta}, {"main", code}}, romfs[1] = {{"asset.bin", asset}};
-    romfs_file_t ncas[1] = {{"program.nca", dnca_build_romfs(NCACONTENTTYPE_PROGRAM, 0x0100000000AB0000ULL, exefs, 2,
-                                                             romfs, 1, kind == DUMP_ROMFS_CUT ? 0x20 : 0,
-                                                             kind == DUMP_ROMFS_ZEROS ? 64ull << 20 : 0)}};
+    romfs_file_t ncas[1] = {
+        {"program.nca",
+         dnca_build_at(kind == DUMP_NSZ ? 0x4000 : 0xC00, NCACONTENTTYPE_PROGRAM, 0x0100000000AB0000ULL, exefs, 2,
+                       romfs, 1, kind == DUMP_ROMFS_CUT ? 0x20 : 0, kind == DUMP_ROMFS_ZEROS ? 64ull << 20 : 0)}};
+    if (kind == DUMP_NSZ) {
+        blob_t ncz = ncz_of_dnca(&ncas[0].content, 0);
+        free(ncas[0].content.data);
+        ncas[0].name = "program.ncz";
+        ncas[0].content = ncz;
+    }
     if (kind == DUMP_SEALED) {
         nca_encrypt(&ncas[0].content, dump_header_key, 20);
         CHECK(!snx_mkdirs("dump-data") && !snx_write_file("dump-data/prod.keys", dump_keys, sizeof dump_keys - 1));
@@ -2650,12 +2659,25 @@ int main(int argc, char** argv) {
     if (argc == 6 && !strcmp(argv[3], "save-launch")) _Exit(save_launch(argv[4], atoi(argv[5])));
     int raw = argc == 4 && !strcmp(argv[3], "raw");
 #if !defined(_WIN32)
-    if (argc == 4 && (!strcmp(argv[3], "dump") || !strcmp(argv[3], "dump-source"))) {
-        int source = !strcmp(argv[3], "dump-source");
-        dump_write(source);
+    if (argc == 4 && (!strcmp(argv[3], "dump") || !strcmp(argv[3], "dump-source") || !strcmp(argv[3], "dump-nsz"))) {
+        int source = !strcmp(argv[3], "dump-source"), nsz = !strcmp(argv[3], "dump-nsz");
+        dump_write_nsp(source, nsz ? DUMP_NSZ : DUMP_WHOLE);
         if (source) strcpy(g_settings.game_dump, "dump-data/Game.nsp");
         strcpy(g_datadir, "dump-data/Game_data/");
         fs_init(NULL, NULL);
+        if (nsz) { /* read in place all the same, and what a solid NCZ costs said, the dump by its full path */
+            char *dir = snx_absolute("dump-data"),
+                 *said = snx_format("fs: The game's Program NCA in %s/Game.source is a solid NCZ (one zstd stream, "
+                                    "nsz's default for an NSZ): a read behind where its stream got to, and past the "
+                                    "pages of it kept, decodes it again from its start, each said here as \"decoded "
+                                    "again\". With Extract dump on, or the dump compressed in blocks (nsz -B), it is "
+                                    "read without that\n",
+                                    dir);
+            if (strcmp(test_fs_text, said)) fprintf(stderr, "said:     %sexpected: %s", test_fs_text, said);
+            CHECK(!strcmp(test_fs_text, said));
+            free(said);
+            free(dir);
+        }
         test_scans_allowed = 0;
         svc_fs_init();
         romfs_init();

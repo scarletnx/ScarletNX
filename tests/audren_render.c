@@ -956,8 +956,8 @@ static void update_output_counts(void) {
 }
 
 /* #222: from revision 15 a voice's input is 0x188 bytes (Eden's VoiceInParameterV2), its biquads in floats, 0x18
-   each, and what follows them 0x18 further on. Read at 0x170 a voice, Metroid Prime 4's 128 voices made 136, a
-   reply 128 bytes over its 21,456, and every voice's fields after the first biquad came from the wrong bytes */
+   each, and what follows them 0x18 further on. Read at 0x170 a voice, one game's 128 voices made 136, a reply
+   128 bytes over its 21,456, and every voice's fields after the first biquad came from the wrong bytes */
 static void update_voice_v2(void) {
     enum { voices = 128, effects = 68, sinks = 2, pools = effects + voices * 4, stride = 0x188 };
     /* a 100 Hz low-pass at 48 kHz: its b are under Q14's step, which would leave a 200 Hz tone 21.1 dB down, not 12.3 */

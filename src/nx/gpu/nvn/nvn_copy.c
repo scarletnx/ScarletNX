@@ -22,9 +22,31 @@
 #include "nx/hle/services/nvdrv.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/log.h"
+#include "nx/runtime/platform/tracy.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+/* why a copy was skipped: the small code in its zone's value, 0 when the copy was launched */
+enum {
+    CP_OK = 0,         /* launched */
+    CP_NO_RENDERER = 1,/* no renderer, or no GPU copy path, yet */
+    CP_FAILED = 2,     /* the renderer could not do the copy */
+    CP_EMPTY = 3,      /* an empty source or destination region */
+    CP_NO_LAYOUT = 4   /* a texture the runtime cannot lay out */
+};
+#if defined(SNX_TRACY)
+/* the words of the codes above, for a copy's zone text. The zone value still holds the code itself. */
+static const char* copy_skip(u32 why) {
+    switch (why) {
+        case CP_NO_RENDERER: return "no renderer or GPU copy path";
+        case CP_FAILED: return "the GPU could not do the copy";
+        case CP_EMPTY: return "an empty source or destination region";
+        case CP_NO_LAYOUT: return "a texture the runtime cannot lay out";
+        default: return "launched";
+    }
+}
+#endif
 /* A texture's level as a surface plane: the snapshot t, its view v (NULL for none), the level's block dimensions
    (texels a block: bw x bh, bpb bytes), its blocks a row and rows, and which slice a copy's z names */
 typedef struct {
@@ -94,12 +116,23 @@ static void tex_side(const TexPlane* p, i32 x, i32 y, i32 z, GpuDmaSide* s) {
 }
 /* the copy, on the GPU; a render target over the destination takes the new bytes */
 static void launch(const GpuDmaOp* o) {
+    SNX_ZONE(z, "nvn dma copy");
+    u32 why = CP_OK;
     if (!g_renderer_up || !g_renderer->dma_copy) {
+        why = CP_NO_RENDERER;
         LOG_LIMIT(4, "nvn: a copy before the renderer started, skipped\n");
-        return;
+        goto done;
     }
-    if (!gpu_renderer_now()->dma_copy(o)) LOG_LIMIT(4, "nvn: the GPU could not do a copy, skipped\n");
+    if (!gpu_renderer_now()->dma_copy(o)) {
+        why = CP_FAILED;
+        LOG_LIMIT(4, "nvn: the GPU could not do a copy, skipped\n");
+    }
     if (g_renderer->rt_reload) gpu_renderer_now()->rt_reload(o->dst.addr);
+done:
+    SNX_ZONE_VALUE(z, why);
+#if defined(SNX_TRACY)
+    SNX_ZONE_TEXT(z, "copy dma bytes=%llu %s", (unsigned long long)o->line_out * o->lines, copy_skip(why));
+#endif
 }
 /* lines of a region w texels wide and h high on the plane */
 static void region_lines(const TexPlane* p, i32 w, i32 h, GpuDmaOp* o) {
@@ -144,18 +177,27 @@ static void copy_buffer_mirrored(const GpuDmaOp* o, u32 bpb, int to_tex, u32 fla
 /* between a buffer at buf and a texture's region, either way (to_tex: the buffer is the source) */
 static void copy_buffer_texture(const NvnPCopyB2T* r, const NvnTexture* t, int to_tex, const i64 stride[2],
                                 const u8* snap) {
+    SNX_ZONE(z, "nvn buffer texture copy");
+    [[maybe_unused]] u32 why = CP_OK;
+    [[maybe_unused]] u32 fmt = r->has_view && (r->view.set & NVN_VIEW_FORMAT) ? r->view.format : t->d.format;
+    [[maybe_unused]] u64 bytes = 0;
     NVNcopyRegion region = copy_region(t, &r->r);
     i32 depth = region.depth > 0 ? region.depth : 1;
-    if (region.width <= 0 || region.height <= 0) return;
+    if (region.width <= 0 || region.height <= 0) {
+        why = CP_EMPTY;
+        goto done;
+    }
     TexPlane p;
     if (!tex_plane(t, r->has_view ? &r->view : NULL, &p)) {
+        why = CP_NO_LAYOUT;
         LOG_LIMIT(4, "nvn: a copy of a texture of format %#x, which the runtime can't lay out\n", t->d.format);
-        return;
+        goto done;
     }
     GpuDmaOp o = {0};
     region_lines(&p, region.width, region.height, &o);
     u64 row = stride[0] ? (u64)stride[0] : o.width;
     u64 image = stride[1] ? (u64)stride[1] : row * o.lines;
+    bytes = image * (u64)depth;
     for (i32 k = 0; k < depth; k++) {
         u64 at = image * (u64)(r->flags & NVN_COPY_FLAGS_MIRROR_Z_BIT ? depth - 1 - k : k);
         GpuDmaSide* b = to_tex ? &o.src : &o.dst;
@@ -169,6 +211,12 @@ static void copy_buffer_texture(const NvnPCopyB2T* r, const NvnTexture* t, int t
         else
             launch(&o);
     }
+done:
+    SNX_ZONE_VALUE(z, why);
+#if defined(SNX_TRACY)
+    SNX_ZONE_TEXT(z, "copy %s fmt=%#x bytes=%llu %s", to_tex ? "b2t" : "t2b", fmt, (unsigned long long)bytes,
+                  copy_skip(why));
+#endif
 }
 /* The 2D engine's format for a depth or stencil texture, by the zeta format of its target: the color format of the
    same bytes that the game's driver gives the engine (NVN 55.15's format table, the word at +0x18 of each entry:
@@ -585,6 +633,7 @@ static int dlss_upscale(const NvnPDlss* r) {
                      "in\n");
         return 0;
     }
+    u.has_depth = u.has_motion = 1;
     u.has_exposure = r->tex[NVN_DLSS_EXPOSURE] && surf2d_at(r->tex[NVN_DLSS_EXPOSURE], &r->view[NVN_DLSS_EXPOSURE],
                                                             r->has_view[NVN_DLSS_EXPOSURE], 0, &u.exposure, &bpp);
     u.has_reactive =
@@ -602,6 +651,80 @@ static int dlss_upscale(const NvnPDlss* r) {
     u.flags = (u32)r->flags;
     if (r->in[0] <= 0 || r->in[1] <= 0 || r->out[0] <= 0 || r->out[1] <= 0) return 0;
     return gpu_renderer_now()->upscale(&u);
+}
+/* A hook module's upscale (OP_UPSCALE) given to the renderer's upscaler: 1 when it wrote the output, *ran then the
+   upscaler's name. The color and output as the renderer addresses them go in *color and *output (zeroed when not
+   surfaces it takes). The color, and depth and motion vectors when given, are read from their corner. A render_max of
+   0 is the color's size */
+static int module_upscale(const NvnPUpscale* r, Surf2D* color, Surf2D* output, const char** ran) {
+    GpuUpscale u = {0};
+    u32 bpp;
+    /* each on its own, so the log says which one the renderer doesn't take */
+    int has_color = surf2d_at(r->tex[NVN_UPSCALE_COLOR], &r->view[NVN_UPSCALE_COLOR], r->has_view[NVN_UPSCALE_COLOR], 0,
+                              color, &bpp);
+    int has_output = surf2d_at(r->tex[NVN_UPSCALE_OUTPUT], &r->view[NVN_UPSCALE_OUTPUT],
+                               r->has_view[NVN_UPSCALE_OUTPUT], 0, output, &bpp);
+    int surfaces = has_color && has_output;
+    if (!g_renderer_up || !g_renderer->upscale) return 0;
+    if (!surfaces) {
+        LOG_LIMIT(1,
+                  "nvn: a hook module's upscale whose textures aren't surfaces the renderer takes: the filtered copy "
+                  "stands in\n");
+        return 0;
+    }
+    static const int k_more[4] = {NVN_UPSCALE_DEPTH, NVN_UPSCALE_MOTION, NVN_UPSCALE_EXPOSURE, NVN_UPSCALE_REACTIVE};
+    Surf2D* more[4] = {&u.depth, &u.motion, &u.exposure, &u.reactive};
+    int* has[4] = {&u.has_depth, &u.has_motion, &u.has_exposure, &u.has_reactive};
+    for (u32 i = 0; i < 4; i++)
+        *has[i] = r->tex[k_more[i]] &&
+                  surf2d_at(r->tex[k_more[i]], &r->view[k_more[i]], r->has_view[k_more[i]], 0, more[i], &bpp);
+    u.color = *color, u.output = *output;
+    memcpy(u.render, r->render, sizeof u.render);
+    memcpy(u.out, r->out, sizeof u.out);
+    memcpy(u.render_max, r->render_max, sizeof u.render_max);
+    if (!u.render_max[0] || !u.render_max[1]) u.render_max[0] = u.color.width, u.render_max[1] = u.color.height;
+    memcpy(u.out_base, r->out_base, sizeof u.out_base);
+    memcpy(u.jitter, r->jitter, sizeof u.jitter);
+    memcpy(u.motion_scale, r->motion_scale, sizeof u.motion_scale);
+    memcpy(u.reprojection, r->reprojection, sizeof u.reprojection);
+    u.pre_exposure = r->pre_exposure;
+    u.reset = r->reset;
+    u.flags = r->flags;
+    u.ran = ran;
+    return gpu_renderer_now()->upscale(&u);
+}
+/* a surface of a recorded upscale for the log: as the renderer addresses it, or, when it doesn't take it, the
+   texture's own address, NVN format and size from its snapshot */
+static void describe(char* out, size_t n, const Surf2D* s, u64 snapshot) {
+    if (s->addr) {
+        snprintf(out, n, "%llx (format %#x, %ux%u)", (unsigned long long)s->addr, s->format, s->width, s->height);
+        return;
+    }
+    NvnTexture t = {0};
+    memcpy(&t, GP(snapshot), NVN_TEX_SNAP);
+    snprintf(out, n, "%llx, which isn't a surface the renderer takes (NVN format %#x, %ux%u)",
+             (unsigned long long)t.gpu, (unsigned)t.d.format, (unsigned)t.d.width, (unsigned)t.d.height);
+}
+/* what a hook module's recorded upscale ran, and its color and output: said the first 4 times, then each time one of
+   them changes, 32 changes at most (a game that alternates two targets would say one each frame). An upscaler's arm
+   that is silently the copy, or a texture the renderer doesn't take, shows here */
+static void say_upscale(const char* ran, const Surf2D* c, const Surf2D* o, const NvnPUpscale* r) {
+    static struct {
+        const char* ran;
+        Surf2D c, o;
+        u32 said;
+    } last;
+    enum { FIRST = 4, CHANGES = 32 };
+    int same = last.ran == ran && !memcmp(&last.c, c, sizeof *c) && !memcmp(&last.o, o, sizeof *o);
+    if ((last.said >= FIRST && same) || last.said >= FIRST + CHANGES) return;
+    last.ran = ran, last.c = *c, last.o = *o, last.said++;
+    char color[160], output[160];
+    describe(color, sizeof color, c, r->tex[NVN_UPSCALE_COLOR]);
+    describe(output, sizeof output, o, r->tex[NVN_UPSCALE_OUTPUT]);
+    LOG("nvn: a hook module's recorded upscale ran %s: color %s, render %ux%u from its corner, output %s, %ux%u at (%d, "
+        "%d)%s\n",
+        ran, color, r->render[0], r->render[1], output, r->out[0], r->out[1], r->out_base[0], r->out_base[1],
+        last.said == FIRST + CHANGES ? " (further changes are not said)" : "");
 }
 /* n bytes at dst filled with the 32-bit value, as the DMA engine fills: its remap writes constant A into every
    component, reading nothing */
@@ -627,8 +750,68 @@ static void fill_buffer(u64 dst, u64 n, u32 value) {
     }
 }
 
+#if defined(SNX_TRACY)
+/* the copy path the record asked for, with the bytes and format the record gives: the 2D-engine and DLSS paths have
+   no zone of their own, so their work is named here on the record's zone */
+static void copy_record_text(TracyCZoneCtx z, u32 op, u64 payload) {
+    if (!snx_tracy_attached()) return;
+    switch (op) {
+        case OP_COPY_STRIDE: {
+            const NvnPCopyStride* r = NVN_OBJ(const NvnPCopyStride, payload);
+            SNX_ZONE_TEXT(z, "copy stride image=%d bytes=%lld", r->image, (long long)r->stride);
+            break;
+        }
+        case OP_COPY_B2B: {
+            const NvnPCopyB2B* r = NVN_OBJ(const NvnPCopyB2B, payload);
+            SNX_ZONE_TEXT(z, "copy b2b bytes=%llu", (unsigned long long)r->size);
+            break;
+        }
+        case OP_CLEAR_BUF: {
+            const NvnPClearBuf* r = NVN_OBJ(const NvnPClearBuf, payload);
+            SNX_ZONE_TEXT(z, "copy clear bytes=%llu", (unsigned long long)r->size);
+            break;
+        }
+        case OP_COPY_B2T:
+        case OP_COPY_T2B: {
+            const NvnPCopyB2T* r = NVN_OBJ(const NvnPCopyB2T, payload);
+            u32 fmt = 0;
+            if (r->texture) {
+                NvnTexture t = {0};
+                memcpy(&t, GP(r->texture), NVN_TEX_SNAP);
+                fmt = r->has_view && (r->view.set & NVN_VIEW_FORMAT) ? r->view.format : t.d.format;
+            }
+            SNX_ZONE_TEXT(z, "copy %s fmt=%#x %dx%d", op == OP_COPY_B2T ? "b2t" : "t2b", fmt, r->r.width, r->r.height);
+            break;
+        }
+        case OP_COPY_T2T: {
+            const NvnPCopyT2T* r = NVN_OBJ(const NvnPCopyT2T, payload);
+            u32 fmt = 0;
+            if (r->src) {
+                NvnTexture s = {0};
+                memcpy(&s, GP(r->src), NVN_TEX_SNAP);
+                fmt = r->has_sv && (r->sv.set & NVN_VIEW_FORMAT) ? r->sv.format : s.d.format;
+            }
+            SNX_ZONE_TEXT(z, "copy t2t%s fmt=%#x %dx%d", r->flags & NVN_COPY_RESOLVE ? " resolve" : "", fmt,
+                          r->sr.width, r->sr.height);
+            break;
+        }
+        case OP_DLSS: {
+            const NvnPDlss* r = NVN_OBJ(const NvnPDlss, payload);
+            SNX_ZONE_TEXT(z, "copy dlss %dx%d to %dx%d, %u copies", r->in[0], r->in[1], r->out[0], r->out[1],
+                          (u32)r->n_copies);
+            break;
+        }
+    }
+}
+#endif
+
 int nvn_copy_record(u32 op, u64 payload, u32 size, i64 stride[2]) {
     (void)size;
+    /* the record's op stays the value: which kind of copy this is. A skip names why in the zone text instead */
+    SNX_ZONE_V(z, "nvn copy record", op);
+#if defined(SNX_TRACY)
+    copy_record_text(z, op, payload);
+#endif
     switch (op) {
         case OP_COPY_STRIDE: {
             const NvnPCopyStride* r = NVN_OBJ(const NvnPCopyStride, payload);
@@ -649,7 +832,10 @@ int nvn_copy_record(u32 op, u64 payload, u32 size, i64 stride[2]) {
         case OP_COPY_T2B: {
             NvnPCopyB2T r;
             memcpy(&r, GP(payload), sizeof r);
-            if (!r.texture) return 1;
+            if (!r.texture) {
+                SNX_ZONE_TEXT(z, "copy b2t/t2b: skipped: no texture");
+                return 1;
+            }
             NvnTexture t = {0}; /* past the snapshot's bytes */
             memcpy(&t, GP(r.texture), NVN_TEX_SNAP);
             copy_buffer_texture(&r, &t, op == OP_COPY_B2T, stride, NULL);
@@ -658,17 +844,49 @@ int nvn_copy_record(u32 op, u64 payload, u32 size, i64 stride[2]) {
         case OP_COPY_T2T: {
             NvnPCopyT2T r;
             memcpy(&r, GP(payload), sizeof r);
-            if (!r.src || !r.dst) return 1;
+            if (!r.src || !r.dst) {
+                SNX_ZONE_TEXT(z, "copy t2t: skipped: no source or destination");
+                return 1;
+            }
             NvnTexture s = {0}, d = {0}; /* past the snapshots' bytes */
             memcpy(&s, GP(r.src), NVN_TEX_SNAP);
             memcpy(&d, GP(r.dst), NVN_TEX_SNAP);
             copy_texture_texture(&r, &s, &d);
             return 1;
         }
+        case OP_UPSCALE: {
+            NvnPUpscale r;
+            memcpy(&r, GP(payload), sizeof r);
+            Surf2D color = {0}, output = {0};
+            const char* ran = "an upscaler";
+            if (!r.tex[NVN_UPSCALE_COLOR] || !r.tex[NVN_UPSCALE_OUTPUT]) return 1;
+            if (module_upscale(&r, &color, &output, &ran)) {
+                say_upscale(ran, &color, &output, &r);
+                return 1;
+            }
+            /* no upscaler took it: the color's render rectangle onto the output's, filtered, as the game's own pass
+               the module left out would have written it */
+            say_upscale("no upscaler, the filtered copy stands in", &color, &output, &r);
+            NvnTexture s = {0}, d = {0};
+            memcpy(&s, GP(r.tex[NVN_UPSCALE_COLOR]), NVN_TEX_SNAP);
+            memcpy(&d, GP(r.tex[NVN_UPSCALE_OUTPUT]), NVN_TEX_SNAP);
+            NvnPCopyT2T copy = {0};
+            copy.src = r.tex[NVN_UPSCALE_COLOR], copy.dst = r.tex[NVN_UPSCALE_OUTPUT];
+            copy.sv = r.view[NVN_UPSCALE_COLOR], copy.dv = r.view[NVN_UPSCALE_OUTPUT];
+            copy.has_sv = r.has_view[NVN_UPSCALE_COLOR], copy.has_dv = r.has_view[NVN_UPSCALE_OUTPUT];
+            copy.sr = (NVNcopyRegion){0, 0, 0, (i32)r.render[0], (i32)r.render[1], 1};
+            copy.dr = (NVNcopyRegion){r.out_base[0], r.out_base[1], 0, (i32)r.out[0], (i32)r.out[1], 1};
+            copy.flags = NVN_COPY_FLAGS_LINEAR_FILTER_BIT;
+            copy_texture_texture(&copy, &s, &d);
+            return 1;
+        }
         case OP_DLSS: {
             NvnPDlss r;
             memcpy(&r, GP(payload), sizeof r);
-            if (!r.tex[NVN_DLSS_INPUT] || !r.tex[NVN_DLSS_OUTPUT]) return 1;
+            if (!r.tex[NVN_DLSS_INPUT] || !r.tex[NVN_DLSS_OUTPUT]) {
+                SNX_ZONE_TEXT(z, "copy dlss: skipped: no input or output texture");
+                return 1;
+            }
             if (dlss_upscale(&r)) return 1;
             /* no upscaler took it: the stand-in copies */
             NvnTexture s = {0}, d = {0};

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* Decoders for the MME macro calls NVN command buffers are made of, checked against packets captured from Tears of the
-   Kingdom (tests/nvn_control.c). Macro slots are assigned by the SDK's macro upload, so a runtime user has to identify
+/* Decoders for the MME macro calls NVN command buffers are made of, checked against packets captured from an open world
+   game (tests/nvn_control.c). Macro slots are assigned by the SDK's macro upload, so a runtime user has to identify
    the macro by its uploaded code first: these only define the argument layouts once it has. */
 #ifndef SNX_NVN_CONTROL_H
 #define SNX_NVN_CONTROL_H

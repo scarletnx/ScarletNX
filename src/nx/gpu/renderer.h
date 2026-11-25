@@ -95,13 +95,18 @@ typedef struct Renderer {
     /* the 2D engine: 1 when the renderer did the blit on the GPU, 0 to do it in guest memory */
     int (*blit)(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy, double sdx,
                 double sdy);
-    /* A temporal upscale (a Switch 2 game's DLSS evaluation, GpuUpscale): 1 when the renderer wrote the output, 0
-       for the front end's stand-in (a filtered copy). NULL in a renderer without one */
+    /* An upscale (a Switch 2 game's DLSS evaluation, or a hook module's, GpuUpscale): 1 when the renderer wrote the
+       output, 0 for the caller's own fallback (the front end's filtered copy, for a DLSS evaluation and a module's
+       recorded upscale alike). NULL in a renderer without one */
     int (*upscale)(const GpuUpscale* u);
     /* An Ounce's shading rate image (GpuShadingRate) for the draws after it: the id they give in DrawCall.shading_rate,
        0 when they shade each pixel (a renderer or device without it, an image it can't take). A later call can give
        the image other texels, and the draws of an earlier id then shade each pixel. NULL in a renderer without it */
     u32 (*shading_rate)(const GpuShadingRate* r);
+    /* A resolution multiplier asked for (a hook module's, from the internal resolution target): every render target
+       made after it is the game's size times scale. It is taken until the renderer makes its first render target.
+       The multiplier in effect after the call, scale when taken. NULL in a renderer without one */
+    float (*scale_request)(float scale);
     /* NVN copies choose their filter explicitly; source steps can be negative to mirror an axis. */
     int (*blit_filter)(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int dh, double sx, double sy,
                        double sdx, double sdy, int linear);

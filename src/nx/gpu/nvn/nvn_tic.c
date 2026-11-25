@@ -47,6 +47,7 @@
        4-7 border color r g b a */
 #include "nx/gpu/nvn/nvn_tic.h"
 #include "nx/gpu/nvn/nvn_tex.h"
+#include "nx/gpu/texture/descriptor.h"
 #include <math.h>
 #include <string.h>
 
@@ -112,6 +113,45 @@ static u32 depth_channels(u32 format, int stencil, u32 api) {
     if (format == NVN_FORMAT_STENCIL8) return channels(SWZ_R, SWZ_ZERO, SWZ_ZERO, SWZ_ONE_INT);
     if (api && api < (55u << 16)) return stencil ? channels(s, s, s, s) : channels(s, s, s, SWZ_ONE_FLOAT);
     return channels(s, SWZ_ZERO, SWZ_ZERO, stencil ? SWZ_ONE_INT : SWZ_ONE_FLOAT);
+}
+
+/* every NVN format's traits, for the way back from a descriptor to a target */
+static const TicFormat k_formats[] = {
+#define NVN_TIC_FORMAT(i, p0, p1, p2, p3, p4, name) {p0, p1, p2, p3, p4},
+#include "nx/gpu/nvn/nvn_tic_format.inc"
+};
+
+int nvn_tic_surface(const u32 tic[8], Surf2D* out) {
+    TicFields f;
+    u32 rt = 0, loose = 0;
+    int exact = 0;
+    memset(out, 0, sizeof *out);
+    tic_decode(tic, &f);
+    if (!f.address || (f.header != TIC_HDR_PITCH && f.header != TIC_HDR_BLOCK_LINEAR) || f.msaa || f.base_level ||
+        (f.type != TT_2D && f.type != TT_2D_NO_MIPMAP && (f.type != TT_2D_ARRAY || f.depth != 1)))
+        return 0;
+    /* The format word with its channels is one format's descriptor, whose target it is (none for a format no target
+       takes). A word no format has is a view's own channels over a format's components: the target of every format
+       with those components, when they all have the same one */
+    for (u32 i = 0; i < sizeof k_formats / sizeof *k_formats && !exact; i++) {
+        const TicFormat* k = &k_formats[i];
+        if (!k->word || k->depth || k->srgb != f.srgb) continue;
+        if ((k->word & 0x7fffffffu) == (tic[0] & 0x7fffffffu))
+            exact = 1, rt = k->rt;
+        else if ((k->word & 0x7ffffu) == (tic[0] & 0x7ffffu))
+            loose = (!loose || loose == k->rt) && k->rt ? k->rt : ~0u;
+    }
+    if (!exact) rt = loose == ~0u ? 0 : loose;
+    if (!rt) return 0;
+    out->addr = f.address;
+    out->format = rt;
+    out->linear = f.header == TIC_HDR_PITCH;
+    out->bh = out->linear ? 0 : f.block_h;
+    out->pitch = out->linear ? f.pitch : 0;
+    out->depth = 1;
+    out->width = f.width;
+    out->height = f.height;
+    return 1;
 }
 
 int nvn_tic_encode(const NvnTexture* t, const NvnView* v, int image, u32 api, u32 out[8]) {

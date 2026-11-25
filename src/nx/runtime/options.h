@@ -62,6 +62,9 @@ void ini_list(const IniSection* sections, int count);
 /* 1 for a key of the file or an unattended-run option (platform/unattended.h): the driver passes only those on to a
    game (driver.h) */
 int snx_setting_known(const char* key);
+/* key's value as the .ini would write it, into out (size bytes with its NUL): 1, or 0 for a key no setting has, or a
+   value that doesn't fit */
+int snx_setting_text(const char* key, char* out, size_t size);
 /* reads path and the game's picks beside it, applies them with the overrides, writes the .ini back with its help, and
    watches both: ini_poll reloads either when it changes and saves what the game's menu set */
 void ini_open(const char* path);
@@ -109,6 +112,14 @@ int options_write_tracking_hot_old(const char* old, int given);
    emulated_cores_mode's default, as 1 was emulated_cores's own, which every .ini had written, and 1 from the command
    line or the launcher (given 1), a choice; -2 for any other value */
 int options_emulated_cores_old(const char* old, int given);
+/* dlss_render_size's value as internal_resolution's, whose values are the same (0 the game's to 5 ultra performance).
+   The command line's (given 1) is as it is. The .ini's (given 0) is as it is but 0, which is -1, internal_resolution's
+   default too, as 0 was dlss_render_size's own, which every game's .ini had written. A value that is not a whole
+   number from 0 to 5 is -2 */
+int options_dlss_render_size_old(const char* old, int given);
+/* dlss_upscaler's value as render_upscaler's. 0 (a filtered copy of each DLSS evaluation) is 3 (None). 1 (the
+   upscaler, its default, which every game's .ini had written) is -1, render_upscaler as it is. Any other is -2 */
+int options_dlss_upscaler_old(const char* old, int given);
 /* the path ini_open read, "" before it */
 const char* ini_file(void);
 /* about once a second, from the main loop. final: at exit, where an edit still being saved is left for the next start

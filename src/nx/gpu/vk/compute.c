@@ -22,6 +22,7 @@
 #include "common/utilities/spirv_emit.h" /* SPV_CAPABILITY_COOPERATIVE_MATRIX_KHR, the scanner's */
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
+#include "nx/runtime/platform/tracy.h"
 #include "common/platform/thread.h" /* plat_thread_note */
 #include "nx/gpu/vk/lookup_ways.h"
 #include "nx/gpu/vk/vk.h"
@@ -468,14 +469,26 @@ static void cs_submit(void) {
         VK_OK(vkSignalSemaphore(g_vk.dev, &ss));
     }
 }
-static void cs_wait(u64 value) {
+/* The waits the compute thread makes, each with its own plot. A plot's name carries its one unit: milliseconds per
+   wait, so a reader cannot take one for a total over a present */
+enum { CS_WAIT_PENDING, CS_WAIT_LAND, CS_WAIT_GAME, CS_WAIT_N };
+static const char* const cs_wait_plot[CS_WAIT_N] = {
+    "vk pipe compute wait pending ms per wait",
+    "vk pipe compute wait land ms per wait",
+    "vk pipe compute wait game ms per wait",
+};
+/* why: the short reason from the caller. kind: the wait's plot kind */
+static void cs_wait(u64 value, [[maybe_unused]] const char* why, int kind) {
     u64 t0 = plat_ns();
     SNX_ZONE_C(z, "vk compute wait", 0xb05252);
+    SNX_ZONE_TEXT(z, "kind %u: %s, gate %llu", (unsigned)kind, why, (unsigned long long)value);
     SNX_ZONE_VALUE(z, value);
     gpu_wait_note("a compute batch", value);
     vk_wait_semaphore(g_vk_csem, value);
     gpu_wait_note(NULL, 0);
-    atomic_fetch_add_explicit(&g_vk_cs_wait_ns, plat_ns() - t0, memory_order_relaxed);
+    u64 ns = plat_ns() - t0;
+    atomic_fetch_add_explicit(&g_vk_cs_wait_ns, ns, memory_order_relaxed);
+    SNX_PLOT(cs_wait_plot[kind], (double)ns / 1e6);
 }
 /* the arena's results into guest memory, after its batch is done: of a logged one the bytes its dispatch wrote, each
    of them and no other, its reference to the log dropped then; of another, the bytes that changed */
@@ -521,7 +534,7 @@ static void cs_any_update(void) {
 static void cs_land_oldest(void) {
     CsBatch* b = &g_pend[g_ptail % CS_PENDING];
     int was = g_landing;
-    cs_wait(b->cval);
+    cs_wait(b->cval, "the oldest pending batch has to land", CS_WAIT_PENDING);
     g_landing = 1;
     vk_gpuprof_compute_land(&b->ops);
     cs_write_back(b->ar_mem, b->ar_ptr, b->org, b->out, b->nout);
@@ -617,7 +630,7 @@ static void cs_land(void) {
     if (!g_recording && !g_inflight) return;
     g_landing = 1;
     cs_submit();
-    cs_wait(atomic_load_explicit(&g_cval, memory_order_relaxed));
+    cs_wait(atomic_load_explicit(&g_cval, memory_order_relaxed), "landing the current batch", CS_WAIT_LAND);
     g_inflight = 0;
     vk_gpuprof_compute_land(&g_ops);
     cs_write_back(g_ar_mem, g_ar_ptr, g_org, g_out, g_nout);
@@ -829,7 +842,7 @@ u64 vk_compute_put_aside(void) {
     return gate;
 }
 void vk_compute_wait(u64 value) {
-    if (value) cs_wait(value);
+    if (value) cs_wait(value, "the game asked for a compute result", CS_WAIT_GAME);
 }
 u64 vk_compute_number(void) { return atomic_load_explicit(&g_cval, memory_order_relaxed) + (g_recording ? 1 : 0); }
 void vk_compute_progress(u64* submitted, u64* done) {
@@ -1044,8 +1057,9 @@ static CsPipe* cs_make(const u8* code, u32 blen, u64 key, u32 flow_base, u32 lx,
     u32* spv = vk_translate_spirv(code, CS_WINDOW, ST_CS, &p->si, &nw, read, &p->cbr);
     if (!spv || p->si.unsupported) {
         p->failed = 1;
-        LOG("vulkan: compute %016llx not translated: %s\n", (unsigned long long)key,
-            p->si.first_unsupported[0] ? p->si.first_unsupported : "unsupported feature or shader");
+        LOG("vulkan: compute %016llx not translated: %s%s\n", (unsigned long long)key,
+            p->si.first_unsupported[0] ? p->si.first_unsupported : "unsupported feature or shader",
+            vk_lane_note((char[32]){0}, &p->si));
         return p;
     }
     /* not for a pipeline of an earlier run (vk_cs_pipe_load): one saved before the size was read has 0 in its key */
@@ -1422,7 +1436,9 @@ void vk_dispatch(const DispatchState* d) {
     u64 bimg_at[8] = {0}; /* the buffer images' headers: where, their handles and words 0, for the log */
     u32 bimg_h[8] = {0}, bimg_w0[8] = {0};
     int i;
-    SNX_ZONE(z_dispatch, "dispatch");
+    SNX_ZONE_TV(z_dispatch, "vk: dispatch", (u64)gx * gy * gz * lx * ly * lz,
+                 "grid %ux%ux%u block %ux%ux%u shared %u%s", gx, gy, gz, lx, ly, lz, shm,
+                 d->indirect ? " indirect" : "");
     vk_frame_check();
     vk_own_room();
     if (d->indirect) gx = gy = gz = 1; /* the GPU's: these only say there is a grid */

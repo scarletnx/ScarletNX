@@ -13,6 +13,10 @@
 static struct {
     VitaVk vk;
     bool up;
+    /* the device is chosen among those that import guest memory, then (copies) among all, which work on copies of it;
+       skipped: a GPU was passed over for it, which is taken before a CPU that imports */
+    bool copies, skipped;
+    const char* copy_why; /* why the device chosen last does not import it, NULL when it does */
     /* the presenter's copy of the framebuffer, which the window's rendering samples */
     VkImage frame;
     VkDeviceMemory frame_memory;
@@ -30,6 +34,7 @@ static struct {
 
 VitaVk* vita_vk(void) { return g.up ? &g.vk : NULL; }
 void vita_vk_on_retire(void (*retire)(unsigned slot, uint64_t serial)) { g.vk.ring.retire = retire; }
+void vita_vk_on_submit(void (*submit)(void)) { g.vk.ring.close = submit; }
 uint32_t vita_vk_memory_type(uint32_t bits, VkMemoryPropertyFlags properties) {
     return snx_vk_memory_type(&g.vk.memory_properties, bits, properties);
 }
@@ -38,8 +43,6 @@ static void ban_say(const char* line, int warn) { fprintf(stderr, "%s%s\n", warn
 /* what the device can't go without, into need: how many */
 static uint32_t extension_needs(bool windowed, VkExtensionNeed* need) {
     uint32_t needs = 0;
-    need[needs++] =
-        (VkExtensionNeed){VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME, "the guest's memory the GPU uses is imported"};
     if (windowed) need[needs++] = (VkExtensionNeed){VK_KHR_SWAPCHAIN_EXTENSION_NAME, "the window is drawn with it"};
     return needs;
 }
@@ -47,8 +50,20 @@ static uint32_t extension_needs(bool windowed, VkExtensionNeed* need) {
 static bool choose(SnxVkChoice* c, void* user) {
     VitaVk* v = user;
     VkPhysicalDevice phys = c->phys;
-    if (!snx_vk_choice_enable(c, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME))
-        return snx_vk_choice_refuse(c, "has no VK_EXT_external_memory_host to import the guest's memory");
+    /* a driver that takes an import's pages again at each submission (extension_bans.txt) refuses it, EPERM on amdgpu,
+       while the watch has one of them write-protected (watch.c), as a scene's surface when it ends: nothing would be
+       drawn */
+    bool listed = snx_vk_choice_has(c, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
+    bool refuses = vk_ban("VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT", listed, ban_say) != 0;
+    v->host_import = !refuses && snx_vk_choice_enable(c, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
+    g.copy_why = v->host_import ? NULL
+                 : refuses      ? "refuses work on imported memory while a page of it is write-protected"
+                                : "has no VK_EXT_external_memory_host to import the guest's memory";
+    bool cpu = c->properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU;
+    if (!g.copies && (!v->host_import || (cpu && g.skipped))) {
+        if (!cpu) g.skipped = true;
+        return snx_vk_choice_refuse(c, g.copy_why ? g.copy_why : "is a CPU, after a GPU that can work on copies");
+    }
     if (v->host.surface && !snx_vk_choice_enable(c, VK_KHR_SWAPCHAIN_EXTENSION_NAME))
         return snx_vk_choice_refuse(c, "has no VK_KHR_swapchain to draw the window with");
     /* fragment programs that read their pixel's color (the program flag FRAGCOLOR_USED): the color attachment read
@@ -95,7 +110,7 @@ static bool choose(SnxVkChoice* c, void* user) {
     VkPhysicalDeviceExternalMemoryHostPropertiesEXT host = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT};
     VkPhysicalDeviceVulkan12Properties p12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES,
-                                              .pNext = &host};
+                                              .pNext = v->host_import ? &host : NULL};
     VkPhysicalDeviceProperties2 properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &p12};
     vkGetPhysicalDeviceProperties2(phys, &properties);
     v->host_alignment = host.minImportedHostPointerAlignment ? host.minImportedHostPointerAlignment : 4096;
@@ -158,7 +173,7 @@ bool vita_vk_init(const char* title, char* error, size_t error_size) {
     VkExtensionNeed need[2];
     VkExtensionSetting settings[VK_EXTENSION_SETTINGS];
     SnxVkDeviceRequest request = {.who = "scarletnx-vita",
-                                  .none = "no Vulkan 1.3 device with dynamic rendering and VK_EXT_external_memory_host",
+                                  .none = "no Vulkan 1.3 device with dynamic rendering",
                                   .instance = v->host.instance.instance,
                                   .api = VK_API_VERSION_1_3,
                                   .queues = VK_QUEUE_GRAPHICS_BIT,
@@ -169,7 +184,13 @@ bool vita_vk_init(const char* title, char* error, size_t error_size) {
                                   .needs = extension_needs(v->host.surface != VK_NULL_HANDLE, need)};
     snx_vk_device_settings(&request, settings);
     SnxVkDevice device;
-    if (!snx_vk_device_make(&request, &device, error, error_size)) {
+    g.copies = g.skipped = false;
+    bool device_made = snx_vk_device_make(&request, &device, error, error_size);
+    if (!device_made && device.passed_over) {
+        g.copies = true;
+        device_made = snx_vk_device_make(&request, &device, error, error_size);
+    }
+    if (!device_made) {
         /* a package whose driver lists no device at all: its name and this device's GPU, not the generic line. A device
            it lists and the renderer refuses has its reason in error already */
         char said[512];
@@ -184,6 +205,8 @@ bool vita_vk_init(const char* title, char* error, size_t error_size) {
     v->family = device.family;
     vkGetDeviceQueue(v->device, v->family, 0, &v->queue);
     vkGetPhysicalDeviceProperties(v->phys, &v->properties);
+    if (g.copy_why)
+        fprintf(stderr, "scarletnx-vita: %s %s: guest memory is copied\n", v->properties.deviceName, g.copy_why);
     vkGetPhysicalDeviceMemoryProperties(v->phys, &v->memory_properties);
     VkSemaphoreCreateInfo semaphore = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 8192},

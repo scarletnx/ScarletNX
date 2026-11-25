@@ -21,3 +21,6 @@ struct Report32 @version(>= 2.0.0) { u32 used @0x10 } size 0x14
 a32 hook save_j(addr report, usize size) -> u32 = test_save uses Report32
 family switched_off
 hook off_answer() -> u32 = test_off a32
+# a second family with a declaration for the versions of one 32-bit SDK: the stop counts each family's own
+family second
+hook ranged_too(u32 a) -> u32 = test_ranged a32 @version(< 2.0.0)

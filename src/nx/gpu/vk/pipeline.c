@@ -25,6 +25,9 @@
 #include "nx/gpu/vk/capture.h"
 #include "nx/gpu/vk/lookup_ways.h"
 #include "nx/gpu/vk/pipeline_file.h"
+#ifndef SNX_SHADER_FLAGS
+#error "SNX_SHADER_FLAGS, the translator's compile flags for the shader files' key, comes from cmake/shader_flags.cmake"
+#endif
 #include "nx/gpu/vk/pipeline_parts.h"
 #include "nx/gpu/vk/shading_rate.h"
 #include "nx/gpu/vk/pipeline_stats.h"
@@ -48,7 +51,7 @@
 
 /* SH_CODE (vk.h), the bytes of a program vk_shader_get reads from its SPH. The SPH has no size, so shader_hash ends the
    program at its EXIT or the zero padding after it, and NVN packs programs into one pool: the window has to reach past
-   the largest program's end (FINAL FANTASY RESONANCE has one of 70,728 bytes, an Ounce game one of 149,120), without
+   the largest program's end (one game has one of 70,728 bytes, an Ounce game one of 149,120), without
    going on into the next program. Another Ounce game has fragment programs longer than 512 KiB, whose calls go
    to functions past 41,000 instructions: in a window of that size they had no end, and its shader pass left 13 of
    them untranslated. The SM86 reader takes the whole window for each program it looks up (vk_shader_read_code), and
@@ -513,7 +516,7 @@ const char* vk_spirv_unavailable(const u32* spv, size_t words) {
 static int sm86_program(const u8* code, u32 max_bytes, Sm86Program* p) {
     return sm86_find_programs(code, max_bytes, p, 1) == 1;
 }
-static u32* sm86_translate(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, size_t* words) {
+static u32* sm86_translate(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, size_t* words, int lanes) {
     Sm86Program p;
     u32 sph[SM86_SPH_BYTES / 4];
     if (!sm86_program(code, max_bytes, &p) || !p.complete) {
@@ -531,7 +534,14 @@ static u32* sm86_translate(const u8* code, u32 max_bytes, int stage, ShaderInfo*
         }
         for (u32 i = 0; i < SM86_SPH_BYTES / 4; i++) sph[i] = snx_ld_le32(code + p.header + 4 * i);
     }
-    return sm86_to_spirv_ftz(code + p.code, p.size, stage, stage == ST_CS ? NULL : sph, si, words, g_vk_ftz);
+    return sm86_to_spirv_ftz(code + p.code, p.size, stage, stage == ST_CS ? NULL : sph, si, words, g_vk_ftz, lanes);
+}
+const char* vk_lane_note(char out[32], const ShaderInfo* si) {
+    static const char lanes[] = "subgroup ballot/shuffle unavailable";
+    out[0] = 0;
+    if (!strncmp(si->first_unsupported, lanes, sizeof lanes - 1))
+        snprintf(out, 32, " (%u lanes of 32)", g_vk_subgroup_lanes);
+    return out;
 }
 u32* vk_translate_spirv(const u8* code, u32 max_bytes, int stage, ShaderInfo* si, size_t* words, VkCbReader read,
                         VkCbReads* reads) {
@@ -558,7 +568,11 @@ u32* vk_translate_spirv_fold(const u8* code, u32 max_bytes, int stage, ShaderInf
                                             VK_SHADER_STAGE_TASK_BIT_EXT,
                                             VK_SHADER_STAGE_MESH_BIT_EXT};
     VkShaderStageFlagBits shader_stage = stages[stage];
-    u32* result = g_shader_sm86 ? sm86_translate(code, max_bytes, stage, si, words)
+    /* a task or mesh program runs in pipelines that ask for subgroups of 32 (mesh_choose), or not at all */
+    int lanes = stage == ST_TS || stage == ST_MS || (g_vk_subgroup_stages & shader_stage) ? SM86_LANES_WARP
+                : g_vk_quad_stages & shader_stage                                        ? SM86_LANES_QUAD
+                                                                                          : 0;
+    u32* result = g_shader_sm86 ? sm86_translate(code, max_bytes, stage, si, words, lanes)
                                 : shader_to_spirv(code, max_bytes, stage, si, words, g_vk_ftz, g_vk_preserve_infnan,
                                                   g_vk_preserve_infnan64, (g_vk_subgroup_stages & shader_stage) != 0);
     g_shader_cb_read = old;
@@ -780,6 +794,8 @@ VkPipelineLayout vk_pipeline_layout(VkPipeline h, u32 arrays) {
 static void plib_init(void);
 void vk_pipeline_init(void) {
     pm_lock_announce(&g_pipeline.playout_lock, "pipeline layout");
+    pm_lock_announce(&g_pipeline.pj_lock, "pipeline jobs"); /* game threads queueing work, workers taking it */
+    pm_lock_announce(&g_pipeline.modinfo_lock, "shader modules"); /* the module table's readers and builders */
     plib_init();
     pm_lock_announce(&g_pipeline.xlate_lock, "shader translate");
     /* the tessellation and geometry stages' sets come after the first two, where the device binds that many */
@@ -1043,6 +1059,12 @@ void vk_pipeline_init(void) {
                                                   (size_t)data.size, &loaded, why, sizeof why);
     if (why[0]) LOG("vulkan: %s: %s\n", from ? from : g_pipeline.pcache_path, why);
     if (loaded) LOG("vulkan: pipeline cache loaded (%zu KB)\n", loaded >> 10);
+    if (snx_tracy_attached()) {
+        char msg[96];
+        snprintf(msg, sizeof msg, "pipeline cache: %zu bytes read%s", loaded, from ? "" : " (no file)");
+        SNX_MSG(msg, strlen(msg));
+    }
+    SNX_PLOT("vk pipe cache read bytes", (double)loaded);
     vk_so_init();
     free(legacy);
     plat_file_unmap(&data); /* the cache copied it, and a mapped file can't be replaced on Windows */
@@ -1232,14 +1254,14 @@ static u32* sh_spirv(VkSh* s, const u8* code, u64 h, int stage, const u32 mask[S
     sh_mesh_sph(&s->si, stage, code, mask);
     *nw = 0;
     SNX_ZONE(z_translate, "shader translate");
-    SNX_ZONE_TEXT(z_translate, "%s hash %08x",
-                  stage >= 0 && stage < (int)(sizeof vk_tracy_stage / sizeof *vk_tracy_stage) ? vk_tracy_stage[stage]
-                                                                                              : "stage?",
-                  (unsigned)h);
     u32* spv = vk_translate_spirv_fold(code, SH_CODE, stage, &s->si, nw, read, &s->cbr,
                                        atomic_load_explicit(&g_pipeline.fold_off, memory_order_relaxed) ? NULL : fold);
     s->nfold = vk_cb_fold_count(&s->cbr);
     SNX_ZONE_VALUE(z_translate, *nw);
+    SNX_ZONE_TEXT(z_translate, "%s %08x, %u spv words, %s",
+                  stage >= 0 && stage < (int)(sizeof vk_tracy_stage / sizeof *vk_tracy_stage) ? vk_tracy_stage[stage]
+                                                                                              : "stage?",
+                  (unsigned)h, (unsigned)*nw, spv ? "made" : "rejected");
     SNX_ZONE_END(z_translate);
     for (int i = 0; i < s->si.ntex; i++) s->indexed |= (s->si.tex[i].flags & SNX_TEX_INDEXED) != 0;
     int unread = 0;
@@ -1291,6 +1313,7 @@ static VkSh* sh_make(const u8* code, u32 mlen, u64 h, int stage, const u32 mask[
             s->failed = 1;
             snprintf(s->si.first_unsupported, sizeof s->si.first_unsupported, "vkCreateShaderModule failed");
         } else {
+            SNX_MEM_ALLOC_D((const void*)(uintptr_t)s->mod, 0, "shader modules");
             modinfo_put(s->mod, h, stage, nw);
             vk_so_keep_spirv(s->mod, spv, nw);
             pf_shader_record(s, spv, nw, code, src_bytes(mlen), xfb);
@@ -1554,8 +1577,9 @@ VkSh* vk_shader_get_ex(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int
             return NULL;
         }
         if (s->failed)
-            WARN("vulkan: shader %016llx (stage %d) not translated: %s\n", (unsigned long long)h, stage,
-                 s->si.first_unsupported[0] ? s->si.first_unsupported : "unsupported feature or float controls");
+            WARN("vulkan: shader %016llx (stage %d) not translated: %s%s\n", (unsigned long long)h, stage,
+                 s->si.first_unsupported[0] ? s->si.first_unsupported : "unsupported feature or float controls",
+                 vk_lane_note((char[32]){0}, &s->si));
         g_pipeline.sh_new++;
         g_pipeline.sh_ns += plat_ns() - t0;
         s->next = g_pipeline.shh[h & 1023];
@@ -1608,7 +1632,8 @@ VkShaderModule vk_module_spv(const u32* spv, size_t nw) {
     VkShaderModuleCreateInfo mi = {
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = nw * 4, .pCode = spv};
     VkShaderModule m = VK_NULL_HANDLE;
-    VK_OK(vkCreateShaderModule(g_vk.dev, &mi, NULL, &m));
+    if (VK_OK(vkCreateShaderModule(g_vk.dev, &mi, NULL, &m)))
+        SNX_MEM_ALLOC_D((const void*)(uintptr_t)m, 0, "shader modules");
     return m;
 }
 VkShaderModule vk_module_spv_location(const u32* source, size_t nw, u32 location) {
@@ -1978,6 +2003,8 @@ static void pipe_heaps(VkGraphicsPipelineCreateInfo* gi, VkPipelineCreateFlags2C
     gi->layout = VK_NULL_HANDLE;
 }
 static VkPipeline pipe_create(const Pipe* e, int* hit) {
+    SNX_ZONE(z, "pipeline whole make"); /* no libraries: the driver compiles every stage */
+    u64 t0 = plat_ns();
     PipeInfo o;
     pipe_info(&e->k, e->fs, &o);
     VkDynamicState dyn[VK_PIPE_DYN_MAX];
@@ -2011,6 +2038,12 @@ static VkPipeline pipe_create(const Pipe* e, int* hit) {
     COMPILED(VK_OK(vkCreateGraphicsPipelines(g_vk.dev, g_pipeline.pcache, 1, &gi, NULL, &p)));
     plat_thread_note_clear();
     *hit = (o.made.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT) != 0;
+    SNX_ZONE_TEXT(z, "whole, %u modules, hash %016llx, cache %s", o.nst, (unsigned long long)e->h,
+                  *hit ? "hit" : "a new compile");
+    SNX_ZONE_VALUE(z, *hit);
+    SNX_ZONE_END(z);
+    SNX_PLOT("vk pipe whole make ms", (double)(plat_ns() - t0) / 1e6);
+    SNX_PLOT("vk pipe whole cache hit", (double)*hit);
     if (*hit)
         atomic_fetch_add_explicit(e->prewarm ? &g_pipeline.pf.hits : &g_pipeline.pipe_hits, 1, memory_order_relaxed);
     return p;
@@ -2251,12 +2284,18 @@ static VkPipeline lib_get(PipeLib* l) {
     pm_unlock(&g_pipeline.pj_lock);
     u32 i = l->part == VK_PART_VI ? 0 : l->part == VK_PART_PR ? 1 : l->part == VK_PART_FS ? 2 : 3;
     u64 t0 = plat_ns();
-    SNX_ZONE_T(z, "pipeline library make", "%s, hash %016llx", g_part_names[i], (unsigned long long)l->h);
+    SNX_ZONE(z, "pipeline library make");
     int hit = 0;
     if (i == 1 || i == 2) pcache_note(); /* before the driver, as pipe_make */
     VkPipeline p = lib_create(l, &hit);
+    [[maybe_unused]] u32 nm = i == 1 ? !!l->src.vs + !!l->src.tcs + !!l->src.tes + !!l->src.gs : i == 2 ? !!l->fs : 0;
+    SNX_ZONE_TEXT(z, "%s library, %u modules, hash %016llx, cache %s", g_part_names[i], nm,
+                  (unsigned long long)l->h, hit ? "hit" : "a new compile");
+    SNX_ZONE_VALUE(z, hit);
     SNX_ZONE_END(z);
     u64 ns = plat_ns() - t0;
+    SNX_PLOT("vk pipe lib make ms", (double)ns / 1e6);
+    SNX_PLOT("vk pipe lib cache hit", (double)hit);
     char what[64];
     snprintf(what, sizeof what, "a %s pipeline library", g_part_names[i]);
     const VkShaderModule modules[5] = {i == 1 ? l->src.vs : VK_NULL_HANDLE, i == 1 ? l->src.tcs : VK_NULL_HANDLE,
@@ -2337,9 +2376,15 @@ static VkPipeline gpl_cached(const Pipe* e) {
     SNX_ZONE(z, "pipeline from the cache");
     int hit = 0;
     VkPipeline p = gpl_link(e, GPL_CACHED, &hit);
+    SNX_ZONE_TEXT(z, "hash %016llx, %s", (unsigned long long)e->h,
+                  p ? "hit: the driver has the optimized link" : "miss: it would have to compile");
+    SNX_ZONE_VALUE(z, p ? 1 : 0);
     SNX_ZONE_END(z);
+    u64 ns = plat_ns() - t0; /* one time for the statistic and the plot, so they cannot disagree */
+    SNX_PLOT("vk pipe cached lookup ms", (double)ns / 1e6);
+    SNX_PLOT("vk pipe cached hit", (double)(p ? 1 : 0));
     atomic_fetch_add_explicit(&g_pipeline.plib.cached_tries, 1, memory_order_relaxed);
-    atomic_fetch_add_explicit(&g_pipeline.plib.cached_ns, plat_ns() - t0, memory_order_relaxed);
+    atomic_fetch_add_explicit(&g_pipeline.plib.cached_ns, ns, memory_order_relaxed);
     if (p) atomic_fetch_add_explicit(&g_pipeline.plib.cached, 1, memory_order_relaxed);
     return p;
 }
@@ -2356,21 +2401,32 @@ static VkPipeline gpl_fast(const Pipe* e, int* hit, int* opt) {
     u64 t0 = plat_ns();
     SNX_ZONE(z, "pipeline link");
     VkPipeline p = gpl_link(e, GPL_FAST, hit);
+    SNX_ZONE_TEXT(z, "hash %016llx, %s", (unsigned long long)e->h,
+                  *hit ? "driver cache hit on the fast link" : "cache miss: the driver compiled it");
+    SNX_ZONE_VALUE(z, *hit);
     SNX_ZONE_END(z);
+    u64 ns = plat_ns() - t0; /* one time for the statistic and the plot, so they cannot disagree */
+    SNX_PLOT("vk pipe fast link ms", (double)ns / 1e6);
+    SNX_PLOT("vk pipe fast link cache hit", (double)*hit);
     atomic_fetch_add_explicit(&g_pipeline.plib.links, 1, memory_order_relaxed);
-    atomic_fetch_add_explicit(&g_pipeline.plib.link_ns, plat_ns() - t0, memory_order_relaxed);
+    atomic_fetch_add_explicit(&g_pipeline.plib.link_ns, ns, memory_order_relaxed);
     return p;
 }
 /* on a worker, after e's fast link: the optimized pipeline, which the draws take from then on (vk_pipeline_resolve
    and the others read e->p) */
 static void pipe_optimize(Pipe* e) {
     u64 t0 = plat_ns();
-    SNX_ZONE_T(z, "pipeline optimize", "hash %016llx", (unsigned long long)e->h);
+    SNX_ZONE(z, "pipeline optimize");
     int hit = 0;
     pcache_note(); /* before the driver, as pipe_make */
     VkPipeline o = gpl_link(e, GPL_LTO, &hit);
+    SNX_ZONE_TEXT(z, "hash %016llx, %s", (unsigned long long)e->h,
+                  !o ? "failed: the fast link stays" : hit ? "driver cache hit" : "a new optimized compile");
+    SNX_ZONE_VALUE(z, hit);
     SNX_ZONE_END(z);
     u64 ns = plat_ns() - t0;
+    SNX_PLOT("vk pipe optimize ms", (double)ns / 1e6);
+    SNX_PLOT("vk pipe optimize cache hit", (double)hit);
     const VkShaderModule modules[5] = {e->k.vs, e->k.tcs, e->k.tes, e->k.gs, e->fs};
     slow_say("an optimized pipeline, in the background,", modules, ns, hit);
     pcache_note();
@@ -2424,8 +2480,11 @@ void vk_pipeline_lib_warm_stats(u64* made, u64* hit, u64* ms) {
    makes it (record), and when it queues it for a worker otherwise, as the file's tables are the GPU thread's */
 static VkPipeline pipe_make(Pipe* e, int record, int* opt) {
     SNX_ZONE_T(z_pipe, "pipeline make", "hash %016llx", (unsigned long long)e->h);
+    /* Rename the open zone with the pipeline's own identity, so a make of one program reads by name on the timeline
+       without expanding its text; the client copies the formatted name at the call. */
+    SNX_ZONE_NAME_F(z_pipe, "pipeline make %016llx", (unsigned long long)e->h);
     u64 t0 = plat_ns();
-    SNX_ZONE(z, "pipeline make");
+    SNX_ZONE(z, "pipeline make compile"); /* the outer "pipeline make" also covers shader objects and takes no callstack */
     /* A new-area pipeline can arrive after a long quiet spell. Mark it before entering the driver, so a periodic
        cache snapshot doesn't mistake an in-flight compile for idleness and contend for the driver's cache lock. */
     int so = atomic_load_explicit(&e->so, memory_order_relaxed);
@@ -2441,24 +2500,46 @@ static VkPipeline pipe_make(Pipe* e, int record, int* opt) {
             atomic_store_explicit(&e->so, 0, memory_order_relaxed);
     }
     if (!p) p = e->lib[0] ? gpl_fast(e, &hit, opt) : pipe_create(e, &hit);
+    const VkShaderModule pm[5] = {e->k.vs, e->k.tcs, e->k.tes, e->k.gs, e->fs};
+    u32 nm = 0;
+    for (int s = 0; s < 5; s++) nm += !!pm[s];
+    const char* path = p == PIPE_SO_MADE ? "shader objects" : e->lib[0] ? "link of libraries" : "whole compile";
+    SNX_ZONE_TEXT(z, "%s, %u modules, hash %016llx, cache %s", path, nm, (unsigned long long)e->h,
+                  hit ? "hit" : "miss");
+    SNX_ZONE_VALUE(z, hit);
     SNX_ZONE_END(z);
+    SNX_ZONE_TEXT(z_pipe, "%s, %u modules, cache %s", path, nm, hit ? "hit" : "miss");
+    SNX_ZONE_VALUE(z_pipe, p == PIPE_SO_MADE ? 3 : e->lib[0] ? 2 : 1); /* 1 whole, 2 libraries, 3 objects */
+    (void)nm;
+    (void)path;
+    /* Only a compile the driver really did gets a callstack: taking one on each cache hit is costly, and a hit's
+       caller is not the one that made the shader */
+    if (p && p != PIPE_SO_MADE && !hit) {
+        SNX_ZONE_CS(z_cs, "pipeline make compile callstack", 4); /* four frames: the draw's path into the driver */
+        /* the compile that earned a call stack also says which pipeline it made, without a name change */
+        SNX_ZONE_VALUE(z_cs, e->h);
+        SNX_ZONE_TEXT(z_cs, "%s, %u modules, hash %016llx", path, nm, (unsigned long long)e->h);
+    }
     if (p != PIPE_SO_MADE && (!e->lib[0] || *opt))
         pipe_stats(p, e, *opt ? "optimized" : "whole"); /* a fast link runs unoptimized code */
+    u64 ns = plat_ns() - t0; /* one time for the log, the statistic and the plot, so they cannot disagree */
     if (p == PIPE_SO_MADE) {
         if (!e->prewarm) atomic_fetch_add_explicit(&g_pipeline.pipe_so, 1, memory_order_relaxed);
         const VkShaderModule modules[5] = {e->k.vs, e->k.tcs, e->k.tes, e->k.gs, e->fs};
-        slow_say("a draw's shader objects", modules, plat_ns() - t0, 0);
+        slow_say("a draw's shader objects", modules, ns, 0);
     } else {
-        if (p && plat_ns() - t0 < PIPE_FAST_NS)
+        if (p && ns < PIPE_FAST_NS)
             atomic_fetch_add_explicit(e->prewarm ? &g_pipeline.pf.fast : &g_pipeline.pipe_fast, 1,
                                       memory_order_relaxed);
-        pipe_slow_say(e, plat_ns() - t0, hit);
+        pipe_slow_say(e, ns, hit);
         pcache_note();
     }
     if (e->prewarm)
         atomic_fetch_add_explicit(&g_pipeline.pf.made, 1, memory_order_relaxed);
     else {
-        atomic_fetch_add_explicit(&g_pipeline.pipe_make_ns, plat_ns() - t0, memory_order_relaxed);
+        atomic_fetch_add_explicit(&g_pipeline.pipe_make_ns, ns, memory_order_relaxed);
+        SNX_PLOT("vk pipe make ms", (double)ns / 1e6);
+        SNX_PLOT("vk pipe make cache hit", (double)hit);
         if (p && record) pf_pipe_record(&e->k);
     }
     return p;
@@ -2484,14 +2565,21 @@ static void warm_run(WarmItem* w) {
     int hit = 0;
     u64 t0 = plat_ns();
     VkPipeline p = lib_create(&lib, &hit);
+    if (p) SNX_MEM_ALLOC_D((const void*)(uintptr_t)p, 0, "pipelines");
     u64 ns = plat_ns() - t0;
     atomic_fetch_add_explicit(&g_pipeline.plib.warm_ns, ns, memory_order_relaxed);
     pcache_note();
     atomic_fetch_add_explicit(&g_pipeline.plib.warm_made, 1, memory_order_relaxed);
     if (hit) atomic_fetch_add_explicit(&g_pipeline.plib.warm_hit, 1, memory_order_relaxed);
-    if (p) vkDestroyPipeline(g_vk.dev, p, NULL);
+    if (p) {
+        SNX_MEM_FREE_D((const void*)(uintptr_t)p, "pipelines");
+        vkDestroyPipeline(g_vk.dev, p, NULL);
+    }
     VkShaderModule mod = w->part == VK_PART_PR ? w->src.vs : w->fs;
-    if (mod) vkDestroyShaderModule(g_vk.dev, mod, NULL);
+    if (mod) {
+        SNX_MEM_FREE_D((const void*)(uintptr_t)mod, "shader modules");
+        vkDestroyShaderModule(g_vk.dev, mod, NULL);
+    }
     free(w);
 }
 static void pipe_worker(void* low) {
@@ -2713,10 +2801,12 @@ static VkPipeline pipe_wait_here(Pipe* p) {
 }
 /* k's entry, found or added (NULL with no memory): *found says whether it was there */
 static Pipe* pipe_entry(const PipeKey* k, int* found) {
+    SNX_ZONE_V(z, "pipeline entry lookup", 0); /* 0 new, 1 in the recent four, 2 in the hash table */
     pf_merge();
     for (u32 i = 0; i < 4 && g_pipeline.recent[i]; i++)
         if (!memcmp(&g_pipeline.recent[i]->k, k, sizeof *k)) {
             *found = 1;
+            SNX_ZONE_VALUE(z, 1);
             return g_pipeline.recent[i];
         }
     u64 h = vk_hash(k, sizeof *k);
@@ -2724,6 +2814,7 @@ static Pipe* pipe_entry(const PipeKey* k, int* found) {
     for (Pipe* p = g_pipeline.pipeh[b]; p; p = p->next)
         if (p->h == h && !memcmp(&p->k, k, sizeof *k)) {
             *found = 1;
+            SNX_ZONE_VALUE(z, 2);
             g_pipeline.recent[g_pipeline.recent_next++ & 3] = p;
             return p;
         }
@@ -3564,13 +3655,13 @@ static void pf_load_pipe(void* ctx, const u64 m[5], const void* key, u32 keylen)
    the PF_SOURCE and PF_PIPE records depend on (pf_open): the device; the features and limits the translator,
    vk_shader_get and pipe_create consult; the sizes of what those records hold whole. Then the rest, which only the
    SPIR-V and ShaderInfo of the PF_SHADER records depend on: the build (commit, compiler, host), and for a tree with
-   changes, which has one commit for every build of it, the runtime's own file; the driver. The guest part's length
+   changes or a build outside git, which have one commit for every build of them, the runtime's own file, and for a
+   build whose translator is compiled with other flags than a normal one's, those; the driver. The guest part's length
    goes in *guest */
 static void pf_key(char* out, size_t n, size_t* guest) {
     const VkPhysicalDeviceProperties* d = &g_vk.props;
     const char* commit = snx_build_commit();
-    size_t len = strlen(commit);
-    char exe[64] = "", uuid[33];
+    char words[64], uuid[33];
     /* 0 no texture arrays, 1 arrays of SNX_TEX_ARRAY (every file's word before arrays came smaller), else 1 and the
        elements */
     u32 arrays = !g_spirv_translate.texture_arrays              ? 0u
@@ -3629,14 +3720,19 @@ static void pf_key(char* out, size_t n, size_t* guest) {
     /* the last word, dynamic vertex input, only where it is on: its keys hold no vertex layout (PipeKey.vi), and the
        files of every device without it keep the key they have */
     size_t ncaps = sizeof caps / sizeof *caps - !g_vk.vertex_input_dynamic;
-    /* a tree with changes builds under one commit name: the runtime's own bytes tell those builds apart. Not its
-       modification time, which a copy of the same runtime (each game has one) changes */
-    if (len >= 6 && !strcmp(commit + len - 6, "-dirty")) {
+    pf_build_words(words, sizeof words, commit, SNX_SHADER_FLAGS, NULL);
+    /* a tree with changes, or a build outside git, builds under one commit name: the runtime's own bytes tell those
+       builds apart. Not its modification time, which a copy of the same runtime (each game has one) changes */
+    if (pf_build_unnamed(commit)) {
         char* self = snx_executable("scarletnx");
         PFileMap m;
         if (self && !plat_file_map(&m, self) && m.data) {
-            snprintf(exe, sizeof exe, " exe=%016llx", (unsigned long long)vk_hash(m.data, (size_t)m.size));
+            pf_build_words(words, sizeof words, commit, SNX_SHADER_FLAGS, &m);
             plat_file_unmap(&m);
+        } else {
+            WARN("vulkan: this build's commit is %s and its program (%s) can't be read: its shader cache is one with "
+                 "every other build of that name\n",
+                 commit, self ? self : "no path");
         }
         free(self);
     }
@@ -3653,7 +3749,7 @@ static void pf_key(char* out, size_t n, size_t* guest) {
             " %s%s driver=%u api=%u spirv=%x uuid=%s ftz=%d quad=%d,%d mixed_dot=%d hmma_coop=%d hmma_shapes=%u "
             "hmma_pairs=%d hmma_stage=%d half_flush=%d hmma_f16=%d hmma_astat=%d sizes=%u,%u vertex_bounds=%d "
             "robust2=%d%d%d",
-            snx_build_info(), exe, d->driverVersion, d->apiVersion, (unsigned)spv_emit_version(), uuid, g_vk_ftz,
+            snx_build_info(), words, d->driverVersion, d->apiVersion, (unsigned)spv_emit_version(), uuid, g_vk_ftz,
             g_spirv_translate.quad, g_spirv_translate.quad_compute, g_spirv_translate.mixed_dot,
             g_spirv_translate.hmma_coop, g_spirv_translate.hmma_coop_shapes, g_spirv_translate.hmma_pairs,
             g_spirv_translate.hmma_stage, g_spirv_translate.half_flush, g_spirv_translate.hmma_f16,
@@ -3837,6 +3933,7 @@ static VkSh* pf_ship_take(u64 h, int stage, const u32 mask[SH_KEY_WORDS], u32 le
     if (!s) return NULL;
     if (!vk_cb_folds_hold(&s->cbr, sh_cb_read, sh_cb_bytes)) {
         vk_so_forget_spirv(s->mod); /* a later module may get its handle */
+        SNX_MEM_FREE_D((const void*)(uintptr_t)s->mod, "shader modules");
         vkDestroyShaderModule(g_vk.dev, s->mod, NULL);
         free(s->cbr.r);
         free(s);
@@ -3884,6 +3981,7 @@ static void ship_warm(int stage, int indexed, const u32* spv, u32 nw) {
     if (!mod) return;
     WarmItem* w = calloc(1, sizeof *w);
     if (!w) {
+        SNX_MEM_FREE_D((const void*)(uintptr_t)mod, "shader modules");
         vkDestroyShaderModule(g_vk.dev, mod, NULL);
         return;
     }
@@ -3900,6 +3998,7 @@ static void ship_warm(int stage, int indexed, const u32* spv, u32 nw) {
     pm_lock(&g_pipeline.pj_lock);
     if (!pipe_workers()) { /* no workers: the parts are made when the draws ask, as now */
         pm_unlock(&g_pipeline.pj_lock);
+        SNX_MEM_FREE_D((const void*)(uintptr_t)mod, "shader modules");
         vkDestroyShaderModule(g_vk.dev, mod, NULL);
         free(w);
         return;
@@ -3941,8 +4040,9 @@ static int ship_make(const u8* code, u64 h, int stage, u32 len, u64 qh, u32 len_
        and is counted as failed, for this build and driver. Taking every failure without a reason as one to try again
        would walk the files again on every run of a game with a program that fails so */
     if (!translated) {
-        LOG("vulkan: %s %016llx not translated: %s\n", shipped_stage_name(stage), (unsigned long long)h,
-            s.si.first_unsupported[0] ? s.si.first_unsupported : "unsupported feature or float controls");
+        LOG("vulkan: %s %016llx not translated: %s%s\n", shipped_stage_name(stage), (unsigned long long)h,
+            s.si.first_unsupported[0] ? s.si.first_unsupported : "unsupported feature or float controls",
+            vk_lane_note((char[32]){0}, &s.si));
         return SHIP_FAILED;
     }
     if (!at) return SHIP_STOP;
@@ -4165,6 +4265,7 @@ static void pf_start_load(void) {
     pm_init(&g_pipeline.pf.scan.lock);
     pm_init(&g_pipeline.pf.note_lock);
     pm_init(&g_pipeline.pf.lock);
+    pm_lock_announce(&g_pipeline.pf.lock, "pipeline files"); /* the load thread and the game threads reading files */
     pc_init(&g_pipeline.pf.done);
     if (vk_corpus_dir()) {
         LOG("vulkan: shaders are recorded (shader_corpus or shader_captures), so every one is translated and none is "

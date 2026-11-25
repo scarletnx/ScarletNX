@@ -1178,7 +1178,7 @@ int main(int argc, char** argv) {
                PAuth stays out, as QEMU signs with keys where the emitters run with authentication off */
             if (snx_a64_decode_word(it->words[k], SNX_A64_TARGET_MAX, &max) != SNX_A64_OP_UNDEF &&
                 (snx_ir_ldst_handles(max.op) || snx_ir_fpu_handles(max.op) || snx_ir_vec_handles(max.op)) &&
-                (max.feature & ~(SnxU64)SNX_A64_TARGET_SWITCH))
+                (max.feature & ~(SnxU64)SNX_A64_TARGET_SWITCH) && !(max.feature & SNX_A64_FEAT_PAUTH))
                 features = SNX_A64_TARGET_MAX;
             else if (snx_a64_decode_word(it->words[k], SNX_A64_TARGET_OUNCE, &ounce) != SNX_A64_OP_UNDEF &&
                      snx_ir_int_handles(ounce.op) && (ounce.feature & ~(SnxU64)SNX_A64_TARGET_SWITCH) &&

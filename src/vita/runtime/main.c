@@ -55,11 +55,12 @@ static void usage(FILE* out) {
         "                         KEY is the key with a - for each _; the key as written, the older spelling, is still\n"
         "                         read, and said once\n"
         "\n"
-        "On the Vita, -O is the level of the blocks' code and of the helpers they call. --chunk N puts N instructions\n"
-        "in a chunk, whole blocks (default: 512 blocks a chunk). --jit-cache FILE is the list of the blocks a run\n"
-        "compiled at run time that discovery starts from, another game folder's <title ID>.hints (default: the\n"
-        "game's own). --jit-only makes a module of no blocks, the run-time compiler compiling every one, and\n"
-        "--keep-ir keeps each chunk's IR in <title ID>_build of the game's folder.\n"
+        "On the Vita, -O is the level of the blocks LLVM compiles: those this computer's native back end does not make,\n"
+        "and every one with --keep-ir. --chunk N puts N instructions in a chunk of LLVM's, whole blocks (default: 512\n"
+        "blocks a chunk). --jit-cache FILE is the list of the blocks a run compiled at run time that discovery starts\n"
+        "from, another game folder's <title ID>.hints (default: the game's own). --jit-only makes a module of no blocks,\n"
+        "the run-time compiler compiling every one, and --keep-ir has LLVM compile them all and keeps each chunk's IR in\n"
+        "<title ID>_build of the game's folder.\n"
         "\n"
         "On the Vita, --update is the dumped game's update folder (default: patch/<title ID> beside its app/<title\n"
         "ID>), --shot saves PATH.ppm, and --script=ms:buttons,... is the setting vita_script.\n",
@@ -340,15 +341,15 @@ int snx_vita_main(int argc, char** argv) {
             snx_cli_free(&cli);
             return common < 0 ? 2 : 0;
         }
-        if (common == SNX_CLI_SCRIPT) ini_read(ini_find(g_vita_debug_ini, "vita_script"), cli.value[SNX_CLI_SCRIPT]);
+        if (common == SNX_CLI_SCRIPT) ini_read(ini_find(g_vita_run_ini, "vita_script"), cli.value[SNX_CLI_SCRIPT]);
         /* the Switch's settings, as --aot-threads= is: the last given counts */
         if (common == SNX_CLI_OPT) ini_read(ini_find(g_recompile_ini, "opt"), cli.value[SNX_CLI_OPT]);
         if (common == SNX_CLI_JOBS) g_settings.aot_threads = cli.jobs;
         if (common) continue;
         if (!strncmp(a, "--", 2) && strchr(a, '=')) {
-            /* the Vita debug table's, --press-len= and --shot-every= being vita_press_len and vita_shot_every (a Switch
-               game's are g_unattended_ini's), vulkan_video (which the Vita's AVC decoder doesn't take yet), the
-               upscaler and the anti-aliasing (the presenter's, gpu/vk.c), a Vulkan extension's (vk_ext_*) and
+            /* the Vita debug and run tables', --press-len= and --shot-every= being vita_press_len and vita_shot_every
+               (a Switch game's are g_unattended_ini's), vulkan_video (which the Vita's AVC decoder doesn't take yet),
+               the upscaler and the anti-aliasing (the presenter's, gpu/vk.c), a Vulkan extension's (vk_ext_*) and
                gamepad_map */
             char key[64];
             const char* value = settings_arg(a, key, sizeof key);
@@ -362,9 +363,10 @@ int snx_vita_main(int argc, char** argv) {
                     return 2;
                 }
             } else if (value) {
-                o = ini_find(g_vita_debug_ini, !strcmp(key, "press_len")    ? "vita_press_len"
-                                               : !strcmp(key, "shot_every") ? "vita_shot_every"
-                                                                            : key);
+                o = ini_find(g_vita_run_ini, !strcmp(key, "press_len")    ? "vita_press_len"
+                                             : !strcmp(key, "shot_every") ? "vita_shot_every"
+                                                                          : key);
+                if (!o) o = ini_find(g_vita_debug_ini, key);
                 if (!o) o = ini_find(g_debug_ini, key);
                 if (!o && (!strcmp(key, "vulkan_video") || !strcmp(key, "upscaler") ||
                            !strcmp(key, "upscaler_sharpness") || !strcmp(key, "anti_aliasing")))

@@ -16,8 +16,8 @@
 
 /* a row that is no setting: a page's, which opens the section/page rows listed after it, and its All, first on that
    page, which steps them together */
-enum { GUI_SETTING_PAGE = 1, GUI_SETTING_ALL };
-#define GUI_SETTING_TEXT 192 /* a typed value's room: gamepad_map's whole map (pad_map.h) is 165 at most */
+enum { GUI_SETTING_PAGE = 1, GUI_SETTING_ALL, GUI_SETTING_SECRET };
+#define GUI_SETTING_TEXT 512 /* a typed value's room: the longest of settings.txt's texts the launcher keeps */
 typedef struct {
     int word;                           /* a word row's: the word, 0 the .ini's (a plain row's: its first) */
     char text[GUI_SETTING_TEXT];        /* a typed row's: empty, the .ini's. A page's and an All's: the value shown */
@@ -28,12 +28,27 @@ typedef struct {
     const char* fallback; /* the runtime's default for the .ini, as the row words it: what it shows while not picked */
     const char* def;      /* that default as the .ini writes it */
     const char* only;     /* where it does something, when not on this system ("macOS only", ini.h's ini_only) */
-    int kind;             /* 0, GUI_SETTING_PAGE or GUI_SETTING_ALL */
+    int kind;             /* 0, GUI_SETTING_PAGE, GUI_SETTING_ALL, or GUI_SETTING_SECRET: the Eden room's password,
+                             which is neither the picks' nor a run's option (users/online.ini holds it) */
     int plain;            /* a word row whose words are its values alone, no .ini's: its default's is no pick */
     int always;           /* plain, and passed to every run, its start too (gui_settings_always) */
     int type_text;        /* the .ini's value is a text, often a folder: gui_settings_debug says its key alone */
     int needs_build;      /* the build this row needs, which this one has none of: shown, picked by nothing */
+    int path; /* a text that is a path (ini.h's INI_PATH): 'd' a folder's, 'f' a file's, 's' one to write's */
     int slider;           /* a plain word row on a slider (ini.h's INI_SLIDER): stepped to its ends, never round */
+    /* a word row's value that is none of its words, kept in text and shown as itself as a word after its others: that
+       word's index, 0 for none. Only a slider's row and an open one have such a value (the runtime's list's open:
+       its words the common values, not every one): a number in its range (number 'i' or 'f', lo to hi), or a text */
+    int custom, number, open;
+    double lo, hi;
+    /* a row of boxes (the runtime's list's boxes): its items, their value, label and about, by item; the value (text)
+       is a set of them, a text's separated by commas or spaces, an int's the sum of their bits (number 'i') */
+    const char **item_value, **item_label, **item_about;
+    int items;
+    /* an open row's words with more the launcher found itself (gui_settings_add_words), in one block of its own, NULL
+       for none; how many words it had before them */
+    const char** grown;
+    int base;
     int first, count;     /* the rows a page opens, an All steps */
 } GuiSetting;
 typedef struct {
@@ -42,8 +57,10 @@ typedef struct {
     int count;          /* in one block with the list the keys' names and help point into */
     int own;            /* the launcher's own rows and the recompiler's, first (their page's rows among them) */
     int game;           /* a game's own picks (gui_settings_read_game): none of the launcher's rows, every word row's
-                           first word Global, no pick */
+                           first word Global, no pick. The console it is of, GUI_GAME_*, 0 for the launcher's */
 } GuiSettings;
+/* the consoles whose games have picks of their own */
+enum { GUI_GAME_SWITCH = 1, GUI_GAME_3DS };
 /* the launcher's own rows and the recompiler's (g_launch_sections, listed by ini_list_text), then the runtime's list of
    the game's settings, a line each (section[/page], key, default, int | float | text, lowest, highest, help, name, the
    values value=word between '|', where it does something when not on this system, what the build needs, slider for a
@@ -51,10 +68,13 @@ typedef struct {
    nothing. A page's rows are listed after its section's others, one page a section. 0, else nonzero when out of
    memory */
 int gui_settings_read(GuiSettings* settings, const char* runtime);
-/* the rows of a game's own picks, its picks file (<name>.picks beside its .ini) as gui_settings_load and
+/* the rows of a Switch game's own picks, its picks file (<name>.picks beside its .ini) as gui_settings_load and
    gui_settings_save read and write it: the runtime's alone, each with Global first, the value it starts with, which
    no pick has and the launcher's picks then give (no plain row, no slider). As gui_settings_read: 0, else nonzero */
 int gui_settings_read_game(GuiSettings* settings, const char* runtime);
+/* a game's of console (GUI_GAME_*): a 3DS game's, the settings it has of its own alone (3ds/runtime/main.h's
+   snx_ctr_game_setting, its console), a word row's words Global and those its default is not, which Global gives */
+int gui_settings_read_console(GuiSettings* settings, const char* runtime, int console);
 void gui_settings_free(GuiSettings* settings);
 /* the row of key set to value, a word or a text as the row takes: 1 when it did */
 int gui_settings_set(GuiSettings* settings, const char* key, const char* value);
@@ -91,6 +111,23 @@ int gui_settings_changed(const GuiSettings* settings);
 int gui_settings_slide(GuiSettings* settings, int row, int step);
 int gui_settings_slide_to(GuiSettings* settings, int row, int at);
 int gui_settings_knob(const GuiSettings* settings, int row);
+/* a number's typed row (GuiThemeKey's numeric) a step down (-1) or up (1) from its value, else its default: a whole
+   number's by 1, a float's by a quarter, or a twentieth where its range is 2 or less, as the game's menu steps it, onto
+   that step's grid and stopping at its ends. 1 when it changed, 0 at an end or on another row */
+int gui_settings_step_number(GuiSettings* settings, int row, int step);
+/* row, an open one of words, with count values more after its own, each its own word (the recording devices by name):
+   the ones it has already left out, in the place of those a call before added. Its value stays what it is, a word of
+   them now where one is. 1, else 0 for another row or out of memory */
+int gui_settings_add_words(GuiSettings* settings, int row, const char* const* values, int count);
+/* A row of boxes: item i on in the value the row has, else in base, what it has none of its own (the launcher's for a
+   game's own, else NULL for the default); item i turned on or off in it, the row's own value then (one with nothing on
+   is no value: the default's, or the launcher's, again): 1 when it did. The items a value names that the row has not
+   are kept as they are */
+int gui_settings_item_on(const GuiSettings* settings, int row, int item, const char* base);
+int gui_settings_item_toggle(GuiSettings* settings, int row, int item, const char* base);
+/* what a row of boxes shows: how many of its items are on in value, "None" for none, and how many others the value
+   names that are none of them ("2 on, 1 other") */
+void gui_settings_items_said(const GuiSettings* settings, int row, const char* value, char* out, size_t size);
 /* an All's row stepped (-1 or 1, 0 for a select) with every row it steps: 1, else 0 */
 int gui_settings_step_all(GuiSettings* settings, int row, int step);
 /* the Alls' values after a change: their rows' word when they share one */
@@ -121,8 +158,17 @@ const char* gui_settings_value(const GuiSettings* settings, const char* key);
    at most */
 size_t gui_settings_options(GuiSettings* settings, int launch, const char* game_ini, const char** argv);
 /* argv's --key=value for each of the 3DS driver's settings picked: its tables' (keys that start with ctr_) and the
-   Switch's it takes too (3ds/runtime/main.h's snx_ctr_shared_setting, vk_memory). Its count */
+   Switch's it takes too (3ds/runtime/main.h's snx_ctr_shared_setting, vk_memory); with one a game has of its own among
+   them (its console), --launcher-picks=1 after them, which puts the game's over it. Its count */
 size_t gui_settings_ctr_options(GuiSettings* settings, const char** argv);
+/* argv's --key=value for each of the Vita driver's settings picked: its Debug page's (keys that start with vita_). Its
+   count */
+size_t gui_settings_vita_options(GuiSettings* settings, const char** argv);
+/* the same for a Linux program's run (linux_), an Android app's (android_) and a DS game's (nds_, but the WFC
+   service's, which that driver reads from settings.ini) */
+size_t gui_settings_linux_options(GuiSettings* settings, const char** argv);
+size_t gui_settings_android_options(GuiSettings* settings, const char** argv);
+size_t gui_settings_nds_options(GuiSettings* settings, const char** argv);
 /* Extract to tmpfs: --tmpfs while it is on, else NULL (extractions on disk) */
 const char* gui_settings_tmpfs(const GuiSettings* settings);
 /* Extract dump: --extract-container while it is on, else NULL (a dump read in place, nothing extracted).

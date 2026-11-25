@@ -42,6 +42,19 @@
 #                         there as anywhere
 #     words W|W...        the menus' words (ini.h): an int's for LO, LO + step..., a text's value=word
 #     step N, shift N     the menus' step and shift (ini.h)
+#     steps V V...        an int's values the menus offer, in order (ini.h's IniOpt steps), a range as A..B/S: its words
+#                         name each (Auto|# MB), a value between two is still read, and the launcher keeps it, shown as
+#                         itself
+#     boxes SOURCE        its value is a set of items, a text's separated by commas, an int's the sum of their bits: a box
+#                         an item in the launcher's Settings. SOURCE: words (the row's own words, value=Label each, an
+#                         int's value one bit), bans (the keys of the extension bans, --bans), families (the hook
+#                         families, --hooks), commands (the vulkan table's extensions' device commands, --vk-registry);
+#                         without that file the row is typed
+#     path folder|file|save
+#                         a text that is a path (ini.h's INI_PATH_): the launcher picks it with the system's dialog, a
+#                         folder's, a file's that is read, or a save dialog's for one that is written
+#     open                a text whose words are its common values, not every one (ini.h's INI_OPEN): the launcher
+#                         keeps a value none of them is, shown as itself
 #     slider              the menus draw an int with words on a slider and step it to its ends, never round (ini.h's
 #                         INI_SLIDER): every step a word the launcher lists, its default one of them
 #     perf                off its default it changes how fast the game runs, and nothing on the screen shows it (ini.h's
@@ -131,6 +144,8 @@ setting Save state slots
     key state_slots
     int 1 32
     default 10
+    words #
+    slider
     help The save state slots the menu's Save states page lists and F9 steps through. A state is the whole game at
     help one moment, kept in states/ in the game's folder. The game's own save files are never part of one
 setting Save state backup
@@ -152,6 +167,8 @@ setting Microphone
     key microphone
     text 256
     default off
+    words =System default|off=Off
+    open
     perf
     help The microphone a game hears as the console's own: empty = the system's default recording device; off = none,
     help and the game hears silence; else the first recording device whose name holds this text (any case). It is
@@ -264,31 +281,103 @@ setting Resolution scale
     default 1
     startup
     perf
-    help The scale of the game's 3D rendering, 0.25 to 16: 1 = the console's, 2 = double, 0.5 = half
-setting DLSS upscaler
-    key dlss_upscaler
-    int 0 1
-    default 1
-    words Filtered copy|FSR 2
-    perf
-    help What a Switch 2 game's DLSS evaluations run, as this runtime has no DLSS: 1 = AMD FidelityFX Super Resolution
-    help 2.2 (a temporal upscaler, on any GPU), 0 = a filtered copy of the frame (cheaper, soft, and the picture shakes
-    help with the game's camera jitter). FSR 2 falls back to the copy where it can't run
-setting DLSS render size
-    key dlss_render_size
+    help The scale of every 3D render target the game draws, 0.25 to 16: 1 = the console's, 2 = double, 0.5 = half.
+    help It scales the game's whole rendering, its internal picture and its output alike, as an emulator's resolution
+    help scaler does. The size a game renders at before its own upscaler is internal_resolution, apart from this. At 1,
+    help its default, a game module may set it from internal_resolution (the game's own size times it reaching the
+    help target), and the log says so. Any other value is the user's, which a module's leaves as it is
+setting Internal resolution
+    key internal_resolution
     int 0 5
     default 0
     words Game's|Native|Quality|Balanced|Performance|Ultra performance
     startup
     perf
-    help The size a Switch 2 game is told to render at before its DLSS evaluation: 0 = what the game's own DLSS mode
-    help asks, 1 = the output's size (sharpest, slowest), 2 = 1/1.5, 3 = 1/1.7, 4 = 1/2, 5 = 1/3 of it (fastest)
+    help The internal resolution target: the size a game renders at before its own upscaler (a Switch 2 game's DLSS, or
+    help the one a game module replaces) turns it into the output. 0 = the game's choice, 1 = the output's size
+    help (sharpest, slowest), 2 = 1/1.5, 3 = 1/1.7, 4 = 1/2, 5 = 1/3 of it (fastest). A Switch 2 game is told it as
+    help the render size its DLSS asks for. A game that picks its sizes itself takes it through its game module, which
+    help may set the output to the display's size and the resolution multiplier too. render_upscaler turns that picture
+    help into the output, and resolution scales both
+setting Render upscaler
+    key render_upscaler
+    label Game's upscaler (DLSS, FSR 2)
+    int 0 6
+    default 0
+    words Best|FSR 2|FSR 1|None|DLSS|FSR 3.1 or 4|XeSS
+    perf
+    help What turns the game's internal picture (internal_resolution) into its output: a Switch 2 game's DLSS
+    help evaluations, and the upscalers that hook modules replace (docs/layers/gpu/upscalers.md). A game that has
+    help neither takes nothing from it: upscaler is the window's filter. 0 = the best one
+    help that can run, 1 = AMD FidelityFX Super Resolution 2.2 (temporal), 2 = FSR 1 (spatial: one frame, no jitter or
+    help motion needed), 3 = none: a filtered copy of the picture onto the output (1:1 at the native size, soft below
+    help it, and the picture shakes with the game's camera jitter), 4 = NVIDIA DLSS (Windows, an NVIDIA GPU, and
+    help NVIDIA's runtime in dlss_runtime's folder). FSR 3.1 or 4 and XeSS are not built in yet. Where the one asked
+    help for can't run, or its caller can't take it (a DLSS evaluation takes a temporal one or None, a hook module the
+    help kinds it names), the best one that can stands in
+setting Render anti aliasing
+    key render_anti_aliasing
+    label Render anti-aliasing
+    int 0 2
+    default 0
+    words Off|SMAA 1x|SMAA T2x
+    help The anti-aliasing of the game's 3D picture where no temporal upscaler runs (render_upscaler None, or a hook
+    help module's copy or spatial upscale), on the picture at the render size, before the upscale and before the game
+    help draws its interface over it. 1 = SMAA 1x. 2 = SMAA T2x: each frame taken back by the camera's jitter, then 1x,
+    help then resolved with the frame before, reprojected by the game's motion vectors and weighted by how alike their
+    help motion is: steady, whatever jitter says, and smoother than 1x where the jitter moved edges. It takes a game's DLSS
+    help evaluations: where no motion vectors are given (a hook module's upscale) it is 1x. A temporal upscaler (FSR 2,
+    help DLSS) resolves edges itself and takes none. 0 = none. SMAA S2x and 4x need the game drawn with multisampling,
+    help which a game made without it can't be
+setting SMAA quality
+    key smaa_quality
+    int 0 3
+    default 2
+    words Low|Medium|High|Ultra
+    help SMAA's preset: its edge threshold and how far it searches along an edge. 0 = Low (threshold 0.15, 4 steps),
+    help 1 = Medium (0.1, 8), both without the diagonal and corner searches, 2 = High (0.1, 16, diagonals 8), 3 = Ultra
+    help (0.05, 32, diagonals 16). Higher finds more edges and costs more
+setting SMAA edges
+    key smaa_edges
+    int 0 2
+    default 0
+    words Luma|Color|Depth
+    help What SMAA finds edges in: 0 = the picture's luma, 1 = its color (more edges, between colors of one
+    help brightness), 2 = the depth (geometry's edges alone, none inside textures), where the game's depth is given at
+    help the render size, else luma
+setting Jitter
+    key jitter
+    int 0 1
+    default 0
+    words Game's|Steady
+    help The camera's jitter where no temporal upscaler runs: a game made for DLSS moves its camera by a fraction of a
+    help pixel each frame, which a temporal upscaler resolves and a copy shows as a picture that shakes. 0 = as the game
+    help draws it, 1 = steady: the picture is taken back by the jitter the game gives (a resample, a little softer).
+    help SMAA T2x (render_anti_aliasing=2) does that itself
 setting FSR sharpness
     key fsr_sharpness
     float 0 1
     default 0
     perf
-    help The sharpening FSR 2 applies after upscaling (RCAS), 0 to 1: 0 = none, and no sharpening pass runs
+    help The sharpening FSR 2 or FSR 1 applies after upscaling (RCAS), 0 to 1: 0 = none, and no sharpening pass runs
+setting DLSS runtime
+    key dlss_runtime
+    text 2048
+    startup
+    only windows
+    help The folder that holds NVIDIA's DLSS runtime, which the user downloads from NVIDIA and which is not part of
+    help ScarletNX: sl.interposer.dll, sl.common.dll and sl.dlss.dll from NVIDIA Streamline's SDK and nvngx_dlss.dll
+    help (docs/user/dlss.md). Empty = no DLSS. With it, render_upscaler 0 (Best) or 4 runs DLSS on an NVIDIA GPU. On
+    help any other, or where the files are missing or not signed by NVIDIA, the next upscaler stands in
+setting DLSS preset
+    key dlss_preset
+    int 0 4
+    default 2
+    words NVIDIA's|J|K|L|M
+    startup
+    only windows
+    help The DLSS model: 0 = NVIDIA's choice for each mode, 1 to 4 = the presets J, K, L, M (transformer models). K
+    help by default: at 2x it takes less memory than NVIDIA's choice there (M), 158 against 214 MB at 2560x1440
 setting Shadows
     key shadows
     int 0 1
@@ -336,6 +425,9 @@ setting Upscaler sharpness
     key upscaler_sharpness
     int 0 100
     default 75
+    words #%
+    step 5
+    slider
     help How sharp AMD FSR 1, NVIDIA NIS and Qualcomm SGSR draw the frame's edges: 0 the softest, 100 the sharpest
 setting Anti-aliasing
     key anti_aliasing
@@ -363,7 +455,9 @@ setting HDR paper white
     int 0 480
     default 0
     startup
+    words Reference|# nits
     step 10
+    steps 0..480/10
     help With Game HDR output: the light of white a game is told to draw its SDR parts at, which the menu and the
     help on-screen controls are drawn at too, in nits. 0 = BT.2408's reference white of 203 nits
 setting HDR peak
@@ -372,7 +466,9 @@ setting HDR peak
     int 400 4000
     default 1000
     startup
+    words # nits
     step 100
+    steps 400..4000/100
     help With Game HDR output: the brightest light a game is told the display shows, in nits, which it tone maps its
     help frames for: the display's own peak, 1000 for most TVs
 setting Vulkan Video decode
@@ -431,6 +527,7 @@ setting Vulkan ban ignore
     key vulkan_ban_ignore
     text 512
     default ""
+    boxes bans
     startup
     perf
     help Keys of the extension bans (the drivers known to break a Vulkan extension or feature), separated by commas,
@@ -494,8 +591,8 @@ setting ASTC lines BC1
     help Under astc_mode's Auto, an opaque colour ASTC texture whose 4x4 blocks hold more colours than BC1's line (the
     help ones held as BC7) is held as BC1 instead, half BC7's memory and coarser. Auto = once the GPU's memory has run
     help short (an image found no memory, the caches stayed past their budget, or a trim took what the last frames used),
-    help for the textures loaded from then on. Never (the default) = BC7. Always = from the start. On a 2 GB GPU Mario
-    help Kart World's race ran no faster with Auto (10.3 and 10.9 frames a second against 12.2 and 11.1): the cache
+    help for the textures loaded from then on. Never (the default) = BC7. Always = from the start. On a 2 GB GPU a
+    help racing game's race ran no faster with Auto (10.3 and 10.9 frames a second against 12.2 and 11.1): the cache
     help fills what it saves
 setting Texture system memory
     label Textures given way to system memory
@@ -513,6 +610,7 @@ setting BC7 queue
     default 0
     startup
     words Auto|#
+    steps 0 256 512 1024 2048 4096 8192 16384
     perf
     help The thousands of blocks the BC7 encoder may have queued on the GPU. An upload submits at each half of them
     help and waits for the half before. 0 = by the GPU's own memory: 256 for every 2 GB of it, from 256 to 4096, and
@@ -534,6 +632,7 @@ setting ASTC quick Mtexels
     int 0 4096
     default 8
     words Never|#
+    steps 0 1 2 4 8 16 32 64 128 256 512 1024 2048 4096
     perf
     help With ASTC textures encoded as BC7 as they load (Auto for an Ounce game, or BC7 at load), a texture level of
     help this many megatexels or more, all its layers counted (8 = 4096x2048, or two layers of 2048x2048), is encoded
@@ -569,11 +668,22 @@ setting FPS limit
     key fps_limit
     text 16
     default game
+    words game=Game's|0=No limit|30=30 FPS|60=60 FPS|90=90 FPS|120=120 FPS|144=144 FPS|165=165 FPS|240=240 FPS
+    open
     set options_fps_set
     perf
     help game = the pace the game asks for, as on the console (60 FPS, or 30 for a game made for 30); 0 = no limit;
     help 10 to 1000 = that many frames a second. The display's vsync follows a limit other than game, so a game that
     help counts vsyncs as its time runs faster or slower with it. F4 turns the limit off and on
+setting Frame rate
+    key frame_rate
+    int 0 2
+    default 0
+    startup
+    words Game's|30|60
+    help The frame rate a game module asks the game to run at: 0 = the game's own, 1 = 30, 2 = 60 frames a second.
+    help Only a game whose module knows how the game paces itself follows it, keeping its logic in real time. Without
+    help such a module it does nothing: fps_limit paces the frames, not the game's logic
 setting Memory (GB)
     key memory_gb
     int 0 12
@@ -597,8 +707,10 @@ setting Memory fit mode
     help whatever the device can give. It takes the place of memory_fit, whose 0 was Off (docs/user/deprecations.md)
 setting Heap limit (MB)
     key heap_max_mb
-    text 32
+    int 0 1048576
     default 0
+    words No limit|# MB
+    steps 0 512 1024 1536 2048 3072 4096 6144 8192
     startup
     set options_heap_max_set
     perf
@@ -610,6 +722,7 @@ setting Map limit (MB)
     default-if SNX_IOS 256
     startup
     words No limit|#
+    steps 0 128 256 512 1024 2048 4096 8192 16384 32768
     perf
     help The most of the game's files mapped into memory, in MB, as the game first reads them; 0 = no limit. A file past
     help it is read from disk when the game asks, slower, which leaves address space for threads and graphics where a
@@ -621,6 +734,7 @@ setting Map limit (files)
     default-if SNX_IOS 2048
     startup
     words No limit|#
+    steps 0 512 1024 2048 4096 8192 16384 32768 65536
     perf
     help The most of the game's files mapped, as the game first reads them; 0 = no limit. A file past it is read from
     help disk when the game asks: each mapped file holds a descriptor, of which a device may give the whole app a few
@@ -630,6 +744,8 @@ setting Thread stack (MB)
     int 1 256
     default 32
     default-if SNX_IOS 8
+    words # MB
+    steps 1 2 4 8 16 32 64 128 256
     startup
     perf
     help The host stack of each of the game's threads, in MB: a game's deep calls take it. Less leaves address space
@@ -729,6 +845,7 @@ setting JIT region size
     default 0
     startup
     words Auto|# instructions
+    steps 0 256 512 1024 2048 4096 8192 16384 32768 65536
     perf
     help The most instructions one branch graph of missed code may hold when the JIT compiles it, so a huge function
     help cannot stall the game for seconds. Branches out of it resume through the dispatch table. 0 = up to 4096, and
@@ -739,6 +856,7 @@ setting JIT live budget
     default 0
     startup
     words Auto|# instructions
+    steps 0 16 32 64 128 256 512 1024 4096
     perf
     help The instructions beyond the missed code itself that a miss the game is waiting on discovers (callees).
     help The background queue keeps its larger budget. 0 = 64
@@ -1045,7 +1163,7 @@ setting Tracy capture shortcut
     default F10
     label Tracy capture
     set hotkey_set
-    help The key that records a 60-second Tracy capture, as hotkey_help's
+    help The key that records a Tracy capture of tracy_capture_seconds, as hotkey_help's
 end
 setting Pause shortcut
     key hotkey_pause
@@ -1182,6 +1300,30 @@ setting DS WFC DNS server
     help The DNS server nds_wfc=custom gives the DS, an IPv4 address such as 178.62.43.212. With custom, empty or
     help anything but an address stops the game
 
+# the 3DS driver's (scarletnx-3ds --key=value; the launcher passes its picks)
+table g_ctr_network_ini
+setting CTR online service
+    key ctr_online
+    label 3DS online service
+    text 16
+    default pretendo
+    startup
+    words off=Off|pretendo=Pretendo Network
+    help The 3DS's online service: Pretendo Network, the community's replacement of the original, which is closed. A
+    help game logs in to its server through Pretendo's NASC with the console's own files (ctr_console), as a console
+    help with Pretendo's Nimbus does; off logs in nowhere. The console maker's own domains resolve to nothing either
+    help way, and the game reaches nothing while network is 0. Another word stops the game
+setting CTR console files
+    key ctr_console
+    label 3DS console files
+    text 2048
+    default ""
+    startup
+    help The folder of the player's own 3DS's files, laid out as Azahar's NAND folder (its nand/):
+    help rw/sys/LocalFriendCodeSeed_B and rw/sys/SecureInfo_A, which Azahar's Artic Setup Tool copies from the console,
+    help and the friends module's save holding the Pretendo account, which it does not copy: Nimbus makes it when it
+    help runs in Azahar. Empty: the console has no account, and a game's login does not go out
+
 # the Switch's, which nothing reads: its row shows the service is not offered
 table g_switch_online_ini
 setting Switch online service
@@ -1208,6 +1350,8 @@ setting FSR input conventions
     key fsr_input_conventions
     int 0 255
     default 0
+    words 1=Jitter reversed in x|2=Jitter reversed in y|4=Motion vectors reversed|8=Inverted depth|16=Motion vectors that include the jitter|32=FSR's own exposure|64=HDR color input
+    boxes words
     help Reverses what the runtime takes a game's DLSS inputs to mean when it gives them to FSR 2, a bit each:
     help 1 = the jitter's sign in x, 2 = in y, 4 = the motion vectors' sign, 8 = inverted depth, 16 = motion vectors
     help that include the jitter, 32 = FSR's own exposure, 64 = HDR color input. For a game whose picture smears
@@ -1233,6 +1377,8 @@ setting Log size limit
     key log_max
     int 1 1024
     default 16
+    words # MiB
+    steps 1 2 4 8 16 32 64 128 256 512 1024
     help The game log's size in MiB, 1 to 1024: past it the run's start stays and the oldest lines after it go, said in
     help the log and once over the game, so the log always ends with the last lines. The 5 last runs' logs are kept,
     help the ones before this run's in logs/ beside it, named by when each was last written
@@ -1408,6 +1554,7 @@ setting IR dump PC
 setting IR branch profile
     key ir_branch_profile
     text 1024
+    path file
     default ""
     startup
     recompile
@@ -1485,6 +1632,8 @@ setting Host page size
     key host_page
     int 0 1048576
     default 0
+    words Host's|# bytes
+    steps 0 8192 16384 32768 65536 131072 262144 524288 1048576
     startup
     help The page size the runtime works in, in bytes: a power of two larger than the host's own, up to 1 MiB.
     help 16384 or 65536 run as a host with 16 or 64 KiB pages does (views copy, a host page holds several guest
@@ -1497,6 +1646,7 @@ setting NCE foreign scan
     default 0
     startup
     words Off|# s
+    steps 0 1 2 5 10 30 60 120 300 600 1800 3600
     help Under NCE, the seconds between two looks at the game's addresses for what of the host's process is not the
     help game's (another owner's mapping over its memory, a run nothing maps), 1 to 3600, each new finding logged once.
     help 0 = off: only as the game's code starts and in a crash report. Each look reads /proc/self/maps, a few
@@ -1545,13 +1695,27 @@ setting Hook families off
     key hooks_off
     text 256
     default ""
+    boxes families
     startup
     help The families of hooks (hle/hook/hooks.hook's family lines, such as libc) whose functions run their own code,
-    help separated by commas or spaces, to tell which family a problem comes from. Empty: every family is on
+    help and the hook modules turned off (docs/platforms/nx/hooks.md, Modules), separated by commas or spaces, to tell
+    help which a problem comes from. Empty: every family and module is on
+setting Hook modules folder
+    key hook_modules_dir
+    text 1024
+    default ""
+    startup
+    recompile
+    help The folder of the hook modules built as libraries (docs/platforms/nx/hooks.md, Modules in libraries): each
+    help NAME.so (NAME.dll on Windows, NAME.dylib on macOS) there is the module NAME, loaded at start when its ABI is
+    help the runtime's and hooks_off doesn't name it. Empty: hook_modules in the user's data folder. The recompile reads
+    help it too, and routes the functions the modules' CPU hooks name, so a recompile after installing a module gives its
+    help CPU hooks their calls
 setting Hook families verified
     key hooks_verify
     text 256
     default ""
+    boxes families
     startup
     help The families of hooks whose pure hooks (hle/hook/hooks.hook's pure, such as libc's memcpy) are checked on
     help every call: the function's own code runs on copies of the memory it writes, then the handler on the game's,
@@ -1578,9 +1742,34 @@ setting Native os sync
     help events, semaphores and message queues (os_light) run on the host with no SVC, a lock's waiters waiting on its
     help word with the host's futex, and save states are refused, as a state can't hold a thread waiting there. 0 = the game's own code makes the SVCs, and save states can be taken
     help and loaded
+setting GPU hook trace
+    key gpu_hook_trace
+    int 0 1000000
+    default 0
+    startup
+    help How many of a Switch 2 or NVN game's draws and dispatches the log names (docs/platforms/nx/hooks.md, Finding a
+    help game's passes): each dispatch's program hash, call site in main, grid and block, its buffers and the images its
+    help handles name, each draw's fragment program hash, targets and viewport, and the records between them that aren't
+    help binds. For finding the passes a hook module replaces and the game's code that records them. 0 = none
+setting GPU hook trace from
+    key gpu_hook_trace_from
+    int 0 100000000
+    default 0
+    startup
+    help How many presents GPU hook trace lets go by before it logs, to trace a scene the game reaches later. It
+    help marks each present while it logs. 0 = from the start
+setting GPU hook trace words
+    key gpu_hook_trace_words
+    text 64
+    default ""
+    startup
+    help With GPU hook trace, words of a constant buffer each traced draw binds, as floats: its stage (0 vertex to 4
+    help fragment, 5 task, 6 mesh), slot, byte offset and how many 32-bit words (at most 128), four numbers separated
+    help by spaces or commas such as "0,1,0x40,16". A draw whose words are the ones logged before says so. Empty: none
 setting Shader corpus
     key shader_corpus
     text 1024
+    path folder
     default ""
     startup
     help A folder that keeps each translated shader for snx-shaderc (gpu/shader/corpus.c). With it every shader is
@@ -1588,6 +1777,7 @@ setting Shader corpus
 setting Pipeline stats
     key pipeline_stats
     text 1024
+    path save
     default ""
     startup
     help A CSV file that gets the driver's statistics of each whole and optimized graphics pipeline, and of each
@@ -1598,6 +1788,7 @@ setting Pipeline stats
 setting GL call census
     key gl_call_census
     text 1024
+    path save
     default ""
     startup
     help A TSV file that gets, for a game that draws through its own OpenGL driver, each GL function it calls: the
@@ -1607,6 +1798,7 @@ setting GL call census
 setting ASTC dump
     key astc_dump
     text 1024
+    path folder
     default ""
     startup
     help A folder that keeps each whole ASTC texture level the game loads, as an .astc file (astcenc's format, the
@@ -1615,6 +1807,7 @@ setting ASTC dump
 setting SM86 dump
     key sm86_dump
     text 1024
+    path folder
     default ""
     startup
     help A folder that keeps the bytes of each Ounce program (SM86) the translator refuses, and of each block of
@@ -1650,6 +1843,7 @@ setting Vulkan hidden commands
     key vk_debug_hide_commands
     text 512
     default ""
+    boxes commands
     startup
     help Vulkan device commands, separated by commas, that the check of each extension's commands takes as missing
     help from the driver, to test that path: an extension that requires one goes off, and the device is made again
@@ -1910,6 +2104,8 @@ setting Vulkan allocation cap
     key vk_max_allocation_mb
     int 0 INT_MAX
     default 0
+    words Device's|# MiB
+    steps 0 64 128 256 512 1024 2048 4096
     startup
     help The largest Vulkan allocation in MiB, below the device's own (larger images in pieces with sparse binding),
     help to test the pieces on a driver that takes anything (lavapipe). 0 = the default
@@ -1931,6 +2127,8 @@ setting Submit every
     key vk_submit_every
     int 0 65536
     default 512
+    words Only when needed|#
+    steps 0 64 128 256 512 1024 2048 4096 8192 65536
     help The draws, dispatches and copy bands that a submission holds at most: what was recorded goes to the GPU after
     help this much work, so the GPU starts on a frame while the rest of it is recorded (Eden's renderer submits every
     help 4096 draws). 0 = a submission only where the GPU's results are needed (a present, a wait, a readback)
@@ -1938,12 +2136,15 @@ setting Vulkan memory budget
     key vk_budget_mb
     int 0 INT_MAX
     default 0
+    words Driver's|# MiB
+    steps 0 256 512 1024 2048 3072 4096 6144 8192 12288 16384
     startup
     help The caches keep within this many MiB of the GPU's heap, below the driver's budget, for testing. 0 = the
     help driver's budget alone
 setting RenderDoc captures
     key renderdoc
     text 1024
+    path save
     default ""
     startup
     help The path's stem of RenderDoc captures (RenderDoc's library is loaded before the Vulkan instance): the capture
@@ -1973,8 +2174,14 @@ setting Tracy capture
     startup
     words Off|On
     help 1 = records this run to a trace beside the game and opens it in the profiler when the run ends; the client
-    help starts for it, so the GUI cannot have the run as well. F10 starts a 60-second capture while a run goes.
+    help starts for it, so the GUI cannot have the run as well. F10 starts a capture while a run goes.
     help tracy-capture must be on PATH, and the runtime built with SNX_TRACY
+setting Tracy capture seconds
+    key tracy_capture_seconds
+    int 1 3600
+    default 60
+    help The seconds a capture records: the run's own capture at the start, and one F10 starts while the game plays.
+    help The capture writes the trace when it stops, so a longer one holds more of the run but takes more disk space
 setting Tracy sampling
     key tracy_sampling
     int 0 1
@@ -2006,11 +2213,12 @@ setting Tracy port
     text 6
     default ""
     startup
-    help The port the client listens on and the capture connects to, a number of 1 to 65535. Empty: one of the
-    help run's own, so an earlier capture or GUI on 8086 is not in the way
+    help The port the client listens on and the capture connects to, a number of 1 to 65535. Empty: Tracy's 8086
+    help unless a capture is requested, when one of the run's own ports is used instead
 setting Tracy capture tool
     key tracy_capture_tool
     text 1024
+    path file
     default ""
     startup
     help The tracy-capture to start: a path, or a name on PATH. Empty: beside the runtime, then on PATH
@@ -2021,7 +2229,54 @@ setting Tracy open trace
     startup
     words Off|On
     help 1 = opens the trace in tracy-profiler when the run ends
+setting Tracy zone callstack
+    key tracy_zone_callstack
+    int 0 16
+    default 0
+    startup
+    help The callstack depth an SNX_ZONE_CS zone captures, 0 to 16 frames. 0 = no callstack; a larger depth gives the
+    help flame graphs more frames but costs more time and space in the trace
+setting Tracy memory detail
+    key tracy_memory_detail
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = emits a Memory view event for each game malloc, audio and video buffer, and GPU object, so a trace can
+    help show which pool holds the bytes. Every game malloc and free then pays the cost of a Tracy event, so leave this
+    help off unless the trace needs those pools; guest mappings and Vulkan device memory are always tracked
+setting Tracy memory callstack
+    key tracy_memory_callstack
+    int 0 16
+    default 0
+    startup
+    help The call stack depth added to the detailed memory events of tracy_memory_detail, 0 to 16 frames. 0 = none.
+    help A larger depth shows the code that made each allocation, and costs time at every game malloc and free
+setting Tracy lock marks
+    key tracy_lock_marks
+    int 0 1
+    default 0
+    words Off|On
+    startup
+    help 1 = adds a try event for named locks and records the source line for each lock mark. Wait, take and release
+    help events go out with any attached client. Leave this off unless the lock pane needs try outcomes
+setting Tracy GPU zone callstack
+    key tracy_gpu_zone_callstack
+    int 0 16
+    default 0
+    startup
+    help The call stack depth added to each GPU pass zone, 0 to 16 frames. 0 = none. A larger depth walks the CPU
+    help stack where the pass is recorded. This costs much time, so use it on pass-level zones only
 end
+setting Perf map
+    key perf_map
+    int 0 1
+    default 0
+    startup
+    only linux
+    words Off|On
+    help 1 = names the code the runtime JIT compiles in Linux perf maps, so a sampled flame graph names those frames.
+    help The map is written as loads compile, and any lines not yet emitted are appended at exit; 0 writes no map
 
 # the unattended runs' (platform/unattended.c): read as the .ini's settings are, from the command line, but in no section,
 # so never written back
@@ -2115,9 +2370,20 @@ setting State checks
     help Save state round trips, a comma between: at saves the game at that many ms of the scripted input's clock into
     help the check slot, loads it back at once, and logs whether guest memory and guest time came back the same
 
-# ---- the 3DS driver's display ----
+# ---- the 3DS driver's console and display, the 3DS group's own rows ----
 
 table g_ctr_display_ini
+setting CTR model
+    key ctr_model
+    label Console
+    text 8
+    default auto
+    startup
+    words auto=Auto|old=Old 3DS|new=New 3DS
+    help The console a 3DS game runs on. Auto = the one it was played on before, which its .ini records (model=), and
+    help for its first run a New 3DS where the game is New 3DS exclusive or asks for the New 3DS's 178 MiB memory
+    help mode, else an Old 3DS. Old 3DS and New 3DS = that console, as --model old or new. Any other value stops the
+    help game, saying so. A game's own Settings pick it for that game alone, over this
 setting CTR screen layout
     key ctr_screen_layout
     label Screen layout
@@ -2156,16 +2422,25 @@ setting CTR bottom resolution
     help The scale of the bottom screen's 3D rendering, 1 to 16: 1 = the console's 320x240, 2 = 640x480. The screen
     help is scaled to its window
 
-# ---- the 3DS driver's (scarletnx-3ds --key=value), in no section of the game's .ini ----
+# ---- the 3DS driver's debug settings (scarletnx-3ds --key=value), the 3DS section's Debug page: the launcher passes
+# each picked to a 3DS game's run, as every ctr_ setting ----
 
 table g_ctr_debug_ini
+setting CTR NASC URL
+    key ctr_nasc_url
+    text 256
+    default ""
+    help The NASC a game's login posts to with ctr_online=pretendo: empty is Pretendo's, https://nasc.pretendo.cc/ac/;
+    help another, http:// or https://, a NASC of one's own (a Pretendo server run locally, a test's)
 setting CTR IPC trace
+    label IPC trace
     key ctr_ipc_trace
     int 0 1
     default 0
     words Off|On
     help 1 = logs each service request the 3DS game sends, its service and header, in the order sent
 setting CTR hooks
+    label IPC hooks
     key ctr_hooks
     int 0 1
     default 1
@@ -2174,6 +2449,7 @@ setting CTR hooks
     help sends their requests to the services without the TLS command buffer and the SVC, and runs a GX command at the
     help SDK's enqueue (aot/ctr_hook.h); 0 = the game's code makes every request
 setting CTR SVC trace
+    label SVC trace
     key ctr_svc_trace
     int 0 2
     default 0
@@ -2181,6 +2457,7 @@ setting CTR SVC trace
     help 1 = logs each SVC the 3DS game makes that answers a failure (r0 with its top bit set), 2 = every SVC, with
     help the thread, its pc and r0 to r3 before and after
 setting CTR stand in
+    label Stand-in shaders
     key ctr_stand_in
     int 0 2
     default 1
@@ -2190,12 +2467,14 @@ setting CTR stand in
     help environment as it goes, where they draw it as its own would, instead of being skipped; 0 skips it; 2 draws
     help every draw they draw with them, to test them
 setting CTR GPU trace
+    label GPU trace
     key ctr_gpu_trace
     int 0 1
     default 0
     words Off|On
     help 1 = logs each GX command the 3DS game queues, and each framebuffer swap the display takes or drops (and why)
 setting CTR UDS trace
+    label Local wireless trace
     key ctr_uds_trace
     int 0 1
     default 0
@@ -2203,6 +2482,7 @@ setting CTR UDS trace
     help 1 = logs each local wireless packet of the 3DS game that goes through an Eden room (sent, received,
     help delivered): its direction, the time, its size and its first 96 bytes in hex
 setting CTR run-time compile trace
+    label Run-time compile trace
     key ctr_jit_trace
     int 0 1
     default 0
@@ -2210,6 +2490,7 @@ setting CTR run-time compile trace
     help 1 = logs each block the 3DS runtime compiles while the game runs (the static module lacked it), Thumb ones
     help with the pc's low bit set as the hints file writes them
 setting CTR answer unknown commands
+    label Answer unknown commands
     key ctr_auto_stub_ipc
     int 0 1
     default 1
@@ -2217,6 +2498,11 @@ setting CTR answer unknown commands
     help 1 = a command of a 3DS service the runtime doesn't know answers success, and a service it doesn't have is a
     help stand-in that answers each command so (each logged the first time), as auto_stub_ipc does for a Switch game;
     help 0 = the run stops at the first, saying which, except for the services --ipc-stubs names
+
+# ---- a 3DS run's scripted input (scarletnx-3ds --key=value), in no section: a run's own, as the unattended
+# runs' are, never written back nor listed ----
+
+table g_ctr_run_ini
 setting CTR script
     key ctr_script
     text 4096
@@ -2225,10 +2511,12 @@ setting CTR script
     help buttons in hex as hid:USER's pad has them (1 A, 2 B, 4 Select, 8 Start, 10 Right, 20 Left, 40 Up, 80 Down,
     help 100 R, 200 L, 400 X, 800 Y), each held for press_len ms
 
-# ---- the Vita driver's (scarletnx-vita --key=value), in no section of the game's .ini ----
+# ---- the Vita driver's debug settings (scarletnx-vita --key=value), the Vita section's Debug page: the launcher
+# passes each one picked to a Vita game's run ----
 
 table g_vita_debug_ini
 setting Vita import trace
+    label Import trace
     key vita_hle_trace
     int 0 2
     default 0
@@ -2236,6 +2524,7 @@ setting Vita import trace
     help 1 = logs each call of an imported function the runtime doesn't implement, 2 = every call, with its
     help thread, r0 to r3 and its result
 setting Vita run-time compile trace
+    label Run-time compile trace
     key vita_jit_trace
     int 0 1
     default 0
@@ -2243,17 +2532,45 @@ setting Vita run-time compile trace
     help 1 = logs each block the Vita runtime compiles while the game runs (the game's module lacked it), Thumb ones
     help with the pc's low bit set as the hints file writes them
 setting Vita GXM trace
+    label GXM trace
     key vita_gxm_trace
     int 0 1
     default 0
     words Off|On
     help 1 = logs each scene, draw and display queue entry the Vita game makes through sceGxm
 setting Vita shader corpus
+    label Shader corpus
     key vita_shader_corpus
     text 1024
+    path folder
     default ""
     help A folder the Vita runtime writes each GXP program it translates to, with what it was translated for, as
     help <hash>.gxp: tools/snx_vita_usse.c translates such a folder again (the game's own code: keep it local)
+# the backend checked against Unicorn, in a build configured with -DSNX_VITA_LOCKSTEP=ON alone (src/vita/CMakeLists.txt)
+needs vita_lockstep
+setting Vita lockstep
+    label Lockstep
+    key vita_lockstep
+    int -1 INT_MAX
+    default -1
+    words Off|#
+    help From this import call on (0 = the first), every instruction group of the Vita game also runs in Unicorn, and
+    help the first difference in registers, flags or written memory stops the run with both states (docs/platforms/vita/README.md).
+    help Only in a build configured with -DSNX_VITA_LOCKSTEP=ON: another build says so at start. -1 = off
+setting Vita lockstep steps
+    label Lockstep steps
+    key vita_lockstep_steps
+    int 0 INT_MAX
+    default 0
+    words No limit|#
+    help With vita_lockstep, how many instruction groups are compared before the game runs on without Unicorn.
+    help 0 = no limit
+end
+
+# ---- a Vita run's scripted input (scarletnx-vita --key=value), in no section: a run's own, as the unattended runs'
+# are, never written back nor listed ----
+
+table g_vita_run_ini
 setting Vita script
     key vita_script
     text 4096
@@ -2273,21 +2590,180 @@ setting Vita screenshot interval
     default 0
     help With --shot=PATH, also a screenshot every this many vblanks (60 a second), PATH_0000.ppm on; 0 = only the
     help last frame's
-setting Vita lockstep
-    key vita_lockstep
-    int -1 INT_MAX
-    default -1
-    words Off|#
-    help From this import call on (0 = the first), every instruction group of the Vita game also runs in Unicorn, and
-    help the first difference in registers, flags or written memory stops the run with both states (docs/platforms/vita/README.md).
-    help Only in a build configured with -DSNX_VITA_LOCKSTEP=ON: another build says so at start. -1 = off
-setting Vita lockstep steps
-    key vita_lockstep_steps
-    int 0 INT_MAX
+
+# ---- a Linux program's run (scarletnx-gnuabi --key=value), the Linux group: the launcher passes each one picked to a
+# Linux program's run, before its name ----
+
+table g_linux_ini
+setting Linux isolated
+    label Isolated
+    key linux_isolated
+    int 0 1
     default 0
-    words No limit|#
-    help With vita_lockstep, how many instruction groups are compared before the game runs on without Unicorn.
-    help 0 = no limit
+    words Off|On
+    help On = no host files and no variables of the host's: /tmp in memory, the program alone as /program and PATH and
+    help LANG in its environment (--isolated)
+setting Linux root
+    label Root folder
+    key linux_root
+    text 1024
+    path folder
+    default ""
+    help The guest's root (-L DIR, --sysroot=DIR): a guest path names its file when it has one, the host's otherwise, as
+    help with QEMU's -L. Empty: linux/ in the data folder. Isolated takes none
+setting Linux kept code
+    label Kept code
+    key linux_jit_cache
+    int 0 1
+    default 1
+    words Off|On
+    help Off = no compiled code is kept between runs (--no-jit-cache)
+setting Linux JIT level
+    label JIT optimization
+    key linux_jit_opt
+    text 4
+    default 2
+    words 0=O0|1=O1|2=O2|3=O3|s=Os|z=Oz
+    help LLVM's optimization of the code the JIT compiles (--jit-opt=, -O): O0 compiles several times faster
+setting Linux host page
+    label Host page
+    key linux_host_page
+    int 0 1048576
+    default 0
+    words Auto|# bytes
+    steps 0 4096 16384 65536
+    help Works as a host whose pages have that many bytes: a power of two from the host's page to 1048576 (--host-page=).
+    help 0 = the host's. Not on Windows, which works in 4096-byte pages and refuses another
+
+table g_linux_debug_ini
+setting Linux system call trace
+    label System call trace
+    key linux_strace
+    int 0 1
+    default 0
+    words Off|On
+    help On = each system call, its arguments and its result on stderr, with the process id (--strace)
+setting Linux pc sample
+    label Program counter sample
+    key linux_sample_pc
+    int 0 1
+    default 0
+    words Off|On
+    help On = the guest's program counter on stderr once a second, which shows a loop with no system call
+    help (--sample-pc). Not on Windows
+setting Linux JIT messages
+    label JIT messages
+    key linux_verbose_jit
+    int 0 1
+    default 0
+    words Off|On
+    help On = says what the JIT compiles (--verbose-jit)
+
+# ---- an Android app's run (scarletnx-android --key=value), the Android group: the launcher passes each one picked ----
+
+table g_android_ini
+setting Android JIT level
+    label JIT optimization
+    key android_jit_opt
+    text 4
+    default 2
+    words 0=O0|1=O1|2=O2|3=O3|s=Os|z=Oz
+    help LLVM's optimization of the native code the JIT compiles (--jit-opt=, -O): O0 compiles several times faster, to
+    help test the JIT itself
+setting Android Java options
+    label Java options
+    key android_java_options
+    text 1024
+    default ""
+    help Options for the JVM, a space between two, as -J gives one: -Xmx2g. Empty: none
+
+table g_android_debug_ini
+setting Android log level
+    label Log level
+    key android_log_level
+    text 4
+    default D
+    words V=Verbose|D=Debug|I=Info|W=Warning|E=Error|A=Assert
+    help The least android.util.Log level printed (--log-level=), the least Log.isLoggable is true for too
+setting Android frame trace
+    label Frame trace
+    key android_trace_frames
+    int 0 1
+    default 0
+    words Off|On
+    help On = each frame the app's windows make, on stderr (--trace-frames)
+setting Android signal log
+    label Signal log
+    key android_log_signals
+    int 0 1
+    default 0
+    words Off|On
+    help On = each guest signal action, send and delivery (--log-signals)
+setting Android sample
+    label Thread sample
+    key android_sample
+    int 0 1
+    default 0
+    words Off|On
+    help On = every 5 seconds, each guest thread's pc, x30 and HLE call, and the count of Vulkan presents (--sample)
+setting Android JIT messages
+    label JIT messages
+    key android_jit_verbose
+    int 0 1
+    default 0
+    words Off|On
+    help On = each unit the JIT compiles, before and after, with its time (--jit-verbose)
+setting Android JIT IR
+    label JIT IR folder
+    key android_jit_keep_ir
+    text 1024
+    path folder
+    default ""
+    help A folder that keeps the LLVM IR of each unit the JIT compiles, so one LLVM fails on can be compiled again by
+    help itself (--jit-keep-ir=). Empty: none
+setting Android linker messages
+    label Linker messages
+    key android_linker_verbose
+    int 0 1
+    default 0
+    words Off|On
+    help On = each native library and its load address (--linker-verbose)
+
+# ---- a DS game's run (scarletnx-nds --key=value), the DS group: the launcher passes each one picked to a DS game's
+# run, but the WFC service's, which the driver reads from settings.ini itself (g_nds_network_ini) ----
+
+table g_nds_ini
+setting DS compile first
+    label Compile first
+    key nds_aot
+    int 0 1
+    default 1
+    words Off|On
+    help Off = a game with no module is not compiled before it starts: every block compiles as the run reaches it (a
+    help quick look at a game, --aot=0; a recompile does it later, from the hints)
+
+table g_nds_debug_ini
+setting DS trace
+    label Trace
+    key nds_trace
+    int 0 2
+    default 0
+    words Off|Unknown accesses|And interrupts
+    help 1 = says each register access and ARM7 request the board does not know (--trace), 2 = each interrupt taken too
+setting DS sound file
+    label Sound file
+    key nds_wav
+    text 1024
+    path save
+    default ""
+    help A WAV file that gets the run's sound, 16 bits stereo (--wav=). Empty: none
+setting DS memory dump
+    label Memory dump
+    key nds_dump_ram
+    text 1024
+    path save
+    default ""
+    help A file that gets 0x01FF8000 to 0x02FFFFFF when the run ends (--dump_ram=). Empty: none
 
 # ---- the Vulkan extensions ----
 
@@ -2394,13 +2870,17 @@ section Game: g_game_ini
 section Display: g_display_ini
 section Graphics: g_graphics_ini, g_vk_extensions_ini/Vulkan Extensions
 section Audio: g_audio_ini
-section 3DS: g_ctr_display_ini
+section 3DS: g_ctr_display_ini, g_ctr_debug_ini/Debug
+section Vita: g_vita_debug_ini/Debug
+section Linux: g_linux_ini, g_linux_debug_ini/Debug
+section Android: g_android_ini, g_android_debug_ini/Debug
+section DS: g_nds_ini, g_nds_debug_ini/Debug
 section Performance: g_performance_ini
 section On-screen controls: g_vpad_ini, g_backend_ini, g_vpad_shown_ini/Buttons    backend
 section Controllers: g_gamepad_ini, g_gamepad_map_ini/Button map, g_gamepad_players_ini/Player, g_joycon2_ini/Bluetooth    backend
 section Shortcuts: g_hotkeys_ini    backend
 section Network: g_network_ini
-section Online: g_nds_network_ini, g_switch_online_ini
+section Online: g_nds_network_ini, g_ctr_network_ini, g_switch_online_ini
 section User: g_user_ini
 section Debug: g_debug_ini
 
@@ -2432,6 +2912,9 @@ setting Extract game container
 setting Java home
     key java_home
     text 192
+    words =The build's
+    open
+    path folder
     help The JDK, 21 or later, that Android apps run on: the folder that holds its lib/server (bin/server on Windows).
     help Empty = the one the build found. Set, the launcher gives it to scarletnx-android as --java-home
 
@@ -2460,6 +2943,7 @@ setting AOT threads
     int 0 1024
     default 0
     words Auto|#
+    steps 0 1 2 3 4 5 6 7 8 10 12 14 16 20 24 28 32 48 64 96 128 256
     help The threads compiling the game's code when it is recompiled: 0 (Auto) = 1 to start, then one more each
     help second while the memory the code units are seen to take leaves room for it and the system reports no memory
     help pressure, up to the cores with the last quarter left free (aot_threads_most), so the machine stays responsive;
@@ -2470,6 +2954,7 @@ setting AOT threads most
     int 0 1024
     default 0
     words Auto|#
+    steps 0 1 2 3 4 5 6 7 8 10 12 14 16 20 24 28 32 48 64 96 128 256
     help The most threads aot_threads' Auto opens: 0 (Auto) = the cores with the last quarter left free; N = N at most,
     help whatever the cores. Only Auto takes it: with aot_threads at N, the recompile runs on N
 setting Unit size
@@ -2479,6 +2964,7 @@ setting Unit size
     default-if __ANDROID__ 20000
     default-if SNX_IOS 20000
     words # instructions
+    steps 5000 10000 20000 45000 90000 180000 360000
     perf
     help The instructions a code unit takes, whole functions at a time, when the game is recompiled: each is compiled
     help on its own, and a smaller one takes less memory at once, which a phone needs (Android's allocator ran out at
@@ -2489,6 +2975,7 @@ setting Unit cache ceiling
     int 0 1048576
     default 512
     words Off|# MB
+    steps 0 64 128 256 512 1024 2048 4096 8192
     help The most memory, in MB, the x86-64 back end's code units are held in while ScarletNX runs, so that a unit
     help made again (an NRO a game loads again, the launcher's next recompile) is copied rather than made. They take a
     help hundredth of the machine's memory at most, and this ceiling over that; the ones used longest ago go first. 0 =

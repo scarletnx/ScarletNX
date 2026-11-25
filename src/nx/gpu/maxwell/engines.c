@@ -13,6 +13,7 @@
 #include "nx/gpu/maxwell/engines_int.h"
 #include "nx/gpu/gpu_queue.h"
 #include "nx/gpu/maxwell/maxwell_3d_regs.h"
+#include "nx/runtime/platform/tracy.h"
 
 /* ------------------------------------------------------------ the file's state */
 /* the counter reports whose made-up values a render enable must not compare (MADEUP_N, madeup_*) */
@@ -236,6 +237,7 @@ static int render_owner(u32 owner) {
 }
 static void render_enable_run(const void* arg, u64 bytes) {
     RenderEnable e;
+    SNX_ZONE(z, "gpu render enable");
     (void)bytes;
     memcpy(&e, arg, sizeof e);
     int at = render_owner(e.owner), on = 1;
@@ -259,6 +261,7 @@ static void render_enable_run(const void* arg, u64 bytes) {
             on = (x == y) == equal;
         }
         g_render[at].off = !on;
+        SNX_ZONE_TEXT(z, "NVN mode %u at %llx: %s", e.mode, (unsigned long long)e.a, on ? "on" : "off");
         return;
     }
     switch (e.override) {
@@ -301,6 +304,8 @@ static void render_enable_run(const void* arg, u64 bytes) {
             break;
     }
     g_render[at].off = !on;
+    SNX_ZONE_TEXT(z, "override %x mode %u at %llx: %s", e.override, e.mode, (unsigned long long)e.a,
+                  on ? "on" : "off");
 }
 void gpu_render_enable_nvn(u32 owner, u32 mode, u64 a) {
     RenderEnable e = {owner, RENDER_ENABLE_NVN, mode, 0, a};
@@ -322,6 +327,7 @@ void gpu_render_states_reset(void) {
     }
 }
 static void render_enable_update(GpuChannel* ch) {
+    SNX_ZONE(z, "gpu render enable");
     const u32* r = ch->r3d;
     u64 a = gpu_packed_va(r[MAXWELL3D_RENDER_ENABLE_ADDRESS_HIGH], r[MAXWELL3D_RENDER_ENABLE_ADDRESS_LOW]);
     u32 mode = r[MAXWELL3D_RENDER_ENABLE_MODE] & MAXWELL3D_RENDER_ENABLE_MODE_MASK;
@@ -329,6 +335,7 @@ static void render_enable_update(GpuChannel* ch) {
     if (gpu_channel_verify(ch)) { /* no report to read: a conditional enable draws, as the live replay's does */
         ch->render_off = o == MAXWELL3D_RENDER_ENABLE_OVERRIDE_NEVER_RENDER ||
                          (o != MAXWELL3D_RENDER_ENABLE_OVERRIDE_ALWAYS_RENDER && mode == MAXWELL3D_RENDER_ENABLE_FALSE);
+        SNX_ZONE_TEXT(z, "verify, override %x mode %u: %s", o, mode, ch->render_off ? "off" : "on");
         return;
     }
     RenderEnable e = {ch->ds.owner, o, mode, 0, a};
@@ -343,6 +350,8 @@ void r3d_pending_flush(void) {
     DeferredDraw* p = &g_engines.deferred;
     GpuChannel* ch = p->ch;
     if (!ch) return;
+    /* the held draw goes out when the next method ends it: its value is how many draws were merged into it */
+    SNX_ZONE_V(z, "gpu deferred draw flush", p->n);
     p->ch = NULL;
     r3d_draw(ch, p->indexed, p->topology, p->first, p->count, p->base_vertex, p->base_instance + p->start, p->n);
 }

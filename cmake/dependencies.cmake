@@ -266,35 +266,65 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     snx_package_file(yuzu-oss-extension)
     include("${PROJECT_SOURCE_DIR}/cmake/shared_fonts.cmake")
 
+    # NVIDIA Streamline's headers (MIT, NVIDIA-RTX/Streamline v2.14.16), the DLSS backend's (src/nx/gpu/vk/upscaler/dlss.cpp),
+    # in a Windows build alone, as Streamline runs there alone. One file each, the ones it includes: the repository also
+    # holds NVIDIA's NGX SDK, whose licence keeps it out of this program, and nothing else of it is fetched. NVIDIA's
+    # runtime (its DLLs) is never fetched or shipped: the user downloads it (docs/user/dlss.md)
+    if(WIN32)
+        set(snx_streamline_include "${PROJECT_BINARY_DIR}/streamline/include")
+        # each pinned in cpmfile.json by its SHA-512, as streamline_<its name, sl_dlss_h>
+        foreach(snx_sl_name IN ITEMS sl.h sl_struct.h sl_consts.h sl_version.h sl_result.h sl_appidentity.h
+                                     sl_device_wrappers.h sl_core_api.h sl_core_types.h sl_dlss.h sl_helpers_vk.h)
+            string(MAKE_C_IDENTIFIER "${snx_sl_name}" snx_sl_id)
+            snx_package_file(streamline_${snx_sl_id})
+            # one folder, as they include each other by name
+            configure_file("${streamline_${snx_sl_id}_SOURCE_DIR}/${snx_sl_name}"
+                           "${snx_streamline_include}/${snx_sl_name}" COPYONLY)
+        endforeach()
+    endif()
+
     # AMD FidelityFX Super Resolution 2.2.1 (MIT), the temporal upscaler the Ounce's DLSS evaluations run through
     # (src/nx/gpu/vk/fsr2, gpu/nvn/nvn_dlss.c): its library and Vulkan backend's sources and its GLSL passes, which the
     # build compiles (cmake/fsr2_shaders.cmake). The archive's prebuilt tools (tools/sc, Windows programs) are not used
     AddJsonPackage(NAME fidelityfx-fsr2 DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
-    # Its library carries one patch (.patch/fidelityfx-fsr2/0001-memory-types.patch): the backend takes device-local
+    # Its library carries two patches (.patch/fidelityfx-fsr2). 0001-memory-types.patch: the backend takes device-local
     # memory only from a type that is not host-visible, and found none where every device-local type is (lavapipe, some
-    # integrated GPUs), so no context could be made there
+    # integrated GPUs), so no context could be made there. 0002-fsr1-easu-glsl.patch: FSR 1's EASU in its ffx_fsr1.h,
+    # which FSR 2 never compiles, puts a comparison in an integer, which GLSL refuses. The upscalers' spatial pass
+    # compiles it (src/nx/gpu/vk/upscaler/up_easu.comp)
     set(snx_fsr2_api_dir "${FidelityFX-FSR2_SOURCE_DIR}/src/ffx-fsr2-api")
+    # SMAA 1x (Jorge Jimenez, Jose I. Echevarria, Belen Masia, Fernando Navarro and Diego Gutierrez, MIT), the
+    # anti-aliasing the upscalers run before a copy or a spatial upscale (src/nx/gpu/vk/upscaler/up_smaa.comp): its
+    # reference shader and its precomputed area and search textures, each pinned in cpmfile.json at the commit its
+    # repository ends at
+    snx_package_file(smaa-shader)
+    snx_package_file(smaa-area-tex)
+    snx_package_file(smaa-search-tex)
     # RenderDoc's in-application API, one header (renderdoc, gpu/vk/renderdoc.c), from the release tag
     snx_package_file(renderdoc_app)
 
     # Tracy client, for SNX_TRACY development builds.
     if(SNX_TRACY)
+        option(SNX_TRACY_WAIT_STACKS "Keep Tracy's wait stacks on: they walk the stack at every context switch and need root and tracefs" OFF)
         # The sampler and the callstacks it needs are on; the zones take no callstacks of their own, so it costs
-        # nothing per zone. The wait stacks are off: they walk the stack at every context switch, and they need
-        # root and tracefs. The zones' own validation is on: it queues a ZoneValidation next to every zone begin,
-        # end, text and value, doubled per zone and only while a server is attached, which is the price of a run
-        # that says when this runtime's zone pairs are unbalanced. The code the zones are in and the pictures of the
-        # presented frame are on too: both cost nothing until a GUI asks for them.
+        # nothing per zone. The wait stacks are off by default: SNX_TRACY_WAIT_STACKS=ON keeps them on. They walk the
+        # stack at every context switch, and they need root and tracefs. The zones' own validation is on: it queues a
+        # ZoneValidation next to every zone begin, end, text and value, doubled per zone and only while a server is
+        # attached, which is the price of a run that says when this runtime's zone pairs are unbalanced. The code the
+        # zones are in and the pictures of the presented frame are on too: both cost nothing until a GUI asks for them.
         # Fibers are on: the guest's waits get a lane each, named by what the thread blocked on. Tracy's set_option
         # makes TRACY_FIBERS a PUBLIC define, so the runtime that emits them sees it too.
         set(snx_tracy_options "TRACY_ENABLE ON" "TRACY_ON_DEMAND ON" "TRACY_NO_CRASH_HANDLER ON" "TRACY_STATIC ON"
                               "TRACY_MANUAL_LIFETIME ON" "TRACY_NO_WAIT_STACKS ON" "TRACY_FIBERS ON")
+        if(SNX_TRACY_WAIT_STACKS)
+            list(REMOVE_ITEM snx_tracy_options "TRACY_NO_WAIT_STACKS ON")
+        endif()
         if(NOT ANDROID)
             list(APPEND snx_tracy_options "TRACY_ONLY_LOCALHOST ON" "TRACY_NO_BROADCAST ON")
         endif()
         AddJsonPackage(NAME tracy FORCE_BUNDLED_PACKAGE ON OPTIONS ${snx_tracy_options})
-        # The sampler waits for the runtime to ask for it, and samples at 1 kHz unless TRACY_SAMPLING_HZ says
-        # otherwise.
+        # The sampler waits for the runtime to ask for it and samples at 1 kHz; TRACY_SAMPLING_HZ is this build's
+        # compile-time define, not an environment variable.
         target_compile_definitions(TracyClient PRIVATE TRACY_SAMPLING_PROFILER_MANUAL_START TRACY_SAMPLING_HZ=1000)
         snx_quiet(TracyClient)
     endif()

@@ -946,6 +946,19 @@ static void check_ignore(void) {
     CHECK(vk_bans_ignore("", err, sizeof err) && vk_ban_find("VK_EXT_vertex_input_dynamic_state") != 0,
           "an empty vulkan_ban_ignore lets every ban hold again");
 
+    /* the Settings' boxes for it (settings.txt's boxes bans), made from the table itself: each is a key it has */
+    CHECK(o && (o->flags & INI_BOXES) && o->words && *o->words, "vulkan_ban_ignore has a box for each ban's key");
+    int keys = 0;
+    for (const char* c = o && o->words ? o->words : ""; *c; keys++) {
+        char key[128];
+        size_t n = strcspn(c, "=");
+        CHECK(n < sizeof key && c[n] == '=', "each box is a key and its label");
+        snprintf(key, sizeof key, "%.*s", (int)n, c);
+        CHECK(vk_bans_ignore(key, err, sizeof err), err);
+        c += strcspn(c, "|");
+        if (*c) c++;
+    }
+    CHECK(keys >= 50, "a box for every key of the table");
     /* a key the table has not: refused with the key and the nearest ones it has */
     read_graphics("[Graphics]\nvulkan_ban_ignore=VK_KHR_present_id\n");
     CHECK(!strcmp(g_settings.vulkan_ban_ignore, "VK_KHR_present_id"), "the wrong key reads from the .ini as written");
