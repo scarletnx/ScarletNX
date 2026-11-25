@@ -15,7 +15,6 @@
 #include "nx/hle/kernel/kernel.h"
 #include "nx/hle/services/services_int.h"
 #include "nx/nn/codec.h"
-#include "nx/runtime/arm.h"
 #include "nx/runtime/platform/log.h"
 #include <stdlib.h>
 #include <string.h>
@@ -65,46 +64,6 @@ static void lock(void) {
     pm_lock(&g_lk);
 }
 static void unlock(void) { pm_unlock(&g_lk); }
-
-void hook_guest_call(CPU* c, u64 fn, u64 a0, u64 a1, u64 a2, u64 a3) {
-    u64 lr = c->x[30], pc = fn;
-    if (g_arm_mod) {
-        hook_guest_call_a32(c, (u32)fn, (u32)a0, (u32)a1, (u32)a2, (u32)a3);
-        return;
-    }
-    c->x[0] = a0;
-    c->x[1] = a1;
-    c->x[2] = a2;
-    c->x[3] = a3;
-    do snx_lookup(c, pc)(c, pc);
-    while ((pc = c->pc) != lr);
-    c->x[30] = lr;
-}
-KEvent* hook_attach_event(CPU* c, u64 event, const char* name) {
-    static const char attach[] =
-        "_ZN2nn2os33AttachReadableHandleToSystemEventEPNS0_15SystemEventTypeEjbNS0_14EventClearModeE";
-    u64 fn = kernel_find_symbol_exact(attach);
-    KEvent* e;
-    u32 h;
-    if (!fn) return NULL;
-    e = kevent_new(name);
-    kobj_ref(&e->o);  /* the caller's reference, which it drops when its object goes */
-    h = h_new(&e->o); /* the handle's, which the SystemEvent's destruction closes */
-    if (!h) {         /* a full handle table: the event is destroyed here */
-        kobj_unref(&e->o);
-        return NULL;
-    }
-    if (event) hook_guest_call(c, fn, event, h, 1, 1);
-    return e;
-}
-int hook_attach_handle(CPU* c, u64 event, u32 handle) {
-    static const char attach[] =
-        "_ZN2nn2os33AttachReadableHandleToSystemEventEPNS0_15SystemEventTypeEjbNS0_14EventClearModeE";
-    u64 fn = kernel_find_symbol_exact(attach);
-    if (!fn || !handle) return 0;
-    hook_guest_call(c, fn, event, handle, 1, 1);
-    return 1;
-}
 
 static CodecManager* manager_of(u64 guest) {
     for (u32 i = 0; i < CODEC_MANAGERS; i++)

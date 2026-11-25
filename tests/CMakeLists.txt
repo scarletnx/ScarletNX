@@ -2039,8 +2039,8 @@ if(NOT WIN32)
     snx_hookgen(snx-test-libc-std SPEC "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
     add_test(NAME libc_std COMMAND snx-test-libc-std)
 endif()
-# the event a hooked SDK object attaches to the game's SystemEvent (src/nx/hle/hook/codec.c's hook_attach_event): its
-# references, with the kernel's objects stubbed to their counts
+# the event a hooked SDK object attaches to the game's SystemEvent (src/nx/hle/hook/guest_call.c's hook_attach_event):
+# its references, with the kernel's objects stubbed to their counts
 add_executable(snx-test-hook-event-reference hook_event_reference.c)
 snx_test_target(snx-test-hook-event-reference gnu23)
 target_include_directories(snx-test-hook-event-reference PRIVATE "${PROJECT_SOURCE_DIR}/src")
