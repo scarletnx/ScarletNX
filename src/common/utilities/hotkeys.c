@@ -1,10 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-#include "nx/runtime/platform/hotkeys.h"
-#include "nx/runtime/platform/log.h"
+#include "common/utilities/hotkeys.h"
+#include "common/utilities/common.h"
 #include "common/utilities/key_text.h"
 #include "common/utilities/quit_key.h"
 #include "snx_settings.h"
+#include <SDL3/SDL_keycode.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdatomic.h>
@@ -35,6 +36,15 @@ const char* hotkey_text(int action) {
     return o ? (const char*)o->var : "";
 }
 
+unsigned hotkey_mods(unsigned sdl_mod) {
+    return (sdl_mod & SDL_KMOD_CTRL ? HOTKEY_CTRL : 0u) | (sdl_mod & SDL_KMOD_ALT ? HOTKEY_ALT : 0u) |
+           (sdl_mod & SDL_KMOD_SHIFT ? HOTKEY_SHIFT : 0u) | (sdl_mod & SDL_KMOD_GUI ? HOTKEY_GUI : 0u);
+}
+const IniOpt* hotkey_setting(const char* key) {
+    for (int a = 0; a < HOTKEY_COUNT; ++a)
+        if (!strcmp(key, KEYS[a])) return hotkey_row(a);
+    return NULL;
+}
 int hotkey_modifier(unsigned key) { return snx_key_modifier(key); }
 int hotkey_parse(const char* text, unsigned* key, unsigned* mods, char* why, size_t n) {
     return snx_key_parse(text, key, mods, why, n);
@@ -49,7 +59,7 @@ static void start(void) {
     for (a = 0; a < HOTKEY_COUNT; ++a) {
         const IniOpt* o = hotkey_row(a);
         if (o && hotkey_parse(o->def, &g_hotkeys.key[a], &g_hotkeys.mods[a], why, sizeof why))
-            WARN("settings: %s's default, %s: %s: it has no key\n", o->key, o->def, why);
+            snx_error("settings: %s's default, %s: %s: it has no key", o->key, o->def, why);
     }
 }
 
@@ -84,7 +94,7 @@ void hotkey_set(const IniOpt* o, const char* v) {
         g_hotkeys.mods[a] = mods;
     } else {
         hotkey_name(g_hotkeys.key[a], g_hotkeys.mods[a], now, sizeof now);
-        WARN("settings: %s=%s: %s: it keeps %s\n", o->key, v, why, now[0] ? now : "\"\" (no key)");
+        snx_error("settings: %s=%s: %s: it keeps %s", o->key, v, why, now[0] ? now : "\"\" (no key)");
     }
     hotkey_name(g_hotkeys.key[a], g_hotkeys.mods[a], (char*)o->var, o->size);
     atomic_fetch_add_explicit(&g_hotkeys.version, 1, memory_order_release);

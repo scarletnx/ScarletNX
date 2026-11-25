@@ -24,7 +24,7 @@
 #include "nx/runtime/platform/stats.h"
 #include "nx/runtime/platform/unattended.h"
 #include "renderdoc_app.h"
-#include "nx/runtime/platform/hotkeys.h"
+#include "common/utilities/hotkeys.h"
 #include "nx/runtime/platform/overlay.h"
 #include "gui/icons.h"
 #include "common/utilities/common.h"

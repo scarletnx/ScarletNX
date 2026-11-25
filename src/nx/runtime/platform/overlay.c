@@ -6,7 +6,7 @@
 #include "nx/runtime/platform/backend.h"
 #include "nx/runtime/platform/fatal_screen.h"
 #include "nx/runtime/platform/gamepad.h"
-#include "nx/runtime/platform/hotkeys.h"
+#include "common/utilities/hotkeys.h"
 #include "nx/runtime/platform/hud.h"
 #include "nx/runtime/platform/plat.h" /* the notices' lock */
 #include "nx/runtime/platform/prepare_screen.h"

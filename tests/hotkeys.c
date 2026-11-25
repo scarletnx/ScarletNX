@@ -5,7 +5,7 @@
    a key pressed with modifiers does, Shift's loose match below an exact one, and a key two actions share; a setting
    read from the .ini, an empty one no key, and one that isn't a key refused with the value given and the one in
    effect; the quit key's two presses */
-#include "nx/runtime/platform/hotkeys.h"
+#include "common/utilities/hotkeys.h"
 #include "common/utilities/quit_key.h"
 #include "snx_settings.h"
 #include <SDL3/SDL_keyboard.h>
@@ -23,12 +23,14 @@ static struct {
     char why[256];
     int also;
 } g;
-void logf_(int lvl, const char* fmt, ...) {
+/* snx_error's line as the runtime's log takes it (log_error_line: the line and its end) */
+int snx_error(const char* fmt, ...) {
     va_list ap;
-    (void)lvl;
     va_start(ap, fmt);
-    vsnprintf(g.logged, sizeof g.logged, fmt, ap);
+    int n = vsnprintf(g.logged, sizeof g.logged - 1, fmt, ap);
     va_end(ap);
+    if (n >= 0 && (size_t)n < sizeof g.logged - 1) strcat(g.logged, "\n");
+    return 1;
 }
 
 static int parse(const char* text) { return hotkey_parse(text, &g.key, &g.mods, g.why, sizeof g.why); }

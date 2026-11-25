@@ -14,7 +14,7 @@
 #include "nx/runtime/platform/gamepad.h"
 #include "nx/runtime/platform/touch.h"
 #include "nx/runtime/platform/vpad.h"
-#include "nx/runtime/platform/hotkeys.h"
+#include "common/utilities/hotkeys.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/renderer.h"
 #include "common/utilities/font.h"
