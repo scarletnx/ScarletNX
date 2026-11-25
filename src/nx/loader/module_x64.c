@@ -61,11 +61,15 @@ static void desc_put(SnxXElf* o, const char* name, int flags, const SnxNativeFn*
 }
 /* it is x86-64's, of Windows' calling convention in a COFF object */
 static int win64(void) { return !g_desc && !g_arm64 && snx_x64_win64(); }
+const SnxNativeDesc snx_a64_desc = {.name = "arm64", .em = EM_AARCH64};
 static SnxXElf* desc_new(const SnxNativeDesc* d) {
     SnxXElf* o = snx_xelf_new();
-    g_desc = d, g_desc_failed = 0;
-    g_arm64 = !d && (snx_arm64_windows() || (!snx_x64_available() && snx_arm64_available()));
-    if (o && (win64() || (g_arm64 && snx_arm64_windows()))) snx_xelf_set_coff(o, 1);
+    const int packed = d == &snx_a64_desc; /* an ELF object whatever this host's own are: a module packed for iOS */
+    g_desc_failed = 0;
+    g_arm64 = packed || (!d && (snx_arm64_windows() || (!snx_x64_available() && snx_arm64_available())));
+    if (g_arm64) d = NULL;
+    g_desc = d;
+    if (o && (win64() || (g_arm64 && !packed && snx_arm64_windows()))) snx_xelf_set_coff(o, 1);
     if (o && d) {
         snx_xelf_set_machine(o, d->em);
         snx_xelf_set_flags(o, d->elf_flags);
@@ -424,6 +428,12 @@ int snx_x64_descriptor_for(const SnxNativeDesc* desc, const SnxCodegen* codegen,
                            const SnxProgram* loaded, const SnxU64* imports, size_t import_count,
                            const SnxJitCacheRecord* records, size_t record_count, unsigned char** object,
                            size_t* size, size_t* entry_count, size_t* variant_count, char* error, size_t error_size) {
+#ifdef _WIN32
+    if (desc == &snx_a64_desc) {
+        snprintf(error, error_size, "arm64's descriptor is an ELF object, which this host does not write");
+        return -1;
+    }
+#endif
     SnxXElf* o = desc_new(desc);
     SnxModuleEntry* entries;
     size_t count, i, nfns = codegen->function_count ? codegen->function_count : 1, at, fn_at = 0, ptr_at = 0;

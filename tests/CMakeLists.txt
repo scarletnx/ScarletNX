@@ -4483,7 +4483,7 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
     target_link_libraries(snx-test-module-desc PRIVATE snx_driver_llvm snx_driver snx_llvm "${SNX_UNICORN_LIBRARY}"
                           ${CMAKE_DL_LIBS})
     # one test a machine: one whose Unicorn is missing (an unpatched one's PPC64) is skipped, not passed
-    foreach(m riscv64 ppc64le mips64el loongarch64)
+    foreach(m riscv64 ppc64le mips64el loongarch64 arm64)
         add_test(NAME module_desc_${m} COMMAND snx-test-module-desc ${m})
         set_tests_properties(module_desc_${m} PROPERTIES SKIP_RETURN_CODE 77)
     endforeach()

@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* An AOT module's descriptor for a RISC host (nx/loader/module_x64.c over mach/risc_desc.inc), for each little-endian
-   one under Unicorn (support/host_unicorn.c; loongarch64 in its interpreter): the descriptor of a made-up program of
+   one under Unicorn (support/host_unicorn.c; loongarch64 in its interpreter), and arm64's (module_x64.c's own, which a
+   pack of iOS's has whatever host makes it): the descriptor of a made-up program of
    three functions and two imports loaded with them (each function a trap), then
      snx_module()    its MOD, ENT_ADDR the entries' addresses and ENT_PTR their functions
      snx_routes()    its table's version
@@ -12,8 +13,8 @@
    A big-endian host's descriptor is the same code; its data is the host's numbers, which a test here can't read. With
    SNX_TEST_WIN64 (snx-test-module-desc-win64) it is x86-64's for Windows, a COFF object of its calling convention, run by
    an x86-64 host itself (support/host_win64.c); with SNX_TEST_ARM64WIN (snx-test-module-desc-arm64win) arm64's for
-   Windows.
-     snx-test-module-desc [MACHINE...]   (riscv64 ppc64le mips64el loongarch64 by default) */
+   Windows, and arm64's of a pack beside it, which stays ELF.
+     snx-test-module-desc [MACHINE...]   (riscv64 ppc64le mips64el loongarch64 arm64 by default) */
 #include "nx/loader/module_x64.h"
 #include "nx/loader/module_abi.h"
 #include "nx/loader/loader.h"
@@ -52,7 +53,7 @@ static int machine(const char* name, HostUcArch arch) {
     const SnxNativeDesc* desc = NULL;
     const int found = snx_arm64_windows();
 #else
-    const SnxNativeDesc* desc = snx_native_desc_named(name);
+    const SnxNativeDesc* desc = !strcmp(name, "arm64") ? &snx_a64_desc : snx_native_desc_named(name);
     const int found = desc != NULL;
 #endif
     static const SnxU64 starts[3] = {SNX_CODE_BASE + 0x100, SNX_CODE_BASE + 0x200, SNX_CODE_BASE + 0x300};
@@ -289,6 +290,36 @@ static int many_imports(void) {
 }
 #endif
 
+#if defined(SNX_TEST_ARM64WIN)
+/* a Windows host's own descriptor is a COFF object, and a pack's (snx_a64_desc: a phone's) an ELF one all the same */
+static int packed(void) {
+    const char* name = "a pack's arm64";
+    const SnxU64 imports[1] = {0x7100000000ull};
+    SnxProgram* loaded = (SnxProgram*)calloc(1, sizeof *loaded);
+    SnxCodegen codegen = {0};
+    SnxCodegenOptions options = {0};
+    int failures = 0;
+    for (int own = 0; loaded && own < 2; ++own) {
+        unsigned char* object = NULL;
+        size_t size = 0, entries = 0, variants = 0;
+        char error[256] = "";
+        const int rc = snx_x64_descriptor_for(own ? NULL : &snx_a64_desc, &codegen, &options, loaded, imports, 1, NULL,
+                                              0, &object, &size, &entries, &variants, error, sizeof error);
+        CHECK(!rc, "%s descriptor: %s", own ? "the host's own" : "a pack's", error);
+        if (!rc && own)
+            CHECK(size > 2 && object[0] == 0x64 && object[1] == 0xAA, "the host's own descriptor is not COFF's arm64");
+        if (!rc && !own)
+            CHECK(size > 20 && !memcmp(object, "\177ELF", 4) && object[18] == 183 && object[19] == 0,
+                  "a pack's descriptor is not ELF's arm64");
+        free(object);
+    }
+    if (!loaded) ++failures;
+    printf("module_desc %s: %s\n", name, failures ? "FAILED" : "ok");
+    free(loaded);
+    return failures != 0;
+}
+#endif
+
 int main(int argc, char** argv) {
     static const struct {
         const char* name;
@@ -302,7 +333,8 @@ int main(int argc, char** argv) {
         {"riscv64", HOSTUC_RV64},
         {"ppc64le", HOSTUC_PPC64LE},
         {"mips64el", HOSTUC_MIPS64EL},
-        {"loongarch64", HOSTUC_LA64}
+        {"loongarch64", HOSTUC_LA64},
+        {"arm64", HOSTUC_ARM64}
 #endif
     };
     int failed = 0, skipped = 0, ran = 0;
@@ -320,6 +352,7 @@ int main(int argc, char** argv) {
     }
 #if defined(SNX_TEST_ARM64WIN)
     failed |= many_imports() == 1;
+    failed |= packed();
 #endif
     return failed ? 1 : skipped && !ran ? 77 : 0;
 }
