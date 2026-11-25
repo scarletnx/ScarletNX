@@ -536,8 +536,7 @@ jobs:
       - *caches-env
       - name: Build the differential and its runner
         run: scripts/ci/linux.sh qemu_reference_build
-      # what QEMU makes of the words, whichever back end the host that reads it has: this host's native one is held to it
-      # as it is recorded
+      # what QEMU makes of the words, whichever back end the host that reads it has: every state of every word
       - name: Record the A64 differential's QEMU reference
         run: scripts/ci/linux.sh qemu_reference_record
       - uses: actions/upload-artifact@v7
