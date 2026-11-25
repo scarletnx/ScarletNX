@@ -7,8 +7,8 @@
    with a veneer for each symbol it branches to that another object defines, which a branch out of reach goes through
    when its field holds no addend: one veneer serves every branch of the object to the symbol.
    The structures are read and written byte by byte, so this builds anywhere (no <windows.h>). */
-#include "common/cpu/recompiler/llvm/coff_defs.h"
-#include "common/cpu/recompiler/llvm/link_internal.h"
+#include "common/cpu/recompiler/object/coff_defs.h"
+#include "common/cpu/recompiler/object/link_internal.h"
 #include "common/utilities/bits.h"
 #include <stdint.h>
 #include <stdio.h>

@@ -44,7 +44,7 @@
 #define MG_ARM_EXIT_LAST(c) win64(c)
 #define MG_ARM_COFF snx_x64_win64()
 #if defined(__APPLE__) || defined(_WIN32)
-#include "common/cpu/recompiler/llvm/elf_defs.h"
+#include "common/cpu/recompiler/object/elf_defs.h"
 #else
 #include <elf.h>
 #endif

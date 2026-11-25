@@ -4,7 +4,7 @@
    allocas of its fetch must not call the stack probe (___chkstk_ms), whichever host builds the module */
 #include "common/cpu/arm/llvm.h"
 #include "common/cpu/recompiler/llvm/ir.h"
-#include "common/cpu/recompiler/llvm/link.h"
+#include "common/cpu/recompiler/object/link.h"
 #include <stdio.h>
 #include <stdlib.h>
 

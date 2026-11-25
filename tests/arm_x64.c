@@ -39,7 +39,7 @@
    have it shows, and the hook (SnxArmCPU.io) is that object's too */
 #include "common/cpu/arm/llvm.h"
 #include "common/cpu/arm/simd.h"
-#include "common/cpu/recompiler/llvm/code_loader.h"
+#include "common/cpu/recompiler/loader/code_loader.h"
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "support/arm_back.h"
 #if !defined(SNX_TEST_NATIVE)
@@ -255,7 +255,7 @@ static const Class* pick_class(void) {
 /* ---- running ---- */
 
 #ifdef SNX_TEST_NATIVE
-#include "common/cpu/recompiler/llvm/elf_object.h"
+#include "common/cpu/recompiler/object/elf_object.h"
 #define SNX_TEST_SWAP_ARM 1
 #include "support/swap_state.h"
 /* a state with nothing beside it to turn over */

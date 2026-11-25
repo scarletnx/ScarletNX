@@ -168,7 +168,7 @@ The IPA is unsigned: AltStore, SideStore or a developer account signs it for the
 framework.
 
 Code compiled while a game runs on macOS, 32-bit games' blocks and the runtime JIT's functions, goes through the
-runtime's own loader (`src/common/cpu/recompiler/llvm/code_loader.c`). The arm64 back end
+runtime's own loader (`src/common/cpu/recompiler/loader/code_loader.c`). The arm64 back end
 (`src/common/cpu/recompiler/arm64`), and LLVM for what it leaves, write it as ELF objects with Darwin's calling
 convention, and the loader places them in `MAP_JIT` memory, which each thread sees either writable or executable.
 The app is signed without the hardened runtime, so `MAP_JIT` needs no entitlement.
@@ -243,7 +243,7 @@ PowerPC64 ([PowerPC64](./ppc64.md)), and views of memory are copies there, as Wi
 games from running:
 
 - **A game's frame on a Mac.** The recompiler links an arm64 Mach-O dylib
-  (`src/common/cpu/recompiler/llvm/link_macho.c`) from ELF objects, the arm64 back end's and the runtime library's, and
+  (`src/common/cpu/recompiler/object/link_macho.c`) from ELF objects, the arm64 back end's and the runtime library's, and
   from LLVM's Mach-O ones, with the ad hoc signature ld64 gives one, which Apple silicon needs to run it. A Mac loads
   one and a game runs; MoltenVK still loses the GPU in some scenes (see
   [A GPU lockup on MoltenVK](#a-gpu-lockup-on-moltenvk)).

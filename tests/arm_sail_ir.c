@@ -23,7 +23,7 @@
    longer block's two IR texts; --time ROUNDS times the two emitters over the halfwords (time_emitters) */
 #include "common/cpu/arm/llvm.h"
 #include "common/cpu/arm/simd.h"
-#include "common/cpu/recompiler/llvm/code_loader.h"
+#include "common/cpu/recompiler/loader/code_loader.h"
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/utilities/common.h"
 #include <stdint.h>

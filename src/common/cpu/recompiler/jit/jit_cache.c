@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-#include "common/cpu/recompiler/llvm/jit_cache.h"
+#include "common/cpu/recompiler/jit/jit_cache.h"
 #include "common/cpu/aarch64/a64_decoder.h"
 #include "common/cpu/recompiler/llvm/ir.h"
-#include "common/cpu/recompiler/llvm/rtlib_object.h"
+#include "common/cpu/recompiler/rtlib/rtlib_object.h"
 #include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
 #include <llvm-c/Core.h>

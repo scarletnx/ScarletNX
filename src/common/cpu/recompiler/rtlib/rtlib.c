@@ -13,7 +13,7 @@
 
 /* No interpreter here: what a module lacks is compiled by the runtime JIT, and every decoded op has an IR emitter */
 
-#include "common/cpu/recompiler/llvm/libc.inc"
+#include "common/cpu/recompiler/rtlib/libc.inc"
 
 /* GCC calls libm's round and roundf for ties-away rounding (FCVTA*, FRINTA) unless told -fno-trapping-math, and a
    module links no libm. On the bits, with integers: Clang may not turn them back into a libm call */

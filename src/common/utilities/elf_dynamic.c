@@ -4,8 +4,8 @@
    version sections as the Linux Standard Base describes them. Every structure is copied out of the bytes before it is
    read: a file's offsets need not be aligned */
 #include "common/utilities/elf_dynamic.h"
-#include "common/cpu/recompiler/llvm/elf_defs.h"
-#include "common/cpu/recompiler/llvm/elf_hash.h"
+#include "common/cpu/recompiler/object/elf_defs.h"
+#include "common/cpu/recompiler/object/elf_hash.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>

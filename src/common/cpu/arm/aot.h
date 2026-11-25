@@ -6,7 +6,7 @@
 #ifndef SNX_ARM_AOT_H
 #define SNX_ARM_AOT_H
 #include "common/cpu/arm/codegen.h"
-#include "common/cpu/recompiler/llvm/link.h"
+#include "common/cpu/recompiler/object/link.h"
 #include <stddef.h>
 #include <stdint.h>
 

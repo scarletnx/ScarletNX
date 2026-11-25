@@ -21,8 +21,8 @@
 #ifndef _WIN32
 #define _POSIX_C_SOURCE 200809L /* snprintf */
 #endif
-#include "common/cpu/recompiler/llvm/code_loader_int.h"
-#include "common/cpu/recompiler/llvm/coff_defs.h"
+#include "common/cpu/recompiler/loader/code_loader_int.h"
+#include "common/cpu/recompiler/object/coff_defs.h"
 #include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
 #include <stdio.h>

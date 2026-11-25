@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* The LLVM backend's step functions for the instruction tests (llvm_steps.h) */
 #include "llvm_steps.h"
-#include "common/cpu/recompiler/llvm/link.h"
+#include "common/cpu/recompiler/object/link.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

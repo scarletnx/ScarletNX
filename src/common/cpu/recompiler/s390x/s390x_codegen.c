@@ -8,8 +8,8 @@
    s390x, big-endian: a call's and snx_stale's literal in the code is a distance (R_390_PC64), loaded by LARL and LG
    and added to its place, called with BASR */
 #include "common/cpu/recompiler/s390x/s390x_codegen.h"
-#include "common/cpu/recompiler/llvm/link.h"
-#include "common/cpu/recompiler/llvm/elf_object.h"
+#include "common/cpu/recompiler/object/link.h"
+#include "common/cpu/recompiler/object/elf_object.h"
 #include "common/cpu/aarch64/a64_decoder.h"
 #include "common/cpu/aarch64/cpu.h"
 #include "common/runtime/interface.h"

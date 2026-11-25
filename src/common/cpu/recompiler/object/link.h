@@ -5,8 +5,8 @@
    loads, an ELF shared object, a PE DLL or a Mach-O dylib. The module defines everything it uses (rtlib.c), so the
    linker resolves every symbol itself and writes no imports: only the relocations position-independent code needs
    (ELF R_*_RELATIVE, PE base relocations, Mach-O rebases) and an export table */
-#ifndef SNX_RECOMPILER_LLVM_LINK_H
-#define SNX_RECOMPILER_LLVM_LINK_H
+#ifndef SNX_RECOMPILER_OBJECT_LINK_H
+#define SNX_RECOMPILER_OBJECT_LINK_H
 #include <stddef.h>
 #include <stdint.h>
 

@@ -8,8 +8,8 @@
    relocations' r_info laid out as n64's): a call's and snx_stale's literal in the code is a distance (R_MIPS_PC32), or
    in a JIT unit the address (R_MIPS_64), the callee entered through t9 */
 #include "common/cpu/recompiler/mips64/mips64_codegen.h"
-#include "common/cpu/recompiler/llvm/link.h"
-#include "common/cpu/recompiler/llvm/elf_object.h"
+#include "common/cpu/recompiler/object/link.h"
+#include "common/cpu/recompiler/object/elf_object.h"
 #include "common/cpu/aarch64/a64_decoder.h"
 #include "common/cpu/aarch64/cpu.h"
 #include "common/runtime/interface.h"

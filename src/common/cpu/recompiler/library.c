@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* The recompiler as a library (snx_recompiler.h, issue #171). The pieces are the ones the scarletnx command uses
    for a game: function discovery (codegen.c), the LLVM backend (llvm/ir*.c), and the runtime library every module
-   carries (llvm/rtlib.c, prebuilt). What differs from the game workflow (nx/loader/module_llvm.c): the input is a buffer at a guest address instead of NSO files, the module
+   carries (rtlib/rtlib.c, prebuilt). What differs from the game workflow (nx/loader/module_llvm.c): the input is a buffer at a guest address instead of NSO files, the module
    descriptor is the small one below instead of the Switch loader's SnxModule, and the result is loaded into this
    process straight from memory (or a temporary file the OS requires) instead of being written beside the game. */
 #if defined(__linux__) && !defined(_GNU_SOURCE)
@@ -18,10 +18,10 @@
 #include "common/cpu/arm/exec.h"
 #include "common/cpu/arm/simd.h"
 #include "common/cpu/recompiler/llvm/ir.h"
-#include "common/cpu/recompiler/llvm/jit_service.h"
-#include "common/cpu/recompiler/llvm/link.h"
-#include "common/cpu/recompiler/llvm/code_loader.h"
-#include "common/cpu/recompiler/llvm/objects_pack.h"
+#include "common/cpu/recompiler/jit/jit_service.h"
+#include "common/cpu/recompiler/object/link.h"
+#include "common/cpu/recompiler/loader/code_loader.h"
+#include "common/cpu/recompiler/object/objects_pack.h"
 #include "common/cpu/recompiler/mach/native.h"
 #include "common/cpu/recompiler/x64/x64_codegen.h"
 #include "common/cpu/recompiler/workers.h"

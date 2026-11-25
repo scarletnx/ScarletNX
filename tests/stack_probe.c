@@ -7,9 +7,9 @@
    so its object alone does not link. On a Windows host of that machine also: that object links with the runtime
    library the AOT modules get, and the JIT loader runs one on a new thread whose stack has only its first page
    committed. Without the probe the process ends there */
-#include "common/cpu/recompiler/llvm/code_loader.h"
+#include "common/cpu/recompiler/loader/code_loader.h"
 #include "common/cpu/recompiler/llvm/ir.h"
-#include "common/cpu/recompiler/llvm/rtlib_object.h"
+#include "common/cpu/recompiler/rtlib/rtlib_object.h"
 #include <llvm-c/Target.h>
 #include <stdio.h>
 #include <stdlib.h>

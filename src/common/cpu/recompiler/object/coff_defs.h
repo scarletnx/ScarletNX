@@ -2,8 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* The part of the PE/COFF format that link_coff.c (the DLL linker) and code_loader_coff.c (the JIT loader's COFF
    objects) read x86-64 and ARM64 objects with, read byte by byte so both build anywhere */
-#ifndef SNX_RECOMPILER_LLVM_COFF_DEFS_H
-#define SNX_RECOMPILER_LLVM_COFF_DEFS_H
+#ifndef SNX_RECOMPILER_OBJECT_COFF_DEFS_H
+#define SNX_RECOMPILER_OBJECT_COFF_DEFS_H
 #include "common/utilities/endian.h"
 #include <stddef.h>
 #include <stdint.h>

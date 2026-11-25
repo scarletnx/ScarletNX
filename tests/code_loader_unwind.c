@@ -4,7 +4,7 @@
    calls back into this program, which longjmps out across it. On x86-64 Windows longjmp unwinds every frame between
    (RtlUnwindEx), which needs the loaded code's function table (.pdata, registered by code_loader_coff.c), and
    RtlLookupFunctionEntry finds the loaded function. Elsewhere it checks the same load and call */
-#include "common/cpu/recompiler/llvm/code_loader.h"
+#include "common/cpu/recompiler/loader/code_loader.h"
 #include "common/cpu/recompiler/llvm/ir.h"
 #include <setjmp.h>
 #include <stdio.h>

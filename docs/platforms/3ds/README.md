@@ -377,7 +377,7 @@ Implemented:
   CMP / LDRLS PC-indexed tables with at most 256 entries; no unbounded sweep.
   Blocks contain at most 32 guest instructions;
   bounded chunks of them are objects, then statically linked.
-  The link is the LLVM backend's own (`src/common/cpu/recompiler/llvm/link.c`),
+  The link is the LLVM backend's own (`src/common/cpu/recompiler/object/link.c`),
   with the helpers the blocks call (`armlib.c`), as the Switch's 32-bit modules
   are: an ELF shared object, a PE DLL or a Mach-O dylib, without a C compiler.
   A block the static discovery misses compiles at run time through the ARM JIT; with `--jit-only` every block does.

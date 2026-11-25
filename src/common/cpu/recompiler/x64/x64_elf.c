@@ -4,7 +4,7 @@
    .bss, .symtab (locals first, as ELF wants), .strtab, .shstrtab and .note.GNU-stack. COFF: the sections that hold
    anything, .xdata and .pdata with them, each with its relocations, then the symbols and their strings */
 #include "common/cpu/recompiler/x64/x64_elf.h"
-#include "common/cpu/recompiler/llvm/coff_defs.h"
+#include "common/cpu/recompiler/object/coff_defs.h"
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,7 +12,7 @@
 /* module_x64.c makes one for any machine whose objects are ELF (elf_object.h has the definitions where the system's
    <elf.h> is missing) */
 #if defined(__APPLE__) || defined(_WIN32)
-#include "common/cpu/recompiler/llvm/elf_defs.h"
+#include "common/cpu/recompiler/object/elf_defs.h"
 #else
 #include <elf.h>
 #endif

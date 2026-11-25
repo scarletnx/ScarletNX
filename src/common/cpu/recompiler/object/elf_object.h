@@ -10,12 +10,12 @@
    LoongArch's, MIPS64's and s390x's (code_loader.h). Not on Windows, whose objects are COFF (link_coff.c,
    code_loader_coff.c). Darwin has no <elf.h>: its definitions are elf_defs.h's, for the JIT loader's ELF objects there
    (code_loader.c) */
-#ifndef SNX_RECOMPILER_LLVM_ELF_OBJECT_H
-#define SNX_RECOMPILER_LLVM_ELF_OBJECT_H
+#ifndef SNX_RECOMPILER_OBJECT_ELF_OBJECT_H
+#define SNX_RECOMPILER_OBJECT_ELF_OBJECT_H
 #if !defined(_WIN32)
-#include "common/cpu/recompiler/llvm/link.h"
+#include "common/cpu/recompiler/object/link.h"
 #ifdef __APPLE__
-#include "common/cpu/recompiler/llvm/elf_defs.h"
+#include "common/cpu/recompiler/object/elf_defs.h"
 #else
 #include <elf.h>
 #endif

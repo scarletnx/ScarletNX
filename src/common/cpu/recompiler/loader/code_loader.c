@@ -7,9 +7,9 @@
 #elif defined(__APPLE__)
 #define _DARWIN_C_SOURCE /* MAP_ANON, MAP_JIT and pthread_jit_write_protect_np besides POSIX */
 #endif
-#include "common/cpu/recompiler/llvm/code_loader_int.h"
-#include "common/cpu/recompiler/llvm/gdb_jit.h"
-#include "common/cpu/recompiler/llvm/link_internal.h"
+#include "common/cpu/recompiler/loader/code_loader_int.h"
+#include "common/cpu/recompiler/loader/gdb_jit.h"
+#include "common/cpu/recompiler/object/link_internal.h"
 #include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
 #include "common/platform/vm.h"
@@ -25,7 +25,7 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <unistd.h>
-#include "common/cpu/recompiler/llvm/elf_object.h"
+#include "common/cpu/recompiler/object/elf_object.h"
 #endif
 #if defined(__linux__)
 #include <sys/syscall.h>

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-#include "common/cpu/recompiler/llvm/objects_pack.h"
+#include "common/cpu/recompiler/object/objects_pack.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
 #include <stdio.h>

@@ -21,7 +21,7 @@
    module's units (library.c), so an LLVM unit's function calls one of these and the other way; in a JIT unit local,
    with the unit's table. A call is a PLT32 relocation, resolved here where the callee is this object's own */
 #include "common/cpu/recompiler/x64/x64_codegen.h"
-#include "common/cpu/recompiler/llvm/link.h"
+#include "common/cpu/recompiler/object/link.h"
 #include "common/cpu/aarch64/a64_decoder.h"
 #include "common/cpu/aarch64/cpu.h"
 #include "common/runtime/interface.h"
@@ -32,7 +32,7 @@
 #include "common/cpu/recompiler/x64/x64_elf.h"
 #if defined(__x86_64__) && defined(SNX_HAVE_X64)
 #if defined(__APPLE__) || defined(_WIN32)
-#include "common/cpu/recompiler/llvm/elf_defs.h"
+#include "common/cpu/recompiler/object/elf_defs.h"
 #else
 #include <elf.h>
 #endif

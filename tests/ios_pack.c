@@ -1,16 +1,16 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* A module packed for iOS (--target ios: recompiler/llvm/objects_pack.h), made on this host by the arm64 back end
+/* A module packed for iOS (--target ios: recompiler/object/objects_pack.h), made on this host by the arm64 back end
    (mach/native.h's snx_native_target), LLVM nowhere in it: LLVM is never started, the pack's every object is an arm64
    ELF relocatable one, and no function is refused. Then the pack as the app's loader takes it (code_loader.c): its
    objects loaded into an arena of the regions they need, and where Unicorn is, snx_module() called and the program's
    functions run through the descriptor's entries, across the objects. Other triples are no native back end's
      ios_pack PACK   (the file it writes) */
 #include "common/cpu/aarch64/cpu.h"
-#include "common/cpu/recompiler/llvm/code_loader_int.h"
-#include "common/cpu/recompiler/llvm/elf_object.h"
+#include "common/cpu/recompiler/loader/code_loader_int.h"
+#include "common/cpu/recompiler/object/elf_object.h"
 #include "common/cpu/recompiler/llvm/ir.h"
-#include "common/cpu/recompiler/llvm/objects_pack.h"
+#include "common/cpu/recompiler/object/objects_pack.h"
 #include "common/cpu/recompiler/mach/native.h"
 #include "common/runtime/interface.h"
 #include "common/utilities/common.h"

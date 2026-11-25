@@ -9,8 +9,8 @@
 #include "common/utilities/endian.h"
 #include "common/cpu/arm/aot.h"
 #include "common/cpu/arm/exec.h"
-#include "common/cpu/recompiler/llvm/rtlib_object.h"
-#include "common/cpu/recompiler/llvm/link.h"
+#include "common/cpu/recompiler/rtlib/rtlib_object.h"
+#include "common/cpu/recompiler/object/link.h"
 #include "common/platform/dl.h"
 #include <stdio.h>
 #include <stdlib.h>

@@ -3,9 +3,9 @@
 /* What the linkers (link_elf.c, link_macho.c, link_coff.c), the ELF object reader (elf_object.c) and the JIT loader
    (code_loader.c, code_loader_coff.c) share beside link.h: their error, the keys of their GOT slots and veneers, and
    the AArch64 instruction fields their relocations write */
-#ifndef SNX_RECOMPILER_LLVM_LINK_INTERNAL_H
-#define SNX_RECOMPILER_LLVM_LINK_INTERNAL_H
-#include "common/cpu/recompiler/llvm/link.h"
+#ifndef SNX_RECOMPILER_OBJECT_LINK_INTERNAL_H
+#define SNX_RECOMPILER_OBJECT_LINK_INTERNAL_H
+#include "common/cpu/recompiler/object/link.h"
 #include "common/utilities/endian.h"
 #include <stddef.h>
 #include <stdint.h>

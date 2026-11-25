@@ -4,7 +4,7 @@
    order they depend on each other, the shaders made before the game draws (prepare_wait), the game's main thread;
    then the frontend's loop at the display's rate until the run ends, saving what outlives it */
 #include "nx/runtime/main.h"
-#include "common/cpu/recompiler/llvm/gdb_jit.h"
+#include "common/cpu/recompiler/loader/gdb_jit.h"
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/recompiler/x64/x64_cache.h"
 #include "common/utilities/build_info.h"
@@ -76,11 +76,11 @@
    that the JIT loader places in memory a debugger made executable (load_pack) */
 #if defined(__APPLE__) && TARGET_OS_IOS
 #define MODULE_PACK 1
-#include "common/cpu/recompiler/llvm/code_loader.h"
-#include "common/cpu/recompiler/llvm/objects_pack.h"
+#include "common/cpu/recompiler/loader/code_loader.h"
+#include "common/cpu/recompiler/object/objects_pack.h"
 /* src/gui/apple.m's (gui/apple.h pulls in SDL's headers, which this part of the runtime is not built with) */
 void gui_apple_stats(char* out, size_t size);
-#include "common/cpu/recompiler/llvm/rtlib_object.h"
+#include "common/cpu/recompiler/rtlib/rtlib_object.h"
 #endif
 
 #if defined(_WIN32)

@@ -4,7 +4,7 @@
    snx_ir_slp_vectorizer(0), which stops it in default<O2> and default<O3> as the pass builder's SLPVectorization does
    not, once for the process; and the JIT cache's key says which */
 #include "common/cpu/recompiler/llvm/ir.h"
-#include "common/cpu/recompiler/llvm/jit_cache.h"
+#include "common/cpu/recompiler/jit/jit_cache.h"
 #include <assert.h>
 #include <llvm-c/Core.h>
 #include <llvm-c/TargetMachine.h>

@@ -4,8 +4,8 @@
    snx_variants() hands the runtime its table, and the cached function's direct call
    to a static AOT entry goes through the module's snx_aot_<addr> alias. */
 #include "common/cpu/aarch64/cpu.h"
-#include "common/cpu/recompiler/llvm/jit_cache.h"
-#include "common/cpu/recompiler/llvm/jit_service.h"
+#include "common/cpu/recompiler/jit/jit_cache.h"
+#include "common/cpu/recompiler/jit/jit_service.h"
 #include "common/cpu/recompiler/variants.h"
 #include "common/utilities/common.h"
 #include "nx/loader/loader.h"

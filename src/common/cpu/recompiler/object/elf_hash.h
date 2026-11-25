@@ -2,8 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* The two hashes an ELF symbol table is looked up by: the System V ABI's DT_HASH one (generic ABI 5, "Hash Table") and
    GNU's DT_GNU_HASH one. Apart from elf_defs.h, so a file that has the system's <elf.h> can include it too */
-#ifndef SNX_RECOMPILER_LLVM_ELF_HASH_H
-#define SNX_RECOMPILER_LLVM_ELF_HASH_H
+#ifndef SNX_RECOMPILER_OBJECT_ELF_HASH_H
+#define SNX_RECOMPILER_OBJECT_ELF_HASH_H
 #include <stdint.h>
 
 /* DT_HASH's: each byte shifted in, the top nibble folded back and cleared, so the value stays below 2^28 */

@@ -12,7 +12,7 @@
 #if !defined(_WIN32) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE
 #endif
-#include "common/cpu/recompiler/llvm/gdb_jit.h"
+#include "common/cpu/recompiler/loader/gdb_jit.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>

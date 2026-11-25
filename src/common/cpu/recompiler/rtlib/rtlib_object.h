@@ -4,8 +4,8 @@
    generated rtlib_object.c): linked into every AOT module (module_llvm.c) and loaded once into the JIT's code arena
    (jit_service.c). And armlib.c's in the host's object format (armlib_object.c): what a 32-bit module links
    (module_arm.c, the consoles' AOT) and, on powerpc64, the AArch32 JIT loads (cpu/arm/exec.c) */
-#ifndef SNX_RECOMPILER_LLVM_RTLIB_OBJECT_H
-#define SNX_RECOMPILER_LLVM_RTLIB_OBJECT_H
+#ifndef SNX_RECOMPILER_RTLIB_RTLIB_OBJECT_H
+#define SNX_RECOMPILER_RTLIB_RTLIB_OBJECT_H
 
 extern const unsigned char snx_rtlib_object[];
 extern const unsigned long snx_rtlib_object_size;

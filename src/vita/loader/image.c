@@ -5,7 +5,7 @@
    Vita developer wiki's SELF pages */
 #include "vita/loader/image.h"
 #include "vita/loader/inflate.h"
-#include "common/cpu/recompiler/llvm/elf_defs.h"
+#include "common/cpu/recompiler/object/elf_defs.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
 #include <openssl/evp.h>
