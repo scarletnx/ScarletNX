@@ -6286,6 +6286,26 @@ static void compile_first(App* app, const char* dir) {
     queue_drop(app, 0);
     assert(!snx_remove_tree(made));
     free(made);
+    { /* refused, the host below its back end's floor: what it lacks follows how it ended, whatever the theme draws */
+        static const char lacks[] = "cpu: needs SSE4.2 and POPCNT, this host has SSE3, SSSE3, SSE4.1 and PCLMULQDQ";
+        char *say = snx_format("Recompiling first compile (1 modules)\nscarletnx: %s", lacks),
+             *said = snx_format("Compile failed (status 1). %s", lacks), *line = snx_format("first compile: %s", said);
+        bool due = app->log_due;
+        driver_will(got, 1, say);
+        launch(app, snx_strdup(dump), false);
+        for (until = SDL_GetTicks() + 10000; app->queue.job[0].state < GUI_JOB_OK && SDL_GetTicks() < until;
+             SDL_Delay(2))
+            pump(app);
+        assert(app->queue.job[0].state == GUI_JOB_FAILED && !app->menu.running && app->log_due);
+        assert(!strcmp(app->queue.job[0].said, said) && !strcmp(app->message, line));
+        remove(got);
+        queue_drop(app, 0);
+        app->log_due = due;
+        driver_will(got, 0, "Recompiling first compile");
+        go_tab(app, GUI_TAB_MENU);
+        app->menu.selected = GUI_SWITCH;
+        free(say), free(said), free(line);
+    }
     /* away from the tab before it ended: nothing plays, the tips say it is ready, Enter then plays it */
     launch(app, snx_strdup(dump), false);
     assert(app->queue.job[0].kind == GUI_JOB_COMPILE && app->menu.view == GUI_LOAD_RECOMPILE);

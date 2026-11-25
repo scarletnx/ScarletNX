@@ -39,6 +39,9 @@ typedef struct {
     uint32_t switching;
     int program, previous;
     char next[64];
+    /* why nothing made the host's code, "" for no line of it: a driver's of what the host lacks for its native back end
+       ("cpu: needs ..., this host has ..."), past the driver's name; one that says LLVM makes the code is none */
+    char refused[112];
 } GuiSteps;
 void gui_steps_reset(GuiSteps* steps);
 void gui_steps_feed(GuiSteps* steps, const char* data, size_t size, uint64_t now_ms);
@@ -54,6 +57,9 @@ typedef enum { GUI_PROGRESS_AMOUNT, GUI_PROGRESS_PERCENT, GUI_PROGRESS_TIME } Gu
 void gui_step_progress(const GuiStep* step, int how, uint64_t now_ms, char* out, size_t size);
 /* the latest step of label, NULL for none: LAUNCH, the runner's banner, says the game is loading */
 const GuiStep* gui_steps_last(const GuiSteps* steps, const char* label);
+/* said, how a run or a recompile ended in failure, and after it the host's refusal (GuiSteps.refused), where it had
+   one, into out */
+void gui_steps_failure(const GuiSteps* steps, const char* said, char* out, size_t size);
 /* the latest max notes of a step, oldest first, into out; their count */
 int gui_step_notes(const GuiSteps* steps, const GuiStep* step, const GuiNote** out, int max);
 #endif
