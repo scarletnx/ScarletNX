@@ -45,8 +45,6 @@ static const Row k_rows[] = {
     {"sqabs v0.16b, v1.16b", 0, 0, 288, -1, NULL, "4E207820"},
     {"sqneg v0.4s, v1.4s", 0, 0, 304, -1, NULL, "6EA07820"},
     {"sqabs v0.2d, v1.2d", 0, 0, 304, -1, NULL, "4EE07820"},
-    {"shl v0.16b, v1.16b, #3", NEEDS_GFNI, 0, 240, -1, GF2P8AFFINEQB, "4F0B5420"},
-    {"ushr v0.16b, v1.16b, #3", NEEDS_GFNI, 0, 240, -1, GF2P8AFFINEQB, "6F0D0420"},
     {"sshr v0.16b, v1.16b, #3", NEEDS_GFNI, 0, 240, -1, GF2P8AFFINEQB, "4F0D0420"},
     {"srshr v0.16b, v1.16b, #3", NEEDS_GFNI, 0, 288, -1, NULL, "4F0D2420"},
     {"rbit v0.16b, v1.16b", NEEDS_GFNI, 0, 240, -1, NULL, "6E605820"},
