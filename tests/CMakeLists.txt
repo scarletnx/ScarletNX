@@ -3914,6 +3914,12 @@ snx_test_target(snx-test-arm-module-chain gnu23)
 target_link_libraries(snx-test-arm-module-chain PRIVATE snx_driver_llvm ${CMAKE_DL_LIBS})
 add_test(NAME arm_module_chain COMMAND snx-test-arm-module-chain)
 set_tests_properties(arm_module_chain PROPERTIES TIMEOUT 120)
+# what its recompile says of the blocks the native back end leaves to LLVM
+add_executable(snx-test-arm-module-refused arm_module_refused.c)
+snx_test_target(snx-test-arm-module-refused gnu23)
+target_link_libraries(snx-test-arm-module-refused PRIVATE snx_driver_llvm ${CMAKE_DL_LIBS})
+add_test(NAME arm_module_refused COMMAND snx-test-arm-module-refused)
+set_tests_properties(arm_module_refused PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
 # the AArch32 dispatch loop's lookup keeps no frame and no stack canary: compile(), its slow path, stays out of line
 # (arm_dispatch_frame.py reads arm.c's object with the build's llvm-objdump). With ThinLTO the object is bitcode and the
 # link makes the machine code, so it reads the program, which the line table ties to arm.c (cmake/lto.cmake)
