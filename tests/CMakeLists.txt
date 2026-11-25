@@ -4309,6 +4309,29 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
                  --long ${times} ${bytes} --words ${long})
         set_tests_properties(recompiler_${m}_long recompiler_${m}_long_jit PROPERTIES TIMEOUT 600)
     endforeach()
+    # arm64's functions as a Windows host's: COFF objects, loaded by the JIT's own loader, their frames unwound by the
+    # function table where they call out, with --step at every instruction; one of more than a record's 1 MiB
+    add_executable(snx-test-recompiler-arm64win recompiler_backends.c llvm_qemu_words.c qemu_ref/qemu_ref.c
+                   support/host_unicorn.c support/la64_interp.c
+                   "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
+                   "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
+    snx_cpu_helpers_flags(snx-test-recompiler-arm64win)
+    snx_test_target(snx-test-recompiler-arm64win gnu23)
+    target_compile_definitions(snx-test-recompiler-arm64win PRIVATE SNX_TEST_ARM64=1 SNX_TEST_ARM64WIN=1)
+    target_include_directories(snx-test-recompiler-arm64win PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${SNX_UNICORN_INCLUDE_DIR}")
+    target_link_libraries(snx-test-recompiler-arm64win PRIVATE scarletnx-recompiler snx_llvm scarletnx-common
+                          "${SNX_UNICORN_LIBRARY}")
+    snx_decodetree_a64(snx-test-recompiler-arm64win)
+    add_test(NAME recompiler_arm64win COMMAND snx-test-recompiler-arm64win)
+    add_test(NAME recompiler_arm64win_step COMMAND snx-test-recompiler-arm64win --step --functions 60 --states 2)
+    add_test(NAME recompiler_arm64win_jit COMMAND snx-test-recompiler-arm64win --jit --functions 200 --states 8 --seed 2)
+    add_test(NAME recompiler_arm64win_hook COMMAND snx-test-recompiler-arm64win --hook --functions 200 --states 8 --seed 3)
+    add_test(NAME recompiler_arm64win_plain COMMAND snx-test-recompiler-arm64win --without 0x7ffff --functions 200
+             --states 8 --seed 4)
+    add_test(NAME recompiler_arm64win_long COMMAND snx-test-recompiler-arm64win --without 0x7ffff --states 8
+             --long 1200 1048576 --words 4e056000 5e024020)
+    set_tests_properties(recompiler_arm64win recompiler_arm64win_step recompiler_arm64win_jit recompiler_arm64win_hook
+                         recompiler_arm64win_plain recompiler_arm64win_long PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
     # their A32 blocks (arm64_arm.c, rv64_arm.c) against LLVM's, as arm_x64's, under Unicorn; again with three host
     # registers
     foreach(m arm64 rv64 ppc64 mips64 la64 ppc64be mips64be s390x)
@@ -4358,9 +4381,9 @@ if(snx_host_win64)
                          TIMEOUT 600)
 endif()
 # its code on Windows unwinds at every instruction, by the system's unwinder there and by support/host_win64.c's here
-# (x64_unwind.c)
+# (native_unwind.c)
 if(snx_host_win64 OR (SNX_X64 AND WIN32))
-    add_executable(snx-test-x64-unwind x64_unwind.c "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
+    add_executable(snx-test-x64-unwind native_unwind.c "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
                    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
     if(NOT WIN32)
         target_sources(snx-test-x64-unwind PRIVATE support/host_win64.c)
@@ -4372,6 +4395,22 @@ if(snx_host_win64 OR (SNX_X64 AND WIN32))
     snx_decodetree_a64(snx-test-x64-unwind)
     add_test(NAME x64_unwind COMMAND snx-test-x64-unwind)
     set_tests_properties(x64_unwind PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+endif()
+# and arm64's, under Unicorn
+if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
+    add_executable(snx-test-arm64-unwind native_unwind.c "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
+                   "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
+    snx_cpu_helpers_flags(snx-test-arm64-unwind)
+    snx_test_target(snx-test-arm64-unwind gnu23)
+    target_compile_definitions(snx-test-arm64-unwind PRIVATE SNX_TEST_ARM64WIN=1)
+    target_include_directories(snx-test-arm64-unwind PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(snx-test-arm64-unwind PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+    target_sources(snx-test-arm64-unwind PRIVATE support/host_unicorn.c support/la64_interp.c)
+    target_include_directories(snx-test-arm64-unwind PRIVATE "${SNX_UNICORN_INCLUDE_DIR}")
+    target_link_libraries(snx-test-arm64-unwind PRIVATE "${SNX_UNICORN_LIBRARY}")
+    snx_decodetree_a64(snx-test-arm64-unwind)
+    add_test(NAME arm64_unwind COMMAND snx-test-arm64-unwind)
+    set_tests_properties(arm64_unwind PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
 endif()
 # the objects every native back end writes for an AOT module: no absolute address in their code, the little-endian ones
 # linked

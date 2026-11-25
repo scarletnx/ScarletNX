@@ -12,20 +12,38 @@
    The object is ELF AArch64: F_<address> global and hidden in the AOT module's units, so another back end's
    function calls one of these and the other way; in a JIT unit local, with the unit's table (ABS64). A call is a
    CALL26 relocation (a tail call JUMP26), resolved here where the callee is this object's own; snx_stale is read by
-   ADRP and LDRB (ADR_PREL_PG_HI21, LDST8_ABS_LO12_NC) */
+   ADRP and LDRB (ADR_PREL_PG_HI21, LDST8_ABS_LO12_NC). For Windows (SNX_ARM64_F_WIN) the code is the same, AAPCS64's
+   registers Windows' too (X18, the system's, is never touched), in a COFF object whose function table unwinds it by the
+   prologue and the epilogues (x64_elf.c), a frame of a page or more read page by page first (the guard page's) */
 #include "common/cpu/recompiler/arm64/arm64_codegen.h"
 #include "common/cpu/recompiler/llvm/link.h"
-#include "common/cpu/recompiler/llvm/elf_object.h"
+#include "common/cpu/recompiler/x64/x64_elf.h"
 #include "common/cpu/aarch64/a64_decoder.h"
 #include "common/cpu/aarch64/cpu.h"
 #include "common/runtime/interface.h"
 #include "common/utilities/bits.h"
 #include <setjmp.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #if !defined(_WIN32)
+#if defined(__APPLE__) || defined(_WIN32)
+#include "common/cpu/recompiler/llvm/elf_defs.h"
+#else
+#include <elf.h>
+#endif
+/* elf_object.c's, for mach_codegen.inc's ELF objects (its header clashes with x64_elf.h's) */
+unsigned char snx_elf_host_data(void);
+int snx_elf_byteswap(unsigned char* object, size_t size, int to_foreign);
+
+/* AArch64's machine and relocations, by number: not every <elf.h> has them (ELF for the Arm 64-bit Architecture, 5.7) */
+#ifndef EM_AARCH64
+#define EM_AARCH64 183
+#endif
+enum { A64_ABS64 = 257, A64_ADR_PREL_PG_HI21 = 275, A64_LDST8_ABS_LO12_NC = 278, A64_JUMP26 = 282, A64_CALL26 = 283 };
+
 #if defined(__clang__)
 #pragma clang diagnostic ignored "-Wunused-variable"
 #pragma clang diagnostic ignored "-Wunused-but-set-variable"
@@ -50,7 +68,8 @@ static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r);
 
 /* ---- what mach_codegen.inc asks of the machine ---- */
 #define MG_EM EM_AARCH64
-#define MG_R_ABS64 SNX_A64_ABS64
+#define MG_COFF windows
+#define MG_R_ABS64 A64_ABS64
 #define SGX_FN_TARGET 1
 static const signed char mg_pin_hosts[9] = {20, 21, 22, 23, 24, 25, 26, 27, 28};
 #define MG_NPINS 9
@@ -67,6 +86,9 @@ static void unit_reloc(void* machine, size_t at, const char* sym, long long adde
 #include "common/cpu/recompiler/mach/mach_codegen.inc"
 
 /* ---- the glue ---- */
+
+/* the code is for Windows */
+static int windows(const Unit* u) { return (u->g->x.features & SNX_ARM64_F_WIN) != 0; }
 
 enum { FIX_B, FIX_BCOND, FIX_CBZ }; /* a fixup's word: B's imm26, B.cond's and CBZ's imm19 */
 
@@ -88,7 +110,7 @@ static void reloc(Unit* u, size_t at, const char* sym, unsigned type, long long 
 }
 /* the helpers' calls the emitters make (arm64_a64.h's BL): CALL26 */
 static void unit_reloc(void* machine, size_t at, const char* sym, long long addend) {
-    reloc((Unit*)machine, at, sym, SNX_A64_CALL26, addend);
+    reloc((Unit*)machine, at, sym, A64_CALL26, addend);
 }
 
 static void jmp(Unit* u, int label) {
@@ -131,8 +153,14 @@ static void pins_of(Unit* u, SgXBuf* b, int store, int caller) {
     }
 }
 
+/* an ADD or SUB of SP to come, of the frame's size, patched in at the end */
+static void frame_here(Unit* u, size_t at) {
+    u->frame_at = (size_t*)grow(u->frame_at, &u->cap_frame, u->nframe + 1, sizeof *u->frame_at);
+    u->frame_at[u->nframe++] = at;
+}
 /* STP X29, X30, [SP, #-96]!; MOV X29, SP; STP X19, X20, [SP, #16] (and X21-X28 where pinned); MOV X19, X0; SUB SP,
-   SP, #frame (patched); the pins loaded */
+   SP, #frame (patched), on Windows past the probe of one of a page or more; the pins loaded. x64_elf.c's a64_prologue
+   reads it back, and knows the epilogue by it */
 static void prologue(Unit* u) {
     w32(u, sge_a64_stp_gen_pre_idx(29, 31, 30, (SnxU32)-12 & 0x7F, 2));
     w32(u, sge_a64_add_addsub_imm(29, 31, 0, 0, 1));
@@ -142,15 +170,15 @@ static void prologue(Unit* u) {
         for (k = 0; k < 4; ++k) w32(u, sge_a64_stp_gen_general_offset((SnxU32)(21 + 2 * k), 31, (SnxU32)(22 + 2 * k), (SnxU32)(4 + 2 * k), 2));
     }
     w32(u, sge_a64_orr_log_shift(SGX_BASE, SGA_ZR, 0, 0, 0, 1)); /* MOV X19, X0 */
-    u->frame_at = (size_t*)grow(u->frame_at, &u->cap_frame, u->nframe + 1, sizeof *u->frame_at);
-    u->frame_at[u->nframe++] = u->b.n;
+    if (windows(u) && u->again) frame_here(u, sga_stack_probe(&u->b));
+    frame_here(u, u->b.n);
     w32(u, sge_a64_sub_addsub_imm(31, 31, 0, 0, 1));
     pins(u, 0);
 }
-/* ADD SP, SP, #frame (patched); the saved registers back; LDP X29, X30, [SP], #96 */
+/* ADD SP, SP, #frame (patched); the saved registers back; LDP X29, X30, [SP], #96. The return or the jump is next:
+   Windows' unwinder has an epilogue end at one */
 static void epilogue(Unit* u) {
-    u->frame_at = (size_t*)grow(u->frame_at, &u->cap_frame, u->nframe + 1, sizeof *u->frame_at);
-    u->frame_at[u->nframe++] = u->b.n;
+    frame_here(u, u->b.n);
     w32(u, sge_a64_add_addsub_imm(31, 31, 0, 0, 1));
     if (u->pinned) {
         int k;
@@ -202,15 +230,18 @@ static void call_sym(Unit* u, const char* sym, int tail) {
     pins(u, 1);
     mov_x0_state(u);
     if (tail) epilogue(u);
-    reloc(u, u->b.n, sym, tail ? SNX_A64_JUMP26 : SNX_A64_CALL26, 0);
+    reloc(u, u->b.n, sym, tail ? A64_JUMP26 : A64_CALL26, 0);
     w32(u, tail ? sge_a64_b_uncond(0) : sge_a64_bl(0));
     if (!tail) pins(u, 0);
 }
-/* W16 = snx_stale[index]: ADRP X16 and LDRB of the page's offset, then CMP W16, #0 */
+/* W16 = snx_stale[index]: ADRP X16 and LDRB of the page's offset, then CMP W16, #0. COFF's ADRP holds less than 1 MiB
+   past the symbol: the rest is whole pages, an ADD */
 static void stale_test(Unit* u, size_t index) {
-    reloc(u, u->b.n, "snx_stale", SNX_A64_ADR_PREL_PG_HI21, (long long)index);
+    const size_t far = windows(u) ? index >> 20 : 0;
+    reloc(u, u->b.n, "snx_stale", A64_ADR_PREL_PG_HI21, (long long)(index - (far << 20)));
     w32(u, sge_a64_adrp(SGA_X16, 0, 0));
-    reloc(u, u->b.n, "snx_stale", SNX_A64_LDST8_ABS_LO12_NC, (long long)index);
+    if (far) w32(u, sge_a64_add_addsub_imm(SGA_X16, SGA_X16, (SnxU32)(far << 8), 1, 1)); /* 1 MiB: 256 pages */
+    reloc(u, u->b.n, "snx_stale", A64_LDST8_ABS_LO12_NC, (long long)(index - (far << 20)));
     w32(u, sge_a64_ldrb_imm_immediate_unsigned(SGA_X16, SGA_X16, 0));
     w32(u, sge_a64_subs_addsub_imm(SGA_ZR, SGA_X16, 0, 0, 0));
 }
@@ -265,10 +296,10 @@ static void poll_then(Unit* u, SnxU64 resume) {
     mov_x0_state(u);
     call_rt(u, (int)offsetof(RtAPI, poll));
     mov_x0_state(u);
-    epilogue(u);
     movi(u, 1, resume);
+    epilogue(u);
     fname(sym, sizeof sym, "F_", u->f->start);
-    reloc(u, u->b.n, sym, SNX_A64_JUMP26, 0);
+    reloc(u, u->b.n, sym, A64_JUMP26, 0);
     w32(u, sge_a64_b_uncond(0));
     bind(u, run);
 }
@@ -370,17 +401,13 @@ static void mg_pool_island(Unit* u) {
 }
 static int mg_finish(Unit* u, size_t fix0) {
     size_t i;
-    unsigned size = ((unsigned)u->a.slots_max * 8 + 15) & ~15u, sh = size > 4095, i12 = sh ? (size + 4095) >> 12 : size;
+    unsigned size = sga_frame_size(&u->a), sh = size > 4095, i12 = sh ? (size + 4095) >> 12 : size;
     if (i12 > 4095) return 0;
-    for (i = 0; i < u->nframe; ++i) {
-        size_t at = u->frame_at[i];
-        SnxU32 w;
-        if (at + 4 > u->b.cap) continue;
-        w = (SnxU32)u->b.p[at] | (SnxU32)u->b.p[at + 1] << 8 | (SnxU32)u->b.p[at + 2] << 16 | (SnxU32)u->b.p[at + 3] << 24;
-        w = (w >> 30 & 1) ? sge_a64_sub_addsub_imm(31, 31, i12, sh, 1) : sge_a64_add_addsub_imm(31, 31, i12, sh, 1);
-        u->b.p[at] = (unsigned char)w, u->b.p[at + 1] = (unsigned char)(w >> 8), u->b.p[at + 2] = (unsigned char)(w >> 16);
-        u->b.p[at + 3] = (unsigned char)(w >> 24);
+    if (windows(u) && SGA_FRAME_PROBED(size) && !u->again) {
+        u->again = 1; /* a page or more, read page by page first (the guard page): made again with it */
+        return 0;
     }
+    for (i = 0; i < u->nframe; ++i) sga_frame_imm(&u->b, u->frame_at[i], i12, sh);
     for (i = fix0; i < u->nfixups; ++i) {
         long long t = u->label_at[u->fixups[i].label];
         if (t < 0 || !put_offset(u, u->fixups[i].at, (t - (long long)u->fixups[i].at) / 4, u->fixups[i].kind)) return 0;
@@ -389,7 +416,7 @@ static int mg_finish(Unit* u, size_t fix0) {
 }
 /* BL or B of the unit's own function, within B's reach */
 static int mg_resolve_local(Unit* u, const Reloc* r, size_t target_at) {
-    if (r->type != SNX_A64_CALL26 && r->type != SNX_A64_JUMP26) return 0;
+    if (r->type != A64_CALL26 && r->type != A64_JUMP26) return 0;
     return put_offset(u, r->at, ((long long)target_at - (long long)r->at) / 4, FIX_B);
 }
 
@@ -423,8 +450,50 @@ static SnxU64 host_a64(unsigned host) {
 #if defined(__aarch64__) && defined(__ELF__)
 #include <sys/auxv.h>
 #endif
+#if defined(__aarch64__) && defined(_WIN32)
+/* here, past the code above: its macros take names of that (far) */
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+/* what IsProcessorFeaturePresent says, its features by number, as not every SDK's winnt.h names them (PF_ARM_*: V8_CRYPTO
+   30, V8_CRC32 31, V81_ATOMIC 34, V82_DP 43, V83_JSCVT 44, SHA3 64, SHA512 65, V82_I8MM 66, V82_FP16 67, V86_BF16 68);
+   one the system has no number for is one the code goes without */
+static unsigned windows_features(void) {
+    static const struct {
+        DWORD number;
+        unsigned f;
+    } list[] = {{30, SNX_ARM64_F_AES | SNX_ARM64_F_PMULL | SNX_ARM64_F_SHA1 | SNX_ARM64_F_SHA256},
+                {31, SNX_ARM64_F_CRC32},
+                {34, SNX_ARM64_F_LSE},
+                {43, SNX_ARM64_F_DOTPROD},
+                {44, SNX_ARM64_F_JSCVT},
+                {64, SNX_ARM64_F_SHA3},
+                {65, SNX_ARM64_F_SHA512},
+                {66, SNX_ARM64_F_I8MM},
+                {67, SNX_ARM64_F_FP16},
+                {68, SNX_ARM64_F_BF16}};
+    unsigned f = 0;
+    size_t k;
+    for (k = 0; k < sizeof list / sizeof *list; ++k)
+        if (IsProcessorFeaturePresent(list[k].number)) f |= list[k].f;
+    return f;
+}
+#endif
+/* what a test asked the AArch32 blocks and the descriptor to be made for */
+static struct {
+    _Atomic int windows;
+} g_arm64_codegen;
+void snx_arm64_set_windows(int on) { atomic_store_explicit(&g_arm64_codegen.windows, on, memory_order_relaxed); }
+int snx_arm64_windows(void) {
+#if defined(_WIN32)
+    return snx_arm64_available();
+#else
+    return atomic_load_explicit(&g_arm64_codegen.windows, memory_order_relaxed);
+#endif
+}
 unsigned snx_arm64_features(void) {
-#if defined(__aarch64__) && defined(__ELF__)
+#if defined(__aarch64__) && defined(_WIN32)
+    return windows_features() | SNX_ARM64_F_WIN;
+#elif defined(__aarch64__) && defined(__ELF__)
     unsigned long hw = 0;
     unsigned f = 0;
 #if defined(__linux__)
@@ -467,6 +536,8 @@ int snx_arm64_object(SnxCodegen* codegen, size_t first, size_t last, const SnxNa
 #else
 int snx_arm64_available(void) { return 0; }
 unsigned snx_arm64_features(void) { return 0; }
+int snx_arm64_windows(void) { return 0; }
+void snx_arm64_set_windows(int on) { (void)on; }
 int snx_arm64_object(SnxCodegen* codegen, size_t first, size_t last, const SnxNativeOptions* options, unsigned host,
                      unsigned char* made, unsigned char** object, size_t* size, char* error, size_t error_size) {
     (void)codegen, (void)options, (void)host, (void)error, (void)error_size;

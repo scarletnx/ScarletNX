@@ -1,19 +1,25 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The x86-64 back end's code on Windows unwinds: functions it made (a leaf, one that calls, one whose registers are
+/* A native back end's code on Windows unwinds, x86-64's or with SNX_TEST_ARM64WIN arm64's: functions it made (a leaf, one that calls, one whose registers are
    pinned with the vector ones, a frame of more than a page, an undefined word, a loop's poll, a jump and calls through
    the dispatch table, one of them no function's) are loaded as the runtime JIT's are, their function table registered
-   with RtlAddFunctionTable, and run one instruction at a time (the trap flag). At each instruction of theirs
-   RtlLookupFunctionEntry and RtlVirtualUnwind, the system's own, unwind the stack to the test's entry, where every
-   register a callee keeps must be what the entry marked, in the middle of a prologue and of an epilogue too; from the
-   runtime's functions they call the stack unwinds the same way, and a longjmp out of one crosses their frames.
+   with RtlAddFunctionTable, and run. From the runtime's functions they call RtlLookupFunctionEntry and
+   RtlVirtualUnwind, the system's own, unwind the stack to the test's entry, where every register a callee keeps must be
+   what the entry marked, and a longjmp out of one crosses their frames. x86-64's run one instruction at a time (the trap
+   flag), each unwound the same way, in the middle of a prologue and of an epilogue too. arm64's are unwound from each
+   instruction of theirs in a made-up state of it, the one its prologue (or the epilogue it is in) leaves.
 
-   On another x86-64 host it is the back end's code for Windows that runs, and support/host_win64.c's unwinder, which does
-   what RtlVirtualUnwind does with the same table; there is no longjmp */
+   On another host it is the back end's code for Windows that runs, and an unwinder that does what RtlVirtualUnwind does
+   with the same table: support/host_win64.c's on x86-64, support/arm64_unwinder.h's under Unicorn; there is no longjmp */
 #include "common/cpu/aarch64/cpu.h"
 #include "common/cpu/recompiler/codegen.h"
 #include "common/cpu/recompiler/llvm/code_loader.h"
+#if defined(SNX_TEST_ARM64WIN)
+#include "common/cpu/recompiler/arm64/arm64_codegen.h"
+#include "support/arm64_unwinder.h"
+#else
 #include "common/cpu/recompiler/x64/x64_codegen.h"
+#endif
 #include "common/runtime/interface.h"
 #include <setjmp.h>
 #include <stdint.h>
@@ -24,13 +30,21 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #else
+#include "support/host_near.h"
 #include "support/host_unicorn.h"
-#include <sys/mman.h>
 #endif
 
 #define BASE  0x10000u
 #define WORDS 2048u
 #define BIG   1400u /* the long function's additions: each value is read again far on, so it is kept in the frame */
+#if defined(SNX_TEST_ARM64WIN)
+#define BIG_ADD  0x4EA08400u
+#define BIG_REGS 32u
+#else
+#define BIG_ADD  0x8B000000u
+#define BIG_REGS 29u
+#endif
+#define STACK (1u << 20)
 #define STOP  0u
 #define GUEST 0x40000u /* the guest's memory, its stack in the middle */
 
@@ -63,6 +77,11 @@ static struct {
     unsigned char *lo, *hi; /* the loaded code's bounds, by the functions' addresses */
     jmp_buf out;
     int jump;
+#else
+    HostUc* uc; /* what runs the code */
+#endif
+#if defined(SNX_TEST_ARM64WIN)
+    uint64_t stack[STACK / 8]; /* the made-up states' (walk) */
 #endif
 } g_test;
 
@@ -118,10 +137,11 @@ static void program(void) {
     w[F_MISS] = 0x50000000u | ((unsigned)(F_FAR - F_MISS) & 0x7FFFFu) << 5 | 9u, w[F_MISS + 1] = 0xD63F0120u;
     /* FADD S0, S1, S2, FMUL S3, S0, S1 of denormals FPCR.FZ flushes: the cold paths and their helper */
     w[F_FLUSHED] = 0x1E222820u, w[F_FLUSHED + 1] = 0x1E210803u;
-    /* ADD Xd, Xd, Xn, d a step of 29 registers and n one far from it, then SVC #3 with the frame up */
+    /* ADD Xd, Xd, Xn (arm64, whose spilled general registers go to vector ones first: ADD Vd.4S, Vd.4S, Vn.4S), d a step
+       of the registers and n one far from it, then SVC #3 with the frame up */
     for (k = 0; k < BIG; ++k) {
-        unsigned d = (k * 7) % 29, n = (k * 11 + 13) % 29;
-        w[F_BIG + k] = 0x8B000000u | n << 16 | d << 5 | d;
+        unsigned d = (k * 7) % BIG_REGS, n = (k * 11 + 13) % BIG_REGS;
+        w[F_BIG + k] = BIG_ADD | n << 16 | d << 5 | d;
     }
     w[F_BIG + BIG] = 0xD4000061u;
 }
@@ -143,7 +163,205 @@ static void on_miss(CPU* c, u64 pc) {
     c->pc = pc;
 }
 
+#if defined(SNX_TEST_ARM64WIN)
+/* the object of codegen's functions as a Windows host's, and whether this host runs it */
+static int make_object(SnxCodegen* codegen, const SnxNativeOptions* options, unsigned char* made,
+                       unsigned char** object, size_t* size, char* error, size_t error_size) {
+    return snx_arm64_object(codegen, 0, codegen->function_count, options,
+                            (snx_arm64_available() ? snx_arm64_features() : SNX_ARM64_F_ALL) | SNX_ARM64_F_WIN, made,
+                            object, size, error, error_size);
+}
+/* the code of the function table's entry pc is in: where it begins, its words. 0 where none is */
+static uint32_t code_of(uint64_t pc, uint64_t* begin) {
 #if defined(_WIN32)
+    DWORD64 base = 0;
+    PRUNTIME_FUNCTION f = RtlLookupFunctionEntry(pc, &base, NULL);
+    if (!f || (f->UnwindData & 3)) return 0;
+    *begin = base + f->BeginAddress;
+    return arm64_record((const unsigned char*)(uintptr_t)(base + f->UnwindData)).words;
+#else
+    return hostuc_table_entry(g_test.uc, pc, begin);
+#endif
+}
+/* a frame of the code's, at s->pc in an entry of the table, made its caller's: NULL, or what can't be */
+static const char* one_frame(Arm64State* s) {
+#if defined(_WIN32)
+    CONTEXT c = {0};
+    DWORD64 image = 0, frame = 0;
+    void* data;
+    PRUNTIME_FUNCTION f = RtlLookupFunctionEntry(s->pc, &image, NULL);
+    if (!f) return "no entry of the function table";
+    c.Pc = s->pc, c.Sp = s->sp;
+    memcpy(c.X, s->x, sizeof s->x);
+    RtlVirtualUnwind(UNW_FLAG_NHANDLER, image, c.Pc, f, &c, &data, &frame, NULL);
+    s->pc = c.Pc, s->sp = c.Sp;
+    memcpy(s->x, c.X, sizeof s->x);
+    return NULL;
+#else
+    return hostuc_unwind_frame(g_test.uc, s);
+#endif
+}
+/* a frame's instruction run on s (the registers it saves in *saved): 1, 0 one that is neither a prologue's nor an
+   epilogue's */
+static int step_frame(uint32_t w, Arm64State* s, uint32_t* saved) {
+    int32_t offset = ((int32_t)((w >> 15 & 0x7F) ^ 0x40) - 0x40) * 8;
+    uint32_t rt = w & 31, rt2 = w >> 10 & 31;
+    uint64_t imm = (uint64_t)(w >> 10 & 0xFFF) << (w >> 22 & 1 ? 12 : 0), v[2];
+    if ((w & 0xFFC07FFFu) == 0xA9807BFDu) { /* STP X29, X30, [SP, #offset]! */
+        s->sp += (uint64_t)(int64_t)offset;
+        memcpy((void*)(uintptr_t)s->sp, &s->x[29], 16);
+    } else if ((w & 0xFFC003E0u) == 0xA90003E0u && rt < 30 && rt2 < 31) { /* STP Xt, Xt2, [SP, #offset] */
+        v[0] = s->x[rt], v[1] = s->x[rt2];
+        *saved |= 1u << rt | 1u << rt2;
+        memcpy((void*)(uintptr_t)(s->sp + (uint64_t)(int64_t)offset), v, 16);
+    } else if ((w & 0xFFC003E0u) == 0xA94003E0u && rt < 30 && rt2 < 31) { /* LDP Xt, Xt2, [SP, #offset] */
+        memcpy(v, (void*)(uintptr_t)(s->sp + (uint64_t)(int64_t)offset), 16);
+        s->x[rt] = v[0], s->x[rt2] = v[1];
+    } else if ((w & 0xFFC07FFFu) == 0xA8C07BFDu) { /* LDP X29, X30, [SP], #offset */
+        memcpy(&s->x[29], (void*)(uintptr_t)s->sp, 16);
+        s->sp += (uint64_t)(int64_t)offset;
+    } else if (w == 0x910003FDu) /* MOV X29, SP */
+        s->x[29] = s->sp;
+    else if (w == 0xAA0003F3u) /* MOV X19, X0 */
+        s->x[19] = s->x[0];
+    else if ((w & 0xFF8003FFu) == 0xD10003FFu) /* SUB SP, SP, #imm */
+        s->sp -= imm;
+    else if ((w & 0xFF8003FFu) == 0x910003FFu) /* ADD SP, SP, #imm */
+        s->sp += imm;
+    else /* a page's probe */
+        return w == 0x910003F1u || (w & 0xFF8003FFu) == 0xD10003F0u || w == 0xD1400631u || w == 0x3940023Fu ||
+               w == 0xEB10023Fu || w == 0x54FFFFA8u;
+    return 1;
+}
+/* every instruction of the function at word function unwound from the state it is run in, as its frame's instructions
+   make it: the entry's registers, its stack pointer and its return come back. The states, *bad those that did not */
+static size_t walk(const uint32_t* code, uint32_t words, uint64_t begin, unsigned function, size_t* bad) {
+    Arm64State entry = {0}, body, s, u;
+    uint32_t k = 0, n, saved = 0;
+    size_t states = 0;
+    unsigned r;
+    entry.sp = (uint64_t)(uintptr_t)(g_test.stack + STACK / 8) & ~15ull;
+    for (r = 0; r < 31; ++r) entry.x[r] = 0x5A5A000000000000ull + r * 0x0101010101ull;
+    s = entry;
+    for (int in_body = 0; k < words; ++k) {
+        const char* why = NULL;
+        if (in_body) {
+            s = body;
+            /* ADD SP, then LDPs: an epilogue, its states one after the other */
+            for (n = k; n + 1 < words && n < k + 12; ++n) {
+                uint32_t w = code[n];
+                if (n == k ? (w & 0xFF8003FFu) != 0x910003FFu : (w & 0xFFC003E0u) != 0xA94003E0u) break;
+            }
+            if (n > k && (code[n] & 0xFFC07FFFu) == 0xA8C07BFDu)
+                n = n + 1 - k;
+            else
+                n = 0;
+        } else
+            n = 0;
+        for (uint32_t e = 0; e <= n; ++e) {
+            u = s;
+            u.pc = begin + 4ull * (k + e);
+            why = one_frame(&u);
+            if (!why && u.sp != entry.sp) why = "a stack pointer not the caller's";
+            if (!why && u.pc != entry.x[30]) why = "a return not the caller's";
+            for (r = 19; !why && r < 30; ++r)
+                if (u.x[r] != entry.x[r]) why = "a register not the caller's";
+            ++states;
+            if (why && ++*bad <= 20)
+                fprintf(stderr, "the function at word %u: unwound from +%u: %s\n", function, 4 * (k + e), why);
+            if (e < n && !step_frame(code[k + e], &s, &saved)) return *bad += 1, states;
+        }
+        if (n) {
+            k += n; /* the return or the jump after it was the last of its states */
+            continue;
+        }
+        if (!in_body) {
+            if (!step_frame(code[k], &s, &saved)) return *bad += 1, states;
+            if ((code[k] & 0xFF8003FFu) == 0xD10003FFu) { /* SUB SP: the prologue's last */
+                body = s;
+                /* what the body may change: X0 to X17, what was saved (X19, the pins) */
+                for (r = 0; r < 29; ++r)
+                    if (r < 18 || (saved >> r & 1)) body.x[r] = 0xB0D1000000000000ull + r;
+                in_body = 1;
+            }
+        }
+    }
+    return states;
+}
+#if defined(_WIN32)
+/* what entry() marks before the call and the unwinder must find at it: X19 to X29, D8 to D15; the call's stack pointer
+   and return address */
+struct Marks {
+    uint64_t x[11];   /* 0 */
+    uint64_t d[8];    /* 88 */
+    uint64_t sp, ret; /* 152, 160 */
+};
+struct Marks snx_test_marks;
+static_assert(offsetof(struct Marks, d) == 88 && offsetof(struct Marks, sp) == 152 &&
+                  offsetof(struct Marks, ret) == 160,
+              "entry's bytes reach the marks at their offsets");
+/* entry(fn X0, state X1, pc X2): fn(state, pc) */
+[[gnu::naked]] static void entry(GuestFn fn, CPU* c, u64 pc) {
+    __asm__("stp x29, x30, [sp, #-176]!\n\tstp x19, x20, [sp, #16]\n\tstp x21, x22, [sp, #32]\n\t"
+            "stp x23, x24, [sp, #48]\n\tstp x25, x26, [sp, #64]\n\tstp x27, x28, [sp, #80]\n\t"
+            "stp d8, d9, [sp, #96]\n\tstp d10, d11, [sp, #112]\n\tstp d12, d13, [sp, #128]\n\t"
+            "stp d14, d15, [sp, #144]\n\t"
+            "mov x9, x0\n\tmov x0, x1\n\tmov x1, x2\n\t"
+            "adrp x10, snx_test_marks\n\tadd x10, x10, :lo12:snx_test_marks\n\t"
+            "ldp x19, x20, [x10]\n\tldp x21, x22, [x10, #16]\n\tldp x23, x24, [x10, #32]\n\t"
+            "ldp x25, x26, [x10, #48]\n\tldp x27, x28, [x10, #64]\n\tldr x29, [x10, #80]\n\t"
+            "ldp d8, d9, [x10, #88]\n\tldp d10, d11, [x10, #104]\n\tldp d12, d13, [x10, #120]\n\t"
+            "ldp d14, d15, [x10, #136]\n\t"
+            "mov x11, sp\n\tstr x11, [x10, #152]\n\tadr x11, 1f\n\tstr x11, [x10, #160]\n\t"
+            "blr x9\n"
+            "1:\n\t"
+            "ldp d8, d9, [sp, #96]\n\tldp d10, d11, [sp, #112]\n\tldp d12, d13, [sp, #128]\n\t"
+            "ldp d14, d15, [sp, #144]\n\t"
+            "ldp x19, x20, [sp, #16]\n\tldp x21, x22, [sp, #32]\n\tldp x23, x24, [sp, #48]\n\t"
+            "ldp x25, x26, [sp, #64]\n\tldp x27, x28, [sp, #80]\n\tldp x29, x30, [sp], #176\n\tret");
+}
+/* the state c unwound by the system to entry's frame: what is wrong with where it came to, NULL for nothing */
+static const char* unwinds(CONTEXT c) {
+    const struct Marks* m = &snx_test_marks;
+    unsigned frames = 0, k;
+    ++g_test.unwound;
+    while (c.Pc != m->ret) {
+        DWORD64 image = 0, frame = 0;
+        void* data;
+        PRUNTIME_FUNCTION f = RtlLookupFunctionEntry(c.Pc, &image, NULL);
+        if (++frames > 64) return "never reached the entry";
+        if (c.Sp > m->sp) return "a stack pointer past the entry's";
+        if (f)
+            RtlVirtualUnwind(UNW_FLAG_NHANDLER, image, c.Pc, f, &c, &data, &frame, NULL);
+        else /* a leaf's */
+            c.Pc = c.Lr;
+    }
+    if (c.Sp != m->sp) return "a stack pointer not the entry's";
+    for (k = 0; k < 11; ++k)
+        if (c.X[19 + k] != m->x[k]) return "a general-purpose register not its caller's";
+    for (k = 0; k < 8; ++k)
+        if (c.V[8 + k].Low != m->d[k]) return "a vector register's low half not its caller's";
+    return NULL;
+}
+/* a function the code calls: the stack from here, through the code's frames, to the entry; or out, across them */
+static void on_svc(CPU* c, u32 number) {
+    const char* why;
+    CONTEXT here;
+    ++g_test.svcs;
+    (void)c, (void)number;
+    if (g_test.jump) longjmp(g_test.out, 7);
+    RtlCaptureContext(&here);
+    if ((why = unwinds(here)) && ++g_test.bad <= 20)
+        fprintf(stderr, "unwound from a call of the function at word %u: %s\n", g_test.function, why);
+}
+#endif
+#else
+static int make_object(SnxCodegen* codegen, const SnxNativeOptions* options, unsigned char* made,
+                       unsigned char** object, size_t* size, char* error, size_t error_size) {
+    return snx_x64_object(codegen, 0, codegen->function_count, options, made, object, size, error, error_size);
+}
+#endif
+#if defined(_WIN32) && !defined(SNX_TEST_ARM64WIN)
 /* what entry() marks before the call and the unwinder must find at it: RBX, RBP, RSI, RDI, R12 to R15, XMM6 to XMM15;
    the call's stack pointer and return address */
 struct Marks {
@@ -237,7 +455,8 @@ static void on_svc(CPU* c, u32 number) {
     RtlCaptureContext(&here);
     unwound(&here, "a call");
 }
-#else
+#endif
+#if !defined(_WIN32)
 static void on_svc(CPU* c, u32 number) {
     (void)c, (void)number;
     ++g_test.svcs;
@@ -296,11 +515,22 @@ static void check(unsigned function) {
             if (!(c->fpsr & 0x80)) failed("the denormals not flushed (FPSR.IDC)", function);
             break;
         default: {
-            uint64_t x[29];
             unsigned k, bad = 0;
-            for (k = 0; k < 29; ++k) x[k] = 0x0101010101010101ull * k;
-            for (k = 0; k < BIG; ++k) x[(k * 7) % 29] += x[(k * 11 + 13) % 29];
-            for (k = 0; k < 29; ++k) bad += c->x[k] != x[k];
+#if defined(SNX_TEST_ARM64WIN)
+            uint32_t v[BIG_REGS][4];
+            for (k = 0; k < BIG_REGS; ++k) {
+                const uint64_t d[2] = {0x3F8000003F800000ull + k, k}; /* start's */
+                memcpy(v[k], d, sizeof d);
+            }
+            for (k = 0; k < BIG; ++k)
+                for (unsigned e = 0; e < 4; ++e) v[(k * 7) % BIG_REGS][e] += v[(k * 11 + 13) % BIG_REGS][e];
+            for (k = 0; k < BIG_REGS; ++k) bad += memcmp(&c->v[k], v[k], 16) != 0;
+#else
+            uint64_t x[BIG_REGS];
+            for (k = 0; k < BIG_REGS; ++k) x[k] = 0x0101010101010101ull * k;
+            for (k = 0; k < BIG; ++k) x[(k * 7) % BIG_REGS] += x[(k * 11 + 13) % BIG_REGS];
+            for (k = 0; k < BIG_REGS; ++k) bad += c->x[k] != x[k];
+#endif
             if (bad || g_test.svcs != 1) failed("its sums", function);
         }
     }
@@ -339,6 +569,51 @@ static int check_near(void) {
     return bad;
 }
 #endif
+#if defined(SNX_TEST_ARM64WIN) && !defined(_WIN32)
+/* a function so far in its module that its stale byte is past what COFF's ADRP holds: its entry reads that byte, and no
+   other */
+static void stale_far(const SnxCodegen* codegen) {
+    enum { FAR = (1u << 20) + 0x2345 };
+    SnxCodegen cg = *codegen;
+    SnxNativeOptions options = {.stale = 1};
+    unsigned char made = 0, *object = NULL, *stale;
+    size_t size = 0, k;
+    char error[512] = "", sym[40];
+    uint64_t fn = 0;
+    CPU* c;
+    HostUc* uc = hostuc_new(HOSTUC_ARM64_WIN, 1u << 16);
+    const SnxFunction* leaf = snx_codegen_function(codegen, BASE + 4 * F_LEAF);
+    cg.functions = (SnxFunction*)calloc(FAR + 1, sizeof *cg.functions);
+    cg.function_count = FAR + 1;
+    stale = uc ? (unsigned char*)hostuc_alloc(uc, FAR + 1) : NULL;
+    c = uc ? (CPU*)hostuc_alloc(uc, sizeof *c) : NULL;
+    if (!cg.functions || !leaf || !stale || !c) {
+        failed("no room for a module of a million functions", F_LEAF);
+        free(cg.functions);
+        hostuc_free(uc);
+        return;
+    }
+    cg.functions[FAR] = *leaf;
+    snprintf(sym, sizeof sym, "F_%llX", (unsigned long long)leaf->start);
+    for (k = 0; k < FAR; ++k) stale[k] = 1;
+    if (snx_arm64_object(&cg, FAR, FAR + 1, &options, SNX_ARM64_F_ALL | SNX_ARM64_F_WIN, &made, &object, &size, error,
+                         sizeof error) < 0 ||
+        !object || hostuc_define(uc, "snx_stale", (uint64_t)(uintptr_t)stale) ||
+        hostuc_load(uc, object, size, error, sizeof error) || !(fn = hostuc_symbol(uc, sym)))
+        failed(error[0] ? error : "no object of the far function", F_LEAF);
+    else
+        for (k = 0; k < 2; ++k) {
+            stale[FAR] = (unsigned char)k;
+            memset(c, 0, sizeof *c);
+            c->x[30] = STOP;
+            if (hostuc_call(uc, fn, (uint64_t)(uintptr_t)c, leaf->start, NULL) || c->x[0] != !k ||
+                c->pc != (k ? leaf->start : STOP))
+                failed(k ? "its stale byte not read" : "another function's stale byte read", F_LEAF);
+        }
+    free(object), free(cg.functions);
+    hostuc_free(uc);
+}
+#endif
 
 int main(void) {
     static const unsigned functions[] = {F_LEAF,    F_CALLS, F_PINNED, F_UNDEF,  F_POLL, F_JUMP,
@@ -352,18 +627,38 @@ int main(void) {
     const uint64_t* table;
     size_t size = 0, unwound_count = 0, bad = 0, k;
     char error[512] = "";
-    if (!snx_x64_available()) {
-        printf("x64 unwind: no x86-64 back end on this host\n");
+#if defined(SNX_TEST_ARM64WIN)
+    const char* name = "arm64";
+#if defined(_WIN32)
+    const int available = snx_arm64_available();
+#else
+    const int available = 1; /* under Unicorn */
+#endif
+#else
+    const char* name = "x64";
+    const int available = snx_x64_available();
+#endif
+    if (!available) {
+        printf("%s unwind: no back end of it on this host\n", name);
         return 77;
     }
     program();
 #if !defined(_WIN32)
     if (check_near()) ++g_test.failures;
+#if defined(SNX_TEST_ARM64WIN)
+    HostUc* uc = g_test.uc = hostuc_new(HOSTUC_ARM64_WIN, 1u << 16);
+#else
     snx_x64_set_win64(1);
     HostUc* uc = hostuc_new(HOSTUC_WIN64, 1u << 16);
+#endif
     if (!uc) {
+#if defined(SNX_TEST_ARM64WIN)
+        printf("SKIP: no Unicorn arm64 to run its code\n");
+        return 77;
+#else
         fprintf(stderr, "FAIL: no loader for the code\n");
         return 1;
+#endif
     }
     g_test.cpu = (CPU*)hostuc_alloc(uc, sizeof(CPU));
     g_test.rt = (RtAPI*)hostuc_alloc(uc, sizeof(RtAPI));
@@ -378,8 +673,13 @@ int main(void) {
     g_test.rt = (RtAPI*)calloc(1, sizeof(RtAPI));
 #define NATIVE(f) ((uint64_t)(uintptr_t)f)
 #endif
+#if defined(SNX_TEST_ARM64WIN) && !defined(_WIN32)
+    g_test.guest = (unsigned char*)hostuc_alloc(uc, GUEST); /* where Unicorn has them too */
+    g_test.disp = (SNX_ATOMIC(GuestFn)*)hostuc_alloc(uc, WORDS * sizeof *g_test.disp);
+#else
     g_test.guest = (unsigned char*)calloc(1, GUEST);
     g_test.disp = (SNX_ATOMIC(GuestFn)*)calloc(WORDS, sizeof *g_test.disp);
+#endif
     if (!g_test.cpu || !g_test.rt || !g_test.guest || !g_test.disp) {
         fprintf(stderr, "FAIL: out of memory\n");
         return 1;
@@ -397,9 +697,7 @@ int main(void) {
         return 1;
     }
     made = (unsigned char*)calloc(codegen.function_count + 1, 1);
-    if (!made ||
-        snx_x64_object(&codegen, 0, codegen.function_count, &options, made, &object, &size, error, sizeof error) < 0 ||
-        !object) {
+    if (!made || make_object(&codegen, &options, made, &object, &size, error, sizeof error) < 0 || !object) {
         fprintf(stderr, "FAIL: the back end made no unit of the functions: %s\n", error);
         return 1;
     }
@@ -428,7 +726,7 @@ int main(void) {
     for (k = 0; k < codegen.function_count; ++k) {
         GuestFn fn = (GuestFn)(uintptr_t)table[k];
         atomic_store_explicit(&g_test.disp[(codegen.functions[k].start - BASE) / 4], fn, memory_order_relaxed);
-#if defined(_WIN32)
+#if defined(_WIN32) && !defined(SNX_TEST_ARM64WIN)
         if (!g_test.lo || (unsigned char*)(uintptr_t)table[k] < g_test.lo)
             g_test.lo = (unsigned char*)(uintptr_t)table[k];
         {
@@ -444,7 +742,10 @@ int main(void) {
         }
 #endif
     }
-#if defined(_WIN32)
+#if defined(_WIN32) && defined(SNX_TEST_ARM64WIN)
+    for (k = 0; k < 11; ++k) snx_test_marks.x[k] = 0x5151000000000000ull + k * 0x0101010101ull;
+    for (k = 0; k < 8; ++k) snx_test_marks.d[k] = 0x6262000000000000ull + k * 0x0303030303ull;
+#elif defined(_WIN32)
     AddVectoredExceptionHandler(1, on_step);
     for (k = 0; k < 8; ++k) snx_test_marks.mark[k] = 0x5151000000000000ull + k * 0x0101010101ull;
     for (k = 0; k < 10; ++k)
@@ -465,9 +766,13 @@ int main(void) {
         start(f);
 #if defined(_WIN32)
         g_test.function = f;
+#if !defined(SNX_TEST_ARM64WIN)
         snx_test_marks.step = 1;
+#endif
         entry(fn, g_test.cpu, g_test.cpu->pc);
+#if !defined(SNX_TEST_ARM64WIN)
         snx_test_marks.step = 0;
+#endif
 #else
         if (hostuc_call(uc, (uint64_t)(uintptr_t)fn, (uint64_t)(uintptr_t)g_test.cpu, g_test.cpu->pc, NULL))
             failed("its registers or its unwinding", f);
@@ -495,7 +800,23 @@ int main(void) {
 #else
     unwound_count = hostuc_unwound(uc, &bad);
 #endif
+#if defined(SNX_TEST_ARM64WIN)
+    /* and from each instruction of each function */
+    for (k = 0; k < codegen.function_count; ++k) {
+        const unsigned f = (unsigned)((codegen.functions[k].start - BASE) / 4);
+        uint64_t begin = 0;
+        uint32_t words = code_of(table[k], &begin);
+        if (!words || begin != table[k])
+            failed("no entry of the function table", f);
+        else
+            unwound_count += walk((const uint32_t*)(uintptr_t)begin, words, begin, f, &bad);
+    }
+#endif
+#if defined(SNX_TEST_ARM64WIN) && !defined(_WIN32)
+    stale_far(&codegen);
+#endif
     if (bad) ++g_test.failures;
+#if !defined(SNX_TEST_ARM64WIN)
     {
         /* a callee of the object's may be another compiler's, which has 32 bytes there to write (in an AOT module LLVM's):
            push rbx; mov rbx, rcx; sub rsp, imm32 */
@@ -504,16 +825,23 @@ int main(void) {
         if (!p || memcmp(p, "\x53\x48\x89\xCB\x48\x81\xEC", 7) || p[7] < 32)
             failed("its frame has no room for its callee's", F_DIRECT);
     }
+#endif
     {
-        /* the long function's frame is past a page: its prologue reads each page first (mov r9, rsp; sub r9, 4096) */
+        /* the long function's frame is past a page: its prologue reads each page first */
+#if defined(SNX_TEST_ARM64WIN)
+        /* LDRB WZR, [X17]; CMP X17, X16 */
+        static const unsigned char probe[] = {0x3F, 0x02, 0x40, 0x39, 0x3F, 0x02, 0x10, 0xEB};
+#else
+        /* mov r9, rsp; sub r9, 4096 */
         static const unsigned char probe[] = {0x49, 0x89, 0xE1, 0x49, 0x81, 0xE9, 0x00, 0x10, 0x00, 0x00};
+#endif
         size_t probes = 0;
         for (k = 0; k + sizeof probe <= size; ++k) probes += !memcmp(object + k, probe, sizeof probe);
         if (probes != 1)
             ++g_test.failures, fprintf(stderr, "FAIL: %zu frames of a page or more, not the long one's\n", probes);
     }
     if (unwound_count < BIG) ++g_test.failures, fprintf(stderr, "FAIL: only %zu states unwound\n", unwound_count);
-    printf("x64 unwind: %zu functions, %zu bytes; %zu states unwound, %zu wrongly\n", codegen.function_count, size,
+    printf("%s unwind: %zu functions, %zu bytes; %zu states unwound, %zu wrongly\n", name, codegen.function_count, size,
            unwound_count, bad);
     free(made), free(object);
     snx_codegen_free(&codegen);
