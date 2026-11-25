@@ -513,8 +513,8 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         # a dma-buf region (udmabuf) keeps the GPU's pages while the CPU's mapping is trapped, the ground of the watch
         # over one in docs/dev/draw-cost.md's item 8: uma_copies=2 takes the dma-buf way on any discrete GPU, and the
         # check skips where the device or the kernel has none
-        add_test(NAME vulkan_uma_region_trap COMMAND snx-test-vulkan -H --uma-copies=2)
-        set_tests_properties(vulkan_uma_region_trap PROPERTIES TIMEOUT 60 ENVIRONMENT "SNX_TEST_UMA_ONLY=region_trap"
+        add_test(NAME vulkan_uma_region_dmabuf_trap COMMAND snx-test-vulkan -H --uma-copies=2)
+        set_tests_properties(vulkan_uma_region_dmabuf_trap PROPERTIES TIMEOUT 60 ENVIRONMENT "SNX_TEST_UMA_ONLY=region_dmabuf_trap"
             FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
         # the watch itself: a render target there is watched at a release, not published, and the CPU's read publishes
         # it in place
