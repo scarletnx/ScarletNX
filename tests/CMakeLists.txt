@@ -1404,6 +1404,11 @@ add_test(NAME a64_decode_unordered
                  "${CMAKE_CURRENT_SOURCE_DIR}/a64_decode_group/unordered.decode")
 set_tests_properties(a64_decode_unordered PROPERTIES PASS_REGULAR_EXPRESSION
     "unordered.decode:7: %wide spans 0 to 2097151: !function=xor_2 is not rising, and a span is tried whole up to 1048576 values")
+# --rows: a .decode file's patterns as a table of their fixed bits and their fields' (recompile_census draws words of it)
+add_test(NAME decodetree_rows COMMAND snx-decodetree --rows=rows_fixture
+         "${CMAKE_CURRENT_SOURCE_DIR}/decodetree_rows/rows.decode")
+set_tests_properties(decodetree_rows PROPERTIES PASS_REGULAR_EXPRESSION
+    "SnxDecodeRow rows_fixture\\[\\] = {[^{]*{0xfff00000u, 0x1a000000u, {0x0000f000u, 0x00000f00u, 0x000f00ffu}}, /\\* ADD \\*/[^{]*{0xffffff00u, 0xf0000000u, {0}}, /\\* NOP")
 
 
 # sailgen (tools/sailgen/): --extract copies the closure of a root (its clause, what it calls, the enum it names) and

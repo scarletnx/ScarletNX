@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# what --rows writes of a pattern (decodetree_rows): its fixed bits and its format's, and each field's bits, those of a
+# field of two parts together
+
+%imm 16:4 0:8
+
+&rri rd rn imm
+&none
+
+@rri .... 1010 .... .... rn:4 rd:4 ........ &rri imm=%imm
+
+ADD  0001 .... 0000 .... .... .... ........ @rri
+NOP  1111 0000 0000 0000 0000 0000 -------- &none
