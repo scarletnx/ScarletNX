@@ -617,6 +617,7 @@ typedef struct App {
     /* the box a click on the user opens (users_open): each user of users.ini, the focused one picked as Settings' user */
     bool users_shown;
     int users_focus;
+    bool online_said; /* online.ini's keys that are another version's, logged once (secret_shown) */
     /* Settings > App's UI scale: its dialog over the rows, the size its slider picks (size_pick) and OK and Cancel; OK
        uses it in place of size_was until size_until, when it goes back unless kept, the dialog asking meanwhile in
        size_line with Keep and Back; size_until 0 while it picks */
@@ -11885,8 +11886,11 @@ static void secret_shown(App* app, int group) {
         snprintf(v->text, sizeof v->text, "%s", snx_tr("Cannot be read"));
         snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Room password: %s"),
                  app->users_dir ? why : snx_tr("no users/ folder"));
-    } else
+    } else {
         snprintf(v->text, sizeof v->text, "%s", password[0] ? "********" : snx_tr("None"));
+        if (why[0] && !app->online_said) gui_log("%s", why);
+        app->online_said |= why[0] != 0;
+    }
     SDL_memset(password, 0, sizeof password);
 }
 /* the dialog's text gone, its letters with it */

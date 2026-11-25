@@ -78,7 +78,8 @@ void snx_ctr_uds_settings(const char* data) {
     if (users && snx_users_room_password(users, g_uds.password, sizeof g_uds.password, why, sizeof why)) {
         snx_error("3ds uds: the Eden room's password: %s: this run joins with none", why);
         g_uds.password[0] = 0;
-    }
+    } else if (users && why[0] && !strcmp(g_settings.local_wireless, "room"))
+        snx_error("3ds uds: %s", why);
     free(users);
 }
 enum { MSG_BEACON = 1, MSG_JOIN, MSG_SYNC, MSG_DATA, MSG_LEAVE, MSG_CLOSE, MSG_PING, MSG_PONG };

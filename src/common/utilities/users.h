@@ -36,12 +36,14 @@ extern SnxUser g_users[SNX_USERS_MAX]; /* user 1 first, g_user_count of them */
 extern int g_user_count;
 
 /* the room password of online.ini in dir ("" without the file): 0, or -1 with why. The file holds a secret, so one
-   other users of this machine may read is refused; a section, another key or a value longer than size - 1 bytes is
-   too */
+   other users of this machine may read is refused; a section, another key that starts with room_ or a value longer than
+   size - 1 bytes is too. A key of another version or program is none of this one's: why names them then with 0, for the
+   log, never their values ("" without one) */
 int snx_users_room_password(const char* dir, char* password, size_t size, char* why, size_t why_size);
-/* the room password of online.ini in dir set to password, the file made readable by its owner alone, or taken away with
-   "": 0, or -1 with why and the file as it was. Text it would not read back, or a file that has anything else, is
-   refused */
+/* the room password of online.ini in dir set to password, or taken off with "", the file made readable by its owner
+   alone and its other lines byte for byte as they were (with none of them left, "" takes the file away): 0, or -1 with
+   why and the file as it was. Text it would not read back is refused, and a file the reading refuses, or that is no
+   text */
 int snx_users_room_password_set(const char* dir, const char* password, char* why, size_t why_size);
 /* the users of users.ini in dir (one, user 1, without it), the one playing selected (1-based): 0, or -1 with why the
    file or selected is no list of users, and user 1 alone */
