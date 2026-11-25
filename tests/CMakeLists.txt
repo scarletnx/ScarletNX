@@ -4238,6 +4238,11 @@ add_test(NAME recompiler_backends_undef_pins COMMAND snx-test-recompiler-backend
 # X30 kept in a host register, in step with the state (an SVC), and then stripped by XPACLRI: what the exit stores
 add_test(NAME recompiler_backends_xpac COMMAND snx-test-recompiler-backends --target max --words aa0003fe d4000001
          d2800050 8b1e03c2 f1000610 54ffffc1 d50320ff d2800005 d65f00a0)
+# functions that call each other, with loops, SVCs, polls and switches: what a call, an exit and an entry keep of the
+# registers kept in host ones
+add_test(NAME recompiler_backends_calls COMMAND snx-test-recompiler-backends --calls --functions 120 --states 8)
+add_test(NAME recompiler_backends_calls_2 COMMAND snx-test-recompiler-backends --calls --functions 120 --states 8 --seed 2)
+set_tests_properties(recompiler_backends_calls recompiler_backends_calls_2 PROPERTIES TIMEOUT 600)
 # words of the lanes' arithmetic, each a function of its own that the back end must make, from the lanes' edge values
 add_test(NAME recompiler_backends_lanes COMMAND snx-test-recompiler-backends --states 48 --ops ADD_v SUB_v MUL_v MLA_v
          FADD_v FMUL_v FMLA_v FMAX_v FMINNM_v FCMGE_v SQADD_v UQXTN_v SQSHL_v ADDV ZIP1 TBL_TBX)
@@ -4283,6 +4288,8 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
                  9ac10c00 d65f03c0)
         add_test(NAME recompiler_${m}_br_pins COMMAND snx-test-recompiler-${m} --words ${snx_br_pins})
         add_test(NAME recompiler_${m}_undef_pins COMMAND snx-test-recompiler-${m} --words ${snx_undef_pins})
+        add_test(NAME recompiler_${m}_calls COMMAND snx-test-recompiler-${m} --calls --functions 40 --states 4)
+        set_tests_properties(recompiler_${m}_calls PROPERTIES TIMEOUT 600)
         add_test(NAME recompiler_${m}_half_words COMMAND snx-test-recompiler-${m} --target android --states 40 --words
                  ${snx_half_words})
         # MRS and MSR of EL0's registers, the cache maintenance, DC ZVA
@@ -4290,7 +4297,8 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
         set_tests_properties(recompiler_${m}_system PROPERTIES TIMEOUT 600)
         # no Unicorn of the machine (an unpatched one's PPC64): skipped, as it compares nothing
         set_tests_properties(recompiler_${m} recompiler_${m}_jit recompiler_${m}_br_pins recompiler_${m}_undef_pins
-                             recompiler_${m}_half_words recompiler_${m}_system PROPERTIES SKIP_RETURN_CODE 77)
+                             recompiler_${m}_calls recompiler_${m}_half_words recompiler_${m}_system PROPERTIES
+                             SKIP_RETURN_CODE 77)
         # the exclusives whatever the fields they leave unused hold
         add_test(NAME recompiler_${m}_exclusives COMMAND snx-test-recompiler-${m} --refused --ops LDXR LDXP STXR)
         foreach(target switch android ounce max)
@@ -4406,6 +4414,7 @@ if(snx_host_win64)
     add_test(NAME recompiler_win64_plain COMMAND snx-test-recompiler-win64 --without 0x3d07 --functions 300 --seed 3)
     add_test(NAME recompiler_win64_br_pins COMMAND snx-test-recompiler-win64 --words ${snx_br_pins})
     add_test(NAME recompiler_win64_undef_pins COMMAND snx-test-recompiler-win64 --words ${snx_undef_pins})
+    add_test(NAME recompiler_win64_calls COMMAND snx-test-recompiler-win64 --calls --functions 120 --states 8)
     set_tests_properties(recompiler_win64 recompiler_win64_jit recompiler_win64_hook recompiler_win64_plain PROPERTIES
                          TIMEOUT 600)
 endif()
