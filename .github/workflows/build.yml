@@ -1777,6 +1777,16 @@ jobs:
               done
             done
           done
+          # x86_64's recompiler has the x86-64 back end (cmake/sdm.cmake): its library lacks the words of a build without
+          # one, which arm64-v8a's holds
+          none='no x86-64 back end in this build'
+          grep -qaF "$none" apk/lib/arm64-v8a/libscarletnx.so ||
+            { echo "arm64-v8a/libscarletnx.so does not hold \"$none\": x86_64's lacking it would prove nothing" >&2; exit 1; }
+          if grep -qaF "$none" apk/lib/x86_64/libscarletnx.so; then
+            echo "x86_64/libscarletnx.so holds \"$none\": it has no x86-64 back end" >&2
+            exit 1
+          fi
+          ls -l apk/lib/*/libscarletnx.so
       - uses: actions/upload-artifact@v7
         with:
           path: ScarletNX-android-universal-${{ steps.commit.outputs.short }}.apk

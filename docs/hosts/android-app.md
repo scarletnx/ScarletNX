@@ -110,11 +110,12 @@ recompiles on the phone, then the game opens.
   10 and later) and of Battery Saver.
 
 The app runs on arm64 phones and on x86_64 Android (the emulator, some tablets and Chromebooks): the recompiler makes
-the code of the device it runs on. It installs from Android 5.0 (API 21). A game needs Vulkan 1.3: on a device without
-it (Android 5.0 and 6.0 have no Vulkan at all) the menu still prepares games, and a game says what it lacks. The
-fingers reach a game's touch screen (*Touch screen*, in the game's menu or the Settings, turns them off or adds a
-mouse). The buttons and sticks are on the screen, over the game ([Usage](../user/usage.md#on-screen-controls)), and a gamepad
-works beside them; the menu's *On-screen controls* item hides them.
+the code of the device it runs on, with arm64's or x86-64's native back end, and LLVM what that refuses. It installs
+from Android 5.0 (API 21). A game needs Vulkan 1.3: on a device without it (Android 5.0 and 6.0 have no Vulkan at all)
+the menu still prepares games, and a game says what it lacks. The fingers reach a game's touch screen (*Touch screen*,
+in the game's menu or the Settings, turns them off or adds a mouse). The buttons and sticks are on the screen, over
+the game ([Usage](../user/usage.md#on-screen-controls)), and a gamepad works beside them; the menu's *On-screen
+controls* item hides them.
 
 ## Keys
 
