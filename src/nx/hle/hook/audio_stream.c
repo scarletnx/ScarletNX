@@ -36,7 +36,7 @@
 #define STREAMS_MAX    16
 #define STREAM_STOPPED 1
 #define STREAM_STARTED 2
-#define STREAM_FAILED  0x1ee6f /* a refused call: an error of codec.c's, for this file's too */
+#define STREAM_FAILED  0x1ee6f /* a refused call: an error of nn/codec.c's, for this file's too */
 /* nn::audio::SampleFormat: PcmInt8 1, PcmInt16 2, PcmInt24 3, PcmInt32 4, PcmFloat 5 */
 #define FORMAT_FLOAT   5
 /* the format's offset in the SDK's input stream object */

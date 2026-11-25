@@ -351,8 +351,8 @@ hook _ZN2nn4diag6detail10VAbortImplEPKcS3_S3_iPKNS_6ResultEPKNS_2os17UserExcepti
 family gs
 hook _ZN2nn2gs3sdk17ReadUserImageNv12EPvmmS2_mmRKNS_3gsv22CpuUserImageDescriptorEPKvtttt(addr dst_y, u64 size_y, u64 pitch_y, addr dst_uv, u64 size_uv, u64 pitch_uv, addr descriptor, addr src) -> u32 = gs_read_user_image_nv12
 
-# nn::codec's hardware Opus decoder of the Ounce's SDK (codec.c), which its SDK runs on the audio DSP through
-# nn::codec::hwacod: decoded here with the service's FFmpeg decoder (audio.c), each packet as it is enqueued
+# nn::codec's hardware Opus decoder of the Ounce's SDK (nn/codec.c's hwacod section), which its SDK runs on the audio
+# DSP through nn::codec::hwacod: decoded here with the service's FFmpeg decoder (audio.c), each packet as it is enqueued
 family codec
 hook _ZN2nn5codec43GetHardwareOpusDecoderManagerWorkBufferSizeEiiNS_8TimeSpanEii(i32 rate, i32 channels, i64 frame, i32 decoders, i32 buffers) -> u64 = codec_manager_work_size
 hook _ZN2nn5codec36InitializeHardwareOpusDecoderManagerEPNS0_30HardwareOpusDecoderManagerTypeEPNS_2os15SystemEventTypeEiiNS_8TimeSpanEiiPvm(addr manager, addr event, i32 rate, i32 channels, i64 frame, i32 decoders, i32 buffers, addr work) -> u32 = codec_manager_init
