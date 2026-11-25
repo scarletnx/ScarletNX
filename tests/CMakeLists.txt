@@ -4479,6 +4479,18 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
         set_tests_properties(module_desc_${m} PROPERTIES SKIP_RETURN_CODE 77)
     endforeach()
 endif()
+# and arm64's for Windows, a COFF object
+if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
+    add_executable(snx-test-module-desc-arm64win module_desc.c support/host_unicorn.c support/la64_interp.c)
+    snx_test_target(snx-test-module-desc-arm64win gnu23)
+    target_compile_definitions(snx-test-module-desc-arm64win PRIVATE SNX_TEST_ARM64WIN=1)
+    target_include_directories(snx-test-module-desc-arm64win PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}"
+                               "${SNX_UNICORN_INCLUDE_DIR}")
+    target_link_libraries(snx-test-module-desc-arm64win PRIVATE snx_driver_llvm snx_driver snx_llvm
+                          "${SNX_UNICORN_LIBRARY}" ${CMAKE_DL_LIBS})
+    add_test(NAME module_desc_arm64win COMMAND snx-test-module-desc-arm64win)
+    set_tests_properties(module_desc_arm64win PROPERTIES SKIP_RETURN_CODE 77)
+endif()
 # and x86-64's for Windows, a COFF object, its functions run by this host's processor (support/host_win64.c)
 if(snx_host_win64)
     add_executable(snx-test-module-desc-win64 module_desc.c support/host_win64.c)

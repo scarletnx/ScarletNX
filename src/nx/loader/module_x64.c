@@ -4,7 +4,7 @@
    the same symbols and data module_llvm.c's emit_module, emit_routes, emit_nros and emit_imports give, written by
    x64_elf.h's builder, their few functions in the host's own code: x86-64's as bytes (of Windows' calling convention in
    a COFF object where the back end's code is Windows': none keeps a frame, so the unwinder needs no table of them),
-   arm64's by the A64 Sail's encoders (a64_enc.inc), a RISC machine's by its back end (mach/native.h's SnxNativeDesc,
+   arm64's by the A64 Sail's encoders (a64_enc.inc; the same in a COFF object on Windows), a RISC machine's by its back end (mach/native.h's SnxNativeDesc,
    mach/risc_desc.inc). The data's layout is module_abi.h's and nro_slots.h's C types, the host's own (this is the host's
    module) */
 #include "nx/loader/module_x64.h"
@@ -41,7 +41,7 @@ enum {
 #include "a64_enc.inc"
 
 /* the descriptor's machine: a RISC machine's (g_desc), else arm64's where the arm64 back end made the module (this
-   host's), else x86-64's */
+   host's, or a Windows one's a test asked for), else x86-64's */
 static _Thread_local int g_arm64;
 static _Thread_local const SnxNativeDesc* g_desc;
 static _Thread_local int g_desc_failed; /* a function of g_desc's out of room */
@@ -64,8 +64,8 @@ static int win64(void) { return !g_desc && !g_arm64 && snx_x64_win64(); }
 static SnxXElf* desc_new(const SnxNativeDesc* d) {
     SnxXElf* o = snx_xelf_new();
     g_desc = d, g_desc_failed = 0;
-    g_arm64 = !d && !snx_x64_available() && snx_arm64_available();
-    if (o && win64()) snx_xelf_set_coff(o, 1);
+    g_arm64 = !d && (snx_arm64_windows() || (!snx_x64_available() && snx_arm64_available()));
+    if (o && (win64() || (g_arm64 && snx_arm64_windows()))) snx_xelf_set_coff(o, 1);
     if (o && d) {
         snx_xelf_set_machine(o, d->em);
         snx_xelf_set_flags(o, d->elf_flags);
@@ -73,6 +73,17 @@ static SnxXElf* desc_new(const SnxNativeDesc* d) {
     } else if (o && g_arm64)
         snx_xelf_set_machine(o, EM_AARCH64);
     return o;
+}
+/* the object written and freed: 0, or -1 with the reason in error */
+static int desc_write(SnxXElf* o, unsigned char** object, size_t* size, char* error, size_t error_size) {
+    int rc = g_desc_failed ? -1 : snx_xelf_write(o, object, size);
+    snx_xelf_free(o);
+    if (rc)
+        snprintf(error, error_size, "%s",
+                 g_desc_failed ? "a descriptor function too large"
+                 : rc == -2    ? "a descriptor's relocation COFF has no form of"
+                               : "out of memory");
+    return rc ? -1 : 0;
 }
 static void a64(SnxXElf* o, SnxU32 w) { snx_xelf_put(o, SNX_ELF_TEXT, &w, 4, 1); }
 /* ADRP Xd, sym; ADD Xd, Xd, :lo12:sym (+ addend) */
@@ -418,7 +429,6 @@ int snx_x64_descriptor_for(const SnxNativeDesc* desc, const SnxCodegen* codegen,
     size_t count, i, nfns = codegen->function_count ? codegen->function_count : 1, at, fn_at = 0, ptr_at = 0;
     SnxU64 lo = ~(SnxU64)0, hi = 0;
     char name[48];
-    int rc;
     if (!o) {
         snprintf(error, error_size, "out of memory");
         return -1;
@@ -619,10 +629,7 @@ int snx_x64_descriptor_for(const SnxNativeDesc* desc, const SnxCodegen* codegen,
     }
     free(entries);
     *entry_count = count;
-    rc = g_desc_failed ? -1 : snx_xelf_write(o, object, size);
-    snx_xelf_free(o);
-    if (rc) snprintf(error, error_size, g_desc_failed ? "a descriptor function too large" : "out of memory");
-    return rc;
+    return desc_write(o, object, size, error, error_size);
 }
 
 /* a 32-bit program's SnxArmModule, as module_arm.c's emit_descriptor gives it: ENT_ADDR the blocks' keys, ENT_FN
@@ -716,8 +723,5 @@ int snx_x64_arm_descriptor_for(const SnxNativeDesc* desc, const SnxProgram* load
         ptr(o, SNX_ELF_RELRO, at + offsetof(SnxArmModule, poll_offset), "snx_arm_poll_offset");
     }
     returns(o, "snx_module_arm", "MOD");
-    int rc = g_desc_failed ? -1 : snx_xelf_write(o, object, size);
-    snx_xelf_free(o);
-    if (rc) snprintf(error, error_size, g_desc_failed ? "a descriptor function too large" : "out of memory");
-    return rc;
+    return desc_write(o, object, size, error, error_size);
 }
