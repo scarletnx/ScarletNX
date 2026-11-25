@@ -149,7 +149,7 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   **Keys already setup. This will overwrite the previous ones**. The screen then says what the try
   did, *Installed* or *Not installed* and why, and goes back to the menu by itself after 3 seconds
   (10 after a failure, while another file can still be picked); ESC cancels without changing them.
-- **Settings** opens on its groups, Enter opening one and ESC coming back: **App**, then
+- **Settings** opens on its groups, Enter opening one and ESC coming back: **Search** first (below), **App**, then
   **Launch** (the launcher's own and the recompiler's, from `src/nx/runtime/settings.txt`), then a group per section of the game's `.ini` (Display,
   Graphics, Audio, Performance, Overlay, Controllers, Network, Debug; Overlay is the runtime's On-screen controls, the
   name its page in the game and `settings.ini` keep), as `scarletnx --settings`
@@ -354,6 +354,18 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   are passed as `--key=value` when the game is recompiled: by **R**, or by a run that has to (a dump played the first
   time, an NRO each time). A game made already keeps its code until then. The first two settings and these reach
   neither the Linux nor the 3DS driver.
+- Settings' **Search**, the row over the groups (Up from App, a click or a tap on it), Ctrl+F on the groups, a group,
+  App or User, or a pad's Y: a dialog where what is typed is looked for as it is typed, every word of it, whatever its
+  case and accents, in each row's name, `.ini` key, group, page and words, and its help, in the menu's language and in
+  English. The rows found show beside the groups, the best first (a name that starts with a word, a name with it, the
+  key, the group or page, a word, the help), each with where it is at its end (`Graphics > Vulkan Extensions`,
+  `Controllers > Player 3`), 24 at most (`24 of 61 settings: type more to see the rest`), App's rows and User's Current
+  user among them. Enter takes the dialog away and goes to the rows, which change where they are as in their group:
+  Left/Right, Enter, Del; a page's row, a row of boxes, a player's button map, an App row or Current user open their
+  screen, and ESC there comes back to the search as it was. **G** (a pad's L3, a finger's *Its group*) opens the row's
+  group, page or player on it instead, ESC from there going to the groups. Ctrl+F again types more, ESC in the dialog
+  putting back what it had; with nothing that matches the rows say so and keys do nothing on them; ESC on the rows goes
+  back to the groups, on Search.
 - The Status box, after the RAM and the CPU, says what ScarletNX's folders take (recompiled/,
   work/ and themes/ of the data folder, and on Linux its config, state and cache folders, else
   the menu's own) and what is left on that disk, counted as the menu opens and after each run. While a recompile of

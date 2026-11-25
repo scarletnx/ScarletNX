@@ -758,6 +758,12 @@ msgstr ""
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
+msgid "Its group."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
 msgid "Tap: open. Back."
 msgstr ""
 
@@ -1030,6 +1036,18 @@ msgstr ""
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
+msgid "Ctrl+F: search."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "G: its group."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
 msgid "Del: Global."
 msgstr ""
 
@@ -1255,6 +1273,18 @@ msgstr ""
 #: src/gui/main.c
 #, snx-keys
 msgid "X: Global."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Y: search."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "L3: its group."
 msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
@@ -2394,6 +2424,10 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "SCARLETNX  /  SETTINGS  /  FREEDRENO SETTINGS  /  %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "SCARLETNX  /  SETTINGS  /  SEARCH"
 msgstr ""
 
 #: src/gui/main.c
@@ -3967,6 +4001,29 @@ msgid "%s has no room for another item"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Player"
+msgstr ""
+
+#: src/gui/main.c
+msgid "A setting's name, key, group or words: each one typed is looked for"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "No setting matches \"%s\". ESC: the groups"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%d of %d settings: type more to see the rest"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%d of %d settings"
+msgstr ""
+
+#: src/gui/main.c
 #, c-format
 msgid "%s is no recompiled Switch or 3DS game: only they have settings of their own"
 msgstr ""
@@ -4301,6 +4358,10 @@ msgid "Data, Logs, Caches, Extractions and the recompiled library's Main"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Enter: look for a setting by the words of its name, key, group or help"
+msgstr ""
+
+#: src/gui/main.c
 msgid "The runtime listed no settings"
 msgstr ""
 
@@ -4345,6 +4406,10 @@ msgid "A nickname, 1 to 32 bytes, no control character, no space at either end"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Words of a setting's name, key, group, help or values"
+msgstr ""
+
+#: src/gui/main.c
 msgid "The room's password, 1 to 255 bytes, no control character, no space at either end"
 msgstr ""
 
@@ -4367,6 +4432,11 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "(no themes folder)"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Search: %s"
 msgstr ""
 
 #: src/gui/main.c
@@ -6228,6 +6298,24 @@ msgstr ""
 #: src/gui/main.c
 #, snx-key
 msgid "Ctrl+V"
+msgstr ""
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "Ctrl+F"
+msgstr ""
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "G"
+msgstr ""
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "Its group"
 msgstr ""
 
 #. A key of the foot's sentences, which a click finds by this word

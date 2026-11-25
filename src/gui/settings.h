@@ -15,8 +15,9 @@
 #include "gui/theme.h"
 
 /* a row that is no setting: a page's, which opens the section/page rows listed after it, and its All, first on that
-   page, which steps them together */
-enum { GUI_SETTING_PAGE = 1, GUI_SETTING_ALL, GUI_SETTING_SECRET };
+   page, which steps them together; a link, a row of another screen past every setting (gui_settings_link) */
+enum { GUI_SETTING_PAGE = 1, GUI_SETTING_ALL, GUI_SETTING_SECRET, GUI_SETTING_LINK };
+#define GUI_SETTING_LINKS 24  /* the links past count a list of settings has room for */
 #define GUI_SETTING_TEXT 512 /* a typed value's room: the longest of settings.txt's texts the launcher keeps */
 typedef struct {
     int word;                           /* a word row's: the word, 0 the .ini's (a plain row's: its first) */
@@ -28,8 +29,9 @@ typedef struct {
     const char* fallback; /* the runtime's default for the .ini, as the row words it: what it shows while not picked */
     const char* def;      /* that default as the .ini writes it */
     const char* only;     /* where it does something, when not on this system ("macOS only", ini.h's ini_only) */
-    int kind;             /* 0, GUI_SETTING_PAGE, GUI_SETTING_ALL, or GUI_SETTING_SECRET: the Eden room's password,
-                             which is neither the picks' nor a run's option (users/online.ini holds it) */
+    int kind;             /* 0, GUI_SETTING_PAGE, GUI_SETTING_ALL, GUI_SETTING_SECRET: the Eden room's password,
+                             which is neither the picks' nor a run's option (users/online.ini holds it), or
+                             GUI_SETTING_LINK */
     int plain;            /* a word row whose words are its values alone, no .ini's: its default's is no pick */
     int always;           /* plain, and passed to every run, its start too (gui_settings_always) */
     int type_text;        /* the .ini's value is a text, often a folder: gui_settings_debug says its key alone */
@@ -76,6 +78,10 @@ int gui_settings_read_game(GuiSettings* settings, const char* runtime);
    snx_ctr_game_setting, its console), a word row's words Global and those its default is not, which Global gives */
 int gui_settings_read_console(GuiSettings* settings, const char* runtime, int console);
 void gui_settings_free(GuiSettings* settings);
+/* row count + i (i under GUI_SETTING_LINKS), past the settings and out of their count, made a link: a row of another
+   screen that Settings' search lists, its name, help and value shown, which nothing of the settings reads or writes.
+   Its row, or -1 for an i past them or no list read */
+int gui_settings_link(GuiSettings* settings, int i, const char* name, const char* about, const char* value);
 /* the row of key set to value, a word or a text as the row takes: 1 when it did */
 int gui_settings_set(GuiSettings* settings, const char* key, const char* value);
 /* the rows as they are, the launcher's own choices among them, as the values to start from */

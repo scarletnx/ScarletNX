@@ -1096,6 +1096,155 @@ static void microphone_words(App* app) {
     leave_form(app);
     settings_forget(app);
 }
+/* the group a row of the Settings' groups' list opens: its row past Search's, the first */
+static GuiRect group_row_box(App* app, int g) { return row_box(app, g + 1, false); }
+/* Settings' search: its row over the groups (Up from the first, a hover, a click), Ctrl+F and a pad's Y open it; what is
+   typed is looked for as it is typed, whatever its case and accents, the best rows first with where each is; Enter goes
+   to them, which change where they are; G opens a row's group on it; a page, App's rows and a link's screen go back to
+   it; no row, nothing to act on; ESC, the groups; past GUI_VIEW_ROWS, how many more */
+static void settings_search(App* app) {
+    char list[4096] =
+        "Display\tfullscreen\t0\tint\t0\t1\tFullscreen\tFullscreen\t0=Off|1=On\n"
+        "Graphics\tfps_limit\t60\tint\t0\t240\tThe most frames a second\tFPS limit\t0=Unlimited|30=30|60=60\n"
+        "Graphics/Vulkan Extensions\tvk_x\t1\tint\t0\t1\tAn extension\tAn extension\t0=Off|1=On\n";
+    int graphics, n = (int)strlen(list);
+    SDL_Event pad = {0};
+    for (int i = 0; i < 30; ++i) /* more rows that match than the search shows */
+        n += snprintf(list + n, sizeof list - (size_t)n,
+                      "Debug\tzlimit_%02d\t0\tint\t0\t1\tA test's\tZlimit %02d\t0=Off|1=On\n", i, i);
+    settings_forget(app);
+    assert(!gui_settings_read(&app->settings, list));
+    gui_settings_mark(&app->settings);
+    open_settings(app);
+    for (graphics = 0; graphics < app->groups && strcmp(app->group_name[graphics], "Graphics"); ++graphics) {}
+    assert(graphics < app->groups && app->form == GUI_FORM_SETTINGS && !app->editor.row && !app->search_row);
+    /* its row first in the list, Up from App goes to it and Down back; Enter there opens the search's dialog */
+    render(app);
+    shows(app, "- " ICON_EYE " Search", normal);
+    key(app, SDLK_UP);
+    assert(app->search_row && !app->editor.row);
+    render(app);
+    shows(app, "- " ICON_EYE " Search", yellow);
+    assert(!strcmp(form_note(app), "Enter: look for a setting by the words of its name, key, group or help"));
+    key(app, SDLK_DOWN);
+    assert(!app->search_row && !app->editor.row && app->form == GUI_FORM_SETTINGS);
+    key(app, SDLK_UP);
+    key(app, SDLK_RETURN);
+    assert(search_typing(app) && !app->view_count);
+    /* as it is typed, whatever the case and the accents: the row and where it is; Enter goes to the rows */
+    typed(app, "J\xC3\x81VA");
+    assert(search_typing(app) && app->view_count == 1 && setting_of(app, 0) == setting_row(app, "java_home"));
+    assert(!strcmp(app->search_text, "J\xC3\x81VA"));
+    key(app, SDLK_RETURN);
+    assert(search_shown(app) && !app->editor.typing && !app->editor.row);
+    render(app);
+    shows(app, "SCARLETNX  /  SETTINGS  /  SEARCH", normal);
+    shows(app, "Search: J\xC3\x81VA", normal);
+    shows(app, "Launch", yellow); /* where it is, at its row's end in the focus's ink */
+    assert(!strcmp(form_note(app), "1 of 1 settings"));
+    key(app, SDLK_ESCAPE); /* the groups, on Search */
+    assert(app->form == GUI_FORM_SETTINGS && app->search_row && !app->searching);
+    /* Ctrl+F from a group; a word row changes where it is, Del puts it back; G opens its group on it */
+    key(app, SDLK_DOWN);
+    app->editor.row = graphics;
+    key(app, SDLK_RETURN);
+    assert(app->form == GUI_FORM_GROUP && app->group == graphics);
+    key_with(app, SDLK_F, SDL_KMOD_LCTRL);
+    assert(search_typing(app));
+    typed(app, "fps");
+    key(app, SDLK_RETURN);
+    assert(app->view_count == 1 && setting_of(app, 0) == setting_row(app, "fps_limit"));
+    key(app, SDLK_RIGHT);
+    assert(search_shown(app) && setting_is(app, "fps_limit", "0"));
+    key(app, SDLK_DELETE);
+    assert(search_shown(app) && setting_is(app, "fps_limit", NULL));
+    render(app);
+    shows(app, "Graphics", yellow);
+    key(app, SDLK_G);
+    assert(app->form == GUI_FORM_GROUP && !app->searching && app->group == graphics &&
+           setting_of(app, app->editor.row) == setting_row(app, "fps_limit"));
+    key(app, SDLK_ESCAPE); /* from there, the groups */
+    assert(app->form == GUI_FORM_SETTINGS && app->editor.row == graphics && !app->search_row);
+    /* the page's row before the page's row of its words; the page opened from it goes back to it, as it was */
+    key_with(app, SDLK_F, SDL_KMOD_LCTRL);
+    typed(app, "vulkan ext");
+    key(app, SDLK_RETURN);
+    assert(app->view_count == 2 && screen_settings(app)->values[setting_of(app, 0)].kind == GUI_SETTING_PAGE &&
+           setting_of(app, 1) == setting_row(app, "vk_x"));
+    key(app, SDLK_DOWN);
+    render(app);
+    shows(app, "Graphics > Vulkan Extensions", yellow);
+    key(app, SDLK_UP);
+    key(app, SDLK_RETURN);
+    assert(app->form == GUI_FORM_GROUP && app->page >= 0 && !app->searching && app->search_back);
+    key(app, SDLK_ESCAPE);
+    assert(search_shown(app) && app->view_count == 2 && !app->editor.row && !strcmp(app->search_text, "vulkan ext"));
+    /* the dialog again, with what it had: what is typed then and taken back with ESC leaves the search as it was */
+    key_with(app, SDLK_F, SDL_KMOD_LCTRL);
+    assert(search_typing(app) && !strcmp(app->editor.text, "vulkan ext"));
+    typed(app, "zzz");
+    assert(!app->view_count);
+    key(app, SDLK_ESCAPE);
+    assert(search_shown(app) && !app->editor.typing && app->view_count == 2 && !strcmp(app->search_text, "vulkan ext"));
+    /* App's rows: Enter opens App on the row, ESC comes back */
+    key_with(app, SDLK_F, SDL_KMOD_LCTRL);
+    for (int i = 0; i < 10; ++i) key(app, SDLK_BACKSPACE);
+    typed(app, "theme editor");
+    key(app, SDLK_RETURN);
+    assert(app->view_count == 1 && setting_of(app, 0) >= screen_settings(app)->count);
+    render(app);
+    shows(app, "App", yellow);
+    key(app, SDLK_RIGHT); /* nothing on a link but Enter */
+    assert(search_shown(app));
+    key(app, SDLK_RETURN);
+    assert(app->form == GUI_FORM_APP && app->editor.row == GUI_APP_EDITOR);
+    key(app, SDLK_ESCAPE);
+    assert(search_shown(app) && app->view_count == 1);
+    /* nothing matches: said, and no key acts on a row */
+    key_with(app, SDLK_F, SDL_KMOD_LCTRL);
+    typed(app, "qqqq");
+    key(app, SDLK_RETURN);
+    assert(search_shown(app) && !app->view_count &&
+           !strcmp(form_note(app), "No setting matches \"theme editorqqqq\". ESC: the groups"));
+    key(app, SDLK_RIGHT);
+    key(app, SDLK_RETURN);
+    key(app, SDLK_DELETE);
+    assert(search_shown(app) && !gui_settings_changed(&app->settings));
+    key(app, SDLK_ESCAPE);
+    assert(app->form == GUI_FORM_SETTINGS && app->search_row);
+    /* more than it shows: the best GUI_VIEW_ROWS, how many there are said */
+    key(app, SDLK_RETURN);
+    typed(app, "zlimit");
+    assert(app->view_count == GUI_VIEW_ROWS && app->search_total == 30 &&
+           !strcmp(form_note(app), "24 of 30 settings: type more to see the rest"));
+    key(app, SDLK_ESCAPE); /* nothing before it: the groups */
+    assert(app->form == GUI_FORM_SETTINGS && app->search_row && !app->searching);
+    /* a pad's Y opens it; the pointer over its row focuses it, a click there opens it, from a group too */
+    pad.type = SDL_EVENT_KEY_DOWN;
+    pad.key.key = SDLK_R;
+    pad.key.which = GUI_PAD_KEYBOARD;
+    key(app, SDLK_DOWN);
+    event(app, &pad);
+    assert(search_typing(app));
+    key(app, SDLK_ESCAPE);
+    key(app, SDLK_DOWN);
+    point(app, row_box(app, 0, false), false);
+    assert(app->search_row);
+    point(app, group_row_box(app, graphics), false);
+    assert(!app->search_row && app->editor.row == graphics);
+    point(app, row_box(app, 0, false), false);
+    point(app, row_box(app, 0, false), true);
+    assert(search_typing(app));
+    key(app, SDLK_ESCAPE);
+    key(app, SDLK_DOWN);
+    app->editor.row = graphics;
+    key(app, SDLK_RETURN);
+    point(app, row_box(app, 0, false), true);
+    assert(search_typing(app));
+    key(app, SDLK_ESCAPE);
+    leave_editor(app);
+    settings_forget(app);
+}
 /* the Room password: its row in Network says whether there is one, and the dialog that takes one starts empty, draws
    stars alone and keeps none of the letters; written 0600 in users/online.ini, never in settings.ini nor a run's
    options; Del takes it off; refused text is said and can be mended; a file others can read is said; another version's
@@ -8192,13 +8341,14 @@ int main(int argc, char** argv) {
     shows(&app, "Reset to Defaults", rgb(app.theme.soft));
     hides(&app, "\x1e", rgb(app.theme.soft)); /* every row shows: no arrows */
     hides(&app, "\x1f", rgb(app.theme.soft));
-    { /* F1's box here: every key every screen has, the groups' none of their own, so no title over them */
+    { /* F1's box here: the groups' own key first, the search's, then under its title every key every screen has */
         GuiHelpKeys k;
         key(&app, SDLK_F1);
         render(&app);
         help_keys(&app, &k);
-        assert(app.help_shown && k.own == 0 && k.n >= 5 && help_rows(&k) == k.n);
-        hides(&app, "Every screen", normal);
+        assert(app.help_shown && k.own == 1 && k.n >= 6 && help_rows(&k) == k.n + 1 &&
+               !strncmp(k.said, "Ctrl+F: search.", 15));
+        shows(&app, "Every screen", normal);
         key(&app, SDLK_ESCAPE);
         assert(!app.help_shown && app.form == GUI_FORM_SETTINGS);
     }
@@ -14853,7 +15003,7 @@ int main(int argc, char** argv) {
                 render(&app);
                 form_boxes(&app, &f);
                 side = form_row_box(&app, &f, true, 0);
-                groups = form_row_box(&app, &f, false, group);
+                groups = form_row_box(&app, &f, false, group + 1); /* past Search's */
                 assert(side.h && groups.h && app.form == GUI_FORM_SETTINGS);
                 finger_px(&app, SDL_EVENT_FINGER_DOWN, side.x + 20, side.y + 2);
                 finger_px(&app, SDL_EVENT_FINGER_MOTION, side.x + 20, side.y + 2 + 2 * side.h);
@@ -14938,8 +15088,9 @@ int main(int argc, char** argv) {
                 GuiFormBoxes f;
                 GuiRect b;
                 form_boxes(&app, &f);
-                assert(f.place.side.w && form_shown(&app, &f, false) >= (size_t)app.groups && !form_first(&f, false));
-                b = form_row_box(&app, &f, false, app.groups - 1);
+                assert(f.place.side.w && form_shown(&app, &f, false) >= (size_t)app.groups + 1 &&
+                       !form_first(&f, false));
+                b = form_row_box(&app, &f, false, app.groups); /* the last group's, past Search's */
                 assert(b.h && same_colour(pixel(&app, (float)b.x, (float)(b.y + b.h / 2)), rgb(app.theme.focus)));
             }
             key(&app, SDLK_ESCAPE);
@@ -16023,20 +16174,22 @@ int main(int argc, char** argv) {
             render(&app);
             form_boxes(&app, &f);
             assert(f.place.side.x > f.place.list.x + f.place.list.w);
-            /* every group shown, ui.txt's 2 pixels apart in a column that would spread them further; nothing past the
-               last group */
-            assert(form_shown(&app, &f, false) >= (size_t)app.groups && !form_first(&f, false) &&
-                   app.groups * (item_h(&app) + 14 * s) <= f.left[UI_FORM_LIST_ROWS].h);
+            /* Search's row and every group shown, ui.txt's 2 pixels apart in a column that would spread them further;
+               nothing past the last group */
+            assert(form_shown(&app, &f, false) >= (size_t)app.groups + 1 && !form_first(&f, false) &&
+                   (app.groups + 1) * (item_h(&app) + 14 * s) <= f.left[UI_FORM_LIST_ROWS].h);
             {
                 UiRowInfo info = {0};
-                assert(!ui_form_list_rows_get_row_info(&app, (size_t)app.groups, 100, &info));
+                assert(!ui_form_list_rows_get_row_info(&app, (size_t)app.groups + 1, 100, &info));
             }
             form_boxes(&app, &f);
             b = form_row_box(&app, &f, false, 1);
             assert(b.y - form_row_box(&app, &f, false, 0).y == item_h(&app) + 2 * s && b.h == item_h(&app));
             b = form_row_box(&app, &f, false, 0);
+            text_px_is(&app, b.x + cw / 2, item_text_y(&app, b), "- " ICON_EYE " Search", normal, black);
+            b = form_row_box(&app, &f, false, 1);
             text_px_is(&app, b.x + cw / 2, item_text_y(&app, b), "- " ICON_APP_WINDOW " App", yellow, black);
-            b = form_row_box(&app, &f, false, app.groups - 1); /* the last group, whole */
+            b = form_row_box(&app, &f, false, app.groups); /* the last group, whole */
             snprintf(last, sizeof last, "- %s %s",
                      gui_icon_utf8(gui_group_icon(app.group_keys[app.groups - 1].key), glyph),
                      app.group_keys[app.groups - 1].key);
@@ -16081,7 +16234,7 @@ int main(int argc, char** argv) {
             for (launch = 0; launch < app.groups && strcmp(app.group_keys[launch].key, "Launch"); ++launch) {}
             assert(launch < app.groups);
             /* the pointer over a group focuses it, its rows beside it; over those rows it waits for a click */
-            b = form_row_box(&app, &f, false, 2);
+            b = form_row_box(&app, &f, false, 2 + 1);
             mouse_px(&app, b.x + 4, b.y + 4, false);
             assert(app.form == GUI_FORM_SETTINGS && app.editor.row == 2);
             mouse_px(&app, b.x + 4, b.y + 4, true); /* and a click on the focused group opens it */
@@ -16107,7 +16260,7 @@ int main(int argc, char** argv) {
             assert(app.form == GUI_FORM_GROUP && app.group == launch && !app.editor.row);
             render(&app);
             form_boxes(&app, &f);
-            b = form_row_box(&app, &f, false, launch);
+            b = form_row_box(&app, &f, false, launch + 1);
             text_px_is(&app, b.x + cw / 2, item_text_y(&app, b), "- " ICON_ROCKET " Launch", yellow,
                        black); /* the group open */
             b = form_row_box(&app, &f, true, 0);
@@ -16137,17 +16290,17 @@ int main(int argc, char** argv) {
             mouse_px(&app, b.x + 4, b.y + 4, true);
             assert(setting_is(&app, "tmpfs", "on"));
             key(&app, SDLK_LEFT);
-            b = form_row_box(&app, &f, false, 0);
+            b = form_row_box(&app, &f, false, 1);
             mouse_px(&app, b.x + 4, b.y + 4, false);
             assert(app.form == GUI_FORM_GROUP && app.editor.row == 1);
             /* a click on App in the list opens it, from a group's rows; one on another group, that one */
-            b = form_row_box(&app, &f, false, 0);
+            b = form_row_box(&app, &f, false, 1);
             mouse_px(&app, b.x + 4, b.y + 4, true);
             assert(app.editing && app.form == GUI_FORM_APP && app.editor.row == GUI_APP_THEME);
-            b = form_row_box(&app, &f, false, launch);
+            b = form_row_box(&app, &f, false, launch + 1);
             mouse_px(&app, b.x + 4, b.y + 4, true);
             assert(app.form == GUI_FORM_GROUP && app.group == launch && !app.editor.row);
-            b = form_row_box(&app, &f, false, 0);
+            b = form_row_box(&app, &f, false, 1);
             mouse_px(&app, b.x + 4, b.y + 4, true);
             assert(app.form == GUI_FORM_APP && app.editor.row == GUI_APP_THEME);
             /* the theme editor: its keys on the left, the theme's menu in the preview on the right, which a click, or
@@ -18395,6 +18548,7 @@ int main(int argc, char** argv) {
     shortcuts_capture(&app);
     microphone_words(&app);
     room_password_row(&app, temporary);
+    settings_search(&app);
     boxes_form(&app);
     volume_view(&app);
     bluetooth_settings(&app, temporary); /* its rows of the runtime's settings */
@@ -18479,7 +18633,7 @@ int main(int argc, char** argv) {
         app.editor.row = app.groups - 1; /* the last group */
         render(&app);
         form_boxes(&app, &f);
-        b = form_row_box(&app, &f, false, app.groups - 1);
+        b = form_row_box(&app, &f, false, app.groups); /* past Search's */
         {
             char last[80], glyph[4];
             snprintf(last, sizeof last, "\xfe %s %s",
@@ -18505,7 +18659,7 @@ int main(int argc, char** argv) {
                cursor: the keys are not there */
             assert(!strcmp(app.theme.cursor, "\xe2\x96\xba ") && app.theme.focus_bar);
             text_px_is(&app, b.x - 2 * cw, item_text_y(&app, b), "\x10 ", rgb(app.theme.focus), rgb(app.theme.page));
-            b = form_row_box(&app, &f, false, row);
+            b = form_row_box(&app, &f, false, row + 1);
             text_px_is(&app, b.x + cw / 2, item_text_y(&app, b), "\xfe " ICON_MONITOR " Display", rgb(app.theme.page),
                        rgb(app.theme.focus));
             text_px_is(&app, b.x - 2 * cw, item_text_y(&app, b), "  ", rgb(app.theme.focus), rgb(app.theme.page));

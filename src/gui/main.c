@@ -33,6 +33,7 @@
 #include "common/network/https.h"
 #include "gui/gpu_driver.h"
 #include "gui/jdk.h"
+#include "gui/find.h"
 #include "gui/bluetooth.h"
 #include "gui/gpu_driver_fetch.h"
 #include "gui/gui.h"
@@ -626,6 +627,13 @@ typedef struct App {
     Uint64 size_until;
     char size_line[128];
     bool typed_cancel; /* the pointer is on Cancel of a typed value's dialog, nothing typed since */
+    /* Settings' search (search_open): its row over the groups in focus; its screen, a view of the rows that match
+       search_text (search_total of them, search_note saying so), what search_was had before it was typed again; a
+       screen opened from a row of it, which goes back to it on search_at; each link's App row, or -1 - g for group
+       g's (the User group's) */
+    bool search_row, searching, search_back, search_dialog;
+    char search_text[64], search_was[64], search_note[192];
+    int search_total, search_at, search_link[GUI_SETTING_LINKS];
     /* a resolution past 4x or under 0.25x: its row flashes in the warning colour and the foot says why, until
        warn_until; warn_key is its .ini key, empty for none */
     char warn_key[64];
@@ -1094,6 +1102,8 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #define SAY_PICKER SNX_TR_KEYS("Drag: change. Tap #RRGGBB: type. Tap outside: OK.")
 #endif
 #define SAY_SETTINGS         SAY_EDITOR
+#define SAY_SEARCH           NULL /* a finger taps Search's row */
+#define SAY_SEARCH_GO        SNX_TR_KEYS("Its group.")
 #define SAY_SETTINGS_DEFAULT NULL /* a finger has no Del */
 #define SAY_SETTINGS_GLOBAL  NULL /* a game's own: its word Global, or its text emptied */
 #ifdef SDL_PLATFORM_ANDROID
@@ -1172,6 +1182,8 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #define SAY_PICKER       SNX_TR_KEYS("Up/Down: row. Left/Right: step 1. PgUp/PgDn: step 16. Enter: OK. ESC: cancel.")
 #define SAY_SETTINGS     SNX_TR_KEYS("Up/Down: setting. Left/Right: change. Enter: type. ESC: back.")
 #define SAY_SETTINGS_DEFAULT SNX_TR_KEYS("Del: default.") /* a setting not at its default */
+#define SAY_SEARCH           SNX_TR_KEYS("Ctrl+F: search.")
+#define SAY_SEARCH_GO        SNX_TR_KEYS("G: its group.")
 #define SAY_SETTINGS_GLOBAL  SNX_TR_KEYS("Del: Global.")  /* a game's own picked */
 #define SAY_GROUPS           SNX_TR_KEYS("Up/Down: group. Enter: open. ESC: back.")
 #define SAY_APP              SNX_TR_KEYS("Up/Down: row. Left/Right: change. Enter: change or open. ESC: back.")
@@ -1218,6 +1230,8 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 #define SAY_PAD_SETTINGS         SNX_TR_KEYS("D-pad: setting, change. A: type. B: back.")
 #define SAY_PAD_SETTINGS_DEFAULT SNX_TR_KEYS("X: default.")
 #define SAY_PAD_SETTINGS_GLOBAL  SNX_TR_KEYS("X: Global.")
+#define SAY_PAD_SEARCH           SNX_TR_KEYS("Y: search.")
+#define SAY_PAD_SEARCH_GO        SNX_TR_KEYS("L3: its group.")
 #define SAY_PAD_GROUPS           SNX_TR_KEYS("D-pad: group. A: open. B: back.")
 #define SAY_PAD_APP              SNX_TR_KEYS("D-pad: row, change. A: change or open. B: back.")
 #define SAY_PAD_FOLDERS          SNX_TR_KEYS("D-pad: folder. Start: refresh. B: back.")
@@ -3596,6 +3610,7 @@ static void folders_said(const App* app, bool pad, const char** parts, int* n);
 static void games_said(const App* app, bool pad, const char** parts, int* n);
 static int setting_of(const App* app, int row);
 static void settings_said(const App* app, bool pad, const char** parts, int* n);
+static void search_said(const App* app, bool pad, const char** parts, int* n);
 static int hint_next(const char** s, char* key, char* what, size_t size);
 /* a key every screen has, which F1's box says and a foot leaves out: moving and picking, paging, the tabs, the side
    box, a pad's D-pad, A, LT/RT and LB/RB. key: an English sentence's, its words between slashes */
@@ -3711,7 +3726,9 @@ static unsigned key_icon(const char* key, const char* what) {
                  {"folders", GUI_ICON_FOLDER},
                  {"view", GUI_ICON_EYE},
                  {"help", GUI_ICON_INFO},
-                 {"more", GUI_ICON_ELLIPSIS}};
+                 {"more", GUI_ICON_ELLIPSIS},
+                 {"search", GUI_ICON_EYE},
+                 {"its group", GUI_ICON_LAYERS}};
     size_t i;
     if (!*what) what = key;
     if (!strcmp(what, "select") || !strcmp(what, "choose")) return key_moves(key) ? GUI_ICON_MOVE : GUI_ICON_POINTER;
@@ -3856,6 +3873,7 @@ static int screen_parts(const App* app, bool pad, const char** parts) {
         if (!app->editing && folder_pick_screen(app)) said_add(parts, &n, SAY_PAD_PICK_FOLDER);
         said_add(parts, &n, keys);
         if (app->editing) settings_said(app, true, parts, &n);
+        search_said(app, true, parts, &n);
         if (aot_said(app)) said_add(parts, &n, SAY_PAD_GAMES_AOT);
         said_add(parts, &n, SAY_PAD_TAB);
     } else {
@@ -3883,6 +3901,7 @@ static int screen_parts(const App* app, bool pad, const char** parts) {
         said_add(parts, &n, keys);
         if (!app->editing && folder_pick_screen(app)) said_add(parts, &n, SAY_PICK_FOLDER);
         if (app->editing) settings_said(app, false, parts, &n);
+        search_said(app, false, parts, &n);
         if (!app->editing && app->menu.view == GUI_LOAD_GAMES) {
             said_add(parts, &n, SAY_GAMES_FOLDERS); /* to add a folder */
             said_add(parts, &n, SAY_GAMES_VIEW);    /* its options' box */
@@ -4471,6 +4490,7 @@ static int settings_user(const App* app) {
 /* settings.ini's deprecated user=N named the user playing: user_uid written in its place, once, and said */
 static GuiSettings* settings_of(App* app);
 static GuiSettings* screen_settings(const App* app);
+static bool search_shown(const App* app);
 static void open_game_settings(App* app, const char* program, const char* title, bool from_box);
 static void users_migrate(App* app, int old) {
     char uid[33];
@@ -7046,7 +7066,9 @@ static const char* screen_title(const App* app, char* out, size_t size) {
         snprintf(out, size, snx_tr("SCARLETNX  /  SETTINGS  /  %s  /  %s"), snx_tr(app->group_keys[app->group].key),
                  snx_tr(app->settings.keys[app->page].key));
         for (c = out; *c; ++c) *c = (char)SDL_toupper((unsigned char)*c);
-    } else if (app->own_picks) { /* a game's own: its name, as its row says it */
+    } else if (search_shown(app))
+        snprintf(out, size, "%s", snx_tr("SCARLETNX  /  SETTINGS  /  SEARCH"));
+    else if (app->own_picks) { /* a game's own: its name, as its row says it */
         snprintf(out, size, snx_tr("SCARLETNX  /  SETTINGS  /  %s"), app->game_title);
         for (c = out; *c; ++c) *c = (char)SDL_toupper((unsigned char)*c);
     } else
@@ -9457,6 +9479,7 @@ static void settings_top(App* app, int row) {
     app->editor.row = SDL_min(row, gui_editor_rows(&app->editor) - 1);
     app->form = GUI_FORM_SETTINGS;
     app->editing = true;
+    app->searching = app->search_back = app->search_row = app->search_dialog = false;
 }
 static void open_app(App* app, int row) {
     app->clean_found = -1; /* looked at again as its rows show */
@@ -11959,6 +11982,7 @@ static void jdk_words(App* app, int group) {
     gui_jdks_free(jdks, count);
     gui_jdks_free(roots, n);
 }
+static bool search_typing(const App* app);
 /* ---- the Room password (GUI_SETTING_SECRET), kept in users/online.ini: its row says whether there is one and the
    dialog that takes one draws no letter of it; the typed text is wiped as it goes ---- */
 static int secret_row(const App* app) {
@@ -11966,7 +11990,7 @@ static int secret_row(const App* app) {
     return row >= 0 && screen_settings(app)->values[row].kind == GUI_SETTING_SECRET ? row : -1;
 }
 static bool secret_open(const App* app) {
-    return app->form == GUI_FORM_GROUP && app->editing && secret_row(app) >= 0 &&
+    return app->form == GUI_FORM_GROUP && app->editing && !search_typing(app) && secret_row(app) >= 0 &&
            setting_of(app, app->editor.row) == secret_row(app);
 }
 /* what the row says: there is one, none, or why it cannot be told */
@@ -11993,6 +12017,7 @@ static void secret_wipe(App* app) {
     SDL_memset(app->editor.text, 0, sizeof app->editor.text);
     app->editor.typing = false;
 }
+static int search_group(const App* app, int r);
 /* password written for the room, "" for none; its row as it is now, the note said */
 static void secret_write(App* app, const char* password) {
     char why[512] = "";
@@ -12001,7 +12026,7 @@ static void secret_write(App* app, const char* password) {
                  app->users_dir ? why : snx_tr("no users/ folder"));
         return;
     }
-    secret_shown(app, app->group);
+    secret_shown(app, search_shown(app) ? search_group(app, secret_row(app)) : app->group);
     snprintf(app->editor.note, sizeof app->editor.note, "%s",
              *password ? snx_tr("Room password: set") : snx_tr("Room password: none"));
     secret_wipe(app);
@@ -12275,6 +12300,293 @@ static void open_settings(App* app) {
     settings_top(app, 0);
     space_start(app);
 }
+/* ---- Settings' search: its row over the groups, Ctrl+F or a pad's Y opens it. What is typed is looked for as it is
+   typed (gui/find.h) in each row's name, key, help, group, page and values, in the menu's language and English, and
+   the GUI_VIEW_ROWS best show as a view of the group's, which edits them where they are. A row of App's, or the User
+   group's, a page's, a row of boxes and a player's button map open their screen from it, which goes back to it; G (a
+   pad's L3) opens the row's group on it. ESC goes back to the groups ---- */
+static void typed_keyboard(App* app);
+static bool search_shown(const App* app) { return app->editing && app->form == GUI_FORM_GROUP && app->searching; }
+static bool search_typing(const App* app) { return search_shown(app) && app->editor.typing && app->search_dialog; }
+/* the group row r of the settings is in: its section's, or the section its page is of; -1 for none */
+static int search_group(const App* app, int r) {
+    const GuiSettings* s = screen_settings(app);
+    const char* section = s->keys[r].section ? s->keys[r].section : "";
+    size_t n = strcspn(section, "/");
+    for (int g = 0; g < app->groups; ++g) {
+        const char* own;
+        if (app->group_first[g] < 0 || (!g && !app->own_picks)) continue; /* Reset to Global's, App's */
+        own = s->keys[app->group_first[g]].section;
+        if (strlen(own) == n && !strncmp(own, section, n)) return g;
+    }
+    return -1;
+}
+/* the rows the search lists of the settings: no page's All, no Player row (a view's), none of the User group's */
+static bool search_takes(const App* app, int r) {
+    const GuiSettings* s = screen_settings(app);
+    int g = search_group(app, r);
+    if (s->values[r].kind == GUI_SETTING_ALL || g < 0 || users_group(app, g)) return false;
+    return s->values[r].kind != GUI_SETTING_PAGE || strcmp(s->keys[r].key, "Player");
+}
+/* the links it lists: App's rows, then the User group's Current user, a game's own Settings none. How many */
+static int search_links(App* app) {
+    GuiSettings* s = screen_settings(app);
+    char value[256];
+    int n = 0, g;
+    if (app->own_picks) return 0;
+    app_values(app);
+    for (int r = 0; r < GUI_APP_ROWS && n < GUI_SETTING_LINKS; ++r) {
+        value[0] = 0;
+        if (app_keys[r].size) gui_theme_get((const char*)&app->app_form, &app_keys[r], value, sizeof value);
+        app->search_link[n] = r;
+        gui_settings_link(s, n++, app_keys[r].key, app_keys[r].about, value);
+    }
+    for (g = 0; g < app->groups && n < GUI_SETTING_LINKS; ++g)
+        if (users_group(app, g)) {
+            users_fill(app);
+            app->search_link[n] = -1 - g;
+            gui_settings_link(s, n++, SNX_TR_NOOP("Current user"), SNX_TR_NOOP("The user the games play as"),
+                              app->users_form.plays);
+        }
+    return n;
+}
+/* where row r is, as the search shows it: its group, then its page or player ("Controllers > Player 3"); a link's
+   screen's */
+static void search_where(const App* app, int r, bool english, char* out, size_t size) {
+    const GuiSettings* s = screen_settings(app);
+    const char *slash, *group;
+    int g, p;
+    if (r >= s->count) {
+        int link = app->search_link[r - s->count];
+        group = link >= 0 ? "App" : app->group_keys[-1 - link].key;
+        snprintf(out, size, "%s", english ? group : snx_tr(group));
+        return;
+    }
+    g = search_group(app, r);
+    p = player_key(s->values[r].key, NULL);
+    slash = strchr(s->keys[r].section, '/');
+    group = g >= 0 ? app->group_keys[g].key : "";
+    snprintf(out, size, "%s", english ? group : snx_tr(group));
+    if (p)
+        snprintf(out + strlen(out), size - strlen(out), " > %s %d", english ? "Player" : snx_tr("Player"), p);
+    else if (slash)
+        snprintf(out + strlen(out), size - strlen(out), " > %s", english ? slash + 1 : snx_tr(slash + 1));
+}
+/* how well the search matches row r (gui_find_rank): its name, key, help and where in both languages, its words */
+static int search_rank(const App* app, int r) {
+    const GuiSettings* s = screen_settings(app);
+    const GuiThemeKey* k = &s->keys[r];
+    const char* shown[65];
+    char where[2][160];
+    int i = 0;
+    GuiFindRow row = {0};
+    search_where(app, r, false, where[0], sizeof where[0]);
+    search_where(app, r, true, where[1], sizeof where[1]);
+    for (; k->words && k->words[i] && i < 64; ++i) shown[i] = snx_tr(k->words[i]);
+    shown[i] = NULL;
+    row.name[0] = snx_tr(k->key);
+    row.name[1] = k->key;
+    row.key = s->values[r].kind ? NULL : s->values[r].key;
+    row.where[0] = where[0];
+    row.where[1] = where[1];
+    row.words[0] = shown;
+    row.words[1] = k->words;
+    row.about[0] = k->about ? snx_tr(k->about) : NULL;
+    row.about[1] = k->about;
+    return gui_find_rank(app->search_text, &row);
+}
+/* the search's screen: the rows that match it, the best first and the rows' order between equals, row focus in focus */
+static void search_show(App* app, int focus) {
+    GuiSettings* s = screen_settings(app);
+    int rank[GUI_VIEW_ROWS], links = search_links(app), n = 0, total = 0, r, i;
+    for (r = 0; r < s->count + links; ++r) {
+        int got = r < s->count && !search_takes(app, r) ? 0 : search_rank(app, r);
+        if (!got) continue;
+        ++total;
+        for (i = n; i > 0 && rank[i - 1] < got; --i) /* after the rows of as many points or more */
+            if (i < GUI_VIEW_ROWS) {
+                rank[i] = rank[i - 1];
+                app->view_rows[i] = app->view_rows[i - 1];
+            }
+        if (i >= GUI_VIEW_ROWS) continue;
+        rank[i] = got;
+        app->view_rows[i] = r;
+        n += n < GUI_VIEW_ROWS;
+    }
+    for (i = 0; i < n; ++i) app->view_keys[i] = s->keys[app->view_rows[i]];
+    app->view_count = n;
+    app->search_total = total;
+    gui_editor_form(&app->editor, app->view_keys, n, s->values, NULL);
+    app->editor.flat = true;
+    app->editor.row = SDL_clamp(focus, 0, SDL_max(n - 1, 0));
+    app->form = GUI_FORM_GROUP;
+    app->editing = true;
+    app->searching = true;
+    app->search_row = false;
+    app->page = -1;
+    app->first = 0;
+    if (!app->search_text[0])
+        snprintf(app->search_note, sizeof app->search_note, "%s",
+                 snx_tr("A setting's name, key, group or words: each one typed is looked for"));
+    else if (!total)
+        snprintf(app->search_note, sizeof app->search_note, snx_tr("No setting matches \"%s\". ESC: the groups"),
+                 app->search_text);
+    else if (total > n)
+        snprintf(app->search_note, sizeof app->search_note, snx_tr("%d of %d settings: type more to see the rest"), n,
+                 total);
+    else
+        snprintf(app->search_note, sizeof app->search_note, snx_tr("%d of %d settings"), n, total);
+    for (i = 0; i < n; ++i) { /* what rows show from elsewhere: the microphones, the JDKs, the room's password */
+        r = app->view_rows[i];
+        if (r >= s->count) continue;
+        if (r == setting_row(app, "microphone"))
+            mic_words(app, search_group(app, r));
+        else if (r == setting_row(app, "java_home"))
+            jdk_words(app, search_group(app, r));
+        else if (s->values[r].kind == GUI_SETTING_SECRET)
+            secret_shown(app, search_group(app, r));
+    }
+}
+/* the search typed: in a dialog over its screen, its rows found as the text changes; the text it had before kept to
+   go back to with ESC. Opened from elsewhere, it starts empty */
+static void search_open(App* app) {
+    if (!search_shown(app)) app->search_text[0] = 0;
+    snprintf(app->search_was, sizeof app->search_was, "%s", app->search_text);
+    app->search_back = false;
+    search_show(app, 0);
+    snprintf(app->editor.text, sizeof app->editor.text, "%s", app->search_text);
+    app->editor.typing = true;
+    app->search_dialog = true;
+    app->typed_cancel = false;
+    typed_keyboard(app);
+}
+/* the text typed so far looked for, the dialog kept up; one longer than the search takes is cut at a whole letter */
+static void search_typed(App* app) {
+    char text[sizeof app->editor.text];
+    size_t n = strlen(app->editor.text);
+    if (n >= sizeof app->search_text) {
+        n = sizeof app->search_text - 1;
+        while (n && ((unsigned char)app->editor.text[n] & 0xC0) == 0x80) --n;
+        app->editor.text[n] = 0;
+    }
+    snprintf(text, sizeof text, "%s", app->editor.text);
+    snprintf(app->search_text, sizeof app->search_text, "%s", text);
+    search_show(app, 0);
+    snprintf(app->editor.text, sizeof app->editor.text, "%s", text);
+    app->editor.typing = true;
+}
+/* the groups again, their Search row in focus */
+static void search_close(App* app) {
+    app->search_text[0] = 0;
+    settings_top(app, 0);
+    app->search_row = true;
+}
+/* Enter or ESC on the dialog: its rows to go over, or the search as it was (the groups when it had none) */
+static void search_typed_key(App* app, GuiKey key) {
+    app->search_dialog = false;
+    if (key == GUI_SELECT) {
+        app->editor.typing = false;
+        app->editor.row = 0;
+    } else if (key == GUI_CANCEL && app->search_was[0]) {
+        snprintf(app->search_text, sizeof app->search_text, "%s", app->search_was);
+        search_show(app, 0);
+    } else if (key == GUI_CANCEL)
+        search_close(app);
+    typed_keyboard(app);
+}
+/* a screen opened from the search's row: it goes back to it there, the row's group open as it opens */
+static void search_away(App* app, int group) {
+    app->search_at = app->editor.row;
+    app->search_back = true;
+    app->searching = false;
+    app->group = group;
+}
+/* back from that screen: the search again, as it was */
+static void search_return(App* app) {
+    app->search_back = false;
+    search_show(app, app->search_at);
+}
+/* a key on a link's row: Enter opens its screen, the rest do nothing there; false on a setting's row */
+static bool search_link_key(App* app, GuiKey key) {
+    GuiSettings* s = screen_settings(app);
+    int row = app->view_count ? setting_of(app, app->editor.row) : -1, link;
+    if (row < s->count) return false;
+    if (key != GUI_SELECT)
+        return key != GUI_UP && key != GUI_DOWN && key != GUI_PAGE_UP && key != GUI_PAGE_DOWN && key != GUI_CANCEL;
+    link = app->search_link[row - s->count];
+    search_away(app, link >= 0 ? 0 : -1 - link);
+    if (link >= 0)
+        open_app(app, link);
+    else
+        open_users(app, -1 - link, 0);
+    return true;
+}
+/* G: the row's group, its page or its player's view, open on it; a link's screen. From there ESC goes to the groups */
+static void search_go(App* app) {
+    GuiSettings* s = screen_settings(app);
+    int row = app->view_count ? setting_of(app, app->editor.row) : -1, g, p;
+    if (row < 0) return;
+    if (row >= s->count) {
+        search_link_key(app, GUI_SELECT);
+        app->search_back = false;
+        return;
+    }
+    g = search_group(app, row);
+    p = player_key(s->values[row].key, NULL);
+    app->searching = false;
+    open_group(app, g);
+    if (p) { /* its player's rows, as the Player row shows them */
+        app->player = p;
+        group_view(app, g);
+    } else if (strchr(s->keys[row].section, '/')) /* its page, from its row in the group */
+        for (int r = 0; r < s->count; ++r)
+            if (s->values[r].kind == GUI_SETTING_PAGE && row >= s->values[r].first &&
+                row < s->values[r].first + s->values[r].count) {
+                open_page(app, r);
+                break;
+            }
+    app->editor.row = SDL_max(row_of(app, row), 0);
+}
+/* Up on the groups' first row: their Search row; Enter there opens the search, Down goes back to the first group.
+   Whether it took key */
+static bool search_row_key(App* app, GuiKey key) {
+    if (!app->search_row) {
+        if (key != GUI_UP || app->editor.row) return false;
+        app->search_row = true;
+        return true;
+    }
+    if (key == GUI_CANCEL) return false; /* the groups' ESC */
+    if (key == GUI_SELECT)
+        search_open(app);
+    else if (key == GUI_DOWN || key == GUI_PAGE_DOWN)
+        app->search_row = false;
+    return true;
+}
+/* Ctrl+F, or a pad's Y (its R), on the Settings' groups, a group, App or User: the search opens */
+static bool search_key_of(const App* app, const SDL_KeyboardEvent* k) {
+    if (!app->editing || app->editor.typing || app->editor.picking || k->repeat ||
+        (app->form != GUI_FORM_SETTINGS && app->form != GUI_FORM_GROUP && app->form != GUI_FORM_APP &&
+         app->form != GUI_FORM_USERS))
+        return false;
+    return (k->key == SDLK_F && (k->mod & SDL_KMOD_CTRL)) ||
+           (k->key == SDLK_R && (k->which == GUI_PAD_KEYBOARD || app->pad_driven));
+}
+/* G, or a pad's L3 (its M), on the search's rows */
+static bool search_go_of(const App* app, const SDL_KeyboardEvent* k) {
+    if (!search_shown(app) || app->editor.typing || k->repeat) return false;
+    return (k->key == SDLK_G && !(k->mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI))) ||
+           (k->key == SDLK_M && (k->which == GUI_PAD_KEYBOARD || app->pad_driven));
+}
+/* the foot's sentences of the search: Ctrl+F (a pad's Y; a finger has its row) on the Settings' screens, G on its rows */
+static void search_said(const App* app, bool pad, const char** parts, int* n) {
+    const char* open = pad ? SAY_PAD_SEARCH : SAY_SEARCH;
+    if (!app->editing || app->editor.typing || app->editor.picking ||
+        (app->form != GUI_FORM_SETTINGS && app->form != GUI_FORM_GROUP && app->form != GUI_FORM_APP &&
+         app->form != GUI_FORM_USERS))
+        return;
+    if (search_shown(app) && app->view_count) said_add(parts, n, pad ? SAY_PAD_SEARCH_GO : SAY_SEARCH_GO);
+    if (open) said_add(parts, n, open);
+}
 /* ---- a game's own Settings (its boxes' Settings): the Settings screen on its picks file, <name>.picks beside its
    .ini, which its runtime reads over the launcher's picks; a Switch game's the Switch's settings, a 3DS game's its
    console; each row Global until picked, Del back to Global, the last group Reset to Global, asked first. Back from
@@ -12352,6 +12664,18 @@ static void leave_form(App* app) {
     device_stop(app);
     leave_editor(app);
     if (form == GUI_FORM_PAD) pad_close(app);
+    if (form == GUI_FORM_GROUP && app->searching) {
+        search_close(app);
+        return;
+    }
+    if (app->search_back &&
+        (form == GUI_FORM_GROUP || form == GUI_FORM_APP || form == GUI_FORM_USERS || form == GUI_FORM_PAD ||
+         form == GUI_FORM_BLUETOOTH || (form == GUI_FORM_BOXES && !app->box_fd && app->box_page < 0))) {
+        if (form == GUI_FORM_BOXES) boxes_close(app);
+        if (form == GUI_FORM_BLUETOOTH) bt_search_stop(app);
+        search_return(app);
+        return;
+    }
     if (form == GUI_FORM_BOXES && app->box_fd) { /* Freedreno Settings again, on its variable */
         int k = gui_freedreno_find(app->fd_settings.values[app->box_row].key);
         app->box_fd = false;
@@ -13682,6 +14006,18 @@ static void editor_key(App* app, GuiKey key) {
         app->typed_cancel = false; /* a dialog opens on OK */
     else if (key == GUI_SELECT && typed_focus(app))
         key = GUI_CANCEL;
+    if (search_typing(app)) { /* the search's dialog: Enter, its rows; ESC, the search as it was */
+        if (key == GUI_SELECT || key == GUI_CANCEL) search_typed_key(app, key);
+        return;
+    }
+    if (app->form == GUI_FORM_SETTINGS && !app->editor.typing && search_row_key(app, key)) return;
+    if (search_shown(app) && !app->editor.typing) { /* ESC, the groups; nothing on no row; a link's screen */
+        if (key == GUI_CANCEL) {
+            search_close(app);
+            return;
+        }
+        if (!app->view_count || search_link_key(app, key)) return;
+    }
     if (app->warn_until) app->editor.note[0] = 0;
     app->warn_until = 0;
     app->warn_key[0] = 0;
@@ -13708,6 +14044,7 @@ static void editor_key(App* app, GuiKey key) {
        a press on the controller it takes */
     if (app->form == GUI_FORM_GROUP && key == GUI_SELECT && !app->editor.typing &&
         player_key(screen_settings(app)->values[setting_of(app, app->editor.row)].key, "map")) {
+        if (search_shown(app)) search_away(app, search_group(app, setting_of(app, app->editor.row)));
         open_player_pad(app, setting_of(app, app->editor.row));
         return;
     }
@@ -13736,6 +14073,7 @@ static void editor_key(App* app, GuiKey key) {
     if (app->form == GUI_FORM_GROUP && key == GUI_SELECT && !app->editor.typing &&
         app->editor.object == (char*)screen_settings(app)->values &&
         screen_settings(app)->values[setting_of(app, app->editor.row)].items) {
+        if (search_shown(app)) search_away(app, search_group(app, setting_of(app, app->editor.row)));
         open_boxes(app, setting_of(app, app->editor.row), app->page);
         return;
     }
@@ -13811,9 +14149,10 @@ static void editor_key(App* app, GuiKey key) {
             }
             return;
         }
-        if (screen_settings(app)->values[row].kind == GUI_SETTING_PAGE && !app->editor.step)
+        if (screen_settings(app)->values[row].kind == GUI_SETTING_PAGE && !app->editor.step) {
+            if (search_shown(app)) search_away(app, search_group(app, row));
             open_page(app, row);
-        else if (gui_settings_step_all(screen_settings(app), row, app->editor.step)) {
+        } else if (gui_settings_step_all(screen_settings(app), row, app->editor.step)) {
             app->editor.dirty = true;
             keep_settings(app);
         }
@@ -13883,6 +14222,35 @@ static void editor_key(App* app, GuiKey key) {
 /* keys and typed text: while a value is typed, Space and the letters are its text */
 static void editor_input(App* app, const SDL_Event* e) {
     GuiKey key;
+    if (search_typing(app) && (e->type == SDL_EVENT_TEXT_INPUT || e->key.key == SDLK_BACKSPACE ||
+                               (e->key.key == SDLK_V && (e->key.mod & SDL_KMOD_CTRL)))) {
+        int row = app->editor.row;
+        app->editor.row = -1; /* no row's: any letters */
+        if (e->type == SDL_EVENT_TEXT_INPUT)
+            gui_editor_type(&app->editor, e->text.text);
+        else if (e->key.key == SDLK_BACKSPACE)
+            gui_editor_erase(&app->editor);
+        else {
+            char* clipboard = SDL_GetClipboardText();
+            gui_editor_type(&app->editor, clipboard ? clipboard : "");
+            SDL_free(clipboard);
+        }
+        app->editor.row = row;
+        search_typed(app);
+        return;
+    }
+    if (e->type == SDL_EVENT_KEY_DOWN && search_key_of(app, &e->key)) {
+        search_open(app);
+        return;
+    }
+    if (e->type == SDL_EVENT_KEY_DOWN && search_go_of(app, &e->key)) {
+        search_go(app);
+        return;
+    }
+    /* the search with no row: nothing for a key to act on but ESC and Tab */
+    if (search_shown(app) && !app->view_count && !app->editor.typing && e->type == SDL_EVENT_KEY_DOWN &&
+        e->key.key != SDLK_ESCAPE && e->key.key != SDLK_AC_BACK && e->key.key != SDLK_TAB)
+        return;
     /* what is typed goes with OK, wherever the pointer was left */
     if (e->type == SDL_EVENT_TEXT_INPUT || e->key.key == SDLK_BACKSPACE || e->key.key == SDLK_V)
         app->typed_cancel = false;
@@ -13994,6 +14362,7 @@ typedef struct {
 } GuiFormBoxes;
 /* the group the groups' list shows open, -1 for none: the one being edited, App for its folders */
 static int form_group(const App* app) {
+    if (search_shown(app)) return -1;
     if (app->form == GUI_FORM_GROUP || app->form == GUI_FORM_USERS) return app->group;
     return app->form == GUI_FORM_APP || app->form == GUI_FORM_FOLDERS ? 0 : -1;
 }
@@ -14029,11 +14398,45 @@ static const char* form_note(const App* app) {
                                      : snx_tr("Data, Logs, Caches, Extractions and the recompiled library's Main");
     }
     if (app->form != GUI_FORM_SETTINGS && app->form != GUI_FORM_GROUP) return NULL;
+    if (search_shown(app)) return app->search_note;
+    if (app->form == GUI_FORM_SETTINGS && app->search_row)
+        return snx_tr("Enter: look for a setting by the words of its name, key, group or help");
     if (screen_settings(app)->count <= screen_settings(app)->own) return snx_tr("The runtime listed no settings");
     if (app->own_picks) return snx_tr("For this game's next runs. Global: as the launcher's Settings say");
     if (app->form == GUI_FORM_GROUP && screen_settings(app)->values[setting_of(app, app->editor.row)].always)
         return snx_tr("For the next runs, over the game's .ini"); /* Fullscreen and Show controls: both values passed */
     return snx_tr("For the next runs. [default]: as the game's .ini says");
+}
+/* the groups' list's row in focus, Search's first: on the groups the focused one, else the one open; -1 for none */
+static int list_row(const App* app) {
+    int g = form_group(app);
+    if (app->form == GUI_FORM_SETTINGS) return app->search_row ? 0 : app->editor.row + 1;
+    return search_shown(app) ? 0 : g >= 0 ? g + 1 : -1;
+}
+/* the columns where a search's row r of e is takes at the row's end, with two before it; 0 off the search */
+static int search_where_cols(const App* app, const GuiEditor* e, int r) {
+    char where[160];
+    if (!search_shown(app) || e != &app->editor || r < 0 || r >= app->view_count) return 0;
+    search_where(app, setting_of(app, r), false, where, sizeof where);
+    return gui_text_cols(where) + 2;
+}
+/* a search's row r of e, its text line in room columns: where it is at its end, what it shows before cut to leave two
+   columns before it */
+static void search_where_end(const App* app, const GuiEditor* e, int r, char* line, size_t size, int room) {
+    char where[160];
+    char* at = line;
+    int cols = 0, wide;
+    if (!search_shown(app) || e != &app->editor || r < 0 || r >= app->view_count) return;
+    search_where(app, setting_of(app, r), false, where, sizeof where);
+    wide = gui_text_cols(where);
+    while (*at) { /* the line's letters that fit before it */
+        const char* next = at;
+        int w = gui_glyph_cols(gui_menu_glyph(gui_utf8_step(&next)));
+        if (cols + w > room - wide - 2) break;
+        cols += w;
+        at = line + (next - line);
+    }
+    snprintf(at, size - (size_t)(at - line), "%*s%s", SDL_max(room - wide - cols, 2), "", where);
 }
 /* the right box's rows: on the groups, the focused group's, to see before opening it, made in peek; else the
    editor's */
@@ -14041,7 +14444,9 @@ static const GuiEditor* form_rows(App* app, GuiEditor* peek) {
     int g = app->editor.row;
     if (app->form != GUI_FORM_SETTINGS) return &app->editor;
     memset(peek, 0, sizeof *peek);
-    if (g == 0 && !app->own_picks) {
+    if (app->search_row) /* Search's: none */
+        gui_editor_form(peek, NULL, 0, &app->app_form, NULL);
+    else if (g == 0 && !app->own_picks) {
         app_values(app);
         gui_editor_form(peek, app_keys, GUI_APP_ROWS, &app->app_form, NULL);
     } else if (g >= 0 && g < app->groups && app->group_first[g] < 0) /* Reset to Global: no rows */
@@ -14097,8 +14502,8 @@ static void form_boxes(App* app, GuiFormBoxes* f) {
     memset(f->left_lists, 0, sizeof f->left_lists);
     memset(f->right_lists, 0, sizeof f->right_lists);
     /* the list the keys move in follows its focus; the groups' the open one, which has the focus's look alone */
-    count = theme ? gui_editor_rows(&app->editor) : app->groups;
-    g = theme || app->form == GUI_FORM_SETTINGS ? app->editor.row : form_group(app);
+    count = theme ? gui_editor_rows(&app->editor) : app->groups + 1; /* Search, then the groups */
+    g = theme ? app->editor.row : list_row(app);
     f->left_lists[UI_FORM_LIST_ROWS].focus = g >= 0 ? (size_t)g : SIZE_MAX;
     if (g >= 0)
         list_follow(app, GUI_LIST_FORM_LIST, ui_form_list_follow, ui_form_list_row, f->left, UI_FORM_LIST_ROWS,
@@ -14275,13 +14680,15 @@ static bool form_row_info(App* app, const GuiEditor* e, size_t r, int labels, in
     for (i = 0; i < rows && !gutter && e->keys != app->folder_keys; ++i) gutter = form_icon(app, e, i) != GUI_ICON_NONE;
     info->icon = form_icon(app, e, (int)r);
     gutter = gutter && !info->icon;
-    form_line(app, e, (int)r, labels, form_room(app, width) - (gutter || info->icon ? 3 : 0), line + 3 * gutter,
-              sizeof app->row_text - 3, NULL);
+    form_line(app, e, (int)r, labels,
+              form_room(app, width) - (gutter || info->icon ? 3 : 0) - search_where_cols(app, e, (int)r),
+              line + 3 * gutter, sizeof app->row_text - 3, NULL);
     if (gutter) { /* the marker, then the icon's columns and the one after it */
         size_t n = strlen(app->theme.marker);
         memmove(line, line + 3, n);
         memset(line + n, ' ', 3);
     }
+    search_where_end(app, e, (int)r, line, sizeof app->row_text, form_room(app, width) - (info->icon ? 3 : 0));
     info->label = line + strlen(app->theme.marker); /* ui_draw_row puts the marker */
     if (form_row_off(app, e, (int)r))
         info->attr |= UI_ATTR_OFF;
@@ -14300,10 +14707,10 @@ static bool form_row_info(App* app, const GuiEditor* e, size_t r, int labels, in
 bool ui_form_list_rows_get_row_info(App* app, size_t row, int width, UiRowInfo* info) {
     if (app->form == GUI_FORM_THEME)
         return form_row_info(app, &app->editor, row, form_labels(&app->editor), width, info);
-    if (row >= (size_t)app->groups) return false;
-    info->label = snx_tr(app->group_keys[row].key);
-    info->icon = gui_group_icon(app->group_keys[row].key);
-    if (app->form != GUI_FORM_SETTINGS && (int)row == form_group(app)) info->attr = UI_ATTR_OPEN;
+    if (row > (size_t)app->groups) return false;
+    info->label = row ? snx_tr(app->group_keys[row - 1].key) : snx_tr("Search");
+    info->icon = row ? gui_group_icon(app->group_keys[row - 1].key) : GUI_ICON_EYE;
+    if (app->form != GUI_FORM_SETTINGS && (int)row == list_row(app)) info->attr = UI_ATTR_OPEN;
     return true;
 }
 /* FormSide's row: the open or the focused group's; Folders' groups each under its title, the last after them; none
@@ -14506,13 +14913,22 @@ static const char* const typed_choices[2] = {SNX_TR_NOOP("OK"), SNX_TR_NOOP("Can
 #define SAY_NICKNAME_TAKES SNX_TR_NOOP("A nickname, 1 to 32 bytes, no control character, no space at either end")
 /* what the row typed takes, in out: its key's, a nickname's on Settings > User */
 static void typed_takes(const App* app, char* out, size_t size) {
-    if (secret_open(app))
+    if (search_typing(app))
+        snprintf(out, size, "%s", snx_tr("Words of a setting's name, key, group, help or values"));
+    else if (secret_open(app))
         snprintf(out, size, "%s",
                  snx_tr("The room's password, 1 to 255 bytes, no control character, no space at either end"));
     else if (app->form == GUI_FORM_USERS && app->editor.row > 0 && !users_row_mii(app->editor.row))
         snprintf(out, size, "%s", snx_tr(SAY_NICKNAME_TAKES));
     else
         gui_editor_takes(&app->editor, out, size);
+}
+/* the dialog's title: the row's label, the search's Search */
+static void typed_title(const App* app, char* out, size_t size) {
+    if (search_typing(app))
+        snprintf(out, size, "%s", snx_tr("Search"));
+    else
+        gui_editor_label(&app->editor, app->editor.row, out, size);
 }
 /* the dialog's boxes: its choices' (box the whole dialog's), the field, what it takes and the editor's note */
 typedef struct {
@@ -14528,7 +14944,7 @@ static void typed_place(App* app, GuiTypedBoxes* b) {
     area(app, &width, &height);
     memset(b, 0, sizeof *b);
     c->of = GUI_CHOICES_TYPED;
-    gui_editor_label(&app->editor, app->editor.row, title, sizeof title);
+    typed_title(app, title, sizeof title);
     typed_takes(app, takes, sizeof takes);
     cols = SDL_max(SDL_max(gui_text_cols(title) + 2, gui_text_cols(takes)), GUI_TYPED_FIELD);
     for (; (text = choice_text(app, c->of, c->count, app->row_text, sizeof app->row_text)); ++c->count)
@@ -14561,7 +14977,7 @@ static void render_typed(App* app) {
     char title[256], takes[256], line[sizeof app->editor.text + 4];
     int cw = cell_w(app), room;
     typed_place(app, &b);
-    gui_editor_label(&app->editor, app->editor.row, title, sizeof title);
+    typed_title(app, title, sizeof title);
     over_box(app, b.c.box, title);
     outline(app, b.field, t->focus);
     if (secret_open(app)) { /* a star a letter, as long as the text */
@@ -14639,12 +15055,18 @@ static void draw_form(App* app) {
         wrap_in(app, gui_rect(p.x, y, p.w, f.place.side.y + f.place.side.h - y), p.x, y, line, 1, rgb(app->theme.soft));
     } else {
         int g = app->form == GUI_FORM_SETTINGS ? app->editor.row : app->group;
+        char title[160];
+        if (search_shown(app))
+            snprintf(title, sizeof title, snx_tr("Search: %s"), app->search_text);
+        else
+            snprintf(title, sizeof title, "%s",
+                     app->form == GUI_FORM_SETTINGS && app->search_row ? snx_tr("Search")
+                     : app->form == GUI_FORM_GROUP && app->page >= 0 ? snx_tr(screen_settings(app)->keys[app->page].key)
+                                                                     : snx_tr(app->group_keys[g].key));
         if (form_grouped(app)) /* its groups' titles are in its rows */
             grouped_frames(app, &f);
         else
-            pane(app, f.place.side,
-                 app->form == GUI_FORM_GROUP && app->page >= 0 ? snx_tr(screen_settings(app)->keys[app->page].key)
-                                                               : snx_tr(app->group_keys[g].key));
+            pane(app, f.place.side, title);
         ui_form_side_draw(app, f.right, app->scale, f.right_lists);
         form_sliders(app, &f);
         if (form_note(app)) { /* a half step under the text's letters, as form_boxes measured it */
@@ -14773,18 +15195,32 @@ static void form_row_pointer(App* app, int r) {
    from its row, as Enter there */
 void ui_form_list_rows_row_action_cb(App* app, size_t row, uint32_t hit) {
     int r = (int)row;
-    if (app->form == GUI_FORM_THEME || app->form == GUI_FORM_SETTINGS) {
+    if (app->form == GUI_FORM_THEME) {
         if (hit & UI_HIT_CLICK)
             form_row_pointer(app, r);
         else
             app->editor.row = r;
         return;
     }
+    if (app->form == GUI_FORM_SETTINGS) { /* Search, then the groups */
+        bool on = r ? !app->search_row && app->editor.row == r - 1 : app->search_row;
+        if ((hit & UI_HIT_CLICK) && on)
+            editor_key(app, GUI_SELECT);
+        else if (r) {
+            app->search_row = false;
+            app->editor.row = r - 1;
+        } else
+            app->search_row = true;
+        return;
+    }
     if (!(hit & UI_HIT_CLICK)) return;
     keep_settings(app);
     leave_editor(app);
-    settings_top(app, r);
-    open_group(app, r);
+    settings_top(app, SDL_max(r - 1, 0));
+    if (r)
+        open_group(app, r - 1);
+    else
+        search_open(app);
 }
 /* FormSide's row under the pointer: where the keys move in its rows, the focus on it as it goes over it and a click on
    the focused one selecting it; on the groups a click opens the focused group, on that row. A grouped screen's
@@ -14796,6 +15232,7 @@ void ui_form_side_rows_row_action_cb(App* app, size_t row, uint32_t hit) {
         if (app->form != GUI_FORM_SETTINGS) app->editor.row = r;
         return;
     }
+    if (app->form == GUI_FORM_SETTINGS && app->search_row) return;
     if (app->form == GUI_FORM_SETTINGS) {
         open_group(app, app->editor.row);
         app->editor.row = SDL_min(r, gui_editor_rows(&app->editor) - 1);
@@ -23244,6 +23681,9 @@ static const struct {
                  {SNX_TR_KEY("Save states"), SDLK_S, 0, false}, /* a finger's, on Games */
                  {SNX_TR_KEY("Ctrl+S"), SDLK_S, SDL_KMOD_CTRL, false},
                  {SNX_TR_KEY("Ctrl+V"), SDLK_V, SDL_KMOD_CTRL, false},
+                 {SNX_TR_KEY("Ctrl+F"), SDLK_F, SDL_KMOD_CTRL, false},
+                 {SNX_TR_KEY("G"), SDLK_G, 0, false},
+                 {SNX_TR_KEY("Its group"), SDLK_G, 0, false}, /* a finger's, on the search's rows */
                  {SNX_TR_KEY("F5"), SDLK_F5, 0, false},
                  {SNX_TR_KEY("F2"), SDLK_F2, 0, false},
                  {SNX_TR_KEY("F1"), SDLK_F1, 0, false},
@@ -23406,6 +23846,7 @@ static int list_at(const App* app, float x, float y) {
    the groups' list it back from a group's rows, as ESC does */
 static void list_take(App* app, int list) {
     if (!app->editing || app->editor.typing) return;
+    if (list == GUI_LIST_FORM_SIDE && app->form == GUI_FORM_SETTINGS && app->search_row) return;
     if (list == GUI_LIST_FORM_SIDE && app->form == GUI_FORM_SETTINGS) {
         open_group(app, app->editor.row);
         app->firsts[list] = 0; /* the group's rows from their first */
