@@ -866,6 +866,60 @@ static void test_invalidate_in_flight(void) {
 }
 
 /* added images in different 16 MiB chunks: the page map finds each, and removing one leaves the other's pages */
+#if !defined(_WIN32)
+static void* image_remover(void* base) {
+    snx_jit_remove_image(service, (SnxU64)(size_t)base);
+    return NULL;
+}
+/* an image added while the removal of another waits for the batch that holds it takes a free region, not the one being
+   removed, whose tables the removal frees once the batch lets go of it */
+static void test_added_beside_removal(void) {
+    static const u32 one[] = {0x91000400, 0xD65F03C0};   /* add x0, x0, #1; ret */
+    static const u32 eight[] = {0x91002000, 0xD65F03C0}; /* add x0, x0, #8; ret */
+    const SnxU64 leaving = 0x2300000, joining = 0x2400000;
+    SnxCodeImage image = {0};
+    pthread_t remover;
+    GuestFn f;
+    CPU c;
+    int started, spins;
+    service = start(1, 1);
+    if (!service) {
+        ++failures;
+        return;
+    }
+    put(NRO, one, 2);
+    put(NRO + 0x100, eight, 2);
+    image.image = memory + NRO;
+    image.image_size = 8;
+    image.base = leaving;
+    image.text_size = 8;
+    CHECK(snx_jit_add_image(service, &image) == 0);
+    in_flight_hold(leaving);
+    CHECK(snx_jit_resolve(service, leaving) == NULL);
+    CHECK(in_flight_wait(&in_flight.begun));
+    started = pthread_create(&remover, NULL, image_remover, (void*)(size_t)leaving) == 0;
+    CHECK(started);
+    for (spins = 0; started && snx_jit_covers(service, leaving) && spins < 60000; ++spins)
+        nanosleep(&(struct timespec){0, 1000000}, NULL);
+    CHECK(!snx_jit_covers(service, leaving)); /* the removal waits for the batch */
+    image.image = memory + NRO + 0x100;
+    image.base = joining;
+    CHECK(snx_jit_add_image(service, &image) == 0);
+    in_flight_release();
+    CHECK(in_flight_wait(&in_flight.ended));
+    if (started) pthread_join(remover, NULL);
+    f = snx_jit_wait(service, joining);
+    CHECK(f != NULL);
+    if (f) {
+        cpu_init(&c, 0xF000);
+        f(&c, joining);
+        CHECK(c.x[0] == 8 && c.pc == RETURN);
+    }
+    snx_jit_drain(service);
+    snx_jit_service_free(service);
+}
+#endif
+
 static void test_image_map(void) {
     static const u32 far_words[] = {0x91000400, 0xD65F03C0}; /* add x0, x0, #1; ret */
     SnxCodeImage image;
@@ -1237,6 +1291,9 @@ int main(int argc, char** argv) {
     test_invalidate_middle();
     test_invalidated_callee();
     test_invalidate_in_flight();
+#if !defined(_WIN32)
+    test_added_beside_removal();
+#endif
     test_image_map();
     test_region_limit(0);
     test_waited_priority();
