@@ -728,6 +728,49 @@ static void stale_far(const SnxCodegen* codegen) {
 }
 #endif
 
+/* two JIT units of the same functions load beside each other: a unit's functions are its own, its table its one global */
+static SnxU64 any_symbol(void* user, const char* name) {
+    (void)user, (void)name;
+    return (SnxU64)(uintptr_t)&g_test;
+}
+static void two_units(SnxCodegen* codegen) {
+    static const char* const tables[2] = {"UNIT_A_TABLE", "UNIT_B_TABLE"};
+    char error[512] = "";
+    SnxCodeLoader* loader =
+#if defined(SNX_TEST_ARM64WIN)
+        snx_code_loader_new_machine((size_t)16 << 20, SNX_CODE_COFF_ARM64, error, sizeof error);
+#else
+        snx_code_loader_new_machine((size_t)16 << 20, SNX_CODE_COFF_X64, error, sizeof error);
+#endif
+    unsigned char* made = (unsigned char*)calloc(codegen->function_count + 1, 1);
+    SnxU64 at = 0, got[2] = {0};
+    if (!loader || !made) {
+        failed("no loader for two units", 0);
+    } else {
+        snx_code_set_resolver(loader, any_symbol, NULL);
+        for (int k = 0; k < 2; ++k) {
+            SnxNativeOptions options = {.jit = 1, .table_name = tables[k]};
+            unsigned char* object = NULL;
+            size_t size = 0;
+            SnxLinkInput input = {NULL, 0, "unit"};
+            if (make_object(codegen, &options, made, &object, &size, error, sizeof error) < 0 || !object)
+                failed("no object of a unit", 0);
+            else {
+                input.data = object;
+                input.size = size;
+                if (snx_code_load(loader, &input, 1, &tables[k], 1, &at, error, sizeof error))
+                    failed("the second unit of the same functions", 0), fprintf(stderr, "%s\n", error);
+                else
+                    got[k] = at;
+            }
+            free(object);
+        }
+        if (!got[0] || !got[1] || got[0] == got[1]) failed("two units' tables", 0);
+    }
+    free(made);
+    snx_code_loader_free(loader);
+}
+
 int main(void) {
     static const unsigned functions[] = {F_LEAF,    F_CALLS, F_PINNED, F_UNDEF,  F_POLL, F_JUMP,
                                          F_FLUSHED, F_FAR,   F_MISS,   F_DIRECT, F_BIG};
@@ -929,6 +972,7 @@ int main(void) {
 #if defined(SNX_TEST_ARM64WIN) && !defined(_WIN32)
     stale_far(&codegen);
 #endif
+    two_units(&codegen);
     if (bad) ++g_test.failures;
 #if !defined(SNX_TEST_ARM64WIN)
     {
