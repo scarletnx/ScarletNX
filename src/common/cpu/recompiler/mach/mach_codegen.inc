@@ -86,6 +86,12 @@ typedef struct {
     SnxU32 vpin_wr;       /* the same of the V registers */
     SnxU64 pin_sel;       /* the pins a load of them reloads (the prologue's: those live where the function starts) */
     SnxU32 vpin_sel;
+    SnxU64* dsync;        /* each instruction's X registers a store of the pins there stores: those it may write and
+                             those an instruction before it may have, with no call (which syncs them) between */
+    SnxU32* vdsync;
+    size_t cap_dsync, cap_vdsync;
+    SnxU64 cur_dirty;     /* the pins a store of them stores now: the instruction's dsync, 0 past a call */
+    SnxU32 vcur_dirty;
     size_t index; /* the function's in the codegen: its snx_stale byte */
     size_t at;    /* the index of the function's instruction being made, its count past them */
     int far;      /* the function's jumps are the machine's longest (MG_FAR_JUMPS): its short ones did not reach */
@@ -101,6 +107,8 @@ typedef struct {
                      (poll_slow) */
         SnxU64 target;
         SnxU64 address;
+        SnxU64 dirty; /* cur_dirty where it was made */
+        SnxU32 vdirty;
     } * stubs;
 } Unit;
 
@@ -196,9 +204,18 @@ static int lane_put(SgCtx* g, unsigned size, int a, int i, SgD v);
 static int vdup(SgCtx* g, unsigned size, int a, int e);
 
 static void pins(Unit* u, int store) { pins_of(u, &u->b, store, 0); }
-static void pins_flush(void* machine) { pins_of((Unit*)machine, ((Unit*)machine)->a.b, 1, 0); }
+/* the region's own stores of the pins (UNDEF's flush, the spill and reload around a helper's call) are assembled
+   with the region, or with the cold paths at the function's end, not where cur_dirty is theirs: every pin written */
+static void pins_all(Unit* u, SgXBuf* b, int store, int caller) {
+    SnxU64 d = u->cur_dirty, sel = u->pin_sel;
+    SnxU32 vd = u->vcur_dirty, vsel = u->vpin_sel;
+    u->cur_dirty = u->pin_sel = ~(SnxU64)0, u->vcur_dirty = u->vpin_sel = ~0u;
+    pins_of(u, b, store, caller);
+    u->cur_dirty = d, u->vcur_dirty = vd, u->pin_sel = sel, u->vpin_sel = vsel;
+}
+static void pins_flush(void* machine) { pins_all((Unit*)machine, ((Unit*)machine)->a.b, 1, 0); }
 /* the region assembler's: into the buffer it writes (the cold one on a cold path) */
-static void pins_cs(void* machine, int store) { pins_of((Unit*)machine, ((Unit*)machine)->a.b, store, 1); }
+static void pins_cs(void* machine, int store) { pins_all((Unit*)machine, ((Unit*)machine)->a.b, store, 1); }
 
 /* a function's symbol */
 static void fname(char* out, size_t size, const char* prefix, SnxU64 address) {
@@ -243,6 +260,8 @@ static int add_stub(Unit* u, int kind, SnxU64 target, SnxU64 address) {
     u->stubs[u->nstubs].kind = kind;
     u->stubs[u->nstubs].target = target;
     u->stubs[u->nstubs].address = address;
+    u->stubs[u->nstubs].dirty = u->cur_dirty;
+    u->stubs[u->nstubs].vdirty = u->vcur_dirty;
     return u->stubs[u->nstubs++].label;
 }
 
@@ -1302,6 +1321,18 @@ static void no_code(Unit* u, const char* why) {
               snx_a64_target_text(u->codegen->features), becomes);
 }
 
+/* a call's reload of the pins: those live where it returns (the next instruction); and past it, until the next
+   instruction, every pin in sync with the state (stored before it, loaded after) or dead */
+static void call_masks(Unit* u, size_t i) {
+    const SnxFunction* f = u->f;
+    if (u->pinned && u->live && i + 1 < f->count && snx_function_address(f, i + 1) == snx_function_address(f, i) + 4)
+        u->pin_sel = u->live[i + 1], u->vpin_sel = u->vlive ? u->vlive[i + 1] : ~0u;
+}
+static void after_call(Unit* u) {
+    u->pin_sel = ~(SnxU64)0, u->vpin_sel = ~0u;
+    u->cur_dirty = 0, u->vcur_dirty = 0;
+}
+
 static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
     SgCtx* g = u->g;
     SgX* x = &g->x;
@@ -1452,13 +1483,17 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
         target = snx_a64_branch_target(&insn, address);
         sg_GPR_write(g, 30, sgx_const(64, next));
         flush(u);
+        call_masks(u, index);
         if (!call_or_stub(u, target, 0)) return 0;
+        after_call(u);
         check_return(u, next);
         break;
     case SNX_A64_FLOW_BLR:
         if (!sg_decode(g) || x->unmade || !g->branched) return 0; /* it writes the link register */
         machine_target(u, SGX_FN_CALLDYN, g->target);
+        call_masks(u, index);
         flush(u);
+        after_call(u);
         check_return(u, next);
         break;
     case SNX_A64_FLOW_BR: {
@@ -1856,6 +1891,43 @@ static SnxU64 may_write(const SnxA64Insn* insn, SnxU32 w, SnxU32* v) {
     return def | live_r(rd); /* the SP as a destination; a SIMD&FP transfer's or conversion's register */
 }
 
+/* each instruction's dsync, from its own writes (u->dsync on entry) and what reaches it by succ: forward passes
+   until nothing changes. A call or an SVC (sk 1) leaves nothing to store, the pins synced around it; a BR to the
+   dispatch block (sk 2) reaches every leader. All stored where there is no fixed point */
+static void pin_dirt(Unit* u, const SnxFunction* f, const int* succ, const unsigned char* sk) {
+    size_t n = f->count, i;
+    SnxU64 *in = (SnxU64*)calloc(n, sizeof *in), br = 0;
+    SnxU32 *vin = (SnxU32*)calloc(n, sizeof *vin), vbr = 0;
+    int changed = 1, passes = 0;
+    if (in && vin)
+        do {
+            SnxU64 nbr = 0;
+            SnxU32 nvbr = 0;
+            changed = 0;
+            for (i = 0; i < n; ++i) {
+                SnxU64 out;
+                SnxU32 vout;
+                int k;
+                if (f->leaders[i] && ((in[i] | br) != in[i] || (vin[i] | vbr) != vin[i]))
+                    in[i] |= br, vin[i] |= vbr, changed = 1;
+                out = sk[i] == 1 ? 0 : in[i] | u->dsync[i];
+                vout = sk[i] == 1 ? 0 : vin[i] | u->vdsync[i];
+                if (sk[i] == 2) nbr |= out, nvbr |= vout;
+                for (k = 0; k < 2; ++k) {
+                    int s = succ[2 * i + k];
+                    if (s >= 0 && ((in[s] | out) != in[s] || (vin[s] | vout) != vin[s]))
+                        in[s] |= out, vin[s] |= vout, changed = 1;
+                }
+            }
+            if (nbr != br || nvbr != vbr) br |= nbr, vbr |= nvbr, changed = 1;
+        } while (changed && ++passes < 64);
+    for (i = 0; i < n; ++i)
+        if (changed) u->dsync[i] = ~(SnxU64)0, u->vdsync[i] = ~0u;
+        else
+            u->dsync[i] |= in[i], u->vdsync[i] |= vin[i];
+    free(in), free(vin);
+}
+
 /* the guest registers the function keeps in host registers (the machine's mg_pin_hosts: callee-saved ones first, no
    call changes them) for its whole run, written to the state where something else may read it (a call, SVC, BRK, UNDEF, a poll, the
    exits) and read back after: the most used, a register field of an instruction counting 1, 8 inside a loop
@@ -1865,7 +1937,7 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
     SnxU64 weight[33], vweight[32]; /* weight[32]: the guest memory's base */
     unsigned k, best, nhosts;
     int fixed = 0; /* an exclusive, an atomic or CRC32: the last pins' registers may be their machine instructions' */
-    unsigned char* loop;
+    unsigned char *loop, *sk;
     int* succ;
     size_t i, backs = 0;
     memset(u->pin, -1, sizeof u->pin);
@@ -1880,9 +1952,12 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
     u->a.reserved = 0;
     u->a.xreserved = MG_XRESERVED;
     memset(vweight, 0, sizeof vweight);
-    loop = (unsigned char*)calloc(f->count + 1, 1);
+    loop = (unsigned char*)calloc(2 * (f->count + 1), 1);
+    sk = loop + f->count + 1; /* each instruction's kind for pin_dirt */
     succ = (int*)malloc(2 * f->count * sizeof *succ);
-    if (!loop || !succ) {
+    u->dsync = (SnxU64*)grow(u->dsync, &u->cap_dsync, f->count, sizeof *u->dsync);
+    u->vdsync = (SnxU32*)grow(u->vdsync, &u->cap_vdsync, f->count, sizeof *u->vdsync);
+    if (!loop || !succ || !u->dsync || !u->vdsync) {
         free(loop), free(succ);
         return;
     }
@@ -1907,6 +1982,11 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
             if (insn.flow == SNX_A64_FLOW_BL) xw |= live_r(16) | live_r(17); /* a bound PLT stub's in its place */
             u->pin_wr |= xw;
             u->vpin_wr |= vw;
+            u->dsync[i] = xw;
+            u->vdsync[i] = vw;
+            sk[i] = insn.flow == SNX_A64_FLOW_BL || insn.flow == SNX_A64_FLOW_BLR || insn.flow == SNX_A64_FLOW_SVC
+                        ? 1
+                        : insn.flow == SNX_A64_FLOW_BR ? 2 : 0;
         }
         falls = insn.flow != SNX_A64_FLOW_B && insn.flow != SNX_A64_FLOW_BR && insn.flow != SNX_A64_FLOW_RET &&
                 insn.flow != SNX_A64_FLOW_UNDEF && insn.flow != SNX_A64_FLOW_BRK;
@@ -1987,7 +2067,6 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
         }
         free(first), free(pred), free(stack), free(seen);
     }
-    free(succ);
     /* what a pin saves is the load where a block (from one label to the next) reads a register before it writes it,
        and the store where it writes it: each counted once a block, 8 times a loop's level */
     {
@@ -2030,7 +2109,6 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
             }
         }
     }
-    free(loop);
     nhosts = fixed ? MG_NPINS_FIXED : MG_NPINS;
     for (k = 0; k < nhosts; ++k) {
         unsigned r;
@@ -2057,6 +2135,8 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
         u->a.xreserved |= 1u << MG_VPIN(k);
         u->pinned = 1;
     }
+    if (u->pinned) pin_dirt(u, f, succ, sk);
+    free(succ), free(loop); /* sk's too */
 }
 
 /* the function's code, or 0 (the unit as it was) where an instruction isn't this back end's */
@@ -2107,6 +2187,7 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
         u->pin_sel = u->live[0];
         u->vpin_sel = u->vlive ? u->vlive[0] : ~0u;
     }
+    u->cur_dirty = ~(SnxU64)0, u->vcur_dirty = ~0u;
     prologue(u);
     pin_rest = ~u->pin_sel, vpin_rest = ~u->vpin_sel;
     u->pin_sel = ~(SnxU64)0, u->vpin_sel = ~0u; /* every other load of the pins: all of them */
@@ -2128,6 +2209,7 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
             }
             (void)snx_codegen_word((SnxCodegen*)u->codegen, address, &word);
             u->at = vi;
+            if (u->pinned) u->cur_dirty = u->dsync[vi], u->vcur_dirty = u->vdsync[vi];
             if (!instruction(u, vi, address, word)) {
                 ok = 0;
                 goto out;
@@ -2140,6 +2222,7 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
     /* mismatch: { c->pc = e; goto D; } or { CALLDYN(e); return; }; D: the poll, then switch (c->pc) over the
        leaders, else CALLDYN(c->pc) */
     bind(u, u->mismatch_label);
+    u->cur_dirty = ~(SnxU64)0, u->vcur_dirty = ~0u; /* the dispatch block's: a BR's way in too */
     if (pin_rest || vpin_rest) {
         u->pin_sel = pin_rest, u->vpin_sel = vpin_rest;
         pins(u, 0);
@@ -2149,6 +2232,7 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
     for (i = 0; i < (size_t)u->nstubs; ++i) {
         struct Stub s = u->stubs[i];
         bind(u, s.label);
+        u->cur_dirty = s.dirty, u->vcur_dirty = s.vdirty;
         if (s.kind == 1) {
             poll_then(u, s.target);
             jmp(u, (int)index_of(f, s.target));
@@ -2550,7 +2634,7 @@ static int mach_object(SnxCodegen* codegen, size_t first, size_t last, const Snx
     for (i = 0; i < u.nsyms; ++i) free(u.syms[i].name);
     free(u.relocs), free(u.syms), free(u.fixups), free(u.label_at), free(u.frame_at), free(u.stubs), free(u.b.p);
     free(u.none);
-    free(u.live_buf), free(u.exits_buf), free(u.vlive_buf);
+    free(u.live_buf), free(u.exits_buf), free(u.vlive_buf), free(u.dsync), free(u.vdsync);
     free(u.a.cold.p), free(u.a.pool), free(u.a.rips), free(u.a.cjumps), free(u.a.ccalls);
     free(u.g);
     if (options->jit && !count) memset(made, 0, last - first);
