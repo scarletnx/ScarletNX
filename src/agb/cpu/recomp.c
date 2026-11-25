@@ -45,13 +45,6 @@ void agb_recomp_free(AgbRecomp* recomp) {
 
 static char* block_name(size_t index) { return snx_format("snx_agb_%zu", index); }
 
-/* FNV-1a (snx_fnv1a) tells one ROM, or one block's code, from another */
-static uint64_t rom_hash(const AgbBoard* board) {
-    return board->has_cartridge    ? snx_fnv1a(SNX_FNV_BASIS, board->cartridge.data, board->cartridge.size)
-           : board->multiboot_size ? board->multiboot_hash
-                                   : SNX_FNV_BASIS;
-}
-
 /* The BIOS and the cartridge windows hold the same code for the whole run; the game writes over the rest */
 static int fixed(uint32_t pc) {
     uint32_t region = pc >> 24 & 0x0F;
@@ -419,7 +412,8 @@ static int write_cache(AgbRecomp* recomp, const AgbBoard* board) {
     FILE* file = fopen(map_path, "w");
     free(map_path);
     if (!file) return -1;
-    fprintf(file, "snx-agb-code %d %u %016llX\n", AGB_RECOMP_ABI, (unsigned)SNX_ARM_ABI, (unsigned long long)rom_hash(board));
+    fprintf(file, "snx-agb-code %d %u %016llX\n", AGB_RECOMP_ABI, (unsigned)SNX_ARM_ABI,
+            (unsigned long long)agb_board_hash(board));
     for (size_t i = 1; i <= recomp->count; ++i) {
         const AgbBlock* block = &recomp->blocks[i];
         fprintf(file, "%08X %u %u %016llX ", block->pc, block->thumb, block->instructions,
@@ -464,7 +458,7 @@ int agb_recomp_load_map_from(AgbRecomp* recomp, AgbBoard* board, const char* pat
         fclose(file);
         return -1;
     }
-    unsigned long long here = (unsigned long long)rom_hash(board);
+    unsigned long long here = (unsigned long long)agb_board_hash(board);
     if (sscanf(line, "snx-agb-code %*d %*u %llX", &rom) != 1 || rom != here) {
         snprintf(error, error_size, "%s is another ROM's (%016llX, this one %016llX)", map_path, rom, here);
         fclose(file);
