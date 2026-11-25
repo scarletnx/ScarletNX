@@ -50,6 +50,16 @@ int plat_vm_read(const void* p, void* dst, u64 size) {
     return -1;
 }
 int mem_pool_offset(u64 a, u64* off) { *off = a; return 0; }
+/* no GPU buffer's pages lie in this fixture's memory (mem_migrate's views): a watch in place finds none */
+int mem_ext_runs(u64 a, u64 size, MemPoolRun* runs, u32 max, u32* n) {
+    (void)a, (void)size, (void)runs, (void)max;
+    *n = 0;
+    return -1;
+}
+int mem_ext_read(u64 a, void* dst, u64 size) {
+    (void)a, (void)dst, (void)size;
+    return -1;
+}
 int mem_own_prepare(u64 a, u64 size, MemPoolRun* runs, u32 max, u32* n) {
     CHECK(max > 0);
     runs[0] = (MemPoolRun){a, size, a};
