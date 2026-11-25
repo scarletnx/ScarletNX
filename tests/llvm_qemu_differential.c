@@ -73,6 +73,7 @@
 #define CODE_SIZE   (2 * SNX_QREF_PAGE)
 #define SEED        0x5EEDull
 #define DIRECTED    51u  /* words directed() makes per round */
+#define SCALAR      16u  /* and scalar_words() */
 #define BATCH       8192 /* QEMU cases per run of the runner */
 #define EXAMPLES    3    /* kept per group */
 #define SIGBUS_A64  7u   /* QEMU's alignment fault: SIGBUS, as Linux on AArch64 numbers it */
@@ -422,6 +423,39 @@ static size_t directed(size_t rounds, u32* out) {
         got += DIRECTED;
     }
     return got;
+}
+
+/* scalar_words(): the integer words with immediates and shifts, which the rows' samples, the ends of their free bits,
+   never have in between */
+static size_t scalar_words(size_t rounds, u32* out) {
+    size_t i;
+    for (i = 0; i < rounds; ++i) {
+        u32* w = out + i * SCALAR;
+        const u32 r = (u32)next_random(), k = (u32)next_random(), imm16 = (u32)next_random() & 0xFFFF;
+        const u32 s = r & 0x80000000u, wide = s ? 63 : 31, rd = r & 31, rn = (r >> 5) & 31, rm = (r >> 10) & 31,
+                  ra = (r >> 15) & 31, immr = k & wide, imms = (k >> 6) & wide, n = s ? 1u << 22 : 0;
+        const u32 regs = rm << 16 | rn << 5 | rd, two = (k >> 12) & 3, op2 = (k >> 14) & 3, bit = (k >> 16) & 1,
+                  amount = ((k >> 17) & wide) << 10, cond = ((k >> 23) & 15) << 12;
+        const u32 below = immr ? (k >> 6) % immr : 0, opc = (k >> 28) % 3 << 29;
+        w[0] = 0x13000000u | s | opc | n | immr << 16 | imms << 10 | rn << 5 | rd;          /* SBFM, BFM, UBFM */
+        w[1] = 0x53000000u | s | n | immr << 16 | ((immr - 1) & wide) << 10 | rn << 5 | rd; /* LSL */
+        w[2] = 0x13000000u | s | (k >> 28 & 1) << 30 | n | immr << 16 | below << 10 | rn << 5 | rd; /* SBFIZ, UBFIZ */
+        w[3] = 0x13800000u | s | n | imms << 10 | regs;                                             /* EXTR */
+        w[4] = 0x12000000u | s | two << 29 | n | immr << 16 | imms << 10 | rn << 5 | rd;       /* AND (immediate)... */
+        w[5] = 0x11000000u | s | two << 29 | bit << 22 | (k & 0xFFF) << 10 | rn << 5 | rd;     /* ADD (immediate)... */
+        w[6] = 0x0B000000u | s | two << 29 | op2 << 22 | amount | regs;                        /* ADD (shifted)... */
+        w[7] = 0x0B200000u | s | two << 29 | (k >> 17 & 7) << 13 | (k >> 20) % 5 << 10 | regs; /* ADD (extended)... */
+        w[8] = 0x0A000000u | s | two << 29 | op2 << 22 | bit << 21 | amount | regs;            /* AND (shifted)... */
+        w[9] = 0x12800000u | s | two << 29 | (k >> 14 & 3) << 21 | imm16 << 5 | rd;            /* MOVN, MOVZ, MOVK */
+        w[10] =
+            0x3A400000u | s | bit << 30 | cond | (k >> 27 & 1) << 11 | rm << 16 | rn << 5 | (k & 15); /* CCMN, CCMP */
+        w[11] = 0x1A800000u | s | bit << 30 | cond | (k >> 27 & 1) << 10 | regs;                      /* CSEL... */
+        w[12] = 0x1B000000u | s | (k >> 27 & 1) << 15 | ra << 10 | regs;                              /* MADD, MSUB */
+        w[13] = 0x1AC02000u | s | op2 << 10 | regs;                   /* LSLV, LSRV, ASRV, RORV */
+        w[14] = 0x5AC00000u | s | (k >> 14) % 6 << 10 | rn << 5 | rd; /* RBIT to CLS */
+        w[15] = 0x1AC00800u | s | bit << 10 | regs;                   /* UDIV, SDIV */
+    }
+    return rounds * SCALAR;
 }
 
 /* the words the other instruction tests hand-check against expected values (llvm_module's program, native_codegen's
@@ -1270,8 +1304,9 @@ int main(int argc, char** argv) {
     } else {
         /* the words */
         nwords = lqd_row_words((unsigned)samples, next_random, &words);
-        words = (u32*)snx_realloc(words, (nwords + DIRECTED * rounds + KEPT) * sizeof(*words));
+        words = (u32*)snx_realloc(words, (nwords + (DIRECTED + SCALAR) * rounds + KEPT) * sizeof(*words));
         nwords += directed(rounds, words + nwords);
+        nwords += scalar_words(rounds, words + nwords);
         memcpy(words + nwords, kept, sizeof(kept));
         nwords += KEPT;
         items = (Item*)snx_alloc((2 * nwords) * sizeof(*items));
