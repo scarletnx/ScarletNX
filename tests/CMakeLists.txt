@@ -2903,6 +2903,10 @@ add_test(NAME deps_cache COMMAND "${CMAKE_COMMAND}" "-DCC=${CMAKE_C_COMPILER}" "
 add_test(NAME cpmutil_options COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
          "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/cpmutil-options-test" -P
          "${CMAKE_CURRENT_SOURCE_DIR}/cpmutil_options_test.cmake")
+# the configure stops where the x86-64 back end can't be made (cmake/sdm.cmake)
+add_test(NAME sdm_configure COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
+         "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/sdm-configure-test" -P
+         "${CMAKE_CURRENT_SOURCE_DIR}/sdm_configure_test.cmake")
 # where spirv-opt, spirv-val and spirv-dis come from (cmake/spirv_tools.cmake): the fake tools are shell scripts
 if(NOT CMAKE_HOST_WIN32)
     add_test(NAME spirv_tools COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}" "-DCC=${CMAKE_C_COMPILER}"

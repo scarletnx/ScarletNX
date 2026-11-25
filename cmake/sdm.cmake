@@ -5,13 +5,14 @@
 # the PDF, cut into its instruction pages by sailgen --sdm with the errata's overrides (tools/sailgen/sdm/), then
 # sailgen --isel matches the back end's primitives (tools/sailgen/x64.ops) with the pages' pseudocode. The manual is not
 # kept in the tree: pass its PDF with -DSNX_SDM_PDF=, or it is downloaded once into the CPM cache (cpmfile.json's
-# intel-sdm-vol2); either way its SHA-256 must be 093US's, so every build derives from the same text. Off unless SNX_SAIL_X64 is set
+# intel-sdm-vol2); either way its SHA-256 must be 093US's, so every build derives from the same text
 include_guard(GLOBAL)
 include("${CMAKE_CURRENT_LIST_DIR}/sailgen.cmake")
 
-# on by default where the back end runs (x86-64, not Windows: its objects are COFF); without the manual or pdftotext
-# it is left off, with a warning, and LLVM makes every function
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$" AND NOT WIN32)
+# on by default where the back end runs: x86-64, but Windows (its objects are COFF) and Android (its APKs have been
+# made without it). Without the manual or pdftotext the configure stops: SNX_SAIL_X64=OFF is how a build goes without
+# the back end, and LLVM makes every function
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$" AND NOT WIN32 AND NOT ANDROID)
     set(snx_sail_x64_default ON)
 else()
     set(snx_sail_x64_default OFF)
@@ -22,7 +23,7 @@ set(SNX_SDM_PDF "" CACHE FILEPATH "Intel SDM Vol. 2 PDF, order no. 325383-093US 
 set(snx_sdm_sha256 d137a7887787bbb06c1a8b8bafd51958d8d2e16b4dff987a03226c845cca1516)
 
 # the manual and pdftotext, found once: where either is missing (no PDF given and no download, a revision other than
-# 093US, no pdftotext) the x86-64 back end is left out with a warning, and LLVM makes every function
+# 093US, no pdftotext) the configure stops and says which
 set(SNX_X64 OFF CACHE INTERNAL "the x86-64 back end is built (SNX_SAIL_X64 and the manual found)")
 if(SNX_SAIL_X64)
     set(snx_sdm_why "")
@@ -36,20 +37,20 @@ if(SNX_SAIL_X64)
     if(NOT snx_sdm_why)
         file(SHA256 "${pdf}" got)
         if(NOT got STREQUAL snx_sdm_sha256)
-            set(snx_sdm_why "${pdf} isn't revision 325383-093US (Intel's link serves the latest): pass the 093US PDF "
-                            "with -DSNX_SDM_PDF=")
+            string(CONCAT snx_sdm_why "${pdf} isn't revision 325383-093US of the Intel SDM (its SHA-256 is ${got}; "
+                                      "Intel's link serves the latest): pass the 093US PDF with -DSNX_SDM_PDF=")
         endif()
     endif()
     find_program(SNX_PDFTOTEXT pdftotext)
     if(NOT snx_sdm_why AND NOT SNX_PDFTOTEXT)
-        set(snx_sdm_why "pdftotext (poppler) is missing")
+        set(snx_sdm_why "pdftotext (poppler's) is missing: install it (docs/dev/build.md)")
     endif()
     if(snx_sdm_why)
-        message(WARNING "The x86-64 back end is left out, LLVM makes every function: the Intel SDM's ${snx_sdm_why}")
-    else()
-        set(SNX_X64 ON CACHE INTERNAL "the x86-64 back end is built (SNX_SAIL_X64 and the manual found)")
-        set(SNX_SDM_PDF_FOUND "${pdf}" CACHE INTERNAL "the Intel SDM's PDF the build derives from")
+        message(FATAL_ERROR "The x86-64 back end (SNX_SAIL_X64=ON) can't be made: ${snx_sdm_why}. "
+                            "-DSNX_SAIL_X64=OFF builds without it, and LLVM makes every function")
     endif()
+    set(SNX_X64 ON CACHE INTERNAL "the x86-64 back end is built (SNX_SAIL_X64 and the manual found)")
+    set(SNX_SDM_PDF_FOUND "${pdf}" CACHE INTERNAL "the Intel SDM's PDF the build derives from")
 endif()
 
 # snx_sdm_isel(<target>): generates x64_isel.inc (the encoders of the selected forms and each primitive's candidates)
