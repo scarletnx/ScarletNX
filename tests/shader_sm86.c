@@ -1010,6 +1010,40 @@ static void test_buffer_images(const char* dir) {
     free(spv);
 }
 
+/* S2R SR_THREAD_KILL (0x13) in a fragment program: all ones in a helper lane and 0 in another, which is OpIsHelper-
+   InvocationEXT (5381) and a select; outside a fragment program it is refused */
+static void test_thread_kill(const char* dir) {
+    for (u32 stage = 0; stage < 2; stage++) {
+        u8 code[16 * 4] = {0};
+        u32 n = 0, fsph[32] = {0}, helper = 0;
+        Word x = fix(0x919); /* S2R R0, SR_THREAD_KILL */
+        set(&x, 72, 8, 0x13);
+        put(code, n++, x);
+        put(code, n++, exit_insn());
+        put(code, n, bra(n, n, 7, 0));
+        n++;
+        fsph[0] = sph0(2, 5);
+        fsph[18] = 0xf;
+        ShaderInfo si = {0};
+        size_t count = 0;
+        u32* spv = sm86_to_spirv(code, n * 16, stage ? ST_CS : ST_FS, stage ? NULL : fsph, &si, &count);
+        if (stage) {
+            CHECK(!spv && strstr(si.first_unsupported, "0x13 outside a fragment program"));
+            if (spv) free(spv);
+            continue;
+        }
+        CHECK(spv != NULL);
+        if (!spv) {
+            fprintf(stderr, "thread kill: %s\n", si.first_unsupported);
+            continue;
+        }
+        for (u32 i = 5; i + 2 < count; i += spv[i] >> 16 ? spv[i] >> 16 : 1) helper += (spv[i] & 0xffff) == 5381;
+        CHECK(helper == 1);
+        CHECK(keep_module(dir, "fs_thread_kill", spv, count));
+        free(spv);
+    }
+}
+
 /* A fragment program's KILL says so in has_discard, which the renderer reads before it tests depth ahead of the
    program; one without a KILL leaves it 0 */
 static void test_kill_discard(void) {
@@ -8018,6 +8052,7 @@ int main(int argc, char** argv) {
     test_compute_forms(dir);
     test_image_kinds(dir);
     test_buffer_images(dir);
+    test_thread_kill(dir);
     test_kill_discard();
     test_root_tables(dir);
     test_texel_offsets(dir);
