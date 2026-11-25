@@ -220,6 +220,11 @@ static SgD lane_get(SgCtx* g, unsigned size, int a, int i);
 static int lane_put(SgCtx* g, unsigned size, int a, int i, SgD v);
 static int vdup(SgCtx* g, unsigned size, int a, int e);
 
+/* whether CRC32 word w takes the machine's fixed registers (the last pins'); every one does where the machine says
+   nothing (MG_CRC_FIXED) */
+#ifndef MG_CRC_FIXED
+#define MG_CRC_FIXED(u, w) 1
+#endif
 /* the bits of v (a W's or an X's) in the other order: the machine's, where it has better (MG_RBIT) */
 #ifdef MG_RBIT
 static SgD MG_RBIT(Unit* u, SgD v);
@@ -2228,7 +2233,7 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
             wt = 1ull << (3 * loop[i]);
             if ((w >> 25 & 5) == 4 && !memseen) weight[32] += wt, memseen = 1; /* the block's first access */
             if ((w >> 24 & 0x3F) == 0x08 || ((w >> 24 & 0x3F) == 0x38 && (w >> 21 & 1) && !(w >> 10 & 3)) ||
-                (w & 0x7FE0E000) == 0x1AC04000)
+                ((w & 0x7FE0E000) == 0x1AC04000 && MG_CRC_FIXED(u, w)))
                 fixed = 1;
             /* the V registers: SIMD and FP data processing reads Rn, Rm (Ra of the 3-source group) and Rd (an
                accumulation's), and writes Rd; a SIMD&FP load writes Rt (and a pair's Rt2), a store reads them */

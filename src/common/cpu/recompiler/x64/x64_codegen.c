@@ -87,6 +87,8 @@ static const signed char g_pin_hosts[2][7] = {{5, 12, 13, 14, 15, 11, 10}, {5, 1
 #define MG_BOUND 1
 #define MG_QC 1
 #define MG_RBIT mg_rbit
+/* CRC32 of a word or a doubleword is PCLMULQDQ's (sg_crc32), in no fixed register */
+#define MG_CRC_FIXED(u, w) ((w) >> 12 & 1 || ((w) >> 10 & 3) < 2 || !((u)->g->x.features & SGX_F_PCLMUL))
 #define MG_COFF win64
 #define MG_POLL_INLINE 1
 #define MG_JTAB 1
