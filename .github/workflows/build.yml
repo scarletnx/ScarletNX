@@ -373,7 +373,7 @@ jobs:
           cmake --build build/default --parallel "$(getconf _NPROCESSORS_ONLN)"
           ccache --show-stats
           ccache --zero-stats
-          cmake --preset default -B build/headless ${{ env.SNX_HEADLESS_OPTIONS }} \
+          cmake --preset default -B build/headless ${{ env.SNX_HEADLESS_OPTIONS }} -DBUILD_TESTING=ON \
             -DLLVM_DIR="$PWD/.cache/llvm/${{ matrix.arch }}/lib/cmake/llvm" -DSNX_A64_DISASM=OFF \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build build/headless --parallel "$(getconf _NPROCESSORS_ONLN)"
@@ -663,7 +663,7 @@ jobs:
         run: |
           git config --global --add safe.directory '*'
           ccache --zero-stats
-          cmake --preset default -B build/sanitizers -DSNX_TEST_SANITIZERS=ON -DSNX_TEST_VP9_VECTORS=ON \
+          cmake --preset default -B build/sanitizers -DBUILD_TESTING=ON -DSNX_TEST_SANITIZERS=ON -DSNX_TEST_VP9_VECTORS=ON \
             -DSNX_DEPLOY=OFF -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build build/sanitizers --parallel "$(getconf _NPROCESSORS_ONLN)"
           ccache --show-stats
@@ -800,7 +800,7 @@ jobs:
           } >> "$GITHUB_ENV"
       - name: Build the differential and its runner
         run: |
-          cmake --preset default -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --preset default -DBUILD_TESTING=ON -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build --preset default --parallel "$(getconf _NPROCESSORS_ONLN)" \
             --target snx-test-llvm-qemu-differential snx_qemu_ref_runner
           ccache --show-stats
@@ -1370,7 +1370,7 @@ jobs:
             -DSNX_FFMPEG_MAKE="$(cygpath -m /usr/bin/make.exe)" \
             -DPERL_EXECUTABLE="$(cygpath -m /usr/bin/perl.exe)" \
             -DSNX_OPENSSL_MAKE="$(cygpath -m /usr/bin/make.exe)" \
-            -DCMAKE_DISABLE_FIND_PACKAGE_SDL3=ON -DSNX_DEPLOY=OFF -DSNX_TEST_VP9_VECTORS=ON \
+            -DCMAKE_DISABLE_FIND_PACKAGE_SDL3=ON -DSNX_DEPLOY=OFF -DBUILD_TESTING=ON -DSNX_TEST_VP9_VECTORS=ON \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build --preset default --parallel "$(getconf _NPROCESSORS_ONLN)"
           cmake --install build/default --prefix stage

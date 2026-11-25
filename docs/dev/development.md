@@ -28,7 +28,7 @@ games=~/.local/share/scarletnx/recompiled work=~/.cache/scarletnx/work
 ## Rebuild / checks
 
 ```sh
-cmake --build build
+cmake build -DBUILD_TESTING=ON && cmake --build build
 ./build/scarletnx -r "$work/Game" Game --jobs 8
 ctest --test-dir build --output-on-failure
 python3 tests/run_filesystem_tree.py --cc clang --sanitize
