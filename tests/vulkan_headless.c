@@ -9071,7 +9071,7 @@ static int run_headless(int argc, char** argv) {
         if (!strcmp(name, "texture_region") && ++ran) CHECK(!check_uma_texture_region());
         if (!strcmp(name, "dma_region") && ++ran) CHECK(!check_uma_dma_region());
 #if !defined(_WIN32)
-        if (!strcmp(name, "region_trap") && ++ran) CHECK(!check_uma_region_trap());
+        if (!strcmp(name, "region_dmabuf_trap") && ++ran) CHECK(!check_uma_region_dmabuf_trap());
         if (!strcmp(name, "region_watch") && ++ran) CHECK(!check_uma_region_watch());
         if (!strcmp(name, "region_letgo") && ++ran) CHECK(!check_uma_region_letgo());
         if (!strcmp(name, "region_dead_bind") && ++ran) CHECK(!check_uma_region_dead_bind());
