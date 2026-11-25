@@ -229,7 +229,7 @@ enum {
 };
 
 /* a call of the helper sym (x64_helpers.c's) or of the runtime's function at rt_offset in RtAPI, the state first
-   where state: args its other arguments (in the machine's sgx_arg_regs); its result (SGX_RET) */
+   where state: args its other arguments (in the machine's SGX_ARG_REG); its result (SGX_RET) */
 static inline SgD sgx_call(SgCtx* g, const char* sym, int rt_offset, int state, SgD* args, int nargs, int result_w) {
     SgX* x = sgx(g);
     int regs[5], k;
@@ -251,7 +251,7 @@ static inline SgD sgx_call(SgCtx* g, const char* sym, int rt_offset, int state, 
     i->calls = 1;
     for (k = 0; k < nargs; ++k) {
         i->in[k] = regs[k];
-        i->fixed[k] = sgx_arg_regs[k + (state ? 1 : 0)];
+        i->fixed[k] = SGX_ARG_REG(x, k + (state ? 1 : 0));
     }
     if (result_w) i->def = sgx_vreg(x, x->n - 1, 64);
     /* a call changes the flags; the guest's registers the helpers and the runtime's hints leave as they are */
@@ -895,6 +895,7 @@ static size_t sg_x64_block(SgCtx* g, const SnxU32* words, size_t* count, SnxU64 
     b.disp = 0;
     b.index = -1;
     memset(&a, 0, sizeof a);
+    a.x = &g->x;
     a.b = &b;
     a.resolve = g->resolve;
     sgx_prologue(&a);

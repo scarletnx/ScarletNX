@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* A relocatable ELF x86-64 object built in memory, for what the x86-64 back end writes without LLVM besides the
-   guest's functions (x64_codegen.c writes those itself): an AOT module's descriptor (nx/loader/module_x64.c). Four
-   sections of bytes (.text, .rodata, .data.rel.ro, .data) and .bss of a size, symbols at their offsets, relocations
-   by symbol name (a name no symbol defines is left undefined, for the link) */
+/* A relocatable object built in memory, ELF or Windows' COFF, for what the native back ends write without LLVM: an AOT
+   module's descriptor (nx/loader/module_x64.c), AArch32 blocks (mach/mach_arm.inc) and, as COFF, the guest's functions
+   (x64_codegen.c; mach/mach_codegen.inc writes their ELF objects itself). Four sections of bytes (.text, .rodata,
+   .data.rel.ro, .data) and .bss of a size, symbols at their offsets, relocations by symbol name (a name no symbol
+   defines is left undefined, for the link) */
 #ifndef SNX_RECOMPILER_X64_ELF_H
 #define SNX_RECOMPILER_X64_ELF_H
 #include <stddef.h>
@@ -20,6 +21,14 @@ void snx_xelf_set_machine(SnxXElf* o, unsigned machine);
 void snx_xelf_set_flags(SnxXElf* o, unsigned flags);
 /* the object a big-endian machine's (1): its tables in that order wherever it's written */
 void snx_xelf_set_big(SnxXElf* o, int big);
+/* the object COFF x86-64, for Windows (1; a Windows host's default): its relocations' types are x86-64 ELF's all the
+   same (R_X86_64_64, PC32 and PLT32), its two read-only sections .rdata. A call of .text's to a function of its own is
+   written, with no relocation */
+void snx_xelf_set_coff(SnxXElf* o, int coff);
+/* a COFF object's function table (.pdata, .xdata): the code of .text from begin to end unwinds as the prologue at code
+   (begin's bytes) says, which is x64_codegen.c's or x64_arm.c's: the pushes, the frame and the XMM registers saved. up:
+   the prologue is elsewhere, and its frame is up in all of the code */
+void snx_xelf_unwind(SnxXElf* o, size_t begin, size_t end, const unsigned char* code, size_t size, int up);
 /* n bytes (none: zeros; .bss takes none) at an offset of align, which it gives */
 size_t snx_xelf_put(SnxXElf* o, int section, const void* bytes, size_t n, size_t align);
 /* the section's bytes so far, to patch (not .bss) */

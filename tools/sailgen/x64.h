@@ -16,6 +16,7 @@
    candidates). The work is paid for then; at run time an emitter only appends instructions to a short SSA of them
    (the assembly itself, virtual registers for operands: SgXIns), folds what is constant as it appends, and once the
    block is done drops what nothing reads, gives the virtual registers host ones and writes the bytes. */
+#include "common/utilities/bits.h"
 
 /* the r/m operand that is the constant pool's (RIP-relative: mod 00, r/m 101), which the assembler patches */
 #define SGX_RIP 32
@@ -52,7 +53,9 @@ static inline void sgx_modrm(SgXBuf* b, int reg, int rm) {
 enum {
     SGX_F_BMI1 = 1, SGX_F_BMI2 = 2, SGX_F_LZCNT = 4, SGX_F_SSE3 = 8, SGX_F_SSSE3 = 16, SGX_F_SSE41 = 32,
     SGX_F_SSE42 = 64, SGX_F_PCLMUL = 128, SGX_F_F16C = 256, SGX_F_POPCNT = 512, SGX_F_AVX = 1024, SGX_F_FMA = 2048,
-    SGX_F_AES = 4096, SGX_F_SHA = 8192
+    SGX_F_AES = 4096, SGX_F_SHA = 8192,
+    /* not CPUID's: the code's calling convention is Microsoft's x64 one (a Windows host's), System V's otherwise */
+    SGX_F_WIN64 = 16384
 };
 
 #include "x64_isel.inc"
@@ -97,10 +100,26 @@ static const SgXSel sgx_sel_leai_32[1] = {SGX_LEA_SEL(sgx_enc_lea_ri32, 1)};
 #define sgx_sel_leai_64_n 1u
 #define sgx_sel_leai_32_n 1u
 
-/* the host registers values may be in: those a call may change (RAX RCX RDX RSI RDI R8-R11); RBX holds the state's
-   address. The machine's part writes what an ABI needs (its prologue, the runtime's calls, the flow) */
+/* ---- the calling convention ----
+   System V's, or where the features say so Microsoft's x64 (SGX_F_WIN64): its arguments in RCX, RDX, R8 and R9, then
+   on the stack past 32 bytes the caller leaves its callee (the frame's lowest slots: SGX_SLOT0), RSI, RDI and XMM6 to
+   XMM15 the callee's. Values are in the registers a call may change, so a function saves no more there than here: RSI
+   and RDI hold pins alone (x64_codegen.c), and XMM6 to XMM15 what the function saved (SgXAsm.xsaved) */
+#define SGX_WIN64(x) (((x)->features & SGX_F_WIN64) != 0)
+
+/* the host registers values may be in: those a call may change (RAX RCX RDX RSI RDI R8-R11, without RSI and RDI on
+   Windows); RBX holds the state's address. The machine's part writes what an ABI needs (its prologue, the runtime's
+   calls, the flow) */
 static const signed char sgx_pool[] = {6, 7, 8, 9, 10, 11, 0, 2, 1}; /* the fixed-purpose ones (RAX, RDX, RCX: MUL, CL) last */
-#define SGX_CALLER_SAVED 0x0FC7u /* RAX RCX RDX RSI RDI R8-R11 */
+static const signed char sgx_pool_win64[] = {8, 9, 1, 10, 11, 0, 2}; /* RCX, no atomic sequence's input, among the first */
+#define SGX_POOL(a) (SGX_WIN64((a)->x) ? sgx_pool_win64 : sgx_pool)
+#define SGX_POOL_N(a) (SGX_WIN64((a)->x) ? sizeof sgx_pool_win64 : sizeof sgx_pool)
+#define SGX_CALLER_SAVED (SGX_WIN64(a->x) ? 0x0F07u : 0x0FC7u) /* RAX RCX RDX (RSI RDI) R8-R11 */
+/* the frame's first slot for values: below it what a Windows callee is left, four arguments' shadow and two more, then
+   the XMM registers the function saved. And the XMM registers of the callee's no value may be in there */
+#define SGX_WIN64_ARGS 6
+#define SGX_SLOT0(a) (SGX_WIN64((a)->x) ? SGX_WIN64_ARGS + 2 * (int)snx_popcount64((a)->xsaved) : 0)
+#define SGX_XCALLEE(a) (SGX_WIN64((a)->x) ? 0xFFC0u & ~(a)->xsaved : 0u)
 #define SGX_RSP 4
 #define SGX_FRAME SGX_RSP
 
@@ -123,10 +142,17 @@ static const signed char sgx_pool[] = {6, 7, 8, 9, 10, 11, 0, 2, 1}; /* the fixe
 /* the state's address (RBX, the callee's), and a call's arguments after the state's (RDI) */
 #define SGX_BASE 3
 static const signed char sgx_arg_regs[6] = {7, 6, 2, 1, 8, 9};
+/* Windows' (RCX, RDX, R8, R9, then the stack's fifth and sixth: the frame's slots 4 and 5, SGX_NREG + a slot) */
+static const signed char sgx_arg_regs_win64[6] = {1, 2, 8, 9, 20, 21};
+#define SGX_ARG_REG(x, n) (SGX_WIN64(x) ? sgx_arg_regs_win64[n] : sgx_arg_regs[n])
 /* AArch32's calls' arguments after the state's (RSI, RDX, RCX, R8), and its exclusive store's address, value and the
    memory's base (RSI, RDX, R10: mach_a32.h's SGX_A32_STREX) */
 static const signed char sgx_a32_args[4] = {6, 2, 1, 8};
 static const signed char sgx_a32_strex[3] = {6, 2, 10};
+/* Windows' (RDX, R8, R9, the stack's fifth; R9, RDX, R10) */
+static const signed char sgx_a32_strex_win64[3] = {9, 2, 10};
+#define SGX_A32_ARG(x, n) (SGX_WIN64(x) ? sgx_arg_regs_win64[1 + (n)] : sgx_a32_args[n])
+#define SGX_A32_STREX_REGS(x) (SGX_WIN64(x) ? sgx_a32_strex_win64 : sgx_a32_strex)
 #define SGX_A32_STREX_CLOBBER (1u << 1) /* RCX, its compare's */
 #define SGX_CARRY 0
 #define SGX_DIV_ARM 0

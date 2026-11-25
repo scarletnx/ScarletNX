@@ -30,5 +30,6 @@ size_t snx_mach_block(const uint32_t* words, size_t* count, uint64_t pc, uint64_
 }
 
 void snx_mach_set_pool(int registers) { g_ctx.x.pool = registers; }
+void snx_mach_set_xpool(int registers) { g_ctx.x.xpool = registers; }
 
 void snx_mach_set_resolve(uint64_t (*resolve)(const char* sym)) { g_ctx.resolve = resolve; }

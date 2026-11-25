@@ -29,14 +29,16 @@
    FEAT_MOPS's SET and CPY, FEAT_LSE128's atomics
    --coverage: a line of each of the target's ops, how many of its words the back end makes with its own instructions
    alone, with an exact helper's call, and leaves, and the first of those, and stops there
-   On a host without the back end (not x86-64, or Windows, or built without SNX_SAIL_X64) it passes, saying so.
+   On a host without the back end (not x86-64, or built without SNX_SAIL_X64) it passes, saying so.
 
    Built with SNX_TEST_ARM64 or SNX_TEST_RV64 (snx-test-recompiler-arm64, -rv64), the same programs hold that native
    back end (src/common/cpu/recompiler/arm64, rv64) to LLVM on any host: its object, made for the program's
    functions, runs under Unicorn (support/host_unicorn.c), the native side's memory and state mapped into it, the
    helpers and the runtime's functions it calls trapped to this process's. --hook makes it with every call through
    CPU.disp (hook_direct_calls, as NVN's handlers want), which holds each function; --jit makes it a JIT unit, its
-   functions its table's */
+   functions its table's. With SNX_TEST_WIN64 (snx-test-recompiler-win64) it is the x86-64 back end's code for Windows
+   that runs, on an x86-64 host itself, entered and called out of as that convention wants, its frames unwound by its
+   function table where it calls out, or with --step after every instruction (support/host_win64.c) */
 #include "common/cpu/recompiler/snx_recompiler.h"
 #include "common/cpu/recompiler/x64/x64_codegen.h"
 #include "llvm_qemu_words.h"
@@ -48,8 +50,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#if defined(SNX_TEST_ARM64) || defined(SNX_TEST_RV64) || defined(SNX_TEST_PPC64) || defined(SNX_TEST_MIPS64) ||          \
-    defined(SNX_TEST_LA64) || defined(SNX_TEST_PPC64BE) || defined(SNX_TEST_MIPS64BE) || defined(SNX_TEST_S390X)
+#if defined(SNX_TEST_ARM64) || defined(SNX_TEST_RV64) || defined(SNX_TEST_PPC64) || defined(SNX_TEST_MIPS64) ||        \
+    defined(SNX_TEST_LA64) || defined(SNX_TEST_PPC64BE) || defined(SNX_TEST_MIPS64BE) || defined(SNX_TEST_S390X) ||    \
+    defined(SNX_TEST_WIN64)
 #define SNX_TEST_NATIVE 1
 #include "common/cpu/recompiler/llvm/elf_object.h"
 #include "support/host_unicorn.h"
@@ -61,6 +64,14 @@
 #define NATIVE_OBJECT(cg, options, made, object, size, error)                                                         \
     snx_arm64_object(cg, 0, (cg)->function_count, options, SNX_ARM64_F_ALL & ~g_without, made, object, size, error,    \
                      sizeof error)
+#elif defined(SNX_TEST_WIN64)
+#define NATIVE_UC       HOSTUC_WIN64
+#define NATIVE_MIN_MADE 90
+#define NATIVE_OBJECT(cg, options, made, object, size, error)                                                          \
+    snx_x64_object(cg, 0, (cg)->function_count, options, made, object, size, error, sizeof error)
+void snx_x64_fp_vec(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
+void snx_x64_crypto(CPU* c, void* out, const void* x, const void* y, const void* z, u32 op);
+extern const u32 snx_x64_crc32_table[256];
 #elif defined(SNX_TEST_LA64)
 #include "common/cpu/recompiler/la64/la64_codegen.h"
 #define NATIVE_UC HOSTUC_LA64
@@ -492,7 +503,7 @@ static void on_fault(int sig) {
     _exit(3);
 }
 static void undef(CPU* c, uint64_t pc, uint32_t word) {
-    (void)word, (void)pc;
+    c->x[17] ^= pc ^ (uint64_t)word << 32; /* what it was passed, in the state the sides are compared by */
     c->pc = STOP;
 }
 static void on_svc(CPU* c, uint32_t imm) { (void)c, (void)imm; }
@@ -755,7 +766,7 @@ static int branch_taken(uint32_t w, uint64_t a, uint64_t b) {
 
 /* --programs: the writes of another thread to come between a pair's read and its compare and swap */
 static unsigned g_between;
-#ifdef SNX_TEST_NATIVE
+#if defined(SNX_TEST_NATIVE) && !defined(SNX_TEST_WIN64)
 static typeof(snx_x64_casp(NULL, 0, 0, 0, 0, 0)) casp_between(CPU* c, u64 a, u64 e0, u64 e1, u64 d0, u64 d1) {
     if (g_between) --g_between, c->mem[a] ^= 0x10;
     return snx_x64_casp(c, a, e0, e1, d0, d1);
@@ -969,6 +980,9 @@ int main(int argc, char** argv) {
     size_t longer = 0;
     int jit = 0;
 #endif
+#ifdef SNX_TEST_WIN64
+    int step = 0;
+#endif
     for (i = 1; i < (unsigned)argc; ++i) {
         if (!strcmp(argv[i], "--functions") && i + 1 < (unsigned)argc) functions = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--states") && i + 1 < (unsigned)argc)
@@ -984,6 +998,10 @@ int main(int argc, char** argv) {
 #ifdef SNX_TEST_NATIVE
         else if (!strcmp(argv[i], "--jit"))
             jit = 1;
+#endif
+#ifdef SNX_TEST_WIN64
+        else if (!strcmp(argv[i], "--step"))
+            step = 1;
 #endif
         else if (!strcmp(argv[i], "--refused"))
             refused = 1;
@@ -1027,6 +1045,9 @@ int main(int argc, char** argv) {
         }
     }
     (void)hook;
+#ifdef SNX_TEST_WIN64
+    snx_x64_set_win64(1);
+#endif
     rows_init();
     if (refused) {
 #ifndef SNX_TEST_NATIVE
@@ -1194,7 +1215,15 @@ int main(int argc, char** argv) {
         NATIVE(snx_x64_half), NATIVE(snx_x64_bfdot), NATIVE(snx_x64_sm4_box);
         NATIVE(snx_x64_set), NATIVE(snx_x64_copy);
         NATIVE(snx_x64_fp_scale), NATIVE(snx_x64_fp8_widen), NATIVE(snx_x64_fp8_narrow), NATIVE(snx_x64_fp8_dot);
+#ifdef SNX_TEST_WIN64
+        hostuc_step(uc, step);
+        NATIVE(snx_x64_fp_vec), NATIVE(snx_x64_crypto);
+        void* crc32_table = hostuc_alloc(uc, sizeof snx_x64_crc32_table);
+        if (crc32_table) memcpy(crc32_table, snx_x64_crc32_table, sizeof snx_x64_crc32_table);
+        hostuc_define(uc, "snx_x64_crc32_table", (uint64_t)(uintptr_t)crc32_table);
+#else
         hostuc_native_wide(uc, "snx_x64_casp", (void*)casp_between);
+#endif
 #undef NATIVE
         if (object && hostuc_load(uc, object, object_size, error, sizeof error)) {
             fprintf(stderr, "FAIL: loading the %s object: %s\n", native_name, error);
@@ -1218,12 +1247,17 @@ int main(int argc, char** argv) {
             snprintf(name, sizeof name, "F_%llX", (unsigned long long)hints[n]);
             udisp[(hints[n] - CODE) / 4] = hostuc_symbol(uc, name);
         }
+        /* and the functions the analysis found besides (a BL's target in --words) */
+        for (n = 0; n < cg.function_count; ++n) {
+            char name[40];
+            snprintf(name, sizeof name, "F_%llX", (unsigned long long)cg.functions[n].start);
+            udisp[(cg.functions[n].start - CODE) / 4] = hostuc_symbol(uc, name);
+        }
         /* a JIT unit's functions are its table's, in the codegen's order */
         if (jit) {
             const uint64_t* table = (const uint64_t*)(uintptr_t)hostuc_symbol(uc, "UNIT_TABLE");
             for (n = 0; table && n < cg.function_count; ++n)
-                udisp[(cg.functions[n].start - CODE) / 4] =
-                    object[EI_DATA] == snx_elf_host_data() ? table[n] : snx_bswap64(table[n]);
+                udisp[(cg.functions[n].start - CODE) / 4] = hostuc_big(NATIVE_UC) ? snx_bswap64(table[n]) : table[n];
         }
         free(made), free(object);
         snx_codegen_free(&cg);
@@ -1435,6 +1469,14 @@ int main(int argc, char** argv) {
         }
 done:
     printf("recompiler backends: %u functions, %u states each: %d failures\n", functions, states, failures);
+#ifdef SNX_TEST_WIN64
+    {
+        size_t bad, unwound = hostuc_unwound(uc, &bad);
+        printf("recompiler backends: %zu states of the code unwound by its function table, %zu wrongly\n", unwound,
+               bad);
+        if (step && !unwound) ++failures, fprintf(stderr, "FAIL: --step unwound no state of the code\n");
+    }
+#endif
     result = failures != 0;
 out:
     snx_recompiled_free(mx);
