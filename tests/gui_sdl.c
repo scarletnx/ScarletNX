@@ -6975,6 +6975,26 @@ static void missing_file(App* app, const char* dir) {
     assert(!app->picks_shown && app->menu.running);
     argv_got = ran(app, 0); /* back on the menu */
     free(argv_got);
+    { /* a run refused, the host below its back end's floor: what it lacks follows how it ended */
+        char* go = snx_format("%s.go", got);
+        bool due = app->log_due;
+        driver_will(got, 1, "scarletnx: cpu: needs SSE4.2, this host has SSE3");
+        go_tab(app, GUI_TAB_GAMES);
+        focus_game(app, "extracted game");
+        key(app, SDLK_RETURN);
+        assert(app->menu.running && !snx_write_file(go, "", 0));
+        for (Uint64 until = SDL_GetTicks() + 10000; app->menu.running && SDL_GetTicks() < until; SDL_Delay(5))
+            pump(app);
+        assert(!app->menu.running && app->finished && app->abnormal_exit);
+        assert(!strcmp(app->message, "Program ended abnormally (status 1). cpu: needs SSE4.2, this host has SSE3"));
+        key(app, SDLK_ESCAPE);
+        assert(!app->finished && !app->message[0]);
+        app->log_due = due;
+        driver_will(got, 0, "ScarletNX - extracted game");
+        remove(got);
+        remove(go);
+        free(go);
+    }
     /* Locate...: a file of another kind refused, the dump it keeps said; a dump taken, its row saying nothing more */
     go_tab(app, GUI_TAB_GAMES);
     focus_game(app, "lost game");
