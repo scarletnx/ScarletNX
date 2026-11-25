@@ -549,8 +549,9 @@ The code for Windows is run by an x86-64 Linux host too (`sail_win64`, and over 
 R12 to R15, XMM6 to XMM15, MXCSR and the stack past the shadow marked before and read back after, and what it calls goes
 through a Windows callee that overwrites the shadow and every register it may. Its COFF objects are loaded by the JIT's
 own loader (`code_loader_coff.c`), and their function table is held to what Windows does with it: at each call out, and
-with `--step` at every instruction, the stack is unwound by the table back to the entry. `x64_unwind` does that on Windows
-with the system's `RtlVirtualUnwind`, and a `longjmp` across the code's frames.
+with `--step` at every instruction, the stack is unwound by the table back to the entry. `x64_unwind`
+(`tests/native_unwind.c`) does that on Windows with the system's `RtlVirtualUnwind`, and a `longjmp` across the code's
+frames.
 
 **Integers** known only when the guest runs (`SgI`: `UInt`, `SInt` and what comes of them) are 64-bit values, what their
 low bits' readers want; what needs more (a saturation of a sum of two 64-bit elements, a shift right) reads the exact
@@ -637,12 +638,27 @@ host's own (FEAT_CRC32) or the exact helper, the barriers the guest's (DMB ISH, 
 after it and a release store DMB ISH around it, and the ABI (AAPCS64: the state in X19, the frame below the saved X29,
 X30, X19 and X20; X16 and X17 the assembler's). It builds on any host: the code it writes is arm64's.
 
+Windows on Arm's convention is AAPCS64 too, with X18 the system's (no value's here), so the code for it
+(`SNX_ARM64_F_WIN`) is the same words. What differs is around it: a COFF object (`x64_elf.c`), whose function table
+unwinds each frame by a record of 1 MiB of code at most (a longer function has several), its prologue's codes and its
+epilogues'; an epilogue's return or jump right after it, where the unwinder has it end; a frame of a page or more reading
+its pages first (`sga_stack_probe`, X16 and X17); an AArch32 block's code of no frame, the exit of a failed entry check,
+past the range its frame covers; and `snx_stale` past the 1 MiB COFF's ADRP holds read with an ADD more.
+
 **The test** (`tests/sail_arm64.c`, `sail_arm64` where Unicorn is installed): the words of `sail_x64`'s rows, and
 blocks of two to four of them, made into arm64 code and run under Unicorn (QEMU's AArch64, its "max" CPU) beside the
 LLVM back end's steps from the same random states; registers, flags, the SIMD&FP state, guest memory, the next pc and
 UNDEF must match. The test's memory is mapped into Unicorn at its own addresses, so the code and the test's C share
 every pointer; a call out goes to a page of traps whose hook calls the native helper. `sail_arm64_spill` gives it
 three registers (`--pool 3`); `--dump WORD...` prints a block for a disassembler.
+
+The code for Windows runs under Unicorn on any host (`recompiler_arm64win`, `arm_arm64win`, `module_desc_arm64win`):
+`HOSTUC_ARM64_WIN` loads its COFF objects with the JIT's own loader (`code_loader_coff.c`), marks X18, X19 to X29, the
+low halves of V8 to V15 and SP before a call and reads them back after, and has each native function change every
+register a callee may. The function table is held to what `RtlVirtualUnwind` does with it (`tests/support/arm64_unwinder.h`):
+at each call out, and with `--step` at every instruction, the stack is unwound by it back to the entry. `arm64_unwind`
+(`tests/native_unwind.c`) does that on Windows on Arm with the system's own, from each instruction's state, and a
+`longjmp` across the code's frames.
 
 ### AArch32 (`x64_a32.h`)
 
@@ -721,7 +737,8 @@ with each of their failures, and an MSR of E is run into the next block. Thumb b
 way from random halfwords: 16-bit ones of every form, 32-bit ones of every family and one IT in four blocks, with the
 instructions of its block after it; their witnesses are the entry's checks (R15, T, ITSTATE, E, in their order) and
 TBB's and TBH's reads past memory. `arm_x64_spill` does it with three host
-registers, `arm_x64_plain` without BMI1, BMI2 and LZCNT; `arm_win64` runs the same with the code a Windows host's. `--profile` and `--memory` run the other profiles and modes
+registers, `arm_x64_plain` without BMI1, BMI2 and LZCNT; `arm_win64` and `arm_arm64win` run the same with the code a
+Windows host's. `--profile` and `--memory` run the other profiles and modes
 (`arm_x64_a9`, `arm_x64_arm7tdmi_trace`, `arm_x64_arm11_checked`, ... and the same on each other machine), against
 LLVM's blocks of the same options: their words are what the profile decodes, hosted memory and the hook's two run on a
 window of 4 GiB, and every call of the hook or the checked callback is logged with the state it saw. The hosted modes run

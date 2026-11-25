@@ -21,7 +21,7 @@ enum {
     SNX_ARM64_F_WIN = 1 << 19 /* no processor's: the code is Windows', in COFF objects with a function table */
 };
 #define SNX_ARM64_F_ALL ((1u << 19) - 1)
-/* 1 where this host runs the arm64 back end's code and its objects load (AArch64, ELF: not Windows or Apple's) */
+/* 1 where this host runs the arm64 back end's code and its objects load (AArch64: ELF's hosts and Windows) */
 int snx_arm64_available(void);
 /* this host's features (0 where it isn't arm64) */
 unsigned snx_arm64_features(void);

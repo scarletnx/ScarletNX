@@ -16,7 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if !defined(_WIN32)
+#if !defined(_WIN32) || defined(__aarch64__) /* as arm64_codegen.c */
 /* the AArch64 ELF relocations the blocks have (the ELF for the Arm 64-bit Architecture's numbers) */
 enum {
     A64_EM = 183, /* EM_AARCH64 */
