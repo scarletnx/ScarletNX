@@ -499,6 +499,58 @@ static void jump_table_mask_test(void) {
     snx_codegen_free(&codegen);
 }
 
+/* Tables found from the function's flow, not the code just before the load (llvm-mc, at SNX_CODE_BASE):
+   A, the base set before a RET in the layout, the switch reached by a branch around it:
+     adrp x14, tbl; add x14, x14, #0x80; cmp w0, #3; b.ls sw; mov w0, #99; ret
+     sw: adr x10, c0; ldrb w11, [x14, x0]; add x10, x10, x11, lsl #2; br x10; c0..c3: mov w0, #k; ret
+   B, the compare on another block, its guard shared: adrp x9, tbl; add x9, x9, #0x80; cmp w0, #3; b join;
+     mov w0, #7; ret; join: b.hi dflt; adr x10, c0; ldrb w11, [x9, x0]; add x10, x10, x11, lsl #2; br x10;
+     c0..c3: mov w0, #k; ret; dflt: mov w0, #0; ret */
+static void jump_table_flow_test(void) {
+    static const SnxU32 a[] = {0x9000000EUL, 0x910201CEUL, 0x71000C1FUL, 0x54000069UL, 0x52800C60UL, 0xD65F03C0UL,
+                               0x1000008AUL, 0x386069CBUL, 0x8B0B094AUL, 0xD61F0140UL, 0x52800020UL, 0xD65F03C0UL,
+                               0x52800040UL, 0xD65F03C0UL, 0x52800060UL, 0xD65F03C0UL, 0x52800080UL, 0xD65F03C0UL};
+    static const SnxU32 b[] = {0x90000009UL, 0x91020129UL, 0x71000C1FUL, 0x14000003UL, 0x528000E0UL, 0xD65F03C0UL,
+                               0x540001A8UL, 0x1000008AUL, 0x3860692BUL, 0x8B0B094AUL, 0xD61F0140UL, 0x52800020UL,
+                               0xD65F03C0UL, 0x52800040UL, 0xD65F03C0UL, 0x52800060UL, 0xD65F03C0UL, 0x52800080UL,
+                               0xD65F03C0UL, 0x52800000UL, 0xD65F03C0UL};
+    static const unsigned char entries[] = {0, 2, 4, 6};
+    unsigned char image[0x100];
+    SnxProgram program;
+    SnxModuleImage module;
+    SnxCodegen codegen;
+    SnxU64 targets[8];
+    const SnxFunction* function;
+    size_t i, n;
+    /* A */
+    memset(image, 0, sizeof(image));
+    for (i = 0; i < sizeof(a) / sizeof(a[0]); ++i) put32(image, i * 4, a[i]);
+    memcpy(image + 0x80, entries, 4);
+    setup_program(&program, &module, image, sizeof(image));
+    module.text_size = sizeof(a); /* the table is .rodata */
+    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1, 0), "analyze a table set before a RET");
+    n = snx_codegen_jump_table(&codegen, SNX_CODE_BASE + 0x24, targets, 8);
+    check(n == 4, "the table whose base the flow gives: its four cases");
+    function = snx_codegen_function(&codegen, SNX_CODE_BASE);
+    for (i = 0; i < 4; ++i)
+        check(n == 4 && targets[i] == SNX_CODE_BASE + 0x28 + 8 * i && function &&
+                  has_leader(function, SNX_CODE_BASE + 0x28 + 8 * i),
+              "a case of the table the flow gives, a leader of its function");
+    snx_codegen_free(&codegen);
+    /* B */
+    memset(image, 0, sizeof(image));
+    for (i = 0; i < sizeof(b) / sizeof(b[0]); ++i) put32(image, i * 4, b[i]);
+    memcpy(image + 0x80, entries, 4);
+    image[0x84] = 0x0a; /* past the bound: it would name dflt */
+    setup_program(&program, &module, image, sizeof(image));
+    module.text_size = sizeof(b);
+    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1, 0), "analyze a table guarded from another block");
+    n = snx_codegen_jump_table(&codegen, SNX_CODE_BASE + 0x28, targets, 8);
+    check(n == 4, "the table whose bound the flow gives: its four cases, not the next byte's");
+    for (i = 0; i < n && i < 4; ++i) check(targets[i] == SNX_CODE_BASE + 0x2C + 8 * i, "a case of the guarded table");
+    snx_codegen_free(&codegen);
+}
+
 /* The same with halves, the table's address taken before the compare's branch: the code that takes it is not next
    to the load (in a loop it is outside the loop) */
 static void jump_table_anchor_far_test(void) {
@@ -1610,6 +1662,7 @@ int main(void) {
     jump_table_other_function_test();
     jump_table_anchor_test();
     jump_table_mask_test();
+    jump_table_flow_test();
     jump_table_anchor_far_test();
     jump_table_anchor_branch_test();
     large_range_test();
