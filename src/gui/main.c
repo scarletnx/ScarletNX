@@ -626,6 +626,7 @@ typedef struct App {
     int size_pick, size_was;
     Uint64 size_until;
     char size_line[128];
+    bool typed_cancel; /* the pointer is on Cancel of a typed value's dialog, nothing typed since */
     /* a resolution past 4x or under 0.25x: its row flashes in the warning colour and the foot says why, until
        warn_until; warn_key is its .ini key, empty for none */
     char warn_key[64];
@@ -13581,9 +13582,15 @@ static void resolution_check(App* app, int row) {
 }
 static void typed_keyboard(App* app);
 static bool form_row_off(App* app, const GuiEditor* e, int r);
+/* the typed value's choice in focus, which Enter takes: OK, or Cancel while the pointer is on it */
+static int typed_focus(const App* app) { return app->hovering && app->typed_cancel; }
 static void editor_key(App* app, GuiKey key) {
     GuiEditorDo what;
     int was_typing = app->editor.typing;
+    if (!app->editor.typing)
+        app->typed_cancel = false; /* a dialog opens on OK */
+    else if (key == GUI_SELECT && typed_focus(app))
+        key = GUI_CANCEL;
     if (app->warn_until) app->editor.note[0] = 0;
     app->warn_until = 0;
     app->warn_key[0] = 0;
@@ -13785,6 +13792,9 @@ static void editor_key(App* app, GuiKey key) {
 /* keys and typed text: while a value is typed, Space and the letters are its text */
 static void editor_input(App* app, const SDL_Event* e) {
     GuiKey key;
+    /* what is typed goes with OK, wherever the pointer was left */
+    if (e->type == SDL_EVENT_TEXT_INPUT || e->key.key == SDLK_BACKSPACE || e->key.key == SDLK_V)
+        app->typed_cancel = false;
     if (e->type == SDL_EVENT_TEXT_INPUT) {
         gui_editor_type(&app->editor, e->text.text);
         return;
@@ -14452,7 +14462,7 @@ static void typed_place(App* app, GuiTypedBoxes* b) {
         y += 4 * s + note_rows * ch;
     }
     c->at = gui_rect(c->box.x + cw, y + 6 * s, c->box.w - 2 * cw, list_h);
-    choices_rows(app, c, 0); /* OK's look: Enter takes it */
+    choices_rows(app, c, typed_focus(app)); /* the look of what Enter takes */
 }
 /* the dialog over its form: the text framed in the focus's colour, its end and the cursor in view; what it takes in
    the soft colour, the editor's note in the warning's */
@@ -14483,11 +14493,12 @@ static void render_typed(App* app) {
 }
 /* choice i of the dialog: OK takes what was typed, as Enter, Cancel leaves the row as it was, as ESC */
 static void typed_choice(App* app, int i) { editor_key(app, i ? GUI_CANCEL : GUI_SELECT); }
-/* the pointer on the dialog: a choice under it takes the focus and a click takes it; a click on the field brings a
-   phone's keyboard back, one off the box is Cancel */
+/* the pointer on the dialog: a choice under it takes the focus and a click takes it, and off the choices the focus is
+   OK's again, as Enter's; a click on the field brings a phone's keyboard back, one off the box is Cancel */
 static void typed_pointer(App* app, float x, float y, bool click) {
     GuiTypedBoxes b;
     bool on;
+    app->typed_cancel = false;
     typed_place(app, &b);
     if (choices_pointer(app, &b.c, x, y, click, &on) || !click) return;
     if (in_rect(b.field, x, y))
@@ -22972,6 +22983,7 @@ void ui_choices_rows_row_action_cb(App* app, size_t row, uint32_t hit) {
             if (hit & UI_HIT_CLICK) pick_take(app, i);
             break;
         case GUI_CHOICES_TYPED:
+            app->typed_cancel = i == 1;
             if (hit & UI_HIT_CLICK) typed_choice(app, i);
             break;
         default: { /* the setup's choice on row i (setup_order); none on the row between its groups */

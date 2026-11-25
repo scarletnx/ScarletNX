@@ -302,10 +302,11 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   takes the step under it, and a drag moves the knob along, each step kept at once. A value typed (a number, a text, a
   nickname, a theme's key, a color's `#RRGGBB`) is typed in a dialog, as UI scale's, never in the row: the row's label
   its title, the text with its cursor in a field, what the row takes under it with its numbers (`A number from 0.25 to
-  16, two decimals at most; empty, the default 1`), then OK and Cancel. Enter or A is OK, ESC or B Cancel, Backspace
-  takes a letter out; a click off the dialog is Cancel. A phone's keyboard comes up with it, its number pad for a whole
-  number never under 0 (SDL's pad has no point and no minus). Nothing changes before OK, and OK takes nothing the
-  row does not take whole, a number past its range too: the dialog stays, saying the value typed and what holds
+  16, two decimals at most; empty, the default 1`), then OK and Cancel. Enter or A is OK (Cancel while the pointer is on
+  it), ESC or B Cancel, Backspace takes a letter out; a click off the dialog is Cancel. A phone's keyboard comes up with
+  it, its number pad for a whole number never under 0 (SDL's pad has no point and no minus). Nothing changes before OK,
+  and OK takes nothing the row does not take whole, a number past its range too: the dialog stays, saying the value
+  typed and what holds
   (`20 is not a number from 0.25 to 16, two decimals at most`, `Ab is not a nickname: ...`). A setting that is a path
   (a shader corpus's folder, a branch profile's file, a stats file to write) is picked: Enter opens the system's
   folder, file or save dialog over the path it has, Ctrl+V and a drop give it a path too, Del takes it off; on iOS, and
