@@ -358,9 +358,11 @@ enum {
     /* the block compiler's own (mach_arm.inc's sgx_machine_op), on every machine: */
     SGX_A32_OUT, /* to a new way out (SgA32Out) on cc: kv[0] the word, imm its reason + 1, 0 for a yield; kv[1] the
                     instruction's address, and the next one's from bit 32 */
-    SGX_A32_BUS /* on cc, out of the hot code to sym(state, in[0] the address, imm its size, kv[0]'s low word or in[3]),
+    SGX_A32_BUS, /* on cc, out of the hot code to sym(state, in[0] the address, imm its size, kv[0]'s low word or in[3]),
                     R15 kv[0]'s high word, else sel's access of [in[1] + in[2]]: a load's into SGX_RET (kv[1] 1), or a
                     store of in[3], SGX_RET then 0 */
+    SGX_A32_FIELD, /* SGX_RET = the host's number of w bits at [in[0] + disp]: no guest memory */
+    SGX_A32_TAIL   /* the block's end: a tail call of the block whose address is in[0] */
 };
 
 /* a machine instruction, after the fields written are stored: whatever it does may leave the region (a jump, an exit)

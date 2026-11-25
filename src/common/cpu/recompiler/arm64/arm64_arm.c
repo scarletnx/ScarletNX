@@ -122,9 +122,9 @@ static void mg_return(MG_ARM* c) {
     sga_w(&c->b, sge_a64_ret(30));
 }
 /* where the block ends with R15 key's address in key's state: a jump to the block's own entry past its checks (X and
-   its name) where key is one of the successors, after the poll for one at or before the block's start; else R15
-   stored and the return. public: the block's checked entry instead, R15 stored */
-static void mg_go_on(MG_ARM* c, SnxU32 key, SnxU32 block, const SnxU32* next, size_t nnext, int public) {
+   its name) where key is one of the successors, after the poll where polled (key at or before the block's start); else
+   R15 stored and the return. public: the block's checked entry instead, R15 stored */
+static void mg_go_on(MG_ARM* c, SnxU32 key, int polled, const SnxU32* next, size_t nnext, int public) {
     SgXBuf* b = &c->b;
     SgCtx* g = &c->g;
     size_t k = 0;
@@ -134,7 +134,7 @@ static void mg_go_on(MG_ARM* c, SnxU32 key, SnxU32 block, const SnxU32* next, si
         sgx_a32_jmp(g, b, g->ret);
         return;
     }
-    if ((key & ~1u) <= block) {
+    if (polled) {
         /* ADRP X16, snx_arm_poll_offset; LDR X16, [X16, :lo12:]; LDR W16, [X19, X16]; CBZ W16, go: a thread of higher
            priority waits, the return with R15 stored */
         int go = sgx_a32_label(g);
@@ -155,6 +155,15 @@ static void mg_go_on(MG_ARM* c, SnxU32 key, SnxU32 block, const SnxU32* next, si
     if (!public) sym[0] = 'X';
     add_rel(c, b->n, sym, A64_JUMP26, 0);
     sga_w(b, sge_a64_b_uncond(0));
+}
+
+/* the block's end in a tail call of the block at the address in reg: the state its argument, as it is this one's */
+static void mg_tail(MG_ARM* c, int reg) {
+    SgXBuf* b = &c->b;
+    sga_w(b, sge_a64_orr_log_shift(SGA_X16, SGA_ZR, 0, (SnxU32)reg, 0, 1)); /* MOV X16, reg */
+    sga_w(b, sge_a64_orr_log_shift(0, SGA_ZR, 0, SGX_BASE, 0, 1));          /* MOV X0, X19 */
+    epilogue(c);
+    sga_w(b, sge_a64_br(SGA_X16));
 }
 
 /* snx_a64_a32_entry_exit(state X0, the block's address W1, its first word W2), each object's own, where a block's

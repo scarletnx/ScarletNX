@@ -232,3 +232,12 @@ uint64_t snx_arm_checked_strex(SnxArmCPU* cpu, uint64_t address, uint64_t bytes)
         (uint32_t)snx_arm_checked_access(cpu, SNX_ARM_ACCESS_WRITE | SNX_ARM_ACCESS_EXCLUSIVE, address, bytes);
     return !status ? 0 : status == SNX_ARM_EXCLUSIVE_FAILED ? 1 : 2;
 }
+
+uint64_t snx_arm_direct(SnxArmCPU* cpu, uint64_t import, uint64_t at) {
+    typedef uint32_t (*Direct)(SnxArmCPU*, uint32_t);
+    const Direct direct = *(const Direct*)((const char*)cpu + at);
+    if (direct) return direct(cpu, (uint32_t)import);
+    cpu->syndrome = (uint32_t)import;
+    cpu->exit = SNX_ARM_SVC;
+    return 0;
+}

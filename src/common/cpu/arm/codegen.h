@@ -53,6 +53,36 @@ static inline int snx_arm_codegen_options_valid(const SnxArmCodegenOptions* o) {
                   ((!o->trace && !o->skipped) ||
                    (o->profile == SNX_ARM_PROFILE_ARM7TDMI && o->trace && o->skipped && o->trace != o->skipped)));
 }
+/* Options for hosted blocks that go on to the next by themselves, for a runtime whose dispatch loop runs one thread's
+   blocks a slice at a time (the Vita's). The native back ends take these where options.abi says so; LLVM's blocks go on
+   by what their compiler adds to them (vita/aot/compiler.c). poll, lookup and direct are where the runtime keeps a thing
+   past the pointer its blocks get, 0 for none of it:
+   - poll: an int32_t, the steps back (to a block at or before the one that ends) the slice may still take. A block counts
+     its own down and returns to the loop where they run out, so every loop of blocks ends the slice;
+   - lookup (with poll alone): a pointer to a table of SNX_ARM_LOOKUP_SLOTS SnxArmLookups, or null. A target that is none
+     of the block's successors (an indirect branch's) is run from there, its step back counted the same way; a target the
+     table lacks returns to the loop, as every target does with no table;
+   - direct: the block is an import's stub, an SVC alone, and this a pointer to a function, or null. It is called with the
+     block's pointer and import in the SVC's place (R15 past it), and the block goes on past the SVC where it returns
+     nonzero, else to the loop. With no function it is the SVC, import its syndrome */
+#define SNX_ARM_CHAINED_OPTIONS_ABI 2u
+typedef struct {
+    SnxArmCodegenOptions options; /* abi SNX_ARM_CHAINED_OPTIONS_ABI, memory SNX_ARM_MEMORY_HOSTED */
+    uint32_t poll, lookup, direct, import;
+} SnxArmChainedOptions;
+/* at a target's address shifted right once; key is the address with bit 0 set for Thumb, 0 for an empty slot */
+typedef struct {
+    uint32_t key;
+    SnxArmBlock block;
+} SnxArmLookup;
+#define SNX_ARM_LOOKUP_SLOTS 65536u /* a power of two */
+/* o's options as they are without the chaining: 1 for ones the native back ends take */
+static inline int snx_arm_chained_options_valid(const SnxArmChainedOptions* o) {
+    SnxArmCodegenOptions plain = o->options;
+    plain.abi = SNX_ARM_CODEGEN_OPTIONS_ABI;
+    return o->options.abi == SNX_ARM_CHAINED_OPTIONS_ABI && snx_arm_codegen_options_valid(&plain) &&
+           plain.memory == SNX_ARM_MEMORY_HOSTED && (o->poll || !o->lookup);
+}
 /* an ARM7TDMI instruction whose time depends on whether its condition held (SnxArmCodegenOptions' skipped): any but a
    data processing one with an immediate or an immediate shift that leaves the PC alone */
 static inline int snx_arm_timed_condition(uint32_t w) {

@@ -1822,6 +1822,295 @@ static int run_entries(Back* x64) {
     return 0;
 }
 #endif
+
+/* ---- the hosted blocks that go on by themselves (codegen.h's SnxArmChainedOptions), on every machine ---- */
+
+#define SG_TEST_IT_BITS 0x0600FC00u /* ITSTATE in CPSR */
+/* the state a chained block gets, and what the runtime keeps past it */
+typedef struct {
+    SnxArmCPU cpu;
+    int32_t poll;
+    const SnxArmLookup* lookup;
+    uint32_t (*direct)(SnxArmCPU* cpu, uint32_t import);
+    uint32_t calls, import, r15, returns, sets15; /* the direct function's: what it saw, what it gives, R15 it leaves */
+} ChainedState;
+static uint32_t chained_direct(SnxArmCPU* cpu, uint32_t import) {
+    ChainedState* s = (ChainedState*)cpu;
+    ++s->calls;
+    s->import = import;
+    s->r15 = cpu->r[15];
+    if (s->sets15) cpu->r[15] = s->sets15;
+    return s->returns;
+}
+#define CHAINED_IMPORT 77u
+/* the blocks: a loop, SUBS R0, R0, #1 and BNE to it; after it MOV R2, #1; BX R1; MOV R2, #2; an import's stub, whose
+   SVC's immediate is not the import's number; after it MOV R2, #3; BXEQ R1; an SVC that is no stub's. The Thumb ones:
+   SUBS R0, #1 and BNE to it; BX R1; a stub; after it MOVS R2, #4; IT EQ alone */
+enum {
+    C_LOOP = 0x1000,
+    C_AFTER = 0x1008,
+    C_BX = 0x1100,
+    C_MOV = 0x1200,
+    C_STUB = 0x1300,
+    C_PAST = 0x1304,
+    C_BXEQ = 0x1400,
+    C_SVC = 0x1500,
+    C_TLOOP = 0x1601,
+    C_TBX = 0x1701,
+    C_TSTUB = 0x1801,
+    C_TPAST = 0x1803,
+    C_TIT = 0x1901
+};
+static const struct {
+    uint32_t key;
+    unsigned char code[8];
+    size_t units;
+} chained_blocks[] = {
+    {C_LOOP, {0x01, 0x00, 0x50, 0xe2, 0xfd, 0xff, 0xff, 0x1a}, 2},
+    {C_AFTER, {0x01, 0x20, 0xa0, 0xe3}, 1},
+    {C_BX, {0x11, 0xff, 0x2f, 0xe1}, 1},
+    {C_MOV, {0x02, 0x20, 0xa0, 0xe3}, 1},
+    {C_STUB, {0x05, 0x00, 0x00, 0xef}, 1},
+    {C_PAST, {0x03, 0x20, 0xa0, 0xe3}, 1},
+    {C_BXEQ, {0x11, 0xff, 0x2f, 0x01}, 1},
+    {C_SVC, {0x05, 0x00, 0x00, 0xef}, 1},
+    {C_TLOOP, {0x01, 0x38, 0xfd, 0xd1}, 2},
+    {C_TBX, {0x08, 0x47}, 1},
+    {C_TSTUB, {0x05, 0xdf}, 1},
+    {C_TPAST, {0x04, 0x22}, 1},
+    {C_TIT, {0x08, 0xbf}, 1},
+};
+#define CHAINED_BLOCKS (sizeof chained_blocks / sizeof *chained_blocks)
+/* every block that may come next is one of them, but the targets only R1 or the table names */
+static size_t chained_next(void* user, uint32_t key, size_t units, size_t count, uint32_t keys[2]) {
+    (void)user, (void)units, (void)count;
+    switch (key) {
+        case C_LOOP: keys[0] = C_LOOP, keys[1] = C_AFTER; return 2;
+        case C_STUB: keys[0] = C_PAST; return 1;
+        case C_TLOOP: keys[0] = C_TLOOP; return 1;
+        case C_TSTUB: keys[0] = C_TPAST; return 1;
+        default: return 0;
+    }
+}
+typedef struct {
+    const char* what;
+    uint32_t entry, r0, r1, cpsr;
+    int32_t poll;
+    uint32_t key, block;      /* the table's one slot: its key, and the block there (a block's key, 0 for null) */
+    int table, direct;        /* a table, a direct function */
+    uint32_t returns, sets15; /* the direct function's */
+    uint32_t end0, end2, end15, endt; /* R0, R2 (0 to start with), R15 and CPSR's T and IT bits as it ends */
+    int32_t end_poll;
+    uint32_t exit, syndrome, calls;
+} ChainedCase;
+static const ChainedCase chained_cases[] = {
+    {"a loop within the poll", .entry = C_LOOP, .r0 = 5, .poll = 100, .table = 1, .end2 = 1, .end15 = C_AFTER + 4,
+     .end_poll = 96},
+    {"a loop past the poll", .entry = C_LOOP, .r0 = 5, .poll = 2, .table = 1, .end0 = 3, .end15 = C_LOOP},
+    {"a loop with no table", .entry = C_LOOP, .r0 = 5, .poll = 100, .end2 = 1, .end15 = C_AFTER + 4, .end_poll = 96},
+    {"BX forward", .entry = C_BX, .r1 = C_MOV, .poll = 1, .key = C_MOV, .block = C_MOV, .table = 1, .end2 = 2,
+     .end15 = C_MOV + 4, .end_poll = 1},
+    {"BX forward, the poll out", .entry = C_BX, .r1 = C_MOV, .key = C_MOV, .block = C_MOV, .table = 1, .end15 = C_MOV},
+    {"BX back", .entry = C_BX, .r1 = C_AFTER, .poll = 3, .key = C_AFTER, .block = C_AFTER, .table = 1, .end2 = 1,
+     .end15 = C_AFTER + 4, .end_poll = 2},
+    {"BX back at the poll's last", .entry = C_BX, .r1 = C_AFTER, .poll = 1, .key = C_AFTER, .block = C_AFTER,
+     .table = 1, .end15 = C_AFTER},
+    {"BX to itself", .entry = C_BX, .r1 = C_BX, .poll = 4, .key = C_BX, .block = C_BX, .table = 1, .end15 = C_BX},
+    {"BX to a Thumb key", .entry = C_BX, .r1 = C_MOV | 1, .poll = 9, .key = C_MOV | 1, .block = C_MOV, .table = 1,
+     .end2 = 2, .end15 = C_MOV + 4, .endt = SNX_ARM_T, .end_poll = 9},
+    {"BX to Thumb, an ARM key", .entry = C_BX, .r1 = C_MOV | 1, .poll = 9, .key = C_MOV, .block = C_MOV, .table = 1,
+     .end15 = C_MOV, .endt = SNX_ARM_T, .end_poll = 9},
+    {"BX, the slot another's", .entry = C_BX, .r1 = C_MOV, .poll = 9, .key = C_MOV + 0x20000, .block = C_MOV,
+     .table = 1, .end15 = C_MOV, .end_poll = 9},
+    {"BX, the slot's block null", .entry = C_BX, .r1 = C_MOV, .poll = 9, .key = C_MOV, .table = 1, .end15 = C_MOV,
+     .end_poll = 9},
+    {"BX with no table", .entry = C_BX, .r1 = C_MOV, .poll = 9, .key = C_MOV, .block = C_MOV, .end15 = C_MOV,
+     .end_poll = 9},
+    {"on, through the table", .entry = C_MOV, .poll = 9, .key = C_MOV + 4, .block = C_AFTER, .table = 1, .end2 = 1,
+     .end15 = C_AFTER + 4, .end_poll = 9},
+    {"BXEQ not taken", .entry = C_BXEQ, .r1 = C_AFTER, .poll = 9, .key = C_BXEQ + 4, .block = C_MOV, .table = 1,
+     .end2 = 2, .end15 = C_MOV + 4, .end_poll = 9},
+    {"BXEQ taken", .entry = C_BXEQ, .r1 = C_AFTER, .cpsr = 1u << 30, .poll = 9, .key = C_AFTER, .block = C_AFTER,
+     .table = 1, .end2 = 1, .end15 = C_AFTER + 4, .end_poll = 8},
+    {"an SVC", .entry = C_SVC, .poll = 9, .key = C_SVC + 4, .block = C_MOV, .table = 1, .direct = 1, .returns = 1,
+     .end15 = C_SVC + 4, .end_poll = 9, .exit = SNX_ARM_SVC, .syndrome = 5},
+    {"a stub with no function", .entry = C_STUB, .poll = 9, .table = 1, .end15 = C_PAST, .end_poll = 9,
+     .exit = SNX_ARM_SVC, .syndrome = CHAINED_IMPORT},
+    {"a stub that goes on", .entry = C_STUB, .poll = 9, .table = 1, .direct = 1, .returns = 1, .end2 = 3,
+     .end15 = C_PAST + 4, .end_poll = 9, .calls = 1},
+    {"a stub that stops", .entry = C_STUB, .poll = 9, .key = C_PAST, .block = C_PAST, .table = 1, .direct = 1,
+     .end15 = C_PAST, .end_poll = 9, .calls = 1},
+    {"a stub whose function moves R15", .entry = C_STUB, .poll = 9, .table = 1, .direct = 1, .sets15 = 0x5554,
+     .end15 = 0x5554, .end_poll = 9, .calls = 1},
+    {"a Thumb loop within the poll", .entry = C_TLOOP, .r0 = 5, .poll = 100, .table = 1, .end15 = C_TLOOP + 3,
+     .endt = SNX_ARM_T, .end_poll = 96},
+    {"a Thumb loop past the poll", .entry = C_TLOOP, .r0 = 5, .poll = 2, .table = 1, .end0 = 3, .end15 = C_TLOOP - 1,
+     .endt = SNX_ARM_T},
+    {"a Thumb BX to ARM", .entry = C_TBX, .r1 = C_AFTER, .poll = 9, .key = C_AFTER, .block = C_AFTER, .table = 1,
+     .end2 = 1, .end15 = C_AFTER + 4, .end_poll = 8},
+    {"a Thumb BX to Thumb", .entry = C_TBX, .r1 = C_TPAST, .poll = 9, .key = C_TPAST, .block = C_TPAST, .table = 1,
+     .end2 = 4, .end15 = C_TPAST + 1, .endt = SNX_ARM_T, .end_poll = 9},
+    {"a Thumb stub that goes on", .entry = C_TSTUB, .poll = 9, .table = 1, .direct = 1, .returns = 1, .end2 = 4,
+     .end15 = C_TPAST + 1, .endt = SNX_ARM_T, .end_poll = 9, .calls = 1},
+    {"a Thumb stub with no function", .entry = C_TSTUB, .poll = 9, .table = 1, .end15 = C_TPAST - 1, .endt = SNX_ARM_T,
+     .end_poll = 9, .exit = SNX_ARM_SVC, .syndrome = CHAINED_IMPORT},
+    /* IT EQ leaves ITSTATE 0x08 in CPSR: its dispatch loop's, whatever the table has */
+    {"an IT block's end", .entry = C_TIT, .poll = 9, .key = C_TIT + 2, .block = C_MOV, .table = 1, .end15 = C_TIT + 1,
+     .endt = SNX_ARM_T | 0x800, .end_poll = 9},
+};
+#define CHAINED_CASES (sizeof chained_cases / sizeof *chained_cases)
+static int chained_makes(uint32_t key) {
+    return !(key & 1) || key != C_TIT || thumb2(); /* IT is Thumb-2's */
+}
+#if defined(SNX_TEST_NATIVE)
+static void swap_chained(void* state) {
+    ChainedState* s = (ChainedState*)state;
+    snx_test_swap_arm(&s->cpu);
+    snx_test_sw32(&s->poll);
+    snx_test_sw64((void*)&s->lookup);
+    snx_test_sw64((void*)&s->direct);
+}
+#endif
+static int run_chained(Back* x64) {
+    SnxArmChainedOptions options = {
+        .options = g_test.options, .poll = offsetof(ChainedState, poll), .lookup = offsetof(ChainedState, lookup)};
+    unsigned char* object = NULL;
+    size_t size = 0, failures = 0, ran = 0;
+    char error[512] = "";
+    SnxU64 addr[CHAINED_BLOCKS] = {0};
+    const char* names[CHAINED_BLOCKS];
+    char name[CHAINED_BLOCKS][24];
+    size_t of[CHAINED_BLOCKS], n = 0;
+    int rc = 1;
+    /* options that are not these: a table and no poll, another memory, the plain ABI's number */
+    SnxArmChainedOptions bad = options;
+    bad.options.abi = SNX_ARM_CHAINED_OPTIONS_ABI, bad.poll = 0;
+    int took = !back_(options)(x64, &bad.options);
+    bad = options, bad.options.abi = SNX_ARM_CHAINED_OPTIONS_ABI, bad.options.memory = SNX_ARM_MEMORY_FLAT;
+    took |= !back_(options)(x64, &bad.options);
+    bad.options.abi = 3;
+    took |= !back_(options)(x64, &bad.options);
+    if (took) {
+        fprintf(stderr, "FAIL: the " BACK_NAME " back end takes chained options it has no meaning for\n");
+        ++failures;
+    }
+    for (size_t i = 0; i < CHAINED_BLOCKS; ++i) {
+        const uint32_t key = chained_blocks[i].key, pc = key & ~1u;
+        const int stub = key == C_STUB || key == C_TSTUB;
+        size_t consumed = 0;
+        if (!chained_makes(key)) continue;
+        options.options.abi = SNX_ARM_CHAINED_OPTIONS_ABI;
+        options.direct = stub ? offsetof(ChainedState, direct) : 0;
+        options.import = stub ? CHAINED_IMPORT : 0;
+        int made = !back_(options)(x64, &options.options);
+        if (made)
+            made = key & 1 ? back_(thumb_block)(x64, NULL, chained_blocks[i].code, chained_blocks[i].units, pc,
+                                                &consumed, chained_next, NULL)
+                           : back_(block)(x64, NULL, chained_blocks[i].code, chained_blocks[i].units, pc, &consumed,
+                                          chained_next, NULL);
+        if (!made || consumed != chained_blocks[i].units) {
+            fprintf(stderr, "FAIL: the chained block at %08x: %s\n", key, back_(why)(x64));
+            return 1;
+        }
+        snprintf(name[n], sizeof name[n], "%c_%08x", key & 1 ? 'T' : 'A', pc);
+        names[n] = name[n];
+        of[n++] = i;
+    }
+    back_(options)(x64, &g_test.options);
+    if (back_(object)(x64, &object, &size, NULL)) {
+        fprintf(stderr, "FAIL: the chained blocks' object\n");
+        return 1;
+    }
+    SnxU64 loaded[CHAINED_BLOCKS] = {0};
+#if defined(SNX_TEST_NATIVE)
+    HostUc* uc = hostuc_new(BACK_UC, 1u << 20);
+    ChainedState* t = uc ? (ChainedState*)hostuc_alloc(uc, sizeof *t) : NULL;
+    SnxArmLookup* table = uc ? (SnxArmLookup*)hostuc_alloc(uc, SNX_ARM_LOOKUP_SLOTS * sizeof *table) : NULL;
+    const int big = hostuc_big(BACK_UC);
+    if (!t || !table) goto done;
+    hostuc_swapper(uc, swap_chained, t);
+    if (!hostuc_native(uc, "snx_arm_direct", (void*)snx_arm_direct) ||
+        hostuc_load(uc, object, size, error, sizeof error))
+        goto done;
+#if defined(SNX_TEST_WIN64)
+    hostuc_step(uc, 1); /* each frame unwound at every instruction, a tail call's way out of it among them */
+#endif
+    for (size_t k = 0; k < n; ++k)
+        if (!(loaded[k] = hostuc_symbol(uc, names[k]))) goto done;
+#else
+    SnxCodeLoader* loader = NULL;
+    ChainedState* t = (ChainedState*)malloc(sizeof *t);
+    SnxArmLookup* table = (SnxArmLookup*)calloc(SNX_ARM_LOOKUP_SLOTS, sizeof *table);
+    SnxLinkInput input = {.data = object, .size = size, .name = "chained"};
+    if (!t || !table || !(loader = new_loader(error, sizeof error)) ||
+        snx_code_define(loader, "snx_arm_direct", (SnxU64)(uintptr_t)snx_arm_direct) ||
+        snx_code_load_private(loader, &input, 1, names, n, loaded, error, sizeof error))
+        goto done;
+#endif
+    for (size_t k = 0; k < n; ++k) addr[of[k]] = loaded[k];
+    for (size_t i = 0; i < CHAINED_CASES; ++i) {
+        const ChainedCase* k = &chained_cases[i];
+        SnxU64 entry = 0, target = 0;
+        for (size_t b = 0; b < CHAINED_BLOCKS; ++b) {
+            if (chained_blocks[b].key == k->entry) entry = addr[b];
+            if (chained_blocks[b].key == k->block) target = addr[b];
+        }
+        if (!entry || (k->block && !target)) continue; /* a Thumb-2 one, where there is none */
+        SnxArmLookup* slot = &table[(k->key >> 1) & (SNX_ARM_LOOKUP_SLOTS - 1)];
+        *slot = (SnxArmLookup){k->key, (SnxArmBlock)(uintptr_t)target};
+        *t = (ChainedState){0};
+        t->cpu.r[0] = k->r0;
+        t->cpu.r[1] = k->r1;
+        t->cpu.r[15] = k->entry & ~1u;
+        t->cpu.cpsr = 0x10u | k->cpsr | (k->entry & 1 ? SNX_ARM_T : 0);
+        t->poll = k->poll;
+        t->lookup = k->table ? table : NULL;
+        t->direct = k->direct ? chained_direct : NULL;
+        t->returns = k->returns;
+        t->sets15 = k->sets15;
+#if defined(SNX_TEST_NATIVE)
+        if (big) snx_test_sw32(&slot->key), snx_test_sw64((void*)&slot->block);
+        if (hostuc_call(uc, entry, (uint64_t)(uintptr_t)&t->cpu, 0, NULL)) {
+            fprintf(stderr, "FAIL: %s: the code stopped\n", k->what);
+            ++failures;
+        }
+#else
+        run_block(entry, &t->cpu);
+#endif
+        *slot = (SnxArmLookup){0};
+        ++ran;
+        const uint32_t state = t->cpu.cpsr & (SNX_ARM_T | SG_TEST_IT_BITS);
+        if (t->cpu.r[0] != k->end0 || t->cpu.r[2] != k->end2 || t->cpu.r[15] != k->end15 || state != k->endt ||
+            t->poll != k->end_poll || t->cpu.exit != k->exit || (k->exit && t->cpu.syndrome != k->syndrome) ||
+            t->calls != k->calls ||
+            (k->calls && (t->import != CHAINED_IMPORT || t->r15 != (k->entry & ~1u) + (k->entry & 1 ? 2 : 4)))) {
+            fprintf(
+                stderr,
+                "FAIL: %s: R0 %u, R2 %u, R15 %08x, T and IT %x, poll %d, exit %u, syndrome %u, calls %u (import %u, "
+                "R15 %08x); wanted R0 %u, R2 %u, R15 %08x, T and IT %x, poll %d, exit %u, syndrome %u, calls %u\n",
+                k->what, t->cpu.r[0], t->cpu.r[2], t->cpu.r[15], state, t->poll, t->cpu.exit, t->cpu.syndrome, t->calls,
+                t->import, t->r15, k->end0, k->end2, k->end15, k->endt, k->end_poll, k->exit, k->syndrome, k->calls);
+            ++failures;
+        }
+    }
+    printf("%zu cases of chained blocks, %zu failures\n", ran, failures);
+    g_test.failures += failures;
+    rc = 0;
+done:
+    if (rc) fprintf(stderr, "FAIL: the chained blocks' object: %s\n", error);
+    free(object);
+#if defined(SNX_TEST_WIN64)
+    if (uc) hostuc_step(uc, 0);
+#endif
+#if defined(SNX_TEST_NATIVE)
+    if (uc) hostuc_free(uc);
+#else
+    free(t), free(table);
+    if (loader) snx_code_loader_free(loader);
+#endif
+    return rc;
+}
+
 /* a block's address: the bus's open bus reads the code by its region, and in IWRAM by its halfword */
 static uint32_t block_pc(int thumb) {
     static const uint32_t at[] = {0x1000, 0x2001000, 0x3001000, 0x3001002, 0x7000010, 0x8001000, 0x8001006};
@@ -1983,6 +2272,7 @@ int main(int argc, char** argv) {
     if (plain && !g_test.nonly && !g_test.nhalves && run_vrshl_witness(x64)) ++g_test.failures;
     if (!plain && !g_test.nonly && !g_test.nhalves && run_chains(x64)) ++g_test.failures;
 #endif
+    if (hosted() && !g_test.nonly && !g_test.nhalves && run_chained(x64)) ++g_test.failures;
     if (plain && !g_test.nonly && !g_test.nhalves && run_thumb_witnesses(ir, x64)) ++g_test.failures;
     if (g_test.nhalves) {
         blocks[0].thumb = 1;

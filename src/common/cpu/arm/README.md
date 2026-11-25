@@ -8,7 +8,7 @@ The NX runtime runs 32-bit programs with it. The recompiler compiles a 32-bit pr
 
 - `arm.h`: separate, versioned `SnxArmCPU` state and exit reasons, the backend's `SnxArmRt`, plus the Thumb decode model.
 - `codegen.h`: what a block is made for (`SnxArmCodegenOptions`: the profile, the memory mode, the ARM7TDMI's trace),
-  whichever compiler makes it.
+  whichever compiler makes it, and how a chained hosted one goes on (`SnxArmChainedOptions`, the native back ends').
 - `aot.h`, `aot.c`: the blocks of a module made ahead of time (the 3DS's, the DS's, the GBA's): the host's native back
   end's, LLVM's where it has none or refuses one, counted with its reason and said, and every one LLVM's where its IR is
   kept. The Vita's compiler counts and says its blocks the same way.

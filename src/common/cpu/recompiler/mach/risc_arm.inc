@@ -69,9 +69,9 @@ static void mg_return(MG_ARM* c) {
     rk_ret(&c->b);
 }
 /* where the block ends with R15 key's address in key's state: a jump to the block's own entry past its checks (X and
-   its name) where key is one of the successors, after the poll for one at or before the block's start; else R15
-   stored and the return. public: the block's checked entry instead, R15 stored */
-static void mg_go_on(MG_ARM* c, SnxU32 key, SnxU32 block, const SnxU32* next, size_t nnext, int public) {
+   its name) where key is one of the successors, after the poll where polled (key at or before the block's start); else
+   R15 stored and the return. public: the block's checked entry instead, R15 stored */
+static void mg_go_on(MG_ARM* c, SnxU32 key, int polled, const SnxU32* next, size_t nnext, int public) {
     SgXBuf* b = &c->b;
     SgCtx* g = &c->g;
     size_t k = 0;
@@ -81,7 +81,7 @@ static void mg_go_on(MG_ARM* c, SnxU32 key, SnxU32 block, const SnxU32* next, si
         sgx_a32_jmp(g, b, g->ret);
         return;
     }
-    if ((key & ~1u) <= block) {
+    if (polled) {
         /* the thread's poll (the state's word at snx_arm_poll_offset): a thread of higher priority waits, the return
            with R15 stored */
         int go = sgx_a32_label(g);
@@ -100,6 +100,21 @@ static void mg_go_on(MG_ARM* c, SnxU32 key, SnxU32 block, const SnxU32* next, si
     name_of(sym + (public ? 0 : 1), sizeof sym - 1, key);
     if (!public) sym[0] = 'X';
     add_rel(c, rk_tail_reloc(b), sym, MG_ARM_R_TAIL, 0);
+}
+
+/* the block's end in a tail call of the block at the address in reg: the state its argument, as it is this one's. The
+   address goes by a register the epilogue leaves alone, RK_S1 or the one RK_TAIL says */
+static void mg_tail(MG_ARM* c, int reg) {
+    SgXBuf* b = &c->b;
+#ifdef RK_TAIL
+    const int to = RK_TAIL;
+#else
+    const int to = RK_S1;
+#endif
+    rk_mv(b, to, reg);
+    rk_mv(b, sgx_arg_regs[0], SGX_BASE);
+    epilogue(c);
+    rk_jump_reg(b, to);
 }
 
 /* the exit function (state, the block's address, its first word), each object's own, where a block's entry check

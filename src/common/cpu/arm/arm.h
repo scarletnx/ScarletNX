@@ -106,6 +106,9 @@ uint64_t snx_arm_io_write(SnxArmCPU* cpu, uint64_t address, uint64_t size, uint6
 uint64_t snx_arm_checked_fetch(SnxArmCPU* cpu, uint64_t pc, uint64_t word, uint64_t bytes);
 uint64_t snx_arm_checked_access(SnxArmCPU* cpu, uint64_t operation, uint64_t address, uint64_t bytes);
 uint64_t snx_arm_checked_strex(SnxArmCPU* cpu, uint64_t address, uint64_t bytes);
+/* A chained import's stub (codegen.h's SnxArmChainedOptions): the function whose pointer is at bytes past cpu, called with
+   cpu and import, nonzero where the block goes on; with none there, 0 and the SVC's exit, import its syndrome */
+uint64_t snx_arm_direct(SnxArmCPU* cpu, uint64_t import, uint64_t at);
 
 typedef void (*SnxArmBlock)(SnxArmCPU* cpu);
 

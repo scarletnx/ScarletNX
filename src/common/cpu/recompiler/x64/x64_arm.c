@@ -232,9 +232,9 @@ static void epilogue(MG_ARM* c) {
 }
 /* where the block ends with R15 key's address in key's state: a jump to the block's own entry past its checks (X and
    its name: the code there reads no R15, and its every exit stores it) where key is one of the successors, after the
-   poll for one at or before the block's start; else R15 stored and the return. public: the block's checked entry
-   instead, R15 stored (after an MSR that may have set E, which that entry checks) */
-static void mg_go_on(MG_ARM* c, SnxU32 key, SnxU32 block, const SnxU32* next, size_t nnext, int public) {
+   poll where polled (key at or before the block's start); else R15 stored and the return. public: the block's checked
+   entry instead, R15 stored (after an MSR that may have set E, which that entry checks) */
+static void mg_go_on(MG_ARM* c, SnxU32 key, int polled, const SnxU32* next, size_t nnext, int public) {
     SgXBuf* b = &c->b;
     SgCtx* g = &c->g;
     size_t k = 0;
@@ -244,7 +244,7 @@ static void mg_go_on(MG_ARM* c, SnxU32 key, SnxU32 block, const SnxU32* next, si
         sgx_a32_jmp(g, b, g->ret);
         return;
     }
-    if ((key & ~1u) <= block) {
+    if (polled) {
         /* mov rax, [rip + snx_arm_poll_offset]; cmp dword [rbx + rax], 0; jne: a thread of higher priority waits, the
            return with R15 stored */
         int wait = sgx_a32_label(g), go = sgx_a32_label(g);
@@ -266,6 +266,15 @@ static void mg_go_on(MG_ARM* c, SnxU32 key, SnxU32 block, const SnxU32* next, si
     sgx_byte(b, 0xE9);
     add_rel(c, b->n, sym, R_X86_64_PLT32, -4);
     sgx_imm(b, 0, 4);
+}
+
+/* the block's end in a tail call of the block at the address in reg: the state its argument, as it is this one's */
+static void mg_tail(MG_ARM* c, int reg) {
+    SgXBuf* b = &c->b;
+    if (reg != SGX_RET) sgx_mov_rr(&c->a, SGX_RET, reg);
+    sgx_state_arg(&c->a, b);
+    epilogue(c);
+    sgx_bytes(b, "48 FF E0"); /* jmp rax, whose REX.W says to Windows' unwinder that it ends the epilogue */
 }
 
 /* the block's return: the epilogue and RET */

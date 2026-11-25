@@ -694,6 +694,10 @@ load's call), `sgx_a32_read` and `sgx_a32_write` move its bytes (`sgx_a32_read_l
   calls `snx_arm_multiply_carry`, and its trace is stores past the state and a bit on a skipped instruction's way.
 - The *ARM11's* VFP stops for the backend where FPSCR enables an exception or a short vector, and at a VMSR of bits it
   does not model (`SGX_A32_OUT` too).
+- *Chained* hosted blocks (`codegen.h`'s `SnxArmChainedOptions`, the Vita's) go on without their dispatch loop: a step
+  back counts the slice's poll down (`count_back`), a target that is no successor is run from the runtime's table
+  (`look_up`: `SGX_A32_FIELD` loads the host's own words of it, `SGX_A32_TAIL` is the tail call, `mg_tail` on each
+  machine), and an import's stub calls the runtime through `snx_arm_direct` in its SVC's place (`import_call`).
 
 A block's entry checks what `block_begin` does (exit and syndrome cleared, R15 its address, CPSR.T and E clear) on a
 shared stub of the object; its end goes on to the block after it with a jump to that block's function where
@@ -717,4 +721,5 @@ TBB's and TBH's reads past memory. `arm_x64_spill` does it with three host
 registers, `arm_x64_plain` without BMI1, BMI2 and LZCNT; `arm_win64` runs the same with the code a Windows host's. `--profile` and `--memory` run the other profiles and modes
 (`arm_x64_a9`, `arm_x64_arm7tdmi_trace`, `arm_x64_arm11_checked`, ... and the same on each other machine), against
 LLVM's blocks of the same options: their words are what the profile decodes, hosted memory and the hook's two run on a
-window of 4 GiB, and every call of the hook or the checked callback is logged with the state it saw.
+window of 4 GiB, and every call of the hook or the checked callback is logged with the state it saw. The hosted modes run
+the chained blocks' cases as well, each end against the state, the poll and the calls it must leave.
