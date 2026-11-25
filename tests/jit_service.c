@@ -16,7 +16,9 @@
    cache: a second service on the same file loads the first one's units instead of compiling them, refuses a unit whose
    code changed (and compiles the new code), and reads the records before one a run left unfinished. A change in the
    middle of a function drops its whole unit, and a callee invalidated then compiled again by a later caller's batch is
-   published, so the batches after it don't compile it again */
+   published, so the batches after it don't compile it again. A change of code a batch has read, while it compiles,
+   drops it, and its pcs compile again, live or warm; a counter in one image says nothing of another's words; an image
+   removed while a batch holds it is not read again; and a program that rewrites code beside a long batch drops none */
 #include "common/cpu/recompiler/llvm/jit_service.h"
 #include "common/cpu/recompiler/llvm/jit_cache.h"
 #include "nx/runtime/ini.h"
@@ -1079,6 +1081,65 @@ static void test_removed_in_flight(void) {
 
 #endif
 
+/* A program that rewrites code around a long batch while it compiles, as a game patching its own code does: the batch
+   reads none of what the writer writes, so it is published once it is done, however fast the writer goes, and nothing
+   it compiled is thrown away. Dropped for any change of memory, the batch was compiled over and over until the writer
+   stopped (the same batch five times in a game, which waited a second for it each time) */
+#define LONG_PC   0x14000
+#define LONG_ADDS 4000
+#define REWRITTEN 0x9000
+static _Atomic int rewrite_stop;
+static void* rewriter(void* arg) {
+    (void)arg;
+    for (u32 i = 0; !atomic_load_explicit(&rewrite_stop, memory_order_relaxed); ++i) {
+        const u32 word = 0x91000400 | (i & 1) << 10; /* add x0, x0, #1, then #2 */
+        put(REWRITTEN, &word, 1);
+        snx_jit_invalidate(service, REWRITTEN, 4);
+    }
+    return NULL;
+}
+static void test_rewrite_beside(void) {
+    u32* words = (u32*)calloc(LONG_ADDS + 1, sizeof *words);
+    SnxJitStats before, after;
+    pthread_t writer;
+    int published = 0, started;
+    double began, took;
+    CPU c;
+    service = words ? start(1, 1) : NULL;
+    if (!service) {
+        ++failures;
+        free(words);
+        return;
+    }
+    for (unsigned j = 0; j < LONG_ADDS; ++j) words[j] = 0x91000400; /* add x0, x0, #1 */
+    words[LONG_ADDS] = 0xD65F03C0;                                  /* ret */
+    put(LONG_PC, words, LONG_ADDS + 1);
+    free(words);
+    snx_jit_stats(service, &before);
+    atomic_store_explicit(&rewrite_stop, 0, memory_order_relaxed);
+    started = pthread_create(&writer, NULL, rewriter, NULL) == 0;
+    CHECK(started);
+    began = snx_seconds();
+    CHECK(snx_jit_resolve(service, LONG_PC) == NULL);
+    while (started && !published && snx_seconds() - began < 20) {
+        published = get(LONG_PC) != NULL;
+        if (!published) nanosleep(&(struct timespec){0, 1000000}, NULL);
+    }
+    took = snx_seconds() - began;
+    atomic_store_explicit(&rewrite_stop, 1, memory_order_relaxed);
+    if (started) pthread_join(writer, NULL);
+    snx_jit_drain(service);
+    snx_jit_stats(service, &after);
+    printf("rewrite beside: a batch of %d instructions in %.1f ms while its module was rewritten elsewhere, %lu of its "
+           "batches dropped\n",
+           LONG_ADDS, took * 1000.0, after.dropped - before.dropped);
+    CHECK(published && after.dropped == before.dropped);
+    cpu_init(&c, 0xF000);
+    run(&c, LONG_PC);
+    CHECK(c.x[0] == LONG_ADDS && c.pc == RETURN);
+    snx_jit_service_free(service);
+}
+
 /* added images in different 16 MiB chunks: the page map finds each, and removing one leaves the other's pages */
 static void test_image_map(void) {
     static const u32 far_words[] = {0x91000400, 0xD65F03C0}; /* add x0, x0, #1; ret */
@@ -1457,6 +1518,7 @@ int main(int argc, char** argv) {
 #if !defined(_WIN32)
     test_removed_in_flight();
 #endif
+    test_rewrite_beside();
     test_image_map();
     test_region_limit(0);
     test_waited_priority();
