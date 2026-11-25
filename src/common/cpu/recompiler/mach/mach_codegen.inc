@@ -2059,7 +2059,11 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
         {
             SnxU32 vw;
             SnxU64 xw = may_write(&insn, w, &vw);
-            if (insn.flow == SNX_A64_FLOW_BL) xw |= live_r(16) | live_r(17); /* a bound PLT stub's in its place */
+            /* a bound PLT stub's, in the place of a call or of a tail call */
+            if (insn.flow == SNX_A64_FLOW_BL ||
+                ((insn.flow == SNX_A64_FLOW_B || insn.flow == SNX_A64_FLOW_BC) &&
+                 !snx_function_contains(f, snx_a64_branch_target(&insn, a))))
+                xw |= live_r(16) | live_r(17);
             u->pin_wr |= xw;
             u->vpin_wr |= vw;
             u->dsync[i] = xw;

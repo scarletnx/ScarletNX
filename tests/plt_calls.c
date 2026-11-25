@@ -111,9 +111,9 @@ enum {
     SDK_TWO = 0x60,
     EXT_TAIL = 0x80
 };
-/* The main module: game_main (CALLER) calls the stubs of ext_add, own_add and two and ends in a branch to
-   ext_tail's, which another function (OTHER, never run) calls too and a symbol names (tail_stub), so that the branch
-   leaves game_main; own_add copies x16 to x22 and adds 0x20 to x0, and its two adds 0x200. ext: the name ext_add
+/* The main module: game_main (CALLER) calls the stubs of ext_add, own_add and two, reads x16 in a loop (so a back end
+   keeps it in a host register) and ends in a branch to ext_tail's, a CBNZ where x23 is not zero or a B, which another
+   function (OTHER, never run) calls too and a symbol names (tail_stub), so that the branch leaves game_main; own_add copies x16 to x22 and adds 0x20 to x0, and its two adds 0x200. ext: the name ext_add
    goes by */
 static void main_image(unsigned char* image, const char* ext) {
     const Symbol symbols[6] = {{"game_main", CALLER}, {"own_add", OWN_ADD},    {"two", MAIN_TWO}, {ext, 0},
@@ -128,7 +128,12 @@ static void main_image(unsigned char* image, const char* ext) {
     put32(image, CALLER + 8, 0x94000000 | rel(CALLER + 8, STUB + 16));          /* bl own_add's */
     put32(image, CALLER + 12, 0x94000000 | rel(CALLER + 12, STUB + 32));        /* bl two's */
     put32(image, CALLER + 16, 0xAA1303FE);                                      /* mov x30, x19 */
-    put32(image, CALLER + 20, 0x14000000 | rel(CALLER + 20, STUB + 48));        /* b ext_tail's */
+    put32(image, CALLER + 20, 0xD280004A);                                      /* mov x10, #2 */
+    put32(image, CALLER + 24, 0x8B100209);                                      /* add x9, x16, x16 */
+    put32(image, CALLER + 28, 0xD100054A);                                      /* sub x10, x10, #1 */
+    put32(image, CALLER + 32, 0xB5FFFFCA);                                      /* cbnz x10, -8 */
+    put32(image, CALLER + 36, 0xB5000017 | rel(CALLER + 36, STUB + 48) << 5);   /* cbnz x23, ext_tail's */
+    put32(image, CALLER + 40, 0x14000000 | rel(CALLER + 40, STUB + 48));        /* b ext_tail's */
     put32(image, OTHER, 0x94000000 | rel(OTHER, STUB + 48));                    /* bl ext_tail's */
     put32(image, OTHER + 4, 0xD65F03C0);                                        /* ret */
     put32(image, OWN_ADD, 0xAA1003F6);                                          /* mov x22, x16 */
@@ -265,6 +270,7 @@ static void module_runs(const char* path, const unsigned char* main_bytes, const
             c.disp[(b + EXT_TAIL - m->code_lo) / 4] = override_add;
         }
         c.x[30] = 0x1000;
+        c.x[23] = step == 1; /* the tail call a CBNZ's */
         missed = 0;
         entry(&c, a + CALLER);
         if (!step)
