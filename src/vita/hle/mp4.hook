@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+#
+# The Vita's imports that mp4.c answers, by NID, for tools/hookgen --vita.
+# SceMp4: an MP4 file's H.264 and AAC units, as the SDK's SceAvPlayer reads them (one statically linked into a game:
+# the calls and structures below are what that library does with them). The file is read whole into memory when it
+# is opened, through the game's file callbacks (SceAvPlayerFileReplacement's open, size, readOffset and close, each
+# called as guest code) or from its path, and FFmpeg's MP4 demuxer reads it from there. A video unit is H.264 in
+# Annex B (h264_mp4toannexb), as the console's decoder takes it; an audio unit a raw AAC frame. Timestamps are 90 kHz
+# ticks, the movie's duration in 0.1 ms units, as the library reads them.
+#
+# The NIDs are Vita3K's (nids.inc, GPL-2.0-or-later); its SceMp4 is stubs, so what each call does is the library's
+# use of it: GetStreamInfo's (0xd5b26179) name is ours
+family mp4
+[0x05474af0] hook sceMp4OpenFile(addr path, addr replacement) -> u32 = vita_mp4_open_file
+[0x30e49e4d] hook sceMp4StartFileStreaming(u32 handle, addr streams, addr duration_out) -> u32 = vita_mp4_start_file_streaming
+[0xd5b26179] hook sceMp4GetStreamInfo(u32 handle, u32 index, addr info) -> u32 = vita_mp4_get_stream_info
+[0x8be0e3d3] hook sceMp4GetStreamInfo(u32 handle, u32 index, addr info, u32 unknown) -> u32 = vita_mp4_get_stream_info_named
+[0x609e57ad] hook sceMp4EnableStream(u32 handle, u32 stream) -> u32 = vita_mp4_enable_stream
+[0x20a01112] hook sceMp4GetNextUnit(u32 handle, addr unit) -> u32 = vita_mp4_get_next_unit
+[0xd092a066] hook sceMp4GetNextUnitData(u32 handle, addr to) -> u32 = vita_mp4_get_next_unit_data
+[0x40351e1a] hook sceMp4Reset(u32 handle) -> u32 = vita_mp4_reset
+[0x96676ba0] hook sceMp4JumpPTS(u32 handle, u32 unused, u64 time) -> u32 = vita_mp4_jump_pts
+[0x920623c8] hook sceMp4CloseFile(u32 handle) -> u32 = vita_mp4_close_file
+[0x7b4832fe] hook sceMp4ReleaseBuffer() -> u32 = vita_mp4_ok

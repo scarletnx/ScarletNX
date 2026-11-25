@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+#
+# The Vita's imports that audio.c answers, by NID, for tools/hookgen --vita.
+# SceAudio: the output ports, each an SDL3 stream on the default playback device, which mixes them. A buffer is
+# queued when output, and the call returns when the one before it has played, as the console's double-buffered port
+# does: the game stays a buffer ahead of what is heard. Without a device the time still passes the same way.
+# SceAudioIn: a microphone that hears silence, each grain taking its time as the console's does
+family audio
+[0x5bc341e4] hook sceAudioOutOpenPort(u32 type, u32 len, u32 freq, u32 mode) -> u32 = vita_audio_open_port
+[0x69e2e6b5] hook sceAudioOutReleasePort(u32 port_id) -> u32 = vita_audio_release_port
+[0x02db3f5f] hook sceAudioOutOutput(u32 port_id, addr buffer) -> u32 = vita_audio_output
+[0xb8ba0d07] hook sceAudioOutSetConfig(u32 port_id, i32 len, i32 freq, i32 mode) -> u32 = vita_audio_set_config
+[0x9c8edaea] hook sceAudioOutGetConfig(u32 port_id, u32 type) -> u32 = vita_audio_get_config
+[0x64167f11] hook sceAudioOutSetVolume(u32 port_id, u32 flag, addr volumes) -> u32 = vita_audio_set_volume
+[0x9a5370c4] hook sceAudioOutGetRestSample(u32 port_id) -> u32 = vita_audio_get_rest_sample
+[0x12fb1767] hook sceAudioOutGetAdopt(u32 type) -> u32 = vita_audio_get_adopt
+[0x39b50dc1] hook sceAudioInOpenPort(u32 type, u32 grain, u32 freq, u32 param) -> u32 = vita_audio_in_open_port
+[0x3a61b8c4] hook sceAudioInReleasePort(u32 port_id) -> u32 = vita_audio_in_release_port
+[0x638add2d] hook sceAudioInInput(u32 port_id, addr dest) -> u32 = vita_audio_in_input
+[0x2f940377] hook sceAudioInGetStatus(u32 select) -> u32 = vita_audio_in_get_status
+[0x566ac433] hook sceAudioInGetAdopt(u32 type) -> u32 = vita_audio_get_adopt

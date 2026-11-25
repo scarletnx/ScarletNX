@@ -12,6 +12,7 @@
    ADTS, of the size SceMp4 gave the unit at that address (vita_mp4_unit_size: a raw frame says nothing of its length),
    or the most a decoder reads */
 #include "vita/hle/hle.h"
+#include "vita/hle/hle.hook.h"
 #include "common/utilities/endian.h"
 #include <libavcodec/avcodec.h>
 #include <math.h>
@@ -51,7 +52,6 @@ struct VitaAudiodec {
     } blocks[BLOCKS]; /* the codec engine's: carved from their start */
 };
 
-static uint32_t arg(VitaProcess* p, VitaThread* t, unsigned n) { return vita_arg(p, t, n); }
 static struct VitaAudiodec* state(VitaProcess* p) {
     if (!p->audiodec) p->audiodec = calloc(1, sizeof *p->audiodec);
     return p->audiodec;
@@ -76,15 +76,15 @@ void vita_audiodec_free(VitaProcess* p) {
     free(p->audiodec);
     p->audiodec = NULL;
 }
-static uint32_t ok(VitaProcess* p, VitaThread* t) {
+uint32_t vita_audiodec_ok(VitaProcess* p, VitaThread* t) {
     (void)p, (void)t;
     return 0;
 }
 
 /* ---- the decoders ---- */
 /* sceAudiodecGetContextSize(ctrl, type): the decoder's memory, which its caller allocates */
-static uint32_t get_context_size(VitaProcess* p, VitaThread* t) {
-    uint32_t ctrl = arg(p, t, 0), type = arg(p, t, 1);
+uint32_t vita_audiodec_get_context_size(VitaProcess* p, VitaThread* t, uint32_t ctrl, uint32_t type) {
+    (void)t;
     if (!ctrl) return SCE_AUDIODEC_ERROR_INVALID_PTR;
     if (vita_read32(p, ctrl) != CTRL_SIZE) return SCE_AUDIODEC_ERROR_INVALID_SIZE;
     return type == TYPE_AAC ? 0x18000u : type == TYPE_AT9 ? 0xc00u : SCE_AUDIODEC_ERROR_INVALID_TYPE;
@@ -167,12 +167,16 @@ static uint32_t create(VitaProcess* p, uint32_t ctrl, uint32_t type) {
     return 0;
 }
 /* sceAudiodecCreateDecoder(ctrl, type), and its External form (ctrl, type, memory, size), whose memory is unused */
-static uint32_t create_decoder(VitaProcess* p, VitaThread* t) { return create(p, arg(p, t, 0), arg(p, t, 1)); }
-static uint32_t delete_decoder(VitaProcess* p, VitaThread* t) {
-    Decoder* d = decoder_of(p, arg(p, t, 0));
+uint32_t vita_audiodec_create_decoder(VitaProcess* p, VitaThread* t, uint32_t ctrl, uint32_t type) {
+    (void)t;
+    return create(p, ctrl, type);
+}
+uint32_t vita_audiodec_delete_decoder(VitaProcess* p, VitaThread* t, uint32_t ctrl) {
+    (void)t;
+    Decoder* d = decoder_of(p, ctrl);
     if (!d) return SCE_AUDIODEC_ERROR_INVALID_HANDLE;
     release(d);
-    vita_write32(p, arg(p, t, 0) + 4, 0);
+    vita_write32(p, ctrl + 4, 0);
     return 0;
 }
 /* samples [first, first + count) of FFmpeg's frame (planar or packed, float or 16-bit) as interleaved 16-bit ones at out */
@@ -254,13 +258,18 @@ static uint32_t decode_frames(VitaProcess* p, uint32_t ctrl, uint32_t frames) {
     vita_write32(p, ctrl + 0xc, used), vita_write32(p, ctrl + 0x18, given);
     return 0;
 }
-static uint32_t decode(VitaProcess* p, VitaThread* t) { return decode_frames(p, arg(p, t, 0), 1); }
-static uint32_t decode_n_frames(VitaProcess* p, VitaThread* t) {
-    return decode_frames(p, arg(p, t, 0), arg(p, t, 1));
+uint32_t vita_audiodec_decode(VitaProcess* p, VitaThread* t, uint32_t ctrl) {
+    (void)t;
+    return decode_frames(p, ctrl, 1);
+}
+uint32_t vita_audiodec_decode_n_frames(VitaProcess* p, VitaThread* t, uint32_t ctrl, uint32_t frames) {
+    (void)t;
+    return decode_frames(p, ctrl, frames);
 }
 /* sceAudiodecClearContext(ctrl): the decoder as new, before a seek */
-static uint32_t clear_context(VitaProcess* p, VitaThread* t) {
-    Decoder* d = decoder_of(p, arg(p, t, 0));
+uint32_t vita_audiodec_clear_context(VitaProcess* p, VitaThread* t, uint32_t ctrl) {
+    (void)t;
+    Decoder* d = decoder_of(p, ctrl);
     if (!d) return SCE_AUDIODEC_ERROR_INVALID_HANDLE;
     avcodec_flush_buffers(d->codec);
     d->superframe_index = 0;
@@ -269,18 +278,19 @@ static uint32_t clear_context(VitaProcess* p, VitaThread* t) {
 
 /* ---- SceCodecEngine: memory the decoders' callers hand them, carved from blocks the caller allocated ---- */
 /* sceCodecEngineOpenUnmapMemBlock(base, size): the block's id */
-static uint32_t open_block(VitaProcess* p, VitaThread* t) {
+uint32_t vita_audiodec_open_block(VitaProcess* p, VitaThread* t, uint32_t base, uint32_t size) {
+    (void)t;
     struct VitaAudiodec* s = state(p);
     for (unsigned i = 0; s && i < BLOCKS; ++i)
         if (!s->blocks[i].size) {
-            s->blocks[i].base = arg(p, t, 0), s->blocks[i].size = arg(p, t, 1), s->blocks[i].used = 0;
+            s->blocks[i].base = base, s->blocks[i].size = size, s->blocks[i].used = 0;
             return s->blocks[i].size ? i + 1 : 0x80000000u;
         }
     return 0x80000000u;
 }
 /* sceCodecEngineAllocMemoryFromUnmapMemBlock(id, size, alignment): its address, 0 without room */
-static uint32_t alloc_from_block(VitaProcess* p, VitaThread* t) {
-    uint32_t id = arg(p, t, 0), size = arg(p, t, 1), align = arg(p, t, 2);
+uint32_t vita_audiodec_alloc_from_block(VitaProcess* p, VitaThread* t, uint32_t id, uint32_t size, uint32_t align) {
+    (void)t;
     struct VitaAudiodec* s = p->audiodec;
     if (!s || id < 1 || id > BLOCKS || !s->blocks[id - 1].size || (align & (align - 1))) return 0;
     if (!align) align = 1;
@@ -289,28 +299,9 @@ static uint32_t alloc_from_block(VitaProcess* p, VitaThread* t) {
     s->blocks[id - 1].used = (uint32_t)(at + size - s->blocks[id - 1].base);
     return (uint32_t)at;
 }
-static uint32_t close_block(VitaProcess* p, VitaThread* t) {
-    uint32_t id = arg(p, t, 0);
+uint32_t vita_audiodec_close_block(VitaProcess* p, VitaThread* t, uint32_t id) {
+    (void)t;
     if (!p->audiodec || id < 1 || id > BLOCKS) return 0x80000000u;
     memset(&p->audiodec->blocks[id - 1], 0, sizeof p->audiodec->blocks[id - 1]);
     return 0;
 }
-
-const VitaHle vita_hle_audiodec[] = {
-    {0x445c2cefu, "sceAudiodecInitLibrary", ok},
-    {0x45719b9du, "sceAudiodecTermLibrary", ok},
-    {0xdb712abcu, "sceAudiodecGetContextSize", get_context_size},
-    {0x4dfd3aaau, "sceAudiodecCreateDecoder", create_decoder},
-    {0x56085dfbu, "sceAudiodecCreateDecoderExternal", create_decoder},
-    {0xe7a24e16u, "sceAudiodecDeleteDecoder", delete_decoder},
-    {0xe4ea05bbu, "sceAudiodecDeleteDecoderExternal", delete_decoder},
-    {0xccdaba04u, "sceAudiodecDecode", decode},
-    {0x8018aa9bu, "sceAudiodecDecodeNFrames", decode_n_frames},
-    {0xf72f9b64u, "sceAudiodecClearContext", clear_context},
-    {0x883b0cf5u, "sceAudiodecGetInternalError", ok},
-    {0xf0b4c892u, "sceCodecEngineOpenUnmapMemBlock", open_block},
-    {0x1a3a53e5u, "sceCodecEngineAllocMemoryFromUnmapMemBlock", alloc_from_block},
-    {0x6a31831du, "sceCodecEngineFreeMemoryFromUnmapMemBlock", ok},
-    {0x95ea3b3eu, "sceCodecEngineCloseUnmapMemBlock", close_block},
-    {0, NULL, NULL},
-};

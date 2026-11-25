@@ -10,6 +10,7 @@
    The NIDs are Vita3K's (nids.inc, GPL-2.0-or-later); its SceMp4 is stubs, so what each call does is the library's
    use of it: GetStreamInfo's (0xd5b26179) name is ours */
 #include "vita/hle/hle.h"
+#include "vita/hle/hle.hook.h"
 #include "common/utilities/endian.h"
 #include "common/utilities/common.h"
 #include <inttypes.h>
@@ -260,8 +261,7 @@ static uint32_t on_open(VitaProcess* p, VitaThread* t, void* context) {
     vita_hle_guest_call(p, t, m->size, args, 1, on_size, m);
     return 0;
 }
-static uint32_t open_file(VitaProcess* p, VitaThread* t) {
-    uint32_t path = arg(p, t, 0), replacement = arg(p, t, 1);
+uint32_t vita_mp4_open_file(VitaProcess* p, VitaThread* t, uint32_t path, uint32_t replacement) {
     struct VitaMp4* s = state(p);
     Mp4* m = NULL;
     for (unsigned i = 0; s && i < FILES && !m; ++i)
@@ -292,12 +292,14 @@ static uint32_t open_file(VitaProcess* p, VitaThread* t) {
 }
 
 /* sceMp4StartFileStreaming(handle, int* streams, u64* duration) */
-static uint32_t start_file_streaming(VitaProcess* p, VitaThread* t) {
-    Mp4* m = file_of(p, arg(p, t, 0));
+uint32_t vita_mp4_start_file_streaming(VitaProcess* p, VitaThread* t, uint32_t handle, uint32_t streams,
+                                       uint32_t duration_out) {
+    (void)t;
+    Mp4* m = file_of(p, handle);
     if (!m) return 0x80000000u;
-    if (arg(p, t, 1)) vita_write32(p, arg(p, t, 1), m->stream_count);
+    if (streams) vita_write32(p, streams, m->stream_count);
     int64_t duration = m->fmt->duration == AV_NOPTS_VALUE ? 0 : m->fmt->duration / 100; /* microseconds to 0.1 ms */
-    if (arg(p, t, 2)) vita_write64(p, arg(p, t, 2), (uint64_t)duration);
+    if (duration_out) vita_write64(p, duration_out, (uint64_t)duration);
     return 0;
 }
 /* the largest unit of a stream, from the file's index, with room for the parameter sets Annex B puts before a key
@@ -314,9 +316,9 @@ static uint32_t largest_unit(const AVStream* st) {
 /* sceMp4GetStreamInfo(handle, index, info): 0x140 bytes, zero: the type (0 video, 1 audio), the codec (1 AVC, 2 AAC),
    a video's size, profile, level, references and largest unit, its display aspect ratio times 10^6, an audio's
    rate and channels; the language in both */
-static uint32_t get_stream_info(VitaProcess* p, VitaThread* t) {
-    Mp4* m = file_of(p, arg(p, t, 0));
-    uint32_t index = arg(p, t, 1), info = arg(p, t, 2);
+uint32_t vita_mp4_get_stream_info(VitaProcess* p, VitaThread* t, uint32_t handle, uint32_t index, uint32_t info) {
+    (void)t;
+    Mp4* m = file_of(p, handle);
     if (!m || index >= m->stream_count || !info) return 0x80000000u;
     const AVStream* st = m->fmt->streams[m->streams[index]];
     const AVCodecParameters* c = st->codecpar;
@@ -343,12 +345,13 @@ static uint32_t get_stream_info(VitaProcess* p, VitaThread* t) {
 /* sceMp4GetStreamInfo, its own NID (0x8be0e3d3; 0xd5b26179 above is the call the library's other path makes): the
    arguments are not known. It does what that does, which reads the same handle, index and buffer, and the first calls
    log what they were given and what the pointers point to, to check */
-static uint32_t get_stream_info_named(VitaProcess* p, VitaThread* t) {
+uint32_t vita_mp4_get_stream_info_named(VitaProcess* p, VitaThread* t, uint32_t handle, uint32_t index, uint32_t info,
+                                        uint32_t unknown) {
     static unsigned shown;
     if (shown < 4) {
         ++shown;
-        printf("vita: sceMp4GetStreamInfo(0x%08x, 0x%08x, 0x%08x, 0x%08x)\n", arg(p, t, 0), arg(p, t, 1), arg(p, t, 2),
-               arg(p, t, 3));
+        printf("vita: sceMp4GetStreamInfo(0x%08x, 0x%08x, 0x%08x, 0x%08x)\n", handle, index, info,
+               unknown);
         for (unsigned i = 0; i < 4; ++i) {
             uint32_t a = arg(p, t, i) & ~3u;
             if (a < 0x80000000u || !vita_mapped(p, a, 32)) continue;
@@ -357,11 +360,12 @@ static uint32_t get_stream_info_named(VitaProcess* p, VitaThread* t) {
             putchar('\n');
         }
     }
-    return get_stream_info(p, t);
+    return vita_mp4_get_stream_info(p, t, handle, index, info);
 }
-static uint32_t enable_stream(VitaProcess* p, VitaThread* t) {
-    Mp4* m = file_of(p, arg(p, t, 0));
-    return m && arg(p, t, 1) < m->stream_count ? 0 : 0x80000000u;
+uint32_t vita_mp4_enable_stream(VitaProcess* p, VitaThread* t, uint32_t handle, uint32_t stream) {
+    (void)t;
+    Mp4* m = file_of(p, handle);
+    return m && stream < m->stream_count ? 0 : 0x80000000u;
 }
 /* the next unit of our streams into m->unit: 0, 1 at the end, negative on an error */
 static int next_unit(Mp4* m, unsigned* ours) {
@@ -388,9 +392,9 @@ static uint64_t ticks(const AVStream* st, int64_t ts) {
 }
 /* sceMp4GetNextUnit(handle, unit): 0x38 bytes, its size, pts and dts in 90 kHz ticks, a flag and the stream. 0, or
    above 0 at the end */
-static uint32_t get_next_unit(VitaProcess* p, VitaThread* t) {
-    Mp4* m = file_of(p, arg(p, t, 0));
-    uint32_t unit = arg(p, t, 1);
+uint32_t vita_mp4_get_next_unit(VitaProcess* p, VitaThread* t, uint32_t handle, uint32_t unit) {
+    (void)t;
+    Mp4* m = file_of(p, handle);
     if (!m || !unit || !vita_mapped(p, unit, 0x38)) return 0x80000000u;
     unsigned k = 0;
     int r = next_unit(m, &k);
@@ -408,9 +412,9 @@ static uint32_t get_next_unit(VitaProcess* p, VitaThread* t) {
     return 0;
 }
 /* sceMp4GetNextUnitData(handle, destination): the unit's bytes, all of them */
-static uint32_t get_next_unit_data(VitaProcess* p, VitaThread* t) {
-    Mp4* m = file_of(p, arg(p, t, 0));
-    uint32_t to = arg(p, t, 1);
+uint32_t vita_mp4_get_next_unit_data(VitaProcess* p, VitaThread* t, uint32_t handle, uint32_t to) {
+    (void)t;
+    Mp4* m = file_of(p, handle);
     if (!m || !m->has_unit || !to || !vita_mapped(p, to, (uint32_t)m->unit->size)) return 0x80000000u;
     memcpy(vita_ptr(p, to), m->unit->data, (size_t)m->unit->size);
     /* a raw AAC frame doesn't say how long it is: the decoder looks its size up by where it was put */
@@ -429,42 +433,29 @@ static void seek(Mp4* m, int64_t microseconds) {
     m->has_unit = false;
 }
 /* sceMp4Reset(handle): from the start */
-static uint32_t reset(VitaProcess* p, VitaThread* t) {
-    Mp4* m = file_of(p, arg(p, t, 0));
+uint32_t vita_mp4_reset(VitaProcess* p, VitaThread* t, uint32_t handle) {
+    (void)t;
+    Mp4* m = file_of(p, handle);
     if (!m) return 0x80000000u;
     seek(m, 0);
     return 0;
 }
 /* sceMp4JumpPTS(handle, unused, u64 time): the time in milliseconds (the library passes sceAvPlayerJumpToTime's) */
-static uint32_t jump_pts(VitaProcess* p, VitaThread* t) {
-    Mp4* m = file_of(p, arg(p, t, 0));
+uint32_t vita_mp4_jump_pts(VitaProcess* p, VitaThread* t, uint32_t handle, uint32_t unused, uint64_t time) {
+    (void)t, (void)unused;
+    Mp4* m = file_of(p, handle);
     if (!m) return 0x80000000u;
-    uint64_t ms = arg(p, t, 2) | (uint64_t)arg(p, t, 3) << 32;
-    seek(m, (int64_t)ms * 1000);
+    seek(m, (int64_t)time * 1000);
     return 0;
 }
-static uint32_t close_file(VitaProcess* p, VitaThread* t) {
-    Mp4* m = file_of(p, arg(p, t, 0));
+uint32_t vita_mp4_close_file(VitaProcess* p, VitaThread* t, uint32_t handle) {
+    (void)t;
+    Mp4* m = file_of(p, handle);
     if (!m) return 0x80000000u;
     release(p, m);
     return 0;
 }
-static uint32_t ok(VitaProcess* p, VitaThread* t) {
+uint32_t vita_mp4_ok(VitaProcess* p, VitaThread* t) {
     (void)p, (void)t;
     return 0;
 }
-
-const VitaHle vita_hle_mp4[] = {
-    {0x05474af0u, "sceMp4OpenFile", open_file},
-    {0x30e49e4du, "sceMp4StartFileStreaming", start_file_streaming},
-    {0xd5b26179u, "sceMp4GetStreamInfo", get_stream_info},
-    {0x8be0e3d3u, "sceMp4GetStreamInfo", get_stream_info_named},
-    {0x609e57adu, "sceMp4EnableStream", enable_stream},
-    {0x20a01112u, "sceMp4GetNextUnit", get_next_unit},
-    {0xd092a066u, "sceMp4GetNextUnitData", get_next_unit_data},
-    {0x40351e1au, "sceMp4Reset", reset},
-    {0x96676ba0u, "sceMp4JumpPTS", jump_pts},
-    {0x920623c8u, "sceMp4CloseFile", close_file},
-    {0x7b4832feu, "sceMp4ReleaseBuffer", ok},
-    {0, NULL, NULL},
-};

@@ -7,6 +7,7 @@
    does the reverse. The game's SceFiber holds the slot's index, the registers stay here. As the vitasdk headers
    (MIT) declare, and Vita3K's own SceFiber.cpp (GPL-2.0-or-later) confirms where they're silent */
 #include "vita/hle/hle.h"
+#include "vita/hle/hle.hook.h"
 #include <string.h>
 
 #define SCE_FIBER_ERROR_NULL       0x80590001u
@@ -18,7 +19,6 @@
 #define SCE_FIBER_ERROR_BUSY       0x80590007u
 #define MAGIC 0x52424946u /* "FIBR", then the slot's index */
 
-static uint32_t arg(VitaProcess* p, VitaThread* t, unsigned n) { return vita_arg(p, t, n); }
 static VitaFiber* fiber_of(VitaProcess* p, uint32_t address) {
     if (!address || !vita_mapped(p, address, 8) || vita_read32(p, address) != MAGIC) return NULL;
     uint32_t index = vita_read32(p, address + 4);
@@ -27,9 +27,9 @@ static VitaFiber* fiber_of(VitaProcess* p, uint32_t address) {
 /* _sceFiberInitializeImpl(fiber, name, entry, argOnInitialize, addrContext, sizeContext, params): addrContext and
    sizeContext may both be 0, meaning the fiber runs on whichever thread's stack it's started from (sceFiberRun's,
    or the last switch's) instead of a context of its own */
-static uint32_t initialize(VitaProcess* p, VitaThread* t) {
-    uint32_t address = arg(p, t, 0), name = arg(p, t, 1), entry = arg(p, t, 2), context = arg(p, t, 4),
-             size = arg(p, t, 5);
+uint32_t vita_fiber_initialize(VitaProcess* p, VitaThread* t, uint32_t address, uint32_t name, uint32_t entry,
+                               uint32_t arg_on_initialize, uint32_t context, uint32_t size, uint32_t params) {
+    (void)t, (void)params;
     if (!address || !entry || !name) return SCE_FIBER_ERROR_NULL;
     if (size && size < 512) return SCE_FIBER_ERROR_RANGE;
     if ((address & 7) || (context & 7) || (size & 7) || (!context) != (!size)) return SCE_FIBER_ERROR_INVALID;
@@ -38,15 +38,16 @@ static uint32_t initialize(VitaProcess* p, VitaThread* t) {
     for (unsigned i = 0; i < VITA_FIBERS && slot == VITA_FIBERS; ++i)
         if (!p->fibers[i].address) slot = i;
     if (slot == VITA_FIBERS) return SCE_FIBER_ERROR_INVALID;
-    p->fibers[slot] = (VitaFiber){.address = address, .entry = entry, .argument = arg(p, t, 3), .context = context,
+    p->fibers[slot] = (VitaFiber){.address = address, .entry = entry, .argument = arg_on_initialize, .context = context,
                                   .context_size = size};
     memset(vita_ptr(p, address), 0, 128);
     vita_write32(p, address, MAGIC), vita_write32(p, address + 4, slot);
     return 0;
 }
-static uint32_t finalize(VitaProcess* p, VitaThread* t) {
-    VitaFiber* f = fiber_of(p, arg(p, t, 0));
-    if (!f) return arg(p, t, 0) ? SCE_FIBER_ERROR_INVALID : SCE_FIBER_ERROR_NULL;
+uint32_t vita_fiber_finalize(VitaProcess* p, VitaThread* t, uint32_t fiber) {
+    (void)t;
+    VitaFiber* f = fiber_of(p, fiber);
+    if (!f) return fiber ? SCE_FIBER_ERROR_INVALID : SCE_FIBER_ERROR_NULL;
     if (f->running) return SCE_FIBER_ERROR_STATE;
     memset(vita_ptr(p, f->address), 0, 8);
     memset(f, 0, sizeof *f);
@@ -54,16 +55,15 @@ static uint32_t finalize(VitaProcess* p, VitaThread* t) {
 }
 /* sceFiberRun(fiber, argOnRunTo, argOnRun*): the thread's registers kept, the fiber's loaded, the value the fiber
    sees returned in its own r0 (the fiber's sceFiberReturnToThread returns 0, its entry gets them as arguments) */
-static uint32_t run(VitaProcess* p, VitaThread* t) {
-    uint32_t to = arg(p, t, 1);
-    VitaFiber* f = fiber_of(p, arg(p, t, 0));
-    if (!f) return arg(p, t, 0) ? SCE_FIBER_ERROR_INVALID : SCE_FIBER_ERROR_NULL;
+uint32_t vita_fiber_run(VitaProcess* p, VitaThread* t, uint32_t fiber, uint32_t to, uint32_t arg_on_run) {
+    VitaFiber* f = fiber_of(p, fiber);
+    if (!f) return fiber ? SCE_FIBER_ERROR_INVALID : SCE_FIBER_ERROR_NULL;
     if (t->fiber) return SCE_FIBER_ERROR_PERMISSION;
     if (f->running) return SCE_FIBER_ERROR_BUSY;
     uint32_t caller_sp = t->cpu.r[13]; /* before t->cpu is overwritten below, for a context-less fiber's stack */
     t->own = t->cpu;
     t->own.r[0] = 0;
-    t->fiber_out = arg(p, t, 2);
+    t->fiber_out = arg_on_run;
     t->fiber = (uint32_t)(f - p->fibers) + 1;
     f->running = t->uid;
     if (!f->started) {
@@ -90,13 +90,13 @@ static void back(VitaProcess* p, VitaThread* t, uint32_t value) {
     t->cpu = t->own;
 }
 /* sceFiberReturnToThread(argOnReturn, argOnRun*): the fiber's registers kept, at its return, for its next run */
-static uint32_t return_to_thread(VitaProcess* p, VitaThread* t) {
+uint32_t vita_fiber_return_to_thread(VitaProcess* p, VitaThread* t, uint32_t arg_on_return, uint32_t arg_on_run) {
     if (!t->fiber) return SCE_FIBER_ERROR_PERMISSION;
     VitaFiber* f = &p->fibers[t->fiber - 1];
     f->cpu = t->cpu;
     f->cpu.r[0] = 0;
-    f->in_out = arg(p, t, 1);
-    back(p, t, arg(p, t, 0));
+    f->in_out = arg_on_run;
+    back(p, t, arg_on_return);
     return 0; /* sceFiberRun's */
 }
 void vita_fiber_ended(VitaProcess* p, VitaThread* t) {
@@ -107,8 +107,7 @@ void vita_fiber_ended(VitaProcess* p, VitaThread* t) {
     p->fibers[t->fiber - 1].started = 0; /* run again from its entry */
     back(p, t, 0);
 }
-static uint32_t get_self(VitaProcess* p, VitaThread* t) {
-    uint32_t out = arg(p, t, 0);
+uint32_t vita_fiber_get_self(VitaProcess* p, VitaThread* t, uint32_t out) {
     if (!out) return SCE_FIBER_ERROR_NULL;
     if (!t->fiber) return SCE_FIBER_ERROR_PERMISSION;
     vita_write32(p, out, p->fibers[t->fiber - 1].address);
@@ -116,20 +115,24 @@ static uint32_t get_self(VitaProcess* p, VitaThread* t) {
 }
 /* _sceFiberInitializeWithInternalOptionImpl(fiber, name, entry, argOnInitialize, addrContext, sizeContext): the
    same as _sceFiberInitializeImpl, minus its params argument, which initialize() never reads anyway */
-static uint32_t initialize_with_internal_option(VitaProcess* p, VitaThread* t) { return initialize(p, t); }
+uint32_t vita_fiber_initialize_with_internal_option(VitaProcess* p, VitaThread* t, uint32_t fiber, uint32_t name,
+                                                    uint32_t entry, uint32_t arg_on_initialize, uint32_t addr_context,
+                                                    uint32_t size_context, uint32_t params) {
+    return vita_fiber_initialize(p, t, fiber, name, entry, arg_on_initialize, addr_context, size_context, params);
+}
 /* sceFiberOptParamInitialize(optParam): zero it, same as the real one does */
-static uint32_t opt_param_initialize(VitaProcess* p, VitaThread* t) {
-    uint32_t out = arg(p, t, 0);
+uint32_t vita_fiber_opt_param_initialize(VitaProcess* p, VitaThread* t, uint32_t out) {
+    (void)t;
     if (!out) return SCE_FIBER_ERROR_NULL;
     if (!vita_mapped(p, out, 128)) return SCE_FIBER_ERROR_RANGE;
     memset(vita_ptr(p, out), 0, 128);
     return 0;
 }
 /* sceFiberGetInfo(fiber, out SceFiberInfo): entry, argOnInitialize, addrContext, sizeContext, name[32], padding[80] */
-static uint32_t get_info(VitaProcess* p, VitaThread* t) {
-    VitaFiber* f = fiber_of(p, arg(p, t, 0));
-    uint32_t out = arg(p, t, 1);
-    if (!f) return arg(p, t, 0) ? SCE_FIBER_ERROR_INVALID : SCE_FIBER_ERROR_NULL;
+uint32_t vita_fiber_get_info(VitaProcess* p, VitaThread* t, uint32_t fiber, uint32_t out) {
+    (void)t;
+    VitaFiber* f = fiber_of(p, fiber);
+    if (!f) return fiber ? SCE_FIBER_ERROR_INVALID : SCE_FIBER_ERROR_NULL;
     if (!out) return SCE_FIBER_ERROR_NULL;
     if (!vita_mapped(p, out, 0x170)) return SCE_FIBER_ERROR_RANGE;
     memset(vita_ptr(p, out), 0, 0x170);
@@ -141,10 +144,9 @@ static uint32_t get_info(VitaProcess* p, VitaThread* t) {
 }
 /* sceFiberSwitch(fiber, argOnRunTo, argOnRun*): what sceFiberRun then sceFiberReturnToThread would, from inside
    another fiber (switching straight to a sibling, instead of going back to the thread first) */
-static uint32_t do_switch(VitaProcess* p, VitaThread* t) {
-    uint32_t to = arg(p, t, 1), out = arg(p, t, 2);
-    VitaFiber* f = fiber_of(p, arg(p, t, 0));
-    if (!f) return arg(p, t, 0) ? SCE_FIBER_ERROR_INVALID : SCE_FIBER_ERROR_NULL;
+uint32_t vita_fiber_do_switch(VitaProcess* p, VitaThread* t, uint32_t fiber, uint32_t to, uint32_t out) {
+    VitaFiber* f = fiber_of(p, fiber);
+    if (!f) return fiber ? SCE_FIBER_ERROR_INVALID : SCE_FIBER_ERROR_NULL;
     if (!t->fiber) return SCE_FIBER_ERROR_PERMISSION; /* no fiber running on this thread to switch away from */
     if (f->running) return SCE_FIBER_ERROR_BUSY;
     VitaFiber* from = &p->fibers[t->fiber - 1];
@@ -172,16 +174,3 @@ static uint32_t do_switch(VitaProcess* p, VitaThread* t) {
     if (f->in_out) vita_write32(p, f->in_out, to);
     return 0;
 }
-
-const VitaHle vita_hle_fiber[] = {
-    {0xf24a298cu, "_sceFiberInitializeImpl", initialize},
-    {0xc6a3f9bbu, "_sceFiberInitializeWithInternalOptionImpl", initialize_with_internal_option},
-    {0xe160f844u, "sceFiberFinalize", finalize},
-    {0x7df23243u, "sceFiberRun", run},
-    {0x3b42921fu, "sceFiberReturnToThread", return_to_thread},
-    {0x414d8ca5u, "sceFiberGetSelf", get_self},
-    {0x801ab334u, "sceFiberOptParamInitialize", opt_param_initialize},
-    {0x189599b4u, "sceFiberGetInfo", get_info},
-    {0xe4283144u, "sceFiberSwitch", do_switch},
-    {0, NULL, NULL},
-};
