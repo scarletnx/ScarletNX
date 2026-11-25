@@ -87,19 +87,16 @@ static int vmax(SgCtx* g, unsigned size, int a, int b, int uns, int minimum) {
     }
 }
 /* ---- each byte's bits moved (GFNI) ----
-   GF2P8AFFINEQB: bit i of each byte of a its own bit i - n (left) or i + n (right, past 7 the sign's where arith), or,
-   for VGF_REVERSE, its bit 7 - i; a bit from past the byte 0. The matrix' row of bit i, in its byte 7 - i, is the mask
-   of the bits it adds */
-enum { VGF_LEFT, VGF_RIGHT, VGF_ARITH, VGF_REVERSE, VGF_BIT }; /* VGF_BIT: bit n alone, as bit 0 */
+   GF2P8AFFINEQB: bit i of each byte of a its own bit i + n (VGF_ARITH, past 7 the sign's), bit 7 - i (VGF_REVERSE), or
+   bit 0 bit n (VGF_BIT); a bit from past the byte 0. The matrix' row of bit i, in its byte 7 - i, is the mask of the bits
+   it adds. Where SSE takes a shift and a mask (a logical shift) it is that: GF2P8AFFINEQB's latency is longer */
+enum { VGF_ARITH, VGF_REVERSE, VGF_BIT }; /* VGF_BIT: bit n alone, as bit 0 */
 static int vgfni(const SgCtx* g) { return (g->x.features & SGX_F_GFNI) != 0; }
 static int vgf(SgCtx* g, int a, int kind, unsigned n) {
     SnxU64 rows = 0;
     int i, m;
     for (i = 0; i < 8; ++i) {
-        int from = kind == VGF_LEFT      ? i - (int)n
-                   : kind == VGF_REVERSE ? 7 - i
-                   : kind == VGF_BIT     ? (i ? 8 : (int)n)
-                                         : i + (int)n;
+        int from = kind == VGF_REVERSE ? 7 - i : kind == VGF_BIT ? (i ? 8 : (int)n) : i + (int)n;
         if (kind == VGF_ARITH && from > 7) from = 7;
         if (from >= 0 && from < 8) rows |= (SnxU64)1 << (8 * (7 - i) + from);
     }
@@ -125,7 +122,6 @@ static SgD mg_rbit(Unit* u, SgD v) {
 static int vshl(SgCtx* g, unsigned size, int a, unsigned n) {
     if (n >= 8u << size) return vzero(g);
     if (!n) return a;
-    if (!size && vgfni(g)) return vgf(g, a, VGF_LEFT, n);
     if (!size) return vand(g, opi(g, &sgx_v_psllw_i, a, n), vsplat(g, 0, 0xFFu << n));
     return opi(g, k_sll[size], a, n);
 }
@@ -151,7 +147,6 @@ static int vshr(SgCtx* g, unsigned size, int a, unsigned n, int arith) {
     }
     if (n >= e) return vzero(g);
     if (!n) return a;
-    if (!size && vgfni(g)) return vgf(g, a, VGF_RIGHT, n);
     if (!size) return vand(g, opi(g, &sgx_v_psrlw_i, a, n), vsplat(g, 0, 0xFFu >> n));
     return opi(g, k_srl[size], a, n);
 }
