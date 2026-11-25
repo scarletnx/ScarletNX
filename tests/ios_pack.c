@@ -172,7 +172,7 @@ int main(int argc, char** argv) {
     CHECK(!snx_ir_started());
     data = (unsigned char*)snx_read_file(argv[1], &size);
     inputs = data ? snx_objects_unpack(data, size, "pack", &count) : NULL;
-    CHECK(inputs && count >= 4); /* the descriptor, three functions */
+    CHECK(inputs && count >= 3); /* the descriptor, f0's unit and f1's, with f2 in it or of its own */
     for (size_t i = 0; inputs && i < count; ++i) {
         SnxElfObject object;
         unsigned machine = 183, abi = 0; /* EM_AARCH64 */
