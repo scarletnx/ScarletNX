@@ -840,11 +840,16 @@ i32 nvn_SamplerPoolGetSize(CPU* c, u64 sp) {
 }
 /* A texture descriptor written over another. The game writes it between two submissions, and the GPU thread may still
    replay the work before them, with no write tracking epoch between (one Ounce game's menus and loads register new
-   textures at indices its last frame sampled others at). Recorded as a GPU-side write of its 32 bytes, as
-   sampler_write records one, so what the renderer keeps of the descriptor (the texture memo, the pool map) checks it
-   again at its next lookup, not only after the next submission. The descriptor the slot already holds is no write */
+   textures at indices its last frame sampled others at). That replay reads the descriptor as it binds, so it would draw
+   with the new texture: the write waits for the work submitted before it, as a sampler's does (sampler_write). Recorded
+   as a GPU-side write of its 32 bytes, so what the renderer keeps of the descriptor (the texture memo, the pool map)
+   checks it again at its next lookup, not only after the next submission. The descriptor the slot already holds is no
+   write, and no wait */
 static void texture_write(u64 slot, const u32 tic[8]) {
     if (!memcmp(GP(slot), tic, NVN_DESCRIPTOR_SIZE)) return;
+    nvn_wait_begin();
+    nvn_replay_finish_all();
+    nvn_wait_end();
     memcpy(GP(slot), tic, NVN_DESCRIPTOR_SIZE); /* guest memory: every byte the game sees */
     gpu_mem_written_cpu(slot, NVN_DESCRIPTOR_SIZE);
 }

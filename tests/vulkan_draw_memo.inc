@@ -1106,6 +1106,97 @@ static int pool_map_nvn_case(GpuChannel* channel) {
     puts("PASS pool map: a header NVN registers between two draws in one epoch clears its record");
     return 0;
 }
+/* Work submitted with texture A at index 0, which the GPU thread replays while the game registers B there: it draws
+   with A, as the registration waits for it (nvn_object.c texture_write). The call on the GPU thread draws once it sees
+   what the registration does: B's descriptor in the slot, which nothing waited to write, or the wait for the submitted
+   work queued (nvn_replay_finish_all's job, NVN_QUEUES + 1), which ends after this call */
+typedef struct {
+    GpuChannel* channel;
+    u64 slot;
+    u32 a[8];
+    u8 px[4];
+    int failed, waited, late;
+} TxwDraw;
+static int txw_waits(void) {
+    NvnReplayState* st = &g_nvn.replay;
+    int n = 0;
+    pm_lock(&st->lock);
+    for (int i = 0; i < NVN_JOBS; i++) n += st->jobs[i].queue == NVN_QUEUES + 1;
+    pm_unlock(&st->lock);
+    return n != 0;
+}
+static int txw_draw(void* arg) {
+    TxwDraw* d = (TxwDraw*)arg;
+    const u64 end = plat_ns() + 10000000000ull;
+    int kept;
+    while (!(d->waited = txw_waits()) && !memcmp(GP(d->slot), d->a, sizeof d->a)) {
+        if (plat_ns() > end) {
+            d->late = 1;
+            break;
+        }
+        plat_sleep_ns(20000);
+    }
+    d->failed = pending_draw(d->channel, d->px, &kept);
+    return 1;
+}
+static int texture_write_case(GpuChannel* channel) {
+    u32* r = channel->r3d;
+    const u64 pool = PMN_OBJECTS, tp = PMN_OBJECTS + 0x100, a = PMN_OBJECTS + 0x200, b = PMN_OBJECTS + 0x300;
+    NvnPool mem = {0};
+    mem.memory = MEMO_CPU + (LIFE_POOL - MEMO_GPU);
+    mem.gpu = LIFE_POOL;
+    mem.size = 0x1000;
+    memcpy(GP(pool), &mem, sizeof mem);
+    CHECK(nvn_TexturePoolInitialize(NULL, tp, pool, 0, 2));
+    pmn_texture(a, LIFE_POOL + 0x400);
+    pmn_texture(b, LIFE_POOL + 0x800);
+    u8 texels[16] = {0}, px[4];
+    int kept;
+    snx_st_le32(texels + 4, 0x3f800000);
+    snx_st_le32(texels + 8, 0x3f800000);
+    snx_st_le32(texels + 12, 0x3f800000);
+    CHECK(!gmem_write(LIFE_POOL + 0x400, texels, 8));     /* A: 0 and 1, filtered to 191 of 255 */
+    CHECK(!gmem_write(LIFE_POOL + 0x800, texels + 8, 8)); /* B: 1 and 1 */
+    CHECK(!life_headers(0, 0));                           /* the sampler */
+    r[0x982] = 2;
+    r[0x8E0] = 256; /* constant buffer 2 of the fragment stage: the texture's handle, 0 */
+    r[0x8E1] = (u32)((LIFE_POOL + 0x200) >> 32);
+    r[0x8E2] = (u32)(LIFE_POOL + 0x200);
+    r3d_cb_bind(channel, 4, 1 | 2u << 4);
+    nvn_TexturePoolRegisterTexture(NULL, tp, 0, a, 0);
+    vk_ww_new_epoch(); /* the game's submission */
+    vk_lock();
+    rt_clear(channel, MEMO_GPU + 0x20000, MEMO_SIDE, MEMO_SIDE, 0, 0);
+    vk_unlock();
+    CHECK(!pending_draw(channel, px, &kept));
+    const u8 alone = px[0];
+    TxwDraw d = {.channel = channel, .slot = mem.memory};
+    memcpy(d.a, GP(d.slot), sizeof d.a);
+    const u32 q = nvn_replay_queue(); /* a live queue: with none, finish_all has nothing to wait for */
+    gpu_call_poll(txw_draw, &d, q - 1);
+    nvn_TexturePoolRegisterTexture(NULL, tp, 0, b, 0); /* the same epoch */
+    nvn_replay_finish(q);
+    const int written = memcmp(GP(d.slot), d.a, sizeof d.a) != 0;
+    CHECK(!pending_draw(channel, px, &kept));
+    nvn_replay_queue_free(q);
+    if (alone != 191 || d.px[0] != 191 || px[0] != 255 || !written || d.late || d.failed)
+        fprintf(stderr,
+                "a texture registered over another while the work before it replays: that work reads red %u, the draw "
+                "after %u, and A alone %u (expected 191, 255 and 191); the registration waited %d, wrote %d, the draw "
+                "gave up on it %d, failed %d\n",
+                d.px[0], px[0], alone, d.waited, written, d.late, d.failed);
+    CHECK(alone == 191 && d.px[0] == 191 && px[0] == 255 && written && !d.late && !d.failed);
+    CHECK(!life_headers(0, 0));
+    u8 zero[8] = {0};
+    snx_st_le32(zero + 4, 0x3f800000);
+    CHECK(!gmem_write(LIFE_POOL + 0x400, zero, 8));
+    vk_ww_new_epoch();
+    channel->ds.bind.cb_addr[4][2] = 0;
+    channel->ds.bind.cb_size[4][2] = 0;
+    r[0x982] = 0;
+    puts("PASS a texture NVN registers over another waits for the work that samples it");
+    return 0;
+}
 
 /* The barriers at the writer (writer_barriers, gpu/vk/surface.c vk_surf_written_flush), with unified image layouts. A
    pass writes target T with the color program (white or green, as the cases before left its code), a pass on another
@@ -1720,6 +1811,7 @@ static int check_draw_memo(void) {
     CHECK(!over_target_cases(channel));
     CHECK(!pool_map_cases(channel));
     CHECK(!pool_map_nvn_case(channel));
+    CHECK(!texture_write_case(channel));
     CHECK(!writer_cases(channel));
     CHECK(!inline_block_cases(channel));
     CHECK(!empty_header_cases(channel));
