@@ -606,12 +606,12 @@ narrower value first) only where the result or the flags depend on its bits abov
 to the right, a division's, CLZ's and REV's. A constant is MOVZ or MOVN, ORR of a bitmask, or MOVZ and MOVKs.
 
 `arm64_a64.h` keeps what is the machine's: the floating point through the exact helpers (`x64_helpers.c`'s
-`snx_x64_fp_*`, every operation: the host's own arithmetic needs the guest's FPCR, which the runtime's C would then
-run under too), the store-exclusive as cpu.h's value-based monitor (its checks, then LDAXR and STLXR of the value the
+`snx_x64_fp_*`, every operation: the host's own arithmetic needs the guest's FPCR, which the runtime's C would then run
+under too), the store-exclusive as cpu.h's value-based monitor (its checks, then LDAXR and STLXR of the value the
 load-exclusive read, compared at the access's size), the LSE atomics, CAS and CASP as load-exclusive loops, CRC32 the
-host's own (FEAT_CRC32), the barriers the guest's (DMB ISH, ISHLD, ISHST), an acquire load DMB ISHLD after it and a
-release store DMB ISH around it, and the ABI (AAPCS64: the state in X19, the frame below the saved X29, X30, X19 and
-X20; X16 and X17 the assembler's). It builds on any host: the code it writes is arm64's.
+host's own (FEAT_CRC32) or the exact helper, the barriers the guest's (DMB ISH, ISHLD, ISHST), an acquire load DMB ISHLD
+after it and a release store DMB ISH around it, and the ABI (AAPCS64: the state in X19, the frame below the saved X29,
+X30, X19 and X20; X16 and X17 the assembler's). It builds on any host: the code it writes is arm64's.
 
 **The test** (`tests/sail_arm64.c`, `sail_arm64` where Unicorn is installed): the words of `sail_x64`'s rows, and
 blocks of two to four of them, made into arm64 code and run under Unicorn (QEMU's AArch64, its "max" CPU) beside the

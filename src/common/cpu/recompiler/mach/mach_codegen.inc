@@ -2058,6 +2058,7 @@ out:
         u->g->x.n = 0;
         u->g->x.nv = 1;
         u->g->x.nb = 1;
+        u->g->x.unmade = 0;
     }
     u->nfixups = ok ? u->nfixups : fix0;
     u->nlabels = lab0; /* a function's labels are its own */

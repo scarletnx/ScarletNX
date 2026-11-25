@@ -4193,10 +4193,15 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
             set_tests_properties(recompiler_${m}_refused_${target} PROPERTIES TIMEOUT 600)
         endforeach()
     endforeach()
-    # an arm64 host with none of the features a guest's word may be its own with (all but LSE, CRC32 and CSSC)
-    add_test(NAME recompiler_arm64_refused_plain COMMAND snx-test-recompiler-arm64 --refused --without 0x7fff8
-             --target android)
-    set_tests_properties(recompiler_arm64_refused_plain PROPERTIES TIMEOUT 600)
+    # an arm64 host with no optional feature (SNX_ARM64_F_ALL): every word made, and the results of the random functions'
+    # and of CRC32's
+    add_test(NAME recompiler_arm64_refused_plain COMMAND snx-test-recompiler-arm64 --refused --without 0x7ffff
+             --target max)
+    add_test(NAME recompiler_arm64_plain COMMAND snx-test-recompiler-arm64 --without 0x7ffff)
+    add_test(NAME recompiler_arm64_plain_crc32 COMMAND snx-test-recompiler-arm64 --without 0x7ffff --made --states 40
+             --words 1ac14000 1ac24400 1ac34800 9ac44c00 1ac55000 1ac65400 1ac75800 9ac85c00 1ac14be9 9adf5c0a)
+    set_tests_properties(recompiler_arm64_refused_plain recompiler_arm64_plain recompiler_arm64_plain_crc32
+                         PROPERTIES TIMEOUT 600)
     # their A32 blocks (arm64_arm.c, rv64_arm.c) against LLVM's, as arm_x64's, under Unicorn; again with three host
     # registers
     foreach(m arm64 rv64 ppc64 mips64 la64 ppc64be mips64be s390x)
