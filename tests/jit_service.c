@@ -91,17 +91,18 @@ static void hold_wait(void) {
     pthread_mutex_unlock(&held.lock);
 }
 
-/* the batch of in_flight.pc waits as it begins, having taken its epoch, until in_flight_release: a change of memory made
-   between the two is one the batch must see. Then its report says how it ended */
+/* the batch of in_flight.pc waits until in_flight_release: as it begins, before it has read any code, or (at_read) once it
+   has read the code it compiles, before it makes anything of it. A change of memory made between the two is one it must
+   find. Then its report says how it ended */
 static struct {
     pthread_mutex_t lock;
     pthread_cond_t moved;
     u64 pc; /* the batch's first pc, 0: none waits */
-    int begun, released, ended, dropped;
-} in_flight = {PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, 0, 0, 0, 0, 0};
-static void batch_begins(SnxU64 pc) {
+    int at_read, begun, released, ended, dropped;
+} in_flight = {PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, 0, 0, 0, 0, 0, 0};
+static void batch_holds(SnxU64 pc, int at_read) {
     pthread_mutex_lock(&in_flight.lock);
-    if (pc == in_flight.pc) {
+    if (pc == in_flight.pc && at_read == in_flight.at_read) {
         in_flight.pc = 0;
         in_flight.begun = 1;
         pthread_cond_broadcast(&in_flight.moved);
@@ -109,12 +110,16 @@ static void batch_begins(SnxU64 pc) {
     }
     pthread_mutex_unlock(&in_flight.lock);
 }
-static void in_flight_hold(u64 pc) {
+static void batch_begins(SnxU64 pc) { batch_holds(pc, 0); }
+static void batch_discovered(SnxU64 pc) { batch_holds(pc, 1); }
+static void in_flight_hold_at(u64 pc, int at_read) {
     pthread_mutex_lock(&in_flight.lock);
     in_flight.pc = pc;
+    in_flight.at_read = at_read;
     in_flight.begun = in_flight.released = in_flight.ended = in_flight.dropped = 0;
     pthread_mutex_unlock(&in_flight.lock);
 }
+static void in_flight_hold(u64 pc) { in_flight_hold_at(pc, 0); }
 /* whether *flag is set, within a minute */
 static int in_flight_wait(const int* flag) {
     struct timespec until = {time(NULL) + 60, 0};
@@ -262,6 +267,7 @@ static SnxJitService* start(size_t batch, unsigned threads) {
     config.budget = discovery_budget;
     config.threads = threads;
     config.begin = batch_begins;
+    config.discovered = batch_discovered;
     config.report = report;
     config.thread = thread_role;
     config.cache_path = cache_path;
@@ -893,6 +899,70 @@ static void test_invalidate_own_code_in_flight(void) {
     snx_jit_service_free(service);
 }
 
+/* the code a batch has read changes before it publishes: nothing it made is in the service, its report says it was
+   dropped, and its pcs are compiled from what memory holds now. A pc of its own outside the range that changed (the
+   callee's word, the caller's batch holding both) goes back to its queue, the misses' or the warm one's, so a drain
+   alone compiles it, with no miss of its own: left IN_FLIGHT, or GONE with its pending bit set, which snx_jit_resolve's
+   fast path reads as "queued, wait for it", it would never be compiled (rt_miss's fatal, a game's at 98f1fc4). One in
+   the range is new to the service, and a lookup queues it */
+#define CHANGED      0x12000
+#define CHANGED_STEP 0x400
+static void put_changed(u64 pc, u32 add, int own) {
+    /* own: pc: x0 += add. Else pc calls pc + 0x100: x0 += add */
+    u32 words[4] = {0x91000000 | add << 10, 0xD65F03C0, 0, 0};
+    if (!own) {
+        put(pc + 0x100, words, 2);
+        words[0] = 0xA9BF7BFD;
+        words[1] = 0x94000000 | (0x100 - 4) >> 2;
+        words[2] = 0xA8C17BFD;
+        words[3] = 0xD65F03C0;
+        put(pc, words, 4);
+    } else
+        put(pc, words, 2);
+}
+static void test_changed_in_flight(void) {
+    static const char* const kinds[] = {"a live pc's callee", "a warm pc's callee", "a live pc's own code"};
+    SnxJitStats stats;
+    unsigned long dropped;
+    int round, own;
+    CPU c;
+    service = start(1, 1);
+    if (!service) {
+        ++failures;
+        return;
+    }
+    for (round = 0; round < 3; ++round) {
+        const SnxU64 pc = CHANGED + CHANGED_STEP * (u64)round;
+        own = round == 2;
+        put_changed(pc, 1, own);
+        snx_jit_stats(service, &stats);
+        dropped = stats.dropped;
+        in_flight_hold_at(pc, 1);
+        if (round == 1)
+            CHECK(snx_jit_warm(service, &pc, 1) == 1);
+        else
+            CHECK(snx_jit_resolve(service, pc) == NULL);
+        CHECK(in_flight_wait(&in_flight.begun));
+        put_changed(pc, 8, own); /* other code than the batch has read */
+        snx_jit_invalidate(service, own ? pc : pc + 0x100, 4);
+        hold(1);
+        in_flight_release();
+        CHECK(in_flight_wait(&in_flight.ended) && in_flight.dropped);
+        CHECK(get(pc) == NULL);
+        hold(0);
+        if (own) CHECK(snx_jit_resolve(service, pc) == NULL); /* new to the service: queued */
+        snx_jit_drain(service);
+        CHECK(get(pc) != NULL);
+        cpu_init(&c, 0xF000);
+        run(&c, pc);
+        CHECK(c.x[0] == 8 && c.pc == RETURN);
+        snx_jit_stats(service, &stats);
+        CHECK(stats.dropped == dropped + 1);
+        printf("changed in flight: %s: %lu batch dropped, compiled again\n", kinds[round], stats.dropped - dropped);
+    }
+    snx_jit_service_free(service);
+}
+
 /* added images in different 16 MiB chunks: the page map finds each, and removing one leaves the other's pages */
 static void test_image_map(void) {
     static const u32 far_words[] = {0x91000400, 0xD65F03C0}; /* add x0, x0, #1; ret */
@@ -1266,6 +1336,7 @@ int main(int argc, char** argv) {
     test_invalidated_callee();
     test_invalidate_in_flight();
     test_invalidate_own_code_in_flight();
+    test_changed_in_flight();
     test_image_map();
     test_region_limit(0);
     test_waited_priority();

@@ -1195,6 +1195,7 @@ static void compile(SnxJitService* s, const SnxU64* pcs, size_t count, SnxU64 st
     int rc = images && !source_changed ? snx_codegen_discover(&codegen, images, image_count, pcs, count, known, &batch,
                                                                budget, s->config.features, region_limit, overflow_limit)
                                        : -1;
+    if (!rc && s->config.discovered) s->config.discovered(pcs[0]);
     if (source_changed) snprintf(error, sizeof(error), "instruction image changed during compilation");
     int discovered = !rc;
     if (rc && !error[0]) snprintf(error, sizeof(error), "no guest code to compile at %llx", (unsigned long long)pcs[0]);
