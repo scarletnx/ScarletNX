@@ -1926,6 +1926,38 @@ static void jump_table_met_test(void) {
                 1);
 }
 
+/* The guards of a table's compare in another block (llvm-mc), an entry past it in each: adrp x9; add x9; cmp w0, #imm;
+   b join; ret; join: the guard; adr x10, c0; ldrb w11, [x9, x0]; ...: b.hs d (hs), b.lo s; b d; s: (lo), b.ls s; b d; s:
+   (ls), two compares of two ways and b.hi d (wider), a call between the compare and b.hi d (called, its base x19) */
+static void jump_table_guards_test(void) {
+    static const SnxU32 hs[] = {0x90000009UL, 0x91020129UL, 0x7100101FUL, 0x14000002UL, 0xD65F03C0UL, 0x54000142UL,
+                                0x1000008AUL, 0x3860692BUL, 0x8B0B094AUL, 0xD61F0140UL, 0xD65F03C0UL, 0xD65F03C0UL,
+                                0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL};
+    static const SnxU32 lo[] = {0x90000009UL, 0x91020129UL, 0x7100101FUL, 0x14000002UL, 0xD65F03C0UL, 0x54000043UL,
+                                0x1400000AUL, 0x1000008AUL, 0x3860692BUL, 0x8B0B094AUL, 0xD61F0140UL, 0xD65F03C0UL,
+                                0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL};
+    static const SnxU32 ls[] = {0x90000009UL, 0x91020129UL, 0x71000C1FUL, 0x14000002UL, 0xD65F03C0UL, 0x54000049UL,
+                                0x1400000AUL, 0x1000008AUL, 0x3860692BUL, 0x8B0B094AUL, 0xD61F0140UL, 0xD65F03C0UL,
+                                0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL};
+    static const SnxU32 wider[] = {0x90000009UL, 0x91020129UL, 0x34000065UL, 0x7100041FUL, 0x14000004UL,
+                                   0x71000C1FUL, 0x14000002UL, 0xD65F03C0UL, 0x54000148UL, 0x1000008AUL,
+                                   0x3860692BUL, 0x8B0B094AUL, 0xD61F0140UL, 0xD65F03C0UL, 0xD65F03C0UL,
+                                   0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL};
+    static const SnxU32 called[] = {0x90000013UL, 0x91020273UL, 0x71000C1FUL, 0x97FFFFFDUL, 0x14000002UL, 0xD65F03C0UL,
+                                    0x54000148UL, 0x1000008AUL, 0x38606A6BUL, 0x8B0B094AUL, 0xD61F0140UL, 0xD65F03C0UL,
+                                    0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL};
+    static const unsigned char five[] = {0, 1, 2, 3, 4};
+    static const TableCases hs_want[] = {{0x24, {0x28, 0x2C, 0x30, 0x34}}};
+    static const TableCases lo_want[] = {{0x28, {0x2C, 0x30, 0x34, 0x38}}};
+    static const TableCases wider_want[] = {{0x30, {0x34, 0x38, 0x3C, 0x40}}};
+    static const TableCases called_want[] = {{0x28, {0}}};
+    table_cases("a B.HS", hs, sizeof(hs) / 4, five, 5, NULL, 0, hs_want, 1);
+    table_cases("a B.LO taken", lo, sizeof(lo) / 4, five, 5, NULL, 0, lo_want, 1);
+    table_cases("a B.LS taken", ls, sizeof(ls) / 4, five, 5, NULL, 0, lo_want, 1);
+    table_cases("two ways' compares", wider, sizeof(wider) / 4, five, 5, NULL, 0, wider_want, 1);
+    table_cases("a call after the compare", called, sizeof(called) / 4, five, 5, NULL, 0, called_want, 1);
+}
+
 int main(void) {
     decoder_test();
     analysis_test();
@@ -1943,6 +1975,7 @@ int main(void) {
     jump_table_ways_test();
     jump_table_end_test();
     jump_table_met_test();
+    jump_table_guards_test();
     jump_table_anchor_far_test();
     jump_table_anchor_branch_test();
     large_range_test();
