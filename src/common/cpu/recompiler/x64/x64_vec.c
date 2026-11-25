@@ -715,20 +715,25 @@ static int vec_fp(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
 /* ---- saturation ---- */
 
 /* FPSR.QC owed where any bit of v's first bytes is set (the lanes that saturated, or the bits a result differs in from
-   the wrapped one): the saturating instructions'. The region's are one value, which mg_qc tests once */
+   the wrapped one): the saturating instructions'. The region's are an OR of PTEST's answers in a general-purpose
+   register, no vector register held for it, which mg_qc tests once */
 static void set_qc(SgCtx* g, int v, int bytes) {
-    if (bytes < 16) v = sgx_xclear(X, v, 8u * (unsigned)bytes);
-    g->qc_owed = g->qc_owed ? vor(g, g->qc_owed, v) : v;
+    SgX* x = X;
+    int in[4] = {0, 0, 0, 0};
+    SgD any, owed;
+    if (bytes < 16) v = sgx_xclear(x, v, 8u * (unsigned)bytes);
+    in[0] = in[1] = v;
+    sgx_vins(x, &sgx_v_ptest, -1, 0, in, 0, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
+    any = sg_d_zext(g, sgx_bool_bits(x, sgx_bool(x, SGX_B_CC, x->flags_ins, 5)), 32); /* NE: a bit set */
+    owed = g->qc_owed ? sg_d_or(g, sgx_val(32, g->qc_owed), any) : any;
+    g->qc_owed = sgx_reg(x, &owed);
 }
 static void mg_qc(Unit* u) {
     SgCtx* g = u->g;
     SgX* x = X;
-    int in[4] = {g->qc_owed, g->qc_owed, 0, 0};
     SgXIns* i;
     SgD fpsr, bit;
-    sgx_vins(x, &sgx_v_ptest, -1, 0, in, 0, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
-    bit = sg_d_zext(g, sgx_bool_bits(x, sgx_bool(x, SGX_B_CC, x->flags_ins, 5)), 32); /* NE: a bit set */
-    bit = sg_d_lsl(g, bit, 27);
+    bit = sg_d_lsl(g, sgx_val(32, g->qc_owed), 27); /* 0 or 1 */
     i = sgx_append(x, SGX_K_LOAD);
     i->w = 32;
     i->disp = (int)offsetof(CPU, fpsr);
