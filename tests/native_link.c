@@ -4,7 +4,8 @@
    a tail call, a loop, a branch through a register, a stale check, a helper's call), its module descriptor, and two
    chained A32 blocks with theirs. None may have an absolute address in its code: the linker refuses one in a read-only
    section (link_elf.c), since a shared object would need a text relocation there. The little-endian machines' objects
-   are then linked into a module (snx_link), which the recompiler would write */
+   are then linked into a module (snx_link), which the recompiler would write; a host whose linker writes no ELF says
+   so, and the objects are still checked */
 #include "nx/loader/module_x64.h"
 #include "nx/loader/loader.h"
 #include "common/cpu/recompiler/arm64/arm64_arm.h"
@@ -37,7 +38,7 @@
 #define WORDS 0x100
 
 static struct {
-    size_t failures;
+    size_t failures, linked, unlinked; /* the modules linked, and those the host's linker writes no ELF for */
     unsigned char code[2][WORDS * 4]; /* the program's, and the helper's caller's */
 } g_test;
 
@@ -75,6 +76,23 @@ static int relocations(const char* name, const char* what, const unsigned char* 
     }
     free(copy);
     return count;
+}
+
+/* a machine's module linked, or a failure said, or said to be no link of this host's with the linker's reason
+   (link_elf.c's for a host whose modules are not ELF) */
+static void link_module(const char* name, const char* what, const SnxLinkInput* inputs, const char* export,
+                        const char* soname) {
+    const char* const exports[1] = {export};
+    SnxLinkOutput linked = {0};
+    char error[256] = "";
+    if (!snx_link(inputs, 2, exports, 1, soname, &linked, error, sizeof error))
+        ++g_test.linked;
+    else if (strstr(error, "is not supported on this host")) {
+        printf("native_link %s: %s not linked on this host: %s\n", name, what, error);
+        ++g_test.unlinked;
+    } else
+        FAIL("%s: linking %s: %s", name, what, error);
+    free(linked.data);
 }
 
 typedef struct {
@@ -184,11 +202,7 @@ static void module(const Back* back, SnxCodegen* cg, const unsigned char* object
         FAIL("%s: the descriptor is not an object", back->name);
     if (back->little) {
         const SnxLinkInput inputs[2] = {{object, size, "code"}, {descriptor, descriptor_size, "module"}};
-        const char* const exports[1] = {"snx_module"};
-        SnxLinkOutput linked = {0};
-        if (snx_link(inputs, 2, exports, 1, "module.so", &linked, error, sizeof error))
-            FAIL("%s: linking the module: %s", back->name, error);
-        free(linked.data);
+        link_module(back->name, "the module", inputs, "snx_module", "module.so");
     }
     free(descriptor);
 }
@@ -218,11 +232,7 @@ static void arm(const Back* back) {
             FAIL("%s: the A32 descriptor is not an object", back->name);
         if (back->little) {
             const SnxLinkInput inputs[2] = {{object, size, "blocks"}, {descriptor, descriptor_size, "module"}};
-            const char* const exports[1] = {"snx_module_arm"};
-            SnxLinkOutput linked = {0};
-            if (snx_link(inputs, 2, exports, 1, "arm.so", &linked, error, sizeof error))
-                FAIL("%s: linking the A32 module: %s", back->name, error);
-            free(linked.data);
+            link_module(back->name, "the A32 module", inputs, "snx_module_arm", "arm.so");
         }
     }
     free(loaded), free(object), free(descriptor);
@@ -275,5 +285,15 @@ int main(void) {
         printf("native_link %s: %s\n", backs[k].name, g_test.failures == before ? "ok" : "FAILED");
     }
     snx_codegen_free(&cg), snx_codegen_free(&cgh);
+    /* the four little-endian machines with a descriptor here, their two modules each: all of them where the host's
+       modules are ELF, none where its linker says they are not */
+    printf("native_link: %zu modules linked, %zu not linked on this host\n", g_test.linked, g_test.unlinked);
+#if defined(_WIN32) || defined(__APPLE__)
+    if (g_test.linked || g_test.unlinked != 8)
+#else
+    if (g_test.linked != 8 || g_test.unlinked)
+#endif
+        FAIL("%zu modules linked and %zu not linked, wanted all 8 of them on the one side", g_test.linked,
+             g_test.unlinked);
     return g_test.failures != 0;
 }
