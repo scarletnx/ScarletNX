@@ -169,7 +169,10 @@ static int hook_lib_cpu_read(const SnxHookCpu* cpu, uint64_t addr, void* out, ui
 
 static int hook_lib_cpu_write(SnxHookCpu* cpu, uint64_t addr, const void* in, uint64_t size) {
     if (!cpu || !cpu->active || addr + size < addr || !mem_user_mapped(addr, size)) return 0;
-    if (size) memcpy(hook_host(cpu->c, addr), in, size);
+    if (size) {
+        memcpy(hook_host(cpu->c, addr), in, size);
+        mem_wrote(addr, size); /* the module's store, for the write marks, as the game's own would be */
+    }
     return 1;
 }
 

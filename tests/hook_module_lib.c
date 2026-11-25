@@ -66,6 +66,7 @@ int snx_setting_text(const char* key, char* out, size_t size) {
 /* what the libraries' CPU hooks reach (tests/hook_lib_cpu.c tests them): none of this test's has one */
 void hook_run_original(CPU* c, u64 addr) { (void)c, (void)addr; }
 int mem_user_mapped(u64 addr, u64 size) { return addr < sizeof memory && size <= sizeof memory - addr; }
+void mem_wrote(u64 a, u64 size) { (void)a, (void)size; } /* no write marks here */
 int nvn_cmd_record_upscale(CPU* c, u64 cb, const NvnUpscaleRequest* r) { return (void)c, (void)cb, (void)r, 0; }
 /* what the host's 1.1 functions reach: no renderer, a console's screen */
 const Renderer* g_renderer;

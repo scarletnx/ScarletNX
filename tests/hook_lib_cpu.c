@@ -75,6 +75,12 @@ void mem_query(u64 addr, MemBlock* b) {
     b->addr = addr, b->state = MS_CODE, b->perm = PERM_R | PERM_X;
 }
 int mem_user_mapped(u64 addr, u64 size) { return addr < sizeof guest && size <= sizeof guest - addr; }
+/* memory/mem.c's write marks: the last range a hook's write was told of, and how many */
+static struct {
+    u64 a, size;
+    unsigned n;
+} g_marked;
+void mem_wrote(u64 a, u64 size) { g_marked.a = a, g_marked.size = size, g_marked.n++; }
 GuestFn nce_slot(GuestFn f) { return f; }
 void nce_slot_taken(u64 addr, const char* what) { (void)addr, (void)what; }
 void jit_slot_taken(u64 addr, GuestFn fn) { (void)addr, (void)fn; }
@@ -240,9 +246,11 @@ int main(void) {
     snx_st_le32(guest + DATA, 1000);
     call(&c, 0x100, 5, DATA, 0, 0);
     assert(c.x[0] == 1010 && guest[DATA + 4] == 0x5a && c.pc == RET && own_runs == 0);
+    /* what the handler wrote is marked written, one range and only it */
+    assert(g_marked.n == 1 && g_marked.a == DATA + 4 && g_marked.size == 1);
     /* skip with its word unmapped: nothing changed, the registers as the call left them */
     call(&c, 0x100, 5, sizeof guest, 0, 0);
-    assert(c.x[0] == 5 && c.pc == RET && own_runs == 0);
+    assert(c.x[0] == 5 && c.pc == RET && own_runs == 0 && g_marked.n == 1);
     /* around: (6 + 1 + 100) * 3, its own code run once, the entry, main's base and v1 */
     memset(&c.v[1], 9, 16);
     g_log[0] = 0;
