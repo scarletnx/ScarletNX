@@ -69,6 +69,9 @@ static const Row k_rows[] = {
     {"sshl v0.2d, v1.2d, v2.2d", NEEDS_AVX2, 0, 320, -1, NULL, "4EE24420"},
     {"sqrshl v0.4s, v1.4s, v2.4s", NEEDS_AVX2, 0, 480, -1, NULL, "4EA25C20"},
     {"uqrshl v0.2d, v1.2d, v2.2d", NEEDS_AVX2, 0, 448, -1, NULL, "6EE25C20"},
+    {"sqshl v0.16b, v1.16b, #3", 0, 0, 416, -1, NULL, "4F0B7420"},
+    {"uqshl v0.8h, v1.8h, #3", 0, 0, 304, -1, NULL, "6F137420"},
+    {"sqshlu v0.4s, v1.4s, #3", 0, 0, 320, -1, NULL, "6F236420"},
 };
 
 static const Row* g_row; /* the one being checked, for the messages */

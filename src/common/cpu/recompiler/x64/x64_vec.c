@@ -1019,6 +1019,18 @@ static int vshift_of(SnxA64Op op, int* scalar) {
         default: return -1;
     }
 }
+/* SQSHL, UQSHL (uns) and SQSHLU (mixed: signed to unsigned) by n, below the lane's bits */
+static int vqshl_imm(SgCtx* g, unsigned size, int a, unsigned n, int uns, int mixed, int* sat) {
+    int r = vshl(g, size, a, n), over = vnot(g, veq(g, size, vshr(g, size, r, n, !uns && !mixed), a));
+    if (mixed) { /* a negative lane is 0, and saturated; the rest unsigned */
+        int neg = vsign(g, size, a);
+        *sat = vor(g, over, neg);
+        return vandn(g, neg, vor(g, r, over));
+    }
+    *sat = over;
+    return uns ? vor(g, r, over) : vsel(g, over, vlimit(g, size, a), r);
+}
+
 /* |a - b|'s building blocks and the rest of the lanes' integer arithmetic the instructions below share */
 static int vabs(SgCtx* g, unsigned size, int a) {
     if (k_abs[size]) return sgx_v1(X, k_abs[size], a, 0);
@@ -1696,6 +1708,25 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
                      insn->op == SNX_A64_OP_SQSUB_v || insn->op == SNX_A64_OP_UQSUB_v, &sat);
         set_qc(g, sat, q ? 16 : 8);
         vwrite(g, rd, r, q);
+        return 1;
+    }
+    case SNX_A64_OP_SQSHL_vi:
+    case SNX_A64_OP_UQSHL_vi:
+    case SNX_A64_OP_SQSHLU_vi:
+    case SNX_A64_OP_SQSHL_si:
+    case SNX_A64_OP_UQSHL_si:
+    case SNX_A64_OP_SQSHLU_si: {
+        unsigned sz, left, right;
+        int sat, scalar = insn->op == SNX_A64_OP_SQSHL_si || insn->op == SNX_A64_OP_UQSHL_si ||
+                          insn->op == SNX_A64_OP_SQSHLU_si;
+        if (shift_imm(word, &sz, &left, &right) < 0 || (sz == 3 && !q && !scalar)) return -1;
+        r = vqshl_imm(g, sz, vread(g, rn), left, insn->op == SNX_A64_OP_UQSHL_vi || insn->op == SNX_A64_OP_UQSHL_si,
+                      insn->op == SNX_A64_OP_SQSHLU_vi || insn->op == SNX_A64_OP_SQSHLU_si, &sat);
+        set_qc(g, sat, scalar ? 1 << sz : q ? 16 : 8);
+        if (scalar)
+            vwrite_scalar(g, rd, sz, r);
+        else
+            vwrite(g, rd, r, q);
         return 1;
     }
     case SNX_A64_OP_SUQADD_v:

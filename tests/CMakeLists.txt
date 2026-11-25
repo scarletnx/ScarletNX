@@ -4351,6 +4351,7 @@ foreach(family IN ITEMS
         "byte_shifts;SHL_v;USHR_v;SSHR_v;USRA_v;SSRA_v;SRSHR_v;URSHR_v;SRSRA_v;URSRA_v;SRI_v;SLI_v;RBIT_v"
         "reversals;RBIT;REV16;REV32;REV64"
         "shifts_by_register;SSHL_v;USHL_v;SRSHL_v;URSHL_v;SSHL_s;USHL_s;SRSHL_s;URSHL_s;SQSHL_v;UQSHL_v;SQRSHL_v;UQRSHL_v;SQSHL_s;UQSHL_s;SQRSHL_s;UQRSHL_s"
+        "saturating_shifts;SQSHL_vi;UQSHL_vi;SQSHLU_vi;SQSHL_si;UQSHL_si;SQSHLU_si"
         "crypto;AESE;AESD;AESMC;AESIMC;SHA1C;SHA1P;SHA1M;SHA1SU0;SHA1H;SHA1SU1;SHA256H;SHA256H2;SHA256SU0;SHA256SU1;PMULL_p64")
     list(POP_FRONT family name)
     add_test(NAME recompiler_backends_${name} COMMAND snx-test-recompiler-backends --states 48 --ops ${family})
