@@ -23,7 +23,6 @@
 #define ONLINE_FILE      "online.ini"
 #define ONLINE_PASSWORD  255 /* a room password's bytes, at most */
 #define ONLINE_COMMENT   "; the password of the Eden room ldn=room joins (docs/user/settings.md)"
-#define ONLINE_NAMED     8 /* the keys online_said names, at most */
 
 SnxUser g_users[SNX_USERS_MAX];
 int g_user_count;
@@ -873,62 +872,41 @@ static int write_private(const char* path, const char* text) {
     return (close(fd) != 0) | failed;
 #endif
 }
-/* online.ini's keys that are neither room_password nor a mistake of it (a key that starts with room_): another
-   version's, or another program's, which this one keeps and reads nothing of. Their values can be secrets */
-typedef struct {
-    char names[ONLINE_NAMED * 36];
-    int count;
-} OnlineOthers;
+/* a key that starts with room_ is a mistake of room_password, never another version's */
 static int online_mistake(const char* key) { return !strncmp(key, "room_", 5); }
-/* key, read on the file's line, among o's: by its name, or by the line where the text before its = is no key's name
-   (small letters, digits and _, 32 at most), which could be a secret's */
-static void online_other(OnlineOthers* o, const char* key, int line) {
-    size_t n = strspn(key, "abcdefghijklmnopqrstuvwxyz0123456789_"), at = strlen(o->names);
-    if (o->count++ >= ONLINE_NAMED) return;
-    if (n && n <= 32 && !key[n])
-        snprintf(o->names + at, sizeof o->names - at, "%s%s", at ? ", " : "", key);
-    else
-        snprintf(o->names + at, sizeof o->names - at, "%sline %d", at ? ", " : "", line);
-}
-/* what a reading of online.ini says of them, "" for none */
-static void online_said(const OnlineOthers* o, int password, char* why, size_t why_size) {
-    char more[32] = "";
-    if (o->count > ONLINE_NAMED) snprintf(more, sizeof more, " and %d more", o->count - ONLINE_NAMED);
-    why[0] = 0;
-    if (o->count)
-        snprintf(why, why_size, "users/" ONLINE_FILE ": this version reads room_password (%s) and no other key: %s%s",
-                 password ? "set" : "none", o->names, more);
-}
-int snx_users_room_password(const char* dir, char* password, size_t size, char* why, size_t why_size) {
+int snx_users_room_password(const char* dir, char* password, size_t size, SnxConfigOthers* others, char* why,
+                            size_t why_size) {
     char *path = snx_path_join(dir, ONLINE_FILE), *text = NULL, *key, *value;
-    OnlineOthers others = {0};
+    SnxConfigOthers none = {0};
     size_t length;
     SnxIni ini;
-    int rc = -1;
+    int rc = -1, line = 0;
     password[0] = why[0] = 0;
+    if (!others) others = &none;
+    memset(others, 0, sizeof *others);
+    others->secret = 1;
     if (!path) {
         snprintf(why, why_size, "out of memory");
-        goto done;
-    }
-    if (!snx_is_file(path)) {
-        rc = 0;
         goto done;
     }
 #ifndef _WIN32
     {
         struct stat st;
-        if (stat(path, &st) || (st.st_mode & 077)) {
+        if (snx_is_file(path) && (stat(path, &st) || (st.st_mode & 077))) {
             snprintf(why, why_size, "%s can be read by other users of this machine: chmod 600 it", path);
             goto done;
         }
     }
 #endif
-    text = (char*)snx_read_file(path, &length);
-    if (!text) {
-        snprintf(why, why_size, "%s could not be read", path);
+    rc = snx_config_read(path, &text, &length, why, why_size);
+    if (rc <= 0) { /* none there: 0; one that cannot be read, said: -1 */
+        rc = -(rc < 0);
         goto done;
     }
+    rc = -1;
     snx_ini_start(&ini, text);
+    ini.left = users_left;
+    ini.ctx = others;
     while (snx_ini_next(&ini, &key, &value)) {
         if (ini.section[0]) {
             snprintf(why, why_size, "%s: [%s] is not a section: the file has none", path, ini.section);
@@ -939,16 +917,17 @@ int snx_users_room_password(const char* dir, char* password, size_t size, char* 
                 snprintf(why, why_size, "%s: %s is not a setting: room_password", path, key);
                 goto done;
             }
-            online_other(&others, key, ini.line);
+            snx_config_other_key(others, "", key, ini.line);
             continue;
         }
         if (strlen(value) >= size) {
             snprintf(why, why_size, "%s: room_password is longer than %u bytes", path, (unsigned)size - 1);
             goto done;
         }
+        if (line) snx_config_twice(others, "", key, NULL, line, NULL, ini.line); /* the last is taken */
+        line = ini.line;
         strcpy(password, value);
     }
-    online_said(&others, password[0] != 0, why, why_size);
     rc = 0;
 done:
     free(text);

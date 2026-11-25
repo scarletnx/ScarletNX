@@ -1150,7 +1150,7 @@ static void room_password_row(App* app, const char* temporary) {
     typed(app, "s3cret pass");
     key(app, SDLK_RETURN);
     assert(!app->editor.typing && !app->editor.text[0] && !strcmp(app->editor.note, "Room password: set"));
-    assert(!snx_users_room_password(users, password, sizeof password, why, sizeof why) &&
+    assert(!snx_users_room_password(users, password, sizeof password, NULL, why, sizeof why) &&
            !strcmp(password, "s3cret pass"));
 #ifndef _WIN32
     {
@@ -1189,7 +1189,8 @@ static void room_password_row(App* app, const char* temporary) {
     key(app, SDLK_RETURN); /* a new one puts it right: its file is the owner's alone */
     typed(app, "fresh");
     key(app, SDLK_RETURN);
-    assert(!snx_users_room_password(users, password, sizeof password, why, sizeof why) && !strcmp(password, "fresh"));
+    assert(!snx_users_room_password(users, password, sizeof password, NULL, why, sizeof why) &&
+           !strcmp(password, "fresh"));
     key(app, SDLK_DELETE);
 #endif
     { /* another version's key there (a sign-in's, whose value is a secret): the password is set and taken off with it
@@ -1231,7 +1232,7 @@ static void room_password_row(App* app, const char* temporary) {
         log = (char*)snx_read_file(console, &size);
         for (char* at = log; at && (at = strstr(at, "sign_in")); ++at) ++named;
         assert(named == 1 &&
-               strstr(log, "users/online.ini: this version reads room_password (none) and no other key: sign_in") &&
+               strstr(log, "users/online.ini: this version does not read sign_in, which stays as it is") &&
                !strstr(log, "FAKE"));
         free(log);
         assert(!snx_remove_tree(logs));
