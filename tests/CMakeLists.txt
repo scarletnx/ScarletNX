@@ -4227,6 +4227,40 @@ target_link_libraries(snx-test-plt-calls PRIVATE snx_llvm snx_driver ${CMAKE_DL_
 add_test(NAME plt_calls COMMAND snx-test-plt-calls $<TARGET_FILE:scarletnx> "${CMAKE_CURRENT_BINARY_DIR}/plt-calls-data")
 add_test(NAME llvm_module COMMAND snx-test-llvm-module $<TARGET_FILE:scarletnx> "${PROJECT_SOURCE_DIR}")
 add_test(NAME llvm_module_stats COMMAND snx-test-llvm-module $<TARGET_FILE:scarletnx> "${PROJECT_SOURCE_DIR}" --stats)
+# what the host's native back end makes of whole programs (recompile_census.c): a fixed one of each kind the drivers
+# recompile, every function or block of which must be the back end's. Each prints its count, which the CI's jobs show
+# (scripts/recompile-census.py), by the label
+add_executable(snx-test-recompile-census recompile_census.c llvm_qemu_words.c)
+snx_test_target(snx-test-recompile-census c23)
+target_link_libraries(snx-test-recompile-census PRIVATE scarletnx-recompiler snx_arm_decode scarletnx-common
+                      OpenSSL::Crypto)
+snx_decodetree_a64(snx-test-recompile-census)
+# AArch32's words: the patterns of its decoders' .decode files
+foreach(isa a32 a32-uncond t32 t16)
+    string(REPLACE "-" "_" snx_rows "rows_${isa}")
+    set(snx_width 32)
+    if(isa STREQUAL "t16")
+        set(snx_width 16)
+    endif()
+    snx_decodetree(snx-test-recompile-census OUTPUT rows-${isa}.inc
+                   DECODE "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/decode/${isa}.decode"
+                   OPTIONS --rows=${snx_rows} --insnwidth=${snx_width})
+endforeach()
+set(snx_census switch ounce nro switch32)
+if(TARGET snx_ctr_board)
+    list(APPEND snx_census 3ds)
+endif()
+foreach(program IN LISTS snx_census)
+    add_test(NAME recompile_census_${program} COMMAND snx-test-recompile-census ${program} $<TARGET_FILE:scarletnx>
+             "${SNX_CTR_PROGRAM}")
+    set_tests_properties(recompile_census_${program} PROPERTIES SKIP_RETURN_CODE 77 LABELS census)
+    # under a second here, minutes under a cross build's emulator
+    if(CMAKE_CROSSCOMPILING_EMULATOR)
+        set_tests_properties(recompile_census_${program} PROPERTIES TIMEOUT 1800)
+    else()
+        set_tests_properties(recompile_census_${program} PROPERTIES TIMEOUT 600)
+    endif()
+endforeach()
 # the recompiler as a library (snx_recompiler.h): A64 on every backend built, A32, from code in memory
 add_executable(snx-test-recompiler-library recompiler_library.c)
 snx_test_target(snx-test-recompiler-library gnu23)

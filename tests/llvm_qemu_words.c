@@ -41,7 +41,7 @@ static int push(uint32_t** out, size_t* count, size_t* capacity, uint32_t word) 
     return 0;
 }
 
-static size_t row_words(unsigned samples, LqdRandom random, uint64_t without, uint32_t** out) {
+static size_t row_words(unsigned samples, unsigned widest, LqdRandom random, uint64_t without, uint32_t** out) {
     size_t count = 0, capacity = 0, i;
     *out = NULL;
     for (i = 0; i < ROWS; ++i) {
@@ -70,7 +70,7 @@ static size_t row_words(unsigned samples, LqdRandom random, uint64_t without, ui
             for (k = 0; k < snx_a64_row_fields[i].count; ++k) {
                 const uint32_t mask = snx_a64_field_masks[snx_a64_row_fields[i].first + k];
                 uint32_t v;
-                if (popcount(mask) > 3) continue;
+                if (popcount(mask) > widest) continue;
                 for (v = 0; v < 1u << popcount(mask); ++v)
                     if (push(out, &count, &capacity, (bases[b] & ~mask) | deposit(v, mask))) return count;
             }
@@ -78,10 +78,13 @@ static size_t row_words(unsigned samples, LqdRandom random, uint64_t without, ui
     return count;
 }
 size_t lqd_row_words(unsigned samples, LqdRandom random, uint32_t** out) {
-    return row_words(samples, random, SNX_A64_FEAT_SME | SNX_A64_FEAT_MOPS, out);
+    return row_words(samples, 3, random, SNX_A64_FEAT_SME | SNX_A64_FEAT_MOPS, out);
 }
 size_t lqd_all_row_words(unsigned samples, LqdRandom random, uint32_t** out) {
-    return row_words(samples, random, 0, out);
+    return row_words(samples, 3, random, 0, out);
+}
+size_t lqd_wide_row_words(unsigned samples, unsigned widest, LqdRandom random, uint32_t** out) {
+    return row_words(samples, widest, random, 0, out);
 }
 
 const char* lqd_op_name(uint32_t word, int* unrunnable) {
@@ -99,6 +102,24 @@ const char* lqd_op_name(uint32_t word, int* unrunnable) {
 const char* lqd_switch_op_name(uint32_t word) {
     SnxA64Insn insn;
     return snx_a64_decode(word, SNX_A64_TARGET_SWITCH, &insn) != SNX_A64_OP_UNDEF ? snx_a64_op_name(insn.op) : NULL;
+}
+
+const char* lqd_op_without_word(const uint32_t* words, size_t count, uint64_t features, size_t* ops) {
+    unsigned char has[SNX_A64_OP_COUNT] = {0};
+    const char* missing = NULL;
+    size_t i;
+    for (i = 0; i < count; ++i) {
+        SnxA64Insn insn;
+        has[snx_a64_decode(words[i], features, &insn)] = 1;
+    }
+    *ops = 0;
+    for (i = 0; i < ROWS; ++i) {
+        const SnxA64Row* row = &snx_a64_rows[i];
+        if (row->feature & ~features) continue;
+        if (!has[row->op] && !missing) missing = snx_a64_op_name((SnxA64Op)row->op);
+        if (has[row->op] == 1) has[row->op] = 2, ++*ops;
+    }
+    return missing;
 }
 
 size_t lqd_rows(void) { return ROWS; }
