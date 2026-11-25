@@ -1222,8 +1222,21 @@ static int vec_fp_more(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     return 1;
 }
 
-/* the cryptographic extensions' instructions: the host's AES-NI and SHA-NI where it has them, else the portable helpers
-   (SHA-1 always: SHA1RNDS4 adds the round's constant, which Vm already holds here); 0 for the rest */
+/* SHA1C, SHA1P, SHA1M by SHA-NI's four rounds (func: their choice, parity and majority, with the constant SHA1RNDS4
+   adds, which Vm holds already and so is taken out of it): the state, the words and the first one's E in the other
+   order of lanes */
+static int vsha1(SgCtx* g, int func, int abcd, int e, int wk) {
+    static const SnxU32 k[3] = {0x5A827999u, 0x6ED9EBA1u, 0x8F1BBCDCu};
+    int m = sgx_v1(X, &sgx_v_pshufd, vsub(g, 2, wk, vsplat(g, 2, k[func])), 0x1B), t;
+    m = vadd(g, 2, m, opi(g, &sgx_v_pslldq, e, 12));
+    t = sgx_v2(X, &sgx_v_sha1rnds4, sgx_v1(X, &sgx_v_pshufd, abcd, 0x1B), m, func);
+    return sgx_v1(X, &sgx_v_pshufd, t, 0x1B);
+}
+/* the words of a rotated left by n */
+static int vrolw(SgCtx* g, int a, unsigned n) { return vor(g, vshl(g, 2, a, n), vshr(g, 2, a, 32 - n, 0)); }
+
+/* the cryptographic extensions' instructions: the host's AES-NI and SHA-NI where it has them, else the portable
+   helpers; 0 for the rest */
 static int vec_crypto(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     SgCtx* g = u->g;
     unsigned rd = word & 31, rn = word >> 5 & 31, rm = word >> 16 & 31;
@@ -1251,12 +1264,22 @@ static int vec_crypto(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
         }
         op = insn->op == SNX_A64_OP_AESIMC ? 0x23 : 0x22;
         goto call;
-    case SNX_A64_OP_SHA1C: op = 0; goto three;
-    case SNX_A64_OP_SHA1P: op = 1; goto three;
-    case SNX_A64_OP_SHA1M: op = 2; goto three;
-    case SNX_A64_OP_SHA1SU0: op = 3; goto three;
-    case SNX_A64_OP_SHA1H: op = 0x10; goto two;
-    case SNX_A64_OP_SHA1SU1: op = 0x11; goto two;
+    case SNX_A64_OP_SHA1C:
+    case SNX_A64_OP_SHA1P:
+    case SNX_A64_OP_SHA1M:
+        op = insn->op == SNX_A64_OP_SHA1C ? 0 : insn->op == SNX_A64_OP_SHA1P ? 1 : 2;
+        if (!sha) goto three;
+        r = vsha1(g, (int)op, vread(g, rd), vread(g, rn), vread(g, rm));
+        break;
+    case SNX_A64_OP_SHA1SU0: /* (Vn:Vd's middle doublewords) ^ Vd ^ Vm */
+        a = vread(g, rd);
+        r = vxor(g, vxor(g, sgx_v2(X, &sgx_v_palignr, vread(g, rn), a, 8), a), vread(g, rm));
+        break;
+    case SNX_A64_OP_SHA1H: vwrite_scalar(g, rd, 2, vrolw(g, vread(g, rn), 30)); return 1;
+    case SNX_A64_OP_SHA1SU1: /* each word (Vd's ^ Vn's next one) rotated by 1, the last XORed with the first's by 2 */
+        r = vrolw(g, vxor(g, vread(g, rd), opi(g, &sgx_v_psrldq, vread(g, rn), 4)), 1);
+        r = vxor(g, r, vrolw(g, opi(g, &sgx_v_pslldq, r, 12), 1));
+        break;
     case SNX_A64_OP_SHA256H:
     case SNX_A64_OP_SHA256H2:
         op = insn->op == SNX_A64_OP_SHA256H ? 4 : 5;
