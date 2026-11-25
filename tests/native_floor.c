@@ -23,6 +23,7 @@
 #include "common/cpu/recompiler/ppc64/ppc64be_codegen.h"
 #include "common/cpu/recompiler/snx_recompiler.h"
 #include "common/cpu/recompiler/x64/x64_codegen.h"
+#include "common/platform/file.h"
 #include "common/runtime/interface.h"
 #include "common/utilities/common.h"
 #include "sail_x64_emit.h"
@@ -333,6 +334,40 @@ static void beside_llvm(const char* of) {
     snx_recompiler_free(r);
 }
 
+/* the recompiles' lines on stdout, from here on in path: the A32 maker's of its blocks, the library's of its functions */
+static void printed(const char* path, const char* of) {
+    char line[256], want[320], error[512] = "";
+    size_t consumed = 0, size = 0;
+    SnxArmCodegenOptions options = {SNX_ARM_CODEGEN_OPTIONS_ABI, SNX_ARM_PROFILE_A57, SNX_ARM_MEMORY_FLAT, 0, 0};
+    unsigned char code[8];
+    SnxArmAot* aot = snx_arm_aot_new('0', NULL);
+    struct snx_recompiler* r = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
+    struct snx_code_range range = {CODE, g_memory + CODE, 8};
+    const uint64_t entry = CODE;
+    check(snx_native_floor(line, sizeof line) && aot && r && freopen(path, "w", stdout), "starts", of);
+    for (int i = 0; i < 8; ++i) code[i] = (unsigned char)(k_a32[i / 4] >> (8 * (i % 4)));
+    if (aot) {
+        check(!snx_arm_aot_block(aot, "block", code, 2, 0x1000, 0, &options, &consumed, error, sizeof error), error,
+              of);
+        snx_arm_aot_report(snx_arm_aot_count(aot), "test", 0);
+    }
+    snx_arm_aot_free(aot);
+    if (r) {
+        snx_recompiler_set_verbose(r, 1);
+        snx_recompiled_free(snx_recompile_ranges(r, &range, 1, &entry, 1));
+    }
+    snx_recompiler_free(r);
+    fflush(stdout);
+    char* text = (char*)snx_read_file(path, &size);
+    char* lines = (char*)calloc(size + 1, 1);
+    if (text && lines) memcpy(lines, text, size);
+    snprintf(want, sizeof want, "LLVM: 1 blocks (%s)\n", line);
+    check(lines && strstr(lines, want) != NULL, want, of);
+    snprintf(want, sizeof want, "%s: LLVM makes the code\n", line);
+    check(lines && strstr(lines, want) != NULL, want, of);
+    free(text), free(lines);
+}
+
 /* the features named, "A,B", of this host's floor: their bits, or -1 for a name it has none of, said */
 static int named(const char* names, unsigned* bits) {
     *bits = 0;
@@ -393,11 +428,13 @@ int main(int argc, char** argv) {
             take_out(k < NAMES ? g_names[k].bit : all_names());
             beside_llvm(of);
         }
+        take_out(all_names());
+        printed("native_floor_printed.txt", "the lines on stdout");
         take_out(0);
     } else
         printf("native_floor: no floor to take this host below (%s%s): the lines alone\n", snx_native_name(),
                below ? ", below it already" : "");
     snx_native_set_alone(0);
-    printf("native_floor: %d failures\n", g_floor.failures);
+    fprintf(stderr, "native_floor: %d failures\n", g_floor.failures);
     return g_floor.failures != 0;
 }
