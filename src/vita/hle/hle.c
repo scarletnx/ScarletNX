@@ -29,13 +29,7 @@ static int by_nid(const void* key, const void* entry) {
     return a < b ? -1 : a > b;
 }
 static const VitaHle* find(uint32_t nid) {
-    const VitaHle* h = bsearch(&nid, vita_hle_table, VITA_HLE_COUNT, sizeof *vita_hle_table, by_nid);
-    if (h) return h;
-    static const VitaHle* const tables[] = {vita_hle_libc};
-    for (size_t i = 0; i < sizeof tables / sizeof *tables; ++i)
-        for (const VitaHle* h = tables[i]; h->name; ++h)
-            if (h->nid == nid) return h;
-    return NULL;
+    return bsearch(&nid, vita_hle_table, VITA_HLE_COUNT, sizeof *vita_hle_table, by_nid);
 }
 static uint32_t vita_export_return(VitaProcess* p, VitaThread* t, void* context) {
     (void)p;
