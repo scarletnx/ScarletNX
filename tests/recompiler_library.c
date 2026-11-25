@@ -141,6 +141,75 @@ static void jit_cache(struct snx_recompiler* r, uint8_t* mem, const char* folder
     free(file);
 }
 
+/* ---- a switch through a jump table (llvm-mc -triple=aarch64), at SWITCH64: LLVM's compressed table of bytes, its
+   cases counted in instructions from case0, the table permuted so case k is body (5k mod 32) ----
+   f:      cmp w0, #31; b.hi dflt; mov w8, w0; adr x9, table; adr x10, case0; ldrb w11, [x9, x8];
+           add x10, x10, x11, lsl #2; br x10
+   casek:  movz x0, #(7k + 3); ret                    (k 0..31: 32 cases, so many leaders the BR takes the table)
+   dflt:   movz x0, #999; ret
+   table:  .byte (5k mod 32) * 2 for k 0..31 */
+#define SWITCH64 0xA000u
+static const uint32_t switch_words[] = {
+    0x71007c1f, 0x540008e8, 0x2a0003e8, 0x100008e9, 0x1000008a, 0x3868692b,
+    0x8b0b094a, 0xd61f0140, 0xd2800060, 0xd65f03c0, 0xd2800140, 0xd65f03c0,
+    0xd2800220, 0xd65f03c0, 0xd2800300, 0xd65f03c0, 0xd28003e0, 0xd65f03c0,
+    0xd28004c0, 0xd65f03c0, 0xd28005a0, 0xd65f03c0, 0xd2800680, 0xd65f03c0,
+    0xd2800760, 0xd65f03c0, 0xd2800840, 0xd65f03c0, 0xd2800920, 0xd65f03c0,
+    0xd2800a00, 0xd65f03c0, 0xd2800ae0, 0xd65f03c0, 0xd2800bc0, 0xd65f03c0,
+    0xd2800ca0, 0xd65f03c0, 0xd2800d80, 0xd65f03c0, 0xd2800e60, 0xd65f03c0,
+    0xd2800f40, 0xd65f03c0, 0xd2801020, 0xd65f03c0, 0xd2801100, 0xd65f03c0,
+    0xd28011e0, 0xd65f03c0, 0xd28012c0, 0xd65f03c0, 0xd28013a0, 0xd65f03c0,
+    0xd2801480, 0xd65f03c0, 0xd2801560, 0xd65f03c0, 0xd2801640, 0xd65f03c0,
+    0xd2801720, 0xd65f03c0, 0xd2801800, 0xd65f03c0, 0xd28018e0, 0xd65f03c0,
+    0xd28019c0, 0xd65f03c0, 0xd2801aa0, 0xd65f03c0, 0xd2801b80, 0xd65f03c0,
+    0xd2807ce0, 0xd65f03c0, 0x1e140a00, 0x063c3228, 0x2e241a10, 0x160c0238,
+    0x3e342a20, 0x261c1208, 0x0e043a30, 0x362c2218,
+};
+static void switch64(struct snx_recompiler* r, uint8_t* mem) {
+    int backend;
+    place(mem, SWITCH64, switch_words, sizeof(switch_words) / sizeof(switch_words[0]));
+    for (backend = 1; backend >= 0; --backend) {
+        struct snx_recompiled* m;
+        RtAPI rt;
+        CPU cpu;
+        Seen seen;
+        uint64_t k;
+        char what[256];
+        snx_recompiler_set_backend(r, backend);
+        m = snx_recompile(r, SWITCH64, mem + SWITCH64, sizeof(switch_words));
+        snprintf(what, sizeof(what), "switch, back end %d: snx_recompile: %s", backend, snx_recompiler_error(r));
+        check(m != NULL, what);
+        if (!m) continue;
+#if defined(__x86_64__) && !defined(_WIN32)
+        /* the function, and its table's bytes after it taken for one */
+        snprintf(what, sizeof(what), "the switch's functions are the x86-64 back end's (%lu of %lu)",
+                 (unsigned long)snx_recompiled_x64_functions(m), (unsigned long)snx_recompiled_functions(m));
+        if (backend) check(snx_recompiled_x64_functions(m) == snx_recompiled_functions(m), what);
+#endif
+        snx_runtime_defaults(&rt);
+        rt.svc = svc64;
+        rt.undef = undef64;
+        rt.brk = brk64;
+        memset(&cpu, 0, sizeof(cpu));
+        memset(&seen, 0, sizeof(seen));
+        cpu.mem = mem;
+        cpu.rt = &rt;
+        cpu.thread = &seen;
+        check(snx_recompiled_bind(m, &cpu) == 0, "bind the switch");
+        for (k = 0; k < 41; ++k) {
+            uint64_t want = k < 32 ? (k * 5 % 32) * 7 + 3 : 999;
+            cpu.x[0] = k;
+            cpu.x[30] = STOP;
+            snx_recompiled_run(m, &cpu, SWITCH64, STOP);
+            snprintf(what, sizeof(what), "switch, back end %d: case %llu gives %llu, not %llu", backend,
+                     (unsigned long long)k, (unsigned long long)cpu.x[0], (unsigned long long)want);
+            check(cpu.x[0] == want && cpu.pc == STOP && !seen.brks && !seen.undefs, what);
+        }
+        snx_recompiled_free(m);
+    }
+    snx_recompiler_set_backend(r, 1);
+}
+
 static void run64(struct snx_recompiler* r, const char* backend, uint8_t* mem, const char* keep_ir) {
     struct snx_recompiled *m, *first;
     RtAPI rt;
@@ -847,6 +916,7 @@ int main(int argc, char** argv) {
               "the Switch and max A64 targets");
         snx_recompiler_set_jobs(r, 2);
         run64(r, "llvm", mem, keep_ir);
+        switch64(r, mem);
         progress64(r, mem);
         schedule64(r);
         invalidate64(r, mem);

@@ -64,7 +64,9 @@ int snx_codegen_word(SnxCodegen* codegen, SnxU64 address, SnxU32* word);
 /* 1 when every word in read_block is what its module holds now */
 int snx_codegen_words_current(const SnxCodegen* codegen);
 /* conservative discovery targets for a BR's jump table, up to capacity; emitted BR instructions still use their
-   register and dispatch at run time */
+   register and dispatch at run time (the native back ends' through a table of the cases, the others by the dispatch
+   block). A switch with more cases is followed to SNX_JUMP_TABLE_MAX */
+#define SNX_JUMP_TABLE_MAX 256
 size_t snx_codegen_jump_table(SnxCodegen* codegen, SnxU64 address, SnxU64* targets, size_t capacity);
 SnxU64 snx_function_address(const SnxFunction* function, size_t index);
 int snx_function_contains(const SnxFunction* function, SnxU64 address);

@@ -300,7 +300,6 @@ typedef struct {
     int absolute;   /* the entry is the target, not an offset from base */
 } JumpTable;
 
-#define SNX_JUMP_TABLE_MAX 256 /* a switch with more cases is followed to here */
 /* instructions a compiler puts between the ADD that makes a case's address and its BR, and between the code that
    takes a table's address and the entry's load (the first cases' moves; a loop keeps the table's address outside) */
 #define SNX_JUMP_TABLE_GAP   16
