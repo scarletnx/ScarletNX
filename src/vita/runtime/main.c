@@ -18,6 +18,7 @@
 #include "common/platform/file.h"
 #include "common/utilities/game_ini.h"
 #include "common/utilities/ini_lines.h"
+#include "common/utilities/vpad_consoles.h"
 #include "snx_settings.h"
 #include <ctype.h>
 #include <stdio.h>
@@ -48,6 +49,13 @@ static void usage(FILE* out) {
         "Vita options:\n"
         "  --gpu-driver=NAME      The Vulkan driver package to run with (Android arm64), --freedreno-env=NAME=value;...\n"
         "                         its Freedreno variables, as the Switch's.\n"
+        "  --controls=0|1|2       The on-screen controls: 1 shown, 0 hidden, 2 (Auto, the default) shown on a touch\n"
+        "                         screen while no gamepad is connected. --controls-scale=N, --controls-snap=0|1,\n"
+        "                         --controls-rel-center=0|1, --controls-dpad-slide=0|1, --controls-haptics=0|1 and\n"
+        "                         --controls-<ID>-shown=0|1 (ID one of a for Circle, b Cross, x Triangle, y Square,\n"
+        "                         l, r, plus for Start, minus for Select, dpad, stick_l, stick_r) as a Switch game's\n"
+        "  --touch=0|1|2          The front panel's touch: 2 (default) the fingers and the mouse's left button, 1 the\n"
+        "                         fingers, 0 none\n"
         "  --KEY=VALUE            A Vita debug setting: --vita-hle-trace=1 logs each import the runtime lacks (2\n"
         "                         every call), --vita-gxm-trace=1 each scene. And the Switch's --aot-threads=N:\n"
         "                         the game's code compiles on N threads (1 to 1024; the default 0: the computer's\n"
@@ -61,6 +69,9 @@ static void usage(FILE* out) {
         "from, another game folder's <title ID>.hints (default: the game's own). --jit-only makes a module of no blocks,\n"
         "the run-time compiler compiling every one, and --keep-ir has LLVM compile them all and keeps each chunk's IR in\n"
         "<title ID>_build of the game's folder.\n"
+        "\n"
+        "F2, or Android's Back, edits the on-screen controls' layout: a control dragged moves, and one tapped is\n"
+        "sized from the bar; Done, Esc, F2 or Back ends it, and <title ID>.ini keeps it. Back twice quits.\n"
         "\n"
         "On the Vita, --update is the dumped game's update folder (default: patch/<title ID> beside its app/<title\n"
         "ID>), --shot saves PATH.ppm, and --script=ms:buttons,... is the setting vita_script.\n",
@@ -184,8 +195,8 @@ static void deploy_runtime(const char* folder, const char* runtime) {
     free(ini);
     free(copy);
 }
-static int play(const char* folder, bool recompile, double seconds, const char* shot, const char* runtime,
-                const SnxCliRecompile* asked) {
+static int play(const char* folder, const char* ini, bool recompile, double seconds, const char* shot,
+                const char* runtime, const SnxCliRecompile* asked) {
     VitaImage image;
     VitaNative native = {0};
     VitaProcess* process = NULL;
@@ -295,7 +306,7 @@ static int play(const char* folder, bool recompile, double seconds, const char* 
     printf("ScarletNX - %s (Vita)\nbuild: %s\n", title ? title : image.name, snx_build_log_line());
     snx_run_log_line(run, (long long)time(NULL));
     printf("%s\n", run);
-    vita_present_init(header ? header : image.name, shot);
+    vita_present_init(header ? header : image.name, ini, shot);
     free(header);
     free(sfo);
     free(title);
@@ -327,6 +338,7 @@ int snx_vita_main(int argc, char** argv) {
         ini_read(ini_find(g_vita_debug_ini, "vita_lockstep_steps"), old_steps);
     int old_lockstep = g_settings.vita_lockstep, old_lockstep_steps = g_settings.vita_lockstep_steps;
     SnxCli cli;
+    vpad_console(&snx_vpad_vita);
     snx_cli_init(&cli, "scarletnx-vita", vita_cli);
     for (int i = 1; i < argc; ++i) {
         const char* a = argv[i];
@@ -346,6 +358,14 @@ int snx_vita_main(int argc, char** argv) {
         if (common == SNX_CLI_OPT) ini_read(ini_find(g_recompile_ini, "opt"), cli.value[SNX_CLI_OPT]);
         if (common == SNX_CLI_JOBS) g_settings.aot_threads = cli.jobs;
         if (common) continue;
+        /* the on-screen controls' and the front panel's settings, read with the game's own once its folder is known */
+        int controls = vpad_arg(a, error, sizeof error);
+        if (controls < 0) {
+            fprintf(stderr, "scarletnx-vita: %s\n", error);
+            snx_cli_free(&cli);
+            return 2;
+        }
+        if (controls) continue;
         if (!strncmp(a, "--", 2) && strchr(a, '=')) {
             /* the Vita debug and run tables', --press-len= and --shot-every= being vita_press_len and vita_shot_every
                (a Switch game's are g_unattended_ini's), vulkan_video (which the Vita's AVC decoder doesn't take yet),
@@ -472,7 +492,12 @@ int snx_vita_main(int argc, char** argv) {
             goto done;
         }
     }
-    status = play(folder, recompile, seconds, shot, runtime, &asked);
+    char *ini = vita_game_file(folder, ".ini"), *name = last_part(folder);
+    vpad_set_say(vita_present_say);
+    if (name) vpad_settings(folder, name, argc, argv);
+    free(name);
+    status = play(folder, ini, recompile, seconds, shot, runtime, &asked);
+    free(ini);
 done:
     free(folder);
     free(runtime);

@@ -12,4 +12,6 @@ extern const SnxVpadConsole snx_vpad_gba;
 /* the DS's: those, X and Y, around the screens, clear of them in a phone held upright. Its touch screen is the lower
    one */
 extern const SnxVpadConsole snx_vpad_nds;
+/* the Vita's keys and its two sticks. Its touch screen is the front one */
+extern const SnxVpadConsole snx_vpad_vita;
 #endif

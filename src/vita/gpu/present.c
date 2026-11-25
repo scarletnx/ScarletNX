@@ -3,6 +3,7 @@
 #include "vita/gpu/present.h"
 #include "common/utilities/common.h"
 #include "common/utilities/quit_key.h"
+#include "common/utilities/vpad_sdl.h"
 #include "vita/gpu/render.h"
 #include "vita/gpu/vk.h"
 #include "vita/platform/input.h"
@@ -23,13 +24,16 @@ static void on_signal(int signal) {
     (void)signal;
     g_interrupted = 1;
 }
-void vita_present_init(const char* title, const char* shot) {
+void vita_present_say(const char* line) { printf("%s\n", line); }
+void vita_present_init(const char* title, const char* ini, const char* shot) {
     char error[256];
+    snx_vpad_sdl_hints();
     if (!vita_vk_init(title, error, sizeof error)) printf("vita: no Vulkan device, nothing is drawn: %s\n", error);
     g_present.shot = shot && *shot ? strdup(shot) : NULL;
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
     vita_input_init();
+    if (vita_vk() && vita_vk()->host.window) snx_vpad_window_open(vita_vk()->host.window, ini, vita_present_say);
 }
 /* the framebuffer shown last as PATH<suffix>.ppm, once the GPU drew it */
 static void shot_write(VitaProcess* p, const char* suffix);
@@ -44,6 +48,9 @@ bool vita_present_vblank(VitaProcess* p) {
     SDL_Event event;
     while (SDL_WasInit(SDL_INIT_EVENTS) && SDL_PollEvent(&event)) {
         if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) return false;
+        SnxVpadEvent took = snx_vpad_window_event(&event);
+        if (took == SNX_VPAD_QUIT) return false;
+        if (took == SNX_VPAD_TAKEN) continue;
         /* Esc twice ends the game, a first one warning on the terminal and over the game; not with Ctrl, Alt or the
            system key */
         if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_ESCAPE && !event.key.repeat &&
@@ -57,6 +64,7 @@ bool vita_present_vblank(VitaProcess* p) {
         }
         vita_input_event(&event);
     }
+    vita_input_sample();
     return !g_interrupted;
 }
 /* SceDisplay's formats: A8B8G8R8 (0, the bytes R, G, B, A) and the others the runtime doesn't show yet */
@@ -78,6 +86,7 @@ void vita_present_shot(VitaProcess* p) {
     if (g_present.shot && p->display.base) shot_write(p, "");
 }
 void vita_present_free(void) {
+    snx_vpad_window_close();
     vita_input_free();
     vita_vk_free();
     free(g_present.shot);

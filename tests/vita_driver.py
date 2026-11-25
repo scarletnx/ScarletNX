@@ -51,6 +51,10 @@ def main():
         'settings: vita_press_len=-5 is not a whole number from 0 to 2147483647: it keeps 0',
     )
     run(['--vita-hle_trace=1', 'game.vpk'], 2, 'scarletnx-vita: unknown setting: --vita-hle_trace=1')
+    # the on-screen controls' settings and the front panel's, as a Switch game's: taken, a value they do not take said
+    run(['--controls=1', '--controls-stick-l-shown=0', '--touch=1', '--launcher-picks=1', '--help'], 0, 'Vita options:')
+    run(['--controls=3', 'game.vpk'], 2, 'scarletnx-vita: controls=3 ')
+    run(['--touch=x', 'game.vpk'], 2, 'scarletnx-vita: touch=x ')
     # the key as the .ini writes it, the older spelling: still read, and said once a run with the name now
     out = run(
         ['--vita_hle_trace=1', '--vita_hle_trace=2', '--help'],

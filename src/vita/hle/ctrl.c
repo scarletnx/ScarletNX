@@ -52,17 +52,18 @@ uint32_t vita_ctrl_touch_peek(VitaProcess* p, VitaThread* t, uint32_t port, uint
         return SCE_TOUCH_ERROR_INVALID_ARG;
     VitaInput in;
     vita_input_read(&in);
-    bool down = port ? in.back : in.front;
-    uint16_t x = port ? in.back_x : in.front_x, y = port ? in.back_y : in.front_y;
+    unsigned reports = port ? in.back : in.fronts;
     for (uint32_t i = 0; i < count; ++i) {
         uint32_t at = data + i * 144;
         unsigned char* b = vita_ptr(p, at);
         memset(b, 0, 144);
         vita_write64(p, at, (plat_ns() - p->start_ns) / 1000u);
-        vita_write32(p, at + 12, down ? 1 : 0);
-        if (down) {
-            b[16] = 0, b[17] = 128; /* id, force */
-            snx_st_le16(b + 18, (uint16_t)x), snx_st_le16(b + 20, (uint16_t)y);
+        vita_write32(p, at + 12, reports);
+        for (unsigned r = 0; r < reports; ++r) {
+            unsigned char* report = b + 16 + r * 16;
+            report[0] = port ? 0 : in.front[r].id, report[1] = 128; /* id, force */
+            snx_st_le16(report + 2, port ? in.back_x : in.front[r].x);
+            snx_st_le16(report + 4, port ? in.back_y : in.front[r].y);
         }
     }
     return count;
