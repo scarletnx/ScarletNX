@@ -18,7 +18,7 @@
 #if defined(__ANDROID__)
 #include <android/api-level.h>
 #endif
-#include "common/cpu/recompiler/llvm/ir.h"
+#include "common/cpu/recompiler/llvm/ir_settings.h"
 #include "common/cpu/recompiler/x64/x64_cache.h"
 
 /* the triple of the iOS app's code: Darwin's calling convention and the generic AArch64 CPU, in the object format the

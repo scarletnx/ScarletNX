@@ -770,7 +770,6 @@ LLVM_USERS = {
     'src/common/cpu/recompiler/library.c',
     'src/common/cpu/recompiler/workers.h',
     'src/nds/aot/compiler.c',
-    'src/nds/cpu/recomp.c',
     'src/nx/loader/module_arm.c',
     'src/nx/loader/module_ir.h',
     'src/nx/loader/module_llvm.c',
@@ -778,8 +777,6 @@ LLVM_USERS = {
     'src/nx/loader/module_variants.h',
     'src/nx/runtime/driver/disasm.c',
     'src/nx/runtime/driver/llvm_tuning.c',
-    'src/nx/runtime/driver/recompile.c',
-    'src/nx/runtime/main.c',
     'src/nx/runtime/settings_llvm.h',
     'src/vita/aot/compiler.c',
 }
