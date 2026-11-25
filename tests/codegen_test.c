@@ -1800,6 +1800,33 @@ static void jump_table_ways_test(void) {
     table_cases("a base of two addresses", other, sizeof(other) / 4, in_case, 4, whole, 1, first, 2);
 }
 
+/* Where a table without a compare ends, in an unwind range (llvm-mc; its cases mov w0, #k; ret, the byte table at 0x80).
+   masked: and x0, x0, #7; ...: four entries, and the bytes past them name the function after it
+   two: a switch of three cases, its table at 0x80, and one of three, its table at 0x83
+   shifted: and w0, w0, #0x7fff; nop; ubfx x1, x0, #13, #19; ...: four values, and a fifth byte names a case's RET */
+static void jump_table_end_test(void) {
+    static const SnxU32 masked[] = {0x92400800UL, 0x90000009UL, 0x91020129UL, 0x1000008AUL, 0x3860692BUL,
+                                    0x8B0B094AUL, 0xD61F0140UL, 0x52800020UL, 0xD65F03C0UL, 0x52800040UL,
+                                    0xD65F03C0UL, 0x52800060UL, 0xD65F03C0UL, 0x52800080UL, 0xD65F03C0UL,
+                                    0x528000A0UL, 0x11000400UL, 0x11000800UL, 0xD65F03C0UL};
+    static const SnxU32 two[] = {0x35000201UL, 0x90000009UL, 0x91020129UL, 0x1000008AUL, 0x3860692BUL, 0x8B0B094AUL,
+                                 0xD61F0140UL, 0x52800020UL, 0x11000400UL, 0xD65F03C0UL, 0x52800040UL, 0x11000400UL,
+                                 0xD65F03C0UL, 0x52800060UL, 0x11000400UL, 0xD65F03C0UL, 0x90000009UL, 0x91020D29UL,
+                                 0x1000008AUL, 0x3862692BUL, 0x8B0B094AUL, 0xD61F0140UL, 0x52800080UL, 0xD65F03C0UL,
+                                 0x528000A0UL, 0xD65F03C0UL, 0x528000C0UL, 0xD65F03C0UL};
+    static const SnxU32 shifted[] = {0x12003800UL, 0xD503201FUL, 0xD34D7C01UL, 0x90000009UL, 0x91020129UL, 0x1000008AUL,
+                                     0x3861692BUL, 0x8B0B094AUL, 0xD61F0140UL, 0x52800020UL, 0xD65F03C0UL, 0x52800040UL,
+                                     0xD65F03C0UL, 0x52800060UL, 0xD65F03C0UL, 0x52800080UL, 0xD65F03C0UL};
+    static const unsigned char past[] = {0, 2, 4, 6, 9, 10}, next[] = {0, 3, 6, 0, 2, 4}, five[] = {0, 2, 4, 6, 1};
+    static SnxFde ranges[] = {{0, 0x3C}, {0x3C, 0x10}}, all[] = {{0, sizeof(two)}}, shift[] = {{0, sizeof(shifted)}};
+    static const TableCases four_cases[] = {{0x18, {0x1C, 0x24, 0x2C, 0x34}}};
+    static const TableCases threes[] = {{0x18, {0x1C, 0x28, 0x34}}, {0x54, {0x58, 0x60, 0x68}}};
+    static const TableCases fours[] = {{0x20, {0x24, 0x2C, 0x34, 0x3C}}};
+    table_cases("a mask wider than the table", masked, sizeof(masked) / 4, past, 6, ranges, 2, four_cases, 1);
+    table_cases("a table another follows", two, sizeof(two) / 4, next, 6, all, 1, threes, 2);
+    table_cases("a mask and a shift", shifted, sizeof(shifted) / 4, five, 5, shift, 1, fours, 1);
+}
+
 /* What the way back from a table's load meets (llvm-mc), each a byte table at 0x80 of cases that are RETs, its guard
    cmp #3; b.hi d but where said.
    others: a switch in another's case; between them ccmp w5, w6, #9, eq; fmov s9, w5; scvtf d9, x5, #4; msr tpidr_el0, x9:
@@ -1813,7 +1840,8 @@ static void jump_table_ways_test(void) {
    answered: adrp x1; add x1; svc #0; ...: the SVC's x1
    late: a switch of x12's, in its case one of x9's, whose case 2 sets x9 to another address and branches to it
    deep: a switch of x12's, in its case one of x9's, in that one's case another of x9's
-   remade: cmp w1, #0; cneg w1, w1, mi; and x1, x1, #3; ...: the compare is of w1 before */
+   remade: cmp w1, #0; cneg w1, w1, mi; and x1, x1, #3; ...: the compare is of w1 before
+   unreachable: five entries, the third the end of the unwind range, another function's start */
 static void jump_table_met_test(void) {
     static const SnxU32 others[] = {0x90000009UL, 0x91020129UL, 0x71000C1FUL, 0x54000248UL, 0x1000008AUL, 0x3860692BUL,
                                     0x8B0B094AUL, 0xD61F0140UL, 0x7A4600A9UL, 0x1E2700A9UL, 0x9E42F0A9UL, 0xD51BD049UL,
@@ -1854,11 +1882,14 @@ static void jump_table_met_test(void) {
     static const SnxU32 remade[] = {0x90000009UL, 0x91020129UL, 0x7100003FUL, 0x5A815421UL, 0x92400421UL,
                                     0x1000008AUL, 0x3861692BUL, 0x8B0B094AUL, 0xD61F0140UL, 0xD65F03C0UL,
                                     0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL};
+    static const SnxU32 unreachable[] = {0x90000009UL, 0x91020129UL, 0x1000008AUL, 0x3860692BUL,
+                                         0x8B0B094AUL, 0xD61F0140UL, 0xD65F03C0UL, 0xD65F03C0UL,
+                                         0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL};
     static const unsigned char in_case[] = {0, 10, 11, 12}, copies[] = {0, 6, 7, 8}, four[] = {0, 1, 2, 3};
-    static const unsigned char in_late[] = {0, 0, 0, 0, 6, 7, 9, 6};
+    static const unsigned char holed[] = {0, 1, 4, 2, 3}, in_late[] = {0, 0, 0, 0, 6, 7, 9, 6};
     static const unsigned char in_deep[] = {0, 0, 0, 0, 6, 12, 13, 6};
     static SnxFde of_padded[] = {{0, sizeof(padded)}}, of_landed[] = {{0, sizeof(landed)}};
-    static SnxFde of_late[] = {{0, sizeof(late)}}, of_deep[] = {{0, sizeof(deep)}};
+    static SnxFde of_late[] = {{0, sizeof(late)}}, of_deep[] = {{0, sizeof(deep)}}, two[] = {{0, 0x28}, {0x28, 4}};
     static const TableCases others_want[] = {{0x1C, {0x20, 0x48, 0x4C, 0x50}}, {0x44, {0x20, 0x48, 0x4C, 0x50}}};
     static const TableCases copied_want[] = {{0x20, {0x24, 0x3C, 0x40, 0x44}}, {0x38, {0x24, 0x3C, 0x40, 0x44}}};
     static const TableCases apart_want[] = {{0x40, {0x44, 0x48, 0x4C, 0x50}}};
@@ -1869,6 +1900,7 @@ static void jump_table_met_test(void) {
     static const TableCases late_want[] = {{0x24, {0x28}}, {0x3C, {0}}};
     static const TableCases deep_want[] = {{0x24, {0x28}}, {0x3C, {0x40, 0x58, 0x5C}}, {0x54, {0x40, 0x58, 0x5C}}};
     static const TableCases remade_want[] = {{0x20, {0x24, 0x28, 0x2C, 0x30}}};
+    static const TableCases unreachable_want[] = {{0x14, {0x18, 0x1C, 0x20, 0x24}}};
     table_cases("no write of the base", others, sizeof(others) / 4, in_case, 4, NULL, 0, others_want, 2);
     table_cases("a copy of the base", copied, sizeof(copied) / 4, copies, 4, NULL, 0, copied_want, 2);
     table_cases("an ADRP far from its ADD", apart, sizeof(apart) / 4, four, 4, NULL, 0, apart_want, 1);
@@ -1880,6 +1912,7 @@ static void jump_table_met_test(void) {
     table_cases("a base refused late", late, sizeof(late) / 4, in_late, 8, of_late, 1, late_want, 2);
     table_cases("a switch two switches in", deep, sizeof(deep) / 4, in_deep, 8, of_deep, 1, deep_want, 3);
     table_cases("an index made after a compare", remade, sizeof(remade) / 4, four, 4, NULL, 0, remade_want, 1);
+    table_cases("an unreachable case", unreachable, sizeof(unreachable) / 4, holed, 5, two, 2, unreachable_want, 1);
 }
 
 int main(void) {
@@ -1897,6 +1930,7 @@ int main(void) {
     jump_table_flow_test();
     jump_table_flags_test();
     jump_table_ways_test();
+    jump_table_end_test();
     jump_table_met_test();
     jump_table_anchor_far_test();
     jump_table_anchor_branch_test();
