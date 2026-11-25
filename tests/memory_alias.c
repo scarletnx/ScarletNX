@@ -1061,6 +1061,12 @@ static void test_write_marks(void) {
     for (u64 pg = 0; pg < 64; pg += 9) mem_wrote(h + (pg << 12), 1);
     g_marks_n = 0;
     CHECK(mem_marks_scan(h, 64 << 12, on_marked) == 0 && g_marks_n == 8 && marked_run(7, h + (63ull << 12), 0x1000));
+    /* a run that ends a word, before words of no mark: closed there, not at the next mark */
+    mem_wrote(h + 0x7000, 1);
+    mem_wrote(h + (20ull << 12), 1);
+    g_marks_n = 0;
+    CHECK(mem_marks_scan(h, 64 << 12, on_marked) == 0 && g_marks_n == 2 && marked_run(0, h + 0x7000, 0x1000) &&
+          marked_run(1, h + (20ull << 12), 0x1000));
 }
 
 int main(int argc, char** argv) {

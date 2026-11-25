@@ -1182,11 +1182,10 @@ int mem_foreign(char* out, size_t size) {
 static u8* g_wmarks;
 static void marks_init(void) {
     if (!g_settings.write_marks || g_mem_identity || !g_mem) return;
-    if (plat_vm_commit(g_mem - SNX_WMARK_BELOW, g_as_size >> 12)) {
-        WARN("memory: the write marks' %llu MiB could not be committed: the game's first store will fault\n",
-             (unsigned long long)((g_as_size >> 12) >> 20));
-        return;
-    }
+    if (plat_vm_commit(g_mem - SNX_WMARK_BELOW, g_as_size >> 12))
+        fatal("write_marks=%d needs %llu MiB of memory for the marks below guest memory, and they could not be "
+              "committed: run the game with write_marks=0, or with more memory",
+              g_settings.write_marks, (unsigned long long)((g_as_size >> 12) >> 20));
     g_wmarks = g_mem - SNX_WMARK_BELOW;
     LOG("memory: write marks on, %llu MiB below guest memory\n", (unsigned long long)((g_as_size >> 12) >> 20));
 }
@@ -1207,21 +1206,12 @@ int mem_marks_scan(u64 a, u64 size, void (*cb)(u8* p, u64 size)) {
     u64 pg = a >> 12, pe = ((size > g_as_size - a ? g_as_size : a + size) + 4095) >> 12, run = 0;
     int in = 0;
     while (pg < pe) {
-        u64 bits;
-        /* eight marks a word where the run is aligned, each word read before the exchange that takes it */
-        if (!(pg & 7) && pg + 8 <= pe) {
-            _Atomic u64* w = (_Atomic u64*)(void*)&g_wmarks[pg];
-            if (!atomic_load_explicit(w, memory_order_relaxed)) {
-                if (in) cb(GP(run << 12), (pg - run) << 12), in = 0;
-                pg += 8;
-                continue;
-            }
-            bits = atomic_exchange_explicit(w, 0, memory_order_acquire);
-            for (int i = 0; i < 8; i++, pg++)
-                if ((bits >> (8 * i)) & 0xff) {
-                    if (!in) run = pg, in = 1;
-                } else if (in)
-                    cb(GP(run << 12), (pg - run) << 12), in = 0;
+        /* eight marks a word where the run is aligned: none of them set is the common word. A word with one is taken a
+           byte at a time, as each mark is stored, so a mark's own byte (no host byte order to know) is what is taken */
+        if (!(pg & 7) && pg + 8 <= pe &&
+            !atomic_load_explicit((_Atomic u64*)(void*)&g_wmarks[pg], memory_order_relaxed)) {
+            if (in) cb(GP(run << 12), (pg - run) << 12), in = 0;
+            pg += 8;
             continue;
         }
         _Atomic u8* m = (_Atomic u8*)&g_wmarks[pg];
