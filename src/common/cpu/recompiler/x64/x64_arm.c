@@ -43,7 +43,6 @@
    range, with the one exit that has none past it */
 #define MG_ARM_EXIT_LAST(c) win64(c)
 #define MG_ARM_COFF snx_x64_win64()
-#define MG_ARM_UNWIND unwind_block
 #if defined(__APPLE__) || defined(_WIN32)
 #include "common/cpu/recompiler/llvm/elf_defs.h"
 #else
@@ -61,8 +60,6 @@
 #endif
 
 static int win64(const SnxX64Arm* c);
-static void unwind_block(SnxXElf* o, size_t at, const unsigned char* code, size_t size, size_t own, const void* rel,
-                         size_t nrel);
 #include "common/cpu/recompiler/mach/mach_arm.inc"
 
 /* ---- the x86-64 glue ---- */
@@ -215,7 +212,6 @@ static void mg_prologue(MG_ARM* c, SnxU32 pc, int* bad) {
 }
 /* where a check of the entry failed: ESI the block's address, EDX its first word (a Thumb block's halfword; Windows' EDX
    and R8D), and snx_x64_arm_entry_exit or snx_x64_thumb_entry (the object's own, which set the exit) */
-#define ENTRY_EXIT_WIN64 16 /* its bytes there, whose frame isn't up (unwind_block's) */
 static void mg_entry_exit(MG_ARM* c, SnxU32 pc, SnxU32 first, int bad) {
     SgXBuf* b = &c->b;
     sgx_a32_bind(&c->g, b, bad);
@@ -353,18 +349,6 @@ static void mg_entry_exit_fn(SnxXElf* o) {
     entry_exit_fn(o);
     thumb_entry_exit_fn(o);
 }
-/* a block's entry in the function table (COFF's): its frame from its own entry on, to the failed check's exit (the jump
-   to entry_exit_fn's or thumb_entry_exit_fn's, its one relocation) */
-static void unwind_block(SnxXElf* o, size_t at, const unsigned char* code, size_t size, size_t own, const void* rel,
-                         size_t nrel) {
-    const Rel* r = (const Rel*)rel;
-    size_t out = size;
-    if (own == (size_t)-1) return; /* a jump of no frame */
-    for (size_t k = 0; k < nrel; ++k)
-        if (!strcmp(r[k].sym, "snx_x64_arm_entry_exit") || !strcmp(r[k].sym, "snx_x64_thumb_entry"))
-            out = r[k].at + 4 - ENTRY_EXIT_WIN64;
-    snx_xelf_unwind(o, at + own, at + out, code + own, size - own);
-}
 int snx_x64_arm_entry(MG_ARM* c, uint32_t key) {
     unsigned char code[12] = {0xC7, state8(c, 0), (unsigned char)(offsetof(SnxArmCPU, r) + 60), 0, 0, 0, 0, 0xE9};
     SnxU32 address = key & ~1u;
@@ -373,7 +357,7 @@ int snx_x64_arm_entry(MG_ARM* c, uint32_t key) {
     name_of(rel.sym, sizeof rel.sym, key);
     char name[24];
     snprintf(name, sizeof name, "X%s", rel.sym);
-    return keep(c, code, sizeof code, &rel, 1, address, name, (size_t)-1) ? 0 : -1;
+    return keep(c, code, sizeof code, &rel, 1, address, name, (size_t)-1, 0) ? 0 : -1;
 }
 #else
 int snx_x64_arm_available(void) { return 0; }

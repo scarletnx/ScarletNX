@@ -4353,6 +4353,17 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
         set_tests_properties(arm_${m} arm_${m}_spill arm_${m}_half arm_${m}_odd PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
         snx_arm_native_modes(${m} --blocks 600 --states 8)
     endforeach()
+    # arm64's as a Windows host's
+    add_executable(snx-test-arm-arm64win arm_x64.c support/host_unicorn.c support/la64_interp.c)
+    snx_test_target(snx-test-arm-arm64win gnu23)
+    target_compile_definitions(snx-test-arm-arm64win PRIVATE SNX_TEST_ARM64=1 SNX_TEST_ARM64WIN=1)
+    target_include_directories(snx-test-arm-arm64win PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${SNX_UNICORN_INCLUDE_DIR}")
+    target_link_libraries(snx-test-arm-arm64win PRIVATE snx_llvm snx_arm_llvm snx_driver "${SNX_UNICORN_LIBRARY}"
+                          ${CMAKE_DL_LIBS})
+    add_test(NAME arm_arm64win COMMAND snx-test-arm-arm64win --blocks 1500 --thumb 1000 --states 8)
+    add_test(NAME arm_arm64win_spill COMMAND snx-test-arm-arm64win --pool 3 --blocks 1500 --thumb 1000 --states 8 --seed 2)
+    add_test(NAME arm_arm64win_step COMMAND snx-test-arm-arm64win --step --blocks 300 --thumb 200 --states 2 --seed 3)
+    set_tests_properties(arm_arm64win arm_arm64win_spill arm_arm64win_step PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
     # rv64's ABI extends a narrow argument with its sign, arm64's does not (the control); la64's and the others' tests
     # run the back end's own words (la64_interp) or skip, so they have no compiled function
     include(arm_call_abi.cmake)

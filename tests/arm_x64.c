@@ -3,13 +3,14 @@
 /* The x86-64 back end's A32 blocks (src/common/cpu/recompiler/x64/x64_arm.c), or built with SNX_TEST_ARM64 or
    SNX_TEST_RV64 the arm64 or riscv64 back end's (run under Unicorn: snx-test-arm-arm64, -rv64, without the hot paths'
    witnesses and the chain), or with SNX_TEST_WIN64 the x86-64 one's for Windows (its calling convention, run by an
-   x86-64 host itself: support/host_win64.c), against the AArch32 block compiler's LLVM ones (snx_arm_llvm_block, which
+   x86-64 host itself: support/host_win64.c), or with SNX_TEST_ARM64WIN beside SNX_TEST_ARM64 the arm64 one's for
+   Windows, against the AArch32 block compiler's LLVM ones (snx_arm_llvm_block, which
    module_arm.c makes a 32-bit program's blocks with), at -O0: their IR as it is, which LLVM 22's -O2 makes otherwise in
    one case (VRSHL's witness, below): the same words consumed, and the same results from the same random states.
      snx-test-arm-x64 [--profile a57|a9|arm11|arm946e|arm7tdmi] [--memory flat|hosted|checked] [--trace] [--blocks N]
          [--thumb N] [--states N] [--pool N] [--features MASK] [--seed N] [--word HEX]... [--halves HEX[,HEX]...]
          [--dump] [--step]
-   --step (SNX_TEST_WIN64): the stack unwound by the objects' function table at every instruction of the blocks. Each
+   --step (Windows' blocks): the stack unwound by the objects' function table at every instruction of the blocks. Each
    block is words drawn from the A32 instructions the back end makes (data processing, branches, the loads and
    stores of every kind, the multiplies and divides, the bit operations, MRS and MSR, the exclusives and acquire and
    release, the barriers and hints, SVC, BKPT, the coprocessor's and UNDEFINED, ARMv6's and ARMv7's DSP and media
@@ -46,8 +47,14 @@
 #include "support/host_unicorn.h"
 typedef SnxArm64Arm Back;
 #define back_(name) snx_arm64_arm_##name
-#define BACK_NAME   "arm64"
-#define BACK_UC     HOSTUC_ARM64
+#if defined(SNX_TEST_ARM64WIN)
+#include "common/cpu/recompiler/arm64/arm64_codegen.h"
+#define BACK_NAME "arm64 (Windows)"
+#define BACK_UC   HOSTUC_ARM64_WIN
+#else
+#define BACK_NAME "arm64"
+#define BACK_UC   HOSTUC_ARM64
+#endif
 #elif defined(SNX_TEST_LA64)
 #define SNX_TEST_NATIVE 1
 #include "common/cpu/recompiler/la64/la64_arm.h"
@@ -120,6 +127,10 @@ typedef SnxX64Arm Back;
 #define back_(name) snx_x64_arm_##name
 #define BACK_NAME   "x86-64"
 #endif
+/* the blocks have a function table, their frames unwound by it (hostuc_step, hostuc_unwound) */
+#if defined(SNX_TEST_WIN64) || defined(SNX_TEST_ARM64WIN)
+#define SNX_TEST_UNWINDS 1
+#endif
 #include "common/utilities/bits.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
@@ -167,7 +178,7 @@ static struct {
     const char* object; /* --object FILE: the first chunk's x86-64 object written there (objdump -d reads it) */
     const char* ll;     /* --ll FILE: the first chunk's LLVM module, before its passes, written there */
     int dump;           /* --dump: a failing state's start printed */
-#if defined(SNX_TEST_WIN64)
+#if defined(SNX_TEST_UNWINDS)
     int step; /* --step: hostuc_step */
 #endif
     /* the x86-64 blocks' calls of snx_arm_fp_x64, by op: the VFP's hot paths leave to it what they can't do */
@@ -883,7 +894,7 @@ static int run_chunk(SnxIr* ir, Back* x64, Block* blocks, size_t count) {
     /* the native code's world: the states in memory Unicorn maps at their own addresses */
     HostUc* uc = hostuc_new(BACK_UC, 16u << 20);
     RunState* s = uc ? (RunState*)hostuc_alloc(uc, 2 * sizeof *s) : NULL;
-#if defined(SNX_TEST_WIN64)
+#if defined(SNX_TEST_UNWINDS)
     if (uc && g_test.step) hostuc_step(uc, 1);
 #endif
     if (s) hostuc_swapper(uc, swap_arm, &s[1]); /* a big-endian machine's state turned over around its runs */
@@ -1754,7 +1765,7 @@ done:
     return rc;
 }
 
-#if defined(SNX_TEST_WIN64)
+#if defined(SNX_TEST_UNWINDS)
 /* the entry's checks of an A32 and a Thumb block (llvm.c's block_begin and thumb_block, in their order), each failed one
    with its exit and syndrome, R15 left as it is; run an instruction at a time, its exit's code having no frame */
 static int run_entries(Back* x64) {
@@ -2165,7 +2176,7 @@ int main(int argc, char** argv) {
 #endif
         } else if (!strcmp(argv[i], "--dump"))
             g_test.dump = 1;
-#if defined(SNX_TEST_WIN64)
+#if defined(SNX_TEST_UNWINDS)
         else if (!strcmp(argv[i], "--step"))
             g_test.step = 1;
 #endif
@@ -2228,6 +2239,8 @@ int main(int argc, char** argv) {
     }
 #if defined(SNX_TEST_WIN64)
     snx_x64_set_win64(1);
+#elif defined(SNX_TEST_ARM64WIN)
+    snx_arm64_set_windows(1);
 #endif
 #else
     if (!back_(available)()) {
@@ -2269,7 +2282,7 @@ int main(int argc, char** argv) {
     size_t done = 0;
     for (int thumb = 0; thumb < 2; ++thumb)
         if (plain && !g_test.nonly && !g_test.nhalves && run_poll_chain(x64, thumb)) ++g_test.failures;
-#if defined(SNX_TEST_WIN64)
+#if defined(SNX_TEST_UNWINDS)
     if (plain && !g_test.nonly && !g_test.nhalves && run_entries(x64)) ++g_test.failures;
 #endif
 #else

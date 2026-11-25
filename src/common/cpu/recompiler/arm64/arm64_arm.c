@@ -4,7 +4,8 @@
    (a32_arm64.inc), and its glue here: the frame (X29, X30 and X19 saved, the spill slots below), the entry checks on
    X0, the chaining's tail jumps (JUMP26) and its poll (ADRP and LDR of snx_arm_poll_offset), and the entry stub of a
    block another back end makes. The VFP's arithmetic is snx_arm_fp's, its helper (no hot path yet). It builds on any
-   host: its blocks are arm64's code, which the tests run under Unicorn */
+   host: its blocks are arm64's code, which the tests run under Unicorn. On Windows the object is COFF, a frame's code one
+   entry of its function table */
 #include "common/cpu/recompiler/arm64/arm64_arm.h"
 #include "common/cpu/recompiler/arm64/arm64_codegen.h"
 #include "common/cpu/recompiler/x64/x64_elf.h"
@@ -24,7 +25,10 @@ enum {
     A64_CALL26 = 283,
     A64_LDST64_ABS_LO12_NC = 286
 };
-static unsigned arm64_arm_features(void) { return snx_arm64_available() ? snx_arm64_features() : SNX_ARM64_F_ALL; }
+static unsigned arm64_arm_features(void) {
+    return (snx_arm64_available() ? snx_arm64_features() : SNX_ARM64_F_ALL) |
+           (snx_arm64_windows() ? SNX_ARM64_F_WIN : 0);
+}
 #define MG_ARM_INC         "a32_arm64.inc"
 #define MG_ARM             SnxArm64Arm
 #define MG_ARM_NEXT        SnxArm64ArmNext
@@ -36,6 +40,10 @@ static unsigned arm64_arm_features(void) { return snx_arm64_available() ? snx_ar
 #define MG_ARM_CALL_RELOC  A64_CALL26
 #define MG_ARM_LOAD_FENCE  1 /* an LDR is no acquire: a DMB after it, as LLVM's LDA lowering's order */
 #define MG_ARM_FP_HOT      0
+#define MG_ARM_ABI          SNX_ARM64_F_WIN
+/* the code of a frame one range, the one exit that has none past it */
+#define MG_ARM_EXIT_LAST(c) windows(c)
+#define MG_ARM_COFF         snx_arm64_windows()
 
 #if defined(__clang__)
 #pragma clang diagnostic ignored "-Wunused-variable"
@@ -47,23 +55,34 @@ static unsigned arm64_arm_features(void) { return snx_arm64_available() ? snx_ar
 #pragma GCC diagnostic ignored "-Wunused-function"
 #endif
 
+static int windows(const SnxArm64Arm* c);
 #include "common/cpu/recompiler/mach/mach_arm.inc"
 
 /* ---- the arm64 glue ---- */
+
+/* the block is made for Windows */
+static int windows(const SnxArm64Arm* c) { return (c->features & SNX_ARM64_F_WIN) != 0; }
 
 /* every operation snx_arm_fp's (its helper's) */
 static SgD fp_call(SgCtx* g, SnxArmVectorOp op, unsigned width, SnxU32 param, SgD xv, SgD yv, SgD zv) {
     return fp_helper(g, op, width, param, xv, yv, zv);
 }
 
-/* the frame's room: SUB or ADD SP of the slots' size, patched once the block is done (sgx_patch_frame) */
+/* the frame's room: SUB or ADD SP of the slots' size, patched once the block is done (sgx_patch_frame), on Windows the
+   SUB past a probe of one of a page or more */
+static void frame_here(MG_ARM* c, size_t at) {
+    if (c->a.nframe >= 256) sg_fail("a block of too many epilogues", c->a.nframe, 256);
+    c->a.frame_at[c->a.nframe++] = at;
+}
 static void frame(MG_ARM* c, int add) {
     SgXBuf* b = &c->b;
-    if (c->a.nframe >= 256) sg_fail("a block of too many epilogues", c->a.nframe, 256);
-    c->a.frame_at[c->a.nframe++] = b->n;
+    if (!add && c->big) frame_here(c, sga_stack_probe(b));
+    frame_here(c, b->n);
     sga_w(b, add ? sge_a64_add_addsub_imm(31, 31, 0, 0, 1) : sge_a64_sub_addsub_imm(31, 31, 0, 0, 1));
 }
+/* 1 where the frame is a page or more and has no probe: made again with it */
 static int mg_patch_frame(MG_ARM* c) {
+    if (windows(c) && !c->big && SGA_FRAME_PROBED(sga_frame_size(&c->a))) return 1;
     sgx_patch_frame(&c->a);
     return 0;
 }
@@ -247,7 +266,7 @@ int snx_arm64_arm_entry(MG_ARM* c, uint32_t key) {
     name_of(rel.sym, sizeof rel.sym, key);
     char name[24];
     snprintf(name, sizeof name, "X%s", rel.sym);
-    return keep(c, code, b.n, &rel, 1, key & ~1u, name, (size_t)-1) ? 0 : -1;
+    return keep(c, code, b.n, &rel, 1, key & ~1u, name, (size_t)-1, 0) ? 0 : -1;
 }
 #else
 int snx_arm64_arm_available(void) { return 0; }

@@ -201,5 +201,5 @@ int MG_ARM_API(entry)(MG_ARM* c, uint32_t key) {
     name_of(rel.sym, sizeof rel.sym, key);
     char name[24];
     snprintf(name, sizeof name, "X%s", rel.sym);
-    return keep(c, code, b.n, &rel, 1, key & ~1u, name, (size_t)-1) ? 0 : -1;
+    return keep(c, code, b.n, &rel, 1, key & ~1u, name, (size_t)-1, 0) ? 0 : -1;
 }
