@@ -2,8 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* A render target whose pixels exist only on the GPU, where the caches would let it go (surface.c rt_give_way): for its
    age (VK_RECLAIM_IDLE, every 600 presents) or under the budget's pressure (VK_RECLAIM_ANY). Here a parked one, as a
-   target is once another shape took its address, which nothing kept from its age. It is published as it is parked
-   (rt_park_publish), so its pixels are in memory and it goes for its age and comes back from there, unless memory
+   target is once another shape took its address, which nothing kept from its age. Its pixels are owed to memory as it
+   is parked (rt_park_keep), so its age writes them back, and it goes and comes back from there, unless memory
    can't hold them: a format that is no format of guest memory's (ASIDE_HELD), drawn as RGBA8, is the one that still
    has pixels memory lacks when it is parked. Its pixels: a green picture with a rectangle cleared red over it.
    - Where the GPU shares the system's memory nothing moves: its age leaves it, bit for bit when it holds its address
@@ -200,13 +200,13 @@ static int check_rt_aside(void) {
     CHECK(aside_targets() == held - 1 && now.lost == was.lost + 1);
     vk_unlock();
 
-    /* a target memory holds is published as it is parked: its age takes it, its pixels memory's, and what the CPU wrote
-       meanwhile is what the target made again at its next use holds */
+    /* a target memory holds is owed to memory as it is parked (rt_park_keep): its age writes it back and takes it, its
+       pixels memory's, and what the CPU wrote meanwhile is what the target made again at its next use holds */
     for (int wrote = 0; wrote < 2; wrote++) {
         aside_bytes(ASIDE_CPU);
         g_renderer->mem_may_have_changed();
         t = aside_draw(ch, ASIDE_GA, ASIDE_RAW);
-        CHECK(t && aside_park(ASIDE_GA) != t && (t->gva >> 63) && !vk_surf_flush_size(t));
+        CHECK(t && aside_park(ASIDE_GA) != t && (t->gva >> 63) && vk_surf_flush_size(t));
         CHECK(!aside_read(t, ref));
         g_vk.mem_model = VK_MEM_UMA;
         before = aside_oldest(t);

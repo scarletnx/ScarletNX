@@ -1551,36 +1551,68 @@ typedef struct {
     u32 count, capacity;
 } RtPendingList;
 
+/* s in pending, in the order of its image's age (oldest first, so that the newer target's pixels land on top), once */
+static void pending_add(RtPendingList* pending, Surf* s) {
+    u32 at = 0;
+    while (at < pending->count && pending->surfaces[at]->wseq < s->wseq) at++;
+    if (at < pending->count && pending->surfaces[at] == s) return;
+    if (pending->count == pending->capacity) {
+        u32 capacity = pending->capacity * 2;
+        if (capacity < pending->capacity || (u64)capacity > SIZE_MAX / sizeof *pending->surfaces)
+            fatal("Too many render target aliases");
+        Surf** grown = malloc((size_t)capacity * sizeof *grown);
+        if (!grown) fatal("Out of memory collecting render target aliases");
+        memcpy(grown, pending->surfaces, (size_t)pending->count * sizeof *grown);
+        if (pending->capacity > 16) free(pending->surfaces);
+        pending->surfaces = grown;
+        pending->capacity = capacity;
+    }
+    memmove(pending->surfaces + at + 1, pending->surfaces + at,
+            (size_t)(pending->count - at) * sizeof *pending->surfaces);
+    pending->surfaces[at] = s;
+    pending->count++;
+}
+/* The parked targets whose pixels memory lacks, armed in the CPU's watch as they were parked (rt_park_keep): the CPU's
+   access to their pages writes them back there first (rt_publish_any), as the console's memory holds what their draws
+   wrote. A target leaves the list when it is taken out of parking, written back or freed. A game that renders a chain
+   of targets of other sizes over one scratch pool each frame parks tens of them a present, which the CPU never reads */
+static Surf** g_park_owed;
+static u32 g_npark_owed, g_cap_park_owed;
+static void park_owed_add(Surf* s) {
+    if (s->park_owed) return;
+    if (g_npark_owed == g_cap_park_owed) {
+        u32 cap = g_cap_park_owed ? g_cap_park_owed * 2 : 64;
+        Surf** grown = realloc(g_park_owed, (size_t)cap * sizeof *grown);
+        if (!grown) fatal("Out of memory listing the parked render targets");
+        g_park_owed = grown;
+        g_cap_park_owed = cap;
+    }
+    g_park_owed[g_npark_owed++] = s;
+    s->park_owed = 1;
+}
+static void park_owed_drop(Surf* s) {
+    if (!s->park_owed) return;
+    u32 i = 0;
+    while (i < g_npark_owed && g_park_owed[i] != s) i++;
+    if (i < g_npark_owed) g_park_owed[i] = g_park_owed[--g_npark_owed];
+    s->park_owed = 0;
+}
+static int rt_superseded(const Surf* s);
 /* Collect under the GMMU alias lock, then flush after it is released. A flush
    writes guest memory and asks the alias index about those writes itself. */
 static void rt_pending_alias(void* ctx, u64 gva, u64 size) {
     RtPendingList* pending = ctx;
-    Surf *local[16], **list;
-    u32 count;
-    if (!pend_hit_va(&g_rt_pages, gva, size)) return;
-    count = rt_pending_over(gva, size, local, 16, &list);
-    for (u32 i = 0; i < count; i++) {
-        Surf* s = list[i];
-        u32 at = 0;
-        while (at < pending->count && pending->surfaces[at]->wseq < s->wseq) at++;
-        if (at < pending->count && pending->surfaces[at] == s) continue;
-        if (pending->count == pending->capacity) {
-            u32 capacity = pending->capacity * 2;
-            if (capacity < pending->capacity || (u64)capacity > SIZE_MAX / sizeof *pending->surfaces)
-                fatal("Too many render target aliases");
-            Surf** grown = malloc((size_t)capacity * sizeof *grown);
-            if (!grown) fatal("Out of memory collecting render target aliases");
-            memcpy(grown, pending->surfaces, (size_t)pending->count * sizeof *grown);
-            if (pending->capacity > 16) free(pending->surfaces);
-            pending->surfaces = grown;
-            pending->capacity = capacity;
-        }
-        memmove(pending->surfaces + at + 1, pending->surfaces + at,
-                (size_t)(pending->count - at) * sizeof *pending->surfaces);
-        pending->surfaces[at] = s;
-        pending->count++;
+    if (pend_hit_va(&g_rt_pages, gva, size)) {
+        Surf *local[16], **list;
+        u32 count = rt_pending_over(gva, size, local, 16, &list);
+        for (u32 i = 0; i < count; i++) pending_add(pending, list[i]);
+        if (list != local) free(list);
     }
-    if (list != local) free(list);
+    for (u32 i = 0; i < g_npark_owed; i++) {
+        Surf* s = g_park_owed[i];
+        const u64 at = s->gva & ~(1ull << 63);
+        if (at < gva + size && at + rt_bytes(s) > gva && flush_bytes(s) && !rt_superseded(s)) pending_add(pending, s);
+    }
 }
 /* The targets over s's bytes whose images are newer than s's and newer than memory, with nothing written under them
    since they last matched it: s's landing goes under them, as rt_flush_older leaves them pending on top, so it is no
@@ -2551,8 +2583,8 @@ static void zt_restore(Surf* s);
 /* Another format over the same bytes: one game draws its scene to an sRGB target and the overlay over it to a UNORM
    one at the same address, and presents that. The target taking the address starts from the pixels of the one it
    parks (fresh: newer than memory) when they are newer than its own and both images hold the guest's bytes as they
-   are, in the same shape (rt_takes). 1 when it took them: those pixels are in it then, not in memory, and need no
-   publish (rt_park_publish) */
+   are, in the same shape (rt_takes). 1 when it took them: those pixels are in it then, not in memory, and nothing is
+   owed to memory for them (rt_park_keep) */
 static int rt_takes(const Surf* to, const Surf* from, int fresh) {
     return from && from != to && fresh && from->layout != VK_IMAGE_LAYOUT_UNDEFINED && from->wseq > to->wseq &&
            !from->f.depth && !to->f.depth && from->f.raw && to->f.raw && from->f.bpp == to->f.bpp && from->w == to->w &&
@@ -2596,9 +2628,9 @@ static void rt_stride_keep(Surf* s, u64 layer_size) {
 }
 /* Newer guest memory at this address takes precedence, as it does where a texture takes a target's draw
    (vk_rt_drawn_fresh, tex_take_drawn): where the CPU wrote the target's memory since it was drawn, the target is loaded
-   again from it. What the draw left is in that memory before the write lands: a live target is watched and published at
-   the CPU's first access (vk_rt_watch_hit), and a parked one was published as it was parked (rt_park_publish). A depth
-   target holds nothing a load takes, and one never drawn has no baseline to tell by */
+   again from it. What the draw left is in that memory before the write lands: a target is watched and published at the
+   CPU's first access (vk_rt_watch_hit), a live one and a parked one alike (rt_park_keep). A depth target holds nothing a
+   load takes, and one never drawn has no baseline to tell by */
 static void rt_stride_written(Surf* s) {
     if (!s->f.depth && s->draw_wseen && s->layout != VK_IMAGE_LAYOUT_UNDEFINED && !vk_rt_drawn_fresh(s))
         vk_rt_reload(s->gva);
@@ -2628,12 +2660,34 @@ static Surf* rt_find_parked(u64 gva, const Surf* want, u32 fkey, int* padding) {
     return found;
 }
 static void rt_publish_now(Surf* s, int why);
-/* A target that takes its address from another parks it, which drops its pages from the watch (rt_pages): a CPU write
-   there is no access vk_rt_watch_hit sees, and lands over bytes the draw never wrote back, so the target is published
-   first, whatever of its pixels memory lacks */
-static void rt_park_publish(u64 gva) {
+static void rt_watch(Surf* s);
+/* A target that takes its address from another parks it, which drops its pages from the live targets' (rt_pages): a
+   CPU write there lands over bytes the draw never wrote back, and a load of the target named again takes the stale
+   bytes of the rest of it. So the CPU's watch is armed over its pages, and it goes in the list of parked targets owed
+   to memory (g_park_owed), which the CPU's access writes back first. Only with no traps to watch by is it published
+   now. Published at each park, one game's scratch pool, which takes a chain of targets of other sizes each frame,
+   cost about 40 publishes and 70 MB a present, and each target named again was loaded from the bytes of another
+   size, which broke the image */
+static void rt_park_keep(u64 gva) {
     Surf* live = vk_rt_find(gva);
-    if (live && flush_bytes(live) && !rt_superseded(live)) rt_publish_now(live, VK_PUB_OTHER);
+    if (!live || !flush_bytes(live) || rt_superseded(live)) return;
+    if (!own_traps()) {
+        rt_publish_now(live, VK_PUB_OTHER);
+        return;
+    }
+    rt_watch(live); /* drawn since the last release, which watches only the live targets */
+    if (vk_rt_find(gva) == live && flush_bytes(live)) park_owed_add(live);
+}
+/* A new target over [gva, gva + size) starts from memory, as the CPU does, so the parked targets owed there are
+   written back first. A target named again is found parked and loads nothing, so the chain of the scratch pool
+   writes back only as each shape is first made */
+static void rt_park_owed_land(u64 gva, u64 size) {
+    for (u32 i = g_npark_owed; i--;) {
+        if (i >= g_npark_owed) continue; /* a write-back can drop more than one */
+        Surf* s = g_park_owed[i];
+        const u64 at = s->gva & ~(1ull << 63);
+        if (at < gva + size && at + rt_bytes(s) > gva) rt_publish_now(s, VK_PUB_OTHER);
+    }
 }
 static Surf* rt_create_(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, int depth, u32 pitch, u32 layers, u64 layer_size,
                         int volume, u32 msaa);
@@ -2705,10 +2759,10 @@ static Surf* rt_create_(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, int depth, u32
     int padding; /* the parked one was found by its padding alone */
     Surf* parked = rt_find_parked(gva, &want, fkey, &padding);
     if (!rt_takes(parked ? parked : &want, cur, cur_fresh)) {
-        /* cur's own pixels, which no target takes, go to memory as it is parked. After its freshness is asked, as the
-           publish's write to memory is newer than its draw to vk_rt_drawn_fresh, and before the parked targets are
-           looked up for good, as it can let some go */
-        rt_park_publish(gva);
+        /* cur's own pixels, which no target takes, are owed to memory as it is parked: watched, or published where
+           nothing can be (rt_park_keep). After its freshness is asked, as a publish's write to memory is newer than its
+           draw to vk_rt_drawn_fresh, and before the parked targets are looked up for good, as it can let some go */
+        rt_park_keep(gva);
         if (cur && vk_rt_find(gva) != cur) cur = NULL, cur_fresh = 0;
         parked = rt_find_parked(gva, &want, fkey, &padding);
     }
@@ -2722,6 +2776,7 @@ static Surf* rt_create_(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, int depth, u32
             surf_changed(gva);
         }
     if (parked) {
+        park_owed_drop(parked); /* live again: the watch over its pages finds it as a live target */
         parked->gva = gva;
         g_take_gen++;
         rtx_add(parked);
@@ -2748,8 +2803,10 @@ static Surf* rt_create_(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, int depth, u32
        comes from memory, but a loaded save state may hold its pixels */
     if (depth)
         zt_restore(s);
-    else if (!rt_take_pixels(s, cur, cur_fresh))
+    else if (!rt_take_pixels(s, cur, cur_fresh)) {
+        rt_park_owed_land(gva, s->rt_size);
         vk_rt_reload(gva);
+    }
     return s;
 }
 
@@ -2940,11 +2997,25 @@ static void linear_drop(Surf* s) {
     drawn_pull(&g_bl, s, &s->in_bl);
 }
 static void rt_publish_now(Surf* s, int why) {
+    if (s->gva >> 63) {
+        /* parked (g_park_owed): written back at its own address now, as no owner can hold it for later. An owner's
+           publish lands it later, by its address, where a parked one's lands nowhere (flush_land). The parked bit
+           leaves it in its bucket, and no live target's index holds it, so the address goes back after */
+        const u64 gva = s->gva, size = flush_bytes(s), a = plat_ns();
+        s->gva = gva & ~(1ull << 63);
+        vk_surf_flush(s, NULL);
+        s->gva = gva;
+        if (!flush_bytes(s)) park_owed_drop(s);
+        g_vk_rt_watch.by[why]++;
+        g_vk_rt_watch.bytes[why] += size;
+        g_vk_rt_watch.ns[why] += plat_ns() - a;
+        return;
+    }
     if (!publish_why(s, why)) vk_surf_flush(s, NULL);
 }
 /* a block linear target s drawn since the last release, its pixels newer than memory: watched, or published */
 static void rt_watch(Surf* s) {
-    u64 size = rt_bytes(s);
+    u64 size = rt_bytes(s), at = s->gva & ~(1ull << 63); /* a parked one's (g_park_owed) at its own address */
     int publish = 0, armed = 0;
     if (!own_traps()) return; /* no traps: left as before, as a publish would land at once, a readback a release */
     /* Read lately: published now, so that the CPU's next read finds it with no fault. That is a CPU access that had
@@ -2964,9 +3035,9 @@ static void rt_watch(Surf* s) {
         return;
     }
     for (u64 off = 0; off < size;) {
-        u64 cpu = 0, n = gmmu_run(s->gva + off, size - off, &cpu);
+        u64 cpu = 0, n = gmmu_run(at + off, size - off, &cpu);
         if (!n) {
-            n = 0x1000 - ((s->gva + off) & 0xFFF);
+            n = 0x1000 - ((at + off) & 0xFFF);
             if (n > size - off) n = size - off;
         } else if (!own_covered(cpu, n)) {
             /* Armed only where no owner or watch is yet: an owner's trap is a watch too (OwnHooks' refresh), and over
@@ -3231,6 +3302,7 @@ static void surf_free(Surf* s) {
     if (s->is_rt) rt_pages(s, -1);
     rt_sys_left(s);
     if (s->gva >> 63) g_parked--;
+    park_owed_drop(s);
     linear_drop(s);
     if (s->in_drawn) {
         g_take_gen++;
@@ -3342,6 +3414,8 @@ static void rt_aside_check(Surf* s) {
    memory (rt_demote) and stays there, where it frees none of the GPU's memory. One that can't move stays for its age,
    and goes under the pressure with its pixels, said */
 static u64 rt_give_way(Surf* s, int lossy) {
+    /* parked with pixels owed to memory (rt_park_keep): written back now, as no use of it came first */
+    if (s->park_owed) rt_publish_now(s, VK_PUB_OTHER);
     if (lossless(s)) {
         SNX_ZONE_T(z, "vk mem target reclaim", "%ux%u %lluKB, epoch %u: memory has its pixels, evict", s->w, s->h,
                    (unsigned long long)(s->bytes >> 10), vk_ww_epoch());

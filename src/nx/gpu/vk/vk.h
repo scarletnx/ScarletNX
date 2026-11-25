@@ -1300,6 +1300,7 @@ typedef struct Surf {
     int take_seen; /* render targets: vk_rt_drawn_in gave it to a texture's search since its last write */
     int in_linear; /* a pitch-linear target in surface.c's list of those drawn since the last release */
     int in_bl;     /* a block linear target in surface.c's other list of those */
+    int park_owed; /* a parked target in surface.c's list of those whose pixels memory lacks (g_park_owed) */
     u32 cpu_asked; /* the present, plus one, at which a CPU access last had it published (vk_rt_watch_hit): 0 never */
     u64 drawn_from;
     u64 draw_gw;    /* guest-memory generation at the first draw this present or since a full replacement */
