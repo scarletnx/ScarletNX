@@ -178,6 +178,8 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     if (k < 0 || strcmp(sge_a64_table[k].family, "DataProcFPSIMD") || (insn->feature & ~g_host_a64) ||
         u->options->sail_alone)
         return 0;
+    /* FMOV (vector, immediate) of halves, whose words the table has first as FCVTZS of a fixed point with immh 0 */
+    if (insn->op == SNX_A64_OP_FMOVI_v_h) return 0;
     name = sge_a64_table[k].name;
     if ((!strcmp(name, "tbl_advsimd") || !strcmp(name, "tbx_advsimd")) && (word >> 13 & 3)) {
         /* a table of len + 1 registers from Rn, which the host's need not hold in a row: TBL (or TBX, of Vd) of the
