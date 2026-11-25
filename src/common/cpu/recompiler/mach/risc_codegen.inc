@@ -3,14 +3,15 @@
 /* The RISC back ends' guest functions, the glue every one shares (after mach/mach_codegen.inc, included by a
    machine's code generator: rv64/rv64_codegen.c...): the flow, the calls, the entry's checks and the dispatch block,
    written from risc.h's operations and the machine's branches, calls and frame (its header's rk_j, rk_bz, rk_patch,
-   rk_call_reloc, rk_tail_reloc, rk_patch_call, rk_call_reg, rk_jump_reg, rk_literal, rk_literal_value,
-   rk_fn_prologue, rk_fn_epilogue, rk_fn_patch_frame), and its relocations (MG_R_CALL, MG_R_TAIL, MG_R_LITERAL, and
-   MG_R_FAR where a JIT unit's literals hold addresses: MIPS64's).
+   with MG_FAR_JUMPS rk_j_far and rk_patch_far, rk_call_reloc, rk_tail_reloc, rk_patch_call, rk_call_reg, rk_jump_reg,
+   rk_literal, rk_literal_value, rk_fn_prologue, rk_fn_epilogue, rk_fn_patch_frame), and its relocations (MG_R_CALL,
+   MG_R_TAIL, MG_R_LITERAL, and MG_R_FAR where a JIT unit's literals hold addresses: MIPS64's).
 
    The function's ABI is GuestFn's: the state in the first argument's register, kept in SGX_BASE, the entry in the
-   second's (SGX_FN_TARGET). A jump goes as far as the machine's long jump (rk_j); a conditional one is a short branch
-   of the opposite over it. An address of data (snx_stale) is a literal in the code, its distance from itself
-   (rk_literal, MG_R_LITERAL). RK_S1 and RK_S2 are the glue's own, RK_SA the machine's assembler's */
+   second's (SGX_FN_TARGET). A jump goes as far as the machine's long jump (rk_j; rk_j_far in a function its reach
+   is too short for, Unit.far); a conditional one is a short branch of the opposite over it. An address of data
+   (snx_stale) is a literal in the code, its distance from itself (rk_literal, MG_R_LITERAL). RK_S1 and RK_S2 are
+   the glue's own, RK_SA the machine's assembler's */
 
 static void fixup(Unit* u, int label, size_t at) {
     u->fixups = (Fixup*)grow(u->fixups, &u->cap_fixups, u->nfixups + 1, sizeof *u->fixups);
@@ -35,7 +36,15 @@ static void unit_reloc(void* machine, size_t at, const char* sym, long long adde
     reloc((Unit*)machine, at, sym, MG_R_CALL, addend);
 }
 
-static void jmp(Unit* u, int label) { fixup(u, label, rk_j(&u->b)); }
+static void jmp(Unit* u, int label) {
+#ifdef MG_FAR_JUMPS
+    if (u->far) {
+        fixup(u, label, rk_j_far(&u->b));
+        return;
+    }
+#endif
+    fixup(u, label, rk_j(&u->b));
+}
 /* to label where r is (nonzero) or isn't 0: the short branch of the opposite over a long jump */
 static void jump_reg(Unit* u, int nonzero, int r, int label) {
     size_t skip = rk_bz(&u->b, !nonzero, r);
@@ -248,7 +257,14 @@ static int mg_finish(Unit* u, size_t fix0) {
         if (!rk_fn_patch_frame(&u->b, u->frame_at[i], size)) return 0;
     for (i = fix0; i < u->nfixups; ++i) {
         long long t = u->label_at[u->fixups[i].label];
-        if (t < 0 || rk_patch(&u->b, u->fixups[i].at, (size_t)t)) return 0;
+        if (t < 0) return 0;
+#ifdef MG_FAR_JUMPS
+        if (u->far) {
+            if (rk_patch_far(&u->b, u->fixups[i].at, (size_t)t)) return 0;
+            continue;
+        }
+#endif
+        if (rk_patch(&u->b, u->fixups[i].at, (size_t)t)) return 0;
     }
     return 1;
 }

@@ -10,10 +10,12 @@
    would compare LLVM with itself.
      snx-test-recompiler-backends [--functions N] [--states N] [--seed N] [--without MASK] [--target NAME] [--verbose]
          [--hook] [--jit] [--words HEX...] [--made] [--ops OP...] [--refused] [--coverage]
-         [--qemu QEMU RUNNER DIR] [--programs]
+         [--qemu QEMU RUNNER DIR] [--programs] [--long N BYTES]
    --without MASK: the x86-64 back end goes without these features of the host (sailgen's SGX_F_*: FMA 0x800, AVX 0x400,
    F16C 0x100, BMI1, BMI2 and LZCNT 7, AES-NI 0x1000, SHA-NI 0x2000), as on a host that lacks them; arm64's without its
    (SNX_ARM64_F_*)
+   --long N BYTES: --words' words N times over in one function, entered past them by a CBZ, gone over twice by a B.NE
+   back, and left by a B back over them: more than BYTES of a native back end's code, which is what its short jumps reach
    --target NAME: the guest's features, switch (the default), android, max or, with --refused, ounce
    --made: the back end must make --words' function (else, where LLVM makes it, there is nothing to compare)
    --ops OP...: every word of these ops of the decoder (llvm_qemu_words.c's samples, and each value of its small fields)
@@ -494,10 +496,10 @@ static void undef(CPU* c, uint64_t pc, uint32_t word) {
     c->pc = STOP;
 }
 static void on_svc(CPU* c, uint32_t imm) { (void)c, (void)imm; }
+static void on_poll(CPU* c) { atomic_store_explicit(&c->poll, 0, memory_order_relaxed); }
 #ifdef SNX_TEST_NATIVE
 /* the native side's: a call no function takes (CALLDYN's miss) goes on at its target, which the run's loop finds */
 static void on_miss(CPU* c, uint64_t entry) { c->pc = entry; }
-static void on_poll(CPU* c) { (void)c; }
 u64 snx_x64_fp_binary(CPU* c, u64 a, u64 b, u64 fpcr, u32 desc);
 u64 snx_x64_fp_fma(CPU* c, u64 add, u64 a, u64 b, u64 fpcr, u32 desc);
 u64 snx_x64_fp_unary(CPU* c, u64 a, u64 fpcr, u32 desc);
@@ -950,7 +952,7 @@ int main(int argc, char** argv) {
     CPU* own = NULL; /* --qemu's on arm64: its code's ends there, and which ran to one */
     unsigned char* ran = NULL;
 #endif
-    unsigned functions = 600, states = 8, i, s, k, nwords = 0, nops = 0;
+    unsigned functions = 600, states = 8, i, s, k, nwords = 0, nops = 0, slot = SLOT, times = 0;
     int refused = 0, must_make = 0, branches = 0;
     uint32_t (*more)[2] = NULL; /* --programs' words after the first */
     char** ops = NULL;
@@ -964,6 +966,7 @@ int main(int argc, char** argv) {
                                  test */
     RtAPI rt;
 #ifdef SNX_TEST_NATIVE
+    size_t longer = 0;
     int jit = 0;
 #endif
     for (i = 1; i < (unsigned)argc; ++i) {
@@ -990,11 +993,16 @@ int main(int argc, char** argv) {
             refused = 2;
         else if (!strcmp(argv[i], "--programs"))
             branches = 1;
-        else if (!strcmp(argv[i], "--qemu") && i + 3 < (unsigned)argc) {
+        else if (!strcmp(argv[i], "--long") && i + 2 < (unsigned)argc) {
+            times = (unsigned)atoi(argv[++i]);
+#ifdef SNX_TEST_NATIVE
+            longer = (size_t)strtoull(argv[i + 1], NULL, 0);
+#endif
+            must_make = 1, ++i;
+        } else if (!strcmp(argv[i], "--qemu") && i + 3 < (unsigned)argc) {
             qemu = argv + i + 1;
             i += 3;
-        }
-        else if (!strcmp(argv[i], "--target") && i + 1 < (unsigned)argc) {
+        } else if (!strcmp(argv[i], "--target") && i + 1 < (unsigned)argc) {
             const char* name = argv[++i];
             if (strcmp(name, "switch") && strcmp(name, "android") && strcmp(name, "ounce") && strcmp(name, "max")) {
                 fprintf(stderr, "--target %s: the targets are switch, android, ounce and max\n", name);
@@ -1028,6 +1036,13 @@ int main(int argc, char** argv) {
         }
 #endif
         return refused == 2 ? list_coverage() : list_refused(ops, nops);
+    }
+    if (times) {
+        if (!nwords || qemu || nops) {
+            fprintf(stderr, "--long %u: only with --words\n", times);
+            return 2;
+        }
+        slot = (nwords * times + 8 + SLOT - 1) / SLOT * SLOT;
     }
     if (g_features == SNX_A64_TARGET_OUNCE) {
         fprintf(stderr, "--target ounce: snx_recompiler.h has no such target to compare with: only with --refused\n");
@@ -1081,18 +1096,32 @@ int main(int argc, char** argv) {
 #endif
     data0 = (uint8_t*)malloc(DATA_LEN);
     hints = (uint64_t*)malloc(functions * sizeof *hints);
-    if (CODE + (uint64_t)functions * SLOT * 4 > DATA) {
-        fprintf(stderr, "FAIL: %u functions do not fit in the code's %u bytes\n", functions, DATA - CODE);
+    if (CODE + (uint64_t)functions * slot * 4 > DATA) {
+        fprintf(stderr, "FAIL: %u functions of %u words do not fit in the code's %u bytes\n", functions, slot, DATA - CODE);
         goto out;
     }
     /* the program, in both memories: each function its words then RET */
     for (i = 0; i < functions; ++i) {
-        uint64_t at = CODE + (uint64_t)i * SLOT * 4;
+        uint64_t at = CODE + (uint64_t)i * slot * 4;
         unsigned n = branches ? 1 + (more[i][0] != 0) + (more[i][1] != 0)
                      : opw    ? 1
                      : nwords ? nwords
                               : 1 + pick(SLOT - 2);
         hints[i] = at;
+        if (times) {
+            unsigned all = nwords * times;
+            put32(mem[0], at, 0xB4000011u | (all + 6) << 5);                     /* CBZ x17, the ADD past them */
+            put32(mem[0], at + 4, 0xD2800050u);                                  /* MOVZ x16, #2 */
+            put32(mem[0], at + 8, 0x14000002u);                                  /* B, over the RET */
+            put32(mem[0], at + 12, 0xD65F03C0u);                                 /* RET */
+            for (k = 0; k < all; ++k) put32(mem[0], at + 16 + 4 * k, words[k % nwords]);
+            put32(mem[0], at + 16 + 4 * all, 0xF1000610u);                       /* SUBS x16, x16, #1 */
+            put32(mem[0], at + 20 + 4 * all, 0x54000001u | ((0x80000u - (all + 1)) & 0x7FFFF) << 5); /* B.NE, the first */
+            put32(mem[0], at + 24 + 4 * all, 0x91000400u);                       /* ADD x0, x0, #1 */
+            put32(mem[0], at + 28 + 4 * all, 0x14000000u | ((0x4000000u - (all + 4)) & 0x3FFFFFF)); /* B, the RET */
+            for (k = all + 8; k < slot; ++k) put32(mem[0], at + 4 * k, 0xD65F03C0u);
+            continue;
+        }
         /* a quarter of them a loop: MOVZ x16, #1-3, the words, SUBS x16, x16, #1, B.NE back to the first word (x16
            no word writes); a branch forward in the words may leave it early */
         int loop = !nwords && !opw && n >= 4 && !pick(4);
@@ -1120,7 +1149,7 @@ int main(int argc, char** argv) {
     }
     memcpy(mem[1], mem[0], MEMORY);
     {
-        struct snx_code_range range = {CODE, mem[0] + CODE, (size_t)functions * SLOT * 4};
+        struct snx_code_range range = {CODE, mem[0] + CODE, (size_t)functions * slot * 4};
 #ifndef SNX_TEST_NATIVE
         mx = snx_recompile_ranges(rx, &range, 1, hints, functions);
 #endif
@@ -1140,7 +1169,7 @@ int main(int argc, char** argv) {
         memset(&view, 0, sizeof view);
         memset(&options, 0, sizeof options);
         view.image = mem[1] + CODE;
-        view.image_size = (size_t)functions * SLOT * 4;
+        view.image_size = (size_t)functions * slot * 4;
         view.base = CODE;
         view.text_off = 0;
         view.text_size = view.image_size;
@@ -1174,10 +1203,15 @@ int main(int argc, char** argv) {
         for (n = 0; n < cg.function_count; ++n) made_native += made[n];
         printf("recompiler %s: %zu functions, the %s back end made %zu (%zu bytes)\n", native_name,
                cg.function_count, native_name, made_native, object_size);
+        if (made_native && object_size <= longer) {
+            fprintf(stderr, "FAIL: the %s object has %zu bytes, not more than the %zu a short jump reaches\n", native_name,
+                    object_size, longer);
+            ++failures;
+        }
         ucpu = (CPU*)hostuc_alloc(uc, sizeof *ucpu);
         urt = (RtAPI*)hostuc_alloc(uc, sizeof *urt);
-        udisp = (uint64_t*)hostuc_alloc(uc, (size_t)functions * SLOT * 8 + 8);
-        g_swap.cpu = ucpu, g_swap.rt = urt, g_swap.disp = udisp, g_swap.ndisp = (size_t)functions * SLOT + 1;
+        udisp = (uint64_t*)hostuc_alloc(uc, (size_t)functions * slot * 8 + 8);
+        g_swap.cpu = ucpu, g_swap.rt = urt, g_swap.disp = udisp, g_swap.ndisp = (size_t)functions * slot + 1;
         hostuc_swapper(uc, swap_shared, NULL);
         for (n = 0; n < functions; ++n) {
             char name[40];
@@ -1246,6 +1280,7 @@ int main(int argc, char** argv) {
     rt.undef = undef;
     rt.svc = on_svc;
     rt.brk = on_brk;
+    rt.poll = on_poll;
 #ifdef SNX_TEST_NATIVE
     *urt = (RtAPI){
         .undef = (void (*)(CPU*, u64, u32))(uintptr_t)hostuc_native(uc, "undef", (void*)undef),
@@ -1307,6 +1342,10 @@ int main(int argc, char** argv) {
                 if (branches && s % 4 == 3) start.x[1] &= 0xFF, start.x[2] = start.x[1] ^ 0x80; /* a byte's sign */
             } else
                 start_state(&start, s);
+            if (times) { /* past the words or not, and a poll at the branch back, which resumes in the function's midst */
+                start.x[17] = s & 1 ? 0 : 1 + s;
+                atomic_store_explicit(&start.poll, s >> 1 & 1, memory_order_relaxed);
+            }
 #ifdef SNX_TEST_NATIVE
             {
                 /* the native side: F_<entry> under Unicorn, then the function of each pc a call left (a miss) */
@@ -1323,7 +1362,7 @@ int main(int argc, char** argv) {
                 ucpu->x[30] = STOP;
                 ucpu->disp = (SNX_ATOMIC(GuestFn)*)(void*)udisp;
                 ucpu->code_lo = CODE;
-                ucpu->code_hi = CODE + (uint64_t)functions * SLOT * 4;
+                ucpu->code_hi = CODE + (uint64_t)functions * slot * 4;
                 ucpu->pc = hints[i];
                 g_running = hints[i];
                 for (; !ran || !ran[(size_t)i * states + s];) {

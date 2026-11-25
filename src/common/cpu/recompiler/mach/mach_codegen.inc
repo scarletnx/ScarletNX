@@ -11,7 +11,9 @@
    absolute doubleword's relocation), SGX_FN_TARGET (the register a call's target and a function's entry are in),
    the pins' host registers (mg_pin_hosts, MG_NPINS, MG_NPINS_FIXED where an exclusive, an atomic or CRC32 takes the
    last ones, MG_PIN_RESERVED(h) whether a pin's register is one values may be in), the vector pins' (MG_VPIN(k),
-   the k-th, MG_NVPINS) and the vector registers no value may take (MG_XRESERVED: the callee's).
+   the k-th, MG_NVPINS) and the vector registers no value may take (MG_XRESERVED: the callee's). MG_FAR_JUMPS where its
+   jumps have a longer form (Unit.far), MG_POOL_REACH how far the code goes past the first LDR of a literal before the
+   literals are put in it (mg_pool_island).
 
    Each basic block's instructions are sailgen's emitters', appended to one SSA region (registers read once, flags
    reused, constants folded) and assembled when the block ends. The guest's registers are in the CPU structure at
@@ -81,6 +83,7 @@ typedef struct {
     signed char mempin;   /* the guest memory's base's host register, -1 for none */
     size_t index; /* the function's in the codegen: its snx_stale byte */
     size_t at;    /* the index of the function's instruction being made, its count past them */
+    int far;      /* the function's jumps are the machine's longest (MG_FAR_JUMPS): its short ones did not reach */
     /* the addresses of the function's instructions there is no code for (options.alone), undefined where they run */
     SnxU64* none;
     size_t nnone, cap_none;
@@ -152,6 +155,10 @@ static void mg_dispatch(Unit* u, int lab0);
 static int mg_finish(Unit* u, size_t fix0);
 /* a relocation of the unit's to one of its own functions (at target_at), resolved in place: 1, 0 where it stays one */
 static int mg_resolve_local(Unit* u, const Reloc* r, size_t target_at);
+#ifdef MG_POOL_REACH
+/* the literals so far, here, a jump over them */
+static void mg_pool_island(Unit* u);
+#endif
 #ifdef MG_BOUND
 /* what a bound PLT stub's slot is compared with (call_stub, the BR of a stub): a jump to label where the function at
    index is stale, where the guest's Xr is not value (its pin's, else the state's), where CPU.pc is not; and CPU.pc as
@@ -237,6 +244,9 @@ static void flush(Unit* u) {
     SgCtx* g = u->g;
     int k;
     if (g->x.n) sgx_assemble_region(&u->a, &g->x);
+#ifdef MG_POOL_REACH
+    if (u->a.nrips && u->b.n - u->a.rips[0].at > MG_POOL_REACH) mg_pool_island(u);
+#endif
     g->x.end_dead = 0;
     g->x.end_vdead = 0;
     for (k = 0; k < 32; ++k) g->gpr[k] = g->vd[k][0] = g->vd[k][1] = g->vx[k] = g->gk_known[k] = 0;
@@ -1233,8 +1243,8 @@ static void no_code(Unit* u, const char* why) {
     SnxA64Insn insn;
     if (u->options->refused) ++*u->options->refused;
     if (u->at >= f->count) {
-        snx_error("native back end: the function at 0x%llx is longer than its branches reach%s",
-                  (unsigned long long)f->start, u->options->alone ? "" : ": LLVM makes the function");
+        snx_error("native back end: the function at 0x%llx: %s%s", (unsigned long long)f->start,
+                  why ? why : "longer than its branches reach", u->options->alone ? "" : ": LLVM makes the function");
         return;
     }
     address = snx_function_address(f, u->at);
@@ -2339,6 +2349,15 @@ static int mach_object(SnxCodegen* codegen, size_t first, size_t last, const Snx
             --i;
             continue;
         }
+#ifdef MG_FAR_JUMPS
+        if (!made[i - first] && !u.far && u.at >= codegen->functions[i].count) {
+            /* a jump's reach: made again with the long ones */
+            u.far = 1;
+            --i;
+            continue;
+        }
+        u.far = 0;
+#endif
         if (!made[i - first]) {
             if (!u.nnone) no_code(&u, g_why);
             if (options->alone && u.at < codegen->functions[i].count) {
