@@ -87,6 +87,9 @@ static const signed char g_pin_hosts[2][7] = {{5, 12, 13, 14, 15, 11, 10}, {5, 1
 #define MG_BOUND 1
 #define MG_COFF win64
 #define MG_POLL_INLINE 1
+#define MG_JTAB 1
+#define MG_JTAB_CLOBBER (1u << 0 | 1u << (MG_WIN64(u) ? 8 : 2)) /* RAX, RDX (Windows' R8) */
+#define MG_JTAB_LEADERS 24 /* fewer: the dispatch block (measured on an i5-9400: 12 cases, 14 leaders, 17% quicker) */
 static void unit_reloc(void* machine, size_t at, const char* sym, long long addend);
 
 #include "common/cpu/recompiler/mach/mach_codegen.inc"
@@ -115,6 +118,7 @@ static void imm(Unit* u, long long v, int bytes) { sgx_imm(&u->b, v, bytes); }
 static void rel_label(Unit* u, int label) {
     u->fixups = (Fixup*)grow(u->fixups, &u->cap_fixups, u->nfixups + 1, sizeof *u->fixups);
     u->fixups[u->nfixups].at = u->b.n;
+    u->fixups[u->nfixups].kind = 0;
     u->fixups[u->nfixups++].label = label;
     imm(u, 0, 4);
 }
@@ -445,6 +449,48 @@ static void poll_slow(Unit* u, SnxU64 resume) {
     byte(u, 0xE9);
     rel_sym(u, sym);
 }
+/* a switch's jump, T the target (SGX_FN_TARGET): if (!c->poll && T - lo <= span && !(T & 3)) goto *(table +
+   table[T - lo]), else the dispatch block (CPU.pc holds the target). In RAX and RDX, on Windows, where T is in RDX, R8 */
+static void jtab_jump(Unit* u, int k) {
+    const struct JTab* t = &u->jtabs[k];
+    SnxU64 span = (SnxU64)(t->n - 1) * 4;
+    int win = win64(u);
+    byte(u, 0x83), byte(u, 0xBB), imm(u, (long long)offsetof(CPU, poll), 4), byte(u, 0x00); /* cmp dword [rbx+poll], 0 */
+    jcc(u, 0x5, u->d_label);
+    if (t->lo < 0x80000000u) {
+        byte(u, 0x48), byte(u, 0x8D), byte(u, win ? 0x82 : 0x86), imm(u, -(long long)t->lo, 4); /* lea rax, [T - lo] */
+    } else {
+        byte(u, win ? 0x49 : 0x48), byte(u, win ? 0xB8 : 0xBA), imm(u, (long long)t->lo, 8); /* mov rdx (r8), lo */
+        mov_rax_target(u);
+        byte(u, win ? 0x4C : 0x48), byte(u, 0x29), byte(u, win ? 0xC0 : 0xD0); /* sub rax, rdx (r8) */
+    }
+    byte(u, 0x48), byte(u, 0x3D), imm(u, (long long)span, 4); /* cmp rax, span */
+    jcc(u, 0x7, u->d_label);                                  /* ja */
+    byte(u, 0xA8), byte(u, 0x03);                             /* test al, 3 */
+    jcc(u, 0x5, u->d_label);
+    byte(u, win ? 0x4C : 0x48), byte(u, 0x8D), byte(u, win ? 0x05 : 0x15); /* lea rdx (r8), [rip + table] */
+    rel_label(u, t->label);
+    byte(u, win ? 0x49 : 0x48), byte(u, 0x63), byte(u, 0x04), byte(u, win ? 0x00 : 0x02); /* movsxd rax, [rdx + rax] */
+    byte(u, win ? 0x4C : 0x48), byte(u, 0x01), byte(u, win ? 0xC0 : 0xD0);                /* add rax, rdx (r8) */
+    byte(u, 0xFF), byte(u, 0xE0); /* jmp rax (no REX.W: no epilogue's to Windows' unwinder) */
+}
+/* each table: a word a slot, its label's distance from the table (mg_finish's fixups of kind table's label + 1) */
+static void jtab_emit(Unit* u) {
+    int k;
+    for (k = 0; k < u->njtabs; ++k) {
+        const struct JTab* t = &u->jtabs[k];
+        unsigned s;
+        while (u->b.n & 3) byte(u, 0xCC);
+        bind(u, t->label);
+        for (s = 0; s < t->n; ++s) {
+            u->fixups = (Fixup*)grow(u->fixups, &u->cap_fixups, u->nfixups + 1, sizeof *u->fixups);
+            u->fixups[u->nfixups].at = u->b.n;
+            u->fixups[u->nfixups].kind = t->label + 1;
+            u->fixups[u->nfixups++].label = u->jslots[t->first + s];
+            imm(u, 0, 4);
+        }
+    }
+}
 static void poll_then(Unit* u, SnxU64 resume) {
     int run = new_label(u);
     poll_jz(u, run);
@@ -550,8 +596,11 @@ static int mg_finish(Unit* u, size_t fix0) {
     for (i = fix0; i < u->nfixups; ++i) {
         long long t = u->label_at[u->fixups[i].label];
         if (t < 0) return 0;
-        if (u->fixups[i].at + 4 <= u->b.cap)
-            snx_link_put32(u->b.p + u->fixups[i].at, (uint32_t)(t - (long long)(u->fixups[i].at + 4)));
+        if (u->fixups[i].at + 4 <= u->b.cap) {
+            /* a jump table's word (kind: its table's label + 1), else a rel32 */
+            long long from = u->fixups[i].kind ? u->label_at[u->fixups[i].kind - 1] : (long long)(u->fixups[i].at + 4);
+            snx_link_put32(u->b.p + u->fixups[i].at, (uint32_t)(t - from));
+        }
     }
     return 1;
 }

@@ -101,6 +101,17 @@ typedef struct {
     int again;    /* the machine's glue refused the function to make it again its way (mg_finish), once */
     int dispatch, d_label, mismatch_label;
     int nstubs, cap_stubs;
+    /* the function's BRs through a recovered jump table (MG_JTAB): each one's table, its label, the guest address of its
+       first slot and its slots (a word each), whose labels are jslots[first...] (the dispatch block's where no case) */
+    struct JTab {
+        int label;
+        SnxU64 lo;
+        unsigned n, first;
+    } * jtabs;
+    int njtabs;
+    size_t cap_jtabs;
+    int* jslots;
+    size_t njslots, cap_jslots;
     struct Stub {
         int label;
         int kind; /* 0 a branch to target; 1 a poll then target (resume); 2 a return (leave); 3 a pending poll
@@ -160,6 +171,12 @@ static void poll_then(Unit* u, SnxU64 resume);
    is pending (it may change the host's flags), and the pending poll's call alone, out of line */
 static void poll_jz(Unit* u, int label);
 static void poll_slow(Unit* u, SnxU64 resume);
+#endif
+#ifdef MG_JTAB
+/* a BR's jump through table k (the target in SGX_FN_TARGET): to the case's label, else (a poll pending, the target
+   no case of it) to the dispatch block, CPU.pc stored already; and the tables' words at the function's end */
+static void jtab_jump(Unit* u, int k);
+static void jtab_emit(Unit* u);
 #endif
 /* c->pc = address, c->rt->undef(c, address, word); SVC n (c->pc = next, c->rt->svc or svcs[n], the pins around it);
    c->pc = address, c->rt->brk(c, address, imm) */
@@ -303,7 +320,7 @@ static void flush_to(Unit* u, SnxU64 target) {
 }
 
 /* the machine's instructions of a function's region */
-enum { SGX_FN_JCC = 16, SGX_FN_CALLDYN, SGX_FN_TAILDYN, SGX_FN_JCC_BACK };
+enum { SGX_FN_JCC = 16, SGX_FN_CALLDYN, SGX_FN_TAILDYN, SGX_FN_JCC_BACK, SGX_FN_JTAB };
 static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r) {
     Unit* u = (Unit*)a->machine;
     SgXIns* i = &a->x->ins[at];
@@ -321,6 +338,9 @@ static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r) {
         bind(u, skip);
         break;
     }
+#endif
+#ifdef MG_JTAB
+    case SGX_FN_JTAB: jtab_jump(u, (int)i->imm); break; /* the target in SGX_FN_TARGET (in[0]) */
 #endif
     case SGX_FN_CALLDYN: calldyn(u, 0); break;      /* the target in SGX_FN_TARGET (in[0]) */
     case SGX_FN_TAILDYN: calldyn(u, 1); break;
@@ -1333,6 +1353,42 @@ static void after_call(Unit* u) {
     u->cur_dirty = 0, u->vcur_dirty = 0;
 }
 
+#ifdef MG_JTAB
+/* the table of the BR at address (snx_codegen_jump_table's cases), its slots from the first case to the last, each the
+   case's leader label or the dispatch block's: its index in u->jtabs, -1 where it has no case in the function or is
+   too sparse */
+static int jtab_new(Unit* u, SnxU64 address) {
+    SnxU64 t[SNX_JUMP_TABLE_MAX], lo = ~(SnxU64)0, hi = 0;
+    size_t n = snx_codegen_jump_table((SnxCodegen*)u->codegen, address, t, SNX_JUMP_TABLE_MAX), k, cases = 0;
+    const SnxFunction* f = u->f;
+    struct JTab* j;
+    unsigned span, s;
+    for (k = 0; k < n; ++k) {
+        size_t at;
+        if (!snx_function_contains(f, t[k]) || !f->leaders[at = index_of(f, t[k])] || snx_function_address(f, at) != t[k])
+            continue;
+        lo = t[k] < lo ? t[k] : lo, hi = t[k] > hi ? t[k] : hi;
+        t[cases++] = t[k];
+    }
+    /* a function of few leaders: the dispatch block's compares, as many, are quicker (its matching jump is to a
+       label the predictor knows; the table's waits on its load) */
+    if (!cases || (hi - lo) / 4 >= 1024 || f->leader_count <= MG_JTAB_LEADERS) return -1;
+    span = (unsigned)((hi - lo) / 4 + 1);
+    u->jtabs = (struct JTab*)grow(u->jtabs, &u->cap_jtabs, (size_t)u->njtabs + 1, sizeof *u->jtabs);
+    u->jslots = (int*)grow(u->jslots, &u->cap_jslots, u->njslots + span, sizeof *u->jslots);
+    if (!u->jtabs || !u->jslots) return -1;
+    j = &u->jtabs[u->njtabs];
+    j->label = new_label(u);
+    j->lo = lo;
+    j->n = span;
+    j->first = (unsigned)u->njslots;
+    for (s = 0; s < span; ++s) u->jslots[j->first + s] = u->d_label;
+    for (k = 0; k < cases; ++k) u->jslots[j->first + (t[k] - lo) / 4] = (int)index_of(f, t[k]);
+    u->njslots += span;
+    return u->njtabs++;
+}
+#endif
+
 static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
     SgCtx* g = u->g;
     SgX* x = &g->x;
@@ -1507,6 +1563,30 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
         (void)guard;
 #endif
         if (!sg_decode(g) || x->unmade || !g->branched) return 0;
+#ifdef MG_JTAB
+        if (u->dispatch && !bound) {
+            int k = jtab_new(u, address);
+            if (k >= 0) {
+                /* a switch: CPU.pc for the dispatch block's way, then the table's jump */
+                SgD t = g->target;
+                int v = sgx_reg(x, &t);
+                SgXIns* st = sgx_append(x, SGX_K_STORE);
+                SgXIns* j;
+                st->w = 64;
+                st->in[0] = v;
+                st->disp = (int)offsetof(CPU, pc);
+                j = sgx_append(x, SGX_K_MACHINE);
+                j->op = SGX_FN_JTAB;
+                j->in[0] = v;
+                j->fixed[0] = SGX_FN_TARGET;
+                j->imm = k;
+                j->mclobber = MG_JTAB_CLOBBER;
+                flush(u);
+                terminal = 1;
+                break;
+            }
+        }
+#endif
         if (u->dispatch || bound) {
             SgD t = g->target;
             int v = sgx_reg(x, &t);
@@ -2157,6 +2237,8 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
     u->a.npool = u->a.nrips = 0;
     u->a.slots_max = 0;
     u->nstubs = 0;
+    u->njtabs = 0;
+    u->njslots = 0;
     g_fail = &jb;
     g_why = NULL;
     if (setjmp(jb)) {
@@ -2245,6 +2327,9 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
             goto out;
         }
     }
+#ifdef MG_JTAB
+    jtab_emit(u);
+#endif
     /* the cold paths (the FP helpers' calls), then the constant pool */
     sgx_cold_emit(&u->a);
     sgx_pool_emit(&u->a);
@@ -2635,6 +2720,7 @@ static int mach_object(SnxCodegen* codegen, size_t first, size_t last, const Snx
     free(u.relocs), free(u.syms), free(u.fixups), free(u.label_at), free(u.frame_at), free(u.stubs), free(u.b.p);
     free(u.none);
     free(u.live_buf), free(u.exits_buf), free(u.vlive_buf), free(u.dsync), free(u.vdsync);
+    free(u.jtabs), free(u.jslots);
     free(u.a.cold.p), free(u.a.pool), free(u.a.rips), free(u.a.cjumps), free(u.a.ccalls);
     free(u.g);
     if (options->jit && !count) memset(made, 0, last - first);
