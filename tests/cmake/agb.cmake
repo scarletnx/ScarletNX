@@ -49,6 +49,7 @@ if(BUILD_TESTING)
     add_test(NAME agb_cpu COMMAND snx-test-agb-cpu)
     add_executable(snx-test-agb-host "${PROJECT_SOURCE_DIR}/tests/agb_host.c")
     target_link_libraries(snx-test-agb-host PRIVATE snx_agb_program)
+    target_include_directories(snx-test-agb-host PRIVATE "${PROJECT_SOURCE_DIR}/tests") # support/
     target_compile_options(snx-test-agb-host PRIVATE -Wall -Wextra -Werror)
     set_target_properties(snx-test-agb-host PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
     add_test(NAME agb_host COMMAND snx-test-agb-host)

@@ -49,6 +49,10 @@ static void usage(FILE* out) {
           "  --registers            Print the CPU's registers when the run ends\n"
           "  --gba-color=gba|raw    The screen's colours: gba as the original GBA's unlit screen shows them\n"
           "                         (default), raw as the game writes them\n"
+          "  --controls=0|1|2       The on-screen controls: 1 shown, 0 hidden, 2 (Auto, the default) shown on a touch\n"
+          "                         screen while no gamepad is connected. --controls-scale=N, --controls-snap=0|1,\n"
+          "                         --controls-dpad-slide=0|1, --controls-haptics=0|1 and --controls-<ID>-shown=0|1\n"
+          "                         (ID one of a, b, l, r, plus for Start, minus for Select, dpad) as a Switch game's\n"
           "  --aot-threads=N        The threads a recompile may take (0 to 1024), as the other drivers': a ROM's code\n"
           "                         is one module, which compiles on 1 thread whatever N, and the recompile says so;\n"
           "                         --aot-threads-most=N the same\n"
@@ -63,6 +67,9 @@ static void usage(FILE* out) {
           "<name>_code.map (default: the game's own), --jit-only plays with no module, every block compiled as the\n"
           "run reaches it, and --keep-ir has LLVM compile them all and keeps their IR in <name>_build of the game's\n"
           "folder.\n"
+          "\n"
+          "F2, or Android's Back, edits the on-screen controls' layout: a control dragged moves, and one tapped is\n"
+          "sized from the bar; Done, Esc, F2 or Back ends it, and <name>.ini keeps it. Back twice quits.\n"
           "\n"
           "On the AGB, --frames runs with no window, sound or pacing, for tests. --shot writes the final frame as a\n"
           "PPM image. --script=MS:KEYS,... presses keys MS after the run's start, KEYS in hex as KEYINPUT has them (1\n"
@@ -177,6 +184,7 @@ int snx_agb_main(int argc, char** argv) {
     int registers = 0;
     int lcd = 1; /* --gba-color: the original GBA's screen colours, raw the game's (settings.txt's gba_color) */
     SnxCli cli;
+    vpad_console(&agb_host_pad);
     snx_cli_init(&cli, "scarletnx-agb", agb_cli);
     for (int i = 1; i < argc; ++i) {
         char error[256];
@@ -191,6 +199,14 @@ int snx_agb_main(int argc, char** argv) {
         }
         if (common == SNX_CLI_OPT) opt = cli.value[SNX_CLI_OPT][0];
         if (common) continue;
+        /* the on-screen controls' settings, read with the game's own once its folder is known (vpad_settings) */
+        int controls = vpad_arg(argv[i], error, sizeof error);
+        if (controls < 0) {
+            fprintf(stderr, "scarletnx-agb: %s\n", error);
+            snx_cli_free(&cli);
+            return 2;
+        }
+        if (controls) continue;
         /* the settings it takes, their keys' _ a - or not */
         char key[64];
         const char* value = settings_arg(argv[i], key, sizeof key);
@@ -422,7 +438,9 @@ int snx_agb_main(int argc, char** argv) {
         if (!audio) goto done;
         if (frames < 0) {
             char* title = snx_format("ScarletNX - %s (GBA)", board.cartridge.title[0] ? board.cartridge.title : name);
-            host = agb_host_open(title, fullscreen, error, sizeof error);
+            vpad_set_say(agb_host_say);
+            vpad_settings(ini, argc, argv);
+            host = agb_host_open(title, ini, fullscreen, error, sizeof error);
             free(title);
             if (!host) {
                 fprintf(stderr, "scarletnx-agb: %s\n", error);
