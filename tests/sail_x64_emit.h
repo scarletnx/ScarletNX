@@ -11,11 +11,17 @@
 enum {
     SNX_X64_BMI1 = 1, SNX_X64_BMI2 = 2, SNX_X64_LZCNT = 4, SNX_X64_SSE3 = 8, SNX_X64_SSSE3 = 16, SNX_X64_SSE41 = 32,
     SNX_X64_SSE42 = 64, SNX_X64_PCLMUL = 128, SNX_X64_F16C = 256, SNX_X64_POPCNT = 512, SNX_X64_AVX = 1024,
-    SNX_X64_FMA = 2048
+    SNX_X64_FMA = 2048, SNX_X64_WIN64 = 16384
 };
+/* the calling convention of this host's C, which the test calls the code by */
+#if defined(_WIN32)
+#define SNX_X64_ABI SNX_X64_WIN64
+#else
+#define SNX_X64_ABI 0
+#endif
 /* what the back end needs of every host (snx_x64_available): the 'plain' host of the tests */
 #define SNX_X64_BASELINE \
-    (SNX_X64_SSE3 | SNX_X64_SSSE3 | SNX_X64_SSE41 | SNX_X64_SSE42 | SNX_X64_PCLMUL | SNX_X64_POPCNT)
+    (SNX_X64_SSE3 | SNX_X64_SSSE3 | SNX_X64_SSE41 | SNX_X64_SSE42 | SNX_X64_PCLMUL | SNX_X64_POPCNT | SNX_X64_ABI)
 
 /* word's x86-64 code at pc for a guest of these A64 features, as u64 step(CPU*) returning the next pc: its size in
    code, 0 when the x86-64 back end's roots take no clause of it */

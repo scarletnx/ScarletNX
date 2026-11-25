@@ -1863,6 +1863,12 @@ int main(int argc, char** argv) {
                        "--callee and --memory checked: the callback is the test's, which compiled code cannot call\n"),
                2;
     g_test.windowed = hosted() || legacy();
+#if defined(_WIN32)
+    if (g_test.windowed) {
+        printf("SKIP: no window of guest memory of %llu bytes on Windows\n", (unsigned long long)WINDOW);
+        return 77;
+    }
+#endif
     if (g_test.windowed && windows_new()) return 1;
     if (snx_ir_init(error, sizeof error) || !(ir = snx_ir_new_jit("arm-x64", '2', error, sizeof error))) {
         fprintf(stderr, "FAIL: no LLVM for this host: %s\n", error);

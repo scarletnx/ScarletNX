@@ -8,7 +8,7 @@
 # whose first are a shift count's and a pair's), so that values spill
 function(snx_arm_native_modes machine)
     set(pool 3)
-    if(machine STREQUAL "win64")
+    if(machine STREQUAL "win64" OR WIN32)
         set(pool 4)
     endif()
     foreach(mode a9 arm11 arm946e arm7tdmi arm7tdmi_trace a57_hosted a9_hosted arm11_hosted a57_checked a9_checked

@@ -22,9 +22,19 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/mman.h>
 #if defined(__x86_64__)
 #include <cpuid.h>
+#endif
+#include "support/exec_pages.h"
+#if defined(_WIN32)
+/* no signal mask to keep */
+typedef jmp_buf sigjmp_buf;
+#define sigsetjmp(buf, mask)   setjmp(buf)
+#define siglongjmp(buf, value) longjmp(buf, value)
+/* a pool values spill in: x64.h's first registers on Windows are a pair's and a shift count's */
+#define FEW_REGISTERS 4
+#else
+#define FEW_REGISTERS 3
 #endif
 
 #define TARGET SNX_A64_TARGET_OUNCE
@@ -106,7 +116,7 @@ static const char* op_name(u32 word) {
 }
 
 static unsigned host_features(void) {
-    unsigned f = 0;
+    unsigned f = SNX_X64_ABI;
 #if defined(__x86_64__)
     unsigned a, b, c, d;
     if (__get_cpuid_count(7, 0, &a, &b, &c, &d)) {
@@ -138,6 +148,9 @@ static unsigned host_features(void) {
 /* the back end's sg_fail aborts: a word it can't make is named, and the test goes on */
 static void on_abort(int signal_number) {
     (void)signal_number;
+#if defined(_WIN32)
+    signal(SIGABRT, on_abort); /* the handler is taken once there */
+#endif
     if (g_test.jumping) siglongjmp(g_test.jump, 1);
 }
 
@@ -195,20 +208,20 @@ typedef u64 (*Step)(CPU* c);
    Made on this host and the plain one, with every register and with three (spills) */
 static size_t check_casp(void) {
     static const u64 old[2] = {0x1111111111111111ull, 0x2222222222222222ull};
-    unsigned char* code = (unsigned char*)mmap(NULL, CODE_MAX, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    unsigned char* code = snx_test_pages(CODE_MAX);
     RtAPI rt = {.undef = on_undef, .sev = on_sev, .wfe = on_wfe, .cas128 = snx_runtime_cas128};
     size_t failures = 0;
     int pool = snx_x64_pool();
-    if (code == MAP_FAILED) {
+    if (code == NULL) {
         fprintf(stderr, "FAIL: CASP: no memory for the code\n");
         return 1;
     }
     for (int variant = 0; variant < 4; ++variant) {
         unsigned features = variant & 1 ? SNX_X64_BASELINE : host_features();
-        snx_x64_set_pool(variant & 2 ? 3 : pool);
-        if (mprotect(code, CODE_MAX, PROT_READ | PROT_WRITE) ||
+        snx_x64_set_pool(variant & 2 ? FEW_REGISTERS : pool);
+        if (snx_test_pages_exec(code, CODE_MAX, 0) ||
             !snx_x64_step(0x48207C82u, 0x1000, TARGET, features, code, CODE_MAX) ||
-            mprotect(code, CODE_MAX, PROT_READ | PROT_EXEC)) {
+            snx_test_pages_exec(code, CODE_MAX, 1)) {
             fprintf(stderr, "FAIL: CASP X0, X1, X2, X3, [X4]: not made (variant %d)\n", variant);
             ++failures;
             continue;
@@ -242,7 +255,7 @@ static size_t check_casp(void) {
         }
     }
     snx_x64_set_pool(pool);
-    munmap(code, CODE_MAX);
+    snx_test_pages_free(code, CODE_MAX);
     printf("CASP of doublewords, 4 ways made, matching and not: %zu failures\n", failures);
     return failures;
 }
@@ -268,9 +281,9 @@ static size_t check_fz_hot(void) {
         {0x1E222020u, "FCMP s1, s2 of a denormal", 0x00000001u, 0x40100000u, 0, 1, 0x8, 0x90},
         {0x1E22C020u, "FCVT d0, s1", 0x3FC00000u, 0, 0, 0, 0x3FF8000000000000ull, 0x10},
     };
-    unsigned char* code = (unsigned char*)mmap(NULL, CODE_MAX, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    unsigned char* code = snx_test_pages(CODE_MAX);
     size_t failures = 0, k;
-    if (code == MAP_FAILED) {
+    if (code == NULL) {
         fprintf(stderr, "FAIL: FZ's hot paths: no memory for the code\n");
         return 1;
     }
@@ -279,9 +292,9 @@ static size_t check_fz_hot(void) {
         unsigned long calls;
         u64 got;
         int cold, want_cold;
-        if (mprotect(code, CODE_MAX, PROT_READ | PROT_WRITE) ||
+        if (snx_test_pages_exec(code, CODE_MAX, 0) ||
             !snx_x64_step(cases[k].word, 0x1000, TARGET, host_features(), code, CODE_MAX) ||
-            mprotect(code, CODE_MAX, PROT_READ | PROT_EXEC)) {
+            snx_test_pages_exec(code, CODE_MAX, 1)) {
             fprintf(stderr, "FAIL: %s %08x: not made\n", cases[k].text, (unsigned)cases[k].word);
             ++failures;
             continue;
@@ -307,7 +320,7 @@ static size_t check_fz_hot(void) {
             ++failures;
         }
     }
-    munmap(code, CODE_MAX);
+    snx_test_pages_free(code, CODE_MAX);
     printf("sail_x64: FZ's hot paths, %zu cases\n", sizeof cases / sizeof *cases);
     return failures;
 }
@@ -481,18 +494,18 @@ static size_t check_fp_guards(void) {
                                   0x7FF0000000000001ull};
     enum { VALUES = sizeof singles / sizeof *singles };
     static const u32 fpcrs[] = {0, 1u << 24, 1u << 22, 3u << 22 | 1u << 24};
-    unsigned char* code = (unsigned char*)mmap(NULL, CODE_MAX, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    unsigned char* code = snx_test_pages(CODE_MAX);
     size_t failures = 0, runs = 0, hot = 0;
-    if (code == MAP_FAILED) {
+    if (code == NULL) {
         fprintf(stderr, "FAIL: the floating-point guards: no memory for the code\n");
         return 1;
     }
     for (size_t k = 0; k < sizeof cases / sizeof *cases; ++k) {
         const GuardCase* g = &cases[k];
         size_t total = g->nops == 3 ? VALUES * VALUES * VALUES : g->nops == 2 ? VALUES * VALUES : VALUES;
-        if (mprotect(code, CODE_MAX, PROT_READ | PROT_WRITE) ||
+        if (snx_test_pages_exec(code, CODE_MAX, 0) ||
             !snx_x64_step(g->word, 0x1000, TARGET, host_features(), code, CODE_MAX) ||
-            mprotect(code, CODE_MAX, PROT_READ | PROT_EXEC)) {
+            snx_test_pages_exec(code, CODE_MAX, 1)) {
             fprintf(stderr, "FAIL: %s %08x: not made\n", g->text, (unsigned)g->word);
             ++failures;
             continue;
@@ -549,7 +562,7 @@ static size_t check_fp_guards(void) {
                 {"FRINTM d", {0x1E654020u, 0x1E654062u, 0x1E6540A4u, 0x1E6540E6u}}};
     for (size_t k = 0; k < sizeof rows / sizeof *rows; ++k) {
         size_t count = 4, size = 0, set = 0;
-        if (!mprotect(code, CODE_MAX, PROT_READ | PROT_WRITE))
+        if (!snx_test_pages_exec(code, CODE_MAX, 0))
             size = snx_x64_block(rows[k].words, &count, 0x1000, TARGET, host_features(), code, CODE_MAX);
         for (size_t at = 0; at + 1 < size; ++at) set += code[at] == 0x0F && code[at + 1] >> 4 == 9;
         if (!size || count != 4 || set) {
@@ -558,7 +571,7 @@ static size_t check_fp_guards(void) {
             ++failures;
         }
     }
-    munmap(code, CODE_MAX);
+    snx_test_pages_free(code, CODE_MAX);
     printf("sail_x64: the floating-point guards, %zu runs of %zu words, %zu on the inline code alone: %zu failures\n",
            runs, sizeof cases / sizeof *cases, hot, failures);
     return failures;
@@ -606,14 +619,13 @@ static size_t check_fp_rows(void) {
                                  0x001FFFFF00000000ull,
                                  0x000000000080000Aull};
     static const u32 fpcrs[] = {0, 1u << 24, 1u << 22};
-    unsigned char* code = (unsigned char*)mmap(NULL, (WORDS + 1) * (size_t)CODE_MAX, PROT_READ | PROT_WRITE,
-                                               MAP_PRIVATE | MAP_ANON, -1, 0);
+    unsigned char* code = snx_test_pages((WORDS + 1) * (size_t)CODE_MAX);
     RtAPI rt = {.undef = on_undef, .sev = on_sev, .wfe = on_wfe, .cas128 = snx_runtime_cas128};
     unsigned char* at = g_test.memory[0] + MEMORY_ZERO + 0x1000;
     u64 seed = 0x9E3779B97F4A7C15ull;
     size_t failures = 0, runs = 0;
     int pool = snx_x64_pool(), xpool = snx_x64_xpool();
-    if (code == MAP_FAILED) {
+    if (code == NULL) {
         fprintf(stderr, "FAIL: guarded operations in a row: no memory for the code\n");
         return 1;
     }
@@ -624,12 +636,12 @@ static size_t check_fp_rows(void) {
         snx_x64_set_xpool(k & 2 ? 6 : xpool);
         while (n < WORDS && rows[k / 4].words[n]) ++n;
         count = n;
-        if (mprotect(code, (WORDS + 1) * (size_t)CODE_MAX, PROT_READ | PROT_WRITE)) return 1;
+        if (snx_test_pages_exec(code, (WORDS + 1) * (size_t)CODE_MAX, 0)) return 1;
         made = snx_x64_block(rows[k / 4].words, &count, 0x1000, TARGET, host_features(), code, CODE_MAX) != 0;
         for (size_t w = 0; w < n; ++w)
             made += snx_x64_step(rows[k / 4].words[w], 0x1000 + 4 * w, TARGET, host_features(),
                                  code + (w + 1) * CODE_MAX, CODE_MAX) != 0;
-        if (made != n + 1 || count != n || mprotect(code, (WORDS + 1) * (size_t)CODE_MAX, PROT_READ | PROT_EXEC)) {
+        if (made != n + 1 || count != n || snx_test_pages_exec(code, (WORDS + 1) * (size_t)CODE_MAX, 1)) {
             fprintf(stderr, "FAIL: %s: %zu of %zu made, the block of %zu words\n", text, made, n + 1, count);
             ++failures;
             continue;
@@ -673,7 +685,7 @@ static size_t check_fp_rows(void) {
     }
     snx_x64_set_pool(pool);
     snx_x64_set_xpool(xpool);
-    munmap(code, (WORDS + 1) * (size_t)CODE_MAX);
+    snx_test_pages_free(code, (WORDS + 1) * (size_t)CODE_MAX);
     printf("sail_x64: guarded operations in a row, %zu runs: %zu failures\n", runs, failures);
     return failures;
 }
@@ -689,7 +701,9 @@ static int run(int argc, char** argv) {
     LlvmSteps set;
     char error[1024];
     RtAPI rt = {.undef = on_undef, .sev = on_sev, .wfe = on_wfe, .cas128 = snx_runtime_cas128};
+#if !defined(_WIN32)
     struct sigaction sa;
+#endif
     for (i = 1; i < (unsigned)argc; ++i) {
         if (!strcmp(argv[i], "--states") && i + 1 < (unsigned)argc) states = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--samples") && i + 1 < (unsigned)argc)
@@ -727,12 +741,16 @@ static int run(int argc, char** argv) {
     g_test.seed = 0x9e3779b97f4a7c15ull;
     hosts[0] = host_features();
     hosts[1] = SNX_X64_BASELINE; /* no BMI1, BMI2, LZCNT, AVX, FMA or F16C */
+#if defined(_WIN32)
+    signal(SIGABRT, on_abort);
+#else
     memset(&sa, 0, sizeof sa);
     sa.sa_handler = on_abort;
     sigaction(SIGABRT, &sa, NULL);
+#endif
     for (k = 0; k < 3; ++k) {
-        g_test.memory[k] = (unsigned char*)mmap(NULL, MEMORY_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-        if (g_test.memory[k] == MAP_FAILED) return 1;
+        g_test.memory[k] = snx_test_pages(MEMORY_SIZE);
+        if (g_test.memory[k] == NULL) return 1;
     }
     failures += check_fz_hot();
     failures += check_fp_guards();
@@ -741,8 +759,8 @@ static int run(int argc, char** argv) {
     for (i = 0; i < MEMORY_SIZE; ++i) g_test.memory[2][i] = (unsigned char)rnd();
     memcpy(g_test.memory[0], g_test.memory[2], MEMORY_SIZE);
     memcpy(g_test.memory[1], g_test.memory[2], MEMORY_SIZE);
-    code = (unsigned char*)mmap(NULL, code_cap, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-    if (code == MAP_FAILED) {
+    code = snx_test_pages(code_cap);
+    if (code == NULL) {
         fprintf(stderr, "FAIL: no memory for the code\n");
         return 1;
     }
@@ -797,7 +815,7 @@ static int run(int argc, char** argv) {
             }
         }
     }
-    if (mprotect(code, code_cap, PROT_READ | PROT_EXEC)) {
+    if (snx_test_pages_exec(code, code_cap, 1)) {
         fprintf(stderr, "FAIL: the code can't be made executable\n");
         return 1;
     }
@@ -886,7 +904,7 @@ static int run(int argc, char** argv) {
         size_t q, nseq = 0, steps = 0;
         if (!seq) return 1;
         g_test.sequences = seq;
-        if (mprotect(code, code_cap, PROT_READ | PROT_WRITE)) return 1;
+        if (snx_test_pages_exec(code, code_cap, 0)) return 1;
         for (q = 0; q < sequences; ++q) {
             Seq* sq = &seq[nseq];
             size_t len = 2 + rnd() % 3, got, j;
@@ -911,7 +929,7 @@ static int run(int argc, char** argv) {
             code_at += (got + 15) & ~(size_t)15;
             ++nseq;
         }
-        if (mprotect(code, code_cap, PROT_READ | PROT_EXEC)) return 1;
+        if (snx_test_pages_exec(code, code_cap, 1)) return 1;
         if (llvm_steps_begin(&set, 0, LLVM_STEPS_HOST, error, sizeof error)) {
             fprintf(stderr, "FAIL: %s\n", error);
             return 1;

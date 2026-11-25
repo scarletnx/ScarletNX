@@ -3663,71 +3663,79 @@ if(NOT WIN32)
             endif()
         endforeach()
     endif()
-    include("${PROJECT_SOURCE_DIR}/cmake/sdm.cmake")
-    # a host that runs its code for Windows: support/host_win64.c, whose signals are Linux's
-    if(SNX_X64 AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
-        set(snx_host_win64 ON)
+endif()
+# the x86-64 back end's, on Windows too: its emitters and its AArch32 blocks against LLVM's
+include("${PROJECT_SOURCE_DIR}/cmake/sdm.cmake")
+# a host that runs its code for Windows: support/host_win64.c, whose signals are Linux's
+if(SNX_X64 AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(snx_host_win64 ON)
+endif()
+if(SNX_X64)
+    add_executable(snx-test-sail-x64 sail_x64.c sail_x64_emit.c llvm_qemu_words.c llvm_steps.c
+                   "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
+                   "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
+    snx_cpu_helpers_flags(snx-test-sail-x64)
+    snx_test_target(snx-test-sail-x64 gnu23)
+    target_include_directories(snx-test-sail-x64 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(snx-test-sail-x64 PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+    snx_decodetree_a64(snx-test-sail-x64)
+    snx_sailgen_a64_x64(snx-test-sail-x64)
+    add_test(NAME sail_x64 COMMAND snx-test-sail-x64)
+    # three registers for values; on Windows four, as a pair's and a shift count's fixed ones are among its first (x64.h)
+    set(snx_x64_pool 3)
+    if(WIN32)
+        set(snx_x64_pool 4)
     endif()
-    if(SNX_X64)
-        add_executable(snx-test-sail-x64 sail_x64.c sail_x64_emit.c llvm_qemu_words.c llvm_steps.c
+    add_test(NAME sail_x64_spill COMMAND snx-test-sail-x64 --pool ${snx_x64_pool} --states 32)
+    add_test(NAME sail_x64_spill_xmm COMMAND snx-test-sail-x64 --pool ${snx_x64_pool} --xmm 6 --states 16)
+    set_tests_properties(sail_x64 sail_x64_spill sail_x64_spill_xmm PROPERTIES TIMEOUT 600)
+    # its code for Windows (the calling convention), run by this host's processor as Windows' C would call it
+    # (support/host_win64.c): the same words against LLVM, as the other machines' under Unicorn
+    if(snx_host_win64)
+        add_executable(snx-test-sail-win64 sail_mach.c sail_mach_emit.c llvm_qemu_words.c llvm_steps.c
+                       qemu_ref/qemu_ref.c support/host_win64.c
                        "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
                        "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
-        snx_cpu_helpers_flags(snx-test-sail-x64)
-        snx_test_target(snx-test-sail-x64 gnu23)
-        target_include_directories(snx-test-sail-x64 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-        target_link_libraries(snx-test-sail-x64 PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
-        snx_decodetree_a64(snx-test-sail-x64)
-        snx_sailgen_a64_x64(snx-test-sail-x64)
-        add_test(NAME sail_x64 COMMAND snx-test-sail-x64)
-        add_test(NAME sail_x64_spill COMMAND snx-test-sail-x64 --pool 3 --states 32)
-        add_test(NAME sail_x64_spill_xmm COMMAND snx-test-sail-x64 --pool 3 --xmm 6 --states 16)
-        set_tests_properties(sail_x64 sail_x64_spill sail_x64_spill_xmm PROPERTIES TIMEOUT 600)
-        # its code for Windows (the calling convention), run by this host's processor as Windows' C would call it
-        # (support/host_win64.c): the same words against LLVM, as the other machines' under Unicorn
-        if(snx_host_win64)
-            add_executable(snx-test-sail-win64 sail_mach.c sail_mach_emit.c llvm_qemu_words.c llvm_steps.c
-                           qemu_ref/qemu_ref.c support/host_win64.c
-                           "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
-                           "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
-            snx_cpu_helpers_flags(snx-test-sail-win64)
-            snx_test_target(snx-test-sail-win64 gnu23)
-            target_compile_definitions(snx-test-sail-win64 PRIVATE SAIL_MACH_INC="a64_x64.inc" SAIL_MACH_UC=HOSTUC_WIN64
-                                                                     SAIL_MACH_WIN64=1)
-            target_include_directories(snx-test-sail-win64 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-            target_link_libraries(snx-test-sail-win64 PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
-            snx_decodetree_a64(snx-test-sail-win64)
-            snx_sailgen_a64_x64(snx-test-sail-win64)
-            add_test(NAME sail_win64 COMMAND snx-test-sail-win64)
-            add_test(NAME sail_win64_spill COMMAND snx-test-sail-win64 --pool 4 --states 32)
-            add_test(NAME sail_win64_spill_xmm COMMAND snx-test-sail-win64 --pool 4 --xmm 4 --states 16)
-            add_test(NAME sail_win64_plain COMMAND snx-test-sail-win64 --without 0x3d07 --states 16)
-            set_tests_properties(sail_win64 sail_win64_spill sail_win64_spill_xmm sail_win64_plain PROPERTIES TIMEOUT 600)
-        endif()
-        # its A32 blocks (x64_arm.c) against the AArch32 block compiler's LLVM ones: the same words consumed and the
-        # same results from random states, the A32 instructions it makes alone and in rows; again with three host
-        # registers (the values spill) and without BMI1, BMI2 and LZCNT
-        add_executable(snx-test-arm-x64 arm_x64.c)
-        snx_test_target(snx-test-arm-x64 gnu23)
-        target_link_libraries(snx-test-arm-x64 PRIVATE snx_llvm snx_arm_llvm snx_driver ${CMAKE_DL_LIBS})
-        add_test(NAME arm_x64 COMMAND snx-test-arm-x64)
-        add_test(NAME arm_x64_spill COMMAND snx-test-arm-x64 --pool 3 --blocks 2000 --seed 2)
-        add_test(NAME arm_x64_plain COMMAND snx-test-arm-x64 --features 0 --blocks 2000 --seed 3)
-        set_tests_properties(arm_x64 arm_x64_spill arm_x64_plain PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
-        snx_arm_native_modes(x64)
-        # and as a Windows host's, run by this host's processor (support/host_win64.c)
-        if(snx_host_win64)
-            add_executable(snx-test-arm-win64 arm_x64.c support/host_win64.c)
-            snx_test_target(snx-test-arm-win64 gnu23)
-            target_compile_definitions(snx-test-arm-win64 PRIVATE SNX_TEST_WIN64=1)
-            target_include_directories(snx-test-arm-win64 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-            target_link_libraries(snx-test-arm-win64 PRIVATE snx_llvm snx_arm_llvm snx_driver ${CMAKE_DL_LIBS})
-            add_test(NAME arm_win64 COMMAND snx-test-arm-win64)
-            add_test(NAME arm_win64_spill COMMAND snx-test-arm-win64 --pool 4 --blocks 2000 --seed 2)
-            add_test(NAME arm_win64_plain COMMAND snx-test-arm-win64 --features 0 --blocks 2000 --seed 3)
-            set_tests_properties(arm_win64 arm_win64_spill arm_win64_plain PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
-            snx_arm_native_modes(win64 --blocks 600 --states 8)
-        endif()
+        snx_cpu_helpers_flags(snx-test-sail-win64)
+        snx_test_target(snx-test-sail-win64 gnu23)
+        target_compile_definitions(snx-test-sail-win64 PRIVATE SAIL_MACH_INC="a64_x64.inc" SAIL_MACH_UC=HOSTUC_WIN64
+                                                                 SAIL_MACH_WIN64=1)
+        target_include_directories(snx-test-sail-win64 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+        target_link_libraries(snx-test-sail-win64 PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+        snx_decodetree_a64(snx-test-sail-win64)
+        snx_sailgen_a64_x64(snx-test-sail-win64)
+        add_test(NAME sail_win64 COMMAND snx-test-sail-win64)
+        add_test(NAME sail_win64_spill COMMAND snx-test-sail-win64 --pool 4 --states 32)
+        add_test(NAME sail_win64_spill_xmm COMMAND snx-test-sail-win64 --pool 4 --xmm 4 --states 16)
+        add_test(NAME sail_win64_plain COMMAND snx-test-sail-win64 --without 0x3d07 --states 16)
+        set_tests_properties(sail_win64 sail_win64_spill sail_win64_spill_xmm sail_win64_plain PROPERTIES TIMEOUT 600)
     endif()
+    # its A32 blocks (x64_arm.c) against the AArch32 block compiler's LLVM ones: the same words consumed and the
+    # same results from random states, the A32 instructions it makes alone and in rows; again with three host
+    # registers (the values spill) and without BMI1, BMI2 and LZCNT
+    add_executable(snx-test-arm-x64 arm_x64.c)
+    snx_test_target(snx-test-arm-x64 gnu23)
+    target_link_libraries(snx-test-arm-x64 PRIVATE snx_llvm snx_arm_llvm snx_driver ${CMAKE_DL_LIBS})
+    add_test(NAME arm_x64 COMMAND snx-test-arm-x64)
+    add_test(NAME arm_x64_spill COMMAND snx-test-arm-x64 --pool ${snx_x64_pool} --blocks 2000 --seed 2)
+    add_test(NAME arm_x64_plain COMMAND snx-test-arm-x64 --features 0 --blocks 2000 --seed 3)
+    set_tests_properties(arm_x64 arm_x64_spill arm_x64_plain PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
+    snx_arm_native_modes(x64)
+    # and as a Windows host's, run by this host's processor (support/host_win64.c)
+    if(snx_host_win64)
+        add_executable(snx-test-arm-win64 arm_x64.c support/host_win64.c)
+        snx_test_target(snx-test-arm-win64 gnu23)
+        target_compile_definitions(snx-test-arm-win64 PRIVATE SNX_TEST_WIN64=1)
+        target_include_directories(snx-test-arm-win64 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+        target_link_libraries(snx-test-arm-win64 PRIVATE snx_llvm snx_arm_llvm snx_driver ${CMAKE_DL_LIBS})
+        add_test(NAME arm_win64 COMMAND snx-test-arm-win64)
+        add_test(NAME arm_win64_spill COMMAND snx-test-arm-win64 --pool 4 --blocks 2000 --seed 2)
+        add_test(NAME arm_win64_plain COMMAND snx-test-arm-win64 --features 0 --blocks 2000 --seed 3)
+        set_tests_properties(arm_win64 arm_win64_spill arm_win64_plain PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
+        snx_arm_native_modes(win64 --blocks 600 --states 8)
+    endif()
+endif()
+if(NOT WIN32)
     # the T16 emitters sailgen generates from the Sail against the ones written by hand they replaced
     # (snx_thumb_llvm_block_t16_reference): the same optimized IR halfword by halfword on every profile and memory mode,
     # alone and in an IT block, and the same results run here. Each part takes a sixteenth of its third, spread over
@@ -4314,18 +4322,21 @@ if(snx_host_win64)
     set_tests_properties(recompiler_win64 recompiler_win64_jit recompiler_win64_hook recompiler_win64_plain PROPERTIES
                          TIMEOUT 600)
 endif()
-# its code on Windows unwinds at every instruction, by support/host_win64.c's unwinder here (x64_unwind.c)
-if(snx_host_win64)
-    add_executable(snx-test-x64-unwind x64_unwind.c support/host_win64.c
-                   "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
+# its code on Windows unwinds at every instruction, by the system's unwinder there and by support/host_win64.c's here
+# (x64_unwind.c)
+if(snx_host_win64 OR (SNX_X64 AND WIN32))
+    add_executable(snx-test-x64-unwind x64_unwind.c "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
                    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
+    if(NOT WIN32)
+        target_sources(snx-test-x64-unwind PRIVATE support/host_win64.c)
+    endif()
     snx_cpu_helpers_flags(snx-test-x64-unwind)
     snx_test_target(snx-test-x64-unwind gnu23)
     target_include_directories(snx-test-x64-unwind PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(snx-test-x64-unwind PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
     snx_decodetree_a64(snx-test-x64-unwind)
     add_test(NAME x64_unwind COMMAND snx-test-x64-unwind)
-    set_tests_properties(x64_unwind PROPERTIES TIMEOUT 120)
+    set_tests_properties(x64_unwind PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
 endif()
 # the objects every native back end writes for an AOT module: no absolute address in their code, the little-endian ones
 # linked

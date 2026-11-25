@@ -9,10 +9,9 @@
 include_guard(GLOBAL)
 include("${CMAKE_CURRENT_LIST_DIR}/sailgen.cmake")
 
-# on by default where the back end runs: x86-64, but Windows (its objects are COFF) and Android (its APKs have been
-# made without it). Without the manual or pdftotext the configure stops: SNX_SAIL_X64=OFF is how a build goes without
-# the back end, and LLVM makes every function
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$" AND NOT WIN32 AND NOT ANDROID)
+# on by default where the back end runs: x86-64, but Android (its APKs have been made without it). Without the manual or
+# pdftotext the configure stops: SNX_SAIL_X64=OFF is how a build goes without the back end, and LLVM makes every function
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$" AND NOT ANDROID)
     set(snx_sail_x64_default ON)
 else()
     set(snx_sail_x64_default OFF)
