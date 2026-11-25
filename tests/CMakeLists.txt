@@ -2717,6 +2717,13 @@ add_executable(snx-test-vpad-console vpad_console.c)
 snx_test_target(snx-test-vpad-console c23)
 target_link_libraries(snx-test-vpad-console PRIVATE snx_vpad scarletnx-common)
 add_test(NAME vpad_console COMMAND snx-test-vpad-console)
+# the layer's quads as rectangles, for the windows with no pipeline of their own (common/utilities/ui_rects.c): each pixel
+# the one ui.frag writes
+add_executable(snx-test-ui-rects ui_rects.c support/ui_shape_ref.c)
+snx_test_target(snx-test-ui-rects c23)
+target_link_libraries(snx-test-ui-rects PRIVATE snx_vpad scarletnx-common m)
+target_include_directories(snx-test-ui-rects PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+add_test(NAME ui_rects COMMAND snx-test-ui-rects)
 
 add_executable(snx-test-hud hud.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/hud.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c")
@@ -5833,6 +5840,12 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
         target_link_libraries(snx-test-vk-notice PRIVATE snx_vk_common)
         add_test(NAME vk_notice COMMAND snx-test-vk-notice)
         set_tests_properties(vk_notice PROPERTIES SKIP_RETURN_CODE 77)
+        # the on-screen controls' rectangles over a window's image (common/gpu/vk/rects.c), on whatever device there is
+        add_executable(snx-test-vk-rects vk_rects.c "${volk_SOURCE_DIR}/volk.c")
+        snx_test_target(snx-test-vk-rects c23)
+        target_link_libraries(snx-test-vk-rects PRIVATE snx_vk_common snx_vpad)
+        add_test(NAME vk_rects COMMAND snx-test-vk-rects)
+        set_tests_properties(vk_rects PROPERTIES SKIP_RETURN_CODE 77)
     endif()
     add_executable(snx-test-vk-uma-budget vk_uma_budget.c)
     snx_test_target(snx-test-vk-uma-budget c23)
