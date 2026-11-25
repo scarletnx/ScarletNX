@@ -232,6 +232,71 @@ static void switch64(struct snx_recompiler* r, uint8_t* mem) {
     snx_recompiler_set_backend(r, 1);
 }
 
+/* The same past its cases, at PAST64 (llvm-mc): f: cbz w1, past; and x0, x0, #31; past: adr x9, table; adr x10, low;
+   ldrb w11, [x9, x0]; add x10, x10, x11, lsl #2; br x10; low: movz x0, #777; ret; casek: movz x0, #(7k + 3); ret
+   (k 0..31); high: movz x0, #888; ret. The table's 32 entries name the cases; with x1 zero the index is not masked, and
+   entry 32 names low, before the first case, 33 case 0's RET, between two, and 34 high, past the last */
+#define PAST64 0xB000u
+static const uint32_t past_words[] = {
+    0x34000041, 0x92401000, 0x10000929, 0x1000008a, 0x3860692b, 0x8b0b094a, 0xd61f0140, 0xd2806120, 0xd65f03c0,
+    0xd2800060, 0xd65f03c0, 0xd2800140, 0xd65f03c0, 0xd2800220, 0xd65f03c0, 0xd2800300, 0xd65f03c0, 0xd28003e0,
+    0xd65f03c0, 0xd28004c0, 0xd65f03c0, 0xd28005a0, 0xd65f03c0, 0xd2800680, 0xd65f03c0, 0xd2800760, 0xd65f03c0,
+    0xd2800840, 0xd65f03c0, 0xd2800920, 0xd65f03c0, 0xd2800a00, 0xd65f03c0, 0xd2800ae0, 0xd65f03c0, 0xd2800bc0,
+    0xd65f03c0, 0xd2800ca0, 0xd65f03c0, 0xd2800d80, 0xd65f03c0, 0xd2800e60, 0xd65f03c0, 0xd2800f40, 0xd65f03c0,
+    0xd2801020, 0xd65f03c0, 0xd2801100, 0xd65f03c0, 0xd28011e0, 0xd65f03c0, 0xd28012c0, 0xd65f03c0, 0xd28013a0,
+    0xd65f03c0, 0xd2801480, 0xd65f03c0, 0xd2801560, 0xd65f03c0, 0xd2801640, 0xd65f03c0, 0xd2801720, 0xd65f03c0,
+    0xd2801800, 0xd65f03c0, 0xd28018e0, 0xd65f03c0, 0xd28019c0, 0xd65f03c0, 0xd2801aa0, 0xd65f03c0, 0xd2801b80,
+    0xd65f03c0, 0xd2806f00, 0xd65f03c0, 0x08060402, 0x100e0c0a, 0x18161412, 0x201e1c1a, 0x28262422, 0x302e2c2a,
+    0x38363432, 0x403e3c3a, 0x00420300,
+};
+static unsigned past_polls;
+static void past_poll(CPU* c) {
+    ++past_polls;
+    atomic_store_explicit(&c->poll, 0, memory_order_relaxed);
+}
+static void switch_past64(struct snx_recompiler* r, uint8_t* mem) {
+    int backend;
+    place(mem, PAST64, past_words, sizeof(past_words) / sizeof(past_words[0]));
+    for (backend = 1; backend >= 0; --backend) {
+        struct snx_recompiled* m;
+        RtAPI rt;
+        CPU cpu = {0};
+        Seen seen = {0};
+        uint64_t k;
+        char what[160];
+        snx_recompiler_set_backend(r, backend);
+        m = snx_recompile(r, PAST64, mem + PAST64, sizeof(past_words));
+        check(m != NULL, "past the cases: snx_recompile");
+        if (!m) continue;
+        snx_runtime_defaults(&rt);
+        rt.svc = svc64;
+        rt.undef = undef64;
+        rt.brk = brk64;
+        rt.poll = past_poll;
+        cpu.mem = mem;
+        cpu.rt = &rt;
+        cpu.thread = &seen;
+        check(snx_recompiled_bind(m, &cpu) == 0, "past the cases: bind");
+        for (k = 0; k < 70; ++k) { /* each index, and each again with a poll pending */
+            uint64_t index = k % 35, want = index < 32 ? 7 * index + 3 : index == 32 ? 777 : index == 33 ? 33 : 888;
+            cpu.x[0] = index;
+            cpu.x[1] = 0;
+            cpu.x[30] = STOP;
+            past_polls = 0;
+            atomic_store_explicit(&cpu.poll, k >= 35, memory_order_relaxed);
+            snx_recompiled_run(m, &cpu, PAST64, STOP);
+            snprintf(what, sizeof(what), "past the cases, back end %d: index %llu gives %llu, not %llu", backend,
+                     (unsigned long long)index, (unsigned long long)cpu.x[0], (unsigned long long)want);
+            check(cpu.x[0] == want && cpu.pc == STOP && !seen.brks && !seen.undefs, what);
+            snprintf(what, sizeof(what), "past the cases, back end %d: index %llu, %u polls taken, not %d", backend,
+                     (unsigned long long)index, past_polls, k >= 35);
+            check(past_polls == (k >= 35), what);
+        }
+        snx_recompiled_free(m);
+    }
+    snx_recompiler_set_backend(r, 1);
+}
+
 static void run64(struct snx_recompiler* r, const char* backend, uint8_t* mem, const char* keep_ir) {
     struct snx_recompiled *m, *first;
     RtAPI rt;
@@ -939,6 +1004,7 @@ int main(int argc, char** argv) {
         snx_recompiler_set_jobs(r, 2);
         run64(r, "llvm", mem, keep_ir);
         switch64(r, mem);
+        switch_past64(r, mem);
         progress64(r, mem);
         schedule64(r);
         invalidate64(r, mem);
