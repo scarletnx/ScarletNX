@@ -13,8 +13,15 @@ int snx_link(const SnxLinkInput* inputs, size_t count, const char* const* export
         snprintf(error, error_size, "nothing to link");
         return -1;
     }
-    if (inputs[0].size >= 4 && !memcmp(inputs[0].data, "\177ELF", 4))
+    if (inputs[0].size >= 4 && !memcmp(inputs[0].data, "\177ELF", 4)) {
+#ifdef __APPLE__
+        /* Darwin loads Mach-O: the native back ends' arm64 objects and the runtime library's link into one
+           (link_macho.c). Another machine's are no module of this host's (e_machine 183 is AArch64) */
+        if (inputs[0].size >= 20 && snx_ld_le16(inputs[0].data + 18) == 183)
+            return snx_link_macho(inputs, count, exports, export_count, soname, output, error, error_size);
+#endif
         return snx_link_elf(inputs, count, exports, export_count, soname, output, error, error_size);
+    }
     /* COFF's machine: IMAGE_FILE_MACHINE_AMD64 or IMAGE_FILE_MACHINE_ARM64, little-endian */
     if (inputs[0].size >= 2 && inputs[0].data[0] == 0x64 && (inputs[0].data[1] == 0x86 || inputs[0].data[1] == 0xAA))
         return snx_link_coff(inputs, count, exports, export_count, soname, output, error, error_size);

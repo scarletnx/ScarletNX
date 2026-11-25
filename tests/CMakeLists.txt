@@ -4590,28 +4590,47 @@ if(TARGET OpenSSL::Crypto)
                     -o "${CMAKE_CURRENT_BINARY_DIR}/link_macho_${part}.o"
                 DEPENDS link_macho_fixture.c VERBATIM)
         endforeach()
+        # the same parts as ELF, with the ABI and the visibility the runtime library's embedded object has
+        # (recompiler/llvm/CMakeLists.txt): what the native back ends write for this host
+        foreach(part 1 2 3 4 5 6 7)
+            add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/link_macho_elf_${part}.o"
+                COMMAND "${CMAKE_C_COMPILER}" --target=arm64-apple-macos13-elf -std=gnu23 -ffreestanding -O2 -fPIC
+                    -fvisibility=hidden -fno-common -DPART=${part} -c "${CMAKE_CURRENT_SOURCE_DIR}/link_macho_fixture.c"
+                    -o "${CMAKE_CURRENT_BINARY_DIR}/link_macho_elf_${part}.o"
+                DEPENDS link_macho_fixture.c VERBATIM)
+        endforeach()
         set(snx_link_sources "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/llvm")
+        set(snx_macho_objects)
+        foreach(object 1 2 3 4 elf_1 elf_2 elf_3 elf_4 elf_5 elf_6 elf_7)
+            list(APPEND snx_macho_objects "${CMAKE_CURRENT_BINARY_DIR}/link_macho_${object}.o")
+        endforeach()
         add_executable(snx-test-link-macho link_macho.c "${snx_link_sources}/link.c" "${snx_link_sources}/link_elf.c"
             "${snx_link_sources}/elf_object.c" "${snx_link_sources}/link_coff.c" "${snx_link_sources}/link_macho.c"
-            "${CMAKE_CURRENT_BINARY_DIR}/link_macho_1.o" "${CMAKE_CURRENT_BINARY_DIR}/link_macho_2.o"
-            "${CMAKE_CURRENT_BINARY_DIR}/link_macho_3.o" "${CMAKE_CURRENT_BINARY_DIR}/link_macho_4.o")
+            ${snx_macho_objects})
         # the objects are the test's data, not part of its own link
-        set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/link_macho_1.o"
-            "${CMAKE_CURRENT_BINARY_DIR}/link_macho_2.o" "${CMAKE_CURRENT_BINARY_DIR}/link_macho_3.o"
-            "${CMAKE_CURRENT_BINARY_DIR}/link_macho_4.o" PROPERTIES EXTERNAL_OBJECT FALSE HEADER_FILE_ONLY TRUE)
+        set_source_files_properties(${snx_macho_objects} PROPERTIES EXTERNAL_OBJECT FALSE HEADER_FILE_ONLY TRUE)
         snx_test_target(snx-test-link-macho gnu23)
         target_include_directories(snx-test-link-macho PRIVATE "${PROJECT_SOURCE_DIR}/src")
         target_link_libraries(snx-test-link-macho PRIVATE OpenSSL::Crypto)
+        if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY) # the dylib's code, run
+            target_sources(snx-test-link-macho PRIVATE support/host_unicorn.c support/la64_interp.c)
+            target_include_directories(snx-test-link-macho PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}"
+                                                                   "${SNX_UNICORN_INCLUDE_DIR}")
+            target_compile_definitions(snx-test-link-macho PRIVATE SNX_TEST_UNICORN=1)
+            # the harness loads objects with the JIT's loader; the sources above stay this test's own
+            target_link_libraries(snx-test-link-macho PRIVATE snx_llvm "${SNX_UNICORN_LIBRARY}" ${CMAKE_DL_LIBS})
+        endif()
         add_test(NAME link_macho COMMAND snx-test-link-macho "${CMAKE_CURRENT_BINARY_DIR}/link_macho_1.o"
             "${CMAKE_CURRENT_BINARY_DIR}/link_macho_2.o" "${CMAKE_CURRENT_BINARY_DIR}/link_macho.dylib"
+            "${CMAKE_CURRENT_BINARY_DIR}/link_macho_elf_1.o" "${CMAKE_CURRENT_BINARY_DIR}/link_macho_elf_2.o"
+            "${CMAKE_CURRENT_BINARY_DIR}/link_macho_elf_7.o"
             "${CMAKE_CURRENT_BINARY_DIR}/link_macho_3.o" "a call to the undefined weak symbol _missing"
-            "${CMAKE_CURRENT_BINARY_DIR}/link_macho_4.o" "aligned beyond a page")
+            "${CMAKE_CURRENT_BINARY_DIR}/link_macho_4.o" "aligned beyond a page"
+            "${CMAKE_CURRENT_BINARY_DIR}/link_macho_elf_3.o" "a call to the undefined weak symbol _missing"
+            "${CMAKE_CURRENT_BINARY_DIR}/link_macho_elf_4.o" "aligned beyond a page"
+            "${CMAKE_CURRENT_BINARY_DIR}/link_macho_elf_5.o" "absolute address in read-only section .rodata"
+            "${CMAKE_CURRENT_BINARY_DIR}/link_macho_elf_6.o" "thread-local data is not supported")
     endif()
-endif()
-if(APPLE)
-    # aot_variants links a JIT cache unit as ELF into an AOT module that is Mach-O on this host: it needs its own fix
-    # before it can run here
-    set_tests_properties(aot_variants PROPERTIES DISABLED TRUE)
 endif()
 
 # the generated decoder, function discovery, and LLVM steps against expected values (llvm_steps.c)
