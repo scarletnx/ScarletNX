@@ -6,6 +6,7 @@
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/recompiler/llvm/jit_cache.h"
 #include "common/cpu/recompiler/llvm/jit_service.h"
+#include "common/cpu/recompiler/mach/native.h"
 #include <llvm-c/TargetMachine.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -95,6 +96,7 @@ int main(void) {
     ok = snx_jit_wait(service, CODE_LO) != NULL;
     CHECK(ok);
     snx_jit_service_free(service);
+    CHECK(!snx_native_available() || !snx_ir_started()); /* the host's back end made the unit: LLVM never started */
 
     key = snx_jit_cache_key('2', 0, 0, 0);
     CHECK(key != NULL);
