@@ -82,8 +82,10 @@ void vita_hle_guest_call(VitaProcess* p, VitaThread* t, uint32_t func, const uin
                          VitaHleNext next, void* context);
 /* VITA_SVC_CALL_RETURN: the guest function returned */
 void vita_hle_call_returned(VitaProcess* p, VitaThread* t);
+/* the functions the runtime answers, sorted by NID (hookgen --vita's, a NULL-named entry ends it) */
+extern const VitaHle vita_hle_table[];
 /* each module's functions (a NULL-named entry ends each table) */
-extern const VitaHle vita_hle_kernel[], vita_hle_io[], vita_hle_ctrl[], vita_hle_display[], vita_hle_audio[],
+extern const VitaHle vita_hle_kernel[], vita_hle_io[], vita_hle_display[], vita_hle_audio[],
     vita_hle_misc[], vita_hle_gxm[], vita_hle_libc[], vita_hle_fiber[], vita_hle_ngs[], vita_hle_mp4[],
     vita_hle_videodec[], vita_hle_audiodec[], vita_hle_dialog[], vita_hle_net[], vita_hle_trophy[];
 

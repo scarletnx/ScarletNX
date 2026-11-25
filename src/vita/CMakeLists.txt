@@ -35,6 +35,10 @@ target_link_libraries(snx_vita_program PUBLIC snx_vita_loader snx_vita_usse scar
                       snx_settings_runtime snx_build_info snx_window_icon snx_vk_common snx_pad_sdl SDL3::SDL3
                       Vulkan::Headers ${CMAKE_DL_LIBS})
 target_include_directories(snx_vita_program PUBLIC "${volk_SOURCE_DIR}")
+# the imports the runtime answers, by NID: hle/*.hook, read by hookgen --vita into vita/hle/hle.hook.{h,inc}
+# (cmake/hookgen.cmake)
+include("${PROJECT_SOURCE_DIR}/cmake/hookgen.cmake")
+snx_vita_hookgen(snx_vita_program)
 # the compute shaders (the texture deswizzle, the decoded pictures' layout, YUV textures, 24-bit color surfaces),
 # compiled at build time
 # (cmake/glsl.cmake)
