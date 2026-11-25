@@ -5,6 +5,7 @@
 #define _GNU_SOURCE 1 /* sched_getaffinity: the CPUs this process may run on */
 #endif
 #include "common/cpu/recompiler/jit/jit_service.h"
+#include "common/cpu/recompiler/fallback.h"
 #include "common/cpu/recompiler/mach/native.h"
 #include "common/cpu/recompiler/x64/x64_codegen.h"
 #include "common/cpu/recompiler/compile_thread.h"
@@ -16,8 +17,6 @@
 #include "common/cpu/recompiler/loader/code_loader.h"
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/recompiler/rtlib/rtlib_object.h"
-#include <llvm-c/TargetMachine.h>
-#include <llvm/Config/llvm-config.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -495,15 +494,15 @@ static uint64_t aot_toc(const SnxJitConfig* config) {
    loader's table, where every global stays */
 static int emit_unit(SnxJitService* s, SnxCodegen* codegen, const char* table_name, unsigned char** object,
                      size_t* size, char* error, size_t error_size) {
+    SnxNativeOptions options = {
+        .jit = 1, .table_name = table_name, .direct = direct, .direct_user = s, .llvm_at = snx_ir_dump_pc()};
+    codegen->hook_direct_calls = s->config.hook_direct_calls; /* every call through CPU.disp (call_target) */
+    codegen->direct_svc = s->config.direct_svc;
     if (snx_native_available() && codegen->function_count) {
-        /* the x86-64 back end, where it makes every function of the unit (a unit's are its own locals, so it isn't
-           split between two objects): LLVM otherwise */
-        SnxNativeOptions options = {
-            .jit = 1, .table_name = table_name, .direct = direct, .direct_user = s, .llvm_at = snx_ir_dump_pc()};
+        /* the native back end, where it makes every function of the unit (a unit's are its own locals, so it isn't
+           split between two objects): the fallback otherwise */
         unsigned char* made = (unsigned char*)calloc(codegen->function_count, 1);
         if (made) {
-            codegen->hook_direct_calls = s->config.hook_direct_calls; /* every call through CPU.disp (call_target) */
-            codegen->direct_svc = s->config.direct_svc;
             int reused = 0;
             int rc = snx_native_cached_object(codegen, 0, codegen->function_count, &options, made, object, size,
                                               &reused, error, error_size);
@@ -512,33 +511,8 @@ static int emit_unit(SnxJitService* s, SnxCodegen* codegen, const char* table_na
             if (*object) return 0;
         }
     }
-    SnxIr* ir = snx_ir_init(error, error_size) ? NULL : snx_ir_new_jit("jit", s->config.opt, error, error_size);
-    if (!ir) return -1;
-    LLVMValueRef* functions = (LLVMValueRef*)malloc(codegen->function_count * sizeof(*functions));
-    if (!functions) {
-        snx_ir_free(ir);
-        snprintf(error, error_size, "out of memory");
-        return -1;
-    }
-    ir->direct = direct;
-    ir->direct_user = s;
-    codegen->hook_direct_calls = s->config.hook_direct_calls;
-    codegen->direct_svc = s->config.direct_svc;
-    for (size_t i = 0; i < codegen->function_count; ++i) snx_ir_emit(ir, codegen, &codegen->functions[i]);
-    for (size_t i = 0; i < codegen->function_count; ++i) {
-        functions[i] = snx_ir_guest_function(ir, codegen->functions[i].start);
-        LLVMSetLinkage(functions[i], LLVMInternalLinkage);
-        LLVMSetVisibility(functions[i], LLVMDefaultVisibility); /* a local symbol has no visibility */
-    }
-    LLVMTypeRef type = LLVMArrayType(ir->t_ptr, (unsigned)codegen->function_count);
-    LLVMValueRef table = LLVMAddGlobal(ir->mod, type, table_name);
-    LLVMSetInitializer(table, LLVMConstArray(ir->t_ptr, functions, (unsigned)codegen->function_count));
-    LLVMSetGlobalConstant(table, 1);
-    LLVMSetVisibility(table, LLVMHiddenVisibility);
-    free(functions);
-    int rc = snx_ir_object(ir, s->config.opt, object, size, error, error_size);
-    snx_ir_free(ir);
-    return rc;
+    return snx_fallback_object(codegen, 0, codegen->function_count, &options, NULL, "jit", s->config.opt, object, size,
+                               error, error_size);
 }
 
 /* function i's code in a loaded unit's table */

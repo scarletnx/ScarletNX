@@ -55,8 +55,8 @@ if(SNX_TEST_SANITIZERS)
         snx_ble_system
         snx-logscan
         # the recompiler, its backends and what they take of the common code
-        snx_recompiler_base snx_recompiler_core snx_llvm snx_recompiler_jit snx_arm_llvm snx_arm_decode snx_arm_rt
-        scarletnx-recompiler scarletnx-recompiler-shared
+        snx_recompiler_base snx_recompiler_core snx_llvm snx_fallback_none snx_recompiler_jit snx_arm_llvm snx_arm_decode
+        snx_arm_rt scarletnx-recompiler scarletnx-recompiler-shared
         # the driver, its extraction, the first start's setup, the settings and the build's line
         snx_driver snx_nx_module snx_driver_llvm hactool_lib snx_setup snx_settings snx_settings_runtime snx_build_info
         snx-test-build-info

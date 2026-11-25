@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# The LLVM backend: the IR of the guest's functions, and the runtime library's bitcode, compiled for the CPU of the
-# module that links it. A folder of the recompiler's (../CMakeLists.txt), whose snx_rtlib_flags, snx_rtlib_gen and
+# The LLVM backend: the IR of the guest's functions, the fallback made of it (../fallback_llvm.c), and the runtime
+# library's bitcode, compiled for the CPU of the module that links it. A folder of the recompiler's (../CMakeLists.txt), whose snx_rtlib_flags, snx_rtlib_gen and
 # snx_rtlib_sources the bitcode takes
 set(snx_rtlib_dir "${CMAKE_CURRENT_SOURCE_DIR}/../rtlib")
 # LLVM reads the bitcode of its own version and older ones
@@ -65,7 +65,8 @@ add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/rtlib_bitcode.c"
     DEPENDS "${snx_rtlib_gen}" "${CMAKE_CURRENT_BINARY_DIR}/rtlib.bc" VERBATIM)
 
 add_library(snx_llvm STATIC ir.c ir_state.c ir_promote.c ir_emit.c ir_profile.c ir_helpers.c ir_int.c ir_sail.c
-    ir_ldst.c ir_fpu.c ir_vec.c ir_vec_fp.c ir_vec_crypto.c ir_codegen.c "${CMAKE_CURRENT_BINARY_DIR}/rtlib_bitcode.c")
+    ir_ldst.c ir_fpu.c ir_vec.c ir_vec_fp.c ir_vec_crypto.c ir_codegen.c ../fallback_llvm.c
+    "${CMAKE_CURRENT_BINARY_DIR}/rtlib_bitcode.c")
 set_target_properties(snx_llvm PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS ON)
 target_include_directories(snx_llvm SYSTEM PUBLIC "${SNX_LLVM_INCLUDE_DIR}")
 target_compile_options(snx_llvm PRIVATE -Wall -Wextra -Werror=missing-prototypes)

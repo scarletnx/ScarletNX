@@ -27,3 +27,24 @@ add_test(NAME recompiler_core_symbols COMMAND "${CMAKE_COMMAND}" "-DBUILD=${PROJ
 # SNX_WITH_LLVM (cmake/with_llvm.cmake): which builds it stops
 add_test(NAME with_llvm_option COMMAND "${CMAKE_COMMAND}" "-DSCRIPT=${PROJECT_SOURCE_DIR}/cmake/with_llvm.cmake"
          -P "${PROJECT_SOURCE_DIR}/tests/with_llvm_test.cmake")
+
+# what makes the code the native back end leaves (recompiler/fallback.h), and the AArch32 executor over it: none, in a
+# program that links no LLVM, and LLVM's where the build has it. exec.c is in the test, its loads counted and refused
+set(snx_fallback_tests none)
+if(SNX_WITH_LLVM)
+    list(APPEND snx_fallback_tests llvm)
+endif()
+foreach(fallback IN LISTS snx_fallback_tests)
+    set(target snx-test-recompiler-fallback-${fallback})
+    add_executable(${target} "${PROJECT_SOURCE_DIR}/tests/recompiler_fallback.c")
+    snx_test_target(${target} gnu23)
+    if(fallback STREQUAL none)
+        target_link_libraries(${target} PRIVATE snx_fallback_none snx_arm_rt)
+        if(NOT WIN32)
+            target_link_libraries(${target} PRIVATE m)
+        endif()
+    else()
+        target_link_libraries(${target} PRIVATE snx_llvm)
+    endif()
+    add_test(NAME recompiler_fallback_${fallback} COMMAND ${target} WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+endforeach()
