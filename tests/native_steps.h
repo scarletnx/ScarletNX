@@ -26,6 +26,12 @@ enum {
 };
 
 typedef struct NativeUnit NativeUnit;
+/* what a step has once loaded: its function, NULL where there is no code, its address, and its unit's snx_stale */
+typedef struct {
+    GuestFn function;
+    u64 pc;
+    u8* stale;
+} NativeEntry;
 typedef struct {
     int jit;     /* load with the JIT's loader, not as a module file */
     int form;    /* NATIVE_STEPS_HOST or NATIVE_STEPS_PORTABLE */
@@ -33,9 +39,7 @@ typedef struct {
     size_t count, cap;
     NativeUnit* units; /* while steps are added */
     size_t nunits, cap_units;
-    GuestFn* fns; /* once loaded: the function of each add, by index, NULL where there is no code */
-    u64* pcs;     /* its address */
-    u8** stale;   /* its unit's snx_stale */
+    NativeEntry* entries; /* of each add, by index, filled by native_steps_load */
     SnxCodeLoader* loader;
     void** libraries; /* the module files loaded */
     size_t nlibraries;
@@ -61,7 +65,7 @@ size_t native_steps_add(NativeSteps* s, u32 word, u64 pc, u64 features);
 /* a function of codegen, at its index in the table as its entry F_<address>: a GuestFn, not a step. Consecutive
    functions of one codegen are one unit, which calls each other's directly */
 size_t native_steps_add_function(NativeSteps* s, SnxCodegen* codegen, const SnxFunction* function);
-/* compiles and loads the steps added, s->fns then holding them. 0, or -1 with the reason in error */
+/* compiles and loads the steps added, s->entries then holding them. 0, or -1 with the reason in error */
 int native_steps_load(NativeSteps* s, char* error, size_t error_size);
 /* Saves the object of the first unit as prefix.o. The caller must end these steps afterward */
 int native_steps_dump(NativeSteps* s, const char* prefix, char* error, size_t error_size);
@@ -73,7 +77,7 @@ void native_steps_end(NativeSteps* s);
 int native_steps_host_mode(int mode);
 
 /* whether the back end has code for a step */
-static inline int native_steps_made(const NativeSteps* s, size_t index) { return s->fns[index] != NULL; }
+static inline int native_steps_made(const NativeSteps* s, size_t index) { return s->entries[index].function != NULL; }
 /* runs a step from *c and returns the next pc: the pc it goes on to, or of a word that leaves the function (RET, UNDEF,
    BRK) CPU.pc. *c's pc, its dispatch table and runtime are as they were. A word that branches to itself returns its own
    pc, once */
