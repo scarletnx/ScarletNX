@@ -2630,10 +2630,19 @@ static Surf* rt_find_parked(u64 gva, const Surf* want, u32 fkey, int* padding) {
 static void rt_publish_now(Surf* s, int why);
 /* A target that takes its address from another parks it, which drops its pages from the watch (rt_pages): a CPU write
    there is no access vk_rt_watch_hit sees, and lands over bytes the draw never wrote back, so the target is published
-   first, whatever of its pixels memory lacks */
-static void rt_park_publish(u64 gva) {
+   first, whatever of its pixels memory lacks.
+
+   Not when the target taking the address is a parked one coming back (back) whose bytes cover all of the live one's.
+   It loads nothing from memory, and it is the one watched over those bytes from now on: a CPU access there publishes
+   it, and no stale byte stays under the access as the live one's would without the watch. A game that
+   draws several shapes in turn at one address, a blur chain's levels over its scratch memory, had each one published
+   as the next came back. Those write-backs were newer than the draws over the memory they share, so a texture took
+   none of the levels and loaded them from memory instead, which held another shape's bytes: an area name's backdrop
+   showed as stripes on each load into the world */
+static void rt_park_publish(u64 gva, const Surf* back) {
     Surf* live = vk_rt_find(gva);
-    if (live && flush_bytes(live) && !rt_superseded(live)) rt_publish_now(live, VK_PUB_OTHER);
+    if (!live || (back && rt_bytes(back) >= rt_bytes(live))) return;
+    if (flush_bytes(live) && !rt_superseded(live)) rt_publish_now(live, VK_PUB_OTHER);
 }
 static Surf* rt_create_(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, int depth, u32 pitch, u32 layers, u64 layer_size,
                         int volume, u32 msaa);
@@ -2708,7 +2717,7 @@ static Surf* rt_create_(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, int depth, u32
         /* cur's own pixels, which no target takes, go to memory as it is parked. After its freshness is asked, as the
            publish's write to memory is newer than its draw to vk_rt_drawn_fresh, and before the parked targets are
            looked up for good, as it can let some go */
-        rt_park_publish(gva);
+        rt_park_publish(gva, parked);
         if (cur && vk_rt_find(gva) != cur) cur = NULL, cur_fresh = 0;
         parked = rt_find_parked(gva, &want, fkey, &padding);
     }
