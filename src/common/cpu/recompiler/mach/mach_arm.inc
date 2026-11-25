@@ -26,6 +26,9 @@
 #ifndef MG_ARM_ELF_FLAGS
 #define MG_ARM_ELF_FLAGS 0 /* the objects' e_flags (mach_codegen.inc's MG_ELF_FLAGS) */
 #endif
+#ifndef MG_ARM_ABI
+#define MG_ARM_ABI 0u /* the features that are no processor's, which a test's limit leaves (x86-64's SGX_F_WIN64) */
+#endif
 
 /* the thread's: where a word the emitters can't make (bits.h's sg_fail) refuses the block, which LLVM makes, and why,
    for the caller */
@@ -107,7 +110,7 @@ void MG_ARM_API(free)(MG_ARM* c) {
 }
 void MG_ARM_API(limit)(MG_ARM* c, int pool, unsigned features) {
     c->pool = pool;
-    c->features = MG_ARM_FEATURES() & features;
+    c->features = MG_ARM_FEATURES() & (features | MG_ARM_ABI);
 }
 const char* MG_ARM_API(why)(const MG_ARM* c) { return c->why ? c->why : ""; }
 
@@ -192,8 +195,8 @@ static void cold_ways(MG_ARM* c) {
         sgx_a32_bind(g, b, o->label);
         if (o->undefined) { /* llvm.c's trap: the backend's to run or stop at */
             sgx_a32_state_imm(b, offsetof(SnxArmCPU, r) + 60, o->pc);
-            sgx_a32_movi(b, sgx_a32_args[0], o->word);
-            sgx_a32_movi(b, sgx_a32_args[1], o->reason);
+            sgx_a32_movi(b, SGX_A32_ARG(&g->x, 0), o->word);
+            sgx_a32_movi(b, SGX_A32_ARG(&g->x, 1), o->reason);
             sgx_a32_call_out(&c->a, b, "snx_arm_undefined");
             sgx_a32_leave(g, b);
         }
@@ -207,8 +210,8 @@ static void cold_ways(MG_ARM* c) {
         for (int j = 0; j < SGX_NREG; ++j)
             if (m->live >> j & 1) sgx_mov_mem(&c->a, 0, 64, j, SGX_FRAME, 8 * slot++);
         sgx_a32_state_imm(b, offsetof(SnxArmCPU, r) + 60, m->pc); /* the hook may read it */
-        sgx_a32_movi(b, sgx_a32_args[1], m->size);
-        if (m->load) sgx_a32_movi(b, sgx_a32_args[2], m->key);
+        sgx_a32_movi(b, SGX_A32_ARG(&g->x, 1), m->size);
+        if (m->load) sgx_a32_movi(b, SGX_A32_ARG(&g->x, 2), m->key);
         sgx_a32_call_out(&c->a, b, m->sym);
         slot = m->slot;
         for (int j = 0; j < SGX_NREG; ++j)
@@ -554,7 +557,7 @@ static void exclusive(SgCtx* g) {
         sg_GPR_write(g, d, sg_d_slice(g, value, 31, 0));
         if (bytes == 8) sg_GPR_write(g, g->pair ? g->pair - 1 : d + 1, sg_d_slice(g, value, 63, 32));
     } else {
-        const signed char* fix = sgx_a32_strex; /* the machine's registers of the address, the value and the base */
+        const signed char* fix = SGX_A32_STREX_REGS(x); /* the machine's: the address, the value and the base */
         SgD value = reg(g, t);
         if (bytes == 8) value = sg_d_concat(g, reg(g, g->pair ? g->pair - 1 : t + 1), value);
         SgD in[3];
@@ -1956,6 +1959,7 @@ static size_t block(MG_ARM* c, const unsigned char* code, size_t count, SnxU32 p
     c->a.slots_max = 0;
     c->a.cold.n = 0;
     c->a.ncjumps = c->a.nccalls = c->a.npool = c->a.nrips = 0;
+    c->a.x = x;
     c->a.b = b;
     c->a.machine = g;
     c->a.reloc = unit_reloc;
@@ -2047,7 +2051,7 @@ static size_t block(MG_ARM* c, const unsigned char* code, size_t count, SnxU32 p
     sgx_pool_emit(&c->a);
     if (mg_patch_frame(c)) {
         t_mach_arm.fail = saved;
-        c->big = 1; /* made again with 32-bit frame sizes */
+        ++c->big; /* made again with 32-bit frame sizes (x86-64's) */
         return (size_t)-1;
     }
     if (sgx_a32_patch(g, b)) sg_fail("a jump to a label never bound", 0, 0);
@@ -2156,6 +2160,9 @@ int MG_ARM_API(object)(MG_ARM* c, unsigned char** object, size_t* size, size_t* 
     if (!o) return -1;
     snx_xelf_set_machine(o, MG_ARM_EM);
     snx_xelf_set_flags(o, MG_ARM_ELF_FLAGS);
+#ifdef MG_ARM_COFF
+    snx_xelf_set_coff(o, MG_ARM_COFF);
+#endif
 #ifdef MG_ARM_ELF_BIG
     snx_xelf_set_big(o, MG_ARM_ELF_BIG);
 #endif
@@ -2168,6 +2175,9 @@ int MG_ARM_API(object)(MG_ARM* c, unsigned char** object, size_t* size, size_t* 
         snx_xelf_symbol(o, m->name, SNX_ELF_TEXT, at, m->size,
                         m->own == (size_t)-1 && m->name[0] == 'X' ? SNX_ELF_LOCAL | SNX_ELF_FUNC
                                                                   : SNX_ELF_GLOBAL | SNX_ELF_HIDDEN | SNX_ELF_FUNC);
+#ifdef MG_ARM_UNWIND
+        MG_ARM_UNWIND(o, at, c->text + m->at, m->size, m->own, c->rels + m->rel0, m->nrel);
+#endif
         if (m->own != (size_t)-1) {
             char own[sizeof m->name + 1];
             snprintf(own, sizeof own, "X%s", m->name);

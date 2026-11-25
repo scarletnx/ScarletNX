@@ -3,7 +3,8 @@
 /* sailgen's x86-64 back end, AArch32's part of its own (after mach_a32.h): the jumps to the block's labels (rel32s
    patched as it ends), the machine instructions' bytes (a condition's skip, the exits, the monitor's check, a call,
    the exclusive store), and the exits' and the monitor's stubs after the block's code. The state's address is in
-   RBX */
+   RBX. Windows' calling convention (SGX_F_WIN64) changes a call's registers, the exclusive store's address's, and where
+   the monitor's stub keeps RAX */
 
 /* ---- labels ---- */
 
@@ -82,7 +83,8 @@ static inline void sgx_a32_movi(SgXBuf* b, int reg, SnxU32 v) {
 }
 /* a call of the runtime library's sym, the state its first argument */
 static inline void sgx_a32_call_out(SgXAsm* a, SgXBuf* b, const char* sym) {
-    sgx_bytes(b, "48 89 DF"); /* mov rdi, rbx */
+    sgx_call_room(a);
+    sgx_state_arg(a, b);
     if (a->reloc) {
         sgx_byte(b, 0xE8); /* call rel32, which the object's relocation fills */
         a->reloc(a->machine, b->n, sym, -4);
@@ -127,6 +129,7 @@ static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r) {
         case SGX_A32_MONITOR: {
             sgx_a32_state(b, 0, 0x83, 7, offsetof(SnxArmCPU, exclusive_valid)); /* cmp dword [rbx + valid], imm8 */
             sgx_byte(b, 0);
+            if (SGX_WIN64(a->x)) sgx_call_room(a); /* the stub keeps RAX in the callees' bytes of the frame */
             SgA32Monitor m = {.label = sgx_a32_label(g), .reg = (signed char)r[0], .bytes = (unsigned)i->imm};
             sgx_a32_jcc(g, b, 5, m.label); /* jne: armed */
             m.back = b->n;
@@ -141,22 +144,23 @@ static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r) {
             /* llvm.c's exclusive(): the reservation's address and size checked and the monitor cleared, then a
            compare-and-swap of the value the load-exclusive read: status 0 where it took, 1 otherwise */
             unsigned bytes = (unsigned)i->imm;
+            const int ad = SGX_A32_STREX_REGS(a->x)[0];
             size_t fail[3];
             sgx_a32_state(b, 0, 0x8B, 1, offsetof(SnxArmCPU, exclusive_valid)); /* mov ecx, [rbx + valid] */
             sgx_a32_state_imm(b, offsetof(SnxArmCPU, exclusive_valid), 0);
             sgx_bytes(b, "85 C9 0F 84"), fail[0] = b->n, sgx_imm(b, 0, 4);        /* test ecx, ecx; jz */
-            sgx_a32_state(b, 0, 0x3B, 6, offsetof(SnxArmCPU, exclusive_address)); /* cmp esi, [rbx + address] */
-            sgx_bytes(b, "0F 85"), fail[1] = b->n, sgx_imm(b, 0, 4);              /* jne */
-            sgx_a32_state(b, 0, 0x83, 7, offsetof(SnxArmCPU, exclusive_size));    /* cmp dword [rbx + size], bytes */
+            sgx_a32_state(b, 0, 0x3B, ad, offsetof(SnxArmCPU, exclusive_address)); /* cmp esi, [rbx + address] */
+            sgx_bytes(b, "0F 85"), fail[1] = b->n, sgx_imm(b, 0, 4);               /* jne */
+            sgx_a32_state(b, 0, 0x83, 7, offsetof(SnxArmCPU, exclusive_size));     /* cmp dword [rbx + size], bytes */
             sgx_byte(b, (unsigned char)bytes);
             sgx_bytes(b, "0F 85"), fail[2] = b->n, sgx_imm(b, 0, 4);            /* jne */
             sgx_a32_state(b, 1, 0x8B, 0, offsetof(SnxArmCPU, exclusive_value)); /* mov rax, [rbx + value] */
             /* lock cmpxchg [r10 + rsi], dl / dx / edx / rdx */
             sgx_byte(b, 0xF0);
             if (bytes == 2) sgx_byte(b, 0x66);
-            sgx_byte(b, (unsigned char)(0x41 | (bytes == 8 ? 8 : 0)));
+            sgx_byte(b, (unsigned char)(0x41 | (bytes == 8 ? 8 : 0) | (ad >> 3) << 1));
             sgx_bytes(b, bytes == 1 ? "0F B0" : "0F B1");
-            sgx_bytes(b, "14 32");
+            sgx_byte(b, 0x14), sgx_byte(b, (unsigned char)(0x02 | (ad & 7) << 3));
             sgx_bytes(b, "0F 95 C0 0F B6 C0 E9"); /* setne al; movzx eax, al; jmp done */
             size_t done = b->n;
             sgx_imm(b, 0, 4);
@@ -191,8 +195,9 @@ static inline void sgx_a32_stubs(SgCtx* g, SgXBuf* b) {
     for (int k = 0; k < g->nmonitors; ++k) {
         SgA32Monitor* m = &g->monitors[k];
         sgx_a32_bind(g, b, m->label);
-        sgx_bytes(b, "50"); /* push rax */
-        if (m->reg != 0) {  /* mov eax, reg */
+        const int win64 = SGX_WIN64(sgx(g));
+        sgx_bytes(b, win64 ? "48 89 44 24 20" : "50"); /* push rax; mov [rsp + 32], rax */
+        if (m->reg != 0) {                             /* mov eax, reg */
             if (m->reg >= 8) sgx_byte(b, 0x44);
             sgx_byte(b, 0x89);
             sgx_byte(b, (unsigned char)(0xC0 | (m->reg & 7) << 3));
@@ -205,7 +210,7 @@ static inline void sgx_a32_stubs(SgCtx* g, SgXBuf* b) {
         sgx_byte(b, 0);
         sgx_a32_state(b, 0, 0x8B, 0, offsetof(SnxArmCPU, exclusive_address)); /* mov eax, [rbx + address] */
         if (m->reg == 0)
-            sgx_bytes(b, "2B 04 24"); /* sub eax, [rsp]: the address, pushed */
+            sgx_bytes(b, win64 ? "2B 44 24 20" : "2B 04 24"); /* sub eax, [rsp]: the address, kept there */
         else {
             if (m->reg >= 8) sgx_byte(b, 0x44);
             sgx_byte(b, 0x29); /* sub eax, reg */
@@ -218,7 +223,7 @@ static inline void sgx_a32_stubs(SgCtx* g, SgXBuf* b) {
         sgx_a32_patch8(b, clear);
         sgx_a32_state_imm(b, offsetof(SnxArmCPU, exclusive_valid), 0);
         sgx_a32_patch8(b, keep);
-        sgx_bytes(b, "58 E9"); /* pop rax; jmp back */
+        sgx_bytes(b, win64 ? "48 8B 44 24 20 E9" : "58 E9"); /* pop rax; jmp back */
         sgx_imm(b, (long long)m->back - (long long)(b->n + 4), 4);
     }
     g->nexits = g->nmonitors = 0;

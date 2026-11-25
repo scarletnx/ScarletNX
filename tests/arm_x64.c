@@ -2,7 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* The x86-64 back end's A32 blocks (src/common/cpu/recompiler/x64/x64_arm.c), or built with SNX_TEST_ARM64 or
    SNX_TEST_RV64 the arm64 or riscv64 back end's (run under Unicorn: snx-test-arm-arm64, -rv64, without the hot paths'
-   witnesses and the chain), against the AArch32 block compiler's LLVM ones (snx_arm_llvm_block, which
+   witnesses and the chain), or with SNX_TEST_WIN64 the x86-64 one's for Windows (its calling convention, run by an
+   x86-64 host itself: support/host_win64.c), against the AArch32 block compiler's LLVM ones (snx_arm_llvm_block, which
    module_arm.c makes a 32-bit program's blocks with), at -O0: their IR as it is, which LLVM 22's -O2 makes otherwise in
    one case (VRSHL's witness, below): the same words consumed, and the same results from the same random states.
      snx-test-arm-x64 [--profile a57|a9|arm11|arm946e|arm7tdmi] [--memory flat|hosted|checked] [--trace] [--blocks N]
@@ -102,6 +103,15 @@ typedef SnxRv64Arm Back;
 #define back_(name) snx_rv64_arm_##name
 #define BACK_NAME   "riscv64"
 #define BACK_UC     HOSTUC_RV64
+#elif defined(SNX_TEST_WIN64)
+#define SNX_TEST_NATIVE 1
+#include "common/cpu/recompiler/x64/x64_arm.h"
+#include "common/cpu/recompiler/x64/x64_codegen.h"
+#include "support/host_unicorn.h"
+typedef SnxX64Arm Back;
+#define back_(name) snx_x64_arm_##name
+#define BACK_NAME   "x86-64 (Windows)"
+#define BACK_UC     HOSTUC_WIN64
 #else
 #include "common/cpu/recompiler/x64/x64_arm.h"
 #include "common/cpu/recompiler/x64/x64_elf.h"
@@ -123,6 +133,13 @@ typedef SnxX64Arm Back;
 #endif
 
 typedef uint64_t u64;
+
+/* each object goes into a loader of its own, so its names are only its own either way: COFF objects' are published */
+#if defined(_WIN32)
+#define load_object snx_code_load
+#else
+#define load_object snx_code_load_private
+#endif
 
 #define PC        0x1000u /* the blocks' address */
 #define MEM_SIZE  0x10000u
@@ -785,7 +802,7 @@ static int load(SnxCodeLoader* loader, unsigned char* object, size_t size, const
         index[n++] = i;
     }
     SnxLinkInput input = {.data = object, .size = size, .name = what};
-    int rc = snx_code_load_private(loader, &input, 1, names, n, got, error, sizeof error);
+    int rc = load_object(loader, &input, 1, names, n, got, error, sizeof error);
     if (rc) fprintf(stderr, "FAIL: the %s object: %s\n", what, error);
     for (size_t k = 0; !rc && k < n; ++k) addr[index[k]] = got[k];
     free(names);
@@ -1227,7 +1244,7 @@ static int run_endian_chain(Back* x64) {
     const char* names[1] = {name};
     SnxU64 addr = 0;
     RunState* s = (RunState*)malloc(sizeof *s);
-    if (!s || snx_code_load_private(loader, &input, 1, names, 1, &addr, error, sizeof error)) {
+    if (!s || load_object(loader, &input, 1, names, 1, &addr, error, sizeof error)) {
         fprintf(stderr, "FAIL: the MSR's chain's object: %s\n", error);
         free(s), free(object);
         snx_code_loader_free(loader);
@@ -1435,7 +1452,7 @@ static int run_vrshl_witness(Back* x64) {
     const char* names[1] = {name};
     SnxU64 addr = 0;
     RunState* s = (RunState*)malloc(sizeof *s);
-    if (!s || snx_code_load_private(loader, &input, 1, names, 1, &addr, error, sizeof error)) {
+    if (!s || load_object(loader, &input, 1, names, 1, &addr, error, sizeof error)) {
         fprintf(stderr, "FAIL: VRSHL's witness's object: %s\n", error);
         free(s), free(object);
         snx_code_loader_free(loader);
@@ -1665,7 +1682,7 @@ static int run_poll_chain(Back* x64, int thumb) {
     int64_t* offset = uc ? (int64_t*)hostuc_alloc(uc, sizeof *offset) : NULL;
     if (!t || !offset) goto done;
     *offset = (int64_t)offsetof(PollState, poll);
-    if (object[EI_DATA] != snx_elf_host_data()) *offset = (int64_t)snx_bswap64((uint64_t)*offset);
+    if (hostuc_big(BACK_UC)) *offset = (int64_t)snx_bswap64((uint64_t)*offset);
     hostuc_swapper(uc, swap_cpu, &t->cpu);
     if (hostuc_define(uc, "snx_arm_poll_offset", (uint64_t)(uintptr_t)offset) ||
         hostuc_load(uc, object, size, error, sizeof error) || !(addr = hostuc_symbol(uc, name)))
@@ -1689,7 +1706,7 @@ static int run_poll_chain(Back* x64, int thumb) {
     SnxLinkInput inputs[2] = {{.data = object, .size = size, .name = "poll"},
                               {.data = data_object, .size = data_size, .name = "data"}};
     if (!made || !t || !(loader = new_loader(error, sizeof error)) ||
-        snx_code_load_private(loader, inputs, 2, names, 1, &addr, error, sizeof error))
+        load_object(loader, inputs, 2, names, 1, &addr, error, sizeof error))
         goto done;
 #endif
     for (int set = 0; set < 2; ++set) {
@@ -1830,6 +1847,9 @@ int main(int argc, char** argv) {
         }
         hostuc_free(probe);
     }
+#if defined(SNX_TEST_WIN64)
+    snx_x64_set_win64(1);
+#endif
 #else
     if (!back_(available)()) {
         printf("SKIP: no " BACK_NAME " back end on this host\n");
@@ -1860,7 +1880,7 @@ int main(int argc, char** argv) {
     }
     int plain = g_test.options.profile == SNX_ARM_PROFILE_A57 && g_test.options.memory == SNX_ARM_MEMORY_FLAT;
 #if defined(SNX_TEST_NATIVE)
-    back_(limit)(x64, g_test.pool, ~0u);
+    back_(limit)(x64, g_test.pool, g_test.features | ~7u);
     size_t done = 0;
     for (int thumb = 0; thumb < 2; ++thumb)
         if (plain && !g_test.nonly && !g_test.nhalves && run_poll_chain(x64, thumb)) ++g_test.failures;

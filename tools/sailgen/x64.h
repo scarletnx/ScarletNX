@@ -153,6 +153,7 @@ static const signed char sgx_a32_strex[3] = {6, 2, 10};
 static const signed char sgx_a32_strex_win64[3] = {9, 2, 10};
 #define SGX_A32_ARG(x, n) (SGX_WIN64(x) ? sgx_arg_regs_win64[1 + (n)] : sgx_a32_args[n])
 #define SGX_A32_STREX_REGS(x) (SGX_WIN64(x) ? sgx_a32_strex_win64 : sgx_a32_strex)
+#define SGX_A32_BUS_MEM(x) (SGX_WIN64(x) ? 10 : sgx_a32_args[3]) /* the fourth argument's, the stack's on Windows */
 #define SGX_A32_STREX_CLOBBER (1u << 1) /* RCX, its compare's */
 #define SGX_CARRY 0
 #define SGX_DIV_ARM 0

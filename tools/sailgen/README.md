@@ -544,8 +544,8 @@ UNDEF must match (`sail_x64_spill` again with three host registers, `--pool 3`, 
 sequences of two to four of the words are made one block each and run beside their LLVM
 steps one after another (`--sequences N`), which is what holds the block's folds, dropped stores and reused flags. `--dump WORD` prints a word's code for a disassembler (`llvm-mc --disassemble -triple=x86_64`).
 
-The code for Windows is run by an x86-64 Linux host too (`sail_win64`, and over whole functions `recompiler_win64`):
-`tests/support/host_win64.c` enters it as Windows' C would, with RBX, RBP, RSI, RDI,
+The code for Windows is run by an x86-64 Linux host too (`sail_win64`, and over whole functions and AArch32 blocks
+`recompiler_win64` and `arm_win64`): `tests/support/host_win64.c` enters it as Windows' C would, with RBX, RBP, RSI, RDI,
 R12 to R15, XMM6 to XMM15, MXCSR and the stack past the shadow marked before and read back after, and what it calls goes
 through a Windows callee that overwrites the shadow and every register it may. Its COFF objects are loaded by the JIT's
 own loader (`code_loader_coff.c`), and their function table is held to what Windows does with it: at each call out, and
@@ -653,7 +653,8 @@ sailgen --generate a32.roots --backend bits.h --backend machdef.h --backend x64.
 The same roots as LLVM's AArch32 (`snx_sailgen_a32_x64` in `cmake/sdm.cmake`), for the block compiler
 `src/common/cpu/recompiler/x64/x64_arm.c`, which makes what `cpu/arm/llvm.c` and `llvm_thumb.inc` make of an A32 or
 Thumb block, for any profile and memory mode of its options (`cpu/arm/codegen.h`: "The profiles and the memory modes",
-below); a block with an instruction it doesn't make stays LLVM's. `x64_a32.h` keeps the state where `arm.h`'s SnxArmCPU
+below); a block with an instruction it doesn't make stays LLVM's. (On Windows its blocks save RBX alone too: the state
+comes in RCX.) `x64_a32.h` keeps the state where `arm.h`'s SnxArmCPU
 does (`r[16]`, `cpsr`), reads a register once a region and stores each write at once (the dead-store pass drops the
 overwritten ones), and keeps NZCV as the flags of the instruction that made them: the four condition codes are packed
 into one store of CPSR at the instruction's end, and a condition read before another instruction writes the flags is
@@ -697,8 +698,8 @@ A block's entry checks what `block_begin` does (exit and syndrome cleared, R15 i
 shared stub of the object; its end goes on to the block after it with a jump to that block's function where
 `nx/loader/module_arm.c` names it a successor (after the poll a backward one takes), past the entry's checks where
 nothing in the block can have changed them, and through them after an MSR that may set E. Each block is
-`void A_xxxxxxxx(SnxArmCPU*)` of one ELF object, global and hidden as LLVM's are, so the two back ends' blocks call
-each other; a block LLVM makes gets an entry here that stores R15 and jumps to it. `module_arm.c` makes every A32
+`void A_xxxxxxxx(SnxArmCPU*)` of one ELF object (a COFF one on Windows), global and hidden as LLVM's are, so the two back
+ends' blocks call each other; a block LLVM makes gets an entry here that stores R15 and jumps to it. `module_arm.c` makes every A32
 block it can this way as it discovers it, on all the build's threads, and leaves LLVM's units only the blocks the
 x86-64 back end refused; `nx/loader/module_x64.c` writes the module's descriptor without LLVM. The recompile prints
 `x86-64 back end: N of M AArch32 blocks` and why the others were left to LLVM.
@@ -712,7 +713,7 @@ with each of their failures, and an MSR of E is run into the next block. Thumb b
 way from random halfwords: 16-bit ones of every form, 32-bit ones of every family and one IT in four blocks, with the
 instructions of its block after it; their witnesses are the entry's checks (R15, T, ITSTATE, E, in their order) and
 TBB's and TBH's reads past memory. `arm_x64_spill` does it with three host
-registers, `arm_x64_plain` without BMI1, BMI2 and LZCNT. `--profile` and `--memory` run the other profiles and modes
+registers, `arm_x64_plain` without BMI1, BMI2 and LZCNT; `arm_win64` runs the same with the code a Windows host's. `--profile` and `--memory` run the other profiles and modes
 (`arm_x64_a9`, `arm_x64_arm7tdmi_trace`, `arm_x64_arm11_checked`, ... and the same on each other machine), against
 LLVM's blocks of the same options: their words are what the profile decodes, hosted memory and the hook's two run on a
 window of 4 GiB, and every call of the hook or the checked callback is logged with the state it saw.

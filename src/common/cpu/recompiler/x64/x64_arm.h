@@ -5,9 +5,10 @@
    processing and branches are sailgen's x86-64 emitters of the AArch32 Sail (a32_x64.inc, the same roots as LLVM's),
    the rest written over the same SSA; the block ends where llvm.c's does, and the code it goes on to it reaches by a
    jump of its own where that is a block the caller names (the chaining nx/loader/module_arm.c gives LLVM's blocks).
-   Each block is a function void name(SnxArmCPU*) of an ELF object, global and hidden as LLVM's blocks are, so the
-   two back ends' blocks call each other. A Thumb block is made the same way (snx_x64_arm_thumb_block, what
-   cpu/arm/llvm_thumb.inc makes of it). A block with an instruction it doesn't make is refused: LLVM makes it */
+   Each block is a function void name(SnxArmCPU*) of an ELF object (COFF on Windows, of its calling convention), global
+   and hidden as LLVM's blocks are, so the two back ends' blocks call each other. A Thumb block is made the same way
+   (snx_x64_arm_thumb_block, what cpu/arm/llvm_thumb.inc makes of it). A block with an instruction it doesn't make is
+   refused: LLVM makes it */
 #ifndef SNX_RECOMPILER_X64_ARM_H
 #define SNX_RECOMPILER_X64_ARM_H
 
@@ -22,7 +23,7 @@ typedef struct SnxX64Arm SnxX64Arm;
    (their functions must be in the link); any other block is reached by returning to the caller's loop */
 typedef size_t (*SnxX64ArmNext)(void* user, uint32_t key, size_t units, size_t count, uint32_t keys[2]);
 
-/* 1 where this host runs the code and loads its objects (x86-64, ELF) */
+/* 1 where this host runs the code (x86-64) */
 int snx_x64_arm_available(void);
 /* a compiler of its own for one thread (NULL out of memory, or where unavailable) */
 SnxX64Arm* snx_x64_arm_new(void);
@@ -42,7 +43,7 @@ int snx_x64_arm_thumb_block(SnxX64Arm* c, const char* name, const unsigned char*
                             size_t* consumed, SnxX64ArmNext next, void* user);
 /* what the last refused block had that this back end doesn't make */
 const char* snx_x64_arm_why(const SnxX64Arm* c);
-/* the ELF object of the blocks made since the last one, in their addresses' order (malloc'd), 0; -1 out of memory.
+/* the object of the blocks made since the last one, in their addresses' order (malloc'd), 0; -1 out of memory.
    Its count of blocks in *blocks where not NULL; the compiler starts a new object after */
 int snx_x64_arm_object(SnxX64Arm* c, unsigned char** object, size_t* size, size_t* blocks);
 /* the blocks another compiler (another thread's) made, taken into c's next object: 0; -1 out of memory */
