@@ -24,8 +24,9 @@
 #define NEEDS_AVX2    32768u
 #define NEEDS_GFNI    65536u
 #define NEEDS_SHA     8192u
-/* GF2P8AFFINEQB xmm, xmm/m128, imm8 (66 0F 3A CE) and its VEX.128 form (C4, two bytes, CE); SHA1RNDS4 (0F 3A CC)
-   below */
+#define NEEDS_AES     4096u
+/* GF2P8AFFINEQB xmm, xmm/m128, imm8 (66 0F 3A CE) and its VEX.128 form (C4, two bytes, CE); SHA1RNDS4 (0F 3A CC),
+   AESDECLAST (66 0F 38 DF) and AESDEC (66 0F 38 DE) below */
 #define GF2P8AFFINEQB "66 0F 3A CE|C4 ?? ?? CE"
 
 typedef struct {
@@ -33,7 +34,8 @@ typedef struct {
     unsigned needs, without; /* the host's features; those it goes without */
     unsigned bytes;          /* the most the function takes */
     int fpsr;                /* the writes of FPSR, -1 not counted */
-    const char* has;         /* bytes the code has (hex, ?? any), one form's encodings or another's (|), or NULL */
+    const char* has;         /* bytes the code has (hex, ?? any), one form's encodings or another's (|), or after a !
+                                bytes it has not; NULL for none */
     const char* words;       /* the function's words before its RET, in hex */
 } Row;
 
@@ -83,6 +85,8 @@ static const Row k_rows[] = {
     {"sha1h s0, s1", 0, 0, 224, -1, NULL, "5E280820"},
     {"sha1su0 v0.4s, v1.4s, v2.4s", 0, 0, 240, -1, NULL, "5E023020"},
     {"sha1su1 v0.4s, v1.4s", 0, 0, 234, -1, NULL, "5E281820"},
+    {"aese v0.16b, v1.16b; aesmc v0.16b, v0.16b", NEEDS_AES, 0, 224, -1, "!66 0F 38 DF", "4E284820 4E286800"},
+    {"aesd v0.16b, v1.16b; aesimc v0.16b, v0.16b", NEEDS_AES, 0, 224, -1, "66 0F 38 DE", "4E285820 4E287800"},
 };
 
 static struct {
@@ -168,8 +172,8 @@ static void check(const Row* row, int print) {
         if (length > row->bytes) fail("bytes of code", length, row->bytes);
         if (row->fpsr >= 0 && fpsr_writes(text, length) != row->fpsr)
             fail("writes of FPSR", (size_t)fpsr_writes(text, length), (size_t)row->fpsr);
-        if (row->has && !has_bytes(text, length, row->has)) {
-            fprintf(stderr, "FAIL: %s: no %s in its code\n", row->what, row->has);
+        if (row->has && has_bytes(text, length, row->has + (row->has[0] == '!')) == (row->has[0] == '!')) {
+            fprintf(stderr, "FAIL: %s: %s %s in its code\n", row->what, row->has[0] == '!' ? "has" : "no", row->has);
             ++g_x64_vec_code.failures;
         }
     }

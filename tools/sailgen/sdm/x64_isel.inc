@@ -7000,6 +7000,21 @@ static inline void sgx_e_VPSRAVD_xmm1_xmm2_xmm3_m128(SgXBuf* b, const unsigned c
 }
 
 static const SgXVForm sgx_v_vpsravd = {sgx_e_VPSRAVD_xmm1_xmm2_xmm3_m128, SGX_F_AVX2, 3, 0, 2, 1, 7, 0, NULL}; /* VEX.128.66.0F38.W0 46 /r */
+/* AESDEC xmm1, xmm2/m128: 66 0F 38 DE /r (the SDM's AESDEC) */
+static inline void sgx_e_AESDEC_xmm1_xmm2_m128(SgXBuf* b, const unsigned char* r, long long imm, int cc) {
+    (void)r, (void)imm, (void)cc;
+    sgx_byte(b, 0x66);
+    {
+        unsigned rex = 0x40 | (r[0] >> 3) << 2 | (r[1] & 15) >> 3 | sgx_rex_x(b, r[1]);
+        if (rex != 0x40) sgx_byte(b, (unsigned char)rex);
+    }
+    sgx_byte(b, 0x0F);
+    sgx_byte(b, 0x38);
+    sgx_byte(b, 0xDE);
+    sgx_modrm(b, r[0] & 7, r[1]);
+}
+
+static const SgXVForm sgx_v_aesdec = {sgx_e_AESDEC_xmm1_xmm2_m128, SGX_F_AES, 2, 0, 1, -1, 3, 0, NULL}; /* 66 0F 38 DE /r */
 /* SHA1RNDS4 xmm1, xmm2/m128, imm8: NP 0F 3A CC /r ib (the SDM's SHA1RNDS4) */
 static inline void sgx_e_SHA1RNDS4_xmm1_xmm2_m128_imm8(SgXBuf* b, const unsigned char* r, long long imm, int cc) {
     (void)r, (void)imm, (void)cc;
