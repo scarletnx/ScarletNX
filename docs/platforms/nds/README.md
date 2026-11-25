@@ -58,8 +58,8 @@ S X, A Y, Q L, E R, Enter Start and Backspace Select. A gamepad's buttons are wh
 the mouse's left button held on the lower screen is the pen, the first one until it lifts (`--touch=1` the fingers
 alone, `--touch=0` neither). The twelve keys are on the screen too
 ([On-screen controls](../../user/usage.md#on-screen-controls)): shown on a touch screen while no gamepad is connected,
-or as `--controls=` says, their layout edited with F2. F11 switches fullscreen, and Esc twice within 3 seconds closes
-the window.
+or as `--controls=` says, their layout edited with F2. F11 or Alt+Return switches fullscreen, and Esc twice within 3
+seconds closes the window: the runtime's keys, as a Switch game takes them.
 
 `scarletnx-nds` is also a menu entry of `scarletnx-gui` ("Load NDS ROM"), and an image in a games folder shows in
 Games.

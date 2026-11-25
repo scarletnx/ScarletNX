@@ -28,20 +28,31 @@ void snx_vpad_sdl_auto(int finger_seen);
 SDL_Haptic* snx_vpad_sdl_buzzer(void);
 void snx_vpad_sdl_buzz(SDL_Haptic* buzzer);
 
+/* the runtime's keys (hotkeys.h: hotkey_quit...) among the settings vpad_arg and vpad_settings take: before the first
+   vpad_arg */
+void snx_vpad_sdl_settings(void);
 /* window's controls, their layout kept in [On-screen controls] of the game's .ini at ini as it is edited, what they say
-   on say. After vpad_console and vpad_settings */
-void snx_vpad_window_open(SDL_Window* window, const char* ini, void (*say)(const char* line));
+   on say (the log), and what the runtime's keys say on show too (a line over the picture). After vpad_console and
+   vpad_settings */
+void snx_vpad_window_open(SDL_Window* window, const char* ini, void (*say)(const char* line),
+                          void (*show)(const char* line));
 void snx_vpad_window_close(void);
 /* window's clear part (its safe area, whole when fullscreen) in its pixels: x, y, w, h */
 void snx_vpad_window_safe(int safe[4]);
 /* where a finger's event, or the mouse's motion or button, is in the window's pixels: false for the mouse's that SDL made
    of a finger, and where the window has no size */
 bool snx_vpad_window_point(const SDL_Event* e, float* x, float* y);
-/* an event of the window's: PASS for one that is not the controls', TAKEN for one that is (the game gets none of it),
-   QUIT for the key that quits. Android's Back edits the layout, as F2 does, and a second one within quit_key.h's
-   time quits, which the first says over the picture; later, or with Esc or F2, it ends the editing */
-typedef enum { SNX_VPAD_PASS, SNX_VPAD_TAKEN, SNX_VPAD_QUIT } SnxVpadEvent;
-SnxVpadEvent snx_vpad_window_event(const SDL_Event* e);
+/* an event of the window's: PASS for one that is not the controls' nor a runtime's key, TAKEN for one that is (the game
+   gets none of it), QUIT for the quit key's second press within quit_key.h's time (hotkey_quit, Esc), whose first says
+   so on say and show, ACTION for another runtime's key, its HOTKEY_ in *action, for the console to do or say it has
+   none of (snx_vpad_window_none). The two fullscreen keys switch the window; the menu's key (F2) edits the layout, and
+   so does Android's Back, a second one within that time quitting, which the first says over the picture; later, or
+   with Esc or the menu's key, it ends the editing */
+typedef enum { SNX_VPAD_PASS, SNX_VPAD_TAKEN, SNX_VPAD_QUIT, SNX_VPAD_ACTION } SnxVpadEvent;
+SnxVpadEvent snx_vpad_window_event(const SDL_Event* e, int* action);
+/* the runtime's key action said on say and show to do nothing in this window, with why: "F3 (Screenshot) does nothing
+   in a GBA game: why" */
+void snx_vpad_window_none(int action, const char* why);
 /* vpad_state, with the buzz they ask for: nothing held while their layout is edited */
 void snx_vpad_window_state(u64* buttons, i32 sticks[4]);
 /* their rectangles over a picture w by h pixels, the window's: NULL while there are none to draw */

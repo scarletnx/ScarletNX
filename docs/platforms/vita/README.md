@@ -103,7 +103,8 @@ for fingers and the mouse's left button: shown on a touch screen while no gamepa
 says, their layout edited with F2. A finger or that button off them touches the front panel where it is on the picture,
 six at most (`--touch=1` the fingers alone, `--touch=0` neither), and the mouse's right button the rear panel, which no
 finger touches. Esc twice within 3 seconds ends the game, a first press warning on the terminal and in a line over the
-game, as a Switch game's notices show.
+game, as a Switch game's notices show, and F11 or Alt+Return switches fullscreen: the runtime's keys, as a Switch game
+takes them ([On-screen controls](../../user/usage.md#on-screen-controls)).
 
 The driver's settings (`--key=value`) are the `g_vita_debug_ini` table of `src/nx/runtime/settings.txt`: `vita_hle_trace` prints each import call,
 `vita_jit_trace` each block compiled at run time, `vita_gxm_trace` each scene and draw (and why a draw was

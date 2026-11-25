@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "common/utilities/vpad_sdl.h"
 #include "common/utilities/game_ini.h"
+#include "common/utilities/hotkeys.h"
 #include "common/utilities/notice.h"
 #include "common/utilities/quit_key.h"
 #include "common/utilities/ui_colors.h"
@@ -14,6 +15,7 @@ static struct {
     SDL_Window* window;
     char* ini;
     void (*say)(const char* line);
+    void (*show)(const char* line);
     SDL_Haptic* buzzer;
     int finger_seen;
     uint64_t quit_by; /* a second Back before this quits (quit_key.h), the first one's line shown until then */
@@ -80,10 +82,13 @@ void snx_vpad_sdl_buzz(SDL_Haptic* buzzer) {
 static void store(const char* key, const char* value) {
     if (g_vpad_sdl.ini) (void)snx_ini_record_in(g_vpad_sdl.ini, SNX_VPAD_PAGE, key, value);
 }
-void snx_vpad_window_open(SDL_Window* window, const char* ini, void (*say)(const char* line)) {
+void snx_vpad_sdl_settings(void) { vpad_settings_also(hotkey_setting); }
+void snx_vpad_window_open(SDL_Window* window, const char* ini, void (*say)(const char* line),
+                          void (*show)(const char* line)) {
     g_vpad_sdl.window = window;
     g_vpad_sdl.ini = ini ? snx_strdup(ini) : NULL;
     g_vpad_sdl.say = say;
+    g_vpad_sdl.show = show;
     vpad_set_say(say);
     vpad_set_store(store);
     snx_vpad_sdl_auto(0);
@@ -112,11 +117,44 @@ void snx_vpad_window_safe(int safe[4]) {
         safe[2] = pw, safe[3] = ph;
     }
 }
-/* F2, the Switch's menu's key, and Android's Back: their layout edited or no more */
-static SnxVpadEvent key_event(const SDL_KeyboardEvent* k) {
-    if (k->repeat || (k->mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI))) return SNX_VPAD_PASS;
+/* line on say and show */
+static void tell(const char* line) {
+    if (g_vpad_sdl.say) g_vpad_sdl.say(line);
+    if (g_vpad_sdl.show) g_vpad_sdl.show(line);
+}
+void snx_vpad_window_none(int action, const char* why) {
+    const IniOpt* o = hotkey_row(action);
+    const char* name = o && o->name ? o->name : "";
+    size_t n = strlen(name) > 9 && !strcmp(name + strlen(name) - 9, " shortcut") ? strlen(name) - 9 : strlen(name);
+    char line[256];
+    snprintf(line, sizeof line, "%s (%.*s) does nothing in a %s game: %s", hotkey_text(action), (int)n, name,
+             vpad_console_name(), why);
+    tell(line);
+}
+/* the runtime's keys: the quit key's, the fullscreen keys', the menu's, which edits their layout as Android's Back
+   does, and the others' for the console */
+static SnxVpadEvent key_event(const SDL_KeyboardEvent* k, int* action) {
+    if (k->repeat) return SNX_VPAD_PASS;
     bool back = k->key == SDLK_AC_BACK;
-    if (!back && k->key != SDLK_F2 && !(k->key == SDLK_ESCAPE && vpad_editing())) return SNX_VPAD_PASS;
+    int also, a = back ? HOTKEY_MENU : hotkey_find(k->key, hotkey_mods(k->mod), &also);
+    if (vpad_editing() && k->key == SDLK_ESCAPE && !(k->mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI)))
+        a = HOTKEY_MENU; /* Esc ends the editing, as Done does */
+    if (a == HOTKEY_QUIT) {
+        char line[64];
+        if (hotkey_quit_press(SDL_GetTicksNS())) return SNX_VPAD_QUIT;
+        snx_quit_warning(line, sizeof line, hotkey_text(HOTKEY_QUIT));
+        tell(line);
+        return SNX_VPAD_TAKEN;
+    }
+    if (a == HOTKEY_FULLSCREEN || a == HOTKEY_FULLSCREEN_2) {
+        SDL_SetWindowFullscreen(g_vpad_sdl.window, !(SDL_GetWindowFlags(g_vpad_sdl.window) & SDL_WINDOW_FULLSCREEN));
+        return SNX_VPAD_TAKEN;
+    }
+    if (a >= 0 && a != HOTKEY_MENU) {
+        *action = a;
+        return SNX_VPAD_ACTION;
+    }
+    if (a < 0) return SNX_VPAD_PASS;
     if (back && SDL_GetTicksNS() < g_vpad_sdl.quit_by) return SNX_VPAD_QUIT;
     g_vpad_sdl.quit_by = 0;
     vpad_edit(!vpad_editing());
@@ -150,11 +188,12 @@ bool snx_vpad_window_point(const SDL_Event* e, float* x, float* y) {
         default: return false;
     }
 }
-SnxVpadEvent snx_vpad_window_event(const SDL_Event* e) {
+SnxVpadEvent snx_vpad_window_event(const SDL_Event* e, int* action) {
     int safe[4];
     float x, y;
+    *action = -1;
     switch (e->type) {
-        case SDL_EVENT_KEY_DOWN: return key_event(&e->key);
+        case SDL_EVENT_KEY_DOWN: return key_event(&e->key, action);
         case SDL_EVENT_GAMEPAD_ADDED:
         case SDL_EVENT_GAMEPAD_REMOVED: snx_vpad_sdl_auto(g_vpad_sdl.finger_seen); return SNX_VPAD_PASS;
         case SDL_EVENT_WINDOW_FOCUS_LOST: vpad_release(); return SNX_VPAD_PASS;

@@ -3,6 +3,7 @@
 /* The Vita window's Esc (gpu/present.c), as SDL sends it: a first press only warns, over the game too, and a second
    ends the game at the vblank that reads it; held with Ctrl, Alt or the system key it is no press, nor is a key's
    repeat. A vblank with no framebuffer draws nothing, so no device or window is opened */
+#include "common/utilities/vpad_sdl.h"
 #include "vita/gpu/present.h"
 #include "vita/gpu/vk.h"
 #include <SDL3/SDL.h>
@@ -35,11 +36,12 @@ static bool esc(SDL_Keymod mod, bool repeat) {
 
 int main(void) {
     CHECK(SDL_Init(SDL_INIT_EVENTS));
+    snx_vpad_window_open(NULL, NULL, vita_present_say, vita_vk_notice); /* the runtime's keys, as vita_present_init */
     CHECK(vita_present_vblank(&g_process) && !strcmp(vita_vk_notice_text(), ""));
     CHECK(esc(SDL_KMOD_LCTRL, false) && esc(SDL_KMOD_LALT, false) && esc(SDL_KMOD_LGUI, false));
     CHECK(!strcmp(vita_vk_notice_text(), "")); /* no press, no notice */
     CHECK(esc(SDL_KMOD_NONE, false)); /* the first: a warning */
-    CHECK(!strcmp(vita_vk_notice_text(), "Press Esc again within 3 seconds to quit"));
+    CHECK(!strcmp(vita_vk_notice_text(), "Press Escape again within 3 seconds to quit"));
     CHECK(esc(SDL_KMOD_NONE, true) && esc(SDL_KMOD_LCTRL, false));
     CHECK(!esc(SDL_KMOD_NONE, false)); /* the second */
     SDL_Quit();

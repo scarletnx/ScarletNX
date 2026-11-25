@@ -17,6 +17,7 @@
 #include "common/utilities/game_ini.h"
 #include "common/utilities/script.h"
 #include "common/utilities/vpad_consoles.h"
+#include "common/utilities/vpad_sdl.h"
 #include "snx_settings.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -186,6 +187,7 @@ int snx_agb_main(int argc, char** argv) {
     int lcd = 1; /* --gba-color: the original GBA's screen colours, raw the game's (settings.txt's gba_color) */
     SnxCli cli;
     vpad_console(&snx_vpad_gba);
+    snx_vpad_sdl_settings();
     snx_cli_init(&cli, "scarletnx-agb", agb_cli);
     for (int i = 1; i < argc; ++i) {
         char error[256];

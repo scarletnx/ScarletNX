@@ -143,6 +143,7 @@ void vpad_console(const SnxVpadConsole* console) {
     g_moved = 0;
     placed();
 }
+const char* vpad_console_name(void) { return g_console ? g_console->name : "Switch"; }
 const char* vpad_name(int control) {
     return control >= 0 && control < SNX_VPAD_COUNT && has(control) ? name_of(control) : "?";
 }
@@ -279,10 +280,13 @@ void vpad_store_shown(int control) {
 }
 
 /* ---- the settings as every console but the Switch reads them (its options.c has its own) ---- */
+static const IniOpt* (*g_also)(const char* key);
+void vpad_settings_also(const IniOpt* (*find)(const char* key)) { g_also = find; }
 static const IniOpt* setting(const char* key) {
     const IniOpt* o = ini_find(g_vpad_ini, key);
     if (!o) o = ini_find(g_vpad_shown_ini, key);
-    return o ? o : ini_find(g_backend_ini, key);
+    if (!o) o = ini_find(g_backend_ini, key);
+    return o || !g_also ? o : g_also(key);
 }
 /* one of them read, or said to do nothing where the console has none of what it sets */
 static void setting_read(const IniOpt* o, const char* value) {

@@ -20,6 +20,7 @@
 #include "common/utilities/game_ini.h"
 #include "common/utilities/script.h"
 #include "common/utilities/vpad_consoles.h"
+#include "common/utilities/vpad_sdl.h"
 #include "common/online/wfc.h"
 #include "snx_settings.h"
 #include <inttypes.h>
@@ -240,6 +241,7 @@ int snx_nds_main(int argc, char** argv) {
     const char* dump_ram = NULL; /* main memory written there when the run ends, for a look at what the game holds */
     SnxCli cli;
     vpad_console(&snx_vpad_nds);
+    snx_vpad_sdl_settings();
     snx_cli_init(&cli, "scarletnx-nds", nds_cli);
     for (int i = 1; i < argc; ++i) {
         char error[256];

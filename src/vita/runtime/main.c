@@ -19,6 +19,7 @@
 #include "common/utilities/game_ini.h"
 #include "common/utilities/ini_lines.h"
 #include "common/utilities/vpad_consoles.h"
+#include "common/utilities/vpad_sdl.h"
 #include "snx_settings.h"
 #include <ctype.h>
 #include <stdio.h>
@@ -339,6 +340,7 @@ int snx_vita_main(int argc, char** argv) {
     int old_lockstep = g_settings.vita_lockstep, old_lockstep_steps = g_settings.vita_lockstep_steps;
     SnxCli cli;
     vpad_console(&snx_vpad_vita);
+    snx_vpad_sdl_settings();
     snx_cli_init(&cli, "scarletnx-vita", vita_cli);
     for (int i = 1; i < argc; ++i) {
         const char* a = argv[i];

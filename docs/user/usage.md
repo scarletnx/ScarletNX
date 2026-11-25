@@ -1011,6 +1011,12 @@ and the others of the game's own Settings (M on it in Games) or the launcher's, 
 controls]`, where a moved control's place is kept) or on the command line (`--controls=0`). A key the console has nothing
 for changes nothing, and the run says it with its value: `touch=1` for a GBA game, `controls_zl_shown=0` for any of the
 three, `controls_rel_center=0` for a GBA or a DS game.
+
+Their windows take the runtime's keys too, the Shortcuts' settings of a Switch game (`hotkey_quit`, `hotkey_fullscreen`
+and the others, in the game's `.ini`, its own picks or on the command line, as `--hotkey-quit=Q`): Esc twice within 3
+seconds closes the game, F11 or Alt+Return switches fullscreen, F2 edits the layout. A key the console has nothing for
+says so over the picture with why: `Ctrl+D (TV mode) does nothing in a GBA game: the TV mode is the Switch's console
+docked`.
 Beside the executable: `Game.log`, `threads.txt` (15 s refresh), `captures/` (screenshots); an installed copy on Linux
 keeps the first two in its state folder ([Folders](#folders)). `Game.log` is this run's: the 4 runs before keep theirs
 in `logs/` beside it, named by when each was last written (`2026-10-28_14-05-33.log`). Past `log_max` (MiB, 1 to
