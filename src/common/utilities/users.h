@@ -14,6 +14,7 @@
    mii. What was read where it was not taken is in snx_users_notes */
 #ifndef SNX_COMMON_USERS_H
 #define SNX_COMMON_USERS_H
+#include "common/utilities/config_file.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -38,9 +39,11 @@ extern int g_user_count;
 
 /* the room password of online.ini in dir ("" without the file): 0, or -1 with why. The file holds a secret, so one
    other users of this machine may read is refused; a section, another key that starts with room_ or a value longer than
-   size - 1 bytes is too. A key of another version or program is none of this one's: why names them then with 0, for the
-   log, never their values ("" without one) */
-int snx_users_room_password(const char* dir, char* password, size_t size, char* why, size_t why_size);
+   size - 1 bytes is too. A key of another version or program, a line with no = and room_password given twice go in
+   others (NULL for none), which a caller that names them says with SNX_USERS_ONLINE (config_file.h), never a value */
+#define SNX_USERS_ONLINE "users/online.ini"
+int snx_users_room_password(const char* dir, char* password, size_t size, SnxConfigOthers* others, char* why,
+                            size_t why_size);
 /* the room password of online.ini in dir set to password, or taken off with "", the file made readable by its owner
    alone and its other lines byte for byte as they were (with none of them left, "" takes the file away): 0, or -1 with
    why and the file as it was. Text it would not read back is refused, and a file the reading refuses, or that is no

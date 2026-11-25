@@ -70,16 +70,18 @@ void snx_ctr_uds_settings(const char* data) {
     free(settings);
     free(config);
     char* users = snx_users_dir(data);
-    char why[512];
+    char why[512], said[1024];
+    SnxConfigOthers others;
     if (users && !snx_users_choose(users, uid, uid[0] ? NULL : old, &was, why, sizeof why)) {
         const SnxUser* user = snx_users_selected();
         if (user) snprintf(g_uds.nickname, sizeof g_uds.nickname, "%.20s", user->nickname);
     }
-    if (users && snx_users_room_password(users, g_uds.password, sizeof g_uds.password, why, sizeof why)) {
+    if (users && snx_users_room_password(users, g_uds.password, sizeof g_uds.password, &others, why, sizeof why)) {
         snx_error("3ds uds: the Eden room's password: %s: this run joins with none", why);
         g_uds.password[0] = 0;
-    } else if (users && why[0] && !strcmp(g_settings.local_wireless, "room"))
-        snx_error("3ds uds: %s", why);
+    } else if (users && !strcmp(g_settings.local_wireless, "room") &&
+               snx_config_others_said(&others, SNX_USERS_ONLINE, said, sizeof said))
+        snx_error("3ds uds: %s", said);
     free(users);
 }
 enum { MSG_BEACON = 1, MSG_JOIN, MSG_SYNC, MSG_DATA, MSG_LEAVE, MSG_CLOSE, MSG_PING, MSG_PONG };

@@ -31,9 +31,13 @@ static int users_save(const char* dir) {
 
 /* ---- users/online.ini ---- */
 static int online_load(const char* dir, char* state, size_t size) {
-    char *users = snx_path_join(dir, "users"), password[256], why[1024];
-    int rc = snx_users_room_password(users, password, sizeof password, why, sizeof why);
-    if (why[0]) config_say("%s", why);
+    char *users = snx_path_join(dir, "users"), password[256], why[1024], said[1024];
+    SnxConfigOthers others;
+    int rc = snx_users_room_password(users, password, sizeof password, &others, why, sizeof why);
+    if (rc)
+        config_say("%s", why);
+    else if (snx_config_others_said(&others, SNX_USERS_ONLINE, said, sizeof said))
+        config_say("%s", said);
     snprintf(state, size, "%s", rc ? "" : password[0] ? "a password" : "none"); /* never the secret itself */
     free(users);
     return rc != 0;

@@ -104,11 +104,11 @@ static void password_written(void) {
     mode_t was = umask(0);
 #endif
     CHECK(snx_users_room_password_set(DIR, "s3cret = pass; #1", why, sizeof why) == 0 && online_mode() == 0600);
-    CHECK(snx_users_room_password(DIR, password, sizeof password, why, sizeof why) == 0 &&
+    CHECK(snx_users_room_password(DIR, password, sizeof password, NULL, why, sizeof why) == 0 &&
           !strcmp(password, "s3cret = pass; #1"));
     put("room_password=old\n", 0644);
     CHECK(snx_users_room_password_set(DIR, "new", why, sizeof why) == 0 && online_mode() == 0600);
-    CHECK(!snx_users_room_password(DIR, password, sizeof password, why, sizeof why) && !strcmp(password, "new"));
+    CHECK(!snx_users_room_password(DIR, password, sizeof password, NULL, why, sizeof why) && !strcmp(password, "new"));
 #ifndef _WIN32
     umask(was);
 #endif
@@ -124,12 +124,12 @@ static void password_written(void) {
           strstr(why, "at most 255 bytes, not 256"));
     long_one[255] = 0;
     CHECK(snx_users_room_password_set(DIR, long_one, why, sizeof why) == 0);
-    CHECK(!snx_users_room_password(DIR, password, sizeof password, why, sizeof why) && strlen(password) == 255);
+    CHECK(!snx_users_room_password(DIR, password, sizeof password, NULL, why, sizeof why) && strlen(password) == 255);
     CHECK(snx_users_room_password_set(DIR, "new", why, sizeof why) == 0);
     /* none: the file away, twice the same */
     CHECK(snx_users_room_password_set(DIR, "", why, sizeof why) == 0 && !snx_is_file(DIR "/online.ini"));
     CHECK(snx_users_room_password_set(DIR, "", why, sizeof why) == 0);
-    CHECK(!snx_users_room_password(DIR, password, sizeof password, why, sizeof why) && !password[0]);
+    CHECK(!snx_users_room_password(DIR, password, sizeof password, NULL, why, sizeof why) && !password[0]);
     /* a section, or a mistake of the key: refused, as it was, what it has named */
     put("[room]\nroom_password=s3cret\n", 0600);
     CHECK(set_refused("new", "has [room]"));
@@ -160,38 +160,47 @@ static int file_is(const char* want) {
 /* a key of another version or program in online.ini (a sign-in's, whose value is a secret): the password is read past
    it, the key named and never its value; the password set, changed and taken off leaves every other line byte for byte */
 static void others_kept(void) {
-    static const char said[] = "users/online.ini: this version reads room_password (%s) and no other key: ";
     static const char nul[] = "a=1\0room_password=x\n";
     static const char before[] = "# another's\r\nsign_in = FAKE-TOKEN\r\n\r\nuser_name=x";
-    char password[256], why[512], want[512];
+    char password[256], why[512], want[512], said[1024];
+    SnxConfigOthers others;
     snx_remove_tree(DIR);
     CHECK(snx_mkdirs(DIR) == 0);
+    snx_config_forget();
     put("sign_in=FAKE-TOKEN\nroom_password=s3cret\nuser_name=x\n", 0600);
-    strcpy(why, "x");
-    CHECK(snx_users_room_password(DIR, password, sizeof password, why, sizeof why) == 0 && !strcmp(password, "s3cret"));
-    snprintf(want, sizeof want, said, "set");
-    strcat(want, "sign_in, user_name");
-    if (strcmp(why, want)) fprintf(stderr, "room_service: said \"%s\", not \"%s\"\n", why, want);
-    CHECK(!strcmp(why, want) && !strstr(why, "FAKE"));
-    put("sign_in=FAKE-TOKEN\n", 0600);
-    CHECK(snx_users_room_password(DIR, password, sizeof password, why, sizeof why) == 0 && !password[0]);
-    snprintf(want, sizeof want, said, "none");
-    strcat(want, "sign_in");
-    CHECK(!strcmp(why, want));
+    CHECK(snx_users_room_password(DIR, password, sizeof password, &others, why, sizeof why) == 0 &&
+          !strcmp(password, "s3cret") && snx_config_others_said(&others, SNX_USERS_ONLINE, said, sizeof said));
+    snprintf(want, sizeof want, "%s",
+             "users/online.ini: this version does not read sign_in, user_name, which stay as "
+             "they are");
+    if (strcmp(said, want)) fprintf(stderr, "room_service: said \"%s\", not \"%s\"\n", said, want);
+    CHECK(!strcmp(said, want) && !strstr(said, "FAKE"));
+    /* once a run: a second reading names them no more */
+    CHECK(snx_users_room_password(DIR, password, sizeof password, &others, why, sizeof why) == 0 &&
+          !snx_config_others_said(&others, SNX_USERS_ONLINE, said, sizeof said) && !said[0]);
     /* nothing to say: nothing said */
+    snx_config_forget();
     put("room_password=s3cret\n", 0600);
-    strcpy(why, "x");
-    CHECK(snx_users_room_password(DIR, password, sizeof password, why, sizeof why) == 0 && !why[0]);
-    /* what is no key's name could be a secret's text: its line. Past eight, how many */
-    put("FAKEtoken==\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa=1\nk1=1\nk2=1\nk3=1\nk4=1\nk5=1\nk6=1\nk7=1\nk8=1\n", 0600);
-    CHECK(snx_users_room_password(DIR, password, sizeof password, why, sizeof why) == 0);
-    CHECK(strstr(why, ": line 1, line 2, k1, k2, k3, k4, k5, k6 and 2 more") && !strstr(why, "FAKE"));
+    CHECK(snx_users_room_password(DIR, password, sizeof password, &others, why, sizeof why) == 0 &&
+          !snx_config_others_said(&others, SNX_USERS_ONLINE, said, sizeof said));
+    /* what is no key's name could be a secret's text: its line. Past eight, how many; a line with no = and the
+       password twice by their lines alone */
+    put("FAKEtoken==\naaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa=1\nk1=1\nk2=1\nk3=1\nk4=1\nk5=1\nk6=1\nk7=1\nk8=1\n"
+        "FAKE-TOKEN\nroom_password=FAKE1\nroom_password=FAKE2\n",
+        0600);
+    CHECK(snx_users_room_password(DIR, password, sizeof password, &others, why, sizeof why) == 0 &&
+          snx_config_others_said(&others, SNX_USERS_ONLINE, said, sizeof said));
+    CHECK(strstr(said, ": this version does not read line 1, line 2, k1, k2, k3, k4, k5, k6 and 2 more") &&
+          strstr(said, "line 11 has no = and sets nothing") &&
+          strstr(said, "room_password is given twice, on lines 12 and 13: the last line's is taken") &&
+          !strstr(said, "FAKE"));
     /* set after the other lines, then in its place; taken off, the others alone; the file its owner's alone */
     put_bytes(before, strlen(before), 0644);
     CHECK(snx_users_room_password_set(DIR, "new", why, sizeof why) == 0 && online_mode() == 0600);
     snprintf(want, sizeof want, "%s\n" COMMENT "room_password=new\n", before);
     CHECK(file_is(want) && !snx_is_file(DIR "/online.ini.new"));
-    CHECK(snx_users_room_password(DIR, password, sizeof password, why, sizeof why) == 0 && !strcmp(password, "new"));
+    CHECK(snx_users_room_password(DIR, password, sizeof password, NULL, why, sizeof why) == 0 &&
+          !strcmp(password, "new"));
     CHECK(snx_users_room_password_set(DIR, "newer", why, sizeof why) == 0);
     snprintf(want, sizeof want, "%s\n" COMMENT "room_password=newer\n", before);
     CHECK(file_is(want));
@@ -219,19 +228,20 @@ static void passwords(void) {
     CHECK(snx_mkdirs(DIR) == 0);
     /* no file: no password */
     strcpy(password, "x");
-    CHECK(snx_users_room_password(DIR, password, sizeof password, why, sizeof why) == 0 && !password[0]);
+    CHECK(snx_users_room_password(DIR, password, sizeof password, NULL, why, sizeof why) == 0 && !password[0]);
     put("; the rooms\nroom_password=s3cret pass\n", 0600);
-    CHECK(snx_users_room_password(DIR, password, sizeof password, why, sizeof why) == 0 &&
+    CHECK(snx_users_room_password(DIR, password, sizeof password, NULL, why, sizeof why) == 0 &&
           !strcmp(password, "s3cret pass"));
 #ifndef _WIN32
     put("room_password=s3cret\n", 0644); /* others may read it */
-    CHECK(snx_users_room_password(DIR, password, sizeof password, why, sizeof why) == -1 && strstr(why, "chmod 600"));
+    CHECK(snx_users_room_password(DIR, password, sizeof password, NULL, why, sizeof why) == -1 &&
+          strstr(why, "chmod 600"));
 #endif
     put("room_pasword=s3cret\n", 0600);
-    CHECK(snx_users_room_password(DIR, password, sizeof password, why, sizeof why) == -1);
+    CHECK(snx_users_room_password(DIR, password, sizeof password, NULL, why, sizeof why) == -1);
     CHECK(strstr(why, "room_pasword is not a setting: room_password"));
     put("[room]\nroom_password=s3cret\n", 0600);
-    CHECK(snx_users_room_password(DIR, password, sizeof password, why, sizeof why) == -1 &&
+    CHECK(snx_users_room_password(DIR, password, sizeof password, NULL, why, sizeof why) == -1 &&
           strstr(why, "[room] is not a section"));
     {
         char text[300];
@@ -240,7 +250,8 @@ static void passwords(void) {
         text[sizeof text - 2] = '\n';
         text[sizeof text - 1] = 0;
         put(text, 0600);
-        CHECK(snx_users_room_password(DIR, password, 16, why, sizeof why) == -1 && strstr(why, "longer than 15 bytes"));
+        CHECK(snx_users_room_password(DIR, password, 16, NULL, why, sizeof why) == -1 &&
+              strstr(why, "longer than 15 bytes"));
     }
     snx_remove_tree(DIR);
 }
@@ -296,8 +307,7 @@ static void refused(void) {
     }
     CHECK(strstr(g_stop, "as user 1: the room's password is another") && network_room() == NULL);
     if (!strstr(g_logged, "sign_in")) fprintf(stderr, "room_service: logged: %s\n", g_logged);
-    CHECK(!strcmp(g_logged, "room: users/online.ini: this version reads room_password (none) and no other key: "
-                            "sign_in\n"));
+    CHECK(!strcmp(g_logged, "room: users/online.ini: this version does not read sign_in, which stays as it is\n"));
     if (strstr(g_stop, "Wanda")) fprintf(stderr, "room_service: the nickname in the stop: %s\n", g_stop);
     CHECK(!strstr(g_stop, "Wanda"));
     g_opt_ldn = SNX_OPT_LDN_LAN;

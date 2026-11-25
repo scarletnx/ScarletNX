@@ -556,8 +556,8 @@ static void password_other_key(void) {
         snprintf(g_settings.local_wireless, sizeof g_settings.local_wireless, "%s", room ? "room" : "lan");
         g_said[0] = 0;
         snx_ctr_uds_settings(app);
-        assert(!strcmp(g_said, room ? "3ds uds: users/online.ini: this version reads room_password (set) and no other "
-                                      "key: sign_in\n"
+        assert(!strcmp(g_said, room ? "3ds uds: users/online.ini: this version does not read sign_in, which stays as "
+                                      "it is\n"
                                     : ""));
     }
     snx_error_sink(NULL);
