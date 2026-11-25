@@ -134,7 +134,19 @@ static void land(const OwnRange* r, u8* const* dst, u32 n, int by) {
     }
     atomic_fetch_add_explicit(&g_lands, 1, memory_order_relaxed);
 }
-static void retain(void* res) { atomic_fetch_add_explicit(&((Res*)res)->refs, 1, memory_order_relaxed); }
+/* test_move_scan's: a scan of [at, at + size) by each retain, the pages it reports a bit each */
+static struct {
+    u64 at, size, pages;
+    int failed;
+} g_move;
+static void on_move_scan(u8* p, u64 size) {
+    for (u64 a = (u64)(p - g_mem), e = a + size; a < e; a += 0x1000)
+        if (a >= g_move.at && a < g_move.at + g_move.size) g_move.pages |= 1ull << ((a - g_move.at) >> 12);
+}
+static void retain(void* res) {
+    atomic_fetch_add_explicit(&((Res*)res)->refs, 1, memory_order_relaxed);
+    if (g_move.size && plat_ww_scan(GP(g_move.at), g_move.size, on_move_scan)) g_move.failed = 1;
+}
 static u64 g_release_touch; /* a guest address the release reads, 0 for none: test_release_order's */
 static int g_release_read;
 static void release(void* res) {
@@ -1091,6 +1103,37 @@ static void test_let_go_watched(void) {
     res_free(r);
 }
 
+/* A scan between an owner's move into the pool and its trap, as the renderer's write scanner makes on a thread of its
+   own (here the retain hook's, which own_begin calls between the two): the move wrote nothing, so the scan reports the
+   page the CPU wrote before it, which no scan had reported yet, and no other. The mapping the move makes read as
+   written whole, and the renderer marked those pages written by the CPU after the owner's result was published: a
+   storage image stored there again kept memory's bytes on them, a frame old */
+static void test_move_scan(void) {
+    u64 a = region(R0 + 0x900000, 0x10000);
+    Res* r = res_new(0x7000, 0x40);
+    if (plat_ww_scan(GP(a), 0x10000, on_scan)) { /* no write tracking here */
+        CHECK(mem_unmap(a, 0x10000) == 0);
+        res_free(r);
+        return;
+    }
+    GP(a)[0x2010] = 0x99; /* on the owner's first page, beside its bytes */
+    g_move.at = a;
+    g_move.size = 0x10000;
+    g_move.pages = 0;
+    CHECK(own_begin(a + 0x2800, 0x7000, r, 0) == 0); /* pages 2 to 9 move */
+    g_move.size = 0;
+    CHECK(!g_move.failed);
+    if (g_move.pages != 1ull << 2)
+        fprintf(stderr,
+                "move scan: a scan between the move of pages 2 to 9 into the pool and their trap reported the pages "
+                "%#llx written (a bit a page), and the CPU wrote page 2 alone (0x4)\n",
+                (unsigned long long)g_move.pages);
+    CHECK(g_move.pages == 1ull << 2);
+    CHECK(GP(a)[0x2800] == 0x40 && GP(a)[0x2010] == 0x99 && GP(a)[0x9800] == (u8)(0x11 + 0x9800));
+    CHECK(refs(r) == 0 && mem_unmap(a, 0x10000) == 0);
+    res_free(r);
+}
+
 /* a watch: trapped pages that no resource holds. own_lookup skips it, own_stage reads its CPU bytes (through the
    mirror, or in place the shadows that own_watch took), own_trapped and own_hash see it. The first access asks the
    producer once (resolve), and lands what it published there. own_drop and own_unwatch open its pages with no resolve,
@@ -1480,6 +1523,7 @@ int main(int argc, char** argv) {
     test_busy_unowned();
     test_scan_owned();
     test_let_go_watched();
+    test_move_scan();
     test_refresh();
     test_watch();
     test_watch_bound();
