@@ -15409,6 +15409,8 @@ static void setup_start(App* app) {
     }
     if (snx_setup_read(file, &app->setup, why, sizeof why))
         snprintf(app->message, sizeof app->message, snx_tr("%s: the setup asks again"), why);
+    else if (why[0]) /* what another version keeps there */
+        gui_log("%s", why);
     free(file);
     for (i = 0; i < SNX_NOTICES && !snx_setup_shows(&app->setup, i); ++i) {}
     if (i < SNX_NOTICES) app->setup_pages[app->setup_count++] = SETUP_NOTICE;

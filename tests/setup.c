@@ -6,6 +6,7 @@
 #define _POSIX_C_SOURCE 200809L
 #define _XOPEN_SOURCE   700 /* realpath */
 #include "common/utilities/setup.h"
+#include "common/utilities/config_file.h"
 #include "common/utilities/common.h"
 #include "common/utilities/users.h"
 #include <assert.h>
@@ -79,14 +80,25 @@ static void test_file(const char* root) {
     assert(!snx_setup_read(path, &setup, why, sizeof why) && snx_setup_due(&setup));
     for (i = 0; i < SNX_SETUP_STEPS; ++i) assert(!snx_setup_asks(&setup, i));
     for (i = 0; i < SNX_NOTICES; ++i) assert(snx_setup_shows(&setup, i) == (i == SNX_NOTICES - 1));
-    /* a newer version's: nothing to ask, its own keys left alone, its numbers kept when done */
-    put(path, "[setup]\nversion = 3\nnotices = 40\ncolour = red\n[later]\nkey = 1\n");
+    /* a newer version's: nothing to ask, its own keys left alone and named once a run, its numbers kept when done,
+       and its other lines with them */
+    snx_config_forget();
+    put(path, "; mine\ntop = 2\n[setup]\nversion = 3\nnotices = 40\ncolour = red\n[later]\nkey = 1\n");
     assert(!snx_setup_read(path, &setup, why, sizeof why) && setup.version == 3 && setup.notices == 40);
+    assert(strstr(why, "does not read top, [setup] colour, [later] key, which stay as they are") &&
+           !strstr(why, "red"));
     assert(!snx_setup_due(&setup) && !snx_setup_done(path, &setup, why, sizeof why));
-    assert(!snx_setup_read(path, &setup, why, sizeof why) && setup.version == 3 && setup.notices == 40);
-    /* this version's with what it does not know, or a number that is none: said, what was read kept */
+    assert(!snx_setup_read(path, &setup, why, sizeof why) && setup.version == 3 && setup.notices == 40 && !why[0]);
+    {
+        size_t size;
+        char* text = (char*)snx_read_file(path, &size);
+        assert(text && strstr(text, "\ntop = 2\n[setup]\nversion = 3\nnotices = 40\ncolour = red\n[later]\nkey = 1\n"));
+        free(text);
+    }
+    /* this version's with what it does not know: read, named, kept; a number that is none: said, what was read kept */
+    snx_config_forget();
     put(path, "[setup]\nversion = 1\nnotices = 2\ncolour = red\n");
-    assert(snx_setup_read(path, &setup, why, sizeof why) == -1 && strstr(why, "[setup] colour is not the setup's"));
+    assert(!snx_setup_read(path, &setup, why, sizeof why) && strstr(why, "this version does not read [setup] colour"));
     assert(setup.version == 1 && setup.notices == 2);
     put(path, "[setup]\nversion = one\n");
     assert(snx_setup_read(path, &setup, why, sizeof why) == -1 && strstr(why, "version = one is not a whole number"));
