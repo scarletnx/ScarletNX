@@ -61,6 +61,7 @@ static void wr(u64 a, u32 w, u64 v) {
         gw32(a, (u32)v);
     else
         gw64(a, v);
+    mem_wrote(a, w); /* a write of the game's memory, for the write marks (mem.h) */
 }
 
 static void cheats_load(void) {
