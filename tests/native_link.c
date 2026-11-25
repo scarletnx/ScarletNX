@@ -265,6 +265,14 @@ static const unsigned char* at_rva(const unsigned char* pe, uint32_t rva, uint32
     }
     return NULL;
 }
+/* a COFF object's .bss: 1 where it takes no bytes of the file, 0 where it does, -1 where there is none */
+static int bss_without_bytes(const unsigned char* object) {
+    for (uint32_t i = 0; i < snx_ld_le16(object + 2); ++i) {
+        const unsigned char* h = object + 20 + 40 * (size_t)i;
+        if (!strncmp((const char*)h, ".bss", 8)) return !snx_ld_le32(h + 20);
+    }
+    return -1;
+}
 /* the functions, an object of A32 and Thumb blocks and their descriptors for Windows, each pair linked into a DLL */
 static void windows(SnxCodegen* cg) {
     static const uint32_t code[4] = {0xE2500001u, 0x1AFFFFFDu, 0xE2811001u, 0xE12FFF1Eu};
@@ -292,9 +300,11 @@ static void windows(SnxCodegen* cg) {
             const SnxLinkInput inputs[2] = {{objects[k], sizes[k], "code"},
                                             {descriptors[k], descriptor_sizes[k], "module"}};
             const char* const exports[1] = {k ? "snx_module_arm" : "snx_module"};
+            const int bss = bss_without_bytes(descriptors[k]);
             SnxLinkOutput dll = {0};
             uint32_t left = 0, count = 0, last = 0, size, pdata, relocs;
             const unsigned char *p, *name;
+            if (!bss || (!k && bss < 0)) FAIL("windows: the %s object's .bss: %d", exports[0], bss);
             if (snx_link(inputs, 2, exports, 1, "module.dll", &dll, error, sizeof error)) {
                 FAIL("windows: linking the %s: %s", exports[0], error);
                 continue;
