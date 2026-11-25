@@ -237,6 +237,7 @@ static void run(CPU* c, u64 pc) { snx_lookup(c, pc)(c, pc); }
 static const char* cache_path; /* start's config.cache_path */
 static size_t region_limit, discovery_budget; /* the bounded-region witnesses below */
 static u64 text_end = CODE_HI; /* where the config's image ends: the table past it has no code until an image joins */
+static const _Atomic uint64_t* text_generation; /* the config's image's, NULL: none */
 
 static SnxJitService* start(size_t batch, unsigned threads) {
     SnxJitConfig config;
@@ -253,6 +254,7 @@ static SnxJitService* start(size_t batch, unsigned threads) {
     image.base = 0;
     image.text_off = CODE_LO;
     image.text_size = text_end - CODE_LO;
+    image.generation = text_generation;
     memset(&config, 0, sizeof(config));
     config.images = &image;
     config.image_count = 1;
@@ -963,6 +965,64 @@ static void test_changed_in_flight(void) {
     snx_jit_service_free(service);
 }
 
+/* an image of a service with a generation counter beside one that has none, as a library's beside an added NRO. The
+   counter that moves while the words the batch read stay (another range of the module was written, or the same bytes)
+   leaves the batch current, and the words of the other image say the same of it: the counter that stays still says
+   nothing of a change in them, and one of those drops the batch */
+static void test_counters(void) {
+    static _Atomic uint64_t counter;                     /* even: no update of the config's image is in the way */
+    static const u32 one[] = {0x91000400, 0xD65F03C0};   /* add x0, x0, #1; ret */
+    static const u32 eight[] = {0x91002000, 0xD65F03C0}; /* add x0, x0, #8; ret */
+    const u64 moved = 0x6800;
+    SnxCodeImage nro = {0};
+    CPU c;
+    GuestFn f;
+    atomic_store_explicit(&counter, 0, memory_order_relaxed);
+    text_generation = &counter;
+    service = start(1, 1);
+    text_generation = NULL;
+    if (!service) {
+        ++failures;
+        return;
+    }
+    /* the counter moves, the words do not */
+    put(moved, one, 2);
+    in_flight_hold_at(moved, 1);
+    CHECK(snx_jit_resolve(service, moved) == NULL);
+    CHECK(in_flight_wait(&in_flight.begun));
+    atomic_fetch_add_explicit(&counter, 2, memory_order_relaxed); /* a write elsewhere, done */
+    hold(1);
+    in_flight_release();
+    CHECK(in_flight_wait(&in_flight.ended) && !in_flight.dropped && get(moved) != NULL);
+    hold(0);
+    /* an image with no counter beside it: its words alone tell */
+    nro.image = memory;
+    nro.image_size = MEMORY;
+    nro.text_off = NRO;
+    nro.text_size = 0x40;
+    put(NRO, one, 2);
+    CHECK(snx_jit_add_image(service, &nro) == 0);
+    in_flight_hold_at(NRO, 1);
+    CHECK(snx_jit_resolve(service, NRO) == NULL);
+    CHECK(in_flight_wait(&in_flight.begun));
+    put(NRO, eight, 2);
+    snx_jit_invalidate(service, NRO, 4);
+    hold(1);
+    in_flight_release();
+    CHECK(in_flight_wait(&in_flight.ended) && in_flight.dropped);
+    hold(0);
+    CHECK(snx_jit_resolve(service, NRO) == NULL); /* new to the service: queued */
+    snx_jit_drain(service);
+    f = snx_jit_resolve(service, NRO);
+    CHECK(f != NULL);
+    if (f) {
+        cpu_init(&c, 0xF000);
+        f(&c, NRO);
+        CHECK(c.x[0] == 8 && c.pc == RETURN);
+    }
+    snx_jit_service_free(service);
+}
+
 /* added images in different 16 MiB chunks: the page map finds each, and removing one leaves the other's pages */
 static void test_image_map(void) {
     static const u32 far_words[] = {0x91000400, 0xD65F03C0}; /* add x0, x0, #1; ret */
@@ -1337,6 +1397,7 @@ int main(int argc, char** argv) {
     test_invalidate_in_flight();
     test_invalidate_own_code_in_flight();
     test_changed_in_flight();
+    test_counters();
     test_image_map();
     test_region_limit(0);
     test_waited_priority();

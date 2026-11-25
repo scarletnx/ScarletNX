@@ -673,7 +673,7 @@ static int image_generations_take(const SnxCodeImage* images, size_t image_count
     *result_count = 0;
     for (size_t i = 0; i < image_count; ++i)
         count += images[i].generation != NULL;
-    if (!count) return 1;
+    if (count != image_count) return 1; /* a module with no counter has its words alone: none are taken */
     if (count > SIZE_MAX / sizeof(*generations)) return 0;
     generations = (SnxImageGeneration*)malloc(count * sizeof(*generations));
     if (!generations) return 0;
@@ -713,10 +713,10 @@ static int image_generations_match(const SnxImageGeneration* generations, size_t
 /* the batch's code is still that of the module: no update since its snapshot, or none to a word the batch read. A
    batch thrown away for any update anywhere in its module never finished while another range of the module, or the
    same bytes again, was written more often than a batch takes to compile. A module with no generation counter (the NX
-   runtime's) has only the words: every one the batch read, the jump tables too, is what it must still hold */
+   runtime's) has only the words its batch read, which must be what they were: its jump tables' entries are not among
+   them, as they are hints and a BR goes where its register says */
 static int batch_current(const SnxCodegen* codegen, const SnxImageGeneration* generations, size_t count) {
-    if (count) return image_generations_match(generations, count);
-    return snx_codegen_words_current(codegen);
+    return (count && image_generations_match(generations, count)) || snx_codegen_words_current(codegen);
 }
 
 /* What the objects depend on beyond the code: the ABI, the IR object version, the host target triple, LLVM, the
