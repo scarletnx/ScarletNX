@@ -31,10 +31,13 @@
 typedef jmp_buf sigjmp_buf;
 #define sigsetjmp(buf, mask)   setjmp(buf)
 #define siglongjmp(buf, value) longjmp(buf, value)
-/* a pool values spill in: x64.h's first registers on Windows are a pair's and a shift count's */
+
+/* pools values spill in: x64.h's first registers on Windows are a pair's and a shift count's, and it has six XMM ones */
 #define FEW_REGISTERS 4
+#define FEW_XMM       4
 #else
 #define FEW_REGISTERS 3
+#define FEW_XMM       6
 #endif
 
 #define TARGET SNX_A64_TARGET_OUNCE
@@ -632,8 +635,8 @@ static size_t check_fp_rows(void) {
     for (size_t k = 0; k < 4 * (sizeof rows / sizeof *rows); ++k) {
         size_t n = 0, count, made;
         const char* text = rows[k / 4].text;
-        snx_x64_set_pool(k & 1 ? 3 : pool);
-        snx_x64_set_xpool(k & 2 ? 6 : xpool);
+        snx_x64_set_pool(k & 1 ? FEW_REGISTERS : pool);
+        snx_x64_set_xpool(k & 2 ? FEW_XMM : xpool);
         while (n < WORDS && rows[k / 4].words[n]) ++n;
         count = n;
         if (snx_test_pages_exec(code, (WORDS + 1) * (size_t)CODE_MAX, 0)) return 1;

@@ -3679,11 +3679,13 @@ if(SNX_X64)
     add_test(NAME sail_x64 COMMAND snx-test-sail-x64)
     # three registers for values; on Windows four, as a pair's and a shift count's fixed ones are among its first (x64.h)
     set(snx_x64_pool 3)
+    set(snx_x64_xmm 6)
     if(WIN32)
         set(snx_x64_pool 4)
+        set(snx_x64_xmm 4) # it has six
     endif()
     add_test(NAME sail_x64_spill COMMAND snx-test-sail-x64 --pool ${snx_x64_pool} --states 32)
-    add_test(NAME sail_x64_spill_xmm COMMAND snx-test-sail-x64 --pool ${snx_x64_pool} --xmm 6 --states 16)
+    add_test(NAME sail_x64_spill_xmm COMMAND snx-test-sail-x64 --pool ${snx_x64_pool} --xmm ${snx_x64_xmm} --states 16)
     set_tests_properties(sail_x64 sail_x64_spill sail_x64_spill_xmm PROPERTIES TIMEOUT 600)
     # its code for Windows (the calling convention), run by this host's processor as Windows' C would call it
     # (support/host_win64.c): the same words against LLVM, as the other machines' under Unicorn
