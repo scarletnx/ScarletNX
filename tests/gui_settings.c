@@ -1207,6 +1207,48 @@ int main(int argc, char** argv) {
         assert(gui_settings_ctr_options(&s, options) == 2 && !strcmp(options[1], "--ctr-hooks=0"));
         gui_settings_free(&s);
     }
+    /* a GBA, a DS or a Vita game's own: the on-screen controls it has and the touch screen, each control by the
+       console's name for it, and nothing else of the Switch's; and the launcher's for its run: the picks of those
+       settings, every one (the driver says what its console has nothing for), --launcher-picks=1 after them, none with
+       nothing picked */
+    {
+        static const char list[] =
+            "Display\tfullscreen\t0\tint\t0\t1\tWhole screen\tFullscreen\t0=Off|1=On\n"
+            "On-screen controls\tcontrols\t2\tint\t0\t2\tShown\tShow controls\t0=Off|1=On|2=Auto\n"
+            "On-screen controls\tcontrols_rel_center\t1\tint\t0\t1\tMiddle\tRelative stick center\t0=Off|1=On\n"
+            "On-screen controls\ttouch\t2\tint\t0\t2\tTouch\tTouch screen\t0=Off|1=Fingers|2=Fingers and mouse\n"
+            "On-screen controls/Buttons\tcontrols_zl_shown\t1\tint\t0\t1\tDrawn\tZL\t0=Hidden|1=Shown\n"
+            "On-screen controls/Buttons\tcontrols_plus_shown\t1\tint\t0\t1\tDrawn\t+\t0=Hidden|1=Shown\n"
+            "On-screen controls/Buttons\tcontrols_stick_l_shown\t1\tint\t0\t1\tDrawn\tLeft stick\t0=Hidden|1=Shown\n"
+            "On-screen controls/Buttons\tcontrols_a_shown\t1\tint\t0\t1\tDrawn\tA\t0=Hidden|1=Shown\n"
+            "Controllers\tcontroller_applet\t0\tint\t0\t1\tAsked\tController applet\t0=Dialog|1=Quick\n";
+        static const struct {
+            int game, touch, sticks;
+            const char* a; /* its A's name */
+        } consoles[] = {{GUI_GAME_GBA, 0, 0, "A"}, {GUI_GAME_NDS, 1, 0, "A"}, {GUI_GAME_VITA, 1, 1, "Circle"}};
+        for (size_t c = 0; c < sizeof consoles / sizeof *consoles; ++c) {
+            GuiSettings game = {0};
+            assert(!gui_settings_read_console(&game, list, consoles[c].game) && game.game == consoles[c].game);
+            assert(at(&game, "controls") == 0 && !strcmp(key(&game, "controls")->words[0], "Global"));
+            assert(at(&game, "fullscreen") < 0 && at(&game, "controller_applet") < 0);
+            assert(at(&game, "controls_zl_shown") < 0);
+            assert((at(&game, "touch") >= 0) == consoles[c].touch);
+            assert((at(&game, "controls_rel_center") >= 0) == consoles[c].sticks);
+            assert((at(&game, "controls_stick_l_shown") >= 0) == consoles[c].sticks);
+            assert(!strcmp(key(&game, "controls_plus_shown")->key, "Start"));
+            assert(!strcmp(key(&game, "controls_a_shown")->key, consoles[c].a));
+            gui_settings_free(&game);
+        }
+        assert(!gui_settings_read(&s, list) && !gui_settings_controls_options(&s, options));
+        assert(gui_settings_set(&s, "fullscreen", "1") && gui_settings_set(&s, "controller_applet", "1") &&
+               !gui_settings_controls_options(&s, options));
+        assert(gui_settings_set(&s, "controls", "1") && gui_settings_set(&s, "touch", "0") &&
+               gui_settings_set(&s, "controls_zl_shown", "0"));
+        assert(gui_settings_controls_options(&s, options) == 4 && !strcmp(options[0], "--controls=1") &&
+               !strcmp(options[1], "--touch=0") && !strcmp(options[2], "--controls-zl-shown=0") &&
+               !strcmp(options[3], "--" SNX_LAUNCHER_PICKS "=1"));
+        gui_settings_free(&s);
+    }
     /* the launcher's Console for a 3DS run: --launcher-picks=1 after the rest, which puts the game's own over it; with
        no Console picked, or Auto, no mark, the rest as it was */
     {

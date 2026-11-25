@@ -55,7 +55,8 @@ add_library(snx_gui_support STATIC aot.c model.c browser.c steps.c theme.c recen
             covers.c probe.c last_run.c title.c bluetooth.c ${gui_process}
             "${PROJECT_BINARY_DIR}/generated/gui_themes.c" "${PROJECT_BINARY_DIR}/generated/gui_glyphs.c"
             "${PROJECT_BINARY_DIR}/generated/gui_titles.c")
-target_link_libraries(snx_gui_support PUBLIC scarletnx-common snx_setup snx_i18n snx_settings snx_miniz PRIVATE snx_libdeflate)
+target_link_libraries(snx_gui_support PUBLIC scarletnx-common snx_setup snx_i18n snx_settings snx_miniz
+                      PRIVATE snx_libdeflate snx_vpad_consoles)
 # Controllers > Bluetooth's controllers (bluetooth.c): the adverts a scan hears (common/platform/ble_scan.h)
 target_link_libraries(snx_gui_support PUBLIC snx_ble)
 # Install Keys' check of the DS's ARM7 BIOS, its CRC-32 (snx_crc32, main.c)
