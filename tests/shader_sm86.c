@@ -3644,6 +3644,61 @@ static void test_global_join_bases(const char* dir) {
     }
 }
 
+/* A uniform instruction under a uniform predicate, run: ULDC UR4 = c[0][0x10], UISETP.NE UP0 = URZ != UR4, @UP0 ULDC
+   UR6 = c[0][0x20], then MOV R2 = UR6 stored at the global buffer of c[0][0x140]. The ULDC runs where UP0 holds,
+   whatever P0 (which nothing writes) is: it stores 0xabc where c[0][0x10] is 7, and 0 where it is 0. Read from P0, the
+   guard skipped the ULDC in both */
+static void test_uniform_guard_run(const char* dir) {
+    for (u32 given = 0; given < 2; given++) {
+        u8 code[16 * 12] = {0};
+        u32 n = 0;
+        Word a = {{0x0100020000047ab9ull, 0x000fe40000000800ull}}; /* ULDC UR4 = c[0][0x10] */
+        set(&a, 54, 5, 0);
+        set(&a, 38, 16, 0x10);
+        put(code, n++, a);
+        put(code, n++, (Word){{0x000000043f00728cull, 0x000fe4000bf05070ull}}); /* UISETP.NE UP0 = URZ != UR4 */
+        Word b = {{0x00c0080000040ab9ull, 0x000fe40000000800ull}};              /* @UP0 ULDC UR6 = c[0][0x20] */
+        set(&b, 16, 6, 6);
+        set(&b, 54, 5, 0);
+        put(code, n++, b);
+        put(code, n++, mov_ur(2, 6));
+        put(code, n++, mov_cbuf(10, 0, 0x140));
+        put(code, n++, mov_cbuf(11, 0, 0x144));
+        put(code, n++, stg_nou(10, 0, 2));
+        put(code, n++, exit_insn());
+        put(code, n, bra(n, n, 7, 0));
+        n++;
+        ShaderInfo si = {0};
+        size_t count = 0;
+        u32* spv = sm86_to_spirv(code, n * 16, ST_CS, NULL, &si, &count);
+        CHECK(spv != NULL && si.ngbuf == 1);
+        if (!spv || si.ngbuf != 1) {
+            fprintf(stderr, "uniform guard run: %s, %d buffers\n", si.first_unsupported, si.ngbuf);
+            free(spv);
+            continue;
+        }
+        static u32 bank0[1024], out[16], log[2 * SH_WLOG_PART];
+        memset(bank0, 0, sizeof bank0);
+        memset(out, 0, sizeof out);
+        bank0[0x10 / 4] = given ? 7 : 0;
+        bank0[0x20 / 4] = 0xabc;
+        bank0[0x140 / 4] = 0, bank0[0x144 / 4] = 1, bank0[0x148 / 4] = 64;
+        SpvEvalEnv env = {0};
+        env.ubo[SNX_VKB_CB] = bank0;
+        env.ubo_words[SNX_VKB_CB] = 1024;
+        env.ubo[SNX_VKB_WPAGES] = log;
+        env.ubo_words[SNX_VKB_WPAGES] = 2 * SH_WLOG_PART;
+        env.ubo[SNX_VKB_SSBO] = out;
+        env.ubo_words[SNX_VKB_SSBO] = 16;
+        const char* why = spv_eval(spv, count, &env);
+        int ok = !why && out[0] == (given ? 0xabcu : 0u);
+        CHECK(ok);
+        if (!ok) fprintf(stderr, "uniform guard run %u: %s, %x\n", given, why ? why : "ran", out[0]);
+        if (given) CHECK(keep_module(dir, "uniform_guard_run", spv, count));
+        free(spv);
+    }
+}
+
 /* ATOMG.E.ADD (no uniform, 0x3a8) of 32-bit data into dst, at [addr + imm], as one game's culling programs encode it */
 static Word atomg_add(u32 dst, u32 addr, u32 imm, u32 data) {
     Word x = fix(0x3a8);
@@ -4175,7 +4230,8 @@ static void test_tld4_bindless(const char* dir) {
    make a TEX.B's: @P1 MOV R18, c[1][0x10], @P1 LOP3 R18 = R18 | c[1][0x20] (the texture's word and the sampler's),
    @P1 TEX.B of R18, P1 a compare of the lane that nothing can evaluate. Where the TEX.B runs, so do the two writes, so
    they make its handle, 0xdddddddd. Variant 1 writes P1 again between the LOP3 and the TEX.B, and variant 2 guards
-   the TEX.B with !P1: the writes then may not have run, and the texture is none. Variant 3 is two handles in uniform
+   the TEX.B with !P1: the writes are then conditional ones, whose predicate (from the lane) can't be evaluated, and the
+   texture is none. Variant 3 is two handles in uniform
    registers: UR6 = c[1][0x10], @P0 BRA past the first one's block, which sets UR6 = c[1][0x20] and samples it, and
    the second one's USHF reads the first UR6 after that block in the list. The second texture is none and the first
    is bound, where the whole program was refused ("another of its instructions writes") */
@@ -4238,9 +4294,10 @@ static void test_guarded_handles(const char* dir) {
         u32* spv = sm86_to_spirv(code, n * 16, ST_FS, fsph, &si, &count);
         int none = variant == 1 || variant == 2, ok = spv && !si.unsupported;
         if (variant < 3)
-            ok = ok && si.ntex == 1 && (si.tex[0].flags & SNX_TEX_MEMORY) &&
-                 (none ? si.tex[0].cbuf_off == SH_PROBE_NONE && si.memh_none == 1 && strstr(si.memh_why, "no one writer")
-                       : si.tex[0].cbuf_off != SH_PROBE_NONE && si.memh_none == 0 && si.nmemh == 2);
+            ok =
+                ok && si.ntex == 1 && (si.tex[0].flags & SNX_TEX_MEMORY) &&
+                (none ? si.tex[0].cbuf_off == SH_PROBE_NONE && si.memh_none == 1 && strstr(si.memh_why, "made with S2R")
+                      : si.tex[0].cbuf_off != SH_PROBE_NONE && si.memh_none == 0 && si.nmemh == 2);
         else
             ok = ok && si.ntex == 2 && si.tex[0].cbuf_off != SH_PROBE_NONE && si.tex[1].cbuf_off == SH_PROBE_NONE &&
                  si.memh_none == 1 && strstr(si.memh_why, "another of its") && si.nmemh == 2;
@@ -4268,7 +4325,8 @@ static void test_guarded_handles(const char* dir) {
    it an unguarded TEX.B of R18. Where the TEX.B runs, P1 held at the branch and nothing wrote it since, so the two
    writes ran and make its handle, 0xdddddddd. Variant 1 writes P1 again inside the block before the TEX.B; in variant
    2 an @P0 BRA from before the writes jumps into the block, a path that takes no edge of P1; in variant 3 the branch
-   is @P1 BRA, so the block runs where P1 doesn't hold. The writes then may not have run, and the texture is none.
+   is @P1 BRA, so the block runs where P1 doesn't hold. The writes are then conditional ones, whose predicate (from
+   the lane) can't be evaluated, or (variant 2) not the writes of every path, and the texture is none.
    Variants 4 and 5 put an R2P PR, R1 between the writes and the branch, as that program restores P3 to P5 (mask
    0x38): it leaves P1 as it was and the handle is made; with mask 0x02 it writes P1, and the texture is none */
 static void test_flow_guarded_handles(const char* dir) {
@@ -4321,10 +4379,10 @@ static void test_flow_guarded_handles(const char* dir) {
         size_t count = 0;
         u32* spv = sm86_to_spirv(code, n * 16, ST_FS, fsph, &si, &count);
         int none = variant != 0 && variant != 4,
-            ok =
-                spv && !si.unsupported && si.ntex == 1 && (si.tex[0].flags & SNX_TEX_MEMORY) &&
-                (none ? si.tex[0].cbuf_off == SH_PROBE_NONE && si.memh_none == 1 && strstr(si.memh_why, "no one writer")
-                      : si.tex[0].cbuf_off != SH_PROBE_NONE && si.memh_none == 0 && si.nmemh == 2);
+            ok = spv && !si.unsupported && si.ntex == 1 && (si.tex[0].flags & SNX_TEX_MEMORY) &&
+                 (none ? si.tex[0].cbuf_off == SH_PROBE_NONE && si.memh_none == 1 &&
+                             strstr(si.memh_why, variant == 2 ? "no one writer" : "made with S2R")
+                       : si.tex[0].cbuf_off != SH_PROBE_NONE && si.memh_none == 0 && si.nmemh == 2);
         CHECK(ok);
         if (!ok)
             fprintf(stderr, "flow guarded handle %u: %s, %d textures, %u none (%s), %u kept\n", variant,
@@ -4340,6 +4398,95 @@ static void test_flow_guarded_handles(const char* dir) {
         int ran = sm86_eval((const u64(*)[2])si.memh, si.nmemh, &io, &probe, 1, &value);
         CHECK(ran && value == 0xddddddddu);
         if (!ran || value != 0xddddddddu) fprintf(stderr, "flow guarded handle: ran %d, %08x\n", ran, value);
+    }
+}
+/* A handle that a uniform predicate picks, as one game's overlay pass makes its mask's: ULDC UR4 = c[1][0x8], UISETP.NE
+   UP0 = URZ != UR4, ULDC UR5 = c[1][0x48], PLOP3 P2 = UP0, @UP0 ULDC UR4 = c[1][0x20], @UP0 ULOP3 UR4 = UR4 | UR5,
+   USHF UR5 = UR4 >> 20, @P2 TEX of UR4. The two writes under UP0 are conditional ones: they keep their guard in the
+   list with UP0's UISETP, the others run with none, and sm86_eval gives 0x99999999 | 0x44444443 and its sampler's
+   index where c[1][0x8] is not 0, and c[0][0x600] (0) itself where variant 1 reads that word instead. Variant 2 is
+   a handle under the guard of a vote, UP0 = VOTEU.ALL(P0) of the lane's P0, @!UP0 ULOP3 UR4 = UR8 | UR4 and @!P0 TEX:
+   a lane that samples has P0 false, so the vote is false and the write ran; with VOTEU.ANY (variant 3) nothing says
+   so, the vote can't be evaluated, and the texture is none */
+static void test_conditional_handles(const char* dir) {
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[18] = 0xf;
+    for (u32 variant = 0; variant < 4; variant++) {
+        u8 code[16 * 14] = {0};
+        u32 n = 0;
+        Word t = {{0x3000040602227f60ull, 0x00000000099e4f08ull}}; /* TEX_U, its handle in UR4 */
+        set(&t, 40, 6, 4);
+        if (variant < 2) {
+            Word a = {{0x0100020000047ab9ull, 0x000fe40000000800ull}}; /* ULDC UR4 = c[1][0x8] */
+            set(&a, 54, 5, variant == 0 ? 1 : 0);
+            if (variant == 1) set(&a, 38, 16, 0x600);
+            put(code, n++, a);
+            put(code, n++, (Word){{0x000000043f00728cull, 0x000fe4000bf05070ull}}); /* UISETP.NE UP0 = URZ != UR4 */
+            Word b = {{0x00c0120000057ab9ull, 0x000fc80000000800ull}};              /* ULDC UR5 = c[1][0x48] */
+            set(&b, 54, 5, 1);
+            put(code, n++, b);
+            put(code, n++, (Word){{0x000000000000781cull, 0x000fca0003f4f008ull}}); /* PLOP3 P2 = UP0 */
+            Word d = {{0x00c0080000040ab9ull, 0x000fe40000000800ull}};              /* @UP0 ULDC UR4 = c[1][0x20] */
+            set(&d, 54, 5, 1);
+            put(code, n++, d);
+            put(code, n++, (Word){{0x0000000504040292ull, 0x000fc8000f8efc3full}}); /* @UP0 ULOP3 UR4 |= UR5 */
+            set(&t, 12, 3, 2);                                                      /* @P2 */
+        } else {
+            Word x = fix(0x919); /* S2R R1, SR_LANEID */
+            set(&x, 16, 8, 1);
+            set(&x, 72, 8, 0);
+            put(code, n++, x);
+            put(code, n++, mov_imm(3, 4));
+            put(code, n++, isetp(0, 7, 1, 3, 1, 0, 0, 7, 0, 7));       /* P0 = R1 < R3 */
+            Word v = {{0x00000000003f7886ull, 0x000fe40000000000ull}}; /* VOTEU.ALL URZ, UP0, P0 */
+            set(&v, 72, 2, variant == 3);
+            put(code, n++, v);
+            Word a = {{0x00c0120000057ab9ull, 0x000fc80000000800ull}}; /* ULDC UR4 = c[1][0x20] */
+            set(&a, 16, 6, 4);
+            set(&a, 54, 5, 1);
+            set(&a, 38, 16, 0x20);
+            put(code, n++, a);
+            set(&a, 16, 6, 8); /* ULDC UR8 = c[1][0x10] */
+            set(&a, 38, 16, 0x10);
+            put(code, n++, a);
+            put(code, n++, (Word){{0x0000000408048292ull, 0x000fe2000f8efc3full}}); /* @!UP0 ULOP3 UR4 = UR8 | UR4 */
+            set(&t, 12, 3, 0);                                                      /* @!P0 */
+            set(&t, 15, 1, 1);
+        }
+        put(code, n++, (Word){{0x000000143f057899ull, 0x000fe20008011604ull}}); /* USHF UR5 = UR4 >> 20 */
+        put(code, n++, t);
+        put(code, n++, exit_insn());
+        put(code, n, bra(n, n, 7, 0));
+        n++;
+        ShaderInfo si = {0};
+        size_t count = 0;
+        u32* spv = sm86_to_spirv(code, n * 16, ST_FS, fsph, &si, &count);
+        int none = variant == 3, ok = spv && !si.unsupported && si.ntex == 1 && (si.tex[0].flags & SNX_TEX_MEMORY);
+        if (none)
+            ok = ok && si.tex[0].cbuf_off == SH_PROBE_NONE && si.memh_none == 1 && strstr(si.memh_why, "VOTEU");
+        else
+            ok = ok && si.tex[0].cbuf_off != SH_PROBE_NONE && si.tex[0].bl2_off != SH_PROBE_NONE && si.memh_none == 0 &&
+                 si.nmemh == (variant < 2 ? 6u : 4u);
+        /* the conditional writes keep their guard, the others none */
+        for (u32 k = 0; ok && variant < 2 && k < si.nmemh; k++)
+            ok = (u32)(si.memh[k][0] >> 12 & 0xf) == (k == 3 || k == 4 ? 0u : 7u);
+        CHECK(ok);
+        if (!ok)
+            fprintf(stderr, "conditional handle %u: %s, %d textures, %u none (%s), %u kept\n", variant,
+                    si.first_unsupported, si.ntex, si.memh_none, si.memh_why, si.nmemh);
+        static const char* const names[4] = {"fs_conditional_handle", "fs_conditional_handle_zero",
+                                             "fs_vote_guarded_handle", "fs_vote_guarded_handle_any"};
+        if (spv) CHECK(keep_module(dir, names[variant], spv, count));
+        free(spv);
+        if (!ok || none) continue;
+        u32 probes[2] = {si.tex[0].cbuf_off, si.tex[0].bl2_off}, values[2] = {0, 0};
+        Sm86EvalIo io = {NULL, mh_cbuf, mh_mem};
+        u32 want = variant == 0 ? 0xdddddddbu : variant == 1 ? 0u : 0xddddddddu;
+        int ran = sm86_eval((const u64(*)[2])si.memh, si.nmemh, &io, probes, 2, values);
+        CHECK(ran && values[0] == want && values[1] == want >> 20);
+        if (!ran || values[0] != want || values[1] != want >> 20)
+            fprintf(stderr, "conditional handle %u: ran %d, %08x %08x\n", variant, ran, values[0], values[1]);
     }
 }
 /* An address's base through a ULDC of one word to the register before it: UR4 = c[0][0x530] (64 bits), UR7 = UR4 +
@@ -8386,6 +8533,8 @@ int main(int argc, char** argv) {
     test_tld4_bindless(dir);
     test_guarded_handles(dir);
     test_flow_guarded_handles(dir);
+    test_conditional_handles(dir);
+    test_uniform_guard_run(dir);
     test_memory_eval();
     test_uldc_word_key(dir);
     test_mesh(dir);

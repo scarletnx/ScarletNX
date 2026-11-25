@@ -290,6 +290,11 @@ static inline int sm86_always(const Sm86Insn* in) {
     return in->pred == SM86_PT && !in->pred_not &&
            (!sm86_has_cond(in) || (sm86_field(in, 87, 3) == SM86_PT && !sm86_field(in, 90, 1)));
 }
+/* whether its guard is a uniform predicate: an instruction of the uniform datapath (ULDC with the uniform ALU's) runs
+   under UP0-UP6, as the compiler guards ULDC and ULOP3 with UP0 = UR4 != 0 and copies UP0 into a P for a TEX */
+static inline int sm86_uniform_guard(const Sm86Insn* in) {
+    return sm86_ops[in->op].kind == SM86_K_UALU || in->op == SM86_ULDC || in->op == SM86_ULDC_IDX;
+}
 /* whether it runs in none: its guard !PT, or a BRA's or an EXIT's operand !PT */
 static inline int sm86_never(const Sm86Insn* in) {
     return (in->pred == SM86_PT && in->pred_not) ||
