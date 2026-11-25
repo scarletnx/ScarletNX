@@ -788,7 +788,7 @@ LABEL = re.compile(rb'SDK MW\+[A-Za-z]+\+[A-Za-z]+S[Dd][Kk]_(NVN|nnSdk)-([0-9_]+
 
 def labels(mods):
     """{'NVN': ..., 'nnSdk': ...}: the SDK middleware labels with their build type ("15.3.1-Release"), which
-    nvn_census's versions and the hooks' version key (hle/hook/version.c) leave out"""
+    nvn_census's versions and the hooks' version key (nn/version.c) leave out"""
     out = {}
     for m in mods:
         for hit in LABEL.finditer(m.image):

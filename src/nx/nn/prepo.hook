@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 #
-# The native nn::prepo (prepo.c), for tools/hookgen, in the language of hle/hook/hooks.hook.
+# The native nn::prepo (prepo.c), for tools/hookgen, in the language of nn/hooks.hook.
 # nn::prepo: the play reports, with no prepo:u session. The report is built in the game's buffer by the SDK's own
 # code. Save, Send, AddSessionId, RequestImmediateTransmission and GetTransmissionStatus are what a game has reach the
 # service. The report's layout and Save's limit are those of the SDKs read: no limit in 3.5.0 to 8.2.1, the limit from

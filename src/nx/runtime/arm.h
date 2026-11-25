@@ -33,7 +33,7 @@ void arm_run(SnxArmCPU* c, SnxArmBlock first, u32 stop_at);
 /* the block at addr (A32, or Thumb when thumb), compiled now when the recompiler didn't make it: what its slot held
    before a hook took it. NULL when addr isn't code */
 SnxArmBlock arm_block(u32 addr, int thumb);
-/* the 32-bit registers of the game thread whose CPU c is (hle/hook/hook.h's hook_a32_cpu the other way) */
+/* the 32-bit registers of the game thread whose CPU c is (nn/hook.h's hook_a32_cpu the other way) */
 SnxArmCPU* arm_cpu(CPU* c);
 /* the modules' code, [lo, hi): 0 when there is none (a 64-bit game) */
 int arm_code_range(u64* lo, u64* hi);

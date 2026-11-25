@@ -3,7 +3,7 @@
 /* Hooks' versions (hook.h): the SDK version a module's middleware label gives, and the entry of a generated table
    whose versions hold a module's. Pure functions of their arguments, so tests/hook_versions.c runs them on labels and
    tables of its own */
-#include "nx/hle/hook/hook.h"
+#include "nx/nn/hook.h"
 #include "nx/loader/hook_routes.h"
 #include <stdio.h>
 

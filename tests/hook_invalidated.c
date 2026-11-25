@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* A native hook the game invalidates (src/nx/hle/hook/hook.c, jump.c), on this test's own x86_64 code, over
+/* A native hook the game invalidates (src/nx/nn/hook.c, jump.c), on this test's own x86_64 code, over
    tests/hook/install.hook with the runtime stubbed as tests/hook_install.c stubs it. A mod's hook writes a branch over
    the start of a hooked function: the native hook's adapter is rewritten into a jump to hook_invalidated, so a copy
    of its address taken before (as an NRO's import or the JIT's direct call holds one) runs the game's new code with
@@ -12,7 +12,7 @@
    handler, and a handler's own code is the trampoline's, entered there. The index of the sites by address still finds
    the invalidated one, and no other, as a search of every site does. The system's refusal to make code writable is
    reported with its reason. Only x86_64 runs the jump: on another host the test is skipped (77) */
-#include "nx/hle/hook/hook.c"
+#include "nx/nn/hook.c"
 #include <assert.h>
 #include <stdarg.h>
 #include <stdio.h>

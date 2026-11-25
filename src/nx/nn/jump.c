@@ -3,7 +3,7 @@
 /* The jump over a native hook's start (jump.h). Only x86_64's is run by a test (tests/hook_invalidated.c); every
    encoder's bytes are checked on any host (tests/hook_jump.c), against what llvm-mc disassembles them to, and IA-64's
    against GNU objdump's, as clang has no IA-64 target yet */
-#include "nx/hle/hook/jump.h"
+#include "nx/nn/jump.h"
 #include "common/utilities/common.h"
 #include "common/utilities/bits.h"
 #include <stdint.h>

@@ -24,7 +24,7 @@
 #include "common/gpu/gl/gl_texture.h"
 #include "nx/gpu/gl/gl_host_program.h"
 #include "nx/gpu/gl/gl_layer.h"
-#include "nx/hle/hook/hook.h"
+#include "nx/nn/hook.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/nvn/nvn_draw.h"
 #include "nx/gpu/nvn/nvn_tex.h"

@@ -17,8 +17,8 @@
 
    The standard output (printf, puts, putchar, perror's standard error) is the runtime's log, a line at a time, as a
    game's svcOutputDebugString is ("[game] ..."). Off on Windows, as libc_str */
-#include "nx/hle/hook/hook.h"
-#include "hle/hook/hooks.hook.h"
+#include "nx/nn/hook.h"
+#include "nn/hooks.hook.h"
 #include "nx/runtime/platform/log.h"
 #include <ctype.h>
 #include <errno.h>

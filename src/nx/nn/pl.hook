@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 #
-# The native nn::pl (pl.c), for tools/hookgen, in the language of hle/hook/hooks.hook.
+# The native nn::pl (pl.c), for tools/hookgen, in the language of nn/hooks.hook.
 # nn::pl: the shared fonts, with no pl:u session. These are every function that reaches pl:u but the built-in font
 # functions of the first console's types. IsRunningOnOunce is a constant of the SDK's, and the system functions use
 # other services.

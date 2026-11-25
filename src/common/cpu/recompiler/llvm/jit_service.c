@@ -420,7 +420,7 @@ static int known(void* user, SnxU64 address) {
 }
 
 /* the AOT function to call for target, as a host address (SnxIr.direct), 0 when the AOT module has no entry there, or
-   when its dispatch slot holds something else: a hook of the runtime's (nx/hle/hook/hook.c) took its place, which
+   when its dispatch slot holds something else: a hook of the runtime's (nx/nn/hook.c) took its place, which
    only a call through the slot reaches. A unit of the cache that calls it directly is refused at its load, and
    compiled again */
 static SnxU64 direct(void* user, SnxU64 target) {

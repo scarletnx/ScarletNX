@@ -4,7 +4,7 @@
    every name resolves, the 0x100 bytes of the output are the name and zeros after it, a name with no end in its
    0x100 bytes is cut there, and the environment's own name fills its 8 bytes */
 #include "nx/nn/nsd.c"
-#include "hle/hook/hooks.hook.inc" /* nsd.hook's table, and a 32-bit game's */
+#include "nn/hooks.hook.inc" /* nsd.hook's table, and a 32-bit game's */
 #include <stdio.h>
 #include <stdlib.h>
 

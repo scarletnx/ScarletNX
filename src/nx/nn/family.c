@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* Which hook families the runtime can run where it runs (hook.h's hook_family_unready), apart from hook.c: the tests
    that install hooks over a table of their own link hook.c without the handlers this asks */
-#include "nx/hle/hook/hook.h"
+#include "nx/nn/hook.h"
 #include "nx/runtime/arm.h"
 #include "nx/runtime/options.h"
 #include <string.h>

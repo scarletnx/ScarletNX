@@ -12,8 +12,8 @@
    them, else a call of the guest's own. What would throw (a position past the end, a length past max_size) runs the
    function's own code, before the handler changes anything, so the game's exception is the one it would get.
    A 32-bit game's strings are another layout, so every hook is for a 64-bit game */
-#include "nx/hle/hook/hook.h"
-#include "hle/hook/hooks.hook.h"
+#include "nx/nn/hook.h"
+#include "nn/hooks.hook.h"
 #include "nx/hle/kernel/kernel.h"
 #include <stdlib.h>
 #include <string.h>

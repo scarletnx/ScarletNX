@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-"""Each hook of src/nx/hle/hook/ext_skyline.hooks, a mod's trampoline's native hook, is the function's own native hook
+"""Each hook of src/nx/nn/ext_skyline.hooks, a mod's trampoline's native hook, is the function's own native hook
 for a 64-bit game: the same symbol, argument types, result, handler and SDK range as a 64-bit hook of the native table
-(hle/hook/hooks.hook, nn/*.hook and patches/*.hook, cmake/hookgen.cmake's snx_hookgen) declares it. hook.c gives the
+(nn/hooks.hook, nn/*.hook and patches/*.hook, cmake/hookgen.cmake's snx_hookgen) declares it. hook.c gives the
 trampoline's slot that handler, with the arguments the mod's call of the original passes, and hook_select picks the
 hook by the SDK's version as the native table does."""
 
@@ -12,9 +12,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 NX = ROOT / "src" / "nx"
-EXT = NX / "hle" / "hook" / "ext_skyline.hooks"
+EXT = NX / "nn" / "ext_skyline.hooks"
 # the native table's files: nvn.hook is a table of its own, whose symbols never reach the trampolines' table
-NATIVE = [NX / "hle" / "hook" / "hooks.hook", *sorted((NX / "nn").glob("*.hook")), *sorted((NX / "patches").glob("*.hook"))]
+NATIVE = [
+    NX / "nn" / "hooks.hook",
+    *sorted(p for p in (NX / "nn").glob("*.hook") if p.name != "hooks.hook"),
+    *sorted((NX / "patches").glob("*.hook")),
+]
 # a hook line: what comes before "hook" (an @version for 64-bit games, or "a32" for a 32-bit game's hook alone), then
 # the symbol, the arguments, the result and the handler. What comes after the handler (a32 and its @version) is for
 # 32-bit games

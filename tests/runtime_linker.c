@@ -16,7 +16,7 @@
    the weak word they lacked bound to it and its DT_INIT run on the calling thread; found by name; and unloaded, once
    the SDK counts no thread-local destructor left, its DT_FINI run and the word 0 again.
      runtime_linker switch */
-#include "nx/hle/hook/hook.h"
+#include "nx/nn/hook.h"
 #include "nx/hle/kernel/kernel.h"
 #include "nx/loader/module_abi.h"
 #include "nx/loader/relocate.h"

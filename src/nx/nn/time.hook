@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 #
-# The native nn::time (time.c), for tools/hookgen, in the language of hle/hook/hooks.hook.
+# The native nn::time (time.c), for tools/hookgen, in the language of nn/hooks.hook.
 # nn::time: the clocks, the time zone and the clock snapshots, with no time:u session and no shared memory. Every
 # function that reads the state the SDK keeps behind Initialize is here, with Initialize, so that state stays empty.
 # The functions that need no state (the calendar's arithmetic, the snapshot's getters) run their own code.

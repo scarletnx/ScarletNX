@@ -14,7 +14,7 @@
    The game's first nvnBootstrapLoader call, before it has any NVN function, reads the game's NVN API version: the
    driver's own lookup finds nvnDeviceGetInteger by name (it touches nothing else), and that function's switch answers
    it (gpu/nvn/nvn_driver.c). A function declared for some API versions (gpu/nvn/nvn.hook's @version(nvn ...)) takes the
-   declaration that holds for it (hle/hook/version.c hook_select). The log says whether the version is one the runtime
+   declaration that holds for it (nn/version.c hook_select). The log says whether the version is one the runtime
    has measured layouts for: the runtime takes the game's NVN calls either way, as the driver has no GPU to run on */
 #include "nx/gpu/nvn/nvn_loader.h"
 #include "nx/runtime/nce/nce.h"
@@ -22,7 +22,7 @@
 #include "nx/gpu/nvn/nvn_driver.h"
 #include "nx/gpu/nvn/nvn_object.h"
 #include "gpu/nvn/nvn.hook.h"
-#include "nx/hle/hook/hook.h"
+#include "nx/nn/hook.h"
 #include "nx/hle/kernel/kernel.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/arm.h"

@@ -20,7 +20,7 @@
 #include "common/cpu/aarch64/cpu.h"
 #include "common/cpu/arm/arm.h"
 #include "common/utilities/endian.h"
-#include "nx/hle/hook/verify.h"
+#include "nx/nn/verify.h"
 #include <stddef.h>
 #include <string.h>
 

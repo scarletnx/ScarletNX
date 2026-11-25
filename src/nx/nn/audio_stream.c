@@ -19,8 +19,8 @@
    is reduced too, by a neural network or spectrally (audio_denoise.h), as the microphone noise reduction setting says,
    read for each block of 10 ms. The devices the SDK asks auddmg:u about
    (the virtual input devices and the devices' properties) are answered here too */
-#include "nx/hle/hook/hook.h"
-#include "hle/hook/hooks.hook.h"
+#include "nx/nn/hook.h"
+#include "nn/hooks.hook.h"
 #include "nx/hle/kernel/kernel.h"
 #include "nx/hle/services/services_int.h"
 #include "nx/runtime/clock.h"

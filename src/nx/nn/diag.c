@@ -4,8 +4,8 @@
    condition that failed, the SDK function and source position that checked it, the Result and the message's format:
    the handler logs them as the SDK passed them, then runs the function's own code, which stops the game as it would.
    It changes nothing the game can see */
-#include "nx/hle/hook/hook.h"
-#include "hle/hook/hooks.hook.h"
+#include "nx/nn/hook.h"
+#include "nn/hooks.hook.h"
 #include "nx/hle/kernel/kernel.h"
 #include "nx/runtime/platform/log.h"
 

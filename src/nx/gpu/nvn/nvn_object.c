@@ -30,7 +30,7 @@
 #include "nx/hle/services/native_video.h"
 #include "nx/runtime/clock.h"
 #include "nx/hle/kernel/kernel.h"
-#include "nx/hle/hook/hook.h"
+#include "nx/nn/hook.h"
 #include "nx/runtime/arm.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/platform/log.h"

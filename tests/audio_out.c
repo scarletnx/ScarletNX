@@ -11,7 +11,7 @@
 #include "nx/hle/services/audio.c"
 #include "nx/nn/codec.c"
 #include "nx/hle/hle.c"
-#include "hle/hook/hooks.hook.inc" /* codec.hook's table and adapters */
+#include "nn/hooks.hook.inc" /* codec.hook's table and adapters */
 #include "kobj_ids.h"              /* the kernel objects the stubs make, as ids */
 
 u8* g_mem;

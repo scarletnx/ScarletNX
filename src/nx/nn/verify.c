@@ -2,8 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* Verify mode's check of one call (verify.h). It depends on the CPU and guest memory alone, so tests run it on
    functions of their own */
-#include "nx/hle/hook/verify.h"
-#include "nx/hle/hook/hook.h"
+#include "nx/nn/verify.h"
+#include "nx/nn/hook.h"
 #include <stddef.h>
 #include <string.h>
 

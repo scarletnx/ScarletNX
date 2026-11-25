@@ -11,7 +11,7 @@ The game folder is the extracted dump (exefs/ + romfs/), read through `scarletnx
 (tools/moduledump.py) as tools/nvn_census.py reads it: the NVN module, its procedure table (the names of its lookup
 pool, without the "nvn" prefix) and the API version nvnDeviceGetInteger's switch answers. Each name is looked for in
 gpu/nvn/nvn.hook as that file has it, and a name is implemented when one of its entries holds for the game's API
-version by hook_select's rule (src/nx/hle/hook/version.c): an entry without @version always holds, an nvn entry holds
+version by hook_select's rule (src/nx/nn/version.c): an entry without @version always holds, an nvn entry holds
 while the version lies in its [lo, hi), and an sdk entry never holds for the NVN module, which carries no SDK label.
 The `route` lines name the two resolvers, which gpu/nvn/nvn_direct.c wraps with code of its own: covered.
 

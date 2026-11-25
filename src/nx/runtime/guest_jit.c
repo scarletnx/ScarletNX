@@ -12,7 +12,7 @@
 #include "nx/runtime/options.h"
 #include "nx/runtime/rtapi.h"
 #include "nx/gpu/nvn/nvn_loader.h"
-#include "nx/hle/hook/hook.h"
+#include "nx/nn/hook.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"

@@ -9,8 +9,8 @@
    reads its Unicode tables). The host's are its locale's, so the handlers take them from a C.UTF-8 locale of their
    own (iswalpha_l and the rest, made at the first call); a host without one leaves the family off (libc_wide_ready) */
 #define _GNU_SOURCE
-#include "nx/hle/hook/hook.h"
-#include "hle/hook/hooks.hook.h"
+#include "nx/nn/hook.h"
+#include "nn/hooks.hook.h"
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>

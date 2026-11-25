@@ -9,8 +9,8 @@
 #ifndef SNX_HLE_HOOK_MODULE_LIB_H
 #define SNX_HLE_HOOK_MODULE_LIB_H
 #include "common/cpu/aarch64/cpu.h"
-#include "nx/hle/hook/module.h"
-#include "nx/hle/hook/snx_hook_module.h"
+#include "nx/nn/module.h"
+#include "nx/nn/snx_hook_module.h"
 #include "nx/loader/hook_libs.h"
 
 /* The libraries of the folder the hook_modules_dir setting names, or of hook_modules/ in the user's data folder when

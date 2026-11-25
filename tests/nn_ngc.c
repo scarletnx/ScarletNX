@@ -4,7 +4,7 @@
    order, with their Results, the object as Initialize leaves it, a text that comes back as it was with none counted,
    the encodings refused, and Finalize */
 #include "nx/nn/ngc.c"
-#include "hle/hook/hooks.hook.inc" /* ngc.hook's table and adapters */
+#include "nn/hooks.hook.inc" /* ngc.hook's table and adapters */
 #include <stdio.h>
 #include <stdlib.h>
 

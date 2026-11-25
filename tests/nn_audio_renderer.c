@@ -14,7 +14,7 @@
 #include "nx/nn/audio_renderer.c"
 #include "nx/hle/services/audren.c"
 #include "nx/hle/hle.c"
-#include "hle/hook/hooks.hook.inc" /* audio_renderer.hook's table and adapters */
+#include "nn/hooks.hook.inc" /* audio_renderer.hook's table and adapters */
 
 u8* g_mem;
 u64 g_as_size = AS_MAX; /* the reservation's size, mem.c's, which this test does not link */

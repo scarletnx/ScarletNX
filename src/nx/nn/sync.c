@@ -17,8 +17,8 @@
    steady_clock's now is the game's clock (guest_ns), as the SDK's reads it through clock_gettime's CLOCK_MONOTONIC and
    nn::os's system tick: it stops while the game is paused and takes a save state's time, as every other clock of the
    game does. system_clock's now is the host's real time, which is all __do_timed_wait compares a deadline with */
-#include "nx/hle/hook/hook.h"
-#include "hle/hook/hooks.hook.h"
+#include "nx/nn/hook.h"
+#include "nn/hooks.hook.h"
 #include "common/platform/thread.h"
 #include "common/platform/time.h"
 #include "nx/hle/kernel/kernel.h"

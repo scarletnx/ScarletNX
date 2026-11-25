@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 #
-# The native nn::nsd (nsd.c), for tools/hookgen, in the language of hle/hook/hooks.hook.
+# The native nn::nsd (nsd.c), for tools/hookgen, in the language of nn/hooks.hook.
 # nn::nsd: the names of the console's servers, with no nsd:u session. Resolve and ResolveEx are what games call,
 # nn::oe::GetServerEnvironmentType calls GetApplicationServerEnvironmentType, and the network libraries ask
 # GetEnvironmentIdentifier for the environment's name. A 32-bit game has the same four in SDK 0.12.16, the one 32-bit

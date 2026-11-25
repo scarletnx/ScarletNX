@@ -9,7 +9,7 @@
 
 #include "nx/nn/audio.c"
 #include "nx/hle/hle.c"
-#include "hle/hook/hooks.hook.inc" /* audio.hook's table and adapters */
+#include "nn/hooks.hook.inc" /* audio.hook's table and adapters */
 #include "kobj_ids.h"              /* the kernel objects the stubs make, as ids */
 
 u8* g_mem;

@@ -5,9 +5,9 @@
    result in x0 (narrow ones extended to 32 bits) or v0 (the rest of v0 zeroed), and returns to x30. The adapters for a
    32-bit program (hookgen --a32) read them where AAPCS32 with VFP arguments puts them (r0-r3, an even pair of them for
    64 bits, s and d registers apart, the rest on the stack) and return to lr in the state its bit 0 says */
-#include "nx/hle/hook/hook.h"
-#include "hle/hook/hooks.hook.h"
-#include "hle/hook/hooks.hook.inc"
+#include "nx/nn/hook.h"
+#include "nn/hooks.hook.h"
+#include "nn/hooks.hook.inc"
 #include <assert.h>
 #include <stdio.h>
 

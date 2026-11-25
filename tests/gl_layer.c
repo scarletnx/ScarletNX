@@ -28,7 +28,7 @@
 #include "nx/gpu/nvn/nvn_tex.h"
 #include "nx/gpu/nvn/nvn_tic.h"
 #include "nx/gpu/renderer.h"
-#include "nx/hle/hook/hook.h"
+#include "nx/nn/hook.h"
 #include "nx/hle/services/vi.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/loader.h"

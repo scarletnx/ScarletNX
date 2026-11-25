@@ -29,8 +29,8 @@
    - Chroma that RenderYUV writes to a surface of other chroma than the JPEG's, and Render's RGB, take the nearest
      chroma sample. Which of the two chroma planes is Cb follows the order NVJPG takes them in, Cb first: a guess */
 #include "nx/nn/tvmr_jpeg.h"
-#include "nx/hle/hook/hook.h"
-#include "hle/hook/hooks.hook.h"
+#include "nx/nn/hook.h"
+#include "nn/hooks.hook.h"
 #include "nx/hle/hle.h"
 #include "nx/hle/services/nvdrv.h"
 #include "nx/hle/services/services_int.h"

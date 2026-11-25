@@ -26,7 +26,7 @@
 #include "nx/hle/services/gsv.h"
 #include "nx/hle/services/network/network.h"
 #include "nx/hle/filesystem/fs.h"
-#include "nx/hle/hook/hook.h"
+#include "nx/nn/hook.h"
 #include "nx/nn/fs.h"
 #include "nx/nn/time.h"
 #include "nx/nn/pl.h"

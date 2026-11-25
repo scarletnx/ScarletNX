@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* Hook module libraries' CPU hooks (hle/hook/module_lib.c, hook.c's lib_adapter, nx/loader/hook_libs.c), of no game,
+/* Hook module libraries' CPU hooks (nn/module_lib.c, hook.c's lib_adapter, nx/loader/hook_libs.c), of no game,
    on a 64-bit game stubbed to one module and a dispatch table as tests/hook_install.c has it. The libraries are built
    by the test suite from tests/hook_lib_cpu_mod.c.
    - The recompile's side: snx_hook_libs_route adds each library's CPU hooks to the route list by build ID and offset,
@@ -19,7 +19,7 @@
    - Outside a handler the host's CPU functions give 0 and change nothing.
    - A mod's change of a hooked function's first instruction turns that hook off, its calls then running the game's
      code through the adapter's invalid path, and leaves the other hooks */
-#include "nx/hle/hook/hook.c"
+#include "nx/nn/hook.c"
 #include <assert.h>
 #include <stdarg.h>
 #include <stdio.h>

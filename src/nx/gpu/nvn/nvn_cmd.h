@@ -93,7 +93,7 @@ typedef struct {
 } NvnCmdState;
 
 /* An upscale for the command buffer at cb (an OP_UPSCALE record, nvn_obj.h's NvnPUpscale), which a hook module's CPU
-   hook asks for (hle/hook/snx_hook_module.h): its textures and views as the game's objects' guest addresses (0 for
+   hook asks for (nn/snx_hook_module.h): its textures and views as the game's objects' guest addresses (0 for
    none), flags gpu.h's GPU_UPSCALE_ */
 typedef struct {
     u64 tex[NVN_UPSCALE_TEXTURES], view[NVN_UPSCALE_TEXTURES];

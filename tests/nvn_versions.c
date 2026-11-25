@@ -5,7 +5,7 @@
    reads it at the game's first NVN call, packed as the key takes it, the entry hook_select picks for it, and the
    versions the runtime has measured layouts for */
 #include "nx/gpu/nvn/nvn_driver.h"
-#include "nx/hle/hook/hook.h"
+#include "nx/nn/hook.h"
 #include "gpu/nvn/nvn_versions.hook.h"
 #include "gpu/nvn/nvn_versions.hook.inc"
 #include <assert.h>

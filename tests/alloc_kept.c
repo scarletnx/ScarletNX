@@ -9,7 +9,7 @@
    alloc_kept reads its verdict once a run, so each program is a run of its own: "off", whose malloc calls an object
    (the family is off, naming it), and "on", whose malloc calls the SDK's allocator while its operator new and free
    call objects, as another game's do (the family stays on) */
-#include "nx/hle/hook/hook.h"
+#include "nx/nn/hook.h"
 #include "nx/loader/module_abi.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/loader.h"
