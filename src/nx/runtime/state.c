@@ -50,6 +50,8 @@
 #include <stdatomic.h>
 
 typedef char state_pointers_are_8_bytes[sizeof(void*) == 8 ? 1 : -1]; /* pointer fields hold the numbers below */
+static_assert(SNX_UI_IMAGE_W == SNX_STATE_THUMB_W && SNX_UI_IMAGE_H == SNX_STATE_THUMB_H,
+              "a state's thumbnail is the menu's picture, on every console");
 
 /* ============================================================ streams */
 /* a stream in memory: a section read whole before a load changes anything, or one written before it goes out */
@@ -99,58 +101,6 @@ static int section_write(StateWriter* w, const char* tag, u64 schema, const Buf*
 }
 
 /* ============================================================ the schema */
-/* A hash of the names and types of every field g_hle holds, and of the other types the state holds as raw bytes, from
-   Clang's walk of each struct (hle_walk.h): a state whose types had other fields isn't read as this runtime's. The
-   values the walk prints aren't part of it */
-static void hash_str(u64* h, const char* s) {
-    for (; *s; s++) *h = snx_fnv_step(*h, (u8)*s);
-    *h = snx_fnv_step(*h, 0x1F);
-}
-static int schema_out(u64* h, const char* fmt, ...) {
-    va_list ap;
-    const char* f;
-    int before = 1;
-    va_start(ap, fmt);
-    for (f = fmt; *f; f++) {
-        int longs = 0;
-        if (*f == '=') before = 0;
-        if (*f != '%') {
-            if (before) *h = snx_fnv_step(*h, (u8)*f);
-            continue;
-        }
-        f++;
-        while (*f == 'l' || *f == 'h' || *f == 'z' || *f == 'j' || *f == 't') longs += *f++ == 'l';
-        switch (*f) {
-            case 's': {
-                const char* s = va_arg(ap, const char*);
-                if (before && s) hash_str(h, s);
-                break;
-            }
-            case 'p': (void)va_arg(ap, void*); break;
-            case 'f':
-            case 'g':
-            case 'e': (void)va_arg(ap, double); break;
-            case 'c':
-            case 'd':
-            case 'i':
-            case 'u':
-            case 'x':
-            case 'X':
-            case 'o':
-                if (longs >= 2)
-                    (void)va_arg(ap, long long);
-                else if (longs)
-                    (void)va_arg(ap, long);
-                else
-                    (void)va_arg(ap, int);
-                break;
-            case 0: f--; break;
-            default: break;
-        }
-    }
-    va_end(ap);
-    return 0;
-}
 /* instances of the types written raw outside g_hle, for their walk */
 static const GpuChannel z_chan;
 static const ARState z_ar;
@@ -165,13 +115,15 @@ static const GMap z_gmap;
 static const GRun z_grun;
 static const VaRange z_va;
 static const MemBlock z_blk;
+/* A hash of the names and types of every field g_hle holds, and of the other types the state holds as raw bytes, from
+   Clang's walk of each struct (hle_walk.h, snx_state_schema_out) */
 static u64 state_schema(void) {
     static u64 hash;
     u64 h = 0xCBF29CE484222325ull ^ sizeof(Hle);
     if (hash) return hash; /* the types don't change while the runtime runs */
 #define SCHEMA_WALK(name, obj)                                                                                         \
-    hash_str(&h, #name);                                                                                               \
-    __builtin_dump_struct(&(obj), schema_out, &h);
+    snx_state_schema_name(&h, #name);                                                                                  \
+    __builtin_dump_struct(&(obj), snx_state_schema_out, &h);
     HLE_WALKS(SCHEMA_WALK, g_hle)
     SCHEMA_WALK(GpuChannel, z_chan)
     SCHEMA_WALK(ARState, z_ar)
@@ -187,13 +139,13 @@ static u64 state_schema(void) {
     SCHEMA_WALK(VaRange, z_va)
     SCHEMA_WALK(MemBlock, z_blk)
 #undef SCHEMA_WALK
-    gpu_state_schema(schema_out, &h);
+    gpu_state_schema(snx_state_schema_out, &h);
     return hash = h;
 }
 /* the NVN section's: g_nvn's layout and that of the types it writes raw, which a game whose NVN the runtime runs has */
 static u64 nvn_schema(void) {
     u64 h = 0xCBF29CE484222325ull ^ sizeof(Nvn);
-    nvn_state_schema(schema_out, &h);
+    nvn_state_schema(snx_state_schema_out, &h);
     return h;
 }
 

@@ -13,6 +13,8 @@
 #define SNX_STATE_HEADER   512 /* the header's bytes, the thumbnail right after them */
 #define SNX_STATE_SECTIONS 64  /* a state holds this many sections at most */
 #define SNX_STATE_EXT      ".snxstate"
+#define SNX_STATE_THUMB_W  320 /* the thumbnail a runtime gives a state, the menu's picture of it: 320 x 180 RGBA8 */
+#define SNX_STATE_THUMB_H  180
 
 typedef struct {
     uint32_t format;          /* SNX_STATE_FORMAT */
@@ -41,6 +43,13 @@ int snx_state_fits(const SnxStateHeader* h, uint64_t title, const char* stamp, c
 void snx_state_stamp(const char* program, char* out, size_t size);
 /* a state file's name, program.slot.snxstate, as its program and slot: 1, or 0 for a name of no state */
 int snx_state_name(const char* name, char* program, size_t psize, char* slot, size_t ssize);
+
+/* A schema hash: the names and types of the fields a state holds as raw bytes, from Clang's walk of each struct
+   (__builtin_dump_struct(&obj, snx_state_schema_out, &h)), so a state whose types had other fields isn't read as this
+   runtime's. The values the walk prints aren't part of it. snx_state_schema_name adds a name of the caller's (the
+   struct's) to h */
+void snx_state_schema_name(uint64_t* h, const char* s);
+int snx_state_schema_out(uint64_t* h, const char* fmt, ...);
 
 /* text into a caller's why buffer of n bytes, when it gave one */
 static inline void snx_state_why(char* why, size_t n, const char* text) {
