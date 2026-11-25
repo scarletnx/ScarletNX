@@ -4,6 +4,7 @@
    there: the runtime answers their functions), SceRtc, SceAppMgr, SceAppUtil's save data (in savedata0:, io.c). The
    network is net.c's */
 #include "vita/hle/hle.h"
+#include "vita/hle/hle.hook.h"
 #include "common/utilities/endian.h"
 #include "common/utilities/common.h"
 #include <stdio.h>
@@ -14,30 +15,31 @@
 #define SCE_FONT_ERROR_HANDLER_OPEN_FAILED 0x80460005u
 #define SCE_RTC_ERROR_INVALID_POINTER 0x80251001u
 
-static uint32_t zero(VitaProcess* p, VitaThread* t) {
+uint32_t vita_misc_zero(VitaProcess* p, VitaThread* t) {
     (void)p, (void)t;
     return 0;
 }
-static uint32_t one(VitaProcess* p, VitaThread* t) {
+uint32_t vita_misc_one(VitaProcess* p, VitaThread* t) {
     (void)p, (void)t;
     return 1;
 }
-static uint32_t battery_percent(VitaProcess* p, VitaThread* t) {
+uint32_t vita_misc_battery_percent(VitaProcess* p, VitaThread* t) {
     (void)p, (void)t;
     return 100;
 }
-static uint32_t battery_life_time(VitaProcess* p, VitaThread* t) {
+uint32_t vita_misc_battery_life_time(VitaProcess* p, VitaThread* t) {
     (void)p, (void)t;
     return 300; /* minutes */
 }
-static uint32_t arm_clock(VitaProcess* p, VitaThread* t) {
+uint32_t vita_misc_arm_clock(VitaProcess* p, VitaThread* t) {
     (void)p, (void)t;
     return 444;
 }
 /* sceAppUtilSystemParamGetInt(id, *value): the system's language (1, English), enter button (1, cross), date and
    time formats, the time zone */
-static uint32_t system_param_int(VitaProcess* p, VitaThread* t) {
-    uint32_t id = vita_arg(p, t, 0), out = vita_arg(p, t, 1), value = 0;
+uint32_t vita_misc_system_param_int(VitaProcess* p, VitaThread* t, uint32_t id, uint32_t out) {
+    (void)t;
+    uint32_t value = 0;
     switch (id) {
         case 1: value = 1; break; /* SCE_SYSTEM_PARAM_ID_LANG: English (United States) */
         case 2: value = 1; break; /* SCE_SYSTEM_PARAM_ID_ENTER_BUTTON: cross */
@@ -46,8 +48,8 @@ static uint32_t system_param_int(VitaProcess* p, VitaThread* t) {
     if (out) vita_write32(p, out, value);
     return 0;
 }
-static uint32_t system_param_string(VitaProcess* p, VitaThread* t) {
-    uint32_t out = vita_arg(p, t, 1), size = vita_arg(p, t, 2);
+uint32_t vita_misc_system_param_string(VitaProcess* p, VitaThread* t, uint32_t id, uint32_t out, uint32_t size) {
+    (void)t, (void)id;
     static const char name[] = "Player";
     if (out && size) {
         size_t n = size < sizeof name ? size - 1 : sizeof name - 1;
@@ -71,46 +73,47 @@ static int64_t date_seconds(VitaProcess* p, uint32_t date) {
     for (unsigned i = 0; i < 6; ++i) f[i] = snx_ld_le16(b + i * 2);
     return days_from_civil(f[0], f[1], f[2]) * 86400 + f[3] * 3600 + f[4] * 60 + f[5];
 }
-static uint32_t rtc_get_time_t(VitaProcess* p, VitaThread* t) {
-    uint32_t date = vita_arg(p, t, 0), out = vita_arg(p, t, 1);
+uint32_t vita_misc_rtc_get_time_t(VitaProcess* p, VitaThread* t, uint32_t date, uint32_t out) {
+    (void)t;
     if (!date || !out) return SCE_RTC_ERROR_INVALID_POINTER;
     vita_write32(p, out, (uint32_t)date_seconds(p, date));
     return 0;
 }
-static uint32_t rtc_get_time64_t(VitaProcess* p, VitaThread* t) {
-    uint32_t date = vita_arg(p, t, 0), out = vita_arg(p, t, 1);
+uint32_t vita_misc_rtc_get_time64_t(VitaProcess* p, VitaThread* t, uint32_t date, uint32_t out) {
+    (void)t;
     if (!date || !out) return SCE_RTC_ERROR_INVALID_POINTER;
     vita_write64(p, out, (uint64_t)date_seconds(p, date));
     return 0;
 }
 /* SceRtcTick: microseconds since 0001-01-01 */
 #define UNIX_EPOCH_TICK 62135596800000000ull
-static uint32_t rtc_get_tick(VitaProcess* p, VitaThread* t) {
-    uint32_t date = vita_arg(p, t, 0), out = vita_arg(p, t, 1);
+uint32_t vita_misc_rtc_get_tick(VitaProcess* p, VitaThread* t, uint32_t date, uint32_t out) {
+    (void)t;
     if (!date || !out) return SCE_RTC_ERROR_INVALID_POINTER;
     vita_write64(p, out, UNIX_EPOCH_TICK + (uint64_t)(date_seconds(p, date) * 1000000) + vita_read32(p, date + 12));
     return 0;
 }
-static uint32_t rtc_get_current_tick(VitaProcess* p, VitaThread* t) {
-    uint32_t out = vita_arg(p, t, 0);
+uint32_t vita_misc_rtc_get_current_tick(VitaProcess* p, VitaThread* t, uint32_t out) {
+    (void)t;
     if (!out) return SCE_RTC_ERROR_INVALID_POINTER;
     vita_write64(p, out, UNIX_EPOCH_TICK + (uint64_t)(plat_unix_ns() / 1000));
     return 0;
 }
-static uint32_t rtc_get_tick_resolution(VitaProcess* p, VitaThread* t) {
+uint32_t vita_misc_rtc_get_tick_resolution(VitaProcess* p, VitaThread* t) {
     (void)p, (void)t;
     return 1000000;
 }
 /* sceRtcGetDayOfWeek(year, month, day): 0 for Sunday */
-static uint32_t rtc_get_day_of_week(VitaProcess* p, VitaThread* t) {
-    int64_t days = days_from_civil(vita_arg(p, t, 0), vita_arg(p, t, 1), vita_arg(p, t, 2));
+uint32_t vita_misc_rtc_get_day_of_week(VitaProcess* p, VitaThread* t, uint32_t year, uint32_t month, uint32_t day) {
+    (void)p, (void)t;
+    int64_t days = days_from_civil(year, month, day);
     return (uint32_t)(((days + 4) % 7 + 7) % 7); /* 1970-01-01 was a Thursday */
 }
 /* sceRtcSetTime_t(SceDateTime*, time_t): the date of a 32-bit time_t, UTC */
-static uint32_t rtc_set_time_t(VitaProcess* p, VitaThread* t) {
-    uint32_t out = vita_arg(p, t, 0);
+uint32_t vita_misc_rtc_set_time_t(VitaProcess* p, VitaThread* t, uint32_t out, int32_t time) {
+    (void)t;
     if (!out) return SCE_RTC_ERROR_INVALID_POINTER;
-    time_t seconds = (time_t)(int32_t)vita_arg(p, t, 1);
+    time_t seconds = (time_t)time;
     struct tm tm;
 #ifdef _WIN32
     gmtime_s(&tm, &seconds);
@@ -138,8 +141,8 @@ static void date_from_seconds(VitaProcess* p, uint32_t out, int64_t seconds, uin
     vita_write32(p, out + 12, microseconds);
 }
 /* sceRtcSetTick(SceDateTime*, const SceRtcTick*) */
-static uint32_t rtc_set_tick(VitaProcess* p, VitaThread* t) {
-    uint32_t out = vita_arg(p, t, 0), tick = vita_arg(p, t, 1);
+uint32_t vita_misc_rtc_set_tick(VitaProcess* p, VitaThread* t, uint32_t out, uint32_t tick) {
+    (void)t;
     if (!out || !tick) return SCE_RTC_ERROR_INVALID_POINTER;
     int64_t since = (int64_t)(((uint64_t)vita_read32(p, tick + 4) << 32 | vita_read32(p, tick)) - UNIX_EPOCH_TICK);
     int64_t seconds = since >= 0 ? since / 1000000 : -((-since + 999999) / 1000000);
@@ -147,15 +150,16 @@ static uint32_t rtc_set_tick(VitaProcess* p, VitaThread* t) {
     return 0;
 }
 /* sceRtcSetTime64_t(SceDateTime*, uint64_t time) */
-static uint32_t rtc_set_time64_t(VitaProcess* p, VitaThread* t) {
-    uint32_t out = vita_arg(p, t, 0);
+uint32_t vita_misc_rtc_set_time64_t(VitaProcess* p, VitaThread* t, uint32_t out, uint64_t time) {
+    (void)t;
     if (!out) return SCE_RTC_ERROR_INVALID_POINTER;
-    date_from_seconds(p, out, (int64_t)((uint64_t)vita_arg(p, t, 3) << 32 | vita_arg(p, t, 2)), 0);
+    date_from_seconds(p, out, (int64_t)time, 0);
     return 0;
 }
 /* sceRtcGetAccumulativeTime(): microseconds since the process started, 64 bits */
-static uint32_t rtc_get_accumulative_time(VitaProcess* p, VitaThread* t) {
-    return vita_return64(t, (plat_ns() - p->start_ns) / 1000u);
+uint64_t vita_misc_rtc_get_accumulative_time(VitaProcess* p, VitaThread* t) {
+    (void)t;
+    return (plat_ns() - p->start_ns) / 1000u;
 }
 /* SceDateTime (16 bytes: year, month, day, hour, minute, second as 16 bits, then microseconds) of now, local time */
 static void date_time_now(unsigned char* b) {
@@ -173,8 +177,8 @@ static void date_time_now(unsigned char* b) {
     for (unsigned i = 0; i < 6; ++i) snx_st_le16(b + i * 2, f[i]);
     snx_st_le32(b + 12, us);
 }
-static uint32_t rtc_current_local(VitaProcess* p, VitaThread* t) {
-    uint32_t out = vita_arg(p, t, 0);
+uint32_t vita_misc_rtc_current_local(VitaProcess* p, VitaThread* t, uint32_t out) {
+    (void)t;
     if (!out) return SCE_RTC_ERROR_INVALID_POINTER;
     date_time_now(vita_ptr(p, out));
     return 0;
@@ -186,8 +190,8 @@ static void put_float(VitaProcess* p, uint32_t address, float f) {
     memcpy(&bits, &f, sizeof bits);
     vita_write32(p, address, bits);
 }
-static uint32_t motion_get_state(VitaProcess* p, VitaThread* t) {
-    uint32_t out = vita_arg(p, t, 0);
+uint32_t vita_misc_motion_get_state(VitaProcess* p, VitaThread* t, uint32_t out) {
+    (void)t;
     if (!out) return 0x80360200u; /* SCE_MOTION_ERROR_NULL_PARAMETER */
     uint64_t us = (plat_ns() - p->start_ns) / 1000u;
     memset(vita_ptr(p, out), 0, 0xf8);
@@ -204,30 +208,31 @@ static uint32_t motion_get_state(VitaProcess* p, VitaThread* t) {
     return 0;
 }
 /* sceAppMgrReceiveSystemEvent and sceAppUtilReceiveAppEvent: no event comes */
-static uint32_t receive_system_event(VitaProcess* p, VitaThread* t) {
+uint32_t vita_misc_receive_system_event(VitaProcess* p, VitaThread* t) {
     (void)p, (void)t;
     return 0x80802013u; /* SCE_APPMGR_ERROR_STATE */
 }
-static uint32_t receive_app_event(VitaProcess* p, VitaThread* t) {
-    uint32_t out = vita_arg(p, t, 0);
+uint32_t vita_misc_receive_app_event(VitaProcess* p, VitaThread* t, uint32_t out) {
+    (void)t;
     if (!out) return 0x80100600u; /* SCE_APPUTIL_ERROR_PARAMETER */
     vita_write32(p, out, 0); /* no event */
     return 0;
 }
 /* sceAppMgrAppParamGetString(pid, param, *out, size): the title ID (param 12), what a plugin loader names its files by */
-static uint32_t app_param_get_string(VitaProcess* p, VitaThread* t) {
-    uint32_t out = vita_arg(p, t, 2), size = vita_arg(p, t, 3);
+uint32_t vita_misc_app_param_get_string(VitaProcess* p, VitaThread* t, uint32_t pid, uint32_t param, uint32_t out,
+                                        uint32_t size) {
+    (void)t, (void)pid;
     size_t length = strlen(p->title_id);
-    if (vita_arg(p, t, 1) != 12 || !out || !size || !vita_mapped(p, out, size)) return 0x80010016u; /* EINVAL */
+    if (param != 12 || !out || !size || !vita_mapped(p, out, size)) return 0x80010016u; /* EINVAL */
     if (length >= size) length = size - 1;
     memcpy(vita_ptr(p, out), p->title_id, length);
     ((char*)vita_ptr(p, out))[length] = 0;
     return 0;
 }
 /* sceAppUtilAppParamGetInt(id, *value): the game's full version (SCE_APPUTIL_APPPARAM_ID_SKU_FLAG 0, SKU 3) */
-static uint32_t app_param_get_int(VitaProcess* p, VitaThread* t) {
-    uint32_t out = vita_arg(p, t, 1);
-    if (!out || vita_arg(p, t, 0)) return 0x80100600u;
+uint32_t vita_misc_app_param_get_int(VitaProcess* p, VitaThread* t, uint32_t id, uint32_t out) {
+    (void)t;
+    if (!out || id) return 0x80100600u;
     vita_write32(p, out, 3); /* SCE_APPUTIL_APPPARAM_SKU_FLAG_FULL */
     return 0;
 }
@@ -288,8 +293,8 @@ bool vita_savedata_slot_exists(VitaProcess* p, uint32_t id) {
     return id < SAVEDATA_SLOTS && slot_read(p, id, param);
 }
 /* sceAppUtilSaveDataSlotCreate(id, const SceAppUtilSaveDataSlotParam*, mount point) */
-static uint32_t save_data_slot_create(VitaProcess* p, VitaThread* t) {
-    uint32_t id = vita_arg(p, t, 0), param = vita_arg(p, t, 1);
+uint32_t vita_misc_save_data_slot_create(VitaProcess* p, VitaThread* t, uint32_t id, uint32_t param, uint32_t point) {
+    (void)t, (void)point;
     unsigned char old[SLOT_PARAM_SIZE];
     if (id >= SAVEDATA_SLOTS || !param || !vita_mapped(p, param, SLOT_PARAM_SIZE)) return SCE_APPUTIL_ERROR_PARAMETER;
     if (slot_read(p, id, old)) return SCE_APPUTIL_ERROR_SAVEDATA_SLOT_EXISTS;
@@ -299,8 +304,8 @@ static uint32_t save_data_slot_create(VitaProcess* p, VitaThread* t) {
     return slot_write(p, id, copy) ? 0 : SCE_APPUTIL_ERROR_SAVEDATA_NO_SPACE_FS;
 }
 /* sceAppUtilSaveDataSlotDelete(id, mount point) */
-static uint32_t save_data_slot_delete(VitaProcess* p, VitaThread* t) {
-    uint32_t id = vita_arg(p, t, 0);
+uint32_t vita_misc_save_data_slot_delete(VitaProcess* p, VitaThread* t, uint32_t id, uint32_t point) {
+    (void)t, (void)point;
     if (id >= SAVEDATA_SLOTS) return SCE_APPUTIL_ERROR_PARAMETER;
     char* path = slot_path(p, id);
     bool there = path && snx_is_file(path);
@@ -309,8 +314,9 @@ static uint32_t save_data_slot_delete(VitaProcess* p, VitaThread* t) {
     return there ? 0 : SCE_APPUTIL_ERROR_SAVEDATA_SLOT_NOT_FOUND;
 }
 /* sceAppUtilSaveDataSlotGetParam(id, SceAppUtilSaveDataSlotParam*, mount point) */
-static uint32_t save_data_slot_get_param(VitaProcess* p, VitaThread* t) {
-    uint32_t id = vita_arg(p, t, 0), param = vita_arg(p, t, 1);
+uint32_t vita_misc_save_data_slot_get_param(VitaProcess* p, VitaThread* t, uint32_t id, uint32_t param,
+                                            uint32_t point) {
+    (void)t, (void)point;
     unsigned char copy[SLOT_PARAM_SIZE];
     if (id >= SAVEDATA_SLOTS || !param || !vita_mapped(p, param, SLOT_PARAM_SIZE)) return SCE_APPUTIL_ERROR_PARAMETER;
     if (!slot_read(p, id, copy)) return SCE_APPUTIL_ERROR_SAVEDATA_SLOT_NOT_FOUND;
@@ -319,8 +325,9 @@ static uint32_t save_data_slot_get_param(VitaProcess* p, VitaThread* t) {
     return 0;
 }
 /* sceAppUtilSaveDataSlotSetParam(id, const SceAppUtilSaveDataSlotParam*, mount point) */
-static uint32_t save_data_slot_set_param(VitaProcess* p, VitaThread* t) {
-    uint32_t id = vita_arg(p, t, 0), param = vita_arg(p, t, 1);
+uint32_t vita_misc_save_data_slot_set_param(VitaProcess* p, VitaThread* t, uint32_t id, uint32_t param,
+                                            uint32_t point) {
+    (void)t, (void)point;
     unsigned char copy[SLOT_PARAM_SIZE];
     if (id >= SAVEDATA_SLOTS || !param || !vita_mapped(p, param, SLOT_PARAM_SIZE)) return SCE_APPUTIL_ERROR_PARAMETER;
     if (!slot_read(p, id, copy)) return SCE_APPUTIL_ERROR_SAVEDATA_SLOT_NOT_FOUND;
@@ -350,9 +357,9 @@ static bool save_file(const char* path, const unsigned char* data, uint32_t size
    SceSize* required KiB): each file (0x40 bytes: path, buffer, size, offset at 0x10, mode at 0x18) written, a
    directory made; then the slot's parameters, the ones given (slot: id, parameters) or those it has, with now for
    their modified time */
-static uint32_t save_data_data_save(VitaProcess* p, VitaThread* t) {
-    uint32_t slot = vita_arg(p, t, 0), files = vita_arg(p, t, 1), count = vita_arg(p, t, 2);
-    uint32_t required = vita_arg(p, t, 4);
+uint32_t vita_misc_save_data_data_save(VitaProcess* p, VitaThread* t, uint32_t slot, uint32_t files, uint32_t count,
+                                       uint32_t point, uint32_t required) {
+    (void)t, (void)point;
     /* the slot (id, parameters), the files and the given parameters in the game's memory */
     if ((slot && !vita_mapped(p, slot, 8)) ||
         (count && (count > UINT32_MAX / 0x40 || !vita_mapped(p, files, count * 0x40))))
@@ -388,8 +395,9 @@ static uint32_t save_data_data_save(VitaProcess* p, VitaThread* t) {
 /* sceAppUtilSaveDataDataRemove(SceAppUtilSaveDataFileSlot* slot, SceAppUtilSaveDataRemoveItem* items, count, mount
    point): each item's file or folder (0x2c bytes: path, mode), and the slot unless the first's mode keeps it
    (SCE_APPUTIL_SAVEDATA_DATA_REMOVE_MODE_NO_SLOT, 1) */
-static uint32_t save_data_data_remove(VitaProcess* p, VitaThread* t) {
-    uint32_t slot = vita_arg(p, t, 0), items = vita_arg(p, t, 1), count = vita_arg(p, t, 2);
+uint32_t vita_misc_save_data_data_remove(VitaProcess* p, VitaThread* t, uint32_t slot, uint32_t items, uint32_t count,
+                                         uint32_t point) {
+    (void)t, (void)point;
     /* the slot (its id) and the items in the game's memory, as DataSave's */
     if ((slot && !vita_mapped(p, slot, 4)) ||
         (count && (count > UINT32_MAX / 0x2c || !vita_mapped(p, items, count * 0x2c))) ||
@@ -424,13 +432,13 @@ static bool addcont_installed(VitaProcess* p, uint32_t id) {
     free(path);
     return installed;
 }
-static uint32_t drm_open(VitaProcess* p, VitaThread* t) {
-    uint32_t id = vita_arg(p, t, 0);
+uint32_t vita_misc_drm_open(VitaProcess* p, VitaThread* t, uint32_t id) {
+    (void)t;
     if (!id) return SCE_APPUTIL_ERROR_PARAMETER;
     return addcont_installed(p, id) ? 0 : SCE_ERROR_ERRNO_ENOENT;
 }
-static uint32_t drm_close(VitaProcess* p, VitaThread* t) {
-    uint32_t id = vita_arg(p, t, 0);
+uint32_t vita_misc_drm_close(VitaProcess* p, VitaThread* t, uint32_t id) {
+    (void)t;
     if (!id) return SCE_APPUTIL_ERROR_PARAMETER;
     return addcont_installed(p, id) ? 0 : SCE_APPUTIL_ERROR_NOT_MOUNTED;
 }
@@ -439,25 +447,25 @@ static uint32_t drm_close(VitaProcess* p, VitaThread* t) {
    frame, and pauses itself while the system's screen is over it */
 #define SCE_APPMGR_ERROR_NULL_POINTER 0x80802016u
 #define APP_STATE_SIZE 0x80u
-static uint32_t get_app_state(VitaProcess* p, VitaThread* t) {
-    uint32_t state = vita_arg(p, t, 0), size = vita_arg(p, t, 1);
+uint32_t vita_misc_get_app_state(VitaProcess* p, VitaThread* t, uint32_t state, uint32_t size) {
+    (void)t;
     if (!state) return SCE_APPMGR_ERROR_NULL_POINTER;
     memset(vita_ptr(p, state), 0, size < APP_STATE_SIZE ? size : APP_STATE_SIZE);
     return 0;
 }
 /* sceAppMgrLoadExec: another program in the game's place, which the runtime can't start: the game ends */
-static uint32_t load_exec(VitaProcess* p, VitaThread* t) {
+uint32_t vita_misc_load_exec(VitaProcess* p, VitaThread* t) {
     (void)t;
     p->exited = true;
     return 0;
 }
 /* ScePgf: the console's system fonts, which the runtime doesn't have: sceFontNewLib answers no library and its error */
-static uint32_t font_new_lib(VitaProcess* p, VitaThread* t) {
-    uint32_t error = vita_arg(p, t, 1);
+uint32_t vita_misc_font_new_lib(VitaProcess* p, VitaThread* t, uint32_t params, uint32_t error) {
+    (void)t, (void)params;
     if (error) vita_write32(p, error, SCE_FONT_ERROR_HANDLER_OPEN_FAILED);
     return 0;
 }
-static uint32_t font_fail(VitaProcess* p, VitaThread* t) {
+uint32_t vita_misc_font_fail(VitaProcess* p, VitaThread* t) {
     (void)p, (void)t;
     return SCE_FONT_ERROR_HANDLER_OPEN_FAILED;
 }
@@ -465,8 +473,8 @@ static uint32_t font_fail(VitaProcess* p, VitaThread* t) {
 /* sceAppUtilSaveDataGetQuota(SceSize* quota KiB, SceSize* used KiB, mount point): the save data's room. The game's
    SAVEDATA_MAX_SIZE is not at hand here, so the quota is a card's worth of room (as sceAppUtilSaveDataDataSave's
    "required" says there is room) and none of it used */
-static uint32_t save_data_get_quota(VitaProcess* p, VitaThread* t) {
-    uint32_t quota = vita_arg(p, t, 0), used = vita_arg(p, t, 1);
+uint32_t vita_misc_save_data_get_quota(VitaProcess* p, VitaThread* t, uint32_t quota, uint32_t used, uint32_t point) {
+    (void)t, (void)point;
     if (!quota && !used) return SCE_APPUTIL_ERROR_PARAMETER;
     if ((quota && !vita_mapped(p, quota, 4)) || (used && !vita_mapped(p, used, 4))) return SCE_APPUTIL_ERROR_PARAMETER;
     if (quota) vita_write32(p, quota, 64u << 10);
@@ -478,25 +486,20 @@ static uint32_t save_data_get_quota(VitaProcess* p, VitaThread* t) {
    never saved gives zeros */
 #define SAFE_MEMORY_SIZE (64u * 1024)
 static char* safe_memory_path(VitaProcess* p) { return snx_path_join(p->savedata, ".safe_memory"); }
-static bool safe_memory_range(VitaProcess* p, VitaThread* t, uint32_t* buffer, uint32_t* size, uint32_t* offset) {
-    *buffer = vita_arg(p, t, 0), *size = vita_arg(p, t, 1);
-    uint64_t at = vita_arg(p, t, 2) | (uint64_t)vita_arg(p, t, 3) << 32; /* a 64-bit argument, from an even register */
-    if (!*buffer || at > SAFE_MEMORY_SIZE || *size > SAFE_MEMORY_SIZE - at || !vita_mapped(p, *buffer, *size))
-        return false;
-    *offset = (uint32_t)at;
-    return true;
+static bool safe_memory_range(VitaProcess* p, uint32_t buffer, uint32_t size, uint64_t offset) {
+    return buffer && offset <= SAFE_MEMORY_SIZE && size <= SAFE_MEMORY_SIZE - offset && vita_mapped(p, buffer, size);
 }
-static uint32_t save_safe_memory(VitaProcess* p, VitaThread* t) {
-    uint32_t buffer, size, offset;
-    if (!safe_memory_range(p, t, &buffer, &size, &offset)) return SCE_APPUTIL_ERROR_PARAMETER;
+uint32_t vita_misc_save_safe_memory(VitaProcess* p, VitaThread* t, uint32_t buffer, uint32_t size, uint64_t offset) {
+    (void)t;
+    if (!safe_memory_range(p, buffer, size, offset)) return SCE_APPUTIL_ERROR_PARAMETER;
     char* path = safe_memory_path(p);
     bool ok = path && save_file(path, vita_ptr(p, buffer), size, offset, false);
     free(path);
     return ok ? size : SCE_APPUTIL_ERROR_SAVEDATA_NO_SPACE_FS;
 }
-static uint32_t load_safe_memory(VitaProcess* p, VitaThread* t) {
-    uint32_t buffer, size, offset;
-    if (!safe_memory_range(p, t, &buffer, &size, &offset)) return SCE_APPUTIL_ERROR_PARAMETER;
+uint32_t vita_misc_load_safe_memory(VitaProcess* p, VitaThread* t, uint32_t buffer, uint32_t size, uint64_t offset) {
+    (void)t;
+    if (!safe_memory_range(p, buffer, size, offset)) return SCE_APPUTIL_ERROR_PARAMETER;
     char* path = safe_memory_path(p);
     size_t have = 0;
     unsigned char* bytes = path && snx_is_file(path) ? snx_read_file(path, &have) : NULL;
@@ -506,75 +509,3 @@ static uint32_t load_safe_memory(VitaProcess* p, VitaThread* t) {
     free(path);
     return size;
 }
-
-const VitaHle vita_hle_misc[] = {
-    {0x2085d15du, "scePowerGetBatteryLifePercent", battery_percent},
-    {0x8efb3fa2u, "scePowerGetBatteryLifeTime", battery_life_time},
-    {0x1e490401u, "scePowerIsBatteryCharging", one},
-    {0x87440f5eu, "scePowerIsPowerOnline", one},
-    {0x74db5ae5u, "scePowerSetArmClockFrequency", zero},
-    {0xabc6f88fu, "scePowerGetArmClockFrequency", arm_clock},
-    {0xdaffe671u, "sceAppUtilInit", zero},
-    {0xb220b00bu, "sceAppUtilShutdown", zero},
-    {0xee85804du, "sceAppUtilPhotoMount", zero},
-    {0x9651b941u, "sceAppUtilPhotoUmount", zero},
-    {0xb5edcbffu, "sceAppUtilMusicMount", zero},
-    {0xa7fe1bf7u, "sceAppUtilMusicUmount", zero},
-    {0x5dfb9ca0u, "sceAppUtilSystemParamGetInt", system_param_int},
-    {0x6e6aa267u, "sceAppUtilSystemParamGetString", system_param_string},
-    {0x79a0160au, "sceSysmoduleLoadModule", zero},
-    {0x31d87805u, "sceSysmoduleUnloadModule", zero},
-    {0x53099b7au, "sceSysmoduleIsLoaded", zero},
-    {0x8de6feb7u, "sceRtcGetTime_t", rtc_get_time_t},
-    {0x0572eddcu, "sceRtcGetCurrentClockLocalTime", rtc_current_local},
-    {0xc995de02u, "sceRtcGetTime64_t", rtc_get_time64_t},
-    {0xf2b238e2u, "sceRtcGetTick", rtc_get_tick},
-    {0x23f79274u, "sceRtcGetCurrentTick", rtc_get_current_tick},
-    {0xcddd25feu, "sceRtcGetCurrentNetworkTick", rtc_get_current_tick},
-    {0x811313b3u, "sceRtcGetTickResolution", rtc_get_tick_resolution},
-    {0x2f3531ebu, "sceRtcGetDayOfWeek", rtc_get_day_of_week},
-    {0x3a332f81u, "sceRtcSetTime_t", rtc_set_time_t},
-    {0xcd89f464u, "sceRtcSetTick", rtc_set_tick},
-    {0xa6c36b6au, "sceRtcSetTime64_t", rtc_set_time64_t},
-    {0x258be8ecu, "sceRtcGetAccumulativeTime", rtc_get_accumulative_time},
-    {0x3ce187b6u, "scePowerSetConfigurationMode", zero},
-    {0x28034ac9u, "sceMotionStartSampling", zero},
-    {0x0fd2cda2u, "sceMotionReset", zero},
-    {0xbdb32767u, "sceMotionGetState", motion_get_state},
-    {0x10b5765fu, "sceAppMgrReceiveSystemEvent", receive_system_event},
-    {0xfff8f7f0u, "sceAppMgrIsGameProgram", one},
-    {0xafceab96u, "sceAppMgrAcquireBgmPort", zero},
-    {0xf3717e37u, "sceAppMgrReleaseBgmPort", zero},
-    {0xb18370c2u, "sceTouchEnableTouchForce", zero},
-    {0x76e674d1u, "sceScreenShotEnable", zero},
-    {0x50ae9ff9u, "sceScreenShotDisable", zero},
-    {0x7061665bu, "sceScreenShotSetOverlayImage", zero},
-    {0xcc18fbaeu, "sceKernelChangeThreadVfpException", zero},
-    {0x9379e2d5u, "_sceFiosKernelOverlayGetList", zero},
-    {0xb02e0b26u, "_sceFiosKernelOverlayGetRecommendedScheduler", zero},
-    {0x3e9172eau, "_sceFiosKernelOverlayThreadSetDisabled", zero},
-    {0xee0dbed9u, "sceAppUtilReceiveAppEvent", receive_app_event},
-    {0xcd7fd67au, "sceAppUtilAppParamGetInt", app_param_get_int},
-    {0x0c733ae2u, "sceAppMgrAppParamGetString", app_param_get_string},
-    {0x7e8fe96au, "sceAppUtilSaveDataSlotCreate", save_data_slot_create},
-    {0x266a7646u, "sceAppUtilSaveDataSlotDelete", save_data_slot_delete},
-    {0x93f0d89fu, "sceAppUtilSaveDataSlotGetParam", save_data_slot_get_param},
-    {0x98630136u, "sceAppUtilSaveDataSlotSetParam", save_data_slot_set_param},
-    {0x607647bau, "sceAppUtilSaveDataDataSave", save_data_data_save},
-    {0x2db7be3bu, "sceAppUtilDrmOpen", drm_open},
-    {0x6a140498u, "sceAppUtilDrmClose", drm_close},
-    {0xd1c6ab8eu, "sceAppUtilSaveDataDataRemove", save_data_data_remove},
-    {0xc560e716u, "sceAppUtilSaveDataGetQuota", save_data_get_quota},
-    {0x9d8ac677u, "sceAppUtilSaveSafeMemory", save_safe_memory},
-    {0x3424d772u, "sceAppUtilLoadSafeMemory", load_safe_memory},
-    {0xe6774abcu, "sceAppMgrLoadExec", load_exec},
-    {0x5e86319au, "_sceAppMgrGetAppState", get_app_state},
-    {0x210c0046u, "__sceAppMgrGetAppState", get_app_state},
-    {0x1055aba3u, "sceFontNewLib", font_new_lib},
-    {0x07ee1733u, "sceFontDoneLib", zero},
-    {0xbd2dfcffu, "sceFontOpen", font_new_lib},
-    {0x4a7293e9u, "sceFontClose", zero},
-    {0x6fd1ba65u, "sceFontGetCharInfo", font_fail},
-    {0xab45aad3u, "sceFontGetCharGlyphImage", font_fail},
-    {0, NULL, NULL},
-};

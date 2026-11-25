@@ -1,0 +1,76 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+#
+# The Vita's imports that misc.c answers, by NID, for tools/hookgen --vita.
+# The small system libraries: ScePower (a charged battery on mains power), SceAppUtil, SceSysmodule (every module is
+# there: the runtime answers their functions), SceRtc, SceAppMgr, SceAppUtil's save data (in savedata0:, io.c). The
+# network is net.c's
+family misc
+[0x2085d15d] hook scePowerGetBatteryLifePercent() -> u32 = vita_misc_battery_percent
+[0x8efb3fa2] hook scePowerGetBatteryLifeTime() -> u32 = vita_misc_battery_life_time
+[0x1e490401] hook scePowerIsBatteryCharging() -> u32 = vita_misc_one
+[0x87440f5e] hook scePowerIsPowerOnline() -> u32 = vita_misc_one
+[0x74db5ae5] hook scePowerSetArmClockFrequency() -> u32 = vita_misc_zero
+[0xabc6f88f] hook scePowerGetArmClockFrequency() -> u32 = vita_misc_arm_clock
+[0xdaffe671] hook sceAppUtilInit() -> u32 = vita_misc_zero
+[0xb220b00b] hook sceAppUtilShutdown() -> u32 = vita_misc_zero
+[0xee85804d] hook sceAppUtilPhotoMount() -> u32 = vita_misc_zero
+[0x9651b941] hook sceAppUtilPhotoUmount() -> u32 = vita_misc_zero
+[0xb5edcbff] hook sceAppUtilMusicMount() -> u32 = vita_misc_zero
+[0xa7fe1bf7] hook sceAppUtilMusicUmount() -> u32 = vita_misc_zero
+[0x5dfb9ca0] hook sceAppUtilSystemParamGetInt(u32 id, addr out) -> u32 = vita_misc_system_param_int
+[0x6e6aa267] hook sceAppUtilSystemParamGetString(u32 id, addr out, u32 size) -> u32 = vita_misc_system_param_string
+[0x79a0160a] hook sceSysmoduleLoadModule() -> u32 = vita_misc_zero
+[0x31d87805] hook sceSysmoduleUnloadModule() -> u32 = vita_misc_zero
+[0x53099b7a] hook sceSysmoduleIsLoaded() -> u32 = vita_misc_zero
+[0x8de6feb7] hook sceRtcGetTime_t(u32 date, addr out) -> u32 = vita_misc_rtc_get_time_t
+[0x0572eddc] hook sceRtcGetCurrentClockLocalTime(addr out) -> u32 = vita_misc_rtc_current_local
+[0xc995de02] hook sceRtcGetTime64_t(u32 date, addr out) -> u32 = vita_misc_rtc_get_time64_t
+[0xf2b238e2] hook sceRtcGetTick(addr date, addr out) -> u32 = vita_misc_rtc_get_tick
+[0x23f79274] hook sceRtcGetCurrentTick(addr out) -> u32 = vita_misc_rtc_get_current_tick
+[0xcddd25fe] hook sceRtcGetCurrentNetworkTick(addr out) -> u32 = vita_misc_rtc_get_current_tick
+[0x811313b3] hook sceRtcGetTickResolution() -> u32 = vita_misc_rtc_get_tick_resolution
+[0x2f3531eb] hook sceRtcGetDayOfWeek(u32 year, u32 month, u32 day) -> u32 = vita_misc_rtc_get_day_of_week
+[0x3a332f81] hook sceRtcSetTime_t(addr out, i32 time) -> u32 = vita_misc_rtc_set_time_t
+[0xcd89f464] hook sceRtcSetTick(u32 out, addr tick) -> u32 = vita_misc_rtc_set_tick
+[0xa6c36b6a] hook sceRtcSetTime64_t(addr out, u64 time) -> u32 = vita_misc_rtc_set_time64_t
+[0x258be8ec] hook sceRtcGetAccumulativeTime() -> u64 = vita_misc_rtc_get_accumulative_time
+[0x3ce187b6] hook scePowerSetConfigurationMode() -> u32 = vita_misc_zero
+[0x28034ac9] hook sceMotionStartSampling() -> u32 = vita_misc_zero
+[0x0fd2cda2] hook sceMotionReset() -> u32 = vita_misc_zero
+[0xbdb32767] hook sceMotionGetState(addr out) -> u32 = vita_misc_motion_get_state
+[0x10b5765f] hook sceAppMgrReceiveSystemEvent() -> u32 = vita_misc_receive_system_event
+[0xfff8f7f0] hook sceAppMgrIsGameProgram() -> u32 = vita_misc_one
+[0xafceab96] hook sceAppMgrAcquireBgmPort() -> u32 = vita_misc_zero
+[0xf3717e37] hook sceAppMgrReleaseBgmPort() -> u32 = vita_misc_zero
+[0xb18370c2] hook sceTouchEnableTouchForce() -> u32 = vita_misc_zero
+[0x76e674d1] hook sceScreenShotEnable() -> u32 = vita_misc_zero
+[0x50ae9ff9] hook sceScreenShotDisable() -> u32 = vita_misc_zero
+[0x7061665b] hook sceScreenShotSetOverlayImage() -> u32 = vita_misc_zero
+[0xcc18fbae] hook sceKernelChangeThreadVfpException() -> u32 = vita_misc_zero
+[0x9379e2d5] hook _sceFiosKernelOverlayGetList() -> u32 = vita_misc_zero
+[0xb02e0b26] hook _sceFiosKernelOverlayGetRecommendedScheduler() -> u32 = vita_misc_zero
+[0x3e9172ea] hook _sceFiosKernelOverlayThreadSetDisabled() -> u32 = vita_misc_zero
+[0xee0dbed9] hook sceAppUtilReceiveAppEvent(addr out) -> u32 = vita_misc_receive_app_event
+[0xcd7fd67a] hook sceAppUtilAppParamGetInt(u32 id, addr out) -> u32 = vita_misc_app_param_get_int
+[0x0c733ae2] hook sceAppMgrAppParamGetString(u32 pid, u32 param, addr out, u32 size) -> u32 = vita_misc_app_param_get_string
+[0x7e8fe96a] hook sceAppUtilSaveDataSlotCreate(u32 id, addr param, u32 point) -> u32 = vita_misc_save_data_slot_create
+[0x266a7646] hook sceAppUtilSaveDataSlotDelete(u32 id, u32 point) -> u32 = vita_misc_save_data_slot_delete
+[0x93f0d89f] hook sceAppUtilSaveDataSlotGetParam(u32 id, addr param, u32 point) -> u32 = vita_misc_save_data_slot_get_param
+[0x98630136] hook sceAppUtilSaveDataSlotSetParam(u32 id, addr param, u32 point) -> u32 = vita_misc_save_data_slot_set_param
+[0x607647ba] hook sceAppUtilSaveDataDataSave(addr slot, addr files, u32 count, u32 point, addr required) -> u32 = vita_misc_save_data_data_save
+[0x2db7be3b] hook sceAppUtilDrmOpen(u32 id) -> u32 = vita_misc_drm_open
+[0x6a140498] hook sceAppUtilDrmClose(u32 id) -> u32 = vita_misc_drm_close
+[0xd1c6ab8e] hook sceAppUtilSaveDataDataRemove(addr slot, addr items, u32 count, u32 point) -> u32 = vita_misc_save_data_data_remove
+[0xc560e716] hook sceAppUtilSaveDataGetQuota(addr quota, addr used, u32 point) -> u32 = vita_misc_save_data_get_quota
+[0x9d8ac677] hook sceAppUtilSaveSafeMemory(addr buffer, u32 size, u64 offset) -> u32 = vita_misc_save_safe_memory
+[0x3424d772] hook sceAppUtilLoadSafeMemory(addr buffer, u32 size, u64 offset) -> u32 = vita_misc_load_safe_memory
+[0xe6774abc] hook sceAppMgrLoadExec() -> u32 = vita_misc_load_exec
+[0x5e86319a] hook _sceAppMgrGetAppState(addr state, u32 size) -> u32 = vita_misc_get_app_state
+[0x210c0046] hook __sceAppMgrGetAppState(addr state, u32 size) -> u32 = vita_misc_get_app_state
+[0x1055aba3] hook sceFontNewLib(u32 params, addr error) -> u32 = vita_misc_font_new_lib
+[0x07ee1733] hook sceFontDoneLib() -> u32 = vita_misc_zero
+[0xbd2dfcff] hook sceFontOpen(u32 params, addr error) -> u32 = vita_misc_font_new_lib
+[0x4a7293e9] hook sceFontClose() -> u32 = vita_misc_zero
+[0x6fd1ba65] hook sceFontGetCharInfo() -> u32 = vita_misc_font_fail
+[0xab45aad3] hook sceFontGetCharGlyphImage() -> u32 = vita_misc_font_fail
