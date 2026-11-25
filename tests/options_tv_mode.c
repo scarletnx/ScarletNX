@@ -1332,7 +1332,10 @@ static void test_key_steps(void) {
     free(dir);
 }
 
+#include "config_files_options.c"
+
 int main(int argc, char** argv) {
+    if (argc > 2 && !strcmp(argv[1], "--config-files")) return config_files_options(argv[2]);
     if (argc > 1 && !strncmp(argv[1], "--picks-", 8)) return options_picks(argv[1]);
     if (argc > 1) return options_vk_descriptors_first(argv[1]);
     test_fixed();

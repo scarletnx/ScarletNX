@@ -1,0 +1,83 @@
+# What still differs from the rule of tests/config_files.h, "<file's id> <situation>" a line: the fix of each takes its
+# line out (config_files_* fail on a line whose situation holds), and the last of them takes this file's lines all out.
+users.ini unknown-key
+users.ini unknown-section
+users.ini no-equals
+users.ini repeated
+users.ini unreadable
+users.ini closed
+online.ini unknown-key
+online.ini no-equals
+online.ini repeated
+online.ini unreadable
+online.ini closed
+setup.ini unknown-key
+setup.ini unknown-section
+setup.ini no-equals
+setup.ini repeated
+setup.ini unreadable
+setup.ini closed
+game.ini record unreadable
+game.ini record closed
+game.ini unknown-key
+game.ini unknown-section
+game.ini unreadable
+game.ini closed
+game.picks unknown-key
+game.picks unknown-section
+game.picks no-equals
+game.picks repeated
+game.picks unreadable
+game.picks closed
+settings.ini unknown-key
+settings.ini unknown-section
+settings.ini no-equals
+settings.ini repeated
+settings.ini bad-value
+settings.ini unreadable
+settings.ini closed
+game.picks launcher unknown-key
+game.picks launcher unknown-section
+game.picks launcher no-equals
+game.picks launcher repeated
+game.picks launcher bad-value
+game.picks launcher unreadable
+game.picks launcher closed
+app.ini unknown-key
+app.ini unknown-section
+app.ini no-equals
+app.ini repeated
+app.ini bad-value
+app.ini unreadable
+app.ini closed
+theme.ini unknown-key
+theme.ini unknown-section
+theme.ini no-equals
+theme.ini repeated
+theme.ini unreadable
+theme.ini closed
+theme.ini write-fails
+last-run.ini unknown-key
+last-run.ini unknown-section
+last-run.ini no-equals
+last-run.ini repeated
+last-run.ini bad-value
+last-run.ini closed
+folders.txt unreadable
+folders.txt closed
+folders.txt write-fails
+removed.txt unreadable
+removed.txt closed
+recent.txt unknown-key
+recent.txt unreadable
+recent.txt closed
+joycon2.txt unknown-key
+joycon2.txt unreadable
+joycon2.txt closed
+settings.ini 3DS adapter
+settings.ini NDS adapter
+settings.ini Android adapter
+app.ini folders adapter
+joycon2.txt runtime adapter
+3DS game.ini adapter
+game.folders adapter

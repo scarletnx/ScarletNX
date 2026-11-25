@@ -1359,6 +1359,107 @@ def check_state_fns(repo):
     return errors
 
 
+CONFIG_CALL = re.compile(
+    r'(?<![A-Za-z0-9_])(snx_ini_start|snx_ini_next|snx_ini_put|snx_ini_record|snx_ini_drop|snx_ini_value|snx_ini_has|'
+    r'snx_lines_add|snx_config_read|snx_config_write)\s*\('
+)
+CONFIG_HEAD = re.compile(r'^(?:static |const |unsigned |struct |enum |inline )*[A-Za-z_]\w*[\s*]+\**([A-Za-z_]\w*)\(', re.M)
+CONFIG_NAME = re.compile(r'"([A-Za-z0-9_.-]*\.(?:ini|picks|folders|txt))"')
+CONFIG_TEXT = re.compile(r'/\*.*?\*/|//[^\n]*', re.S)
+CONFIG_ID = re.compile(r'\.id\s*=\s*"([^"]+)"')
+CONFIG_OWN = {'src/common/utilities/ini_lines.c', 'src/common/utilities/config_file.c'}
+
+
+def config_functions(source):
+    """each function a C source defines, with where it starts"""
+    return [(m.start(), m.group(1)) for m in CONFIG_HEAD.finditer(source)]
+
+
+def check_config_files(repo):
+    """every function in src/ that reads or writes a settings file (the ini reader's and config_file.h's calls, and the
+    names of its files) is one of tests/config_files.json's, each such file has an adapter that runs it through
+    tests/config_files.h's situations or is listed pending without one, and every adapter's id is the registry's"""
+    errors = []
+    registry = json.loads((repo / 'tests/config_files.json').read_text(encoding='utf-8'))
+    listed, names, ids = {}, set(registry['not_config']) - {'doc'}, set()
+    for entry in registry['files']:
+        ids.add(entry['id'])
+        names.update(entry['names'])
+        for fn in entry['functions']:
+            listed[fn] = entry['id']
+    for name, record in registry['records'].items():
+        if name != 'doc':
+            names.add(name)
+            for fn in record['functions']:
+                listed[fn] = name
+    pending = (repo / 'tests/config_files.pending').read_text(encoding='utf-8').splitlines()
+    pending = {line.strip() for line in pending if line.strip() and not line.lstrip().startswith('#')}
+    seen = set()
+    for path in sorted((repo / 'src').rglob('*.[ch]')):
+        shown = path.relative_to(repo).as_posix()
+        text = path.read_text(encoding='utf-8', errors='replace')
+        for match in CONFIG_NAME.finditer(text):
+            if match.group(1) not in names:
+                line = text.count('\n', 0, match.start()) + 1
+                errors.append(
+                    f'{shown}:{line}: "{match.group(1)}" names a file that is neither a settings file of '
+                    "tests/config_files.json nor one of its not_config: a settings file follows the rule of "
+                    'tests/config_files.h; list it there with its readers, or say why it is none'
+                )
+        if path.suffix != '.c':
+            continue
+        source = CONFIG_TEXT.sub(lambda m: re.sub(r'[^\n]', ' ', m.group(0)), text)
+        heads = config_functions(source)
+        for _, fn in heads:
+            seen.add(f'{shown}:{fn}')
+        if shown in CONFIG_OWN:
+            continue
+        for match in CONFIG_CALL.finditer(source):
+            before = [fn for at, fn in heads if at < match.start()]
+            where = f'{shown}:{before[-1] if before else "?"}'
+            if where not in listed:
+                line = source.count('\n', 0, match.start()) + 1
+                errors.append(
+                    f'{shown}:{line}: {match.group(1)} in {where.split(":")[1]}, which reads or writes a settings file '
+                    'tests/config_files.json does not list: add the function to its file there, so '
+                    "tests/config_files.h's situations run what it does"
+                )
+                listed[where] = None  # once
+    for fn, owner in sorted(listed.items(), key=lambda item: item[0]):
+        if owner is not None and fn not in seen:
+            errors.append(f'tests/config_files.json: {fn} ({owner}) is no function in src/ any more: take it out')
+    adapters = {}
+    for path in sorted((repo / 'tests').glob('config_files_*.c')):
+        if path.name == 'config_files_checker.c':  # the runner's own test, of a reader made up
+            continue
+        for match in CONFIG_ID.finditer(path.read_text(encoding='utf-8', errors='replace')):
+            adapters[match.group(1)] = path.relative_to(repo).as_posix()
+    for entry in registry['files']:
+        given, has = entry['adapter'], adapters.get(entry['id'])
+        if given is None and f'{entry["id"]} adapter' not in pending:
+            errors.append(
+                f'tests/config_files.json: {entry["id"]} has no adapter, and tests/config_files.pending does not list '
+                f'"{entry["id"]} adapter"'
+            )
+        elif given is not None and f'{entry["id"]} adapter' in pending:
+            errors.append(f'tests/config_files.pending: "{entry["id"]} adapter", and it has one: take the line out')
+        elif given is not None and given != has:
+            errors.append(
+                f'tests/config_files.json: {entry["id"]}\'s adapter is {given}, and '
+                + (f'its id is in {has}' if has else 'no tests/config_files_*.c gives that id')
+            )
+    for found, where in sorted(adapters.items()):
+        if found not in ids:
+            errors.append(f'{where}: {found} is no id of tests/config_files.json')
+    situations = {'unknown-key', 'unknown-section', 'no-equals', 'repeated', 'bad-value', 'absent', 'unreadable',
+                  'closed', 'secret-readable', 'write-fails', 'adapter'}
+    for line in sorted(pending):
+        file, _, situation = line.rpartition(' ')
+        if file not in ids or situation not in situations:
+            errors.append(f'tests/config_files.pending: "{line}" is no file of tests/config_files.json and situation')
+    return errors
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--repo', type=Path, default=Path(__file__).resolve().parents[1])
@@ -1389,6 +1490,7 @@ def main():
         + check_cmake_versions(args.repo.resolve())
         + check_device_makers(args.repo.resolve())
         + check_weak_declarations(args.repo.resolve())
+        + check_config_files(args.repo.resolve())
     )
     if args.build:
         graph = args.build.resolve() / 'architecture-targets.dot'
