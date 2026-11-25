@@ -652,6 +652,39 @@ static unsigned index_bound(SnxCodegen* codegen, SnxU64 at, unsigned reg, int de
     return k && k <= 8 ? 1u << k : 0;
 }
 
+/* whether the plain instruction word writes general register reg: its Rd, but a load's or store's Rt where it loads
+   it (and a pair's Rt2), the base a pre- or post-indexed access or structure writes back, a SIMD&FP instruction's Rd
+   only where it moves or converts to a general register. What it can't tell writes reg */
+static int writes_reg(SnxU32 w, unsigned reg) {
+    unsigned rt = w & 31, rn = (w >> 5) & 31, v = (w >> 26) & 1, opc = (w >> 22) & 3, idx = (w >> 10) & 3;
+    if ((w & 0x0a000000UL) == 0x08000000UL) {   /* loads and stores */
+        if ((w & 0x3f000000UL) == 0x08000000UL) /* exclusives: Rt, Rt2, Rs */
+            return rt == reg || ((w >> 10) & 31) == reg || ((w >> 16) & 31) == reg;
+        if ((w & 0x3a000000UL) == 0x28000000UL) /* pairs: bit 22 a load, bit 23 a writeback */
+            return (!v && (w >> 22 & 1) && (rt == reg || ((w >> 10) & 31) == reg)) || ((w >> 23 & 1) && rn == reg);
+        if ((w & 0x3b000000UL) == 0x18000000UL) return !v && rt == reg;        /* LDR (literal) */
+        if ((w & 0x3b000000UL) == 0x39000000UL) return !v && opc && rt == reg; /* unsigned offset */
+        if ((w & 0x3b200000UL) == 0x38000000UL)                                /* unscaled, pre, post */
+            return (!v && opc && rt == reg) || ((idx == 1 || idx == 3) && rn == reg);
+        if ((w & 0x3b200c00UL) == 0x38200800UL) return !v && opc && rt == reg;     /* register offset */
+        if ((w & 0xbe000000UL) == 0x0c000000UL) return (w >> 23 & 1) && rn == reg; /* structures' post-index */
+        return rt == reg || rn == reg || ((w >> 16) & 31) == reg;
+    }
+    if ((w & 0x0e000000UL) == 0x0e000000UL) {
+        /* SIMD and FP: UMOV, SMOV and the scalar moves and conversions (bit 21 clear: of fixed point) to a general
+           register, not from one (SCVTF, UCVTF, FMOV) */
+        unsigned op = (w >> 16) & 7;
+        if (rt != reg) return 0;
+        if ((w & 0x5f000000UL) == 0x1e000000UL && (!((w >> 21) & 1) || !((w >> 10) & 63)))
+            return op != 2 && op != 3 && op != 7;
+        return (w & 0xbfe0fc00UL) == 0x0e003c00UL || (w & 0xbfe0fc00UL) == 0x0e002c00UL;
+    }
+    if ((w & 0xffe00000UL) == 0xd5000000UL) return 0;                       /* MSR, SYS: Rt is read */
+    if ((w & 0x1fe00000UL) == 0x1a400000UL) return 0;                       /* CCMP, CCMN: the flags */
+    if ((w & 0x1fe00000UL) == 0x1a000000UL && ((w >> 10) & 0x3f)) return 0; /* RMIF, SETF: a mask */
+    return rt == reg;
+}
+
 /* the entries the compare guarding the table bounds: cases + 1, or 0 when there is no such compare */
 static unsigned table_bound(SnxCodegen* codegen, SnxU64 load, unsigned index_reg) {
     for (unsigned i = 1; i <= 16 && load >= (SnxU64)i * 4; ++i) {
@@ -668,11 +701,13 @@ static unsigned table_bound(SnxCodegen* codegen, SnxU64 load, unsigned index_reg
         if (flow != SNX_A64_FLOW_PLAIN && flow != SNX_A64_FLOW_BC) break;
         /* the index widened to 64 bits after the compare (mov wI, wS; and xI, xS, #0xffffffff): the compare is on
            the register it came from */
-        if (flow == SNX_A64_FLOW_PLAIN && (word & 31) == index_reg) {
+        if (flow == SNX_A64_FLOW_PLAIN && writes_reg(word, index_reg)) {
             if ((word & 0x7fe0ffe0UL) == 0x2a0003e0UL)
                 index_reg = (word >> 16) & 31;
             else if ((word & 0xfffffc00UL) == 0x92407c00UL)
                 index_reg = (word >> 5) & 31;
+            else
+                return 0; /* made here: a compare before is of another value */
         }
     }
     return 0;
@@ -737,39 +772,6 @@ size_t snx_codegen_jump_table(SnxCodegen* codegen, SnxU64 address, SnxU64* targe
          atomic_load_explicit(table_generation, memory_order_seq_cst) != table_version))
         return 0;
     return count;
-}
-
-/* whether the plain instruction word writes general register reg: its Rd, but a load's or store's Rt where it loads
-   it (and a pair's Rt2), the base a pre- or post-indexed access or structure writes back, a SIMD&FP instruction's Rd
-   only where it moves or converts to a general register. What it can't tell writes reg */
-static int writes_reg(SnxU32 w, unsigned reg) {
-    unsigned rt = w & 31, rn = (w >> 5) & 31, v = (w >> 26) & 1, opc = (w >> 22) & 3, idx = (w >> 10) & 3;
-    if ((w & 0x0a000000UL) == 0x08000000UL) { /* loads and stores */
-        if ((w & 0x3f000000UL) == 0x08000000UL) /* exclusives: Rt, Rt2, Rs */
-            return rt == reg || ((w >> 10) & 31) == reg || ((w >> 16) & 31) == reg;
-        if ((w & 0x3a000000UL) == 0x28000000UL) /* pairs: bit 22 a load, bit 23 a writeback */
-            return (!v && (w >> 22 & 1) && (rt == reg || ((w >> 10) & 31) == reg)) || ((w >> 23 & 1) && rn == reg);
-        if ((w & 0x3b000000UL) == 0x18000000UL) return !v && rt == reg;             /* LDR (literal) */
-        if ((w & 0x3b000000UL) == 0x39000000UL) return !v && opc && rt == reg;       /* unsigned offset */
-        if ((w & 0x3b200000UL) == 0x38000000UL)                                      /* unscaled, pre, post */
-            return (!v && opc && rt == reg) || ((idx == 1 || idx == 3) && rn == reg);
-        if ((w & 0x3b200c00UL) == 0x38200800UL) return !v && opc && rt == reg;       /* register offset */
-        if ((w & 0xbe000000UL) == 0x0c000000UL) return (w >> 23 & 1) && rn == reg; /* structures' post-index */
-        return rt == reg || rn == reg || ((w >> 16) & 31) == reg;
-    }
-    if ((w & 0x0e000000UL) == 0x0e000000UL) {
-        /* SIMD and FP: UMOV, SMOV and the scalar moves and conversions (bit 21 clear: of fixed point) to a general
-           register, not from one (SCVTF, UCVTF, FMOV) */
-        unsigned op = (w >> 16) & 7;
-        if (rt != reg) return 0;
-        if ((w & 0x5f000000UL) == 0x1e000000UL && (!((w >> 21) & 1) || !((w >> 10) & 63)))
-            return op != 2 && op != 3 && op != 7;
-        return (w & 0xbfe0fc00UL) == 0x0e003c00UL || (w & 0xbfe0fc00UL) == 0x0e002c00UL;
-    }
-    if ((w & 0xffe00000UL) == 0xd5000000UL) return 0;                       /* MSR, SYS: Rt is read */
-    if ((w & 0x1fe00000UL) == 0x1a400000UL) return 0;                       /* CCMP, CCMN: the flags */
-    if ((w & 0x1fe00000UL) == 0x1a000000UL && ((w >> 10) & 0x3f)) return 0; /* RMIF, SETF: a mask */
-    return rt == reg;
 }
 
 /* the page the ADRP word at address puts in its register */

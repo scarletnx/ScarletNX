@@ -1721,6 +1721,60 @@ static void jump_table_flags_test(void) {
     }
 }
 
+/* a program of words at SNX_CODE_BASE, its tables' bytes at 0x80 and 0xff past them, in nranges unwind ranges (none:
+   explored), analyzed: the BR at each of want's br has these cases, in order (a 0 ends them), each a leader */
+typedef struct {
+    unsigned br;
+    unsigned cases[8];
+} TableCases;
+static void table_cases(const char* what, const SnxU32* words, size_t n, const unsigned char* table, size_t bytes,
+                        SnxFde* ranges, unsigned nranges, const TableCases* want, unsigned nwant) {
+    unsigned char image[0x300];
+    SnxProgram program;
+    SnxModuleImage module;
+    SnxCodegen codegen;
+    SnxU64 targets[SNX_JUMP_TABLE_MAX];
+    char text[160];
+    size_t i, k, found;
+    memset(image, 0, 0x80);
+    memset(image + 0x80, 0xff, sizeof(image) - 0x80);
+    for (i = 0; i < n; ++i) put32(image, i * 4, words[i]);
+    memcpy(image + 0x80, table, bytes);
+    setup_program(&program, &module, image, sizeof(image));
+    module.text_size = n * 4;
+    module.fde = ranges;
+    module.fde_count = nranges;
+    snprintf(text, sizeof(text), "%s: analyze", what);
+    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1, 0), text);
+    for (i = 0; i < nwant; ++i) {
+        size_t cases = 0;
+        found = snx_codegen_jump_table(&codegen, SNX_CODE_BASE + want[i].br, targets, SNX_JUMP_TABLE_MAX);
+        while (cases < 8 && want[i].cases[cases]) ++cases;
+        snprintf(text, sizeof(text), "%s: the BR at 0x%x has %zu cases, not %zu", what, want[i].br, found, cases);
+        check(found == cases, text);
+        for (k = 0; k < found && k < cases; ++k) {
+            const SnxFunction* f = codegen.functions;
+            while (f < codegen.functions + codegen.function_count && !snx_function_contains(f, targets[k])) ++f;
+            snprintf(text, sizeof(text), "%s: case %zu of the BR at 0x%x is 0x%llx, not 0x%x", what, k, want[i].br,
+                     (unsigned long long)(targets[k] - SNX_CODE_BASE), want[i].cases[k]);
+            check(targets[k] == SNX_CODE_BASE + want[i].cases[k], text);
+            check(f < codegen.functions + codegen.function_count && has_leader(f, targets[k]), "a case is a leader");
+        }
+    }
+    snx_codegen_free(&codegen);
+}
+
+/* A switch whose index is made after a compare of what was in its register (llvm-mc): cmp w1, #0; cneg w1, w1, mi;
+   and x1, x1, #3; adr x10, c0; ldrb w11, [x9, x1]; ... */
+static void jump_table_met_test(void) {
+    static const SnxU32 remade[] = {0x90000009UL, 0x91020129UL, 0x7100003FUL, 0x5A815421UL, 0x92400421UL,
+                                    0x1000008AUL, 0x3861692BUL, 0x8B0B094AUL, 0xD61F0140UL, 0xD65F03C0UL,
+                                    0xD65F03C0UL, 0xD65F03C0UL, 0xD65F03C0UL};
+    static const unsigned char four[] = {0, 1, 2, 3};
+    static const TableCases remade_want[] = {{0x20, {0x24, 0x28, 0x2C, 0x30}}};
+    table_cases("an index made after a compare", remade, sizeof(remade) / 4, four, 4, NULL, 0, remade_want, 1);
+}
+
 int main(void) {
     decoder_test();
     analysis_test();
@@ -1735,6 +1789,7 @@ int main(void) {
     jump_table_mask_test();
     jump_table_flow_test();
     jump_table_flags_test();
+    jump_table_met_test();
     jump_table_anchor_far_test();
     jump_table_anchor_branch_test();
     large_range_test();
