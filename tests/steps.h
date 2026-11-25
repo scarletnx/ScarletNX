@@ -40,7 +40,7 @@ enum { STEPS_HOST = NATIVE_STEPS_HOST, STEPS_PORTABLE = NATIVE_STEPS_PORTABLE, S
 #define steps_end          native_steps_end
 #define step_run           native_step_run
 static inline Step steps_at(const Steps* s, size_t index) { return (Step){s, index}; }
-static inline GuestFn steps_function(const Steps* s, size_t index) { return s->fns[index]; }
+static inline GuestFn steps_function(const Steps* s, size_t index) { return s->entries[index].function; }
 /* the back end's name */
 static inline const char* steps_name(void) { return snx_native_name(); }
 #define steps_host_mode native_steps_host_mode

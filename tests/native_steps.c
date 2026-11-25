@@ -77,17 +77,13 @@ static NativeUnit* unit_new(NativeSteps* s) {
     return &s->units[s->nunits++];
 }
 
-/* the step's slot in the arrays the load fills */
+/* the step's entry, which the load fills */
 static size_t step_new(NativeSteps* s, u64 pc) {
     if (s->count == s->cap) {
         s->cap = s->cap ? s->cap * 2 : 256;
-        s->fns = (GuestFn*)snx_realloc(s->fns, s->cap * sizeof(*s->fns));
-        s->pcs = (u64*)snx_realloc(s->pcs, s->cap * sizeof(*s->pcs));
-        s->stale = (u8**)snx_realloc(s->stale, s->cap * sizeof(*s->stale));
+        s->entries = (NativeEntry*)snx_realloc(s->entries, s->cap * sizeof(*s->entries));
     }
-    s->fns[s->count] = NULL;
-    s->pcs[s->count] = pc;
-    s->stale[s->count] = NULL;
+    s->entries[s->count] = (NativeEntry){.pc = pc};
     return s->count++;
 }
 
@@ -315,8 +311,8 @@ int native_steps_load(NativeSteps* s, char* error, size_t error_size) {
             if (!u->made) continue;
             functions = (GuestFn*)table[1 + n++];
             for (k = 0; k < count; ++k) {
-                s->fns[u->step + k] = functions[k];
-                s->stale[u->step + k] = (u8*)table[0];
+                s->entries[u->step + k].function = functions[k];
+                s->entries[u->step + k].stale = (u8*)table[0];
             }
         }
     }
@@ -343,9 +339,7 @@ void native_steps_end(NativeSteps* s) {
     }
     free(s->libraries);
     free(s->units);
-    free(s->fns);
-    free(s->pcs);
-    free(s->stale);
+    free(s->entries);
     *s = (NativeSteps){0};
 }
 
@@ -373,7 +367,7 @@ static void on_poll(CPU* c) {
 }
 
 u64 native_step_run(NativeStep step, CPU* c) {
-    const NativeSteps* s = step.steps;
+    const NativeEntry* e = &step.steps->entries[step.index];
     const CPU before = *c;
     RtAPI rt = {.cas128 = snx_runtime_cas128};
     u64 next;
@@ -381,13 +375,13 @@ u64 native_step_run(NativeStep step, CPU* c) {
     rt.miss = on_miss;
     rt.poll = on_poll;
     g_run.missed = 0;
-    g_run.stale = s->stale[step.index];
+    g_run.stale = e->stale;
     *g_run.stale = 0;
     c->rt = &rt;
     c->disp = NULL; /* nothing is compiled elsewhere: every call and jump misses */
     c->code_lo = c->code_hi = 0;
     atomic_store_explicit(&c->poll, 1, memory_order_relaxed);
-    s->fns[step.index](c, s->pcs[step.index]);
+    e->function(c, e->pc);
     next = g_run.missed ? g_run.next : c->pc;
     c->pc = before.pc;
     c->rt = before.rt;
