@@ -36,6 +36,11 @@ typedef struct {
        every word: the one the code is built from. One block: read_capacity addresses, as many words, as many marks */
     unsigned char* read_block;
     size_t read_count, read_capacity;
+    /* the jump tables whose base or bound came from their function's flow (explore's, the leaders'), not from the
+       code before the load: each BR's address, its table's base and bound (0 where the code gives it), by BR
+       address, so every later snx_codegen_jump_table (the leaders, the back ends) finds the same cases */
+    SnxU64* jt_bases;
+    size_t jt_base_count, jt_base_capacity;
 } SnxCodegen;
 
 int snx_codegen_analyze(SnxCodegen* codegen, const SnxCodeImage* modules, size_t module_count, const SnxU64* hints,
