@@ -84,6 +84,15 @@ int snx_native_thumb_block(SnxNativeArm* c, const char* name, const unsigned cha
                            size_t* consumed, SnxNativeArmNext next, void* user);
 const char* snx_native_arm_why(const SnxNativeArm* c);
 int snx_native_arm_object(SnxNativeArm* c, unsigned char** object, size_t* size, size_t* blocks);
+/* the objects of the blocks made since the last call, one object where the host's branches reach far, and as many as
+   they need where they reach little (arm64's 128 MiB), whose blocks the linker joins by veneers. *list holds *count
+   objects, each with malloc'd data, and the list itself is malloc'd too. 0, or -1 out of memory */
+typedef struct {
+    unsigned char* data;
+    size_t size;
+} SnxNativeObject;
+int snx_native_arm_objects(SnxNativeArm* c, SnxNativeObject** list, size_t* count);
+void snx_native_arm_objects_free(SnxNativeObject* list, size_t count);
 int snx_native_arm_absorb(SnxNativeArm* c, SnxNativeArm* from);
 int snx_native_arm_entry(SnxNativeArm* c, uint32_t key);
 

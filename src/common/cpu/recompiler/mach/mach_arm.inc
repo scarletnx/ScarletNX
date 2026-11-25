@@ -75,6 +75,8 @@ struct MG_ARM {
     size_t nrels, cap_rels;
     Made* made;
     size_t nmade, cap_made;
+    size_t split;   /* the most code an object takes, 0 for no limit, the rest going in the next ones */
+    size_t emitted; /* how many of the sorted blocks the objects so far have */
     unsigned features;
     int pool;
     const char* why;
@@ -2315,14 +2317,23 @@ int MG_ARM_API(object)(MG_ARM* c, unsigned char** object, size_t* size, size_t* 
     snx_xelf_set_big(o, MG_ARM_ELF_BIG);
 #endif
     mg_entry_exit_fn(o);
-    qsort(c->made, c->nmade, sizeof *c->made, by_address);
-    for (size_t i = 0; i < c->nmade; ++i) {
+    if (!c->emitted) qsort(c->made, c->nmade, sizeof *c->made, by_address);
+    /* the blocks this object takes, all or as many as fit the limit (one at least) */
+    size_t first = c->emitted, last = c->nmade;
+    if (c->split) {
+        size_t room = 0;
+        for (last = first; last < c->nmade && (last == first || room + c->made[last].size <= c->split); ++last)
+            room += c->made[last].size;
+    }
+    for (size_t i = first; i < last; ++i) {
         const Made* m = &c->made[i];
         size_t at = snx_xelf_put(o, SNX_ELF_TEXT, c->text + m->at, m->size, 16);
-        /* a block's name the descriptor and LLVM's blocks call (global); an entry the object's own (X_, local) */
+        /* a block's name the descriptor and LLVM's blocks call (global), and an entry the object's own (X_, local),
+           global too where the blocks are in several objects, whose blocks jump to each other's */
         snx_xelf_symbol(o, m->name, SNX_ELF_TEXT, at, m->size,
-                        m->own == (size_t)-1 && m->name[0] == 'X' ? SNX_ELF_LOCAL | SNX_ELF_FUNC
-                                                                  : SNX_ELF_GLOBAL | SNX_ELF_HIDDEN | SNX_ELF_FUNC);
+                        !c->split && m->own == (size_t)-1 && m->name[0] == 'X'
+                            ? SNX_ELF_LOCAL | SNX_ELF_FUNC
+                            : SNX_ELF_GLOBAL | SNX_ELF_HIDDEN | SNX_ELF_FUNC);
 #ifdef MG_ARM_COFF
         if (m->own != (size_t)-1)
             snx_xelf_unwind(o, at + m->own, at + m->end, c->text + m->at + m->own, m->end - m->own);
@@ -2331,23 +2342,28 @@ int MG_ARM_API(object)(MG_ARM* c, unsigned char** object, size_t* size, size_t* 
             char own[sizeof m->name + 1];
             snprintf(own, sizeof own, "X%s", m->name);
             /* the object's own: only its blocks jump there */
-            snx_xelf_symbol(o, own, SNX_ELF_TEXT, at + m->own, m->size - m->own, SNX_ELF_LOCAL | SNX_ELF_FUNC);
+            snx_xelf_symbol(o, own, SNX_ELF_TEXT, at + m->own, m->size - m->own,
+                            (c->split ? SNX_ELF_GLOBAL | SNX_ELF_HIDDEN : SNX_ELF_LOCAL) | SNX_ELF_FUNC);
         }
         for (size_t k = m->rel0; k < m->rel0 + m->nrel; ++k)
             snx_xelf_reloc(o, SNX_ELF_TEXT, at + c->rels[k].at, c->rels[k].sym, c->rels[k].type, c->rels[k].addend);
     }
-    if (blocks) *blocks = c->nmade;
-    /* the blocks' code given back before the object is written: it has them */
-    free(c->text), free(c->rels), free(c->made);
-    c->text = NULL, c->rels = NULL, c->made = NULL;
-    c->ntext = c->cap_text = c->nrels = c->cap_rels = c->nmade = c->cap_made = 0;
+    if (blocks) *blocks = last - first;
+    c->emitted = last;
+    const int more = last < c->nmade;
+    if (!more) {
+        /* the blocks' code given back before the object is written: it has them */
+        free(c->text), free(c->rels), free(c->made);
+        c->text = NULL, c->rels = NULL, c->made = NULL;
+        c->ntext = c->cap_text = c->nrels = c->cap_rels = c->nmade = c->cap_made = c->emitted = 0;
+    }
     int rc = snx_xelf_write(o, object, size);
     snx_xelf_free(o);
     if (rc == -2) {
         fprintf(stderr, "native back end: AArch32 blocks of a relocation or a prologue COFF has no form of\n");
         abort();
     }
-    return rc ? -1 : 0;
+    return rc ? -1 : more;
 }
 int MG_ARM_API(absorb)(MG_ARM* c, MG_ARM* from) {
     for (size_t i = 0; i < from->nmade; ++i) {

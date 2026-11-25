@@ -852,6 +852,8 @@ int vita_aot_compile(const char* folder, const VitaImage* image, const SnxCliRec
     char *target = NULL, *staged = NULL, *kept = NULL, *recorded = NULL, note[160];
     Stub* stubs = NULL;
     const char* exports[1] = {"snx_vita_module_v1"};
+    SnxNativeObject* native_objects = NULL;
+    size_t parts = 0;
     unsigned files = 0;
     int result = 1;
     const char opt = g_settings.optimization_level[0]; /* the setting opt's, which -O sets */
@@ -910,14 +912,22 @@ int vita_aot_compile(const char* folder, const VitaImage* image, const SnxCliRec
             llvm[llvm_count++] = d.blocks[i];
         }
     const unsigned chunks = cut_chunks(llvm, llvm_count, asked ? asked->chunk : 0, starts);
-    files = chunks + 3; /* the helpers, the index, the native blocks, LLVM's chunks */
+    /* the native blocks, in one object or several */
+    if (made.native && snx_native_arm_objects(native, &native_objects, &parts)) {
+        snprintf(error, error_size, "%s back end: out of memory for the objects of %zu blocks", snx_native_name(),
+                 made.native);
+        goto done;
+    }
+    files = 2 + (unsigned)parts + chunks; /* the helpers, the index, the native blocks, LLVM's chunks */
     objects = calloc(files, sizeof *objects);
     if (!objects) {
         snprintf(error, error_size, "out of memory");
         goto done;
     }
-    objects[0].name = "armlib", objects[1].name = "index", objects[2].name = "native blocks";
-    for (unsigned i = 3; i < files; ++i) objects[i].name = "blocks";
+    objects[0].name = "armlib", objects[1].name = "index";
+    for (size_t i = 0; i < parts; ++i)
+        objects[2 + i] = (SnxLinkInput){native_objects[i].data, native_objects[i].size, "native blocks"};
+    for (unsigned i = 2 + (unsigned)parts; i < files; ++i) objects[i].name = "blocks";
     work = (Work){.image = image,
                   .blocks = llvm,
                   .starts = starts,
@@ -926,19 +936,12 @@ int vita_aot_compile(const char* folder, const VitaImage* image, const SnxCliRec
                   .opt = opt,
                   .keep_ir = kept,
                   .quiet = quiet,
-                  .objects = objects + 3,
+                  .objects = objects + 2 + (unsigned)parts,
                   .chunks = chunks,
                   .steps = chunks + (made.native != 0),
                   .stubs = stubs,
                   .stub_count = d.stub_count};
     if (made.native) {
-        unsigned char* object = NULL;
-        if (snx_native_arm_object(native, &object, &objects[2].size, NULL)) {
-            snprintf(error, error_size, "%s back end: out of memory for the object of %zu blocks", snx_native_name(),
-                     made.native);
-            goto done;
-        }
-        objects[2].data = object;
         ++work.finished;
         if (!quiet) printf("Compiled %u/%u chunks of blocks\n", work.finished, work.steps);
     }
@@ -965,8 +968,11 @@ int vita_aot_compile(const char* folder, const VitaImage* image, const SnxCliRec
     if (!quiet) printf("Compiled %zu blocks into %s\n", d.count, target);
     result = 0;
 done:
-    if (objects)
+    if (objects) {
         for (unsigned i = 1; i < files; ++i) free((void*)objects[i].data);
+        free(native_objects); /* its objects' data are the linker's inputs, freed above */
+    } else
+        snx_native_arm_objects_free(native_objects, parts);
     free(objects);
     free(stubs);
     free(linked.data);
