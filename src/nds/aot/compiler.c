@@ -31,8 +31,8 @@ static void name(char out[48], const Entry* e) {
 }
 
 /* The entries' blocks into objects (two at most: cpu/arm/aot.h), LLVM's IR kept as id.ll where it is kept. A block the
-   backend ends sooner than discovery planned goes on as a block of its own at the instruction after. *made gets every block that was made, with the length the
-   backend gave it (*made_count of them, the caller's to free), for the index */
+   backend ends sooner than discovery planned goes on as a block of its own at the instruction after. *made gets every
+   block that was made, with the length the backend gave it (*made_count of them, the caller's to free), for the index */
 static bool chunk(SnxArmAot* aot, const NdsRom* rom, const Entry* entries, unsigned count, SnxLinkInput output[2],
                   const char* id, Entry** made, unsigned* made_count, char* error, size_t size) {
     unsigned capacity = 0;
