@@ -21,6 +21,7 @@
 #include "common/cpu/aarch64/cpu.h"
 
 enum { ADDR_GENS_GPU, ADDR_GENS_CPU, ADDR_GENS_WRITE, ADDR_GENS_SPACES };
+#define ADDR_GENS_BITS     40   /* the GMMU drops a GPU address's bits past these (nvdrv.c): so do the generations */
 #define ADDR_GENS_SHIFT    18   /* 256 KiB granules */
 #define ADDR_GENS_SLOTS    8192 /* a power of two */
 #define ADDR_GENS_READ_MAX 512  /* granules a read adds up at most (128 MiB): past them it tells nothing */
