@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The player's input for the Vita game (input.c): the window's keyboard and mouse, SDL's gamepads and the scripted
-   presses, in SceCtrl's and SceTouch's terms */
+/* The player's input for the Vita game (input.c): the window's keyboard, fingers and mouse, SDL's gamepads, the
+   on-screen controls and the scripted presses, in SceCtrl's and SceTouch's terms */
 #ifndef SNX_VITA_INPUT_H
 #define SNX_VITA_INPUT_H
 #include <stdbool.h>
@@ -23,19 +23,27 @@ enum {
     VITA_CTRL_SQUARE = 0x8000u,
     VITA_CTRL_BUTTONS = 0xf3f9u,
 };
+#define VITA_FRONT_TOUCHES 6 /* at once, the console's most */
 typedef struct {
     uint32_t buttons;
     uint8_t lx, ly, rx, ry; /* the sticks, 0 to 255, 128 at rest, y down */
-    /* the front panel (the window's left mouse button) and the rear one (its right), in the panels' coordinates:
-       1920 by 1088 for the front, 1920 by 890 for the rear */
-    bool front, back;
-    uint16_t front_x, front_y, back_x, back_y;
+    /* the front panel (the fingers, and the window's left mouse button) and the rear one (its right), in the panels'
+       coordinates: 1920 by 1088 for the front, 1920 by 890 for the rear. A touch keeps its id while it stays down */
+    unsigned fronts;
+    struct {
+        uint8_t id;
+        uint16_t x, y;
+    } front[VITA_FRONT_TOUCHES];
+    bool back;
+    uint16_t back_x, back_y;
 } VitaInput;
 union SDL_Event;
 void vita_input_init(void);
 /* the gamepad_map setting (pad_map.h's text), which the command line gives */
 void vita_input_map(const char* text);
 void vita_input_event(const union SDL_Event* event);
+/* the on-screen controls as they are after the window's events, read once a vblank, as the console samples its own */
+void vita_input_sample(void);
 void vita_input_read(VitaInput* input);
 void vita_input_free(void);
 #endif

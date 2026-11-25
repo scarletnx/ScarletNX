@@ -59,6 +59,9 @@ bool vita_vk_wait(uint64_t serial);
 unsigned vita_vk_slot(void);
 VkDescriptorSet vita_vk_set(VkDescriptorSetLayout layout);
 uint32_t vita_vk_memory_type(uint32_t bits, VkMemoryPropertyFlags properties);
+/* where the framebuffer is in the window, its left, top, width and height in the window's pixels: the whole window
+   before the first one shows. False without a window */
+bool vita_vk_picture(int rect[4]);
 /* a line over the game for a few seconds, as a Switch game shows one: Esc's first press */
 void vita_vk_notice(const char* text);
 /* that line while it shows, "" when none does */
@@ -68,6 +71,7 @@ void vita_vk_on_retire(void (*retire)(unsigned slot, uint64_t serial));
 /* the recording about to be submitted */
 void vita_vk_on_submit(void (*submit)(void));
 /* Shows the framebuffer: width by height pixels, pitch pixels a row, R8G8B8A8 bytes at offset in buffer, scaled into
-   the window. False when nothing was shown: no window, or no swapchain image free this time */
+   the window, the on-screen controls over it. False when nothing was shown: no window, or no swapchain image free this
+   time */
 bool vita_vk_present(VkBuffer buffer, VkDeviceSize offset, uint32_t pitch, uint32_t width, uint32_t height);
 #endif

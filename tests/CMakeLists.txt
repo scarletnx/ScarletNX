@@ -5077,6 +5077,13 @@ if(TARGET snx_vita_program)
     snx_test_target(snx-test-vita-quit-key gnu23)
     target_link_libraries(snx-test-vita-quit-key PRIVATE snx_vita_program)
     add_test(NAME vita_quit_key COMMAND snx-test-vita-quit-key)
+    # the on-screen controls and the front panel in its window, skipped (77) with no Vulkan window
+    add_executable(snx-test-vita-input vita_input.c)
+    snx_test_target(snx-test-vita-input gnu23)
+    target_link_libraries(snx-test-vita-input PRIVATE snx_vita_program)
+    target_include_directories(snx-test-vita-input PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}") # support/
+    add_test(NAME vita_input COMMAND snx-test-vita-input)
+    set_tests_properties(vita_input PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
     # the driver's command line, the recompile's options every driver shares: no game
     if(Python3_Interpreter_FOUND)
         add_test(NAME vita_driver COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/vita_driver.py"

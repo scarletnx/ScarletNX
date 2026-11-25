@@ -3,7 +3,8 @@
 /* The player's input for the Vita game, as the 3DS driver's (3ds/input/input.c) by where the buttons are: Z or Space
    Cross (south), X Circle (east), V Square (west), C Triangle (north), Q L, E R, Enter Start, Backspace Select, the
    arrows the D-pad, WASD the left stick and IJKL the right (pad_sdl.h's keys of a Switch game, Space added). The
-   window's mouse is the touch screen: the left button touches the front panel, the right the rear one. A gamepad's
+   fingers on the picture, off the on-screen controls, touch the front panel, and so does the window's mouse's left
+   button, as the touch setting lets each; its right button touches the rear one. A gamepad's
    controls are a Switch game's pad's, as on the 3DS: each sends the button where it is, gamepad_map over that, then
    gamepad_swap_ab swapping Cross and Circle; its sticks are the Vita's, each past gamepad_deadzone. The script
    (vita_script) is ms:hex presses, each held for vita_press_len ms, its bits 24 to 27 the left stick pushed right,
@@ -12,6 +13,8 @@
 #include "common/utilities/common.h"
 #include "common/utilities/pad_sdl.h"
 #include "common/utilities/script.h"
+#include "common/utilities/vpad_sdl.h"
+#include "vita/gpu/vk.h"
 #include "snx_settings.h"
 #include <SDL3/SDL.h>
 #include <math.h>
@@ -48,6 +51,15 @@ static struct {
     size_t presses;
     double start;
     bool gamepads;
+    /* the front panel's touches, each in its slot (its id) while it stays down: which finger (the mouse's
+       SNX_VPAD_MOUSE) and where, in the window's pixels */
+    struct {
+        bool down;
+        u64 finger;
+        float x, y;
+    } front[VITA_FRONT_TOUCHES];
+    u64 pressed; /* the on-screen controls', the Switch's bits, and their sticks */
+    i32 sticks[4];
     SnxPadMap map; /* gamepad_map's: the controls it names, the others SNX_PAD_UNSET */
 } g_input = {.map = {{UNSET4, UNSET4, UNSET4, UNSET4}}};
 
@@ -67,7 +79,39 @@ void vita_input_init(void) {
                                        &g_input.script);
     g_input.gamepads = SDL_InitSubSystem(SDL_INIT_GAMEPAD);
 }
-void vita_input_event(const union SDL_Event* event) { snx_pads_event(g_input.pads, INPUT_PADS, event, NULL); }
+/* a finger's event, or the left button's, on the front panel, as the touch setting lets it: 0 none, 1 the fingers, 2
+   the fingers and the mouse. A press off the picture starts nothing */
+static void front_event(const SDL_Event* e) {
+    int rect[4], slot = -1;
+    float x, y;
+    if (e->type == SDL_EVENT_WINDOW_FOCUS_LOST) /* this window may not get the lifts */
+        for (int i = 0; i < VITA_FRONT_TOUCHES; ++i) g_input.front[i].down = false;
+    bool finger = e->type >= SDL_EVENT_FINGER_DOWN && e->type <= SDL_EVENT_FINGER_CANCELED;
+    if (!snx_vpad_window_point(e, &x, &y)) return;
+    if ((e->type == SDL_EVENT_MOUSE_BUTTON_DOWN || e->type == SDL_EVENT_MOUSE_BUTTON_UP) &&
+        e->button.button != SDL_BUTTON_LEFT)
+        return;
+    u64 id = finger ? snx_vpad_sdl_finger(&e->tfinger) : SNX_VPAD_MOUSE;
+    for (int i = 0; i < VITA_FRONT_TOUCHES && slot < 0; ++i)
+        if (g_input.front[i].down && g_input.front[i].finger == id) slot = i;
+    if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN || e->type == SDL_EVENT_FINGER_DOWN) {
+        if (slot >= 0 || g_settings.touch_screen < (finger ? 1 : 2) || !vita_vk_picture(rect) || x < (float)rect[0] ||
+            y < (float)rect[1] || x >= (float)(rect[0] + rect[2]) || y >= (float)(rect[1] + rect[3]))
+            return;
+        for (int i = VITA_FRONT_TOUCHES - 1; i >= 0; --i)
+            if (!g_input.front[i].down) slot = i;
+        if (slot < 0) return; /* the panel takes no more */
+        g_input.front[slot].down = true;
+        g_input.front[slot].finger = id;
+    } else if (slot >= 0 && e->type != SDL_EVENT_FINGER_MOTION && e->type != SDL_EVENT_MOUSE_MOTION)
+        g_input.front[slot].down = false;
+    if (slot >= 0) g_input.front[slot].x = x, g_input.front[slot].y = y;
+}
+void vita_input_event(const union SDL_Event* event) {
+    snx_pads_event(g_input.pads, INPUT_PADS, event, NULL);
+    front_event(event);
+}
+void vita_input_sample(void) { snx_vpad_window_state(&g_input.pressed, g_input.sticks); }
 /* an axis, -1 to 1, to the stick's 0 to 255 */
 static uint8_t stick(float v) {
     if (v < -1) v = -1;
@@ -86,23 +130,36 @@ void vita_input_read(VitaInput* input) {
         float left[2], right[2];
         snx_pad_key_sticks(held, left, right);
         sticks[0] = left[0], sticks[1] = -left[1], sticks[2] = right[0], sticks[3] = -right[1];
-        /* the mouse over the window: its place scaled to the panel's */
+        /* the mouse over the window: its place scaled to the rear panel's */
         float x, y;
         SDL_MouseButtonFlags mouse = SDL_GetMouseState(&x, &y);
         SDL_Window* window = SDL_GetMouseFocus();
         int w = 0, h = 0;
-        if (window && SDL_GetWindowSize(window, &w, &h) && w > 0 && h > 0 && (mouse & (SDL_BUTTON_LMASK | SDL_BUTTON_RMASK))) {
+        if (window && SDL_GetWindowSize(window, &w, &h) && w > 0 && h > 0 && (mouse & SDL_BUTTON_RMASK)) {
             float u = fminf(fmaxf(x / (float)w, 0), 1), v = fminf(fmaxf(y / (float)h, 0), 1);
-            if (mouse & SDL_BUTTON_LMASK) {
-                input->front = true;
-                input->front_x = (uint16_t)lrintf(u * 1919), input->front_y = (uint16_t)lrintf(v * 1087);
-            }
-            if (mouse & SDL_BUTTON_RMASK) {
-                input->back = true;
-                input->back_x = (uint16_t)lrintf(u * 1919), input->back_y = (uint16_t)lrintf(v * 889);
-            }
+            input->back = true;
+            input->back_x = (uint16_t)lrintf(u * 1919), input->back_y = (uint16_t)lrintf(v * 889);
         }
     }
+    /* the front panel's touches, on the picture's, kept to its edges as they leave it */
+    int rect[4];
+    for (unsigned i = 0; i < VITA_FRONT_TOUCHES && vita_vk_picture(rect); ++i) {
+        if (!g_input.front[i].down) continue;
+        float u = fminf(fmaxf((g_input.front[i].x - (float)rect[0]) / (float)rect[2], 0), 1);
+        float v = fminf(fmaxf((g_input.front[i].y - (float)rect[1]) / (float)rect[3], 0), 1);
+        input->front[input->fronts].id = (uint8_t)i;
+        input->front[input->fronts].x = (uint16_t)lrintf(u * 1919);
+        input->front[input->fronts].y = (uint16_t)lrintf(v * 1087);
+        ++input->fronts;
+    }
+    /* the on-screen controls: their sticks over the keys' while held */
+    for (int b = 0; b < SNX_PAD_BUTTONS; ++b)
+        if (g_input.pressed >> b & 1) input->buttons |= VITA_BITS[b];
+    for (unsigned s = 0; s < 4; s += 2)
+        if (g_input.sticks[s] || g_input.sticks[s + 1]) {
+            sticks[s] = (float)g_input.sticks[s] / 32767;
+            sticks[s + 1] = -(float)g_input.sticks[s + 1] / 32767;
+        }
     double dead = g_settings.stick_dead_zone / 100.0;
     SnxPadMap map;
     snx_pad_map_sent(&map, &g_input.map, g_settings.swap_a_b);
@@ -117,6 +174,11 @@ void vita_input_read(VitaInput* input) {
             double x = snx_pad_axis(pad, axes[s * 2]), y = snx_pad_axis(pad, axes[s * 2 + 1]);
             if (snx_pad_dead_zone(&x, &y, dead, 1)) sticks[s * 2] = (float)x, sticks[s * 2 + 1] = (float)y;
         }
+    }
+    /* the layout edited: the player's hands are on it, and the script's presses alone reach the game */
+    if (vpad_editing()) {
+        *input = (VitaInput){0};
+        for (unsigned s = 0; s < 4; ++s) sticks[s] = 0;
     }
     /* the script's presses: buttons, and the left stick pushed all the way by bits 24 to 27 (right, left, up, down) */
     if (g_input.presses) {
