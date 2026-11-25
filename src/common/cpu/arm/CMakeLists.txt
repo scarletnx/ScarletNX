@@ -9,11 +9,6 @@ endif()
 add_library(snx_arm_rt STATIC fp_helpers.c crypto_helpers.c rt_helpers.c)
 set_target_properties(snx_arm_rt PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON POSITION_INDEPENDENT_CODE ON)
 target_compile_options(snx_arm_rt PRIVATE -Wall -Wextra -Werror=missing-prototypes)
-# linked into the libraries made from emitted ARM code (tests/arm_test.py loads one into Python), which have no
-# sanitizer runtime: SNX_TEST_SANITIZERS (tests/CMakeLists.txt) builds it without
-if(SNX_TEST_SANITIZERS)
-    target_compile_options(snx_arm_rt PRIVATE -fno-sanitize=address,undefined)
-endif()
 # the decoders and the profile rules, which need no LLVM: a runtime that executes a word itself links these alone.
 # a32.c and thumb.c include the decoders tools/decodetree makes from QEMU's .decode files (decode/), as QEMU's
 # translate.c includes them: t32.decode and t16.decode name a32.decode's and a32-uncond.decode's argument sets

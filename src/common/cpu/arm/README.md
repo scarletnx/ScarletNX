@@ -23,8 +23,10 @@ The NX runtime runs 32-bit programs with it. The recompiler compiles a 32-bit pr
   they form the `snx_arm_decode` target. `snx_arm_llvm` links it, and the 3DS CPU backend links it alone.
   `tests/arm_decode_tree.c` checks them against the hand-written decoders they replaced (`tests/support/`).
 - `llvm.h`, `llvm.c`, `llvm_vector.inc`, `llvm_thumb.inc`: `snx_arm_llvm_block(module, name, words, count, pc, &consumed)` and `snx_thumb_llvm_block(module, name, halfwords, count, pc, &consumed)` emit `void name(SnxArmCPU*)` into a **host-target** LLVM module.
-- `tests/arm_emit.c`, `tests/thumb_emit.c`: object generators demonstrating module creation, verification, optimization and native object emission.
-- `tests/arm_test.py`, `tests/arm_vector_test.py`, `tests/thumb_test.py`: native execution witnesses and optional independent Unicorn comparisons.
+- `tests/arm_blocks.c`, `tests/arm_blocks.py`: the native back ends' blocks, made and run for the Python tests, by this host
+  or, under Unicorn, as another machine's.
+- `tests/arm_test.py`, `tests/arm_vector_test.py`, `tests/thumb_test.py`: execution witnesses of those blocks and optional
+  independent Unicorn comparisons, their words written in the tests.
 - `tests/arm_fuzz.py`: random encodings of each class, A32 and Thumb, against Unicorn from random FP and flag state (`--only ISA:HEX` replays one).
 
 Input words are host integers decoded from little-endian guest code (A32 words, or Thumb halfwords). A block consumes at most `count` instructions (or halfwords for Thumb) and stops at a control transfer, including a conditional transfer. `consumed` reports the compiled length. Bad input returns NULL before changing the module.
@@ -280,7 +282,7 @@ With Clang and LLVM development files installed:
 
 ```sh
 cmake -S . -B build/a32 -DSNX_TOOLS_ONLY=ON -DSNX_BUILD_GNUABI=OFF
-cmake --build build/a32 --target snx-test-arm-decode snx-test-arm-emit
+cmake --build build/a32 --target snx-test-arm-decode snx-test-arm-blocks-native
 ctest --test-dir build/a32 -R '^arm_' --output-on-failure
 ```
 
@@ -291,19 +293,25 @@ python3 -m venv .venv
 .venv/bin/pip install unicorn==2.1.4
 cmake -S . -B build/a32 -DSNX_TOOLS_ONLY=ON -DSNX_BUILD_GNUABI=OFF \
   -DSNX_TEST_ARM_DIFF=ON -DPython3_EXECUTABLE="$PWD/.venv/bin/python"
-ctest --test-dir build/a32 -R 'arm_|thumb_' --output-on-failure
+ctest --test-dir build/a32 -R '^arm_native_' --output-on-failure
 ```
 
-The suite verifies IR before and after optimization and executes generated objects at O0 and O2. The integer
-suite covers 39 witness programs, including an inter-block BL/BX loop, bounds failures, address wrapping,
-writeback, PC loads, failed predicates, monitor invalidation, TLS and deferred-backend exits, with 1,081
+`snx-test-arm-blocks` (`tests/arm_blocks.c`) makes each block with the native back end and runs it from the states the
+Python tests hold (`tests/arm_blocks.py`). `arm_native_<test>` are the host's back end's. With Unicorn's C library too
+(`SNX_UNICORN_INCLUDE_DIR`, `SNX_UNICORN_LIBRARY`) `arm_<machine>_<test>` are those of every other machine the native
+back ends make code for, run under Unicorn (LoongArch, which it has none of, under the test's own interpreter): the same
+tests, the differentials on a share of their states. Each block is made twice, its values in all the host registers and in three of
+them, so that they spill. No assembler: the words are written in the tests, beside their text.
+
+The integer suite covers 49 witness programs, including an inter-block BL/BX loop, bounds failures, address wrapping,
+writeback, PC loads, failed predicates, monitor invalidation, TLS and deferred-backend exits, with 1,287
 instruction/block encodings over 64 initial states each. The VFP/NEON suite compares all GPRs, D registers,
-CPSR, FPSCR and guest memory for 1,490 encodings over 80 initial states each at O0 and O2 (119,200 exact
-comparisons per level), including FP edge cases (NaNs, denormals, infinities, rounding-mode and FPSCR
+CPSR, FPSCR and guest memory for 1,494 encodings over 80 initial states each (239,040 exact comparisons), including FP
+edge cases (NaNs, denormals, infinities, rounding-mode and FPSCR
 combinations) and SIMD saturation/shift boundaries. The Thumb suite compares all GPRs, CPSR and guest memory
-for 141 instruction/IT sequences at O0 and O2, covering Thumb16 and Thumb32 data processing, loads/stores,
+for 280 instruction/IT sequences, covering Thumb16 and Thumb32 data processing, loads/stores,
 branches, bitfield and IT blocks, and witnesses blocks that end or begin around an IT block. `arm_fuzz.py` draws
-encodings at random from each class, keeps those llvm-objdump decodes for the Cortex-A57, and fails on any
+encodings at random from each class and fails on any block the back end refuses, and any
 difference in state; what it reports besides (missing, extra, faults) is mostly UNPREDICTABLE encodings, and
 QEMU 5's missing alignment checks. Decode tests check both accepted and rejected encodings
 against llvm-objdump on cortex-a57. Unicorn's ARMv8-capable AArch32 model is the reference, not Cortex-A57

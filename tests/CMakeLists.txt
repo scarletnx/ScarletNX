@@ -55,7 +55,8 @@ if(SNX_TEST_SANITIZERS)
         snx_ble_system
         snx-logscan
         # the recompiler, its backends and what they take of the common code
-        snx_recompiler_base snx_llvm snx_arm_llvm snx_arm_decode scarletnx-recompiler scarletnx-recompiler-shared
+        snx_recompiler_base snx_llvm snx_arm_llvm snx_arm_decode snx_arm_rt scarletnx-recompiler
+        scarletnx-recompiler-shared
         # the driver, its extraction, the first start's setup, the settings and the build's line
         snx_driver snx_nx_module snx_driver_llvm hactool_lib snx_setup snx_settings snx_settings_runtime snx_build_info
         snx-test-build-info
@@ -4122,58 +4123,7 @@ target_link_libraries(snx-llvm-pieces PRIVATE scarletnx-recompiler)
 # holds already
 target_include_directories(snx-llvm-pieces PRIVATE "$<TARGET_PROPERTY:snx_llvm,INTERFACE_INCLUDE_DIRECTORIES>")
 target_include_directories(snx-llvm-pieces SYSTEM PRIVATE "${SNX_LLVM_INCLUDE_DIR}")
-# A32 emits self-contained host objects, without the A64 interpreter or RtAPI.
-add_executable(snx-test-arm-emit arm_emit.c)
-snx_test_target(snx-test-arm-emit gnu23)
-target_link_libraries(snx-test-arm-emit PRIVATE snx_arm_llvm)
-# Thumb16/32 emits self-contained host objects the same way.
-add_executable(snx-test-thumb-emit thumb_emit.c)
-snx_test_target(snx-test-thumb-emit gnu23)
-target_link_libraries(snx-test-thumb-emit PRIVATE snx_arm_llvm)
-option(SNX_TEST_ARM_DIFF "Compare A32 LLVM execution with Python unicorn 2.1.4" OFF)
-if(UNIX AND NOT CMAKE_CROSSCOMPILING)
-    if(Python3_Interpreter_FOUND)
-        # the ARM tests run emitted code and Unicorn in Python: -X faulthandler names where a crash in either was
-        add_test(NAME arm_llvm_witnesses COMMAND "${Python3_EXECUTABLE}" -X faulthandler
-            "${CMAKE_CURRENT_SOURCE_DIR}/arm_test.py"
-            --emitter $<TARGET_FILE:snx-test-arm-emit> --runtime $<TARGET_FILE:snx_arm_rt> --cc "${CMAKE_C_COMPILER}")
-        add_test(NAME arm7tdmi_witnesses COMMAND "${Python3_EXECUTABLE}" -X faulthandler
-            "${CMAKE_CURRENT_SOURCE_DIR}/arm7tdmi_test.py"
-            --arm-emitter $<TARGET_FILE:snx-test-arm-emit> --thumb-emitter $<TARGET_FILE:snx-test-thumb-emit>
-            --runtime $<TARGET_FILE:snx_arm_rt> --cc "${CMAKE_C_COMPILER}")
-        if(SNX_TEST_ARM_DIFF)
-            add_test(NAME arm_llvm_differential COMMAND "${Python3_EXECUTABLE}" -X faulthandler
-                "${CMAKE_CURRENT_SOURCE_DIR}/arm_test.py"
-                --emitter $<TARGET_FILE:snx-test-arm-emit> --runtime $<TARGET_FILE:snx_arm_rt> --cc "${CMAKE_C_COMPILER}" --unicorn)
-            set_tests_properties(arm_llvm_differential PROPERTIES TIMEOUT 900)
-            # VFP/NEON uses the same emitter plus the raw-bit FP and crypto runtime library.
-            get_filename_component(snx_llvm_bin "${SNX_LLVM_CONFIG}" DIRECTORY)
-            find_program(SNX_LLVM_MC llvm-mc HINTS "${snx_llvm_bin}" NO_DEFAULT_PATH)
-            if(SNX_LLVM_MC)
-                add_test(NAME arm_llvm_vector COMMAND "${Python3_EXECUTABLE}" -X faulthandler
-                    "${CMAKE_CURRENT_SOURCE_DIR}/arm_vector_test.py"
-                    --emitter $<TARGET_FILE:snx-test-arm-emit> --runtime $<TARGET_FILE:snx_arm_rt>
-                    --mc "${SNX_LLVM_MC}" --cc "${CMAKE_C_COMPILER}")
-                set_tests_properties(arm_llvm_vector PROPERTIES TIMEOUT 1800)
-                add_test(NAME thumb_llvm COMMAND "${Python3_EXECUTABLE}" -X faulthandler
-                    "${CMAKE_CURRENT_SOURCE_DIR}/thumb_test.py"
-                    --emitter $<TARGET_FILE:snx-test-thumb-emit> --runtime $<TARGET_FILE:snx_arm_rt> --mc "${SNX_LLVM_MC}"
-                    --cc "${CMAKE_C_COMPILER}")
-                set_tests_properties(thumb_llvm PROPERTIES TIMEOUT 900)
-                # random encodings of every class, llvm-objdump keeping the A57's, from random FP and flag state
-                find_program(SNX_LLVM_OBJDUMP llvm-objdump HINTS "${snx_llvm_bin}" NO_DEFAULT_PATH)
-                if(SNX_LLVM_OBJDUMP)
-                    add_test(NAME arm_llvm_fuzz COMMAND "${Python3_EXECUTABLE}" -X faulthandler
-                        "${CMAKE_CURRENT_SOURCE_DIR}/arm_fuzz.py"
-                        --arm-emitter $<TARGET_FILE:snx-test-arm-emit> --thumb-emitter $<TARGET_FILE:snx-test-thumb-emit>
-                        --runtime $<TARGET_FILE:snx_arm_rt> --mc "${SNX_LLVM_MC}" --objdump "${SNX_LLVM_OBJDUMP}"
-                        --cc "${CMAKE_C_COMPILER}" --count 1500)
-                    set_tests_properties(arm_llvm_fuzz PROPERTIES TIMEOUT 1800)
-                endif()
-            endif()
-        endif()
-    endif()
-endif()
+include(arm_blocks.cmake)
 
 # LLVM Internals: passes cut out of LLVM's pipelines (nx/runtime/driver/llvm_tuning.c), which LLVM still runs
 add_executable(snx-test-llvm-tuning llvm_tuning.c)

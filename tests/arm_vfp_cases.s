@@ -2,104 +2,104 @@
    Copyright 2026 the ScarletNX contributors */
 .syntax unified
 .arm
-vadd.f32 s2,s4,s6
-vsub.f64 d1,d2,d3
-vmul.f32 s2,s4,s6
-vdiv.f64 d1,d2,d3
-vmla.f32 s2,s4,s6
-vmls.f32 s2,s4,s6
-vnmla.f32 s2,s4,s6
-vnmls.f32 s2,s4,s6
-vnmul.f32 s2,s4,s6
-vfma.f32 s2,s4,s6
-vfms.f32 s2,s4,s6
-vfnma.f32 s2,s4,s6
-vfnms.f32 s2,s4,s6
-vmov.f32 s2,s6
-vmov.f64 d17,d19
-vmov.f32 s2,#1.0
-vabs.f32 s2,s6
-vneg.f32 s2,s6
-vsqrt.f32 s2,s6
-vcmp.f32 s2,s6
-vcmpe.f32 s2,s6
-vcmp.f32 s2,#0
-vcmpe.f64 d1,#0
-vcvt.f32.f64 s2,d3
-vcvt.f64.f32 d1,s6
-vcvt.s32.f32 s2,s6
-vcvt.u32.f64 s2,d3
-vcvtr.s32.f64 s2,d3
-vcvtr.u32.f32 s2,s6
-vcvt.f32.s32 s2,s6
-vcvt.f64.u32 d1,s6
-vcvt.s16.f32 s2,s2,#8
-vcvt.u32.f64 d1,d1,#16
-vcvt.f32.s16 s2,s2,#8
-vcvt.f64.u32 d1,d1,#16
-vcvtb.f32.f16 s2,s6
-vcvtt.f32.f16 s2,s6
-vcvtb.f16.f32 s2,s6
-vcvtt.f16.f64 s2,d3
-vrintr.f32 s2,s6
-vrintz.f32 s2,s6
-vrintx.f64 d1,d3
-vrinta.f32 s2,s6
-vrintn.f32 s2,s6
-vrintp.f32 s2,s6
-vrintm.f32 s2,s6
-vcvta.s32.f32 s2,s6
-vcvtn.u32.f64 s2,d3
-vcvtp.s32.f32 s2,s6
-vcvtm.u32.f32 s2,s6
-vmaxnm.f32 s2,s4,s6
-vminnm.f64 d1,d2,d3
-vselgt.f32 s2,s4,s6
-vmov s2,r0
-vmov r0,s2
-vmov d17,r0,r1
-vmov r0,r1,d17
-vmov s2,s3,r0,r1
-vmov r0,r1,s2,s3
-vmrs r0,fpscr
-vmrs apsr_nzcv,fpscr
-vmsr fpscr,r0
-vldr s2,[r4,#12]
-vldr d17,[pc,#12]
-vstr d17,[r4,#-12]
-vldmia r4!,{s2-s5}
-vstmdb r4!,{d17-d20}
-vstr d17,[pc,#64]
-vstr s3,[pc,#-12]
-vldmia pc,{d0-d3}
-vstmia pc,{s1-s4}
-vmov.8 d17[3],r0
-vmov.u8 r0,d17[3]
-vmov.s16 r0,d17[2]
-vmov.32 r0,d17[1]
-vdup.8 q1,r0
-vdup.16 d1,d3[2]
-vmov.16 d17[3],r0
-vmov.32 d17[1],r0
-vmov.s8 r0,d17[7]
-vmov.u16 r0,d17[3]
-vdup.16 q1,r0
-vdup.32 d17,r0
-vcvt.s16.f64 d1,d1,#1
-vcvt.u16.f32 s3,s3,#16
-vcvt.s32.f64 d1,d1,#32
-vcvt.f64.s16 d1,d1,#16
-vcvt.f32.s32 s3,s3,#32
-vmov.f32 s3,#-2.0
-vmov.f64 d31,#0.125
-vcvtb.f64.f16 d17,s3
-vcvtt.f64.f16 d17,s3
-vcvtb.f16.f64 s3,d17
-vpush {s0-s31}
-vpop {d16-d31}
-vldmia r4,{d0-d15}
-vstmia r4!,{s1-s30}
-vstr s3,[r4,#4]
-vldreq d17,[r4,#4]
-vaddne.f32 s3,s3,s5
-vmoveq r0,s3
+vadd.f32 s2,s4,s6 @ ee321a03
+vsub.f64 d1,d2,d3 @ ee321b43
+vmul.f32 s2,s4,s6 @ ee221a03
+vdiv.f64 d1,d2,d3 @ ee821b03
+vmla.f32 s2,s4,s6 @ ee021a03
+vmls.f32 s2,s4,s6 @ ee021a43
+vnmla.f32 s2,s4,s6 @ ee121a43
+vnmls.f32 s2,s4,s6 @ ee121a03
+vnmul.f32 s2,s4,s6 @ ee221a43
+vfma.f32 s2,s4,s6 @ eea21a03
+vfms.f32 s2,s4,s6 @ eea21a43
+vfnma.f32 s2,s4,s6 @ ee921a43
+vfnms.f32 s2,s4,s6 @ ee921a03
+vmov.f32 s2,s6 @ eeb01a43
+vmov.f64 d17,d19 @ eef01b63
+vmov.f32 s2,#1.0 @ eeb71a00
+vabs.f32 s2,s6 @ eeb01ac3
+vneg.f32 s2,s6 @ eeb11a43
+vsqrt.f32 s2,s6 @ eeb11ac3
+vcmp.f32 s2,s6 @ eeb41a43
+vcmpe.f32 s2,s6 @ eeb41ac3
+vcmp.f32 s2,#0 @ eeb51a40
+vcmpe.f64 d1,#0 @ eeb51bc0
+vcvt.f32.f64 s2,d3 @ eeb71bc3
+vcvt.f64.f32 d1,s6 @ eeb71ac3
+vcvt.s32.f32 s2,s6 @ eebd1ac3
+vcvt.u32.f64 s2,d3 @ eebc1bc3
+vcvtr.s32.f64 s2,d3 @ eebd1b43
+vcvtr.u32.f32 s2,s6 @ eebc1a43
+vcvt.f32.s32 s2,s6 @ eeb81ac3
+vcvt.f64.u32 d1,s6 @ eeb81b43
+vcvt.s16.f32 s2,s2,#8 @ eebe1a44
+vcvt.u32.f64 d1,d1,#16 @ eebf1bc8
+vcvt.f32.s16 s2,s2,#8 @ eeba1a44
+vcvt.f64.u32 d1,d1,#16 @ eebb1bc8
+vcvtb.f32.f16 s2,s6 @ eeb21a43
+vcvtt.f32.f16 s2,s6 @ eeb21ac3
+vcvtb.f16.f32 s2,s6 @ eeb31a43
+vcvtt.f16.f64 s2,d3 @ eeb31bc3
+vrintr.f32 s2,s6 @ eeb61a43
+vrintz.f32 s2,s6 @ eeb61ac3
+vrintx.f64 d1,d3 @ eeb71b43
+vrinta.f32 s2,s6 @ feb81a43
+vrintn.f32 s2,s6 @ feb91a43
+vrintp.f32 s2,s6 @ feba1a43
+vrintm.f32 s2,s6 @ febb1a43
+vcvta.s32.f32 s2,s6 @ febc1ac3
+vcvtn.u32.f64 s2,d3 @ febd1b43
+vcvtp.s32.f32 s2,s6 @ febe1ac3
+vcvtm.u32.f32 s2,s6 @ febf1a43
+vmaxnm.f32 s2,s4,s6 @ fe821a03
+vminnm.f64 d1,d2,d3 @ fe821b43
+vselgt.f32 s2,s4,s6 @ fe321a03
+vmov s2,r0 @ ee010a10
+vmov r0,s2 @ ee110a10
+vmov d17,r0,r1 @ ec410b31
+vmov r0,r1,d17 @ ec510b31
+vmov s2,s3,r0,r1 @ ec410a11
+vmov r0,r1,s2,s3 @ ec510a11
+vmrs r0,fpscr @ eef10a10
+vmrs apsr_nzcv,fpscr @ eef1fa10
+vmsr fpscr,r0 @ eee10a10
+vldr s2,[r4,#12] @ ed941a03
+vldr d17,[pc,#12] @ eddf1b03
+vstr d17,[r4,#-12] @ ed441b03
+vldmia r4!,{s2-s5} @ ecb41a04
+vstmdb r4!,{d17-d20} @ ed641b08
+vstr d17,[pc,#64] @ edcf1b10
+vstr s3,[pc,#-12] @ ed4f1a03
+vldmia pc,{d0-d3} @ ec9f0b08
+vstmia pc,{s1-s4} @ eccf0a04
+vmov.8 d17[3],r0 @ ee410bf0
+vmov.u8 r0,d17[3] @ eed10bf0
+vmov.s16 r0,d17[2] @ ee310bb0
+vmov.32 r0,d17[1] @ ee310b90
+vdup.8 q1,r0 @ eee20b10
+vdup.16 d1,d3[2] @ f3ba1c03
+vmov.16 d17[3],r0 @ ee210bf0
+vmov.32 d17[1],r0 @ ee210b90
+vmov.s8 r0,d17[7] @ ee710bf0
+vmov.u16 r0,d17[3] @ eeb10bf0
+vdup.16 q1,r0 @ eea20b30
+vdup.32 d17,r0 @ ee810b90
+vcvt.s16.f64 d1,d1,#1 @ eebe1b67
+vcvt.u16.f32 s3,s3,#16 @ eeff1a40
+vcvt.s32.f64 d1,d1,#32 @ eebe1bc0
+vcvt.f64.s16 d1,d1,#16 @ eeba1b40
+vcvt.f32.s32 s3,s3,#32 @ eefa1ac0
+vmov.f32 s3,#-2.0 @ eef81a00
+vmov.f64 d31,#0.125 @ eef4fb00
+vcvtb.f64.f16 d17,s3 @ eef21b61
+vcvtt.f64.f16 d17,s3 @ eef21be1
+vcvtb.f16.f64 s3,d17 @ eef31b61
+vpush {s0-s31} @ ed2d0a20
+vpop {d16-d31} @ ecfd0b20
+vldmia r4,{d0-d15} @ ec940b20
+vstmia r4!,{s1-s30} @ ece40a1e
+vstr s3,[r4,#4] @ edc41a01
+vldreq d17,[r4,#4] @ 0dd41b01
+vaddne.f32 s3,s3,s5 @ 1e711aa2
+vmoveq r0,s3 @ 0e110a90
