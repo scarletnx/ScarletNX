@@ -130,6 +130,8 @@ static unsigned char* retyped(const SnxLinkInput* object, const char* name, unsi
     return copy;
 }
 
+/* the linker's ELF side (elf_object.c) is not on Windows, whose objects are COFF */
+#if !defined(_WIN32)
 /* a copy of an ELF object, which the caller frees, with pad bytes of code before its own: its code's symbols moved, and
    no relocation (the part it is made of has none in its code) */
 static unsigned char* stretched(const SnxLinkInput* object, uint64_t pad, size_t* size) {
@@ -211,6 +213,7 @@ static int malformed(const SnxLinkInput* object, const SnxLinkInput* other, cons
     }
     return failed;
 }
+#endif
 
 /* name's address in a symbol table, or 0 */
 static uint64_t symbol_named(const unsigned char* symbols, uint32_t count, const char* strings, const char* name) {
@@ -477,33 +480,17 @@ static int check_dylib(const char* what, const SnxLinkInput* inputs, size_t coun
     return failed;
 }
 
-int main(int argc, char** argv) {
-    SnxLinkInput macho[2], elf[2];
+#if !defined(_WIN32)
+/* the ELF objects argv[4] to argv[6] name, alone and beside the Mach-O ones: 1 where one of the cases fails */
+static int check_elf(const SnxLinkInput* macho, char** argv) {
+    SnxLinkInput elf[2];
     SnxLinkOutput out;
-    const char* exports[] = {"test_entry"};
+    const char* exports[] = {"helper"};
     char error[512];
-    int failed = 0;
-    uint32_t i;
-    assert(argc >= 7 && argc % 2 == 1);
-    for (i = 7; i < (uint32_t)argc; i += 2) {
-        SnxLinkInput input;
-        input.data = slurp(argv[i], &input.size);
-        input.name = argv[i];
-        failed |= refused(&input, 1, argv[i + 1]);
-        free((void*)input.data);
-    }
+    int failed = 0, i;
     for (i = 0; i < 2; ++i) {
-        macho[i].data = slurp(argv[1 + i], &macho[i].size);
-        macho[i].name = argv[1 + i];
         elf[i].data = slurp(argv[4 + i], &elf[i].size);
         elf[i].name = argv[4 + i];
-    }
-    /* code referring to a symbol of a type the linker does not take: scale made a local N_PBUD */
-    {
-        SnxLinkInput retyped_inputs[2] = {macho[0], macho[1]};
-        retyped_inputs[0].data = retyped(&macho[0], "_scale", 0xC);
-        failed |= refused(retyped_inputs, 2, "unsupported symbol type of _scale");
-        free((void*)retyped_inputs[0].data);
     }
     /* another machine's object, and one definition of a name in an object of each format */
     {
@@ -519,12 +506,10 @@ int main(int argc, char** argv) {
         free(copy);
         failed |= malformed(&elf[0], &elf[1], "test_entry");
     }
-    /* the entry's own object alone leaves helper and counter undefined, in either format */
-    failed |= refused(&macho[0], 1, "undefined");
+    /* the entry's own object alone leaves helper and counter undefined */
     failed |= refused(&elf[0], 1, "undefined symbol _");
     {
         const SnxLinkInput first_elf[2] = {elf[0], macho[1]}, first_macho[2] = {macho[0], elf[1]};
-        failed |= check_dylib("Mach-O", macho, 2, argv[3], macho[0].data, 1);
         failed |= check_dylib("ELF", elf, 2, argv[3], NULL, 0);
         failed |= check_dylib("ELF and Mach-O", first_elf, 2, argv[3], NULL, 0);
         failed |= check_dylib("Mach-O and ELF", first_macho, 2, argv[3], macho[0].data, 1);
@@ -547,7 +532,6 @@ int main(int argc, char** argv) {
         free((void*)far_elf[1].data);
     }
     /* which linker the first object's format picks: ELF's on Apple is this one's, elsewhere the ELF linker's */
-    exports[0] = "helper";
     if (snx_link(&elf[1], 1, exports, 1, "test.dylib", &out, error, sizeof(error)))
         fprintf(stderr, "link of %s: %s\n", argv[5], error), failed = 1;
     else {
@@ -559,6 +543,39 @@ int main(int argc, char** argv) {
         if (rd32(out.data) != magic) fprintf(stderr, "link of %s: not this host's module\n", argv[5]), failed = 1;
         free(out.data);
     }
-    for (i = 0; i < 2; ++i) free((void*)macho[i].data), free((void*)elf[i].data);
+    for (i = 0; i < 2; ++i) free((void*)elf[i].data);
+    return failed;
+}
+#endif
+
+int main(int argc, char** argv) {
+    SnxLinkInput macho[2];
+    int failed = 0, i;
+    assert(argc >= 7 && argc % 2 == 1);
+    for (i = 7; i < argc; i += 2) {
+        SnxLinkInput input;
+        input.data = slurp(argv[i], &input.size);
+        input.name = argv[i];
+        failed |= refused(&input, 1, argv[i + 1]);
+        free((void*)input.data);
+    }
+    for (i = 0; i < 2; ++i) {
+        macho[i].data = slurp(argv[1 + i], &macho[i].size);
+        macho[i].name = argv[1 + i];
+    }
+    /* code referring to a symbol of a type the linker does not take: scale made a local N_PBUD */
+    {
+        SnxLinkInput retyped_inputs[2] = {macho[0], macho[1]};
+        retyped_inputs[0].data = retyped(&macho[0], "_scale", 0xC);
+        failed |= refused(retyped_inputs, 2, "unsupported symbol type of _scale");
+        free((void*)retyped_inputs[0].data);
+    }
+    /* the entry's own object alone leaves helper and counter undefined */
+    failed |= refused(&macho[0], 1, "undefined");
+    failed |= check_dylib("Mach-O", macho, 2, argv[3], macho[0].data, 1);
+#if !defined(_WIN32)
+    failed |= check_elf(macho, argv);
+#endif
+    for (i = 0; i < 2; ++i) free((void*)macho[i].data);
     return failed;
 }

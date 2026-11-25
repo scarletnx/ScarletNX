@@ -4618,16 +4618,23 @@ if(TARGET OpenSSL::Crypto)
             # the harness loads objects with the JIT's loader; the sources above stay this test's own
             target_link_libraries(snx-test-link-macho PRIVATE snx_llvm "${SNX_UNICORN_LIBRARY}" ${CMAKE_DL_LIBS})
         endif()
+        # the linker's ELF side is not on Windows, whose objects are COFF
+        if(NOT WIN32)
+            set(snx_macho_elf_refusals
+                "${CMAKE_CURRENT_BINARY_DIR}/link_macho_elf_3.o" "a call to the undefined weak symbol _missing"
+                "${CMAKE_CURRENT_BINARY_DIR}/link_macho_elf_4.o" "aligned beyond a page"
+                "${CMAKE_CURRENT_BINARY_DIR}/link_macho_elf_5.o" "absolute address in read-only section .rodata"
+                "${CMAKE_CURRENT_BINARY_DIR}/link_macho_elf_6.o" "thread-local data is not supported")
+        else()
+            set(snx_macho_elf_refusals)
+        endif()
         add_test(NAME link_macho COMMAND snx-test-link-macho "${CMAKE_CURRENT_BINARY_DIR}/link_macho_1.o"
             "${CMAKE_CURRENT_BINARY_DIR}/link_macho_2.o" "${CMAKE_CURRENT_BINARY_DIR}/link_macho.dylib"
             "${CMAKE_CURRENT_BINARY_DIR}/link_macho_elf_1.o" "${CMAKE_CURRENT_BINARY_DIR}/link_macho_elf_2.o"
             "${CMAKE_CURRENT_BINARY_DIR}/link_macho_elf_7.o"
             "${CMAKE_CURRENT_BINARY_DIR}/link_macho_3.o" "a call to the undefined weak symbol _missing"
             "${CMAKE_CURRENT_BINARY_DIR}/link_macho_4.o" "aligned beyond a page"
-            "${CMAKE_CURRENT_BINARY_DIR}/link_macho_elf_3.o" "a call to the undefined weak symbol _missing"
-            "${CMAKE_CURRENT_BINARY_DIR}/link_macho_elf_4.o" "aligned beyond a page"
-            "${CMAKE_CURRENT_BINARY_DIR}/link_macho_elf_5.o" "absolute address in read-only section .rodata"
-            "${CMAKE_CURRENT_BINARY_DIR}/link_macho_elf_6.o" "thread-local data is not supported")
+            ${snx_macho_elf_refusals})
     endif()
 endif()
 
