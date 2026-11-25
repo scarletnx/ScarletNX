@@ -482,6 +482,15 @@ setting Vulkan Video decode
     help 1 = H.264 and AV1 movies decode on the GPU with Vulkan Video (FFmpeg's Vulkan decoder), each where the GPU and
     help its driver have a decode queue for it. Experimental. 0 = FFmpeg decodes them on the CPU. VP9 movies always
     help decode on the CPU
+setting Guest Vulkan
+    key guest_vulkan
+    label Game's Vulkan on the host (experimental)
+    int 0 1
+    default 0
+    startup
+    words Off|On
+    help 1 = run supported 64-bit games' Vulkan calls on the host after compatibility fixes. Experimental.
+    help 0 = run the game's driver through the Maxwell front end. Requires a restart to change
 setting Apple video decode
     key apple_video
     only macos
@@ -1733,7 +1742,7 @@ setting Native hooks
     default 1
     startup
     words Off|On
-    help 1 = the game's exported functions that the runtime has a native handler for (hle/hook/hooks.hook: the C
+    help 1 = the game's exported functions that the runtime has a native handler for (nn/hooks.hook: the C
     help library's memcpy, memmove and memset) run that handler instead of their own code. 0 runs every function's own
     help code, to tell whether a problem comes from a hook
 setting Hook families off
@@ -1742,7 +1751,7 @@ setting Hook families off
     default ""
     boxes families
     startup
-    help The families of hooks (hle/hook/hooks.hook's family lines, such as libc) whose functions run their own code,
+    help The families of hooks (nn/hooks.hook's family lines, such as libc) whose functions run their own code,
     help and the hook modules turned off (docs/platforms/nx/hooks.md, Modules), separated by commas or spaces, to tell
     help which a problem comes from. Empty: every family and module is on
 setting Hook modules folder
@@ -1762,7 +1771,7 @@ setting Hook families verified
     default ""
     boxes families
     startup
-    help The families of hooks whose pure hooks (hle/hook/hooks.hook's pure, such as libc's memcpy) are checked on
+    help The families of hooks whose pure hooks (nn/hooks.hook's pure, such as libc's memcpy) are checked on
     help every call: the function's own code runs on copies of the memory it writes, then the handler on the game's,
     help and the log names each call whose result, registers or bytes differ (docs/platforms/nx/hooks.md). Slow: for checking a
     help hook, never for playing. Empty: none
@@ -1774,7 +1783,7 @@ setting Native cond var
     startup
     words Off|On
     help 1 = the game's std::condition_variable, std::mutex and std::recursive_mutex wait on the host's own
-    help (hle/hook/hooks.hook's cond_var family), and save states are refused, as a state can't hold a thread waiting
+    help (nn/hooks.hook's cond_var family), and save states are refused, as a state can't hold a thread waiting
     help there. 0 = the game's own code waits, and save states can be taken and loaded
 setting Native os sync
     key native_os_sync
@@ -1783,7 +1792,7 @@ setting Native os sync
     default 1
     startup
     words Off|On
-    help 1 = nn::os's sleeps, yields, locks and condition variables (hle/hook/hooks.hook's os_sync family) and its light
+    help 1 = nn::os's sleeps, yields, locks and condition variables (nn/hooks.hook's os_sync family) and its light
     help events, semaphores and message queues (os_light) run on the host with no SVC, a lock's waiters waiting on its
     help word with the host's futex, and save states are refused, as a state can't hold a thread waiting there. 0 = the game's own code makes the SVCs, and save states can be taken
     help and loaded
@@ -2841,6 +2850,7 @@ setting @VK_EXT_external_memory_host
 setting @VK_EXT_fragment_shader_interlock
 setting @VK_EXT_graphics_pipeline_library
 setting @VK_EXT_hdr_metadata
+setting @VK_EXT_image_drm_format_modifier
 setting @VK_EXT_image_view_min_lod
 setting @VK_EXT_index_type_uint8
 setting @VK_EXT_legacy_vertex_attributes
@@ -2849,6 +2859,7 @@ setting @VK_EXT_map_memory_placed
 setting @VK_EXT_memory_budget
 setting @VK_EXT_memory_priority
 setting @VK_EXT_mesh_shader
+setting @VK_EXT_mutable_descriptor_type
 setting @VK_EXT_pageable_device_local_memory
 setting @VK_EXT_physical_device_drm
 setting @VK_EXT_pipeline_creation_feedback

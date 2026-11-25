@@ -24,8 +24,8 @@
 
    Locks: g_nnfs.lock guards the tables, and is taken before fs_lock (the tree's) when both are held. */
 #include "nx/nn/fs.h"
-#include "nx/hle/hook/hook.h"
-#include "hle/hook/hooks.hook.h"
+#include "nx/nn/hook.h"
+#include "nn/hooks.hook.h"
 #include "nx/hle/filesystem/fs.h"
 #include "nx/hle/kernel/kernel.h"
 #include "nx/hle/hle.h"

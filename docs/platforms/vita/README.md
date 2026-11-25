@@ -6,6 +6,7 @@
 
 * [Layers](#layers)
 * [How it fits together](#how-it-fits-together)
+* [The system's functions by NID](#the-systems-functions-by-nid)
 * [The shader corpus](#the-shader-corpus)
 * [Code compiled at run time](#code-compiled-at-run-time)
 * [Checking the CPU backend](#checking-the-cpu-backend)
@@ -63,12 +64,39 @@ and plays its sound test.
 | VPK, SELF and ELF loading (zip and zlib, relocations, imports patched to SVCs by index) | `src/vita/loader/` |
 | The offline compiler and the module it makes: the host's native back end's blocks (the A9's, chained: `src/common/cpu/arm/codegen.h`), as discovery finds them, and LLVM's where it refuses one, or all of them on a host without one or with `--keep-ir` (the recompile says how many each made, and why) | `src/vita/aot/` |
 | Process, threads (cooperative, one host thread), waits, memory, the dispatcher, run-time compiles | `src/vita/runtime/` |
-| The system libraries, answered by NID | `src/vita/hle/` (`kernel.c`, `io.c`, `ctrl.c`, `display.c`, `audio.c`, `misc.c`, `gxm.c`, `fiber.c`, `ngs.c`) |
+| The system libraries, answered by NID: each module's functions declared in a `.hook` beside its `.c` ([The system's functions by NID](#the-systems-functions-by-nid)) | `src/vita/hle/` (`kernel.c`, `io.c`, `ctrl.c`, `display.c`, `audio.c`, `misc.c`, `gxm.c`, `fiber.c`, `ngs.c`) |
 | The game's own C and C++ libraries (SceLibc, SceLibm, SceLibstdcxx) and the Clib, malloc on a heap in guest memory | `src/vita/hle/libc.c`, `heap.c` |
 | sceGxm on Vulkan: guest memory imported with `VK_EXT_external_memory_host` (a driver without it, as Mali's, works on a host visible copy of each memory block the game maps, which takes the pages the game wrote before the GPU reads them and goes back to guest memory, the rows the GPU wrote alone, when its submission is done), USSE programs translated to SPIR-V through `src/common/utilities/spirv_emit.c`, decoded by the decoder `tools/decodetree` makes from `usse.decode` | `src/vita/gpu/` (`render.c`, `usse.c`, `usse.decode`, `vk.c`, `present.c`) |
 | Movies: SceMp4 (MP4 demuxed from memory with libavformat, the file read through the game's callbacks), sceAvcdec (H.264 with libavcodec, the picture laid out in the guest's buffer on the GPU, `picture.comp`), sceAudiodec (AAC and ATRAC9) and SceCodecEngine's memory | `src/vita/hle/` (`mp4.c`, `videodec.c`, `audiodec.c`) |
 | Guest memory's writes: the pages the renderer copied to the GPU (textures, color surfaces, the framebuffer; every block the GPU uses where it works on copies) write-protected, a fault marking a page written and letting the write through, so unchanged memory isn't copied again (`mprotect` or `VirtualProtect`, and the fault handler) | `src/vita/runtime/watch.c` |
 | Keyboard, mouse (touch), gamepads and scripted presses (`--script=ms:hex,...`, SceCtrl's button bits, each held for `--press-len=` ms) | `src/vita/platform/input.c` |
+
+## The system's functions by NID
+
+A game imports each system function by its NID, the 32-bit number that names it wherever it is imported from. The
+functions the runtime answers are declared as the Switch's hooks are ([hooks](../nx/hooks.md)), in the language of
+`tools/hookgen`, one spec for each module of `src/vita/hle/` beside its `.c` (`kernel.hook`, `kernel.c`). A declaration
+gives the NID in brackets, then the function's name and signature, and the handler after `=`:
+
+```text
+family io
+[0x99ba173e] hook sceIoLseek(u32 fd, i64 offset, i32 whence) -> u64 = vita_io_lseek
+[0x8cba03d5] hook sceClibSnprintf(u32 buffer, u32 size, u32 fmt, ...) -> u32 = vita_libc_clib_snprintf
+[0x27eab8c1] hook acosf(f32 x) -> f32 = vita_libc_lm_acosf
+```
+
+`hookgen --vita` (`snx_vita_hookgen` in `cmake/hookgen.cmake`) reads every spec into one table, `vita_hle_table`,
+sorted by NID, which `hle.c` searches at an import's first call; two declarations of one NID are refused. Each entry's
+adapter reads the arguments where AAPCS32 with VFP arguments puts them: r0 to r3, a 64-bit one in an even pair of them,
+floats in the S and D registers, the rest on the caller's stack. A variadic function's `...` ends its arguments, which
+are the base standard's (a float in core registers), and its handler reads the others itself (`vita_arg`). The adapter
+calls the handler, `ret handler(VitaProcess* p, VitaThread* t, args...)`, which `vita/hle/hle.hook.h` declares, and
+returns its result in r0 (a 64-bit one's high word in r1, a float in S0 or D0). An addr is the guest's 4-byte address.
+A handler that waits (`vita_wait`) returns all the same, and its result is dropped: the thread's r0 is set when the
+wait is met.
+
+`tests/vita_hle_adapters.c` checks the adapters of `tests/hook/vita.hook`, and the `hookgen_refuses_vita_*` tests the
+declarations that `--vita` refuses.
 
 Esc twice within 3 seconds ends the game, a first press warning on the terminal and in a line over the game, as a
 Switch game's notices show.

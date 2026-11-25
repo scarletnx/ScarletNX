@@ -28,8 +28,8 @@
    declarations. Its handle is a word of 4 bytes, its config holds its managers and buffers in 4-byte fields
    (AudioRendererConfig32), and a manager's method leaves its result in r0 */
 #include "nx/nn/audio.h"
-#include "nx/hle/hook/hook.h"
-#include "hle/hook/hooks.hook.h"
+#include "nx/nn/hook.h"
+#include "nn/hooks.hook.h"
 #include "nx/hle/hle.h"
 #include "nx/hle/kernel/kernel.h"
 #include "nx/hle/services/services_int.h"

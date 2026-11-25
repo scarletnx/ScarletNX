@@ -10,14 +10,36 @@
    stack: vita_arg), its result returned into r0 (a 64-bit one's high word put in r1 first). One that waits calls
    vita_wait, and what it returns is dropped: the thread's r0 is set when the wait is met */
 typedef uint32_t (*VitaHleFunction)(VitaProcess* p, VitaThread* t);
+/* an entry of the table hookgen --vita makes of the .hook files of src/vita/hle/: the function's NID and name, the
+   adapter that calls its handler, and its spec's family */
 typedef struct {
     uint32_t nid;
     const char* name;
     VitaHleFunction function;
+    const char* family;
 } VitaHle;
 
 /* argument n of the call (AAPCS: r0 to r3, then the stack's words) */
 uint32_t vita_arg(VitaProcess* p, VitaThread* t, unsigned n);
+/* the adapters' (hookgen --vita): the word and the double word at byte at of the call's stack arguments, and a
+   float's bits as the float (one on the stack, or a variadic function's) */
+static inline uint32_t vita_arg_word(VitaProcess* p, VitaThread* t, unsigned at) {
+    return vita_read32(p, t->cpu.r[13] + at);
+}
+static inline uint64_t vita_arg_dword(VitaProcess* p, VitaThread* t, unsigned at) {
+    uint32_t sp = t->cpu.r[13] + at;
+    return vita_read32(p, sp) | (uint64_t)vita_read32(p, sp + 4) << 32;
+}
+static inline float vita_f32_bits(uint32_t bits) {
+    float f;
+    memcpy(&f, &bits, sizeof f);
+    return f;
+}
+static inline double vita_f64_bits(uint64_t bits) {
+    double d;
+    memcpy(&d, &bits, sizeof d);
+    return d;
+}
 /* the hard-float ABI's: single-precision register Sn, double-precision Dn */
 static inline float vita_float(const VitaThread* t, unsigned n) {
     uint32_t bits = (uint32_t)(t->cpu.d[n / 2] >> (n & 1 ? 32 : 0));
@@ -60,10 +82,8 @@ void vita_hle_guest_call(VitaProcess* p, VitaThread* t, uint32_t func, const uin
                          VitaHleNext next, void* context);
 /* VITA_SVC_CALL_RETURN: the guest function returned */
 void vita_hle_call_returned(VitaProcess* p, VitaThread* t);
-/* each module's functions (a NULL-named entry ends each table) */
-extern const VitaHle vita_hle_kernel[], vita_hle_io[], vita_hle_ctrl[], vita_hle_display[], vita_hle_audio[],
-    vita_hle_misc[], vita_hle_gxm[], vita_hle_libc[], vita_hle_fiber[], vita_hle_ngs[], vita_hle_mp4[],
-    vita_hle_videodec[], vita_hle_audiodec[], vita_hle_dialog[], vita_hle_net[], vita_hle_trophy[];
+/* the functions the runtime answers, sorted by NID (hookgen --vita's, a NULL-named entry ends it) */
+extern const VitaHle vita_hle_table[];
 
 /* An imported variable (VitaImage.variables): what its slot (VITA_VARIABLE_SIZE bytes, zero) holds, written once as
    the process starts */
@@ -105,8 +125,8 @@ void vita_trophy_free(VitaProcess* p);
 void vita_io_close_all(VitaProcess* p);
 /* sceIoOpen's and sceIoClose's work, for SceLibc's stdio: a descriptor or an error; a descriptor's host file, NULL
    for none */
-uint32_t vita_io_open(VitaProcess* p, uint32_t path, uint32_t flags);
-uint32_t vita_io_close(VitaProcess* p, uint32_t fd);
+uint32_t vita_io_file_open(VitaProcess* p, uint32_t path, uint32_t flags);
+uint32_t vita_io_file_close(VitaProcess* p, uint32_t fd);
 FILE* vita_io_file(VitaProcess* p, uint32_t fd);
 /* the host path of a guest path (app0: with the update's files over it, ux0:), the caller's to free; NULL for none */
 char* vita_io_host_path(VitaProcess* p, uint32_t address);

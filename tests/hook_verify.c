@@ -1,14 +1,14 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* Verify mode (src/nx/hle/hook/verify.c) on functions of the test's own, standing in for the game's recompiled code:
+/* Verify mode (src/nx/nn/verify.c) on functions of the test's own, standing in for the game's recompiled code:
    the buffers' copies in scratch memory (overlapping ones as one, at their alignment), the function's own code run on
    them and through the dispatch loop when it leaves early, the CPU put back for the handler, and each kind of
    difference: a result, a callee-saved register, a byte. Also the table hookgen makes of tests/hook/verify.hook's
    buffers */
-#include "nx/hle/hook/hook.h"
-#include "nx/hle/hook/verify.h"
-#include "hle/hook/hooks.hook.h"
-#include "hle/hook/hooks.hook.inc"
+#include "nx/nn/hook.h"
+#include "nx/nn/verify.h"
+#include "nn/hooks.hook.h"
+#include "nn/hooks.hook.inc"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>

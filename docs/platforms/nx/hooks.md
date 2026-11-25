@@ -42,8 +42,9 @@ Every call to a hooked function goes through its slot in the dispatch table, `g_
 The recompiler routes only the symbols of the route list (`src/nx/loader/hook_routes.c`): each symbol that
 `hooks.hook`, `gpu/nvn/nvn.hook` and `gpu/gl/gl.hook` name in any version, and the `route` lines of the functions the
 runtime wraps with code of its own (`nvnBootstrapLoader` and `nvnDeviceGetProcAddress`, `nvn_loader.c`; a GL driver's
-`eglGetProcAddress`, `gl_census.c`). `hookgen --routes` generates
-the list. A direct call to any other function stays a direct call. `SNX_ABI` 15 and 16 first routed every function
+`eglGetProcAddress`, `gl_census.c`; the Vulkan loader's entry points, `gpu/gvk/gvk.hook`). `hookgen --routes`
+generates the list. A direct call to any other function stays a direct call. `SNX_ABI` 15 and 16 first routed every
+function
 that a module exports, but some games export nearly all of their main executable: 88% to 98% of its functions in
 three games, so that 51% to 64% of all their direct calls became indirect calls (`tools/hook_census.py`). On one of
 them, in a gameplay scene, routing only the list's symbols took 9% of the cycles and 3.6% of the instructions that the
@@ -60,7 +61,7 @@ exports, so it works with this runtime unchanged.
 The list doesn't change `SNX_ABI`: a hook's handler keeps the guest's data as its function does, so a direct call
 that runs the function's own code is still correct, only not accelerated.
 
-`hook_install` (`src/nx/hle/hook/hook.c`) reads the game's exported functions (`kernel_load_symbols`) and puts the
+`hook_install` (`src/nx/nn/hook.c`) reads the game's exported functions (`kernel_load_symbols`) and puts the
 hook's adapter into each matching function's slot, before the game's first thread and the JIT start. The slots never
 change while the game runs, except for `hook_restore` putting a hook back after the JIT drops the code of a range
 (`jit_code_invalidate`), and a hook the game invalidates
@@ -75,7 +76,7 @@ therefore keeps the guest's data as the function does, so inlined copies read wh
 
 ## Declaring a hook
 
-Hooks are declared in `src/nx/hle/hook/hooks.hook`, one per line, each under the `family` line before it:
+Hooks are declared in `src/nx/nn/hooks.hook`, one per line, each under the `family` line before it:
 
 ```
 family libc
@@ -129,7 +130,7 @@ hook memcpy(void* dst, const void* src, u64 size) -> void* = hook_memmove
 - A pointer is a guest address. The adapter reads it from its x register as a `u64`, and the handler takes it as a
   `u64`, as an `addr`: the type only says what it points to, for the function types below and for the tools that
   read the spec (`tools/hook_spec.py`). No handler can take it for a host pointer.
-- The handler is `ret handler(CPU* c, args...)`, declared by the generated `hle/hook/hooks.hook.h`. It reads and
+- The handler is `ret handler(CPU* c, args...)`, declared by the generated `nn/hooks.hook.h`. It reads and
   writes guest memory at `c->mem + addr`, and calls the HLE kernel for anything that waits (a guest thread holds its
   emulated core until a kernel wait releases it, so a handler never blocks on a host primitive).
 - `= HANDLER` names the handler. Without it, the handler is the symbol with a `_` before its first capital:
@@ -167,6 +168,9 @@ them against prototypes in NVN's own types, with `-pedantic-errors`.
 `tools/hookgen` generates the adapters (a `GuestFn` that unpacks the registers, calls the handler, puts the result in
 x0 or v0 and returns to x30) and the table sorted by symbol. `tests/hook_adapters.c` checks the register mapping,
 and the `hookgen_refuses_*` tests the declarations it refuses.
+
+The Vita's system functions are declared in the same language, by NID (`[0x99ba173e] hook sceIoLseek(...)`), and
+`hookgen --vita` generates their adapters and table: [The system's functions by NID](../vita/README.md#the-systems-functions-by-nid).
 
 ## Versions
 
@@ -293,7 +297,7 @@ handler finds its module's base and data.
 
 ## Modules
 
-A module is one game's patch as one unit (`hle/hook/module.h`): what it applies to, what it hooks on the CPU, and its
+A module is one game's patch as one unit (`nn/module.h`): what it applies to, what it hooks on the CPU, and its
 handlers, in one file of `src/nx/patches/`. `src/nx/patches/modules.c` lists every module built into the runtime, and
 nothing else names one. A module can also be a library of its own, built outside ScarletNX
 ([below](#modules-in-libraries)), which the runtime adds after them. When the game starts, `hook_install` takes each
@@ -357,15 +361,15 @@ one flag per record and calls nothing of the trace. `nvn_trace` (`tests/nvn_trac
 
 A module can be a library built outside ScarletNX, so that a game's facts (its title and build IDs, its functions'
 offsets, its layout) stay in a repository of their own. The runtime loads it at start, checks its version, and adds it
-after the compiled-in modules (`hle/hook/module_lib.c`). From then on it is a module like the others:
+after the compiled-in modules (`nn/module_lib.c`). From then on it is a module like the others:
 `hook_modules_select` applies or refuses it. Its work is its CPU hooks, functions of the game's code by their offset in
 one build, as the [address hooks](#game-patches-hooks-by-address) of `src/nx/patches/` are, whose handlers the runtime
 calls with the guest CPU through one adapter of its own ([below](#cpu-hooks-in-libraries)). A handler can record an
 upscale into the game's command buffer. The library and its build files are found by `nx/loader/hook_libs.c`, which
 the runtime and the recompile share.
 
-**The header.** A library includes one header of ScarletNX, `src/nx/hle/hook/snx_hook_module.h`, with `src/` of a
-ScarletNX checkout on its include path (`#include "nx/hle/hook/snx_hook_module.h"`). It names no type of the runtime.
+**The header.** A library includes one header of ScarletNX, `src/nx/nn/snx_hook_module.h`, with `src/` of a
+ScarletNX checkout on its include path (`#include "nx/nn/snx_hook_module.h"`). It names no type of the runtime.
 It has its own code checks (`SnxHookCode`), CPU hooks (`SnxHookCpuHook`) and recorded upscale
 (`SnxHookRecordedUpscale`). The runtime gives the module a table of functions (`SnxHookHost`, `module_lib.c`): the
 log, a setting's value as text, and a handler's registers, guest memory, the function's own code and the upscale it
@@ -487,7 +491,7 @@ records the runtime's upscale in its place, or runs the game's own code when it 
 
 ```c
 /* one_game.c, in a repository of its own: one game's upscaler replaced by the runtime's */
-#include "nx/hle/hook/snx_hook_module.h"
+#include "nx/nn/snx_hook_module.h"
 
 static void upscaler(const SnxHookHost* host, SnxHookCpu* cpu) {
     SnxHookRecordedUpscale u = {0};
@@ -582,7 +586,7 @@ there. A 32-bit game's hooks are not invalidated either: their slots are blocks 
 
 ## A mod's call of the original
 
-`src/nx/hle/hook/ext_skyline.hooks` holds native hooks for the detours loaders are known to make (skyline's and
+`src/nx/nn/ext_skyline.hooks` holds native hooks for the detours loaders are known to make (skyline's and
 Cobalt's on `nn::fs::MountRom`, one game's optimizer mod's on `nn::fs::MountRom` by name alone,
 `nn::fs::MountSdCard` and `nn::fs::OpenFile`, skyline's on `nn::ro::Initialize`), each with the handler and
 arguments of the function's native hook (`tests/ext_skyline_hooks.py` checks them against it), in a table of its own
@@ -616,7 +620,7 @@ hook memcpy(void* dst out[size], const void* src in[size], u64 size) -> void* = 
 
 The `hooks_verify` setting (`[Debug]`) names the families whose pure hooks are checked. Their slots then hold
 verify mode's check (`verify_fn` in `hook.c`) in place of the adapter. For each call, `hook_verify_call`
-(`src/nx/hle/hook/verify.c`) copies the buffers into scratch memory in the kernel region (buffers that overlap or
+(`src/nx/nn/verify.c`) copies the buffers into scratch memory in the kernel region (buffers that overlap or
 touch share one copy, so a memmove's overlap stays one, and each copy keeps its buffer's address modulo 64, so the
 function takes the path it takes for that alignment), runs the function's own code with the buffer arguments pointing
 at the copies (and through the dispatch loop when the code leaves the function early), puts the registers back, runs

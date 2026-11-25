@@ -102,11 +102,8 @@ const SnxNros* g_nros; /* main.c's: a game module without NROs of its own */
 void pm_init(PMutex* m) { (void)m; }
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
-KThread* kthread_cur(void) { return NULL; }
-void kthread_block(KThread* t) { (void)t; }
-void kthread_unblock(KThread* t) { (void)t; }
-void core_enter(KThread* t) { (void)t; }
-void core_leave(KThread* t) { (void)t; }
+void kthread_host_wait_begin(void) {}
+void kthread_host_wait_end(void) {}
 u64 guest_ticks(void) { return 0; }
 u64 guest_gpu_ticks(void) { return 0; }
 int gpu_release_stamp_sync(u64 cpu, int may_wait) {

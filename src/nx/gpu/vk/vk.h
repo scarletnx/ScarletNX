@@ -269,6 +269,8 @@ typedef struct {
        conservative_extra pixels (maxExtraPrimitiveOverestimationSize) */
     int has_conservative;
     int has_depth_range_unrestricted; /* raw D32F copies retain every imported bit */
+    u32 gvk_nonuniform; /* enabled buffer descriptor indexing features (GVK_SPIRV_*) */
+    int gvk_host_sets; /* host-only descriptor pools on (VK_EXT_mutable_descriptor_type): gvk's twin sets */
     float conservative_extra;
     /* how an Ounce's shading rate image lowers the rate of its draws (shading_rate.c): VK_VRS_NV with
        VK_NV_shading_rate_image, VK_VRS_KHR with the attachment of VK_KHR_fragment_shading_rate, VK_VRS_NONE (each
@@ -3330,6 +3332,11 @@ void vk_display_presented(VkSwapchainKHR sc, u64 id, int game, u64 released_ns, 
 void vk_display_made(u64 id, VkResult r);
 void vk_display_fifo(int fifo);
 int vk_display_wait(u64 deadline_ns, u64* refresh_ns);
+/* the game frames presented so far: the last one's number, which vk_display_wait_frame takes (any thread) */
+u64 vk_display_frames(void);
+/* until game frame number frame is displayed or let go: 1, 0 at deadline_ns, -1 at once where the display doesn't
+   pace the game (no FIFO, frame_pacing off), as vk_display_wait */
+int vk_display_wait_frame(u64 frame, u64 deadline_ns);
 
 /* compute.c */
 void vk_dispatch(const DispatchState* d);

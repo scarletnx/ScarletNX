@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The jumps written over an invalidated native hook's start (src/nx/hle/hook/jump.c), every architecture's on any
+/* The jumps written over an invalidated native hook's start (src/nx/nn/jump.c), every architecture's on any
    host: the bytes of a near jump, a far one, one backwards, and the far forms from code 2 bytes off a doubleword, which
    pad to their aligned literal. Each row's bytes are what llvm-mc 22 disassembles to the jump to `to` from `at` (jmp
    rel32 or movabs r11 and jmp r11; b or ldr x16 and br x16; lis, ori, sldi, oris, ori, then mtctr r12 and bctr, or
@@ -8,7 +8,7 @@
    nop; auipc t1 and jr, or auipc, ld and jr; pcaddu18i $t0 and jirl), and a size of 0 is a target out of the form's
    reach. IA-64's bundles (nop.m 0 and brl.few to `to`) are what GNU objdump 2.41 of the IA-64 toolchain decodes, as
    clang has no IA-64 target yet */
-#include "nx/hle/hook/jump.h"
+#include "nx/nn/jump.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

@@ -52,8 +52,8 @@ u64 present_display_period(u64 period, u64 refresh) {
 }
 u64 nvn_device(void) { return 0; }
 u32 nvn_device_flags(void) { return 0; }
-void nvn_wait_begin(void) {}
-void nvn_wait_end(void) {}
+void kthread_host_wait_begin(void) {}
+void kthread_host_wait_end(void) {}
 u32 nvn_replay_queue(void) { return 0; }
 void nvn_replay_queue_free(u32 queue) { (void)queue; }
 u32 nvn_replay_shown_syncpt(void) { return 0; }

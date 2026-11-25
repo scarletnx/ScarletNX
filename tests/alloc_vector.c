@@ -4,7 +4,7 @@
    destroy (no loop, one call or tail call of operator delete, directly or through a PLT stub) and leaves every other
    shape to its own code; alloc_vector_free does nothing for an empty vector and gives a pointer the arena didn't make
    to the function's own code */
-#include "nx/hle/hook/hook.h"
+#include "nx/nn/hook.h"
 #include "nx/loader/module_abi.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/loader.h"

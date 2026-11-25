@@ -190,6 +190,8 @@ compile to nothing on a little-endian host:
   the CPU computes for the device (push constants, uniform and index buffers it builds, indirect commands) is
   written little-endian, and what it reads back is converted. lavapipe on a big-endian host is not little-endian,
   so it doesn't show a game's rendering there.
+- A game's own Vulkan on the host's (`guest_vulkan`) is refused on a big-endian host, and the game's own driver runs:
+  `gpu/gvk` passes Vulkan's structures, SPIR-V words and the numbers in them in the guest's byte order.
 - hactool's headers are converted as they are read, or at each field where they are signed or written back, so
   extraction and recompiling work on a big-endian machine.
 

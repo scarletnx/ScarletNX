@@ -470,3 +470,29 @@ int vk_display_wait(u64 deadline_ns, u64* refresh_ns) {
     SNX_PLOT("vk pres display wait ms", (double)(plat_ns() - t_wait) / 1e6);
     return r;
 }
+
+u64 vk_display_frames(void) {
+    pm_lock(&g_dc.lock);
+    u64 n = g_dc.handed;
+    pm_unlock(&g_dc.lock);
+    return n;
+}
+
+int vk_display_wait_frame(u64 frame, u64 deadline_ns) {
+    int r = 1;
+    if (!atomic_load_explicit(&g_dc.started, memory_order_acquire) ||
+        !atomic_load_explicit(&g_dc.fifo, memory_order_relaxed))
+        return -1;
+    if (!atomic_load_explicit((_Atomic int*)&g_settings.frame_pacing, memory_order_relaxed)) return -1;
+    pm_lock(&g_dc.lock);
+    while (g_dc.done < frame) {
+        u64 now = plat_ns();
+        if (now >= deadline_ns) {
+            r = 0;
+            break;
+        }
+        pc_wait(&g_dc.shown, &g_dc.lock, (i64)(deadline_ns - now));
+    }
+    pm_unlock(&g_dc.lock);
+    return r;
+}

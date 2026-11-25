@@ -326,8 +326,8 @@ typedef struct {
     float* hist; /* the last ntaps samples of each channel at 48 kHz, a ring at hpos */
     u32 queued, cap, phase, ntaps, hpos;
 } HwOpus;
-/* a decoder of one stream outside the service (audio.c), for hle/hook/codec.c: NULL when it can't be opened. A packet
-   is the service's, behind its 8 byte header; out takes its samples, interleaved, little-endian */
+/* a decoder of one stream outside the service (audio.c), for nn/codec.c's hwacod: NULL when it can't be opened. A
+   packet is the service's, behind its 8 byte header; out takes its samples, interleaved, little-endian */
 HwOpus* hwopus_new(u32 rate, u32 channels);
 /* the pool's decoders (nn/codec.c): h opened for rate and channels, one stream (mapping NULL) or streams of them with
    stereo_streams coupled and mapping placing their channels, 0 when it can't be; and closed */
@@ -338,7 +338,7 @@ u32 hwopus_work_size(u32 rate, u32 channels, u32 streams, u32 stereo_streams, in
 void hwopus_delete(HwOpus* h);
 int hwopus_decode_packet(HwOpus* h, const u8* in, u64 in_size, i16* out, u64 out_size, int reset, u32* consumed,
                          u32* samples);
-/* the Ounce's output streams (hle/hook/audio_stream.c) played up to now, guest time: the audio clock's turn */
+/* the Ounce's output streams (nn/audio_stream.c) played up to now, guest time: the audio clock's turn */
 void outstream_tick(u64 now);
 typedef struct {
     u32 ev;              /* the renderers' system event, every frame */

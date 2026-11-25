@@ -28,7 +28,7 @@
 #include "nx/gpu/nvn/nvn_tex.h"
 #include "nx/gpu/nvn/nvn_tic.h"
 #include "nx/gpu/renderer.h"
-#include "nx/hle/hook/hook.h"
+#include "nx/nn/hook.h"
 #include "nx/hle/services/vi.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/loader.h"
@@ -182,7 +182,7 @@ u64 kmem_alloc(u64 size, u32 state, u32 perm) {
     heap += (size + 0xfff) & ~0xfffull;
     return a;
 }
-void nce_slot_taken(u64 addr, const char* what) { (void)addr, (void)what; }
+int nce_slot_taken(u64 addr, const char* what) { return (void)addr, (void)what, 0; }
 void jit_slot_taken(u64 addr, GuestFn fn) { (void)addr, (void)fn; }
 int hook_routed(const char* name) { return (void)name, 1; }
 int shader_vk_set(int stage) { return stage == 4; } /* shader.c's: the fragment stage's set 1 */

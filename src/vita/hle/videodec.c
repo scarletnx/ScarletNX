@@ -6,6 +6,7 @@
    some back (B frames), which sceAvcdecDecodeStop hands out at the end. As the vitasdk headers (MIT) declare and the
    SDK's SceAvPlayer uses them; Vita3K's (GPL-2.0-or-later) checks of the sizes */
 #include "vita/hle/hle.h"
+#include "vita/hle/hle.hook.h"
 #include "vita/gpu/render.h"
 #include "snx_settings.h"
 #include <inttypes.h>
@@ -34,7 +35,6 @@ struct VitaVideodec {
     Decoder decoders[DECODERS];
 };
 
-static uint32_t arg(VitaProcess* p, VitaThread* t, unsigned n) { return vita_arg(p, t, n); }
 static Decoder* decoder_of(VitaProcess* p, uint32_t ctrl) {
     uint32_t handle = ctrl ? vita_read32(p, ctrl) : 0;
     return p->videodec && handle >= 1 && handle <= DECODERS && p->videodec->decoders[handle - 1].used
@@ -77,22 +77,24 @@ static bool size_valid(VitaProcess* p, uint32_t query) {
 }
 static uint32_t frame_bytes(uint32_t w, uint32_t h) { return w * h * 3 / 2; }
 
-static uint32_t ok(VitaProcess* p, VitaThread* t) {
+uint32_t vita_videodec_ok(VitaProcess* p, VitaThread* t) {
     (void)p, (void)t;
     return 0;
 }
 /* sceVideodecQueryMemSize(type, query, u32* size): the library's own memory, none here but some for it to carve */
-static uint32_t query_mem_size(VitaProcess* p, VitaThread* t) {
-    if (arg(p, t, 0) != SCE_VIDEODEC_TYPE_HW_AVCDEC) return SCE_AVCDEC_ERROR_INVALID_PARAM;
-    if (!arg(p, t, 2)) return SCE_AVCDEC_ERROR_INVALID_POINTER;
-    vita_write32(p, arg(p, t, 2), 0x40000);
+uint32_t vita_videodec_query_mem_size(VitaProcess* p, VitaThread* t, uint32_t type, uint32_t query, uint32_t size) {
+    (void)t, (void)query;
+    if (type != SCE_VIDEODEC_TYPE_HW_AVCDEC) return SCE_AVCDEC_ERROR_INVALID_PARAM;
+    if (!size) return SCE_AVCDEC_ERROR_INVALID_POINTER;
+    vita_write32(p, size, 0x40000);
     return 0;
 }
 /* sceAvcdecQueryDecoderMemSize(type, {width, height, references}, u32* frameMemSize): the references' frames, in
    256 KiB units */
-static uint32_t query_decoder_mem_size(VitaProcess* p, VitaThread* t) {
-    uint32_t query = arg(p, t, 1), out = arg(p, t, 2);
-    if (arg(p, t, 0) != SCE_VIDEODEC_TYPE_HW_AVCDEC) return SCE_AVCDEC_ERROR_INVALID_PARAM;
+uint32_t vita_videodec_query_decoder_mem_size(VitaProcess* p, VitaThread* t, uint32_t type, uint32_t query,
+                                              uint32_t out, uint32_t references, uint32_t frame_mem_size) {
+    (void)t, (void)references, (void)frame_mem_size;
+    if (type != SCE_VIDEODEC_TYPE_HW_AVCDEC) return SCE_AVCDEC_ERROR_INVALID_PARAM;
     if (!query || !out) return SCE_AVCDEC_ERROR_INVALID_POINTER;
     if (!size_valid(p, query)) return SCE_AVCDEC_ERROR_INVALID_PARAM;
     uint32_t refs = vita_read32(p, query + 8) ? vita_read32(p, query + 8) : 1;
@@ -101,9 +103,9 @@ static uint32_t query_decoder_mem_size(VitaProcess* p, VitaThread* t) {
     return 0;
 }
 /* sceAvcdecCreateDecoder(type, SceAvcdecCtrl* ctrl, query): the handle into ctrl */
-static uint32_t create_decoder(VitaProcess* p, VitaThread* t) {
-    uint32_t ctrl = arg(p, t, 1), query = arg(p, t, 2);
-    if (arg(p, t, 0) != SCE_VIDEODEC_TYPE_HW_AVCDEC) return SCE_AVCDEC_ERROR_INVALID_PARAM;
+uint32_t vita_videodec_create_decoder(VitaProcess* p, VitaThread* t, uint32_t type, uint32_t ctrl, uint32_t query) {
+    (void)t;
+    if (type != SCE_VIDEODEC_TYPE_HW_AVCDEC) return SCE_AVCDEC_ERROR_INVALID_PARAM;
     if (!ctrl || !query) return SCE_AVCDEC_ERROR_INVALID_POINTER;
     if (!size_valid(p, query)) return SCE_AVCDEC_ERROR_INVALID_PARAM;
     /* the Vita's pictures will decode with Vulkan Video too: until then the setting stops the game */
@@ -132,15 +134,17 @@ static uint32_t create_decoder(VitaProcess* p, VitaThread* t) {
     vita_write32(p, ctrl, (uint32_t)(d - p->videodec->decoders) + 1);
     return 0;
 }
-static uint32_t delete_decoder(VitaProcess* p, VitaThread* t) {
-    Decoder* d = decoder_of(p, arg(p, t, 0));
+uint32_t vita_videodec_delete_decoder(VitaProcess* p, VitaThread* t, uint32_t decoder_id) {
+    (void)t;
+    Decoder* d = decoder_of(p, decoder_id);
     if (!d) return SCE_AVCDEC_ERROR_INVALID_PARAM;
     release(d);
     return 0;
 }
 /* the largest access unit the decoder takes */
-static uint32_t decode_available_size(VitaProcess* p, VitaThread* t) {
-    Decoder* d = decoder_of(p, arg(p, t, 0));
+uint32_t vita_videodec_decode_available_size(VitaProcess* p, VitaThread* t, uint32_t decoder_id) {
+    (void)t;
+    Decoder* d = decoder_of(p, decoder_id);
     return d ? frame_bytes(d->width, d->height) : SCE_AVCDEC_ERROR_INVALID_PARAM;
 }
 /* A picture FFmpeg gave into the array's first SceAvcdecPicture (0x64 bytes: its frame at 4, the frame's pixel type,
@@ -169,9 +173,9 @@ static void output(VitaProcess* p, Decoder* d, uint32_t array) {
     memmove(d->held, d->held + 1, --d->held_count * sizeof *d->held);
 }
 /* sceAvcdecDecode(ctrl, SceAvcdecAu* au: pts, dts {upper, lower}, es {pBuf, size}, array) */
-static uint32_t decode(VitaProcess* p, VitaThread* t) {
-    Decoder* d = decoder_of(p, arg(p, t, 0));
-    uint32_t au = arg(p, t, 1), array = arg(p, t, 2);
+uint32_t vita_videodec_decode(VitaProcess* p, VitaThread* t, uint32_t ctrl, uint32_t au, uint32_t array) {
+    (void)t;
+    Decoder* d = decoder_of(p, ctrl);
     if (!d) return SCE_AVCDEC_ERROR_INVALID_PARAM;
     if (!au || !array) return SCE_AVCDEC_ERROR_INVALID_POINTER;
     vita_write32(p, array, 0);
@@ -196,9 +200,9 @@ static uint32_t decode(VitaProcess* p, VitaThread* t) {
     return sent == AVERROR(EAGAIN) ? 0x8062000au /* SCE_AVCDEC_ERROR_ES_BUFFER_FULL */ : 0;
 }
 /* sceAvcdecDecodeStop(ctrl, array): a picture the decoder held back, each call, until none is left (numOfOutput 0) */
-static uint32_t decode_stop(VitaProcess* p, VitaThread* t) {
-    Decoder* d = decoder_of(p, arg(p, t, 0));
-    uint32_t array = arg(p, t, 1);
+uint32_t vita_videodec_decode_stop(VitaProcess* p, VitaThread* t, uint32_t ctrl, uint32_t array) {
+    (void)t;
+    Decoder* d = decoder_of(p, ctrl);
     if (!d) return SCE_AVCDEC_ERROR_INVALID_PARAM;
     if (!array) return SCE_AVCDEC_ERROR_INVALID_POINTER;
     vita_write32(p, array, 0);
@@ -211,25 +215,12 @@ static uint32_t decode_stop(VitaProcess* p, VitaThread* t) {
     return 0;
 }
 /* sceAvcdecDecodeFlush(ctrl): what it holds dropped (a seek) */
-static uint32_t decode_flush(VitaProcess* p, VitaThread* t) {
-    Decoder* d = decoder_of(p, arg(p, t, 0));
+uint32_t vita_videodec_decode_flush(VitaProcess* p, VitaThread* t, uint32_t ctrl) {
+    (void)t;
+    Decoder* d = decoder_of(p, ctrl);
     if (!d) return SCE_AVCDEC_ERROR_INVALID_PARAM;
     avcodec_flush_buffers(d->codec);
     drop_held(d);
     d->draining = false;
     return 0;
 }
-
-const VitaHle vita_hle_videodec[] = {
-    {0x6731bb2du, "sceVideodecQueryMemSize", query_mem_size},
-    {0x230a78ffu, "sceVideodecInitLibraryWithUnmapMem", ok},
-    {0x3a5f4924u, "sceVideodecTermLibrary", ok},
-    {0x97e95edbu, "sceAvcdecQueryDecoderMemSize", query_decoder_mem_size},
-    {0xe82bb69bu, "sceAvcdecCreateDecoder", create_decoder},
-    {0x8a0e359eu, "sceAvcdecDeleteDecoder", delete_decoder},
-    {0x441673e3u, "sceAvcdecDecodeAvailableSize", decode_available_size},
-    {0xd6190a06u, "sceAvcdecDecode", decode},
-    {0x9648d853u, "sceAvcdecDecodeStop", decode_stop},
-    {0x25f31020u, "sceAvcdecDecodeFlush", decode_flush},
-    {0, NULL, NULL},
-};

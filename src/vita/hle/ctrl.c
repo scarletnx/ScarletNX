@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* SceCtrl and SceTouch: the buttons, the sticks and the touch panels, read from the player's input when asked */
 #include "vita/hle/hle.h"
+#include "vita/hle/hle.hook.h"
 #include "common/utilities/endian.h"
 #include "vita/platform/input.h"
 #include <string.h>
@@ -24,8 +25,8 @@ static void ctrl_data(VitaProcess* p, uint32_t at, const VitaInput* in) {
         if (pressure[i] && (in->buttons & pressure[i])) b[16 + i] = 255;
 }
 /* sceCtrlPeekBufferPositive(port, data, count): the state now, in each of count entries */
-static uint32_t peek_buffer_positive(VitaProcess* p, VitaThread* t) {
-    uint32_t data = vita_arg(p, t, 1), count = vita_arg(p, t, 2);
+uint32_t vita_ctrl_peek_buffer_positive(VitaProcess* p, VitaThread* t, uint32_t port, uint32_t data, uint32_t count) {
+    (void)t, (void)port;
     if (!data || count < 1 || count > 64 || !vita_mapped(p, data, count * 32)) return SCE_CTRL_ERROR_INVALID_ARG;
     VitaInput in;
     vita_input_read(&in);
@@ -33,20 +34,20 @@ static uint32_t peek_buffer_positive(VitaProcess* p, VitaThread* t) {
     return count;
 }
 /* the read variant waits for the next sample, which the console takes each vblank: the state now, after it */
-static uint32_t read_buffer_positive(VitaProcess* p, VitaThread* t) {
-    uint32_t r = peek_buffer_positive(p, t);
+uint32_t vita_ctrl_read_buffer_positive(VitaProcess* p, VitaThread* t, uint32_t port, uint32_t data, uint32_t count) {
+    uint32_t r = vita_ctrl_peek_buffer_positive(p, t, port, data, count);
     if (r & 0x80000000u) return r;
     t->cpu.r[0] = r;
     vita_wait(p, (VitaWait){.kind = VITA_WAIT_VBLANK, .a = (uint32_t)p->display.vblanks, .b = 1});
     return r;
 }
-static uint32_t set_sampling_mode(VitaProcess* p, VitaThread* t) {
+uint32_t vita_ctrl_set_sampling_mode(VitaProcess* p, VitaThread* t) {
     (void)p, (void)t;
     return 1; /* the mode before: SCE_CTRL_MODE_ANALOG */
 }
 /* SceTouchData (144 bytes): the time, a status, the report count, then each report (16 bytes: id, force, x, y) */
-static uint32_t touch_peek(VitaProcess* p, VitaThread* t) {
-    uint32_t port = vita_arg(p, t, 0), data = vita_arg(p, t, 1), count = vita_arg(p, t, 2);
+uint32_t vita_ctrl_touch_peek(VitaProcess* p, VitaThread* t, uint32_t port, uint32_t data, uint32_t count) {
+    (void)t;
     if (port > 1 || !data || count < 1 || count > 64 || !vita_mapped(p, data, count * 144))
         return SCE_TOUCH_ERROR_INVALID_ARG;
     VitaInput in;
@@ -66,13 +67,13 @@ static uint32_t touch_peek(VitaProcess* p, VitaThread* t) {
     }
     return count;
 }
-static uint32_t touch_set_sampling_state(VitaProcess* p, VitaThread* t) {
+uint32_t vita_ctrl_touch_set_sampling_state(VitaProcess* p, VitaThread* t) {
     (void)p, (void)t;
     return 0;
 }
 /* SceTouchPanelInfo: the panel's minimum and maximum active and physical coordinates, then the force range */
-static uint32_t touch_get_panel_info(VitaProcess* p, VitaThread* t) {
-    uint32_t port = vita_arg(p, t, 0), info = vita_arg(p, t, 1);
+uint32_t vita_ctrl_touch_get_panel_info(VitaProcess* p, VitaThread* t, uint32_t port, uint32_t info) {
+    (void)t;
     if (port > 1 || !info) return SCE_TOUCH_ERROR_INVALID_ARG;
     uint16_t height = port ? 890 : 1088;
     uint16_t values[10] = {0, 0, 1919, height - 1, 0, 0, 1919, height - 1, 1, 128};
@@ -81,15 +82,3 @@ static uint32_t touch_get_panel_info(VitaProcess* p, VitaThread* t) {
     for (unsigned i = 0; i < 10; ++i) snx_st_le16(b + i * 2, values[i]);
     return 0;
 }
-
-const VitaHle vita_hle_ctrl[] = {
-    {0xa9c3ced6u, "sceCtrlPeekBufferPositive", peek_buffer_positive},
-    {0x15f81e8cu, "sceCtrlPeekBufferPositive2", peek_buffer_positive},
-    {0x67e7ab83u, "sceCtrlReadBufferPositive", read_buffer_positive},
-    {0xa497b150u, "sceCtrlSetSamplingMode", set_sampling_mode},
-    {0xff082df0u, "sceTouchPeek", touch_peek},
-    {0x169a1d58u, "sceTouchRead", touch_peek},
-    {0x1b9c5d14u, "sceTouchSetSamplingState", touch_set_sampling_state},
-    {0x10a2ca25u, "sceTouchGetPanelInfo", touch_get_panel_info},
-    {0, NULL, NULL},
-};

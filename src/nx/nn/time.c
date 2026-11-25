@@ -19,8 +19,8 @@
    start on that source. The time zone is a fixed offset, the host's at the start (no daylight saving), and the rules
    the game gets are this file's own: the SDK only hands them back */
 #include "nx/nn/time.h"
-#include "nx/hle/hook/hook.h"
-#include "hle/hook/hooks.hook.h"
+#include "nx/nn/hook.h"
+#include "nn/hooks.hook.h"
 #include "nx/hle/hle.h"
 #include "nx/hle/result.h"
 #include "nx/runtime/clock.h"

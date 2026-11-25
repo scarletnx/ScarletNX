@@ -1,0 +1,3 @@
+# --vita: an argument after ...
+family f
+[0x1] hook f(u32 a, ..., u32 b) = h

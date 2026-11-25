@@ -1,0 +1,4 @@
+# --vita: one NID twice
+family f
+[0x1] hook f() = h
+[0x00000001] hook g() = h

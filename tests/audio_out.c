@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* aud:u (audio.c) through its IPC commands, and the hardware Opus decoder: its decoding (audio.c) and the native
    nn::codec functions over it (nn/codec.c), their handlers called as the hooks call them and codec.hook's table by
-   SDK version. The native audio outs and audio device have their own test (nn_audio.c), and the renderer its own
+   SDK version, hwacod's manager beside them. The native audio outs and audio device have their own test (nn_audio.c), and the renderer its own
    (nn_audio_renderer.c, audren_host.c) */
 #include "nx/hle/services/services_int.h"
 #include <setjmp.h>
@@ -11,7 +11,7 @@
 #include "nx/hle/services/audio.c"
 #include "nx/nn/codec.c"
 #include "nx/hle/hle.c"
-#include "hle/hook/hooks.hook.inc" /* codec.hook's table and adapters */
+#include "nn/hooks.hook.inc" /* codec.hook's table and adapters */
 #include "kobj_ids.h"              /* the kernel objects the stubs make, as ids */
 
 u8* g_mem;
@@ -194,6 +194,15 @@ void kobj_unref(KObj* o) {
     test_events--;
 }
 void kevent_signal(KEvent* e) { e->signaled = 1; }
+/* hook/guest_call.c's, by its contract (tests/hook_event_reference.c checks the real one): a new event with the
+   handle's reference and one for the caller to drop */
+KEvent* hook_attach_event(CPU* c, u64 event, const char* name) {
+    KEvent* e = kevent_new(name);
+    (void)c, (void)event;
+    kobj_ref(&e->o);
+    kobj_ref(&e->o);
+    return e;
+}
 u32 owned_event(const char* name) {
     KEvent* e = kevent_new(name);
     kobj_ref(&e->o);
@@ -595,6 +604,32 @@ static void test_native_manager(void) {
     svcobj_unref(aud);
 }
 
+/* hwacod, the Ounce's decoders under a manager: the manager's event attached as the SDK attaches it, signaled by an
+   execute and let go by the finalize while the game's handle still holds it */
+#define T_MANAGER 0x6000u
+#define T_EVENT   0x6100u
+static void test_hwacod(void) {
+    CPU* c = &cpu;
+    KEvent* e;
+    CHECK(codec_manager_init(c, T_MANAGER, T_EVENT, 48000, 2, 20000000, 1, 1, 0) == 0);
+    e = manager_of(T_MANAGER)->event;
+    CHECK(e != NULL && e->o.refs == 2 && !e->signaled);
+    CHECK(codec_manager_execute(c, T_MANAGER) == 0 && e->signaled);
+    codec_manager_finalize(c, T_MANAGER);
+    CHECK(manager_of(T_MANAGER) == NULL && e->o.refs == 1);
+    kobj_unref(&e->o); /* the game's SystemEvent closes the handle */
+#ifndef SNX_NO_H264
+    /* FinalizeHardwareOpusDecoder and ResetHardwareOpusDecoder are hwopus's symbols too: a decoder that isn't one of
+       hwacod's is hwopus's to reset and to close */
+    memset(GP(T_DEC(0)), 0, 0x40);
+    CHECK(nncodec_hwopus_init_timed(c, T_DEC(0), 48000, 2, 0x6000, 0x1000, 0) == 0 && live_decoders() == 1);
+    codec_decoder_reset(c, T_DEC(0));
+    CHECK(GP(T_DEC(0))[0x28] == 1);
+    codec_decoder_finalize(c, T_DEC(0));
+    CHECK(live_decoders() == 0 && snx_ld_le64(GP(T_DEC(0))) == 0);
+#endif
+}
+
 int main(void) {
     hle_init();
     g_mem = calloc(1, 0x10000);
@@ -607,6 +642,7 @@ int main(void) {
     cpu.mem = g_mem;
     test_hwopus();
     test_hwopus_table();
+    test_hwacod();
     CHECK(test_objects == 0 && test_events == 0);
     free(g_mem);
     printf("audio: %u checks passed\n", test_checks);

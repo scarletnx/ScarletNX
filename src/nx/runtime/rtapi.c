@@ -5,7 +5,7 @@
 #include "common/cpu/aarch64/a64_decoder.h"
 #include "common/utilities/endian.h"
 #include "nx/hle/hle.h"
-#include "nx/hle/hook/hook.h"
+#include "nx/nn/hook.h"
 #include "nx/hle/kernel/kernel.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/clock.h"

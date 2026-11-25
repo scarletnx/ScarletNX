@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* SceDisplay: the framebuffer the screen shows, taken at the next vblank, and the waits for vblanks */
 #include "vita/hle/hle.h"
+#include "vita/hle/hle.hook.h"
 #include "vita/gpu/present.h"
 
 #define SCE_DISPLAY_ERROR_INVALID_VALUE 0x80290001u
@@ -9,8 +10,8 @@
 
 /* sceDisplaySetFrameBuf(SceDisplayFrameBuf* param, sync): size, base, pitch (pixels), format, width, height. NULL
    blanks the screen */
-static uint32_t set_frame_buf(VitaProcess* p, VitaThread* t) {
-    uint32_t param = vita_arg(p, t, 0);
+uint32_t vita_display_set_frame_buf(VitaProcess* p, VitaThread* t, uint32_t param, uint32_t sync) {
+    (void)t, (void)sync;
     if (!param) {
         p->display.base = 0;
         return 0;
@@ -23,8 +24,8 @@ static uint32_t set_frame_buf(VitaProcess* p, VitaThread* t) {
     p->display.width = width, p->display.height = height;
     return 0;
 }
-static uint32_t get_frame_buf(VitaProcess* p, VitaThread* t) {
-    uint32_t param = vita_arg(p, t, 0);
+uint32_t vita_display_get_frame_buf(VitaProcess* p, VitaThread* t, uint32_t param) {
+    (void)t;
     if (!param) return SCE_DISPLAY_ERROR_INVALID_VALUE;
     vita_write32(p, param + 4, p->display.base);
     vita_write32(p, param + 8, p->display.pitch);
@@ -59,10 +60,14 @@ static uint32_t pace_vblank(VitaProcess* p, VitaThread* t, uint32_t count) {
     vita_wait(p, (VitaWait){.kind = VITA_WAIT_VBLANK, .a = (uint32_t)(target - 1)});
     return 0;
 }
-static uint32_t wait_vblank_start(VitaProcess* p, VitaThread* t) { return pace_vblank(p, t, 1); }
-static uint32_t wait_vblank_start_multi(VitaProcess* p, VitaThread* t) { return pace_vblank(p, t, vita_arg(p, t, 0)); }
-static uint32_t wait_set_frame_buf(VitaProcess* p, VitaThread* t) { return wait_vblank(p, t, 1); }
-static uint32_t wait_set_frame_buf_multi(VitaProcess* p, VitaThread* t) { return wait_vblank(p, t, vita_arg(p, t, 0)); }
+uint32_t vita_display_wait_vblank_start(VitaProcess* p, VitaThread* t) { return pace_vblank(p, t, 1); }
+uint32_t vita_display_wait_vblank_start_multi(VitaProcess* p, VitaThread* t, uint32_t vcount) {
+    return pace_vblank(p, t, vcount);
+}
+uint32_t vita_display_wait_set_frame_buf(VitaProcess* p, VitaThread* t) { return wait_vblank(p, t, 1); }
+uint32_t vita_display_wait_set_frame_buf_multi(VitaProcess* p, VitaThread* t, uint32_t vcount) {
+    return wait_vblank(p, t, vcount);
+}
 
 bool vita_display_vblank(VitaProcess* p) {
     vita_gxm_poll(p);
@@ -70,24 +75,8 @@ bool vita_display_vblank(VitaProcess* p) {
 }
 
 /* sceDisplayGetRefreshRate(float* rate): the screen's 59.94005 Hz */
-static uint32_t get_refresh_rate(VitaProcess* p, VitaThread* t) {
-    uint32_t at = vita_arg(p, t, 0);
+uint32_t vita_display_get_refresh_rate(VitaProcess* p, VitaThread* t, uint32_t at) {
+    (void)t;
     if (at && vita_mapped(p, at, 4)) vita_write32(p, at, 0x426fc29cu);
     return 0;
 }
-const VitaHle vita_hle_display[] = {
-    {0x7a410b64u, "sceDisplaySetFrameBuf", set_frame_buf},
-    {0xa08ca60du, "sceDisplayGetRefreshRate", get_refresh_rate},
-    {0x42ae6bbcu, "sceDisplayGetFrameBuf", get_frame_buf},
-    {0x5795e898u, "sceDisplayWaitVblankStart", wait_vblank_start},
-    {0x78b41b92u, "sceDisplayWaitVblankStartCB", wait_vblank_start},
-    {0xdd0a13b8u, "sceDisplayWaitVblankStartMulti", wait_vblank_start_multi},
-    {0x9423560cu, "sceDisplayWaitSetFrameBuf", wait_set_frame_buf},
-    {0x7d9864a8u, "sceDisplayWaitSetFrameBufMulti", wait_set_frame_buf_multi},
-    /* the CB waits also run the thread's callbacks while it waits; none are queued here, so they are the plain waits.
-       The display queue's thread calls these two after each sceDisplaySetFrameBuf */
-    {0x05f27764u, "sceDisplayWaitVblankStartMultiCB", wait_vblank_start_multi},
-    {0x814c90afu, "sceDisplayWaitSetFrameBufCB", wait_set_frame_buf},
-    {0x3e796ef5u, "sceDisplayWaitSetFrameBufMultiCB", wait_set_frame_buf_multi},
-    {0, NULL, NULL},
-};

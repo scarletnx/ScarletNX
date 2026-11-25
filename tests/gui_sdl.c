@@ -1098,7 +1098,8 @@ static void microphone_words(App* app) {
 }
 /* the Room password: its row in Network says whether there is one, and the dialog that takes one starts empty, draws
    stars alone and keeps none of the letters; written 0600 in users/online.ini, never in settings.ini nor a run's
-   options; Del takes it off; refused text is said and can be mended; a file others can read is said */
+   options; Del takes it off; refused text is said and can be mended; a file others can read is said; another version's
+   key in the file stays, named once in the log */
 static void room_password_row(App* app, const char* temporary) {
     static const char list[] = "Network\tldn\tlan\ttext\t0\t0\tWireless\tLocal wireless\tlan=LAN|room=Room\n"
                                "Network\troom\t\ttext\t0\t0\tThe room\tEden room\t\n"
@@ -1130,6 +1131,18 @@ static void room_password_row(App* app, const char* temporary) {
     assert(!strcmp(app->editor.text, "s3cret pass"));
     key(app, SDLK_ESCAPE); /* Cancel: none kept, the text gone */
     assert(!app->editor.typing && !app->editor.text[0] && !snx_is_file(online));
+    key(app, SDLK_RETURN);
+    typed(app, "s3cret pass");
+    { /* the pointer on Cancel: its row lit, and Enter takes it as a click would */
+        GuiTypedBoxes b;
+        render(app);
+        typed_place(app, &b);
+        point(app, choice_box(app, &b.c, 1), false);
+        render(app);
+        shows(app, "- Cancel", yellow);
+        key(app, SDLK_RETURN);
+        assert(!app->editor.typing && !app->editor.text[0] && !snx_is_file(online));
+    }
     key(app, SDLK_RETURN);
     key(app, SDLK_RETURN); /* nothing typed: no change, as it says */
     assert(strstr(app->editor.note, "nothing was typed") && !app->editor.typing && !snx_is_file(online));
@@ -1179,6 +1192,52 @@ static void room_password_row(App* app, const char* temporary) {
     assert(!snx_users_room_password(users, password, sizeof password, why, sizeof why) && !strcmp(password, "fresh"));
     key(app, SDLK_DELETE);
 #endif
+    { /* another version's key there (a sign-in's, whose value is a secret): the password is set and taken off with it
+         in its place, and the log names it once, never its value */
+        static const char sign_in[] = "sign_in=FAKE-TOKEN\n";
+        char *logs = snx_path_join(temporary, "room-logs"), *console = console_in(logs), *log, *text;
+        size_t size = 0;
+        int named = 0;
+        assert(!snx_mkdirs(logs) && !snx_write_file(online, sign_in, sizeof sign_in - 1));
+#ifndef _WIN32
+        assert(!chmod(online, 0600));
+#endif
+        gui_log_folder(logs);
+        leave_form(app);
+        app->editor.row = g;
+        key(app, SDLK_RETURN);
+        app->editor.row = row;
+        render(app);
+        shows(app, "None", yellow);
+        key(app, SDLK_RETURN);
+        typed(app, "fresh");
+        key(app, SDLK_RETURN);
+        assert(!strcmp(app->editor.note, "Room password: set"));
+        text = (char*)snx_read_file(online, &size);
+        assert(text && strstr(text, sign_in) == text && strstr(text, "\nroom_password=fresh\n"));
+        free(text);
+        render(app);
+        shows(app, "********", yellow);
+        leave_form(app);
+        app->editor.row = g;
+        key(app, SDLK_RETURN);
+        app->editor.row = row;
+        key(app, SDLK_DELETE);
+        assert(!strcmp(app->editor.note, "Room password: none"));
+        text = (char*)snx_read_file(online, &size);
+        assert(text && !strcmp(text, sign_in));
+        free(text);
+        gui_log_folder(NULL);
+        log = (char*)snx_read_file(console, &size);
+        for (char* at = log; at && (at = strstr(at, "sign_in")); ++at) ++named;
+        assert(named == 1 &&
+               strstr(log, "users/online.ini: this version reads room_password (none) and no other key: sign_in") &&
+               !strstr(log, "FAKE"));
+        free(log);
+        assert(!snx_remove_tree(logs));
+        free(console);
+        free(logs);
+    }
     leave_editor(app);
     settings_forget(app);
     app->users_dir = was;
@@ -8270,6 +8329,43 @@ int main(int argc, char** argv) {
         shows(&app, "- OK", yellow);
         shows(&app, "- Cancel", normal);
         assert(SDL_TextInputActive(app.window) && !gui_settings_value(&app.settings, "resolution"));
+        /* the pointer on Cancel: the look of what Enter takes is its row's, not OK's; off it, and once more is typed,
+           the pointer still there, OK's again; on OK, OK's; Enter there takes it as ever */
+        point(&app, choice_box(&app, &b.c, 1), false);
+        render(&app);
+        shows(&app, "- Cancel", yellow);
+        shows(&app, "- OK", normal);
+        mouse_px(&app, b.field.x + 4, b.field.y + 4, false);
+        render(&app);
+        shows(&app, "- OK", yellow);
+        shows(&app, "- Cancel", normal);
+        point(&app, choice_box(&app, &b.c, 1), false);
+        key(&app, SDLK_BACKSPACE);
+        typed(&app, "5");
+        render(&app);
+        shows(&app, "- OK", yellow);
+        shows(&app, "- Cancel", normal);
+        point(&app, choice_box(&app, &b.c, 0), false);
+        render(&app);
+        shows(&app, "- OK", yellow);
+        point(&app, choice_box(&app, &b.c, 1), false); /* Enter on Cancel: as ESC, the row as it was */
+        key(&app, SDLK_RETURN);
+        assert(!app.editor.typing && !SDL_TextInputActive(app.window) &&
+               !gui_settings_value(&app.settings, "resolution"));
+        key(&app, SDLK_RETURN);
+        typed(&app, "0.5");
+        assert(app.editor.typing);
+        render(&app);
+        shows(&app, "- OK", yellow); /* opened again: on OK, the pointer not moved since */
+        {
+            SDL_Event left = {0};
+            left.type = SDL_EVENT_WINDOW_MOUSE_LEAVE;
+            point(&app, choice_box(&app, &b.c, 1), false);
+            event(&app, &left);
+            render(&app);
+            shows(&app, "- OK", yellow);
+            shows(&app, "- Cancel", normal);
+        }
         key(&app, SDLK_ESCAPE);
         assert(!app.editor.typing && !SDL_TextInputActive(app.window) &&
                !gui_settings_value(&app.settings, "resolution"));

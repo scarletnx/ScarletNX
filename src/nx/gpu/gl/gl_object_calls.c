@@ -46,7 +46,7 @@ static void* host(u64 a) { return a ? GP(a) : NULL; }
 
 u64 gl_guest_pages(u64 size) {
     /* past every region the console gives a program (the kernel's, the heap, the alias region, the stacks), as the
-       hooked allocator's arena (hle/hook/alloc.c): the kernel's own region is a GiB, which a game's textures fill */
+       hooked allocator's arena (nn/alloc.c): the kernel's own region is a GiB, which a game's textures fill */
     u64 lo = KERN_END, a = 0;
     if (HEAP_BASE + HEAP_SIZE > lo) lo = HEAP_BASE + HEAP_SIZE;
     if (ALIAS_BASE + ALIAS_SIZE > lo) lo = ALIAS_BASE + ALIAS_SIZE;

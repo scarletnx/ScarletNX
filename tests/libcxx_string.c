@@ -1,11 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* std::string's hooks (src/nx/hle/hook/libcxx_string.c) on libc++'s layout in guest memory: short and long strings,
+/* std::string's hooks (src/nx/nn/libcxx_string.c) on libc++'s layout in guest memory: short and long strings,
    growth through the guest's operator new with the old buffer given back to its operator delete, sources that
    point into the string itself, the searches and comparisons, libc++'s __grow_by, and what would throw left to the
    function's own code with the string unchanged */
-#include "nx/hle/hook/hook.h"
-#include "hle/hook/hooks.hook.h"
+#include "nx/nn/hook.h"
+#include "nn/hooks.hook.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>

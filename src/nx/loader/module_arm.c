@@ -43,12 +43,22 @@ typedef struct {
     SnxU32 units;
     unsigned char x64; /* the native back end made it (discovery's object), else LLVM makes it in a unit */
 } Block;
-/* the reasons the native back end left blocks to LLVM, counted (snx_x64_arm_why's text) */
+/* the reasons the native back end left blocks to LLVM, counted (snx_x64_arm_why's text), lowest their first's key */
 #define WHYS 64
 typedef struct {
     const char* why;
     size_t count;
+    SnxU32 lowest;
 } Why;
+/* count more blocks left for why, the lowest at key */
+static void leave(Why* whys, size_t* nwhys, const char* why, size_t count, SnxU32 key) {
+    size_t k = 0;
+    while (k < *nwhys && strcmp(whys[k].why, why)) ++k;
+    if (k == WHYS) return;
+    if (k == *nwhys) whys[(*nwhys)++] = (Why){why, 0, key};
+    whys[k].count += count;
+    if (key < whys[k].lowest) whys[k].lowest = key;
+}
 
 typedef struct {
     const SnxProgram* program;
@@ -341,11 +351,7 @@ static int x64_block(Finder* f, const SnxProgram* p, SnxU32 key, size_t* units, 
     if (*count > BLOCK_LIMIT) *count = BLOCK_LIMIT;
     if (!(thumb ? snx_native_thumb_block(f->x64, NULL, code, *count, address, &consumed, x64_next, (void*)p)
                 : snx_native_arm_block(f->x64, NULL, code, *count, address, &consumed, x64_next, (void*)p))) {
-        const char* why = snx_native_arm_why(f->x64);
-        size_t k = 0;
-        while (k < f->nwhys && strcmp(f->whys[k].why, why)) ++k;
-        if (k == f->nwhys && k < WHYS) f->whys[f->nwhys++].why = why;
-        if (k < f->nwhys) ++f->whys[k].count;
+        leave(f->whys, &f->nwhys, snx_native_arm_why(f->x64), 1, key);
         return 0;
     }
     *units = consumed;
@@ -523,12 +529,8 @@ done:
     for (unsigned i = 0; i < threads; ++i) {
         /* each thread's counts, and its blocks into the first's object */
         d->x64_made += finders[i].x64_made;
-        for (size_t w = 0; w < finders[i].nwhys; ++w) {
-            size_t k = 0;
-            while (k < d->nwhys && strcmp(d->whys[k].why, finders[i].whys[w].why)) ++k;
-            if (k == d->nwhys && k < WHYS) d->whys[d->nwhys++].why = finders[i].whys[w].why;
-            if (k < d->nwhys) d->whys[k].count += finders[i].whys[w].count;
-        }
+        for (size_t w = 0; w < finders[i].nwhys; ++w)
+            leave(d->whys, &d->nwhys, finders[i].whys[w].why, finders[i].whys[w].count, finders[i].whys[w].lowest);
         if (i && finders[i].x64) {
             if (!rc && snx_native_arm_absorb(d->x64, finders[i].x64)) {
                 snprintf(error, error_size, "out of memory");
@@ -1013,7 +1015,10 @@ int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* options, c
                     if (d.whys[k].count > d.whys[best].count) best = k;
                 Why t = d.whys[i];
                 d.whys[i] = d.whys[best], d.whys[best] = t;
-                if (i < 8) printf("  %zu blocks: %s\n", d.whys[i].count, d.whys[i].why);
+                if (i < 8)
+                    printf("  %zu block%s, the first the %s one at 0x%08x: %s\n", d.whys[i].count,
+                           d.whys[i].count == 1 ? "" : "s", d.whys[i].lowest & 1 ? "Thumb" : "ARM",
+                           (unsigned)(d.whys[i].lowest & ~1u), d.whys[i].why);
             }
         }
     }

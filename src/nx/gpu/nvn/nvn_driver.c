@@ -11,7 +11,7 @@
    given before the BR (the default), or reads the driver's state, which is unknown here */
 #include "nx/gpu/nvn/nvn_driver.h"
 #include "common/utilities/endian.h"
-#include "nx/hle/hook/hook.h"
+#include "nx/nn/hook.h"
 #include <stdio.h>
 
 typedef struct {

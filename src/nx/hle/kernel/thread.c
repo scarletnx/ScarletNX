@@ -13,6 +13,7 @@
 #include "nx/runtime/platform/tracy.h"
 #include "nx/hle/hle.h"
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/gvk/gvk.h"
 #include "nx/runtime/nce/nce.h"
 #include "nx/runtime/guest_stats.h"
 
@@ -777,7 +778,7 @@ u32 kthread_create(u64 entry, u64 arg, u64 stack_top, int prio, int core, KThrea
    the Switch's as the Ounce's, takes a lock's owner from it (InternalCriticalSection::IsLockedByCurrentThread), from
    the C library's first lock on. Left 0, it reads as the owner of every free lock, and the first pthread_mutex_lock of
    a normal mutex aborts as a relock. Older SDKs leave the word alone: the kernel's own words end at 0x10f. The thread
-   keeps it too, for the lock words the hooks write for it (hle/hook/os_sync.c), whatever its SDK reads */
+   keeps it too, for the lock words the hooks write for it (nn/os_sync.c), whatever its SDK reads */
 void kthread_set_own_handle(KThread* t, u32 h) {
     if (t) t->own_handle = h;
     if (t && t->tls) gw32(t->tls + 0x110, h);
@@ -874,6 +875,7 @@ void svc_exit_thread(KThread* t) {
     core_leave(t);
     guest_stats_thread_end(kt_ix(t));
     kobj_unref(&t->o);
+    gvk_scratch_free();
     atomic_fetch_sub_explicit(&g_host.thread.nhost, 1, memory_order_acq_rel);
     plat_thread_exit();
 }
@@ -924,6 +926,14 @@ void kthread_unblock(KThread* t) {
     if (atomic_load_explicit(&t->suspended, memory_order_seq_cst)) svc_pause_point(t); /* paused during the wait */
     kthread_hold_point(t, PARK_RUN); /* rt_miss set the pc it goes on at */
 }
+void kthread_host_wait_begin(void) {
+    KThread* t = kthread_cur();
+    if (t) core_leave(t);
+}
+void kthread_host_wait_end(void) {
+    KThread* t = kthread_cur();
+    if (t) core_enter(t);
+}
 void kthread_commit(void) {
     KThread* t = kthread_cur();
     if (t) g_host.thread.committed[kt_ix(t) - 1] = 1;
@@ -968,6 +978,7 @@ void kthread_retire_check(PMutex* held) {
     if (!atomic_load_explicit(&g_host.thread.retire, memory_order_acquire)) return;
     if (held) pm_unlock(held);
     guest_stats_thread_end(kt_ix(kthread_cur()));
+    gvk_scratch_free();
     atomic_fetch_sub_explicit(&g_host.thread.nhost, 1, memory_order_acq_rel);
     SNX_FIBER_LEAVE_ALL(); /* this host thread ends inside its guest's wait */
     plat_thread_exit();

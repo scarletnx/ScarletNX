@@ -1213,8 +1213,8 @@ int main(int argc, char** argv) {
     if (refused) {
 #ifndef SNX_TEST_NATIVE
         if (!snx_x64_available()) {
-            printf("recompiler backends: no x86-64 back end on this host: nothing to list\n");
-            return 0;
+            printf("SKIP: no x86-64 back end on this host: nothing to list\n");
+            return 77;
         }
 #endif
         return refused == 2 ? list_coverage() : list_refused(ops, nops);
@@ -1464,9 +1464,9 @@ int main(int argc, char** argv) {
     /* a word the back end doesn't make is LLVM's on both sides: with --ops, and the random programs, it fails below */
     if (!snx_x64_available() || (nwords && !must_make && !snx_recompiled_x64_functions(mx))) {
 #endif
-        printf("recompiler backends: %s: nothing to compare\n",
-               nwords ? "the back end leaves the function to LLVM" : "no x86-64 back end on this host");
-        result = 0;
+        printf("SKIP: %s: nothing to compare\n",
+               snx_x64_available() ? "the back end leaves the function to LLVM" : "no x86-64 back end on this host");
+        result = 77;
         goto out;
     }
 #ifndef SNX_TEST_NATIVE

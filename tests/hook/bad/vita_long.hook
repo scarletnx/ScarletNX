@@ -1,0 +1,3 @@
+# --vita: a NID of 9 digits
+family f
+[0x123456789] hook f() = h

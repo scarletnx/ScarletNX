@@ -3,6 +3,7 @@
 /* SceLibKernel, SceThreadmgr, SceSysmem and SceProcessmgr: threads, their synchronization, memory blocks and time, as
    the vitasdk headers (MIT) declare them */
 #include "vita/hle/hle.h"
+#include "vita/hle/hle.hook.h"
 #include "common/utilities/ascii.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
@@ -31,19 +32,21 @@
 #define EVF_WAITMODE_CLEAR_ALL 0x02u
 #define EVF_WAITMODE_CLEAR_PAT 0x04u
 
-static uint32_t arg(VitaProcess* p, VitaThread* t, unsigned n) { return vita_arg(p, t, n); }
 static void name_of(VitaProcess* p, uint32_t address, char out[32]) { vita_string(p, address, out, 32); }
 
 /* ---- threads ---- */
-static uint32_t create_thread(VitaProcess* p, VitaThread* t) {
+uint32_t vita_kernel_create_thread(VitaProcess* p, VitaThread* t, uint32_t name_address, uint32_t entry,
+                                   uint32_t priority, uint32_t stack_size, uint32_t attr) {
+    (void)t;
     char name[32];
-    name_of(p, arg(p, t, 0), name);
-    int32_t uid = vita_thread_new(p, name, arg(p, t, 1), arg(p, t, 2), arg(p, t, 3), arg(p, t, 4));
+    name_of(p, name_address, name);
+    int32_t uid = vita_thread_new(p, name, entry, priority, stack_size, attr);
     return (uint32_t)uid;
 }
-static uint32_t start_thread(VitaProcess* p, VitaThread* t) {
-    VitaThread* target = vita_thread(p, arg(p, t, 0));
-    uint32_t size = arg(p, t, 1), block = arg(p, t, 2), copy = 0;
+uint32_t vita_kernel_start_thread(VitaProcess* p, VitaThread* t, uint32_t thread_id, uint32_t size, uint32_t block) {
+    (void)t;
+    VitaThread* target = vita_thread(p, thread_id);
+    uint32_t copy = 0;
     if (!target) return SCE_KERNEL_ERROR_UNKNOWN_THREAD_ID;
     if (target->state != VITA_THREAD_DORMANT) return SCE_KERNEL_ERROR_NOT_DORMANT;
     /* the argument block, copied to the top of the thread's stack */
@@ -54,13 +57,13 @@ static uint32_t start_thread(VitaProcess* p, VitaThread* t) {
     vita_thread_start(p, target, size, copy);
     return 0;
 }
-static uint32_t exit_thread(VitaProcess* p, VitaThread* t) {
+uint32_t vita_kernel_exit_thread(VitaProcess* p, VitaThread* t, uint32_t status) {
     if (vita_in_module_start(t)) {
-        t->cpu.r[0] = arg(p, t, 0);
+        t->cpu.r[0] = status;
         vita_hle_call_returned(p, t);
         return t->cpu.r[0];
     }
-    vita_thread_end(p, t, (int32_t)arg(p, t, 0));
+    vita_thread_end(p, t, (int32_t)status);
     return 0;
 }
 static void release_thread(VitaProcess* p, VitaThread* t) {
@@ -69,8 +72,8 @@ static void release_thread(VitaProcess* p, VitaThread* t) {
     vita_object_delete(p, t->uid);
     t->state = VITA_THREAD_FREE;
 }
-static uint32_t exit_delete_thread(VitaProcess* p, VitaThread* t) {
-    vita_thread_end(p, t, (int32_t)arg(p, t, 0));
+uint32_t vita_kernel_exit_delete_thread(VitaProcess* p, VitaThread* t, int32_t status) {
+    vita_thread_end(p, t, status);
     /* no waiter can see its status once it is gone: one waiting for its end is told it ended */
     for (unsigned i = 0; i < VITA_THREADS; ++i) {
         VitaThread* w = &p->threads[i];
@@ -83,57 +86,59 @@ static uint32_t exit_delete_thread(VitaProcess* p, VitaThread* t) {
     release_thread(p, t);
     return 0;
 }
-static uint32_t delete_thread(VitaProcess* p, VitaThread* t) {
-    VitaThread* target = vita_thread(p, arg(p, t, 0));
+uint32_t vita_kernel_delete_thread(VitaProcess* p, VitaThread* t, uint32_t thread_id) {
+    (void)t;
+    VitaThread* target = vita_thread(p, thread_id);
     if (!target) return SCE_KERNEL_ERROR_UNKNOWN_THREAD_ID;
     if (target->state != VITA_THREAD_DORMANT && target->state != VITA_THREAD_DEAD)
         return SCE_KERNEL_ERROR_NOT_DORMANT;
     release_thread(p, target);
     return 0;
 }
-static uint32_t wait_thread_end(VitaProcess* p, VitaThread* t) {
-    uint32_t uid = arg(p, t, 0);
+uint32_t vita_kernel_wait_thread_end(VitaProcess* p, VitaThread* t, uint32_t uid, uint32_t status, uint32_t timeout) {
+    (void)t;
     if (!vita_thread(p, uid)) return SCE_KERNEL_ERROR_UNKNOWN_THREAD_ID;
-    vita_wait(p, (VitaWait){.kind = VITA_WAIT_THREAD_END, .object = uid, .out = arg(p, t, 1),
-                            .timeout = arg(p, t, 2), .deadline = vita_deadline(p, arg(p, t, 2))});
+    vita_wait(p, (VitaWait){.kind = VITA_WAIT_THREAD_END, .object = uid, .out = status,
+                            .timeout = timeout, .deadline = vita_deadline(p, timeout)});
     return 0;
 }
-static uint32_t get_thread_id(VitaProcess* p, VitaThread* t) {
+uint32_t vita_kernel_get_thread_id(VitaProcess* p, VitaThread* t) {
     (void)p;
     return t->uid;
 }
-static uint32_t delay_thread(VitaProcess* p, VitaThread* t) {
-    uint64_t delay = (uint64_t)arg(p, t, 0) * 1000u;
+uint32_t vita_kernel_delay_thread(VitaProcess* p, VitaThread* t, uint32_t usec) {
+    (void)t;
+    uint64_t delay = (uint64_t)usec * 1000u;
     /* a delay of 0 gives the core away, as the console's scheduler does */
     vita_wait(p, (VitaWait){.kind = VITA_WAIT_DELAY, .deadline = plat_ns() + (delay ? delay : 1)});
     return 0;
 }
-static uint32_t get_thread_current_priority(VitaProcess* p, VitaThread* t) {
+uint32_t vita_kernel_get_thread_current_priority(VitaProcess* p, VitaThread* t) {
     (void)p;
     return t->priority;
 }
-static uint32_t change_thread_priority(VitaProcess* p, VitaThread* t) {
-    uint32_t uid = arg(p, t, 0);
+uint32_t vita_kernel_change_thread_priority(VitaProcess* p, VitaThread* t, uint32_t uid, uint32_t priority) {
     VitaThread* target = uid ? vita_thread(p, uid) : t;
     if (!target) return SCE_KERNEL_ERROR_UNKNOWN_THREAD_ID;
-    target->priority = arg(p, t, 1);
+    target->priority = priority;
     return 0;
 }
-static uint32_t check_thread_stack(VitaProcess* p, VitaThread* t) {
+uint32_t vita_kernel_check_thread_stack(VitaProcess* p, VitaThread* t) {
     (void)p;
     return t->cpu.r[13] - t->stack; /* what is left */
 }
-static uint32_t get_tls_addr(VitaProcess* p, VitaThread* t) {
-    uint32_t key = arg(p, t, 0);
+uint32_t vita_kernel_get_tls_addr(VitaProcess* p, VitaThread* t, uint32_t key) {
+    (void)p;
     /* the slots are the first half of the thread's TLS area, the TLS register points at the second */
     return key < VITA_TLS_SIZE / 8 ? t->tls + key * 4 : 0;
 }
-static uint32_t exit_process(VitaProcess* p, VitaThread* t) {
+uint32_t vita_kernel_exit_process(VitaProcess* p, VitaThread* t, int32_t exit_code) {
+    (void)t;
     p->exited = true;
-    p->exit_code = (int32_t)arg(p, t, 0);
+    p->exit_code = exit_code;
     return 0;
 }
-static uint32_t get_process_id(VitaProcess* p, VitaThread* t) {
+uint32_t vita_kernel_get_process_id(VitaProcess* p, VitaThread* t) {
     (void)p, (void)t;
     return 0x10005;
 }
@@ -143,7 +148,7 @@ static uint32_t get_process_id(VitaProcess* p, VitaThread* t) {
    p->image.process_param is the same block, already relocated into guest memory (image.c's exports() records it
    from the export with NID 0x70fba1e7, and process.c already reads it for the main thread's stack and priority).
    Vita3K's sceKernelGetProcessParam returns that same block. */
-static uint32_t get_process_param(VitaProcess* p, VitaThread* t) {
+uint32_t vita_kernel_get_process_param(VitaProcess* p, VitaThread* t) {
     static unsigned shown;
     (void)t;
     uint32_t pp = p->image.process_param;
@@ -162,44 +167,46 @@ static uint32_t get_process_param(VitaProcess* p, VitaThread* t) {
 }
 
 /* ---- semaphores ---- */
-static uint32_t create_sema(VitaProcess* p, VitaThread* t) {
+uint32_t vita_kernel_create_sema(VitaProcess* p, VitaThread* t, uint32_t name_address, uint32_t attr, int32_t count,
+                                 int32_t max) {
+    (void)t;
     char name[32];
     VitaObject* o;
-    name_of(p, arg(p, t, 0), name);
+    name_of(p, name_address, name);
     uint32_t uid = vita_object_new(p, VITA_OBJ_SEMA, name, &o);
     if (!uid) return SCE_KERNEL_ERROR_NO_MEMORY;
-    o->u.sema.attr = arg(p, t, 1);
-    o->u.sema.count = (int32_t)arg(p, t, 2);
-    o->u.sema.max = (int32_t)arg(p, t, 3);
+    o->u.sema.attr = attr;
+    o->u.sema.count = count;
+    o->u.sema.max = max;
     return uid;
 }
-static uint32_t wait_sema(VitaProcess* p, VitaThread* t) {
-    uint32_t uid = arg(p, t, 0);
+uint32_t vita_kernel_wait_sema(VitaProcess* p, VitaThread* t, uint32_t uid, int32_t need, uint32_t timeout) {
+    (void)t;
     VitaObject* o = vita_object(p, uid, VITA_OBJ_SEMA);
     if (!o) return SCE_KERNEL_ERROR_UNKNOWN_SEMA_ID;
-    int32_t need = (int32_t)arg(p, t, 1);
     if (o->u.sema.count >= need) {
         o->u.sema.count -= need;
         return 0;
     }
     vita_wait(p, (VitaWait){.kind = VITA_WAIT_SEMA, .object = uid, .a = (uint32_t)need, .b = o->u.sema.cancelled,
-                            .timeout = arg(p, t, 2), .deadline = vita_deadline(p, arg(p, t, 2))});
+                            .timeout = timeout, .deadline = vita_deadline(p, timeout)});
     return 0;
 }
-static uint32_t poll_sema(VitaProcess* p, VitaThread* t) {
-    VitaObject* o = vita_object(p, arg(p, t, 0), VITA_OBJ_SEMA);
+uint32_t vita_kernel_poll_sema(VitaProcess* p, VitaThread* t, uint32_t uid, int32_t need) {
+    (void)t;
+    VitaObject* o = vita_object(p, uid, VITA_OBJ_SEMA);
     if (!o) return SCE_KERNEL_ERROR_UNKNOWN_SEMA_ID;
-    int32_t need = (int32_t)arg(p, t, 1);
     if (o->u.sema.count < need) return SCE_KERNEL_ERROR_SEMA_ZERO;
     o->u.sema.count -= need;
     return 0;
 }
-static uint32_t signal_sema(VitaProcess* p, VitaThread* t) {
-    VitaObject* o = vita_object(p, arg(p, t, 0), VITA_OBJ_SEMA);
+uint32_t vita_kernel_signal_sema(VitaProcess* p, VitaThread* t, uint32_t uid, int32_t signal) {
+    (void)t;
+    VitaObject* o = vita_object(p, uid, VITA_OBJ_SEMA);
     if (!o) return SCE_KERNEL_ERROR_UNKNOWN_SEMA_ID;
     /* the count and the signal are any 32 bits: their sum is taken wide, and one past the most or past a count's own
        range is the overflow */
-    int64_t sum = (int64_t)o->u.sema.count + (int32_t)arg(p, t, 1);
+    int64_t sum = (int64_t)o->u.sema.count + signal;
     if ((o->u.sema.max > 0 && sum > o->u.sema.max) || sum > INT32_MAX || sum < INT32_MIN)
         return SCE_KERNEL_ERROR_SEMA_OVF;
     o->u.sema.count = (int32_t)sum;
@@ -216,12 +223,12 @@ static uint32_t sema_waiters(VitaProcess* p, uint32_t uid) {
 }
 /* sceKernelGetSemaInfo(uid, *info, size): SceKernelSemaInfo (size, UID, name, attribute, the initial count, the
    count now, the most, the threads waiting; 0x3c bytes). The initial count is not kept: the count now stands for it */
-static uint32_t get_sema_info(VitaProcess* p, VitaThread* t) {
-    uint32_t uid = arg(p, t, 0), at = arg(p, t, 1);
+uint32_t vita_kernel_get_sema_info(VitaProcess* p, VitaThread* t, uint32_t uid, uint32_t at, uint32_t size) {
+    (void)t;
     VitaObject* o = vita_object(p, uid, VITA_OBJ_SEMA);
     unsigned char* info;
     if (!o) return SCE_KERNEL_ERROR_UNKNOWN_SEMA_ID;
-    if (!at || arg(p, t, 2) < 0x3c) return SCE_KERNEL_ERROR_ERROR;
+    if (!at || size < 0x3c) return SCE_KERNEL_ERROR_ERROR;
     if (!vita_mapped(p, at, 0x3c)) return SCE_KERNEL_ERROR_INVALID_ARGUMENT;
     info = vita_ptr(p, at);
     memset(info, 0, 0x3c);
@@ -237,24 +244,23 @@ static uint32_t get_sema_info(VitaProcess* p, VitaThread* t) {
 }
 /* sceKernelCancelSema(uid, count, *waiting): the waiting threads' waits end with SCE_KERNEL_ERROR_WAIT_CANCEL, the
    count set when it is not negative, and how many were waiting written */
-static uint32_t cancel_sema(VitaProcess* p, VitaThread* t) {
-    uint32_t uid = arg(p, t, 0), waiting = arg(p, t, 2);
+uint32_t vita_kernel_cancel_sema(VitaProcess* p, VitaThread* t, uint32_t uid, int32_t count, uint32_t waiting) {
+    (void)t;
     VitaObject* o = vita_object(p, uid, VITA_OBJ_SEMA);
-    int32_t count = (int32_t)arg(p, t, 1);
     if (!o) return SCE_KERNEL_ERROR_UNKNOWN_SEMA_ID;
     if (waiting && vita_mapped(p, waiting, 4)) vita_write32(p, waiting, sema_waiters(p, uid));
     if (count >= 0) o->u.sema.count = count;
     ++o->u.sema.cancelled;
     return 0;
 }
-static uint32_t delete_object(VitaProcess* p, VitaThread* t, uint32_t type, uint32_t unknown) {
-    uint32_t uid = arg(p, t, 0);
+static uint32_t delete_object(VitaProcess* p, uint32_t uid, uint32_t type, uint32_t unknown) {
     if (!vita_object(p, uid, type)) return unknown;
     vita_object_delete(p, uid);
     return 0;
 }
-static uint32_t delete_sema(VitaProcess* p, VitaThread* t) {
-    return delete_object(p, t, VITA_OBJ_SEMA, SCE_KERNEL_ERROR_UNKNOWN_SEMA_ID);
+uint32_t vita_kernel_delete_sema(VitaProcess* p, VitaThread* t, uint32_t uid) {
+    (void)t;
+    return delete_object(p, uid, VITA_OBJ_SEMA, SCE_KERNEL_ERROR_UNKNOWN_SEMA_ID);
 }
 
 /* ---- mutexes: a mutex's UID, or an LwMutex's work area whose first word holds its UID ---- */
@@ -270,13 +276,15 @@ static uint32_t new_mutex(VitaProcess* p, uint32_t name_address, uint32_t attr, 
     o->u.mutex.owner = count > 0 ? p->current->uid : 0;
     return uid;
 }
-static uint32_t create_mutex(VitaProcess* p, VitaThread* t) {
-    uint32_t uid = new_mutex(p, arg(p, t, 0), arg(p, t, 1), (int32_t)arg(p, t, 2), 0);
+uint32_t vita_kernel_create_mutex(VitaProcess* p, VitaThread* t, uint32_t name_address, uint32_t attr, int32_t count) {
+    (void)t;
+    uint32_t uid = new_mutex(p, name_address, attr, count, 0);
     return uid ? uid : SCE_KERNEL_ERROR_NO_MEMORY;
 }
-static uint32_t create_lw_mutex(VitaProcess* p, VitaThread* t) {
-    uint32_t work = arg(p, t, 0);
-    uint32_t uid = new_mutex(p, arg(p, t, 1), arg(p, t, 2), (int32_t)arg(p, t, 3), work);
+uint32_t vita_kernel_create_lw_mutex(VitaProcess* p, VitaThread* t, uint32_t work, uint32_t name_address, uint32_t attr,
+                                     int32_t count) {
+    (void)t;
+    uint32_t uid = new_mutex(p, name_address, attr, count, work);
     if (!uid) return SCE_KERNEL_ERROR_NO_MEMORY;
     vita_write32(p, work, uid);
     return 0;
@@ -301,18 +309,18 @@ static uint32_t try_lock(VitaThread* t, VitaObject* o, int32_t count) {
     }
     return 1;
 }
-static uint32_t lock(VitaProcess* p, VitaThread* t, uint32_t uid, VitaObject* o, uint32_t unknown) {
+static uint32_t lock(VitaProcess* p, VitaThread* t, uint32_t uid, VitaObject* o, int32_t count, uint32_t timeout,
+                     uint32_t unknown) {
     if (!o) return unknown;
-    int32_t count = (int32_t)arg(p, t, 1);
     uint32_t r = try_lock(t, o, count);
     if (r != 1) return r;
-    vita_wait(p, (VitaWait){.kind = VITA_WAIT_MUTEX, .object = uid, .a = (uint32_t)count, .timeout = arg(p, t, 2),
-                            .deadline = vita_deadline(p, arg(p, t, 2))});
+    vita_wait(p, (VitaWait){.kind = VITA_WAIT_MUTEX, .object = uid, .a = (uint32_t)count, .timeout = timeout,
+                            .deadline = vita_deadline(p, timeout)});
     return 0;
 }
-static uint32_t try_lock_call(VitaProcess* p, VitaThread* t, VitaObject* o, uint32_t unknown, uint32_t busy) {
+static uint32_t try_lock_call(VitaThread* t, VitaObject* o, int32_t count, uint32_t unknown, uint32_t busy) {
     if (!o) return unknown;
-    uint32_t r = try_lock(t, o, (int32_t)arg(p, t, 1));
+    uint32_t r = try_lock(t, o, count);
     return r == 1 ? busy : r;
 }
 /* A mutex its owner lets go of goes to the thread waiting for it longest (or, with SCE_KERNEL_ATTR_THREAD_PRIO, the
@@ -335,10 +343,9 @@ static void hand_over(VitaProcess* p, uint32_t uid, VitaObject* o) {
     o->u.mutex.owner = next->uid, o->u.mutex.count = (int32_t)next->wait.a;
     next->wait.b = 1;
 }
-static uint32_t unlock(VitaProcess* p, VitaThread* t, uint32_t uid, VitaObject* o, uint32_t unknown,
+static uint32_t unlock(VitaProcess* p, VitaThread* t, uint32_t uid, VitaObject* o, int32_t count, uint32_t unknown,
                        uint32_t unlocked, uint32_t not_owned) {
     if (!o) return unknown;
-    int32_t count = (int32_t)arg(p, t, 1);
     if (!o->u.mutex.owner) return unlocked;
     if (o->u.mutex.owner != t->uid) return not_owned;
     if (count <= 0 || count > o->u.mutex.count) return SCE_KERNEL_ERROR_INVALID_ARGUMENT;
@@ -348,55 +355,58 @@ static uint32_t unlock(VitaProcess* p, VitaThread* t, uint32_t uid, VitaObject* 
     }
     return 0;
 }
-static uint32_t lock_mutex(VitaProcess* p, VitaThread* t) {
-    uint32_t uid = arg(p, t, 0);
-    return lock(p, t, uid, vita_object(p, uid, VITA_OBJ_MUTEX), SCE_KERNEL_ERROR_UNKNOWN_MUTEX_ID);
+uint32_t vita_kernel_lock_mutex(VitaProcess* p, VitaThread* t, uint32_t uid, int32_t count, uint32_t timeout) {
+    return lock(p, t, uid, vita_object(p, uid, VITA_OBJ_MUTEX), count, timeout,
+                SCE_KERNEL_ERROR_UNKNOWN_MUTEX_ID);
 }
-static uint32_t try_lock_mutex(VitaProcess* p, VitaThread* t) {
-    return try_lock_call(p, t, vita_object(p, arg(p, t, 0), VITA_OBJ_MUTEX), SCE_KERNEL_ERROR_UNKNOWN_MUTEX_ID,
-                  0x80028145u /* SCE_KERNEL_ERROR_MUTEX_FAILED_TO_OWN */);
+uint32_t vita_kernel_try_lock_mutex(VitaProcess* p, VitaThread* t, uint32_t uid, int32_t count) {
+    return try_lock_call(t, vita_object(p, uid, VITA_OBJ_MUTEX), count,
+                         SCE_KERNEL_ERROR_UNKNOWN_MUTEX_ID, 0x80028145u /* SCE_KERNEL_ERROR_MUTEX_FAILED_TO_OWN */);
 }
-static uint32_t unlock_mutex(VitaProcess* p, VitaThread* t) {
-    uint32_t uid = arg(p, t, 0);
-    return unlock(p, t, uid, vita_object(p, uid, VITA_OBJ_MUTEX), SCE_KERNEL_ERROR_UNKNOWN_MUTEX_ID,
+uint32_t vita_kernel_unlock_mutex(VitaProcess* p, VitaThread* t, uint32_t uid, int32_t count) {
+    return unlock(p, t, uid, vita_object(p, uid, VITA_OBJ_MUTEX), count, SCE_KERNEL_ERROR_UNKNOWN_MUTEX_ID,
            SCE_KERNEL_ERROR_MUTEX_UNLOCKED, SCE_KERNEL_ERROR_MUTEX_NOT_OWNED);
 }
-static uint32_t delete_mutex(VitaProcess* p, VitaThread* t) {
-    return delete_object(p, t, VITA_OBJ_MUTEX, SCE_KERNEL_ERROR_UNKNOWN_MUTEX_ID);
+uint32_t vita_kernel_delete_mutex(VitaProcess* p, VitaThread* t, uint32_t uid) {
+    (void)t;
+    return delete_object(p, uid, VITA_OBJ_MUTEX, SCE_KERNEL_ERROR_UNKNOWN_MUTEX_ID);
 }
-static uint32_t lock_lw_mutex(VitaProcess* p, VitaThread* t) {
+uint32_t vita_kernel_lock_lw_mutex(VitaProcess* p, VitaThread* t, uint32_t work, int32_t count, uint32_t timeout) {
     uint32_t uid;
-    VitaObject* o = lw_mutex(p, arg(p, t, 0), &uid);
-    return lock(p, t, uid, o, SCE_KERNEL_ERROR_UNKNOWN_MUTEX_ID);
+    VitaObject* o = lw_mutex(p, work, &uid);
+    return lock(p, t, uid, o, count, timeout, SCE_KERNEL_ERROR_UNKNOWN_MUTEX_ID);
 }
-static uint32_t try_lock_lw_mutex(VitaProcess* p, VitaThread* t) {
+uint32_t vita_kernel_try_lock_lw_mutex(VitaProcess* p, VitaThread* t, uint32_t work, int32_t count) {
     uint32_t uid;
-    return try_lock_call(p, t, lw_mutex(p, arg(p, t, 0), &uid), SCE_KERNEL_ERROR_UNKNOWN_MUTEX_ID,
-                  0x80028185u /* SCE_KERNEL_ERROR_LW_MUTEX_FAILED_TO_OWN */);
+    return try_lock_call(t, lw_mutex(p, work, &uid), count, SCE_KERNEL_ERROR_UNKNOWN_MUTEX_ID,
+                         0x80028185u /* SCE_KERNEL_ERROR_LW_MUTEX_FAILED_TO_OWN */);
 }
-static uint32_t unlock_lw_mutex(VitaProcess* p, VitaThread* t) {
+uint32_t vita_kernel_unlock_lw_mutex(VitaProcess* p, VitaThread* t, uint32_t work, int32_t count) {
     uint32_t uid;
-    VitaObject* o = lw_mutex(p, arg(p, t, 0), &uid);
-    return unlock(p, t, uid, o, SCE_KERNEL_ERROR_UNKNOWN_MUTEX_ID,
+    VitaObject* o = lw_mutex(p, work, &uid);
+    return unlock(p, t, uid, o, count, SCE_KERNEL_ERROR_UNKNOWN_MUTEX_ID,
            SCE_KERNEL_ERROR_LW_MUTEX_UNLOCKED, SCE_KERNEL_ERROR_LW_MUTEX_NOT_OWNED);
 }
-static uint32_t delete_lw_mutex(VitaProcess* p, VitaThread* t) {
+uint32_t vita_kernel_delete_lw_mutex(VitaProcess* p, VitaThread* t, uint32_t work) {
+    (void)t;
     uint32_t uid;
-    if (!lw_mutex(p, arg(p, t, 0), &uid)) return SCE_KERNEL_ERROR_UNKNOWN_MUTEX_ID;
+    if (!lw_mutex(p, work, &uid)) return SCE_KERNEL_ERROR_UNKNOWN_MUTEX_ID;
     vita_object_delete(p, uid);
-    vita_write32(p, arg(p, t, 0), 0);
+    vita_write32(p, work, 0);
     return 0;
 }
 
 /* ---- event flags ---- */
-static uint32_t create_event_flag(VitaProcess* p, VitaThread* t) {
+uint32_t vita_kernel_create_event_flag(VitaProcess* p, VitaThread* t, uint32_t name_address, uint32_t attr,
+                                       uint32_t pattern) {
+    (void)t;
     char name[32];
     VitaObject* o;
-    name_of(p, arg(p, t, 0), name);
+    name_of(p, name_address, name);
     uint32_t uid = vita_object_new(p, VITA_OBJ_EVENT_FLAG, name, &o);
     if (!uid) return SCE_KERNEL_ERROR_NO_MEMORY;
-    o->u.event_flag.attr = arg(p, t, 1);
-    o->u.event_flag.pattern = arg(p, t, 2);
+    o->u.event_flag.attr = attr;
+    o->u.event_flag.pattern = pattern;
     return uid;
 }
 /* whether pattern meets the wait's bits in mode, the flag cleared as mode says when it does */
@@ -411,44 +421,51 @@ static bool event_met(VitaProcess* p, VitaObject* o, uint32_t bits, uint32_t mod
         o->u.event_flag.pattern &= ~bits;
     return true;
 }
-static uint32_t wait_event_flag(VitaProcess* p, VitaThread* t) {
-    uint32_t uid = arg(p, t, 0), bits = arg(p, t, 1), mode = arg(p, t, 2), out = arg(p, t, 3);
+uint32_t vita_kernel_wait_event_flag(VitaProcess* p, VitaThread* t, uint32_t uid, uint32_t bits, uint32_t mode,
+                                     uint32_t out, uint32_t timeout) {
+    (void)t;
     VitaObject* o = vita_object(p, uid, VITA_OBJ_EVENT_FLAG);
     if (!o) return SCE_KERNEL_ERROR_UNKNOWN_EVF_ID;
     if (event_met(p, o, bits, mode, out)) return 0;
     vita_wait(p, (VitaWait){.kind = VITA_WAIT_EVENT_FLAG, .object = uid, .a = bits, .b = mode, .out = out,
-                            .timeout = arg(p, t, 4), .deadline = vita_deadline(p, arg(p, t, 4))});
+                            .timeout = timeout, .deadline = vita_deadline(p, timeout)});
     return 0;
 }
-static uint32_t poll_event_flag(VitaProcess* p, VitaThread* t) {
-    VitaObject* o = vita_object(p, arg(p, t, 0), VITA_OBJ_EVENT_FLAG);
+uint32_t vita_kernel_poll_event_flag(VitaProcess* p, VitaThread* t, uint32_t uid, uint32_t bits, uint32_t mode,
+                                     uint32_t out) {
+    (void)t;
+    VitaObject* o = vita_object(p, uid, VITA_OBJ_EVENT_FLAG);
     if (!o) return SCE_KERNEL_ERROR_UNKNOWN_EVF_ID;
-    return event_met(p, o, arg(p, t, 1), arg(p, t, 2), arg(p, t, 3)) ? 0 : SCE_KERNEL_ERROR_EVF_COND;
+    return event_met(p, o, bits, mode, out) ? 0 : SCE_KERNEL_ERROR_EVF_COND;
 }
-static uint32_t set_event_flag(VitaProcess* p, VitaThread* t) {
-    VitaObject* o = vita_object(p, arg(p, t, 0), VITA_OBJ_EVENT_FLAG);
+uint32_t vita_kernel_set_event_flag(VitaProcess* p, VitaThread* t, uint32_t uid, uint32_t pattern) {
+    (void)t;
+    VitaObject* o = vita_object(p, uid, VITA_OBJ_EVENT_FLAG);
     if (!o) return SCE_KERNEL_ERROR_UNKNOWN_EVF_ID;
-    o->u.event_flag.pattern |= arg(p, t, 1);
+    o->u.event_flag.pattern |= pattern;
     return 0;
 }
-static uint32_t clear_event_flag(VitaProcess* p, VitaThread* t) {
-    VitaObject* o = vita_object(p, arg(p, t, 0), VITA_OBJ_EVENT_FLAG);
+uint32_t vita_kernel_clear_event_flag(VitaProcess* p, VitaThread* t, uint32_t uid, uint32_t pattern) {
+    (void)t;
+    VitaObject* o = vita_object(p, uid, VITA_OBJ_EVENT_FLAG);
     if (!o) return SCE_KERNEL_ERROR_UNKNOWN_EVF_ID;
-    o->u.event_flag.pattern &= arg(p, t, 1);
+    o->u.event_flag.pattern &= pattern;
     return 0;
 }
-static uint32_t delete_event_flag(VitaProcess* p, VitaThread* t) {
-    return delete_object(p, t, VITA_OBJ_EVENT_FLAG, SCE_KERNEL_ERROR_UNKNOWN_EVF_ID);
+uint32_t vita_kernel_delete_event_flag(VitaProcess* p, VitaThread* t, uint32_t uid) {
+    (void)t;
+    return delete_object(p, uid, VITA_OBJ_EVENT_FLAG, SCE_KERNEL_ERROR_UNKNOWN_EVF_ID);
 }
 
 /* ---- condition variables: the waiter gives up its mutex, waits to be signaled (wait.b), then takes it again ---- */
-static uint32_t create_cond(VitaProcess* p, VitaThread* t) {
+uint32_t vita_kernel_create_cond(VitaProcess* p, VitaThread* t, uint32_t name_address, uint32_t attr, uint32_t mutex) {
+    (void)t, (void)attr;
     char name[32];
     VitaObject* o;
-    name_of(p, arg(p, t, 0), name);
+    name_of(p, name_address, name);
     uint32_t uid = vita_object_new(p, VITA_OBJ_COND, name, &o);
     if (!uid) return SCE_KERNEL_ERROR_NO_MEMORY;
-    o->u.cond.mutex = arg(p, t, 2);
+    o->u.cond.mutex = mutex;
     return uid;
 }
 /* timeout is the guest's SceUInt32* (0 for none), as VitaWait.timeout and vita_deadline take it: the wait writes the time
@@ -465,7 +482,9 @@ static uint32_t cond_wait(VitaProcess* p, VitaThread* t, uint32_t uid, uint32_t 
                             .timeout = timeout, .deadline = vita_deadline(p, timeout)});
     return 0;
 }
-static uint32_t wait_cond(VitaProcess* p, VitaThread* t) { return cond_wait(p, t, arg(p, t, 0), arg(p, t, 1)); }
+uint32_t vita_kernel_wait_cond(VitaProcess* p, VitaThread* t, uint32_t uid, uint32_t timeout) {
+    return cond_wait(p, t, uid, timeout);
+}
 static uint32_t cond_signal(VitaProcess* p, uint32_t uid, bool all) {
     if (!vita_object(p, uid, VITA_OBJ_COND)) return SCE_KERNEL_ERROR_UNKNOWN_COND_ID;
     VitaThread* first = NULL;
@@ -481,10 +500,17 @@ static uint32_t cond_signal(VitaProcess* p, uint32_t uid, bool all) {
     if (first) first->wait.b = 1;
     return 0;
 }
-static uint32_t signal_cond_one(VitaProcess* p, VitaThread* t) { return cond_signal(p, arg(p, t, 0), false); }
-static uint32_t signal_cond_all(VitaProcess* p, VitaThread* t) { return cond_signal(p, arg(p, t, 0), true); }
-static uint32_t delete_cond(VitaProcess* p, VitaThread* t) {
-    return delete_object(p, t, VITA_OBJ_COND, SCE_KERNEL_ERROR_UNKNOWN_COND_ID);
+uint32_t vita_kernel_signal_cond_one(VitaProcess* p, VitaThread* t, uint32_t uid) {
+    (void)t;
+    return cond_signal(p, uid, false);
+}
+uint32_t vita_kernel_signal_cond_all(VitaProcess* p, VitaThread* t, uint32_t uid) {
+    (void)t;
+    return cond_signal(p, uid, true);
+}
+uint32_t vita_kernel_delete_cond(VitaProcess* p, VitaThread* t, uint32_t uid) {
+    (void)t;
+    return delete_object(p, uid, VITA_OBJ_COND, SCE_KERNEL_ERROR_UNKNOWN_COND_ID);
 }
 
 /* ---- LwConds: the work area's first word holds the UID of a cond, whose mutex is the LwMutex given at creation ---- */
@@ -493,13 +519,14 @@ static VitaObject* lw_cond(VitaProcess* p, uint32_t work, uint32_t* uid) {
     return vita_object(p, *uid, VITA_OBJ_COND);
 }
 /* sceKernelCreateLwCond(work, name, attr, LwMutex work, options) */
-static uint32_t create_lw_cond(VitaProcess* p, VitaThread* t) {
-    uint32_t work = arg(p, t, 0), mutex_work = arg(p, t, 3);
+uint32_t vita_kernel_create_lw_cond(VitaProcess* p, VitaThread* t, uint32_t work, uint32_t name_address, uint32_t attr,
+                                    uint32_t mutex_work, uint32_t options) {
+    (void)t, (void)attr, (void)options;
     uint32_t mutex = mutex_work ? vita_read32(p, mutex_work) : 0;
     if (!vita_object(p, mutex, VITA_OBJ_MUTEX)) return SCE_KERNEL_ERROR_UNKNOWN_MUTEX_ID;
     char name[32];
     VitaObject* o;
-    name_of(p, arg(p, t, 1), name);
+    name_of(p, name_address, name);
     uint32_t uid = vita_object_new(p, VITA_OBJ_COND, name, &o);
     if (!uid) return SCE_KERNEL_ERROR_NO_MEMORY;
     o->u.cond.mutex = mutex;
@@ -507,36 +534,40 @@ static uint32_t create_lw_cond(VitaProcess* p, VitaThread* t) {
     return 0;
 }
 /* sceKernelWaitLwCond(work, uint32_t* timeout): no timeout pointer waits for good */
-static uint32_t wait_lw_cond(VitaProcess* p, VitaThread* t) {
-    uint32_t uid, at = arg(p, t, 1);
-    if (!lw_cond(p, arg(p, t, 0), &uid)) return SCE_KERNEL_ERROR_UNKNOWN_COND_ID;
+uint32_t vita_kernel_wait_lw_cond(VitaProcess* p, VitaThread* t, uint32_t work, uint32_t at) {
+    uint32_t uid;
+    if (!lw_cond(p, work, &uid)) return SCE_KERNEL_ERROR_UNKNOWN_COND_ID;
     return cond_wait(p, t, uid, at && vita_mapped(p, at, 4) ? at : 0);
 }
-static uint32_t signal_lw_cond(VitaProcess* p, VitaThread* t) {
+uint32_t vita_kernel_signal_lw_cond(VitaProcess* p, VitaThread* t, uint32_t work) {
+    (void)t;
     uint32_t uid;
-    return lw_cond(p, arg(p, t, 0), &uid) ? cond_signal(p, uid, false) : SCE_KERNEL_ERROR_UNKNOWN_COND_ID;
+    return lw_cond(p, work, &uid) ? cond_signal(p, uid, false) : SCE_KERNEL_ERROR_UNKNOWN_COND_ID;
 }
-static uint32_t signal_lw_cond_all(VitaProcess* p, VitaThread* t) {
+uint32_t vita_kernel_signal_lw_cond_all(VitaProcess* p, VitaThread* t, uint32_t work) {
+    (void)t;
     uint32_t uid;
-    return lw_cond(p, arg(p, t, 0), &uid) ? cond_signal(p, uid, true) : SCE_KERNEL_ERROR_UNKNOWN_COND_ID;
+    return lw_cond(p, work, &uid) ? cond_signal(p, uid, true) : SCE_KERNEL_ERROR_UNKNOWN_COND_ID;
 }
 /* sceKernelSignalLwCondTo(work, thread UID): that thread's wait, if it waits on the cond */
-static uint32_t signal_lw_cond_to(VitaProcess* p, VitaThread* t) {
+uint32_t vita_kernel_signal_lw_cond_to(VitaProcess* p, VitaThread* t, uint32_t work, uint32_t thread_id) {
+    (void)t;
     uint32_t uid;
-    if (!lw_cond(p, arg(p, t, 0), &uid)) return SCE_KERNEL_ERROR_UNKNOWN_COND_ID;
+    if (!lw_cond(p, work, &uid)) return SCE_KERNEL_ERROR_UNKNOWN_COND_ID;
     for (unsigned i = 0; i < VITA_THREADS; ++i) {
         VitaThread* w = &p->threads[i];
-        if (w->uid == arg(p, t, 1) && w->state == VITA_THREAD_WAITING && w->wait.kind == VITA_WAIT_COND &&
+        if (w->uid == thread_id && w->state == VITA_THREAD_WAITING && w->wait.kind == VITA_WAIT_COND &&
             w->wait.object == uid && !w->wait.b)
             w->wait.b = 1;
     }
     return 0;
 }
-static uint32_t delete_lw_cond(VitaProcess* p, VitaThread* t) {
+uint32_t vita_kernel_delete_lw_cond(VitaProcess* p, VitaThread* t, uint32_t work) {
+    (void)t;
     uint32_t uid;
-    if (!lw_cond(p, arg(p, t, 0), &uid)) return SCE_KERNEL_ERROR_UNKNOWN_COND_ID;
+    if (!lw_cond(p, work, &uid)) return SCE_KERNEL_ERROR_UNKNOWN_COND_ID;
     vita_object_delete(p, uid);
-    vita_write32(p, arg(p, t, 0), 0);
+    vita_write32(p, work, 0);
     return 0;
 }
 
@@ -545,52 +576,59 @@ static uint64_t process_us(VitaProcess* p);
 static uint64_t timer_time(VitaProcess* p, const VitaObject* o) {
     return o->u.timer.accumulated + (o->u.timer.running ? process_us(p) - o->u.timer.started : 0);
 }
-static uint32_t create_timer(VitaProcess* p, VitaThread* t) {
+uint32_t vita_kernel_create_timer(VitaProcess* p, VitaThread* t, uint32_t name_address) {
+    (void)t;
     char name[32];
     VitaObject* o;
-    name_of(p, arg(p, t, 0), name);
+    name_of(p, name_address, name);
     uint32_t uid = vita_object_new(p, VITA_OBJ_TIMER, name, &o);
     if (!uid) return SCE_KERNEL_ERROR_NO_MEMORY;
     return uid;
 }
-static uint32_t start_timer(VitaProcess* p, VitaThread* t) {
-    VitaObject* o = vita_object(p, arg(p, t, 0), VITA_OBJ_TIMER);
+uint32_t vita_kernel_start_timer(VitaProcess* p, VitaThread* t, uint32_t uid) {
+    (void)t;
+    VitaObject* o = vita_object(p, uid, VITA_OBJ_TIMER);
     if (!o) return SCE_KERNEL_ERROR_UNKNOWN_TIMER_ID;
     if (o->u.timer.running) return 1;
     o->u.timer.running = 1, o->u.timer.started = process_us(p);
     return 0;
 }
-static uint32_t stop_timer(VitaProcess* p, VitaThread* t) {
-    VitaObject* o = vita_object(p, arg(p, t, 0), VITA_OBJ_TIMER);
+uint32_t vita_kernel_stop_timer(VitaProcess* p, VitaThread* t, uint32_t uid) {
+    (void)t;
+    VitaObject* o = vita_object(p, uid, VITA_OBJ_TIMER);
     if (!o) return SCE_KERNEL_ERROR_UNKNOWN_TIMER_ID;
     if (!o->u.timer.running) return 0;
     o->u.timer.accumulated = timer_time(p, o), o->u.timer.running = 0;
     return 1;
 }
-static uint32_t get_timer_time_wide(VitaProcess* p, VitaThread* t) {
-    VitaObject* o = vita_object(p, arg(p, t, 0), VITA_OBJ_TIMER);
-    return vita_return64(t, o ? timer_time(p, o) : 0);
+uint64_t vita_kernel_get_timer_time_wide(VitaProcess* p, VitaThread* t, uint32_t uid) {
+    (void)t;
+    VitaObject* o = vita_object(p, uid, VITA_OBJ_TIMER);
+    return o ? timer_time(p, o) : 0;
 }
 /* sceKernelSetTimerTimeWide(uid, u64 time): the time it had comes back */
-static uint32_t set_timer_time_wide(VitaProcess* p, VitaThread* t) {
-    VitaObject* o = vita_object(p, arg(p, t, 0), VITA_OBJ_TIMER);
-    if (!o) return vita_return64(t, 0);
-    uint64_t before = timer_time(p, o), now = ((uint64_t)arg(p, t, 3) << 32) | arg(p, t, 2);
+uint64_t vita_kernel_set_timer_time_wide(VitaProcess* p, VitaThread* t, uint32_t uid, uint64_t time) {
+    (void)t;
+    VitaObject* o = vita_object(p, uid, VITA_OBJ_TIMER);
+    if (!o) return 0;
+    uint64_t before = timer_time(p, o), now = time;
     o->u.timer.accumulated = now, o->u.timer.started = process_us(p);
-    return vita_return64(t, before);
+    return before;
 }
-static uint32_t delete_timer(VitaProcess* p, VitaThread* t) {
-    return delete_object(p, t, VITA_OBJ_TIMER, SCE_KERNEL_ERROR_UNKNOWN_TIMER_ID);
+uint32_t vita_kernel_delete_timer(VitaProcess* p, VitaThread* t, uint32_t uid) {
+    (void)t;
+    return delete_object(p, uid, VITA_OBJ_TIMER, SCE_KERNEL_ERROR_UNKNOWN_TIMER_ID);
 }
 
 /* ---- reader-writer locks ---- */
-static uint32_t create_rw_lock(VitaProcess* p, VitaThread* t) {
+uint32_t vita_kernel_create_rw_lock(VitaProcess* p, VitaThread* t, uint32_t name_address, uint32_t attr) {
+    (void)t;
     char name[32];
     VitaObject* o;
-    name_of(p, arg(p, t, 0), name);
+    name_of(p, name_address, name);
     uint32_t uid = vita_object_new(p, VITA_OBJ_RWLOCK, name, &o);
     if (!uid) return SCE_KERNEL_ERROR_NO_MEMORY;
-    o->u.rwlock.attr = arg(p, t, 1);
+    o->u.rwlock.attr = attr;
     return uid;
 }
 /* a lock now: 0, or the error, or 1 when the caller must wait. A writer may also read what it writes */
@@ -609,39 +647,43 @@ static uint32_t try_rw_lock(VitaThread* t, VitaObject* o, bool write) {
     ++o->u.rwlock.reads;
     return 0;
 }
-static uint32_t lock_rw_lock(VitaProcess* p, VitaThread* t, bool write) {
-    uint32_t uid = arg(p, t, 0);
+static uint32_t lock_rw_lock(VitaProcess* p, VitaThread* t, uint32_t uid, uint32_t timeout, bool write) {
     VitaObject* o = vita_object(p, uid, VITA_OBJ_RWLOCK);
     if (!o) return SCE_KERNEL_ERROR_UNKNOWN_RW_LOCK_ID;
     uint32_t r = try_rw_lock(t, o, write);
     if (r != 1) return r;
-    vita_wait(p, (VitaWait){.kind = VITA_WAIT_RWLOCK, .object = uid, .a = write, .timeout = arg(p, t, 1),
-                            .deadline = vita_deadline(p, arg(p, t, 1))});
+    vita_wait(p, (VitaWait){.kind = VITA_WAIT_RWLOCK, .object = uid, .a = write, .timeout = timeout,
+                            .deadline = vita_deadline(p, timeout)});
     return 0;
 }
-static uint32_t lock_read_rw_lock(VitaProcess* p, VitaThread* t) { return lock_rw_lock(p, t, false); }
-static uint32_t lock_write_rw_lock(VitaProcess* p, VitaThread* t) { return lock_rw_lock(p, t, true); }
-static uint32_t unlock_read_rw_lock(VitaProcess* p, VitaThread* t) {
-    VitaObject* o = vita_object(p, arg(p, t, 0), VITA_OBJ_RWLOCK);
+uint32_t vita_kernel_lock_read_rw_lock(VitaProcess* p, VitaThread* t, uint32_t uid, uint32_t timeout) {
+    return lock_rw_lock(p, t, uid, timeout, false);
+}
+uint32_t vita_kernel_lock_write_rw_lock(VitaProcess* p, VitaThread* t, uint32_t uid, uint32_t timeout) {
+    return lock_rw_lock(p, t, uid, timeout, true);
+}
+uint32_t vita_kernel_unlock_read_rw_lock(VitaProcess* p, VitaThread* t, uint32_t uid) {
+    (void)t;
+    VitaObject* o = vita_object(p, uid, VITA_OBJ_RWLOCK);
     if (!o) return SCE_KERNEL_ERROR_UNKNOWN_RW_LOCK_ID;
     if (!o->u.rwlock.reads) return SCE_KERNEL_ERROR_RW_LOCK_UNLOCK_UDF;
     --o->u.rwlock.reads;
     return 0;
 }
-static uint32_t unlock_write_rw_lock(VitaProcess* p, VitaThread* t) {
-    VitaObject* o = vita_object(p, arg(p, t, 0), VITA_OBJ_RWLOCK);
+uint32_t vita_kernel_unlock_write_rw_lock(VitaProcess* p, VitaThread* t, uint32_t uid) {
+    VitaObject* o = vita_object(p, uid, VITA_OBJ_RWLOCK);
     if (!o) return SCE_KERNEL_ERROR_UNKNOWN_RW_LOCK_ID;
     if (o->u.rwlock.writer != t->uid) return SCE_KERNEL_ERROR_RW_LOCK_NOT_OWNED;
     if (!--o->u.rwlock.writes) o->u.rwlock.writer = 0;
     return 0;
 }
-static uint32_t delete_rw_lock(VitaProcess* p, VitaThread* t) {
-    return delete_object(p, t, VITA_OBJ_RWLOCK, SCE_KERNEL_ERROR_UNKNOWN_RW_LOCK_ID);
+uint32_t vita_kernel_delete_rw_lock(VitaProcess* p, VitaThread* t, uint32_t uid) {
+    (void)t;
+    return delete_object(p, uid, VITA_OBJ_RWLOCK, SCE_KERNEL_ERROR_UNKNOWN_RW_LOCK_ID);
 }
 
 /* sceKernelGetThreadInfo(uid, SceKernelThreadInfo*): uid 0 the calling thread's */
-static uint32_t get_thread_info(VitaProcess* p, VitaThread* t) {
-    uint32_t uid = arg(p, t, 0), info = arg(p, t, 1);
+uint32_t vita_kernel_get_thread_info(VitaProcess* p, VitaThread* t, uint32_t uid, uint32_t info) {
     VitaThread* target = uid ? vita_thread(p, uid) : t;
     if (!target) return SCE_KERNEL_ERROR_UNKNOWN_THREAD_ID;
     if (!info || !vita_mapped(p, info, 0x80)) return SCE_KERNEL_ERROR_INVALID_ARGUMENT;
@@ -659,10 +701,11 @@ static uint32_t get_thread_info(VitaProcess* p, VitaThread* t) {
     vita_write32(p, info + 0x5c, (uint32_t)target->exit_status);
     return 0;
 }
-static uint32_t get_thread_cpu_affinity_mask(VitaProcess* p, VitaThread* t) {
-    return arg(p, t, 0) && !vita_thread(p, arg(p, t, 0)) ? SCE_KERNEL_ERROR_UNKNOWN_THREAD_ID : 0;
+uint32_t vita_kernel_get_thread_cpu_affinity_mask(VitaProcess* p, VitaThread* t, uint32_t thread_id) {
+    (void)t;
+    return thread_id && !vita_thread(p, thread_id) ? SCE_KERNEL_ERROR_UNKNOWN_THREAD_ID : 0;
 }
-static uint32_t close_object(VitaProcess* p, VitaThread* t) {
+uint32_t vita_kernel_close_object(VitaProcess* p, VitaThread* t) {
     (void)p, (void)t;
     return 0;
 }
@@ -670,17 +713,18 @@ static uint32_t close_object(VitaProcess* p, VitaThread* t) {
    thread (Vita3K's ThreadState::wait_for_signal and send_signal). A signal sent before the wait ends it at once, with
    the timeout untouched. libult's idle workers sleep here, so a call that returned at once made them find an empty
    queue and assert. */
-static uint32_t wait_signal(VitaProcess* p, VitaThread* t) {
+uint32_t vita_kernel_wait_signal(VitaProcess* p, VitaThread* t, uint32_t unused0, uint32_t unused1, uint32_t timeout) {
+    (void)unused0, (void)unused1;
     if (t->signal_pending) {
         t->signal_pending = false;
         return 0;
     }
-    vita_wait(p, (VitaWait){.kind = VITA_WAIT_SIGNAL, .timeout = arg(p, t, 2),
-                            .deadline = vita_deadline(p, arg(p, t, 2))});
+    vita_wait(p, (VitaWait){.kind = VITA_WAIT_SIGNAL, .timeout = timeout,
+                            .deadline = vita_deadline(p, timeout)});
     return 0;
 }
-static uint32_t send_signal(VitaProcess* p, VitaThread* t) {
-    uint32_t uid = arg(p, t, 0);
+uint32_t vita_kernel_send_signal(VitaProcess* p, VitaThread* t, uint32_t uid) {
+    (void)t;
     if (!uid) return SCE_KERNEL_ERROR_ILLEGAL_THREAD_ID;
     VitaThread* target = vita_thread(p, uid);
     if (!target) return SCE_KERNEL_ERROR_UNKNOWN_THREAD_ID;
@@ -690,7 +734,7 @@ static uint32_t send_signal(VitaProcess* p, VitaThread* t) {
 }
 /* SceUlobjDbg's two functions (0xd7f0f610, 0xf9c0f5da): libult's debug registration of its user-level objects. Vita3K
    leaves both unimplemented, as the debugger they report to isn't there */
-static uint32_t ulobj_dbg(VitaProcess* p, VitaThread* t) {
+uint32_t vita_kernel_ulobj_dbg(VitaProcess* p, VitaThread* t) {
     (void)p, (void)t;
     return 0;
 }
@@ -756,10 +800,11 @@ bool vita_kernel_wait_try(VitaProcess* p, VitaThread* t, uint64_t now) {
 }
 
 /* ---- memory blocks: CDRAM (the GPU's) in its range, every other type in user memory ---- */
-static uint32_t alloc_mem_block(VitaProcess* p, VitaThread* t) {
+uint32_t vita_kernel_alloc_mem_block(VitaProcess* p, VitaThread* t, uint32_t name_address, uint32_t type,
+                                     uint32_t size) {
+    (void)t;
     char name[32];
-    name_of(p, arg(p, t, 0), name);
-    uint32_t type = arg(p, t, 1), size = arg(p, t, 2);
+    name_of(p, name_address, name);
     bool cdram = type == SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW;
     uint32_t address = vita_alloc(p, cdram ? &p->cdram : &p->user, size, cdram ? 0x40000 : 0x1000);
     VitaObject* o;
@@ -772,22 +817,23 @@ static uint32_t alloc_mem_block(VitaProcess* p, VitaThread* t) {
     o->u.memblock.address = address, o->u.memblock.size = size, o->u.memblock.type = type;
     return uid;
 }
-static uint32_t get_mem_block_base(VitaProcess* p, VitaThread* t) {
-    VitaObject* o = vita_object(p, arg(p, t, 0), VITA_OBJ_MEMBLOCK);
+uint32_t vita_kernel_get_mem_block_base(VitaProcess* p, VitaThread* t, uint32_t uid, uint32_t i) {
+    (void)t;
+    VitaObject* o = vita_object(p, uid, VITA_OBJ_MEMBLOCK);
     if (!o) return SCE_KERNEL_ERROR_UNKNOWN_UID;
-    vita_write32(p, arg(p, t, 1), o->u.memblock.address);
+    vita_write32(p, i, o->u.memblock.address);
     return 0;
 }
-static uint32_t free_mem_block(VitaProcess* p, VitaThread* t) {
-    uint32_t uid = arg(p, t, 0);
+uint32_t vita_kernel_free_mem_block(VitaProcess* p, VitaThread* t, uint32_t uid) {
+    (void)t;
     VitaObject* o = vita_object(p, uid, VITA_OBJ_MEMBLOCK);
     if (!o) return SCE_KERNEL_ERROR_UNKNOWN_UID;
     vita_free(p, o->u.memblock.address);
     vita_object_delete(p, uid);
     return 0;
 }
-static uint32_t find_mem_block_by_addr(VitaProcess* p, VitaThread* t) {
-    uint32_t address = arg(p, t, 0);
+uint32_t vita_kernel_find_mem_block_by_addr(VitaProcess* p, VitaThread* t, uint32_t address) {
+    (void)t;
     for (uint32_t i = 0; i < VITA_OBJECTS; ++i) {
         VitaObject* o = &p->objects[i];
         if (o->type == VITA_OBJ_MEMBLOCK && address >= o->u.memblock.address &&
@@ -796,9 +842,10 @@ static uint32_t find_mem_block_by_addr(VitaProcess* p, VitaThread* t) {
     }
     return SCE_KERNEL_ERROR_UNKNOWN_UID;
 }
-static uint32_t get_free_memory_size(VitaProcess* p, VitaThread* t) {
+uint32_t vita_kernel_get_free_memory_size(VitaProcess* p, VitaThread* t, uint32_t info) {
+    (void)t;
     /* SceKernelFreeMemorySizeInfo: size, then the user, CDRAM and physically continuous memory free */
-    uint32_t info = arg(p, t, 0), user = VITA_USER_END - VITA_USER_BASE, cdram = VITA_CDRAM_END - VITA_CDRAM_BASE;
+    uint32_t user = VITA_USER_END - VITA_USER_BASE, cdram = VITA_CDRAM_END - VITA_CDRAM_BASE;
     for (unsigned i = 0; i < VITA_ALLOCATIONS; ++i) {
         const VitaAllocation* a = &p->allocations[i];
         if (!a->size) continue;
@@ -816,22 +863,25 @@ static uint32_t get_free_memory_size(VitaProcess* p, VitaThread* t) {
 
 /* ---- time: the process's in microseconds, the wall clock's as the C library asks ---- */
 static uint64_t process_us(VitaProcess* p) { return (plat_ns() - p->start_ns) / 1000u; }
-static uint32_t get_process_time_wide(VitaProcess* p, VitaThread* t) { return vita_return64(t, process_us(p)); }
-static uint32_t get_process_time_low(VitaProcess* p, VitaThread* t) {
+uint64_t vita_kernel_get_process_time_wide(VitaProcess* p, VitaThread* t) {
+    (void)t;
+    return process_us(p);
+}
+uint32_t vita_kernel_get_process_time_low(VitaProcess* p, VitaThread* t) {
     (void)t;
     return (uint32_t)process_us(p);
 }
-static uint32_t libc_gettimeofday(VitaProcess* p, VitaThread* t) {
-    uint32_t tv = arg(p, t, 0);
+uint32_t vita_kernel_libc_gettimeofday(VitaProcess* p, VitaThread* t, uint32_t tv, uint32_t address) {
+    (void)t;
     int64_t now = plat_unix_ns();
     if (tv) {
         vita_write32(p, tv, (uint32_t)(now / 1000000000));
         vita_write32(p, tv + 4, (uint32_t)(now % 1000000000 / 1000));
     }
-    if (arg(p, t, 1)) vita_write64(p, arg(p, t, 1), 0); /* UTC, no daylight saving */
+    if (address) vita_write64(p, address, 0); /* UTC, no daylight saving */
     return 0;
 }
-static uint32_t power_tick(VitaProcess* p, VitaThread* t) {
+uint32_t vita_kernel_power_tick(VitaProcess* p, VitaThread* t) {
     (void)p, (void)t;
     return 0;
 }
@@ -861,11 +911,12 @@ static uint32_t module_started(VitaProcess* p, VitaThread* t, void* context) {
 /* sceKernelLoadStartModule(path, args, argp, flags, option, *result): a module the game ships, found by its file's
    name among those loaded with it (nothing is loaded at run time: the code was compiled with the game's), started
    once; any other file is not there */
-static uint32_t load_start_module(VitaProcess* p, VitaThread* t) {
+uint32_t vita_kernel_load_start_module(VitaProcess* p, VitaThread* t, uint32_t address, uint32_t args, uint32_t argp,
+                                       uint32_t flags, uint32_t option, uint32_t result) {
+    (void)flags, (void)option;
     char path[256];
     const char* leaf = path;
-    uint32_t args = arg(p, t, 1), argp = arg(p, t, 2), result = arg(p, t, 5);
-    if (!vita_string(p, arg(p, t, 0), path, sizeof path)) return SCE_ERROR_ERRNO_ENOENT;
+    if (!vita_string(p, address, path, sizeof path)) return SCE_ERROR_ERRNO_ENOENT;
     for (const char* c = path; *c; ++c)
         if (*c == '/' || *c == ':' || *c == '\\') leaf = c + 1;
     for (unsigned i = 1; i < p->image.module_count; ++i) {
@@ -883,8 +934,9 @@ static uint32_t load_start_module(VitaProcess* p, VitaThread* t) {
     return SCE_ERROR_ERRNO_ENOENT;
 }
 /* sceKernelGetModuleList(flags, *ids, *count): the started modules, the game's last */
-static uint32_t get_module_list(VitaProcess* p, VitaThread* t) {
-    uint32_t ids = arg(p, t, 1), count = arg(p, t, 2), room, n = 0;
+uint32_t vita_kernel_get_module_list(VitaProcess* p, VitaThread* t, uint32_t flags, uint32_t ids, uint32_t count) {
+    (void)t, (void)flags;
+    uint32_t room, n = 0;
     if (!ids || !count) return SCE_KERNEL_ERROR_MODULEMGR_NO_MOD;
     room = snx_ld_le32(vita_ptr(p, count));
     for (unsigned i = 1; i <= p->image.module_count && n < room; ++i) {
@@ -896,19 +948,19 @@ static uint32_t get_module_list(VitaProcess* p, VitaThread* t) {
     return 0;
 }
 /* sceKernelGetModuleInfo(uid, *info): SceKernelModuleInfo, 0x1b8 bytes, with its segments' places */
-static uint32_t get_module_info(VitaProcess* p, VitaThread* t) {
-    VitaLoadedModule* m = module_of(p, arg(p, t, 0));
-    uint32_t at = arg(p, t, 1);
+uint32_t vita_kernel_get_module_info(VitaProcess* p, VitaThread* t, uint32_t uid, uint32_t at) {
+    (void)t;
+    VitaLoadedModule* m = module_of(p, uid);
     unsigned char* info;
     if (!m || !at) return SCE_KERNEL_ERROR_MODULEMGR_NO_MOD;
     if (!vita_mapped(p, at, MODULE_INFO_SIZE)) return SCE_KERNEL_ERROR_INVALID_ARGUMENT;
     info = vita_ptr(p, at);
     memset(info, 0, MODULE_INFO_SIZE);
     snx_st_le32(info, MODULE_INFO_SIZE);
-    snx_st_le32(info + 4, arg(p, t, 0));
+    snx_st_le32(info + 4, uid);
     snprintf((char*)info + 0xc, 28, "%s", m->name);
     snx_st_le32(info + 0x2c, m->start);
-    if (arg(p, t, 0) == MODULE_UID_BASE)
+    if (uid == MODULE_UID_BASE)
         snprintf((char*)info + 0x54, 256, "app0:eboot.bin");
     else
         snprintf((char*)info + 0x54, 256, "app0:sce_module/%s", m->leaf);
@@ -923,102 +975,3 @@ static uint32_t get_module_info(VitaProcess* p, VitaThread* t) {
     }
     return 0;
 }
-
-const VitaHle vita_hle_kernel[] = {
-    {0x2dcc4afau, "sceKernelLoadStartModule", load_start_module},
-    {0x2ef2581fu, "sceKernelGetModuleList", get_module_list},
-    {0x36585dafu, "sceKernelGetModuleInfo", get_module_info},
-    {0xc5c11ee7u, "sceKernelCreateThread", create_thread},
-    {0xf08de149u, "sceKernelStartThread", start_thread},
-    {0x0c8a38e1u, "sceKernelExitThread", exit_thread},
-    {0x1d17decfu, "sceKernelExitDeleteThread", exit_delete_thread},
-    {0x1bbde3d9u, "sceKernelDeleteThread", delete_thread},
-    {0xddb395a9u, "sceKernelWaitThreadEnd", wait_thread_end},
-    {0x0fb972f9u, "sceKernelGetThreadId", get_thread_id},
-    {0x4b675d05u, "sceKernelDelayThread", delay_thread},
-    {0x9c0180e1u, "sceKernelDelayThreadCB", delay_thread},
-    {0xc53a9848u, "sceKernelGetThreadCurrentPriority", get_thread_current_priority},
-    {0xbd0139f2u, "sceKernelChangeThreadPriority", change_thread_priority},
-    {0x84092fd0u, "sceKernelCheckThreadStack", check_thread_stack},
-    {0xb295eb61u, "sceKernelGetTLSAddr", get_tls_addr},
-    {0x7595d9aau, "sceKernelExitProcess", exit_process},
-    {0x9dcb4b7au, "sceKernelGetProcessId", get_process_id},
-    {0x2be3e066u, "sceKernelGetProcessParam", get_process_param},
-    {0x1bd67366u, "sceKernelCreateSema", create_sema},
-    {0x0c7b834bu, "sceKernelWaitSema", wait_sema},
-    {0x174692b4u, "sceKernelWaitSemaCB", wait_sema},
-    {0x866ef048u, "sceKernelPollSema", poll_sema},
-    {0xe6b761d1u, "sceKernelSignalSema", signal_sema},
-    {0xdb32948au, "sceKernelDeleteSema", delete_sema},
-    {0x595d3fa6u, "sceKernelGetSemaInfo", get_sema_info},
-    {0x66d6bf05u, "sceKernelCancelSema", cancel_sema},
-    {0xed53334au, "sceKernelCreateMutex", create_mutex},
-    {0x1d8d7945u, "sceKernelLockMutex", lock_mutex},
-    {0x72fc1f54u, "sceKernelTryLockMutex", try_lock_mutex},
-    {0x1a372ec8u, "sceKernelUnlockMutex", unlock_mutex},
-    {0xcb78710du, "sceKernelDeleteMutex", delete_mutex},
-    {0xda6ec8efu, "sceKernelCreateLwMutex", create_lw_mutex},
-    {0x46e7be7bu, "sceKernelLockLwMutex", lock_lw_mutex},
-    {0xa6a2c915u, "sceKernelTryLockLwMutex", try_lock_lw_mutex},
-    {0x120afc8cu, "sceKernelUnlockLwMutex2", unlock_lw_mutex},
-    {0x91fa6614u, "sceKernelUnlockLwMutex", unlock_lw_mutex},
-    {0x244e76d2u, "sceKernelDeleteLwMutex", delete_lw_mutex},
-    {0x8516d040u, "sceKernelCreateEventFlag", create_event_flag},
-    {0x83c0e2afu, "sceKernelWaitEventFlag", wait_event_flag},
-    {0x1fbb0fe1u, "sceKernelPollEventFlag", poll_event_flag},
-    {0xec94dff7u, "sceKernelSetEventFlag", set_event_flag},
-    {0x4cb87ca7u, "sceKernelClearEventFlag", clear_event_flag},
-    {0x5840162cu, "sceKernelDeleteEventFlag", delete_event_flag},
-    {0x50572fdau, "sceKernelCreateCond", create_cond},
-    {0xc88d44adu, "sceKernelWaitCond", wait_cond},
-    {0x6ed2e2dcu, "sceKernelSignalCond", signal_cond_one},
-    {0xc2e7ac22u, "sceKernelSignalCondAll", signal_cond_all},
-    {0x879e6ebdu, "sceKernelDeleteCond", delete_cond},
-    {0x48c7eae6u, "sceKernelCreateLwCond", create_lw_cond},
-    {0xe1878282u, "sceKernelWaitLwCond", wait_lw_cond},
-    {0x3ac63b9au, "sceKernelSignalLwCond", signal_lw_cond},
-    {0xe5241a0cu, "sceKernelSignalLwCondAll", signal_lw_cond_all},
-    {0xfc1a48ebu, "sceKernelSignalLwCondTo", signal_lw_cond_to},
-    {0x721f6cb3u, "sceKernelDeleteLwCond", delete_lw_cond},
-    {0x8fa54b07u, "sceKernelWaitLwCondCB", wait_lw_cond},
-    {0x3148c6b6u, "sceKernelLockLwMutexCB", lock_lw_mutex},
-    {0x2bdaa524u, "sceKernelLockMutexCB", lock_mutex},
-    {0x4ce42ce2u, "sceKernelWaitCondCB", wait_cond},
-    {0xe737b1dfu, "sceKernelWaitEventFlagCB", wait_event_flag},
-    {0x2d4a62b7u, "sceKernelLockReadRWLockCB", lock_read_rw_lock},
-    {0xa4777082u, "sceKernelLockWriteRWLockCB", lock_write_rw_lock},
-    {0xc54941edu, "sceKernelWaitThreadEndCB", wait_thread_end},
-    {0xb9d5ebdeu, "sceKernelAllocMemBlock", alloc_mem_block},
-    {0xb8ef5818u, "sceKernelGetMemBlockBase", get_mem_block_base},
-    {0xa91e15eeu, "sceKernelFreeMemBlock", free_mem_block},
-    {0xa33b99d1u, "sceKernelFindMemBlockByAddr", find_mem_block_by_addr},
-    {0x87cc580bu, "sceKernelGetFreeMemorySize", get_free_memory_size},
-    {0xb110c123u, "sceKernelGetProcessTimeWide", get_process_time_wide},
-    {0x4c4672bfu, "sceKernelGetProcessTime", get_process_time_wide},
-    {0xe9f973b1u, "sceKernelGetProcessTimeLow", get_process_time_low},
-    {0xf4ee4fa9u, "sceKernelGetSystemTimeWide", get_process_time_wide},
-    {0x4b879059u, "sceKernelLibcGettimeofday", libc_gettimeofday},
-    {0x2252890cu, "sceKernelPowerTick", power_tick},
-    {0x2255b2a5u, "sceKernelCreateTimer", create_timer},
-    {0x48091e0cu, "sceKernelStartTimer", start_timer},
-    {0x869e9f20u, "sceKernelStopTimer", stop_timer},
-    {0x3efd3165u, "sceKernelGetTimerTimeWide", get_timer_time_wide},
-    {0x273b4a4du, "sceKernelSetTimerTimeWide", set_timer_time_wide},
-    {0xab1e42c4u, "sceKernelDeleteTimer", delete_timer},
-    {0x8667951du, "sceKernelCreateRWLock", create_rw_lock},
-    {0xfa670f0fu, "sceKernelLockReadRWLock", lock_read_rw_lock},
-    {0x67a187bbu, "sceKernelLockWriteRWLock", lock_write_rw_lock},
-    {0x3ef91145u, "sceKernelUnlockReadRWLock", unlock_read_rw_lock},
-    {0xb4151397u, "sceKernelUnlockWriteRWLock", unlock_write_rw_lock},
-    {0xe73649cau, "sceKernelDeleteRWLock", delete_rw_lock},
-    {0x8d9c5461u, "sceKernelGetThreadInfo", get_thread_info},
-    {0xf1ae5654u, "sceKernelGetThreadCpuAffinityMask", get_thread_cpu_affinity_mask},
-    {0x15129174u, "sceKernelChangeThreadCpuAffinityMask", get_thread_cpu_affinity_mask},
-    {0x03e23af6u, "sceKernelCloseMutex", close_object},
-    {0xadca94e5u, "sceKernelWaitSignal", wait_signal},
-    {0x24460bb3u, "sceKernelWaitSignalCB", wait_signal},
-    {0xd4c367b2u, "sceKernelSendSignal", send_signal},
-    {0xd7f0f610u, "SceUlobjDbg_D7F0F610", ulobj_dbg},
-    {0xf9c0f5dau, "SceUlobjDbg_F9C0F5DA", ulobj_dbg},
-    {0, NULL, NULL},
-};

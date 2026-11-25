@@ -14,7 +14,7 @@ int nvn_driver_info(const u8* mem, u64 lo, u64 hi, u64 func, u32 item, i32* out)
 /* nvn_driver_info for a 32-bit program's driver, whose code is A32 */
 int nvn_driver_info32(const u8* mem, u64 lo, u64 hi, u64 func, u32 item, i32* out);
 /* The NVN API version a driver's answers for items 0 and 1 (NVN_DEVICE_INFO_API_MAJOR_VERSION and _MINOR_VERSION)
-   make, as the hooks' nvn key takes it (hle/hook/hook.h HOOK_NVN): major << 16 | minor, 0 when either is out of
+   make, as the hooks' nvn key takes it (nn/hook.h HOOK_NVN): major << 16 | minor, 0 when either is out of
    range (a major of 0, or either past 65535) */
 u32 nvn_api_pack(i32 major, i32 minor);
 /* Whether the runtime describes NVN API version api (packed as nvn_api_pack does), which the log says at the game's

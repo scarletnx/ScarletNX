@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 #
-# The native nn::ro (ro.c), for tools/hookgen, in the language of hle/hook/hooks.hook.
+# The native nn::ro (ro.c), for tools/hookgen, in the language of nn/hooks.hook.
 # nn::ro: the modules of the program and the NROs it loads, as the game's linker (its rtld module) keeps them for the
 # SDK. These are the functions of the SDK that need the rtld's lists of modules or call it back, every one of them of
 # nn::ro: with them answered here, nothing of the SDK reaches what an rtld would have left. The family is installed

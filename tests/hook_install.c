@@ -1,13 +1,13 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* hook_install on a 64-bit game (src/nx/hle/hook/hook.c), over tests/hook/install.hook, with the runtime stubbed to a
+/* hook_install on a 64-bit game (src/nx/nn/hook.c), over tests/hook/install.hook, with the runtime stubbed to a
    symbol list and a dispatch table: each hook takes its function's slot, a pure one of a verified family as verify
    mode's check. Then a save state loaded (state.c puts the state's g_hle in place of the running one): the functions
    hooked are still this process's, so a function's own code, the hook in its slot, its name and the slots put back
    after the JIT emptied them are what they were, whatever run saved the state. Verify mode's scratch memory is the
    state's: a state saved with none skips the check, the handler answering the call, and one saved with some checks
    on it */
-#include "nx/hle/hook/hook.c"
+#include "nx/nn/hook.c"
 #include <assert.h>
 #include <stdio.h>
 
@@ -77,7 +77,7 @@ void mem_query(u64 addr, MemBlock* b) {
     b->addr = addr, b->state = MS_CODE, b->perm = PERM_R | PERM_X;
 }
 GuestFn nce_slot(GuestFn f) { return f; }
-void nce_slot_taken(u64 addr, const char* what) { (void)addr, (void)what; }
+int nce_slot_taken(u64 addr, const char* what) { return (void)addr, (void)what, 0; }
 void jit_slot_taken(u64 addr, GuestFn fn) { (void)addr, (void)fn; }
 GuestFn jit_code_now(u64 pc) { return (void)pc, NULL; }
 /* arm.c's: a 64-bit game has no 32-bit code */

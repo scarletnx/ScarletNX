@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* Hook modules from libraries (hle/hook/module_lib.h, nx/loader/hook_libs.h, hle/hook/snx_hook_module.h), of no game:
+/* Hook modules from libraries (nn/module_lib.h, nx/loader/hook_libs.h, nn/snx_hook_module.h), of no game:
    the libraries the test suite builds from tests/hook_module_lib_mod.c, loaded as the runtime loads them.
    - the folder the hook_modules_dir setting names, loaded once: its module library added, a file that isn't a
      library passed over, and the library hooks_off names never loaded (the process never has it: plat_dl_loaded).
@@ -20,8 +20,8 @@
 #include "common/platform/dl.h"
 #include "nx/gpu/nvn/nvn_cmd.h"
 #include "nx/gpu/renderer.h"
-#include "nx/hle/hook/module.h"
-#include "nx/hle/hook/module_lib.h"
+#include "nx/nn/module.h"
+#include "nx/nn/module_lib.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
 

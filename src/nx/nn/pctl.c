@@ -8,8 +8,8 @@
    vision are permitted, nothing is restricted, the safety level is none, and no play timer runs. The functions here
    are the ones whose answer the spec gives. Any other function opens the pctl session itself, and sm stops the game
    with the name of this layer */
-#include "nx/hle/hook/hook.h"
-#include "hle/hook/hooks.hook.h"
+#include "nx/nn/hook.h"
+#include "nn/hooks.hook.h"
 #include <string.h>
 
 u32 nnpctl_initialize(CPU* c) {

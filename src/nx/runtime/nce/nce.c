@@ -115,9 +115,10 @@ void nce_thread_run(struct KThread* t, u64 pc) {
 }
 void nce_kick(struct KThread* t) { (void)t; }
 GuestFn nce_slot(GuestFn f) { return f; }
-void nce_slot_taken(u64 addr, const char* family) {
+int nce_slot_taken(u64 addr, const char* family) {
     (void)addr;
     (void)family;
+    return 0;
 }
 void nce_code_added(u64 base, u64 text_size) {
     (void)base;
@@ -433,10 +434,10 @@ void nce_init(void) {
     if (plat_thread(kicker, NULL, 64 << 10)) fatal("NCE: the thread of the kicks cannot start");
 }
 
-void nce_slot_taken(u64 addr, const char* family) {
+int nce_slot_taken(u64 addr, const char* family) {
     u64 original;
     u32 word, i;
-    if (!g_nce.on) return;
+    if (!g_nce.on) return 0;
     pm_lock(&g_nce.lock);
     u32 n = atomic_load_explicit(&g_nce.diverts, memory_order_relaxed); /* under the lock: its only writer */
     for (i = 0; i < n; i++)
@@ -444,7 +445,7 @@ void nce_slot_taken(u64 addr, const char* family) {
     if (i < n) {
         pm_unlock(&g_nce.lock);
         SNX_ZONE_T(z_dup, "nce hook duplicate", "%s", family);
-        return;
+        return 0;
     }
     if (i == NCE_DIVERTS) fatal("NCE: more than %d functions take handlers", NCE_DIVERTS);
     {
@@ -462,7 +463,7 @@ void nce_slot_taken(u64 addr, const char* family) {
                      (unsigned long long)addr, family);
             SNX_ZONE_TV(z_rej, "nce hook rejected", (u64)r, "%s: %s", family,
                         r == -2 ? "word beyond reach" : "no stub room");
-            return;
+            return -1;
         }
     }
     g_nce.entry[i] = addr;
@@ -474,6 +475,7 @@ void nce_slot_taken(u64 addr, const char* family) {
     code_write(addr, word);
     pm_unlock(&g_nce.lock);
     SNX_ZONE_TV(z_added, "nce hook added", 1, "%s", family);
+    return 0;
 }
 
 void nce_code_added(u64 base, u64 text_size) {

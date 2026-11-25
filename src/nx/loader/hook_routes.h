@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The route list: the symbols whose calls the recompiler sends through their dispatch slots, where a hook of the
-   runtime's can take them. They are the symbols that hle/hook/hooks.hook and gpu/nvn/nvn.hook name, in each version,
+   runtime's can take them. They are the symbols that nn/hooks.hook and gpu/nvn/nvn.hook name, in each version,
    with their route lines (hookgen --routes), and the keys of the address hooks of src/nx/patches/ (BUILDID:OFFSET),
    each of which routes one function of one build of a module. Every other call to a recompiled function is a direct
    call, which no hook sees. A module carries the list it was built with (snx_routes, module_abi.h), and hook_install

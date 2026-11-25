@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 #
-# The native nn::audio renderer (audio_renderer.c), for tools/hookgen, in the language of hle/hook/hooks.hook.
+# The native nn::audio renderer (audio_renderer.c), for tools/hookgen, in the language of nn/hooks.hook.
 # The audio renderer, with no audren:u session (audio_renderer.c): OpenAudioRenderer and every function that takes
 # the handle it fills. RequestUpdateAudioRenderer runs the SDK's own managers on the game's AudioRendererConfig, whose
 # buffers sit at an offset that differs between SDKs, as RequestUpdateAudioRenderer's code reads them. Read in an SDK

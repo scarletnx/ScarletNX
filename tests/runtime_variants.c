@@ -162,6 +162,9 @@ u64* hints_copy(size_t* count) {
 }
 
 int nvn_loader_active(void) { return 0; }
+/* gvk.c, which takes no game's Vulkan here: an invalidation empties each slot */
+int gvk_active(void) { return 0; }
+GuestFn gvk_invalidation_slot(u64 addr) { return (void)addr, NULL; }
 /* nvn_loader.c's and hook.c's answers of what they put in a slot in the game's place: g_nvn_fn is NVN's one
    implementation here, and g_hook_fn the hook's handler of the function at g_hook_addr */
 static GuestFn g_nvn_fn, g_hook_fn;
@@ -396,6 +399,11 @@ static void nro_modules(const char* path) {
     CHECK(imports_call(own) == 'N');
     jit_slot_taken(0x2400, override_fn);
     CHECK(imports_call(own) == 'H');
+    /* the slot given back with nothing in it: the import calls what the table holds */
+    g_disp[(0x2400 - CODE_LO) / 4] = test_fn;
+    jit_slot_taken(0x2400, NULL);
+    CHECK(imports_call(own) == 'T');
+    g_disp[(0x2400 - CODE_LO) / 4] = test_fn2;
     jit_nro_removed(0x1000);
     CHECK(jit_nro_added(slots[0].hash, 0x1000, 0x1000, id, &entries) == 0 && entries == 2);
     CHECK(imports_call(own) == 'G');

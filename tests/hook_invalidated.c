@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* A native hook the game invalidates (src/nx/hle/hook/hook.c, jump.c), on this test's own x86_64 code, over
+/* A native hook the game invalidates (src/nx/nn/hook.c, jump.c), on this test's own x86_64 code, over
    tests/hook/install.hook with the runtime stubbed as tests/hook_install.c stubs it. A mod's hook writes a branch over
    the start of a hooked function: the native hook's adapter is rewritten into a jump to hook_invalidated, so a copy
    of its address taken before (as an NRO's import or the JIT's direct call holds one) runs the game's new code with
@@ -12,7 +12,7 @@
    handler, and a handler's own code is the trampoline's, entered there. The index of the sites by address still finds
    the invalidated one, and no other, as a search of every site does. The system's refusal to make code writable is
    reported with its reason. Only x86_64 runs the jump: on another host the test is skipped (77) */
-#include "nx/hle/hook/hook.c"
+#include "nx/nn/hook.c"
 #include <assert.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -96,7 +96,7 @@ void mem_query(u64 addr, MemBlock* b) {
     if (addr < CODE || addr >= CODE + 0x1000) b->addr = addr, b->size = 0, b->state = MS_FREE;
 }
 GuestFn nce_slot(GuestFn f) { return f; }
-void nce_slot_taken(u64 addr, const char* what) { (void)addr, (void)what; }
+int nce_slot_taken(u64 addr, const char* what) { return (void)addr, (void)what, 0; }
 void jit_slot_taken(u64 addr, GuestFn fn) { (void)addr, (void)fn; }
 GuestFn jit_code_now(u64 pc) { return pc == ANSWER ? game_answer : pc == TRAMP ? tramp_code : NULL; }
 _Atomic SnxArmBlock* arm_slot(u32 addr, int thumb) { return (void)addr, (void)thumb, NULL; }

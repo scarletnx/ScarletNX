@@ -30,7 +30,7 @@
 #include "nx/hle/services/native_video.h"
 #include "nx/runtime/clock.h"
 #include "nx/hle/kernel/kernel.h"
-#include "nx/hle/hook/hook.h"
+#include "nx/nn/hook.h"
 #include "nx/runtime/arm.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/platform/log.h"
@@ -313,9 +313,9 @@ u64 nvn_DeviceGetTimestampInNanoseconds(CPU* c, u64 d, u64 counter) {
     (void)d;
     /* a report whose submission isn't done waits for it off the guest core, as nvn_SyncWait does */
     if (gpu_release_stamp_sync(counter, 0)) {
-        nvn_wait_begin();
+        kthread_host_wait_begin();
         gpu_release_stamp_sync(counter, 1);
-        nvn_wait_end();
+        kthread_host_wait_end();
     }
     return snx_gpu_ns_of_ticks(NVN_OBJ(NVNcounterData, counter)->timestamp);
 }
@@ -847,9 +847,9 @@ i32 nvn_SamplerPoolGetSize(CPU* c, u64 sp) {
    write, and no wait */
 static void texture_write(u64 slot, const u32 tic[8]) {
     if (!memcmp(GP(slot), tic, NVN_DESCRIPTOR_SIZE)) return;
-    nvn_wait_begin();
+    kthread_host_wait_begin();
     nvn_replay_finish_all();
-    nvn_wait_end();
+    kthread_host_wait_end();
     memcpy(GP(slot), tic, NVN_DESCRIPTOR_SIZE); /* guest memory: every byte the game sees */
     gpu_mem_written_cpu(slot, NVN_DESCRIPTOR_SIZE);
 }
@@ -887,9 +887,9 @@ void nvn_TexturePoolRegisterImage(CPU* c, u64 tp, i32 id, u64 t, u64 v) {
    for the renderer's kept descriptors. The descriptor the slot already holds changes nothing for that work: no wait */
 static void sampler_write(u64 slot, const u32 tsc[8]) {
     if (!memcmp(GP(slot), tsc, NVN_DESCRIPTOR_SIZE)) return;
-    nvn_wait_begin();
+    kthread_host_wait_begin();
     nvn_replay_finish_all();
-    nvn_wait_end();
+    kthread_host_wait_end();
     memcpy(GP(slot), tsc, NVN_DESCRIPTOR_SIZE);
     gpu_mem_written_cpu(slot, NVN_DESCRIPTOR_SIZE);
 }
@@ -1218,15 +1218,13 @@ void nvn_TextureFlushTexels(CPU* c, u64 t, u64 v, u64 region) {
     (void)v;
     (void)region;
 }
-void nvn_wait_begin(void) { core_leave(kthread_cur()); }
-void nvn_wait_end(void) { core_enter(kthread_cur()); }
 /* the texels copied out of the texture by the GPU (gpu/nvn/nvn_copy.c): a deswizzle is the GPU's work, waited for
    off the core */
 void nvn_TextureReadTexels(CPU* c, u64 t, u64 v, u64 region, u64 dst) {
     (void)c;
-    nvn_wait_begin();
+    kthread_host_wait_begin();
     nvn_read_texels(t, v, region, dst, 0, 0);
-    nvn_wait_end();
+    kthread_host_wait_end();
 }
 void nvn_TextureWriteTexels(CPU* c, u64 t, u64 v, u64 region, u64 src) {
     (void)c;
@@ -1277,9 +1275,9 @@ void nvn_TextureWriteTexelsStrided(CPU* c, u64 t, u64 v, u64 region, u64 src, i6
 /* ReadTexels with the destination's rows row bytes apart and its slices image bytes apart (0: tightly packed) */
 void nvn_TextureReadTexelsStrided(CPU* c, u64 t, u64 v, u64 region, u64 dst, i64 row, i64 image) {
     (void)c;
-    nvn_wait_begin();
+    kthread_host_wait_begin();
     nvn_read_texels(t, v, region, dst, row, image);
-    nvn_wait_end();
+    kthread_host_wait_end();
 }
 /* The CPU's caches dropped over the texels of a region, for a CPU read of what the GPU wrote: the CPU and the GPU share
    guest memory here, and the GPU's writes land there before the CPU reads them (GPU-owned memory lands when the CPU

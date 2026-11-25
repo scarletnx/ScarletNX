@@ -47,8 +47,10 @@
 #include "nx/runtime/platform/tracy.h"
 
 static VkSemaphore g_acquired[VK_FRAMES];
-/* the CPU fallback's image, and the last presented frame for screenshots */
+/* the CPU fallback's image, the copy of the game's own Vulkan image (vkr_present_image), and the last presented frame
+   for screenshots */
 static Surf* g_cpu_img;
+static Surf* g_gvk_img;
 static Surf* g_last;
 static u32 g_last_x, g_last_y, g_last_w, g_last_h;
 static u32 g_last_transform;
@@ -1536,6 +1538,100 @@ static void vkr_present_buffer(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout
     atomic_store_explicit(&g_shown_ns, plat_ns(), memory_order_relaxed);
     vk_unlock();
 }
+
+/* the copy of a game's own image, w x h, in an sRGB format when srgb: made anew when either changes */
+static Surf* gvk_frame(u32 w, u32 h, int srgb) {
+    VkFormat vf = srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+    if (g_gvk_img && (g_gvk_img->w != w || g_gvk_img->h != h || g_gvk_img->f.vk != vf)) {
+        vk_defer_image(g_gvk_img->img, g_gvk_img->mem, g_gvk_img->present, g_gvk_img->att);
+        if (g_last == g_gvk_img) g_last = NULL;
+        free(g_gvk_img);
+        g_gvk_img = NULL;
+    }
+    if (g_gvk_img) return g_gvk_img;
+    Surf* s = calloc(1, sizeof *s);
+    if (!s) return NULL;
+    s->w = s->sw = w;
+    s->h = s->sh = h;
+    s->f = vk_rt_format(srgb ? 0xD6 : 0xD5); /* A8B8G8R8, sRGB or not */
+    s->layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    /* the window's pass samples an sRGB copy through a view of its bytes (present_quad.c), of the UNORM twin */
+    VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                            .flags = srgb ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT : 0,
+                            .imageType = VK_IMAGE_TYPE_2D,
+                            .format = vf,
+                            .extent = {w, h, 1},
+                            .mipLevels = 1,
+                            .arrayLayers = 1,
+                            .samples = VK_SAMPLE_COUNT_1_BIT,
+                            .tiling = VK_IMAGE_TILING_OPTIMAL,
+                            .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                     VK_IMAGE_USAGE_SAMPLED_BIT,
+                            .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    DevMemWant want = {.at = DM_DEVICE};
+    if (!VK_OK(vk_devmem_image(&ii, &want, &s->img, &s->mem))) {
+        free(s);
+        return NULL;
+    }
+    vk_mem_track(s->mem, VK_OWN_UI);
+    g_gvk_img = s;
+    return s;
+}
+
+/* a game's own Vulkan image (renderer.h): blitted into the renderer's copy, which show() draws, after the game's work
+   on the queue before it (the barrier's first scope), and given back to the game in its present layout */
+static void vkr_present_image(u64 image, u32 fmt, u32 w, u32 h, const i32 crop[4]) {
+    SNX_ZONE(z_present, "present image");
+    vk_lock();
+    vk_buf_writable_abort();
+    vk_render_end();
+    Surf* src = NULL;
+    if (w && h && w <= g_vk.props.limits.maxImageDimension2D && h <= g_vk.props.limits.maxImageDimension2D)
+        src = gvk_frame(w, h, is_srgb((VkFormat)fmt));
+    u32 x0 = 0, y0 = 0, x1 = w, y1 = h;
+    if (crop && crop[2] > crop[0] && crop[3] > crop[1] && crop[0] >= 0 && crop[1] >= 0) {
+        x0 = (u32)crop[0] < w ? (u32)crop[0] : 0;
+        y0 = (u32)crop[1] < h ? (u32)crop[1] : 0;
+        x1 = (u32)crop[2] < w ? (u32)crop[2] : w;
+        y1 = (u32)crop[3] < h ? (u32)crop[3] : h;
+    }
+    if (src) {
+        VkCommandBuffer cb = vk_cmd();
+        VkImage img = (VkImage)(uintptr_t)image;
+        vk_barrier(cb, img, VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                   VK_ACCESS_2_MEMORY_WRITE_BIT, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
+                   VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_GENERAL);
+        vk_surf_use(cb, src, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_BLIT_BIT,
+                    VK_ACCESS_2_TRANSFER_WRITE_BIT);
+        VkImageBlit b = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                         .srcOffsets = {{(i32)x0, (i32)y0, 0}, {(i32)x1, (i32)y1, 1}},
+                         .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                         .dstOffsets = {{(i32)x0, (i32)y0, 0}, {(i32)x1, (i32)y1, 1}}};
+        rec_CmdBlitImage(cb, img, VK_IMAGE_LAYOUT_GENERAL, src->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b,
+                         VK_FILTER_NEAREST);
+        g_last = src;
+        g_last_hdr = (SnxHdrFrame){0};
+        g_last_transform = 0;
+        g_last_x = x0;
+        g_last_y = y0;
+        g_last_w = x1 - x0;
+        g_last_h = y1 - y0;
+    }
+    if (prepare_screen_shown()) {
+        ui_lock();
+        prepare_screen_game_drew();
+        ui_unlock();
+    }
+    if (src && overlay_settings_waiting()) { /* the settings off their default, named from the game's first frame */
+        ui_lock();
+        overlay_settings_start(plat_ns());
+        ui_unlock();
+    }
+    SnxHdrFrame hdr = {0};
+    show(src, &hdr, w, h, 0, 1, 0, 0, 0);
+    atomic_store_explicit(&g_shown_ns, plat_ns(), memory_order_relaxed);
+    vk_unlock();
+}
 /* the presenting thread's, before its present: nothing else reads g_next_hdr */
 static void vkr_present_hdr(const SnxHdrFrame* frame) { g_next_hdr = *frame; }
 /* what the display session tells a game (vi2's GetHdrStatus and GetHdrPaperWhite), any thread */
@@ -1835,6 +1931,11 @@ static void vkr_reset(void) {
         free(g_cpu_img);
         g_cpu_img = NULL;
     }
+    if (g_gvk_img) {
+        vk_defer_image(g_gvk_img->img, g_gvk_img->mem, g_gvk_img->present, g_gvk_img->att);
+        free(g_gvk_img);
+        g_gvk_img = NULL;
+    }
     g_last = NULL;
     g_vk.shader_generation++; /* the shaders found at guest addresses: the code there is the state's */
     vk_unlock();
@@ -1908,6 +2009,7 @@ const Renderer vk_renderer = {
     .samples_report = vkr_samples_report,
     .stream_end = vk_release_submit,
     .present_buffer = vkr_present_buffer,
+    .present_image = vkr_present_image,
     .present_hdr = vkr_present_hdr,
     .hdr_display = vkr_hdr_display,
     .display_wait = vk_display_wait,

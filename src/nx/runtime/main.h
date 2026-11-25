@@ -64,9 +64,14 @@ void crash_report(void* host_pc, void* fault, int sig);
    transform's flips (bit 0 horizontal, bit 1 vertical); slot is vi's, which present_pace was given at its dequeue */
 void vi_show_buffer(u32 nvmap_id, u32 offset, u32 w, u32 h, u32 pitch, u32 layout, u32 bhl, u32 fmt, const i32 crop[4],
                     u32 transform, int slot);
+/* a game's own Vulkan image on the display (gpu/gvk/gvk.c, renderer.h present_image): its VkImage, VkFormat and size */
+void present_image(u64 image, u32 fmt, u32 w, u32 h, const i32 crop[4]);
 /* the wait before vi hands the game a buffer for its next frame, as fps_limit says: with fps_limit=game until the
    frame before has been on the display for interval refreshes (its swap interval). slot: the buffer's (vi's) */
 void present_pace(u32 interval, int slot);
+/* present_pace that gives up at deadline_ns (plat_ns): 0 when the deadline came first, else 1 (gvk's acquire, which
+   has the game's timeout) */
+int present_pace_until(u32 interval, int slot, u64 deadline_ns);
 /* A frame period (ns) on the display's clock: the nearest whole number of the display's refreshes (refresh, 0 unknown)
    within 1/512 of it, so near-identical clocks (59.94 Hz) do not drift. Incompatible refresh ratios keep period. */
 u64 present_display_period(u64 period, u64 refresh);

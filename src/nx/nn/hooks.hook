@@ -1,0 +1,470 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+#
+# The functions the game exports that the runtime runs natively (hook.h), for tools/hookgen. A line at a time:
+#
+#   family NAME
+#   include "HEADER"
+#   [@version([KEY] OP VERSION, ...)] hook SYMBOL(TYPE NAME [BUFFER], ...) [-> TYPE] [= HANDLER] [uses STRUCT, ...] [pure]
+#   [@version(...)] struct NAME::NAME [@version(...)] { TYPE FIELD @OFFSET; ... } size SIZE
+#
+# A family names the hooks after it, until the next family line: the hooks_off setting turns families off by name.
+# SYMBOL is the function's name as the game's dynamic symbol table spells it: a C++ function by its mangled name
+# (_ZN2nn2os...), never demangled. The arguments are the function's as C sees it (a C++ method's this first), of the
+# types void (a result only), bool, u8, u16, u32, u64, i8, i16, i32, i64, addr (a guest address), f32 and f64, each
+# of its size in the guest, and pointers (const char* name, NVNtexture* const* textures): to void, char, those types,
+# or a type of the C header the include line names (gpu/nvn/nvn.hook's). No arrays. The handler is a function of the
+# runtime's, `ret HANDLER(CPU* c, args...)` (a pointer is a u64 guest address), declared by the generated
+# nn/hooks.hook.h. Without '= HANDLER' it is SYMBOL with a '_' before its first capital (nvnDeviceFinalize:
+# nvn_DeviceFinalize). A handler does what the function is known to do and nothing the game could tell apart.
+# @version limits a hook or a struct to the versions of the module that exports the function (KEY sdk, the default, or
+# nvn; OP >=, >, <=, <, ==), a struct gives a guest struct's layout for those versions, and a handler that uses one
+# takes the layout for its module after the CPU (docs/platforms/nx/hooks.md, tools/hookgen/hookgen.c). A pure hook's function
+# depends only on its arguments, the memory they point to and constant data, and changes only its result and its
+# buffers: an addr or pointer argument followed by in[LENGTH], out[LENGTH] or inout[LENGTH] (bytes: a number, or an
+# integer argument times a number plus a number). The hooks_verify setting checks a pure hook against the function's
+# own code on every call (verify.h).
+
+# the C library (libc.c): the guest's own byte loops become the host's
+# What a game's linker calls last (runtime/linker.c wraps it until then, with C of its own): through its dispatch
+# slot. With three callbacks of the linker's, and with two
+route _ZN2nn4init5StartEmmPFvvES2_S2_
+route _ZN2nn4init5StartEmmPFvvES2_
+# The resolver of a game's own OpenGL driver, which gpu/gl/gl_census.c wraps with C of its own (gl_call_census): through
+# its dispatch slot
+route eglGetProcAddress
+
+family libc
+hook memcpy(void* dst out[size], const void* src in[size], u64 size) -> void* = hook_memmove pure
+hook memmove(void* dst out[size], const void* src in[size], u64 size) -> void* = hook_memmove pure
+hook memset(void* dst out[size], i32 value, u64 size) -> void* = hook_memset pure
+
+# the C library's string, character, number and sorting functions (libc_std.c): the host's, on guest memory. Off on
+# Windows, whose C library lacks some and has another RAND_MAX
+family libc_str
+hook memcmp(addr a, addr b, u64 n) -> i32 = libc_memcmp
+hook memchr(addr s, i32 ch, u64 n) -> addr = libc_memchr
+hook memset_s(addr dst, u64 size, i32 ch, u64 n) -> i32 = libc_memset_s
+hook strlen(addr s) -> u64 = libc_strlen
+hook strnlen(addr s, u64 n) -> u64 = libc_strnlen
+hook strcmp(addr a, addr b) -> i32 = libc_strcmp
+hook strncmp(addr a, addr b, u64 n) -> i32 = libc_strncmp
+hook strcasecmp(addr a, addr b) -> i32 = libc_strcasecmp
+hook strncasecmp(addr a, addr b, u64 n) -> i32 = libc_strncasecmp
+hook strncasecmp_l(addr a, addr b, u64 n, addr locale) -> i32 = libc_strncasecmp_l
+hook strcoll(addr a, addr b) -> i32 = libc_strcoll
+hook strcpy(addr dst, addr src) -> addr = libc_strcpy
+hook strncpy(addr dst, addr src, u64 n) -> addr = libc_strncpy
+hook stpcpy(addr dst, addr src) -> addr = libc_stpcpy
+hook strcat(addr dst, addr src) -> addr = libc_strcat
+hook strncat(addr dst, addr src, u64 n) -> addr = libc_strncat
+hook strlcpy(addr dst, addr src, u64 n) -> u64 = libc_strlcpy
+hook strlcat(addr dst, addr src, u64 n) -> u64 = libc_strlcat
+hook strchr(addr s, i32 ch) -> addr = libc_strchr
+hook strrchr(addr s, i32 ch) -> addr = libc_strrchr
+hook strstr(addr s, addr sub) -> addr = libc_strstr
+hook strcasestr(addr s, addr sub) -> addr = libc_strcasestr
+hook strpbrk(addr s, addr set) -> addr = libc_strpbrk
+hook strspn(addr s, addr set) -> u64 = libc_strspn
+hook strcspn(addr s, addr set) -> u64 = libc_strcspn
+hook strtok(addr s, addr delim) -> addr = libc_strtok
+hook strtok_r(addr s, addr delim, addr save) -> addr = libc_strtok_r
+hook isalnum(i32 ch) -> i32 = libc_isalnum
+hook isalpha(i32 ch) -> i32 = libc_isalpha
+hook isblank(i32 ch) -> i32 = libc_isblank
+hook iscntrl(i32 ch) -> i32 = libc_iscntrl
+hook isdigit(i32 ch) -> i32 = libc_isdigit
+hook isgraph(i32 ch) -> i32 = libc_isgraph
+hook islower(i32 ch) -> i32 = libc_islower
+hook isprint(i32 ch) -> i32 = libc_isprint
+hook ispunct(i32 ch) -> i32 = libc_ispunct
+hook isspace(i32 ch) -> i32 = libc_isspace
+hook isupper(i32 ch) -> i32 = libc_isupper
+hook isxdigit(i32 ch) -> i32 = libc_isxdigit
+hook tolower(i32 ch) -> i32 = libc_tolower
+hook toupper(i32 ch) -> i32 = libc_toupper
+hook atoi(addr s) -> i32 = libc_atoi
+hook atol(addr s) -> i64 = libc_atol
+hook atoll(addr s) -> i64 = libc_atoll
+hook atof(addr s) -> f64 = libc_atof
+hook strtol(addr s, addr end, i32 base) -> i64 = libc_strtol
+hook strtoul(addr s, addr end, i32 base) -> u64 = libc_strtoul
+hook strtoll(addr s, addr end, i32 base) -> i64 = libc_strtoll
+hook strtoull(addr s, addr end, i32 base) -> u64 = libc_strtoull
+hook strtod(addr s, addr end) -> f64 = libc_strtod
+hook strtof(addr s, addr end) -> f32 = libc_strtof
+hook abs(i32 v) -> i32 = libc_abs
+hook labs(i64 v) -> i64 = libc_labs
+hook llabs(i64 v) -> i64 = libc_llabs
+hook div(i32 n, i32 d) -> u64 = libc_div
+hook ldiv(i64 n, i64 d) -> i64 = libc_ldiv
+hook ffs(i32 v) -> i32 = libc_ffs
+hook ffsl(i64 v) -> i32 = libc_ffsl
+hook fabs(f64 v) -> f64 = libc_fabs
+hook ldexp(f64 v, i32 e) -> f64 = libc_ldexp
+hook frexp(f64 v, addr e) -> f64 = libc_frexp
+hook modf(f64 v, addr ip) -> f64 = libc_modf
+hook htonl(u32 v) -> u32 = libc_htonl
+hook ntohl(u32 v) -> u32 = libc_htonl
+hook htons(u32 v) -> u32 = libc_htons
+hook ntohs(u32 v) -> u32 = libc_htons
+hook __fpclassifyf(f32 v) -> i32 = libc_fpclassifyf
+hook rand() -> i32 = libc_rand
+hook srand(u32 seed) = libc_srand
+hook rand_r(addr seed) -> i32 = libc_rand_r
+hook qsort(addr base, u64 n, u64 size, addr compare) = libc_qsort
+hook bsearch(addr key, addr base, u64 n, u64 size, addr compare) -> addr = libc_bsearch
+
+# the C library's wide string functions (libc_wide.c): the host's, on guest memory, the character classes and case
+# Unicode's as the SDK's musl has them. Off where the host's wchar_t isn't 32 bits or it has no UTF-8 locale
+family libc_wide
+hook wcslen(addr s) -> u64 = libc_wcslen
+hook wcsnlen(addr s, u64 n) -> u64 = libc_wcsnlen
+hook wcscmp(addr a, addr b) -> i32 = libc_wcscmp
+hook wcsncmp(addr a, addr b, u64 n) -> i32 = libc_wcsncmp
+hook wcscasecmp(addr a, addr b) -> i32 = libc_wcscasecmp
+hook wcscpy(addr dst, addr src) -> addr = libc_wcscpy
+hook wcsncpy(addr dst, addr src, u64 n) -> addr = libc_wcsncpy
+hook wcscat(addr dst, addr src) -> addr = libc_wcscat
+hook wcsncat(addr dst, addr src, u64 n) -> addr = libc_wcsncat
+hook wcschr(addr s, u32 wc) -> addr = libc_wcschr
+hook wcsrchr(addr s, u32 wc) -> addr = libc_wcsrchr
+hook wcsstr(addr s, addr sub) -> addr = libc_wcsstr
+hook wcstok(addr s, addr delim, addr save) -> addr = libc_wcstok
+hook wmemchr(addr s, u32 wc, u64 n) -> addr = libc_wmemchr
+hook wmemcmp(addr a, addr b, u64 n) -> i32 = libc_wmemcmp
+hook wmemcpy(addr dst, addr src, u64 n) -> addr = libc_wmemcpy
+hook wmemmove(addr dst, addr src, u64 n) -> addr = libc_wmemmove
+hook wmemset(addr dst, u32 wc, u64 n) -> addr = libc_wmemset
+hook iswalnum(u32 wc) -> i32 = libc_iswalnum
+hook iswalpha(u32 wc) -> i32 = libc_iswalpha
+hook iswdigit(u32 wc) -> i32 = libc_iswdigit
+hook iswgraph(u32 wc) -> i32 = libc_iswgraph
+hook iswlower(u32 wc) -> i32 = libc_iswlower
+hook iswprint(u32 wc) -> i32 = libc_iswprint
+hook iswspace(u32 wc) -> i32 = libc_iswspace
+hook iswupper(u32 wc) -> i32 = libc_iswupper
+hook iswxdigit(u32 wc) -> i32 = libc_iswxdigit
+hook towlower(u32 wc) -> u32 = libc_towlower
+hook towupper(u32 wc) -> u32 = libc_towupper
+hook wcstol(addr s, addr end, i32 base) -> i64 = libc_wcstol
+hook wcstoul(addr s, addr end, i32 base) -> u64 = libc_wcstoul
+hook wcstoll(addr s, addr end, i32 base) -> i64 = libc_wcstoll
+hook wcstoull(addr s, addr end, i32 base) -> u64 = libc_wcstoull
+hook wcstod(addr s, addr end) -> f64 = libc_wcstod
+hook wcstof(addr s, addr end) -> f32 = libc_wcstof
+
+# the C library's formatted output and input (libc_fmt.c): each conversion the host's snprintf or sscanf, with the
+# guest's arguments (a direct call's registers and stack, or a va_list's record); the standard output the log. A
+# format with a conversion it doesn't take runs the function's own code. Off on Windows
+family libc_fmt
+hook snprintf(addr dst, u64 size, addr fmt) -> i32 = libc_snprintf
+hook vsnprintf(addr dst, u64 size, addr fmt, addr ap) -> i32 = libc_vsnprintf
+hook sprintf(addr dst, addr fmt) -> i32 = libc_sprintf
+hook vsprintf(addr dst, addr fmt, addr ap) -> i32 = libc_vsprintf
+hook printf(addr fmt) -> i32 = libc_printf
+hook vprintf(addr fmt, addr ap) -> i32 = libc_vprintf
+hook puts(addr s) -> i32 = libc_puts
+hook putchar(i32 ch) -> i32 = libc_putchar
+hook perror(addr s) = libc_perror
+hook sscanf(addr s, addr fmt) -> i32 = libc_sscanf
+hook vsscanf(addr s, addr fmt, addr ap) -> i32 = libc_vsscanf
+
+# the C and C++ libraries' allocation functions (alloc.c): the host's jemalloc, in an arena of its own whose pages are
+# guest memory. Only a block the arena handed out goes back to it: any other pointer, a piece of a region the game's
+# own allocator carved from an arena block among them, goes to the function's own code. Off without jemalloc, and in a
+# game whose address space has no room for the arena
+family alloc
+hook malloc(u64 size) -> addr = alloc_malloc
+hook calloc(u64 count, u64 size) -> addr = alloc_calloc
+hook realloc(addr p, u64 size) -> addr = alloc_realloc
+hook free(addr p) = alloc_free
+# a game whose malloc is its nn::mem::StandardAllocator's hands the allocator a block malloc gave: its GetSizeOf, and the
+# SDK heap's functions its others end in (nn::nlibsdk::heap), CentralHeap's and, on a thread with a cache, those of the
+# TlsHeapCache's table, in each spelling the SDKs give them (Mode0 or an older _Mode0, a template's two instances)
+hook _ZNK2nn3mem17StandardAllocator9GetSizeOfEPKv(addr self, addr p) -> u64 = alloc_std_size
+hook _ZN2nn7nlibsdk4heap11CentralHeap12GetAllocSizeEPKv(addr heap, addr p) -> u64 = alloc_std_size
+hook _ZN2nn7nlibsdk4heap11CentralHeap4FreeEPv(addr heap, addr p) -> i32 = alloc_heap_free
+hook _ZN2nn7nlibsdk4heap11CentralHeap7ReallocEPvmPS3_(addr heap, addr p, u64 size, addr out) -> i32 = alloc_heap_realloc
+hook _ZN2nn7nlibsdk4heap11CentralHeap12FreeWithSizeEPvm(addr heap, addr p, u64 size) -> i32 = alloc_heap_free_size
+hook _ZN2nn7nlibsdk4heap11CentralHeap6ShrinkEPvm(addr heap, addr p, u64 size) -> i32 = alloc_heap_shrink
+hook _ZN2nn7nlibsdk4heap12TlsHeapCache13FreeFuncMode0I*EEiPS2_Pv(addr cache, addr p) -> i32 = alloc_heap_free
+hook _ZN2nn7nlibsdk4heap12TlsHeapCache14FreeFunc_Mode0I*EEiPS2_Pv(addr cache, addr p) -> i32 = alloc_heap_free
+hook _ZN2nn7nlibsdk4heap12TlsHeapCache17FreeFuncSizeMode0I*EEiPS2_Pvm(addr cache, addr p, u64 size) -> i32 = alloc_heap_free_size
+hook _ZN2nn7nlibsdk4heap12TlsHeapCache18FreeFuncSize_Mode0I*EEiPS2_Pvm(addr cache, addr p, u64 size) -> i32 = alloc_heap_free_size
+hook _ZN2nn7nlibsdk4heap12TlsHeapCache21GetAllocSizeFuncMode0EPS2_PKv(addr cache, addr p) -> u64 = alloc_std_size
+hook _ZN2nn7nlibsdk4heap12TlsHeapCache22GetAllocSizeFunc_Mode0EPS2_PKv(addr cache, addr p) -> u64 = alloc_std_size
+hook _ZN2nn7nlibsdk4heap12TlsHeapCache16ReallocFuncMode0I*EEiPS2_PvmPS8_(addr cache, addr p, u64 size, addr out) -> i32 = alloc_heap_realloc
+hook _ZN2nn7nlibsdk4heap12TlsHeapCache17ReallocFunc_Mode0I*EEiPS2_PvmPS8_(addr cache, addr p, u64 size, addr out) -> i32 = alloc_heap_realloc
+hook _ZN2nn7nlibsdk4heap12TlsHeapCache15ShrinkFuncMode0I*EEiPS2_Pvm(addr cache, addr p, u64 size) -> i32 = alloc_heap_shrink
+hook _ZN2nn7nlibsdk4heap12TlsHeapCache15ShrinkFuncMode0EPS2_Pvm(addr cache, addr p, u64 size) -> i32 = alloc_heap_shrink
+hook aligned_alloc(u64 align, u64 size) -> addr = alloc_aligned
+hook memalign(u64 align, u64 size) -> addr = alloc_aligned
+hook posix_memalign(addr out, u64 align, u64 size) -> i32 = alloc_posix_memalign
+hook strdup(const char* s) -> addr = alloc_strdup
+hook strndup(const char* s, u64 max) -> addr = alloc_strndup
+# operator new keeps its own code in a module whose operator delete looks the block's allocator up by its address and
+# is copied where no hook takes it, inlined or in a function no symbol names (alloc_new_shape): a block of the arena
+# there would be looked up past the game's table. And in one whose new takes its block from an allocator object and
+# whose delete asks which heap the block is in: a block of the arena is in none of the game's heaps
+hook _Znwm(u64 size) -> addr = alloc_new check alloc_new_shape
+hook _Znam(u64 size) -> addr = alloc_new check alloc_new_shape
+hook _ZnwmSt11align_val_t(u64 size, u64 align) -> addr = alloc_new_aligned check alloc_new_shape
+hook _ZnamSt11align_val_t(u64 size, u64 align) -> addr = alloc_new_aligned check alloc_new_shape
+hook _ZnwmRKSt9nothrow_t(u64 size, addr nothrow) -> addr = alloc_new_nothrow check alloc_new_shape
+hook _ZnamRKSt9nothrow_t(u64 size, addr nothrow) -> addr = alloc_new_nothrow check alloc_new_shape
+hook _ZnwmSt11align_val_tRKSt9nothrow_t(u64 size, u64 align, addr nothrow) -> addr = alloc_new_aligned_nothrow check alloc_new_shape
+hook _ZnamSt11align_val_tRKSt9nothrow_t(u64 size, u64 align, addr nothrow) -> addr = alloc_new_aligned_nothrow check alloc_new_shape
+hook _ZdlPv(addr p) = alloc_delete
+hook _ZdaPv(addr p) = alloc_delete
+hook _ZdlPvm(addr p) = alloc_delete
+hook _ZdaPvm(addr p) = alloc_delete
+hook _ZdlPvRKSt9nothrow_t(addr p) = alloc_delete
+hook _ZdaPvRKSt9nothrow_t(addr p) = alloc_delete
+hook _ZdlPvSt11align_val_t(addr p) = alloc_delete
+hook _ZdaPvSt11align_val_t(addr p) = alloc_delete
+hook _ZdlPvmSt11align_val_t(addr p) = alloc_delete
+hook _ZdaPvmSt11align_val_t(addr p) = alloc_delete
+hook _ZdlPvSt11align_val_tRKSt9nothrow_t(addr p) = alloc_delete
+hook _ZdaPvSt11align_val_tRKSt9nothrow_t(addr p) = alloc_delete
+# std::vector<T>'s storage with std::allocator<T> (NS_9allocatorIS1_EE for a T of the game's, NS_9allocatorImEE for a
+# built-in one), for a T with nothing to destroy: every such instance of the template's destructor is the same code,
+# which alloc_vector_shape checks the function is before the hook takes it
+hook _ZNSt3__113__vector_baseI*NS_9allocatorI*EEED1Ev(addr self) = alloc_vector_free check alloc_vector_shape
+hook _ZNSt3__113__vector_baseI*NS_9allocatorI*EEED2Ev(addr self) = alloc_vector_free check alloc_vector_shape
+
+# the C++ library's clocks and sleep (sync.c): the host's own
+family sync
+hook _ZNSt3__16chrono12system_clock3nowEv() -> i64 = sync_system_now
+hook _ZNSt3__16chrono12steady_clock3nowEv() -> i64 = sync_steady_now
+hook _ZNSt3__111this_thread9sleep_forERKNS_6chrono8durationIxNS_5ratioILl1ELl1000000000EEEEE(addr duration) = sync_sleep_for
+
+# std::mutex, std::recursive_mutex and std::condition_variable (sync.c): the host's own, by the guest object's address.
+# A condition variable's wait in the game's own code unlocks its mutex in the guest object, which the host's mutex
+# never writes, so they go together. A save state can't hold a thread waiting on the host's, nor a mutex the host holds
+# for it, so native_cond_var=0 leaves all three to the game's own code, and save states are refused while they run.
+# Not timed_mutex, shared_timed_mutex or condition_variable_any, whose templates the game inlines over their members,
+# which are a std::mutex and a condition variable of these
+family cond_var
+hook _ZNSt3__115recursive_mutexC1Ev(addr m) = sync_recursive_init
+hook _ZNSt3__115recursive_mutexC2Ev(addr m) = sync_recursive_init
+hook _ZNSt3__115recursive_mutexD1Ev(addr m) = sync_drop
+hook _ZNSt3__115recursive_mutexD2Ev(addr m) = sync_drop
+hook _ZNSt3__115recursive_mutex4lockEv(addr m) = sync_recursive_lock
+hook _ZNSt3__115recursive_mutex8try_lockEv(addr m) -> bool = sync_recursive_try_lock
+hook _ZNSt3__115recursive_mutex6unlockEv(addr m) = sync_recursive_unlock
+hook _ZNSt3__15mutex4lockEv(addr m) = sync_mutex_lock
+hook _ZNSt3__15mutex8try_lockEv(addr m) -> bool = sync_mutex_try_lock
+hook _ZNSt3__15mutex6unlockEv(addr m) = sync_mutex_unlock
+hook _ZNSt3__15mutexD1Ev(addr m) = sync_drop
+hook _ZNSt3__15mutexD2Ev(addr m) = sync_drop
+hook _ZNSt3__118condition_variable10notify_oneEv(addr cv) = sync_cond_notify_one
+hook _ZNSt3__118condition_variable10notify_allEv(addr cv) = sync_cond_notify_all
+hook _ZNSt3__118condition_variable4waitERNS_11unique_lockINS_5mutexEEE(addr cv, addr lock) = sync_cond_wait
+hook _ZNSt3__118condition_variable15__do_timed_waitERNS_11unique_lockINS_5mutexEEENS_6chrono10time_pointINS5_12system_clockENS5_8durationIxNS_5ratioILl1ELl1000000000EEEEEEE(addr cv, addr lock, i64 ns) = sync_cond_timed_wait
+hook _ZNSt3__118condition_variableD1Ev(addr cv) = sync_drop
+hook _ZNSt3__118condition_variableD2Ev(addr cv) = sync_drop
+# the C library's waits, which libc++'s inlined timed waits call with a std::mutex's words (a steady_clock wait_for or
+# wait_until made with pthread_cond_clockwait): on a mutex of this family's the wait is the host's, as
+# condition_variable's own; on any other mutex the function's own code runs
+hook pthread_cond_wait(addr cv, addr m) -> i32 = sync_pthread_cond_wait
+hook pthread_cond_timedwait(addr cv, addr m, addr abstime) -> i32 = sync_pthread_cond_timedwait
+hook pthread_cond_clockwait(addr cv, addr m, i32 clock, addr abstime) -> i32 = sync_pthread_cond_clockwait
+
+# nn::os's sleeps, yields, locks and condition variables (os_sync.c): no SVC, and a lock's waiters wait on its word with
+# the host's futex. The SDK's own lock and condition variable types, and the InternalCriticalSection and
+# InternalConditionVariable every other nn::os object locks and waits through. The family writes their words its own
+# way, so it takes them all or none (os_sync_ready). A save state can't hold a thread waiting on the host, so
+# native_os_sync=0 leaves them to the game's own code, and save states are refused while they run
+family os_sync
+hook _ZN2nn2os11SleepThreadENS_8TimeSpanE(i64 ns) = os_sleep_thread
+hook _ZN2nn2os11YieldThreadEv() = os_yield_thread
+hook _ZN2nn2os6detail26TimeoutHelperImplByHorizon5SleepENS_8TimeSpanE(i64 ns) = os_sleep_thread
+hook _ZN2nn2os6detail26ThreadManagerImplByHorizon11YieldThreadEv(addr self) = os_yield_impl
+hook _ZN2nn2os12SdkMutexType10InitializeEv(addr m) = os_cs_init
+hook _ZN2nn2os12SdkMutexType4LockEv(addr m) = os_sdk_mutex_lock
+hook _ZN2nn2os12SdkMutexType7TryLockEv(addr m) -> bool = os_sdk_mutex_try_lock
+hook _ZN2nn2os12SdkMutexType6UnlockEv(addr m) = os_sdk_mutex_unlock
+hook _ZN2nn2os21SdkRecursiveMutexType10InitializeEv(addr m) = os_sdk_recursive_init
+hook _ZN2nn2os21SdkRecursiveMutexType4LockEv(addr m) = os_sdk_recursive_lock
+hook _ZN2nn2os21SdkRecursiveMutexType7TryLockEv(addr m) -> bool = os_sdk_recursive_try_lock
+hook _ZN2nn2os21SdkRecursiveMutexType6UnlockEv(addr m) = os_sdk_recursive_unlock
+hook _ZN2nn2os24SdkConditionVariableType10InitializeEv(addr cv) = os_cv_init
+hook _ZN2nn2os24SdkConditionVariableType6SignalEv(addr cv) = os_cv_signal
+hook _ZN2nn2os24SdkConditionVariableType9BroadcastEv(addr cv) = os_cv_broadcast
+hook _ZN2nn2os24SdkConditionVariableType4WaitERNS0_12SdkMutexTypeE(addr cv, addr m) = os_sdk_cv_wait
+hook _ZN2nn2os24SdkConditionVariableType9TimedWaitERNS0_12SdkMutexTypeENS_8TimeSpanE(addr cv, addr m, i64 ns) -> bool = os_sdk_cv_timed_wait
+hook _ZN2nn2os24SdkConditionVariableType4WaitERNS0_21SdkRecursiveMutexTypeE(addr cv, addr m) = os_sdk_cv_wait_recursive
+hook _ZN2nn2os6detail36InternalCriticalSectionImplByHorizonC1Ev(addr cs) = os_cs_init
+hook _ZN2nn2os6detail36InternalCriticalSectionImplByHorizonC2Ev(addr cs) = os_cs_init
+hook _ZN2nn2os6detail36InternalCriticalSectionImplByHorizon10InitializeEv(addr cs) = os_cs_init
+hook _ZN2nn2os6detail36InternalCriticalSectionImplByHorizon5EnterEv(addr cs) = os_cs_enter
+hook _ZN2nn2os6detail36InternalCriticalSectionImplByHorizon8TryEnterEv(addr cs) -> bool = os_cs_try_enter
+hook _ZN2nn2os6detail36InternalCriticalSectionImplByHorizon5LeaveEv(addr cs) = os_cs_leave
+hook _ZNK2nn2os6detail36InternalCriticalSectionImplByHorizon23IsLockedByCurrentThreadEv(addr cs) -> bool = os_cs_mine
+hook _ZN2nn2os6detail38InternalConditionVariableImplByHorizonC1Ev(addr cv) = os_cv_init
+hook _ZN2nn2os6detail38InternalConditionVariableImplByHorizonC2Ev(addr cv) = os_cv_init
+hook _ZN2nn2os6detail38InternalConditionVariableImplByHorizon10InitializeEv(addr cv) = os_cv_init
+hook _ZN2nn2os6detail38InternalConditionVariableImplByHorizon6SignalEv(addr cv) = os_cv_signal
+hook _ZN2nn2os6detail38InternalConditionVariableImplByHorizon9BroadcastEv(addr cv) = os_cv_broadcast
+hook _ZN2nn2os6detail38InternalConditionVariableImplByHorizon4WaitEPNS1_23InternalCriticalSectionE(addr cv, addr cs) = os_cv_wait
+hook _ZN2nn2os6detail38InternalConditionVariableImplByHorizon9TimedWaitEPNS1_23InternalCriticalSectionERKNS1_13TimeoutHelperE(addr cv, addr cs, addr helper) -> bool = os_cv_timed_wait
+
+# nn::os's light events, semaphores and message queues (os_sync.c) whole, their waits and signals the kernel's address
+# arbiter's with no SVC: their words keep the SDK's protocol, so each function may be left to the game's code alone.
+# Under native_os_sync as the os_sync family, for its waits a save state can't hold
+family os_light
+# LightEventType as each SDK's InitializeLightEvent lays it out: the waiter word first up to 12.3.1, after the flags
+# from 13.3.0 (games of 6.5.0 to 12.3.1 and of 13.3.0 to 18.3.2 looked at). A module of a version between, or of no
+# known version, runs the SDK's own light event code. The SDK before 13 clears all 12 bytes first
+struct nn::os::LightEventType @version(>= 6.5.0, <= 12.3.1) { u32 waiter @0x0; bool auto_clear @0x4; bool initialized @0x5 } size 0xc
+struct nn::os::LightEventType @version(>= 13.3.0) { bool auto_clear @0x0; bool initialized @0x1; u32 waiter @0x4 } size 0x8
+@version(>= 6.5.0, <= 12.3.1)
+hook _ZN2nn2os20InitializeLightEventEPNS0_14LightEventTypeEbNS0_14EventClearModeE(addr e, bool signaled, u32 mode) = os_light_event_init_old uses nn::os::LightEventType
+@version(>= 13.3.0)
+hook _ZN2nn2os20InitializeLightEventEPNS0_14LightEventTypeEbNS0_14EventClearModeE(addr e, bool signaled, u32 mode) = os_light_event_init uses nn::os::LightEventType
+hook _ZN2nn2os16SignalLightEventEPNS0_14LightEventTypeE(addr e) = os_light_event_signal uses nn::os::LightEventType
+hook _ZN2nn2os15ClearLightEventEPNS0_14LightEventTypeE(addr e) = os_light_event_clear uses nn::os::LightEventType
+hook _ZN2nn2os14WaitLightEventEPNS0_14LightEventTypeE(addr e) = os_light_event_wait uses nn::os::LightEventType
+hook _ZN2nn2os17TryWaitLightEventEPNS0_14LightEventTypeE(addr e) -> bool = os_light_event_try_wait uses nn::os::LightEventType
+hook _ZN2nn2os21AcquireLightSemaphoreEPNS0_18LightSemaphoreTypeE(addr s) = os_light_sem_acquire
+hook _ZN2nn2os24TryAcquireLightSemaphoreEPNS0_18LightSemaphoreTypeE(addr s) -> bool = os_light_sem_try_acquire
+hook _ZN2nn2os21ReleaseLightSemaphoreEPNS0_18LightSemaphoreTypeE(addr s) = os_light_sem_release
+hook _ZN2nn2os21ReleaseLightSemaphoreEPNS0_18LightSemaphoreTypeEi(addr s, i32 count) = os_light_sem_release_n
+hook _ZN2nn2os24ReceiveLightMessageQueueEPmPNS0_21LightMessageQueueTypeE(addr out, addr q) = os_lmq_receive
+hook _ZN2nn2os27TryReceiveLightMessageQueueEPmPNS0_21LightMessageQueueTypeE(addr out, addr q) -> bool = os_lmq_try_receive
+hook _ZN2nn2os24TrySendLightMessageQueueEPNS0_21LightMessageQueueTypeEm(addr q, u64 msg) -> bool = os_lmq_try_send
+
+# nn::os's current core (os_sync.c): the core the calling thread is scheduled on, svcGetCurrentProcessorNumber's
+# answer with no SVC
+family os_core
+hook _ZN2nn2os20GetCurrentCoreNumberEv() -> i32 = os_core_number
+hook _ZNK2nn2os6detail26ThreadManagerImplByHorizon20GetCurrentCoreNumberEv(addr self) -> i32 = os_core_number_impl
+
+# nn::diag (diag.c): the SDK's abort, which every one of its NN_ABORT overloads ends in, logged with what the SDK passed
+# it, then its own code, which stops the game as it would
+family diag
+hook _ZN2nn4diag6detail10VAbortImplEPKcS3_S3_iPKNS_6ResultEPKNS_2os17UserExceptionInfoES3_RSt9__va_list(const char* condition, const char* function, const char* file, i32 line, const u32* result, addr exception, const char* format, addr args) = diag_abort
+
+# nn::gs's image reads of the Ounce's SDK (gs.c): a video image's rectangle into the caller's buffers, which a movie
+# player calls for every picture. The rectangle's four 16-bit numbers come on the stack: the handler reads them there
+family gs
+hook _ZN2nn2gs3sdk17ReadUserImageNv12EPvmmS2_mmRKNS_3gsv22CpuUserImageDescriptorEPKvtttt(addr dst_y, u64 size_y, u64 pitch_y, addr dst_uv, u64 size_uv, u64 pitch_uv, addr descriptor, addr src) -> u32 = gs_read_user_image_nv12
+
+# nn::codec's hardware Opus decoder of the Ounce's SDK (nn/codec.c's hwacod section), which its SDK runs on the audio
+# DSP through nn::codec::hwacod: decoded here with the service's FFmpeg decoder (audio.c), each packet as it is enqueued
+family codec
+hook _ZN2nn5codec43GetHardwareOpusDecoderManagerWorkBufferSizeEiiNS_8TimeSpanEii(i32 rate, i32 channels, i64 frame, i32 decoders, i32 buffers) -> u64 = codec_manager_work_size
+hook _ZN2nn5codec36InitializeHardwareOpusDecoderManagerEPNS0_30HardwareOpusDecoderManagerTypeEPNS_2os15SystemEventTypeEiiNS_8TimeSpanEiiPvm(addr manager, addr event, i32 rate, i32 channels, i64 frame, i32 decoders, i32 buffers, addr work) -> u32 = codec_manager_init
+hook _ZN2nn5codec34FinalizeHardwareOpusDecoderManagerEPNS0_30HardwareOpusDecoderManagerTypeE(addr manager) = codec_manager_finalize
+hook _ZN2nn5codec34ExecuteHardwareOpusDecoderDecodingEPNS0_30HardwareOpusDecoderManagerTypeE(addr manager) -> u32 = codec_manager_execute
+hook _ZN2nn5codec46GetHardwareOpusDecoderManagerFreeIoBufferCountEPKNS0_30HardwareOpusDecoderManagerTypeE(addr manager) -> i32 = codec_manager_free_buffers
+hook _ZN2nn5codec29InitializeHardwareOpusDecoderEPNS0_23HardwareOpusDecoderTypeEiiNS_8TimeSpanEPNS0_30HardwareOpusDecoderManagerTypeE(addr decoder, i32 rate, i32 channels, i64 frame, addr manager) -> u32 = codec_decoder_init
+hook _ZN2nn5codec27FinalizeHardwareOpusDecoderEPNS0_23HardwareOpusDecoderTypeE(addr decoder) = codec_decoder_finalize
+hook _ZN2nn5codec24ResetHardwareOpusDecoderEPNS0_23HardwareOpusDecoderTypeE(addr decoder) = codec_decoder_reset
+hook _ZN2nn5codec36EnqueueOpusDataToHardwareOpusDecoderEPNS0_23HardwareOpusDecoderTypeEPmPKvm(addr decoder, addr consumed, addr data, u64 size) -> u32 = codec_decoder_enqueue
+hook _ZN2nn5codec48DequeuePcmInterleavedDataFromHardwareOpusDecoderEPNS0_23HardwareOpusDecoderTypeEPiPsm(addr decoder, addr samples, addr out, u64 size) -> u32 = codec_decoder_dequeue
+hook _ZN2nn5codec47GetHardwareOpusDecoderWaitingDecodeRequestCountEPKNS0_23HardwareOpusDecoderTypeE(addr decoder) -> i32 = codec_decoder_waiting
+hook _ZN2nn5codec49GetHardwareOpusDecoderExecutingDecodeRequestCountEPKNS0_23HardwareOpusDecoderTypeE(addr decoder) -> i32 = codec_decoder_executing
+hook _ZN2nn5codec49GetHardwareOpusDecoderCompletedDecodeRequestCountEPKNS0_23HardwareOpusDecoderTypeE(addr decoder) -> i32 = codec_decoder_completed
+
+# nn::audio's output and input streams of the Ounce's SDK (audio_stream.c), which its SDK plays and records through the
+# audio device manager (auddmg:u) and the audio DSP: played here on the host's output and recorded from the host's
+# microphone, its steady noise reduced, paced by the audio clock
+family audio_stream
+hook _ZN2nn5audio29GetDefaultVirtualOutputDeviceEPNS0_15AudioDeviceNameE(addr name) -> u32 = audio_default_virtual_output
+hook _ZN2nn5audio16OpenOutputStreamEPNS0_16OutputStreamTypeEPNS_2os11SystemEventEPvmRKNS0_15AudioDeviceNameERKNS0_12StreamFormatEiiNS_4util10BitFlagSetILi32ENS0_16OutputStreamFlagEEE(addr stream, addr event, addr work, u64 size, addr device, addr format, i32 capacity, i32 threshold) -> u32 = audio_open_stream_event
+hook _ZN2nn5audio16OpenOutputStreamEPNS0_16OutputStreamTypeEPvmRKNS0_15AudioDeviceNameERKNS0_12StreamFormatEiNS_4util10BitFlagSetILi32ENS0_16OutputStreamFlagEEE(addr stream, addr work, u64 size, addr device, addr format, i32 capacity, u32 flags) -> u32 = audio_open_stream
+hook _ZN2nn5audio17CloseOutputStreamEPNS0_16OutputStreamTypeE(addr stream) = audio_close_stream
+hook _ZN2nn5audio17StartOutputStreamEPNS0_16OutputStreamTypeE(addr stream) -> u32 = audio_start_stream
+hook _ZN2nn5audio16StopOutputStreamEPNS0_16OutputStreamTypeE(addr stream) -> u32 = audio_stop_stream
+hook _ZN2nn5audio17PurgeOutputStreamEPNS0_16OutputStreamTypeE(addr stream) -> u32 = audio_purge_stream
+hook _ZN2nn5audio20GetOutputStreamStateEPKNS0_16OutputStreamTypeE(addr stream) -> u32 = audio_stream_state
+hook _ZN2nn5audio29GetOutputStreamFreeFrameCountEPKNS0_16OutputStreamTypeE(addr stream) -> i32 = audio_stream_free_frames
+hook _ZN2nn5audio17WriteOutputStreamEPNS0_16OutputStreamTypeEPKvi(addr stream, addr data, i32 frames) -> i32 = audio_write_stream
+hook _ZN2nn5audio19SetOutputStreamGainEPNS0_16OutputStreamTypeEfNS_8TimeSpanE(addr stream, f32 gain, i64 fade) = audio_set_stream_gain
+hook _ZN2nn5audio25GetOutputStreamStatisticsEPNS0_16OutputStreamTypeEb(addr stream, bool reset) = audio_stream_statistics
+hook _ZN2nn5audio16OpenOutputStreamEPNS0_16OutputStreamTypeEPNS_2os11SystemEventEPvmRKNS0_15AudioDeviceNameERKNS0_12StreamFormatEii(addr stream, addr event, addr work, u64 size, addr device, addr format, i32 capacity, i32 threshold) -> u32 = audio_open_stream_event
+hook _ZN2nn5audio31GetOutputStreamFilledFrameCountEPKNS0_16OutputStreamTypeE(addr stream) -> i32 = audio_stream_filled_frames
+hook _ZN2nn5audio32GetVirtualOutputDevicePropertiesEPNS0_23VirtualDevicePropertiesERKNS0_15AudioDeviceNameE(addr props, addr name) -> u32 = audio_virtual_output_properties
+hook _ZN2nn5audio23ListVirtualInputDevicesEPNS0_15AudioDeviceNameEi(addr names, i32 count) -> i32 = audio_list_virtual_inputs
+hook _ZN2nn5audio15OpenInputStreamEPNS0_15InputStreamTypeEPvmRKNS0_15AudioDeviceNameERKNS0_12StreamFormatEi(addr stream, addr work, u64 size, addr device, addr format, i32 capacity) -> u32 = audio_open_input
+hook _ZN2nn5audio15OpenInputStreamEPNS0_15InputStreamTypeEPNS_2os11SystemEventEPvmRKNS0_15AudioDeviceNameERKNS0_12StreamFormatEii(addr stream, addr event, addr work, u64 size, addr device, addr format, i32 capacity, i32 threshold) -> u32 = audio_open_input_event
+hook _ZN2nn5audio16StartInputStreamEPNS0_15InputStreamTypeE(addr stream) -> u32 = audio_start_input
+hook _ZN2nn5audio15StopInputStreamEPNS0_15InputStreamTypeE(addr stream) -> u32 = audio_stop_input
+hook _ZN2nn5audio16PurgeInputStreamEPNS0_15InputStreamTypeE(addr stream) -> u32 = audio_purge_input
+hook _ZN2nn5audio16CloseInputStreamEPNS0_15InputStreamTypeE(addr stream) = audio_close_input
+hook _ZN2nn5audio19GetInputStreamStateEPKNS0_15InputStreamTypeE(addr stream) -> u32 = audio_input_state
+hook _ZN2nn5audio30GetInputStreamFilledFrameCountEPKNS0_15InputStreamTypeE(addr stream) -> i32 = audio_input_filled_frames
+hook _ZN2nn5audio28GetInputStreamFreeFrameCountEPKNS0_15InputStreamTypeE(addr stream) -> i32 = audio_input_free_frames
+hook _ZN2nn5audio32GetInputStreamCapacityFrameCountEPKNS0_15InputStreamTypeE(addr stream) -> i32 = audio_input_capacity_frames
+hook _ZN2nn5audio15ReadInputStreamEPNS0_15InputStreamTypeEPvi(addr stream, addr data, i32 frames) -> i32 = audio_read_input
+hook _ZN2nn5audio24GetInputStreamStatisticsEPNS0_15InputStreamTypeEb(addr stream, bool reset) = audio_stream_statistics
+hook _ZN2nn5audio28GetDefaultVirtualInputDeviceEPNS0_15AudioDeviceNameE(addr name) -> u32 = audio_default_virtual_input
+hook _ZN2nn5audio31GetVirtualInputDevicePropertiesEPNS0_23VirtualDevicePropertiesERKNS0_15AudioDeviceNameE(addr props, addr name) -> u32 = audio_virtual_input_properties
+hook _ZN2nn5audio20GetInputStreamFormatEPKNS0_15InputStreamTypeE(addr stream) -> addr = audio_input_format
+hook _ZN2nn5audio18SetInputStreamGainEPNS0_15InputStreamTypeEfNS_8TimeSpanE(addr stream, f32 gain, i64 fade) = audio_set_input_gain
+hook _ZN2nn5audio18GetInputStreamGainEPKNS0_15InputStreamTypeE(addr stream) -> f32 = audio_input_gain
+
+# std::string, libc++'s basic_string<char, char_traits<char>, allocator<char>> (libcxx_string.c): the members main
+# imports or exports across the games, on the object's own layout, its buffers from the guest's operator new. Not
+# another char_traits or allocator, whose code is the game's; not a 32-bit game's, whose layout differs
+family string
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev(addr self) = string_drop
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED2Ev(addr self) = string_drop
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEPKcm(addr self, const char* s, u64 n) = string_init
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEPKcmm(addr self, const char* s, u64 n, u64 reserve) = string_init_reserve
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEmc(addr self, u64 n, u8 ch) = string_init_fill
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initIPKcEENS_9enable_ifIXsr21__is_forward_iteratorIT_EE5valueEvE4typeESA_SA_(addr self, const char* first, const char* last) = string_init_range
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initIPcEENS_9enable_ifIXsr21__is_forward_iteratorIT_EE5valueEvE4typeES9_S9_(addr self, const char* first, const char* last) = string_init_range
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC1B6v15007IDnEEPKc(addr self, const char* s) = string_from_cstr
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC2B6v15007IDnEEPKc(addr self, const char* s) = string_from_cstr
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC1B7v170006ILi0EEEPKc(addr self, const char* s) = string_from_cstr
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC2B7v170006ILi0EEEPKc(addr self, const char* s) = string_from_cstr
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC1ERKS5_(addr self, addr str) = string_copy
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC2ERKS5_(addr self, addr str) = string_copy
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC1ERKS5_RKS4_(addr self, addr str, addr alloc) = string_copy_alloc
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC2ERKS5_RKS4_(addr self, addr str, addr alloc) = string_copy_alloc
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC1ERKS5_mmRKS4_(addr self, addr str, u64 pos, u64 n, addr alloc) = string_copy_sub
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC2ERKS5_mmRKS4_(addr self, addr str, u64 pos, u64 n, addr alloc) = string_copy_sub
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEaSERKS5_(addr self, addr str) -> addr = string_assign_string
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEaSEc(addr self, u8 ch) -> addr = string_assign_char
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6assignEPKc(addr self, const char* s) -> addr = string_assign_cstr
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6assignEPKcm(addr self, const char* s, u64 n) -> addr = string_assign
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6assignEmc(addr self, u64 n, u8 ch) -> addr = string_assign_fill
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6assignERKS5_mm(addr self, addr str, u64 pos, u64 n) -> addr = string_assign_sub
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEPKc(addr self, const char* s) -> addr = string_append_cstr
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEPKcm(addr self, const char* s, u64 n) -> addr = string_append
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEmc(addr self, u64 n, u8 ch) -> addr = string_append_fill
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendERKS5_mm(addr self, addr str, u64 pos, u64 n) -> addr = string_append_sub
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE9push_backEc(addr self, u8 ch) = string_push_back
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6resizeEmc(addr self, u64 n, u8 ch) = string_resize
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7reserveEm(addr self, u64 n) = string_reserve
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6insertEmPKc(addr self, u64 pos, const char* s) -> addr = string_insert_cstr
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6insertEmPKcm(addr self, u64 pos, const char* s, u64 n) -> addr = string_insert
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6insertEmmc(addr self, u64 pos, u64 n, u8 ch) -> addr = string_insert_fill
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6insertEmRKS5_mm(addr self, u64 pos, addr str, u64 pos2, u64 n) -> addr = string_insert_sub
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6insertENS_11__wrap_iterIPKcEEc(addr self, addr at, u8 ch) -> addr = string_insert_at
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6insertIPhEENS_9enable_ifIXaasr21__is_forward_iteratorIT_EE5valuesr38__libcpp_string_gets_noexcept_iteratorIS9_EE5valueENS_11__wrap_iterIPcEEE4typeENSA_IPKcEES9_S9_(addr self, addr at, const u8* first, const u8* last) -> addr = string_insert_range
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE5eraseEmm(addr self, u64 pos, u64 n) -> addr = string_erase
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7replaceEmmPKc(addr self, u64 pos, u64 n1, const char* s) -> addr = string_replace_cstr
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7replaceEmmPKcm(addr self, u64 pos, u64 n1, const char* s, u64 n2) -> addr = string_replace
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7replaceEmmmc(addr self, u64 pos, u64 n1, u64 n2, u8 ch) -> addr = string_replace_fill
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7replaceEmmRKS5_mm(addr self, u64 pos, u64 n1, addr str, u64 pos2, u64 n2) -> addr = string_replace_sub
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE9__grow_byEmmmmmm(addr self, u64 old_cap, u64 delta_cap, u64 old_size, u64 n_copy, u64 n_del, u64 n_add) = string_grow_by
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE21__grow_by_and_replaceEmmmmmmPKc(addr self, u64 old_cap, u64 delta_cap, u64 old_size, u64 n_copy, u64 n_del, u64 n_add, const char* s) = string_grow_by_and_replace
+hook _ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE2atEm(addr self, u64 n) -> addr = string_at
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE2atEm(addr self, u64 n) -> addr = string_at
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE4copyEPcmm(addr self, char* dst, u64 n, u64 pos) -> u64 = string_copy_out
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7compareEPKc(addr self, const char* s) -> i32 = string_compare_cstr
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7compareEmmPKc(addr self, u64 pos, u64 n1, const char* s) -> i32 = string_compare_sub_cstr
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7compareEmmPKcm(addr self, u64 pos, u64 n1, const char* s, u64 n2) -> i32 = string_compare_sub
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7compareEmmRKS5_mm(addr self, u64 pos1, u64 n1, addr str, u64 pos2, u64 n2) -> i32 = string_compare_sub_sub
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE4findEcm(addr self, u8 ch, u64 pos) -> u64 = string_find_char
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE4findEPKcmm(addr self, const char* s, u64 pos, u64 n) -> u64 = string_find
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE5rfindEcm(addr self, u8 ch, u64 pos) -> u64 = string_rfind_char
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE5rfindEPKcmm(addr self, const char* s, u64 pos, u64 n) -> u64 = string_rfind
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE13find_first_ofEPKcmm(addr self, const char* s, u64 pos, u64 n) -> u64 = string_find_first_of
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE12find_last_ofEPKcmm(addr self, const char* s, u64 pos, u64 n) -> u64 = string_find_last_of
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE17find_first_not_ofEPKcmm(addr self, const char* s, u64 pos, u64 n) -> u64 = string_find_first_not_of
+hook _ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE16find_last_not_ofEPKcmm(addr self, const char* s, u64 pos, u64 n) -> u64 = string_find_last_not_of

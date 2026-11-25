@@ -12,6 +12,7 @@
    later) models them: modules/SceNgsUser/SceNgs.cpp, ngs/src/ngs.cpp, scheduler.cpp, route.cpp, modules/player.cpp
    and codec/src/pcm.cpp (HE-ADPCM, from vgmstream's HEVAG decoder) */
 #include "vita/hle/hle.h"
+#include "vita/hle/hle.hook.h"
 #include "common/utilities/endian.h"
 #include "common/utilities/bits.h"
 #include <stdio.h>
@@ -114,8 +115,7 @@ struct VitaNgs {
     float sound[MOST_GRANULARITY * 2];
 };
 
-static uint32_t arg(VitaProcess* p, VitaThread* t, unsigned n) { return vita_arg(p, t, n); }
-static uint32_t ok(VitaProcess* p, VitaThread* t) {
+uint32_t vita_ngs_ok(VitaProcess* p, VitaThread* t) {
     (void)p, (void)t;
     return 0;
 }
@@ -211,26 +211,28 @@ static unsigned modules_of(const struct VitaNgs* n, const Voice* v) {
 
 /* ---- the system and its racks ---- */
 /* sceNgsSystemGetRequiredMemorySize(params, size*) */
-static uint32_t system_get_required_memory_size(VitaProcess* p, VitaThread* t) {
-    if (!arg(p, t, 1)) return SCE_NGS_ERROR_INVALID_PARAM;
-    vita_write32(p, arg(p, t, 1), 0x1000);
+uint32_t vita_ngs_system_get_required_memory_size(VitaProcess* p, VitaThread* t, uint32_t params, uint32_t size) {
+    (void)t, (void)params;
+    if (!size) return SCE_NGS_ERROR_INVALID_PARAM;
+    vita_write32(p, size, 0x1000);
     return 0;
 }
 /* sceNgsSystemInit(memory, size, SceNgsSystemInitParams*, handle*): the memory is the handle. The parameters: the most
    racks and voices, the granularity (frames an update, a multiple of 64 up to 512), the sample rate */
-static uint32_t system_init(VitaProcess* p, VitaThread* t) {
-    uint32_t params = arg(p, t, 2);
-    if (!arg(p, t, 0) || !arg(p, t, 3) || !params) return SCE_NGS_ERROR_INVALID_PARAM;
+uint32_t vita_ngs_system_init(VitaProcess* p, VitaThread* t, uint32_t memory, uint32_t size, uint32_t params,
+                              uint32_t handle) {
+    (void)t, (void)size;
+    if (!memory || !handle || !params) return SCE_NGS_ERROR_INVALID_PARAM;
     uint32_t granularity = vita_read32(p, params + 8), rate = vita_read32(p, params + 12);
     if (!granularity || granularity % 64 || granularity > MOST_GRANULARITY || !rate) return SCE_NGS_ERROR_INVALID_PARAM;
     struct VitaNgs* n = ngs(p);
     if (!n) return SCE_NGS_ERROR;
     memset(n, 0, sizeof *n);
     n->granularity = granularity, n->rate = rate;
-    vita_write32(p, arg(p, t, 3), arg(p, t, 0));
+    vita_write32(p, handle, memory);
     return 0;
 }
-static uint32_t system_release(VitaProcess* p, VitaThread* t) {
+uint32_t vita_ngs_system_release(VitaProcess* p, VitaThread* t) {
     (void)t;
     if (p->ngs && p->ngs->updating) return SCE_NGS_ERROR;
     if (p->ngs) memset(p->ngs, 0, sizeof *p->ngs);
@@ -238,8 +240,9 @@ static uint32_t system_release(VitaProcess* p, VitaThread* t) {
 }
 /* sceNgsRackGetRequiredMemorySize(system, SceNgsRackDescription*, size*): room for each voice the description names.
    The description: the voice definition, the voices, their channels, the patches an input and an output takes */
-static uint32_t rack_get_required_memory_size(VitaProcess* p, VitaThread* t) {
-    uint32_t description = arg(p, t, 1), out = arg(p, t, 2);
+uint32_t vita_ngs_rack_get_required_memory_size(VitaProcess* p, VitaThread* t, uint32_t system, uint32_t description,
+                                                uint32_t out) {
+    (void)t, (void)system;
     if (!description || !out) return SCE_NGS_ERROR_INVALID_PARAM;
     int32_t voices = (int32_t)vita_read32(p, description + 4);
     uint32_t kind;
@@ -249,8 +252,9 @@ static uint32_t rack_get_required_memory_size(VitaProcess* p, VitaThread* t) {
     return 0;
 }
 /* sceNgsRackInit(system, SceNgsBufferInfo*, description, rack*): its voices from the first free run of them */
-static uint32_t rack_init(VitaProcess* p, VitaThread* t) {
-    uint32_t buffer = arg(p, t, 1), description = arg(p, t, 2), out = arg(p, t, 3);
+uint32_t vita_ngs_rack_init(VitaProcess* p, VitaThread* t, uint32_t system, uint32_t buffer, uint32_t description,
+                            uint32_t out) {
+    (void)t, (void)system;
     struct VitaNgs* n = p->ngs;
     if (!n || !buffer || !description || !out) return SCE_NGS_ERROR_INVALID_PARAM;
     uint32_t rack = vita_read32(p, buffer), size = vita_read32(p, buffer + 4);
@@ -280,16 +284,16 @@ static uint32_t rack_init(VitaProcess* p, VitaThread* t) {
     vita_write32(p, out, rack);
     return 0;
 }
-static uint32_t rack_release(VitaProcess* p, VitaThread* t) {
-    uint32_t rack = arg(p, t, 0);
+uint32_t vita_ngs_rack_release(VitaProcess* p, VitaThread* t, uint32_t rack) {
+    (void)t;
     struct VitaNgs* n = p->ngs;
     for (unsigned i = 0; n && i < RACKS; ++i)
         if (n->racks[i].count && n->racks[i].address == rack) n->racks[i] = (Rack){0};
     return 0;
 }
 /* sceNgsRackGetVoiceHandle(rack, index, voice*) */
-static uint32_t rack_get_voice_handle(VitaProcess* p, VitaThread* t) {
-    uint32_t rack = arg(p, t, 0), index = arg(p, t, 1), out = arg(p, t, 2);
+uint32_t vita_ngs_rack_get_voice_handle(VitaProcess* p, VitaThread* t, uint32_t rack, uint32_t index, uint32_t out) {
+    (void)t;
     struct VitaNgs* n = p->ngs;
     if (!rack || !out) return SCE_NGS_ERROR_INVALID_PARAM;
     for (unsigned i = 0; n && i < RACKS; ++i) {
@@ -301,43 +305,43 @@ static uint32_t rack_get_voice_handle(VitaProcess* p, VitaThread* t) {
     }
     return SCE_NGS_ERROR_INVALID_PARAM;
 }
-static uint32_t master_buss(VitaProcess* p, VitaThread* t) {
+uint32_t vita_ngs_master_buss(VitaProcess* p, VitaThread* t) {
     (void)p, (void)t;
     return DEFINITIONS + DEF_MASTER * 4;
 }
-static uint32_t simple_voice(VitaProcess* p, VitaThread* t) {
+uint32_t vita_ngs_simple_voice(VitaProcess* p, VitaThread* t) {
     (void)p, (void)t;
     return DEFINITIONS + DEF_SIMPLE * 4;
 }
-static uint32_t reverb_buss(VitaProcess* p, VitaThread* t) {
+uint32_t vita_ngs_reverb_buss(VitaProcess* p, VitaThread* t) {
     (void)p, (void)t;
     return DEFINITIONS + DEF_REVERB * 4;
 }
-static uint32_t template1(VitaProcess* p, VitaThread* t) {
+uint32_t vita_ngs_template1(VitaProcess* p, VitaThread* t) {
     (void)p, (void)t;
     return DEFINITIONS + DEF_TEMPLATE1 * 4;
 }
-static uint32_t compressor_buss(VitaProcess* p, VitaThread* t) {
+uint32_t vita_ngs_compressor_buss(VitaProcess* p, VitaThread* t) {
     (void)p, (void)t;
     return DEFINITIONS + DEF_COMPRESSOR * 4;
 }
-static uint32_t sas_emu_voice(VitaProcess* p, VitaThread* t) {
+uint32_t vita_ngs_sas_emu_voice(VitaProcess* p, VitaThread* t) {
     (void)p, (void)t;
     return DEFINITIONS + DEF_SAS_EMULATION * 4;
 }
-static uint32_t mixer_buss(VitaProcess* p, VitaThread* t) {
+uint32_t vita_ngs_mixer_buss(VitaProcess* p, VitaThread* t) {
     (void)p, (void)t;
     return DEFINITIONS + DEF_MIXER * 4;
 }
-static uint32_t eq_buss(VitaProcess* p, VitaThread* t) {
+uint32_t vita_ngs_eq_buss(VitaProcess* p, VitaThread* t) {
     (void)p, (void)t;
     return DEFINITIONS + DEF_EQ * 4;
 }
-static uint32_t distortion_buss(VitaProcess* p, VitaThread* t) {
+uint32_t vita_ngs_distortion_buss(VitaProcess* p, VitaThread* t) {
     (void)p, (void)t;
     return DEFINITIONS + DEF_DISTORTION * 4;
 }
-static uint32_t simple_atrac9_voice(VitaProcess* p, VitaThread* t) {
+uint32_t vita_ngs_simple_atrac9_voice(VitaProcess* p, VitaThread* t) {
     (void)p, (void)t;
     return DEFINITIONS + DEF_SIMPLE_ATRAC9 * 4;
 }
@@ -346,31 +350,34 @@ static uint32_t simple_atrac9_voice(VitaProcess* p, VitaThread* t) {
 static uint32_t module_params(uint32_t voice, uint32_t module) { return voice + VOICE_PARAMS + module * MODULE_PARAMS; }
 /* sceNgsVoiceLockParams(voice, module, struct ID, SceNgsBufferInfo*): the module's room, its descriptor naming the
    ID */
-static uint32_t voice_lock_params(VitaProcess* p, VitaThread* t) {
-    uint32_t voice = arg(p, t, 0), module = arg(p, t, 1), out = arg(p, t, 3);
+uint32_t vita_ngs_voice_lock_params(VitaProcess* p, VitaThread* t, uint32_t voice, uint32_t module, uint32_t updates,
+                                    uint32_t out) {
+    (void)t;
     Voice* v = voice_of(p, voice);
     if (!v || !out || module >= modules_of(p->ngs, v)) return SCE_NGS_ERROR_INVALID_PARAM;
-    vita_write32(p, module_params(voice, module), arg(p, t, 2));
+    vita_write32(p, module_params(voice, module), updates);
     vita_write32(p, out, module_params(voice, module));
     vita_write32(p, out + 4, MODULE_PARAMS);
     return 0;
 }
 /* sceNgsVoiceSetModuleCallback(voice, module, callback, user data) */
-static uint32_t voice_set_module_callback(VitaProcess* p, VitaThread* t) {
-    uint32_t module = arg(p, t, 1), callback = arg(p, t, 2);
-    Voice* v = voice_of(p, arg(p, t, 0));
+uint32_t vita_ngs_voice_set_module_callback(VitaProcess* p, VitaThread* t, uint32_t voice, uint32_t module,
+                                            uint32_t callback, uint32_t data) {
+    (void)t;
+    Voice* v = voice_of(p, voice);
     if (!v || module >= modules_of(p->ngs, v) ||
         (callback && !vita_mapped(p, callback & ~1u, 2)))
         return SCE_NGS_ERROR_INVALID_PARAM;
     v->module_callback[module] = callback;
-    v->module_user_data[module] = arg(p, t, 3);
+    v->module_user_data[module] = data;
     return 0;
 }
 /* sceNgsVoiceSetParamsBlock(voice, block, size, error count*): records of a SceNgsModuleParamHeader (the module, its
    channel or -1) and the module's parameters, whose descriptor (an ID and their size) starts them, each into its
    module's room; the records that name no module, or too much for it, counted as errors */
-static uint32_t voice_set_params_block(VitaProcess* p, VitaThread* t) {
-    uint32_t voice = arg(p, t, 0), block = arg(p, t, 1), size = arg(p, t, 2), errors_out = arg(p, t, 3);
+uint32_t vita_ngs_voice_set_params_block(VitaProcess* p, VitaThread* t, uint32_t voice, uint32_t block, uint32_t size,
+                                         uint32_t errors_out) {
+    (void)t;
     Voice* v = voice_of(p, voice);
     if (!v || !block || !vita_mapped(p, block, size)) return SCE_NGS_ERROR_INVALID_PARAM;
     uint32_t errors = 0;
@@ -392,8 +399,8 @@ static uint32_t voice_set_params_block(VitaProcess* p, VitaThread* t) {
 
 /* ---- voices ---- */
 /* sceNgsVoicePlay(voice): a player starts at its start buffer and byte */
-static uint32_t voice_play(VitaProcess* p, VitaThread* t) {
-    uint32_t voice = arg(p, t, 0);
+uint32_t vita_ngs_voice_play(VitaProcess* p, VitaThread* t, uint32_t voice) {
+    (void)t;
     Voice* v = voice_of(p, voice);
     if (!v) return SCE_NGS_ERROR_INVALID_PARAM;
     if (v->state != AVAILABLE) return SCE_NGS_ERROR;
@@ -407,30 +414,33 @@ static uint32_t voice_play(VitaProcess* p, VitaThread* t) {
     memset(v->history, 0, sizeof v->history);
     return 0;
 }
-static uint32_t voice_pause(VitaProcess* p, VitaThread* t) {
-    Voice* v = voice_of(p, arg(p, t, 0));
+uint32_t vita_ngs_voice_pause(VitaProcess* p, VitaThread* t, uint32_t voice_id) {
+    (void)t;
+    Voice* v = voice_of(p, voice_id);
     if (!v) return SCE_NGS_ERROR_INVALID_PARAM;
     if (v->paused) return SCE_NGS_ERROR_PAUSED;
     v->paused = true;
     return 0;
 }
-static uint32_t voice_resume(VitaProcess* p, VitaThread* t) {
-    Voice* v = voice_of(p, arg(p, t, 0));
+uint32_t vita_ngs_voice_resume(VitaProcess* p, VitaThread* t, uint32_t voice_id) {
+    (void)t;
+    Voice* v = voice_of(p, voice_id);
     if (!v) return SCE_NGS_ERROR_INVALID_PARAM;
     v->paused = false;
     return 0;
 }
-static uint32_t voice_kill(VitaProcess* p, VitaThread* t) {
-    Voice* v = voice_of(p, arg(p, t, 0));
+uint32_t vita_ngs_voice_kill(VitaProcess* p, VitaThread* t, uint32_t voice_id) {
+    (void)t;
+    Voice* v = voice_of(p, voice_id);
     if (!v) return SCE_NGS_ERROR_INVALID_PARAM;
     v->state = AVAILABLE, v->paused = false;
     return 0;
 }
 /* sceNgsVoiceGetInfo(voice, SceNgsVoiceInfo*): its state (ACTIVE, PAUSED 0x20), its modules, inputs and outputs, the
    patches an output takes, the updates it ran in */
-static uint32_t voice_get_info(VitaProcess* p, VitaThread* t) {
-    uint32_t out = arg(p, t, 1);
-    Voice* v = voice_of(p, arg(p, t, 0));
+uint32_t vita_ngs_voice_get_info(VitaProcess* p, VitaThread* t, uint32_t voice, uint32_t out) {
+    (void)t;
+    Voice* v = voice_of(p, voice);
     if (!v || !out) return SCE_NGS_ERROR_INVALID_PARAM;
     uint32_t kind = p->ngs->racks[v->rack].kind;
     vita_write32(p, out, v->state | (v->paused ? 0x20u : 0));
@@ -443,9 +453,10 @@ static uint32_t voice_get_info(VitaProcess* p, VitaThread* t) {
 }
 /* sceNgsVoiceGetStateData(voice, module, memory, size): a player's SceNgsPlayerStates, a master buss's output (its
    16-bit stereo of the last update); zeros for the others */
-static uint32_t voice_get_state_data(VitaProcess* p, VitaThread* t) {
-    uint32_t module = arg(p, t, 1), memory = arg(p, t, 2), size = arg(p, t, 3);
-    Voice* v = voice_of(p, arg(p, t, 0));
+uint32_t vita_ngs_voice_get_state_data(VitaProcess* p, VitaThread* t, uint32_t voice, uint32_t module, uint32_t memory,
+                                       uint32_t size) {
+    (void)t;
+    Voice* v = voice_of(p, voice);
     if (!v || !memory || !vita_mapped(p, memory, size)) return SCE_NGS_ERROR_INVALID_PARAM;
     unsigned char* to = vita_ptr(p, memory);
     memset(to, 0, size);
@@ -460,8 +471,8 @@ static uint32_t voice_get_state_data(VitaProcess* p, VitaThread* t) {
 /* ---- patches ---- */
 /* sceNgsPatchCreateRouting(SceNgsPatchSetupInfo*, patch*): the source voice, its output and the patch's index there
    (-1: the first free), the destination voice and its input; the patch's volumes all zero */
-static uint32_t patch_create_routing(VitaProcess* p, VitaThread* t) {
-    uint32_t info = arg(p, t, 0), out = arg(p, t, 1);
+uint32_t vita_ngs_patch_create_routing(VitaProcess* p, VitaThread* t, uint32_t info, uint32_t out) {
+    (void)t;
     if (!info || !out || !vita_mapped(p, info, 20) || !vita_mapped(p, out, 4))
         return SCE_NGS_ERROR_INVALID_PARAM;
     uint32_t source = vita_read32(p, info), output = vita_read32(p, info + 4), index = vita_read32(p, info + 8);
@@ -480,8 +491,9 @@ static uint32_t patch_create_routing(VitaProcess* p, VitaThread* t) {
 /* sceNgsVoiceGetOutputPatch(voice, output, index, patch*): the handle of the patch the voice has at its output's index
    (the one sceNgsPatchCreateRouting wrote), or zero and PATCH_NOT_AVAIL for an index with none. The game's audio job
    thread asks this of each voice again and again until it has its patch */
-static uint32_t voice_get_output_patch(VitaProcess* p, VitaThread* t) {
-    uint32_t voice = arg(p, t, 0), output = arg(p, t, 1), index = arg(p, t, 2), out = arg(p, t, 3);
+uint32_t vita_ngs_voice_get_output_patch(VitaProcess* p, VitaThread* t, uint32_t voice, uint32_t output, uint32_t index,
+                                         uint32_t out) {
+    (void)t;
     Voice* v = voice_of(p, voice);
     if (!v || !out || !vita_mapped(p, out, 4)) return SCE_NGS_ERROR_INVALID_PARAM;
     uint32_t kind = p->ngs->racks[v->rack].kind;
@@ -494,9 +506,10 @@ static uint32_t voice_get_output_patch(VitaProcess* p, VitaThread* t) {
     return 0;
 }
 /* sceNgsPatchGetInfo(patch, audio properties*, delivery info*): both outputs are optional */
-static uint32_t patch_get_info(VitaProcess* p, VitaThread* t) {
-    PatchRef ref = patch_ref_of(p, arg(p, t, 0));
-    uint32_t properties = arg(p, t, 1), delivery = arg(p, t, 2);
+uint32_t vita_ngs_patch_get_info(VitaProcess* p, VitaThread* t, uint32_t patch, uint32_t properties,
+                                 uint32_t delivery) {
+    (void)t;
+    PatchRef ref = patch_ref_of(p, patch);
     if (!ref.patch || !ref.patch->used || !voice_of(p, ref.patch->destination) ||
         (properties && !vita_mapped(p, properties, 24)) || (delivery && !vita_mapped(p, delivery, 20)))
         return SCE_NGS_ERROR_INVALID_PARAM;
@@ -516,18 +529,19 @@ static uint32_t patch_get_info(VitaProcess* p, VitaThread* t) {
     }
     return 0;
 }
-static uint32_t patch_remove_routing(VitaProcess* p, VitaThread* t) {
-    PatchRef ref = patch_ref_of(p, arg(p, t, 0));
+uint32_t vita_ngs_patch_remove_routing(VitaProcess* p, VitaThread* t, uint32_t patch_ref_id) {
+    (void)t;
+    PatchRef ref = patch_ref_of(p, patch_ref_id);
     if (!ref.patch) return SCE_NGS_ERROR_INVALID_PARAM;
     ref.patch->used = false;
     return 0;
 }
 /* sceNgsVoicePatchSetVolumesMatrix(patch, SceNgsVolumeMatrix*): the volume each source channel gives each destination
    channel, [source][destination] */
-static uint32_t patch_set_volumes_matrix(VitaProcess* p, VitaThread* t) {
-    PatchRef ref = patch_ref_of(p, arg(p, t, 0));
+uint32_t vita_ngs_patch_set_volumes_matrix(VitaProcess* p, VitaThread* t, uint32_t patch_ref_id, uint32_t matrix) {
+    (void)t;
+    PatchRef ref = patch_ref_of(p, patch_ref_id);
     Patch* patch = ref.patch;
-    uint32_t matrix = arg(p, t, 1);
     if (!patch || !matrix || !vita_mapped(p, matrix, 16)) return SCE_NGS_ERROR_INVALID_PARAM;
     const unsigned char* m = vita_ptr(p, matrix);
     for (unsigned i = 0; i < 4; ++i) patch->matrix[i / 2][i % 2] = ld_float(m + i * 4);
@@ -822,7 +836,8 @@ static uint32_t system_update_continue(VitaProcess* p, VitaThread* t) {
     return 0;
 }
 /* sceNgsSystemUpdate(system): a granule of every voice playing, the sources before the busses they lead to */
-static uint32_t system_update(VitaProcess* p, VitaThread* t) {
+uint32_t vita_ngs_system_update(VitaProcess* p, VitaThread* t, uint32_t system) {
+    (void)system;
     struct VitaNgs* n = p->ngs;
     if (!n || !n->granularity || n->updating) return SCE_NGS_ERROR_INVALID_PARAM;
     if (++n->input_epoch == 0) {
@@ -834,42 +849,3 @@ static uint32_t system_update(VitaProcess* p, VitaThread* t) {
     n->update_voice_started = n->callback_end = false;
     return system_update_continue(p, t);
 }
-
-const VitaHle vita_hle_ngs[] = {
-    {0x6ce8b36fu, "sceNgsSystemGetRequiredMemorySize", system_get_required_memory_size},
-    {0xed14cf4au, "sceNgsSystemInit", system_init},
-    {0x4a25bebcu, "sceNgsSystemRelease", system_release},
-    {0x64d80013u, "sceNgsSystemSetFlags", ok},
-    {0x684f080cu, "sceNgsSystemUpdate", system_update},
-    {0x477318c0u, "sceNgsRackGetRequiredMemorySize", rack_get_required_memory_size},
-    {0x0a92e4ecu, "sceNgsRackInit", rack_init},
-    {0xfe1a98e9u, "sceNgsRackGetVoiceHandle", rack_get_voice_handle},
-    {0xdd5ca10bu, "sceNgsRackRelease", rack_release},
-    {0x0d5399cfu, "sceNgsVoiceDefGetSimpleVoice", simple_voice},
-    {0x79a121d1u, "sceNgsVoiceDefGetMasterBuss", master_buss},
-    {0x9dcf50f5u, "sceNgsVoiceDefGetReverbBuss", reverb_buss},
-    {0xe9b572b7u, "sceNgsVoiceDefGetTemplate1", template1},
-    {0x0e0acb68u, "sceNgsVoiceDefGetCompressorBuss", compressor_buss},
-    {0x1f51c2bau, "sceNgsVoiceDefGetSasEmuVoice", sas_emu_voice},
-    {0xe0ac8776u, "sceNgsVoiceDefGetMixerBuss", mixer_buss},
-    {0xf964120eu, "sceNgsVoiceDefGetEqBuss", eq_buss},
-    {0xaad90debu, "sceNgsVoiceDefGetDistortionBuss", distortion_buss},
-    {0x45cf2a73u, "sceNgsVoiceDefGetSimpleAtrac9Voice", simple_atrac9_voice},
-    {0xab6bef8fu, "sceNgsVoiceLockParams", voice_lock_params},
-    {0x24e909a8u, "sceNgsVoiceSetModuleCallback", voice_set_module_callback},
-    {0x3d46d8a7u, "sceNgsVoiceUnlockParams", ok},
-    {0xfb8174b1u, "sceNgsVoiceSetParamsBlock", voice_set_params_block},
-    {0xc9b8c0b4u, "sceNgsVoiceGetStateData", voice_get_state_data},
-    {0x5551410du, "sceNgsVoiceGetInfo", voice_get_info},
-    {0xfa0a0f34u, "sceNgsVoicePlay", voice_play},
-    {0xd7786e99u, "sceNgsVoicePause", voice_pause},
-    {0x54cfb981u, "sceNgsVoiceResume", voice_resume},
-    {0x0e291aadu, "sceNgsVoiceKill", voice_kill},
-    {0x9ab87e71u, "sceNgsVoiceBypassModule", ok},
-    {0xd668b49cu, "sceNgsPatchCreateRouting", patch_create_routing},
-    {0x98703dbcu, "sceNgsPatchGetInfo", patch_get_info},
-    {0x01a52e3au, "sceNgsVoiceGetOutputPatch", voice_get_output_patch},
-    {0xd0c9ae5au, "sceNgsPatchRemoveRouting", patch_remove_routing},
-    {0xa0f5402du, "sceNgsVoicePatchSetVolumesMatrix", patch_set_volumes_matrix},
-    {0, NULL, NULL},
-};

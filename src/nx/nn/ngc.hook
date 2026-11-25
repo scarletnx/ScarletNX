@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 #
-# The native nn::ngc (ngc.c), for tools/hookgen, in the language of hle/hook/hooks.hook.
+# The native nn::ngc (ngc.c), for tools/hookgen, in the language of nn/hooks.hook.
 # nn::ngc::ProfanityFilter with no ngc:u session and no word lists. From SDK 16 these are every function that reads
 # the session or the heap that Initialize makes; the setters and the other constructors run their own code. Read in
 # SDK 16.2, 18.3 and 20.5, whose Initialize lays the object out alike. Through SDK 13 the filter works in its own

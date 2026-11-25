@@ -35,6 +35,10 @@ For each run, the script prints one line with these items:
 The script gives the options that it does not know (`--fps_limit=0`, `-v`...) to the runtime. Look at the picture
 with the Read tool. A frame that "rendered" can still be black or garbage, and only the picture shows it.
 
+For a program of a collection in a test copy, copy the base and update `.ini` files from the config folder.
+The `.ini` files give the paths of the dumps.
+Give `--keys` when the test copy cannot find the keys in the installed data folder.
+
 For CPU time per frame, read process-wide CPU counters at each frame report.
 Use the same reported-frame delta for the denominator.
 Do not combine counters and frames from different time windows.

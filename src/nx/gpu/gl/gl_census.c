@@ -19,7 +19,7 @@
 #include "common/platform/thread.h"
 #include "common/utilities/bits.h"
 #include "common/utilities/common.h"
-#include "nx/hle/hook/hook.h"
+#include "nx/nn/hook.h"
 #include "nx/hle/kernel/kernel.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/arm.h"

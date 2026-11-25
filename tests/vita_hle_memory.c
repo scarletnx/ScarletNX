@@ -56,7 +56,7 @@ static bool save_file_exists(VitaProcess* p, const char* name) {
 /* SceAppUtil's save data (vita/hle/misc.c): a slot's parameters, the slot and the files given to DataSave, each
    file's buffer and the place for the KiB it needs */
 static void save_data(VitaProcess* p, VitaThread* t, uint32_t mem, uint32_t end) {
-    const VitaHle* misc = vita_hle_misc;
+    const VitaHle* misc = vita_hle_table;
     uint32_t param = mem, slot = mem + 0x400, files = mem + 0x440, path = mem + 0x500, data = mem + 0x600,
              required = mem + 0x700;
     memset(vita_ptr(p, param), 0, SLOT_PARAM_SIZE);
@@ -117,7 +117,7 @@ static void save_data(VitaProcess* p, VitaThread* t, uint32_t mem, uint32_t end)
 /* sceNet (vita/hle/net.c): a socket's address read or written, a datagram sent from or received into the game's
    memory, the epoll events, sceNetCtl's and NP's out parameters */
 static void net(VitaProcess* p, VitaThread* t, uint32_t mem, uint32_t end) {
-    const VitaHle* n = vita_hle_net;
+    const VitaHle* n = vita_hle_table;
     uint32_t to = mem + 0x1000, from = mem + 0x1010, length = mem + 0x1020, value = mem + 0x1030, data = mem + 0x1100,
              got = mem + 0x1200, event = mem + 0x1300, events = mem + 0x1400, id = mem + 0x1500;
     uint32_t receiver = CALL(n, "sceNetSocket", 0, 2, 2, 0), sender = CALL(n, "sceNetSocket", 0, 2, 2, 0);
@@ -175,7 +175,7 @@ static void net(VitaProcess* p, VitaThread* t, uint32_t mem, uint32_t end) {
 }
 
 static void ngs_template1(VitaProcess* p, VitaThread* t, uint32_t mem) {
-    const VitaHle* n = vita_hle_ngs;
+    const VitaHle* n = vita_hle_table;
     uint32_t system = mem + 0x2000, params = mem + 0x2100, description = mem + 0x2200;
     uint32_t required = mem + 0x2300, buffer_info = mem + 0x2400, rack_out = mem + 0x2500;
     uint32_t patch_info = mem + 0x2600, patch_out = mem + 0x2700, voice_info = mem + 0x2800;
@@ -259,7 +259,7 @@ static void ngs_template1(VitaProcess* p, VitaThread* t, uint32_t mem) {
 }
 
 static void ngs_sparse_input_clear(VitaProcess* p, VitaThread* t, uint32_t mem) {
-    const VitaHle* n = vita_hle_ngs;
+    const VitaHle* n = vita_hle_table;
     uint32_t system = mem + 0x2000, params = mem + 0x2100, description = mem + 0x2200;
     uint32_t buffer_info = mem + 0x2300, rack_out = mem + 0x2310, voice_out = mem + 0x2320;
     uint32_t patch_info = mem + 0x2400, patch_out = mem + 0x2420, matrix = mem + 0x2440;
@@ -334,7 +334,7 @@ static void ngs_sparse_input_clear(VitaProcess* p, VitaThread* t, uint32_t mem) 
    a System Update that does not crash with no decoder behind the Atrac9 voice: it is silent (no samples out) rather
    than played, and the two busses pass through what little (nothing, here) reaches them */
 static void ngs_atrac9_and_extra_busses(VitaProcess* p, VitaThread* t, uint32_t mem) {
-    const VitaHle* n = vita_hle_ngs;
+    const VitaHle* n = vita_hle_table;
     uint32_t system = mem + 0x2000, params = mem + 0x2100, description = mem + 0x2200;
     uint32_t buffer_info = mem + 0x2300, rack_out = mem + 0x2310, voice_out = mem + 0x2320;
     uint32_t patch_info = mem + 0x2400, patch_out = mem + 0x2420, matrix = mem + 0x2440;
@@ -421,7 +421,7 @@ static void ngs_atrac9_and_extra_busses(VitaProcess* p, VitaThread* t, uint32_t 
 }
 
 static void gxm_program_metadata(VitaProcess* p, VitaThread* t, uint32_t mem) {
-    const VitaHle* gxm = vita_hle_gxm;
+    const VitaHle* gxm = vita_hle_table;
     uint32_t parameter = mem + 0x8000, patcher_out = mem + 0x8020, program = mem + 0x8040,
              fragment_out = mem + 0x8060;
     unsigned char* bytes = vita_ptr(p, parameter);
@@ -440,7 +440,7 @@ static void gxm_program_metadata(VitaProcess* p, VitaThread* t, uint32_t mem) {
     assert(slot < GXM_PROGRAMS && p->gxm->fragment[slot].references == 2);
 }
 static void gxm_texture_transfers(VitaProcess* p, VitaThread* t, uint32_t mem) {
-    const VitaHle* gxm = vita_hle_gxm;
+    const VitaHle* gxm = vita_hle_table;
     uint32_t texture = mem + 0x8080;
     assert(CALL(gxm, "sceGxmTextureInitCube", texture, mem + 0x9000, 0, 64, 32, 1) == 0);
     GxmTexture cube = {{vita_read32(p, texture), vita_read32(p, texture + 4), vita_read32(p, texture + 8),
@@ -504,7 +504,7 @@ static void shared_page_zero(VitaProcess* p) {
    the call may move are the product's, which no buffer holds, not what 32 bits keep of it, which this one does. The
    stream's own block is made first, so the buffer is the last and the page past its end is no one's */
 static void libc_stream_sizes(VitaProcess* p, VitaThread* t) {
-    const VitaHle* libc = vita_hle_libc;
+    const VitaHle* libc = vita_hle_table;
     static unsigned char half[0x10000];
     memset(half, 0x5a, sizeof half);
     host_file(p, "two-buffers.bin", half, sizeof half, 2);
@@ -525,18 +525,18 @@ static void libc_stream_sizes(VitaProcess* p, VitaThread* t) {
 /* the calls that fill a structure of the game's answer an error for a pointer to no memory of its own, and write
    nothing: a semaphore's and the free memory's, a module's, a stat's, the controller's and the touch panel's */
 static void unmapped_outputs(VitaProcess* p, VitaThread* t, uint32_t mem) {
-    const VitaHle* kernel = vita_hle_kernel;
+    const VitaHle* kernel = vita_hle_table;
     strcpy(vita_ptr(p, mem), "sema");
     uint32_t sema = CALL(kernel, "sceKernelCreateSema", mem, 0, 1, 10, 0);
     assert(sema && !(sema & 0x80000000u));
     assert(CALL(kernel, "sceKernelGetSemaInfo", sema, UNMAPPED, 0x3c) == SCE_KERNEL_ERROR_INVALID_ARGUMENT);
     assert(CALL(kernel, "sceKernelGetSemaInfo", sema, mem + 0x100, 0x3c) == 0 && vita_read32(p, mem + 0x100) == 0x3c);
     assert(CALL(kernel, "sceKernelGetFreeMemorySize", UNMAPPED) == SCE_KERNEL_ERROR_INVALID_ARGUMENT);
-    assert(CALL(vita_hle_ctrl, "sceCtrlPeekBufferPositive", 0, UNMAPPED, 1) == 0x80340001u);
-    assert(CALL(vita_hle_ctrl, "sceCtrlPeekBufferPositive", 0, mem + 0x200, 1) == 1);
+    assert(CALL(vita_hle_table, "sceCtrlPeekBufferPositive", 0, UNMAPPED, 1) == 0x80340001u);
+    assert(CALL(vita_hle_table, "sceCtrlPeekBufferPositive", 0, mem + 0x200, 1) == 1);
     strcpy(vita_ptr(p, mem), "ux0:two-buffers.bin");
-    assert(CALL(vita_hle_io, "sceIoGetstat", mem, UNMAPPED) & 0x80000000u);
-    assert(CALL(vita_hle_io, "sceIoGetstat", mem, mem + 0x300) == 0);
+    assert(CALL(vita_hle_table, "sceIoGetstat", mem, UNMAPPED) & 0x80000000u);
+    assert(CALL(vita_hle_table, "sceIoGetstat", mem, mem + 0x300) == 0);
     /* a semaphore's count and a signal are any 32 bits: a signal past the most, or past what a count holds, is the
        overflow, and the count stays */
     assert(CALL(kernel, "sceKernelSignalSema", sema, 0x7fffffff) == SCE_KERNEL_ERROR_SEMA_OVF);
@@ -547,12 +547,12 @@ static void unmapped_outputs(VitaProcess* p, VitaThread* t, uint32_t mem) {
     assert(CALL(kernel, "sceKernelGetSemaInfo", free_run, mem + 0x100, 0x3c) == 0 && vita_read32(p, mem + 0x12c) == 2);
     /* a path's parts are parted by a backslash too where the host parts them so: ".." between two names no file */
     strcpy(vita_ptr(p, mem), "ux0:..\\..\\outside.txt"), strcpy(vita_ptr(p, mem + 0x40), "wb");
-    assert(CALL(vita_hle_libc, "fopen", mem, mem + 0x40) == 0);
+    assert(CALL(vita_hle_table, "fopen", mem, mem + 0x40) == 0);
 }
 /* a field's width from an argument is any 32 bits, and its digits any number: the widest field is 4096, to the left
    for a negative width, the most negative one too */
 static void libc_field_widths(VitaProcess* p, VitaThread* t, uint32_t mem) {
-    const VitaHle* libc = vita_hle_libc;
+    const VitaHle* libc = vita_hle_table;
     uint32_t out = words_block(p);
     char* text = vita_ptr(p, out);
     strcpy(vita_ptr(p, mem), "%*d");
@@ -565,7 +565,7 @@ static void libc_field_widths(VitaProcess* p, VitaThread* t, uint32_t mem) {
    and the file's (30 bytes each: a hash, the first block, the size and the offset), their blocks' sizes, then the
    manifest, which is the file's name, and the file */
 static void fios_archive_unmount(VitaProcess* p, VitaThread* t) {
-    const VitaHle* io = vita_hle_io;
+    const VitaHle* io = vita_hle_table;
     static const unsigned char data[16] = "archived bytes.";
     unsigned char psarc[96 + 8 + 16] = "PSAR\0\1\0\4zlib";
     psarc[15] = 96, psarc[19] = 30, psarc[23] = 2, psarc[25] = 1;  /* the tables' end, an entry, two, 64 KiB blocks */

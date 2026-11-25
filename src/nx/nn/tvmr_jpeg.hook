@@ -2,7 +2,7 @@
 # Copyright 2026 the ScarletNX contributors
 #
 # The movie library's native JPEG decoder and encoder (tvmr_jpeg.c), for tools/hookgen, in the language of
-# hle/hook/hooks.hook. The TVMRJPEG functions, which drive NVJPG on the console, with FFmpeg: the decoder's and the
+# nn/hooks.hook. The TVMRJPEG functions, which drive NVJPG on the console, with FFmpeg: the decoder's and the
 # encoder's every function the library's NvMMLite image block calls, and the ones beside them that would read the
 # SDK's own decoder or encoder object (Resize, FeedFrameQuant, GetBitsEx). TVMRJPEGEncSupportedLayout reads a global
 # of the library and stays its own code.

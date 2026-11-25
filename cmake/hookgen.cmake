@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 # hookgen (tools/hookgen/hookgen.c) generates the hooks' handler declarations, adapters and table from
-# src/nx/hle/hook/hooks.hook. It runs during the build, so a cross build also builds it for the machine doing the
+# src/nx/nn/hooks.hook. It runs during the build, so a cross build also builds it for the machine doing the
 # build, with that machine's C compiler (SNX_HOST_CC), as svcgen.cmake does for svcgen
 include_guard(GLOBAL)
 if(CMAKE_CROSSCOMPILING)
@@ -44,19 +44,20 @@ function(snx_hook_patches var)
 endfunction()
 
 # snx_hook_sdk(<var>): the SDK functions that the runtime answers natively, src/nx/nn/*.hook in name order, one
-# spec for each SDK library whose handlers are the .c files beside them (fs.hook, fs.c). A new file reconfigures
-# the build
+# spec for each SDK library whose handlers are the .c files beside them (fs.hook, fs.c). hooks.hook, beside them, is
+# left out: it is the first spec, ahead of these. A new file reconfigures the build
 function(snx_hook_sdk var)
     file(GLOB found CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/src/nx/nn/*.hook")
+    list(REMOVE_ITEM found "${PROJECT_SOURCE_DIR}/src/nx/nn/hooks.hook")
     list(SORT found)
     set(${var} ${found} PARENT_SCOPE)
 endfunction()
 
 # snx_hookgen(<target> [SPEC <file>...] [PREFIX <name>] [NAME <path>] [A32 | A32_MARKED]): generates NAME.h (the handlers' declarations,
 # and the hooked functions' PFN...PROC types for a spec with an include line, which hookgen finds under src/) and
-# NAME.inc (the adapters and the table, which hle/hook/hook.c includes for the hooks) into the build folder and
-# gives <target> their include root. SPEC is src/nx/hle/hook/hooks.hook, the native SDK's (src/nx/nn/*.hook,
-# snx_hook_sdk) and the game patches' address hooks (src/nx/patches/*.hook, snx_hook_patches) unless a test names its own, NAME is hle/hook/hooks.hook, and PREFIX (hook)
+# NAME.inc (the adapters and the table, which nn/hook.c includes for the hooks) into the build folder and
+# gives <target> their include root. SPEC is src/nx/nn/hooks.hook, the native SDK's (src/nx/nn/*.hook,
+# snx_hook_sdk) and the game patches' address hooks (src/nx/patches/*.hook, snx_hook_patches) unless a test names its own, NAME is nn/hooks.hook, and PREFIX (hook)
 # names the tables: gpu/nvn/nvn.hook, the NVN functions the runtime implements, is a second spec with its own. A32 adds
 # an adapter for a 32-bit program to every hook (hookgen --a32), A32_MARKED a 32-bit program's own table, of the hooks
 # declared a32 and of those declared for it alone (hookgen --a32-marked)
@@ -70,7 +71,7 @@ function(snx_hookgen target)
     endif()
     snx_hook_patches(patches)
     snx_hook_sdk(sdk)
-    set(spec "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook" ${sdk} ${patches})
+    set(spec "${PROJECT_SOURCE_DIR}/src/nx/nn/hooks.hook" ${sdk} ${patches})
     if(arg_SPEC)
         set(spec ${arg_SPEC})
     endif()
@@ -78,7 +79,7 @@ function(snx_hookgen target)
     if(arg_PREFIX)
         set(prefix "${arg_PREFIX}")
     endif()
-    set(name hle/hook/hooks.hook)
+    set(name nn/hooks.hook)
     if(arg_NAME)
         set(name "${arg_NAME}")
     endif()
@@ -96,13 +97,13 @@ endfunction()
 
 # snx_hook_routes(<target> [SPECS <file>...]): generates nx/loader/hook_routes.inc, the symbols that the specs name
 # (hookgen --routes), which nx/loader/hook_routes.c includes, and gives <target> its include root. The specs are
-# hle/hook/hooks.hook, the native SDK's, gpu/nvn/nvn.hook and the game patches unless a test names its own
+# nn/hooks.hook, the native SDK's, gpu/nvn/nvn.hook, gpu/gvk/gvk.hook and the game patches, unless a test names its own
 function(snx_hook_routes target)
     cmake_parse_arguments(PARSE_ARGV 1 arg "" "" "SPECS")
     snx_hook_patches(patches)
     snx_hook_sdk(sdk)
-    set(specs "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook" ${sdk} "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook"
-              "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl.hook" ${patches})
+    set(specs "${PROJECT_SOURCE_DIR}/src/nx/nn/hooks.hook" ${sdk} "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn.hook"
+              "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl.hook" "${PROJECT_SOURCE_DIR}/src/nx/gpu/gvk/gvk.hook" ${patches})
     if(arg_SPECS)
         set(specs ${arg_SPECS})
     endif()
@@ -114,4 +115,35 @@ function(snx_hook_routes target)
         COMMENT "Generating nx/loader/hook_routes.inc" VERBATIM)
     target_sources(${target} PRIVATE "${out}/nx/loader/hook_routes.inc")
     target_include_directories(${target} PRIVATE "${out}")
+endfunction()
+
+# snx_vita_hookgen(<target> [SPEC <file>...] [PREFIX <name>] [NAME <path>]): the Vita's NID hooks (hookgen --vita),
+# NAME.h (the handlers' declarations) and NAME.inc (the adapters and <prefix>_table, which vita/hle/hle.c includes)
+# into the build folder, with <target> given their include root. SPEC is src/vita/hle/*.hook in name order, one spec
+# for each system library whose handlers are the .c files beside them, unless a test names its own; NAME is
+# vita/hle/hle.hook and PREFIX vita_hle. A new file reconfigures the build
+function(snx_vita_hookgen target)
+    cmake_parse_arguments(PARSE_ARGV 1 arg "" "PREFIX;NAME" "SPEC")
+    file(GLOB spec CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/src/vita/hle/*.hook")
+    list(SORT spec)
+    if(arg_SPEC)
+        set(spec ${arg_SPEC})
+    endif()
+    set(prefix vita_hle)
+    if(arg_PREFIX)
+        set(prefix "${arg_PREFIX}")
+    endif()
+    set(name vita/hle/hle.hook)
+    if(arg_NAME)
+        set(name "${arg_NAME}")
+    endif()
+    get_filename_component(dir "${name}" DIRECTORY)
+    set(out "${CMAKE_CURRENT_BINARY_DIR}/hookgen/${target}")
+    add_custom_command(OUTPUT "${out}/${name}.h" "${out}/${name}.inc"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${out}/${dir}"
+        COMMAND snx-hookgen --vita --prefix "${prefix}" --header "${out}/${name}.h" --out "${out}/${name}.inc" ${spec}
+        DEPENDS snx-hookgen ${spec}
+        COMMENT "Generating ${name}" VERBATIM)
+    target_sources(${target} PRIVATE "${out}/${name}.h" "${out}/${name}.inc")
+    target_include_directories(${target} PUBLIC "${out}")
 endfunction()

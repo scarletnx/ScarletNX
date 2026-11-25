@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+#
+# The Vita's imports that trophy.c answers, by NID, for tools/hookgen --vita.
+# SceNpTrophy: the game's trophies, the console's own (no network). A context is a game's trophy set, its
+# communication ID's: what it holds comes from the trophy pack the game ships, app0:sce_sys/trophy/<ID>_<NN>/TROPHY.TRP
+# (the update's over it), whose TROPCONF.SFM lists each trophy (its id, its grade, platinum, gold, silver or bronze).
+# What the player unlocked is kept in the memory card, ux0:user/00/trophy/<ID>_<NN>/unlocked.bin (the game folder's
+# ux0/): the 128 trophies' flags, the runtime's own record. Unlocking the last trophy but the platinum unlocks the
+# platinum too, which the game is told. Each unlock is logged. Handles (for the console's asynchronous calls, which
+# are synchronous here) are numbers. Error codes and the unlock rules as Vita3K (GPL-2.0-or-later,
+# modules/SceNpTrophy/SceNpTrophy.cpp) has them
+family trophy
+[0x34516838] hook sceNpTrophyInit(u32 options) -> u32 = vita_trophy_init
+[0xbfe0f28f] hook sceNpTrophyTerm() -> u32 = vita_trophy_term
+[0xc49fd33f] hook sceNpTrophyCreateContext(addr out, addr commid) -> u32 = vita_trophy_create_context
+[0x56f5cba5] hook sceNpTrophyDestroyContext(u32 context_id) -> u32 = vita_trophy_destroy_context
+[0x4ebc6977] hook sceNpTrophyCreateHandle(addr out) -> u32 = vita_trophy_create_handle
+[0xff142071] hook sceNpTrophyDestroyHandle(u32 handle) -> u32 = vita_trophy_destroy_handle
+[0xc8d2a4de] hook sceNpTrophyGetTrophyUnlockState(u32 context, u32 handle, addr flags, addr count) -> u32 = vita_trophy_get_unlock_state
+[0xb397aa24] hook sceNpTrophyUnlockTrophy(u32 context, u32 handle, u32 id, addr out) -> u32 = vita_trophy_unlock_trophy

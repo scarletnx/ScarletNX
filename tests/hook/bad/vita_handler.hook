@@ -1,0 +1,3 @@
+# --vita: no handler
+family f
+[0x1] hook f()

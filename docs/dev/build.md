@@ -27,10 +27,8 @@ Run from checkout root. [Extract/AOT/run](../user/usage.md) · [Tests/diagnostic
 - **Linux / FreeBSD:** Clang (CI: 23; FreeBSD's system Clang also works), LLVM's development files
   (`llvm-config`, required by the recompiler), CMake ≥3.28, Ninja, POSIX shell, GNU make (`gmake` on FreeBSD),
   NASM on x86-64, Perl, Python 3 (the menu's languages, SPIRV-Tools' build), Git, pkg-config, `patch` and meson
-  (dav1d's build). On x86-64 also `pdftotext` (poppler's), which the x86-64 back end's instruction selection is derived
-  from the Intel SDM with: the configure stops without it, or with `-DSNX_SAIL_X64=OFF` LLVM makes every function.
-  Use a system SDL3 development package, or X11/Wayland and audio development libraries for the bundled
-  SDL3 build.
+  (dav1d's build). Use a system SDL3 development package, or X11/Wayland and audio development libraries for the
+  bundled SDL3 build.
 - **macOS:** Apple silicon, macOS 13 or newer, Xcode (its Clang and SDKs), CMake ≥3.28, Ninja, meson, Python 3 and
   Git.
   LLVM's libraries come from `scripts/apple-llvm.sh` or Homebrew ([steps](#macos)).
@@ -70,7 +68,7 @@ system include; Fedora lists it below.
 
 ```sh
 sudo apt update
-sudo apt install build-essential git cmake ninja-build meson clang llvm-dev nasm poppler-utils pkg-config python3 \
+sudo apt install build-essential git cmake ninja-build meson clang llvm-dev nasm pkg-config python3 \
   libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev \
   libasound2-dev libpulse-dev libpipewire-0.3-dev
 ```
@@ -104,7 +102,7 @@ Vulkan-capable NVIDIA driver.
 ### Fedora
 
 ```sh
-sudo dnf install clang cmake ninja-build meson nasm poppler-utils make perl git pkgconf-pkg-config patch llvm-devel python3 \
+sudo dnf install clang cmake ninja-build meson nasm make perl git pkgconf-pkg-config patch llvm-devel python3 \
   libX11-devel libXext-devel libXrandr-devel libXcursor-devel libXi-devel libXfixes-devel \
   libXScrnSaver-devel libXtst-devel alsa-lib-devel pulseaudio-libs-devel pipewire-devel
 ```
@@ -129,7 +127,7 @@ sudo dnf install wayland-devel libxkbcommon-devel wayland-protocols-devel libdec
 ### Arch Linux
 
 ```sh
-sudo pacman -Syu --needed base-devel git cmake ninja meson clang llvm nasm perl pkgconf poppler python sdl3
+sudo pacman -Syu --needed base-devel git cmake ninja meson clang llvm nasm perl pkgconf python sdl3
 ```
 
 ### FreeBSD
@@ -138,7 +136,7 @@ FreeBSD provides Clang in the base system. Install the remaining tools, the SDL3
 HIDAPI loads at run time to read controllers (an Xbox pad is only read that way):
 
 ```sh
-sudo pkg install git cmake ninja meson gmake nasm perl5 pkgconf poppler-utils python3 sdl3 llvm libusb glslang
+sudo pkg install git cmake ninja meson gmake nasm perl5 pkgconf python3 sdl3 llvm libusb glslang
 ```
 
 The build uses that `sdl3` package by default (`SNX_SYSTEM_SDL3`, see [SDL3 troubleshooting](#sdl3-troubleshooting));
@@ -301,15 +299,13 @@ runtime must not mix with another LLVM build.
      mingw-w64-clang-x86_64-clang mingw-w64-clang-x86_64-llvm mingw-w64-clang-x86_64-lld \
      mingw-w64-clang-x86_64-cmake mingw-w64-clang-x86_64-ninja mingw-w64-clang-x86_64-nasm \
      mingw-w64-clang-x86_64-meson mingw-w64-clang-x86_64-pkgconf mingw-w64-clang-x86_64-python \
-     mingw-w64-clang-x86_64-glslang mingw-w64-clang-x86_64-poppler
+     mingw-w64-clang-x86_64-glslang
    ```
 
-   Python builds the menu's languages and runs SPIRV-Tools' build, which optimizes and validates the shaders; poppler
-   has `pdftotext`, which the x86-64 back end's instruction selection is derived from the Intel SDM with. CI also
+   Python builds the menu's languages and runs SPIRV-Tools' build, which optimizes and validates the shaders. CI also
    installs ccache, which is optional here, as sccache is. On Windows on Arm, open the **MSYS2 CLANGARM64** shell
-   instead and install the same packages but poppler with `mingw-w64-clang-aarch64-` in place of
-   `mingw-w64-clang-x86_64-`, as the job's AArch64 leg does; the steps below are the same there, and its DLLs are in
-   `/clangarm64/bin`.
+   instead and install the same packages with `mingw-w64-clang-aarch64-` in place of `mingw-w64-clang-x86_64-`, as the
+   job's AArch64 leg does; the steps below are the same there, and its DLLs are in `/clangarm64/bin`.
 3. Clone to a path without spaces:
 
    ```sh
@@ -498,7 +494,8 @@ cmake --preset default -B build -DSNX_FFMPEG_ASM=OFF && cmake --build build
 - `-DSNX_RECOMPILER_SHARED=ON`, `-DSNX_RECOMPILER_INSTALL=ON`: also build the recompiler as a shared library, and
   install the library, see [Library](library.md) (defaults OFF and the value of `SNX_TOOLS_ONLY`).
 - `-DSNX_SAIL_X64=OFF`: build without the x86-64 back end, and LLVM makes every function. The default is ON on x86-64
-  (not Android), where it needs `pdftotext` and the Intel SDM (downloaded, or `-DSNX_SDM_PDF=`).
+  (not Android). Its instruction selection is in the tree (`tools/sailgen/sdm/x64_isel.inc`,
+  [sailgen](../../tools/sailgen/README.md#the-x86-64-back-end)).
 - `-DBUILD_TESTING=ON`: build the tests, which the `default` and `tracy` presets leave out.
 - `-DSNX_BUILD_TESTING=OFF`: leave the tests out whatever `BUILD_TESTING` says. ON by default when ScarletNX is the
   top-level project, OFF when another project adds it with CPM or `add_subdirectory` ([Library](library.md)).
@@ -517,6 +514,10 @@ it:
   ([src/common/online](../../src/common/online/README.md)).
 - `-DSNX_TEST_EDENPROBE=/path/to/edenprobe.nro`: add `edenprobe_vk_memory_1` and `edenprobe_vk_memory_2`, which run
   edenprobe as CI does against its baseline, with guest buffers copied and read in place (docs/dev/edenprobe.md).
+- `-DSNX_TEST_SDM=ON`: download the Intel SDM into `CPM_SOURCE_CACHE` once and have `sailgen_sdm_isel` make the x86-64
+  back end's instruction selection again from it, which must be the tree's (needs `pdftotext`, poppler's). The test is
+  skipped without the PDF, which `-DSNX_SDM_PDF=` also names. CI's Linux x86-64 job runs it on the nightly and on a pull
+  request that changes `tools/sailgen`.
 - `-DSNX_TEST_VP9_VECTORS=ON`: add the `nvdec_vp9_*` tests, which run NVDEC's VP9 jobs on libvpx's test vectors;
   configure downloads the 32 files from the WebM project into `CPM_SOURCE_CACHE` once. CI's Linux, ASan, Windows and
   macOS jobs run them.
@@ -527,6 +528,20 @@ it:
   Linux host.
 - `-DSNX_TEST_ARM_AOT=ON`, `-DSNX_TEST_ARM_DIFF=ON`: the 3DS ARM11 witnesses and the A32 unicorn comparison, see
   [3DS](../platforms/3ds/README.md).
+
+With Unicorn (its header and library, found or given with `-DSNX_UNICORN_INCLUDE_DIR` and `-DSNX_UNICORN_LIBRARY`; Python's
+wheel of unicorn 2.1.4 has both, in its `include` and `lib/libunicorn.so.2`), the tests labelled `unicorn` run the code
+that the native back ends make for the other machines against LLVM's (`ctest -L unicorn`, `ctest -L rv64` for one machine).
+CI's Linux x86-64 job runs them in every push, nightly and run by hand, and in a pull request that changes what they test
+(`scripts/recompiler-changes.py`), and fails where a machine ran none (`scripts/unicorn-tests.py`). PowerPC64's are
+skipped: Unicorn 2.1.4 as it is released does not hold the MSR of a 64-bit PowerPC.
+
+The tests labelled `census` (`ctest -L census -V`) recompile five whole programs that they make: a Switch game of a word of
+each A64 instruction, the same with a Switch 2's NPDM, an NRO of it, a 32-bit Switch game of each A32 and Thumb
+instruction, and a 3DS game of the ARM11's. Each prints how many of its functions or blocks this machine's native back
+end made, and fails where any was left to LLVM, naming its address and its word. On a machine with no native back end
+they are skipped, saying so. CI's Linux, Windows and macOS jobs and its cross builds print the five counts, and fail
+where one is missing (`scripts/recompile-census.py`).
 
 ```sh
 # Build without the GUI launcher; SDL3 remains required by the runtime:

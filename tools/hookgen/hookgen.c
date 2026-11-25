@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* hookgen: generates the runtime's hooks from their declarations (src/nx/hle/hook/hooks.hook). A hook replaces a
+/* hookgen: generates the runtime's hooks from their declarations (src/nx/nn/hooks.hook). A hook replaces a
    function the game exports with a handler of the runtime's, found by the function's symbol as the game's dynamic
    symbol table spells it: a C++ function by its mangled name (_ZN2nn2os...), never parsed or demangled. A
    declaration gives the function's arguments and result as C sees them (a C++ method's this is its first argument),
@@ -70,7 +70,7 @@
    integer as the <stdint.h> type of its guest size, an addr as uint64_t, a pointer as its host pointer). Nothing
    calls through these types: a guest function runs at a guest address. They say what the arguments are, and a host
    pointer has the guest's 8 bytes (the header asserts it). All of one symbol's declarations take the same types.
-   The table (--out, hle/hook/hook.c includes it) has each struct's variants, an adapter for each entry, a GuestFn
+   The table (--out, nn/hook.c includes it) has each struct's variants, an adapter for each entry, a GuestFn
    that reads the arguments from the CPU, calls the handler, puts its result in x0 or v0 and returns to x30 as the
    function's ret would, and the entries sorted by symbol and then by version (hook_symbol, hook_fn, hook_handler,
    hook_family (an index into hook_family_name), hook_key, hook_lo and hook_hi (the versions [lo, hi) of key,
@@ -140,9 +140,32 @@
    --a32's), _handler, _family, _key, _lo, _hi, _layouts and _table with <PREFIX>32_COUNT entries: the hooks marked
    a32 and the ones for a 32-bit program alone, which are in no other table and name no route.
 
-   Usage: hookgen [--prefix NAME] [--a32 | --a32-marked] [-I DIR]... --header OUT.h --out OUT.inc SPEC... (NAME,
-          hook by default, names the tables; --a32 adds an adapter for a 32-bit program to every entry,
-          <prefix>_a32, and --a32-marked a 32-bit program's own table instead, <prefix>32_table; each -I DIR a
+   The Vita (--vita). A PS Vita program imports each system function by its NID, the 32-bit number that names it
+   wherever it is imported from, and the runtime answers the import (the .hook specs of src/vita/hle/, with the .c
+   files beside them). Such a hook gives the NID in brackets, then the function's name and its declaration, and its
+   handler after '=':
+
+     family ctrl
+     [0xA9C3CED6] hook sceCtrlPeekBufferPositive(i32 port, addr data, i32 count) -> i32 = vita_ctrl_peek_positive
+     [0x8CBA03D5] hook sceClibSnprintf(addr out, u32 size, addr format, ...) -> i32 = vita_libc_clib_snprintf
+
+   The NID is at most 8 hex digits, with or without 0x; two hooks of one NID are refused, and its key is its 8 digits in
+   lower case, so that the table sorted by key is sorted by NID. The handler is always named, as the function's name is
+   the system's (one name may have two NIDs). The arguments are AAPCS32's with VFP arguments (the Vita's ABI, as for a
+   32-bit Switch program: assign_a32): an addr, a pointer, a usize or an isize is 4 bytes, and the handler takes each
+   as the guest has it (an address as a uint32_t). A variadic function's '...' ends its arguments: they are then the
+   base standard's, a float in core registers as its bits, and the handler reads the rest itself (vita_arg). There are
+   no versions, structs, routes, include lines, checks, buffers or a32 marks: a spec of --vita holds NID hooks and
+   family lines alone. The header declares each handler, `ret handler(VitaProcess* p, VitaThread* t, args...)` with
+   <stdint.h>'s types (bool as bool), and the table is an adapter for each hook, a VitaHleFunction (vita/hle/hle.h)
+   that reads the arguments from the thread, calls the handler and returns the result as r0 (a 64-bit one's high word
+   put in r1, a float's in s0 or d0, r0 as it was for void), and <prefix>_table, the VitaHle entries sorted by NID and
+   ended by a NULL-named one, with <PREFIX>_COUNT entries.
+
+   Usage: hookgen [--prefix NAME] [--a32 | --a32-marked | --vita] [-I DIR]... --header OUT.h --out OUT.inc SPEC...
+          (NAME, hook by default, names the tables; --a32 adds an adapter for a 32-bit program to every entry,
+          <prefix>_a32, --a32-marked a 32-bit program's own table instead, <prefix>32_table, and --vita the NID
+          hooks' adapters and table, <prefix>_table, for a Vita program; each -I DIR a
           folder to find the include line's header in; the specs are read one after another into one table, each
           with its own family lines, as hooks.hook and the game patches of src/nx/patches/ are)
           hookgen [-I DIR]... --routes OUT.inc SPEC... (the symbols that the hooks and route lines of every SPEC
@@ -158,13 +181,13 @@
 #define MAX_HOOKS    1024 /* NVN alone has about 540 functions */
 #define MAX_ENTRIES  1024
 #define MAX_FAMILIES 64
-#define MAX_ARGS     16
+#define MAX_ARGS     24 /* sceGxmTransferCopy has 20 */
 #define MAX_USES     4
 #define MAX_VARIANTS 256
 #define MAX_FIELDS   64
 #define MAX_NAME     256
-#define MAX_ROUTES   64
-#define MAX_SPECS    64 /* hooks.hook, nvn.hook and the game patches */
+#define MAX_ROUTES   512 /* gpu/gvk/gvk.hook routes the 246 entry points of a Vulkan loader */
+#define MAX_SPECS    64 /* hooks.hook, the native SDK's, nvn.hook, gvk.hook and the game patches */
 #define MAX_DIRS     8
 #define MAX_TYPES    1024 /* the include line's header's typedefs: nvn.h has about 110 */
 #define NREGS        8
@@ -237,7 +260,10 @@ typedef struct {
 } Arg;
 
 typedef struct {
-    char symbol[MAX_NAME], handler[MAX_NAME]; /* an address hook's symbol is its key, BUILDID:OFFSET */
+    char symbol[MAX_NAME], handler[MAX_NAME]; /* an address hook's symbol is its key, BUILDID:OFFSET, a NID hook's
+                                                 its NID in 8 hex digits */
+    char name[MAX_NAME];                      /* a NID hook's function's name */
+    int variadic;                             /* a NID hook's arguments end with ... */
     char check[MAX_NAME];                     /* its check (check FN), "" for none */
     int pattern;                              /* its symbol holds a '*' */
     Arg args[MAX_ARGS];
@@ -299,6 +325,8 @@ static struct {
     int base;
 } spec_read[MAX_SPECS];
 static int nspec_read, lines_read, spec_families, include_line;
+/* --vita: the specs hold NID hooks (a Vita program's imports) and family lines alone */
+static int vita;
 /* the include line's header (the spec's at most one), and the names its typedefs declare */
 enum { H_OTHER, H_ENUM, H_POINTER };
 static char include_name[MAX_NAME];
@@ -768,13 +796,15 @@ enum { A32_CORE, A32_PAIR, A32_WORD, A32_DWORD, A32_S, A32_D };
    arguments: an integer, a pointer, a size_t or a ptrdiff_t of at most 4 bytes in the next of r0-r3; a u64 or an i64
    in the next even pair of them; a float in the first free one of s0-s15 and a double in the first free pair, d0-d7,
    which a float after a double may fill back. What finds no register is on the caller's stack, a word 4-aligned and
-   a double word 8-aligned, and once a core argument or a VFP one is there, the next of its kind is there too */
+   a double word 8-aligned, and once a core argument or a VFP one is there, the next of its kind is there too. A
+   variadic function's arguments are the base standard's, which has no VFP registers: a float is a word and a double a
+   double word, in core registers as their bits */
 static void assign_a32(Hook* h) {
     int core = 0, at = 0, i, k, vfp_full = 0;
     unsigned s_used = 0; /* s0-s15 taken, by bit */
     for (i = 0; i < h->nargs; i++) {
         Arg* a = &h->args[i];
-        if (a->kind == T_F32 || a->kind == T_F64) {
+        if ((a->kind == T_F32 || a->kind == T_F64) && !h->variadic) {
             int d = a->kind == T_F64, found = -1;
             for (k = 0; !vfp_full && found < 0 && k < 16; k += d ? 2 : 1)
                 if (!(s_used >> k & (d ? 3u : 1u))) found = k;
@@ -789,7 +819,7 @@ static void assign_a32(Hook* h) {
             a->a32 = d ? A32_DWORD : A32_WORD;
             a->a32_at = at;
             at += d ? 8 : 4;
-        } else if (a->kind == T_U64 || a->kind == T_I64) {
+        } else if (a->kind == T_U64 || a->kind == T_I64 || a->kind == T_F64) {
             core = (core + 1) & ~1;
             if (core + 2 <= 4) {
                 a->a32 = A32_PAIR;
@@ -830,7 +860,11 @@ static void parse_hook(const char* p, int line, const Range* range, const char* 
     h->range = h->range32 = *range;
     h->at = at != NULL;
     h->a32 = alone ? FOR_A32_ALONE : 0;
-    if (at) {
+    if (at && vita) {
+        strcpy(h->symbol, at);
+        p = word(p, h->name, line, "function's name");
+        if (!is_identifier(h->name)) fail(line, "'%s' can't name a function", h->name);
+    } else if (at) {
         strcpy(h->symbol, at);
         p = word(p, h->handler, line, "handler");
         if (!is_identifier(h->handler)) fail(line, "'%s' can't name a handler", h->handler);
@@ -843,12 +877,20 @@ static void parse_hook(const char* p, int line, const Range* range, const char* 
     p = skip_space(p);
     while (*p != ')') {
         Arg* a;
+        if (!strncmp(p, "...", 3)) {
+            if (!vita) fail(line, "only a NID hook (--vita) is variadic");
+            h->variadic = 1;
+            p = skip_space(p + 3);
+            if (*p != ')') fail(line, "... ends the arguments");
+            break;
+        }
         if (h->nargs == MAX_ARGS) fail(line, "more than %d arguments", MAX_ARGS);
         a = &h->args[h->nargs++];
         p = parse_type(p, &a->kind, a->cname, line, "argument's type");
         if (a->kind == T_VOID) fail(line, "an argument can't be void");
         p = word(p, a->name, line, "argument's name");
-        if (!is_identifier(a->name) || !strcmp(a->name, "c")) fail(line, "'%s' can't name an argument", a->name);
+        if (!is_identifier(a->name) || !strcmp(a->name, vita ? "p" : "c") || (vita && !strcmp(a->name, "t")))
+            fail(line, "'%s' can't name an argument", a->name);
         a->reg = is_float(a->kind) ? v++ : x++;
         a->stack = a->reg >= NREGS ? nstack++ : -1;
         p = skip_space(p);
@@ -867,7 +909,11 @@ static void parse_hook(const char* p, int line, const Range* range, const char* 
     strcpy(h->ret_cname, "void");
     if (!strncmp(p, "->", 2)) p = parse_type(p + 2, &h->ret, h->ret_cname, line, "result's type");
     p = skip_space(p);
-    if (at) {
+    if (at && vita) {
+        if (*p != '=') fail(line, "a NID hook names its handler: give one with '= HANDLER'");
+        p = word(p + 1, h->handler, line, "handler");
+        if (!is_identifier(h->handler)) fail(line, "'%s' can't name a handler", h->handler);
+    } else if (at) {
         if (*p == '=') fail(line, "an address hook's name is its handler's: drop '='");
     } else if (*p == '=') {
         p = word(p + 1, h->handler, line, "handler");
@@ -881,6 +927,7 @@ static void parse_hook(const char* p, int line, const Range* range, const char* 
              h->symbol);
     }
     p = skip_space(p);
+    if (vita && *p) fail(line, "a NID hook has no uses, check, pure or a32: unexpected text after its handler");
     if (keyword(p, "uses")) {
         p += 4;
         for (;;) {
@@ -960,6 +1007,28 @@ static const char* parse_at(const char* p, char* key, int line) {
     if (offset & 3) fail(line, "offset 0x%llx isn't a function's: AArch64 code is 4-aligned", offset);
     p = expect(p, "]", line);
     snprintf(key, MAX_NAME, "%s:%llx", id, offset);
+    return skip_space(p);
+}
+
+/* a NID hook's [NID], p after its '[': its key into key (MAX_NAME bytes), the NID's 8 hex digits in lower case, and the
+   text after the ']' */
+static const char* parse_nid(const char* p, char* key, int line) {
+    unsigned long nid = 0;
+    int digits = 0;
+    const char* close = strchr(p, ']');
+    if (close && memchr(p, ':', (size_t)(close - p)))
+        fail(line, "an address hook's [BUILDID:OFFSET] is a Switch program's: --vita takes a NID");
+    p = skip_space(p);
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) p += 2;
+    while (isxdigit((unsigned char)*p)) {
+        unsigned d = (unsigned)(isdigit((unsigned char)*p) ? *p - '0' : tolower((unsigned char)*p) - 'a' + 10);
+        if (++digits > 8) fail(line, "a NID is at most 8 hex digits");
+        nid = nid << 4 | d;
+        p++;
+    }
+    if (!digits) fail(line, "expected the function's NID in hex after '['");
+    p = expect(p, "]", line);
+    snprintf(key, MAX_NAME, "%08lx", nid);
     return skip_space(p);
 }
 
@@ -1085,7 +1154,15 @@ static void read_spec(const char* path) {
             versioned = 1, version_line = line;
             if (!*p) continue;
         }
-        if (*p == '[') {
+        if (vita && *p != '[' && !keyword(p, "family"))
+            fail(line, "expected a family, a NID hook ([NID] hook ...) or a comment: --vita takes nothing else");
+        if (*p == '[' && vita) {
+            char key[MAX_NAME];
+            if (versioned) fail(version_line, "a NID names one function of the system's: it has no @version");
+            p = parse_nid(p + 1, key, line);
+            if (!keyword(p, "hook")) fail(line, "expected 'hook' after the NID");
+            parse_hook(p + 4, line, &any, key, 0);
+        } else if (*p == '[') {
             char key[MAX_NAME];
             if (versioned) fail(version_line, "an address hook is for one build of its module: it has no @version");
             p = parse_at(p + 1, key, line);
@@ -1303,16 +1380,28 @@ static void check_hooks(void) {
     }
 }
 
+/* the C type a handler takes k as: a NID hook's (--vita) as the 32-bit guest has it, with <stdint.h>'s names */
+static const char* ctype(Kind k) {
+    if (!vita) return kinds[k].ctype;
+    switch (k) {
+        case T_BOOL: return "bool";
+        case T_ADDR:
+        case T_USIZE: return "uint32_t";
+        case T_ISIZE: return "int32_t";
+        default: return kinds[k].cname;
+    }
+}
+
 /* two handlers of one name must take the same arguments and layouts: the header declares it once */
 static void check_handlers(void) {
     int i, j, k;
     for (i = 0; i < nhooks; i++)
         for (j = 0; j < i; j++) {
             const Hook *a = &hooks[i], *b = &hooks[j];
-            int same = a->ret == b->ret && a->nargs == b->nargs && a->nuses == b->nuses;
+            int same = (vita ? !strcmp(ctype(a->ret), ctype(b->ret)) : a->ret == b->ret) && a->nargs == b->nargs &&
+                       a->nuses == b->nuses && a->variadic == b->variadic;
             if (strcmp(a->handler, b->handler)) continue;
-            for (k = 0; same && k < a->nargs; k++)
-                same = !strcmp(kinds[a->args[k].kind].ctype, kinds[b->args[k].kind].ctype);
+            for (k = 0; same && k < a->nargs; k++) same = !strcmp(ctype(a->args[k].kind), ctype(b->args[k].kind));
             for (k = 0; same && k < a->nuses; k++) same = !strcmp(a->use_name[k], b->use_name[k]);
             if (!same)
                 fail(a->line > b->line ? a->line : b->line, "%s takes other arguments on %s", a->handler,
@@ -1532,7 +1621,7 @@ static void write_header(const char* path) {
     int i, j;
     out("/* Generated by hookgen from %s: the structs' layouts and the hooks' handlers. Don't edit */\n", spec_path);
     out("#ifndef SNX_%s_HOOK_H\n#define SNX_%s_HOOK_H\n", upper, upper);
-    out("#include \"nx/hle/hook/hook.h\"\n");
+    out("#include \"nx/nn/hook.h\"\n");
     if (include_name[0]) out("#include \"%s\"\n", include_name);
     out("\n");
     for (i = 0; i < nvariants; i++) {
@@ -1704,6 +1793,111 @@ static void write_table(const char* path) {
     flush(path);
 }
 
+/* ============================================================ the Vita's (--vita) */
+static void vita_prototype(const Hook* h) {
+    int i;
+    out("%s %s(VitaProcess* p, VitaThread* t", ctype(h->ret), h->handler);
+    for (i = 0; i < h->nargs; i++) out(", %s %s", ctype(h->args[i].kind), h->args[i].name);
+    out(");\n");
+}
+
+/* an argument's 32 or 64 bits where AAPCS32 puts it (assign_a32), from the calling thread */
+static void vita_bits(const Arg* a) {
+    switch (a->a32) {
+        case A32_CORE: out("t->cpu.r[%d]", a->a32_at); break;
+        case A32_PAIR: out("((uint64_t)t->cpu.r[%d] | (uint64_t)t->cpu.r[%d] << 32)", a->a32_at, a->a32_at + 1); break;
+        case A32_WORD: out("vita_arg_word(p, t, %d)", a->a32_at); break;
+        default: out("vita_arg_dword(p, t, %d)", a->a32_at); break;
+    }
+}
+
+static void vita_argument(const Arg* a) {
+    if (a->a32 == A32_S) {
+        out("vita_float(t, %d)", a->a32_at);
+        return;
+    }
+    if (a->a32 == A32_D) {
+        out("vita_double(t, %d)", a->a32_at);
+        return;
+    }
+    switch (a->kind) {
+        case T_F32: out("vita_f32_bits("); break; /* on the stack, or a variadic function's in core registers */
+        case T_F64: out("vita_f64_bits("); break;
+        case T_BOOL: out("("); break;
+        default: out("(%s)", ctype(a->kind)); break;
+    }
+    vita_bits(a);
+    if (a->kind == T_F32 || a->kind == T_F64)
+        out(")");
+    else if (a->kind == T_BOOL)
+        out(" & 0xFF) != 0");
+}
+
+/* the adapter: a VitaHleFunction that calls the handler and returns its result as r0 (vita/hle/hle.h's
+   vita_return64, vita_return_float and vita_return_double for the others' registers; r0 as it was for void) */
+static void adapter_vita(const Entry* e, int index) {
+    const Hook* h = &hooks[e->hook];
+    int i;
+    out("/* [0x%s] %s */\n", h->symbol, h->name);
+    out("static uint32_t %s_fn_%d(VitaProcess* p, VitaThread* t) {\n", prefix, index);
+    out("    (void)p;\n    "); /* only an argument on the stack reads guest memory */
+    switch (h->ret) {
+        case T_VOID: break;
+        case T_U64:
+        case T_I64: out("return vita_return64(t, (uint64_t)"); break;
+        case T_F32: out("return vita_return_float(t, "); break;
+        case T_F64: out("return vita_return_double(t, "); break;
+        case T_I8:
+        case T_I16:
+        case T_I32:
+        case T_ISIZE: out("return (uint32_t)(int32_t)"); break;
+        default: out("return (uint32_t)"); break;
+    }
+    out("%s(p, t", h->handler);
+    for (i = 0; i < h->nargs; i++) {
+        out(", ");
+        vita_argument(&h->args[i]);
+    }
+    switch (h->ret) {
+        case T_VOID: out(");\n    return t->cpu.r[0];\n"); break;
+        case T_U64:
+        case T_I64:
+        case T_F32:
+        case T_F64: out("));\n"); break;
+        default: out(");\n"); break;
+    }
+    out("}\n");
+}
+
+static void write_header_vita(const char* path) {
+    int i, j;
+    out("/* Generated by hookgen --vita from %s: the NID hooks' handlers. Don't edit */\n", spec_path);
+    out("#ifndef SNX_%s_HOOK_H\n#define SNX_%s_HOOK_H\n", upper, upper);
+    out("#include \"vita/hle/hle.h\"\n#include <stdbool.h>\n#include <stdint.h>\n\n");
+    for (i = 0; i < nhooks; i++) {
+        for (j = 0; j < i && strcmp(hooks[j].handler, hooks[i].handler); j++) {
+        }
+        if (j == i) vita_prototype(&hooks[i]);
+    }
+    out("#endif\n");
+    flush(path);
+}
+
+static void write_table_vita(const char* path) {
+    int i;
+    out("/* Generated by hookgen --vita from %s: the NID hooks' adapters and their table, sorted by NID. Don't edit */\n",
+        spec_path);
+    out("#define %s_COUNT %d\n\n", upper, nentries);
+    for (i = 0; i < nentries; i++) adapter_vita(&entries[i], i);
+    out("\nconst VitaHle %s_table[%s_COUNT + 1] = {\n", prefix, upper);
+    for (i = 0; i < nentries; i++) {
+        const Hook* h = &hooks[entries[i].hook];
+        out("    {0x%su, \"%s\", %s_fn_%d, \"%s\"},\n", h->symbol, h->name, prefix, i, families[h->family]);
+    }
+    out("    {0, NULL, NULL, NULL}};\n");
+    flush(path);
+}
+
 static int by_name(const void* a, const void* b) { return strcmp(*(char* const*)a, *(char* const*)b); }
 
 /* --routes: the symbols each spec's hooks and route lines name, each spec read and checked alone */
@@ -1775,12 +1969,18 @@ int main(int argc, char** argv) {
             a32 = A32_ALL;
         else if (!strcmp(argv[i], "--a32-marked"))
             a32 = A32_MARKED;
+        else if (!strcmp(argv[i], "--vita"))
+            vita = 1;
         else if (!strcmp(argv[i], "-I") && i + 1 < argc && ninclude_dirs < MAX_DIRS)
             include_dirs[ninclude_dirs++] = argv[++i];
         else if (argv[i][0] != '-' && nspecs < MAX_SPECS)
             specs[nspecs++] = argv[i];
         else
             nspecs = 0, i = argc;
+    }
+    if (vita && (a32 || routes_path)) {
+        fprintf(stderr, "hookgen: --vita's hooks are a Vita program's imports: no --a32, --a32-marked or --routes\n");
+        return 2;
     }
     if (routes_path && nspecs && !header && !table) {
         write_routes(routes_path, specs, nspecs);
@@ -1790,7 +1990,8 @@ int main(int argc, char** argv) {
     if (!nspecs || (!header && !table)) {
         fprintf(
             stderr,
-            "usage: hookgen [--prefix NAME] [--a32 | --a32-marked] [-I DIR]... --header OUT.h --out OUT.inc SPEC...\n"
+            "usage: hookgen [--prefix NAME] [--a32 | --a32-marked | --vita] [-I DIR]... --header OUT.h --out OUT.inc "
+            "SPEC...\n"
             "       hookgen [-I DIR]... --routes OUT.inc SPEC...\n");
         return 2;
     }
@@ -1814,8 +2015,13 @@ int main(int argc, char** argv) {
             if (hooks[i].a32 == FOR_A32_ALONE)
                 fail(hooks[i].line, "--a32 gives every hook's declaration to a 32-bit program: one for it alone "
                                     "needs --a32-marked");
-    if (header) write_header(header);
-    if (table) write_table(table);
+    if (vita) {
+        if (header) write_header_vita(header);
+        if (table) write_table_vita(table);
+    } else {
+        if (header) write_header(header);
+        if (table) write_table(table);
+    }
     free(obuf);
     return 0;
 }

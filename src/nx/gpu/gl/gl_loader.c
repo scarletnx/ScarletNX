@@ -8,7 +8,7 @@
    game keeps its driver, whose submissions the GPU's front end reads */
 #include "nx/gpu/gl/gl_layer.h"
 #include "gpu/gl/gl.hook.h"
-#include "nx/hle/hook/hook.h"
+#include "nx/nn/hook.h"
 #include "nx/hle/kernel/kernel.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/arm.h"

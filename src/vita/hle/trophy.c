@@ -9,6 +9,7 @@
    are synchronous here) are numbers. Error codes and the unlock rules as Vita3K (GPL-2.0-or-later,
    modules/SceNpTrophy/SceNpTrophy.cpp) has them */
 #include "vita/hle/hle.h"
+#include "vita/hle/hle.hook.h"
 #include "common/utilities/endian.h"
 #include "common/utilities/common.h"
 #include <stdio.h>
@@ -127,7 +128,8 @@ static void record_write(VitaProcess* p, const Context* c) {
 
 /* ---- the calls ---- */
 /* sceNpTrophyInit(options) */
-static uint32_t trophy_init(VitaProcess* p, VitaThread* t) {
+uint32_t vita_trophy_init(VitaProcess* p, VitaThread* t, uint32_t options) {
+    (void)options;
     (void)t;
     struct VitaTrophy* s = trophy(p);
     if (!s) return SCE_NP_TROPHY_ERROR_NOT_INITIALIZED;
@@ -135,7 +137,7 @@ static uint32_t trophy_init(VitaProcess* p, VitaThread* t) {
     s->initialized = true;
     return 0;
 }
-static uint32_t trophy_term(VitaProcess* p, VitaThread* t) {
+uint32_t vita_trophy_term(VitaProcess* p, VitaThread* t) {
     (void)t;
     if (!p->trophy || !p->trophy->initialized) return SCE_NP_TROPHY_ERROR_NOT_INITIALIZED;
     memset(p->trophy, 0, sizeof *p->trophy);
@@ -143,9 +145,9 @@ static uint32_t trophy_term(VitaProcess* p, VitaThread* t) {
 }
 /* sceNpTrophyCreateContext(context*, const SceNpCommunicationId* (9 characters, a NUL, the number, a byte), sign,
    options) */
-static uint32_t create_context(VitaProcess* p, VitaThread* t) {
+uint32_t vita_trophy_create_context(VitaProcess* p, VitaThread* t, uint32_t out, uint32_t commid) {
+    (void)t;
     struct VitaTrophy* s = p->trophy;
-    uint32_t out = vita_arg(p, t, 0), commid = vita_arg(p, t, 1);
     if (!s || !s->initialized) return SCE_NP_TROPHY_ERROR_NOT_INITIALIZED;
     if (!out || !commid) return SCE_NP_TROPHY_ERROR_INVALID_ARGUMENT;
     const unsigned char* id = vita_ptr(p, commid);
@@ -187,16 +189,17 @@ static uint32_t create_context(VitaProcess* p, VitaThread* t) {
     vita_write32(p, out, free_slot + 1);
     return 0;
 }
-static uint32_t destroy_context(VitaProcess* p, VitaThread* t) {
-    Context* c = context_of(p, vita_arg(p, t, 0));
+uint32_t vita_trophy_destroy_context(VitaProcess* p, VitaThread* t, uint32_t context_id) {
+    (void)t;
+    Context* c = context_of(p, context_id);
     if (!c) return SCE_NP_TROPHY_ERROR_INVALID_CONTEXT;
     *c = (Context){0};
     return 0;
 }
 /* sceNpTrophyCreateHandle(handle*) */
-static uint32_t create_handle(VitaProcess* p, VitaThread* t) {
+uint32_t vita_trophy_create_handle(VitaProcess* p, VitaThread* t, uint32_t out) {
+    (void)t;
     struct VitaTrophy* s = p->trophy;
-    uint32_t out = vita_arg(p, t, 0);
     if (!s || !s->initialized) return SCE_NP_TROPHY_ERROR_NOT_INITIALIZED;
     if (!out) return SCE_NP_TROPHY_ERROR_INVALID_ARGUMENT;
     for (unsigned i = 0; i < HANDLES; ++i)
@@ -207,19 +210,20 @@ static uint32_t create_handle(VitaProcess* p, VitaThread* t) {
         }
     return SCE_NP_TROPHY_ERROR_EXCEEDS_MAX;
 }
-static uint32_t destroy_handle(VitaProcess* p, VitaThread* t) {
-    uint32_t handle = vita_arg(p, t, 0);
+uint32_t vita_trophy_destroy_handle(VitaProcess* p, VitaThread* t, uint32_t handle) {
+    (void)t;
     struct VitaTrophy* s = p->trophy;
     if (!s || handle - 1 >= HANDLES || !s->handles[handle - 1]) return SCE_NP_TROPHY_ERROR_INVALID_HANDLE;
     s->handles[handle - 1] = false;
     return 0;
 }
 /* sceNpTrophyGetTrophyUnlockState(context, handle, SceNpTrophyFlagArray*, count*) */
-static uint32_t get_unlock_state(VitaProcess* p, VitaThread* t) {
-    uint32_t flags = vita_arg(p, t, 2), count = vita_arg(p, t, 3);
+uint32_t vita_trophy_get_unlock_state(VitaProcess* p, VitaThread* t, uint32_t context, uint32_t handle, uint32_t flags,
+                                      uint32_t count) {
+    (void)t, (void)handle;
     if (!p->trophy || !p->trophy->initialized) return SCE_NP_TROPHY_ERROR_NOT_INITIALIZED;
     if (!flags || !count) return SCE_NP_TROPHY_ERROR_INVALID_ARGUMENT;
-    const Context* c = context_of(p, vita_arg(p, t, 0));
+    const Context* c = context_of(p, context);
     if (!c) return SCE_NP_TROPHY_ERROR_INVALID_CONTEXT;
     for (unsigned i = 0; i < TROPHIES / 32; ++i) vita_write32(p, flags + i * 4, c->unlocked[i]);
     vita_write32(p, count, c->count);
@@ -227,11 +231,12 @@ static uint32_t get_unlock_state(VitaProcess* p, VitaThread* t) {
 }
 static bool unlocked(const Context* c, uint32_t id) { return c->unlocked[id / 32] >> (id % 32) & 1; }
 /* sceNpTrophyUnlockTrophy(context, handle, trophy, platinum*) */
-static uint32_t unlock_trophy(VitaProcess* p, VitaThread* t) {
-    uint32_t id = vita_arg(p, t, 2), out = vita_arg(p, t, 3);
+uint32_t vita_trophy_unlock_trophy(VitaProcess* p, VitaThread* t, uint32_t context, uint32_t handle, uint32_t id,
+                                   uint32_t out) {
+    (void)t, (void)handle;
     if (!p->trophy || !p->trophy->initialized) return SCE_NP_TROPHY_ERROR_NOT_INITIALIZED;
     if (id >= TROPHIES) return SCE_NP_TROPHY_ERROR_INVALID_TROPHY_ID;
-    Context* c = context_of(p, vita_arg(p, t, 0));
+    Context* c = context_of(p, context);
     if (!c) return SCE_NP_TROPHY_ERROR_INVALID_CONTEXT;
     if (!c->grades[id]) return SCE_NP_TROPHY_ERROR_INVALID_TROPHY_ID;
     if (c->grades[id] == GRADE_PLATINUM) return SCE_NP_TROPHY_ERROR_PLATINUM_CANNOT_UNLOCK;
@@ -253,15 +258,3 @@ static uint32_t unlock_trophy(VitaProcess* p, VitaThread* t) {
     record_write(p, c);
     return 0;
 }
-
-const VitaHle vita_hle_trophy[] = {
-    {0x34516838u, "sceNpTrophyInit", trophy_init},
-    {0xbfe0f28fu, "sceNpTrophyTerm", trophy_term},
-    {0xc49fd33fu, "sceNpTrophyCreateContext", create_context},
-    {0x56f5cba5u, "sceNpTrophyDestroyContext", destroy_context},
-    {0x4ebc6977u, "sceNpTrophyCreateHandle", create_handle},
-    {0xff142071u, "sceNpTrophyDestroyHandle", destroy_handle},
-    {0xc8d2a4deu, "sceNpTrophyGetTrophyUnlockState", get_unlock_state},
-    {0xb397aa24u, "sceNpTrophyUnlockTrophy", unlock_trophy},
-    {0, NULL, NULL},
-};

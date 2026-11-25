@@ -6,7 +6,7 @@
    Then a 32-bit game's table (time.hook's a32): the functions its SDK has, now() through a pointer and an argument
    from the stack. The guest clock, the lock and the log are stand-ins here */
 #include "nx/nn/time.c"
-#include "hle/hook/hooks.hook.inc" /* time.hook's table, and a 32-bit game's */
+#include "nn/hooks.hook.inc" /* time.hook's table, and a 32-bit game's */
 #include <setjmp.h>
 #include <stdarg.h>
 #include <stdlib.h>

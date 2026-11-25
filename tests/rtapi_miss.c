@@ -9,7 +9,7 @@
 #include "nx/runtime/rtapi.h"
 #include "nx/hle/filesystem/fs.h"
 #include "nx/hle/hle.h"
-#include "nx/hle/hook/hook.h"
+#include "nx/nn/hook.h"
 #include "nx/hle/kernel/kernel.h"
 #include "nx/runtime/clock.h"
 #include "nx/runtime/guest_jit.h"

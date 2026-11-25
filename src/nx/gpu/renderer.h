@@ -231,6 +231,11 @@ typedef struct Renderer {
        won't be (not shown, or no display clock to say), the frames in the order they were given (0: none) */
     void (*present_buffer)(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout, u32 bhl, u32 fmt, const i32 crop[4],
                            u32 transform, u64 released_ns, u64 period_ns, u32 shown_syncpt);
+    /* presenting an image of the renderer's own device, which the game drew with the host's Vulkan (gpu/gvk/gvk.c):
+       image is its VkImage, of VkFormat fmt and w x h, in VK_IMAGE_LAYOUT_GENERAL (it is no swapchain's), its 2D
+       level 0 layer 0 shown. The work that drew it is on the graphics queue before the call, and the copy of it waits
+       for that work. The image can be drawn again once a submission on that queue after the call finishes */
+    void (*present_image)(u64 image, u32 fmt, u32 w, u32 h, const i32 crop[4]);
     /* What the next present_buffer's frame holds, and its window's HDR metadata (gpu/hdr_output.h): on the presenting
        thread, before that present. A present without it is an SDR frame's. NULL: every frame is shown as SDR */
     void (*present_hdr)(const SnxHdrFrame* frame);

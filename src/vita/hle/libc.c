@@ -8,6 +8,7 @@
    variables they export (_Ctype, _Stdout, the exceptions' vtables) get their contents in their slots. The functions
    are the vitasdk database's names (MIT); the layouts are Dinkumware's as the game's code reads them */
 #include "vita/hle/hle.h"
+#include "vita/hle/hle.hook.h"
 #include "vita/runtime/watch.h"
 #include "common/utilities/common.h"
 #include <ctype.h>
@@ -42,7 +43,6 @@
 #define C_CN 0x40
 #define C_BB 0x80
 
-static uint32_t arg(VitaProcess* p, VitaThread* t, unsigned n) { return vita_arg(p, t, n); }
 static char* host(VitaProcess* p, uint32_t address) { return (char*)vita_ptr(p, address); }
 static uint32_t guest(VitaProcess* p, const void* pointer) {
     return pointer ? (uint32_t)((const unsigned char*)pointer - p->mem) : 0;
@@ -96,82 +96,97 @@ static uint32_t heap(VitaProcess* p) {
     }
     return p->libc.heap = vita_heap_init(p, base, size);
 }
-static uint32_t lc_malloc(VitaProcess* p, VitaThread* t) {
-    uint32_t r = vita_heap_alloc(p, heap(p), arg(p, t, 0), 8);
+uint32_t vita_libc_lc_malloc(VitaProcess* p, VitaThread* t, uint32_t size) {
+    uint32_t r = vita_heap_alloc(p, heap(p), size, 8);
     if (!r) set_errno(p, t, ENOMEM);
     return r;
 }
-static uint32_t lc_calloc(VitaProcess* p, VitaThread* t) {
-    uint64_t size = (uint64_t)arg(p, t, 0) * arg(p, t, 1);
+uint32_t vita_libc_lc_calloc(VitaProcess* p, VitaThread* t, uint32_t nmemb, uint32_t member_size) {
+    (void)t;
+    uint64_t size = (uint64_t)nmemb * member_size;
     uint32_t r = size >> 31 ? 0 : vita_heap_alloc(p, heap(p), (uint32_t)size, 8);
     if (r) memset(host(p, r), 0, (size_t)size);
     return r;
 }
-static uint32_t lc_free(VitaProcess* p, VitaThread* t) {
-    vita_heap_free(p, heap(p), arg(p, t, 0));
+uint32_t vita_libc_lc_free(VitaProcess* p, VitaThread* t, uint32_t ptr) {
+    (void)t;
+    vita_heap_free(p, heap(p), ptr);
     return 0;
 }
-static uint32_t lc_realloc(VitaProcess* p, VitaThread* t) {
-    uint32_t r = vita_heap_realloc(p, heap(p), arg(p, t, 0), arg(p, t, 1), 8);
-    if (!r && arg(p, t, 1)) set_errno(p, t, ENOMEM);
+uint32_t vita_libc_lc_realloc(VitaProcess* p, VitaThread* t, uint32_t ptr, uint32_t size) {
+    uint32_t r = vita_heap_realloc(p, heap(p), ptr, size, 8);
+    if (!r && size) set_errno(p, t, ENOMEM);
     return r;
 }
-static uint32_t lc_memalign(VitaProcess* p, VitaThread* t) {
-    return vita_heap_alloc(p, heap(p), arg(p, t, 1), arg(p, t, 0));
+uint32_t vita_libc_lc_memalign(VitaProcess* p, VitaThread* t, uint32_t align, uint32_t size) {
+    (void)t;
+    return vita_heap_alloc(p, heap(p), size, align);
 }
 /* reallocalign(ptr, size, alignment) */
-static uint32_t lc_reallocalign(VitaProcess* p, VitaThread* t) {
-    return vita_heap_realloc(p, heap(p), arg(p, t, 0), arg(p, t, 1), arg(p, t, 2));
+uint32_t vita_libc_lc_reallocalign(VitaProcess* p, VitaThread* t, uint32_t ptr, uint32_t size, uint32_t alignment) {
+    (void)t;
+    return vita_heap_realloc(p, heap(p), ptr, size, alignment);
 }
-static uint32_t lc_malloc_usable_size(VitaProcess* p, VitaThread* t) {
-    return vita_heap_usable(p, heap(p), arg(p, t, 0));
+uint32_t vita_libc_lc_malloc_usable_size(VitaProcess* p, VitaThread* t, uint32_t ptr) {
+    (void)t;
+    return vita_heap_usable(p, heap(p), ptr);
 }
-static uint32_t cxx_new(VitaProcess* p, VitaThread* t) {
-    uint32_t size = arg(p, t, 0), r = vita_heap_alloc(p, heap(p), size ? size : 1, 8);
+uint32_t vita_libc_cxx_new(VitaProcess* p, VitaThread* t, uint32_t size) {
+    uint32_t r = vita_heap_alloc(p, heap(p), size ? size : 1, 8);
     return r ? r : fatal(p, t, "operator new found no memory");
 }
 /* the nothrow overloads: same args plus a reference to the nothrow tag, which we never touch. 0 on failure instead
    of fatal, same as real nothrow new */
-static uint32_t cxx_new_nothrow(VitaProcess* p, VitaThread* t) {
-    uint32_t size = arg(p, t, 0);
+uint32_t vita_libc_cxx_new_nothrow(VitaProcess* p, VitaThread* t, uint32_t size) {
+    (void)t;
     return vita_heap_alloc(p, heap(p), size ? size : 1, 8);
 }
-static uint32_t cxx_delete(VitaProcess* p, VitaThread* t) {
-    uint32_t ptr = arg(p, t, 0);
+uint32_t vita_libc_cxx_delete(VitaProcess* p, VitaThread* t, uint32_t ptr) {
+    (void)t;
     if (ptr) vita_heap_free(p, heap(p), ptr);
     return 0;
 }
 /* the sized-delete overloads (operator delete(void*, unsigned int)): the size is ignored, same free either way */
-static uint32_t cxx_delete_sized(VitaProcess* p, VitaThread* t) { return cxx_delete(p, t); }
+uint32_t vita_libc_cxx_delete_sized(VitaProcess* p, VitaThread* t, uint32_t ptr) {
+    return vita_libc_cxx_delete(p, t, ptr);
+}
 /* the Clib's mspaces: a heap in the memory the game gives */
-static uint32_t clib_mspace_create(VitaProcess* p, VitaThread* t) {
-    return vita_heap_init(p, arg(p, t, 0), arg(p, t, 1));
+uint32_t vita_libc_clib_mspace_create(VitaProcess* p, VitaThread* t, uint32_t base, uint32_t size) {
+    (void)t;
+    return vita_heap_init(p, base, size);
 }
-static uint32_t clib_mspace_malloc(VitaProcess* p, VitaThread* t) {
-    return vita_heap_alloc(p, arg(p, t, 0), arg(p, t, 1), 8);
+uint32_t vita_libc_clib_mspace_malloc(VitaProcess* p, VitaThread* t, uint32_t heap, uint32_t size) {
+    (void)t;
+    return vita_heap_alloc(p, heap, size, 8);
 }
-static uint32_t clib_mspace_calloc(VitaProcess* p, VitaThread* t) {
-    uint64_t size = (uint64_t)arg(p, t, 1) * arg(p, t, 2);
-    uint32_t r = size > UINT32_MAX ? 0 : vita_heap_alloc(p, arg(p, t, 0), (uint32_t)size, 8);
+uint32_t vita_libc_clib_mspace_calloc(VitaProcess* p, VitaThread* t, uint32_t heap, uint32_t nmemb,
+                                      uint32_t member_size) {
+    (void)t;
+    uint64_t size = (uint64_t)nmemb * member_size;
+    uint32_t r = size > UINT32_MAX ? 0 : vita_heap_alloc(p, heap, (uint32_t)size, 8);
     if (r && size) memset(host(p, r), 0, (size_t)size);
     return r;
 }
-static uint32_t clib_mspace_memalign(VitaProcess* p, VitaThread* t) {
-    return vita_heap_alloc(p, arg(p, t, 0), arg(p, t, 2), arg(p, t, 1) > 8 ? arg(p, t, 1) : 8);
+uint32_t vita_libc_clib_mspace_memalign(VitaProcess* p, VitaThread* t, uint32_t heap, uint32_t align, uint32_t size) {
+    (void)t;
+    return vita_heap_alloc(p, heap, size, align > 8 ? align : 8);
 }
-static uint32_t clib_mspace_realloc(VitaProcess* p, VitaThread* t) {
-    return vita_heap_realloc(p, arg(p, t, 0), arg(p, t, 1), arg(p, t, 2), 8);
+uint32_t vita_libc_clib_mspace_realloc(VitaProcess* p, VitaThread* t, uint32_t heap, uint32_t ptr, uint32_t size) {
+    (void)t;
+    return vita_heap_realloc(p, heap, ptr, size, 8);
 }
-static uint32_t clib_strnlen(VitaProcess* p, VitaThread* t) {
-    const char* s = host(p, arg(p, t, 0));
-    uint32_t n = arg(p, t, 1), i = 0;
+uint32_t vita_libc_clib_strnlen(VitaProcess* p, VitaThread* t, uint32_t string, uint32_t n) {
+    (void)t;
+    const char* s = host(p, string);
+    uint32_t i = 0;
     while (i < n && s[i]) ++i;
     return i;
 }
-static uint32_t clib_strlcpy(VitaProcess* p, VitaThread* t) {
-    char* d = host(p, arg(p, t, 0));
-    const char* s = host(p, arg(p, t, 1));
-    uint32_t n = arg(p, t, 2), len = (uint32_t)strlen(s);
+uint32_t vita_libc_clib_strlcpy(VitaProcess* p, VitaThread* t, uint32_t dst, uint32_t src, uint32_t n) {
+    (void)t;
+    char* d = host(p, dst);
+    const char* s = host(p, src);
+    uint32_t len = (uint32_t)strlen(s);
     if (n) {
         uint32_t c = len < n - 1 ? len : n - 1;
         memmove(d, s, c);
@@ -179,10 +194,11 @@ static uint32_t clib_strlcpy(VitaProcess* p, VitaThread* t) {
     }
     return len;
 }
-static uint32_t clib_strlcat(VitaProcess* p, VitaThread* t) {
-    char* d = host(p, arg(p, t, 0));
-    const char* s = host(p, arg(p, t, 1));
-    uint32_t n = arg(p, t, 2), dl = 0, len = (uint32_t)strlen(s);
+uint32_t vita_libc_clib_strlcat(VitaProcess* p, VitaThread* t, uint32_t dst, uint32_t src, uint32_t n) {
+    (void)t;
+    char* d = host(p, dst);
+    const char* s = host(p, src);
+    uint32_t dl = 0, len = (uint32_t)strlen(s);
     while (dl < n && d[dl]) ++dl;
     if (dl == n) return n + len;
     uint32_t c = len < n - dl - 1 ? len : n - dl - 1;
@@ -190,45 +206,54 @@ static uint32_t clib_strlcat(VitaProcess* p, VitaThread* t) {
     d[dl + c] = 0;
     return dl + len;
 }
-static uint32_t clib_tolower(VitaProcess* p, VitaThread* t) {
-    uint32_t c = arg(p, t, 0);
+uint32_t vita_libc_clib_tolower(VitaProcess* p, VitaThread* t, uint32_t c) {
+    (void)p, (void)t;
     return c >= 'A' && c <= 'Z' ? c + 32 : c;
 }
-static uint32_t clib_toupper(VitaProcess* p, VitaThread* t) {
-    uint32_t c = arg(p, t, 0);
+uint32_t vita_libc_clib_toupper(VitaProcess* p, VitaThread* t, uint32_t c) {
+    (void)p, (void)t;
     return c >= 'a' && c <= 'z' ? c - 32 : c;
 }
-static uint32_t clib_mspace_free(VitaProcess* p, VitaThread* t) {
-    vita_heap_free(p, arg(p, t, 0), arg(p, t, 1));
+uint32_t vita_libc_clib_mspace_free(VitaProcess* p, VitaThread* t, uint32_t heap, uint32_t ptr) {
+    (void)t;
+    vita_heap_free(p, heap, ptr);
     return 0;
 }
-static uint32_t zero(VitaProcess* p, VitaThread* t) {
+uint32_t vita_libc_zero(VitaProcess* p, VitaThread* t) {
     (void)p, (void)t;
     return 0;
 }
-static uint32_t first_argument(VitaProcess* p, VitaThread* t) { return arg(p, t, 0); }
+uint32_t vita_libc_first_argument(VitaProcess* p, VitaThread* t, uint32_t self) {
+    (void)p, (void)t;
+    return self;
+}
 
 /* ---- memory and strings, in place ---- */
-static uint32_t lc_memcpy(VitaProcess* p, VitaThread* t) {
-    uint32_t d = arg(p, t, 0), n = arg(p, t, 2);
-    if (n) memmove(host(p, d), host(p, arg(p, t, 1)), n);
+uint32_t vita_libc_lc_memcpy(VitaProcess* p, VitaThread* t, uint32_t d, uint32_t src, uint32_t n) {
+    (void)t;
+    if (n) memmove(host(p, d), host(p, src), n);
     return d;
 }
-static uint32_t lc_memset(VitaProcess* p, VitaThread* t) {
-    uint32_t d = arg(p, t, 0), n = arg(p, t, 2);
-    if (n) memset(host(p, d), (int)arg(p, t, 1), n);
+uint32_t vita_libc_lc_memset(VitaProcess* p, VitaThread* t, uint32_t d, uint32_t c, uint32_t n) {
+    (void)t;
+    if (n) memset(host(p, d), (int)c, n);
     return d;
 }
-static uint32_t lc_memcmp(VitaProcess* p, VitaThread* t) {
-    uint32_t n = arg(p, t, 2);
-    return n ? (uint32_t)memcmp(host(p, arg(p, t, 0)), host(p, arg(p, t, 1)), n) : 0;
+uint32_t vita_libc_lc_memcmp(VitaProcess* p, VitaThread* t, uint32_t s1, uint32_t s2, uint32_t n) {
+    (void)t;
+    return n ? (uint32_t)memcmp(host(p, s1), host(p, s2), n) : 0;
 }
-static uint32_t lc_strlen(VitaProcess* p, VitaThread* t) { return (uint32_t)strlen(host(p, arg(p, t, 0))); }
-static uint32_t lc_strcmp(VitaProcess* p, VitaThread* t) {
-    return (uint32_t)strcmp(host(p, arg(p, t, 0)), host(p, arg(p, t, 1)));
+uint32_t vita_libc_lc_strlen(VitaProcess* p, VitaThread* t, uint32_t s) {
+    (void)t;
+    return (uint32_t)strlen(host(p, s));
 }
-static uint32_t lc_strncmp(VitaProcess* p, VitaThread* t) {
-    return (uint32_t)strncmp(host(p, arg(p, t, 0)), host(p, arg(p, t, 1)), arg(p, t, 2));
+uint32_t vita_libc_lc_strcmp(VitaProcess* p, VitaThread* t, uint32_t s1, uint32_t s2) {
+    (void)t;
+    return (uint32_t)strcmp(host(p, s1), host(p, s2));
+}
+uint32_t vita_libc_lc_strncmp(VitaProcess* p, VitaThread* t, uint32_t s1, uint32_t s2, uint32_t n) {
+    (void)t;
+    return (uint32_t)strncmp(host(p, s1), host(p, s2), n);
 }
 static int casecmp(const char* a, const char* b, size_t n) {
     for (size_t i = 0; i < n; ++i) {
@@ -237,33 +262,35 @@ static int casecmp(const char* a, const char* b, size_t n) {
     }
     return 0;
 }
-static uint32_t lc_strcasecmp(VitaProcess* p, VitaThread* t) {
-    return (uint32_t)casecmp(host(p, arg(p, t, 0)), host(p, arg(p, t, 1)), SIZE_MAX);
+uint32_t vita_libc_lc_strcasecmp(VitaProcess* p, VitaThread* t, uint32_t s1, uint32_t s2) {
+    (void)t;
+    return (uint32_t)casecmp(host(p, s1), host(p, s2), SIZE_MAX);
 }
-static uint32_t lc_strncasecmp(VitaProcess* p, VitaThread* t) {
-    return (uint32_t)casecmp(host(p, arg(p, t, 0)), host(p, arg(p, t, 1)), arg(p, t, 2));
+uint32_t vita_libc_lc_strncasecmp(VitaProcess* p, VitaThread* t, uint32_t s1, uint32_t s2, uint32_t n) {
+    (void)t;
+    return (uint32_t)casecmp(host(p, s1), host(p, s2), n);
 }
-static uint32_t lc_strcpy(VitaProcess* p, VitaThread* t) {
-    uint32_t d = arg(p, t, 0);
-    const char* s = host(p, arg(p, t, 1));
+uint32_t vita_libc_lc_strcpy(VitaProcess* p, VitaThread* t, uint32_t d, uint32_t src) {
+    (void)t;
+    const char* s = host(p, src);
     memmove(host(p, d), s, strlen(s) + 1);
     return d;
 }
-static uint32_t lc_strncpy(VitaProcess* p, VitaThread* t) {
-    uint32_t d = arg(p, t, 0), n = arg(p, t, 2);
-    if (n) strncpy(host(p, d), host(p, arg(p, t, 1)), n);
+uint32_t vita_libc_lc_strncpy(VitaProcess* p, VitaThread* t, uint32_t d, uint32_t src, uint32_t n) {
+    (void)t;
+    if (n) strncpy(host(p, d), host(p, src), n);
     return d;
 }
-static uint32_t lc_strcat(VitaProcess* p, VitaThread* t) {
-    uint32_t d = arg(p, t, 0);
-    const char* s = host(p, arg(p, t, 1));
+uint32_t vita_libc_lc_strcat(VitaProcess* p, VitaThread* t, uint32_t d, uint32_t src) {
+    (void)t;
+    const char* s = host(p, src);
     char* end = host(p, d) + strlen(host(p, d));
     memmove(end, s, strlen(s) + 1);
     return d;
 }
-static uint32_t lc_strncat(VitaProcess* p, VitaThread* t) {
-    uint32_t d = arg(p, t, 0), n = arg(p, t, 2);
-    const char* s = host(p, arg(p, t, 1));
+uint32_t vita_libc_lc_strncat(VitaProcess* p, VitaThread* t, uint32_t d, uint32_t src, uint32_t n) {
+    (void)t;
+    const char* s = host(p, src);
     char* end = host(p, d) + strlen(host(p, d));
     size_t length = 0;
     while (length < n && s[length]) ++length;
@@ -271,28 +298,34 @@ static uint32_t lc_strncat(VitaProcess* p, VitaThread* t) {
     end[length] = 0;
     return d;
 }
-static uint32_t lc_strchr(VitaProcess* p, VitaThread* t) {
-    return guest(p, strchr(host(p, arg(p, t, 0)), (int)(arg(p, t, 1) & 0xff)));
+uint32_t vita_libc_lc_strchr(VitaProcess* p, VitaThread* t, uint32_t s, uint32_t c) {
+    (void)t;
+    return guest(p, strchr(host(p, s), (int)(c & 0xff)));
 }
-static uint32_t lc_memchr(VitaProcess* p, VitaThread* t) {
-    uint32_t n = arg(p, t, 2);
-    return n ? guest(p, memchr(host(p, arg(p, t, 0)), (int)(arg(p, t, 1) & 0xff), n)) : 0;
+uint32_t vita_libc_lc_memchr(VitaProcess* p, VitaThread* t, uint32_t s, uint32_t c, uint32_t n) {
+    (void)t;
+    return n ? guest(p, memchr(host(p, s), (int)(c & 0xff), n)) : 0;
 }
-static uint32_t lc_strrchr(VitaProcess* p, VitaThread* t) {
-    return guest(p, strrchr(host(p, arg(p, t, 0)), (int)(arg(p, t, 1) & 0xff)));
+uint32_t vita_libc_lc_strrchr(VitaProcess* p, VitaThread* t, uint32_t s, uint32_t c) {
+    (void)t;
+    return guest(p, strrchr(host(p, s), (int)(c & 0xff)));
 }
-static uint32_t lc_strstr(VitaProcess* p, VitaThread* t) {
-    return guest(p, strstr(host(p, arg(p, t, 0)), host(p, arg(p, t, 1))));
+uint32_t vita_libc_lc_strstr(VitaProcess* p, VitaThread* t, uint32_t haystack, uint32_t needle) {
+    (void)t;
+    return guest(p, strstr(host(p, haystack), host(p, needle)));
 }
-static uint32_t lc_strspn(VitaProcess* p, VitaThread* t) {
-    return (uint32_t)strspn(host(p, arg(p, t, 0)), host(p, arg(p, t, 1)));
+uint32_t vita_libc_lc_strspn(VitaProcess* p, VitaThread* t, uint32_t s, uint32_t accept) {
+    (void)t;
+    return (uint32_t)strspn(host(p, s), host(p, accept));
 }
-static uint32_t lc_strpbrk(VitaProcess* p, VitaThread* t) {
-    const char* at = strpbrk(host(p, arg(p, t, 0)), host(p, arg(p, t, 1)));
+uint32_t vita_libc_lc_strpbrk(VitaProcess* p, VitaThread* t, uint32_t s, uint32_t accept) {
+    (void)t;
+    const char* at = strpbrk(host(p, s), host(p, accept));
     return at ? guest(p, at) : 0;
 }
-static uint32_t lc_strcspn(VitaProcess* p, VitaThread* t) {
-    return (uint32_t)strcspn(host(p, arg(p, t, 0)), host(p, arg(p, t, 1)));
+uint32_t vita_libc_lc_strcspn(VitaProcess* p, VitaThread* t, uint32_t s, uint32_t reject) {
+    (void)t;
+    return (uint32_t)strcspn(host(p, s), host(p, reject));
 }
 /* the wide strings: 16-bit wchar_t */
 static uint32_t wide_length(VitaProcess* p, uint32_t s) {
@@ -300,7 +333,10 @@ static uint32_t wide_length(VitaProcess* p, uint32_t s) {
     while (vita_read16(p, s + n * 2)) ++n;
     return n;
 }
-static uint32_t lc_wcslen(VitaProcess* p, VitaThread* t) { return wide_length(p, arg(p, t, 0)); }
+uint32_t vita_libc_lc_wcslen(VitaProcess* p, VitaThread* t, uint32_t s) {
+    (void)t;
+    return wide_length(p, s);
+}
 static int wide_compare(VitaProcess* p, uint32_t a, uint32_t b, uint32_t n) {
     for (uint32_t i = 0; i < n; ++i) {
         uint32_t x = vita_read16(p, a + i * 2), y = vita_read16(p, b + i * 2);
@@ -308,86 +344,93 @@ static int wide_compare(VitaProcess* p, uint32_t a, uint32_t b, uint32_t n) {
     }
     return 0;
 }
-static uint32_t lc_wcscmp(VitaProcess* p, VitaThread* t) {
-    return (uint32_t)wide_compare(p, arg(p, t, 0), arg(p, t, 1), UINT32_MAX);
+uint32_t vita_libc_lc_wcscmp(VitaProcess* p, VitaThread* t, uint32_t a, uint32_t b) {
+    (void)t;
+    return (uint32_t)wide_compare(p, a, b, UINT32_MAX);
 }
-static uint32_t lc_wcsncmp(VitaProcess* p, VitaThread* t) {
-    return (uint32_t)wide_compare(p, arg(p, t, 0), arg(p, t, 1), arg(p, t, 2));
+uint32_t vita_libc_lc_wcsncmp(VitaProcess* p, VitaThread* t, uint32_t a, uint32_t b, uint32_t n) {
+    (void)t;
+    return (uint32_t)wide_compare(p, a, b, n);
 }
-static uint32_t lc_wcschr(VitaProcess* p, VitaThread* t) {
-    uint32_t s = arg(p, t, 0), c = arg(p, t, 1) & 0xffff;
+uint32_t vita_libc_lc_wcschr(VitaProcess* p, VitaThread* t, uint32_t s, uint32_t c) {
+    (void)t;
     for (;; s += 2) {
         uint32_t u = vita_read16(p, s);
         if (u == c) return s;
         if (!u) return 0;
     }
 }
-static uint32_t lc_wmemchr(VitaProcess* p, VitaThread* t) {
-    uint32_t s = arg(p, t, 0), c = arg(p, t, 1) & 0xffff, n = arg(p, t, 2);
+uint32_t vita_libc_lc_wmemchr(VitaProcess* p, VitaThread* t, uint32_t s, uint32_t c, uint32_t n) {
+    (void)t;
     for (uint32_t i = 0; i < n; ++i)
         if (vita_read16(p, s + i * 2) == c) return s + i * 2;
     return 0;
 }
-static uint32_t lc_wmemcpy(VitaProcess* p, VitaThread* t) {
-    uint32_t d = arg(p, t, 0), n = arg(p, t, 2);
-    if (n) memmove(host(p, d), host(p, arg(p, t, 1)), (size_t)n * 2);
+uint32_t vita_libc_lc_wmemcpy(VitaProcess* p, VitaThread* t, uint32_t d, uint32_t src, uint32_t n) {
+    (void)t;
+    if (n) memmove(host(p, d), host(p, src), (size_t)n * 2);
     return d;
 }
-static uint32_t lc_wmemset(VitaProcess* p, VitaThread* t) {
-    uint32_t d = arg(p, t, 0), n = arg(p, t, 2);
-    uint16_t c = (uint16_t)arg(p, t, 1);
+uint32_t vita_libc_lc_wmemset(VitaProcess* p, VitaThread* t, uint32_t d, uint32_t wc, uint32_t n) {
+    (void)t;
+    uint16_t c = (uint16_t)wc;
     for (uint32_t i = 0; i < n; ++i) memcpy(host(p, d + i * 2), &c, 2);
     return d;
 }
-static uint32_t lc_wcsstr(VitaProcess* p, VitaThread* t) {
-    uint32_t s = arg(p, t, 0), w = arg(p, t, 1), n = wide_length(p, w);
+uint32_t vita_libc_lc_wcsstr(VitaProcess* p, VitaThread* t, uint32_t s, uint32_t w) {
+    (void)t;
+    uint32_t n = wide_length(p, w);
     for (;; s += 2) {
         if (!wide_compare(p, s, w, n)) return s;
         if (!vita_read16(p, s)) return 0;
     }
 }
 /* _Towctrans(c, which): wctrans's "tolower" (1) or "toupper" (2) */
-static uint32_t lc_towctrans(VitaProcess* p, VitaThread* t) {
-    uint32_t c = arg(p, t, 0), which = arg(p, t, 1);
+uint32_t vita_libc_lc_towctrans(VitaProcess* p, VitaThread* t, uint32_t c, uint32_t which) {
+    (void)p, (void)t;
     if (c >= 0x80) return c;
     return which == 1 ? (uint32_t)tolower((int)c) : which == 2 ? (uint32_t)toupper((int)c) : c;
 }
 
 /* ---- numbers from strings: the host's, on the guest's string ---- */
-static uint32_t lc_strtol(VitaProcess* p, VitaThread* t) {
-    char *s = host(p, arg(p, t, 0)), *end = s;
-    long long v = strtoll(s, &end, (int)arg(p, t, 2));
+uint32_t vita_libc_lc_strtol(VitaProcess* p, VitaThread* t, uint32_t nptr, uint32_t endptr, uint32_t base) {
+    (void)t;
+    char *s = host(p, nptr), *end = s;
+    long long v = strtoll(s, &end, (int)base);
     if (v > INT32_MAX) v = INT32_MAX;
     if (v < INT32_MIN) v = INT32_MIN;
-    if (arg(p, t, 1)) vita_write32(p, arg(p, t, 1), guest(p, end));
+    if (endptr) vita_write32(p, endptr, guest(p, end));
     return (uint32_t)(int32_t)v;
 }
-static uint32_t lc_stoul(VitaProcess* p, VitaThread* t) {
-    char *s = host(p, arg(p, t, 0)), *end = s;
-    unsigned long long v = strtoull(s, &end, (int)arg(p, t, 2));
-    if (arg(p, t, 1)) vita_write32(p, arg(p, t, 1), guest(p, end));
+uint32_t vita_libc_lc_stoul(VitaProcess* p, VitaThread* t, uint32_t nptr, uint32_t endptr, uint32_t base) {
+    (void)t;
+    char *s = host(p, nptr), *end = s;
+    unsigned long long v = strtoull(s, &end, (int)base);
+    if (endptr) vita_write32(p, endptr, guest(p, end));
     return v > UINT32_MAX ? UINT32_MAX : (uint32_t)v;
 }
-static uint32_t lc_stoull(VitaProcess* p, VitaThread* t) {
-    char *s = host(p, arg(p, t, 0)), *end = s;
-    unsigned long long v = strtoull(s, &end, (int)arg(p, t, 2));
-    if (arg(p, t, 1)) vita_write32(p, arg(p, t, 1), guest(p, end));
-    return vita_return64(t, v);
+uint64_t vita_libc_lc_stoull(VitaProcess* p, VitaThread* t, uint32_t nptr, uint32_t endptr, uint32_t base) {
+    (void)t;
+    char *s = host(p, nptr), *end = s;
+    unsigned long long v = strtoull(s, &end, (int)base);
+    if (endptr) vita_write32(p, endptr, guest(p, end));
+    return v;
 }
-static uint32_t lc_stoll(VitaProcess* p, VitaThread* t) {
-    char *s = host(p, arg(p, t, 0)), *end = s;
-    long long v = strtoll(s, &end, (int)arg(p, t, 2));
-    if (arg(p, t, 1)) vita_write32(p, arg(p, t, 1), guest(p, end));
-    return vita_return64(t, (uint64_t)v);
+uint64_t vita_libc_lc_stoll(VitaProcess* p, VitaThread* t, uint32_t nptr, uint32_t endptr, uint32_t base) {
+    (void)t;
+    char *s = host(p, nptr), *end = s;
+    long long v = strtoll(s, &end, (int)base);
+    if (endptr) vita_write32(p, endptr, guest(p, end));
+    return (uint64_t)v;
 }
 /* _Stod(s, endptr, pten): the number times 10 to pten */
-static uint32_t lc_stod(VitaProcess* p, VitaThread* t) {
-    char *s = host(p, arg(p, t, 0)), *end = s;
+double vita_libc_lc_stod(VitaProcess* p, VitaThread* t, uint32_t string, uint32_t endptr, int32_t pten) {
+    (void)t;
+    char *s = host(p, string), *end = s;
     double v = strtod(s, &end);
-    int32_t pten = (int32_t)arg(p, t, 2);
     if (pten) v *= pow(10.0, pten);
-    if (arg(p, t, 1)) vita_write32(p, arg(p, t, 1), guest(p, end));
-    return vita_return_double(t, v);
+    if (endptr) vita_write32(p, endptr, guest(p, end));
+    return v;
 }
 
 /* ---- printf ---- */
@@ -582,59 +625,63 @@ static void to_host(FILE* f, const Out* o) {
     fflush(f);
 }
 /* each printf: the format's argument, then its first argument's (or the va_list's) */
-static Out print(VitaProcess* p, VitaThread* t, unsigned fmt, bool list, bool wide) {
-    Args a = {p, t, fmt + 1, list ? arg(p, t, fmt + 1) : 0};
+/* format, its arguments the call's words from first on (the registers, then the stack), or a va_list's when list is
+   set */
+static Out print(VitaProcess* p, VitaThread* t, uint32_t fmt, unsigned first, uint32_t list, bool wide) {
+    Args a = {p, t, first, list};
     Out o = {0};
-    format(&a, arg(p, t, fmt), wide, &o);
+    format(&a, fmt, wide, &o);
     return o;
 }
-static uint32_t lc_printf(VitaProcess* p, VitaThread* t) {
-    Out o = print(p, t, 0, false, false);
+uint32_t vita_libc_lc_printf(VitaProcess* p, VitaThread* t, uint32_t fmt) {
+    Out o = print(p, t, fmt, 1, 0, false);
     to_host(stdout, &o);
     free(o.units);
     return (uint32_t)o.length;
 }
-static uint32_t lc_sprintf(VitaProcess* p, VitaThread* t) {
-    Out o = print(p, t, 1, false, false);
-    uint32_t r = to_buffer(p, arg(p, t, 0), UINT64_MAX, &o);
+uint32_t vita_libc_lc_sprintf(VitaProcess* p, VitaThread* t, uint32_t buffer, uint32_t fmt) {
+    Out o = print(p, t, fmt, 2, 0, false);
+    uint32_t r = to_buffer(p, buffer, UINT64_MAX, &o);
     free(o.units);
     return r;
 }
-static uint32_t lc_vsprintf(VitaProcess* p, VitaThread* t) {
-    Out o = print(p, t, 1, true, false);
-    uint32_t r = to_buffer(p, arg(p, t, 0), UINT64_MAX, &o);
+uint32_t vita_libc_lc_vsprintf(VitaProcess* p, VitaThread* t, uint32_t buffer, uint32_t fmt, uint32_t list) {
+    Out o = print(p, t, fmt, 2, list, false);
+    uint32_t r = to_buffer(p, buffer, UINT64_MAX, &o);
     free(o.units);
     return r;
 }
-static uint32_t lc_snprintf(VitaProcess* p, VitaThread* t) {
-    Out o = print(p, t, 2, false, false);
-    uint32_t r = to_buffer(p, arg(p, t, 0), arg(p, t, 1), &o);
+uint32_t vita_libc_lc_snprintf(VitaProcess* p, VitaThread* t, uint32_t buffer, uint32_t size, uint32_t fmt) {
+    Out o = print(p, t, fmt, 3, 0, false);
+    uint32_t r = to_buffer(p, buffer, size, &o);
     free(o.units);
     return r;
 }
-static uint32_t lc_vsnprintf(VitaProcess* p, VitaThread* t) {
-    Out o = print(p, t, 2, true, false);
-    uint32_t r = to_buffer(p, arg(p, t, 0), arg(p, t, 1), &o);
+uint32_t vita_libc_lc_vsnprintf(VitaProcess* p, VitaThread* t, uint32_t buffer, uint32_t size, uint32_t fmt,
+                                uint32_t list) {
+    Out o = print(p, t, fmt, 3, list, false);
+    uint32_t r = to_buffer(p, buffer, size, &o);
     free(o.units);
     return r;
 }
-static uint32_t lc_swprintf(VitaProcess* p, VitaThread* t) {
-    Out o = print(p, t, 2, false, true);
-    uint32_t r = to_wide(p, arg(p, t, 0), arg(p, t, 1), &o);
+uint32_t vita_libc_lc_swprintf(VitaProcess* p, VitaThread* t, uint32_t buffer, uint32_t size, uint32_t fmt) {
+    Out o = print(p, t, fmt, 3, 0, true);
+    uint32_t r = to_wide(p, buffer, size, &o);
     free(o.units);
     return r;
 }
-static uint32_t lc_vswprintf(VitaProcess* p, VitaThread* t) {
-    Out o = print(p, t, 2, true, true);
-    uint32_t r = to_wide(p, arg(p, t, 0), arg(p, t, 1), &o);
+uint32_t vita_libc_lc_vswprintf(VitaProcess* p, VitaThread* t, uint32_t buffer, uint32_t size, uint32_t fmt,
+                                uint32_t list) {
+    Out o = print(p, t, fmt, 3, list, true);
+    uint32_t r = to_wide(p, buffer, size, &o);
     free(o.units);
     return r;
 }
 
 /* ---- sscanf ---- */
-static uint32_t lc_sscanf(VitaProcess* p, VitaThread* t) {
-    const char* in = host(p, arg(p, t, 0));
-    uint32_t fmt = arg(p, t, 1), assigned = 0;
+uint32_t vita_libc_lc_sscanf(VitaProcess* p, VitaThread* t, uint32_t str, uint32_t fmt) {
+    const char* in = host(p, str);
+    uint32_t assigned = 0;
     Args a = {p, t, 2, 0};
     const char* s = in;
     bool any = false;
@@ -758,72 +805,79 @@ static FILE* stream(VitaProcess* p, uint32_t file) {
     return fd == STDOUT_FD ? stdout : fd == STDERR_FD ? stderr : fd ? vita_io_file(p, fd) : NULL;
 }
 static uint32_t open_stream(VitaProcess* p, VitaThread* t, uint32_t path, uint32_t flags);
-static uint32_t lc_fopen(VitaProcess* p, VitaThread* t) {
+uint32_t vita_libc_lc_fopen(VitaProcess* p, VitaThread* t, uint32_t path, uint32_t mode_string) {
     char mode[8];
-    vita_string(p, arg(p, t, 1), mode, sizeof mode);
+    vita_string(p, mode_string, mode, sizeof mode);
     uint32_t flags = mode[0] == 'r' ? 0x0001u : mode[0] == 'w' ? 0x0002u | 0x0200u | 0x0400u
                      : mode[0] == 'a' ? 0x0002u | 0x0200u | 0x0100u : 0;
     if (strchr(mode, '+')) flags |= 0x0003u;
     if (!flags) return set_errno(p, t, EINVAL), 0;
-    return open_stream(p, t, arg(p, t, 0), flags);
+    return open_stream(p, t, path, flags);
 }
 static uint32_t open_stream(VitaProcess* p, VitaThread* t, uint32_t path, uint32_t flags) {
-    uint32_t fd = vita_io_open(p, path, flags);
+    uint32_t fd = vita_io_file_open(p, path, flags);
     if (fd & 0x80000000u) return set_errno(p, t, fd & 0xffff), 0;
     uint32_t file = vita_heap_alloc(p, heap(p), 16, 8);
     if (!file) {
-        vita_io_close(p, fd);
+        vita_io_file_close(p, fd);
         return set_errno(p, t, ENOMEM), 0;
     }
     vita_write32(p, file, FILE_MAGIC), vita_write32(p, file + 4, fd);
     return file;
 }
-static uint32_t lc_fclose(VitaProcess* p, VitaThread* t) {
-    uint32_t file = arg(p, t, 0), fd = file_fd(p, file);
+uint32_t vita_libc_lc_fclose(VitaProcess* p, VitaThread* t, uint32_t file) {
+    (void)t;
+    uint32_t fd = file_fd(p, file);
     if (!fd || fd == STDOUT_FD || fd == STDERR_FD) return fd ? 0 : UINT32_MAX;
-    vita_io_close(p, fd);
+    vita_io_file_close(p, fd);
     vita_write32(p, file, 0);
     vita_heap_free(p, heap(p), file);
     return 0;
 }
-static uint32_t lc_fread(VitaProcess* p, VitaThread* t) {
-    FILE* f = stream(p, arg(p, t, 3));
-    uint32_t size = arg(p, t, 1), count = arg(p, t, 2), buffer = arg(p, t, 0);
+uint32_t vita_libc_lc_fread(VitaProcess* p, VitaThread* t, uint32_t buffer, uint32_t size, uint32_t count,
+                            uint32_t file) {
+    (void)t;
+    FILE* f = stream(p, file);
     uint64_t bytes = (uint64_t)size * count; /* past 4 GiB for some sizes and counts: no buffer of a game's is */
     if (!f || !bytes || bytes > UINT32_MAX || !vita_mapped(p, buffer, (uint32_t)bytes)) return 0;
     vita_watch_release(buffer, (uint32_t)bytes); /* the system writes it (watch.h) */
     return (uint32_t)fread(host(p, buffer), size, count, f);
 }
-static uint32_t lc_fwrite(VitaProcess* p, VitaThread* t) {
-    FILE* f = stream(p, arg(p, t, 3));
-    uint32_t size = arg(p, t, 1), count = arg(p, t, 2), buffer = arg(p, t, 0);
+uint32_t vita_libc_lc_fwrite(VitaProcess* p, VitaThread* t, uint32_t buffer, uint32_t size, uint32_t count,
+                             uint32_t file) {
+    (void)t;
+    FILE* f = stream(p, file);
     uint64_t bytes = (uint64_t)size * count;
     if (!f || !bytes || bytes > UINT32_MAX || !vita_mapped(p, buffer, (uint32_t)bytes)) return 0;
     return (uint32_t)fwrite(host(p, buffer), size, count, f);
 }
-static uint32_t lc_fseek(VitaProcess* p, VitaThread* t) {
-    FILE* f = stream(p, arg(p, t, 0));
-    return f && !fseek(f, (long)(int32_t)arg(p, t, 1), (int)arg(p, t, 2)) ? 0 : UINT32_MAX;
+uint32_t vita_libc_lc_fseek(VitaProcess* p, VitaThread* t, uint32_t file, int32_t offset, uint32_t whence) {
+    (void)t;
+    FILE* f = stream(p, file);
+    return f && !fseek(f, (long)offset, (int)whence) ? 0 : UINT32_MAX;
 }
-static uint32_t lc_ftell(VitaProcess* p, VitaThread* t) {
-    FILE* f = stream(p, arg(p, t, 0));
+uint32_t vita_libc_lc_ftell(VitaProcess* p, VitaThread* t, uint32_t file) {
+    (void)t;
+    FILE* f = stream(p, file);
     return f ? (uint32_t)ftell(f) : UINT32_MAX;
 }
-static uint32_t lc_fflush(VitaProcess* p, VitaThread* t) {
-    FILE* f = arg(p, t, 0) ? stream(p, arg(p, t, 0)) : stdout;
+uint32_t vita_libc_lc_fflush(VitaProcess* p, VitaThread* t, uint32_t file) {
+    (void)t;
+    FILE* f = file ? stream(p, file) : stdout;
     if (f) fflush(f);
     return 0;
 }
-static uint32_t lc_fputs(VitaProcess* p, VitaThread* t) {
-    FILE* f = stream(p, arg(p, t, 1));
+uint32_t vita_libc_lc_fputs(VitaProcess* p, VitaThread* t, uint32_t s, uint32_t file) {
+    (void)t;
+    FILE* f = stream(p, file);
     if (!f) return UINT32_MAX;
-    fputs(host(p, arg(p, t, 0)), f);
+    fputs(host(p, s), f);
     if (f == stdout || f == stderr) fflush(f);
     return 0;
 }
-static uint32_t lc_fprintf(VitaProcess* p, VitaThread* t) {
-    FILE* f = stream(p, arg(p, t, 0));
-    Out o = print(p, t, 1, false, false);
+uint32_t vita_libc_lc_fprintf(VitaProcess* p, VitaThread* t, uint32_t file, uint32_t fmt) {
+    FILE* f = stream(p, file);
+    Out o = print(p, t, fmt, 2, 0, false);
     if (f) to_host(f, &o);
     free(o.units);
     return f ? (uint32_t)o.length : UINT32_MAX;
@@ -848,28 +902,27 @@ static void vtable_init(VitaProcess* p, uint32_t slot) {
 }
 
 /* ---- the process, setjmp, TLS, errno ---- */
-static uint32_t lc_exit(VitaProcess* p, VitaThread* t) {
+uint32_t vita_libc_lc_exit(VitaProcess* p, VitaThread* t, int32_t exit_code) {
+    (void)t;
     p->exited = true;
-    p->exit_code = (int32_t)arg(p, t, 0);
+    p->exit_code = exit_code;
     return 0;
 }
-static uint32_t lc_abort(VitaProcess* p, VitaThread* t) { return fatal(p, t, "abort()"); }
+uint32_t vita_libc_lc_abort(VitaProcess* p, VitaThread* t) { return fatal(p, t, "abort()"); }
 /* setjmp(env): r4 to r11, sp and lr, then d8 to d15, as only longjmp reads them */
-static uint32_t lc_setjmp(VitaProcess* p, VitaThread* t) {
-    uint32_t env = arg(p, t, 0);
+uint32_t vita_libc_lc_setjmp(VitaProcess* p, VitaThread* t, uint32_t env) {
     for (unsigned i = 0; i < 10; ++i) vita_write32(p, env + i * 4, t->cpu.r[4 + i]);
     for (unsigned i = 0; i < 8; ++i) vita_write64(p, env + 40 + i * 8, t->cpu.d[8 + i]);
     return 0;
 }
-static uint32_t lc_longjmp(VitaProcess* p, VitaThread* t) {
-    uint32_t env = arg(p, t, 0), value = arg(p, t, 1);
+uint32_t vita_libc_lc_longjmp(VitaProcess* p, VitaThread* t, uint32_t env, uint32_t value) {
     for (unsigned i = 0; i < 10; ++i) t->cpu.r[4 + i] = vita_read32(p, env + i * 4);
     for (unsigned i = 0; i < 8; ++i)
         t->cpu.d[8 + i] = vita_read32(p, env + 40 + i * 8) | (uint64_t)vita_read32(p, env + 44 + i * 8) << 32;
     return value ? value : 1; /* returned from setjmp's call, by the stub's bx lr */
 }
 /* __tls_get_addr(&{module, offset}): the thread's copy of the module's thread-local data, made at its first use */
-static uint32_t lc_tls_get_addr(VitaProcess* p, VitaThread* t) {
+uint32_t vita_libc_lc_tls_get_addr(VitaProcess* p, VitaThread* t, uint32_t list) {
     const VitaImage* image = &p->image;
     if (!t->module_tls) {
         uint32_t block = image->tls_memsz ? vita_alloc(p, &p->user, image->tls_memsz, PAGE) : 0;
@@ -877,43 +930,49 @@ static uint32_t lc_tls_get_addr(VitaProcess* p, VitaThread* t) {
         memcpy(host(p, block), host(p, image->tls_image), image->tls_filesz);
         t->module_tls = block;
     }
-    return t->module_tls + vita_read32(p, arg(p, t, 0) + 4);
+    return t->module_tls + vita_read32(p, list + 4);
 }
-static uint32_t lc_errno_loc(VitaProcess* p, VitaThread* t) {
+uint32_t vita_libc_lc_errno_loc(VitaProcess* p, VitaThread* t) {
     (void)p;
     return t->tls + VITA_TLS_ERRNO;
 }
 /* __cxa_guard_acquire(guard): 1 when the object is to be made (its guard's first byte clear), one thread at a time */
-static uint32_t cxa_guard_acquire(VitaProcess* p, VitaThread* t) { return !(p->mem[arg(p, t, 0)] & 1); }
-static uint32_t cxa_guard_release(VitaProcess* p, VitaThread* t) {
-    p->mem[arg(p, t, 0)] = 1;
+uint32_t vita_libc_cxa_guard_acquire(VitaProcess* p, VitaThread* t, uint32_t guard) {
+    (void)t;
+    return !(p->mem[guard] & 1);
+}
+uint32_t vita_libc_cxa_guard_release(VitaProcess* p, VitaThread* t, uint32_t guard) {
+    (void)t;
+    p->mem[guard] = 1;
     return 0;
 }
-static uint32_t lc_rand(VitaProcess* p, VitaThread* t) {
+uint32_t vita_libc_lc_rand(VitaProcess* p, VitaThread* t) {
     (void)t;
     p->libc.rand = p->libc.rand * 1103515245u + 12345u;
     return (p->libc.rand >> 16) & 0x7fff;
 }
-static uint32_t lc_srand(VitaProcess* p, VitaThread* t) {
-    p->libc.rand = arg(p, t, 0);
+uint32_t vita_libc_lc_srand(VitaProcess* p, VitaThread* t, uint32_t seed) {
+    (void)t;
+    p->libc.rand = seed;
     return 0;
 }
 /* ldiv(n, d): its ldiv_t returned in memory, the address in r0 */
-static uint32_t lc_ldiv(VitaProcess* p, VitaThread* t) {
-    uint32_t out = arg(p, t, 0);
-    int32_t n = (int32_t)arg(p, t, 1), d = (int32_t)arg(p, t, 2);
+uint32_t vita_libc_lc_ldiv(VitaProcess* p, VitaThread* t, uint32_t out, int32_t n, int32_t d) {
+    (void)t;
     int32_t q = d ? (d == -1 ? (int32_t)(0u - (uint32_t)n) : n / d) : 0, r = d ? (int32_t)((uint32_t)n - (uint32_t)q * (uint32_t)d) : 0;
     vita_write32(p, out, (uint32_t)q), vita_write32(p, out + 4, (uint32_t)r);
     return out;
 }
 /* time(t): a 32-bit time_t, as SCE's libc has it */
-static uint32_t lc_time(VitaProcess* p, VitaThread* t) {
+uint32_t vita_libc_lc_time(VitaProcess* p, VitaThread* t, uint32_t tloc) {
+    (void)t;
     uint32_t now = (uint32_t)time(NULL);
-    if (arg(p, t, 0)) vita_write32(p, arg(p, t, 0), now);
+    if (tloc) vita_write32(p, tloc, now);
     return now;
 }
-static uint32_t lc_gmtime(VitaProcess* p, VitaThread* t) {
-    uint32_t d = data(p), at = arg(p, t, 0);
+uint32_t vita_libc_lc_gmtime(VitaProcess* p, VitaThread* t, uint32_t at) {
+    (void)t;
+    uint32_t d = data(p);
     time_t when = (time_t)(int32_t)vita_read32(p, at);
     struct tm tm;
 #ifdef _WIN32
@@ -927,72 +986,81 @@ static uint32_t lc_gmtime(VitaProcess* p, VitaThread* t) {
     return d + TM_RESULT;
 }
 
-/* ---- SceLibm: the hard-float ABI's, S0 and S1 or D0 and D1 in, S0 or D0 out ---- */
+/* ---- SceLibm: the hard-float ABI's, which hookgen's adapters keep: x (and y) from S0 and S1 or D0 and D1, the
+   result to S0 or D0 ---- */
 #define F1(name, expr)                                                                                                 \
-    static uint32_t name(VitaProcess* p, VitaThread* t) {                                                              \
-        (void)p;                                                                                                       \
-        float x = vita_float(t, 0), y = vita_float(t, 1);                                                              \
-        (void)y;                                                                                                       \
-        return vita_return_float(t, expr);                                                                             \
+    float name(VitaProcess* p, VitaThread* t, float x) {                                                               \
+        (void)p, (void)t;                                                                                              \
+        return expr;                                                                                                   \
+    }
+#define F2(name, expr)                                                                                                 \
+    float name(VitaProcess* p, VitaThread* t, float x, float y) {                                                      \
+        (void)p, (void)t;                                                                                              \
+        return expr;                                                                                                   \
     }
 #define D1(name, expr)                                                                                                 \
-    static uint32_t name(VitaProcess* p, VitaThread* t) {                                                              \
-        (void)p;                                                                                                       \
-        double x = vita_double(t, 0), y = vita_double(t, 1);                                                           \
-        (void)y;                                                                                                       \
-        return vita_return_double(t, expr);                                                                            \
+    double name(VitaProcess* p, VitaThread* t, double x) {                                                             \
+        (void)p, (void)t;                                                                                              \
+        return expr;                                                                                                   \
     }
-F1(lm_acosf, acosf(x))
-F1(lm_asinf, asinf(x))
-F1(lm_atanf, atanf(x))
-F1(lm_atan2f, atan2f(x, y))
-F1(lm_tanf, tanf(x))
-F1(lm_expf, expf(x))
-F1(lm_powf, powf(x, y))
-F1(lm_fmodf, fmodf(x, y))
-F1(lm_ceilf, ceilf(x))
-F1(lm_floorf, floorf(x))
-F1(lm_fabsf, fabsf(x))
-F1(lm_sinf, sinf(x))
-F1(lm_cosf, cosf(x))
-F1(lm_sqrtf, sqrtf(x))
-F1(lm_logf, logf(x))
-D1(lm_pow, pow(x, y))
-D1(lm_fmod, fmod(x, y))
-D1(lm_exp, exp(x))
-D1(lm_sqrt, sqrt(x))
-D1(lm_floor, floor(x))
-D1(lm_ceil, ceil(x))
-static uint32_t lm_ldexpf(VitaProcess* p, VitaThread* t) {
-    return vita_return_float(t, ldexpf(vita_float(t, 0), (int)(int32_t)arg(p, t, 0)));
+#define D2(name, expr)                                                                                                 \
+    double name(VitaProcess* p, VitaThread* t, double x, double y) {                                                   \
+        (void)p, (void)t;                                                                                              \
+        return expr;                                                                                                   \
+    }
+F1(vita_libc_lm_acosf, acosf(x))
+F1(vita_libc_lm_asinf, asinf(x))
+F1(vita_libc_lm_atanf, atanf(x))
+F2(vita_libc_lm_atan2f, atan2f(x, y))
+F1(vita_libc_lm_tanf, tanf(x))
+F1(vita_libc_lm_expf, expf(x))
+F2(vita_libc_lm_powf, powf(x, y))
+F2(vita_libc_lm_fmodf, fmodf(x, y))
+F1(vita_libc_lm_ceilf, ceilf(x))
+F1(vita_libc_lm_floorf, floorf(x))
+F1(vita_libc_lm_fabsf, fabsf(x))
+F1(vita_libc_lm_sinf, sinf(x))
+F1(vita_libc_lm_cosf, cosf(x))
+F1(vita_libc_lm_sqrtf, sqrtf(x))
+F1(vita_libc_lm_logf, logf(x))
+D2(vita_libc_lm_pow, pow(x, y))
+D2(vita_libc_lm_fmod, fmod(x, y))
+D1(vita_libc_lm_exp, exp(x))
+D1(vita_libc_lm_sqrt, sqrt(x))
+D1(vita_libc_lm_floor, floor(x))
+D1(vita_libc_lm_ceil, ceil(x))
+float vita_libc_lm_ldexpf(VitaProcess* p, VitaThread* t, float x, int32_t exponent) {
+    (void)p, (void)t;
+    return ldexpf(x, exponent);
 }
 /* modff(x, float* integer) */
-static uint32_t lm_modff(VitaProcess* p, VitaThread* t) {
-    float whole, part = modff(vita_float(t, 0), &whole);
+float vita_libc_lm_modff(VitaProcess* p, VitaThread* t, float x, uint32_t integer) {
+    (void)t;
+    float whole, part = modff(x, &whole);
     uint32_t bits;
     memcpy(&bits, &whole, sizeof bits);
-    if (arg(p, t, 0)) vita_write32(p, arg(p, t, 0), bits);
-    return vita_return_float(t, part);
+    if (integer) vita_write32(p, integer, bits);
+    return part;
 }
 /* Dinkumware's _FSin(x, quadrant offset): sin(x + offset * pi/2), cos for offset 1 */
-static uint32_t lm_fsin(VitaProcess* p, VitaThread* t) {
-    float x = vita_float(t, 0);
-    switch (arg(p, t, 0) & 3) {
-        case 0: return vita_return_float(t, sinf(x));
-        case 1: return vita_return_float(t, cosf(x));
-        case 2: return vita_return_float(t, -sinf(x));
-        default: return vita_return_float(t, -cosf(x));
+float vita_libc_lm_fsin(VitaProcess* p, VitaThread* t, float x, uint32_t offset) {
+    (void)p, (void)t;
+    switch (offset & 3) {
+        case 0: return sinf(x);
+        case 1: return cosf(x);
+        case 2: return -sinf(x);
+        default: return -cosf(x);
     }
 }
 /* _FLog(x, base): 0 the natural, 1 base 10, 2 base 2 */
-static uint32_t lm_flog(VitaProcess* p, VitaThread* t) {
-    float x = vita_float(t, 0);
-    uint32_t base = arg(p, t, 0);
-    return vita_return_float(t, base == 1 ? log10f(x) : base == 2 ? log2f(x) : logf(x));
+float vita_libc_lm_flog(VitaProcess* p, VitaThread* t, float x, uint32_t base) {
+    (void)p, (void)t;
+    return base == 1 ? log10f(x) : base == 2 ? log2f(x) : logf(x);
 }
 /* _FDtest(float* x): its class, Dinkumware's codes */
-static uint32_t lm_fdtest(VitaProcess* p, VitaThread* t) {
-    uint32_t bits = vita_read32(p, arg(p, t, 0));
+uint32_t vita_libc_lm_fdtest(VitaProcess* p, VitaThread* t, uint32_t list) {
+    (void)t;
+    uint32_t bits = vita_read32(p, list);
     float x;
     memcpy(&x, &bits, sizeof x);
     switch (fpclassify(x)) {
@@ -1005,63 +1073,65 @@ static uint32_t lm_fdtest(VitaProcess* p, VitaThread* t) {
 }
 
 /* the double libm's others, which a game's own printf and string-to-number code reach through Dinkumware's helpers */
-D1(lm_fabs, fabs(x))
-D1(lm_sin, sin(x))
-D1(lm_cos, cos(x))
-D1(lm_tan, tan(x))
-D1(lm_asin, asin(x))
-D1(lm_acos, acos(x))
-D1(lm_atan, atan(x))
-D1(lm_atan2, atan2(x, y))
-D1(lm_log, log(x))
-D1(lm_log10, log10(x))
-D1(lm_log2, log2(x))
-D1(lm_exp2, exp2(x))
-D1(lm_trunc, trunc(x))
-D1(lm_round, round(x))
-D1(lm_rint, rint(x))
-D1(lm_nearbyint, nearbyint(x))
-D1(lm_cbrt, cbrt(x))
-D1(lm_sinh, sinh(x))
-D1(lm_cosh, cosh(x))
-D1(lm_tanh, tanh(x))
-D1(lm_hypot, hypot(x, y))
-D1(lm_copysign, copysign(x, y))
-D1(lm_fmax, fmax(x, y))
-D1(lm_fmin, fmin(x, y))
-F1(lm_truncf, truncf(x))
-F1(lm_roundf, roundf(x))
-F1(lm_rintf, rintf(x))
-F1(lm_nearbyintf, nearbyintf(x))
-F1(lm_log10f, log10f(x))
-F1(lm_log2f, log2f(x))
-F1(lm_exp2f, exp2f(x))
-F1(lm_cbrtf, cbrtf(x))
-F1(lm_sinhf, sinhf(x))
-F1(lm_coshf, coshf(x))
-F1(lm_tanhf, tanhf(x))
-F1(lm_hypotf, hypotf(x, y))
-F1(lm_copysignf, copysignf(x, y))
-F1(lm_fmaxf, fmaxf(x, y))
-F1(lm_fminf, fminf(x, y))
+D1(vita_libc_lm_fabs, fabs(x))
+D1(vita_libc_lm_sin, sin(x))
+D1(vita_libc_lm_cos, cos(x))
+D1(vita_libc_lm_tan, tan(x))
+D1(vita_libc_lm_asin, asin(x))
+D1(vita_libc_lm_acos, acos(x))
+D1(vita_libc_lm_atan, atan(x))
+D2(vita_libc_lm_atan2, atan2(x, y))
+D1(vita_libc_lm_log, log(x))
+D1(vita_libc_lm_log10, log10(x))
+D1(vita_libc_lm_log2, log2(x))
+D1(vita_libc_lm_exp2, exp2(x))
+D1(vita_libc_lm_trunc, trunc(x))
+D1(vita_libc_lm_round, round(x))
+D1(vita_libc_lm_rint, rint(x))
+D1(vita_libc_lm_nearbyint, nearbyint(x))
+D1(vita_libc_lm_cbrt, cbrt(x))
+D1(vita_libc_lm_sinh, sinh(x))
+D1(vita_libc_lm_cosh, cosh(x))
+D1(vita_libc_lm_tanh, tanh(x))
+D2(vita_libc_lm_hypot, hypot(x, y))
+D2(vita_libc_lm_copysign, copysign(x, y))
+D2(vita_libc_lm_fmax, fmax(x, y))
+D2(vita_libc_lm_fmin, fmin(x, y))
+F1(vita_libc_lm_truncf, truncf(x))
+F1(vita_libc_lm_roundf, roundf(x))
+F1(vita_libc_lm_rintf, rintf(x))
+F1(vita_libc_lm_nearbyintf, nearbyintf(x))
+F1(vita_libc_lm_log10f, log10f(x))
+F1(vita_libc_lm_log2f, log2f(x))
+F1(vita_libc_lm_exp2f, exp2f(x))
+F1(vita_libc_lm_cbrtf, cbrtf(x))
+F1(vita_libc_lm_sinhf, sinhf(x))
+F1(vita_libc_lm_coshf, coshf(x))
+F1(vita_libc_lm_tanhf, tanhf(x))
+F2(vita_libc_lm_hypotf, hypotf(x, y))
+F2(vita_libc_lm_copysignf, copysignf(x, y))
+F2(vita_libc_lm_fmaxf, fmaxf(x, y))
+F2(vita_libc_lm_fminf, fminf(x, y))
 /* ldexp(x, int exponent) and frexp(x, int* exponent): the double in D0, the int in R0 */
-static uint32_t lm_ldexp(VitaProcess* p, VitaThread* t) {
-    return vita_return_double(t, ldexp(vita_double(t, 0), (int)(int32_t)arg(p, t, 0)));
+double vita_libc_lm_ldexp(VitaProcess* p, VitaThread* t, double x, int32_t exponent) {
+    (void)p, (void)t;
+    return ldexp(x, exponent);
 }
-static uint32_t lm_frexp(VitaProcess* p, VitaThread* t) {
+double vita_libc_lm_frexp(VitaProcess* p, VitaThread* t, double x, uint32_t out) {
+    (void)t;
     int exponent = 0;
-    double mantissa = frexp(vita_double(t, 0), &exponent);
-    uint32_t out = arg(p, t, 0);
+    double mantissa = frexp(x, &exponent);
     if (out && vita_mapped(p, out, 4)) vita_write32(p, out, (uint32_t)exponent);
-    return vita_return_double(t, mantissa);
+    return mantissa;
 }
 /* modf(x, double* integer): the fraction in D0, the integer part through R0 */
-static uint32_t lm_modf(VitaProcess* p, VitaThread* t) {
-    double whole, part = modf(vita_double(t, 0), &whole);
-    uint32_t out = arg(p, t, 0), words[2];
+double vita_libc_lm_modf(VitaProcess* p, VitaThread* t, double x, uint32_t out) {
+    (void)t;
+    double whole, part = modf(x, &whole);
+    uint32_t words[2];
     memcpy(words, &whole, sizeof words);
     if (out && vita_mapped(p, out, 8)) vita_write32(p, out, words[0]), vita_write32(p, out + 4, words[1]);
-    return vita_return_double(t, part);
+    return part;
 }
 /* Dinkumware's classes: _Dtest(double* x), _FDsign(float x) and _Dsign(double x), the sign as the sign bit of the
    16-bit word it is in (0x8000) */
@@ -1074,28 +1144,29 @@ static int dinkum_class(double x) {
         default: return -1;
     }
 }
-static uint32_t lm_dtest(VitaProcess* p, VitaThread* t) {
-    uint32_t at = arg(p, t, 0);
+uint32_t vita_libc_lm_dtest(VitaProcess* p, VitaThread* t, uint32_t at) {
+    (void)t;
     if (!at || !vita_mapped(p, at, 8)) return 0;
     uint32_t words[2] = {vita_read32(p, at), vita_read32(p, at + 4)};
     double x;
     memcpy(&x, words, sizeof x);
     return (uint32_t)dinkum_class(x);
 }
-static uint32_t lm_dsign(VitaProcess* p, VitaThread* t) {
-    (void)p;
-    return signbit(vita_double(t, 0)) ? 0x8000u : 0;
+uint32_t vita_libc_lm_dsign(VitaProcess* p, VitaThread* t, double x) {
+    (void)p, (void)t;
+    return signbit(x) ? 0x8000u : 0;
 }
-static uint32_t lm_fdsign(VitaProcess* p, VitaThread* t) {
-    (void)p;
-    return signbit(vita_float(t, 0)) ? 0x8000u : 0;
+uint32_t vita_libc_lm_fdsign(VitaProcess* p, VitaThread* t, float x) {
+    (void)p, (void)t;
+    return signbit(x) ? 0x8000u : 0;
 }
 /* _Stolx(const char* s, char** end, int base, int* error): strtol, the error set when the value is out of range */
-static uint32_t lc_stolx(VitaProcess* p, VitaThread* t) {
-    char *s = host(p, arg(p, t, 0)), *end = s;
-    long long v = strtoll(s, &end, (int)arg(p, t, 2));
-    uint32_t error = arg(p, t, 3);
-    if (arg(p, t, 1)) vita_write32(p, arg(p, t, 1), guest(p, end));
+uint32_t vita_libc_lc_stolx(VitaProcess* p, VitaThread* t, uint32_t nptr, uint32_t endptr, uint32_t base,
+                            uint32_t error) {
+    (void)t;
+    char *s = host(p, nptr), *end = s;
+    long long v = strtoll(s, &end, (int)base);
+    if (endptr) vita_write32(p, endptr, guest(p, end));
     if (v > INT32_MAX || v < INT32_MIN) {
         if (error && vita_mapped(p, error, 4)) vita_write32(p, error, 1);
         return v > 0 ? (uint32_t)INT32_MAX : (uint32_t)INT32_MIN;
@@ -1105,18 +1176,18 @@ static uint32_t lc_stolx(VitaProcess* p, VitaThread* t) {
 
 /* _Fiopen(path, openmode, protection): what ifstream and ofstream open with. The openmode's bits: in 1, out 2, ate 4,
    app 8, trunc 0x10, binary 0x20 */
-static uint32_t cxx_fiopen(VitaProcess* p, VitaThread* t) {
-    uint32_t mode = arg(p, t, 1), flags = 0;
+uint32_t vita_libc_cxx_fiopen(VitaProcess* p, VitaThread* t, uint32_t path, uint32_t mode) {
+    uint32_t flags = 0;
     if (mode & 1) flags |= 0x0001u;
     if (mode & 2) flags |= 0x0002u;
     if ((mode & 3) == 2 || (mode & 0x10)) flags |= 0x0200u | 0x0400u; /* out alone makes the file and empties it */
     if (mode & 8) flags = (flags & ~0x0400u) | 0x0002u | 0x0200u | 0x0100u;
     if (!flags) return set_errno(p, t, EINVAL), 0;
-    return open_stream(p, t, arg(p, t, 0), flags);
+    return open_stream(p, t, path, flags);
 }
 /* wide strings are 16-bit on the Vita */
-static uint32_t lc_wmemcmp(VitaProcess* p, VitaThread* t) {
-    uint32_t a = arg(p, t, 0), b = arg(p, t, 1), n = arg(p, t, 2);
+uint32_t vita_libc_lc_wmemcmp(VitaProcess* p, VitaThread* t, uint32_t a, uint32_t b, uint32_t n) {
+    (void)t;
     for (uint32_t i = 0; i < n; ++i) {
         uint16_t x, y;
         memcpy(&x, host(p, a + i * 2), 2), memcpy(&y, host(p, b + i * 2), 2);
@@ -1124,25 +1195,24 @@ static uint32_t lc_wmemcmp(VitaProcess* p, VitaThread* t) {
     }
     return 0;
 }
-static uint32_t lc_labs(VitaProcess* p, VitaThread* t) {
-    int32_t v = (int32_t)arg(p, t, 0);
+uint32_t vita_libc_lc_labs(VitaProcess* p, VitaThread* t, int32_t v) {
+    (void)p, (void)t;
     return v < 0 ? 0u - (uint32_t)v : (uint32_t)v;
 }
-static uint32_t lc_imaxabs(VitaProcess* p, VitaThread* t) {
-    int64_t v = (int64_t)((uint64_t)arg(p, t, 1) << 32 | arg(p, t, 0));
-    return vita_return64(t, v < 0 ? 0u - (uint64_t)v : (uint64_t)v);
+uint64_t vita_libc_lc_imaxabs(VitaProcess* p, VitaThread* t, int64_t v) {
+    (void)p, (void)t;
+    return v < 0 ? 0u - (uint64_t)v : (uint64_t)v;
 }
 /* _Log(x, base) as _FLog's, in double */
-static uint32_t lm_log_base(VitaProcess* p, VitaThread* t) {
-    double x = vita_double(t, 0);
-    uint32_t base = arg(p, t, 0);
-    return vita_return_double(t, base == 1 ? log10(x) : base == 2 ? log2(x) : log(x));
+double vita_libc_lm_log_base(VitaProcess* p, VitaThread* t, double x, uint32_t base) {
+    (void)p, (void)t;
+    return base == 1 ? log10(x) : base == 2 ? log2(x) : log(x);
 }
 
 /* ---- SceLibstdcxx: what the game's code throws ends it ---- */
-static uint32_t cxx_length_error(VitaProcess* p, VitaThread* t) { return fatal(p, t, "std::length_error thrown"); }
-static uint32_t cxx_out_of_range(VitaProcess* p, VitaThread* t) { return fatal(p, t, "std::out_of_range thrown"); }
-static uint32_t cxx_raise(VitaProcess* p, VitaThread* t) { return fatal(p, t, "a C++ exception thrown"); }
+uint32_t vita_libc_cxx_length_error(VitaProcess* p, VitaThread* t) { return fatal(p, t, "std::length_error thrown"); }
+uint32_t vita_libc_cxx_out_of_range(VitaProcess* p, VitaThread* t) { return fatal(p, t, "std::out_of_range thrown"); }
+uint32_t vita_libc_cxx_raise(VitaProcess* p, VitaThread* t) { return fatal(p, t, "a C++ exception thrown"); }
 /* type_info compares by identity, then by the name the second word points to */
 /* the name of a type_info: the string its second word points to, or else (Dinkumware's type_info has a data word, then
    the name's characters inline) the bytes after that word. The layout is a guess: type_info::name logs the first
@@ -1158,9 +1228,9 @@ static int typeinfo_same(VitaProcess* p, uint32_t a, uint32_t b) {
     uint32_t x = typeinfo_name(p, a), y = typeinfo_name(p, b);
     return x && y && (x == y || !strcmp(host(p, x), host(p, y)));
 }
-static uint32_t cxx_typeinfo_name(VitaProcess* p, VitaThread* t) {
+uint32_t vita_libc_cxx_typeinfo_name(VitaProcess* p, VitaThread* t, uint32_t info) {
+    (void)t;
     static unsigned shown;
-    uint32_t info = arg(p, t, 0);
     if (shown < 3 && info && vita_mapped(p, info, 16)) {
         ++shown;
         printf("vita: type_info::name(0x%08" PRIx32 ") words %08" PRIx32 " %08" PRIx32 " %08" PRIx32 " %08" PRIx32 "\n",
@@ -1169,21 +1239,22 @@ static uint32_t cxx_typeinfo_name(VitaProcess* p, VitaThread* t) {
     }
     return typeinfo_name(p, info);
 }
-static uint32_t cxx_typeinfo_eq(VitaProcess* p, VitaThread* t) {
-    return (uint32_t)typeinfo_same(p, arg(p, t, 0), arg(p, t, 1));
+uint32_t vita_libc_cxx_typeinfo_eq(VitaProcess* p, VitaThread* t, uint32_t a, uint32_t b) {
+    (void)t;
+    return (uint32_t)typeinfo_same(p, a, b);
 }
-static uint32_t cxx_typeinfo_ne(VitaProcess* p, VitaThread* t) {
-    return (uint32_t)!typeinfo_same(p, arg(p, t, 0), arg(p, t, 1));
+uint32_t vita_libc_cxx_typeinfo_ne(VitaProcess* p, VitaThread* t, uint32_t a, uint32_t b) {
+    (void)t;
+    return (uint32_t)!typeinfo_same(p, a, b);
 }
-static uint32_t cxa_allocate_exception(VitaProcess* p, VitaThread* t) {
-    uint32_t r = vita_heap_alloc(p, heap(p), arg(p, t, 0) + 128, 8);
+uint32_t vita_libc_cxa_allocate_exception(VitaProcess* p, VitaThread* t, uint32_t size) {
+    uint32_t r = vita_heap_alloc(p, heap(p), size + 128, 8);
     return r ? r : fatal(p, t, "no memory for an exception");
 }
 /* ios_base::clear(state, reraise). The game's inline code reads the state at +8 and the rdbuf at +0x24, so the
    exception mask is taken as the word after the state. The first calls are logged to check it */
-static uint32_t ios_clear(VitaProcess* p, VitaThread* t) {
+uint32_t vita_libc_ios_clear(VitaProcess* p, VitaThread* t, uint32_t self, uint32_t state) {
     static unsigned shown;
-    uint32_t self = arg(p, t, 0), state = arg(p, t, 1);
     if (shown++ < 4)
         printf("vita: ios_base::clear(0x%08" PRIx32 ", 0x%" PRIx32 ") words %08" PRIx32 " %08" PRIx32 " %08" PRIx32
                " %08" PRIx32 " rdbuf %08" PRIx32 "\n",
@@ -1194,8 +1265,8 @@ static uint32_t ios_clear(VitaProcess* p, VitaThread* t) {
     return 0;
 }
 /* ios_base::_Init(this) gives the stream the state of a new one: good, no exceptions, skipws and dec, precision 6 */
-static uint32_t ios_init(VitaProcess* p, VitaThread* t) {
-    uint32_t self = arg(p, t, 0);
+uint32_t vita_libc_ios_init(VitaProcess* p, VitaThread* t, uint32_t self) {
+    (void)t;
     vita_write32(p, self + 8, 0);
     vita_write32(p, self + 12, 0);
     vita_write32(p, self + 16, 0x201);
@@ -1204,15 +1275,21 @@ static uint32_t ios_init(VitaProcess* p, VitaThread* t) {
     return self;
 }
 /* std::exception::exception(this): its vtable one whose functions do nothing */
-static uint32_t cxx_exception(VitaProcess* p, VitaThread* t) {
-    uint32_t self = arg(p, t, 0), d = data(p);
+uint32_t vita_libc_cxx_exception(VitaProcess* p, VitaThread* t, uint32_t self) {
+    (void)t;
+    uint32_t d = data(p);
     if (d) vita_write32(p, self, d + EMPTY_VTABLE + 8);
     return self;
 }
 
 /* ---- the Clib's printf ---- */
-static uint32_t clib_snprintf(VitaProcess* p, VitaThread* t) { return lc_snprintf(p, t); }
-static uint32_t clib_vsnprintf(VitaProcess* p, VitaThread* t) { return lc_vsnprintf(p, t); }
+uint32_t vita_libc_clib_snprintf(VitaProcess* p, VitaThread* t, uint32_t buffer, uint32_t size, uint32_t fmt) {
+    return vita_libc_lc_snprintf(p, t, buffer, size, fmt);
+}
+uint32_t vita_libc_clib_vsnprintf(VitaProcess* p, VitaThread* t, uint32_t buffer, uint32_t size, uint32_t fmt,
+                                  uint32_t list) {
+    return vita_libc_lc_vsnprintf(p, t, buffer, size, fmt, list);
+}
 
 /* qsort(base, count, size, compare): the game's comparator runs as guest code, so the sort is an insertion sort
    (adjacent swaps) stepping one comparison per callback */
@@ -1245,12 +1322,12 @@ static uint32_t qsort_step(VitaProcess* p, VitaThread* t, Qsort* q) {
     vita_hle_guest_call(p, t, q->compare, args, 2, qsort_compared, q);
     return 0;
 }
-static uint32_t lc_qsort(VitaProcess* p, VitaThread* t) {
-    uint32_t count = arg(p, t, 1), size = arg(p, t, 2);
-    if (count < 2 || !size || !arg(p, t, 3)) return 0;
+uint32_t vita_libc_lc_qsort(VitaProcess* p, VitaThread* t, uint32_t base, uint32_t count, uint32_t size,
+                            uint32_t compare) {
+    if (count < 2 || !size || !compare) return 0;
     Qsort* q = calloc(1, sizeof *q);
     if (!q) return 0;
-    q->base = arg(p, t, 0), q->count = count, q->size = size, q->compare = arg(p, t, 3);
+    q->base = base, q->count = count, q->size = size, q->compare = compare;
     q->i = q->j = 1;
     return qsort_step(p, t, q);
 }
@@ -1285,248 +1362,16 @@ static uint32_t bsearch_step(VitaProcess* p, VitaThread* t, Bsearch* b) {
     vita_hle_guest_call(p, t, b->compare, args, 2, bsearch_compared, b);
     return 0;
 }
-static uint32_t lc_bsearch(VitaProcess* p, VitaThread* t) {
-    uint32_t count = arg(p, t, 2), size = arg(p, t, 3);
-    if (!count || !size || !arg(p, t, 4)) return 0;
+uint32_t vita_libc_lc_bsearch(VitaProcess* p, VitaThread* t, uint32_t key, uint32_t base, uint32_t count, uint32_t size,
+                              uint32_t compare) {
+    if (!count || !size || !compare) return 0;
     Bsearch* b = calloc(1, sizeof *b);
     if (!b) return 0;
-    b->key = arg(p, t, 0), b->base = arg(p, t, 1), b->size = size, b->compare = arg(p, t, 4);
+    b->key = key, b->base = base, b->size = size, b->compare = compare;
     b->high = count;
     return bsearch_step(p, t, b);
 }
 
-const VitaHle vita_hle_libc[] = {
-    /* SceLibc */
-    {0x775a0cb2u, "malloc", lc_malloc},
-    {0xa7cbe4a6u, "qsort", lc_qsort},
-    {0xd1bc28e7u, "bsearch", lc_bsearch},
-    {0x5b9bb802u, "free", lc_free},
-    {0x006b54bau, "realloc", lc_realloc},
-    {0xe7ec3d0bu, "calloc", lc_calloc},
-    {0xa9363e6bu, "memalign", lc_memalign},
-    {0x608ac135u, "reallocalign", lc_reallocalign},
-    {0x54a54eb1u, "malloc_usable_size", lc_malloc_usable_size},
-    {0x7205bfdbu, "memcpy", lc_memcpy},
-    {0xaf5c218du, "memmove", lc_memcpy},
-    {0x6dc1f0d8u, "memset", lc_memset},
-    {0x7747f6d7u, "memcmp", lc_memcmp},
-    {0x2f3e5b16u, "memchr", lc_memchr},
-    {0x8aecc873u, "strlen", lc_strlen},
-    {0x1b58fa3bu, "strcmp", lc_strcmp},
-    {0xe4299dcbu, "strncmp", lc_strncmp},
-    {0x184c4b07u, "strcasecmp", lc_strcasecmp},
-    {0xaf1ca2f1u, "strncasecmp", lc_strncasecmp},
-    {0x85b924b7u, "strcpy", lc_strcpy},
-    {0x9f87712du, "strncpy", lc_strncpy},
-    {0x1434fa46u, "strcat", lc_strcat},
-    {0xfba69bc2u, "strncat", lc_strncat},
-    {0xb9336e16u, "strchr", lc_strchr},
-    {0xcefdd143u, "strrchr", lc_strrchr},
-    {0x0d5200cbu, "strstr", lc_strstr},
-    {0x4203b663u, "strspn", lc_strspn},
-    {0x0e29d27au, "strcspn", lc_strcspn},
-    {0x68c307b6u, "strpbrk", lc_strpbrk},
-    {0x7a08be70u, "wmemchr", lc_wmemchr},
-    {0xd9f9ddcdu, "wmemcpy", lc_wmemcpy},
-    {0x4d04a480u, "wmemset", lc_wmemset},
-    {0xa778a14bu, "wcslen", lc_wcslen},
-    {0xf42128b9u, "wcscmp", lc_wcscmp},
-    {0xaaa6aaa2u, "wcsncmp", lc_wcsncmp},
-    {0xc1587971u, "wcschr", lc_wcschr},
-    {0x5be328eeu, "wcsstr", lc_wcsstr},
-    {0x9d885076u, "_Towctrans", lc_towctrans},
-    {0x181827edu, "strtol", lc_strtol},
-    {0xe71c5cdeu, "_Stoul", lc_stoul},
-    {0x6794b3c6u, "_Stoull", lc_stoull},
-    {0x6b9e23feu, "_Stoll", lc_stoll},
-    {0xbf94193bu, "_Stod", lc_stod},
-    {0x9a004680u, "printf", lc_printf},
-    {0x7449b359u, "sprintf", lc_sprintf},
-    {0x802fddf9u, "vsprintf", lc_vsprintf},
-    {0xa1bff606u, "snprintf", lc_snprintf},
-    {0xfe83f2e4u, "vsnprintf", lc_vsnprintf},
-    {0x1b581bebu, "swprintf", lc_swprintf},
-    {0x572dab57u, "vswprintf", lc_vswprintf},
-    {0xec585241u, "sscanf", lc_sscanf},
-    {0xfffbe239u, "fopen", lc_fopen},
-    {0xec97321cu, "fclose", lc_fclose},
-    {0xb31c73a9u, "fread", lc_fread},
-    {0x8bcdcc4eu, "fwrite", lc_fwrite},
-    {0xc3a7cde1u, "fseek", lc_fseek},
-    {0x41c2af95u, "ftell", lc_ftell},
-    {0x5aad2996u, "fflush", lc_fflush},
-    {0xc8ff13e5u, "fputs", lc_fputs},
-    {0xe0c79764u, "fprintf", lc_fprintf},
-    {0x826bbbafu, "exit", lc_exit},
-    {0x20fe0fffu, "abort", lc_abort},
-    {0x50b326ceu, "setjmp", lc_setjmp},
-    {0x2d81c8c8u, "longjmp", lc_longjmp},
-    {0xbc529b7bu, "__tls_get_addr", lc_tls_get_addr},
-    {0x54f87eacu, "_sceLdTlsRegisterModuleInfo", zero},
-    {0x9e248b76u, "_sceLibcErrnoLoc", lc_errno_loc},
-    {0xbfe02b3au, "__cxa_set_dso_handle_main", zero},
-    {0x33b83b70u, "__cxa_atexit", zero},
-    {0xedc939e1u, "__aeabi_atexit", zero},
-    {0xd0310e31u, "__cxa_guard_acquire", cxa_guard_acquire},
-    {0x4ed1056fu, "__cxa_guard_release", cxa_guard_release},
-    {0xc0883865u, "rand", lc_rand},
-    {0x3aad41b0u, "srand", lc_srand},
-    {0xd63330dau, "ldiv", lc_ldiv},
-    {0xdae8d60fu, "time", lc_time},
-    {0xf283cfe3u, "gmtime", lc_gmtime},
-    {0xf4a2e0bfu, "localtime", lc_gmtime}, /* the console's time zone is UTC here */
-    /* SceLibm */
-    {0x27eab8c1u, "acosf", lm_acosf},
-    {0x3a3e5424u, "asinf", lm_asinf},
-    {0xd78fc94eu, "atanf", lm_atanf},
-    {0x4e09dd53u, "atan2f", lm_atan2f},
-    {0xa98e941bu, "tanf", lm_tanf},
-    {0x56473bc7u, "expf", lm_expf},
-    {0x6dea815au, "powf", lm_powf},
-    {0x1cd8f88eu, "fmodf", lm_fmodf},
-    {0x6bbfec89u, "ceilf", lm_ceilf},
-    {0xcd7c05bdu, "floorf", lm_floorf},
-    {0x75348906u, "fabsf", lm_fabsf},
-    {0x0e61e016u, "ldexpf", lm_ldexpf},
-    {0x5d7a7eb2u, "modff", lm_modff},
-    {0x640db443u, "pow", lm_pow},
-    {0x798587e4u, "fmod", lm_fmod},
-    {0xeb027358u, "exp", lm_exp},
-    {0x7f00b590u, "sinf", lm_sinf},
-    {0x127f8302u, "cosf", lm_cosf},
-    {0xba3f6937u, "sqrtf", lm_sqrtf},
-    {0x811ed68bu, "logf", lm_logf},
-    {0xda227fccu, "sqrt", lm_sqrt},
-    {0x22bb8237u, "floor", lm_floor},
-    {0x63f05bd6u, "ceil", lm_ceil},
-    {0x4a496bc0u, "_FSin", lm_fsin},
-    {0xd5bd8d5cu, "_FLog", lm_flog},
-    {0xc5b9c8d8u, "_FDtest", lm_fdtest},
-    {0x1167b5d2u, "modf", lm_modf},
-    {0x27a55170u, "_Dtest", lm_dtest},
-    {0x5bd0f71cu, "_Dsign", lm_dsign},
-    {0xc4f7e42cu, "_FDsign", lm_fdsign},
-    {0x52ddcdafu, "_Stolx", lc_stolx},
-    {0x3e672be3u, "fabs", lm_fabs},
-    {0xb5519ff0u, "sin", lm_sin},
-    {0x061d0244u, "cos", lm_cos},
-    {0x5bae40b0u, "tan", lm_tan},
-    {0x4016b2e6u, "asin", lm_asin},
-    {0xd72b5acbu, "acos", lm_acos},
-    {0x516d9970u, "atan", lm_atan},
-    {0xc9be3f05u, "atan2", lm_atan2},
-    {0x6037c48fu, "log", lm_log},
-    {0xcf65f098u, "log10", lm_log10},
-    {0x73afee5fu, "log2", lm_log2},
-    {0x9b18f38fu, "exp2", lm_exp2},
-    {0x0212323eu, "trunc", lm_trunc},
-    {0x64d37996u, "round", lm_round},
-    {0x943f218fu, "rint", lm_rint},
-    {0x877187c4u, "nearbyint", lm_nearbyint},
-    {0xacc0dc5au, "cbrt", lm_cbrt},
-    {0xf2c0af49u, "sinh", lm_sinh},
-    {0x110195e7u, "cosh", lm_cosh},
-    {0x26cd78cau, "tanh", lm_tanh},
-    {0x2d2cd795u, "hypot", lm_hypot},
-    {0x0b918d13u, "copysign", lm_copysign},
-    {0xbe30cc1eu, "fmax", lm_fmax},
-    {0x2abbdff7u, "fmin", lm_fmin},
-    {0x0056061bu, "ldexp", lm_ldexp},
-    {0x59197427u, "frexp", lm_frexp},
-    {0x090b899fu, "truncf", lm_truncf},
-    {0xaaf31896u, "roundf", lm_roundf},
-    {0xcace5a19u, "rintf", lm_rintf},
-    {0xd56e78f6u, "nearbyintf", lm_nearbyintf},
-    {0xfd2a3464u, "log10f", lm_log10f},
-    {0x4095dbdbu, "log2f", lm_log2f},
-    {0x79415bd3u, "exp2f", lm_exp2f},
-    {0xd1699f4du, "cbrtf", lm_cbrtf},
-    {0xb5838e7du, "sinhf", lm_sinhf},
-    {0x61de0770u, "coshf", lm_coshf},
-    {0xc4847578u, "tanhf", lm_tanhf},
-    {0xa397b929u, "hypotf", lm_hypotf},
-    {0x16eb9e63u, "copysignf", lm_copysignf},
-    {0x7004fa75u, "fmaxf", lm_fmaxf},
-    {0x7673cc1eu, "fminf", lm_fminf},
-    /* SceLibstdcxx */
-    {0xf99ed5acu, "_Znwj", cxx_new},
-    {0xe7fb2bf4u, "_Znaj", cxx_new},
-    {0x0ae71dc3u, "_ZnwjRKSt9nothrow_t", cxx_new_nothrow},
-    {0x31c62481u, "_ZnajRKSt9nothrow_t", cxx_new_nothrow},
-    {0x72293931u, "_ZdlPv", cxx_delete},
-    {0x91b0dc47u, "_ZdaPv", cxx_delete},
-    {0x87ef85ffu, "_ZdlPvRKSt9nothrow_t", cxx_delete},
-    {0xa7241f09u, "_ZdaPvRKSt9nothrow_t", cxx_delete},
-    {0x1eb89099u, "_ZdlPvS_", cxx_delete_sized},
-    {0x3688ffdau, "_ZdaPvS_", cxx_delete_sized},
-    {0xf9fab558u, "_ZNSt6_Mutex5_LockEv", zero},
-    {0x0402c9f8u, "_ZNSt6_Mutex7_UnlockEv", zero},
-    {0xa4f99ae7u, "_ZNSt6_MutexC1Ev", first_argument},
-    {0x011ceb00u, "_ZSt18uncaught_exceptionv", zero},
-    {0x78cb190eu, "_ZNSt8ios_base5_InitEv", ios_init},
-    {0x9b37cad9u, "_ZNSt6_MutexD1Ev", zero},
-    {0xdce89e71u, "_ZNSt8ios_baseD2Ev", zero},
-    {0x40ea90d5u, "_ZNSt8ios_baseD1Ev", zero},
-    {0x5e60b2b3u, "_ZNSt8ios_base4InitC1Ev", first_argument},
-    {0xabb11cf9u, "_ZNSt6_WinitC1Ev", first_argument},
-    {0xc9de8208u, "_ZNSt8ios_base5clearENSt5_IosbIiE8_IostateEb", ios_clear},
-    {0xdb15f0fcu, "_ZNKSt9type_infoeqERKS_", cxx_typeinfo_eq},
-    {0x9994f9feu, "_ZNKSt9type_infoneERKS_", cxx_typeinfo_ne},
-    {0x8c93efdau, "__cxa_allocate_exception", cxa_allocate_exception},
-    {0xbae38df9u, "_ZNKSt9type_info4nameEv", cxx_typeinfo_name},
-    {0xfd276300u, "_ZSt7_FiopenPKcNSt5_IosbIiE9_OpenmodeEi", cxx_fiopen},
-    {0x9da92617u, "_ZNSt6_MutexC1ESt14_Uninitialized", first_argument},
-    {0x9864c99fu, "wmemcmp", lc_wmemcmp},
-    {0x53f7eb4bu, "wmemmove", lc_wmemcpy},
-    {0xbcea304bu, "labs", lc_labs},
-    {0x1118b49fu, "imaxabs", lc_imaxabs},
-    {0x5044fc32u, "_Lockfilelock", zero},
-    {0xfd5dd98cu, "_Unlockfilelock", zero},
-    {0x67e99979u, "_Log", lm_log_base},
-    {0xf87e6098u, "__cxa_throw", cxx_raise},
-    {0x596ba786u, "_ZNSt8bad_castC2Ev", first_argument},
-    {0xe8d59ab5u, "_ZNKSt12_String_base5_XlenEv", cxx_length_error},
-    {0x473dc636u, "_ZNKSt12_String_base5_XranEv", cxx_out_of_range},
-    {0x0656be32u, "_ZNKSt9exception6_RaiseEv", cxx_raise},
-    {0x00e08376u, "_ZNSt9exceptionC2Ev", cxx_exception},
-    {0x5fae79bfu, "_ZNSt12out_of_rangeD1Ev", first_argument},
-    {0xa873d7f9u, "_ZNSt12length_errorD1Ev", first_argument},
-    /* SceLibKernel's Clib */
-    {0x14e9dbd7u, "sceClibMemcpy", lc_memcpy},
-    {0x632980d7u, "sceClibMemset", lc_memset},
-    {0x9cc2bfdfu, "sceClibMemcmp", lc_memcmp},
-    {0x6e728aaeu, "sceClibStrrchr", lc_strrchr},
-    {0xb54c0be4u, "sceClibStrncasecmp", lc_strncasecmp},
-    {0xfa26bc62u, "sceClibPrintf", lc_printf},
-    {0x8cba03d5u, "sceClibSnprintf", clib_snprintf},
-    {0xfa6be467u, "sceClibVsnprintf", clib_vsnprintf},
-    {0x3b9e301au, "sceClibMspaceCreate", clib_mspace_create},
-    {0x86ef7680u, "sceClibMspaceMalloc", clib_mspace_malloc},
-    {0x9c56b4d1u, "sceClibMspaceFree", clib_mspace_free},
-    {0xae1a21ecu, "sceClibMspaceDestroy", zero},
-    {0x736753c8u, "sceClibMemmove", lc_memcpy},
-    {0xa18068fcu, "sceClibMemmoveChk", lc_memcpy},
-    {0x1f94ef45u, "sceClibMemcpyChk", lc_memcpy},
-    {0x2e3b02a1u, "sceClibMemcpy_safe", lc_memcpy},
-    {0xd19b6dc5u, "sceClibMemsetChk", lc_memset},
-    {0x407d6153u, "sceClibMemchr", lc_memchr},
-    {0x614076b7u, "sceClibStrchr", lc_strchr},
-    {0xa2fb4d9du, "sceClibStrcmp", lc_strcmp},
-    {0x660d1f6du, "sceClibStrncmp", lc_strncmp},
-    {0xc458d60au, "sceClibStrncpy", lc_strncpy},
-    {0xe265498bu, "sceClibStrstr", lc_strstr},
-    {0xac595e68u, "sceClibStrnlen", clib_strnlen},
-    {0x2cdfcd1cu, "sceClibStrlcpy", clib_strlcpy},
-    {0x70cbc2d5u, "sceClibStrlcat", clib_strlcat},
-    {0x4c5471bcu, "sceClibTolower", clib_tolower},
-    {0xb0335388u, "sceClibToupper", clib_toupper},
-    {0x678374adu, "sceClibMspaceCalloc", clib_mspace_calloc},
-    {0x3c847d57u, "sceClibMspaceMemalign", clib_mspace_memalign},
-    {0x774891d6u, "sceClibMspaceRealloc", clib_mspace_realloc},
-    {0x4373b548u, "__sce_aeabi_idiv0", zero},
-    {0xfb235848u, "__sce_aeabi_ldiv0", zero},
-    {0, NULL, NULL},
-};
 const VitaHleVariable vita_hle_libc_variables[] = {
     {0x5d8c1282u, "_Stdout", stdout_init},
     {0xddf9bb09u, "_Stderr", stderr_init},

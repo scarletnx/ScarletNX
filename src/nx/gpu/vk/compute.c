@@ -1722,6 +1722,19 @@ void vk_dispatch(const DispatchState* d) {
        land (mirror.c, mirror_plan) */
     u64 mcpu[16];
     int mir = mirror_plan(p, ng, sa, ss, mcpu);
+    /* but not one a buffer of which a draw's result still pending covers: the mirror takes its bytes from guest
+       memory, where that result has to land first, and for a draw being recorded that lands it by finishing all the
+       GPU's work (one game: one a present, about 0.9 ms of the thread that records the draws). Its buffers take the
+       copies, on the graphics queue below, which read a pending result where it is on the GPU. The copies know nothing
+       of the bytes that only the mirror has, though, and the mirror nothing of the pending result: a dispatch that
+       reads a buffer with both stays in the mirror, and the result lands first */
+    int leaves = 0;
+    for (i = 0; i < ng && mir && !leaves; i++) leaves = sa[i] && vk_buf_pending(sa[i], ss[i]);
+    for (i = 0; i < ng && leaves; i++)
+        if (sa[i] && ((p->si.gbuf_rmask >> i) & 1) &&
+            (vk_mirror_pending(sa[i], ss[i]) || vk_mirror_holds(sa[i], ss[i])))
+            leaves = 0;
+    if (leaves) mir = 0;
     gfx = gfx || mir;
     VkBuffer grid_buf = VK_NULL_HANDLE, cb0_buf = VK_NULL_HANDLE;
     u64 grid_off = 0, cb0_off = 0;

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 #
-# The native nn::audio (audio.c), for tools/hookgen, in the language of hle/hook/hooks.hook.
+# The native nn::audio (audio.c), for tools/hookgen, in the language of nn/hooks.hook.
 # The audio outs, with no audout:u session: OpenAudioOut and every function that asks the session of the AudioOut it
 # opened. The SDK reads an out's rate, channels, sample format and name from the game's AudioOut itself
 # (GetAudioOutSampleRate and the like, which stay its own code), so OpenAudioOut fills them: the same layout in every

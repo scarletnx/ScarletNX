@@ -2,6 +2,9 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # The SDM's errata
 
+`x64_isel.inc` is the x86-64 back end's instruction selection (`../README.md`, "The x86-64 back end"), which `isel.py`
+makes from the manual and the test `sailgen_sdm_isel` holds to it. The `.sdm` files are:
+
 Overrides of the instruction pages `sailgen --sdm` cuts out of the Intel SDM, Volume 2 (325383-093US), where the
 manual's Operation section, read as the specification the instruction selection derives from (`../README.md`, "The
 x86-64 back end"), is wrong or can't be read as written. Each file is a page of only the sections it replaces, and says

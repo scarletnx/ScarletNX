@@ -1,13 +1,13 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* nn::diag's abort hook (src/nx/hle/hook/diag.c) on a fake abort: the generated adapter called as the SDK's own
+/* nn::diag's abort hook (src/nx/nn/diag.c) on a fake abort: the generated adapter called as the SDK's own
    AbortImpl calls VAbortImpl, with its strings and Result in guest memory. The log line holds each value as passed,
    the error code the Result makes, "none" for a null string and "no result" for a null Result; the function's own
    code then runs once, with the registers the call left */
-#include "nx/hle/hook/hook.h"
+#include "nx/nn/hook.h"
 #include "nx/runtime/platform/log.h"
-#include "hle/hook/hooks.hook.h"
-#include "hle/hook/hooks.hook.inc"
+#include "nn/hooks.hook.h"
+#include "nn/hooks.hook.inc"
 #include <assert.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -64,7 +64,7 @@ u32 gs_read_user_image_nv12(CPU* c, u64 dst_y, u64 size_y, u64 pitch_y, u64 dst_
         (void)src;
     return 0;
 }
-/* codec.c's and audio_stream.c's, none reached here */
+/* nn/codec.c's and audio_stream.c's, none reached here */
 u32 audio_open_stream_event(CPU* c, u64 stream, u64 event, u64 work, u64 size, u64 device, u64 format, i32 capacity,
                             i32 threshold) {
     (void)c, (void)stream, (void)event, (void)work, (void)size, (void)device, (void)format, (void)capacity,

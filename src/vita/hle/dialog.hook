@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+#
+# The Vita's imports that dialog.c answers, by NID, for tools/hookgen --vita.
+# SceCommonDialog: the system's dialogs, drawn over the game. One is open at a time: its Init opens it (BUSY while
+# another is open), its GetStatus says RUNNING until the player is done with it, then FINISHED, its GetResult gives
+# what came of it, and its Term closes it. A game waits for FINISHED, so a dialog the runtime doesn't model would
+# stall it: the ones modeled here finish as they open, with what the console's would end with when nothing needs
+# the player. The trophy setup dialog (the trophies' files made ready) succeeds. The network check dialog finds no
+# network (the runtime gives a game none: vita/hle/net.c), and the player backs out of its message. A finished
+# dialog keeps the others out until its Term: a game that opens the network check as it boots and closes it from
+# its menus waits that long for its trophy setup, retrying its Init while it answers BUSY
+family dialog
+[0x90530f2f] hook sceCommonDialogUpdate() -> u32 = vita_dialog_zero
+[0xbecd35c8] hook sceCommonDialogSetConfigParam() -> u32 = vita_dialog_zero
+[0x9e2c02c9] hook sceNpTrophySetupDialogInit(addr param) -> u32 = vita_dialog_trophy_setup_init
+[0xc3a59547] hook sceNpTrophySetupDialogGetStatus() -> u32 = vita_dialog_trophy_setup_status
+[0xe37069d5] hook sceNpTrophySetupDialogGetResult(addr out) -> u32 = vita_dialog_trophy_setup_result
+[0xdc346979] hook sceNpTrophySetupDialogAbort() -> u32 = vita_dialog_trophy_setup_abort
+[0xa81082dd] hook sceNpTrophySetupDialogTerm() -> u32 = vita_dialog_trophy_setup_term
+[0xa38a4a0d] hook sceNetCheckDialogInit(addr param) -> u32 = vita_dialog_net_check_init
+[0x8027292a] hook sceNetCheckDialogGetStatus() -> u32 = vita_dialog_net_check_status
+[0xb05fce9e] hook sceNetCheckDialogGetResult(addr out) -> u32 = vita_dialog_net_check_result
+[0x2d8edf09] hook sceNetCheckDialogAbort() -> u32 = vita_dialog_net_check_abort
+[0x8be51c15] hook sceNetCheckDialogTerm() -> u32 = vita_dialog_net_check_term
+[0xbf5248fa] hook sceSaveDataDialogInit(addr param) -> u32 = vita_dialog_save_data_init
+[0x6e258046] hook sceSaveDataDialogGetStatus() -> u32 = vita_dialog_save_data_status
+[0xba0542ca] hook sceSaveDataDialogGetSubStatus() -> u32 = vita_dialog_save_data_substatus
+[0x19192c8b] hook sceSaveDataDialogContinue(addr param) -> u32 = vita_dialog_save_data_continue
+[0x6c49924b] hook sceSaveDataDialogFinish(addr param) -> u32 = vita_dialog_save_data_finish
+[0xb2ff576e] hook sceSaveDataDialogGetResult(addr out) -> u32 = vita_dialog_save_data_result
+[0x013e7f74] hook sceSaveDataDialogAbort() -> u32 = vita_dialog_save_data_abort
+[0x2192a10a] hook sceSaveDataDialogTerm() -> u32 = vita_dialog_save_data_term
+[0xbde00a83] hook sceSaveDataDialogProgressBarInc() -> u32 = vita_dialog_save_data_progress
+[0x5c322d1e] hook sceSaveDataDialogProgressBarSetValue() -> u32 = vita_dialog_save_data_progress
+[0x415d6068] hook sceSaveDataDialogSubClose() -> u32 = vita_dialog_save_data_progress

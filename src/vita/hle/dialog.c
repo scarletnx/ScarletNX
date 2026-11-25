@@ -9,6 +9,7 @@
    dialog keeps the others out until its Term: a game that opens the network check as it boots and closes it from
    its menus waits that long for its trophy setup, retrying its Init while it answers BUSY */
 #include "vita/hle/hle.h"
+#include "vita/hle/hle.hook.h"
 #include <string.h>
 
 #define SCE_COMMON_DIALOG_ERROR_BUSY         0x80020401u
@@ -24,8 +25,8 @@ enum { DIALOG_NONE, DIALOG_TROPHY_SETUP, DIALOG_NET_CHECK, DIALOG_SAVE_DATA };
    SceNetCheckDialogResult with psnModeSucceeded false) */
 #define RESULT_SIZE 0x84u
 
-static uint32_t init(VitaProcess* p, VitaThread* t, uint32_t kind, uint32_t result) {
-    if (!vita_arg(p, t, 0)) return SCE_COMMON_DIALOG_ERROR_NULL;
+static uint32_t init(VitaProcess* p, uint32_t param, uint32_t kind, uint32_t result) {
+    if (!param) return SCE_COMMON_DIALOG_ERROR_NULL;
     if (p->dialog.kind) return SCE_COMMON_DIALOG_ERROR_BUSY;
     p->dialog.kind = kind, p->dialog.status = STATUS_FINISHED, p->dialog.result = result;
     return 0;
@@ -33,8 +34,7 @@ static uint32_t init(VitaProcess* p, VitaThread* t, uint32_t kind, uint32_t resu
 static uint32_t status(VitaProcess* p, uint32_t kind) {
     return p->dialog.kind == kind ? p->dialog.status : STATUS_NONE;
 }
-static uint32_t result(VitaProcess* p, VitaThread* t, uint32_t kind) {
-    uint32_t out = vita_arg(p, t, 0);
+static uint32_t result(VitaProcess* p, uint32_t out, uint32_t kind) {
     if (p->dialog.kind != kind) return SCE_COMMON_DIALOG_ERROR_NOT_IN_USE;
     if (p->dialog.status != STATUS_FINISHED) return SCE_COMMON_DIALOG_ERROR_NOT_FINISHED;
     if (!out || !vita_mapped(p, out, RESULT_SIZE)) return SCE_COMMON_DIALOG_ERROR_NULL;
@@ -55,33 +55,43 @@ static uint32_t term(VitaProcess* p, uint32_t kind) {
     return 0;
 }
 
-static uint32_t trophy_setup_init(VitaProcess* p, VitaThread* t) { return init(p, t, DIALOG_TROPHY_SETUP, RESULT_OK); }
-static uint32_t trophy_setup_status(VitaProcess* p, VitaThread* t) {
+uint32_t vita_dialog_trophy_setup_init(VitaProcess* p, VitaThread* t, uint32_t param) {
+    (void)t;
+    return init(p, param, DIALOG_TROPHY_SETUP, RESULT_OK);
+}
+uint32_t vita_dialog_trophy_setup_status(VitaProcess* p, VitaThread* t) {
     (void)t;
     return status(p, DIALOG_TROPHY_SETUP);
 }
-static uint32_t trophy_setup_result(VitaProcess* p, VitaThread* t) { return result(p, t, DIALOG_TROPHY_SETUP); }
-static uint32_t trophy_setup_abort(VitaProcess* p, VitaThread* t) {
+uint32_t vita_dialog_trophy_setup_result(VitaProcess* p, VitaThread* t, uint32_t out) {
+    (void)t;
+    return result(p, out, DIALOG_TROPHY_SETUP);
+}
+uint32_t vita_dialog_trophy_setup_abort(VitaProcess* p, VitaThread* t) {
     (void)t;
     return abort_dialog(p, DIALOG_TROPHY_SETUP);
 }
-static uint32_t trophy_setup_term(VitaProcess* p, VitaThread* t) {
+uint32_t vita_dialog_trophy_setup_term(VitaProcess* p, VitaThread* t) {
     (void)t;
     return term(p, DIALOG_TROPHY_SETUP);
 }
-static uint32_t net_check_init(VitaProcess* p, VitaThread* t) {
-    return init(p, t, DIALOG_NET_CHECK, RESULT_USER_CANCELED);
+uint32_t vita_dialog_net_check_init(VitaProcess* p, VitaThread* t, uint32_t param) {
+    (void)t;
+    return init(p, param, DIALOG_NET_CHECK, RESULT_USER_CANCELED);
 }
-static uint32_t net_check_status(VitaProcess* p, VitaThread* t) {
+uint32_t vita_dialog_net_check_status(VitaProcess* p, VitaThread* t) {
     (void)t;
     return status(p, DIALOG_NET_CHECK);
 }
-static uint32_t net_check_result(VitaProcess* p, VitaThread* t) { return result(p, t, DIALOG_NET_CHECK); }
-static uint32_t net_check_abort(VitaProcess* p, VitaThread* t) {
+uint32_t vita_dialog_net_check_result(VitaProcess* p, VitaThread* t, uint32_t out) {
+    (void)t;
+    return result(p, out, DIALOG_NET_CHECK);
+}
+uint32_t vita_dialog_net_check_abort(VitaProcess* p, VitaThread* t) {
     (void)t;
     return abort_dialog(p, DIALOG_NET_CHECK);
 }
-static uint32_t net_check_term(VitaProcess* p, VitaThread* t) {
+uint32_t vita_dialog_net_check_term(VitaProcess* p, VitaThread* t) {
     (void)t;
     return term(p, DIALOG_NET_CHECK);
 }
@@ -104,8 +114,8 @@ static uint32_t save_slot_of(VitaProcess* p, uint32_t param) {
     uint32_t fixed = vita_mapped(p, param, SAVE_PARAM_SIZE) ? vita_read32(p, param + SAVE_PARAM_FIXED) : 0;
     return fixed && vita_mapped(p, fixed, 4) ? vita_read32(p, fixed) : 0;
 }
-static uint32_t save_data_init(VitaProcess* p, VitaThread* t) {
-    uint32_t param = vita_arg(p, t, 0);
+uint32_t vita_dialog_save_data_init(VitaProcess* p, VitaThread* t, uint32_t param) {
+    (void)t;
     if (!param) return SCE_COMMON_DIALOG_ERROR_NULL;
     if (!vita_mapped(p, param, SAVE_PARAM_SIZE)) return SAVE_ERROR_PARAM;
     if (p->dialog.kind) return SCE_COMMON_DIALOG_ERROR_BUSY;
@@ -116,17 +126,17 @@ static uint32_t save_data_init(VitaProcess* p, VitaThread* t) {
     p->dialog.userdata = vita_read32(p, param + SAVE_PARAM_USER);
     return 0;
 }
-static uint32_t save_data_status(VitaProcess* p, VitaThread* t) {
+uint32_t vita_dialog_save_data_status(VitaProcess* p, VitaThread* t) {
     (void)t;
     return status(p, DIALOG_SAVE_DATA);
 }
-static uint32_t save_data_substatus(VitaProcess* p, VitaThread* t) {
+uint32_t vita_dialog_save_data_substatus(VitaProcess* p, VitaThread* t) {
     (void)t;
     return p->dialog.kind == DIALOG_SAVE_DATA && p->dialog.status == STATUS_RUNNING ? p->dialog.substatus : STATUS_NONE;
 }
 /* sceSaveDataDialogContinue(const SceSaveDataDialogParam*): the next screen, shown and answered */
-static uint32_t save_data_continue(VitaProcess* p, VitaThread* t) {
-    uint32_t param = vita_arg(p, t, 0);
+uint32_t vita_dialog_save_data_continue(VitaProcess* p, VitaThread* t, uint32_t param) {
+    (void)t;
     if (!param) return SCE_COMMON_DIALOG_ERROR_NULL;
     if (p->dialog.kind != DIALOG_SAVE_DATA || p->dialog.status != STATUS_RUNNING)
         return SCE_COMMON_DIALOG_ERROR_NOT_RUNNING;
@@ -137,16 +147,17 @@ static uint32_t save_data_continue(VitaProcess* p, VitaThread* t) {
     return 0;
 }
 /* sceSaveDataDialogFinish(const SceSaveDataDialogFinishParam*) */
-static uint32_t save_data_finish(VitaProcess* p, VitaThread* t) {
-    if (!vita_arg(p, t, 0)) return SCE_COMMON_DIALOG_ERROR_NULL;
+uint32_t vita_dialog_save_data_finish(VitaProcess* p, VitaThread* t, uint32_t param) {
+    (void)t;
+    if (!param) return SCE_COMMON_DIALOG_ERROR_NULL;
     if (p->dialog.kind != DIALOG_SAVE_DATA || p->dialog.status != STATUS_RUNNING)
         return SCE_COMMON_DIALOG_ERROR_NOT_RUNNING;
     if (p->dialog.substatus != STATUS_FINISHED) return SCE_COMMON_DIALOG_ERROR_NOT_FINISHED;
     p->dialog.status = STATUS_FINISHED, p->dialog.substatus = STATUS_RUNNING;
     return 0;
 }
-static uint32_t save_data_result(VitaProcess* p, VitaThread* t) {
-    uint32_t out = vita_arg(p, t, 0);
+uint32_t vita_dialog_save_data_result(VitaProcess* p, VitaThread* t, uint32_t out) {
+    (void)t;
     if (p->dialog.kind != DIALOG_SAVE_DATA) return SCE_COMMON_DIALOG_ERROR_NOT_FINISHED;
     if (!out) return SCE_COMMON_DIALOG_ERROR_NULL;
     if (!vita_mapped(p, out, 0x38)) return SAVE_ERROR_PARAM;
@@ -164,11 +175,11 @@ static uint32_t save_data_result(VitaProcess* p, VitaThread* t) {
     vita_write32(p, out + 20, p->dialog.userdata);
     return 0;
 }
-static uint32_t save_data_abort(VitaProcess* p, VitaThread* t) {
+uint32_t vita_dialog_save_data_abort(VitaProcess* p, VitaThread* t) {
     (void)t;
     return abort_dialog(p, DIALOG_SAVE_DATA);
 }
-static uint32_t save_data_term(VitaProcess* p, VitaThread* t) {
+uint32_t vita_dialog_save_data_term(VitaProcess* p, VitaThread* t) {
     (void)t;
     if (p->dialog.kind != DIALOG_SAVE_DATA) return SCE_COMMON_DIALOG_ERROR_NOT_IN_USE;
     if (p->dialog.status != STATUS_FINISHED) return SCE_COMMON_DIALOG_ERROR_NOT_FINISHED;
@@ -176,38 +187,11 @@ static uint32_t save_data_term(VitaProcess* p, VitaThread* t) {
     return 0;
 }
 /* the progress bar's value calls: nothing is drawn */
-static uint32_t save_data_progress(VitaProcess* p, VitaThread* t) {
+uint32_t vita_dialog_save_data_progress(VitaProcess* p, VitaThread* t) {
     (void)t;
     return p->dialog.kind == DIALOG_SAVE_DATA ? 0 : SCE_COMMON_DIALOG_ERROR_NOT_IN_USE;
 }
-static uint32_t zero(VitaProcess* p, VitaThread* t) {
+uint32_t vita_dialog_zero(VitaProcess* p, VitaThread* t) {
     (void)p, (void)t;
     return 0;
 }
-
-const VitaHle vita_hle_dialog[] = {
-    {0x90530f2fu, "sceCommonDialogUpdate", zero},
-    {0xbecd35c8u, "sceCommonDialogSetConfigParam", zero},
-    {0x9e2c02c9u, "sceNpTrophySetupDialogInit", trophy_setup_init},
-    {0xc3a59547u, "sceNpTrophySetupDialogGetStatus", trophy_setup_status},
-    {0xe37069d5u, "sceNpTrophySetupDialogGetResult", trophy_setup_result},
-    {0xdc346979u, "sceNpTrophySetupDialogAbort", trophy_setup_abort},
-    {0xa81082ddu, "sceNpTrophySetupDialogTerm", trophy_setup_term},
-    {0xa38a4a0du, "sceNetCheckDialogInit", net_check_init},
-    {0x8027292au, "sceNetCheckDialogGetStatus", net_check_status},
-    {0xb05fce9eu, "sceNetCheckDialogGetResult", net_check_result},
-    {0x2d8edf09u, "sceNetCheckDialogAbort", net_check_abort},
-    {0x8be51c15u, "sceNetCheckDialogTerm", net_check_term},
-    {0xbf5248fau, "sceSaveDataDialogInit", save_data_init},
-    {0x6e258046u, "sceSaveDataDialogGetStatus", save_data_status},
-    {0xba0542cau, "sceSaveDataDialogGetSubStatus", save_data_substatus},
-    {0x19192c8bu, "sceSaveDataDialogContinue", save_data_continue},
-    {0x6c49924bu, "sceSaveDataDialogFinish", save_data_finish},
-    {0xb2ff576eu, "sceSaveDataDialogGetResult", save_data_result},
-    {0x013e7f74u, "sceSaveDataDialogAbort", save_data_abort},
-    {0x2192a10au, "sceSaveDataDialogTerm", save_data_term},
-    {0xbde00a83u, "sceSaveDataDialogProgressBarInc", save_data_progress},
-    {0x5c322d1eu, "sceSaveDataDialogProgressBarSetValue", save_data_progress},
-    {0x415d6068u, "sceSaveDataDialogSubClose", save_data_progress},
-    {0, NULL, NULL},
-};

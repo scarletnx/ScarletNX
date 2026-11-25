@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The input streams of the Ounce's SDK (src/nx/hle/hook/audio_stream.c) over a synthetic microphone: their handlers
+/* The input streams of the Ounce's SDK (src/nx/nn/audio_stream.c) over a synthetic microphone: their handlers
    called as the hooks call them, on a guest buffer, with a clock the test moves and a host recording device
    (plat_mic_*) that plays a generated signal in bursts, never a real one. Checked: what an open leaves for the
    format query, the device properties, the frames' count in guest time and their format on every channel, the
@@ -15,7 +15,7 @@
 #include <stdarg.h>
 #include <time.h>
 
-#include "nx/hle/hook/audio_stream.c"
+#include "nx/nn/audio_stream.c"
 #include "nx/runtime/platform/audio_denoise.c"
 
 u8* g_mem;

@@ -11,6 +11,7 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/gpu_queue.h"
+#include "nx/gpu/gvk/gvk.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/shading_rate.h"
 #include "nx/runtime/main.h"
@@ -1062,7 +1063,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
     int has_portability = 0, has_reconvergence = 0;
     int has_calibrated = 0, has_present_id = 0, has_present_wait = 0, has_present_v2 = 0, has_calibrated_khr = 0;
     int has_google_timing = 0;
-    int has_host_import = 0, has_ahb = 0, has_placed = 0, has_map2 = 0, has_dmabuf = 0;
+    int has_host_import = 0, has_ahb = 0, has_placed = 0, has_map2 = 0, has_dmabuf = 0, has_mutable = 0;
     int has_descriptor_buffer = 0, has_descriptor_heap = 0, has_extended_flags = 0, has_maintenance5 = 0;
     int has_maintenance8 = 0, has_copy_indirect = 0;
     int has_vertex_input = 0, has_legacy_vertex = 0, has_unused_attachments = 0;
@@ -1209,6 +1210,8 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         has_map2 = snx_vk_choice_has(c, VK_KHR_MAP_MEMORY_2_EXTENSION_NAME);
         has_dmabuf = snx_vk_choice_has(c, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME) &&
                      snx_vk_choice_has(c, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME);
+        /* host-only descriptor pools: the twins of a game's own descriptor sets, which its copies read (gpu/gvk) */
+        has_mutable = g_settings.guest_vulkan && snx_vk_choice_has(c, VK_EXT_MUTABLE_DESCRIPTOR_TYPE_EXTENSION_NAME);
 #if defined(__ANDROID__) /* every driver there takes AHardwareBuffers, which guest memory can move into (uma.c) */
         has_ahb = snx_vk_choice_has(c, "VK_ANDROID_external_memory_android_hardware_buffer");
 #endif
@@ -1222,14 +1225,21 @@ static bool choose_device(SnxVkChoice* c, void* user) {
     g_vk.imports_dear =
         (g_settings.guest_buffers_copied ? vk_ban_find(imports_key) : vk_ban(imports_key, 1, ban_say)) != 0;
     int uma_with = vk_uma_choose(has_host_import, has_ahb, has_placed && has_map2, has_dmabuf);
-    if (uma_with == VK_UMA_WITH_HOST) snx_vk_choice_enable(c, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
+    /* and guest memory a game's own Vulkan maps (gpu/gvk/gvk_api.c), imported as host memory, or the device's own
+       exported as a dma-buf where the device imports no host memory (a capture layer: RenderDoc takes no host memory) */
+    if (uma_with == VK_UMA_WITH_HOST || (g_settings.guest_vulkan && has_host_import))
+        snx_vk_choice_enable(c, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
     if (uma_with == VK_UMA_WITH_AHB) snx_vk_choice_enable(c, "VK_ANDROID_external_memory_android_hardware_buffer");
     /* the dma-bufs of memfds that guest memory moves into (uma.c, udmabuf), which placed maps' views also take */
     int fd_exts = uma_with == VK_UMA_WITH_DMABUF;
-    if (fd_exts) {
+    if (fd_exts || (g_settings.guest_vulkan && has_dmabuf)) {
         snx_vk_choice_enable(c, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME);
         snx_vk_choice_enable(c, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME);
     }
+    /* a dma-buf takes an image only with a DRM format modifier: a game's own linear images (gpu/gvk) are linear's */
+    if (g_settings.guest_vulkan && has_dmabuf &&
+        snx_vk_choice_has(c, VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME))
+        snx_vk_choice_enable(c, VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME);
     if (g_vk.has_budget) snx_vk_choice_enable(c, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
     if (has_hdr_metadata) {
         snx_vk_choice_enable(c, VK_EXT_HDR_METADATA_EXTENSION_NAME);
@@ -1330,6 +1340,8 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_ROBUSTNESS_FEATURES_EXT};
     VkPhysicalDeviceRobustness2FeaturesEXT qrobust = {.sType =
                                                           VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT};
+    VkPhysicalDeviceMutableDescriptorTypeFeaturesEXT qmutable = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MUTABLE_DESCRIPTOR_TYPE_FEATURES_EXT};
     VkPhysicalDeviceVulkan12Features q12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
     VkPhysicalDeviceMeshShaderFeaturesEXT qmesh = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
     VkPhysicalDeviceVulkan11Features q11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
@@ -1487,6 +1499,7 @@ static bool choose_device(SnxVkChoice* c, void* user) {
                            has_exec ? &qexec : NULL,
                            has_so ? &qso : NULL,
                            has_nv_rate ? &qnv_rate : NULL,
+                           has_mutable ? &qmutable : NULL,
                            has_khr_rate ? &qkhr_rate : NULL};
     snx_vk_chain(query, sizeof query / sizeof *query);
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &f2);
@@ -2014,6 +2027,34 @@ static bool choose_device(SnxVkChoice* c, void* user) {
             "after the program's\n", names);
     }
     f12.vulkanMemoryModel = f12.vulkanMemoryModelDeviceScope = g_spirv_translate.hmma_coop != 0;
+    /* a game's own SPIR-V (gpu/gvk) is the console's driver's to take, which lays blocks out as scalars */
+    f12.scalarBlockLayout = g_settings.guest_vulkan && q12.scalarBlockLayout;
+    f12.uniformBufferStandardLayout = g_settings.guest_vulkan && q12.uniformBufferStandardLayout;
+    /* and indexes its arrays of buffers per vertex, which gvk_spirv.c marks NonUniform for the host's driver */
+    f12.shaderUniformBufferArrayNonUniformIndexing =
+        g_settings.guest_vulkan && q12.shaderUniformBufferArrayNonUniformIndexing;
+    f12.shaderStorageBufferArrayNonUniformIndexing =
+        g_settings.guest_vulkan && q12.shaderStorageBufferArrayNonUniformIndexing;
+    f12.shaderStorageImageArrayNonUniformIndexing =
+        g_settings.guest_vulkan && q12.shaderStorageImageArrayNonUniformIndexing;
+    f12.shaderInputAttachmentArrayNonUniformIndexing =
+        g_settings.guest_vulkan && q12.shaderInputAttachmentArrayNonUniformIndexing;
+    f12.shaderUniformTexelBufferArrayNonUniformIndexing =
+        g_settings.guest_vulkan && q12.shaderUniformTexelBufferArrayNonUniformIndexing;
+    f12.shaderStorageTexelBufferArrayNonUniformIndexing =
+        g_settings.guest_vulkan && q12.shaderStorageTexelBufferArrayNonUniformIndexing;
+    g_vk.gvk_nonuniform =
+        (f12.shaderUniformBufferArrayNonUniformIndexing ? GVK_SPIRV_UBO_NONUNIFORM : 0) |
+        (f12.shaderStorageBufferArrayNonUniformIndexing ? GVK_SPIRV_SSBO_NONUNIFORM : 0) |
+        (f12.shaderSampledImageArrayNonUniformIndexing ? GVK_SPIRV_SAMPLED_NONUNIFORM : 0) |
+        (f12.shaderStorageImageArrayNonUniformIndexing ? GVK_SPIRV_STORAGE_IMAGE_NONUNIFORM : 0) |
+        (f12.shaderInputAttachmentArrayNonUniformIndexing ? GVK_SPIRV_INPUT_NONUNIFORM : 0) |
+        (f12.shaderUniformTexelBufferArrayNonUniformIndexing ? GVK_SPIRV_UNIFORM_TEXEL_NONUNIFORM : 0) |
+        (f12.shaderStorageTexelBufferArrayNonUniformIndexing ? GVK_SPIRV_STORAGE_TEXEL_NONUNIFORM : 0);
+    if (g_settings.guest_vulkan)
+        LOG("gvk: the host indexes arrays of descriptors by what differs between invocations, kinds %x of %x (a kind "
+            "it lacks keeps the game's shaders as they are)\n",
+            g_vk.gvk_nonuniform, GVK_SPIRV_NONUNIFORM_ALL);
     /* HMMA off the matrix unit, by the rules: pairs of lanes with subgroups of 32 where the extension bans prefer
        them (OpGroupNonUniformShuffleXor), and A and B through shared memory where the driver loops for a shuffle
        whose index differs between lanes, which no feature or property tells, so the table does. hmma_mode settles
@@ -2181,6 +2222,16 @@ static bool choose_device(SnxVkChoice* c, void* user) {
             .geometryStreams = g_vk.has_geometry_streams};
         chain = &fxfb;
         snx_vk_choice_enable(c, VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME);
+    }
+    /* VK_DESCRIPTOR_POOL_CREATE_HOST_ONLY_BIT_EXT needs the feature on */
+    VkPhysicalDeviceMutableDescriptorTypeFeaturesEXT fmutable = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MUTABLE_DESCRIPTOR_TYPE_FEATURES_EXT,
+        .mutableDescriptorType = VK_TRUE};
+    g_vk.gvk_host_sets = has_mutable && qmutable.mutableDescriptorType;
+    if (g_vk.gvk_host_sets) {
+        fmutable.pNext = chain;
+        chain = &fmutable;
+        snx_vk_choice_enable(c, VK_EXT_MUTABLE_DESCRIPTOR_TYPE_EXTENSION_NAME);
     }
     /* the heap as GPU memory where it is (uma.c's placed maps) */
     VkPhysicalDeviceMapMemoryPlacedFeaturesEXT fplaced = {

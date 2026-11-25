@@ -22,8 +22,8 @@
    fails. An AudioOut that was never opened makes the SDK read a session it doesn't have: here the call is logged and
    answers as a stopped, empty out */
 #include "nx/nn/audio.h"
-#include "nx/hle/hook/hook.h"
-#include "hle/hook/hooks.hook.h"
+#include "nx/nn/hook.h"
+#include "nn/hooks.hook.h"
 #include "nx/hle/hle.h"
 #include "nx/hle/kernel/kernel.h"
 #include "nx/hle/services/services_int.h"
@@ -420,7 +420,7 @@ i32 nnaudio_list_outs(CPU* c, u64 infos, i32 count) {
    none to open, as the service answered. The SDK gives a game the session's result for an open that fails, and
    writes nothing into its audio in. The functions that take an audio in it opened have none to be called with.
    The Ounce has a microphone built in, which the list of audio ins names. A game of the Ounce records it through the
-   input streams (hle/hook/audio_stream.c), and one game opens its input stream only once the list has named an
+   input streams (nn/audio_stream.c), and one game opens its input stream only once the list has named an
    audio in: the name is the game's to show. An open of it as an audio in still fails as on a Switch */
 #define IN_NAME_SIZE 0x100 /* an audio in's entry */
 i32 nnaudio_list_ins(CPU* c, u64 infos, i32 count) {

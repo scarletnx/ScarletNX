@@ -6,7 +6,7 @@
    game folder's .ttf taken over the stand-in for its slot; and the hooks' answers on a stand-in CPU, the fonts at the
    address their memory was mapped at, and a 32-bit game's through its table's adapters (pl.hook's a32) */
 #include "nx/nn/pl.c"
-#include "hle/hook/hooks.hook.inc" /* pl.hook's table, and a 32-bit game's */
+#include "nn/hooks.hook.inc" /* pl.hook's table, and a 32-bit game's */
 #include "nx/hle/hle.c"
 #include "kobj_ids.h" /* the kernel objects the stubs make, as ids */
 #include <setjmp.h>

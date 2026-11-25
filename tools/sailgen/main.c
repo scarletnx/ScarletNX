@@ -21,6 +21,9 @@
          writes PAGES, the instruction pages of Intel's SDM Vol. 2 (opcode table, operand encoding, Operation,
          Flags Affected) out of TEXT, what `pdftotext -layout` makes of its PDF, each override's sections in place of
          its page's (sdm.c): what the x86-64 back end's instruction selection reads
+     sailgen --isel PAGES --ops OPS [--source TEXT] -o OUT [--report REPORT]
+         writes OUT, the x86-64 back end's instruction selection out of PAGES (--sdm's) and the back end's primitives OPS
+         (x64.ops), with TEXT, where PAGES are from, in its header; REPORT, what was selected and what could not be read
      sailgen --encoders PREFIX [--roots ROOTS] -o OUT INPUT...
          writes OUT, an encoder for each clause of the scattered decode function PREFIX (__DecodeA64) of INPUT, or of
          those that call a root of ROOTS (enc.c): the instruction table of a back end that writes that architecture
@@ -151,6 +154,7 @@ static int usage(const char* why) {
             "               [--overlay FILE]...\n"
             "       sailgen --gpu ROOTS --backend FILE [--backend FILE]... -o OUT INPUT... [--overlay FILE]...\n"
             "       sailgen --sdm TEXT -o PAGES [--overlay OVERRIDE]...\n"
+            "       sailgen --isel PAGES --ops OPS [--source TEXT] -o OUT [--report REPORT]\n"
             "       sailgen --encoders PREFIX [--roots ROOTS] -o OUT INPUT...\n",
             why);
     return 2;
@@ -165,6 +169,7 @@ int main(int argc, char** argv) {
     const char* profile = NULL;
     const char* ops = NULL;
     const char* report = NULL;
+    const char* source = NULL;
     const char* enc_roots = NULL;
     const char* inputs[16];
     int overlays[16], count = 0, i;
@@ -186,6 +191,9 @@ int main(int argc, char** argv) {
                 enc_roots = argv[++i];
             else
                 report = argv[++i];
+        } else if (!strcmp(argv[i], "--source")) {
+            if (i + 1 >= argc) return usage("--source takes the text that says where --isel's pages are from");
+            source = argv[++i];
         } else if (!strcmp(argv[i], "--profile")) {
             if (i + 1 >= argc) return usage("--profile takes the decoder's profile (a64.profile)");
             profile = argv[++i];
@@ -205,9 +213,10 @@ int main(int argc, char** argv) {
     }
     if (!mode) return usage("give --extract, --generate, --gpu or --sdm");
     if (!out) return usage("give -o OUT");
+    if (source && strcmp(mode, "--isel")) return usage("--source is --isel's");
     if (!strcmp(mode, "--isel")) {
         if (!ops) return usage("--isel takes the back end's primitives (--ops x64.ops)");
-        return sg_isel(roots, ops, out, report);
+        return sg_isel(roots, ops, source, out, report);
     }
     if (!strcmp(mode, "--encoders")) {
         if (!out || !count) return usage("--encoders writes -o OUT from the Sail's files");

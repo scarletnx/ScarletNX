@@ -1,12 +1,12 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* hook_install (src/nx/hle/hook/hook.c) over a full table, the spec tests/CMakeLists.txt writes with as many hooks as
+/* hook_install (src/nx/nn/hook.c) over a full table, the spec tests/CMakeLists.txt writes with as many hooks as
    tools/hookgen takes, with the runtime stubbed: a game whose module exports every one of their functions gets each
    one hooked, the last as the first, and the index of the sites by address finds each one, and none at any other
    address, as a search of every site does, then after an install again and after one into emptied sites. With
    "twice", a second module exports them all again, and the install stops the game at the first function it has no
    site for, naming it and the sites there are */
-#include "nx/hle/hook/hook.c"
+#include "nx/nn/hook.c"
 #include <assert.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -56,7 +56,7 @@ void mem_query(u64 addr, MemBlock* b) {
     b->addr = addr, b->state = MS_CODE, b->perm = PERM_R | PERM_X;
 }
 GuestFn nce_slot(GuestFn f) { return f; }
-void nce_slot_taken(u64 addr, const char* what) { (void)addr, (void)what; }
+int nce_slot_taken(u64 addr, const char* what) { return (void)addr, (void)what, 0; }
 void jit_slot_taken(u64 addr, GuestFn fn) { (void)addr, (void)fn; }
 GuestFn jit_code_now(u64 pc) { return (void)pc, NULL; }
 _Atomic SnxArmBlock* arm_slot(u32 addr, int thumb) { return (void)addr, (void)thumb, NULL; }

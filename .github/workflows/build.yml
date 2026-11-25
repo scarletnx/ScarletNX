@@ -220,8 +220,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          # poppler: pdftotext, which the x86-64 back end's instruction selection is derived with (cmake/sdm.cmake);
-          # without it the configure stops
+          # poppler: pdftotext, which makes the x86-64 back end's instruction selection again (below)
           for try in 1 2 3; do
             pacman -Syu --noconfirm --needed cmake ninja meson make patch nasm perl python clang llvm sdl3 libx11 mesa vulkan-icd-loader ccache glslang jdk21-openjdk poppler && break
             [ "$try" = 3 ] && exit 1
@@ -271,6 +270,22 @@ jobs:
           else
             echo "any=true" >> "$GITHUB_OUTPUT"
           fi
+      # Whether the native back ends of the other machines are tested under Unicorn (ctest -L unicorn), which takes long:
+      # a push, a tag, the nightly's schedule and a run by hand test them, a pull request only where it changes what they
+      # test, by the script that says so in recompiler-changes too. Not that job's output: this job would wait for it
+      - name: Look for what the tests under Unicorn test
+        id: unicorn
+        if: matrix.arch == 'x86_64'
+        shell: bash
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
+            echo "unicorn=true" >> "$GITHUB_OUTPUT"
+            echo "a $GITHUB_EVENT_NAME runs them"
+            exit 0
+          fi
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          changed=$(git diff --name-only HEAD^1 HEAD)
+          python3 scripts/recompiler-changes.py <<<"$changed" >> "$GITHUB_OUTPUT"
       # LLVM's libraries linked into the runtime, with the host's code generator alone (scripts/linux-llvm.sh), where
       # Arch's libLLVM is one library with every target. Built once for each version, the image's LLVM's,
       # whose opt prints the pipelines of the LLVM settings (cmake/settings.cmake)
@@ -351,13 +366,19 @@ jobs:
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
-      # Unicorn 2.1.4, the A32 and Thumb differentials' reference (SNX_TEST_ARM_DIFF), in a venv: Arch's Python takes no
-      # pip install of its own. PyPI drops a connection now and then, so it is tried 3 times, 5 s apart
+      # Unicorn 2.1.4, the A32 and Thumb differentials' reference (SNX_TEST_ARM_DIFF), and the header and library the
+      # native back ends' tests link, in a venv: Arch's Python takes no pip install of its own. The wheels, by their
+      # SHA-256 on PyPI (x86-64's and AArch64's). PyPI drops a connection now and then, so it is tried 3 times, 5 s apart
       - name: Install Unicorn
         run: |
           python -m venv --system-site-packages .cache/unicorn
+          cat > .cache/unicorn/requirements.txt <<'EOF'
+          unicorn==2.1.4 \
+            --hash=sha256:9d6e6dea140560de4ebd8446661f7ef84a357d428c14a3ef09dacd306ec8c239 \
+            --hash=sha256:bd1fb0c9af5f57e356d8a96928b4fe045b2e18f308ef23b481d5f970008aa722
+          EOF
           for try in 1 2 3; do
-            .cache/unicorn/bin/pip install --quiet unicorn==2.1.4 && break
+            .cache/unicorn/bin/pip install --quiet --require-hashes --only-binary :all: -r .cache/unicorn/requirements.txt && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
@@ -365,11 +386,19 @@ jobs:
       # target builds, in a folder of its own with this job's LLVM. The A64 disassembler, which the AppImage leaves out,
       # is back in AArch64's test tree; on x86-64 linux-sanitizers' tree has it
       - name: Build the tests and the headless Vulkan tree
+        shell: bash
+        env:
+          UNICORN: ${{ steps.unicorn.outputs.unicorn }}
         run: |
           ccache --zero-stats
+          options=()
+          if [ "$UNICORN" = true ]; then
+            wheel=$(.cache/unicorn/bin/python -c 'import os, unicorn; print(os.path.dirname(os.path.abspath(unicorn.__file__)))')
+            options=(-DSNX_UNICORN_INCLUDE_DIR="$wheel/include" -DSNX_UNICORN_LIBRARY="$wheel/lib/libunicorn.so.2")
+          fi
           cmake build/default ${{ env.SNX_TEST_OPTIONS }} -DBUILD_TESTING=ON \
             -DSNX_A64_DISASM=${{ matrix.arch == 'aarch64' && 'ON' || 'OFF' }} \
-            -DPython3_EXECUTABLE="$PWD/.cache/unicorn/bin/python"
+            -DPython3_EXECUTABLE="$PWD/.cache/unicorn/bin/python" "${options[@]}"
           cmake --build build/default --parallel "$(getconf _NPROCESSORS_ONLN)"
           ccache --show-stats
           ccache --zero-stats
@@ -437,8 +466,27 @@ jobs:
       # The game modules compile src/common/cpu/aarch64/cpu_helpers.c, which no CMake target does
       - name: Check the ABI helpers compile
         run: clang -std=gnu23 -fsyntax-only -Wall -I src src/common/cpu/aarch64/cpu_helpers.c
+      # Then how many functions and blocks of whole programs the native back end made (scripts/recompile-census.py), which
+      # ctest does not show of tests that pass
       - name: Test native tooling and indexed filesystems
-        run: ctest --test-dir build/default --output-on-failure --parallel 4
+        shell: bash
+        run: |
+          status=0
+          ctest --test-dir build/default -LE '^(unicorn|sdm)$' --output-on-failure --parallel 4 \
+            --output-junit "$PWD/tests.xml" || status=$?
+          python3 scripts/recompile-census.py tests.xml || status=1
+          exit "$status"
+      # The code of the native back ends that no job runs, each test by its name, then what each machine ran: one that ran
+      # none fails (scripts/unicorn-tests.py), as ctest passes a test the build has not
+      - name: Test the native back ends under Unicorn
+        if: steps.unicorn.outputs.unicorn == 'true'
+        shell: bash
+        run: |
+          status=0
+          ctest --test-dir build/default -L '^unicorn$' --no-tests=error --output-on-failure --parallel 4 \
+            --output-junit "$PWD/unicorn.xml" || status=$?
+          python3 scripts/unicorn-tests.py unicorn.xml || status=1
+          exit "$status"
       - name: Check optional Python diagnostics
         run: |
           python -m compileall -q tools
@@ -553,6 +601,29 @@ jobs:
             *.log
             times.txt
           if-no-files-found: ignore
+      # The x86-64 back end's instruction selection (tools/sailgen/sdm/x64_isel.inc) made again from the Intel SDM, on the
+      # nightly's schedule, a run by hand and a pull request that changes what it is made from. The manual is downloaded
+      # here alone (SNX_TEST_SDM), and Intel's link serves the latest revision: where that is not 093US, or it doesn't
+      # answer, this step fails, saying what it got and what it expected, and no other pull request does. The last of the
+      # job's tests, so that what it says hides none of the others
+      - name: Make the x86-64 instruction selection again
+        if: matrix.arch == 'x86_64' && github.event_name != 'push'
+        shell: bash
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            git config --global --add safe.directory "$GITHUB_WORKSPACE"
+            changed=$(git diff --name-only HEAD^1 HEAD)
+            if ! grep -qE '^(tools/sailgen/|cmake/sdm\.cmake$|tests/sdm_isel_test\.py$)' <<<"$changed"; then
+              echo "::notice title=x64_isel.inc::not made again: the pull request changes nothing it is made from"
+              exit 0
+            fi
+          fi
+          cmake build/default -DSNX_TEST_SDM=ON
+          cmake --build build/default --target snx-sailgen --parallel "$(getconf _NPROCESSORS_ONLN)"
+          ctest --test-dir build/default -R '^sailgen_sdm_isel$' --output-on-failure --no-tests=error \
+            --output-junit sdm_isel.xml
+          # skipped is not made again
+          if grep -q '<skipped' build/default/sdm_isel.xml; then exit 1; fi
       # A run stops at its first failed job, whatever its event: the jobs done keep their results, and the others are
       # cancelled instead of building for nothing. A failed job marks its run with this artifact, and the jobs still
       # running cancel the run once this one has ended (scripts/fail-fast.py), so it keeps its failure: a job that
@@ -608,11 +679,11 @@ jobs:
           path: /var/cache/pacman/pkg
           key: pacman-${{ github.job }}-${{ steps.week.outputs.week }}
           restore-keys: pacman-${{ github.job }}-
-      # the appimage job's build and test tools, without the AppImage's (poppler, as there, for the x86-64 back end)
+      # the appimage job's build and test tools, without the AppImage's
       - name: Install tools
         run: |
           for try in 1 2 3; do
-            pacman -Syu --noconfirm --needed cmake ninja meson make patch nasm perl python git clang lld mold llvm qemu-user pkgconf sdl3 libx11 libxtst libxrandr libxss mesa vulkan-icd-loader vulkan-swrast vulkan-validation-layers ccache gdb jq glslang jdk21-openjdk poppler && break
+            pacman -Syu --noconfirm --needed cmake ninja meson make patch nasm perl python git clang lld mold llvm qemu-user pkgconf sdl3 libx11 libxtst libxrandr libxss mesa vulkan-icd-loader vulkan-swrast vulkan-validation-layers ccache gdb jq glslang jdk21-openjdk && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
@@ -688,10 +759,11 @@ jobs:
       - *fail-fast-file
       - *fail-fast-mark
 
-  # A pull request runs the A64 differential on the cross builds (qemu-reference's recording, appimage-cross's run of
-  # it) only when it changes what the differential tests or how it is built there: the A64 front end and the
-  # recompiler, the differential and its reference, LLVM's build for the target, or this workflow. A push, a nightly
-  # and a run by hand run it whatever changed, and every Linux job's tests run it on their own host
+  # Which of the recompiler's long tests a pull request changes what they test of (scripts/recompiler-changes.py): the A64
+  # differential on the cross builds (qemu-reference's recording, appimage-cross's run of it), which no pull request makes
+  # now, and the native back ends of the other machines under Unicorn (the appimage job, which asks the script itself). A
+  # push, a nightly and a run by hand run them whatever changed, and every Linux job's tests run the differential on their
+  # own host
   recompiler-changes:
     name: Recompiler changes
     if: github.event_name == 'pull_request'
@@ -699,29 +771,18 @@ jobs:
     timeout-minutes: 5
     outputs:
       differential: ${{ steps.changed.outputs.differential }}
+      unicorn: ${{ steps.changed.outputs.unicorn }}
     steps:
       # the pull request's merge commit and the base it is diffed against
       - uses: actions/checkout@v7
         with:
           fetch-depth: 2
-      # grep's 1 is no file matched; anything else it or git returns fails the step
-      - name: Look for what the A64 differential tests
+      - name: Look for what the recompiler's long tests test
         id: changed
+        shell: bash
         run: |
-          paths='^(src/common/cpu/|tests/(llvm_qemu_|llvm_steps\.c$|qemu_ref/)|'
-          paths+='cmake/(cross|decodetree|llvm|llvm_components|qemu_ref)\.cmake$|'
-          paths+='scripts/(linux-llvm\.sh$|llvm-libraries/)|\.github/workflows/build\.yml$)'
           changed=$(git diff --name-only HEAD^1 HEAD)
-          matched=$(grep -E "$paths" <<<"$changed") || [ $? = 1 ]
-          if [ -n "$matched" ]; then
-            printf 'The cross builds run the A64 differential, for:\n%s\n' "$matched"
-            echo "differential=true" >> "$GITHUB_OUTPUT"
-          else
-            count=0
-            [ -z "$changed" ] || count=$(wc -l <<<"$changed")
-            echo "None of the $count files changed is one the A64 differential tests: the cross builds run without it"
-            echo "differential=false" >> "$GITHUB_OUTPUT"
-          fi
+          python3 scripts/recompiler-changes.py <<<"$changed" >> "$GITHUB_OUTPUT"
       - *fail-fast-file
       - *fail-fast-mark
 
@@ -754,12 +815,11 @@ jobs:
           path: /var/cache/pacman/pkg
           key: pacman-${{ github.job }}-${{ steps.week.outputs.week }}
           restore-keys: pacman-${{ github.job }}-
-      # jdk21-openjdk: javac and jni.h, which the Android app driver (src/android) configures with; poppler: pdftotext
-      # (cmake/sdm.cmake)
+      # jdk21-openjdk: javac and jni.h, which the Android app driver (src/android) configures with
       - name: Install tools
         run: |
           for try in 1 2 3; do
-            pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang jdk21-openjdk poppler && break
+            pacman -Syu --noconfirm --needed cmake ninja make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libxtst libxrandr libxss vulkan-swrast vulkan-validation-layers ccache gdb jq glslang jdk21-openjdk && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
@@ -1142,6 +1202,23 @@ jobs:
           cmake --build --preset ${{ matrix.preset }} --parallel "$(getconf _NPROCESSORS_ONLN)" --target snx_gui_tests
           ctest --preset ${{ matrix.preset }} -R '^gui_' -E '^gui_sdl_events$' -j"$(getconf _NPROCESSORS_ONLN)"
           EOF
+      # The census of whole programs, as in the appimage job, of the target's native back end: its drivers recompile them
+      # through qemu-user, in the launcher tests' tree, and none is run
+      - name: Recompile whole programs through qemu
+        run: |
+          docker exec -i -e CCACHE_DIR=/src/.cache/ccache -e CCACHE_BASEDIR=/src -e CCACHE_NOHASHDIR=true \
+            -e SNX_DEPS_CACHE=/src/.cache/deps build sh -s <<'EOF'
+          set -eu
+          git config --global --add safe.directory '*'
+          export SNX_SYSROOT=/src/sysroot
+          cmake --build --preset ${{ matrix.preset }} --parallel "$(getconf _NPROCESSORS_ONLN)" \
+            --target scarletnx snx-test-recompile-census
+          status=0
+          ctest --preset ${{ matrix.preset }} -L '^census$' --no-tests=error --output-on-failure \
+            -j"$(getconf _NPROCESSORS_ONLN)" --output-junit "$PWD/census.xml" || status=$?
+          python3 scripts/recompile-census.py census.xml || status=1
+          exit "$status"
+          EOF
       # Only what this run compiled is kept, as in the appimage job: the AppImage's, the differential's and the launcher
       # tests'. The container builds as root, and the runner's user saves the cache
       - name: Keep what this run compiled
@@ -1321,7 +1398,7 @@ jobs:
             echo "SNX_CCACHE_START=$(date +%s)"
           } >> "$GITHUB_ENV"
       # llvm-mingw alone has no LLVM development libraries. Do not mix its C++ runtime with another LLVM build. meson:
-      # dav1d's build (cmake/dav1d.cmake), as in the appimage job; poppler: pdftotext (cmake/sdm.cmake), x86-64's alone
+      # dav1d's build (cmake/dav1d.cmake), as in the appimage job
       - name: Install Clang, LLVM development files and FFmpeg build tools
         uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
         with:
@@ -1345,7 +1422,6 @@ jobs:
             mingw-w64-clang-${{ matrix.arch }}-pkgconf
             mingw-w64-clang-${{ matrix.arch }}-python
             mingw-w64-clang-${{ matrix.arch }}-ccache
-            ${{ matrix.arch == 'x86_64' && 'mingw-w64-clang-x86_64-poppler' || '' }}
       - name: Check required dependencies
         run: |
           set -euo pipefail
@@ -1451,10 +1527,14 @@ jobs:
           build/default/scarletnx.exe --help > /dev/null
           build/default/scarletnx.exe --extract --help > /dev/null
           build/default/scarletnx.exe --recomp --help > /dev/null
+      # and the census of whole programs, as in the appimage job
       - name: Test native tooling and indexed filesystems
         run: |
           set -euo pipefail
-          ctest --test-dir build/default --output-on-failure --parallel 4
+          status=0
+          ctest --test-dir build/default --output-on-failure --parallel 4 --output-junit "$PWD/tests.xml" || status=$?
+          python scripts/recompile-census.py tests.xml || status=1
+          exit "$status"
       - name: Bundle runtime DLLs and licenses
         run: |
           set -euo pipefail
@@ -1861,9 +1941,14 @@ jobs:
       - name: Check the ABI helpers compile
         if: ${{ !cancelled() && steps.macos-build.outcome == 'success' }}
         run: clang -std=gnu23 -fsyntax-only -Wall -I src src/common/cpu/aarch64/cpu_helpers.c
+      # and the census of whole programs, as in the appimage job
       - name: Test native tooling and indexed filesystems
         if: ${{ !cancelled() && steps.macos-build.outcome == 'success' }}
-        run: ctest --test-dir build/macos --output-on-failure --parallel 4
+        run: |
+          status=0
+          ctest --test-dir build/macos --output-on-failure --parallel 4 --output-junit "$PWD/tests.xml" || status=$?
+          python3 scripts/recompile-census.py tests.xml || status=1
+          exit "$status"
       # A shared SDL3 brings no framework of its own to the link, where CI's pinned static build brings Cocoa and the
       # rest: a Mac user's SDL3 is Homebrew's, and the platform's power watcher must name CoreFoundation itself
       # (cmake/power_frameworks.cmake). The tests that compile plat_posix.c are built against that SDL3 here.

@@ -1,8 +1,12 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The imported functions by NID: each import of the image (vita/loader/image.h) is looked up in the modules' tables
-   at its first call. A NID names one function wherever it is imported from, so the tables are by NID alone */
+/* The imported functions by NID: each import of the image (vita/loader/image.h) is looked up at its first call in
+   the table hookgen --vita makes of the modules' specs (src/vita/hle/, a .hook beside each .c). A NID names one
+   function wherever it is imported from, so the table is by NID alone */
 #include "vita/hle/hle.h"
+#include "vita/hle/hle.hook.h"
+#include "vita/hle/hle.hook.inc"
+#include <stdlib.h>
 #include "snx_settings.h"
 #include <inttypes.h>
 #include <string.h>
@@ -20,16 +24,12 @@
 uint32_t vita_arg(VitaProcess* p, VitaThread* t, unsigned n) {
     return n < 4 ? t->cpu.r[n] : vita_read32(p, t->cpu.r[13] + (n - 4) * 4);
 }
+static int by_nid(const void* key, const void* entry) {
+    uint32_t a = *(const uint32_t*)key, b = ((const VitaHle*)entry)->nid;
+    return a < b ? -1 : a > b;
+}
 static const VitaHle* find(uint32_t nid) {
-    static const VitaHle* const tables[] = {vita_hle_kernel, vita_hle_io,    vita_hle_ctrl, vita_hle_display,
-                                            vita_hle_audio,  vita_hle_misc, vita_hle_gxm, vita_hle_libc,
-                                            vita_hle_fiber, vita_hle_ngs, vita_hle_mp4, vita_hle_videodec,
-                                            vita_hle_audiodec, vita_hle_dialog, vita_hle_net,
-                                            vita_hle_trophy};
-    for (size_t i = 0; i < sizeof tables / sizeof *tables; ++i)
-        for (const VitaHle* h = tables[i]; h->name; ++h)
-            if (h->nid == nid) return h;
-    return NULL;
+    return bsearch(&nid, vita_hle_table, VITA_HLE_COUNT, sizeof *vita_hle_table, by_nid);
 }
 static uint32_t vita_export_return(VitaProcess* p, VitaThread* t, void* context) {
     (void)p;

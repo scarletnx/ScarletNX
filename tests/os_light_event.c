@@ -1,13 +1,13 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The os_light family's LightEvent handlers (src/nx/hle/hook/os_sync.c) on each layout hooks.hook gives
+/* The os_light family's LightEvent handlers (src/nx/nn/os_sync.c) on each layout hooks.hook gives
    nn::os::LightEventType: InitializeLightEvent leaves the bytes the SDK's own leaves, so the SDK's TimedWait, which
    the family leaves to the game's code, reads a waiter word of 0, 1 or 2. The bytes are those of the SDK's own
    InitializeLightEvent, read from games of 6.5.0 to 12.3.1 (the waiter word at 0, the automatic clear at 4,
    initialized at 5, the word at 8 cleared) and of 13.3.0 to 18.3.2 (the automatic clear at 0, initialized at 1, the
    waiter word at 4). An SDK before 13 given the later layout found 0x101 at its waiter word, and aborted. TryWait,
    Clear and a Signal with no waiter take the word as the SDK's do, with no wait in the kernel */
-#include "nx/hle/hook/os_sync.c"
+#include "nx/nn/os_sync.c"
 #include <assert.h>
 #include <stdarg.h>
 #include <stdio.h>

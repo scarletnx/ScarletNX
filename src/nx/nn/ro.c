@@ -11,8 +11,8 @@
    The game's objects are filled as the SDK is seen to leave them: a Module's first word names the module's own object
    in its BSS, which stays zero here, then its state (1 loaded, 0 not), the image and the buffer it was loaded from; a
    RegistrationInfo is its state (1 registered), the NRR and a list's node, which links to itself */
-#include "nx/hle/hook/hook.h"
-#include "hle/hook/hooks.hook.h"
+#include "nx/nn/hook.h"
+#include "nn/hooks.hook.h"
 #include "nx/hle/services/services.h"
 #include "nx/runtime/linker.h"
 #include "nx/runtime/main.h"

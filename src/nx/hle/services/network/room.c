@@ -52,6 +52,7 @@ void network_room_init(void) {
     r = snx_users_room_password(dir, password, sizeof password, why, sizeof why);
     free(dir);
     if (r) fatal("The Eden room's password: %s", why);
+    if (why[0]) LOG("room: %s\n", why);
     u64 t0 = snx_tracy_attached() ? plat_ns() : 0;
     r = snx_room_join(&room, host, port, snx_users_room_nickname(user), password, g_exename, g_hle.kernel.title_id, "",
                       &refused);

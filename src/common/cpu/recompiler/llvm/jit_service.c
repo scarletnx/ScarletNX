@@ -420,7 +420,7 @@ static int known(void* user, SnxU64 address) {
 }
 
 /* the AOT function to call for target, as a host address (SnxIr.direct), 0 when the AOT module has no entry there, or
-   when its dispatch slot holds something else: a hook of the runtime's (nx/hle/hook/hook.c) took its place, which
+   when its dispatch slot holds something else: a hook of the runtime's (nx/nn/hook.c) took its place, which
    only a call through the slot reaches. A unit of the cache that calls it directly is refused at its load, and
    compiled again */
 static SnxU64 direct(void* user, SnxU64 target) {
@@ -1680,7 +1680,8 @@ int snx_jit_add_image(SnxJitService* s, const SnxCodeImage* image) {
     }
     for (size_t i = 1; r != &s->regions[0] && i <= SNX_JIT_IMAGES; ++i)
         if (!atomic_load_explicit(&s->regions[i].hi, memory_order_relaxed)) {
-            if (!r) r = &s->regions[i];
+            /* hi 0 and users: its removal waits for the batches that hold it, and frees its arrays after */
+            if (!r && !s->regions[i].users) r = &s->regions[i];
         } else if (lo < atomic_load_explicit(&s->regions[i].hi, memory_order_relaxed) &&
                    atomic_load_explicit(&s->regions[i].lo, memory_order_relaxed) < hi)
             r = &s->regions[0];

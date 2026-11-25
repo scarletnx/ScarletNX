@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* hook_install on a 32-bit game (src/nx/hle/hook/hook.c), over tests/hook/a32_marked.hook, with the runtime stubbed to
+/* hook_install on a 32-bit game (src/nx/nn/hook.c), over tests/hook/a32_marked.hook, with the runtime stubbed to
    a symbol list and a code table of slots: a hook of the 32-bit program's table (one declared a32, or for a 32-bit
    program alone) takes its function's slot, an A32 function's and a Thumb one's alike, and its adapter runs the
    handler with the arguments AAPCS32 gives it; one not declared a32, a symbol no hook names and a family that
@@ -13,7 +13,7 @@
    that hands its call back: the function's own block, the one its slot held, runs until the call's return address,
    and the adapter still returns there; and one that calls another function of the game, with its four words in r0
    to r3, and is back at its own function after it */
-#include "nx/hle/hook/hook.c"
+#include "nx/nn/hook.c"
 #include <assert.h>
 #include <stdio.h>
 
@@ -147,7 +147,10 @@ static void not_reached(void) { assert(!"the 64-bit install ran for a 32-bit gam
 u64 kmem_alloc(u64 size, u32 state, u32 perm) { return (void)size, (void)state, (void)perm, not_reached(), 0; }
 void mem_query(u64 addr, MemBlock* b) { (void)addr, (void)b, not_reached(); }
 GuestFn nce_slot(GuestFn f) { return not_reached(), f; }
-void nce_slot_taken(u64 addr, const char* what) { (void)addr, (void)what, not_reached(); }
+int nce_slot_taken(u64 addr, const char* what) {
+    (void)addr, (void)what, not_reached();
+    return 0;
+}
 void jit_slot_taken(u64 addr, GuestFn fn) { (void)addr, (void)fn, not_reached(); }
 GuestFn jit_code_now(u64 pc) { return (void)pc, not_reached(), NULL; }
 int linker_links(void) { return 0; }

@@ -50,7 +50,7 @@ snx_svcgen(snx_kernel)
 snx_component(hle hle/services/services.c hle/services/audren.c hle/services/audren_dsp.c hle/services/sm.c hle/services/am.c hle/services/gsv.c hle/services/native_video.c hle/services/native_video_core.c hle/services/native_video_decoder.c hle/services/set.c  hle/services/acc.c hle/services/users.c hle/services/audio.c
               hle/services/misc.c hle/services/ldr.c hle/services/network/bsd.c hle/services/network/dns.c
               hle/services/network/nifm.c hle/services/network/ssl.c hle/services/network/ldn.c hle/services/network/room.c hle/filesystem/fs.c hle/services/hid.c hle/services/hid_motion.c hle/services/hid_touch.c hle/services/vi.c hle/services/nvdrv.c
-              hle/hook/hook.c hle/hook/module.c hle/hook/module_lib.c hle/hook/family.c hle/hook/jump.c hle/hook/ext_skyline.c hle/hook/libc.c hle/hook/alloc.c hle/hook/sync.c hle/hook/os_sync.c hle/hook/libc_std.c hle/hook/libc_wide.c hle/hook/libc_fmt.c hle/hook/libcxx_string.c hle/hook/gs.c hle/hook/diag.c hle/hook/codec.c hle/hook/audio_stream.c hle/hook/verify.c hle/hook/version.c
+              nn/hook.c nn/module.c nn/module_lib.c nn/family.c nn/jump.c nn/ext_skyline.c nn/libc.c nn/alloc.c nn/sync.c nn/os_sync.c nn/libc_std.c nn/libc_wide.c nn/libc_fmt.c nn/libcxx_string.c nn/gs.c nn/diag.c nn/guest_call.c nn/audio_stream.c nn/verify.c nn/version.c
               nn/ro.c nn/fs.c nn/time.c nn/pl.c nn/pl_font.c nn/pctl.c nn/nsd.c nn/ngc.c nn/prepo.c
               nn/audio.c nn/audio_renderer.c nn/codec.c nn/tvmr_jpeg.c)
 # the shared fonts' stand-ins (cmake/shared_fonts.cmake), which nn/pl.c hands out
@@ -61,14 +61,14 @@ if(APPLE)
     target_sources(snx_hle PRIVATE hle/services/native_video_vt.c)
     target_link_libraries(snx_hle PUBLIC "-framework VideoToolbox" "-framework CoreMedia" "-framework CoreVideo")
 endif()
-# the hooks' adapters and table, generated from hle/hook/hooks.hook and the game patches' address hooks
+# the hooks' adapters and table, generated from nn/hooks.hook and the game patches' address hooks
 # (patches/*.hook), whose handlers are the .c files beside them. patches/modules.c lists the hook modules
-# (hle/hook/module.h)
+# (nn/module.h)
 include("${PROJECT_SOURCE_DIR}/cmake/hookgen.cmake")
 snx_hookgen(snx_hle A32_MARKED)
-# the native hooks of mods' trampolines (hle/hook/ext_skyline.hooks), a table of their own for ext_skyline.c
-snx_hookgen(snx_hle SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hle/hook/ext_skyline.hooks" PREFIX skyline
-            NAME hle/hook/ext_skyline.hooks)
+# the native hooks of mods' trampolines (nn/ext_skyline.hooks), a table of their own for ext_skyline.c
+snx_hookgen(snx_hle SPEC "${CMAKE_CURRENT_SOURCE_DIR}/nn/ext_skyline.hooks" PREFIX skyline
+            NAME nn/ext_skyline.hooks)
 file(GLOB snx_patch_handlers CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/patches/*.c")
 target_sources(snx_hle PRIVATE ${snx_patch_handlers})
 # the IPC interfaces of the services (docs/platforms/nx/ipc.md): their dispatchers are generated, the handlers are in the services'
@@ -95,7 +95,7 @@ snx_component(gpu gpu/gpu.c gpu/gpu_queue.c gpu/guest_pools.c gpu/guest_textures
               gpu/gl/gl_texture_calls.c gpu/gl/gl_framebuffer_calls.c
               gpu/gl/gl_sync_calls.c gpu/gl/gl_draw.c
               gpu/gl/gl_host_nx.c
-              gpu/shipped_pass.c)
+              gpu/shipped_pass.c gpu/gvk/gvk.c gpu/gvk/gvk_api.c gpu/gvk/gvk_spirv.c)
 # the NVN functions nvn implements: their adapters and table, generated from gpu/nvn/nvn.hook
 target_link_libraries(snx_gpu PRIVATE snx_zstd) # an Ounce game's .zs shader files (gpu/shipped_pass.c)
 snx_hookgen(snx_gpu SPEC "${CMAKE_CURRENT_SOURCE_DIR}/gpu/nvn/nvn.hook" PREFIX nvn NAME gpu/nvn/nvn.hook A32)
