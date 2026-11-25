@@ -786,7 +786,8 @@ void jit_slot_taken(u64 addr, GuestFn fn) {
                 hi = middle;
         }
         if (im && lo < im->count && im->address[lo] == addr)
-            atomic_store_explicit((_Atomic GuestFn*)&im->function[lo], fn, memory_order_release);
+            atomic_store_explicit((_Atomic GuestFn*)&im->function[lo], fn ? fn : nro_import_dynamic,
+                                  memory_order_release);
     }
     pm_unlock(&g_fn_lock);
 }
