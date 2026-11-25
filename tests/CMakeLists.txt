@@ -4242,7 +4242,9 @@ add_test(NAME recompiler_backends_xpac COMMAND snx-test-recompiler-backends --ta
 # registers kept in host ones
 add_test(NAME recompiler_backends_calls COMMAND snx-test-recompiler-backends --calls --functions 120 --states 8)
 add_test(NAME recompiler_backends_calls_2 COMMAND snx-test-recompiler-backends --calls --functions 120 --states 8 --seed 2)
-set_tests_properties(recompiler_backends_calls recompiler_backends_calls_2 PROPERTIES TIMEOUT 600)
+add_test(NAME recompiler_backends_calls_3 COMMAND snx-test-recompiler-backends --calls --functions 1000 --states 8 --seed 4)
+set_tests_properties(recompiler_backends_calls recompiler_backends_calls_2 recompiler_backends_calls_3 PROPERTIES
+                     TIMEOUT 600)
 # words of the lanes' arithmetic, each a function of its own that the back end must make, from the lanes' edge values
 add_test(NAME recompiler_backends_lanes COMMAND snx-test-recompiler-backends --states 48 --ops ADD_v SUB_v MUL_v MLA_v
          FADD_v FMUL_v FMLA_v FMAX_v FMINNM_v FCMGE_v SQADD_v UQXTN_v SQSHL_v ADDV ZIP1 TBL_TBX)
