@@ -860,8 +860,8 @@ target_link_libraries(snx-test-gpu-driver-stage PRIVATE scarletnx-common)
 add_test(NAME gpu_driver_stage COMMAND snx-test-gpu-driver-stage)
 # the common utilities alone, for the tests every build runs (gui_probe) and the NX ones
 add_library(snx_test_common STATIC "${PROJECT_SOURCE_DIR}/src/common/utilities/common.c"
-    "${PROJECT_SOURCE_DIR}/src/common/utilities/ini_lines.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/game_ini.c"
-    "${PROJECT_SOURCE_DIR}/src/common/utilities/script.c")
+    "${PROJECT_SOURCE_DIR}/src/common/utilities/ini_lines.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/config_file.c"
+    "${PROJECT_SOURCE_DIR}/src/common/utilities/game_ini.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/script.c")
 snx_test_target(snx_test_common c23)
 target_link_libraries(snx_test_common PUBLIC snx_libdeflate) # a control.nacp's titles in deflate
 target_link_libraries(snx_test_common PUBLIC scarletnx-platform) # the clocks (snx_seconds)
@@ -2876,6 +2876,11 @@ add_test(NAME linux_signal COMMAND snx-test-linux-signal)
 add_executable(snx-test-ini-lines ini_lines.c "${PROJECT_SOURCE_DIR}/src/common/utilities/ini_lines.c")
 snx_test_target(snx-test-ini-lines c23)
 add_test(NAME ini_lines COMMAND snx-test-ini-lines)
+# the rule of every settings file the project writes and reads (common/utilities/config_file.c)
+add_executable(snx-test-config-file config_file.c)
+snx_test_target(snx-test-config-file c23)
+target_link_libraries(snx-test-config-file PRIVATE snx_test_common)
+add_test(NAME config_file COMMAND snx-test-config-file)
 # the R_ result helpers (src/nx/hle/result.h), strict ISO C23 as the code that may use them
 add_executable(snx-test-result-macros result_macros.c)
 snx_test_target(snx-test-result-macros c23)
