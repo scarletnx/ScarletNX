@@ -3696,6 +3696,10 @@ if(NOT WIN32)
                          SHA1C SHA256H)
                 set_tests_properties(sail_${m}_integers sail_${m}_floats sail_${m}_tables PROPERTIES TIMEOUT 900)
             endif()
+            if(gen STREQUAL "ppc64") # an unpatched Unicorn has none: skipped, as it compares nothing
+                set_tests_properties(sail_${m} sail_${m}_spill sail_${m}_integers sail_${m}_floats sail_${m}_tables
+                                     PROPERTIES SKIP_RETURN_CODE 77)
+            endif()
         endforeach()
     endif()
 endif()
@@ -4525,6 +4529,9 @@ foreach(family IN ITEMS
                      ${family} --qemu "${SNX_QEMU_AARCH64}" "${SNX_QEMU_REF_RUNNER}"
                      "${CMAKE_CURRENT_BINARY_DIR}/qemu_past/${m}_${name}")
             set_tests_properties(recompiler_${m}_past_${name} PROPERTIES TIMEOUT 900)
+            if(m MATCHES "^ppc64") # an unpatched Unicorn has none: skipped, as it compares nothing
+                set_tests_properties(recompiler_${m}_past_${name} PROPERTIES SKIP_RETURN_CODE 77)
+            endif()
         endif()
     endforeach()
 endforeach()
@@ -4532,6 +4539,9 @@ endforeach()
 foreach(m IN LISTS backends)
     add_test(NAME recompiler_${m}_past_tags COMMAND snx-test-recompiler-${m} --target max --states 16 --ops STG STZG ST2G
              STZ2G STGP LDG)
+    if(m MATCHES "^ppc64")
+        set_tests_properties(recompiler_${m}_past_tags PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
 endforeach()
 # an AOT module's descriptor for each little-endian RISC host (module_x64.c over mach/risc_desc.inc), its functions
 # run under Unicorn (loongarch64's in support/la64_interp.c)

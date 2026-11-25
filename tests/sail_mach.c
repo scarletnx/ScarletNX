@@ -173,11 +173,6 @@ static void swap_state(void* user) {
 }
 /* Unicorn with the test's memory mapped: the code's region, the state, guest memory, the runtime's traps */
 static int unicorn_begin(unsigned char* code, size_t code_cap) {
-    g_test.uc = hostuc_new(SAIL_MACH_UC, PAGE);
-    if (!g_test.uc) {
-        fprintf(stderr, "FAIL: no Unicorn %s\n", hostuc_name(SAIL_MACH_UC));
-        return -1;
-    }
     g_test.rt = (RtAPI*)hostuc_alloc(g_test.uc, sizeof(RtAPI));
     g_test.cpu = (CPU*)hostuc_alloc(g_test.uc, sizeof(CPU));
     if (!g_test.rt || !g_test.cpu) return -1;
@@ -423,6 +418,11 @@ int main(int argc, char** argv) {
     memcpy(g_test.memory[0], g_test.memory[2], MEMORY_SIZE);
     memcpy(g_test.memory[1], g_test.memory[2], MEMORY_SIZE);
     code = (unsigned char*)hostuc_pages(code_cap);
+    g_test.uc = hostuc_new(SAIL_MACH_UC, PAGE);
+    if (!g_test.uc) {
+        printf("SKIP: no Unicorn of %s: nothing to compare\n", hostuc_name(SAIL_MACH_UC));
+        return 77;
+    }
     if (!code || unicorn_begin(code, code_cap)) {
         fprintf(stderr, "FAIL: no memory or Unicorn for the code\n");
         return 1;
