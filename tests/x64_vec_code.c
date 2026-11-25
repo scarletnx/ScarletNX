@@ -40,6 +40,11 @@ static const Row k_rows[] = {
     {"SQADD, UQSUB, SQXTN, SQRDMULH of one block", 0, 0, 576, 1, NULL, "4E220C20 6EA52C83 0E2148E6 6E6AB528"},
     {"SQADD, MRS FPSR, SQADD", 0, 0, 432, 2, NULL, "4E220C20 D53B4420 4EA50C83"},
     {"SQADD, SUBS, B.NE back to the SQADD", 0, 0, 480, 1, NULL, "4E220C20 F1000610 54FFFFC1"},
+    {"suqadd v0.16b, v1.16b", 0, 0, 304, -1, NULL, "4E203820"},
+    {"usqadd v0.8h, v1.8h", 0, 0, 304, -1, NULL, "6E603820"},
+    {"sqabs v0.16b, v1.16b", 0, 0, 288, -1, NULL, "4E207820"},
+    {"sqneg v0.4s, v1.4s", 0, 0, 304, -1, NULL, "6EA07820"},
+    {"sqabs v0.2d, v1.2d", 0, 0, 304, -1, NULL, "4EE07820"},
 };
 
 static const Row* g_row; /* the one being checked, for the messages */
