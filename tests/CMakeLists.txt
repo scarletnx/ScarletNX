@@ -6,7 +6,7 @@ the runtime links those libraries too, and isn't deployed)" OFF)
 option(SNX_TEST_VULKAN "Run offscreen Vulkan integration tests (requires a Vulkan 1.3 ICD, e.g. lavapipe)" OFF)
 option(SNX_TEST_ONLINE_LIVE
        "Ask each WFC service's DNS server over the internet (online_presets_live, ctest -L network)" OFF)
-option(SNX_TEST_ARM_AOT "Build asset-free static ARM11/checked-memory witnesses (requires native LLVM SDK)" OFF)
+option(SNX_TEST_ARM_AOT "Build asset-free static ARM11/checked-memory witnesses (requires a native build of the 3DS)" OFF)
 option(SNX_TEST_VP9_VECTORS
        "Run NVDEC's VP9 jobs on libvpx's test vectors (configure downloads 32 files from the WebM project)" OFF)
 if(SNX_TEST_VP9_VECTORS AND SNX_TOOLS_ONLY)
