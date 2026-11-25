@@ -123,6 +123,9 @@ void agb_board_destroy(AgbBoard* board);
    start, so once EWRAM is the map's (agb_map_init). Returns 0, or -1 with a message naming the image's size when it
    is empty or EWRAM cannot hold it */
 int agb_board_multiboot(AgbBoard* board, const void* image, size_t size, char* error, size_t error_size);
+/* The game the board holds, as its recompiled code and its save states name it: the cartridge image's FNV-1a, or the
+   multiboot program's */
+uint64_t agb_board_hash(const AgbBoard* board);
 /* Where the machine starts: the cartridge's first word, or a multiboot program's entry */
 uint32_t agb_board_entry(const AgbBoard* board);
 

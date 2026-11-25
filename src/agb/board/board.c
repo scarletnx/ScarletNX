@@ -52,6 +52,12 @@ int agb_board_multiboot(AgbBoard* board, const void* image, size_t size, char* e
     return 0;
 }
 
+uint64_t agb_board_hash(const AgbBoard* board) {
+    return board->has_cartridge    ? snx_fnv1a(SNX_FNV_BASIS, board->cartridge.data, board->cartridge.size)
+           : board->multiboot_size ? board->multiboot_hash
+                                   : SNX_FNV_BASIS;
+}
+
 uint32_t agb_board_entry(const AgbBoard* board) {
     /* with no cartridge, mGBA's machine starts a program at 0x020000C0 when that word is not zero, else at EWRAM's
        start, where a program whose header has no entry begins */
