@@ -4363,7 +4363,14 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
     add_test(NAME arm_arm64win COMMAND snx-test-arm-arm64win --blocks 1500 --thumb 1000 --states 8)
     add_test(NAME arm_arm64win_spill COMMAND snx-test-arm-arm64win --pool 3 --blocks 1500 --thumb 1000 --states 8 --seed 2)
     add_test(NAME arm_arm64win_step COMMAND snx-test-arm-arm64win --step --blocks 300 --thumb 200 --states 2 --seed 3)
-    set_tests_properties(arm_arm64win arm_arm64win_spill arm_arm64win_step PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
+    add_test(NAME arm_arm64win_step_hosted COMMAND snx-test-arm-arm64win --step --memory hosted --blocks 200 --thumb 150
+             --states 2 --seed 4)
+    add_test(NAME arm_arm64win_step_bus COMMAND snx-test-arm-arm64win --step --profile arm7tdmi --trace --blocks 200
+             --thumb 150 --states 2 --seed 5)
+    add_test(NAME arm_arm64win_step_checked COMMAND snx-test-arm-arm64win --step --memory checked --blocks 200 --thumb 150
+             --states 2 --seed 6)
+    set_tests_properties(arm_arm64win arm_arm64win_spill arm_arm64win_step arm_arm64win_step_hosted
+                         arm_arm64win_step_bus arm_arm64win_step_checked PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
     # rv64's ABI extends a narrow argument with its sign, arm64's does not (the control); la64's and the others' tests
     # run the back end's own words (la64_interp) or skip, so they have no compiled function
     include(arm_call_abi.cmake)

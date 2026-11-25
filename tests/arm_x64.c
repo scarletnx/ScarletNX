@@ -2054,7 +2054,7 @@ static int run_chained(Back* x64) {
     if (!hostuc_native(uc, "snx_arm_direct", (void*)snx_arm_direct) ||
         hostuc_load(uc, object, size, error, sizeof error))
         goto done;
-#if defined(SNX_TEST_WIN64)
+#if defined(SNX_TEST_UNWINDS)
     hostuc_step(uc, 1); /* each frame unwound at every instruction, a tail call's way out of it among them */
 #endif
     for (size_t k = 0; k < n; ++k)
@@ -2121,7 +2121,7 @@ static int run_chained(Back* x64) {
 done:
     if (rc) fprintf(stderr, "FAIL: the chained blocks' object: %s\n", error);
     free(object);
-#if defined(SNX_TEST_WIN64)
+#if defined(SNX_TEST_UNWINDS)
     if (uc) hostuc_step(uc, 0);
 #endif
 #if defined(SNX_TEST_NATIVE)
