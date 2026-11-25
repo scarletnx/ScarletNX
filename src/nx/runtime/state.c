@@ -1280,9 +1280,13 @@ int state_save(const char* path, char* why, size_t whysize) {
     SNX_SECTION_SCOPED_C(snx_save_state, "save state", 3);
     SNX_FRAME_SCOPED(f_state, "state"); /* save and load each frame one discontinuous set */
     why[0] = 0;
-    if (state_gvk_refused(why, whysize)) return -1;
+    if (state_gvk_refused(why, whysize)) {
+        WARN("state: %s wasn't saved: %s\n", path, why);
+        return -1;
+    }
     if (game_pause()) {
         snprintf(why, whysize, "the game didn't stop to be saved");
+        WARN("state: %s wasn't saved: %s\n", path, why);
         return -1;
     }
     if (savable(why, whysize) || (has_nvn && nvn_state_save(&nio, why, whysize))) {
