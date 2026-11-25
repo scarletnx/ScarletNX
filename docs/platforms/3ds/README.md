@@ -366,16 +366,17 @@ Implemented:
   zeroed page-appended BSS, guarded stack and one private initial TLS page.
   `TPIDRURO` points at this page. Initial 3b adds per-thread zeroed TLS slots
   and serialized native context scheduling, not a host-thread/multicore scheduler.
-- The offline LLVM compiler and native host linker, part of `scarletnx-3ds`:
+- The offline compiler and native host linker, part of `scarletnx-3ds`:
   private staging/publication, versioned module ABI and exact image
-  identity. Images up to 4096 bytes retain exhaustive one-instruction ARM/Thumb
+  identity. The host's native back end makes the blocks (`src/common/cpu/arm/aot.h`), and LLVM the ones it refuses,
+  or all of them on a host without one or with `--keep-ir`; the recompile says how many each made, and why. Images up to 4096 bytes retain exhaustive one-instruction ARM/Thumb
   entries. Stage 2b3 adds conservative static CFG discovery for larger images:
   direct branches/calls, conditional continuations, literal/ADR code pointers,
   initialized RO/data pointer candidates, legacy Thumb BL pairs and a bounded
   PC-relative ADD jump window. Initial 3b also recognizes adjacent unsigned
   CMP / LDRLS PC-indexed tables with at most 256 entries; no unbounded sweep.
   Blocks contain at most 32 guest instructions;
-  bounded LLVM chunks are disposed between emissions, then statically linked.
+  bounded chunks of them are objects, then statically linked.
   The link is the LLVM backend's own (`src/common/cpu/recompiler/llvm/link.c`),
   with the helpers the blocks call (`armlib.c`), as the Switch's 32-bit modules
   are: an ELF shared object, a PE DLL or a Mach-O dylib, without a C compiler.
@@ -953,9 +954,9 @@ no static entry, even if its page is executable: it compiles at run time, as any
 code the static graph lacks does. The static graph is bounded by the text itself
 (each instruction slot is visited once in each instruction set). Objects together
 are capped at 1 GiB and the linked module at 1 GiB, and only the module is kept,
-beside the game as `<title ID>_code.so`. The code uses the setting `opt` (`-O`, 2)
-and 512 blocks per LLVM module, compiled on the `aot_threads` threads (75% of the
-physical cores by default).
+beside the game as `<title ID>_code.so`. The chunks are of 512 blocks, compiled on the
+`aot_threads` threads (75% of the physical cores by default); the setting `opt` (`-O`,
+2) is the level of the blocks LLVM compiles.
 
 ### Build and test
 

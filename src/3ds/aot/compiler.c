@@ -1,12 +1,15 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The offline compiler, part of the driver: the extracted image's static blocks to a native module. Never creates an
-   execution engine. */
+/* The offline compiler, part of the driver: the extracted image's static blocks to a native module, by the host's native
+   back end, and LLVM for what that does not make (cpu/arm/aot.h). Never creates an execution engine. */
 #include "3ds/aot/ctr_compile.h"
 #include "3ds/aot/ctr_module.h"
 #include "3ds/aot/ctr_discover.h"
-#include "common/cpu/arm/llvm.h"
+#include "common/cpu/arm/aot.h"
+#include "common/cpu/arm/checked.h"
 #include "common/cpu/recompiler/llvm/ir.h"
+#include "common/cpu/recompiler/mach/native.h"
+#include "common/cpu/recompiler/x64/x64_elf.h"
 #include "common/cpu/recompiler/llvm/rtlib_object.h"
 #include "common/cpu/recompiler/llvm/link.h"
 #include "common/cpu/recompiler/workers.h"
@@ -32,6 +35,59 @@ typedef struct {
 static void name(char out[40], unsigned mode, unsigned index) {
     snprintf(out, 40, "ctr_%c_%u", mode ? 't' : 'a', index);
 }
+/* the module's descriptor, its tables' addresses the linker's */
+static SnxCtrModule describe(const SnxCtrImage* image) {
+    const uint32_t bytes = image->segment[0].bytes;
+    SnxCtrModule m = {.magic = SNX_CTR_MODULE_MAGIC,
+                      .abi = SNX_CTR_MODULE_ABI,
+                      .descriptor_size = sizeof(SnxCtrModule),
+                      .cpu_size = sizeof(SnxArmCPU),
+                      .checked_size = sizeof(SnxArmCheckedCPU),
+                      .arm_abi = SNX_ARM_ABI,
+                      .checked_abi = SNX_ARM_CHECKED_ABI,
+                      .codegen_abi = SNX_ARM_CODEGEN_OPTIONS_ABI,
+                      .profile = SNX_ARM_PROFILE_ARM11,
+                      .memory_mode = snx_ctr_module_memory(),
+                      .pointer_size = sizeof(void*),
+                      .text_address = image->segment[0].address,
+                      .text_bytes = bytes,
+                      .arm_count = bytes / 4,
+                      .thumb_count = bytes / 2};
+    memcpy(m.image_identity, image->identity, sizeof m.image_identity);
+    return m;
+}
+/* The index without LLVM (native.h's snx_native_data): a table of the blocks of each state, an entry for every word and
+   every halfword of the text (entries are sorted by state, then place), and the descriptor, the object's one global. 1,
+   0 where this host's native back end has no objects, -1 with the reason in error */
+static int native_index(const SnxCtrImage* image, const Entry* entries, unsigned count, SnxLinkInput* output,
+                        char* error, size_t size) {
+    unsigned pointer = 0;
+    SnxXElf* o = snx_native_data(&pointer);
+    if (!o) return 0;
+    const SnxCtrModule m = describe(image);
+    unsigned cursor = 0;
+    for (unsigned mode = 0; mode < 2; ++mode) {
+        const size_t bytes = (size_t)(mode ? m.thumb_count : m.arm_count) * sizeof(SnxArmBlock);
+        const size_t at = snx_xelf_put(o, SNX_ELF_RELRO, NULL, bytes, sizeof(SnxArmBlock));
+        snx_xelf_symbol(o, mode ? "ctr_thumb" : "ctr_arm", SNX_ELF_RELRO, at, bytes, SNX_ELF_LOCAL);
+        for (; cursor < count && entries[cursor].mode == mode; ++cursor) {
+            char id[40];
+            name(id, mode, entries[cursor].index);
+            snx_xelf_reloc(o, SNX_ELF_RELRO, at + entries[cursor].index * sizeof(SnxArmBlock), id, pointer, 0);
+        }
+    }
+    const size_t at = snx_xelf_put(o, SNX_ELF_RELRO, &m, sizeof m, alignof(SnxCtrModule));
+    snx_xelf_symbol(o, "snx_ctr_module_v1", SNX_ELF_RELRO, at, sizeof m, SNX_ELF_GLOBAL);
+    snx_xelf_reloc(o, SNX_ELF_RELRO, at + offsetof(SnxCtrModule, arm_blocks), "ctr_arm", pointer, 0);
+    snx_xelf_reloc(o, SNX_ELF_RELRO, at + offsetof(SnxCtrModule, thumb_blocks), "ctr_thumb", pointer, 0);
+    unsigned char* object = NULL;
+    const int rc = snx_xelf_write(o, &object, &output->size);
+    snx_xelf_free(o);
+    output->data = object;
+    if (rc) snprintf(error, size, "out of memory for static index");
+    return rc ? -1 : 1;
+}
+/* ---- the index through LLVM, where the host has no native back end or its IR is kept ---- */
 static LLVMValueRef table(LLVMModuleRef mod, const char* id, LLVMValueRef* functions, unsigned count) {
     LLVMTypeRef ptr = LLVMPointerTypeInContext(LLVMGetModuleContext(mod), 0);
     LLVMValueRef result = LLVMAddGlobal(mod, LLVMArrayType(ptr, count), id);
@@ -46,22 +102,12 @@ static bool descriptor(LLVMModuleRef mod, LLVMTargetDataRef layout, const SnxCtr
     LLVMTypeRef i8 = LLVMInt8TypeInContext(c), i32 = LLVMInt32TypeInContext(c);
     LLVMTypeRef types[18];
     LLVMValueRef values[18], hash[32];
+    const SnxCtrModule m = describe(image);
     types[0] = LLVMInt64TypeInContext(c);
-    values[0] = LLVMConstInt(types[0], SNX_CTR_MODULE_MAGIC, 0);
-    uint32_t integers[] = {SNX_CTR_MODULE_ABI,
-                           sizeof(SnxCtrModule),
-                           sizeof(SnxArmCPU),
-                           sizeof(SnxArmCheckedCPU),
-                           SNX_ARM_ABI,
-                           SNX_ARM_CHECKED_ABI,
-                           SNX_ARM_CODEGEN_OPTIONS_ABI,
-                           SNX_ARM_PROFILE_ARM11,
-                           snx_ctr_module_memory(),
-                           sizeof(void*),
-                           image->segment[0].address,
-                           image->segment[0].bytes,
-                           image->segment[0].bytes / 4,
-                           image->segment[0].bytes / 2};
+    values[0] = LLVMConstInt(types[0], m.magic, 0);
+    const uint32_t integers[] = {m.abi,          m.descriptor_size, m.cpu_size,  m.checked_size, m.arm_abi,
+                                 m.checked_abi,  m.codegen_abi,     m.profile,   m.memory_mode,  m.pointer_size,
+                                 m.text_address, m.text_bytes,      m.arm_count, m.thumb_count};
     const size_t offsets[] = {offsetof(SnxCtrModule, magic),           offsetof(SnxCtrModule, abi),
                               offsetof(SnxCtrModule, descriptor_size), offsetof(SnxCtrModule, cpu_size),
                               offsetof(SnxCtrModule, checked_size),    offsetof(SnxCtrModule, arm_abi),
@@ -76,7 +122,7 @@ static bool descriptor(LLVMModuleRef mod, LLVMTargetDataRef layout, const SnxCtr
         values[i + 1] = LLVMConstInt(i32, integers[i], 0);
     }
     types[15] = LLVMArrayType(i8, 32);
-    for (unsigned i = 0; i < 32; ++i) hash[i] = LLVMConstInt(i8, image->identity[i], 0);
+    for (unsigned i = 0; i < 32; ++i) hash[i] = LLVMConstInt(i8, m.image_identity[i], 0);
     values[15] = LLVMConstArray(i8, hash, 32);
     types[16] = types[17] = LLVMPointerTypeInContext(c, 0);
     values[16] = arm;
@@ -89,14 +135,6 @@ static bool descriptor(LLVMModuleRef mod, LLVMTargetDataRef layout, const SnxCtr
     LLVMSetInitializer(global, LLVMConstNamedStruct(structure, values, 18));
     LLVMSetGlobalConstant(global, 1);
     return true;
-}
-/* a module made for this machine as the backend makes the Switch's (ir.c): the target, CPU and ABI the helpers
-   (armlib.c) are compiled for, which the module is linked with */
-static LLVMModuleRef new_module(SnxIr* ir) {
-    LLVMModuleRef m = LLVMModuleCreateWithNameInContext("ctr-static-aot-v1", ir->ctx);
-    LLVMSetTarget(m, LLVMGetTarget(ir->mod));
-    LLVMSetDataLayout(m, LLVMGetDataLayoutStr(ir->mod));
-    return m;
 }
 /* the module's IR as the backend made it, before its passes, as dir/id.ll (--keep-ir) */
 static bool save_ir(LLVMModuleRef mod, const char* dir, const char* id, char* error, size_t size) {
@@ -112,73 +150,16 @@ static bool save_ir(LLVMModuleRef mod, const char* dir, const char* id, char* er
     free(path);
     return ok;
 }
-/* the module's object, *output's, from the backend's passes at the -O letter opt */
-static bool write_object(SnxIr* ir, LLVMModuleRef mod, SnxLinkInput* output, char opt, char* error, size_t size) {
-    unsigned char* object = NULL;
-    bool ok = !snx_ir_module_object(ir, mod, opt, &object, &output->size, error, size);
-    output->data = object;
-    return ok;
-}
-/* The entries' blocks into one object, at the -O letter opt, its IR kept in the folder keep_ir names as id.ll. A block
-   the backend ends sooner than discovery planned (at an MSR to the CPSR, which it ends blocks on) goes on as a block of
-   its own at the instruction after, appended to *rest (*rest_count of them, the caller's to free) for the index */
-static bool chunk(SnxIr* ir, const SnxCtrImage* image, const Entry* entries, unsigned count, SnxLinkInput* output,
-                  char opt, const char* keep_ir, const char* id, Entry** rest, unsigned* rest_count, char* error,
-                  size_t size) {
-    LLVMModuleRef mod = new_module(ir);
-    bool ok = false;
-    unsigned capacity = 0;
-    SnxArmCodegenOptions options = {SNX_ARM_CODEGEN_OPTIONS_ABI, SNX_ARM_PROFILE_ARM11,
-                                    (SnxArmMemoryMode)snx_ctr_module_memory(), 0, 0};
-    *rest = NULL;
-    *rest_count = 0;
-    for (unsigned i = 0; i < count; ++i) {
-        Entry e = entries[i];
-        while (e.length) {
-            unsigned width = e.mode ? 2 : 4;
-            uint32_t pc = image->segment[0].address + e.index * width;
-            uint32_t words[SNX_CTR_AOT_BLOCK_WORDS];
-            uint16_t halves[SNX_CTR_AOT_BLOCK_WORDS];
-            for (unsigned j = 0; j < e.length; ++j) {
-                const unsigned char* unit = image->code + e.index * width + j * width;
-                words[j] = width == 2 ? snx_ld_le16(unit) : snx_ld_le32(unit);
-                halves[j] = (uint16_t)words[j];
-            }
-            char id[40];
-            name(id, e.mode, e.index);
-            size_t consumed = 0;
-            LLVMValueRef f = e.mode ? snx_thumb_llvm_block_ex(mod, id, halves, e.length, pc, &consumed, &options)
-                                    : snx_arm_llvm_block_ex(mod, id, words, e.length, pc, &consumed, &options);
-            if (!f || !consumed || consumed > e.length) {
-                snprintf(error, size, "static discovery/backend termination mismatch at 0x%08x (%zu/%u)", pc,
-                         consumed, e.length);
-                goto done;
-            }
-            LLVMSetVisibility(f, LLVMHiddenVisibility);
-            if (e.index != entries[i].index) {
-                if (*rest_count == capacity) {
-                    Entry* grown = realloc(*rest, (capacity = capacity ? capacity * 2 : 16) * sizeof *grown);
-                    if (!grown) {
-                        snprintf(error, size, "out of memory for static entries");
-                        goto done;
-                    }
-                    *rest = grown;
-                }
-                (*rest)[(*rest_count)++] = (Entry){e.mode, e.index, (unsigned)consumed};
-            }
-            e.index += (unsigned)consumed;
-            e.length -= (unsigned)consumed;
-        }
-    }
-    ok = (!keep_ir || save_ir(mod, keep_ir, id, error, size)) && write_object(ir, mod, output, opt, error, size);
-done:
-    LLVMDisposeModule(mod);
-    return ok;
-}
-static bool index_object(SnxIr* ir, const SnxCtrImage* image, const Entry* entries, unsigned count,
-                         SnxLinkInput* output, const char* keep_ir, char* error, size_t size) {
+/* the index in a module made for this machine as the backend makes the Switch's (ir.c): the target, CPU and ABI the
+   helpers (armlib.c) are compiled for, which the module is linked with */
+static bool llvm_index(const SnxCtrImage* image, const Entry* entries, unsigned count, SnxLinkInput* output, char opt,
+                       const char* keep_ir, char* error, size_t size) {
+    SnxIr* ir = snx_ir_init(error, size) ? NULL : snx_ir_new("ctr-static-aot", opt, error, size);
+    if (!ir) return false;
     LLVMContextRef c = ir->ctx;
-    LLVMModuleRef mod = new_module(ir);
+    LLVMModuleRef mod = LLVMModuleCreateWithNameInContext("ctr-static-aot-v1", c);
+    LLVMSetTarget(mod, LLVMGetTarget(ir->mod));
+    LLVMSetDataLayout(mod, LLVMGetDataLayoutStr(ir->mod));
     LLVMTypeRef ptr = LLVMPointerTypeInContext(c, 0), ft = LLVMFunctionType(LLVMVoidTypeInContext(c), &ptr, 1, 0);
     LLVMValueRef tables[2];
     unsigned cursor = 0;
@@ -205,10 +186,61 @@ static bool index_object(SnxIr* ir, const SnxCtrImage* image, const Entry* entri
         snprintf(error, size, "incompatible native descriptor layout");
         goto done;
     }
-    ok = (!keep_ir || save_ir(mod, keep_ir, "index", error, size)) && write_object(ir, mod, output, '0', error, size);
+    unsigned char* object = NULL;
+    ok = (!keep_ir || save_ir(mod, keep_ir, "index", error, size)) &&
+         !snx_ir_module_object(ir, mod, '0', &object, &output->size, error, size);
+    output->data = object;
 done:
     LLVMDisposeModule(mod);
+    snx_ir_free(ir);
     return ok;
+}
+static bool index_object(const SnxCtrImage* image, const Entry* entries, unsigned count, SnxLinkInput* output, char opt,
+                         const char* keep_ir, char* error, size_t size) {
+    const int made = keep_ir ? 0 : native_index(image, entries, count, output, error, size);
+    return made > 0 || (!made && llvm_index(image, entries, count, output, opt, keep_ir, error, size));
+}
+
+/* ---- the blocks ---- */
+
+/* The entries' blocks into objects (two at most: cpu/arm/aot.h), LLVM's IR kept as id.ll where it is kept. A block
+   the backend ends sooner than discovery planned (at an MSR to the CPSR, which it ends blocks on) goes on as a block of
+   its own at the instruction after, appended to *rest (*rest_count of them, the caller's to free) for the index */
+static bool chunk(SnxArmAot* aot, const SnxCtrImage* image, const Entry* entries, unsigned count,
+                  SnxLinkInput output[2], const char* id, Entry** rest, unsigned* rest_count, char* error,
+                  size_t size) {
+    unsigned capacity = 0;
+    const SnxArmCodegenOptions options = {SNX_ARM_CODEGEN_OPTIONS_ABI, SNX_ARM_PROFILE_ARM11,
+                                          (SnxArmMemoryMode)snx_ctr_module_memory(), 0, 0};
+    *rest = NULL;
+    *rest_count = 0;
+    for (unsigned i = 0; i < count; ++i) {
+        Entry e = entries[i];
+        while (e.length) {
+            unsigned width = e.mode ? 2 : 4;
+            char block[40];
+            name(block, e.mode, e.index);
+            size_t consumed = 0;
+            if (snx_arm_aot_block(aot, block, image->code + (size_t)e.index * width, e.length,
+                                  image->segment[0].address + e.index * width, e.mode != 0, &options, &consumed, error,
+                                  size))
+                return false;
+            if (e.index != entries[i].index) {
+                if (*rest_count == capacity) {
+                    Entry* grown = realloc(*rest, (capacity = capacity ? capacity * 2 : 16) * sizeof *grown);
+                    if (!grown) {
+                        snprintf(error, size, "out of memory for static entries");
+                        return false;
+                    }
+                    *rest = grown;
+                }
+                (*rest)[(*rest_count)++] = (Entry){e.mode, e.index, (unsigned)consumed};
+            }
+            e.index += (unsigned)consumed;
+            e.length -= (unsigned)consumed;
+        }
+    }
+    return snx_arm_aot_objects(aot, id, output, error, size) >= 0;
 }
 /* A title's hints (snx_ctr_jit_save_hints), at path: the blocks earlier runs compiled at run time, one pc a line in
    hex, | 1 for Thumb. *count of them, the caller's to free; none (NULL) without the file */
@@ -241,13 +273,13 @@ static void chunk_label(const SnxCtrImage* image, const Entry* entries, unsigned
     if (lo > hi) lo = hi = 0;
     snprintf(out, size, "0x%08X-0x%08X, %u block%s", (unsigned)lo, (unsigned)hi, count, count == 1 ? "" : "s");
 }
-/* The chunks shared out to a worker per host core, each with an SnxIr of its own: a commercial title's few hundred
-   thousand blocks take an hour on one */
+/* The chunks shared out to a worker per host core, each with a maker of blocks of its own: a commercial title's few
+   hundred thousand blocks took an hour on one */
 typedef struct {
     const SnxCtrImage* image;
     const Entry* entries;
     const unsigned* starts; /* chunk i is entries starts[i] to starts[i + 1] */
-    SnxLinkInput* objects;  /* chunk i's object is objects[i] */
+    SnxLinkInput* objects;  /* chunk i's objects are objects[2 * i] and the next, no data for one it lacks */
     unsigned count, chunks, next, finished;
     char opt;            /* the -O letter */
     const char* keep_ir; /* where each chunk's IR goes, NULL for nowhere */
@@ -255,14 +287,15 @@ typedef struct {
     Entry* rest; /* the blocks the backend split off, every chunk's */
     unsigned rest_count;
     uint64_t output_bytes;
+    SnxArmAotCount made; /* who made the blocks */
     char error[512];
     SnxWorkLock lock;
 } Work;
 static void worker(void* arg) {
     Work* w = arg;
-    char error[512] = "";
-    SnxIr* ir = snx_ir_new("ctr-static-aot", w->opt, error, sizeof error);
-    bool ok = ir != NULL;
+    char error[512] = "out of memory for a maker of blocks";
+    SnxArmAot* aot = snx_arm_aot_new(w->opt, w->keep_ir);
+    bool ok = aot != NULL;
     for (;;) {
         snx_work_lock(&w->lock);
         if (!ok && !w->failed) {
@@ -278,8 +311,8 @@ static void worker(void* arg) {
         char id[24];
         snprintf(id, sizeof id, "blocks_%03u", i);
         double start = snx_seconds();
-        ok = chunk(ir, w->image, w->entries + begin, n, &w->objects[i], w->opt, w->keep_ir, id, &rest, &rest_count,
-                   error, sizeof error);
+        ok = chunk(aot, w->image, w->entries + begin, n, &w->objects[2 * i], id, &rest, &rest_count, error,
+                   sizeof error);
         double seconds = snx_seconds() - start;
         snx_work_lock(&w->lock);
         Entry* merged = rest_count ? realloc(w->rest, (w->rest_count + rest_count) * sizeof *merged) : w->rest;
@@ -291,7 +324,7 @@ static void worker(void* arg) {
             w->rest = merged;
             if (rest_count) memcpy(w->rest + w->rest_count, rest, rest_count * sizeof *rest);
             w->rest_count += rest_count;
-            w->output_bytes += w->objects[i].size;
+            w->output_bytes += w->objects[2 * i].size + w->objects[2 * i + 1].size;
             /* a line for each chunk, as the Switch's recompile gives one for each unit, + the index */
             char label[64];
             chunk_label(w->image, w->entries + begin, n, label, sizeof label);
@@ -301,7 +334,12 @@ static void worker(void* arg) {
         snx_work_unlock(&w->lock);
         free(rest);
     }
-    snx_ir_free(ir);
+    if (aot) {
+        snx_work_lock(&w->lock);
+        snx_arm_aot_add(&w->made, snx_arm_aot_count(aot));
+        snx_work_unlock(&w->lock);
+    }
+    snx_arm_aot_free(aot);
 }
 /* on the threads the settings aot_threads and aot_threads_most give, as the Switch's recompile (snx_aot_threads) */
 static bool compile_chunks(Work* w) {
@@ -344,7 +382,6 @@ int snx_ctr_aot_compile(const char* extracted, const SnxCtrSource* game, const S
     int result = 1;
     SnxCtrImage image = {0}, check = {0};
     SnxCtrPlan plan = {0};
-    SnxIr* ir = NULL;
     SnxLinkInput* objects = NULL;
     SnxLinkOutput linked = {NULL, 0};
     size_t armlib_size = (size_t)snx_armlib_object_size;
@@ -427,22 +464,21 @@ int snx_ctr_aot_compile(const char* extracted, const SnxCtrSource* game, const S
     if (!quiet)
         printf("Discovered ARM11 static coverage: %u blocks%s\n", count,
                exhaustive ? " (exhaustive tiny image)" : " (conservative CFG)");
-    if (snx_ir_init(error, error_size) || !(ir = snx_ir_new("ctr-static-aot", opt, error, error_size))) goto done;
     starts = malloc(((size_t)count + 1) * sizeof *starts);
-    files = starts ? cut_chunks(entries, count, asked ? asked->chunk : 0, starts) + 2 : 0; /* helpers, index, chunks */
+    unsigned chunks = starts ? cut_chunks(entries, count, asked ? asked->chunk : 0, starts) : 0;
+    files = starts ? 2 + 2 * chunks : 0; /* the helpers, the index, two at most for each chunk */
     objects = files ? calloc(files, sizeof *objects) : NULL;
     if (!objects) {
         snprintf(error, error_size, "out of memory for native chunks");
         goto done;
     }
     objects[0].name = "armlib", objects[1].name = "index";
-    for (unsigned i = 2; i < files; ++i) objects[i].name = "blocks";
     work = (Work){.image = &image,
                   .entries = entries,
                   .starts = starts,
                   .objects = objects + 2,
                   .count = count,
-                  .chunks = files - 2,
+                  .chunks = chunks,
                   .opt = opt,
                   .keep_ir = kept,
                   .quiet = quiet};
@@ -450,6 +486,7 @@ int snx_ctr_aot_compile(const char* extracted, const SnxCtrSource* game, const S
         snprintf(error, error_size, "%s", work.error);
         goto done;
     }
+    snx_arm_aot_report(&work.made, "scarletnx-3ds", quiet);
     /* the index of every block, the ones the backend split off with the planned ones */
     if (work.rest_count) {
         Entry* all = realloc(entries, (count + work.rest_count) * sizeof *all);
@@ -463,7 +500,7 @@ int snx_ctr_aot_compile(const char* extracted, const SnxCtrSource* game, const S
         qsort(entries, count, sizeof *entries, by_place);
     }
     double start = snx_seconds();
-    if (!index_object(ir, &image, entries, count, &objects[1], kept, error, error_size)) goto done;
+    if (!index_object(&image, entries, count, &objects[1], opt, kept, error, error_size)) goto done;
     if (!quiet) {
         char label[48];
         snprintf(label, sizeof label, "the module's index, %u block%s", count, count == 1 ? "" : "s");
@@ -476,7 +513,14 @@ int snx_ctr_aot_compile(const char* extracted, const SnxCtrSource* game, const S
         result = 3;
         goto done;
     }
-    if (snx_link(objects, files, exports, 1, snx_path_leaf(target), &linked, error, error_size)) goto done;
+    unsigned linking = 2; /* the objects there are */
+    for (unsigned i = 2; i < files; ++i)
+        if (objects[i].data) {
+            const SnxLinkInput object = objects[i];
+            objects[i] = (SnxLinkInput){0};
+            objects[linking++] = object;
+        }
+    if (snx_link(objects, linking, exports, 1, snx_path_leaf(target), &linked, error, error_size)) goto done;
     if (linked.size > MODULE_LIMIT) {
         snprintf(error, error_size, "native module output limit exceeded");
         result = 3;
@@ -508,7 +552,7 @@ int snx_ctr_aot_compile(const char* extracted, const SnxCtrSource* game, const S
     /* an older version's module, in native/ */
     previous = snx_path_join(directory, "native");
     if (previous && snx_is_dir(previous)) (void)snx_remove_tree(previous);
-    if (!quiet) printf("Compiled ARM11 static module: %u blocks in %u objects\n", count, files);
+    if (!quiet) printf("Compiled ARM11 static module: %u blocks in %u objects\n", count, linking);
     result = 0;
 done:
     if (objects)
@@ -524,7 +568,6 @@ done:
     free(target);
     free(previous);
     free(directory);
-    snx_ir_free(ir);
     snx_ctr_plan_free(&plan);
     snx_ctr_image_free(&check);
     snx_ctr_image_free(&image);
