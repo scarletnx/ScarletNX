@@ -44,6 +44,8 @@ struct SgCtx {
     unsigned base_next;
     int exclusive[2], exclusive_count, exclusive_next, status; /* a load-exclusive's values, a store's status */
     SgB qc; /* when the instruction so far sets FPSR.QC (sg_FPSR_field_write), 0 for not: stored with its V register */
+    int qc_owed; /* a machine's vector value, any bit of which says FPSR.QC is to be set (mach_codegen.inc's qc_pay), 0
+                    for none */
     SnxU64 (*resolve)(const char* sym); /* a helper's address, where the code calls it absolutely (a test's) */
     int start;       /* the instructions before this word's */
 };

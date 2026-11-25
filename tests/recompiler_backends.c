@@ -357,7 +357,11 @@ static const char* const k_vec_ops[] = {
     "FMINV_s", "FMAXNMV_s", "FMINNMV_s", "FRECPE_v", "FRECPE_s", "FRSQRTE_v", "FRSQRTE_s", "FRECPS_v", "FRECPS_s",
     "FRSQRTS_v", "FRSQRTS_s", "FRINTN_v", "FRINTP_v", "FRINTM_v", "FRINTZ_v", "FRINTA_v", "AESE", "AESD", "AESMC",
     "AESIMC", "SHA1C", "SHA1P", "SHA1M", "SHA1SU0", "SHA1H", "SHA1SU1", "SHA256H", "SHA256H2", "SHA256SU0", "SHA256SU1",
-    NULL};
+    "SUQADD_v", "USQADD_v", "SUQADD_s", "USQADD_s", "SQABS_v", "SQNEG_v", "SQABS_s", "SQNEG_s", "RBIT_v", "SRSHL_v",
+    "URSHL_v", "UQSHL_v", "SQRSHL_v", "UQRSHL_v", "SSHL_s", "USHL_s", "SRSHL_s", "URSHL_s", "SQSHL_s", "UQSHL_s",
+    "SQRSHL_s", "UQRSHL_s", "SQSHL_vi", "UQSHL_vi", "SQSHLU_vi", "SQSHL_si", "UQSHL_si", "SQSHLU_si", "SQDMULH_s",
+    "SQRDMULH_s", "SQDMULH_si", "SQRDMULH_si", "SQDMULL_v", "SQDMLAL_v", "SQDMLSL_v", "SQDMULL_vi", "SQDMLAL_vi",
+    "SQDMLSL_vi", "SQDMULL_si", "SQDMLAL_si", "SQDMLSL_si", "SRHADD_v", "RADDHN", "RSUBHN", NULL};
 static uint32_t* g_rows;
 static size_t g_nrows;
 static uint64_t rnd_for_rows(void) { return rnd(); }

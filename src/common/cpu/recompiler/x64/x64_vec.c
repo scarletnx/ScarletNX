@@ -669,18 +669,26 @@ static int vec_fp(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
 
 /* ---- saturation ---- */
 
-/* FPSR.QC set where any of the first bytes of mask (whole lanes; 8 << n of them, a scalar's 1 to 8) is set: the
-   saturating instructions' */
-static void set_qc(SgCtx* g, int mask, int bytes) {
+/* FPSR.QC owed where any bit of v's first bytes is set (the lanes that saturated, or the bits a result differs in from
+   the wrapped one): the saturating instructions'. The region's are one value, which mg_qc tests once */
+static void set_qc(SgCtx* g, int v, int bytes) {
+    if (bytes < 16) v = sgx_xclear(X, v, 8u * (unsigned)bytes);
+    g->qc_owed = g->qc_owed ? vor(g, g->qc_owed, v) : v;
+}
+static void mg_qc(Unit* u) {
+    SgCtx* g = u->g;
     SgX* x = X;
+    int in[4] = {g->qc_owed, g->qc_owed, 0, 0};
     SgXIns* i;
-    SgD fpsr, bits = sgx_val(32, sgx_v1(x, &sgx_v_pmovmskb, mask, 0));
-    SgB any = sg_b_not(g, sg_d_is_zero(g, sg_d_and(g, bits, sgx_const(32, (1u << bytes) - 1))));
+    SgD fpsr, bit;
+    sgx_vins(x, &sgx_v_ptest, -1, 0, in, 0, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
+    bit = sg_d_zext(g, sgx_bool_bits(x, sgx_bool(x, SGX_B_CC, x->flags_ins, 5)), 32); /* NE: a bit set */
+    bit = sg_d_lsl(g, bit, 27);
     i = sgx_append(x, SGX_K_LOAD);
     i->w = 32;
     i->disp = (int)offsetof(CPU, fpsr);
     i->def = sgx_vreg(x, x->n - 1, 32);
-    fpsr = sg_d_or(g, sgx_val(32, i->def), sg_d_select(g, any, sgx_const(32, 1u << 27), sgx_const(32, 0)));
+    fpsr = sg_d_or(g, sgx_val(32, i->def), bit);
     {
         int r = sgx_reg(x, &fpsr);
         SgXIns* st = sgx_append(x, SGX_K_STORE);
@@ -701,7 +709,7 @@ static int vqaddsub(SgCtx* g, unsigned size, int a, int b, int uns, int sub, int
     int r = sub ? vsub(g, size, a, b) : vadd(g, size, a, b), ovf, res;
     if (size < 2) {
         res = op2(g, k[sub * 2 + size][uns], a, b);
-        *sat = vnot(g, veq(g, size, res, r));
+        *sat = vxor(g, res, r);
         return res;
     }
     if (uns) {
