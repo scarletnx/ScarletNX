@@ -2895,6 +2895,9 @@ if(Python3_Interpreter_FOUND)
     # each machine's tests under Unicorn did, in ctest's JUnit file (scripts/unicorn-tests.py)
     add_test(NAME recompiler_changes COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/recompiler_changes_test.py")
     add_test(NAME unicorn_tests COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/unicorn_tests_test.py")
+    # what it shows of the native back end's counts of whole programs (recompile_census), scripts/recompile-census.py
+    add_test(NAME recompile_census_script COMMAND "${Python3_EXECUTABLE}"
+             "${CMAKE_CURRENT_SOURCE_DIR}/recompile_census_test.py")
     # the runs a closed pull request left going, which pr-closed.yml cancels (scripts/cancel-pr-runs.py)
     add_test(NAME cancel_pr_runs COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/cancel_pr_runs_test.py")
     # the check that keeps a pull request red while its title says donotmerge (scripts/pr-title.py, pr-checks.yml)

@@ -466,8 +466,16 @@ jobs:
       # The game modules compile src/common/cpu/aarch64/cpu_helpers.c, which no CMake target does
       - name: Check the ABI helpers compile
         run: clang -std=gnu23 -fsyntax-only -Wall -I src src/common/cpu/aarch64/cpu_helpers.c
+      # Then how many functions and blocks of whole programs the native back end made (scripts/recompile-census.py), which
+      # ctest does not show of tests that pass
       - name: Test native tooling and indexed filesystems
-        run: ctest --test-dir build/default -LE '^(unicorn|sdm)$' --output-on-failure --parallel 4
+        shell: bash
+        run: |
+          status=0
+          ctest --test-dir build/default -LE '^(unicorn|sdm)$' --output-on-failure --parallel 4 \
+            --output-junit "$PWD/tests.xml" || status=$?
+          python3 scripts/recompile-census.py tests.xml || status=1
+          exit "$status"
       # The code of the native back ends that no job runs, each test by its name, then what each machine ran: one that ran
       # none fails (scripts/unicorn-tests.py), as ctest passes a test the build has not
       - name: Test the native back ends under Unicorn
@@ -1194,6 +1202,23 @@ jobs:
           cmake --build --preset ${{ matrix.preset }} --parallel "$(getconf _NPROCESSORS_ONLN)" --target snx_gui_tests
           ctest --preset ${{ matrix.preset }} -R '^gui_' -E '^gui_sdl_events$' -j"$(getconf _NPROCESSORS_ONLN)"
           EOF
+      # The census of whole programs, as in the appimage job, of the target's native back end: its drivers recompile them
+      # through qemu-user, in the launcher tests' tree, and none is run
+      - name: Recompile whole programs through qemu
+        run: |
+          docker exec -i -e CCACHE_DIR=/src/.cache/ccache -e CCACHE_BASEDIR=/src -e CCACHE_NOHASHDIR=true \
+            -e SNX_DEPS_CACHE=/src/.cache/deps build sh -s <<'EOF'
+          set -eu
+          git config --global --add safe.directory '*'
+          export SNX_SYSROOT=/src/sysroot
+          cmake --build --preset ${{ matrix.preset }} --parallel "$(getconf _NPROCESSORS_ONLN)" \
+            --target scarletnx snx-test-recompile-census
+          status=0
+          ctest --preset ${{ matrix.preset }} -L '^census$' --no-tests=error --output-on-failure \
+            -j"$(getconf _NPROCESSORS_ONLN)" --output-junit "$PWD/census.xml" || status=$?
+          python3 scripts/recompile-census.py census.xml || status=1
+          exit "$status"
+          EOF
       # Only what this run compiled is kept, as in the appimage job: the AppImage's, the differential's and the launcher
       # tests'. The container builds as root, and the runner's user saves the cache
       - name: Keep what this run compiled
@@ -1502,10 +1527,14 @@ jobs:
           build/default/scarletnx.exe --help > /dev/null
           build/default/scarletnx.exe --extract --help > /dev/null
           build/default/scarletnx.exe --recomp --help > /dev/null
+      # and the census of whole programs, as in the appimage job
       - name: Test native tooling and indexed filesystems
         run: |
           set -euo pipefail
-          ctest --test-dir build/default --output-on-failure --parallel 4
+          status=0
+          ctest --test-dir build/default --output-on-failure --parallel 4 --output-junit "$PWD/tests.xml" || status=$?
+          python scripts/recompile-census.py tests.xml || status=1
+          exit "$status"
       - name: Bundle runtime DLLs and licenses
         run: |
           set -euo pipefail
@@ -1912,9 +1941,14 @@ jobs:
       - name: Check the ABI helpers compile
         if: ${{ !cancelled() && steps.macos-build.outcome == 'success' }}
         run: clang -std=gnu23 -fsyntax-only -Wall -I src src/common/cpu/aarch64/cpu_helpers.c
+      # and the census of whole programs, as in the appimage job
       - name: Test native tooling and indexed filesystems
         if: ${{ !cancelled() && steps.macos-build.outcome == 'success' }}
-        run: ctest --test-dir build/macos --output-on-failure --parallel 4
+        run: |
+          status=0
+          ctest --test-dir build/macos --output-on-failure --parallel 4 --output-junit "$PWD/tests.xml" || status=$?
+          python3 scripts/recompile-census.py tests.xml || status=1
+          exit "$status"
       # A shared SDL3 brings no framework of its own to the link, where CI's pinned static build brings Cocoa and the
       # rest: a Mac user's SDL3 is Homebrew's, and the platform's power watcher must name CoreFoundation itself
       # (cmake/power_frameworks.cmake). The tests that compile plat_posix.c are built against that SDL3 here.

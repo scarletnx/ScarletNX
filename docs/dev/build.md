@@ -536,6 +536,13 @@ CI's Linux x86-64 job runs them in every push, nightly and run by hand, and in a
 (`scripts/recompiler-changes.py`), and fails where a machine ran none (`scripts/unicorn-tests.py`). PowerPC64's are
 skipped: Unicorn 2.1.4 as it is released does not hold the MSR of a 64-bit PowerPC.
 
+The tests labelled `census` (`ctest -L census -V`) recompile five whole programs that they make: a Switch game of a word of
+each A64 instruction, the same with a Switch 2's NPDM, an NRO of it, a 32-bit Switch game of each A32 and Thumb
+instruction, and a 3DS game of the ARM11's. Each prints how many of its functions or blocks this machine's native back
+end made, and fails where any was left to LLVM, naming its address and its word. On a machine with no native back end
+they are skipped, saying so. CI's Linux, Windows and macOS jobs and its cross builds print the five counts, and fail
+where one is missing (`scripts/recompile-census.py`).
+
 ```sh
 # Build without the GUI launcher; SDL3 remains required by the runtime:
 cmake --preset default -B build/headless-vk -DSNX_BUILD_GUI=OFF -DSNX_DEPLOY=OFF &&
