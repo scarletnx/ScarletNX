@@ -5849,6 +5849,13 @@ foreach(snx_test native_recompiler llvm_module nro_modules plt_calls nx_runtime_
         set_property(TEST ${snx_test} APPEND PROPERTY ENVIRONMENT "XDG_CACHE_HOME=${CMAKE_CURRENT_BINARY_DIR}/xdg-cache")
     endif()
 endforeach()
+# recompiler_backends on a host that has no x86-64 back end, or for words that it leaves to LLVM: nothing to compare
+get_property(snx_tests DIRECTORY PROPERTY TESTS)
+foreach(snx_test IN LISTS snx_tests)
+    if(snx_test MATCHES "^recompiler_backends(_|$)")
+        set_property(TEST ${snx_test} PROPERTY SKIP_RETURN_CODE 77)
+    endif()
+endforeach()
 # the tests that Unicorn runs a native back end's code for: ctest -L unicorn, each with its machine's label too
 # (scripts/unicorn-tests.py, which counts what each machine ran)
 if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
