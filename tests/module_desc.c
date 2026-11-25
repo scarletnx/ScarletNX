@@ -9,7 +9,9 @@
      snx_import_dyn  CPU.disp's function for an address in the code, aligned, with one; else rt->miss
      snx_variants   a profile run's unit's functions: their data, and each one's tail call through the unit's table
      snx_aot_<e>    (with a profile run's units) a tail call of the entry's function
-   A big-endian host's descriptor is the same code; its data is the host's numbers, which a test here can't read.
+   A big-endian host's descriptor is the same code; its data is the host's numbers, which a test here can't read. With
+   SNX_TEST_WIN64 (snx-test-module-desc-win64) it is x86-64's for Windows, a COFF object of its calling convention, run by
+   an x86-64 host itself (support/host_win64.c).
      snx-test-module-desc [MACHINE...]   (riscv64 ppc64le mips64el loongarch64 by default) */
 #include "nx/loader/module_x64.h"
 #include "nx/loader/module_abi.h"
@@ -17,6 +19,7 @@
 #include "common/cpu/aarch64/cpu.h"
 #include "common/runtime/interface.h"
 #include "common/cpu/recompiler/variants.h"
+#include "common/cpu/recompiler/x64/x64_codegen.h"
 #include "support/host_unicorn.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,7 +43,13 @@ static uint64_t missed(uint64_t a, uint64_t b) { return g_called = 0x5A, g_args[
     } while (0)
 
 static int machine(const char* name, HostUcArch arch) {
+#if defined(SNX_TEST_WIN64)
+    const SnxNativeDesc* desc = NULL; /* module_x64.c's own */
+    const int found = snx_x64_win64();
+#else
     const SnxNativeDesc* desc = snx_native_desc_named(name);
+    const int found = desc != NULL;
+#endif
     static const SnxU64 starts[3] = {SNX_CODE_BASE + 0x100, SNX_CODE_BASE + 0x200, SNX_CODE_BASE + 0x300};
     static void* const fns[3] = {(void*)fn0, (void*)fn1, (void*)fn2};
     /* the entries: function 0's words 0 and 2, function 1's 0, function 2's 0 and 1 */
@@ -58,7 +67,7 @@ static int machine(const char* name, HostUcArch arch) {
     char error[256], sym[48];
     int failures = 0;
     HostUc* u;
-    if (!desc || !loaded) {
+    if (!found || !loaded) {
         fprintf(stderr, "FAIL %s: no descriptor of the machine's\n", name);
         free(loaded);
         return 1;
@@ -231,9 +240,20 @@ int main(int argc, char** argv) {
     static const struct {
         const char* name;
         HostUcArch arch;
-    } all[] = {{"riscv64", HOSTUC_RV64}, {"ppc64le", HOSTUC_PPC64LE}, {"mips64el", HOSTUC_MIPS64EL},
-               {"loongarch64", HOSTUC_LA64}};
+    } all[] = {
+#if defined(SNX_TEST_WIN64)
+        {"x86-64", HOSTUC_WIN64}
+#else
+        {"riscv64", HOSTUC_RV64},
+        {"ppc64le", HOSTUC_PPC64LE},
+        {"mips64el", HOSTUC_MIPS64EL},
+        {"loongarch64", HOSTUC_LA64}
+#endif
+    };
     int failed = 0, skipped = 0, ran = 0;
+#if defined(SNX_TEST_WIN64)
+    snx_x64_set_win64(1);
+#endif
     for (size_t k = 0; k < sizeof all / sizeof *all; ++k) {
         int asked = argc < 2;
         for (int a = 1; a < argc; ++a) asked |= !strcmp(argv[a], all[k].name);
