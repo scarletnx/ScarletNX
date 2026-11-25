@@ -561,7 +561,7 @@ static int write_unit(Unit* u, unsigned char** object, size_t* size) {
         const Sym* s = &u->syms[i];
         snx_xelf_symbol(o, s->name, SNX_ELF_TEXT, s->at, s->size,
                         SNX_ELF_FUNC | (jit ? SNX_ELF_LOCAL : SNX_ELF_GLOBAL | SNX_ELF_HIDDEN));
-        snx_xelf_unwind(o, s->at, s->at + s->size, u->b.p + s->at, s->size, 0);
+        snx_xelf_unwind(o, s->at, s->at + s->size, u->b.p + s->at, s->size);
     }
     for (i = 0; i < u->nrelocs; ++i)
         snx_xelf_reloc(o, SNX_ELF_TEXT, u->relocs[i].at, u->relocs[i].sym, u->relocs[i].type, u->relocs[i].addend);

@@ -39,6 +39,9 @@
 #define MG_ARM_LOAD_FENCE 0 /* an x86 load is an acquire one */
 #define MG_ARM_FP_HOT 1
 #define MG_ARM_ABI SGX_F_WIN64
+/* Windows' unwinder takes a jump out of a function's entry in its table for an epilogue's: the code of a frame is one
+   range, with the one exit that has none past it */
+#define MG_ARM_EXIT_LAST(c) win64(c)
 #define MG_ARM_COFF snx_x64_win64()
 #define MG_ARM_UNWIND unwind_block
 #if defined(__APPLE__) || defined(_WIN32)
@@ -57,6 +60,7 @@
 #pragma GCC diagnostic ignored "-Wunused-function"
 #endif
 
+static int win64(const SnxX64Arm* c);
 static void unwind_block(SnxXElf* o, size_t at, const unsigned char* code, size_t size, size_t own, const void* rel,
                          size_t nrel);
 #include "common/cpu/recompiler/mach/mach_arm.inc"
@@ -340,18 +344,17 @@ static void mg_entry_exit_fn(SnxXElf* o) {
     entry_exit_fn(o);
     thumb_entry_exit_fn(o);
 }
-/* a block's function table (COFF's): its frame from its own entry on, but where the failed check's exit leaves before it
-   (the jump to entry_exit_fn's or thumb_entry_exit_fn's, its one relocation) */
+/* a block's entry in the function table (COFF's): its frame from its own entry on, to the failed check's exit (the jump
+   to entry_exit_fn's or thumb_entry_exit_fn's, its one relocation) */
 static void unwind_block(SnxXElf* o, size_t at, const unsigned char* code, size_t size, size_t own, const void* rel,
                          size_t nrel) {
     const Rel* r = (const Rel*)rel;
-    size_t k, out = size, past = size;
+    size_t out = size;
     if (own == (size_t)-1) return; /* a jump of no frame */
-    for (k = 0; k < nrel; ++k)
+    for (size_t k = 0; k < nrel; ++k)
         if (!strcmp(r[k].sym, "snx_x64_arm_entry_exit") || !strcmp(r[k].sym, "snx_x64_thumb_entry"))
-            past = r[k].at + 4, out = past - ENTRY_EXIT_WIN64;
-    snx_xelf_unwind(o, at + own, at + out, code + own, size - own, 0);
-    snx_xelf_unwind(o, at + past, at + size, code + own, size - own, 1);
+            out = r[k].at + 4 - ENTRY_EXIT_WIN64;
+    snx_xelf_unwind(o, at + own, at + out, code + own, size - own);
 }
 int snx_x64_arm_entry(MG_ARM* c, uint32_t key) {
     unsigned char code[12] = {0xC7, state8(c, 0), (unsigned char)(offsetof(SnxArmCPU, r) + 60), 0, 0, 0, 0, 0xE9};

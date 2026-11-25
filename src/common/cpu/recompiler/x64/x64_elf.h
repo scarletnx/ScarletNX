@@ -26,9 +26,9 @@ void snx_xelf_set_big(SnxXElf* o, int big);
    written, with no relocation */
 void snx_xelf_set_coff(SnxXElf* o, int coff);
 /* a COFF object's function table (.pdata, .xdata): the code of .text from begin to end unwinds as the prologue at code
-   (begin's bytes) says, which is x64_codegen.c's or x64_arm.c's: the pushes, the frame and the XMM registers saved. up:
-   the prologue is elsewhere, and its frame is up in all of the code */
-void snx_xelf_unwind(SnxXElf* o, size_t begin, size_t end, const unsigned char* code, size_t size, int up);
+   (begin's bytes) says, which is x64_codegen.c's or x64_arm.c's: the pushes, the frame and the XMM registers saved. The
+   code has its jumps in there, but an epilogue's: out of it Windows' unwinder takes one for that */
+void snx_xelf_unwind(SnxXElf* o, size_t begin, size_t end, const unsigned char* code, size_t size);
 /* n bytes (none: zeros; .bss takes none) at an offset of align, which it gives */
 size_t snx_xelf_put(SnxXElf* o, int section, const void* bytes, size_t n, size_t align);
 /* the section's bytes so far, to patch (not .bss) */
