@@ -17,8 +17,8 @@ endif()
 option(SNX_SAIL_X64 "Build the x86-64 back end: without it LLVM makes every function" ${snx_sail_x64_default})
 set(SNX_X64 "${SNX_SAIL_X64}" CACHE INTERNAL "the x86-64 back end is built (SNX_SAIL_X64)")
 
-# the file path: downloaded from url into the package cache, where it is not there, and the revision's that isel.py
-# makes the selection from (its SHA-256), or the configure stops: with what came, what was expected and what to do
+# the file path, of the package cache: downloaded from url where it is not there, and the revision's that isel.py makes
+# the selection from (its SHA-256), or the configure stops: with what came, what was expected and what to do
 function(snx_sdm_download url path)
     file(STRINGS "${PROJECT_SOURCE_DIR}/tools/sailgen/sdm/isel.py" lines REGEX "^(REVISION|SHA256) = '.*'$")
     foreach(line ${lines})
@@ -29,11 +29,13 @@ function(snx_sdm_download url path)
     if(NOT REVISION OR NOT SHA256)
         message(FATAL_ERROR "tools/sailgen/sdm/isel.py names no REVISION and SHA256 of the Intel SDM")
     endif()
-    set(todo "Pass that revision's PDF with -DSNX_SDM_PDF=, or move to the one Intel serves: the version and hash of "
-             "cpmfile.json's intel-sdm-vol2, REVISION and SHA256 of tools/sailgen/sdm/isel.py, and x64_isel.inc made again")
-    string(CONCAT todo ${todo})
+    string(CONCAT todo
+           "Pass that revision's PDF with -DSNX_SDM_PDF=, or move to the one Intel serves: the version and hash of "
+           "cpmfile.json's intel-sdm-vol2, REVISION and SHA256 of tools/sailgen/sdm/isel.py, and x64_isel.inc "
+           "made again")
     set(expected "revision ${REVISION} of the Intel SDM, Volume 2, whose PDF's SHA-256 is ${SHA256}")
-    file(LOCK "${path}.lock" GUARD FUNCTION)
+    get_filename_component(dir "${path}" DIRECTORY)
+    file(LOCK "${dir}.lock" GUARD FUNCTION)
     if(EXISTS "${path}")
         file(SHA256 "${path}" got)
         if(got STREQUAL SHA256)
@@ -41,19 +43,10 @@ function(snx_sdm_download url path)
         endif()
         message(FATAL_ERROR "${path} isn't ${expected}: its SHA-256 is ${got}. ${todo}")
     endif()
-    foreach(try 1 2 3)
-        file(DOWNLOAD "${url}" "${path}.part" STATUS status)
-        list(GET status 0 code)
-        if(code EQUAL 0)
-            break()
-        endif()
-        execute_process(COMMAND "${CMAKE_COMMAND}" -E sleep 5)
-    endforeach()
-    if(NOT code EQUAL 0)
-        list(GET status 1 why)
-        message(FATAL_ERROR "${url} did not download 3 times, the last with status ${code}: ${why}. Expected: "
-                            "${expected}. ${todo}")
-    endif()
+    # without the pin's SHA-512, at which CMake would stop before this can say what to do: snx_package_file, after it,
+    # checks that
+    message(STATUS "${url} has to give ${expected}. If it doesn't: ${todo}")
+    cpm_download("${url}" "${path}.part")
     file(SHA256 "${path}.part" got)
     if(NOT got STREQUAL SHA256)
         message(FATAL_ERROR "${url} gives a file whose SHA-256 is ${got}, not ${expected}. ${todo}")
@@ -62,8 +55,8 @@ function(snx_sdm_download url path)
 endfunction()
 
 # snx_sdm_pdf(<pdf> <pdftotext>): what sailgen_sdm_isel derives the selection again from, for the tests alone: the PDF
-# of SNX_SDM_PDF, else the CPM cache's (cpmfile.json's intel-sdm-vol2, a path whether or not it is there), and pdftotext,
-# empty for none. With SNX_TEST_SDM pdftotext has to be there, and the PDF is downloaded into that cache
+# of SNX_SDM_PDF, else the CPM cache's (cpmfile.json's intel-sdm-vol2, a path whether or not it is there), and
+# pdftotext, empty for none. With SNX_TEST_SDM pdftotext has to be there, and the PDF is downloaded into that cache
 function(snx_sdm_pdf pdf pdftotext)
     set(SNX_SDM_PDF "" CACHE FILEPATH "PDF of the Intel SDM Vol. 2, 325383-093US, for the test sailgen_sdm_isel")
     find_program(SNX_PDFTOTEXT pdftotext)
