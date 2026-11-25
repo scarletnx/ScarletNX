@@ -82,10 +82,10 @@ class Blocks:
     """The blocks of (isa, pc, words or halfwords), made by runner's back end for profile and memory (flat, checked),
     its values in pool host registers (0: all of them; .name says). functions[i] runs the ith on a CPU (a Checked where
     memory is checked), or is None where the back end refused it; names[i] is what its decoder has of each instruction,
-    why[i] what the refusal said. A state's flat memory (mem_size bytes, at most size) is copied there and back, but where
-    it is .memory, which holds the runs' own."""
+    why[i] what the refusal said. A state's flat memory (mem_size bytes, at most size) is copied there and back, but
+    where it is .memory, which holds the runs' own."""
 
-    def __init__(self, runner, blocks, size=SIZE, profile='a57', memory='flat', pool=0, features=None):
+    def __init__(self, runner, blocks, size=SIZE, profile='a57', memory='flat', pool=0):
         self.blocks, self.checked = blocks, memory == 'checked'
         self.directory = tempfile.TemporaryDirectory(prefix='snx-arm-blocks-')
         root = pathlib.Path(self.directory.name)
@@ -98,7 +98,6 @@ class Blocks:
         self.memory = (C.c_uint8 * size).from_buffer(self.map, MEMORY)
         self.size, self.at = size, C.addressof(self.memory)
         command = [runner, str(listed), str(state), '--profile', profile, '--memory', memory, '--pool', str(pool)]
-        command += [] if features is None else ['--features', str(features)]
         self.process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
         self.functions, self.names, self.why = [], [], []
         for index in range(len(blocks)):
