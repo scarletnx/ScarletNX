@@ -4375,7 +4375,8 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
     # run the back end's own words (la64_interp) or skip, so they have no compiled function
     include(arm_call_abi.cmake)
     snx_arm_call_abi(rv64 riscv64-unknown-elf -march=rv64gc -mabi=lp64d -mcmodel=medany -mno-relax)
-    snx_arm_call_abi(arm64 aarch64-unknown-elf)
+    # X18 is the system's on Windows and Apple, where the back end never touches it: the callee must not either
+    snx_arm_call_abi(arm64 aarch64-unknown-elf -ffixed-x18)
 endif()
 # the x86-64 back end's functions as a Windows host's (the calling convention, COFF objects), run by this host's processor
 # as Windows' C would call them (support/host_win64.c): against LLVM, as the other machines' under Unicorn
