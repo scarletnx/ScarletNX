@@ -325,7 +325,7 @@ runtime must not mix with another LLVM build.
      -DSNX_FFMPEG_MAKE="$(cygpath -m /usr/bin/make.exe)" \
      -DPERL_EXECUTABLE="$(cygpath -m /usr/bin/perl.exe)" \
      -DSNX_OPENSSL_MAKE="$(cygpath -m /usr/bin/make.exe)" \
-     -DCMAKE_DISABLE_FIND_PACKAGE_SDL3=ON
+     -DCMAKE_DISABLE_FIND_PACKAGE_SDL3=ON -DBUILD_TESTING=ON
    cmake --build --preset default
    ```
 
@@ -358,7 +358,7 @@ needs the matching sources already in the cache, or `-D<package>_CUSTOM_DIR=/pat
 package of one file is checked against its pin there too; a patched package, FFmpeg's and FidelityFX-FSR2's, is
 refused there, as CPMUtil would take it unpatched). A patched package is kept patched in the cache, one folder for each
 set of patches: trees of branches that patch it otherwise share the cache and not the folder. A folder of patches no tree
-uses any more stays until it is deleted. With tests on (`BUILD_TESTING`, the default) and the runtime, libvpx's VP9 test
+uses any more stays until it is deleted. With tests on (`BUILD_TESTING`) and the runtime, libvpx's VP9 test
 vectors download there too ([tests](../../tests/CMakeLists.txt)). The Switch runtime's shared font stand-ins download only when it is
 built ([Shared fonts](../platforms/nx/filesystem.md#shared-fonts)), and GNU Unifont's `.hex` (the menu's CJK and Hangul
 letters of game titles) only when the menu is. Override via CMake/env `CPM_SOURCE_CACHE`. SDL3 is
@@ -497,10 +497,12 @@ cmake --preset default -B build -DSNX_FFMPEG_ASM=OFF && cmake --build build
   install the library, see [Library](library.md) (defaults OFF and the value of `SNX_TOOLS_ONLY`).
 - `-DSNX_SAIL_X64=OFF`: build without the x86-64 back end, and LLVM makes every function. The default is ON on x86-64
   (not Windows nor Android), where it needs `pdftotext` and the Intel SDM (downloaded, or `-DSNX_SDM_PDF=`).
+- `-DBUILD_TESTING=ON`: build the tests, which the `default` and `tracy` presets leave out.
 - `-DSNX_BUILD_TESTING=OFF`: leave the tests out whatever `BUILD_TESTING` says. ON by default when ScarletNX is the
   top-level project, OFF when another project adds it with CPM or `add_subdirectory` ([Library](library.md)).
 
-Test options, read when `BUILD_TESTING` is on (CTest's default), all OFF by default:
+Test options, all OFF by default. One that is on without `BUILD_TESTING=ON` stops the configure, as nothing would build
+it:
 
 - `-DSNX_TEST_SANITIZERS=ON`: build the native tests, and the programs and libraries of the repository they run or
   link, with ASan and UBSan (`runtime_architecture` names one left out). The runtime is one, so it is not deployed.
@@ -542,7 +544,7 @@ Offscreen integration test, with an installed Vulkan 1.3 ICD (lavapipe works):
 
 ```sh
 cmake --preset default -B build/headless-vk -DSNX_BUILD_GUI=OFF \
-  -DSNX_DEPLOY=OFF -DSNX_TEST_VULKAN=ON && cmake --build build/headless-vk
+  -DSNX_DEPLOY=OFF -DBUILD_TESTING=ON -DSNX_TEST_VULKAN=ON && cmake --build build/headless-vk
 # Set VK_DRIVER_FILES to your lavapipe manifest to force CPU rendering.
 ctest --test-dir build/headless-vk -R vulkan_headless --output-on-failure
 # the same with the validation layer
@@ -562,7 +564,7 @@ not the build machine's LLVM libraries. Running the `snx-rtlib-gen` build helper
 Host tools only, without SDL/Vulkan/FFmpeg or Python:
 
 ```sh
-cmake --preset default -B build/tools -DSNX_TOOLS_ONLY=ON && cmake --build build/tools
+cmake --preset default -B build/tools -DSNX_TOOLS_ONLY=ON -DBUILD_TESTING=ON && cmake --build build/tools
 build/tools/scarletnx -r -h
 ctest --test-dir build/tools --output-on-failure
 ```

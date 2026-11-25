@@ -2903,6 +2903,9 @@ add_test(NAME deps_cache COMMAND "${CMAKE_COMMAND}" "-DCC=${CMAKE_C_COMPILER}" "
 add_test(NAME cpmutil_options COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
          "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/cpmutil-options-test" -P
          "${CMAKE_CURRENT_SOURCE_DIR}/cpmutil_options_test.cmake")
+# a test option without the tests stops the configure, and the presets for this machine leave the tests out
+add_test(NAME test_options COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
+         "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/test-options-test" -P "${CMAKE_CURRENT_SOURCE_DIR}/test_options_test.cmake")
 # the configure stops where the x86-64 back end can't be made (cmake/sdm.cmake)
 add_test(NAME sdm_configure COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
          "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/sdm-configure-test" -P

@@ -180,6 +180,8 @@ if(NOT SNX_BUILD_TESTING)
 endif()
 # Before the dependencies: the tests' network fixtures link ENet and zstd, whatever the build
 include(CTest)
+# a test option given without the tests stops here
+include(cmake/test_options.cmake)
 # ThinLTO in the optimized configurations, where the toolchain links it (cmake/lto.cmake): before the packages, which
 # get it too
 include(cmake/lto.cmake)

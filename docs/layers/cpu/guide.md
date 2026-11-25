@@ -82,7 +82,7 @@ under explicit assumptions, not a promised gain. Keep Rosetta observations disti
 ```sh
 git clone https://github.com/scarletnx/ScarletNX.git
 cd ScarletNX
-cmake --preset default -B build && cmake --build build
+cmake --preset default -B build -DBUILD_TESTING=ON && cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
