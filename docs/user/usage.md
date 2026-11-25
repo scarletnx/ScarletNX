@@ -1015,8 +1015,9 @@ three, `controls_rel_center=0` for a GBA or a DS game.
 Their windows take the runtime's keys too, the Shortcuts' settings of a Switch game (`hotkey_quit`, `hotkey_fullscreen`
 and the others, in the game's `.ini`, its own picks or on the command line, as `--hotkey-quit=Q`): Esc twice within 3
 seconds closes the game, F11 or Alt+Return switches fullscreen, F2 edits the layout, Pause holds the game and lets it
-go (*Pause: on*, the picture and the keys going on). A key the console has nothing for
-says so over the picture with why: `Ctrl+D (TV mode) does nothing in a GBA game: the TV mode is the Switch's console
+go (*Pause: on*, the picture and the keys going on), F3 saves the picture as it shows in `captures/` of the game's
+folder, as a Switch game's (`screenshot_YYYYMMDD_HHMMSS.ppm`, both screens of a DS game). A key the console has nothing
+for says so over the picture with why: `Ctrl+D (TV mode) does nothing in a GBA game: the TV mode is the Switch's console
 docked`.
 Beside the executable: `Game.log`, `threads.txt` (15 s refresh), `captures/` (screenshots); an installed copy on Linux
 keeps the first two in its state folder ([Folders](#folders)). `Game.log` is this run's: the 4 runs before keep theirs

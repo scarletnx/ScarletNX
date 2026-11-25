@@ -38,6 +38,8 @@ struct AgbHost {
     /* a line over the game for a few seconds, as a Switch game shows one (common/utilities/notice.h): what the
        runtime's keys say. Its band's texture, made again for another size */
     SnxNotice notice;
+    char* captures; /* the game's folder with its separator, whose captures/ a screenshot goes in */
+    bool shot;      /* the screenshot key's: the next frame saved */
     SDL_Texture* notice_texture;
     int notice_w, notice_h, notice_failed;
 };
@@ -108,8 +110,12 @@ static struct {
 static void show(const char* line) {
     if (g_host.open) snx_notice_show(&g_host.open->notice, line, SDL_GetTicksNS());
 }
-/* a runtime's key this window has nothing for, said with why */
-static void key_none(int action) {
+/* a runtime's key the window does: the screenshot's, at the next frame; another said to do nothing, with why */
+static void key_action(AgbHost* host, int action) {
+    if (action == HOTKEY_SCREENSHOT) {
+        host->shot = true;
+        return;
+    }
     snx_vpad_window_none(action, action == HOTKEY_THREAD_DUMP ? "it runs on one CPU, with no threads"
                                  : action == HOTKEY_MOUSE     ? "its mouse is the pointer of the on-screen controls"
                                  : action == HOTKEY_TV_MODE   ? "the TV mode is the Switch's console docked"
@@ -164,6 +170,11 @@ AgbHost* agb_host_open(const char* title, const char* ini, bool fullscreen, char
     }
     snx_pad_map_position(&host->pad); /* A where the console has it, east */
     g_host.open = host;
+    {
+        char* folder = ini ? snx_dirname(ini) : NULL;
+        host->captures = snx_format("%s/", folder ? folder : ".");
+        free(folder);
+    }
     snx_vpad_window_open(host->window, ini, agb_host_say, show);
     if (!SDL_InitSubSystem(SDL_INIT_AUDIO) ||
         !(host->audio = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, NULL, NULL)) ||
@@ -179,6 +190,7 @@ AgbHost* agb_host_open(const char* title, const char* ini, bool fullscreen, char
 void agb_host_close(AgbHost* host) {
     if (!host) return;
     if (g_host.open == host) g_host.open = NULL;
+    free(host->captures);
     snx_vpad_window_close();
     if (host->audio) SDL_DestroyAudioStream(host->audio);
     if (host->notice_texture) SDL_DestroyTexture(host->notice_texture);
@@ -199,7 +211,7 @@ bool agb_host_poll(AgbHost* host, uint16_t* keys) {
         int action;
         SnxVpadEvent took = snx_vpad_window_event(&event, &action);
         if (took == SNX_VPAD_QUIT) open = false;
-        if (took == SNX_VPAD_ACTION) key_none(action);
+        if (took == SNX_VPAD_ACTION) key_action(host, action);
         if (took != SNX_VPAD_PASS) continue;
         switch (event.type) {
             case SDL_EVENT_QUIT:
@@ -272,7 +284,29 @@ const char* agb_host_notice(const AgbHost* host) {
     return snx_notice_shown(&host->notice, SDL_GetTicksNS()) ? host->notice.text : "";
 }
 
+/* the frame shown, as the Switch's screenshot is: a PPM in the game's captures/, said where */
+static void shot(AgbHost* host, const uint32_t* framebuffer) {
+    char path[SNX_PATH_SIZE], line[SNX_PATH_SIZE + 64], why[160];
+    host->shot = false;
+    snx_capture_path(path, sizeof path - 4, host->captures ? host->captures : "./");
+    strcat(path, ".ppm");
+    FILE* f = fopen(path, "wb");
+    int failed = !f || snx_ppm_write(f, AGB_SCREEN_WIDTH, AGB_SCREEN_HEIGHT, (const unsigned char*)framebuffer, 4,
+                                     AGB_SCREEN_WIDTH * 4, SNX_PPM_RGBA);
+    if (f && fclose(f)) failed = 1;
+    if (failed) {
+        snprintf(line, sizeof line, "the screenshot could not be written to %s: %s", path,
+                 snx_os_error(why, sizeof why));
+        agb_host_say(line);
+        show("Screenshot not saved: the log says why");
+        return;
+    }
+    snprintf(line, sizeof line, "screenshot: %s", path);
+    agb_host_say(line);
+    show("Screenshot saved in captures");
+}
 void agb_host_frame(AgbHost* host, const uint32_t* framebuffer, const int16_t* samples, uint32_t count) {
+    if (host->shot) shot(host, framebuffer);
     if (host->vk)
         (void)agb_vk_frame(host->vk, framebuffer, &host->notice); /* no image for it: the next frame goes */
     else {

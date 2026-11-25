@@ -280,6 +280,33 @@ int main(void) {
         agb_host_close(host);
         return 1;
     }
+    /* the screenshot key: the next frame, as it shows, in the game's folder's captures/, said over it */
+    {
+        static uint32_t frame[AGB_SCREEN_WIDTH * AGB_SCREEN_HEIGHT];
+        char* captures = snx_path_join(dir, "captures");
+        size_t count = 0, size = 0;
+        char** names = NULL;
+        unsigned char* got = NULL;
+        for (size_t i = 0; i < sizeof frame / sizeof *frame; ++i) frame[i] = 0xFF000000u | (uint32_t)i;
+        if (!press(host, SDLK_F3, SDL_KMOD_NONE, false)) return 1;
+        agb_host_frame(host, frame, NULL, 0);
+        if (!snx_list_dir(captures, &names, &count) && count == 1 && !strncmp(names[0], "screenshot_", 11)) {
+            char* path = snx_path_join(captures, names[0]);
+            got = (unsigned char*)snx_read_file(path, &size);
+            free(path);
+        }
+        const char head[] = "P6\n240 160\n255\n";
+        if (!got || size != sizeof head - 1 + sizeof frame / 4 * 3 || memcmp(got, head, sizeof head - 1) ||
+            got[sizeof head - 1 + 3 * 300] != (300 & 0xFF) || got[sizeof head - 1 + 3 * 300 + 1] != (300 >> 8) ||
+            notice_read(host, SDL_GetRenderer(window), window, "Screenshot saved in captures") != 0) {
+            fprintf(stderr, "agb_host: F3 saved %zu files in %s, not the frame as one PPM\n", count, captures);
+            agb_host_close(host);
+            return 1;
+        }
+        free(got);
+        snx_free_strings(names, count);
+        free(captures);
+    }
     /* the pause key holds the game and says so, as a Switch game's */
     for (int i = 0; i < 2; ++i)
         if (!press(host, SDLK_PAUSE, SDL_KMOD_NONE, false) || snx_vpad_window_paused() != !i ||
