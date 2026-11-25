@@ -59,6 +59,16 @@ static const Row k_rows[] = {
     {"rev x0, x1", 0, NEEDS_GFNI, 192, -1, NULL, "DAC00C20"},
     {"rev16 x0, x1", 0, NEEDS_GFNI, 240, -1, NULL, "DAC00420"},
     {"rev16 w0, w1", 0, NEEDS_GFNI, 208, -1, NULL, "5AC00420"},
+    {"ushl v0.16b, v1.16b, v2.16b", 0, 0, 512, -1, NULL, "6E224420"},
+    {"sshl v0.8h, v1.8h, v2.8h", 0, 0, 576, -1, NULL, "4E624420"},
+    {"srshl v0.16b, v1.16b, v2.16b", 0, 0, 560, -1, NULL, "4E225420"},
+    {"uqshl v0.16b, v1.16b, v2.16b", 0, 0, 640, -1, NULL, "6E224C20"},
+    {"sqshl v0.8h, v1.8h, v2.8h", 0, 0, 784, -1, NULL, "4E624C20"},
+    {"sqrshl v0.16b, v1.16b, v2.16b", 0, 0, 768, -1, NULL, "4E225C20"},
+    {"ushl v0.4s, v1.4s, v2.4s", NEEDS_AVX2, 0, 288, -1, NULL, "6EA24420"},
+    {"sshl v0.2d, v1.2d, v2.2d", NEEDS_AVX2, 0, 320, -1, NULL, "4EE24420"},
+    {"sqrshl v0.4s, v1.4s, v2.4s", NEEDS_AVX2, 0, 480, -1, NULL, "4EA25C20"},
+    {"uqrshl v0.2d, v1.2d, v2.2d", NEEDS_AVX2, 0, 448, -1, NULL, "6EE25C20"},
 };
 
 static const Row* g_row; /* the one being checked, for the messages */
