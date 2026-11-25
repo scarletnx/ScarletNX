@@ -48,9 +48,10 @@ int snx_native_available(void);
 const char* snx_native_name(void);
 
 /* What this host lacks of what its architecture's back end takes of every host past the program's own baseline: on
-   x86-64 SSE3, SSSE3, SSE4.1, SSE4.2, PCLMULQDQ and POPCNT. 1 with the line of it in why, what is needed and what the
-   host has ("cpu: needs SSE4.2, this host has SSE3, SSSE3, SSE4.1, PCLMULQDQ and POPCNT"); 0 and "" where there is a
-   back end, or none of the architecture is built */
+   x86-64 SSE3, SSSE3, SSE4.1, SSE4.2, PCLMULQDQ and POPCNT, on a big-endian PowerPC64 ISA 2.06's LDBRX and STDBRX and
+   the ELFv2 ABI. 1 with the line of it in why, what is needed and what the host has ("cpu: needs SSE4.2, this host has
+   SSE3, SSSE3, SSE4.1, PCLMULQDQ and POPCNT"); 0 and "" where there is a back end, or none of the architecture is
+   built */
 int snx_native_floor(char* why, size_t size);
 /* 1 where nothing makes this host's code, snx_native_floor's line in error: a host below the floor, in a build without
    LLVM (SNX_WITH_LLVM=OFF). 0 with LLVM, which makes the code there, and the line is said beside it; error is as it
