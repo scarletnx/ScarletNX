@@ -1540,7 +1540,7 @@ static void gvk_AllocateMemory(CPU* RESTRICT c, u64 entry) {
         void* host_map = NULL;
         r = vkGetMemoryFdKHR(g_vk.dev, &gi, &fd);
         if (r == VK_SUCCESS) {
-            moved = mem_migrate(m.va, m.size, fd);
+            moved = mem_migrate(m.va, m.size, fd, NULL); /* a dma-buf of the driver's: no view of its pages here */
             plat_vm_fd_close(fd); /* the mapping holds the dma-buf */
         }
         if (r == VK_SUCCESS && !moved) r = vkMapMemory(g_vk.dev, mem, 0, VK_WHOLE_SIZE, 0, &host_map);
