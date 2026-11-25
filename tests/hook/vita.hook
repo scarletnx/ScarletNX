@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+# NID hooks of every placement AAPCS32 has, for tests/vita_hle_adapters.c (hookgen --vita)
+family types
+# r0, r1, s0, the pair r2:r3, d1 (s2 and s3), then the stack's first word
+[0x00000001] hook mixed(addr self, i32 a, f32 b, u64 w, f64 d, u32 c2) -> i64 = test_mixed
+[0x2] hook narrow(i8 a) -> i8 = test_narrow
+[0X0000ABCD] hook flag(bool on) -> bool = test_flag
+[0xfffffffe] hook half(f64 x) -> f64 = test_half
+[0x10] hook single(f32 x) -> f32 = test_single
+# a 64-bit argument that finds r3 alone goes on the stack, which the integer after it follows
+[0x11] hook stacked(u32 a, u32 b, u32 c, u64 d, u32 e) -> u32 = test_stacked
+family other
+[0x20] hook nothing() = test_nothing
+# a variadic function's double in an even pair of core registers, as its bits
+[0x21] hook print(addr format, f64 x, ...) -> i32 = test_print
+# one handler for two NIDs
+[0x30] hook narrow_again(i8 a) -> i8 = test_narrow

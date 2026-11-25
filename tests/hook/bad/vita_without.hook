@@ -1,0 +1,3 @@
+# a NID hook without --vita: [BUILDID:OFFSET] expected
+family f
+[0x1] hook f() = h

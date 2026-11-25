@@ -2239,6 +2239,33 @@ add_test(NAME hookgen_refuses_a32_all COMMAND snx-hookgen --a32 --out "${CMAKE_C
          "${CMAKE_CURRENT_SOURCE_DIR}/hook/bad/a32_all.hook")
 set_tests_properties(hookgen_refuses_a32_all PROPERTIES
                      PASS_REGULAR_EXPRESSION "a32_all.hook:4: .*one for it alone needs --a32-marked")
+# NID hooks (hookgen --vita) it has to refuse, and one without --vita, where a bracket holds an address hook's key
+foreach(bad IN ITEMS
+        vita_address 3 "an address hook's .BUILDID:OFFSET. is a Switch program's"
+        vita_handler 3 "a NID hook names its handler"
+        vita_twice 4 "00000001 is hooked on line 3 too"
+        vita_symbol 3 "--vita takes nothing else"
+        vita_long 3 "a NID is at most 8 hex digits"
+        vita_variadic 3 "... ends the arguments"
+        vita_a32 3 "a NID hook has no uses, check, pure or a32")
+    if(NOT DEFINED bad_name)
+        set(bad_name "${bad}")
+    elseif(NOT DEFINED bad_line)
+        set(bad_line "${bad}")
+    else()
+        add_test(NAME hookgen_refuses_${bad_name} COMMAND snx-hookgen --vita
+                 --out "${CMAKE_CURRENT_BINARY_DIR}/refused.inc"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/hook/bad/${bad_name}.hook")
+        set_tests_properties(hookgen_refuses_${bad_name} PROPERTIES
+                             PASS_REGULAR_EXPRESSION "${bad_name}.hook:${bad_line}: .*${bad}")
+        unset(bad_name)
+        unset(bad_line)
+    endif()
+endforeach()
+add_test(NAME hookgen_refuses_vita_without COMMAND snx-hookgen --out "${CMAKE_CURRENT_BINARY_DIR}/refused.inc"
+         "${CMAKE_CURRENT_SOURCE_DIR}/hook/bad/vita_without.hook")
+set_tests_properties(hookgen_refuses_vita_without PROPERTIES
+                     PASS_REGULAR_EXPRESSION "vita_without.hook:3: .*a build ID is an even number of hex digits")
 # a prefix that makes a generated line longer than the generator's line holds: refused, where it was written cut
 string(REPEAT "p" 200 snx_hookgen_long_prefix)
 add_test(NAME hookgen_refuses_long_line COMMAND snx-hookgen --prefix "${snx_hookgen_long_prefix}"
@@ -4977,6 +5004,14 @@ if(TARGET snx_vita_program)
     snx_test_target(snx-test-vita-hle-memory gnu23)
     target_link_libraries(snx-test-vita-hle-memory PRIVATE snx_vita_program)
     add_test(NAME vita_hle_memory COMMAND snx-test-vita-hle-memory)
+    # tools/hookgen --vita's adapters (tests/hook/vita.hook): the arguments where AAPCS32 puts them, the results
+    add_executable(snx-test-vita-hle-adapters vita_hle_adapters.c)
+    snx_test_target(snx-test-vita-hle-adapters gnu23)
+    target_link_libraries(snx-test-vita-hle-adapters PRIVATE snx_vita_program)
+    include("${PROJECT_SOURCE_DIR}/cmake/hookgen.cmake")
+    snx_vita_hookgen(snx-test-vita-hle-adapters SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/vita.hook" PREFIX vita_test
+                     NAME vita/hle/test.hook)
+    add_test(NAME vita_hle_adapters COMMAND snx-test-vita-hle-adapters)
     # an image compiled by the native back end and by LLVM, both modules run as the run loop runs one
     add_executable(snx-test-vita-aot vita_aot.c)
     snx_test_target(snx-test-vita-aot gnu23)

@@ -1,0 +1,3 @@
+# --vita: a32 after the handler
+family f
+[0x1] hook f() = h a32

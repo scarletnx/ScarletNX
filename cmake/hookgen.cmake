@@ -116,3 +116,34 @@ function(snx_hook_routes target)
     target_sources(${target} PRIVATE "${out}/nx/loader/hook_routes.inc")
     target_include_directories(${target} PRIVATE "${out}")
 endfunction()
+
+# snx_vita_hookgen(<target> [SPEC <file>...] [PREFIX <name>] [NAME <path>]): the Vita's NID hooks (hookgen --vita),
+# NAME.h (the handlers' declarations) and NAME.inc (the adapters and <prefix>_table, which vita/hle/hle.c includes)
+# into the build folder, with <target> given their include root. SPEC is src/vita/hle/*.hook in name order, one spec
+# for each system library whose handlers are the .c files beside them, unless a test names its own; NAME is
+# vita/hle/hle.hook and PREFIX vita_hle. A new file reconfigures the build
+function(snx_vita_hookgen target)
+    cmake_parse_arguments(PARSE_ARGV 1 arg "" "PREFIX;NAME" "SPEC")
+    file(GLOB spec CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/src/vita/hle/*.hook")
+    list(SORT spec)
+    if(arg_SPEC)
+        set(spec ${arg_SPEC})
+    endif()
+    set(prefix vita_hle)
+    if(arg_PREFIX)
+        set(prefix "${arg_PREFIX}")
+    endif()
+    set(name vita/hle/hle.hook)
+    if(arg_NAME)
+        set(name "${arg_NAME}")
+    endif()
+    get_filename_component(dir "${name}" DIRECTORY)
+    set(out "${CMAKE_CURRENT_BINARY_DIR}/hookgen/${target}")
+    add_custom_command(OUTPUT "${out}/${name}.h" "${out}/${name}.inc"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${out}/${dir}"
+        COMMAND snx-hookgen --vita --prefix "${prefix}" --header "${out}/${name}.h" --out "${out}/${name}.inc" ${spec}
+        DEPENDS snx-hookgen ${spec}
+        COMMENT "Generating ${name}" VERBATIM)
+    target_sources(${target} PRIVATE "${out}/${name}.h" "${out}/${name}.inc")
+    target_include_directories(${target} PUBLIC "${out}")
+endfunction()

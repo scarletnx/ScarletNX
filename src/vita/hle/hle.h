@@ -10,14 +10,36 @@
    stack: vita_arg), its result returned into r0 (a 64-bit one's high word put in r1 first). One that waits calls
    vita_wait, and what it returns is dropped: the thread's r0 is set when the wait is met */
 typedef uint32_t (*VitaHleFunction)(VitaProcess* p, VitaThread* t);
+/* an entry of the table hookgen --vita makes of the .hook files of src/vita/hle/: the function's NID and name, the
+   adapter that calls its handler, and its spec's family */
 typedef struct {
     uint32_t nid;
     const char* name;
     VitaHleFunction function;
+    const char* family;
 } VitaHle;
 
 /* argument n of the call (AAPCS: r0 to r3, then the stack's words) */
 uint32_t vita_arg(VitaProcess* p, VitaThread* t, unsigned n);
+/* the adapters' (hookgen --vita): the word and the double word at byte at of the call's stack arguments, and a
+   float's bits as the float (one on the stack, or a variadic function's) */
+static inline uint32_t vita_arg_word(VitaProcess* p, VitaThread* t, unsigned at) {
+    return vita_read32(p, t->cpu.r[13] + at);
+}
+static inline uint64_t vita_arg_dword(VitaProcess* p, VitaThread* t, unsigned at) {
+    uint32_t sp = t->cpu.r[13] + at;
+    return vita_read32(p, sp) | (uint64_t)vita_read32(p, sp + 4) << 32;
+}
+static inline float vita_f32_bits(uint32_t bits) {
+    float f;
+    memcpy(&f, &bits, sizeof f);
+    return f;
+}
+static inline double vita_f64_bits(uint64_t bits) {
+    double d;
+    memcpy(&d, &bits, sizeof d);
+    return d;
+}
 /* the hard-float ABI's: single-precision register Sn, double-precision Dn */
 static inline float vita_float(const VitaThread* t, unsigned n) {
     uint32_t bits = (uint32_t)(t->cpu.d[n / 2] >> (n & 1 ? 32 : 0));
