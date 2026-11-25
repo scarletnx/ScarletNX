@@ -387,7 +387,7 @@ int snx_nds_main(int argc, char** argv) {
     if (!module || !hints || !save) goto done;
     if (recompile || (aot && !nds_module_current(module, &rom))) {
         printf("Recompiling %s (offline static AOT)\n", rom.title[0] ? rom.title : name);
-        if (nds_aot_compile(&rom, module, hints, threads, most, error, sizeof error)) {
+        if (nds_aot_compile(&rom, module, hints, threads, most, NULL, NULL, error, sizeof error)) {
             fprintf(stderr, "scarletnx-nds: %s\n", error);
             goto done;
         }

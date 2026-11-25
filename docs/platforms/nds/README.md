@@ -160,7 +160,8 @@ are the image's regions.
 The offline compiler (`src/nds/aot/`) discovers the code of each region from the entry point, the overlays' static
 initializers and the hints, along every direct branch and call. A function reached only through its address is found
 from the words that hold the address, where a function can start: at code that reads as code, right after the end of
-code already found or at a region's start. The blocks are compiled in chunks on the threads `--aot-threads` gives and
+code already found or at a region's start. The blocks are compiled in chunks on the threads `--aot-threads` gives, by the
+host's native back end and LLVM for the ones it refuses (`src/common/cpu/arm/aot.h`, which the recompile says), and
 linked by the backend's own linker, with a table of blocks for each region and instruction set and each block's
 length.
 
