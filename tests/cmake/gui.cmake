@@ -32,6 +32,10 @@ if(BUILD_TESTING)
     add_executable(snx-test-gui-jdk "${PROJECT_SOURCE_DIR}/tests/gui_jdk.c")
     target_link_libraries(snx-test-gui-jdk PRIVATE snx_gui_support scarletnx-common)
     add_test(NAME gui_jdk COMMAND snx-test-gui-jdk)
+    # Settings' search: a text folded whatever its case and accents, and how a search's words rank a row
+    add_executable(snx-test-gui-find "${PROJECT_SOURCE_DIR}/tests/gui_find.c")
+    target_link_libraries(snx-test-gui-find PRIVATE snx_gui_support)
+    add_test(NAME gui_find COMMAND snx-test-gui-find)
     # Download Driver's lists: GitHub's releases of Eden's repositories, the marks, the recommendation by model
     add_executable(snx-test-gui-gpu-driver-fetch "${PROJECT_SOURCE_DIR}/tests/gui_gpu_driver_fetch.c")
     target_link_libraries(snx-test-gui-gpu-driver-fetch PRIVATE snx_gui_support scarletnx-common)

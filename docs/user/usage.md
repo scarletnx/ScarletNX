@@ -819,7 +819,8 @@ written, so a data folder with no users.ini plays as `Player`, uid `0123456789ab
 
 ## Playing
 
-Every setting of the game's `.ini`, with its default and what it does: [Settings](settings.md).
+Every setting of the game's `.ini`, with its default and what it does: [Settings](settings.md). The launcher's Settings
+find one by its words: Ctrl+F, a pad's Y, or the Search row over its groups ([GUI](gui.md)).
 
 A gamepad's motion sensors, a Joy-Con's among them, go to the game when SDL exposes them. No setting turns them off.
 

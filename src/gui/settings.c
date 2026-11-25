@@ -101,8 +101,8 @@ static int has_mark(const char* column, const char* mark) {
 static int read_list(GuiSettings* s, const char* runtime, int game) {
     /* the launcher's own rows and the recompiler's (settings.txt's launcher sections), listed as the runtime lists the
        game's, then the runtime's; a game's the runtime's alone */
-    size_t own = game ? 0 : ini_list_text(g_launch_sections, g_launch_sections_count, NULL, 0), size, n = 3, bars = 0,
-           pool;
+    size_t own = game ? 0 : ini_list_text(g_launch_sections, g_launch_sections_count, NULL, 0), size,
+           n = 3 + GUI_SETTING_LINKS, bars = 0, pool;
     const char* c;
     const char** free_words;
     char *line, *next, *text, *page = NULL, *list, *own_end;
@@ -228,6 +228,25 @@ int gui_settings_read(GuiSettings* s, const char* runtime) { return read_list(s,
 int gui_settings_read_game(GuiSettings* s, const char* runtime) { return read_list(s, runtime, GUI_GAME_SWITCH); }
 int gui_settings_read_console(GuiSettings* s, const char* runtime, int console) {
     return read_list(s, runtime, console);
+}
+int gui_settings_link(GuiSettings* s, int i, const char* name, const char* about, const char* value) {
+    GuiThemeKey* k;
+    GuiSetting* v;
+    if (!s->keys || i < 0 || i >= GUI_SETTING_LINKS) return -1;
+    k = &s->keys[s->count + i];
+    v = &s->values[s->count + i];
+    memset(k, 0, sizeof *k);
+    memset(v, 0, sizeof *v);
+    k->section = "";
+    k->key = name;
+    k->about = about;
+    k->type = GUI_KEY_ACTION;
+    k->at = (size_t)((char*)v->text - (char*)s->values);
+    k->size = sizeof v->text;
+    v->key = name;
+    v->kind = GUI_SETTING_LINK;
+    snprintf(v->text, sizeof v->text, "%s", value ? value : "");
+    return s->count + i;
 }
 void gui_settings_free(GuiSettings* s) {
     for (int i = 0; i < s->count; ++i) free(s->values[i].grown);

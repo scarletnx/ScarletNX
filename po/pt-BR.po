@@ -756,6 +756,12 @@ msgstr "Arraste: mudar. Toque em #RRGGBB: digitar. Toque fora: OK."
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
+msgid "Its group."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
 msgid "Tap: open. Back."
 msgstr "Toque: abrir. Voltar."
 
@@ -1028,6 +1034,18 @@ msgstr "Del: padrão."
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
+msgid "Ctrl+F: search."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "G: its group."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
 msgid "Del: Global."
 msgstr ""
 
@@ -1253,6 +1271,18 @@ msgstr "X: padrão."
 #: src/gui/main.c
 #, snx-keys
 msgid "X: Global."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Y: search."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "L3: its group."
 msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
@@ -2388,6 +2418,10 @@ msgstr "SCARLETNX  /  CONFIGURAÇÕES  /  AJUSTES DO FREEDRENO"
 #, c-format
 msgid "SCARLETNX  /  SETTINGS  /  FREEDRENO SETTINGS  /  %s"
 msgstr "SCARLETNX  /  CONFIGURAÇÕES  /  AJUSTES DO FREEDRENO  /  %s"
+
+#: src/gui/main.c
+msgid "SCARLETNX  /  SETTINGS  /  SEARCH"
+msgstr ""
 
 #: src/gui/main.c
 #, c-format
@@ -3955,6 +3989,29 @@ msgid "%s has no room for another item"
 msgstr "%s não tem espaço para outro item"
 
 #: src/gui/main.c
+msgid "Player"
+msgstr ""
+
+#: src/gui/main.c
+msgid "A setting's name, key, group or words: each one typed is looked for"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "No setting matches \"%s\". ESC: the groups"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%d of %d settings: type more to see the rest"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%d of %d settings"
+msgstr ""
+
+#: src/gui/main.c
 #, c-format
 msgid "%s is no recompiled Switch or 3DS game: only they have settings of their own"
 msgstr "%s não é um jogo de Switch ou 3DS recompilado: só eles têm configurações próprias"
@@ -4299,6 +4356,10 @@ msgid "Data, Logs, Caches, Extractions and the recompiled library's Main"
 msgstr "Dados, Logs, Caches, Extrações e a Principal da biblioteca de recompilados"
 
 #: src/gui/main.c
+msgid "Enter: look for a setting by the words of its name, key, group or help"
+msgstr ""
+
+#: src/gui/main.c
 msgid "The runtime listed no settings"
 msgstr "O runtime não listou nenhum ajuste"
 
@@ -4343,6 +4404,10 @@ msgid "A nickname, 1 to 32 bytes, no control character, no space at either end"
 msgstr "Um apelido, de 1 a 32 bytes, sem caractere de controle, sem espaço nas pontas"
 
 #: src/gui/main.c
+msgid "Words of a setting's name, key, group, help or values"
+msgstr ""
+
+#: src/gui/main.c
 msgid "The room's password, 1 to 255 bytes, no control character, no space at either end"
 msgstr "A senha da sala, de 1 a 255 bytes, sem caractere de controle nem espaço nas pontas"
 
@@ -4366,6 +4431,11 @@ msgstr "Salva em %s"
 #: src/gui/main.c
 msgid "(no themes folder)"
 msgstr "(sem pasta de temas)"
+
+#: src/gui/main.c
+#, c-format
+msgid "Search: %s"
+msgstr ""
 
 #: src/gui/main.c
 msgid "was"
@@ -6221,6 +6291,24 @@ msgstr "Ctrl+V"
 #. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
+msgid "Ctrl+F"
+msgstr ""
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "G"
+msgstr ""
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "Its group"
+msgstr ""
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
 msgid "F5"
 msgstr "F5"
 
@@ -7852,8 +7940,6 @@ msgstr ""
 #~ msgid "Unit cache limit"
 #~ msgstr "Limite do cache de unidades"
 
-#~ msgid "The most the cache of compiled code units may hold, in GB: units/ of the cache folder, where every recompile finds the units it compiled before. Past it the units reused longest ago are removed. 0 = no limit. Either way the cache always leaves a tenth of its disk free, at most 10 GB, removing its oldest units for a new one"
-#~ msgstr "O máximo que o cache de unidades de código compiladas pode ocupar, em GB: units/ da pasta de cache, onde cada recompilação acha as unidades que já compilou. Passando dele, saem as unidades reusadas há mais tempo. 0 = sem limite. De todo jeito o cache sempre deixa um décimo do disco livre, no máximo 10 GB, tirando as unidades mais antigas para caber uma nova"
 #~ msgid "the picker could not open: %s. Enter now types the path"
 #~ msgstr "o seletor não abriu: %s. Enter agora digita o caminho"
 
