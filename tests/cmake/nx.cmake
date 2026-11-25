@@ -538,6 +538,10 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         # what comes after the watch: a target drawn over it again keeps its drawing in memory and in its image, and the
         # write tracking finds what the CPU wrote to its pages and nothing else; an engine's result over it waits for
         # nothing
+        # a full table of imports lets go of the oldest one that no watch traps (gpu/vk/uma.c imp_get)
+        add_test(NAME vulkan_uma_region_table COMMAND snx-test-vulkan -H --uma-copies=2)
+        set_tests_properties(vulkan_uma_region_table PROPERTIES TIMEOUT 60 ENVIRONMENT "SNX_TEST_UMA_ONLY=region_table"
+            FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
         foreach(snx_watch frames writes engine)
             add_test(NAME vulkan_uma_region_watch_${snx_watch} COMMAND snx-test-vulkan -H --uma-copies=2)
             set_tests_properties(vulkan_uma_region_watch_${snx_watch} PROPERTIES TIMEOUT 60

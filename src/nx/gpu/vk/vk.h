@@ -532,6 +532,8 @@ int vk_uma_storage_copied(void); /* read-only storage is copied as vertices are 
 int vk_uma_through_dmabuf(void);  /* guest memory reaches the GPU through dma-bufs (uma.c) */
 void vk_uma_frame(void);
 void vk_uma_forget_all(void);
+/* tests: the imports the table takes, n of them, or 0 for its own number */
+void vk_uma_table_max(u32 n);
 void vk_uma_owning(u64 cpu, u64 size);        /* that guest memory becomes GPU-owned next, trapped (vk_own_publish) */
 void vk_uma_mapping_begin(u64 cpu, u64 size); /* mem.c changes that guest memory next (size ~0: all) */
 void vk_uma_mapping_end(void);                /* they changed: before anything else is submitted */

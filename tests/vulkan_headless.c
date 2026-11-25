@@ -9082,6 +9082,7 @@ static int run_headless(int argc, char** argv) {
         if (!strcmp(name, "region_watch_frames") && ++ran) CHECK(!check_uma_region_watch_frames());
         if (!strcmp(name, "region_watch_writes") && ++ran) CHECK(!check_uma_region_watch_writes());
         if (!strcmp(name, "region_watch_engine") && ++ran) CHECK(!check_uma_region_watch_engine());
+        if (!strcmp(name, "region_table") && ++ran) CHECK(!check_uma_region_table());
 #endif
         if (!strcmp(name, "storage_region") && ++ran) CHECK(!check_uma_storage_region());
         if (!strcmp(name, "storage_order") && ++ran) CHECK(!check_uma_storage_order());
@@ -9100,7 +9101,7 @@ static int run_headless(int argc, char** argv) {
                     "dispatch_table, header_words, placed, placed_view, logged_back, trapped_window, copies, "
                     "pages_producers, pages_counts, pages_partial, texture_region, dma_region, region_dmabuf_trap, "
                     "region_watch, region_letgo, region_dead_bind, region_watch_frames, region_watch_writes, "
-                    "region_watch_engine, "
+                    "region_watch_engine, region_table, "
                     "storage_region, "
                     "storage_order, alias_in_place, alias_fallback, alias_merge, alias_cpu_read, alias_shader or "
                     "alias_order\n",
