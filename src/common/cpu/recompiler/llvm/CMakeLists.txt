@@ -174,8 +174,8 @@ target_link_libraries(snx_llvm PUBLIC snx_recompiler_base snx_arm_llvm ${SNX_LLV
 include("${PROJECT_SOURCE_DIR}/cmake/sailgen.cmake")
 snx_sailgen_a64(snx_llvm)
 # the x86-64 back end (src/common/cpu/recompiler/x64): its functions' code without LLVM, from the A64 emitters sailgen
-# generates with its instruction selection derived from the Intel SDM (cmake/sdm.cmake); the default code generator
-# where it is built, LLVM making what it can't
+# generates with the instruction selection derived from the Intel SDM that the tree has (tools/sailgen/sdm/x64_isel.inc,
+# cmake/sdm.cmake); the default code generator where it is built, LLVM making what it can't
 target_sources(snx_llvm PRIVATE "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_codegen.c"
                                "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_cache.c"
                                "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_elf.c"

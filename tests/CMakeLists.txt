@@ -1444,6 +1444,19 @@ add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/sailgen/sdm.pages"
 add_custom_target(snx_sailgen_sdm_test ALL DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/sailgen/sdm.pages")
 add_test(NAME sailgen_sdm COMMAND "${CMAKE_COMMAND}" -E compare_files --ignore-eol
          "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/sdm_expected.pages" "${CMAKE_CURRENT_BINARY_DIR}/sailgen/sdm.pages")
+# the x86-64 back end's instruction selection in the tree (tools/sailgen/sdm/x64_isel.inc) is what the Intel SDM gives:
+# made again where its PDF is (SNX_SDM_PDF, else the CPM cache) and pdftotext is, skipped elsewhere, saying which it lacks
+option(SNX_TEST_SDM "Download the Intel SDM and make x64_isel.inc again from it (needs pdftotext)" OFF)
+if(Python3_Interpreter_FOUND)
+    include("${PROJECT_SOURCE_DIR}/cmake/sdm.cmake")
+    snx_sdm_pdf(snx_sdm_pdf_path snx_sdm_pdftotext)
+    add_test(NAME sailgen_sdm_isel COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/sdm_isel_test.py"
+             --sailgen $<TARGET_FILE:snx-sailgen> "--pdf=${snx_sdm_pdf_path}" "--pdftotext=${snx_sdm_pdftotext}")
+    # CI's Linux x86-64 job, which has pdftotext, runs it in a step of its own: its poppler may be another tomorrow
+    set_tests_properties(sailgen_sdm_isel PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 600 LABELS sdm)
+elseif(SNX_TEST_SDM)
+    message(FATAL_ERROR "SNX_TEST_SDM=${SNX_TEST_SDM} needs Python 3 (docs/dev/build.md)")
+endif()
 # --isel derives the selection from pages in the manual's notation (written for the test): ADD for an addition, SUB
 # for SUBS with Arm's C the negation of CF and Arm's conditions as Intel's condition codes, CMP and SUB for CMP, SHL's
 # loop for LSLV (its count mask Arm's MOD 64), SETcc on a zeroed register for CSET, and a page it can't read, with why
@@ -2950,7 +2963,7 @@ add_test(NAME cpmutil_options COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE
 # a test option without the tests stops the configure, and the presets for this machine leave the tests out
 add_test(NAME test_options COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
          "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/test-options-test" -P "${CMAKE_CURRENT_SOURCE_DIR}/test_options_test.cmake")
-# the configure stops where the x86-64 back end can't be made (cmake/sdm.cmake)
+# the x86-64 back end needs neither the Intel SDM nor pdftotext, and SNX_TEST_SDM says what it lacks (cmake/sdm.cmake)
 add_test(NAME sdm_configure COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
          "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/sdm-configure-test" -P
          "${CMAKE_CURRENT_SOURCE_DIR}/sdm_configure_test.cmake")
