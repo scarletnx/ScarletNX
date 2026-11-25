@@ -93,12 +93,18 @@ static int vshl(SgCtx* g, unsigned size, int a, unsigned n) {
     if (!size) return vand(g, opi(g, &sgx_v_psllw_i, a, n), vsplat(g, 0, 0xFFu << n));
     return opi(g, k_sll[size], a, n);
 }
+/* each lane's sign spread over it */
+static int vsign(SgCtx* g, unsigned size, int a) {
+    if (k_sra[size]) return opi(g, k_sra[size], a, (8u << size) - 1);
+    return vgt(g, size, vzero(g), a, 0);
+}
 /* a >> n, logical (arith: arithmetic), n up to the element's bits */
 static int vshr(SgCtx* g, unsigned size, int a, unsigned n, int arith) {
     unsigned e = 8u << size;
     if (arith) {
         if (n >= e) n = e - 1;
         if (!n) return a;
+        if (n == e - 1) return vsign(g, size, a);
         if (k_sra[size]) return opi(g, k_sra[size], a, n);
         /* (a ^ m) >> n - (m >> n), m the sign bit: the logical shift sign extended */
         {
@@ -249,6 +255,7 @@ static int vshl_reg(SgCtx* g, unsigned size, int q, int a, int m, int sign) {
 }
 
 static int shift_imm(SnxU32 word, unsigned* size, unsigned* left, unsigned* right);
+static int vabs(SgCtx* g, unsigned size, int a);
 
 /* ---- floating point by lanes ----
    The host's lanes where the LLVM back end's guards (ir_vec_fp.c's fast paths) hold for every lane that is the
@@ -702,13 +709,14 @@ static SnxU64 smax_of(unsigned size) { return sg_ones((8u << size) - 1); }
 static SnxU64 smin_of(unsigned size) { return 1ull << ((8u << size) - 1); }
 /* SQADD, UQADD, SQSUB, UQSUB: PADDS and the rest for bytes and halfwords; words and doublewords wrapped, the lanes
    that overflowed (signed: the result's sign unlike both operands' for a sum, unlike a's and like b's for a
-   difference; unsigned: carried or borrowed) given the limit */
+   difference; unsigned: carried or borrowed) given the limit. UQSUB of words: the larger of the operands less b.
+   *sat: bits set in the lanes that saturated */
 static int vqaddsub(SgCtx* g, unsigned size, int a, int b, int uns, int sub, int* sat) {
     static const SgXVForm* const k[4][2] = {{&sgx_v_paddsb, &sgx_v_paddusb}, {&sgx_v_paddsw, &sgx_v_paddusw},
                                             {&sgx_v_psubsb, &sgx_v_psubusb}, {&sgx_v_psubsw, &sgx_v_psubusw}};
     int r = sub ? vsub(g, size, a, b) : vadd(g, size, a, b), ovf, res;
-    if (size < 2) {
-        res = op2(g, k[sub * 2 + size][uns], a, b);
+    if (size < 2 || (size == 2 && uns && sub)) {
+        res = size < 2 ? op2(g, k[sub * 2 + size][uns], a, b) : vsub(g, 2, vmax(g, 2, a, b, 1, 0), b);
         *sat = vxor(g, res, r);
         return res;
     }
@@ -718,10 +726,30 @@ static int vqaddsub(SgCtx* g, unsigned size, int a, int b, int uns, int sub, int
         return sub ? vandn(g, ovf, r) : vor(g, r, ovf);
     }
     ovf = sub ? vand(g, vxor(g, a, b), vxor(g, a, r)) : vand(g, vxor(g, a, r), vxor(g, b, r));
-    ovf = vshr(g, size, ovf, (8u << size) - 1, 1); /* whole lanes */
+    ovf = vsign(g, size, ovf); /* whole lanes */
     *sat = ovf;
-    /* a's sign spread, XOR the largest: the smallest for a negative a, the largest for a positive */
-    return vsel(g, ovf, vxor(g, vshr(g, size, a, (8u << size) - 1, 1), vsplat(g, size, smax_of(size))), r);
+    /* the wrapped result's sign spread, XOR the smallest: the largest for a negative one, the smallest for a
+       positive */
+    return vsel(g, ovf, vxor(g, vsign(g, size, r), vsplat(g, size, smin_of(size))), r);
+}
+/* SUQADD (uns 0: signed d and unsigned n, saturated as signed) and USQADD (unsigned d, signed n, saturated as
+   unsigned): d's sign bit flipped, what is left is UQADD's and SQADD's sum, its sign bit flipped back */
+static int vqaddmixed(SgCtx* g, unsigned size, int d, int n, int uns, int* sat) {
+    int flip = vsplat(g, size, smin_of(size));
+    return vxor(g, vqaddsub(g, size, vxor(g, d, flip), n, !uns, 0, sat), flip);
+}
+/* SQABS, SQNEG (neg): the smallest's magnitude or negation the largest */
+static int vqabsneg(SgCtx* g, unsigned size, int a, int neg, int* sat) {
+    int r, res, m;
+    if (neg && size < 2) {
+        res = op2(g, size ? &sgx_v_psubsw : &sgx_v_psubsb, vzero(g), a);
+        *sat = vxor(g, res, vneg(g, size, a));
+        return res;
+    }
+    r = neg ? vneg(g, size, a) : vabs(g, size, a);
+    m = veq(g, size, r, vsplat(g, size, smin_of(size)));
+    *sat = m;
+    return vxor(g, r, m);
 }
 /* elements of 16 << size bits saturated to 8 << size (to: 0 signed to signed, 1 unsigned to unsigned, 2 signed to
    unsigned), into the low doubleword; *sat the lanes (of the source's) that were out of range */
@@ -1448,6 +1476,35 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
                      insn->op == SNX_A64_OP_SQSUB_v || insn->op == SNX_A64_OP_UQSUB_v, &sat);
         set_qc(g, sat, q ? 16 : 8);
         vwrite(g, rd, r, q);
+        return 1;
+    }
+    case SNX_A64_OP_SUQADD_v:
+    case SNX_A64_OP_USQADD_v:
+    case SNX_A64_OP_SUQADD_s:
+    case SNX_A64_OP_USQADD_s: {
+        int sat, scalar = insn->op == SNX_A64_OP_SUQADD_s || insn->op == SNX_A64_OP_USQADD_s;
+        if (size == 3 && !q && !scalar) return -1;
+        r = vqaddmixed(g, size, vread(g, rd), vread(g, rn),
+                       insn->op == SNX_A64_OP_USQADD_v || insn->op == SNX_A64_OP_USQADD_s, &sat);
+        set_qc(g, sat, scalar ? 1 << size : q ? 16 : 8);
+        if (scalar)
+            vwrite_scalar(g, rd, size, r);
+        else
+            vwrite(g, rd, r, q);
+        return 1;
+    }
+    case SNX_A64_OP_SQABS_v:
+    case SNX_A64_OP_SQNEG_v:
+    case SNX_A64_OP_SQABS_s:
+    case SNX_A64_OP_SQNEG_s: {
+        int sat, scalar = insn->op == SNX_A64_OP_SQABS_s || insn->op == SNX_A64_OP_SQNEG_s;
+        if (size == 3 && !q && !scalar) return -1;
+        r = vqabsneg(g, size, vread(g, rn), insn->op == SNX_A64_OP_SQNEG_v || insn->op == SNX_A64_OP_SQNEG_s, &sat);
+        set_qc(g, sat, scalar ? 1 << size : q ? 16 : 8);
+        if (scalar)
+            vwrite_scalar(g, rd, size, r);
+        else
+            vwrite(g, rd, r, q);
         return 1;
     }
     case SNX_A64_OP_SQXTN_v:

@@ -4347,6 +4347,7 @@ foreach(family IN ITEMS
         "differences;UABD_v;SABD_v;UABA_v;SABA_v;UABDL_v;SABDL_v;UABAL_v;SABAL_v"
         "doublewords;ADD_s;SUB_s;CMEQ_s;CMGT_s;CMGE_s;CMHI_s;CMHS_s;CMTST_s"
         "saturating;SQADD_s;UQADD_s;SQSUB_s;UQSUB_s;SQXTN_s;UQXTN_s;SQXTUN_s;SQSHRN_si;UQSHRN_si;SQSHRUN_si;SQRSHRN_v;UQRSHRN_v;SQRSHRUN_v;SQRSHRN_si;UQRSHRN_si;SQRSHRUN_si"
+        "saturating_sums;SQADD_v;UQADD_v;SQSUB_v;UQSUB_v;SUQADD_v;USQADD_v;SUQADD_s;USQADD_s;SQABS_v;SQNEG_v;SQABS_s;SQNEG_s"
         "crypto;AESE;AESD;AESMC;AESIMC;SHA1C;SHA1P;SHA1M;SHA1SU0;SHA1H;SHA1SU1;SHA256H;SHA256H2;SHA256SU0;SHA256SU1;PMULL_p64")
     list(POP_FRONT family name)
     add_test(NAME recompiler_backends_${name} COMMAND snx-test-recompiler-backends --states 48 --ops ${family})
