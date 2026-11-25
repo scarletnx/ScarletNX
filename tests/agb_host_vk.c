@@ -113,7 +113,7 @@ int main(void) {
 
     SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "offscreen");
     SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "dummy");
-    AgbHost* host = agb_host_open("agb_host_vk", false, error, sizeof error);
+    AgbHost* host = agb_host_open("agb_host_vk", NULL, false, error, sizeof error);
     if (!host) {
         fprintf(stderr, "agb_host_vk: opening the runner's window: %s\n", error);
         return 1;

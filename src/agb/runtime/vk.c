@@ -7,10 +7,12 @@
 #include "agb/ppu/ppu.h"
 #include "common/gpu/vk/device_settings.h"
 #include "common/gpu/vk/notice.h"
+#include "common/gpu/vk/rects.h"
 #include "common/gpu/vk/ring.h"
 #include "common/gpu/vk/swapchain.h"
 #include "common/gpu/vk/vk_common.h"
 #include "common/gpu/vk/window.h"
+#include "common/utilities/vpad_sdl.h"
 #include "common/utilities/window_icon.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,6 +40,7 @@ struct AgbVk {
     SnxVkRing ring;
     AgbFrame frame[AGB_VK_SLOTS];
     SnxVkNotice* notice;
+    SnxVkRects* controls;
 };
 
 /* the GBA's device on a physical device and queue family (common/gpu/vk/device.h) */
@@ -47,7 +50,8 @@ static bool choose(SnxVkChoice* c, void* user) {
         return snx_vk_choice_refuse(c, "has no VK_KHR_swapchain to draw the window with");
     snx_vk_choice_enable(c, "VK_KHR_portability_subset");
     VkPhysicalDeviceVulkan13Features want13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
-                                               .synchronization2 = VK_TRUE}; /* every 1.3 device has it */
+                                               .synchronization2 = VK_TRUE, /* every 1.3 device has both */
+                                               .dynamicRendering = VK_TRUE};
     VkPhysicalDeviceFeatures2 want = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &want13};
     return snx_vk_choice_create(c, &want, NULL, NULL, 0);
 }
@@ -58,8 +62,9 @@ static bool swapchain_make(AgbVk* v) {
     SnxVkSwapchainInfo info = {.surface = v->host.surface,
                                .formats = formats,
                                .format_count = sizeof formats / sizeof *formats,
-                               .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                               .window = snx_vk_window_extent(&v->host, (VkExtent2D){960, 640})};
+                               .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                               .window = snx_vk_window_extent(&v->host, (VkExtent2D){960, 640}),
+                               .views = true};
     return snx_vk_swapchain_make(v->phys, v->device, &info, &v->swap);
 }
 
@@ -185,7 +190,8 @@ AgbVk* agb_vk_open(const char* title, int width, int height, bool fullscreen, ch
         made = vkCreateSemaphore(v->device, &si, NULL, &v->acquired[i]) == VK_SUCCESS && frame_make(v, &v->frame[i]);
     for (unsigned i = 0; i < SNX_VK_SWAP_IMAGES && made; ++i)
         made = vkCreateSemaphore(v->device, &si, NULL, &v->rendered[i]) == VK_SUCCESS;
-    if (!made || !(v->notice = snx_vk_notice_create(v->phys, v->device, AGB_VK_SLOTS)) || !swapchain_make(v)) {
+    if (!made || !(v->notice = snx_vk_notice_create(v->phys, v->device, AGB_VK_SLOTS)) ||
+        !(v->controls = snx_vk_rects_create(v->phys, v->device, AGB_VK_SLOTS)) || !swapchain_make(v)) {
         snprintf(error, error_size, "cannot make the Vulkan window's frames, swapchain or command pool");
         agb_vk_close(v);
         return NULL;
@@ -200,6 +206,7 @@ void agb_vk_close(AgbVk* v) {
     if (v->device) {
         vkDeviceWaitIdle(v->device);
         snx_vk_notice_destroy(v->notice);
+        snx_vk_rects_destroy(v->controls);
         snx_vk_swapchain_free(v->device, &v->swap);
         for (unsigned i = 0; i < AGB_VK_SLOTS; ++i) {
             frame_free(v, &v->frame[i]);
@@ -283,6 +290,8 @@ bool agb_vk_frame(AgbVk* v, const uint32_t* framebuffer, const SnxNotice* notice
     (void)snx_vk_notice_record(v->notice, cb, slot, target, v->swap.format.format, w, h,
                                snx_display_percent(SDL_GetWindowDisplayScale(v->host.window)), notice, SDL_GetTicksNS(),
                                notice_log);
+    (void)snx_vk_rects_record(v->controls, cb, slot, target, v->swap.views[index], v->swap.format.format, w, h,
+                              snx_vpad_window_rects((int)w, (int)h), notice_log);
     barrier(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
             VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, 0);
     (void)snx_vk_ring_submit(&v->ring, v->acquired[slot], v->rendered[index]);

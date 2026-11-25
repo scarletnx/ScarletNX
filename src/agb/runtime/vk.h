@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* The GBA runner's Vulkan window, as the other consoles' windows present: the board's 240x160 frame at the largest
    whole step of the screen the window holds, centred on black in sharp pixels, where SDL's renderer puts it (host.c),
-   and a notice over it (common/gpu/vk/notice.h). host.c keeps SDL's renderer where the host has no Vulkan window, so a
+   and over it a notice (common/gpu/vk/notice.h) and the on-screen controls (common/gpu/vk/rects.h). host.c keeps SDL's renderer where the host has no Vulkan window, so a
    run without one still shows its frame */
 #ifndef SNX_AGB_RUNTIME_VK_H
 #define SNX_AGB_RUNTIME_VK_H
@@ -23,6 +23,7 @@ SDL_Window* agb_vk_window(AgbVk* vk);
    of it that fits, centred, as SDL_LOGICAL_PRESENTATION_INTEGER_SCALE places it; a window smaller than the screen
    holds it shrunk to fit, its aspect kept, where SDL's renderer shows its middle at 1x */
 void agb_vk_place(uint32_t w, uint32_t h, int32_t rect[4]);
-/* The 240x160 RGBA frame on screen, notice over it while it shows: false when the window had no image to take it */
+/* The 240x160 RGBA frame on screen, notice over it while it shows, and the on-screen controls: false when the window
+   had no image to take it */
 bool agb_vk_frame(AgbVk* vk, const uint32_t* framebuffer, const SnxNotice* notice);
 #endif
