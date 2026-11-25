@@ -1126,6 +1126,11 @@ snx_test_target(snx-test-arm-exec-fallback gnu23)
 target_include_directories(snx-test-arm-exec-fallback PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(snx-test-arm-exec-fallback PRIVATE snx_llvm)
 add_test(NAME arm_exec_fallback COMMAND snx-test-arm-exec-fallback WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+# the AOT compilers' blocks: the native back end's, LLVM's where it refuses one or the IR is kept, and who made them said
+add_executable(snx-test-arm-aot arm_aot.c)
+snx_test_target(snx-test-arm-aot gnu23)
+target_link_libraries(snx-test-arm-aot PRIVATE snx_llvm scarletnx-common ${CMAKE_DL_LIBS})
+add_test(NAME arm_aot COMMAND snx-test-arm-aot)
 # a 32-bit game's blocks compiled from an NRO go when its memory is unmapped, so another NRO mapped there runs its own
 # code (runtime/arm.c, with the block compiler and the rest of the runtime stubbed)
 add_executable(snx-test-arm-code-invalidate arm_code_invalidate.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/arm.c")
