@@ -19,6 +19,7 @@
    runtime's descriptors never are; any other type gives result 0x100f3, as the SDK's own check does */
 #include "nx/nn/hook.h"
 #include "nn/hooks.hook.h"
+#include "nx/memory/mem.h"
 #include "common/utilities/endian.h"
 #include "nx/runtime/platform/log.h"
 #include <string.h>
@@ -44,9 +45,12 @@ u32 gs_read_user_image_nv12(CPU* c, u64 dst_y, u64 size_y, u64 pitch_y, u64 dst_
     u64 c_at = src + snx_ld_le32(d + 0x18), c_pitch = snx_ld_le64(d + 0x20);
     for (u32 r = 0; r < h; r++)
         memcpy(hook_host(c, dst_y + r * pitch_y), hook_host(c, y_at + x + (u64)((y + r) & 0xffff) * y_pitch), w);
-    if (h >= 2)
+    if (h) mem_wrote(dst_y, (u64)(h - 1) * pitch_y + w); /* the planes go to textures: the write marks see them */
+    if (h >= 2) {
         for (u32 r = 0; r < h >> 1; r++)
             memcpy(hook_host(c, dst_uv + r * pitch_uv),
                    hook_host(c, c_at + (x & 0xfffe) + (u64)(((y >> 1) + r) & 0xffff) * c_pitch), w & 0xfffe);
+        mem_wrote(dst_uv, (u64)((h >> 1) - 1) * pitch_uv + (w & 0xfffe));
+    }
     return 0;
 }

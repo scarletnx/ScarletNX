@@ -14,6 +14,7 @@
    (hook_guest_call). The family is off on Windows, whose C library lacks half of these and has another RAND_MAX */
 #define _GNU_SOURCE /* glibc's strcasestr */
 #include "nx/nn/hook.h"
+#include "nx/memory/mem.h"
 #include "common/utilities/bits.h"
 #include "nn/hooks.hook.h"
 #include "nx/hle/kernel/kernel.h"
@@ -123,25 +124,41 @@ i32 libc_strncasecmp_l(CPU* c, u64 a, u64 b, u64 n, u64 locale) { /* every local
     return strncasecmp(S(a), S(b), (size_t)n);
 }
 i32 libc_strcoll(CPU* c, u64 a, u64 b) { return strcmp(S(a), S(b)); } /* the C locale's collation */
+/* the write marks (memory/mem.h) see the text these write, its terminator too, as they see the game's own stores */
+u64 libc_stpcpy(CPU* c, u64 d, u64 s) {
+    const u64 end = G(stpcpy(S(d), S(s)));
+    mem_wrote(d, end - d + 1);
+    return end;
+}
 u64 libc_strcpy(CPU* c, u64 d, u64 s) {
-    strcpy(S(d), S(s));
+    libc_stpcpy(c, d, s);
     return d;
 }
 u64 libc_strncpy(CPU* c, u64 d, u64 s, u64 n) {
     strncpy(S(d), S(s), (size_t)n);
+    mem_wrote(d, n); /* the zeros after a shorter string too */
     return d;
 }
-u64 libc_stpcpy(CPU* c, u64 d, u64 s) { return G(stpcpy(S(d), S(s))); }
 u64 libc_strcat(CPU* c, u64 d, u64 s) {
-    strcat(S(d), S(s));
+    libc_stpcpy(c, d + strlen(S(d)), s);
     return d;
 }
 u64 libc_strncat(CPU* c, u64 d, u64 s, u64 n) {
+    const u64 at = d + strlen(S(d)), k = strnlen(S(s), (size_t)n);
     strncat(S(d), S(s), (size_t)n);
+    mem_wrote(at, k + 1);
     return d;
 }
-u64 libc_strlcpy(CPU* c, u64 d, u64 s, u64 n) { return lcpy(S(d), S(s), (size_t)n); }
-u64 libc_strlcat(CPU* c, u64 d, u64 s, u64 n) { return lcat(S(d), S(s), (size_t)n); }
+u64 libc_strlcpy(CPU* c, u64 d, u64 s, u64 n) {
+    const u64 len = lcpy(S(d), S(s), (size_t)n);
+    if (n) mem_wrote(d, (len < n - 1 ? len : n - 1) + 1);
+    return len;
+}
+u64 libc_strlcat(CPU* c, u64 d, u64 s, u64 n) {
+    const u64 had = strnlen(S(d), (size_t)n), len = lcat(S(d), S(s), (size_t)n);
+    if (had < n) mem_wrote(d + had, (len - had < n - had - 1 ? len - had : n - had - 1) + 1);
+    return len;
+}
 u64 libc_strchr(CPU* c, u64 s, i32 ch) { return GN(strchr(S(s), ch)); }
 u64 libc_strrchr(CPU* c, u64 s, i32 ch) { return GN(strrchr(S(s), ch)); }
 u64 libc_strstr(CPU* c, u64 s, u64 sub) { return GN(strstr(S(s), S(sub))); }
@@ -169,6 +186,7 @@ u64 libc_strtok(CPU* c, u64 s, u64 delim) {
     char* save = g_strtok ? S(g_strtok) : NULL;
     char* t = tok(s ? S(s) : NULL, S(delim), &save);
     g_strtok = GN(save);
+    if (t && save) mem_wrote(g_strtok - 1, 1); /* the terminator put over the separator after the token */
     return GN(t);
 }
 u64 libc_strtok_r(CPU* c, u64 s, u64 delim, u64 save) {
@@ -176,12 +194,15 @@ u64 libc_strtok_r(CPU* c, u64 s, u64 delim, u64 save) {
     char* p = at ? S(at) : NULL;
     char* t = tok(s ? S(s) : NULL, S(delim), &p);
     snx_st_le64(hook_host(c, save), GN(p));
+    if (t && p) mem_wrote(GN(p) - 1, 1); /* the terminator put over the separator after the token */
+    mem_wrote(save, 8);
     return GN(t);
 }
 /* C11's memset_s: the bytes set always, and EINVAL (22) when more were asked than the destination holds */
 i32 libc_memset_s(CPU* c, u64 d, u64 size, i32 ch, u64 n) {
     if (!d) return 22;
     memset(S(d), ch, (size_t)(n < size ? n : size));
+    mem_wrote(d, n < size ? n : size);
     return n > size ? 22 : 0;
 }
 
@@ -369,6 +390,7 @@ void libc_qsort(CPU* c, u64 base, u64 n, u64 size, u64 fn) {
     if (!n || !size) return;
     g_cmp = (CmpCtx){c, fn};
     qsort(S(base), (size_t)n, (size_t)size, cmp_guest);
+    mem_wrote(base, n * size); /* the host moved the elements: the write marks see them as the game's own */
     g_cmp = was;
 }
 u64 libc_bsearch(CPU* c, u64 key, u64 base, u64 n, u64 size, u64 fn) {

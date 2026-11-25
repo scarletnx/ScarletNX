@@ -1025,6 +1025,50 @@ static void test_unpool_read_fails(void) {
 }
 #endif
 
+/* The write marks (--write_marks=1, memory/mem.c): a runtime writer's mem_wrote marks the pages it wrote, and
+   mem_marks_scan reports each run of marked pages once, as whole pages, and clears their marks, a part of a run
+   alone when the scan covers only that part. A copy of mem.c's into guest memory (a view's) marks too */
+static u64 g_marks_run[16][2];
+static int g_marks_n;
+static void on_marked(u8* p, u64 n) {
+    if (g_marks_n < 16) g_marks_run[g_marks_n][0] = (u64)(p - g_mem), g_marks_run[g_marks_n][1] = n;
+    g_marks_n++;
+}
+static int marked_run(int i, u64 a, u64 n) { return i < g_marks_n && g_marks_run[i][0] == a && g_marks_run[i][1] == n; }
+static void test_write_marks(void) {
+    const u64 h = HEAP_BASE;
+    CHECK(mem_marks_on());
+    CHECK(mem_marks_scan(h, 2 * MIB, on_marked) == 0); /* what the setup wrote */
+    g_marks_n = 0;
+    mem_wrote(h + 0x10, 8);
+    mem_wrote(h + 0x2ffc, 8); /* across a page boundary: both pages */
+    mem_wrote(h + 0x9000, 0x3000);
+    mem_wrote(h + 0x10000, 1);
+    CHECK(mem_mark_peek(h + 0x3000) == 1 && mem_mark_peek(h + 0x1000) == 0);
+    CHECK(mem_marks_scan(h, 2 * MIB, on_marked) == 0);
+    CHECK(g_marks_n == 4);
+    CHECK(marked_run(0, h, 0x1000) && marked_run(1, h + 0x2000, 0x2000) && marked_run(2, h + 0x9000, 0x3000) &&
+          marked_run(3, h + 0x10000, 0x1000));
+    g_marks_n = 0;
+    CHECK(mem_marks_scan(h, 2 * MIB, on_marked) == 0 && g_marks_n == 0); /* taken once */
+    mem_wrote(h + 0x5000, 0x4000);
+    CHECK(mem_marks_scan(h + 0x6000, 0x1000, on_marked) == 0 && g_marks_n == 1 && marked_run(0, h + 0x6000, 0x1000));
+    CHECK(mem_mark_peek(h + 0x5000) == 1 && mem_mark_peek(h + 0x6000) == 0 && mem_mark_peek(h + 0x7000) == 1);
+    g_marks_n = 0;
+    CHECK(mem_marks_scan(h + 0x5000, 0x5000, on_marked) == 0 && g_marks_n == 2 && marked_run(0, h + 0x5000, 0x1000) &&
+          marked_run(1, h + 0x7000, 0x2000));
+    /* a marked page every 8th, across the scan's words, and the last page of a run that ends a word */
+    for (u64 pg = 0; pg < 64; pg += 9) mem_wrote(h + (pg << 12), 1);
+    g_marks_n = 0;
+    CHECK(mem_marks_scan(h, 64 << 12, on_marked) == 0 && g_marks_n == 8 && marked_run(7, h + (63ull << 12), 0x1000));
+    /* a run that ends a word, before words of no mark: closed there, not at the next mark */
+    mem_wrote(h + 0x7000, 1);
+    mem_wrote(h + (20ull << 12), 1);
+    g_marks_n = 0;
+    CHECK(mem_marks_scan(h, 64 << 12, on_marked) == 0 && g_marks_n == 2 && marked_run(0, h + 0x7000, 0x1000) &&
+          marked_run(1, h + (20ull << 12), 0x1000));
+}
+
 int main(int argc, char** argv) {
     int copies = 0, nce = 0, unpool_fails = 0;
     /* Debug settings as the runtime takes them, --key=value (--write_tracking=1: the tracking of hosts without Linux
@@ -1103,6 +1147,10 @@ int main(int argc, char** argv) {
     g_code_memory = 55 * MIB;
     g_main_stack_size = MIB;
     CHECK(svc_set_heap_size(2 * MIB) == 0);
+    if (g_settings.write_marks)
+        test_write_marks();
+    else
+        CHECK(!mem_marks_on());
     if (unpool_fails) {
 #if defined(__linux__)
         test_unpool_read_fails();

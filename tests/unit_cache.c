@@ -13,6 +13,7 @@
 #include "nx/loader/module.h"
 #include "nx/loader/module_abi.h"
 #include "nx/loader/module_llvm.h"
+#include "common/cpu/recompiler/llvm/ir.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -220,11 +221,17 @@ int main(void) {
     s = stats();
     CHECK(s.hits == 2 && s.misses == 2 && s.units == 2);
     CHECK(same_file(out[0], out[1]));
+    /* a unit made with the write marks is not one made without: both made again, and kept beside them */
+    snx_ir_write_marks(1);
+    CHECK(!build(out[2]));
+    snx_ir_write_marks(0);
+    s = stats();
+    CHECK(s.hits == 2 && s.misses == 4 && s.units == 4);
     /* f1 changed: its unit made and kept beside the old one, f0's from memory */
     program(5);
-    CHECK(!build(out[2]) && run(out[2]) == 46);
+    CHECK(!build(out[3]) && run(out[3]) == 46);
     s = stats();
-    CHECK(s.hits == 3 && s.misses == 3 && s.units == 3);
+    CHECK(s.hits == 3 && s.misses == 5 && s.units == 5);
 
     /* room for two units: f1's +5 unit, made with the +1 ones held, leaves room by letting go f1's +1 unit, used
        longest ago (f0's was just used). Built again, the +5 program takes both its units from memory: had f0's gone

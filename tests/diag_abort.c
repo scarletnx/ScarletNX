@@ -12,6 +12,8 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+/* memory/mem.c: no write marks here (weak: a test that links mem.c takes its own) */
+[[gnu::weak]] void mem_wrote(u64 a, u64 size) { (void)a, (void)size; }
 
 #define VABORT "_ZN2nn4diag6detail10VAbortImplEPKcS3_S3_iPKNS_6ResultEPKNS_2os17UserExceptionInfoES3_RSt9__va_list"
 #define AT     0x8100040u /* where the sdk module exports it */

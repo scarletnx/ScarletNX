@@ -1372,6 +1372,17 @@ target_link_libraries(snx-test-llvm-promote-edges PRIVATE snx_llvm snx_driver ${
 add_test(NAME llvm_promote_edges COMMAND snx-test-llvm-promote-edges)
 set_tests_properties(llvm_promote_edges PROPERTIES TIMEOUT 120)
 
+# the write marks (ir_marks.c) after every kind of guest store, none off the stack pointer, at O2 and O0
+add_executable(snx-test-llvm-write-marks llvm_write_marks.c llvm_steps.c)
+snx_test_target(snx-test-llvm-write-marks c23)
+target_link_libraries(snx-test-llvm-write-marks PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+add_test(NAME llvm_write_marks COMMAND snx-test-llvm-write-marks)
+# the same marks as the native back end makes them: functions of a few words run on memory with the marks below it
+add_executable(snx-test-write-marks-native write_marks_native.c)
+snx_test_target(snx-test-write-marks-native gnu23)
+target_link_libraries(snx-test-write-marks-native PRIVATE scarletnx-recompiler scarletnx-platform)
+add_test(NAME write_marks_native COMMAND snx-test-write-marks-native)
+
 add_executable(snx-test-llvm-promote-sync llvm_promote_sync.c llvm_steps.c)
 snx_test_target(snx-test-llvm-promote-sync c23)
 target_link_libraries(snx-test-llvm-promote-sync PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
@@ -3460,6 +3471,15 @@ if(NOT SNX_TOOLS_ONLY)
     snx_test_target(snx-test-vk-write-scan gnu23)
     target_link_libraries(snx-test-vk-write-scan PRIVATE snx_nx_flags)
     add_test(NAME vk_write_scan COMMAND snx-test-vk-write-scan)
+    # the pages a game wrote, from its write marks (gpu/vk/buffer.c, write_marks_scan=1) over a model of the marks:
+    # written in the next epoch after a mark, its neighbours not, the marks taken, a trapped page's mark kept
+    add_executable(snx-test-vk-write-marks-scan vk_write_marks_scan.c tracy_stubs.c
+                   "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/addr_gens.c")
+    snx_test_target(snx-test-vk-write-marks-scan gnu23)
+    target_link_libraries(snx-test-vk-write-marks-scan PRIVATE snx_nx_flags)
+    add_test(NAME vk_write_marks_scan COMMAND snx-test-vk-write-marks-scan)
+    add_test(NAME vk_write_marks_check COMMAND snx-test-vk-write-marks-scan --check)
+    add_test(NAME vk_write_marks_check_uma COMMAND snx-test-vk-write-marks-scan --check-uma)
     # the file of shaders and pipelines kept across runs (gpu/vk/pipeline_file.c): records back as written, pipelines
     # by their shaders' records (a shipped shader's reference among them), a cut or changed record ending the reading,
     # another key starting over, a full file; its records packed into zstd units and unpacked in their place, a unit
@@ -3823,6 +3843,15 @@ if(SNX_X64)
     add_test(NAME arm_x64 COMMAND snx-test-arm-x64)
     add_test(NAME arm_x64_spill COMMAND snx-test-arm-x64 --pool ${snx_x64_pool} --blocks 2000 --seed 2)
     add_test(NAME arm_x64_plain COMMAND snx-test-arm-x64 --features 0 --blocks 2000 --seed 3)
+    # the write marks, each page a block's stores changed and no other: with the stack's, and with the host's BMI2 and
+    # without
+    add_test(NAME arm_x64_marks COMMAND snx-test-arm-x64 --marks 2 --blocks 3000 --thumb 2000 --seed 4)
+    add_test(NAME arm_x64_marks_plain COMMAND snx-test-arm-x64 --marks 2 --features 0 --blocks 1500 --thumb 800 --seed 5)
+    # a profile with no marks of its own (a 3DS's, a GBA's) makes none, whatever is asked
+    add_test(NAME arm_x64_marks_legacy COMMAND snx-test-arm-x64 --marks 2 --profile arm7tdmi --blocks 600 --thumb 400
+             --seed 6)
+    set_tests_properties(arm_x64_marks arm_x64_marks_plain arm_x64_marks_legacy PROPERTIES TIMEOUT 900
+                         SKIP_RETURN_CODE 77)
     set_tests_properties(arm_x64 arm_x64_spill arm_x64_plain PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
     snx_arm_native_modes(x64)
     # and as a Windows host's, run by this host's processor (support/host_win64.c)
@@ -3834,13 +3863,14 @@ if(SNX_X64)
         target_link_libraries(snx-test-arm-win64 PRIVATE snx_llvm snx_arm_llvm snx_driver ${CMAKE_DL_LIBS})
         add_test(NAME arm_win64 COMMAND snx-test-arm-win64)
         add_test(NAME arm_win64_spill COMMAND snx-test-arm-win64 --pool 4 --blocks 2000 --seed 2)
+        add_test(NAME arm_win64_marks COMMAND snx-test-arm-win64 --marks 2 --blocks 400 --thumb 300 --seed 4)
         add_test(NAME arm_win64_plain COMMAND snx-test-arm-win64 --features 0 --blocks 2000 --seed 3)
         add_test(NAME arm_win64_step COMMAND snx-test-arm-win64 --step --blocks 600 --thumb 600 --states 2 --seed 4)
         add_test(NAME arm_win64_step_bus COMMAND snx-test-arm-win64 --step --profile arm7tdmi --trace --blocks 300
                  --thumb 200 --states 2 --seed 5)
         add_test(NAME arm_win64_step_checked COMMAND snx-test-arm-win64 --step --memory checked --blocks 300 --thumb 200
                  --states 2 --seed 6)
-        set_tests_properties(arm_win64 arm_win64_spill arm_win64_plain arm_win64_step arm_win64_step_bus
+        set_tests_properties(arm_win64 arm_win64_spill arm_win64_marks arm_win64_plain arm_win64_step arm_win64_step_bus
                              arm_win64_step_checked PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
         snx_arm_native_modes(win64 --blocks 600 --states 8)
     endif()
@@ -3941,6 +3971,12 @@ snx_test_target(snx-test-unit-cache gnu23)
 target_link_libraries(snx-test-unit-cache PRIVATE snx_driver_llvm ${CMAKE_DL_LIBS})
 add_test(NAME unit_cache COMMAND snx-test-unit-cache)
 set_tests_properties(unit_cache PROPERTIES TIMEOUT 120)
+# the write marks in the code a module and the JIT are made of, which a module says it was made with
+add_executable(snx-test-write-marks-code write_marks_code.c)
+snx_test_target(snx-test-write-marks-code gnu23)
+target_link_libraries(snx-test-write-marks-code PRIVATE snx_driver_llvm ${CMAKE_DL_LIBS})
+add_test(NAME write_marks_code COMMAND snx-test-write-marks-code)
+set_tests_properties(write_marks_code PROPERTIES TIMEOUT 120)
 # a function past the buffer its unit started with, on every machine's back end
 if(NOT WIN32)
     add_executable(snx-test-native-grow native_grow.c)
@@ -4387,6 +4423,20 @@ add_test(NAME recompiler_backends_xpac COMMAND snx-test-recompiler-backends --ta
 add_test(NAME recompiler_backends_calls COMMAND snx-test-recompiler-backends --calls --functions 120 --states 8)
 add_test(NAME recompiler_backends_calls_2 COMMAND snx-test-recompiler-backends --calls --functions 120 --states 8 --seed 2)
 add_test(NAME recompiler_backends_calls_3 COMMAND snx-test-recompiler-backends --calls --functions 1000 --states 8 --seed 4)
+# the write marks: the marks the back end makes of the pages its stores wrote are LLVM's, over every store of the random
+# functions, of the words of each kind of store, and of functions that call each other
+add_test(NAME recompiler_backends_marks COMMAND snx-test-recompiler-backends --marks 2 --functions 1200 --states 8)
+add_test(NAME recompiler_backends_marks_1 COMMAND snx-test-recompiler-backends --marks 1 --functions 600 --states 8
+         --seed 7)
+add_test(NAME recompiler_backends_marks_ops COMMAND snx-test-recompiler-backends --marks 2 --states 8 --target android
+         --ops STXR STLR STXP CASP CAS STP STP_v STR_i STR_v_i LDADD LDCLR LDEOR LDSET LDSMAX LDSMIN LDUMAX
+         LDUMIN SWP ST_mult ST_single)
+# and without the host's optional features: the mark's shift then changes the flags
+add_test(NAME recompiler_backends_marks_plain COMMAND snx-test-recompiler-backends --marks 2 --without 0x3d07 --functions
+         600 --states 8 --seed 3)
+add_test(NAME recompiler_backends_marks_calls COMMAND snx-test-recompiler-backends --marks 2 --calls --functions 120
+         --states 4)
+set_tests_properties(recompiler_backends_marks_calls PROPERTIES TIMEOUT 600)
 set_tests_properties(recompiler_backends_calls recompiler_backends_calls_2 recompiler_backends_calls_3 PROPERTIES
                      TIMEOUT 600)
 # words of the lanes' arithmetic, each a function of its own that the back end must make, from the lanes' edge values
@@ -4452,6 +4502,9 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
             set_tests_properties(recompiler_${m}_refused_${target} PROPERTIES TIMEOUT 600)
         endforeach()
     endforeach()
+    # the write marks of the pages the code of an arm64 host's back end marks, and of arm64's as a Windows host's
+    add_test(NAME recompiler_arm64_marks COMMAND snx-test-recompiler-arm64 --marks 2 --functions 200 --states 4)
+    set_tests_properties(recompiler_arm64_marks PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
     # an arm64 host with no optional feature (SNX_ARM64_F_ALL): every word made, and the results of the random functions'
     # and of CRC32's
     add_test(NAME recompiler_arm64_refused_plain COMMAND snx-test-recompiler-arm64 --refused --without 0x7ffff
@@ -4487,6 +4540,8 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
     snx_decodetree_a64(snx-test-recompiler-arm64win)
     add_test(NAME recompiler_arm64win COMMAND snx-test-recompiler-arm64win)
     add_test(NAME recompiler_arm64win_step COMMAND snx-test-recompiler-arm64win --step --functions 60 --states 2)
+    add_test(NAME recompiler_arm64win_marks COMMAND snx-test-recompiler-arm64win --marks 2 --functions 200 --states 4)
+    set_tests_properties(recompiler_arm64win_marks PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
     add_test(NAME recompiler_arm64win_jit COMMAND snx-test-recompiler-arm64win --jit --functions 200 --states 8 --seed 2)
     add_test(NAME recompiler_arm64win_hook COMMAND snx-test-recompiler-arm64win --hook --functions 200 --states 8 --seed 3)
     add_test(NAME recompiler_arm64win_plain COMMAND snx-test-recompiler-arm64win --without 0x7ffff --functions 200
@@ -4516,6 +4571,8 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
         set_tests_properties(arm_${m} arm_${m}_spill arm_${m}_half arm_${m}_odd PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
         snx_arm_native_modes(${m} --blocks 600 --states 8)
     endforeach()
+    add_test(NAME arm_arm64_marks COMMAND snx-test-arm-arm64 --marks 2 --blocks 300 --thumb 200 --seed 4)
+    set_tests_properties(arm_arm64_marks PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
     # arm64's as a Windows host's
     add_executable(snx-test-arm-arm64win arm_x64.c support/host_unicorn.c support/la64_interp.c)
     snx_test_target(snx-test-arm-arm64win gnu23)
@@ -4525,6 +4582,8 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
                           ${CMAKE_DL_LIBS})
     add_test(NAME arm_arm64win COMMAND snx-test-arm-arm64win --blocks 1500 --thumb 1000 --states 8)
     add_test(NAME arm_arm64win_spill COMMAND snx-test-arm-arm64win --pool 3 --blocks 1500 --thumb 1000 --states 8 --seed 2)
+    add_test(NAME arm_arm64win_marks COMMAND snx-test-arm-arm64win --marks 2 --blocks 300 --thumb 200 --seed 4)
+    set_tests_properties(arm_arm64win_marks PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
     add_test(NAME arm_arm64win_step COMMAND snx-test-arm-arm64win --step --blocks 300 --thumb 200 --states 2 --seed 3)
     add_test(NAME arm_arm64win_step_hosted COMMAND snx-test-arm-arm64win --step --memory hosted --blocks 200 --thumb 150
              --states 2 --seed 4)
@@ -4555,13 +4614,14 @@ if(snx_host_win64)
     target_link_libraries(snx-test-recompiler-win64 PRIVATE scarletnx-recompiler snx_llvm scarletnx-common)
     snx_decodetree_a64(snx-test-recompiler-win64)
     add_test(NAME recompiler_win64 COMMAND snx-test-recompiler-win64)
+    add_test(NAME recompiler_win64_marks COMMAND snx-test-recompiler-win64 --marks 2 --functions 300 --states 4)
     add_test(NAME recompiler_win64_jit COMMAND snx-test-recompiler-win64 --jit)
     add_test(NAME recompiler_win64_hook COMMAND snx-test-recompiler-win64 --hook --functions 300 --seed 2)
     add_test(NAME recompiler_win64_plain COMMAND snx-test-recompiler-win64 --without 0x3d07 --functions 300 --seed 3)
     add_test(NAME recompiler_win64_br_pins COMMAND snx-test-recompiler-win64 --words ${snx_br_pins})
     add_test(NAME recompiler_win64_undef_pins COMMAND snx-test-recompiler-win64 --words ${snx_undef_pins})
     add_test(NAME recompiler_win64_calls COMMAND snx-test-recompiler-win64 --calls --functions 120 --states 8)
-    set_tests_properties(recompiler_win64 recompiler_win64_jit recompiler_win64_hook recompiler_win64_plain PROPERTIES
+    set_tests_properties(recompiler_win64 recompiler_win64_marks recompiler_win64_jit recompiler_win64_hook recompiler_win64_plain PROPERTIES
                          TIMEOUT 600)
 endif()
 # its code on Windows unwinds at every instruction, by the system's unwinder there and by support/host_win64.c's here
@@ -5398,6 +5458,9 @@ if(UNIX)
     add_test(NAME memory_alias_signal_ww_auto COMMAND snx-test-memory-alias --write_tracking=1)
     set_tests_properties(memory_alias_signal_ww memory_alias_signal_ww_auto
                          PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+    # the write marks below guest memory (write_marks=1): the runtime's writers' marks and their scan
+    add_test(NAME memory_alias_write_marks COMMAND snx-test-memory-alias --write_marks=1)
+    set_tests_properties(memory_alias_write_marks PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
     # the write tracking in NCE's layout (g_mem 0, moved up from 64 GiB), each kind: Android's is the protection
     add_test(NAME memory_alias_nce COMMAND snx-test-memory-alias --nce)
     set_tests_properties(memory_alias_nce PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)

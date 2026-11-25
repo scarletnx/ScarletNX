@@ -32,6 +32,7 @@ static struct {
     int fpsr_loose; /* snx_ir_fpsr_flags(0)'s */
     int volatile_memory; /* snx_ir_volatile_memory's */
     int abi_contract; /* snx_ir_abi_contract's */
+    int write_marks;  /* snx_ir_write_marks's */
     int mips_tail_calls; /* snx_ir_init's, of LLVM's MIPS tail calls */
     int stats, dump;     /* snx_ir_diagnostics's: ir_stats, and whether ir_dump_pc names a function */
     SnxU64 dump_pc;
@@ -124,6 +125,8 @@ int snx_ir_fpsr_exact(void) { return !g_ir.fpsr_loose; }
 void snx_ir_volatile_memory(int on) { g_ir.volatile_memory = on != 0; }
 void snx_ir_abi_contract(int on) { g_ir.abi_contract = on != 0; }
 int snx_ir_abi_contract_on(void) { return g_ir.abi_contract; }
+void snx_ir_write_marks(int on) { g_ir.write_marks = on < 0 ? 0 : on > 2 ? 2 : on; }
+int snx_ir_write_marks_on(void) { return g_ir.write_marks; }
 void snx_ir_diagnostics(int stats, const char* dump_pc) {
     char* end = NULL;
     g_ir.stats = stats != 0;

@@ -14,8 +14,31 @@
 #define DELETE 0x200u
 #define NPOS   (~0ull)
 
-static u8 g_guest[0x40000];
+static u8 g_guest[0x40000], g_before[0x40000];
 static u64 g_heap = 0x20000;
+/* memory/mem.c's write marks: the ranges the handler of the last call() said it wrote */
+static struct {
+    u64 a, size;
+} g_marked[16];
+static int g_nmarked;
+void mem_wrote(u64 a, u64 size) {
+    if (!size) return;
+    assert(g_nmarked < 16);
+    g_marked[g_nmarked].a = a;
+    g_marked[g_nmarked++].size = size;
+}
+#define INPUT 0x3000u /* where the test puts a handler's source: its own writes, not the handler's */
+/* each byte the handler changed is in a range it said it wrote */
+static void all_marked(void) {
+    for (u64 i = 0; i < sizeof g_guest; i++) {
+        int in = g_guest[i] == g_before[i] || (i >= INPUT && i < INPUT + 0x200);
+        for (int k = 0; k < g_nmarked && !in; k++) in = i - g_marked[k].a < g_marked[k].size;
+        if (in) continue;
+        fprintf(stderr, "the handler wrote byte %#llx and said nothing of it (%d ranges)\n", (unsigned long long)i,
+                g_nmarked);
+        assert(0);
+    }
+}
 static int g_news, g_deletes, g_own;
 static u64 g_deleted;
 
@@ -51,6 +74,7 @@ static u64 put(u64 a, const char* s) {
 /* the string at self: its size, its characters and whether they are long, as the game's inlined code reads them */
 static void expect(u64 self, const char* want, int is_long) {
     u8* r = g_guest + self;
+    all_marked();
     size_t n = strlen(want);
     assert((r[0] & 1) == is_long);
     if (is_long) {
@@ -66,6 +90,8 @@ static u64 data_of(u64 self) { return g_guest[self] & 1 ? snx_ld_le64(g_guest + 
 static void call(void) {
     c->pc = 0x4000;
     c->x[1] = 0x1111;
+    memcpy(g_before, g_guest, sizeof g_guest);
+    g_nmarked = 0;
 }
 
 int main(void) {
@@ -153,7 +179,9 @@ int main(void) {
     assert(string_compare_sub_sub(c, s, 4, 5, u, 0, NPOS) == 0);
     /* at, copy out */
     assert(string_at(c, u, 1) == data_of(u) + 1);
-    assert(string_copy_out(c, s, 0x3100, 100, 40) == 3 && !memcmp(g_guest + 0x3100, "dog", 3));
+    call(), assert(string_copy_out(c, s, 0x3400, 100, 40) == 3 && !memcmp(g_guest + 0x3400, "dog", 3));
+    all_marked();
+    assert(g_nmarked == 1 && g_marked[0].a == 0x3400 && g_marked[0].size == 3); /* no byte past what it wrote */
     /* what would throw: the function's own code, with the string as it was */
     call(), assert(string_at(c, u, 5) == 0x777 && g_own == 1);
     call(), assert(string_erase(c, u, 6, 1) == 0x777 && g_own == 2);
@@ -170,8 +198,11 @@ int main(void) {
     call(), string_grow_by_and_replace(c, t, 22, 10, 10, 2, 3, 4, put(0x3000, "WXYZ"));
     expect(t, "abWXYZfghij", 1);
     call(), string_grow_by(c, t, 47, 50, 11, 2, 0, 1);
+    all_marked();
+    memcpy(g_before, g_guest, sizeof g_guest); /* what follows is the caller's writing */
     snx_st_le64(g_guest + t + 8, 12);
     g_guest[data_of(t) + 2] = '+', g_guest[data_of(t) + 12] = 0;
+    memcpy(g_before, g_guest, sizeof g_guest);
     expect(t, "ab+WXYZfghij", 1);
     puts("PASS std::string's hooks on libc++'s layout");
     return 0;

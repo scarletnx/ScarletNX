@@ -672,6 +672,7 @@ static int llvm_unit(Queue* q, size_t index, char* error, size_t error_size) {
     if (q->r->x64 && !q->r->keep_ir && u->last > u->first) {
         /* the x86-64 back end first: LLVM makes only what it can't (and all of it where the IR is to be kept) */
         SnxNativeOptions options = {0};
+        options.write_marks = snx_ir_write_marks_on();
         options.llvm_at = snx_ir_dump_pc();
         options.refused = &u->x64_refused;
         options.without = q->r->without;

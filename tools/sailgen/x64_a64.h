@@ -396,6 +396,7 @@ static inline int sgx_address_reg(const SgX* x, int pair) { return !SGX_WIN64(x)
 /* STXR, STLXR, STXP: cpu.h's stx and stxp inline (SGX_M_STX, SGX_M_STXP: LOCK CMPXCHG, CMPXCHG16B) */
 static inline void sg_GuestStoreExclusive(SgCtx* g, SgD address, long long size, SgD value) {
     SgD in[4];
+    sgx_marks_flush(g);
     in[0] = sgx_val(64, sgx_mem(g));
     in[1] = address;
     if (size == 16) {
@@ -409,17 +410,23 @@ static inline void sg_GuestStoreExclusive(SgCtx* g, SgD address, long long size,
         g->status = sgx_mach(g, SGX_M_STX, in, fix, 3, sgx_log2(size), 1u << SGX_RCX, 1, 32).v;
     }
     sgx(g)->v[g->status].zab = 1;
+    sgx_mark_atomic(g, address, (unsigned)size);
 }
 /* the LSE atomics: LOCK XADD, XCHG, a LOCK CMPXCHG loop for the others (SGX_M_RMW) */
 static inline SgD sgx_rmw(SgCtx* g, int op, SgD address, SgD v) {
     const signed char fix[3] = {SGX_R10, (signed char)sgx_address_reg(sgx(g), 0), SGX_RDX};
     unsigned w = v.w;
-    SgD in[3];
+    SgD in[3], old;
+    sgx_marks_flush(g);
     in[0] = sgx_val(64, sgx_mem(g));
     in[1] = address;
     in[2] = sg_d_zext(g, v, 64);
-    return sg_d_slice(g, sgx_mach(g, SGX_M_RMW, in, fix, 3, op << 2 | sgx_log2(w / 8),
-                                  1u << SGX_RCX | 1u << SGX_RDX | 1u << SGX_R11, 1, 64), w - 1, 0);
+    old = sg_d_slice(g,
+                     sgx_mach(g, SGX_M_RMW, in, fix, 3, op << 2 | sgx_log2(w / 8),
+                              1u << SGX_RCX | 1u << SGX_RDX | 1u << SGX_R11, 1, 64),
+                     w - 1, 0);
+    sgx_mark_atomic(g, address, w / 8);
+    return old;
 }
 static inline SgD sg_GuestAtomicAdd(SgCtx* g, SgD a, SgD v) { return sgx_rmw(g, 0, a, v); }
 static inline SgD sg_GuestAtomicAnd(SgCtx* g, SgD a, SgD v) { return sgx_rmw(g, 1, a, v); }
@@ -434,6 +441,7 @@ static inline SgD sg_GuestAtomicSwap(SgCtx* g, SgD a, SgD v) { return sgx_rmw(g,
 static inline SgD sg_GuestCompareSwap(SgCtx* g, SgD address, SgD expected, SgD desired) {
     unsigned w = expected.w;
     SgD in[6];
+    sgx_marks_flush(g);
     in[0] = sgx_val(64, sgx_mem(g));
     in[1] = address;
     if (w == 128) {
@@ -446,13 +454,17 @@ static inline SgD sg_GuestCompareSwap(SgCtx* g, SgD address, SgD expected, SgD d
         in[5] = sg_d_slice(g, desired, 127, 64);
         lo = sgx_mach(g, SGX_M_CASP, in, fix, 6, 0, 1u << SGX_RCX | 1u << SGX_R11, 2, 64);
         i = &sgx(g)->ins[sgx(g)->n - 1];
-        return sg_d_concat(g, sgx_val(64, i->def2), lo);
+        lo = sg_d_concat(g, sgx_val(64, i->def2), lo);
+        sgx_mark_atomic(g, address, 16);
+        return lo;
     }
     {
         const signed char fix[4] = {SGX_R10, (signed char)sgx_address_reg(sgx(g), 0), SGX_RAX, SGX_RDX};
         in[2] = sg_d_zext(g, expected, 64);
         in[3] = sg_d_zext(g, desired, 64);
-        return sg_d_slice(g, sgx_mach(g, SGX_M_CAS, in, fix, 4, sgx_log2(w / 8), 0, 1, 64), w - 1, 0);
+        SgD old = sg_d_slice(g, sgx_mach(g, SGX_M_CAS, in, fix, 4, sgx_log2(w / 8), 0, 1, 64), w - 1, 0);
+        sgx_mark_atomic(g, address, w / 8);
+        return old;
     }
 }
 

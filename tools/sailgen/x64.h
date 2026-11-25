@@ -100,6 +100,27 @@ static const SgXSel sgx_sel_leai_32[1] = {SGX_LEA_SEL(sgx_enc_lea_ri32, 1)};
 #define sgx_sel_leai_64_n 1u
 #define sgx_sel_leai_32_n 1u
 
+/* MOV r/m8, imm8 (C6 /0 ib), a write mark's store of 1 (mach.h's sgx_mark_page): operand 0 the memory. The manual's page
+   of MOV spells its operation as an assignment of either operand, so this form is written here, as LEA's are */
+static void sgx_enc_markb(SgXBuf* b, const unsigned char* r, long long imm, int cc) {
+    unsigned rex = 0x40 | (r[0] & 15) >> 3 | sgx_rex_x(b, r[0]);
+    (void)cc;
+    if (rex != 0x40) sgx_byte(b, (unsigned char)rex);
+    sgx_byte(b, 0xC6);
+    sgx_modrm(b, 0, r[0]);
+    sgx_byte(b, (unsigned char)imm);
+}
+static const SgXSel sgx_sel_markb = {.enc = sgx_enc_markb,
+                                     .rm = 0,
+                                     .in = {-1, -1, -1, -1},
+                                     .imm = 1,
+                                     .out = 0,
+                                     .fit_kind = '-',
+                                     .flag_of = {-1, -1, -1, -1},
+                                     .cc_of = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1}};
+#define SGX_MARK_IMM  sgx_sel_markb
+#define SGX_MARK_WEAK 0 /* x86's stores are seen in order (Vol. 3A, 10.2.2) */
+
 /* ---- the calling convention ----
    System V's, or where the features say so Microsoft's x64 (SGX_F_WIN64): its arguments in RCX, RDX, R8 and R9, then
    on the stack past 32 bytes the caller leaves its callee (the frame's lowest slots: SGX_SLOT0), RSI, RDI and XMM6 to

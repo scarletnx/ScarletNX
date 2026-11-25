@@ -194,6 +194,13 @@ int plat_trap_init(void (*fault)(u8* p, int write, u32 tid));
 /* size bytes from src written at p, into armed pages that stay armed (their waiters wait on): each run of pages opened
    just before its bytes go in. An in-place landing's (SNX_PLAT_TRAPS_IN_PLACE): 0, or -1, and always -1 elsewhere */
 int plat_trap_fill(u8* p, const void* src, u64 size);
+/* whether a trap holds the reservation's page at p now, without a lock: Windows (its traps' bits); 0 elsewhere, where
+   the written-page tracking skips the owners' pages itself (a mark scan's caller, gpu/vk/buffer.c) */
+int plat_trap_armed(const void* p);
+/* fn(p, size) for each run of pages a trap lets go of, which then read as written to plat_ww_scan, and each page an
+   in-place landing fills (Windows; nothing elsewhere): the write marks' check tells those reports from the CPU's
+   writes (gpu/vk/buffer.c). NULL: none */
+void plat_trap_open_watch(void (*fn)(u8* p, u64 size));
 /* size bytes of the reservation at p copied to dst without faulting: 0, or -1 when some of them can't be read now (a
    trap holds them, or they were given back). Windows, for an in-place landing's pages (gpu/vk/buffer.c); -1
    elsewhere, whose landings are read through the mirror */

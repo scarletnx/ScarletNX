@@ -1540,10 +1540,16 @@ static void run_landed(void* user, u64 at, u8* host, u64 n) {
     for (u64 cpu = (u64)(host - g_mem), end = cpu + n; cpu < end; cpu += 0x1000)
         if (!mem_pool_offset(cpu, &off)) vk_ww_landed(cpu, 0x1000, mirror + off);
 }
+static void run_gpu_wrote(void* user, u64 at, u8* host, u64 n) {
+    (void)user, (void)at;
+    vk_ww_gpu_wrote((u64)(host - g_mem), n);
+}
 static void flush_note_landed(u64 gva, u64 from, u64 to) {
     u64 lo = (gva + from) & ~0xfffull, hi = (gva + to + 0xfff) & ~0xfffull;
     u8* mirror = plat_alias_mirror();
     if (to > from && mirror) span_runs(lo, hi - lo, run_landed, mirror);
+    else if (to > from && g_settings.write_marks_scan == 2)
+        span_runs(lo, hi - lo, run_gpu_wrote, NULL);
 }
 static u32 rt_pending_over(u64 gva, u64 size, Surf** local, u32 nlocal, Surf*** out);
 typedef struct {

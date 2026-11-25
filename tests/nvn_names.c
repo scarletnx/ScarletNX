@@ -305,6 +305,15 @@ void nvn_replay_finish_all(void) {
 /* the writes recorded for the renderer: how many, and the last one's range */
 static u32 g_written;
 static u64 g_written_at, g_written_size;
+/* memory/mem.c's write marks: the range last marked, and how many times one was, for the checks of what marks */
+static u64 g_mark_at, g_mark_size;
+static u32 g_marks;
+int mem_marks_on(void) { return 0; }
+void mem_wrote(u64 a, u64 size) {
+    g_mark_at = a;
+    g_mark_size = size;
+    g_marks++;
+}
 void gpu_mem_written_cpu(u64 cpu, u64 size) {
     g_written++;
     g_written_at = cpu;
@@ -1047,6 +1056,15 @@ static void test_texture(void) {
           "the packaged layout's getter");
     nvn_TextureBuilderSetPackagedTextureLayout(NULL, TEX_B, 0);
     check(!nvn_TextureBuilderGetPackagedTextureLayout(NULL, TEX_B, s + 8) && gr32(s + 8) == 0, "no packaged layout");
+    /* a packaged texture's bytes are copied into its storage, which the GPU reads: the write marks see that copy */
+    for (int i = 0; i < 64; i++) GP(SCRATCH + 0x100)[i] = (u8)(i + 1);
+    nvn_TextureBuilderSetPackagedTextureData(NULL, TEX_B, SCRATCH + 0x100);
+    g_marks = 0;
+    check(nvn_TextureInitialize(NULL, TEX, TEX_B) && g_marks == 1 &&
+              g_mark_at == POOL_MEM + 0x20000 && g_mark_size == NVN_OBJ(NvnTexture, TEX)->size &&
+              GP(POOL_MEM + 0x20000)[63] == 64,
+          "a packaged texture's bytes, copied and marked written");
+    nvn_TextureBuilderSetPackagedTextureData(NULL, TEX_B, 0);
     /* the raw storage classes, by the driver's table */
     check(nvn_TextureGetRawStorageClass(NULL, TEX) == 2, "a color texture: color and ZF32");
     nvn_TextureBuilderSetFormat(NULL, TEX_B, NVN_FORMAT_DEPTH16);

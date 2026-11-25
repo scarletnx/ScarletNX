@@ -28,6 +28,17 @@ u64 g_as_size = AS_MAX; /* the reservation's size, mem.c's, which this test does
 int mem_user_mapped(u64 addr, u64 size) {
     return !size || addr >= FREE_PAGES + 0x10000 || (addr < FREE_PAGES && size <= FREE_PAGES - addr);
 }
+/* memory/mem.c's write marks: the ranges the kernel said a service wrote, in their order */
+static struct {
+    u64 a, size;
+} test_marked[16];
+static u32 test_nmarked;
+void mem_wrote(u64 a, u64 size) {
+    if (!size) return;
+    CHECK(test_nmarked < sizeof test_marked / sizeof *test_marked);
+    test_marked[test_nmarked].a = a;
+    test_marked[test_nmarked++].size = size;
+}
 static int test_log; /* SNX_TEST_LOG=1 prints what ipc.c logs */
 /* single-threaded: the locks only have to be balanced, which the count checks at the end */
 static int test_locks;
@@ -420,6 +431,7 @@ static int test_dispatch(SvcObj* self, IpcCtx* c) {
 #define UBUF 0x2000ull /* a SendSyncRequestWithUserBuffer buffer, 0x1000 bytes */
 static u8* msg(void) { return GP(MSG); }
 static void clear(void) {
+    test_nmarked = 0;
     memset(GP(MSG), 0, 0x100);
     memset(&got, 0, sizeof got);
 }
@@ -1204,6 +1216,42 @@ static void session_closes(void) {
     }
 }
 
+/* the buffers a command may fill are marked written once it ran, each whole, whatever it answered: the receive
+   buffers, the exchange one and the receive list, and none of those it reads, nor with a request no service saw */
+static void marked_buffers(u32 h) {
+    for (u32 cmd = 1; cmd <= 2; cmd++) { /* a command that answers, one that fails after it wrote */
+        clear();
+        CmifRequest r = cmif_make_request(msg(), (CmifRequestFormat){.request_id = cmd,
+                                                                     .data_size = 8,
+                                                                     .num_in_buffers = 1,
+                                                                     .num_out_buffers = 2,
+                                                                     .num_inout_buffers = 1,
+                                                                     .num_in_pointers = 1,
+                                                                     .num_out_fixed_pointers = 1});
+        hipc_buffer(r.hipc.send_buffers, 0x3000, 0x100, 0);
+        hipc_buffer(r.hipc.recv_buffers, 0x10000, 0x2000, 1);
+        hipc_buffer(r.hipc.recv_buffers + 12, 0x20800, 0x801, 1);
+        hipc_buffer(r.hipc.exch_buffers, 0x30000, 0x10, 0);
+        hipc_send_static(r.hipc.send_statics, 0x40000, 0x80, 0);
+        hipc_recv_static(r.hipc.recv_list, 0x50000, 0x80);
+        CHECK(send(h) == 0 && got.calls == 1);
+        CHECK(cmif_parse_response(msg(), 0, 0).result == (cmd == 1 ? 0 : RC_FAIL));
+        CHECK(test_nmarked == 4);
+        CHECK(test_marked[0].a == 0x10000 && test_marked[0].size == 0x2000);
+        CHECK(test_marked[1].a == 0x20800 && test_marked[1].size == 0x801);
+        CHECK(test_marked[2].a == 0x30000 && test_marked[2].size == 0x10);
+        CHECK(test_marked[3].a == 0x50000 && test_marked[3].size == 0x80);
+    }
+    /* an empty buffer is none, and a request the kernel refuses reaches no service */
+    clear();
+    CmifRequest r = cmif_make_request(msg(), (CmifRequestFormat){.request_id = 1, .num_out_buffers = 1});
+    hipc_buffer(r.hipc.recv_buffers, 0, 0, 0);
+    CHECK(send(h) == 0 && got.calls == 1 && test_nmarked == 0);
+    clear();
+    r = cmif_make_request(msg(), (CmifRequestFormat){.request_id = 1, .num_out_buffers = 1});
+    hipc_buffer(r.hipc.recv_buffers, 0x7F00000000ull, 0x100, 0);
+    CHECK(send(h) != 0 && !got.calls && test_nmarked == 0);
+}
 
 int main(void) {
     hle_init();
@@ -1217,6 +1265,7 @@ int main(void) {
     SvcObj* root = test_object("test:p");
     u32 h = session_new(root);
     plain_requests(h, root);
+    marked_buffers(h);
     counters(h);
     ring_entries(h);
     plain_refusals(h);

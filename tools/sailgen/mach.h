@@ -29,6 +29,11 @@
 #ifndef SGX_HAS_VREGS
 #define SGX_HAS_VREGS 1
 #endif
+/* a machine whose stores of one thread another may see in another order, and whose mark (sgx_mark_page) is no
+   store-release: a store barrier before the marks (x64.h's and arm64.h's say 0) */
+#ifndef SGX_MARK_WEAK
+#define SGX_MARK_WEAK 1
+#endif
 #ifndef SGX_FP_HELPERS
 #define SGX_FP_HELPERS 0 /* mach_a64.h's exact helpers for all the floating point, not the machine's own code */
 #endif
@@ -174,6 +179,12 @@ typedef struct {
 } SgD;
 
 #define SGX_MAXI 4096
+/* the write marks' tables of a region: the stores' bases it keeps apart, the marks' distance below the guest's memory
+   (cpu.h's SNX_WMARK_BELOW, which mach_a64.h holds to it) and how many bytes of one base are marked together (two
+   marks, of the first and the last page: what more a wider range would have pages between) */
+#define SGX_MARKS       8
+#define SGX_WMARK_BELOW (1ll << 27)
+#define SGX_MARK_SPAN   4096
 #define SGX_STATE_WORDS 1024 /* the state's 4-byte words dead-store elimination tracks (CPU's first 4 KiB) */
 /* the guest's (x64_a64.h's): the state's words masks of dead registers and flags (dead) and V registers (vdead) name,
    at most 200 of them, into words[]; their count */
@@ -203,6 +214,9 @@ typedef struct {
     SgD dw[SGX_IDW], carry; /* ADD's and SUB's carry (borrow) out of the first, 0 or 1 of 64 bits */
 } SgXInt;
 
+typedef struct {
+    unsigned long long stores, stack, made; /* seen, off the stack pointer left unmarked, marks made */
+} SgXMarkCounts;
 typedef struct {
     SgXIns ins[SGX_MAXI];
     int n;
@@ -236,6 +250,15 @@ typedef struct {
     unsigned char vlive[SGX_MAXV + 1], flive[SGX_MAXI + 1];
     unsigned stamp[SGX_STATE_WORDS], now;
     int next_call[SGX_MAXI + 1]; /* sgx_assemble_region's (SgXAsm's) */
+    /* the write marks (sgx_mark's, below): what they mark (0 no store's, 1 every guest store's but the stack's, 2 the
+       stack's too), the region's stores not marked yet, and what was seen and made (the counts) */
+    int marks, nmark;
+    struct SgXMark {
+        int m, base;      /* CPU.mem's register, and the address's base: the value the stores' address adds constants
+                              to, 0 for a constant address */
+        long long lo, hi; /* the bytes [lo, hi) from it */
+    } mark[SGX_MARKS];
+    SgXMarkCounts counts;
 } SgX;
 
 typedef int SgB;
@@ -1141,6 +1164,227 @@ static inline SgD sg_d_lsl(SgCtx* g, SgD a, long long n) { return sgx_shift_i(g,
 static inline SgD sg_d_lsr(SgCtx* g, SgD a, long long n) { return sgx_shift_i(g, 1, a, n); }
 static inline SgD sg_d_asr(SgCtx* g, SgD a, long long n) { return sgx_shift_i(g, 2, a, n); }
 static inline SgD sg_d_ror(SgCtx* g, SgD a, long long n) { return sgx_shift_i(g, 3, a, n); }
+
+/* ---- the write marks ----
+   A module made with the setting write_marks marks the pages its guest stores write: a store of 1 into each page's byte
+   of the SGX_WMARK_BELOW bytes just below the guest's memory (cpu.h), so the runtime finds the pages the game wrote by
+   reading those bytes in place of asking the host (memory/mem.c's mem_marks_scan).
+
+   Every guest store of every machine goes through sgx_mark (sgx_store, the SIMD&FP stores, DC ZVA and the exclusive and
+   atomic stores of mach_a64.h and mach_codegen.inc; mach_a32.h's of AArch32), which only notes it: the base its address
+   adds constants to and the bytes from it. The stores of one base are one group of at most SGX_MARK_SPAN bytes, marked
+   at its first and its last page, its marks made by sgx_marks_flush: after the group's stores and before anything that
+   can make them visible to another thread first (a call, a barrier, an atomic or exclusive access, a store-release, a
+   branch, the region's end). A store is visible no later than its mark: on x86-64 by its ordering, elsewhere by
+   the mark being a store-release (SGX_MARK_STLR) or following a store barrier (sgx_mark_order). The runtime clears a
+   mark before it reads the page, so it never keeps a page from before a store whose mark it took.
+
+   A store whose base is the stack pointer is not marked (marks 1): a thread's stack is no memory the GPU reads. A
+   constant address is marked at the pages it is in, two where the bytes cross a page, else one, with no shift */
+
+/* 1 where v is the stack pointer as the region read it: the guest's part defines it */
+static inline int sgx_is_sp(SgCtx* g, int v);
+/* the marks made here are not seen before the stores before them, where the machine may show one thread's stores in
+   another order (SGX_MARK_WEAK): the guest's part defines it */
+static inline void sgx_mark_order(SgCtx* g);
+
+/* the value v adds a constant to (*k of 64 bits): an addition made by an operation of width w with a constant (SGX_C_ADD),
+   or by ADDS's or SUBS's form of it; 0 where v is none */
+static inline int sgx_mark_step(const SgX* x, int v, unsigned w, SnxU64* k) {
+    const SgXV* p = &x->v[v];
+    if (p->op == SGX_C_ADD && p->cw == w && p->src) {
+        *k = p->k;
+        return p->src;
+    }
+    if (p->def >= 0 && p->def < x->n) {
+        const SgXIns* i = &x->ins[p->def];
+        if (i->kind == SGX_K_SEL && i->cadd && i->w == w && i->def == v && i->in[0]) {
+            *k = (SnxU64)i->cadd_k;
+            return i->in[0];
+        }
+    }
+    return 0;
+}
+/* v's address's base, through the additions of constants that made it (*at is their sum): the value, 0 for a constant
+   address. Only a 64-bit sum is the address's own */
+static inline int sgx_mark_root(SgX* x, SgD address, long long* at) {
+    int v, depth, next;
+    SnxU64 k;
+    *at = 0;
+    if (sgx_is_const(&address)) {
+        *at = (long long)address.k;
+        return 0;
+    }
+    v = sgx_reg(x, &address);
+    for (depth = 0; depth < 16 && (next = sgx_mark_step(x, v, 64, &k)) != 0; ++depth) {
+        *at = (long long)((SnxU64)*at + k);
+        v = next;
+    }
+    return v;
+}
+/* 1 where the address is the stack pointer's and a constant: the chain of additions of constants (of either width, an
+   AArch32 address's are of 32 bits) from it */
+static inline int sgx_mark_stack(SgCtx* g, int v) {
+    SgX* x = sgx(g);
+    int depth, next;
+    SnxU64 k;
+    for (depth = 0; v && depth < 16; ++depth) {
+        if (sgx_is_sp(g, v)) return 1;
+        next = sgx_mark_step(x, v, 64, &k);
+        if (!next) next = sgx_mark_step(x, v, 32, &k);
+        v = next;
+    }
+    return 0;
+}
+
+/* what a flush's marks share: the marks' base (CPU.mem less SGX_WMARK_BELOW), the byte 1 and the shift's 12, each made
+   where a form reads it as a register */
+typedef struct {
+    int base, one, twelve;
+} SgXMarks;
+/* the index of address's page, its bits 12 up: a shift that leaves the flags where something may read them */
+static inline SgD sgx_mark_shift(SgCtx* g, SgXMarks* e, SgD a) {
+    SgX* x = sgx(g);
+    const SgXSel* s = sgx_pick(x, SGX_TABLE(lsr_i, 64), SGX_TABLE_N(lsr_i, 64), 12, 64, 0);
+    if (s && !s->flags) return sgx_val(64, sgx_emit(x, s, (SgD[]){a, sgx_const(6, 12)}, 2, 64, 0, -1));
+    if (x->flags_ins >= 0) {
+        s = sgx_pick(x, SGX_TABLE(lsrv, 64), SGX_TABLE_N(lsrv, 64), 0, 64, 1);
+        if (s) {
+            if (!e->twelve) e->twelve = sgx_movi(x, 12);
+            return sgx_val(64, sgx_emit(x, s, (SgD[]){a, sgx_val(64, e->twelve)}, 2, 64, 0, -1));
+        }
+    }
+    return SGX_OP(x, lsr_i, 64, a, sgx_const(6, 12));
+}
+/* a store of 1 into the mark at m less SGX_WMARK_BELOW plus index (a value of 64 bits, or a constant): SGX_MARK_IMM's form
+   (x86-64's MOV r/m8, imm8 at [m + index - SGX_WMARK_BELOW]), SGX_MARK_STLR's (arm64's: a store-release at the address,
+   SGX_MARK_INDEXED's sum, of address rather than its page's index), else the byte store of 1 in a register */
+static inline int sgx_mark_base(SgCtx* g, SgXMarks* e, int m) {
+    if (!e->base) {
+        SgD b = sg_d_add_int(g, sgx_val(64, m), -SGX_WMARK_BELOW);
+        e->base = sgx_reg(sgx(g), &b);
+    }
+    return e->base;
+}
+/* the mark's form s, its memory [base + index + disp], its value's register (0: s's own immediate) */
+static inline void sgx_mark_emit(SgX* x, const SgXSel* s, int value, int base, int index, int disp) {
+    SgXIns* i = sgx_append(x, SGX_K_SEL);
+    i->sel = i->fsel = s;
+    i->w = 32;
+    i->mplace = s->out;
+    i->imm = 1;
+    i->in[0] = value;
+    i->in[5] = base;
+    i->in[6] = index;
+    i->mdisp = disp;
+    i->side = 1;
+}
+static inline void sgx_mark_page(SgCtx* g, SgXMarks* e, int m, SgD address) {
+    SgX* x = sgx(g);
+    int known = sgx_is_const(&address);
+    /* past the marks, no guest page: the store faults before its mark */
+    if (known && address.k >> 12 >= (SnxU64)SGX_WMARK_BELOW) return;
+    ++x->counts.made;
+#if defined(SGX_MARK_IMM)
+    {
+        SgD index;
+        (void)e;
+        if (known) {
+            sgx_mark_emit(x, &SGX_MARK_IMM, 0, m, 0, (int)((long long)(address.k >> 12) - SGX_WMARK_BELOW));
+            return;
+        }
+        index = sgx_mark_shift(g, e, address);
+        sgx_mark_emit(x, &SGX_MARK_IMM, 0, m, sgx_reg(x, &index), (int)-SGX_WMARK_BELOW);
+    }
+#elif defined(SGX_MARK_STLR)
+    {
+        int b = sgx_mark_base(g, e, m);
+        SgD at;
+        if (!e->one) e->one = sgx_movi(x, 1);
+        at = known ? sg_d_add_int(g, sgx_val(64, b), (long long)(address.k >> 12)) : SGX_MARK_INDEXED(x, b, address);
+        sgx_mark_emit(x, &SGX_MARK_STLR, e->one, sgx_reg(x, &at), 0, 0);
+    }
+#else
+    {
+        const SgXSel* s = NULL;
+        unsigned k;
+        int b = sgx_mark_base(g, e, m);
+        for (k = 0; k < sgx_sel_mov_8_n && !s; ++k)
+            if (sgx_sel_mov_8[k].rm >= 0 && !sgx_sel_mov_8[k].feature && sgx_sel_mov_8[k].out == sgx_sel_mov_8[k].rm)
+                s = &sgx_sel_mov_8[k];
+        if (!s) sg_fail("no form of a byte store", 0, 0);
+        if (!e->one) e->one = sgx_movi(x, 1);
+        if (known) {
+            SgD at = sg_d_add_int(g, sgx_val(64, b), (long long)(address.k >> 12));
+            sgx_mark_emit(x, s, e->one, sgx_reg(x, &at), 0, 0);
+        } else {
+            SgD index = sgx_mark_shift(g, e, address);
+            sgx_mark_emit(x, s, e->one, b, sgx_reg(x, &index), 0);
+        }
+    }
+#endif
+}
+
+/* the marks of the region's stores so far, here */
+static inline void sgx_marks_flush(SgCtx* g) {
+    SgX* x = sgx(g);
+    struct SgXMark mark[SGX_MARKS];
+    SgXMarks e = {0, 0, 0};
+    int n = x->nmark, k;
+    if (!n) return;
+    memcpy(mark, x->mark, (size_t)n * sizeof mark[0]);
+    x->nmark = 0;
+    sgx_mark_order(g);
+    for (k = 0; k < n; ++k) {
+        SgD base = mark[k].base ? sgx_val(64, mark[k].base) : sgx_const(64, 0);
+        sgx_mark_page(g, &e, mark[k].m, sg_d_add_int(g, base, mark[k].lo));
+        if (mark[k].hi - mark[k].lo > 1) {
+            SgD last = sg_d_add_int(g, base, mark[k].hi - 1);
+            /* a constant address whose bytes are one page's: marked once */
+            if (!sgx_is_const(&last) || (last.k >> 12) != ((SnxU64)mark[k].lo >> 12))
+                sgx_mark_page(g, &e, mark[k].m, last);
+        }
+    }
+}
+/* a guest store of bytes at address (+ disp), just made: noted with its group (m CPU.mem's register). The group's marks
+   are made here where it would be too wide or there are more bases than the region keeps apart */
+static inline void sgx_mark(SgCtx* g, int m, SgD address, long long disp, unsigned bytes) {
+    SgX* x = sgx(g);
+    struct SgXMark* p = NULL;
+    long long at;
+    int base, k;
+    if (!x->marks) return;
+    ++x->counts.stores;
+    base = sgx_mark_root(x, address, &at);
+    at = (long long)((SnxU64)at + (SnxU64)disp);
+    if (x->marks < 2 && sgx_mark_stack(g, base)) {
+        ++x->counts.stack;
+        return;
+    }
+    if (at > (1ll << 40) || at < -(1ll << 40)) {
+        /* a far offset (the high bits of an address the guest made by adding a constant) is a base of its own */
+        SgD v = sg_d_add_int(g, base ? sgx_val(64, base) : sgx_const(64, 0), at);
+        base = sgx_is_const(&v) ? 0 : sgx_reg(x, &v);
+        at = base ? 0 : (long long)v.k;
+    }
+    for (k = 0; k < x->nmark && !p; ++k)
+        if (x->mark[k].base == base) p = &x->mark[k];
+    if (p) {
+        long long lo = at < p->lo ? at : p->lo, hi = at + (long long)bytes > p->hi ? at + (long long)bytes : p->hi;
+        if (hi - lo <= SGX_MARK_SPAN) {
+            p->lo = lo;
+            p->hi = hi;
+            return;
+        }
+        /* too wide for two marks: the groups so far are marked, and this one starts again */
+        sgx_marks_flush(g);
+    } else if (x->nmark == SGX_MARKS)
+        sgx_marks_flush(g);
+    x->mark[x->nmark].m = m;
+    x->mark[x->nmark].base = base;
+    x->mark[x->nmark].lo = at;
+    x->mark[x->nmark++].hi = at + (long long)bytes;
+}
 
 /* LSLV, LSRV, ASRV, RORV: the amount UInt(operand2) MOD datasize, which the x86 forms selected for them take as it
    is (their count mask, the selection proved, is that MOD) */

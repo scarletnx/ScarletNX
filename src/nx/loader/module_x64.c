@@ -136,6 +136,18 @@ static size_t fn_begin(SnxXElf* o, const char* name, int flags) {
     snx_xelf_symbol(o, name, SNX_ELF_TEXT, at, 0, flags | SNX_ELF_FUNC);
     return at;
 }
+static void returns(SnxXElf* o, const char* name, const char* sym);
+/* snx_write_marks(): the setting write_marks the module's code was made with, where it was (module_abi.h) */
+static void write_marks(SnxXElf* o, const SnxCodegenOptions* options) {
+    SnxWriteMarks made;
+    size_t at;
+    if (!options->write_marks) return;
+    made.version = SNX_WRITE_MARKS_VERSION;
+    made.level = (u32)options->write_marks;
+    at = snx_xelf_put(o, SNX_ELF_RODATA, &made, sizeof made, 4);
+    snx_xelf_symbol(o, "WRITE_MARKS", SNX_ELF_RODATA, at, sizeof made, SNX_ELF_LOCAL);
+    returns(o, "snx_write_marks", "WRITE_MARKS");
+}
 /* const T* f(void) { return &sym; } */
 static void returns(SnxXElf* o, const char* name, const char* sym) {
     if (g_desc) {
@@ -594,6 +606,7 @@ int snx_x64_descriptor_for(const SnxNativeDesc* desc, const SnxCodegen* codegen,
         ptr(o, SNX_ELF_RELRO, at + offsetof(SnxRoutes, names), "ROUTE_NAMES");
         returns(o, "snx_routes", "ROUTES");
     }
+    write_marks(o, options);
     /* snx_nros(): where the NROs the program maps go */
     if (options->nro_count) {
         SnxNros nros;
@@ -732,6 +745,7 @@ int snx_x64_arm_descriptor_for(const SnxNativeDesc* desc, const SnxProgram* load
         ptr(o, SNX_ELF_RELRO, at + offsetof(SnxArmModule, title), "TITLE");
         ptr(o, SNX_ELF_RELRO, at + offsetof(SnxArmModule, poll_offset), "snx_arm_poll_offset");
     }
+    write_marks(o, options);
     returns(o, "snx_module_arm", "MOD");
     return desc_write(o, object, size, error, error_size);
 }

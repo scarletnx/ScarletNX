@@ -805,6 +805,7 @@ static void reserved_samplers(u64 sp) {
         par.anisotropy = (f32)(i + 1);
         nvn_tsc_encode(&par, tsc);
         memcpy(GP(memory + p->offset + i * NVN_DESCRIPTOR_SIZE), tsc, sizeof tsc);
+        mem_wrote(memory + p->offset + i * NVN_DESCRIPTOR_SIZE, sizeof tsc); /* the GPU reads it: write marks */
     }
 }
 int nvn_SamplerPoolInitialize(CPU* c, u64 sp, u64 pool, i64 offset, i32 count) {
@@ -851,6 +852,7 @@ static void texture_write(u64 slot, const u32 tic[8]) {
     nvn_replay_finish_all();
     kthread_host_wait_end();
     memcpy(GP(slot), tic, NVN_DESCRIPTOR_SIZE); /* guest memory: every byte the game sees */
+    mem_wrote(slot, NVN_DESCRIPTOR_SIZE); /* the texture cache reads the descriptor: a write the write marks must see */
     gpu_mem_written_cpu(slot, NVN_DESCRIPTOR_SIZE);
 }
 /* an image's descriptor is in the texture pool's ID space too (nvnDeviceGetImageHandle is the ID) */
@@ -891,6 +893,7 @@ static void sampler_write(u64 slot, const u32 tsc[8]) {
     nvn_replay_finish_all();
     kthread_host_wait_end();
     memcpy(GP(slot), tsc, NVN_DESCRIPTOR_SIZE);
+    mem_wrote(slot, NVN_DESCRIPTOR_SIZE);
     gpu_mem_written_cpu(slot, NVN_DESCRIPTOR_SIZE);
 }
 void nvn_SamplerPoolRegisterSampler(CPU* c, u64 sp, i32 id, u64 s) {
@@ -1122,7 +1125,10 @@ int nvn_TextureInitialize(CPU* c, u64 t, u64 b) {
                   o.d.height);
     /* a whole range, guest to guest, as the driver's own copy: bytes already in the texture's layout, nothing
        converted, before any submission can read the texture */
-    if (s->packaged_data && o.memory && o.size) memmove(GP(o.memory), GP(s->packaged_data), (size_t)o.size);
+    if (s->packaged_data && o.memory && o.size) {
+        memmove(GP(o.memory), GP(s->packaged_data), (size_t)o.size);
+        mem_wrote(o.memory, o.size); /* the texture cache reads these bytes: the write marks must see them */
+    }
     memcpy(GP(t), &o, sizeof o);
     /* a live texture at that address (gpu/guest_textures.c), until nvn_TextureFinalize: the renderer's texture cache
        measures what it holds for none. A texture with no storage has no address */
@@ -2559,6 +2565,7 @@ void nvn_EventSignal(CPU* c, u64 e, i32 mode, u32 value) {
     gpu_cpu_signal(); /* a stream's wait on the event takes in what the CPU wrote before (nvn_replay.c) */
     atomic_thread_fence(memory_order_release);
     gw32(a, mode == NVN_EVENT_SIGNAL_MODE_ADD ? gr32(a) + value : value);
+    mem_wrote(a, 4); /* the GPU reads the event's word: the write marks must see it */
     gpu_kick();
 }
 u64 nvn_EventBuilderGetMemoryPool(CPU* c, u64 b) {

@@ -77,6 +77,7 @@ struct MG_ARM {
     size_t nmade, cap_made;
     unsigned features;
     int pool;
+    int marks; /* the next blocks' write marks (MG_ARM_API(marks)) */
     const char* why;
     int big;    /* the block being made has 32-bit frame sizes, or a page's probe (frame) */
     size_t own; /* its entry past the checks, from its start (prologue) */
@@ -113,6 +114,14 @@ int MG_ARM_API(options)(MG_ARM* c, const SnxArmCodegenOptions* options) {
     else
         c->options.options.abi = SNX_ARM_CODEGEN_OPTIONS_ABI;
     return 0;
+}
+void MG_ARM_API(marks)(MG_ARM* c, int write_marks) { c->marks = write_marks; }
+void MG_ARM_API(mark_counts)(MG_ARM* c, unsigned long long* stores, unsigned long long* stack,
+                             unsigned long long* made) {
+    *stores = c->g.x.counts.stores;
+    *stack = c->g.x.counts.stack;
+    *made = c->g.x.counts.made;
+    c->g.x.counts = (SgXMarkCounts){0, 0, 0};
 }
 void MG_ARM_API(free)(MG_ARM* c) {
     if (!c) return;
@@ -259,6 +268,7 @@ static void mg_entry_exit_fn(SnxXElf* o);
 /* the region so far assembled (what its fields wrote stored first), and what the block knows forgotten */
 static void flush(MG_ARM* c) {
     SgCtx* g = &c->g;
+    sgx_marks_flush(g); /* the region's stores marked before control leaves it */
     sg_flags_flush(g);
     if (g->x.n) sgx_assemble_region(&c->a, &g->x);
     for (int k = 0; k < 15; ++k) g->gpr[k] = 0;
@@ -597,6 +607,7 @@ static void exclusive(SgCtx* g) {
         i->mclobber = SGX_A32_STREX_CLOBBER;
         i->side = 1;
         i->def = sgx_vreg(x, x->n - 1, 32);
+        if (x->marks) sgx_mark(g, regs[2], in[0], 0, bytes);
         sg_GPR_write(g, d, sgx_val(32, i->def));
     }
 }
@@ -2102,6 +2113,9 @@ static size_t block(MG_ARM* c, const unsigned char* code, size_t count, SnxU32 p
     x->base = SGX_BASE;
     x->pool = c->pool;
     x->unmade = 0;
+    /* flat memory alone: what another mode's accesses are (a bus hook's, a callback's) is their runtime's to say */
+    x->marks = g->memory == SNX_ARM_MEMORY_FLAT && !sgx_a32_legacy(g) ? c->marks : 0;
+    x->nmark = 0;
     g->pending = 0;
     g->origin = -1;
     g->skip = -1;
@@ -2255,11 +2269,14 @@ static int make(MG_ARM* c, const char* name, const unsigned char* code, size_t c
         return 0;
     }
     c->big = 0;
+    const SgXMarkCounts counts = c->g.x.counts; /* a block made again is counted once, a refused one not at all */
     size_t size;
     for (;;) {
+        c->g.x.counts = counts;
         size = block(c, code, count, pc, thumb, consumed, next, user);
         if (size == (size_t)-1) continue; /* its frame passes an 8-bit immediate: made again with 32-bit ones */
         if (!size) {
+            c->g.x.counts = counts;
             c->why = t_mach_arm.why ? t_mach_arm.why : "unknown";
             *consumed = 0;
             return 0;

@@ -9,8 +9,10 @@
    one case (VRSHL's witness, below): the same words consumed, and the same results from the same random states.
      snx-test-arm-x64 [--profile a57|a9|arm11|arm946e|arm7tdmi] [--memory flat|hosted|checked] [--trace] [--blocks N]
          [--thumb N] [--states N] [--pool N] [--features MASK] [--seed N] [--word HEX]... [--halves HEX[,HEX]...]
-         [--dump] [--step]
-   --step (Windows' blocks): the stack unwound by the objects' function table at every instruction of the blocks. Each
+         [--dump] [--step] [--marks N]
+   --marks N (flat memory, the Cortex-A57's): the native blocks make the write marks (cpu.h's SNX_WMARK_BELOW), N 1 or 2: each
+   page of memory a run of one changed is marked, and no page it did not, but for a block with an exclusive store (which
+   marks where it fails). --step (Windows' blocks): the stack unwound by the objects' function table at every instruction of the blocks. Each
    block is words drawn from the A32 instructions the back end makes (data processing, branches, the loads and
    stores of every kind, the multiplies and divides, the bit operations, MRS and MSR, the exclusives and acquire and
    release, the barriers and hints, SVC, BKPT, the coprocessor's and UNDEFINED, ARMv6's and ARMv7's DSP and media
@@ -155,6 +157,7 @@ typedef uint64_t u64;
 
 #define PC        0x1000u /* the blocks' address */
 #define MEM_SIZE  0x10000u
+#define BELOW     ((size_t)1 << 27) /* the marks' room below the memory, where --marks */
 #define CHUNK     256
 #define MAX_WORDS 48
 #define MAX_HALF  16 /* halfwords of a Thumb block */
@@ -185,6 +188,9 @@ static struct {
     size_t fp_calls[256], fp_hot_calls;
     SnxArmCodegenOptions options; /* --profile, --memory and --trace */
     int windowed;                 /* the runs' memory is the windows' */
+    int marks;                    /* --marks: the native blocks make the write marks (1 or 2) */
+    unsigned char* below[2];      /* each side's memory with the marks below it, where --marks */
+    unsigned char pre[MEM_SIZE];  /* and the memory as it was before the runs */
     unsigned char *window[2], *view[2],
         *pristine;                      /* each side's window and the memory it mirrors; what both start from */
     size_t hooked, transfers;           /* the hook's calls and checked memory's, LLVM's side's */
@@ -882,6 +888,34 @@ static void block_text(const Block* b, char* out, size_t size) {
                                b->thumb ? b->half[i] : b->words[i]);
 }
 
+/* --marks: what is wrong with a native run's marks (after the run memory is after, the marks of its pages at marks), or
+   NULL: a page the run changed is marked; a page it did not is not, but for a block that may store what was there (a
+   byte's or a halfword's is, one time in 256 or so) or of an exclusive store, which marks where it fails. A Thumb
+   block's, whose narrow stores are not decoded here, has the first alone */
+static const char* marks_wrong(const Block* b, const unsigned char* after, const unsigned char* marks) {
+    static _Thread_local char why[96];
+    int lenient = b->thumb;
+    if (legacy()) { /* a profile whose memory is not the console's with the marks below it: none is made */
+        for (unsigned p = 0; p < MEM_SIZE >> 12; ++p)
+            if (marks[p]) return snprintf(why, sizeof why, "a profile without marks marked page %u", p), why;
+        return NULL;
+    }
+    for (size_t i = 0; i < b->n && !lenient; ++i) {
+        const uint32_t w = b->words[i];
+        lenient = (w & 0x0F800EF0u) == 0x01800E90u || (w & 0x0C500000u) == 0x04400000u || /* exclusives; STRB */
+                  (w & 0x0E1000F0u) == 0x000000B0u || (w & 0x0F000000u) == 0x04000000u || /* STRH; VST1 and its like */
+                  (w & 0x0FB00FF0u) == 0x01000090u;                                       /* SWP */
+    }
+    for (unsigned p = 0; p < MEM_SIZE >> 12; ++p) {
+        int changed = memcmp(g_test.pre + p * 4096u, after + p * 4096u, 4096) != 0;
+        if ((changed && !marks[p]) || (!changed && marks[p] && !lenient) || marks[p] > 1)
+            return snprintf(why, sizeof why, "page %u of guest memory was %s and its mark is %u", p,
+                            changed ? "changed" : "unchanged", marks[p]),
+                   why;
+    }
+    return NULL;
+}
+
 /* the chunk's blocks made by both, loaded and run */
 static int run_chunk(SnxIr* ir, Back* x64, Block* blocks, size_t count) {
     LLVMModuleRef module = LLVMModuleCreateWithNameInContext("llvm", ir->ctx);
@@ -903,6 +937,15 @@ static int run_chunk(SnxIr* ir, Back* x64, Block* blocks, size_t count) {
     RunState* s = (RunState*)malloc(2 * sizeof *s);
 #endif
     int rc = 0;
+    if (g_test.marks) {
+#if defined(SNX_TEST_NATIVE)
+        g_test.below[1] = uc ? (unsigned char*)hostuc_alloc(uc, BELOW + MEM_SIZE) : NULL;
+#else
+        if (!g_test.below[1]) g_test.below[1] = (unsigned char*)calloc(1, BELOW + MEM_SIZE);
+#endif
+        if (!g_test.below[0]) g_test.below[0] = (unsigned char*)calloc(1, BELOW + MEM_SIZE);
+    }
+    if (g_test.marks && (!g_test.below[0] || !g_test.below[1])) s = NULL;
     if (!laddr || !xaddr || !s) {
         fprintf(stderr, "FAIL: out of memory for a chunk of %zu blocks\n", count);
         free(laddr), free(xaddr);
@@ -1002,6 +1045,12 @@ static int run_chunk(SnxIr* ir, Back* x64, Block* blocks, size_t count) {
                 g_test.seed = seed;
                 start(&s[side], k, b->pc);
                 if (b->thumb) s[side].cpu.cpsr |= SNX_ARM_T;
+                if (g_test.marks) { /* the memory, its marks' pages cleared below it */
+                    if (!side) memcpy(g_test.pre, s[side].mem, MEM_SIZE);
+                    memcpy(g_test.below[side] + BELOW, s[side].mem, MEM_SIZE);
+                    memset(g_test.below[side], 0, MEM_SIZE >> 12);
+                    s[side].cpu.mem = g_test.below[side] + BELOW;
+                }
                 if (g_test.callee) s[side].rt = g_test.rt[side], s[side].cpu.rt = &s[side].rt;
                 if (g_test.callee && s[side].cpu.io) s[side].cpu.io = g_test.io[side];
                 s[side].code = code_of(b), s[side].code_size = b->n * (b->thumb ? 2 : 4), s[side].code_pc = b->pc;
@@ -1016,6 +1065,15 @@ static int run_chunk(SnxIr* ir, Back* x64, Block* blocks, size_t count) {
                 }
 #endif
                 run_block(side ? xaddr[i] : laddr[i], &s[side].cpu);
+            }
+            if (g_test.marks) {
+                for (int side = 0; side < 2; ++side) memcpy(s[side].mem, g_test.below[side] + BELOW, MEM_SIZE);
+                why = marks_wrong(b, s[1].mem, g_test.below[1]);
+                if (why) {
+                    block_text(b, text, sizeof text);
+                    fprintf(stderr, "FAIL: [%s] state %u: %s\n", text, k, why);
+                    ++g_test.failures;
+                }
             }
             ++g_test.ran;
             *(legacy() ? &g_test.hooked : &g_test.transfers) += s[0].calls;
@@ -2253,6 +2311,8 @@ int main(int argc, char** argv) {
                 return fprintf(stderr, "--profile %s is not a57, arm11, a9, arm7tdmi or arm946e\n", argv[i + 1]), 2;
             g_test.options.profile = (SnxArmProfile)k;
             ++i;
+        } else if (!strcmp(argv[i], "--marks") && i + 1 < argc) {
+            g_test.marks = atoi(argv[++i]);
         } else if (!strcmp(argv[i], "--memory") && i + 1 < argc) {
             static const char* const names[] = {[SNX_ARM_MEMORY_FLAT] = "flat",
                                                 [SNX_ARM_MEMORY_CHECKED] = "checked",
@@ -2331,11 +2391,13 @@ int main(int argc, char** argv) {
         fprintf(stderr, "FAIL: out of memory for the " BACK_NAME " back end's compiler or the blocks\n");
         return 1;
     }
+    back_(marks)(x64, g_test.marks);
     if (back_(options)(x64, &g_test.options)) {
         fprintf(stderr, "FAIL: the " BACK_NAME " back end takes no such options\n");
         return 1;
     }
-    int plain = g_test.options.profile == SNX_ARM_PROFILE_A57 && g_test.options.memory == SNX_ARM_MEMORY_FLAT;
+    int plain = !g_test.marks && g_test.options.profile == SNX_ARM_PROFILE_A57 &&
+                g_test.options.memory == SNX_ARM_MEMORY_FLAT; /* the witnesses' memory has no marks below it */
 #if defined(SNX_TEST_NATIVE)
     back_(limit)(x64, g_test.pool, g_test.features | ~7u);
     size_t done = 0;
@@ -2356,7 +2418,7 @@ int main(int argc, char** argv) {
     for (int thumb = 0; thumb < 2; ++thumb)
         if (plain && !g_test.nonly && !g_test.nhalves && run_poll_chain(x64, thumb)) ++g_test.failures;
     if (plain && !g_test.nonly && !g_test.nhalves && run_vrshl_witness(x64)) ++g_test.failures;
-    if (!plain && !g_test.nonly && !g_test.nhalves && run_chains(x64)) ++g_test.failures;
+    if (!plain && !g_test.marks && !g_test.nonly && !g_test.nhalves && run_chains(x64)) ++g_test.failures;
 #endif
     if (hosted() && !g_test.nonly && !g_test.nhalves && run_chained(x64)) ++g_test.failures;
     if (plain && !g_test.nonly && !g_test.nhalves && run_thumb_witnesses(ir, x64)) ++g_test.failures;

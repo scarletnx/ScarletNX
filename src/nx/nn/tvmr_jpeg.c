@@ -183,6 +183,11 @@ static Plane plane_at(CPU* c, u64 rm, u32 rows, u32 row_bytes) {
     pl.p = hook_host(c, base + off);
     return pl;
 }
+/* the plane's rows rows of row_bytes bytes are written: the GPU reads the surface, and the write marks must see the
+   runtime's store as the game's own */
+static void plane_wrote(const CPU* c, const Plane* pl, u32 rows, u32 row_bytes) {
+    if (pl->p && rows && row_bytes) mem_wrote((u64)(pl->p - hook_host(c, 0)), (u64)(rows - 1) * pl->pitch + row_bytes);
+}
 
 /* ------------------------------------------------------------ the bitstream */
 /* the count buffers {pointer, u32 bytes} at bufs, one after another: a buffer of the runtime's with their bytes and
@@ -546,6 +551,7 @@ static u32 render(CPU* c, const Abi* a, u64 dec, u64 dst, u8 ds, u32 count, u64 
                 row[4 * x + 3] = (u8)o.alpha;
             }
         }
+        plane_wrote(c, &pl, h, w * 4);
         LOG_LIMIT(1, "tvmr_jpeg: the first picture decoded to RGBA, %lux%lu\n", (unsigned long)w, (unsigned long)h);
     } else
         st = ST_BAD;
@@ -648,11 +654,13 @@ static u32 render_yuv(CPU* c, const Abi* a, u64 dec, u64 dst, u8 ds, u32 count, 
                 q[0] = sample(f, d, 0, x, y);
                 if (!gray) q[1] = sample(f, d, x & 1 ? 2 : 1, x & ~1u, y);
             }
+        plane_wrote(c, &p, h, 2 * cw * 2);
     } else {
         py = plane_at(c, rm[0], h, w);
         if (!py.p) st = ST_BAD;
         for (u32 y = 0; py.p && y < h; y++)
             for (u32 x = 0; x < w; x++) py.p[(size_t)y * py.pitch + x] = sample(f, d, 0, x, y);
+        plane_wrote(c, &py, h, w);
         if (!gray && t.lay == LAY_NV12) {
             Plane p = plane_at(c, rm[1], ch, 2 * cw);
             if (!p.p) st = ST_BAD;
@@ -662,6 +670,7 @@ static u32 render_yuv(CPU* c, const Abi* a, u64 dec, u64 dst, u8 ds, u32 count, 
                     q[0] = sample(f, d, 1, x << t.sub_w, y << t.sub_h);
                     q[1] = sample(f, d, 2, x << t.sub_w, y << t.sub_h);
                 }
+            plane_wrote(c, &p, ch, 2 * cw);
         } else if (!gray) {
             /* NVJPG's second plane (Cb) is the surface's third, its third (Cr) the surface's second */
             Plane pb = plane_at(c, rm[2], ch, cw), pr = plane_at(c, rm[1], ch, cw);
@@ -671,6 +680,8 @@ static u32 render_yuv(CPU* c, const Abi* a, u64 dec, u64 dst, u8 ds, u32 count, 
                     pb.p[(size_t)y * pb.pitch + x] = sample(f, d, 1, x << t.sub_w, y << t.sub_h);
                     pr.p[(size_t)y * pr.pitch + x] = sample(f, d, 2, x << t.sub_w, y << t.sub_h);
                 }
+            plane_wrote(c, &pb, ch, cw);
+            plane_wrote(c, &pr, ch, cw);
         }
     }
     if (!st)

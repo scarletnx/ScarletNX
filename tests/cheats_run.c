@@ -24,6 +24,10 @@ static const SnxModule g_module = {.nmods = 1, .mods = g_mods};
 const SnxModule* g_mod = &g_module;
 
 void logf_(int lvl, const char* fmt, ...) { (void)lvl, (void)fmt; }
+/* memory/mem.c's write marks: the last range a cheat's write was told of, and how many */
+static u64 g_marked, g_marked_size;
+static int g_marks;
+void mem_wrote(u64 a, u64 size) { g_marked = a, g_marked_size = size, g_marks++; }
 /* all of the game's memory is one readable and writable block */
 void mem_query(u64 addr, MemBlock* out) {
     (void)addr;
@@ -50,6 +54,8 @@ int main(void) {
     assert(gr64(MAIN + 0x100) == 0x1111111122222222ull);
     assert(gr64(MAIN + 0x200) == 0); /* half a value is none: nothing written */
     assert(gr64(MAIN + 0x300) == 0x44444444ull);
+    assert(g_marks == 2 && g_marked == MAIN + 0x300 &&
+           g_marked_size == 4); /* the two cheats that wrote, the last's bytes */
     puts("cheats_run: ok");
     return 0;
 }

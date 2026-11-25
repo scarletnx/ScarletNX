@@ -123,6 +123,7 @@ static _Atomic SnxArmBlock* slot(u32 pc, int thumb) {
         if (!g_jit) {
             g_jit = snx_arm_exec_new(error, sizeof error);
             if (!g_jit) fatal("Cannot compile the game's code while it runs: %s", error);
+            snx_arm_exec_marks(g_jit, g_settings.write_marks);
         }
         SnxArmExecRange range = {m.addr, NULL, (size_t)m.size};
         if ((m.perm & PERM_X) && m.state != MS_FREE) b = snx_arm_exec_block(g_jit, &range, 1, pc, thumb, g_mem);

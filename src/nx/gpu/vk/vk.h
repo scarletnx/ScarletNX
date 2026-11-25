@@ -2957,6 +2957,8 @@ void vk_ww_seen(void);                 /* renderer.h mem_seen: the running job's
 void vk_mem_changed(u64 cpu, u64 len); /* gpu.c's g_gpu_mem_changed: the range counts as written */
 /* own.c's landed hook: host pages [cpu, cpu + size) a landing wrote, with their bytes then, whose next report as
    written counts only if those changed */
+/* write marks' check mode: guest pages [cpu, cpu + n) a GPU write-back wrote with no landing noted (buffer.c) */
+void vk_ww_gpu_wrote(u64 cpu, u64 n);
 void vk_ww_landed(u64 cpu, u64 size, const u8* bytes);
 /* own.c's open hook: the pages of a watch in place open by go(ctx), with no report as written but of those whose bytes
    changed as they opened (bytes: their place in their buffer's view) */

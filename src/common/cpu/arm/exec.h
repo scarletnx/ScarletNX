@@ -26,6 +26,9 @@ typedef struct SnxArmExec SnxArmExec;
 SnxArmExec* snx_arm_exec_new(char* error, size_t error_size);
 /* The profile the blocks snx_arm_exec_block compiles from now on are for (A57 until set): the Vita's A9 */
 void snx_arm_exec_set_profile(SnxArmExec* exec, SnxArmProfile profile);
+/* The write marks (recompiler/mach/native.h's SnxNativeOptions.write_marks) the blocks compiled from now on make, 0 none (a
+   new executor's). LLVM makes none, so a block the native back end refuses is not made while they are asked for */
+void snx_arm_exec_marks(SnxArmExec* exec, int write_marks);
 void snx_arm_exec_free(SnxArmExec* exec);
 /* how many blocks LLVM was asked for, the native back end having refused them, or the loader their objects (or none on
    this host): why, the last of them, in *why where not NULL */

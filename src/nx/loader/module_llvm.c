@@ -39,6 +39,7 @@ typedef struct {
     unsigned char* x64;
     size_t x64_size, x64_made;
     size_t x64_refused; /* of the others, those with an instruction it has no code for */
+    SnxNativeMarks marks; /* the native back end's write marks */
     int reused; /* the x86-64 back end's object came from memory (x64_cache.h) */
 } Unit;
 
@@ -257,6 +258,8 @@ static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) 
         options.stale = 1;
         options.llvm_at = snx_ir_dump_pc();
         options.refused = &u->x64_refused;
+        options.write_marks = snx_ir_write_marks_on();
+        options.marks = &u->marks;
         if (q->bound_count) {
             options.bound = bound_at;
             options.bound_user = q;
@@ -275,6 +278,7 @@ static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) 
             return -1;
         }
         for (i = 0; i < u->last - u->first; ++i) u->x64_made += made[i];
+        snx_ir_write_marks_add(u->marks.stores, u->marks.stack, u->marks.made);
         if (u->x64_made == u->last - u->first) {
             free(made);
             return 0;
@@ -734,6 +738,20 @@ static int emit_routes(SnxIr* ir, int all, char* error, size_t error_size) {
     return 0;
 }
 
+/* SNX_EXPORT const SnxWriteMarks* snx_write_marks(void): the setting write_marks the module's code was made with
+   (module_abi.h), where it was */
+static void emit_write_marks(SnxIr* ir, int level) {
+    LLVMTypeRef fields[2] = {ir->t_i32, ir->t_i32};
+    LLVMTypeRef type = LLVMStructTypeInContext(ir->ctx, fields, 2, 0);
+    LLVMValueRef f[2] = {ir_i32(ir, SNX_WRITE_MARKS_VERSION), ir_i32(ir, (SnxU32)level)};
+    LLVMValueRef marks = global(ir, type, "WRITE_MARKS", LLVMConstStructInContext(ir->ctx, f, 2, 0), 1);
+    LLVMValueRef fn = LLVMAddFunction(ir->mod, "snx_write_marks", LLVMFunctionType(ir->t_ptr, NULL, 0, 0));
+    if (ir->windows) LLVMSetDLLStorageClass(fn, LLVMDLLExportStorageClass);
+    ir->fn = fn;
+    LLVMPositionBuilderAtEnd(ir->b, LLVMAppendBasicBlockInContext(ir->ctx, fn, "entry"));
+    LLVMBuildRet(ir->b, marks);
+}
+
 /* SNX_EXPORT const SnxNros* snx_nros(void): where the NROs the program maps while it runs go (module_abi.h), for
    ldr:ro to map each at the address its own module was made for */
 static int emit_nros(SnxIr* ir, const SnxCodegenOptions* options, const SnxProgram* loaded, char* error,
@@ -843,7 +861,10 @@ static const char* base_name(const char* path) {
     return name;
 }
 
-int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, const SnxLlvmBuild* build) {
+int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* asked, const SnxLlvmBuild* build) {
+    /* what the descriptor says of the write marks is what the code has: an interpreted program has no code of them */
+    SnxCodegenOptions with = *asked;
+    const SnxCodegenOptions* options = &with;
     SnxCodegen codegen;
     Queue q;
     SnxIr* ir = NULL;
@@ -853,10 +874,11 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     unsigned char *module_object = NULL, *rtlib_object = NULL;
     size_t module_size = 0, rtlib_size = 0, first, last, count, limit, i, entry_count = 0, wrapped = 0, n = 0;
     size_t cache_count = 0, variant_count = 0, export_count = 1;
-    const char* exports[5];
+    const char* exports[6];
     char error[1024], *tmp = NULL;
     double start;
     int rc = -1, x64_only = 0, rtlib_static = 0;
+    with.write_marks = asked->interp_only ? 0 : snx_ir_write_marks_on();
     memset(&codegen, 0, sizeof(codegen));
     memset(&q, 0, sizeof(q));
     memset(&linked, 0, sizeof(linked));
@@ -1016,6 +1038,7 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
         snx_error("LLVM backend: %s", error);
         goto done;
     }
+    if (options->write_marks) emit_write_marks(ir, options->write_marks);
     if (q.import_count && emit_imports(ir, q.imports, q.import_count, error, sizeof(error))) {
         snx_error("LLVM backend: %s", error);
         goto done;
@@ -1091,6 +1114,7 @@ descriptor_done:
     if (variant_count) exports[export_count++] = "snx_variants";
     if (options->nro_count) exports[export_count++] = "snx_nros";
     if (q.import_count) exports[export_count++] = "snx_imports";
+    if (options->write_marks) exports[export_count++] = "snx_write_marks";
     tmp = snx_format("%s.tmp", build->output);
     if (build->triple) {
         /* the pack to its file a record at a time, the code generator's tables gone first: a game of hundreds of

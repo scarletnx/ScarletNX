@@ -49,6 +49,17 @@ struct SgCtx {
 };
 
 static inline SgX* sgx(SgCtx* g) { return &g->x; }
+static_assert(SGX_WMARK_BELOW == (long long)SNX_WMARK_BELOW, "the write marks' place below the guest's memory");
+/* mach.h's: SP as the region read it, the state's X31's or its pin's value */
+static inline int sgx_is_sp(SgCtx* g, int v) {
+    const SgX* x = sgx(g);
+    int d = v > 0 ? x->v[v].def : -1;
+    const SgXIns* i;
+    if (d < 0 || d >= x->n) return 0;
+    i = &x->ins[d];
+    if (i->kind == SGX_K_LOAD) return i->w == 64 && i->disp == (int)(offsetof(CPU, x) + 8 * 31);
+    return i->kind == SGX_K_PGET && g->pinned && g->pin[31] >= 0 && i->imm == g->pin[31];
+}
 /* x64.h's: nothing of A64's comes between flags and their reader */
 static inline void sgx_flags_begin(SgCtx* g) { (void)g; }
 
@@ -57,7 +68,9 @@ static inline void sgx_flags_begin(SgCtx* g) { (void)g; }
 static inline int sg_feature(SgCtx* g, SnxU64 feature) { return (g->features & feature) != 0; }
 
 static inline void sg_undefined(SgCtx* g) {
-    SgXIns* i = sgx_append(sgx(g), SGX_K_UNDEF);
+    SgXIns* i;
+    sgx_marks_flush(g); /* the runtime may see the stores before it */
+    i = sgx_append(sgx(g), SGX_K_UNDEF);
     i->imm = (long long)g->pc;
     i->disp = (int)g->word;
     i->calls = 1;
@@ -235,6 +248,7 @@ static inline SgD sgx_call(SgCtx* g, const char* sym, int rt_offset, int state, 
     int regs[5], k;
     SgXIns* i;
     if (nargs > 5 - (state ? 0 : 0)) sg_fail("a call of more than five arguments", nargs, 0);
+    sgx_marks_flush(g); /* the callee may make the stores before it visible */
     for (k = 0; k < nargs; ++k) regs[k] = sgx_reg(x, &args[k]);
     /* a call changes the flags: a condition on them read after it (FCCMP's, both its compare's path and its flags'
        choice) is first made 0 or 1 in a register; and it may change FPCR (MSR's snx_msr): the FP state check again */
@@ -259,8 +273,15 @@ static inline SgD sgx_call(SgCtx* g, const char* sym, int rt_offset, int state, 
     return result_w ? sgx_val((unsigned)result_w, i->def) : sgx_const(1, 0);
 }
 static inline void sgx_simple(SgCtx* g, int op) {
-    SgXIns* i = sgx_append(sgx(g), SGX_K_MACHINE);
+    SgXIns* i;
+    /* a barrier of stores: what it orders after them is after their marks */
+    if (op == SGX_M_FENCE || op == SGX_M_FENCE_ST) sgx_marks_flush(g);
+    i = sgx_append(sgx(g), SGX_K_MACHINE);
     i->op = (unsigned char)op;
+}
+/* mach.h's: the marks' store barrier, where the machine needs one */
+static inline void sgx_mark_order(SgCtx* g) {
+    if (SGX_MARK_WEAK) sgx_simple(g, SGX_M_FENCE_ST);
 }
 
 /* ---- the SIMD&FP registers and floating point ----
@@ -721,6 +742,8 @@ static inline SgD sgx_load(SgCtx* g, SgD address, int bytes, int disp) {
 }
 static inline void sgx_store(SgCtx* g, SgD address, int bytes, int disp, SgD value) {
     SgX* x = sgx(g);
+    SgD at = address;
+    int mark = disp;
     int base = sgx_base(g, &address, &disp);
     const SgXSel* s = bytes == 1   ? sgx_mem_form(sgx_sel_mov_8, sgx_sel_mov_8_n, 1)
                       : bytes == 2 ? sgx_mem_form(sgx_sel_mov_16, sgx_sel_mov_16_n, 1)
@@ -737,6 +760,7 @@ static inline void sgx_store(SgCtx* g, SgD address, int bytes, int disp, SgD val
     i->in[6] = a;
     i->mdisp = disp;
     i->side = 1; /* a store: kept though nothing reads a result */
+    if (x->marks) sgx_mark(g, sgx_mem(g), at, mark, (unsigned)bytes);
 }
 
 /* the machine's ordering of an acquire load after it and of a release store (before and after it: the sequentially
@@ -759,13 +783,22 @@ static inline SgD sg_GuestMemRead(SgCtx* g, SgD address, long long size, int acq
 static inline void sg_GuestMemWrite(SgCtx* g, SgD address, long long size, int release, SgD value) {
     if (address.w != 64) sg_fail("a guest address of other than 64 bits", address.w, 64);
     if (value.w != 8u * (unsigned)size) sg_fail("a guest write of a value of another size", size, value.w);
-    if (release) sgx_release(g, 0);
+    if (release) {
+        sgx_marks_flush(g); /* the stores before a store-release are seen before it: their marks too */
+        sgx_release(g, 0);
+    }
     if (size == 16) {
         sgx_store(g, address, 8, 0, sg_d_slice(g, value, 63, 0));
         sgx_store(g, address, 8, 8, sg_d_slice(g, value, 127, 64));
     } else
         sgx_store(g, address, (int)size, 0, value);
     if (release) sgx_release(g, 1);
+}
+
+/* an exclusive or atomic store of bytes at address, which may publish the stores before it (a release, or the machine's
+   own full barrier): their marks before it, its own page's after (sgx_mark_atomic, once the store is made) */
+static inline void sgx_mark_atomic(SgCtx* g, SgD address, unsigned bytes) {
+    if (sgx(g)->marks) sgx_mark(g, sgx_mem(g), address, 0, bytes);
 }
 
 static inline int sgx_log2(long long size) { return size == 1 ? 0 : size == 2 ? 1 : size == 4 ? 2 : 3; }
@@ -879,6 +912,7 @@ static size_t sg_x64_block(SgCtx* g, const SnxU32* words, size_t* count, SnxU64 
     *count = i;
     pc = g->pc;
     r = NULL;
+    sgx_marks_flush(g);
     if (g->branched && !g->undefined) {
         SgD next = g->taken ? sg_d_select(g, g->taken, g->target, sgx_const(64, pc + 4)) : g->target;
         int v = sgx_reg(&g->x, &next);

@@ -16,6 +16,7 @@
 #include "nx/runtime/nce/nce_host.h"
 #include "nx/runtime/platform/tracy.h"
 #include "snx_settings.h"
+#include "common/cpu/aarch64/cpu.h"
 #include <errno.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -528,6 +529,7 @@ static void decommit_host_nl(u64 a, u64 size) {
         else {
             own_acquire(edge[i], g_host_page); /* a neighbour's bytes the GPU holds land before the page is written */
             memset(GP(lo), 0, (size_t)(hi - lo));
+            mem_wrote(lo, hi - lo);
         }
     }
     if (last > first + g_host_page) give_back_nl(first + g_host_page, last - first - g_host_page);
@@ -950,6 +952,7 @@ static int alias_map_nl(u64 dst, u64 src, u64 size, u32 state, u32 perm) {
     else if (!p) {
         if (commit_nl(dst, size)) return MEM_NOMEM;
         memcpy(GP(dst), GP(src), size);
+        mem_wrote(dst, size);
     }
     c.set_state = c.set_perm = c.set_pool = 1;
     c.state = state;
@@ -1065,7 +1068,9 @@ static u8* reserve_tiers(void) {
                         (unsigned long long)(tiers[i] >> 30));
                 continue;
             }
-            p = watched ? plat_vm_reserve(tiers[i]) : plat_vm_reserve_unwatched(tiers[i]);
+            /* the write marks' bytes below (cpu.h), reserved with it always, as the settings may not be read yet */
+            p = watched ? plat_vm_reserve(tiers[i] + SNX_WMARK_BELOW)
+                        : plat_vm_reserve_unwatched(tiers[i] + SNX_WMARK_BELOW);
             if (!p) {
                 if (!watched && errno == ENOSYS) return NULL;
                 LOG("memory: %llu GiB of address space%s refused: %s\n", (unsigned long long)(tiers[i] >> 30),
@@ -1074,6 +1079,7 @@ static u8* reserve_tiers(void) {
             }
             g_as_size = tiers[i];
             layout_for(tiers[i]);
+            p += SNX_WMARK_BELOW;
             if (!watched)
                 WARN("memory: %llu GiB of address space reserved without the write watch, as no tier from %llu GiB "
                      "down was given with it: the caches compare guest memory's contents to find what changed\n",
@@ -1170,6 +1176,55 @@ int mem_foreign(char* out, size_t size) {
     errno = ENOSYS;
     return -1;
 }
+/* ---- write marks (cpu.h's SNX_WMARK_BELOW, recompiler/llvm/ir_marks.c): a byte per page below g_mem, which the
+   game's code (a module made with write_marks) and the runtime's writers (mem_wrote) set, and mem_marks_scan reads
+   and clears. NULL without them: under NCE, which has no g_mem, or without the setting */
+static u8* g_wmarks;
+static void marks_init(void) {
+    if (!g_settings.write_marks || g_mem_identity || !g_mem) return;
+    if (plat_vm_commit(g_mem - SNX_WMARK_BELOW, g_as_size >> 12))
+        fatal("write_marks=%d needs %llu MiB of memory for the marks below guest memory, and they could not be "
+              "committed: run the game with write_marks=0, or with more memory",
+              g_settings.write_marks, (unsigned long long)((g_as_size >> 12) >> 20));
+    g_wmarks = g_mem - SNX_WMARK_BELOW;
+    LOG("memory: write marks on, %llu MiB below guest memory\n", (unsigned long long)((g_as_size >> 12) >> 20));
+}
+int mem_marks_on(void) { return g_wmarks != NULL; }
+void mem_wrote(u64 a, u64 size) {
+    if (!g_wmarks || !size || a >= g_as_size) return;
+    u64 e = size > g_as_size - a ? g_as_size : a + size;
+    atomic_thread_fence(memory_order_release); /* the bytes before their marks, as a guest store's */
+    for (u64 pg = a >> 12; pg <= (e - 1) >> 12; pg++)
+        atomic_store_explicit((_Atomic u8*)&g_wmarks[pg], 1, memory_order_relaxed);
+}
+u8 mem_mark_peek(u64 a) {
+    return g_wmarks && a < g_as_size ? atomic_load_explicit((_Atomic u8*)&g_wmarks[a >> 12], memory_order_relaxed) : 0;
+}
+int mem_marks_scan(u64 a, u64 size, void (*cb)(u8* p, u64 size)) {
+    if (!g_wmarks) return -1;
+    if (!size || a >= g_as_size) return 0;
+    u64 pg = a >> 12, pe = ((size > g_as_size - a ? g_as_size : a + size) + 4095) >> 12, run = 0;
+    int in = 0;
+    while (pg < pe) {
+        /* eight marks a word where the run is aligned: none of them set is the common word. A word with one is taken a
+           byte at a time, as each mark is stored, so a mark's own byte (no host byte order to know) is what is taken */
+        if (!(pg & 7) && pg + 8 <= pe &&
+            !atomic_load_explicit((_Atomic u64*)(void*)&g_wmarks[pg], memory_order_relaxed)) {
+            if (in) cb(GP(run << 12), (pg - run) << 12), in = 0;
+            pg += 8;
+            continue;
+        }
+        _Atomic u8* m = (_Atomic u8*)&g_wmarks[pg];
+        if (atomic_load_explicit(m, memory_order_relaxed) && atomic_exchange_explicit(m, 0, memory_order_acquire)) {
+            if (!in) run = pg, in = 1;
+        } else if (in)
+            cb(GP(run << 12), (pg - run) << 12), in = 0;
+        pg++;
+    }
+    if (in) cb(GP(run << 12), (pe - run) << 12);
+    return 0;
+}
+
 /* where the written-page tracking starts (plat_vm_track): g_mem, or under NCE the code region's base */
 static u8* tracked_base(void) { return g_mem_identity ? (u8*)(uintptr_t)(IDENTITY_LO + g_mem_moved) : g_mem; }
 int mem_ww_probe(void (*cb)(u8* p, u64 size)) { return plat_ww_scan(tracked_base(), 4096, cb); }
@@ -1198,6 +1253,7 @@ void mem_init(void) {
     /* the settings are read by now, which mem_reserve may have run before. NCE's reservation is the guest's own
        addresses, from the code region's base, which mem_layout_move moved up by g_mem_moved */
     plat_vm_track(tracked_base(), g_mem_identity ? g_as_size - IDENTITY_LO - g_mem_moved : g_as_size);
+    marks_init();
     mem_lock();
     blk_reserve_nl(1);
     memset(&g_blk[0], 0, sizeof *g_blk);
@@ -1441,7 +1497,10 @@ int mem_alias_unmap(u64 dst, u64 size, u64 back) {
     if (back) own_acquire(back, size);
     if (back && !g_pool_on) own_acquire(dst, size); /* a copy's bytes, read below: the view may be owned too */
     mem_lock();
-    if (back && !any_pool_nl(dst, size) && !placed_nl(dst, size)) memcpy(GP(back), GP(dst), size); /* a copy's */
+    if (back && !any_pool_nl(dst, size) && !placed_nl(dst, size)) { /* a copy's */
+        memcpy(GP(back), GP(dst), size);
+        mem_wrote(back, size);
+    }
     unmap_nl(dst, size);
     mem_unlock();
     mapping_end();
@@ -2074,6 +2133,7 @@ int mem_map_code(MemCodeMap* m) {
     else {
         memcpy(GP(base), GP(m->source), m->size);
         if (m->bss_size) memcpy(GP(base + m->size), GP(m->bss), m->bss_size);
+        mem_wrote(base, total);
         blk_set_nl(base, total, MS_ALIASCODEDATA, PERM_RW, 0);
     }
     if (!r) {
@@ -2107,6 +2167,8 @@ int mem_unmap_code(const MemCodeMap* m) {
         if (!any_pool_nl(m->base, total)) {
             memcpy(GP(m->source), GP(m->base), m->size);
             if (m->bss_size) memcpy(GP(m->bss), GP(m->base + m->size), m->bss_size);
+            mem_wrote(m->source, m->size);
+            if (m->bss_size) mem_wrote(m->bss, m->bss_size);
         }
         unmap_nl(m->base, total);
         demote_nl(m->source, m->size);

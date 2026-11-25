@@ -58,6 +58,16 @@ typedef struct SnxRoutes {
     u32 all, reserved;
 } SnxRoutes;
 
+/* What snx_write_marks() of a module returns, where it was made with the setting write_marks (and only there: a module
+   made without has no such symbol, and is the one it always was): its code marks the pages its stores write in the
+   SNX_WMARK_BELOW bytes below CPU.mem (cpu.h), so it runs only where the runtime commits them. level is the setting's
+   value, 1 or 2. A separate symbol with a version of its own, as snx_routes */
+#define SNX_WRITE_MARKS_VERSION 1
+typedef struct SnxWriteMarks {
+    u32 version;
+    u32 level;
+} SnxWriteMarks;
+
 /* What a 32-bit program's module returns from snx_module_arm() instead. Its code is AArch32 blocks
    (common/cpu/arm/), each running to its next control transfer, which runtime/arm.c dispatches one after another.
    Being another symbol with a version of its own, it leaves SNX_ABI and 64-bit modules alone. abi comes first here
@@ -98,6 +108,7 @@ SNX_ABI_CHECK(module_main, offsetof(SnxModule, main_stack) == 80 && offsetof(Snx
 SNX_ABI_CHECK(module_fns, offsetof(SnxModule, nfns) == 92 && offsetof(SnxModule, fn) == 96 &&
                               offsetof(SnxModule, fn_lo) == 104 && offsetof(SnxModule, fn_len) == 112 &&
                               offsetof(SnxModule, stale) == 120);
+SNX_ABI_CHECK(write_marks, sizeof(SnxWriteMarks) == 8 && offsetof(SnxWriteMarks, level) == 4);
 SNX_ABI_CHECK(routes_size, sizeof(SnxRoutes) == 32);
 SNX_ABI_CHECK(routes_fields,
               offsetof(SnxRoutes, list) == 8 && offsetof(SnxRoutes, names) == 16 && offsetof(SnxRoutes, all) == 24);

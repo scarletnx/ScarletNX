@@ -82,6 +82,29 @@ int nvmap_get(u32 h, u64* addr, u32* size) {
     return *addr != 0;
 }
 void own_acquire(u64 addr, u64 size) { (void)addr, (void)size; }
+/* the write marks: the pages the decoder says it wrote, and guest memory as it was before (decode_begin) */
+static u8 test_marked[GUEST_HI >> 12], test_before[GUEST_HI];
+void mem_wrote(u64 a, u64 size) {
+    CHECK(size && a < GUEST_HI && size <= GUEST_HI - a);
+    for (u64 pg = a >> 12; pg <= (a + size - 1) >> 12; pg++) test_marked[pg] = 1;
+}
+static void decode_begin(void) {
+    memcpy(test_before, test_mem, sizeof test_mem);
+    memset(test_marked, 0, sizeof test_marked);
+}
+/* the decoder's planes are in handle B, its first 0x8000 bytes: each page it changed there is marked, and no page it
+   did not write is (changed also covers the alpha and luma bytes that match what was there) */
+static int decode_marked(void) {
+    for (u64 pg = MEM_B >> 12; pg < (MEM_B + 0x8000) >> 12; pg++)
+        if (memcmp(test_mem + (pg << 12), test_before + (pg << 12), 0x1000) && !test_marked[pg]) {
+            fprintf(stderr, "the decoder wrote page %#llx of the surface's memory and marked no page there\n",
+                    (unsigned long long)(pg << 12));
+            return 0;
+        }
+    for (u64 pg = 0; pg < GUEST_HI >> 12; pg++)
+        if (test_marked[pg] && (pg < MEM_B >> 12 || pg >= (MEM_B + 0x8000) >> 12)) return 0;
+    return 1;
+}
 static u32 test_waits, test_wait_id, test_wait_value;
 int syncpt_wait(u32 id, u32 thresh, i64 timeout_ns) {
     CHECK(timeout_ns < 0);
@@ -328,7 +351,9 @@ static void test_decode(const Abi* a, int movie7) {
     memset(G(MEM_B), 0, 0x8000);
     surface(a, dst, 0, W, H, p, 3);
     snx_st_le64(G(post), 0);
+    decode_begin();
     CHECK(yuv(c, dec, dst, 0, 1, list, 0, post, 0) == ST_OK);
+    CHECK(decode_marked());
     CHECK(snx_ld_le32(G(post)) == NO_FENCE);
     u32 err = 0;
     for (u32 y = 0; y < H; y++)
@@ -339,18 +364,24 @@ static void test_decode(const Abi* a, int movie7) {
           close_to(G(MEM_B + 0x4000)[3 * 40 + 5], pic_cr(5, 3), 3));
     /* shrunk by 2: half the sides */
     memset(G(MEM_B), 0, 0x8000);
+    decode_begin();
     CHECK(yuv(c, dec, dst, 1, 1, list, 0, post, 0) == ST_OK);
+    CHECK(decode_marked());
     CHECK(close_to(G(MEM_B)[10 * 72 + 10], pic_y(21, 21), 12) && G(MEM_B)[30 * 72 + 40] == 0);
     /* NV12 */
     PlaneDesc nv[2] = {{HANDLE_B, 0, 64, W, H}, {HANDLE_B, 0x4000, 64, W / 2, H / 2}};
     surface(a, dst, 6, W, H, nv, 2);
+    decode_begin();
     CHECK(yuv(c, dec, dst, 0, 1, list, 0, post, 0) == ST_OK);
+    CHECK(decode_marked());
     CHECK(close_to(G(MEM_B + 0x4000)[3 * 64 + 10], pic_cb(5, 3), 3) &&
           close_to(G(MEM_B + 0x4000)[3 * 64 + 11], pic_cr(5, 3), 3));
     /* YUYV, 4:2:2 from 4:2:0 */
     PlaneDesc yuyv = {HANDLE_B, 0, 2 * W, W, H};
     surface(a, dst, 12, W, H, &yuyv, 1);
+    decode_begin();
     CHECK(yuv(c, dec, dst, 0, 1, list, 0, post, 0) == ST_OK);
+    CHECK(decode_marked());
     CHECK(close_to(G(MEM_B)[6 * 2 * W + 2 * 20], pic_y(20, 6), 6) &&
           close_to(G(MEM_B)[6 * 2 * W + 2 * 20 + 1], pic_cb(10, 3), 3) &&
           close_to(G(MEM_B)[6 * 2 * W + 2 * 20 + 3], pic_cr(10, 3), 3));
@@ -389,12 +420,21 @@ static void test_decode(const Abi* a, int movie7) {
     PlaneDesc rgba = {HANDLE_B, 0, 4 * W + 32, W, H};
     output_surface(a, dst, a->rgba, &rgba);
     snx_st_le64(G(post), 0);
+    decode_begin();
     CHECK(render_any(a, movie7, dec, dst, list, post) == ST_OK);
+    CHECK(decode_marked());
     CHECK(snx_ld_le32(G(post)) == NO_FENCE);
     const u8* px = G(MEM_B) + 20 * (4 * W + 32) + 4 * 20; /* in the block: Y 200 */
     int y = 200, cb = pic_cb(10, 10) - 128, cr = pic_cr(10, 10) - 128;
     CHECK(close_to(px[0], y + (int)(1.402 * cr), 6) && close_to(px[1], y - (int)(0.344 * cb + 0.714 * cr), 6) &&
           close_to(px[2], snx_clamp_int(y + (int)(1.772 * cb), 0, 255), 6) && px[3] == 0xff);
+    /* a plane whose last row starts a page: the page of that row alone is marked too */
+    PlaneDesc edge = {HANDLE_B, 0x4000 - 47 * (4 * W + 32), 4 * W + 32, W, H};
+    memset(G(MEM_B), 0, 0x8000);
+    output_surface(a, dst, a->rgba, &edge);
+    decode_begin();
+    CHECK(render_any(a, movie7, dec, dst, list, post) == ST_OK);
+    CHECK(decode_marked() && test_marked[(MEM_B + 0x4000) >> 12]);
     output_surface(a, dst, a->rgba + 1u, &rgba); /* another byte order */
     CHECK(render_any(a, movie7, dec, dst, list, post) == ST_UNSUPPORTED);
     output_surface(a, dst, a->rgba + 4u, &rgba); /* past them: RGBA, as NVJPG's default */

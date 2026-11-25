@@ -308,6 +308,7 @@ static u64 take(u64 size, u64 align, int zero) {
         g_alloc.mallocx(size ? (size_t)size : 1, g_alloc.flags | ALLOC_LG_ALIGN(lg(align)) | (zero ? ALLOC_ZERO : 0)));
     live_add(p);
     if (p) SNX_MEM_ALLOC_D((const void*)(uintptr_t)p, size, "game malloc");
+    if (zero && p) mem_wrote(p, size); /* the arena wrote the zeros, not the game's code: the write marks see them */
     return p;
 }
 /* p given back: the arena's own, or the hooked function's own code's (the registers as the call left them) */
@@ -337,8 +338,10 @@ u64 alloc_realloc(CPU* c, u64 p, u64 size) {
         return c->x[0];
     }
     SNX_MEM_FREE_D((const void*)(uintptr_t)p, "game malloc"); /* the old block goes back as rallocx resizes it */
+    const u64 kept = (u64)g_alloc.sallocx(q, g_alloc.flags);
     u64 r = guest(g_alloc.rallocx(q, size ? (size_t)size : 1, g_alloc.flags | ALLOC_LG_ALIGN(lg(align_of(size, 16)))));
     live_add(r ? r : p); /* no room: p stays the game's */
+    if (r && r != p) mem_wrote(r, kept < size ? kept : size); /* the bytes the arena moved */
     SNX_MEM_ALLOC_D((const void*)(uintptr_t)(r ? r : p), size, "game malloc");
     return r;
 }

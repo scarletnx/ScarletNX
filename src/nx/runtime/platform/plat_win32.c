@@ -157,6 +157,7 @@ void plat_exit_now(int code) {
 static u8* g_ww_base;
 static u64 g_ww_size;
 static u8* g_ww_watched; /* plat_vm_reserve's reservation, when it has the watch */
+static u64 g_ww_watched_size;
 /* plat_vm_track's reservation, whose pages the traps arm (below) */
 static u8* g_vm_base;
 static u64 g_vm_size;
@@ -208,22 +209,24 @@ static u8* vm_reserved(void* p) {
 }
 u8* plat_vm_reserve(u64 size) {
     u8* p = vm_reserved(VirtualAlloc(NULL, (SIZE_T)size, MEM_RESERVE | MEM_WRITE_WATCH, PAGE_NOACCESS));
-    if (p) g_ww_watched = p;
+    if (p) g_ww_watched = p, g_ww_watched_size = size;
     return p;
 }
 /* at the 64 KiB allocation granularity, which commits any 4 KiB page */
 u8* plat_vm_reserve_unwatched(u64 size) { return (u8*)plat_mem_reserve(size, 0); }
 void plat_vm_track(u8* p, u64 size) {
+    /* the guest's memory may start past the reservation's start (mem.c reserves the write marks below it) */
+    int watched = g_ww_watched && p >= g_ww_watched && p + size <= g_ww_watched + g_ww_watched_size;
     g_vm_base = p; /* mem_init runs before any thread that traps */
     g_vm_size = size;
     if (g_settings.write_tracking == 1)
         WARN("memory: write_tracking=1 (page protection) has no Windows version: %s\n",
-             p == g_ww_watched ? "the reservation's write watch tracks writes, as write_tracking=0 does"
-                               : "the reservation has no write watch, so the caches compare contents");
+             watched ? "the reservation's write watch tracks writes, as write_tracking=0 does"
+                     : "the reservation has no write watch, so the caches compare contents");
     if (g_settings.write_tracking_hot_pages == 1)
         WARN("memory: write_tracking_hot_pages=1 leaves pages hot only where page protection tracks the writes, "
              "which has no Windows version: no page is hot this run\n");
-    if (p != g_ww_watched || g_settings.write_tracking == 2) return;
+    if (!watched || g_settings.write_tracking == 2) return;
     g_ww_base = p; /* mem_init runs before any thread that scans */
     g_ww_size = size;
 }
@@ -439,6 +442,7 @@ static int trap_armed_at(const void* a) {
     u64 i;
     return trap_index(a, &i) && trap_bit(i);
 }
+int plat_trap_armed(const void* p) { return trap_armed_at(p); }
 /* the pages [*lo, *hi) of [p, p + size), whole 4 KiB pages in the reservation: 1, or 0 when they aren't */
 static int trap_pages(const u8* p, u64 size, u64* lo, u64* hi) {
     if (!size || ((uintptr_t)p | size) & 4095 || !trap_index(p, lo) || size > g_vm_size - (u64)(p - g_vm_base))
@@ -453,6 +457,10 @@ static void trap_wake(void) {
 /* the armed pages of [lo, hi) open (readable and writable), written once so the write watch reports them (a page a
    trap lets go reads as written, as on the other hosts), let go, and their waiters woken. Under own.c's trap lock, or
    on one thread (a test's) */
+static void (*_Atomic g_trap_open_watch)(u8* p, u64 size);
+void plat_trap_open_watch(void (*fn)(u8* p, u64 size)) {
+    atomic_store_explicit(&g_trap_open_watch, fn, memory_order_release);
+}
 static void trap_open(u64 lo, u64 hi) {
     u64 i = lo, run, k;
     int any = 0;
@@ -476,6 +484,10 @@ static void trap_open(u64 lo, u64 hi) {
             SNX_PLOT("plat pages opened", (double)(run - i));
             for (k = i; k < run; k++)
                 atomic_fetch_or_explicit((_Atomic u8*)(g_vm_base + (k << 12)), (u8)0, memory_order_relaxed);
+        }
+        {
+            void (*watch)(u8*, u64) = atomic_load_explicit(&g_trap_open_watch, memory_order_acquire);
+            if (watch) watch(a, (run - i) << 12);
         }
         /* before the bits go: a fault that raced this finds the count moved, and goes again (trap_fault) */
         atomic_fetch_add_explicit(&g_trap_opened, 1, memory_order_seq_cst);
@@ -701,6 +713,10 @@ int plat_trap_fill(u8* p, const void* src, u64 size) {
         n = (size_t)((hi < end ? hi : end) - p);
         memcpy(p, s, n);
         done += n;
+        {
+            void (*watch)(u8*, u64) = atomic_load_explicit(&g_trap_open_watch, memory_order_acquire);
+            if (watch) watch(lo, 4096); /* the GPU's bytes, as a page let go reads */
+        }
         p += n;
         s += n;
     }

@@ -296,6 +296,7 @@ static int branch_label(Unit* u, SnxU64 address, SnxU64 target) {
 static void flush(Unit* u) {
     SgCtx* g = u->g;
     int k;
+    sgx_marks_flush(g); /* the region's stores marked before control leaves it */
     if (g->x.n) sgx_assemble_region(&u->a, &g->x);
 #ifdef MG_POOL_REACH
     if (u->a.nrips && u->b.n - u->a.rips[0].at > MG_POOL_REACH) mg_pool_island(u);
@@ -349,6 +350,7 @@ static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r) {
 }
 static void machine_target(Unit* u, int op, SgD target) {
     SgX* x = &u->g->x;
+    sgx_marks_flush(u->g);
     int v = sgx_reg(x, &target);
     SgXIns* i = sgx_append(x, SGX_K_MACHINE);
     i->op = (unsigned char)op;
@@ -755,6 +757,7 @@ static int sys(Unit* u, SnxU32 word) {
             int z = sgx_xconst(x, 0, 0), base = sgx_mem(g), index = sgx_reg(x, &block), k, in[4] = {0, z, 0, 0};
             for (k = 0; k < 4; ++k)
                 sgx_vins(x, SGX_VF_ST16, 0, 0, in, 0, 0, SGX_VM_GUEST, base, index, 16 * k, 0, 0);
+            if (x->marks) sgx_mark(g, base, block, 0, 1); /* 64 aligned bytes: one page */
             return 1;
         }
         case 5: sgx_call(g, "snx_ic_ivau", 0, 1, &a, 1, 0); return 1;
@@ -781,10 +784,12 @@ static int vload(SgCtx* g, SgD address, int bytes) {
 static void vstore(SgCtx* g, SgD address, int r, int bytes) {
     SgX* x = sgx(g);
     const SgXVForm* f = v_form(bytes, 1);
+    SgD at = address;
     int disp = 0, base, index, in[4] = {0, 0, 0, 0};
     base = sgx_base(g, &address, &disp), index = sgx_reg(x, &address);
     in[(int)f->reg] = r;
     sgx_vins(x, f, f->rm, 0, in, 0, f->rm, SGX_VM_GUEST, base, index, disp, 0, 0);
+    if (x->marks) sgx_mark(g, sgx_mem(g), at, 0, (unsigned)bytes);
 }
 
 /* 1 made, 0 not one of these, -1 UNDEF */
@@ -1483,6 +1488,10 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
         terminal = 1;
         break;
     case SNX_A64_FLOW_BC:
+        /* the stores before a branch are marked before it, on both ways of it, and before the condition's flags are
+           made (a mark's shift may change them) */
+        sgx_marks_flush(g);
+        g->start = x->n;
         if (insn.op == SNX_A64_OP_CB_cond || insn.op == SNX_A64_OP_CB_cond_imm) compare_branch(u, &insn, word);
         else if (!sg_decode(g) || x->unmade || !g->branched)
             return 0;
@@ -1556,6 +1565,8 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
         check_return(u, next);
         break;
     case SNX_A64_FLOW_BR: {
+        sgx_marks_flush(g); /* before the jump through a table, which is an instruction of the region */
+        g->start = x->n;
         /* a PLT stub whose slot is bound, entered as a function (through a pointer, or by a call that does not run
            it in place): if (target == bound) F_bound, always compared, as the stub's own branch has the slot's word */
         int guard = 0;
@@ -2361,6 +2372,7 @@ out:
         u->g->x.nv = 1;
         u->g->x.nb = 1;
         u->g->x.unmade = 0;
+        u->g->x.nmark = 0;
     }
     u->nfixups = ok ? u->nfixups : fix0;
     u->nlabels = lab0; /* a function's labels are its own */
@@ -2658,8 +2670,10 @@ static int mach_object(SnxCodegen* codegen, size_t first, size_t last, const Snx
     u.g->x.base = SGX_BASE;
     u.g->x.nv = 1;
     u.g->x.nb = 1;
+    u.g->x.marks = options->write_marks;
     for (i = first; i < last; ++i) {
         size_t before = u.b.n, relocs = u.nrelocs, syms = u.nsyms;
+        SgXMarkCounts marks0 = u.g->x.counts;
         if (options->llvm_at && codegen->functions[i].start == options->llvm_at) {
             if (options->jit) break; /* made[] stays 0: LLVM's, for the IR it prints */
             continue;
@@ -2670,7 +2684,11 @@ static int mach_object(SnxCodegen* codegen, size_t first, size_t last, const Snx
         }
         u.again = 0;
         made[i - first] = (unsigned char)function(&u, &codegen->functions[i], i);
-        if (!made[i - first] && u.again) made[i - first] = (unsigned char)function(&u, &codegen->functions[i], i);
+        if (!made[i - first] && u.again) {
+            u.g->x.counts = marks0;
+            made[i - first] = (unsigned char)function(&u, &codegen->functions[i], i);
+        }
+        if (!made[i - first] || u.b.n > u.b.cap) u.g->x.counts = marks0; /* made again, or another's */
         if (u.b.n > u.b.cap) {
             /* past the buffer: grown, and made again, its symbol and relocations too */
             for (; u.nrelocs > relocs; --u.nrelocs) free(u.relocs[u.nrelocs - 1].sym);
@@ -2711,6 +2729,11 @@ static int mach_object(SnxCodegen* codegen, size_t first, size_t last, const Snx
         if (options->jit && !made[i - first]) break;
     }
     if (options->jit && count != last - first) count = 0;
+    if (options->marks) {
+        options->marks->stores += u.g->x.counts.stores;
+        options->marks->stack += u.g->x.counts.stack;
+        options->marks->made += u.g->x.counts.made;
+    }
     if (count) {
         int coff = 0;
 #ifdef MG_COFF

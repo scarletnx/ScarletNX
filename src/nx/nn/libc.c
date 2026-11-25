@@ -8,15 +8,20 @@
    range and where the fault lies in it: debug.c's kernel_dump_libc_fault) */
 #include "nx/nn/hook.h"
 #include "nn/hooks.hook.h"
+#include "nx/memory/mem.h"
 #include "nx/runtime/platform/tracy.h"
 
 /* memcpy and memmove share this one handler (hooks.hook), so one zone covers both: the zone's time is the host CPU
    time the copy took, its value the bytes it moved. The zone's name says the family; copying the same text into every
-   one of millions of calls only formats a constant, so no zone text is sent here */
+   one of millions of calls only formats a constant, so no zone text is sent here.
+   The game's copies and fills are most of what it writes into memory the GPU reads (its buffers, its uploads), and
+   here the host writes them, not the game's code: with the write marks (mem.h) they mark the pages as that code
+   would */
 u64 hook_memmove(CPU* c, u64 dst, u64 src, u64 size) {
     if (size) {
         SNX_ZONE_V(z, "hook mem copy", size);
         memmove(hook_host(c, dst), hook_host(c, src), (size_t)size);
+        mem_wrote(dst, size);
     }
     return dst;
 }
@@ -25,6 +30,7 @@ u64 hook_memset(CPU* c, u64 dst, i32 value, u64 size) {
     if (size) {
         SNX_ZONE_V(z, "hook mem set", size);
         memset(hook_host(c, dst), value, (size_t)size); /* the value as an unsigned char, as both take it */
+        mem_wrote(dst, size);
     }
     return dst;
 }

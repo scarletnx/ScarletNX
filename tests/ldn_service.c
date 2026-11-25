@@ -47,6 +47,8 @@ void own_acquire(u64 addr, u64 size) { (void)addr, (void)size; }
 /* platform/plat_posix.c: no page here is protected for the write tracking */
 void plat_ww_open(u8* p, u64 size) { (void)p, (void)size; }
 void plat_ww_close(u8* p, u64 size) { (void)p, (void)size; }
+/* memory/mem.c: no write marks here (weak: a test that links mem.c takes its own) */
+[[gnu::weak]] void mem_wrote(u64 a, u64 size) { (void)a, (void)size; }
 /* the log, which players attach to public reports: kept since log_reset for what ldn.c says of the nodes, never their
    nicknames. The transport's thread may write it too */
 static struct {

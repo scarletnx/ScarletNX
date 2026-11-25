@@ -160,13 +160,18 @@ char* snx_jit_cache_key(char opt, int hook, int svc, SnxU64 guest) {
     char* key = (char*)malloc(n);
     if (key) {
         SnxU64 rtlib = snx_fnv1a(SNX_FNV_BASIS, snx_rtlib_object, (size_t)snx_rtlib_object_size);
+        /* only when on, so the caches of every other game stay: units made without the marks are not a run's that reads
+           them */
+        char marks[24] = "";
+        if (snx_ir_write_marks_on()) snprintf(marks, sizeof marks, " marks=%d", snx_ir_write_marks_on());
         /* dec: the decoding (a64.decode and its profile) and a64: the guest's features choose what each word does */
         snprintf(key, n,
                  "abi=%d obj=%d llvm=%s triple=%s rtlib=%016llx dec=%016llx a64=%016llx cpu=%s opt=%c hook=%d svc=%d "
-                 "slp=%d fpsr=%d volatile=%d contract=%d features=%s",
+                 "slp=%d fpsr=%d volatile=%d contract=%d%s features=%s",
                  SNX_ABI, SNX_IR_OBJECT_VERSION, LLVM_VERSION_STRING, triple, (unsigned long long)rtlib,
                  (unsigned long long)snx_a64_decoder_hash(), (unsigned long long)snx_a64_features(guest), cpu, opt,
-                 hook, svc, snx_ir_slp(), snx_ir_fpsr_exact(), snx_ir_volatile(), snx_ir_abi_contract_on(), features);
+                 hook, svc, snx_ir_slp(), snx_ir_fpsr_exact(), snx_ir_volatile(), snx_ir_abi_contract_on(), marks,
+                 features);
     }
     LLVMDisposeMessage(cpu);
     LLVMDisposeMessage(features);

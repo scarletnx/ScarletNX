@@ -562,6 +562,14 @@ static void respond(IpcCtx* c) {
 }
 
 /* ============================================================ serving */
+/* the buffers a command may have filled, for the write marks (mem.h): a service writes them on the host, where the
+   game's own code would have marked its stores. Whole, as what of them it filled is the command's to say */
+static void mark_outputs(const IpcCtx* c) {
+    int i;
+    for (i = 0; i < c->nb; i++) mem_wrote(c->b[i].addr, c->b[i].size);
+    for (i = 0; i < c->nw; i++) mem_wrote(c->w[i].addr, c->w[i].size);
+    for (i = 0; i < c->nc; i++) mem_wrote(c->c[i].addr, c->c[i].size);
+}
 /* the request goes to o's dispatcher, and its result into the reply */
 static void serve(IpcCtx* c, SvcObj* o, u32 seq) {
     u32 in[2];
@@ -575,6 +583,7 @@ static void serve(IpcCtx* c, SvcObj* o, u32 seq) {
     ring_set(seq, IPC_REC_RUNNING, o->name, c->type, c->cmd, in, 0, NULL);
     LOGV("IPC %s cmd %u\n", o->name, c->cmd);
     c->rc = (u32)o->dispatch(o, c);
+    mark_outputs(c);
     /* the command's result on error only: one compare on the path that matters, and the zone a failed command leaves
        carries what it failed with */
     if (c->rc) SNX_ZONE_VALUE(z_ipc, c->rc);
