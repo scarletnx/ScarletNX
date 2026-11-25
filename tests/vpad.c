@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The on-screen controls (runtime/platform/vpad.c): what fingers on them press, edit mode, the .ini keys, the draw,
-   and controls=2's Auto by the device's touch screen and gamepads */
+/* The on-screen controls (common/utilities/vpad.c, and the Switch's showcase of them, runtime/platform/vpad.c): what
+   fingers on them press, edit mode, the .ini keys, the draw, and controls=2's Auto by the device's touch screen and
+   gamepads */
 #include "nx/runtime/platform/vpad.h"
 #include <assert.h>
 #include <stdarg.h>
@@ -20,7 +21,6 @@ void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
 
 /* ui.c's warning for a picture that does not draw */
-/* vpad.c's check of settings.txt's keys against its controls: a mismatch fails the test */
 void fatal(const char* fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
@@ -46,6 +46,9 @@ void logf_(int lvl, const char* fmt, ...) {
     vsnprintf(logged, sizeof logged, fmt, ap);
     va_end(ap);
 }
+
+/* the controls' own line, the runtime's log's as any */
+static void said(const char* line) { snprintf(logged, sizeof logged, "%s\n", line); }
 
 /* a theme's 0xRRGGBB as a quad's colour, R G B A from the low byte, opaque */
 #define THEME(rgb) (0xFF000000u | ((rgb) & 0xFFu) << 16 | ((rgb) & 0xFF00u) | ((rgb) >> 16 & 0xFFu))
@@ -144,6 +147,7 @@ int main(void) {
     SnxUiList l;
     i32 st[4];
     vpad_set_store(store);
+    vpad_set_say(said);
     vpad_defaults(&d);
     assert(g_settings.controls_scale == 50 && g_settings.relative_stick_center &&
            g_settings.d_pad_slide && g_settings.haptics && !g_settings.snap_to_grid);
