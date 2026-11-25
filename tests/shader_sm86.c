@@ -2281,6 +2281,62 @@ static void test_resolution_scale(const char* dir) {
     CHECK(!why && env.fetched[SNX_VKB_TEX][0] == 5 && env.fetched[SNX_VKB_TEX][1] == 3);
     free(spv);
 }
+/* TLD.LZ of a 1D texture, c[2][0x40], at texel x: the renderer binds a buffer texture longer than a row as rows of
+   2^SH_TEXEL_ROW_SHIFT texels (texture.c), so the fetch reads column x mod row of row x / row. Texel 20000 of a
+   202016-texel buffer is (3616, 1), 16384 is (0, 1), and one in the first row stays (x, 0); -1 lands in row -1, out of
+   the image as it is out of the texture. A game's compute program read its vertex inputs past the first row as
+   zeros, and the vertices it made from them collapsed to one point */
+static void test_tld_1d_rows(const char* dir) {
+    static const struct {
+        u32 x, col, row;
+    } cases[] = {{100, 100, 0},    {16383, 16383, 0}, {16384, 0, 1},
+                 {20000, 3616, 1}, {49048, 16280, 2}, {0xffffffffu, 16383, 0xffffffffu}};
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[18] = 0xf;
+    for (u32 k = 0; k < sizeof cases / sizeof *cases; k++) {
+        u8 code[16 * 4] = {0};
+        u32 n = 0;
+        put(code, n++, mov_imm(4, cases[k].x));
+        Word x = fix(0xb66); /* TLD.LZ R0-R3, R4, c[2][0x40], 1D */
+        set(&x, 16, 8, 0);
+        set(&x, 24, 8, 4);
+        set(&x, 32, 8, 255);
+        set(&x, 40, 19, 2u << 14 | 0x40 >> 2);
+        set(&x, 61, 3, 0);
+        set(&x, 64, 8, 255);
+        set(&x, 72, 4, 0xf);
+        set(&x, 87, 3, 1);
+        put(code, n++, x);
+        put(code, n, exit_insn());
+        n++;
+        put(code, n, bra(n, n, 7, 0));
+        n++;
+        ShaderInfo si = {0};
+        size_t count = 0;
+        u32* spv = sm86_to_spirv(code, n * 16, ST_FS, fsph, &si, &count);
+        CHECK(spv != NULL);
+        if (!spv) {
+            fprintf(stderr, "1D fetch rows: %s\n", si.first_unsupported);
+            return;
+        }
+        if (!k) CHECK(keep_module(dir, "fs_tld_1d_rows", spv, count));
+        CHECK(si.ntex == 1 && si.tex[0].type == 0);
+        SpvEvalEnv env = {0};
+        env.image_size[SNX_VKB_TEX][0] = 1u << SH_TEXEL_ROW_SHIFT;
+        env.image_size[SNX_VKB_TEX][1] = 13;
+        const char* why = eval_draw(spv, count, &env);
+        if (why) fprintf(stderr, "1D fetch rows: the evaluator stops at %s\n", why);
+        CHECK(!why);
+        free(spv);
+        int ok = env.fetched[SNX_VKB_TEX][0] == cases[k].col && env.fetched[SNX_VKB_TEX][1] == cases[k].row;
+        if (!ok)
+            fprintf(stderr, "1D fetch rows: texel %d of a 1D texture fetches (%d, %d) of its rows, not (%d, %d)\n",
+                    (int)cases[k].x, (int)env.fetched[SNX_VKB_TEX][0], (int)env.fetched[SNX_VKB_TEX][1],
+                    (int)cases[k].col, (int)cases[k].row);
+        CHECK(ok);
+    }
+}
 
 /* TXQ R4, R5 of the handle c[2][0x20] before TLD.LZ.MS R0-R3, R4, R5, sample R9 of it, as a game's resolve programs
    do: one multisampled 2D slot (ShTex.flags bit 1) for both, the sample fetched with the Sample operand from R9, and
@@ -8219,6 +8275,7 @@ int main(int argc, char** argv) {
     test_ipa_uniform(dir);
     test_tld_multisample(dir);
     test_resolution_scale(dir);
+    test_tld_1d_rows(dir);
     test_tex_f16(dir);
     test_output_defaults(dir);
     test_fragment_depth(dir);
