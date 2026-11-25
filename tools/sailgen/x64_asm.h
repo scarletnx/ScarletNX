@@ -50,8 +50,28 @@ static inline void sgx_movq(SgXBuf* b, int to_xmm, int xmm, int gpr) {
 }
 
 /* a value spilled where no register is free: to a free XMM register where nothing calls out before it is last read
-   (every XMM register is caller-saved), else to its slot of the frame, given once (an SSA value never changes, so a
-   second spill stores nothing) */
+   (the calls' code takes every XMM register as changed), else to its slot of the frame, given once (an SSA value never
+   changes, so a second spill stores nothing) */
+
+/* ---- the calls ---- */
+
+/* the convention's first argument, the state, for a call: mov rdi, rbx, or on Windows mov rcx, rbx */
+static inline void sgx_state_arg(SgXAsm* a, SgXBuf* b) {
+    sgx_byte(b, 0x48);
+    sgx_byte(b, 0x89);
+    sgx_byte(b, SGX_WIN64(a->x) ? 0xD9 : 0xDF);
+}
+/* Windows commits a thread's stack as it grows, through the guard page below what is in use: a frame of a page or more
+   reads each of its pages first, nearest first, from the stack pointer down to past the new one. mov eax, the frame's
+   size (an imm32 at the sequence's second byte, to patch); mov r9, rsp; then sub r9, 4096; test [r9], r9b;
+   sub rax, 4096; ja back there. RAX, R9 and the flags changed */
+#define SGX_STACK_PROBE_BYTES "B8 00 00 00 00 49 89 E1 49 81 E9 00 10 00 00 45 84 09 48 2D 00 10 00 00 77 EE"
+#define SGX_STACK_PROBE_SIZE 26
+static inline void sgx_stack_probe(SgXBuf* b) { sgx_bytes(b, SGX_STACK_PROBE_BYTES); }
+/* the frame has room for a callee's shadow and its arguments on the stack, whose slots no value is in */
+static inline void sgx_call_room(SgXAsm* a) {
+    if (a->slots_max < SGX_SLOT0(a)) a->slots_max = SGX_SLOT0(a);
+}
 
 /* ---- XMM registers: vectors' values and spilled general-purpose ones ---- */
 
@@ -122,10 +142,21 @@ static inline void sgx_cold_room(SgXAsm* a, size_t need) {
 /* SGX_K_COLD at at: the hot code jumps out where its condition holds; the cold code keeps the registers the call
    changes that are read after (and the arguments) in scratch slots of the frame above the region's, calls with the
    arguments from where they are, puts RAX in the result's register, takes the others back and jumps in again */
+/* RAX kept (save) for what a cold path takes it for before its call, and back: pushed, or on Windows in the callees'
+   fifth argument's slot, no callee's yet (the stack pointer stays, for what unwinds the code there) */
+static inline void sgx_cold_rax(SgXAsm* a, int save) {
+    if (SGX_WIN64(a->x)) {
+        sgx_call_room(a);
+        sgx_mov_mem(a, !save, 64, 0, SGX_RSP, 8 * 4);
+    } else
+        sgx_byte(a->b, save ? 0x50 : 0x58);
+}
 /* RAX = a value of the cold path's (v; -1: the result, in reg out, an XMM one where cls), its doubled magnitude's
-   flags then (ADD of itself, 32 bits where w32): RAX was pushed, so a value in RAX is [rsp], a slot 8 further */
+   flags then (ADD of itself, 32 bits where w32): RAX was kept (sgx_cold_rax), so a value in RAX is there, and pushed the
+   others' slots 8 further */
 static inline void sgx_cold_zf(SgXAsm* a, int v, int out, int cls, int w32) {
     SgXBuf* c = a->b;
+    const int pushed = SGX_WIN64(a->x) ? 0 : 8;
     int reg = v < 0 ? out : a->x->v[v].reg, xcls = v < 0 ? cls : a->x->v[v].cls;
     if (xcls && reg >= 0) {
         const SgXVForm* f = w32 ? &sgx_v_movd_rx : &sgx_v_movq_rx;
@@ -134,13 +165,13 @@ static inline void sgx_cold_zf(SgXAsm* a, int v, int out, int cls, int w32) {
         r[(int)f->reg] = (unsigned char)reg;
         f->enc(c, r, 0, 0);
     } else if (reg == 0)
-        sgx_mov_mem(a, 1, 64, 0, SGX_RSP, 0);
+        sgx_mov_mem(a, 1, 64, 0, SGX_RSP, pushed ? 0 : 8 * 4);
     else if (reg > 0)
         sgx_mov_rr(a, 0, reg);
     else if (!xcls && a->x->v[v].xmm >= 0)
         sgx_movq(c, 0, a->x->v[v].xmm, 0);
     else
-        sgx_mov_mem(a, 1, 64, 0, SGX_RSP, 8 + 8 * a->x->v[v].slot);
+        sgx_mov_mem(a, 1, 64, 0, SGX_RSP, pushed + 8 * a->x->v[v].slot);
     if (!w32) sgx_byte(c, 0x48);
     sgx_byte(c, 0x01); /* add eax, eax */
     sgx_byte(c, 0xC0);
@@ -239,9 +270,9 @@ static inline void sgx_cold_jumps(SgXAsm* a, int at, int out, int cls) {
     }
 }
 static inline void sgx_assemble_cold(SgXAsm* a, int at) {
-    static const signed char args_reg[5] = {6, 2, 1, 8, 9}; /* RSI RDX RCX R8 R9, RDI the state */
     SgX* x = a->x;
     SgXIns* i = &x->ins[at];
+    const int win64 = SGX_WIN64(x);
     SgXBuf* b = a->b;
     SgXBuf* c;
     int tv = i->in[0], cls = x->v[tv].cls, from, outreg, k, n = 0, nargs = i->w;
@@ -275,7 +306,7 @@ static inline void sgx_assemble_cold(SgXAsm* a, int at) {
             size_t to_call[8];
             int ncall = 0, nok = 0, j;
             size_t to_ok[5];
-            sgx_byte(c, 0x50); /* push rax */
+            sgx_cold_rax(a, 1);
             sgx_cold_zf(a, -1, outreg, cls, i->cw32 >> 7 & 1);
             sgx_byte(c, 0x75), sgx_byte(c, 0), to_call[ncall++] = c->n; /* jnz call */
             sgx_byte(c, 0xF7), sgx_byte(c, 0x83), sgx_imm(c, i->disp, 4), sgx_imm(c, (long long)i->kv[0], 4); /* test */
@@ -307,12 +338,12 @@ static inline void sgx_assemble_cold(SgXAsm* a, int at) {
                 sgx_byte(c, 0xEB), sgx_byte(c, 0), to_call[ncall++] = c->n; /* jmp call */
             }
             for (j = 0; j < nok; ++j) c->p[to_ok[j] - 1] = (unsigned char)(c->n - to_ok[j]);
-            sgx_byte(c, 0x58); /* ok: pop rax, back */
+            sgx_cold_rax(a, 0); /* ok: RAX back, and to the hot code */
             sgx_byte(c, 0xE9);
             sgx_cjump(a, c->n, back, 1);
             sgx_imm(c, 0, 4);
             for (j = 0; j < ncall; ++j) c->p[to_call[j] - 1] = (unsigned char)(c->n - to_call[j]);
-            sgx_byte(c, 0x58); /* call: pop rax */
+            sgx_cold_rax(a, 0); /* call: RAX back */
         }
         /* the caller-saved general-purpose registers read after at, or an argument's */
         for (k = 0; k < 16; ++k) {
@@ -325,7 +356,7 @@ static inline void sgx_assemble_cold(SgXAsm* a, int at) {
             saved_g[k] = 1;
             sgx_mov_mem(a, 0, 64, k, SGX_RSP, 8 * gslot[k]);
         }
-        for (k = 0; k < 16; ++k) {
+        for (k = 0; k < (win64 ? 6 : 16); ++k) { /* XMM6 to XMM15 are a Windows callee's */
             int o = a->xowner[k];
             if (o <= 0 || (cls && k == outreg) || x->v[o].last <= at) continue;
             if (n % 2) ++n;
@@ -335,9 +366,11 @@ static inline void sgx_assemble_cold(SgXAsm* a, int at) {
             sgx_vmem(a, &sgx_v_movdqu_st, k, SGX_RSP, 8 * xslot[k]);
         }
         if (a->slots + n > a->slots_max) a->slots_max = a->slots + n;
+        sgx_call_room(a);
         if (i->vflags == 2) {
             /* the vector form: each XMM argument's 16 bytes in memory (its slot where it was spilled), the result's
-               16 bytes, their addresses in RSI (the result), RDX, RCX, R8, desc in R9D */
+               16 bytes, their addresses in RSI (the result), RDX, RCX, R8, desc in R9D; on Windows in RDX, R8, R9 and
+               (by RAX) the fifth argument's slot, desc in the sixth's */
             int outslot, aslot[3];
             if (n % 2) ++n;
             outslot = a->slots + n;
@@ -353,17 +386,20 @@ static inline void sgx_assemble_cold(SgXAsm* a, int at) {
             }
             if (a->slots + n > a->slots_max) a->slots_max = a->slots + n;
             {
-                static const signed char lea_to[4] = {6, 2, 1, 8};
+                static const signed char lea_to[2][4] = {{6, 2, 1, 8}, {2, 8, 9, 0}};
                 for (k = 0; k < 4; ++k) {
-                    int dst = lea_to[k], at8 = 8 * (k ? aslot[k - 1] : outslot);
+                    int dst = lea_to[win64][k], at8 = 8 * (k ? aslot[k - 1] : outslot);
                     sgx_byte(c, (unsigned char)(0x48 | (dst >> 3) << 2)); /* lea dst, [rsp + at8] */
                     sgx_byte(c, 0x8D);
                     sgx_byte(c, (unsigned char)(0x84 | (dst & 7) << 3));
                     sgx_byte(c, 0x24);
                     sgx_imm(c, at8, 4);
                 }
-                sgx_byte(c, 0x41); /* mov r9d, desc */
-                sgx_byte(c, 0xB9);
+                if (win64) {
+                    sgx_mov_mem(a, 0, 64, 0, SGX_RSP, 8 * 4);
+                    sgx_bytes(c, "C7 44 24 28"); /* mov dword [rsp + 40], desc */
+                } else
+                    sgx_bytes(c, "41 B9"); /* mov r9d, desc */
                 sgx_imm(c, i->imm, 4);
             }
             nargs = 0;
@@ -371,9 +407,10 @@ static inline void sgx_assemble_cold(SgXAsm* a, int at) {
         }
         /* the arguments: from a saved register's slot, an XMM register, or the value's own slot */
         for (k = 0; k < nargs; ++k) {
-            int v = i->in[1 + k], dst = args_reg[k];
+            int v = i->in[1 + k], stack = 0, dst = SGX_ARG_REG(x, 1 + k);
             SgXV* vv = &x->v[v];
             argslot[k] = -1;
+            if (dst >= SGX_NREG) stack = dst - SGX_NREG, dst = 0; /* through RAX, whose value was saved, to its slot */
             if (k + 1 == i->cfpcr) {
                 /* mov dst32, [rbx + disp] */
                 if (dst >= 8) sgx_byte(c, 0x44);
@@ -403,11 +440,10 @@ static inline void sgx_assemble_cold(SgXAsm* a, int at) {
                 sgx_movq(c, 0, vv->xmm, dst);
             else
                 sgx_mov_mem(a, 1, 64, dst, SGX_RSP, 8 * vv->slot);
+            if (stack) sgx_mov_mem(a, 0, 64, 0, SGX_RSP, 8 * stack);
         }
         if (a->pin_cs) a->pin_cs(a->machine, 1); /* the caller-saved pins, which the call changes, to the state */
-        sgx_byte(c, 0x48); /* mov rdi, rbx */
-        sgx_byte(c, 0x89);
-        sgx_byte(c, 0xDF);
+        sgx_state_arg(a, c);
         if (a->reloc) {
             sgx_byte(c, 0xE8);
             if (a->nccalls == a->cap_ccalls) {

@@ -500,7 +500,7 @@ SETcc forms is the state's memory for the loads and stores of the guest's regist
 free, the value read latest is spilled: to a free XMM register (MOVQ, as bytes) where nothing calls out before it is
 last read, since every XMM register is a caller's, else to a slot of the function's frame (`[RSP + 8k]`), once either
 way (an SSA value never changes), and reloaded where it is read; the frame's size is patched into the prologue and the epilogues once the
-function is done. The general registers are given first and RAX, RDX and RCX last, so MUL's and CL's fixed registers
+function is done (the registers and the slots are Windows' own there: below). The general registers are given first and RAX, RDX and RCX last, so MUL's and CL's fixed registers
 seldom hold another value. A primitive with no candidate on the host has a composition of the others where one
 is written (CLZ without LZCNT: a binary search of shifts, a test and CMOVcc).
 
@@ -526,12 +526,30 @@ DIV and IDIV of 64 bits, the divisor 1 where it is 0 or -1 under the most negati
 CLS and RBIT are compositions (CLZ of `(x XOR x << 1) OR 1`; BSWAP and three swaps of masks); NZCV read as bits
 (CCMP's choice) is four SETcc.
 
+The code's calling convention is the host C's: System V's, or where the features have `SGX_F_WIN64` (not CPUID's: a
+Windows host's, or a test's) Microsoft's x64 one, so a guest function is called the same way by the runtime's C, by LLVM's
+units, through the dispatch table and by the code itself. Values are in the registers a call changes there too
+(`sgx_pool_win64`: RAX, RCX, RDX and R8 to R11, XMM0 to XMM5), so a function saves RBX and what it pins: RDI and RSI,
+its callee's there, hold the pins R11 and R10 hold elsewhere, and the XMM registers it pins are saved in its frame, XMM6
+and XMM7 with them for values. The frame's lowest 48 bytes are its callees' (`SGX_WIN64_ARGS`: the four arguments'
+shadow, a fifth and a sixth), an atomic's address is in R9 (a pair's in R11) rather than RSI, nothing moves the stack
+pointer between the prologue and an epilogue, an epilogue is the instructions Windows' unwinder knows one by (ADD RSP,
+the pops, the return or a jump), and a frame of a page or more reads its pages first (`sgx_stack_probe`). No pin is stored
+around a C call, which keeps all of them.
+
 **The test** (`tests/sail_x64.c`, `sail_x64` with `SNX_SAIL_X64`): every word of the decoder's rows the roots take
 (again with Rd, Rn and Rm 31) is made into x86-64 code twice, on the host's BMI1, BMI2 and LZCNT and without them, and
 run beside the LLVM back end's step of it (`llvm_steps.c`) from random states: every register, the flags, the next pc and
 UNDEF must match (`sail_x64_spill` again with three host registers, `--pool 3`, so the values spill). Then random
 sequences of two to four of the words are made one block each and run beside their LLVM
 steps one after another (`--sequences N`), which is what holds the block's folds, dropped stores and reused flags. `--dump WORD` prints a word's code for a disassembler (`llvm-mc --disassemble -triple=x86_64`).
+
+The code for Windows is run by an x86-64 Linux host too (`sail_win64`, and over whole functions `recompiler_win64`):
+`tests/support/host_win64.c` enters it as Windows' C would, with RBX, RBP, RSI, RDI,
+R12 to R15, XMM6 to XMM15, MXCSR and the stack past the shadow marked before and read back after, and what it calls goes
+through a Windows callee that overwrites the shadow and every register it may. Its COFF objects are loaded by the JIT's
+own loader (`code_loader_coff.c`), and their function table is held to what Windows does with it: at each call out, and
+with `--step` at every instruction, the stack is unwound by the table back to the entry, which is `x64_unwind`.
 
 **Integers** known only when the guest runs (`SgI`: `UInt`, `SInt` and what comes of them) are 64-bit values, what their
 low bits' readers want; what needs more (a saturation of a sum of two 64-bit elements, a shift right) reads the exact

@@ -87,6 +87,7 @@ typedef struct {
     /* the addresses of the function's instructions there is no code for (options.alone), undefined where they run */
     SnxU64* none;
     size_t nnone, cap_none;
+    int again;    /* the machine's glue refused the function to make it again its way (mg_finish), once */
     int dispatch, d_label, mismatch_label;
     int nstubs, cap_stubs;
     struct Stub {
@@ -158,6 +159,10 @@ static int mg_resolve_local(Unit* u, const Reloc* r, size_t target_at);
 #ifdef MG_POOL_REACH
 /* the literals so far, here, a jump over them */
 static void mg_pool_island(Unit* u);
+#endif
+#ifdef MG_WRITE_OBJECT
+/* the unit's object in another format than ELF (x86-64's COFF): 1 written, 0 for ELF's (write_object) */
+static int MG_WRITE_OBJECT(Unit* u, unsigned char** object, size_t* size);
 #endif
 #ifdef MG_BOUND
 /* what a bound PLT stub's slot is compared with (call_stub, the BR of a stub): a jump to label where the function at
@@ -2077,6 +2082,7 @@ out:
 
 /* ---- the ELF object ---- */
 
+#if !defined(_WIN32) /* whose objects are COFF: MG_WRITE_OBJECT's */
 typedef struct {
     unsigned char* p;
     size_t n, cap;
@@ -2293,6 +2299,7 @@ static int write_object(Unit* u, unsigned char** object, size_t* size) {
     *size = o.n;
     return 0;
 }
+#endif
 
 static int mach_object(SnxCodegen* codegen, size_t first, size_t last, const SnxNativeOptions* options,
                        unsigned char* made, unsigned char** object, size_t* size, char* error, size_t error_size,
@@ -2338,7 +2345,9 @@ static int mach_object(SnxCodegen* codegen, size_t first, size_t last, const Snx
             u.b.cap = u.b.cap * 2 + codegen->functions[i].count * 400 + 4096;
             u.b.p = (unsigned char*)realloc(u.b.p, u.b.cap);
         }
+        u.again = 0;
         made[i - first] = (unsigned char)function(&u, &codegen->functions[i], i);
+        if (!made[i - first] && u.again) made[i - first] = (unsigned char)function(&u, &codegen->functions[i], i);
         if (u.b.n > u.b.cap) {
             /* past the buffer: grown, and made again, its symbol and relocations too */
             for (; u.nrelocs > relocs; --u.nrelocs) free(u.relocs[u.nrelocs - 1].sym);
@@ -2380,7 +2389,15 @@ static int mach_object(SnxCodegen* codegen, size_t first, size_t last, const Snx
     }
     if (options->jit && count != last - first) count = 0;
     if (count) {
-        write_object(&u, object, size);
+        int written = 0;
+#ifdef MG_WRITE_OBJECT
+        written = MG_WRITE_OBJECT(&u, object, size);
+#endif
+#if !defined(_WIN32)
+        if (!written) write_object(&u, object, size);
+#else
+        (void)written;
+#endif
     }
     for (i = 0; i < u.nrelocs; ++i) free(u.relocs[i].sym);
     for (i = 0; i < u.nsyms; ++i) free(u.syms[i].name);

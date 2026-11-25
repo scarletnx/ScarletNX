@@ -29,7 +29,8 @@ typedef enum {
     HOSTUC_LA64,
     HOSTUC_PPC64, /* big-endian, ELFv2 */
     HOSTUC_MIPS64, /* big-endian */
-    HOSTUC_S390X
+    HOSTUC_S390X,
+    HOSTUC_WIN64 /* x86-64's code for Windows, run by this x86-64 host itself (host_win64.c, with no Unicorn) */
 } HostUcArch;
 typedef struct HostUc HostUc;
 /* Unicorn with a region of code_cap bytes for code (and its traps after it): NULL where Unicorn has none of arch */
@@ -70,5 +71,9 @@ void hostuc_swapper(HostUc* u, void (*swap)(void* user), void* user);
 /* the code at fn run with the first two arguments a0 and a1 until it returns: 0 and its result, -1 where Unicorn
    stopped (why on stderr) */
 int hostuc_call(HostUc* u, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t* result);
+/* HOSTUC_WIN64's: the code's frames unwound by its function table after every instruction (1), not where it calls a
+   native function alone; and how many states were unwound, *failures of them wrongly (hostuc_call fails with them) */
+void hostuc_step(HostUc* u, int on);
+size_t hostuc_unwound(const HostUc* u, size_t* failures);
 
 #endif

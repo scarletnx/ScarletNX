@@ -15,6 +15,8 @@ size_t snx_mach_block(const uint32_t* words, size_t* count, uint64_t pc, uint64_
                       unsigned char* code, size_t cap);
 /* the host registers the back end may give values (0: all of its pool; fewer makes it spill) */
 void snx_mach_set_pool(int registers);
+/* and the vector registers: the first ones */
+void snx_mach_set_xpool(int registers);
 /* a helper's address, where the code calls it (the test's traps) */
 void snx_mach_set_resolve(uint64_t (*resolve)(const char* sym));
 

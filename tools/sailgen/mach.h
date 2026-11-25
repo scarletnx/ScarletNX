@@ -32,6 +32,26 @@
 #ifndef SGX_FP_HELPERS
 #define SGX_FP_HELPERS 0 /* mach_a64.h's exact helpers for all the floating point, not the machine's own code */
 #endif
+/* a machine of two calling conventions (x64.h's): the registers values may be in, a call's argument n's register (past
+   the machine's registers, SGX_NREG + a slot of the frame, where the convention has it on the stack), the frame's first
+   slot for values (those below are the convention's) and the vector registers no value may be in as the callee's */
+#ifndef SGX_POOL
+#define SGX_POOL(a) sgx_pool
+#define SGX_POOL_N(a) sizeof sgx_pool
+#endif
+#ifndef SGX_ARG_REG
+#define SGX_ARG_REG(x, n) sgx_arg_regs[n]
+#endif
+#ifndef SGX_A32_ARG /* AArch32's calls' after the state, and its exclusive store's registers */
+#define SGX_A32_ARG(x, n) sgx_a32_args[n]
+#define SGX_A32_STREX_REGS(x) sgx_a32_strex
+#endif
+#ifndef SGX_SLOT0
+#define SGX_SLOT0(a) 0
+#endif
+#ifndef SGX_XCALLEE
+#define SGX_XCALLEE(a) 0u
+#endif
 
 /* ---- the SSA of the block's instructions ---- */
 
@@ -2238,6 +2258,7 @@ typedef struct SgXAsm {
        registers pins hold, which no value is given (reserved, xreserved) */
     void (*pin_cs)(void* machine, int store);
     unsigned reserved, xreserved;
+    unsigned xsaved; /* the callee's vector registers the function saved itself (x64.h's SGX_XCALLEE) */
     /* the constant pool (16 bytes each) the function's RIP-relative operands read, after its code
        (sgx_pool_emit), and where each such operand's displacement is */
     SnxU64 (*pool)[2];
@@ -2319,11 +2340,12 @@ static inline void sgx_spill(SgXAsm* a, int r) { sgx_spill_at(a, r, -1); }
 /* a host register free at instruction at, none of avoid's (a mask: the registers the instruction reads or writes):
    one whose value nothing reads after, or else the one whose value is read latest, spilled */
 static inline int sgx_free_reg(SgXAsm* a, int at, unsigned avoid) {
-    unsigned k, n = a->x->pool && (unsigned)a->x->pool < sizeof sgx_pool ? (unsigned)a->x->pool : sizeof sgx_pool;
+    const signed char* pool = SGX_POOL(a);
+    unsigned k, n = a->x->pool && (unsigned)a->x->pool < SGX_POOL_N(a) ? (unsigned)a->x->pool : SGX_POOL_N(a);
     int best = -1;
     avoid |= a->reserved;
     for (k = 0; k < n; ++k) {
-        int r = sgx_pool[k];
+        int r = pool[k];
         if (avoid & (1u << r)) continue;
         if (!a->owner[r] || (a->owner[r] > 0 && a->x->v[a->owner[r]].last < at)) {
             if (a->owner[r] > 0) a->x->v[a->owner[r]].reg = -1;
@@ -2332,7 +2354,7 @@ static inline int sgx_free_reg(SgXAsm* a, int at, unsigned avoid) {
         }
     }
     for (k = 0; k < n; ++k) {
-        int r = sgx_pool[k];
+        int r = pool[k];
         if ((avoid & (1u << r)) || a->owner[r] <= 0) continue;
         if (best < 0 || a->x->v[a->owner[r]].last > a->x->v[a->owner[best]].last) best = r;
     }
@@ -2362,11 +2384,12 @@ static inline void sgx_evict(SgXAsm* a, int r, int at, unsigned avoid) {
     int v = a->owner[r];
     if (v > 0 && a->x->v[v].last > at) {
         /* a free register of the pool, else its slot (spilled from r, where the instruction may still read it) */
-        unsigned k, n = a->x->pool && (unsigned)a->x->pool < sizeof sgx_pool ? (unsigned)a->x->pool : sizeof sgx_pool;
+        const signed char* pool = SGX_POOL(a);
+        unsigned k, n = a->x->pool && (unsigned)a->x->pool < SGX_POOL_N(a) ? (unsigned)a->x->pool : SGX_POOL_N(a);
         int to = -1;
         avoid |= a->reserved; /* R10 and R11 when they hold pins, which the value would overwrite */
         for (k = 0; k < n && to < 0; ++k) {
-            int c = sgx_pool[k];
+            int c = pool[k];
             if (((avoid | (1u << r)) >> c) & 1) continue;
             if (!a->owner[c] || (a->owner[c] > 0 && a->x->v[a->owner[c]].last < at)) {
                 if (a->owner[c] > 0) a->x->v[a->owner[c]].reg = -1;
@@ -2388,10 +2411,11 @@ static inline void sgx_evict(SgXAsm* a, int r, int at, unsigned avoid) {
 
 /* a caller-saved register none of held's, for a call's argument of no fixed register */
 static inline int sgx_arg_free(SgXAsm* a, unsigned held) {
+    const signed char* pool = SGX_POOL(a);
     unsigned k;
     held |= a->reserved;
-    for (k = 0; k < sizeof sgx_pool; ++k)
-        if (!(held & (1u << sgx_pool[k]))) return sgx_pool[k];
+    for (k = 0; k < SGX_POOL_N(a); ++k)
+        if (!(held & (1u << pool[k]))) return pool[k];
     sg_fail("no register for a call's argument", (long long)held, 0);
 }
 
@@ -2784,9 +2808,10 @@ static inline void sgx_assemble_region(SgXAsm* a, SgX* x) {
     SgXBuf* b = a->b;
     a->x = x;
     if (x->xpool) a->xreserved |= ~0u << x->xpool;
+    a->xreserved |= SGX_XCALLEE(a);
     memset(a->owner, 0, sizeof a->owner);
     memset(a->xowner, 0, sizeof a->xowner);
-    a->slots = 0;
+    a->slots = SGX_SLOT0(a);
     for (i = 0; i < x->nv; ++i) {
         x->v[i].reg = -1;
         x->v[i].slot = -1;
@@ -2894,10 +2919,15 @@ static inline void sgx_assemble_region(SgXAsm* a, SgX* x) {
                 for (k = 0; k < SGX_MACHINE_IN; ++k)
                     if (s->in[k]) {
                         SgXV* vv = &x->v[s->in[k]];
-                        int fr = s->fixed[k] >= 0 ? s->fixed[k] : sgx_arg_free(a, held);
+                        int stack = s->fixed[k] >= SGX_NREG; /* on the stack: through a register, put there */
+                        int fr = s->fixed[k] >= 0 && !stack ? s->fixed[k] : sgx_arg_free(a, held);
                         if (vv->xmm >= 0) sgx_spill_x(a, 0, vv->xmm, fr);
                         else
                             sgx_mov_mem(a, 1, 64, fr, SGX_FRAME, 8 * vv->slot);
+                        if (stack) {
+                            sgx_mov_mem(a, 0, 64, fr, SGX_FRAME, 8 * (s->fixed[k] - SGX_NREG));
+                            continue;
+                        }
                         held |= 1u << fr;
                         r[k] = (unsigned char)fr;
                     }
