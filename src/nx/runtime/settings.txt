@@ -1543,14 +1543,16 @@ setting Write marks
     help 1 = the game's code marks each 4 KiB page it stores to, in a byte of an array beside guest memory, so the
     help caches can find the pages the game wrote by reading those bytes (write_marks_scan) instead of asking the host.
     help It costs the game's threads a store after theirs. 2 = the stores off the stack pointer too, which 1 leaves
-    help out, to check what that misses. It applies to the next recompile, and to the JIT's next run
+    help out, to check what that misses. It applies to the next recompile, and to the JIT's next run: a program made with
+    help marks is stopped, with both values named, where a run has write_marks=0
 setting Write marks scan
     key write_marks_scan
     int 0 2
     default 0
     startup
     words Host|Marks|Check
-    help With a game made with write_marks=1: 0 = the caches find written pages with the host's tracking
+    help With a game made with write_marks=1 (a run of one made without is stopped, with both values named): 0 = the caches
+    help find written pages with the host's tracking
     help (write_tracking), as without the marks. 1 = they read the marks instead, which takes the host's system calls
     help off the thread that records the draws. 2 = the host's tracking, and the marks checked against it: each page
     help the host found written that no mark covered is counted and the first ones named in the log, the way to find

@@ -16,6 +16,9 @@ typedef struct {
     size_t hint_count;
     const char* jit_cache; /* the profile run's .jitcache, linked into the module; NULL for none */
     unsigned abi;
+    /* the setting write_marks (snx_ir_write_marks) the code is made with, which a module's descriptor says: 0 says nothing.
+       The builders set it; the caller's is not read */
+    int write_marks;
     /* the NROs the program maps while it runs, each placed (snx_nro_slots_place), behind its modules up to nro_end:
        the module's snx_nros table (module_abi.h). None: no table */
     const SnxNroSlot* nros;

@@ -962,7 +962,9 @@ static const char* base_name(const char* path) {
     return name;
 }
 
-int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* options, const SnxLlvmBuild* build) {
+int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* asked, const SnxLlvmBuild* build) {
+    SnxCodegenOptions with = *asked; /* what the descriptor says of the write marks is what the code has */
+    const SnxCodegenOptions* options = &with;
     Discovery d;
     Queue q;
     SnxIr* ir = NULL;
@@ -971,10 +973,11 @@ int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* options, c
     unsigned char *module_object = NULL, *x64_object = NULL;
     size_t module_size = 0, x64_size = 0, first, last, units, limit, i, n = 0, nllvm = 0;
     Block* llvm = NULL;
-    const char* exports[1];
+    const char* exports[2];
     char error[1024], *tmp = NULL;
     double start;
     int rc = -1;
+    with.write_marks = snx_ir_write_marks_on();
     memset(&d, 0, sizeof(d));
     memset(&q, 0, sizeof(q));
     memset(&linked, 0, sizeof(linked));
@@ -1033,6 +1036,13 @@ int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* options, c
     llvm = (Block*)snx_alloc((d.count + 1) * sizeof(*llvm));
     for (i = 0; i < d.count; ++i)
         if (!d.blocks[i].x64) llvm[nllvm++] = d.blocks[i];
+    if (snx_ir_write_marks_on() && (nllvm || !d.x64)) {
+        /* LLVM's blocks make no marks (cpu/arm/llvm.c), so a program of both would miss the pages theirs write */
+        snx_error("write_marks=%d: LLVM makes %lu of this program's %lu AArch32 blocks, which have no write marks: "
+                  "recompile it with write_marks=0",
+                  snx_ir_write_marks_on(), (unsigned long)nllvm, (unsigned long)d.count);
+        goto done;
+    }
     limit = options->chunk_instrs ? options->chunk_instrs : (size_t)g_settings.unit_size;
     if (d.x64) {
         /* the few blocks the native back end left, spread over the whole code: units of a sixteenth of their code at
@@ -1117,7 +1127,9 @@ int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* options, c
         inputs[n++].name = "native blocks";
     }
     exports[0] = "snx_module_arm";
-    if (snx_link(inputs, n, exports, 1, base_name(build->output), &linked, error, sizeof(error))) {
+    exports[1] = "snx_write_marks";
+    if (snx_link(inputs, n, exports, options->write_marks ? 2 : 1, base_name(build->output), &linked, error,
+                 sizeof(error))) {
         snx_error("linking failed: %s", error);
         goto done;
     }

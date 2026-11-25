@@ -6,6 +6,7 @@
 #include "nx/runtime/main.h"
 #include "common/cpu/recompiler/llvm/gdb_jit.h"
 #include "common/cpu/recompiler/llvm/ir.h"
+#include "common/cpu/recompiler/mach/native.h"
 #include "common/cpu/recompiler/x64/x64_cache.h"
 #include "common/utilities/build_info.h"
 #include "common/utilities/program_start.h"
@@ -113,6 +114,7 @@ typedef const SnxModule* (*ModuleFn)(void);
 typedef const SnxArmModule* (*ArmModuleFn)(void);
 typedef const SnxVariants* (*VariantsFn)(void);
 typedef const SnxRoutes* (*RoutesFn)(void);
+typedef const SnxWriteMarks* (*WriteMarksFn)(void);
 typedef const SnxNros* (*NrosFn)(void);
 
 /* ---- the game to run ---- */
@@ -210,6 +212,38 @@ static void routes_load(RoutesFn get) {
     }
 }
 
+/* the write marks the game's code was made with, the setting's value (snx_write_marks, module_abi.h): 0 none */
+static u32 g_module_marks;
+static void marks_load(WriteMarksFn get) {
+    const SnxWriteMarks* made = get();
+    if (!made || made->version != SNX_WRITE_MARKS_VERSION)
+        fatal("The recompiled code's write marks are of version %u, where this runtime reads %u: recompile the game "
+              "with this one",
+              made ? (unsigned)made->version : 0u, (unsigned)SNX_WRITE_MARKS_VERSION);
+    g_module_marks = made->level;
+}
+/* the settings write_marks and write_marks_scan are what the program's code was made with, or the run is refused before
+   anything of it runs: without write_marks the marks are not committed and the code's first store would fault, and
+   without marks of its own nothing says what the game wrote */
+static void marks_check(void) {
+    if (g_module_marks && !g_settings.write_marks)
+        fatal("write_marks=0 is in effect and this program's code was made with write_marks=%u, which stores into the "
+              "marks: recompile the game with write_marks=0, or run it with write_marks=%u",
+              (unsigned)g_module_marks, (unsigned)g_module_marks);
+    if (!g_module_marks && g_settings.write_marks_scan)
+        fatal("write_marks_scan=%d is given and this program's code was made with write_marks=0, so it marks no page: "
+              "recompile the game with write_marks=1, or run it with write_marks_scan=0",
+              g_settings.write_marks_scan);
+    if (!g_module_marks && g_settings.write_marks)
+        WARN("write_marks=%d is given and this program's code was made with write_marks=0: only the code the JIT makes "
+             "marks its pages\n",
+             g_settings.write_marks);
+    if (g_settings.write_marks && !snx_native_write_marks())
+        fatal(
+            "write_marks=%d is given and the %s back end's code makes no write marks: run the game with write_marks=0",
+            g_settings.write_marks, snx_native_name());
+}
+
 /* the module's table of the NROs the game maps (snx_nros, nro_slots.h), kept when it is one this runtime can place
    them by: its version, each NRO behind the one before it in the order of their hashes, all of them between the
    modules' code and the table's end. Else said once, and the NROs' code is the JIT's, as without a table */
@@ -278,7 +312,7 @@ static const SnxModule* load_pack(const char* path) {
     free(data); /* the loaded code is a copy */
     {
         SnxU64 variants = 0;
-        SnxU64 routes = 0;
+        SnxU64 routes = 0, marks = 0;
         if (snx_code_lookup(loader, "snx_variants", &variants)) { /* a global of the pack, in the loader's table */
             VariantsFn get_variants = (VariantsFn)(uintptr_t)variants;
             g_variants = get_variants();
@@ -286,6 +320,7 @@ static const SnxModule* load_pack(const char* path) {
                 fatal("%s has a runtime variant table of another version", path);
         }
         if (snx_code_lookup(loader, "snx_routes", &routes)) routes_load((RoutesFn)(uintptr_t)routes);
+        if (snx_code_lookup(loader, "snx_write_marks", &marks)) marks_load((WriteMarksFn)(uintptr_t)marks);
     }
     get = (ModuleFn)(uintptr_t)address;
     return get();
@@ -340,6 +375,11 @@ static const SnxModule* load_module(const char* path) {
         RoutesFn get_routes;
         memcpy(&get_routes, &sym, sizeof get_routes);
         routes_load(get_routes);
+    }
+    if ((sym = plat_dl_sym(lib, "snx_write_marks")) != NULL) {
+        WriteMarksFn get_marks;
+        memcpy(&get_marks, &sym, sizeof get_marks);
+        marks_load(get_marks);
     }
     if (!g_arm_mod && (sym = plat_dl_sym(lib, "snx_nros")) != NULL) {
         NrosFn get_nros;
@@ -1597,6 +1637,14 @@ int snx_main(int argc, char** argv) {
     snx_ir_volatile_memory(g_settings.volatile_load_stores);
     snx_ir_abi_contract(g_settings.abi_contract);
     snx_ir_write_marks(g_settings.write_marks);
+    if (nce_wanted()) {
+        if (g_settings.write_marks || g_settings.write_marks_scan)
+            WARN(
+                "write_marks=%d and write_marks_scan=%d are given and 0 and 0 are in effect: NCE (nce=1) runs the game's "
+                "own code, which makes no marks\n",
+                g_settings.write_marks, g_settings.write_marks_scan);
+    } else
+        marks_check();
     snx_ir_diagnostics(g_settings.ir_stats, g_settings.ir_dump_pc);
     snx_x64_cache_ceiling((SnxU64)g_settings.unit_cache_ceiling * 1000000ull);
     snx_ir_branch_profile(g_settings.ir_branch_profile);

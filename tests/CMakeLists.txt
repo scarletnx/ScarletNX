@@ -3930,6 +3930,12 @@ snx_test_target(snx-test-unit-cache gnu23)
 target_link_libraries(snx-test-unit-cache PRIVATE snx_driver_llvm ${CMAKE_DL_LIBS})
 add_test(NAME unit_cache COMMAND snx-test-unit-cache)
 set_tests_properties(unit_cache PROPERTIES TIMEOUT 120)
+# the write marks in the code a module and the JIT are made of, which a module says it was made with
+add_executable(snx-test-write-marks-code write_marks_code.c)
+snx_test_target(snx-test-write-marks-code gnu23)
+target_link_libraries(snx-test-write-marks-code PRIVATE snx_driver_llvm ${CMAKE_DL_LIBS})
+add_test(NAME write_marks_code COMMAND snx-test-write-marks-code)
+set_tests_properties(write_marks_code PROPERTIES TIMEOUT 120)
 # a function past the buffer its unit started with, on every machine's back end
 if(NOT WIN32)
     add_executable(snx-test-native-grow native_grow.c)

@@ -19,6 +19,7 @@
 #include <android/api-level.h>
 #endif
 #include "common/cpu/recompiler/llvm/ir.h"
+#include "common/cpu/recompiler/mach/native.h"
 #include "common/cpu/recompiler/x64/x64_cache.h"
 
 /* the triple of the iOS app's code: Darwin's calling convention and the generic AArch64 CPU, in the object format the
@@ -853,6 +854,11 @@ static int make_program(const MakeArgs* a, int index) {
         snx_ir_fpsr_flags(g_settings.fpsr_flags);
         snx_ir_volatile_memory(g_settings.volatile_load_stores);
         snx_ir_abi_contract(g_settings.abi_contract);
+        if (g_settings.write_marks && !snx_native_write_marks()) {
+            snx_error("write_marks=%d: the %s back end's code makes no write marks: recompile with write_marks=0",
+                      g_settings.write_marks, snx_native_name());
+            goto done;
+        }
         snx_ir_write_marks(g_settings.write_marks);
         snx_ir_diagnostics(g_settings.ir_stats, g_settings.ir_dump_pc);
         snx_x64_cache_ceiling((SnxU64)g_settings.unit_cache_ceiling * 1000000ull);
