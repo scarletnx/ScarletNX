@@ -14,7 +14,7 @@ typedef struct AgbBoard AgbBoard;
 typedef struct {
     SnxArmCPU arm;
     AgbBoard* board; /* the machine the bus hook serves */
-    /* the running block's trace (llvm.h's SnxArmCodegenOptions): per instruction unit its access's address or its
+    /* the running block's trace (codegen.h's SnxArmCodegenOptions): per instruction unit its access's address or its
        multiplier, and a bit for each conditional one that did not run, which the machine loop clears before it */
     uint32_t trace[AGB_BLOCK_MAX];
     uint32_t skipped[AGB_BLOCK_MAX / 32];

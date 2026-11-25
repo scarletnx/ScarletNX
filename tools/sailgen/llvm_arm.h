@@ -183,7 +183,7 @@ static inline void sg_MultiplyCarry(SgCtx* g) {
     g->cpsr = NULL; /* its C */
     memset(g->read, 0, sizeof g->read);
 }
-/* the multiplier, in the instruction's trace slot when the block keeps a trace (llvm.h's SnxArmCodegenOptions) */
+/* the multiplier, in the instruction's trace slot when the block keeps a trace (codegen.h's SnxArmCodegenOptions) */
 static inline void sg_TraceMultiplier(SgCtx* g, SgD multiplier) {
     if (g->a->trace) trace_value(g->a, sg_d_make(g, &multiplier));
 }

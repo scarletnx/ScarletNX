@@ -210,8 +210,8 @@ SnxCtrRunResult snx_ctr_dispatch(const SnxCtrModule* m, SnxCtrProcess* process, 
                 return SNX_CTR_RUN_UNSUPPORTED;
             }
         }
-        /* a hosted block (SNX_ARM_MEMORY_HOSTED, llvm.h) takes its entry state from this loop: r15 and CPSR.T chose the
-           block, exit and syndrome are clear (the context of a thread that blocked in an SVC comes back with them
+        /* a hosted block (SNX_ARM_MEMORY_HOSTED, codegen.h) takes its entry state from this loop: r15 and CPSR.T chose
+           the block, exit and syndrome are clear (the context of a thread that blocked in an SVC comes back with them
            set), and no IT block is under way, which an SVC inside one or a stop at a changed instruction leaves */
         cpu->exit = SNX_ARM_OK;
         cpu->syndrome = 0;
