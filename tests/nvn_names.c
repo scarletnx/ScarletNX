@@ -311,6 +311,7 @@ static u64 g_written_at, g_written_size;
 /* memory/mem.c's write marks: the range last marked, and how many times one was, for the checks of what marks */
 static u64 g_mark_at, g_mark_size;
 static u32 g_marks;
+int mem_marks_on(void) { return 0; }
 void mem_wrote(u64 a, u64 size) {
     g_mark_at = a;
     g_mark_size = size;

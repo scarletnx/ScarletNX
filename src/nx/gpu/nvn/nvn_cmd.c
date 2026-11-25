@@ -846,6 +846,13 @@ static int count(CPU* c, u64 cb, u32 cost) {
 static u64 alloc_rec(CPU* c, u64 cb, u32 op, u32 size, u32 cost) {
     NvnCmdBuf* o = CB(cb);
     u64 at;
+    /* the record before this one is whole: its payload is in since it was given out (rec), and a scan of the write marks
+       in between took its first pages' marks before that. Its pages are marked again */
+    if (o->recording == 1 && o->last && mem_marks_on()) {
+        NvnRecHdr before;
+        memcpy(&before, GP(o->last), sizeof before);
+        mem_wrote(o->last, before.size);
+    }
     size = (size + 7) & ~7u;
     if (cost == COST_RECORD) cost = size;
     int counted = count(c, cb, cost);
@@ -883,8 +890,8 @@ static u64 rec(CPU* c, u64 cb, u32 op, size_t payload, u32 cost) {
     u32 size = (u32)((8 + payload + 7) & ~(size_t)7);
     u64 at = alloc_rec(c, cb, op, size, cost);
     memset(GP(at + 8), 0, size - 8); /* guest memory: every byte the game sees */
-    /* the record's pages, for the write marks: its payload's stores right after this land on the same pages, which the
-       next record marks again, and the recording's end marks its last one (nvn_CommandBufferEndRecording) */
+    /* the record's pages, for the write marks: the next record marks them again once its payload is in (alloc_rec), and
+       the recording's end marks its last one (nvn_CommandBufferEndRecording) */
     mem_wrote(at, size);
     return at + 8;
 }
