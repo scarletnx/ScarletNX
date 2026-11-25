@@ -1,14 +1,15 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The runtime's keys (backend/sdl3.c): an action each, its key a setting of settings.txt's Shortcuts
-   (hotkey_<action>), the key as SDL names it after Ctrl+, Alt+, Shift+ or GUI+ for the modifiers held with it, empty
-   for none. F1's help (help.c) and the stats box's RenderDoc line show them, and the game's menu's Shortcuts page sets
-   them (overlay.c). The main thread's, and the renderer's reading a key's text under ui_lock, which the settings' reads
-   (backend_ini) and the menu hold too */
+/* The runtime's keys (nx/runtime/platform/backend/sdl3.c): an action each, its key a setting of settings.txt's
+   Shortcuts (hotkey_<action>), the key as SDL names it after Ctrl+, Alt+, Shift+ or GUI+ for the modifiers held with
+   it, empty for none. F1's help (nx/runtime/platform/help.c) and the stats box's RenderDoc line show them, and the
+   game's menu's Shortcuts page sets them (nx/runtime/platform/overlay.c). The main thread's, and the renderer's reading
+   a key's text under ui_lock, which the settings' reads (backend_ini) and the menu hold too. What they say goes through
+   snx_error */
 #ifndef SNX_HOTKEYS_H
 #define SNX_HOTKEYS_H
 #include "common/utilities/key_text.h"
-#include "nx/runtime/ini.h"
+#include "snx_settings.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -51,6 +52,11 @@ uint32_t hotkeys_version(void);
 int hotkey_parse(const char* text, unsigned* key, unsigned* mods, char* why, size_t n);
 /* key and mods as a setting holds them, into out (n bytes): "" for no key */
 void hotkey_name(unsigned key, unsigned mods, char* out, size_t n);
+/* SDL's modifiers held with a key (SDL_Keymod) as these count them, either side's */
+unsigned hotkey_mods(unsigned sdl_mod);
+/* the Shortcuts' row of key (hotkey_quit), NULL for another key: the consoles' windows read them with the on-screen
+   controls' (vpad_settings_also) */
+const IniOpt* hotkey_setting(const char* key);
 /* whether key is a modifier (Ctrl, Shift, Alt, GUI, AltGr...), which only goes with another */
 int hotkey_modifier(unsigned key);
 /* the action a key pressed with mods does, -1 for none: the one set to that key with those modifiers, else, with Shift

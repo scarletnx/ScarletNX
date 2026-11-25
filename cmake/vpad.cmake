@@ -18,12 +18,15 @@ add_library(snx_vpad_consoles STATIC "${PROJECT_SOURCE_DIR}/src/common/utilities
 target_link_libraries(snx_vpad_consoles PUBLIC scarletnx-common snx_settings)
 set_target_properties(snx_vpad_consoles PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_compile_options(snx_vpad_consoles PRIVATE -pedantic-errors -Wall -Wextra -Werror=missing-variable-declarations)
-# and in an SDL window (src/common/utilities/vpad_sdl.c), which the Switch's and every other console's share
+# and in an SDL window (src/common/utilities/vpad_sdl.c), which the Switch's and every other console's share, with the
+# runtime's keys (src/common/utilities/hotkeys.c: settings.txt's Shortcuts, a key as SDL names it)
 if(TARGET SDL3::SDL3)
     include("${CMAKE_CURRENT_LIST_DIR}/notice.cmake") # the menu's letters' scale
-    add_library(snx_vpad_sdl STATIC "${PROJECT_SOURCE_DIR}/src/common/utilities/vpad_sdl.c")
+    include("${CMAKE_CURRENT_LIST_DIR}/pad_sdl.cmake") # a key's text (key_text.c)
+    add_library(snx_vpad_sdl STATIC "${PROJECT_SOURCE_DIR}/src/common/utilities/vpad_sdl.c"
+                                    "${PROJECT_SOURCE_DIR}/src/common/utilities/hotkeys.c")
     target_include_directories(snx_vpad_sdl PRIVATE "${PROJECT_BINARY_DIR}/generated")
-    target_link_libraries(snx_vpad_sdl PUBLIC snx_vpad SDL3::SDL3 PRIVATE snx_notice)
+    target_link_libraries(snx_vpad_sdl PUBLIC snx_vpad SDL3::SDL3 snx_pad_sdl PRIVATE snx_notice)
     set_target_properties(snx_vpad_sdl PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
     target_compile_options(snx_vpad_sdl PRIVATE -pedantic-errors -Wall -Wextra -Werror=missing-prototypes
                                                 -Werror=missing-variable-declarations)
