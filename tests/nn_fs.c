@@ -40,6 +40,9 @@ static u8 mem[0x2000];
 /* a RomFS image of one root directory and no files: the header, then its four tables. The tables' sizes differ in
    the two images, so each one's cache size tells them apart */
 #define SYSTEM_ID 0x0100000000000823ull
+/* a Switch 2 Edition's programs: this one, program 1, and program 0, whose RomFS image is in the data folder */
+#define PROGRAM1_ID 0x0400000000001001ull
+#define PROGRAM0_ID 0x0400000000001000ull
 static u8 game_image[0x100], data_image_bytes[0x100];
 static void image(u8* b, u64 dir_hash_size) {
     u64 dir_hash = 0x50, dirs = dir_hash + dir_hash_size, file_hash = dirs + 0x18, files = file_hash + 4;
@@ -78,9 +81,14 @@ u64 fs_pace_read(const void* storage, u64 off, u64 sz) {
 static unsigned storages_open;
 u32 fs_storage_open(u64 data_id, FsStorage* out) {
     *out = (FsStorage){0};
-    if (data_id != SYSTEM_ID) return FSR(1002);
+    if (data_id != SYSTEM_ID && data_id != PROGRAM0_ID) return FSR(1002);
     storages_open++;
     return 0;
+}
+/* the data folder's files: only program 0's RomFS image, which the native layer checks for before it opens it */
+FILE* fs_open_read(const char* path, u64* size) {
+    if (size) *size = 0;
+    return strcmp(path, "system/archives/0400000000001000.romfs") ? NULL : tmpfile();
 }
 void fs_storage_close(FsStorage* st) {
     (void)st;
@@ -523,6 +531,23 @@ int main(int argc, char** argv) {
             nnfs_unmount(c, NAME);
         }
         g_program = 0;
+    }
+    /* another program's RomFS: a Switch 2 Edition's program 1 (the low byte of its title ID) mounts program 0, the
+       Switch 1 game, from its image in the data folder, as a system archive's is mounted */
+    {
+        g_hle.kernel.title_id = PROGRAM1_ID;
+        outs();
+        CHECK(nnfs_query_mount_rom_cache_size_program(c, RESULT, 0) == 0 && snx_ld_le64(mem + RESULT) == 12 + 0x18 + 4);
+        CHECK(storages_open == 0);
+        text(NAME, "conorig");
+        memset(mem + CACHE, 0xee, 0x40);
+        CHECK(nnfs_mount_rom_program(c, NAME, 0, CACHE, 0x28) == 0 && storages_open == 1);
+        CHECK(!memcmp(mem + CACHE, data_image_bytes + 0x50, 12 + 0x18 + 4) && mem[CACHE + 0x28] == 0xee);
+        text(PATH, "conorig:/x");
+        CHECK(nnfs_is_path_mounted(c, PATH) == 1);
+        nnfs_unmount(c, NAME);
+        CHECK(storages_open == 0);
+        g_hle.kernel.title_id = 0;
     }
 
     /* the device's save is asked of the file server as the save of type 3 that no user owns, an account's as type 1

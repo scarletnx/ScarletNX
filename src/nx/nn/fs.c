@@ -681,24 +681,6 @@ static u32 query_rom_cache_size(CPU* c, const char* symbol, u64 size) {
 }
 u32 nnfs_query_mount_rom_cache_size(CPU* c, u64 size) { return query_rom_cache_size(c, SYM_QUERY_ROM_CACHE, size); }
 
-/* MountRom and QueryMountRomCacheSize for the program of the application at index, whose RomFS the SDK opens: this
-   program's own when index is this program's (g_program, 0 for a game of one program), answered as the overloads
-   without an index are. The native layer has no other program's RomFS, so the game stops, naming both */
-static void own_program(const char* function, i32 index) {
-    if (index != g_program)
-        fatal("nn::fs::%s: the game asks for the RomFS of program %d of its application, and this is program %d, the "
-              "only one whose RomFS the runtime mounts",
-              function, index, g_program);
-}
-u32 nnfs_mount_rom_program(CPU* c, u64 name, i32 index, u64 cache, u64 cache_size) {
-    own_program("MountRom", index);
-    return mount_rom(c, SYM_MOUNT_ROM_PROGRAM, name, cache, cache_size);
-}
-u32 nnfs_query_mount_rom_cache_size_program(CPU* c, u64 size, i32 index) {
-    own_program("QueryMountRomCacheSize", index);
-    return query_rom_cache_size(c, SYM_QUERY_ROM_PROGRAM, size);
-}
-
 /* The data storage of id (an add-on content's, or a system archive's, as OpenDataStorageByDataId gives it), its tables
    read into a free image (lock held): the image, or -1 with *r the Result */
 static int data_image(u64 id, u32* r) {
@@ -715,6 +697,57 @@ static int data_image(u64 id, u32* r) {
 /* The add-on content of index: its data id is the game's base id + index, as aoc's PrepareAddOnContent, which
    always finds it in place here, gives it */
 static int aoc_image(i32 index, u32* r) { return data_image(aoc_base_id(g_hle.kernel.title_id) + (u64)(u32)index, r); }
+
+/* MountRom and QueryMountRomCacheSize for the program of the application at index, whose RomFS the SDK opens. A
+   program's ID is its application's plus its index, so this program's index is the low byte of its title ID, or
+   g_program for a collection's other program. Its own index is answered as the overloads without an index are. Another
+   program's RomFS is the image system/archives/<its ID>.romfs in the game's data folder: a Switch 2 Edition's program
+   1 mounts program 0, the Switch 1 game, when its own RomFS lacks the Switch 1 game's files */
+static i32 own_index(void) { return g_program ? g_program : (i32)(g_hle.kernel.title_id & (SNX_PROGRAMS_MAX - 1)); }
+/* the image of program index's RomFS, another program's (lock held): the image, or -1 with *r the Result. The game
+   stops when the image is not there: archive_node would give an empty one, and the program needs its files */
+static int program_image(const char* function, i32 index, u32* r) {
+    u64 id = g_hle.kernel.title_id - (u64)own_index() + (u64)(u32)index;
+    char path[64];
+    snprintf(path, sizeof path, "system/archives/%016llx.romfs", (unsigned long long)id);
+    FILE* f = index >= 0 && index < SNX_PROGRAMS_MAX ? fs_open_read(path, NULL) : NULL;
+    if (!f)
+        fatal("nn::fs::%s: the game asks for the RomFS of program %d of its application (%016llx), and this is program "
+              "%d. Put that program's RomFS image in the game's data folder as %s",
+              function, index, (unsigned long long)id, own_index(), path);
+    fclose(f);
+    return data_image(id, r);
+}
+u32 nnfs_mount_rom_program(CPU* c, u64 name, i32 index, u64 cache, u64 cache_size) {
+    if (index == own_index()) return mount_rom(c, SYM_MOUNT_ROM_PROGRAM, name, cache, cache_size);
+    pm_lock(&g_nnfs.lock);
+    u32 r;
+    int rom = program_image("MountRom", index, &r);
+    if (rom >= 0) {
+        r = mount_image(c, "MountRom", name, cache, cache_size, (u32)rom);
+        if (r) rom_release((u32)rom);
+    }
+    pm_unlock(&g_nnfs.lock);
+    return done("MountRom", r);
+}
+u32 nnfs_query_mount_rom_cache_size_program(CPU* c, u64 size, i32 index) {
+    if (index == own_index()) return query_rom_cache_size(c, SYM_QUERY_ROM_PROGRAM, size);
+    pm_lock(&g_nnfs.lock);
+    u32 r = 0;
+    u64 n = 0;
+    if (!size)
+        r = R_NULL_ARGUMENT;
+    else {
+        int rom = program_image("QueryMountRomCacheSize", index, &r);
+        if (rom >= 0) {
+            n = rom_cache_size(rom_at((u32)rom));
+            rom_release((u32)rom);
+        }
+    }
+    pm_unlock(&g_nnfs.lock);
+    if (!r) put_size(c, size, n);
+    return done("QueryMountRomCacheSize", r);
+}
 
 u32 nnfs_mount_add_on_content(CPU* c, u64 name, i32 index, u64 cache, u64 cache_size) {
     pm_lock(&g_nnfs.lock);
