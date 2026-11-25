@@ -47,6 +47,12 @@ if(BUILD_TESTING)
     target_compile_options(snx-test-agb-cpu PRIVATE -Wall -Wextra -Werror)
     set_target_properties(snx-test-agb-cpu PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
     add_test(NAME agb_cpu COMMAND snx-test-agb-cpu)
+    # the save states: the frames after a state loaded are the frames the run that went on had (agb_state.c)
+    add_executable(snx-test-agb-state "${PROJECT_SOURCE_DIR}/tests/agb_state.c")
+    target_link_libraries(snx-test-agb-state PRIVATE snx_agb_program)
+    target_compile_options(snx-test-agb-state PRIVATE -Wall -Wextra -Werror)
+    set_target_properties(snx-test-agb-state PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
+    add_test(NAME agb_state COMMAND snx-test-agb-state "${CMAKE_CURRENT_BINARY_DIR}")
     add_executable(snx-test-agb-host "${PROJECT_SOURCE_DIR}/tests/agb_host.c")
     target_link_libraries(snx-test-agb-host PRIVATE snx_agb_program)
     target_include_directories(snx-test-agb-host PRIVATE "${PROJECT_SOURCE_DIR}/tests") # support/
@@ -115,6 +121,6 @@ endif()
 
 if(COMMAND snx_sanitizer_path) # tests/CMakeLists.txt: this folder's tests
     snx_test_sanitize(snx-test-agb-board snx-test-agb-bios snx-test-agb-ppu snx-test-agb-apu snx-test-agb-cpu
-                      snx-test-agb-host snx-test-agb-host-vk)
+                      snx-test-agb-state snx-test-agb-host snx-test-agb-host-vk)
     snx_sanitizer_path()
 endif()

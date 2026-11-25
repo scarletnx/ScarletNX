@@ -27,9 +27,10 @@ target_compile_options(scarletnx-agb PRIVATE -Wall -Wextra -Werror)
 # the runner: the board in a window, with sound and the keypad (runtime/host.c), SDL here and never in the board. Its
 # command line goes beside every GBA game (recompiled/<name>/<name>, its .ini saying system=gba), and reads the
 # settings it takes by their names on a command line (snx_settings' settings_arg)
-add_library(snx_agb_program STATIC runtime/host.c runtime/main.c runtime/vk.c "${volk_SOURCE_DIR}/volk.c")
+add_library(snx_agb_program STATIC runtime/host.c runtime/main.c runtime/vk.c runtime/state.c "${volk_SOURCE_DIR}/volk.c")
 target_link_libraries(snx_agb_program PUBLIC scarletnx-agb SDL3::SDL3 snx_window_icon snx_pad_sdl snx_build_info
                       snx_settings snx_notice snx_vpad_sdl snx_vpad_consoles)
+target_link_libraries(snx_agb_program PUBLIC snx_state_file) # the save states (runtime/state.c), the Switch's file
 # the window through Vulkan (runtime/vk.c), as the other consoles' windows; volk's loader compiled here, as every
 # frontend does. snx_settings_runtime: the vk_ext_* table (g_vk_extension_settings) its device takes
 target_link_libraries(snx_agb_program PUBLIC snx_vk_common Vulkan::Headers snx_settings_runtime)
