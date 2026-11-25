@@ -195,6 +195,8 @@ static int ready(SnxUpscalerId id, const u32 render[2], const u32 out[2], u32 fl
 static int input(const Surf2D* s, int depth, const u32 least[2], Surf** surf, SnxUpscaleImage* image) {
     Surf* t = vk_rt_find(s->addr);
     if (t) vk_rt_note_read(t);
+    /* a hosted target, read as level 0 of its own image here: given one first (docs/dev/one-image.md) */
+    if (t && t->host && !vk_rt_own(t)) return 0;
     if (!t || t->layout == VK_IMAGE_LAYOUT_UNDEFINED || t->msaa || !t->f.depth != !depth || t->sw < least[0] ||
         t->sh < least[1]) {
         LOG_LIMIT(6, "vulkan: the upscaler can't sample the surface at %llx (format %#x): %s\n",

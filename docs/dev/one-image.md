@@ -16,6 +16,7 @@
 * [What stays a copy](#what-stays-a-copy)
 * [The steps](#the-steps)
 * [Risks](#risks)
+* [The first form: hosting](#the-first-form-hosting)
 
 The renderer keeps a render target and a texture over the same guest memory as two Vulkan images. A texture that
 samples a drawn target copies the target's pixels into its own image (a take, `texture.c tex_take_drawn`). This
@@ -193,3 +194,38 @@ texels of each view with the take's copy, and counts each one that differs.
 - A game that draws a subresource in one format and samples it in another of the same texel size. The view format
   must be in the storage's list, so the list is fixed when the storage is made. A format that comes later and is not
   in the list makes a new storage, one time.
+
+## The first form: hosting
+
+Hosting does steps 3 and part of 4 without the storage of step 1. It runs wherever the device has unified image
+layouts (`VK_KHR_unified_image_layouts`), where every image is in `GENERAL`, so a layout for each subresource (step 2)
+is not needed. Elsewhere targets keep images of their own and the takes, as before. The tables below compare it off
+and on, with a switch the measurements had.
+
+- A texture image that a target can be a view of gets the attachment usage (`tex_create`, `tex_info`): block linear,
+  2D, an array or a cube, one sample, its format as memory holds it, and a format the device can draw into.
+- After the take of a target into such a texture (`tex_take_drawn`), the target is hosted (`vk_rt_host`), when it has
+  the texture's format, it is not scaled, and it covers the level's size and the layers whole. Its image goes, and its
+  attachment view is made on the texture's image at its level and layer. Its pixels are already there from the take.
+- A hosted target keeps no state of its own. `vk_surf_use` keeps the host's, so a barrier names the host's whole image.
+- The paths that read a target's image as level 0 and layer 0 add `vk_surf_level0` and `vk_surf_layer0` (the
+  attachment views, the publishes, the loads, the takes into other textures, the sampled views). The other paths
+  first give the target an image of its own again with a copy (`vk_rt_own`): the moves of a parked target's pixels,
+  the present, the upscaler, readbacks, captures, crops and storage use.
+- Before a texture's image goes (`tex_image_swap`, a free), its targets get images of their own (`vk_tex_unhost`).
+  Before a texture loads from memory, its hosted targets that memory lacks are published first (`tex_hosted_publish`).
+
+Not hosted yet: depth targets, scaled targets, and targets that a GOB pads past their level (a 32x11 target over a
+20x11 level). The last one needs the render area, the scissors and the publishes clamped to the level.
+
+An A/B/B/A of the race, 2026-11-24:
+
+| Hosting | fps (median) | GPU busy a present | Takes a present |
+| --- | --- | --- | --- |
+| 0 | 78.1, 81.6 | 7.82, 7.60 ms | 104, 99 |
+| 1 | 80.8, 83.3 | 7.40, 7.19 ms | 37, 35 |
+
+Sync validation found no new hazard, and the screenshots match. About half of the hosted targets stay hosted. The
+others go back when their texture's image is remade or freed, and the next take hosts them again. A Switch game
+that makes no takes hosts nothing.
+

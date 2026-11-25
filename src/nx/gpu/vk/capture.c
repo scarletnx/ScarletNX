@@ -196,6 +196,8 @@ static VkFormat mixed_validity_format(const Surf* shape, VkImageUsageFlags usage
         (u32)vk_surf_samples(shape), shape->sw, shape->sh, shape->layers);
 }
 static VkCapture* capture_get(Surf* target, u32 msaa, int mixed) {
+    /* a hosted target, read as level 0 of its own image here: given one first (docs/dev/one-image.md) */
+    if (target && target->host && !vk_rt_own(target)) return NULL;
     if (!target || !target->img || target->f.depth || (!mixed && !target->storage_capable) || target->depth3d > 1 ||
         !target->layers || !target->sw || !target->sh ||
         (!mixed && (!g_vk.feat.shaderStorageImageReadWithoutFormat || !g_vk.feat.shaderStorageImageWriteWithoutFormat)) ||

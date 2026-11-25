@@ -619,6 +619,31 @@ int vk_rt_drawn_fresh_in(Surf* s, u64 at, u64 size) {
     (void)size;
     return vk_rt_drawn_fresh(s);
 }
+/* no target is hosted by a texture here (docs/dev/one-image.md) */
+void vk_tex_unhost(Surf* t) {
+    (void)t;
+}
+void vk_rt_host_counts(u64* hosted, u64* unhosted) {
+    *hosted = *unhosted = 0;
+}
+u64 vk_surf_flush_size(const Surf* s) {
+    (void)s;
+    return 0;
+}
+int vk_surf_publish(Surf* s) {
+    (void)s;
+    return 1;
+}
+void vk_surf_flush(Surf* s, const u8* original) {
+    (void)s, (void)original;
+}
+int vk_rt_own_(Surf* s, const char* why) {
+    (void)s, (void)why;
+    return 1;
+}
+void vk_rt_host(Surf* s, Surf* t, u32 level, u32 layer) {
+    (void)s, (void)t, (void)level, (void)layer;
+}
 int vk_rt_drawn_in(u64 lo, u64 hi, Surf** out, int max) {
     (void)lo, (void)hi;
     g_drawn_searches++;
