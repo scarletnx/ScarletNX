@@ -4163,6 +4163,18 @@ static void test_memory_eval(void) {
     set(&imad, 64, 8, 6);
     Word mul[] = {wide, prmt, imad};
     mh_cross("sm86_eval: IMAD and PRMT", mul, 3, cb1);
+    /* IMAD.WIDE R0:R1 = R4 * R6 (signed) + c[1][4] (8 bytes), and .U32 R2:R3 = R4 * R5 + c[1][0] */
+    Word wcb = alu(0x025, 3, 0, 4);
+    set(&wcb, 64, 8, 6);
+    cbuf(&wcb, 1, 4);
+    set(&wcb, 73, 1, 1);
+    set(&wcb, 81, 3, 7);
+    Word wcb2 = alu(0x025, 3, 2, 4);
+    set(&wcb2, 64, 8, 5);
+    cbuf(&wcb2, 1, 0);
+    set(&wcb2, 81, 3, 7);
+    Word wcbs[] = {wcb, wcb2};
+    mh_cross("sm86_eval: IMAD.WIDE of a constant buffer pair", wcbs, 2, cb1);
     /* P0 = R4 < R5 (unsigned), P1 = R4 > R6 (signed) and P0; R0 = P0 ? R4 : R5, R1 = signed min of R4 and R6, P2 =
        P0 ^ P1 (PLOP3), R2 = P2 ? R5 : R6, R3 = R4 ^ R5 ^ R6 */
     Word mnmx = alu(0x017, 1, 1, 4);
