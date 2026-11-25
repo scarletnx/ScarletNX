@@ -22,6 +22,8 @@
 
 struct NdsHost {
     NdsBoard* board;
+    char* captures; /* the game's folder with its separator, whose captures/ a screenshot goes in */
+    bool shot;      /* the screenshot key's: saved at the frame's end */
     int headless, gpu, paced;
     SnxPadMap pad;
     uint16_t keyboard;
@@ -166,6 +168,11 @@ NdsHost* nds_host_open(NdsBoard* board, const char* title, const char* ini, cons
         return NULL;
     }
     host->board = board;
+    {
+        char* folder = ini ? snx_dirname(ini) : NULL;
+        host->captures = snx_format("%s/", folder ? folder : ".");
+        free(folder);
+    }
     host->headless = headless;
     host->paced = !headless;
     if (!headless) snx_vpad_sdl_hints();
@@ -220,6 +227,7 @@ NdsHost* nds_host_open(NdsBoard* board, const char* title, const char* ini, cons
 
 void nds_host_close(NdsHost* host) {
     if (!host) return;
+    free(host->captures);
     if (!host->headless) snx_vpad_window_close();
     if (host->audio) SDL_DestroyAudioStream(host->audio);
     if (host->wav) {
@@ -236,8 +244,12 @@ void nds_host_close(NdsHost* host) {
     free(host);
 }
 
-/* a runtime's key this window has nothing for, said with why */
-static void key_none(int action) {
+/* a runtime's key the window does: the screenshot's, at the frame's end; another said to do nothing, with why */
+static void key_action(NdsHost* host, int action) {
+    if (action == HOTKEY_SCREENSHOT) {
+        host->shot = true;
+        return;
+    }
     snx_vpad_window_none(action, action == HOTKEY_THREAD_DUMP ? "its ARM9 runs the game's code alone, with no threads"
                                  : action == HOTKEY_MOUSE
                                      ? "its mouse is the pen and the pointer of the on-screen controls"
@@ -252,7 +264,7 @@ bool nds_host_poll(NdsHost* host, NdsInput* input) {
             int action;
             SnxVpadEvent took = snx_vpad_window_event(&event, &action);
             if (took == SNX_VPAD_QUIT) open = false;
-            if (took == SNX_VPAD_ACTION) key_none(action);
+            if (took == SNX_VPAD_ACTION) key_action(host, action);
             if (took != SNX_VPAD_PASS) continue;
             pen_event(host, &event);
             switch (event.type) {
@@ -276,6 +288,7 @@ bool nds_host_poll(NdsHost* host, NdsInput* input) {
     return open;
 }
 
+static void shot(NdsHost* host);
 void nds_host_frame(NdsHost* host) {
     /* the frame's sound: to the speaker unless it is too far behind, and to the file */
     int16_t samples[FRAME_SAMPLES * 4 * 2];
@@ -288,6 +301,7 @@ void nds_host_frame(NdsHost* host) {
         fwrite(samples, 4, count, host->wav);
         host->wav_frames += count;
     }
+    if (host->shot) shot(host);
     if (!host->paced) return;
     /* the frame's time by the host's clock: a late frame does not hurry the ones after it past a frame's worth */
     uint64_t now = SDL_GetTicksNS();
@@ -298,8 +312,19 @@ void nds_host_frame(NdsHost* host) {
     host->due += FRAME_NS;
 }
 
+/* both screens as they show, as the Switch's screenshot is: a PPM in the game's captures/, said where */
+static void shot(NdsHost* host) {
+    char path[SNX_PATH_SIZE], line[SNX_PATH_SIZE + 64];
+    host->shot = false;
+    snx_capture_path(path, sizeof path - 4, host->captures ? host->captures : "./");
+    strcat(path, ".ppm");
+    snprintf(line, sizeof line,
+             nds_host_shot(host, path) ? "the screenshot could not be written to %s" : "screenshot: %s", path);
+    nds_host_say(line);
+}
 void nds_host_hold(NdsHost* host) {
     if (nds_vk()) nds_vk_present();
+    if (host->shot) shot(host);
     uint64_t now = SDL_GetTicksNS();
     if (now < host->due) SDL_DelayPrecise(host->due - now);
     host->due = SDL_GetTicksNS() + FRAME_NS;

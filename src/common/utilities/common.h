@@ -36,6 +36,10 @@ void snx_path_native(char* path);
 /* fmt's path into out, of size bytes, its separators the system's (snx_path_native). 0; -1 when it does not fit,
    said with snx_error, out empty */
 int snx_path_format(char* out, size_t size, const char* fmt, ...);
+/* a screenshot's file in prefix's captures/ (prefix a folder's path ending with its separator, as the runtime's g_exedir
+   does), the folder made where it is missing: <prefix>captures/screenshot_YYYYMMDD_HHMMSS by the local time, without
+   its extension, into out (size bytes) */
+void snx_capture_path(char* out, size_t size, const char* prefix);
 /* says a line of error, "scarletnx: " and the line on stderr, or to the sink given to snx_error_sink. Returns 1 */
 int snx_error(const char* fmt, ...);
 /* an option given by the name an older version had, old (a literal), said once a run with its name now */

@@ -133,6 +133,21 @@ static int controls(NdsHost* host, SDL_Window* window, const char* dir, const ch
     CHECK(vpad_test_key(window, SDLK_F2) && !keys(host) && !vpad_editing());
     /* the pause key: the game held (main.c's loop shows the last frame again, nds_host_hold), then let go */
     CHECK(vpad_test_key(window, SDLK_PAUSE) && !keys(host) && snx_vpad_window_paused());
+    /* the screenshot key, paused too: both screens in the game's folder's captures/, a PPM */
+    {
+        char *captures = snx_path_join(dir, "captures"), **names = NULL;
+        size_t count = 0, size = 0;
+        unsigned char* got = NULL;
+        CHECK(vpad_test_key(window, SDLK_F3) && !keys(host));
+        nds_host_hold(host);
+        CHECK(!snx_list_dir(captures, &names, &count) && count == 1 && !strncmp(names[0], "screenshot_", 11));
+        char* path = snx_path_join(captures, names[0]);
+        CHECK((got = snx_read_file(path, &size)) && !memcmp(got, "P6\n256 384\n255\n", 15));
+        free(got);
+        free(path);
+        snx_free_strings(names, count);
+        free(captures);
+    }
     nds_host_hold(host);
     CHECK(vpad_test_key(window, SDLK_PAUSE) && !keys(host) && !snx_vpad_window_paused());
     vpad_console(&snx_vpad_nds);

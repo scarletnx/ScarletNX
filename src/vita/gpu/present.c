@@ -17,6 +17,8 @@
 static struct {
     char* shot;
     bool video;
+    char* captures; /* the game's folder with its separator, whose captures/ a screenshot goes in */
+    bool shot_req;  /* the screenshot key's: the frame saved at the vblank's end */
 } g_present;
 static volatile sig_atomic_t g_interrupted;
 static void on_signal(int signal) {
@@ -29,6 +31,11 @@ void vita_present_init(const char* title, const char* ini, const char* shot) {
     snx_vpad_sdl_hints();
     if (!vita_vk_init(title, error, sizeof error)) printf("vita: no Vulkan device, nothing is drawn: %s\n", error);
     g_present.shot = shot && *shot ? strdup(shot) : NULL;
+    {
+        char* folder = ini ? snx_dirname(ini) : NULL;
+        g_present.captures = snx_format("%s/", folder ? folder : ".");
+        free(folder);
+    }
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
     vita_input_init();
@@ -37,6 +44,7 @@ void vita_present_init(const char* title, const char* ini, const char* shot) {
 }
 /* the framebuffer shown last as PATH<suffix>.ppm, once the GPU drew it */
 static void shot_write(VitaProcess* p, const char* suffix);
+static void shot_key(VitaProcess* p);
 /* a vblank's: the frame shown, a periodic screenshot (not again while paused), the window's events: false to end */
 static bool vblank(VitaProcess* p, bool again) {
     if (p->display.base) vita_render_show(p, p->display.base, p->display.pitch, p->display.width, p->display.height);
@@ -52,7 +60,9 @@ static bool vblank(VitaProcess* p, bool again) {
         int action;
         SnxVpadEvent took = snx_vpad_window_event(&event, &action);
         if (took == SNX_VPAD_QUIT) return false;
-        if (took == SNX_VPAD_ACTION)
+        if (took == SNX_VPAD_ACTION && action == HOTKEY_SCREENSHOT)
+            g_present.shot_req = true;
+        else if (took == SNX_VPAD_ACTION)
             snx_vpad_window_none(action, action == HOTKEY_MOUSE     ? "its mouse is the front panel's finger and the "
                                                                       "pointer of the on-screen controls"
                                          : action == HOTKEY_TV_MODE ? "the TV mode is the Switch's console docked"
@@ -61,6 +71,7 @@ static bool vblank(VitaProcess* p, bool again) {
         vita_input_event(&event);
     }
     vita_input_sample();
+    if (g_present.shot_req) shot_key(p);
     return !g_interrupted;
 }
 bool vita_present_vblank(VitaProcess* p) {
@@ -71,20 +82,41 @@ bool vita_present_vblank(VitaProcess* p) {
     }
     return open;
 }
-/* SceDisplay's formats: A8B8G8R8 (0, the bytes R, G, B, A) and the others the runtime doesn't show yet */
-static void shot_write(VitaProcess* p, const char* suffix) {
+/* SceDisplay's formats: A8B8G8R8 (0, the bytes R, G, B, A) and the others the runtime doesn't show yet. 0 once the
+   frame is at path, said there */
+static int shot_to(VitaProcess* p, const char* path) {
     vita_render_idle(p, true);
+    FILE* f = fopen(path, "wb");
+    if (!f) return -1;
+    int failed = snx_ppm_write(f, p->display.width, p->display.height, vita_ptr(p, p->display.base), 4,
+                               (ptrdiff_t)p->display.pitch * 4, SNX_PPM_RGBA);
+    if (fclose(f)) failed = 1;
+    if (!failed) printf("Screenshot: %s\n", path);
+    return failed ? -1 : 0;
+}
+static void shot_write(VitaProcess* p, const char* suffix) {
     char* path = malloc(strlen(g_present.shot) + strlen(suffix) + 5);
     if (!path) return;
     sprintf(path, "%s%s.ppm", g_present.shot, suffix);
-    FILE* f = fopen(path, "wb");
-    if (f) {
-        (void)snx_ppm_write(f, p->display.width, p->display.height, vita_ptr(p, p->display.base), 4,
-                            (ptrdiff_t)p->display.pitch * 4, SNX_PPM_RGBA);
-        fclose(f);
-        printf("Screenshot: %s\n", path);
-    }
+    (void)shot_to(p, path);
     free(path);
+}
+/* the screenshot key's: the frame as it shows in the game's captures/, as the Switch's is */
+static void shot_key(VitaProcess* p) {
+    char path[SNX_PATH_SIZE];
+    g_present.shot_req = false;
+    if (!p->display.base) {
+        vita_present_say("Screenshot not saved: the game has shown no frame yet");
+        vita_vk_notice("Screenshot not saved: the game has shown no frame yet");
+        return;
+    }
+    snx_capture_path(path, sizeof path - 4, g_present.captures ? g_present.captures : "./");
+    strcat(path, ".ppm");
+    if (shot_to(p, path)) {
+        printf("the screenshot could not be written to %s\n", path);
+        vita_vk_notice("Screenshot not saved: the log says why");
+    } else
+        vita_vk_notice("Screenshot saved in captures");
 }
 void vita_present_shot(VitaProcess* p) {
     if (g_present.shot && p->display.base) shot_write(p, "");
@@ -94,5 +126,6 @@ void vita_present_free(void) {
     vita_input_free();
     vita_vk_free();
     free(g_present.shot);
+    free(g_present.captures);
     memset(&g_present, 0, sizeof g_present);
 }

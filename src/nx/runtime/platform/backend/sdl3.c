@@ -2540,17 +2540,7 @@ void frontend_frame(void) {
     if (g_sdl3.shot_req) {
         g_sdl3.shot_req = 0;
         SNX_ZONE_T(z_shot, "plat screenshot", "hotkey");
-        time_t now = time(NULL);
-        struct tm t;
-#ifdef _WIN32
-        localtime_s(&t, &now);
-#else
-        localtime_r(&now, &t);
-#endif
-        snprintf(p, sizeof p, "%scaptures", g_exedir);
-        plat_mkdir(p);
-        snprintf(p, sizeof p, "%scaptures/screenshot_%04d%02d%02d_%02d%02d%02d", g_exedir, t.tm_year + 1900,
-                 t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec);
+        snx_capture_path(p, sizeof p, g_exedir);
         g_renderer->screenshot(p);
         toast(HOTKEY_SCREENSHOT, "Screenshot saved in captures");
     }
