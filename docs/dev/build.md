@@ -526,12 +526,14 @@ it:
   CPU elsewhere; configure downloads the 8 files into `CPM_SOURCE_CACHE` once. CI's headless Vulkan step runs it.
 - `-DSNX_TEST_A64_FP_DIFF=ON`: add the AArch64 FP differential test, which needs Python unicorn 2.1.4 and a native
   Linux host.
-- `-DSNX_TEST_ARM_AOT=ON`, `-DSNX_TEST_ARM_DIFF=ON`: the 3DS ARM11 witnesses and the A32 unicorn comparison, see
-  [3DS](../platforms/3ds/README.md).
+- `-DSNX_TEST_ARM_AOT=ON`, `-DSNX_TEST_ARM_DIFF=ON`: the 3DS ARM11 and checked memory witnesses, and the comparisons of
+  the native back ends' A32 and Thumb blocks with Python's Unicorn, see [3DS](../platforms/3ds/README.md).
 
 With Unicorn (its header and library, found or given with `-DSNX_UNICORN_INCLUDE_DIR` and `-DSNX_UNICORN_LIBRARY`; Python's
 wheel of unicorn 2.1.4 has both, in its `include` and `lib/libunicorn.so.2`), the tests labelled `unicorn` run the code
-that the native back ends make for the other machines against LLVM's (`ctest -L unicorn`, `ctest -L rv64` for one machine).
+that the native back ends make for the other machines against LLVM's, and their A32 and Thumb blocks (`arm_<machine>_vector`
+and its like, with `SNX_TEST_ARM_DIFF`) against Unicorn's own ARM core (`ctest -L unicorn`, `ctest -L rv64` for one
+machine).
 CI's Linux x86-64 job runs them in every push, nightly and run by hand, and in a pull request that changes what they test
 (`scripts/recompiler-changes.py`), and fails where a machine ran none (`scripts/unicorn-tests.py`). PowerPC64's are
 skipped: Unicorn 2.1.4 as it is released does not hold the MSR of a 64-bit PowerPC.
