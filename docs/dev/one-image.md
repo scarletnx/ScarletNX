@@ -220,7 +220,13 @@ A target that its rows of whole GOBs make wider than its level (a 48x22 target o
 the loads and publishes and its copy out stop there. A publish of it through the block linear move zeroes the
 columns past the level. A texture of its own size samples it through an image of its own again.
 
-Not hosted yet: depth targets, scaled targets, and storage image surfaces (19 takes a present in the race). A storage
+Depth targets are hosted too. Their own paths take the place in the host: the depth packs of a publish
+(`vk_depth_pack`), the copies of a save state (`zt_copy`) and the depth shadow (`depth_shadow.c`). The 2D engine's
+blits (`blit2d`, `blit_depth`, `resolve_depth`) give a hosted source or destination an image of its own first. In the
+race, the depth takes were 3.5 a present and 62 MB (3072x3072 shadow cascades into a 3-layer array), the largest part
+of the bytes. They fell to none.
+
+Not hosted yet: scaled targets, and storage image surfaces (19 takes a present in the race). A storage
 surface is a texture, whose loads from memory (`tex_upload`, `tex_patch`, the pieces) all write level 0 of its own
 image: hosting it needs those paths to take its place in the host, as step 1 gives.
 

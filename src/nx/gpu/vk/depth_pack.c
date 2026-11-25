@@ -73,9 +73,11 @@ int vk_depth_pack(VkCommandBuffer cb, const Surf* s, u32 layer, VkBuffer buf, u6
     if (!set) return 0;
     /* the aspects apart, tightly packed: a word of depth a pixel (a 24-bit one in the low bits), a byte of stencil */
     VkBufferImageCopy c[2] = {
-        {.bufferOffset = dat, .imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, layer, 1}, .imageExtent = {w, h, 1}},
+        {.bufferOffset = dat,
+         .imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, vk_surf_level0(s), vk_surf_layer0(s) + layer, 1},
+         .imageExtent = {w, h, 1}},
         {.bufferOffset = sat,
-         .imageSubresource = {VK_IMAGE_ASPECT_STENCIL_BIT, 0, layer, 1},
+         .imageSubresource = {VK_IMAGE_ASPECT_STENCIL_BIT, vk_surf_level0(s), vk_surf_layer0(s) + layer, 1},
          .imageExtent = {w, h, 1}}};
     rec_CmdCopyImageToBuffer(cb, s->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), db, 1, &c[0]);
     rec_CmdCopyImageToBuffer(cb, s->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), sb, 1, &c[1]);

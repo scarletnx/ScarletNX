@@ -58,7 +58,8 @@ static int stencil_writes(const DsDynamic* dynamic, u32 face) {
 }
 static VkBufferImageCopy aspect_copy(const Surf* surface, VkImageAspectFlagBits aspect, u32 offset) {
     return (VkBufferImageCopy){.bufferOffset = (u64)offset * 4,
-        .imageSubresource = {aspect, 0, 0, 1}, .imageExtent = {surface->sw, surface->sh, 1}};
+        .imageSubresource = {aspect, vk_surf_level0(surface), vk_surf_layer0(surface), 1},
+        .imageExtent = {vk_surf_view_w(surface), vk_surf_view_h(surface), 1}};
 }
 static u64 shadow_shape(Surf* surface, u32* depth_offset, u32* stencil_offset) {
     if (!surface || !surface->img || surface->layers != 1 || surface->depth3d > 1 || surface->volume ||
@@ -125,7 +126,7 @@ static void shadow_initialize(Surf* surface, int stencil) {
         VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
     VkClearDepthStencilValue value = {1.0f, 0};
     VkImageSubresourceRange range = {VK_IMAGE_ASPECT_DEPTH_BIT | (stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0),
-        0, 1, 0, 1};
+        vk_surf_level0(surface), 1, vk_surf_layer0(surface), 1};
     rec_CmdClearDepthStencilImage(vk_cmd(), surface->img, surface->layout, &value, 1, &range);
     surface->discarded = 0;
     surface->pred_undefined = 0;

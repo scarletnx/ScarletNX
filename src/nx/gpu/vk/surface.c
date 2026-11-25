@@ -699,8 +699,7 @@ static void surf_views_go(Surf* s) {
 static void rt_sys_left(Surf* s);
 static u64 g_rt_hosted, g_rt_unhosted; /* targets made views of a texture, and given images of their own again */
 void vk_rt_host(Surf* s, Surf* t, u32 level, u32 layer) {
-    /* color alone: a depth target's paths (packs, its own loads, sample locations) read its image as its own */
-    if (s->host || !s->is_rt || t->is_rt || s->hosted || s->f.depth) return;
+    if (s->host || !s->is_rt || t->is_rt || s->hosted) return;
     /* its own image and its views go once the frames that use them are done */
     surf_views_go(s);
     vk_defer_image(s->img, s->mem, VK_NULL_HANDLE, VK_NULL_HANDLE);
@@ -4396,6 +4395,7 @@ static int blit_depth(Surf* st, const Surf2D* s, const Surf2D* d, int dx, int dy
        nvn_draw_surface describes the same texture on its later bind. Keep its extra columns out of the copy. */
     u32 target_width = d->linear ? d->width : ((d->width * st->f.bpp + 63) / 64 * 64) / st->f.bpp;
     dt = vk_zt_array(d->addr, target_width, d->height, fmt, tile, 1, 0, DS_MSAA_1X1);
+    if (dt && dt->host && !vk_rt_own(dt)) return 0;
     if (!dt || dt == st || dt->f.vk != st->f.vk) return 0;
     float S = g_vk_scale;
     i32 x0 = (i32)(sx * S), y0 = (i32)(sy * S), x1 = (i32)((sx + sdx * dw) * S + 0.5),
@@ -4465,6 +4465,7 @@ static int resolve_depth(Surf* st, const Surf2D* d, int dx, int dy, int dw, int 
     vk_surf_touch(st); /* used now: making the destination may evict what wasn't */
     Surf* dt = vk_zt_array(d->addr, d->width, d->height, fmt, tile, 1, 0, DS_MSAA_1X1);
     if (!dt || dt == st || dt->f.vk != st->f.vk) return 0;
+    if (dt->host && !vk_rt_own(dt)) return 0;
     float S = g_vk_scale;
     i32 x0 = (i32)(sx * S), y0 = (i32)(sy * S), x1 = (i32)((sx + sdx * dw) * S + 0.5),
         y1 = (i32)((sy + sdy * dh) * S + 0.5);
@@ -4571,6 +4572,8 @@ static int blit2d(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int 
         u32 tile = (s->linear ? 0x1000u : 0) | (s->bh << 4);
         st = vk_rt(s->addr, s->width, s->height, s->format, tile, 0, s->pitch);
     }
+    /* a hosted target, read or written as level 0 of its own image here: given one first (docs/dev/one-image.md) */
+    if (st && st->host && !vk_rt_own(st)) return 0;
     if (st && st->msaa) { /* in the source's pixels */
         double bx = (double)(1u << ds_msaa_log2_x(st->msaa)), by = (double)(1u << ds_msaa_log2_y(st->msaa));
         sx /= bx;
@@ -4591,6 +4594,7 @@ static int blit2d(const Surf2D* s, const Surf2D* d, int dx, int dy, int dw, int 
     u32 tile = (d->linear ? 0x1000u : 0) | (d->bh << 4);
     Surf* dt = vk_rt(d->addr, d->width, d->height, d->format, tile, 0, d->pitch);
     if (!dt || dt == st || dt->f.depth || st->f.is_int != dt->f.is_int) return 0;
+    if (dt->host && !vk_rt_own(dt)) return 0;
     if (!blit_ok(st->f.vk, VK_FORMAT_FEATURE_BLIT_SRC_BIT) || !blit_ok(dt->f.vk, VK_FORMAT_FEATURE_BLIT_DST_BIT))
         return 0;
     if (filter > 0 && !st->f.is_int && !blit_ok(st->f.vk, VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)) return 0;
@@ -4775,8 +4779,9 @@ static void zt_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, int out) 
         for (layer = 0; layer < s->layers; layer++) {
             VkBufferImageCopy c = {
                 .bufferOffset = at,
-                .imageSubresource = {a ? VK_IMAGE_ASPECT_STENCIL_BIT : VK_IMAGE_ASPECT_DEPTH_BIT, 0, layer, 1},
-                .imageExtent = {s->sw, s->sh, 1}};
+                .imageSubresource = {a ? VK_IMAGE_ASPECT_STENCIL_BIT : VK_IMAGE_ASPECT_DEPTH_BIT, vk_surf_level0(s),
+                                     vk_surf_layer0(s) + layer, 1},
+                .imageExtent = {vk_surf_view_w(s), vk_surf_view_h(s), 1}};
             if (out)
                 rec_CmdCopyImageToBuffer(cb, s->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), buf, 1, &c);
             else
