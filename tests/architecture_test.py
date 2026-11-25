@@ -610,6 +610,69 @@ class ArchitectureTests(unittest.TestCase):
                 architecture.check_graph(graph), ['snx_ctr_cpu transitively links forbidden target snx_arm_llvm']
             )
 
+    def test_the_recompilers_core_links_no_llvm(self):
+        with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
+            graph = Path(temporary) / 'targets.dot'
+            text = (
+                'digraph {\n"a" [label = "scarletnx-common"];\n'
+                '"b" [label = "snx_recompiler_core"];\n"c" [label = "adapter"];\n'
+                '"d" [label = "snx_llvm"];\n"e" [label = "-lLLVM-22"];\n"f" [label = "snx_recompiler_base"];\n'
+                '"b" -> "f";\n"c" -> "d";\n"c" -> "e";\n'
+            )
+            graph.write_text(text + '}\n', encoding='ascii')
+            self.assertEqual(architecture.check_graph(graph), [])
+            graph.write_text(text + '"b" -> "c";\n}\n', encoding='ascii')
+            self.assertEqual(
+                sorted(architecture.check_graph(graph)),
+                [
+                    'snx_recompiler_core transitively links LLVM: -lLLVM-22',
+                    'snx_recompiler_core transitively links forbidden target snx_llvm',
+                ],
+            )
+
+    def llvm_errors(self, files, users=()):
+        with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
+            root = Path(temporary)
+            for name, text in files.items():
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text(text, encoding='ascii')
+            with mock.patch.object(architecture, 'LLVM_USERS', set(users)):
+                return architecture.check_llvm(root)
+
+    def test_an_llvm_header_outside_the_backend_is_rejected(self):
+        folder = 'src/common/cpu/recompiler/'
+        backend = {
+            folder + 'llvm/ir.h': '#include <llvm-c/Core.h>\n',
+            folder + 'llvm/ir.c': '#include "common/cpu/recompiler/llvm/ir.h"\n',
+            folder + 'mach/native.c': '#include "common/cpu/recompiler/mach/native.h"\n',
+            folder + 'mach/native.h': "/* #include <llvm-c/Core.h> is LLVM's */ int native(void);\n",
+        }
+        self.assertEqual(self.llvm_errors(backend), [])
+        # LLVM's header itself, and one of ours that takes it two includes away
+        errors = self.llvm_errors(
+            {
+                **backend,
+                folder + 'object/link.c': '#include <llvm/Config/llvm-config.h>\n',
+                folder + 'workers.h': '#include "common/cpu/recompiler/llvm/ir.h"\n',
+                'src/nx/runtime/main.c': '#include "common/cpu/recompiler/workers.h"\n',
+            }
+        )
+        self.assertEqual(len(errors), 3)
+        for name, header in (
+            (folder + 'object/link.c', '<llvm/Config/llvm-config.h>'),
+            (folder + 'workers.h', '"common/cpu/recompiler/llvm/ir.h"'),
+            ('src/nx/runtime/main.c', '"common/cpu/recompiler/workers.h"'),
+        ):
+            self.assertTrue(any(error.startswith(f'{name}: includes {header}, ') for error in errors), (name, errors))
+
+    def test_the_files_left_on_llvm_are_the_ones_listed(self):
+        user = 'src/common/cpu/recompiler/library.c'
+        self.assertEqual(self.llvm_errors({user: '#include <llvm-c/Support.h>\n'}, {user}), [])
+        errors = self.llvm_errors({user: '#include <stdio.h>\n'}, {user})
+        self.assertEqual(
+            errors, [f'tests/architecture.py: LLVM_USERS names {user}, which takes no LLVM header: take it out']
+        )
+
     def test_transitive_graphics_link_is_rejected(self):
         with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
             graph = Path(temporary) / 'targets.dot'

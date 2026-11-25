@@ -22,8 +22,7 @@ endif()
 # the NX runtime, configure it here
 if(NOT TARGET scarletnx-recompiler)
     include("${PROJECT_SOURCE_DIR}/cmake/llvm.cmake")
-    add_subdirectory("${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/llvm" gnuabi-llvm-backend)
-    add_subdirectory("${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler" gnuabi-recompiler-library)
+    add_subdirectory("${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler" gnuabi-recompiler)
 endif()
 target_link_libraries(scarletnx-gnuabi PUBLIC scarletnx-gnuabi-kernel scarletnx-common scarletnx-net snx_arm_llvm
                       scarletnx-recompiler)
