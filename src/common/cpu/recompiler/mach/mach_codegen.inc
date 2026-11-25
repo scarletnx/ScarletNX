@@ -92,7 +92,8 @@ typedef struct {
     int nstubs, cap_stubs;
     struct Stub {
         int label;
-        int kind; /* 0 a branch to target; 1 a poll then target (resume); 2 a return (leave) */
+        int kind; /* 0 a branch to target; 1 a poll then target (resume); 2 a return (leave); 3 a pending poll
+                     (poll_slow) */
         SnxU64 target;
         SnxU64 address;
     } * stubs;
@@ -141,6 +142,12 @@ static void call_sym(Unit* u, const char* sym, int tail);
 static void check_return(Unit* u, SnxU64 next);
 /* the poll of a backward branch: if (c->poll) { c->pc = resume; c->rt->poll(c); F_start(c, resume); return; } */
 static void poll_then(Unit* u, SnxU64 resume);
+#ifdef MG_POLL_INLINE
+/* the poll split for a backward branch laid out with one taken jump a pass of the loop: a jump to label where no poll
+   is pending (it may change the host's flags), and the pending poll's call alone, out of line */
+static void poll_jz(Unit* u, int label);
+static void poll_slow(Unit* u, SnxU64 resume);
+#endif
 /* c->pc = address, c->rt->undef(c, address, word); SVC n (c->pc = next, c->rt->svc or svcs[n], the pins around it);
    c->pc = address, c->rt->brk(c, address, imm) */
 static void mg_undef(Unit* u, SnxU64 address, SnxU32 word);
@@ -272,13 +279,25 @@ static void flush_to(Unit* u, SnxU64 target) {
 }
 
 /* the machine's instructions of a function's region */
-enum { SGX_FN_JCC = 16, SGX_FN_CALLDYN, SGX_FN_TAILDYN };
+enum { SGX_FN_JCC = 16, SGX_FN_CALLDYN, SGX_FN_TAILDYN, SGX_FN_JCC_BACK };
 static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r) {
     Unit* u = (Unit*)a->machine;
     SgXIns* i = &a->x->ins[at];
     (void)r;
     switch (i->op) {
     case SGX_FN_JCC: jcc(u, i->cc, i->disp); break;
+#ifdef MG_POLL_INLINE
+    case SGX_FN_JCC_BACK: {
+        /* a loop's backward branch: past it where not taken (the flags as they were, for the region's code after);
+           taken, to the header where no poll is pending, else to the poll's stub (imm) */
+        int skip = new_label(u);
+        jcc(u, i->cc ^ 1, skip);
+        poll_jz(u, i->disp);
+        jmp(u, (int)i->imm);
+        bind(u, skip);
+        break;
+    }
+#endif
     case SGX_FN_CALLDYN: calldyn(u, 0); break;      /* the target in SGX_FN_TARGET (in[0]) */
     case SGX_FN_TAILDYN: calldyn(u, 1); break;
     default: sg_fail("a machine instruction of no kind", i->op, 0);
@@ -307,6 +326,15 @@ static void jump_if(Unit* u, SgB taken, int label, SnxU64 target) {
     i->kv[0] = vdead_at(u, target);
     i->jdead = i->kv[1] != 0 || i->kv[0] != 0;
 }
+#ifdef MG_POLL_INLINE
+/* the same for a backward branch to the function's instruction header, its poll pending going to the stub slow */
+static void jump_if_back(Unit* u, SgB taken, int header, int slow, SnxU64 target) {
+    SgX* x = &u->g->x;
+    jump_if(u, taken, header, target);
+    x->ins[x->n - 1].op = SGX_FN_JCC_BACK;
+    x->ins[x->n - 1].imm = slow;
+}
+#endif
 
 /* ---- what the Sail roots don't have: ir_ldst.c's, ir_vec.c's and ir_int.c's, on the region's SSA ---- */
 
@@ -1345,6 +1373,14 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
         target = snx_a64_branch_target(&insn, address);
         flush_to(u, target);
         if (snx_function_contains(f, target)) {
+#ifdef MG_POLL_INLINE
+            if (target <= address) {
+                poll_jz(u, (int)index_of(f, target));
+                jmp(u, add_stub(u, 3, target, address));
+                terminal = 1;
+                break;
+            }
+#endif
             if (target <= address) poll_then(u, target);
             jmp(u, (int)index_of(f, target));
         } else if (!call_or_stub(u, target, 1))
@@ -1361,7 +1397,12 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
                holds where the branch isn't taken. The taken path finds the guest's state where a label wants it:
                every write stored (or PSET) where it was made, and the store pass keeps the stores before a machine
                instruction */
-            jump_if(u, g->taken, branch_label(u, address, target), target);
+#ifdef MG_POLL_INLINE
+            if (target <= address && snx_function_contains(f, target))
+                jump_if_back(u, g->taken, (int)index_of(f, target), add_stub(u, 3, target, address), target);
+            else
+#endif
+                jump_if(u, g->taken, branch_label(u, address, target), target);
             if (target <= address && u->exits && u->exits[index]) {
                 /* a loop's latch: the registers the loop doesn't read again (dead at its header) but the code after
                    it may are stored here, on the way out alone: the store pass then drops the ones in the body, dead
@@ -2046,6 +2087,10 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
         if (s.kind == 1) {
             poll_then(u, s.target);
             jmp(u, (int)index_of(f, s.target));
+#ifdef MG_POLL_INLINE
+        } else if (s.kind == 3) {
+            poll_slow(u, s.target);
+#endif
         } else if (!call_or_stub(u, s.target, 1)) {
             ok = 0;
             goto out;
