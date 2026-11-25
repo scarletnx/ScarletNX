@@ -21,6 +21,7 @@
 #include "common/cpu/recompiler/x64/x64_arm.h"
 #include "common/cpu/recompiler/x64/x64_cache.h"
 #include "common/cpu/recompiler/x64/x64_codegen.h"
+#include "common/cpu/recompiler/x64/x64_elf.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -239,3 +240,24 @@ const SnxNativeDesc* snx_native_desc_named(const char* name) {
     return NULL;
 }
 #endif
+
+/* <elf.h>'s, where the system has it */
+enum { NATIVE_EM_AARCH64 = 183, NATIVE_R_X86_64_64 = 1, NATIVE_R_AARCH64_ABS64 = 257 };
+SnxXElf* snx_native_data(unsigned* pointer) {
+    const SnxNativeDesc* d = snx_native_desc();
+    SnxXElf* o = snx_native_available() ? snx_xelf_new() : NULL;
+    if (!o) return NULL;
+    if (d) {
+        snx_xelf_set_machine(o, d->em);
+        snx_xelf_set_flags(o, d->elf_flags);
+        snx_xelf_set_big(o, d->big);
+        *pointer = d->abs64;
+    } else if (snx_x64_available()) {
+        if (snx_x64_win64()) snx_xelf_set_coff(o, 1);
+        *pointer = NATIVE_R_X86_64_64; /* a COFF object's too */
+    } else {
+        snx_xelf_set_machine(o, NATIVE_EM_AARCH64);
+        *pointer = NATIVE_R_AARCH64_ABS64;
+    }
+    return o;
+}

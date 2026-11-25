@@ -76,6 +76,12 @@ int snx_native_arm_object(SnxNativeArm* c, unsigned char** object, size_t* size,
 int snx_native_arm_absorb(SnxNativeArm* c, SnxNativeArm* from);
 int snx_native_arm_entry(SnxNativeArm* c, uint32_t key);
 
+/* An object of data alone, in the host's native back end's format (x64/x64_elf.h's builder), as an AOT module's
+   descriptor may be: NULL with no native back end on this host, or out of memory. *pointer is the relocation that makes
+   8 bytes of the data a symbol's address */
+typedef struct SnxXElf SnxXElf;
+SnxXElf* snx_native_data(unsigned* pointer);
+
 /* An AOT module descriptor's few functions in a RISC machine's code (mach/risc_desc.inc, each one's code generator),
    for nx/loader/module_x64.c, which writes the data and puts each function in: its code and its relocations (of sym +
    addend at the code's byte at; type 0 a literal's, the machine's literal), the object's machine, e_flags and byte order
