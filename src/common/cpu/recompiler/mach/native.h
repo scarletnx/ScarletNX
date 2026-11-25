@@ -41,8 +41,8 @@ typedef struct {
 struct snx_recompiler;
 void snx_native_without(struct snx_recompiler* r, const SnxU32* words, size_t count);
 
-/* this host's native back end (mach/native.c): x86-64's on an x86-64 host, arm64's on an arm64 one that loads ELF
-   objects...; 1 where there is one */
+/* this host's native back end (mach/native.c): x86-64's on an x86-64 host, arm64's on an arm64 one whose objects are
+   ELF or COFF...; 1 where there is one */
 int snx_native_available(void);
 /* its name, for the recompiler's lines ("x86-64", "arm64"; "none") */
 const char* snx_native_name(void);
