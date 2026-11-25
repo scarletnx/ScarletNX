@@ -196,7 +196,7 @@ if(TARGET Vulkan::Headers AND TARGET SDL3::SDL3)
                                      "${PROJECT_BINARY_DIR}/generated/vk_extension_bans_text.c"
                                      gpu/vk/extension_commands.c "${snx_vk_extension_commands_c}" gpu/vk/ring.c
                                      gpu/vk/shader_object.c gpu/vk/swapchain.c gpu/vk/window.c gpu/vk/notice.c
-                                     gpu/vk/present_fx.c gpu/vk/fx/fx_fsr.c gpu/vk/gpu_pstate.c)
+                                     gpu/vk/rects.c gpu/vk/present_fx.c gpu/vk/fx/fx_fsr.c gpu/vk/gpu_pstate.c)
     set_target_properties(snx_vk_common PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
     # the GPU's clocks held while a game runs (gpu/vk/gpu_pstate.h): the kernel's interface, which the strict standard
     # of the files above hides, as it does POSIX's open and ioctl
@@ -236,6 +236,9 @@ if(TARGET Vulkan::Headers AND TARGET SDL3::SDL3)
     target_sources(snx_vk_common PRIVATE "${snx_areatex_h}" "${snx_searchtex_h}")
     # a notice's band drawn in a window's rendering (gpu/vk/notice.c), over the effects' fullscreen triangle
     snx_glsl_spirv(snx_vk_common SOURCE gpu/vk/notice.frag NAME notice_frag_spv HEADER common/gpu/vk/notice_spv.h)
+    # the on-screen controls' rectangles over a window's picture (gpu/vk/rects.c)
+    snx_glsl_spirv(snx_vk_common SOURCE gpu/vk/rects.vert NAME rects_vert_spv HEADER common/gpu/vk/rects_spv.h)
+    snx_glsl_spirv(snx_vk_common SOURCE gpu/vk/rects.frag NAME rects_frag_spv HEADER common/gpu/vk/rects_spv.h)
     # The GPU driver a run asks for (gpu/vk/gpu_driver_load.h), which the window's instance and surface are made through:
     # the Switch runtime's and the Vita's share this one loader. It reads the environment and the process's maps, which
     # the strict standard of the files above hides, so its files are compiled as the runtimes' are
