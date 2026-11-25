@@ -44,6 +44,8 @@ static void mark_page(SnxIr* ir, V M, V address) {
         LLVMBuildAdd(B, LLVMBuildLShr(B, address, ir_i64(ir, 12), ""), ir_i64(ir, (SnxU64)0 - SNX_WMARK_BELOW), "");
     V store = LLVMBuildStore(B, LLVMConstInt(ir->t_i8, 1, 0), LLVMBuildGEP2(B, ir->t_i8, M, &index, 1, ""));
     LLVMSetAlignment(store, 1);
+    /* after the stores before it to whoever reads it: x86-64 orders one thread's stores, AArch64 does not (STLRB) */
+    LLVMSetOrdering(store, LLVMAtomicOrderingRelease);
     ir_tag_guest(ir, store); /* never the CPU structure: the promotion keeps registers across it */
     atomic_fetch_add_explicit(&g_mark_marks, 1, memory_order_relaxed);
 }
