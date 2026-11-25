@@ -54,7 +54,7 @@ and plays its sound test.
 | Kernel and HLE | the process, threads and memory (`src/vita/runtime/`), the system libraries by NID (`src/vita/hle/`) | [How it fits together](#how-it-fits-together) |
 | GPU | sceGxm on Vulkan, USSE programs to SPIR-V (`src/vita/gpu/`) | [The shader corpus](#the-shader-corpus) |
 | Audio | the audio ports, NGS and the audio decoders (`src/vita/hle/audio.c`, `ngs.c`, `audiodec.c`) | this page |
-| Input | SceCtrl and touch from the keyboard, the mouse and gamepads (`src/vita/platform/input.c`) | this page |
+| Input | SceCtrl and touch from the keyboard, the mouse, fingers, the gamepads and the on-screen controls (`src/vita/platform/input.c`) | this page |
 | Platform | the host layer that every driver shares (`src/common/platform/`) | [Build](../../dev/build.md) |
 
 ## How it fits together
@@ -69,7 +69,7 @@ and plays its sound test.
 | sceGxm on Vulkan: guest memory imported with `VK_EXT_external_memory_host` (a driver without it, as Mali's, works on a host visible copy of each memory block the game maps, which takes the pages the game wrote before the GPU reads them and goes back to guest memory, the rows the GPU wrote alone, when its submission is done), USSE programs translated to SPIR-V through `src/common/utilities/spirv_emit.c`, decoded by the decoder `tools/decodetree` makes from `usse.decode` | `src/vita/gpu/` (`render.c`, `usse.c`, `usse.decode`, `vk.c`, `present.c`) |
 | Movies: SceMp4 (MP4 demuxed from memory with libavformat, the file read through the game's callbacks), sceAvcdec (H.264 with libavcodec, the picture laid out in the guest's buffer on the GPU, `picture.comp`), sceAudiodec (AAC and ATRAC9) and SceCodecEngine's memory | `src/vita/hle/` (`mp4.c`, `videodec.c`, `audiodec.c`) |
 | Guest memory's writes: the pages the renderer copied to the GPU (textures, color surfaces, the framebuffer; every block the GPU uses where it works on copies) write-protected, a fault marking a page written and letting the write through, so unchanged memory isn't copied again (`mprotect` or `VirtualProtect`, and the fault handler) | `src/vita/runtime/watch.c` |
-| Keyboard, mouse (touch), gamepads and scripted presses (`--script=ms:hex,...`, SceCtrl's button bits, each held for `--press-len=` ms) | `src/vita/platform/input.c` |
+| Keyboard, mouse and fingers (touch), the on-screen controls, gamepads and scripted presses (`--script=ms:hex,...`, SceCtrl's button bits, each held for `--press-len=` ms) | `src/vita/platform/input.c` |
 
 ## The system's functions by NID
 
@@ -98,8 +98,12 @@ wait is met.
 `tests/vita_hle_adapters.c` checks the adapters of `tests/hook/vita.hook`, and the `hookgen_refuses_vita_*` tests the
 declarations that `--vita` refuses.
 
-Esc twice within 3 seconds ends the game, a first press warning on the terminal and in a line over the game, as a
-Switch game's notices show.
+The twelve keys and the two sticks are on the screen too ([On-screen controls](../../user/usage.md#on-screen-controls)),
+for fingers and the mouse's left button: shown on a touch screen while no gamepad is connected, or as `--controls=`
+says, their layout edited with F2. A finger or that button off them touches the front panel where it is on the picture,
+six at most (`--touch=1` the fingers alone, `--touch=0` neither), and the mouse's right button the rear panel, which no
+finger touches. Esc twice within 3 seconds ends the game, a first press warning on the terminal and in a line over the
+game, as a Switch game's notices show.
 
 The driver's settings (`--key=value`) are the `g_vita_debug_ini` table of `src/nx/runtime/settings.txt`: `vita_hle_trace` prints each import call,
 `vita_jit_trace` each block compiled at run time, `vita_gxm_trace` each scene and draw (and why a draw was

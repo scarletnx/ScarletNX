@@ -39,7 +39,7 @@ to the Switch, Linux and 3DS loaders.
 | Kernel and HLE | the BIOS calls as board routines (`src/agb/bios/`), the board's memory, DMA, timers and saves (`src/agb/board/`) | [The HLE BIOS](#the-hle-bios), [The memory map](#the-memory-map) |
 | GPU | the display device, drawn on the CPU (`src/agb/ppu/`) | [The display device](#the-display-device) |
 | Audio | the sound hardware and its mixer (`src/agb/apu/`) | [The sound hardware](#the-sound-hardware) |
-| Input | the keypad from the keyboard and gamepads (`src/agb/runtime/host.c`) | [Playing](#playing) |
+| Input | the keypad from the keyboard, the gamepads and the on-screen controls (`src/agb/runtime/host.c`) | [Playing](#playing) |
 | Platform | the SDL window and the run (`src/agb/runtime/`), and the host layer that every driver shares (`src/common/platform/`) | [Build](../../dev/build.md) |
 
 ## Playing
@@ -65,7 +65,10 @@ other consoles' windows, where the host has a Vulkan 1.3 device that presents to
 SDL's renderer, which the start says, the same pixels either way. The keyboard is the Switch runtime's: the arrows are the D-pad, X or
 Space A, Z B, Q L, E R, Enter Start and Backspace Select. A gamepad's buttons are
 where the console has them (A east, B south), its shoulders and triggers L and
-R, its left stick the D-pad. `--script ms:hex,...` presses keys unattended, as the
+R, its left stick the D-pad. The ten keys are on the screen too, over the picture, for fingers and
+the mouse's left button ([On-screen controls](../../user/usage.md#on-screen-controls)): shown on a touch
+screen while no gamepad is connected, or as `--controls=` says, their layout edited with F2.
+`--script ms:hex,...` presses keys unattended, as the
 3DS and Vita drivers take it: each press at its time in ms from the start of the
 run, by the console's frames (the same with a window or without), its keys in
 KEYINPUT's bits (1 A, 2 B, 4 Select, 8 Start, 10 Right, 20 Left, 40 Up, 80 Down,
@@ -101,7 +104,7 @@ The board is under construction, piece by piece:
 | HLE BIOS interface | mostly done: the software interrupts run as board routines, the waits and sound driver stubs |
 | PPU and display | done: the text, affine and bitmap layers, sprites, windows and blending |
 | APU (audio) | done: the four PSG channels, the two FIFOs at their timer's rate and the stereo mixer |
-| Keypad (HID) | done: KEYINPUT and the KEYCNT interrupt, from the keyboard and gamepads |
+| Keypad (HID) | done: KEYINPUT and the KEYCNT interrupt, from the keyboard, the gamepads and the on-screen controls |
 | Save memory | SRAM and flash, kept in the game's folder; EEPROM not yet |
 | CPU, DMA, timers, interrupts | done, and the BIOS's IntrWait waits for the game's handler to flag the interrupt |
 | Serial (link) | no cable: answers as a console with none plugged, where a transfer that waits for a partner never ends |
