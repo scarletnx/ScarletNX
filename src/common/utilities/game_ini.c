@@ -86,11 +86,12 @@ static int key_line(const char* line, const char* end, const char* key) {
     for (line += n; line < end && (*line == ' ' || *line == '\t'); line++) continue;
     return line < end && *line == '=';
 }
-/* a line, from line to end, that starts [Game] */
-static int game_line(const char* line, const char* end) {
+/* a line, from line to end, that starts [section] */
+static int section_line(const char* line, const char* end, const char* section) {
+    size_t n = strlen(section);
     while (line < end && (*line == ' ' || *line == '\t')) line++;
     while (end > line && (end[-1] == '\r' || end[-1] == ' ' || end[-1] == '\t')) end--;
-    return end - line == 6 && !strncmp(line, "[Game]", 6);
+    return (size_t)(end - line) == n + 2 && line[0] == '[' && !strncmp(line + 1, section, n) && line[n + 1] == ']';
 }
 /* text's n bytes in path's place, through tmp beside it: NULL, else what could not be done and the system's reason.
    Owned */
@@ -106,10 +107,13 @@ static char* replace_text(const char* path, const char* tmp, const char* text, s
     return why;
 }
 int snx_ini_record(const char* path, const char* key, const char* value) {
+    return snx_ini_record_in(path, "Game", key, value);
+}
+int snx_ini_record_in(const char* path, const char* section, const char* key, const char* value) {
     char *dir = snx_dirname(path), *tmp = snx_format("%s.tmp", path), *out = NULL, *text, *copy, *had, *why;
     char reason[512];
     const char *line, *end, *next;
-    size_t size = 0, n = 0, len = strlen(key) + strlen(value);
+    size_t size = 0, n = 0, len = strlen(section) + strlen(key) + strlen(value);
     int placed = 0, rc = 0;
     if (value[strcspn(value, "\r\n")]) {
         rc = snx_error("%s=%s has a line break, which the game's settings cannot keep", key, value);
@@ -139,13 +143,13 @@ int snx_ini_record(const char* path, const char* key, const char* value) {
         memcpy(out + n, line, (size_t)(next - line));
         n += (size_t)(next - line);
         if (next == end) out[n++] = '\n'; /* the file's last line, without a newline */
-        if (!placed && game_line(line, end)) {
+        if (!placed && section_line(line, end, section)) {
             n += (size_t)sprintf(out + n, "%s=%s\n", key, value);
             placed = 1;
         }
     }
     free(text);
-    if (!placed) n += (size_t)sprintf(out + n, "%s[Game]\n%s=%s\n", n ? "\n" : "", key, value);
+    if (!placed) n += (size_t)sprintf(out + n, "%s[%s]\n%s=%s\n", n ? "\n" : "", section, key, value);
     why = snx_mkdirs(dir) ? snx_format("%s cannot be made (%s)", dir, snx_os_error(reason, sizeof reason))
                           : replace_text(path, tmp, out, n);
     if (why) rc = snx_error("cannot record %s=%s in %s: %s", key, value, path, why);

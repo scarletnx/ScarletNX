@@ -104,7 +104,7 @@ static struct {
     _Atomic u32 generation;         /* the window's surface came back this many times */
     _Atomic u32 window_changes;     /* the app's, the displays' and the window's events (backend_window_changes) */
     u64 touch_ids[SNX_HID_TOUCHES]; /* the finger in each slot of g_hle.hid.touch */
-    int touch_lift; /* backend_touch_mode_set asks video_poll to lift what the touch screen no longer takes */
+    int touch_lift; /* touch_changed asks video_poll to lift what the touch screen no longer takes */
     /* the window's display's refresh period in ns (0 not known), set on the main thread when the window opens or moves
        to another display, read by the renderer's threads */
     _Atomic u64 refresh_ns;
@@ -381,11 +381,7 @@ static void touch_set(int how, u64 id, const int picture[4], float px, float py)
 /* the touch screen's setting changed (the .ini's setter, on the main thread): the fingers or the mouse it no longer
    takes are lifted by the next video_poll, under the input_lock it holds already. Not here: the in-game menu sets it
    from inside video_poll (overlay_controls), where taking the lock again would hang the thread */
-void backend_touch_mode_set(const IniOpt* o, const char* v) {
-    (void)o;
-    (void)v;
-    g_sdl3.touch_lift = 1;
-}
+static void touch_changed(void) { g_sdl3.touch_lift = 1; }
 static void touch_lift(void) { /* under input_lock */
     if (!g_sdl3.touch_lift) return;
     g_sdl3.touch_lift = 0;
@@ -736,6 +732,7 @@ void video_init(const char* title, const char* addons) {
 #endif
     controls_atlas();
     vpad_set_say(controls_say);
+    vpad_set_touch(touch_changed);
     controls_auto();
     vpad_set_store(ini_set);
     buzzer_open();
