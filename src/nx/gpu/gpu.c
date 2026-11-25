@@ -1573,6 +1573,14 @@ void gpu_call_poll(int (*fn)(void*), void* arg, u32 lane) {
     pm_unlock(&g_qlk);
 }
 
+int gpu_lane_busy(u32 lane) {
+    int busy = 0;
+    pm_lock(&g_qlk);
+    for (const GpuItem* it = g_qhead; it && !busy; it = it->next) busy = it->poll && it->lane == lane;
+    pm_unlock(&g_qlk);
+    return busy;
+}
+
 /* A game pause: the GPU thread gets here once the jobs queued before it have run or wait (a channel waiting on the CPU
    stays parked, its deadline moved on by the time held, as nothing the CPU does can happen meanwhile), the renderer
    finishes what it has in flight, and the thread waits until gpu_release. One that gpu_hold gave up on goes past */
