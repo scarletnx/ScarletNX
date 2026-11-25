@@ -1000,6 +1000,15 @@ static size_t flow_table(SnxCodegen* codegen, SnxU64 br, const SnxU64* body, Snx
     if (shaped && !table_bound(codegen, table.load, table.index_reg) &&
         !index_bound(codegen, table.load, table.index_reg, 0)) {
         bound = function_bound(codegen, &table, body, first, count, entry, &flow);
+        if (!bound && !body) {
+            /* nothing in the function bounds the index (the caller's range, a byte from memory): a function of an
+               unwind range has its cases inside it, so the entries up to the first that leaves it. Past the table, the
+               next table's are the function's code too: a leader more, never a case of another function */
+            SnxU64 target;
+            while (bound < SNX_JUMP_TABLE_MAX && entry_target(codegen, &table, bound, &target) && !(target & 3) &&
+                   target >= first && (target - first) / 4 < count)
+                ++bound;
+        }
         if (bound) record_table(codegen, br, 0, bound);
     }
     flow_free(&flow);
