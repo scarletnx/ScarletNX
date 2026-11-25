@@ -667,7 +667,8 @@ static struct {
     _Atomic unsigned without;
     _Atomic int win64;
 } g_x64_codegen;
-/* the back end's SSE code needs SSSE3 and SSE4.1 (2008's processors), and SSE4.2, PCLMULQDQ and POPCNT */
+/* the back end's SSE code needs SSSE3 and SSE4.1 (2008's processors), and SSE4.2, PCLMULQDQ and POPCNT. Android's
+   x86_64 ABI (x86-64-v2, developer.android.com/ndk/guides/abis) has all of them but PCLMULQDQ */
 static const SnxNativeFeature k_x64_floor[] = {{"SSE3", SGX_F_SSE3},        {"SSSE3", SGX_F_SSSE3},
                                                {"SSE4.1", SGX_F_SSE41},     {"SSE4.2", SGX_F_SSE42},
                                                {"PCLMULQDQ", SGX_F_PCLMUL}, {"POPCNT", SGX_F_POPCNT}};

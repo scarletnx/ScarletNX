@@ -501,7 +501,8 @@ cmake --preset default -B build -DSNX_FFMPEG_ASM=OFF && cmake --build build
   instruction selection is in the tree (`tools/sailgen/sdm/x64_isel.inc`,
   [sailgen](../../tools/sailgen/README.md#the-x86-64-back-end)). Its code needs SSE3, SSSE3, SSE4.1, SSE4.2, PCLMULQDQ
   and POPCNT, which the build itself does not: on a processor without them LLVM makes the code, and the recompile and
-  the run's log say which ones it lacks and has (`cpu: needs ..., this host has ...`).
+  the run's log say which ones it lacks and has (`cpu: needs ..., this host has ...`). An Android x86_64 device may lack
+  PCLMULQDQ alone: its ABI promises the others.
 - `-DBUILD_TESTING=ON`: build the tests, which the `default` and `tracy` presets leave out.
 - `-DSNX_BUILD_TESTING=OFF`: leave the tests out whatever `BUILD_TESTING` says. ON by default when ScarletNX is the
   top-level project, OFF when another project adds it with CPM or `add_subdirectory` ([Library](library.md)).

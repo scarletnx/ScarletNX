@@ -6266,6 +6266,22 @@ static void wait_played(App* app, int line) {
 /* a game opened that no game of the library was made from: its first compile in the queue, the Compile tab showing it.
    It plays once it ended while the tab still shows it; sent away from the tab first, the tips say it is ready instead
    (DraVee's pick, 2026-10-24) */
+/* text drawn in color in the letters half a step under the text's, on the line as it slides: one too long for its row
+   rests 8 steps at each end (common/utilities/slide.h), so a look every 8 steps meets both */
+static void slid_half(App* app, const char* text, SDL_Color color) {
+    int x, y, found = 0;
+    for (int step = 0; !found && step < 2 * (200 + 8); step += 8) {
+        app->clock = SDL_GetTicks() + 60000 + (Uint64)step * app->theme.scroll_ms; /* every line typed */
+        render(app);
+        int half = text_half(app);
+        found = find_text(app, text, color, 1, &x, &y);
+        app->half = half;
+    }
+    if (!found)
+        fprintf(stderr, "gui_sdl: \"%s\" is not drawn in %02x%02x%02x by the %s theme at %d columns\n", text, color.r,
+                color.g, color.b, app->theme.id, app->cols);
+    assert(found);
+}
 static void compile_first(App* app, const char* dir) {
     char *dump = snx_path_join(dir, "first compile.nsp"), *got = snx_path_join(dir, "driver argv"), *made, *argv_got;
     Uint64 until;
@@ -6286,10 +6302,13 @@ static void compile_first(App* app, const char* dir) {
     queue_drop(app, 0);
     assert(!snx_remove_tree(made));
     free(made);
-    { /* refused, the host below its back end's floor: what it lacks follows how it ended, whatever the theme draws */
-        static const char lacks[] = "cpu: needs SSE4.2 and POPCNT, this host has SSE3, SSSE3, SSE4.1 and PCLMULQDQ";
+    { /* refused, the host below its back end's floor: an Android x86_64 without PCLMULQDQ, the one part of it that the
+         ABI leaves out (recompiler/x64/x64_codegen.c). What the host lacks follows how the recompile ended, and the
+         panel shows the driver's line: YoRHa's as the failed step's, the classic theme's in its output */
+        static const char lacks[] = "cpu: needs PCLMULQDQ, this host has SSE3, SSSE3, SSE4.1, SSE4.2 and POPCNT";
         char *say = snx_format("Recompiling first compile (1 modules)\nscarletnx: %s", lacks),
              *said = snx_format("Compile failed (status 1). %s", lacks), *line = snx_format("first compile: %s", said);
+        GuiTheme theme = app->theme;
         bool due = app->log_due;
         driver_will(got, 1, say);
         launch(app, snx_strdup(dump), false);
@@ -6298,6 +6317,27 @@ static void compile_first(App* app, const char* dir) {
             pump(app);
         assert(app->queue.job[0].state == GUI_JOB_FAILED && !app->menu.running && app->log_due);
         assert(!strcmp(app->queue.job[0].said, said) && !strcmp(app->message, line));
+        {
+            /* YoRHa, the look of every platform's first start, at 80 columns and 50; the classic theme, which cuts a
+               line and slides none, at 80 */
+            static const struct {
+                const char* id;
+                int w, h;
+            } looks[] = {{"yorha", 1280, 800}, {"yorha", 800, 512}, {"default", 1280, 800}};
+            int w, h;
+            assert(app->menu.view == GUI_LOAD_RECOMPILE && SDL_GetWindowSize(app->window, &w, &h));
+            for (size_t k = 0; k < SDL_arraysize(looks); ++k) {
+                app->theme = *gui_theme_builtin(looks[k].id);
+                assert(SDL_SetWindowSize(app->window, looks[k].w, looks[k].h));
+                const SDL_Color color =
+                    rgb(app->theme.run == GUI_RUN_STEPS ? app->theme.run_colors.failure : app->theme.ink);
+                slid_half(app, "cpu: needs PCLMULQDQ", color);
+                slid_half(app, "SSE4.2 and POPCNT", color);
+            }
+            app->clock = 0;
+            assert(SDL_SetWindowSize(app->window, w, h));
+        }
+        app->theme = theme;
         remove(got);
         queue_drop(app, 0);
         app->log_due = due;

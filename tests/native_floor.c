@@ -96,6 +96,8 @@ static void x64_lines(void) {
          "cpu: needs SSSE3, SSE4.1, SSE4.2 and PCLMULQDQ, this host has SSE3 and POPCNT"},
         {"a Penryn", SNX_X64_SSE3 | SNX_X64_SSSE3 | SNX_X64_SSE41,
          "cpu: needs SSE4.2, PCLMULQDQ and POPCNT, this host has SSE3, SSSE3 and SSE4.1"},
+        /* and an Android x86_64 device with what its ABI promises alone (developer.android.com/ndk/guides/abis: SSE3,
+           SSSE3, SSE4.1, SSE4.2 and POPCNT, no PCLMULQDQ) */
         {"a Nehalem", X64_ALL & ~SNX_X64_PCLMUL,
          "cpu: needs PCLMULQDQ, this host has SSE3, SSSE3, SSE4.1, SSE4.2 and POPCNT"},
     };
