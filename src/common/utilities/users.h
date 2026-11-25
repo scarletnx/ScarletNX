@@ -6,8 +6,9 @@
    a [user1] without one) the uid ScarletNX always gave it (SNX_USERS_FIRST_UID0 and 1), so the saves made before there
    were others stay its own. Without users.ini it is the only user, "Player". A nickname is what the console's account
    service keeps (SwitchBrew's ProfileBase): 1 to 32 bytes of UTF-8, with no control character, and no space at
-   either end, which users.ini would not keep. Anything users.ini says that is not a user is refused, but for a user's
-   Mii and picture, which never stop anything: mii= names the user's Mii in the Mii database (mii_db.h), its first
+   either end, which users.ini would not keep. A user's key it cannot read is refused, but for a user's Mii and
+   picture, which never stop anything; a key, a section or a line it does not know is another version's or program's,
+   kept and named (config_file.h), and a key given twice takes its last line's value: mii= names the user's Mii in the Mii database (mii_db.h), its first
    (Baguette) without one or for a name the database does not hold; picture= mii draws the user's picture from that
    Mii, file takes users/<uid>.jpg, and without one (or for another word) it is file when the user has that file, else
    mii. What was read where it was not taken is in snx_users_notes */
