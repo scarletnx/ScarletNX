@@ -138,7 +138,7 @@ What the words reach, by folder (lines run, of the lines in that folder):
 | `nx/nn` | 3793 | 26.9% |
 | `nx/hle/services` | 14096 | 17.7% |
 | `nx/gpu/vk` | 42940 | 11.3% |
-| `nx/hle/hook` | 3497 | 9.2% |
+| `nx/hle/hook` (now in `nx/nn`) | 3497 | 9.2% |
 | `nx/gpu/nvn` | 9617 | 0.3% |
 | `nx/gpu/shader` | 20440 | 0.3% |
 
