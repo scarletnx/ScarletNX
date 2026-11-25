@@ -298,6 +298,12 @@ void nds_host_frame(NdsHost* host) {
     host->due += FRAME_NS;
 }
 
+void nds_host_hold(NdsHost* host) {
+    if (nds_vk()) nds_vk_present();
+    uint64_t now = SDL_GetTicksNS();
+    if (now < host->due) SDL_DelayPrecise(host->due - now);
+    host->due = SDL_GetTicksNS() + FRAME_NS;
+}
 int nds_host_shot(NdsHost* host, const char* path) {
     if (!host->gpu) return -1;
     unsigned char* rgba = malloc(NDS_SCREEN_WIDTH * NDS_SCREEN_HEIGHT * 2 * 4);

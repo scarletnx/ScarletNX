@@ -50,6 +50,9 @@ bool snx_vpad_window_point(const SDL_Event* e, float* x, float* y);
    with Esc or the menu's key, it ends the editing */
 typedef enum { SNX_VPAD_PASS, SNX_VPAD_TAKEN, SNX_VPAD_QUIT, SNX_VPAD_ACTION } SnxVpadEvent;
 SnxVpadEvent snx_vpad_window_event(const SDL_Event* e, int* action);
+/* the pause key's (hotkey_pause): the game held while it is on, which the window still shows and takes keys in. Each
+   press said on say and show, as a Switch game's ("Pause: on") */
+bool snx_vpad_window_paused(void);
 /* the runtime's key action said on say and show to do nothing in this window, with why: "F3 (Screenshot) does nothing
    in a GBA game: why" */
 void snx_vpad_window_none(int action, const char* why);

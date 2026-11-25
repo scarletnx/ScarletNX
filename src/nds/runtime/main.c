@@ -483,6 +483,11 @@ int snx_nds_main(int argc, char** argv) {
     for (; limit < 0 || frame < limit; ++frame) {
         NdsInput input = {0};
         if (!nds_host_poll(host, &input)) break;
+        if (snx_vpad_window_paused()) {
+            nds_host_hold(host);
+            --frame;
+            continue;
+        }
         uint64_t held = snx_script_held(presses, press_count, (double)frame * FRAME_MS, (uint32_t)press_len);
         /* the pen of the last press that names it */
         if (held & 0x1000) {
