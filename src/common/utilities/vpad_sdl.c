@@ -3,6 +3,7 @@
 #include "common/utilities/vpad_sdl.h"
 #include "common/utilities/game_ini.h"
 #include "common/utilities/hotkeys.h"
+#include "common/utilities/key_said.h"
 #include "common/utilities/notice.h"
 #include "common/utilities/quit_key.h"
 #include "common/utilities/ui_colors.h"
@@ -18,6 +19,7 @@ static struct {
     void (*show)(const char* line);
     SDL_Haptic* buzzer;
     int finger_seen;
+    bool paused;      /* the pause key's */
     uint64_t quit_by; /* a second Back before this quits (quit_key.h), the first one's line shown until then */
     SnxUiRects rects;
     int made, warned, w, h; /* what the rectangles are made for: a first time, with the line or not, the picture */
@@ -122,6 +124,7 @@ static void tell(const char* line) {
     if (g_vpad_sdl.say) g_vpad_sdl.say(line);
     if (g_vpad_sdl.show) g_vpad_sdl.show(line);
 }
+bool snx_vpad_window_paused(void) { return g_vpad_sdl.paused; }
 void snx_vpad_window_none(int action, const char* why) {
     const IniOpt* o = hotkey_row(action);
     const char* name = o && o->name ? o->name : "";
@@ -144,6 +147,15 @@ static SnxVpadEvent key_event(const SDL_KeyboardEvent* k, int* action) {
         if (hotkey_quit_press(SDL_GetTicksNS())) return SNX_VPAD_QUIT;
         snx_quit_warning(line, sizeof line, hotkey_text(HOTKEY_QUIT));
         tell(line);
+        return SNX_VPAD_TAKEN;
+    }
+    if (a == HOTKEY_PAUSE) {
+        char line[96];
+        g_vpad_sdl.paused = !g_vpad_sdl.paused;
+        snx_key_said(line, sizeof line, "Pause", g_vpad_sdl.paused ? "on" : "off", g_vpad_sdl.paused ? "off" : "on");
+        if (g_vpad_sdl.say) g_vpad_sdl.say(line);
+        snx_key_now(line, sizeof line, "Pause", g_vpad_sdl.paused ? "on" : "off");
+        if (g_vpad_sdl.show) g_vpad_sdl.show(line);
         return SNX_VPAD_TAKEN;
     }
     if (a == HOTKEY_FULLSCREEN || a == HOTKEY_FULLSCREEN_2) {

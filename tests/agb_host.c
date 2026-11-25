@@ -280,6 +280,14 @@ int main(void) {
         agb_host_close(host);
         return 1;
     }
+    /* the pause key holds the game and says so, as a Switch game's */
+    for (int i = 0; i < 2; ++i)
+        if (!press(host, SDLK_PAUSE, SDL_KMOD_NONE, false) || snx_vpad_window_paused() != !i ||
+            notice_read(host, SDL_GetRenderer(window), window, i ? "Pause: off" : "Pause: on") != 0) {
+            fprintf(stderr, "agb_host: the pause key did not hold the game and say so (press %d)\n", i + 1);
+            agb_host_close(host);
+            return 1;
+        }
     for (int i = 0; i < 4; ++i) {
         bool alt = i & 1;
         if (!press(host, alt ? SDLK_RETURN : SDLK_F11, alt ? SDL_KMOD_LALT : SDL_KMOD_NONE, false) ||

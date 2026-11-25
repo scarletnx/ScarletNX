@@ -37,10 +37,11 @@ void vita_present_init(const char* title, const char* ini, const char* shot) {
 }
 /* the framebuffer shown last as PATH<suffix>.ppm, once the GPU drew it */
 static void shot_write(VitaProcess* p, const char* suffix);
-bool vita_present_vblank(VitaProcess* p) {
+/* a vblank's: the frame shown, a periodic screenshot (not again while paused), the window's events: false to end */
+static bool vblank(VitaProcess* p, bool again) {
     if (p->display.base) vita_render_show(p, p->display.base, p->display.pitch, p->display.width, p->display.height);
     unsigned every = (unsigned)g_settings.vita_screenshot_interval;
-    if (g_present.shot && every && p->display.base && p->display.vblanks % every == 0) {
+    if (!again && g_present.shot && every && p->display.base && p->display.vblanks % every == 0) {
         char suffix[16];
         snprintf(suffix, sizeof suffix, "_%04u", (unsigned)(p->display.vblanks / every - 1));
         shot_write(p, suffix);
@@ -61,6 +62,14 @@ bool vita_present_vblank(VitaProcess* p) {
     }
     vita_input_sample();
     return !g_interrupted;
+}
+bool vita_present_vblank(VitaProcess* p) {
+    bool open = vblank(p, false);
+    while (open && snx_vpad_window_paused()) { /* the game's thread held, the frame and the keys going on */
+        SDL_Delay(16);
+        open = vblank(p, true);
+    }
+    return open;
 }
 /* SceDisplay's formats: A8B8G8R8 (0, the bytes R, G, B, A) and the others the runtime doesn't show yet */
 static void shot_write(VitaProcess* p, const char* suffix) {

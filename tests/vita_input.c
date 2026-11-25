@@ -28,6 +28,12 @@
 static VitaProcess g_process; /* no framebuffer: its vblank reads the events only */
 static VitaInput g_input;
 /* a vblank, and the input after it: the buttons, 0xFFFFFFFF once the window closed */
+/* the pause key pressed again, from a timer while the game's thread is held */
+static Uint32 SDLCALL pause_again(void* window, SDL_TimerID timer, Uint32 interval) {
+    (void)timer, (void)interval;
+    (void)vpad_test_key((SDL_Window*)window, SDLK_PAUSE);
+    return 0;
+}
 static uint32_t vblank(void) {
     bool open = vita_present_vblank(&g_process);
     vita_input_read(&g_input);
@@ -211,6 +217,12 @@ static int controls(SDL_Window* window, const char* dir, const char* ini) {
     CHECK(vpad_test_finger(window, SDL_EVENT_FINGER_UP, 77, 31, (float)w / 2, (float)h / 2) && !vblank());
     CHECK(vpad_test_in_file(ini, "[On-screen controls]\ncontrols_stick_r=0.500 0.500 100\n") == 1);
     CHECK(vpad_test_key(window, SDLK_F2) && !vblank() && !vpad_editing());
+    /* the pause key holds the game's thread in its vblank until it is pressed again */
+    {
+        Uint64 at = SDL_GetTicks();
+        CHECK(vpad_test_key(window, SDLK_PAUSE) && SDL_AddTimer(200, pause_again, window));
+        CHECK(!vblank() && !snx_vpad_window_paused() && SDL_GetTicks() - at >= 150);
+    }
     vpad_console(&snx_vpad_vita);
     vpad_settings(dir, "a game", 0, NULL);
     CHECK(vpad_config()->at[SNX_VPAD_STICK_R].x == 0.5f && vpad_config()->at[SNX_VPAD_STICK_R].y == 0.5f);

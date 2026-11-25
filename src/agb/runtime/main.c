@@ -467,6 +467,11 @@ int snx_agb_main(int argc, char** argv) {
             uint32_t written = 0;
             uint16_t keys = 0;
             if (host && !agb_host_poll(host, &keys)) break;
+            if (host && snx_vpad_window_paused()) { /* the last frame again, paced, with no sound */
+                agb_host_frame(host, board.ppu.framebuffer, audio, 0);
+                --frame;
+                continue;
+            }
             keys |= (uint16_t)snx_script_held(presses, press_count, (double)frame * FRAME_MS, (uint32_t)press_len);
             agb_board_keys(&board, keys);
             /* a cartridge's clock keeps the host's local time, as the console's keeps its own on the cartridge's battery */

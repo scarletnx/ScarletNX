@@ -24,6 +24,8 @@ NdsHost* nds_host_open(NdsBoard* board, const char* title, const char* ini, cons
 bool nds_host_poll(NdsHost* host, NdsInput* input);
 /* a frame of the console's is done: its sound goes out, and the run waits for the frame's time */
 void nds_host_frame(NdsHost* host);
+/* a frame of the pause (snx_vpad_window_paused): the last one shown again, at the frames' pace, with no sound */
+void nds_host_hold(NdsHost* host);
 /* the last frame, both screens, as a PPM at path: 0, or -1 */
 int nds_host_shot(NdsHost* host, const char* path);
 void nds_host_close(NdsHost* host);
