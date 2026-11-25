@@ -252,8 +252,8 @@ static VkExtent2D target_extent(Surf* const* rt, const Surf* zt, u32 n) {
     VkExtent2D ext = {~0u, ~0u};
     for (u32 i = 0; i < n; i++)
         if (rt[i]) {
-            if (rt[i]->sw < ext.width) ext.width = rt[i]->sw;
-            if (rt[i]->sh < ext.height) ext.height = rt[i]->sh;
+            if (vk_surf_view_w(rt[i]) < ext.width) ext.width = vk_surf_view_w(rt[i]);
+            if (vk_surf_view_h(rt[i]) < ext.height) ext.height = vk_surf_view_h(rt[i]);
         }
     if (zt) {
         if (zt->sw < ext.width) ext.width = zt->sw;
@@ -361,8 +361,8 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u
         ca[i].imageLayout = layout;
         ca[i].loadOp = load_op(rt[i], undefined);
         if (loop) loops |= 1u << i;
-        if (rt[i]->sw < ext.width) ext.width = rt[i]->sw;
-        if (rt[i]->sh < ext.height) ext.height = rt[i]->sh;
+        if (vk_surf_view_w(rt[i]) < ext.width) ext.width = vk_surf_view_w(rt[i]);
+        if (vk_surf_view_h(rt[i]) < ext.height) ext.height = vk_surf_view_h(rt[i]);
     }
     VkRenderingAttachmentInfo za = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
                                     .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,

@@ -1518,6 +1518,18 @@ VkImage vk_unscaled_image(const Surf* s, u32 layers, DevMem* mem);
 /* a surface's first level and layer in its image: a hosted target's place in its host's, else 0 */
 static inline u32 vk_surf_level0(const Surf* s) { return s->host ? s->host_level : 0; }
 static inline u32 vk_surf_layer0(const Surf* s) { return s->host ? s->host_layer : 0; }
+/* the size of a surface's view of its image: a hosted target's level's, which a target padded to whole GOBs is wider
+   than (a 48x22 target over a level of 40x22), else its own (scaled) */
+static inline u32 vk_surf_view_w(const Surf* s) {
+    if (!s->host) return s->sw;
+    const u32 lw = s->host->w >> s->host_level ? s->host->w >> s->host_level : 1;
+    return lw < s->sw ? lw : s->sw;
+}
+static inline u32 vk_surf_view_h(const Surf* s) {
+    if (!s->host) return s->sh;
+    const u32 lh = s->host->h >> s->host_level ? s->host->h >> s->host_level : 1;
+    return lh < s->sh ? lh : s->sh;
+}
 /* render targets as views of their textures (surface.c): vk_rt_host makes target s a view of level level and layers
    from layer of texture t's image, its own image let go (its pixels must be in t's there already). vk_rt_own gives a
    hosted target an image of its own again with its pixels: what reads or writes a target's image as level 0 and
