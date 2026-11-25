@@ -3821,6 +3821,56 @@ if(NOT WIN32)
         add_test(NAME llvm_qemu_differential COMMAND snx-test-llvm-qemu-differential --skip "${SNX_QEMU_REF_MISSING}")
     endif()
     set_tests_properties(llvm_qemu_differential PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 600)
+endif()
+# The host's native back end's, on every host: against QEMU here (SNX_QEMU_REF), or against what another host recorded
+# (SNX_QEMU_REFERENCE: build.yml's qemu-reference job, which the Windows and macOS jobs download), or skipped saying why.
+# The groups known to differ are in native_qemu_expected.txt. Its forms are the host's (linked as a module), the JIT's
+# loader's and the host's without its optional features, which no RISC machine has
+set(SNX_QEMU_REFERENCE "" CACHE FILEPATH "A QEMU reference another host recorded, for a host without qemu-aarch64")
+add_executable(snx-test-llvm-qemu-differential-native llvm_qemu_differential.c llvm_qemu_words.c native_steps.c
+    qemu_ref/qemu_ref.c)
+snx_test_target(snx-test-llvm-qemu-differential-native gnu23)
+target_compile_definitions(snx-test-llvm-qemu-differential-native PRIVATE SNX_TEST_NATIVE_STEPS)
+target_include_directories(snx-test-llvm-qemu-differential-native PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(snx-test-llvm-qemu-differential-native PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+snx_decodetree_a64(snx-test-llvm-qemu-differential-native)
+set(snx_nqd_expected "${CMAKE_CURRENT_SOURCE_DIR}/native_qemu_expected.txt")
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64|aarch64|arm64|ARM64)$")
+    set(snx_nqd_modes _jit _portable)
+else()
+    set(snx_nqd_modes)
+endif()
+foreach(mode IN ITEMS "" ${snx_nqd_modes})
+    set(args)
+    if(mode STREQUAL "_jit")
+        set(args --jit)
+    elseif(mode STREQUAL "_portable")
+        set(args --portable)
+    endif()
+    set(name native_qemu_differential${mode})
+    set(folder "${CMAKE_CURRENT_BINARY_DIR}/native_qemu${mode}")
+    if(SNX_QEMU_REF)
+        add_test(NAME ${name} COMMAND snx-test-llvm-qemu-differential-native "${SNX_QEMU_AARCH64}"
+                 "${SNX_QEMU_REF_RUNNER}" "${folder}" "${snx_nqd_expected}" --quiet ${args})
+    elseif(SNX_QEMU_REFERENCE)
+        add_test(NAME ${name} COMMAND snx-test-llvm-qemu-differential-native "${folder}" "${snx_nqd_expected}"
+                 --reference-if-there "${SNX_QEMU_REFERENCE}" --quiet ${args})
+    else()
+        add_test(NAME ${name} COMMAND snx-test-llvm-qemu-differential-native --skip
+                 "${SNX_QEMU_REF_MISSING}, and SNX_QEMU_REFERENCE names no recorded one")
+    endif()
+    set_tests_properties(${name} PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 600)
+endforeach()
+if(SNX_QEMU_REF)
+    add_dependencies(snx-test-llvm-qemu-differential-native snx_qemu_ref_runner)
+    if(SNX_TEST_LLVM_SWEEP)
+        add_test(NAME native_qemu_differential_sweep COMMAND snx-test-llvm-qemu-differential-native "${SNX_QEMU_AARCH64}"
+                 "${SNX_QEMU_REF_RUNNER}" "${CMAKE_CURRENT_BINARY_DIR}/native_qemu_sweep" "${snx_nqd_expected}"
+                 --quiet --sweep)
+        set_tests_properties(native_qemu_differential_sweep PROPERTIES TIMEOUT 3600 COST 100 SKIP_RETURN_CODE 77)
+    endif()
+endif()
+if(NOT WIN32)
     # The lowering census (llvm_lowering.c): each A64 SIMD, FP and crypto op's class on nine emitter paths against
     # llvm_lowering_expected.txt, which a change that moves an op updates in the same commit (--update)
     add_executable(snx-test-llvm-lowering llvm_lowering.c llvm_qemu_words.c)

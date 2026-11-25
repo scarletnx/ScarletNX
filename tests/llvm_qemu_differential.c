@@ -1,19 +1,25 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The LLVM backend against QEMU, instruction by instruction: each word runs as the backend's step function
-   (snx_ir_static_step, compiled and linked by the backend) and under qemu-aarch64 -cpu max (tests/qemu_ref), from the
-   same state and the same seeded window of guest memory, and the registers, flags, FPCR, FPSR, vector registers,
-   the memory it changed and how it ended (the next pc, UNDEF, BRK or SVC) must match. A store-exclusive also runs
-   after a load-exclusive of its address, so that it can succeed.
+/* The recompiler's back ends against QEMU, instruction by instruction: each word runs as the back end's step function
+   (steps.h: LLVM's snx_ir_static_step, compiled and linked by it, or in a build with SNX_TEST_NATIVE_STEPS the host's
+   native back end's) and under qemu-aarch64 -cpu max (tests/qemu_ref), from the same state and the same seeded window
+   of guest memory, and the registers, flags, FPCR, FPSR, vector registers, the memory it changed and how it ended (the
+   next pc, UNDEF, BRK or SVC) must match. A store-exclusive also runs after a load-exclusive of its address, so that
+   it can succeed.
      snx-test-llvm-qemu-differential QEMU RUNNER DIR EXPECTED [--sweep] [--states N] [--seed N] [--quiet] [--update]
-                                     [--jit] [--portable | --generic] [--without-avx512] [--record FILE]
+                                     [--jit] [--portable | --generic] [--without-avx512] [--abi-contract] [--record FILE]
      snx-test-llvm-qemu-differential DIR EXPECTED --reference FILE [--quiet] [--update] [--jit]
                                      [--portable | --generic] [--without-avx512]
+     snx-test-llvm-qemu-differential DIR EXPECTED --reference-if-there FILE ...
      snx-test-llvm-qemu-differential --skip REASON
+   snx-test-llvm-qemu-differential-native takes the same, with neither --generic, --without-avx512 nor --abi-contract,
+   which are the LLVM back end's: its --portable is the host without its optional features.
    --record writes the QEMU side of the run (the words, each case's start state, its end state, how it ended and the
-   memory it changed) to FILE. --reference runs the LLVM side alone against such a file, so that the cross-built hosts
-   (PowerPC64, RISC-V, LoongArch), where qemu-aarch64 can't run beside the host, compare against the reference a Linux
-   x86-64 host recorded. The record defines the run: --sweep, --states and --seed do not apply with it.
+   memory it changed) to FILE. --reference runs the steps alone against such a file, so that a host where qemu-aarch64
+   can't run beside the test (the cross-built PowerPC64, RISC-V and LoongArch, Windows and macOS) compares against the
+   reference that a Linux x86-64 host recorded: with every word and state a step may need, whichever back end recorded
+   it. The record defines the run: --sweep, --states and --seed do not apply with it. A --reference that is not there
+   fails the test; with --reference-if-there it is skipped (77), saying that the file is not there.
    The words: samples of every row of the generated decoder's table with every value of each field of 3 bits or
    fewer, directed() words, and the words the other instruction tests hand-check (kept[]). The default run takes 2
    samples of each row, 20 directed rounds and 3 states of each word; --sweep takes 4 samples, 300 rounds and 6
@@ -24,33 +30,40 @@
    (PowerPC64, RISC-V, LoongArch, MIPS64), a byte loop for TBL and helpers for FMA, square roots and rounding.
    --without-avx512 runs an AVX-512 host as an x86-64 without it (snx_ir_host_drop): the emitters' choices and the
    target machine both, as a host with AVX2 alone compiles them; on a host without AVX-512 it is skipped (77).
-   A word the backend leaves UNDEF (the generated decoder for the Switch target), or decodes without an emitter,
-   while QEMU runs it, has no emitter yet: it is listed in DIR/llvm_qemu_coverage.txt, not failed. So is a word that
+   A word the back end leaves UNDEF (the generated decoder for the Switch target), or decodes without code for it, while
+   QEMU runs it, has none yet: it is listed in DIR/<side>_qemu_coverage.txt, not failed. So is a word that
    differs where the Switch target decodes it as another name (a hint's NOP) or, as the backend does, as UNDEF: what
    max makes of it is beyond the Cortex-A57. The mismatches are
-   grouped by the max target's name for the word and their cause, with examples in DIR/llvm_qemu_mismatches.txt.
-   EXPECTED lists the groups known to differ until the emitters are rewritten, with their counts in the default run
-   and the sweep: a group missing from it fails the test, and so does a group it lists for this run that no longer
-   differs. --update rewrites this run's counts in EXPECTED instead. */
+   grouped by the max target's name for the word and their cause, with examples in DIR/<side>_qemu_mismatches.txt.
+   EXPECTED lists the groups known to differ, with their counts in the default run and the sweep: a group missing from
+   it fails the test, and so does a group it lists for this run that no longer differs. --update rewrites this run's
+   counts in EXPECTED instead. */
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
 #include "common/cpu/aarch64/cpu.h"
-#include "common/cpu/recompiler/llvm/ir.h"
-#include "common/cpu/recompiler/llvm/ir_ldst.h"
-#include "common/cpu/recompiler/llvm/ir_fpu.h"
-#include "common/cpu/recompiler/llvm/ir_int.h"
-#include "common/cpu/recompiler/llvm/ir_vec.h"
 #include "common/runtime/interface.h"
 #include "llvm_qemu_words.h"
-#include "llvm_steps.h"
+#include "steps.h"
 #include "qemu_ref/qemu_ref.h"
 #include <fenv.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-
-typedef u64 (*StepFn)(CPU* c);
+#ifdef SNX_TEST_NATIVE_STEPS
+#include "common/cpu/aarch64/a64_decoder.h"
+/* the name of this side of the comparison: in the causes, the reports' names and the expected-failure list */
+#define SIDE    "native"
+#define PROGRAM "snx-test-llvm-qemu-differential-native"
+#else
+#include "common/cpu/recompiler/llvm/ir.h"
+#include "common/cpu/recompiler/llvm/ir_ldst.h"
+#include "common/cpu/recompiler/llvm/ir_fpu.h"
+#include "common/cpu/recompiler/llvm/ir_int.h"
+#include "common/cpu/recompiler/llvm/ir_vec.h"
+#define SIDE    "llvm"
+#define PROGRAM "snx-test-llvm-qemu-differential"
+#endif
 
 #define WINDOW      0x0ull /* the window starts at guest address 0 on both sides */
 #define WINDOW_SIZE SNX_QREF_WINDOW_SIZE
@@ -79,7 +92,7 @@ static struct {
 /* a fatal signal (the generated code's or the harness's) names what was running before its default action ends the
    test, which under --quiet would otherwise print nothing */
 static void on_fatal(int signo) {
-    static const char head[] = "snx-test-llvm-qemu-differential: signal ";
+    static const char head[] = PROGRAM ": signal ";
     char digits[4];
     size_t n = 0;
     for (unsigned v = (unsigned)signo; n < sizeof digits && (v || !n); v /= 10)
@@ -413,6 +426,14 @@ typedef struct {
     char op[40], switch_op[40]; /* the max and Switch targets' names for the (last) word, "" for UNDEF */
 } Item;
 
+/* FCVTN2 (FEAT_FP8's, to Vd's upper half) of its own Vn: QEMU 11.1.2 reads Vn after it has written Vd, so the word is
+   asked of another Vn, as recompiler_backends.c's own_vn asks it */
+static u32 qemu_word(u32 word, const char* op) {
+    const u32 rd = word & 31, rn = (word >> 5) & 31, rm = (word >> 16) & 31;
+    if (strcmp(op, "FCVTN_bs") || !((word >> 30) & 1) || rd != rn) return word;
+    return (word & ~(31u << 5)) | ((rd ^ 1) == rm ? rd ^ 2 : rd ^ 1) << 5;
+}
+
 /* a store-exclusive (STXR, STLXR, STXP, STLXP): size 001000 o2=0 L=0 o1 Rs o0 Rt2 Rn Rt */
 static int store_exclusive(u32 w) { return (w & 0x3FC00000u) == 0x08000000u; }
 
@@ -427,12 +448,63 @@ static u32 load_exclusive(u32 st) {
 
 static u64 item_pc(const Item* it) { return it->nwords > 1 ? PAIR_PC : PC; }
 
+/* The features a word runs with on this side, 0 for the Switch's. A word the Switch lacks that this side has code for
+   runs with max's features, against QEMU's -cpu max: PAuth stays out, as QEMU signs with keys where the code runs with
+   authentication off. *skip: no code for it, the Switch's decode says UNDEF */
+static SnxU64 word_features(u32 word, int* skip) {
+    SnxA64Insn max, sw;
+    const int beyond = snx_a64_decode_word(word, SNX_A64_TARGET_MAX, &max) != SNX_A64_OP_UNDEF &&
+                       (max.feature & ~(SnxU64)SNX_A64_TARGET_SWITCH) && !(max.feature & SNX_A64_FEAT_PAUTH);
+#ifdef SNX_TEST_NATIVE_STEPS
+    /* every feature that the back end has code for (mach_codegen.inc's past_guests): a word it has none for is not made,
+       and the loads say which */
+    if (beyond) return SNX_A64_TARGET_MAX;
+#else
+    /* the load/store emitters (ir_ldst.c) implement the LSE and RCpc atomics too, the scalar FP ones (ir_fpu.c)
+       FEAT_FP16, FEAT_JSCVT, FEAT_FRINTTS and BFCVT, the AdvSIMD ones (ir_vec.c) the vector extensions: a word the Switch
+       lacks that they emit runs with max's features. The integer ones (ir_int.c) implement the ounce target's FlagM and
+       ESB, which run with its features */
+    SnxA64Insn ounce;
+    if (beyond && (snx_ir_ldst_handles(max.op) || snx_ir_fpu_handles(max.op) || snx_ir_vec_handles(max.op)))
+        return SNX_A64_TARGET_MAX;
+    if (snx_a64_decode_word(word, SNX_A64_TARGET_OUNCE, &ounce) != SNX_A64_OP_UNDEF && snx_ir_int_handles(ounce.op) &&
+        (ounce.feature & ~(SnxU64)SNX_A64_TARGET_SWITCH) && !(ounce.feature & SNX_A64_FEAT_PAUTH))
+        return SNX_A64_TARGET_OUNCE;
+#endif
+    if (snx_a64_decode_word(word, 0, &sw) == SNX_A64_OP_UNDEF) *skip = 1;
+    return 0;
+}
+
+/* a word's step, 1 when the back end's emitter has code for it (the native ones are known once they are loaded) */
+static int add_step(Steps* built, u32 word, u64 pc, SnxU64 features) {
+#ifdef SNX_TEST_NATIVE_STEPS
+    steps_add(built, word, pc, features);
+    return 1;
+#else
+    SnxIr* ir = built->ir;
+    const unsigned long before = ir->fallbacks;
+    steps_add(built, word, pc, features);
+    if (ir->fallbacks == before) return 1;
+    ir->fallbacks = before; /* noted here: the module is still wanted for the rest */
+    return 0;
+#endif
+}
+
+/* an op that reads or writes guest memory, by its name, as the ops of the loads and stores are named */
+static int memory_op(SnxA64Op op) {
+    static const char* const starts[] = {"LD", "ST", "CAS", "SWP"};
+    const char* name = snx_a64_op_text(op);
+    for (size_t i = 0; i < sizeof(starts) / sizeof(starts[0]); ++i)
+        if (!strncmp(name, starts[i], strlen(starts[i]))) return 1;
+    return 0;
+}
+
 /* a word whose registers should point into the window: a load or store, a system instruction (DC ZVA), or one the
    Switch leaves UNDEF, which QEMU may still run */
 static int memory_pattern(u32 word) {
     SnxA64Insn insn;
     const SnxA64Op op = snx_a64_decode_word(word, 0, &insn);
-    return op == SNX_A64_OP_UNDEF || op == SNX_A64_OP_SYS || snx_ir_ldst_handles(op);
+    return op == SNX_A64_OP_UNDEF || op == SNX_A64_OP_SYS || memory_op(op);
 }
 
 /* ---- the runtime's callbacks, recorded for the outcome ---- */
@@ -526,7 +598,7 @@ static int environment_register(u32 word, u64* value, int* fixed) {
 
 /* the parts of the end states that differ, as the cause ("" when none), and the example's text */
 static void compare(const Item* it, const SnxQrefState* start, const End* l, const End* q, const u8* initial,
-                    const u8* llvm, const SnxQrefBatch* b, const SnxQrefResult* r, char* cause, size_t cause_size,
+                    const u8* ours, const SnxQrefBatch* b, const SnxQrefResult* r, char* cause, size_t cause_size,
                     char* text, size_t text_size) {
     size_t used = 0, cu = 0;
     unsigned i;
@@ -555,8 +627,8 @@ static void compare(const Item* it, const SnxQrefState* start, const End* l, con
          (unsigned long long)start->v[rm][1], (unsigned long long)start->v[rm][0], ra,
          (unsigned long long)start->v[ra][1], (unsigned long long)start->v[ra][0]);
     if (strcmp(outcome_kind(l->outcome), outcome_kind(q->outcome))) {
-        snprintf(cause, cause_size, "llvm-%s/qemu-%s", outcome_kind(l->outcome), outcome_kind(q->outcome));
-        TEXT("  llvm %s pc %llx, qemu %s pc %llx (signal %u, fault %llx)\n", snx_qref_outcome_name(l->outcome),
+        snprintf(cause, cause_size, SIDE "-%s/qemu-%s", outcome_kind(l->outcome), outcome_kind(q->outcome));
+        TEXT("  " SIDE " %s pc %llx, qemu %s pc %llx (signal %u, fault %llx)\n", snx_qref_outcome_name(l->outcome),
              (unsigned long long)l->pc, snx_qref_outcome_name(q->outcome), (unsigned long long)q->pc, r->signo,
              (unsigned long long)r->fault);
         return;
@@ -565,12 +637,12 @@ static void compare(const Item* it, const SnxQrefState* start, const End* l, con
        byte of a branch's target: the kernel's setting, not the instruction's */
     if (l->outcome != SNX_QREF_UNDEF && l->pc != q->pc && (l->pc & 0x00FFFFFFFFFFFFFFull) != q->pc) {
         PART("pc");
-        TEXT("  pc llvm %llx (%s) qemu %llx (%s, signal %u)\n", (unsigned long long)l->pc,
+        TEXT("  pc " SIDE " %llx (%s) qemu %llx (%s, signal %u)\n", (unsigned long long)l->pc,
              snx_qref_outcome_name(l->outcome), (unsigned long long)q->pc, snx_qref_outcome_name(q->outcome), r->signo);
     }
     if ((l->outcome == SNX_QREF_BRK || l->outcome == SNX_QREF_SVC) && l->imm != q->imm) {
         PART("imm");
-        TEXT("  imm llvm %llx qemu %llx\n", (unsigned long long)l->imm, (unsigned long long)q->imm);
+        TEXT("  imm " SIDE " %llx qemu %llx\n", (unsigned long long)l->imm, (unsigned long long)q->imm);
     }
     for (i = 0; i < 31; ++i) {
         u64 want = q->state.x[i];
@@ -580,36 +652,36 @@ static void compare(const Item* it, const SnxQrefState* start, const End* l, con
         }
         if (l->state.x[i] != want) {
             if (!x++) PART("x");
-            TEXT("  x%u: start %016llx llvm %016llx qemu %016llx\n", i, (unsigned long long)start->x[i],
+            TEXT("  x%u: start %016llx " SIDE " %016llx qemu %016llx\n", i, (unsigned long long)start->x[i],
                  (unsigned long long)l->state.x[i], (unsigned long long)want);
         }
     }
     if (l->state.sp != q->state.sp) {
         PART("sp");
-        TEXT("  sp: start %016llx llvm %016llx qemu %016llx\n", (unsigned long long)start->sp,
+        TEXT("  sp: start %016llx " SIDE " %016llx qemu %016llx\n", (unsigned long long)start->sp,
              (unsigned long long)l->state.sp, (unsigned long long)q->state.sp);
     }
     if ((l->state.nzcv ^ q->state.nzcv) & 0xF0000000u) {
         PART("nzcv");
-        TEXT("  nzcv: start %x llvm %x qemu %x\n", start->nzcv >> 28, l->state.nzcv >> 28, q->state.nzcv >> 28);
+        TEXT("  nzcv: start %x " SIDE " %x qemu %x\n", start->nzcv >> 28, l->state.nzcv >> 28, q->state.nzcv >> 28);
     }
     for (i = 0; i < 32; ++i)
         if (l->state.v[i][0] != q->state.v[i][0] || l->state.v[i][1] != q->state.v[i][1]) {
             if (!v++) PART("v");
-            TEXT("  v%u: start %016llx:%016llx llvm %016llx:%016llx qemu %016llx:%016llx\n", i,
+            TEXT("  v%u: start %016llx:%016llx " SIDE " %016llx:%016llx qemu %016llx:%016llx\n", i,
                  (unsigned long long)start->v[i][1], (unsigned long long)start->v[i][0],
                  (unsigned long long)l->state.v[i][1], (unsigned long long)l->state.v[i][0],
                  (unsigned long long)q->state.v[i][1], (unsigned long long)q->state.v[i][0]);
         }
     if (l->state.fpsr != q->state.fpsr) {
         PART("fpsr");
-        TEXT("  fpsr: start %08x llvm %08x qemu %08x\n", start->fpsr, l->state.fpsr, q->state.fpsr);
+        TEXT("  fpsr: start %08x " SIDE " %08x qemu %08x\n", start->fpsr, l->state.fpsr, q->state.fpsr);
     }
     if (l->state.fpcr != q->state.fpcr) {
         PART("fpcr");
-        TEXT("  fpcr: start %08x llvm %08x qemu %08x\n", start->fpcr, l->state.fpcr, q->state.fpcr);
+        TEXT("  fpcr: start %08x " SIDE " %08x qemu %08x\n", start->fpcr, l->state.fpcr, q->state.fpcr);
     }
-    /* memory: every byte QEMU reports must be the LLVM side's, and every byte the LLVM side changed must be in a run
+    /* memory: every byte QEMU reports must be this side's, and every byte this side changed must be in a run
        QEMU reports */
     {
         u64 first = ~0ull;
@@ -624,7 +696,7 @@ static void compare(const Item* it, const SnxQrefState* start, const End* l, con
                 break;
             }
             for (k = 0; k < ch->size; ++k)
-                if (llvm[ch->address - WINDOW + k] != b->bytes[ch->offset + k]) {
+                if (ours[ch->address - WINDOW + k] != b->bytes[ch->offset + k]) {
                     differs = 1;
                     first = ch->address + k;
                     break;
@@ -632,10 +704,10 @@ static void compare(const Item* it, const SnxQrefState* start, const End* l, con
         }
         for (i = 0; i < WINDOW_SIZE && !differs; i += SNX_QREF_PAGE) {
             u32 k;
-            if (!memcmp(llvm + i, initial + i, SNX_QREF_PAGE)) continue;
+            if (!memcmp(ours + i, initial + i, SNX_QREF_PAGE)) continue;
             for (k = 0; k < SNX_QREF_PAGE && !differs; ++k) {
                 u64 a = WINDOW + i + k;
-                if (llvm[i + k] == initial[i + k]) continue;
+                if (ours[i + k] == initial[i + k]) continue;
                 for (c = 0; c < r->changes; ++c) {
                     const SnxQrefChange* ch = &b->changes[r->first_change + c];
                     if (a >= ch->address && a < ch->address + ch->size) break;
@@ -651,8 +723,8 @@ static void compare(const Item* it, const SnxQrefState* start, const End* l, con
             if (first == ~0ull)
                 TEXT("  memory: QEMU's changes truncated\n");
             else if (first >= WINDOW && first < WINDOW + WINDOW_SIZE)
-                TEXT("  memory: first difference at %llx, start %02x llvm %02x (%u QEMU runs)\n",
-                     (unsigned long long)first, initial[first - WINDOW], llvm[first - WINDOW], r->changes);
+                TEXT("  memory: first difference at %llx, start %02x " SIDE " %02x (%u QEMU runs)\n",
+                     (unsigned long long)first, initial[first - WINDOW], ours[first - WINDOW], r->changes);
             else
                 TEXT("  memory: QEMU changed %llx, outside the window\n", (unsigned long long)first);
         }
@@ -720,12 +792,20 @@ static int write_expected(const char* path, Expected* e, size_t n) {
     size_t i;
     if (!f) return -1;
     qsort(e, n, sizeof(*e), order_expected);
-    fputs("# llvm_qemu_differential's expected mismatches until the emitters are rewritten from QEMU's translate-a64.c:\n"
-          "# the max target's name for the word, the cause (the state parts that differ, or llvm-X/qemu-Y for\n"
-          "# different outcomes, or qemu-alignment-fault for an alignment fault the LLVM side doesn't run), and the\n"
+    fputs("# " SIDE "_qemu_differential's expected mismatches"
+#ifndef SNX_TEST_NATIVE_STEPS
+          " until the emitters are rewritten from QEMU's translate-a64.c"
+#endif
+          ":\n# the max target's name for the word, the cause (the state parts that differ, or " SIDE "-X/qemu-Y for\n"
+          "# different outcomes, or qemu-alignment-fault for an alignment fault the " SIDE
+          " side doesn't run), and the\n"
           "# words differing in the default run and in --sweep. A group missing here fails the test, and so does a\n"
           "# listed one that no longer differs in a run whose count isn't 0.\n"
-          "# --update rewrites the counts of the run it is given with. qemu-diff-triage.md has the judgement on each.\n",
+          "# --update rewrites the counts of the run it is given with."
+#ifndef SNX_TEST_NATIVE_STEPS
+          " qemu-diff-triage.md has the judgement on each."
+#endif
+          "\n",
           f);
     for (i = 0; i < n; ++i)
         if (e[i].counts[0] || e[i].counts[1])
@@ -995,17 +1075,18 @@ int main(int argc, char** argv) {
     const char *expected_path, *reference_path = NULL, *record_path = NULL;
     size_t states, samples, rounds, nwords, nitems = 0, i, k, nsteps = 0, compared = 0, mismatched = 0,
                                                     no_emitter = 0, nexpected;
-    int sweep = 0, update = 0, jit = 0, abi = 0, portable = LLVM_STEPS_HOST, a, failed = 0, reference = 0,
+    int sweep = 0, update = 0, jit = 0, portable = STEPS_HOST, a, failed = 0, reference = 0, required = 0,
         no_avx512 = 0;
-    static const char* const forms[] = {"host", "portable", "generic"}; /* the emitters', by LLVM_STEPS_ value */
+#ifndef SNX_TEST_NATIVE_STEPS
+    int abi = 0;
+#endif
+    static const char* const forms[] = {"host", "portable", "generic"}; /* the code's, by STEPS_ value */
     u32* words = NULL;
     Item* items;
     Groups groups = {0}, missing = {0};
     Expected* expected;
     char error[1024], *path;
-    LlvmSteps built;
-    SnxIr* ir;
-    StepFn* steps;
+    Steps built;
     RtAPI rt = {.cas128 = snx_runtime_cas128};
     u8 *initial, *work, *reference_file = NULL;
     SnxQrefBatch batch = {0};
@@ -1016,11 +1097,13 @@ int main(int argc, char** argv) {
     double started = snx_seconds();
     FILE* f;
     if (argc == 3 && !strcmp(argv[1], "--skip")) {
-        printf("llvm_qemu_differential skipped: %s\n", argv[2]);
+        printf(SIDE "_qemu_differential skipped: %s\n", argv[2]);
         return 77;
     }
-    if (argc >= 5 && !strcmp(argv[3], "--reference")) {
+    STEPS_REQUIRE();
+    if (argc >= 5 && (!strcmp(argv[3], "--reference") || !strcmp(argv[3], "--reference-if-there"))) {
         reference = 1;
+        required = !strcmp(argv[3], "--reference");
         q.dir = argv[1];
         expected_path = argv[2];
         reference_path = argv[4];
@@ -1032,12 +1115,16 @@ int main(int argc, char** argv) {
         expected_path = argv[4];
         a = 5;
     } else {
-        fputs("usage: snx-test-llvm-qemu-differential QEMU RUNNER DIR EXPECTED [--sweep] [--states N] [--seed N] "
-              "[--quiet] [--update] [--jit] [--abi-contract] [--portable | --generic] [--without-avx512] "
-              "[--record FILE]\n"
-              "       snx-test-llvm-qemu-differential DIR EXPECTED --reference FILE [--quiet] [--update] [--jit] "
-              "[--abi-contract] [--portable | --generic] [--without-avx512]\n"
-              "       snx-test-llvm-qemu-differential --skip REASON\n",
+#ifdef SNX_TEST_NATIVE_STEPS
+#define FORMS "[--portable]"
+#else
+#define FORMS "[--abi-contract] [--portable | --generic] [--without-avx512]"
+#endif
+        fputs("usage: " PROGRAM " QEMU RUNNER DIR EXPECTED [--sweep] [--states N] [--seed N] "
+              "[--quiet] [--update] [--jit] " FORMS " [--record FILE]\n"
+              "       " PROGRAM " DIR EXPECTED --reference FILE [--quiet] [--update] [--jit] " FORMS "\n"
+              "       " PROGRAM " DIR EXPECTED --reference-if-there FILE ...\n"
+              "       " PROGRAM " --skip REASON\n",
               stderr);
         return 2;
     }
@@ -1052,16 +1139,22 @@ int main(int argc, char** argv) {
             update = 1;
         else if (!strcmp(argv[a], "--jit"))
             jit = 1;
+#ifdef SNX_TEST_NATIVE_STEPS
+        else if (!strcmp(argv[a], "--portable"))
+            portable = STEPS_PORTABLE;
+#else
         else if (!strcmp(argv[a], "--without-avx512"))
             no_avx512 = 1;
         else if (!strcmp(argv[a], "--abi-contract"))
             abi = 1;
         else if (!strcmp(argv[a], "--portable") || !strcmp(argv[a], "--generic")) {
-            int form = !strcmp(argv[a], "--portable") ? LLVM_STEPS_PORTABLE : LLVM_STEPS_GENERIC;
+            int form = !strcmp(argv[a], "--portable") ? STEPS_PORTABLE : STEPS_GENERIC;
             if (portable && portable != form)
                 return snx_error("%s after --%s: the emitters take one form a run", argv[a], forms[portable]);
             portable = form;
-        } else if (a + 1 < argc && !strcmp(argv[a], "--states"))
+        }
+#endif
+        else if (a + 1 < argc && !strcmp(argv[a], "--states"))
             states = strtoul(argv[++a], NULL, 10);
         else if (a + 1 < argc && !strcmp(argv[a], "--seed"))
             g_test.rng = strtoull(argv[++a], NULL, 0) | 1;
@@ -1071,6 +1164,7 @@ int main(int argc, char** argv) {
             return snx_error("unknown argument %s", argv[a]);
     }
     initial_seed = g_test.rng;
+#ifndef SNX_TEST_NATIVE_STEPS
     if (no_avx512) {
         char *host, *dropped;
         int same;
@@ -1081,15 +1175,24 @@ int main(int argc, char** argv) {
         LLVMDisposeMessage(host);
         LLVMDisposeMessage(dropped);
         if (same) {
-            printf("llvm_qemu_differential skipped: --without-avx512 on a host without AVX-512 runs its own path\n");
+            printf(SIDE "_qemu_differential skipped: --without-avx512 on a host without AVX-512 runs its own path\n");
             return 77;
         }
     }
     if (abi) snx_ir_abi_contract(1);
+#endif
     if (reference) {
         size_t size = 0;
         u64 window, window_size, pc, seed, pad;
         reference_file = (u8*)snx_read_file(reference_path, &size);
+        if (!reference_file && !required) {
+            printf(
+                SIDE
+                "_qemu_differential skipped: no recorded QEMU reference at %s (build.yml's qemu-reference job records "
+                "one, and this host has no qemu-aarch64 to run beside it)\n",
+                reference_path);
+            return 77;
+        }
         if (!reference_file) return snx_error("cannot read %s", reference_path);
         ref.in.p = reference_file;
         ref.in.size = size;
@@ -1126,7 +1229,10 @@ int main(int argc, char** argv) {
     if (reference) {
         /* the record's items, so that its cases line up with the words it ran */
         items = (Item*)snx_alloc((header.nitems ? header.nitems : 1) * sizeof(*items));
-        for (i = 0; i < header.nitems; ++i) ref_get_item(&ref.in, &items[i]);
+        for (i = 0; i < header.nitems; ++i) {
+            ref_get_item(&ref.in, &items[i]);
+            items[i].skip = 0; /* the recorder's back end's: this one's is below */
+        }
         if (ref.in.failed) return snx_error("%s ends inside its items", reference_path);
         nitems = header.nitems;
     } else {
@@ -1139,8 +1245,10 @@ int main(int argc, char** argv) {
         items = (Item*)snx_alloc((2 * nwords) * sizeof(*items));
         for (i = 0; i < nwords; ++i) {
             int unrunnable;
-            const char *op = lqd_op_name(words[i], &unrunnable), *sw = lqd_switch_op_name(words[i]);
-            unsigned pairs = store_exclusive(words[i]) ? 2 : 1, p;
+            const char* op = lqd_op_name(words[i], &unrunnable);
+            const u32 word = qemu_word(words[i], op);
+            const char* sw = lqd_switch_op_name(word);
+            unsigned pairs = store_exclusive(word) ? 2 : 1, p;
             if (unrunnable) continue;
             for (p = 0; p < pairs; ++p) {
                 Item* it = &items[nitems++];
@@ -1148,59 +1256,54 @@ int main(int argc, char** argv) {
                 snprintf(it->op, sizeof(it->op), "%s", op);
                 snprintf(it->switch_op, sizeof(it->switch_op), "%s", sw ? sw : "");
                 it->nwords = p + 1;
-                it->words[0] = p ? load_exclusive(words[i]) : words[i];
-                it->words[p] = words[i];
+                it->words[0] = p ? load_exclusive(word) : word;
+                it->words[p] = word;
             }
         }
         free(words);
     }
 
-    /* the LLVM steps, one function a word, at the word's pc; a word without an emitter is noted and left out */
+    /* the steps, one function a word, at the word's pc; a word without code is noted and left out */
     {
-        static const int fatal[] = {SIGSEGV, SIGBUS, SIGILL, SIGFPE};
+        static const int fatal[] = {SIGSEGV,
+#ifdef SIGBUS
+                                    SIGBUS,
+#endif
+                                    SIGILL, SIGFPE};
+#ifdef _WIN32
+        for (i = 0; i < sizeof(fatal) / sizeof(fatal[0]); ++i) signal(fatal[i], on_fatal);
+#else
         struct sigaction on = {0};
         on.sa_handler = on_fatal;
         for (i = 0; i < sizeof(fatal) / sizeof(fatal[0]); ++i) sigaction(fatal[i], &on, NULL);
+#endif
     }
-    if (llvm_steps_begin(&built, jit, portable, error, sizeof(error))) return snx_error("%s", error);
-    ir = built.ir;
+    if (steps_begin(&built, jit, portable, error, sizeof(error))) return snx_error("%s", error);
     for (i = 0; i < nitems; ++i) {
         Item* it = &items[i];
         it->step = (u32)nsteps;
         for (k = 0; k < it->nwords; ++k) {
-            unsigned long before = ir->fallbacks;
-            SnxA64Insn max, ounce, sw;
-            SnxU64 features = 0;
-            /* the load/store emitters (ir_ldst.c) implement the LSE and RCpc atomics too, the scalar FP ones
-               (ir_fpu.c) FEAT_FP16, FEAT_JSCVT, FEAT_FRINTTS and BFCVT, the AdvSIMD ones (ir_vec.c) the vector
-               extensions: a word the Switch lacks that they emit runs with max's features, against QEMU's -cpu max.
-               The integer ones (ir_int.c) implement the ounce target's FlagM and ESB, which run with its features;
-               PAuth stays out, as QEMU signs with keys where the emitters run with authentication off */
-            if (snx_a64_decode_word(it->words[k], SNX_A64_TARGET_MAX, &max) != SNX_A64_OP_UNDEF &&
-                (snx_ir_ldst_handles(max.op) || snx_ir_fpu_handles(max.op) || snx_ir_vec_handles(max.op)) &&
-                (max.feature & ~(SnxU64)SNX_A64_TARGET_SWITCH) && !(max.feature & SNX_A64_FEAT_PAUTH))
-                features = SNX_A64_TARGET_MAX;
-            else if (snx_a64_decode_word(it->words[k], SNX_A64_TARGET_OUNCE, &ounce) != SNX_A64_OP_UNDEF &&
-                     snx_ir_int_handles(ounce.op) && (ounce.feature & ~(SnxU64)SNX_A64_TARGET_SWITCH) &&
-                     !(ounce.feature & SNX_A64_FEAT_PAUTH))
-                features = SNX_A64_TARGET_OUNCE;
-            else if (snx_a64_decode_word(it->words[k], 0, &sw) == SNX_A64_OP_UNDEF)
-                it->skip = 1;
-            snprintf(g_test.running, sizeof(g_test.running), "the IR of word %08x (%s emitters)", it->words[k],
+            int none = 0;
+            const SnxU64 features = word_features(it->words[k], &none);
+            if (none) it->skip = 1;
+            snprintf(g_test.running, sizeof(g_test.running), "the code of word %08x (%s form)", it->words[k],
                      forms[portable]);
-            llvm_steps_add(&built, it->words[k], item_pc(it) + 4 * k, features);
+            if (!add_step(&built, it->words[k], item_pc(it) + 4 * k, features)) it->skip = 1;
             ++nsteps;
-            if (ir->fallbacks != before) {
-                it->skip = 1;
-                ir->fallbacks = before; /* noted here: the module is still wanted for the rest */
-            }
         }
     }
-    if (!q.quiet) printf("%zu cases of %zu words; compiling %zu LLVM steps\n", nitems, nwords, nsteps);
-    snprintf(g_test.running, sizeof(g_test.running), "the compile of %zu LLVM steps (%s emitters)", nsteps,
+    if (!q.quiet) printf("%zu cases of %zu words; compiling %zu %s steps\n", nitems, nwords, nsteps, steps_name());
+    snprintf(g_test.running, sizeof(g_test.running), "the compile of %zu %s steps (%s form)", nsteps, steps_name(),
              forms[portable]);
-    if (llvm_steps_load(&built, error, sizeof(error))) return snx_error("%s", error);
-    steps = built.steps;
+#ifdef SNX_TEST_NATIVE_STEPS
+    built.partial = 1; /* the words it has no code for */
+#endif
+    if (steps_load(&built, error, sizeof(error))) return snx_error("%s", error);
+#ifdef SNX_TEST_NATIVE_STEPS
+    for (i = 0; i < nitems; ++i)
+        for (k = 0; k < items[i].nwords; ++k)
+            if (!native_steps_made(&built, items[i].step + k)) items[i].skip = 1;
+#endif
     rt.svc = cb_svc;
     rt.undef = cb_undef;
     rt.note_hint = cb_note;
@@ -1269,9 +1372,10 @@ int main(int argc, char** argv) {
                 for (s = 0; s < states; ++s) {
                     CPU c;
                     SnxQrefState* start = &starts[(k - first) * states + s];
-                    /* a word without an emitter runs its first state only, under QEMU, for the coverage report */
+                    /* a word without code runs its first state only, under QEMU, for the coverage report; a
+                       record has every state, as another host's back end may have the code */
                     index[(k - first) * states + s] = -1;
-                    if (it->skip && s) continue;
+                    if (it->skip && s && !record_path) continue;
                     random_state(&c, it->words[it->nwords - 1], addresses);
                     state_of(&c, start);
                     index[(k - first) * states + s] = add_case(&batch, it, start);
@@ -1308,7 +1412,7 @@ int main(int argc, char** argv) {
                     break;
                 }
                 /* an alignment fault (an ordered access across 16 bytes, LDAPUR's or STLUR's): the backend
-                   raises none, and on an AArch64 host the access faults the host and ends this test, so the LLVM
+                   raises none, and on an AArch64 host the access faults the host and ends this test, so this
                    side doesn't run it. It differs alike on every host */
                 if (r->outcome == SNX_QREF_FAULT && r->signo == SIGBUS_A64) {
                     Group* g = group(&groups, it->op, "qemu-alignment-fault");
@@ -1316,7 +1420,7 @@ int main(int argc, char** argv) {
                     if (g->nexamples < EXAMPLES)
                         snprintf(g->examples[g->nexamples++], sizeof(text),
                                  "  word %08x (the Switch target decodes it as %s)\n  start x%u=%016llx\n"
-                                 "  qemu fault pc %llx (signal %u, fault %llx), not run on the LLVM side\n",
+                                 "  qemu fault pc %llx (signal %u, fault %llx), not run on the " SIDE " side\n",
                                  word, it->switch_op[0] ? it->switch_op : "UNDEF", rn,
                                  (unsigned long long)(rn < 31 ? start->x[rn] : start->sp), (unsigned long long)r->pc,
                                  r->signo, (unsigned long long)r->fault);
@@ -1324,20 +1428,21 @@ int main(int argc, char** argv) {
                     ++mismatched;
                     break;
                 }
-                /* the LLVM side */
+                /* this side */
                 snprintf(g_test.running, sizeof(g_test.running),
-                         "the LLVM side of %s, word %08x, state %zu of %zu (%s emitters)", it->op,
+                         "the " SIDE " side of %s, word %08x, state %zu of %zu (%s form)", it->op,
                          it->words[it->nwords - 1], s, states, forms[portable]);
                 cpu_from_state(&c, start);
                 c.rt = &rt;
                 c.mem = work - WINDOW;
                 if (it->nwords == 1) snx_st_le32(work + PC - WINDOW, it->words[0]);
                 g_test.events = &ev;
-                /* the host FP environment as other code on the thread may leave it, rounding upward: each generated
-                   function's snx_fp_env puts back what its fast paths assume, on every host that has them */
-                fesetround(FE_UPWARD);
+                /* the host FP environment as other code on the thread may leave it, rounding upward, where the code
+                   takes none of it (steps_host_mode): each LLVM function's snx_fp_env puts back what its fast paths
+                   assume, on every host that has them */
+                fesetround(steps_host_mode(FE_UPWARD));
                 for (w = 0; w < it->nwords; ++w) {
-                    l.pc = steps[it->step + w](&c);
+                    l.pc = step_run(steps_at(&built, it->step + w), &c);
                     if (ev.undef || ev.brk || l.pc != item_pc(it) + 4 * (w + 1)) break;
                 }
                 fesetround(FE_TONEAREST);
@@ -1411,9 +1516,9 @@ int main(int argc, char** argv) {
             g->listed = 1;
         }
     }
-    printf("LLVM against %sQEMU%s, %s emitters%s: %zu cases of %zu rows' and directed words, %zu runs compared, %zu "
-           "without an emitter yet, %zu differing in %zu groups\n",
-           reference ? "a recorded " : "", sweep ? " (sweep)" : "", forms[portable],
+    printf("%s against %sQEMU%s, %s form%s: %zu cases of %zu rows' and directed words, %zu runs compared, %zu "
+           "without code yet, %zu differing in %zu groups\n",
+           steps_name(), reference ? "a recorded " : "", sweep ? " (sweep)" : "", forms[portable],
            no_avx512 ? " without AVX-512" : "", nitems, lqd_rows(), compared, no_emitter, mismatched, groups.ngroups);
     for (i = 0; i < groups.ngroups; ++i) {
         const Group* g = &groups.groups[i];
@@ -1437,7 +1542,7 @@ int main(int argc, char** argv) {
 
     /* the reports */
     snx_mkdirs(q.dir);
-    path = snx_path_join(q.dir, "llvm_qemu_coverage.txt");
+    path = snx_path_join(q.dir, SIDE "_qemu_coverage.txt");
     f = fopen(path, "w");
     if (f) {
         fprintf(f, "# the names (max target) of words QEMU runs and the backend has no emitter for yet, with the words;\n"
@@ -1447,7 +1552,7 @@ int main(int argc, char** argv) {
         fclose(f);
     }
     free(path);
-    path = snx_path_join(q.dir, "llvm_qemu_mismatches.txt");
+    path = snx_path_join(q.dir, SIDE "_qemu_mismatches.txt");
     f = fopen(path, "w");
     if (f) {
         for (i = 0; i < groups.ngroups; ++i) {
@@ -1458,11 +1563,11 @@ int main(int argc, char** argv) {
         }
         fclose(f);
     }
-    printf("%zu names without an emitter in %s/llvm_qemu_coverage.txt, examples in llvm_qemu_mismatches.txt; "
+    printf("%zu names without code in %s/" SIDE "_qemu_coverage.txt, examples in " SIDE "_qemu_mismatches.txt; "
            "%.1f s: %s\n",
            missing.ngroups, q.dir, snx_seconds() - started, failed ? "FAILED" : "passed");
     free(path);
-    llvm_steps_end(&built);
+    steps_end(&built);
     free(initial);
     free(work);
     free(items);
