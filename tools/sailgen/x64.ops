@@ -538,3 +538,5 @@ enc vpsrlvq VPSRLVQ xmm1, xmm2, xmm3/m128
 enc vpsravd VPSRAVD xmm1, xmm2, xmm3/m128
 enc aesdec AESDEC xmm1, xmm2/m128
 enc sha1rnds4 SHA1RNDS4 xmm1, xmm2/m128, imm8
+enc vsm4rnds4 VSM4RNDS4 xmm1, xmm2, xmm3/m128
+enc vsm4key4 VSM4KEY4 xmm1, xmm2, xmm3/m128

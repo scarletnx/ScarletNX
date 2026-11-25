@@ -1245,8 +1245,8 @@ static int vaes_last(SgCtx* g, int a, int inv) {
     return key->kind == SGX_K_VEC && key->vzero ? i->in[0] : 0;
 }
 
-/* the cryptographic extensions' instructions: the host's AES-NI and SHA-NI where it has them, else the portable
-   helpers; 0 for the rest */
+/* the cryptographic extensions' instructions: the host's AES-NI, SHA-NI and SM4 where it has them, else the portable
+   helpers (SM4: the Sail's); 0 for the rest */
 static int vec_crypto(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     SgCtx* g = u->g;
     unsigned rd = word & 31, rn = word >> 5 & 31, rm = word >> 16 & 31;
@@ -1320,6 +1320,13 @@ static int vec_crypto(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
         a = vread(g, rm);
         r = vadd(g, 2, vread(g, rd), sgx_v2(X, &sgx_v_palignr, a, vread(g, rn), 4));
         r = op2(g, &sgx_v_sha256msg2, r, a);
+        break;
+    case SNX_A64_OP_SM4E: /* Vd's state by Vn's keys, and Vn's key by Vm's constants: SRC1's and SRC2's */
+    case SNX_A64_OP_SM4EKEY:
+        if (!(X->features & SGX_F_SM4)) return 0; /* the Sail's */
+        a = vread(g, insn->op == SNX_A64_OP_SM4E ? rd : rn);
+        b = vread(g, insn->op == SNX_A64_OP_SM4E ? rn : rm);
+        r = op3(g, insn->op == SNX_A64_OP_SM4E ? &sgx_v_vsm4rnds4 : &sgx_v_vsm4key4, a, b);
         break;
     default: return 0;
     three: c = vread(g, rm);

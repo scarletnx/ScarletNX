@@ -201,7 +201,8 @@ the game's image read from that image.
   ones biased by 0x80), GF2P8AFFINEQB (8-bit shifts, bit reversal); the tricks are wunkolo's (wunkolo.github.io).
   The x86-64 back end (`x64/x64_vec.c`) makes the same with SSE4.2's and AVX's forms: GF2P8AFFINEQB, PAVGB/PAVGW, AVX2's
   shifts by a lane's own amount (bytes and halfwords by products with the amount's power of two), and FPSR.QC tested
-  once for all the saturating instructions of a block.
+  once for all the saturating instructions of a block; CRC32 by PCLMULQDQ, SHA-1 by SHA1RNDS4, and VSM4RNDS4 and VSM4KEY4
+  where CPUID says SM4.
 - `src/common/utilities/common.c` and `process.c`: host files/processes; argv-based subprocesses.
 - `src/common/platform/` / `scarletnx-platform`: the host layer every driver shares, without SDL: threads and locks,
   clocks and sleep, files, address space and shared libraries. The NX runtime's `runtime/platform/` builds on it.
