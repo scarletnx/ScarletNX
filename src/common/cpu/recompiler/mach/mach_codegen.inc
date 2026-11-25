@@ -1695,8 +1695,8 @@ static void regs_of(SnxU32 w, SnxU64* use, SnxU64* def) {
             *use = LIVE_NZCV;
             return;
         }
-        if ((w & 0xFFFFF01F) == 0xD503201F) { /* hints: NOP, YIELD... */
-            *use = 0;
+        if ((w & 0xFFFFF01F) == 0xD503201F) { /* hints: NOP, YIELD...; but XPACLRI's X30 and CHKFEAT's X16 */
+            if ((w >> 5 & 127) != 7 && (w >> 5 & 127) != 40) *use = 0;
             return;
         }
         if ((w >> 20) == 0xD53) { /* MRS */
