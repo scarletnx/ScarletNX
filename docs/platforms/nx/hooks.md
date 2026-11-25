@@ -169,6 +169,9 @@ them against prototypes in NVN's own types, with `-pedantic-errors`.
 x0 or v0 and returns to x30) and the table sorted by symbol. `tests/hook_adapters.c` checks the register mapping,
 and the `hookgen_refuses_*` tests the declarations it refuses.
 
+The Vita's system functions are declared in the same language, by NID (`[0x99ba173e] hook sceIoLseek(...)`), and
+`hookgen --vita` generates their adapters and table: [The system's functions by NID](../vita/README.md#the-systems-functions-by-nid).
+
 ## Versions
 
 A function's code, and the layout of the structs it works on, change between versions of the SDK that built the
