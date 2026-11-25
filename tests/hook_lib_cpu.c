@@ -76,7 +76,7 @@ void mem_query(u64 addr, MemBlock* b) {
 }
 int mem_user_mapped(u64 addr, u64 size) { return addr < sizeof guest && size <= sizeof guest - addr; }
 GuestFn nce_slot(GuestFn f) { return f; }
-void nce_slot_taken(u64 addr, const char* what) { (void)addr, (void)what; }
+int nce_slot_taken(u64 addr, const char* what) { return (void)addr, (void)what, 0; }
 void jit_slot_taken(u64 addr, GuestFn fn) { (void)addr, (void)fn; }
 /* the JIT's code of what the game put at a function: its own code's */
 GuestFn jit_code_now(u64 pc) { return (void)pc, own_code; }
