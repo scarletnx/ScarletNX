@@ -56,6 +56,17 @@ int snx_native_cached_object(SnxCodegen* codegen, size_t first, size_t last, con
                              unsigned char* made, unsigned char** object, size_t* size, int* reused, char* error,
                              size_t error_size);
 
+/* 1 where this host's build makes the module of another machine's triple (module_llvm.h's: the pack of objects a JIT
+   loader takes) with a native back end: arm64's, for arm64-apple-ios<version>-elf, whose objects are the ELF that
+   loader reads, with Darwin's calling convention. 0 for another triple, on a Windows host, whose objects are COFF
+   alone, and on a big-endian one, whose descriptors are its own numbers. Its code takes the features of the host it is
+   made on only where that is the device (an app that recompiles for itself), else the architecture's baseline */
+int snx_native_target(const char* triple);
+/* snx_native_object for a triple snx_native_target takes; nothing is reused */
+int snx_native_target_object(const char* triple, SnxCodegen* codegen, size_t first, size_t last,
+                             const SnxNativeOptions* options, unsigned char* made, unsigned char** object, size_t* size,
+                             char* error, size_t error_size);
+
 /* the host's back end's AArch32 blocks (x64/x64_arm.h's or arm64/arm64_arm.h's, whose functions these are): a compiler
    of its own for one thread, NULL where the host has none or out of memory */
 typedef struct SnxNativeArm SnxNativeArm;

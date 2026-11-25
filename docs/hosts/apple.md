@@ -168,14 +168,16 @@ The IPA is unsigned: AltStore, SideStore or a developer account signs it for the
 framework.
 
 Code compiled while a game runs on macOS, 32-bit games' blocks and the runtime JIT's functions, goes through the
-runtime's own loader (`src/common/cpu/recompiler/llvm/code_loader.c`). LLVM writes it as ELF objects with Darwin's
-calling convention, and the loader places them in `MAP_JIT` memory, which each thread sees either writable or
-executable. The app is signed without the hardened runtime, so `MAP_JIT` needs no entitlement.
+runtime's own loader (`src/common/cpu/recompiler/llvm/code_loader.c`). The arm64 back end
+(`src/common/cpu/recompiler/arm64`), and LLVM for what it leaves, write it as ELF objects with Darwin's calling
+convention, and the loader places them in `MAP_JIT` memory, which each thread sees either writable or executable.
+The app is signed without the hardened runtime, so `MAP_JIT` needs no entitlement.
 
 ### Running a game on iOS
 
-The iPhone prepares the game itself: it extracts the dump and recompiles it with its own LLVM. Super Meat Boy takes
-about two minutes on an iPhone 14 Pro, with the app in the foreground and the screen on.
+The iPhone prepares the game itself: it extracts the dump and recompiles it, the arm64 back end making the code and
+the phone's own LLVM what that back end leaves. With LLVM making all of it, one game took about two minutes on an iPhone
+14 Pro, the app in the foreground and the screen on; the arm64 back end's time there is not measured.
 
 You do not need to put files in the right folders. The app copies the `prod.keys` you pick into `keys/` and a dump you
 pick into `dumps/`, then makes the game in `recompiled/`. Pick them from wherever they are (Files, Downloads, iCloud).
@@ -241,8 +243,9 @@ PowerPC64 ([PowerPC64](./ppc64.md)), and views of memory are copies there, as Wi
 games from running:
 
 - **A game's frame on a Mac.** The recompiler links an arm64 Mach-O dylib
-  (`src/common/cpu/recompiler/llvm/link_macho.c`) with the ad hoc signature ld64 gives one, which Apple silicon
-  needs to run it. A Mac loads one and a game runs; MoltenVK still loses the GPU in some scenes (see
+  (`src/common/cpu/recompiler/llvm/link_macho.c`) from ELF objects, the arm64 back end's and the runtime library's, and
+  from LLVM's Mach-O ones, with the ad hoc signature ld64 gives one, which Apple silicon needs to run it. A Mac loads
+  one and a game runs; MoltenVK still loses the GPU in some scenes (see
   [A GPU lockup on MoltenVK](#a-gpu-lockup-on-moltenvk)).
 - **Game modules on iOS, one game checked.** iOS loads no code it did not ship with, so a game's code is a pack of
   objects (`scarletnx -r Game --target ios` writes `<id>_code.snxobj`, 64-bit games only) that the app loads into
@@ -250,8 +253,9 @@ games from running:
   `code_loader.c`). The app makes it itself, or a Mac does.
 - **32-bit games on iOS.** Their blocks are compiled at run time (`src/nx/runtime/arm.c`,
   `src/common/cpu/arm/exec.c`), which needs memory that becomes executable. iOS gives that only to an app that may JIT.
-- **Preparing on Windows or Linux.** Their x86 builds carry x86's code generator alone, to keep their size, so
-  `--target ios` fails there. The iPhone prepares games itself now.
+- **Preparing on Windows.** The arm64 back end makes a pack's code on every host but Windows, whose build writes COFF
+  objects alone. The x86-64 build's LLVM carries x86's code generator alone, to keep its size: `--target ios` fails
+  there. The iPhone prepares games itself now.
 - **JIT without StikDebug.** The app still needs a debugger attached, which StikDebug gives ([#598](https://github.com/scarletnx/ScarletNX/issues/598)).
 - **The 3DS, Vita and Linux drivers** are not built for iOS (`SNX_BUILD_3DS`, `SNX_BUILD_VITA`, `SNX_BUILD_GNUABI`),
   nor the Linux one for macOS.
