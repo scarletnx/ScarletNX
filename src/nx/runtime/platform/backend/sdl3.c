@@ -27,6 +27,7 @@
 #include "nx/runtime/platform/touch.h"
 #include "nx/runtime/platform/ui.h"
 #include "nx/runtime/platform/vpad.h"
+#include "common/utilities/vpad_sdl.h"
 #include "nx/runtime/platform/gamepad.h"
 #include "nx/runtime/platform/joycon2.h"
 #include "nx/runtime/platform/joycon2_sdl.h" /* joycon2_mouse */
@@ -596,35 +597,9 @@ void backend_controller_hide(u32 ticket) {
 /* the atlas the renderer uploads: when the window opens, and again for the fatal panel */
 static void controls_atlas(void) { ui_atlas_build(); }
 static void controls_say(const char* line) { LOG("%s\n", line); }
-/* controls=2 (Auto): the touch screens SDL knows, or a finger seen on one, and the gamepads connected (vpad_auto) */
+/* controls=2 (Auto): the touch screens SDL knows, or a finger seen on one, and the gamepads connected */
 static int g_touch_seen;
-static void controls_auto(void) {
-    int n = 0, pads = 0, touch = g_touch_seen;
-    SDL_TouchID* t = SDL_GetTouchDevices(&n);
-    SDL_JoystickID* g = SDL_GetGamepads(&pads);
-    for (int i = 0; t && i < n && !touch; i++) touch = SDL_GetTouchDeviceType(t[i]) == SDL_TOUCH_DEVICE_DIRECT;
-    SDL_free(t);
-    SDL_free(g);
-    vpad_auto(touch, pads);
-}
-/* Android's vibrator, which SDL lists as VIBRATOR_SERVICE; a gamepad's motors are no buzz for a finger */
-static void buzzer_open(void) {
-#ifdef __ANDROID__
-    int n = 0;
-    SDL_HapticID* ids;
-    if (!SDL_InitSubSystem(SDL_INIT_HAPTIC)) return;
-    ids = SDL_GetHaptics(&n);
-    for (int i = 0; ids && i < n && !g_sdl3.buzzer; i++) {
-        const char* name = SDL_GetHapticNameForID(ids[i]);
-        if (name && !strcmp(name, "VIBRATOR_SERVICE")) g_sdl3.buzzer = SDL_OpenHaptic(ids[i]);
-    }
-    SDL_free(ids);
-    if (g_sdl3.buzzer && !SDL_InitHapticRumble(g_sdl3.buzzer)) {
-        SDL_CloseHaptic(g_sdl3.buzzer);
-        g_sdl3.buzzer = NULL;
-    }
-#endif
-}
+static void controls_auto(void) { snx_vpad_sdl_auto(g_touch_seen); }
 
 /* the renderer's start failed: what it says of why, with its values, else the log has it. A start that failed for
    another reason than the device's Vulkan version was said as that before */
@@ -686,14 +661,8 @@ void video_init(const char* title, const char* addons) {
         LOG("renderer: Vulkan headless (no window, surface or swapchain)\n");
         return;
     }
-#ifdef __ANDROID__
-    SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1"); /* back opens the game's menu (overlay.c), not leaves */
-#endif
-    /* a finger and the mouse each reach the touch screen once: SDL would also send each as the other, and a pen as both
-       (it stays a finger) */
-    SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
-    SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "0");
-    SDL_SetHint(SDL_HINT_PEN_MOUSE_EVENTS, "0");
+    /* a finger and the mouse each reach the touch screen once, and Android's Back opens the game's menu (overlay.c) */
+    snx_vpad_sdl_hints();
     snx_sdl_desktop_hints();
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) fatal("SDL could not start its video: %s", SDL_GetError());
     gamepad_scan();
@@ -735,7 +704,7 @@ void video_init(const char* title, const char* addons) {
     vpad_set_touch(touch_changed);
     controls_auto();
     vpad_set_store(ini_set);
-    buzzer_open();
+    g_sdl3.buzzer = snx_vpad_sdl_buzzer();
     SDL_GetWindowSizeInPixels(g_sdl3.win, &w, &h);
     LOG("video: a window of %dx%d pixels, the display's scale %.2f\n", w, h, SDL_GetWindowDisplayScale(g_sdl3.win));
     wsize_set(w, h);
@@ -1386,11 +1355,7 @@ static void hotkey(int action) {
 /* The game's menu takes the keys, the buttons, the fingers and the mouse while it is open, and the keyboard's box
    while it shows and the menu doesn't. Back, Home and the menu's key (hotkey_menu, F2) open and close the menu, and
    they and Esc end the on-screen controls' edit mode. Under ui_lock: the renderer draws them on its thread */
-/* a finger's id, the pen's apart: SDL gives a pen's touch the id 1 on every platform, the id Android and Wayland
-   give a first finger and any finger may have, and no real finger's id sets bit 63 */
-static u64 finger_id(const SDL_TouchFingerEvent* f) {
-    return (u64)f->fingerID | (f->touchID == SDL_PEN_TOUCHID ? 1ull << 63 : 0);
-}
+static u64 finger_id(const SDL_TouchFingerEvent* f) { return snx_vpad_sdl_finger(f); }
 static void menu_open(int open) {
     if (overlay_shown() != open) overlay_toggle();
     vpad_release();
@@ -1642,12 +1607,7 @@ static void touch_finger(const SDL_Event* e) {
     py = e->tfinger.y * (float)h;
     backend_window_safe(&safe[0], &safe[1], &safe[2], &safe[3]);
     ui_lock();
-    if (e->type == SDL_EVENT_FINGER_DOWN)
-        taken = vpad_down(finger_id(&e->tfinger), px, py, safe);
-    else if (e->type == SDL_EVENT_FINGER_MOTION)
-        vpad_move(finger_id(&e->tfinger), px, py, safe);
-    else
-        vpad_up(finger_id(&e->tfinger));
+    taken = snx_vpad_sdl_pointer(e, px, py, safe);
     ui_unlock();
     if (taken || !g_settings.touch_screen) return;
     touch_window(picture);
@@ -1738,17 +1698,14 @@ static void touch_mouse(const SDL_Event* e) {
     if (e->type == SDL_EVENT_MOUSE_MOTION) {
         if (e->motion.which == SDL_TOUCH_MOUSEID) return;
         ui_lock();
-        vpad_move(SNX_TOUCH_MOUSE, e->motion.x * d, e->motion.y * d, safe);
+        (void)snx_vpad_sdl_pointer(e, e->motion.x * d, e->motion.y * d, safe);
         ui_unlock();
         touch_window(picture);
         if (g_settings.touch_screen == 2 && (e->motion.state & SDL_BUTTON_LMASK))
             touch_set(TOUCH_MOVE, SNX_TOUCH_MOUSE, picture, e->motion.x * d, e->motion.y * d);
     } else if (e->button.which != SDL_TOUCH_MOUSEID && e->button.button == SDL_BUTTON_LEFT) {
         ui_lock();
-        if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN)
-            taken = vpad_down(SNX_TOUCH_MOUSE, e->button.x * d, e->button.y * d, safe);
-        else
-            taken = vpad_up(SNX_TOUCH_MOUSE);
+        taken = snx_vpad_sdl_pointer(e, e->button.x * d, e->button.y * d, safe);
         ui_unlock();
         if (taken || g_settings.touch_screen != 2) return;
         touch_window(picture);
@@ -2483,7 +2440,7 @@ void video_poll(void) {
             ry = vs[3];
         }
         if (acts & SNX_VPAD_DO_SHOT) g_sdl3.shot_req = 1;
-        if ((acts & SNX_VPAD_DO_BUZZ) && g_sdl3.buzzer) SDL_PlayHapticRumble(g_sdl3.buzzer, 0.5f, 15);
+        if (acts & SNX_VPAD_DO_BUZZ) snx_vpad_sdl_buzz(g_sdl3.buzzer);
     }
     input_stick_clamp(&lx, &ly);
     input_stick_clamp(&rx, &ry);
