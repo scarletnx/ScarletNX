@@ -1526,6 +1526,8 @@ int main(int argc, char** argv) {
         if (!q.quiet || !g->listed)
             printf("  %-20s %-28s %5lu %s\n", g->op, g->cause, g->count,
                    g->listed ? (g->count == g->expected ? "expected" : "expected, count changed") : "NEW");
+        /* the word and what it made of the state, in the log of a machine the test can't be rerun on */
+        if (!g->listed && g->nexamples) fputs(g->examples[0], stdout);
     }
     for (k = 0; k < nexpected; ++k)
         if (expected[k].counts[sweep] && !expected[k].seen) {
