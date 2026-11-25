@@ -89,6 +89,10 @@ void snx_native_arm_free(SnxNativeArm* c);
 /* what the next blocks are made for (cpu/arm/codegen.h; NULL the Cortex-A57 on flat memory, as a new compiler's): 0, or
    -1 for options no block compiler takes */
 int snx_native_arm_options(SnxNativeArm* c, const SnxArmCodegenOptions* options);
+/* the write marks of the next blocks and their counts (snx_x64_arm_marks, snx_x64_arm_mark_counts) */
+void snx_native_arm_marks(SnxNativeArm* c, int write_marks);
+void snx_native_arm_mark_counts(SnxNativeArm* c, unsigned long long* stores, unsigned long long* stack,
+                                unsigned long long* made);
 int snx_native_arm_block(SnxNativeArm* c, const char* name, const unsigned char* code, size_t count, uint32_t pc,
                          size_t* consumed, SnxNativeArmNext next, void* user);
 /* the Thumb block at pc, its code little-endian halfwords, *consumed the halfwords it covers */

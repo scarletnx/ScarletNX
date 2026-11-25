@@ -58,6 +58,12 @@ int snx_s390x_arm_options(SnxS390xArm* c, const SnxArmCodegenOptions* options) {
     (void)c, (void)options;
     return -1;
 }
+void snx_s390x_arm_marks(SnxS390xArm* c, int write_marks) { (void)c, (void)write_marks; }
+void snx_s390x_arm_mark_counts(SnxS390xArm* c, unsigned long long* stores, unsigned long long* stack,
+                               unsigned long long* made) {
+    (void)c;
+    *stores = *stack = *made = 0;
+}
 int snx_s390x_arm_block(SnxS390xArm* c, const char* name, const unsigned char* code, size_t count, uint32_t pc,
                        size_t* consumed, SnxS390xArmNext next, void* user) {
     (void)c, (void)name, (void)code, (void)count, (void)pc, (void)next, (void)user;

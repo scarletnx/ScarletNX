@@ -178,6 +178,47 @@ int snx_native_arm_options(SnxNativeArm* c, const SnxArmCodegenOptions* options)
            : c->mips64be ? snx_mips64be_arm_options(c->mips64be, options)
                          : snx_s390x_arm_options(c->s390x, options);
 }
+void snx_native_arm_marks(SnxNativeArm* c, int write_marks) {
+    if (c->x64)
+        snx_x64_arm_marks(c->x64, write_marks);
+    else if (c->arm64)
+        snx_arm64_arm_marks(c->arm64, write_marks);
+    else if (c->rv64)
+        snx_rv64_arm_marks(c->rv64, write_marks);
+    else if (c->ppc64)
+        snx_ppc64_arm_marks(c->ppc64, write_marks);
+    else if (c->mips64)
+        snx_mips64_arm_marks(c->mips64, write_marks);
+    else if (c->la64)
+        snx_la64_arm_marks(c->la64, write_marks);
+    else if (c->ppc64be)
+        snx_ppc64be_arm_marks(c->ppc64be, write_marks);
+    else if (c->mips64be)
+        snx_mips64be_arm_marks(c->mips64be, write_marks);
+    else
+        snx_s390x_arm_marks(c->s390x, write_marks);
+}
+void snx_native_arm_mark_counts(SnxNativeArm* c, unsigned long long* stores, unsigned long long* stack,
+                                unsigned long long* made) {
+    if (c->x64)
+        snx_x64_arm_mark_counts(c->x64, stores, stack, made);
+    else if (c->arm64)
+        snx_arm64_arm_mark_counts(c->arm64, stores, stack, made);
+    else if (c->rv64)
+        snx_rv64_arm_mark_counts(c->rv64, stores, stack, made);
+    else if (c->ppc64)
+        snx_ppc64_arm_mark_counts(c->ppc64, stores, stack, made);
+    else if (c->mips64)
+        snx_mips64_arm_mark_counts(c->mips64, stores, stack, made);
+    else if (c->la64)
+        snx_la64_arm_mark_counts(c->la64, stores, stack, made);
+    else if (c->ppc64be)
+        snx_ppc64be_arm_mark_counts(c->ppc64be, stores, stack, made);
+    else if (c->mips64be)
+        snx_mips64be_arm_mark_counts(c->mips64be, stores, stack, made);
+    else
+        snx_s390x_arm_mark_counts(c->s390x, stores, stack, made);
+}
 int snx_native_arm_block(SnxNativeArm* c, const char* name, const unsigned char* code, size_t count, uint32_t pc,
                          size_t* consumed, SnxNativeArmNext next, void* user) {
     return c->x64     ? snx_x64_arm_block(c->x64, name, code, count, pc, consumed, next, user)

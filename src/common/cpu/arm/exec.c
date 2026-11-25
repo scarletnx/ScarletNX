@@ -48,6 +48,7 @@ struct SnxArmExec {
     char said[REASONS][96]; /* the reasons said, each once */
     size_t said_count;
     SnxArmProfile profile; /* the one snx_arm_exec_block compiles for, A57 unless set */
+    int marks;             /* snx_arm_exec_marks's */
 };
 
 static size_t code_span(const SnxArmExecRange* ranges, size_t n, uint32_t pc, unsigned unit) {
@@ -208,6 +209,12 @@ SnxArmBlock snx_arm_exec_compile_ex(SnxArmExec* e, const void* code, size_t coun
         object = NULL, size = 0, *consumed = 0;
     }
     ++e->refused;
+    if (e->marks) {
+        char why[sizeof e->why + 80];
+        snprintf(why, sizeof why, "write_marks=%d: LLVM, which makes no marks, would make it (%s)", e->marks, e->why);
+        say(e, "nothing makes a block", why);
+        return NULL;
+    }
     if (e->native) say(e, "LLVM makes a block it leaves", e->why);
     if (llvm_object(e, name, code, count, pc, thumb, options, consumed, &object, &size, error, sizeof error) ||
         !(block = load_object(e, object, size, name, error, sizeof error)))
@@ -301,6 +308,10 @@ SnxArmExec* snx_arm_exec_new(char* error, size_t error_size) {
 }
 
 void snx_arm_exec_set_profile(SnxArmExec* e, SnxArmProfile profile) { e->profile = profile; }
+void snx_arm_exec_marks(SnxArmExec* e, int write_marks) {
+    e->marks = write_marks;
+    if (e->native) snx_native_arm_marks(e->native, write_marks);
+}
 size_t snx_arm_exec_refused(const SnxArmExec* e, const char** why) {
     if (why) *why = e->why;
     return e->refused;

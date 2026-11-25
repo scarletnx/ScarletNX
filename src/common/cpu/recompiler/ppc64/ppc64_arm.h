@@ -28,6 +28,13 @@ void snx_ppc64_arm_free(SnxPpc64Arm* c);
 /* what the next blocks are made for (cpu/arm/codegen.h; NULL the Cortex-A57 on flat memory, as a new compiler's): 0, or
    -1 for options no block compiler takes */
 int snx_ppc64_arm_options(SnxPpc64Arm* c, const SnxArmCodegenOptions* options);
+/* the write marks (recompiler/mach/native.h's SnxNativeOptions.write_marks) of the next blocks, on flat memory for the
+   Cortex-A57: 0 none (a new compiler's), 1 the marks but the stack's, 2 the stack's too */
+void snx_ppc64_arm_marks(SnxPpc64Arm* c, int write_marks);
+/* the counts since the last call, which clears them: the stores seen, those off the stack pointer left unmarked and the
+   marks made */
+void snx_ppc64_arm_mark_counts(SnxPpc64Arm* c, unsigned long long* stores, unsigned long long* stack,
+                               unsigned long long* made);
 /* the A32 block at pc, its code as guest memory holds it (little-endian words, count of them at most: the block
    compiler's limit, 65536, at most; read as far as the block goes), as the function name (NULL: A_<pc> in eight hex
    digits, as module_arm.c names blocks): 1 with *consumed the words it covers, 0 where it can't make it (nothing

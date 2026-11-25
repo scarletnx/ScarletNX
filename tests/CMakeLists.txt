@@ -3802,6 +3802,15 @@ if(SNX_X64)
     add_test(NAME arm_x64 COMMAND snx-test-arm-x64)
     add_test(NAME arm_x64_spill COMMAND snx-test-arm-x64 --pool ${snx_x64_pool} --blocks 2000 --seed 2)
     add_test(NAME arm_x64_plain COMMAND snx-test-arm-x64 --features 0 --blocks 2000 --seed 3)
+    # the write marks, each page a block's stores changed and no other: with the stack's, and with the host's BMI2 and
+    # without
+    add_test(NAME arm_x64_marks COMMAND snx-test-arm-x64 --marks 2 --blocks 3000 --thumb 2000 --seed 4)
+    add_test(NAME arm_x64_marks_plain COMMAND snx-test-arm-x64 --marks 2 --features 0 --blocks 1500 --thumb 800 --seed 5)
+    # a profile with no marks of its own (a 3DS's, a GBA's) makes none, whatever is asked
+    add_test(NAME arm_x64_marks_legacy COMMAND snx-test-arm-x64 --marks 2 --profile arm7tdmi --blocks 600 --thumb 400
+             --seed 6)
+    set_tests_properties(arm_x64_marks arm_x64_marks_plain arm_x64_marks_legacy PROPERTIES TIMEOUT 900
+                         SKIP_RETURN_CODE 77)
     set_tests_properties(arm_x64 arm_x64_spill arm_x64_plain PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
     snx_arm_native_modes(x64)
     # and as a Windows host's, run by this host's processor (support/host_win64.c)
@@ -3813,13 +3822,14 @@ if(SNX_X64)
         target_link_libraries(snx-test-arm-win64 PRIVATE snx_llvm snx_arm_llvm snx_driver ${CMAKE_DL_LIBS})
         add_test(NAME arm_win64 COMMAND snx-test-arm-win64)
         add_test(NAME arm_win64_spill COMMAND snx-test-arm-win64 --pool 4 --blocks 2000 --seed 2)
+        add_test(NAME arm_win64_marks COMMAND snx-test-arm-win64 --marks 2 --blocks 400 --thumb 300 --seed 4)
         add_test(NAME arm_win64_plain COMMAND snx-test-arm-win64 --features 0 --blocks 2000 --seed 3)
         add_test(NAME arm_win64_step COMMAND snx-test-arm-win64 --step --blocks 600 --thumb 600 --states 2 --seed 4)
         add_test(NAME arm_win64_step_bus COMMAND snx-test-arm-win64 --step --profile arm7tdmi --trace --blocks 300
                  --thumb 200 --states 2 --seed 5)
         add_test(NAME arm_win64_step_checked COMMAND snx-test-arm-win64 --step --memory checked --blocks 300 --thumb 200
                  --states 2 --seed 6)
-        set_tests_properties(arm_win64 arm_win64_spill arm_win64_plain arm_win64_step arm_win64_step_bus
+        set_tests_properties(arm_win64 arm_win64_spill arm_win64_marks arm_win64_plain arm_win64_step arm_win64_step_bus
                              arm_win64_step_checked PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
         snx_arm_native_modes(win64 --blocks 600 --states 8)
     endif()
@@ -4514,6 +4524,8 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
         set_tests_properties(arm_${m} arm_${m}_spill arm_${m}_half arm_${m}_odd PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
         snx_arm_native_modes(${m} --blocks 600 --states 8)
     endforeach()
+    add_test(NAME arm_arm64_marks COMMAND snx-test-arm-arm64 --marks 2 --blocks 300 --thumb 200 --seed 4)
+    set_tests_properties(arm_arm64_marks PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
     # arm64's as a Windows host's
     add_executable(snx-test-arm-arm64win arm_x64.c support/host_unicorn.c support/la64_interp.c)
     snx_test_target(snx-test-arm-arm64win gnu23)
@@ -4523,6 +4535,8 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
                           ${CMAKE_DL_LIBS})
     add_test(NAME arm_arm64win COMMAND snx-test-arm-arm64win --blocks 1500 --thumb 1000 --states 8)
     add_test(NAME arm_arm64win_spill COMMAND snx-test-arm-arm64win --pool 3 --blocks 1500 --thumb 1000 --states 8 --seed 2)
+    add_test(NAME arm_arm64win_marks COMMAND snx-test-arm-arm64win --marks 2 --blocks 300 --thumb 200 --seed 4)
+    set_tests_properties(arm_arm64win_marks PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
     add_test(NAME arm_arm64win_step COMMAND snx-test-arm-arm64win --step --blocks 300 --thumb 200 --states 2 --seed 3)
     add_test(NAME arm_arm64win_step_hosted COMMAND snx-test-arm-arm64win --step --memory hosted --blocks 200 --thumb 150
              --states 2 --seed 4)

@@ -55,6 +55,12 @@ int snx_rv64_arm_options(SnxRv64Arm* c, const SnxArmCodegenOptions* options) {
     (void)c, (void)options;
     return -1;
 }
+void snx_rv64_arm_marks(SnxRv64Arm* c, int write_marks) { (void)c, (void)write_marks; }
+void snx_rv64_arm_mark_counts(SnxRv64Arm* c, unsigned long long* stores, unsigned long long* stack,
+                              unsigned long long* made) {
+    (void)c;
+    *stores = *stack = *made = 0;
+}
 int snx_rv64_arm_block(SnxRv64Arm* c, const char* name, const unsigned char* code, size_t count, uint32_t pc,
                        size_t* consumed, SnxRv64ArmNext next, void* user) {
     (void)c, (void)name, (void)code, (void)count, (void)pc, (void)next, (void)user;

@@ -473,6 +473,7 @@ static int discover(Discovery* d, const SnxCodegenOptions* options, unsigned thr
     int rc = 0;
     for (size_t i = 0; i < threads; ++i) {
         finders[i].x64 = d->x64 && i ? snx_native_arm_new() : d->x64;
+        if (finders[i].x64) snx_native_arm_marks(finders[i].x64, snx_ir_write_marks_on());
         if (d->x64 && !finders[i].x64) {
             snprintf(error, error_size, "out of memory");
             rc = -1;
@@ -527,8 +528,13 @@ static int discover(Discovery* d, const SnxCodegenOptions* options, unsigned thr
 done:
     free(r.found);
     for (unsigned i = 0; i < threads; ++i) {
+        unsigned long long stores, stack, made;
         /* each thread's counts, and its blocks into the first's object */
         d->x64_made += finders[i].x64_made;
+        if (finders[i].x64) {
+            snx_native_arm_mark_counts(finders[i].x64, &stores, &stack, &made);
+            snx_ir_write_marks_add((SnxU64)stores, (SnxU64)stack, (SnxU64)made);
+        }
         for (size_t w = 0; w < finders[i].nwhys; ++w)
             leave(d->whys, &d->nwhys, finders[i].whys[w].why, finders[i].whys[w].count, finders[i].whys[w].lowest);
         if (i && finders[i].x64) {

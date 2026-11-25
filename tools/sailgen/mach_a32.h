@@ -649,6 +649,7 @@ static inline void sgx_a32_store(SgCtx* g, SgD address, int bytes, int disp, SgD
     i->in[6] = r;
     i->mdisp = disp;
     i->side = 1;
+    if (x->marks) sgx_mark(g, m, a, disp, (unsigned)bytes);
 }
 /* after a store of bytes at address: the exclusive monitor cleared where the store overlaps its reservation */
 static inline void sgx_a32_monitor(SgCtx* g, SgD address, unsigned bytes) {

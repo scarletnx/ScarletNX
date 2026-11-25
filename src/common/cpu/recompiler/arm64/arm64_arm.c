@@ -276,6 +276,12 @@ int snx_arm64_arm_options(SnxArm64Arm* c, const SnxArmCodegenOptions* options) {
     (void)c, (void)options;
     return -1;
 }
+void snx_arm64_arm_marks(SnxArm64Arm* c, int write_marks) { (void)c, (void)write_marks; }
+void snx_arm64_arm_mark_counts(SnxArm64Arm* c, unsigned long long* stores, unsigned long long* stack,
+                               unsigned long long* made) {
+    (void)c;
+    *stores = *stack = *made = 0;
+}
 int snx_arm64_arm_block(SnxArm64Arm* c, const char* name, const unsigned char* code, size_t count, uint32_t pc,
                         size_t* consumed, SnxArm64ArmNext next, void* user) {
     (void)c, (void)name, (void)code, (void)count, (void)pc, (void)next, (void)user;
