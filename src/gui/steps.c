@@ -39,12 +39,20 @@ static void note(GuiSteps* steps, const char* s, uint64_t now) {
     n->step = steps->step[steps->count - 1].serial;
 }
 static int prefix(const char* line, const char* text) { return !strncmp(line, text, strlen(text)); }
+/* a driver's refusal (recompiler/mach/native.h's snx_native_floor), "scarletnx: cpu: needs ..." or "abi: needs ...",
+   where LLVM does not make the code beside it */
+static void refusal(GuiSteps* steps, const char* s) {
+    const char* said = prefix(s, "scarletnx") ? strstr(s, "cpu: needs ") : NULL;
+    if (!said && prefix(s, "scarletnx")) said = strstr(s, "abi: needs ");
+    if (said && !strstr(said, ": LLVM makes the code")) snprintf(steps->refused, sizeof steps->refused, "%s", said);
+}
 static void line(GuiSteps* steps, const char* s, uint64_t now) {
     GuiStep* last = current(steps);
     uint32_t before = steps->serial;
     unsigned value, total;
     int program;
     const char* block = strstr(s, "compiled block ");
+    refusal(steps, s);
     if (block && last && !strcmp(last->label, "RECOMPILE") &&
         sscanf(block, "compiled block %u/%u", &value, &total) == 2) {
         last->value = value;
@@ -129,6 +137,9 @@ void gui_steps_finish(GuiSteps* steps, int ok) {
         last->state = ok ? GUI_STEP_DONE : GUI_STEP_FAILED;
     else if (last && !ok)
         last->state = GUI_STEP_FAILED;
+}
+void gui_steps_failure(const GuiSteps* steps, const char* said, char* out, size_t size) {
+    snprintf(out, size, "%s%s%s", said, steps->refused[0] ? " " : "", steps->refused);
 }
 int gui_steps_percent(const GuiSteps* steps) {
     int i;

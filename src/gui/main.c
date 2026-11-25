@@ -18907,6 +18907,11 @@ static void pump(App* app) {
                 snprintf(app->message, sizeof(app->message), snx_tr("Program ended abnormally (status %d)."), status);
             else
                 snprintf(app->message, sizeof(app->message), snx_tr("The run ended with status %d."), status);
+            if (app->abnormal_exit && !app->aborting) {
+                char how[sizeof app->message];
+                memcpy(how, app->message, sizeof how);
+                gui_steps_failure(&app->steps, how, app->message, sizeof app->message);
+            }
             recent_note(app);
             app->aborting = false;
             app->confirm.shown = false; /* a run that ended while asking has nothing left to abort */
@@ -21834,6 +21839,11 @@ static void job_ended(App* app, int i, int status) {
         snprintf(job->said, sizeof job->said, snx_tr("Recompile failed (status %d)."), status);
     else
         snprintf(job->said, sizeof job->said, snx_tr("Recompiled in %s."), took);
+    if (failed) {
+        char how[sizeof job->said];
+        memcpy(how, job->said, sizeof how);
+        gui_steps_failure(&app->job_steps, how, job->said, sizeof job->said);
+    }
     app->ended_console = app->job_console;
     app->ended_steps = app->job_steps;
     app->ended_serial = job->serial;
