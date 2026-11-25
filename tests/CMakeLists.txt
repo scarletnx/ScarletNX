@@ -4188,6 +4188,9 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
         # MRS and MSR of EL0's registers, the cache maintenance, DC ZVA
         add_test(NAME recompiler_${m}_system COMMAND snx-test-recompiler-${m} --ops SYS)
         set_tests_properties(recompiler_${m}_system PROPERTIES TIMEOUT 600)
+        # no Unicorn of the machine (an unpatched one's PPC64): skipped, as it compares nothing
+        set_tests_properties(recompiler_${m} recompiler_${m}_jit recompiler_${m}_br_pins recompiler_${m}_half_words
+                             recompiler_${m}_system PROPERTIES SKIP_RETURN_CODE 77)
         # the exclusives whatever the fields they leave unused hold
         add_test(NAME recompiler_${m}_exclusives COMMAND snx-test-recompiler-${m} --refused --ops LDXR LDXP STXR)
         foreach(target switch android ounce max)
@@ -4292,7 +4295,11 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
     target_include_directories(snx-test-module-desc PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${SNX_UNICORN_INCLUDE_DIR}")
     target_link_libraries(snx-test-module-desc PRIVATE snx_driver_llvm snx_driver snx_llvm "${SNX_UNICORN_LIBRARY}"
                           ${CMAKE_DL_LIBS})
-    add_test(NAME module_desc COMMAND snx-test-module-desc)
+    # one test a machine: one whose Unicorn is missing (an unpatched one's PPC64) is skipped, not passed
+    foreach(m riscv64 ppc64le mips64el loongarch64)
+        add_test(NAME module_desc_${m} COMMAND snx-test-module-desc ${m})
+        set_tests_properties(module_desc_${m} PROPERTIES SKIP_RETURN_CODE 77)
+    endforeach()
 endif()
 # a division in a loop of enough registers that R10 and R11 hold pins, where DIV moves what RAX and RDX held
 add_test(NAME recompiler_backends_div_pins COMMAND snx-test-recompiler-backends --words d2800070 d503201f d503201f
