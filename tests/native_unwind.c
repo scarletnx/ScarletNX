@@ -682,9 +682,10 @@ static int check_near(void) {
 #endif
 #if defined(SNX_TEST_ARM64WIN) && !defined(_WIN32)
 /* a function so far in its module that its stale byte is past what COFF's ADRP holds: its entry reads that byte, and no
-   other */
+   other. The bytes start one past a page's start, and the function's is the first of a page, so each bit of the ADRP's
+   addend counts */
 static void stale_far(const SnxCodegen* codegen) {
-    enum { FAR = (1u << 20) + 0x2345 };
+    enum { FAR = (1u << 20) + 0x2FFF };
     SnxCodegen cg = *codegen;
     SnxNativeOptions options = {.stale = 1};
     unsigned char made = 0, *object = NULL, *stale;
@@ -696,7 +697,7 @@ static void stale_far(const SnxCodegen* codegen) {
     const SnxFunction* leaf = snx_codegen_function(codegen, BASE + 4 * F_LEAF);
     cg.functions = (SnxFunction*)calloc(FAR + 1, sizeof *cg.functions);
     cg.function_count = FAR + 1;
-    stale = uc ? (unsigned char*)hostuc_alloc(uc, FAR + 1) : NULL;
+    stale = uc ? (unsigned char*)hostuc_alloc(uc, FAR + 2) : NULL;
     c = uc ? (CPU*)hostuc_alloc(uc, sizeof *c) : NULL;
     if (!cg.functions || !leaf || !stale || !c) {
         failed("no room for a module of a million functions", F_LEAF);
@@ -704,6 +705,7 @@ static void stale_far(const SnxCodegen* codegen) {
         hostuc_free(uc);
         return;
     }
+    ++stale;
     cg.functions[FAR] = *leaf;
     snprintf(sym, sizeof sym, "F_%llX", (unsigned long long)leaf->start);
     for (k = 0; k < FAR; ++k) stale[k] = 1;
