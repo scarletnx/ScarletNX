@@ -505,7 +505,9 @@ static void jump_table_mask_test(void) {
      sw: adr x10, c0; ldrb w11, [x14, x0]; add x10, x10, x11, lsl #2; br x10; c0..c3: mov w0, #k; ret
    B, the compare on another block, its guard shared: adrp x9, tbl; add x9, x9, #0x80; cmp w0, #3; b join;
      mov w0, #7; ret; join: b.hi dflt; adr x10, c0; ldrb w11, [x9, x0]; add x10, x10, x11, lsl #2; br x10;
-     c0..c3: mov w0, #k; ret; dflt: mov w0, #0; ret */
+     c0..c3: mov w0, #k; ret; dflt: mov w0, #0; ret
+   C, no bound at all (the index the caller's), in an unwind range: adr x9, tbl; adr x10, c0; ldrb w11, [x9, x0];
+     add x10, x10, x11, lsl #2; br x10; c0..c2: mov w0, #k; ret; tbl: 0, 2, 4, then 0xff, past the function */
 static void jump_table_flow_test(void) {
     static const SnxU32 a[] = {0x9000000EUL, 0x910201CEUL, 0x71000C1FUL, 0x54000069UL, 0x52800C60UL, 0xD65F03C0UL,
                                0x1000008AUL, 0x386069CBUL, 0x8B0B094AUL, 0xD61F0140UL, 0x52800020UL, 0xD65F03C0UL,
@@ -514,12 +516,15 @@ static void jump_table_flow_test(void) {
                                0x540001A8UL, 0x1000008AUL, 0x3860692BUL, 0x8B0B094AUL, 0xD61F0140UL, 0x52800020UL,
                                0xD65F03C0UL, 0x52800040UL, 0xD65F03C0UL, 0x52800060UL, 0xD65F03C0UL, 0x52800080UL,
                                0xD65F03C0UL, 0x52800000UL, 0xD65F03C0UL};
+    static const SnxU32 c[] = {0x10000169UL, 0x1000008AUL, 0x3860692BUL, 0x8B0B094AUL, 0xD61F0140UL, 0x52800020UL,
+                               0xD65F03C0UL, 0x52800040UL, 0xD65F03C0UL, 0x52800060UL, 0xD65F03C0UL};
     static const unsigned char entries[] = {0, 2, 4, 6};
     unsigned char image[0x100];
     SnxProgram program;
     SnxModuleImage module;
     SnxCodegen codegen;
     SnxU64 targets[8];
+    SnxFde range;
     const SnxFunction* function;
     size_t i, n;
     /* A */
@@ -548,6 +553,27 @@ static void jump_table_flow_test(void) {
     n = snx_codegen_jump_table(&codegen, SNX_CODE_BASE + 0x28, targets, 8);
     check(n == 4, "the table whose bound the flow gives: its four cases, not the next byte's");
     for (i = 0; i < n && i < 4; ++i) check(targets[i] == SNX_CODE_BASE + 0x2C + 8 * i, "a case of the guarded table");
+    snx_codegen_free(&codegen);
+    /* C: in its unwind range, to the first entry past the function; explored, not followed */
+    memset(image, 0, sizeof(image));
+    for (i = 0; i < sizeof(c) / sizeof(c[0]); ++i) put32(image, i * 4, c[i]);
+    image[0x2C] = 0, image[0x2D] = 2, image[0x2E] = 4, image[0x2F] = 0xff;
+    setup_program(&program, &module, image, sizeof(image));
+    module.text_size = 0x30;
+    range.start = 0;
+    range.size = 0x2C;
+    module.fde = &range;
+    module.fde_count = 1;
+    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1, 0), "analyze an unbounded table in an unwind range");
+    n = snx_codegen_jump_table(&codegen, SNX_CODE_BASE + 0x10, targets, 8);
+    check(n == 3, "the unbounded table's cases, to the entry that leaves its function");
+    for (i = 0; i < n && i < 3; ++i) check(targets[i] == SNX_CODE_BASE + 0x14 + 8 * i, "a case inside the function");
+    snx_codegen_free(&codegen);
+    module.fde = NULL;
+    module.fde_count = 0;
+    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1, 0), "analyze it explored");
+    check(snx_codegen_jump_table(&codegen, SNX_CODE_BASE + 0x10, targets, 8) == 0,
+          "an unbounded table of an explored function is not followed");
     snx_codegen_free(&codegen);
 }
 
