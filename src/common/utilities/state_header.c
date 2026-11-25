@@ -8,9 +8,11 @@
      512  the thumbnail: thumb_w * thumb_h RGBA8 pixels */
 #include "common/utilities/state_header.h"
 #include "common/cpu/aarch64/cpu.h"
+#include "common/utilities/bits.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
 #include "common/utilities/mods.h"
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -124,4 +126,54 @@ int snx_state_name(const char* name, char* program, size_t psize, char* slot, si
     snprintf(program, psize, "%.*s", (int)(dot - 1 - name), name);
     snprintf(slot, ssize, "%.*s", (int)(name + n - dot), dot);
     return 1;
+}
+
+void snx_state_schema_name(uint64_t* h, const char* s) {
+    for (; *s; s++) *h = snx_fnv_step(*h, (uint8_t)*s);
+    *h = snx_fnv_step(*h, 0x1F);
+}
+int snx_state_schema_out(uint64_t* h, const char* fmt, ...) {
+    va_list ap;
+    const char* f;
+    int before = 1;
+    va_start(ap, fmt);
+    for (f = fmt; *f; f++) {
+        int longs = 0;
+        if (*f == '=') before = 0;
+        if (*f != '%') {
+            if (before) *h = snx_fnv_step(*h, (uint8_t)*f);
+            continue;
+        }
+        f++;
+        while (*f == 'l' || *f == 'h' || *f == 'z' || *f == 'j' || *f == 't') longs += *f++ == 'l';
+        switch (*f) {
+            case 's': {
+                const char* s = va_arg(ap, const char*);
+                if (before && s) snx_state_schema_name(h, s);
+                break;
+            }
+            case 'p': (void)va_arg(ap, void*); break;
+            case 'f':
+            case 'g':
+            case 'e': (void)va_arg(ap, double); break;
+            case 'c':
+            case 'd':
+            case 'i':
+            case 'u':
+            case 'x':
+            case 'X':
+            case 'o':
+                if (longs >= 2)
+                    (void)va_arg(ap, long long);
+                else if (longs)
+                    (void)va_arg(ap, long);
+                else
+                    (void)va_arg(ap, int);
+                break;
+            case 0: f--; break;
+            default: break;
+        }
+    }
+    va_end(ap);
+    return 0;
 }
