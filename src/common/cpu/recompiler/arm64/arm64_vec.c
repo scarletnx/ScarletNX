@@ -265,6 +265,7 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
             unsigned lo = sge_a64_table[k].fields[f].lo, width = sge_a64_table[k].fields[f].width;
             /* TBL's and TBX's table of len + 1 registers from Rn: consecutive ones, which the host's need not be */
             if (!strcmp(fn, "len") && (word >> lo & 3)) return 0;
+            if (!strcmp(fn, "sf")) return 0; /* a conversion's general-purpose register: Rd or Rn is none of the host's */
             if (!strcmp(fn, "M")) has_m = 1;
             if (!strcmp(fn, "sz") || (!strcmp(fn, "size") && (word >> lo & 3) >= 2)) wide = 1;
             if (strcmp(fn, "Rd") && strcmp(fn, "Rn") && strcmp(fn, "Rm") && strcmp(fn, "Ra")) {
