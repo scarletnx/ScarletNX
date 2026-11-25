@@ -962,8 +962,9 @@ int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* options, c
     SnxIr* ir = NULL;
     SnxLinkInput* inputs = NULL;
     SnxLinkOutput linked;
-    unsigned char *module_object = NULL, *x64_object = NULL;
-    size_t module_size = 0, x64_size = 0, first, last, units, limit, i, n = 0, nllvm = 0;
+    unsigned char* module_object = NULL;
+    SnxNativeObject* natives = NULL;
+    size_t module_size = 0, nnative = 0, first, last, units, limit, i, n = 0, nllvm = 0;
     Block* llvm = NULL;
     const char* exports[1];
     char error[1024], *tmp = NULL;
@@ -993,14 +994,14 @@ int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* options, c
     qsort(d.blocks, d.count, sizeof(*d.blocks), compare_block);
     if (!options->quiet) printf("AArch32: %lu blocks found (%.1f s)\n", (unsigned long)d.count, snx_seconds() - start);
     if (d.x64) {
-        size_t made = 0;
+        size_t made;
         /* the entry the native back end's blocks jump to, for each block LLVM makes */
         for (i = 0; i < d.count; ++i)
             if (!d.blocks[i].x64 && snx_native_arm_entry(d.x64, d.blocks[i].key)) {
                 snx_error("%s back end: out of memory", snx_native_name());
                 goto done;
             }
-        if (snx_native_arm_object(d.x64, &x64_object, &x64_size, &made)) {
+        if (snx_native_arm_objects(d.x64, &natives, &nnative)) {
             snx_error("%s back end: out of memory", snx_native_name());
             goto done;
         }
@@ -1092,7 +1093,7 @@ int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* options, c
         snx_report_unit(q.count + 1, q.count + 1, "module", label, 0, snx_seconds() - start);
         free(label);
     }
-    inputs = (SnxLinkInput*)snx_alloc((q.count + 3) * sizeof(*inputs));
+    inputs = (SnxLinkInput*)snx_alloc((q.count + 2 + nnative) * sizeof(*inputs));
     /* the one the recompiler's build compiled (rtlib_object.h) */
     inputs[n].data = (unsigned char*)snx_armlib_object;
     inputs[n].size = (size_t)snx_armlib_object_size;
@@ -1105,9 +1106,9 @@ int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* options, c
         inputs[n].size = q.units[i].size;
         inputs[n++].name = "code unit";
     }
-    if (x64_object) {
-        inputs[n].data = x64_object;
-        inputs[n].size = x64_size;
+    for (i = 0; i < nnative; ++i) {
+        inputs[n].data = natives[i].data;
+        inputs[n].size = natives[i].size;
         inputs[n++].name = "native blocks";
     }
     exports[0] = "snx_module_arm";
@@ -1122,8 +1123,8 @@ int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* options, c
         goto done;
     }
     if (!options->quiet)
-        printf("%s%s module: %.1f MB, %lu AArch32 blocks\n", x64_object ? snx_native_name() : "",
-               x64_object ? " and LLVM" : "LLVM",
+        printf("%s%s module: %.1f MB, %lu AArch32 blocks\n", nnative ? snx_native_name() : "",
+               nnative ? " and LLVM" : "LLVM",
                (double)linked.size / 1000000.0, (unsigned long)d.count);
     rc = 0;
 done:
@@ -1131,7 +1132,7 @@ done:
     free(q.units);
     free(inputs);
     free(module_object);
-    free(x64_object);
+    snx_native_arm_objects_free(natives, nnative);
     free(llvm);
     snx_native_arm_free(d.x64);
     free(linked.data);

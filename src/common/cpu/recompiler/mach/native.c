@@ -223,8 +223,35 @@ int snx_native_arm_object(SnxNativeArm* c, unsigned char** object, size_t* size,
            : c->mips64be ? snx_mips64be_arm_object(c->mips64be, object, size, blocks)
                          : snx_s390x_arm_object(c->s390x, object, size, blocks);
 }
-void snx_native_arm_split(SnxNativeArm* c, size_t bytes) {
-    if (c->arm64) snx_arm64_arm_split(c->arm64, bytes);
+/* the most code of an object where a branch reaches 128 MiB, and the veneers of calls out of it go past its code */
+#define OBJECT_BYTES ((size_t)48 << 20)
+int snx_native_arm_objects(SnxNativeArm* c, SnxNativeObject** list, size_t* count) {
+    int more = 1;
+    *list = NULL;
+    *count = 0;
+    if (c->arm64) snx_arm64_arm_split(c->arm64, OBJECT_BYTES);
+    while (more) {
+        SnxNativeObject* grown = (SnxNativeObject*)realloc(*list, (*count + 1) * sizeof **list);
+        if (!grown) {
+            snx_native_arm_objects_free(*list, *count);
+            *list = NULL, *count = 0;
+            return -1;
+        }
+        *list = grown;
+        (*list)[*count] = (SnxNativeObject){0};
+        more = snx_native_arm_object(c, &(*list)[*count].data, &(*list)[*count].size, NULL);
+        if (more < 0) {
+            snx_native_arm_objects_free(*list, *count);
+            *list = NULL, *count = 0;
+            return -1;
+        }
+        ++*count;
+    }
+    return 0;
+}
+void snx_native_arm_objects_free(SnxNativeObject* list, size_t count) {
+    for (size_t i = 0; i < count; ++i) free(list[i].data);
+    free(list);
 }
 int snx_native_arm_absorb(SnxNativeArm* c, SnxNativeArm* from) {
     return c->x64     ? snx_x64_arm_absorb(c->x64, from->x64)
