@@ -3,7 +3,7 @@
 #include "nds/cpu/recomp.h"
 #include "nds/aot/nds_module.h"
 #include "common/cpu/arm/exec.h"
-#include "common/cpu/arm/llvm.h"
+#include "common/cpu/arm/codegen.h"
 #include "common/platform/dl.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
