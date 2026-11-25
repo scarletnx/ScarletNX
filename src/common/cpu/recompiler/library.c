@@ -206,35 +206,9 @@ static void fail(struct snx_recompiler* r, const char* fmt, ...) {
 
 /* ---- the recompiler ---- */
 
-/* snx_ir_init once per process, whichever thread's recompiler comes first: it writes LLVM's and ir.c's process-wide
-   state, which the game driver only ever calls from one thread */
-static int llvm_ready;
-static char llvm_error[256];
-static void llvm_init_once(void) { llvm_ready = snx_ir_init(llvm_error, sizeof(llvm_error)) ? -1 : 1; }
-#ifdef _WIN32
-static BOOL CALLBACK llvm_init_callback(PINIT_ONCE once, PVOID parameter, PVOID* context) {
-    (void)once;
-    (void)parameter;
-    (void)context;
-    llvm_init_once();
-    return TRUE;
-}
-#endif
-static int llvm_init(char* error, size_t error_size) {
-#ifdef _WIN32
-    static INIT_ONCE once = INIT_ONCE_STATIC_INIT;
-    InitOnceExecuteOnce(&once, llvm_init_callback, NULL, NULL);
-#else
-    static pthread_once_t once = PTHREAD_ONCE_INIT;
-    pthread_once(&once, llvm_init_once);
-#endif
-    if (llvm_ready < 0 && error_size) snprintf(error, error_size, "%s", llvm_error);
-    return llvm_ready < 0 ? -1 : 0;
-}
-
 int snx_recompiler_has(int flags) {
     char error[256];
-    if (flags == SNX_RECOMPILER_FLAG_LLVM) return !llvm_init(error, sizeof(error));
+    if (flags == SNX_RECOMPILER_FLAG_LLVM) return !snx_ir_init(error, sizeof(error));
     return 0;
 }
 
@@ -1068,7 +1042,7 @@ static int recompile_llvm(struct snx_recompiler* r, struct snx_recompiled* m, Sn
     char* cached = NULL;
     memset(&q, 0, sizeof(q));
     error[0] = 0;
-    if (llvm_init(error, sizeof(error))) {
+    if (snx_ir_init(error, sizeof(error))) {
         fail(r, "%s", error);
         return -1;
     }
