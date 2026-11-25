@@ -16,6 +16,7 @@
 #include "nx/memory/own.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/ledger.h"
+#include "nx/gpu/vk/pending_pages.h"
 #include "nx/gpu/vk/resource_stats.h"
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/gpu/vk/texture_arrays.h"
@@ -1200,7 +1201,19 @@ const char* const g_vk_sub_name[VK_SUB_N] = {"other", "present", "finish", "1 ms
                                              "readback", "frame end", "split", "background"};
 /* the frame's commands submitted, waiting for xw and signaling xs besides the graphics timeline (one each at most), for
    why (VK_SUB_*: the statistics) */
+/* the results added so far, of every kind (the mirror's writes, storage images and queued releases too), and the
+   writes in place, which the page model counts apart */
+static u64 results_added(void) {
+    return atomic_load_explicit(&g_pend_any.adds, memory_order_relaxed) + vk_uma_writes();
+}
+/* results_added at the last submission: a split run of draws (render.c) submits first where the commands being
+   recorded added any, as a finish in it lands only what was submitted before */
+static u64 g_sub_adds;
+int vk_recording_results(void) { return results_added() != g_sub_adds; }
 static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo* xs, int land, int why) {
+    /* a worker in a split run takes the ring first, before this changes the frame's state (render.c's
+       vk_split_ring_wait) */
+    vk_rec_ring_take();
     SNX_ZONE(z_submit, "vk submit");
     /* the ASTC uploads recorded for the compute queue first: this submission waits for them (below), as its draws
        sample their textures and its frame's staging and descriptor sets hold what they read */
@@ -1260,6 +1273,7 @@ static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo*
     atomic_store_explicit(&g_gval, atomic_load_explicit(&g_gval, memory_order_relaxed) + 1,
                           memory_order_relaxed); /* read by the stall report too */
     g_cmd.submits[why]++;
+    g_sub_adds = results_added();
     g_work = 0;
     g_work_rings = frame_rings(f);
     f->recording = 0;
@@ -1401,6 +1415,7 @@ void vk_submit_after(VkSemaphore sem, u64 wait, u64 signal) {
 
 _Thread_local const char* g_vk_finish_who;
 u64 g_vk_finishes, g_vk_finish_ns;
+static _Atomic u64 g_split_finishes; /* finishes in split runs, which submit nothing (finish) */
 /* the finishes since the last stats by their call site (a file's literal and a line, or the reason the renderer gave
    in g_vk_finish_who, which has no line of the caller's), with their time, under vk_lock as vk_finish is: one game made
    nine a frame, a round trip each with the GPU idle after it */
@@ -1429,7 +1444,15 @@ void vk_wait_submit_letting_go(u64 value) { wait_letting_go(value, VK_WAIT_SUBMI
 static void finish(const char* file, int line, int let_go) {
     u64 t0 = plat_ns();
     SNX_ZONE(z_finish, "vk finish");
-    submit_why(VK_NULL_HANDLE, 0, VK_NULL_HANDLE, VK_SUB_FINISH);
+    /* In a split run (draw_batches=2) the renderer thread submits nothing until its join: the worker's commands name
+       the command buffer being recorded, and the results they add name its submission (render.c's render_split).
+       The submissions made already are waited for and land. The split began with no result in the commands being
+       recorded, so what stays is only what its own draws added, which their later draws read on the GPU. The worker
+       submits once the renderer thread hands it the ring (vk_rec_ring_take) */
+    if (vk_share_on() && !vk_rec_listing())
+        atomic_fetch_add_explicit(&g_split_finishes, 1, memory_order_relaxed);
+    else
+        submit_why(VK_NULL_HANDLE, 0, VK_NULL_HANDLE, VK_SUB_FINISH);
     const u64 at = atomic_load_explicit(&g_gval, memory_order_relaxed);
     wait_letting_go(at, VK_WAIT_FINISH, let_go);
     land_through(at);
@@ -1471,6 +1494,8 @@ void vk_finishes_log(void) {
         g_finish_sites[best].n = 0;
     }
     for (u32 i = 0; i < FINISH_SITES && g_finish_sites[i].file; i++) g_finish_sites[i].n = g_finish_sites[i].ns = 0;
+    const u64 split = atomic_exchange_explicit(&g_split_finishes, 0, memory_order_relaxed);
+    if (split) LOG("vulkan:   %llu of them in split runs of draws, which submitted nothing\n", (unsigned long long)split);
     u64 hosts = atomic_exchange_explicit(&g_host_waits, 0, memory_order_relaxed),
         host_ns = atomic_exchange_explicit(&g_host_wait_ns, 0, memory_order_relaxed);
     if (hosts)

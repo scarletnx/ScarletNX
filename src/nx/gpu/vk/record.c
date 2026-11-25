@@ -246,8 +246,7 @@ struct VkRecList {
     int failed; /* out of memory: the batch is set up again on the renderer thread */
 };
 static _Thread_local VkRecList* t_list;
-static VkRecList* list_pause_at(const char* why);
-#define list_pause() list_pause_at(__func__)
+static VkRecList* list_pause(void);
 static void list_resume(VkRecList* l);
 static void* list_push(RecFn fn, u64 size) {
     VkRecList* l = t_list;
@@ -319,14 +318,22 @@ u64 vk_rec_list_bytes(const VkRecList* l) { return l->used; }
    empty. Only while the renderer thread waits for this one (a batch run in turn), as the ring has one producer */
 static _Thread_local int t_list_parallel; /* the ring's producer runs meanwhile (vk_rec_list_parallel) */
 void vk_rec_list_parallel(int on) { t_list_parallel = on; }
-static VkRecList* list_pause_at(const char* why) {
+int vk_rec_ring_held(void) { return t_list && !t_list_parallel; }
+/* A worker in parallel (draw_batches=2) that needs the ring itself waits for the renderer thread to reach the split's
+   join, which ends its own commands there and hands the ring over (render.c's vk_split_ring_wait). The worker then
+   runs as a batch in turn: its list goes into the ring after the renderer thread's commands, as at the join, and a
+   submit takes both halves' commands with the submission whose number they name */
+void vk_rec_ring_take(void) {
+    if (!t_list || !t_list_parallel) return;
+    barrier_flush(); /* the list's batch of barriers, into the list before it goes into the ring */
+    vk_split_ring_wait();
+    t_list_parallel = 0;
+}
+static VkRecList* list_pause(void) {
     VkRecList* l = t_list;
     if (!l) return NULL;
     barrier_flush(); /* the list's batch of barriers, into the list before it goes into the ring */
-    if (t_list_parallel)
-        fatal("vulkan: draw_batches=2: a worker's draw needed the recording ring itself (%s, from %p), which the "
-              "renderer thread records into at the same time\n",
-              why, __builtin_return_address(1));
+    vk_rec_ring_take();
     t_list = NULL;
     vk_rec_list_splice(l);
     l->used = 0;
@@ -336,6 +343,7 @@ static void list_resume(VkRecList* l) {
     if (l) t_list = l;
 }
 void vk_rec_list_flush(void) { list_resume(list_pause()); }
+void vk_rec_barrier_flush(void) { barrier_flush(); }
 /* A deferred call (vk_rec_defer) in a list: the packet's function marks it, and its arguments are the call's function
    and its own arguments. The recording thread never runs one: the splice does, on the renderer thread */
 typedef struct {

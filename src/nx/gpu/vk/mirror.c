@@ -993,6 +993,10 @@ static void own_entries(const u32* out, u32 n) {
 void vk_mirror_publish(void) {
     static int busy;
     if (g_mir.on <= 0 || !g_mir_nq || busy || vk_rec_unsafe()) return;
+    /* In a split run (draw_batches=2) nothing submits until its join (render.c's render_split), and a publish submits
+       its copies, and with UMA the readers of the imports over its pages (uma.c's quiesce). The pages wait for the
+       next read that needs them (vk_mirror_mem_need). A worker that has the ring (vk_rec_ring_held) can submit */
+    if (vk_share_on() && !vk_rec_ring_held()) return;
     busy = 1;
     u32* q = g_mir_q;
     u32 n = g_mir_nq;
@@ -1286,6 +1290,7 @@ void vk_mirror_done(u64 done) {
 }
 
 /* a read of guest memory over pending writes: they land first, as other results do (buffer.c's land_reason) */
+int vk_mirror_recording(void) { return g_mir.on > 0 && g_mir_nnow; }
 static int mir_pending(u64 gva, u64 len) {
     return len == ~0ull ? g_mir_nnow || g_mir_nbatch : pend_hit(&g_mir_pend, gva, len); /* ~0: anywhere */
 }

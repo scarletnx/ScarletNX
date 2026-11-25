@@ -191,6 +191,21 @@ void vk_share_unlock(void) {
         share_add(&g_share_stats[vk_render_slot() != 0].c[SH_HOLD], __builtin_readcyclecounter() - t_share_at);
     atomic_store_explicit(&g_share_taken, 0, memory_order_release);
 }
+/* the share lock let go of at any depth, and taken again: a worker that waits for the ring (record.c's
+   vk_rec_ring_take) holds it inside a wrapped call, and the renderer thread's draws take it meanwhile */
+int vk_share_pause(void) {
+    if (!t_share_held) return 0;
+    t_share_held = 0;
+    t_share_at = 0; /* the hold is not timed across the wait */
+    atomic_store_explicit(&g_share_taken, 0, memory_order_release);
+    return 1;
+}
+void vk_share_resume(int paused) {
+    if (!paused) return;
+    while (atomic_exchange_explicit(&g_share_taken, 1, memory_order_acquire))
+        while (atomic_load_explicit(&g_share_taken, memory_order_relaxed)) plat_spin_hint();
+    t_share_held = 1;
+}
 void vk_share_times(u32 side, u64* takes, u64* waited, u64* wait, u64* hold) {
     u64* const out[SH_N] = {takes, waited, wait, hold};
     for (u32 k = 0; k < SH_N; k++) {

@@ -395,6 +395,9 @@ int vk_lock_held(void);  /* this thread holds vk_lock */
 void vk_lock_lend(int on);
 /* the share lock of split runs (draw_batches=2, share_wrap.h): on while a run is split, and each call's take */
 void vk_share_active(int on);
+/* the share lock let go of at any depth (1 when this thread held it), and taken again */
+int vk_share_pause(void);
+void vk_share_resume(int paused);
 /* this thread's record of the shading rate state bound in the command buffer is gone: the next draw binds it */
 void vk_vrs_forget(void);
 /* a run is split now: inline, as each wrapped call of share_wrap.h reads it first and calls straight through while
@@ -443,6 +446,13 @@ struct Surf;
 void vk_rec_list_flush(void);
 /* this thread's list runs while the ring's producer records (draw_batches=2): it never goes into the ring on its own */
 void vk_rec_list_parallel(int on);
+/* a worker in parallel that needs the ring itself (a submit) waits for the renderer thread to hand it over at the
+   split's join (render.c's vk_split_ring_wait), and runs in turn from there; nothing on any other thread */
+void vk_rec_ring_take(void);
+int vk_rec_ring_held(void); /* a worker of a split run that has the ring, and may submit */
+void vk_split_ring_wait(void);
+/* this thread's batch of barriers into the ring */
+void vk_rec_barrier_flush(void);
 /* a surface's layout as this thread sees it (a worker's view of its batch, else the surface's own); the view's reset at a
    batch's start; and the list put into the ring before a surface in the view is made over, loaded again or freed */
 VkImageLayout vk_surf_layout(const struct Surf* s);
@@ -2788,6 +2798,12 @@ int vk_mirror_holds(u64 gva, u64 len);
 int vk_mirror_holds_at(u64 cpu, u64 len); /* vk_mirror_holds of the run at guest address cpu */
 int vk_mirror_owns_any(void);             /* the mirror is made and owns pages: makes nothing, as vk_mirror_on() can */
 void vk_mirror_mem_need(u64 gva, u64 len);
+/* whether the commands being recorded write the mirror's pages: their batch lands only once they are submitted and
+   done (a split run of draws submits first, render.c) */
+int vk_mirror_recording(void);
+/* cmd.c: whether the commands being recorded added results (vk_buf_adds, compute's, the mirror's, writes in place):
+   a finish in a split run of draws lands only those submitted before it */
+int vk_recording_results(void);
 /* at a submit, recorded into cb: the pages its programs wrote, copied for landing; and once submissions up to done are,
    their landing in guest memory */
 void vk_mirror_harvest(VkCommandBuffer cb, u64 submit);
