@@ -46,9 +46,10 @@
    the arena is placed within 32-bit reach of the module's TOC, which every load keeps in r2 instead, so a guest's
    jump between the module and a load, either way, leaves r2 as the code it reaches wants it.
 
-   macOS on Apple silicon loads ELF objects too, which the IR backend writes there with Darwin's calling convention
-   (snx_ir_new_jit). Memory becomes executable there only as MAP_JIT memory, which can't be shared or placed: the code
-   and read-only data are one MAP_JIT mapping, which each thread sees either writable or executable
+   macOS on Apple silicon loads ELF objects too, which the arm64 back end and the IR backend (snx_ir_new_jit) write
+   there with Darwin's calling convention. Memory becomes executable there only as MAP_JIT memory, which can't be
+   shared or placed: the code and read-only data are one MAP_JIT mapping, which each thread sees either writable or
+   executable
    (pthread_jit_write_protect_np). The loading thread sees it writable while it writes a load, every other thread
    executable, so no thread can write and run it at once, and nothing loaded may run on the loading thread during
    snx_code_load (the resolver included). Not iOS, where an app may not make memory executable */
@@ -58,6 +59,10 @@
 #include "common/cpu/recompiler/llvm/link.h"
 
 typedef struct SnxCodeLoader SnxCodeLoader;
+
+/* what the refusal of an arena's JIT memory of size bytes says, for the system's error number (errno's): the size, the
+   system's reason and what macOS asks of the app */
+void snx_code_jit_refused(size_t size, int number, char* error, size_t error_size);
 
 /* the machines of Windows' x86-64 and ARM64 COFF objects (IMAGE_FILE_MACHINE_AMD64, IMAGE_FILE_MACHINE_ARM64), for
    snx_code_loader_new_machine */

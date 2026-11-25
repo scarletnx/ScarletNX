@@ -4035,6 +4035,11 @@ add_executable(snx-bench-jit-latency jit_latency.c)
 snx_test_target(snx-bench-jit-latency gnu23)
 target_link_libraries(snx-bench-jit-latency PRIVATE snx_llvm Threads::Threads)
 # longjmp across the loader's code, which on Windows unwinds through its registered function table
+# what the loader says where the system refuses its memory, on any host
+add_executable(snx-test-code-loader-refused code_loader_refused.c)
+snx_test_target(snx-test-code-loader-refused gnu23)
+target_link_libraries(snx-test-code-loader-refused PRIVATE snx_llvm)
+add_test(NAME code_loader_refused COMMAND snx-test-code-loader-refused)
 add_executable(snx-test-code-loader-unwind code_loader_unwind.c)
 snx_test_target(snx-test-code-loader-unwind gnu23)
 target_link_libraries(snx-test-code-loader-unwind PRIVATE snx_llvm)
