@@ -166,12 +166,13 @@ cmake --build build/arm11
 ctest --test-dir build/arm11 --output-on-failure
 ```
 
-The build-time generator emits verified native `.o` files at O0/O2; the witness
+The build-time generator makes the native back end's `.o` files, with the blocks' values
+in all the host registers and in few of them; the witness
 executables link only the CTR CPU/memory adapters, **not LLVM or MCJIT**. The bus
-matrix compares checked and flat AOT across 1,059 integer encodings and 13 states
-for both profiles at both optimization levels (55,068 comparisons). With
-`SNX_TEST_ARM_DIFF=ON` and Python `unicorn==2.1.4`, the isolated build also runs
-independent ARM11 MPCore integer comparisons and the existing A57 integer,
+matrix compares checked and flat blocks across 1,265 integer encodings and 13 states
+for both profiles, with all the host registers and with three (65,780 comparisons). With
+`SNX_TEST_ARM_DIFF=ON` and Python `unicorn==2.1.4`, the build also runs
+independent ARM11 MPCore integer comparisons and the A57 integer,
 VFP/NEON and Thumb regression suites. ARM11 Thumb BL halves have C golden tests,
 not a claimed independent differential oracle. The CTR pipeline, built with
 `SNX_BUILD_3DS`, supplies process setup, offline conservative CFG discovery/chunking
