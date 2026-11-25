@@ -214,9 +214,9 @@ steps and on the native ones (`native_*`). `tests/steps.h` gives both one set of
 that a Linux host recorded: Windows, macOS, and the cross-built PowerPC64, RISC-V and LoongArch. One file serves both
 back ends on any of them. CI's `qemu-reference` job records it for each run and hands it over as the artifact
 `ScarletNX-llvm-qemu-reference-<commit>`. No file is kept in the repository, because one is bound to the commit that
-made it. Record another when one of these changes: the rows of the generated decoder, `directed()` or `kept[]` in
-`tests/llvm_qemu_differential.c`, the random states, the runner in `tests/qemu_ref/`, or the QEMU version. By hand, on a
-Linux host with the tools named above, the recording takes 4 seconds and about 54 MB:
+made it. Record another when one of these changes: the rows of the generated decoder, `directed()`, `scalar_words()`
+or `kept[]` in `tests/llvm_qemu_differential.c`, the random states, the runner in `tests/qemu_ref/`, or the QEMU
+version. By hand, on a Linux host with the tools named above, the recording takes 4 seconds and about 54 MB:
 
 ```sh
 cmake --build build --target snx-test-llvm-qemu-differential-native snx_qemu_ref_runner
