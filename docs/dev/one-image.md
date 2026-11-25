@@ -236,12 +236,19 @@ An A/B/B/A of the race with all of the above, 2026-11-25:
 | 0 | 81.2, 70.9 | 7.61, 7.82 ms | 1.10, 1.16 ms | 101, 99 |
 | 1 | 83.0, 86.4 | 7.29, 7.00 ms | 0.76, 0.79 ms | 0.7, 0.5 |
 
-Not hosted yet: scaled targets, and storage image surfaces. A storage surface is a texture, whose loads from memory
-(`tex_upload`, `tex_patch`, the pieces) all write level 0 of its own image: hosting it needs those paths to take its
-place in the host, as step 1 gives. It is not worth that now: in the race, with hosting on, the storage surfaces are 12
-takes a present, and two races with those takes left out (their textures wrong, as a bound) ran at 85.3 and 83.2 fps,
-GPU busy 6.66 and 7.03 ms, copy gaps 0.79 and 0.73 ms, against 83.2 and 82.4 fps, 6.83 and 6.99 ms, 0.82 and 0.73 ms
-with them (2026-11-25). The difference is within the runs' spread.
+Storage image surfaces are hosted too, where the texture has storage usage: a dispatch's image over a level or layer
+of a texture writes the texture's image through its storage view. A hosted texture surface has no loads or takes of
+its own: its checks are its host's (`tex_check`, `tex_take_drawn`), and a copy engine's write into its level goes to
+memory, which the host's check loads. In the race this took the storage surfaces' takes from 12 a present to none. A
+bound measured before (the takes left out) showed no gain in fps or GPU time there: other games use storage images
+more.
+
+A texture that is one level of another's layers, of its format and layer stride, joins that one as a view of its image
+(`vk_tex_join`): its pixels are copied there once, and the targets it hosts move with it. One game samples each of its
+reflection cubes alone (6 layers, 1 level) and in an array of the cubes (12 layers, 7 levels). The faces were hosted
+in the cube, and the array took them each frame: 18 takes a present. Joined, the race takes 0.3 a present.
+
+Not hosted yet: scaled targets.
 
 An A/B/B/A of the race, 2026-11-24:
 

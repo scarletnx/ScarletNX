@@ -1539,6 +1539,11 @@ void vk_rt_host(Surf* s, Surf* t, u32 level, u32 layer);
 int vk_rt_own_(Surf* s, const char* why);
 #define vk_rt_own(s) vk_rt_own_((s), __func__)
 void vk_tex_unhost(Surf* t);
+/* an image of its own for a texture surface s (texture.c), as tex_create makes a storage surface's: vk_rt_own's */
+int vk_tex_image_own(Surf* s, VkImage* img, DevMem* mem, u64* bytes);
+/* texture a, one level of layers of texture t (a cube seen alone and in an array of cubes), made a view of t's image
+   at level and layer, with its pixels copied there once and the targets it hosts moved into t (surface.c) */
+void vk_tex_join(Surf* a, Surf* t, u32 level, u32 layer);
 void vk_rt_host_counts(u64* hosted, u64* unhosted);
 void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineStageFlags2 stage, VkAccessFlags2 access);
 /* The barriers at the writer (docs/dev/draw-cost.md, item 7, step 4; the setting writer_barriers, with unified image

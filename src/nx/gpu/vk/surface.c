@@ -699,13 +699,13 @@ static void surf_views_go(Surf* s) {
 static void rt_sys_left(Surf* s);
 static u64 g_rt_hosted, g_rt_unhosted; /* targets made views of a texture, and given images of their own again */
 void vk_rt_host(Surf* s, Surf* t, u32 level, u32 layer) {
-    if (s->host || !s->is_rt || t->is_rt || s->hosted) return;
+    if (s->host || t->is_rt || s->hosted) return;
     /* its own image and its views go once the frames that use them are done */
     surf_views_go(s);
     vk_defer_image(s->img, s->mem, VK_NULL_HANDLE, VK_NULL_HANDLE);
     vk_defer_bytes(s->bytes);
     vk_surf_bytes(s, 0);
-    rt_sys_left(s);
+    if (s->is_rt) rt_sys_left(s);
     s->img = t->img;
     s->mem = 0;
     s->movable = 0;
@@ -718,26 +718,65 @@ void vk_rt_host(Surf* s, Surf* t, u32 level, u32 layer) {
     s->layout = t->layout;
     s->stage = t->stage;
     s->access = t->access;
-    surf_att_create(s, s->f.depth ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-                    s->f.vk);
+    if (s->is_rt) /* a storage surface has no attachment view: its storage view is made on use (vk_tex_storage_view) */
+        surf_att_create(s,
+                        s->f.depth ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                        s->f.vk);
     vk_pool_map_swapped(s);
     g_rt_hosted++;
+}
+void vk_tex_join(Surf* a, Surf* t, u32 level, u32 layer) {
+    if (a->host || a->is_rt || t->is_rt || t->host || a == t) return;
+    /* a's pixels into its place in t, once: what a loaded and what its targets drew in it */
+    vk_render_end();
+    VkCommandBuffer cb = vk_cmd();
+    const VkImageAspectFlags aspect = vk_aspect(&a->f);
+    vk_surf_use(cb, a, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+    vk_surf_use(cb, t, VK_LAYOUT(TRANSFER_DST_OPTIMAL), VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    const VkImageCopy c = {.srcSubresource = {aspect, 0, 0, a->layers},
+                           .dstSubresource = {aspect, level, layer, a->layers},
+                           .extent = {a->w, a->h, 1}};
+    rec_CmdCopyImage(cb, a->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), t->img, VK_LAYOUT(TRANSFER_DST_OPTIMAL), 1, &c);
+    /* its targets draw into t from now on, at their places in a moved by a's in t */
+    while (a->hosted) {
+        Surf* s = a->hosted;
+        a->hosted = s->host_next;
+        surf_views_go(s);
+        s->host = t;
+        s->host_level += level;
+        s->host_layer += layer;
+        s->img = t->img;
+        s->host_next = t->hosted;
+        t->hosted = s;
+        s->layout = t->layout;
+        s->stage = t->stage;
+        s->access = t->access;
+        if (s->is_rt)
+            surf_att_create(s,
+                            s->f.depth ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                            s->f.vk);
+        vk_pool_map_swapped(s);
+    }
+    vk_rt_host(a, t, level, layer);
 }
 int vk_rt_own_(Surf* s, const char* why) {
     Surf* t = s->host;
     if (!t) return 1;
-    LOG_LIMIT(24, "vulkan: the %ux%u render target at %llx, a view of the %ux%ux%u texture at %llx, gets an image of its "
-                  "own again for %s\n",
-              s->w, s->h, (unsigned long long)s->gva, t->w, t->h, t->layers, (unsigned long long)t->gva, why);
+    LOG_LIMIT(24, "vulkan: the %ux%u %s at %llx, a view of the %ux%ux%u texture at %llx, gets an image of its own again "
+                  "for %s\n",
+              s->w, s->h, s->is_rt ? "render target" : "storage surface", (unsigned long long)s->gva, t->w, t->h,
+              t->layers, (unsigned long long)t->gva, why);
     VkImageCreateInfo ii;
     VkViewFormats vf;
-    VkImageUsageFlags usage;
-    VkFormat storage_format;
+    VkImageUsageFlags usage = 0;
+    VkFormat storage_format = VK_FORMAT_UNDEFINED;
     VkImage img;
     DevMem mem;
     u64 bytes;
-    if (!surf_image_info(s, &ii, &vf, &usage, &storage_format) ||
-        !vk_cache_image_create(&ii, &img, &mem, VK_OWN_TARGET | VK_OWN_MOVES, &bytes))
+    /* a target's image as surf_create makes it, a storage surface's as tex_create does (texture.c) */
+    if (s->is_rt ? !surf_image_info(s, &ii, &vf, &usage, &storage_format) ||
+                       !vk_cache_image_create(&ii, &img, &mem, VK_OWN_TARGET | VK_OWN_MOVES, &bytes)
+                 : !vk_tex_image_own(s, &img, &mem, &bytes))
         return 0;
     /* its pixels out of the host's image, where it drew them */
     vk_render_end();
@@ -765,10 +804,12 @@ int vk_rt_own_(Surf* s, const char* why) {
     s->layout = VK_LAYOUT(TRANSFER_DST_OPTIMAL);
     s->stage = VK_PIPELINE_STAGE_2_COPY_BIT;
     s->access = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    surf_att_create(s, usage, storage_format);
-    if (s->mem) {
-        s->movable = 1;
-        vk_devmem_owner(s->mem, s);
+    if (s->is_rt) {
+        surf_att_create(s, usage, storage_format);
+        if (s->mem) {
+            s->movable = 1;
+            vk_devmem_owner(s->mem, s);
+        }
     }
     vk_pool_map_swapped(s);
     g_rt_unhosted++;

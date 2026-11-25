@@ -83,7 +83,9 @@ static int ct_store(const CtCube* c, u32 l, u32 k, u32 color) {
                 VK_ACCESS_2_TRANSFER_WRITE_BIT);
     VkClearColorValue rgba = {.float32 = {(float)(color & 255) / 255.0f, (float)(color >> 8 & 255) / 255.0f,
                                           (float)(color >> 16 & 255) / 255.0f, (float)(color >> 24) / 255.0f}};
-    VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    /* its place in its image: the cube's level and face once the cube hosts it (docs/dev/one-image.md), as the
+       dispatch's storage view has it */
+    VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, vk_surf_level0(s), 1, vk_surf_layer0(s), 1};
     rec_CmdClearColorImage(cb, s->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &rgba, 1, &all);
     vk_surf_wrote(s);
     if (!vk_surf_publish(s))
