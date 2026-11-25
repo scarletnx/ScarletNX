@@ -46,7 +46,8 @@ def whole():
     out = {}
     for machine, families in module.MACHINES.items():
         for family in families:
-            for name in (f'{family}_{machine}', f'{family}_{machine}_spill'):
+            blocks = [f'arm_{machine}_{test}' for test in module.BLOCKS] if family == 'arm' else []
+            for name in [f'{family}_{machine}', f'{family}_{machine}_spill', *blocks]:
                 if machine in module.MAY_SKIP and family != 'recompiler':
                     out[name] = case(name, f'unicorn;{machine}', 'notrun', 'SKIP_RETURN_CODE=77', SKIP)
                 else:
@@ -77,7 +78,7 @@ with tempfile.TemporaryDirectory() as folder:
     summary = Path(folder) / 'summary.md'
     status, said, why = run(all_ok.values(), summary)
     check('every machine ran', status == 0 and not why, (status, why))
-    check('what each did is said', '| rv64 | 6 | 0 | 0 | 9 |' in said and '| ppc64 | 2 | 4 | 0 | 9 |' in said, said)
+    check('what each did is said', '| rv64 | 10 | 0 | 0 | 15 |' in said and '| ppc64 | 2 | 8 | 0 | 15 |' in said, said)
     check('and goes to the summary of the step', '| all |' in summary.read_text())
 for machine in module.MACHINES:
     left = [c for n, c in all_ok.items() if f'{machine}' != n.split('_')[1]]
@@ -86,6 +87,9 @@ wrong('no test at all', [], 'has no test', 'rv64: no test of it')
 for family in ('sail', 'recompiler', 'arm'):
     cases = {n: c for n, c in all_ok.items() if n.split('_')[:2] != [family, 'mips64']}
     wrong(f'a machine with no {family} test', cases.values(), f'mips64: no {family}_ test of it passed')
+for test in module.BLOCKS:
+    cases = {n: c for n, c in all_ok.items() if n != f'arm_rv64_{test}'}
+    wrong(f'a machine with no {test} of its blocks', cases.values(), f'rv64: arm_rv64_{test} of it did not pass')
 cases = dict(all_ok)
 cases['arm_rv64'] = case('arm_rv64', 'unicorn;rv64', 'notrun', 'SKIP_RETURN_CODE=77', 'SKIP: no Unicorn riscv64\n')
 wrong('another machine skipped', cases.values(), 'arm_rv64: not run (SKIP_RETURN_CODE=77): SKIP: no Unicorn riscv64')
@@ -109,7 +113,7 @@ cases['recompiler_s390x'] = case('recompiler_s390x', 'unicorn;s390x', 'fail')
 status, said, why = run(cases.values())
 check(
     "a failure is ctest's to say, and is counted",
-    status == 0 and '| s390x | 5 | 0 | 1 | 9 |' in said,
+    status == 0 and '| s390x | 9 | 0 | 1 | 15 |' in said,
     (status, said, why),
 )
 cases = dict(all_ok)
