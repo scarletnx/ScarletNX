@@ -4,6 +4,7 @@
    recompiler (src/common/cpu/arm) into a native module, the way NX and GNU ABI prepare their code. */
 #ifndef SNX_AGB_RECOMP_H
 #define SNX_AGB_RECOMP_H
+#include "common/cpu/arm/aot.h"
 #include "common/cpu/arm/arm.h"
 #include <stddef.h>
 #include <stdint.h>
@@ -35,8 +36,9 @@ typedef struct {
     /* the blocks a search compared with the pc it looked for: a dispatch's cost, which the index keeps to a slot or two
        however many blocks there are (tests/agb_cpu.c) */
     uint64_t compared;
-    char opt;      /* the -O letter the module compiles at: 2, the setting opt's default, or -O's */
+    char opt;      /* the -O letter LLVM's blocks compile at: 2, the setting opt's default, or -O's */
     char* keep_ir; /* the folder the module's IR goes in (--keep-ir), NULL for none */
+    SnxArmAotCount made; /* who made the blocks of the module this run linked */
     /* the blocks of one instruction the machine steps through where an interrupt is due before a whole block would
        end: compiled at run time, never in the module or its map, their index of twice their capacity after them */
     AgbBlock* steps;

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-"""The recompile's options every driver shares (common/utilities/cli.h), on the GBA runner: -O is the module's
-level, --keep-ir keeps its IR in <name>_build, -q says no progress, --jit-only plays with no module, --jit-cache names
+"""The recompile's options every driver shares (common/utilities/cli.h), on the GBA runner: -O is the level of the
+blocks LLVM makes, --keep-ir has it make them all and keeps their IR in <name>_build, -q says no progress, --jit-only plays with no module, --jit-cache names
 the map of the blocks runs reached that the recompile starts from, and --jobs, --chunk and the launcher's Gentle
 --aot-threads-most=N, which one module compiled whole has nothing to give, are said. A ROM made here puts 42 in r5 and
 spins (mov r5, #42; b .)."""
@@ -65,12 +65,24 @@ def main():
         check("--chunk 100: a ROM's code is one module, compiled as one unit" in text, '--chunk not said', text)
         ir = work / 'kept' / 'game' / 'game_build' / 'blocks.ll'
         check(ir.is_file() and 'define ' in ir.read_text(), f'--keep-ir kept no IR in {ir}', text)
-        # -q: no progress; the default level is 2, the setting opt's: the module -O2 makes, not -O0's
+        check(re.search(r'^LLVM: \d+ blocks \(--keep-ir', text, re.M), "--keep-ir's blocks are not all LLVM's", text)
+        # -q: no progress; the default level is 2, the setting opt's: the module -O2 makes
         text = run('quiet', '-r', '-q')
-        check('Recompiling' not in text and 'Built' not in text, '-q said its progress', text)
+        check(
+            'Recompiling' not in text and 'Built' not in text and 'back end: ' not in text, '-q said its progress', text
+        )
         run('two', '-r', '-q', '--opt=2')
         check(module('quiet') is not None and module('quiet') == module('two'), 'the default level is not -O2', text)
-        check(module('quiet') != module('kept'), '-O0 made the module -O2 makes', text)
+        # the level is LLVM's: of every block with --keep-ir, and of none where the native back end makes them all
+        run('kept2', '-r', '-q', '--keep-ir')
+        check(module('kept2') is not None and module('kept2') != module('kept'), '-O0 made the module -O2 makes', text)
+        text = run('zero', '-r', '-O0')
+        native = re.search(r'^(\S+) back end: (\d+) of (\d+) blocks', text, re.M)
+        check(
+            bool(native) or 'blocks (no native back end on this host)' in text, 'who made the blocks is not said', text
+        )
+        check(not native or native[2] == native[3], 'the native back end left blocks to LLVM', text)
+        check((module('zero') == module('quiet')) == bool(native), '-O0 and the native back end', text)
         # --jit-only: no module, every block compiled as the run reaches it
         text = run('jit', '--frames=2', '--registers', '--jit-only')
         check('No code ahead of time (--jit-only)' in text and re.search(r'\br5=0000002A\b', text), '--jit-only', text)

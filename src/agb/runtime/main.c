@@ -57,10 +57,12 @@ static void usage(FILE* out) {
           "once.\n"
           "\n"
           "On the GBA, a ROM's code is one module, compiled on 1 thread as one unit: --jobs and --chunk change\n"
-          "nothing, which the recompile says. -O is the module's level (default 2, the setting opt's), --jit-cache\n"
-          "FILE the map of the blocks runs reached that the recompile starts from, another game folder's\n"
+          "nothing, which the recompile says. -O is the level of the blocks LLVM compiles (default 2, the setting\n"
+          "opt's): those this computer's native back end does not make, and every one with --keep-ir. --jit-cache\n"
+          "FILE is the map of the blocks runs reached that the recompile starts from, another game folder's\n"
           "<name>_code.map (default: the game's own), --jit-only plays with no module, every block compiled as the\n"
-          "run reaches it, and --keep-ir keeps the module's IR in <name>_build of the game's folder.\n"
+          "run reaches it, and --keep-ir has LLVM compile them all and keeps their IR in <name>_build of the game's\n"
+          "folder.\n"
           "\n"
           "On the AGB, --frames runs with no window, sound or pacing, for tests. --shot writes the final frame as a\n"
           "PPM image. --script=MS:KEYS,... presses keys MS after the run's start, KEYS in hex as KEYINPUT has them (1\n"
@@ -383,6 +385,7 @@ int snx_agb_main(int argc, char** argv) {
                 fprintf(stderr, "scarletnx-agb: %s\n", error);
                 goto done;
             }
+            snx_arm_aot_report(&recomp.made, "scarletnx-agb", asked.quiet);
             if (!asked.quiet) printf("Built %zu blocks\n", recomp.count);
         }
         /* the game's copy of the runtime and its .ini, so the launcher's Games plays it as any game made */
