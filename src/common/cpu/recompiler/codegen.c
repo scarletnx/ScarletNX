@@ -492,6 +492,19 @@ static SnxFlowTable* record_table(SnxCodegen* codegen, SnxU64 address) {
     return r;
 }
 
+/* the first of the program's jump tables past base's, ~0 for none */
+static SnxU64 next_table(const SnxCodegen* codegen, SnxU64 base) {
+    size_t lo = 0, hi = codegen->table_base_count;
+    while (lo < hi) {
+        size_t middle = lo + (hi - lo) / 2;
+        if (codegen->table_bases[middle] <= base)
+            lo = middle + 1;
+        else
+            hi = middle;
+    }
+    return lo < codegen->table_base_count ? codegen->table_bases[lo] : ~(SnxU64)0;
+}
+
 /* whether the BR at address dispatches through a jump table, filling in where its cases are */
 static int jump_table_shape(SnxCodegen* codegen, SnxU64 address, SnxU32 word, JumpTable* table) {
     SnxU32 made, load;
@@ -720,6 +733,24 @@ static int entry_target(SnxCodegen* codegen, const JumpTable* table, unsigned i,
     return 1;
 }
 
+/* whether target, an entry's, is in the unwind range its table's function has */
+static int in_range(const SnxFlowTable* flow, SnxU64 target) {
+    return target >= flow->first && (target - flow->first) / 4 < flow->count;
+}
+
+/* the entries of a table no compare bounds, in an unwind range, which holds every case of it: up to the first that
+   leaves the range (the address at its very end is an unreachable case's, whose block has no instruction), where the
+   program's next table starts, or past what the index can reach. All the table's are among them, and where other data
+   follows it some of that, a leader more in the function each */
+static unsigned table_extent(SnxCodegen* codegen, const JumpTable* table, const SnxFlowTable* flow) {
+    SnxU64 room = (next_table(codegen, table->base) - table->base) / table->width, target;
+    unsigned limit = flow->max ? flow->max : SNX_JUMP_TABLE_MAX, n = 0;
+    while (n < limit && n < room && entry_target(codegen, table, n, &target) && !(target & 3) &&
+           (in_range(flow, target) || target == flow->first + (SnxU64)flow->count * 4))
+        ++n;
+    return n;
+}
+
 size_t snx_codegen_jump_table(SnxCodegen* codegen, SnxU64 address, SnxU64* targets, size_t capacity) {
     JumpTable table;
     const SnxFlowTable* flow;
@@ -730,13 +761,18 @@ size_t snx_codegen_jump_table(SnxCodegen* codegen, SnxU64 address, SnxU64* targe
     SnxU32 word;
     unsigned limit;
     size_t count = 0;
+    int ranged = 0;
     if (!capacity || (code_version & 1) || !snx_codegen_word(codegen, address, &word) || !is_br(word) ||
         !jump_table_shape(codegen, address, word, &table))
         return 0;
     limit = table_bound(codegen, table.load, table.index_reg);
-    if (!limit) limit = index_bound(codegen, table.load, table.index_reg, 0);
     flow = recorded(codegen, address);
-    if (!limit && flow) limit = flow->bound;
+    if (!limit && flow) {
+        limit = flow->bound;
+        ranged = !limit && flow->count;
+        if (ranged && !(limit = table_extent(codegen, &table, flow))) return 0;
+    }
+    if (!limit) limit = index_bound(codegen, table.load, table.index_reg, 0);
     table_generation = image_generation(codegen, table.base);
     table_version = table_generation == code_generation
                         ? code_version
@@ -751,6 +787,7 @@ size_t snx_codegen_jump_table(SnxCodegen* codegen, SnxU64 address, SnxU64* targe
         SnxU64 target;
         int found = 0;
         if (!entry_target(codegen, &table, i, &target)) break;
+        if (ranged && !in_range(flow, target)) continue;
         if ((target & 3) || !snx_codegen_module(codegen, target)) {
             if (limit) continue; /* not code: the switch's default, or the next table's word */
             break;               /* no bound: the table ends where the code does */
@@ -971,18 +1008,78 @@ static int bound_push(BoundState* stack, size_t* top, unsigned char* seen, size_
     return 1;
 }
 
+/* the largest value the plain instruction at body's index k leaves in reg, which it writes: an AND's or a UBFM's of its
+   source (made by what alone runs into it), a byte's or a half's load, a MOVZ, a MOV, an ADD of an immediate; ~0 where
+   it can't be told */
+static SnxU64 made_max(SnxCodegen* codegen, const SnxU64* body, SnxU64 first, const Flow* flow, size_t k, unsigned reg,
+                       int depth) {
+    SnxU64 source = ~(SnxU64)0, a = body ? body[k] : first + (SnxU64)k * 4;
+    SnxU32 w;
+    unsigned from = 32, immr, imms, idx;
+    if (!snx_codegen_word(codegen, a, &w) || (w & 31) != reg)
+        return ~(SnxU64)0; /* a pair's second, a writeback's base */
+    immr = (w >> 16) & 63, imms = (w >> 10) & 63, idx = (w >> 10) & 3;
+    if ((w & 0x7f800000UL) == 0x12000000UL || (w & 0x7f800000UL) == 0x53000000UL || (w & 0x7f800000UL) == 0x11000000UL)
+        from = (w >> 5) & 31;                    /* AND (immediate), UBFM, ADD (immediate) */
+    else if ((w & 0x7fe0ffe0UL) == 0x2a0003e0UL) /* MOV */
+        from = (w >> 16) & 31;
+    else if ((w & 0x7fe00000UL) == 0x52800000UL) /* MOVZ, not shifted */
+        return (w >> 5) & 0xffff;
+    else if ((w & 0xbfc00000UL) == 0x39400000UL || ((w & 0xbfe00c00UL) == 0x38600800UL) ||
+             ((w & 0xbfe00000UL) == 0x38400000UL && idx != 2)) /* LDRB, LDRH */
+        return (w >> 30) ? 0xffff : 0xff;
+    else
+        return ~(SnxU64)0;
+    for (unsigned steps = 0; depth < 4 && from < 31 && steps < 32; ++steps) {
+        SnxU32 before;
+        SnxA64Flow kind;
+        /* only what runs into the instruction from the one before it, and that alone */
+        if (!k || flow->start[k + 1] - flow->start[k] != 1 || flow->pred[flow->start[k]] != 2 * (k - 1) ||
+            !snx_codegen_word(codegen, body ? body[k - 1] : first + (SnxU64)(k - 1) * 4, &before))
+            break;
+        --k;
+        kind = snx_a64_flow(before, codegen->features);
+        if (kind == SNX_A64_FLOW_PLAIN && writes_reg(before, from)) {
+            source = made_max(codegen, body, first, flow, k, from, depth + 1);
+            break;
+        }
+        if (kind != SNX_A64_FLOW_PLAIN && kind != SNX_A64_FLOW_BC) break;
+    }
+    if (!(w >> 31) && source > 0xffffffffull) source = 0xffffffffull; /* a W register's */
+    if ((w & 0x7f800000UL) == 0x12000000UL) {
+        SnxU64 mask;
+        if (immr || ((w >> 22) & 1 ? imms == 63 : imms & 0x20)) return source; /* not its low bits alone */
+        mask = ((SnxU64)2 << imms) - 1;
+        return mask < source ? mask : source;
+    }
+    if ((w & 0x7f800000UL) == 0x53000000UL) {
+        SnxU64 mask;
+        if (imms < immr) return ~(SnxU64)0; /* shifted left */
+        mask = imms - immr < 63 ? ((SnxU64)2 << (imms - immr)) - 1 : ~(SnxU64)0;
+        source >>= immr;
+        return mask < source ? mask : source;
+    }
+    if ((w & 0x7f800000UL) == 0x11000000UL) {
+        SnxU64 imm = (w >> 10) & 0xfff;
+        if ((w >> 22) & 1) imm <<= 12;
+        return from < 31 && source < 0x7fffffffull ? source + imm : ~(SnxU64)0;
+    }
+    return source;
+}
+
 /* The bound of the table of the BR at br that no compare just before its load gives, from its function's flow: every
    path back from the load passes the guard of the default, then the compare of the index with an immediate it guards,
-   nothing else setting the flags between; or a mask that bounds the index (index_bound's) is the index's making on it.
-   The largest of the paths', 0 where one has none, or where two ways to one instruction have the index in two registers
+   nothing else setting the flags between; or the index's making on it bounds its value (made_max's; masked then). The
+   largest of the paths', 0 where one has none, or where two ways to one instruction have the index in two registers
    (what bounds one says nothing of the other). whole as function_base's */
 static unsigned function_bound(SnxCodegen* codegen, const JumpTable* table, const SnxU64* body, SnxU64 first,
-                               size_t count, SnxU64 entry, const Flow* flow, int whole) {
+                               size_t count, SnxU64 entry, const Flow* flow, int whole, int* masked) {
     size_t top = 0, k, load = body_index(body, first, count, table->load);
     BoundState* stack = (BoundState*)malloc((3 * count + 1) * sizeof(*stack));
     unsigned char* seen = (unsigned char*)calloc(3 * count + 1, 1);
     unsigned bound = 0;
     int ok = stack && seen && load < count && bound_push(stack, &top, seen, load, table->index_reg, 0);
+    *masked = 0;
     while (ok && top) {
         BoundState s = stack[--top];
         SnxU64 a = body ? body[s.at] : first + (SnxU64)s.at * 4;
@@ -1008,15 +1105,19 @@ static unsigned function_bound(SnxCodegen* codegen, const JumpTable* table, cons
                 }
             }
             if (kind == SNX_A64_FLOW_PLAIN && writes_reg(w, reg)) {
-                unsigned mask = index_bound(codegen, a + 4, reg, 0);
                 if ((w & 0xffe0ffe0UL) == 0x2a0003e0UL) /* mov wI, wS: the index was S's before */
                     reg = (w >> 16) & 31;
-                else if (mask) {
-                    bound = mask > bound ? mask : bound;
+                else if ((w & 0xfffffc00UL) == 0x92407c00UL) /* and xI, xS, #0xffffffff */
+                    reg = (w >> 5) & 31;
+                else {
+                    SnxU64 max = made_max(codegen, body, first, flow, s.at, reg, 0);
+                    if (max >= SNX_JUMP_TABLE_MAX) {
+                        ok = 0;
+                        break;
+                    }
+                    bound = (unsigned)max + 1 > bound ? (unsigned)max + 1 : bound;
+                    *masked = 1;
                     continue;
-                } else {
-                    ok = 0;
-                    break;
                 }
             } else if (kind == SNX_A64_FLOW_BL || kind == SNX_A64_FLOW_BLR || kind == SNX_A64_FLOW_SVC) {
                 ok = 0;
@@ -1034,6 +1135,18 @@ static unsigned function_bound(SnxCodegen* codegen, const JumpTable* table, cons
     }
     free(stack), free(seen);
     return ok && bound ? (bound < SNX_JUMP_TABLE_MAX ? bound : SNX_JUMP_TABLE_MAX) : 0;
+}
+
+static void add_table_base(SnxCodegen* codegen, SnxU64 base) {
+    size_t at = codegen->table_base_count;
+    while (at && codegen->table_bases[at - 1] > base) --at;
+    if (at && codegen->table_bases[at - 1] == base) return;
+    codegen->table_bases =
+        (SnxU64*)snx_realloc(codegen->table_bases, (codegen->table_base_count + 1) * sizeof(*codegen->table_bases));
+    memmove(&codegen->table_bases[at + 1], &codegen->table_bases[at],
+            (codegen->table_base_count - at) * sizeof(*codegen->table_bases));
+    codegen->table_bases[at] = base;
+    ++codegen->table_base_count;
 }
 
 /* The tables of the function's BRs that the code before their loads doesn't give whole (the base, the bound), from its
@@ -1054,8 +1167,7 @@ static int function_tables(SnxCodegen* codegen, const SnxU64* body, SnxU64 first
         if (!snx_codegen_word(codegen, br, &word) || !is_br(word)) continue;
         if (jump_table_shape(codegen, br, word, &table)
                 ? table.absolute || (address_in(codegen, table.load, table.base_reg, 8, 0) &&
-                                     (table_bound(codegen, table.load, table.index_reg) ||
-                                      index_bound(codegen, table.load, table.index_reg, 0)))
+                                     table_bound(codegen, table.load, table.index_reg))
                 : !table.load || table.absolute)
             continue;
         if (n == capacity) {
@@ -1074,8 +1186,8 @@ static int function_tables(SnxCodegen* codegen, const SnxU64* body, SnxU64 first
             SnxFlowTable* r = recorded(codegen, br);
             JumpTable table;
             SnxU32 word = 0;
-            int shaped;
-            unsigned bound;
+            int shaped, masked;
+            unsigned bound, max;
             if (r && r->base == SNX_TABLE_REFUSED) continue;
             (void)snx_codegen_word(codegen, br, &word);
             shaped = jump_table_shape(codegen, br, word, &table);
@@ -1087,27 +1199,20 @@ static int function_tables(SnxCodegen* codegen, const SnxU64* body, SnxU64 first
                     r = record_table(codegen, br);
                     r->base = base;
                     changed = 1;
+                    if (base != SNX_TABLE_REFUSED) add_table_base(codegen, base);
                 }
                 shaped = jump_table_shape(codegen, br, word, &table);
             }
-            if (!shaped || table_bound(codegen, table.load, table.index_reg) ||
-                index_bound(codegen, table.load, table.index_reg, 0))
-                continue;
-            bound = function_bound(codegen, &table, body, first, count, entry, &flow, whole);
-            if (!bound && !body) {
-                /* nothing in the function bounds the index (the caller's range, a byte from memory): a function of an
-                   unwind range has its cases inside it, so the entries up to the first that leaves it. Past the table,
-                   the next table's are the function's code too: a leader more, never a case of another function */
-                SnxU64 target;
-                while (bound < SNX_JUMP_TABLE_MAX && entry_target(codegen, &table, bound, &target) && !(target & 3) &&
-                       target >= first && (target - first) / 4 < count)
-                    ++bound;
-            }
-            if (bound && (!r || bound != r->bound)) {
-                r = record_table(codegen, br);
-                r->bound = bound;
-                changed = 1;
-            }
+            if (!shaped || table_bound(codegen, table.load, table.index_reg)) continue;
+            /* a range's table without a compare (the caller's index, a byte from memory, a mask) ends as table_extent
+               says; one of an explored function is followed only to a bound */
+            bound = function_bound(codegen, &table, body, first, count, entry, &flow, whole, &masked);
+            max = masked && !body ? bound : 0;
+            if (max) bound = 0;
+            if (!bound && body) continue;
+            if (!r) r = record_table(codegen, br), changed = 1;
+            if (!body && !r->count) r->first = first, r->count = count, changed = 1;
+            if (r->bound != bound || r->max != max) r->bound = bound, r->max = max, changed = 1;
         }
         free(flow.start);
         found |= changed;
@@ -1232,6 +1337,24 @@ static void mark_entry(SnxCodegen* codegen, SnxU64 address) {
     if (lo) mark_leader(&codegen->functions[lo - 1], address);
 }
 
+/* the bases of the tables of the program's BRs that the code before their loads gives (function_tables adds the
+   others') */
+static void table_bases(SnxCodegen* codegen, const Addresses* brs) {
+    size_t n = 0, k = 0;
+    codegen->table_bases = (SnxU64*)snx_realloc(codegen->table_bases, (brs->count + 1) * sizeof(SnxU64));
+    for (size_t i = 0; i < brs->count; ++i) {
+        JumpTable table;
+        SnxU32 word;
+        if (snx_codegen_word(codegen, brs->values[i], &word) && jump_table_shape(codegen, brs->values[i], word, &table))
+            codegen->table_bases[n++] = table.base;
+    }
+    if (n) qsort(codegen->table_bases, n, sizeof(SnxU64), snx_compare_u64);
+    for (size_t i = 0; i < n; ++i)
+        if (!k || codegen->table_bases[k - 1] != codegen->table_bases[i])
+            codegen->table_bases[k++] = codegen->table_bases[i];
+    codegen->table_base_count = k;
+}
+
 static void leaders(SnxCodegen* codegen, const AddressSet* extra, const AddressSet* hints) {
     Addresses brs = {0}; /* every function's BRs, the functions' in order, and where each one's start */
     size_t* first = (size_t*)snx_alloc((codegen->function_count + 1) * sizeof(*first));
@@ -1265,6 +1388,7 @@ static void leaders(SnxCodegen* codegen, const AddressSet* extra, const AddressS
         }
         codegen->instruction_count += f->count;
     }
+    table_bases(codegen, &brs);
     /* a function of an unwind range, which explore didn't see: its tables from its flow */
     for (size_t i = 0; i < codegen->function_count; ++i) {
         const SnxFunction* f = &codegen->functions[i];
@@ -1625,5 +1749,6 @@ void snx_codegen_free(SnxCodegen* codegen) {
     free(codegen->modules);
     free(codegen->read_block);
     free(codegen->flow_tables);
+    free(codegen->table_bases);
     *codegen = (SnxCodegen){0};
 }

@@ -15,10 +15,13 @@ typedef struct {
 } SnxFunction;
 
 /* what a function's flow gives of the jump table of the BR at address: its base (0 where the code before its load does,
-   ~0 where two ways to the BR take two) and the entries it is bounded to (0 for none) */
+   ~0 where two ways to the BR take two); bound, the entries a compare of the index bounds it to, or else max, those the
+   index's making lets it reach, each 0 for none; and the unwind range its cases are in, count instructions from first,
+   count 0 for none */
 typedef struct {
-    SnxU64 address, base;
-    unsigned bound;
+    SnxU64 address, base, first;
+    size_t count;
+    unsigned bound, max;
 } SnxFlowTable;
 
 typedef struct {
@@ -45,9 +48,11 @@ typedef struct {
     size_t read_count, read_capacity;
     /* the jump tables whose base or end came from their function's flow (explore's, the leaders'), not from the code
        before the load, by BR address, so every later snx_codegen_jump_table (the leaders, the back ends) finds the same
-       cases */
+       cases; and every table's base the leaders know of, ascending: where the table before it ends */
     SnxFlowTable* flow_tables;
     size_t flow_table_count, flow_table_capacity;
+    SnxU64* table_bases;
+    size_t table_base_count;
 } SnxCodegen;
 
 int snx_codegen_analyze(SnxCodegen* codegen, const SnxCodeImage* modules, size_t module_count, const SnxU64* hints,
