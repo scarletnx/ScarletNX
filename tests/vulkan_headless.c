@@ -2347,6 +2347,60 @@ static int check_alias_newer_target(void) {
     return 0;
 }
 
+/* A render target whose GPU address the game maps to other memory: its pixels go to the memory it showed, and it goes,
+   as it describes memory that is gone. One game unmapped its scene targets, its movie player took their memory for
+   VIC's output and the game mapped that at the old targets' addresses: the targets stayed, and each movie frame
+   reached the scene through them read as floats. A mapping of the same memory again keeps its target */
+static int check_remapped_target(void) {
+    GpuChannel* ch = calloc(1, sizeof *ch);
+    CHECK(ch);
+    u32* r = ch->r3d;
+    const u64 cpu = HEAP_BASE + 0xAA0000, other = HEAP_BASE + 0xAB0000, gva = 0x9A00000ull, kept = 0x9B00000ull;
+    CHECK(mem_map(cpu, 0x20000, MS_NORMAL, PERM_RW) == 0);
+    memset(GP(cpu), 0, 0x10000);
+    memset(GP(other), 0x40, 0x10000);
+    gmmu_map(gva, cpu, 0x10000);
+    gmmu_map(kept, cpu, 0x10000);
+    r[0x487] = 1;
+    r[0x202] = 64; /* 16 RGBA pixels, pitch linear */
+    r[0x203] = 16;
+    r[0x204] = 0xD5; /* A8B8G8R8 */
+    r[0x205] = 0x1000;
+    r[0x206] = 1;
+    const float red[4] = {1, 0, 0, 1}, green[4] = {0, 1, 0, 1};
+    r[0x201] = (u32)gva;
+    memcpy(&r[0x360], red, sizeof red);
+    engine_clear(ch, 15 << 2);
+    vk_render_end();
+    CHECK(vk_rt_find(gva));
+    u64 went = g_vk_rt_remapped;
+    gmmu_map(gva, other, 0x10000); /* the same GPU address, other memory */
+    if (vk_rt_find(gva) || g_vk_rt_remapped != went + 1) {
+        fprintf(stderr, "a target whose GPU address shows other memory now stayed (%llu went)\n",
+                (unsigned long long)(g_vk_rt_remapped - went));
+        return 1;
+    }
+    const u8* old = GP(cpu);
+    CHECK(old[0] == 255 && old[1] == 0 && old[2] == 0 && old[3] == 255); /* its pixels, in the memory it showed */
+    CHECK(GP(other)[0] == 0x40); /* the other memory as it was */
+    /* the same memory mapped again: its target stays */
+    r[0x201] = (u32)kept;
+    memcpy(&r[0x360], green, sizeof green);
+    engine_clear(ch, 15 << 2);
+    vk_render_end();
+    Surf* k = vk_rt_find(kept);
+    CHECK(k);
+    went = g_vk_rt_remapped;
+    gmmu_map(kept, cpu, 0x10000);
+    CHECK(vk_rt_find(kept) == k && g_vk_rt_remapped == went);
+    u8 px[4];
+    CHECK(!read_pixel0(k, px));
+    CHECK(px[0] == 0 && px[1] == 255);
+    CHECK(mem_unmap(cpu, 0x20000) == 0);
+    free(ch);
+    return 0;
+}
+
 /* Images in pieces (sparse binding: vkQueueBindSparse on the graphics queue) made on this thread while the recording
    thread submits frames to the same queue: Vulkan requires the two calls to be externally synchronized, which the
    validation layer's threading checks report when they overlap */
@@ -7771,6 +7825,7 @@ static void results_copied(u64 cpu, u64 len) { vk_own_cpu_touched(cpu, len); }
 #include "vulkan_shader_windows.inc"
 #include "vulkan_shared_clamp.inc"
 #include "vulkan_compute_arena.inc"
+#include "vulkan_compute_owned_input.inc"
 #include "vulkan_rt_aside.inc"
 #include "vulkan_so_note.inc"
 #include "vulkan_index_draws.inc"
@@ -7817,9 +7872,10 @@ static int check_pipeline_stats_compute(void) {
 #include "vulkan_depth_state.inc"
 #include "vulkan_owned_readback.inc"
 /* A finish that lets go (vk_finish_letting_go, the GPU mirror's for a CPU read of pages it holds) lets go of vk_lock
-   while it waits for the GPU: another thread takes the lock meanwhile. The submission waits for a semaphore that thread
-   signals once it held the lock, or after 5 s without it, so the finish cannot end first. Before, the finish held the
-   lock through its wait, and the other thread got it only after */
+   while it waits for the GPU: another thread takes the lock meanwhile. So does the wait for one submission
+   (vk_wait_submit_letting_go, the mirror's where a submission made already wrote the pages). The submission waits for a
+   semaphore that thread signals once it held the lock, or after 5 s without it, so the wait cannot end first. Before,
+   the finish held the lock through its wait, and the other thread got it only after */
 static _Atomic int g_fl_got, g_fl_done;
 static VkSemaphore g_fl_gate;
 static void fl_thread(void* p) {
@@ -7838,24 +7894,48 @@ static void fl_thread(void* p) {
     VK_OK(vkSignalSemaphore(g_vk.dev, &signal));
     atomic_store_explicit(&g_fl_done, 1, memory_order_release);
 }
-static int check_finish_lets_go(void) {
+/* the gate, and the next submission waiting for it (vk_lock held) */
+static int fl_gate(void) {
     VkSemaphoreTypeCreateInfo type = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
                                       .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE};
     VkSemaphoreCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &type};
     CHECK(VK_OK(vkCreateSemaphore(g_vk.dev, &ci, NULL, &g_fl_gate)));
+    (void)vk_cmd(); /* a submission to make */
+    vk_submit_after(g_fl_gate, 1, 2);
+    atomic_store_explicit(&g_fl_got, 0, memory_order_relaxed);
+    atomic_store_explicit(&g_fl_done, 0, memory_order_relaxed);
+    return 0;
+}
+/* the thread done: 0 when it took the lock meanwhile */
+static int fl_ended(const char* what) {
+    while (!atomic_load_explicit(&g_fl_done, memory_order_acquire)) plat_sleep_ns(1000000);
+    const int got = atomic_load_explicit(&g_fl_got, memory_order_acquire);
+    if (!got) fprintf(stderr, "%s: the other thread did not get vk_lock in 5 s of the wait\n", what);
+    vkDestroySemaphore(g_vk.dev, g_fl_gate, NULL);
+    return !got;
+}
+static int check_finish_lets_go(void) {
     vk_lock();
     vk_finish();
-    (void)vk_cmd(); /* a submission for the finish to make, waiting for the gate */
-    vk_submit_after(g_fl_gate, 1, 2);
+    CHECK(!fl_gate());
     CHECK(!plat_thread(fl_thread, NULL, 1u << 16));
     vk_finish_letting_go();
     vk_unlock();
-    while (!atomic_load_explicit(&g_fl_done, memory_order_acquire)) plat_sleep_ns(1000000);
-    if (!atomic_load_explicit(&g_fl_got, memory_order_acquire))
-        fprintf(stderr, "finish letting go: the other thread did not get vk_lock in 5 s of the finish's wait\n");
-    CHECK(atomic_load_explicit(&g_fl_got, memory_order_acquire));
-    vkDestroySemaphore(g_vk.dev, g_fl_gate, NULL);
-    puts("finish letting go: another thread took vk_lock while the finish waited for the GPU");
+    CHECK(!fl_ended("finish letting go"));
+    vk_lock();
+    vk_finish();
+    CHECK(!fl_gate());
+    vk_submit(VK_NULL_HANDLE, 0, VK_NULL_HANDLE);
+    const u64 at = vk_last_submit();
+    CHECK(!plat_thread(fl_thread, NULL, 1u << 16));
+    vk_wait_submit_letting_go(at);
+    u64 submitted, done;
+    vk_submit_progress(&submitted, &done);
+    vk_unlock();
+    CHECK(!fl_ended("a submission's wait letting go"));
+    CHECK(done >= at);
+    puts("finish letting go: another thread took vk_lock while the finish waited for the GPU, and while a submission's "
+         "wait did");
     return 0;
 }
 
@@ -7868,6 +7948,7 @@ static int check_finish_lets_go(void) {
 #include "vulkan_storage_suffix.inc"
 #include "vulkan_storage_logged.inc"
 #include "vulkan_mirror.inc"
+#include "vulkan_mirror_batch.inc"
 #include "vulkan_pending_index.inc"
 #include "vulkan_unmapped_tail.inc"
 #include "vulkan_draw_storage_stages.inc"
@@ -8830,6 +8911,12 @@ static int run_headless(int argc, char** argv) {
             result = check_wlog_clear();
         else if (!strcmp(name, "poll_kick"))
             result = check_poll_kick();
+        else if (!strcmp(name, "mirror"))
+            result = check_mirror();
+        else if (!strcmp(name, "mirror_batch"))
+            result = check_mirror_batch();
+        else if (!strcmp(name, "finish_lets_go"))
+            result = check_finish_lets_go();
         else if (!strcmp(name, "descriptor_heaps"))
             result = check_descriptor_heaps();
         else if (!strcmp(name, "heap_pipeline_flags"))
@@ -8844,6 +8931,8 @@ static int run_headless(int argc, char** argv) {
             result = check_cb_address();
         else if (!strcmp(name, "indirect_dispatch"))
             result = check_indirect_dispatch_once();
+        else if (!strcmp(name, "compute_owned"))
+            result = check_compute_owned_input() || check_compute_owned_chain();
         else if (!strcmp(name, "integer_half"))
             result = check_shader_integer_half_rounding();
         else if (!strcmp(name, "integer_float"))
@@ -9216,6 +9305,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_storage_logged());
     CHECK(!check_need_unlocked());
     CHECK(!check_mirror());
+    CHECK(!check_mirror_batch());
     CHECK(!check_pending_index());
     CHECK(!check_unmapped_tail());
     CHECK(!check_draw_storage_stages());
@@ -9330,6 +9420,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_present_effects());
     CHECK(!check_clear_load_op());
     CHECK(!check_alias_newer_target());
+    CHECK(!check_remapped_target());
     CHECK(!check_sparse_while_submitting());
     CHECK(!check_multisample_shader_gate());
     CHECK(!check_translation_dead_code());
@@ -9349,6 +9440,8 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_compute_arena_count());
     CHECK(!check_compute_lone_lane());
     CHECK(!check_sm86_lanes());
+    CHECK(!check_compute_owned_input());
+    CHECK(!check_compute_owned_chain());
     CHECK(!check_vic());
     CHECK(!check_vic_chain(shot));
     CHECK(!check_nvdec_vic());

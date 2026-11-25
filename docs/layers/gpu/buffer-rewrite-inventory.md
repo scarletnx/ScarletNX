@@ -434,6 +434,13 @@ between.**
 - Comment: `mirror.c`, `vk_mirror_landed`.
 - Check: `check_mirror` in `tests/vulkan_mirror.inc`, the binding after the CPU touch.
 
+**D40. On Windows the scanner starts no scan while a check scans.**
+
+- Without the rule: the write watch calls of two threads slow each other down. In one game a check took about 47 us a
+  leaf against the scanner's 4, on the thread that records the draws, and 12 us with the scanner waiting.
+- Comment: `buffer.c`, above `g_wcheck_scans`.
+- Check: `vk_write_scan` (`tests/vk_write_scan.c`), on any host.
+
 ## Results that the GPU writes
 
 **R1. A result byte lands only where the shader changed it and guest memory still holds what the shader read.**
@@ -1082,6 +1089,23 @@ submission.**
   took about 30 ms of the 51 ms of their landing. A GPU with no memory traps lands every page.
 - Comment: `mirror.c`, above `run_end`.
 - Check: no test covers the cost.
+
+**W24. A dispatch that is not kept on the GPU runs on the graphics queue where it reads GPU-owned or watched pages.**
+
+- Without the rule: on the compute queue its read into the arena copied the bytes on the thread that records the draws,
+  and landed first what the GPU owned. One game's dispatches put about 21 MB a present there. The rule is not for a
+  dispatch that stays resident: the output of the second of a chain of two came back through a staged result.
+- Comment: `compute.c`, `vk_dispatch`, above `vk_buf_owned`.
+- Check: `check_compute_owned_input` and `check_compute_owned_chain` in `tests/vulkan_compute_owned_input.inc`.
+
+**W25. A read over pending mirror pages waits for the submission that wrote them, with `vk_lock` let go.**
+
+- Without the rule: the read finished all the GPU's work, also for pages of a submission that was made already, about
+  one time in two presents in one game. A finish is left for writes that are still being recorded. A change of guest
+  memory asks for pages anywhere, and looks at the batches alone: the walk of the whole GPU address space, a page at a
+  time with `vk_lock` held, did not end.
+- Comment: `mirror.c`, `mir_batch_over` and `vk_mirror_mem_need`.
+- Check: `check_mem_need` in `tests/mirror_landing.c`, and `check_mirror_batch` in `tests/vulkan_mirror_batch.inc`.
 
 ## Staging and rings
 

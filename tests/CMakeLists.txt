@@ -1036,8 +1036,8 @@ if(SNX_BUILD_3DS)
     add_test(NAME 3ds_uds_relay COMMAND snx-test-3ds-uds)
     add_test(NAME 3ds_uds_delayed_relay COMMAND snx-test-3ds-uds --delay)
     # a wait of the two lasts 30 s at most and says what is missing (3ds_uds.c), which ctest's own limit must not precede
-    set_tests_properties(3ds_uds_delayed_relay PROPERTIES TIMEOUT 180)
-    set_tests_properties(3ds_uds_relay PROPERTIES TIMEOUT 180)
+    # alone: a request within 100 ms and a DSP frame 4.9 ms away are the host's clock, which tests beside them take
+    set_tests_properties(3ds_uds_delayed_relay 3ds_uds_relay PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE)
     # nim:aoc's Initialize answers the no-network error a console gives (tests/3ds_nim_aoc.c)
     add_executable(snx-test-3ds-nim-aoc 3ds_nim_aoc.c support/3ds_guest.c)
     snx_test_target(snx-test-3ds-nim-aoc gnu23)
@@ -2382,7 +2382,8 @@ if(TARGET OpenSSL::Crypto AND NOT SNX_TOOLS_ONLY)
     target_link_libraries(snx-test-nn-time PRIVATE OpenSSL::Crypto)
     add_test(NAME nn_time COMMAND snx-test-nn-time)
     # the native nn::fs (nn/fs.c): a path's mount and limits as the SDK's C library asks them, and a system archive
-    # mounted by its data id, with the file server's core stubbed; then the RomFS of another program, which stops
+    # mounted by its data id, with the file server's core stubbed; then the RomFS of another program, from its
+    # image, and the stop when the image is not there
     add_executable(snx-test-nn-fs nn_fs.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c")
     snx_test_target(snx-test-nn-fs gnu23)
     snx_service_swipc(snx-test-nn-fs)
@@ -2393,7 +2394,7 @@ if(TARGET OpenSSL::Crypto AND NOT SNX_TOOLS_ONLY)
     add_test(NAME nn_fs COMMAND snx-test-nn-fs)
     add_test(NAME nn_fs_other_program COMMAND snx-test-nn-fs other-program)
     set_tests_properties(nn_fs_other_program PROPERTIES PASS_REGULAR_EXPRESSION
-        "fatal: nn::fs::QueryMountRomCacheSize: the game asks for the RomFS of program 1 of its application, and this is program 0")
+        "fatal: nn::fs::QueryMountRomCacheSize: the game asks for the RomFS of program 1 of its application \\(0000000000000001\\), and this is program 0. Put that program's RomFS image in the game's data folder as system/archives/0000000000000001.romfs")
     add_test(NAME nn_fs_commit_null COMMAND snx-test-nn-fs commit-null)
     set_tests_properties(nn_fs_commit_null PROPERTIES PASS_REGULAR_EXPRESSION
         "fatal: nn::fs::Commit failed with result 0x2f5e02 \\(error 2002-6063\\)")
@@ -3390,6 +3391,12 @@ if(NOT SNX_TOOLS_ONLY)
     snx_test_target(snx-test-vk-buffer-pages gnu23)
     target_link_libraries(snx-test-vk-buffer-pages PRIVATE snx_nx_flags)
     add_test(NAME vk_buffer_pages COMMAND snx-test-vk-buffer-pages)
+    # the scans of written pages on Windows (gpu/vk/buffer.c, WW_SCANS_SERIAL), on any host: the scanner starts no scan
+    # while a check scans
+    add_executable(snx-test-vk-write-scan vk_write_scan.c tracy_stubs.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/addr_gens.c")
+    snx_test_target(snx-test-vk-write-scan gnu23)
+    target_link_libraries(snx-test-vk-write-scan PRIVATE snx_nx_flags)
+    add_test(NAME vk_write_scan COMMAND snx-test-vk-write-scan)
     # the file of shaders and pipelines kept across runs (gpu/vk/pipeline_file.c): records back as written, pipelines
     # by their shaders' records (a shipped shader's reference among them), a cut or changed record ending the reading,
     # another key starting over, a full file; its records packed into zstd units and unpacked in their place, a unit
@@ -3972,6 +3979,16 @@ if(SNX_TEST_EDENPROBE AND Python3_Interpreter_FOUND AND NOT CMAKE_CROSSCOMPILING
                 --setting fps-limit=0 --setting vk_memory=${snx_memory})
         set_tests_properties(edenprobe_vk_memory_${snx_memory} PROPERTIES TIMEOUT 1800 RUN_SERIAL TRUE LABELS external)
     endforeach()
+    # #2442's case, the wimsy suite's heavy level after the reference suite, which it needs: each compute texture read
+    # back after a judged frame holds that frame's texels, where a write scan between the texture's move into the alias
+    # pool and its trap leaves the frame before's in some of its pages
+    add_test(NAME edenprobe_compute_readback
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/edenprobe.py" run
+            --runtime $<TARGET_FILE:scarletnx> --nro "${snx_edenprobe_nro}" --mode "quick hooks game level=3 frames=8"
+            --out "${CMAKE_CURRENT_BINARY_DIR}/edenprobe-compute-readback"
+            --baseline "${PROJECT_SOURCE_DIR}/tests/edenprobe/compute-readback.txt" --timeout 600
+            --setting fps-limit=0)
+    set_tests_properties(edenprobe_compute_readback PROPERTIES TIMEOUT 1800 RUN_SERIAL TRUE LABELS external)
 endif()
 # the program's malloc is the pinned jemalloc's (SNX_JEMALLOC). On macOS its prefix, je_, names the options' variable
 if(SNX_JEMALLOC AND NOT CMAKE_CROSSCOMPILING)

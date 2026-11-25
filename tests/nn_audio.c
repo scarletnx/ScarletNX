@@ -343,8 +343,8 @@ static void test_layouts(void) {
     unsigned before = host->queued;
     CHECK(append(T_OUT, 0x33, 0x2000, 64, 96, 0) == 1); /* 96 bytes in a 64 byte buffer: timed, not played */
     CHECK(q->nqueued == 3 && host->queued == before);
-    CHECK(append(T_OUT, 0x34, 0x2000, 96, 64, 64) == 1); /* past the capacity from its offset */
-    CHECK(q->nqueued == 4 && host->queued == before);
+    CHECK(append(T_OUT, 0x34, 0x2000, 96, 64, 64) == 1); /* inside the capacity from its start: the offset is no one's */
+    CHECK(q->nqueued == 4 && host->queued == before + 1);
     /* an AudioOutBuffer the game can't have: not appended, and the log names its address */
     test_last_log[0] = 0;
     CHECK(nnaudio_append_out_buffer(&cpu, T_OUT, 0x7FF0) == 0 && q->nqueued == 4 && strstr(test_last_log, "0x7ff0"));
@@ -352,21 +352,22 @@ static void test_layouts(void) {
     nnaudio_close_out(&cpu, &L, T_OUT);
 }
 
-/* a data offset past the buffer's capacity (a game leaves the field unset, 0xCD in every byte) plays the buffer from
-   its start, as Eden and yuzu play every buffer: they never read the field. The message names both offsets */
-static void test_offset_past_capacity(void) {
+/* the data offset is not read (the SDK's SetAudioOutBufferInfo never writes it): every buffer plays from its start,
+   as Eden and yuzu play every buffer. Stray leaves 0, 1, 2 and 0xFFFFFFFF there in turn, and its buffers played from
+   their second and third bytes were noise and clicks; another game leaves 0xCD in every byte */
+static void test_offset_unread(void) {
+    static const u64 offsets[] = {1, 2, 0xFFFFFFFFull, 0xCDCDCDCDCDCDCDCDull, 196, 197};
     AudOut* q = open_output(T_OUT);
     PAudio* host = q->output;
     u8 expected[192];
     for (u32 i = 0; i < 196; i++) GP(SAMPLES)[i] = (u8)(i * 5 + 1);
     memcpy(expected, GP(SAMPLES), sizeof expected);
-    test_last_log[0] = 0;
-    CHECK(append(T_OUT, 0x51, SAMPLES, 196, 192, 0xCDCDCDCDCDCDCDCDull) == 1);
-    CHECK(q->nqueued == 1 && host->queued == 1 && host->bytes == 192 && !memcmp(host->pcm, expected, 192));
-    CHECK(strstr(test_last_log, "0xcdcdcdcdcdcdcdcd") && strstr(test_last_log, "capacity 196") &&
-          strstr(test_last_log, "from offset 0"));
-    CHECK(append(T_OUT, 0x52, SAMPLES, 196, 192, 197) == 1); /* one past the capacity */
-    CHECK(host->queued == 2 && host->bytes == 384 && !memcmp(host->pcm + 192, expected, 192));
+    for (u32 k = 0; k < sizeof offsets / sizeof *offsets; k++) {
+        test_last_log[0] = 0;
+        CHECK(append(T_OUT, 0x51 + k, SAMPLES, 196, 192, offsets[k]) == 1);
+        CHECK(q->nqueued == k + 1 && host->queued == k + 1 && host->bytes == 192 * (k + 1));
+        CHECK(!memcmp(host->pcm + 192 * k, expected, 192) && !test_last_log[0]);
+    }
     nnaudio_close_out(&cpu, &L, T_OUT);
 }
 
@@ -847,8 +848,8 @@ int main(void) {
     CHECK(host && !host->started);
     for (u32 i = 0; i < 196; i++) GP(SAMPLES)[i] = (u8)(i * 7);
     u8 expected[192];
-    memcpy(expected, GP(SAMPLES + 4), sizeof expected);
-    CHECK(append(T_OUT, 0, SAMPLES, 196, 192, 4) == 1);
+    memcpy(expected, GP(SAMPLES), sizeof expected);
+    CHECK(append(T_OUT, 0, SAMPLES, 196, 192, 4) == 1); /* from its start: the data offset is not read */
     CHECK(host->queued == 1 && host->bytes == 192 && !memcmp(host->pcm, expected, 192));
     memset(GP(SAMPLES), 0, 196); /* the host owns its copy, even when the guest later reuses the memory */
     CHECK(!memcmp(host->pcm, expected, 192));
@@ -921,7 +922,7 @@ int main(void) {
     test_queries();
     test_open();
     test_layouts();
-    test_offset_past_capacity();
+    test_offset_unread();
     test_partial_frame();
     test_two_outs();
     test_turn_before_the_clock();

@@ -34,7 +34,10 @@
 
 #define OUT_NAME_SIZE   0x100 /* an AudioOutInfo, and the name in an AudioOut */
 /* an AudioOutBuffer, which the SDK hands its session whole: the next buffer, the samples' address, their capacity
-   and size, and the offset into them, 8 bytes each in a 64-bit and a 32-bit game alike */
+   and size, and a data offset, 8 bytes each in a 64-bit and a 32-bit game alike. The offset is not read: the SDK's
+   SetAudioOutBufferInfo writes the address, the capacity and the size alone, so the field holds what the game's
+   memory held (0xCD in every byte in one game; 0, 1, 2 and 0xFFFFFFFF in turn in Stray, whose buffers played from
+   their second and third bytes made a third of its sound noise and clicks). Eden and yuzu never read it either */
 #define OUT_BUFFER_SIZE 0x28
 #define OUT_STARTED     0 /* nn::audio::AudioOutState */
 #define OUT_STOPPED     1
@@ -288,7 +291,7 @@ void nnaudio_stop_out(CPU* c, u64 out) {
 /* the AudioOutBuffer's samples copied to the host now, so the guest owns its memory again once the buffer is
    released; its length in frames sets when that is. False for a full ring, as the SDK answers BufferRingFull */
 int nnaudio_append_out_buffer(CPU* c, u64 out, u64 buffer) {
-    u64 d[OUT_BUFFER_SIZE / 8], samples, capacity, size, offset;
+    u64 d[OUT_BUFFER_SIZE / 8], samples, capacity, size;
     AudOut* q;
     u32 i;
     if (!buffer || !snx_audio_guest_ok(buffer, OUT_BUFFER_SIZE, PERM_R)) {
@@ -298,7 +301,7 @@ int nnaudio_append_out_buffer(CPU* c, u64 out, u64 buffer) {
         return 0;
     }
     for (i = 0; i < OUT_BUFFER_SIZE / 8; i++) d[i] = snx_ld_le64(hook_host(c, buffer + 8 * i));
-    samples = d[1], capacity = d[2], size = d[3], offset = d[4];
+    samples = d[1], capacity = d[2], size = d[3]; /* d[4], the data offset, is no one's (OUT_BUFFER_SIZE) */
     q = out_lock(out, "AppendAudioOutBuffer");
     if (!q || q->nreleased + q->nqueued >= AUDOUT_BUFFERS) {
         if (q) { /* a rare decision: the out's ring is full */
@@ -316,22 +319,14 @@ int nnaudio_append_out_buffer(CPU* c, u64 out, u64 buffer) {
     q->frames[i] = (u32)((size < 0xFFFFFFFFu ? size : 0xFFFFFFFFu) / (q->channels * 2u));
     q->nqueued++;
     if (q->output && q->frames[i]) { /* without a host device it is played on the clock alone */
-        /* an offset past the capacity is no place in the buffer (a game leaves the field unset): the buffer plays
-           from its start, as Eden and yuzu play every buffer, which never read the field */
-        if (offset > capacity) {
-            SNX_ZONE_T(z_out_offset, "audio out append", "offset past capacity"); /* a rare decision */
-            WARN_LIMIT(4, "audio: buffer %#llx's data offset %#llx is past its capacity %llu: played from offset 0\n",
-                       (unsigned long long)samples, (unsigned long long)offset, (unsigned long long)capacity);
-            offset = 0;
-        }
-        if (size <= 0xFFFFFFFFu && size <= capacity - offset && samples + offset >= samples &&
-            snx_audio_guest_ok(samples + offset, size, PERM_R))
+        /* from the buffer's start, whatever the data offset holds */
+        if (size <= 0xFFFFFFFFu && size <= capacity && snx_audio_guest_ok(samples, size, PERM_R))
             /* the frames the clock plays, a part of one at the end left out: SDL refuses it, and the buffer with it */
-            plat_audio_queue(q->output, hook_host(c, samples + offset), q->frames[i] * q->channels * 2u);
+            plat_audio_queue(q->output, hook_host(c, samples), q->frames[i] * q->channels * 2u);
         else {
             SNX_ZONE_T(z_out_silence, "audio out append", "buffer unreadable, played as silence"); /* rare */
-            WARN_LIMIT(4, "audio: buffer %#llx (%llu bytes at offset %llu) isn't readable, played as silence\n",
-                       (unsigned long long)samples, (unsigned long long)size, (unsigned long long)offset);
+            WARN_LIMIT(4, "audio: buffer %#llx (%llu bytes, capacity %llu) isn't readable, played as silence\n",
+                       (unsigned long long)samples, (unsigned long long)size, (unsigned long long)capacity);
         }
     }
     pm_unlock(&g_host.audio.lk);

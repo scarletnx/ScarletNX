@@ -140,7 +140,9 @@ void plat_ww_cool(u8* p, u64 size, void (*cb)(u8* p, u64 size));
    pool with 4 KiB host pages: a view of other pages needs its address and its pool offset at the same place in a host
    page, and the game picks its addresses in 4 KiB steps */
 int plat_alias_init(u64 size); /* 0, or -1 when the host has no pool */
-/* the pool's [off, off + size) at p in the reservation, readable and writable, written-page tracking kept: 0, or -1 */
+/* the pool's [off, off + size) at p in the reservation, readable and writable, watched for writes: 0, or -1. Of a range
+   its caller froze (plat_freeze), whose bytes those pool pages hold, it keeps what the written-page tracking says of
+   each page, as plat_vm_share does, and the range takes writes again at plat_thaw; any other reads as written */
 int plat_alias_map(u8* p, u64 off, u64 size);
 /* p back to the reservation's own memory, decommitted as plat_vm_decommit leaves it: 0, or -1 */
 int plat_alias_unmap(u8* p, u64 size);

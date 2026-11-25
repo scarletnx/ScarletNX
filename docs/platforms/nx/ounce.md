@@ -188,7 +188,8 @@ the CPU touched in the last presents with traps. A logged byte that guest memory
 keeps the CPU's: the shadow holds every CPU write from before the submit, so the CPU wrote it later. Landed over it,
 the write was lost to guest memory and the mirror both (one game's characters showed squares of wrong lighting).
 Landing every written page at each submit took most of the GPU thread in one game's menus. A read of guest memory
-under pending writes lands them first, and a draw reading them takes the mirror instead (`buffer.c`'s `buf_get`), as
+under pending writes lands them first, waiting for the submission that wrote them, or finishing the GPU's work where
+they are still being recorded, and a draw reading them takes the mirror instead (`buffer.c`'s `buf_get`), as
 does a draw reading a range part of which the mirror owns (`vk_mirror_holds`): read elsewhere, the CPU's bytes between
 the owned pages were staged again for each draw.
 Before, every writing dispatch copied the 16 MiB of each range twice (its original bytes, and its input), compared

@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The GPU mirror's bookkeeping on the CPU (vk/mirror.c), with no device: the ranges its programs write and their
-   pending counts (vk_mirror_wrote, the real pending_pages.c), and the landing of a page's entry (land_entry): which
-   owners and render targets it asks for, and the bytes it puts in guest memory. Everything else mirror.c calls is a
-   stub below */
+   pending counts (vk_mirror_wrote, the real pending_pages.c), the landing of a page's entry (land_entry): which
+   owners and render targets it asks for, and the bytes it puts in guest memory, and what a read of guest memory over
+   pending writes waits for (vk_mirror_mem_need). Everything else mirror.c calls is a stub below */
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -81,14 +81,38 @@ void fatal(const char* fmt, ...) {
     exit(1);
 }
 void logf_(int lvl, const char* fmt, ...) { (void)lvl, (void)fmt; }
-void gmmu_aliases(u64 cpu, u64 size, void (*fn)(void* ctx, u64 gva, u64 n), void* ctx) { (void)cpu, (void)size, (void)fn, (void)ctx; }
-u64 gmmu_run(u64 gva, u64 max, u64* cpu) { return *cpu = gva, max; }
+/* GPU addresses below 4 GiB show guest memory at the same address, but for a page that shows none. A walk that goes
+   past them page by page, over an address space it was given whole, ends the test here and not in hours */
+#define MAPPED 0x100000000ull
+#define HOLE   0x502000ull
+static u32 g_runs;
+void gmmu_aliases(u64 cpu, u64 size, void (*fn)(void* ctx, u64 gva, u64 n), void* ctx) { fn(ctx, cpu, size); }
+u64 gmmu_run(u64 gva, u64 max, u64* cpu) {
+    if (++g_runs > 100000) {
+        fprintf(stderr, "mirror_landing: a walk of the page table is at %#llx after %u runs\n", (unsigned long long)gva,
+                g_runs);
+        exit(1);
+    }
+    if (gva >= MAPPED || gva >> 12 == HOLE >> 12) return 0;
+    const u64 end = gva < HOLE ? HOLE : MAPPED;
+    return *cpu = gva, max < end - gva ? max : end - gva;
+}
 void gmmu_pieces(u64 gva, u64 size, void (*fn)(void* ctx, u64 gva, u64 cpu, u64 n), void* ctx) { (void)gva, (void)size, (void)fn, (void)ctx; }
 void gpu_mem_dirty_runs(u64 since, u64 a, u64 sz, void (*fn)(void* ctx, u64 at, u64 n), void* ctx) { (void)since, (void)a, (void)sz, (void)fn, (void)ctx; }
 int gpu_mem_dirty_since(u64 since, u64 a, u64 sz) { return (void)since, (void)a, (void)sz, 0; }
 u64 gpu_mem_generation(void) { return 1; }
-void vk_submit_progress(u64* submitted, u64* done) { *submitted = *done = 0; }
-void vk_land_through(u64 value) { (void)value; }
+/* the submissions: the last one made, the last one the GPU has done, and what was waited for */
+static struct {
+    u64 submitted, done, waited;
+    u32 waits, finishes;
+} g_sub;
+void vk_submit_progress(u64* submitted, u64* done) { *submitted = g_sub.submitted, *done = g_sub.done; }
+void vk_land_through(u64 value) { vk_mirror_done(value); }
+void vk_wait_submit_letting_go(u64 value) {
+    g_sub.waits++;
+    g_sub.waited = value;
+    if (value > g_sub.done) g_sub.done = value;
+}
 /* owned.c's: the stages a buffer barrier names */
 VkPipelineStageFlags2 vk_buffer_stages(void) { return VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT; }
 int own_hash(u64 addr, u64 size, u64* h) { return (void)addr, (void)size, (void)h, 0; }
@@ -116,7 +140,14 @@ void vk_devmem_buffer_destroy(VkBuffer buf, DevMem mem) { (void)buf, (void)mem; 
 void vk_devmem_free(DevMem mem) { (void)mem; }
 VkResult vk_devmem_invalidate(DevMem mem, u64 off, u64 size) { return (void)mem, (void)off, (void)size, VK_SUCCESS; }
 void vk_finish_at(const char* file, int line) { (void)file, (void)line; }
-void vk_finish_letting_go_at(const char* file, int line) { (void)file, (void)line; }
+static void now_submitted(void);
+void vk_finish_letting_go_at(const char* file, int line) {
+    (void)file, (void)line;
+    g_sub.finishes++;
+    now_submitted();
+    g_sub.done = g_sub.submitted;
+    vk_land_through(g_sub.done);
+}
 void vk_gpuprof_tag(u64 key) { (void)key; }
 int vk_host_bind_sparse(VkHostTimeline* t, const VkBindSparseInfo* bi) { return (void)t, (void)bi, 0; }
 u64 vk_host_next(VkHostTimeline* t) { return (void)t, 0; }
@@ -129,8 +160,14 @@ void vk_mem_track(DevMem a, u32 owner) { (void)a, (void)owner; }
 void vk_mem_use(u64* usage, u64* budget) { *usage = 0, *budget = 1; }
 int vk_ok_(VkResult r, const char* what, const char* file, int line) { return (void)what, (void)file, (void)line, r == VK_SUCCESS; }
 int vk_own_cpu_read(u64 cpu, u64 size, u32 presents) { return (void)cpu, (void)size, (void)presents, 0; }
-void vk_own_publish_submitted(u64 cpu, u64 size, VkOwnRes* r, u64 off) { (void)cpu, (void)size, (void)r, (void)off; }
-VkOwnRes* vk_own_res_borrow(VkBuffer buf) { return (void)buf, NULL; }
+static u64 g_published; /* the bytes published as the mirror's */
+void vk_own_publish_submitted(u64 cpu, u64 size, VkOwnRes* r, u64 off) {
+    (void)cpu, (void)r, (void)off, g_published += size;
+}
+VkOwnRes* vk_own_res_borrow(VkBuffer buf) {
+    static VkOwnRes r;
+    return (void)buf, &r;
+}
 void vk_own_res_unref(VkOwnRes* r) { (void)r; }
 VkPipelineCache vk_pipeline_cache(void) { return VK_NULL_HANDLE; }
 void vk_queue_lock(VkQueue q) { (void)q; }
@@ -253,9 +290,124 @@ static void check_land_entry(void) {
     CHECK(g_rec.acquires == 0 && g_rec.targets_asked == 0 && g_rec.before_writes == 0 && g_rec.written_cpu == 1);
 }
 
+/* ---- what a read of guest memory over pending writes waits for */
+static u32 g_no_pages[MIR_HEAD]; /* a harvest's output with no page in it */
+/* the ranges written so far, as vk_mirror_harvest takes them: a batch of the submission sub */
+static void batch(u64 sub) {
+    MirBatch* grown = realloc(g_mir_batch, (g_mir_nbatch + 1) * sizeof *grown);
+    MirRange* r = malloc(g_mir_nnow * sizeof *r);
+    CHECK(grown && r && g_mir_nnow);
+    g_mir_batch = grown;
+    memcpy(r, g_mir_now, g_mir_nnow * sizeof *r);
+    g_mir_batch[g_mir_nbatch++] = (MirBatch){
+        .submit = sub, .r = r, .n = g_mir_nnow, .room = 1, .entry = MIR_ENTRY, .pages = 1, .out = g_no_pages};
+    g_mir_nnow = 0;
+}
+/* a finish submits what was being recorded */
+static void now_submitted(void) {
+    g_sub.submitted++;
+    if (g_mir_nnow) batch(g_sub.submitted);
+}
+static void subs(u64 submitted, u64 done) {
+    memset(&g_sub, 0, sizeof g_sub);
+    g_sub.submitted = submitted;
+    g_sub.done = done;
+    g_published = 0;
+    g_runs = 0;
+}
+static int pending(u64 at, u64 len) { return vk_mirror_pending(at, len); }
+/* nothing pending anywhere, for the next case */
+static void all_landed(void) {
+    vk_land_through(~0ull);
+    CHECK(!g_mir_nnow && !g_mir_nbatch && !g_mir_nq && pending_pages() == 0);
+}
+
+/* Pages harvested and waiting for their publish alone are published, with no wait at all. Those of a batch whose
+   submission was made wait for the newest submission that wrote there, letting go of vk_lock, and land it: one that
+   wrote elsewhere stays pending. A finish, which submits what is being recorded and waits for everything, is left for
+   the commands being recorded, and for a batch whose submission is still being made. A read of anywhere (a change of
+   guest memory) asks the batches, and walks no page table */
+static void check_mem_need(void) {
+    g_mir.on = 1;
+    /* harvested, in the queue for the publish */
+    static u32 harvested[MIR_HEAD + MIR_ENTRY_PAGE];
+    harvested[MIR_HEAD] = 0x600;
+    subs(9, 9);
+    own_entries(harvested, 1);
+    CHECK(pending(0x600000, 16) && g_mir_nq == 1);
+    vk_mirror_mem_need(0x600000, 16);
+    CHECK(!pending(0x600000, 16) && !g_mir_nq && g_published == 4096 && !g_sub.waits && !g_sub.finishes);
+    all_landed();
+
+    /* two batches over the range, one elsewhere, none done */
+    subs(9, 5);
+    vk_mirror_wrote(0x500000, 0x1000);
+    batch(6);
+    vk_mirror_wrote(0x501000, 0x3000); /* across the page that shows no guest memory */
+    batch(7);
+    vk_mirror_wrote(0x700000, 0x1000);
+    batch(8);
+    vk_mirror_mem_need(0x500000, 0x4000);
+    CHECK(g_sub.waits == 1 && g_sub.waited == 7 && !g_sub.finishes);
+    CHECK(!pending(0x500000, 0x4000) && pending(0x700000, 1) && g_mir_nbatch == 1);
+    vk_mirror_mem_need(0x500000, 0x4000); /* nothing pending there: nothing asked */
+    CHECK(g_sub.waits == 1 && !g_sub.finishes);
+    /* done since: landed with no wait */
+    g_sub.done = 8;
+    vk_mirror_mem_need(0x700000, 1);
+    CHECK(g_sub.waits == 1 && !g_sub.finishes && !pending(0x700000, 1));
+    all_landed();
+
+    /* only past the page that shows none: found all the same, and the batch before it is landed with it */
+    subs(9, 5);
+    vk_mirror_wrote(0x500000, 0x1000);
+    batch(6);
+    vk_mirror_wrote(0x503000, 0x1000);
+    batch(7);
+    vk_mirror_mem_need(0x501000, 0x3000);
+    CHECK(g_sub.waits == 1 && g_sub.waited == 7 && !g_sub.finishes && !g_mir_nbatch);
+    all_landed();
+
+    /* in the commands being recorded, beside a batch: the finish takes both */
+    subs(9, 5);
+    vk_mirror_wrote(0x500000, 0x1000);
+    batch(6);
+    vk_mirror_wrote(0x501000, 0x1000);
+    vk_mirror_mem_need(0x500000, 0x2000);
+    CHECK(!g_sub.waits && g_sub.finishes == 1 && !pending(0x500000, 0x2000));
+    all_landed();
+
+    /* a batch of a submission still being made (its number is past the last one made) */
+    subs(9, 5);
+    vk_mirror_wrote(0x500000, 0x1000);
+    batch(10);
+    vk_mirror_mem_need(0x500000, 0x1000);
+    CHECK(!g_sub.waits && g_sub.finishes == 1 && !pending(0x500000, 0x1000));
+    all_landed();
+
+    /* anywhere */
+    subs(9, 5);
+    vk_mirror_wrote(0x500000, 0x1000);
+    batch(6);
+    vk_mirror_wrote(0x700000, 0x1000);
+    batch(7);
+    vk_mirror_mem_need(0, ~0ull);
+    CHECK(g_sub.waits == 1 && g_sub.waited == 7 && !g_sub.finishes && !g_mir_nbatch && !g_runs);
+    all_landed();
+    subs(9, 5);
+    vk_mirror_wrote(0x500000, 0x1000);
+    batch(6);
+    vk_mirror_wrote(0x700000, 0x1000);
+    vk_mirror_mem_need(0, ~0ull);
+    CHECK(!g_sub.waits && g_sub.finishes == 1 && !g_mir_nbatch && !g_runs);
+    all_landed();
+    g_mir.on = 0;
+}
+
 int main(void) {
     check_wrote_held();
     check_land_entry();
+    check_mem_need();
     printf("mirror_landing: %u checks passed\n", checks);
     return 0;
 }
