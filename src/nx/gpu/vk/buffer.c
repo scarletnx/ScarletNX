@@ -2606,13 +2606,19 @@ static int ww_take(const u8* host, u64 len) {
     if (g_ww < 0) {
         g_wmarks_scan = g_settings.write_marks_scan;
         if (g_wmarks_scan && !mem_marks_on()) {
-            WARN("vulkan: write_marks_scan=%d needs a game made with write_marks=1, and the marks on: the host's "
-                 "tracking finds written pages\n",
-                 g_wmarks_scan);
+            WARN(
+                "vulkan: write_marks_scan=%d is given and 0 is in effect: this program's code makes no marks here: the "
+                "host's tracking finds written pages\n",
+                g_wmarks_scan);
             g_wmarks_scan = 0;
         }
-        if (g_wmarks_scan == 2 && (!(g_wseen = calloc(AS_SIZE >> 15, 1)) || !(g_wmissed = calloc(AS_SIZE >> 15, 1))))
+        if (g_wmarks_scan == 2 && (!(g_wseen = calloc(AS_SIZE >> 15, 1)) || !(g_wmissed = calloc(AS_SIZE >> 15, 1)))) {
+            WARN(
+                "vulkan: write_marks_scan=2 is given and 0 is in effect: no memory for the check's bits (%llu MiB): the "
+                "host's tracking finds written pages\n",
+                (unsigned long long)(AS_SIZE >> 34));
             g_wmarks_scan = 0;
+        }
         /* the GPU's writes by guest address, where unified memory's hazard count does not hold the watch */
         if (g_wmarks_scan == 2 && !vk_uma() && (g_wgpu = calloc(AS_SIZE >> 15, 1))) {
             g_wgpu_window = calloc(AS_SIZE >> 15, 1);
