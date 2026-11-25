@@ -1676,6 +1676,51 @@ static void zva_test(void) {
     snx_codegen_free(&codegen);
 }
 
+/* What is between the compare and the guard, and what writes the index after them, of a table the flow bounds (llvm-mc):
+   adrp x9, tbl; add x9, x9, #0x80; cmp w0, #3; [between]; b join; mov w0, #7; ret; join: b.hi dflt; [after]; adr x10, c0;
+   ldrb w11, [x9, x0]; add x10, x10, x11, lsl #2; br x10; c0..c3: mov w0, #k; ret; dflt: mov w0, #0; ret */
+static void jump_table_flags_test(void) {
+    static const struct {
+        SnxU32 between, after;
+        int found;
+        const char* what;
+    } rows[] = {
+        {0xD503201FUL, 0xD503201FUL, 1, "NOP sets no flags"},
+        {0x1A8700C5UL, 0xD503201FUL, 1, "CSEL w5, w6, w7, eq sets no flags"},
+        {0x1B077CC5UL, 0xD503201FUL, 1, "MUL w5, w6, w7 sets no flags"},
+        {0x4EA71CE5UL, 0xD503201FUL, 1, "a vector MOV sets no flags"},
+        {0x2B0700C5UL, 0xD503201FUL, 0, "ADDS w5, w6, w7 sets them"},
+        {0x3A0700C5UL, 0xD503201FUL, 0, "ADCS w5, w6, w7 sets them"},
+        {0x3A4008C0UL, 0xD503201FUL, 0, "CCMN w6, #0, #0, eq sets them"},
+        {0x1E602000UL, 0xD503201FUL, 0, "FCMP d0, d0 sets them"},
+        {0xD503201FUL, 0x1E380000UL, 0, "FCVTZS w0, s0 writes the index"},
+        {0xD503201FUL, 0x1E18F000UL, 0, "FCVTZS w0, s0, #4 writes the index"},
+        {0xD503201FUL, 0x1E18F005UL, 1, "FCVTZS w5, s0, #4 doesn't"},
+    };
+    static const unsigned char entries[] = {0, 2, 4, 6, 0x3F};
+    size_t k, i;
+    for (k = 0; k < sizeof(rows) / sizeof(rows[0]); ++k) {
+        const SnxU32 words[] = {0x90000009UL, 0x91020129UL, 0x71000C1FUL,  rows[k].between, 0x14000003UL, 0x528000E0UL,
+                                0xD65F03C0UL, 0x540001C8UL, rows[k].after, 0x1000008AUL,    0x3860692BUL, 0x8B0B094AUL,
+                                0xD61F0140UL, 0x52800020UL, 0xD65F03C0UL,  0x52800040UL,    0xD65F03C0UL, 0x52800060UL,
+                                0xD65F03C0UL, 0x52800080UL, 0xD65F03C0UL,  0x52800000UL,    0xD65F03C0UL};
+        unsigned char image[0x100];
+        SnxProgram program;
+        SnxModuleImage module;
+        SnxCodegen codegen;
+        SnxU64 targets[8];
+        memset(image, 0, sizeof(image));
+        for (i = 0; i < sizeof(words) / sizeof(words[0]); ++i) put32(image, i * 4, words[i]);
+        memcpy(image + 0x80, entries, sizeof(entries));
+        setup_program(&program, &module, image, sizeof(image));
+        module.text_size = sizeof(words);
+        check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1, 0), "analyze a guard and what is before it");
+        check(snx_codegen_jump_table(&codegen, SNX_CODE_BASE + 0x30, targets, 8) == (rows[k].found ? 4 : 0),
+              rows[k].what);
+        snx_codegen_free(&codegen);
+    }
+}
+
 int main(void) {
     decoder_test();
     analysis_test();
@@ -1689,6 +1734,7 @@ int main(void) {
     jump_table_anchor_test();
     jump_table_mask_test();
     jump_table_flow_test();
+    jump_table_flags_test();
     jump_table_anchor_far_test();
     jump_table_anchor_branch_test();
     large_range_test();
