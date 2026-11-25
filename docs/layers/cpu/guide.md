@@ -71,7 +71,8 @@ under explicit assumptions, not a promised gain. Keep Rosetta observations disti
   (`llvm-config`), CMake 3.25 or newer, Ninja, Python 3, nasm and pkg-config. The configure step stops on any compiler
   other than Clang.
 * **For the QEMU differential tests:** `qemu-aarch64`, Clang's `aarch64-linux-gnu` target and `ld.lld`.
-  `cmake/qemu_ref.cmake` turns the QEMU reference on only when all three are present.
+  `cmake/qemu_ref.cmake` turns the QEMU reference on only when all three are present. Another host runs them against a
+  [recorded reference](#rules-that-apply-to-this-work).
 * **A Vulkan 1.3 driver** to run games.
 * **Your own Switch keys and game dumps** for game runs. They must come from your own console, and nobody can send them
   to you. Never commit or share them, or anything extracted from them.
@@ -99,7 +100,7 @@ The commands you will use most, from the table in `CLAUDE.md`:
 | Run a game unattended | `cd ~/.local/share/scarletnx/recompiled/<id> && ./<id> --seconds=60 --shot=/path/out --script=...` |
 | Name addresses, disassemble one function | `tools/symbols.py work/Game ADDR...`, `tools/disasm.py work/Game FUNC` |
 | All tests | `ctest --test-dir build --output-on-failure` |
-| The QEMU differential test | `ctest --test-dir build -R llvm_qemu_differential` |
+| The QEMU differential test, of the LLVM back end and of the host's native one | `ctest --test-dir build -R 'llvm_qemu_differential|native_qemu_differential'` |
 | What each SIMD, FP and crypto op becomes, per emitter path | `ctest --test-dir build -R llvm_lowering` |
 | The module contract test | `ctest --test-dir build -R module_contract` |
 
@@ -153,7 +154,7 @@ and at the plan.
 | Guest memory | `src/nx/memory/mem.c`, `src/nx/memory/own.c` |
 | Guest threads | `src/nx/hle/kernel/thread.c` |
 | The GNU ABI runtime | `src/gnuabi/` |
-| Translator tests | `tests/llvm_qemu_differential.c`, `tests/llvm_qemu_expected.txt`, `tests/llvm_lowering.c`, `tests/llvm_lowering_expected.txt`, `tests/a64_ported.c`, `tests/llvm_module.c`, `tests/llvm_bench.c`, `tests/module_contract.c`, `tests/qemu_ref/` |
+| Translator tests | `tests/llvm_qemu_differential.c`, `tests/llvm_qemu_expected.txt`, `tests/native_qemu_expected.txt`, `tests/llvm_steps.c`, `tests/native_steps.c`, `tests/llvm_lowering.c`, `tests/llvm_lowering_expected.txt`, `tests/a64_ported.c`, `tests/llvm_module.c`, `tests/llvm_bench.c`, `tests/module_contract.c`, `tests/qemu_ref/` |
 
 ## Rules that apply to this work
 
@@ -201,6 +202,31 @@ the cold paths included, which is code inspection and never a speed claim. An em
 runs both ways on one machine: `llvm_qemu_differential_avx2` (`--without-avx512`) compiles for the host as one
 without AVX-512, and the choices table in `tests/llvm_lowering.c` checks the instruction each x86 path picks where
 the class does not show it.
+
+**The native back ends.** `native_qemu_differential` holds the host's own native back end to QEMU by the same words and
+states, with the groups known to differ in `tests/native_qemu_expected.txt`. `native_qemu_differential_jit` loads the
+code with the JIT's loader, and `native_qemu_differential_portable` makes it without the host's optional features. A word
+the back end has no code for is listed in the run's `native_qemu_coverage.txt`, as the LLVM one's is. The programs that
+compare a word's result with a value (the `llvm_*` ones, `a64_ported_cases` and `crc32_helper`) run twice, on the LLVM
+steps and on the native ones (`native_*`). `tests/steps.h` gives both one set of names, so a check is written once.
+
+**The recorded QEMU reference.** The hosts with no `qemu-aarch64` beside the test run the differential against a file
+that a Linux host recorded: Windows, macOS, and the cross-built PowerPC64, RISC-V and LoongArch. One file serves both
+back ends on any of them. CI's `qemu-reference` job records it for each run and hands it over as the artifact
+`ScarletNX-llvm-qemu-reference-<commit>`. No file is kept in the repository, because one is bound to the commit that
+made it. Record another when one of these changes: the rows of the generated decoder, `directed()` or `kept[]` in
+`tests/llvm_qemu_differential.c`, the random states, the runner in `tests/qemu_ref/`, or the QEMU version. By hand, on a
+Linux host with the tools named above, the recording takes 4 seconds and about 54 MB:
+
+```sh
+cmake --build build --target snx-test-llvm-qemu-differential-native snx_qemu_ref_runner
+build/tests/snx-test-llvm-qemu-differential-native qemu-aarch64 build/qemu_ref_runner build/record \
+    tests/native_qemu_expected.txt --quiet --record qemu_reference.bin
+```
+
+On the other host, configure with `-DSNX_QEMU_REFERENCE=/path/qemu_reference.bin` and run `native_qemu_differential`. It
+is skipped, with the reason, where the file is not there. A program run by hand takes `DIR EXPECTED --reference FILE`,
+and fails where the file is not there.
 
 **Settings.** A new setting goes in `src/nx/runtime/settings.txt`, from which `tools/settingsgen` generates the code
 that reads it. A setting that changes generated code must also join the JIT cache key in `jit_cache_key.c`, as
