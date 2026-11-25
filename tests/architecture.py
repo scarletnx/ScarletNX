@@ -755,16 +755,17 @@ def check_weak_declarations(repo):
 
 
 # LLVM's headers, and what of src/ builds on them: the backend's folder, and the files named here, which include one or
-# a header of the project's that does. A file leaves the list when it stops, and none joins it: the rest of the
-# recompiler (snx_recompiler_core) builds without LLVM
+# a header of the project's that does. A file leaves the list when it stops, and none joins it: what wants the code the
+# native back ends leave asks for it through recompiler/fallback.h, and the rest of the recompiler (snx_recompiler_core)
+# builds without LLVM
 LLVM_HEADER = re.compile(r'llvm(?:-c)?/')
 LLVM_FOLDER = 'src/common/cpu/recompiler/llvm/'
 LLVM_USERS = {
     'src/3ds/aot/compiler.c',
     'src/common/cpu/arm/aot.c',
-    'src/common/cpu/arm/exec.c',
     'src/common/cpu/arm/llvm.c',
     'src/common/cpu/arm/llvm.h',
+    'src/common/cpu/recompiler/fallback_llvm.c',
     'src/common/cpu/recompiler/jit/jit_cache.c',
     'src/common/cpu/recompiler/jit/jit_service.c',
     'src/common/cpu/recompiler/library.c',
@@ -808,7 +809,7 @@ def check_llvm(repo):
                 pending.append(shown)
     errors = [
         f'{shown}: includes {by[shown]}, which takes LLVM: the recompiler builds without it but for the files of '
-        'LLVM_USERS (tests/architecture.py), which none joins'
+        'LLVM_USERS (tests/architecture.py), which none joins: ask recompiler/fallback.h'
         for shown in sorted(by)
         if not shown.startswith(LLVM_FOLDER) and shown not in LLVM_USERS
     ]

@@ -114,6 +114,11 @@ the game's image read from that image.
   `src/nx/loader/codegen_view.c` adapts NX images; `module.c` holds what the backends share (the dispatch entry
   table, chunk labels, progress lines); chunks batch whole functions up to `CHUNK_INSTRUCTIONS` (`library.c`), 90000 (20000 on Android).
 - `toolchain.c`: the runtime build for deployment.
+- The native back ends (`src/common/cpu/recompiler/mach/` and a folder a machine) make the guest's code where the host
+  has one. What they leave is the fallback's (`recompiler/fallback.h`): LLVM's (`fallback_llvm.c`), or, in a build
+  without it, none (`fallback_none.c`), which refuses it and names what was asked. The JIT and the AArch32 executor ask
+  it there; the AOT compilers and the library still call LLVM themselves. `tests/architecture.py` lists the files that
+  take LLVM's headers (`LLVM_USERS`), which none joins.
 - The code generator, LLVM (`src/common/cpu/recompiler/llvm/`, a required dependency), builds LLVM IR with the
   LLVM-C API: `ir_int.c`, `ir_ldst.c` and `ir_vec*.c`, ported from QEMU's `translate-a64.c`, and
   `ir_sail.c`, the integer data-processing ops, the hints, the barriers, the branch operands, the general-purpose

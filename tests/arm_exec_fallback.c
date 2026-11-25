@@ -4,6 +4,7 @@
    and said once however many blocks have it, and a block LLVM's object cannot load either is NULL, said too. exec.c is
    here, its loads counted and refused as the test asks */
 #include "common/cpu/recompiler/loader/code_loader.h"
+#include "common/cpu/recompiler/llvm/ir.h"
 #include <stdio.h>
 static struct {
     int refuse; /* the loads to refuse from here on */
