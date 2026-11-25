@@ -12,10 +12,10 @@
      x64_asm.h  x86-64's assembly of what mach.h leaves to the machine (vector forms, cold paths, the frame).
 
    No LLVM: the generated emitters write x86-64 instructions themselves, chosen by the instruction selection sailgen
-   derived from the Intel SDM when it was built (x64_isel.inc: an encoder per selected form, and each primitive's
-   candidates). The work is paid for then; at run time an emitter only appends instructions to a short SSA of them
-   (the assembly itself, virtual registers for operands: SgXIns), folds what is constant as it appends, and once the
-   block is done drops what nothing reads, gives the virtual registers host ones and writes the bytes. */
+   derived from the Intel SDM (sdm/x64_isel.inc: an encoder per selected form, and each primitive's candidates). At run
+   time an emitter only appends instructions to a short SSA of them (the assembly itself, virtual registers for
+   operands: SgXIns), folds what is constant as it appends, and once the block is done drops what nothing reads, gives
+   the virtual registers host ones and writes the bytes. */
 #include "common/utilities/bits.h"
 
 /* the r/m operand that is the constant pool's (RIP-relative: mod 00, r/m 101), which the assembler patches */

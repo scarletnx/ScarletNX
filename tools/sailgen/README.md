@@ -356,9 +356,9 @@ instructions the guest's emitters make by hand or not at all (B, MRS, SVC, the A
 
 ## The x86-64 back end
 
-A back end that writes x86-64 machine code itself, without LLVM: its instruction selection is derived when sailgen
-runs from the pseudocode of Intel's manual, so the recompiler pays for choosing instructions at build time and does
-little more than write their bytes at run time.
+A back end that writes x86-64 machine code itself, without LLVM: its instruction selection is derived from the
+pseudocode of Intel's manual and kept in the tree (`sdm/x64_isel.inc`), so choosing instructions costs the recompiler
+nothing and it does little more than write their bytes at run time.
 
 ### The SDM's pages (`--sdm`)
 
@@ -381,7 +381,7 @@ takes their place, so the extracted pages stay the manual's own words and every 
 ### Instruction selection (`--isel`)
 
 ```sh
-sailgen --isel sdm.pages --ops tools/sailgen/x64.ops -o x64_isel.inc [--report x64_isel.report]
+sailgen --isel sdm.pages --ops tools/sailgen/x64.ops -o x64_isel.inc [--source TEXT] [--report x64_isel.report]
 ```
 
 The back end's primitives (`x64.ops`: `add`, `subs`, `lslv`, `clz`, `csel`... at 32 and 64 bits) are written in the
@@ -448,9 +448,18 @@ the count's bit, a superscript is lost), and which override or reading handles e
 REX's W, the opcode, ModRM's mod and /digit; the registers' bits and the immediate are its arguments), and for each
 primitive at each width its candidates, cheapest first (no register zeroed before it, no fixed register, no result tied
 to an input, a feature the host may have first): the first whose CPUID feature the host has and whose immediate fits is
-the one. `cmake/sdm.cmake` runs pdftotext, `--sdm` with the overrides and `--isel` when `SNX_SAIL_X64` is on, from the
-PDF `-DSNX_SDM_PDF=` names or one it downloads (its SHA-256 must be 093US's). `tests/sailgen/isel_fixture.pages` is a
-few pages in the manual's notation written for the test (`sailgen_isel`).
+the one. The file is in the tree: a build needs neither the manual nor `pdftotext`. `sdm/isel.py` makes it again from the
+PDF (its SHA-256 must be 093US's), running pdftotext, `--sdm` with the overrides and `--isel`:
+
+```sh
+python3 tools/sailgen/sdm/isel.py --sailgen build/snx-sailgen --pdf 325383-093US.pdf --pdftotext pdftotext
+```
+
+The file says in its header which revision and PDF it is from. Whatever changes what `--isel` writes (`x64.ops`,
+`sailgen`, an override) is followed by it in the same commit: `sailgen_sdm_isel` makes the file again and compares it with
+the tree's, byte for byte, where the PDF is (`SNX_SDM_PDF`, else the CPM cache's) and `pdftotext` is. Elsewhere it is
+skipped, saying which is missing. `tests/sailgen/isel_fixture.pages` is a few pages in the manual's notation written for
+the test (`sailgen_isel`).
 
 ### At run time (`x64.h`, `mach.h`, `x64_asm.h`, `x64_a64.h`)
 
