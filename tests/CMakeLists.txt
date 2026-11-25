@@ -2045,7 +2045,6 @@ add_executable(snx-test-hook-event-reference hook_event_reference.c)
 snx_test_target(snx-test-hook-event-reference gnu23)
 target_include_directories(snx-test-hook-event-reference PRIVATE "${PROJECT_SOURCE_DIR}/src")
 snx_service_swipc(snx-test-hook-event-reference)
-snx_hookgen(snx-test-hook-event-reference SPEC "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
 add_test(NAME hook_event_reference COMMAND snx-test-hook-event-reference)
 # the hooks' NVN key (tests/hook/nvn_versions.hook): the API version read from a driver's nvnDeviceGetInteger
 # (src/nx/gpu/nvn/nvn_driver.c), the entry hook_select picks for it, and the versions the log calls described

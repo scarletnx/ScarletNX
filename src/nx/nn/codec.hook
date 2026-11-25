@@ -15,9 +15,10 @@
 #   that leaves the decoder's state out from 16;
 # - SDK 21's and 22's functions are 16 to 20's: the same loads and stores through the struct, only some compares'
 #   and orrs' operands commuted in 21. The game of #1999 runs on SDK 22 with these handlers.
-# FinalizeHardwareOpusDecoder and ResetHardwareOpusDecoder of a HardwareOpusDecoderType are in hle/hook/hooks.hook: the
-# Ounce's SDK has the same two symbols, and its handlers hand a decoder that isn't theirs to codec.c. The getters and
-# the other resets are the SDK's own code over the game's struct.
+# FinalizeHardwareOpusDecoder and ResetHardwareOpusDecoder of a HardwareOpusDecoderType are in hle/hook/hooks.hook's
+# codec family: the Ounce's SDK has the same two symbols for its hwacod decoders, and their handlers (codec.c's hwacod
+# section) hand a decoder that isn't hwacod's to these. The getters and the other resets are the SDK's own code over
+# the game's struct.
 # InitializeHardwareOpusMultiStreamDecoder's last argument, an option, comes on the stack and is not declared: nothing
 # of it is read. No function is declared for a 32-bit game
 family nn_codec_hwopus

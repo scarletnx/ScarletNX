@@ -388,7 +388,7 @@ u32 hwopus_packet_samples(const HwOpus* h, const u8* payload, u32 size) {
     return opus_packet_48k(payload, size) / h->step;
 }
 
-/* An Ounce game's hardware Opus decoders (hle/hook/codec.c), which its SDK runs on the audio DSP and the hooks run
+/* An Ounce game's hardware Opus decoders (nn/codec.c's hwacod), which its SDK runs on the audio DSP and the hooks run
    here: the same decoding, outside the pool's decoders and their save states */
 HwOpus* hwopus_new(u32 rate, u32 channels) {
     HwOpus* h = calloc(1, sizeof *h);

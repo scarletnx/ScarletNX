@@ -64,7 +64,7 @@ u32 gs_read_user_image_nv12(CPU* c, u64 dst_y, u64 size_y, u64 pitch_y, u64 dst_
         (void)src;
     return 0;
 }
-/* codec.c's and audio_stream.c's, none reached here */
+/* nn/codec.c's and audio_stream.c's, none reached here */
 u32 audio_open_stream_event(CPU* c, u64 stream, u64 event, u64 work, u64 size, u64 device, u64 format, i32 capacity,
                             i32 threshold) {
     (void)c, (void)stream, (void)event, (void)work, (void)size, (void)device, (void)format, (void)capacity,
