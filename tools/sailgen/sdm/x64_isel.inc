@@ -7030,3 +7030,25 @@ static inline void sgx_e_SHA1RNDS4_xmm1_xmm2_m128_imm8(SgXBuf* b, const unsigned
 }
 
 static const SgXVForm sgx_v_sha1rnds4 = {sgx_e_SHA1RNDS4_xmm1_xmm2_m128_imm8, SGX_F_SHA, 3, 0, 1, -1, 3, 1, NULL}; /* NP 0F 3A CC /r ib */
+/* VSM4RNDS4 xmm1, xmm2, xmm3/m128: VEX.128.F2.0F38.W0 DA /r (the SDM's VSM4RNDS4) */
+static inline void sgx_e_VSM4RNDS4_xmm1_xmm2_xmm3_m128(SgXBuf* b, const unsigned char* r, long long imm, int cc) {
+    (void)r, (void)imm, (void)cc;
+    sgx_byte(b, 0xC4);
+    sgx_byte(b, (unsigned char)(0x02 | (r[0] < 8 ? 0x80 : 0) | ((r[2] & 15) < 8 ? 0x20 : 0) | (sgx_rex_x(b, r[2]) ? 0 : 0x40)));
+    sgx_byte(b, (unsigned char)(0x03 | ((~r[1] & 15) << 3)));
+    sgx_byte(b, 0xDA);
+    sgx_modrm(b, r[0] & 7, r[2]);
+}
+
+static const SgXVForm sgx_v_vsm4rnds4 = {sgx_e_VSM4RNDS4_xmm1_xmm2_xmm3_m128, SGX_F_AVX | SGX_F_SM4, 3, 0, 2, 1, 7, 0, NULL}; /* VEX.128.F2.0F38.W0 DA /r */
+/* VSM4KEY4 xmm1, xmm2, xmm3/m128: VEX.128.F3.0F38.W0 DA /r (the SDM's VSM4KEY4) */
+static inline void sgx_e_VSM4KEY4_xmm1_xmm2_xmm3_m128(SgXBuf* b, const unsigned char* r, long long imm, int cc) {
+    (void)r, (void)imm, (void)cc;
+    sgx_byte(b, 0xC4);
+    sgx_byte(b, (unsigned char)(0x02 | (r[0] < 8 ? 0x80 : 0) | ((r[2] & 15) < 8 ? 0x20 : 0) | (sgx_rex_x(b, r[2]) ? 0 : 0x40)));
+    sgx_byte(b, (unsigned char)(0x02 | ((~r[1] & 15) << 3)));
+    sgx_byte(b, 0xDA);
+    sgx_modrm(b, r[0] & 7, r[2]);
+}
+
+static const SgXVForm sgx_v_vsm4key4 = {sgx_e_VSM4KEY4_xmm1_xmm2_xmm3_m128, SGX_F_AVX | SGX_F_SM4, 3, 0, 2, 1, 7, 0, NULL}; /* VEX.128.F3.0F38.W0 DA /r */

@@ -1,0 +1,4 @@
+# VSM4RNDS4—Performs Four Rounds of SM4 Encryption -- override
+# S-12: the CPUID cell 'AVX' over 'SM4', both. The VEX.128 form's row.
+@opcodes
+VEX.128.F2.0F38.W0 DA /r | VSM4RNDS4 xmm1, xmm2, xmm3/m128 | A | Valid | Valid | AVX SM4 | Performs four rounds of SM4 encryption.

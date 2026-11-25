@@ -2663,7 +2663,7 @@ static const char* xmm_feature_c(const char* f) {
                                            {"PCLMULQDQ", "SGX_F_PCLMUL"}, {"F16C", "SGX_F_F16C"}, {"POPCNT", "SGX_F_POPCNT"},
                                            {"AVX", "SGX_F_AVX"},   {"FMA", "SGX_F_FMA"},   {"AES", "SGX_F_AES"},
                                            {"SHA", "SGX_F_SHA"},   {"AVX2", "SGX_F_AVX2"}, {"GFNI", "SGX_F_GFNI"},
-                                           {"AVX GFNI", "SGX_F_AVX | SGX_F_GFNI"},
+                                           {"AVX GFNI", "SGX_F_AVX | SGX_F_GFNI"}, {"AVX SM4", "SGX_F_AVX | SGX_F_SM4"},
                                            {"", "0"}};
     unsigned k;
     for (k = 0; k < sizeof names / sizeof *names; ++k)
