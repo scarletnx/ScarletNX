@@ -13,6 +13,7 @@
 
 typedef struct Arm64State {
     uint64_t pc, sp, x[31];
+    uint64_t low, high; /* the stack's bounds: a frame's registers are read from there alone */
 } Arm64State;
 
 /* a record's parts: the words of the code it is of, its epilogues' scopes, its codes */
@@ -54,10 +55,11 @@ static inline uint32_t arm64_instructions(const Arm64Record* r, size_t at) {
     }
     return n;
 }
-static inline uint64_t arm64_load(uint64_t at) {
-    uint64_t v;
-    memcpy(&v, (const void*)(uintptr_t)at, 8);
-    return v;
+/* the pair of registers at at into x: 1, 0 for one off the stack */
+static inline int arm64_pair(const Arm64State* s, uint64_t at, uint64_t x[2]) {
+    if (at < s->low || at > s->high - 16) return 0;
+    memcpy(x, (const void*)(uintptr_t)at, 16);
+    return 1;
 }
 
 /* s, whose pc is in the code at begin that the record at p is of, made its caller's; NULL, or what can't be */
@@ -97,15 +99,14 @@ static inline const char* arm64_unwind(const unsigned char* p, uint64_t begin, A
         if (c[0] < 0x20)
             s->sp += 16ull * c[0];
         else if (c[0] >= 0x80 && c[0] < 0xC0) { /* the pair back, post-indexed */
-            s->x[29] = arm64_load(s->sp), s->x[30] = arm64_load(s->sp + 8);
+            if (!arm64_pair(s, s->sp, &s->x[29])) return "a frame's X29 and X30 off the stack";
             s->sp += 8ull * (c[0] & 0x3Fu) + 8;
         } else if (c[0] < 0xC8)
             s->sp += 16ull * ((c[0] & 7u) << 8 | c[1]);
         else if (c[0] < 0xCC) {
             unsigned reg = 19 + ((c[0] & 3u) << 2 | c[1] >> 6);
             if (reg > 28) return "a pair past X28";
-            s->x[reg] = arm64_load(s->sp + 8ull * (c[1] & 0x3F));
-            s->x[reg + 1] = arm64_load(s->sp + 8ull * (c[1] & 0x3F) + 8);
+            if (!arm64_pair(s, s->sp + 8ull * (c[1] & 0x3F), &s->x[reg])) return "a frame's pair off the stack";
         } else if (c[0] == 0xE0)
             s->sp += 16ull * ((uint32_t)c[1] << 16 | (uint32_t)c[2] << 8 | c[3]);
         else if (c[0] == 0xE1)
