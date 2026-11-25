@@ -25,6 +25,7 @@
 #include "nx/runtime/linker.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/nce/nce.h"
+#include "nx/runtime/armature.h"
 #include "nx/runtime/platform/log.h"
 #include <setjmp.h>
 #include <stdarg.h>
@@ -87,6 +88,7 @@ void fatal(const char* fmt, ...) {
     longjmp(g_stopped, 1);
 }
 int nce_on(void) { return g_nce; }
+int arma_on(void) { return 0; } /* armature.c's: no game runs in armature here */
 int hook_routed(const char* name) { return !strcmp(name, NAME) ? g_routed : g_ro_routed; }
 int hook_family_off(const char* family) { return g_family_off && !strcmp(family, LINKER_FAMILY); }
 u64 kernel_find_symbol_exact(const char* name) { return g_exported && !strcmp(name, NAME) ? START : 0; }

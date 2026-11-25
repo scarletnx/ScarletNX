@@ -10,6 +10,7 @@
 #include "nx/runtime/arm.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/nce/nce.h"
+#include "nx/runtime/armature.h"
 #include "nx/runtime/platform/log.h"
 #include "common/utilities/endian.h"
 #include <stdio.h>
@@ -91,6 +92,7 @@ static void undefined_say(void) {
 static const char* own_linker(void) {
     u32 i;
     if (nce_on()) return "the game runs its own code (NCE)";
+    if (arma_on()) return "the game runs in armature";
     for (i = 0; i < sizeof linker_start / sizeof linker_start[0] && !g_linker.start; i++) {
         g_linker.named = i;
         g_linker.start = kernel_find_symbol_exact(linker_start[i]);
@@ -225,7 +227,7 @@ void linker_init(void) {
         return;
     }
     /* the game's linker runs: compared with the runtime's, where its last call can be watched */
-    if (nce_on()) return;
+    if (nce_on() || arma_on()) return;
     if (!l->start) {
         LOG("linker: not compared with the game's own linker: the game has no recompiled nn::init::Start (%s or %s)\n",
             linker_start[0], linker_start[1]);

@@ -9,6 +9,7 @@
 #include "nx/loader/module_abi.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/guest_jit.h"
+#include "nx/runtime/armature.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/options.h"
@@ -162,6 +163,7 @@ u64* hints_copy(size_t* count) {
 }
 
 int nvn_loader_active(void) { return 0; }
+int arma_on(void) { return 0; } /* armature.c's: no game runs in armature here */
 /* nvn_loader.c's and hook.c's answers of what they put in a slot in the game's place: g_nvn_fn is NVN's one
    implementation here, and g_hook_fn the hook's handler of the function at g_hook_addr */
 static GuestFn g_nvn_fn, g_hook_fn;
