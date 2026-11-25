@@ -11,6 +11,7 @@
 * [The HLE BIOS](#the-hle-bios)
 * [The recompiled ROM](#the-recompiled-rom)
 * [The ROM header](#the-rom-header)
+* [Save states](#save-states)
 * [Tests](#tests)
 
 `scarletnx-agb` is the Game Boy Advance system type. It loads a GBA ROM image
@@ -18,7 +19,8 @@
 runs it with the same static recompiler the other system types use. The board
 library under `src/agb/` is CPU-only: it links `scarletnx-common` and nothing of
 `src/nx/` or `src/gnuabi/`, so the board builds without the Switch runtime's
-graphics and media packages. Its files whose header names the mGBA contributors
+graphics and media packages. Its runner's save states take the Switch's state
+file (`src/nx/runtime/state_file.c`, the `snx_state_file` library). Its files whose header names the mGBA contributors
 are MPL-2.0 ([Licenses and credits](../../CREDITS.md)).
 
 ```sh
@@ -232,9 +234,41 @@ check at 0xBD over the title block. `cartridge/cartridge.c` validates the branch
 the fixed byte and the complement check, and keeps the parsed fields beside the
 image. A ROM the console would reject is refused with the failing byte named.
 
+## Save states
+
+A state is the whole console at one moment, in the Switch's state file
+(`src/nx/runtime/state_file.h`): the header and the 320 by 180 thumbnail the
+launcher and the game's menu read, then three sections, each with a hash of the
+names and types of what it holds (`src/agb/runtime/state.c`):
+
+| Section | What it holds |
+| --- | --- |
+| BOARD | the `AgbBoard`: the devices' registers, the display's frame, the timers, DMA, the sound's channels and FIFOs, the cartridge's clock and save chip's protocol |
+| CPU | the `AgbCpu`: the registers and their banks, the bus and the prefetch unit, the BIOS's time owed |
+| MEMORY | EWRAM, IWRAM, the palette, VRAM and OAM |
+
+The runner keeps what is its own: the cartridge image (the header names the ROM
+by its FNV-1a, as the recompiled module's map does), the flat window, the
+`gba_color` setting. The cartridge's save memory is the game's save file,
+`<name>.sav`, as a Switch game's save files are: a state does not hold it, and a
+load leaves it as it is. The recompiled blocks are no part of a state: a block
+built from RAM a load changed is built again at its next dispatch.
+
+`snx_agb_state_save` and `snx_agb_state_load` (`src/agb/runtime/state.h`) take
+the board and the CPU between two frames. A load reads and checks every section
+before it changes anything, and refuses another ROM's state (both hashes named),
+another `SNX_AGB_STATE_VERSION` (both versions named), a section of another
+layout (both hashes named), and a file that is damaged or cut short. The test's
+ROM, which keeps every device busy, makes a state of 306 KiB, 225 KiB of it the
+thumbnail, saved and loaded in a few milliseconds (`agb_state`).
+
 ## Tests
 
-The board's unit tests are `tests/agb_*.c`. A test build also downloads
+The board's unit tests are `tests/agb_*.c`. `agb_state` (`tests/agb_state.c`)
+runs a ROM it makes, saves a state, and checks that the 30 frames after a load,
+in the same machine and in a fresh one, give the same pictures, sound and state
+word for word as the run that went on, and that a state of another ROM, version
+or layout, damaged or cut short, is refused with the machine left as it was. A test build also downloads
 [jsmolka's gba-tests](https://github.com/jsmolka/gba-tests) (pinned in `cpmfile.json`)
 and runs each ROM as a test of its own, `agb_gba_<rom>` (`tests/agb_gba_tests.py`).
 The ROMs check the ARM and Thumb instruction sets, the BIOS's open bus, the
