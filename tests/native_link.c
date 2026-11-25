@@ -274,6 +274,7 @@ static int bss_without_bytes(const unsigned char* object) {
 }
 /* entry of the DLL's function table at p, exports' k-th (the functions', the blocks'): what is wrong with it, NULL for
    nothing. *last the end of the one before, then its own */
+#if defined(__x86_64__)
 static const char* x64_entry(const unsigned char* dll, const unsigned char* p, int k, uint32_t* last) {
     uint32_t begin = snx_ld_le32(p), end = snx_ld_le32(p + 4), left = 0;
     const unsigned char* text = at_rva(dll, begin, &left);
@@ -286,6 +287,7 @@ static const char* x64_entry(const unsigned char* dll, const unsigned char* p, i
     if (k && (!text || text[0] != 0xBA)) return "not ended by its failed check's exit (MOV EDX, the block's address)";
     return NULL;
 }
+#endif
 static const char* arm64_entry(const unsigned char* dll, const unsigned char* p, int k, uint32_t* last) {
     uint32_t begin = snx_ld_le32(p), info = snx_ld_le32(p + 4), end, left = 0;
     const unsigned char *text = at_rva(dll, begin, &left), *record = info & 3 ? NULL : at_rva(dll, info, &left);
