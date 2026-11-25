@@ -10,6 +10,7 @@
   * [What the items are worth after item 8, on the desktop](#what-the-items-are-worth-after-item-8-on-the-desktop)
 * [The course load](#the-course-load)
 * [A target refused whole for a write over part of it](#a-target-refused-whole-for-a-write-over-part-of-it)
+* [The runtime's own GPU work](#the-runtimes-own-gpu-work)
 * [Memory on the GPU](#memory-on-the-gpu)
 * [Out of scope](#out-of-scope)
 
@@ -342,6 +343,14 @@ target fresh past its own publish does not help here, because the compute write 
 
 The fix needs the freshness of a target by range: which runs of its memory changed since its draw, and which of
 those its own publish wrote. Then a take can copy the target and load only the runs that something else wrote.
+
+## The runtime's own GPU work
+
+After the merge of main in the race, the frame is bound by the GPU, not by the renderer thread: about 10.2 ms of a
+12.4 ms frame. Of that, about 2.6 ms is the runtime's own copies and moves. Scoped barriers in place of the full
+barriers of `surf_publish` (copies and compute writes only) moved the stall from the barriers to the dispatches after
+them, and the GPU's span did not change. The largest copies are the takes of drawn targets into textures of several
+levels or layers: [Render targets as views of their textures](one-image.md) is the design that removes them.
 
 ## Memory on the GPU
 
