@@ -842,13 +842,13 @@ static void test_migrate(void) {
         CHECK(scan_reports(a, 2 * size, a) >= 0); /* the writes above, and the pages mapped again, taken */
         g[13 * page] = fill(13 * page);
     }
-    CHECK(mem_unmigrate(a, 2 * size) == 0);
+    CHECK(mem_unmigrate(a, 2 * size, NULL) == 0);
     if (g_ww) CHECK(scan_only(a, 2 * size, a + 13 * page) == 1 && scan_only(a, 2 * size, a) == 0);
     g[500] = 0x44;
     CHECK(v2[500] != 0x44 && g[100] == 0x77 && g[300] == 0x11 && g[400] == 0x33 && g[size] == 0x22 &&
           g[size + 0x10000] == fill(size + 0x10000));
     check_tracking(a, 2 * size);
-    CHECK(mem_unmigrate(a, 2 * size) == 0); /* none moved */
+    CHECK(mem_unmigrate(a, 2 * size, NULL) == 0); /* none moved */
     /* moved, then unmapped: zero when mapped again, the buffer's bytes its own */
     g[100] = 0x99;
     CHECK(mem_migrate(a, size, f1, NULL) == 0 && mem_unmap(a, 2 * size) == 0 &&
@@ -858,7 +858,7 @@ static void test_migrate(void) {
     /* moved, then the source of a view (MapMemory): its pages move on into the pool, which a move back leaves alone */
     gw32(src, 0x600d);
     CHECK(mem_migrate(src, 0x4000, f1, NULL) == 0 && svc_map_memory(dst, src, 0x4000) == 0 && gr32(dst) == 0x600d);
-    CHECK(mem_unmigrate(src, 0x4000) == 0);
+    CHECK(mem_unmigrate(src, 0x4000, NULL) == 0);
     gw32(src, 0x1234abcd);
     CHECK(gr32(dst) == 0x1234abcd && snx_ld_le32(v1) == 0x600d); /* the buffer keeps what it had */
     /* only the guest's data on the reservation's own pages: not past the mapped pages, not code, not the pool's */
@@ -940,12 +940,12 @@ static void test_migrate_owned(void) {
     CHECK(!b.pool);
     GP(a)[7] = 0x5A;
     CHECK(v[7] == 0x5A);
-    CHECK(mem_unmigrate(a, size) == 0 && GP(a)[7] == 0x5A);
+    CHECK(mem_unmigrate(a, size, NULL) == 0 && GP(a)[7] == 0x5A);
     /* one pool page among the reservation's own */
     CHECK(mem_own_prepare(a + 0x1000, 0x1000, runs, 4, &n) == 0 && n == 1 && mem_pool_used() == used + 0x1000);
     CHECK(mem_migrate(a, size, f, NULL) == 0 && mem_pool_used() == used);
     CHECK(v[7] == 0x5A && v[0x1003] == fill(0x1003) && v[0x2003] == fill(0x2003));
-    CHECK(mem_unmigrate(a, size) == 0);
+    CHECK(mem_unmigrate(a, size, NULL) == 0);
     /* a service's mapping of the pool pages outside the reservation, which a move would leave behind */
     u8* p = mem_pool_host(0x1000, &off);
     CHECK(p && mem_map_pool(a + size, off, 0x1000, MS_SHARED, PERM_RW) == 0);

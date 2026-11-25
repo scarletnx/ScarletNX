@@ -1699,8 +1699,8 @@ out:
     mem_unlock();
     return r;
 }
-int mem_unmigrate(u64 a, u64 size) {
-    u64 end = a + size, at = a;
+int mem_unmigrate(u64 a, u64 size, u64* moved) {
+    u64 end = a + size, at = a, back = 0;
     int r = 0;
     mem_lock();
     for (;;) {
@@ -1721,11 +1721,14 @@ int mem_unmigrate(u64 a, u64 size) {
                   (unsigned long long)((hi - lo) >> 10));
         if (u)
             r = MEM_NOMEM;
-        else
+        else {
             ext_cut_nl(lo, hi);
+            back += hi - lo;
+        }
         at = hi;
     }
     mem_unlock();
+    if (moved) *moved = back;
     return r;
 }
 int mem_pool_any(u64 a, u64 size) {

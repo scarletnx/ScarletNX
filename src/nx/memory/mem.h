@@ -180,9 +180,10 @@ void mem_set_pages_replaced(void (*fn)(u64 a, u64 size));
    other pages there; the moves themselves don't call the hook above, as the caller holds the buffer. Pool pages it
    moves are given back to the pool. 0, MEM_BADSTATE (not all of it is what mem_movable says), or MEM_NOMEM when the
    host can't share them. view is a mapping of fd's pages in the process (a memfd's), or NULL: own.c reads the CPU's
-   bytes of a trapped page through it (mem_ext_read), which the buffer keeps mapped while a run of its pages is */
+   bytes of a trapped page through it (mem_ext_read), which the buffer keeps mapped while a run of its pages is:
+   a mem_unmigrate that answers MEM_NOMEM leaves some there. *moved (or NULL) is the bytes it moved all the same */
 int mem_migrate(u64 a, u64 size, int fd, u8* view);
-int mem_unmigrate(u64 a, u64 size);
+int mem_unmigrate(u64 a, u64 size, u64* moved);
 /* whether [a, a + size) is all the guest's data, in whole host pages, on the reservation's own pages or on pool pages
    that no other address maps (not a view's or its source's, not shared memory's, not those a service maps outside
    the reservation), and not the renderer's placed windows below: what mem_migrate moves */

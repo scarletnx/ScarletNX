@@ -542,6 +542,10 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         add_test(NAME vulkan_uma_region_table COMMAND snx-test-vulkan -H --uma-copies=2)
         set_tests_properties(vulkan_uma_region_table PROPERTIES TIMEOUT 60 ENVIRONMENT "SNX_TEST_UMA_ONLY=region_table"
             FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+        # a region that the host has no room to move back stays with its pages (gpu/vk/uma.c imp_let_go)
+        add_test(NAME vulkan_uma_region_stays COMMAND snx-test-vulkan -H --uma-copies=2)
+        set_tests_properties(vulkan_uma_region_stays PROPERTIES TIMEOUT 60 ENVIRONMENT "SNX_TEST_UMA_ONLY=region_stays"
+            FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
         foreach(snx_watch frames writes engine)
             add_test(NAME vulkan_uma_region_watch_${snx_watch} COMMAND snx-test-vulkan -H --uma-copies=2)
             set_tests_properties(vulkan_uma_region_watch_${snx_watch} PROPERTIES TIMEOUT 60

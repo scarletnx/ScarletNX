@@ -5,6 +5,8 @@
    comes after it: the pages it let go of and the write tracking, and the publishes over a target it is on.
    vulkan_uma_region_reads.inc has the watch itself. No extracted shaders or game data are used */
 #if !defined(_WIN32)
+#include <sys/resource.h>
+#include <unistd.h>
 #define URW_SPAN (20ull * 2 * 512 * 16) /* rt_clear_rect's target: 20 GOBs across, 2 blocks of 16 GOBs down */
 /* a window of 2 MiB with a region over it, and the channel its targets are drawn through. region 0: this device has
    none there, and the window is unmapped */
@@ -378,6 +380,100 @@ static int check_uma_region_table(void) {
     }
     for (int k = 0; k < 4; k++) CHECK(!urw_close(&w[k]));
     puts("in place: a full table of imports lets go of the oldest one that no watch traps, and of none when all are");
+    return 0;
+}
+/* no room in this process's address space for a copy of 1 MiB or more, so a region does not move back
+   (plat_vm_unshare): 0 limits it, 1 puts back what was there */
+static struct rlimit g_urw_as;
+static int urw_no_room(int back) {
+    if (back) return setrlimit(RLIMIT_AS, &g_urw_as);
+    FILE* f = fopen("/proc/self/statm", "r");
+    unsigned long long pages = 0;
+    CHECK(f && fscanf(f, "%llu", &pages) == 1 && !fclose(f) && !getrlimit(RLIMIT_AS, &g_urw_as));
+    const struct rlimit r = {(rlim_t)(pages * (unsigned long long)sysconf(_SC_PAGESIZE) + (1ull << 20)),
+                             g_urw_as.rlim_max};
+    return setrlimit(RLIMIT_AS, &r);
+}
+/* A region the host has no room to move back (its copy of 2 MiB fails) stays, with its pages the buffer's, which are
+   read through the buffer's view after the frames that would have freed it: the import went, and the view was unmapped
+   under what own.c reads. Given the room, the next idle present takes it. Where it is two runs (a page moved back, or a
+   page unmapped), the first moves and the second can't: it is dead, holds the pages that did not move alone, and a
+   draw's lookup does not try it again, which the next present does */
+static int check_uma_region_stays(void) {
+    UrwWindow w;
+    VkBuffer r, r2;
+    u64 ro, ro2;
+    OwnRange o[4];
+    u8 got[64];
+    int held, still = 0;
+    CHECK(!urw_open(&w, 0x1400000));
+    if (!w.region) return 0;
+    vk_lock();
+    g_vk_present = (g_vk_present / 60 + 12) * 60;
+    CHECK(!urw_no_room(0));
+    vk_uma_frame(); /* idle: the let-go, which the host refuses */
+    CHECK(!urw_no_room(1));
+    held = vk_uma_region_held(w.cpu, 0x200000);
+    vk_finish();
+    for (int k = 0; k < 2 * VK_FRAMES; k++) { /* what a dropped import's buffer waits for */
+        vk_frame_next();
+        vk_cmd();
+        g_vk_present++;
+        vk_uma_frame();
+    }
+    still = held && vk_uma_region_held(w.cpu, 0x200000); /* nothing moved: alive, and not tried until it is idle */
+    if (still) {
+        CHECK(vk_own_watch(w.cpu + 0x40000, 0x1000) == 0 && own_stage(w.cpu + 0x40000, sizeof got, got, o, 4) == 0);
+        own_unwatch(w.cpu + 0x40000, 0x1000);
+        for (u32 i = 0; i < sizeof got; i++) CHECK(got[i] == 0x11);
+        g_vk_present = (g_vk_present / 60 + 12) * 60;
+        vk_uma_frame();
+        CHECK(!vk_uma_region_held(w.cpu, 0x200000) && GP(w.cpu + 0x40000)[0] == 0x11);
+    }
+    vk_unlock();
+    if (!still) {
+        fprintf(stderr,
+                "a region the host has no room to move back: held %d (want 1) after the try, and %d (want 1) after the "
+                "frames that follow\n",
+                held, still);
+        return 1;
+    }
+    for (int unmapped = 0; unmapped < 2; unmapped++) {
+        vk_lock();
+        CHECK(vk_buf_get_strict(w.gva, 256, &r, &ro) && vk_uma_region_held(w.cpu, 0x200000));
+        if (unmapped) {
+            vk_unlock();
+            CHECK(!urw_no_room(0));
+            CHECK(mem_unmap(w.cpu + 0x8000, 0x1000) == 0); /* the mapping's end lets a dead region go */
+            CHECK(!urw_no_room(1));
+            g_renderer->mem_may_have_changed();
+            vk_lock();
+        } else {
+            CHECK(mem_unmigrate(w.cpu + 0x8000, 0x1000, NULL) == 0); /* two runs, and the region is not dead */
+            g_vk_present = (g_vk_present / 60 + 12) * 60;
+            CHECK(!urw_no_room(0));
+            vk_uma_frame();
+            CHECK(!urw_no_room(1));
+        }
+        const int left = vk_uma_region_held(w.cpu + 0x100000, 0x1000),
+                  went = vk_uma_region_held(w.cpu + 0x1000, 0x1000), back = mem_ext_read(w.cpu + 0x1000, got, 16) != 0;
+        const int bound = vk_buf_get_strict(w.gva + 0x100000, 256, &r2, &ro2), kept = bound && r2 == r;
+        vk_unlock();
+        if (unmapped) CHECK(mem_map(w.cpu + 0x8000, 0x1000, MS_NORMAL, PERM_RW) == 0);
+        if (!left || went || !back || !kept) {
+            fprintf(stderr,
+                    "a region that moved back in part (%s): it holds the pages that did not move %d (want 1) and the "
+                    "ones that did %d (want 0), which went back %d (want 1); a draw's lookup leaves it %d (want 1)\n",
+                    unmapped ? "a page unmapped" : "two runs", left, went, back, kept);
+            return 1;
+        }
+        vk_lock();
+        vk_uma_frame();
+        CHECK(!vk_uma_region_held(w.cpu + 0x100000, 0x1000) && GP(w.cpu + 0x100000)[5] == 0x11);
+        vk_unlock();
+    }
+    CHECK(!urw_close(&w));
+    puts("in place: a region the host cannot move back stays with its pages, and goes when it can");
     return 0;
 }
 #endif
