@@ -19,10 +19,17 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define CODE    0x10000u
+#define EACH    0x40u
+#define ADD_ONE 0x91000400u /* ADD X0, X0, #1 */
+#define RET     0xD65F03C0u
+#define STOP    0u
+
 static struct {
     int refuse; /* the executor's loads to refuse from here on */
     int failures;
-    uint64_t svc; /* the executor's SVC's number */
+    uint64_t svc;                               /* the executor's SVC's number */
+    unsigned char image[2 * EACH], mem[0x3000]; /* the A64 functions' code; the executor's guest memory */
 } g_seam;
 static int seam_load(SnxCodeLoader* loader, const SnxLinkInput* inputs, size_t count, const char* const* names,
                      size_t name_count, SnxU64* addresses, char* error, size_t error_size) {
@@ -46,11 +53,6 @@ static int seam_load(SnxCodeLoader* loader, const SnxLinkInput* inputs, size_t c
         }                                                                                                              \
     } while (0)
 
-#define CODE    0x10000u
-#define EACH    0x40u
-#define ADD_ONE 0x91000400u /* ADD X0, X0, #1 */
-#define RET     0xD65F03C0u
-#define STOP    0u
 static const uint32_t k_arm[2] = {0xE3A00007u, 0xEF000000u}; /* mov r0, #7; svc #0 */
 static const uint16_t k_thumb[2] = {0x2009u, 0xDF00u};       /* movs r0, #9; svc #0 */
 
@@ -230,7 +232,7 @@ static int on_syscall(void* context, uint32_t imm, uint64_t number, const uint64
 }
 /* a block whose native object does not load: the fallback's, run, or refused and said */
 static void executor(void) {
-    static unsigned char mem[0x3000];
+    unsigned char* mem = g_seam.mem;
     const char* path = "recompiler-fallback.txt";
     char said[2048] = "", error[512] = "";
     size_t n = 0;
@@ -252,7 +254,7 @@ static void executor(void) {
     CHECK(exec, "an executor: %s", error);
     if (!exec) return;
     cpu.mem = mem;
-    cpu.mem_size = sizeof mem;
+    cpu.mem_size = sizeof g_seam.mem;
     cpu.r[15] = 0x1000;
     g_seam.refuse = 1; /* the native object's load */
     const int exit = snx_arm_exec_run(exec, &cpu, &range, 1, on_syscall, NULL);
@@ -285,10 +287,9 @@ static void executor(void) {
 }
 
 int main(void) {
-    static unsigned char image[2 * EACH];
     uint64_t hints[2];
     SnxCodegen cg;
-    if (functions(&cg, image, sizeof image, hints)) {
+    if (functions(&cg, g_seam.image, sizeof g_seam.image, hints)) {
         printf("FAIL: the program's functions\n");
         return 1;
     }
