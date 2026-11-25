@@ -94,10 +94,11 @@ int vpad_ini(const char* key, const char* value);
    the controls or of touch, or --launcher-picks=0|1, which vpad_settings then reads; 0 for another; -1 for a value the
    setting does not take, why in error */
 int vpad_arg(const char* arg, char* error, size_t n);
-/* The game's settings of them: its .ini's, at ini, then the ones of its own (snx_game_picks) and the command line's,
-   which go over them, or with --launcher-picks=1 under them (the launcher's picks for every game). One the console has
-   nothing for does nothing, and is said with its value */
-void vpad_settings(const char* ini, int argc, char** argv);
+/* The settings of them the game name in folder has: its .ini's (<folder>/<name>.ini, where its driver keeps it), then
+   its own picks (game_ini.h's snx_game_picks) and the command line's, which go over them, or with --launcher-picks=1
+   under them (the launcher's picks for every game). One the console has nothing for does nothing, and is said with its
+   value */
+void vpad_settings(const char* folder, const char* name, int argc, char** argv);
 /* where changed settings go: called with each key and its value (the game's .ini) */
 void vpad_set_store(void (*store)(const char* key, const char* value));
 /* where what the controls say goes, a line without its newline (vpad_auto's): the game's log */
