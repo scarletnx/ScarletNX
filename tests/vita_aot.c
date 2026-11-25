@@ -15,6 +15,7 @@
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
 #include "snx_settings.h"
+#include "support/text_lines.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -184,7 +185,8 @@ static Runs compile(const char* folder, const SnxCliRecompile* asked, char** sai
     } else {
         fflush(stdout);
         unsigned char* text = snx_read_file(lines, &size);
-        if (text && (*said = malloc(size + 1))) memcpy(*said, text, size), (*said)[size] = 0;
+        if (text && (*said = malloc(size + 1)))
+            memcpy(*said, text, size), (*said)[size] = 0, snx_test_text_lines(*said);
         free(text);
         CHECK(vita_module_current(path, &g_test.image));
         if (vita_native_open(path, &g_test.image, &native, error, sizeof error)) {
@@ -277,7 +279,9 @@ int main(void) {
     if (snx_native_arm_available()) {
         snprintf(line, sizeof line, "%s back end: %u of %u blocks\n", snx_native_name(), by_native.blocks,
                  by_native.blocks);
-        CHECK(said && strstr(said, line) && !snx_ir_started()); /* and no LLVM was started for them */
+        CHECK(said && strstr(said, line));
+        CHECK(!snx_ir_started()); /* no LLVM was started for them */
+        if (g_test.failures) fprintf(stderr, "the lines on stdout:\n%s", said ? said : "(none)\n");
     } else
         CHECK(said && strstr(said, "blocks (no native back end on this host)"));
     CHECK(said && strstr(said, "Compiled 1/")); /* a line of progress, which the launcher reads */
