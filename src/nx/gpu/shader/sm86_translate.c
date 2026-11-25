@@ -3653,6 +3653,15 @@ static void texel_fetch(Ctx* c, const Sm86Insn* in) {
             v[k] = spv_emit_iadd_u32(&c->e, c->t_u32, v[k],
                                      spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_u32,
                                                     offset_part(c, 0, 0, rd(c, regs[n0 + (lod_mode == 3)]), k, 4)));
+    /* a 1D texture is bound as rows of 2^SH_TEXEL_ROW_SHIFT texels (shader.h): texel x is column x mod row of row
+       x / row, which is (x, 0) where the texture fits one row. A negative x lands in a negative row, out of the image */
+    if (type == 0 && !array) {
+        u32 x = spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, v[0]);
+        v[1] = spv_emit_unary(
+            &c->e, SPV_OP_BITCAST, c->t_u32,
+            spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_ARITHMETIC, c->t_i32, x, cu(c, SH_TEXEL_ROW_SHIFT)));
+        v[0] = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, v[0], cu(c, (1u << SH_TEXEL_ROW_SHIFT) - 1));
+    }
     if (c->stage == ST_FS && type == 1) scaled_fetch(c, slot, &v[0], &v[1]);
     if (array) v[count++] = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, rd(c, regs[0]), cu(c, 0xffff));
     u32 ivec = spv_emit_type_vector(&c->e, c->t_i32, count);
