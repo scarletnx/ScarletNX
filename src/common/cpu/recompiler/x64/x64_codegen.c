@@ -92,15 +92,16 @@ static void unit_reloc(void* machine, size_t at, const char* sym, long long adde
 #include "common/cpu/recompiler/mach/mach_codegen.inc"
 
 static int win64(const Unit* u) { return MG_WIN64(u); }
-/* the host registers of the pins the function pushes itself, RDI's and RSI's, on Windows (bits) */
+/* the callee-saved host registers the pins take (RBP, R12-R15, on Windows RDI and RSI: bits), which the prologue
+   pushes */
 static unsigned pushed_pins(const Unit* u) {
     unsigned mask = 0;
     int n;
-    if (!win64(u)) return 0;
+    if (!u->pinned) return 0;
     for (n = 0; n < 32; ++n)
-        if (u->pin[n] == 6 || u->pin[n] == 7) mask |= 1u << u->pin[n];
-    if (u->mempin == 6 || u->mempin == 7) mask |= 1u << u->mempin;
-    return mask;
+        if (u->pin[n] >= 0) mask |= 1u << u->pin[n];
+    if (u->mempin >= 0) mask |= 1u << u->mempin;
+    return mask & ~(1u << 10 | 1u << 11);
 }
 /* where the function's saved XMM register k (xsaved's bits) is from RSP: above the callees' bytes, in order */
 static int xsaved_at(const Unit* u, int k) {
@@ -307,9 +308,9 @@ static void prologue(Unit* u) {
         if (u->a.xsaved) u->a.xsaved |= 1u << 6 | 1u << 7, sgx_call_room(&u->a);
     }
     byte(u, 0x53); /* push rbx */
-    if (u->pinned) /* push rbp, r12, r13, r14, r15 */
-        byte(u, 0x55), byte(u, 0x41), byte(u, 0x54), byte(u, 0x41), byte(u, 0x55), byte(u, 0x41), byte(u, 0x56),
-            byte(u, 0x41), byte(u, 0x57);
+    if (pushed >> 5 & 1) byte(u, 0x55);                            /* push rbp */
+    for (n = 12; n < 16; ++n)
+        if (pushed >> n & 1) byte(u, 0x41), byte(u, (unsigned char)(0x50 | (n & 7))); /* push r12 to r15 */
     if (pushed >> 7 & 1) byte(u, 0x57);                            /* push rdi */
     if (pushed >> 6 & 1) byte(u, 0x56);                            /* push rsi */
     byte(u, 0x48), byte(u, 0x89), byte(u, win64(u) ? 0xCB : 0xFB); /* mov rbx, rdi (rcx) */
@@ -332,6 +333,7 @@ static void prologue(Unit* u) {
    the ADD on the bytes are an epilogue as Windows' unwinder knows one, up to the return or the jump after it */
 static void epilogue(Unit* u) {
     unsigned pushed = pushed_pins(u);
+    int n;
     xsaved(u, 1);
     byte(u, 0x48); /* add rsp, imm32 */
     byte(u, 0x81);
@@ -341,9 +343,9 @@ static void epilogue(Unit* u) {
     imm(u, 0, 4);
     if (pushed >> 6 & 1) byte(u, 0x5E); /* pop rsi */
     if (pushed >> 7 & 1) byte(u, 0x5F); /* pop rdi */
-    if (u->pinned) /* pop r15, r14, r13, r12, rbp */
-        byte(u, 0x41), byte(u, 0x5F), byte(u, 0x41), byte(u, 0x5E), byte(u, 0x41), byte(u, 0x5D), byte(u, 0x41),
-            byte(u, 0x5C), byte(u, 0x5D);
+    for (n = 15; n >= 12; --n)
+        if (pushed >> n & 1) byte(u, 0x41), byte(u, (unsigned char)(0x58 | (n & 7))); /* pop r15 to r12 */
+    if (pushed >> 5 & 1) byte(u, 0x5D); /* pop rbp */
     byte(u, 0x5B); /* pop rbx */
 }
 static void leave(Unit* u) {
@@ -530,9 +532,9 @@ static void mg_dispatch(Unit* u, int lab0) {
 }
 static int mg_finish(Unit* u, size_t fix0) {
     size_t i;
-    /* RSP 16-aligned in the body: the return address and RBX (and RBP, R12-R15 where pinned, RDI, RSI): 8 more where
-       those are an odd number of doublewords */
-    int size = ((u->a.slots_max * 8 + 15) & ~15) + ((u->pinned ? 5 : 0) + (int)snx_popcount64(pushed_pins(u))) % 2 * 8;
+    /* RSP 16-aligned in the body: the return address and RBX, and the pushed pins' registers: 8 more where those are
+       an odd number of doublewords */
+    int size = ((u->a.slots_max * 8 + 15) & ~15) + (int)snx_popcount64(pushed_pins(u)) % 2 * 8;
     if (win64(u) && size >= 4096 && !u->again) {
         u->again = 1; /* a page or more, whose prologue reads each page first (the guard page): made again with it */
         return 0;
