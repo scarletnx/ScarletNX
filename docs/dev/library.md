@@ -134,12 +134,13 @@ decide what the decoder (`tools/decodetree`, from QEMU's `a64.decode`) accepts: 
 encoding needing a feature the target lacks is an undefined instruction, as on that
 CPU. `SNX_RECOMPILER_A64_SWITCH`, the default, is the Switch's Cortex-A57 (Armv8.0
 with CRC32 and the Cryptographic Extension). `SNX_RECOMPILER_A64_MAX` takes every
-feature the decoder knows; `llvm_qemu_differential` checks the emitters against QEMU
-for it, and the native back ends' tests check theirs (FEAT_FP8's as FPMR zero has them,
-which is all code can do here: an `MSR` or `MRS` of FPMR is undefined). An instruction a
-native back end has no code for is said at the recompile, once a function: its address,
-the instruction, its word and address, the feature and the target, and how many functions
-there were; the function is made, the instruction undefined where it runs.
+feature the decoder knows; `llvm_qemu_differential` and `native_qemu_differential` check
+the LLVM emitters and the host's native code against QEMU for it, and the native back
+ends' tests check theirs (FEAT_FP8's as FPMR zero has them, which is all code can do
+here: an `MSR` or `MRS` of FPMR is undefined). An instruction a native back end has no
+code for is said at the recompile, once a function: its address, the instruction, its
+word and address, the feature and the target, and how many functions there were; the
+function is made, the instruction undefined where it runs.
 `SNX_RECOMPILER_A64_ANDROID` is an Android phone's CPU, as the Android
 driver's native bridge runs it: Armv8.2 with the atomics, RDM, half precision, the
 dot product and LRCPC, without pointer authentication, so that the `PACIASP` and

@@ -141,7 +141,8 @@ the game's image read from that image.
   `qemu-aarch64 -cpu max` (`tests/qemu_ref/`) on random states, for words of every row of the generated decoder, with
   the groups known to differ in `tests/llvm_qemu_expected.txt` (a new group, or a listed one that no longer differs,
   fails it; `--sweep` runs more of each), loaded as a module, with the JIT's loader and in the emitters' portable
-  forms. `tests/a64_ported.c` runs rEden's cases through the steps against their expected values and QEMU,
+  forms. The host's native back end takes the same words (`tests/native_steps.c`), and the hosts with no QEMU beside the
+  test a reference that another host recorded ([the implementer guide](../layers/cpu/guide.md#rules-that-apply-to-this-work)). `tests/a64_ported.c` runs rEden's cases through the steps against their expected values and QEMU,
   `tests/llvm_module.c` a whole program against the end state QEMU gives it, `tests/llvm_bench.c` times it on
   assembly kernels.
 - `-r --layout FILE` orders the module's code by a profile. `tools/layout.py record` samples a scene's taken branches
