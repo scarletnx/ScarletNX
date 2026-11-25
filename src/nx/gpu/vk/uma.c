@@ -911,7 +911,7 @@ static int imp_let_go(u32 i, int publish) {
     /* A watch over a render target on a region's pages (vk_own_watch) traps them, and the move back below copies them
        under mem.c's lock and vk_lock. That copy faulted: the trap thread, which takes faults one at a time, waited in
        another thread's landing there for vk_lock, and never took it. The targets pending there are published first, in
-       place (own_publish waits for the copy), and their watches go. Only at the present (vk_uma_frame) or a let-go of
+       place, their copies done, and their watches go (mem_unmigrate). Only at the present (vk_uma_frame) or a let-go of
        all (publish): elsewhere this runs in a draw's setup (bind, imp_get), which must not end its pass or wait for the
        GPU, and there the region stays until the present. The publish can kill imports (vk_uma_owning): the region is
        looked up again, and it is gone when it was let go meanwhile. mem_unmigrate lands what is left there */
@@ -920,6 +920,7 @@ static int imp_let_go(u32 i, int publish) {
         const u64 cpu = m->cpu, size = m->size;
         g_uma.letting = 1;
         vk_rt_publish_over(cpu, size);
+        region_writes_land(cpu, cpu + size); /* a dead region's too: its other pages move back with those bytes */
         g_uma.letting = 0;
         i = imp_find(cpu);
         if (i >= g_uma.nimp || g_uma.imp[i].cpu != cpu || g_uma.imp[i].size != size) return 1;

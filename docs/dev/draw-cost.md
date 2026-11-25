@@ -275,8 +275,7 @@ before it, the frame rate went from 52 to 54 fps to 64 to 66, the GPU thread fro
 to 13.5, and the staging of bindings from 147 MB a present on the GPU and 36 MB on the CPU to under 17 MB and 0.2 MB.
 What is left:
 
-- Point 4. A publish that runs still does the work for each page, and a CPU access to a watched region waits for the
-  GPU once for each run of guest memory.
+- Point 4. A publish that runs still does the work for each page.
 - A host pointer import still gets a publish at each release. A driver that imports guest memory that way (where
   dma-bufs are not cheaper) gains nothing yet.
 - The save thumbnail of commit 12f8977cd, in its own game.
