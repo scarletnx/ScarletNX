@@ -73,6 +73,7 @@ struct Win64Regs {
     uint64_t step;                /* 568: the code stops after each instruction (the trap flag) */
     uint64_t regs[16];            /* 576: a trap's registers, by number, as the code called it */
     uint64_t xregs[16][2];        /* 704 */
+    uint64_t flags_after;         /* 960: RFLAGS as the code came back */
 };
 [[gnu::visibility("hidden")]] extern struct Win64Regs snx_test_win64;
 [[gnu::aligned(16), gnu::used, gnu::visibility("hidden")]] struct Win64Regs snx_test_win64;
@@ -81,7 +82,7 @@ static_assert(offsetof(struct Win64Regs, xmark) == 64 && offsetof(struct Win64Re
                   offsetof(struct Win64Regs, sp) == 512 && offsetof(struct Win64Regs, csr) == 536 &&
                   offsetof(struct Win64Regs, host_sp) == 544 && offsetof(struct Win64Regs, junk) == 552 &&
                   offsetof(struct Win64Regs, step) == 568 && offsetof(struct Win64Regs, regs) == 576 &&
-                  offsetof(struct Win64Regs, xregs) == 704,
+                  offsetof(struct Win64Regs, xregs) == 704 && offsetof(struct Win64Regs, flags_after) == 960,
               "the entry's and the stubs' bytes reach the marks at their offsets");
 
 /* enter(fn RDI, a0 RSI, a1 RDX): fn(a0, a1) as Windows' convention calls it */
@@ -115,7 +116,8 @@ static_assert(offsetof(struct Win64Regs, xmark) == 64 && offsetof(struct Win64Re
             "pushfq\n\torq $0x100, (%rsp)\n\tpopfq\n" /* the trap flag */
             "1:\n\t"
             "callq *%rax\n\t"
-            "pushfq\n\tandq $-257, (%rsp)\n\tpopfq\n\t"
+            "pushfq\n\tmovq (%rsp), %r11\n\tmovq %r11, snx_test_win64+960(%rip)\n\t"
+            "andq $-257, (%rsp)\n\tpopfq\n\t"
             "movq %rsp, snx_test_win64+520(%rip)\n\t"
             "movq %rbx, snx_test_win64+224(%rip)\n\tmovq %rbp, snx_test_win64+232(%rip)\n\t"
             "movq %rsi, snx_test_win64+240(%rip)\n\tmovq %rdi, snx_test_win64+248(%rip)\n\t"
@@ -289,7 +291,8 @@ size_t hostuc_unwound(const HostUc* u, size_t* failures) {
 /* what a stub jumps to, R10 the native function: a Windows callee of six arguments (those past the native's own are
    whatever is there) calling the System V function, then every register it may change changed */
 [[gnu::naked]] static void trap(void) {
-    __asm__("movq %rsp, %rax\n\tandl $15, %eax\n\tcmpl $8, %eax\n\tje 1f\n\t"
+    __asm__("pushfq\n\tandq $-257, (%rsp)\n\tpopfq\n\t" /* no trap flag in the native function: not the code's */
+            "movq %rsp, %rax\n\tandl $15, %eax\n\tcmpl $8, %eax\n\tje 1f\n\t"
             "movq $1, snx_test_win64+528(%rip)\n" /* the caller's stack was not 16-aligned */
             "1:\n\t"
             "movq %rbx, snx_test_win64+600(%rip)\n\tmovq %rsp, snx_test_win64+608(%rip)\n\t"
@@ -325,7 +328,10 @@ size_t hostuc_unwound(const HostUc* u, size_t* failures) {
             "movq %rcx, %r10\n\tmovq %rcx, %r11\n\t"
             "movups snx_test_win64+552(%rip), %xmm0\n\tmovaps %xmm0, %xmm1\n\tmovaps %xmm0, %xmm2\n\t"
             "movaps %xmm0, %xmm3\n\tmovaps %xmm0, %xmm4\n\tmovaps %xmm0, %xmm5\n\t"
-            "movq %rbp, %rsp\n\tpopq %rbp\n\tpopq %rdi\n\tpopq %rsi\n\tretq");
+            "movq %rbp, %rsp\n\tpopq %rbp\n\tpopq %rdi\n\tpopq %rsi\n\t"
+            "cmpq $0, snx_test_win64+568(%rip)\n\tje 2f\n\t"
+            "pushfq\n\torq $0x100, (%rsp)\n\tpopfq\n" /* and the code's next instruction */
+            "2:\n\tretq");
 }
 
 const char* hostuc_name(HostUcArch arch) {
@@ -543,6 +549,10 @@ int hostuc_call(HostUc* u, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t* resu
                              (unsigned long long)w->xgot[k][0]);
     if ((w->csr ^ w->csr_after) & 0xFFC0u) /* the control bits: the flags are a callee's to change */
         bad = 1, fprintf(stderr, "win64: MXCSR came back %x, was %x\n", w->csr_after, w->csr);
+    if (w->step && !(w->flags_after & 0x100))
+        bad = 1,
+        fprintf(stderr, "win64: the trap flag came back clear (RFLAGS %llx): not every instruction was stepped\n",
+                (unsigned long long)w->flags_after);
     if (w->fault == 1)
         bad = 1, fprintf(stderr, "win64: a call with the stack not 16-aligned\n");
     else if (w->fault)
