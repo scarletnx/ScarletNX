@@ -1,19 +1,19 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The x86-64 back end (src/common/cpu/recompiler/x64) against LLVM, a function at a time, through the recompiler's
-   own interface (snx_recompiler.h): random functions of a few words and a RET, made from encodings of what
-   x64_codegen.c builds itself (the SIMD&FP loads and stores in every addressing mode, MOVI, MVNI, ORR, BIC and FMOV
-   of an immediate, MRS, MSR and the cache maintenance) among the scalar floating point and integer words sailgen's
-   emitters make. One program is recompiled twice, by a recompiler with the x86-64 back end and one with LLVM alone;
-   each function runs from the same random state in both, and every register, the flags, FPCR, FPSR, TPIDR_EL0 and the
-   data memory must match. The x86-64 back end must make the functions (snx_recompiled_x64_functions), or the test
-   would compare LLVM with itself.
+/* The host's native back end (mach/native.h: x86-64's on an x86-64 host, arm64's on an arm64 one...) against LLVM, a
+   function at a time, through the recompiler's own interface (snx_recompiler.h): random functions of a few words and
+   a RET, made from encodings of what the back ends build themselves (the SIMD&FP loads and stores in every addressing
+   mode, MOVI, MVNI, ORR, BIC and FMOV of an immediate, MRS, MSR and the cache maintenance) among the scalar floating
+   point and integer words sailgen's emitters make. One program is recompiled twice, by a recompiler with the native
+   back end and one with LLVM alone; each function runs from the same random state in both, and every register, the
+   flags, FPCR, FPSR, TPIDR_EL0 and the data memory must match. The native back end must make the functions
+   (snx_recompiled_x64_functions), or the test would compare LLVM with itself.
      snx-test-recompiler-backends [--functions N] [--states N] [--seed N] [--without MASK] [--target NAME] [--verbose]
          [--hook] [--jit] [--words HEX...] [--made] [--ops OP...] [--refused] [--coverage]
          [--qemu QEMU RUNNER DIR] [--programs] [--calls] [--long N BYTES]
-   --without MASK: the x86-64 back end goes without these features of the host (sailgen's SGX_F_*: FMA 0x800, AVX 0x400,
-   F16C 0x100, BMI1, BMI2 and LZCNT 7, AES-NI 0x1000, SHA-NI 0x2000), as on a host that lacks them; arm64's without its
-   (SNX_ARM64_F_*)
+   --without MASK: the back end goes without these features of the host, as on a host that lacks them: x86-64's
+   (sailgen's SGX_F_*: FMA 0x800, AVX 0x400, F16C 0x100, BMI1, BMI2 and LZCNT 7, AES-NI 0x1000, SHA-NI 0x2000), arm64's
+   (SNX_ARM64_F_*: 0x7ffff all of them). Another machine's back end has none to go without: it is skipped
    --long N BYTES: --words' words N times over in one function, entered past them by a CBZ, gone over twice by a B.NE
    back, and left by a B back over them: more than BYTES of a native back end's code, which is what its short jumps reach
    --target NAME: the guest's features, switch (the default), android, max or, with --refused, ounce
@@ -25,13 +25,14 @@
    there, failing where there is one
    --qemu: with --ops, their words' results held to qemu-aarch64 -cpu max's (tests/qemu_ref: its path, the runner's, a
    folder for its files) rather than to LLVM's, which lacks what no guest's CPU has; not loads nor stores
+   --skip REASON, alone: nothing to compare with, what a host without QEMU registers for its --qemu tests
    --programs: what LLVM's back end and QEMU's one word don't show, as C says it: FEAT_CMPBR's compare and branch,
    FEAT_MOPS's SET and CPY, FEAT_LSE128's atomics
    --calls: functions that call each other, in four layers: BL, BLR and tail B, loops (some with a call in them), SVCs
    that change registers, switches through a table, a pending poll in every other state
    --coverage: a line of each of the target's ops, how many of its words the back end makes with its own instructions
    alone, with an exact helper's call, and leaves, and the first of those, and stops there
-   On a host without the back end (not x86-64, or built without SNX_SAIL_X64) it passes, saying so.
+   On a host with no native back end it is skipped, saying so.
 
    Built with SNX_TEST_ARM64 or SNX_TEST_RV64 (snx-test-recompiler-arm64, -rv64), the same programs hold that native
    back end (src/common/cpu/recompiler/arm64, rv64) to LLVM on any host: its object, made for the program's
@@ -44,6 +45,8 @@
    SNX_TEST_ARM64WIN beside SNX_TEST_ARM64 (snx-test-recompiler-arm64win) it is arm64's for Windows, in COFF objects,
    unwound the same way (HOSTUC_ARM64_WIN) */
 #include "common/cpu/recompiler/snx_recompiler.h"
+#include "common/cpu/recompiler/arm64/arm64_codegen.h"
+#include "common/cpu/recompiler/mach/native.h"
 #include "common/cpu/recompiler/x64/x64_codegen.h"
 #include "llvm_qemu_words.h"
 #include "qemu_ref/qemu_ref.h"
@@ -67,7 +70,6 @@
 #define SNX_TEST_UNWINDS 1
 #endif
 #if defined(SNX_TEST_ARM64)
-#include "common/cpu/recompiler/arm64/arm64_codegen.h"
 #if defined(SNX_TEST_ARM64WIN)
 #define NATIVE_UC      HOSTUC_ARM64_WIN
 #define NATIVE_WINDOWS SNX_ARM64_F_WIN
@@ -149,6 +151,11 @@ HostUcPair snx_x64_casp(CPU* c, u64 a, u64 e0, u64 e1, u64 d0, u64 d1);
 
 static int failures, verbose;
 [[maybe_unused]] static unsigned g_without; /* --without's, for arm64's */
+/* --without: the features of the host's back end, each back end's its own, which the other leaves alone */
+static void go_without(unsigned features) {
+    snx_x64_without(features);
+    snx_arm64_without(features);
+}
 static uint64_t g_features = SNX_A64_TARGET_SWITCH; /* --target */
 static uint64_t seed = 0x2545F4914F6CDD1Dull;
 static uint64_t rnd(void) {
@@ -606,25 +613,36 @@ static void ops_state(CPU* c, unsigned s) {
     }
 }
 
+/* what the native side's results are called by */
+static const char* native_back_end(void) {
+#ifdef SNX_TEST_NATIVE
+    return hostuc_name(NATIVE_UC);
+#else
+    return snx_native_name();
+#endif
+}
+
 static int differs(const CPU* a, const CPU* b) {
     return memcmp(a->x, b->x, sizeof a->x) || memcmp(a->v, b->v, sizeof a->v) || a->n != b->n || a->z != b->z ||
            a->cf != b->cf || a->vf != b->vf || a->fpcr != b->fpcr || a->fpsr != b->fpsr || a->tpidr != b->tpidr ||
            a->pc != b->pc;
 }
 
+/* the end states that differ: a LLVM's (or QEMU's), b the native back end's */
 static void report(const CPU* a, const CPU* b) {
+    const char* native = native_back_end();
     unsigned r;
     for (r = 0; r < 32; ++r)
         if (a->x[r] != b->x[r])
-            fprintf(stderr, "  x%u: llvm %016llx x64 %016llx\n", r, (unsigned long long)a->x[r],
+            fprintf(stderr, "  x%u: llvm %016llx %s %016llx\n", r, (unsigned long long)a->x[r], native,
                     (unsigned long long)b->x[r]);
     for (r = 0; r < 32; ++r)
         if (memcmp(&a->v[r], &b->v[r], sizeof a->v[r]))
-            fprintf(stderr, "  v%u: llvm %016llx:%016llx x64 %016llx:%016llx\n", r, (unsigned long long)a->v[r].d[1],
-                    (unsigned long long)a->v[r].d[0], (unsigned long long)b->v[r].d[1],
+            fprintf(stderr, "  v%u: llvm %016llx:%016llx %s %016llx:%016llx\n", r, (unsigned long long)a->v[r].d[1],
+                    (unsigned long long)a->v[r].d[0], native, (unsigned long long)b->v[r].d[1],
                     (unsigned long long)b->v[r].d[0]);
-    fprintf(stderr, "  nzcv llvm %u%u%u%u x64 %u%u%u%u; fpcr %08x %08x; fpsr %08x %08x; tpidr %llx %llx; pc %llx %llx\n",
-            a->n, a->z, a->cf, a->vf, b->n, b->z, b->cf, b->vf, a->fpcr, b->fpcr, a->fpsr, b->fpsr,
+    fprintf(stderr, "  nzcv llvm %u%u%u%u %s %u%u%u%u; fpcr %08x %08x; fpsr %08x %08x; tpidr %llx %llx; pc %llx %llx\n",
+            a->n, a->z, a->cf, a->vf, native, b->n, b->z, b->cf, b->vf, a->fpcr, b->fpcr, a->fpsr, b->fpsr,
             (unsigned long long)a->tpidr, (unsigned long long)b->tpidr, (unsigned long long)a->pc,
             (unsigned long long)b->pc);
 }
@@ -769,7 +787,7 @@ static long made_count(uint8_t* code, size_t size, uint64_t* hints, size_t count
 #ifdef SNX_TEST_NATIVE
     if (NATIVE_OBJECT(&cg, &options, made, &object, &object_size, error) < 0) total = -1;
 #else
-    if (snx_x64_object(&cg, 0, cg.function_count, &options, made, &object, &object_size, error, sizeof error) < 0)
+    if (snx_native_object(&cg, 0, cg.function_count, &options, made, &object, &object_size, error, sizeof error) < 0)
         total = -1;
 #endif
     if (total < 0) fprintf(stderr, "FAIL: %s\n", error);
@@ -1141,6 +1159,10 @@ int main(int argc, char** argv) {
 #ifdef SNX_TEST_UNWINDS
     int step = 0;
 #endif
+    if (argc == 3 && !strcmp(argv[1], "--skip")) {
+        printf("SKIP: %s: nothing to compare\n", argv[2]);
+        return 77;
+    }
     for (i = 1; i < (unsigned)argc; ++i) {
         if (!strcmp(argv[i], "--functions") && i + 1 < (unsigned)argc) functions = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--states") && i + 1 < (unsigned)argc)
@@ -1148,7 +1170,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--seed") && i + 1 < (unsigned)argc)
             seed = strtoull(argv[++i], NULL, 0) | 1;
         else if (!strcmp(argv[i], "--without") && i + 1 < (unsigned)argc)
-            snx_x64_without(g_without = (unsigned)strtoul(argv[++i], NULL, 0));
+            go_without(g_without = (unsigned)strtoul(argv[++i], NULL, 0));
         else if (!strcmp(argv[i], "--verbose"))
             verbose = 1;
         else if (!strcmp(argv[i], "--hook"))
@@ -1206,14 +1228,20 @@ int main(int argc, char** argv) {
         }
     }
     (void)hook;
+#ifndef SNX_TEST_NATIVE
+    if (g_without && snx_native_available() && !snx_x64_available() && !snx_arm64_available()) {
+        printf("SKIP: the %s back end has no features to go without: nothing to compare\n", snx_native_name());
+        return 77;
+    }
+#endif
 #ifdef SNX_TEST_WIN64
     snx_x64_set_win64(1);
 #endif
     rows_init();
     if (refused) {
 #ifndef SNX_TEST_NATIVE
-        if (!snx_x64_available()) {
-            printf("SKIP: no x86-64 back end on this host: nothing to list\n");
+        if (!snx_native_available()) {
+            printf("SKIP: no native back end on this host: nothing to list\n");
             return 77;
         }
 #endif
@@ -1459,24 +1487,25 @@ int main(int argc, char** argv) {
     }
     if (0) {
 #else
-    printf("recompiler backends: %lu functions, the x86-64 back end made %lu\n",
-           (unsigned long)snx_recompiled_functions(mx), (unsigned long)snx_recompiled_x64_functions(mx));
+    printf("recompiler backends: %lu functions, the %s back end made %lu\n",
+           (unsigned long)snx_recompiled_functions(mx), snx_native_name(),
+           (unsigned long)snx_recompiled_x64_functions(mx));
     /* a word the back end doesn't make is LLVM's on both sides: with --ops, and the random programs, it fails below */
-    if (!snx_x64_available() || (nwords && !must_make && !snx_recompiled_x64_functions(mx))) {
+    if (!snx_native_available() || (nwords && !must_make && !snx_recompiled_x64_functions(mx))) {
 #endif
         printf("SKIP: %s: nothing to compare\n",
-               snx_x64_available() ? "the back end leaves the function to LLVM" : "no x86-64 back end on this host");
+               snx_native_available() ? "the back end leaves the function to LLVM" : "no native back end on this host");
         result = 77;
         goto out;
     }
 #ifndef SNX_TEST_NATIVE
     if (opw && snx_recompiled_x64_functions(mx) < snx_recompiled_functions(mx)) {
         ++failures;
-        fprintf(stderr, "FAIL: the x86-64 back end made %lu of the ops' %lu words\n",
+        fprintf(stderr, "FAIL: the %s back end made %lu of the ops' %lu words\n", snx_native_name(),
                 (unsigned long)snx_recompiled_x64_functions(mx), (unsigned long)snx_recompiled_functions(mx));
         (void)list_refused(ops, nops);
     } else if (!nwords && snx_recompiled_x64_functions(mx) < snx_recompiled_functions(mx)) {
-        fprintf(stderr, "FAIL: the x86-64 back end made %lu of the %lu functions\n",
+        fprintf(stderr, "FAIL: the %s back end made %lu of the %lu functions\n", snx_native_name(),
                 (unsigned long)snx_recompiled_x64_functions(mx), (unsigned long)snx_recompiled_functions(mx));
         ++failures;
     }

@@ -4327,15 +4327,25 @@ target_compile_options(snx-test-recompiler-library-cpp PRIVATE -Wall -Wextra -We
 target_link_libraries(snx-test-recompiler-library-cpp PRIVATE scarletnx-recompiler Threads::Threads)
 snx_test_sanitize(snx-test-recompiler-library-cpp) # this target is not made through snx_test_target
 add_test(NAME recompiler_library_cpp COMMAND snx-test-recompiler-library-cpp)
-# the x86-64 back end against LLVM, function by function (recompiler_backends.c)
+# the host's native back end (x86-64's, arm64's...) against LLVM, function by function (recompiler_backends.c). The
+# features of the host it goes without in plain runs (--without): x86-64's BMI, AVX, FMA, F16C, AES and SHA, arm64's all
+set(snx_plain_features 0xd07)
+set(snx_plain_ops_features 0x3d07)
+set(snx_plain_fma_features 0x800)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
+    set(snx_plain_features 0x7ffff)
+    set(snx_plain_ops_features 0x7ffff)
+    set(snx_plain_fma_features 0x7ffff)
+endif()
 add_executable(snx-test-recompiler-backends recompiler_backends.c llvm_qemu_words.c qemu_ref/qemu_ref.c)
 snx_test_target(snx-test-recompiler-backends gnu23)
 target_include_directories(snx-test-recompiler-backends PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(snx-test-recompiler-backends PRIVATE scarletnx-recompiler scarletnx-common)
 snx_decodetree_a64(snx-test-recompiler-backends)
 add_test(NAME recompiler_backends COMMAND snx-test-recompiler-backends)
-# x64_vec.c's Advanced SIMD, a family at a time: each word of these ops (the decoder's samples of them) made by the x86-64
-# back end, a function of its own, and its results LLVM's from states of the lanes' edge values
+# the back ends' Advanced SIMD (x64_vec.c, arm64_vec.c), a family at a time: each word of these ops (the decoder's samples
+# of them) made by the host's back end, a function of its own, and its results LLVM's from states of the lanes' edge
+# values
 foreach(family IN ITEMS
         "pairs;FADDP_v;FADDP_s;FMAXP_v;FMINP_v;FMAXNMP_v;FMINNMP_v;FMAXP_s;FMINP_s;FMAXNMP_s;FMINNMP_s;FMAXV_s;FMINV_s;FMAXNMV_s;FMINNMV_s"
         "elements;FMUL_si;FMLA_si;FMLS_si"
@@ -4361,8 +4371,9 @@ add_test(NAME recompiler_backends_half COMMAND snx-test-recompiler-backends --ta
          FMAXNMV_h FMINNMV_h FMUL_si FMLA_si FMLS_si FRECPE_v FRECPE_s FRSQRTE_v FRSQRTE_s FRECPS_v FRECPS_s FRSQRTS_v
          FRSQRTS_s FRINTN_v FRINTP_v FRINTM_v FRINTZ_v FRINTA_v)
 set_tests_properties(recompiler_backends_half PROPERTIES TIMEOUT 900)
-# the same without FMA, AES-NI and SHA-NI (0x800, 0x1000, 0x2000), where the helpers do their work
-add_test(NAME recompiler_backends_plain_ops COMMAND snx-test-recompiler-backends --without 0x3d07 --states 48 --ops
+# the same without the host's optional features (FMA, AES-NI and SHA-NI, or all of arm64's), where the helpers do their work
+add_test(NAME recompiler_backends_plain_ops COMMAND snx-test-recompiler-backends --without ${snx_plain_ops_features}
+         --states 48 --ops
          FRECPS_v FRECPS_s FRSQRTS_v FRSQRTS_s FMLA_si FMLS_si AESE AESD AESMC AESIMC SHA256H SHA256H2 SHA256SU0
          SHA256SU1)
 set_tests_properties(recompiler_backends_plain_ops PROPERTIES TIMEOUT 600)
@@ -4635,6 +4646,8 @@ foreach(family IN ITEMS
             if(m MATCHES "^ppc64") # an unpatched Unicorn has none: skipped, as it compares nothing
                 set_tests_properties(recompiler_${m}_past_${name} PROPERTIES SKIP_RETURN_CODE 77)
             endif()
+        elseif(m STREQUAL "backends") # no QEMU: the words' values are not compared
+            add_test(NAME recompiler_${m}_past_${name} COMMAND snx-test-recompiler-${m} --skip "${SNX_QEMU_REF_MISSING}")
         endif()
     endforeach()
 endforeach()
@@ -4695,12 +4708,15 @@ add_test(NAME recompiler_backends_fp_pins COMMAND snx-test-recompiler-backends -
 # SHA-NI: elsewhere a helper makes the word, and the path does not run)
 add_test(NAME recompiler_backends_sha_xmm0 COMMAND snx-test-recompiler-backends --made --states 40 --words 4ea684a5
          5e0640c5)
-# FMLA of a vector in a loop on a host with AVX and F16C but no FMA (0x800, FMA alone, taken away), where it is a cold
-# call always taken: its result stays in the destination's pin, past the pins' reload
-add_test(NAME recompiler_backends_cold_pin COMMAND snx-test-recompiler-backends --without 0x800 --states 40 --words
+# FMLA of a vector in a loop on an x86-64 host with AVX and F16C but no FMA (0x800, FMA alone, taken away), where it is a
+# cold call always taken (on arm64 the words run without its optional features): its result stays in the destination's
+# pin, past the pins' reload
+add_test(NAME recompiler_backends_cold_pin COMMAND snx-test-recompiler-backends --without ${snx_plain_fma_features}
+         --states 40 --words
          d2800030 4ee1d41f 4f821bff 9a8211c3 0f406000 f1000610 54ffff61)
-# random functions on a host of SSE4.2: no BMI1, BMI2, LZCNT, F16C, AVX or FMA
-add_test(NAME recompiler_backends_plain COMMAND snx-test-recompiler-backends --without 0xd07 --seed 209458
+# random functions on a host without optional features: SSE4.2 alone (no BMI1, BMI2, LZCNT, F16C, AVX or FMA) on x86-64,
+# the architecture's baseline on arm64
+add_test(NAME recompiler_backends_plain COMMAND snx-test-recompiler-backends --without ${snx_plain_features} --seed 209458
          --functions 1200)
 # what the library's archive needs from outside it: LLVM and the system's libraries alone
 # (tests/recompiler_symbols.cmake). Its program links every object of the archive with those, named here rather than
@@ -5956,7 +5972,7 @@ foreach(snx_test native_recompiler llvm_module nro_modules plt_calls nx_runtime_
         set_property(TEST ${snx_test} APPEND PROPERTY ENVIRONMENT "XDG_CACHE_HOME=${CMAKE_CURRENT_BINARY_DIR}/xdg-cache")
     endif()
 endforeach()
-# recompiler_backends on a host that has no x86-64 back end, or for words that it leaves to LLVM: nothing to compare
+# recompiler_backends on a host that has no native back end, or for words that it leaves to LLVM: nothing to compare
 get_property(snx_tests DIRECTORY PROPERTY TESTS)
 foreach(snx_test IN LISTS snx_tests)
     if(snx_test MATCHES "^recompiler_backends(_|$)")
