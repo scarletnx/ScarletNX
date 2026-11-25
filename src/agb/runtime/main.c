@@ -439,7 +439,7 @@ int snx_agb_main(int argc, char** argv) {
         if (frames < 0) {
             char* title = snx_format("ScarletNX - %s (GBA)", board.cartridge.title[0] ? board.cartridge.title : name);
             vpad_set_say(agb_host_say);
-            vpad_settings(ini, argc, argv);
+            vpad_settings(folder, name, argc, argv);
             host = agb_host_open(title, ini, fullscreen, error, sizeof error);
             free(title);
             if (!host) {

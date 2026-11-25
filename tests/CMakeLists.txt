@@ -2716,6 +2716,9 @@ add_executable(snx-test-vpad-console vpad_console.c)
 snx_test_target(snx-test-vpad-console c23)
 target_link_libraries(snx-test-vpad-console PRIVATE snx_vpad scarletnx-common)
 add_test(NAME vpad_console COMMAND snx-test-vpad-console)
+set(vpad_home "${CMAKE_CURRENT_BINARY_DIR}/vpad-console-home") # a home of its own: the config folder each system keeps
+set_tests_properties(vpad_console PROPERTIES ENVIRONMENT
+    "SNX_TEST_HOME=${vpad_home};HOME=${vpad_home};XDG_DATA_HOME=${vpad_home}/data;XDG_CONFIG_HOME=${vpad_home}/config;APPDATA=${vpad_home}")
 # the layer's quads as rectangles, for the windows with no pipeline of their own (common/utilities/ui_rects.c): each pixel
 # the one ui.frag writes
 add_executable(snx-test-ui-rects ui_rects.c support/ui_shape_ref.c)

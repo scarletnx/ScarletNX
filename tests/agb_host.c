@@ -126,7 +126,7 @@ static long controls_read(AgbHost* host, SDL_Window* window, size_t* count) {
     return bad;
 }
 
-static int controls(AgbHost* host, SDL_Window* window, const char* ini) {
+static int controls(AgbHost* host, SDL_Window* window, const char* dir, const char* ini) {
     static const struct {
         int control;
         uint16_t key;
@@ -214,7 +214,7 @@ static int controls(AgbHost* host, SDL_Window* window, const char* ini) {
     CHECK(vpad_test_finger(window, SDL_EVENT_FINGER_UP, 77, 21, 480, 320) && !keys(host));
     vpad_console(&agb_host_pad); /* the defaults, as a run starts */
     CHECK(vpad_config()->at[SNX_VPAD_A].x > 0.9f);
-    vpad_settings(ini, 0, NULL);
+    vpad_settings(dir, "a game", 0, NULL);
     CHECK(vpad_config()->at[SNX_VPAD_A].x == 0.5f && vpad_config()->at[SNX_VPAD_A].y == 0.5f);
     /* Esc ends it too, and is no press of the quit key */
     CHECK(vpad_test_key(window, SDLK_F2) && !keys(host) && vpad_editing());
@@ -265,7 +265,7 @@ int main(void) {
     }
     SDL_Window* window = windows[0];
     SDL_free(windows);
-    int failed = controls(host, window, ini); /* before a notice is over the frame */
+    int failed = controls(host, window, dir, ini); /* before a notice is over the frame */
     if (!esc(host, SDL_KMOD_LCTRL, false) || !esc(host, SDL_KMOD_LALT, false) || !esc(host, SDL_KMOD_LGUI, false) ||
         !esc(host, SDL_KMOD_NONE, false)) {
         fprintf(stderr, "agb_host: Esc's first press closed the window\n");

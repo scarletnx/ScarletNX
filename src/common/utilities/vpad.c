@@ -361,8 +361,9 @@ static void settings_args(int argc, char** argv) {
         if (value && setting(key)) setting_read(setting(key), value);
     }
 }
-void vpad_settings(const char* ini, int argc, char** argv) {
-    char* picks = snx_game_picks(ini);
+void vpad_settings(const char* folder, const char* name, int argc, char** argv) {
+    char *ini = snx_format("%s/%s.ini", folder, name), *settings = snx_game_ini(folder, name);
+    char* picks = snx_game_picks(settings);
     int i, launcher = 0;
     for (i = 1; i < argc; ++i)
         if (launcher_picks(argv[i]) >= 0) launcher = launcher_picks(argv[i]);
@@ -372,6 +373,8 @@ void vpad_settings(const char* ini, int argc, char** argv) {
     settings_file(picks);
     if (!launcher) settings_args(argc, argv);
     free(picks);
+    free(settings);
+    free(ini);
 }
 
 /* a control's rectangle (x, y, w, h) on a clear part of safe: its look's shape, its longer side size */
