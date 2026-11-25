@@ -295,13 +295,9 @@ u32 nvn_replay_syncpt(u32 queue) {
 }
 u32 nvn_replay_shown_syncpt(void) { return 0; }
 void nvn_replay_finish(u32 queue) { (void)queue; }
-/* the wait for every queue's submitted work: how often it ran, and the descriptor at g_finish_at as it was then */
-static u32 g_finish_all, g_finish_saw[8];
-static u64 g_finish_at;
-void nvn_replay_finish_all(void) {
-    g_finish_all++;
-    if (g_finish_at) memcpy(g_finish_saw, GP(g_finish_at), sizeof g_finish_saw);
-}
+/* the wait for every queue's submitted work, which a descriptor's write takes only where the replay's order can't */
+static u32 g_finish_all;
+void nvn_replay_finish_all(void) { g_finish_all++; }
 /* the writes recorded for the renderer: how many, and the last one's range */
 static u32 g_written;
 static u64 g_written_at, g_written_size;
@@ -310,6 +306,18 @@ void gpu_mem_written_cpu(u64 cpu, u64 size) {
     g_written_at = cpu;
     g_written_size = size;
 }
+/* a descriptor's write in the replay's order: how many, and the descriptor at g_ordered_at as the work queued before it
+   reads it. Here it lands at once, as with nothing left to replay */
+static u32 g_ordered, g_ordered_saw[8];
+static u64 g_ordered_at;
+int nvn_replay_write(u64 gva, const void* data, u32 len) {
+    g_ordered++;
+    if (g_ordered_at == gva) memcpy(g_ordered_saw, GP(gva), sizeof g_ordered_saw);
+    memcpy(GP(gva), data, len);
+    gpu_mem_written_cpu(gva, len);
+    return 1;
+}
+u32 nvn_replay_writes_pending(void) { return 0; }
 void nvn_replay_wait(u32 queue, const NvnSync* sync) {
     (void)queue;
     (void)sync;
@@ -1233,35 +1241,36 @@ static void test_sampler(void) {
         check((w2 & 0xfff) == 0 && (w2 >> 12 & 0xfff) == 15u * 256, "a reserved sampler's LOD range");
     }
     u64 slot = POOL_MEM + 0x40000 + 32 * 3;
-    u32 waits = g_finish_all, written = g_written, tsc_new[8];
+    u32 waits = g_ordered, finishes = g_finish_all, written = g_written, tsc_new[8];
     nvn_SamplerPoolRegisterSamplerBuilder(NULL, SAMPLER_P, 3, SAMPLER_B);
     nvn_SamplerPoolRegisterSampler(NULL, SAMPLER_P, 4, SAMPLER);
     memcpy(tsc_b, GP(slot), 32);
     memcpy(tsc_s, GP(POOL_MEM + 0x40000 + 32 * 4), 32);
     check(!memcmp(tsc_b, tsc_s, 32), "RegisterSamplerBuilder writes the sampler's descriptor");
-    check(g_finish_all == waits + 2 && g_written == written + 2 && g_written_at == slot + 32 && g_written_size == 32,
-          "a descriptor over an empty one waits for the submitted work and is recorded");
+    check(g_ordered == waits + 2 && g_written == written + 2 && g_written_at == slot + 32 && g_written_size == 32,
+          "a descriptor over an empty one goes into the replay's order and is recorded");
     /* the descriptor a slot already holds: nothing changes for the work in flight, so no wait and no write */
     nvn_SamplerPoolRegisterSamplerBuilder(NULL, SAMPLER_P, 3, SAMPLER_B);
     nvn_SamplerPoolRegisterSampler(NULL, SAMPLER_P, 3, SAMPLER);
-    check(g_finish_all == waits + 2 && g_written == written + 2, "the same descriptor again waits for nothing");
+    check(g_ordered == waits + 2 && g_written == written + 2, "the same descriptor again is no write");
     /* another over it: the submitted work is done while the slot still holds the one it read */
     nvn_SamplerBuilderSetLodClamp(NULL, SAMPLER_B, 2.0f, 2.0f);
-    g_finish_at = slot;
+    g_ordered_at = slot;
     nvn_SamplerPoolRegisterSamplerBuilder(NULL, SAMPLER_P, 3, SAMPLER_B);
     memcpy(tsc_new, GP(slot), 32);
-    check(g_finish_all == waits + 3 && !memcmp(g_finish_saw, tsc_b, 32) && memcmp(tsc_new, tsc_b, 32) != 0,
-          "a builder's descriptor over another waits before it is written");
+    check(g_ordered == waits + 3 && !memcmp(g_ordered_saw, tsc_b, 32) && memcmp(tsc_new, tsc_b, 32) != 0,
+          "a builder's descriptor over another is queued while the slot holds the old one");
     check(g_written == written + 3 && g_written_at == slot && g_written_size == 32, "and its 32 bytes are recorded");
     nvn_SamplerPoolRegisterSampler(NULL, SAMPLER_P, 3, SAMPLER);
-    check(g_finish_all == waits + 4 && !memcmp(g_finish_saw, tsc_new, 32) && !memcmp(GP(slot), tsc_b, 32),
-          "a sampler's descriptor over another waits before it is written");
+    check(g_ordered == waits + 4 && !memcmp(g_ordered_saw, tsc_new, 32) && !memcmp(GP(slot), tsc_b, 32),
+          "a sampler's descriptor over another is queued while the slot holds the old one");
+    check(g_finish_all == finishes, "and no sampler's write waits for the replay");
     check(g_written == written + 4 && g_written_at == slot && g_written_size == 32, "and its 32 bytes are recorded");
-    g_finish_at = 0;
+    g_ordered_at = 0;
 }
-/* a texture's descriptor over another, which the work submitted before and not replayed yet reads as it binds: it is
-   done while the slot still holds the one it was submitted with, as with a sampler's. The one the slot holds already
-   waits for nothing */
+/* a texture's descriptor over another, which the work submitted before and not replayed yet reads as it binds: it goes
+   into the replay's order, which that work reads the old one before, as a sampler's does. The one the slot holds
+   already is no write */
 static void test_texture_pool_waits(void) {
     const u64 tp = SCRATCH + 0x100, a = SCRATCH + 0x200, b = a + sizeof(NvnTexture), slot = POOL_MEM + 0x40400 + 32 * 2;
     u32 first[8], second[8], zero[8] = {0};
@@ -1277,23 +1286,24 @@ static void test_texture_pool_waits(void) {
     memcpy(GP(b), &t, sizeof t);
     memset(GP(POOL_MEM + 0x40400), 0, 8 * 32);
     check(nvn_TexturePoolInitialize(NULL, tp, POOL, 0x40400, 8), "a texture pool");
-    u32 waits = g_finish_all, written = g_written;
-    g_finish_at = slot;
+    u32 waits = g_ordered, written = g_written, finishes = g_finish_all;
+    g_ordered_at = slot;
     nvn_TexturePoolRegisterTexture(NULL, tp, 2, a, 0);
     memcpy(first, GP(slot), 32);
-    check(memcmp(first, zero, 32) != 0 && g_finish_all == waits + 1 && !memcmp(g_finish_saw, zero, 32),
-          "a texture's descriptor over an empty one waits before it is written");
+    check(memcmp(first, zero, 32) != 0 && g_ordered == waits + 1 && !memcmp(g_ordered_saw, zero, 32),
+          "a texture's descriptor over an empty one goes into the replay's order");
     nvn_TexturePoolRegisterTexture(NULL, tp, 2, b, 0);
     memcpy(second, GP(slot), 32);
-    check(memcmp(second, first, 32) != 0 && g_finish_all == waits + 2 && !memcmp(g_finish_saw, first, 32),
-          "a texture's descriptor over another waits before it is written");
+    check(memcmp(second, first, 32) != 0 && g_ordered == waits + 2 && !memcmp(g_ordered_saw, first, 32),
+          "a texture's descriptor over another is queued while the slot holds the old one");
     check(g_written == written + 2 && g_written_at == slot && g_written_size == 32, "and its 32 bytes are recorded");
     nvn_TexturePoolRegisterTexture(NULL, tp, 2, b, 0);
-    check(g_finish_all == waits + 2 && g_written == written + 2, "the same texture again waits for nothing");
+    check(g_ordered == waits + 2 && g_written == written + 2, "the same texture again is no write");
     nvn_TexturePoolRegisterTexture(NULL, tp, 2, 0, 0);
-    check(g_finish_all == waits + 3 && !memcmp(g_finish_saw, second, 32) && !memcmp(GP(slot), zero, 32),
-          "no texture over one waits before it is written");
-    g_finish_at = 0;
+    check(g_ordered == waits + 3 && !memcmp(g_ordered_saw, second, 32) && !memcmp(GP(slot), zero, 32),
+          "no texture over one is queued while the slot holds the old one");
+    check(g_finish_all == finishes, "and no texture's write waits for the replay");
+    g_ordered_at = 0;
 }
 
 /* ---- events, programs, syncs */

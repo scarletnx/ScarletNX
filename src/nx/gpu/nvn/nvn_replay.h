@@ -37,6 +37,14 @@ void nvn_replay_finish(u32 queue);
    queue stopped at a wait that only the game ends (an event it signals, a sync it has not fenced yet) is not waited
    for, nor is the work behind that wait. The console's GPU stands at such a wait too */
 void nvn_replay_finish_all(void);
+/* A descriptor the game writes over another (nvn_object.c's texture_write, sampler_write): len bytes (32 at most) at
+   gva, written where the console's GPU reads them, in place of a wait for the replay. The work queued before it in
+   every queue reads what it replaced, unless it stops at a wait first, as the console's GPU reads after its wait what
+   the CPU wrote meanwhile; the work queued after it reads it. 0 when it can't be so (no free work slots, the writes'
+   ring full): the caller waits for the replay (nvn_replay_finish_all) and writes it. nvn_replay_writes_pending: writes
+   queued, not landed */
+int nvn_replay_write(u64 gva, const void* data, u32 len);
+u32 nvn_replay_writes_pending(void);
 /* A window texture to show: its storage's GPU address (0: black), size, the vi pixel format and layout of its bytes
    (block height log2 for a block-linear one, row pitch for a pitch-linear one), the crop (left, top, right, bottom;
    all 0 for the whole texture), its flips as vi takes them (FlipV 2), for the renderer's display times and holds
@@ -62,6 +70,8 @@ u32 nvn_replay_present(u32 queue, const NvnReplayPresent* p, u32* shown);
 #define NVN_EFFECTS     1024
 #define NVN_JOBS        512
 #define NVN_JOB_HANDLES 512
+/* descriptor writes queued at once (nvn_replay_write): one Ounce game writes about 90 a frame over its 5 queues */
+#define NVN_WRITES 4096
 /* a queue's replay state: its rendering and copy state (gpu/nvn/nvn_draw.c, nvn_copy.c), and the syncpoint its
    fences count */
 typedef struct {
@@ -85,6 +95,8 @@ typedef struct {
     u32 queue, kind, n;
     u32 handle, depth, waiting, present_order;
     u64 serial;
+    u64 seq;     /* the order it was queued in, across the queues (nvn_replay.c's job) */
+    u32 applied; /* a JOB_WRITE its lane reached: handles[0] is its group (nvn_replay.c's writes_land) */
     u8* snapshot; /* retained command bytes for a submission that can yield before its fences */
     NvnReplayWait wait;
     struct {
@@ -109,6 +121,18 @@ typedef struct {
     u32 present_submitted, present_walked; /* the shared shown syncpoint requires global present order */
     _Atomic u64 submitted, walked;         /* nvn_replay_submitted and nvn_replay_walked */
     u32 settled; /* nvn_replay_finish_all's syncpoint: up by one as each of its waits ends, 0 before the first */
+    u64 job_seq; /* the last work's seq */
+    /* the descriptors written in the replay's order (nvn_replay_write), in a ring: each in a group, whose JOB_WRITE in
+       each live queue's lane holds that lane's later work back until it lands. Groups land in their order. The open
+       one takes more writes while no work was queued after its markers */
+    struct {
+        u64 gva, group;
+        u32 len;
+        u8 data[32];
+    } wq[NVN_WRITES];
+    u32 wq_head, wq_count;
+    u64 group_next, group_open, group_open_seq, group_landed;
+    _Atomic u32 writes; /* written, not landed (nvn_replay_writes_pending) */
 } NvnReplayState;
 
 #endif

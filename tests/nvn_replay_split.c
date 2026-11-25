@@ -265,6 +265,10 @@ static void held(const void* arg, u64 bytes) {
     pthread_mutex_unlock(&gate_lock);
 }
 
+/* a descriptor write's landing, recorded for the renderer (nvn_replay.c's write_land): nothing keeps them here */
+void gpu_mem_written_cpu(u64 cpu, u64 size) {
+    (void)cpu, (void)size;
+}
 int main(void) {
     g_front = pthread_self();
     g_settings.gpu_split = 1;
