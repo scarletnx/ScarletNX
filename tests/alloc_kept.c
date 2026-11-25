@@ -59,6 +59,7 @@ void fatal(const char* format, ...) {
 u64 mem_find_free(u64 lo, u64 hi, u64 size, u64 align) { return (void)lo, (void)hi, (void)size, (void)align, 0; }
 int mem_map(u64 addr, u64 size, u32 state, u32 perm) { return (void)addr, (void)size, (void)state, (void)perm, -1; }
 int mem_unmap(u64 addr, u64 size) { return (void)addr, (void)size, 0; }
+void mem_wrote(u64 a, u64 size) { (void)a, (void)size; }
 
 /* ---- the instructions */
 static void put(u32 w) {

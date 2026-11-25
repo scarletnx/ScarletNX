@@ -371,6 +371,7 @@ void libc_qsort(CPU* c, u64 base, u64 n, u64 size, u64 fn) {
     if (!n || !size) return;
     g_cmp = (CmpCtx){c, fn};
     qsort(S(base), (size_t)n, (size_t)size, cmp_guest);
+    mem_wrote(base, n * size); /* the host moved the elements: the write marks see them as the game's own */
     g_cmp = was;
 }
 u64 libc_bsearch(CPU* c, u64 key, u64 base, u64 n, u64 size, u64 fn) {

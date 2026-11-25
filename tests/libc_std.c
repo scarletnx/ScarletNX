@@ -13,7 +13,10 @@
 #include <stdlib.h>
 #include <string.h>
 /* memory/mem.c: no write marks here (weak: a test that links mem.c takes its own) */
-[[gnu::weak]] void mem_wrote(u64 a, u64 size) { (void)a, (void)size; }
+static struct {
+    u64 a, size;
+} g_marked; /* the last range the write marks were told of */
+[[gnu::weak]] void mem_wrote(u64 a, u64 size) { g_marked.a = a, g_marked.size = size; }
 
 #define ERRNO_AT 0x100u /* where the test's __errno_location says errno is */
 #define CMP_FN   0x40u  /* the guest's comparison function's address, as the test answers it */
@@ -107,6 +110,7 @@ int main(void) {
     i32 v[6] = {5, -1, 3, 9, 0, 3};
     for (int i = 0; i < 6; i++) snx_st_le32(g_mem + 0x6000 + 4 * i, (u32)v[i]);
     libc_qsort(c, 0x6000, 6, 4, CMP_FN);
+    assert(g_marked.a == 0x6000 && g_marked.size == 24); /* the host moved the elements: the write marks are told */
     for (int i = 1; i < 6; i++)
         assert((i32)snx_ld_le32(g_mem + 0x6000 + 4 * i) >= (i32)snx_ld_le32(g_mem + 0x6000 + 4 * (i - 1)));
     snx_st_le32(g_mem + 0x6100, 9);

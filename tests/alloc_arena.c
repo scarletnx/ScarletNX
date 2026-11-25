@@ -76,6 +76,10 @@ int mem_map(u64 addr, u64 size, u32 state, u32 perm) {
     return mprotect(g_mem + addr, (size_t)size, PROT_READ | PROT_WRITE) ? MEM_NOMEM : 0;
 }
 int mem_unmap(u64 addr, u64 size) { return mprotect(g_mem + addr, (size_t)size, PROT_NONE) ? -1 : 0; }
+static struct {
+    u64 a, size;
+} g_marked; /* the last range the write marks were told of */
+void mem_wrote(u64 a, u64 size) { g_marked.a = a, g_marked.size = size; }
 
 int main(void) {
     CPU c;
@@ -93,8 +97,13 @@ int main(void) {
     memset(g_mem + p, 0xAB, 100);
     u64 z = alloc_calloc(&c, 50, 4);
     for (int i = 0; i < 200; i++) assert(g_mem[z + i] == 0);
+    /* the arena wrote the zeros and the moved bytes, not the game's code: the write marks are told */
+    assert(g_marked.a == z && g_marked.size == 200);
     u64 q = alloc_realloc(&c, p, 100000);
     assert(q >= WINDOW && g_mem[q] == 0xAB && g_mem[q + 99] == 0xAB);
+    assert(q == p || (g_marked.a == q && g_marked.size >= 100 && g_marked.size <= 100000));
+    g_marked.size = 0;
+    assert(alloc_malloc(&c, 100) >= WINDOW && !g_marked.size); /* a block with no bytes of its own marks nothing */
     u64 a = alloc_new_aligned(&c, 64, 4096);
     assert(a >= WINDOW && !(a & 4095));
     /* an alignment no block has (past 2^63, and no power of two) ends: the arena gives none, and the game's own
