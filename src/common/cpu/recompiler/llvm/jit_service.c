@@ -1708,7 +1708,8 @@ int snx_jit_add_image(SnxJitService* s, const SnxCodeImage* image) {
     }
     for (size_t i = 1; r != &s->regions[0] && i <= SNX_JIT_IMAGES; ++i)
         if (!atomic_load_explicit(&s->regions[i].hi, memory_order_relaxed)) {
-            if (!r) r = &s->regions[i];
+            /* hi 0 and users: its removal waits for the batches that hold it, and frees its arrays after */
+            if (!r && !s->regions[i].users) r = &s->regions[i];
         } else if (lo < atomic_load_explicit(&s->regions[i].hi, memory_order_relaxed) &&
                    atomic_load_explicit(&s->regions[i].lo, memory_order_relaxed) < hi)
             r = &s->regions[0];
