@@ -512,7 +512,7 @@ static int emit_unit(SnxJitService* s, SnxCodegen* codegen, const char* table_na
             if (*object) return 0;
         }
     }
-    SnxIr* ir = snx_ir_new_jit("jit", s->config.opt, error, error_size);
+    SnxIr* ir = snx_ir_init(error, error_size) ? NULL : snx_ir_new_jit("jit", s->config.opt, error, error_size);
     if (!ir) return -1;
     LLVMValueRef* functions = (LLVMValueRef*)malloc(codegen->function_count * sizeof(*functions));
     if (!functions) {
@@ -1878,7 +1878,8 @@ SnxJitService* snx_jit_service_new(const SnxJitConfig* config, char* error, size
             snprintf(error, error_size, "the AOT entries are not in ascending order");
             return NULL;
         }
-    if (snx_ir_init(error, error_size)) return NULL;
+    /* LLVM starts at the first unit it has to make, where the host has a native back end (emit_unit) */
+    if (!snx_native_available() && snx_ir_init(error, error_size)) return NULL;
     SnxJitService* s = (SnxJitService*)calloc(1, sizeof(*s));
     if (!s) {
         snprintf(error, error_size, "out of memory");
