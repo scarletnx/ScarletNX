@@ -702,7 +702,8 @@ load's call), `sgx_a32_read` and `sgx_a32_write` move its bytes (`sgx_a32_read_l
 A block's entry checks what `block_begin` does (exit and syndrome cleared, R15 its address, CPSR.T and E clear) on a
 shared stub of the object; its end goes on to the block after it with a jump to that block's function where
 `nx/loader/module_arm.c` names it a successor (after the poll a backward one takes), past the entry's checks where
-nothing in the block can have changed them, and through them after an MSR that may set E. Each block is
+nothing in the block can have changed them, and through them after an MSR that may set E. Both ways of a CBZ are such
+jumps. Each block is
 `void A_xxxxxxxx(SnxArmCPU*)` of one ELF object (a COFF one on Windows), global and hidden as LLVM's are, so the two back
 ends' blocks call each other; a block LLVM makes gets an entry here that stores R15 and jumps to it. `module_arm.c` makes every A32
 block it can this way as it discovers it, on all the build's threads, and leaves LLVM's units only the blocks the

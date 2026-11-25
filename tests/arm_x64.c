@@ -1845,7 +1845,7 @@ static uint32_t chained_direct(SnxArmCPU* cpu, uint32_t import) {
 #define CHAINED_IMPORT 77u
 /* the blocks: a loop, SUBS R0, R0, #1 and BNE to it; after it MOV R2, #1; BX R1; MOV R2, #2; an import's stub, whose
    SVC's immediate is not the import's number; after it MOV R2, #3; BXEQ R1; an SVC that is no stub's. The Thumb ones:
-   SUBS R0, #1 and BNE to it; BX R1; a stub; after it MOVS R2, #4; IT EQ alone */
+   SUBS R0, #1 and BNE to it; BX R1; a stub; after it MOVS R2, #4; IT EQ alone; CBZ R0 to MOVS R2, #5, past MOVS R2, #6 */
 enum {
     C_LOOP = 0x1000,
     C_AFTER = 0x1008,
@@ -1859,7 +1859,10 @@ enum {
     C_TBX = 0x1701,
     C_TSTUB = 0x1801,
     C_TPAST = 0x1803,
-    C_TIT = 0x1901
+    C_TIT = 0x1901,
+    C_TCBZ = 0x1A01,
+    C_TNONZERO = 0x1A03,
+    C_TZERO = 0x1A09
 };
 static const struct {
     uint32_t key;
@@ -1879,6 +1882,9 @@ static const struct {
     {C_TSTUB, {0x05, 0xdf}, 1},
     {C_TPAST, {0x04, 0x22}, 1},
     {C_TIT, {0x08, 0xbf}, 1},
+    {C_TCBZ, {0x10, 0xb1}, 1},
+    {C_TNONZERO, {0x06, 0x22}, 1},
+    {C_TZERO, {0x05, 0x22}, 1},
 };
 #define CHAINED_BLOCKS (sizeof chained_blocks / sizeof *chained_blocks)
 /* every block that may come next is one of them, but the targets only R1 or the table names */
@@ -1889,6 +1895,7 @@ static size_t chained_next(void* user, uint32_t key, size_t units, size_t count,
         case C_STUB: keys[0] = C_PAST; return 1;
         case C_TLOOP: keys[0] = C_TLOOP; return 1;
         case C_TSTUB: keys[0] = C_TPAST; return 1;
+        case C_TCBZ: keys[0] = C_TZERO, keys[1] = C_TNONZERO; return 2;
         default: return 0;
     }
 }
@@ -1954,13 +1961,17 @@ static const ChainedCase chained_cases[] = {
      .end15 = C_TPAST + 1, .endt = SNX_ARM_T, .end_poll = 9, .calls = 1},
     {"a Thumb stub with no function", .entry = C_TSTUB, .poll = 9, .table = 1, .end15 = C_TPAST - 1, .endt = SNX_ARM_T,
      .end_poll = 9, .exit = SNX_ARM_SVC, .syndrome = CHAINED_IMPORT},
+    /* both ways known: each its own jump, no table's */
+    {"CBZ taken", .entry = C_TCBZ, .poll = 9, .end2 = 5, .end15 = C_TZERO + 1, .endt = SNX_ARM_T, .end_poll = 9},
+    {"CBZ not taken", .entry = C_TCBZ, .r0 = 1, .poll = 9, .end0 = 1, .end2 = 6, .end15 = C_TNONZERO + 1,
+     .endt = SNX_ARM_T, .end_poll = 9},
     /* IT EQ leaves ITSTATE 0x08 in CPSR: its dispatch loop's, whatever the table has */
     {"an IT block's end", .entry = C_TIT, .poll = 9, .key = C_TIT + 2, .block = C_MOV, .table = 1, .end15 = C_TIT + 1,
      .endt = SNX_ARM_T | 0x800, .end_poll = 9},
 };
 #define CHAINED_CASES (sizeof chained_cases / sizeof *chained_cases)
 static int chained_makes(uint32_t key) {
-    return !(key & 1) || key != C_TIT || thumb2(); /* IT is Thumb-2's */
+    return !(key & 1) || (key != C_TIT && key != C_TCBZ) || thumb2(); /* IT and CBZ are Thumb-2's */
 }
 #if defined(SNX_TEST_NATIVE)
 static void swap_chained(void* state) {

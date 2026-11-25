@@ -1921,6 +1921,7 @@ static size_t arm_code(MG_ARM* c, const unsigned char* code, size_t count, SnxU3
         g->pc = pc + 4 * (SnxU32)i;
         g->next = (SnxU32)g->pc + 4;
         g->branched = g->undefined = 0;
+        g->taken = 0;
         g->iset = 0;
         g->skip = -1;
         g->when = 0;
@@ -2131,7 +2132,8 @@ static size_t block(MG_ARM* c, const unsigned char* code, size_t count, SnxU32 p
         import_call(c, (pc + (thumb ? 2u : 4u)) | (SnxU32)thumb, nexts, nnext);
     else if (g->branched) {
         SgD t = g->target;
-        int tconst = sgx_is_const(&t), to_thumb = thumb;
+        SgB taken = g->taken;
+        int tconst = sgx_is_const(&t), to_thumb = thumb, other = -1;
         if (g->pending >> SG_PSTATE_T & 1) {
             SgD f = g->field[SG_PSTATE_T];
             if (sgx_is_const(&f))
@@ -2141,16 +2143,25 @@ static size_t block(MG_ARM* c, const unsigned char* code, size_t count, SnxU32 p
         }
         const int looked = !tconst && chained && c->options.lookup;
         if (!tconst) { /* a known target's R15 go_on's */
+            if (taken) t = sg_d_select(g, taken, t, sgx_const(32, g->next)), taken = 0;
             sgx_reg(x, &t);
             sgx_a32_pc(g, t);
         }
         if (it) cpsr_bits(g, 0, sgx_const(32, it));
+        if (taken) { /* two known ways, each its own */
+            other = sgx_a32_label(g);
+            sgx_a32_on(g, SGX_A32_JCC, sg_b_not(g, taken))->disp = other;
+        }
         if (looked) look_up(c, t, sg_PSTATE_read(g, SG_PSTATE_T), pc);
         flush(c);
         if (tconst)
             go_on(c, (SnxU32)t.k | (SnxU32)to_thumb, pc, nexts, nnext, it != 0, chained);
         else if (!looked)
             sgx_a32_jmp(g, b, g->ret);
+        if (other >= 0) {
+            sgx_a32_bind(g, b, other);
+            go_on(c, g->next | (SnxU32)thumb, pc, nexts, nnext, it != 0, chained);
+        }
     } else if (!g->undefined) {
         /* on, both ways past the skip */
         if (g->skip >= 0)
