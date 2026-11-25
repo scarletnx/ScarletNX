@@ -3,7 +3,7 @@
 # Copyright 2026 the ScarletNX contributors
 """Which of the recompiler's long tests a change calls for: the paths it changes, on standard input, a line each.
 
-    git diff --name-only HEAD^1 HEAD | scripts/recompiler-changes.py >> "$GITHUB_OUTPUT"
+    git diff --name-only BASE | scripts/recompiler-changes.py >> "$GITHUB_OUTPUT"
 
 It prints an answer a line, as a step's outputs, and on standard error which paths called for it:
 
