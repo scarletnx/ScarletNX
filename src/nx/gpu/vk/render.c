@@ -2365,8 +2365,8 @@ int vk_image_key(const ShaderInfo* si, int i, const u32* tic) {
 }
 
 VkImageView vk_storage_image_view(Surf* t, const ShaderInfo* si, int i, u64* bytes) {
-    /* a hosted target: a host's image has no storage usage (docs/dev/one-image.md) */
-    if (t && t->host && !vk_rt_own(t)) return VK_NULL_HANDLE;
+    /* a hosted surface: vk_tex_storage_view writes its host's image where that has storage usage, else gives it an
+       image of its own (docs/dev/one-image.md) */
     int volume = si->img[i].type == 5;
     int kind = si->img[i].kind;
     *bytes = vk_surf_guest_size(t);

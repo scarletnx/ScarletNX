@@ -620,6 +620,9 @@ int vk_rt_drawn_fresh_in(Surf* s, u64 at, u64 size) {
     return vk_rt_drawn_fresh(s);
 }
 /* no target is hosted by a texture here (docs/dev/one-image.md) */
+void vk_tex_join(Surf* a, Surf* t, u32 level, u32 layer) {
+    (void)a, (void)t, (void)level, (void)layer;
+}
 void vk_tex_unhost(Surf* t) {
     (void)t;
 }

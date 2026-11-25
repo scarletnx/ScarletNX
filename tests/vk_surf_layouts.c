@@ -219,6 +219,7 @@ u64 vk_tex_demote(Surf* t) { STUB(); }
 void vk_devmem_budgets(DevMemBudget* b) { STUB(); }
 u32 vk_mem_owner_prio(u32 owner) { STUB(); }
 void vk_tex_evicted(const Surf* t) { STUB(); }
+int vk_tex_image_own(Surf* s, VkImage* img, DevMem* mem, u64* bytes) { STUB(); }
 int vk_tex_finer(Surf* t) { STUB(); }
 void vk_tex_later_forget(Surf* s) { STUB(); }
 void vk_tex_note_writeback(Surf* s) { STUB(); }
