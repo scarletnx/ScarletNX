@@ -8,7 +8,7 @@
    FPSR are drawn too (round to nearest or not, FZ, DN, IXC set or clear). With the host's extensions and in the
    portable form, which has no FMA on x86. The instructions whose fast paths don't take the host's rounding (the
    FRINTs and FCVTs to integers, the estimates) run in each of the host's rounding modes too */
-#include "llvm_steps.h"
+#include "steps.h"
 #include <fenv.h>
 #include <stdio.h>
 #include <string.h>
@@ -146,20 +146,20 @@ static u64 get_lane(const V128* v, int width, int i) { return width == 32 ? v->s
    just past them, of either sign, in a lane with three other values, in each host rounding mode */
 static unsigned estimates(int portable) {
     static const u32 words[] = {0x4EA1D820u, 0x6EA1D820u, 0x5EA1D820u, 0x7EA1D820u}; /* RECPE, RSQRTE: 4S, S */
-    LlvmSteps steps;
+    Steps steps;
     char error[1024];
     unsigned checks = 0, k, dbl, top, e, m;
     u64 seed = 0x2545F4914F6CDD1Dull;
-    if (llvm_steps_begin(&steps, 1, portable, error, sizeof(error))) return snx_error("%s", error), 0;
+    if (steps_begin(&steps, 1, portable, error, sizeof(error))) return snx_error("%s", error), 0;
     for (k = 0; k < 4; k++)
-        for (dbl = 0; dbl < 2; dbl++) llvm_steps_add(&steps, words[k] | dbl << 22, 0x1000, 0);
-    if (llvm_steps_load(&steps, error, sizeof(error))) return snx_error("%s", error), 0;
+        for (dbl = 0; dbl < 2; dbl++) steps_add(&steps, words[k] | dbl << 22, 0x1000, 0);
+    if (steps_load(&steps, error, sizeof(error))) return snx_error("%s", error), 0;
     for (k = 0; k < 4; k++)
         for (dbl = 0; dbl < 2; dbl++) {
             int width = dbl ? 64 : 32, fbits = dbl ? 52 : 23, lanes = k >= 2 ? 1 : 128 / width;
             u64 emax = dbl ? 2047 : 255, bias = emax >> 1;
             u64 exps[] = {1, 2, bias - 1, bias, 2 * bias - 3, 2 * bias - 2, 2 * bias - 1, 2 * bias, emax - 1};
-            LlvmStep step = steps.steps[k * 2 + dbl];
+            Step step = steps_at(&steps, k * 2 + dbl);
             for (top = 0; top < 256; top++)
                 for (e = 0; e < sizeof exps / sizeof *exps; e++)
                     for (m = 0; m < 4; m++) {
@@ -181,8 +181,8 @@ static unsigned estimates(int portable) {
                         for (lane = 0; lane < lanes; lane++)
                             want[lane] = snx_fp_unary_c(&ref, get_lane(&c.v[1], width, lane), width,
                                                         k & 1 ? SNX_FP_RSQRTE : SNX_FP_RECPE);
-                        fesetround(g_host_modes[(top + e + m) % 4]);
-                        step(&c);
+                        fesetround(steps_host_mode(g_host_modes[(top + e + m) % 4]));
+                        step_run(step, &c);
                         fesetround(FE_TONEAREST);
                         checks++;
                         for (lane = 0; lane < lanes; lane++)
@@ -198,7 +198,7 @@ static unsigned estimates(int portable) {
                                     (unsigned long long)want[lane < lanes ? lane : 0], c.fpsr, ref.fpsr);
                     }
         }
-    llvm_steps_end(&steps);
+    steps_end(&steps);
     return checks;
 }
 
@@ -224,20 +224,19 @@ static unsigned round_ints(int portable) {
         int rm, intsize;
     } insns[] = {{"FRINT32Z", 0x4E21E820u, 3, 32}, {"FRINT32X", 0x6E21E820u, -1, 32},
                  {"FRINT64Z", 0x4E21F820u, 3, 64}, {"FRINT64X", 0x6E21F820u, -1, 64}};
-    LlvmSteps steps;
+    Steps steps;
     char error[1024];
     unsigned checks = 0, k, i;
     u64 seed = 0xC2B2AE3D27D4EB4Full;
-    if (llvm_steps_begin(&steps, 1, portable, error, sizeof(error))) return snx_error("%s", error), 0;
+    if (steps_begin(&steps, 1, portable, error, sizeof(error))) return snx_error("%s", error), 0;
     for (k = 0; k < 4; k++)
         for (unsigned dbl = 0; dbl < 2; dbl++)
-            llvm_steps_add(&steps, insns[k].word | dbl << 22, 0x1000,
-                           SNX_A64_TARGET_SWITCH | SNX_A64_FEAT_FRINTTS);
-    if (llvm_steps_load(&steps, error, sizeof(error))) return snx_error("%s", error), 0;
+            steps_add(&steps, insns[k].word | dbl << 22, 0x1000, SNX_A64_TARGET_SWITCH | SNX_A64_FEAT_FRINTTS);
+    if (steps_load(&steps, error, sizeof(error))) return snx_error("%s", error), 0;
     for (k = 0; k < 4; k++)
         for (unsigned dbl = 0; dbl < 2; dbl++) {
             int width = dbl ? 64 : 32, lanes = 128 / width;
-            LlvmStep step = steps.steps[k * 2 + dbl];
+            Step step = steps_at(&steps, k * 2 + dbl);
             for (i = 0; i < 10000; i++) {
                 CPU c, ref;
                 RtAPI rt = {.cas128 = snx_runtime_cas128};
@@ -257,8 +256,8 @@ static unsigned round_ints(int portable) {
                     want[lane] = snx_fp_round_int_c(&ref, get_lane(&c.v[1], width, lane), width,
                                                     insns[k].rm < 0 ? (int)(fpcr >> 22 & 3) : insns[k].rm,
                                                     insns[k].intsize);
-                fesetround(g_host_modes[i % 4]);
-                step(&c);
+                fesetround(steps_host_mode(g_host_modes[i % 4]));
+                step_run(step, &c);
                 fesetround(FE_TONEAREST);
                 checks++;
                 for (lane = 0; lane < lanes; lane++)
@@ -275,7 +274,7 @@ static unsigned round_ints(int portable) {
                 }
             }
         }
-    llvm_steps_end(&steps);
+    steps_end(&steps);
     return checks;
 }
 
@@ -285,16 +284,15 @@ static unsigned bfcvts(int portable) {
     static const u32 words[] = {0x0EA16820u, 0x4EA16820u}; /* BFCVTN, BFCVTN2 (Rn 1, Rd 0) */
     static const u32 edges[] = {0x7F7FFFFFu, 0x7F7F8000u, 0x7F7F7FFFu, 0x7F800000u, 0x7F800001u, 0x7FC12345u,
                                 0xBF7FFFFFu, 0x00000001u, 0x00008000u, 0x80008000u, 0x3F808000u, 0x3F80FFFFu};
-    LlvmSteps steps;
+    Steps steps;
     char error[1024];
     unsigned checks = 0, k, i;
     u64 seed = 0x165667B19E3779F9ull;
-    if (llvm_steps_begin(&steps, 1, portable, error, sizeof(error))) return snx_error("%s", error), 0;
-    for (k = 0; k < 2; k++)
-        llvm_steps_add(&steps, words[k], 0x1000, SNX_A64_TARGET_SWITCH | SNX_A64_FEAT_BF16);
-    if (llvm_steps_load(&steps, error, sizeof(error))) return snx_error("%s", error), 0;
+    if (steps_begin(&steps, 1, portable, error, sizeof(error))) return snx_error("%s", error), 0;
+    for (k = 0; k < 2; k++) steps_add(&steps, words[k], 0x1000, SNX_A64_TARGET_SWITCH | SNX_A64_FEAT_BF16);
+    if (steps_load(&steps, error, sizeof(error))) return snx_error("%s", error), 0;
     for (k = 0; k < 2; k++) {
-        LlvmStep step = steps.steps[k];
+        Step step = steps_at(&steps, k);
         for (i = 0; i < 20000; i++) {
             CPU c, ref;
             RtAPI rt = {.cas128 = snx_runtime_cas128};
@@ -314,7 +312,7 @@ static unsigned bfcvts(int portable) {
             c.fpsr = fpsr;
             ref = c;
             for (lane = 0; lane < 4; lane++) want[lane] = snx_fp_bfcvt_c(&ref, get_lane(&c.v[1], 32, lane));
-            step(&c);
+            step_run(step, &c);
             checks++;
             for (lane = 0; lane < 4; lane++)
                 if (c.v[0].h[(k ? 4 : 0) + lane] != (u16)want[lane]) bad = 1;
@@ -329,28 +327,29 @@ static unsigned bfcvts(int portable) {
             }
         }
     }
-    llvm_steps_end(&steps);
+    steps_end(&steps);
     return checks;
 }
 
 int main(void) {
+    STEPS_REQUIRE();
     const char* forms[2] = {"the host's", "the portable"};
     unsigned checks = 0;
     int portable;
-    for (portable = 0; portable < 2; portable++) {
-        LlvmSteps steps;
+    for (portable = 0; portable < STEPS_FORMS(2); portable++) {
+        Steps steps;
         char error[1024];
         u64 seed = (u64)0x9E3779B9 << 32 | 0x7F4A7C15;
         size_t k;
         int dbl, i, lane;
-        if (llvm_steps_begin(&steps, 1, portable, error, sizeof(error))) return snx_error("%s", error);
+        if (steps_begin(&steps, 1, portable, error, sizeof(error))) return snx_error("%s", error);
         for (k = 0; k < NINSN; k++)
-            for (dbl = 0; dbl < 2; dbl++) llvm_steps_add(&steps, g_insns[k].word | (u32)dbl << 22, 0x1000, 0);
-        if (llvm_steps_load(&steps, error, sizeof(error))) return snx_error("%s", error);
+            for (dbl = 0; dbl < 2; dbl++) steps_add(&steps, g_insns[k].word | (u32)dbl << 22, 0x1000, 0);
+        if (steps_load(&steps, error, sizeof(error))) return snx_error("%s", error);
         for (k = 0; k < NINSN; k++)
             for (dbl = 0; dbl < 2; dbl++) {
                 int width = dbl ? 64 : 32, lanes = g_insns[k].scalar ? 1 : 128 / width;
-                LlvmStep step = steps.steps[k * 2 + (size_t)dbl];
+                Step step = steps_at(&steps, k * 2 + (size_t)dbl);
                 for (i = 0; i < 20000; i++) {
                     CPU c, ref;
                     RtAPI rt = {.cas128 = snx_runtime_cas128};
@@ -381,8 +380,9 @@ int main(void) {
                                          ? snx_fp_minmax_c(&ref, n, m, width, (op - MINMAX) & 1, (op - MINMAX) >> 1)
                                          : snx_fp_binary_c(&ref, n, m, width, op);
                     }
-                    if (g_insns[k].op >= UNARY) fesetround(g_host_modes[i % 4]); /* the estimates' own rounding */
-                    step(&c);
+                    if (g_insns[k].op >= UNARY)
+                        fesetround(steps_host_mode(g_host_modes[i % 4])); /* the estimates' own rounding */
+                    step_run(step, &c);
                     fesetround(FE_TONEAREST);
                     checks++;
                     for (lane = 0; lane < lanes; lane++)
@@ -404,15 +404,15 @@ int main(void) {
                     }
                 }
             }
-        llvm_steps_end(&steps);
-        if (llvm_steps_begin(&steps, 1, portable, error, sizeof(error))) return snx_error("%s", error);
+        steps_end(&steps);
+        if (steps_begin(&steps, 1, portable, error, sizeof(error))) return snx_error("%s", error);
         for (k = 0; k < NROUND; k++)
-            for (dbl = 0; dbl < 2; dbl++) llvm_steps_add(&steps, g_rounds[k].word | (u32)dbl << 22, 0x1000, 0);
-        if (llvm_steps_load(&steps, error, sizeof(error))) return snx_error("%s", error);
+            for (dbl = 0; dbl < 2; dbl++) steps_add(&steps, g_rounds[k].word | (u32)dbl << 22, 0x1000, 0);
+        if (steps_load(&steps, error, sizeof(error))) return snx_error("%s", error);
         for (k = 0; k < NROUND; k++)
             for (dbl = 0; dbl < 2; dbl++) {
                 int width = dbl ? 64 : 32, lanes = g_rounds[k].scalar ? 1 : 128 / width;
-                LlvmStep step = steps.steps[k * 2 + (size_t)dbl];
+                Step step = steps_at(&steps, k * 2 + (size_t)dbl);
                 for (i = 0; i < 20000; i++) {
                     CPU c, ref;
                     RtAPI rt = {.cas128 = snx_runtime_cas128};
@@ -423,7 +423,8 @@ int main(void) {
                     if (r & 8) fpcr = 0;          /* mostly round to nearest */
                     if (r & 16) fpcr |= 1u << 24; /* FZ */
                     if (r & 32) fpcr |= 1u << 25; /* DN */
-                    fesetround(g_host_modes[i % 4]); /* the generated code's rounding is the host's in none */
+                    fesetround(
+                        steps_host_mode(g_host_modes[i % 4])); /* the generated code's rounding is the host's in none */
                     for (lane = 0; lane < lanes; lane++) set_lane(&c.v[1], width, lane, round_value(&seed, width));
                     c.fpcr = fpcr;
                     c.fpsr = fpsr;
@@ -432,7 +433,7 @@ int main(void) {
                         want[lane] = snx_fp_round_c(&ref, get_lane(&c.v[1], width, lane), width,
                                                     g_rounds[k].rm < 0 ? (int)(fpcr >> 22 & 3) : g_rounds[k].rm,
                                                     g_rounds[k].exact);
-                    step(&c);
+                    step_run(step, &c);
                     fesetround(FE_TONEAREST);
                     checks++;
                     for (lane = 0; lane < lanes; lane++)
@@ -455,17 +456,17 @@ int main(void) {
                     }
                 }
             }
-        llvm_steps_end(&steps);
-        if (llvm_steps_begin(&steps, 1, portable, error, sizeof(error))) return snx_error("%s", error);
+        steps_end(&steps);
+        if (steps_begin(&steps, 1, portable, error, sizeof(error))) return snx_error("%s", error);
         for (k = 0; k < NCONVERT; k++)
             for (dbl = 0; dbl < 2; dbl++)
-                llvm_steps_add(&steps, g_converts[k].word | (u32)dbl << 22 | (u32)(dbl && g_converts[k].scalar) << 31,
-                               0x1000, 0);
-        if (llvm_steps_load(&steps, error, sizeof(error))) return snx_error("%s", error);
+                steps_add(&steps, g_converts[k].word | (u32)dbl << 22 | (u32)(dbl && g_converts[k].scalar) << 31,
+                          0x1000, 0);
+        if (steps_load(&steps, error, sizeof(error))) return snx_error("%s", error);
         for (k = 0; k < NCONVERT; k++)
             for (dbl = 0; dbl < 2; dbl++) {
                 int width = dbl ? 64 : 32, lanes = g_converts[k].scalar ? 1 : 128 / width;
-                LlvmStep step = steps.steps[k * 2 + (size_t)dbl];
+                Step step = steps_at(&steps, k * 2 + (size_t)dbl);
                 for (i = 0; i < 20000; i++) {
                     CPU c, ref;
                     RtAPI rt = {.cas128 = snx_runtime_cas128};
@@ -489,8 +490,8 @@ int main(void) {
                     for (lane = 0; lane < lanes; lane++)
                         want[lane] = snx_fp_to_int_c(&ref, get_lane(&c.v[1], width, lane), width, width,
                                                      g_converts[k].uns, 0, g_converts[k].rm);
-                    fesetround(g_host_modes[i % 4]);
-                    step(&c);
+                    fesetround(steps_host_mode(g_host_modes[i % 4]));
+                    step_run(step, &c);
                     fesetround(FE_TONEAREST);
                     checks++;
                     for (lane = 0; lane < lanes; lane++) {
@@ -513,11 +514,11 @@ int main(void) {
                     }
                 }
             }
-        llvm_steps_end(&steps);
+        steps_end(&steps);
         checks += estimates(portable);
         checks += round_ints(portable);
         checks += bfcvts(portable);
     }
-    printf("Vector FP fast paths through the LLVM steps: %u checks, %d failed\n", checks, failures);
+    printf("Vector FP fast paths through the %s steps: %u checks, %d failed\n", steps_name(), checks, failures);
     return failures != 0;
 }

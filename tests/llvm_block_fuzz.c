@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* Seeded multi-block programs against QEMU: flag joins, bounded loops, guest calls, memory, exclusives and SIMD/FP.
    The self-tests plant a stale flag or a wrong exclusive-loop update only in the translated copy. */
-#include "llvm_steps.h"
+#include "steps.h"
 #include "qemu_ref/qemu_ref.h"
 #include "llvm_qemu_words.h"
 #include "common/utilities/endian.h"
@@ -256,9 +256,9 @@ static int run(const char* qemu, const char* runner, const char* dir, unsigned c
     Program* programs = calloc(count, sizeof *programs);
     if (!programs) { free(g_corpus.words); return snx_error("cannot allocate the block corpus"); }
     SnxQrefBatch batch = {0};
-    LlvmSteps steps;
+    Steps steps;
     char error[1024];
-    if (llvm_steps_begin_opt(&steps, jit, portable, opt, error, sizeof error)) {
+    if (steps_begin_opt(&steps, jit, portable, opt, error, sizeof error)) {
         free(programs);
         free(g_corpus.words);
         return snx_error("%s", error);
@@ -268,8 +268,8 @@ static int run(const char* qemu, const char* runner, const char* dir, unsigned c
     for (unsigned i = 0; i < count; ++i) {
         Program* p = &programs[i];
         generate(p, i, &rng, mutant, hook);
-        llvm_steps_add_function(&steps, &p->codegen, &p->functions[0]);
-        llvm_steps_add_function(&steps, &p->codegen, &p->functions[1]);
+        steps_add_function(&steps, &p->codegen, &p->functions[0]);
+        steps_add_function(&steps, &p->codegen, &p->functions[1]);
         for (unsigned n = 0; n < STATES; ++n) {
             SnxQrefCase c = {.window_size = MEMORY, .seed_kind = SNX_QREF_SEED_RANDOM,
                 .seed = seed, .code = p->module.base, .code_size = 0x1000, .pc = p->module.base,
@@ -277,7 +277,10 @@ static int run(const char* qemu, const char* runner, const char* dir, unsigned c
             if (snx_qref_add(&batch, &c, p->words, WORDS, NULL, 0) < 0) failed = 1;
         }
     }
-    if (!failed && llvm_steps_load(&steps, error, sizeof error)) { fprintf(stderr, "%s\n", error); failed = 1; }
+    if (!failed && steps_load(&steps, error, sizeof error)) {
+        fprintf(stderr, "%s\n", error);
+        failed = 1;
+    }
     if (!failed && snx_qref_run(&batch, qemu, runner, "cortex-a57", dir, error, sizeof error)) {
         fprintf(stderr, "%s\n", error);
         failed = 1;
@@ -285,9 +288,7 @@ static int run(const char* qemu, const char* runner, const char* dir, unsigned c
     unsigned mismatches = 0;
     for (unsigned i = 0; i < count && !failed; ++i) {
         Program* p = &programs[i];
-        GuestFn root, helper;
-        memcpy(&root, &steps.steps[i * 2], sizeof root);
-        memcpy(&helper, &steps.steps[i * 2 + 1], sizeof helper);
+        GuestFn root = steps_function(&steps, i * 2), helper = steps_function(&steps, i * 2 + 1);
         _Atomic GuestFn dispatch[WORDS] = {0};
         dispatch[0] = root;
         dispatch[HELPER_WORD] = helper;
@@ -333,7 +334,7 @@ static int run(const char* qemu, const char* runner, const char* dir, unsigned c
             }
         }
     }
-    llvm_steps_end(&steps);
+    steps_end(&steps);
     snx_qref_free(&batch);
     free(programs);
     unsigned families = 0;
@@ -353,6 +354,7 @@ static int run(const char* qemu, const char* runner, const char* dir, unsigned c
 }
 
 int main(int argc, char** argv) {
+    STEPS_REQUIRE();
     if (argc == 3 && !strcmp(argv[1], "--skip")) { printf("Skipped: %s\n", argv[2]); return 77; }
     if (argc < 4) return snx_error("usage: llvm_block_fuzz QEMU RUNNER DIR [--jit] [--portable] [--opt=0|2] "
                                   "[--hook] [--volatile] [--self-test|--self-test-exclusive] [--seed=N] [--programs=N]");
@@ -364,7 +366,9 @@ int main(int argc, char** argv) {
         if (!strcmp(argv[i], "--jit")) jit = 1;
         else if (!strcmp(argv[i], "--portable")) portable = 1;
         else if (!strcmp(argv[i], "--hook")) hook = 1;
+#ifndef SNX_TEST_NATIVE_STEPS /* what the LLVM back end alone has */
         else if (!strcmp(argv[i], "--volatile")) snx_ir_volatile_memory(1);
+#endif
         else if (!strcmp(argv[i], "--self-test")) { mutant = 1; count = 1; }
         else if (!strcmp(argv[i], "--self-test-exclusive")) { mutant = 2; count = 1; }
         else if (!strncmp(argv[i], "--opt=", 6) && strlen(argv[i]) == 7 && (argv[i][6] == '0' || argv[i][6] == '2'))

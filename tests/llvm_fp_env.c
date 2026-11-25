@@ -1,10 +1,19 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* A generated entry must normalize host control bits even after the bitcode helper is inlined. */
-#include "llvm_steps.h"
+#include "steps.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(SNX_TEST_NATIVE_STEPS) && (defined(__x86_64__) || defined(_M_X64))
+/* the native x86-64 code runs under the thread's MXCSR, which the runtime keeps at its default word (tools/sailgen/x64_a64.h):
+   this is that word's, with the exceptions' sticky flags clear and set */
+#define CONTROL_MODES   2
+#define CONTROL_MODE(n) ((n) ? 16u : 0)
+#else
+#define CONTROL_MODES   32
+#define CONTROL_MODE(n) (n)
+#endif
 #if defined(__x86_64__) || defined(_M_X64)
 #include <xmmintrin.h>
 static u64 host_control(void) { return _mm_getcsr(); }
@@ -27,11 +36,11 @@ static u64 altered(unsigned n) { (void)n; return 0; }
 #endif
 
 static int run(int jit, char opt, int benchmark) {
-    LlvmSteps steps;
+    Steps steps;
     char error[1024];
-    if (llvm_steps_begin_opt(&steps, jit, 0, opt, error, sizeof error)) return snx_error("%s", error);
-    llvm_steps_add(&steps, 0x4e22d420u, 0x1000, 0); /* FADD V0.4S,V1.4S,V2.4S requires the host environment. */
-    if (llvm_steps_load(&steps, error, sizeof error)) return snx_error("%s", error);
+    if (steps_begin_opt(&steps, jit, 0, opt, error, sizeof error)) return snx_error("%s", error);
+    steps_add(&steps, 0x4e22d420u, 0x1000, 0); /* FADD V0.4S,V1.4S,V2.4S requires the host environment. */
+    if (steps_load(&steps, error, sizeof error)) return snx_error("%s", error);
     CPU cpu = {0};
     cpu.pc = 0x1000;
     cpu.fpsr = 16;
@@ -41,10 +50,10 @@ static int run(int jit, char opt, int benchmark) {
     }
     u64 saved = host_control();
     int failed = 0;
-    for (unsigned n = 0; n < 32; n++) {
-        u64 input = altered(n);
+    for (unsigned n = 0; n < CONTROL_MODES; n++) {
+        u64 input = altered(CONTROL_MODE(n));
         host_set(input);
-        u64 next = steps.steps[0](&cpu), control = host_control();
+        u64 next = step_run(steps_at(&steps, 0), &cpu), control = host_control();
         int values = 1;
         for (unsigned lane = 0; lane < 4; lane++) values &= cpu.v[0].s[lane] == 0x3f800000;
         host_set(saved);
@@ -58,18 +67,19 @@ static int run(int jit, char opt, int benchmark) {
         host_set(default_control());
         u64 checksum = 0;
         double start = snx_seconds();
-        for (unsigned n = 0; n < 10000000; n++) checksum += steps.steps[0](&cpu);
+        for (unsigned n = 0; n < 10000000; n++) checksum += step_run(steps_at(&steps, 0), &cpu);
         double elapsed = snx_seconds() - start;
         host_set(saved);
         printf("{\"elapsed_ns\":%.0f,\"checksum\":\"%016llx\"}\n", elapsed * 1e9, (unsigned long long)checksum);
     }
-    llvm_steps_end(&steps);
+    steps_end(&steps);
     return failed;
 }
 int main(int argc, char** argv) {
+    STEPS_REQUIRE();
     if (argc > 1 && !strcmp(argv[1], "--bench")) return run(1, argc > 2 ? argv[2][0] : '2', 1);
     for (int jit = 0; jit < 2; jit++)
-        for (unsigned level = 0; level < 3; level++)
+        for (unsigned level = 0; level < STEPS_LEVELS(3); level++)
             if (run(jit, (char)('0' + level), 0)) return 1;
     return 0;
 }

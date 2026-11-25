@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* Scalar FP stores preserve exactly their lane's bytes, regardless of NaNs, alignment or other register contents.
    Run every width and source register at O0 and O2. The O0 benchmark emits a run of stores as one guest function. */
-#include "llvm_steps.h"
+#include "steps.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -33,11 +33,11 @@ static int mixed(char opt) {
     codegen.module_count = 1;
     codegen.functions = &function;
     codegen.function_count = 1;
-    LlvmSteps steps;
+    Steps steps;
     char error[1024];
-    if (llvm_steps_begin_opt(&steps, 1, 0, opt, error, sizeof error)) return snx_error("%s", error);
-    llvm_steps_add_function(&steps, &codegen, &function);
-    if (llvm_steps_load(&steps, error, sizeof error)) return snx_error("%s", error);
+    if (steps_begin_opt(&steps, 1, 0, opt, error, sizeof error)) return snx_error("%s", error);
+    steps_add_function(&steps, &codegen, &function);
+    if (steps_load(&steps, error, sizeof error)) return snx_error("%s", error);
     for (unsigned sample = 0; sample < 256; sample++) {
         CPU cpu = {0};
         for (unsigned i = 0; i < sizeof memory; i++) memory[i] = (unsigned char)(i * 13 + sample);
@@ -52,28 +52,27 @@ static int mixed(char opt) {
         for (unsigned b = 0; b < 4; b++) expected[7 + b] = (unsigned char)(cpu.x[2] >> (b * 8));
         memset(expected + 11, (int)(255 - sample), 4);
         memcpy(expected + 15, memory + 19, 4);
-        GuestFn fn;
-        memcpy(&fn, &steps.steps[0], sizeof fn);
+        GuestFn fn = steps_function(&steps, 0);
         fn(&cpu, module.base);
         if (memcmp(memory, expected, sizeof memory) || memcmp(&cpu.v[1], memory + 19, 16) ||
             cpu.x[0] != 3 || cpu.x[2] != 0xAABBCCDD || cpu.fpsr != 0x800009Fu) {
             fprintf(stderr, "mixed scalar/vector stores differ at O%c sample %u\n", opt, sample);
-            llvm_steps_end(&steps);
+            steps_end(&steps);
             return 1;
         }
     }
-    llvm_steps_end(&steps);
+    steps_end(&steps);
     printf("Mixed scalar/vector updates at O%c: 256 exact cases passed\n", opt);
     return 0;
 }
 
 static int correctness(char opt) {
     char error[1024];
-    LlvmSteps steps;
-    if (llvm_steps_begin_opt(&steps, 1, 0, opt, error, sizeof error)) return snx_error("%s", error);
+    Steps steps;
+    if (steps_begin_opt(&steps, 1, 0, opt, error, sizeof error)) return snx_error("%s", error);
     for (unsigned size = 0; size < 5; size++)
-        for (unsigned reg = 0; reg < 32; reg++) llvm_steps_add(&steps, stores[size] | reg, 0x1000, 0);
-    if (llvm_steps_load(&steps, error, sizeof error)) return snx_error("%s", error);
+        for (unsigned reg = 0; reg < 32; reg++) steps_add(&steps, stores[size] | reg, 0x1000, 0);
+    if (steps_load(&steps, error, sizeof error)) return snx_error("%s", error);
     unsigned checks = 0;
     for (unsigned size = 0; size < 5; size++)
         for (unsigned reg = 0; reg < 32; reg++)
@@ -93,18 +92,18 @@ static int correctness(char opt) {
                     cpu.fpsr = 0x800009Fu;
                     CPU before = cpu;
                     memcpy(expected + cpu.x[0], lane, 1u << size);
-                    u64 next = steps.steps[size * 32 + reg](&cpu);
+                    u64 next = step_run(steps_at(&steps, size * 32 + reg), &cpu);
                     if (next != 0x1004 || memcmp(memory, expected, sizeof memory) ||
                         memcmp(cpu.x, before.x, sizeof cpu.x) || memcmp(cpu.v, before.v, sizeof cpu.v) ||
                         cpu.fpcr != before.fpcr || cpu.fpsr != before.fpsr) {
                         fprintf(stderr, "FP store differs at O%c size %u reg %u align %u pattern %u\n",
                                 opt, size, reg, alignment, pattern);
-                        llvm_steps_end(&steps);
+                        steps_end(&steps);
                         return 1;
                     }
                     checks++;
                 }
-    llvm_steps_end(&steps);
+    steps_end(&steps);
     printf("FP stores at O%c: %u exact byte/register cases passed\n", opt, checks);
     return 0;
 }
@@ -134,28 +133,28 @@ static int benchmark(unsigned size) {
     codegen.functions = &function;
     codegen.function_count = 1;
     char error[1024];
-    LlvmSteps steps;
-    if (llvm_steps_begin_opt(&steps, 1, 0, '0', error, sizeof error)) return snx_error("%s", error);
-    llvm_steps_add_function(&steps, &codegen, &function);
-    if (llvm_steps_load(&steps, error, sizeof error)) return snx_error("%s", error);
+    Steps steps;
+    if (steps_begin_opt(&steps, 1, 0, '0', error, sizeof error)) return snx_error("%s", error);
+    steps_add_function(&steps, &codegen, &function);
+    if (steps_load(&steps, error, sizeof error)) return snx_error("%s", error);
     CPU cpu = {0};
     cpu.mem = memory;
     cpu.x[0] = 3;
     memset(&cpu.v[1], 0xA7, sizeof cpu.v[1]);
-    GuestFn fn;
-    memcpy(&fn, &steps.steps[0], sizeof fn);
+    GuestFn fn = steps_function(&steps, 0);
     double start = snx_seconds();
     for (unsigned i = 0; i < 1000000; i++) fn(&cpu, module.base);
     double elapsed = snx_seconds() - start;
     for (unsigned i = 0; i < (64u << size); i++)
         if (memory[3 + i] != 0xA7) return 1;
     if (memory[2] || memory[3 + (64u << size)]) return 1;
-    llvm_steps_end(&steps);
+    steps_end(&steps);
     printf("{\"width_bits\":%u,\"store_count\":64000000,\"seconds\":%.9f,\"verified\":true}\n", 8u << size, elapsed);
     return 0;
 }
 
 int main(int argc, char** argv) {
+    STEPS_REQUIRE();
     if (argc == 3 && !strcmp(argv[1], "--bench")) return benchmark((unsigned)strtoul(argv[2], NULL, 10));
     return correctness('0') || correctness('2') || mixed('0') || mixed('2');
 }

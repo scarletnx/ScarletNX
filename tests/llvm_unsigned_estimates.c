@@ -1,18 +1,19 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* All fixed-point estimate bins and their boundaries, plus seeded bits, without any FP status effects. */
-#include "llvm_steps.h"
+#include "steps.h"
 #include <stdio.h>
 #include <string.h>
 static int run(int jit,int portable,char opt,unsigned long long* count) {
-    LlvmSteps steps;char error[1024];
-    if(llvm_steps_begin_opt(&steps,jit,portable,opt,error,sizeof error))return snx_error("%s",error);
+    Steps steps;
+    char error[1024];
+    if (steps_begin_opt(&steps, jit, portable, opt, error, sizeof error)) return snx_error("%s", error);
     for(unsigned op=0;op<2;++op)for(unsigned short_form=0;short_form<2;++short_form)for(unsigned alias=0;alias<2;++alias) {
         u32 word=(op?0x6EA1C820u:0x4EA1C820u)|alias;
         if(short_form)word&=~0x40000000u;
-        llvm_steps_add(&steps,word,0x1000,0);
+        steps_add(&steps, word, 0x1000, 0);
     }
-    if(llvm_steps_load(&steps,error,sizeof error))return snx_error("%s",error);
+    if (steps_load(&steps, error, sizeof error)) return snx_error("%s", error);
     size_t index=0;int failed=0;
     for(unsigned op=0;op<2&&!failed;++op)for(unsigned short_form=0;short_form<2&&!failed;++short_form)
         for(unsigned alias=0;alias<2&&!failed;++alias,++index)
@@ -24,17 +25,21 @@ static int run(int jit,int portable,char opt,unsigned long long* count) {
                 CPU actual=expected;expected.v[alias]=(V128){0};
                 for(unsigned lane=0;lane<(short_form?2u:4u);++lane)
                     expected.v[alias].s[lane]=op?ursqrte32(actual.v[1].s[lane]):urecpe32(actual.v[1].s[lane]);
-                if(steps.steps[index](&actual)!=0x1004||memcmp(&actual,&expected,sizeof actual)) {
+                if (step_run(steps_at(&steps, index), &actual) != 0x1004 || memcmp(&actual, &expected, sizeof actual)) {
                     fprintf(stderr,"Unsigned estimate op%u short%u alias%u bin%u sample%u O%c\n",op,short_form,alias,bin,sample,opt);
                     failed=1;
                 }
                 ++*count;
             }
-    llvm_steps_end(&steps);return failed;
+    steps_end(&steps);
+    return failed;
 }
 int main(void) {
+    STEPS_REQUIRE();
     unsigned long long count=0;
-    for(int jit=0;jit<2;++jit)for(int portable=0;portable<2;++portable)for(unsigned opt=0;opt<2;++opt)
-        if(run(jit,portable,opt?'2':'0',&count))return 1;
+    for (int jit = 0; jit < 2; ++jit)
+        for (int portable = 0; portable < STEPS_FORMS(2); ++portable)
+            for (unsigned opt = 0; opt < STEPS_LEVELS(2); ++opt)
+                if (run(jit, portable, opt ? '2' : '0', &count)) return 1;
     printf("Unsigned estimates: %llu exact cases\n",count);return 0;
 }

@@ -17,7 +17,7 @@
    next call that returns into main must leave its AOT code too, for the dispatch loop the runtime's threads run, and
    end the same.
      llvm_module SCARLETNX REPO */
-#include "llvm_steps.h"
+#include "steps.h"
 #include "common/utilities/common.h"
 #include "common/cpu/aarch64/cpu.h"
 #include "nx/loader/module_abi.h"
@@ -124,7 +124,7 @@ static void on_poll(CPU* c) {
    code no function of the module covers, as the runtime JIT would compile it (the BR's target, which no analysis
    finds) */
 static struct {
-    LlvmSteps steps;
+    Steps steps;
     int ready;
     u64 base;
 } g_stepper;
@@ -133,9 +133,9 @@ static int stepper_build(u64 base) {
     char error[1024];
     u32 i;
     if (g_stepper.ready) return g_stepper.base == base ? 0 : -1;
-    if (llvm_steps_begin(&g_stepper.steps, 1, 0, error, sizeof(error))) return snx_error("%s", error);
-    for (i = 0; i < IMAGE / 4; ++i) llvm_steps_add(&g_stepper.steps, g_image_words[i], base + 4 * i, 0);
-    if (llvm_steps_load(&g_stepper.steps, error, sizeof(error))) return snx_error("%s", error);
+    if (steps_begin(&g_stepper.steps, 1, 0, error, sizeof(error))) return snx_error("%s", error);
+    for (i = 0; i < IMAGE / 4; ++i) steps_add(&g_stepper.steps, g_image_words[i], base + 4 * i, 0);
+    if (steps_load(&g_stepper.steps, error, sizeof(error))) return snx_error("%s", error);
     g_stepper.ready = 1;
     g_stepper.base = base;
     return 0;
@@ -178,7 +178,7 @@ static void miss(CPU* c, u64 pc) {
             entry(c, pc);
             return;
         }
-        pc = g_stepper.steps.steps[(pc - base) / 4](c);
+        pc = step_run(steps_at(&g_stepper.steps, (pc - base) / 4), c);
     }
     if (n == 10000) ++current->lost;
     c->pc = pc;
@@ -468,6 +468,7 @@ static void stats_fixture(const char* cli, const char* repo, const char* root, c
 }
 
 int main(int argc, char** argv) {
+    STEPS_REQUIRE();
     static Run runs[1], want, hooked, unhooked, stale, stale_polling, stale_running;
     unsigned char image[IMAGE];
     char *root, *input, *self, *out[2], *module[2], *text = NULL;
@@ -619,7 +620,7 @@ int main(int argc, char** argv) {
         free(dir);
     }
     if (stats) stats_fixture(argv[1], argv[2], root, self, image);
-    if (g_stepper.ready) llvm_steps_end(&g_stepper.steps);
+    if (g_stepper.ready) steps_end(&g_stepper.steps);
     check(!snx_remove_tree(root), "fixture cleanup");
     for (b = 0; b < 2; ++b) {
         free(out[b]);

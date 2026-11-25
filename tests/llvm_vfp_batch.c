@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* Whole-vector half conversions after ordinary, DUP and zero producers: no helper calls and exact full state. */
-#include "llvm_steps.h"
+#include "steps.h"
 #include "common/cpu/recompiler/codegen.h"
 #include "common/utilities/endian.h"
 #include <stdio.h>
@@ -11,6 +11,7 @@ static const u32 conversions[] = {0x0e217820u, 0x4e217820u, 0x0e216820u, 0x4e216
 static const u32 edges[] = {0, 1, 0x8000, 0x3ff, 0x400, 0x3555, 0x7c00, 0x7d01, 0x7e02, 0xffff,
                             0x80000000, 0x007fffff, 0x00800000, 0x3fc00000, 0x7f800000, 0x7f800001,
                             0x7fc12345, 0xffffffff};
+#ifndef SNX_TEST_NATIVE_STEPS
 static unsigned convert_calls(LLVMValueRef function, const char* name) {
     unsigned count = 0;
     for (LLVMBasicBlockRef block = LLVMGetFirstBasicBlock(function); block; block = LLVMGetNextBasicBlock(block))
@@ -23,6 +24,7 @@ static unsigned convert_calls(LLVMValueRef function, const char* name) {
         }
     return count;
 }
+#endif
 static void reference(CPU* c, unsigned index, int broadcast) {
     unsigned from = index < 2 ? 16 : 32, to = index < 2 ? 32 : 16;
     if (broadcast == 2) c->v[1] = (V128){0};
@@ -45,9 +47,9 @@ static void reference(CPU* c, unsigned index, int broadcast) {
     c->pc = c->x[30];
 }
 static int run(int jit, char opt) {
-    LlvmSteps steps;
+    Steps steps;
     char error[1024];
-    if (llvm_steps_begin_opt(&steps, jit, LLVM_STEPS_PORTABLE, opt, error, sizeof error)) return snx_error("%s", error);
+    if (steps_begin_opt(&steps, jit, STEPS_PORTABLE, opt, error, sizeof error)) return snx_error("%s", error);
     u8 bytes[12][12], leaders[12][3] = {{0}};
     SnxCodeImage images[12] = {{0}};
     SnxFunction functions[12] = {{0}};
@@ -63,16 +65,18 @@ static int run(int jit, char opt) {
         functions[i] = (SnxFunction){.start = base, .end = base + 12, .count = 3,
                                     .leaders = leaders[i], .leader_count = 1};
     }
-    for (unsigned i = 0; i < 12; i++) llvm_steps_add_function(&steps, &code, &functions[i]);
+    for (unsigned i = 0; i < 12; i++) steps_add_function(&steps, &code, &functions[i]);
+#ifndef SNX_TEST_NATIVE_STEPS
     if (opt != '0' && !steps.ir->big_endian) {
         if (snx_ir_module_optimize(steps.ir, steps.ir->mod, opt, error, sizeof error)) return snx_error("%s", error);
         for (unsigned i = 0; i < 12; i++)
             if (convert_calls(steps.fns[i], "snx_fp_convert") || convert_calls(steps.fns[i], "snx_fp_host_lanes"))
                 return snx_error("half conversion sequence %u still calls a helper at O%c", i, opt);
     }
-    if (llvm_steps_load(&steps, error, sizeof error)) return snx_error("%s", error);
+#endif
+    if (steps_load(&steps, error, sizeof error)) return snx_error("%s", error);
     for (unsigned i = 0; i < 12; i++) {
-        GuestFn function = (GuestFn)(size_t)steps.steps[i];
+        GuestFn function = steps_function(&steps, i);
         for (unsigned pattern = 0; pattern < sizeof edges / sizeof *edges; pattern++)
             for (unsigned mode = 0; mode < 64; mode++) {
                 CPU actual = {0};
@@ -91,12 +95,13 @@ static int run(int jit, char opt) {
                     return snx_error("conversion sequence %u pattern %u mode %u O%c jit%d", i, pattern, mode, opt, jit);
             }
     }
-    llvm_steps_end(&steps);
+    steps_end(&steps);
     return 0;
 }
 int main(void) {
+    STEPS_REQUIRE();
     for (int jit = 0; jit < 2; jit++)
-        for (unsigned opt = 0; opt < 3; opt++)
+        for (unsigned opt = 0; opt < STEPS_LEVELS(3); opt++)
             if (run(jit, (char)('0' + opt))) return 1;
     return 0;
 }
