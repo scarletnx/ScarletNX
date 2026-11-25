@@ -46,7 +46,7 @@ concurrency:
 # The Linux x86-64 and AArch64 tests' options, the appimage job's: SNX_TEST_OPTIONS go on the default tree,
 # SNX_HEADLESS_OPTIONS make the headless Vulkan tree
 env:
-  SNX_TEST_OPTIONS: -DSNX_TEST_VP9_VECTORS=ON -DSNX_TEST_ARM_DIFF=ON -DSNX_TEST_LLVM_SWEEP=ON
+  SNX_TEST_OPTIONS: -DSNX_TEST_VP9_VECTORS=ON -DSNX_TEST_ARM_AOT=ON -DSNX_TEST_ARM_DIFF=ON -DSNX_TEST_LLVM_SWEEP=ON
   SNX_HEADLESS_OPTIONS: -DSNX_BUILD_GUI=OFF -DSNX_DEPLOY=OFF -DSNX_TEST_VULKAN=ON -DSNX_TEST_AV1_VECTORS=ON
   # the jobs that may fail without failing the run (continue-on-error), whose failure cancels nothing
   # (scripts/fail-fast.py; tests/fail_fast_test.py holds the two to each other)
