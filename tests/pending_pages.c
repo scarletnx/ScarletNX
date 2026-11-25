@@ -162,6 +162,22 @@ static void check_addr_gens(void) {
     pend_add(&apart, second, 0x1000, 1);
     pend_add(&apart, second, 0x1000, -1);
     check(gen_at(second) == b, "a table that g_pend_any doesn't count moves none");
+    /* the GMMU drops an address's bits past its 40, as pend_hit does: the page is the same one */
+    const u64 high = 1ull << 40, top = high - 0x1000;
+    check(gen_at(high + second) == gen_at(second), "an address with more bits has its page's generations");
+    b = gen_at(high + second), a = gen_at(high + first);
+    pend_add(&counted, second, 0x1000, 1);
+    check(pend_hit(&g_pend_any, high + second, 1) && gen_at(high + second) != b && gen_at(high + first) == a,
+          "a result moves the generations where pend_hit finds it, by an address with more bits too");
+    pend_add(&counted, second, 0x1000, -1);
+    a = gen_at(first), b = gen_at(second);
+    addr_gens_bump(ADDR_GENS_GPU, high + second, 0x1000);
+    check(gen_at(second) != b && gen_at(first) == a, "and a write there moves the page's");
+    u32 across = 0, again = 0;
+    check(addr_gens_read(ADDR_GENS_GPU, top, 0x2000, &across), "a range over the top tells something");
+    addr_gens_bump(ADDR_GENS_GPU, 0, 0x1000); /* its second page */
+    check(addr_gens_read(ADDR_GENS_GPU, top, 0x2000, &again) && again != across, "and goes on at the bottom");
+    a = gen_at(first);
     map(third, 0xB0000000ull, 0x1000);
     check(gen_at(third) != c && gen_at(first) == a, "a mapping change moves its pages' generations");
     addr_gens_bump(ADDR_GENS_GPU, 0, 1ull << 40);

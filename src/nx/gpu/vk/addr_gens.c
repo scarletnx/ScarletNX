@@ -10,7 +10,11 @@ static struct {
     _Atomic u32 all;
 } g_addr_gens[ADDR_GENS_SPACES];
 
-static u32 slot_of(u64 granule) { return (u32)((granule * 0x9E3779B97F4A7C15ull) >> 51) & (ADDR_GENS_SLOTS - 1); }
+/* a granule's slot, by the bits of its address that the GMMU translates (ADDR_GENS_BITS) */
+static u32 slot_of(u64 granule) {
+    granule &= (1ull << (ADDR_GENS_BITS - ADDR_GENS_SHIFT)) - 1;
+    return (u32)((granule * 0x9E3779B97F4A7C15ull) >> 51) & (ADDR_GENS_SLOTS - 1);
+}
 /* the granules of [a, a + size), first and last, up to the top of the address space: 0 for none */
 static u64 granules(u64 a, u64 size, u64* first) {
     if (!size) return 0;
