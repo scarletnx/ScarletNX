@@ -27,6 +27,14 @@
 # All are empty for the other hosts and builds.
 include_guard(GLOBAL)
 option(SNX_PPC64_ELFV2 "Build big-endian PowerPC64 glibc for ELFv2 (Arch POWER), not ELFv1 (Debian ports)" ON)
+# without LLVM the ppc64 back end alone makes a game's code, and it writes ELFv2's calls. Read here, before the
+# project's options are: -DSNX_WITH_LLVM=OFF, the cache's
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(ppc64|powerpc64)$" AND NOT SNX_PPC64_ELFV2 AND DEFINED SNX_WITH_LLVM AND
+   NOT SNX_WITH_LLVM)
+    message(FATAL_ERROR "SNX_PPC64_ELFV2=${SNX_PPC64_ELFV2} and SNX_WITH_LLVM=${SNX_WITH_LLVM}: nothing would make a "
+                        "game's code here. The ppc64 back end needs ELFv2 and this build has ELFv1, whose code LLVM "
+                        "alone makes: build with -DSNX_PPC64_ELFV2=ON or -DSNX_WITH_LLVM=ON.")
+endif()
 set(SNX_ARCH_FLAGS "")
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(ppc64|powerpc64)$")
     list(APPEND SNX_ARCH_FLAGS -mcpu=ppc64 -mno-altivec)
