@@ -3392,7 +3392,7 @@ if(NOT SNX_TOOLS_ONLY)
     add_test(NAME vk_buffer_pages COMMAND snx-test-vk-buffer-pages)
     # the scans of written pages on Windows (gpu/vk/buffer.c, WW_SCANS_SERIAL), on any host: the scanner starts no scan
     # while a check scans
-    add_executable(snx-test-vk-write-scan vk_write_scan.c tracy_stubs.c)
+    add_executable(snx-test-vk-write-scan vk_write_scan.c tracy_stubs.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/addr_gens.c")
     snx_test_target(snx-test-vk-write-scan gnu23)
     target_link_libraries(snx-test-vk-write-scan PRIVATE snx_nx_flags)
     add_test(NAME vk_write_scan COMMAND snx-test-vk-write-scan)
