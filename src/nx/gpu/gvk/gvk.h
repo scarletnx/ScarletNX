@@ -95,11 +95,23 @@ int gvk_writes_take(void* writes, u32 n);
    - a matrix member with a MatrixStride and neither RowMajor nor ColMajor (3,700 of one game's 4,000 modules): it
      gets ColMajor, which GLSL's compilers mean by none, and what that game's matrices are (RowMajor tilts its
      scenes).
-   - a pointer into an array of uniform or storage buffers by an index that isn't a constant: NonUniform (with
-     SPV_EXT_descriptor_indexing's capabilities). One game picks each vertex's matrices from an array of four uniform
-     buffers by the vertex's matrix index. The console's GPU takes each vertex's own buffer, and AMD's and lavapipe
-     take the first vertex's of the group unless told: that game's planets drew as long thin triangles */
-enum { GVK_SPIRV_UBO_NONUNIFORM = 1, GVK_SPIRV_SSBO_NONUNIFORM = 2 };
+   - a pointer into an array of uniform or storage buffers, textures, samplers or other images by an index that isn't
+     the same in every invocation (a constant, or push constants' and a uniform buffer's value): NonUniform, with
+     SPV_EXT_descriptor_indexing's capabilities, and so is what is loaded and sampled through it. One game picks each
+     vertex's matrices from an array of four uniform buffers by the vertex's matrix index. The console's GPU takes
+     each vertex's own buffer, and AMD's and lavapipe take the first vertex's of the group unless told: that game's
+     planets drew as long thin triangles. Vulkan gives a host the same freedom with an image or a sampler */
+enum {
+    GVK_SPIRV_UBO_NONUNIFORM = 1,
+    GVK_SPIRV_SSBO_NONUNIFORM = 2,
+    /* arrays of the images gvk_spirv.c marks where the host can index them so, and leaves as they are where it can't */
+    GVK_SPIRV_SAMPLED_NONUNIFORM = 4, /* samplers, sampled images and combined ones */
+    GVK_SPIRV_STORAGE_IMAGE_NONUNIFORM = 8,
+    GVK_SPIRV_INPUT_NONUNIFORM = 16,
+    GVK_SPIRV_UNIFORM_TEXEL_NONUNIFORM = 32,
+    GVK_SPIRV_STORAGE_TEXEL_NONUNIFORM = 64,
+    GVK_SPIRV_NONUNIFORM_ALL = 127
+};
 /* Returns w if unchanged, a scratch copy if mended, or NULL if the module cannot be forwarded. */
 const u32* gvk_spirv_mend(const u32* w, size_t bytes, size_t* out_bytes, u32 allow);
 /* A fragment module (as gvk_spirv_mend takes one) whose outputs at Location 1 are at Location 0, Index 1: the
