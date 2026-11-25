@@ -9,8 +9,9 @@
    Only with descriptor sets: descriptor buffers and heaps have no dynamic descriptors. The device caps the dynamic
    uniform buffers of a pipeline layout (maxDescriptorSetUniformBuffersDynamic: 15 on NVIDIA's, 16 on RADV, 8 on ANV),
    so the slots that move most take them. Which slots move most is the game's: each run counts the moves of each slot
-   and keeps them in the game's shader cache as it closes (<game>.vkcbmoves), and the next start chooses from them, before
-   the set layouts are made. With no file, one game's order (cb_dynamic.c) */
+   and keeps them in the game's shader cache as it closes (<game>.vkcbmoves), with the slots it had dynamic, and the next
+   start chooses from them, before the set layouts are made: the same slots, unless others move far more. With no file,
+   one game's order (cb_dynamic.c) */
 #ifndef SNX_VK_CB_DYNAMIC_H
 #define SNX_VK_CB_DYNAMIC_H
 #include <stdatomic.h>

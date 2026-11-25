@@ -32,7 +32,8 @@ static int cb_move_order(const void* a, const void* b) {
     return x->slot < y->slot ? -1 : x->slot > y->slot;
 }
 /* The file's lines past the magic one: "set slot moves dynamic", dynamic 1 where the run that wrote it had the slot
-   dynamic. Their moves and that flag into m: n, or 0 for no file or none */
+   dynamic, which then has a line whether it moved or not. Their moves and that flag into m: n, or 0 for no file or
+   none */
 static u32 cb_moves_read(CbMove* m, u32 cap) {
     size_t size;
     char* text = (char*)snx_read_file(g_cb_dynamic.path, &size);
@@ -45,7 +46,8 @@ static u32 cb_moves_read(CbMove* m, u32 cap) {
         int used;
         while (n < cap && sscanf(p, "%u %u %llu %u%n", &set, &slot, &moves, &dynamic, &used) == 4) {
             p += used;
-            if (set < 2 && slot < VK_CB_DYNAMIC_SLOTS && moves) m[n++] = (CbMove){set, slot, (u64)moves, dynamic != 0};
+            if (set < 2 && slot < VK_CB_DYNAMIC_SLOTS && (moves || dynamic))
+                m[n++] = (CbMove){set, slot, (u64)moves, dynamic != 0};
         }
     }
     free(text);
@@ -100,13 +102,30 @@ void vk_cb_dynamic_choose(const char* cache_dir) {
        layouts, which every pipeline of the driver's cache and every shader object binary (g_vk_dslayout_hash) is
        made again for. Chosen from each run's counts alone, an Ounce game's choice changed at almost every run (a run
        of its menus after a race, or the race after the menus), and each run made its 2,000 shader objects again,
-       about 50 s of the CPU, with waits for them in its loads */
+       about 50 s of the CPU, with waits for them in its loads. The slots the last run did not move are among them: a
+       run of the menus alone, which moves few, would else hand only those on.
+       The room that they leave goes to the others that move, the most moved first: such a slot costs other layouts
+       once, and left out of it, it stayed out for as long as the slots taken moved four fifths of the whole */
     const int keep = from_file && kept_n && kept * 5 >= best * 4;
     if (keep) {
         g_cb_dynamic.mask[0] = kept_mask[0];
         g_cb_dynamic.mask[1] = kept_mask[1];
         taken = kept_n;
+        for (u32 i = 0; i < n && taken < limit && m[i].score; i++) {
+            if (vk_cbuf_type(m[i].slot) != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
+                (g_cb_dynamic.mask[m[i].set] >> m[i].slot & 1))
+                continue;
+            g_cb_dynamic.mask[m[i].set] |= 1u << m[i].slot;
+            taken++;
+        }
     }
+    char why[128] = "";
+    if (keep)
+        snprintf(why, sizeof why, " (the last run's %u, and %u more in the room left)", kept_n, taken - kept_n);
+    else if (from_file && kept_n)
+        snprintf(why, sizeof why, " (the best ones, which move over a quarter more than the last run's %u)", kept_n);
+    else if (from_file)
+        snprintf(why, sizeof why, " (the best ones: the last run had none)");
     char list[2][96];
     for (int s = 0; s < 2; s++) {
         size_t at = 0;
@@ -119,28 +138,27 @@ void vk_cb_dynamic_choose(const char* cache_dir) {
         if (!at) snprintf(list[s], sizeof list[s], " none");
     }
     LOG("vulkan: dynamic constant buffers, %u of the device's limit %u, from %s%s: vertex set%s, fragment set%s\n",
-        taken, limit, from_file ? g_cb_dynamic.path : "the default order",
-        !from_file ? ""
-        : keep     ? " (the last run's, which moved enough of the best ones)"
-                   : " (the best ones, a quarter more than the last run's)",
-        list[0], list[1]);
+        taken, limit, from_file ? g_cb_dynamic.path : "the default order", why, list[0], list[1]);
 }
 void vk_cb_dynamic_save(void) {
     if (!g_cb_dynamic.counting) return;
     CbMove m[2 * VK_CB_DYNAMIC_SLOTS];
     u32 n = 0;
+    u64 all = 0;
     for (u32 s = 0; s < 2; s++)
         for (u32 i = 0; i < VK_CB_DYNAMIC_SLOTS; i++) {
-            u64 moves = atomic_load_explicit(&g_cb_dynamic.moves[s][i], memory_order_relaxed);
-            if (moves) m[n++] = (CbMove){s, i, moves};
+            const u64 moves = atomic_load_explicit(&g_cb_dynamic.moves[s][i], memory_order_relaxed);
+            const int dynamic = (int)(g_cb_dynamic.mask[s] >> i & 1);
+            if (moves || dynamic) m[n++] = (CbMove){s, i, moves, dynamic};
+            all += moves;
         }
-    if (!n) return; /* a run that drew nothing keeps the last run's */
+    if (!all) return; /* a run that drew nothing keeps the last run's */
     qsort(m, n, sizeof *m, cb_move_order);
     char text[sizeof CB_MOVES_MAGIC + 2 * VK_CB_DYNAMIC_SLOTS * 40];
     size_t at = (size_t)snprintf(text, sizeof text, "%s\n", CB_MOVES_MAGIC);
     for (u32 i = 0; i < n && at < sizeof text; i++) {
-        int w = snprintf(text + at, sizeof text - at, "%u %u %llu %u\n", m[i].set, m[i].slot,
-                         (unsigned long long)m[i].score, g_cb_dynamic.mask[m[i].set] >> m[i].slot & 1);
+        int w = snprintf(text + at, sizeof text - at, "%u %u %llu %d\n", m[i].set, m[i].slot,
+                         (unsigned long long)m[i].score, m[i].was);
         if (w > 0) at += (size_t)w;
     }
     if (at >= sizeof text) at = sizeof text - 1; /* snprintf cut the last line: not its NUL */
