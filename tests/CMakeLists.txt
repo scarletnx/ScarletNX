@@ -82,6 +82,8 @@ if(SNX_TEST_SANITIZERS)
         snx_window_icon snx-test-window-icon snx_pad_sdl snx_gui_pad
         # the notice of the 3DS's, the Vita's and the GBA's windows
         snx_notice
+        # the on-screen controls, their consoles' tables and their side of an SDL window
+        snx_vpad snx_vpad_consoles snx_vpad_sdl
         # the shader corpus translator, which shaderc_sm86 runs
         snx-shaderc
         # GLSL ES into SPIR-V
