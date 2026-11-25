@@ -54,7 +54,9 @@ recompiles on the phone, then the game opens.
   from a game folder on the shared storage, which maps nothing executable, the runtime loads a copy in the app's
   cache. The back button opens the
   game's menu over it, in the menu's look (a gamepad's Home does on every system): the on-screen controls'
-  settings, the touch screen's, and *Exit*; back again returns to the game. Leaving it for the home screen keeps it:
+  settings, the touch screen's, and *Exit*; back again returns to the game. A GBA, DS or Vita game has no menu: the
+  back button edits the layout of its on-screen controls, and a second one within 3 seconds, which a line over the game
+  says, closes it. Leaving a game for the home screen keeps it:
   its window is made anew when it comes back.
 - **A game by its title ID**: the intent `org.scarletnx.action.PLAY` (`PlayActivity`), its extra `title_id` the
   game's title ID, plays the recompiled game whose folder that ID names (`recompiled/<title ID>/`) as *Play* on its
@@ -115,7 +117,8 @@ from Android 5.0 (API 21). A game needs Vulkan 1.3: on a device without it (Andr
 the menu still prepares games, and a game says what it lacks. The fingers reach a game's touch screen (*Touch screen*,
 in the game's menu or the Settings, turns them off or adds a mouse). The buttons and sticks are on the screen, over
 the game ([Usage](../user/usage.md#on-screen-controls)), and a gamepad works beside them; the menu's *On-screen
-controls* item hides them.
+controls* item hides them. A GBA, DS or Vita game has its console's, which its own Settings (*Settings* at the foot of
+Games) hide.
 
 ## Keys
 

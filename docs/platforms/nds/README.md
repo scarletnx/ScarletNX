@@ -43,7 +43,7 @@ The driver uses melonDS as its reference and ports parts of it ([Source provenan
 | Kernel and HLE | the BIOS calls as board routines (`src/nds/bios/`), the ARM7's services (`src/nds/hle/`), the board's memory, registers, DMA, timers and card (`src/nds/board/`) | [The ARM7's services](#the-arm7s-services), [The HLE BIOS](#the-hle-bios), [The memory map](#the-memory-map) |
 | GPU | the geometry engine (`src/nds/gpu/gpu3d.c`), and on Vulkan the 3D engine's picture, the 2D engines' frame and the window (`src/nds/gpu/vk/`) | [The display on the GPU](#the-display-on-the-gpu) |
 | Audio | the sound driver (`src/nds/hle/sound.c`) and the sound hardware's channels (`src/nds/audio/`) | [Sound](#sound) |
-| Input | the keys, the gamepads and the pen from the window (`src/nds/runtime/host.c`) | [Playing](#playing) |
+| Input | the keys, the gamepads, the on-screen controls and the pen from the window (`src/nds/runtime/host.c`) | [Playing](#playing) |
 | Platform | the run (`src/nds/runtime/`), and the host layer that every driver shares (`src/common/platform/`) | [Build](../../dev/build.md) |
 
 ## Playing
@@ -54,8 +54,12 @@ The driver uses melonDS as its reference and ports parts of it ([Source provenan
 
 `scarletnx-nds Game.nds` plays the image in a window with both screens, the upper one above the lower one, scaled to
 the window at the console's shape. The keyboard is the other consoles': the arrows are the D-pad, X or Space A, Z B,
-S X, A Y, Q L, E R, Enter Start and Backspace Select. A gamepad's buttons are where the console has them. The pointer
-held on the lower screen is the pen. F11 switches fullscreen, and Esc twice within 3 seconds closes the window.
+S X, A Y, Q L, E R, Enter Start and Backspace Select. A gamepad's buttons are where the console has them. A finger or
+the mouse's left button held on the lower screen is the pen, the first one until it lifts (`--touch=1` the fingers
+alone, `--touch=0` neither). The twelve keys are on the screen too
+([On-screen controls](../../user/usage.md#on-screen-controls)): shown on a touch screen while no gamepad is connected,
+or as `--controls=` says, their layout edited with F2. F11 switches fullscreen, and Esc twice within 3 seconds closes
+the window.
 
 `scarletnx-nds` is also a menu entry of `scarletnx-gui` ("Load NDS ROM"), and an image in a games folder shows in
 Games.

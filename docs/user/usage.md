@@ -999,6 +999,18 @@ game's own picks keep them: `controls`, `controls_scale`,
 `controls_snap`, `controls_rel_center`, `controls_dpad_slide`, `controls_haptics`, and whether a control is shown once
 that changed (`controls_a_shown=0`); its `.ini` keeps a control's place once it was moved (`controls_a=0.930 0.470 100`:
 its middle across the screen and its size in percent). The launcher's Settings have the same, but the layout.
+
+A GBA, DS or Vita game has the controls of its console over its picture, by its names for them: Start where Plus is and
+Select where Minus is, the Vita's Circle, Cross, Triangle and Square where A, B, X and Y are, and sticks on the Vita
+alone. They start where the window leaves them room, wider than tall or taller than wide, and each stays whole in it. A
+finger off them is the DS's pen on the lower screen, one at a time, or touches the Vita's front panel, six at most, and
+so does the mouse's left button, as `touch` lets each; the GBA has no touch screen. These windows have no menu: F2, or
+Back on Android, edits the layout (drag a control; tap one and size it with the bar on top; *Done*, Esc, F2 or Back ends
+it), and Back twice within 3 seconds closes the game. The settings are the Switch's keys: `controls`, `controls_scale`
+and the others of the game's own Settings (M on it in Games) or the launcher's, in the game's `.ini` (`[On-screen
+controls]`, where a moved control's place is kept) or on the command line (`--controls=0`). A key the console has nothing
+for changes nothing, and the run says it with its value: `touch=1` for a GBA game, `controls_zl_shown=0` for any of the
+three, `controls_rel_center=0` for a GBA or a DS game.
 Beside the executable: `Game.log`, `threads.txt` (15 s refresh), `captures/` (screenshots); an installed copy on Linux
 keeps the first two in its state folder ([Folders](#folders)). `Game.log` is this run's: the 4 runs before keep theirs
 in `logs/` beside it, named by when each was last written (`2026-10-28_14-05-33.log`). Past `log_max` (MiB, 1 to
