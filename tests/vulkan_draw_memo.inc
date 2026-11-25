@@ -557,6 +557,7 @@ static int compute_pending_cases(GpuChannel* channel) {
    check keeps the texture by the generations alone, with no resolve and the same pixel. Then the writes that must
    miss or load again: the CPU writes the texture's texel 0 (red one, then 0.75 again), the CPU writes the header
    (its red read as one), and a dispatch stores 1.0 into texel 0 (red one) */
+#include "nx/gpu/vk/addr_gens.h"
 #define GENS_OTHER_GPU (MEMO_GPU + 0x200000)
 #define GENS_OTHER_CPU (MEMO_CPU + 0x200000)
 /* a draw of pending_draw's, its pixel's red against want, and the counts it added into *d */
@@ -582,6 +583,53 @@ static int gens_draw(GpuChannel* channel, u8 want, const char* what, VkDrawCount
 static void gens_cpu_word(u64 cpu, u32 word) {
     snx_st_le32(GP(cpu), word);
     vk_ww_new_epoch();
+}
+/* the sampler pool of the fragment stage at gva, its sampler 0 the cases' (life_headers) */
+static int gens_samplers(GpuChannel* channel, u64 gva) {
+    u8 sampler[32];
+    CHECK(!gmem_read(LIFE_POOL + 0x100, sampler, sizeof sampler) && !gmem_write(gva, sampler, sizeof sampler));
+    channel->r3d[0x557] = (u32)(gva >> 32);
+    channel->r3d[0x558] = (u32)gva;
+    return 0;
+}
+/* A way of the memo that is kept anew for another key takes nothing of the generations it had: its first check reads
+   the headers. The texture through five sampler pools, one more than a set has ways, so the last takes the way of the
+   first, whose last check took the sum of its headers' granule (header_cpu's, two times). The last one's sampler is in
+   a granule of its own: once the texture's header is written, that granule is moved until the sum of the two is the
+   first one's. Taken for the last check's, it kept the header from before */
+static int gens_way_again(GpuChannel* channel, u64 header_cpu) {
+    const u64 last = GENS_OTHER_GPU + 0x100, last_cpu = GENS_OTHER_CPU + 0x100;
+    VkDrawCounts d;
+    u32 tic[8], g = 0, h = 0;
+    vk_ww_new_epoch();
+    CHECK(!gens_draw(channel, 191, "the first pool", &d));
+    for (int i = 0; i < 64; i++) addr_gens_bump(ADDR_GENS_CPU, header_cpu, 32); /* room for the last one's sum */
+    gens_cpu_word(GENS_OTHER_CPU, 0x5ca1ab1eu);
+    CHECK(!gens_draw(channel, 191, "the first pool, its headers checked", &d));
+    CHECK(d.gens[VK_GENS_HEADERS_CHECKED] && vk_ww_gen(GP(header_cpu), 32, &g));
+    const u32 sum = 2 * g;
+    for (u32 i = 1; i < 4; i++) {
+        CHECK(!gens_samplers(channel, LIFE_POOL + 0x100 + i * 0x20));
+        CHECK(!gens_draw(channel, 191, "a pool beside it", &d));
+    }
+    CHECK(!gens_samplers(channel, last));
+    CHECK(!gens_draw(channel, 191, "the last pool", &d));
+    CHECK(d.tex[VK_TEX_RESOLVED]);
+    life_tic(tic, 1);
+    for (u32 i = 0; i < 8; i++) snx_st_le32(GP(header_cpu) + i * 4, tic[i]);
+    vk_ww_new_epoch();
+    vk_lock();
+    CHECK(!vk_ww_take(GP(header_cpu), 32) && !vk_ww_take(GP(last_cpu), 32));
+    CHECK(vk_ww_gen(GP(header_cpu), 32, &g) && vk_ww_gen(GP(last_cpu), 32, &h));
+    for (; g + h < sum; h++) addr_gens_bump(ADDR_GENS_CPU, last_cpu, 8);
+    CHECK(vk_ww_gen(GP(last_cpu), 32, &h) && g + h == sum);
+    vk_unlock();
+    CHECK(!gens_draw(channel, 255, "the last pool, after the CPU wrote the header", &d));
+    CHECK(d.tex[VK_TEX_RESOLVED] && !d.gens[VK_GENS_HEADERS_KEPT]);
+    CHECK(!gens_samplers(channel, LIFE_POOL + 0x100) && !life_headers(0, 0));
+    vk_ww_new_epoch();
+    CHECK(!gens_draw(channel, 191, "the first pool again", &d));
+    return 0;
 }
 static int memo_gens_cases(GpuChannel* channel) {
     if (vk_uma()) {
@@ -677,6 +725,7 @@ static int memo_gens_cases(GpuChannel* channel) {
     vk_finish();
     vk_unlock();
     CHECK(!gmem_write(LIFE_POOL + 0x400, texels, sizeof texels)); /* texel 0 back to 0 for the cases after */
+    if (tracking) CHECK(!gens_way_again(channel, header_cpu));
     vk_ww_new_epoch();
     g_settings.draw_state_check = saved_check;
     channel->ds.bind.cb_addr[4][2] = 0;

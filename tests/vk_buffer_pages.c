@@ -404,7 +404,23 @@ static void check_spans(u32 count) {
     }
 }
 
+/* guest memory marked written whole, as an unmap of it is (vk_mem_changed): a 4 MiB leaf of the write tracking that has
+   no table gets its newest generation alone, and the generations by address of its pages move as a page's stamp moves
+   them (addr_gens.h: the texture memo's headers are kept by them), and no other leaf's */
+static void check_leaf_generations(void) {
+    const u64 leaf = 1ull << WW_LEAF_SHIFT, at = 5 * leaf, beside = 16 * leaf;
+    u32 inside[3], outside, now;
+    for (u32 i = 0; i < 3; i++) CHECK(addr_gens_read(ADDR_GENS_CPU, at + (u64)i * 0x1FF000 + 0x40, 32, &inside[i]));
+    CHECK(addr_gens_read(ADDR_GENS_CPU, beside, 32, &outside));
+    ww_mark_pages(at, at + leaf);
+    CHECK(!g_wleaf[5] && g_wleaf_max[5] == g_wclock); /* no table was made for it */
+    for (u32 i = 0; i < 3; i++)
+        CHECK(addr_gens_read(ADDR_GENS_CPU, at + (u64)i * 0x1FF000 + 0x40, 32, &now) && now != inside[i]);
+    CHECK(addr_gens_read(ADDR_GENS_CPU, beside, 32, &now) && now == outside);
+}
+
 int main(void) {
+    check_leaf_generations();
     /* one run */
     for (u32 i = 0; i < NPAGES; i++) g_m.pte[i] = 0x100 + i;
     check_ranges();

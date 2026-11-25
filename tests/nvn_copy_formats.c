@@ -275,6 +275,12 @@ static void check_array1d_copies(void) {
                   "1D array buffer copy layer %u has five RGBA8 texels in one row", k);
             check(texture_side->addr == 0x10000 + (u64)(3 + k) * 512 && texture_side->ox == 12 && !texture_side->oy,
                   "1D array buffer copy layer %u includes the view and region layer offsets", k);
+            if (i)
+                check(!o->tex, "1D array copy to a buffer names no texture");
+            else
+                check(o->tex == 0x10000 && !o->tex_level && o->tex_layer == 3 + k,
+                      "1D array buffer copy layer %u names its texture, level and layer: %llx, %u, %u", k,
+                      (unsigned long long)o->tex, o->tex_level, o->tex_layer);
             check(buffer_side->addr == 0x80000 + (u64)k * 128 && buffer_side->pitch == 32,
                   "1D array buffer copy layer %u advances the buffer by image stride", k);
         }
@@ -336,6 +342,40 @@ static void check_array1d_copies(void) {
     for (u32 k = 0; k < 3 && k < (u32)g_seen.blits; k++)
         check(g_seen.blit_src[k] == 0x10000 + (u64)(4 - k) * 512 && g_seen.blit_dst[k] == 0x20000 + (u64)(4 + k) * 512,
               "mirrored 1D array image blit layer %u reverses source slices only", k);
+}
+
+/* a buffer copied into a level of a layer of a 2D array, through a view: the copy names the texture by its first byte,
+   the view's level, and the view's first layer past the region's. Into a volume it names none */
+static void check_buffer_names(void) {
+    texture(DST_TEX, NVN_FORMAT_RGBA8, 0x20000);
+    NvnTexture* t = NVN_OBJ(NvnTexture, DST_TEX);
+    t->d.target = NVN_TEXTURE_TARGET_2D_ARRAY;
+    t->d.flags = 0;
+    t->d.levels = 4;
+    t->d.depth = 8;
+    NvnPCopyB2T r = {.buffer = 0x80000, .texture = DST_TEX, .r = {1, 2, 3, 4, 2, 2}, .has_view = 1};
+    r.view.set = NVN_VIEW_LAYERS | NVN_VIEW_LEVELS;
+    r.view.min_layer = 2;
+    r.view.layers = 6;
+    r.view.base_level = 2;
+    r.view.levels = 1;
+    i64 stride[2] = {0};
+    memcpy(GP(RECORD), &r, sizeof r);
+    memset(&g_seen, 0, sizeof g_seen);
+    check(nvn_copy_record(OP_COPY_B2T, RECORD, sizeof r, stride), "array buffer copy accepted");
+    check(g_seen.copies == 2, "array buffer copy has two layers, found %d", g_seen.copies);
+    for (u32 k = 0; k < 2 && k < (u32)g_seen.copies; k++) {
+        const GpuDmaOp* o = &g_seen.dma[k];
+        check(o->tex == 0x20000 && o->tex_level == 2 && o->tex_layer == 5 + k,
+              "array buffer copy %u names its texture, level and layer: %llx, %u, %u", k, (unsigned long long)o->tex,
+              o->tex_level, o->tex_layer);
+    }
+    t->d.target = NVN_TEXTURE_TARGET_3D;
+    r.view.set = 0;
+    memcpy(GP(RECORD), &r, sizeof r);
+    memset(&g_seen, 0, sizeof g_seen);
+    nvn_copy_record(OP_COPY_B2T, RECORD, sizeof r, stride);
+    check(g_seen.copies == 2 && !g_seen.dma[0].tex && !g_seen.dma[1].tex, "a volume's buffer copy names no texture");
 }
 
 static void check_buffer_mirrors(void) {
@@ -561,6 +601,7 @@ int main(void) {
     check_level_copies();
     check_module_upscales();
     check_array1d_copies();
+    check_buffer_names();
     check_buffer_mirrors();
     check_texture_filters();
     check_volume_mirrors();

@@ -124,9 +124,14 @@ static int urw_frames(int how) {
             urw_epoch(&w); /* before the lock goes, where the target is watched again */
         }
         if (!k && how == URW_LETGO) { /* unused for longer than UMA_IDLE presents, at a present that looks for such */
+            const VkRtWatchStats w0 = g_vk_rt_watch;
             g_vk_present = (g_vk_present / 60 + 12) * 60;
             vk_uma_frame();
             CHECK(!vk_uma_region_held(w.cpu, 0x200000));
+            /* published for the move of its pages, which no CPU access asked for: it is not one the CPU reads lately */
+            CHECK(g_vk_rt_watch.hits == w0.hits && g_vk_rt_watch.by[VK_PUB_OTHER] == w0.by[VK_PUB_OTHER] + 1);
+            Surf* s = vk_rt_find(w.gva + t);
+            CHECK(s && !s->cpu_asked);
         }
         vk_unlock();
         urw_epoch(&w);
