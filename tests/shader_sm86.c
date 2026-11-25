@@ -3872,10 +3872,13 @@ static u32 mh_cbuf(void* user, u32 bank, u32 off) {
 static int mh_mem(void* user, u64 address, u32* words, u32 count) {
     (void)user;
     if (g_mh_nloads < 8) g_mh_loads[g_mh_nloads++] = address;
-    for (u32 k = 0; k < count; k++)
-        words[k] = address + 4 * k == 0x2000010f8ull   ? 0x12300abcu
-                   : address + 4 * k == 0x200001010ull ? 0x00402345u
-                                                       : 0xdeadbeefu;
+    for (u32 k = 0; k < count; k++) {
+        u64 at = address + 4 * k;
+        words[k] = at == 0x2000010f8ull                          ? 0x12300abcu
+                   : at == 0x200001010ull                        ? 0x00402345u
+                   : at >= 0x200002000ull && at < 0x200003000ull ? 0xab000000u | (u32)(at & 0xffff)
+                                                                 : 0xdeadbeefu;
+    }
     return 1;
 }
 /* LDG.E.64 dst, [reg.U32 + UR.64 + imm] (the uniform form, the register 32-bit) */
@@ -4073,6 +4076,66 @@ static void test_uniform_handle(const char* dir) {
             fprintf(stderr, "memory handle %u: ran %d, %08x %08x %08x, load %llx\n", variant, ran, values[0], values[1],
                     values[2], (unsigned long long)g_mh_loads[0]);
     }
+}
+/* More handles from memory than 64 instructions make: 17 TEX_U, each with a record of its own past the table's first 4
+   KiB (IADD3 R6 = R2 + 0x1018 + 32 * h, LDG.E.64 R4, R2UR UR8, USHF UR9), after the six instructions of the table's
+   base and the record index that they share: 74 in all. A full-screen pass loads 17 handles so, and with room for 64
+   instructions its last texture was none, which samples zeros. Every slot names its handle, and sm86_eval gives the
+   first and the last one's words, [0x2_0000_20f8] and [0x2_0000_22f8], whose values are 0xab00 and their address */
+static void test_many_memory_handles(const char* dir) {
+    enum { HANDLES = 17 };
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[18] = 0xf;
+    u8 code[16 * (8 + 5 * HANDLES)] = {0};
+    u32 n = 0;
+    put(code, n++, uldc64(0x520));
+    put(code, n++, mov_cbuf(2, 4, 0x88));
+    put(code, n++, lop3_imm(2, 2, 0xfffff, 255, 0xc0));
+    put(code, n++, mov_cbuf(3, 5, 0x2ec));
+    put(code, n++, iadd3(2, 2, 3));
+    put(code, n++, shf_imm(2, 2, 5, 255, 3, 0, 0, 0));
+    for (u32 h = 0; h < HANDLES; h++) {
+        put(code, n++, iadd3_imm(6, 2, 0x1018 + 0x20 * h));
+        put(code, n++, ldg_reg_ur64(4, 6, 4, 0));
+        put(code, n++, r2ur(8, 4));
+        put(code, n++, ushf_r(9, 8, 20));
+        Word t = {{0x3000040602227f60ull, 0x00000000099e4f08ull}}; /* TEX_U, its handle in UR8 */
+        set(&t, 40, 6, 8);
+        put(code, n++, t);
+    }
+    put(code, n++, exit_insn());
+    put(code, n, bra(n, n, 7, 0));
+    n++;
+    ShaderInfo si = {0};
+    size_t count = 0;
+    u32* spv = sm86_to_spirv(code, n * 16, ST_FS, fsph, &si, &count);
+    CHECK(spv != NULL);
+    if (!spv) {
+        fprintf(stderr, "many memory handles: %s\n", si.first_unsupported);
+        return;
+    }
+    CHECK(keep_module(dir, "fs_memory_handles_many", spv, count));
+    free(spv);
+    int named = 0;
+    for (int i = 0; i < si.ntex; i++)
+        named += (si.tex[i].flags & SNX_TEX_MEMORY) && si.tex[i].cbuf_off != SH_PROBE_NONE &&
+                 si.tex[i].bl2_off != SH_PROBE_NONE;
+    int ok = si.ntex == HANDLES && named == HANDLES && si.memh_none == 0 && si.nmemh == 6 + 4 * HANDLES;
+    CHECK(ok);
+    if (!ok) {
+        fprintf(stderr, "many memory handles: %d slots, %d named, %u none (%s), %u instructions kept\n", si.ntex, named,
+                si.memh_none, si.memh_why, si.nmemh);
+        return;
+    }
+    u32 probes[3] = {si.tex[0].cbuf_off, si.tex[HANDLES - 1].cbuf_off, si.tex[HANDLES - 1].bl2_off};
+    u32 values[3] = {0, 0, 0};
+    Sm86EvalIo io = {NULL, mh_cbuf, mh_mem};
+    g_mh_nloads = 0;
+    ok = sm86_eval((const u64(*)[2])si.memh, si.nmemh, &io, probes, 3, values) && values[0] == 0xab0020f8u &&
+         values[1] == 0xab0022f8u && values[2] == 0xab0u;
+    CHECK(ok);
+    if (!ok) fprintf(stderr, "many memory handles: %08x %08x %08x\n", values[0], values[1], values[2]);
 }
 /* A handle whose record's address takes the carry of an IMAD.WIDE.X (bit 74): IADD3 RZ, P0, R2, R2, RZ with R2 =
    c[4][0x88] = 0xc0000003 carries out into P0, and IMAD.WIDE.U32.X R6, RZ, RZ, R8, P0 adds it to R8:R9 = 0xf7:0, so
@@ -8528,6 +8591,7 @@ int main(int argc, char** argv) {
     test_global_two_bases(dir);
     test_global_atomic_same_register(dir);
     test_uniform_handle(dir);
+    test_many_memory_handles(dir);
     test_memory_handle_carry(dir);
     test_compute_handle_table(dir);
     test_tld4_bindless(dir);
