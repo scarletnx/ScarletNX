@@ -226,7 +226,7 @@ static int urr_prot(const void* p, char out[5]) {
    region's window is protected with no access, the GPU writes the region's buffer in 100 submissions, and the
    mapping stays protected through them. Opened again, the CPU reads the GPU's last write, and the device is not lost
    (a lost device is fatal) */
-static int check_uma_region_trap(void) {
+static int check_uma_region_dmabuf_trap(void) {
     const u64 gva = URR_GVA + 0x600000, cpu = URR_CPU + 0x600000;
     VkBuffer r, buf;
     u64 ro, off;
