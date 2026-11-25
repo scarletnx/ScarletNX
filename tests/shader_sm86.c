@@ -4263,6 +4263,85 @@ static void test_guarded_handles(const char* dir) {
             fprintf(stderr, "guarded handle %u: ran %d, %08x %08x\n", variant, ran, values[0], values[1]);
     }
 }
+/* A handle made under the guard of the branch around its texture instruction's block, as one game's material program
+   makes a TLD4.B's: @P1 MOV R18, c[1][0x10], @P1 LOP3 R18 = R18 | c[1][0x20], then @!P1 BRA past the block, and in
+   it an unguarded TEX.B of R18. Where the TEX.B runs, P1 held at the branch and nothing wrote it since, so the two
+   writes ran and make its handle, 0xdddddddd. Variant 1 writes P1 again inside the block before the TEX.B; in variant
+   2 an @P0 BRA from before the writes jumps into the block, a path that takes no edge of P1; in variant 3 the branch
+   is @P1 BRA, so the block runs where P1 doesn't hold. The writes then may not have run, and the texture is none.
+   Variants 4 and 5 put an R2P PR, R1 between the writes and the branch, as that program restores P3 to P5 (mask
+   0x38): it leaves P1 as it was and the handle is made; with mask 0x02 it writes P1, and the texture is none */
+static void test_flow_guarded_handles(const char* dir) {
+    u32 fsph[32] = {0};
+    fsph[0] = sph0(2, 5);
+    fsph[18] = 0xf;
+    for (u32 variant = 0; variant < 6; variant++) {
+        u8 code[16 * 12] = {0};
+        u32 n = 0;
+        Word x = fix(0x919); /* S2R R1, SR_LANEID */
+        set(&x, 16, 8, 1);
+        set(&x, 72, 8, 0);
+        put(code, n++, x);
+        put(code, n++, mov_imm(3, 4));
+        put(code, n++, isetp(1, 7, 1, 3, 1, 0, 0, 7, 0, 7)); /* P1 = R1 < R3 */
+        u32 jump_in = variant == 2 ? n++ : 0;                /* @P0 BRA into the block, written below */
+        Word m = mov_cbuf(18, 1, 0x10);
+        set(&m, 12, 3, 1);
+        put(code, n++, m);
+        Word l = alu(0x012, 5, 18, 18); /* @P1 LOP3 R18 = R18 | c[1][0x20] */
+        cbuf(&l, 1, 0x20);
+        set(&l, 64, 8, 255);
+        set(&l, 72, 8, 0xfc);
+        set(&l, 81, 3, 7);
+        set(&l, 87, 4, 0xf);
+        set(&l, 12, 3, 1);
+        put(code, n++, l);
+        if (variant >= 4) { /* R2P PR, R1, 0x38 (0x02) */
+            Word p = {{0x0000000001007804ull | (u64)(variant == 4 ? 0x38 : 0x02) << 32, 0x0000000000001000ull}};
+            put(code, n++, p);
+        }
+        u32 skip = n++; /* @!P1 BRA past the block (@P1 in variant 3), written below */
+        u32 block = n;
+        if (variant == 1) put(code, n++, isetp(1, 7, 1, 3, 4, 0, 0, 7, 0, 7)); /* P1 = R1 > R3 */
+        Word b = fix(0x361);                                                   /* TEX.B R0, R8, R18, 2D */
+        set(&b, 16, 8, 0);
+        set(&b, 24, 8, 8);
+        set(&b, 32, 8, 18);
+        set(&b, 61, 3, 1);
+        set(&b, 64, 8, 255);
+        set(&b, 72, 4, 0xf);
+        set(&b, 81, 3, 7);
+        put(code, n++, b);
+        put(code, skip, bra(skip, n, 1, variant != 3));
+        if (variant == 2) put(code, jump_in, bra(jump_in, block, 0, 0));
+        put(code, n++, exit_insn());
+        put(code, n, bra(n, n, 7, 0));
+        n++;
+        ShaderInfo si = {0};
+        size_t count = 0;
+        u32* spv = sm86_to_spirv(code, n * 16, ST_FS, fsph, &si, &count);
+        int none = variant != 0 && variant != 4,
+            ok =
+                spv && !si.unsupported && si.ntex == 1 && (si.tex[0].flags & SNX_TEX_MEMORY) &&
+                (none ? si.tex[0].cbuf_off == SH_PROBE_NONE && si.memh_none == 1 && strstr(si.memh_why, "no one writer")
+                      : si.tex[0].cbuf_off != SH_PROBE_NONE && si.memh_none == 0 && si.nmemh == 2);
+        CHECK(ok);
+        if (!ok)
+            fprintf(stderr, "flow guarded handle %u: %s, %d textures, %u none (%s), %u kept\n", variant,
+                    si.first_unsupported, si.ntex, si.memh_none, si.memh_why, si.nmemh);
+        static const char* const names[6] = {"fs_flow_guarded_handle",         "fs_flow_guarded_handle_moved",
+                                             "fs_flow_guarded_handle_entered", "fs_flow_guarded_handle_other",
+                                             "fs_flow_guarded_handle_r2p",     "fs_flow_guarded_handle_r2p_p1"};
+        if (spv) CHECK(keep_module(dir, names[variant], spv, count));
+        free(spv);
+        if (!ok || none) continue;
+        u32 probe = si.tex[0].cbuf_off, value = 0;
+        Sm86EvalIo io = {NULL, mh_cbuf, mh_mem};
+        int ran = sm86_eval((const u64(*)[2])si.memh, si.nmemh, &io, &probe, 1, &value);
+        CHECK(ran && value == 0xddddddddu);
+        if (!ran || value != 0xddddddddu) fprintf(stderr, "flow guarded handle: ran %d, %08x\n", ran, value);
+    }
+}
 /* An address's base through a ULDC of one word to the register before it: UR4 = c[0][0x530] (64 bits), UR7 = UR4 +
    0x30, then a ULDC UR6 of one word of bank 3, UMOV UR4 = UR7, and the LDG at [UR4 + 0x5c]. UR7 keeps its key: the
    word's ULDC took the key of UR7 as a 64-bit one's high word, and one game's material program was refused for "a
@@ -8306,6 +8385,7 @@ int main(int argc, char** argv) {
     test_compute_handle_table(dir);
     test_tld4_bindless(dir);
     test_guarded_handles(dir);
+    test_flow_guarded_handles(dir);
     test_memory_eval();
     test_uldc_word_key(dir);
     test_mesh(dir);

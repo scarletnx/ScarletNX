@@ -6155,7 +6155,7 @@ static int mh_may_write(const Sm86Insn* in, int file, u32 r) {
             case SM86_LOP3:
             case SM86_ULOP3: return uk == u && p81;
             case SM86_UVOTE: return u && p81;
-            case SM86_R2P: return !u;
+            case SM86_R2P: return !u && (in->b.kind != SM86_SRC_IMM || (in->b.value >> r & 1)); /* its mask's */
             case SM86_VOTE:
             case SM86_MATCH:
             case SM86_SHFL_II:
@@ -6386,12 +6386,70 @@ static int mh_sources(Ctx* c, u32 k) {
         default: return mh_fail(c, "a texture handle from memory made with %s", sm86_ops[op].name);
     }
 }
+/* the condition (mh_guard_code) that the edge from instruction j to k carries: a BRA guarded by a predicate alone (its
+   operand PT) jumps where the guard holds and goes on to the next instruction where it doesn't. 0 for none */
+static u32 mh_edge_guard(Ctx* c, u32 j, u32 k) {
+    const Sm86Insn* in = &c->in[j];
+    if (in->op != SM86_BRA || sm86_always(in) || sm86_never(in) || in->pred == SM86_PT ||
+        sm86_field(in, 87, 3) != SM86_PT || sm86_field(in, 90, 1))
+        return 0;
+    u32 t = sm86_branch_target(in, j);
+    if (t == j + 1) return 0;
+    return t == k ? mh_guard_code(in) : k == j + 1 ? mh_guard_code(in) ^ 8u : 0;
+}
+#define MH_GUARD_PREDS(k)                                                                                              \
+    do {                                                                                                               \
+        if ((k) == 0) ok = 0;                                                                                          \
+        if ((k) > 0 && falls_through(&c->in[(k) - 1])) MH_GUARD_EDGE((k) - 1, k);                                      \
+        for (u32 e = c->jump_first[k]; e < c->jump_first[(k) + 1]; e++) MH_GUARD_EDGE(c->jump_from[e], k);             \
+    } while (0)
+#define MH_GUARD_EDGE(j, k)                                                                                            \
+    do {                                                                                                               \
+        u32 eg = mh_edge_guard(c, j, k);                                                                               \
+        if (!g && eg) g = eg;                                                                                          \
+        if ((!eg || eg != g) && !seen[j]) seen[j] = 1, stack[top++] = (j);                                             \
+    } while (0)
+/* The guard under which instruction i runs though it has none of its own, 0 when none shows: every path to it from the
+   program's start takes an edge of a BRA that holds the guard (the fall-through of @!P0 BRA, the jump of @P0 BRA), and
+   no write of the guard's predicate lies after that edge on the way to i. The compiler computes the handle of a texture
+   instruction inside a block that a branch skips before the branch, under its predicate: @P6 MOV R49 = c[3][0x18],
+   @P6 LOP3 R49 = R49 | c[3][0x60], later @!P6 BRA past the block and an unguarded TLD4.B of R49 in it. The first
+   walk back names the guard by the first such edge it finds, the second checks it on every path */
+static u32 mh_flow_guard(Ctx* c, u32 i) {
+    if (!flow_sources(c)) return 0;
+    u32 n = c->n, *stack = malloc(((size_t)n + 1) * sizeof *stack), top = 0, g = 0;
+    u8* seen = calloc((size_t)n + 1, 1);
+    int ok = stack && seen;
+    if (ok) MH_GUARD_PREDS(i);
+    while (ok && top && !g) {
+        u32 k = stack[--top];
+        MH_GUARD_PREDS(k);
+    }
+    if (ok && g) {
+        memset(seen, 0, (size_t)n + 1);
+        top = 0;
+        MH_GUARD_PREDS(i);
+        while (ok && top) {
+            u32 k = stack[--top];
+            if (mh_may_write(&c->in[k], MH_P, g & 7))
+                ok = 0;
+            else
+                MH_GUARD_PREDS(k);
+        }
+    }
+    free(stack);
+    free(seen);
+    return ok ? g : 0;
+}
+#undef MH_GUARD_EDGE
+#undef MH_GUARD_PREDS
 /* the probe (SH_PROBE, by instruction index until mh_finish) of value r of the file at texture instruction at, whose
    writer joins ShaderInfo.memh: ~0 when it can't. The handle's value matters where the texture instruction runs,
-   under its guard */
+   under its guard, or under the one its block runs under where it has none (mh_flow_guard) */
 static u32 mh_probe(Ctx* c, u32 at, int file, u32 r) {
     int changed;
     c->mh_guard = mh_guard_code(&c->in[at]);
+    if (!c->mh_guard) c->mh_guard = mh_flow_guard(c, at);
     c->mh_used = 0;
     int k = mh_writer(c, at, file, r, &changed);
     int ok = k >= 0 && (u32)k < at;
