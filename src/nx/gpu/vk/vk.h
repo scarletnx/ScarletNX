@@ -2944,6 +2944,12 @@ void vk_mem_changed(u64 cpu, u64 len); /* gpu.c's g_gpu_mem_changed: the range c
 /* own.c's landed hook: host pages [cpu, cpu + size) a landing wrote, with their bytes then, whose next report as
    written counts only if those changed */
 void vk_ww_landed(u64 cpu, u64 size, const u8* bytes);
+/* own.c's open hook: the pages of a watch in place open by go(ctx), with no report as written but of those whose bytes
+   changed as they opened (bytes: their place in their buffer's view) */
+void vk_ww_open(u64 lo, u64 hi, const u8* bytes, void (*go)(void* ctx), void* ctx);
+/* the host pages [lo, hi) are trapped in place next, where no scan looks: what the CPU wrote there so far is noted as a
+   scan finds it. Under vk_lock */
+void vk_ww_watching(u64 lo, u64 hi);
 void vk_ww_stats(u32 presents); /* the stats: the write tracking's epochs and scans since the last, a line */
 /* tests: the landed pages' list sorted as a scan's take sorts it, its length, or ~0u when it isn't one entry a page in
    the pages' order; and the hash kept for the host page at cpu (0 for none) */

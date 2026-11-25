@@ -1586,7 +1586,7 @@ int mem_ext_runs(u64 a, u64 size, MemPoolRun* runs, u32 max, u32* n) {
         const u32 i = ext_at_nl(at);
         if (i == g_ext.n || !g_ext.run[i].view || *n == max) goto out;
         const u64 hi = g_ext.run[i].b < end ? g_ext.run[i].b : end;
-        runs[*n] = (MemPoolRun){at, hi - at, at};
+        runs[*n] = (MemPoolRun){at, hi - at, (u64)(uintptr_t)(g_ext.run[i].view + (at - g_ext.run[i].a))};
         ++*n;
         at = hi;
     }

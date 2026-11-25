@@ -164,6 +164,19 @@ static void resolve(u64 addr, u64 size) {
     atomic_store_explicit(&g_resolve_gate, 0, memory_order_release);
     if (g_resolve_res) CHECK(own_begin(g_resolve_lo, g_resolve_size, g_resolve_res, 0) == 0);
 }
+/* the producer's opening of a watch over a GPU's buffer (OwnHooks' open): the last one's pages and their place in the
+   buffer's view, the watch on them when it is asked */
+static _Atomic int g_opens; /* atomic */
+static u64 g_open_lo, g_open_hi;
+static const u8* g_open_bytes;
+static void open_pages(u64 lo, u64 hi, const u8* bytes, void (*go)(void* ctx), void* ctx) {
+    atomic_fetch_add_explicit(&g_opens, 1, memory_order_relaxed);
+    g_open_lo = lo;
+    g_open_hi = hi;
+    g_open_bytes = bytes;
+    CHECK(own_trapped(lo, hi - lo));
+    go(ctx);
+}
 /* the producer's answer before owners land (OwnHooks' refresh): g_refresh_res published over
    [g_refresh_lo, + g_refresh_size), or nothing when it is NULL */
 static _Atomic int g_refreshes; /* atomic */
@@ -606,7 +619,7 @@ static void test_watch_in_place(void) {
     u8 buf[0x4000];
     u8* view = (u8*)handle;
     CHECK(mem_migrate(a, 0x10000, fd, view) == 0 && view[0x1234] == (u8)(0x11 + 0x1234));
-    int resolves = g_resolves, lands = g_lands;
+    int resolves = g_resolves, lands = g_lands, opens = g_opens;
     CHECK(own_watch_in_place(other, 0x1000) == -1 && !own_trapped(other, 0x4000));
     CHECK(own_watch_in_place(a + 0x1100, 0x2000) == 0);
     CHECK(own_watched(a + 0x1100, 0x2000) && own_trapped(a + 0x1000, 0x3000) && !own_trapped(a + 0x4000, 0x1000));
@@ -620,9 +633,22 @@ static void test_watch_in_place(void) {
     producer_lock(); /* the landing's thread done: it holds the producer's lock until then */
     producer_unlock();
     CHECK(g_resolves == resolves + 1 && g_lands == lands && !own_trapped(a, 0x10000));
+    /* opened by the producer, whole, its place in the view with it */
+    CHECK(g_opens == opens + 1 && g_open_lo == a + 0x1000 && g_open_hi == a + 0x4000 && g_open_bytes == view + 0x1000);
     CHECK(GP(a)[0x10FF] == (u8)(0x11 + 0x10FF) && GP(a)[0x30FF] == 0xA5 && mem_pool_offset(a + 0x1000, &off) != 0);
     GP(a)[0x1300] = 0x77; /* the same pages as the buffer's */
     CHECK(view[0x1300] == 0x77);
+    /* a watch that goes in parts: each part's pages, at their own place in the view */
+    producer_lock();
+    CHECK(own_watch_in_place(a + 0x4000, 0x5000) == 0);
+    own_unwatch(a + 0x6000, 0x1000); /* its middle */
+    CHECK(g_opens == opens + 2 && g_open_lo == a + 0x6000 && g_open_hi == a + 0x7000 && g_open_bytes == view + 0x6000);
+    CHECK(own_trapped(a + 0x4000, 0x2000) && !own_trapped(a + 0x6000, 0x1000) && own_trapped(a + 0x7000, 0x2000));
+    own_unwatch(a + 0x7000, 0x1000); /* the start of the upper part */
+    CHECK(g_opens == opens + 3 && g_open_bytes == view + 0x7000 && own_trapped(a + 0x8000, 0x1000));
+    own_unwatch(a, 0x10000); /* what is left: the lower part, and the upper one's end */
+    CHECK(g_opens == opens + 5 && g_open_lo == a + 0x8000 && g_open_bytes == view + 0x8000 && !own_trapped(a, 0x10000));
+    producer_unlock();
     CHECK(mem_unmap(a, 0x10000) == 0 && mem_unmap(other, 0x4000) == 0);
     plat_gpu_buffer_free(fd, handle, 0x10000);
     puts("memory_own: a watch over a GPU buffer's pages traps them where they are, and reads their bytes through it");
@@ -1364,7 +1390,8 @@ int main(int argc, char** argv) {
                   .lock = producer_lock,
                   .unlock = producer_unlock,
                   .resolve = resolve,
-                  .refresh = refresh};
+                  .refresh = refresh,
+                  .open = open_pages};
     pthread_mutexattr_t recursive;
     pthread_mutexattr_init(&recursive);
     pthread_mutexattr_settype(&recursive, PTHREAD_MUTEX_RECURSIVE);
