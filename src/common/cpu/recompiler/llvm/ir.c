@@ -15,6 +15,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <pthread.h>
+#endif
 
 /* ---- setup ---- */
 
@@ -32,7 +37,20 @@ static struct {
     SnxU64 dump_pc;
     int initialized;    /* snx_ir_init ran */
     char host_drop[32]; /* snx_ir_host_drop's prefix */
-} g_ir;
+#ifdef _WIN32
+    INIT_ONCE once; /* snx_ir_init's, whichever thread is first */
+#else
+    pthread_once_t once;
+#endif
+    int ready; /* its answer, -1 or 1, with why not in error */
+    char error[256];
+} g_ir = {
+#ifdef _WIN32
+    .once = INIT_ONCE_STATIC_INIT,
+#else
+    .once = PTHREAD_ONCE_INIT,
+#endif
+};
 static const SnxIrFeatures generic_features;
 
 int snx_ir_host_drop(const char* prefix, char* error, size_t error_size) {
@@ -115,7 +133,7 @@ void snx_ir_diagnostics(int stats, const char* dump_pc) {
 int snx_ir_volatile(void) { return g_ir.volatile_memory; }
 int snx_ir_stats_on(void) { return g_ir.stats; }
 SnxU64 snx_ir_dump_pc(void) { return g_ir.dump ? g_ir.dump_pc : 0; }
-int snx_ir_init(char* error, size_t error_size) {
+static int init_llvm(char* error, size_t error_size) {
     /* the asm parser for the runtime library's inline assembly (rtlib.c's divq, cpu.h's compiler barrier) */
     if (LLVMInitializeNativeTarget() || LLVMInitializeNativeAsmPrinter() || LLVMInitializeNativeAsmParser()) {
         snprintf(error, error_size, "LLVM has no code generator for this host");
@@ -219,6 +237,24 @@ int snx_ir_init(char* error, size_t error_size) {
     g_ir.initialized = 1;
     return x86 || arm || ppc || other ? 0 : -1;
 }
+static void init_once(void) { g_ir.ready = init_llvm(g_ir.error, sizeof g_ir.error) ? -1 : 1; }
+#ifdef _WIN32
+static BOOL CALLBACK init_callback(PINIT_ONCE once, PVOID parameter, PVOID* context) {
+    (void)once, (void)parameter, (void)context;
+    init_once();
+    return TRUE;
+}
+#endif
+int snx_ir_init(char* error, size_t error_size) {
+#ifdef _WIN32
+    InitOnceExecuteOnce(&g_ir.once, init_callback, NULL, NULL);
+#else
+    pthread_once(&g_ir.once, init_once);
+#endif
+    if (g_ir.ready < 0 && error_size) snprintf(error, error_size, "%s", g_ir.error);
+    return g_ir.ready < 0 ? -1 : 0;
+}
+int snx_ir_started(void) { return g_ir.initialized; }
 
 static LLVMCodeGenOptLevel codegen_level(char opt) {
     switch (opt) {

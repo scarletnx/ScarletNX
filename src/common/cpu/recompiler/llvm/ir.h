@@ -245,8 +245,11 @@ void ir_flags_logic(SnxIr* ir, LLVMValueRef value, unsigned bits);
 void ir_flags_set_nzcv(SnxIr* ir, LLVMValueRef nzcv);
 LLVMValueRef ir_flags_cond(SnxIr* ir, unsigned cond);
 
-/* Once per process, before any other call; threads may then each own SnxIrs. 0, or -1 with the reason */
+/* Before any other call of the thread's: the first starts LLVM for the process, whichever thread it is, and the others
+   give its answer (threads may then each own SnxIrs). 0, or -1 with the reason */
 int snx_ir_init(char* error, size_t error_size);
+/* whether snx_ir_init started LLVM, which a native back end's work never does */
+int snx_ir_started(void);
 /* Tests': takes every host feature whose name begins with prefix out of what snx_ir_init reads into snx_ir_host and
    of the target machines snx_ir_new and snx_ir_new_jit make, so the host runs as one without them (prefix "avx512":
    an x86-64 with AVX2 and no AVX-512). prefix names a whole family, as "avx512" does: a feature left in that needs
