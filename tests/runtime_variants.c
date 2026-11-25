@@ -399,6 +399,11 @@ static void nro_modules(const char* path) {
     CHECK(imports_call(own) == 'N');
     jit_slot_taken(0x2400, override_fn);
     CHECK(imports_call(own) == 'H');
+    /* the slot given back with nothing in it: the import calls what the table holds */
+    g_disp[(0x2400 - CODE_LO) / 4] = test_fn;
+    jit_slot_taken(0x2400, NULL);
+    CHECK(imports_call(own) == 'T');
+    g_disp[(0x2400 - CODE_LO) / 4] = test_fn2;
     jit_nro_removed(0x1000);
     CHECK(jit_nro_added(slots[0].hash, 0x1000, 0x1000, id, &entries) == 0 && entries == 2);
     CHECK(imports_call(own) == 'G');

@@ -41,7 +41,8 @@ int jit_nro_added(const u8* hash, u64 base, u64 size, const u8* id, u32* entries
 void jit_nro_removed(u64 base);
 /* The dispatch slot of addr was given fn, which answers every call of that address from now on in the game module's
    place (a hook, NVN's implementation of a function the game resolved): an NRO's module that calls the function at
-   addr directly, through its import of it, calls fn from now on. Called once the slot holds fn */
+   addr directly, through its import of it, calls fn from now on. NULL for fn, a slot given back with no function in it
+   (gvk's release): the call goes through the dispatch table. Called once the slot holds fn */
 void jit_slot_taken(u64 addr, GuestFn fn);
 /* a mapping, permission or write-back change under [addr, addr+size) (mem_set_code_invalidate): the dispatch slots in
    the range are cleared, the JIT's code is invalidated, and a block the game mapped that is no longer executable loses
