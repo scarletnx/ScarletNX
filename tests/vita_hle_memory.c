@@ -56,7 +56,7 @@ static bool save_file_exists(VitaProcess* p, const char* name) {
 /* SceAppUtil's save data (vita/hle/misc.c): a slot's parameters, the slot and the files given to DataSave, each
    file's buffer and the place for the KiB it needs */
 static void save_data(VitaProcess* p, VitaThread* t, uint32_t mem, uint32_t end) {
-    const VitaHle* misc = vita_hle_misc;
+    const VitaHle* misc = vita_hle_table;
     uint32_t param = mem, slot = mem + 0x400, files = mem + 0x440, path = mem + 0x500, data = mem + 0x600,
              required = mem + 0x700;
     memset(vita_ptr(p, param), 0, SLOT_PARAM_SIZE);
@@ -117,7 +117,7 @@ static void save_data(VitaProcess* p, VitaThread* t, uint32_t mem, uint32_t end)
 /* sceNet (vita/hle/net.c): a socket's address read or written, a datagram sent from or received into the game's
    memory, the epoll events, sceNetCtl's and NP's out parameters */
 static void net(VitaProcess* p, VitaThread* t, uint32_t mem, uint32_t end) {
-    const VitaHle* n = vita_hle_net;
+    const VitaHle* n = vita_hle_table;
     uint32_t to = mem + 0x1000, from = mem + 0x1010, length = mem + 0x1020, value = mem + 0x1030, data = mem + 0x1100,
              got = mem + 0x1200, event = mem + 0x1300, events = mem + 0x1400, id = mem + 0x1500;
     uint32_t receiver = CALL(n, "sceNetSocket", 0, 2, 2, 0), sender = CALL(n, "sceNetSocket", 0, 2, 2, 0);
@@ -175,7 +175,7 @@ static void net(VitaProcess* p, VitaThread* t, uint32_t mem, uint32_t end) {
 }
 
 static void ngs_template1(VitaProcess* p, VitaThread* t, uint32_t mem) {
-    const VitaHle* n = vita_hle_ngs;
+    const VitaHle* n = vita_hle_table;
     uint32_t system = mem + 0x2000, params = mem + 0x2100, description = mem + 0x2200;
     uint32_t required = mem + 0x2300, buffer_info = mem + 0x2400, rack_out = mem + 0x2500;
     uint32_t patch_info = mem + 0x2600, patch_out = mem + 0x2700, voice_info = mem + 0x2800;
@@ -259,7 +259,7 @@ static void ngs_template1(VitaProcess* p, VitaThread* t, uint32_t mem) {
 }
 
 static void ngs_sparse_input_clear(VitaProcess* p, VitaThread* t, uint32_t mem) {
-    const VitaHle* n = vita_hle_ngs;
+    const VitaHle* n = vita_hle_table;
     uint32_t system = mem + 0x2000, params = mem + 0x2100, description = mem + 0x2200;
     uint32_t buffer_info = mem + 0x2300, rack_out = mem + 0x2310, voice_out = mem + 0x2320;
     uint32_t patch_info = mem + 0x2400, patch_out = mem + 0x2420, matrix = mem + 0x2440;
@@ -334,7 +334,7 @@ static void ngs_sparse_input_clear(VitaProcess* p, VitaThread* t, uint32_t mem) 
    a System Update that does not crash with no decoder behind the Atrac9 voice: it is silent (no samples out) rather
    than played, and the two busses pass through what little (nothing, here) reaches them */
 static void ngs_atrac9_and_extra_busses(VitaProcess* p, VitaThread* t, uint32_t mem) {
-    const VitaHle* n = vita_hle_ngs;
+    const VitaHle* n = vita_hle_table;
     uint32_t system = mem + 0x2000, params = mem + 0x2100, description = mem + 0x2200;
     uint32_t buffer_info = mem + 0x2300, rack_out = mem + 0x2310, voice_out = mem + 0x2320;
     uint32_t patch_info = mem + 0x2400, patch_out = mem + 0x2420, matrix = mem + 0x2440;

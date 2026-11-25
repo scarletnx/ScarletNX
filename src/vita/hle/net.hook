@@ -1,0 +1,83 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+#
+# The Vita's imports that net.c answers, by NID, for tools/hookgen --vita.
+# The network, as an offline console has it: in flight mode (its radios off), signed out of PSN. What it does
+# without a network works: a library's Init and Term, its callbacks registered and checked, byte order and address
+# text, the account's NP ID (known signed out: a game looks its own player up by it) and NP IDs compared, and the
+# console's own sockets. A socket sends to the console itself (127.0.0.0/8, or 0.0.0.0), where the socket bound to
+# the address's port gets the datagram; any other address can't be reached. A game that hosts its own session, as
+# one does offline, talks to itself that way. The state queries and the callbacks say there is no network (SceNetCtl
+# disconnected for flight mode, NP signed out): a game waits on its connecting screen until it learns why. Every
+# other function of the network's libraries, the ones the runtime doesn't know included, fails with its library's
+# error (vita_net_offline_error): a game that took a network function's 0 for success went on to wait for a server
+# that never answers, and one whose sceNetInit failed quit as it booted. The trophies (SceNpTrophy,
+# vita/hle/dialog.c) and the licenses (SceNpDrm) are the console's own, not the network's
+family net
+[0xeb03e265] hook sceNetInit() -> u32 = vita_net_zero
+[0xea3cc286] hook sceNetTerm() -> u32 = vita_net_zero
+[0xf084fce3] hook sceNetSocket(u32 name, u32 domain, u32 type, u32 protocol) -> u32 = vita_net_socket
+[0x29822b4d] hook sceNetSocketClose(u32 socket_id) -> u32 = vita_net_close
+[0x891c1b9b] hook sceNetSocketAbort() -> u32 = vita_net_zero
+[0x1296a94b] hook sceNetBind(u32 socket_id, addr at, u32 length) -> u32 = vita_net_bind
+[0x7a8da094] hook sceNetListen(u32 socket_id) -> u32 = vita_net_listen
+[0x1adf9bb1] hook sceNetAccept(u32 socket_id, u32 address, u32 length) -> u32 = vita_net_accept
+[0x11e5b6f6] hook sceNetConnect(u32 socket_id, addr at, u32 length) -> u32 = vita_net_connect
+[0x52db31d5] hook sceNetSendto(u32 socket_id, u32 data, u32 size, u32 flags, addr at, u32 length) -> u32 = vita_net_sendto
+[0xe3dd8cd9] hook sceNetSend(u32 socket_id, u32 data, u32 size, u32 flags) -> u32 = vita_net_send
+[0xb226138b] hook sceNetRecvfrom(u32 socket_id, u32 data, u32 size, u32 flags, u32 address, u32 length) -> u32 = vita_net_recvfrom
+[0x023643b7] hook sceNetRecv(u32 socket_id, u32 data, u32 size, u32 flags) -> u32 = vita_net_recv
+[0x1c66a6db] hook sceNetGetsockname(u32 socket_id, u32 at, u32 length_at) -> u32 = vita_net_getsockname
+[0x065505ca] hook sceNetSetsockopt(u32 socket_id, u32 level, u32 option, addr value, u32 length) -> u32 = vita_net_setsockopt
+[0xba652062] hook sceNetGetsockopt(u32 socket_id, u32 level, u32 option, addr value, addr length) -> u32 = vita_net_getsockopt
+[0xe37f34aa] hook sceNetErrnoLoc() -> u32 = vita_net_errno_loc
+[0xf9d102ae] hook sceNetEpollCreate(u32 name, u32 flags) -> u32 = vita_net_epoll_create
+[0x4c8764ac] hook sceNetEpollControl(u32 epoll_id, u32 op, u32 id, addr event) -> u32 = vita_net_epoll_control
+[0x45ce337d] hook sceNetEpollWait(u32 id, addr events, u32 count, i32 timeout) -> u32 = vita_net_epoll_wait
+[0x7915caf3] hook sceNetEpollDestroy(u32 epoll_id) -> u32 = vita_net_epoll_destroy
+[0x93fcc4e8] hook sceNetEpollAbort() -> u32 = vita_net_zero
+[0x4c30b03c] hook sceNetHtonl(u32 value) -> u32 = vita_net_htonl
+[0x9fa3207b] hook sceNetHtons(u32 value) -> u32 = vita_net_htons
+[0xd2eaa645] hook sceNetNtohl(u32 value) -> u32 = vita_net_htonl
+[0x07845128] hook sceNetNtohs(u32 value) -> u32 = vita_net_htons
+[0xd5eeb048] hook sceNetInetPton() -> u32 = vita_net_zero
+# 0: not an address
+[0x98839b74] hook sceNetInetNtop() -> u32 = vita_net_zero
+# NULL: no text
+[0x495ca1db] hook sceNetCtlInit() -> u32 = vita_net_zero
+[0xcd188648] hook sceNetCtlTerm() -> u32 = vita_net_zero
+[0x6d26ac68] hook sceNetCtlInetGetState(addr state) -> u32 = vita_net_ctl_state
+[0x6b20ec02] hook sceNetCtlInetGetResult(u32 event, addr error) -> u32 = vita_net_ctl_result
+[0xeaee6185] hook sceNetCtlInetRegisterCallback(u32 callback, u32 argument, addr id) -> u32 = vita_net_ctl_register_callback
+[0xd0c3bf3f] hook sceNetCtlInetUnregisterCallback(u32 id) -> u32 = vita_net_ctl_unregister_callback
+[0xdffc3ed4] hook sceNetCtlCheckCallback() -> u32 = vita_net_ctl_check_callback
+[0x214926d9] hook sceHttpInit() -> u32 = vita_net_zero
+[0xc9076666] hook sceHttpTerm() -> u32 = vita_net_zero
+[0x3c733316] hook sceSslInit() -> u32 = vita_net_zero
+[0x03ce6e3a] hook sceSslTerm() -> u32 = vita_net_zero
+[0x04d9f484] hook sceNpInit() -> u32 = vita_net_zero
+[0x19e40ae1] hook sceNpTerm() -> u32 = vita_net_zero
+[0x54060df6] hook sceNpGetServiceState(addr state) -> u32 = vita_net_np_service_state
+[0x44239c35] hook sceNpRegisterServiceStateCallback(u32 callback, u32 argument) -> u32 = vita_net_np_register_state_callback
+[0xd9e6e56c] hook sceNpUnregisterServiceStateCallback() -> u32 = vita_net_np_unregister_state_callback
+[0x3b0ae9a9] hook sceNpCheckCallback() -> u32 = vita_net_np_check_callback
+[0x3c94b4b4] hook sceNpManagerGetNpId(addr id) -> u32 = vita_net_np_get_id
+[0xfb8d82e5] hook sceNpCmpNpId(addr x, addr y) -> u32 = vita_net_np_compare_ids
+[0x441d8b4e] hook sceNpAuthInit() -> u32 = vita_net_zero
+[0x6093b689] hook sceNpAuthTerm() -> u32 = vita_net_zero
+[0xe807d0bc] hook sceNpSetPlatformType() -> u32 = vita_net_zero
+[0x4b6acf47] hook sceNpSignalingInit() -> u32 = vita_net_zero
+[0xbc892d18] hook sceNpSignalingTerm() -> u32 = vita_net_zero
+[0xc73f209a] hook sceNpCommerce2Init() -> u32 = vita_net_zero
+[0xb99958ae] hook sceNpCommerce2Term() -> u32 = vita_net_zero
+[0x01284c6e] hook sceNpWordFilterInit() -> u32 = vita_net_zero
+[0x7d140f70] hook sceNpWordFilterTerm() -> u32 = vita_net_zero
+[0x9246a673] hook sceNpLookupInit() -> u32 = vita_net_zero
+[0x0158b61b] hook sceNpLookupTerm() -> u32 = vita_net_zero
+[0xefb91a99] hook sceNpBasicInit() -> u32 = vita_net_zero
+[0x389bcb3b] hook sceNpBasicTerm() -> u32 = vita_net_zero
+[0x20146aec] hook sceNpBasicCheckCallback() -> u32 = vita_net_zero
+[0x258da4ac] hook sceNpMessageInit() -> u32 = vita_net_zero
+[0x380230a1] hook sceNpMessageTerm() -> u32 = vita_net_zero
+[0xe0ffee97] hook sceNpActivityInit() -> u32 = vita_net_zero
+[0x9ea4901f] hook sceNpActivityTerm() -> u32 = vita_net_zero

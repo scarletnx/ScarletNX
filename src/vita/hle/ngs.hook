@@ -1,0 +1,51 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+#
+# The Vita's imports that ngs.c answers, by NID, for tools/hookgen --vita.
+# SceNgs, the console's voice synthesizer. The system, its racks and their voices live in the memory the game gives
+# them: a voice's handle is the address of its part of its rack's buffer, which holds its modules' parameters (a
+# room each, which sceNgsVoiceLockParams hands the game) and its patches' handles. What a voice does is kept here.
+# Each sceNgsSystemUpdate runs a granule (the system's granularity, in frames at 48 kHz): every simple voice and
+# Template1 player reads its buffers (16-bit PCM or HE-ADPCM), resampled to the system's rate, and mixes them through
+# its patches' volume matrices into the voices they lead to; a master buss's output module then holds the sum as
+# 16-bit stereo, the state data the game sends to its audio port. A player's buffers loop and chain as their loop
+# counts and next indices say, and the voice is available again once it runs out of them. The effect modules pass the
+# sound unchanged. As the vitasdk headers (MIT) declare, and as Vita3K's ngs/ (GPL-2.0-or-
+# later) models them: modules/SceNgsUser/SceNgs.cpp, ngs/src/ngs.cpp, scheduler.cpp, route.cpp, modules/player.cpp
+# and codec/src/pcm.cpp (HE-ADPCM, from vgmstream's HEVAG decoder)
+family ngs
+[0x6ce8b36f] hook sceNgsSystemGetRequiredMemorySize(u32 params, addr size) -> u32 = vita_ngs_system_get_required_memory_size
+[0xed14cf4a] hook sceNgsSystemInit(u32 memory, u32 size, addr params, addr handle) -> u32 = vita_ngs_system_init
+[0x4a25bebc] hook sceNgsSystemRelease() -> u32 = vita_ngs_system_release
+[0x64d80013] hook sceNgsSystemSetFlags() -> u32 = vita_ngs_ok
+[0x684f080c] hook sceNgsSystemUpdate(u32 system) -> u32 = vita_ngs_system_update
+[0x477318c0] hook sceNgsRackGetRequiredMemorySize(u32 system, addr description, addr out) -> u32 = vita_ngs_rack_get_required_memory_size
+[0x0a92e4ec] hook sceNgsRackInit(u32 system, addr buffer, addr description, addr out) -> u32 = vita_ngs_rack_init
+[0xfe1a98e9] hook sceNgsRackGetVoiceHandle(u32 rack, u32 index, addr out) -> u32 = vita_ngs_rack_get_voice_handle
+[0xdd5ca10b] hook sceNgsRackRelease(u32 rack) -> u32 = vita_ngs_rack_release
+[0x0d5399cf] hook sceNgsVoiceDefGetSimpleVoice() -> u32 = vita_ngs_simple_voice
+[0x79a121d1] hook sceNgsVoiceDefGetMasterBuss() -> u32 = vita_ngs_master_buss
+[0x9dcf50f5] hook sceNgsVoiceDefGetReverbBuss() -> u32 = vita_ngs_reverb_buss
+[0xe9b572b7] hook sceNgsVoiceDefGetTemplate1() -> u32 = vita_ngs_template1
+[0x0e0acb68] hook sceNgsVoiceDefGetCompressorBuss() -> u32 = vita_ngs_compressor_buss
+[0x1f51c2ba] hook sceNgsVoiceDefGetSasEmuVoice() -> u32 = vita_ngs_sas_emu_voice
+[0xe0ac8776] hook sceNgsVoiceDefGetMixerBuss() -> u32 = vita_ngs_mixer_buss
+[0xf964120e] hook sceNgsVoiceDefGetEqBuss() -> u32 = vita_ngs_eq_buss
+[0xaad90deb] hook sceNgsVoiceDefGetDistortionBuss() -> u32 = vita_ngs_distortion_buss
+[0x45cf2a73] hook sceNgsVoiceDefGetSimpleAtrac9Voice() -> u32 = vita_ngs_simple_atrac9_voice
+[0xab6bef8f] hook sceNgsVoiceLockParams(u32 voice, u32 module, u32 updates, addr out) -> u32 = vita_ngs_voice_lock_params
+[0x24e909a8] hook sceNgsVoiceSetModuleCallback(u32 voice, u32 module, addr callback, u32 data) -> u32 = vita_ngs_voice_set_module_callback
+[0x3d46d8a7] hook sceNgsVoiceUnlockParams() -> u32 = vita_ngs_ok
+[0xfb8174b1] hook sceNgsVoiceSetParamsBlock(u32 voice, addr block, u32 size, addr errors_out) -> u32 = vita_ngs_voice_set_params_block
+[0xc9b8c0b4] hook sceNgsVoiceGetStateData(u32 voice, u32 module, addr memory, u32 size) -> u32 = vita_ngs_voice_get_state_data
+[0x5551410d] hook sceNgsVoiceGetInfo(u32 voice, addr out) -> u32 = vita_ngs_voice_get_info
+[0xfa0a0f34] hook sceNgsVoicePlay(u32 voice) -> u32 = vita_ngs_voice_play
+[0xd7786e99] hook sceNgsVoicePause(u32 voice_id) -> u32 = vita_ngs_voice_pause
+[0x54cfb981] hook sceNgsVoiceResume(u32 voice_id) -> u32 = vita_ngs_voice_resume
+[0x0e291aad] hook sceNgsVoiceKill(u32 voice_id) -> u32 = vita_ngs_voice_kill
+[0x9ab87e71] hook sceNgsVoiceBypassModule() -> u32 = vita_ngs_ok
+[0xd668b49c] hook sceNgsPatchCreateRouting(addr info, addr out) -> u32 = vita_ngs_patch_create_routing
+[0x98703dbc] hook sceNgsPatchGetInfo(u32 patch, addr properties, addr delivery) -> u32 = vita_ngs_patch_get_info
+[0x01a52e3a] hook sceNgsVoiceGetOutputPatch(u32 voice, u32 output, u32 index, addr out) -> u32 = vita_ngs_voice_get_output_patch
+[0xd0c9ae5a] hook sceNgsPatchRemoveRouting(u32 patch_ref_id) -> u32 = vita_ngs_patch_remove_routing
+[0xa0f5402d] hook sceNgsVoicePatchSetVolumesMatrix(u32 patch_ref_id, addr matrix) -> u32 = vita_ngs_patch_set_volumes_matrix
