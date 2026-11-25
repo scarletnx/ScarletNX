@@ -2,14 +2,17 @@
    Copyright 2026 the ScarletNX contributors */
 /* A render target whose pixels exist only on the GPU, where the caches would let it go (surface.c rt_give_way): for its
    age (VK_RECLAIM_IDLE, every 600 presents) or under the budget's pressure (VK_RECLAIM_ANY). Here a parked one, as a
-   target is once another shape took its address, which nothing kept from its age: its pixels the guest's bytes loaded
-   at its making, with a rectangle cleared red over them that memory lacks.
+   target is once another shape took its address, which nothing kept from its age. It is published as it is parked
+   (rt_park_publish), so its pixels are in memory and it goes for its age and comes back from there, unless memory
+   can't hold them: a format that is no format of guest memory's (ASIDE_HELD), drawn as RGBA8, is the one that still
+   has pixels memory lacks when it is parked. Its pixels: a green picture with a rectangle cleared red over it.
    - Where the GPU shares the system's memory nothing moves: its age leaves it, bit for bit when it holds its address
      again, and the pressure takes it.
    - Where the GPU has memory of its own its image moves into system memory, the pressure leaves it there, and once it
      is used again it goes back into the GPU's memory, bit for bit.
-   - Memory the guest wrote while it was set aside, by the CPU or an engine, is what it holds at its next use, as a
-     target made after an eviction loads.
+   - Memory the guest wrote while it was set aside, by the CPU or an engine, is newer than it at its next use: it counts
+     as loaded again and, as such a format loads nothing, its pixels are undefined. One of a format memory holds, let go
+     for its age, is made again at its next use and loads what the guest wrote.
    Lavapipe is of the first kind; the second is had there by taking the device-local flag off its one memory type while
    the target moves out, so that system memory finds a type. A discrete GPU is of the second kind as it is, and of the
    first by its memory model */
@@ -19,6 +22,8 @@
 #define ASIDE_H     180u
 #define ASIDE_BYTES (ASIDE_W * ASIDE_H * 4u)
 #define ASIDE_SPAN  0x50000u /* its guest bytes: 20 GOBs across, 2 blocks of 16 GOBs down */
+#define ASIDE_RAW   0xD5u    /* A8B8G8R8: guest memory holds its texels as they are */
+#define ASIDE_HELD  0xE1u    /* no format of the table (format.c): drawn as RGBA8, and memory holds none of it */
 typedef struct {
     Surf** s;
     u32 n, cap;
@@ -77,20 +82,25 @@ static int aside_read(Surf* t, u8* out) {
     memcpy(out, data, ASIDE_BYTES);
     return 0;
 }
-/* the 320 by 180 A8B8G8R8 block linear target at gva (blocks 16 GOBs high), made from the guest's bytes there, then a
-   rectangle of it cleared red: the target, held with vk_lock */
-static Surf* aside_draw(GpuChannel* ch, u64 gva) {
+/* the 320 by 180 block linear target of format fmt at gva (blocks 16 GOBs high), made from the guest's bytes there,
+   then, one memory holds nothing of, all of it cleared green, and a rectangle of it cleared red: the target, held with
+   vk_lock */
+static Surf* aside_draw(GpuChannel* ch, u64 gva, u32 fmt) {
     u32* r = ch->r3d;
-    const float red[4] = {1, 0, 0, 1};
+    const float red[4] = {1, 0, 0, 1}, green[4] = {0, 1, 0, 1};
     r[0x487] = 1;
     r[0x200] = (u32)(gva >> 32);
     r[0x201] = (u32)gva;
     r[0x202] = ASIDE_W;
     r[0x203] = ASIDE_H;
-    r[0x204] = 0xD5;
+    r[0x204] = fmt;
     r[0x205] = 4u << 4;
     r[0x206] = 1;
     r[0x207] = 0;
+    if (fmt == ASIDE_HELD) {
+        memcpy(&r[0x360], green, sizeof green);
+        engine_clear(ch, 15 << 2);
+    }
     r[0x43E] |= 0x100;
     r[0x380] = 1;
     r[0x381] = 40 | 200u << 16;
@@ -105,7 +115,7 @@ static Surf* aside_draw(GpuChannel* ch, u64 gva) {
 }
 /* the target of another shape at gva takes the address, parking t; or t takes it again, the other one parked */
 static Surf* aside_park(u64 gva) { return vk_rt(gva, 160, 90, 0xD5, 4u << 4, 0, 0); }
-static Surf* aside_use(u64 gva) { return vk_rt(gva, ASIDE_W, ASIDE_H, 0xD5, 4u << 4, 0, 0); }
+static Surf* aside_use(u64 gva, u32 fmt) { return vk_rt(gva, ASIDE_W, ASIDE_H, fmt, 4u << 4, 0, 0); }
 /* the guest bytes of a target: none the same as the one before */
 static void aside_bytes(u64 cpu) {
     for (u32 i = 0; i < ASIDE_SPAN; i++) GP(cpu)[i] = (u8)(i * 37 + 11);
@@ -130,11 +140,13 @@ static int check_rt_aside(void) {
     /* the GPU shares the system's memory */
     aside_bytes(ASIDE_CPU);
     g_renderer->mem_may_have_changed();
-    Surf* t = aside_draw(ch, ASIDE_GA);
+    Surf* t = aside_draw(ch, ASIDE_GA, ASIDE_HELD);
     CHECK(t && aside_park(ASIDE_GA) != t && (t->gva >> 63));
     CHECK(!aside_read(t, ref));
     static const u8 red[4] = {255, 0, 0, 255};
-    CHECK(!memcmp(ref + (u64)(60 * ASIDE_W + 100) * 4, red, 4) && memcmp(ref, red, 4)); /* the guest's bytes, and red */
+    static const u8 green[4] = {0, 255, 0, 255};
+    CHECK(!memcmp(ref + (u64)(60 * ASIDE_W + 100) * 4, red, 4) && !memcmp(ref, green, 4));
+    CHECK(!vk_surf_flush_size(t)); /* memory can't hold its pixels, so its parking published nothing */
     g_vk.mem_model = VK_MEM_UMA;
     u32 before = aside_oldest(t), held = aside_targets();
     vk_rt_sys_stats(&was);
@@ -149,13 +161,14 @@ static int check_rt_aside(void) {
         return 1;
     }
     if (aside_expect(t, ref, got, "kept for its age")) return 1;
-    CHECK(aside_use(ASIDE_GA) == t && !t->aside);
+    CHECK(aside_use(ASIDE_GA, ASIDE_HELD) == t && !t->aside);
     vk_rt_sys_stats(&now);
     CHECK(now.reloads == was.reloads);
     if (aside_expect(t, ref, got, "kept for its age, used again")) return 1;
-    /* the CPU writes its memory while it is set aside: its next use loads that */
+    /* the CPU writes its memory while it is set aside: its next use finds that newer than its pixels, which are
+       undefined then, as its format loads nothing */
     vk_unlock();
-    CHECK(aside_draw(ch, ASIDE_GA) == t && aside_park(ASIDE_GA) != t);
+    CHECK(aside_draw(ch, ASIDE_GA, ASIDE_HELD) == t && aside_park(ASIDE_GA) != t);
     g_vk.mem_model = VK_MEM_UMA;
     vk_surf_reclaim(VK_LRU_RT, aside_oldest(t), ~0ull, VK_RECLAIM_IDLE);
     g_vk.mem_model = model;
@@ -164,20 +177,19 @@ static int check_rt_aside(void) {
     memset(GP(ASIDE_CPU), 0xA5, ASIDE_SPAN);
     g_renderer->mem_may_have_changed(); /* as the runtime says at the guest's next submission */
     vk_lock();
-    CHECK(aside_use(ASIDE_GA) == t);
+    CHECK(aside_use(ASIDE_GA, ASIDE_HELD) == t);
     vk_rt_sys_stats(&now);
-    memset(flat, 0xA5, ASIDE_BYTES);
-    if (now.reloads != was.reloads + 1) {
+    if (now.reloads != was.reloads + 1 || t->layout != VK_IMAGE_LAYOUT_UNDEFINED) {
         fprintf(stderr,
                 "a target set aside whose memory the CPU wrote meanwhile: %llu loaded again at their next use, not "
-                "%llu\n",
-                (unsigned long long)now.reloads, (unsigned long long)(was.reloads + 1));
+                "%llu, its pixels defined %d\n",
+                (unsigned long long)now.reloads, (unsigned long long)(was.reloads + 1),
+                t->layout != VK_IMAGE_LAYOUT_UNDEFINED);
         return 1;
     }
-    if (aside_expect(t, flat, got, "the CPU wrote its memory meanwhile")) return 1;
     /* the pressure takes it */
     vk_unlock();
-    CHECK(aside_draw(ch, ASIDE_GA) == t && aside_park(ASIDE_GA) != t);
+    CHECK(aside_draw(ch, ASIDE_GA, ASIDE_HELD) == t && aside_park(ASIDE_GA) != t);
     g_vk.mem_model = VK_MEM_UMA;
     before = aside_oldest(t);
     held = aside_targets();
@@ -188,11 +200,46 @@ static int check_rt_aside(void) {
     CHECK(aside_targets() == held - 1 && now.lost == was.lost + 1);
     vk_unlock();
 
+    /* a target memory holds is published as it is parked: its age takes it, its pixels memory's, and what the CPU wrote
+       meanwhile is what the target made again at its next use holds */
+    for (int wrote = 0; wrote < 2; wrote++) {
+        aside_bytes(ASIDE_CPU);
+        g_renderer->mem_may_have_changed();
+        t = aside_draw(ch, ASIDE_GA, ASIDE_RAW);
+        CHECK(t && aside_park(ASIDE_GA) != t && (t->gva >> 63) && !vk_surf_flush_size(t));
+        CHECK(!aside_read(t, ref));
+        g_vk.mem_model = VK_MEM_UMA;
+        before = aside_oldest(t);
+        held = aside_targets();
+        vk_rt_sys_stats(&was);
+        vk_surf_reclaim(VK_LRU_RT, before, ~0ull, VK_RECLAIM_IDLE);
+        vk_rt_sys_stats(&now);
+        g_vk.mem_model = model;
+        if (aside_targets() != held - 1 || now.kept != was.kept || now.lost != was.lost) {
+            fprintf(stderr,
+                    "a parked target whose pixels memory has: %u targets held after the age's walk, not %u; set aside "
+                    "%llu, gone with its pixels %llu\n",
+                    aside_targets(), held - 1, (unsigned long long)(now.kept - was.kept),
+                    (unsigned long long)(now.lost - was.lost));
+            return 1;
+        }
+        vk_unlock();
+        if (wrote) memset(GP(ASIDE_CPU), 0xA5, ASIDE_SPAN);
+        g_renderer->mem_may_have_changed();
+        vk_lock();
+        Surf* again = aside_use(ASIDE_GA, ASIDE_RAW);
+        CHECK(again);
+        memset(flat, 0xA5, ASIDE_BYTES);
+        if (aside_expect(again, wrote ? flat : ref, got, wrote ? "let go, the CPU wrote its memory" : "let go"))
+            return 1;
+        vk_unlock();
+    }
+
     /* the GPU has memory of its own */
     const u64 cpu = ASIDE_CPU + 0x80000, gva = ASIDE_GA + 0x80000;
     aside_bytes(cpu);
     g_renderer->mem_may_have_changed();
-    t = aside_draw(ch, gva);
+    t = aside_draw(ch, gva, ASIDE_HELD);
     CHECK(t && aside_park(gva) != t && (t->gva >> 63));
     CHECK(!aside_read(t, ref));
     const u64 device_bytes = t->bytes;
@@ -234,7 +281,7 @@ static int check_rt_aside(void) {
         vk_rt_sys_stats(&now);
         CHECK(aside_targets() == held && t->demoted && now.lost == was.lost);
         /* used again: back into the GPU's memory at the present's end */
-        CHECK(aside_use(gva) == t && !t->aside);
+        CHECK(aside_use(gva, ASIDE_HELD) == t && !t->aside);
         if (aside_expect(t, ref, got, "in system memory, used again")) return 1;
         vk_rt_sys_frame();
         vk_rt_sys_stats(&now);
@@ -249,21 +296,25 @@ static int check_rt_aside(void) {
         if (aside_expect(t, ref, got, "back in the GPU's memory")) return 1;
         /* again, and an engine writes its memory while it is in system memory */
         vk_unlock();
-        CHECK(aside_draw(ch, gva) == t && aside_park(gva) != t);
+        CHECK(aside_draw(ch, gva, ASIDE_HELD) == t && aside_park(gva) != t);
     }
     vk_unlock();
     memset(GP(cpu), 0x5A, ASIDE_SPAN);
     gpu_mem_written(gva, ASIDE_SPAN);
     g_renderer->mem_may_have_changed();
     vk_lock();
-    CHECK(aside_use(gva) == t);
+    vk_rt_sys_stats(&was);
+    CHECK(aside_use(gva, ASIDE_HELD) == t);
+    vk_rt_sys_stats(&now);
     vk_rt_sys_frame();
-    memset(flat, 0x5A, ASIDE_BYTES);
     if (t->demoted) {
         fprintf(stderr, "a target in system memory used again after an engine wrote its memory: still there\n");
         return 1;
     }
-    if (aside_expect(t, flat, got, "an engine wrote its memory meanwhile")) return 1;
+    if (t->layout != VK_IMAGE_LAYOUT_UNDEFINED) {
+        fprintf(stderr, "a target in system memory used again after an engine wrote its memory: it kept its pixels\n");
+        return 1;
+    }
     vk_unlock();
     CHECK(mem_unmap(ASIDE_CPU, 2 * 0x80000) == 0);
     free(ch);
@@ -271,6 +322,7 @@ static int check_rt_aside(void) {
     free(got);
     free(flat);
     puts("render targets set aside: kept for their age bit for bit, moved into system memory and back where the GPU "
-         "has its own, taken by the pressure where it doesn't, and loaded from memory the guest wrote meanwhile");
+         "has its own, taken by the pressure where it doesn't, undefined where the guest wrote their memory meanwhile, "
+         "and one memory holds let go for its age and loaded from it");
     return 0;
 }
