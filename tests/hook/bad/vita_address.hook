@@ -1,0 +1,3 @@
+# --vita: an address hook
+family f
+[0123456789abcdef:0x40] hook f()

@@ -1,0 +1,3 @@
+# --vita: a hook by symbol
+family f
+hook f() = h
