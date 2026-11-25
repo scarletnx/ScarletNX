@@ -14,6 +14,7 @@
    A 32-bit game's strings are another layout, so every hook is for a 64-bit game */
 #include "nx/nn/hook.h"
 #include "nn/hooks.hook.h"
+#include "nx/memory/mem.h"
 #include "nx/hle/kernel/kernel.h"
 #include <stdlib.h>
 #include <string.h>
@@ -55,6 +56,12 @@ static Str get(CPU* c, u64 self) {
     }
     return s;
 }
+/* the string's own words and its n characters with their terminator, for the write marks (memory/mem.h): the handlers
+   end in set_size or set_long, after the characters are in. A short string's characters are in its words */
+static void wrote(const Str* s, u64 n) {
+    mem_wrote(s->self, 24);
+    if (s->is_long) mem_wrote(s->data, n + 1);
+}
 static void set_size(CPU* c, Str* s, u64 n) {
     if (s->is_long)
         snx_st_le64(hook_host(c, s->self + 8), n);
@@ -62,6 +69,7 @@ static void set_size(CPU* c, Str* s, u64 n) {
         *hook_host(c, s->self) = (u8)(n << 1);
     H(s->data)[n] = 0;
     s->size = n;
+    wrote(s, n);
 }
 static void set_long(CPU* c, Str* s, u64 data, u64 cap, u64 size) {
     u8* r = hook_host(c, s->self);
@@ -70,6 +78,7 @@ static void set_long(CPU* c, Str* s, u64 data, u64 cap, u64 size) {
     snx_st_le64(r + 16, data);
     s->is_long = 1, s->data = data, s->cap = cap, s->size = size;
     H(data)[size] = 0;
+    wrote(s, size);
 }
 /* libc++'s __recommend: the capacity of a buffer for n characters, its allocation a multiple of 16 */
 static u64 recommend(u64 n) { return n <= SHORT_CAP ? SHORT_CAP : ((n + 16) & ~15ull) - 1; }
@@ -194,6 +203,7 @@ void string_copy(CPU* c, u64 self, u64 str) {
     Str o = get(c, str);
     if (!o.is_long) {
         memcpy(H(self), H(str), 24);
+        mem_wrote(self, 24);
         return;
     }
     if (init(c, self, H(o.data), o.size, 0, 0)) OWN_VOID();
@@ -405,6 +415,8 @@ static int grow_by(CPU* c, u64 self, u64 old_cap, u64 delta_cap, u64 old_size, u
         snx_st_le64(r + 8, n_copy + n_add + rest);
         H(p)[n_copy + n_add + rest] = 0;
     }
+    mem_wrote(self, 24);
+    mem_wrote(p, n_copy + n_add + rest + (src != NULL)); /* the gap of n_add characters is the caller's to write */
     return 0;
 }
 void string_grow_by(CPU* c, u64 self, u64 old_cap, u64 delta_cap, u64 old_size, u64 n_copy, u64 n_del, u64 n_add) {
@@ -426,6 +438,7 @@ u64 string_copy_out(CPU* c, u64 self, u64 dst, u64 n, u64 pos) {
     if (pos > s.size) OWN();
     if (n > s.size - pos) n = s.size - pos;
     memmove(H(dst), H(s.data) + pos, (size_t)n);
+    if (n) mem_wrote(dst, n);
     return n;
 }
 static i32 compare(const char* a, u64 na, const char* b, u64 nb) {

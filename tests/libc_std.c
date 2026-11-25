@@ -15,8 +15,37 @@
 /* memory/mem.c: no write marks here (weak: a test that links mem.c takes its own) */
 static struct {
     u64 a, size;
-} g_marked; /* the last range the write marks were told of */
-[[gnu::weak]] void mem_wrote(u64 a, u64 size) { g_marked.a = a, g_marked.size = size; }
+} g_marked, g_marks[16]; /* the last range the write marks were told of, and the ones since marks_clear */
+static int g_nmarks;
+[[gnu::weak]] void mem_wrote(u64 a, u64 size) {
+    g_marked.a = a, g_marked.size = size;
+    if (size && g_nmarks < 16) g_marks[g_nmarks].a = a, g_marks[g_nmarks++].size = size;
+}
+static void marks_clear(void) { g_nmarks = 0; }
+/* the ranges marked since marks_clear are exactly n of them, the i-th at a[i], size[i] */
+static int marked_are(int n, const u64* a, const u64* size) {
+    int ok = g_nmarks == n;
+    for (int i = 0; i < n && ok; i++) ok = g_marks[i].a == a[i] && g_marks[i].size == size[i];
+    if (!ok)
+        for (int i = 0; i < g_nmarks; i++)
+            fprintf(stderr, "marked %d: %#llx + %llu\n", i, (unsigned long long)g_marks[i].a,
+                    (unsigned long long)g_marks[i].size);
+    return ok;
+}
+/* one range, a and size, and nothing but that */
+#define MARKED(expr, at, n)                                                                                            \
+    do {                                                                                                               \
+        u64 a_[1] = {at}, n_[1] = {n};                                                                                 \
+        marks_clear();                                                                                                 \
+        (void)(expr);                                                                                                  \
+        assert(marked_are(1, a_, n_));                                                                                 \
+    } while (0)
+#define UNMARKED(expr)                                                                                                 \
+    do {                                                                                                               \
+        marks_clear();                                                                                                 \
+        (void)(expr);                                                                                                  \
+        assert(g_nmarks == 0);                                                                                         \
+    } while (0)
 
 #define ERRNO_AT 0x100u /* where the test's __errno_location says errno is */
 #define CMP_FN   0x40u  /* the guest's comparison function's address, as the test answers it */
@@ -64,9 +93,57 @@ static u64 put(u64 at, const char* s) {
     return at;
 }
 
+/* what each writer marks, from its destination to the byte past its terminator (memory/mem.h's write marks): the page a
+   hook's host code writes is marked as the game's own code would mark it */
+static void marked_text(CPU* c) {
+    const u64 s = put(0x8000, "abcde"), t = 0x8100;
+    put(t, "xy");
+    MARKED(libc_strcpy(c, 0x8200, s), 0x8200, 6);
+    MARKED(libc_stpcpy(c, 0x8200, s), 0x8200, 6);
+    MARKED(libc_strncpy(c, 0x8200, s, 9), 0x8200, 9); /* the zeros after it */
+    MARKED(libc_strncpy(c, 0x8200, s, 3), 0x8200, 3);
+    MARKED(libc_strcat(c, t, s), t + 2, 6); /* from the old end */
+    put(t, "xy");
+    MARKED(libc_strncat(c, t, s, 3), t + 2, 4);
+    put(t, "xy");
+    MARKED(libc_strncat(c, t, s, 50), t + 2, 6);
+    MARKED(libc_strlcpy(c, 0x8200, s, 4), 0x8200, 4); /* cut: the terminator in its place */
+    MARKED(libc_strlcpy(c, 0x8200, s, 40), 0x8200, 6);
+    UNMARKED(libc_strlcpy(c, 0x8200, s, 0));
+    put(t, "xy");
+    MARKED(libc_strlcat(c, t, s, 5), t + 2, 3);
+    put(t, "xy");
+    MARKED(libc_strlcat(c, t, s, 40), t + 2, 6);
+    UNMARKED(libc_strlcat(c, t, s, 1)); /* no room past the destination: nothing written */
+    put(0x8400, "a b");
+    MARKED(libc_strtok(c, 0x8400, put(0x8500, " ")), 0x8401, 1); /* the separator is the terminator now */
+    put(0x8400, "c");
+    UNMARKED(libc_strtok(c, 0x8400, 0x8500));
+    {
+        u64 a[2] = {0x8401, 0x8600}, n[2] = {1, 8};
+        put(0x8400, "a b");
+        marks_clear();
+        (void)libc_strtok_r(c, 0x8400, 0x8500, 0x8600);
+        assert(marked_are(2, a, n));
+    }
+    MARKED(libc_memset_s(c, 0x8700, 8, 1, 4), 0x8700, 4);
+    UNMARKED(libc_strlen(c, s));
+    UNMARKED(libc_strcmp(c, s, s));
+    if (libc_wide_ready()) {
+        static const u32 w[] = {'h', 'i', '!', 0};
+        for (int i = 0; i < 4; i++) snx_st_le32(g_mem + 0x9000 + 4 * i, w[i]);
+        MARKED(libc_wcscpy(c, 0x9100, 0x9000), 0x9100, 16);
+        MARKED(libc_wcsncpy(c, 0x9100, 0x9000, 5), 0x9100, 20);
+        MARKED(libc_wcscat(c, 0x9100, 0x9000), 0x9100 + 4 * 3, 16);
+        for (int i = 0; i < 4; i++) snx_st_le32(g_mem + 0x9100 + 4 * i, w[i]);
+        MARKED(libc_wcsncat(c, 0x9100, 0x9000, 2), 0x9100 + 4 * 3, 12);
+    }
+}
+
 int main(void) {
     CPU* c = &g_cpu;
     c->mem = g_mem;
+    marked_text(c);
     /* pointers into the argument, as guest addresses */
     u64 s = put(0x1000, "hello, world");
     assert(libc_strchr(c, s, 'w') == s + 7 && libc_strchr(c, s, 'z') == 0 && libc_strrchr(c, s, 'o') == s + 8);
@@ -165,6 +242,7 @@ int main(void) {
     c->x[3] = (u64)INT32_MIN, c->x[4] = 5;
     assert(libc_snprintf(c, 0x9400, 64, put(0x81c0, "%*d|")) == -1);
     /* truncated to the size, the whole length returned */
+    MARKED(libc_snprintf(c, 0x9100, 4, put(0x8200, "hello")), 0x9100, 4);
     assert(libc_snprintf(c, 0x9100, 4, put(0x8200, "hello")) == 5 && !strcmp((char*)g_mem + 0x9100, "hel"));
     /* vsnprintf, through a va_list record: two ints from the general registers' save area, a double from the vector
        registers', a long from the stack */
@@ -183,15 +261,32 @@ int main(void) {
            !strcmp((char*)g_mem + 0x9200, "11 22 0.5 33"));
     /* %n through the guest's pointer, and a numbered argument left to the function's own code */
     c->x[3] = 0xB000;
+    marks_clear();
     assert(libc_snprintf(c, 0x9300, 64, put(0x8400, "abc%n")) == 3 && snx_ld_le32(g_mem + 0xB000) == 3);
+    {
+        u64 a[2] = {0xB000, 0x9300}, n[2] = {4, 4}; /* %n's int, then the text and its terminator */
+        assert(marked_are(2, a, n));
+    }
     assert(libc_snprintf(c, 0x9300, 64, put(0x8500, "%1$d")) == 777 && g_own_runs == 1);
     /* sscanf through the guest's pointers */
     c->x[2] = 0xB100, c->x[3] = 0xB200, c->x[4] = 0xB300, c->x[5] = 0xB400;
+    marks_clear();
     assert(libc_sscanf(c, put(0x8600, " 42 hello 2.5 ff"), put(0x8700, "%d %s %lf %x")) == 4);
     f64 got;
     memcpy(&got, g_mem + 0xB300, 8);
     assert((i32)snx_ld_le32(g_mem + 0xB100) == 42 && !strcmp((char*)g_mem + 0xB200, "hello") && got == 2.5 &&
            snx_ld_le32(g_mem + 0xB400) == 255);
+    {
+        u64 a[4] = {0xB100, 0xB200, 0xB300, 0xB400}, n[4] = {4, 6, 8, 4}; /* what each directive stored, and no more */
+        assert(marked_are(4, a, n));
+    }
+    c->x[2] = 0xB100, c->x[3] = 0xB200, c->x[4] = 0xB300;
+    marks_clear();
+    assert(libc_sscanf(c, put(0x8600, "ab 7 1.5 z"), put(0x8700, "%hhx %hd %f %c")) == 4);
+    {
+        u64 a[4] = {0xB100, 0xB200, 0xB300, 0xB400}, n[4] = {1, 2, 4, 1};
+        assert(marked_are(4, a, n));
+    }
     c->x[2] = 0xB100;
     assert(libc_sscanf(c, put(0x8600, "x"), put(0x8700, "%d")) == 0 && libc_sscanf(c, put(0x8600, ""), 0x8700) == -1);
     /* printf: the log, a line at a time */

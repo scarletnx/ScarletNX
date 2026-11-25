@@ -19,6 +19,7 @@
    game's svcOutputDebugString is ("[game] ..."). Off on Windows, as libc_str */
 #include "nx/nn/hook.h"
 #include "nn/hooks.hook.h"
+#include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
 #include <ctype.h>
 #include <errno.h>
@@ -324,13 +325,13 @@ static int format(CPU* c, Out* o, const char* f, Args* a) {
                 u64 p = arg_int(a);
                 u8* d = hook_host(c, p);
                 if (!strcmp(s.len, "hh"))
-                    *d = (u8)o->n;
+                    *d = (u8)o->n, mem_wrote(p, 1);
                 else if (s.len[0] == 'h')
-                    snx_st_le16(d, (u16)o->n);
+                    snx_st_le16(d, (u16)o->n), mem_wrote(p, 2);
                 else if (is_long(&s) || !strcmp(s.len, "ll"))
-                    snx_st_le64(d, o->n);
+                    snx_st_le64(d, o->n), mem_wrote(p, 8);
                 else
-                    snx_st_le32(d, (u32)o->n);
+                    snx_st_le32(d, (u32)o->n), mem_wrote(p, 4);
                 continue;
             }
             default: { /* e E f F g G a A */
@@ -352,6 +353,7 @@ static i32 to_guest(CPU* c, u64 dst, u64 size, Out* o, int n) {
         size_t k = (size_t)n < size - 1 ? (size_t)n : (size_t)size - 1;
         if (k) memcpy(S(dst), o->p, k);
         S(dst)[k] = 0;
+        mem_wrote(dst, k + 1); /* for the write marks, as the game's own stores (memory/mem.h) */
     }
     free(o->p);
     return n;
@@ -493,15 +495,16 @@ static int scan(CPU* c, const char* in, const char* f, Args* a) {
         int used = -1, r;
         if (conv == 'n') {
             if (!suppress) {
-                u8* d = hook_host(c, arg_int(a));
+                const u64 p = arg_int(a);
+                u8* d = hook_host(c, p);
                 if (len[0] == 'l' || len[0] == 'z' || len[0] == 'j' || len[0] == 't' || len[0] == 'q')
-                    snx_st_le64(d, at);
+                    snx_st_le64(d, at), mem_wrote(p, 8);
                 else if (!strcmp(len, "hh"))
-                    *d = (u8)at;
+                    *d = (u8)at, mem_wrote(p, 1);
                 else if (len[0] == 'h')
-                    snx_st_le16(d, (u16)at);
+                    snx_st_le16(d, (u16)at), mem_wrote(p, 2);
                 else
-                    snx_st_le32(d, (u32)at);
+                    snx_st_le32(d, (u32)at), mem_wrote(p, 4);
             }
             continue;
         }
@@ -523,9 +526,25 @@ static int scan(CPU* c, const char* in, const char* f, Args* a) {
                 double_quad(d, &lo, &hi);
                 snx_st_le64(hook_host(c, p), lo);
                 snx_st_le64(hook_host(c, p + 8), hi);
+                mem_wrote(p, 16);
             }
-        } else /* straight through the guest's pointer: the same types, sizes and order */
-            r = sscanf(in + at, spec, (void*)hook_host(c, arg_int(a)), &used);
+        } else { /* straight through the guest's pointer: the same types, sizes and order */
+            const u64 p = arg_int(a);
+            const int wide = len[0] == 'l' && strchr("sc[", conv);
+            u64 n = strchr("aeEfFgG", conv)                               ? (len[0] == 'l' ? 8 : 4)
+                    : conv == 'p' || (len[0] && strchr("ljztqL", len[0])) ? 8
+                    : len[1] == 'h'                                       ? 1
+                    : len[0] == 'h'                                       ? 2
+                                                                          : 4; /* a number's size */
+            r = sscanf(in + at, spec, (void*)hook_host(c, p), &used);
+            if (r == 1 && strchr("s[", conv))
+                n = wide ? 4 * ((u64)wcslen((const wchar_t*)hook_host(c, p)) + 1) : strlen(S(p)) + 1;
+            else if (r == 1 && conv == 'c') { /* its width's characters, one without */
+                const int width = atoi(start + 1);
+                n = (u64)(width > 0 ? width : 1) * (wide ? 4 : 1);
+            }
+            if (r == 1) mem_wrote(p, n);
+        }
         if (used < 0) return converted || assigned ? assigned : (r == EOF ? -1 : assigned);
         converted++;
         if (!suppress) assigned++;
