@@ -1,9 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The window: the frame image, the upper screen above the lower one as on the console, scaled into the window's
-   swapchain image at the frame's shape, and each submission sent with it. */
+   swapchain image at the frame's shape, the on-screen controls over it, and each submission sent with it. */
 #include "nds/gpu/vk/vk.h"
 #include "nds/gpu/vk/vk_present.h"
+#include "common/gpu/vk/rects.h"
+#include "common/utilities/vpad_sdl.h"
 #include <SDL3/SDL.h>
 #include <stdio.h>
 #include <string.h>
@@ -11,6 +13,7 @@
 static struct {
     SnxVkSwapchain swap;
     VkSemaphore acquire[NDS_VK_SLOTS], presented[NDS_VK_SLOTS];
+    SnxVkRects* controls;
     VkOffset2D rect[2]; /* where the frame is in the window */
     bool up;
 } g_present;
@@ -23,6 +26,7 @@ static bool swap_make(void) {
                                .format_count = 2,
                                .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
                                .window = snx_vk_window_extent(&v->host, (VkExtent2D){512, 768}),
+                               .views = true,
                                .unsynced = true}; /* the run paces itself by the console's frame (runtime/host.c) */
     return snx_vk_swapchain_make(v->phys, v->device, &info, &g_present.swap);
 }
@@ -37,7 +41,8 @@ bool nds_vk_present_init(char* error, size_t error_size) {
             snprintf(error, error_size, "cannot make the window's semaphores");
             return false;
         }
-    if (!swap_make()) {
+    g_present.controls = snx_vk_rects_create(v->phys, v->device, NDS_VK_SLOTS);
+    if (!g_present.controls || !swap_make()) {
         snprintf(error, error_size, "cannot make the window's swapchain");
         return false;
     }
@@ -54,6 +59,7 @@ void nds_vk_present_free(void) {
         if (g_present.presented[i]) vkDestroySemaphore(v->device, g_present.presented[i], NULL);
     }
     if (g_present.swap.swapchain) snx_vk_swapchain_free(v->device, &g_present.swap);
+    snx_vk_rects_destroy(g_present.controls);
     memset(&g_present, 0, sizeof g_present);
 }
 
@@ -65,6 +71,8 @@ bool nds_vk_present_point(float x, float y, int* frame_x, int* frame_y) {
     *frame_x = (int)fx, *frame_y = (int)fy;
     return fx >= 0 && fy >= 0 && fx < (float)NDS_SCREEN_WIDTH && fy < (float)(NDS_SCREEN_HEIGHT * 2);
 }
+
+static void controls_log(const char* text) { fprintf(stderr, "nds gpu: %s\n", text); }
 
 void nds_vk_present(void) {
     NdsVk* v = nds_vk();
@@ -124,6 +132,9 @@ void nds_vk_present(void) {
     if (w && h)
         vkCmdBlitImage(cb, frame->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target,
                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_NEAREST);
+    (void)snx_vk_rects_record(g_present.controls, cb, slot, target, g_present.swap.views[index],
+                              g_present.swap.format.format, extent.width, extent.height,
+                              snx_vpad_window_rects((int)extent.width, (int)extent.height), controls_log);
     barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, barrier.dstAccessMask = 0;
     barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0, NULL, 1,

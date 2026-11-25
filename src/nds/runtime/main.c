@@ -19,6 +19,7 @@
 #include "common/utilities/game_ini.h"
 #include "common/utilities/ini_lines.h"
 #include "common/utilities/script.h"
+#include "common/utilities/vpad_consoles.h"
 #include "common/online/wfc.h"
 #include "snx_settings.h"
 #include <inttypes.h>
@@ -50,6 +51,13 @@ static void usage(FILE* out) {
     fputs(
         "NDS options:\n"
         "  --press-len=MS         How long each scripted press is held (default 300)\n"
+        "  --controls=0|1|2       The on-screen controls: 1 shown, 0 hidden, 2 (Auto, the default) shown on a touch\n"
+        "                         screen while no gamepad is connected. --controls-scale=N, --controls-snap=0|1,\n"
+        "                         --controls-dpad-slide=0|1, --controls-haptics=0|1 and --controls-<ID>-shown=0|1\n"
+        "                         (ID one of a, b, x, y, l, r, plus for Start, minus for Select, dpad) as a Switch\n"
+        "                         game's\n"
+        "  --touch=0|1|2          The lower screen's touch: 2 (default) a finger or the mouse's left button, 1 a\n"
+        "                         finger, 0 none\n"
         "  --aot-threads=N        The threads a recompile may take (0: the system's choice)\n"
         "  --aot-threads-most=N   The most threads --aot-threads=0 takes (0: the computer's cores, a quarter left\n"
         "                         free); beside --aot-threads=N it changes nothing, which the recompile says\n"
@@ -68,6 +76,9 @@ static void usage(FILE* out) {
         "as --aot, --trace, --wav and --dump_ram: the last given counts.\n"
         "--press-len, --aot-threads, --aot-threads-most, --shot-every, --nds-wfc and --nds-wfc-dns are settings:\n"
         "each with an _ for each - (--press_len=MS), the older spelling, is still read, and said once.\n"
+        "\n"
+        "F2, or Android's Back, edits the on-screen controls' layout: a control dragged moves, and one tapped is\n"
+        "sized from the bar; Done, Esc, F2 or Back ends it, and <name>.ini keeps it. Back twice quits.\n"
         "\n"
         "--frames runs that many of the console's frames and --seconds that much of its time, then ends. --headless\n"
         "opens no window. --shot writes the last frame, both screens, as a PPM image. --script=MS:KEYS,... presses\n"
@@ -232,6 +243,7 @@ int snx_nds_main(int argc, char** argv) {
     const char* wav = NULL; /* the run's sound written there, 16 bits stereo */
     const char* dump_ram = NULL; /* main memory written there when the run ends, for a look at what the game holds */
     SnxCli cli;
+    vpad_console(&snx_vpad_nds);
     snx_cli_init(&cli, "scarletnx-nds", nds_cli);
     for (int i = 1; i < argc; ++i) {
         char error[256];
@@ -245,6 +257,14 @@ int snx_nds_main(int argc, char** argv) {
             return common < 0 ? 2 : 0;
         }
         if (common) continue;
+        /* the on-screen controls' and the pen's settings, read with the game's own once its folder is known */
+        int controls = vpad_arg(argv[i], error, sizeof error);
+        if (controls < 0) {
+            fprintf(stderr, "scarletnx-nds: %s\n", error);
+            snx_cli_free(&cli);
+            return 2;
+        }
+        if (controls) continue;
         char* end;
         /* the settings it takes, their keys' _ a - or not */
         char key[64];
@@ -446,7 +466,9 @@ int snx_nds_main(int argc, char** argv) {
     printf("card: %s\n", rom.code);
     {
         char* title = snx_format("ScarletNX - %s (NDS)", rom.title[0] ? rom.title : name);
-        host = nds_host_open(board, title, wav, headless || frames >= 0, fullscreen && !(seconds > 0), error,
+        vpad_set_say(nds_host_say);
+        vpad_settings(folder, name, argc, argv);
+        host = nds_host_open(board, title, ini, wav, headless || frames >= 0, fullscreen && !(seconds > 0), error,
                              sizeof error);
         free(title);
         if (!host) {
