@@ -5,7 +5,6 @@
    console's 59.73 frames a second. The board knows none of it (tests/architecture.py keeps SDL out of scarletnx-agb) */
 #ifndef SNX_AGB_HOST_H
 #define SNX_AGB_HOST_H
-#include "common/utilities/vpad.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -31,15 +30,12 @@ uint16_t agb_host_key(int scancode);
    the sticks' clicks */
 uint16_t agb_host_button(int bit);
 
-/* the GBA's on-screen controls (common/utilities/vpad.h): A, B, L, R, Start, Select and the D-pad, beside the screen in
-   a window wider than tall and under it in another */
-extern const SnxVpadConsole agb_host_pad;
-/* what they say, on stderr */
+/* what the on-screen controls say, on stderr */
 void agb_host_say(const char* line);
 typedef struct AgbHost AgbHost;
 /* the window titled title, fullscreen or not, and the sound: NULL with error saying why. A host with no sound device
    plays without one, and says so on stderr. ini: the game's, which keeps the on-screen controls' layout (NULL: none
-   kept); their settings are read by then (vpad_settings) */
+   kept), the GBA's (vpad_consoles.h), whose settings are read by then (vpad_settings) */
 AgbHost* agb_host_open(const char* title, const char* ini, bool fullscreen, char* error, size_t error_size);
 void agb_host_close(AgbHost* host);
 /* the events since the last call: the keys held after them (AGB_KEY_), the on-screen controls' among them, none while
