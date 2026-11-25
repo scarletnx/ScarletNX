@@ -486,10 +486,25 @@ static inline void sg_Hint_WFI(SgCtx* g) { (void)g; }
 static inline void sg_SendEvent(SgCtx* g) { sgx_call(g, NULL, (int)offsetof(RtAPI, sev), 0, NULL, 0, 0); }
 static inline void sg_SendEventLocal(SgCtx* g) { sg_SendEvent(g); }
 /* CRC32 and CRC32C: the reflected update (BitReverse(Poly32Mod2(...)) as README.md's builtins say): CRC32C SSE4.2's
-   CRC32 instruction, CRC32 a byte at a time through x64_helpers.c's table (SGX_M_CRC) */
+   CRC32 instruction; CRC32 of a word or a doubleword by Barrett's reduction, two PCLMULQDQs: x, the value XOR the
+   accumulator at the top of 64 bits, times the low 64 bits of x^96 / P reflected, whose low half times P reflected has
+   the remainder in bits 95:64 (both linear: equal on a basis of x, the task's proof); of a byte or a halfword a byte at a
+   time through x64_helpers.c's table (SGX_M_CRC) */
 static inline SgD sg_crc32(SgCtx* g, SgD acc_bits, SgD value_bits, long long size, SgS poly) {
     static const signed char fix[2] = {SGX_RAX, SGX_RDX};
     SgD in[2];
+    if (poly.v == 0x04C11DB7u && size >= 32 && (sgx(g)->features & SGX_F_PCLMUL)) {
+        SgX* x = sgx(g);
+        int k = sgx_xconst(x, 0xB4E5B025F7011641ull, 0x1DB710641ull), t, vin[4] = {0, 0, 0, 0};
+        SgD v = sg_d_xor(g, sg_d_zext(g, acc_bits, 64), sg_d_zext(g, value_bits, 64));
+        if (size == 32) v = sg_d_lsl(g, v, 32);
+        vin[1] = sgx_reg(x, &v);
+        t = sgx_vins(x, &sgx_v_movq_xr, 0, 0, vin, 0, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
+        t = sgx_v2(x, &sgx_v_pclmulqdq, t, k, 0x00);
+        t = sgx_v2(x, &sgx_v_pclmulqdq, t, k, 0x10);
+        vin[1] = t;
+        return sgx_val(32, sgx_vins(x, &sgx_v_pextrd, 0, 0, vin, 2, 0, SGX_VM_NONE, 0, 0, 0, 0, 0));
+    }
     in[0] = sg_d_zext(g, acc_bits, 64);
     in[1] = sg_d_zext(g, value_bits, 64);
     return sg_d_slice(g, sgx_mach(g, SGX_M_CRC, in, fix, 2, size / 8 | (poly.v == 0x1EDC6F41u) << 4,

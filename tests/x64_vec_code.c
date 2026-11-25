@@ -75,6 +75,8 @@ static const Row k_rows[] = {
     {"raddhn v0.8b, v1.8h, v2.8h", 0, 0, 304, -1, NULL, "2E224020"},
     {"sqdmull v0.4s, v1.4h, v2.4h", 0, 0, 320, -1, NULL, "0E62D020"},
     {"sqdmlal v0.2d, v1.2s, v2.2s", 0, 0, 400, -1, NULL, "0EA29020"},
+    {"crc32w w0, w0, w2", 0, 0, 224, -1, NULL, "1AC24800"},
+    {"crc32x w0, w0, x2", 0, 0, 272, -1, NULL, "9AC24C00"},
 };
 
 static struct {
