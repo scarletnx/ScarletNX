@@ -22,6 +22,7 @@
 #include "common/cpu/recompiler/x64/x64_cache.h"
 #include "common/cpu/recompiler/x64/x64_codegen.h"
 #include "common/cpu/recompiler/x64/x64_elf.h"
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -43,6 +44,53 @@ const char* snx_native_name(void) {
            : snx_mips64be_available() ? "mips64"
            : snx_s390x_available()    ? "s390x"
                                    : "none";
+}
+
+/* ---- the hosts below a back end's floor ---- */
+
+static struct {
+    _Atomic int alone; /* what a test asked: to be as a build without LLVM */
+} g_native;
+void snx_native_set_alone(int on) { atomic_store_explicit(&g_native.alone, on, memory_order_relaxed); }
+
+/* text after out's first *at bytes, *at past it: what doesn't fit is cut */
+static void append(char* out, size_t size, size_t* at, const char* text) {
+    if (*at < size) snprintf(out + *at, size - *at, "%s", text);
+    *at += strlen(text);
+}
+/* the names of need's features in bits, "A, B and C" */
+static void append_features(const SnxNativeFeature* need, size_t count, unsigned bits, char* out, size_t size,
+                            size_t* at) {
+    size_t left = 0, k;
+    for (k = 0; k < count; ++k) left += (need[k].bit & bits) != 0;
+    for (k = 0; k < count; ++k) {
+        if (!(need[k].bit & bits)) continue;
+        append(out, size, at, need[k].name);
+        --left;
+        if (left) append(out, size, at, left > 1 ? ", " : " and ");
+    }
+}
+int snx_native_lacks(const SnxNativeFeature* need, size_t count, unsigned has, char* why, size_t size) {
+    unsigned all = 0;
+    size_t at = 0, k;
+    if (size) why[0] = 0;
+    for (k = 0; k < count; ++k) all |= need[k].bit;
+    if (!(all & ~has)) return 0;
+    append(why, size, &at, "cpu: needs ");
+    append_features(need, count, all & ~has, why, size, &at);
+    append(why, size, &at, ", this host has ");
+    if (all & has)
+        append_features(need, count, all & has, why, size, &at);
+    else
+        append(why, size, &at, "none");
+    return 1;
+}
+int snx_native_floor(char* why, size_t size) { return snx_x64_floor(why, size); }
+int snx_native_refused(char* error, size_t size) {
+#if !defined(SNX_NATIVE_ALONE)
+    if (!atomic_load_explicit(&g_native.alone, memory_order_relaxed)) return 0;
+#endif
+    return !snx_native_available() && snx_native_floor(error, size);
 }
 
 int snx_native_object(SnxCodegen* codegen, size_t first, size_t last, const SnxNativeOptions* options,

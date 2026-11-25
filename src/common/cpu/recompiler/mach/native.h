@@ -46,6 +46,25 @@ void snx_native_without(struct snx_recompiler* r, const SnxU32* words, size_t co
 int snx_native_available(void);
 /* its name, for the recompiler's lines ("x86-64", "arm64"; "none") */
 const char* snx_native_name(void);
+
+/* What this host lacks of what its architecture's back end takes of every host past the program's own baseline: on
+   x86-64 SSE3, SSSE3, SSE4.1, SSE4.2, PCLMULQDQ and POPCNT. 1 with the line of it in why, what is needed and what the
+   host has ("cpu: needs SSE4.2, this host has SSE3, SSSE3, SSE4.1, PCLMULQDQ and POPCNT"); 0 and "" where there is a
+   back end, or none of the architecture is built */
+int snx_native_floor(char* why, size_t size);
+/* 1 where nothing makes this host's code, snx_native_floor's line in error: a host below the floor, in a build without
+   LLVM (SNX_WITH_LLVM=OFF). 0 with LLVM, which makes the code there, and the line is said beside it; error is as it
+   was then */
+int snx_native_refused(char* error, size_t size);
+/* for a test: from here on as a build without LLVM (1) or as this one (0) */
+void snx_native_set_alone(int on);
+/* a feature a back end takes of every host: its name, and its bit of the host's */
+typedef struct {
+    const char* name;
+    unsigned bit;
+} SnxNativeFeature;
+/* snx_native_floor's line of the features of need that has lacks into why: 1, or 0 and "" for a host that has them */
+int snx_native_lacks(const SnxNativeFeature* need, size_t count, unsigned has, char* why, size_t size);
 /* the object of the functions [first, last) of codegen the host's back end can make, made[i - first] 1 for each, as
    snx_x64_object and snx_arm64_object make it (for this host's features) */
 int snx_native_object(SnxCodegen* codegen, size_t first, size_t last, const SnxNativeOptions* options,

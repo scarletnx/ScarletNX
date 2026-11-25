@@ -247,7 +247,8 @@ void ir_flags_set_nzcv(SnxIr* ir, LLVMValueRef nzcv);
 LLVMValueRef ir_flags_cond(SnxIr* ir, unsigned cond);
 
 /* Before any other call of the thread's: the first starts LLVM for the process, whichever thread it is, and the others
-   give its answer (threads may then each own SnxIrs). 0, or -1 with the reason */
+   give its answer (threads may then each own SnxIrs). 0, or -1 with the reason: among them that the host is below its
+   native back end's floor in a build without LLVM (native.h's snx_native_refused) */
 int snx_ir_init(char* error, size_t error_size);
 /* whether snx_ir_init started LLVM, which a native back end's work never does */
 int snx_ir_started(void);
