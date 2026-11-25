@@ -16,6 +16,7 @@
 * [The HLE BIOS](#the-hle-bios)
 * [The display on the GPU](#the-display-on-the-gpu)
 * [Sound](#sound)
+* [Save states](#save-states)
 * [Known limits](#known-limits)
 * [Source provenance and licensing](#source-provenance-and-licensing)
 
@@ -313,6 +314,35 @@ every 5.2 ms of the board's time, as the driver's timer has it.
 `src/nds/audio/spu.c` is the sound hardware the driver plays through: sixteen channels (PCM, ADPCM, the square waves
 and the noise channels) mixed to stereo at the console's rate, 32728.5 Hz. SDK 2.0's sound library numbers its
 commands in two other ways (its early builds and its later ones), which the program's SDK version tells.
+
+## Save states
+
+A state is the whole console at one moment, in the Switch's state file (`src/nx/runtime/state_file.h`): the header and
+the 320 by 180 thumbnail the launcher and the game's menu read, then a section for each part, each with a hash of the
+names and types of what it holds (`src/nds/runtime/state.c`):
+
+| Section | What it holds |
+| --- | --- |
+| BOARD | the `NdsBoard`: the registers, the lines' 2D registers, the main memory display, DMA, timers, the FIFO, the card's transfer, CP15 |
+| CPU | the `NdsCpu`: the ARM9's registers and their banks |
+| MEMORY | main memory, the shared work RAM, the ITCM, the DTCM, the palettes, the OAM and the nine VRAM banks |
+| GPU3D | the geometry engine, its vertex and polygon memory with their links as indices, and the commands queued after SWAP_BUFFERS (`gpu/gpu3d.c`) |
+| SPU | the sound hardware's channels and the samples mixed and not played yet (`audio/spu.c`) |
+| PXI | the ARM7's side and the firmware's flash (`hle/pxi.c`) |
+| SOUND | the sound driver: its channels, sequences, tracks and alarms with their links as indices (`hle/sound.c`) |
+| CAPTURE | a display capture the GPU made and the bank has not taken yet (`gpu/vk/frame.c`) |
+
+The card image (named by its identity, as the compiled module is), the window and the card's save memory stay the
+runner's: the save memory is the game's save file, `<name>.sav`, as a Switch game's save files are, so a load leaves
+it as it is. A load maps the VRAM banks and the DTCM where the state's registers put them. The compiled blocks are no
+part of a state: each dispatch compares the code memory holds.
+
+`snx_nds_state_save` and `snx_nds_state_load` (`src/nds/runtime/state.h`) take the board and the ARM9 between two
+frames. A load reads and checks every section before it changes anything, and refuses another card's state (both
+identities named), another `SNX_NDS_STATE_VERSION` (both versions named), a section of another layout (both hashes
+named), and a file that is damaged or cut short. The test's card makes a state of 232 KiB, 225 KiB of it the
+thumbnail, saved and loaded in a few milliseconds (`nds_state`, `tests/nds_state.c`: the 30 frames after a load give
+the run's pictures, sound and state word for word).
 
 ## Known limits
 

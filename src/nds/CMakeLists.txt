@@ -57,9 +57,10 @@ target_link_libraries(scarletnx-nds PUBLIC snx_nds_gpu)
 target_link_libraries(snx_nds_gpu PUBLIC scarletnx-nds)
 
 # snx_settings: the settings its command line takes, by their names there (settings_arg)
-add_library(snx_nds_program STATIC runtime/main.c runtime/host.c aot/compiler.c aot/discover.c)
+add_library(snx_nds_program STATIC runtime/main.c runtime/host.c runtime/state.c aot/compiler.c aot/discover.c)
 target_link_libraries(snx_nds_program PUBLIC scarletnx-nds snx_nds_gpu snx_build_info snx_window_icon snx_pad_sdl
                       snx_settings snx_vpad_consoles PRIVATE snx_online) # the WFC service's DNS server (runtime/main.c)
+target_link_libraries(snx_nds_program PUBLIC snx_state_file) # the save states (runtime/state.c), the Switch's file
 set_target_properties(snx_nds_program PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
 target_compile_options(snx_nds_program PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 include("${PROJECT_SOURCE_DIR}/tests/cmake/nds.cmake") # its tests
