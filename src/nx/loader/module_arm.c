@@ -300,7 +300,7 @@ static size_t x64_next(void* user, uint32_t key, size_t units, size_t count, uin
     return block_next((const SnxProgram*)user, key, units, count, keys);
 }
 /* one thread of discovery's: its native back end (whose blocks go into the module's object), its scratch module for
-   LLVM's, and what it counted */
+   LLVM's (made at the first block left to it), and what it counted */
 typedef struct {
     SnxNativeArm* x64;
     SnxIr* scratch;
@@ -356,6 +356,9 @@ static int x64_block(Finder* f, const SnxProgram* p, SnxU32 key, size_t* units, 
 static int find(Finder* f, const SnxProgram* p, Found* k) {
     k->x64 = f->x64 && x64_block(f, p, k->key, &k->units, &k->count);
     if (!k->x64) {
+        if (!f->scratch && (snx_ir_init(f->error, sizeof f->error) ||
+                            !(f->scratch = snx_ir_new("discovery", '0', f->error, sizeof f->error))))
+            return -1;
         LLVMValueRef fn = compile_block(f->scratch->mod, p, k->key, "block", &k->units, &k->count);
         if (!fn || !k->units) {
             char name[16];
@@ -463,10 +466,9 @@ static int discover(Discovery* d, const SnxCodegenOptions* options, unsigned thr
     Round r = {0};
     int rc = 0;
     for (size_t i = 0; i < threads; ++i) {
-        finders[i].scratch = snx_ir_new("discovery", '0', error, error_size);
         finders[i].x64 = d->x64 && i ? snx_native_arm_new() : d->x64;
-        if (!finders[i].scratch || (d->x64 && !finders[i].x64)) {
-            if (finders[i].scratch) snprintf(error, error_size, "out of memory");
+        if (d->x64 && !finders[i].x64) {
+            snprintf(error, error_size, "out of memory");
             rc = -1;
             threads = (unsigned)i + 1;
             goto done;
@@ -969,7 +971,6 @@ int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* options, c
     memset(&q, 0, sizeof(q));
     memset(&linked, 0, sizeof(linked));
     if (!loaded->module_count) return snx_error("no modules to generate");
-    if (snx_ir_init(error, sizeof(error))) return snx_error("%s", error);
     d.program = loaded;
     /* the native back end makes the A32 blocks it can, for this host's module (not where the IR is to be kept) */
     if (snx_native_arm_available() && !build->triple && !build->keep_ir) {
@@ -978,6 +979,9 @@ int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* options, c
             snx_error("%s back end: out of memory", snx_native_name());
             goto done;
         }
+    } else if (snx_ir_init(error, sizeof(error))) { /* else LLVM starts at the first block left to it (find) */
+        snx_error("%s", error);
+        goto done;
     }
     start = snx_seconds();
     if (discover(&d, options, build->jobs ? build->jobs : 1, error, sizeof(error))) {
@@ -1042,8 +1046,9 @@ int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* options, c
     q.all = d.blocks;
     q.nall = d.count;
     q.build = build;
-    if (!options->quiet)
-        printf("LLVM: %lu code unit%s and the module descriptor\n", (unsigned long)q.count, q.count == 1 ? "" : "s");
+    if (!options->quiet && (q.count || !d.x64))
+        printf("LLVM: %lu code unit%s%s\n", (unsigned long)q.count, q.count == 1 ? "" : "s",
+               d.x64 ? "" : " and the module descriptor");
     /* LLVM's few units the native back end left are small: their threads all at once, not opened one a second while the
        memory holds them (as module_llvm.c runs its x86-64 units) */
     if (q.count && d.x64 && build->jobs_open && !options->quiet) {
