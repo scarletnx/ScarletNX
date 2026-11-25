@@ -86,6 +86,7 @@ static const signed char g_pin_hosts[2][7] = {{5, 12, 13, 14, 15, 11, 10}, {5, 1
 #define MG_XRESERVED 0u
 #define MG_BOUND 1
 #define MG_COFF win64
+#define MG_POLL_INLINE 1
 static void unit_reloc(void* machine, size_t at, const char* sym, long long addend);
 
 #include "common/cpu/recompiler/mach/mach_codegen.inc"
@@ -423,11 +424,12 @@ static void check_return(Unit* u, SnxU64 next) {
 }
 
 /* the poll of a backward branch: if (c->poll) { c->pc = resume; c->rt->poll(c); F_start(c, resume); return; } */
-static void poll_then(Unit* u, SnxU64 resume) {
-    int run = new_label(u);
-    char sym[40];
+static void poll_jz(Unit* u, int label) {
     byte(u, 0x83), byte(u, 0xBB), imm(u, (long long)offsetof(CPU, poll), 4), byte(u, 0x00); /* cmp dword [rbx+poll], 0 */
-    jcc(u, 0x4, run);
+    jcc(u, 0x4, label);
+}
+static void poll_slow(Unit* u, SnxU64 resume) {
+    char sym[40];
     pins(u, 1);
     set_pc(u, resume);
     state_arg(u);
@@ -439,6 +441,11 @@ static void poll_then(Unit* u, SnxU64 resume) {
     fname(sym, sizeof sym, "F_", u->f->start);
     byte(u, 0xE9);
     rel_sym(u, sym);
+}
+static void poll_then(Unit* u, SnxU64 resume) {
+    int run = new_label(u);
+    poll_jz(u, run);
+    poll_slow(u, resume);
     bind(u, run);
 }
 
