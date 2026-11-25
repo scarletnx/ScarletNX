@@ -450,6 +450,36 @@ static SnxU64 host_a64(unsigned host) {
 
 #if defined(__aarch64__) && defined(__ELF__)
 #include <sys/auxv.h>
+#elif defined(__aarch64__) && defined(__APPLE__)
+#include <sys/sysctl.h>
+/* one of XNU's flags (Apple's "Determining instruction set characteristics"), 0 where the system has none so named */
+static int apple_has(const char* name) {
+    int value = 0;
+    size_t size = sizeof value;
+    return !sysctlbyname(name, &value, &size, NULL, 0) && value;
+}
+/* the features Linux's hwcaps give above, by their sysctl. Read once: a unit asks for them, and each is a system call */
+static unsigned apple_features(void) {
+    static const struct {
+        const char* name;
+        unsigned f;
+    } caps[] = {
+        {"hw.optional.arm.FEAT_AES", SNX_ARM64_F_AES},         {"hw.optional.arm.FEAT_PMULL", SNX_ARM64_F_PMULL},
+        {"hw.optional.arm.FEAT_SHA1", SNX_ARM64_F_SHA1},       {"hw.optional.arm.FEAT_SHA256", SNX_ARM64_F_SHA256},
+        {"hw.optional.arm.FEAT_CRC32", SNX_ARM64_F_CRC32},     {"hw.optional.armv8_crc32", SNX_ARM64_F_CRC32},
+        {"hw.optional.arm.FEAT_LSE", SNX_ARM64_F_LSE},         {"hw.optional.arm.FEAT_FP16", SNX_ARM64_F_FP16},
+        {"hw.optional.arm.FEAT_RDM", SNX_ARM64_F_RDM},         {"hw.optional.arm.FEAT_JSCVT", SNX_ARM64_F_JSCVT},
+        {"hw.optional.arm.FEAT_FCMA", SNX_ARM64_F_FCMA},       {"hw.optional.arm.FEAT_SHA3", SNX_ARM64_F_SHA3},
+        {"hw.optional.arm.FEAT_DotProd", SNX_ARM64_F_DOTPROD}, {"hw.optional.arm.FEAT_SHA512", SNX_ARM64_F_SHA512},
+        {"hw.optional.arm.FEAT_FHM", SNX_ARM64_F_FHM}};
+    static _Atomic unsigned known; /* the features, and bit 31 once they are read */
+    unsigned f = atomic_load_explicit(&known, memory_order_acquire);
+    if (f) return f & ~(1u << 31);
+    for (size_t k = 0; k < sizeof caps / sizeof *caps; ++k)
+        if (apple_has(caps[k].name)) f |= caps[k].f;
+    atomic_store_explicit(&known, f | 1u << 31, memory_order_release);
+    return f;
+}
 #endif
 #if defined(__aarch64__) && defined(_WIN32)
 /* here, past the code above: its macros take names of that (far) */
@@ -494,6 +524,8 @@ int snx_arm64_windows(void) {
 unsigned snx_arm64_features(void) {
 #if defined(__aarch64__) && defined(_WIN32)
     return windows_features() | SNX_ARM64_F_WIN;
+#elif defined(__aarch64__) && defined(__APPLE__)
+    return apple_features();
 #elif defined(__aarch64__) && defined(__ELF__)
     unsigned long hw = 0;
     unsigned f = 0;
@@ -521,7 +553,7 @@ unsigned snx_arm64_features(void) {
 #endif
 }
 int snx_arm64_available(void) {
-#if defined(__aarch64__) && (defined(__ELF__) || defined(_WIN32))
+#if defined(__aarch64__) && (defined(__ELF__) || defined(_WIN32) || defined(__APPLE__))
     return 1;
 #else
     return 0;
