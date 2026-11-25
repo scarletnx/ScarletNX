@@ -189,7 +189,7 @@ if(SNX_X64)
 endif()
 # the arm64 back end (src/common/cpu/recompiler/arm64): the same functions in A64, from the emitters sailgen
 # generates with the A64 Sail's encoders; built on every host (its code is arm64's, which the tests run under
-# Unicorn), the default code generator on arm64's ELF hosts
+# Unicorn; not on Windows on another machine), the default code generator on arm64's ELF hosts and Windows
 target_sources(snx_llvm PRIVATE "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/arm64/arm64_codegen.c"
                                "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/arm64/arm64_arm.c"
                                "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/mach/native.c")
