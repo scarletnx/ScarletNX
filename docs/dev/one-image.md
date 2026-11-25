@@ -215,8 +215,14 @@ and on, with a switch the measurements had.
 - Before a texture's image goes (`tex_image_swap`, a free), its targets get images of their own (`vk_tex_unhost`).
   Before a texture loads from memory, its hosted targets that memory lacks are published first (`tex_hosted_publish`).
 
-Not hosted yet: depth targets, scaled targets, and targets that a GOB pads past their level (a 32x11 target over a
-20x11 level). The last one needs the render area, the scissors and the publishes clamped to the level.
+A target that its rows of whole GOBs make wider than its level (a 48x22 target over a level of 40x22, a 16x1 one over
+1x1) is hosted too. Its view is the level's size (`vk_surf_view_w`): the render area, and so the scissors and clears,
+the loads and publishes and its copy out stop there. A publish of it through the block linear move zeroes the
+columns past the level. A texture of its own size samples it through an image of its own again.
+
+Not hosted yet: depth targets, scaled targets, and storage image surfaces (19 takes a present in the race). A storage
+surface is a texture, whose loads from memory (`tex_upload`, `tex_patch`, the pieces) all write level 0 of its own
+image: hosting it needs those paths to take its place in the host, as step 1 gives.
 
 An A/B/B/A of the race, 2026-11-24:
 
@@ -224,6 +230,9 @@ An A/B/B/A of the race, 2026-11-24:
 | --- | --- | --- | --- |
 | 0 | 78.1, 81.6 | 7.82, 7.60 ms | 104, 99 |
 | 1 | 80.8, 83.3 | 7.40, 7.19 ms | 37, 35 |
+
+With the padded targets hosted too, the drawn targets taken fell to about 11 a present, and the storage surfaces stay
+at 19.
 
 Sync validation found no new hazard, and the screenshots match. About half of the hosted targets stay hosted. The
 others go back when their texture's image is remade or freed, and the next take hosts them again. A Switch game

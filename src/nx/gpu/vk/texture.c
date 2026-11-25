@@ -4224,6 +4224,9 @@ static Surf* tex_from_tic(const u32* tic, int raw, int use) {
                 if (guest) return guest;
             }
             if (as) return rt_crop(rt, w, h, as);
+            /* a hosted target padded past its level: its view is the level's, not the size the header samples */
+            if (rt->w == w && rt->h == h && rt->host && vk_surf_view_w(rt) != rt->w && !vk_rt_own(rt))
+                goto texture_from_memory;
             return rt->w == w && rt->h == h ? rt : rt_crop(rt, w, h, NULL);
         }
         LOG_LIMIT(1,
@@ -5214,8 +5217,8 @@ static void tex_take_drawn(Surf* t) {
             /* the last take of it: from now on it draws into t's image (docs/dev/one-image.md). Its format, its
                scale, the level's size and the layers it covers whole; t whole in memory, not sparse */
             if (t->att_capable && !t->sparse && !t->bricks && s->is_rt && !s->host && !s->msaa && !(s->gva >> 63) &&
-                s->sw == s->w && s->sh == s->h && !s->volume && s->bl && s->f.vk == t->f.vk && s->w == at.lw &&
-                s->h == at.lh && at.count == s->layers && t->img)
+                s->sw == s->w && s->sh == s->h && !s->volume && s->bl && s->f.vk == t->f.vk && s->w >= at.lw &&
+                s->w * s->f.bpp <= ((at.lw * s->f.bpp + 63) & ~63u) && s->h == at.lh && at.count == s->layers && t->img)
                 vk_rt_host(s, t, at.l, at.layer);
             if (s->is_rt)
                 g_takes.targets++;

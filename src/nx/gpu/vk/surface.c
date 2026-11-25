@@ -749,7 +749,7 @@ int vk_rt_own_(Surf* s, const char* why) {
                VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_LAYOUT(TRANSFER_DST_OPTIMAL));
     const VkImageCopy rg = {.srcSubresource = {aspect, s->host_level, s->host_layer, s->layers},
                             .dstSubresource = {aspect, 0, 0, s->layers},
-                            .extent = {s->w, s->h, 1}};
+                            .extent = {vk_surf_view_w(s), vk_surf_view_h(s), 1}};
     rec_CmdCopyImage(cb, t->img, VK_LAYOUT(TRANSFER_SRC_OPTIMAL), img, VK_LAYOUT(TRANSFER_DST_OPTIMAL), 1, &rg);
     surf_views_go(s);
     for (Surf** p = &t->hosted; *p; p = &(*p)->host_next)
@@ -1191,7 +1191,7 @@ static int rt_load_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 off, u32 
                                .bufferRowLength = pitch / s->f.bpp,
                                .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, vk_surf_level0(s),
                                                     vk_surf_layer0(s) + layer, 1},
-                               .imageExtent = {s->w, s->h, 1}};
+                               .imageExtent = {s->host ? vk_surf_view_w(s) : s->w, s->h, 1}};
         DevMem tm;
         const int scaled = s->sw != s->w || s->sh != s->h;
         VkImage t = scaled ? vk_unscaled_image(s, 1, &tm) : VK_NULL_HANDLE;
@@ -1286,7 +1286,7 @@ static void rt_load_rows(VkCommandBuffer cb, Surf* s, VkBuffer buf, u32 pitch, u
                            .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, vk_surf_level0(s), vk_surf_layer0(s) + layer,
                                                 1},
                            .imageOffset = {0, (i32)y, 0},
-                           .imageExtent = {s->w, n, 1}};
+                           .imageExtent = {s->host ? vk_surf_view_w(s) : s->w, n, 1}};
     vk_surf_use(cb, s, VK_LAYOUT(TRANSFER_DST_OPTIMAL), VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
                 VK_ACCESS_2_TRANSFER_WRITE_BIT);
     rec_CmdCopyBufferToImage(cb, buf, s->img, VK_LAYOUT(TRANSFER_DST_OPTIMAL), 1, &c);
@@ -1493,7 +1493,7 @@ static int flush_copy(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, u32 pit
                                .bufferRowLength = pitch / s->f.bpp,
                                .imageSubresource = {flush_aspect(s), vk_surf_level0(s), vk_surf_layer0(s) + layer, 1},
                                .imageOffset = {0, (i32)part->y, 0},
-                               .imageExtent = {s->w, part->rows, depth}};
+                               .imageExtent = {s->host ? vk_surf_view_w(s) : s->w, part->rows, depth}};
         DevMem tm;
         const int scaled = s->sw != s->w || s->sh != s->h;
         VkImage t = scaled ? vk_unscaled_image(s, 1, &tm) : VK_NULL_HANDLE;
@@ -1546,6 +1546,20 @@ static int flush_swizzle(VkCommandBuffer cb, Surf* s, VkBuffer buf, u64 at, cons
             vk_bl_barrier(cb, 0);
         }
         return 1;
+    }
+    /* a hosted target narrower in its host than its rows (padded to whole GOBs): the columns past its level have no
+       pixels, zeros in their place and not the scratch buffer's old bytes */
+    if (s->host && vk_surf_view_w(s) < s->w) {
+        vk_bl_barrier(cb, 0);
+        rec_CmdFillBuffer(cb, scratch, 0, need, 0); /* rows 16 bytes apart: whole words */
+        VkMemoryBarrier2 fill = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                                 .srcStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                                 .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                 .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                                 .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT};
+        VkDependencyInfo dep = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1,
+                                .pMemoryBarriers = &fill};
+        rec_CmdPipelineBarrier2(cb, &dep);
     }
     if (!flush_copy(cb, s, scratch, 0, pitch, part)) return 0;
     vk_bl_barrier(cb, 1);
