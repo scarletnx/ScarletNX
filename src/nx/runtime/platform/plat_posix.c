@@ -1127,12 +1127,12 @@ static void ww_scans_begin(void) {
 static void ww_scans_end(void) { atomic_fetch_sub_explicit(&g_ww_scans, 1, memory_order_seq_cst); }
 #endif
 
-#if defined(__linux__) /* plat_vm_share and plat_vm_unshare are Linux's */
 /* What the written-page tracking says of a range kept across a move of its pages that keeps their bytes
-   (plat_vm_share, plat_vm_unshare, on a range its caller froze). A mapping made again reads as written whole, and a
-   move writes nothing: what took that report for the CPU's writes loaded a guest page over the pixels the GPU had
-   drawn there and not yet written back. The range stays read only from the freeze to plat_thaw, so no write comes
-   between. The kernel's tracking: the pages a scan would report before the move are noted (written, a bit a page), no
+   (plat_vm_share, plat_vm_unshare and plat_alias_map, on a range its caller froze). A mapping made again reads as
+   written whole, and a move writes nothing: what took that report for the CPU's writes loaded a guest page over the
+   pixels the GPU had drawn there and not yet written back, and a scan between an owner's move into the pool and its
+   trap had the image stored there keep memory's bytes over its next store (memory/own.c's own_begin). The range stays
+   read only from the freeze to plat_thaw, so no write comes between. The kernel's tracking: the pages a scan would report before the move are noted (written, a bit a page), no
    scan runs meanwhile (g_ww_letgo, as a trap's let-go holds them), and the others are protected again once the new
    mapping is registered. Tracking by protection keeps each page's state and protection through the move instead
    (wp_let_same) */
@@ -1229,7 +1229,6 @@ static void ww_kept(WwKept* k, u8* p, u64 size, int moved) {
     (void)k, (void)p, (void)size, (void)moved;
 #endif
 }
-#endif
 
 int plat_ww_scan(u8* p, u64 size, void (*cb)(u8* p, u64 size)) {
     if (atomic_load_explicit(&g_wp, memory_order_acquire) && g_wp_track) return wp_scan(p, size, cb);
@@ -1921,11 +1920,26 @@ int plat_alias_init(u64 size) {
 int plat_alias_map(u8* p, u64 off, u64 size) {
     int r;
     if (g_alias < 0) return -1;
+    /* frozen, the range holds the bytes the pool's pages were given (mem.c's promote_nl): mapped read only until
+       plat_thaw, it keeps what the written-page tracking says of it (WwKept); not frozen, it reads as written, as any
+       mapping made again */
+    const int frozen = frozen_whole(p, size);
+    WwKept kept = {NULL, 0};
+    if (frozen) kept = ww_keep(p, size);
     wp_hold(p, size, WP_MAPPED);
-    r = mmap(p, (size_t)size, PROT_READ | PROT_WRITE | g_vm_exec, MAP_SHARED | MAP_FIXED, g_alias, (off_t)off) == MAP_FAILED;
-    wp_let(p, size, WP_MAPPED, !r);
-    if (r) return -1;
+    r = mmap(p, (size_t)size, (frozen ? PROT_READ : PROT_READ | PROT_WRITE) | g_vm_exec, MAP_SHARED | MAP_FIXED,
+             g_alias, (off_t)off) == MAP_FAILED;
+    if (frozen && !r) {
+        wp_let_same(p, size, WP_MAPPED);
+        t_plat_posix.frz_kept = 1;
+    } else
+        wp_let(p, size, WP_MAPPED, !r);
+    if (r) {
+        ww_kept(&kept, p, size, 0);
+        return -1;
+    }
     ww_remapped(p, size);
+    ww_kept(&kept, p, size, frozen);
     return 0;
 }
 int plat_alias_unmap(u8* p, u64 size) {

@@ -128,7 +128,11 @@ request, so nothing is copied from it). The fault is taken differently on each h
 Guest memory is a private anonymous reservation (`plat_vm_reserve`), and memory mapped at two guest addresses comes
 from a memfd mapped shared (the alias pool, `plat_posix.c`). An owned span is moved into the pool when its trap is
 made (`mem.c`'s `promote_nl`), so it has a mirror (`plat_alias_host`) and its edge pages keep the CPU's bytes in the
-page cache.
+page cache. The move is no write: `plat_alias_map` keeps what write tracking says of each page of the range
+`mem_own_prepare` froze, as `plat_vm_share` does for a dma-buf region (below). The pool's mapping is registered with
+the write watch before the trap takes it out of the scans, and a scan on another thread between the two would report
+every moved page: marked after the result published there took its baseline, they would read as the CPU's writes, and
+the image stored there again would keep memory's bytes on them.
 
 - The span's guest views are registered with the runtime's userfaultfd (the one write tracking uses) in minor mode
   and their page table entries dropped (`MADV_DONTNEED`). A guest access then blocks the faulting thread in the

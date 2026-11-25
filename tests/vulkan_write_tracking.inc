@@ -9,6 +9,7 @@
    - a write after a draw recorded its upload and before its submission
    - the runtime's own writes: a system call's, a decommit's, a GPU engine's, a landing's
    - a range the GPU owns (memory traps) written by the CPU in the middle of an epoch
+   - memory moved into the alias pool for an owner, which is no write
    - a render target's write-back and freshness over pages a scan reports written at every scan (hot pages)
    - what the caches check by contents where the tracking answers for them: a texture over several pieces of guest
      memory, a buffer rewritten with its own bytes, a pending result's original bytes
@@ -989,6 +990,94 @@ static u32 wt_texel_at(const u32 tic[8], u32 x, u32 y) {
     Surf* t = vk_tex_from_tic(tic);
     return t ? dma_texel(t, x, y) : 0;
 }
+/* A GPU result's first owner moves the pages it takes into the alias pool before it traps them (memory/own.c's
+   own_begin, through mem.c's mem_own_prepare), and the move is no write: the mapping it makes read as written whole,
+   and a scan between the move and the trap (the write scanner's, on its thread) had those pages marked as the CPU's
+   writes, newer than the storage image just published there, whose next store kept memory's bytes on them, a frame
+   old. Here the move is made as own_begin makes it, with an epoch's scan after it:
+   - the tracking tells the page the CPU wrote before the move, which no scan had taken, and no other; then a write
+     after the move, alone;
+   - a target drawn before the move and written back after it holds its pixels on every page but the one the CPU
+     wrote after the draw */
+static int check_wt_owner_move(void) {
+    const u64 cpu = WT_CPU + 18 * WT_LEAF, gva = WT_GVA + 0x12000000, size = 0x10000; /* 128 by 128, 4 bytes a pixel */
+    const u64 beside = cpu + 0x20000, later = cpu + 0x8000;
+    MemPoolRun runs[4];
+    u32 nruns = 0;
+    GpuChannel* ch = calloc(1, sizeof *ch);
+    CHECK(ch);
+    CHECK(mem_map(cpu, 0x30000, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(gva, cpu, size);
+    memset(GP(cpu), 0x11, 0x30000);
+    vk_lock();
+    int tracking = wt_tracking(cpu);
+    vk_unlock();
+    if (!tracking) {
+        printf("skip: an owner's move into the pool, as the tracking sees it, needs write tracking\n");
+        CHECK(mem_unmap(cpu, 0x30000) == 0);
+        free(ch);
+        return 0;
+    }
+    /* the tracking's answers over the pages beside the target: one written before the move, one after it */
+    wt_scans(beside, size, 1);
+    vk_lock();
+    u32 since = vk_ww_now();
+    vk_unlock();
+    GP(beside + 0x5000)[0x10] = 0x99;
+    vk_lock();
+    int moved = !mem_own_prepare(beside, size, runs, 4, &nruns);
+    vk_unlock();
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    int told = vk_written_since(GP(beside), size, since);
+    u32 pages = 0, pages2 = 0;
+    for (u32 pg = 0; pg < 16; pg++) pages |= (u32)(vk_ww_page_after(beside + pg * 0x1000ull, since) != 0) << pg;
+    u32 since2 = vk_ww_now();
+    vk_unlock();
+    GP(beside + 0x9000)[0] = 0x98;
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    int told2 = vk_written_since(GP(beside), size, since2);
+    for (u32 pg = 0; pg < 16; pg++) pages2 |= (u32)(vk_ww_page_after(beside + pg * 0x1000ull, since2) != 0) << pg;
+    vk_unlock();
+    int answers = told == 1 && pages == 1u << 5 && told2 == 1 && pages2 == 1u << 9 && GP(beside + 0x5000)[0x10] == 0x99;
+    if (!answers)
+        fprintf(stderr,
+                "owner move: after 16 pages %s into the pool the tracking told %d and the pages %#x written (a bit a "
+                "page; 1 and 0x20: the CPU wrote page 5 before the move), then %d and %#x after a write to page 9 (1 "
+                "and 0x200)\n",
+                moved ? "moved" : "did not move", told, pages, told2, pages2);
+    /* the target: drawn, the CPU's write to one page of it, the move, and the write-back */
+    wt_scans(cpu, size, 1);
+    rt_clear(ch, gva, 128, 128, 0, 1);
+    wt_scans(cpu, size, 1);
+    memset(GP(later), 0x77, 0x1000);
+    vk_lock();
+    int moved_rt = !mem_own_prepare(cpu, size, runs, 4, &nruns);
+    vk_unlock();
+    g_renderer->mem_may_have_changed();
+    g_renderer->rt_flush(gva);
+    guest_done(cpu, size);
+    int blue =
+        all_blue(GP(cpu), (u32)(later - cpu)) && all_blue(GP(later + 0x1000), (u32)(cpu + size - later - 0x1000));
+    int kept = all_bytes(GP(later), 0x1000, 0x77);
+    if (!blue || !kept)
+        fprintf(
+            stderr,
+            "owner move: a target drawn before its 16 pages %s into the pool holds %02x %02x %02x %02x at its "
+            "first pixel after its write-back (blue: 00 00 ff ff), the rest of it is %s, and the page the CPU wrote "
+            "after the draw %s\n",
+            moved_rt ? "moved" : "did not move", GP(cpu)[0], GP(cpu)[1], GP(cpu)[2], GP(cpu)[3],
+            blue ? "blue" : "not all blue", kept ? "keeps 0x77" : "lost 0x77");
+    CHECK(mem_unmap(cpu, 0x30000) == 0);
+    free(ch);
+    CHECK(answers && blue && kept);
+    printf("write tracking: an owner's move into the pool reads as no write (%s), to the tracking and to a target's "
+           "write-back\n",
+           moved && moved_rt ? "moved here" : "no move on this host");
+    return 0;
+}
+
 /* A texture over two pieces of guest memory, its GPU pages mapping runs that don't follow each other: write tracking
    answers for it piece by piece, as for one run. Untouched over epochs, its checks hash nothing; the CPU writing the
    second piece, and a DMA copy over the first through another GPU address of it, each reach it in the next epoch.
@@ -1249,6 +1338,7 @@ static const struct {
     {"hot_alias", check_wt_hot_alias},
     {"hot_same_frame", check_wt_hot_same_frame},
     {"hot_rt_take_in", check_wt_hot_rt_take_in},
+    {"owner_move", check_wt_owner_move},
     {"pieces", check_wt_pieces},
     {"sampled", check_wt_sampled},
     {"compares", check_wt_compares},
@@ -1288,7 +1378,7 @@ static int check_write_tracking(void) {
                 "SNX_TEST_WW_ONLY=%s names no case: 1, each, landed_order, two_consumers, concurrent, record_submit, "
                 "runtime_writes, "
                 "owned, alias, shared, mixed_leaf, hot_page, hot_rt_overlap, hot_rt_fresh, hot_alias, hot_same_frame, "
-                "hot_rt_take_in, pieces, sampled or compares\n",
+                "hot_rt_take_in, owner_move, pieces, sampled or compares\n",
                 only);
         return 2;
     }
