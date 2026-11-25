@@ -335,7 +335,10 @@ int sm86_eval(const u64 (*insn)[2], u32 n, const Sm86EvalIo* io, const u32* prob
     for (u32 k = 0; k < nprobes; k++) out[k] = 0;
     for (u32 i = 0; i < n; i++) {
         Sm86Insn in;
-        if (!sm86_decode(insn[i][0], insn[i][1], &in) || !sm86_eval_takes(&in) || !ev_step(&e, &in)) return 0;
+        if (!sm86_decode(insn[i][0], insn[i][1], &in) || !sm86_eval_takes(&in)) return 0;
+        /* a conditional write keeps its guard (the translation runs the others with none): where it doesn't hold,
+           the destination keeps what it had */
+        if (ev_pred(&e, in.pred, in.pred_not, sm86_uniform_guard(&in)) && !ev_step(&e, &in)) return 0;
         for (u32 k = 0; k < nprobes; k++) {
             if (SH_PROBE_INSN(probes[k]) != i) continue;
             u32 r = SH_PROBE_REG(probes[k]);

@@ -153,6 +153,10 @@ typedef struct {
     u32 mh_guard;
     int mh_used;
     u8* mh_gneed;
+    /* by instruction, whether it joined as a conditional write (mh_writer): its guard kept for sm86_eval, with the
+       guard's predicate and the value it leaves where the guard doesn't hold; and whether the one being added does */
+    u8* mh_cond;
+    int mh_take_cond;
     u32 img[8], img_type[8];
     u32 interfaces[MAX_INTERFACES], ninterfaces;
     /* the uniform register pair a ULDC.64 last loaded from a constant buffer: (bank << 16 | offset) + 1, 0 for none */
@@ -463,7 +467,8 @@ static u32 saturate(Ctx* c, u32 v, int on) {
    interface programs exit the lanes their KILL took with @P0 EXIT P1: with P1 left out, every lane of a draw with P0
    set exited before the MOVs to its outputs, and the whole title screen drew transparent black */
 static u32 guard(Ctx* c, const Sm86Insn* in) {
-    u32 v = prd(c, in->pred, in->pred_not, 0), p = sm86_field(in, 87, 3), negate = sm86_field(in, 90, 1);
+    u32 v = prd(c, in->pred, in->pred_not, sm86_uniform_guard(in)), p = sm86_field(in, 87, 3),
+        negate = sm86_field(in, 90, 1);
     if (!sm86_has_cond(in) || (p == SM86_PT && !negate)) return v;
     return op2(c, SPV_OP_LOGICAL_AND, c->t_bool, v, prd(c, p, negate, 0));
 }
@@ -6202,42 +6207,79 @@ static int mh_may_write(const Sm86Insn* in, int file, u32 r) {
         for (u32 j = c->jump_first[k]; j < c->jump_first[(k) + 1]; j++)                                                \
             if (!seen[c->jump_from[j]]) seen[c->jump_from[j]] = 1, stack[top++] = c->jump_from[j];                     \
     } while (0)
-/* an instruction's guard as mh_guard holds it: 0 for none (PT), else 0x80, the negation at bit 3, the predicate */
+/* an instruction's guard as mh_guard holds it: 0 for none (PT), else 0x80, a uniform predicate at bit 4
+   (sm86_uniform_guard), the negation at bit 3, the predicate */
 static u32 mh_guard_code(const Sm86Insn* in) {
-    return in->pred == SM86_PT && !in->pred_not ? 0 : 0x80u | (u32)in->pred_not << 3 | in->pred;
+    return in->pred == SM86_PT && !in->pred_not
+               ? 0
+               : 0x80u | (u32)sm86_uniform_guard(in) << 4 | (u32)in->pred_not << 3 | in->pred;
 }
+/* the file of a guard's predicate (mh_guard_code) */
+static int mh_guard_file(u32 g) { return g & 0x10u ? MH_UP : MH_P; }
 /* The one instruction whose write of value r of the file reaches instruction i on every path there, as
    reaching_write finds a register's: -1 when that can't be shown, -2 for RZ, URZ and PT, which no one writes. A
-   write needs no guard, or the one of c->mh_guard: the compiler computes a handle under the guard of the texture
-   instruction that takes it (@!P0 ULOP3 UR4 = UR8 | UR4, then @!P0 TEX of UR4; @P1 MOV R18 = c[3][0x70], @P1 LOP3
-   R18 = R18 | c[3][0x78], then @P1 TEX.B of R18), and where the texture instruction runs, so does that write, when no
-   write of the guard's predicate lies between them. *changed: one does (the writer's own too), so that the
-   instructions before it can't count on the guard */
-static int mh_writer(Ctx* c, u32 i, int file, u32 r, int* changed) {
+   write needs no guard, or the one of c->mh_guard, or one that guard implies (mh_guard_implied): the compiler computes
+   a handle under the guard of the texture instruction that takes it (@P1 MOV R18 = c[3][0x70], @P1 LOP3 R18 = R18 |
+   c[3][0x78], then @P1 TEX.B of R18), and where the texture instruction runs, so does that write, when no write of
+   the guard's predicate lies between them. *changed: one does (the writer's own too), so that the
+   instructions before it can't count on the guard. A write under another guard, or under that one with such a write
+   between, is a conditional one (*cond): the value is the write's where its guard holds and the one before it where it
+   doesn't, which sm86_eval decides with the guard's predicate (mh_add). One program makes a handle so: UR4 =
+   c[4][0x8], UP0 = UR4 != 0, @UP0 UR4 = c[3][0x20], @UP0 UR4 |= c[3][0x48], P2 = UP0, then @P2 TEX of UR4 */
+static int mh_writer(Ctx* c, u32 i, int file, u32 r, int* changed, int* cond);
+/* whether guard g (a lane's predicate), which holds at instruction i, implies the uniform guard of instruction k: its
+   predicate is a VOTEU of g's predicate, as written there and at i alike. With ALL, a lane where the predicate is false
+   sees the vote false; with ANY, one where it is true sees it true. The compiler computes a handle in uniform registers
+   so: UP0 = VOTEU.ALL(P0), @!UP0 ULOP3 UR4 = UR8 | UR4, then @!P0 TEX of UR4 */
+static int mh_guard_implied(Ctx* c, u32 i, u32 k, u32 g) {
+    u32 w = mh_guard_code(&c->in[k]), keep = c->mh_guard;
+    if (!g || (g & 0x10u) || !(w & 0x10u)) return 0;
+    int changed, cond, ok = 0;
+    c->mh_guard = 0;
+    int v = mh_writer(c, k, MH_UP, w & 7, &changed, &cond);
+    if (v >= 0 && !cond && c->in[v].op == SM86_UVOTE && sm86_always(&c->in[v])) {
+        const Sm86Insn* vi = &c->in[v];
+        u32 how = sm86_field(vi, 72, 2), p = sm86_field(vi, 87, 3), neg = sm86_field(vi, 90, 1);
+        /* g holds where the lane's vote input is false (ALL) or true (ANY), and w is the vote's !UP or UP */
+        int lane = (g & 7) == p && p < SM86_PT && (how == 0 ? (g >> 3 & 1) != neg : how == 1 && (g >> 3 & 1) == neg);
+        int vote = sm86_field(vi, 81, 3) == (w & 7) && (w >> 3 & 1) == (how == 0);
+        int pv = mh_writer(c, v, MH_P, p, &changed, &cond),
+            pi = pv >= 0 ? mh_writer(c, i, MH_P, p, &changed, &cond) : -1;
+        ok = lane && vote && pv >= 0 && pv == pi;
+    }
+    c->mh_guard = keep;
+    return ok;
+}
+static int mh_writer(Ctx* c, u32 i, int file, u32 r, int* changed, int* cond) {
     *changed = 0;
+    *cond = 0;
     if ((file == MH_R && r >= SM86_RZ) || (file == MH_UR && r >= SM86_URZ) || (file >= MH_P && r >= SM86_PT)) return -2;
     if (!flow_sources(c)) return -1;
     u32 n = c->n, *stack = malloc(((size_t)n + 1) * sizeof *stack), top = 0, g = c->mh_guard;
     u8* seen = calloc((size_t)n + 1, 1);
-    int ok = stack && seen, found = -1, under = 0;
+    int ok = stack && seen, found = -1, under = 0, other = 0;
     if (ok) MH_FLOW_PREDS(i);
     while (ok && top) {
         u32 k = stack[--top];
         const Sm86Insn* in = &c->in[k];
-        if (g && mh_may_write(in, MH_P, g & 7)) *changed = 1;
+        if (g && mh_may_write(in, mh_guard_file(g), g & 7)) *changed = 1;
         if (!mh_may_write(in, file, r)) {
             MH_FLOW_PREDS(k);
             continue;
         }
-        int guarded = !sm86_always(in) && g && !sm86_has_cond(in) && mh_guard_code(in) == g;
-        if ((!sm86_always(in) && !guarded) || (found >= 0 && (u32)found != k)) ok = 0;
+        int guarded =
+            !sm86_always(in) && g && !sm86_has_cond(in) && (mh_guard_code(in) == g || mh_guard_implied(c, i, k, g));
+        if ((!sm86_always(in) && sm86_has_cond(in)) || (found >= 0 && (u32)found != k)) ok = 0;
         under |= guarded;
+        other |= !sm86_always(in) && !guarded;
         found = (int)k;
     }
     free(stack);
     free(seen);
-    if (ok && under && *changed) ok = 0;
+    if (ok && under && *changed) under = 0, other = 1;
+    if (other && file >= MH_P) ok = 0; /* a predicate's conditional write: not taken */
     if (ok && under) c->mh_used = 1;
+    *cond = ok && other;
     return ok ? found : -1;
 }
 #undef MH_FLOW_PREDS
@@ -6255,17 +6297,18 @@ static int mh_fail(Ctx* c, const char* fmt, ...) {
 static int mh_add(Ctx* c, u32 k, u32 reader);
 /* the writer k of a value that instruction at reads joins ShaderInfo.memh, under the guard only where no write of its
    predicate lies between them */
-static int mh_add_under(Ctx* c, u32 k, u32 at, int changed) {
+static int mh_add_under(Ctx* c, u32 k, u32 at, int changed, int cond) {
     u32 g = c->mh_guard;
     if (changed) c->mh_guard = 0;
+    c->mh_take_cond = cond;
     int ok = mh_add(c, k, at);
     c->mh_guard = g;
     return ok;
 }
 /* instruction at, of ShaderInfo.memh or the texture instruction, reads value r of the file: its writer joins them */
 static int mh_need(Ctx* c, u32 at, int file, u32 r) {
-    int changed;
-    int k = mh_writer(c, at, file, r, &changed);
+    int changed, cond;
+    int k = mh_writer(c, at, file, r, &changed, &cond);
     if (k == -2) return 1;
     if (k < 0 || (u32)k >= at)
         return mh_fail(c, "a texture handle from memory whose %s%u at %u has no one writer before", mh_file_name(file),
@@ -6280,7 +6323,7 @@ static int mh_need(Ctx* c, u32 at, int file, u32 r) {
         c->mh_dep = grown, c->mh_dep_cap = cap;
     }
     c->mh_dep[c->nmh_dep++] = (MhDep){at, (u32)file, r, (u32)k};
-    return mh_add_under(c, (u32)k, at, changed);
+    return mh_add_under(c, (u32)k, at, changed, cond);
 }
 static int mh_src(Ctx* c, u32 at, const Sm86Src* s) {
     if (s->kind == SM86_SRC_REG) return mh_need(c, at, MH_R, s->reg);
@@ -6296,7 +6339,12 @@ static int mh_sources(Ctx* c, u32 k);
 /* instruction k, which reader reads, joins ShaderInfo.memh, with the writers of what it reads. One already there that
    took a write under a guard holds for a reader under that guard alone */
 static int mh_add(Ctx* c, u32 k, u32 reader) {
+    int cond = c->mh_take_cond;
+    c->mh_take_cond = 0;
     if (c->mh_mark[k]) {
+        if (cond && !c->mh_cond[k])
+            return mh_fail(c, "a texture handle from memory made with %s at %u under another guard",
+                           sm86_ops[c->in[k].op].name, k);
         if (c->mh_gneed[k] && c->mh_gneed[k] != c->mh_guard)
             return mh_fail(c, "a texture handle from memory made with %s at %u under another guard",
                            sm86_ops[c->in[k].op].name, k);
@@ -6310,10 +6358,18 @@ static int mh_add(Ctx* c, u32 k, u32 reader) {
         return mh_fail(c, "texture handles from memory made with more than %u instructions", SH_MEMH_MAX);
     c->nmh++;
     c->mh_mark[k] = 1;
+    c->mh_cond[k] = (u8)cond;
     c->mh_new[c->nmh_new++] = k;
     int outer = c->mh_used;
     c->mh_used = 0;
     int ok = mh_sources(c, k);
+    /* a conditional write: its guard's predicate, and what its destination held before it */
+    if (ok && cond) {
+        int u = mh_uniform_dst(in);
+        u32 d = u && sm86_ops[in->op].kind != SM86_K_UALU ? sm86_field(in, 16, 6) : in->dst;
+        ok = mh_need(c, k, mh_guard_file(mh_guard_code(in)), in->pred);
+        for (u32 w = 0; ok && w < mh_words(in); w++) ok = mh_need(c, k, u ? MH_UR : MH_R, d + w);
+    }
     c->mh_gneed[k] = (u8)(c->mh_used ? c->mh_guard : 0);
     c->mh_used |= outer;
     return ok;
@@ -6431,7 +6487,7 @@ static u32 mh_flow_guard(Ctx* c, u32 i) {
         MH_GUARD_PREDS(i);
         while (ok && top) {
             u32 k = stack[--top];
-            if (mh_may_write(&c->in[k], MH_P, g & 7))
+            if (mh_may_write(&c->in[k], mh_guard_file(g), g & 7))
                 ok = 0;
             else
                 MH_GUARD_PREDS(k);
@@ -6447,16 +6503,16 @@ static u32 mh_flow_guard(Ctx* c, u32 i) {
    writer joins ShaderInfo.memh: ~0 when it can't. The handle's value matters where the texture instruction runs,
    under its guard, or under the one its block runs under where it has none (mh_flow_guard) */
 static u32 mh_probe(Ctx* c, u32 at, int file, u32 r) {
-    int changed;
+    int changed, cond;
     c->mh_guard = mh_guard_code(&c->in[at]);
     if (!c->mh_guard) c->mh_guard = mh_flow_guard(c, at);
     c->mh_used = 0;
-    int k = mh_writer(c, at, file, r, &changed);
+    int k = mh_writer(c, at, file, r, &changed, &cond);
     int ok = k >= 0 && (u32)k < at;
     if (!ok)
         mh_fail(c, "a texture handle from memory whose %s%u at %u has no one writer before", mh_file_name(file), r, at);
     else
-        ok = mh_add_under(c, (u32)k, at, changed);
+        ok = mh_add_under(c, (u32)k, at, changed, cond);
     c->mh_guard = 0;
     return ok ? SH_PROBE(k, file == MH_UR, r) : SH_PROBE_NONE;
 }
@@ -6481,7 +6537,9 @@ static int mh_finish(Ctx* c) {
     for (u32 k = 0; k < c->n; k++) {
         if (!c->mh_mark[k]) continue;
         c->mh_pos[k] = pos + 1;
-        c->si->memh[pos][0] = c->in[k].lo;
+        /* sm86_eval keeps a conditional write's guard; the others run where the texture instruction does (their
+           guard PT) */
+        c->si->memh[pos][0] = c->mh_cond[k] ? c->in[k].lo : (c->in[k].lo & ~0xf000ull) | 0x7000ull;
         c->si->memh[pos][1] = c->in[k].hi;
         pos++;
     }
@@ -6585,11 +6643,12 @@ static void memory_handles(Ctx* c) {
     if (!any) return;
     c->mh_mark = calloc((size_t)n + 1, 1);
     c->mh_gneed = calloc((size_t)n + 1, 1);
+    c->mh_cond = calloc((size_t)n + 1, 1);
     c->mh_pos = calloc((size_t)n + 1, sizeof *c->mh_pos);
     c->mh_new = calloc((size_t)n + 1, sizeof *c->mh_new);
     u32(*probe)[2] = malloc(((size_t)n + 1) * sizeof *probe); /* ~0 for none */
     if (!c->handle) c->handle = calloc((size_t)n + 1, sizeof *c->handle);
-    if (!c->mh_mark || !c->mh_gneed || !c->mh_pos || !c->mh_new || !probe || !c->handle) {
+    if (!c->mh_mark || !c->mh_gneed || !c->mh_cond || !c->mh_pos || !c->mh_new || !probe || !c->handle) {
         free(probe);
         fail(c, "out of memory");
         return;
@@ -7323,6 +7382,7 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
     free(c->handle);
     free(c->mh_mark);
     free(c->mh_gneed);
+    free(c->mh_cond);
     free(c->mh_pos);
     free(c->mh_dep);
     free(c->mh_new);
