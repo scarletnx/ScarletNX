@@ -11,9 +11,14 @@ enum {
     SPV_TYPE_INT = 21,
     SPV_TYPE_FLOAT = 22,
     SPV_TYPE_VECTOR = 23,
+    SPV_TYPE_IMAGE = 25,
+    SPV_TYPE_SAMPLER = 26,
+    SPV_TYPE_SAMPLED_IMAGE = 27,
     SPV_TYPE_FORWARD_POINTER = 39,
     SPV_CONSTANT_TRUE = 41,
     SPV_FUNCTION = 54,
+    SPV_FUNCTION_PARAMETER = 55,
+    SPV_FUNCTION_CALL = 57,
     SPV_LOAD = 61,
     SPV_COMPOSITE_CONSTRUCT = 80,
     SPV_COMPOSITE_EXTRACT = 81,
@@ -23,7 +28,10 @@ enum {
     SPV_QUERY_SIZE_LOD = 103,
     SPV_QUERY_SIZE = 104,
     SPV_BITCAST = 124,
+    SPV_UCONVERT = 113,
+    SPV_SCONVERT = 114,
     SPV_IADD = 128,
+    SPV_ISUB = 130,
     SPV_IMUL = 132,
     SPV_UDIV = 134,
     SPV_SDIV = 135,
@@ -64,26 +72,128 @@ enum {
     SPV_LOCATION = 30,
     SPV_INDEX = 32,
     /* storage classes */
+    SPV_UNIFORM_CONSTANT = 0,
     SPV_UNIFORM = 2,
     SPV_STORAGE_BUFFER = 12,
     SPV_OUTPUT = 3,
+    /* what an image's Dim is, and its Sampled */
+    SPV_DIM_BUFFER = 5,
+    SPV_DIM_SUBPASS = 6,
+    SPV_SAMPLED_NO = 2,
     /* capabilities */
     SPV_CAP_NON_UNIFORM = 5301,
+    /* and its arrays', each the kind's of the same index (kind_cap) */
     SPV_CAP_UBO_NON_UNIFORM = 5306,
     SPV_CAP_SSBO_NON_UNIFORM = 5308,
 };
+/* the kinds of descriptor whose arrays a module indexes, in the order of the GVK_SPIRV_* bits. 0: no such thing */
+enum {
+    KIND_NONE,
+    KIND_UBO,
+    KIND_SSBO,
+    KIND_SAMPLED,
+    KIND_STORAGE_IMAGE,
+    KIND_INPUT,
+    KIND_UNIFORM_TEXEL,
+    KIND_STORAGE_TEXEL,
+    KINDS
+};
+/* the capability of each kind's arrays indexed by what can differ */
+static u32 kind_cap(u32 kind) {
+    static const u32 cap[KINDS] = {0,    SPV_CAP_UBO_NON_UNIFORM, SPV_CAP_SSBO_NON_UNIFORM,
+                                   5307, /* SampledImageArrayNonUniformIndexing */
+                                   5309, /* StorageImageArrayNonUniformIndexing */
+                                   5310, /* InputAttachmentArrayNonUniformIndexing */
+                                   5311, /* UniformTexelBufferArrayNonUniformIndexing */
+                                   5312 /* StorageTexelBufferArrayNonUniformIndexing */};
+    return cap[kind];
+}
 #define SPV_IDS (1u << 22) /* a module's id bound gvk mends, at most */
 /* what an id is */
 enum {
-    SPV_MATRIX = 1,        /* a matrix type */
-    SPV_STRIDED = 2,       /* an array type with its own ArrayStride */
-    SPV_BUFFER_TYPE = 4,   /* a structure decorated BufferBlock: a storage buffer in the Uniform class */
-    SPV_UNIFORM_ID = 8,    /* a constant, the same in every invocation */
-    SPV_BUFFER_ARRAY = 16, /* a variable that is an array of buffers (with 32 for storage buffers) */
-    SPV_SSBO_ARRAY = 32,
-    SPV_INDEXED = 64, /* a pointer into such an array, by an index that can differ between invocations */
+    SPV_MATRIX = 1,       /* a matrix type */
+    SPV_STRIDED = 2,      /* an array type with its own ArrayStride */
+    SPV_BUFFER_TYPE = 4,  /* a structure decorated BufferBlock: a storage buffer in the Uniform class */
+    SPV_UNIFORM_ID = 8,   /* a value that is the same in every invocation of a draw or a dispatch */
+    SPV_UNIFORM_PTR = 16, /* a pointer to one: to push constants, or into a uniform buffer, by such indices */
+    SPV_ARRAY = 32,       /* a variable that is an array of descriptors of its kind */
+    SPV_INDEXED = 64, /* a pointer into such an array by an index that can differ between invocations, and an image or
+                         a sampler loaded by one */
     SPV_HAS_NU = 128, /* decorated NonUniform by the module itself */
 };
+/* The kind of each id: of an image or sampler type, the descriptors of it; of a variable, the array's; of a pointer or
+   a value, the array it is of. allow names the kinds the host's device can index by such an index (GVK_SPIRV_*). One
+   of an image's kinds it can't keeps the module's own code, as a host without the feature did before */
+typedef struct {
+    const u32* w;
+    u32 n, bound, allow;
+    u8 *flag, *kind;
+    const u32* func_at; /* where each function is declared, 0 for none */
+} Marks;
+static int kind_allowed(const Marks* m, u32 kind) { return (m->allow >> (kind - 1)) & 1; }
+/* flags and a kind given to an id: 1 when it has more of them than before */
+static int mark(Marks* m, u32 id, u8 flag, u8 kind) {
+    if (!id || id >= m->bound) return 0;
+    int more = (flag & ~m->flag[id]) || (kind && !m->kind[id]);
+    m->flag[id] |= flag;
+    if (!m->kind[id]) m->kind[id] = kind; /* one kind, whatever a module gives it later: the marks only grow */
+    return more;
+}
+/* whether every index of an access chain (n words at o, from the first index) is the same in every invocation */
+static int uniform_indices(const Marks* m, const u32* o, u32 from, u32 n) {
+    for (u32 j = from; j < n; j++)
+        if (o[j] >= m->bound || !(m->flag[o[j]] & SPV_UNIFORM_ID)) return 0;
+    return 1;
+}
+/* a pointer into an array of descriptors is indexed by what an invocation can hold of its own, and so are the pointers
+   made from it, the images and samplers it loads, what is made of those, and the parameters of the functions they are
+   passed to. Until nothing more is: a function's body can come before the call that passes it one. A buffer's load is
+   its bytes, and not the buffer */
+static void mark_indexed(Marks* m) {
+    for (int more = 1; more;) {
+        more = 0;
+        for (u32 i = 5; i < m->n; i += m->w[i] >> 16) {
+            u32 len = m->w[i] >> 16, op = m->w[i] & 0xffff;
+            const u32* o = m->w + i + 1;
+            if ((op == SPV_ACCESS_CHAIN || op == SPV_IN_BOUNDS_ACCESS_CHAIN) && len >= 5 && o[2] < m->bound &&
+                o[3] < m->bound) {
+                u8 base = m->flag[o[2]], k = m->kind[o[2]];
+                u32 last =
+                    k >= KIND_SAMPLED ? len - 1 : 4; /* an array of buffers is one of structures past its first */
+                int pick = (base & SPV_ARRAY) && !uniform_indices(m, o, 3, last);
+                if ((pick || (base & SPV_INDEXED)) && (k < KIND_SAMPLED || kind_allowed(m, k)))
+                    more |= mark(m, o[1], SPV_INDEXED, k);
+                if ((base & SPV_UNIFORM_PTR) && uniform_indices(m, o, 3, len - 1))
+                    more |= mark(m, o[1], SPV_UNIFORM_PTR, 0);
+            } else if (op == SPV_LOAD && len >= 4 && o[2] < m->bound) {
+                if ((m->flag[o[2]] & SPV_INDEXED) && m->kind[o[2]] >= KIND_SAMPLED)
+                    more |= mark(m, o[1], SPV_INDEXED, m->kind[o[2]]);
+                if (m->flag[o[2]] & SPV_UNIFORM_PTR) more |= mark(m, o[1], SPV_UNIFORM_ID, 0);
+            } else if (op == SPV_SAMPLED_IMAGE && len >= 5 && o[2] < m->bound && o[3] < m->bound) {
+                if (m->flag[o[2]] & SPV_INDEXED)
+                    more |= mark(m, o[1], SPV_INDEXED, m->kind[o[2]]);
+                else if (m->flag[o[3]] & SPV_INDEXED)
+                    more |= mark(m, o[1], SPV_INDEXED, m->kind[o[3]]);
+            } else if ((op == SPV_IMAGE || op == SPV_COPY_OBJECT) && len >= 4 && o[2] < m->bound) {
+                if (m->flag[o[2]] & SPV_INDEXED) more |= mark(m, o[1], SPV_INDEXED, m->kind[o[2]]);
+                if (op == SPV_COPY_OBJECT && (m->flag[o[2]] & SPV_UNIFORM_ID)) more |= mark(m, o[1], SPV_UNIFORM_ID, 0);
+            } else if ((op == SPV_BITCAST || op == SPV_UCONVERT || op == SPV_SCONVERT) && len >= 4 && o[2] < m->bound) {
+                if (m->flag[o[2]] & SPV_UNIFORM_ID) more |= mark(m, o[1], SPV_UNIFORM_ID, 0);
+            } else if (op == SPV_IADD || op == SPV_ISUB || op == SPV_IMUL) {
+                if (len >= 5 && o[2] < m->bound && o[3] < m->bound && (m->flag[o[2]] & m->flag[o[3]] & SPV_UNIFORM_ID))
+                    more |= mark(m, o[1], SPV_UNIFORM_ID, 0);
+            } else if (op == SPV_FUNCTION_CALL && len >= 4 && o[2] < m->bound && m->func_at[o[2]]) {
+                u32 p = m->func_at[o[2]];
+                p += m->w[p] >> 16;
+                for (u32 j = 3;
+                     j < len - 1 && p < m->n && (m->w[p] & 0xffff) == SPV_FUNCTION_PARAMETER && m->w[p] >> 16 >= 3;
+                     j++, p += m->w[p] >> 16)
+                    if (o[j] < m->bound && m->kind[o[j]] >= KIND_SAMPLED)
+                        more |= mark(m, m->w[p + 2], m->flag[o[j]] & (SPV_INDEXED | SPV_ARRAY), m->kind[o[j]]);
+            }
+        }
+    }
+}
 static const char g_ext_name[] = "SPV_EXT_descriptor_indexing";
 #define SPV_EXT_WORDS ((u32)(sizeof g_ext_name + 3) / 4) /* its words, with its NUL */
 
@@ -119,15 +229,19 @@ const u32* gvk_spirv_mend(const u32* w, size_t bytes, size_t* out_bytes, u32 all
     /* what each id is: its flags, an array's element type, where a structure is declared, a pointer type's pointee,
        an array type's ArrayStride (0 none) */
     u8* flag = gvk_scratch(bound);
+    u8* kind = gvk_scratch(bound);
     u32* elem = gvk_scratch(sizeof *elem * bound);
     u32* struct_at = gvk_scratch(sizeof *struct_at * bound);
     u32* pointee = gvk_scratch(sizeof *pointee * bound);
     u32* stride = gvk_scratch(sizeof *stride * bound);
+    u32* func_at = gvk_scratch(sizeof *func_at * bound);
     memset(flag, 0, bound);
+    memset(kind, 0, bound);
     memset(elem, 0, sizeof *elem * bound);
     memset(struct_at, 0, sizeof *struct_at * bound);
     memset(pointee, 0, sizeof *pointee * bound);
     memset(stride, 0, sizeof *stride * bound);
+    memset(func_at, 0, sizeof *func_at * bound);
     int groups = 0;
     for (u32 i = 5; i < n;) {
         u32 len = w[i] >> 16, op = w[i] & 0xffff;
@@ -150,7 +264,7 @@ const u32* gvk_spirv_mend(const u32* w, size_t bytes, size_t* out_bytes, u32 all
     }
     size_t extra = 0;
     u32 fixes = 0, indexed = 0, caps_end = 5;
-    int has_cap[3] = {0, 0, 0}, need_ssbo = 0, need_ubo = 0, has_ext = 0;
+    int has_cap[KINDS] = {0}, has_ext = 0, need[KINDS] = {0}; /* has_cap[0]: ShaderNonUniform */
     for (u32 i = 5; i < n;) {
         u32 len = w[i] >> 16, op = w[i] & 0xffff;
         const u32* o = w + i + 1;
@@ -160,8 +274,7 @@ const u32* gvk_spirv_mend(const u32* w, size_t bytes, size_t* out_bytes, u32 all
                 return NULL;
             caps_end = i + len;
             has_cap[0] |= o[0] == SPV_CAP_NON_UNIFORM;
-            has_cap[1] |= o[0] == SPV_CAP_UBO_NON_UNIFORM;
-            has_cap[2] |= o[0] == SPV_CAP_SSBO_NON_UNIFORM;
+            for (u32 k = KIND_UBO; k < KINDS; k++) has_cap[k] |= o[0] == kind_cap(k);
         } else if (op == SPV_EXTENSION && len - 1 >= SPV_EXT_WORDS) {
             has_ext |= !memcmp(o, g_ext_name, sizeof g_ext_name);
         } else if ((op == SPV_TYPE_MATRIX || op == SPV_TYPE_STRUCT) && len >= 2 && o[0] < bound) {
@@ -169,6 +282,16 @@ const u32* gvk_spirv_mend(const u32* w, size_t bytes, size_t* out_bytes, u32 all
                 flag[o[0]] |= SPV_MATRIX;
             else
                 struct_at[o[0]] = i;
+        } else if (op == SPV_TYPE_IMAGE && len >= 9 && o[0] < bound) {
+            int loads = o[6] != SPV_SAMPLED_NO; /* sampled, or not known until it is made */
+            kind[o[0]] = o[2] == SPV_DIM_SUBPASS  ? KIND_INPUT
+                         : o[2] == SPV_DIM_BUFFER ? (loads ? KIND_UNIFORM_TEXEL : KIND_STORAGE_TEXEL)
+                         : loads                  ? KIND_SAMPLED
+                                                  : KIND_STORAGE_IMAGE;
+        } else if (op == SPV_TYPE_SAMPLER && len >= 2 && o[0] < bound) {
+            kind[o[0]] = KIND_SAMPLED;
+        } else if (op == SPV_TYPE_SAMPLED_IMAGE && len >= 3 && o[0] < bound && o[1] < bound) {
+            kind[o[0]] = kind[o[1]];
         } else if ((op == SPV_TYPE_ARRAY || op == SPV_TYPE_RUNTIME_ARRAY) && len >= 3 && o[0] < bound) {
             elem[o[0]] = o[1];
         } else if (op == SPV_TYPE_POINTER && len >= 4 && o[0] < bound) {
@@ -177,29 +300,22 @@ const u32* gvk_spirv_mend(const u32* w, size_t bytes, size_t* out_bytes, u32 all
                     op == SPV_SPEC_CONSTANT_OP) &&
                    len >= 3 && o[1] < bound) {
             flag[o[1]] |= SPV_UNIFORM_ID;
-        } else if (op == SPV_VARIABLE && len >= 4 && o[1] < bound && o[0] < bound &&
-                   (o[2] == SPV_UNIFORM || o[2] == SPV_STORAGE_BUFFER)) {
-            /* an array of buffers (a descriptor array): types come before variables */
-            u32 t = pointee[o[0]];
-            if (t && t < bound && elem[t]) {
-                u32 e = elem[t];
-                flag[o[1]] |= SPV_BUFFER_ARRAY;
-                if (o[2] == SPV_STORAGE_BUFFER || (e < bound && (flag[e] & SPV_BUFFER_TYPE)))
-                    flag[o[1]] |= SPV_SSBO_ARRAY;
-            }
-        } else if ((op == SPV_ACCESS_CHAIN || op == SPV_IN_BOUNDS_ACCESS_CHAIN) && len >= 5 && o[1] < bound &&
-                   o[2] < bound && o[3] < bound) {
-            /* a pointer into a buffer of the array by an index that isn't a constant, or into an indexed one: the
-               console's GPU takes each invocation's own buffer, the host's driver the first's unless told */
-            u32 base = o[2];
-            int pick = (flag[base] & SPV_BUFFER_ARRAY) && !(flag[o[3]] & SPV_UNIFORM_ID);
-            if (pick || (flag[base] & SPV_INDEXED)) {
-                if (!(flag[o[1]] & (SPV_INDEXED | SPV_HAS_NU))) indexed++;
-                flag[o[1]] |= SPV_INDEXED | (flag[base] & SPV_SSBO_ARRAY);
-                if (flag[base] & SPV_SSBO_ARRAY)
-                    need_ssbo = 1;
-                else
-                    need_ubo = 1;
+        } else if (op == SPV_FUNCTION && len >= 5 && o[1] < bound) {
+            func_at[o[1]] = i;
+        } else if (op == SPV_VARIABLE && len >= 4 && o[1] < bound && o[0] < bound) {
+            /* an array of descriptors, whose types come before variables, or what push constants and a uniform buffer
+               hold, which no invocation changes */
+            u32 t = pointee[o[0]], e = t && t < bound ? elem[t] : 0;
+            if (e && e < bound && o[2] == SPV_UNIFORM_CONSTANT && kind[e]) {
+                flag[o[1]] |= SPV_ARRAY;
+                kind[o[1]] = kind[e];
+            } else if (e && (o[2] == SPV_UNIFORM || o[2] == SPV_STORAGE_BUFFER)) {
+                flag[o[1]] |= SPV_ARRAY;
+                kind[o[1]] =
+                    o[2] == SPV_STORAGE_BUFFER || (e < bound && (flag[e] & SPV_BUFFER_TYPE)) ? KIND_SSBO : KIND_UBO;
+            } else if (o[2] == SPV_PUSH_CONSTANT ||
+                       (o[2] == SPV_UNIFORM && !e && t && t < bound && !(flag[t] & SPV_BUFFER_TYPE))) {
+                flag[o[1]] |= SPV_UNIFORM_PTR;
             }
         } else if (op == SPV_DECORATE && len >= 3 && o[0] < bound) {
             if (o[1] == SPV_ARRAY_STRIDE) flag[o[0]] |= SPV_STRIDED;
@@ -209,15 +325,22 @@ const u32* gvk_spirv_mend(const u32* w, size_t bytes, size_t* out_bytes, u32 all
         }
         i += len;
     }
-    if ((need_ubo && !(allow & GVK_SPIRV_UBO_NONUNIFORM)) || (need_ssbo && !(allow & GVK_SPIRV_SSBO_NONUNIFORM)))
+    Marks marks = {w, n, bound, allow, flag, kind, func_at};
+    mark_indexed(&marks);
+    for (u32 id = 1; id < bound; id++) {
+        if (!(flag[id] & SPV_INDEXED)) continue;
+        need[kind[id]] = 1;
+        if (!(flag[id] & SPV_HAS_NU)) indexed++;
+    }
+    if ((need[KIND_UBO] && !(allow & GVK_SPIRV_UBO_NONUNIFORM)) ||
+        (need[KIND_SSBO] && !(allow & GVK_SPIRV_SSBO_NONUNIFORM)))
         return NULL;
     *out_bytes = bytes;
     /* the capabilities and the extension NonUniform needs, where the module has them not */
-    int add_cap[3] = {indexed && !has_cap[0], indexed && need_ubo && !has_cap[1], indexed && need_ssbo && !has_cap[2]};
-    int add_ext = indexed && !has_ext;
+    int add_cap[KINDS] = {indexed && !has_cap[0]}, add_ext = indexed && !has_ext, added = add_cap[0];
+    for (u32 k = KIND_UBO; k < KINDS; k++) added += add_cap[k] = indexed && need[k] && !has_cap[k];
     if (!fixes && !indexed) return w;
-    extra +=
-        3 * (size_t)indexed + 2 * (size_t)(add_cap[0] + add_cap[1] + add_cap[2]) + (add_ext ? 1 + SPV_EXT_WORDS : 0);
+    extra += 3 * (size_t)indexed + 2 * (size_t)added + (add_ext ? 1 + SPV_EXT_WORDS : 0);
     if (extra > UINT32_MAX - n || extra > SIZE_MAX / sizeof(u32) - n) return NULL;
     u32* out = gvk_scratch(sizeof *out * (n + extra));
     memcpy(out, w, 5 * sizeof *out);
@@ -225,11 +348,10 @@ const u32* gvk_spirv_mend(const u32* w, size_t bytes, size_t* out_bytes, u32 all
     int decorated = !indexed;
     for (u32 i = 5; i <= n; i += i < n ? w[i] >> 16 : 1) {
         if (i == caps_end) {
-            static const u32 cap_id[3] = {SPV_CAP_NON_UNIFORM, SPV_CAP_UBO_NON_UNIFORM, SPV_CAP_SSBO_NON_UNIFORM};
-            for (int k = 0; k < 3; k++)
+            for (u32 k = 0; k < KINDS; k++)
                 if (add_cap[k]) {
                     out[o++] = 2u << 16 | SPV_CAPABILITY;
-                    out[o++] = cap_id[k];
+                    out[o++] = k ? kind_cap(k) : SPV_CAP_NON_UNIFORM;
                 }
             if (add_ext) {
                 out[o++] = (1 + SPV_EXT_WORDS) << 16 | SPV_EXTENSION;
@@ -237,7 +359,7 @@ const u32* gvk_spirv_mend(const u32* w, size_t bytes, size_t* out_bytes, u32 all
                 memcpy(out + o, g_ext_name, sizeof g_ext_name);
                 o += SPV_EXT_WORDS;
             }
-            mended += add_cap[0] + add_cap[1] + add_cap[2] + add_ext;
+            mended += (u32)(added + add_ext);
         }
         if (i == n) break;
         u32 len = w[i] >> 16, op = w[i] & 0xffff;

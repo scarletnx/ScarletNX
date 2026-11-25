@@ -2035,9 +2035,26 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         g_settings.guest_vulkan && q12.shaderUniformBufferArrayNonUniformIndexing;
     f12.shaderStorageBufferArrayNonUniformIndexing =
         g_settings.guest_vulkan && q12.shaderStorageBufferArrayNonUniformIndexing;
+    f12.shaderStorageImageArrayNonUniformIndexing =
+        g_settings.guest_vulkan && q12.shaderStorageImageArrayNonUniformIndexing;
+    f12.shaderInputAttachmentArrayNonUniformIndexing =
+        g_settings.guest_vulkan && q12.shaderInputAttachmentArrayNonUniformIndexing;
+    f12.shaderUniformTexelBufferArrayNonUniformIndexing =
+        g_settings.guest_vulkan && q12.shaderUniformTexelBufferArrayNonUniformIndexing;
+    f12.shaderStorageTexelBufferArrayNonUniformIndexing =
+        g_settings.guest_vulkan && q12.shaderStorageTexelBufferArrayNonUniformIndexing;
     g_vk.gvk_nonuniform =
         (f12.shaderUniformBufferArrayNonUniformIndexing ? GVK_SPIRV_UBO_NONUNIFORM : 0) |
-        (f12.shaderStorageBufferArrayNonUniformIndexing ? GVK_SPIRV_SSBO_NONUNIFORM : 0);
+        (f12.shaderStorageBufferArrayNonUniformIndexing ? GVK_SPIRV_SSBO_NONUNIFORM : 0) |
+        (f12.shaderSampledImageArrayNonUniformIndexing ? GVK_SPIRV_SAMPLED_NONUNIFORM : 0) |
+        (f12.shaderStorageImageArrayNonUniformIndexing ? GVK_SPIRV_STORAGE_IMAGE_NONUNIFORM : 0) |
+        (f12.shaderInputAttachmentArrayNonUniformIndexing ? GVK_SPIRV_INPUT_NONUNIFORM : 0) |
+        (f12.shaderUniformTexelBufferArrayNonUniformIndexing ? GVK_SPIRV_UNIFORM_TEXEL_NONUNIFORM : 0) |
+        (f12.shaderStorageTexelBufferArrayNonUniformIndexing ? GVK_SPIRV_STORAGE_TEXEL_NONUNIFORM : 0);
+    if (g_settings.guest_vulkan)
+        LOG("gvk: the host indexes arrays of descriptors by what differs between invocations, kinds %x of %x (a kind "
+            "it lacks keeps the game's shaders as they are)\n",
+            g_vk.gvk_nonuniform, GVK_SPIRV_NONUNIFORM_ALL);
     /* HMMA off the matrix unit, by the rules: pairs of lanes with subgroups of 32 where the extension bans prefer
        them (OpGroupNonUniformShuffleXor), and A and B through shared memory where the driver loops for a shuffle
        whose index differs between lanes, which no feature or property tells, so the table does. hmma_mode settles
