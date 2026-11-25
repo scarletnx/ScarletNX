@@ -432,6 +432,7 @@ static uint32_t placed(uint32_t w) {
     if ((w & 0xFE000000u) == 0x54000000u && !(w & 0x00FFFFE0u)) return w | (2u << 5);         /* B.cond */
     if ((w & 0x7C000000u) == 0x34000000u && !(w & 0x00FFFFE0u)) return w | (2u << 5);         /* CBZ, CBNZ */
     if ((w & 0x7E000000u) == 0x36000000u && !(w & 0x0007FFE0u)) return w | (2u << 5);         /* TBZ, TBNZ */
+    if ((w & 0x7E000000u) == 0x74000000u && !(w & 0x00003FE0u)) return w | (2u << 5); /* CB<cc>, CB<cc> of an integer */
     return w;
 }
 

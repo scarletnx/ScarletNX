@@ -91,6 +91,8 @@ enum {
     H_SMC_SUB,
     H_FAULT,
     H_LOOP,
+    H_CB,
+    H_CB_IMM,
     H_COUNT
 };
 
@@ -112,6 +114,8 @@ static void hand(const char* cpu) {
         0xD1000420u, /* sub x0, x1, #1: the same pc as the add, so QEMU must translate it anew */
         0xF9400020u, /* ldr x0, [x1] */
         0xD61F0020u, /* br x1: to itself */
+        0xF4C10001u, /* cbeq x1, x1, .: to itself (FEAT_CMPBR) */
+        0xF5C00001u, /* cbeq x1, #0, .: to itself */
     };
     const int max = !strcmp(cpu, "max");
     const uint64_t data = SNX_QREF_WINDOW + 0x2000, pc = SNX_QREF_WORD_PC;
@@ -195,6 +199,15 @@ static void hand(const char* cpu) {
     check(R(H_FAULT)->outcome == SNX_QREF_FAULT && R(H_FAULT)->fault == 8 && R(H_FAULT)->pc == pc, cpu,
           "LDR from an unmapped address faults");
     check(R(H_LOOP)->outcome == SNX_QREF_TIMEOUT, cpu, "a loop times out");
+    if (max) {
+        check(R(H_CB)->outcome == SNX_QREF_BRANCH && R(H_CB)->pc == pc && !R(H_CB)->changes, cpu,
+              "CBEQ to itself stops");
+        check(R(H_CB_IMM)->outcome == SNX_QREF_BRANCH && R(H_CB_IMM)->pc == pc && !R(H_CB_IMM)->changes, cpu,
+              "CBEQ of an integer to itself stops");
+    } else {
+        check(R(H_CB)->outcome == SNX_QREF_UNDEF && R(H_CB_IMM)->outcome == SNX_QREF_UNDEF, cpu,
+              "CBEQ is UNDEF without CMPBR");
+    }
 #undef R
     for (i = 0; i < H_COUNT; ++i) {
         if (b.results[i].outcome != SNX_QREF_ERROR) continue;
