@@ -2077,6 +2077,7 @@ static size_t block(MG_ARM* c, const unsigned char* code, size_t count, SnxU32 p
     b->n = 0;
     b->disp = 0;
     b->index = -1;
+    b->features = c->features;
     c->nrel = 0;
     /* the assembler's state of a function (its buffers kept) */
     c->a.nframe = 0;

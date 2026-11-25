@@ -2708,6 +2708,7 @@ static int mach_object(SnxCodegen* codegen, size_t first, size_t last, const Snx
     u.b.p = (unsigned char*)malloc(u.b.cap);
     u.b.index = -1;
     u.b.disp = 0;
+    u.b.features = host;
 #ifdef MG_R_FAR
     u.b.absolute = options->jit;
 #endif
