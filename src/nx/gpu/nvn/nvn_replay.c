@@ -503,20 +503,25 @@ static void write_land(u64 gva, const u8* data, u32 len) {
     memcpy(GP(gva), data, len);
     gpu_mem_written_cpu(gva, len);
 }
-/* whether lane's work before seq stopped at a wait (under g_nvn.replay.lock): only a lane's first work waits */
-static int lane_stopped_before(u32 queue, u64 seq) {
-    for (u32 i = 0; i < NVN_JOBS; i++)
-        if (g_nvn.replay.jobs[i].queue == queue && g_nvn.replay.jobs[i].waiting && g_nvn.replay.jobs[i].seq < seq)
-            return 1;
-    return 0;
+/* each lane's work stopped at a wait (under g_nvn.replay.lock): its seq by queue (1 up), 0 where none waits. Only a
+   lane's first work waits. One pass over the work */
+static void lanes_stopped(u64 stop[NVN_QUEUES + 2]) {
+    for (u32 i = 0; i < NVN_QUEUES + 2; i++) stop[i] = 0;
+    for (u32 i = 0; i < NVN_JOBS; i++) {
+        const NvnJob* c = &g_nvn.replay.jobs[i];
+        if (c->queue && c->queue < NVN_QUEUES + 2 && c->waiting) stop[c->queue] = c->seq;
+    }
 }
 /* whether group g's writes may land (under the lock): each lane reached its JOB_WRITE, or stopped at a wait before it,
    after which the console's GPU reads what the CPU wrote meanwhile (a game registers a sampler between a recording's
    event wait and that event's signal) */
 static int group_ready(u64 g) {
+    u64 stop[NVN_QUEUES + 2];
+    lanes_stopped(stop);
     for (u32 i = 0; i < NVN_JOBS; i++) {
         const NvnJob* c = &g_nvn.replay.jobs[i];
-        if (c->queue && c->kind == JOB_WRITE && c->handles[0] == g && !c->applied && !lane_stopped_before(c->queue, c->seq))
+        if (c->queue && c->kind == JOB_WRITE && c->handles[0] == g && !c->applied &&
+            !(c->queue < NVN_QUEUES + 2 && stop[c->queue] && stop[c->queue] < c->seq))
             return 0;
     }
     return 1;
@@ -771,11 +776,11 @@ int nvn_replay_write(u64 gva, const void* data, u32 len) {
     /* nothing queued: no work reads it before, and every live lane is idle or stopped at a wait, behind which it reads
        what the CPU wrote meanwhile. The write lands at once */
     int now = !st->wq_count;
-    for (u32 k = 0; k < live && now; k++) {
-        int stopped = 0;
-        for (u32 i = 0; i < NVN_JOBS && !stopped; i++)
-            stopped = st->jobs[i].queue == lanes[k] + 1 && st->jobs[i].waiting;
-        if (!stopped && gpu_lane_busy(lanes[k])) now = 0;
+    if (now) {
+        u64 stop[NVN_QUEUES + 2];
+        lanes_stopped(stop);
+        for (u32 k = 0; k < live && now; k++)
+            if (!stop[lanes[k] + 1] && gpu_lane_busy(lanes[k])) now = 0;
     }
     if (now) {
         pm_unlock(&st->lock);
