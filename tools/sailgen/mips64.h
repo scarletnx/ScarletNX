@@ -346,6 +346,26 @@ static inline int rk_patch(SgXBuf* b, size_t at, size_t to) {
     mips_word_put(b, at, (w & 0xFFFF0000u) | ((SnxU32)d & 0xffff));
     return 0;
 }
+/* a jump past rk_j's reach, within 2 GiB: t9 the distance (LUI, in BAL's delay slot, and DADDIU, patched) from BAL's
+   link, the word after that slot (ra is the frame's, saved) */
+static inline size_t rk_j_far(SgXBuf* b) {
+    size_t at = b->n;
+    mips_w(b, sge_mips64_bal(1));
+    mips_w(b, sge_mips64_lui(RK_SA, 0));
+    mips_w(b, sge_mips64_daddiu(RK_SA, RK_SA, 0));
+    mips_w(b, sge_mips64_daddu(RK_SA, RK_SA, MIPS_RA));
+    mips_w(b, sge_mips64_jr(RK_SA));
+    mips_w(b, MIPS_NOP);
+    return at;
+}
+static inline int rk_patch_far(SgXBuf* b, size_t at, size_t to) {
+    long long d = (long long)to - (long long)at - 8, hi = (d + 0x8000) >> 16;
+    if (at + 12 > b->cap) return 0;
+    if (hi < -32768 || hi >= 32768) return -1;
+    mips_word_put(b, at + 4, sge_mips64_lui(RK_SA, (SnxU32)hi & 0xffff));
+    mips_word_put(b, at + 8, sge_mips64_daddiu(RK_SA, RK_SA, mips_i(d - (hi << 16))));
+    return 0;
+}
 /* calls and jumps through t9 (an n64 PIC callee's address) */
 static inline void rk_call_reg(SgXBuf* b, int r) {
     rk_mv(b, RK_SA, r);

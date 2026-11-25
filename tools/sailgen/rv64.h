@@ -226,6 +226,9 @@ static inline int rk_patch_call(SgXBuf* b, size_t at, size_t to) {
     rv_word_put(b, at + 4, sge_rv64_jalr((jalr >> 7) & 31, (jalr >> 15) & 31, rv_i12(lo)));
     return 0;
 }
+/* a jump past rk_j's reach: a tail call's AUIPC and JALR */
+static inline size_t rk_j_far(SgXBuf* b) { return rk_tail_reloc(b); }
+static inline int rk_patch_far(SgXBuf* b, size_t at, size_t to) { return rk_patch_call(b, at, to); }
 /* d = the address of a word in the code (its relocation's place, which this gives), a symbol's distance from it
    (R_RISCV_32_PCREL; a module's code holds no address, which would be a text relocation): JAL d over it, the link its
    address */

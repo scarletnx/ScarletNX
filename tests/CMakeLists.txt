@@ -4202,6 +4202,17 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
              --words 1ac14000 1ac24400 1ac34800 9ac44c00 1ac55000 1ac65400 1ac75800 9ac85c00 1ac14be9 9adf5c0a)
     set_tests_properties(recompiler_arm64_refused_plain recompiler_arm64_plain recompiler_arm64_plain_crc32
                          PROPERTIES TIMEOUT 600)
+    # a function longer than a machine's short jumps reach: B's 128 KiB on MIPS64, JAL's 1 MiB on riscv64, B.cond's and
+    # LDR (literal)'s 1 MiB on arm64 (words an optional feature would make short); in an AOT module and in a JIT unit
+    foreach(long IN ITEMS "mips64;0;400;131072;4ee20c20;1e622820" "mips64be;0;400;131072;4ee20c20;1e622820"
+            "rv64;0;3000;1048576;4ee20c20;1e622820" "arm64;0x7ffff;1200;1048576;4e056000;5e024020")
+        list(POP_FRONT long m without times bytes)
+        add_test(NAME recompiler_${m}_long COMMAND snx-test-recompiler-${m} --without ${without} --states 8
+                 --long ${times} ${bytes} --words ${long})
+        add_test(NAME recompiler_${m}_long_jit COMMAND snx-test-recompiler-${m} --without ${without} --states 8 --jit
+                 --long ${times} ${bytes} --words ${long})
+        set_tests_properties(recompiler_${m}_long recompiler_${m}_long_jit PROPERTIES TIMEOUT 600)
+    endforeach()
     # their A32 blocks (arm64_arm.c, rv64_arm.c) against LLVM's, as arm_x64's, under Unicorn; again with three host
     # registers
     foreach(m arm64 rv64 ppc64 mips64 la64 ppc64be mips64be s390x)

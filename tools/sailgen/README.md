@@ -548,6 +548,11 @@ doublewords, element by element, the floating point and AES's tables the exact h
 `recompiler_<machine>_refused` fails where a word of the Switch's, or of the Ounce's half precision and dot products, is
 left to another back end.
 
+A function whose code is longer than the machine's jump reaches (MIPS64's B 128 KiB, riscv64's JAL 1 MiB, arm64's B.cond
+1 MiB) is made again with its longest (`MG_FAR_JUMPS`: BAL and JR, AUIPC and JALR, the opposite B.cond over a B), and
+arm64's literals are put in the code before LDR (literal)'s 1 MiB is past (`MG_POOL_REACH`). `recompiler_<machine>_long`
+runs one.
+
 ### Past the guests' CPUs
 
 `snx_recompiler.h`'s `SNX_RECOMPILER_A64_MAX` decodes all of `a64.decode`, and the nine back ends make it too. What the

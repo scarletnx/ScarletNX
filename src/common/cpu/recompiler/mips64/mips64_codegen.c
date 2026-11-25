@@ -60,6 +60,7 @@ static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r);
 #define MG_R_TAIL MG_R_LITERAL
 #define SGX_FN_TARGET 5 /* a1 */
 static const signed char mg_pin_hosts[8] = {17, 18, 19, 20, 21, 22, 23, 28}; /* s1-s7, gp */
+#define MG_FAR_JUMPS 1 /* past B's 128 KiB: rk_j_far */
 #define MG_NPINS 8
 #define MG_NPINS_FIXED 8
 #define MG_PIN_RESERVED(h) 0
