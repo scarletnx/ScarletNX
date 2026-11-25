@@ -885,8 +885,8 @@ setting JIT optimization
     help pack built from the cache needs to match. It applies to the next run, which compiles its JIT code again
 # SNX_PHONE_END
 
-# the on-screen controls' (platform/vpad.c): their settings in the game's menu's order, then a control's place in the
-# order of SNX_VPAD_ (VPAD_CONTROLS, which the list controls follows)
+# the on-screen controls' (common/utilities/vpad.c): their settings in the game's menu's order, then a control's place
+# in the order of SNX_VPAD_ (VPAD_CONTROLS, which the list controls follows)
 table g_vpad_ini
 setting Show controls
     key controls

@@ -3,7 +3,7 @@
 #include "nx/runtime/platform/hud.h"
 #include "nx/runtime/platform/tracy.h"
 #include "nx/runtime/platform/stats.h"
-#include "nx/runtime/platform/ui_colors.h"
+#include "common/utilities/ui_colors.h"
 #include "common/utilities/slide.h"
 #include <stdio.h>
 #include <string.h>

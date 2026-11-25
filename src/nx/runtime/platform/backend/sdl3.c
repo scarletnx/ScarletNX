@@ -599,6 +599,7 @@ void backend_controller_hide(u32 ticket) {
 
 /* the atlas the renderer uploads: when the window opens, and again for the fatal panel */
 static void controls_atlas(void) { ui_atlas_build(); }
+static void controls_say(const char* line) { LOG("%s\n", line); }
 /* controls=2 (Auto): the touch screens SDL knows, or a finger seen on one, and the gamepads connected (vpad_auto) */
 static int g_touch_seen;
 static void controls_auto(void) {
@@ -734,6 +735,7 @@ void video_init(const char* title, const char* addons) {
     overlay_set_fingers(1); /* a screen of fingers, as the launcher's SNX_TOUCH_UI: the menu's rows a finger's */
 #endif
     controls_atlas();
+    vpad_set_say(controls_say);
     controls_auto();
     vpad_set_store(ini_set);
     buzzer_open();

@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "nx/runtime/platform/ctrl_applet.h"
 #include "nx/runtime/platform/fatal_screen.h"
-#include "nx/runtime/platform/ui_colors.h"
+#include "common/utilities/ui_colors.h"
 #include "common/utilities/bits.h"
 #include "gui/icons.h"
 #include <stdatomic.h>

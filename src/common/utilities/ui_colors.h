@@ -4,7 +4,7 @@
    theme.ini (gui_theme_colors.h), opaque, as nothing in the layer is translucent */
 #ifndef SNX_UI_COLORS_H
 #define SNX_UI_COLORS_H
-#include "nx/runtime/platform/ui.h"
+#include "common/utilities/ui_quads.h"
 #include "gui_theme_colors.h"
 
 /* a theme's 0xRRGGBB as a quad's colour: R G B A from the low byte, opaque */

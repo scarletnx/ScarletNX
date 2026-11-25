@@ -8,7 +8,7 @@
 #include "nx/runtime/platform/stats.h"
 #include "nx/runtime/platform/prepare_screen.h"
 #include "nx/runtime/platform/wait_screen.h"
-#include "nx/runtime/platform/ui_colors.h"
+#include "common/utilities/ui_colors.h"
 #include "nx/runtime/platform/fatal_screen.h"
 #include "nx/runtime/platform/backend.h"
 #include "nx/runtime/platform/gamepad.h"
