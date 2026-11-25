@@ -661,7 +661,10 @@ static void on_svc(CPU* c, uint32_t imm) {
     c->x[(imm + 5) & 15] += c->x[imm & 15];
     c->v[imm & 31].d[0] ^= c->x[imm & 15];
 }
-static void on_poll(CPU* c) { atomic_store_explicit(&c->poll, 0, memory_order_relaxed); }
+static void on_poll(CPU* c) {
+    atomic_store_explicit(&c->poll, 0, memory_order_relaxed);
+    if (g_calls) c->tpidr += 1; /* whether it was taken */
+}
 #ifdef SNX_TEST_NATIVE
 /* the native side's: a call no function takes (CALLDYN's miss) goes on at its target, which the run's loop finds */
 static void on_miss(CPU* c, uint64_t entry) { c->pc = entry; }
