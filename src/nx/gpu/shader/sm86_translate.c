@@ -131,6 +131,7 @@ typedef struct {
        starts (draw_at) */
     u32 draw, draw_ptr, draw_at, draw_at_ptr;
     u32 tex[SH_MAXTEX], tex_sampled[SH_MAXTEX];
+    u32 tex_scalar[SH_MAXTEX]; /* a plain slot's sampled type (tex_scalar), 0 for float */
     /* an indexed slot's arrays on SNX_VKB_TEXARRAY and SNX_VKB_TEXDEPTH, by kind (its tex[] is the element of the
        instruction being written), and SNX_VKB_TEXMAP and SNX_VKB_TEXFUNCS */
     u32 tex_array[SH_MAXTEX], tex_depth[SH_MAXTEX], tex_depth_type[SH_MAXTEX];
@@ -3173,6 +3174,25 @@ static void table_element(Ctx* c, int slot) {
         spv_emit_table_element(&c->e, c->tex_sampled[slot], c->tex_images[slot], image, c->table_samplers, sampler);
 }
 /* the texture slot of a handle at byte offset off of a bank */
+/* the scalar type a plain texture slot is sampled as: an integer texture's header (the key's tex_int_mask, signed in
+   tex_sint_mask) gives an image of its integer type, as spirv_translate.c declares Maxwell's, so that the view the
+   renderer binds of it (vk_tex_bind_view) is of the image's numeric type (VUID-vkCmdDispatch-format-07753). A compare,
+   a table's slot and an indexed one stay float */
+static u32 tex_scalar(const Ctx* c, int slot, int shadow) {
+    if (shadow || !(c->si->tex_int_mask >> slot & 1)) return c->t_f32;
+    return c->si->tex_sint_mask >> slot & 1 ? c->t_i32 : c->t_u32;
+}
+/* the vec4 a sample of the slot gives, and that vec4 as the float bits the registers take: an integer texel's bits are
+   the register's, as the console's TEX writes them */
+static u32 tex_vec4(Ctx* c, int slot) {
+    const u32 scalar = c->tex_scalar[slot] ? c->tex_scalar[slot] : c->t_f32;
+    return scalar == c->t_f32 ? c->t_v4f : spv_emit_type_vec4(&c->e, scalar);
+}
+static u32 tex_bits(Ctx* c, int slot, u32 value) {
+    return c->tex_scalar[slot] && c->tex_scalar[slot] != c->t_f32
+               ? spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_v4f, value)
+               : value;
+}
 /* the texture slot of the handle at c[bank][off] with that view: ms for a multisampled 2D texture (ShTex.flags bit 1,
    which the renderer binds a multisampled view for) */
 static int tex_slot(Ctx* c, u32 bank, u32 off, u32 type, u32 array, u32 shadow, u32 ms) {
@@ -3199,7 +3219,8 @@ static int tex_slot(Ctx* c, u32 bank, u32 off, u32 type, u32 array, u32 shadow, 
     si->tex[i] = t;
     if (tex_table_slot(c, i, type, array, shadow, ms)) return i;
     /* a 1D texture is bound as a 2D one (shader.h) */
-    c->tex[i] = spv_emit_sampler_image(&c->e, c->t_f32, (u32)shader_vk_tex_set(c->stage), SNX_VKB_TEX + (u32)i,
+    c->tex_scalar[i] = tex_scalar(c, i, (int)shadow);
+    c->tex[i] = spv_emit_sampler_image(&c->e, c->tex_scalar[i], (u32)shader_vk_tex_set(c->stage), SNX_VKB_TEX + (u32)i,
                                        type == 0 ? 1 : type, (int)array, (int)shadow, ms ? 1 : 0, &c->tex_sampled[i]);
     add_interface(c, c->tex[i]);
     return i;
@@ -3459,8 +3480,9 @@ static void texture(Ctx* c, const Sm86Insn* in) {
         u32 comp = cu(c, sm86_field(in, 87, 2)), v[4];
         if (offset == 1) {
             u32 o = offset_vector(c, 0, 0, rd(c, off_reg), dims, used, 8);
-            result =
-                spv_emit_image_gather_ex(&c->e, c->t_v4f, c->tex_sampled[slot], c->tex[slot], coord, comp, dref, o);
+            result = tex_bits(c, slot,
+                              spv_emit_image_gather_ex(&c->e, tex_vec4(c, slot), c->tex_sampled[slot], c->tex[slot],
+                                                       coord, comp, dref, o));
         } else {
             for (u32 k = 0; k < 4; k++) {
                 u32 word = rd(c, off_reg >= SM86_RZ ? off_reg : off_reg + k / 2);
@@ -3469,14 +3491,17 @@ static void texture(Ctx* c, const Sm86Insn* in) {
                                                 offset_part(c, 0, 0, word, (k % 2) * 2 + 1, 8));
                 v[k] = spv_emit_vec4_extract(
                     &c->e, c->t_f32,
-                    spv_emit_image_gather_ex(&c->e, c->t_v4f, c->tex_sampled[slot], c->tex[slot], coord, comp, dref, o),
+                    tex_bits(c, slot,
+                             spv_emit_image_gather_ex(&c->e, tex_vec4(c, slot), c->tex_sampled[slot], c->tex[slot],
+                                                      coord, comp, dref, o)),
                     k);
             }
             result = spv_emit_vec4_construct(&c->e, c->t_v4f, v);
         }
     } else if (op == SM86_TLD4) {
-        result = spv_emit_image_gather_ex(&c->e, c->t_v4f, c->tex_sampled[slot], c->tex[slot], coord,
-                                          cu(c, sm86_field(in, 87, 2)), dref, 0);
+        result = tex_bits(c, slot,
+                          spv_emit_image_gather_ex(&c->e, tex_vec4(c, slot), c->tex_sampled[slot], c->tex[slot], coord,
+                                                   cu(c, sm86_field(in, 87, 2)), dref, 0));
     } else if (op == SM86_TMML) {
         u32 lod = spv_emit_image_query_lod(&c->e, c->t_v2f, c->tex_sampled[slot], c->tex[slot], coord);
         u32 v[4] = {0};
@@ -3539,8 +3564,10 @@ static void texture(Ctx* c, const Sm86Insn* in) {
         int reduce = shadow ? 0 : shader_minmax_slot(c->si->tex_minmax_mask, c->si->tex_minmax_max, slot);
         result = indexed && shadow ? sample_indexed_shadow(c, slot, element, coord, dref, mode, level, const_offset)
                  : reduce ? minmax_sample(c, slot, coord, (int)array, const_offset, reduce)
-                          : spv_emit_sample_image(&c->e, rtype, c->tex_sampled[slot], c->tex[slot], coord, dref, mode,
-                                                  level, const_offset, 0);
+                          : tex_bits(c, slot,
+                                     spv_emit_sample_image(&c->e, shadow ? rtype : tex_vec4(c, slot),
+                                                           c->tex_sampled[slot], c->tex[slot], coord, dref, mode, level,
+                                                           const_offset, 0));
         if (shadow) {
             u32 v[4] = {result, cf(c, 0.0f), cf(c, 0.0f), cf(c, 1.0f)};
             result = spv_emit_vec4_construct(&c->e, c->t_v4f, v);
@@ -3620,7 +3647,9 @@ static void texture_grad(Ctx* c, const Sm86Insn* in) {
     u32 coord = coord_vector(c, f, count);
     tex_results(c, in,
                 reduce ? minmax_sample(c, slot, coord, (int)array, 0, reduce)
-                       : spv_emit_sample_grad(&c->e, c->t_v4f, c->tex_sampled[slot], c->tex[slot], coord, gx, gy, 0),
+                       : tex_bits(c, slot,
+                                  spv_emit_sample_grad(&c->e, tex_vec4(c, slot), c->tex_sampled[slot], c->tex[slot],
+                                                       coord, gx, gy, 0)),
                 c->t_f32);
 }
 /* TLD: a texel at integer coordinates and an explicit level (bits 87-89, NAK's TexLodMode: 1 the base level, 3 a
@@ -3677,9 +3706,12 @@ static void texel_fetch(Ctx* c, const Sm86Insn* in) {
     u32 level = lod_mode == 3 ? spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, rd(c, regs[n0]))
                               : spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, c->zero);
     u32 texel =
-        ms ? spv_emit_image_fetch_sample(&c->e, c->t_v4f, c->tex_sampled[slot], c->tex[slot], coord,
-                                         spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32, rd(c, regs[n0 + offset])))
-           : spv_emit_image_fetch(&c->e, c->t_v4f, c->tex_sampled[slot], c->tex[slot], coord, level);
+        tex_bits(c, slot,
+                 ms ? spv_emit_image_fetch_sample(&c->e, tex_vec4(c, slot), c->tex_sampled[slot], c->tex[slot], coord,
+                                                  spv_emit_unary(&c->e, SPV_OP_BITCAST, c->t_i32,
+                                                                 rd(c, regs[n0 + offset])))
+                    : spv_emit_image_fetch(&c->e, tex_vec4(c, slot), c->tex_sampled[slot], c->tex[slot], coord,
+                                           level));
     tex_results(c, in, texel, c->t_f32);
 }
 /* TXQ of the dimensions (bits 62-63 = 0): width, height, depth or layers, and the levels, at the level in register
@@ -6586,8 +6618,9 @@ static int tex_slot_memory(Ctx* c, u32 tex_probe, int smp, u32 smp_probe, u32 ty
     t.flags = (u8)(SNX_TEX_MEMORY | (ms ? 2 : 0));
     si->tex[i] = t;
     if (!tex_table_slot(c, i, type, array, shadow, ms)) {
+        c->tex_scalar[i] = tex_scalar(c, i, (int)shadow);
         c->tex[i] =
-            spv_emit_sampler_image(&c->e, c->t_f32, (u32)shader_vk_tex_set(c->stage), SNX_VKB_TEX + (u32)i,
+            spv_emit_sampler_image(&c->e, c->tex_scalar[i], (u32)shader_vk_tex_set(c->stage), SNX_VKB_TEX + (u32)i,
                                    type == 0 ? 1 : type, (int)array, (int)shadow, ms ? 1 : 0, &c->tex_sampled[i]);
         add_interface(c, c->tex[i]);
     }
@@ -7225,6 +7258,17 @@ u32* sm86_to_spirv_ftz(const u8* code, u32 bytes, int stage, const u32* sph, Sha
             if (c->position) spv_emit_store(e, c->position, empty);
             for (u32 i = 0; i < 32; i++)
                 if (c->out_attr[i]) spv_emit_store(e, c->out_attr[i], empty);
+            /* the point size, which a list of points needs from the stage before the rasterizer (Vulkan's
+               VUID-vkCmdDraw-primitiveTopology-10748, without maintenance5): the 3D engine's (pc[12], render.c) where
+               the program writes none, as spirv_translate.c gives Maxwell's, else 1 until its own write */
+            int writes_size = 0;
+            for (u32 i = 0; i < n && !writes_size; i++)
+                if (insn[i].op == SM86_AST)
+                    for (u32 k = 0; k <= sm86_field(&insn[i], 74, 2); k++)
+                        if (sm86_field(&insn[i], 40, 10) + 4 * k == 0x6c) writes_size = 1;
+            c->point_size = spv_emit_point_size_output(e, c->t_f32);
+            add_interface(c, c->point_size);
+            spv_emit_store(e, c->point_size, writes_size ? cf(c, 1.0f) : push_component(c, 12));
         }
         for (u32 plane = 0; plane < 8 && c->clip; plane++)
             spv_emit_store(e, spv_emit_output_element_pointer(e, c->t_f32, c->clip, cu(c, plane)), cf(c, 0.0f));
