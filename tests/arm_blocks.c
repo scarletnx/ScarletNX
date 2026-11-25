@@ -305,7 +305,7 @@ static uint32_t relay_access(void* context, uint32_t operation, uint32_t address
     if ((operation & 3) == SNX_ARM_ACCESS_WRITE) memcpy(s->bus, bytes, size);
     put(&(Reply){REPLY_ACCESS, operation, address, size, 0});
     v = answer();
-    if ((operation & 3) != SNX_ARM_ACCESS_WRITE) memcpy(bytes, s->bus, size);
+    if (!v && (operation & 3) != SNX_ARM_ACCESS_WRITE) memcpy(bytes, s->bus, size); /* nothing of a read that faults */
     return v;
 }
 #if defined(SNX_TEST_NATIVE)
