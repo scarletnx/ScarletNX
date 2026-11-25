@@ -38,8 +38,14 @@ int snx_ir_started(void);
 /* what a line of the launcher's run holds of one (gui/steps.h's GuiNote), past "scarletnx: " */
 #define NOTE_MAX (111 - 11)
 
+#define CODE    0x1000u
+#define CODE_HI 0x2000u
 static struct {
     int failures;
+    /* the JIT's: the guest's memory, its dispatch table, the image of it */
+    unsigned char memory[0x4000];
+    _Atomic GuestFn dispatch[(CODE_HI - CODE) / 4];
+    SnxCodeImage image;
 } g_floor;
 static void check(int ok, const char* what, const char* of) {
     if (ok) return;
@@ -161,25 +167,25 @@ static void ppc64_lines(void) {} /* the ppc64 back ends are not built there */
 
 /* the features of this host's floor a test takes out of it, none where its back end has no floor */
 #if defined(__x86_64__)
-static const SnxNativeFeature* g_names = k_x64;
+static const SnxNativeFeature* const k_names = k_x64;
 enum { NAMES = X64_FEATURES };
 static void take_out(unsigned bits) { snx_x64_without(bits); }
 static const char* const k_none = "cpu: needs SSE3, SSSE3, SSE4.1, SSE4.2, PCLMULQDQ and POPCNT, this host has none";
 #elif defined(__powerpc64__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
 static const SnxNativeFeature k_ppc64be[] = {{"LDBRX", 1}};
-static const SnxNativeFeature* g_names = k_ppc64be;
+static const SnxNativeFeature* const k_names = k_ppc64be;
 enum { NAMES = 1 };
 static void take_out(unsigned bits) { snx_ppc64be_without(bits ? ~0ul : 0); }
 static const char* const k_none = "cpu: needs LDBRX and STDBRX (ISA 2.06), this host has AT_HWCAP 0x00000000";
 #else
-static const SnxNativeFeature* g_names = NULL;
+static const SnxNativeFeature* const k_names = NULL;
 enum { NAMES = 0 };
 static void take_out(unsigned bits) { (void)bits; }
 static const char* const k_none = "";
 #endif
 static unsigned all_names(void) {
     unsigned bits = 0;
-    for (unsigned k = 0; k < NAMES; ++k) bits |= g_names[k].bit;
+    for (unsigned k = 0; k < NAMES; ++k) bits |= k_names[k].bit;
     return bits;
 }
 /* whether this host has a back end whose floor the test can take it below */
@@ -189,14 +195,14 @@ static void masked(void) {
     char line[256], name[64];
     const char* real = snx_native_name();
     for (unsigned k = 0; k <= NAMES; ++k) {
-        const unsigned bits = k < NAMES ? g_names[k].bit : all_names();
-        snprintf(name, sizeof name, "this host without %s", k < NAMES ? g_names[k].name : "any of them");
+        const unsigned bits = k < NAMES ? k_names[k].bit : all_names();
+        snprintf(name, sizeof name, "this host without %s", k < NAMES ? k_names[k].name : "any of them");
         take_out(bits);
         check(!snx_native_available(), "has no back end", name);
         check(!strcmp(snx_native_name(), "none"), "its name is none", name);
         check(!snx_native_arm_available() && !snx_native_arm_new(), "nor one of A32 blocks", name);
         check(snx_native_floor(line, sizeof line), "is below the floor", name);
-        check(k == NAMES || NAMES == 1 || strstr(line, g_names[k].name) != NULL, line, name);
+        check(k == NAMES || NAMES == 1 || strstr(line, k_names[k].name) != NULL, line, name);
 #if defined(__x86_64__)
         char want[256];
         line_of(X64_ALL & ~bits, want, sizeof want);
@@ -211,25 +217,19 @@ static void masked(void) {
 
 /* ---- the refusal, and LLVM beside it ---- */
 
-#define CODE    0x1000u
-#define CODE_HI 0x2000u
-static unsigned char g_memory[0x4000];
-static _Atomic GuestFn g_dispatch[(CODE_HI - CODE) / 4];
 static SnxJitService* start_jit(char* error, size_t size) {
     static const SnxU32 words[] = {0x91000400u, 0xD65F03C0u}; /* add x0, x0, #1; ret */
-    static SnxCodeImage image;
-    static SnxJitConfig config;
+    SnxJitConfig config = {0};
     for (size_t i = 0; i < sizeof words / sizeof *words; ++i)
-        for (size_t j = 0; j < 4; ++j) g_memory[CODE + 4 * i + j] = (unsigned char)(words[i] >> (8 * j));
-    for (size_t i = 0; i < sizeof g_dispatch / sizeof *g_dispatch; ++i) g_dispatch[i] = NULL;
-    image.image = g_memory;
-    image.image_size = sizeof g_memory;
-    image.base = 0;
-    image.text_off = CODE;
-    image.text_size = CODE_HI - CODE;
-    config.images = &image;
+        for (size_t j = 0; j < 4; ++j) g_floor.memory[CODE + 4 * i + j] = (unsigned char)(words[i] >> (8 * j));
+    for (size_t i = 0; i < sizeof g_floor.dispatch / sizeof *g_floor.dispatch; ++i) g_floor.dispatch[i] = NULL;
+    g_floor.image.image = g_floor.memory;
+    g_floor.image.image_size = sizeof g_floor.memory;
+    g_floor.image.text_off = CODE;
+    g_floor.image.text_size = CODE_HI - CODE;
+    config.images = &g_floor.image;
     config.image_count = 1;
-    config.dispatch = g_dispatch;
+    config.dispatch = g_floor.dispatch;
     config.code_lo = CODE;
     config.code_hi = CODE_HI;
     config.batch = 1;
@@ -239,11 +239,10 @@ static SnxJitService* start_jit(char* error, size_t size) {
 /* one function through the JIT: x0 after it, 0 where it made none */
 static uint64_t run_jit(SnxJitService* s) {
     RtAPI rt;
-    CPU c;
+    CPU c = {0};
     GuestFn f = snx_jit_wait(s, CODE);
     snx_runtime_defaults(&rt);
-    memset(&c, 0, sizeof c);
-    c.mem = g_memory;
+    c.mem = g_floor.memory;
     c.rt = &rt;
     c.x[0] = 41;
     if (!f) return 0;
@@ -325,7 +324,7 @@ static void beside_llvm(const char* of) {
     check(snx_recompiler_has(SNX_RECOMPILER_FLAG_LLVM), "the library has its back end", of);
     /* and its code is LLVM's */
     struct snx_recompiler* r = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
-    struct snx_code_range range = {CODE, g_memory + CODE, 8};
+    struct snx_code_range range = {CODE, g_floor.memory + CODE, 8};
     const uint64_t entry = CODE;
     struct snx_recompiled* m = r ? snx_recompile_ranges(r, &range, 1, &entry, 1) : NULL;
     check(m && !snx_recompiled_x64_functions(m), r && !m ? snx_recompiler_error(r) : "the library's LLVM functions",
@@ -342,7 +341,7 @@ static void printed(const char* path, const char* of) {
     unsigned char code[8];
     SnxArmAot* aot = snx_arm_aot_new('0', NULL);
     struct snx_recompiler* r = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
-    struct snx_code_range range = {CODE, g_memory + CODE, 8};
+    struct snx_code_range range = {CODE, g_floor.memory + CODE, 8};
     const uint64_t entry = CODE;
     check(snx_native_floor(line, sizeof line) && aot && r && freopen(path, "wb", stdout), "starts", of);
     for (int i = 0; i < 8; ++i) code[i] = (unsigned char)(k_a32[i / 4] >> (8 * (i % 4)));
@@ -374,14 +373,14 @@ static int named(const char* names, unsigned* bits) {
     while (*names) {
         const size_t n = strcspn(names, ",");
         unsigned k = 0;
-        while (k < NAMES && (strlen(g_names[k].name) != n || strncmp(g_names[k].name, names, n))) ++k;
+        while (k < NAMES && (strlen(k_names[k].name) != n || strncmp(k_names[k].name, names, n))) ++k;
         if (k == NAMES) {
             fprintf(stderr, "--without=%.*s: this host's back end has no such feature in its floor%s", (int)n, names,
                     NAMES ? ": " : "\n");
-            for (k = 0; k < NAMES; ++k) fprintf(stderr, "%s%s", g_names[k].name, k + 1 < NAMES ? ", " : "\n");
+            for (k = 0; k < NAMES; ++k) fprintf(stderr, "%s%s", k_names[k].name, k + 1 < NAMES ? ", " : "\n");
             return -1;
         }
-        *bits |= g_names[k].bit;
+        *bits |= k_names[k].bit;
         names += n + (names[n] == ',');
     }
     return 0;
@@ -417,15 +416,15 @@ int main(int argc, char** argv) {
         check(!snx_ir_started(), "LLVM never started", "this host");
         for (unsigned k = 0; k <= NAMES; ++k) {
             char of[64];
-            snprintf(of, sizeof of, "without LLVM and without %s", k < NAMES ? g_names[k].name : "any of them");
-            take_out(k < NAMES ? g_names[k].bit : all_names());
+            snprintf(of, sizeof of, "without LLVM and without %s", k < NAMES ? k_names[k].name : "any of them");
+            take_out(k < NAMES ? k_names[k].bit : all_names());
             refused(of);
         }
         snx_native_set_alone(0);
         for (unsigned k = 0; k <= NAMES; ++k) {
             char of[64];
-            snprintf(of, sizeof of, "with LLVM and without %s", k < NAMES ? g_names[k].name : "any of them");
-            take_out(k < NAMES ? g_names[k].bit : all_names());
+            snprintf(of, sizeof of, "with LLVM and without %s", k < NAMES ? k_names[k].name : "any of them");
+            take_out(k < NAMES ? k_names[k].bit : all_names());
             beside_llvm(of);
         }
         take_out(all_names());

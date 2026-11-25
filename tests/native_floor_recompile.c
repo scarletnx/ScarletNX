@@ -50,7 +50,7 @@ static void put32(unsigned char* p, unsigned v) {
 }
 /* an NRO of 0x100 bytes of code, ADD X0, X0, #1 and RET past the header's words, 0x80 of .rodata and of .data */
 static int write_nro(const char* path) {
-    static unsigned char nro[0x200];
+    unsigned char nro[0x200] = {0};
     put32(nro, 0x14000020u); /* B +0x80, over the header */
     memcpy(nro + 0x10, "NRO0", 4);
     put32(nro + 0x18, sizeof nro);
@@ -110,9 +110,13 @@ int main(int argc, char** argv) {
     for (unsigned k = 0; k < sizeof runs / sizeof *runs; ++k) {
         char* args[] = {nro, "--name", "floor", "--outdir", out, "--runtime", runtime};
         const char* of = runs[k].of;
+        char line[256], refused[300];
         g_test.said[0] = 0;
         take_out(runs[k].below);
         snx_native_set_alone(runs[k].alone);
+        check(snx_native_floor(line, sizeof line) == runs[k].below &&
+                  (!runs[k].below || !strncmp(line, LACKS, strlen(LACKS))),
+              "the host's line", of);
         fflush(stdout);
         if (!freopen(printed, "wb", stdout)) return 1;
         const int rc = snx_recompile_game(sizeof args / sizeof *args, args, &paths);
@@ -124,13 +128,15 @@ int main(int argc, char** argv) {
         check(strstr(lines, "Recompiling floor (1 modules)\n") != NULL, "the line of the launcher's step", of);
         if (runs[k].below && runs[k].alone) {
             check(rc != 0, "fails", of);
-            check(!strcmp(g_test.said, LACKS "\n"), "says what the host lacks, alone", of);
+            snprintf(refused, sizeof refused, "%s\n", line);
+            check(!strcmp(g_test.said, refused), "says what the host lacks, alone", of);
             check(same(stamped, first_stamp) && same(made, first_code), "leaves the game made before as it was", of);
             check(!snx_ir_started(), "starts no LLVM", of);
         } else {
             check(rc == 0, "makes the game", of);
             check(stamped.data && made.data, "with its stamp and its module", of);
-            check(!runs[k].below == !strstr(g_test.said, LACKS ": LLVM makes the code"), "says why LLVM makes it", of);
+            snprintf(refused, sizeof refused, "%s: LLVM makes the code\n", line);
+            check(!runs[k].below || strstr(g_test.said, refused) != NULL, "says why LLVM makes it", of);
             check(runs[k].below || !g_test.said[0], "says nothing else", of);
             check(!runs[k].below == !strstr(lines, "LLVM: 1 code unit"), "makes it by LLVM below the floor alone", of);
             check(!runs[k].below || snx_ir_started(), "which starts for it", of);
