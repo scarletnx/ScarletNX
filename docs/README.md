@@ -46,6 +46,7 @@ keeps audits and measurements as they were taken.
 - [Coverage](dev/coverage.md): which of the runtime's code edenprobe, the tests and a game run, and the paths none of them reach
 - [Status and roadmap](dev/roadmap.md): what is next
 - [The CPU cost of a draw](dev/draw-cost.md): the plan to cut the GPU thread's work for each draw
+- [Render targets as views of their textures](dev/one-image.md): one image for each guest surface, in place of the copies of drawn targets into textures
 - [Contributing](../CONTRIBUTING.md): game data, checks, commits and pull requests
 
 ## Guest platforms
