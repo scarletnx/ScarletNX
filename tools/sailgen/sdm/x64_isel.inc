@@ -6917,3 +6917,31 @@ static inline void sgx_e_VFMADD231PD_xmm1_xmm2_xmm3_m128(SgXBuf* b, const unsign
 }
 
 static const SgXVForm sgx_v_vfmadd231pd = {sgx_e_VFMADD231PD_xmm1_xmm2_xmm3_m128, SGX_F_FMA, 3, 0, 2, 1, 7, 0, NULL}; /* VEX.128.66.0F38.W1 B8 /r */
+/* GF2P8AFFINEQB xmm1, xmm2/m128, imm8: 66 0F 3A CE /r ib (the SDM's GF2P8AFFINEQB) */
+static inline void sgx_e_GF2P8AFFINEQB_xmm1_xmm2_m128_imm8(SgXBuf* b, const unsigned char* r, long long imm, int cc) {
+    (void)r, (void)imm, (void)cc;
+    sgx_byte(b, 0x66);
+    {
+        unsigned rex = 0x40 | (r[0] >> 3) << 2 | (r[1] & 15) >> 3 | sgx_rex_x(b, r[1]);
+        if (rex != 0x40) sgx_byte(b, (unsigned char)rex);
+    }
+    sgx_byte(b, 0x0F);
+    sgx_byte(b, 0x3A);
+    sgx_byte(b, 0xCE);
+    sgx_modrm(b, r[0] & 7, r[1]);
+    sgx_imm(b, imm, 1);
+}
+
+static const SgXVForm sgx_v_gf2p8affineqb = {sgx_e_GF2P8AFFINEQB_xmm1_xmm2_m128_imm8, SGX_F_GFNI, 3, 0, 1, -1, 3, 1, NULL}; /* 66 0F 3A CE /r ib */
+/* VGF2P8AFFINEQB xmm1, xmm2, xmm3/m128, imm8: VEX.128.66.0F3A.W1 CE /r ib (the SDM's GF2P8AFFINEQB) */
+static inline void sgx_e_VGF2P8AFFINEQB_xmm1_xmm2_xmm3_m128_imm8(SgXBuf* b, const unsigned char* r, long long imm, int cc) {
+    (void)r, (void)imm, (void)cc;
+    sgx_byte(b, 0xC4);
+    sgx_byte(b, (unsigned char)(0x03 | (r[0] < 8 ? 0x80 : 0) | ((r[2] & 15) < 8 ? 0x20 : 0) | (sgx_rex_x(b, r[2]) ? 0 : 0x40)));
+    sgx_byte(b, (unsigned char)(0x81 | ((~r[1] & 15) << 3)));
+    sgx_byte(b, 0xCE);
+    sgx_modrm(b, r[0] & 7, r[2]);
+    sgx_imm(b, imm, 1);
+}
+
+static const SgXVForm sgx_v_vgf2p8affineqb = {sgx_e_VGF2P8AFFINEQB_xmm1_xmm2_xmm3_m128_imm8, SGX_F_AVX | SGX_F_GFNI, 4, 0, 2, 1, 7, 1, NULL}; /* VEX.128.66.0F3A.W1 CE /r ib */

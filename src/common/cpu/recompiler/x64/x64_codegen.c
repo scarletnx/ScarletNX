@@ -677,7 +677,7 @@ void snx_x64_without(unsigned features) {
 }
 void snx_x64_set_win64(int on) { atomic_store_explicit(&g_x64_codegen.win64, on, memory_order_relaxed); }
 
-/* CPUID's BMI1, BMI2, SHA and LZCNT (ABM), and Windows' ABI */
+/* CPUID's BMI1, BMI2, SHA, GFNI and LZCNT (ABM), and Windows' ABI */
 static unsigned host_features(void) {
     unsigned a, b, c, d, f = 0;
 #if defined(_WIN32)
@@ -689,6 +689,7 @@ static unsigned host_features(void) {
     if (b & (1u << 3)) f |= SGX_F_BMI1;
     if (b & (1u << 8)) f |= SGX_F_BMI2;
     if (b & (1u << 29)) f |= SGX_F_SHA;
+    if (c & (1u << 8)) f |= SGX_F_GFNI;
     __asm__("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(0x80000001u), "c"(0));
     if (c & (1u << 5)) f |= SGX_F_LZCNT;
     /* leaf 1's: SSE3, PCLMULQDQ, SSSE3, SSE4.1, SSE4.2, POPCNT, AES; the VEX forms' (AVX, FMA, F16C) where the system
