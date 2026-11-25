@@ -28,7 +28,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if !defined(_WIN32)
+/* not on Windows on another machine, whose tests run none of its code */
+#if !defined(_WIN32) || defined(__aarch64__)
 #if defined(__APPLE__) || defined(_WIN32)
 #include "common/cpu/recompiler/llvm/elf_defs.h"
 #else
@@ -520,7 +521,7 @@ unsigned snx_arm64_features(void) {
 #endif
 }
 int snx_arm64_available(void) {
-#if defined(__aarch64__) && defined(__ELF__)
+#if defined(__aarch64__) && (defined(__ELF__) || defined(_WIN32))
     return 1;
 #else
     return 0;

@@ -257,7 +257,8 @@ SnxXElf* snx_native_data(unsigned* pointer) {
         *pointer = NATIVE_R_X86_64_64; /* a COFF object's too */
     } else {
         snx_xelf_set_machine(o, NATIVE_EM_AARCH64);
-        *pointer = NATIVE_R_AARCH64_ABS64;
+        if (snx_arm64_windows()) snx_xelf_set_coff(o, 1);
+        *pointer = NATIVE_R_AARCH64_ABS64; /* a COFF object's too */
     }
     return o;
 }
