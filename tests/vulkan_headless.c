@@ -2347,6 +2347,60 @@ static int check_alias_newer_target(void) {
     return 0;
 }
 
+/* A render target whose GPU address the game maps to other memory: its pixels go to the memory it showed, and it goes,
+   as it describes memory that is gone. One game unmapped its scene targets, its movie player took their memory for
+   VIC's output and the game mapped that at the old targets' addresses: the targets stayed, and each movie frame
+   reached the scene through them read as floats. A mapping of the same memory again keeps its target */
+static int check_remapped_target(void) {
+    GpuChannel* ch = calloc(1, sizeof *ch);
+    CHECK(ch);
+    u32* r = ch->r3d;
+    const u64 cpu = HEAP_BASE + 0xAA0000, other = HEAP_BASE + 0xAB0000, gva = 0x9A00000ull, kept = 0x9B00000ull;
+    CHECK(mem_map(cpu, 0x20000, MS_NORMAL, PERM_RW) == 0);
+    memset(GP(cpu), 0, 0x10000);
+    memset(GP(other), 0x40, 0x10000);
+    gmmu_map(gva, cpu, 0x10000);
+    gmmu_map(kept, cpu, 0x10000);
+    r[0x487] = 1;
+    r[0x202] = 64; /* 16 RGBA pixels, pitch linear */
+    r[0x203] = 16;
+    r[0x204] = 0xD5; /* A8B8G8R8 */
+    r[0x205] = 0x1000;
+    r[0x206] = 1;
+    const float red[4] = {1, 0, 0, 1}, green[4] = {0, 1, 0, 1};
+    r[0x201] = (u32)gva;
+    memcpy(&r[0x360], red, sizeof red);
+    engine_clear(ch, 15 << 2);
+    vk_render_end();
+    CHECK(vk_rt_find(gva));
+    u64 went = g_vk_rt_remapped;
+    gmmu_map(gva, other, 0x10000); /* the same GPU address, other memory */
+    if (vk_rt_find(gva) || g_vk_rt_remapped != went + 1) {
+        fprintf(stderr, "a target whose GPU address shows other memory now stayed (%llu went)\n",
+                (unsigned long long)(g_vk_rt_remapped - went));
+        return 1;
+    }
+    const u8* old = GP(cpu);
+    CHECK(old[0] == 255 && old[1] == 0 && old[2] == 0 && old[3] == 255); /* its pixels, in the memory it showed */
+    CHECK(GP(other)[0] == 0x40); /* the other memory as it was */
+    /* the same memory mapped again: its target stays */
+    r[0x201] = (u32)kept;
+    memcpy(&r[0x360], green, sizeof green);
+    engine_clear(ch, 15 << 2);
+    vk_render_end();
+    Surf* k = vk_rt_find(kept);
+    CHECK(k);
+    went = g_vk_rt_remapped;
+    gmmu_map(kept, cpu, 0x10000);
+    CHECK(vk_rt_find(kept) == k && g_vk_rt_remapped == went);
+    u8 px[4];
+    CHECK(!read_pixel0(k, px));
+    CHECK(px[0] == 0 && px[1] == 255);
+    CHECK(mem_unmap(cpu, 0x20000) == 0);
+    free(ch);
+    return 0;
+}
+
 /* Images in pieces (sparse binding: vkQueueBindSparse on the graphics queue) made on this thread while the recording
    thread submits frames to the same queue: Vulkan requires the two calls to be externally synchronized, which the
    validation layer's threading checks report when they overlap */
@@ -9330,6 +9384,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_present_effects());
     CHECK(!check_clear_load_op());
     CHECK(!check_alias_newer_target());
+    CHECK(!check_remapped_target());
     CHECK(!check_sparse_while_submitting());
     CHECK(!check_multisample_shader_gate());
     CHECK(!check_translation_dead_code());

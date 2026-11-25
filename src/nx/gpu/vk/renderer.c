@@ -206,6 +206,7 @@ static void vkr_mapping_begin(u64 gva, u64 size, int kind) {
         /* Images still describe the old backing until the page table changes: the targets there go to memory, and
            none is dropped, as nothing says every byte of them is written */
         vk_rt_before_write(gva, size, 0);
+        vk_rt_remap_begin(gva, size); /* and which memory each shows, to tell which show other memory at the end */
     }
     pend_lock();
 }
@@ -221,7 +222,10 @@ static void vkr_mapping_end(void) {
     }
     vk_uma_mapping_end(); /* first: what follows may submit */
     vk_buf_mapping_changed();
-    if (g_mapping_size) vk_surf_mapping_changed(g_mapping_gva, g_mapping_size);
+    if (g_mapping_size) {
+        vk_surf_mapping_changed(g_mapping_gva, g_mapping_size);
+        vk_rt_remap_end();
+    }
     pend_remap(g_mapping_gva, g_mapping_size);
     g_mapping_size = 0;
     pend_unlock();
@@ -1358,13 +1362,14 @@ static void show(Surf* src, const SnxHdrFrame* hdr, u32 fw, u32 fh, u32 transfor
             own_landings_by(by);
             LOG("vulkan: GPU-owned guest memory landed for the CPU %llu times (%llu for the runtime's own access, "
                 "%llu for a read of the game's code, %llu for a write of it), render targets written back for an "
-                "engine %llu times, %llu dropped for a guest write over all of them; block linear targets watched "
-                "%llu times, published for a CPU access %llu times and at a release %llu times\n",
+                "engine %llu times, %llu dropped for a guest write over all of them, %llu for a GPU mapping change "
+                "under them; block linear targets watched %llu times, published for a CPU access %llu times and at a "
+                "release %llu times\n",
                 (unsigned long long)own_landings(), (unsigned long long)by[OWN_BY_RUNTIME],
                 (unsigned long long)by[OWN_BY_READ], (unsigned long long)by[OWN_BY_WRITE],
                 (unsigned long long)g_vk_rt_readbacks, (unsigned long long)g_vk_rt_dropped,
-                (unsigned long long)g_vk_rt_watch.arms, (unsigned long long)g_vk_rt_watch.hits,
-                (unsigned long long)g_vk_rt_watch.publishes);
+                (unsigned long long)g_vk_rt_remapped, (unsigned long long)g_vk_rt_watch.arms,
+                (unsigned long long)g_vk_rt_watch.hits, (unsigned long long)g_vk_rt_watch.publishes);
             /* the command stream's own writes to guest memory, and the landings that they forced (gpu.c) */
             static const char* const inline_kind[GPU_INLINE_N] = {
                 "inline-to-memory pitch linear", "inline-to-memory block linear", "NVN uniform buffer updates"};

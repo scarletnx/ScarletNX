@@ -2378,6 +2378,7 @@ int vk_surf_keep_end(Surf* s, const VkImageKeep* k, u8** original) {
 
 u64 g_vk_rt_readbacks; /* render targets written back to guest memory because the GPU's copy couldn't take them */
 u64 g_vk_rt_dropped;   /* render targets dropped instead of written back: the guest wrote over all of their bytes */
+u64 g_vk_rt_remapped;  /* render targets that went as the GPU mapping under them changed (vk_rt_remap_end) */
 /* a publish made for another one's sake (rt_overlay, rt_publish_newer) is under way: one met inside it is written back */
 static int g_rt_nested;
 /* vk_rt_overlay's work for every pending target over the range (of NULL), or for a publish of the target of: the
@@ -3534,6 +3535,71 @@ static struct {
     u32 n;
     int all;
 } g_remapped;
+/* The live render targets a GMMU change covers, each with the guest addresses the first and the last page of what it
+   covers showed before the change (vk_rt_remap_begin), so the change's end (vk_rt_remap_end) knows which show other
+   memory now. A target is keyed by its GPU address, and one whose pages show other memory after the change describes
+   memory that is gone: one game unmapped its 1280x720 scene targets (R11G11B10F, R16G16) after a menu, its movie
+   player took their memory for its VIC output surfaces and the game mapped those at the old targets' GPU addresses.
+   The targets stayed, so each movie frame VIC wrote there reached the scene through them as floats: purple and blue
+   frames with colour bands, flashing on the title screen */
+typedef struct {
+    Surf* s;
+    u64 lo, hi;     /* the first and last byte of the change the target covers, GPU addresses */
+    u64 was_lo, was_hi; /* their guest addresses before it, 0 unmapped */
+} RtRemap;
+static struct {
+    RtRemap* at;
+    u32 n, cap;
+} g_rt_remap;
+static void rt_remap_note(Surf* s, u64 gva, u64 size) {
+    const u64 end = gva + size, s_end = s->gva + rt_bytes(s);
+    if ((s->gva >> 63) || s->gva >= end || s_end <= gva) return;
+    if (g_rt_remap.n == g_rt_remap.cap) {
+        u32 cap = g_rt_remap.cap ? g_rt_remap.cap * 2 : 16;
+        RtRemap* n = (RtRemap*)realloc(g_rt_remap.at, (size_t)cap * sizeof *n);
+        if (!n) fatal("Out of memory listing the render targets a GPU mapping change covers");
+        g_rt_remap.at = n;
+        g_rt_remap.cap = cap;
+    }
+    RtRemap* r = &g_rt_remap.at[g_rt_remap.n++];
+    r->s = s;
+    r->lo = s->gva > gva ? s->gva : gva;
+    r->hi = (s_end < end ? s_end : end) - 1;
+    r->was_lo = gmmu_translate(r->lo);
+    r->was_hi = gmmu_translate(r->hi);
+}
+void vk_rt_remap_begin(u64 gva, u64 size) {
+    g_rt_remap.n = 0;
+    if (!size) return;
+    if (!g_rts_failed) {
+        for (u32 i = rts_lower(gva > g_rts_span ? gva - g_rts_span : 0); i < g_nrts && g_rts[i]->gva < gva + size; i++)
+            rt_remap_note(g_rts[i], gva, size);
+        return;
+    }
+    for (int lru = VK_LRU_RT; lru <= VK_LRU_RT + LRU_AGED; lru += LRU_AGED)
+        for (u32 r = g_rows.lists[lru].head; r; r = g_rows.lru[r].next) rt_remap_note(g_rows.surf[r], gva, size);
+}
+/* The targets whose pages show other memory now go, as memory has all of their pixels: the change's beginning sent
+   each one pending to its old memory (vk_rt_before_write), and the others held nothing memory lacked. A target held
+   by a storage image's result still to land stays. A change that showed the same memory again leaves its targets */
+void vk_rt_remap_end(void) {
+    u32 went = 0;
+    for (u32 i = 0; i < g_rt_remap.n; i++) {
+        const RtRemap* r = &g_rt_remap.at[i];
+        if (gmmu_translate(r->lo) == r->was_lo && gmmu_translate(r->hi) == r->was_hi) continue;
+        if (vk_gfx_image_holds(r->s)) continue;
+        if (!went) vk_render_end(); /* the open pass may draw to one of them */
+        LOG_LIMIT(8,
+                  "vulkan: the %ux%u render target at %llx (format %x) went: the GPU mapping under it changed, from "
+                  "guest memory %llx to %llx\n",
+                  r->s->w, r->s->h, (unsigned long long)r->s->gva, r->s->fkey, (unsigned long long)r->was_lo,
+                  (unsigned long long)gmmu_translate(r->lo));
+        surf_evict(r->s);
+        went++;
+    }
+    g_rt_remap.n = 0;
+    g_vk_rt_remapped += went;
+}
 void vk_surf_mapping_changed(u64 gva, u64 size) {
     if (gpu_textures_added()) return; /* the front end tells of each texture's end */
     if (g_remapped.n == sizeof g_remapped.gva / sizeof *g_remapped.gva)
