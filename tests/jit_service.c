@@ -22,6 +22,10 @@
 #include "nx/runtime/ini.h"
 #include "snx_settings.h"
 #include <pthread.h>
+#if !defined(_WIN32)
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1023,6 +1027,58 @@ static void test_counters(void) {
     snx_jit_service_free(service);
 }
 
+#if !defined(_WIN32)
+static void* image_remover(void* base) {
+    snx_jit_remove_image(service, (SnxU64)(size_t)base);
+    return NULL;
+}
+/* an image removed while a batch that has read it is compiling, its memory gone (no longer readable) as soon as the
+   removal has begun, as the game's unmap makes it: the batch reads no word of it any more, it publishes nothing, and its
+   pc is new to the service. The removal waits for the batch, and lets go of it */
+static void test_removed_in_flight(void) {
+    static const u32 words[] = {0x91000400, 0xD65F03C0}; /* add x0, x0, #1; ret */
+    const size_t page = (size_t)sysconf(_SC_PAGESIZE);
+    const SnxU64 base = 0x2200000, pc = base + 0x10;
+    unsigned char* code = (unsigned char*)mmap(NULL, page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    SnxCodeImage image = {0};
+    pthread_t remover;
+    int started, spins;
+    if (code == MAP_FAILED) {
+        ++failures;
+        return;
+    }
+    for (size_t i = 0; i < 8; ++i) code[0x10 + i] = (unsigned char)(words[i / 4] >> (i % 4 * 8));
+    service = start(1, 1);
+    if (!service) {
+        ++failures;
+        munmap(code, page);
+        return;
+    }
+    image.image = code;
+    image.image_size = page;
+    image.base = base;
+    image.text_size = 0x18;
+    CHECK(snx_jit_add_image(service, &image) == 0);
+    in_flight_hold_at(pc, 1); /* a pc in the middle of the image */
+    CHECK(snx_jit_resolve(service, pc) == NULL);
+    CHECK(in_flight_wait(&in_flight.begun));
+    started = pthread_create(&remover, NULL, image_remover, (void*)(size_t)base) == 0;
+    CHECK(started);
+    for (spins = 0; started && snx_jit_covers(service, pc) && spins < 60000; ++spins)
+        nanosleep(&(struct timespec){0, 1000000}, NULL);
+    CHECK(!snx_jit_covers(service, pc)); /* the removal has begun, and waits for the batch */
+    CHECK(mprotect(code, page, PROT_NONE) == 0);
+    in_flight_release();
+    CHECK(in_flight_wait(&in_flight.ended) && in_flight.dropped);
+    if (started) pthread_join(remover, NULL);
+    CHECK(snx_jit_resolve(service, pc) == NULL && !snx_jit_covers(service, pc));
+    munmap(code, page);
+    snx_jit_drain(service);
+    snx_jit_service_free(service);
+}
+
+#endif
+
 /* added images in different 16 MiB chunks: the page map finds each, and removing one leaves the other's pages */
 static void test_image_map(void) {
     static const u32 far_words[] = {0x91000400, 0xD65F03C0}; /* add x0, x0, #1; ret */
@@ -1398,6 +1454,9 @@ int main(int argc, char** argv) {
     test_invalidate_own_code_in_flight();
     test_changed_in_flight();
     test_counters();
+#if !defined(_WIN32)
+    test_removed_in_flight();
+#endif
     test_image_map();
     test_region_limit(0);
     test_waited_priority();

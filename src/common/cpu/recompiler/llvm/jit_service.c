@@ -710,12 +710,32 @@ static int image_generations_match(const SnxImageGeneration* generations, size_t
     return 1;
 }
 
+/* whether an added image the batch holds (taken) is being removed: snx_jit_remove_image waits for the batch, and the
+   memory may be unmapped meanwhile, so the batch reads no word of it any more and publishes nothing. Once its hi is 0
+   it stays 0 while the batch holds it, and it needs no lock */
+static int images_going(const SnxJitService* s, const unsigned char* taken) {
+    for (size_t i = 1; i <= SNX_JIT_IMAGES; ++i)
+        if (taken[i] && !atomic_load_explicit(&s->regions[i].hi, memory_order_acquire)) return 1;
+    return 0;
+}
+/* under lock: whether pc is in the text of one of them */
+static int in_going_image(const SnxJitService* s, const unsigned char* taken, SnxU64 pc) {
+    for (size_t i = 1; i <= SNX_JIT_IMAGES; ++i) {
+        const SnxCodeImage* m = &s->regions[i].image; /* whole until the removal has its answer: after the batch ends */
+        if (!taken[i] || atomic_load_explicit(&s->regions[i].hi, memory_order_relaxed)) continue;
+        if (pc >= m->base + m->text_off && pc - (m->base + m->text_off) < m->text_size) return 1;
+    }
+    return 0;
+}
+
 /* the batch's code is still that of the module: no update since its snapshot, or none to a word the batch read. A
    batch thrown away for any update anywhere in its module never finished while another range of the module, or the
    same bytes again, was written more often than a batch takes to compile. A module with no generation counter (the NX
    runtime's) has only the words its batch read, which must be what they were: its jump tables' entries are not among
    them, as they are hints and a BR goes where its register says */
-static int batch_current(const SnxCodegen* codegen, const SnxImageGeneration* generations, size_t count) {
+static int batch_current(const SnxJitService* s, const unsigned char* taken, const SnxCodegen* codegen,
+                         const SnxImageGeneration* generations, size_t count) {
+    if (images_going(s, taken)) return 0;
     return (count && image_generations_match(generations, count)) || snx_codegen_words_current(codegen);
 }
 
@@ -901,8 +921,8 @@ static CacheRecord* cache_find(Cache* c, SnxU64 pc) {
 
 /* Appends the unit just loaded: its functions as codegen found them, hashed from the words they were built from, and
    its object. Under load_lock */
-static void cache_append(SnxJitService* s, SnxCodegen* codegen, const char* name, const unsigned char* object,
-                         size_t size, const SnxCodeImage* images, size_t image_count,
+static void cache_append(SnxJitService* s, const unsigned char* taken, SnxCodegen* codegen, const char* name,
+                         const unsigned char* object, size_t size, const SnxCodeImage* images, size_t image_count,
                          const SnxImageGeneration* generations, size_t generation_count) {
     size_t name_length = strlen(name);
     SnxU64 h1 = 0, h2 = 0, start = 0, previous = 0;
@@ -949,7 +969,7 @@ static void cache_append(SnxJitService* s, SnxCodegen* codegen, const char* name
         snx_st_le64(head + 4, (SnxU64)body.size);
         out64(&body, h1);
         /* a full file takes no more: past the limit the next run would read only the records before it */
-        if (!batch_current(codegen, generations, generation_count)) body.failed = 1;
+        if (!batch_current(s, taken, codegen, generations, generation_count)) body.failed = 1;
         if (!body.failed &&
             (s->cache.size > SNX_JIT_CACHE_MAX - 12 || body.size > SNX_JIT_CACHE_MAX - 12 - s->cache.size))
             body.failed = 1;
@@ -1126,7 +1146,7 @@ static void images_release(SnxJitService* s, SnxCodeImage* images, const unsigne
 static void compile(SnxJitService* s, const SnxU64* pcs, size_t count, SnxU64 stamp, int queue) {
     SnxCodegen codegen = {0};
     SnxJitReport report = {0};
-    unsigned char taken[1 + SNX_JIT_IMAGES];
+    unsigned char taken[1 + SNX_JIT_IMAGES] = {0}; /* filled by images_take: none held when that fails */
     unsigned char* object = NULL;
     size_t size = 0, failed = 0, image_count = 0;
     size_t generation_count = 0;
@@ -1191,7 +1211,7 @@ static void compile(SnxJitService* s, const SnxU64* pcs, size_t count, SnxU64 st
     size_t budget = s->config.budget;
     size_t live = s->config.live_budget ? s->config.live_budget : SNX_JIT_LIVE_BUDGET;
     if (queue == LIVE && budget > live) budget = live;
-    int source_changed = !generation_snapshot || !batch_current(&codegen, generations, generation_count);
+    int source_changed = !generation_snapshot || !batch_current(s, taken, &codegen, generations, generation_count);
     int rc = images && !source_changed ? snx_codegen_discover(&codegen, images, image_count, pcs, count, known, &batch,
                                                                budget, s->config.features, region_limit, overflow_limit)
                                        : -1;
@@ -1201,7 +1221,7 @@ static void compile(SnxJitService* s, const SnxU64* pcs, size_t count, SnxU64 st
     if (rc && !error[0]) snprintf(error, sizeof(error), "no guest code to compile at %llx", (unsigned long long)pcs[0]);
     for (size_t i = 0; !rc && i < codegen.function_count; ++i) report.instructions += codegen.functions[i].count;
     report.functions = codegen.function_count;
-    if (!rc && !batch_current(&codegen, generations, generation_count)) {
+    if (!rc && !batch_current(s, taken, &codegen, generations, generation_count)) {
         rc = -1;
         source_changed = 1;
         snprintf(error, sizeof(error), "instruction image changed during compilation");
@@ -1214,7 +1234,7 @@ static void compile(SnxJitService* s, const SnxU64* pcs, size_t count, SnxU64 st
         while (snx_code_lookup(s->loader, name, &address));
         unlock(&s->load_lock);
         rc = emit_unit(s, &codegen, name, &object, &size, error, sizeof(error));
-        if (!rc && !batch_current(&codegen, generations, generation_count)) {
+        if (!rc && !batch_current(s, taken, &codegen, generations, generation_count)) {
             rc = -1;
             source_changed = 1;
             snprintf(error, sizeof(error), "instruction image changed during compilation");
@@ -1233,8 +1253,8 @@ static void compile(SnxJitService* s, const SnxU64* pcs, size_t count, SnxU64 st
         size_t used = snx_code_used(s->loader);
         rc = snx_code_load(s->loader, &input, 1, names, 1, &table, error, sizeof(error));
         report.bytes = snx_code_used(s->loader) - used;
-        if (!rc && batch_current(&codegen, generations, generation_count))
-            cache_append(s, &codegen, name, object, size, images, image_count, generations, generation_count);
+        if (!rc && batch_current(s, taken, &codegen, generations, generation_count))
+            cache_append(s, taken, &codegen, name, object, size, images, image_count, generations, generation_count);
         else if (!rc) {
             rc = -1;
             source_changed = 1;
@@ -1261,7 +1281,7 @@ static void compile(SnxJitService* s, const SnxU64* pcs, size_t count, SnxU64 st
        stands, and only a change in the words it read is a drop. Memory elsewhere changing is what a game does all the
        time, and a batch can be a second of its time. Under the lock, so an invalidate cannot fall between the check of
        the words and the publish */
-    int current = generation_snapshot && batch_current(&codegen, generations, generation_count);
+    int current = generation_snapshot && batch_current(s, taken, &codegen, generations, generation_count);
     if (current) {
         for (size_t i = 0; !rc && i < codegen.function_count; ++i) {
             const SnxFunction* f = &codegen.functions[i];
@@ -1272,9 +1292,9 @@ static void compile(SnxJitService* s, const SnxU64* pcs, size_t count, SnxU64 st
                 /* an added region being removed has none: its arrays stay until users is 0 */
                 Region* r = region_of(s, address);
                 if (!r) continue;
-                /* a GONE pc was invalidated before this batch read its code (the epoch is unchanged since): the code
-                   is what memory holds now, and is published like any other. Left with its slot empty, discovery
-                   would take it for code nobody compiled, and every later batch that calls it would compile it again */
+                /* a GONE pc was invalidated, but the words this batch read are still what memory holds: its code is
+                   published like any other. Left with its slot empty, discovery would take it for code nobody
+                   compiled, and every later batch that calls it would compile it again */
                 Entry* e = add(s, address, DONE);
                 GuestFn expected = NULL;
                 atomic_compare_exchange_strong_explicit(slot(r, address), &expected, code, memory_order_release,
@@ -1300,8 +1320,15 @@ static void compile(SnxJitService* s, const SnxU64* pcs, size_t count, SnxU64 st
             /* memory changed since the code was read, so the batch published nothing. A pc of its own still
                IN_FLIGHT wasn't in the range that changed (snx_jit_invalidate makes those GONE), but the code read with
                it may have been: it goes back to its queue to be compiled from what is there now. Leaving it IN_FLIGHT,
-               or GONE with its pending bit set, would leave it uncompiled for good */
-            if (e && e->state == IN_FLIGHT) requeue(s, e, pcs[i], queue);
+               or GONE with its pending bit set, would leave it uncompiled for good. One in an image being removed is
+               gone already: nothing compiles it */
+            if (e && e->state == IN_FLIGHT) {
+                if (in_going_image(s, taken, pcs[i])) {
+                    e->state = GONE;
+                    e->code = NULL;
+                } else
+                    requeue(s, e, pcs[i], queue);
+            }
             continue;
         }
         /* its image went while the batch compiled (snx_jit_remove_image clears hi under this lock): gone, not failed */
@@ -1786,7 +1813,7 @@ void snx_jit_invalidate_ranges(SnxJitService* s, SnxU64 addr, SnxU64 size, SnxJi
     size_t range_capacity = s->span_count;
     if (callback && range_capacity) ranges = (InvalidatedRange*)calloc(range_capacity, sizeof(*ranges));
     if (callback && range_capacity && !ranges) ranges_incomplete = 1;
-    /* a batch compiling now reads s->epoch before its code, and refuses a cache record that memory changed since */
+    /* a cache record's load reads s->epoch before its code, and refuses it when memory changed since */
     ++s->epoch;
     if ((end - addr) / 4 < s->entry_capacity / 8) { /* a few lines (IC IVAU's 64 bytes): each pc looked up */
         for (SnxU64 pc = addr & ~(SnxU64)3; pc < end; pc += 4) {
