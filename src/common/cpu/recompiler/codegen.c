@@ -306,6 +306,8 @@ typedef struct {
 #define SNX_JUMP_TABLE_GAP   16
 #define SNX_JUMP_TABLE_BASE  256
 #define SNX_JUMP_TABLE_FAR   64 /* between an ADRP and its ADD, scheduled apart */
+/* entries of a table nothing says the end of, or a mask alone in an explored function */
+#define SNX_JUMP_TABLE_LOOSE 256
 /* instructions either side of a table's code in which the branch to it is looked for */
 #define SNX_JUMP_TABLE_REACH 8192
 
@@ -618,7 +620,7 @@ static unsigned compare_bound(SnxU32 word, unsigned index_reg) {
         return 0;
     SnxU64 imm = (word >> 10) & 0xfff;
     if (word & (1UL << 22)) imm <<= 12;
-    return imm < SNX_JUMP_TABLE_MAX ? (unsigned)imm + 1 : SNX_JUMP_TABLE_MAX;
+    return imm < SNX_JUMP_TABLE_ENTRIES ? (unsigned)imm + 1 : SNX_JUMP_TABLE_ENTRIES;
 }
 
 /* the bound of a table whose code starts a block, block, that the compare's branch jumps to: cmp index, #imm;
@@ -744,7 +746,7 @@ static int in_range(const SnxFlowTable* flow, SnxU64 target) {
    follows it some of that, a leader more in the function each */
 static unsigned table_extent(SnxCodegen* codegen, const JumpTable* table, const SnxFlowTable* flow) {
     SnxU64 room = (next_table(codegen, table->base) - table->base) / table->width, target;
-    unsigned limit = flow->max ? flow->max : SNX_JUMP_TABLE_MAX, n = 0;
+    unsigned limit = flow->max ? flow->max : table->width == 1 ? SNX_JUMP_TABLE_LOOSE : SNX_JUMP_TABLE_ENTRIES, n = 0;
     while (n < limit && n < room && entry_target(codegen, table, n, &target) && !(target & 3) &&
            (in_range(flow, target) || target == flow->first + (SnxU64)flow->count * 4))
         ++n;
@@ -783,7 +785,7 @@ size_t snx_codegen_jump_table(SnxCodegen* codegen, SnxU64 address, SnxU64* targe
     /* an entry of four bytes that is no case leaves the text and ends an unbounded table; a byte or a half from an
        address in the code lands in the text whatever it holds, so such a table is followed only to its bound */
     if (!limit && table.anchor != table.base && table.width < 4) return 0;
-    for (unsigned i = 0; i < (limit ? limit : SNX_JUMP_TABLE_MAX) && count < capacity; ++i) {
+    for (unsigned i = 0; i < (limit ? limit : SNX_JUMP_TABLE_LOOSE) && count < capacity; ++i) {
         SnxU64 target;
         int found = 0;
         if (!entry_target(codegen, &table, i, &target)) break;
@@ -1111,7 +1113,7 @@ static unsigned function_bound(SnxCodegen* codegen, const JumpTable* table, cons
                     reg = (w >> 5) & 31;
                 else {
                     SnxU64 max = made_max(codegen, body, first, flow, s.at, reg, 0);
-                    if (max >= SNX_JUMP_TABLE_MAX) {
+                    if (max >= (body ? SNX_JUMP_TABLE_LOOSE : SNX_JUMP_TABLE_ENTRIES)) {
                         ok = 0;
                         break;
                     }
@@ -1134,7 +1136,7 @@ static unsigned function_bound(SnxCodegen* codegen, const JumpTable* table, cons
         }
     }
     free(stack), free(seen);
-    return ok && bound ? (bound < SNX_JUMP_TABLE_MAX ? bound : SNX_JUMP_TABLE_MAX) : 0;
+    return ok ? bound : 0;
 }
 
 static void add_table_base(SnxCodegen* codegen, SnxU64 base) {
