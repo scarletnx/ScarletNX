@@ -85,7 +85,7 @@ void vita_hle_call_returned(VitaProcess* p, VitaThread* t);
 /* the functions the runtime answers, sorted by NID (hookgen --vita's, a NULL-named entry ends it) */
 extern const VitaHle vita_hle_table[];
 /* each module's functions (a NULL-named entry ends each table) */
-extern const VitaHle vita_hle_gxm[], vita_hle_libc[];
+extern const VitaHle vita_hle_libc[];
 
 /* An imported variable (VitaImage.variables): what its slot (VITA_VARIABLE_SIZE bytes, zero) holds, written once as
    the process starts */
