@@ -58,6 +58,7 @@ typedef struct {
     char name[24];
     size_t at, size, rel0, nrel;
     size_t own; /* its entry past the checks (X and its name), from its start; (size_t)-1 for none (entry's) */
+    size_t end; /* where its frame's code ends: the failed check's exit (MG_ARM_EXIT_LAST) and the literals are past it */
 } Made;
 
 struct MG_ARM {
@@ -77,8 +78,9 @@ struct MG_ARM {
     unsigned features;
     int pool;
     const char* why;
-    int big;    /* the block being made has 32-bit frame sizes (frame) */
+    int big;    /* the block being made has 32-bit frame sizes, or a page's probe (frame) */
     size_t own; /* its entry past the checks, from its start (prologue) */
+    size_t end; /* where its frame's code ends (Made.end) */
 };
 
 int MG_ARM_API(available)(void) { return MG_ARM_AVAILABLE(); }
@@ -2191,11 +2193,12 @@ static size_t block(MG_ARM* c, const unsigned char* code, size_t count, SnxU32 p
     sgx_a32_bind(g, b, g->ret);
     mg_return(c);
     sgx_cold_emit(&c->a);
+    c->end = b->n;
     if (entered && MG_ARM_EXIT_LAST(c)) mg_entry_exit(c, pc, first, bad);
     sgx_pool_emit(&c->a);
     if (mg_patch_frame(c)) {
         t_mach_arm.fail = saved;
-        ++c->big; /* made again with 32-bit frame sizes (x86-64's) */
+        ++c->big; /* made again with 32-bit frame sizes (x86-64's), or with a page's probe (arm64's on Windows) */
         return (size_t)-1;
     }
     if (sgx_a32_patch(g, b)) sg_fail("a jump to a label never bound", 0, 0);
@@ -2205,7 +2208,7 @@ static size_t block(MG_ARM* c, const unsigned char* code, size_t count, SnxU32 p
 
 /* a block's code (size bytes), relocations and record kept for the object: 1, or 0 out of memory */
 static int keep(MG_ARM* c, const unsigned char* code, size_t size, const Rel* rel, size_t nrel, SnxU32 pc,
-                const char* name, size_t own) {
+                const char* name, size_t own, size_t end) {
     if (c->ntext + size > c->cap_text) {
         size_t cap = c->cap_text ? c->cap_text * 2 : (size_t)1 << 20;
         while (cap < c->ntext + size) cap *= 2;
@@ -2234,6 +2237,7 @@ static int keep(MG_ARM* c, const unsigned char* code, size_t size, const Rel* re
     m->rel0 = c->nrels;
     m->nrel = nrel;
     m->own = own;
+    m->end = end;
     memcpy(c->text + c->ntext, code, size);
     c->ntext += size;
     if (nrel) memcpy(c->rels + c->nrels, rel, nrel * sizeof *rel);
@@ -2277,7 +2281,7 @@ static int make(MG_ARM* c, const char* name, const unsigned char* code, size_t c
         return 0;
     }
     /* kept: its code, its relocations, its record */
-    if (!keep(c, c->b.p, size, c->rel, (size_t)c->nrel, pc, name, c->own)) {
+    if (!keep(c, c->b.p, size, c->rel, (size_t)c->nrel, pc, name, c->own, c->end)) {
         c->why = "out of memory";
         return 0;
     }
@@ -2319,8 +2323,9 @@ int MG_ARM_API(object)(MG_ARM* c, unsigned char** object, size_t* size, size_t* 
         snx_xelf_symbol(o, m->name, SNX_ELF_TEXT, at, m->size,
                         m->own == (size_t)-1 && m->name[0] == 'X' ? SNX_ELF_LOCAL | SNX_ELF_FUNC
                                                                   : SNX_ELF_GLOBAL | SNX_ELF_HIDDEN | SNX_ELF_FUNC);
-#ifdef MG_ARM_UNWIND
-        MG_ARM_UNWIND(o, at, c->text + m->at, m->size, m->own, c->rels + m->rel0, m->nrel);
+#ifdef MG_ARM_COFF
+        if (m->own != (size_t)-1)
+            snx_xelf_unwind(o, at + m->own, at + m->end, c->text + m->at + m->own, m->end - m->own);
 #endif
         if (m->own != (size_t)-1) {
             char own[sizeof m->name + 1];
@@ -2338,12 +2343,17 @@ int MG_ARM_API(object)(MG_ARM* c, unsigned char** object, size_t* size, size_t* 
     c->ntext = c->cap_text = c->nrels = c->cap_rels = c->nmade = c->cap_made = 0;
     int rc = snx_xelf_write(o, object, size);
     snx_xelf_free(o);
+    if (rc == -2) {
+        fprintf(stderr, "native back end: AArch32 blocks of a relocation or a prologue COFF has no form of\n");
+        abort();
+    }
     return rc ? -1 : 0;
 }
 int MG_ARM_API(absorb)(MG_ARM* c, MG_ARM* from) {
     for (size_t i = 0; i < from->nmade; ++i) {
         const Made* m = &from->made[i];
-        if (!keep(c, from->text + m->at, m->size, from->rels + m->rel0, m->nrel, m->pc, m->name, m->own)) return -1;
+        if (!keep(c, from->text + m->at, m->size, from->rels + m->rel0, m->nrel, m->pc, m->name, m->own, m->end))
+            return -1;
     }
     free(from->text), free(from->rels), free(from->made);
     from->text = NULL, from->rels = NULL, from->made = NULL;
