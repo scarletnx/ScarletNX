@@ -6,6 +6,7 @@
    decoder. SNX_TEST_PICTURE names a file to keep the JPEG in */
 #include "nx/hle/services/services_int.h"
 #include "common/utilities/common.h"
+#include "common/utilities/config_file.h"
 #include <plutovg.h>
 #include <ctype.h>
 #include <stdarg.h>
@@ -270,6 +271,16 @@ static void refused(const char* text, int selected, const char* why_has) {
 }
 /* a [user1] nickname the rule refuses, with why saying what is wrong with it but never the nickname: the game's stop
    carries it to the log, which players attach to public reports */
+/* text taken: user 1's nickname, and the notes name what it does not take (needs), never what must stay out (never) */
+static void taken(const char* text, const char* nickname, const char* needs, const char* never) {
+    char why[512];
+    put_ini(text);
+    snx_config_forget(); /* each a run of its own: a name is said once a run */
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0 && !strcmp(g_users[0].nickname, nickname));
+    if (!strstr(snx_users_notes(), needs) || (never && strstr(snx_users_notes(), never)))
+        fprintf(stderr, "notes: %s", snx_users_notes());
+    CHECK(strstr(snx_users_notes(), needs) && !(never && strstr(snx_users_notes(), never)));
+}
 static void refused_nickname(const char* nickname, const char* why_has) {
     char text[128], why[512];
     snprintf(text, sizeof text, "[user1]\nnickname=%s\n", nickname);
@@ -1368,7 +1379,9 @@ static void test_rename(void) {
 
 static void test_refused(void) {
     char why[512];
-    refused("[user1]\nnickname=Aogo\ncolour=red\n", 1, "colour is not a setting");
+    /* what it does not take, another version's or program's: kept, named once a run, never by its value */
+    taken("[user1]\nnickname=Aogo\ncolour=red\n", "Aogo", "this version does not read [user1] colour, which stays",
+          "red");
     refused("[user1]\nuid=" UID2 "\nnickname=Aogo\n[user2]\nuid=" UID2 "\nnickname=Xuji\n", 1,
             "[user2] has the uid of [user1]");
     refused("[user1]\nnickname=Aogo\n[user2]\nuid=" UID1 "\nnickname=Xuji\n", 1, "[user2] has the uid of [user1]");
@@ -1411,11 +1424,16 @@ static void test_refused(void) {
         CHECK(nn_account_profile_IProfile_GetBase(profile, &base) == 0 && !memcmp(base.nickname, NICK32, 32));
         svcobj_unref(profile);
     }
-    refused("[user1]\npassword=hunter2\n", 1, "is not a setting: uid, nickname");
+    taken("[user1]\npassword=hunter2\n", "Player", "does not read [user1] password", "hunter2");
     refused("[user1]\n[user2]\nuid=" UID2 "\nnickname=Xuji\n", 3, "user=3");
-    refused("nickname=Aogo\n[user1]\n", 1, "before [user1]");
-    refused("[players]\nnickname=Aogo\n", 1, "[user1] to [user8]");
-    refused("[user1]\nnickname Aogo\n", 1, "neither");
+    taken("nickname=Aogo\n[user1]\n", "Player", "does not read nickname, which stays", NULL);
+    taken("[user1]\nnickname=Ada\n[players]\nnickname=Aogo\n", "Ada", "does not read [players] nickname", "Aogo");
+    refused("[players]\nnickname=Aogo\n", 1, "no [user1]");
+    taken("[user1]\nnickname Aogo\nnickname=Ada\n", "Ada", "line 2 has no = and sets nothing", "Aogo");
+    /* a key given twice: the last line's, said with both lines */
+    taken("[user1]\nnickname=Ada\nnickname=Bob\n", "Bob",
+          "[user1] nickname is given twice, nickname=Ada on line 2 and nickname=Bob on line 3: the last", NULL);
+    CHECK(snx_users_load(DIR, 1, why, sizeof why) == 0 && !strstr(snx_users_notes(), "given twice")); /* once a run */
     refused("; nothing\n", 1, "no [user1]");
     refused("[user1\n", 1, "no ]");
     /* a picture is the bytes the service keeps, as a program stored them: one that is no JPEG goes to the game as it
