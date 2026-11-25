@@ -11,7 +11,7 @@
 
 #include "nx/nn/tvmr_jpeg.c"
 #include "nx/hle/hle.c"
-#include "hle/hook/hooks.hook.inc" /* tvmr_jpeg.hook's table and adapters */
+#include "nn/hooks.hook.inc" /* tvmr_jpeg.hook's table and adapters */
 
 u8* g_mem;
 int g_ounce;

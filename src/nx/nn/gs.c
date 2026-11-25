@@ -17,8 +17,8 @@
      from x & ~1 on, to the chroma buffer a pitch a row;
    and the result is 0. The sizes aren't read. A type of 0xb to 0x15 takes other code (block linear images), which the
    runtime's descriptors never are; any other type gives result 0x100f3, as the SDK's own check does */
-#include "nx/hle/hook/hook.h"
-#include "hle/hook/hooks.hook.h"
+#include "nx/nn/hook.h"
+#include "nn/hooks.hook.h"
 #include "common/utilities/endian.h"
 #include "nx/runtime/platform/log.h"
 #include <string.h>

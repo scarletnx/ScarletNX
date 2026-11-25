@@ -865,7 +865,7 @@ static inline u64 nvn_rate_palette(const u32* rates, i32 n) {
     }
     return p;
 }
-/* An upscale a hook module's CPU hook recorded (nvn_cmd_record_upscale, hle/hook/snx_hook_module.h), its textures'
+/* An upscale a hook module's CPU hook recorded (nvn_cmd_record_upscale, nn/snx_hook_module.h), its textures'
    snapshots after it, tex and view in the order of NVN_UPSCALE_*: given to the renderer's upscaler, and where none
    takes it, a filtered copy of the color's render rectangle onto the output's rectangle */
 enum {

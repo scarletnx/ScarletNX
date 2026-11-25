@@ -1,13 +1,13 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* native_cond_var (src/nx/hle/hook/family.c, hook.c) over tests/hook/states.hook, with the runtime stubbed: at 1 the
+/* native_cond_var (src/nx/nn/family.c, hook.c) over tests/hook/states.hook, with the runtime stubbed: at 1 the
    cond_var family's functions take its handlers and save states are refused with a message that names the setting
    and its value; at 0 they keep their own code (the recursive mutex's with the condition variable's) and states may
    be taken. hooks_off naming the family, or the game changing every hooked function's code, leaves the game's too.
    native_os_sync the same for the os_sync family, which also stays the game's where its SDK lacks a function that
    writes the words the family owns (os_sync_ready) */
-#include "nx/hle/hook/hook.c"
-#include "nx/hle/hook/family.c"
+#include "nx/nn/hook.c"
+#include "nx/nn/family.c"
 #include <assert.h>
 #include <stdarg.h>
 #include <stdio.h>

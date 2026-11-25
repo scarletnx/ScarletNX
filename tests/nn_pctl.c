@@ -4,7 +4,7 @@
    and the play timer's display as nobody configured it, NotConfigured (7) in the first of its 0x18 bytes and the
    rest zero, which a game reads as no timer and not as TimesUp */
 #include "nx/nn/pctl.c"
-#include "hle/hook/hooks.hook.inc" /* pctl.hook's table, and its adapters for a 32-bit game */
+#include "nn/hooks.hook.inc" /* pctl.hook's table, and its adapters for a 32-bit game */
 #include <stdio.h>
 #include <stdlib.h>
 

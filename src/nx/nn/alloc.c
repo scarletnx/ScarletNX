@@ -20,8 +20,8 @@
    the C library's names of them), else looked up at run time (dlsym, je_ names on macOS): a build without it
    (SNX_JEMALLOC=OFF, Windows) has no arena, and hook_install leaves the family's functions to the game's own code
    (alloc_ready). A 36-bit game, whose address space leaves no window, keeps its own too */
-#include "nx/hle/hook/hook.h"
-#include "hle/hook/hooks.hook.h"
+#include "nx/nn/hook.h"
+#include "nn/hooks.hook.h"
 #include "nx/hle/kernel/kernel.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/loader.h"

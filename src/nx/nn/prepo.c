@@ -31,8 +31,8 @@
    getter gives none in SDK 3.5 to 20.5), and the game crashes in it. No game of the dumps read calls one: they are the
    storage, the statistics, the upload history, the user agreement check, the operation mode and the system's reports */
 #include "nx/nn/prepo.h"
-#include "nx/hle/hook/hook.h"
-#include "hle/hook/hooks.hook.h"
+#include "nx/nn/hook.h"
+#include "nn/hooks.hook.h"
 #include "nx/hle/hle.h"
 #include "nx/hle/kernel/kernel.h"
 #include "nx/runtime/clock.h"

@@ -3,10 +3,10 @@
 /* Hooks (hook.h): the generated table of hooks.hook, matched against the game's exported functions by name and the
    version of the module that exports each, each match's dispatch slot given the adapter of the entry for that
    version */
-#include "nx/hle/hook/hook.h"
-#include "nx/hle/hook/jump.h"
-#include "nx/hle/hook/module.h"
-#include "nx/hle/hook/module_lib.h"
+#include "nx/nn/hook.h"
+#include "nx/nn/jump.h"
+#include "nx/nn/module.h"
+#include "nx/nn/module_lib.h"
 #include "nx/runtime/nce/nce.h"
 #include "common/utilities/bits.h"
 #include "nx/hle/hle.h"
@@ -20,8 +20,8 @@
 #include "nx/runtime/main.h"
 #include "nx/runtime/options.h"
 #include "common/platform/thread.h"
-#include "hle/hook/hooks.hook.h"
-#include "hle/hook/hooks.hook.inc"
+#include "nn/hooks.hook.h"
+#include "nn/hooks.hook.inc"
 #include <stdatomic.h>
 
 /* a site for every hook of either table, so that no family is left half native (hook.h) */

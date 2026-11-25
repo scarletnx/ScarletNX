@@ -1,11 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The synthetic hook modules of tests/hook_module_lib.c, of no game: one source built into a library per case, as a
-   module built outside ScarletNX is, against hle/hook/snx_hook_module.h alone. HX_CASE picks the case. 1 is the module
+   module built outside ScarletNX is, against nn/snx_hook_module.h alone. HX_CASE picks the case. 1 is the module
    that applies, 2 the same named hx_off (hooks_off names it, so it is never loaded), 3 another ABI major, 4 a newer ABI
    minor, 5 no entry point, 6 an entry point that refuses the runtime, 7 a module named otherwise than its file, 8 a
    module without a CPU hook */
-#include "nx/hle/hook/snx_hook_module.h"
+#include "nx/nn/snx_hook_module.h"
 
 #ifndef HX_CASE
 #error HX_CASE picks the case

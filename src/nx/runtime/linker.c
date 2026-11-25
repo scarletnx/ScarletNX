@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "nx/runtime/linker.h"
 #include "common/utilities/common.h"
-#include "nx/hle/hook/hook.h"
+#include "nx/nn/hook.h"
 #include "nx/hle/kernel/kernel.h"
 #include "nx/hle/services/services.h"
 #include "nx/loader/relocate.h"
@@ -18,7 +18,7 @@
 #include <stdatomic.h>
 
 /* nn::init::Start as the SDKs export it, with three callbacks of the linker's and with two: what a game's linker
-   calls last. The route list names them (hle/hook/hooks.hook), so the module calls them through their slots */
+   calls last. The route list names them (nn/hooks.hook), so the module calls them through their slots */
 static const char* const linker_start[] = {"_ZN2nn4init5StartEmmPFvvES2_S2_", "_ZN2nn4init5StartEmmPFvvES2_"};
 /* a function of nn::ro the module must route for the runtime to answer the library (nn/ro.hook) */
 #define LINKER_RO_ROUTED "_ZN2nn2ro12LookupSymbolEPmPKc"

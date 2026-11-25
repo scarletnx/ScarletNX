@@ -15,7 +15,7 @@
    new that calls nothing through an object do not.
    The verdict is read once a module and said once, naming the delete that does the lookup, its first load, the count
    and the first copy, or the new and the delete of the heap manager */
-#include "nx/hle/hook/hook.h"
+#include "nx/nn/hook.h"
 #include "nx/loader/module_abi.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/loader.h"

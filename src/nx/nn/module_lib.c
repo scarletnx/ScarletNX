@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* module_lib.h: a library's module joins the list, its CPU hooks are kept, and their handlers run with the guest CPU */
-#include "nx/hle/hook/module_lib.h"
+#include "nx/nn/module_lib.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,7 +11,7 @@
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/nvn/nvn_cmd.h"
 #include "nx/gpu/renderer.h"
-#include "nx/hle/hook/hook.h"
+#include "nx/nn/hook.h"
 #include "nx/hle/services/vi.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/loader.h"

@@ -8,8 +8,8 @@
    session. The behavior is that of a clean-room spec of the SDK's functions, never the SDK's code. The environment
    is the retail one, lp1. Any other nn::nsd function opens nsd:u itself, and sm stops the game with the name of
    this layer */
-#include "nx/hle/hook/hook.h"
-#include "hle/hook/hooks.hook.h"
+#include "nx/nn/hook.h"
+#include "nn/hooks.hook.h"
 #include <string.h>
 
 #define NSD_ENVIRONMENT "lp1"   /* the retail network environment */

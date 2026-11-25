@@ -125,7 +125,7 @@ endif()
 # what the rows of boxes take their items from (settings.txt's boxes): the extension bans and the hook families, their
 # files as the readers read them
 set(snx_settings_bans "${PROJECT_SOURCE_DIR}/src/common/gpu/vk/extension_bans.txt")
-set(snx_settings_hooks "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
+set(snx_settings_hooks "${PROJECT_SOURCE_DIR}/src/nx/nn/hooks.hook")
 list(APPEND snx_settings_args --bans "${snx_settings_bans}" --hooks "${snx_settings_hooks}")
 
 # a file for each game's table, runtime or vulkan (settings_<name>.c, settingsgen's table_file), named from

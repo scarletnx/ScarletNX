@@ -338,7 +338,7 @@ u32 hwopus_work_size(u32 rate, u32 channels, u32 streams, u32 stereo_streams, in
 void hwopus_delete(HwOpus* h);
 int hwopus_decode_packet(HwOpus* h, const u8* in, u64 in_size, i16* out, u64 out_size, int reset, u32* consumed,
                          u32* samples);
-/* the Ounce's output streams (hle/hook/audio_stream.c) played up to now, guest time: the audio clock's turn */
+/* the Ounce's output streams (nn/audio_stream.c) played up to now, guest time: the audio clock's turn */
 void outstream_tick(u64 now);
 typedef struct {
     u32 ev;              /* the renderers' system event, every frame */

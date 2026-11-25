@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 #
-# The native nn::pctl (pctl.c), for tools/hookgen, in the language of hle/hook/hooks.hook.
+# The native nn::pctl (pctl.c), for tools/hookgen, in the language of nn/hooks.hook.
 # nn::pctl: the parental controls of a console with none set, with no pctl session. Initialize is here, so the
 # SDK's start makes no session, with every function whose answer is known for no restriction. They hold for a
 # 32-bit game too (a32), but the one that fills a struct, whose 32-bit layout was not read: in SDK 0.12.16, the one

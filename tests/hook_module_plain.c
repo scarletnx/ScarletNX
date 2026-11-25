@@ -2,8 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* hook_install.c's module cases: one hook module, named after tests/hook/install.hook's plain family, which applies
    when main's code at +0x40 holds the four bytes it checks. No library's module (module_lib.h) */
-#include "nx/hle/hook/module.h"
-#include "nx/hle/hook/module_lib.h"
+#include "nx/nn/module.h"
+#include "nx/nn/module_lib.h"
 #include "nx/loader/hook_routes.h"
 
 static const HookModuleCode code[] = {{NULL, 0x40, "de ad be ef"}};

@@ -1139,7 +1139,7 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         return snx_error("--target %s: modules are built for this host only (%s)", target,
                          host_win ? "win64" : "linux");
     gen.abi = snx_game_abi();
-    /* the CPU hooks of the hook module libraries (hle/hook/snx_hook_module.h): their keys join the route list before
+    /* the CPU hooks of the hook module libraries (nn/snx_hook_module.h): their keys join the route list before
        the game's modules are read, so each function they hook is a seed called through its dispatch slot */
     {
         char* folder = snx_hook_libs_folder(g_settings.hook_modules_folder);

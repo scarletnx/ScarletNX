@@ -23,8 +23,8 @@
    and save states are refused while it runs (hook_states_refused), as for the cond_var family. A waiting thread
    leaves its core first (hook_wait_begin), as in a waiting SVC: the core's other threads run meanwhile, the holder
    among them. The console's kernel raises a lock holder's priority to its waiters'; the host's futex doesn't */
-#include "nx/hle/hook/hook.h"
-#include "hle/hook/hooks.hook.h"
+#include "nx/nn/hook.h"
+#include "nn/hooks.hook.h"
 #include "common/platform/thread.h"
 #include "common/platform/time.h"
 #include "nx/hle/kernel/kernel.h"

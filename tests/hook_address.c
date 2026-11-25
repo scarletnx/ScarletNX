@@ -4,9 +4,9 @@
    with the game patches of src/nx/patches/: each spec's families in their order, an address hook's key for its symbol
    (the build ID in lower case without its ending zero bytes, the offset without 0x or leading zeros), sorted with the
    symbols, and its adapter, which calls the handler its name gives */
-#include "nx/hle/hook/hook.h"
-#include "hle/hook/hooks.hook.h"
-#include "hle/hook/hooks.hook.inc"
+#include "nx/nn/hook.h"
+#include "nn/hooks.hook.h"
+#include "nn/hooks.hook.inc"
 #include <assert.h>
 #include <stdio.h>
 

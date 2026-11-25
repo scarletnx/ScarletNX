@@ -9,7 +9,7 @@
 #include "nx/gpu/gl/gl_layer.h"
 #include "common/gpu/gl/gl_state.h"
 #include "nx/hle/services/vi.h"
-#include "nx/hle/hook/hook.h"
+#include "nx/nn/hook.h"
 #include "gpu/gl/gl.hook.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"

@@ -1,14 +1,14 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The hook module libraries (hle/hook/snx_hook_module.h, docs/platforms/nx/hooks.md "Modules in libraries") as the
+/* The hook module libraries (nn/snx_hook_module.h, docs/platforms/nx/hooks.md "Modules in libraries") as the
    runtime and the recompile read them: which files of the hook modules folder are libraries, the module name a file
    gives, a library opened with its entry point called and its ABI version, name and CPU hooks checked. The runtime
-   then makes each one a module of its own (hle/hook/module_lib.c). The recompile adds the keys of their CPU hooks to
+   then makes each one a module of its own (nn/module_lib.c). The recompile adds the keys of their CPU hooks to
    the route list (hook_routes.h), so the functions they hook are called through their slots */
 #ifndef SNX_NX_HOOK_LIBS_H
 #define SNX_NX_HOOK_LIBS_H
 #include <stddef.h>
-#include "nx/hle/hook/snx_hook_module.h"
+#include "nx/nn/snx_hook_module.h"
 
 #define SNX_HOOK_LIBS_FOLDER "hook_modules"
 enum { SNX_HOOK_LIB_NAME = 63, SNX_HOOK_KEY = 96 };

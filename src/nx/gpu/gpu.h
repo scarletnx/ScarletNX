@@ -205,7 +205,7 @@ typedef struct {
     u32 flags;
     const char** ran; /* where the renderer writes the name of the upscaler that ran, NULL for nowhere */
     /* with GPU_UPSCALE_REPROJECTED_MOTION: this frame's render pixel (x, y as -1 to 1, y down, depth as stored) to
-       the frame before's, row-major (hle/hook/snx_hook_module.h's SnxHookRecordedUpscale) */
+       the frame before's, row-major (nn/snx_hook_module.h's SnxHookRecordedUpscale) */
     f32 reprojection[16];
 } GpuUpscale;
 enum {

@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* hook.c's tests: no hook module (hle/hook/module.h), as the runtime's list (src/nx/patches/modules.c) has none, and
+/* hook.c's tests: no hook module (nn/module.h), as the runtime's list (src/nx/patches/modules.c) has none, and
    no library's (module_lib.h) */
-#include "nx/hle/hook/module.h"
-#include "nx/hle/hook/module_lib.h"
+#include "nx/nn/module.h"
+#include "nx/nn/module_lib.h"
 #include "nx/loader/hook_routes.h"
 
 const HookModule* const g_hook_modules[] = {NULL};

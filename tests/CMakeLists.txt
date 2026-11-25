@@ -104,7 +104,7 @@ if(Python3_Interpreter_FOUND AND CMAKE_EXPORT_COMPILE_COMMANDS)
     add_test(NAME atomic_explicit COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/atomic_explicit_test.py"
                                           "${PROJECT_BINARY_DIR}" "${PROJECT_SOURCE_DIR}")
 endif()
-# each native hook of a mod's trampoline (src/nx/hle/hook/ext_skyline.hooks) as the function's own native hook
+# each native hook of a mod's trampoline (src/nx/nn/ext_skyline.hooks) as the function's own native hook
 if(Python3_Interpreter_FOUND)
     add_test(NAME ext_skyline_hooks COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ext_skyline_hooks.py")
 endif()
@@ -1692,11 +1692,11 @@ snx_test_target(snx-test-hook-adapters c23)
 target_include_directories(snx-test-hook-adapters PRIVATE "${PROJECT_SOURCE_DIR}/src")
 snx_hookgen(snx-test-hook-adapters SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/test.hook" A32)
 add_test(NAME hook_adapters COMMAND snx-test-hook-adapters)
-# hook_install on a 32-bit game (src/nx/hle/hook/hook.c) over tests/hook/a32_marked.hook: the hooks of the 32-bit
+# hook_install on a 32-bit game (src/nx/nn/hook.c) over tests/hook/a32_marked.hook: the hooks of the 32-bit
 # program's table take their functions' slots of the code table, with the runtime stubbed
-add_executable(snx-test-hook-install-a32 hook_install_a32.c hook_no_modules.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/module.c"
-               "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c"
-               "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/jump.c")
+add_executable(snx-test-hook-install-a32 hook_install_a32.c hook_no_modules.c "${PROJECT_SOURCE_DIR}/src/nx/nn/module.c"
+               "${PROJECT_SOURCE_DIR}/src/nx/nn/version.c"
+               "${PROJECT_SOURCE_DIR}/src/nx/nn/jump.c")
 snx_test_target(snx-test-hook-install-a32 gnu23)
 target_link_libraries(snx-test-hook-install-a32 PRIVATE scarletnx-common) # jump.c flushes with snx_vm_flush_code
 target_include_directories(snx-test-hook-install-a32 PRIVATE "${PROJECT_SOURCE_DIR}/src")
@@ -1705,7 +1705,7 @@ snx_hookgen(snx-test-hook-install-a32 SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/a32
 add_test(NAME hook_install_a32 COMMAND snx-test-hook-install-a32)
 # versioned hooks and struct layouts (tests/hook/versions.hook): the entries by version, the layout variant each
 # adapter passes, the SDK labels a module's bytes hold and the entry hook_select picks for a module's version
-add_executable(snx-test-hook-versions hook_versions.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c")
+add_executable(snx-test-hook-versions hook_versions.c "${PROJECT_SOURCE_DIR}/src/nx/nn/version.c")
 snx_test_target(snx-test-hook-versions c23)
 target_include_directories(snx-test-hook-versions PRIVATE "${PROJECT_SOURCE_DIR}/src")
 snx_hookgen(snx-test-hook-versions SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/versions.hook")
@@ -1717,11 +1717,11 @@ target_include_directories(snx-test-hook-address PRIVATE "${PROJECT_SOURCE_DIR}/
 snx_hookgen(snx-test-hook-address SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/address_first.hook"
             "${CMAKE_CURRENT_SOURCE_DIR}/hook/address.hook")
 add_test(NAME hook_address COMMAND snx-test-hook-address)
-# hook_install on a 64-bit game (src/nx/hle/hook/hook.c) over tests/hook/install.hook, with the runtime stubbed: the
+# hook_install on a 64-bit game (src/nx/nn/hook.c) over tests/hook/install.hook, with the runtime stubbed: the
 # hooks' slots, and what is left of them once a save state's g_hle took the running one's place
-add_executable(snx-test-hook-install hook_install.c hook_no_modules.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/module.c"
-               "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c"
-               "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/jump.c")
+add_executable(snx-test-hook-install hook_install.c hook_no_modules.c "${PROJECT_SOURCE_DIR}/src/nx/nn/module.c"
+               "${PROJECT_SOURCE_DIR}/src/nx/nn/version.c"
+               "${PROJECT_SOURCE_DIR}/src/nx/nn/jump.c")
 snx_test_target(snx-test-hook-install gnu23)
 target_link_libraries(snx-test-hook-install PRIVATE scarletnx-common) # jump.c flushes with snx_vm_flush_code
 target_include_directories(snx-test-hook-install PRIVATE "${PROJECT_SOURCE_DIR}/src")
@@ -1787,29 +1787,29 @@ add_executable(snx-test-gl-layer gl_layer.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl
                "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl_texture_calls.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl_framebuffer_calls.c"
                "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl_sync_calls.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl_draw.c" "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_tic.c"
                "${PROJECT_SOURCE_DIR}/src/nx/gpu/draw_state.c"
-               "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl_host_nx.c" "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c")
+               "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl_host_nx.c" "${PROJECT_SOURCE_DIR}/src/nx/nn/version.c")
 snx_test_target(snx-test-gl-layer gnu23)
 target_link_libraries(snx-test-gl-layer PRIVATE snx_gl scarletnx-common)
 target_include_directories(snx-test-gl-layer PRIVATE "${PROJECT_SOURCE_DIR}/src")
 snx_hookgen(snx-test-gl-layer SPEC "${PROJECT_SOURCE_DIR}/src/nx/gpu/gl/gl.hook" PREFIX gl NAME gpu/gl/gl.hook)
 add_test(NAME gl_layer COMMAND snx-test-gl-layer)
-# native_cond_var (src/nx/hle/hook/family.c, hook.c) over tests/hook/states.hook: the cond_var family's hooks at 1, the
+# native_cond_var (src/nx/nn/family.c, hook.c) over tests/hook/states.hook: the cond_var family's hooks at 1, the
 # game's own wait at 0, and save states refused while the host's wait runs, by a message naming the setting's value
-add_executable(snx-test-hook-states hook_states.c hook_no_modules.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/module.c"
-               "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c" "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/jump.c")
+add_executable(snx-test-hook-states hook_states.c hook_no_modules.c "${PROJECT_SOURCE_DIR}/src/nx/nn/module.c"
+               "${PROJECT_SOURCE_DIR}/src/nx/nn/version.c" "${PROJECT_SOURCE_DIR}/src/nx/nn/jump.c")
 snx_test_target(snx-test-hook-states gnu23)
 target_link_libraries(snx-test-hook-states PRIVATE scarletnx-common) # jump.c flushes with snx_vm_flush_code
 target_include_directories(snx-test-hook-states PRIVATE "${PROJECT_SOURCE_DIR}/src")
 snx_service_swipc(snx-test-hook-states)
 snx_hookgen(snx-test-hook-states SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/states.hook" A32_MARKED)
 add_test(NAME hook_states COMMAND snx-test-hook-states)
-# hook_install with a hook module named after install.hook's plain family (tests/hook_module_plain.c, hle/hook/module.c):
+# hook_install with a hook module named after install.hook's plain family (tests/hook_module_plain.c, nn/module.c):
 # its code check holding, the family's hook goes in. Failing, or with hooks_off naming it, the function keeps its own
 # code
 foreach(snx_case IN ITEMS applied refused off)
     add_executable(snx-test-hook-module-${snx_case} hook_install.c hook_module_plain.c
-                   "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/module.c" "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c"
-                   "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/jump.c")
+                   "${PROJECT_SOURCE_DIR}/src/nx/nn/module.c" "${PROJECT_SOURCE_DIR}/src/nx/nn/version.c"
+                   "${PROJECT_SOURCE_DIR}/src/nx/nn/jump.c")
     snx_test_target(snx-test-hook-module-${snx_case} gnu23)
     target_link_libraries(snx-test-hook-module-${snx_case} PRIVATE scarletnx-common)
     target_include_directories(snx-test-hook-module-${snx_case} PRIVATE "${PROJECT_SOURCE_DIR}/src")
@@ -1820,8 +1820,8 @@ endforeach()
 target_compile_definitions(snx-test-hook-module-applied PRIVATE HOOK_MODULE_TEST=1)
 target_compile_definitions(snx-test-hook-module-refused PRIVATE HOOK_MODULE_TEST=2)
 target_compile_definitions(snx-test-hook-module-off PRIVATE HOOK_MODULE_TEST=3)
-# hook modules from libraries (hle/hook/module_lib.c, nx/loader/hook_libs.c): synthetic module libraries of no game, one
-# per case from tests/hook_module_lib_mod.c and built against hle/hook/snx_hook_module.h alone, loaded and refused as the
+# hook modules from libraries (nn/module_lib.c, nx/loader/hook_libs.c): synthetic module libraries of no game, one
+# per case from tests/hook_module_lib_mod.c and built against nn/snx_hook_module.h alone, loaded and refused as the
 # runtime loads them, and which game their modules apply to. snx-test-hook-module-lib --load PATH prints what the
 # runtime makes of any library
 set(snx_hx_libs "${CMAKE_CURRENT_BINARY_DIR}/hook_module_libs")
@@ -1845,8 +1845,8 @@ foreach(snx_hx IN ITEMS hx_good:1:/folder hx_off:2:/folder hx_major:3: hx_minor:
                           LIBRARY_OUTPUT_DIRECTORY "${snx_hx_libs}${snx_hx_folder}")
     list(APPEND snx_hx_targets snx-test-${snx_hx_name})
 endforeach()
-add_executable(snx-test-hook-module-lib hook_module_lib.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/module.c"
-               "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/module_lib.c")
+add_executable(snx-test-hook-module-lib hook_module_lib.c "${PROJECT_SOURCE_DIR}/src/nx/nn/module.c"
+               "${PROJECT_SOURCE_DIR}/src/nx/nn/module_lib.c")
 snx_test_target(snx-test-hook-module-lib 11)
 add_dependencies(snx-test-hook-module-lib snx_settings ${snx_hx_targets})
 target_include_directories(snx-test-hook-module-lib PRIVATE "${PROJECT_SOURCE_DIR}/src"
@@ -1855,7 +1855,7 @@ target_compile_definitions(snx-test-hook-module-lib PRIVATE HX_LIBS="${snx_hx_li
                            HX_SUFFIX="${CMAKE_SHARED_LIBRARY_SUFFIX}")
 target_link_libraries(snx-test-hook-module-lib PRIVATE snx_nx_module scarletnx-common m)
 add_test(NAME hook_module_lib COMMAND snx-test-hook-module-lib)
-# the libraries' CPU hooks: hook_install (src/nx/hle/hook/hook.c, its adapter of the libraries'
+# the libraries' CPU hooks: hook_install (src/nx/nn/hook.c, its adapter of the libraries'
 # hooks) over libraries of no game built from tests/hook_lib_cpu_mod.c, the recompile's route keys
 # (nx/loader/hook_libs.c), the hook the route list leaves out, and the handlers' CPU, memory, own code and upscale
 set(snx_hx_cpu_targets)
@@ -1874,9 +1874,9 @@ foreach(snx_hx IN ITEMS hx_cpu:1:/cpu hx_cpu_title:2:/cpu hx_cpu_full:5:/cpu hx_
                           LIBRARY_OUTPUT_DIRECTORY "${snx_hx_libs}${snx_hx_folder}")
     list(APPEND snx_hx_cpu_targets snx-test-${snx_hx_name})
 endforeach()
-add_executable(snx-test-hook-lib-cpu hook_lib_cpu.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/module.c"
-               "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/module_lib.c" "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c"
-               "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/jump.c")
+add_executable(snx-test-hook-lib-cpu hook_lib_cpu.c "${PROJECT_SOURCE_DIR}/src/nx/nn/module.c"
+               "${PROJECT_SOURCE_DIR}/src/nx/nn/module_lib.c" "${PROJECT_SOURCE_DIR}/src/nx/nn/version.c"
+               "${PROJECT_SOURCE_DIR}/src/nx/nn/jump.c")
 snx_test_target(snx-test-hook-lib-cpu 11)
 add_dependencies(snx-test-hook-lib-cpu snx_settings ${snx_hx_cpu_targets})
 target_include_directories(snx-test-hook-lib-cpu PRIVATE "${PROJECT_SOURCE_DIR}/src"
@@ -1887,29 +1887,29 @@ target_link_libraries(snx-test-hook-lib-cpu PRIVATE snx_nx_module scarletnx-comm
 snx_service_swipc(snx-test-hook-lib-cpu)
 snx_hookgen(snx-test-hook-lib-cpu SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/install.hook" A32_MARKED)
 add_test(NAME hook_lib_cpu COMMAND snx-test-hook-lib-cpu)
-# the jumps written over an invalidated native hook's start (src/nx/hle/hook/jump.c), every architecture's bytes
+# the jumps written over an invalidated native hook's start (src/nx/nn/jump.c), every architecture's bytes
 # against what llvm-mc disassembles them to, on any host
-add_executable(snx-test-hook-jump hook_jump.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/jump.c")
+add_executable(snx-test-hook-jump hook_jump.c "${PROJECT_SOURCE_DIR}/src/nx/nn/jump.c")
 snx_test_target(snx-test-hook-jump gnu23)
 target_link_libraries(snx-test-hook-jump PRIVATE scarletnx-common) # jump.c flushes with snx_vm_flush_code
 target_include_directories(snx-test-hook-jump PRIVATE "${PROJECT_SOURCE_DIR}/src")
 add_test(NAME hook_jump COMMAND snx-test-hook-jump)
-# a native hook the game invalidates (src/nx/hle/hook/hook.c): its adapter rewritten into a jump to the game's code, on
+# a native hook the game invalidates (src/nx/nn/hook.c): its adapter rewritten into a jump to the game's code, on
 # this test's own x86_64 code, and the mod's trampolines that an ext_skyline hook (tests/hook/ext_skyline.hooks) takes;
 # skipped on another host
-add_executable(snx-test-hook-invalidated hook_invalidated.c hook_no_modules.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/module.c"
-               "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c" "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/jump.c"
-               "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/ext_skyline.c")
+add_executable(snx-test-hook-invalidated hook_invalidated.c hook_no_modules.c "${PROJECT_SOURCE_DIR}/src/nx/nn/module.c"
+               "${PROJECT_SOURCE_DIR}/src/nx/nn/version.c" "${PROJECT_SOURCE_DIR}/src/nx/nn/jump.c"
+               "${PROJECT_SOURCE_DIR}/src/nx/nn/ext_skyline.c")
 snx_test_target(snx-test-hook-invalidated gnu23)
 target_link_libraries(snx-test-hook-invalidated PRIVATE scarletnx-common) # jump.c flushes with snx_vm_flush_code
 target_include_directories(snx-test-hook-invalidated PRIVATE "${PROJECT_SOURCE_DIR}/src")
 snx_service_swipc(snx-test-hook-invalidated)
 snx_hookgen(snx-test-hook-invalidated SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/install.hook" A32_MARKED)
 snx_hookgen(snx-test-hook-invalidated SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/ext_skyline.hooks" PREFIX skyline
-            NAME hle/hook/ext_skyline.hooks)
+            NAME nn/ext_skyline.hooks)
 add_test(NAME hook_invalidated COMMAND snx-test-hook-invalidated)
 set_tests_properties(hook_invalidated PROPERTIES SKIP_RETURN_CODE 77)
-# hook_install over a full table (src/nx/hle/hook/hook.c), the spec written here with as many hooks as tools/hookgen
+# hook_install over a full table (src/nx/nn/hook.c), the spec written here with as many hooks as tools/hookgen
 # takes (its MAX_ENTRIES): one module exporting every function gets each one hooked, and a second exporting them again
 # runs out of sites, which stops the game naming the first function left without its hook
 set(full_spec "family full\n")
@@ -1917,9 +1917,9 @@ foreach(i RANGE 1023)
     string(APPEND full_spec "hook full_${i}() = test_full\n")
 endforeach()
 file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/hook/full.hook" CONTENT "${full_spec}")
-add_executable(snx-test-hook-sites hook_sites.c hook_no_modules.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/module.c"
-               "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c"
-               "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/jump.c")
+add_executable(snx-test-hook-sites hook_sites.c hook_no_modules.c "${PROJECT_SOURCE_DIR}/src/nx/nn/module.c"
+               "${PROJECT_SOURCE_DIR}/src/nx/nn/version.c"
+               "${PROJECT_SOURCE_DIR}/src/nx/nn/jump.c")
 snx_test_target(snx-test-hook-sites gnu23)
 target_link_libraries(snx-test-hook-sites PRIVATE scarletnx-common) # jump.c flushes with snx_vm_flush_code
 target_include_directories(snx-test-hook-sites PRIVATE "${PROJECT_SOURCE_DIR}/src")
@@ -1938,108 +1938,108 @@ target_link_libraries(snx-test-hook-routes PRIVATE snx_test_common snx_nx_module
 snx_hook_routes(snx-test-hook-routes SPECS "${CMAKE_CURRENT_SOURCE_DIR}/hook/routes.hook"
                 "${CMAKE_CURRENT_SOURCE_DIR}/hook/versions.hook" "${CMAKE_CURRENT_SOURCE_DIR}/hook/address.hook")
 add_test(NAME hook_routes COMMAND snx-test-hook-routes)
-# verify mode (src/nx/hle/hook/verify.c): pure hooks (tests/hook/verify.hook) checked against stand-ins for the
+# verify mode (src/nx/nn/verify.c): pure hooks (tests/hook/verify.hook) checked against stand-ins for the
 # function's own code, on copies of their buffers, and each kind of difference it reports
-add_executable(snx-test-hook-verify hook_verify.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/verify.c")
+add_executable(snx-test-hook-verify hook_verify.c "${PROJECT_SOURCE_DIR}/src/nx/nn/verify.c")
 snx_test_target(snx-test-hook-verify c23)
 target_include_directories(snx-test-hook-verify PRIVATE "${PROJECT_SOURCE_DIR}/src")
 snx_hookgen(snx-test-hook-verify SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/verify.hook")
 add_test(NAME hook_verify COMMAND snx-test-hook-verify)
-# nn::diag's abort hook (src/nx/hle/hook/diag.c) on a fake abort: the values it logs, then its own code run
+# nn::diag's abort hook (src/nx/nn/diag.c) on a fake abort: the values it logs, then its own code run
 # libc_std.c too: the table names its handlers, which run on the host's C library alone
-add_executable(snx-test-diag-abort diag_abort.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/diag.c"
-               "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/libc_std.c" "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/libc_wide.c"
-               "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/libc_fmt.c" "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/libcxx_string.c")
+add_executable(snx-test-diag-abort diag_abort.c "${PROJECT_SOURCE_DIR}/src/nx/nn/diag.c"
+               "${PROJECT_SOURCE_DIR}/src/nx/nn/libc_std.c" "${PROJECT_SOURCE_DIR}/src/nx/nn/libc_wide.c"
+               "${PROJECT_SOURCE_DIR}/src/nx/nn/libc_fmt.c" "${PROJECT_SOURCE_DIR}/src/nx/nn/libcxx_string.c")
 snx_test_target(snx-test-diag-abort gnu23) # log.h has _Thread_local
 target_include_directories(snx-test-diag-abort PRIVATE "${PROJECT_SOURCE_DIR}/src")
-snx_hookgen(snx-test-diag-abort SPEC "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
+snx_hookgen(snx-test-diag-abort SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/hooks.hook")
 add_test(NAME diag_abort COMMAND snx-test-diag-abort)
-# std::string's hooks (src/nx/hle/hook/libcxx_string.c) on libc++'s layout in guest memory
-add_executable(snx-test-libcxx-string libcxx_string.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/libcxx_string.c")
+# std::string's hooks (src/nx/nn/libcxx_string.c) on libc++'s layout in guest memory
+add_executable(snx-test-libcxx-string libcxx_string.c "${PROJECT_SOURCE_DIR}/src/nx/nn/libcxx_string.c")
 snx_test_target(snx-test-libcxx-string gnu23)
 target_include_directories(snx-test-libcxx-string PRIVATE "${PROJECT_SOURCE_DIR}/src")
-snx_hookgen(snx-test-libcxx-string SPEC "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
+snx_hookgen(snx-test-libcxx-string SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/hooks.hook")
 add_test(NAME libcxx_string COMMAND snx-test-libcxx-string)
-# std::vector's storage hook (src/nx/hle/hook/alloc.c): the destructor shapes alloc_vector_shape takes and leaves, and
+# std::vector's storage hook (src/nx/nn/alloc.c): the destructor shapes alloc_vector_shape takes and leaves, and
 # alloc_vector_free's empty vector and foreign pointer
 if(NOT WIN32)
-    add_executable(snx-test-alloc-vector alloc_vector.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/alloc.c")
+    add_executable(snx-test-alloc-vector alloc_vector.c "${PROJECT_SOURCE_DIR}/src/nx/nn/alloc.c")
     snx_test_target(snx-test-alloc-vector gnu23)
     target_include_directories(snx-test-alloc-vector PRIVATE "${PROJECT_SOURCE_DIR}/src")
-    snx_hookgen(snx-test-alloc-vector SPEC "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
+    snx_hookgen(snx-test-alloc-vector SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/hooks.hook")
     add_test(NAME alloc_vector COMMAND snx-test-alloc-vector)
 endif()
-# the sync family's clocks (src/nx/hle/hook/sync.c) against the game's (src/nx/runtime/clock.c): steady_clock stopped
+# the sync family's clocks (src/nx/nn/sync.c) against the game's (src/nx/runtime/clock.c): steady_clock stopped
 # by a pause and set by a state's load, system_clock the host's; and the cond_var family's C library waits
-add_executable(snx-test-sync-clock sync_clock.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/sync.c"
+add_executable(snx-test-sync-clock sync_clock.c "${PROJECT_SOURCE_DIR}/src/nx/nn/sync.c"
                "${PROJECT_SOURCE_DIR}/src/nx/runtime/clock.c")
 snx_test_target(snx-test-sync-clock gnu23)
 target_include_directories(snx-test-sync-clock PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(snx-test-sync-clock PRIVATE scarletnx-platform)
-snx_hookgen(snx-test-sync-clock SPEC "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
+snx_hookgen(snx-test-sync-clock SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/hooks.hook")
 add_test(NAME sync_clock COMMAND snx-test-sync-clock)
-# the os_light family's LightEvent handlers (src/nx/hle/hook/os_sync.c) on each SDK's layout of nn::os::LightEventType,
+# the os_light family's LightEvent handlers (src/nx/nn/os_sync.c) on each SDK's layout of nn::os::LightEventType,
 # against the bytes the SDK's own InitializeLightEvent leaves
 add_executable(snx-test-os-light-event os_light_event.c)
 snx_test_target(snx-test-os-light-event gnu23)
 target_include_directories(snx-test-os-light-event PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(snx-test-os-light-event PRIVATE scarletnx-platform)
-snx_hookgen(snx-test-os-light-event SPEC "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
+snx_hookgen(snx-test-os-light-event SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/hooks.hook")
 # its handlers on the layouts of the table hookgen makes, which it reads; os_sync.c's split symbol names are deliberate
 target_compile_definitions(snx-test-os-light-event PRIVATE
-    OS_LIGHT_INC="${CMAKE_CURRENT_BINARY_DIR}/hookgen/snx-test-os-light-event/hle/hook/hooks.hook.inc")
+    OS_LIGHT_INC="${CMAKE_CURRENT_BINARY_DIR}/hookgen/snx-test-os-light-event/nn/hooks.hook.inc")
 target_compile_options(snx-test-os-light-event PRIVATE -Wno-string-concatenation)
 add_test(NAME os_light_event COMMAND snx-test-os-light-event)
-# the alloc family's arena (src/nx/hle/hook/alloc.c) in a program that links jemalloc as scarletnx does, whole and
+# the alloc family's arena (src/nx/nn/alloc.c) in a program that links jemalloc as scarletnx does, whole and
 # unexported: ready, and its allocations in the guest's window above the layout; the SDK heap's functions on its
 # blocks, each in the runtime's route list (snx_nx_module's)
 if(SNX_JEMALLOC AND NOT WIN32)
-    add_executable(snx-test-alloc-arena alloc_arena.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/alloc.c")
+    add_executable(snx-test-alloc-arena alloc_arena.c "${PROJECT_SOURCE_DIR}/src/nx/nn/alloc.c")
     snx_test_target(snx-test-alloc-arena gnu23)
     target_include_directories(snx-test-alloc-arena PRIVATE "${PROJECT_SOURCE_DIR}/src")
     target_link_libraries(snx-test-alloc-arena PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,snx_jemalloc>" snx_nx_module)
-    snx_hookgen(snx-test-alloc-arena SPEC "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
+    snx_hookgen(snx-test-alloc-arena SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/hooks.hook")
     target_compile_definitions(snx-test-alloc-arena PRIVATE LIVE_BITS=8) # a table that fills in a few hundred blocks
     add_test(NAME alloc_arena COMMAND snx-test-alloc-arena)
     set_tests_properties(alloc_arena PROPERTIES TIMEOUT 60)
 endif()
-# operator new's check (src/nx/hle/hook/alloc.c's alloc_new_shape): a module whose operator delete looks the block's
+# operator new's check (src/nx/nn/alloc.c's alloc_new_shape): a module whose operator delete looks the block's
 # allocator up by its address and copies that code where no hook takes it, inlined or to a function no symbol names,
 # keeps its own operator new; the deletes' own bodies, the family's functions, loads spread wide, a forwarder, and a
 # copied delete without the lookup (a heap's, by the size, on a link-time table with one global) do not count. Nor does
 # a delete that asks for its heap without giving it the block, beside an operator new that calls an object through its
 # table; one that asks by the block does, and the module keeps its own operator new
 if(NOT WIN32)
-    add_executable(snx-test-alloc-new-shape alloc_new_shape.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/alloc.c")
+    add_executable(snx-test-alloc-new-shape alloc_new_shape.c "${PROJECT_SOURCE_DIR}/src/nx/nn/alloc.c")
     snx_test_target(snx-test-alloc-new-shape gnu23)
     target_include_directories(snx-test-alloc-new-shape PRIVATE "${PROJECT_SOURCE_DIR}/src")
-    snx_hookgen(snx-test-alloc-new-shape SPEC "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
+    snx_hookgen(snx-test-alloc-new-shape SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/hooks.hook")
     add_test(NAME alloc_new_shape COMMAND snx-test-alloc-new-shape)
 endif()
-# a game's own allocator (src/nx/hle/hook/alloc.c's alloc_object_call and alloc_kept): a malloc, operator new or delete
+# a game's own allocator (src/nx/nn/alloc.c's alloc_object_call and alloc_kept): a malloc, operator new or delete
 # that calls an allocator object through its table with the object in x0 is one; a PLT stub, a function pointer in a
 # global, a table no object is passed, the object elsewhere or overwritten, a direct call and a virtual call past the
 # function's end are not. A program whose malloc is one has the family off; one whose malloc is the SDK allocator's
 # keeps it, though its operator new and free call objects
 if(NOT WIN32)
-    add_executable(snx-test-alloc-kept alloc_kept.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/alloc.c")
+    add_executable(snx-test-alloc-kept alloc_kept.c "${PROJECT_SOURCE_DIR}/src/nx/nn/alloc.c")
     snx_test_target(snx-test-alloc-kept gnu23)
     target_include_directories(snx-test-alloc-kept PRIVATE "${PROJECT_SOURCE_DIR}/src")
-    snx_hookgen(snx-test-alloc-kept SPEC "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
+    snx_hookgen(snx-test-alloc-kept SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/hooks.hook")
     add_test(NAME alloc_kept_off COMMAND snx-test-alloc-kept off)
     add_test(NAME alloc_kept_on COMMAND snx-test-alloc-kept on)
 endif()
-# the C library's functions on guest memory (src/nx/hle/hook/libc_std.c): guest addresses back from pointers into an
+# the C library's functions on guest memory (src/nx/nn/libc_std.c): guest addresses back from pointers into an
 # argument, end pointers, strtok's place, div_t and ldiv_t, errno, qsort and bsearch through the guest's comparison
 if(NOT WIN32)
-    add_executable(snx-test-libc-std libc_std.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/libc_std.c"
-                   "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/libc_wide.c" "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/libc_fmt.c")
+    add_executable(snx-test-libc-std libc_std.c "${PROJECT_SOURCE_DIR}/src/nx/nn/libc_std.c"
+                   "${PROJECT_SOURCE_DIR}/src/nx/nn/libc_wide.c" "${PROJECT_SOURCE_DIR}/src/nx/nn/libc_fmt.c")
     snx_test_target(snx-test-libc-std gnu23)
     target_include_directories(snx-test-libc-std PRIVATE "${PROJECT_SOURCE_DIR}/src")
-    snx_hookgen(snx-test-libc-std SPEC "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
+    snx_hookgen(snx-test-libc-std SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/hooks.hook")
     add_test(NAME libc_std COMMAND snx-test-libc-std)
 endif()
-# the event a hooked SDK object attaches to the game's SystemEvent (src/nx/hle/hook/guest_call.c's hook_attach_event):
+# the event a hooked SDK object attaches to the game's SystemEvent (src/nx/nn/guest_call.c's hook_attach_event):
 # its references, with the kernel's objects stubbed to their counts
 add_executable(snx-test-hook-event-reference hook_event_reference.c)
 snx_test_target(snx-test-hook-event-reference gnu23)
@@ -2048,7 +2048,7 @@ snx_service_swipc(snx-test-hook-event-reference)
 add_test(NAME hook_event_reference COMMAND snx-test-hook-event-reference)
 # the hooks' NVN key (tests/hook/nvn_versions.hook): the API version read from a driver's nvnDeviceGetInteger
 # (src/nx/gpu/nvn/nvn_driver.c), the entry hook_select picks for it, and the versions the log calls described
-add_executable(snx-test-nvn-versions nvn_versions.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c"
+add_executable(snx-test-nvn-versions nvn_versions.c "${PROJECT_SOURCE_DIR}/src/nx/nn/version.c"
     "${PROJECT_SOURCE_DIR}/src/nx/gpu/nvn/nvn_driver.c")
 snx_test_target(snx-test-nvn-versions c23)
 target_include_directories(snx-test-nvn-versions PRIVATE "${PROJECT_SOURCE_DIR}/src")
@@ -2213,7 +2213,7 @@ set_tests_properties(hookgen_refuses_a32_all PROPERTIES
 string(REPEAT "p" 200 snx_hookgen_long_prefix)
 add_test(NAME hookgen_refuses_long_line COMMAND snx-hookgen --prefix "${snx_hookgen_long_prefix}"
          -I "${PROJECT_SOURCE_DIR}/src" --header "${CMAKE_CURRENT_BINARY_DIR}/refused.h"
-         --out "${CMAKE_CURRENT_BINARY_DIR}/refused.inc" "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
+         --out "${CMAKE_CURRENT_BINARY_DIR}/refused.inc" "${PROJECT_SOURCE_DIR}/src/nx/nn/hooks.hook")
 set_tests_properties(hookgen_refuses_long_line PROPERTIES
                      PASS_REGULAR_EXPRESSION "a generated line of [0-9]+ bytes passes the 1023 a line holds")
 add_executable(snx-test-swipc-dispatch swipc_dispatch.c)
@@ -2383,7 +2383,7 @@ if(TARGET OpenSSL::Crypto AND NOT SNX_TOOLS_ONLY)
     # the native nn::fs (nn/fs.c): a path's mount and limits as the SDK's C library asks them, and a system archive
     # mounted by its data id, with the file server's core stubbed; then the RomFS of another program, from its
     # image, and the stop when the image is not there
-    add_executable(snx-test-nn-fs nn_fs.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c")
+    add_executable(snx-test-nn-fs nn_fs.c "${PROJECT_SOURCE_DIR}/src/nx/nn/version.c")
     snx_test_target(snx-test-nn-fs gnu23)
     snx_service_swipc(snx-test-nn-fs)
     snx_hookgen(snx-test-nn-fs SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/fs.hook" A32_MARKED)
@@ -2441,27 +2441,27 @@ if(TARGET OpenSSL::Crypto AND NOT SNX_TOOLS_ONLY)
     snx_hookgen(snx-test-nn-nsd SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/nsd.hook" A32_MARKED)
     add_test(NAME nn_nsd COMMAND snx-test-nn-nsd)
     # the native nn::ngc (nn/ngc.c): the profanity filter's checks, with no word lists
-    add_executable(snx-test-nn-ngc nn_ngc.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c")
+    add_executable(snx-test-nn-ngc nn_ngc.c "${PROJECT_SOURCE_DIR}/src/nx/nn/version.c")
     snx_test_target(snx-test-nn-ngc gnu23)
     target_include_directories(snx-test-nn-ngc PRIVATE "${PROJECT_SOURCE_DIR}/src")
     snx_hookgen(snx-test-nn-ngc SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/ngc.hook")
     add_test(NAME nn_ngc COMMAND snx-test-nn-ngc)
     # the native nn::prepo (nn/prepo.c): Save in the two report layouts, and SDK 20's limit
-    add_executable(snx-test-nn-prepo nn_prepo.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c")
+    add_executable(snx-test-nn-prepo nn_prepo.c "${PROJECT_SOURCE_DIR}/src/nx/nn/version.c")
     snx_test_target(snx-test-nn-prepo gnu23)
     snx_service_swipc(snx-test-nn-prepo)
     snx_hookgen(snx-test-nn-prepo SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/prepo.hook" A32_MARKED)
     add_test(NAME nn_prepo COMMAND snx-test-nn-prepo)
     # the native audio outs (nn/audio.c): what OpenAudioOut writes into the game's AudioOut, the buffers' play and
     # release on the clock, the buffer event, and audio.hook's table
-    add_executable(snx-test-nn-audio nn_audio.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c")
+    add_executable(snx-test-nn-audio nn_audio.c "${PROJECT_SOURCE_DIR}/src/nx/nn/version.c")
     snx_test_target(snx-test-nn-audio gnu23)
     snx_service_swipc(snx-test-nn-audio)
     snx_hookgen(snx-test-nn-audio SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/audio.hook" A32_MARKED)
     add_test(NAME nn_audio COMMAND snx-test-nn-audio)
     # the movie library's native JPEG decoder and encoder (nn/tvmr_jpeg.c) over FFmpeg: pictures through both, their
     # surfaces' layouts, the statuses of what NVJPG refuses, and tvmr_jpeg.hook's table by movie version
-    add_executable(snx-test-nn-tvmr-jpeg nn_tvmr_jpeg.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c")
+    add_executable(snx-test-nn-tvmr-jpeg nn_tvmr_jpeg.c "${PROJECT_SOURCE_DIR}/src/nx/nn/version.c")
     snx_test_target(snx-test-nn-tvmr-jpeg gnu23)
     snx_service_swipc(snx-test-nn-tvmr-jpeg)
     snx_hookgen(snx-test-nn-tvmr-jpeg SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/tvmr_jpeg.hook" A32_MARKED)
@@ -2469,18 +2469,18 @@ if(TARGET OpenSSL::Crypto AND NOT SNX_TOOLS_ONLY)
     add_test(NAME nn_tvmr_jpeg COMMAND snx-test-nn-tvmr-jpeg)
     # the native audio renderer (nn/audio_renderer.c): the parameters, the handle, RequestUpdateAudioRenderer over a
     # stand-in SDK's managers, and audio_renderer.hook's table by SDK version
-    add_executable(snx-test-nn-audio-renderer nn_audio_renderer.c "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c")
+    add_executable(snx-test-nn-audio-renderer nn_audio_renderer.c "${PROJECT_SOURCE_DIR}/src/nx/nn/version.c")
     snx_test_target(snx-test-nn-audio-renderer gnu23)
     snx_service_swipc(snx-test-nn-audio-renderer)
     snx_hookgen(snx-test-nn-audio-renderer SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/audio_renderer.hook" A32_MARKED)
     add_test(NAME nn_audio_renderer COMMAND snx-test-nn-audio-renderer)
-    # the input streams of the Ounce's SDK (hle/hook/audio_stream.c) over a synthetic microphone, never a real one, and
+    # the input streams of the Ounce's SDK (nn/audio_stream.c) over a synthetic microphone, never a real one, and
     # the noise reduction (runtime/platform/audio_denoise.c): RNNoise built in, and the system's libspeexdsp when it is
     # there
     add_executable(snx-test-audio-mic audio_mic.c)
     snx_test_target(snx-test-audio-mic gnu23)
     snx_service_swipc(snx-test-audio-mic)
-    snx_hookgen(snx-test-audio-mic SPEC "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/hooks.hook")
+    snx_hookgen(snx-test-audio-mic SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/hooks.hook")
     target_link_libraries(snx-test-audio-mic PRIVATE scarletnx-common snx_rnnoise)
     if(NOT WIN32)
         target_link_libraries(snx-test-audio-mic PRIVATE m)
@@ -5011,7 +5011,7 @@ if(SNX_TOOLS_ONLY)
     snx_test_target(snx-test-audio-out gnu23)
     snx_service_swipc(snx-test-audio-out hle/services/audio.swipc)
     snx_hookgen(snx-test-audio-out SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/codec.hook")
-    target_sources(snx-test-audio-out PRIVATE "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c")
+    target_sources(snx-test-audio-out PRIVATE "${PROJECT_SOURCE_DIR}/src/nx/nn/version.c")
     target_compile_definitions(snx-test-audio-out PRIVATE SNX_NO_H264)
     if(NOT WIN32)
         target_link_libraries(snx-test-audio-out PRIVATE m)
@@ -5022,7 +5022,7 @@ else()
     snx_test_target(snx-test-audio-opus gnu23)
     snx_service_swipc(snx-test-audio-opus hle/services/audio.swipc)
     snx_hookgen(snx-test-audio-opus SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/codec.hook")
-    target_sources(snx-test-audio-opus PRIVATE "${PROJECT_SOURCE_DIR}/src/nx/hle/hook/version.c")
+    target_sources(snx-test-audio-opus PRIVATE "${PROJECT_SOURCE_DIR}/src/nx/nn/version.c")
     target_link_libraries(snx-test-audio-opus PRIVATE FFmpeg::avcodec)
     if(NOT WIN32)
         target_link_libraries(snx-test-audio-opus PRIVATE m)

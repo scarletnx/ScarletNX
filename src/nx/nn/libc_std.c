@@ -13,9 +13,9 @@
    seed. qsort and bsearch call the game's comparison function for each comparison the host's makes
    (hook_guest_call). The family is off on Windows, whose C library lacks half of these and has another RAND_MAX */
 #define _GNU_SOURCE /* glibc's strcasestr */
-#include "nx/hle/hook/hook.h"
+#include "nx/nn/hook.h"
 #include "common/utilities/bits.h"
-#include "hle/hook/hooks.hook.h"
+#include "nn/hooks.hook.h"
 #include "nx/hle/kernel/kernel.h"
 #include <ctype.h>
 #include <errno.h>

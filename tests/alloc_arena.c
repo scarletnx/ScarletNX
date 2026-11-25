@@ -8,8 +8,8 @@
    and go (built with LIVE_BITS 8). Then the SDK heap's functions, which a game whose malloc is its StandardAllocator's
    hands a block malloc gave: an arena block is the arena's, with the heap's results, any other pointer the heap's own
    code, and the route list names each of them as every SDK here spells it */
-#include "nx/hle/hook/hook.h"
-#include "hle/hook/hooks.hook.h"
+#include "nx/nn/hook.h"
+#include "nn/hooks.hook.h"
 #include "nx/loader/hook_routes.h"
 #include "nx/loader/module_abi.h"
 #include "nx/memory/mem.h"

@@ -1,12 +1,12 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The libc_str family's handlers (src/nx/hle/hook/libc_std.c) on guest memory: a pointer into an argument comes back
+/* The libc_str family's handlers (src/nx/nn/libc_std.c) on guest memory: a pointer into an argument comes back
    as the guest address of the same byte, an end pointer is written as one, strtok keeps its place between calls,
    div packs div_t into x0 and ldiv puts ldiv_t's second long in x1, errno goes to the address __errno_location gives
    (here a guest call answered by the test), and qsort and bsearch compare through the guest's function (the test's
    comparison of ints) */
-#include "nx/hle/hook/hook.h"
-#include "hle/hook/hooks.hook.h"
+#include "nx/nn/hook.h"
+#include "nn/hooks.hook.h"
 #include <assert.h>
 #include <stdarg.h>
 #include <stdio.h>

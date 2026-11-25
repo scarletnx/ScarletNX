@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* module.h: whether each hook module applies, by its title, its module's build ID and the code it checks */
-#include "nx/hle/hook/module.h"
+#include "nx/nn/module.h"
 #include <stdio.h>
 #include <string.h>
 #include "nx/runtime/platform/log.h"

@@ -9,7 +9,7 @@
    AddSessionId for the SDKs read from 10: the SDK's own PlayReport::Add of 8 zero bytes under the key, below the
    caller's stack, its Result given back and the stack as it was */
 #include "nx/nn/prepo.c"
-#include "hle/hook/hooks.hook.inc" /* prepo.hook's table and adapters, and a 32-bit game's */
+#include "nn/hooks.hook.inc" /* prepo.hook's table and adapters, and a 32-bit game's */
 #include <stdio.h>
 #include <stdlib.h>
 

@@ -1,13 +1,13 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The synthetic hook modules of tests/hook_lib_cpu.c, of no game, with CPU hooks, built against
-   hle/hook/snx_hook_module.h alone. HX_CASE picks the case. 1 is hx_cpu, four CPU hooks on the test's game: one that
+   nn/snx_hook_module.h alone. HX_CASE picks the case. 1 is hx_cpu, four CPU hooks on the test's game: one that
    leaves the function's own code out, one around it, one the game wasn't recompiled for, one that records an upscale.
    2 is hx_cpu_title, the same for another title. 3 is hx_cpu_nobuild, CPU hooks without a build ID. 4 is hx_cpu_odd,
    a hook at an offset that isn't 4-aligned. 5 is hx_cpu_full, one hook given by the game's whole build ID, where
    hx_cpu gives its first 8 bytes */
 #include <string.h>
-#include "nx/hle/hook/snx_hook_module.h"
+#include "nx/nn/snx_hook_module.h"
 
 #ifndef HX_CASE
 #error HX_CASE picks the case

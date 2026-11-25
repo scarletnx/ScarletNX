@@ -19,7 +19,7 @@
    stop of Unmount with files or directories open on the mount: each one logged with its path, then FileNotClosed, or
    DirectoryNotClosed when only directories are open */
 #include "nx/nn/fs.c"
-#include "hle/hook/hooks.hook.inc" /* fs.hook's table, and a 32-bit game's */
+#include "nn/hooks.hook.inc" /* fs.hook's table, and a 32-bit game's */
 #include <stdarg.h>
 #include <stdio.h>
 

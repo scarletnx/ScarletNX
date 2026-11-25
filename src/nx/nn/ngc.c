@@ -12,8 +12,8 @@
    The game owns the ProfanityFilter object: the flag of the desired language at 8, initialized at 9, the skip, mask
    and normalization modes at 0xc, 0x10 and 0x14 (their setters run the SDK's own code), the work buffer and its size
    at 0x18 and 0x20, and the heap the SDK builds in it at 0x28, which no code reads with every user of it hooked */
-#include "nx/hle/hook/hook.h"
-#include "hle/hook/hooks.hook.h"
+#include "nx/nn/hook.h"
+#include "nn/hooks.hook.h"
 #include "nx/runtime/platform/tracy.h"
 #include "common/utilities/endian.h"
 #include <string.h>

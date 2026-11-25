@@ -5,8 +5,8 @@
    And the C library's condition variable waits on a std::mutex the family holds (libc++'s inlined steady_clock waits
    call pthread_cond_clockwait with its words): the host's wait, ETIMEDOUT at a deadline on steady_clock's or the real
    time's clock, 0 when the condition variable is notified; on any other mutex the function's own code runs */
-#include "nx/hle/hook/hook.h"
-#include "hle/hook/hooks.hook.h"
+#include "nx/nn/hook.h"
+#include "nn/hooks.hook.h"
 #include "common/platform/thread.h"
 #include "common/platform/time.h"
 #include "nx/hle/kernel/kernel.h"

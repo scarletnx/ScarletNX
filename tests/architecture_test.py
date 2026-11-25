@@ -232,7 +232,7 @@ class ArchitectureTests(unittest.TestCase):
         files = {
             'src/nx/runtime/driver/driver.c': '[[gnu::weak]] int snx_setting_known(const char* key) { return 0; }\n'
             '[[gnu::weak]] struct jit_descriptor __jit_debug_descriptor = {1, 0, NULL, NULL};\n',
-            'src/nx/hle/hook/alloc.c': '[[gnu::weak]] extern void* mallocx(size_t size, int flags);\n'
+            'src/nx/nn/alloc.c': '[[gnu::weak]] extern void* mallocx(size_t size, int flags);\n'
             '[[gnu::weak, gnu::visibility("hidden")]] extern const char __ehdr_start[];\n',
             'src/nx/runtime/main.c': '/* [[gnu::weak]] int old(void); */\nconst char* s = "[[gnu::weak]] int f(void);";\n',
         }

@@ -3,7 +3,7 @@
 /* A handler's calls into the game's own code (hook.h): a guest function run to its return, and a kernel event or a
    handle attached to the game's SystemEventType through its SDK's nn::os::AttachReadableHandleToSystemEvent, as an
    SDK object attaches its service's */
-#include "nx/hle/hook/hook.h"
+#include "nx/nn/hook.h"
 #include "nx/hle/kernel/kernel.h"
 #include "nx/runtime/arm.h"
 

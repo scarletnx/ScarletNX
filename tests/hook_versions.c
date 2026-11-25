@@ -3,9 +3,9 @@
 /* Versioned hooks (tests/hook/versions.hook): the table hookgen generates (a symbol's entries by version, a hook split
    at the bounds of the struct variants it uses), the version an SDK label in a module's bytes gives, the entry
    hook_select picks for a module's version and the layout its adapter hands the handler, and the field accessors */
-#include "nx/hle/hook/hook.h"
-#include "hle/hook/hooks.hook.h"
-#include "hle/hook/hooks.hook.inc"
+#include "nx/nn/hook.h"
+#include "nn/hooks.hook.h"
+#include "nn/hooks.hook.inc"
 #include "nx/loader/hook_routes.h"
 #include <assert.h>
 #include <stdio.h>

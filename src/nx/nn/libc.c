@@ -6,8 +6,8 @@
    bytes as they were before the copy, which is what a game that overlaps them (by mistake) most plausibly meant.
    A range the game hasn't mapped faults here as it would in the guest's code (crash.c reports it, with the call's
    range and where the fault lies in it: debug.c's kernel_dump_libc_fault) */
-#include "nx/hle/hook/hook.h"
-#include "hle/hook/hooks.hook.h"
+#include "nx/nn/hook.h"
+#include "nn/hooks.hook.h"
 #include "nx/runtime/platform/tracy.h"
 
 /* memcpy and memmove share this one handler (hooks.hook), so one zone covers both: the zone's time is the host CPU

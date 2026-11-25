@@ -11,7 +11,7 @@
 #include "nx/runtime/main.h"
 #include "nx/runtime/rtapi.h"
 #include "nx/hle/kernel/kernel_int.h"
-#include "nx/hle/hook/hook.h"
+#include "nx/nn/hook.h"
 #include "nx/memory/mem.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"

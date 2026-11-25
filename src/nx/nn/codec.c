@@ -11,8 +11,8 @@
      audio DSP runs from a task queue.
    FinalizeHardwareOpusDecoder and ResetHardwareOpusDecoder carry the same symbols in both: they are declared once, as
    hwacod's, and its handlers hand a decoder that isn't one of its own to hwopus's */
-#include "nx/hle/hook/hook.h"
-#include "hle/hook/hooks.hook.h"
+#include "nx/nn/hook.h"
+#include "nn/hooks.hook.h"
 #include "nx/hle/hle.h"
 #include "nx/hle/kernel/kernel.h"
 #include "nx/hle/services/services_int.h"
