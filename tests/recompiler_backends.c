@@ -502,8 +502,10 @@ static void on_fault(int sig) {
     (void)!write(2, line, (size_t)n);
     _exit(3);
 }
+static int g_qemu; /* --qemu: the end compared is QEMU's, of the word alone */
 static void undef(CPU* c, uint64_t pc, uint32_t word) {
-    c->x[17] ^= pc ^ (uint64_t)word << 32; /* what it was passed, in the state the sides are compared by */
+    /* what it was passed, in the state the sides are compared by; not QEMU's, which has no RET of a word's X30 */
+    if (!g_qemu) c->x[17] ^= pc ^ (uint64_t)word << 32;
     c->pc = STOP;
 }
 static void on_svc(CPU* c, uint32_t imm) { (void)c, (void)imm; }
@@ -1019,6 +1021,7 @@ int main(int argc, char** argv) {
             must_make = 1, ++i;
         } else if (!strcmp(argv[i], "--qemu") && i + 3 < (unsigned)argc) {
             qemu = argv + i + 1;
+            g_qemu = 1;
             i += 3;
         } else if (!strcmp(argv[i], "--target") && i + 1 < (unsigned)argc) {
             const char* name = argv[++i];
