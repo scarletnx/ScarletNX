@@ -321,4 +321,63 @@ static int check_uma_region_watch_engine(void) {
             "in place: an engine's result over a watched target waits for nothing, and the CPU's access waits for it\n");
     return bad;
 }
+/* The table of imports full (vk_uma_table_max: three, the oldest under a watch): the new range takes the place of the
+   oldest one whose pages no watch traps. The oldest of all, under a watch, let go of no room, and the new range was
+   copied for as long. All of them under watches: nothing goes, and the new range is copied */
+static int check_uma_region_table(void) {
+    const float blue[4] = {0, 0, 1, 1};
+    const u64 t = 0x40000;
+    UrwWindow w[4];
+    VkBuffer r;
+    u64 ro;
+    int held[4];
+    for (int k = 0; k < 4; k++) {
+        CHECK(!urw_open(&w[k], 0x1400000 + (u64)k * 0x200000));
+        if (w[k].region) continue;
+        while (k-- > 0) CHECK(!urw_close(&w[k]));
+        return 0;
+    }
+    vk_lock();
+    vk_uma_forget_all(); /* the checks before it; the windows are mapped, and none is imported */
+    vk_unlock();
+    for (int all = 0; all < 2; all++) {
+        g_vk_present += 2;
+        for (int k = 0; k < 3; k++) { /* w[0] is used first: the least recently used */
+            const int watched = !k || all;
+            vk_lock();
+            CHECK(vk_buf_get_strict(w[k].gva, 256, &r, &ro) && vk_uma_region_held(w[k].cpu, 0x200000));
+            vk_unlock();
+            if (watched) rt_clear_rect(w[k].ch, w[k].gva + t, blue, NULL);
+            vk_lock();
+            vk_rt_publish_drawn();
+            CHECK(!!own_watched(w[k].cpu + t, URW_SPAN) == watched);
+            g_vk_present++;
+            vk_unlock();
+        }
+        vk_lock();
+        vk_uma_table_max(3);
+        CHECK(vk_buf_get_strict(w[3].gva, 256, &r, &ro)); /* one lookup lets one go, the next makes the new one */
+        CHECK(vk_buf_get_strict(w[3].gva, 256, &r, &ro));
+        for (int k = 0; k < 4; k++) held[k] = vk_uma_region_held(w[k].cpu, 0x200000);
+        vk_uma_table_max(0);
+        vk_unlock();
+        if (!held[0] || held[1] != all || !held[2] || held[3] == all) {
+            fprintf(stderr,
+                    "the table of imports full, %s under a watch: held the first window's region %d (want 1), the "
+                    "second's %d (want %d), the third's %d (want 1), the new range's %d (want %d)\n",
+                    all ? "all" : "the oldest", held[0], held[1], all, held[2], held[3], !all);
+            return 1;
+        }
+        vk_lock();
+        for (int k = 0; k < 3; k++) {
+            vk_rt_before_write(w[k].gva, 0x200000, 0);
+            own_unwatch(w[k].cpu, 0x200000);
+        }
+        vk_uma_forget_all();
+        vk_unlock();
+    }
+    for (int k = 0; k < 4; k++) CHECK(!urw_close(&w[k]));
+    puts("in place: a full table of imports lets go of the oldest one that no watch traps, and of none when all are");
+    return 0;
+}
 #endif

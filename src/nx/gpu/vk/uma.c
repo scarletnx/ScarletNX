@@ -213,6 +213,7 @@ enum { UMA_FAST_DEAD, UMA_FAST_RUN, UMA_FAST_NONE, UMA_FAST_EDGE, UMA_FAST_BLK, 
    for the GPU (the hazard count), and the GPU thread again for the page table that those threads read */
 typedef struct {
     /* the GPU thread's, under vk_lock */
+    u32 max;          /* the imports the table takes where a test asks for fewer (vk_uma_table_max), 0: UMA_MAX */
     Imp imp[UMA_MAX]; /* sorted by cpu, none overlapping, nimp of them; their dead flags under lk */
     u32 nimp;
     _Atomic u32 untracked; /* untracked_count's */
@@ -1608,10 +1609,18 @@ static u32 imp_get(u64 cpu, u64 len) {
         g_uma.imp_why[hi - lo > cap ? 3 : 4]++;
         return ~0u;
     }
-    if (g_uma.nimp - (last - first) >= UMA_MAX) { /* full: the least recently used goes */
-        u32 old = 0;
-        for (u32 k = 1; k < g_uma.nimp; k++)
-            if ((i32)(g_uma.imp[k].used - g_uma.imp[old].used) < 0) old = k;
+    if (g_uma.nimp - (last - first) >= (g_uma.max ? g_uma.max : UMA_MAX)) { /* full: the least recently used goes */
+        /* of those with no page trapped: a region under a watch stays until the present (imp_let_go), and the table
+           stayed full, every new range copied, for as long as the oldest one was such. All trapped: the oldest */
+        u32 old = 0, pick = g_uma.nimp;
+        for (u32 k = 0; k < g_uma.nimp; k++) {
+            const Imp* c = &g_uma.imp[k];
+            if ((i32)(c->used - g_uma.imp[old].used) < 0) old = k;
+            if ((pick == g_uma.nimp || (i32)(c->used - g_uma.imp[pick].used) < 0) &&
+                (c->fd < 0 || !own_trapped(c->cpu, c->size)))
+                pick = k;
+        }
+        if (pick < g_uma.nimp) old = pick;
         if (g_uma.no_wait && region_writes_wait(g_uma.imp[old].cpu, g_uma.imp[old].cpu + g_uma.imp[old].size)) {
             g_uma.would_wait++;
             return ~0u;
@@ -2592,6 +2601,7 @@ void vk_uma_before_write(u64 gva, u64 len) {
         len -= n;
     }
 }
+void vk_uma_table_max(u32 n) { g_uma.max = n < UMA_MAX ? n : 0; }
 /* a save state's load: every import goes */
 void vk_uma_forget_all(void) {
     for (u32 i = g_uma.nimp; i-- > 0;) /* a let-go can take others with it (imp_let_go) */
