@@ -8183,6 +8183,7 @@ static int check_hmma_file_key(void) {
 #include "vulkan_capture_cap.inc"
 #include "vulkan_trim.inc"
 #include "vulkan_owned_page_reads.inc"
+#include "vulkan_owned_kept_copy.inc"
 #include "vulkan_writeback_sweep.inc"
 
 /* key's row among the settings the runtime applies itself (options.c's), or NULL */
@@ -8868,6 +8869,8 @@ static int run_headless(int argc, char** argv) {
             result = check_targetless_stores();
         else if (!strcmp(name, "owned_page_reads"))
             result = check_owned_page_reads();
+        else if (!strcmp(name, "owned_kept_copy"))
+            result = check_owned_kept_copy();
         else if (!strcmp(name, "index_draws"))
             result = check_index_draws();
         else if (!strcmp(name, "memory_release"))
@@ -9397,6 +9400,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_fragment_flow_lod());
     CHECK(!check_fragment_quad());
     CHECK(!check_owned_page_reads());
+    CHECK(!check_owned_kept_copy());
     CHECK(!check_memory_release());
     CHECK(!check_frag_coord_origin());
     CHECK(!check_varying_passes());
