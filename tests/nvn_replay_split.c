@@ -100,6 +100,10 @@ static struct {
     void* arg;
 } g_work[16];
 static u32 g_nwork;
+int gpu_lane_busy(u32 lane) { /* one lane here: busy with any work */
+    (void)lane;
+    return g_nwork != 0;
+}
 void gpu_call_poll(int (*fn)(void*), void* arg, u32 lane) {
     (void)lane;
     if (g_nwork == 16) fatal("more than 16 pieces of work queued\n");

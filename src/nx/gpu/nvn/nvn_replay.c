@@ -772,10 +772,10 @@ int nvn_replay_write(u64 gva, const void* data, u32 len) {
        what the CPU wrote meanwhile. The write lands at once */
     int now = !st->wq_count;
     for (u32 k = 0; k < live && now; k++) {
-        int has = 0, stopped = 0;
-        for (u32 i = 0; i < NVN_JOBS; i++)
-            if (st->jobs[i].queue == lanes[k] + 1) has = 1, stopped |= st->jobs[i].waiting != 0;
-        if (has && !stopped) now = 0;
+        int stopped = 0;
+        for (u32 i = 0; i < NVN_JOBS && !stopped; i++)
+            stopped = st->jobs[i].queue == lanes[k] + 1 && st->jobs[i].waiting;
+        if (!stopped && gpu_lane_busy(lanes[k])) now = 0;
     }
     if (now) {
         pm_unlock(&st->lock);

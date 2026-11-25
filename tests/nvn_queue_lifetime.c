@@ -90,6 +90,13 @@ void gpu_call(void (*fn)(void*), void* arg, const u32* chans, u32 n) {
     fixture.jobs[i].poll = NULL;
     fixture.jobs[i].arg = arg;
 }
+int gpu_lane_busy(u32 lane) {
+    for (u32 k = 0; k < fixture.count; k++) {
+        const u32 i = (fixture.head + k) % 64;
+        if (fixture.jobs[i].poll && fixture.jobs[i].lane == lane) return 1;
+    }
+    return 0;
+}
 void gpu_call_poll(int (*fn)(void*), void* arg, u32 lane) {
     assert(fixture.count < 64 && lane < 64);
     u32 i = (fixture.head + fixture.count++) % 64;

@@ -1107,9 +1107,10 @@ static int pool_map_nvn_case(GpuChannel* channel) {
     return 0;
 }
 /* Work submitted with texture A at index 0, which the GPU thread replays while the game registers B there: it draws
-   with A, as the registration waits for it (nvn_object.c texture_write). The call on the GPU thread draws once it sees
-   what the registration does: B's descriptor in the slot, which nothing waited to write, or the wait for the submitted
-   work queued (nvn_replay_finish_all's job, NVN_QUEUES + 1), which ends after this call */
+   with A, as the registration lands after it (nvn_object.c descriptor_write). The call on the GPU thread draws once it
+   sees what the registration does: B's descriptor queued in the replay's order (nvn_replay_write), which lands after
+   this call, B's descriptor in the slot, or the wait for the submitted work queued (nvn_replay_finish_all's job,
+   NVN_QUEUES + 1), which ends after this call */
 typedef struct {
     GpuChannel* channel;
     u64 slot;
@@ -1129,7 +1130,8 @@ static int txw_draw(void* arg) {
     TxwDraw* d = (TxwDraw*)arg;
     const u64 end = plat_ns() + 10000000000ull;
     int kept;
-    while (!(d->waited = txw_waits()) && !memcmp(GP(d->slot), d->a, sizeof d->a)) {
+    /* until the registration is in the replay's order (nvn_replay_write), waits for the replay, or wrote the slot */
+    while (!(d->waited = txw_waits() || nvn_replay_writes_pending()) && !memcmp(GP(d->slot), d->a, sizeof d->a)) {
         if (plat_ns() > end) {
             d->late = 1;
             break;
@@ -1182,7 +1184,7 @@ static int texture_write_case(GpuChannel* channel) {
     if (alone != 191 || d.px[0] != 191 || px[0] != 255 || !written || d.late || d.failed)
         fprintf(stderr,
                 "a texture registered over another while the work before it replays: that work reads red %u, the draw "
-                "after %u, and A alone %u (expected 191, 255 and 191); the registration waited %d, wrote %d, the draw "
+                "after %u, and A alone %u (expected 191, 255 and 191); the registration was queued or waited %d, wrote %d, the draw "
                 "gave up on it %d, failed %d\n",
                 d.px[0], px[0], alone, d.waited, written, d.late, d.failed);
     CHECK(alone == 191 && d.px[0] == 191 && px[0] == 255 && written && !d.late && !d.failed);
@@ -1194,7 +1196,7 @@ static int texture_write_case(GpuChannel* channel) {
     channel->ds.bind.cb_addr[4][2] = 0;
     channel->ds.bind.cb_size[4][2] = 0;
     r[0x982] = 0;
-    puts("PASS a texture NVN registers over another waits for the work that samples it");
+    puts("PASS a texture NVN registers over another lands after the work that samples it");
     return 0;
 }
 
