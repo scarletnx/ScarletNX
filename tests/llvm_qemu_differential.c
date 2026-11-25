@@ -1508,10 +1508,9 @@ int main(int argc, char** argv) {
                 c.mem = work - WINDOW;
                 if (it->nwords == 1) snx_st_le32(work + PC - WINDOW, it->words[0]);
                 g_test.events = &ev;
-                /* the host FP environment as other code on the thread may leave it, rounding upward, where the code
-                   takes none of it (steps_host_mode): each LLVM function's snx_fp_env puts back what its fast paths
-                   assume, on every host that has them */
-                fesetround(steps_host_mode(FE_UPWARD));
+                /* the host FP environment as other code on the thread may leave it, rounding upward: each generated
+                   function's entry puts back what its fast paths assume, on every host that has them */
+                fesetround(FE_UPWARD);
                 for (w = 0; w < it->nwords; ++w) {
                     l.pc = step_run(steps_at(&built, it->step + w), &c);
                     if (ev.undef || ev.brk || l.pc != item_pc(it) + 4 * (w + 1)) break;

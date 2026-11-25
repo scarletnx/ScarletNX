@@ -43,7 +43,6 @@ static inline Step steps_at(const Steps* s, size_t index) { return (Step){s, ind
 static inline GuestFn steps_function(const Steps* s, size_t index) { return s->entries[index].function; }
 /* the back end's name */
 static inline const char* steps_name(void) { return snx_native_name(); }
-#define steps_host_mode native_steps_host_mode
 
 #else
 #include "llvm_steps.h"
@@ -71,7 +70,5 @@ static inline GuestFn steps_function(const Steps* s, size_t index) {
     return function;
 }
 static inline const char* steps_name(void) { return "LLVM"; }
-/* the rounding mode of the host's a step is run under: any, as the code's entry puts back the one it assumes */
-static inline int steps_host_mode(int mode) { return mode; }
 #endif
 #endif

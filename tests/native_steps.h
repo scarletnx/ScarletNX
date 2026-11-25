@@ -71,11 +71,6 @@ int native_steps_load(NativeSteps* s, char* error, size_t error_size);
 int native_steps_dump(NativeSteps* s, const char* prefix, char* error, size_t error_size);
 void native_steps_end(NativeSteps* s);
 
-/* the rounding mode of the host's a step is run under, where a test tries each: the native x86-64 code runs under the
-   thread's own MXCSR, which the runtime keeps at its default (tools/sailgen/x64_a64.h), and every other machine's under
-   none of the thread's (arm64's sets its own around its arithmetic, the RISC ones call the exact helpers) */
-int native_steps_host_mode(int mode);
-
 /* whether the back end has code for a step */
 static inline int native_steps_made(const NativeSteps* s, size_t index) { return s->entries[index].function != NULL; }
 /* runs a step from *c and returns the next pc: the pc it goes on to, or of a word that leaves the function (RET, UNDEF,

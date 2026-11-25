@@ -11,7 +11,6 @@
 #include "common/runtime/interface.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
-#include <fenv.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -47,7 +46,6 @@ static int fail(char* error, size_t size, const char* what, const char* why) {
 }
 
 int native_steps_available(void) { return snx_native_available(); }
-int native_steps_host_mode(int mode) { return snx_x64_available() ? FE_TONEAREST : mode; }
 int native_steps_forms(void) { return snx_x64_available() || snx_arm64_available() ? 2 : 1; }
 
 int native_steps_begin(NativeSteps* s, int jit, int form, char* error, size_t error_size) {
