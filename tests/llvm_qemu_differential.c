@@ -190,10 +190,11 @@ static u64 conversion_edge(void) {
     return lane[1] << 32 | lane[0];
 }
 
-/* a half (FEAT_FP16): zeros, denormals, the normal range's ends, infinities, quiet and signalling NaNs, or any */
+/* a half (FEAT_FP16): zeros, denormals, the normal range's ends, infinities, quiet and signalling NaNs, those whose
+   reciprocal is below the normals, or any */
 static u64 half_value(void) {
     u64 k = next_random(), sign = (k & 1) << 15, bits = k >> 8;
-    switch ((k >> 1) % 8) {
+    switch ((k >> 1) % 9) {
         case 0: return sign;
         case 1: return sign | (1 + bits % 0x3FF);
         case 2: return sign | 0x7C00;
@@ -201,12 +202,26 @@ static u64 half_value(void) {
         case 4: return sign | 0x7C01 | (bits & 0x1FE);
         case 5: return sign | 0x0400 | (bits & 0x3FF);
         case 6: return sign | 0x7800 | (bits & 0x3FF);
+        case 7: return sign | 0x7400 | (bits & 0x3FF); /* 2^14 to 2^15: their reciprocal is below the normals */
         default: return bits & 0xFFFF;
     }
 }
 /* a scalar FP instruction (data processing, compares, selects, conversions) on halves: ftype 3 */
-static int half_word(u32 word) {
+static int half_scalar(u32 word) {
     return ((word & 0x5F000000u) == 0x1E000000u || (word & 0x5F000000u) == 0x1F000000u) && ((word >> 22) & 3) == 3;
+}
+/* an Advanced SIMD one, scalar or vector, on halves (FEAT_FP16's and FEAT_FHM's) */
+static int half_simd(u32 word) {
+    SnxA64Insn insn;
+    return snx_a64_decode_word(word, SNX_A64_TARGET_MAX, &insn) != SNX_A64_OP_UNDEF &&
+           (insn.feature & (SNX_A64_FEAT_FP16 | SNX_A64_FEAT_FHM));
+}
+/* four halves, three of four of them half_value()'s */
+static u64 half_lanes(u64 old) {
+    unsigned i;
+    for (i = 0; i < 64; i += 16)
+        if (next_random() % 4) old = (old & ~(0xFFFFull << i)) | half_value() << i;
+    return old;
 }
 
 /* FCVTN/FCVTXN inputs at the narrower format's normal range ends, dropped bits near half an ulp */
@@ -292,7 +307,7 @@ static void random_state(CPU* c, u32 word, int addresses) {
     c->vf = next_random() & 1;
     c->fpcr = fpcr[next_random() % 8] | (next_random() % 2 ? (u32)(next_random() & 0x07C00000u) : 0);
     if ((word & 0x8F3FFC00u) == 0x0E216800u && next_random() % 2) c->fpcr &= ~(3u << 22);
-    if (half_word(word)) { /* the operands as halves, and FPCR.FZ16 */
+    if (half_scalar(word)) { /* the operands as halves, and FPCR.FZ16 */
         unsigned operands[3], i;
         operands[0] = rn;
         operands[1] = rm;
@@ -300,6 +315,21 @@ static void random_state(CPU* c, u32 word, int addresses) {
         for (i = 0; i < 3; ++i)
             if (next_random() % 4) c->v[operands[i]].d[0] = (c->v[operands[i]].d[0] & ~0xFFFFull) | half_value();
         if (next_random() % 2) c->fpcr |= 1u << 19;
+    } else if (half_simd(word)) { /* every lane of them: a by-element form's Rm of halves is one of V0-V15 */
+        unsigned operands[4], i;
+        operands[0] = rn;
+        operands[1] = rm;
+        operands[2] = ra;
+        operands[3] = rm & 15;
+        for (i = 0; i < 4; ++i) {
+            c->v[operands[i]].d[0] = half_lanes(c->v[operands[i]].d[0]);
+            c->v[operands[i]].d[1] = half_lanes(c->v[operands[i]].d[1]);
+        }
+        if (next_random() % 2) c->fpcr |= 1u << 19;
+        if (next_random() % 4 == 0) { /* Vn's reciprocals below the normals, flushed: FRECPE's underflow under FZ16 */
+            c->fpcr |= 1u << 19;
+            for (i = 0; i < 2; ++i) c->v[rn].d[i] = (next_random() & 0x83FF83FF83FF83FFull) | 0x7400740074007400ull;
+        }
     }
     /* FPSR's cumulative flags and QC: its AArch32 NZCV bits are not A64 state */
     c->fpsr = next_random() % 4 ? (next_random() % 2 ? 0x10 : 0) : (u32)(next_random() & 0x0800009Fu);
@@ -413,7 +443,9 @@ static const u32 kept[] = {
        samples name x0 or xzr alone, and RMIF's rotate by 0 or 63) */
     0x6E849427, 0xD500401F, 0xBA02046A, 0x3A00086D, 0x3A00486D, 0xD503221F,
     /* the FP witnesses' reserved encodings */
-    0x5E218820, 0x0E618820, 0x5E217820, 0x5EA1C820, 0x7EA1C820, 0x7EA1F820};
+    0x5E218820, 0x0E618820, 0x5E217820, 0x5EA1C820, 0x7EA1C820, 0x7EA1F820,
+    /* llvm_estimates.c's halves: FRECPE, FRSQRTE and FRECPX, V and scalar (an FZ16 state flushes what they underflow) */
+    0x4EF9D820, 0x0EF9D820, 0x5EF9D820, 0x6EF9D820, 0x2EF9D820, 0x7EF9D820, 0x5EF9F820};
 #define KEPT (sizeof(kept) / sizeof(kept[0]))
 
 /* ---- the cases ---- */
