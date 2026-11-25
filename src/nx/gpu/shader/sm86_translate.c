@@ -4940,6 +4940,16 @@ static u32 system_value(Ctx* c, u32 sr) {
                which one game's vertex programs scale w before they test the position against it (FMUL by the
                register, then FSETP, then PSETP). The runtime sets no w scaling, which is a factor of 1 */
             return cu(c, 0x3f800000u);
+        case 0x13:
+            /* SR_THREAD_KILL: all ones in a helper lane, which is also a lane that KILL demoted (as the Maxwell
+               translator gives it). Five fragment programs of one game read it, and their draws were skipped */
+            if (c->stage != ST_FS) {
+                fail(c, "S2R system register 0x13 outside a fragment program");
+                return c->zero;
+            }
+            spv_emit_capability(&c->e, SPV_CAPABILITY_DEMOTE_TO_HELPER_INVOCATION); /* IsHelperInvocationEXT */
+            return spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, spv_emit_is_helper(&c->e, c->t_bool),
+                                    cu(c, 0xffffffffu), c->zero);
         default: fail(c, "S2R system register 0x%x", sr); return c->zero;
     }
 }
