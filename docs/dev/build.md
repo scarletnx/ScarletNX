@@ -528,6 +528,13 @@ it:
 - `-DSNX_TEST_ARM_AOT=ON`, `-DSNX_TEST_ARM_DIFF=ON`: the 3DS ARM11 witnesses and the A32 unicorn comparison, see
   [3DS](../platforms/3ds/README.md).
 
+With Unicorn (its header and library, found or given with `-DSNX_UNICORN_INCLUDE_DIR` and `-DSNX_UNICORN_LIBRARY`; Python's
+wheel of unicorn 2.1.4 has both, in its `include` and `lib/libunicorn.so.2`), the tests labelled `unicorn` run the code
+that the native back ends make for the other machines against LLVM's (`ctest -L unicorn`, `ctest -L rv64` for one machine).
+CI's Linux x86-64 job runs them in every push, nightly and run by hand, and in a pull request that changes what they test
+(`scripts/recompiler-changes.py`), and fails where a machine ran none (`scripts/unicorn-tests.py`). PowerPC64's are
+skipped: Unicorn 2.1.4 as it is released does not hold the MSR of a 64-bit PowerPC.
+
 ```sh
 # Build without the GUI launcher; SDL3 remains required by the runtime:
 cmake --preset default -B build/headless-vk -DSNX_BUILD_GUI=OFF -DSNX_DEPLOY=OFF &&

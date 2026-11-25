@@ -271,6 +271,22 @@ jobs:
           else
             echo "any=true" >> "$GITHUB_OUTPUT"
           fi
+      # Whether the native back ends of the other machines are tested under Unicorn (ctest -L unicorn), which takes long:
+      # a push, a tag, the nightly's schedule and a run by hand test them, a pull request only where it changes what they
+      # test, by the script that says so in recompiler-changes too. Not that job's output: this job would wait for it
+      - name: Look for what the tests under Unicorn test
+        id: unicorn
+        if: matrix.arch == 'x86_64'
+        shell: bash
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
+            echo "unicorn=true" >> "$GITHUB_OUTPUT"
+            echo "a $GITHUB_EVENT_NAME runs them"
+            exit 0
+          fi
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          changed=$(git diff --name-only HEAD^1 HEAD)
+          python3 scripts/recompiler-changes.py <<<"$changed" >> "$GITHUB_OUTPUT"
       # LLVM's libraries linked into the runtime, with the host's code generator alone (scripts/linux-llvm.sh), where
       # Arch's libLLVM is one library with every target. Built once for each version, the image's LLVM's,
       # whose opt prints the pipelines of the LLVM settings (cmake/settings.cmake)
@@ -351,13 +367,19 @@ jobs:
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
-      # Unicorn 2.1.4, the A32 and Thumb differentials' reference (SNX_TEST_ARM_DIFF), in a venv: Arch's Python takes no
-      # pip install of its own. PyPI drops a connection now and then, so it is tried 3 times, 5 s apart
+      # Unicorn 2.1.4, the A32 and Thumb differentials' reference (SNX_TEST_ARM_DIFF), and the header and library the
+      # native back ends' tests link, in a venv: Arch's Python takes no pip install of its own. The wheels, by their
+      # SHA-256 on PyPI (x86-64's and AArch64's). PyPI drops a connection now and then, so it is tried 3 times, 5 s apart
       - name: Install Unicorn
         run: |
           python -m venv --system-site-packages .cache/unicorn
+          cat > .cache/unicorn/requirements.txt <<'EOF'
+          unicorn==2.1.4 \
+            --hash=sha256:9d6e6dea140560de4ebd8446661f7ef84a357d428c14a3ef09dacd306ec8c239 \
+            --hash=sha256:bd1fb0c9af5f57e356d8a96928b4fe045b2e18f308ef23b481d5f970008aa722
+          EOF
           for try in 1 2 3; do
-            .cache/unicorn/bin/pip install --quiet unicorn==2.1.4 && break
+            .cache/unicorn/bin/pip install --quiet --require-hashes --only-binary :all: -r .cache/unicorn/requirements.txt && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
@@ -365,11 +387,19 @@ jobs:
       # target builds, in a folder of its own with this job's LLVM. The A64 disassembler, which the AppImage leaves out,
       # is back in AArch64's test tree; on x86-64 linux-sanitizers' tree has it
       - name: Build the tests and the headless Vulkan tree
+        shell: bash
+        env:
+          UNICORN: ${{ steps.unicorn.outputs.unicorn }}
         run: |
           ccache --zero-stats
+          options=()
+          if [ "$UNICORN" = true ]; then
+            wheel=$(.cache/unicorn/bin/python -c 'import os, unicorn; print(os.path.dirname(os.path.abspath(unicorn.__file__)))')
+            options=(-DSNX_UNICORN_INCLUDE_DIR="$wheel/include" -DSNX_UNICORN_LIBRARY="$wheel/lib/libunicorn.so.2")
+          fi
           cmake build/default ${{ env.SNX_TEST_OPTIONS }} -DBUILD_TESTING=ON \
             -DSNX_A64_DISASM=${{ matrix.arch == 'aarch64' && 'ON' || 'OFF' }} \
-            -DPython3_EXECUTABLE="$PWD/.cache/unicorn/bin/python"
+            -DPython3_EXECUTABLE="$PWD/.cache/unicorn/bin/python" "${options[@]}"
           cmake --build build/default --parallel "$(getconf _NPROCESSORS_ONLN)"
           ccache --show-stats
           ccache --zero-stats
@@ -438,7 +468,18 @@ jobs:
       - name: Check the ABI helpers compile
         run: clang -std=gnu23 -fsyntax-only -Wall -I src src/common/cpu/aarch64/cpu_helpers.c
       - name: Test native tooling and indexed filesystems
-        run: ctest --test-dir build/default --output-on-failure --parallel 4
+        run: ctest --test-dir build/default -LE '^unicorn$' --output-on-failure --parallel 4
+      # The code of the native back ends that no job runs, each test by its name, then what each machine ran: one that ran
+      # none fails (scripts/unicorn-tests.py), as ctest passes a test the build has not
+      - name: Test the native back ends under Unicorn
+        if: steps.unicorn.outputs.unicorn == 'true'
+        shell: bash
+        run: |
+          status=0
+          ctest --test-dir build/default -L '^unicorn$' --no-tests=error --output-on-failure --parallel 4 \
+            --output-junit "$PWD/unicorn.xml" || status=$?
+          python3 scripts/unicorn-tests.py unicorn.xml || status=1
+          exit "$status"
       - name: Check optional Python diagnostics
         run: |
           python -m compileall -q tools
@@ -688,10 +729,11 @@ jobs:
       - *fail-fast-file
       - *fail-fast-mark
 
-  # A pull request runs the A64 differential on the cross builds (qemu-reference's recording, appimage-cross's run of
-  # it) only when it changes what the differential tests or how it is built there: the A64 front end and the
-  # recompiler, the differential and its reference, LLVM's build for the target, or this workflow. A push, a nightly
-  # and a run by hand run it whatever changed, and every Linux job's tests run it on their own host
+  # Which of the recompiler's long tests a pull request changes what they test of (scripts/recompiler-changes.py): the A64
+  # differential on the cross builds (qemu-reference's recording, appimage-cross's run of it), which no pull request makes
+  # now, and the native back ends of the other machines under Unicorn (the appimage job, which asks the script itself). A
+  # push, a nightly and a run by hand run them whatever changed, and every Linux job's tests run the differential on their
+  # own host
   recompiler-changes:
     name: Recompiler changes
     if: github.event_name == 'pull_request'
@@ -699,29 +741,18 @@ jobs:
     timeout-minutes: 5
     outputs:
       differential: ${{ steps.changed.outputs.differential }}
+      unicorn: ${{ steps.changed.outputs.unicorn }}
     steps:
       # the pull request's merge commit and the base it is diffed against
       - uses: actions/checkout@v7
         with:
           fetch-depth: 2
-      # grep's 1 is no file matched; anything else it or git returns fails the step
-      - name: Look for what the A64 differential tests
+      - name: Look for what the recompiler's long tests test
         id: changed
+        shell: bash
         run: |
-          paths='^(src/common/cpu/|tests/(llvm_qemu_|llvm_steps\.c$|qemu_ref/)|'
-          paths+='cmake/(cross|decodetree|llvm|llvm_components|qemu_ref)\.cmake$|'
-          paths+='scripts/(linux-llvm\.sh$|llvm-libraries/)|\.github/workflows/build\.yml$)'
           changed=$(git diff --name-only HEAD^1 HEAD)
-          matched=$(grep -E "$paths" <<<"$changed") || [ $? = 1 ]
-          if [ -n "$matched" ]; then
-            printf 'The cross builds run the A64 differential, for:\n%s\n' "$matched"
-            echo "differential=true" >> "$GITHUB_OUTPUT"
-          else
-            count=0
-            [ -z "$changed" ] || count=$(wc -l <<<"$changed")
-            echo "None of the $count files changed is one the A64 differential tests: the cross builds run without it"
-            echo "differential=false" >> "$GITHUB_OUTPUT"
-          fi
+          python3 scripts/recompiler-changes.py <<<"$changed" >> "$GITHUB_OUTPUT"
       - *fail-fast-file
       - *fail-fast-mark
 
