@@ -34,6 +34,15 @@ if(BUILD_TESTING)
     set_target_properties(snx-test-nds-vk PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON LINKER_LANGUAGE CXX)
     add_test(NAME nds_vk COMMAND snx-test-nds-vk)
     set_tests_properties(nds_vk PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+    # the save states: the frames after a state loaded are the frames the run that went on had, skipped (77) where the
+    # host has no Vulkan 1.3 device (nds_state.c)
+    add_executable(snx-test-nds-state "${PROJECT_SOURCE_DIR}/tests/nds_state.c")
+    target_link_libraries(snx-test-nds-state PRIVATE snx_nds_program snx_test_nds_image)
+    target_compile_options(snx-test-nds-state PRIVATE -Wall -Wextra -Werror)
+    target_compile_definitions(snx-test-nds-state PRIVATE VK_NO_PROTOTYPES)
+    set_target_properties(snx-test-nds-state PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON LINKER_LANGUAGE CXX)
+    add_test(NAME nds_state COMMAND snx-test-nds-state "${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties(nds_state PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
     # the window under SDL's offscreen driver: the on-screen controls and the pen, skipped (77) with no Vulkan window
     add_executable(snx-test-nds-host "${PROJECT_SOURCE_DIR}/tests/nds_host.c")
     target_link_libraries(snx-test-nds-host PRIVATE snx_nds_program)
@@ -53,6 +62,6 @@ endif()
 
 if(COMMAND snx_sanitizer_path) # tests/CMakeLists.txt: this folder's tests
     snx_test_sanitize(snx_test_nds_image snx-test-nds-board snx-test-nds-key1 snx-test-nds-cpu snx-test-nds-vk
-                      snx-test-nds-host)
+                      snx-test-nds-state snx-test-nds-host)
     snx_sanitizer_path()
 endif()

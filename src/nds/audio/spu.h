@@ -17,4 +17,11 @@ void nds_spu_write(NdsBoard* board, uint32_t address, unsigned bytes, uint32_t v
 void nds_spu_run(NdsBoard* board);
 /* up to most frames of them (left and right, 16 bits each) into out: how many */
 uint32_t nds_spu_take(NdsBoard* board, int16_t* out, uint32_t most);
+/* Save states (runtime/state.c): the hardware into io; its layout's hash; a state's read and checked into a copy (NULL
+   with why), which install puts in the running hardware's place and free() drops unused */
+struct StateIo;
+uint64_t nds_spu_state_schema(const NdsBoard* board);
+int nds_spu_state_save(const NdsBoard* board, struct StateIo* io);
+void* nds_spu_state_parse(struct StateIo* io, char* why, size_t whysize);
+void nds_spu_state_install(NdsBoard* board, void* staged);
 #endif

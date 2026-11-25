@@ -88,6 +88,11 @@ NdsVkImage* nds_vk_frame_image(void);
 /* a display capture the GPU has not given back yet, put into its VRAM bank now (the GPU is waited for): before
    anything reads the bank */
 void nds_vk_capture_land(NdsBoard* board);
+/* A save state's side of it (runtime/state.c): the capture made and not landed yet, its bytes (0 for none) with its
+   bank, offset and pixels, once the GPU has made it; and one put back as not landed yet, 0 bytes for none. pend is
+   false where no device holds one: the caller lands it itself */
+uint32_t nds_vk_capture_pending(unsigned* bank, uint32_t* offset, const unsigned char** data);
+bool nds_vk_capture_pend(unsigned bank, uint32_t offset, const unsigned char* data, uint32_t bytes);
 /* the frame's pixels read back, RGBA, 256 by 384: waits for the GPU. False when it cannot */
 bool nds_vk_frame_read(unsigned char* rgba);
 
