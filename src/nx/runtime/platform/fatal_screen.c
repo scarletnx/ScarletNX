@@ -134,6 +134,41 @@ int fatal_wrap(const char* text, int cols, char (*rows)[FATAL_ROW], int max) {
     return count;
 }
 
+char* fatal_lines(const char* text, int cols) {
+    size_t len = strlen(text), n = 0;
+    char *copy = snx_strdup(text), *out = malloc(2 * len + 2), *line = copy;
+    while (copy && out && line) {
+        char* next = strchr(line, '\n');
+        int count, i;
+        char (*rows)[FATAL_ROW];
+        if (next) *next++ = 0;
+        count = fatal_wrap(line, cols, NULL, 0);
+        rows = malloc((size_t)(count ? count : 1) * sizeof *rows);
+        if (!rows) {
+            free(out);
+            out = NULL;
+            break;
+        }
+        fatal_wrap(line, cols, rows, count);
+        for (i = 0; i < count; ++i) {
+            size_t k = strlen(rows[i]);
+            memcpy(out + n, rows[i], k);
+            n += k;
+            if (i + 1 < count) out[n++] = '\n';
+        }
+        free(rows);
+        if (next) out[n++] = '\n';
+        line = next;
+    }
+    if (out && copy) out[n] = 0;
+    if (!copy) {
+        free(out);
+        out = NULL;
+    }
+    free(copy);
+    return out;
+}
+
 int fatal_cut(const char* text, int cols, char (*rows)[FATAL_ROW], int max) {
     const char *s, *end;
     int total = 0, skip, row, k;
