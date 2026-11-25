@@ -16,6 +16,7 @@
 #include "common/cpu/recompiler/llvm/code_loader.h"
 #if defined(SNX_TEST_ARM64WIN)
 #include "common/cpu/recompiler/arm64/arm64_codegen.h"
+#include "common/cpu/recompiler/x64/x64_elf.h"
 #include "support/arm64_unwinder.h"
 #else
 #include "common/cpu/recompiler/x64/x64_codegen.h"
@@ -82,6 +83,10 @@ static struct {
 #endif
 #if defined(SNX_TEST_ARM64WIN)
     uint64_t stack[STACK / 8]; /* the made-up states' (walk) */
+    /* records': the object whose function table one_frame reads, its .pdata's and .xdata's places, where its code is */
+    const unsigned char* object;
+    uint32_t pdata, entries, xdata;
+    uint64_t code;
 #endif
 } g_test;
 
@@ -185,6 +190,13 @@ static uint32_t code_of(uint64_t pc, uint64_t* begin) {
 }
 /* a frame of the code's, at s->pc in an entry of the table, made its caller's: NULL, or what can't be */
 static const char* one_frame(Arm64State* s) {
+    for (uint32_t k = g_test.object ? g_test.entries : 0; k-- > 0;) {
+        const unsigned char* e = g_test.object + g_test.pdata + 8 * (size_t)k;
+        const uint64_t begin = g_test.code + snx_ld_le32(e);
+        const unsigned char* record = g_test.object + g_test.xdata + snx_ld_le32(e + 4);
+        if (s->pc >= begin && s->pc < begin + 4ull * arm64_record(record).words) return arm64_unwind(record, begin, s);
+    }
+    if (g_test.object) return "no entry of the function table";
 #if defined(_WIN32)
     CONTEXT c = {0};
     DWORD64 image = 0, frame = 0;
@@ -286,6 +298,105 @@ static size_t walk(const uint32_t* code, uint32_t words, uint64_t begin, unsigne
             }
         }
     }
+    return states;
+}
+/* the section of a COFF object named name: where its bytes are, its *size; 0 where there is none */
+static uint32_t section_of(const unsigned char* object, const char* name, uint32_t* size) {
+    for (unsigned k = 0, n = snx_ld_le16(object + 2); k < n; ++k) {
+        const unsigned char* h = object + 20 + 40 * (size_t)k;
+        if (strncmp((const char*)h, name, 8)) continue;
+        *size = snx_ld_le32(h + 16);
+        return snx_ld_le32(h + 20);
+    }
+    return 0;
+}
+/* the code of a frame of frame bytes, words long: its prologue (pairs of X21 on saved too with pins), NOPs, and an
+   epilogue at each of the n words at; then its records, unwound from every one of its instructions */
+static size_t record_case(unsigned number, uint32_t frame, int pins, uint32_t words, const uint32_t* at, size_t n,
+                          size_t* bad) {
+    uint32_t* code = (uint32_t*)malloc(4 * (size_t)words);
+    uint32_t k = 0, size = 0, next = 0, imm;
+    unsigned char* object = NULL;
+    size_t object_size = 0, e, states = 0;
+    SnxXElf* o = snx_xelf_new();
+    const uint32_t sh = frame > 4095;
+    if (!code || !o) return *bad += 1, 0;
+    imm = (sh ? frame >> 12 : frame) << 10 | sh << 22;
+    for (uint32_t w = 0; w < words; ++w) code[w] = 0xD503201Fu; /* NOP */
+    code[k++] = 0xA9BA7BFDu;                                    /* STP X29, X30, [SP, #-96]! */
+    code[k++] = 0x910003FDu;                                    /* MOV X29, SP */
+    code[k++] = 0xA90153F3u;                                    /* STP X19, X20, [SP, #16] */
+    if (pins) {
+        code[k++] = 0xA9025BF5u; /* STP X21, X22, [SP, #32]; X23, X24, #48; X25, X26, #64; X27, X28, #80 */
+        code[k++] = 0xA90363F7u, code[k++] = 0xA9046BF9u, code[k++] = 0xA90573FBu;
+    }
+    code[k++] = 0xAA0003F3u; /* MOV X19, X0 */
+    if (frame > 4095) {      /* the probe */
+        code[k++] = 0x910003F1u, code[k++] = 0xD10003F0u | imm, code[k++] = 0xD1400631u, code[k++] = 0x3940023Fu;
+        code[k++] = 0xEB10023Fu, code[k++] = 0x54FFFFA8u;
+    }
+    code[k++] = 0xD10003FFu | imm; /* SUB SP, SP, #frame */
+    for (e = 0; e < n; ++e) {
+        k = at[e];
+        code[k++] = 0x910003FFu | imm; /* ADD SP, SP, #frame */
+        if (pins) code[k++] = 0xA9425BF5u, code[k++] = 0xA94363F7u, code[k++] = 0xA9446BF9u, code[k++] = 0xA94573FBu;
+        code[k++] = 0xA94153F3u; /* LDP X19, X20, [SP, #16] */
+        code[k++] = 0xA8C67BFDu; /* LDP X29, X30, [SP], #96 */
+        code[k++] = 0xD65F03C0u; /* RET */
+    }
+    snx_xelf_set_machine(o, 183);
+    snx_xelf_set_coff(o, 1);
+    snx_xelf_put(o, SNX_ELF_TEXT, code, 4 * (size_t)words, 16);
+    snx_xelf_symbol(o, "F", SNX_ELF_TEXT, 0, 4 * (size_t)words, SNX_ELF_GLOBAL | SNX_ELF_FUNC);
+    snx_xelf_unwind(o, 0, 4 * (size_t)words, (const unsigned char*)code, 4 * (size_t)words);
+    if (snx_xelf_write(o, &object, &object_size))
+        *bad += 1, fprintf(stderr, "case %u: no object of it\n", number);
+    else {
+        g_test.object = object;
+        g_test.pdata = section_of(object, ".pdata", &size);
+        g_test.entries = size / 8;
+        g_test.xdata = section_of(object, ".xdata", &size);
+        g_test.code = (uint64_t)(uintptr_t)code;
+        for (e = 0; e < g_test.entries; ++e) { /* the pieces, one after the other, to the end */
+            const unsigned char* p = object + g_test.pdata + 8 * e;
+            if (snx_ld_le32(p) != next || (snx_ld_le32(p + 4) & 3)) *bad += 1;
+            next += 4 * arm64_record(object + g_test.xdata + snx_ld_le32(p + 4)).words;
+        }
+        if (next != 4 * words) *bad += 1, fprintf(stderr, "case %u: the records end at +%x\n", number, next);
+        states = walk(code, words, g_test.code, number, bad);
+        g_test.object = NULL;
+    }
+    free(object), free(code);
+    snx_xelf_free(o);
+    return states;
+}
+/* the records the object builder writes (x64_elf.c), each form of them: a frame's sizes on both sides of each code's
+   reach, the epilogues a record's header holds and one more, a function of more than a record's 1 MiB, its epilogues
+   around the place the records meet */
+static size_t records(size_t* bad) {
+    enum { PIECE = 0x3FFFF, EPILOGUE = 8, MANY = 33 };
+    static const uint32_t frames[] = {0, 16, 496, 512, 4080, 4096, 28672, 32768, 0x80000};
+    uint32_t at[MANY + 2];
+    unsigned number = 0;
+    size_t states = 0, n;
+    for (size_t f = 0; f < sizeof frames / sizeof *frames; ++f)
+        for (int pins = 0; pins < 2; ++pins) {
+            at[0] = 40;
+            states += record_case(1000 + number++, frames[f], pins, 64, at, 1, bad);
+        }
+    for (n = 30; n <= MANY; ++n) { /* the header's 31, and past it */
+        for (size_t e = 0; e < n; ++e) at[e] = 40 + 3 * EPILOGUE * (uint32_t)e;
+        states += record_case(1000 + number++, 64, 1, 40 + 3 * EPILOGUE * MANY + 16, at, n, bad);
+    }
+    for (uint32_t before = 0; before <= EPILOGUE;
+         ++before) { /* the place the records meet, from each of its words on */
+        at[0] = 40;
+        at[1] = PIECE - before;
+        at[2] = PIECE + 100;
+        states += record_case(1000 + number++, 128, 1, PIECE + 200, at, 3, bad);
+    }
+    at[0] = PIECE + 64; /* none in the first record */
+    states += record_case(1000 + number++, 128, 1, 2 * PIECE + 64, at, 1, bad);
     return states;
 }
 #if defined(_WIN32)
@@ -801,6 +912,7 @@ int main(void) {
     unwound_count = hostuc_unwound(uc, &bad);
 #endif
 #if defined(SNX_TEST_ARM64WIN)
+    unwound_count += records(&bad);
     /* and from each instruction of each function */
     for (k = 0; k < codegen.function_count; ++k) {
         const unsigned f = (unsigned)((codegen.functions[k].start - BASE) / 4);
