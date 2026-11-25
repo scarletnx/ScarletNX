@@ -81,6 +81,11 @@ typedef struct {
     signed char pin[32]; /* each X register's host register, -1 for none */
     signed char vpin[32]; /* each V register's vector register, -1 for none */
     signed char mempin;   /* the guest memory's base's host register, -1 for none */
+    SnxU64 pin_wr;        /* the X registers (31 the SP) some instruction of the function may write: a pin of none of
+                             them is never stored, the state holding its value */
+    SnxU32 vpin_wr;       /* the same of the V registers */
+    SnxU64 pin_sel;       /* the pins a load of them reloads (the prologue's: those live where the function starts) */
+    SnxU32 vpin_sel;
     size_t index; /* the function's in the codegen: its snx_stale byte */
     size_t at;    /* the index of the function's instruction being made, its count past them */
     int far;      /* the function's jumps are the machine's longest (MG_FAR_JUMPS): its short ones did not reach */
@@ -1820,6 +1825,37 @@ static SnxU32 vdead_at(Unit* u, SnxU64 target) {
     return ~u->vlive[index_of(u->f, target)];
 }
 
+/* the guest registers an instruction may write, X in the result (31 the SP), V in *v: more than regs_of's def,
+   which is for liveness and leaves out some (a SIMD&FP transfer's general-purpose register, the SP as a
+   destination, a structure's post-index). A call's or an SVC's callee writes the state, which the pins are
+   reloaded from after it: the call itself writes the link register alone */
+static SnxU64 may_write(const SnxA64Insn* insn, SnxU32 w, SnxU32* v) {
+    SnxU64 use, def;
+    unsigned rd = w & 31, rn = w >> 5 & 31;
+    *v = 0;
+    if ((w >> 25 & 7) == 7) *v = 1u << rd;
+    else if ((w >> 25 & 5) == 4 && (w >> 26 & 1) && ((w >> 22 & 1) || ((w >> 27 & 7) == 3 && !(w >> 24 & 1))))
+        *v = vreg_run(rd, 4) | 1u << (w >> 10 & 31); /* a load: Rt, a pair's Rt2, a structure's list */
+    regs_of(w, &use, &def);
+    if (use == LIVE_ALL) {
+        if (insn->flow == SNX_A64_FLOW_BL || insn->flow == SNX_A64_FLOW_BLR) return live_r(30);
+        if (insn->flow == SNX_A64_FLOW_RET || insn->flow == SNX_A64_FLOW_BR || insn->flow == SNX_A64_FLOW_B ||
+            insn->flow == SNX_A64_FLOW_SVC || insn->flow == SNX_A64_FLOW_BRK || insn->flow == SNX_A64_FLOW_UNDEF)
+            return 0;
+        *v = ~0u;
+        return LIVE_ALL;
+    }
+    if ((w >> 25 & 5) == 4) { /* loads and stores: def has Rt (and Rt2); a writeback's base, the SP too */
+        unsigned idx = w >> 10 & 3;
+        if (((w >> 27 & 7) == 5 && ((w >> 23 & 3) == 1 || (w >> 23 & 3) == 3)) ||
+            ((w >> 27 & 7) == 7 && !(w >> 24 & 1) && !(w >> 21 & 1) && (idx == 1 || idx == 3)) ||
+            ((w >> 26 & 1) && !(w >> 31) && (w >> 23 & 0x3E) == 0x18 && (w >> 23 & 1)))
+            def |= live_r(rn);
+        return def;
+    }
+    return def | live_r(rd); /* the SP as a destination; a SIMD&FP transfer's or conversion's register */
+}
+
 /* the guest registers the function keeps in host registers (the machine's mg_pin_hosts: callee-saved ones first, no
    call changes them) for its whole run, written to the state where something else may read it (a call, SVC, BRK, UNDEF, a poll, the
    exits) and read back after: the most used, a register field of an instruction counting 1, 8 inside a loop
@@ -1836,6 +1872,10 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
     memset(u->vpin, -1, sizeof u->vpin);
     u->pinned = 0;
     u->mempin = -1;
+    u->pin_wr = 0;
+    u->vpin_wr = 0;
+    u->pin_sel = ~(SnxU64)0;
+    u->vpin_sel = ~0u;
     u->exits = NULL;
     u->a.reserved = 0;
     u->a.xreserved = MG_XRESERVED;
@@ -1860,6 +1900,13 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
             insn.op == SNX_A64_OP_SEVL) {
             free(loop), free(succ);
             return;
+        }
+        {
+            SnxU32 vw;
+            SnxU64 xw = may_write(&insn, w, &vw);
+            if (insn.flow == SNX_A64_FLOW_BL) xw |= live_r(16) | live_r(17); /* a bound PLT stub's in its place */
+            u->pin_wr |= xw;
+            u->vpin_wr |= vw;
         }
         falls = insn.flow != SNX_A64_FLOW_B && insn.flow != SNX_A64_FLOW_BR && insn.flow != SNX_A64_FLOW_RET &&
                 insn.flow != SNX_A64_FLOW_UNDEF && insn.flow != SNX_A64_FLOW_BRK;
@@ -2016,6 +2063,8 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
 static int function(Unit* u, const SnxFunction* f, size_t index) {
     size_t i, at0 = u->b.n, fix0 = u->nfixups, rel0 = u->nrelocs, sym0 = u->nsyms;
     int lab0 = u->nlabels, ok = 1;
+    SnxU64 pin_rest = 0;
+    SnxU32 vpin_rest = 0;
     jmp_buf jb;
     jmp_buf* saved = g_fail;
     char sym[40];
@@ -2053,7 +2102,14 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
     u->g->mempin = u->mempin;
     u->a.pin_cs = pins_cs;
     u->a.pin_flush = pins_flush;
+    /* the prologue loads the pins live where the function starts; the mismatch's path (another entry) the others */
+    if (u->pinned && u->live && f->count && snx_function_address(f, 0) == f->start) {
+        u->pin_sel = u->live[0];
+        u->vpin_sel = u->vlive ? u->vlive[0] : ~0u;
+    }
     prologue(u);
+    pin_rest = ~u->pin_sel, vpin_rest = ~u->vpin_sel;
+    u->pin_sel = ~(SnxU64)0, u->vpin_sel = ~0u; /* every other load of the pins: all of them */
     /* if (snx_stale[index]) { c->pc = e; return; } if (e != start) goto mismatch */
     mg_entry(u, index, f->start);
     if (f->count && snx_function_address(f, 0) != f->start) jmp(u, (int)index_of(f, f->start));
@@ -2084,6 +2140,11 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
     /* mismatch: { c->pc = e; goto D; } or { CALLDYN(e); return; }; D: the poll, then switch (c->pc) over the
        leaders, else CALLDYN(c->pc) */
     bind(u, u->mismatch_label);
+    if (pin_rest || vpin_rest) {
+        u->pin_sel = pin_rest, u->vpin_sel = vpin_rest;
+        pins(u, 0);
+        u->pin_sel = ~(SnxU64)0, u->vpin_sel = ~0u;
+    }
     mg_dispatch(u, lab0);
     for (i = 0; i < (size_t)u->nstubs; ++i) {
         struct Stub s = u->stubs[i];
