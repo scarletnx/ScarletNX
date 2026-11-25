@@ -1754,6 +1754,74 @@ done:
     return rc;
 }
 
+#if defined(SNX_TEST_WIN64)
+/* the entry's checks of an A32 and a Thumb block (llvm.c's block_begin and thumb_block, in their order), each failed one
+   with its exit and syndrome, R15 left as it is; run an instruction at a time, its exit's code having no frame */
+static int run_entries(Back* x64) {
+    enum { WORD = 0xE3A00001u /* MOV R0, #1 */, HALF = 0x2001u /* MOVS R0, #1 */ };
+    static const struct {
+        const char* what;
+        int thumb;
+        uint32_t r15, cpsr, exit, syndrome;
+    } cases[] = {
+        {"R15 elsewhere", 0, PC + 4, 0x10u, SNX_ARM_BAD_ENTRY, PC},
+        {"T set", 0, PC, 0x30u, SNX_ARM_BAD_ENTRY, WORD},
+        {"E set", 0, PC, 0x210u, SNX_ARM_ENDIAN_UNSUPPORTED, WORD},
+        {"T and E set", 0, PC, 0x230u, SNX_ARM_BAD_ENTRY, WORD},
+        {"R15 elsewhere", 1, PC + 2, 0x30u, SNX_ARM_BAD_ENTRY, PC},
+        {"T clear", 1, PC, 0x10u, SNX_ARM_BAD_ENTRY, HALF},
+        {"ITSTATE's high bits", 1, PC, 0x430u, SNX_ARM_IT_ENTRY, 0x04},
+        {"ITSTATE's low bits", 1, PC, 0x06000030u, SNX_ARM_IT_ENTRY, 0x03},
+        {"E set", 1, PC, 0x230u, SNX_ARM_ENDIAN_UNSUPPORTED, HALF},
+        {"none", 0, PC, 0x10u, SNX_ARM_OK, 0},
+        {"none", 1, PC, 0x30u, SNX_ARM_OK, 0},
+    };
+    static const uint32_t word = WORD;
+    static const uint16_t half = HALF;
+    unsigned char* object = NULL;
+    size_t consumed = 0, size = 0, failures = 0;
+    char error[512] = "";
+    SnxU64 addr[2] = {0};
+    if (!back_(block)(x64, "E_arm", (const unsigned char*)&word, 1, PC, &consumed, NULL, NULL) ||
+        !back_(thumb_block)(x64, "E_thumb", (const unsigned char*)&half, 1, PC, &consumed, NULL, NULL) ||
+        back_(object)(x64, &object, &size, NULL)) {
+        fprintf(stderr, "FAIL: the entries' blocks: %s\n", back_(why)(x64));
+        return 1;
+    }
+    HostUc* uc = hostuc_new(BACK_UC, 1u << 20);
+    RunState* s = uc ? (RunState*)hostuc_alloc(uc, sizeof *s) : NULL;
+    if (!s || hostuc_load(uc, object, size, error, sizeof error) || !(addr[0] = hostuc_symbol(uc, "E_arm")) ||
+        !(addr[1] = hostuc_symbol(uc, "E_thumb"))) {
+        fprintf(stderr, "FAIL: the entries' object: %s\n", error);
+        free(object);
+        if (uc) hostuc_free(uc);
+        return 1;
+    }
+    hostuc_step(uc, 1);
+    for (size_t k = 0; k < sizeof cases / sizeof *cases; ++k) {
+        const int ok = cases[k].exit == SNX_ARM_OK;
+        memset(s, 0, sizeof *s);
+        s->cpu.r[15] = cases[k].r15;
+        s->cpu.cpsr = cases[k].cpsr;
+        s->cpu.exit = 0x55, s->cpu.syndrome = 0x55;
+        uint32_t r15 = ok ? PC + (cases[k].thumb ? 2 : 4) : cases[k].r15;
+        if (hostuc_call(uc, addr[cases[k].thumb], (uint64_t)(uintptr_t)&s->cpu, 0, NULL) ||
+            s->cpu.exit != cases[k].exit || s->cpu.syndrome != cases[k].syndrome || s->cpu.r[15] != r15 ||
+            s->cpu.r[0] != (unsigned)ok) {
+            fprintf(stderr, "FAIL: a%s block's entry, %s: exit %u, syndrome %x, R15 %x, R0 %u; wanted %u, %x, %x, %d\n",
+                    cases[k].thumb ? " Thumb" : "n A32", cases[k].what, s->cpu.exit, s->cpu.syndrome, s->cpu.r[15],
+                    s->cpu.r[0], cases[k].exit, cases[k].syndrome, r15, ok);
+            ++failures;
+        }
+    }
+    printf("the entries' checks, %zu states: %zu failures\n", sizeof cases / sizeof *cases, failures);
+    free(object);
+    hostuc_step(uc, 0);
+    hostuc_free(uc);
+    g_test.failures += failures;
+    return 0;
+}
+#endif
 /* a block's address: the bus's open bus reads the code by its region, and in IWRAM by its halfword */
 static uint32_t block_pc(int thumb) {
     static const uint32_t at[] = {0x1000, 0x2001000, 0x3001000, 0x3001002, 0x7000010, 0x8001000, 0x8001006};
@@ -1901,6 +1969,9 @@ int main(int argc, char** argv) {
     size_t done = 0;
     for (int thumb = 0; thumb < 2; ++thumb)
         if (plain && !g_test.nonly && !g_test.nhalves && run_poll_chain(x64, thumb)) ++g_test.failures;
+#if defined(SNX_TEST_WIN64)
+    if (plain && !g_test.nonly && !g_test.nhalves && run_entries(x64)) ++g_test.failures;
+#endif
 #else
     back_(limit)(x64, g_test.pool, g_test.features | ~7u);
     size_t done = 0;
