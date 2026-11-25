@@ -1245,6 +1245,148 @@ static void settings_search(App* app) {
     leave_editor(app);
     settings_forget(app);
 }
+/* a setting's list: on a row of three words or more Alt+Down, a right click, a finger or a pad's A held GUI_HOLD_MS open
+   its words in a box, its word in focus, the foot saying how; Enter takes one, ESC leaves the row as it was; Other...,
+   on a row that takes a value of its own, types it, one it does not take said; a row of two words has none, said; a
+   pad's A let go before, and a finger lifted, step the row as before */
+static void setting_lists(App* app) {
+    static const char list[] =
+        "Display\tfullscreen\t0\tint\t0\t1\tFullscreen\tFullscreen\t0=Off|1=On\n"
+        "Graphics\tfps_limit\t60\tint\t0\t240\tThe most frames a second\tFPS limit\t0=Unlimited|30=30|60=60|120=120\t\t\topen\n"
+        "Graphics\tupscaler\toff\ttext\t0\t0\tThe upscaler\tUpscaler\toff=Off|fsr=AMD FSR 1|nis=NVIDIA NIS\n";
+    char said[1024];
+    int g;
+    settings_forget(app);
+    assert(!gui_settings_read(&app->settings, list));
+    gui_settings_mark(&app->settings);
+    open_settings(app);
+    for (g = 0; g < app->groups && strcmp(app->group_name[g], "Graphics"); ++g) {}
+    app->editor.row = g;
+    key(app, SDLK_RETURN);
+    app->editor.row = row_of(app, setting_row(app, "fps_limit"));
+    assert(app->form == GUI_FORM_GROUP && words_row(app) == setting_row(app, "fps_limit"));
+    assert(strstr(shown_keys(app, said, sizeof said), "Alt+Down/right click: list."));
+    key_with(app, SDLK_DOWN, SDL_KMOD_LALT);
+    assert(app->picks_shown && app->picks_of == GUI_PICKS_WORDS && app->picks.count == 5 && app->picks.focus == 2);
+    render(app);
+    shows(app, "- 60", yellow);
+    shows(app, "- Other...", normal);
+    key(app, SDLK_DOWN);
+    key(app, SDLK_RETURN);
+    assert(!app->picks_shown && setting_is(app, "fps_limit", "120") && app->form == GUI_FORM_GROUP);
+    key_with(app, SDLK_DOWN, SDL_KMOD_LALT);
+    key(app, SDLK_UP);
+    key(app, SDLK_ESCAPE); /* as it was */
+    assert(!app->picks_shown && setting_is(app, "fps_limit", "120"));
+    /* Other...: a value of its own, typed; one the row does not take said with the value it keeps */
+    key_with(app, SDLK_DOWN, SDL_KMOD_LALT);
+    app->picks.focus = 4;
+    key(app, SDLK_RETURN);
+    assert(app->editor.typing && app->word_typing);
+    typed(app, "300");
+    key(app, SDLK_RETURN);
+    assert(app->editor.typing && !strcmp(app->editor.note, "300 is no value of FPS limit: it keeps 120"));
+    for (int i = 0; i < 3; ++i) key(app, SDLK_BACKSPACE);
+    typed(app, "75");
+    key(app, SDLK_RETURN);
+    assert(!app->editor.typing && !app->word_typing && setting_is(app, "fps_limit", "75"));
+    key(app, SDLK_DELETE);
+    { /* a pad's A held on it: its list, and the lift takes nothing; let go before, a press as ever */
+        SDL_VirtualJoystickDesc d;
+        SDL_JoystickID id;
+        SDL_Joystick* j;
+        Uint64 clock = app->clock;
+        bool started = app->pads.started;
+        if (!started) pads_follow(app);
+        assert(app->pads.started);
+        SDL_INIT_INTERFACE(&d);
+        d.type = SDL_JOYSTICK_TYPE_GAMEPAD;
+        d.naxes = SDL_GAMEPAD_AXIS_COUNT;
+        d.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
+        d.vendor_id = 0x045e;
+        d.product_id = 0x02ea;
+        d.name = "Hold Pad";
+        id = SDL_AttachVirtualJoystick(&d);
+        j = SDL_OpenJoystick(id);
+        assert(id && j);
+        pads(app);
+        app->clock = 20000;
+        SDL_SetJoystickVirtualButton(j, SDL_GAMEPAD_BUTTON_SOUTH, true);
+        pads(app);
+        assert(app->pad_hold_ms && !app->picks_shown && setting_is(app, "fps_limit", NULL));
+        app->clock += GUI_HOLD_MS + 10;
+        pad_hold_tick(app);
+        assert(app->picks_shown && app->picks_of == GUI_PICKS_WORDS);
+        SDL_SetJoystickVirtualButton(j, SDL_GAMEPAD_BUTTON_SOUTH, false);
+        pads(app);
+        assert(app->picks_shown && !app->pad_hold_ms && setting_is(app, "fps_limit", NULL));
+        key(app, SDLK_ESCAPE);
+        SDL_SetJoystickVirtualButton(j, SDL_GAMEPAD_BUTTON_SOUTH, true);
+        pads(app);
+        SDL_SetJoystickVirtualButton(j, SDL_GAMEPAD_BUTTON_SOUTH, false);
+        pads(app);
+        assert(!app->picks_shown && setting_is(app, "fps_limit", "120")); /* the next word */
+        key(app, SDLK_DELETE);
+        SDL_CloseJoystick(j);
+        assert(SDL_DetachVirtualJoystick(id));
+        pads(app);
+        if (!started) gui_pads_stop(&app->pads);
+        pad_drive(app, false);
+        app->clock = clock;
+    }
+    /* a right click on another row: its list, on its word */
+    {
+        GuiRect b = row_box(app, row_of(app, setting_row(app, "upscaler")), true);
+        right_click_px(app, b.x + 4, b.y + 4);
+        assert(app->picks_shown && app->picks_of == GUI_PICKS_WORDS && app->picks.count == 3 && !app->picks.focus &&
+               setting_of(app, app->editor.row) == setting_row(app, "upscaler"));
+        key(app, SDLK_DOWN);
+        key(app, SDLK_RETURN);
+        assert(setting_is(app, "upscaler", "fsr"));
+        key(app, SDLK_DELETE);
+        /* a finger held on it: its list, and the lift taps nothing */
+        Uint64 clock = app->clock;
+        app->clock = 10000;
+        finger_px(app, SDL_EVENT_FINGER_DOWN, b.x + 4, b.y + 4);
+        app->clock += GUI_HOLD_MS + 10;
+        hold_tick(app);
+        assert(app->picks_shown && app->picks_of == GUI_PICKS_WORDS);
+        finger_px(app, SDL_EVENT_FINGER_UP, b.x + 4, b.y + 4);
+        assert(app->picks_shown && setting_is(app, "upscaler", NULL));
+        key(app, SDLK_ESCAPE);
+        app->clock = clock;
+    }
+    /* App's Side panel, Background recompile and Language: their lists too, kept in app.ini as their steps are */
+    {
+        int was = (int)app->side_box;
+        open_app(app, GUI_APP_SIDE);
+        assert(words_app_row(app) == GUI_APP_SIDE && strstr(shown_keys(app, said, sizeof said), "list."));
+        key_with(app, SDLK_DOWN, SDL_KMOD_LALT);
+        assert(app->picks_shown && app->picks.count == 3 && app->picks.focus == was);
+        key(app, SDLK_DOWN);
+        key(app, SDLK_RETURN);
+        assert(!app->picks_shown && (int)app->side_box == (was + 1) % 3 && app->form == GUI_FORM_APP);
+        key_with(app, SDLK_DOWN, SDL_KMOD_LALT);
+        app->picks.focus = was;
+        key(app, SDLK_RETURN);
+        assert((int)app->side_box == was);
+        app->editor.row = GUI_APP_ANIMATIONS; /* two words: none */
+        key_with(app, SDLK_DOWN, SDL_KMOD_LALT);
+        assert(!app->picks_shown && !strcmp(app->editor.note, "Animations has no list: Enter changes it"));
+        leave_editor(app);
+        open_settings(app);
+    }
+    /* a row of two words: none, said */
+    for (g = 0; g < app->groups && strcmp(app->group_name[g], "Display"); ++g) {}
+    app->editor.row = g;
+    key(app, SDLK_RETURN);
+    app->editor.row = row_of(app, setting_row(app, "fullscreen"));
+    assert(words_row(app) < 0 && !strstr(shown_keys(app, said, sizeof said), "list."));
+    key_with(app, SDLK_DOWN, SDL_KMOD_LALT);
+    assert(!app->picks_shown && !strcmp(app->editor.note, "Fullscreen has no list: Enter changes it"));
+    leave_editor(app);
+    settings_forget(app);
+}
 /* the Room password: its row in Network says whether there is one, and the dialog that takes one starts empty, draws
    stars alone and keeps none of the letters; written 0600 in users/online.ini, never in settings.ini nor a run's
    options; Del takes it off; refused text is said and can be mended; a file others can read is said; another version's
@@ -18519,6 +18661,7 @@ int main(int argc, char** argv) {
     microphone_words(&app);
     room_password_row(&app, temporary);
     settings_search(&app);
+    setting_lists(&app);
     boxes_form(&app);
     volume_view(&app);
     bluetooth_settings(&app, temporary); /* its rows of the runtime's settings */
