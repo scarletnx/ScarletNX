@@ -525,7 +525,7 @@ static void libc_stream_sizes(VitaProcess* p, VitaThread* t) {
 /* the calls that fill a structure of the game's answer an error for a pointer to no memory of its own, and write
    nothing: a semaphore's and the free memory's, a module's, a stat's, the controller's and the touch panel's */
 static void unmapped_outputs(VitaProcess* p, VitaThread* t, uint32_t mem) {
-    const VitaHle* kernel = vita_hle_kernel;
+    const VitaHle* kernel = vita_hle_table;
     strcpy(vita_ptr(p, mem), "sema");
     uint32_t sema = CALL(kernel, "sceKernelCreateSema", mem, 0, 1, 10, 0);
     assert(sema && !(sema & 0x80000000u));
