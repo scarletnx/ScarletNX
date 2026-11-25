@@ -4235,6 +4235,9 @@ add_test(NAME recompiler_backends_br_pins COMMAND snx-test-recompiler-backends -
 # state: the exit past it stores none
 set(snx_undef_pins d2800050 91000631 f1000610 54ffffc1 00000000)
 add_test(NAME recompiler_backends_undef_pins COMMAND snx-test-recompiler-backends --words ${snx_undef_pins})
+# X30 kept in a host register, in step with the state (an SVC), and then stripped by XPACLRI: what the exit stores
+add_test(NAME recompiler_backends_xpac COMMAND snx-test-recompiler-backends --target max --words aa0003fe d4000001
+         d2800050 8b1e03c2 f1000610 54ffffc1 d50320ff d2800005 d65f00a0)
 # words of the lanes' arithmetic, each a function of its own that the back end must make, from the lanes' edge values
 add_test(NAME recompiler_backends_lanes COMMAND snx-test-recompiler-backends --states 48 --ops ADD_v SUB_v MUL_v MLA_v
          FADD_v FMUL_v FMLA_v FMAX_v FMINNM_v FCMGE_v SQADD_v UQXTN_v SQSHL_v ADDV ZIP1 TBL_TBX)
