@@ -1840,7 +1840,6 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
     u->a.reserved = 0;
     u->a.xreserved = MG_XRESERVED;
     memset(vweight, 0, sizeof vweight);
-    if (f->count < 8) return;
     loop = (unsigned char*)calloc(f->count + 1, 1);
     succ = (int*)malloc(2 * f->count * sizeof *succ);
     if (!loop || !succ) {
@@ -1873,6 +1872,11 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
                 if (t <= a) ++backs;
             }
         }
+    }
+    if (f->count < 8 && !backs) {
+        /* a small function's pins cost more than they save, but where it loops (a strlen) */
+        free(loop), free(succ);
+        return;
     }
     if (backs) {
         /* the natural loops: for each header (a back edge's target), what reaches one of its back edges without
