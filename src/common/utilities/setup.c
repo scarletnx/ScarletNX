@@ -3,6 +3,7 @@
 #include "common/utilities/setup.h"
 #include "common/utilities/common.h"
 #include "common/platform/file.h"
+#include "common/utilities/config_file.h"
 #include "common/utilities/ini_lines.h"
 #include "common/utilities/users.h"
 #include "common/utilities/ascii.h"
@@ -107,28 +108,40 @@ static long setup_number(const char* value) {
     long n = strtol(value, &end, 10);
     return *value >= '0' && *value <= '9' && !*end && n <= 1000000 ? n : -1;
 }
+/* a line of setup.ini the reading leaves (it has no =), for what the reading names */
+static void setup_left(void* ctx, int line, const char* text, const char* does) {
+    (void)text;
+    (void)does;
+    snx_config_other_line((SnxConfigOthers*)ctx, line);
+}
+/* whether a key of section is the setup's own: [setup]'s version and notices */
+static int setup_owns(void* ctx, const char* section, const char* key) {
+    (void)ctx;
+    return !strcmp(section, "setup") && (!strcmp(key, "version") || !strcmp(key, "notices"));
+}
 int snx_setup_read(const char* path, SnxSetup* setup, char* why, size_t why_size) {
-    size_t size, n = 0;
-    char *key, *value, unknown[256];
+    size_t size;
+    char *key, *value, *text, *first[2] = {NULL, NULL};
     long number;
-    int rc = 0;
+    int rc = 0, lines[2] = {0, 0};
     SnxIni ini;
+    SnxConfigOthers others = {0};
     setup->version = setup->notices = 0;
-    if (!snx_is_file(path)) return 0;
-    char* text = (char*)snx_read_file(path, &size);
-    if (!text) {
-        snprintf(why, why_size, "%s could not be read", path);
-        return -1;
-    }
-    unknown[0] = 0;
+    if (why_size) why[0] = 0;
+    if (snx_config_read(path, &text, &size, why, why_size) <= 0) return text || !snx_path_exists(path) ? 0 : -1;
     snx_ini_start(&ini, text);
+    ini.left = setup_left;
+    ini.ctx = &others;
     while (snx_ini_next(&ini, &key, &value)) {
         int version = !strcmp(key, "version");
-        if (strcmp(ini.section, "setup") || (!version && strcmp(key, "notices"))) {
-            if (n < sizeof unknown)
-                n += (size_t)snprintf(unknown + n, sizeof unknown - n, "%s[%s] %s", n ? ", " : "", ini.section, key);
+        if (!setup_owns(NULL, ini.section, key)) { /* a newer version's, or another program's: kept and named */
+            snx_config_other_key(&others, ini.section, key, ini.line);
             continue;
         }
+        if (lines[!version]) /* the last line's, as every settings file takes a key given twice */
+            snx_config_twice(&others, ini.section, key, first[!version], lines[!version], value, ini.line);
+        lines[!version] = ini.line;
+        first[!version] = value;
         number = setup_number(value);
         if (number < 0) {
             snprintf(why, why_size, "%s: %s = %s is not a whole number", path, key, value);
@@ -137,29 +150,37 @@ int snx_setup_read(const char* path, SnxSetup* setup, char* why, size_t why_size
         }
         *(version ? &setup->version : &setup->notices) = (int)number;
     }
-    /* a newer version's file may hold what this one does not know */
-    if (unknown[0] && setup->version <= SNX_SETUP_VERSION && !rc) {
-        snprintf(why, why_size, "%s: %s is not the setup's: version, notices", path, unknown);
-        rc = -1;
-    }
+    if (!rc) snx_config_others_said(&others, path, why, why_size);
     free(text);
     return rc;
 }
 int snx_setup_done(const char* path, const SnxSetup* setup, char* why, size_t why_size) {
-    char *dir = snx_dirname(path), *staged = snx_format("%s.new", path), *text;
-    text = snx_format("; ScarletNX's setup (docs/user/usage.md#setup): the version of the steps it asked and the notices it "
-                      "showed.\n; Delete this file, or run scarletnx --setup, to go through it again\n"
-                      "[setup]\nversion = %d\nnotices = %d\n",
-                      setup->version > SNX_SETUP_VERSION ? setup->version : SNX_SETUP_VERSION,
-                      setup->notices > SNX_NOTICES ? setup->notices : SNX_NOTICES);
-    int failed = !dir || snx_mkdirs(dir) || snx_write_file(staged, text, strlen(text)) || plat_replace_file(staged, path);
-    if (failed) {
-        remove(staged);
-        snprintf(why, why_size, "%s could not be written", path);
+    size_t size = 0;
+    char *was = NULL, *top = NULL, *kept = NULL, *own = NULL, *text = NULL;
+    const char* rest;
+    int failed = snx_config_read(path, &was, &size, why, why_size) < 0;
+    if (!failed) { /* the lines of what it does not read, as they were: those before [setup], then the others' */
+        top = snx_config_kept(was ? was : "", size, 1, setup_owns, NULL);
+        kept = snx_config_kept(was ? was : "", size, 0, setup_owns, NULL);
+        failed = !top || !kept;
+        if (failed) snprintf(why, why_size, "out of memory");
+    }
+    if (!failed) {
+        rest = !strncmp(kept, "[setup]\n", 8) ? kept + 8 : kept; /* still in [setup] */
+        own = snx_format("[setup]\nversion = %d\nnotices = %d\n",
+                         setup->version > SNX_SETUP_VERSION ? setup->version : SNX_SETUP_VERSION,
+                         setup->notices > SNX_NOTICES ? setup->notices : SNX_NOTICES);
+        text = snx_format("; ScarletNX's setup (docs/user/usage.md#setup): the version of the steps it asked and the "
+                          "notices it showed.\n; Delete this file, or run scarletnx --setup, to go through it again\n"
+                          "%s%s%s",
+                          top, own, rest);
+        failed = snx_config_write(path, ".new", text, strlen(text), why, why_size) != 0;
     }
     free(text);
-    free(staged);
-    free(dir);
+    free(own);
+    free(kept);
+    free(top);
+    free(was);
     return failed ? -1 : 0;
 }
 int snx_setup_asks(const SnxSetup* setup, int step) { return snx_setup_since[step] > setup->version; }

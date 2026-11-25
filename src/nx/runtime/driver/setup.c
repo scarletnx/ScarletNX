@@ -374,7 +374,10 @@ int snx_setup_terminal(FILE* in, FILE* out, const char* program_dir, int all) {
         free(a.data);
         return 1;
     }
-    if (snx_setup_read(file, &setup, why, sizeof why)) fprintf(out, "%s: the setup goes through it again\n", why);
+    if (snx_setup_read(file, &setup, why, sizeof why))
+        fprintf(out, "%s: the setup goes through it again\n", why);
+    else if (why[0]) /* what another version keeps there */
+        fprintf(out, "%s\n", why);
     ask = setup;
     if (all) ask.version = ask.notices = 0;
     if (!snx_setup_due(&ask)) {
