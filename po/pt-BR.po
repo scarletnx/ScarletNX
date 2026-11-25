@@ -757,13 +757,13 @@ msgstr "Arraste: mudar. Toque em #RRGGBB: digitar. Toque fora: OK."
 #: src/gui/main.c
 #, snx-keys
 msgid "Hold: list."
-msgstr ""
+msgstr "Segurar: lista."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Its group."
-msgstr ""
+msgstr "Seu grupo."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
@@ -1041,19 +1041,19 @@ msgstr "Del: padrão."
 #: src/gui/main.c
 #, snx-keys
 msgid "Ctrl+F: search."
-msgstr ""
+msgstr "Ctrl+F: buscar."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Alt+Down/right click: list."
-msgstr ""
+msgstr "Alt+Baixo/clique direito: lista."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "G: its group."
-msgstr ""
+msgstr "G: seu grupo."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
@@ -1289,19 +1289,19 @@ msgstr ""
 #: src/gui/main.c
 #, snx-keys
 msgid "Y: search."
-msgstr ""
+msgstr "Y: buscar."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "Hold A: list."
-msgstr ""
+msgstr "Segurar A: lista."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
 msgid "L3: its group."
-msgstr ""
+msgstr "L3: seu grupo."
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
@@ -2439,7 +2439,7 @@ msgstr "SCARLETNX  /  CONFIGURAÇÕES  /  AJUSTES DO FREEDRENO  /  %s"
 
 #: src/gui/main.c
 msgid "SCARLETNX  /  SETTINGS  /  SEARCH"
-msgstr ""
+msgstr "SCARLETNX  /  CONFIGURAÇÕES  /  BUSCA"
 
 #: src/gui/main.c
 #, c-format
@@ -4008,26 +4008,26 @@ msgstr "%s não tem espaço para outro item"
 
 #: src/gui/main.c
 msgid "Player"
-msgstr ""
+msgstr "Jogador"
 
 #: src/gui/main.c
 msgid "A setting's name, key, group or words: each one typed is looked for"
-msgstr ""
+msgstr "Nome, chave, grupo ou palavras de uma configuração: cada uma digitada é procurada"
 
 #: src/gui/main.c
 #, c-format
 msgid "No setting matches \"%s\". ESC: the groups"
-msgstr ""
+msgstr "Nenhuma configuração tem \"%s\". ESC: os grupos"
 
 #: src/gui/main.c
 #, c-format
 msgid "%d of %d settings: type more to see the rest"
-msgstr ""
+msgstr "%d de %d configurações: digite mais para ver o resto"
 
 #: src/gui/main.c
 #, c-format
 msgid "%d of %d settings"
-msgstr ""
+msgstr "%d de %d configurações"
 
 #: src/gui/main.c
 #, c-format
@@ -4153,7 +4153,7 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "Search"
-msgstr ""
+msgstr "Busca"
 
 #: src/gui/main.c
 msgid "Listens 30 s for the Joy-Con 2 nearby, each shown with its state. Hold a controller's sync button, on its side, until its lights run: Enter on it syncs it. Nothing connects or pairs here"
@@ -4375,7 +4375,7 @@ msgstr "Dados, Logs, Caches, Extrações e a Principal da biblioteca de recompil
 
 #: src/gui/main.c
 msgid "Enter: look for a setting by the words of its name, key, group or help"
-msgstr ""
+msgstr "Enter: procurar uma configuração pelas palavras do nome, da chave, do grupo ou da ajuda"
 
 #: src/gui/main.c
 msgid "The runtime listed no settings"
@@ -4424,11 +4424,11 @@ msgstr "Um apelido, de 1 a 32 bytes, sem caractere de controle, sem espaço nas 
 #: src/gui/main.c
 #, c-format
 msgid "A number from %g to %g"
-msgstr ""
+msgstr "Um número de %g a %g"
 
 #: src/gui/main.c
 msgid "Words of a setting's name, key, group, help or values"
-msgstr ""
+msgstr "Palavras do nome, da chave, do grupo, da ajuda ou dos valores de uma configuração"
 
 #: src/gui/main.c
 msgid "The room's password, 1 to 255 bytes, no control character, no space at either end"
@@ -4458,7 +4458,7 @@ msgstr "(sem pasta de temas)"
 #: src/gui/main.c
 #, c-format
 msgid "Search: %s"
-msgstr ""
+msgstr "Busca: %s"
 
 #: src/gui/main.c
 msgid "was"
@@ -5331,17 +5331,17 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "Other..."
-msgstr ""
+msgstr "Outro..."
 
 #: src/gui/main.c
 #, c-format
 msgid "%s has no list: Enter changes it"
-msgstr ""
+msgstr "%s não tem lista: Enter muda o valor"
 
 #: src/gui/main.c
 #, c-format
 msgid "%s is no value of %s: it keeps %s"
-msgstr ""
+msgstr "%s não é um valor de %s: fica %s"
 
 #: src/gui/main.c
 msgid "Every key of this screen is in its foot"
@@ -5361,7 +5361,7 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "%s: %s. Enter picks one, ESC leaves it"
-msgstr ""
+msgstr "%s: %s. Enter escolhe um, ESC fecha sem mudar"
 
 #: src/gui/main.c
 msgid "The rest of this screen's keys"
@@ -6334,43 +6334,43 @@ msgstr "Ctrl+V"
 #: src/gui/main.c
 #, snx-key
 msgid "Ctrl+F"
-msgstr ""
+msgstr "Ctrl+F"
 
 #. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "G"
-msgstr ""
+msgstr "G"
 
 #. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "Its group"
-msgstr ""
+msgstr "Seu grupo"
 
 #. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "Hold A"
-msgstr ""
+msgstr "Segurar A"
 
 #. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "Alt+Down"
-msgstr ""
+msgstr "Alt+Baixo"
 
 #. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "right click"
-msgstr ""
+msgstr "clique direito"
 
 #. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
 msgid "Hold"
-msgstr ""
+msgstr "Segurar"
 
 #. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
