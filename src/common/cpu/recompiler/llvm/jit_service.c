@@ -1143,6 +1143,7 @@ static void compile(SnxJitService* s, const SnxU64* pcs, size_t count, SnxU64 st
     SnxCodeImage* images = images_take(s, &image_count, taken);
     SnxU64 epoch = s->epoch;
     unlock(&s->lock);
+    if (s->config.begin) s->config.begin(pcs[0]);
     int generation_snapshot = images && image_generations_take(images, image_count, &generations, &generation_count);
     if (images && generation_snapshot && s->cache.capacity && (left = (SnxU64*)malloc(count * sizeof(*left))) != NULL) {
         /* what the cache has: its units loaded and published, and the pcs they covered done */
