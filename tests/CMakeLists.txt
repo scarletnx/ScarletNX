@@ -4335,6 +4335,7 @@ foreach(family IN ITEMS
         "saturating_sums;SQADD_v;UQADD_v;SQSUB_v;UQSUB_v;SUQADD_v;USQADD_v;SUQADD_s;USQADD_s;SQABS_v;SQNEG_v;SQABS_s;SQNEG_s"
         "byte_shifts;SHL_v;USHR_v;SSHR_v;USRA_v;SSRA_v;SRSHR_v;URSHR_v;SRSRA_v;URSRA_v;SRI_v;SLI_v;RBIT_v"
         "reversals;RBIT;REV16;REV32;REV64"
+        "shifts_by_register;SSHL_v;USHL_v;SRSHL_v;URSHL_v;SSHL_s;USHL_s;SRSHL_s;URSHL_s;SQSHL_v;UQSHL_v;SQRSHL_v;UQRSHL_v;SQSHL_s;UQSHL_s;SQRSHL_s;UQRSHL_s"
         "crypto;AESE;AESD;AESMC;AESIMC;SHA1C;SHA1P;SHA1M;SHA1SU0;SHA1H;SHA1SU1;SHA256H;SHA256H2;SHA256SU0;SHA256SU1;PMULL_p64")
     list(POP_FRONT family name)
     add_test(NAME recompiler_backends_${name} COMMAND snx-test-recompiler-backends --states 48 --ops ${family})
@@ -4355,6 +4356,11 @@ add_test(NAME recompiler_backends_plain_ops COMMAND snx-test-recompiler-backends
          FRECPS_v FRECPS_s FRSQRTS_v FRSQRTS_s FMLA_si FMLS_si AESE AESD AESMC AESIMC SHA256H SHA256H2 SHA256SU0
          SHA256SU1)
 set_tests_properties(recompiler_backends_plain_ops PROPERTIES TIMEOUT 600)
+# the lanes' shifts and the saturating sums without GFNI (0x10000) and AVX2 (0x8000)
+add_test(NAME recompiler_backends_plain_lanes COMMAND snx-test-recompiler-backends --without 0x18000 --states 32 --ops
+         SHL_v USHR_v SSHR_v SRSHR_v URSRA_v SRI_v SLI_v RBIT_v RBIT SSHL_v USHL_v SRSHL_v URSHL_v SQSHL_v UQSHL_v
+         SQRSHL_v UQRSHL_v SQSHL_s UQRSHL_s)
+set_tests_properties(recompiler_backends_plain_lanes PROPERTIES TIMEOUT 600)
 # half-precision words (an Android phone's): x64_vec.c makes singles and doubles of no half's lanes
 set(snx_half_words 0e421420 4ec31462 6e441c83 2e453ca4 0e460cc5)
 add_test(NAME recompiler_backends_half_words COMMAND snx-test-recompiler-backends --target android --states 40 --words

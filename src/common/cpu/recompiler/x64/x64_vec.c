@@ -866,6 +866,159 @@ static int vqshl_reg(SgCtx* g, unsigned size, int q, int a, int m, int* sat) {
     return r;
 }
 
+/* ---- shifts by a register's lanes ----
+   Left by the signed byte s at the bottom of each lane of m where it is positive, right by -s where it is negative
+   (uns: logical), rounded (round: the last bit shifted out added back) or saturated on the left (saturate), as
+   ir_vec.c's shl_helper. Left and right are made apart, each 0 where it is the other's lane, and ORed (a 0 amount is
+   the value, in both). Words and doublewords by AVX2's shifts, 0 past the lane; bytes and halfwords by products with
+   the power of two a table (PSHUFB) has for the amount: left a * 2^s, right the upper half of a * 2^(e + s), whose
+   index -1 - s is the amount's complement */
+enum { VSH_UNS = 1, VSH_ROUND = 2, VSH_SAT = 4 };
+
+/* each byte's power of two for the amount in i, 2^i (down: 2^(7 - i)), 0 past 7 and for the negative: past the table's
+   16 bytes once 0x70 more (saturated) */
+static int vpow8(SgCtx* g, int i, int down) {
+    return op2(g, &sgx_v_pshufb, kconst(g, down ? 0x0102040810204080ull : 0x8040201008040201ull, 0),
+               op2(g, &sgx_v_paddusb, i, vsplat(g, 0, 0x70)));
+}
+/* each halfword's for the amount in i's low byte, 2^i (down: 2^(15 - i)): the two bytes' tables apart */
+static int vpow16(SgCtx* g, int i, int down) {
+    SnxU64 up = 0x8040201008040201ull, dn = 0x0102040810204080ull;
+    int idx = op2(g, &sgx_v_paddusb, vor(g, i, vsplat(g, 1, 0xFF00)), vsplat(g, 0, 0x70));
+    int low = op2(g, &sgx_v_pshufb, down ? kconst(g, 0, dn) : kconst(g, up, 0), idx);
+    int high = op2(g, &sgx_v_pshufb, down ? kconst(g, dn, 0) : kconst(g, 0, up), idx);
+    return vor(g, low, opi(g, &sgx_v_psllw_i, high, 8));
+}
+/* a's sign limit, the largest for a positive lane, the smallest for a negative one */
+static int vlimit(SgCtx* g, unsigned size, int a) { return vxor(g, vsign(g, size, a), vsplat(g, size, smax_of(size))); }
+
+static int vshift_bytes(SgCtx* g, int a, int m, int flags, int* sat) {
+    int uns = flags & VSH_UNS, zero = vzero(g), neg = 0, left, right, i = vnot(g, m), p, q;
+    /* right: the even bytes' products and the odd ones', the upper byte of each kept (128 added first to round). Signed
+       amounts past 8 shift by 8 where not rounded, which leaves 0 */
+    if (!uns && !(flags & VSH_ROUND)) {
+        neg = vsign(g, 0, m);
+        q = vpow8(g, op2(g, &sgx_v_pminub, i, vsplat(g, 0, 7)), 1);
+    } else
+        q = vpow8(g, i, 1);
+    {
+        int ev = uns ? vand(g, a, vsplat(g, 1, 0xFF)) : vshr(g, 1, vshl(g, 1, a, 8), 8, 1), od = vshr(g, 1, a, 8, !uns);
+        ev = op2(g, &sgx_v_pmullw, ev, vand(g, q, vsplat(g, 1, 0xFF)));
+        od = op2(g, &sgx_v_pmullw, od, vshr(g, 1, q, 8, 0));
+        if (flags & VSH_ROUND) {
+            ev = vadd(g, 1, ev, vsplat(g, 1, 0x80));
+            od = vadd(g, 1, od, vsplat(g, 1, 0x80));
+        }
+        right = vor(g, vshr(g, 1, ev, 8, 0), vand(g, od, vsplat(g, 1, 0xFF00)));
+        if (neg) right = vand(g, right, neg);
+    }
+    p = vpow8(g, m, 0);
+    if (!(flags & VSH_SAT)) { /* left, modulo 256: the odd bytes' product is the halfwords' upper byte */
+        int ev = vand(g, op2(g, &sgx_v_pmullw, a, p), vsplat(g, 1, 0xFF));
+        int od = op2(g, &sgx_v_pmullw, vand(g, a, vsplat(g, 1, 0xFF00)), vshr(g, 1, p, 8, 0));
+        return vor(g, vor(g, ev, od), right);
+    }
+    {
+        /* the products of 16 bits, packed with saturation, which saturates where their upper byte is not 0 (signed:
+           where their bits from 7 up are not all the sign). An amount past 7 (p is 0) leaves 0, and the limit where a
+           is not 0 */
+        int s = uns ? zero : vsign(g, 0, a), far, out_lo, out_hi;
+        int lo = op2(g, &sgx_v_pmullw, op2(g, &sgx_v_punpcklbw, a, s), op2(g, &sgx_v_punpcklbw, p, zero));
+        int hi = op2(g, &sgx_v_pmullw, op2(g, &sgx_v_punpckhbw, a, s), op2(g, &sgx_v_punpckhbw, p, zero));
+        left = op2(g, uns ? &sgx_v_packuswb : &sgx_v_packsswb, lo, hi);
+        out_lo = uns ? vshr(g, 1, lo, 8, 0) : vxor(g, vshr(g, 1, lo, 7, 1), vsign(g, 1, lo));
+        out_hi = uns ? vshr(g, 1, hi, 8, 0) : vxor(g, vshr(g, 1, hi, 7, 1), vsign(g, 1, hi));
+        far = vandn(g, veq(g, 0, a, zero), vgt(g, 0, m, vsplat(g, 0, 7), 0));
+        *sat = vor(g, op2(g, uns ? &sgx_v_packuswb : &sgx_v_packsswb, out_lo, out_hi), far);
+        return vor(g, vor(g, left, uns ? far : vand(g, far, vlimit(g, 0, a))), right);
+    }
+}
+static int vshift_halves(SgCtx* g, int a, int m, int flags, int* sat) {
+    int uns = flags & VSH_UNS, neg = 0, i = vnot(g, m), s = 0, left, right, p, q, high;
+    if (!uns) s = vsign(g, 1, a);
+    if (!uns && !(flags & VSH_ROUND)) {
+        neg = vsign(g, 1, vshl(g, 1, m, 8));
+        q = vpow16(g, op2(g, &sgx_v_pminub, i, vsplat(g, 1, 15)), 1);
+    } else
+        q = vpow16(g, i, 1);
+    /* the upper halves of a * q, q of 16 unsigned bits (a signed a's less q where it is negative) */
+    right = op2(g, &sgx_v_pmulhuw, a, q);
+    if (!uns) right = vsub(g, 1, right, vand(g, q, s));
+    if (flags & VSH_ROUND) right = vadd(g, 1, right, vshr(g, 1, op2(g, &sgx_v_pmullw, a, q), 15, 0));
+    if (neg) right = vand(g, right, neg);
+    p = vpow16(g, m, 0);
+    left = op2(g, &sgx_v_pmullw, a, p);
+    if (flags & VSH_SAT) {
+        /* the product's upper half not its lower's sign (or not 0), or an amount past 15 of an a that is not 0 */
+        int far = vandn(g, veq(g, 1, a, vzero(g)), vgt(g, 1, vshl(g, 1, m, 8), vsplat(g, 1, 0x0FFF), 0)), over;
+        high = op2(g, &sgx_v_pmulhuw, a, p);
+        if (!uns) high = vsub(g, 1, high, vand(g, p, s));
+        over = vor(g, far, vnot(g, veq(g, 1, high, uns ? vzero(g) : vsign(g, 1, left))));
+        *sat = over;
+        left = uns ? vor(g, left, over) : vsel(g, over, vlimit(g, 1, a), left);
+    }
+    return vor(g, left, right);
+}
+/* AVX's three-operand form f of a and b */
+static int op3(SgCtx* g, const SgXVForm* f, int a, int b) {
+    int in[4] = {0, a, b, 0};
+    return sgx_vins(X, f, 0, 0, in, 0, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
+}
+/* words' and doublewords' lanes of a shifted right by c's (AVX2): logical, or arithmetic, a doubleword's the logical
+   shift of its bits XORed with its sign s */
+static int vshrv(SgCtx* g, unsigned size, int a, int c, int uns, int s) {
+    if (size == 2) return op3(g, uns ? &sgx_v_vpsrlvd : &sgx_v_vpsravd, a, c);
+    if (uns) return op3(g, &sgx_v_vpsrlvq, a, c);
+    return vxor(g, op3(g, &sgx_v_vpsrlvq, vxor(g, a, s), c), s);
+}
+static int vshift_words(SgCtx* g, unsigned size, int a, int m, int flags, int* sat) {
+    int uns = flags & VSH_UNS, byte = vsplat(g, size, 0xFF), s = !uns && size == 3 ? vsign(g, 3, a) : 0;
+    int cl = vand(g, m, byte), cr = vand(g, vneg(g, size, m), byte), left, right, neg = 0;
+    if (!uns || (flags & VSH_SAT)) neg = vsign(g, size, vshl(g, size, m, (8u << size) - 8));
+    right = vshrv(g, size, a, cr, uns, s);
+    if (flags & VSH_ROUND) /* shifted by one less, the last bit out is its lowest */
+        right =
+            vadd(g, size, right, vand(g, vshrv(g, size, a, vadd(g, size, cr, vones(g)), uns, s), vsplat(g, size, 1)));
+    if (!uns) right = vand(g, right, neg);
+    left = op3(g, size == 2 ? &sgx_v_vpsllvd : &sgx_v_vpsllvq, a, cl);
+    if (flags & VSH_SAT) { /* what shifting back doesn't give again */
+        int back = vshrv(g, size, left, cl, uns, !uns && size == 3 ? vsign(g, 3, left) : 0);
+        int over = vandn(g, vor(g, veq(g, size, back, a), neg), vones(g));
+        *sat = over;
+        left = uns ? vor(g, left, over) : vsel(g, over, vlimit(g, size, a), left);
+    }
+    return vor(g, left, right);
+}
+static int vshift(SgCtx* g, unsigned size, int a, int m, int flags, int* sat) {
+    return size == 0   ? vshift_bytes(g, a, m, flags, sat)
+           : size == 1 ? vshift_halves(g, a, m, flags, sat)
+                       : vshift_words(g, size, a, m, flags, sat);
+}
+/* the shifts by register: VSH_* and whether scalar, or -1 */
+static int vshift_of(SnxA64Op op, int* scalar) {
+    *scalar = op == SNX_A64_OP_SSHL_s || op == SNX_A64_OP_USHL_s || op == SNX_A64_OP_SRSHL_s ||
+              op == SNX_A64_OP_URSHL_s || op == SNX_A64_OP_SQSHL_s || op == SNX_A64_OP_UQSHL_s ||
+              op == SNX_A64_OP_SQRSHL_s || op == SNX_A64_OP_UQRSHL_s;
+    switch (op) {
+        case SNX_A64_OP_SSHL_v:
+        case SNX_A64_OP_SSHL_s: return 0;
+        case SNX_A64_OP_USHL_v:
+        case SNX_A64_OP_USHL_s: return VSH_UNS;
+        case SNX_A64_OP_SRSHL_v:
+        case SNX_A64_OP_SRSHL_s: return VSH_ROUND;
+        case SNX_A64_OP_URSHL_v:
+        case SNX_A64_OP_URSHL_s: return VSH_UNS | VSH_ROUND;
+        case SNX_A64_OP_SQSHL_v:
+        case SNX_A64_OP_SQSHL_s: return VSH_SAT;
+        case SNX_A64_OP_UQSHL_v:
+        case SNX_A64_OP_UQSHL_s: return VSH_UNS | VSH_SAT;
+        case SNX_A64_OP_SQRSHL_v:
+        case SNX_A64_OP_SQRSHL_s: return VSH_ROUND | VSH_SAT;
+        case SNX_A64_OP_UQRSHL_v:
+        case SNX_A64_OP_UQRSHL_s: return VSH_UNS | VSH_ROUND | VSH_SAT;
+        default: return -1;
+    }
+}
 /* |a - b|'s building blocks and the rest of the lanes' integer arithmetic the instructions below share */
 static int vabs(SgCtx* g, unsigned size, int a) {
     if (k_abs[size]) return sgx_v1(X, k_abs[size], a, 0);
@@ -1138,6 +1291,21 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     unsigned q = word >> 30 & 1, uns = word >> 29 & 1, size = word >> 22 & 3;
     unsigned rd = word & 31, rn = word >> 5 & 31, rm = word >> 16 & 31;
     int a, b, r;
+    {
+        int sc, sat = 0, flags = vshift_of(insn->op, &sc);
+        if (flags >= 0 && size == 3 && !q && !sc) return -1;
+        if (flags >= 0 && sc && size != 3 && !(flags & VSH_SAT)) return -1;
+        /* one byte's or halfword's saturating shift: the Sail's in general-purpose registers, as quick */
+        if (flags >= 0 && (size < 2 || (X->features & SGX_F_AVX2)) && !(sc && size < 2 && (flags & VSH_SAT))) {
+            r = vshift(g, size, vread(g, rn), vread(g, rm), flags, &sat);
+            if (flags & VSH_SAT) set_qc(g, sat, sc ? 1 << size : q ? 16 : 8);
+            if (sc)
+                vwrite_scalar(g, rd, size, r);
+            else
+                vwrite(g, rd, r, q);
+            return 1;
+        }
+    }
     switch (insn->op) {
     /* bitwise, the whole register */
     case SNX_A64_OP_AND_v: vwrite(g, rd, vand(g, vread(g, rn), vread(g, rm)), q); return 1;

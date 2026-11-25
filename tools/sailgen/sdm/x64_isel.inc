@@ -6945,3 +6945,58 @@ static inline void sgx_e_VGF2P8AFFINEQB_xmm1_xmm2_xmm3_m128_imm8(SgXBuf* b, cons
 }
 
 static const SgXVForm sgx_v_vgf2p8affineqb = {sgx_e_VGF2P8AFFINEQB_xmm1_xmm2_xmm3_m128_imm8, SGX_F_AVX | SGX_F_GFNI, 4, 0, 2, 1, 7, 1, NULL}; /* VEX.128.66.0F3A.W1 CE /r ib */
+/* VPSLLVD xmm1, xmm2, xmm3/m128: VEX.128.66.0F38.W0 47 /r (the SDM's VPSLLVW/VPSLLVD/VPSLLVQ) */
+static inline void sgx_e_VPSLLVD_xmm1_xmm2_xmm3_m128(SgXBuf* b, const unsigned char* r, long long imm, int cc) {
+    (void)r, (void)imm, (void)cc;
+    sgx_byte(b, 0xC4);
+    sgx_byte(b, (unsigned char)(0x02 | (r[0] < 8 ? 0x80 : 0) | ((r[2] & 15) < 8 ? 0x20 : 0) | (sgx_rex_x(b, r[2]) ? 0 : 0x40)));
+    sgx_byte(b, (unsigned char)(0x01 | ((~r[1] & 15) << 3)));
+    sgx_byte(b, 0x47);
+    sgx_modrm(b, r[0] & 7, r[2]);
+}
+
+static const SgXVForm sgx_v_vpsllvd = {sgx_e_VPSLLVD_xmm1_xmm2_xmm3_m128, SGX_F_AVX2, 3, 0, 2, 1, 7, 0, NULL}; /* VEX.128.66.0F38.W0 47 /r */
+/* VPSLLVQ xmm1, xmm2, xmm3/m128: VEX.128.66.0F38.W1 47 /r (the SDM's VPSLLVW/VPSLLVD/VPSLLVQ) */
+static inline void sgx_e_VPSLLVQ_xmm1_xmm2_xmm3_m128(SgXBuf* b, const unsigned char* r, long long imm, int cc) {
+    (void)r, (void)imm, (void)cc;
+    sgx_byte(b, 0xC4);
+    sgx_byte(b, (unsigned char)(0x02 | (r[0] < 8 ? 0x80 : 0) | ((r[2] & 15) < 8 ? 0x20 : 0) | (sgx_rex_x(b, r[2]) ? 0 : 0x40)));
+    sgx_byte(b, (unsigned char)(0x81 | ((~r[1] & 15) << 3)));
+    sgx_byte(b, 0x47);
+    sgx_modrm(b, r[0] & 7, r[2]);
+}
+
+static const SgXVForm sgx_v_vpsllvq = {sgx_e_VPSLLVQ_xmm1_xmm2_xmm3_m128, SGX_F_AVX2, 3, 0, 2, 1, 7, 0, NULL}; /* VEX.128.66.0F38.W1 47 /r */
+/* VPSRLVD xmm1, xmm2, xmm3/m128: VEX.128.66.0F38.W0 45 /r (the SDM's VPSRLVW/VPSRLVD/VPSRLVQ) */
+static inline void sgx_e_VPSRLVD_xmm1_xmm2_xmm3_m128(SgXBuf* b, const unsigned char* r, long long imm, int cc) {
+    (void)r, (void)imm, (void)cc;
+    sgx_byte(b, 0xC4);
+    sgx_byte(b, (unsigned char)(0x02 | (r[0] < 8 ? 0x80 : 0) | ((r[2] & 15) < 8 ? 0x20 : 0) | (sgx_rex_x(b, r[2]) ? 0 : 0x40)));
+    sgx_byte(b, (unsigned char)(0x01 | ((~r[1] & 15) << 3)));
+    sgx_byte(b, 0x45);
+    sgx_modrm(b, r[0] & 7, r[2]);
+}
+
+static const SgXVForm sgx_v_vpsrlvd = {sgx_e_VPSRLVD_xmm1_xmm2_xmm3_m128, SGX_F_AVX2, 3, 0, 2, 1, 7, 0, NULL}; /* VEX.128.66.0F38.W0 45 /r */
+/* VPSRLVQ xmm1, xmm2, xmm3/m128: VEX.128.66.0F38.W1 45 /r (the SDM's VPSRLVW/VPSRLVD/VPSRLVQ) */
+static inline void sgx_e_VPSRLVQ_xmm1_xmm2_xmm3_m128(SgXBuf* b, const unsigned char* r, long long imm, int cc) {
+    (void)r, (void)imm, (void)cc;
+    sgx_byte(b, 0xC4);
+    sgx_byte(b, (unsigned char)(0x02 | (r[0] < 8 ? 0x80 : 0) | ((r[2] & 15) < 8 ? 0x20 : 0) | (sgx_rex_x(b, r[2]) ? 0 : 0x40)));
+    sgx_byte(b, (unsigned char)(0x81 | ((~r[1] & 15) << 3)));
+    sgx_byte(b, 0x45);
+    sgx_modrm(b, r[0] & 7, r[2]);
+}
+
+static const SgXVForm sgx_v_vpsrlvq = {sgx_e_VPSRLVQ_xmm1_xmm2_xmm3_m128, SGX_F_AVX2, 3, 0, 2, 1, 7, 0, NULL}; /* VEX.128.66.0F38.W1 45 /r */
+/* VPSRAVD xmm1, xmm2, xmm3/m128: VEX.128.66.0F38.W0 46 /r (the SDM's VPSRAVW/VPSRAVD/VPSRAVQ) */
+static inline void sgx_e_VPSRAVD_xmm1_xmm2_xmm3_m128(SgXBuf* b, const unsigned char* r, long long imm, int cc) {
+    (void)r, (void)imm, (void)cc;
+    sgx_byte(b, 0xC4);
+    sgx_byte(b, (unsigned char)(0x02 | (r[0] < 8 ? 0x80 : 0) | ((r[2] & 15) < 8 ? 0x20 : 0) | (sgx_rex_x(b, r[2]) ? 0 : 0x40)));
+    sgx_byte(b, (unsigned char)(0x01 | ((~r[1] & 15) << 3)));
+    sgx_byte(b, 0x46);
+    sgx_modrm(b, r[0] & 7, r[2]);
+}
+
+static const SgXVForm sgx_v_vpsravd = {sgx_e_VPSRAVD_xmm1_xmm2_xmm3_m128, SGX_F_AVX2, 3, 0, 2, 1, 7, 0, NULL}; /* VEX.128.66.0F38.W0 46 /r */
