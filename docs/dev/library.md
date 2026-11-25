@@ -59,9 +59,9 @@ target_link_libraries(my_emulator PRIVATE ScarletNX::recompiler)
 as ScarletNX does, and finds LLVM the same way (`llvm-config` on the PATH,
 `SNX_LLVM_CONFIG` or `LLVM_DIR`, `cmake/llvm.cmake`).
 
-The archive holds the recompiler's core and nothing else of this tree: the LLVM
-backend (its emitters, the linker and the prebuilt runtime library every module gets),
-the AArch32 block compiler with its decoders and helpers, and what they take from
+The archive holds the recompiler and nothing else of this tree: the native back ends,
+the linkers, the code loader and the prebuilt runtime library every module gets
+(`snx_recompiler_core`), the LLVM backend, the JIT, the AArch32 block compiler with its decoders and helpers, and what they take from
 `src/common` (`snx_recompiler_base`): the A64 decoder, the function discovery, and the
 host calls under them (allocation, the error line, files and folders, the clocks, the
 address space). Its one other library is LLVM, linked as the rest of the build links it

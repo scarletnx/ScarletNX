@@ -18,10 +18,10 @@ add_library(scarletnx-agb STATIC board/board.c board/memory.c board/dma.c board/
                                  cartridge/cartridge.c bios/bios.c bios/bios_time.c ppu/ppu.c apu/apu.c cpu/memmap.c cpu/recomp.c
                                  cpu/cpu.c cpu/timing.c)
 set_target_properties(scarletnx-agb PROPERTIES OUTPUT_NAME scarletnx-agb-runtime C_STANDARD 23 C_STANDARD_REQUIRED ON)
-# The LLVM backend (snx_llvm, which the Switch driver's tree, the GNU ABI runtime's or the top level configures):
-# the module's objects and their helpers (armlib.c) linked by its linker, and the blocks a run reaches compiled in
-# this process by its executor (exec.c), as the 3DS and the Vita do
-target_link_libraries(scarletnx-agb PUBLIC scarletnx-common snx_arm_llvm snx_llvm)
+# The recompiler (snx_recompiler_jit, which the Switch driver's tree, the GNU ABI runtime's or the top level
+# configures): the module's objects and their helpers (armlib.c) linked by its linker, and the blocks a run reaches
+# compiled in this process by its executor (exec.c), as the 3DS and the Vita do
+target_link_libraries(scarletnx-agb PUBLIC scarletnx-common snx_arm_llvm snx_recompiler_jit)
 target_compile_options(scarletnx-agb PRIVATE -Wall -Wextra -Werror)
 
 # the runner: the board in a window, with sound and the keypad (runtime/host.c), SDL here and never in the board. Its

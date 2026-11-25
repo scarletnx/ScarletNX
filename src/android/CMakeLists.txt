@@ -80,8 +80,7 @@ endif()
 # which another driver's tree may have configured already. cpu.h is written in the GNU dialect of C
 if(NOT TARGET scarletnx-recompiler)
     include("${PROJECT_SOURCE_DIR}/cmake/llvm.cmake")
-    add_subdirectory("${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/llvm" android-llvm-backend)
-    add_subdirectory("${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler" android-recompiler-library)
+    add_subdirectory("${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler" android-recompiler)
 endif()
 add_library(snx_android_bridge STATIC bridge/bridge.c bridge/host.c bridge/linker.c bridge/hle.c bridge/hle_libc.c bridge/args.c
                                       bridge/native.c bridge/hle_posix.c bridge/hle_thread.c bridge/hle_sync.c bridge/bionic_sync.c bridge/hle_signal.c bridge/fault.c bridge/hle_proc.c bridge/hle_dl.c bridge/hle_code.c

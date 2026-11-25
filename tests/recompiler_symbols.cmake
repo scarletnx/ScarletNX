@@ -4,7 +4,8 @@
 # outside it but LLVM and the system's libraries (the C library, threads, dl, m; advapi32 on Windows). NM lists the
 # symbols its objects call that none of them defines, each with the objects that call it. TARGET, a program of BUILD
 # that links every object of the archive with those libraries alone, is then built: its link fails on any symbol they
-# lack, and the test names those symbols and their objects
+# lack, and the test names those symbols and their objects. For another archive (recompiler_core_symbols,
+# tests/cmake/recompiler_core.cmake) LIBRARIES says whose the symbols it may call are, and RULE what keeps it so
 cmake_minimum_required(VERSION 3.25)
 foreach(name BUILD TARGET ARCHIVE NM)
     if(NOT ${name})
@@ -12,6 +13,11 @@ foreach(name BUILD TARGET ARCHIVE NM)
                             "links the archive, ARCHIVE the archive's file, NM the nm that reads it")
     endif()
 endforeach()
+
+if(NOT LIBRARIES)
+    set(LIBRARIES "LLVM's or the system's")
+    set(RULE "The recompiler's library holds the core alone (docs/dev/library.md)")
+endif()
 
 # -g the global symbols, -P one line each (name, type, value), -A the archive member it is in: "lib.a[ir.c.o]: name U"
 # (llvm-nm) or "lib.a:ir.c.o: name U" (GNU nm)
@@ -68,7 +74,7 @@ execute_process(COMMAND "${CMAKE_COMMAND}" -E env --unset=LANGUAGE LC_ALL=C
                         "${CMAKE_COMMAND}" --build "${BUILD}" --target "${TARGET}" ${build_config}
                 OUTPUT_VARIABLE build_output ERROR_VARIABLE build_output RESULT_VARIABLE build_result)
 if(build_result EQUAL 0)
-    message(STATUS "${ARCHIVE} calls ${outside_count} symbols from outside it, every one LLVM's or the system's")
+    message(STATUS "${ARCHIVE} calls ${outside_count} symbols from outside it, every one ${LIBRARIES}")
     return()
 endif()
 
@@ -106,8 +112,7 @@ if(missing_count EQUAL 0)
     message(FATAL_ERROR "${TARGET} did not build (${build_result}), and its output names no symbol its link lacks:\n"
                         "${build_output}")
 endif()
-message(FATAL_ERROR "${ARCHIVE} calls ${outside_count} symbols from outside it; ${missing_count} of them are neither "
-                    "LLVM's nor the system's, the only libraries ${TARGET}'s link takes. Each, with the objects "
-                    "that call it:\n${report}The recompiler's library holds the core alone (docs/dev/library.md): a "
-                    "call into another library of this tree, or a new external library, makes it link that too. "
-                    "${TARGET}'s link:\n${build_output}")
+message(FATAL_ERROR "${ARCHIVE} calls ${outside_count} symbols from outside it; ${missing_count} of them are not "
+                    "${LIBRARIES}, the only libraries ${TARGET}'s link takes. Each, with the objects that call "
+                    "it:\n${report}${RULE}: a call into another library of this tree, or a new external library, makes "
+                    "it link that too. ${TARGET}'s link:\n${build_output}")

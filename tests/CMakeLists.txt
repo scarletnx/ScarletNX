@@ -55,8 +55,8 @@ if(SNX_TEST_SANITIZERS)
         snx_ble_system
         snx-logscan
         # the recompiler, its backends and what they take of the common code
-        snx_recompiler_base snx_llvm snx_arm_llvm snx_arm_decode snx_arm_rt scarletnx-recompiler
-        scarletnx-recompiler-shared
+        snx_recompiler_base snx_recompiler_core snx_llvm snx_recompiler_jit snx_arm_llvm snx_arm_decode snx_arm_rt
+        scarletnx-recompiler scarletnx-recompiler-shared
         # the driver, its extraction, the first start's setup, the settings and the build's line
         snx_driver snx_nx_module snx_driver_llvm hactool_lib snx_setup snx_settings snx_settings_runtime snx_build_info
         snx-test-build-info
@@ -142,7 +142,7 @@ function(snx_sanitizer_path)
         set_tests_properties(${tests} PROPERTIES ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${resource}/lib/windows")
     endif()
 endfunction()
-# cpu_helpers.c built as the game's helpers are (snx_rtlib_flags in src/common/cpu/recompiler/llvm/CMakeLists.txt),
+# cpu_helpers.c built as the game's helpers are (snx_rtlib_flags in src/common/cpu/recompiler/CMakeLists.txt),
 # with -mcx16 on x86-64: its 16-byte compare-and-swap is then lock cmpxchg16b, not a libatomic call
 function(snx_cpu_helpers_flags target)
     if(snx_test_x86)
@@ -203,6 +203,7 @@ function(snx_test_target target dialect)
     endif()
     snx_test_sanitize(${target})
 endfunction()
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/recompiler_core.cmake") # the recompiler's core, which has no LLVM
 
 if(TARGET snx_ctr_board)
     add_executable(snx-test-3ds-board 3ds_board.c)
@@ -239,7 +240,7 @@ if(TARGET snx_ctr_board)
     add_test(NAME 3ds_kernel COMMAND snx-test-3ds-kernel)
     add_executable(snx-test-3ds-vfp 3ds_vfp.c support/3ds_guest.c)
     snx_test_target(snx-test-3ds-vfp gnu23)
-    target_link_libraries(snx-test-3ds-vfp PRIVATE snx_ctr_process snx_llvm)
+    target_link_libraries(snx-test-3ds-vfp PRIVATE snx_ctr_process snx_recompiler_jit)
     add_test(NAME 3ds_vfp COMMAND snx-test-3ds-vfp)
     foreach(test services swkbd mii_selector threads)
         add_executable(snx-test-3ds-${test} 3ds_${test}.c support/3ds_guest.c)
@@ -1131,7 +1132,7 @@ target_link_libraries(snx-test-arm-fp-host PRIVATE snx_arm_rt)
 add_test(NAME arm_fp_host COMMAND snx-test-arm-fp-host)
 add_executable(snx-test-arm-exec arm_exec_test.c)
 snx_test_target(snx-test-arm-exec gnu23)
-target_link_libraries(snx-test-arm-exec PRIVATE snx_llvm)
+target_link_libraries(snx-test-arm-exec PRIVATE snx_recompiler_jit)
 add_test(NAME arm_exec_dry_svc COMMAND snx-test-arm-exec)
 # the same executor where the loader does not take a native block's object (exec.c itself, its loads the test's)
 add_executable(snx-test-arm-exec-fallback arm_exec_fallback.c)
@@ -1142,13 +1143,13 @@ add_test(NAME arm_exec_fallback COMMAND snx-test-arm-exec-fallback WORKING_DIREC
 # the AOT compilers' blocks: the native back end's, LLVM's where it refuses one or the IR is kept, and who made them said
 add_executable(snx-test-arm-aot arm_aot.c)
 snx_test_target(snx-test-arm-aot gnu23)
-target_link_libraries(snx-test-arm-aot PRIVATE snx_llvm scarletnx-common ${CMAKE_DL_LIBS})
+target_link_libraries(snx-test-arm-aot PRIVATE snx_recompiler_jit scarletnx-common ${CMAKE_DL_LIBS})
 add_test(NAME arm_aot COMMAND snx-test-arm-aot)
 # a 32-bit game's blocks compiled from an NRO go when its memory is unmapped, so another NRO mapped there runs its own
 # code (runtime/arm.c, with the block compiler and the rest of the runtime stubbed)
 add_executable(snx-test-arm-code-invalidate arm_code_invalidate.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/arm.c")
 snx_test_target(snx-test-arm-code-invalidate gnu23)
-target_link_libraries(snx-test-arm-code-invalidate PRIVATE snx_llvm scarletnx-common)
+target_link_libraries(snx-test-arm-code-invalidate PRIVATE snx_recompiler_jit scarletnx-common)
 add_test(NAME arm_code_invalidate COMMAND snx-test-arm-code-invalidate)
 # a checked block links into the AOT module for Windows x86-64, which has no compiler runtime
 add_executable(snx-test-arm-checked-link arm_checked_link.c)
@@ -4129,12 +4130,12 @@ add_test(NAME module_contract COMMAND snx-test-module-contract)
 # the build-side reader of the runtime JIT's cache
 add_executable(snx-test-jit-cache jit_cache.c)
 snx_test_target(snx-test-jit-cache gnu23)
-target_link_libraries(snx-test-jit-cache PRIVATE snx_llvm)
+target_link_libraries(snx-test-jit-cache PRIVATE snx_recompiler_jit)
 add_test(NAME jit_cache COMMAND snx-test-jit-cache)
 # LLVM's SLP vectorizer turned off for a process (the setting slp_vectorizer), and the JIT cache's key saying so
 add_executable(snx-test-slp-vectorizer slp_vectorizer.c)
 snx_test_target(snx-test-slp-vectorizer gnu23)
-target_link_libraries(snx-test-slp-vectorizer PRIVATE snx_llvm)
+target_link_libraries(snx-test-slp-vectorizer PRIVATE snx_recompiler_jit)
 add_test(NAME slp_vectorizer COMMAND snx-test-slp-vectorizer)
 # the launcher's AOT pack action: the cache's path and header, and the optimization the AOT build must share
 add_executable(snx-test-aot-pack aot_pack.c "${PROJECT_SOURCE_DIR}/src/gui/aot.c")
@@ -4144,13 +4145,13 @@ add_test(NAME aot_pack COMMAND snx-test-aot-pack)
 # the runtime JIT (jit_service.c): misses compiled, published and shared between threads, on that loader
 add_executable(snx-test-jit-service jit_service.c)
 snx_test_target(snx-test-jit-service gnu23)
-target_link_libraries(snx-test-jit-service PRIVATE snx_llvm Threads::Threads)
+target_link_libraries(snx-test-jit-service PRIVATE snx_recompiler_jit Threads::Threads)
 add_test(NAME jit_service COMMAND snx-test-jit-service)
 set_tests_properties(jit_service PROPERTIES TIMEOUT 120)
 # Offline replay of captured executable images. It compiles code but never executes guest instructions.
 add_executable(snx-bench-jit-latency jit_latency.c)
 snx_test_target(snx-bench-jit-latency gnu23)
-target_link_libraries(snx-bench-jit-latency PRIVATE snx_llvm Threads::Threads)
+target_link_libraries(snx-bench-jit-latency PRIVATE snx_recompiler_jit Threads::Threads)
 # longjmp across the loader's code, which on Windows unwinds through its registered function table
 # what the loader says where the system refuses its memory, on any host
 add_executable(snx-test-code-loader-refused code_loader_refused.c)
@@ -4732,7 +4733,7 @@ if(TARGET OpenSSL::Crypto)
                 DEPENDS link_macho_fixture.c VERBATIM)
         endforeach()
         # the same parts as ELF, with the ABI and the visibility the runtime library's embedded object has
-        # (recompiler/llvm/CMakeLists.txt): what the native back ends write for this host
+        # (recompiler/CMakeLists.txt): what the native back ends write for this host
         foreach(part 1 2 3 4 5 6 7)
             add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/link_macho_elf_${part}.o"
                 COMMAND "${CMAKE_C_COMPILER}" --target=arm64-apple-macos13-elf -std=gnu23 -ffreestanding -O2 -fPIC

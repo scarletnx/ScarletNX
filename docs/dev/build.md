@@ -493,6 +493,9 @@ cmake --preset default -B build -DSNX_FFMPEG_ASM=OFF && cmake --build build
 - `-DSNX_TOOLS_ONLY=ON`: build the extraction/recompilation driver without the runtime, see below (default OFF).
 - `-DSNX_RECOMPILER_SHARED=ON`, `-DSNX_RECOMPILER_INSTALL=ON`: also build the recompiler as a shared library, and
   install the library, see [Library](library.md) (defaults OFF and the value of `SNX_TOOLS_ONLY`).
+- `-DSNX_WITH_LLVM=OFF`: build the recompiler's core alone, without LLVM: its own back ends, and what links and loads
+  their objects (`snx_recompiler_core`), with the tests of it. Every driver needs LLVM, so the configure stops and names
+  the ones that are on (default ON).
 - `-DSNX_SAIL_X64=OFF`: build without the x86-64 back end, and LLVM makes every function. The default is ON on x86-64,
   Android's included; a tree keeps the value it was first configured with, which the configure's log says. Its
   instruction selection is in the tree (`tools/sailgen/sdm/x64_isel.inc`,
@@ -591,8 +594,8 @@ ctest --test-dir build/tools --output-on-failure
 
 The recompiler generates game code with LLVM, its only backend. LLVM's
 development files are required: `llvm-config` finds them (`-DSNX_LLVM_CONFIG=/path/to/llvm-config` picks one), and
-the configure stops without them on every platform, including Windows and cross-builds. There is no recompiler
-build without LLVM. Modules are built for the machine that builds them, with its instruction set
+the configure stops without them on every platform, including Windows and cross-builds. No driver builds without LLVM:
+`-DSNX_WITH_LLVM=OFF` builds the recompiler's core alone. Modules are built for the machine that builds them, with its instruction set
 extensions (build == host == target); nothing is detected at run time. Whole functions are batched into units of 90000
 instructions (20000 on Android; `--chunk`), with a progress line per compiled unit.
 

@@ -17,7 +17,8 @@ add_library(scarletnx-nds STATIC cartridge/rom.c cartridge/key1.c board/board.c 
                                  cpu/cpu.c cpu/recomp.c gpu/gpu3d.c gpu/present.c)
 set_target_properties(scarletnx-nds PROPERTIES OUTPUT_NAME scarletnx-nds-runtime C_STANDARD 23 C_STANDARD_REQUIRED ON)
 # the BIOS's CRC-32; the firmware's Wi-Fi connections
-target_link_libraries(scarletnx-nds PUBLIC scarletnx-common snx_arm_llvm snx_llvm PRIVATE snx_zip snx_online)
+target_link_libraries(scarletnx-nds PUBLIC scarletnx-common snx_arm_llvm snx_recompiler_jit
+                      PRIVATE snx_zip snx_online)
 target_compile_options(scarletnx-nds PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 
 # the Vulkan device: the 2D engines' frame, the 3D engine's picture and the window. volk.c is compiled into each

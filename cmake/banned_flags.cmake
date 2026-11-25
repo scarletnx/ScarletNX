@@ -7,8 +7,8 @@
 #   done in unsigned types and converted back, a product that can overflow gets a wider intermediate.
 # The configure stops on either anywhere it reaches that code: the global flags, and every target, source file and
 # directory defined from this project's source tree. Third-party packages (CPMUtil's, under .cache/cpm or the build tree)
-# keep their own flags. The LLVM backend's runtime library, which is compiled by a custom command, checks its own flags
-# (src/common/cpu/recompiler/llvm/).
+# keep their own flags. The recompiler's runtime library, which is compiled by a custom command, checks its own flags
+# (src/common/cpu/recompiler/CMakeLists.txt).
 #
 # SNX_TRAPV builds that same code, and the runtime library, with -ftrapv and a trap on a left shift of a negative value
 # (-fsanitize=shift-base in trap mode, which -ftrapv doesn't cover and -fwrapv also defined): a signed overflow left in
@@ -19,7 +19,7 @@ include_guard(GLOBAL)
 
 option(SNX_TRAPV "Build ScarletNX's own code and the game modules' runtime library to trap on signed overflow and \
 on left shifts of negative values (cmake/banned_flags.cmake)" OFF)
-# in the cache: the guard runs this file once, in the first directory to include it (the LLVM backend's)
+# in the cache: the guard runs this file once, in the first directory to include it (the recompiler's)
 set(SNX_TRAPV_FLAGS -ftrapv -fsanitize=shift-base -fsanitize-trap=shift-base CACHE INTERNAL "SNX_TRAPV's flags")
 
 function(snx_check_banned_flags what flags)
