@@ -3727,7 +3727,13 @@ if(SNX_X64)
         add_test(NAME arm_win64 COMMAND snx-test-arm-win64)
         add_test(NAME arm_win64_spill COMMAND snx-test-arm-win64 --pool 4 --blocks 2000 --seed 2)
         add_test(NAME arm_win64_plain COMMAND snx-test-arm-win64 --features 0 --blocks 2000 --seed 3)
-        set_tests_properties(arm_win64 arm_win64_spill arm_win64_plain PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
+        add_test(NAME arm_win64_step COMMAND snx-test-arm-win64 --step --blocks 600 --thumb 600 --states 2 --seed 4)
+        add_test(NAME arm_win64_step_bus COMMAND snx-test-arm-win64 --step --profile arm7tdmi --trace --blocks 300
+                 --thumb 200 --states 2 --seed 5)
+        add_test(NAME arm_win64_step_checked COMMAND snx-test-arm-win64 --step --memory checked --blocks 300 --thumb 200
+                 --states 2 --seed 6)
+        set_tests_properties(arm_win64 arm_win64_spill arm_win64_plain arm_win64_step arm_win64_step_bus
+                             arm_win64_step_checked PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
         snx_arm_native_modes(win64 --blocks 600 --states 8)
     endif()
 endif()

@@ -317,13 +317,15 @@ static void windows(SnxCodegen* cg) {
                     FAIL("windows: %s: entry %u of the function table", exports[0], count);
                     break;
                 }
-                /* PUSH RBX, every one of its prologues' first; the rest of a block after its check's exit has none */
-                if (!k && text[0] != 0x53)
-                    FAIL("windows: %s: entry %u is not where a function starts", exports[0], count);
+                /* PUSH RBX, every prologue's first */
+                if (text[0] != 0x53) FAIL("windows: %s: entry %u is not where a function starts", exports[0], count);
+                /* a block's goes to its failed check's exit: MOV EDX, the block's address */
+                text = at_rva(dll.data, end, &left);
+                if (k && (!text || text[0] != 0xBA))
+                    FAIL("windows: %s: entry %u does not end where its frame does", exports[0], count);
                 last = end;
             }
-            /* a function's one entry; a block's two */
-            if (count != (k ? 8 : cg->function_count))
+            if (count != (k ? 4 : cg->function_count))
                 FAIL("windows: %s: %u entries in its function table", exports[0], count);
             relocs = snx_ld_le32(dll.data + 0x98 + 112 + 44);
             if (!relocs) FAIL("windows: %s: no base relocations", exports[0]);

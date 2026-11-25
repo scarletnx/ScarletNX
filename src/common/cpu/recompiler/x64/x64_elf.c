@@ -196,9 +196,8 @@ enum { UWOP_PUSH_NONVOL = 0, UWOP_ALLOC_LARGE = 1, UWOP_ALLOC_SMALL = 2, UWOP_SA
 
 /* the UNWIND_INFO of the prologue at code (size bytes of it at most), as x64_codegen.c's prologue and x64_arm.c's
    mg_prologue write it: pushes and MOV RBX, RCX, a frame of a page's probe (x64_asm.h's sgx_stack_probe), SUB RSP (or
-   the four-byte NOP of no frame), then MOVAPS of the XMM registers saved, up to the first other instruction. up: every
-   code at the code's start. Its size */
-static size_t unwind_info(const unsigned char* code, size_t size, int up, unsigned char* out) {
+   the four-byte NOP of no frame), then MOVAPS of the XMM registers saved, up to the first other instruction. Its size */
+static size_t unwind_info(const unsigned char* code, size_t size, unsigned char* out) {
     struct {
         unsigned char at, op, info;
         uint32_t value;
@@ -244,11 +243,11 @@ static size_t unwind_info(const unsigned char* code, size_t size, int up, unsign
             at += 8;
         } else
             break;
-        codes[n].at = (unsigned char)(up ? 0 : at);
+        codes[n].at = (unsigned char)at;
         if (codes[n].op != UWOP_ALLOC_LARGE || codes[n].value) ++n; /* a frame of nothing has no code */
     }
     out[0] = 1; /* version 1, no handler */
-    out[1] = (unsigned char)(up ? 0 : at);
+    out[1] = (unsigned char)at;
     out[3] = 0; /* no frame register */
     o = 4;
     for (k = n; k-- > 0;) { /* the last first */
@@ -317,7 +316,7 @@ static size_t info_at(SnxXElf* o, const unsigned char* info, size_t size) {
     ++o->ninfos;
     return i;
 }
-void snx_xelf_unwind(SnxXElf* o, size_t begin, size_t end, const unsigned char* code, size_t size, int up) {
+void snx_xelf_unwind(SnxXElf* o, size_t begin, size_t end, const unsigned char* code, size_t size) {
     unsigned char info[INFO_MAX];
     if (!o->coff || begin >= end) return;
     if (o->nunwinds == o->cap_unwinds) {
@@ -332,7 +331,7 @@ void snx_xelf_unwind(SnxXElf* o, size_t begin, size_t end, const unsigned char* 
     }
     o->unwinds[o->nunwinds].begin = (uint32_t)begin;
     o->unwinds[o->nunwinds].end = (uint32_t)end;
-    o->unwinds[o->nunwinds].info = (uint32_t)info_at(o, info, unwind_info(code, size, up, info));
+    o->unwinds[o->nunwinds].info = (uint32_t)info_at(o, info, unwind_info(code, size, info));
     ++o->nunwinds;
 }
 

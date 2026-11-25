@@ -26,6 +26,9 @@
 #ifndef MG_ARM_ELF_FLAGS
 #define MG_ARM_ELF_FLAGS 0 /* the objects' e_flags (mach_codegen.inc's MG_ELF_FLAGS) */
 #endif
+#ifndef MG_ARM_EXIT_LAST
+#define MG_ARM_EXIT_LAST(c) 0 /* the failed entry check's exit is the block's last code, past what has its frame up */
+#endif
 #ifndef MG_ARM_ABI
 #define MG_ARM_ABI 0u /* the features that are no processor's, which a test's limit leaves (x86-64's SGX_F_WIN64) */
 #endif
@@ -2044,10 +2047,13 @@ static size_t block(MG_ARM* c, const unsigned char* code, size_t count, SnxU32 p
     }
     sgx_a32_stubs(g, b);
     cold_ways(c);
-    if (!sgx_a32_hosted(g)) mg_entry_exit(c, pc, thumb ? half_at(code, 0) : word_at(code, 0), bad);
+    const SnxU32 first = thumb ? half_at(code, 0) : word_at(code, 0);
+    const int entered = !sgx_a32_hosted(g); /* by way of its checks, one of which may fail */
+    if (entered && !MG_ARM_EXIT_LAST(c)) mg_entry_exit(c, pc, first, bad);
     sgx_a32_bind(g, b, g->ret);
     mg_return(c);
     sgx_cold_emit(&c->a);
+    if (entered && MG_ARM_EXIT_LAST(c)) mg_entry_exit(c, pc, first, bad);
     sgx_pool_emit(&c->a);
     if (mg_patch_frame(c)) {
         t_mach_arm.fail = saved;

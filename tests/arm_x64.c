@@ -8,8 +8,9 @@
    one case (VRSHL's witness, below): the same words consumed, and the same results from the same random states.
      snx-test-arm-x64 [--profile a57|a9|arm11|arm946e|arm7tdmi] [--memory flat|hosted|checked] [--trace] [--blocks N]
          [--thumb N] [--states N] [--pool N] [--features MASK] [--seed N] [--word HEX]... [--halves HEX[,HEX]...]
-         [--dump]
-   Each block is words drawn from the A32 instructions the back end makes (data processing, branches, the loads and
+         [--dump] [--step]
+   --step (SNX_TEST_WIN64): the stack unwound by the objects' function table at every instruction of the blocks. Each
+   block is words drawn from the A32 instructions the back end makes (data processing, branches, the loads and
    stores of every kind, the multiplies and divides, the bit operations, MRS and MSR, the exclusives and acquire and
    release, the barriers and hints, SVC, BKPT, the coprocessor's and UNDEFINED, ARMv6's and ARMv7's DSP and media
    instructions, VFP and Advanced SIMD: its data processing, its element and structure loads and stores, the lane moves
@@ -166,6 +167,9 @@ static struct {
     const char* object; /* --object FILE: the first chunk's x86-64 object written there (objdump -d reads it) */
     const char* ll;     /* --ll FILE: the first chunk's LLVM module, before its passes, written there */
     int dump;           /* --dump: a failing state's start printed */
+#if defined(SNX_TEST_WIN64)
+    int step; /* --step: hostuc_step */
+#endif
     /* the x86-64 blocks' calls of snx_arm_fp_x64, by op: the VFP's hot paths leave to it what they can't do */
     size_t fp_calls[256], fp_hot_calls;
     SnxArmCodegenOptions options; /* --profile, --memory and --trace */
@@ -879,6 +883,9 @@ static int run_chunk(SnxIr* ir, Back* x64, Block* blocks, size_t count) {
     /* the native code's world: the states in memory Unicorn maps at their own addresses */
     HostUc* uc = hostuc_new(BACK_UC, 16u << 20);
     RunState* s = uc ? (RunState*)hostuc_alloc(uc, 2 * sizeof *s) : NULL;
+#if defined(SNX_TEST_WIN64)
+    if (uc && g_test.step) hostuc_step(uc, 1);
+#endif
     if (s) hostuc_swapper(uc, swap_arm, &s[1]); /* a big-endian machine's state turned over around its runs */
     if (s && g_test.windowed && hostuc_map(uc, g_test.window[1], WINDOW)) s = NULL;
 #else
@@ -1790,6 +1797,10 @@ int main(int argc, char** argv) {
 #endif
         } else if (!strcmp(argv[i], "--dump"))
             g_test.dump = 1;
+#if defined(SNX_TEST_WIN64)
+        else if (!strcmp(argv[i], "--step"))
+            g_test.step = 1;
+#endif
         else if (!strcmp(argv[i], "--trace"))
             g_test.options.trace = offsetof(RunState, trace), g_test.options.skipped = offsetof(RunState, skipped);
         else if (!strcmp(argv[i], "--profile") && i + 1 < argc) {
