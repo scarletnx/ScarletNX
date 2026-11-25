@@ -1636,6 +1636,8 @@ int vk_rt_over(u64 gva, u64 size);
 extern u64 g_vk_rt_readbacks;
 /* render targets dropped instead of written back: the guest wrote every byte of them, so memory is the truth */
 extern u64 g_vk_rt_dropped;
+/* render targets that went as the GPU mapping under them changed (vk_rt_remap_end) */
+extern u64 g_vk_rt_remapped;
 u64 vk_surf_flush_size(const Surf* s);
 void vk_surf_flush_record(Surf* s, VkBuffer buf, u64 at);
 /* keep: when non-NULL (and original is), the image's bytes as the landing leaves them, malloc'd, keep_size of them */
@@ -1719,6 +1721,11 @@ u64 vk_surf_ended_freed(void); /* statistics: their bytes freed so far */
 /* the game changed the GPU mapping of [gva, gva + size): where its front end has no texture objects, a texture
    whose memory it unmapped is one it ended (the renderer's bracket of a GMMU change, at its end) */
 void vk_surf_mapping_changed(u64 gva, u64 size);
+/* the bracket of a GMMU change over [gva, gva + size), inside the renderer's: begin, once the targets there went to
+   memory, notes the live render targets it covers and the memory they show; end lets go of those whose pages show
+   other memory (or none) now, as they describe memory that is gone */
+void vk_rt_remap_begin(u64 gva, u64 size);
+void vk_rt_remap_end(void);
 /* frees cache entries (surfaces and own buffers), the least recently used first, when the heap's use with `extra`
    bytes more would be past vk_mem_trim_start: idle lossless ones down to two heads under the budget, the lossless
    working set to half a head under it, then lossy ones (vk_surf_reclaim). Only entries unused for the last two presents
