@@ -7917,6 +7917,7 @@ static int check_finish_lets_go(void) {
 #include "vulkan_memo_over_target.inc"
 #include "vulkan_astc_later.inc"
 #include "vulkan_pool_map.inc"
+#include "vulkan_dma_named.inc"
 #include "vulkan_astc_kind.inc"
 
 /* hmma_mode at the renderer's start (vk/hmma_pick.c), on this device: 1 to 5 take that way; Auto with no file of the
@@ -8761,6 +8762,8 @@ static int run_headless(int argc, char** argv) {
             result = check_texture_half_rounding();
         else if (!strcmp(name, "cross_stage_alias"))
             result = check_cross_stage_image_alias();
+        else if (!strcmp(name, "dma_named"))
+            result = check_dma_named();
         else if (!strcmp(name, "writer_storage"))
             result = check_writer_storage();
         else if (!strcmp(name, "pool_map")) /* with SNX_TEST_SM86_TABLE=1 and --pool-map=1 (vulkan_pool_map.inc) */

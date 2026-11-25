@@ -607,6 +607,7 @@ static void test_view(void) {
    reads. own_stage reads the CPU's bytes through the buffer's view. A write to the buffer meanwhile (the GPU's copy
    in place, here through the view) is what the CPU's first read finds, after one resolve. Not over memory of another
    kind */
+#define IN_PLACE_BYTE(i) ((u8)(0x11 + (i) + ((i) >> 12) * 29)) /* a page's bytes are no other page's */
 static void test_watch_in_place(void) {
     int fd = -1;
     void* handle = NULL;
@@ -618,14 +619,15 @@ static void test_watch_in_place(void) {
     OwnRange o[4];
     u8 buf[0x4000];
     u8* view = (u8*)handle;
-    CHECK(mem_migrate(a, 0x10000, fd, view) == 0 && view[0x1234] == (u8)(0x11 + 0x1234));
+    for (u32 i = 0; i < 0x10000; i++) GP(a)[i] = IN_PLACE_BYTE(i);
+    CHECK(mem_migrate(a, 0x10000, fd, view) == 0 && view[0x1234] == IN_PLACE_BYTE(0x1234));
     int resolves = g_resolves, lands = g_lands, opens = g_opens;
     CHECK(own_watch_in_place(other, 0x1000) == -1 && !own_trapped(other, 0x4000));
     CHECK(own_watch_in_place(a + 0x1100, 0x2000) == 0);
     CHECK(own_watched(a + 0x1100, 0x2000) && own_trapped(a + 0x1000, 0x3000) && !own_trapped(a + 0x4000, 0x1000));
     CHECK(mem_pool_offset(a + 0x1000, &off) != 0); /* still the buffer's pages */
     CHECK(own_stage(a, sizeof buf, buf, o, 4) == 0);
-    for (u32 i = 0; i < sizeof buf; i++) CHECK(buf[i] == (u8)(0x11 + i));
+    for (u32 i = 0; i < sizeof buf; i++) CHECK(buf[i] == IN_PLACE_BYTE(i));
     CHECK(g_resolves == resolves);
     /* the GPU's copy in place, then the CPU's read: one resolve, nothing landed, the bytes written */
     memset(view + 0x1100, 0xA5, 0x2000);
@@ -635,7 +637,7 @@ static void test_watch_in_place(void) {
     CHECK(g_resolves == resolves + 1 && g_lands == lands && !own_trapped(a, 0x10000));
     /* opened by the producer, whole, its place in the view with it */
     CHECK(g_opens == opens + 1 && g_open_lo == a + 0x1000 && g_open_hi == a + 0x4000 && g_open_bytes == view + 0x1000);
-    CHECK(GP(a)[0x10FF] == (u8)(0x11 + 0x10FF) && GP(a)[0x30FF] == 0xA5 && mem_pool_offset(a + 0x1000, &off) != 0);
+    CHECK(GP(a)[0x10FF] == IN_PLACE_BYTE(0x10FF) && GP(a)[0x30FF] == 0xA5 && mem_pool_offset(a + 0x1000, &off) != 0);
     GP(a)[0x1300] = 0x77; /* the same pages as the buffer's */
     CHECK(view[0x1300] == 0x77);
     /* a watch that goes in parts: each part's pages, at their own place in the view */
@@ -648,6 +650,16 @@ static void test_watch_in_place(void) {
     CHECK(g_opens == opens + 3 && g_open_bytes == view + 0x7000 && own_trapped(a + 0x8000, 0x1000));
     own_unwatch(a, 0x10000); /* what is left: the lower part, and the upper one's end */
     CHECK(g_opens == opens + 5 && g_open_lo == a + 0x8000 && g_open_bytes == view + 0x8000 && !own_trapped(a, 0x10000));
+    /* the buffer's pages moved back at its start and in its middle: what is left of it is read, and opened, at its own
+       place in the view */
+    CHECK(mem_unmigrate(a, 0x5000) == 0 && mem_unmigrate(a + 0xA000, 0x1000) == 0);
+    CHECK(own_watch_in_place(a + 0x4000, 0x1000) == -1 && own_watch_in_place(a + 0xA000, 0x1000) == -1);
+    for (u64 at = 0x6000; at <= 0xC000; at += 0x6000) {
+        CHECK(own_watch_in_place(a + at, 0x2000) == 0 && own_stage(a + at, 0x2000, buf, o, 4) == 0);
+        for (u32 i = 0; i < 0x2000; i++) CHECK(buf[i] == IN_PLACE_BYTE(at + i));
+        own_unwatch(a + at, 0x2000);
+        CHECK(g_open_lo == a + at && g_open_bytes == view + at && !own_trapped(a + at, 0x2000));
+    }
     producer_unlock();
     CHECK(mem_unmap(a, 0x10000) == 0 && mem_unmap(other, 0x4000) == 0);
     plat_gpu_buffer_free(fd, handle, 0x10000);

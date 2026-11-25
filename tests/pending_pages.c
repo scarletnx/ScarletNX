@@ -182,6 +182,14 @@ static void check_addr_gens(void) {
     check(gen_at(third) != c && gen_at(first) == a, "a mapping change moves its pages' generations");
     addr_gens_bump(ADDR_GENS_GPU, 0, 1ull << 40);
     check(gen_at(first) != a, "a range wider than the table moves every range");
+    map(third, 1ull << 41, 0x1000);
+    a = gen_at(first), d = gen_at(alias);
+    pend_add(&counted, third, 0x1000, 1);
+    check(g_pend_any.overflow && gen_at(first) != a && gen_at(alias) != d,
+          "a result at guest pages past the table, which no GPU page is counted at, moves every range");
+    a = gen_at(first);
+    pend_add(&counted, third, 0x1000, -1);
+    check(pend_empty(&g_pend_any) && gen_at(first) != a, "and so does its removal");
     u32 g = 0;
     check(!addr_gens_read(ADDR_GENS_GPU, 0, (u64)(ADDR_GENS_READ_MAX + 1) << ADDR_GENS_SHIFT, &g) &&
               !addr_gens_read(ADDR_GENS_GPU, first, 0, &g),
