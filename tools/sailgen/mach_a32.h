@@ -139,6 +139,15 @@ struct SgCtx {
 };
 
 static inline SgX* sgx(SgCtx* g) { return &g->x; }
+static inline SgXIns* sgx_a32_machine(SgCtx* g, int op, int clobbers);
+/* mach.h's: SP as the region read it (its zero extension is it), and the marks' store barrier */
+static inline int sgx_is_sp(SgCtx* g, int v) {
+    const SgX* x = sgx(g);
+    int d = v > 0 ? x->v[v].def : -1;
+    if (d < 0 || d >= x->n || x->ins[d].kind != SGX_K_LOAD) return 0;
+    return x->ins[d].w == 32 && x->ins[d].disp == (int)(offsetof(SnxArmCPU, r) + 4 * 13);
+}
+static inline void sgx_mark_order(SgCtx* g);
 
 /* ---- labels ---- */
 
@@ -370,6 +379,9 @@ enum {
    or read the state (a call). One that changes the flags (clobbers) ends the conditions on them first */
 static inline SgXIns* sgx_a32_machine(SgCtx* g, int op, int clobbers) {
     SgX* x = sgx(g);
+    /* whatever it does may make the stores before it visible or leave the region; a store's own check of the monitor is
+       between it and its marks */
+    if (op != SGX_A32_MONITOR) sgx_marks_flush(g);
     sg_flags_flush(g);
     if (clobbers) sgx_flags_clobbered(x);
     SgXIns* i = sgx_append(x, SGX_K_MACHINE);
@@ -377,9 +389,13 @@ static inline SgXIns* sgx_a32_machine(SgCtx* g, int op, int clobbers) {
     if (clobbers) x->flags_ins = -1;
     return i;
 }
+static inline void sgx_mark_order(SgCtx* g) {
+    if (SGX_MARK_WEAK) sgx_a32_machine(g, SGX_A32_FENCE, 0);
+}
 /* a jump on c (its condition code on the flags as they are now) */
 static inline SgXIns* sgx_a32_on(SgCtx* g, int op, SgB c) {
     SgX* x = sgx(g);
+    sgx_marks_flush(g);
     sg_flags_flush(g);
     int from = 0, cc = sgx_bool_cc(x, c, &from);
     SgXIns* i = sgx_append(x, SGX_K_MACHINE);
@@ -577,6 +593,9 @@ static inline int sgx_a32_mem(SgCtx* g) {
 static inline void sgx_a32_bounds(SgCtx* g, SgD address, unsigned bytes, unsigned alignment) {
     SgX* x = sgx(g);
     SgD a = address;
+    /* the stores before it are marked before its check's flags are made (a mark's shift may change them) and on both
+       ways of it */
+    sgx_marks_flush(g);
     sgx_reg(x, &a);
     if (alignment > 1)
         sgx_a32_exit(g, sg_b_not(g, sg_d_is_zero(g, sg_d_and(g, a, sgx_const(32, alignment - 1)))), SNX_ARM_ALIGNMENT,

@@ -19,6 +19,7 @@
 
 static inline void sg_GuestStoreExclusive(SgCtx* g, SgD address, long long size, SgD value) {
     SgD in[4];
+    sgx_marks_flush(g);
     if (size == 16) {
         /* a pair of doublewords: the runtime's cas128 of the reservation's value, cpu.h's stxp */
         SgD args[3];
@@ -26,6 +27,7 @@ static inline void sg_GuestStoreExclusive(SgCtx* g, SgD address, long long size,
         args[1] = sg_d_slice(g, value, 63, 0);
         args[2] = sg_d_slice(g, value, 127, 64);
         g->status = sgx_call(g, "snx_x64_stxp", 0, 1, args, 3, 32).v;
+        sgx_mark_atomic(g, address, 16);
         return;
     } else {
         static const signed char fix[3] = {RK_M_BASE, RK_M_ADDR, RK_M_V1};
@@ -35,15 +37,19 @@ static inline void sg_GuestStoreExclusive(SgCtx* g, SgD address, long long size,
         g->status = sgx_mach(g, SGX_M_STX, in, fix, 3, sgx_log2(size), RK_M_STX_CLOBBER, 1, 32).v;
     }
     sgx(g)->v[g->status].zab = 1;
+    sgx_mark_atomic(g, address, (unsigned)size);
 }
 static inline SgD sgx_rmw(SgCtx* g, int op, SgD address, SgD v) {
     static const signed char fix[3] = {RK_M_BASE, RK_M_ADDR, RK_M_V1};
     unsigned w = v.w;
-    SgD in[3];
+    SgD in[3], old;
+    sgx_marks_flush(g);
     in[0] = sgx_val(64, sgx_mem(g));
     in[1] = address;
     in[2] = sg_d_zext(g, v, 64);
-    return sg_d_slice(g, sgx_mach(g, SGX_M_RMW, in, fix, 3, op << 2 | sgx_log2(w / 8), RK_M_CLOBBER, 1, 64), w - 1, 0);
+    old = sg_d_slice(g, sgx_mach(g, SGX_M_RMW, in, fix, 3, op << 2 | sgx_log2(w / 8), RK_M_CLOBBER, 1, 64), w - 1, 0);
+    sgx_mark_atomic(g, address, w / 8);
+    return old;
 }
 static inline SgD sg_GuestAtomicAdd(SgCtx* g, SgD a, SgD v) { return sgx_rmw(g, 0, a, v); }
 static inline SgD sg_GuestAtomicAnd(SgCtx* g, SgD a, SgD v) { return sgx_rmw(g, 1, a, v); }
@@ -56,6 +62,7 @@ static inline SgD sg_GuestAtomicUMin(SgCtx* g, SgD a, SgD v) { return sgx_rmw(g,
 static inline SgD sg_GuestAtomicSwap(SgCtx* g, SgD a, SgD v) { return sgx_rmw(g, 8, a, v); }
 static inline SgD sg_GuestCompareSwap(SgCtx* g, SgD address, SgD expected, SgD desired) {
     unsigned w = expected.w;
+    sgx_marks_flush(g);
     if (w == 128) {
         /* CASP of doublewords: snx_x64_casp(state, address, expected, desired), the old pair in SGX_RET and SGX_RET2
            (its SnxX64Pair); a call (the caller-saved registers spilled around it) */
@@ -73,7 +80,9 @@ static inline SgD sg_GuestCompareSwap(SgCtx* g, SgD address, SgD expected, SgD d
         i = &sgx(g)->ins[sgx(g)->n - 1];
         i->calls = 1;
         i->sym = "snx_x64_casp";
-        return sg_d_concat(g, sgx_val(64, i->def2), lo);
+        lo = sg_d_concat(g, sgx_val(64, i->def2), lo);
+        sgx_mark_atomic(g, address, 16);
+        return lo;
     }
     {
         static const signed char fix[4] = {RK_M_BASE, RK_M_ADDR, RK_M_V1, RK_M_V2};
@@ -82,7 +91,9 @@ static inline SgD sg_GuestCompareSwap(SgCtx* g, SgD address, SgD expected, SgD d
         in[1] = address;
         in[2] = sg_d_zext(g, expected, 64);
         in[3] = sg_d_zext(g, desired, 64);
-        return sg_d_slice(g, sgx_mach(g, SGX_M_CAS, in, fix, 4, sgx_log2(w / 8), RK_M_CLOBBER, 1, 64), w - 1, 0);
+        SgD old = sg_d_slice(g, sgx_mach(g, SGX_M_CAS, in, fix, 4, sgx_log2(w / 8), RK_M_CLOBBER, 1, 64), w - 1, 0);
+        sgx_mark_atomic(g, address, w / 8);
+        return old;
     }
 }
 /* CRC32 and CRC32C: the exact helper (x64_helpers.c's table-driven snx_x64_crc32) */

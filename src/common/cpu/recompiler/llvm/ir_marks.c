@@ -32,6 +32,12 @@ void snx_ir_write_marks_counts(SnxU64* stores, SnxU64* stack, SnxU64* marks) {
     *marks = atomic_exchange_explicit(&g_mark_marks, 0, memory_order_relaxed);
 }
 
+void snx_ir_write_marks_add(SnxU64 stores, SnxU64 stack, SnxU64 marks) {
+    atomic_fetch_add_explicit(&g_mark_stores, stores, memory_order_relaxed);
+    atomic_fetch_add_explicit(&g_mark_stack, stack, memory_order_relaxed);
+    atomic_fetch_add_explicit(&g_mark_marks, marks, memory_order_relaxed);
+}
+
 /* the mark of the page of address (an i64) through M */
 static void mark_page(SnxIr* ir, V M, V address) {
     V index =

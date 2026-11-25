@@ -10,7 +10,7 @@
    would compare LLVM with itself.
      snx-test-recompiler-backends [--functions N] [--states N] [--seed N] [--without MASK] [--target NAME] [--verbose]
          [--hook] [--jit] [--words HEX...] [--made] [--ops OP...] [--refused] [--coverage]
-         [--qemu QEMU RUNNER DIR] [--programs] [--calls] [--long N BYTES]
+         [--qemu QEMU RUNNER DIR] [--programs] [--calls] [--long N BYTES] [--marks N]
    --without MASK: the x86-64 back end goes without these features of the host (sailgen's SGX_F_*: FMA 0x800, AVX 0x400,
    F16C 0x100, BMI1, BMI2 and LZCNT 7, AES-NI 0x1000, SHA-NI 0x2000), as on a host that lacks them; arm64's without its
    (SNX_ARM64_F_*)
@@ -29,6 +29,9 @@
    FEAT_MOPS's SET and CPY, FEAT_LSE128's atomics
    --calls: functions that call each other, in four layers: BL, BLR and tail B, loops (some with a call in them), SVCs
    that change registers, switches through a table, a pending poll in every other state
+   --marks N: the code makes the write marks (cpu.h's SNX_WMARK_BELOW, the setting write_marks), N 1 or 2: the two sides'
+   memory has their bytes below it, and after each function each page the data's bytes changed in is marked by the native
+   side, and with N 2 (the stack's stores too) its marks are LLVM's, but that a store-exclusive marks where it fails
    --coverage: a line of each of the target's ops, how many of its words the back end makes with its own instructions
    alone, with an exact helper's call, and leaves, and the first of those, and stops there
    On a host without the back end (not x86-64, or built without SNX_SAIL_X64) it passes, saying so.
@@ -148,6 +151,8 @@ HostUcPair snx_x64_casp(CPU* c, u64 a, u64 e0, u64 e1, u64 d0, u64 d1);
 #define STOP     0u
 
 static int failures, verbose;
+static int g_marks; /* --marks' */
+void snx_ir_write_marks(int on);
 [[maybe_unused]] static unsigned g_without; /* --without's, for arm64's */
 static uint64_t g_features = SNX_A64_TARGET_SWITCH; /* --target */
 static uint64_t seed = 0x2545F4914F6CDD1Dull;
@@ -1113,6 +1118,38 @@ out:
 }
 #endif
 
+/* the marks' bytes below the memory, where --marks asks for them: none without, so the memory is as it was */
+static size_t below(void) { return g_marks ? (size_t)1 << 27 : 0; }
+static uint8_t* memory_new(uint8_t* block) { return block ? block + below() : NULL; }
+#define MARK_PAGES (MEMORY >> 12)
+static void marks_clear(uint8_t* mem) {
+    if (g_marks) memset(mem - below(), 0, MARK_PAGES);
+}
+/* 0 where a native side's marks (mem[1]'s, after the function run from data0) are what they should be: each page whose
+   bytes are other than data0's is marked; with --marks 2 they are LLVM's, where a store-exclusive (stx) may mark more.
+   Of the pages of the code no store of these is in. Else what is wrong, said */
+static int marks_wrong(uint8_t* const mem[2], const uint8_t* data0, size_t data_len, int stx, uint64_t at, unsigned s) {
+    const uint8_t *llvm = mem[0] - below(), *native = mem[1] - below();
+    size_t p;
+    if (!g_marks) return 0;
+    for (p = 0; p < MARK_PAGES; ++p) {
+        size_t lo = p << 12;
+        int in = lo >= DATA && lo - DATA < data_len;
+        size_t n = in && lo - DATA + 4096 > data_len ? data_len - (lo - DATA) : 4096;
+        if (in && !native[p] && (g_marks == 2 || llvm[p]) && memcmp(mem[1] + lo, data0 + (lo - DATA), n)) {
+            fprintf(stderr, "FAIL: the function at %llx, state %u: the native side wrote page %#zx and marked none\n",
+                    (unsigned long long)at, s, p);
+            return 1;
+        }
+        if (native[p] > 1 || llvm[p] > 1 || (native[p] != llvm[p] && !(stx && native[p] > llvm[p]))) {
+            fprintf(stderr,
+                    "FAIL: the function at %llx, state %u: page %#zx is marked %u by the native side, %u by LLVM\n",
+                    (unsigned long long)at, s, p, native[p], llvm[p]);
+            return 1;
+        }
+    }
+    return 0;
+}
 int main(int argc, char** argv) {
     char** qemu = NULL;
     CPU *starts = NULL, *ends = NULL; /* --qemu's */
@@ -1153,6 +1190,8 @@ int main(int argc, char** argv) {
             verbose = 1;
         else if (!strcmp(argv[i], "--hook"))
             hook = 1;
+        else if (!strcmp(argv[i], "--marks") && i + 1 < (unsigned)argc)
+            g_marks = atoi(argv[++i]);
 #ifdef SNX_TEST_NATIVE
         else if (!strcmp(argv[i], "--jit"))
             jit = 1;
@@ -1250,6 +1289,7 @@ int main(int argc, char** argv) {
         return 77;
     }
 #endif
+    snx_ir_write_marks(g_marks);
     rx = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
     rl = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
     if (!rx || !rl) {
@@ -1278,11 +1318,11 @@ int main(int argc, char** argv) {
             goto out;
         }
     }
-    mem[0] = (uint8_t*)calloc(1, MEMORY);
+    mem[0] = memory_new((uint8_t*)calloc(1, below() + MEMORY));
 #ifdef SNX_TEST_NATIVE
-    mem[1] = (uint8_t*)hostuc_alloc(uc, MEMORY);
+    mem[1] = memory_new((uint8_t*)hostuc_alloc(uc, below() + MEMORY));
 #else
-    mem[1] = (uint8_t*)calloc(1, MEMORY);
+    mem[1] = memory_new((uint8_t*)calloc(1, below() + MEMORY));
 #endif
     data0 = (uint8_t*)malloc(data_len);
     hints = (uint64_t*)malloc(functions * sizeof *hints);
@@ -1376,6 +1416,7 @@ int main(int argc, char** argv) {
         made = (unsigned char*)calloc(cg.function_count + 1, 1);
         cg.hook_direct_calls = hook;
         options.jit = jit;
+        options.write_marks = g_marks;
         options.table_name = "UNIT_TABLE";
         if (NATIVE_OBJECT(&cg, &options, made, &object, &object_size, error) < 0) {
             fprintf(stderr, "FAIL: the %s object: %s\n", native_name, error);
@@ -1534,10 +1575,13 @@ int main(int argc, char** argv) {
             unsigned between = branches && (opw[i].op[0] == 'L' || !strcmp(opw[i].op, "SWPP"));
             g_between = between;
             memset(&start, 0, sizeof start);
+            marks_clear(mem[0]);
+            marks_clear(mem[1]);
             if (qemu) start = starts[(size_t)i * states + s];
             else if (opw) {
                 ops_state(&start, s);
-                if (!branches && (!strncmp(opw[i].op, "LD", 2) || !strncmp(opw[i].op, "ST", 2))) /* any register's */
+                if (!branches && (!strncmp(opw[i].op, "LD", 2) || !strncmp(opw[i].op, "ST", 2) ||
+                                  !strncmp(opw[i].op, "CAS", 3) || !strncmp(opw[i].op, "SWP", 3))) /* any register's */
                     for (k = 0; k < 32; ++k) start.x[k] = DATA + 0x6000u + (rnd() % 0x4000u & ~15ull);
                 if (!strcmp(opw[i].op, "LDG") && (opw[i].word & 31) != (opw[i].word >> 5 & 31))
                     start.x[opw[i].word & 31] |= rnd() << 56; /* a tag to take away */
@@ -1627,6 +1671,9 @@ int main(int argc, char** argv) {
             }
             c[0].mem = c[1].mem = NULL;
             c[0].disp = c[1].disp = NULL;
+            if (!qemu && !branches &&
+                marks_wrong(mem, data0, data_len, opw && !strncmp(opw[i].op, "STX", 3), hints[i], s))
+                ++failures;
             if (differs(&c[0], &c[1]) || memcmp(mem[0] + DATA, mem[1] + DATA, data_len)) {
                 unsigned n;
                 ++failures;
@@ -1669,7 +1716,8 @@ out:
 #endif
     snx_recompiler_free(rx);
     snx_recompiler_free(rl);
-    free(mem[0]), free(mem[1]), free(data0), free(hints), free(opw), free(starts), free(ends);
+    free(mem[0] ? mem[0] - below() : NULL), free(mem[1] ? mem[1] - below() : NULL), free(data0), free(hints), free(opw),
+        free(starts), free(ends);
 #ifdef SNX_TEST_NATIVE
     free(own), free(ran);
 #endif

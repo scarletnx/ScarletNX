@@ -8,6 +8,10 @@
 #include "common/cpu/recompiler/codegen.h"
 #include <stddef.h>
 #include <stdint.h>
+/* the write marks' counts (SnxNativeOptions.marks) */
+typedef struct {
+    SnxU64 stores, stack, made;
+} SnxNativeMarks;
 typedef struct {
     /* a JIT unit: every function a local symbol, and table_name an array of their addresses in codegen's order, its
        one global (jit_service.c's emit_unit); else the AOT module's F_<address>, global and hidden */
@@ -35,6 +39,11 @@ typedef struct {
     /* the AOT module's stale checks (ir_codegen.c's snx_ir_stale_checks): snx_stale[the function's index] read at the
        entry and after each call's return */
     int stale;
+    /* the setting write_marks (cpu.h's SNX_WMARK_BELOW): 0 no marks, the code as it is without them; 1 the marks of the
+       pages the guest's stores write, the stack's left out; 2 the stack's too */
+    int write_marks;
+    /* where not NULL, the stores seen, those off the stack pointer left unmarked and the mark stores made, added to it */
+    SnxNativeMarks* marks;
 } SnxNativeOptions;
 
 /* what r's modules are made without (SnxNativeOptions.without), as a test of it asks: words is kept as it is */
@@ -44,6 +53,9 @@ void snx_native_without(struct snx_recompiler* r, const SnxU32* words, size_t co
 /* this host's native back end (mach/native.c): x86-64's on an x86-64 host, arm64's on an arm64 one whose objects are
    ELF or COFF...; 1 where there is one */
 int snx_native_available(void);
+/* 1 where the write marks (SnxNativeOptions.write_marks) are for this host: x86-64's and arm64's, whose code a test holds
+   to LLVM's marks, or LLVM's alone (ir_marks.c); 0 for a RISC machine's, whose native code is not held to any */
+int snx_native_write_marks(void);
 /* its name, for the recompiler's lines ("x86-64", "arm64"; "none") */
 const char* snx_native_name(void);
 /* the object of the functions [first, last) of codegen the host's back end can make, made[i - first] 1 for each, as

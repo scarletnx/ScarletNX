@@ -39,6 +39,7 @@ typedef struct {
     unsigned char* x64;
     size_t x64_size, x64_made;
     size_t x64_refused; /* of the others, those with an instruction it has no code for */
+    SnxNativeMarks marks; /* the native back end's write marks */
     int reused; /* the x86-64 back end's object came from memory (x64_cache.h) */
 } Unit;
 
@@ -257,6 +258,8 @@ static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) 
         options.stale = 1;
         options.llvm_at = snx_ir_dump_pc();
         options.refused = &u->x64_refused;
+        options.write_marks = snx_ir_write_marks_on();
+        options.marks = &u->marks;
         if (q->bound_count) {
             options.bound = bound_at;
             options.bound_user = q;
@@ -275,6 +278,7 @@ static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) 
             return -1;
         }
         for (i = 0; i < u->last - u->first; ++i) u->x64_made += made[i];
+        snx_ir_write_marks_add(u->marks.stores, u->marks.stack, u->marks.made);
         if (u->x64_made == u->last - u->first) {
             free(made);
             return 0;

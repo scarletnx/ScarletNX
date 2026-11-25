@@ -1365,6 +1365,11 @@ add_executable(snx-test-llvm-write-marks llvm_write_marks.c llvm_steps.c)
 snx_test_target(snx-test-llvm-write-marks c23)
 target_link_libraries(snx-test-llvm-write-marks PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
 add_test(NAME llvm_write_marks COMMAND snx-test-llvm-write-marks)
+# the same marks as the native back end makes them: functions of a few words run on memory with the marks below it
+add_executable(snx-test-write-marks-native write_marks_native.c)
+snx_test_target(snx-test-write-marks-native gnu23)
+target_link_libraries(snx-test-write-marks-native PRIVATE scarletnx-recompiler scarletnx-platform)
+add_test(NAME write_marks_native COMMAND snx-test-write-marks-native)
 
 add_executable(snx-test-llvm-promote-sync llvm_promote_sync.c llvm_steps.c)
 snx_test_target(snx-test-llvm-promote-sync c23)
@@ -4361,6 +4366,20 @@ add_test(NAME recompiler_backends_xpac COMMAND snx-test-recompiler-backends --ta
 add_test(NAME recompiler_backends_calls COMMAND snx-test-recompiler-backends --calls --functions 120 --states 8)
 add_test(NAME recompiler_backends_calls_2 COMMAND snx-test-recompiler-backends --calls --functions 120 --states 8 --seed 2)
 add_test(NAME recompiler_backends_calls_3 COMMAND snx-test-recompiler-backends --calls --functions 1000 --states 8 --seed 4)
+# the write marks: the marks the back end makes of the pages its stores wrote are LLVM's, over every store of the random
+# functions, of the words of each kind of store, and of functions that call each other
+add_test(NAME recompiler_backends_marks COMMAND snx-test-recompiler-backends --marks 2 --functions 1200 --states 8)
+add_test(NAME recompiler_backends_marks_1 COMMAND snx-test-recompiler-backends --marks 1 --functions 600 --states 8
+         --seed 7)
+add_test(NAME recompiler_backends_marks_ops COMMAND snx-test-recompiler-backends --marks 2 --states 8 --target android
+         --ops STXR STLR STXP CASP CAS STP STP_v STR_i STR_v_i LDADD LDCLR LDEOR LDSET LDSMAX LDSMIN LDUMAX
+         LDUMIN SWP ST_mult ST_single)
+# and without the host's optional features: the mark's shift then changes the flags
+add_test(NAME recompiler_backends_marks_plain COMMAND snx-test-recompiler-backends --marks 2 --without 0x3d07 --functions
+         600 --states 8 --seed 3)
+add_test(NAME recompiler_backends_marks_calls COMMAND snx-test-recompiler-backends --marks 2 --calls --functions 120
+         --states 4)
+set_tests_properties(recompiler_backends_marks_calls PROPERTIES TIMEOUT 600)
 set_tests_properties(recompiler_backends_calls recompiler_backends_calls_2 recompiler_backends_calls_3 PROPERTIES
                      TIMEOUT 600)
 # words of the lanes' arithmetic, each a function of its own that the back end must make, from the lanes' edge values
@@ -4426,6 +4445,9 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
             set_tests_properties(recompiler_${m}_refused_${target} PROPERTIES TIMEOUT 600)
         endforeach()
     endforeach()
+    # the write marks of the pages the code of an arm64 host's back end marks, and of arm64's as a Windows host's
+    add_test(NAME recompiler_arm64_marks COMMAND snx-test-recompiler-arm64 --marks 2 --functions 200 --states 4)
+    set_tests_properties(recompiler_arm64_marks PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
     # an arm64 host with no optional feature (SNX_ARM64_F_ALL): every word made, and the results of the random functions'
     # and of CRC32's
     add_test(NAME recompiler_arm64_refused_plain COMMAND snx-test-recompiler-arm64 --refused --without 0x7ffff
@@ -4461,6 +4483,8 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
     snx_decodetree_a64(snx-test-recompiler-arm64win)
     add_test(NAME recompiler_arm64win COMMAND snx-test-recompiler-arm64win)
     add_test(NAME recompiler_arm64win_step COMMAND snx-test-recompiler-arm64win --step --functions 60 --states 2)
+    add_test(NAME recompiler_arm64win_marks COMMAND snx-test-recompiler-arm64win --marks 2 --functions 200 --states 4)
+    set_tests_properties(recompiler_arm64win_marks PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
     add_test(NAME recompiler_arm64win_jit COMMAND snx-test-recompiler-arm64win --jit --functions 200 --states 8 --seed 2)
     add_test(NAME recompiler_arm64win_hook COMMAND snx-test-recompiler-arm64win --hook --functions 200 --states 8 --seed 3)
     add_test(NAME recompiler_arm64win_plain COMMAND snx-test-recompiler-arm64win --without 0x7ffff --functions 200
@@ -4529,13 +4553,14 @@ if(snx_host_win64)
     target_link_libraries(snx-test-recompiler-win64 PRIVATE scarletnx-recompiler snx_llvm scarletnx-common)
     snx_decodetree_a64(snx-test-recompiler-win64)
     add_test(NAME recompiler_win64 COMMAND snx-test-recompiler-win64)
+    add_test(NAME recompiler_win64_marks COMMAND snx-test-recompiler-win64 --marks 2 --functions 300 --states 4)
     add_test(NAME recompiler_win64_jit COMMAND snx-test-recompiler-win64 --jit)
     add_test(NAME recompiler_win64_hook COMMAND snx-test-recompiler-win64 --hook --functions 300 --seed 2)
     add_test(NAME recompiler_win64_plain COMMAND snx-test-recompiler-win64 --without 0x3d07 --functions 300 --seed 3)
     add_test(NAME recompiler_win64_br_pins COMMAND snx-test-recompiler-win64 --words ${snx_br_pins})
     add_test(NAME recompiler_win64_undef_pins COMMAND snx-test-recompiler-win64 --words ${snx_undef_pins})
     add_test(NAME recompiler_win64_calls COMMAND snx-test-recompiler-win64 --calls --functions 120 --states 8)
-    set_tests_properties(recompiler_win64 recompiler_win64_jit recompiler_win64_hook recompiler_win64_plain PROPERTIES
+    set_tests_properties(recompiler_win64 recompiler_win64_marks recompiler_win64_jit recompiler_win64_hook recompiler_win64_plain PROPERTIES
                          TIMEOUT 600)
 endif()
 # its code on Windows unwinds at every instruction, by the system's unwinder there and by support/host_win64.c's here

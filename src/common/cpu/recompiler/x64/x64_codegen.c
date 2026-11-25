@@ -759,6 +759,7 @@ void snx_x64_unit_facts(const SnxCodegen* codegen, size_t first, size_t last, co
     if (options->jit && options->table_name) put(user, options->table_name, strlen(options->table_name) + 1);
     fact64(put, user, (SnxU64)options->stale);
     fact64(put, user, (SnxU64)options->alone);
+    fact64(put, user, (SnxU64)options->write_marks);
     fact64(put, user, options->without_count);
     if (options->without_count) put(user, options->without, options->without_count * sizeof *options->without);
     fact64(put, user, options->llvm_at);

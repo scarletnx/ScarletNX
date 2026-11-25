@@ -582,6 +582,21 @@ A function whose code is longer than the machine's jump reaches (MIPS64's B 128 
 arm64's literals are put in the code before LDR (literal)'s 1 MiB is past (`MG_POOL_REACH`). `recompiler_<machine>_long`
 runs one.
 
+### The write marks
+
+Where a function is made with `SnxNativeOptions.write_marks` (the setting `write_marks`; an AArch32 block's by
+`snx_native_arm_marks`), each guest store is followed by the mark of its page: a store of 1 into the page's byte of the
+`SNX_WMARK_BELOW` bytes just below `CPU.mem` (`cpu.h`), which the runtime reads in place of asking the host which pages
+were written (`memory/mem.c`, `mem_marks_scan`). `mach.h`'s `sgx_mark` notes a store (its base, the constants its address
+adds to it, its bytes), and `sgx_marks_flush` makes the marks, where a page is a byte apart: a group of one base marks
+the page of its first byte and of its last, 4096 bytes at most, and a constant address the pages it is in, known when
+it is recompiled. The marks go after the stores and before what can make the stores visible to another thread (a call, a
+barrier, an atomic or exclusive access, a store-release, a branch, the region's end), so a store is visible no later than
+its mark; x86-64 (`MOV r/m8, imm8`) keeps that order by itself, arm64's mark is a store-release (STLRB) at the address ADD
+of CPU.mem less the marks' distance and the guest's address shifted right by 12, and the RISC machines' store barrier goes
+before the marks. A store off the stack pointer is marked with `write_marks` 2 alone, as no thread's stack is memory the
+GPU reads. Without the option the code is the code it is without it, and the back ends take no register for it.
+
 ### Past the guests' CPUs
 
 `snx_recompiler.h`'s `SNX_RECOMPILER_A64_MAX` decodes all of `a64.decode`, and the nine back ends make it too. What the

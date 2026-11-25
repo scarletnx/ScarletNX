@@ -31,6 +31,7 @@ int snx_native_available(void) {
            snx_mips64_available() || snx_la64_available() || snx_ppc64be_available() || snx_mips64be_available() ||
            snx_s390x_available();
 }
+int snx_native_write_marks(void) { return snx_x64_available() || snx_arm64_available() || !snx_native_available(); }
 
 const char* snx_native_name(void) {
     return snx_x64_available()     ? "x86-64"

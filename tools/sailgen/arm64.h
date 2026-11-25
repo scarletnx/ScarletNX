@@ -488,6 +488,35 @@ SGA_N1(sext32, 64)
         {.enc = sga_e_##e, .rm = 0, .in = {1, -1, -1, -1}, .out = 0, .clean_out = 1,                                   \
          .flag_of = {0, 1, 2, 3}, .cc_of = SGA_CC}};                                                                   \
     enum { sgx_sel_mov_##w##_n = 2 };
+/* the write marks' (mach.h's sgx_mark_page): the mark's address, base plus the page of the guest's address (ADD of it
+   shifted right by 12), and the store-release of the byte there, which orders the stores before it before it; an
+   arm64 host shows one thread's stores in another order than it made them */
+SGA_E(markpage) {
+    (void)imm, (void)cc;
+    sga_w(b, sge_a64_add_addsub_shift(r[0], r[1], 12, r[2], 1, 1));
+}
+SGA_E(stlrb) {
+    (void)imm, (void)cc;
+    sga_w(b, sge_a64_stlrb(r[1], r[0] - 64));
+}
+static const SgXSel sgx_sel_markpage = {.enc = sga_e_markpage,
+                                        .rm = -1,
+                                        .in = {1, 2, -1, -1},
+                                        .out = 0,
+                                        .clean_out = 1,
+                                        .flag_of = {0, 1, 2, 3},
+                                        .cc_of = SGA_CC};
+static const SgXSel sgx_sel_stlrb = {.enc = sga_e_stlrb,
+                                     .rm = 0,
+                                     .in = {1, -1, -1, -1},
+                                     .out = 0,
+                                     .clean_out = 1,
+                                     .flag_of = {0, 1, 2, 3},
+                                     .cc_of = SGA_CC};
+#define SGX_MARK_WEAK 0
+#define SGX_MARK_STLR sgx_sel_stlrb
+#define SGX_MARK_INDEXED(x, base, address)                                                                             \
+    sgx_val(64, sgx_emit((x), &sgx_sel_markpage, (SgD[]){sgx_val(64, (base)), (address)}, 2, 64, 0, -1))
 SGA_MOV(64, mov_64)
 SGA_MOV(32, mov_32)
 SGA_MOV(16, mov_16)

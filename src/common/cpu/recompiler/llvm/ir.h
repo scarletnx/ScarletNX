@@ -296,6 +296,8 @@ int snx_ir_write_marks_on(void);
 /* the counts of what ir_write_marks did since the last call, which clears them: guest stores seen, stores off the
    stack pointer left unmarked, and mark stores emitted */
 void snx_ir_write_marks_counts(SnxU64* stores, SnxU64* stack, SnxU64* marks);
+/* the native back end's counts (mach/native.h's SnxNativeMarks) added to them */
+void snx_ir_write_marks_add(SnxU64 stores, SnxU64 stack, SnxU64 marks);
 /* opt is the -O letter: 0,1,2,3,s,z */
 SnxIr* snx_ir_new(const char* name, char opt, char* error, size_t error_size);
 /* the same for code the JIT loader loads into this process (code_loader.h): the host's target, CPU and calling
