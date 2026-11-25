@@ -16,7 +16,7 @@
 data folder's `recompiled/<title ID>/` (`app/` holds the package, `ux0/` the writable storage), the eboot's code is
 compiled ahead of time into `<title ID>_code.so`, and a copy of the runtime named after the title ID plays it; its
 `<title ID>.ini` says `system=vita`, which the launcher and a build's deploy pick the driver by. Code
-the offline pass didn't find is compiled at run time by the LLVM backend's executor, and the addresses it compiled are
+the offline pass didn't find is compiled at run time by the recompiler's executor, and the addresses it compiled are
 kept as hints (`<title ID>.hints`) for the next offline compile.
 
 ```sh
@@ -61,7 +61,7 @@ and plays its sound test.
 | Part | Files |
 | --- | --- |
 | VPK, SELF and ELF loading (zip and zlib, relocations, imports patched to SVCs by index) | `src/vita/loader/` |
-| The offline compiler and the module it makes (the A57-profile AArch32 backend, `src/common/cpu/arm/`) | `src/vita/aot/` |
+| The offline compiler and the module it makes: the host's native back end's blocks (the A9's, chained: `src/common/cpu/arm/codegen.h`), as discovery finds them, and LLVM's where it refuses one, or all of them on a host without one or with `--keep-ir` (the recompile says how many each made, and why) | `src/vita/aot/` |
 | Process, threads (cooperative, one host thread), waits, memory, the dispatcher, run-time compiles | `src/vita/runtime/` |
 | The system libraries, answered by NID | `src/vita/hle/` (`kernel.c`, `io.c`, `ctrl.c`, `display.c`, `audio.c`, `misc.c`, `gxm.c`, `fiber.c`, `ngs.c`) |
 | The game's own C and C++ libraries (SceLibc, SceLibm, SceLibstdcxx) and the Clib, malloc on a heap in guest memory | `src/vita/hle/libc.c`, `heap.c` |

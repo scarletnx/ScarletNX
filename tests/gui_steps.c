@@ -78,7 +78,7 @@ int main(void) {
 
     /* Vita's compiler reports completed parallel chunks, not NX function blocks. */
     gui_steps_reset(&s);
-    feed(&s, "Recompiling PCSG00001 (Vita AArch32)\nDiscovered 1200 blocks (4 addresses were not code)\n", 70);
+    feed(&s, "Recompiling PCSG00001 (Vita AArch32)\nDiscovered 1200 blocks\n", 70);
     assert(gui_steps_last(&s, "RECOMPILE") && gui_steps_percent(&s) == 0);
     feed(&s, "Compiled 1/12 chunks of blocks\n", 80);
     assert(gui_steps_percent(&s) == 8);
