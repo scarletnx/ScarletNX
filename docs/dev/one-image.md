@@ -236,9 +236,12 @@ An A/B/B/A of the race with all of the above, 2026-11-25:
 | 0 | 81.2, 70.9 | 7.61, 7.82 ms | 1.10, 1.16 ms | 101, 99 |
 | 1 | 83.0, 86.4 | 7.29, 7.00 ms | 0.76, 0.79 ms | 0.7, 0.5 |
 
-Not hosted yet: scaled targets, and storage image surfaces (19 takes a present in the race). A storage
-surface is a texture, whose loads from memory (`tex_upload`, `tex_patch`, the pieces) all write level 0 of its own
-image: hosting it needs those paths to take its place in the host, as step 1 gives.
+Not hosted yet: scaled targets, and storage image surfaces. A storage surface is a texture, whose loads from memory
+(`tex_upload`, `tex_patch`, the pieces) all write level 0 of its own image: hosting it needs those paths to take its
+place in the host, as step 1 gives. It is not worth that now: in the race, with hosting on, the storage surfaces are 12
+takes a present, and two races with those takes left out (their textures wrong, as a bound) ran at 85.3 and 83.2 fps,
+GPU busy 6.66 and 7.03 ms, copy gaps 0.79 and 0.73 ms, against 83.2 and 82.4 fps, 6.83 and 6.99 ms, 0.82 and 0.73 ms
+with them (2026-11-25). The difference is within the runs' spread.
 
 An A/B/B/A of the race, 2026-11-24:
 
