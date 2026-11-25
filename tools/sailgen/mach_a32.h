@@ -79,6 +79,7 @@ struct SgCtx {
     int iset;  /* SelectInstrSet's, 0 for the block's */
     int branched, undefined;
     SgD target;    /* BranchTo's, 32 bits */
+    SgB taken;     /* where it holds, the next instruction where it does not (CBZ); 0 for always */
     int gpr[15];   /* the region's value of each register, 0 for none */
     int cpsr;      /* the region's CPSR, 0 for none */
     SgD field[32]; /* PSTATE's fields written and not stored yet (pending's bits) */
@@ -436,7 +437,8 @@ static inline void sg_branch_to(SgCtx* g, SgD target, SgB when) {
     if (target.w != 32) sg_fail("a branch to a target of other than 32 bits", target.w, 32);
     sg_transfer_commit(g);
     g->branched = 1;
-    g->target = when ? sg_d_select(g, when, target, sgx_const(32, g->next)) : target;
+    g->target = target;
+    g->taken = when;
 }
 /* R15 = v */
 static inline void sgx_a32_pc(SgCtx* g, SgD v) { sgx_a32_put(g, offsetof(SnxArmCPU, r) + 60, 32, v); }

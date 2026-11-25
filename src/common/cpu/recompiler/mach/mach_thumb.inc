@@ -338,6 +338,7 @@ static size_t thumb_code(MG_ARM* c, const unsigned char* code, size_t count, Snx
         g->pc = pc + 2 * (SnxU32)used;
         g->yields = 0;
         g->branched = g->undefined = 0;
+        g->taken = 0;
         g->iset = 0;
         g->skip = -1;
         g->when = 0;
