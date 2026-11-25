@@ -25,6 +25,7 @@
 #include <windows.h>
 #else
 #include "support/host_unicorn.h"
+#include <sys/mman.h>
 #endif
 
 #define BASE  0x10000u
@@ -305,6 +306,40 @@ static void check(unsigned function) {
     }
 }
 
+#if !defined(_WIN32)
+/* the pages the code's 32-bit distances reach, where the ones next to its arena are taken (as a sanitizer's layout may
+   have them): those of the one free place above the arena, then of the one below it, though the system's own choice is
+   a free place past the code's reach, higher than both */
+static int check_near(void) {
+    const size_t span = (size_t)4 << 30, arena = (size_t)256 << 20, hole = (size_t)4 << 20, page = (size_t)1 << 20;
+    unsigned char* r = (unsigned char*)mmap(NULL, span, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0);
+    int bad = 0;
+    if (r == MAP_FAILED) {
+        fprintf(stderr, "FAIL: no address space of %zu bytes\n", span);
+        return 1;
+    }
+    unsigned char* base = r + ((size_t)5 << 28);
+    unsigned char* far = r + span - 2 * hole;
+    munmap(far, hole);
+    for (int below = 0; below < 2; ++below) {
+        const char* where = below ? "below" : "above";
+        unsigned char* at = below ? base - ((size_t)300 << 20) : base + arena + ((size_t)100 << 20);
+        munmap(at, hole);
+        unsigned char* p = (unsigned char*)hostuc_near(base, arena, page);
+        if (!p)
+            ++bad, fprintf(stderr, "FAIL: no pages found, with a free place %s the arena\n", where);
+        else if (p < at || p + page > at + hole)
+            ++bad, fprintf(stderr, "FAIL: the pages are %lld MiB from the arena, not in the free place %s it\n",
+                           (long long)((intptr_t)p - (intptr_t)base) / (1 << 20), where);
+        if (p) munmap(p, page);
+        if (mmap(at, hole, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_NORESERVE | MAP_FIXED, -1, 0) == MAP_FAILED)
+            ++bad, fprintf(stderr, "FAIL: the free place %s the arena not taken back\n", where);
+    }
+    munmap(r, span - 2 * hole), munmap(far + hole, hole); /* what the process mapped in the far place meanwhile stays */
+    return bad;
+}
+#endif
+
 int main(void) {
     static const unsigned functions[] = {F_LEAF,    F_CALLS, F_PINNED, F_UNDEF,  F_POLL, F_JUMP,
                                          F_FLUSHED, F_FAR,   F_MISS,   F_DIRECT, F_BIG};
@@ -323,6 +358,7 @@ int main(void) {
     }
     program();
 #if !defined(_WIN32)
+    if (check_near()) ++g_test.failures;
     snx_x64_set_win64(1);
     HostUc* uc = hostuc_new(HOSTUC_WIN64, 1u << 16);
     if (!uc) {
