@@ -1179,6 +1179,15 @@ static void own_landed(u64 addr, u64 size, const u8* bytes) {
     vk_ww_landed(addr, size, bytes);
     vk_mirror_landed(addr, size);
 }
+/* own.c's, as the CPU touches pages [cpu, cpu + size) that watches or owners are on: the targets pending there are
+   published, and the pages open next, for a thread that waits to read them. What the GPU writes there in place is done
+   first, those publishes into a region and any before them: its copy, landing after the pages opened, would be a change
+   that the opening's scan takes for the CPU's (vk_ww_open). The wait is for the last such write's submit, and its end
+   has the host barrier (vk_uma_host_barrier) */
+static void own_accessed(u64 cpu, u64 size) {
+    vk_rt_watch_hit(cpu, size);
+    vk_uma_mem_need_cpu(cpu, size);
+}
 /* owners dropped with no landing (an unmap, a remap, a decommit): the GPU mirror's copy of those pages is no longer
    guest memory's, and its next binding of them fills them again, as a landing has it. A page the mirror owns leaves
    its granule's check whole (mirror.c), which no other change of these pages would end */
@@ -1199,8 +1208,8 @@ int vk_own_init(void) {
                   .dropped = own_dropped,
                   .writer = own_writer,
                   .wait = own_wait,
-                  .resolve = vk_rt_watch_hit,
-                  .refresh = vk_rt_watch_hit,
+                  .resolve = own_accessed,
+                  .refresh = own_accessed,
                   .claim = own_claim,
                   .open = vk_ww_open};
     g_owned.traps = !own_init(&h);
@@ -1270,17 +1279,11 @@ static void own_publish(u64 cpu, u64 size, VkOwnRes* r, u64 off, int in_place) {
        owner and no trap (each trap let go of the imports over its pages, and the next use made them again). Older
        owners of the bytes go: they are written over whole */
     if (in_place && (vk_uma_held(cpu, size) || vk_uma_region_held(cpu, size))) {
-        /* A trap there is a watch over dma-buf regions (vk_own_watch), and this is its CPU access's publish
-           (vk_rt_watch_hit), or one before it at a release: the watch goes once the copy is done and the host can
-           see it, as a thread waits on those pages to read them. The wait is for the submit of the copy, and its end
-           has the host barrier (vk_uma_host_barrier) */
-        const int trapped = own_trapped(cpu, size);
-        if (!trapped) own_drop(cpu, size);
+        /* A trap over regions is a watch (vk_own_watch), and it stays: the copy is the GPU's, as with no watch, and
+           nothing waits for it here, part-way through what the GPU thread records. A CPU access to those pages waits
+           for it, and the watch goes then (own_accessed). No owner is there: its pages are the pool's, not a region's */
+        if (!(vk_uma_region_held(cpu, size) && own_trapped(cpu, size))) own_drop(cpu, size);
         if (publish_in_place(cpu, size, r->buf, off)) {
-            if (trapped) {
-                vk_uma_mem_need_cpu(cpu, size);
-                own_unwatch(cpu, size); /* no write of the CPU's (OwnHooks' open), where own_drop leaves them written */
-            }
             SNX_ZONE_TEXT(z, "UMA holds %llu bytes, copied into its import", (unsigned long long)size);
             SNX_PLOT(k_bytes, (double)size);
             return;

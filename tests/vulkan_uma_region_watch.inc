@@ -231,4 +231,89 @@ static int check_uma_region_watch_writes(void) {
                "the access that ended it and after, and else not\n");
     return bad;
 }
+
+/* An engine's result published in place over a target that a release watches in a region (a copy's, or a dispatch's
+   storage image) is the GPU thread's, part-way through what it records: it submits nothing and waits for nothing, as
+   over memory no target watches. The CPU's access to those pages, with the result not yet submitted, waits for it and
+   reads it, and what is drawn there after that is in memory and in the image */
+static int check_uma_region_watch_engine(void) {
+    /* the one that the CPU reads last: read lately, the target would be published at the release, not watched */
+    static const char* const how[3] = {"a result over other memory of the region", "a DMA copy over the target",
+                                       "a result over the target"};
+    const u64 t = 0x40000, from = 0x100000;
+    const float blue[4] = {0, 0, 1, 1}, red[4] = {1, 0, 0, 1};
+    const u32 left[4] = {0, 0, 160, 180}, b = 0xffff0000u, r = 0xff0000ffu;
+    const u32 want[3] = {r, b, b};
+    u32 px[3], image[3];
+    int bad = 0;
+    UrwWindow w;
+    CHECK(!urw_open(&w, 0x1400000 + (u64)(URW_N + 1) * 0x200000));
+    if (!w.region) return 0;
+    for (int k = 0; k < 3; k++) {
+        rt_clear_rect(w.ch, w.gva + t, blue, NULL);
+        vk_lock();
+        vk_rt_publish_drawn();
+        CHECK(own_watched(w.cpu + t, URW_SPAN));
+        const u64 sub = vk_submit_number(), waits = vk_uma_out_waits();
+        if (k != 1) {
+            VkOwnRes* res = uma_owner(0x1000, 0x42);
+            CHECK(res);
+            vk_own_publish(w.cpu + (k ? t : 0x180000), 0x1000, res, 0);
+            vk_own_res_unref(res);
+        } else {
+            vk_unlock();
+            GpuDmaOp o = {.multi = 1, .width = 256, .line_in = 256, .line_out = 256, .lines = 4};
+            o.src = pitch_side(w.gva + from, 256);
+            o.dst = bl_side(w.gva + t, 1280, 180, 4, 0, 0);
+            CHECK(g_renderer->dma_copy(&o));
+            vk_lock();
+        }
+        const u64 submits = vk_submit_number() - sub, waited = vk_uma_out_waits() - waits;
+        vk_unlock();
+        if (submits || waited) {
+            fprintf(stderr,
+                    "%s, the target watched in a region: %llu submissions and %llu waits for the GPU in it, "
+                    "want none\n",
+                    how[k], (unsigned long long)submits, (unsigned long long)waited);
+            bad = 1;
+        }
+        urw_epoch(&w);
+        if (k < 2) continue;
+        u8 first[64];
+        memcpy(first, GP(w.cpu + t), sizeof first); /* a fault: the result is recorded, not submitted */
+        atomic_signal_fence(memory_order_seq_cst);
+        urw_opened();
+        CHECK(!own_trapped(w.cpu + t, URW_SPAN));
+        u32 differ = 0;
+        for (u32 i = 0; i < sizeof first; i++) differ += first[i] != 0x42;
+        if (differ) {
+            fprintf(stderr, "%s: the CPU reads %u of its 64 bytes wrong (the first %02x, want 42)\n", how[k], differ,
+                    first[0]);
+            bad = 1;
+        }
+        /* the target drawn over it, in another submission: the result's page is the target's again */
+        g_renderer->mem_may_have_changed();
+        rt_clear_rect(w.ch, w.gva + t, red, left);
+        vk_lock();
+        vk_rt_publish_drawn();
+        vk_finish();
+        vk_unlock();
+        urw_epoch(&w);
+        urw_memory(w.cpu + t, px);
+        CHECK(!urw_image(w.gva + t, image));
+        if (memcmp(px, want, sizeof px) || memcmp(image, want, sizeof image)) {
+            fprintf(
+                stderr,
+                "a target drawn red on its left after a result over its first page: memory holds %08x %08x %08x, the "
+                "image %08x %08x %08x, want %08x %08x %08x in both\n",
+                px[0], px[1], px[2], image[0], image[1], image[2], want[0], want[1], want[2]);
+            bad = 1;
+        }
+    }
+    CHECK(!urw_close(&w));
+    if (!bad)
+        printf(
+            "in place: an engine's result over a watched target waits for nothing, and the CPU's access waits for it\n");
+    return bad;
+}
 #endif

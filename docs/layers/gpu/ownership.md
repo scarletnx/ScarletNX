@@ -90,8 +90,10 @@ pending target and only drops the watch.
 
 Over a dma-buf region of unified memory ([below](#linux-guest-memory-moved-into-dma-bufs-of-memfds)) the watch is in
 place (`own_watch_in_place`): its pages stay the region's, which the GPU goes on reading and writing, and only the CPU's
-mapping of them is trapped. The publish that the CPU's access asks for is then a copy in the region on the GPU
-(`vk_uma_publish`), which it waits for, with no owner and no landing, and the watch goes after it.
+mapping of them is trapped. A publish over it is a copy in the region on the GPU (`vk_uma_publish`), with no owner and
+no landing. It waits for nothing and leaves the watch, as it can be the GPU thread's, part-way through its recording.
+The CPU's access waits: once the targets pending there are published, for what the GPU writes there in place
+(`own_accessed` in `vk/owned.c`), and the watch goes after it.
 
 The thread that held `vk_lock` before it touched a watched page (the GPU thread, which reads guest memory in a draw's
 setup) cannot wait for a publish. Its `own_acquire`, or its fault on a page with only watches on it, drops the watches
