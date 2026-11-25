@@ -173,7 +173,8 @@ def main():
                 functions[0](actual if mode == 'flat' else state)
                 assert actual.exit == 10 and actual.r[15] == PC and actual.fpscr == control
                 assert list(actual.d) == list(CPU.from_buffer_copy(old).d)
-            for control in [0x10000, 0x100000, 0x100, 0x8000, 0x4000000, 0x8000000]:
+            # LEN and STRIDE are written; an enabled trap, and AHP and QC, which VFPv2 lacks, stop first
+            for control in [0x10000, 0x70000, 0x100000, 0x300000, 0x100, 0x8000, 0x4000000, 0x8000000]:
                 index = names.index('vmsr fpscr,r0')
                 cpu, memory = V.initial(words[index], 0)
                 cpu.r[0], cpu.fpscr = control, 0
@@ -186,7 +187,10 @@ def main():
                 else:
                     actual = cpu
                 functions[index](actual if mode == 'flat' else state)
-                assert actual.exit == 10 and actual.r[15] == PC and actual.fpscr == 0
+                if control & 0x370000:
+                    assert actual.exit == 0 and actual.r[15] == PC + 4 and actual.fpscr == control
+                else:
+                    assert actual.exit == 10 and actual.r[15] == PC and actual.fpscr == 0
             for text in ['condition=0 vadd.f32 s0,s2,s4', 'condition=0 vstr d15,[r4,#4]']:
                 index = names.index(text)
                 cpu, memory = V.initial(words[index], 0)
