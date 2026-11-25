@@ -698,7 +698,8 @@ function execute_F2FP() -> unit = {
 
 /* ---- the rest of the integer ALU, the uniform registers and the system registers ---- */
 
-/* the register after the operand's (its pair's high word), of its kind; the zero register's is itself */
+/* the register after the operand's (its pair's high word), of its kind; the zero register's is itself. A constant
+   buffer operand's is the word after it: a 64-bit operand reads 8 bytes there */
 val SrcNext : Operand -> bits(32)
 /* the destination's next register (a pair's high word), of its kind; whether it has one (it is no zero register) */
 val D_writeNext : bits(32) -> unit
@@ -738,7 +739,9 @@ let ST_GS : int = 3
 /* IMAD.WIDE and UIMAD.WIDE: NAK's OpIMad64, a * b (bit 73 signed) + the pair at c, into the pair at the destination.
    The carry out of the 64-bit sum goes to the predicate at 81-83 as IADD3's first (nvdisasm: IMAD.WIDE.U32 R14, P0,
    R10, R19, R14): one game's 64-bit division chains IMAD.WIDE ..., P0 into IMAD.X. With .X (bit 74; nvdisasm:
-   IMAD.WIDE.U32.X R6, RZ, R5, R6, P1) the carry predicate at 87-90 joins the sum */
+   IMAD.WIDE.U32.X R6, RZ, R5, R6, P1) the carry predicate at 87-90 joins the sum. A constant buffer's c is the pair
+   of words there: a compute program and a fragment program of one game add c[1][0x0] (IMAD.WIDE R14, R12, R15,
+   c[1][0x0]), and their work was skipped */
 function execute_IMAD_WIDE() -> unit = {
     let is_signed = Field(73, 1) == 0b1;
     Int64();
@@ -746,7 +749,7 @@ function execute_IMAD_WIDE() -> unit = {
     let b32 = SrcInt(B);
     let a64 = if is_signed then SignExtend(a32, 64) else ZeroExtend(a32, 64);
     let b64 = if is_signed then SignExtend(b32, 64) else ZeroExtend(b32, 64);
-    if SrcIsImm(C) | SrcIsCbuf(C) then throw(Unsupported("%s with c an immediate or a constant", OpName()));
+    if SrcIsImm(C) then throw(Unsupported("%s with c an immediate", OpName()));
     let chi = SrcNext(C);
     let product = a64 * b64;
     let clo = SrcBits(C);

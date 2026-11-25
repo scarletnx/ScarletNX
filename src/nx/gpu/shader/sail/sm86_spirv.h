@@ -156,6 +156,13 @@ static SgSpv* sg_spv(SgG* g) { return &g->spv; }
 [[maybe_unused]] static int sg_SrcIsCbuf(SgG* g, int64_t s) { return sg86_src(g, s)->kind == SM86_SRC_CBUF; }
 [[maybe_unused]] static SgV sg_SrcNext(SgG* g, int64_t s) {
     const Sm86Src* x = sg86_src(g, s);
+    if (x->kind == SM86_SRC_CBUF) {
+        if (x->bindless) {
+            fail(g->c, "bindless constant buffer operand");
+            return sg_v(g->c->zero, SGT_U32);
+        }
+        return sg_v(cbuf_load(g->c, x->bank, x->value + 4, 0), SGT_U32);
+    }
     u32 r = x->reg;
     return sg_v(x->kind == SM86_SRC_UREG ? urd(g->c, r >= SM86_URZ ? r : r + 1) : rd(g->c, r >= SM86_RZ ? r : r + 1), SGT_U32);
 }
