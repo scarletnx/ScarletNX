@@ -5,7 +5,8 @@
    chained blocks of each AArch32 state with theirs. None may have an absolute address in its code: the linker refuses one in a read-only
    section (link_elf.c), since a shared object would need a text relocation there. The little-endian machines' objects
    are then linked into a module (snx_link), which the recompiler would write; a host whose linker writes no ELF says
-   so, and the objects are still checked */
+   so, and the objects are still checked. On an x86-64 host its objects for Windows too (COFF, linked into a DLL, whose
+   exports, function table and base relocations are read back) */
 #include "nx/loader/module_x64.h"
 #include "nx/loader/loader.h"
 #include "common/cpu/recompiler/arm64/arm64_arm.h"
@@ -29,6 +30,7 @@
 #include "common/cpu/recompiler/s390x/s390x_codegen.h"
 #include "common/cpu/recompiler/x64/x64_arm.h"
 #include "common/cpu/recompiler/x64/x64_codegen.h"
+#include "common/utilities/endian.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -250,6 +252,89 @@ static void arm(const Back* back) {
     free(loaded), free(object), free(descriptor);
 }
 
+#if defined(__x86_64__)
+/* a section of the DLL at rva: its bytes in the file, *size its own; NULL where no section holds it */
+static const unsigned char* at_rva(const unsigned char* pe, uint32_t rva, uint32_t* size) {
+    const unsigned char* sections = pe + 0x80 + 24 + 240;
+    for (unsigned k = 0, n = snx_ld_le16(pe + 0x80 + 6); k < n; ++k) {
+        const unsigned char* s = sections + 40 * (size_t)k;
+        uint32_t lo = snx_ld_le32(s + 12), length = snx_ld_le32(s + 8);
+        if (rva < lo || rva >= lo + length || !snx_ld_le32(s + 20)) continue;
+        *size = lo + length - rva;
+        return pe + snx_ld_le32(s + 20) + (rva - lo);
+    }
+    return NULL;
+}
+/* the functions, an object of A32 and Thumb blocks and their descriptors for Windows, each pair linked into a DLL */
+static void windows(SnxCodegen* cg) {
+    static const uint32_t code[4] = {0xE2500001u, 0x1AFFFFFDu, 0xE2811001u, 0xE12FFF1Eu};
+    static const uint16_t half[4] = {0x3801u, 0xD1FDu, 0x3101u, 0x4770u};
+    const SnxU32 keys[4] = {ARM, ARM + 8, THUMB, THUMB + 4};
+    SnxNativeOptions options = {.stale = 1};
+    SnxCodegenOptions module_options = {0};
+    unsigned char* made = (unsigned char*)calloc(cg->function_count + 1, 1);
+    SnxProgram* loaded = (SnxProgram*)calloc(1, sizeof *loaded);
+    unsigned char *objects[2] = {NULL, NULL}, *descriptors[2] = {NULL, NULL};
+    size_t sizes[2] = {0}, descriptor_sizes[2] = {0}, entries = 0, variants = 0;
+    const char* why = "";
+    char error[256] = "";
+    snx_x64_set_win64(1);
+    if (!made || !loaded ||
+        snx_x64_object(cg, 0, cg->function_count, &options, made, &objects[0], &sizes[0], error, sizeof error) < 0 ||
+        snx_x64_descriptor_for(NULL, cg, &module_options, loaded, NULL, 0, NULL, 0, &descriptors[0],
+                               &descriptor_sizes[0], &entries, &variants, error, sizeof error) ||
+        arm_x64(code, 4, half, 4, &objects[1], &sizes[1], &why) ||
+        snx_x64_arm_descriptor_for(NULL, loaded, &module_options, keys, 4, &descriptors[1], &descriptor_sizes[1], error,
+                                   sizeof error))
+        FAIL("windows: an object: %s %s", error, why);
+    else
+        for (int k = 0; k < 2; ++k) {
+            const SnxLinkInput inputs[2] = {{objects[k], sizes[k], "code"},
+                                            {descriptors[k], descriptor_sizes[k], "module"}};
+            const char* const exports[1] = {k ? "snx_module_arm" : "snx_module"};
+            SnxLinkOutput dll = {0};
+            uint32_t left = 0, count = 0, last = 0, size, pdata, relocs;
+            const unsigned char *p, *name;
+            if (snx_link(inputs, 2, exports, 1, "module.dll", &dll, error, sizeof error)) {
+                FAIL("windows: linking the %s: %s", exports[0], error);
+                continue;
+            }
+            if (memcmp(dll.data, "MZ", 2) || memcmp(dll.data + 0x80, "PE\0", 4) ||
+                snx_ld_le16(dll.data + 0x84) != 0x8664)
+                FAIL("windows: %s: not an x86-64 DLL", exports[0]);
+            /* the data directories: the exports, the function table (3), the base relocations (5) */
+            p = at_rva(dll.data, snx_ld_le32(dll.data + 0x98 + 112), &left);
+            name = p ? at_rva(dll.data, snx_ld_le32(p + 32), &left) : NULL;
+            name = name ? at_rva(dll.data, snx_ld_le32(name), &left) : NULL;
+            if (!name || strcmp((const char*)name, exports[0])) FAIL("windows: %s is not exported", exports[0]);
+            pdata = snx_ld_le32(dll.data + 0x98 + 112 + 24), size = snx_ld_le32(dll.data + 0x98 + 112 + 28);
+            p = at_rva(dll.data, pdata, &left);
+            for (uint32_t at = 0; p && at + 12 <= size; at += 12, ++count) {
+                uint32_t begin = snx_ld_le32(p + at), end = snx_ld_le32(p + at + 4);
+                const unsigned char* text = at_rva(dll.data, begin, &left);
+                const unsigned char* info = at_rva(dll.data, snx_ld_le32(p + at + 8), &left);
+                if (begin < last || end <= begin || !text || !info || info[0] != 1) {
+                    FAIL("windows: %s: entry %u of the function table", exports[0], count);
+                    break;
+                }
+                /* PUSH RBX, every one of its prologues' first; the rest of a block after its check's exit has none */
+                if (!k && text[0] != 0x53)
+                    FAIL("windows: %s: entry %u is not where a function starts", exports[0], count);
+                last = end;
+            }
+            /* a function's one entry; a block's two */
+            if (count != (k ? 8 : cg->function_count))
+                FAIL("windows: %s: %u entries in its function table", exports[0], count);
+            relocs = snx_ld_le32(dll.data + 0x98 + 112 + 44);
+            if (!relocs) FAIL("windows: %s: no base relocations", exports[0]);
+            free(dll.data);
+        }
+    snx_x64_set_win64(0);
+    for (int k = 0; k < 2; ++k) free(objects[k]), free(descriptors[k]);
+    free(made), free(loaded);
+}
+#endif
+
 int main(void) {
     static const Back backs[] = {
 #define BACK(m, name, little) {name, little, functions_##m, arm_##m}
@@ -296,6 +381,13 @@ int main(void) {
         free(object);
         printf("native_link %s: %s\n", backs[k].name, g_test.failures == before ? "ok" : "FAILED");
     }
+#if defined(__x86_64__)
+    if (snx_x64_available()) {
+        size_t before = g_test.failures;
+        windows(&cg);
+        printf("native_link windows: %s\n", g_test.failures == before ? "ok" : "FAILED");
+    }
+#endif
     snx_codegen_free(&cg), snx_codegen_free(&cgh);
     /* the four little-endian machines with a descriptor here, their two modules each: all of them where the host's
        modules are ELF, none where its linker says they are not */

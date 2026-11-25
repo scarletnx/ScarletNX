@@ -2,9 +2,11 @@
    Copyright 2026 the ScarletNX contributors */
 /* An AOT module's descriptor without LLVM, for a module whose functions a native back end made (module_llvm.c):
    the same symbols and data module_llvm.c's emit_module, emit_routes, emit_nros and emit_imports give, written by
-   x64_elf.h's builder, their few functions in the host's own code: x86-64's as bytes, arm64's by the A64 Sail's
-   encoders (a64_enc.inc), a RISC machine's by its back end (mach/native.h's SnxNativeDesc, mach/risc_desc.inc). The
-   data's layout is module_abi.h's and nro_slots.h's C types, the host's own (this is the host's module) */
+   x64_elf.h's builder, their few functions in the host's own code: x86-64's as bytes (of Windows' calling convention in
+   a COFF object where the back end's code is Windows': none keeps a frame, so the unwinder needs no table of them),
+   arm64's by the A64 Sail's encoders (a64_enc.inc), a RISC machine's by its back end (mach/native.h's SnxNativeDesc,
+   mach/risc_desc.inc). The data's layout is module_abi.h's and nro_slots.h's C types, the host's own (this is the host's
+   module) */
 #include "nx/loader/module_x64.h"
 #include "nx/loader/module.h"
 #include "nx/loader/module_abi.h"
@@ -21,8 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if !defined(_WIN32)
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(_WIN32)
 #include "common/cpu/recompiler/llvm/elf_defs.h"
 #else
 #include <elf.h>
@@ -58,10 +59,13 @@ static void desc_put(SnxXElf* o, const char* name, int flags, const SnxNativeFn*
         snx_xelf_reloc(o, SNX_ELF_TEXT, at + f->rel[k].at, f->rel[k].sym,
                        f->rel[k].type ? f->rel[k].type : g_desc->literal, f->rel[k].addend);
 }
+/* it is x86-64's, of Windows' calling convention in a COFF object */
+static int win64(void) { return !g_desc && !g_arm64 && snx_x64_win64(); }
 static SnxXElf* desc_new(const SnxNativeDesc* d) {
     SnxXElf* o = snx_xelf_new();
     g_desc = d, g_desc_failed = 0;
     g_arm64 = !d && !snx_x64_available() && snx_arm64_available();
+    if (o && win64()) snx_xelf_set_coff(o, 1);
     if (o && d) {
         snx_xelf_set_machine(o, d->em);
         snx_xelf_set_flags(o, d->elf_flags);
@@ -148,7 +152,7 @@ static void fn_name(char* out, size_t size, SnxU64 address) {
 
 /* snx_module(): ENT_ADDR[i] = BASE + ENT_OFF[i], ENT_PTR[i] = FNS[ENT_FN[i]] for each entry (as emit_module's loop:
    no relocation for each), then &MOD. ENT_FN is fn_at bytes past ENT_OFF and ENT_PTR ptr_at past ENT_ADDR, which a
-   RISC machine's loop reads */
+   RISC machine's loop reads, and Windows' the first */
 static void module_fn(SnxXElf* o, size_t count, size_t fn_at, size_t ptr_at) {
     size_t loop, jae, jmp, done;
     if (g_desc) {
@@ -182,8 +186,10 @@ static void module_fn(SnxXElf* o, size_t count, size_t fn_at, size_t ptr_at) {
         a64(o, sge_a64_ret(30));
         return;
     }
-    lea(o, 6, "ENT_OFF");  /* rsi */
-    lea(o, 7, "ENT_FN");   /* rdi */
+    const int win = win64();
+    /* Windows' RSI and RDI are its caller's: RAX, and ENT_FN fn_at past it */
+    lea(o, win ? 0 : 6, "ENT_OFF"); /* rsi */
+    if (!win) lea(o, 7, "ENT_FN");  /* rdi */
     lea(o, 8, "ENT_ADDR"); /* r8 */
     lea(o, 9, "ENT_PTR");  /* r9 */
     lea(o, 10, "FNS");     /* r10 */
@@ -197,10 +203,13 @@ static void module_fn(SnxXElf* o, size_t count, size_t fn_at, size_t ptr_at) {
     b8(o, 0x81), b8(o, 0xF9), b32(o, (SnxU32)count); /* cmp ecx, count */
     b8(o, 0x0F), b8(o, 0x83);                        /* jae done */
     jae = snx_xelf_put(o, SNX_ELF_TEXT, NULL, 4, 1);
-    b8(o, 0x8B), b8(o, 0x14), b8(o, 0x8E);            /* mov edx, [rsi + rcx*4] */
+    b8(o, 0x8B), b8(o, 0x14), b8(o, win ? 0x88 : 0x8E); /* mov edx, [rsi + rcx*4] */
     b8(o, 0x4C), b8(o, 0x01), b8(o, 0xDA);            /* add rdx, r11 */
     b8(o, 0x49), b8(o, 0x89), b8(o, 0x14), b8(o, 0xC8); /* mov [r8 + rcx*8], rdx */
-    b8(o, 0x8B), b8(o, 0x14), b8(o, 0x8F);            /* mov edx, [rdi + rcx*4] */
+    if (win)
+        b8(o, 0x8B), b8(o, 0x94), b8(o, 0x88), b32(o, (SnxU32)fn_at); /* mov edx, [rax + rcx*4 + fn_at] */
+    else
+        b8(o, 0x8B), b8(o, 0x14), b8(o, 0x8F);          /* mov edx, [rdi + rcx*4] */
     b8(o, 0x49), b8(o, 0x8B), b8(o, 0x14), b8(o, 0xD2); /* mov rdx, [r10 + rdx*8] */
     b8(o, 0x49), b8(o, 0x89), b8(o, 0x14), b8(o, 0xC9); /* mov [r9 + rcx*8], rdx */
     b8(o, 0xFF), b8(o, 0xC1);                          /* inc ecx */
@@ -352,21 +361,27 @@ static void import_dyn(SnxXElf* o) {
         a64(o, sge_a64_br(16));
         return;
     }
-    b8(o, 0x48), b8(o, 0x89), b8(o, 0xF0);                                   /* mov rax, rsi */
-    b8(o, 0x48), b8(o, 0x2B), b8(o, 0x87), b32(o, (SnxU32)offsetof(CPU, code_lo)); /* sub rax, [rdi + lo] */
-    b8(o, 0x48), b8(o, 0x8B), b8(o, 0x97), b32(o, (SnxU32)offsetof(CPU, code_hi)); /* mov rdx, [rdi + hi] */
-    b8(o, 0x48), b8(o, 0x2B), b8(o, 0x97), b32(o, (SnxU32)offsetof(CPU, code_lo)); /* sub rdx, [rdi + lo] */
-    b8(o, 0x48), b8(o, 0x39), b8(o, 0xD0);                                   /* cmp rax, rdx */
-    b8(o, 0x0F), b8(o, 0x83);                                                /* jae miss */
+    /* c in RDI, e in RSI, RDX scratch; Windows' RCX, RDX and R8 */
+    const int win = win64();
+    const unsigned c = win ? 0x81 : 0x87, t = win ? 0x81 : 0x97, rt = win ? 0x4C : 0x48;
+    b8(o, 0x48), b8(o, 0x89), b8(o, win ? 0xD0 : 0xF0);                         /* mov rax, rsi */
+    b8(o, 0x48), b8(o, 0x2B), b8(o, c), b32(o, (SnxU32)offsetof(CPU, code_lo)); /* sub rax, [rdi + lo] */
+    b8(o, rt), b8(o, 0x8B), b8(o, t), b32(o, (SnxU32)offsetof(CPU, code_hi));   /* mov rdx, [rdi + hi] */
+    b8(o, rt), b8(o, 0x2B), b8(o, t), b32(o, (SnxU32)offsetof(CPU, code_lo));   /* sub rdx, [rdi + lo] */
+    b8(o, rt), b8(o, 0x39), b8(o, win ? 0xC0 : 0xD0);                           /* cmp rax, rdx */
+    b8(o, 0x0F), b8(o, 0x83);                                                   /* jae miss */
     miss = snx_xelf_put(o, SNX_ELF_TEXT, NULL, 4, 1);
-    b8(o, 0x40), b8(o, 0xF6), b8(o, 0xC6), b8(o, 0x03);                      /* test sil, 3 */
-    b8(o, 0x0F), b8(o, 0x85);                                                /* jnz miss */
+    if (win)
+        b8(o, 0xF6), b8(o, 0xC2), b8(o, 0x03); /* test dl, 3 */
+    else
+        b8(o, 0x40), b8(o, 0xF6), b8(o, 0xC6), b8(o, 0x03); /* test sil, 3 */
+    b8(o, 0x0F), b8(o, 0x85);                               /* jnz miss */
     at = snx_xelf_put(o, SNX_ELF_TEXT, NULL, 4, 1);
-    b8(o, 0x48), b8(o, 0xC1), b8(o, 0xE8), b8(o, 0x02);                      /* shr rax, 2 */
-    b8(o, 0x48), b8(o, 0x8B), b8(o, 0x97), b32(o, (SnxU32)offsetof(CPU, disp)); /* mov rdx, [rdi + disp] */
-    b8(o, 0x48), b8(o, 0x8B), b8(o, 0x04), b8(o, 0xC2);                      /* mov rax, [rdx + rax*8] */
-    b8(o, 0x48), b8(o, 0x85), b8(o, 0xC0);                                   /* test rax, rax */
-    b8(o, 0x0F), b8(o, 0x85);                                                /* jnz found */
+    b8(o, 0x48), b8(o, 0xC1), b8(o, 0xE8), b8(o, 0x02);                                   /* shr rax, 2 */
+    b8(o, rt), b8(o, 0x8B), b8(o, t), b32(o, (SnxU32)offsetof(CPU, disp));                /* mov rdx, [rdi + disp] */
+    b8(o, win ? 0x49 : 0x48), b8(o, 0x8B), b8(o, 0x04), b8(o, win ? 0xC0 : 0xC2);         /* mov rax, [rdx + rax*8] */
+    b8(o, 0x48), b8(o, 0x85), b8(o, 0xC0);                                                /* test rax, rax */
+    b8(o, 0x0F), b8(o, 0x85);                                                             /* jnz found */
     found = snx_xelf_put(o, SNX_ELF_TEXT, NULL, 4, 1);
     {
         size_t here = snx_xelf_put(o, SNX_ELF_TEXT, NULL, 0, 1);
@@ -376,7 +391,7 @@ static void import_dyn(SnxXElf* o) {
         d = (SnxU32)(here - (at + 4));
         memcpy(t + at, &d, 4);
     }
-    b8(o, 0x48), b8(o, 0x8B), b8(o, 0x87), b32(o, (SnxU32)offsetof(CPU, rt));    /* mov rax, [rdi + rt] */
+    b8(o, 0x48), b8(o, 0x8B), b8(o, c), b32(o, (SnxU32)offsetof(CPU, rt));        /* mov rax, [rdi + rt] */
     b8(o, 0x48), b8(o, 0x8B), b8(o, 0x80), b32(o, (SnxU32)offsetof(RtAPI, miss)); /* mov rax, [rax + miss] */
     {
         size_t here = snx_xelf_put(o, SNX_ELF_TEXT, NULL, 0, 1);
@@ -706,35 +721,3 @@ int snx_x64_arm_descriptor_for(const SnxNativeDesc* desc, const SnxProgram* load
     if (rc) snprintf(error, error_size, g_desc_failed ? "a descriptor function too large" : "out of memory");
     return rc;
 }
-
-#else
-int snx_x64_arm_descriptor_for(const SnxNativeDesc* desc, const SnxProgram* loaded, const SnxCodegenOptions* options,
-                               const SnxU32* keys, size_t count, unsigned char** object, size_t* size, char* error,
-                               size_t error_size) {
-    (void)desc;
-    return snx_x64_arm_descriptor(loaded, options, keys, count, object, size, error, error_size);
-}
-int snx_x64_descriptor_for(const SnxNativeDesc* desc, const SnxCodegen* codegen, const SnxCodegenOptions* options,
-                           const SnxProgram* loaded, const SnxU64* imports, size_t import_count,
-                           const SnxJitCacheRecord* records, size_t record_count, unsigned char** object,
-                           size_t* size, size_t* entry_count, size_t* variant_count, char* error, size_t error_size) {
-    (void)desc;
-    return snx_x64_descriptor(codegen, options, loaded, imports, import_count, records, record_count, object, size,
-                              entry_count, variant_count, error, error_size);
-}
-int snx_x64_arm_descriptor(const SnxProgram* loaded, const SnxCodegenOptions* options, const SnxU32* keys, size_t count,
-                           unsigned char** object, size_t* size, char* error, size_t error_size) {
-    (void)loaded, (void)options, (void)keys, (void)count, (void)object, (void)size;
-    snprintf(error, error_size, "no native back end's objects on this host");
-    return -1;
-}
-int snx_x64_descriptor(const SnxCodegen* codegen, const SnxCodegenOptions* options, const SnxProgram* loaded,
-                       const SnxU64* imports, size_t import_count, const SnxJitCacheRecord* records,
-                       size_t record_count, unsigned char** object, size_t* size, size_t* entry_count,
-                       size_t* variant_count, char* error, size_t error_size) {
-    (void)codegen, (void)options, (void)loaded, (void)imports, (void)import_count, (void)object, (void)size;
-    (void)entry_count, (void)records, (void)record_count, (void)variant_count;
-    snprintf(error, error_size, "no native back end's objects on this host");
-    return -1;
-}
-#endif
