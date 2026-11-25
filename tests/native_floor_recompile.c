@@ -114,7 +114,7 @@ int main(int argc, char** argv) {
         take_out(runs[k].below);
         snx_native_set_alone(runs[k].alone);
         fflush(stdout);
-        if (!freopen(printed, "w", stdout)) return 1;
+        if (!freopen(printed, "wb", stdout)) return 1;
         const int rc = snx_recompile_game(sizeof args / sizeof *args, args, &paths);
         fflush(stdout);
         File stamped = take(stamp), made = take(code), text = take(printed);

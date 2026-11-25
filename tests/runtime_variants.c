@@ -5,6 +5,7 @@
    invalidation clears the slot. A miss falls through to the JIT: the fake service
    here proves the runtime asks it only when no variant matches. */
 #include "common/cpu/recompiler/jit/jit_service.h"
+#include "common/cpu/recompiler/mach/native.h"
 #include "common/cpu/recompiler/variants.h"
 #include "nx/loader/module_abi.h"
 #include "nx/memory/mem.h"
@@ -106,6 +107,14 @@ SnxJitService* snx_jit_service_new(const SnxJitConfig* config, char* error, size
     if (error && error_size) error[0] = 0;
     g_jit_started = 1;
     return (SnxJitService*)(void*)&sentinel;
+}
+
+/* native.h's: whether the host is below its back end's floor (--below), and its line */
+static int g_below;
+#define BELOW "cpu: needs POPCNT, this host has SSE3, SSSE3, SSE4.1, SSE4.2 and PCLMULQDQ"
+int snx_native_floor(char* why, size_t size) {
+    snprintf(why, size, "%s", g_below ? BELOW : "");
+    return g_below;
 }
 
 GuestFn snx_jit_resolve(SnxJitService* service, SnxU64 pc) {
@@ -466,8 +475,10 @@ int main(int argc, char** argv) {
     const char* jit_opt = "3";
     const char default_level = g_settings.jit_optimization[0]; /* settings.txt's, before any .ini */
     GuestFn fn;
-    for (int i = 1; i < argc; i++)
+    for (int i = 1; i < argc; i++) {
         if (!strncmp(argv[i], "--jit-opt=", 10)) jit_opt = argv[i] + 10;
+        if (!strcmp(argv[i], "--below")) g_below = 1;
+    }
     memcpy(g_memory + START, words, sizeof(words));
     memcpy(g_memory + OUT, words2, sizeof(words2));
     memset(&g_block, 0, sizeof(g_block));
@@ -520,6 +531,9 @@ int main(int argc, char** argv) {
     jit_init();
     CHECK(g_jit_started == 1);
     check_jit_opt(jit_opt, default_level);
+    /* the host below its back end's floor: LLVM makes the JIT's code, said with what the host lacks; none otherwise */
+    CHECK(!g_below == !strstr(g_warned, "jit: " BELOW ": LLVM makes the code\n"));
+    CHECK(g_below || !strstr(g_warned, "LLVM makes the code"));
     if (argc == 2 && !strcmp(argv[1], "--bench-no-pack")) {
         g_variants = NULL;
         for (u64 i = 0; i < 20000000; i++)

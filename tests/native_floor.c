@@ -344,7 +344,7 @@ static void printed(const char* path, const char* of) {
     struct snx_recompiler* r = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
     struct snx_code_range range = {CODE, g_memory + CODE, 8};
     const uint64_t entry = CODE;
-    check(snx_native_floor(line, sizeof line) && aot && r && freopen(path, "w", stdout), "starts", of);
+    check(snx_native_floor(line, sizeof line) && aot && r && freopen(path, "wb", stdout), "starts", of);
     for (int i = 0; i < 8; ++i) code[i] = (unsigned char)(k_a32[i / 4] >> (8 * (i % 4)));
     if (aot) {
         check(!snx_arm_aot_block(aot, "block", code, 2, 0x1000, 0, &options, &consumed, error, sizeof error), error,
