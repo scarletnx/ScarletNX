@@ -11,6 +11,7 @@
 #define _DEFAULT_SOURCE /* fseeko */
 #endif
 #include "vita/hle/hle.h"
+#include "vita/hle/hle.hook.h"
 #include "vita/hle/psarc.h"
 #include "vita/runtime/watch.h"
 #include "common/utilities/endian.h"
@@ -241,7 +242,7 @@ static uint32_t archive_open(const char* name) {
     }
     return 0;
 }
-uint32_t vita_io_open(VitaProcess* p, uint32_t address, uint32_t flags) {
+uint32_t vita_io_file_open(VitaProcess* p, uint32_t address, uint32_t flags) {
     char debug_name[512] = "<unreadable>";
     vita_string(p, address, debug_name, sizeof debug_name);
     uint32_t result;
@@ -270,12 +271,15 @@ uint32_t vita_io_open(VitaProcess* p, uint32_t address, uint32_t flags) {
     printf("vita: sceIoOpen(\"%s\", flags 0x%x) -> 0x%x\n", debug_name, flags, result);
     return result;
 }
-static uint32_t io_open(VitaProcess* p, VitaThread* t) { return vita_io_open(p, vita_arg(p, t, 0), vita_arg(p, t, 1)); }
+uint32_t vita_io_open(VitaProcess* p, VitaThread* t, uint32_t file, uint32_t flags, uint32_t mode) {
+    (void)t, (void)mode;
+    return vita_io_file_open(p, file, flags);
+}
 FILE* vita_io_file(VitaProcess* p, uint32_t fd) {
     int i = file_index(p, fd, false);
     return i < 0 ? NULL : p->files[i].host;
 }
-uint32_t vita_io_close(VitaProcess* p, uint32_t fd) {
+uint32_t vita_io_file_close(VitaProcess* p, uint32_t fd) {
     if (tty_slot(fd) >= 0) return 0; /* a tty pseudo-descriptor: nothing to close, the host's console stays open */
     int slot = archive_slot(fd);
     if (slot >= 0) {
@@ -288,9 +292,12 @@ uint32_t vita_io_close(VitaProcess* p, uint32_t fd) {
     p->files[i] = (VitaFile){0};
     return 0;
 }
-static uint32_t io_close(VitaProcess* p, VitaThread* t) { return vita_io_close(p, vita_arg(p, t, 0)); }
-static uint32_t io_read(VitaProcess* p, VitaThread* t) {
-    uint32_t fd = vita_arg(p, t, 0), buffer = vita_arg(p, t, 1), size = vita_arg(p, t, 2);
+uint32_t vita_io_close(VitaProcess* p, VitaThread* t, uint32_t fd) {
+    (void)t;
+    return vita_io_file_close(p, fd);
+}
+uint32_t vita_io_read(VitaProcess* p, VitaThread* t, uint32_t fd, uint32_t buffer, uint32_t size) {
+    (void)t;
     /* a tty has no real input here: EOF (0), as a terminal with nothing typed. tty0: is stdin, and its read returning
        0 lets libc see end-of-file rather than an error the game would report as "cannot initialize" */
     if (tty_slot(fd) >= 0) return 0;
@@ -313,8 +320,8 @@ static uint32_t io_read(VitaProcess* p, VitaThread* t) {
     vita_watch_release(buffer, size); /* the system writes it: a watched page would refuse it (EFAULT) */
     return (uint32_t)fread(vita_ptr(p, buffer), 1, size, p->files[i].host);
 }
-static uint32_t io_write(VitaProcess* p, VitaThread* t) {
-    uint32_t fd = vita_arg(p, t, 0), buffer = vita_arg(p, t, 1), size = vita_arg(p, t, 2);
+uint32_t vita_io_write(VitaProcess* p, VitaThread* t, uint32_t fd, uint32_t buffer, uint32_t size) {
+    (void)t;
     int tty = tty_slot(fd);
     if (tty >= 0) {
         /* tty2: is stderr, everything else is stdout. Written straight to the host's console, the same place the
@@ -344,9 +351,8 @@ static uint32_t io_write(VitaProcess* p, VitaThread* t) {
     return (uint32_t)fwrite(vita_ptr(p, buffer), 1, size, p->files[i].host);
 }
 /* sceIoPread(fd, buffer, size, SceOff offset): the offset in the stack's first two words; the file's position kept */
-static uint32_t io_pread(VitaProcess* p, VitaThread* t) {
-    uint32_t fd = vita_arg(p, t, 0), buffer = vita_arg(p, t, 1), size = vita_arg(p, t, 2);
-    int64_t offset = (int64_t)((uint64_t)vita_arg(p, t, 4) | (uint64_t)vita_arg(p, t, 5) << 32);
+uint32_t vita_io_pread(VitaProcess* p, VitaThread* t, uint32_t fd, uint32_t buffer, uint32_t size, int64_t offset) {
+    (void)t;
     if (tty_slot(fd) >= 0) return 0; /* a tty has no position: as if past the end */
     int slot = archive_slot(fd);
     if (slot >= 0) {
@@ -371,40 +377,37 @@ static uint32_t io_pread(VitaProcess* p, VitaThread* t) {
     (void)io_seek(f, was, SEEK_SET);
     return got;
 }
-static uint32_t io_sync_by_fd(VitaProcess* p, VitaThread* t) {
-    if (tty_slot(vita_arg(p, t, 0)) >= 0) return 0;    /* nothing buffered to flush: writes go straight to the host */
-    if (archive_slot(vita_arg(p, t, 0)) >= 0) return 0; /* an archive entry: nothing buffered to flush */
-    int i = file_index(p, vita_arg(p, t, 0), false);
+uint32_t vita_io_sync_by_fd(VitaProcess* p, VitaThread* t, uint32_t fd) {
+    (void)t;
+    if (tty_slot(fd) >= 0) return 0;    /* nothing buffered to flush: writes go straight to the host */
+    if (archive_slot(fd) >= 0) return 0; /* an archive entry: nothing buffered to flush */
+    int i = file_index(p, fd, false);
     if (i < 0) return SCE_ERRNO(EBADF);
     fflush(p->files[i].host);
     return 0;
 }
 /* sceIoLseek(fd, SceOff offset, whence): the offset in r2 and r3, whence on the stack */
-static uint32_t io_lseek(VitaProcess* p, VitaThread* t) {
-    uint32_t fd = vita_arg(p, t, 0);
-    int64_t offset = (int64_t)((uint64_t)vita_arg(p, t, 2) | (uint64_t)vita_arg(p, t, 3) << 32);
-    int whence = (int)vita_arg(p, t, 4);
+uint64_t vita_io_lseek(VitaProcess* p, VitaThread* t, uint32_t fd, int64_t offset, int32_t whence) {
+    (void)t;
     if (tty_slot(fd) >= 0) /* a character device has no position */
-        return vita_return64(t, (uint64_t)(int64_t)(int32_t)SCE_ERRNO(EINVAL));
+        return (uint64_t)(int64_t)(int32_t)SCE_ERRNO(EINVAL);
     int slot = archive_slot(fd);
     if (slot >= 0) {
         uint64_t size = vita_psarc_size(archive_files[slot].archive, archive_files[slot].entry);
         int64_t base = whence == 0 ? 0 : whence == 1 ? (int64_t)archive_files[slot].position : (int64_t)size;
         int64_t to = base + offset;
-        if (whence < 0 || whence > 2 || to < 0) return vita_return64(t, (uint64_t)(int64_t)(int32_t)SCE_ERRNO(EINVAL));
+        if (whence < 0 || whence > 2 || to < 0) return (uint64_t)(int64_t)(int32_t)SCE_ERRNO(EINVAL);
         archive_files[slot].position = (uint64_t)to;
-        return vita_return64(t, (uint64_t)to);
+        return (uint64_t)to;
     }
     int i = file_index(p, fd, false);
-    if (i < 0) return vita_return64(t, (uint64_t)(int64_t)(int32_t)SCE_ERRNO(EBADF));
+    if (i < 0) return (uint64_t)(int64_t)(int32_t)SCE_ERRNO(EBADF);
     if (whence < 0 || whence > 2 || io_seek(p->files[i].host, offset, whence))
-        return vita_return64(t, (uint64_t)(int64_t)(int32_t)SCE_ERRNO(EINVAL));
-    return vita_return64(t, (uint64_t)io_tell(p->files[i].host));
+        return (uint64_t)(int64_t)(int32_t)SCE_ERRNO(EINVAL);
+    return (uint64_t)io_tell(p->files[i].host);
 }
-static uint32_t io_lseek32(VitaProcess* p, VitaThread* t) {
-    uint32_t fd = vita_arg(p, t, 0);
-    int32_t offset = (int32_t)vita_arg(p, t, 1);
-    int whence = (int)vita_arg(p, t, 2);
+uint32_t vita_io_lseek32(VitaProcess* p, VitaThread* t, uint32_t fd, int32_t offset, int32_t whence) {
+    (void)t;
     if (tty_slot(fd) >= 0) return SCE_ERRNO(EINVAL); /* a character device has no position */
     int slot = archive_slot(fd);
     if (slot >= 0) {
@@ -421,16 +424,18 @@ static uint32_t io_lseek32(VitaProcess* p, VitaThread* t) {
         return SCE_ERRNO(EINVAL);
     return (uint32_t)io_tell(p->files[i].host);
 }
-static uint32_t io_remove(VitaProcess* p, VitaThread* t) {
+uint32_t vita_io_remove(VitaProcess* p, VitaThread* t, uint32_t file) {
+    (void)t;
     bool writable;
-    char* path = host_path(p, vita_arg(p, t, 0), &writable);
+    char* path = host_path(p, file, &writable);
     uint32_t result = !path ? SCE_ERRNO(ENOENT) : !writable ? SCE_ERRNO(EACCES) : remove(path) ? SCE_ERRNO(ENOENT) : 0;
     free(path);
     return result;
 }
-static uint32_t io_mkdir(VitaProcess* p, VitaThread* t) {
+uint32_t vita_io_mkdir(VitaProcess* p, VitaThread* t, uint32_t dir, uint32_t mode) {
+    (void)t, (void)mode;
     bool writable;
-    char* path = host_path(p, vita_arg(p, t, 0), &writable);
+    char* path = host_path(p, dir, &writable);
     uint32_t result = !path       ? SCE_ERRNO(ENOENT)
                       : !writable ? SCE_ERRNO(EACCES)
                       : snx_path_exists(path) ? SCE_ERRNO(EEXIST)
@@ -439,9 +444,10 @@ static uint32_t io_mkdir(VitaProcess* p, VitaThread* t) {
     free(path);
     return result;
 }
-static uint32_t io_rmdir(VitaProcess* p, VitaThread* t) {
+uint32_t vita_io_rmdir(VitaProcess* p, VitaThread* t, uint32_t dir) {
+    (void)t;
     bool writable;
-    char* path = host_path(p, vita_arg(p, t, 0), &writable);
+    char* path = host_path(p, dir, &writable);
     uint32_t result = !path ? SCE_ERRNO(ENOENT)
                       : !writable ? SCE_ERRNO(EACCES)
                       : !snx_is_dir(path) ? SCE_ERRNO(ENOTDIR)
@@ -450,9 +456,10 @@ static uint32_t io_rmdir(VitaProcess* p, VitaThread* t) {
     free(path);
     return result;
 }
-static uint32_t io_rename(VitaProcess* p, VitaThread* t) {
+uint32_t vita_io_rename(VitaProcess* p, VitaThread* t, uint32_t old_path, uint32_t new_path) {
+    (void)t;
     bool from_writable, to_writable;
-    char *from = host_path(p, vita_arg(p, t, 0), &from_writable), *to = host_path(p, vita_arg(p, t, 1), &to_writable);
+    char *from = host_path(p, old_path, &from_writable), *to = host_path(p, new_path, &to_writable);
     uint32_t result = !from || !to ? SCE_ERRNO(ENOENT)
                       : !from_writable || !to_writable ? SCE_ERRNO(EACCES)
                       : plat_replace_file(from, to) ? SCE_ERRNO(ENOENT)
@@ -489,18 +496,19 @@ static bool stat_into(VitaProcess* p, const char* path, uint32_t out) {
     date_time(p, out + 48, s.st_mtime);
     return true;
 }
-static uint32_t io_getstat(VitaProcess* p, VitaThread* t) {
+uint32_t vita_io_getstat(VitaProcess* p, VitaThread* t, uint32_t file, uint32_t stat) {
+    (void)t;
     /* try a mounted archive first, with the same device defaulting the FIOS2 path uses (app0: when the game gives no
        device); fall through to the host filesystem when nothing is mounted at that path */
     char name[1100];
-    if (!vita_mapped(p, vita_arg(p, t, 1), 88)) return SCE_ERRNO(EFAULT); /* the SceIoStat written */
-    if (vita_string(p, vita_arg(p, t, 0), name, sizeof name)) {
+    if (!vita_mapped(p, stat, 88)) return SCE_ERRNO(EFAULT); /* the SceIoStat written */
+    if (vita_string(p, file, name, sizeof name)) {
         char full[1100];
         snprintf(full, sizeof full, strchr(name, ':') ? "%s" : "app0:%s", name);
         VitaPsarc* archive;
         int entry;
         if (archive_lookup(full, &archive, &entry)) {
-            uint32_t out = vita_arg(p, t, 1);
+            uint32_t out = stat;
             memset(vita_ptr(p, out), 0, 88);
             vita_write32(p, out, 0x2000u | 0x1b6u);
             vita_write32(p, out + 4, 0x20u | 6u);
@@ -509,13 +517,13 @@ static uint32_t io_getstat(VitaProcess* p, VitaThread* t) {
         }
     }
     bool writable;
-    char* path = host_path(p, vita_arg(p, t, 0), &writable);
-    uint32_t result = path && stat_into(p, path, vita_arg(p, t, 1)) ? 0 : SCE_ERRNO(ENOENT);
+    char* path = host_path(p, file, &writable);
+    uint32_t result = path && stat_into(p, path, stat) ? 0 : SCE_ERRNO(ENOENT);
     free(path);
     return result;
 }
-static uint32_t io_getstat_by_fd(VitaProcess* p, VitaThread* t) {
-    uint32_t fd = vita_arg(p, t, 0), out = vita_arg(p, t, 1);
+uint32_t vita_io_getstat_by_fd(VitaProcess* p, VitaThread* t, uint32_t fd, uint32_t out) {
+    (void)t;
     if (!vita_mapped(p, out, 88)) return SCE_ERRNO(EFAULT);
     if (tty_slot(fd) >= 0) {
         /* a character device: no size, mode SCE_S_IFCHR */
@@ -550,9 +558,10 @@ static uint32_t io_getstat_by_fd(VitaProcess* p, VitaThread* t) {
     date_time(p, out + 48, now);
     return 0;
 }
-static uint32_t io_dopen(VitaProcess* p, VitaThread* t) {
+uint32_t vita_io_dopen(VitaProcess* p, VitaThread* t, uint32_t dirname) {
+    (void)t;
     bool writable;
-    char* path = host_path(p, vita_arg(p, t, 0), &writable);
+    char* path = host_path(p, dirname, &writable);
     if (!path || !snx_is_dir(path)) {
         free(path);
         return SCE_ERRNO(ENOENT);
@@ -572,9 +581,9 @@ static uint32_t io_dopen(VitaProcess* p, VitaThread* t) {
     return fd;
 }
 /* SceIoDirent (352 bytes): its SceIoStat, then d_name[256]. 1 for an entry, 0 past the last */
-static uint32_t io_dread(VitaProcess* p, VitaThread* t) {
-    int i = file_index(p, vita_arg(p, t, 0), true);
-    uint32_t out = vita_arg(p, t, 1);
+uint32_t vita_io_dread(VitaProcess* p, VitaThread* t, uint32_t fd, uint32_t out) {
+    (void)t;
+    int i = file_index(p, fd, true);
     if (i < 0) return SCE_ERRNO(EBADF);
     Directory* d = p->files[i].host;
     while (d->next < d->count) {
@@ -589,8 +598,9 @@ static uint32_t io_dread(VitaProcess* p, VitaThread* t) {
     }
     return 0;
 }
-static uint32_t io_dclose(VitaProcess* p, VitaThread* t) {
-    int i = file_index(p, vita_arg(p, t, 0), true);
+uint32_t vita_io_dclose(VitaProcess* p, VitaThread* t, uint32_t fd) {
+    (void)t;
+    int i = file_index(p, fd, true);
     if (i < 0) return SCE_ERRNO(EBADF);
     close_directory(p->files[i].host);
     p->files[i] = (VitaFile){0};
@@ -622,9 +632,6 @@ static bool fios_name(VitaProcess* p, uint32_t address, char* out, size_t size) 
     snprintf(out, size, strchr(raw, ':') ? "%s" : "app0:%s", raw);
     return true;
 }
-static uint64_t arg64(VitaProcess* p, VitaThread* t, unsigned n) {
-    return (uint64_t)vita_arg(p, t, n) | (uint64_t)vita_arg(p, t, n + 1) << 32;
-}
 static bool fios_stat(VitaProcess* p, uint32_t address, bool* directory, uint64_t* size) {
     char name[1100];
     bool writable;
@@ -644,24 +651,25 @@ static bool fios_stat(VitaProcess* p, uint32_t address, bool* directory, uint64_
 }
 /* sceFiosInitialize(params), sceFiosIOFilterAdd(index, callback, context): nothing to set up, and the filter's
    callback is not called */
-static uint32_t fios_ok(VitaProcess* p, VitaThread* t) {
+uint32_t vita_io_fios_ok(VitaProcess* p, VitaThread* t, uint32_t params) {
+    (void)params;
     (void)p, (void)t;
     return 0;
 }
-static uint32_t fios_is_initialized(VitaProcess* p, VitaThread* t) {
+uint32_t vita_io_fios_is_initialized(VitaProcess* p, VitaThread* t) {
     (void)p, (void)t;
     return 1;
 }
 /* sceFiosStatSync(attr, path, SceFiosStat*): the size at 0, then three dates, the flags at 32 */
-static uint32_t fios_stat_sync(VitaProcess* p, VitaThread* t) {
+uint32_t vita_io_fios_stat_sync(VitaProcess* p, VitaThread* t, uint32_t attr, uint32_t path, uint32_t out) {
+    (void)t, (void)attr;
     static unsigned shown;
     bool directory = false;
     uint64_t size = 0;
-    bool found = fios_stat(p, vita_arg(p, t, 1), &directory, &size);
-    uint32_t out = vita_arg(p, t, 2);
+    bool found = fios_stat(p, path, &directory, &size);
     if (shown < 8) {
         char raw[256] = "";
-        vita_string(p, vita_arg(p, t, 1), raw, sizeof raw);
+        vita_string(p, path, raw, sizeof raw);
         printf("vita: sceFiosStatSync(\"%s\") -> %s\n", raw, found ? "found" : "missing"), ++shown;
     }
     if (!found) return FIOS_ERROR_NO_ENTRY;
@@ -673,13 +681,14 @@ static uint32_t fios_stat_sync(VitaProcess* p, VitaThread* t) {
     return 0;
 }
 /* sceFiosFHOpenSync(attr, SceFiosFH* out, path, params): the flags at the params' first word */
-static uint32_t fios_fh_open_sync(VitaProcess* p, VitaThread* t) {
+uint32_t vita_io_fios_fh_open_sync(VitaProcess* p, VitaThread* t, uint32_t attr, uint32_t out, uint32_t file,
+                                   uint32_t params) {
+    (void)t, (void)attr;
     static unsigned shown;
     char name[1100];
-    uint32_t out = vita_arg(p, t, 1), params = vita_arg(p, t, 3);
     uint32_t want = params && vita_mapped(p, params, 4) ? vita_read32(p, params) : FIOS_O_READ;
     uint32_t flags = 0;
-    if (!fios_name(p, vita_arg(p, t, 2), name, sizeof name)) return FIOS_ERROR_NO_ENTRY;
+    if (!fios_name(p, file, name, sizeof name)) return FIOS_ERROR_NO_ENTRY;
     VitaPsarc* archive;
     int entry;
     if (archive_lookup(name, &archive, &entry)) {
@@ -707,47 +716,52 @@ static uint32_t fios_fh_open_sync(VitaProcess* p, VitaThread* t) {
     if (out && vita_mapped(p, out, 4)) vita_write32(p, out, fd & 0x80000000u ? 0 : fd);
     return fd & 0x80000000u ? FIOS_ERROR_NO_ENTRY : 0;
 }
-static uint32_t fios_fh_close_sync(VitaProcess* p, VitaThread* t) {
-    int slot = archive_slot(vita_arg(p, t, 1));
+uint32_t vita_io_fios_fh_close_sync(VitaProcess* p, VitaThread* t, uint32_t attr, uint32_t fh) {
+    (void)t, (void)attr;
+    int slot = archive_slot(fh);
     if (slot >= 0) {
         archive_files[slot].archive = NULL;
         return 0;
     }
-    return vita_io_close(p, vita_arg(p, t, 1)) ? FIOS_ERROR_NO_ENTRY : 0;
+    return vita_io_file_close(p, fh) ? FIOS_ERROR_NO_ENTRY : 0;
 }
 /* a read of length bytes at the file's place, or at offset when with_offset: the count, or -1 */
-static uint32_t fios_read_at(VitaProcess* p, VitaThread* t, uint32_t fd, uint32_t buffer, uint64_t length,
-                             bool with_offset, uint64_t offset) {
+static uint64_t fios_read_at(VitaProcess* p, uint32_t fd, uint32_t buffer, uint64_t length, bool with_offset,
+                             uint64_t offset) {
     uint32_t size = length > UINT32_MAX ? UINT32_MAX : (uint32_t)length;
-    if (tty_slot(fd) >= 0) return vita_return64(t, 0); /* a tty: EOF, as io_read */
+    if (tty_slot(fd) >= 0) return 0; /* a tty: EOF, as io_read */
     int slot = archive_slot(fd);
     if (slot >= 0) {
-        if (size && !vita_mapped(p, buffer, size)) return vita_return64(t, UINT64_MAX);
+        if (size && !vita_mapped(p, buffer, size)) return UINT64_MAX;
         uint64_t at = with_offset ? offset : archive_files[slot].position;
         size_t got = 0;
         vita_watch_release(buffer, size);
         if (size && !vita_psarc_read(archive_files[slot].archive, archive_files[slot].entry, at, vita_ptr(p, buffer),
                                      size, &got))
-            return vita_return64(t, UINT64_MAX);
+            return UINT64_MAX;
         if (!with_offset) archive_files[slot].position = at + got;
-        return vita_return64(t, got);
+        return got;
     }
     FILE* f = vita_io_file(p, fd);
-    if (!f || (size && !vita_mapped(p, buffer, size))) return vita_return64(t, UINT64_MAX);
+    if (!f || (size && !vita_mapped(p, buffer, size))) return UINT64_MAX;
     int64_t was = io_tell(f);
-    if (with_offset && io_seek(f, (int64_t)offset, SEEK_SET)) return vita_return64(t, UINT64_MAX);
+    if (with_offset && io_seek(f, (int64_t)offset, SEEK_SET)) return UINT64_MAX;
     vita_watch_release(buffer, size);
     size_t count = size ? fread(vita_ptr(p, buffer), 1, size, f) : 0;
     if (with_offset) io_seek(f, was, SEEK_SET);
-    return vita_return64(t, count);
+    return count;
 }
 /* sceFiosFHReadSync(attr, fh, buffer, SceFiosSize length) */
-static uint32_t fios_fh_read_sync(VitaProcess* p, VitaThread* t) {
-    return fios_read_at(p, t, vita_arg(p, t, 1), vita_arg(p, t, 2), arg64(p, t, 4), false, 0);
+uint64_t vita_io_fios_fh_read_sync(VitaProcess* p, VitaThread* t, uint32_t attr, uint32_t fh, uint32_t buffer,
+                                   uint64_t length) {
+    (void)t, (void)attr;
+    return fios_read_at(p, fh, buffer, length, false, 0);
 }
 /* sceFiosFHPreadSync(attr, fh, buffer, SceFiosSize length, SceFiosOffset offset) */
-static uint32_t fios_fh_pread_sync(VitaProcess* p, VitaThread* t) {
-    return fios_read_at(p, t, vita_arg(p, t, 1), vita_arg(p, t, 2), arg64(p, t, 4), true, arg64(p, t, 6));
+uint64_t vita_io_fios_fh_pread_sync(VitaProcess* p, VitaThread* t, uint32_t attr, uint32_t fh, uint32_t buffer,
+                                    uint64_t length, uint64_t offset) {
+    (void)t, (void)attr;
+    return fios_read_at(p, fh, buffer, length, true, offset);
 }
 static int64_t fios_size_of(FILE* f) {
     int64_t at = io_tell(f), size = io_seek(f, 0, SEEK_END) ? 0 : io_tell(f);
@@ -755,36 +769,37 @@ static int64_t fios_size_of(FILE* f) {
     return size;
 }
 /* sceFiosFHGetSize(fh), sceFiosFHTell(fh), sceFiosFHSeek(fh, SceFiosOffset offset, whence): sizes and places as 64 bits */
-static uint32_t fios_fh_get_size(VitaProcess* p, VitaThread* t) {
-    if (tty_slot(vita_arg(p, t, 0)) >= 0) return vita_return64(t, 0); /* a character device: size 0 */
-    int slot = archive_slot(vita_arg(p, t, 0));
-    if (slot >= 0) return vita_return64(t, vita_psarc_size(archive_files[slot].archive, archive_files[slot].entry));
-    FILE* f = vita_io_file(p, vita_arg(p, t, 0));
-    return vita_return64(t, f ? (uint64_t)fios_size_of(f) : UINT64_MAX);
+uint64_t vita_io_fios_fh_get_size(VitaProcess* p, VitaThread* t, uint32_t fh) {
+    (void)t;
+    if (tty_slot(fh) >= 0) return 0; /* a character device: size 0 */
+    int slot = archive_slot(fh);
+    if (slot >= 0) return vita_psarc_size(archive_files[slot].archive, archive_files[slot].entry);
+    FILE* f = vita_io_file(p, fh);
+    return f ? (uint64_t)fios_size_of(f) : UINT64_MAX;
 }
-static uint32_t fios_fh_tell(VitaProcess* p, VitaThread* t) {
-    if (tty_slot(vita_arg(p, t, 0)) >= 0) return vita_return64(t, 0);
-    int slot = archive_slot(vita_arg(p, t, 0));
-    if (slot >= 0) return vita_return64(t, archive_files[slot].position);
-    FILE* f = vita_io_file(p, vita_arg(p, t, 0));
-    return vita_return64(t, f ? (uint64_t)io_tell(f) : UINT64_MAX);
+uint64_t vita_io_fios_fh_tell(VitaProcess* p, VitaThread* t, uint32_t fh) {
+    (void)t;
+    if (tty_slot(fh) >= 0) return 0;
+    int slot = archive_slot(fh);
+    if (slot >= 0) return archive_files[slot].position;
+    FILE* f = vita_io_file(p, fh);
+    return f ? (uint64_t)io_tell(f) : UINT64_MAX;
 }
-static uint32_t fios_fh_seek(VitaProcess* p, VitaThread* t) {
-    if (tty_slot(vita_arg(p, t, 0)) >= 0) return vita_return64(t, UINT64_MAX); /* not seekable */
-    int slot = archive_slot(vita_arg(p, t, 0));
+uint64_t vita_io_fios_fh_seek(VitaProcess* p, VitaThread* t, uint32_t fh, int64_t offset, uint32_t whence) {
+    (void)t;
+    if (tty_slot(fh) >= 0) return UINT64_MAX; /* not seekable */
+    int slot = archive_slot(fh);
     if (slot >= 0) {
         uint64_t size = vita_psarc_size(archive_files[slot].archive, archive_files[slot].entry);
-        uint32_t whence = vita_arg(p, t, 4);
         int64_t base = whence == 0 ? 0 : whence == 1 ? (int64_t)archive_files[slot].position : (int64_t)size;
-        int64_t to = base + (int64_t)arg64(p, t, 2);
-        if (whence > 2 || to < 0) return vita_return64(t, UINT64_MAX);
+        int64_t to = base + offset;
+        if (whence > 2 || to < 0) return UINT64_MAX;
         archive_files[slot].position = (uint64_t)to;
-        return vita_return64(t, (uint64_t)to);
+        return (uint64_t)to;
     }
-    FILE* f = vita_io_file(p, vita_arg(p, t, 0));
-    uint32_t whence = vita_arg(p, t, 4);
-    if (!f || whence > 2 || io_seek(f, (int64_t)arg64(p, t, 2), (int)whence)) return vita_return64(t, UINT64_MAX);
-    return vita_return64(t, (uint64_t)io_tell(f));
+    FILE* f = vita_io_file(p, fh);
+    if (!f || whence > 2 || io_seek(f, offset, (int)whence)) return UINT64_MAX;
+    return (uint64_t)io_tell(f);
 }
 /* an archive of the game's: its host path and the archive opened, NULL for neither */
 static VitaPsarc* fios_open_archive(VitaProcess* p, uint32_t address, char* label, size_t label_size) {
@@ -799,28 +814,32 @@ static VitaPsarc* fios_open_archive(VitaProcess* p, uint32_t address, char* labe
 }
 /* sceFiosArchiveGetMountBufferSizeSync(attr, path, params): the size of the buffer the mount is given, which the
    runtime does not use. The table of contents is what FIOS2 keeps in it */
-static uint32_t fios_archive_buffer_size_sync(VitaProcess* p, VitaThread* t) {
+uint64_t vita_io_fios_archive_buffer_size_sync(VitaProcess* p, VitaThread* t, uint32_t attr, uint32_t path,
+                                               uint32_t params) {
+    (void)t, (void)attr, (void)params;
     static unsigned shown;
     char label[1100] = "";
-    VitaPsarc* a = fios_open_archive(p, vita_arg(p, t, 1), label, sizeof label);
+    VitaPsarc* a = fios_open_archive(p, path, label, sizeof label);
     uint64_t size = a ? ((uint64_t)vita_psarc_toc_length(a) + 0xfffu & ~0xfffull) + 0x1000u : UINT64_MAX;
     if (shown < 8) printf("vita: sceFiosArchiveGetMountBufferSizeSync(\"%s\") -> %" PRId64 "\n", label, (int64_t)size), ++shown;
     vita_psarc_close(a);
-    return vita_return64(t, size);
+    return size;
 }
 /* sceFiosArchiveMountSync(attr, SceFiosFH* out, path, mount point, SceFiosBuffer (two words), params). The first calls
    are logged with the words after the mount point, to check this */
-static uint32_t fios_archive_mount_sync(VitaProcess* p, VitaThread* t) {
+uint32_t vita_io_fios_archive_mount_sync(VitaProcess* p, VitaThread* t, uint32_t attr, uint32_t out, uint32_t path,
+                                         uint32_t point_address, uint32_t buffer, uint32_t buffer_size,
+                                         uint32_t params) {
+    (void)t, (void)attr;
     static unsigned shown;
     char label[1100] = "", point[256] = "";
-    uint32_t out = vita_arg(p, t, 1), point_address = vita_arg(p, t, 3);
     if (point_address) vita_string(p, point_address, point, sizeof point);
-    VitaPsarc* a = fios_open_archive(p, vita_arg(p, t, 2), label, sizeof label);
+    VitaPsarc* a = fios_open_archive(p, path, label, sizeof label);
     unsigned slot = 0;
     while (slot < ARCHIVE_MOUNTS && archive_mounts[slot].archive) ++slot;
     if (shown < 8)
-        printf("vita: sceFiosArchiveMountSync(\"%s\" at \"%s\", 0x%x 0x%x 0x%x) -> %s\n", label, point, vita_arg(p, t, 4),
-               vita_arg(p, t, 5), vita_arg(p, t, 6), a && slot < ARCHIVE_MOUNTS ? "mounted" : "failed"), ++shown;
+        printf("vita: sceFiosArchiveMountSync(\"%s\" at \"%s\", 0x%x 0x%x 0x%x) -> %s\n", label, point, buffer,
+               buffer_size, params, a && slot < ARCHIVE_MOUNTS ? "mounted" : "failed"), ++shown;
     if (!a || slot == ARCHIVE_MOUNTS) {
         vita_psarc_close(a);
         return FIOS_ERROR_NO_ENTRY;
@@ -830,8 +849,8 @@ static uint32_t fios_archive_mount_sync(VitaProcess* p, VitaThread* t) {
     if (out && vita_mapped(p, out, 4)) vita_write32(p, out, ARCHIVE_MOUNT_FH + slot);
     return 0;
 }
-static uint32_t fios_archive_unmount_sync(VitaProcess* p, VitaThread* t) {
-    uint32_t fh = vita_arg(p, t, 1);
+uint32_t vita_io_fios_archive_unmount_sync(VitaProcess* p, VitaThread* t, uint32_t attr, uint32_t fh) {
+    (void)p, (void)t, (void)attr;
     if (fh >= ARCHIVE_MOUNT_FH && fh < ARCHIVE_MOUNT_FH + ARCHIVE_MOUNTS && archive_mounts[fh - ARCHIVE_MOUNT_FH].archive) {
         VitaPsarc* a = archive_mounts[fh - ARCHIVE_MOUNT_FH].archive;
         /* its open files close with it: a handle left open would read the archive after it is freed */
@@ -843,20 +862,23 @@ static uint32_t fios_archive_unmount_sync(VitaProcess* p, VitaThread* t) {
     return 0;
 }
 /* sceFiosFileExistsSync(attr, path), sceFiosDirectoryExistsSync(attr, path), sceFiosFileGetSizeSync(attr, path) */
-static uint32_t fios_file_exists_sync(VitaProcess* p, VitaThread* t) {
+uint32_t vita_io_fios_file_exists_sync(VitaProcess* p, VitaThread* t, uint32_t attr, uint32_t path) {
+    (void)t, (void)attr;
     bool directory = false;
     uint64_t size = 0;
-    return fios_stat(p, vita_arg(p, t, 1), &directory, &size) && !directory;
+    return fios_stat(p, path, &directory, &size) && !directory;
 }
-static uint32_t fios_directory_exists_sync(VitaProcess* p, VitaThread* t) {
+uint32_t vita_io_fios_directory_exists_sync(VitaProcess* p, VitaThread* t, uint32_t attr, uint32_t path) {
+    (void)t, (void)attr;
     bool directory = false;
     uint64_t size = 0;
-    return fios_stat(p, vita_arg(p, t, 1), &directory, &size) && directory;
+    return fios_stat(p, path, &directory, &size) && directory;
 }
-static uint32_t fios_file_get_size_sync(VitaProcess* p, VitaThread* t) {
+uint64_t vita_io_fios_file_get_size_sync(VitaProcess* p, VitaThread* t, uint32_t attr, uint32_t path) {
+    (void)t, (void)attr;
     bool directory = false;
     uint64_t size = 0;
-    return vita_return64(t, fios_stat(p, vita_arg(p, t, 1), &directory, &size) && !directory ? size : UINT64_MAX);
+    return fios_stat(p, path, &directory, &size) && !directory ? size : UINT64_MAX;
 }
 
 /* ---- SceFios2User, the kernel half of libfios2.suprx, which a game ships and the runtime runs as guest code (its
@@ -864,11 +886,12 @@ static uint32_t fios_file_get_size_sync(VitaProcess* p, VitaThread* t) {
    process added (the 02 calls, the process id first). Nothing here adds one, so the list is empty and a path resolves
    to itself. libfios2 uses the output buffer only when the call returns 0 ---- */
 /* sceFiosKernelOverlayResolveWithRangeSync(pid, flags, in, out, capacity, min_order, max_order) */
-static uint32_t fios_overlay_resolve(VitaProcess* p, VitaThread* t) {
+uint32_t vita_io_fios_overlay_resolve(VitaProcess* p, VitaThread* t, uint32_t pid, uint32_t flags, uint32_t in,
+                                      uint32_t out, uint32_t capacity, uint32_t min_order, uint32_t max_order) {
+    (void)t, (void)pid, (void)flags, (void)min_order, (void)max_order;
     static unsigned shown;
-    uint32_t out = vita_arg(p, t, 3), capacity = vita_arg(p, t, 4);
     char path[1024];
-    if (!vita_string(p, vita_arg(p, t, 2), path, sizeof path)) return SCE_KERNEL_ERROR_ERROR;
+    if (!vita_string(p, in, path, sizeof path)) return SCE_KERNEL_ERROR_ERROR;
     size_t size = strlen(path) + 1;
     if (size > capacity || !vita_mapped(p, out, (uint32_t)size)) return SCE_KERNEL_ERROR_ERROR;
     memcpy(vita_ptr(p, out), path, size);
@@ -877,10 +900,12 @@ static uint32_t fios_overlay_resolve(VitaProcess* p, VitaThread* t) {
 }
 /* _sceFiosKernelOverlayResolveWithRangeSync(pid, flags, in, opt), libfios3's form of the call above: the output buffer
    and its capacity are the first two words of opt, and a path resolves to itself the same */
-static uint32_t fios_kernel_overlay_resolve(VitaProcess* p, VitaThread* t) {
-    uint32_t opt = vita_arg(p, t, 3), out, capacity;
+uint32_t vita_io_fios_kernel_overlay_resolve(VitaProcess* p, VitaThread* t, uint32_t pid, uint32_t flags, uint32_t in,
+                                             uint32_t opt) {
+    (void)t, (void)pid, (void)flags;
+    uint32_t out, capacity;
     char path[1024];
-    if (!opt || !vita_mapped(p, opt, 8) || !vita_string(p, vita_arg(p, t, 2), path, sizeof path))
+    if (!opt || !vita_mapped(p, opt, 8) || !vita_string(p, in, path, sizeof path))
         return SCE_KERNEL_ERROR_ERROR;
     out = vita_read32(p, opt), capacity = vita_read32(p, opt + 4);
     size_t size = strlen(path) + 1;
@@ -889,8 +914,9 @@ static uint32_t fios_kernel_overlay_resolve(VitaProcess* p, VitaThread* t) {
     return 0;
 }
 /* sceFiosKernelOverlayGetList(pid, min_order, max_order, ids, capacity, count*): the count is 0 */
-static uint32_t fios_overlay_get_list(VitaProcess* p, VitaThread* t) {
-    uint32_t count = vita_arg(p, t, 5);
+uint32_t vita_io_fios_overlay_get_list(VitaProcess* p, VitaThread* t, uint32_t pid, uint32_t min_order,
+                                       uint32_t max_order, uint32_t ids, uint32_t capacity, uint32_t count) {
+    (void)t, (void)pid, (void)min_order, (void)max_order, (void)ids, (void)capacity;
     if (!count) return 0;
     if (!vita_mapped(p, count, 4)) return SCE_KERNEL_ERROR_ERROR;
     vita_write32(p, count, 0);
@@ -898,51 +924,7 @@ static uint32_t fios_overlay_get_list(VitaProcess* p, VitaThread* t) {
 }
 /* sceFiosKernelOverlayGetRecommendedScheduler(type, path, ...): libfios2 takes 1 as "use another scheduler", and
    with no overlay there is none, so the answer stays 0 */
-static uint32_t fios_overlay_scheduler(VitaProcess* p, VitaThread* t) {
+uint32_t vita_io_fios_overlay_scheduler(VitaProcess* p, VitaThread* t) {
     (void)p, (void)t;
     return 0;
 }
-
-const VitaHle vita_hle_io[] = {
-    {0xdf3352fcu, "sceFiosArchiveGetMountBufferSizeSync", fios_archive_buffer_size_sync},
-    {0xc4822276u, "sceFiosArchiveMountSync", fios_archive_mount_sync},
-    {0xb26dc24du, "sceFiosArchiveUnmountSync", fios_archive_unmount_sync},
-    {0x61c4aac4u, "sceFiosOverlayResolveWithRangeSync02", fios_overlay_resolve},
-    {0x1dd808d1u, "sceFiosOverlayGetList02", fios_overlay_get_list},
-    {0xf5c1f928u, "sceFiosOverlayGetRecommendedScheduler02", fios_overlay_scheduler},
-    {0x70321220u, "sceFiosOverlayThreadSetDisabled02", fios_ok},
-    {0x8cca471au, "_sceFiosKernelOverlayResolveWithRangeSync", fios_kernel_overlay_resolve},
-    {0x774c2c05u, "sceFiosInitialize", fios_ok},
-    {0xd55b8555u, "sceFiosIOFilterAdd", fios_ok},
-    {0x2904b539u, "sceFiosTerminate", fios_ok},
-    {0xf4f54e09u, "sceFiosIsInitialized", fios_is_initialized},
-    {0xacbaf3e0u, "sceFiosStatSync", fios_stat_sync},
-    {0xc3e7c3dbu, "sceFiosFHOpenSync", fios_fh_open_sync},
-    {0x45182328u, "sceFiosFHCloseSync", fios_fh_close_sync},
-    {0x76945919u, "sceFiosFHReadSync", fios_fh_read_sync},
-    {0xe2805059u, "sceFiosFHPreadSync", fios_fh_pread_sync},
-    {0xc5c26581u, "sceFiosFHGetSize", fios_fh_get_size},
-    {0xd7f33130u, "sceFiosFHTell", fios_fh_tell},
-    {0xa75f3c4au, "sceFiosFHSeek", fios_fh_seek},
-    {0x233b070cu, "sceFiosFileExistsSync", fios_file_exists_sync},
-    {0x726e01beu, "sceFiosDirectoryExistsSync", fios_directory_exists_sync},
-    {0x789215c3u, "sceFiosFileGetSizeSync", fios_file_get_size_sync},
-    {0x6c60ac61u, "sceIoOpen", io_open},
-    {0xc70b8886u, "sceIoClose", io_close},
-    {0xfdb32293u, "sceIoRead", io_read},
-    {0x52315ad7u, "sceIoPread", io_pread},
-    {0x16512f59u, "sceIoSyncByFd", io_sync_by_fd},
-    {0x34efd876u, "sceIoWrite", io_write},
-    {0x99ba173eu, "sceIoLseek", io_lseek},
-    {0x49252b9bu, "sceIoLseek32", io_lseek32},
-    {0xe20ed0f3u, "sceIoRemove", io_remove},
-    {0x9670d39fu, "sceIoMkdir", io_mkdir},
-    {0xe9f91ec8u, "sceIoRmdir", io_rmdir},
-    {0xf737e369u, "sceIoRename", io_rename},
-    {0xbca5b623u, "sceIoGetstat", io_getstat},
-    {0x57f8cd25u, "sceIoGetstatByFd", io_getstat_by_fd},
-    {0xa9283dd0u, "sceIoDopen", io_dopen},
-    {0x9c8b6624u, "sceIoDread", io_dread},
-    {0x422a221au, "sceIoDclose", io_dclose},
-    {0, NULL, NULL},
-};
