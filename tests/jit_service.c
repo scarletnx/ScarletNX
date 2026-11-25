@@ -1142,6 +1142,8 @@ static void* rewriter(void* arg) {
         const u32 word = 0x91000400 | (i & 1) << 10; /* add x0, x0, #1, then #2 */
         put(REWRITTEN, &word, 1);
         snx_jit_invalidate(service, REWRITTEN, 4);
+        /* many times while the batch compiles, and never a lock the batch's thread can't get */
+        nanosleep(&(struct timespec){0, 50000}, NULL);
     }
     return NULL;
 }
