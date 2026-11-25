@@ -1204,6 +1204,7 @@ static void test_patch_size(void) {
 static DrawCall fixed_call;
 static u32 fixed_draws, fixed_controls, fixed_clears;
 static DrawClear fixed_clear;
+static u32 fixed_clear_x, fixed_clear_y; /* scissor 0 of the state the clear was given */
 static u32 fixed_control_owner, fixed_control_what, fixed_control_stride;
 static u64 fixed_control_address;
 static void capture_fixed_draw(const DsState* state, const DrawCall* call, DrawOwner* owner) {
@@ -1222,8 +1223,9 @@ static int capture_fixed_control(u32 owner_id, u64 control, u32 what, u32 stride
     return 1;
 }
 static void capture_fixed_clear(const DsState* state, const DrawClear* clear, const DrawOwner* owner) {
-    (void)state;
     (void)owner;
+    fixed_clear_x = state->vp.scissor_x[0];
+    fixed_clear_y = state->vp.scissor_y[0];
     fixed_clear = *clear;
     fixed_clears++;
 }
@@ -1353,6 +1355,29 @@ static void test_fixed_state(void) {
         check(fixed_clears == i + 1 && fixed_clear.aspects == (masks[i] & 255 ? 3u : 1u) &&
                   fixed_clear.stencil_preserve == ((~masks[i]) & 255) && fixed_clear.depth == 0.5f,
               "depth/stencil clear mask %#x forwards only the low stencil bits", masks[i]);
+    }
+    /* a clear takes scissor 0 as it is at the clear, with no draw between the record and it, color and depth alike */
+    const i32 rects[3][4] = {{50, 100, 50, 50}, {0, 0, 0x10000, 0x10000}, {7, 9, 20, 30}};
+    for (u32 i = 0; i < 3; i++) {
+        NvnPScissor scissor;
+        memcpy(&scissor, rects[i], sizeof scissor);
+        memcpy(GP(0xb200), &scissor, sizeof scissor);
+        nvn_draw_record(&d, OP_SCISSOR, 0xb200, sizeof scissor);
+        u32 x = (u32)rects[i][0] | (u32)(rects[i][0] + rects[i][2] > 0xffff ? 0xffff : rects[i][0] + rects[i][2]) << 16;
+        u32 y = (u32)rects[i][1] | (u32)(rects[i][1] + rects[i][3] > 0xffff ? 0xffff : rects[i][1] + rects[i][3]) << 16;
+        u32 clears = fixed_clears;
+        NvnPClearColor cc = {.mask = 15};
+        memcpy(GP(0xb300), &cc, sizeof cc);
+        nvn_draw_record(&d, OP_CLEAR_COLOR, 0xb300, sizeof cc);
+        check(fixed_clears == clears + 1 && fixed_clear.scissored == 1 && fixed_clear_x == x && fixed_clear_y == y,
+              "a color clear takes scissor rectangle %u: %08x %08x, want %08x %08x", i, fixed_clear_x, fixed_clear_y, x,
+              y);
+        NvnPClearDS cd = {.depth = 0.25f, .depth_mask = 1, .stencil_mask = 0xff};
+        memcpy(GP(0xb300), &cd, sizeof cd);
+        nvn_draw_record(&d, OP_CLEAR_DS, 0xb300, sizeof cd);
+        check(fixed_clears == clears + 2 && fixed_clear.scissored == 1 && fixed_clear_x == x && fixed_clear_y == y,
+              "a depth clear takes scissor rectangle %u: %08x %08x, want %08x %08x", i, fixed_clear_x, fixed_clear_y, x,
+              y);
     }
     g_none.draw = NULL;
     g_none.xfb_control = NULL;
