@@ -1222,6 +1222,8 @@ VkFmt vk_tic_format_3d(u32 w0, int srgb);
 /* The device and optimal-tiling format both support writes without a shader format. */
 int vk_format_storage_write(VkFormat f);
 /* whether a sampler may take the least or greatest of the texels its linear filter reads of f (min/max reduction) */
+/* optimal-tiling images of format f can be color attachments, or depth attachments with depth */
+int vk_format_attachable(VkFormat f, int depth);
 int vk_format_minmax_filter(VkFormat f);
 /* the header component (its swizzle's 2 R or 3 G) a depth and stencil texture format keeps its stencil in, 0 for none;
    and whether a header's first component is that one: a view of the stencil */
@@ -1288,6 +1290,16 @@ typedef struct Surf {
     u64 last_used;
     u32 wgen;    /* render targets: bumped when drawn to */
     u32 takes;   /* textures: the drawn targets copied into it (texture.c mark_copied), for tex_events_shadow */
+    /* Render targets as views of their textures (docs/dev/one-image.md, where the device has unified image layouts). A target that a
+       texture hosts draws into a level and layers of the texture's image: img is the host's, it has no memory of its
+       own (mem 0), and host_level and host_layer are where it is in that image. The host's state (layout, stage,
+       access) is the image's, which vk_surf_use keeps for both. A texture's hosted list holds its targets, which it
+       gives images of their own before its image goes (rt_unhost) */
+    struct Surf* host;
+    u32 host_level, host_layer;
+    struct Surf* hosted;    /* textures: the first target hosted */
+    struct Surf* host_next; /* render targets: the next target of the same host */
+    u8 att_capable;         /* textures: the image has the attachment usage a hosted target needs */
     SnxVkRedraw redraw; /* render targets: drawn every frame, which async_pipelines asks (redraw.h) */
     u64 wseq;    /* when its image last changed, counted across surfaces: of two over the same bytes, the higher
                        holds them (vk_surf_wrote) */
@@ -1503,6 +1515,19 @@ int vk_rt_pages_hit(u64 gva, u64 size);
    destination: to move it to and from guest memory, or into a texture a blit can't reach. VK_NULL_HANDLE on failure */
 VkImage vk_unscaled_image(const Surf* s, u32 layers, DevMem* mem);
 /* moves a surface into a layout for a use, with the barrier that needs (which ends an open rendering pass) */
+/* a surface's first level and layer in its image: a hosted target's place in its host's, else 0 */
+static inline u32 vk_surf_level0(const Surf* s) { return s->host ? s->host_level : 0; }
+static inline u32 vk_surf_layer0(const Surf* s) { return s->host ? s->host_layer : 0; }
+/* render targets as views of their textures (surface.c): vk_rt_host makes target s a view of level level and layers
+   from layer of texture t's image, its own image let go (its pixels must be in t's there already). vk_rt_own gives a
+   hosted target an image of its own again with its pixels: what reads or writes a target's image as level 0 and
+   layers from 0 calls it first. vk_tex_unhost does it for each target t hosts, before t's image goes. 0 when it
+   couldn't (no memory): the target stays hosted */
+void vk_rt_host(Surf* s, Surf* t, u32 level, u32 layer);
+int vk_rt_own_(Surf* s, const char* why);
+#define vk_rt_own(s) vk_rt_own_((s), __func__)
+void vk_tex_unhost(Surf* t);
+void vk_rt_host_counts(u64* hosted, u64* unhosted);
 void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineStageFlags2 stage, VkAccessFlags2 access);
 /* The barriers at the writer (docs/dev/draw-cost.md, item 7, step 4; the setting writer_barriers, with unified image
    layouts). A surface that a pass, a copy, an upload or a storage write of the frame's command buffer changes goes on

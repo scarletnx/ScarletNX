@@ -126,6 +126,8 @@ static VkImageView view(VkImage image, VkFormat format, VkImageUsageFlags usage)
     return VK_OK(vk_image_view_create(g_vk.dev, &info, NULL, &result)) ? result : VK_NULL_HANDLE;
 }
 int vk_present_quad_source(VkCommandBuffer cb, Surf* source, int linear, int raw, SnxPresentSource* out) {
+    /* a hosted target, read as level 0 of its own image here: given one first (docs/dev/one-image.md) */
+    if (source && source->host && !vk_rt_own(source)) return 0;
     VkImageView from;
     VkDescriptorSet set;
     if (!source || !initialize()) return 0;

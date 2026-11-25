@@ -1689,6 +1689,8 @@ static void vkr_refresh(void) {
    screenshot after its first, and the driver puts no such image in system memory): an RGBA8 surface's part read as
    it is, its pixels taken nearest to the size asked on the CPU. NULL where it is turned, or of another format */
 static const u8* surf_read_direct(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, u32 dw, u32 dh) {
+    /* a hosted target, read as level 0 of its own image here: given one first (docs/dev/one-image.md) */
+    if (s->host && !vk_rt_own(s)) return NULL;
     static u8* sized;
     static u64 sized_cap;
     if (transform || s->msaa != DS_MSAA_1X1 ||
@@ -1731,6 +1733,8 @@ static const u8* surf_read_direct(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 trans
     return sized;
 }
 static const u8* surf_read(Surf* s, u32 x, u32 y, u32 w, u32 h, u32 transform, u32 dw, u32 dh) {
+    /* a hosted target, read as level 0 of its own image here: given one first (docs/dev/one-image.md) */
+    if (s->host && !vk_rt_own(s)) return NULL;
     /* an image dropped for a guest write over it holds none of its bytes: its pixels now are memory's, and a copy of
        the image would show what is not the target's any more. The present resolves the frame through vk_rt_for_cpu,
        which loads such a target; this reads the one kept (g_last) */
