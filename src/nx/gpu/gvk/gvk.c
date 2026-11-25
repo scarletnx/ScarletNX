@@ -113,6 +113,23 @@ int gvk_writable(u64 g, u64 size) {
     return 1;
 }
 
+int gvk_unlisted(u64 names, u32 n, const char* listed, size_t step, u32 nlisted, char* name, size_t size) {
+    name[0] = 0;
+    if (!n) return 0;
+    if (!mapped(names, 8ull * n)) return 1;
+    for (u32 i = 0; i < n; i++) {
+        u32 k = 0;
+        if (mem_user_string(name, gr64(names + 8ull * i), size) <= 0) {
+            name[0] = 0;
+            return 1;
+        }
+        while (k < nlisted && strcmp(listed + k * step, name)) k++;
+        if (k == nlisted) return 1;
+    }
+    name[0] = 0;
+    return 0;
+}
+
 static const GvkType* chain_type(u32 parent, u32 stype);
 static int chain_in(u32 parent, u64 g, const void** out);
 static void* copy_in(const GvkType* t, u64 g, u64 count);

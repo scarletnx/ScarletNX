@@ -330,6 +330,33 @@ static void scaled_rect(void) {
     assert(part.offset.x == -24 && part.offset.y == 40 && part.extent.width == 56 && part.extent.height == 88);
 }
 
+static void unlisted_names(void) {
+    static const VkExtensionProperties listed[] = {{"VK_KHR_swapchain", 70}, {"VK_KHR_maintenance1", 2}};
+    char name[VK_MAX_EXTENSION_NAME_SIZE];
+    const u64 a = NODE + 0x100, b = NODE + 0x120, longer = NODE + 0x200;
+    memcpy(GP(a), "VK_KHR_maintenance1", 20);
+    memcpy(GP(b), "VK_KHR_maintenance2", 20);
+    memset(GP(longer), 'x', VK_MAX_EXTENSION_NAME_SIZE);
+    memcpy(GP(longer + VK_MAX_EXTENSION_NAME_SIZE), "", 1);
+#define UNLISTED(N) gvk_unlisted(ROOT, N, listed[0].extensionName, sizeof *listed, 2, name, sizeof name)
+    gw64(ROOT, a);
+    gw64(ROOT + 8, b);
+    assert(!UNLISTED(0) && !name[0]);
+    assert(!UNLISTED(1) && !name[0]);
+    assert(UNLISTED(2) && !strcmp(name, "VK_KHR_maintenance2"));
+    gw64(ROOT, b); /* the first one that isn't, of two that aren't */
+    assert(UNLISTED(2) && !strcmp(name, "VK_KHR_maintenance2"));
+    gw64(ROOT, 0); /* no string: an empty name */
+    assert(UNLISTED(1) && !name[0]);
+    gw64(ROOT, UNMAPPED);
+    assert(UNLISTED(1) && !name[0]);
+    gw64(ROOT, longer); /* past the size of a name */
+    assert(UNLISTED(1) && !name[0]);
+    gw64(ROOT, a);
+    assert(gvk_unlisted(UNMAPPED - 8, 2, listed[0].extensionName, sizeof *listed, 2, name, sizeof name) && !name[0]);
+#undef UNLISTED
+}
+
 static void query_bytes(void) {
     /* ucas: two queries 8 bytes apart write 8 + 8, past the 8 bytes a game gave */
     assert(gvk_query_bytes(2, 1, VK_QUERY_RESULT_64_BIT, 8) == 16);
@@ -359,6 +386,7 @@ int main(void) {
     gvk_scratch_free();
     scaled_rect();
     query_bytes();
+    unlisted_names();
 #if !defined(__BYTE_ORDER__) || __BYTE_ORDER__ != __ORDER_BIG_ENDIAN__
     install_driver();
 #endif

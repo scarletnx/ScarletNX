@@ -940,44 +940,49 @@ static void gvk_EnumerateInstanceVersion(CPU* RESTRICT c, u64 entry) {
    commands are the core ones under a name with KHR at its end (proc_addr). Not the YCbCr conversion, whose feature is
    off (guest_features) */
 #define EXT(N) {VK_KHR_##N##_EXTENSION_NAME, VK_KHR_##N##_SPEC_VERSION}
+static const VkExtensionProperties g_instance_ext[] = {
+    EXT(SURFACE),
+    {"VK_NN_vi_surface", 1},
+    EXT(GET_PHYSICAL_DEVICE_PROPERTIES_2),
+    EXT(DEVICE_GROUP_CREATION),
+    EXT(EXTERNAL_MEMORY_CAPABILITIES),
+    EXT(EXTERNAL_SEMAPHORE_CAPABILITIES),
+    EXT(EXTERNAL_FENCE_CAPABILITIES),
+    {VK_EXT_DEBUG_REPORT_EXTENSION_NAME, VK_EXT_DEBUG_REPORT_SPEC_VERSION}, /* last: listed where debug_available */
+};
+static u32 instance_ext_count(void) {
+    return (u32)(sizeof g_instance_ext / sizeof *g_instance_ext) - !debug_available();
+}
 static void gvk_EnumerateInstanceExtensionProperties(CPU* RESTRICT c, u64 entry) {
-    VkExtensionProperties e[] = {EXT(SURFACE),
-                                 {"VK_NN_vi_surface", 1},
-                                 EXT(GET_PHYSICAL_DEVICE_PROPERTIES_2),
-                                 EXT(DEVICE_GROUP_CREATION),
-                                 EXT(EXTERNAL_MEMORY_CAPABILITIES),
-                                 EXT(EXTERNAL_SEMAPHORE_CAPABILITIES),
-                                 EXT(EXTERNAL_FENCE_CAPABILITIES),
-                                 {VK_EXT_DEBUG_REPORT_EXTENSION_NAME, VK_EXT_DEBUG_REPORT_SPEC_VERSION}};
-    u32 n = sizeof e / sizeof *e;
-    ret_vk(c, put_list(c->x[1], c->x[2], e, debug_available() ? n : n - 1, sizeof *e));
+    ret_vk(c, put_list(c->x[1], c->x[2], g_instance_ext, instance_ext_count(), sizeof *g_instance_ext));
 }
 
+static const VkExtensionProperties g_device_ext[] = {
+    EXT(SWAPCHAIN),
+    EXT(MAINTENANCE1),
+    EXT(MAINTENANCE2),
+    EXT(MAINTENANCE3),
+    EXT(DEDICATED_ALLOCATION),
+    EXT(GET_MEMORY_REQUIREMENTS_2),
+    EXT(BIND_MEMORY_2),
+    EXT(DESCRIPTOR_UPDATE_TEMPLATE),
+    EXT(DEVICE_GROUP),
+    EXT(EXTERNAL_MEMORY),
+    EXT(EXTERNAL_SEMAPHORE),
+    EXT(EXTERNAL_FENCE),
+    EXT(MULTIVIEW),
+    EXT(RELAXED_BLOCK_LAYOUT),
+    EXT(SHADER_DRAW_PARAMETERS),
+    EXT(STORAGE_BUFFER_STORAGE_CLASS),
+    EXT(16BIT_STORAGE),
+    EXT(VARIABLE_POINTERS),
+};
+#undef EXT
 static void gvk_EnumerateDeviceExtensionProperties(CPU* RESTRICT c, u64 entry) {
     (void)entry;
-    static const VkExtensionProperties e[] = {
-        EXT(SWAPCHAIN),
-        EXT(MAINTENANCE1),
-        EXT(MAINTENANCE2),
-        EXT(MAINTENANCE3),
-        EXT(DEDICATED_ALLOCATION),
-        EXT(GET_MEMORY_REQUIREMENTS_2),
-        EXT(BIND_MEMORY_2),
-        EXT(DESCRIPTOR_UPDATE_TEMPLATE),
-        EXT(DEVICE_GROUP),
-        EXT(EXTERNAL_MEMORY),
-        EXT(EXTERNAL_SEMAPHORE),
-        EXT(EXTERNAL_FENCE),
-        EXT(MULTIVIEW),
-        EXT(RELAXED_BLOCK_LAYOUT),
-        EXT(SHADER_DRAW_PARAMETERS),
-        EXT(STORAGE_BUFFER_STORAGE_CLASS),
-        EXT(16BIT_STORAGE),
-        EXT(VARIABLE_POINTERS),
-    };
-    ret_vk(c, put_list(c->x[2], c->x[3], e, sizeof e / sizeof *e, sizeof *e));
+    ret_vk(c,
+           put_list(c->x[2], c->x[3], g_device_ext, sizeof g_device_ext / sizeof *g_device_ext, sizeof *g_device_ext));
 }
-#undef EXT
 
 static void gvk_EnumerateInstanceLayerProperties(CPU* RESTRICT c, u64 entry) {
     ret_vk(c, put_list(c->x[0], 0, NULL, 0, sizeof(VkLayerProperties)));
@@ -986,6 +991,21 @@ static void gvk_EnumerateDeviceLayerProperties(CPU* RESTRICT c, u64 entry) {
     ret_vk(c, put_list(c->x[1], 0, NULL, 0, sizeof(VkLayerProperties)));
 }
 
+/* Whether every extension a create info enables is one of the n listed, as Vulkan asks: the game is told of one that
+   isn't with the error a driver gives, not left to run without it */
+static int extensions_listed(const char* what, u64 names, u32 count, const VkExtensionProperties* listed, u32 n) {
+    char name[VK_MAX_EXTENSION_NAME_SIZE];
+    if (!gvk_unlisted(names, count, listed->extensionName, sizeof *listed, n, name, sizeof name)) return 1;
+    if (name[0])
+        WARN_LIMIT(16, "gvk: vkCreate%s: the game enables %s, which gvk doesn't list: VK_ERROR_EXTENSION_NOT_PRESENT\n",
+                   what, name);
+    else
+        WARN_LIMIT(16,
+                   "gvk: vkCreate%s: a name of the %u extensions the game enables isn't a string it mapped: "
+                   "VK_ERROR_EXTENSION_NOT_PRESENT\n",
+                   what, count);
+    return 0;
+}
 /* the names of a create info's extensions, for the log */
 static void say_extensions(const char* what, u64 names, u32 n) {
     char line[512];
@@ -999,7 +1019,7 @@ static void say_extensions(const char* what, u64 names, u32 n) {
         if (w < 0) break;
         at += (size_t)w;
     }
-    LOG("gvk: the game's %s, extensions: %s\n", what, at ? line : "none");
+    LOG("gvk: the game's vkCreate%s, extensions: %s\n", what, at ? line : "none");
 }
 
 static void gvk_CreateInstance(CPU* RESTRICT c, u64 entry) {
@@ -1013,18 +1033,16 @@ static void gvk_CreateInstance(CPU* RESTRICT c, u64 entry) {
             ret_vk(c, VK_ERROR_INITIALIZATION_FAILED);
             return;
         }
-        say_extensions("instance", names, n);
+        say_extensions("Instance", names, n);
+        if (!extensions_listed("Instance", names, n, g_instance_ext, instance_ext_count())) {
+            ret_vk(c, VK_ERROR_EXTENSION_NOT_PRESENT);
+            return;
+        }
         for (u32 i = 0; i < n; i++) {
             char name[VK_MAX_EXTENSION_NAME_SIZE];
-            if (mem_user_string(name, gr64(names + 8ull * i), sizeof name) <= 0 ||
-                strcmp(name, VK_EXT_DEBUG_REPORT_EXTENSION_NAME))
-                continue;
-            if (!debug_available()) {
-                WARN("gvk: this guest execution mode has no VK_EXT_debug_report entry points\n");
-                ret_vk(c, VK_ERROR_EXTENSION_NOT_PRESENT);
-                return;
-            }
-            atomic_store_explicit(&g_gvk_api.debug_enabled, 1, memory_order_release);
+            if (mem_user_string(name, gr64(names + 8ull * i), sizeof name) > 0 &&
+                !strcmp(name, VK_EXT_DEBUG_REPORT_EXTENSION_NAME))
+                atomic_store_explicit(&g_gvk_api.debug_enabled, 1, memory_order_release);
         }
     }
     put_handle(c->x[2], U(g_vk.instance));
@@ -1433,9 +1451,15 @@ FEATURE_OFF(CreateSamplerYcbcrConversion, "samplerYcbcrConversion")
 static void gvk_CreateDevice(CPU* RESTRICT c, u64 entry) {
     REQUIRE_OUT(c->x[3], 8);
     u64 ci = c->x[1];
-    if (ci && mem_user_mapped(ci, sizeof(VkDeviceCreateInfo)))
-        say_extensions("device", gr64(ci + offsetof(VkDeviceCreateInfo, ppEnabledExtensionNames)),
-                       gr32(ci + offsetof(VkDeviceCreateInfo, enabledExtensionCount)));
+    if (ci && mem_user_mapped(ci, sizeof(VkDeviceCreateInfo))) {
+        u64 names = gr64(ci + offsetof(VkDeviceCreateInfo, ppEnabledExtensionNames));
+        u32 n = gr32(ci + offsetof(VkDeviceCreateInfo, enabledExtensionCount));
+        say_extensions("Device", names, n);
+        if (!extensions_listed("Device", names, n, g_device_ext, sizeof g_device_ext / sizeof *g_device_ext)) {
+            ret_vk(c, VK_ERROR_EXTENSION_NOT_PRESENT);
+            return;
+        }
+    }
     types_ready();
     put_handle(c->x[3], U(g_vk.dev));
     ret_vk(c, VK_SUCCESS);
