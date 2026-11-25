@@ -267,14 +267,14 @@ static void pins_of(Unit* u, SgXBuf* b, int store, int caller) {
     }
     for (n = 0; n < 32; ++n) {
         if (u->pin[n] >= 0 && (!caller || u->pin[n] == 10 || u->pin[n] == 11) &&
-            (store ? u->pin_wr >> n & 1 : u->pin_sel >> n & 1)) {
+            (store ? (u->pin_wr & u->cur_dirty) >> n & 1 : u->pin_sel >> n & 1)) {
             int p = u->pin[n];
             sgx_byte(b, (unsigned char)(0x48 | (p >> 3) << 2));
             sgx_byte(b, store ? 0x89 : 0x8B);
             sgx_byte(b, (unsigned char)(0x83 | (p & 7) << 3)); /* [rbx + disp32] */
             sgx_imm(b, (long long)(offsetof(CPU, x) + 8 * (size_t)n), 4);
         }
-        if (u->vpin[n] >= 0 && (store ? u->vpin_wr >> n & 1 : u->vpin_sel >> n & 1)) {
+        if (u->vpin[n] >= 0 && (store ? (u->vpin_wr & u->vcur_dirty) >> n & 1 : u->vpin_sel >> n & 1)) {
             int p = u->vpin[n];
             sgx_byte(b, 0xF3); /* movdqu [rbx + disp32], xmm / xmm, [rbx + disp32] */
             if (p >= 8) sgx_byte(b, 0x44);
