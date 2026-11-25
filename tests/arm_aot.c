@@ -13,6 +13,7 @@
 #include "common/platform/file.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
+#include "support/text_lines.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -221,9 +222,11 @@ static void test_report(void) {
     fflush(stderr);
     unsigned char* read = path ? snx_read_file(path, &size) : NULL;
     if (read && size < sizeof text) memcpy(text, read, size), text[size] = 0;
+    snx_test_text_lines(text);
     CHECK(strstr(text, "scarletnx-test: 3 blocks made by LLVM, the first the ARM one at 0x00001000: reason a\n"));
     CHECK(strstr(text, "scarletnx-test: 1 block made by LLVM, the first the ARM one at 0x00003000: reason b\n"));
     CHECK(!strstr(text, "keep-ir"));
+    if (g_test.failures) printf("the lines on stderr:\n%s", text);
     for (int k = 0; k < SNX_ARM_AOT_WHYS + 2; ++k) {
         snprintf(g_test.whys[k], sizeof g_test.whys[k], "reason %d", k);
         snx_arm_aot_refused(&full, g_test.whys[k], 0x1000u + 4u * (unsigned)k);
