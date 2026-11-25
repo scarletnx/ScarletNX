@@ -3,10 +3,17 @@
 /* The GBA runner's window (src/agb/runtime/host.c) under SDL's dummy drivers: it presents with vsync on, so a frame
    never goes on screen half drawn. Esc closes it on a second press, a first only warning, in a line over the game
    too, read back from the renderer: the band of common/utilities/notice.h in the window's own pixels, the frame
-   around it; held with Ctrl, Alt or the system key it is no press, nor is a key's repeat */
+   around it; held with Ctrl, Alt or the system key it is no press, nor is a key's repeat. The on-screen controls: each
+   presses its key under a finger and under the mouse, alone and two at once, a finger off them none; drawn over the
+   frame as vpad_rects gives them and nothing else; Auto shows them on a touch screen and hides them as a gamepad
+   connects; F2 edits their layout, which the game's .ini keeps and gives back, and so does Android's Back, twice
+   quitting */
 #include "agb/runtime/host.h"
 #include "agb/ppu/ppu.h"
+#include "common/utilities/common.h"
 #include "common/utilities/notice.h"
+#include "support/sdl_real_pads.h"
+#include "support/vpad_window.h"
 #include <SDL3/SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -70,6 +77,165 @@ static long notice_read(AgbHost* host, SDL_Renderer* renderer, SDL_Window* windo
     return bad;
 }
 
+#define CHECK(x)                                                                                                       \
+    do {                                                                                                               \
+        if (!(x)) {                                                                                                    \
+            fprintf(stderr, "agb_host:%d: %s\n", __LINE__, #x);                                                        \
+            return 1;                                                                                                  \
+        }                                                                                                              \
+    } while (0)
+
+/* the keys after the events waiting */
+static uint16_t keys(AgbHost* host) {
+    uint16_t held = 0;
+    return agb_host_poll(host, &held) ? held : 0xFFFF;
+}
+/* the frame drawn, the on-screen controls over it, as it is read back: how many pixels are not the frame's colour nor
+   the controls' rectangles; -1 when it cannot be read */
+static long controls_read(AgbHost* host, SDL_Window* window, size_t* count) {
+    static uint32_t frame[AGB_SCREEN_WIDTH * AGB_SCREEN_HEIGHT];
+    SDL_Renderer* renderer = SDL_GetRenderer(window);
+    int w = 0, h = 0;
+    long bad = 0;
+    for (size_t i = 0; i < sizeof frame / sizeof *frame; ++i) frame[i] = 0xFF302010u; /* R 0x10, G 0x20, B 0x30 */
+    agb_host_draw(host, frame);
+    SDL_SetRenderLogicalPresentation(renderer, 0, 0, SDL_LOGICAL_PRESENTATION_DISABLED);
+    SDL_Surface* read = SDL_RenderReadPixels(renderer, NULL);
+    SDL_Surface* got = read ? SDL_ConvertSurface(read, SDL_PIXELFORMAT_RGBA32) : NULL;
+    SDL_DestroySurface(read);
+    uint32_t* want = got ? malloc((size_t)got->w * (size_t)got->h * 4) : NULL;
+    if (!want || !SDL_GetCurrentRenderOutputSize(renderer, &w, &h) || got->w != w || got->h != h) {
+        SDL_DestroySurface(got);
+        return -1;
+    }
+    for (size_t i = 0; i < (size_t)w * (size_t)h; ++i) want[i] = frame[0];
+    const SnxUiRects* rects = snx_vpad_window_rects(w, h);
+    *count = rects ? rects->count : 0;
+    for (size_t i = 0; i < *count; ++i)
+        for (int y = rects->rect[i].y; y < rects->rect[i].y + rects->rect[i].h; ++y)
+            for (int x = rects->rect[i].x; x < rects->rect[i].x + rects->rect[i].w; ++x)
+                want[(size_t)y * (size_t)w + (size_t)x] = rects->rect[i].rgba;
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            const unsigned char* p = (const unsigned char*)got->pixels + (size_t)y * (size_t)got->pitch + (size_t)x * 4;
+            uint32_t pixel = (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | 0xFF000000u;
+            bad += pixel != want[(size_t)y * (size_t)w + (size_t)x];
+        }
+    free(want);
+    SDL_DestroySurface(got);
+    return bad;
+}
+
+static int controls(AgbHost* host, SDL_Window* window, const char* ini) {
+    static const struct {
+        int control;
+        uint16_t key;
+    } buttons[] = {{SNX_VPAD_A, AGB_KEY_A}, {SNX_VPAD_B, AGB_KEY_B},        {SNX_VPAD_L, AGB_KEY_L},
+                   {SNX_VPAD_R, AGB_KEY_R}, {SNX_VPAD_PLUS, AGB_KEY_START}, {SNX_VPAD_MINUS, AGB_KEY_SELECT}};
+    static const struct {
+        float dx, dy;
+        uint16_t key;
+    } arms[] = {{-0.7f, 0, AGB_KEY_LEFT},
+                {0.7f, 0, AGB_KEY_RIGHT},
+                {0, -0.7f, AGB_KEY_UP},
+                {0, 0.7f, AGB_KEY_DOWN},
+                {0.7f, 0.7f, AGB_KEY_RIGHT | AGB_KEY_DOWN}};
+    float x, y, bx, by, half;
+    size_t drawn = 0, pressed = 0;
+    /* Auto on a device with no touch screen: none drawn, none pressed; a finger on a screen shows them, the next one
+       presses; a gamepad connected hides them, and gone shows them again */
+    g_settings.show_controls = 2;
+    vpad_test_middle(SNX_VPAD_A, &x, &y);
+    CHECK(vpad_test_finger(window, SDL_EVENT_FINGER_DOWN, 77, 1, x, y) && !keys(host));
+    CHECK(controls_read(host, window, &drawn) == 0 && !drawn);
+    CHECK(vpad_test_finger(window, SDL_EVENT_FINGER_UP, 77, 1, x, y));
+    SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "1"); /* SDL's own screen of fingers, SDL_MOUSE_TOUCHID */
+    CHECK(vpad_test_finger(window, SDL_EVENT_FINGER_DOWN, SDL_MOUSE_TOUCHID, 2, x, y));
+    CHECK(vpad_test_finger(window, SDL_EVENT_FINGER_UP, SDL_MOUSE_TOUCHID, 2, x, y));
+    (void)keys(host);
+    CHECK(!keys(host) && controls_read(host, window, &drawn) == 0 && drawn > 100);
+    SDL_JoystickID pad = vpad_test_gamepad();
+    CHECK(pad && vpad_test_finger(window, SDL_EVENT_FINGER_DOWN, SDL_MOUSE_TOUCHID, 3, x, y));
+    SDL_UpdateJoysticks();
+    (void)keys(host);
+    CHECK(!keys(host) && controls_read(host, window, &drawn) == 0 && !drawn);
+    CHECK(SDL_DetachVirtualJoystick(pad));
+    SDL_UpdateJoysticks();
+    (void)keys(host);
+    CHECK(!keys(host) && controls_read(host, window, &drawn) == 0 && drawn > 100);
+    SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "0");
+
+    /* each button under a finger, held until it lifts, and drawn pressed */
+    g_settings.show_controls = 1;
+    for (size_t i = 0; i < sizeof buttons / sizeof *buttons; ++i) {
+        vpad_test_middle(buttons[i].control, &x, &y);
+        CHECK(vpad_test_finger(window, SDL_EVENT_FINGER_DOWN, 77, 10, x, y) && keys(host) == buttons[i].key);
+        CHECK(keys(host) == buttons[i].key && controls_read(host, window, &pressed) == 0 && pressed != drawn);
+        /* a finger dragged off it holds it still, as a thumb that rolls; one that lands off every control is none's */
+        CHECK(vpad_test_finger(window, SDL_EVENT_FINGER_MOTION, 77, 10, x + 300, y) && keys(host) == buttons[i].key);
+        CHECK(vpad_test_finger(window, SDL_EVENT_FINGER_UP, 77, 10, x + 300, y) && !keys(host));
+        CHECK(controls_read(host, window, &pressed) == 0 && pressed == drawn);
+        CHECK(vpad_test_mouse(window, SDL_EVENT_MOUSE_BUTTON_DOWN, x, y) && keys(host) == buttons[i].key);
+        CHECK(vpad_test_mouse(window, SDL_EVENT_MOUSE_BUTTON_UP, x, y) && !keys(host));
+    }
+    CHECK(vpad_test_finger(window, SDL_EVENT_FINGER_DOWN, 77, 11, 480, 320) && !keys(host));
+    CHECK(vpad_test_finger(window, SDL_EVENT_FINGER_UP, 77, 11, 480, 320) && !keys(host));
+    /* a tap that came and went between two polls reaches one */
+    vpad_test_middle(SNX_VPAD_PLUS, &x, &y);
+    CHECK(vpad_test_finger(window, SDL_EVENT_FINGER_DOWN, 77, 12, x, y) &&
+          vpad_test_finger(window, SDL_EVENT_FINGER_UP, 77, 12, x, y));
+    CHECK(keys(host) == AGB_KEY_START && !keys(host));
+    /* the D-pad's directions, slid through, and two fingers at once */
+    vpad_test_middle(SNX_VPAD_DPAD, &x, &y);
+    half = vpad_test_side(0.25f) / 2;
+    CHECK(vpad_test_finger(window, SDL_EVENT_FINGER_DOWN, 77, 13, x, y) && !keys(host));
+    for (size_t i = 0; i < sizeof arms / sizeof *arms; ++i) {
+        CHECK(vpad_test_finger(window, SDL_EVENT_FINGER_MOTION, 77, 13, x + arms[i].dx * half, y + arms[i].dy * half));
+        CHECK(keys(host) == arms[i].key);
+    }
+    vpad_test_middle(SNX_VPAD_B, &bx, &by);
+    CHECK(vpad_test_finger(window, SDL_EVENT_FINGER_DOWN, 77, 14, bx, by));
+    CHECK(keys(host) == (AGB_KEY_RIGHT | AGB_KEY_DOWN | AGB_KEY_B));
+    CHECK(vpad_test_finger(window, SDL_EVENT_FINGER_UP, 77, 13, x, y) && keys(host) == AGB_KEY_B);
+    CHECK(vpad_test_finger(window, SDL_EVENT_FINGER_CANCELED, 77, 14, bx, by) && !keys(host));
+    /* the Switch's others are not there: no ZL, no stick, no Home */
+    CHECK(!strcmp(vpad_name(SNX_VPAD_ZL), "?") && !strcmp(vpad_name(SNX_VPAD_PLUS), "Start"));
+
+    /* F2 edits the layout: the game gets nothing, a control dragged moves and the .ini keeps it as a Switch game's; F2
+       again ends it. Read back, it is where it was left */
+    vpad_test_middle(SNX_VPAD_A, &x, &y);
+    CHECK(vpad_test_key(window, SDLK_F2) && !keys(host) && vpad_editing());
+    CHECK(vpad_test_finger(window, SDL_EVENT_FINGER_DOWN, 77, 20, x, y) && !keys(host));
+    CHECK(vpad_test_finger(window, SDL_EVENT_FINGER_MOTION, 77, 20, 480, 320) && !keys(host));
+    CHECK(vpad_test_finger(window, SDL_EVENT_FINGER_UP, 77, 20, 480, 320) && !keys(host));
+    CHECK(vpad_test_in_file(ini, "[On-screen controls]\ncontrols_a=0.500 0.500 100\n") == 1);
+    CHECK(vpad_test_key(window, SDLK_F2) && !keys(host) && !vpad_editing());
+    CHECK(vpad_test_finger(window, SDL_EVENT_FINGER_DOWN, 77, 21, 480, 320) && keys(host) == AGB_KEY_A);
+    CHECK(vpad_test_finger(window, SDL_EVENT_FINGER_UP, 77, 21, 480, 320) && !keys(host));
+    vpad_console(&agb_host_pad); /* the defaults, as a run starts */
+    CHECK(vpad_config()->at[SNX_VPAD_A].x > 0.9f);
+    vpad_settings(ini, 0, NULL);
+    CHECK(vpad_config()->at[SNX_VPAD_A].x == 0.5f && vpad_config()->at[SNX_VPAD_A].y == 0.5f);
+    /* Esc ends it too, and is no press of the quit key */
+    CHECK(vpad_test_key(window, SDLK_F2) && !keys(host) && vpad_editing());
+    CHECK(controls_read(host, window, &drawn) == 0); /* the controls and edit mode's bar */
+    /* nor does the keyboard reach the game while it is edited */
+    SDL_Event x_key = {.key = {.type = SDL_EVENT_KEY_DOWN, .scancode = SDL_SCANCODE_X, .key = SDLK_X, .down = true}};
+    CHECK(SDL_PushEvent(&x_key) && !keys(host));
+    CHECK(vpad_test_key(window, SDLK_ESCAPE) && keys(host) == AGB_KEY_A && !vpad_editing());
+    CHECK(!agb_host_notice(host)[0]);
+    x_key.key.type = SDL_EVENT_KEY_UP, x_key.key.down = false;
+    CHECK(SDL_PushEvent(&x_key) && !keys(host));
+    /* Android's Back edits it, saying over the picture that a second one quits */
+    CHECK(vpad_test_key(window, SDLK_AC_BACK) && !keys(host) && vpad_editing());
+    CHECK(controls_read(host, window, &pressed) == 0 && pressed > drawn + 100); /* the bar and the line */
+    CHECK(vpad_test_key(window, SDLK_AC_BACK) && keys(host) == 0xFFFF);
+    vpad_edit(0);
+    g_settings.show_controls = 0;
+    CHECK(controls_read(host, window, &drawn) == 0 && !drawn); /* off: none */
+    return 0;
+}
+
 int main(void) {
     char error[256] = {0};
     AgbHost* host;
@@ -77,7 +243,15 @@ int main(void) {
     int count = 0, vsync = 0;
     SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "dummy");
     SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "dummy");
-    host = agb_host_open("agb_host", false, error, sizeof error);
+    sdl_real_pads_hide();
+    vpad_console(&agb_host_pad);
+    char *root = snx_temp_root(), *dir = root ? snx_temp_dir(root) : NULL;
+    char* ini = dir ? snx_path_join(dir, "a game.ini") : NULL;
+    if (!ini || snx_write_file(ini, "[Game]\nsystem=gba\n", strlen("[Game]\nsystem=gba\n"))) {
+        fprintf(stderr, "agb_host: no temporary folder for the game's .ini\n");
+        return 1;
+    }
+    host = agb_host_open("agb_host", ini, false, error, sizeof error);
     if (!host) {
         fprintf(stderr, "agb_host: opening the window: %s\n", error);
         return 1;
@@ -91,6 +265,7 @@ int main(void) {
     }
     SDL_Window* window = windows[0];
     SDL_free(windows);
+    int failed = controls(host, window, ini); /* before a notice is over the frame */
     if (!esc(host, SDL_KMOD_LCTRL, false) || !esc(host, SDL_KMOD_LALT, false) || !esc(host, SDL_KMOD_LGUI, false) ||
         !esc(host, SDL_KMOD_NONE, false)) {
         fprintf(stderr, "agb_host: Esc's first press closed the window\n");
@@ -107,6 +282,11 @@ int main(void) {
         return 1;
     }
     agb_host_close(host);
+    if (snx_remove_tree(dir)) fprintf(stderr, "agb_host: %s could not be removed\n", dir);
+    free(ini);
+    free(dir);
+    free(root);
+    if (failed) return 1;
     puts("agb_host: passed");
     return 0;
 }

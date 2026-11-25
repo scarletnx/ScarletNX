@@ -8,6 +8,7 @@
 #include "common/utilities/notice.h"
 #include "common/utilities/pad_sdl.h"
 #include "common/utilities/quit_key.h"
+#include "common/utilities/vpad_sdl.h"
 #include "common/utilities/window_icon.h"
 #include <SDL3/SDL.h>
 #include <stdio.h>
@@ -41,6 +42,18 @@ struct AgbHost {
     SDL_Texture* notice_texture;
     int notice_w, notice_h, notice_failed;
 };
+
+/* the Switch's controls they are, as a gamepad's buttons are the GBA's (agb_host_button): Start Plus, Select Minus */
+static const SnxVpadControl pad[] = {
+    {SNX_VPAD_L, "L", "L", {0.10f, 0.12f}, {0.16f, 0.68f}},
+    {SNX_VPAD_R, "R", "R", {0.90f, 0.12f}, {0.84f, 0.68f}},
+    {SNX_VPAD_MINUS, "Select", "SE", {0.07f, 0.40f}, {0.40f, 0.94f}},
+    {SNX_VPAD_PLUS, "Start", "ST", {0.93f, 0.40f}, {0.60f, 0.94f}},
+    {SNX_VPAD_DPAD, "D-pad", "", {0.10f, 0.72f}, {0.20f, 0.82f}},
+    {SNX_VPAD_A, "A", "A", {0.94f, 0.65f}, {0.88f, 0.79f}},
+    {SNX_VPAD_B, "B", "B", {0.87f, 0.79f}, {0.72f, 0.85f}},
+};
+const SnxVpadConsole agb_host_pad = {"GBA", pad, sizeof pad / sizeof *pad, 0};
 
 uint16_t agb_host_key(int scancode) {
     switch (scancode) {
@@ -100,7 +113,9 @@ static uint16_t gamepads(const AgbHost* host) {
     return keys;
 }
 
-AgbHost* agb_host_open(const char* title, bool fullscreen, char* error, size_t error_size) {
+void agb_host_say(const char* line) { fprintf(stderr, "scarletnx-agb: %s\n", line); }
+
+AgbHost* agb_host_open(const char* title, const char* ini, bool fullscreen, char* error, size_t error_size) {
     AgbHost* host = (AgbHost*)calloc(1, sizeof(*host));
     SDL_AudioSpec spec = {SDL_AUDIO_S16, 2, AGB_APU_RATE};
     if (!host) {
@@ -108,6 +123,7 @@ AgbHost* agb_host_open(const char* title, bool fullscreen, char* error, size_t e
         return NULL;
     }
     snx_sdl_desktop_hints();
+    snx_vpad_sdl_hints();
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         snprintf(error, error_size, "cannot start SDL's video: %s", SDL_GetError());
         free(host);
@@ -146,6 +162,7 @@ AgbHost* agb_host_open(const char* title, bool fullscreen, char* error, size_t e
         snx_window_icon(host->window);
     }
     snx_pad_map_position(&host->pad); /* A where the console has it, east */
+    snx_vpad_window_open(host->window, ini, agb_host_say);
     if (!SDL_InitSubSystem(SDL_INIT_AUDIO) ||
         !(host->audio = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, NULL, NULL)) ||
         !SDL_ResumeAudioStreamDevice(host->audio)) {
@@ -159,6 +176,7 @@ AgbHost* agb_host_open(const char* title, bool fullscreen, char* error, size_t e
 
 void agb_host_close(AgbHost* host) {
     if (!host) return;
+    snx_vpad_window_close();
     if (host->audio) SDL_DestroyAudioStream(host->audio);
     if (host->notice_texture) SDL_DestroyTexture(host->notice_texture);
     if (host->texture) SDL_DestroyTexture(host->texture);
@@ -175,6 +193,9 @@ bool agb_host_poll(AgbHost* host, uint16_t* keys) {
     SDL_Event event;
     bool open = true;
     while (SDL_PollEvent(&event)) {
+        SnxVpadEvent took = snx_vpad_window_event(&event);
+        if (took == SNX_VPAD_QUIT) open = false;
+        if (took != SNX_VPAD_PASS) continue;
         switch (event.type) {
             case SDL_EVENT_QUIT:
             case SDL_EVENT_WINDOW_CLOSE_REQUESTED: open = false; break;
@@ -205,6 +226,12 @@ bool agb_host_poll(AgbHost* host, uint16_t* keys) {
     }
     host->buttons = gamepads(host);
     *keys = (uint16_t)(host->keyboard | host->buttons);
+    u64 pressed;
+    i32 sticks[4]; /* the GBA has none */
+    snx_vpad_window_state(&pressed, sticks);
+    for (int bit = 0; bit < SNX_PAD_BUTTONS; ++bit)
+        if (pressed >> bit & 1) *keys |= agb_host_button(bit);
+    if (vpad_editing()) *keys = 0;
     return open;
 }
 
@@ -247,6 +274,11 @@ void agb_host_draw(AgbHost* host, const uint32_t* framebuffer) {
     SDL_RenderClear(host->renderer);
     SDL_RenderTexture(host->renderer, host->texture, NULL, NULL);
     notice_draw(host);
+    /* the on-screen controls in the window's own pixels, as the notice */
+    SDL_SetRenderLogicalPresentation(host->renderer, 0, 0, SDL_LOGICAL_PRESENTATION_DISABLED);
+    snx_vpad_window_render(host->renderer);
+    SDL_SetRenderLogicalPresentation(host->renderer, AGB_SCREEN_WIDTH, AGB_SCREEN_HEIGHT,
+                                     SDL_LOGICAL_PRESENTATION_INTEGER_SCALE);
 }
 
 const char* agb_host_notice(const AgbHost* host) {
