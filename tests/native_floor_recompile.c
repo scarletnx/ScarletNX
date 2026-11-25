@@ -9,7 +9,6 @@
    Where the host's back end has no floor, it passes having said so (77, skipped) */
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/recompiler/mach/native.h"
-#include "common/cpu/recompiler/ppc64/ppc64be_codegen.h"
 #include "common/cpu/recompiler/x64/x64_codegen.h"
 #include "common/platform/file.h"
 #include "common/utilities/common.h"
@@ -23,9 +22,6 @@
 #if defined(__x86_64__)
 static void take_out(int on) { snx_x64_without(on ? SNX_X64_SSE42 : 0); }
 #define LACKS "cpu: needs SSE4.2, this host has SSE3, SSSE3, SSE4.1, PCLMULQDQ and POPCNT"
-#elif defined(__powerpc64__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
-static void take_out(int on) { snx_ppc64be_without(on ? ~0ul : 0); }
-#define LACKS "cpu: needs LDBRX and STDBRX (ISA 2.06), this host has AT_HWCAP 0x00000000"
 #else
 static void take_out(int on) { (void)on; }
 #define LACKS ""

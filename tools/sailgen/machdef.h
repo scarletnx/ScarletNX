@@ -13,6 +13,7 @@ typedef struct {
     int index;
     size_t rip_at; /* where an encoder put a pool-relative operand's displacement, which the assembler patches */
     int absolute;  /* a JIT unit's, where mips64.h's literals hold addresses: a distance reaches 2 GiB alone */
+    unsigned features; /* the host's (SgX's), for an encoder that sees the buffer alone: ppc64.h's guest memory */
 } SgXBuf;
 
 static inline void sgx_byte(SgXBuf* b, unsigned char x) {

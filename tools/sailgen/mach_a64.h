@@ -930,6 +930,7 @@ static size_t sg_x64_block(SgCtx* g, const SnxU32* words, size_t* count, SnxU64 
     b.index = -1;
     memset(&a, 0, sizeof a);
     a.x = &g->x;
+    b.features = host_features;
     a.b = &b;
     a.resolve = g->resolve;
     sgx_prologue(&a);

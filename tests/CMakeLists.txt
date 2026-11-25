@@ -4489,6 +4489,26 @@ set(snx_floor_folder "${CMAKE_CURRENT_BINARY_DIR}/native-floor")
 add_test(NAME native_floor_recompile COMMAND snx-test-native-floor-recompile "${snx_floor_folder}")
 set_tests_properties(native_floor_recompile PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77 ENVIRONMENT
     "HOME=${snx_floor_folder}-home;XDG_DATA_HOME=${snx_floor_folder}-home/data;XDG_CONFIG_HOME=${snx_floor_folder}-home/config;XDG_STATE_HOME=${snx_floor_folder}-home/state;XDG_CACHE_HOME=${snx_floor_folder}-home/cache")
+# a big-endian PowerPC64's guest doublewords with LDBRX and without (tools/sailgen/ppc64.h), the code run under
+# qemu-ppc64 on CPUs before ISA 2.06 and after (skipped without qemu-ppc64)
+if(NOT WIN32)
+    find_program(SNX_QEMU_PPC64 qemu-ppc64)
+    add_executable(snx-test-ppc64be-doublewords ppc64be_doublewords.c sail_mach_emit.c)
+    snx_test_target(snx-test-ppc64be-doublewords gnu23)
+    target_compile_definitions(snx-test-ppc64be-doublewords PRIVATE SAIL_MACH_INC="a64_ppc64.inc" RK_BIG_ENDIAN=1)
+    target_include_directories(snx-test-ppc64be-doublewords PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(snx-test-ppc64be-doublewords PRIVATE scarletnx-common)
+    snx_decodetree_a64(snx-test-ppc64be-doublewords)
+    snx_sailgen_a64_risc(snx-test-ppc64be-doublewords ppc64)
+    if(SNX_QEMU_PPC64)
+        set(snx_qemu_ppc64 "${SNX_QEMU_PPC64}")
+    else()
+        set(snx_qemu_ppc64 "no-qemu-ppc64")
+    endif()
+    add_test(NAME ppc64be_doublewords COMMAND snx-test-ppc64be-doublewords "${snx_qemu_ppc64}"
+             "${CMAKE_CURRENT_BINARY_DIR}/ppc64be-doublewords")
+    set_tests_properties(ppc64be_doublewords PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+endif()
 # the exclusives whatever the fields they leave unused hold
 add_test(NAME recompiler_backends_exclusives COMMAND snx-test-recompiler-backends --refused --ops LDXR LDXP STXR)
 # each of the Switch's ops, of an Android phone's (half precision, the dot products, the rounding doubling

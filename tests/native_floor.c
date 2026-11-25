@@ -2,7 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* The hosts below a native back end's floor (recompiler/mach/native.h's snx_native_floor):
    - the line of a host that lacks some of x86-64's features, for each of their subsets: those needed and those the
-     host has. Of the big-endian PowerPC64s as the kernel names them, and of an ELFv1 program, on any host;
+     host has; of an ELFv1 program on big-endian PowerPC64, and which of those the kernel names have LDBRX, on any
+     host;
    - on a host with a floor, its features taken out one by one and all at once (the mask its back end has for tests): no
      back end, of A64 functions nor of A32 blocks, and the line names what was taken;
    - there, in a build without LLVM (snx_native_set_alone), LLVM's start, the JIT, the A32 executor, the blocks made
@@ -130,11 +131,12 @@ static void x64_lines(void) {
 #if !defined(_WIN32)
 static void ppc64_lines(void) {
     /* Linux 6.12's cpu_user_features of each (arch/powerpc/kernel/cpu_specs_book3s_64.h and cpu_specs_e500mc.h), what
-       AT_HWCAP starts from; power4 is the entry of a PVR it doesn't know */
+       AT_HWCAP starts from; power4 is the entry of a PVR it doesn't know. LDBRX where ISA 2.06 or the Cell is, two words
+       elsewhere (ppc64.h's SGX_F_LDBRX): no floor */
     static const struct {
         const char* platform;
         unsigned long hwcap;
-        int runs;
+        unsigned features;
     } hosts[] = {
         {"power4", 0xcc000000, 0},      {"ppc970", 0xdc080000, 0},   {"power5", 0xcc046000, 0},
         {"power5+", 0xcc026000, 0},     {"power6", 0xcc007042, 0},   {"power6x", 0xcc007242, 0},
@@ -142,24 +144,15 @@ static void ppc64_lines(void) {
         {"ppc-cell-be", 0xdc014000, 1}, {"power7", 0xcc006142, 1},   {"power8", 0xcc006142, 1},
         {"power10", 0xcc006142, 1},
     };
-    char line[256], want[256];
-    for (size_t k = 0; k < sizeof hosts / sizeof *hosts; ++k) {
-        if (hosts[k].runs)
-            want[0] = 0;
-        else
-            snprintf(want, sizeof want, "cpu: needs LDBRX and STDBRX (ISA 2.06), this host has AT_HWCAP 0x%08lx (%s)",
-                     hosts[k].hwcap, hosts[k].platform);
-        check(snx_ppc64be_floor_of(hosts[k].hwcap, hosts[k].platform, 2, line, sizeof line) == !hosts[k].runs,
-              "whether it is below it", hosts[k].platform);
-        check_line(line, want, hosts[k].platform);
-        check(strlen(line) <= NOTE_MAX, "fits the launcher's line of it", line);
-        /* ELFv1 is said whatever the processor */
-        check(snx_ppc64be_floor_of(hosts[k].hwcap, hosts[k].platform, 1, line, sizeof line), "ELFv1", line);
-        check_line(line, "abi: needs ELFv2, this build has ELFv1", hosts[k].platform);
-    }
-    check(snx_ppc64be_floor_of(0x58000000, NULL, 2, line, sizeof line), "with no platform", line);
-    check_line(line, "cpu: needs LDBRX and STDBRX (ISA 2.06), this host has AT_HWCAP 0x58000000", "no AT_PLATFORM");
-    check(!snx_ppc64be_floor_of(0xcc006142, NULL, 2, NULL, 0), "POWER7, without a line", "no line");
+    char line[256];
+    for (size_t k = 0; k < sizeof hosts / sizeof *hosts; ++k)
+        check(snx_ppc64be_features_of(hosts[k].hwcap) == hosts[k].features, "LDBRX as the processor has it",
+              hosts[k].platform);
+    /* an ELFv1 program, whatever the processor, is the one floor */
+    check(snx_ppc64be_floor_of(1, line, sizeof line), "ELFv1", line);
+    check_line(line, "abi: needs ELFv2, this build has ELFv1", "ELFv1");
+    check(strlen(line) <= NOTE_MAX, "fits the launcher's line of it", line);
+    check(!snx_ppc64be_floor_of(2, line, sizeof line) && !line[0], "ELFv2", line);
 }
 #else
 static void ppc64_lines(void) {} /* the ppc64 back ends are not built there */
@@ -173,12 +166,6 @@ static const SnxNativeFeature* const k_names = k_x64;
 enum { NAMES = X64_FEATURES };
 static void take_out(unsigned bits) { snx_x64_without(bits); }
 static const char* const k_none = "cpu: needs SSE3, SSSE3, SSE4.1, SSE4.2, PCLMULQDQ and POPCNT, this host has none";
-#elif defined(__powerpc64__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
-static const SnxNativeFeature k_ppc64be[] = {{"LDBRX", 1}};
-static const SnxNativeFeature* const k_names = k_ppc64be;
-enum { NAMES = 1 };
-static void take_out(unsigned bits) { snx_ppc64be_without(bits ? ~0ul : 0); }
-static const char* const k_none = "cpu: needs LDBRX and STDBRX (ISA 2.06), this host has AT_HWCAP 0x00000000";
 #else
 static const SnxNativeFeature* const k_names = NULL;
 enum { NAMES = 0 };

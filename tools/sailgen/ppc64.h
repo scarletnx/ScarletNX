@@ -3,7 +3,9 @@
 /* sailgen's powerpc64 back end (README.md, "The RISC back ends"): the 64-bit PowerPC's registers under the ELFv2 ABI
    and the operations risc.h writes every primitive from, after machdef.h and before risc.h. Each word is an encoder's
    of LLVM's PowerPC TableGen records (td/ppc64_enc.inc, tdenc.py). The code is POWER8's (ppc64le's baseline) without
-   its vector unit; little-endian here, a big-endian host's guest memory byte-reversed where RK_BIG_ENDIAN says so.
+   its vector unit; little-endian here, a big-endian host's guest memory byte-reversed where RK_BIG_ENDIAN says so. A
+   big-endian host before ISA 2.06 (the 970, POWER4 to POWER6, the e5500) has no LDBRX and STDBRX: its doublewords of
+   guest memory are two words each (SGX_F_LDBRX, the host's features in the buffer).
 
    Registers: r3-r8 and r14-r19 hold values (r3 and r4 last: a call's results); r0 (RK_S2: never a base or an addi's
    source, which read it as 0), r9 and r10 (the virtual flags), r11 (RK_S1) and r12 (RK_SA, which also carries a
@@ -26,7 +28,8 @@ static inline void ppc_w(SgXBuf* b, SnxU32 w) {
         sgx_imm(b, (long long)w, 4);
 }
 
-enum { SGX_F_NONE_PPC = 1 };
+/* the host's features a form may need: LDBRX and STDBRX, ISA 2.06's (POWER7) and the Cell's */
+enum { SGX_F_LDBRX = 1 };
 
 #define SGX_NREG 32
 #define SGX_FIX 32
@@ -275,6 +278,22 @@ static inline void rk_gldst(SgXBuf* b, int load, int bytes, int sign, int rt, in
     if (ra == 0) { /* r0 as RA reads 0: the base added into RB instead */
         rk_add(b, RK_SA, (int)rb, 0, 1);
         rb = RK_SA;
+    }
+    if (bytes == 8 && !(b->features & SGX_F_LDBRX)) {
+        /* the word at +4, guest memory's high one, in RK_S2 and the address in RK_S1; LLVM's form there too. Two
+           accesses, as LLVM's are, where Arm's aligned doubleword is one */
+        ppc_w(b, sge_ppc64_addi(RK_S1, rb, 4));
+        if (load) {
+            ppc_w(b, sge_ppc64_lwbrx(RK_S2, ra, RK_S1));
+            ppc_w(b, sge_ppc64_lwbrx(r, ra, rb));
+            ppc_w(b, sge_ppc64_rldicr(RK_S2, RK_S2, 32, 31)); /* sldi */
+            rk_or(b, rt, rt, RK_S2);
+        } else {
+            ppc_w(b, sge_ppc64_rldicl(RK_S2, r, 32, 32)); /* srdi */
+            ppc_w(b, sge_ppc64_stwbrx(r, ra, rb));
+            ppc_w(b, sge_ppc64_stwbrx(RK_S2, ra, RK_S1));
+        }
+        return;
     }
     if (load) {
         ppc_w(b, bytes == 2 ? sge_ppc64_lhbrx(r, ra, rb) : bytes == 4 ? sge_ppc64_lwbrx(r, ra, rb) : sge_ppc64_ldbrx(r, ra, rb));

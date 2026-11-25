@@ -244,12 +244,12 @@ cmake --preset linux-ppc64-g5-cross -DSNX_SYSTEM_SDL3=ON
 cmake --build --preset linux-ppc64-g5-cross
 ```
 
-The recompiler's own back end takes more: its code reads and writes the guest's doublewords with `ldbrx` and `stdbrx`,
-which are ISA 2.06's (POWER7) and the Cell's, and calls as ELFv2 does. On another processor, which the kernel's
-`AT_HWCAP` tells (neither `PPC_FEATURE_ARCH_2_06` nor `PPC_FEATURE_CELL`: POWER4 to POWER6, the 970, PA6T, and NXP's
-e5500 and e6500), and in an ELFv1 build, LLVM makes the code, and the recompile and the run's log say what the host has
-(`cpu: needs LDBRX and STDBRX (ISA 2.06), this host has AT_HWCAP 0xdc080000 (ppc970)`, `abi: needs ELFv2, this build
-has ELFv1`).
+The recompiler's own back end runs on all of them too. Its code reads and writes the guest's doublewords with `ldbrx`
+and `stdbrx` where the kernel's `AT_HWCAP` says the CPU has them (`PPC_FEATURE_ARCH_2_06`, POWER7 on, or
+`PPC_FEATURE_CELL`), and as two words each (`lwbrx`, `stwbrx`) on the others: POWER4 to POWER6, the 970, PA6T, and NXP's
+e5500 and e6500. LLVM makes the same two there; neither is one access, where Arm's aligned doubleword is. Its calls are
+ELFv2's: in an ELFv1 build LLVM makes the code, and the recompile and the run's log say so (`abi: needs ELFv2, this
+build has ELFv1`).
 
 What changes before POWER8:
 

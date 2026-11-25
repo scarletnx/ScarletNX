@@ -29,7 +29,12 @@ enum { PPC_EM = 21, PPC_R_REL64 = 44 };
 #define MG_ARM_API(name)   snx_ppc64_arm_##name
 #define MG_ARM_AVAILABLE() snx_ppc64_available()
 #define MG_ARM_MAKES()     1
-#define MG_ARM_FEATURES()  0u
+#if PPC_BE /* LDBRX where the host has it (ppc64be_codegen.h) */
+#include "common/cpu/recompiler/ppc64/ppc64be_codegen.h"
+#define MG_ARM_FEATURES() snx_ppc64be_features()
+#else
+#define MG_ARM_FEATURES() 0u
+#endif
 #define MG_ARM_EM          PPC_EM
 #define MG_ARM_ELF_FLAGS   2 /* ELFv2 */
 #define MG_ARM_CALL_RELOC  PPC_R_REL64
