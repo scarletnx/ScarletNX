@@ -59,6 +59,13 @@ typedef struct {
     u64 off;
     u32 own_prev, own_next; /* own buffers, from the least recently used to the most (vk_buf_reclaim); a free entry's
                                next free one in own_next */
+    /* A big range over GPU-owned bytes that no one owner holds whole: its copy on the GPU in a buffer of its own
+       (buf_get_owned), kept across submissions. osig is its owners as it was made (owners_sig), ogw the GPU-side
+       write generation and owseen the write-tracking clock before the copy */
+    VkBuffer obuf;
+    DevMem omem;
+    u64 osig, ogw;
+    u32 owseen;
 } Vb;
 /* The cache of guest ranges as buffers: its entries in one array by index (0 is none), and an index of them by range,
    open addressed. An entry with a buffer of its own lives twenty seconds after its last use; one that only holds what
@@ -146,7 +153,15 @@ static u32 vb_new(u64 start, u32 len) {
     g_vblive++;
     return idx;
 }
+/* the entry's kept copy of a range over GPU-owned bytes (Vb.obuf) let go */
+static void drop_ocopy(Vb* e) {
+    if (!e->obuf) return;
+    vk_defer_buffer(e->obuf, e->omem);
+    e->obuf = VK_NULL_HANDLE;
+    e->osig = 0;
+}
 static void vb_free(u32 idx) {
+    drop_ocopy(&g_vb[idx]);
     vb_index_remove(g_vb[idx].start, (u32)g_vb[idx].len);
     g_vb[idx].len = 0; /* free: the sweep skips it */
     g_vb[idx].own_next = g_vbfree;
@@ -4134,6 +4149,66 @@ u64 vk_buf_ahead(void) { return g_buffer.ahead; }
    again (gpu_mem_dirty_since) or a later submit reads it. Bytes all written before this submission are copied ahead
    of its work (vk_guest_read_ahead), and the pass goes on; bytes it writes are copied after those writes, outside the
    pass. Draws over the results of the GPU's engines landed them, a wait for the GPU each */
+/* the owners over guest memory [cpu, cpu + len) as a hash: each one's place, resource and write serial. A new owner,
+   one landed or let go, and a write to one (vk_own_res_wrote) each change it */
+static u64 owners_sig(u64 cpu, u64 len) {
+    OwnRange r[64];
+    u64 h = SNX_FNV_BASIS;
+    for (u64 c = cpu, end = cpu + len; c < end;) {
+        const u32 k = own_lookup(c, end - c, r, 64), n = k < 64 ? k : 64;
+        for (u32 q = 0; q < n; q++) {
+            const VkOwnRes* res = r[q].res;
+            h = snx_fnv_step(h, r[q].addr);
+            h = snx_fnv_step(h, r[q].size);
+            h = snx_fnv_step(h, r[q].res_off);
+            h = snx_fnv_step(h, (u64)(uintptr_t)res);
+            h = snx_fnv_step(h, atomic_load_explicit(&res->serial, memory_order_acquire));
+        }
+        if (k <= 64) break;
+        c = r[63].addr + r[63].size;
+    }
+    return h;
+}
+/* A big range over GPU-owned bytes that no one owner holds whole, kept in a buffer of its own across submissions: in
+   the frame's device ring it was copied again at each submission, and the renderer submits every millisecond it
+   records. One game's draws bound a 64 MiB range over 184 owners about 175 times a present, 9 GB of copies, 95% of
+   the GPU's time at 4 frames a second. It is copied again only when its owners changed (owners_sig), a GPU-side write
+   touched it (gpu_mem_dirty_since) or the CPU wrote its pages. Without write tracking it is copied at each use */
+static int ocopy_get(Vb* e, u64 gva, u64 cpu, u64 len) {
+    const u64 sig = owners_sig(cpu, len);
+    if (e->obuf && e->osig == sig && !gpu_mem_dirty_since(e->ogw, gva, len) &&
+        (e->frame != vk_submit_number() || e->pg_written == vk_pages_written()) &&
+        written_since_gva(gva, len, e->owseen) == 0)
+        return 1;
+    if (!e->obuf) {
+        VkBufferCreateInfo bci = own_info(len);
+        DevMemWant aci = {.at = DM_DEVICE};
+        if (vk_buffer_create(&bci, &aci, &e->obuf, &e->omem, NULL) != VK_SUCCESS) {
+            e->obuf = VK_NULL_HANDLE;
+            return 0;
+        }
+        vk_mem_track(e->omem, VK_OWN_BUFFER);
+        vk_descriptor_heaps_lasting(e->obuf); /* kept descriptors until drop_ocopy's buffer goes */
+    }
+    e->osig = 0; /* until the copy below is recorded */
+    /* the CPU's writes so far taken in by the tracking, so that the clock below is after them: else the next use is
+       told of writes the copy has already, and copies the range again */
+    (void)written_since_gva(gva, len, 0);
+    const u64 gw = gpu_mem_generation();
+    const u32 ws = vk_ww_now(); /* both before the bytes are read */
+    vk_render_end(); /* the GPU's copies happen outside rendering passes */
+    /* the draws recorded and submitted before read the old bytes: done before the copy writes */
+    copy_barrier(VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
+                 VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    if (!vk_guest_read_device(gva, len, e->obuf, 0)) return 0;
+    copy_barrier(VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                 VK_ACCESS_2_MEMORY_READ_BIT);
+    if (copy_stats_on()) g_copy_stage += len;
+    e->osig = sig;
+    e->ogw = gw;
+    e->owseen = ws;
+    return 1;
+}
 static int buf_get_owned(u32 i, Vb* e, u64 gva, u64 len, int strict, u32 epoch, u64 align, VkBuffer* buf, u64* off) {
     VkBuffer sb;
     u64 so, cpu = 0;
@@ -4163,6 +4238,10 @@ static int buf_get_owned(u32 i, Vb* e, u64 gva, u64 len, int strict, u32 epoch, 
         ((VkOwnRes*)o[0].res)->read = ++g_buffer.order.owner_reads;
         ((VkOwnRes*)o[0].res)->used = g_vk_present;
         if (copy_stats_on()) g_owned_bound += len;
+    } else if (len >= PATCH_MIN && gmmu_run(gva, len, &cpu) == len && !vk_uma_pending(gva, len)) {
+        if (!ocopy_get(e, gva, cpu, len)) return 0;
+        sb = e->obuf;
+        so = 0;
     } else {
         /* in device memory, where the GPU's bytes stay on the GPU and the draws read all of it: in staging, the GPU
            copied its own bytes out over PCIe and every draw read them back over it */
@@ -4501,6 +4580,7 @@ static int buf_get_(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 a
     /* GPU-owned bytes, or bytes written in place by a submit not done yet: copied on the GPU (vk_guest_read) */
     if (range_owned(gva, len) || vk_uma_pending(gva, len))
         return buf_get_owned(i, e, gva, len, strict, epoch, align, buf, off);
+    if (e) drop_ocopy(e); /* no GPU-owned bytes there now: the CPU's copy is the range's */
     u32 wnow = vk_ww_now();
     SamplesCount counts[4];
     u32 ncounts;
