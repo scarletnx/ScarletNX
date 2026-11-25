@@ -256,8 +256,8 @@ static VkExtent2D target_extent(Surf* const* rt, const Surf* zt, u32 n) {
             if (vk_surf_view_h(rt[i]) < ext.height) ext.height = vk_surf_view_h(rt[i]);
         }
     if (zt) {
-        if (zt->sw < ext.width) ext.width = zt->sw;
-        if (zt->sh < ext.height) ext.height = zt->sh;
+        if (vk_surf_view_w(zt) < ext.width) ext.width = vk_surf_view_w(zt);
+        if (vk_surf_view_h(zt) < ext.height) ext.height = vk_surf_view_h(zt);
     }
     return ext;
 }
@@ -386,8 +386,8 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u
         za.imageView = zt->att;
         za.imageLayout = zl;
         za.loadOp = load_op(zt, undefined);
-        if (zt->sw < ext.width) ext.width = zt->sw;
-        if (zt->sh < ext.height) ext.height = zt->sh;
+        if (vk_surf_view_w(zt) < ext.width) ext.width = vk_surf_view_w(zt);
+        if (vk_surf_view_h(zt) < ext.height) ext.height = vk_surf_view_h(zt);
     }
     vk_surf_batch_end();
     if (ext.width == ~0u) ext = area; /* nothing bound with a surface: the bound targets' size */
@@ -1021,7 +1021,7 @@ static void clear_targets(const DsState* ds, const DrawClear* c, const DrawOwner
         vk_surf_wrote(zt);
         int all_aspects = (v & 1) && (!zt->f.stencil || ((v & 2) && stencil_mask == 0xff));
         if (!o->pred && all_aspects && zt->layers == 1 && rect.rect.offset.x == 0 && rect.rect.offset.y == 0 &&
-            rect.rect.extent.width == zt->sw && rect.rect.extent.height == zt->sh)
+            rect.rect.extent.width == vk_surf_view_w(zt) && rect.rect.extent.height == vk_surf_view_h(zt))
             vk_rt_drawn_full(zt);
         else
             vk_rt_drawn(zt);
