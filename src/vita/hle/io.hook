@@ -1,0 +1,49 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+#
+# The Vita's imports that io.c answers, by NID, for tools/hookgen --vita.
+# SceIofilemgr and SceLibKernel's sceIo*: the game's files. app0: is the application's folder as the VPK holds it (the
+# game folder's app/, with the update's files in patch/ over it), read-only on the console and here; ux0: the memory card, the game folder's ux0/, which the game
+# writes its data to (ux0:data/...); savedata0: the game's save data, mounted for it as the console mounts it
+# (VitaProcess.savedata, in ux0/). A path leaving its device ("..") is refused
+family io
+[0xdf3352fc] hook sceFiosArchiveGetMountBufferSizeSync(u32 attr, addr path, u32 params) -> u64 = vita_io_fios_archive_buffer_size_sync
+[0xc4822276] hook sceFiosArchiveMountSync(u32 attr, addr out, addr path, addr point_address, u32 buffer, u32 buffer_size, u32 params) -> u32 = vita_io_fios_archive_mount_sync
+[0xb26dc24d] hook sceFiosArchiveUnmountSync(u32 attr, u32 fh) -> u32 = vita_io_fios_archive_unmount_sync
+[0x61c4aac4] hook sceFiosOverlayResolveWithRangeSync02(u32 pid, u32 flags, addr in, addr out, u32 capacity, u32 min_order, u32 max_order) -> u32 = vita_io_fios_overlay_resolve
+[0x1dd808d1] hook sceFiosOverlayGetList02(u32 pid, u32 min_order, u32 max_order, u32 ids, u32 capacity, addr count) -> u32 = vita_io_fios_overlay_get_list
+[0xf5c1f928] hook sceFiosOverlayGetRecommendedScheduler02() -> u32 = vita_io_fios_overlay_scheduler
+[0x70321220] hook sceFiosOverlayThreadSetDisabled02(u32 params) -> u32 = vita_io_fios_ok
+[0x8cca471a] hook _sceFiosKernelOverlayResolveWithRangeSync(u32 pid, u32 flags, addr in, addr opt) -> u32 = vita_io_fios_kernel_overlay_resolve
+[0x774c2c05] hook sceFiosInitialize(u32 params) -> u32 = vita_io_fios_ok
+[0xd55b8555] hook sceFiosIOFilterAdd(u32 params) -> u32 = vita_io_fios_ok
+[0x2904b539] hook sceFiosTerminate(u32 params) -> u32 = vita_io_fios_ok
+[0xf4f54e09] hook sceFiosIsInitialized() -> u32 = vita_io_fios_is_initialized
+[0xacbaf3e0] hook sceFiosStatSync(u32 attr, addr path, addr out) -> u32 = vita_io_fios_stat_sync
+[0xc3e7c3db] hook sceFiosFHOpenSync(u32 attr, addr out, addr file, addr params) -> u32 = vita_io_fios_fh_open_sync
+[0x45182328] hook sceFiosFHCloseSync(u32 attr, u32 fh) -> u32 = vita_io_fios_fh_close_sync
+[0x76945919] hook sceFiosFHReadSync(u32 attr, u32 fh, addr buffer, u64 length) -> u64 = vita_io_fios_fh_read_sync
+[0xe2805059] hook sceFiosFHPreadSync(u32 attr, u32 fh, addr buffer, u64 length, u64 offset) -> u64 = vita_io_fios_fh_pread_sync
+[0xc5c26581] hook sceFiosFHGetSize(u32 fh) -> u64 = vita_io_fios_fh_get_size
+[0xd7f33130] hook sceFiosFHTell(u32 fh) -> u64 = vita_io_fios_fh_tell
+[0xa75f3c4a] hook sceFiosFHSeek(u32 fh, i64 offset, u32 whence) -> u64 = vita_io_fios_fh_seek
+[0x233b070c] hook sceFiosFileExistsSync(u32 attr, addr path) -> u32 = vita_io_fios_file_exists_sync
+[0x726e01be] hook sceFiosDirectoryExistsSync(u32 attr, addr path) -> u32 = vita_io_fios_directory_exists_sync
+[0x789215c3] hook sceFiosFileGetSizeSync(u32 attr, addr path) -> u64 = vita_io_fios_file_get_size_sync
+[0x6c60ac61] hook sceIoOpen(addr file, u32 flags, u32 mode) -> u32 = vita_io_open
+[0xc70b8886] hook sceIoClose(u32 fd) -> u32 = vita_io_close
+[0xfdb32293] hook sceIoRead(u32 fd, addr buffer, u32 size) -> u32 = vita_io_read
+[0x52315ad7] hook sceIoPread(u32 fd, addr buffer, u32 size, i64 offset) -> u32 = vita_io_pread
+[0x16512f59] hook sceIoSyncByFd(u32 fd) -> u32 = vita_io_sync_by_fd
+[0x34efd876] hook sceIoWrite(u32 fd, addr buffer, u32 size) -> u32 = vita_io_write
+[0x99ba173e] hook sceIoLseek(u32 fd, i64 offset, i32 whence) -> u64 = vita_io_lseek
+[0x49252b9b] hook sceIoLseek32(u32 fd, i32 offset, i32 whence) -> u32 = vita_io_lseek32
+[0xe20ed0f3] hook sceIoRemove(addr file) -> u32 = vita_io_remove
+[0x9670d39f] hook sceIoMkdir(addr dir, u32 mode) -> u32 = vita_io_mkdir
+[0xe9f91ec8] hook sceIoRmdir(addr dir) -> u32 = vita_io_rmdir
+[0xf737e369] hook sceIoRename(addr old_path, addr new_path) -> u32 = vita_io_rename
+[0xbca5b623] hook sceIoGetstat(addr file, addr stat) -> u32 = vita_io_getstat
+[0x57f8cd25] hook sceIoGetstatByFd(u32 fd, addr out) -> u32 = vita_io_getstat_by_fd
+[0xa9283dd0] hook sceIoDopen(addr dirname) -> u32 = vita_io_dopen
+[0x9c8b6624] hook sceIoDread(u32 fd, addr out) -> u32 = vita_io_dread
+[0x422a221a] hook sceIoDclose(u32 fd) -> u32 = vita_io_dclose

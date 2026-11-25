@@ -768,11 +768,11 @@ static uint32_t lc_fopen(VitaProcess* p, VitaThread* t) {
     return open_stream(p, t, arg(p, t, 0), flags);
 }
 static uint32_t open_stream(VitaProcess* p, VitaThread* t, uint32_t path, uint32_t flags) {
-    uint32_t fd = vita_io_open(p, path, flags);
+    uint32_t fd = vita_io_file_open(p, path, flags);
     if (fd & 0x80000000u) return set_errno(p, t, fd & 0xffff), 0;
     uint32_t file = vita_heap_alloc(p, heap(p), 16, 8);
     if (!file) {
-        vita_io_close(p, fd);
+        vita_io_file_close(p, fd);
         return set_errno(p, t, ENOMEM), 0;
     }
     vita_write32(p, file, FILE_MAGIC), vita_write32(p, file + 4, fd);
@@ -781,7 +781,7 @@ static uint32_t open_stream(VitaProcess* p, VitaThread* t, uint32_t path, uint32
 static uint32_t lc_fclose(VitaProcess* p, VitaThread* t) {
     uint32_t file = arg(p, t, 0), fd = file_fd(p, file);
     if (!fd || fd == STDOUT_FD || fd == STDERR_FD) return fd ? 0 : UINT32_MAX;
-    vita_io_close(p, fd);
+    vita_io_file_close(p, fd);
     vita_write32(p, file, 0);
     vita_heap_free(p, heap(p), file);
     return 0;

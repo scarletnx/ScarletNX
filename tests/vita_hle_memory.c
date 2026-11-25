@@ -535,8 +535,8 @@ static void unmapped_outputs(VitaProcess* p, VitaThread* t, uint32_t mem) {
     assert(CALL(vita_hle_table, "sceCtrlPeekBufferPositive", 0, UNMAPPED, 1) == 0x80340001u);
     assert(CALL(vita_hle_table, "sceCtrlPeekBufferPositive", 0, mem + 0x200, 1) == 1);
     strcpy(vita_ptr(p, mem), "ux0:two-buffers.bin");
-    assert(CALL(vita_hle_io, "sceIoGetstat", mem, UNMAPPED) & 0x80000000u);
-    assert(CALL(vita_hle_io, "sceIoGetstat", mem, mem + 0x300) == 0);
+    assert(CALL(vita_hle_table, "sceIoGetstat", mem, UNMAPPED) & 0x80000000u);
+    assert(CALL(vita_hle_table, "sceIoGetstat", mem, mem + 0x300) == 0);
     /* a semaphore's count and a signal are any 32 bits: a signal past the most, or past what a count holds, is the
        overflow, and the count stays */
     assert(CALL(kernel, "sceKernelSignalSema", sema, 0x7fffffff) == SCE_KERNEL_ERROR_SEMA_OVF);
@@ -565,7 +565,7 @@ static void libc_field_widths(VitaProcess* p, VitaThread* t, uint32_t mem) {
    and the file's (30 bytes each: a hash, the first block, the size and the offset), their blocks' sizes, then the
    manifest, which is the file's name, and the file */
 static void fios_archive_unmount(VitaProcess* p, VitaThread* t) {
-    const VitaHle* io = vita_hle_io;
+    const VitaHle* io = vita_hle_table;
     static const unsigned char data[16] = "archived bytes.";
     unsigned char psarc[96 + 8 + 16] = "PSAR\0\1\0\4zlib";
     psarc[15] = 96, psarc[19] = 30, psarc[23] = 2, psarc[25] = 1;  /* the tables' end, an entry, two, 64 KiB blocks */

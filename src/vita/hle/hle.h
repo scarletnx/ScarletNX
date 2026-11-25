@@ -85,7 +85,7 @@ void vita_hle_call_returned(VitaProcess* p, VitaThread* t);
 /* the functions the runtime answers, sorted by NID (hookgen --vita's, a NULL-named entry ends it) */
 extern const VitaHle vita_hle_table[];
 /* each module's functions (a NULL-named entry ends each table) */
-extern const VitaHle vita_hle_kernel[], vita_hle_io[], vita_hle_misc[], vita_hle_gxm[], vita_hle_libc[], vita_hle_ngs[], vita_hle_net[];
+extern const VitaHle vita_hle_kernel[], vita_hle_misc[], vita_hle_gxm[], vita_hle_libc[], vita_hle_ngs[], vita_hle_net[];
 
 /* An imported variable (VitaImage.variables): what its slot (VITA_VARIABLE_SIZE bytes, zero) holds, written once as
    the process starts */
@@ -127,8 +127,8 @@ void vita_trophy_free(VitaProcess* p);
 void vita_io_close_all(VitaProcess* p);
 /* sceIoOpen's and sceIoClose's work, for SceLibc's stdio: a descriptor or an error; a descriptor's host file, NULL
    for none */
-uint32_t vita_io_open(VitaProcess* p, uint32_t path, uint32_t flags);
-uint32_t vita_io_close(VitaProcess* p, uint32_t fd);
+uint32_t vita_io_file_open(VitaProcess* p, uint32_t path, uint32_t flags);
+uint32_t vita_io_file_close(VitaProcess* p, uint32_t fd);
 FILE* vita_io_file(VitaProcess* p, uint32_t fd);
 /* the host path of a guest path (app0: with the update's files over it, ux0:), the caller's to free; NULL for none */
 char* vita_io_host_path(VitaProcess* p, uint32_t address);

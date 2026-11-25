@@ -31,7 +31,7 @@ static int by_nid(const void* key, const void* entry) {
 static const VitaHle* find(uint32_t nid) {
     const VitaHle* h = bsearch(&nid, vita_hle_table, VITA_HLE_COUNT, sizeof *vita_hle_table, by_nid);
     if (h) return h;
-    static const VitaHle* const tables[] = {vita_hle_kernel, vita_hle_io,    vita_hle_misc, vita_hle_gxm, vita_hle_libc,
+    static const VitaHle* const tables[] = {vita_hle_kernel, vita_hle_misc, vita_hle_gxm, vita_hle_libc,
                                             vita_hle_ngs, vita_hle_net};
     for (size_t i = 0; i < sizeof tables / sizeof *tables; ++i)
         for (const VitaHle* h = tables[i]; h->name; ++h)
