@@ -59,9 +59,13 @@ int mem_user_string(char* dst, u64 addr, u64 cap) {
         if (!(dst[i] = (char)g_mem[addr + i])) return (int)(i + 1);
     return -1;
 }
+static char g_said[512]; /* the last line logged */
 void logf_(int lvl, const char* fmt, ...) {
+    va_list args;
     (void)lvl;
-    (void)fmt;
+    va_start(args, fmt);
+    vsnprintf(g_said, sizeof g_said, fmt, args);
+    va_end(args);
 }
 void fatal(const char* fmt, ...) {
     va_list args;
@@ -330,6 +334,48 @@ static void scaled_rect(void) {
     assert(part.offset.x == -24 && part.offset.y == 40 && part.extent.width == 56 && part.extent.height == 88);
 }
 
+/* what isn't given to the host is said, with the structure and its values */
+static void marshal_said(void) {
+    VkSubmitInfo submit = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 3};
+    g_said[0] = 0;
+    memcpy(GP(ROOT), &submit, sizeof submit);
+    gw32(ROOT, VK_STRUCTURE_TYPE_FENCE_CREATE_INFO);
+    assert(!gvk_in(&gvk_t_submit, ROOT, 1));
+    assert(strstr(g_said, "VkSubmitInfo 0 of 1 at 1000 has the sType 8, not 4"));
+    gw32(ROOT, VK_STRUCTURE_TYPE_SUBMIT_INFO);
+    g_said[0] = 0;
+    assert(!gvk_in(&gvk_t_submit, ROOT, 1));
+    assert(strstr(g_said, "VkSubmitInfo has 3 elements at 0 by the pointer at its byte 48"));
+    VkWriteDescriptorSet w[2] = {
+        {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+         .dstBinding = 5,
+         .descriptorCount = 2,
+         .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
+         .pImageInfo = (const void*)GP(ROOT),
+         .pBufferInfo = (const void*)GP(ROOT),
+         .pTexelBufferView = (const void*)GP(ROOT)},
+        {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+         .dstBinding = 7,
+         .descriptorCount = 4,
+         .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+         .pBufferInfo = (const void*)GP(ROOT)},
+    };
+    assert(gvk_writes_take(w, 2));
+    assert(w[0].pImageInfo && !w[0].pBufferInfo && !w[0].pTexelBufferView);
+    assert(!w[1].pImageInfo && w[1].pBufferInfo && !w[1].pTexelBufferView);
+    w[1].pBufferInfo = NULL;
+    g_said[0] = 0;
+    assert(!gvk_writes_take(w, 2));
+    assert(strstr(g_said, "write 1 of 2 of descriptors (binding 7, type 7, 4 of them) has no pBufferInfo"));
+    w[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
+    assert(!gvk_writes_take(w, 2) && strstr(g_said, "type 4, 4 of them) has no pTexelBufferView"));
+    w[1].descriptorType = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
+    assert(!gvk_writes_take(w, 2) && strstr(g_said, "type 10, 4 of them) has no pImageInfo"));
+    w[1].descriptorCount = 0; /* a write of no descriptors reads none of its arrays */
+    w[1].pTexelBufferView = (const void*)GP(ROOT);
+    assert(gvk_writes_take(w, 2) && !w[1].pTexelBufferView);
+}
+
 static void unlisted_names(void) {
     static const VkExtensionProperties listed[] = {{"VK_KHR_swapchain", 70}, {"VK_KHR_maintenance1", 2}};
     char name[VK_MAX_EXTENSION_NAME_SIZE];
@@ -385,6 +431,8 @@ int main(void) {
     marshal_core_chains();
     gvk_scratch_free();
     scaled_rect();
+    marshal_said();
+    gvk_scratch_free();
     query_bytes();
     unlisted_names();
 #if !defined(__BYTE_ORDER__) || __BYTE_ORDER__ != __ORDER_BIG_ENDIAN__

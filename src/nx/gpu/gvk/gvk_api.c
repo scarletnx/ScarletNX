@@ -2891,39 +2891,10 @@ static void copies_scale(const VkCopyDescriptorSet* cp, u32 nc) {
 }
 /* writes w and copies cp, each write reading the one of its three arrays its type names (host memory the caller may
    change), its images in host_layout and its views the shadows' (views_to_host). Nothing when a write lacks its
-   array */
+   array (gvk_writes_take says so) */
 static void writes_update(VkWriteDescriptorSet* w, u32 nw, const VkCopyDescriptorSet* cp, u32 nc) {
     /* Validate all writes before mutating any view/set tracking state. */
-    for (u32 i = 0; w && i < nw; i++) {
-        if (!w[i].descriptorCount) {
-            w[i].pImageInfo = NULL;
-            w[i].pBufferInfo = NULL;
-            w[i].pTexelBufferView = NULL;
-            continue;
-        }
-        switch (w[i].descriptorType) {
-            case VK_DESCRIPTOR_TYPE_SAMPLER:
-            case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
-            case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
-            case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
-            case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
-                if (!w[i].pImageInfo) return;
-                w[i].pBufferInfo = NULL;
-                w[i].pTexelBufferView = NULL;
-                break;
-            case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
-            case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
-                if (!w[i].pTexelBufferView) return;
-                w[i].pImageInfo = NULL;
-                w[i].pBufferInfo = NULL;
-                break;
-            default:
-                if (!w[i].pBufferInfo) return;
-                w[i].pImageInfo = NULL;
-                w[i].pTexelBufferView = NULL;
-                break;
-        }
-    }
+    if (w && !gvk_writes_take(w, nw)) return;
     for (u32 i = 0; w && i < nw; i++) {
         if (!w[i].descriptorCount || !w[i].pImageInfo || w[i].descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER) continue;
         VkDescriptorImageInfo* im = gvk_scratch(sizeof *im * w[i].descriptorCount);

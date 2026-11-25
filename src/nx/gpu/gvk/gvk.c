@@ -134,6 +134,13 @@ static const GvkType* chain_type(u32 parent, u32 stype);
 static int chain_in(u32 parent, u64 g, const void** out);
 static void* copy_in(const GvkType* t, u64 g, u64 count);
 
+/* a structure the host can't be given: said, with the values that make it so, and the call fails */
+#define BAD(...)                                                                                                       \
+    do {                                                                                                               \
+        WARN_LIMIT(16, "gvk: " __VA_ARGS__);                                                                           \
+        return 0;                                                                                                      \
+    } while (0)
+
 static int fix(const GvkType* t, u8* h, int fix_chain) {
     if (t->stype && fix_chain) {
         const void* next;
@@ -161,7 +168,8 @@ static int fix(const GvkType* t, u8* h, int fix_chain) {
         if (f->kind == GVK_SAMPLE_MASK) {
             u32 samples;
             memcpy(&samples, h + f->count_off, sizeof samples);
-            if (samples == 0 || samples > VK_SAMPLE_COUNT_64_BIT || (samples & (samples - 1))) return 0;
+            if (samples == 0 || samples > VK_SAMPLE_COUNT_64_BIT || (samples & (samples - 1)))
+                BAD("%s has rasterizationSamples %u, which is no sample count\n", t->name, samples);
             count = (samples + 31) / 32;
         }
         void* p = NULL;
@@ -180,7 +188,8 @@ static int fix(const GvkType* t, u8* h, int fix_chain) {
         }
         if (count && !p && f->kind != GVK_OPTIONAL_ARRAY && f->kind != GVK_OPTIONAL_ONE &&
             (g || f->kind == GVK_ARRAY || f->kind == GVK_BYTES || f->kind == GVK_STR))
-            return 0;
+            BAD("%s has %llu elements at %llx by the pointer at its byte %u, which the host can't be given\n", t->name,
+                (unsigned long long)count, (unsigned long long)g, (unsigned)f->off);
         st_ptr(h + f->off, p);
     }
     return 1;
@@ -198,7 +207,11 @@ static void* copy_in(const GvkType* t, u64 g, u64 count) {
     memcpy(h, GP(g), bytes);
     for (u64 i = 0; i < count; i++) {
         u8* item = h + i * t->size;
-        if (t->stype && snx_ld_le32(item) != t->stype) return NULL;
+        if (t->stype && snx_ld_le32(item) != t->stype) {
+            WARN_LIMIT(16, "gvk: %s %llu of %llu at %llx has the sType %u, not %u\n", t->name, (unsigned long long)i,
+                       (unsigned long long)count, (unsigned long long)g, snx_ld_le32(item), t->stype);
+            return NULL;
+        }
         if (!fix(t, item, 1)) return NULL;
     }
     return h;
@@ -213,19 +226,26 @@ static int chain_in(u32 parent, u64 g, const void** out) {
     u32 hops = 0;
     *out = NULL;
     for (; g; g = gr64(g + 8)) {
-        if (hops == GVK_CHAIN_HOPS || !mapped(g, 16)) return 0;
+        if (hops == GVK_CHAIN_HOPS)
+            BAD("a pNext chain of the structure of type %u is longer than %u\n", parent, GVK_CHAIN_HOPS);
+        if (!mapped(g, 16))
+            BAD("a pNext chain of the structure of type %u points to %llx, which isn't mapped\n", parent,
+                (unsigned long long)g);
         for (u32 i = 0; i < hops; i++)
-            if (seen[i] == g) return 0;
+            if (seen[i] == g)
+                BAD("a pNext chain of the structure of type %u comes back to %llx\n", parent, (unsigned long long)g);
         seen[hops++] = g;
         u32 st = gr32(g);
         const GvkType* t = chain_type(parent, st);
         if (t) {
-            if (!mapped(g, t->size)) return 0;
+            if (!mapped(g, t->size))
+                BAD("the %s at %llx in a pNext chain isn't all mapped\n", t->name, (unsigned long long)g);
             u8* copy = gvk_scratch(t->size);
             memcpy(copy, GP(g), t->size);
             if (snx_ld_le32(copy) != st || !fix(t, copy, 0)) return 0;
             for (const u8* p = *out; p;) {
-                if (snx_ld_le32(p) == st) return 0;
+                if (snx_ld_le32(p) == st)
+                    BAD("a pNext chain of the structure of type %u has two %s\n", parent, t->name);
                 memcpy(&p, p + 8, sizeof p);
             }
             st_ptr(copy + 8, NULL);
@@ -430,6 +450,42 @@ CHAINED(gvk_t_bind_image, VkBindImageMemoryInfo, VK_STRUCTURE_TYPE_BIND_IMAGE_ME
 CHAINED(gvk_t_imreq2, VkImageMemoryRequirementsInfo2, VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2, {0});
 CHAINED(gvk_t_bufreq2, VkBufferMemoryRequirementsInfo2, VK_STRUCTURE_TYPE_BUFFER_MEMORY_REQUIREMENTS_INFO_2, {0});
 CHAINED(gvk_t_req2, VkMemoryRequirements2, VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2, {0});
+
+int gvk_writes_take(void* writes, u32 n) {
+    VkWriteDescriptorSet* w = writes;
+    for (u32 i = 0; i < n; i++) {
+        const VkDescriptorImageInfo* image = NULL;
+        const VkDescriptorBufferInfo* buffer = NULL;
+        const VkBufferView* texel = NULL;
+        const char* array = NULL;
+        if (w[i].descriptorCount) {
+            switch (w[i].descriptorType) {
+                case VK_DESCRIPTOR_TYPE_SAMPLER:
+                case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+                case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+                case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+                case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
+                    if (!(image = w[i].pImageInfo)) array = "pImageInfo";
+                    break;
+                case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+                case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+                    if (!(texel = w[i].pTexelBufferView)) array = "pTexelBufferView";
+                    break;
+                default:
+                    if (!(buffer = w[i].pBufferInfo)) array = "pBufferInfo";
+                    break;
+            }
+        }
+        if (array)
+            BAD("write %u of %u of descriptors (binding %u, type %d, %u of them) has no %s: none of the writes and copies "
+                "of the call is done\n",
+                i, n, w[i].dstBinding, (int)w[i].descriptorType, w[i].descriptorCount, array);
+        w[i].pImageInfo = image;
+        w[i].pBufferInfo = buffer;
+        w[i].pTexelBufferView = texel;
+    }
+    return 1;
+}
 
 static const GvkType* chain_type(u32 parent, u32 stype) {
     static const struct {

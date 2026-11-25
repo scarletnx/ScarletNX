@@ -85,6 +85,9 @@ u64 gvk_export(const char* name);
 /* The first of the n strings at the game's array names that is none of the nlisted at listed, step bytes apart: 1 and
    the string in name (size bytes), "" for one that isn't a string the game mapped. 0 when all are listed */
 int gvk_unlisted(u64 names, u32 n, const char* listed, size_t step, u32 nlisted, char* name, size_t size);
+/* The n VkWriteDescriptorSet at writes (host memory) each with the one of its three arrays that its type reads, the
+   others cleared, and none for a write of no descriptors. 0, said, when a write lacks its array */
+int gvk_writes_take(void* writes, u32 n);
 /* A game's SPIR-V module of bytes at w (4-aligned) with what the console's driver takes and Vulkan doesn't mended
    (gvk_spirv.c), in the calling thread's scratch memory.
    - an ArrayStride on a structure's member (one game's push constants hold an int[8] so, with no stride on the array
