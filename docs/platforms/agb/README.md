@@ -58,8 +58,9 @@ memory.
 
 `scarletnx-agb Game.gba` plays the ROM in a window four times the console's
 screen, scaled by whole steps when it is resized, with the console's sound and
-its 59.73 frames a second. `-f` (or `--fullscreen=1`) starts it fullscreen, and F11
-switches. Esc twice within 3 seconds closes it, a first press warning on the
+its 59.73 frames a second. `-f` (or `--fullscreen=1`) starts it fullscreen, and F11 or Alt+Return
+switches. Esc twice within 3 seconds closes it (the runtime's keys, as a Switch game takes them:
+[On-screen controls](../../user/usage.md#on-screen-controls)), a first press warning on the
 terminal and in a line over the game, as a Switch game's notices show. The screen goes through Vulkan, as the
 other consoles' windows, where the host has a Vulkan 1.3 device that presents to the window; without one, through
 SDL's renderer, which the start says, the same pixels either way. The keyboard is the Switch runtime's: the arrows are the D-pad, X or

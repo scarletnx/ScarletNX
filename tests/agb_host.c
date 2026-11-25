@@ -13,6 +13,9 @@
 #include "common/utilities/common.h"
 #include "common/utilities/notice.h"
 #include "common/utilities/vpad_consoles.h"
+#include "common/utilities/hotkeys.h"
+#include "common/utilities/quit_key.h"
+#include "common/utilities/vpad_sdl.h"
 #include "support/sdl_real_pads.h"
 #include "support/vpad_window.h"
 #include <SDL3/SDL.h>
@@ -20,22 +23,24 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Esc down with mod, a repeat or not, read by a poll: whether the window stays open */
-static bool esc(AgbHost* host, SDL_Keymod mod, bool repeat) {
+/* key down with mod, a repeat or not, read by a poll: whether the window stays open */
+static bool press(AgbHost* host, SDL_Keycode key, SDL_Keymod mod, bool repeat) {
     SDL_Event e = {0};
     uint16_t keys;
     e.type = SDL_EVENT_KEY_DOWN;
-    e.key.key = SDLK_ESCAPE;
-    e.key.scancode = SDL_SCANCODE_ESCAPE;
+    e.key.key = key;
+    e.key.scancode = SDL_GetScancodeFromKey(key, NULL);
     e.key.mod = mod;
     e.key.down = true;
     e.key.repeat = repeat;
     return SDL_PushEvent(&e) && agb_host_poll(host, &keys);
 }
+/* the quit key, Esc by default: the runtime's hotkey_quit */
+static bool esc(AgbHost* host, SDL_Keymod mod, bool repeat) { return press(host, SDLK_ESCAPE, mod, repeat); }
 
-/* the frame drawn under the warning, read back before it is shown: how many pixels differ from the band where the
-   notice goes and from the frame's colour elsewhere; -1 when it cannot be read */
-static long notice_read(AgbHost* host, SDL_Renderer* renderer, SDL_Window* window) {
+/* the frame drawn under the notice saying text, read back before it is shown: how many pixels differ from the band
+   where the notice goes and from the frame's colour elsewhere; -1 when it cannot be read */
+static long notice_read(AgbHost* host, SDL_Renderer* renderer, SDL_Window* window, const char* text) {
     static uint32_t frame[AGB_SCREEN_WIDTH * AGB_SCREEN_HEIGHT];
     static const unsigned char ground[3] = {0x10, 0x20, 0x30};
     SnxNotice n = {0};
@@ -53,7 +58,7 @@ static long notice_read(AgbHost* host, SDL_Renderer* renderer, SDL_Window* windo
         SDL_DestroySurface(got);
         return -1;
     }
-    snx_notice_show(&n, "Press Esc again within 3 seconds to quit", 0);
+    snx_notice_show(&n, text, 0);
     scale = snx_notice_scale(w, h, snx_display_percent(SDL_GetWindowDisplayScale(window)));
     unsigned char* band =
         snx_notice_rect(&n, w, h, scale, rect) ? malloc((size_t)rect[2] * (size_t)rect[3] * 4u) : NULL;
@@ -267,13 +272,58 @@ int main(void) {
     SDL_Window* window = windows[0];
     SDL_free(windows);
     int failed = controls(host, window, dir, ini); /* before a notice is over the frame */
+    /* the runtime's keys: a key the GBA has nothing for said with why; F11 and Alt+Return switch fullscreen */
+    if (!press(host, SDLK_D, SDL_KMOD_LCTRL, false) ||
+        notice_read(host, SDL_GetRenderer(window), window,
+                    "Ctrl+D (TV mode) does nothing in a GBA game: the TV mode is the Switch's console docked") != 0) {
+        fprintf(stderr, "agb_host: Ctrl+D was not said to do nothing in a GBA game\n");
+        agb_host_close(host);
+        return 1;
+    }
+    for (int i = 0; i < 4; ++i) {
+        bool alt = i & 1;
+        if (!press(host, alt ? SDLK_RETURN : SDLK_F11, alt ? SDL_KMOD_LALT : SDL_KMOD_NONE, false) ||
+            !SDL_SyncWindow(window) || !(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) != (i == 1 || i == 3)) {
+            fprintf(stderr, "agb_host: %s did not switch the window's fullscreen\n", alt ? "Alt+Return" : "F11");
+            agb_host_close(host);
+            return 1;
+        }
+    }
+    /* the quit key as a Switch game's command line sets it: Q quits on its second press, Esc no more; a key SDL has no
+       name for keeps the one in effect, as a Switch game's does (hotkey_set says so) */
+    {
+        char why[256] = {0}, *quit_q[] = {"scarletnx-agb", "--hotkey-quit=Q", NULL},
+             *quit_esc[] = {"scarletnx-agb", "--hotkey-quit=Escape", NULL},
+             *quit_nope[] = {"scarletnx-agb", "--hotkey-quit=Nope", NULL};
+        snx_vpad_sdl_settings();
+        if (vpad_arg(quit_nope[1], why, sizeof why) != 1 || vpad_arg(quit_q[1], why, sizeof why) != 1) {
+            fprintf(stderr, "agb_host: --hotkey-quit= was not taken as the runtime takes it (%s)\n", why);
+            agb_host_close(host);
+            return 1;
+        }
+        vpad_settings(dir, "a game", 2, quit_nope);
+        if (strcmp(hotkey_text(HOTKEY_QUIT), "Escape")) {
+            fprintf(stderr, "agb_host: hotkey_quit=Nope left %s, not Escape\n", hotkey_text(HOTKEY_QUIT));
+            agb_host_close(host);
+            return 1;
+        }
+        vpad_settings(dir, "a game", 2, quit_q);
+        if (!esc(host, SDL_KMOD_NONE, false) || !esc(host, SDL_KMOD_NONE, false) ||
+            !press(host, SDLK_Q, SDL_KMOD_NONE, false) || press(host, SDLK_Q, SDL_KMOD_NONE, false)) {
+            fprintf(stderr, "agb_host: with hotkey_quit=Q, Esc quit or Q did not on its second press\n");
+            agb_host_close(host);
+            return 1;
+        }
+        vpad_settings(dir, "a game", 2, quit_esc);
+        SDL_Delay(SNX_QUIT_AGAIN_NS / 1000000 + 100); /* Q's presses spent: Esc's first is a first again */
+    }
     if (!esc(host, SDL_KMOD_LCTRL, false) || !esc(host, SDL_KMOD_LALT, false) || !esc(host, SDL_KMOD_LGUI, false) ||
         !esc(host, SDL_KMOD_NONE, false)) {
         fprintf(stderr, "agb_host: Esc's first press closed the window\n");
         agb_host_close(host);
         return 1;
     }
-    if (notice_read(host, SDL_GetRenderer(window), window) != 0) {
+    if (notice_read(host, SDL_GetRenderer(window), window, "Press Escape again within 3 seconds to quit") != 0) {
         agb_host_close(host);
         return 1;
     }

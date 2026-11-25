@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "vita/gpu/present.h"
 #include "common/utilities/common.h"
-#include "common/utilities/quit_key.h"
+#include "common/utilities/hotkeys.h"
 #include "common/utilities/vpad_sdl.h"
 #include "vita/gpu/render.h"
 #include "vita/gpu/vk.h"
@@ -17,7 +17,6 @@
 static struct {
     char* shot;
     bool video;
-    uint64_t quit_by; /* a second Esc before this ends the game (common/utilities/quit_key.h) */
 } g_present;
 static volatile sig_atomic_t g_interrupted;
 static void on_signal(int signal) {
@@ -33,7 +32,8 @@ void vita_present_init(const char* title, const char* ini, const char* shot) {
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
     vita_input_init();
-    if (vita_vk() && vita_vk()->host.window) snx_vpad_window_open(vita_vk()->host.window, ini, vita_present_say);
+    if (vita_vk() && vita_vk()->host.window)
+        snx_vpad_window_open(vita_vk()->host.window, ini, vita_present_say, vita_vk_notice);
 }
 /* the framebuffer shown last as PATH<suffix>.ppm, once the GPU drew it */
 static void shot_write(VitaProcess* p, const char* suffix);
@@ -48,20 +48,15 @@ bool vita_present_vblank(VitaProcess* p) {
     SDL_Event event;
     while (SDL_WasInit(SDL_INIT_EVENTS) && SDL_PollEvent(&event)) {
         if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) return false;
-        SnxVpadEvent took = snx_vpad_window_event(&event);
+        int action;
+        SnxVpadEvent took = snx_vpad_window_event(&event, &action);
         if (took == SNX_VPAD_QUIT) return false;
-        if (took == SNX_VPAD_TAKEN) continue;
-        /* Esc twice ends the game, a first one warning on the terminal and over the game; not with Ctrl, Alt or the
-           system key */
-        if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_ESCAPE && !event.key.repeat &&
-            !(event.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI))) {
-            char warning[64];
-            if (snx_quit_press(&g_present.quit_by, SDL_GetTicksNS())) return false;
-            snx_quit_warning(warning, sizeof warning, "Esc");
-            printf("%s\n", warning);
-            vita_vk_notice(warning);
-            continue;
-        }
+        if (took == SNX_VPAD_ACTION)
+            snx_vpad_window_none(action, action == HOTKEY_MOUSE     ? "its mouse is the front panel's finger and the "
+                                                                      "pointer of the on-screen controls"
+                                         : action == HOTKEY_TV_MODE ? "the TV mode is the Switch's console docked"
+                                                                    : "its window has none of it yet");
+        if (took != SNX_VPAD_PASS) continue;
         vita_input_event(&event);
     }
     vita_input_sample();

@@ -81,6 +81,7 @@ int vpad_auto_said(int touch, int pads, char* out, size_t n);
    said in the log as it changes */
 void vpad_auto(int touch, int pads);
 const char* vpad_name(int control); /* a control's name, as edit mode shows it: "A", "D-pad" */
+const char* vpad_console_name(void); /* the console vpad_console gave ("GBA"), "Switch" before it */
 /* places, sizes and the shown ones back to their defaults, kept */
 void vpad_reset_layout(void);
 /* the settings' tables (settings.h): g_vpad_ini, controls, controls_scale..., a control's place (controls_a); and
@@ -95,6 +96,9 @@ int vpad_ini(const char* key, const char* value);
    the controls or of touch, or --launcher-picks=0|1, which vpad_settings then reads; 0 for another; -1 for a value the
    setting does not take, why in error */
 int vpad_arg(const char* arg, char* error, size_t n);
+/* another table's settings that vpad_arg and vpad_settings take with theirs, as they take theirs: find gives a key's
+   row, NULL for a key of none (the runtime's keys', hotkey_setting). Before the first vpad_arg */
+void vpad_settings_also(const IniOpt* (*find)(const char* key));
 /* The settings of them the game name in folder has: its .ini's (<folder>/<name>.ini, where its driver keeps it), then
    its own picks (game_ini.h's snx_game_picks) and the command line's, which go over them, or with --launcher-picks=1
    under them (the launcher's picks for every game). One the console has nothing for does nothing, and is said with its

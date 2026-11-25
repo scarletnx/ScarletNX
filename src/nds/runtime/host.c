@@ -8,7 +8,7 @@
 #include "nds/gpu/vk/vk_present.h"
 #include "common/utilities/common.h"
 #include "common/utilities/pad_sdl.h"
-#include "common/utilities/quit_key.h"
+#include "common/utilities/hotkeys.h"
 #include "common/utilities/vpad_sdl.h"
 #include "common/utilities/window_icon.h"
 #include <SDL3/SDL.h>
@@ -32,7 +32,7 @@ struct NdsHost {
         u64 id;
         float x, y;
     } pen;
-    uint64_t due, quit_by;
+    uint64_t due;
     SDL_AudioStream* audio;
     FILE* wav;
     uint32_t wav_frames;
@@ -201,7 +201,7 @@ NdsHost* nds_host_open(NdsBoard* board, const char* title, const char* ini, cons
         snx_window_icon(v->host.window);
         if (fullscreen) SDL_SetWindowFullscreen(v->host.window, true);
         snx_pad_map_position(&host->pad);
-        snx_vpad_window_open(v->host.window, ini, nds_host_say);
+        snx_vpad_window_open(v->host.window, ini, nds_host_say, NULL);
     }
     if (!headless) {
         SDL_AudioSpec spec = {SDL_AUDIO_S16, 2, (int)(NDS_SPU_RATE + 0.5)};
@@ -236,35 +236,30 @@ void nds_host_close(NdsHost* host) {
     free(host);
 }
 
+/* a runtime's key this window has nothing for, said with why */
+static void key_none(int action) {
+    snx_vpad_window_none(action, action == HOTKEY_THREAD_DUMP ? "its ARM9 runs the game's code alone, with no threads"
+                                 : action == HOTKEY_MOUSE
+                                     ? "its mouse is the pen and the pointer of the on-screen controls"
+                                 : action == HOTKEY_TV_MODE ? "the TV mode is the Switch's console docked"
+                                                            : "its window has none of it yet");
+}
 bool nds_host_poll(NdsHost* host, NdsInput* input) {
     bool open = true;
     if (!host->headless) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
-            SnxVpadEvent took = snx_vpad_window_event(&event);
+            int action;
+            SnxVpadEvent took = snx_vpad_window_event(&event, &action);
             if (took == SNX_VPAD_QUIT) open = false;
+            if (took == SNX_VPAD_ACTION) key_none(action);
             if (took != SNX_VPAD_PASS) continue;
             pen_event(host, &event);
             switch (event.type) {
                 case SDL_EVENT_QUIT:
                 case SDL_EVENT_WINDOW_CLOSE_REQUESTED: open = false; break;
                 case SDL_EVENT_GAMEPAD_ADDED: SDL_OpenGamepad(event.gdevice.which); break;
-                case SDL_EVENT_KEY_DOWN:
-                    if (event.key.key == SDLK_ESCAPE && !event.key.repeat &&
-                        !(event.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI))) {
-                        char warning[64];
-                        if (snx_quit_press(&host->quit_by, SDL_GetTicksNS()))
-                            open = false;
-                        else {
-                            snx_quit_warning(warning, sizeof warning, "Esc");
-                            fprintf(stderr, "scarletnx-nds: %s\n", warning);
-                        }
-                    } else if (event.key.key == SDLK_F11 && !event.key.repeat && nds_vk() && nds_vk()->host.window) {
-                        SDL_Window* window = nds_vk()->host.window;
-                        SDL_SetWindowFullscreen(window, !(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN));
-                    }
-                    host->keyboard |= key_of(event.key.scancode);
-                    break;
+                case SDL_EVENT_KEY_DOWN: host->keyboard |= key_of(event.key.scancode); break;
                 case SDL_EVENT_KEY_UP: host->keyboard &= (uint16_t)~key_of(event.key.scancode); break;
                 default: break;
             }

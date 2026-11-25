@@ -7,7 +7,7 @@
 #include "agb/runtime/vk.h"
 #include "common/utilities/notice.h"
 #include "common/utilities/pad_sdl.h"
-#include "common/utilities/quit_key.h"
+#include "common/utilities/hotkeys.h"
 #include "common/utilities/vpad_sdl.h"
 #include "common/utilities/window_icon.h"
 #include <SDL3/SDL.h>
@@ -35,9 +35,8 @@ struct AgbHost {
     SnxPadMap pad;
     uint16_t keyboard, buttons; /* the keys the keyboard and the gamepads hold */
     uint64_t due;               /* when the next frame goes on screen, SDL_GetTicksNS's */
-    uint64_t quit_by;           /* a second Esc before this closes the window (common/utilities/quit_key.h) */
-    /* a line over the game for a few seconds, as a Switch game shows one (common/utilities/notice.h): Esc's first
-       press. Its band's texture, made again for another size */
+    /* a line over the game for a few seconds, as a Switch game shows one (common/utilities/notice.h): what the
+       runtime's keys say. Its band's texture, made again for another size */
     SnxNotice notice;
     SDL_Texture* notice_texture;
     int notice_w, notice_h, notice_failed;
@@ -102,6 +101,20 @@ static uint16_t gamepads(const AgbHost* host) {
 }
 
 void agb_host_say(const char* line) { fprintf(stderr, "scarletnx-agb: %s\n", line); }
+/* the open window, whose notice shows what the runtime's keys say */
+static struct {
+    AgbHost* open;
+} g_host;
+static void show(const char* line) {
+    if (g_host.open) snx_notice_show(&g_host.open->notice, line, SDL_GetTicksNS());
+}
+/* a runtime's key this window has nothing for, said with why */
+static void key_none(int action) {
+    snx_vpad_window_none(action, action == HOTKEY_THREAD_DUMP ? "it runs on one CPU, with no threads"
+                                 : action == HOTKEY_MOUSE     ? "its mouse is the pointer of the on-screen controls"
+                                 : action == HOTKEY_TV_MODE   ? "the TV mode is the Switch's console docked"
+                                                              : "its window has none of it yet");
+}
 
 AgbHost* agb_host_open(const char* title, const char* ini, bool fullscreen, char* error, size_t error_size) {
     AgbHost* host = (AgbHost*)calloc(1, sizeof(*host));
@@ -150,7 +163,8 @@ AgbHost* agb_host_open(const char* title, const char* ini, bool fullscreen, char
         snx_window_icon(host->window);
     }
     snx_pad_map_position(&host->pad); /* A where the console has it, east */
-    snx_vpad_window_open(host->window, ini, agb_host_say);
+    g_host.open = host;
+    snx_vpad_window_open(host->window, ini, agb_host_say, show);
     if (!SDL_InitSubSystem(SDL_INIT_AUDIO) ||
         !(host->audio = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, NULL, NULL)) ||
         !SDL_ResumeAudioStreamDevice(host->audio)) {
@@ -164,6 +178,7 @@ AgbHost* agb_host_open(const char* title, const char* ini, bool fullscreen, char
 
 void agb_host_close(AgbHost* host) {
     if (!host) return;
+    if (g_host.open == host) g_host.open = NULL;
     snx_vpad_window_close();
     if (host->audio) SDL_DestroyAudioStream(host->audio);
     if (host->notice_texture) SDL_DestroyTexture(host->notice_texture);
@@ -181,32 +196,16 @@ bool agb_host_poll(AgbHost* host, uint16_t* keys) {
     SDL_Event event;
     bool open = true;
     while (SDL_PollEvent(&event)) {
-        SnxVpadEvent took = snx_vpad_window_event(&event);
+        int action;
+        SnxVpadEvent took = snx_vpad_window_event(&event, &action);
         if (took == SNX_VPAD_QUIT) open = false;
+        if (took == SNX_VPAD_ACTION) key_none(action);
         if (took != SNX_VPAD_PASS) continue;
         switch (event.type) {
             case SDL_EVENT_QUIT:
             case SDL_EVENT_WINDOW_CLOSE_REQUESTED: open = false; break;
             case SDL_EVENT_GAMEPAD_ADDED: SDL_OpenGamepad(event.gdevice.which); break;
-            case SDL_EVENT_KEY_DOWN:
-                /* Esc twice closes the window, a first one warning on the terminal and over the game; not with Ctrl,
-                   Alt or the system key */
-                if (event.key.key == SDLK_ESCAPE && !event.key.repeat &&
-                    !(event.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI))) {
-                    char warning[64];
-                    if (snx_quit_press(&host->quit_by, SDL_GetTicksNS())) {
-                        open = false;
-                        break;
-                    }
-                    snx_quit_warning(warning, sizeof warning, "Esc");
-                    fprintf(stderr, "scarletnx-agb: %s\n", warning);
-                    snx_notice_show(&host->notice, warning, SDL_GetTicksNS());
-                    break;
-                }
-                if (event.key.scancode == SDL_SCANCODE_F11 && !event.key.repeat)
-                    SDL_SetWindowFullscreen(host->window, !(SDL_GetWindowFlags(host->window) & SDL_WINDOW_FULLSCREEN));
-                host->keyboard |= agb_host_key(event.key.scancode);
-                break;
+            case SDL_EVENT_KEY_DOWN: host->keyboard |= agb_host_key(event.key.scancode); break;
             case SDL_EVENT_KEY_UP: host->keyboard &= (uint16_t)~agb_host_key(event.key.scancode); break;
             case SDL_EVENT_WINDOW_FOCUS_LOST: host->keyboard = 0; break; /* no key held where it cannot be let go */
             default: break;
