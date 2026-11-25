@@ -5,15 +5,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#if defined(SNX_TEST_NATIVE_STEPS) && (defined(__x86_64__) || defined(_M_X64))
-/* the native x86-64 code runs under the thread's MXCSR, which the runtime keeps at its default word (tools/sailgen/x64_a64.h):
-   this is that word's, with the exceptions' sticky flags clear and set */
-#define CONTROL_MODES   2
-#define CONTROL_MODE(n) ((n) ? 16u : 0)
-#else
-#define CONTROL_MODES   32
-#define CONTROL_MODE(n) (n)
-#endif
 #if defined(__x86_64__) || defined(_M_X64)
 #include <xmmintrin.h>
 static u64 host_control(void) { return _mm_getcsr(); }
@@ -50,8 +41,8 @@ static int run(int jit, char opt, int benchmark) {
     }
     u64 saved = host_control();
     int failed = 0;
-    for (unsigned n = 0; n < CONTROL_MODES; n++) {
-        u64 input = altered(CONTROL_MODE(n));
+    for (unsigned n = 0; n < 32; n++) {
+        u64 input = altered(n);
         host_set(input);
         u64 next = step_run(steps_at(&steps, 0), &cpu), control = host_control();
         int values = 1;

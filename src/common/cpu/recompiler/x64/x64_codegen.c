@@ -545,6 +545,17 @@ static void mg_entry(Unit* u, size_t index, SnxU64 start) {
         byte(u, 0xC3);
         bind(u, live);
     }
+    /* the MXCSR the FP hot paths assume (x64_a64.h): round to nearest, no FTZ or DAZ, every exception masked. The
+       thread's may be another, as what the runtime called before left it, so it is written where it drifted, as the
+       LLVM back end's functions do on entry (cpu.h's snx_fp_env). The frame's first slot holds it: nothing is in it
+       before a region spills */
+    if (u->a.slots_max < 1) u->a.slots_max = 1;
+    sgx_bytes(&u->b, "0F AE 1C 24");          /* stmxcsr [rsp] */
+    sgx_bytes(&u->b, "83 24 24 C0");          /* and dword [rsp], -64: the sticky flags out */
+    sgx_bytes(&u->b, "81 3C 24 80 1F 00 00"); /* cmp dword [rsp], 0x1F80 */
+    sgx_bytes(&u->b, "74 0B");                /* je past the write */
+    sgx_bytes(&u->b, "C7 04 24 80 1F 00 00"); /* mov dword [rsp], 0x1F80 */
+    sgx_bytes(&u->b, "0F AE 14 24");          /* ldmxcsr [rsp] */
     mov_rax_imm(u, start);
     byte(u, 0x48), byte(u, 0x39), byte(u, win64(u) ? 0xC2 : 0xC6); /* cmp rsi, rax */
     jcc(u, 0x5, u->mismatch_label);
