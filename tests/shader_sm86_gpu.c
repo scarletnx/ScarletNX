@@ -460,6 +460,96 @@ static void wide_program(Prog* p) {
     epilogue(p);
 }
 
+/* the doubles: F2F.F64 from a float and back in each rounding, DADD, DMUL and DFMA of register pairs and of a constant
+   buffer's 8 bytes, with a negation and an absolute value. The floats come from the integers, so no input is a NaN */
+static Sm86Word dd(u32 op9, u32 form, u32 dst, u32 a) { return alu(op9, form, dst, a); }
+static void double_program(Prog* p) {
+    p->outputs = 18;
+    p->approx_from = p->outputs;
+    prologue(p);
+    Sm86Word w;
+    for (u32 k = 0; k < 2; k++) { /* I2F.F32.S32 R8, R4 and R9, R5 */
+        w = rr(0x106, 8 + k, 255, 4 + k);
+        f(&w, 74, 1, 1);
+        f(&w, 75, 2, 2);
+        f(&w, 84, 2, 2);
+        emit(p, w);
+    }
+    for (u32 k = 0; k < 2; k++) { /* F2F.F64.F32 R12:R13 = R8, R14:R15 = R9 */
+        w = rr(0x110, 12 + 2 * k, 255, 8 + k);
+        f(&w, 75, 2, 3);
+        f(&w, 84, 2, 2);
+        emit(p, w);
+    }
+    w = dd(0x029, 1, 16, 12); /* DADD R16, R12, R14 (c's place) */
+    f(&w, 32, 8, 255);
+    f(&w, 64, 8, 14);
+    emit(p, w);
+    w = dd(0x029, 3, 18, 12); /* DADD R18, R12, c[0][0x40] */
+    f(&w, 64, 8, 255);
+    sm86_cbuf(&w, 0, 0x40);
+    emit(p, w);
+    w = rr(0x028, 20, 12, 14); /* DMUL R20, R12, R14 */
+    emit(p, w);
+    w = dd(0x028, 5, 22, 12); /* DMUL R22, R12, c[0][0x48] */
+    f(&w, 64, 8, 255);
+    sm86_cbuf(&w, 0, 0x48);
+    emit(p, w);
+    w = dd(0x02b, 1, 24, 12); /* DFMA R24, R12, R14, R16 */
+    f(&w, 32, 8, 14);
+    f(&w, 64, 8, 16);
+    emit(p, w);
+    w = dd(0x02b, 5, 26, 14); /* DFMA R26, R14, c[0][0x48], R12 */
+    f(&w, 64, 8, 12);
+    sm86_cbuf(&w, 0, 0x48);
+    emit(p, w);
+    w = dd(0x02b, 1, 28, 12); /* DFMA R28, -R12, |R14|, R16 */
+    f(&w, 32, 8, 14);
+    f(&w, 64, 8, 16);
+    f(&w, 72, 1, 1);
+    f(&w, 62, 1, 1);
+    emit(p, w);
+    for (u32 k = 0; k < 4; k++) { /* F2F.F32.F64.RN, RM, RP, RZ R30 + k, R20 */
+        w = rr(0x110, 30 + k, 255, 20);
+        f(&w, 75, 2, 2);
+        f(&w, 84, 2, 3);
+        f(&w, 78, 2, k);
+        emit(p, w);
+    }
+    static const u8 pairs[7] = {16, 18, 20, 22, 24, 26, 28};
+    for (u32 k = 0; k < 7; k++) {
+        store(p, 2 * k, pairs[k]);
+        store(p, 2 * k + 1, pairs[k] + 1u);
+    }
+    for (u32 k = 0; k < 4; k++) store(p, 14 + k, 30 + k);
+    epilogue(p);
+}
+/* IMAD.WIDE with a constant buffer's 8 bytes as c, unsigned and signed, and the pair of registers beside it */
+static void wide_cbuf_program(Prog* p) {
+    p->outputs = 6;
+    p->approx_from = p->outputs;
+    prologue(p);
+    Sm86Word w;
+    for (u32 k = 0; k < 2; k++) { /* IMAD.WIDE(.U32) R8 + 2k = R4 * R5 + c[0][0x50] */
+        w = dd(0x025, 3, 8 + 2 * k, 4);
+        f(&w, 64, 8, 5);
+        sm86_cbuf(&w, 0, 0x50);
+        if (k) f(&w, 73, 1, 1);
+        f(&w, 81, 3, 7);
+        emit(p, w);
+    }
+    w = dd(0x025, 1, 12, 4); /* IMAD.WIDE.U32 R12 = R4 * R5 + R8 */
+    f(&w, 32, 8, 5);
+    f(&w, 64, 8, 8);
+    f(&w, 81, 3, 7);
+    emit(p, w);
+    for (u32 k = 0; k < 3; k++) {
+        store(p, 2 * k, 8 + 2 * k);
+        store(p, 2 * k + 1, 9 + 2 * k);
+    }
+    epilogue(p);
+}
+
 /* ---- the inputs and the comparison ---- */
 
 static void inputs(u32* in) {
@@ -911,6 +1001,10 @@ static int run_program(Gpu* g, const char* name, void (*build)(Prog*)) {
     cb0[0x24 / 4] = (u32)(VA_IN >> 32);
     cb0[0x28 / 4] = (u32)VA_OUT;
     cb0[0x2c / 4] = (u32)(VA_OUT >> 32);
+    static const double constants[3] = {1.5, -0.1, 0}; /* at 0x40 and 0x48 */
+    memcpy(&cb0[0x40 / 4], constants, 16);
+    cb0[0x50 / 4] = 0xfffffff0u; /* a pair: 0x1234_fffffff0, which a product's low word carries out of */
+    cb0[0x54 / 4] = 0x1234u;
     /* the reference */
     Sm86RefEnv env = {0};
     env.cbuf[0] = cb0;
@@ -2163,6 +2257,8 @@ int main(void) {
         ok &= run_program(&g, "flow", flow_program);
         ok &= run_program(&g, "wide", wide_program);
         ok &= run_program(&g, "stores", stores_program);
+        ok &= run_program(&g, "doubles", double_program);
+        ok &= run_program(&g, "wide with a constant buffer", wide_cbuf_program);
         ok &= maxwell_log(&g);
         ok &= run_fadd(&g);
         ok &= run_lone(&g);

@@ -194,8 +194,11 @@ static SgSpv* sg_spv(SgG* g) { return &g->spv; }
     u32 t = f64_type(g->c);
     return sg_vt(spv_emit_glsl_ternary(&g->c->e, t, g->c->glsl, SPV_GLSL_FMA, a.id, b.id, d.id), t);
 }
-/* a float widened to a double, which is exact */
-[[maybe_unused]] static SgV sg_F32ToF64(SgG* g, SgV x) { return sg_vt(widen(g->c, sg_f(g, x)), f64_type(g->c)); }
+/* a float widened to a double, which is exact: NoContraction, so a driver does not take the float's own conversion
+   from an integer as the double's, which is not rounded to a float */
+[[maybe_unused]] static SgV sg_F32ToF64(SgG* g, SgV x) {
+    return sg_vt(nocontract(g->c, widen(g->c, sg_f(g, x))), f64_type(g->c));
+}
 
 /* ---- the rest of the integer ALU, the uniform registers, the system registers, the warp ---- */
 [[maybe_unused]] static int sg_SrcIsCbuf(SgG* g, int64_t s) { return sg86_src(g, s)->kind == SM86_SRC_CBUF; }

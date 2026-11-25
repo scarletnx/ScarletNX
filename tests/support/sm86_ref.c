@@ -145,6 +145,27 @@ static float srcf(const Thread* t, const Sm86RefEnv* env, const Sm86Src* s, int 
     }
     return flush(f, ftz);
 }
+/* the 64 bits at an operand: a register or uniform register pair, or 8 bytes of a constant buffer */
+static u64 src_pair(const Thread* t, const Sm86RefEnv* env, const Sm86Src* s) {
+    if (s->kind == SM86_SRC_CBUF)
+        return ((u64)cbuf_word(env, s->bank, s->value + 4) << 32) | cbuf_word(env, s->bank, s->value);
+    if (s->kind == SM86_SRC_UREG) return ((u64)urget(t, s->reg >= 63 ? s->reg : s->reg + 1u) << 32) | urget(t, s->reg);
+    return ((u64)rget(t, s->reg >= 255 ? s->reg : s->reg + 1u) << 32) | rget(t, s->reg);
+}
+/* the double there, with the operand's absolute value and negation */
+static double srcd(const Thread* t, const Sm86RefEnv* env, const Sm86Src* s) {
+    u64 bits = src_pair(t, env, s);
+    double d;
+    memcpy(&d, &bits, sizeof d);
+    if (s->abs) d = fabs(d);
+    return s->neg ? -d : d;
+}
+static void setd(Thread* t, u32 dst, double d) {
+    u64 bits;
+    memcpy(&bits, &d, sizeof bits);
+    rset(t, dst, (u32)bits);
+    if (dst < 255) rset(t, dst + 1, (u32)(bits >> 32));
+}
 static const int rounding[4] = {FE_TONEAREST, FE_DOWNWARD, FE_UPWARD, FE_TOWARDZERO};
 /* the NaN that the hardware's float arithmetic gives, whatever NaN went in */
 static u32 nan_canon(u32 v) { return isnan(f_of(v)) ? 0x7fffffffu : v; }
@@ -286,8 +307,7 @@ static const char* step(Thread* t, Sm86RefEnv* env, const Sm86Insn* in, u8* shar
                 rset(t, in->dst, (u32)((px * py) >> 32) + src_neg(t, env, &in->c));
                 return NULL;
             }
-            u32 c = in->c.reg;
-            u64 r = px * py + (((u64)rget(t, c >= 255 ? c : c + 1) << 32) | rget(t, c));
+            u64 r = px * py + src_pair(t, env, &in->c);
             rset(t, in->dst, (u32)r);
             if (in->dst < 255) rset(t, in->dst + 1, (u32)(r >> 32));
             return NULL;
@@ -490,6 +510,25 @@ static const char* step(Thread* t, Sm86RefEnv* env, const Sm86Insn* in, u8* shar
             rset(t, in->dst, u_of(r));
             return NULL;
         }
+        case SM86_DADD: setd(t, in->dst, srcd(t, env, &in->a) + srcd(t, env, &in->c)); return NULL;
+        case SM86_DMUL: setd(t, in->dst, srcd(t, env, &in->a) * srcd(t, env, &in->b)); return NULL;
+        case SM86_DFMA:
+            setd(t, in->dst, fma(srcd(t, env, &in->a), srcd(t, env, &in->b), srcd(t, env, &in->c)));
+            return NULL;
+        case SM86_F2F64:
+            if (sm86_field(in, 75, 2) == 3) { /* a float to a double: exact */
+                setd(t, in->dst, (double)srcf(t, env, &in->b, 0));
+                return NULL;
+            }
+            {
+                volatile double d = srcd(t, env, &in->b);
+                volatile float r;
+                fesetround(rounding[sm86_field(in, 78, 2)]);
+                r = (float)d;
+                fesetround(FE_TONEAREST);
+                rset(t, in->dst, u_of(r));
+            }
+            return NULL;
         case SM86_FRND: {
             float x = srcf(t, env, &in->b, 0);
             u32 mode = sm86_field(in, 78, 2);
