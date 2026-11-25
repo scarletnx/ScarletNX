@@ -7000,3 +7000,18 @@ static inline void sgx_e_VPSRAVD_xmm1_xmm2_xmm3_m128(SgXBuf* b, const unsigned c
 }
 
 static const SgXVForm sgx_v_vpsravd = {sgx_e_VPSRAVD_xmm1_xmm2_xmm3_m128, SGX_F_AVX2, 3, 0, 2, 1, 7, 0, NULL}; /* VEX.128.66.0F38.W0 46 /r */
+/* SHA1RNDS4 xmm1, xmm2/m128, imm8: NP 0F 3A CC /r ib (the SDM's SHA1RNDS4) */
+static inline void sgx_e_SHA1RNDS4_xmm1_xmm2_m128_imm8(SgXBuf* b, const unsigned char* r, long long imm, int cc) {
+    (void)r, (void)imm, (void)cc;
+    {
+        unsigned rex = 0x40 | (r[0] >> 3) << 2 | (r[1] & 15) >> 3 | sgx_rex_x(b, r[1]);
+        if (rex != 0x40) sgx_byte(b, (unsigned char)rex);
+    }
+    sgx_byte(b, 0x0F);
+    sgx_byte(b, 0x3A);
+    sgx_byte(b, 0xCC);
+    sgx_modrm(b, r[0] & 7, r[1]);
+    sgx_imm(b, imm, 1);
+}
+
+static const SgXVForm sgx_v_sha1rnds4 = {sgx_e_SHA1RNDS4_xmm1_xmm2_m128_imm8, SGX_F_SHA, 3, 0, 1, -1, 3, 1, NULL}; /* NP 0F 3A CC /r ib */

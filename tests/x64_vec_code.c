@@ -23,7 +23,9 @@
 #define MOST          12u
 #define NEEDS_AVX2    32768u
 #define NEEDS_GFNI    65536u
-/* GF2P8AFFINEQB xmm, xmm/m128, imm8 (66 0F 3A CE) and its VEX.128 form (C4, two bytes, CE) */
+#define NEEDS_SHA     8192u
+/* GF2P8AFFINEQB xmm, xmm/m128, imm8 (66 0F 3A CE) and its VEX.128 form (C4, two bytes, CE); SHA1RNDS4 (0F 3A CC)
+   below */
 #define GF2P8AFFINEQB "66 0F 3A CE|C4 ?? ?? CE"
 
 typedef struct {
@@ -77,6 +79,10 @@ static const Row k_rows[] = {
     {"sqdmlal v0.2d, v1.2s, v2.2s", 0, 0, 400, -1, NULL, "0EA29020"},
     {"crc32w w0, w0, w2", 0, 0, 224, -1, NULL, "1AC24800"},
     {"crc32x w0, w0, x2", 0, 0, 272, -1, NULL, "9AC24C00"},
+    {"sha1c q0, s1, v2.4s", NEEDS_SHA, 0, 256, -1, "0F 3A CC", "5E020020"},
+    {"sha1h s0, s1", 0, 0, 224, -1, NULL, "5E280820"},
+    {"sha1su0 v0.4s, v1.4s, v2.4s", 0, 0, 240, -1, NULL, "5E023020"},
+    {"sha1su1 v0.4s, v1.4s", 0, 0, 234, -1, NULL, "5E281820"},
 };
 
 static struct {
