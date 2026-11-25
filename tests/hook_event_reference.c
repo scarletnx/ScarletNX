@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The kernel event a hooked SDK object attaches to the game's SystemEvent (hook_attach_event, src/nx/hle/hook/codec.c),
-   with the kernel's objects stubbed to their reference counts: the object that asked for it holds a reference of its
-   own beside the handle's, so dropping it when the object goes leaves the event alive for as long as the game's
-   SystemEvent keeps the handle, and the event is destroyed once, when the last of the two goes */
+/* The kernel event a hooked SDK object attaches to the game's SystemEvent (hook_attach_event,
+   src/nx/hle/hook/guest_call.c), with the kernel's objects stubbed to their reference counts: the object that asked for
+   it holds a reference of its own beside the handle's, so dropping it when the object goes leaves the event alive for
+   as long as the game's SystemEvent keeps the handle, and the event is destroyed once, when the last of the two goes */
+#include "nx/hle/hook/guest_call.c"
 #include "nx/hle/hook/codec.c"
 #include <stdio.h>
 

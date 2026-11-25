@@ -113,7 +113,7 @@ u32 ev_handle(u32 ev) {
     test_handles++;
     return 7;
 }
-/* hook/codec.c's, by its contract (tests/hook_event_reference.c checks the real one): the event the SDK's
+/* hook/guest_call.c's, by its contract (tests/hook_event_reference.c checks the real one): the event the SDK's
    AttachReadableHandleToSystemEvent would attach, with the handle's reference and one for the caller to drop; the
    guest address it was attached to is kept */
 static u64 test_attached_to[4];
