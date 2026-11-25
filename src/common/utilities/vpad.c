@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "common/utilities/vpad.h"
-#include "common/utilities/common.h"
+#include "common/utilities/game_ini.h"
+#include "common/utilities/ini_lines.h"
 #include "common/utilities/ui_colors.h"
 #include "common/utilities/bits.h"
 #include <math.h>
@@ -90,10 +91,34 @@ static int g_edit, g_selected = -1;
 static u32 g_version;
 void vpad_changed(void) { ++g_version; }
 
+/* the console's own pad (vpad_console), NULL for the Switch's, which has every control as INFO has it */
+static const SnxVpadConsole* g_console;
+static int g_tall;  /* its window is taller than wide, as a draw or a finger last had it */
+static u32 g_moved; /* a bit per control whose place is the player's: the window's turn leaves it */
+/* control c as the console has it, NULL for one it has none of; only with a console's own pad */
+static const SnxVpadControl* own(int c) {
+    int i;
+    for (i = 0; i < g_console->count; ++i)
+        if (g_console->pad[i].control == c) return &g_console->pad[i];
+    return NULL;
+}
+static int has(int c) { return !g_console || own(c); }
+static const char* name_of(int c) { return g_console ? own(c)->name : INFO[c].name; }
+static const char* label_of(int c) { return g_console ? own(c)->label : INFO[c].label; }
 static void default_place(int c, SnxVpadPlace* p) {
-    p->x = INFO[c].x;
-    p->y = INFO[c].y;
+    const SnxVpadControl* o = g_console ? own(c) : NULL;
+    p->x = !o ? INFO[c].x : g_tall ? o->tall.x : o->wide.x;
+    p->y = !o ? INFO[c].y : g_tall ? o->tall.y : o->wide.y;
     p->size = DEF_SIZE;
+}
+/* a console's window turned: the controls the player never moved go where they start in the other */
+static void turned(const int safe[4]) {
+    int c, tall = safe[3] > safe[2];
+    if (!g_console || tall == g_tall) return;
+    g_tall = tall;
+    ++g_version;
+    for (c = 0; c < SNX_VPAD_COUNT; ++c)
+        if (!(g_moved >> c & 1)) default_place(c, &g_vpad.at[c]);
 }
 #define KEY_ROW(id, key, name, look, kind, bit, size, x, y) "controls_" key,
 static const char* const KEYS[SNX_VPAD_COUNT] = {VPAD_CONTROLS(KEY_ROW)};
@@ -111,7 +136,16 @@ static void placed(void) {
         }
     }
 }
-const char* vpad_name(int control) { return control >= 0 && control < SNX_VPAD_COUNT ? INFO[control].name : "?"; }
+void vpad_console(const SnxVpadConsole* console) {
+    ++g_version;
+    g_console = console;
+    g_placed = g_tall = 0;
+    g_moved = 0;
+    placed();
+}
+const char* vpad_name(int control) {
+    return control >= 0 && control < SNX_VPAD_COUNT && has(control) ? name_of(control) : "?";
+}
 SnxVpadConfig* vpad_config(void) {
     placed();
     return &g_vpad;
@@ -127,11 +161,13 @@ void vpad_reset_layout(void) {
     int c;
     vpad_defaults(&d);
     for (c = 0; c < SNX_VPAD_COUNT; ++c) {
+        if (!has(c)) continue;
         g_vpad.at[c] = d.at[c];
         g_settings.control_shown[c] = 1;
         vpad_store_control(c);
         vpad_store_shown(c);
     }
+    g_moved = 0;
 }
 
 /* the settings' table (settings.txt): its settings in the game's menu's order, then a control's place, in the order of
@@ -190,6 +226,7 @@ void vpad_place_set(const IniOpt* o, const char* v) {
     g_vpad.at[c].x = (float)snx_clamp_double(f[0], 0, 1);
     g_vpad.at[c].y = (float)snx_clamp_double(f[1], 0, 1);
     g_vpad.at[c].size = (int)snx_clamp_double(f[2], SNX_VPAD_SIZE_MIN, SNX_VPAD_SIZE_MAX);
+    g_moved |= 1u << c;
     if (i == 4) g_settings.control_shown[c] = f[3] != 0;
 }
 int vpad_ini(const char* key, const char* value) {
@@ -203,6 +240,13 @@ int vpad_ini(const char* key, const char* value) {
 }
 void vpad_set_store(void (*store)(const char* key, const char* value)) { g_store = store; }
 void vpad_set_say(void (*say)(const char* line)) { g_say = say; }
+static void (*g_touch)(void);
+void vpad_set_touch(void (*changed)(void)) { g_touch = changed; }
+void vpad_touch_set(const IniOpt* o, const char* v) {
+    (void)o;
+    (void)v;
+    if (g_touch) g_touch();
+}
 void vpad_store(const int* setting) {
     ++g_version;
     const IniOpt* o;
@@ -224,6 +268,7 @@ void vpad_store_control(int control) {
     const SnxVpadPlace* p;
     if (control < 0 || control >= SNX_VPAD_COUNT) return;
     p = &g_vpad.at[control];
+    g_moved |= 1u << control;
     snprintf(v, sizeof v, "%.3f %.3f %d", p->x, p->y, p->size);
     if (g_store) g_store(g_vpad_ini[FIRST_PLACE + control].key, v);
 }
@@ -231,6 +276,102 @@ void vpad_store_shown(int control) {
     ++g_version;
     if (control >= 0 && control < SNX_VPAD_COUNT && g_store)
         g_store(g_vpad_shown_ini[control].key, g_settings.control_shown[control] ? "1" : "0");
+}
+
+/* ---- the settings as every console but the Switch reads them (its options.c has its own) ---- */
+static const IniOpt* setting(const char* key) {
+    const IniOpt* o = ini_find(g_vpad_ini, key);
+    if (!o) o = ini_find(g_vpad_shown_ini, key);
+    return o ? o : ini_find(g_backend_ini, key);
+}
+/* one of them read, or said to do nothing where the console has none of what it sets */
+static void setting_read(const IniOpt* o, const char* value) {
+    char line[192];
+    int c, n = 0;
+    line[0] = 0;
+    if (o >= g_vpad_ini + FIRST_PLACE && o < g_vpad_ini + FIRST_PLACE + SNX_VPAD_COUNT)
+        c = (int)(o - g_vpad_ini) - FIRST_PLACE;
+    else if (o >= g_vpad_shown_ini && o < g_vpad_shown_ini + SNX_VPAD_COUNT)
+        c = (int)(o - g_vpad_shown_ini);
+    else
+        c = -1;
+    if (c >= 0 && !has(c))
+        n = snprintf(line, sizeof line, "settings: %s=%s does nothing: the %s has no such control", o->key, value,
+                     g_console->name);
+    else if (o->var == &g_settings.touch_screen && !g_console->touch)
+        n = snprintf(line, sizeof line,
+                     "settings: %s=%s does nothing: the %s has no touch screen, and it keeps 0 (the fingers press the "
+                     "on-screen controls all the same)",
+                     o->key, value, g_console->name);
+    else if (o->var == &g_settings.relative_stick_center && !has(SNX_VPAD_STICK_L) && !has(SNX_VPAD_STICK_R))
+        n = snprintf(line, sizeof line, "settings: %s=%s does nothing: the %s has no stick", o->key, value,
+                     g_console->name);
+    if (n > 0 && g_say)
+        g_say(line);
+    else if (!n)
+        ini_read(o, value);
+}
+/* a file's of them, the last line of a key counting */
+static void settings_file(const char* path) {
+    size_t size;
+    char *text = (char*)snx_read_file(path, &size), *key, *value, why[256];
+    SnxIni ini;
+    if (!text) {
+        if (snx_path_exists(path))
+            snx_error("%s could not be read (%s): the on-screen controls' settings it holds are not in effect", path,
+                      snx_os_error(why, sizeof why));
+        return;
+    }
+    snx_ini_start(&ini, text);
+    while (snx_ini_next(&ini, &key, &value))
+        if (setting(key)) setting_read(setting(key), value);
+    free(text);
+}
+/* the launcher's word that the command line's settings are its picks for every game: 0 or 1, -1 for another argument
+   and -2 for a value that is neither */
+static int launcher_picks(const char* arg) {
+    size_t n = sizeof "--" SNX_LAUNCHER_PICKS "=" - 1;
+    if (strncmp(arg, "--" SNX_LAUNCHER_PICKS "=", n)) return -1;
+    return !strcmp(arg + n, "0") ? 0 : !strcmp(arg + n, "1") ? 1 : -2;
+}
+int vpad_arg(const char* arg, char* error, size_t n) {
+    char key[64], why[192];
+    const char* value;
+    const IniOpt* o;
+    int picks = launcher_picks(arg);
+    if (picks == -2) {
+        snprintf(error, n, "%s is not 0 or 1", arg);
+        return -1;
+    }
+    if (picks >= 0) return 1;
+    value = settings_arg(arg, key, sizeof key);
+    o = value ? setting(key) : NULL;
+    if (!o) return 0;
+    if (ini_check(o, value, why, sizeof why)) {
+        snprintf(error, n, "%s", why);
+        return -1;
+    }
+    return 1;
+}
+static void settings_args(int argc, char** argv) {
+    char key[64];
+    int i;
+    for (i = 1; i < argc; ++i) {
+        const char* value = settings_arg(argv[i], key, sizeof key);
+        if (value && setting(key)) setting_read(setting(key), value);
+    }
+}
+void vpad_settings(const char* ini, int argc, char** argv) {
+    char* picks = snx_game_picks(ini);
+    int i, launcher = 0;
+    for (i = 1; i < argc; ++i)
+        if (launcher_picks(argv[i]) >= 0) launcher = launcher_picks(argv[i]);
+    if (!g_console->touch) g_settings.touch_screen = 0;
+    settings_file(ini);
+    if (launcher) settings_args(argc, argv);
+    settings_file(picks);
+    if (!launcher) settings_args(argc, argv);
+    free(picks);
 }
 
 /* a control's rectangle (x, y, w, h) on a clear part of safe: its look's shape, its longer side size */
@@ -242,6 +383,9 @@ static void box(int c, const int safe[4], float r[4]) {
     r[3] = aspect >= 1 ? side / aspect : side;
     r[0] = (float)safe[0] + g_vpad.at[c].x * (float)safe[2] - r[2] / 2;
     r[1] = (float)safe[1] + g_vpad.at[c].y * (float)safe[3] - r[3] / 2;
+    if (!g_console) return;
+    r[0] = snx_clamp_float(r[0], (float)safe[0], (float)safe[0] + (float)safe[2] - r[2]);
+    r[1] = snx_clamp_float(r[1], (float)safe[1], (float)safe[1] + (float)safe[3] - r[3]);
 }
 static int inside(const float r[4], float x, float y) {
     return x >= r[0] && y >= r[1] && x < r[0] + r[2] && y < r[1] + r[3];
@@ -251,7 +395,7 @@ static int hit(float x, float y, const int safe[4]) {
     float r[4];
     for (c = SNX_VPAD_COUNT - 1; c >= 0; --c) {
         box(c, safe, r);
-        if (g_settings.control_shown[c] && inside(r, x, y)) return c;
+        if (has(c) && g_settings.control_shown[c] && inside(r, x, y)) return c;
     }
     return -1;
 }
@@ -352,6 +496,7 @@ int vpad_down(u64 id, float x, float y, const int safe[4]) {
     Finger* f;
     int c;
     placed();
+    turned(safe);
     if ((!on() && !g_edit) || finger(id) || g_nfingers == FINGERS) return 0;
     c = g_edit ? -1 : hit(x, y, safe);
     if (!g_edit && c < 0) return 0;
@@ -365,8 +510,14 @@ int vpad_down(u64 id, float x, float y, const int safe[4]) {
         if (!g_dpad) buzz(); /* its middle: held, no direction yet */
     } else if (INFO[c].kind == KIND_STICK) {
         int s = stick_of(c);
-        g_middle[s][0] = g_settings.relative_stick_center ? (x - (float)safe[0]) / (float)safe[2] : g_vpad.at[c].x;
-        g_middle[s][1] = g_settings.relative_stick_center ? (y - (float)safe[1]) / (float)safe[3] : g_vpad.at[c].y;
+        float r[4], mx = g_vpad.at[c].x, my = g_vpad.at[c].y;
+        box(c, safe, r);
+        if (g_console) { /* where it is drawn, whole in the window */
+            mx = (r[0] + r[2] / 2 - (float)safe[0]) / (float)safe[2];
+            my = (r[1] + r[3] / 2 - (float)safe[1]) / (float)safe[3];
+        }
+        g_middle[s][0] = g_settings.relative_stick_center ? (x - (float)safe[0]) / (float)safe[2] : mx;
+        g_middle[s][1] = g_settings.relative_stick_center ? (y - (float)safe[1]) / (float)safe[3] : my;
         stick_at(c, x, y, safe);
         buzz();
     } else {
@@ -452,7 +603,7 @@ static int edge_of(const float r[4]) {
     return e < 1 ? 1 : e;
 }
 static void button_draw(SnxUiList* l, int c, const float r[4], int held) {
-    ui_shape(l, r[0], r[1], r[2], r[3], INFO[c].shape, INFO[c].label, held ? UI_SHAPE_FILLED : 0, edge_of(r), UI_WHITE);
+    ui_shape(l, r[0], r[1], r[2], r[3], INFO[c].shape, label_of(c), held ? UI_SHAPE_FILLED : 0, edge_of(r), UI_WHITE);
 }
 /* the D-pad on r: its cross's edge, and in each arm its arrow; the arms pressed (dpad, DPAD_ bits) filled, their arrows
    cut out. The arms are a third of the shorter side wide, as the cross's (ui.frag) */
@@ -509,7 +660,7 @@ static void edit_draw(SnxUiList* l, const int safe[4]) {
     float b[BAR_COUNT][4], r[4], g = grid(safe), v;
     int s = g_scale, first, n = 0, k;
     char said[BAR_COLS_SIZE + 24], label[BAR_COLS_SIZE + 1]; /* said: a name cut to the field, a space, a size, % */
-    const char* name = g_selected >= 0 ? INFO[g_selected].name : "Tap a control";
+    const char* name = g_selected >= 0 ? name_of(g_selected) : "Tap a control";
     if (g_settings.snap_to_grid && g > 0) {
         for (v = (float)safe[0]; v <= (float)(safe[0] + safe[2]); v += g)
             ui_fill(l, v, (float)safe[1], 1, (float)safe[3], UI_WHITE);
@@ -558,6 +709,7 @@ static void controls_draw(SnxUiList* l, const int safe[4]);
 int vpad_draw(SnxUiList* l, const int safe[4], int scale) {
     int how = VPAD_DRAW_KEPT;
     placed();
+    turned(safe);
     if (scale < 1) scale = 1;
     if (scale != g_scale) { /* the bar's letters another size: laid out again */
         g_scale = scale;
@@ -582,7 +734,7 @@ static void controls_draw(SnxUiList* l, const int safe[4]) {
     float r[4];
     if (g_edit) edit_draw(l, safe);
     for (c = 0; c < SNX_VPAD_COUNT; ++c) {
-        if (!g_settings.control_shown[c]) continue;
+        if (!has(c) || !g_settings.control_shown[c]) continue;
         box(c, safe, r);
         if (INFO[c].kind == KIND_DPAD)
             dpad_draw(l, r, g_dpad);

@@ -29,6 +29,8 @@ char* snx_ini_value(const char* path, const char* key);
 /* key=value in [Game] of the .ini at path, every older key= taken out and the file made when there is none, left as
    it is when it has the value already. value has no line break. 0, or nonzero with a line saying why */
 int snx_ini_record(const char* path, const char* key, const char* value);
+/* the same in [section], made at the file's end where it has none */
+int snx_ini_record_in(const char* path, const char* section, const char* key, const char* value);
 /* 1 when the .ini at path has a key= line, an empty value's too: a game's own choice, which "nothing" can be */
 int snx_ini_has(const char* path, const char* key);
 /* every key= line of the .ini at path taken out, the file left as it is when it has none. 0, or nonzero with a line

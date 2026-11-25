@@ -945,7 +945,7 @@ setting Touch screen
     key touch
     int 0 2
     default 2
-    set backend_touch_mode_set
+    set vpad_touch_set
     words Off|Fingers|Fingers and mouse
     help The game's touch screen: 1 = fingers, 2 = fingers and the mouse's left button, 0 = off
 
