@@ -8,6 +8,7 @@
 #include "common/cpu/recompiler/llvm/rtlib_object.h"
 #include "common/cpu/recompiler/x64/x64_codegen.h"
 #include "common/cpu/recompiler/x64/x64_elf.h"
+#include "common/runtime/interface.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
 #include <fenv.h>
@@ -374,7 +375,7 @@ static void on_poll(CPU* c) {
 u64 native_step_run(NativeStep step, CPU* c) {
     const NativeSteps* s = step.steps;
     const CPU before = *c;
-    RtAPI rt = {0};
+    RtAPI rt = {.cas128 = snx_runtime_cas128};
     u64 next;
     if (c->rt) rt = *c->rt;
     rt.miss = on_miss;
