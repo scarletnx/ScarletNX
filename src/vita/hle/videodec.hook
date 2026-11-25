@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+#
+# The Vita's imports that videodec.c answers, by NID, for tools/hookgen --vita.
+# SceVideodecUser: sceVideodec and sceAvcdec, H.264 decoded with FFmpeg's libavcodec, each picture laid out in the
+# game's buffer on the GPU (vita_render_picture). The decoder takes Annex B access units with their timestamps and
+# gives pictures in display order with the timestamp each came with, one a call at most: as the console's, it holds
+# some back (B frames), which sceAvcdecDecodeStop hands out at the end. As the vitasdk headers (MIT) declare and the
+# SDK's SceAvPlayer uses them; Vita3K's (GPL-2.0-or-later) checks of the sizes
+family videodec
+[0x6731bb2d] hook sceVideodecQueryMemSize(u32 type, u32 query, addr size) -> u32 = vita_videodec_query_mem_size
+[0x230a78ff] hook sceVideodecInitLibraryWithUnmapMem() -> u32 = vita_videodec_ok
+[0x3a5f4924] hook sceVideodecTermLibrary() -> u32 = vita_videodec_ok
+[0x97e95edb] hook sceAvcdecQueryDecoderMemSize(u32 type, addr query, addr out, u32 references, u32 frame_mem_size) -> u32 = vita_videodec_query_decoder_mem_size
+[0xe82bb69b] hook sceAvcdecCreateDecoder(u32 type, addr ctrl, addr query) -> u32 = vita_videodec_create_decoder
+[0x8a0e359e] hook sceAvcdecDeleteDecoder(u32 decoder_id) -> u32 = vita_videodec_delete_decoder
+[0x441673e3] hook sceAvcdecDecodeAvailableSize(u32 decoder_id) -> u32 = vita_videodec_decode_available_size
+[0xd6190a06] hook sceAvcdecDecode(u32 ctrl, addr au, addr array) -> u32 = vita_videodec_decode
+[0x9648d853] hook sceAvcdecDecodeStop(u32 ctrl, addr array) -> u32 = vita_videodec_decode_stop
+[0x25f31020] hook sceAvcdecDecodeFlush(u32 ctrl) -> u32 = vita_videodec_decode_flush

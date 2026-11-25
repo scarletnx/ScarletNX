@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+#
+# The Vita's imports that fiber.c answers, by NID, for tools/hookgen --vita.
+# SceFiber: user-mode coroutines, each a set of registers and a stack that a thread runs in place of its own code
+# until the fiber returns to it. The stack is either a context buffer the game gives at init, or, if it gives none,
+# whichever thread's stack the fiber is started or switched to from. sceFiberRun keeps the thread's registers and
+# loads the fiber's (at its entry the first time, after its last sceFiberReturnToThread since); sceFiberReturnToThread
+# does the reverse. The game's SceFiber holds the slot's index, the registers stay here. As the vitasdk headers
+# (MIT) declare, and Vita3K's own SceFiber.cpp (GPL-2.0-or-later) confirms where they're silent
+family fiber
+[0xf24a298c] hook _sceFiberInitializeImpl(addr address, u32 name, u32 entry, u32 arg_on_initialize, addr context, u32 size, u32 params) -> u32 = vita_fiber_initialize
+[0xc6a3f9bb] hook _sceFiberInitializeWithInternalOptionImpl(addr fiber, u32 name, u32 entry, u32 arg_on_initialize, addr addr_context, u32 size_context, u32 params) -> u32 = vita_fiber_initialize_with_internal_option
+[0xe160f844] hook sceFiberFinalize(u32 fiber) -> u32 = vita_fiber_finalize
+[0x7df23243] hook sceFiberRun(u32 fiber, u32 to, u32 arg_on_run) -> u32 = vita_fiber_run
+[0x3b42921f] hook sceFiberReturnToThread(u32 arg_on_return, u32 arg_on_run) -> u32 = vita_fiber_return_to_thread
+[0x414d8ca5] hook sceFiberGetSelf(addr out) -> u32 = vita_fiber_get_self
+[0x801ab334] hook sceFiberOptParamInitialize(addr out) -> u32 = vita_fiber_opt_param_initialize
+[0x189599b4] hook sceFiberGetInfo(u32 fiber, addr out) -> u32 = vita_fiber_get_info
+[0xe4283144] hook sceFiberSwitch(u32 fiber, u32 to, u32 out) -> u32 = vita_fiber_do_switch

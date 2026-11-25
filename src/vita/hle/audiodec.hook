@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+#
+# The Vita's imports that audiodec.c answers, by NID, for tools/hookgen --vita.
+# SceAudiodecUser: ATRAC9 and AAC decoded with FFmpeg's libavcodec into 16-bit interleaved PCM, a frame a call (n with
+# DecodeNFrames), and SceCodecEngineUser's memory blocks, which the decoders' callers carve their memory from. As the
+# vitasdk headers (MIT) declare them; the sizes a decoder reports are Vita3K's (GPL-2.0-or-later,
+# modules/SceAudiodec/SceAudiodecUser.cpp).
+#
+# ATRAC9: a superframe of one, two or four frames is the configuration's size (configData's average frame size times
+# its frames), and its frames' own sizes vary, so FFmpeg's decoder takes it whole: its first frame decodes it, giving
+# the first frame's samples and using the superframe's bytes, and the others give theirs from it, using none. The
+# caller's stream goes on a superframe at a time, its padding included, as the console's does. AAC: a raw frame, no
+# ADTS, of the size SceMp4 gave the unit at that address (vita_mp4_unit_size: a raw frame says nothing of its length),
+# or the most a decoder reads
+family audiodec
+[0x445c2cef] hook sceAudiodecInitLibrary() -> u32 = vita_audiodec_ok
+[0x45719b9d] hook sceAudiodecTermLibrary() -> u32 = vita_audiodec_ok
+[0xdb712abc] hook sceAudiodecGetContextSize(addr ctrl, u32 type) -> u32 = vita_audiodec_get_context_size
+[0x4dfd3aaa] hook sceAudiodecCreateDecoder(addr ctrl, u32 type) -> u32 = vita_audiodec_create_decoder
+[0x56085dfb] hook sceAudiodecCreateDecoderExternal(addr ctrl, u32 type) -> u32 = vita_audiodec_create_decoder
+[0xe7a24e16] hook sceAudiodecDeleteDecoder(addr ctrl) -> u32 = vita_audiodec_delete_decoder
+[0xe4ea05bb] hook sceAudiodecDeleteDecoderExternal(addr ctrl) -> u32 = vita_audiodec_delete_decoder
+[0xccdaba04] hook sceAudiodecDecode(addr ctrl) -> u32 = vita_audiodec_decode
+[0x8018aa9b] hook sceAudiodecDecodeNFrames(addr ctrl, u32 frames) -> u32 = vita_audiodec_decode_n_frames
+[0xf72f9b64] hook sceAudiodecClearContext(addr ctrl) -> u32 = vita_audiodec_clear_context
+[0x883b0cf5] hook sceAudiodecGetInternalError() -> u32 = vita_audiodec_ok
+[0xf0b4c892] hook sceCodecEngineOpenUnmapMemBlock(u32 base, u32 size) -> u32 = vita_audiodec_open_block
+[0x1a3a53e5] hook sceCodecEngineAllocMemoryFromUnmapMemBlock(u32 id, u32 size, u32 align) -> u32 = vita_audiodec_alloc_from_block
+[0x6a31831d] hook sceCodecEngineFreeMemoryFromUnmapMemBlock() -> u32 = vita_audiodec_ok
+[0x95ea3b3e] hook sceCodecEngineCloseUnmapMemBlock(u32 id) -> u32 = vita_audiodec_close_block

@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+#
+# The Vita's imports that display.c answers, by NID, for tools/hookgen --vita.
+# SceDisplay: the framebuffer the screen shows, taken at the next vblank, and the waits for vblanks
+family display
+[0x7a410b64] hook sceDisplaySetFrameBuf(addr param, u32 sync) -> u32 = vita_display_set_frame_buf
+[0xa08ca60d] hook sceDisplayGetRefreshRate(addr at) -> u32 = vita_display_get_refresh_rate
+[0x42ae6bbc] hook sceDisplayGetFrameBuf(addr param) -> u32 = vita_display_get_frame_buf
+[0x5795e898] hook sceDisplayWaitVblankStart() -> u32 = vita_display_wait_vblank_start
+[0x78b41b92] hook sceDisplayWaitVblankStartCB() -> u32 = vita_display_wait_vblank_start
+[0xdd0a13b8] hook sceDisplayWaitVblankStartMulti(u32 vcount) -> u32 = vita_display_wait_vblank_start_multi
+[0x9423560c] hook sceDisplayWaitSetFrameBuf() -> u32 = vita_display_wait_set_frame_buf
+[0x7d9864a8] hook sceDisplayWaitSetFrameBufMulti(u32 vcount) -> u32 = vita_display_wait_set_frame_buf_multi
+# the CB waits also run the thread's callbacks while it waits; none are queued here, so they are the plain waits.
+# The display queue's thread calls these two after each sceDisplaySetFrameBuf
+[0x05f27764] hook sceDisplayWaitVblankStartMultiCB(u32 vcount) -> u32 = vita_display_wait_vblank_start_multi
+[0x814c90af] hook sceDisplayWaitSetFrameBufCB() -> u32 = vita_display_wait_set_frame_buf
+[0x3e796ef5] hook sceDisplayWaitSetFrameBufMultiCB(u32 vcount) -> u32 = vita_display_wait_set_frame_buf_multi
