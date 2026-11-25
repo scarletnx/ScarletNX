@@ -733,6 +733,16 @@ static void make_viewports(NvnDraw* d) {
     d->vp_dirty = 0;
     d->viewport_upper_left = (u8)upper_left;
 }
+/* c cut to scissor 0, as NVN's clears are: the scissors as they are now, which the draw state takes only at a draw.
+   One game clears a 512x400 target before each of its 80 tiles, under that tile's scissor: a whole clear left the
+   last tile alone */
+static void clear_scissor(NvnDraw* d, DrawClear* c) {
+    u32 upper_left =
+        atomic_load_explicit(&g_nvn.draw.origin, memory_order_relaxed) == NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT;
+    if (d->viewport_upper_left != upper_left) viewports_dirty(d, 0, DS_VIEWPORTS_MAX);
+    if (d->vp_dirty) make_viewports(d);
+    c->scissored = 1;
+}
 static void make_vertex_buffers(NvnDraw* d) {
     DsVertexBuffers b;
     memset(&b, 0, sizeof b); /* every byte: keep compares the bytes */
@@ -1528,6 +1538,7 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
             c.color_mask = (u32)r.mask & 15;
             c.slot = (u32)r.index;
             memcpy(c.color, r.rgba, sizeof c.color);
+            clear_scissor(d, &c);
             if (c.color_mask && !d->render_off && g_renderer->clear) gpu_clear(&d->ds, &c, &d->own);
             return 1;
         }
@@ -1539,6 +1550,7 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
             c.stencil_preserve = ~(u32)r.stencil_mask & 0xff;
             c.depth = r.depth;
             c.stencil = (u32)r.stencil;
+            clear_scissor(d, &c);
             if (c.aspects && !d->render_off && g_renderer->clear) gpu_clear(&d->ds, &c, &d->own);
             return 1;
         }
