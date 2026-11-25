@@ -9,27 +9,28 @@
 #include "common/utilities/ui_quads.h"
 #include "snx_settings.h"
 
-/* in the order they are drawn: a finger presses the last one drawn under it */
-enum {
-    SNX_VPAD_L,
-    SNX_VPAD_R,
-    SNX_VPAD_ZL,
-    SNX_VPAD_ZR,
-    SNX_VPAD_MINUS,
-    SNX_VPAD_PLUS,
-    SNX_VPAD_CAPTURE,
-    SNX_VPAD_HOME,
-    SNX_VPAD_L3,
-    SNX_VPAD_R3,
-    SNX_VPAD_DPAD,
-    SNX_VPAD_STICK_L,
-    SNX_VPAD_STICK_R,
-    SNX_VPAD_A,
-    SNX_VPAD_B,
-    SNX_VPAD_X,
-    SNX_VPAD_Y,
-    SNX_VPAD_COUNT
-};
+/* each control's SNX_VPAD_ name and the id of its keys (controls_<id>, controls_<id>_shown), in the order they are drawn:
+   a finger presses the last one drawn under it */
+#define SNX_VPAD_IDS(ROW)                                                                                              \
+    ROW(L, "l")                                                                                                        \
+    ROW(R, "r")                                                                                                        \
+    ROW(ZL, "zl")                                                                                                      \
+    ROW(ZR, "zr")                                                                                                      \
+    ROW(MINUS, "minus")                                                                                                \
+    ROW(PLUS, "plus")                                                                                                  \
+    ROW(CAPTURE, "capture")                                                                                            \
+    ROW(HOME, "home")                                                                                                  \
+    ROW(L3, "l3")                                                                                                      \
+    ROW(R3, "r3")                                                                                                      \
+    ROW(DPAD, "dpad")                                                                                                  \
+    ROW(STICK_L, "stick_l")                                                                                            \
+    ROW(STICK_R, "stick_r")                                                                                            \
+    ROW(A, "a")                                                                                                        \
+    ROW(B, "b")                                                                                                        \
+    ROW(X, "x")                                                                                                        \
+    ROW(Y, "y")
+#define SNX_VPAD_INDEX(name, id) SNX_VPAD_##name,
+enum { SNX_VPAD_IDS(SNX_VPAD_INDEX) SNX_VPAD_COUNT };
 /* what the frontend does, read with vpad_actions */
 #define SNX_VPAD_DO_MENU 1u /* Home was pressed: the game's menu */
 #define SNX_VPAD_DO_SHOT 2u /* Capture was pressed: a screenshot */
