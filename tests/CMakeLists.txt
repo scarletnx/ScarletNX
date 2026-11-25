@@ -5712,6 +5712,13 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     target_include_directories(snx-test-vk-devmem PRIVATE "${volk_SOURCE_DIR}")
     target_link_libraries(snx-test-vk-devmem PRIVATE Vulkan::Headers scarletnx-common) # snx_thread_name
     add_test(NAME vk_devmem COMMAND snx-test-vk-devmem)
+    # the constant buffer slots bound as dynamic uniform buffers (gpu/vk/cb_dynamic.c), from one run's moves to the next
+    add_executable(snx-test-vk-cb-dynamic vk_cb_dynamic.c)
+    snx_test_target(snx-test-vk-cb-dynamic gnu23)
+    target_compile_definitions(snx-test-vk-cb-dynamic PRIVATE VK_NO_PROTOTYPES)
+    target_include_directories(snx-test-vk-cb-dynamic PRIVATE "${volk_SOURCE_DIR}")
+    target_link_libraries(snx-test-vk-cb-dynamic PRIVATE Vulkan::Headers)
+    add_test(NAME vk_cb_dynamic COMMAND snx-test-vk-cb-dynamic)
     # the trim of the caches (gpu/vk/surface.c vk_mem_trim) over stubs of the rest of the renderer: when it takes the
     # render targets that later ones drew all over, where the driver moves memory by priority and where it does not
     add_executable(snx-test-vk-mem-trim vk_mem_trim.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/addr_gens.c")
