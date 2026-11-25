@@ -284,13 +284,14 @@ setting Internal resolution
     help into the output, and resolution scales both
 setting Render upscaler
     key render_upscaler
-    label Upscaler
+    label Game's upscaler (DLSS, FSR 2)
     int 0 6
     default 0
     words Best|FSR 2|FSR 1|None|DLSS|FSR 3.1 or 4|XeSS
     perf
     help What turns the game's internal picture (internal_resolution) into its output: a Switch 2 game's DLSS
-    help evaluations, and the upscalers that hook modules replace (docs/layers/gpu/upscalers.md). 0 = the best one
+    help evaluations, and the upscalers that hook modules replace (docs/layers/gpu/upscalers.md). A game that has
+    help neither takes nothing from it: upscaler is the window's filter. 0 = the best one
     help that can run, 1 = AMD FidelityFX Super Resolution 2.2 (temporal), 2 = FSR 1 (spatial: one frame, no jitter or
     help motion needed), 3 = none: a filtered copy of the picture onto the output (1:1 at the native size, soft below
     help it, and the picture shakes with the game's camera jitter), 4 = NVIDIA DLSS (Windows, an NVIDIA GPU, and
