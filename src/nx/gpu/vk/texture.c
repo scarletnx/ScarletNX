@@ -2155,8 +2155,9 @@ void vk_tex_kind_frame(void) {
 
 /* 1 when every subresource was copied; 0 when memory or staging ran out, and upload_valid keeps it for a retry */
 static int tex_upload_(Surf* t);
-/* t's hosted targets that hold pixels memory lacks, published: a load of t from memory writes their texels in the image
-   they share, and the take that copied them again after it before is no more (docs/dev/one-image.md) */
+/* t's hosted targets that hold pixels memory lacks, published: a load of all of t from memory writes their texels in the
+   image they share, and the take that copied them again after it before is no more (docs/dev/one-image.md). A load of
+   pieces leaves out the pieces under them (take_cover) */
 static void tex_hosted_publish(Surf* t) {
     for (Surf* s = t->hosted; s; s = s->host_next)
         if (vk_surf_flush_size(s) && !vk_surf_publish(s)) vk_surf_flush(s, NULL);
@@ -3480,7 +3481,6 @@ static int later_pieces_whole(const Surf* t, u64 sum) {
    image's (no blocks loaded alone since) is hashed for that, as a change found by its hash is: its pages written with
    the bytes they had load nothing. 1 when the image has them */
 static int tex_patch(Surf* t, const TexPieces* p) {
-    tex_hosted_publish(t);
     u64 sum = 0, bytes = atomic_load_explicit(&g_tex_upload_bytes, memory_order_relaxed);
     for (u32 i = 0; i < p->count; i++) sum += p->piece[i].n;
     /* a texture held as BC1, BC4 or BC5 for what its blocks held loads whole, which reads them again
@@ -3601,7 +3601,6 @@ static int tex_zero(Surf* t) {
 /* t, a texture with holes in its mapping: its image cleared, then the blocks of its mapped runs loaded; loaded whole
    when they are more than half of it. 1 when the image has them */
 static int tex_load_pieces(Surf* t) {
-    tex_hosted_publish(t);
     TexPieces p;
     TexRuns r = {0, t->gva, 0, 0, 0, 0, &p};
     u64 sum = 0;
@@ -4996,7 +4995,9 @@ static void take_cover(Surf* t, TexPieces* p) {
     }
     for (int i = 0; i < n; i++) {
         Surf* s = d[i];
-        if (s == t || s->img == t->img) continue; /* its own image, written in place */
+        /* its own image, written in place. A target t hosts draws into t's image too, and its fresh pixels are there:
+           memory's bytes under it are not loaded over them (docs/dev/one-image.md) */
+        if (s == t || (s->img == t->img && s->host != t)) continue;
         TakePlace at;
         if (s->f.depth != t->f.depth || s->f.stencil != t->f.stencil || s->f.bpp != t->f.bpp ||
             (t->f.depth && s->f.vk != t->f.vk) || s->msaa || ((s->sw != s->w || s->sh != s->h) && !can_blit(s->f.vk)) ||
@@ -5216,7 +5217,8 @@ static void tex_take_drawn(Surf* t) {
             mark_copied(s, t);
             /* the last take of it: from now on it draws into t's image (docs/dev/one-image.md). Its format, its
                scale, the level's size and the layers it covers whole; t whole in memory, not sparse */
-            if (t->att_capable && !t->sparse && !t->bricks && s->is_rt && !s->host && !s->msaa && !(s->gva >> 63) &&
+            /* not a texture with holes in its mapping (piecewise, sparse or not): its loads clear the image first */
+            if (t->att_capable && !t->sparse && !t->bricks && !t->piecewise && s->is_rt && !s->host && !s->msaa && !(s->gva >> 63) &&
                 s->sw == s->w && s->sh == s->h && !s->volume && s->bl && s->f.vk == t->f.vk && s->w >= at.lw &&
                 s->w * s->f.bpp <= ((at.lw * s->f.bpp + 63) & ~63u) && s->h == at.lh && at.count == s->layers && t->img)
                 vk_rt_host(s, t, at.l, at.layer);
