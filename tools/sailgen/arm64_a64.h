@@ -76,16 +76,16 @@ static inline SgD sg_GuestCompareSwap(SgCtx* g, SgD address, SgD expected, SgD d
         return sg_d_slice(g, sgx_mach(g, SGX_M_CAS, in, fix, 4, sgx_log2(w / 8), SGA_M_CLOBBER, 1, 64), w - 1, 0);
     }
 }
-/* CRC32 and CRC32C: the host's own (FEAT_CRC32); without it the function is another back end's */
+/* CRC32 and CRC32C: the host's own (FEAT_CRC32), else the exact helper (x64_helpers.c's snx_x64_crc32) */
 static inline SgD sg_crc32(SgCtx* g, SgD acc_bits, SgD value_bits, long long size, SgS poly) {
     static const signed char fix[2] = {4, 5};
-    SgD in[2];
-    if (!(sgx(g)->features & SGX_F_CRC32)) {
-        sgx(g)->unmade = 1;
-        return sgx_const(32, 0);
-    }
+    SgD in[3];
     in[0] = sg_d_zext(g, acc_bits, 64);
     in[1] = sg_d_zext(g, value_bits, 64);
+    if (!(sgx(g)->features & SGX_F_CRC32)) {
+        in[2] = sgx_const(32, (SnxU64)(size / 8) | (SnxU64)(poly.v == 0x1EDC6F41u) << 4);
+        return sg_d_slice(g, sgx_call(g, "snx_x64_crc32", 0, 0, in, 3, 64), 31, 0);
+    }
     return sg_d_slice(g, sgx_mach(g, SGX_M_CRC, in, fix, 2, size / 8 | (poly.v == 0x1EDC6F41u) << 4, SGA_M_CLOBBER, 1, 64),
                       31, 0);
 }
