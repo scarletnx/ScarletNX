@@ -591,6 +591,55 @@ function execute_I2F64() -> unit = {
     }
 }
 
+/* The doubles: a register pair (the low word in the register the operand names), a uniform pair, or a constant
+   buffer's 8 bytes, with the operand's absolute value and negation; written to the destination pair */
+val SrcF64 : Operand -> f64
+val D_writeF64 : f64 -> unit
+/* a + b, a * b and a * b + c, each rounded once to nearest */
+val F64Add : (f64, f64) -> f64
+val F64Mul : (f64, f64) -> f64
+val F64Fma : (f64, f64, f64) -> f64
+/* a float as a double, which is exact */
+val F32ToF64 : bits(32) -> f64
+
+/* DADD, DMUL and DFMA (NAK's OpDAdd, OpDMul and OpDFma): the rounding at 78-79. DADD's second source is in c's place
+   (NAK encodes it with no b), DMUL's in b's. One game's map draws the Depths with vertex programs that take each
+   position to doubles (F2F.F64), add and scale it by constant pairs (DADD R40, R24, c[1][0x18], DFMA R24, R60,
+   c[1][0x8], R38), and round it back to floats: refused, those draws were skipped. Only the rounding to nearest is
+   translated, and an immediate (whose 32 bits are a double's high word) is refused */
+function D_check(two : Operand) -> unit = {
+    if not_bool(Float64()) then throw(Unsupported("%s on a device without doubles", OpName()));
+    if UInt(Field(78, 2)) != 0 then throw(Unsupported("%s rounding %u", OpName(), UInt(Field(78, 2))));
+    if SrcIsImm(A) | SrcIsImm(two) then throw(Unsupported("%s with an immediate", OpName()))
+}
+function execute_DADD() -> unit = {
+    D_check(C);
+    D_writeF64(F64Add(SrcF64(A), SrcF64(C)))
+}
+function execute_DMUL() -> unit = {
+    D_check(B);
+    D_writeF64(F64Mul(SrcF64(A), SrcF64(B)))
+}
+function execute_DFMA() -> unit = {
+    D_check(B);
+    if SrcIsImm(C) then throw(Unsupported("DFMA with an immediate"));
+    D_writeF64(F64Fma(SrcF64(A), SrcF64(B), SrcF64(C)))
+}
+
+/* F2F.F64 (NAK's OpF2F with a double on a side): the destination's log2 bytes at 75, the source's at 84, the rounding
+   at 78 and FTZ at 80, as F2F's. A float to a double is exact; a double to a float is rounded by the mode */
+function execute_F2F64() -> unit = {
+    let dsize = UInt(Field(75, 2));
+    let ssize = UInt(Field(84, 2));
+    let rnd = UInt(Field(78, 2));
+    if not_bool(Float64()) then throw(Unsupported("F2F.F64 on a device without doubles"));
+    if Field(80, 1) == 0b1 then throw(Unsupported("F2F.F64.FTZ"));
+    if SrcIsImm(B) then throw(Unsupported("F2F.F64 with an immediate"));
+    if dsize == 3 & ssize == 2 then D_writeF64(F32ToF64(SrcF(B)))
+    else if dsize == 2 & ssize == 3 then D_write(RoundF64(rnd, SrcF64(B)))
+    else throw(Unsupported("F2F.F64 from %u to %u bytes", 1 << ssize, 1 << dsize))
+}
+
 /* F2I: NAK's log2 of the destination's bytes at 75 and of the source's at 84, signed with 72, the rounding at 78. A
    half's source is the one bit 60 names, with b's modifiers, as MUFU.F16's. The hardware saturates, and a NaN gives
    0; an 8- or 16-bit result saturates to its range, then fills the register sign or zero extended */
