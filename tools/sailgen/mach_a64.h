@@ -38,6 +38,7 @@ struct SgCtx {
     int fp_bound[2]; /* sgx_fp_bound's register for 32 and 64 bits, once a region with fp_state (0: none yet) */
     int fp_dbound[2]; /* sgx_fp_flushed's register for 32 and 64 bits, once a region (0: none yet) */
     SgB fp_fz;        /* sgx_fp_bad's check of FPCR.FZ alone, once a region */
+    SgB fp_any;       /* and of FPCR's mode or FZ, or FPSR's IXC clear: the vector guards' hot test */
     int origin;      /* the instruction whose flags NZCV was last written from, -1 for none */
     int mem;         /* the virtual register of CPU.mem (guest memory's host address), 0 until read */
     int base_seen[4]; /* a few recent values of sgx_base's, each checked against what made it */
@@ -244,7 +245,7 @@ static inline SgD sgx_call(SgCtx* g, const char* sym, int rt_offset, int state, 
     g->fp_state[0] = g->fp_state[1] = 0;
     g->fp_bound[0] = g->fp_bound[1] = 0;
     g->fp_dbound[0] = g->fp_dbound[1] = 0;
-    g->fp_fz = 0;
+    g->fp_fz = g->fp_any = 0;
     i = sgx_append(x, SGX_K_MACHINE);
     i->op = sym ? SGX_M_CALL : SGX_M_CALL_RT;
     i->sym = sym;

@@ -454,6 +454,14 @@ static int fcold(SgCtx* g, SgB bad, int fast, int a, int b, int d, SnxU32 desc) 
     return sgx_vcold(X, bad, fast, "snx_x64_fp_vec", a, b, d, desc);
 }
 #define FDESC(kind, sz, n) ((SnxU32)(kind) | (SnxU32)(sz ? 8 : 4) << 4 | (SnxU32)(n) << 8)
+/* the LLVM back end's guards in two steps: the hot code tests FPCR's mode and FZ and FPSR's IXC (once a region) and
+   that every lane of r is a normal number (nr: fnot_roomy's); the cold path tests the rest before its call
+   (x64_asm.h's sgx_cold_vwarm: zacc's bits), back to r where it holds: exact zeros, FZ with no denormal argument */
+static int fwarm(SgCtx* g, int r, int nr, unsigned sz, int n, int a, int b, int d, SnxU32 desc, unsigned zacc) {
+    SgB hot = sg_b_or(g, fstate(g, SGX_FPCR_RMODE | SGX_FPCR_FZ, 1), vany(g, nr, sz, n));
+    return sgx_vcold_warm(X, hot, r, "snx_x64_fp_vec", a, b, d, desc, 0x80 | 0x20 | zacc, (int)offsetof(CPU, fpcr),
+                          (int)offsetof(CPU, fpsr));
+}
 
 /* FADD, FSUB, FMUL, FDIV by lanes; FABD the difference's magnitude */
 static int fbinary(SgCtx* g, unsigned op, unsigned sz, int n, int a, int b) {
@@ -461,32 +469,28 @@ static int fbinary(SgCtx* g, unsigned op, unsigned sz, int n, int a, int b) {
                         : op == SNX_FP_MUL || op == SNX_FP_MULX ? k_fmul[sz]
                         : op == SNX_FP_DIV                      ? k_fdiv[sz]
                                                                 : k_fsub[sz];
-    int r = op2(g, f, a, b), bad = fnot_roomy(g, sz, r), zok;
-    if (op == SNX_FP_ADD || op == SNX_FP_SUB || op == SNX_FP_ABD) zok = fzero(g, sz, r);
-    else if (op == SNX_FP_MUL || op == SNX_FP_MULX) /* FMULX's infinity by a zero: the host's NaN, cold */
-        zok = vand(g, fzero(g, sz, r), vor(g, fzero(g, sz, a), fzero(g, sz, b)));
-    else
-        zok = vand(g, fzero(g, sz, r), fzero(g, sz, a));
-    bad = vandn(g, zok, bad);
-    r = fcold(g, sg_b_or(g, sg_b_or(g, fstate(g, SGX_FPCR_RMODE, 1), fflushed(g, sz, n, a, b, 0)), vany(g, bad, sz, n)),
-              r, a, b, 0, FDESC(0, sz, n) | (op == SNX_FP_ABD ? SNX_FP_SUB : op) << 12);
+    int r = op2(g, f, a, b);
+    /* exact zeros: every one of a sum, a product's of a zero (FMULX's infinity by a zero is the host's NaN: cold), a
+       quotient's of a zero; two arguments FZ may flush */
+    unsigned zacc = op == SNX_FP_ADD || op == SNX_FP_SUB || op == SNX_FP_ABD ? 1
+                    : op == SNX_FP_MUL || op == SNX_FP_MULX                  ? 2
+                                                                             : 3;
+    r = fwarm(g, r, fnot_roomy(g, sz, r), sz, n, a, b, 0, FDESC(0, sz, n) | (op == SNX_FP_ABD ? SNX_FP_SUB : op) << 12,
+              zacc | 2u << 3);
     if (op == SNX_FP_ABD) r = vandn(g, fsplat(g, sz, 1ull << (sz ? 63 : 31)), r);
     return r;
 }
 /* d + n * m rounded once (sub: d - n * m, n negated first): VFMADD231 where the host has FMA */
 static int ffma(SgCtx* g, unsigned sz, int n_, int d, int a, int b, int sub) {
-    int r, bad, zok;
+    int r;
     if (sub) a = vxor(g, a, fsplat(g, sz, 1ull << (sz ? 63 : 31)));
     if (!(X->features & SGX_F_FMA)) return fcold(g, sg_bool(g, 1), vzero(g), d, a, b, FDESC(1, sz, n_));
     {
         int in[4] = {d, a, b, 0};
         r = sgx_vins(X, sz ? &sgx_v_vfmadd231pd : &sgx_v_vfmadd231ps, 0, 1, in, 0, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
     }
-    zok = vand(g, fzero(g, sz, r), vor(g, fzero(g, sz, a), fzero(g, sz, b)));
-    bad = vandn(g, zok, fnot_roomy(g, sz, r));
-    return fcold(
-        g, sg_b_or(g, sg_b_or(g, fstate(g, SGX_FPCR_RMODE, 1), fflushed(g, sz, n_, d, a, b)), vany(g, bad, sz, n_)), r,
-        d, a, b, FDESC(1, sz, n_));
+    /* exact zeros where a or b (arguments 2 and 3) is one; d, a and b FZ may flush */
+    return fwarm(g, r, fnot_roomy(g, sz, r), sz, n_, d, a, b, FDESC(1, sz, n_), 2 | 4 | 3u << 3);
 }
 /* FMAX, FMIN (numeric: FMAXNM, FMINNM): MAXPx's lanes, equal ones ANDed (ORed for the minimum); a NaN goes cold */
 static int fminmax(SgCtx* g, unsigned sz, int n, int a, int b, int minimum, int numeric) {
