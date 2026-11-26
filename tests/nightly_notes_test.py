@@ -165,7 +165,8 @@ with tempfile.TemporaryDirectory() as repo:
         and 'once merged, when a nightly has its change' in readme
         and 'https://github.com/owner/repo/blob/main/docs/user/testing.md' in readme
         and 'https://github.com/owner/nightly/releases/latest' in readme
-        and readme.startswith('<!-- publish.yml writes this file'),
+        and readme.startswith('<!-- publish.yml writes this file')
+        and "[owner/repo](https://github.com/owner/repo/releases)'s one prerelease, `main-<commit>`" in readme,
     )
     for linked in re.findall(r'/blob/main/([^)#]+)', readme):
         check(f'the README links {linked}, which the checkout has', (ROOT / linked).exists())

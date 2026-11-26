@@ -4,8 +4,8 @@ name: Publish builds
 
 # The builds as releases (scripts/publish-builds.py), and a version said on Discord: a version tag (v...) pushed that
 # builds everywhere a release of this repository; the first scheduled run of main of a day (UTC) that builds everywhere,
-# or one by hand, that day's nightly in scarletnx/nightly, every one kept, which this repository's "nightly" prerelease
-# links; every pull request a prerelease there, pr-<number>, replaced at each push and deleted when it closes without a
+# or one by hand, that day's nightly in scarletnx/nightly, every one kept; every push to main this repository's one prerelease of main, main-<commit>, each package as its job ends; every
+# pull request a prerelease there, pr-<number>, replaced at each push and deleted when it closes without a
 # merge, or once a nightly has it. A fork's pull request only once someone of the team
 # labels it "publish builds" after its last push. Nothing of a pull request runs here: the files are its Build run's
 # artifacts, and the checkout is main's. The secrets: NIGHTLY_TOKEN may write scarletnx/nightly's contents;
@@ -18,6 +18,12 @@ on:
   # pull_request_target, so a fork's are seen too: closed, labeled, or pushed to (its label then comes off)
   pull_request_target:
     types: [closed, labeled, synchronize]
+  # a package of a push to main just uploaded: build.yml's job starts this with its run, which GITHUB_TOKEN may do
+  workflow_dispatch:
+    inputs:
+      run:
+        description: The Build run of a push to main whose packages go to main's prerelease
+        required: true
 
 permissions:
   contents: write # a release, and the "nightly" prerelease's link
@@ -31,17 +37,21 @@ jobs:
     # a push to the repository's own pull request, or another label, has nothing for it. Nor has a Build a newer push
     # cancelled: waiting in the group below, it would take the place of the one before it that built
     if: >-
-      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'cancelled') ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' && (github.event.workflow_run.conclusion != 'cancelled' ||
+      github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main')) ||
       github.event.action == 'closed' ||
       (github.event.action == 'labeled' && github.event.label.name == 'publish builds') ||
       (github.event.action == 'synchronize' && github.event.pull_request.head.repo.full_name != github.repository)
-    # One at a time for main's nightlies, each version and each pull request: the nightlies are counted. A group holds
-    # one waiting job, which a newer one replaces: the newer build is the one to publish (a fork's pull request, which
-    # its run cannot name, goes by its commit). On the job, not the workflow: an event the job skips never waits, so
-    # the pull request's checks show no run cancelled for it
+    # One at a time for main's prerelease, each version and each pull request. A group holds one waiting job, which a
+    # newer one replaces: main's each bring the prerelease to everything its run has at the time, so the newer loses
+    # nothing, and the newer build is the one to publish (a fork's pull request, which its run cannot name, goes by its
+    # commit). On the job, not the workflow: an event the job skips never waits, so the pull request's checks show no
+    # run cancelled for it
     concurrency:
       group: >-
-        publish-${{ github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch ||
+        publish-${{ github.event_name == 'workflow_dispatch' && 'main' ||
+        github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch ||
         github.event.pull_request.number ||
         github.event.workflow_run.pull_requests[0].number || github.event.workflow_run.head_sha }}
     runs-on: ubuntu-26.04
@@ -64,8 +74,10 @@ jobs:
       # Each by its name, as the release job takes them, into a folder of its own. A pull request's job that failed made
       # none: its notes say so. A pull request makes no cross AppImage (build.yml's appimage-cross)
       - name: Download the x86-64 AppImage
-        if: steps.plan.outputs.run
-        continue-on-error: ${{ steps.plan.outputs.kind == 'pr' }}
+        if: >-
+          steps.plan.outputs.run &&
+          (steps.plan.outputs.kind != 'main' || contains(steps.plan.outputs.need, ' ScarletNX-linux-x86_64.AppImage '))
+        continue-on-error: ${{ steps.plan.outputs.kind == 'pr' || steps.plan.outputs.kind == 'main' }}
         uses: actions/download-artifact@v8
         with:
           name: ScarletNX-linux-x86_64-${{ steps.plan.outputs.short }}.AppImage
@@ -73,8 +85,10 @@ jobs:
           run-id: ${{ steps.plan.outputs.run }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Download the ARM64 AppImage
-        if: steps.plan.outputs.run
-        continue-on-error: ${{ steps.plan.outputs.kind == 'pr' }}
+        if: >-
+          steps.plan.outputs.run &&
+          (steps.plan.outputs.kind != 'main' || contains(steps.plan.outputs.need, ' ScarletNX-linux-aarch64.AppImage '))
+        continue-on-error: ${{ steps.plan.outputs.kind == 'pr' || steps.plan.outputs.kind == 'main' }}
         uses: actions/download-artifact@v8
         with:
           name: ScarletNX-linux-aarch64-${{ steps.plan.outputs.short }}.AppImage
@@ -82,7 +96,9 @@ jobs:
           run-id: ${{ steps.plan.outputs.run }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Download the PowerPC64 LE AppImage
-        if: steps.plan.outputs.run && steps.plan.outputs.kind != 'pr'
+        if: >-
+          steps.plan.outputs.run && steps.plan.outputs.kind != 'pr' &&
+          (steps.plan.outputs.kind != 'main' || contains(steps.plan.outputs.need, ' ScarletNX-linux-ppc64le.AppImage '))
         continue-on-error: true # its job may fail without failing the run: the notes say not built
         uses: actions/download-artifact@v8
         with:
@@ -91,7 +107,9 @@ jobs:
           run-id: ${{ steps.plan.outputs.run }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Download the PowerPC64 BE AppImage
-        if: steps.plan.outputs.run && steps.plan.outputs.kind != 'pr'
+        if: >-
+          steps.plan.outputs.run && steps.plan.outputs.kind != 'pr' &&
+          (steps.plan.outputs.kind != 'main' || contains(steps.plan.outputs.need, ' ScarletNX-linux-ppc64.AppImage '))
         continue-on-error: true # its job may fail without failing the run: the notes say not built
         uses: actions/download-artifact@v8
         with:
@@ -100,7 +118,9 @@ jobs:
           run-id: ${{ steps.plan.outputs.run }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Download the RISC-V 64 AppImage
-        if: steps.plan.outputs.run && steps.plan.outputs.kind != 'pr'
+        if: >-
+          steps.plan.outputs.run && steps.plan.outputs.kind != 'pr' &&
+          (steps.plan.outputs.kind != 'main' || contains(steps.plan.outputs.need, ' ScarletNX-linux-riscv64.AppImage '))
         continue-on-error: true # its job may fail without failing the run: the notes say not built
         uses: actions/download-artifact@v8
         with:
@@ -109,7 +129,9 @@ jobs:
           run-id: ${{ steps.plan.outputs.run }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Download the LoongArch64 AppImage
-        if: steps.plan.outputs.run && steps.plan.outputs.kind != 'pr'
+        if: >-
+          steps.plan.outputs.run && steps.plan.outputs.kind != 'pr' &&
+          (steps.plan.outputs.kind != 'main' || contains(steps.plan.outputs.need, ' ScarletNX-linux-loongarch64.AppImage '))
         continue-on-error: true # its job may fail without failing the run: the notes say not built
         uses: actions/download-artifact@v8
         with:
@@ -118,8 +140,10 @@ jobs:
           run-id: ${{ steps.plan.outputs.run }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Download the Windows build
-        if: steps.plan.outputs.run
-        continue-on-error: ${{ steps.plan.outputs.kind == 'pr' }}
+        if: >-
+          steps.plan.outputs.run &&
+          (steps.plan.outputs.kind != 'main' || contains(steps.plan.outputs.need, ' ScarletNX-windows-x86_64.zip '))
+        continue-on-error: ${{ steps.plan.outputs.kind == 'pr' || steps.plan.outputs.kind == 'main' }}
         uses: actions/download-artifact@v8
         with:
           name: ScarletNX-windows-x86_64-${{ steps.plan.outputs.short }}
@@ -127,7 +151,9 @@ jobs:
           run-id: ${{ steps.plan.outputs.run }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Download the Windows on Arm build
-        if: steps.plan.outputs.run
+        if: >-
+          steps.plan.outputs.run &&
+          (steps.plan.outputs.kind != 'main' || contains(steps.plan.outputs.need, ' ScarletNX-windows-aarch64.zip '))
         continue-on-error: true # its job may fail without failing the run: the notes say not built
         uses: actions/download-artifact@v8
         with:
@@ -136,8 +162,10 @@ jobs:
           run-id: ${{ steps.plan.outputs.run }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Download the Android APK
-        if: steps.plan.outputs.run
-        continue-on-error: ${{ steps.plan.outputs.kind == 'pr' }}
+        if: >-
+          steps.plan.outputs.run &&
+          (steps.plan.outputs.kind != 'main' || contains(steps.plan.outputs.need, ' ScarletNX-android-universal.apk '))
+        continue-on-error: ${{ steps.plan.outputs.kind == 'pr' || steps.plan.outputs.kind == 'main' }}
         uses: actions/download-artifact@v8
         with:
           name: ScarletNX-android-universal-${{ steps.plan.outputs.short }}.apk
@@ -145,7 +173,9 @@ jobs:
           run-id: ${{ steps.plan.outputs.run }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Download the macOS app
-        if: steps.plan.outputs.run
+        if: >-
+          steps.plan.outputs.run &&
+          (steps.plan.outputs.kind != 'main' || contains(steps.plan.outputs.need, ' ScarletNX-macos-arm64.zip '))
         continue-on-error: true # its job may fail without failing the run: the notes say not built
         uses: actions/download-artifact@v8
         with:
@@ -155,7 +185,9 @@ jobs:
           run-id: ${{ steps.plan.outputs.run }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Download the iOS IPA
-        if: steps.plan.outputs.run
+        if: >-
+          steps.plan.outputs.run &&
+          (steps.plan.outputs.kind != 'main' || contains(steps.plan.outputs.need, ' ScarletNX-ios-arm64.ipa '))
         continue-on-error: true # its job may fail without failing the run: the notes say not built
         uses: actions/download-artifact@v8
         with:

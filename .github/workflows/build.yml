@@ -313,6 +313,18 @@ jobs:
           path: |
             dist/*.AppImage*
             dist/appinfo
+      # A push to main: the package goes to main's prerelease now, not once the run ends (publish.yml, run by hand
+      # with this run, which GITHUB_TOKEN may start; scripts/publish-builds.py)
+      - &publish-main
+        name: Put the package in main's prerelease
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/publish.yml/dispatches" \
+            -d "{\"ref\": \"main\", \"inputs\": {\"run\": \"$GITHUB_RUN_ID\"}}"
       # The AppImage as a user gets it (scripts/check-package.sh). In a container of its own, a plain Ubuntu with none
       # of this job's tools and libraries, where the checkout and build tree the runtime was built in (/__w/...) are
       # not: this job's own checkout would stand in for what an installed copy lacks. The workspace is there at
@@ -1348,6 +1360,7 @@ jobs:
           path: |
             dist/*.AppImage*
             dist/appinfo
+      - *publish-main
       # actions/cache saves .cache/cpm as the runner's user, and its tar fails on what the container's root made that
       # only root may open: FFmpeg's tarball has its top directory 0700
       - name: Give the dependency sources back to the runner
@@ -1624,6 +1637,7 @@ jobs:
           name: ScarletNX-windows-${{ matrix.arch }}-${{ steps.commit.outputs.short }}
           path: stage
           if-no-files-found: error
+      - *publish-main
       # The zip as a user gets it (scripts/check-package.sh), where SNX_TESTS. In Git Bash: setup-msys2 puts only its
       # msys2.cmd's folder on PATH, so no DLL of MSYS2's stands in for one the zip lacks. A copy installed from a build
       # tree never takes that tree's checkout (snx_checkout), so the checkout and build/ left in place stand in for
@@ -1849,6 +1863,7 @@ jobs:
           path: ScarletNX-android-arm64-v8a-${{ steps.commit.outputs.short }}.apk
           archive: false
           if-no-files-found: error
+      - *publish-main
       # The app's unit tests (docs/hosts/android-app.md), on the stage the APK was packed from: its classes build against SDL's
       # Java and the icon there. Last, so a test that fails fails the job and still leaves the APKs to try
       - name: Test the app's Java
@@ -2055,3 +2070,13 @@ jobs:
           path: ScarletNX-ios-arm64-${{ steps.commit.outputs.short }}.ipa
           archive: false
           if-no-files-found: error
+      # macOS's and iOS's, whichever built: either may fail, and the job with it, without failing the run
+      - name: Put the packages in main's prerelease
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/publish.yml/dispatches" \
+            -d "{\"ref\": \"main\", \"inputs\": {\"run\": \"$GITHUB_RUN_ID\"}}"
