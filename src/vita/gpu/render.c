@@ -14,6 +14,7 @@
 #include "vita/gpu/gxp.h"
 #include "vita/gpu/usse.h"
 #include "vita/gpu/vk.h"
+#include "common/gpu/vk/jobs.h"
 #include "vita/runtime/watch.h"
 /* compiled from swizzle.comp, picture.comp, yuv.comp and rgb24.comp by the build (cmake/glsl.cmake) */
 #include "vita/gpu/picture_spv.h"
@@ -112,7 +113,23 @@ typedef struct {
 typedef struct {
     uint64_t key;
     VkPipeline pipeline;
+    uint8_t job; /* while a worker makes it (async_pipelines), its job's index plus 1 */
 } Pipeline;
+/* what a pipeline is made of, all of it its own, so that a worker can make it while the draws go on */
+typedef struct {
+    VkVertexInputBindingDescription bindings[GXM_STREAMS];
+    VkVertexInputAttributeDescription attributes[GXM_ATTRIBUTES];
+    unsigned binding_count, attribute_count;
+    VkShaderModule vs, fs;
+    VkPrimitiveTopology topology;
+    VkPipelineRasterizationStateCreateInfo raster;
+    VkPipelineDepthStencilStateCreateInfo depth;
+    VkPipelineColorBlendAttachmentState blend;
+    VkPipelineColorBlendStateCreateFlags blend_flags;
+    VkFormat color, depth_format, stencil_format;
+    VkPipelineCache cache;
+    VkPipeline made; /* a job's, once made */
+} PipeDesc;
 /* what the graphics bind point of the open recording holds, so a draw that changes none of it records nothing for it.
    Forgotten (zeroed) when a scene begins and when its rendering resumes: a submit may have put a new command buffer
    under it, which holds none of this */
@@ -144,6 +161,11 @@ struct VitaRender {
     Surface surfaces[SURFACES];
     Texture textures[TEXTURES];
     Pipeline pipelines[PIPELINES];
+    /* async_pipelines: the workers that make the new pipelines while the draws that need them are skipped
+       (common/gpu/vk/jobs.h), each job's pipeline, and the draws skipped so far */
+    SnxVkJobs pool;
+    PipeDesc jobs[SNX_VK_JOBS];
+    uint64_t skipped;
     VkDescriptorSetLayout set_layout;
     VkPipelineLayout layout;
     VkSampler samplers[2][2][4]; /* min/mag linear, mip, address mode */
@@ -865,6 +887,13 @@ void vita_render_free(VitaProcess* p) {
     struct VitaRender* r = render_of(p);
     if (!r) return;
     VkDevice d = r->vk->device;
+    /* the workers stopped, every pipeline begun made, and the ones no draw collected freed */
+    snx_vk_jobs_stop(&r->pool, NULL);
+    for (unsigned i = 0; i < SNX_VK_JOBS; ++i)
+        if (snx_vk_jobs_done(&r->pool, i) && r->jobs[i].made) vkDestroyPipeline(d, r->jobs[i].made, NULL);
+    if (r->skipped)
+        fprintf(stderr, "scarletnx-vita: async_pipelines=%d skipped %llu draw%s while their pipelines were made\n",
+                g_settings.async_pipelines, (unsigned long long)r->skipped, r->skipped == 1 ? "" : "s");
     vkDeviceWaitIdle(d);
     vita_vk_on_retire(NULL);
     vita_vk_on_submit(NULL);
@@ -1235,8 +1264,68 @@ static VkBlendOp blend_op(unsigned f) {
                                     VK_BLEND_OP_MIN, VK_BLEND_OP_MAX};
     return f < sizeof ops / sizeof *ops ? ops[f] : VK_BLEND_OP_ADD;
 }
+/* the pipeline d describes, made now: VK_NULL_HANDLE where the device refuses it */
+static VkPipeline make_pipe(VkDevice device, VkPipelineLayout layout, const PipeDesc* d) {
+    VkPipelineShaderStageCreateInfo stages[2] = {{.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                  .stage = VK_SHADER_STAGE_VERTEX_BIT,
+                                                  .module = d->vs,
+                                                  .pName = "main"},
+                                                 {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                  .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+                                                  .module = d->fs,
+                                                  .pName = "main"}};
+    VkPipelineVertexInputStateCreateInfo input = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+                                                  .vertexBindingDescriptionCount = d->binding_count,
+                                                  .pVertexBindingDescriptions = d->bindings,
+                                                  .vertexAttributeDescriptionCount = d->attribute_count,
+                                                  .pVertexAttributeDescriptions = d->attributes};
+    VkPipelineInputAssemblyStateCreateInfo assembly = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, .topology = d->topology};
+    VkPipelineViewportStateCreateInfo viewport = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1, .scissorCount = 1};
+    VkPipelineMultisampleStateCreateInfo multisample = {.sType =
+                                                            VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+                                                        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
+    VkPipelineColorBlendStateCreateInfo blending = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+                                                    .flags = d->blend_flags,
+                                                    .attachmentCount = 1,
+                                                    .pAttachments = &d->blend};
+    VkDynamicState states[5] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_STENCIL_REFERENCE,
+                                VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK};
+    VkPipelineDynamicStateCreateInfo dynamic = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+                                                .dynamicStateCount = 5,
+                                                .pDynamicStates = states};
+    VkPipelineRenderingCreateInfo rendering = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+                                               .colorAttachmentCount = 1,
+                                               .pColorAttachmentFormats = &d->color,
+                                               .depthAttachmentFormat = d->depth_format,
+                                               .stencilAttachmentFormat = d->stencil_format};
+    VkGraphicsPipelineCreateInfo gi = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+                                       .pNext = &rendering,
+                                       .stageCount = 2,
+                                       .pStages = stages,
+                                       .pVertexInputState = &input,
+                                       .pInputAssemblyState = &assembly,
+                                       .pViewportState = &viewport,
+                                       .pRasterizationState = &d->raster,
+                                       .pMultisampleState = &multisample,
+                                       .pDepthStencilState = &d->depth,
+                                       .pColorBlendState = &blending,
+                                       .pDynamicState = &dynamic,
+                                       .layout = layout};
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    if (vkCreateGraphicsPipelines(device, d->cache, 1, &gi, NULL, &pipeline) != VK_SUCCESS) return VK_NULL_HANDLE;
+    return pipeline;
+}
+/* a job's pipeline made, on a worker */
+static void job_make(void* owner, unsigned job) {
+    struct VitaRender* r = owner;
+    r->jobs[job].made = make_pipe(r->vk->device, r->layout, &r->jobs[job]);
+}
+/* The pipeline of a draw. Without async_pipelines it is made now. With it a worker makes a new one while the draws
+   that need it are skipped: VK_NULL_HANDLE and *making until it is done; VK_NULL_HANDLE alone where it cannot be */
 static VkPipeline pipeline_for(struct VitaRender* r, GxmContext* c, const GxmVertexProgram* vp, Shader* vs,
-                               const GxmFragmentProgram* fp, Shader* fs, VkPrimitiveTopology topology) {
+                               const GxmFragmentProgram* fp, Shader* fs, VkPrimitiveTopology topology, bool* making) {
     uint64_t key = SNX_FNV_BASIS;
     key = snx_fnv_step(key, (uintptr_t)vs), key = snx_fnv_step(key, (uintptr_t)fs), key = snx_fnv_step(key, fp->blend_info | (uint64_t)fp->blend << 32);
     key = snx_fnv_step(key, topology), key = snx_fnv_step(key, c->cull_mode), key = snx_fnv_step(key, r->depth != NULL);
@@ -1253,19 +1342,29 @@ static VkPipeline pipeline_for(struct VitaRender* r, GxmContext* c, const GxmVer
                             (uint64_t)a->reg << 40);
     }
     unsigned slot = (unsigned)(key % PIPELINES);
+    *making = false;
     for (unsigned probe = 0; probe < PIPELINES; ++probe, slot = (slot + 1) % PIPELINES) {
-        if (r->pipelines[slot].key == key && r->pipelines[slot].pipeline) return r->pipelines[slot].pipeline;
-        if (!r->pipelines[slot].pipeline) break;
+        Pipeline* e = &r->pipelines[slot];
+        if (e->key == key && e->job) {
+            if (!snx_vk_jobs_take(&r->pool, e->job - 1u)) return *making = true, VK_NULL_HANDLE;
+            e->pipeline = r->jobs[e->job - 1].made;
+            e->job = 0;
+            if (!e->pipeline) { /* the device refused it: the slot free again, the draws after it asking again */
+                e->key = 0;
+                once(r, 6, "the device refuses a pipeline");
+            }
+            return e->pipeline;
+        }
+        if (e->key == key && e->pipeline) return e->pipeline;
+        if (!e->pipeline && !e->job) break;
     }
-    if (r->pipelines[slot].pipeline) {
+    if (r->pipelines[slot].pipeline || r->pipelines[slot].job) {
         once(r, 4, "the pipeline cache is full");
         return VK_NULL_HANDLE;
     }
-    VkVertexInputBindingDescription bindings[GXM_STREAMS];
-    VkVertexInputAttributeDescription attributes[GXM_ATTRIBUTES];
-    unsigned binding_count = 0, attribute_count = 0;
+    PipeDesc d = {.vs = vs->module, .fs = fs->module, .topology = topology, .cache = r->cache};
     for (unsigned i = 0; i < vp->stream_count; ++i)
-        bindings[binding_count++] = (VkVertexInputBindingDescription){
+        d.bindings[d.binding_count++] = (VkVertexInputBindingDescription){
             i, vp->streams[i].stride,
             vp->streams[i].index_source & 1 ? VK_VERTEX_INPUT_RATE_INSTANCE : VK_VERTEX_INPUT_RATE_VERTEX};
     for (unsigned i = 0; i < vp->attribute_count; ++i) {
@@ -1277,34 +1376,17 @@ static VkPipeline pipeline_for(struct VitaRender* r, GxmContext* c, const GxmVer
             once_value(r, 5, a->format, "vertex attribute format %u is not drawn yet", a->format);
             return VK_NULL_HANDLE;
         }
-        attributes[attribute_count++] = (VkVertexInputAttributeDescription){(uint32_t)location, a->stream, format,
-                                                                            a->offset};
+        d.attributes[d.attribute_count++] =
+            (VkVertexInputAttributeDescription){(uint32_t)location, a->stream, format, a->offset};
     }
-    VkPipelineShaderStageCreateInfo stages[2] = {
-        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT,
-         .module = vs->module, .pName = "main"},
-        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-         .module = fs->module, .pName = "main"}};
-    VkPipelineVertexInputStateCreateInfo input = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-                                                  .vertexBindingDescriptionCount = binding_count,
-                                                  .pVertexBindingDescriptions = bindings,
-                                                  .vertexAttributeDescriptionCount = attribute_count,
-                                                  .pVertexAttributeDescriptions = attributes};
-    VkPipelineInputAssemblyStateCreateInfo assembly = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, .topology = topology};
-    VkPipelineViewportStateCreateInfo viewport = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
-                                                  .viewportCount = 1,
-                                                  .scissorCount = 1};
     /* SceGxmCullMode: none, clockwise, counter-clockwise; the viewport flips y, so a face's winding is the console's */
-    VkPipelineRasterizationStateCreateInfo raster = {
+    d.raster = (VkPipelineRasterizationStateCreateInfo){
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
         .depthClampEnable = r->vk->depth_clamp, /* the console clips no primitive by its depth, it clamps it */
         .polygonMode = VK_POLYGON_MODE_FILL,
         .cullMode = c->cull_mode ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE,
         .frontFace = c->cull_mode == 1 ? VK_FRONT_FACE_COUNTER_CLOCKWISE : VK_FRONT_FACE_CLOCKWISE,
         .lineWidth = 1.0f};
-    VkPipelineMultisampleStateCreateInfo multisample = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
     static const VkCompareOp compares[8] = {VK_COMPARE_OP_NEVER,         VK_COMPARE_OP_LESS,
                                             VK_COMPARE_OP_EQUAL,         VK_COMPARE_OP_LESS_OR_EQUAL,
                                             VK_COMPARE_OP_GREATER,       VK_COMPARE_OP_NOT_EQUAL,
@@ -1324,7 +1406,7 @@ static VkPipeline pipeline_for(struct VitaRender* r, GxmContext* c, const GxmVer
                              .passOp = ops[c->stencil_ops[0][2] & 7],
                              .depthFailOp = ops[c->stencil_ops[0][1] & 7],
                              .compareOp = compares[(c->stencil_func[0] >> 25) & 7]};
-    VkPipelineDepthStencilStateCreateInfo depth = {
+    d.depth = (VkPipelineDepthStencilStateCreateInfo){
         .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
         .depthTestEnable = r->depth != NULL,
         .depthWriteEnable = r->depth != NULL && c->depth_write == 0, /* SCE_GXM_DEPTH_WRITE_ENABLED is 0 */
@@ -1333,7 +1415,7 @@ static VkPipeline pipeline_for(struct VitaRender* r, GxmContext* c, const GxmVer
         .front = face,
         .back = face};
     uint32_t b = fp->blend_info;
-    VkPipelineColorBlendAttachmentState blend = {
+    d.blend = (VkPipelineColorBlendAttachmentState){
         .blendEnable = fp->blend,
         .srcColorBlendFactor = blend_factor((b >> 16) & 15),
         .dstColorBlendFactor = blend_factor((b >> 20) & 15),
@@ -1345,42 +1427,25 @@ static VkPipeline pipeline_for(struct VitaRender* r, GxmContext* c, const GxmVer
         .colorWriteMask = (b & 2 ? VK_COLOR_COMPONENT_R_BIT : 0) | (b & 4 ? VK_COLOR_COMPONENT_G_BIT : 0) |
                           (b & 8 ? VK_COLOR_COMPONENT_B_BIT : 0) | (b & 1 ? VK_COLOR_COMPONENT_A_BIT : 0)};
     /* a program reading its pixel's color reads what the draw's earlier primitives wrote there, when the device can */
-    VkPipelineColorBlendStateCreateInfo blending = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-        .flags = fs->meta.reads_color && r->vk->raster_order
-                     ? VK_PIPELINE_COLOR_BLEND_STATE_CREATE_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_BIT_EXT
-                     : 0,
-        .attachmentCount = 1,
-        .pAttachments = &blend};
-    VkDynamicState states[5] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
-                                VK_DYNAMIC_STATE_STENCIL_REFERENCE, VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK,
-                                VK_DYNAMIC_STATE_STENCIL_WRITE_MASK};
-    VkPipelineDynamicStateCreateInfo dynamic = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-                                                .dynamicStateCount = 5,
-                                                .pDynamicStates = states};
-    VkFormat attachment = r->color->vk_format;
-    VkPipelineRenderingCreateInfo rendering = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
-                                               .colorAttachmentCount = 1,
-                                               .pColorAttachmentFormats = &attachment,
-                                               .depthAttachmentFormat = r->depth ? r->depth->vk_format
-                                                                                 : VK_FORMAT_UNDEFINED,
-                                               .stencilAttachmentFormat = stencil ? r->depth->vk_format
-                                                                                  : VK_FORMAT_UNDEFINED};
-    VkGraphicsPipelineCreateInfo gi = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-                                       .pNext = &rendering,
-                                       .stageCount = 2,
-                                       .pStages = stages,
-                                       .pVertexInputState = &input,
-                                       .pInputAssemblyState = &assembly,
-                                       .pViewportState = &viewport,
-                                       .pRasterizationState = &raster,
-                                       .pMultisampleState = &multisample,
-                                       .pDepthStencilState = &depth,
-                                       .pColorBlendState = &blending,
-                                       .pDynamicState = &dynamic,
-                                       .layout = r->layout};
-    VkPipeline pipeline = VK_NULL_HANDLE;
-    if (vkCreateGraphicsPipelines(r->vk->device, r->cache, 1, &gi, NULL, &pipeline) != VK_SUCCESS) {
+    d.blend_flags = fs->meta.reads_color && r->vk->raster_order
+                        ? VK_PIPELINE_COLOR_BLEND_STATE_CREATE_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_BIT_EXT
+                        : 0;
+    d.color = r->color->vk_format;
+    d.depth_format = r->depth ? r->depth->vk_format : VK_FORMAT_UNDEFINED;
+    d.stencil_format = stencil ? r->depth->vk_format : VK_FORMAT_UNDEFINED;
+    r->pool.make = job_make, r->pool.owner = r, r->pool.who = "scarletnx-vita", r->pool.thread = "Vita pipelines";
+    if (g_settings.async_pipelines && snx_vk_jobs_start(&r->pool, g_settings.pipeline_threads)) {
+        int job = snx_vk_jobs_free(&r->pool);
+        if (job >= 0) { /* with every job in hand the pipeline is asked for again at the next draw */
+            r->jobs[job] = d;
+            r->pipelines[slot] = (Pipeline){.key = key, .job = (uint8_t)(job + 1)};
+            snx_vk_jobs_queue(&r->pool, (unsigned)job);
+        }
+        *making = true;
+        return VK_NULL_HANDLE;
+    }
+    VkPipeline pipeline = make_pipe(r->vk->device, r->layout, &d);
+    if (!pipeline) {
         once(r, 6, "the device refuses a pipeline");
         return VK_NULL_HANDLE;
     }
@@ -2136,8 +2201,9 @@ static const char* draw(VitaProcess* p, GxmContext* c, uint32_t primitive, uint3
         images[i] = (VkDescriptorImageInfo){r->samplers[linear][mip][mode == 0 ? 0 : mode == 1 ? 1 : 2], t->view,
                                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     }
-    VkPipeline pipeline = pipeline_for(r, c, vp, vs, fp, fs, topologies[kind]);
-    if (!pipeline) return "no pipeline";
+    bool making;
+    VkPipeline pipeline = pipeline_for(r, c, vp, vs, fp, fs, topologies[kind], &making);
+    if (!pipeline) return making ? (++r->skipped, "its pipeline in the making (async_pipelines)") : "no pipeline";
     uint32_t vertex_at = stage_uniforms(r, p, &vs->meta, c->vertex_uniform);
     uint32_t fragment_at = stage_uniforms(r, p, &fs->meta, c->fragment_uniform);
     if (vertex_at == UINT32_MAX || fragment_at == UINT32_MAX) {
