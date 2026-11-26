@@ -24,13 +24,11 @@
 #define SGX_FPSR_IXC (1u << 4)
 /* FPCR's mask bits set, or (ixc) FPSR's IXC clear: the hot path may not be the console's. Made once a region for
    FPCR's mode and FPSR's values, and for FZ alone (an MSR or a call forgets them: sgx_call) */
-static inline SgB sgx_fp_bad(SgCtx* g, SgD fpcr, SnxU32 mask, int ixc) {
+/* the same as a 32-bit value not 0 where the hot path may not be the console's: FPCR's mask bits and FPSR's IXC
+   clear (bit 4), not made into a condition, for a test that joins it with others */
+static inline SgD sgx_fp_bad_bits(SgCtx* g, SgD fpcr, SnxU32 mask, int ixc) {
     SgX* x = sgx(g);
-    SgD f, bad;
-    if (mask == SGX_FPCR_RMODE && g->fp_state[ixc]) return g->fp_state[ixc];
-    if (mask == SGX_FPCR_FZ && !ixc && g->fp_fz) return g->fp_fz;
-    if (mask == (SGX_FPCR_RMODE | SGX_FPCR_FZ) && ixc && g->fp_any) return g->fp_any;
-    f = sg_d_and(g, sg_d_zext(g, sg_d_slice(g, fpcr, 31, 0), 32), sgx_const(32, mask));
+    SgD f = sg_d_and(g, sg_d_zext(g, sg_d_slice(g, fpcr, 31, 0), 32), sgx_const(32, mask));
     if (ixc) {
         SgXIns* i = sgx_append(x, SGX_K_LOAD);
         SgD fpsr;
@@ -40,9 +38,14 @@ static inline SgB sgx_fp_bad(SgCtx* g, SgD fpcr, SnxU32 mask, int ixc) {
         fpsr = sgx_val(32, i->def);
         f = sg_d_or(g, f, sg_d_xor(g, sg_d_and(g, fpsr, sgx_const(32, SGX_FPSR_IXC)), sgx_const(32, SGX_FPSR_IXC)));
     }
-    bad = f;
+    return f;
+}
+static inline SgB sgx_fp_bad(SgCtx* g, SgD fpcr, SnxU32 mask, int ixc) {
+    if (mask == SGX_FPCR_RMODE && g->fp_state[ixc]) return g->fp_state[ixc];
+    if (mask == SGX_FPCR_FZ && !ixc && g->fp_fz) return g->fp_fz;
+    if (mask == (SGX_FPCR_RMODE | SGX_FPCR_FZ) && ixc && g->fp_any) return g->fp_any;
     {
-        SgB b = sg_b_not(g, sg_d_is_zero(g, bad));
+        SgB b = sg_b_not(g, sg_d_is_zero(g, sgx_fp_bad_bits(g, fpcr, mask, ixc)));
         if (mask == SGX_FPCR_RMODE) g->fp_state[ixc] = b;
         if (mask == SGX_FPCR_FZ && !ixc) g->fp_fz = b;
         if (mask == (SGX_FPCR_RMODE | SGX_FPCR_FZ) && ixc) g->fp_any = b;
