@@ -313,8 +313,8 @@ runtime must not mix with another LLVM build.
    cd ScarletNX
    ```
 
-4. Configure and build. These are CI's options without its ccache and `-DSNX_DEPLOY=OFF` ones. They give
-   CMake the MSYS2 tools as Windows paths and build the pinned SDL3.
+4. Configure and build. These are CI's options without its ccache, LTO, VP9 vectors and `-DSNX_DEPLOY=OFF` ones.
+   They give CMake the MSYS2 tools as Windows paths and build the pinned SDL3.
 
    ```sh
    cmake --preset default \
@@ -337,7 +337,7 @@ runtime must not mix with another LLVM build.
 6. Run `build/default/scarletnx.exe` from the CLANG64 shell, which has the DLLs it imports on PATH
    ([Usage](../user/usage.md)). For a copy that runs without MSYS2, `cmake --install build/default --prefix stage` puts
    `scarletnx.exe` in `stage/bin`. Then copy the DLLs it imports from `/clang64/bin`, as CI's
-   "Bundle runtime DLLs and licenses" step does.
+   "Bundle runtime DLLs and licenses" step does (`scripts/ci/windows.sh bundle`).
 
 ## Rebuild, deploy, cache
 
@@ -506,7 +506,7 @@ it:
 
 - `-DSNX_TEST_SANITIZERS=ON`: build the native tests, and the programs and libraries of the repository they run or
   link, with ASan and UBSan (`runtime_architecture` names one left out). The runtime is one, so it is not deployed.
-  CI's Linux x86-64 job (`Linux AppImage (x86_64)`) runs the tests this way, with
+  CI's job `Linux (x86_64, ASan + UBSan)` runs the tests this way, with
   `LSAN_OPTIONS=use_stacks=0:use_registers=0:suppressions=$PWD/tests/lsan.supp` so the leak check finds the same leaks
   on every machine, and none of the system's libraries' own (SDL's ALSA backend never frees ALSA's device hints).
 - `-DSNX_TEST_VULKAN=ON`: add the offscreen Vulkan integration tests, see below.
@@ -517,8 +517,8 @@ it:
   edenprobe as CI does against its baseline, with guest buffers copied and read in place (docs/dev/edenprobe.md).
 - `-DSNX_TEST_SDM=ON`: download the Intel SDM into `CPM_SOURCE_CACHE` once and have `sailgen_sdm_isel` make the x86-64
   back end's instruction selection again from it, which must be the tree's (needs `pdftotext`, poppler's). The test is
-  skipped without the PDF, which `-DSNX_SDM_PDF=` also names. CI's Linux x86-64 job runs it on the nightly and on a pull
-  request that changes `tools/sailgen`.
+  skipped without the PDF, which `-DSNX_SDM_PDF=` also names. CI's Linux x86-64 job runs it on a run by hand, a
+  version's tag and a pull request that changes `tools/sailgen`.
 - `-DSNX_TEST_VP9_VECTORS=ON`: add the `nvdec_vp9_*` tests, which run NVDEC's VP9 jobs on libvpx's test vectors;
   configure downloads the 32 files from the WebM project into `CPM_SOURCE_CACHE` once. CI's Linux, ASan, Windows and
   macOS jobs run them.

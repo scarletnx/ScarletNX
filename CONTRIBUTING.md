@@ -70,10 +70,10 @@ and the nightly build and package the same and run the x86-64 and AArch64 AppIma
 would, and test nothing else.
 
 A job of the Build that fails cancels the rest of its run once it has ended, a pull request's or main's
-(`scripts/fail-fast.py`); the macOS and iOS job and the cross-built AppImages, which may fail without failing the run,
-cancel nothing. A push to a pull request cancels the run of its commit before, and a pull request merged or closed
-cancels its runs still going (`.github/workflows/pr-closed.yml`, `scripts/cancel-pr-runs.py`), so no runner builds what nobody will
-merge.
+(`scripts/fail-fast.py`); the macOS and iOS job, Windows on AArch64 and the cross-built AppImages, which may fail
+without failing the run, cancel nothing. A push to a pull request cancels the run of its commit before, and a pull
+request merged or closed cancels its runs still going (`.github/workflows/pr-closed.yml`, `scripts/cancel-pr-runs.py`),
+so no runner builds what nobody will merge.
 
 GitHub asks the owners of the files a pull request changes for their review once it is out of draft:
 `.github/CODEOWNERS` names those of the CI, GUI, GPU and CPU code, and of the 3DS and the Vita.
