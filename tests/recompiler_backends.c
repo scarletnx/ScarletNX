@@ -10,7 +10,7 @@
    make the functions (snx_recompiled_x64_functions).
      snx-test-recompiler-backends [--functions N] [--states N] [--seed N] [--without MASK] [--target NAME] [--verbose]
          [--hook] [--jit] [--words HEX...] [--made] [--ops OP...] [--refused] [--coverage] [--counts FILE]
-         [--counts-blocks N FILE] [--stale] [--qemu QEMU RUNNER DIR] [--programs] [--calls] [--calls-back]
+         [--counts-blocks N FILE] [--stale] [--fall] [--qemu QEMU RUNNER DIR] [--programs] [--calls] [--calls-back]
          [--long N BYTES] [--cpu NAME] [--frozen FILE]
    --without MASK: the back end goes without these features of the host, as on a host that lacks them: x86-64's
    (sailgen's SGX_F_*: FMA 0x800, AVX 0x400, F16C 0x100, BMI1, BMI2 and LZCNT 7, AES-NI 0x1000, SHA-NI 0x2000), arm64's
@@ -43,6 +43,8 @@
    --counts FILE: each target op's words with RETs, the native object's bytes: OP, name, size, then a line of hex
    --counts-blocks N FILE: the same records, but N guest words in each function before its RET, so the prologue and
    epilogue are shared; a word that ends its block (a branch out, a RET, a BRK or an UNDEF) ends the function there
+   --fall: every other random function has no RET and runs off its end into the next one's start, which cuts it there:
+   the code a function makes where no word of it left
    --stale: --counts' and --counts-blocks' functions with the stale check a game's have (SnxNativeOptions.stale)
    On a host with no native back end it is skipped, saying so.
 
@@ -767,6 +769,7 @@ static void function_words(const uint8_t* mem, uint64_t at, char* text, size_t s
     }
 }
 static int g_stale; /* --stale */
+static int g_fall;  /* --fall */
 static void undef(CPU* c, uint64_t pc, uint32_t word) {
     /* what it was passed, in the state the sides are compared by; not QEMU's, which has no RET of a word's X30 */
     if (!g_qemu) c->x[17] ^= pc ^ (uint64_t)word << 32;
@@ -1423,6 +1426,8 @@ int main(int argc, char** argv) {
             refused = 2;
         else if (!strcmp(argv[i], "--stale"))
             g_stale = 1;
+        else if (!strcmp(argv[i], "--fall"))
+            g_fall = 1;
         else if (!strcmp(argv[i], "--counts") && i + 1 < (unsigned)argc)
             counts = argv[++i];
         else if (!strcmp(argv[i], "--counts-blocks") && i + 2 < (unsigned)argc) {
@@ -1668,6 +1673,11 @@ int main(int argc, char** argv) {
                 }
             }
             put32(mem[0], at + 4 * k, w);
+        }
+        if (g_fall && !(i & 1) && i + 1 < functions) {
+            /* no RET: NOPs to the slot's end, where the next function's start cuts this one */
+            for (k = n; k < SLOT; ++k) put32(mem[0], at + 4 * k, 0xD503201Fu);
+            continue;
         }
         put32(mem[0], at + 4 * n, 0xD65F03C0u);
         for (k = n; k + 1 < SLOT; ++k) put32(mem[0], at + 4 * (k + 1), 0xD65F03C0u);
