@@ -534,6 +534,8 @@ int snx_agb_main(int argc, char** argv) {
                 told_swi_number = cpu.unknown_swi;
             }
             if (host) agb_host_frame(host, board.ppu.framebuffer, audio, written);
+            if (host)
+                agb_host_rumble(host, (float)agb_gpio_motor_take(&board) / (AGB_SCANLINE_CYCLES * AGB_FRAME_LINES));
             states_step(host, &board, &cpu, folder, name, (double)frame * FRAME_MS);
             if (board.save.dirty && written_at < 0) written_at = frame;
             if (written_at >= 0 && frame - written_at >= SAVE_QUIET_FRAMES && board.save.dirty &&

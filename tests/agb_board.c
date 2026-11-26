@@ -87,6 +87,35 @@ static void rtc_command(AgbBoard* board, uint8_t command) {
 }
 /* The real-time clock a cartridge with the clock library's tag has on its GPIO port: the date and time it reads, in BCD,
    its status register's 24 hour mode, the port's registers as they read back or not, and none without the tag */
+/* pin 3 of the cartridge's port, the motor a rumble cartridge wires there: its cycles while the console drives it
+   high, none while the pin is an input, and the ROM's bytes read as they are on a cartridge without the clock */
+static int check_motor(void) {
+    char error[256];
+    uint8_t* rom = (uint8_t*)malloc(ROM_SIZE);
+    AgbBoard board;
+    CHECK(rom);
+    make_rom(rom);
+    agb_board_init(&board);
+    CHECK(!agb_board_insert(&board, rom, ROM_SIZE, error, sizeof error));
+    CHECK(!board.gpio.rtc);
+    agb_write16(&board, 0x080000C4, 8); /* high, but an input: the cartridge's to drive */
+    board.now += 1000;
+    CHECK(agb_gpio_motor_take(&board) == 0);
+    agb_write16(&board, 0x080000C6, 8);
+    board.now += 700;
+    agb_write16(&board, 0x080000C4, 0);
+    board.now += 300;
+    agb_write16(&board, 0x080000C4, 8);
+    board.now += 50;
+    CHECK(agb_gpio_motor_take(&board) == 750);
+    board.now += 20;
+    CHECK(agb_gpio_motor_take(&board) == 20);
+    CHECK(agb_read8(&board, 0x080000C4) == rom[0xC4] && agb_read8(&board, 0x080000C6) == rom[0xC6]);
+    agb_board_destroy(&board);
+    free(rom);
+    return 0;
+}
+
 static int check_rtc(void) {
     static const uint8_t date[7] = {0x26, 0x11, 0x12, 0x04, 0x22, 0x30, 0x45}; /* 2026-11-12, a Thursday, 22:30:45 */
     static const uint8_t leap[7] = {0x00, 0x02, 0x29, 0x02, 0x13, 0x00, 0x07}; /* 2000-02-29, a Tuesday, 13:00:07 */
@@ -716,6 +745,7 @@ int main(void) {
 
     free(rom);
     if (check_rtc()) return 1;
+    if (check_motor()) return 1;
     puts("agb_board: ok");
     return 0;
 }

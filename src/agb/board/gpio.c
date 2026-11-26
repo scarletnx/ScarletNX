@@ -8,6 +8,7 @@
 #define GPIO_SCK 1u
 #define GPIO_SIO 2u
 #define GPIO_CS  4u
+#define GPIO_MOTOR 8u /* a rumble cartridge's motor (GBATEK "GBA Cart Rumble"), which mGBA reads off this pin too */
 
 /* the clock's commands, bits 4 to 6 of the command byte, and the bytes each moves */
 enum { RTC_RESET = 0, RTC_DATETIME = 2, RTC_CONTROL = 4, RTC_TIME = 6 };
@@ -145,6 +146,29 @@ static void rtc_pins(AgbBoard* board) {
     gpio->sck = (uint8_t)(gpio->pins & GPIO_SCK);
 }
 
+/* the motor on while the console drives pin 3 high, its running time in the board's cycles */
+static void motor(AgbBoard* board) {
+    AgbGpio* gpio = &board->gpio;
+    uint8_t on = (uint8_t)((gpio->direction & gpio->latch & GPIO_MOTOR) != 0);
+    if (on == gpio->motor) return;
+    if (on)
+        gpio->motor_since = board->now;
+    else
+        gpio->motor_ran += board->now - gpio->motor_since;
+    gpio->motor = on;
+}
+
+uint64_t agb_gpio_motor_take(AgbBoard* board) {
+    AgbGpio* gpio = &board->gpio;
+    uint64_t ran = gpio->motor_ran;
+    if (gpio->motor) {
+        ran += board->now - gpio->motor_since;
+        gpio->motor_since = board->now;
+    }
+    gpio->motor_ran = 0;
+    return ran;
+}
+
 int agb_gpio_detect(const uint8_t* image, size_t size) {
     static const char tag[] = "SIIRTC_V";
     for (size_t i = 0; i + sizeof tag - 1 <= size; ++i)
@@ -166,7 +190,14 @@ int agb_gpio_write(AgbBoard* board, uint32_t address, uint16_t value) {
     uint32_t at = address & 0x0FFFFFFE;
     /* the port is the cartridge's, in each of its three windows as its reads are: folded into the first */
     if (at >= 0x08000000 && at < 0x0E000000) at = 0x08000000 + (at & (AGB_ROM_MAX - 1));
-    if (!gpio->rtc || at < 0x08000000 + AGB_GPIO_DATA || at > 0x08000000 + AGB_GPIO_CONTROL) return 0;
+    if (at < 0x08000000 + AGB_GPIO_DATA || at > 0x08000000 + AGB_GPIO_CONTROL) return 0;
+    if (!gpio->rtc) {
+        /* a cartridge without the clock: pin 3 alone, a rumble cartridge's motor, the ROM's bytes read as they are */
+        if (at == 0x08000000 + AGB_GPIO_DATA) gpio->latch = value & 0xF;
+        if (at == 0x08000000 + AGB_GPIO_DIRECTION) gpio->direction = value & 0xF;
+        motor(board);
+        return 1;
+    }
     if (at == 0x08000000 + AGB_GPIO_CONTROL)
         gpio->readable = value & 1;
     else {
@@ -176,6 +207,7 @@ int agb_gpio_write(AgbBoard* board, uint32_t address, uint16_t value) {
             gpio->direction = value & 0xF;
         gpio->pins = (uint8_t)((gpio->pins & ~gpio->direction) | (gpio->latch & gpio->direction));
         rtc_pins(board);
+        motor(board);
     }
     show(board);
     return 1;
