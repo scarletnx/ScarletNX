@@ -14,8 +14,10 @@ void vk_descriptors_bind(VkCommandBuffer cb, VkPipelineLayout layout, u32 first,
                          u32 ndyn, const u32* dyn);
 /* Heap bindings invalidate legacy descriptor state across both pipeline bind points. */
 void vk_descriptors_invalidate(void);
+/* the descriptor buffers' and heaps' binds of a recording slot start again (vk_descriptor_heaps_stream_reset) */
+void vk_descriptors_stream_reset(uint32_t slot);
 void vk_descriptors_reset(u32 slot);
-/* whether the device has the memory the frames' descriptor tables live in (host-visible, coherent and cached) */
+/* whether the device has the memory the frames' descriptor tables live in (host-visible and coherent, ARENA_MEMORY) */
 int vk_descriptors_memory(VkPhysicalDevice phys);
 /* whether the frame slot's descriptor memory holds the tables of one more draw: else vk_frame_check moves on to the
    next frame before the draw's setup starts, which must not submit */

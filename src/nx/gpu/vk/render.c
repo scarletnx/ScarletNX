@@ -7909,7 +7909,7 @@ static void render_batch_run(void) {
        between. The batch binds everything again (g_dyn fresh) */
     g_dyn[t_rc].cb = 0;
     g_ib[t_rc].cb = VK_NULL_HANDLE; /* and the index buffer bound (index_bind) */
-    vk_descriptor_heaps_stream_reset(t_rc); /* and the heaps */
+    vk_descriptors_stream_reset(t_rc); /* and the heaps */
     vk_surf_view_reset();
     g_rp[t_rc] = g_rp[0]; /* the pass open on the renderer thread, which the batch's commands follow */
     vk_rec_list_begin(g_batch.list);
@@ -7988,7 +7988,7 @@ static void render_batch(void) {
     g_rp[t_rc] = g_rp[1]; /* the pass the batch's commands left open */
     g_ib[t_rc].cb = VK_NULL_HANDLE;
     g_dyn[t_rc].cb = 0; /* the batch's binds are the command buffer's now: the next draw here binds everything again */
-    vk_descriptor_heaps_stream_reset(t_rc);
+    vk_descriptors_stream_reset(t_rc);
     gpu_ds_batch_end();
     gpu_ds_batch_done(n);
     g_batch.batches++;
@@ -8088,7 +8088,7 @@ static void render_split_run(void) {
     g_ib[t_rc].cb = VK_NULL_HANDLE;
     /* the heaps the renderer thread bound, or a classic set bound after them, are in commands that it records while
        this list does: the list binds its own */
-    vk_descriptor_heaps_stream_reset(t_rc);
+    vk_descriptors_stream_reset(t_rc);
     vk_surf_view_reset();
     g_rp[t_rc] = (typeof(g_rp[0])){.rate_want = RATE_KEEP}; /* no pass: the first draw begins its own */
     vk_rec_list_begin(g_split.list);
@@ -8155,7 +8155,7 @@ static void render_split_join(void) {
     g_rp[t_rc] = g_rp[1];
     g_ib[t_rc].cb = VK_NULL_HANDLE;
     g_dyn[t_rc].cb = 0;
-    vk_descriptor_heaps_stream_reset(t_rc); /* the worker's binds and classic sets are the command buffer's now */
+    vk_descriptors_stream_reset(t_rc); /* the worker's binds and classic sets are the command buffer's now */
     gpu_ds_batch_end();
     gpu_ds_batch_done(g_split.n);
     g_split.pending = 0;

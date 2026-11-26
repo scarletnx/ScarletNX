@@ -48,8 +48,10 @@ static struct {
         VkDeviceAddress address;
         VkDeviceSize used, capacity;
     } frame[VK_FRAMES];
-    u32 bound_cb;
-    u64 bound_sets; /* vk_rec_set_binds when they were bound */
+    /* each recording stream's (g_vk_slot) command buffer that bound them, and vk_rec_set_binds then. A worker's list
+       plays after the renderer thread's commands, both recorded at the same time (vk_descriptors_stream_reset) */
+    u32 bound_cb[VK_RC_SLOTS];
+    u64 bound_sets[VK_RC_SLOTS];
     VkDescriptorStats stats, reported;
     u8* images;
     size_t image_stride;
@@ -321,7 +323,11 @@ VkDescriptorSet vk_descriptors_write(VkDescriptorSetLayout layout, u32 count, co
     }
     return (VkDescriptorSet)(uintptr_t)(base + 1);
 }
-void vk_descriptors_invalidate(void) { g_descriptors.bound_cb = 0; }
+void vk_descriptors_invalidate(void) { g_descriptors.bound_cb[g_vk_slot] = 0; }
+void vk_descriptors_stream_reset(u32 slot) {
+    if (slot < VK_RC_SLOTS) g_descriptors.bound_cb[slot] = 0;
+    if (g_vk.has_descriptor_heap_support) vk_descriptor_heaps_stream_reset(slot);
+}
 void vk_descriptors_bind(VkCommandBuffer cb, VkPipelineLayout layout, u32 first, u32 count, const VkDescriptorSet* sets,
                          u32 ndyn, const u32* dyn) {
     if (g_vk.has_descriptor_heaps) {
@@ -339,11 +345,11 @@ void vk_descriptors_bind(VkCommandBuffer cb, VkPipelineLayout layout, u32 first,
     u64 binds = vk_rec_set_binds();
     /* in this command buffer, and no descriptor set bound since: a compute pass's (a copy's, a conversion's) between
        two draws unbinds them, and the second draw's offsets went unbound */
-    if (g_descriptors.bound_cb != begun || g_descriptors.bound_sets != binds) {
+    if (g_descriptors.bound_cb[g_vk_slot] != begun || g_descriptors.bound_sets[g_vk_slot] != binds) {
         rec_CmdBindDescriptorBuffersEXT(cb, g_descriptors.frame[vk_frame_slot()].address);
         if (g_vk.has_descriptor_heap_support) vk_descriptor_heaps_buffer_bound(begun);
-        g_descriptors.bound_cb = begun;
-        g_descriptors.bound_sets = binds;
+        g_descriptors.bound_cb[g_vk_slot] = begun;
+        g_descriptors.bound_sets[g_vk_slot] = binds;
     }
     VkDeviceSize offsets[5];
     for (u32 i = 0; i < count; i++) offsets[i] = (u64)(uintptr_t)sets[i] - 1;
