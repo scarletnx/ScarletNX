@@ -631,8 +631,11 @@ static void started(void) {
    key the build has */
 static void jit(void) {
     static const char* const cache = "recompiler-fallback.jitcache";
-    char error[512] = "", *key = snx_jit_cache_key('0', 0, 0, 0), want[64];
+    char error[512] = "", *key = snx_jit_cache_key('0', 0, 0, 0), want[64], code[64];
     snprintf(want, sizeof want, " native=%s ", snx_native_name());
+    snprintf(code, sizeof code, " native_code=%s ", snx_native_code());
+    CHECK(key && strstr(key, code), "the cache key names the native code's version (%s): %s", snx_native_code(),
+          key ? key : "(none)");
     if (snx_fallback_available())
         CHECK(key && strstr(key, " llvm=") && strstr(key, " triple=") && !strstr(key, want), "LLVM's cache key: %s",
               key ? key : "(none)");

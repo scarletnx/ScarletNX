@@ -24,6 +24,11 @@ add_test(NAME recompiler_core_symbols COMMAND "${CMAKE_COMMAND}" "-DBUILD=${PROJ
          "-DRULE=The recompiler's core builds and links without LLVM (src/common/cpu/recompiler/CMakeLists.txt)"
          -P "${PROJECT_SOURCE_DIR}/tests/recompiler_symbols.cmake")
 
+# the version of the native back ends' code that the JIT cache's key names (cmake/native_code_hash.cmake)
+add_test(NAME native_code_hash COMMAND "${CMAKE_COMMAND}" "-DSCRIPT=${PROJECT_SOURCE_DIR}/cmake/native_code_hash.cmake"
+         "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/native-code-hash"
+         -P "${PROJECT_SOURCE_DIR}/tests/native_code_hash_test.cmake")
+
 # SNX_WITH_LLVM (cmake/with_llvm.cmake): which builds it stops
 add_test(NAME with_llvm_option COMMAND "${CMAKE_COMMAND}" "-DSCRIPT=${PROJECT_SOURCE_DIR}/cmake/with_llvm.cmake"
          -P "${PROJECT_SOURCE_DIR}/tests/with_llvm_test.cmake")

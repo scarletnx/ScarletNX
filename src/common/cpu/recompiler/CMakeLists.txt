@@ -161,6 +161,30 @@ target_sources(snx_recompiler_core PRIVATE la64/la64_codegen.c la64/la64_arm.c)
 snx_sailgen_a64_risc(snx_recompiler_core la64)
 snx_sailgen_a32_risc(snx_recompiler_core la64)
 
+# the version of the code the native back ends make (snx_native_code), a hash of every file that decides it: their
+# sources and the object writers', sailgen's headers and the SDM's selection, and what sailgen generated for them above.
+# The JIT cache's key names it, so a cache made before a change to that code is refused rather than run
+set(snx_native_code_globs "${PROJECT_SOURCE_DIR}/tools/sailgen/*.h" "${PROJECT_SOURCE_DIR}/tools/sailgen/sdm/*.inc")
+foreach(dir mach object x64 arm64 rv64 ppc64 mips64 s390x la64)
+    list(APPEND snx_native_code_globs "${CMAKE_CURRENT_SOURCE_DIR}/${dir}/*.c" "${CMAKE_CURRENT_SOURCE_DIR}/${dir}/*.h"
+         "${CMAKE_CURRENT_SOURCE_DIR}/${dir}/*.inc")
+endforeach()
+file(GLOB snx_native_code_files CONFIGURE_DEPENDS ${snx_native_code_globs})
+get_target_property(snx_native_generated snx_recompiler_core SOURCES)
+list(FILTER snx_native_generated INCLUDE REGEX "/sailgen/[^/]*\\.inc$")
+list(APPEND snx_native_code_files ${snx_native_generated})
+list(SORT snx_native_code_files)
+list(JOIN snx_native_code_files "\n" snx_native_code_list)
+file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/native_code_files.txt" CONTENT "${snx_native_code_list}\n")
+add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/native_code.c"
+    COMMAND "${CMAKE_COMMAND}" "-DLIST=${CMAKE_CURRENT_BINARY_DIR}/native_code_files.txt"
+            "-DSOURCE=${PROJECT_SOURCE_DIR}" "-DBINARY=${PROJECT_BINARY_DIR}"
+            "-DOUT=${CMAKE_CURRENT_BINARY_DIR}/native_code.c" -P "${PROJECT_SOURCE_DIR}/cmake/native_code_hash.cmake"
+    DEPENDS ${snx_native_code_files} "${CMAKE_CURRENT_BINARY_DIR}/native_code_files.txt"
+            "${PROJECT_SOURCE_DIR}/cmake/native_code_hash.cmake"
+    COMMENT "Hashing the native back ends' code" VERBATIM)
+target_sources(snx_recompiler_core PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/native_code.c")
+
 # no fallback: each thing asked of it is an error that names it. The tests link it in every build
 add_library(snx_fallback_none STATIC EXCLUDE_FROM_ALL fallback_none.c)
 set_target_properties(snx_fallback_none PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
