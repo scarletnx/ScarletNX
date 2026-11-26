@@ -1350,8 +1350,6 @@ static void job_make(void* owner, unsigned job) {
     struct VitaRender* r = owner;
     r->jobs[job].made = make_pipe(r->vk->device, r->layout, &r->jobs[job]);
 }
-/* The pipeline of a draw. Without async_pipelines it is made now. With it a worker makes a new one while the draws
-   that need it are skipped: VK_NULL_HANDLE and *making until it is done; VK_NULL_HANDLE alone where it cannot be */
 /* what picks a draw's pipeline: its shaders by their programs (a Shader freed and another made where it was is another
    program's), then the state the pipeline bakes in */
 static uint64_t pipeline_key(const struct VitaRender* r, const GxmContext* c, const GxmVertexProgram* vp,
@@ -1375,6 +1373,8 @@ static uint64_t pipeline_key(const struct VitaRender* r, const GxmContext* c, co
     }
     return key;
 }
+/* The pipeline of a draw. Without async_pipelines it is made now. With it a worker makes a new one while the draws
+   that need it are skipped: VK_NULL_HANDLE and *making until it is done; VK_NULL_HANDLE alone where it cannot be */
 static VkPipeline pipeline_for(struct VitaRender* r, GxmContext* c, const GxmVertexProgram* vp, Shader* vs,
                                const GxmFragmentProgram* fp, Shader* fs, VkPrimitiveTopology topology, bool* making) {
     const uint64_t key = pipeline_key(r, c, vp, vs, fp, fs, topology);
