@@ -330,9 +330,9 @@ static inline SgD sg_FPCompare(SgCtx* g, SgB path, SgD a, SgD b, int signal, SgD
     return sg_d_slice(g, sgx_fp_cold(g, un, sg_d_zext(g, nib, 32), "snx_x64_fp_compare", ops, 2, fpcr, 1, desc, t, nt),
                       3, 0);
 }
-/* SCVTF, UCVTF: CVTSI2Sx of 64 bits (an unsigned word zero extended; an unsigned doubleword of its top bit set, the
-   helper), times 2^-fbits (exact: no result is tiny). Exact where the integer fits the significand; else once IXC
-   is set, in round to nearest */
+/* SCVTF, UCVTF: CVTSI2Sx of 64 bits (an unsigned word zero extended; an unsigned doubleword of its top bit set
+   halved, its low bit ORed in to round as the whole, and doubled after), times 2^-fbits (exact: no result is tiny).
+   Exact where the integer fits the significand; else once IXC is set, in round to nearest */
 static inline SgD sg_FixedToFP(SgCtx* g, SgB path, SgD op, long long fbits, int uns, SgD fpcr, int rounding,
                                long long width) {
     SgX* x = sgx(g);
@@ -347,8 +347,20 @@ static inline SgD sg_FixedToFP(SgCtx* g, SgB path, SgD op, long long fbits, int 
     v = sgx_fp_bits(g, op);
     v = uns || iw == 64 ? sg_d_zext(g, v, 64) : sg_d_sext(g, v, 64);
     {
-        int in[4] = {0, sgx_reg(x, &v), 0, 0}, rx;
+        /* an unsigned doubleword from 2^63 up: its half converted, its exponent's field plus 1 (no rounding: the half
+           is from 2^62 up) */
+        int big = uns && iw == 64, in[4] = {0, 0, 0, 0}, rx;
+        SgD in_v = v;
+        if (big) {
+            SgD half = sg_d_or(g, sg_d_lsr(g, v, 1), sg_d_and(g, v, sgx_const(64, 1)));
+            in_v = sg_d_select(g, sgx_d_cmp64(g, 2, v, sgx_const(64, 0), 0), half, v);
+        }
+        in[1] = sgx_reg(x, &in_v);
         rx = sgx_vins(x, w == 64 ? &sgx_v_cvtsi2sd_64 : &sgx_v_cvtsi2ss_64, 0, 0, in, 0, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
+        if (big) {
+            SgD twice = sg_d_slice(g, sg_d_lsl(g, sg_d_lsr(g, v, 63), w == 64 ? 52 : 23), (long long)w - 1, 0);
+            rx = sgx_v2(x, w == 64 ? &sgx_v_paddq : &sgx_v_paddd, rx, sgx_xreg(x, &twice), 0);
+        }
         if (fbits) {
             SnxU64 scale = w == 64 ? (SnxU64)(1023 - fbits) << 52 : (SnxU64)(127 - fbits) << 23;
             rx = sgx_v2(x, w == 64 ? &sgx_v_mulsd : &sgx_v_mulss, rx, sgx_xconst(x, scale, 0), 0);
@@ -360,7 +372,6 @@ static inline SgD sg_FixedToFP(SgCtx* g, SgB path, SgD op, long long fbits, int 
     else
         fits = sgx_d_ult(g, sg_d_add(g, v, sgx_const(64, 1ull << p)), sgx_const(64, 1ull << (p + 1)));
     bad = sg_b_and(g, sgx_fp_bad(g, fpcr, SGX_FPCR_RMODE, 1), sg_b_not(g, fits));
-    if (uns && iw == 64) bad = sg_b_or(g, bad, sg_b_not(g, sgx_d_ult(g, v, sgx_const(64, 1ull << 63))));
     return sgx_fp_cold(g, bad, r, "snx_x64_fp_from_int", &v, 1, fpcr, 1, desc, NULL, 0);
 }
 /* FCVTZS, FCVTZU and the other modes': times 2^fbits, ROUNDSx to the mode (FCVTAS sgx_round_away), CVTTSx2SI

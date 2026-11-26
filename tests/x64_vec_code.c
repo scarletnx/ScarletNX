@@ -36,6 +36,9 @@
 #define MOVMSKPD      "66 0F 50"
 /* SETNE r/m8 (0F 95): a condition made a value */
 #define SETNE         "0F 95"
+/* PADDD (66 0F FE) and PADDQ (66 0F D4), or their VEX forms */
+#define PADDD         "66 0F FE|C5 ?? FE|C4 ?? ?? FE"
+#define PADDQ         "66 0F D4|C5 ?? D4|C4 ?? ?? D4"
 /* INSERTPS (66 0F 3A 21) and MOVQ xmm, xmm/m64 (F3 0F 7E), or their VEX forms: a scalar's upper bits made 0 in XMM */
 #define INSERTPS      "66 0F 3A 21|C4 ?? ?? 21"
 #define MOVQ_XMM      "F3 0F 7E|C5 FA 7E|C5 7A 7E"
@@ -125,6 +128,8 @@ static const Row k_rows[] = {
     {"fmul v0.2d, v1.2d, v2.2d (the hot code's one lane mask)", 0, 0, 864, -1, "=1 " MOVMSKPD, "6E62DC20"},
     {"fmla v0.4s, v1.4s, v2.4s (the hot code's one lane mask)", NEEDS_FMA, 0, 928, -1, "=1 " MOVMSKPS, "4E22CC20"},
     {"fmul v0.4s, v1.4s, v2.4s (the hot test with no SETNE)", 0, 0, 832, -1, "!" SETNE, "6E22DC20"},
+    {"ucvtf s0, x1 (from 2^63 up inline: the exponent's PADDD)", 0, 0, 352, -1, PADDD, "9E230020"},
+    {"ucvtf d0, x1, #3 (from 2^63 up inline: the exponent's PADDQ)", 0, 0, 384, -1, PADDQ, "9E43F420"},
     {"fneg s0, s1 (by the vector's lanes)", 0, 0, 240, -1, INSERTPS, "1E214020"},
     {"fabs d0, d1 (by the vector's lanes)", 0, 0, 240, -1, MOVQ_XMM, "1E60C020"},
     {"fmax v0.4s, v1.4s, v2.4s (the hot code's one lane mask)", 0, 0, 656, -1, "=1 " MOVMSKPS, "4E22F420"},
