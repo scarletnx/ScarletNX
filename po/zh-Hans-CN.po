@@ -5207,6 +5207,11 @@ msgstr "快捷键"
 
 #: src/gui/main.c
 #, c-format
+msgid "Open Settings: no row is the setting %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "The game starts its program %d, %s, which is not made: Recompile the game to make its programs"
 msgstr "游戏要启动其程序 %d（%s），但它尚未生成：重新编译游戏以生成其程序"
 
@@ -6754,6 +6759,16 @@ msgstr "未显示用户：内存不足"
 #, c-format
 msgid "%d to move, %d staying: --migrate=yes moves them"
 msgstr "将移动 %d 项，%d 项保留：--migrate=yes 会移动它们"
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: on Games, in its box"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "--open=%s is not settings:KEY, drivers, keys, addons:, recompile: or locate: with a game"
+msgstr ""
 
 #: src/gui/model.c
 #, c-format

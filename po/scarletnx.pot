@@ -5204,6 +5204,11 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "Open Settings: no row is the setting %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "The game starts its program %d, %s, which is not made: Recompile the game to make its programs"
 msgstr ""
 
@@ -6750,6 +6755,16 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "%d to move, %d staying: --migrate=yes moves them"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: on Games, in its box"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "--open=%s is not settings:KEY, drivers, keys, addons:, recompile: or locate: with a game"
 msgstr ""
 
 #: src/gui/model.c
