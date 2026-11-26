@@ -1,5 +1,18 @@
 # A draw-level fast path (design, not built)
 
+## Index
+
+* [The problem](#the-problem)
+* [What repeats from draw to draw](#what-repeats-from-draw-to-draw)
+* [What can be kept, and what runs on each draw](#what-can-be-kept-and-what-runs-on-each-draw)
+* [The design](#the-design)
+* [The gain, revised](#the-gain-revised)
+* [Risks](#risks)
+* [Measurement plan](#measurement-plan)
+* [Recommendation](#recommendation)
+* [Measured since: the phases of a draw, and runs for device-generated commands](#measured-since-the-phases-of-a-draw-and-runs-for-device-generated-commands)
+  * [The offsets in push constants (window epochs) and D2's ceiling](#the-offsets-in-push-constants-window-epochs-and-d2s-ceiling)
+
 Status: a design for review. Nothing here is built. The numbers come from one game's open world on Windows (RTX 4090,
 `gpu_split=2`, fps unlocked), from timestamp marks in `render_draw_main` and from the runtime's sampler.
 
