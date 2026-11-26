@@ -22,6 +22,11 @@ typedef struct {
    (SetCopyRowStride and SetCopyImageStride, 0 for tightly packed), which OP_COPY_STRIDE sets. 0 when the record is
    no copy */
 int nvn_copy_record(u32 op, u64 payload, u32 size, i64 stride[2]);
+/* 1 when a DMA copy queued for the renderer thread that has not run yet reads or writes guest memory in
+   [gva, gva + len) (any thread). A write of the game's descriptors there orders after it (nvn_replay.c) */
+int nvn_copy_queued_over(u64 gva, u64 len);
+/* waits until no such copy is queued (the game's thread, which releases its core around it) */
+void nvn_copy_wait_over(u64 gva, u64 len);
 /* nvnTextureWriteTexelsStrided of texture t (its view v, 0 for none) on the game's thread: the region's texels from
    the guest memory at src (rows row bytes apart, slices image bytes apart, 0 for tightly packed), read now and
    written into the texture's storage on the GPU, in order with the queues' work */

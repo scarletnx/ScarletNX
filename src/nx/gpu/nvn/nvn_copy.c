@@ -143,24 +143,72 @@ done:
     SNX_ZONE_TEXT(z, "copy dma bytes=%llu %s", (unsigned long long)o->line_out * o->lines, copy_skip(why));
 #endif
 }
+/* the ranges of the copies queued (launch, copy_call) that the renderer thread has not run yet: copies head - done, the last
+   COPY_RING of them kept. The renderer thread runs them in order. The game's thread asks too (nvn_copy_queued_over) */
+#define COPY_RING 256u
+static struct {
+    PMutex lock;
+    u64 head, done;
+    _Atomic u32 done_word; /* done's low bits, for nvn_copy_wait_over's wait */
+    GqRange r[COPY_RING][2];
+} g_copy_ring = {.lock = PMUTEX_INIT};
+/* under the lock */
+static int ring_over(u64 gva, u64 len) {
+    int over = g_copy_ring.head - g_copy_ring.done > COPY_RING; /* the oldest ranges are gone: assume an overlap */
+    for (u64 s = g_copy_ring.done; !over && s != g_copy_ring.head; s++)
+        for (u32 k = 0; k < 2; k++) {
+            const GqRange* r = &g_copy_ring.r[s % COPY_RING][k];
+            if (r->size && gva < r->gva + r->size && r->gva < gva + len) over = 1;
+        }
+    return over;
+}
+int nvn_copy_queued_over(u64 gva, u64 len) {
+    pm_lock(&g_copy_ring.lock);
+    const int over = ring_over(gva, len);
+    pm_unlock(&g_copy_ring.lock);
+    return over;
+}
+void nvn_copy_wait_over(u64 gva, u64 len) {
+    for (;;) {
+        pm_lock(&g_copy_ring.lock);
+        const int over = ring_over(gva, len);
+        const u32 done = atomic_load_explicit(&g_copy_ring.done_word, memory_order_relaxed);
+        pm_unlock(&g_copy_ring.lock);
+        if (!over) return;
+        plat_wait_word(&g_copy_ring.done_word, done, -1);
+    }
+}
+/* a queued copy ran: its ranges, the oldest in the ring, go */
+static void ring_retire(void) {
+    pm_lock(&g_copy_ring.lock);
+    g_copy_ring.done++;
+    atomic_store_explicit(&g_copy_ring.done_word, (u32)g_copy_ring.done, memory_order_relaxed);
+    pm_unlock(&g_copy_ring.lock);
+    plat_wake_word(&g_copy_ring.done_word);
+}
+/* the copy fn(arg) queued, with r[0] its destination and r[1] its source (size 0 for none) in the ring. Only the GPU
+   thread queues, so the ring's order is the queue's */
+static void ring_queue(GqFn fn, const void* arg, u64 bytes, const GqRange r[2]) {
+    pm_lock(&g_copy_ring.lock);
+    g_copy_ring.r[g_copy_ring.head % COPY_RING][0] = r[0];
+    g_copy_ring.r[g_copy_ring.head % COPY_RING][1] = r[1];
+    g_copy_ring.head++;
+    pm_unlock(&g_copy_ring.lock);
+    gq_call_writes(fn, arg, bytes, r, 2);
+}
 static void launch_run(const void* arg, u64 bytes) {
     GpuDmaOp o;
     (void)bytes;
     memcpy(&o, arg, sizeof o);
     launch_now(&o);
+    ring_retire();
 }
-/* the bytes of guest memory a copy can write: a pitch linear destination's span, or a block linear one's surface up
-   to the depth block of its slice */
-static void dst_range(const GpuDmaOp* o, u64* at, u64* len) {
-    const GpuDmaSide* d = &o->dst;
-    if (!d->bl) {
-        *at = d->addr + (u64)gpu_dma_low(d, o->lines);
-        *len = gpu_dma_span(d, o->lines, o->line_out);
-        return;
-    }
+/* the bytes of guest memory a copy's side can touch, with line bytes a line: a pitch linear side's span, or a block
+   linear one's surface up to the depth block of its slice */
+static GqRange side_range(const GpuDmaSide* d, u32 lines, u32 line) {
+    if (!d->bl) return (GqRange){d->addr + (u64)gpu_dma_low(d, lines), gpu_dma_span(d, lines, line)};
     const u64 rows = snx_align_up(d->h ? d->h : 1, 8ull << d->bh), depth = ((u64)(d->z >> d->bd) + 1) << d->bd;
-    *at = d->addr;
-    *len = snx_align_up(d->wb ? d->wb : 1, 64) * rows * depth;
+    return (GqRange){d->addr, snx_align_up(d->wb ? d->wb : 1, 64) * rows * depth};
 }
 /* The copy in its place in the renderer thread's queue, as maxwell/dma.c's launches (Eden's MaxwellDMA::Launch does
    it in the command stream, with no wait). The copy waited for every queued record (gpu_renderer_now): with
@@ -172,9 +220,10 @@ static void launch(const GpuDmaOp* o) {
         launch_now(o);
         return;
     }
-    u64 at = 0, len = 0;
-    dst_range(o, &at, &len);
-    gq_call_writes(launch_run, o, sizeof *o, at, len);
+    /* the destination, and the source (a fill reads none): a write of the game's descriptors there lands after it */
+    const GqRange r[2] = {side_range(&o->dst, o->lines, o->line_out),
+                          o->fill ? (GqRange){0} : side_range(&o->src, o->lines, o->line_in)};
+    ring_queue(launch_run, o, sizeof *o, r);
 }
 /* lines of a region w texels wide and h high on the plane */
 static void region_lines(const TexPlane* p, i32 w, i32 h, GpuDmaOp* o) {
@@ -887,12 +936,58 @@ static void copy_call_run(const void* arg, u64 bytes) {
         case OP_COPY_T2T: copy_texture_texture(&c.u.t2t.r, &c.u.t2t.s, &c.u.t2t.d); break;
     }
 }
-/* the copy in its place among the queued records, or now where nothing queues (the renderer's side, a test) */
+static void copy_call_queued(const void* arg, u64 bytes) {
+    copy_call_run(arg, bytes); /* on the renderer's side, where its launches run at once */
+    ring_retire();
+}
+/* the bytes of the buffer that a copy between it and a texture touches, as copy_buffer_texture lays them out */
+static GqRange buffer_side(const NvnPCopyB2T* r, const NvnTexture* t, const i64 stride[2]) {
+    const NVNcopyRegion region = copy_region(t, &r->r);
+    TexPlane p;
+    if (region.width <= 0 || region.height <= 0 || !tex_plane(t, r->has_view ? &r->view : NULL, &p))
+        return (GqRange){0};
+    GpuDmaOp o = {0};
+    region_lines(&p, region.width, region.height, &o);
+    const u64 row = stride[0] ? (u64)stride[0] : o.width;
+    const u64 image = stride[1] ? (u64)stride[1] : row * o.lines;
+    const u64 depth = (u64)(region.depth > 0 ? region.depth : 1);
+    return (GqRange){r->buffer, image * (depth - 1) + row * (o.lines - 1) + o.width}; /* the last line's end */
+}
+/* a texture's whole storage, from its description (a copy record holds only the snapshot's bytes, no size) */
+static GqRange tex_range(const NvnTexture* t) {
+    NvnTexLayout l;
+    nvn_tex_layout(&t->d, &l);
+    return (GqRange){t->gpu, l.size};
+}
+/* The copy in its place among the queued records, or now where nothing queues (the renderer's side, a test). What it
+   writes counts as a queued write, so a read of it on the front end waits for the record. Its destination and source
+   go in the copy ring, so that a write of the game's descriptors over them lands after it (nvn_copy_queued_over) */
 static void copy_call(const CopyCall* c) {
-    if (gq_queues())
-        gq_call(copy_call_run, c, sizeof *c);
-    else
+    if (!gq_queues()) {
         copy_call_run(c, sizeof *c);
+        return;
+    }
+    GqRange r[2] = {0};
+    switch (c->op) {
+        case OP_COPY_B2B:
+            r[0] = (GqRange){c->u.b2b.dst, c->u.b2b.size};
+            r[1] = (GqRange){c->u.b2b.src, c->u.b2b.size};
+            break;
+        case OP_CLEAR_BUF: r[0] = (GqRange){c->u.clear.address, c->u.clear.size}; break;
+        case OP_COPY_B2T:
+            r[0] = tex_range(&c->u.b2t.t);
+            r[1] = buffer_side(&c->u.b2t.r, &c->u.b2t.t, c->u.b2t.stride);
+            break;
+        case OP_COPY_T2B:
+            r[0] = buffer_side(&c->u.b2t.r, &c->u.b2t.t, c->u.b2t.stride);
+            r[1] = tex_range(&c->u.b2t.t);
+            break;
+        case OP_COPY_T2T:
+            r[0] = tex_range(&c->u.t2t.d);
+            r[1] = tex_range(&c->u.t2t.s);
+            break;
+    }
+    ring_queue(copy_call_queued, c, sizeof *c, r);
 }
 int nvn_copy_record(u32 op, u64 payload, u32 size, i64 stride[2]) {
     (void)size;

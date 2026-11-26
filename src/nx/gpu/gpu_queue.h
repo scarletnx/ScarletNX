@@ -49,8 +49,12 @@ void* gq_call_begin(GqFn fn, u64 bytes);
 void gq_call_end(void);
 /* a call with arg's bytes as they are */
 void gq_call(GqFn fn, const void* arg, u64 bytes);
-/* a call that writes [gva, gva + size) of guest memory as it runs: the front end's reads there wait for it */
-void gq_call_writes(GqFn fn, const void* arg, u64 bytes, u64 gva, u64 size);
+/* a call that writes or reads n ranges of guest memory as it runs: the front end's reads there (gq_read_wait) wait
+   for it. A range that the call reads counts too, so that a write of the front end there can wait (nvn_replay.c) */
+typedef struct {
+    u64 gva, size;
+} GqRange;
+void gq_call_writes(GqFn fn, const void* arg, u64 bytes, const GqRange* ranges, u32 n);
 /* a name for fn's records in the stats line of the records' time, and names for the first word of their payload */
 void gq_name(GqFn fn, const char* name, const char* const* subs, u32 nsubs);
 void gq_seq(u64* all, u64* cb); /* the records run so far, and the constant buffer writes of them */
