@@ -5971,8 +5971,10 @@ static u32 draw_keep(const DsState* ds, const DrawKey* key, u32 found, u32 epoch
     const VkSh* used[6];
     used_shaders(e, used);
     e->not_top = 0;
+    vk_share_lock(); /* one take for the shaders (draw_batches=2), not one for each */
     for (int i = 0; i < 6; i++)
         if (used[i] && !vk_shader_fold_top(used[i])) e->not_top |= 1u << i;
+    vk_share_unlock();
     e->tf = *tf;
     if (pl != &e->plan) e->plan = *pl;
     if (k != &e->k) e->k = *k;
@@ -9910,6 +9912,10 @@ resolved:
 static void draw_commit(const DsState* ds, const DrawOwner* o, const DrawShaders* sh, Surf* const* rt, Surf* zt,
                         u32 n, u32 writes, u32 fb, int zt_ro, int zt_undefined, int capture, u64 programmable_blend,
                         int mesh, DrawImages* images, u32 predraw) {
+    /* one take of the share lock for all of it (draw_batches=2): the writable buffers' commit and each written
+       target took one of their own, about 3.5 a draw, and the two threads of a split run spun on the lock's line
+       between them */
+    vk_share_lock();
     vk_buf_writable_commit();
     draw_images_commit(images);
     feedback_done(fb, writes);
@@ -9923,6 +9929,7 @@ static void draw_commit(const DsState* ds, const DrawOwner* o, const DrawShaders
          (ds->dyn.stencil_test && ((ds->dyn.face[0].wmask & 0xFF) || (ds->dyn.face[1].wmask & 0xFF)))) &&
         zt_written(zt, o->pred, zt_undefined))
         target_written(zt);
+    vk_share_unlock();
     g_vk_drawn++;
     if (mesh) CNT(g_vk_mesh_drawn)++;
     if (sh->task_compute) CNT(g_vk_mesh_task_compute)++;
