@@ -53,6 +53,9 @@ void vita_render_shader_free(VitaProcess* p, void* shader);
 uint64_t vita_render_pipeline_key(VitaProcess* p, GxmContext* c, uint32_t primitive);
 /* for a test: whether that draw has its pipeline, made now as the draw makes it */
 bool vita_render_pipeline_made(VitaProcess* p, GxmContext* c, uint32_t primitive);
+/* for a test: the scale the last scene was drawn at (the resolution setting's, or 1 for a surface the device can't
+   scale), 0 before any */
+uint32_t vita_render_drawn_scale(VitaProcess* p);
 /* prepare_shaders: the shaders and pipelines the game made, in <folder>/shader_cache/vk_prepared.<driver>.bin, read as
    the renderer starts: each shader made again from its program's bytes, taken by the first program of them drawn, and
    each pipeline made before the first draw (2) or on the pipeline workers while the game runs (1), a draw that needs

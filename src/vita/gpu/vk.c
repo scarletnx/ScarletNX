@@ -386,7 +386,8 @@ static bool frame_image(VitaVk* v, uint32_t width, uint32_t height) {
     g.frame_layout = VK_IMAGE_LAYOUT_UNDEFINED;
     return true;
 }
-bool vita_vk_present(VkBuffer buffer, VkDeviceSize offset, uint32_t pitch, uint32_t width, uint32_t height) {
+bool vita_vk_present(VkBuffer buffer, VkDeviceSize offset, uint32_t pitch, VkImage image, uint32_t width,
+                     uint32_t height) {
     SNX_ZONE(z_present, "vita present"); /* the frame's drawing and present, in a Tracy capture (F10) */
     VitaVk* v = &g.vk;
     if (!g.up || !v->host.surface) return false;
@@ -405,11 +406,20 @@ bool vita_vk_present(VkBuffer buffer, VkDeviceSize offset, uint32_t pitch, uint3
     VkCommandBuffer cb = vita_vk_commands();
     image_barrier(cb, g.frame, g.frame_layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                   VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    VkBufferImageCopy copy = {.bufferOffset = offset,
-                              .bufferRowLength = pitch,
-                              .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                              .imageExtent = {width, height, 1}};
-    vkCmdCopyBufferToImage(cb, buffer, g.frame, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+    if (image) { /* a color surface drawn larger: its top left width by height pixels, whatever its format */
+        VkImageBlit region = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                              .srcOffsets = {{0, 0, 0}, {(int32_t)width, (int32_t)height, 1}},
+                              .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                              .dstOffsets = {{0, 0, 0}, {(int32_t)width, (int32_t)height, 1}}};
+        vkCmdBlitImage(cb, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g.frame, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                       1, &region, VK_FILTER_NEAREST);
+    } else {
+        VkBufferImageCopy copy = {.bufferOffset = offset,
+                                  .bufferRowLength = pitch,
+                                  .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                  .imageExtent = {width, height, 1}};
+        vkCmdCopyBufferToImage(cb, buffer, g.frame, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+    }
     image_barrier(cb, g.frame, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                   VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,

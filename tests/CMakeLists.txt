@@ -5188,6 +5188,9 @@ if(TARGET snx_vita_program)
     target_link_libraries(snx-test-vita-render-memory PRIVATE snx_vita_program)
     add_test(NAME vita_render_memory COMMAND snx-test-vita-render-memory)
     set_tests_properties(vita_render_memory PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+    # the same at resolution 2: the memory as at 1x, byte for byte
+    add_test(NAME vita_render_memory_x2 COMMAND snx-test-vita-render-memory --resolution=2)
+    set_tests_properties(vita_render_memory_x2 PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
     # the pipeline a draw takes: a program released and another made in its place, its shader where the first
     # one's was freed, takes its own; a fragment program's shader for each format of the textures it samples
     add_executable(snx-test-vita-render-shaders vita_render_shaders.c)

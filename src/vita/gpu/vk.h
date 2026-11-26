@@ -84,5 +84,6 @@ void vita_vk_on_submit(void (*submit)(void));
 /* Shows the framebuffer: width by height pixels, pitch pixels a row, R8G8B8A8 bytes at offset in buffer, scaled into
    the window, the on-screen controls over it. False when nothing was shown: no window, or no swapchain image free this
    time */
-bool vita_vk_present(VkBuffer buffer, VkDeviceSize offset, uint32_t pitch, uint32_t width, uint32_t height);
+bool vita_vk_present(VkBuffer buffer, VkDeviceSize offset, uint32_t pitch, VkImage image, uint32_t width,
+                     uint32_t height);
 #endif
