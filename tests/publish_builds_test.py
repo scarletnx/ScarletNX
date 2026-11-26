@@ -235,6 +235,19 @@ with tempfile.TemporaryDirectory() as temporary:
             'events': {},
             'permissions': {},
             'runs': [],
+            # the pull request each commit came in by: the merge commit #5's, merged into main; another, never merged
+            'associated': {
+                sha: [
+                    {'number': 9, 'title': '[ci] closed', 'merged': False, 'baseRefName': 'main', 'author': None},
+                    {
+                        'number': 5,
+                        'title': '[ci] its title',
+                        'merged': True,
+                        'baseRefName': 'main',
+                        'author': {'login': 'someone'},
+                    },
+                ]
+            },
             'tags': {
                 TO: {f'nightly-2026-10-15-{c[:7]}': 'x' for c in (oldest, previous)},
                 REPO: {'nightly': oldest, 'v0.1.0': previous, 'v0.2.0': sha},
@@ -292,7 +305,8 @@ with tempfile.TemporaryDirectory() as temporary:
         'its notes: the files linked from this release, the changes, the source',
         made
         and f'https://github.com/{TO}/releases/download/{tag}/ScarletNX-android-universal.apk' in made['body']
-        and f'- \\[ci\\] its title ([#5](https://github.com/{REPO}/pull/5))' in made['body']
+        and f'**ci**\n\n- its title ([#5](https://github.com/{REPO}/pull/5), 1 commit, by someone)' in made['body']
+        and '#9' not in made['body']
         and f'https://github.com/{REPO}/tree/{sha}' in made['body']
         and 'newest 2 nightlies' in made['body']
         and f'[`{previous[:7]}...{sha[:7]}`]' in made['body']
@@ -330,7 +344,7 @@ with tempfile.TemporaryDirectory() as temporary:
         and linked['prerelease']
         and f'https://github.com/{TO}/releases/tag/{tag}' in linked['body']
         and f'[APK](https://github.com/{TO}/releases/download/{tag}/ScarletNX-android-universal.apk)' in linked['body']
-        and f'([#5](https://github.com/{REPO}/pull/5))' in linked['body']
+        and f'([#5](https://github.com/{REPO}/pull/5), 1 commit, by someone)' in linked['body']
         and s['tags'][REPO]['nightly'] == sha,
         linked,
     )
@@ -356,6 +370,20 @@ with tempfile.TemporaryDirectory() as temporary:
         'a run again replaces, posting nothing',
         done.returncode == 0 and posted('nightly') == [] and len(releases()) == 2,
         done.stdout + done.stderr,
+    )
+    # GitHub not answering which pull request merged a commit: the nightly stops, saying what gh said
+    save_state(dict(state(), graphql_fail='gh: HTTP 502: Server Error'))
+    done = publish('nightly', *everything(sha), '--checkout', str(checkout), '--keep', '2')
+    check(
+        "the pull requests unread stop the nightly with GitHub's answer",
+        done.returncode != 0 and 'HTTP 502' in done.stderr,
+        done.stdout + done.stderr,
+    )
+    save_state({k: v for k, v in state().items() if k != 'graphql_fail'})
+    check(
+        "the commits' pull requests asked in one query",
+        state().get('graphql_asked') and all(n == 1 for n in state()['graphql_asked']),
+        state().get('graphql_asked'),
     )
     # a run of an older commit ending last: not published over the newest
     older_files = ['--run', '40', '--sha', oldest, '--artifacts', str(artifacts('old', oldest))]
@@ -450,7 +478,7 @@ with tempfile.TemporaryDirectory() as temporary:
         and '## Changes since v0.1.0' in version['body']
         and version['body'].startswith('ScarletNX v0.2.0, built from [`')
         and 'AppImageUpdate takes it to the newest version.' in version['body']
-        and f'- \\[ci\\] its title ([#5](https://github.com/{REPO}/pull/5))' in version['body']
+        and f'- its title ([#5](https://github.com/{REPO}/pull/5), 1 commit, by someone)' in version['body']
         and f'https://github.com/{REPO}/releases/download/v0.2.0/ScarletNX-windows-x86_64.zip' in version['body'],
         version and version['body'],
     )
@@ -812,6 +840,57 @@ for what, copy in {
         copy != workflow and any(installed_checks(copy).values()),
         what,
     )
+
+# the pull requests of many commits, asked 50 at a time, each commit by its own alias, only one merged into main kept
+spec = importlib.util.spec_from_file_location('publish_builds', SCRIPT)
+publish_builds = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(publish_builds)
+with tempfile.TemporaryDirectory() as temporary:
+    history = Path(temporary)
+
+    def commit_all(*args):
+        return subprocess.run(
+            ['git', '-C', str(history), '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false']
+            + ['-c', 'core.hooksPath=' + os.devnull, *args],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    commit_all('init', '-q', '-b', 'main')
+    commit_all('commit', '-q', '--allow-empty', '-m', 'base')
+    base = commit_all('rev-parse', 'HEAD')
+    for n in range(120):
+        commit_all('commit', '-q', '--allow-empty', '-m', f'[cpu] commit {n}')
+    head = commit_all('rev-parse', 'HEAD')
+    asked = []
+
+    def answer(query):
+        aliases = re.findall(r'(c\d+): object\(oid: "([0-9a-f]+)"\)', query)
+        asked.append(len(aliases))
+        nodes = {
+            alias: {
+                'associatedPullRequests': {
+                    'nodes': [
+                        {'number': 3, 'title': 'into a stack', 'merged': True, 'baseRefName': 'other'},
+                        {'number': 4, 'title': '[cpu] in', 'merged': True, 'baseRefName': 'main', 'author': None},
+                    ]
+                }
+            }
+            for alias, _ in aliases
+        }
+        return {'data': {'repository': nodes}}
+
+    hub = object.__new__(publish_builds.Publisher)
+    hub.repo, hub.checkout, hub.graphql = 'owner/repo', str(history), answer
+    found = hub.pulls(base, head)
+    check('120 commits asked in queries of 50', asked == [50, 50, 20], asked)
+    check(
+        "each commit's pull request merged into main, a deleted author as ghost",
+        len(found) == 120 and set(found.values()) == {publish_builds.nightly_notes.Pull(4, '[cpu] in', 'ghost')},
+        set(found.values()),
+    )
+    check('no pull requests asked without a previous nightly', hub.pulls('', head) == {} and len(asked) == 3)
 
 for failure in failures:
     print('FAIL:', failure)
