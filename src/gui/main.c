@@ -14918,14 +14918,10 @@ static char* game_log_in(const char* folder, const char* name) {
 /* the state folder of the game whose program is program, as its runtime takes it (nx/runtime/main.c's game_dirs): the
    one <program>.folders records when it is there, else its folder's (snx_user_path); owned */
 static char* game_state_of(const char* program) {
-    char *record = snx_format("%s.folders", program), *text, *key, *value, *state = NULL, *folder;
-    size_t size = 0;
-    SnxIni ini;
-    text = (char*)snx_read_file(record, &size);
-    if (text) snx_ini_start(&ini, text);
-    while (text && !state && snx_ini_next(&ini, &key, &value))
-        if (!strcmp(key, "state") && snx_is_dir(value)) state = snx_strdup(value);
-    free(text);
+    char *record = snx_format("%s.folders", program), *dirs[3], *state = NULL, *folder, said[1024];
+    if (record && snx_folders_read(record, dirs, said, sizeof said) && said[0]) gui_log("%s", said);
+    if (record && dirs[1] && snx_is_dir(dirs[1])) state = snx_strdup(dirs[1]);
+    for (int i = 0; record && i < 3; ++i) free(dirs[i]);
     free(record);
     if (state) return state;
     folder = snx_dirname(program);
