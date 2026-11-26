@@ -451,23 +451,45 @@ static void stick_at(int c, float x, float y, const int safe[4]) {
     g_axis[s][1] = ay;
 }
 
-/* edit mode's bar on top: less, the selected control's size, more, done; in cells of 8x16 at a whole scale */
+/* edit mode's bar on top: less, the selected control's size, more, done; in cells of 8x16 at a whole scale. Its ground
+   keeps a fortieth of the window's shorter side from every control shown, as the option buttons keep from the rest:
+   one in its way (the Switch's minus and plus in a wide window) takes it under that control */
 enum { BAR_LESS, BAR_SIZE, BAR_MORE, BAR_DONE, BAR_COUNT };
 enum { BAR_COLS_SIZE = 18 }; /* the middle part's cells: the longest name, a space and "200%" fit */
 static const int BAR_COLS[BAR_COUNT] = {5, BAR_COLS_SIZE, 5, 8};
 static int g_scale = 1; /* the menu's letters' scale as vpad_draw last had it: the bar's, drawn and pressed */
 static void bar(const int safe[4], float r[BAR_COUNT][4]) {
     int i, s = g_scale, total = 0;
-    float x;
+    float x, y = (float)(safe[1] + 8 * s), gap = 0.025f * vpad_side(safe);
     for (i = 0; i < BAR_COUNT; ++i) total += BAR_COLS[i] + (i ? 2 : 0);
     x = (float)safe[0] + ((float)safe[2] - (float)(total * 8 * s)) / 2;
+    float left = x - (float)(8 * s), right = x + (float)((total + 1) * 8 * s); /* the ground's, as vpad_draw fills it */
+    for (int moved = 1, pass = 0; moved && pass < SNX_VPAD_COUNT; ++pass) {
+        moved = 0;
+        for (int c = 0; c < SNX_VPAD_COUNT; ++c) {
+            float b[4];
+            if (!has(c) || !g_settings.control_shown[c]) continue;
+            vpad_box(c, safe, b);
+            if (b[0] - gap < right && b[0] + b[2] + gap > left && b[1] - gap < y + (float)(20 * s) &&
+                b[1] + b[3] + gap > y - (float)(4 * s))
+                y = b[1] + b[3] + gap + (float)(4 * s), moved = 1;
+        }
+    }
     for (i = 0; i < BAR_COUNT; ++i) {
         r[i][0] = x;
-        r[i][1] = (float)(safe[1] + 8 * s);
+        r[i][1] = y;
         r[i][2] = (float)(BAR_COLS[i] * 8 * s);
         r[i][3] = (float)(16 * s);
         x += (float)((BAR_COLS[i] + 2) * 8 * s);
     }
+}
+int vpad_edit_bar(const int safe[4], float box[4]) {
+    float b[BAR_COUNT][4];
+    int s = g_scale;
+    bar(safe, b);
+    box[0] = b[0][0] - (float)(8 * s), box[1] = b[0][1] - (float)(4 * s);
+    box[2] = b[BAR_DONE][0] + b[BAR_DONE][2] - b[0][0] + (float)(16 * s), box[3] = (float)(24 * s);
+    return g_edit;
 }
 static float grid(const int safe[4]) { return (float)(safe[2] < safe[3] ? safe[2] : safe[3]) / 32; }
 static void resize(int step) {
@@ -689,8 +711,8 @@ static void edit_draw(SnxUiList* l, const int safe[4]) {
         outline(l, r, (float)(2 * s), UI_PICKED);
     }
     bar(safe, b);
-    ui_fill(l, b[0][0] - (float)(8 * s), b[0][1] - (float)(4 * s),
-            b[BAR_DONE][0] + b[BAR_DONE][2] - b[0][0] + (float)(16 * s), (float)(24 * s), UI_INK);
+    vpad_edit_bar(safe, r);
+    ui_fill(l, r[0], r[1], r[2], r[3], UI_INK);
     ui_text(l, b[BAR_LESS][0], b[BAR_LESS][1], s, "[ - ]", UI_PAGE);
     /* the picked control's name and size, or what to do: a field of cells (ui_cells) over the bar's middle part, which
        takes the same quads at the same places whatever it says, so that a size stepped or another control picked

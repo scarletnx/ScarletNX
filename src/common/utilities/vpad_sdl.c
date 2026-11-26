@@ -401,12 +401,14 @@ void snx_vpad_window_state(u64* buttons, i32 sticks[4]) {
     for (int i = 0; i < 4; ++i) sticks[i] = 0;
 }
 
-/* Back's first press over the picture, in a band under edit mode's bar (vpad.c), as the bar's own letters */
+/* Back's first press over the picture, in a band right under edit mode's bar (vpad.c), as the bar's own letters */
 static void warning_draw(SnxUiList* l, const int safe[4], int scale) {
     char line[64];
+    float bar[4];
     snx_quit_warning(line, sizeof line, "Back");
+    vpad_edit_bar(safe, bar);
     float w = (float)((int)(strlen(line) + 2) * 8 * scale), h = (float)(24 * scale);
-    float x = (float)safe[0] + ((float)safe[2] - w) / 2, y = (float)(safe[1] + 32 * scale);
+    float x = (float)safe[0] + ((float)safe[2] - w) / 2, y = bar[1] + bar[3] + (float)(4 * scale);
     ui_fill(l, x, y, w, h, UI_INK);
     ui_text(l, x + (float)(8 * scale), y + (float)(4 * scale), scale, line, UI_PAGE);
 }
