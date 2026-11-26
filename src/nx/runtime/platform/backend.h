@@ -5,6 +5,7 @@
 #ifndef SNX_BACKEND_H
 #define SNX_BACKEND_H
 #include "common/cpu/aarch64/cpu.h"
+#include "common/utilities/error_kind.h"
 #include "nx/runtime/ini.h"
 #include "nx/runtime/platform/overlay.h"
 #include "nx/runtime/platform/ctrl_applet.h"
@@ -72,8 +73,9 @@ void backend_keyboard_hide(u32 ticket);
 int backend_controller_show(const CtrlRequest* r, u32 ticket);
 void backend_controller_hide(u32 ticket);
 
-/* fatal's message box. Called on every platform and from any thread; does nothing where there is no box */
-void win_fatal_box(const char* msg);
+/* fatal's error panel (common/utilities/error_kind.h's e), and the run's "error: " line that says whether it showed.
+   Called on every platform and from any thread */
+void win_fatal_box(const SnxError* e);
 
 /* Vulkan, unused when headless. The two handle types are declared here as vulkan_core.h declares them for 64-bit
    hosts (a repeated identical typedef is valid), so callers need no Vulkan header */

@@ -219,11 +219,14 @@ void options_ldn_set(const IniOpt* o, const char* v) {
             g_opt_ldn = i;
             return;
         }
-    fatal("settings: ldn=%s is not lan, room or off", v);
+    fatal_given(1, &(SnxError){.kind = SNX_ERROR_SETTING_VALUE, .key = "ldn"},
+                "settings: ldn=%s is not lan, room or off", v);
 }
 void options_room_set(const IniOpt* o, const char* v) {
     (void)o;
-    if (v[strcspn(v, " \t\r")]) fatal("settings: room=%.64s is not host or host:port", v);
+    if (v[strcspn(v, " \t\r")])
+        fatal_given(1, &(SnxError){.kind = SNX_ERROR_SETTING_VALUE, .key = "room"},
+                    "settings: room=%.64s is not host or host:port", v);
 }
 
 /* MB: below 1 no cap but the heap region's own, which also caps a larger one */

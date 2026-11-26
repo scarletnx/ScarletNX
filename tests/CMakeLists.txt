@@ -102,6 +102,12 @@ find_package(Python3 QUIET COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
     add_test(NAME cpu_plan_tools COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/cpu_plan_tools.py")
 endif()
+# each stop of the Switch runtime that the person playing can do something about names its kind of error, whose panel
+# offers the action that fixes it (src/common/utilities/error_kind.h)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME error_kinds COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/error_kinds.py"
+                                      "${PROJECT_SOURCE_DIR}")
+endif()
 # the GNU extensions with an ISO C counterpart stay out of our own sources (#68)
 if(Python3_Interpreter_FOUND)
     add_test(NAME gnu_extensions COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/gnu_extensions.py"
@@ -5764,7 +5770,7 @@ add_executable(snx-test-platform-log platform_log.c "${PROJECT_SOURCE_DIR}/src/c
         "${PROJECT_SOURCE_DIR}/src/common/platform/file_replace.c"
         "${PROJECT_SOURCE_DIR}/src/common/platform/thread.c")
 snx_test_target(snx-test-platform-log gnu23)
-target_link_libraries(snx-test-platform-log PRIVATE scarletnx-common) # the runs' logs: snx_list_dir, snx_file_time
+target_link_libraries(snx-test-platform-log PRIVATE snx_error scarletnx-common) # the runs' logs: snx_list_dir, snx_file_time
 add_test(NAME platform_log COMMAND snx-test-platform-log "${CMAKE_CURRENT_BINARY_DIR}")
 if(NOT WIN32 AND TARGET SDL3::SDL3) # SDL3 is there with a driver that draws (cmake/dependencies.cmake)
     # written-page tracking, decommit, pread, file maps, replace, folders, waits and threads (platform/plat_posix.c,
@@ -6213,3 +6219,11 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
     endforeach()
 endif()
 snx_sanitizer_path()
+# the tests with a fatal of their own that build runtime code which stops with a kind of error (platform/log.h's
+# fatal_as, fatal_given): those through their fatal (support/fatal_kind.c)
+foreach(t arm-code-invalidate audio-clock audio-opus crash-runtime-thread fs-service gl-layer gvk-marshal misc-service
+          nn-fs nn-time options-tv-mode os-light-event room-service rtapi-miss runtime-linker sm-service)
+    if(TARGET snx-test-${t})
+        target_sources(snx-test-${t} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/support/fatal_kind.c")
+    endif()
+endforeach()

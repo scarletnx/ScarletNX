@@ -310,9 +310,11 @@ u32 linker_nro_load(CPU* c, u64 image, u64 size, u64 buffer, u64 buffer_size, in
     /* the module's header names its BSS, which the game's buffer is mapped as with whatever it held */
     mod0 = snx_ld_le32(GP(*base + 4));
     if (total < 0x1c || mod0 > total - 0x1c || memcmp(GP(*base + mod0), "MOD0", 4))
-        fatal("linker: the NRO the game loaded at %llx (%llu bytes) has no module header (MOD0) at %llx of it, which "
-              "the SDK stops the game on",
-              (unsigned long long)*base, (unsigned long long)total, (unsigned long long)mod0);
+        fatal_as(
+            SNX_ERROR_GAME_STOPPED,
+            "linker: the NRO the game loaded at %llx (%llu bytes) has no module header (MOD0) at %llx of it, which "
+            "the SDK stops the game on",
+            (unsigned long long)*base, (unsigned long long)total, (unsigned long long)mod0);
     zero = mod0 + snx_ld_le32(GP(*base + mod0 + 8));
     zero_end = mod0 + snx_ld_le32(GP(*base + mod0 + 12));
     if (zero > zero_end || zero_end > total)
@@ -372,9 +374,11 @@ int linker_nro_unload(CPU* c, u64 inside) {
         c->x[0] = base + snx_ld_le32(GP(base + 0x60));
         run(c, left, lr);
         if (c->x[0])
-            fatal("linker: the game unloads the NRO at %llx while %llu of its thread-local destructors have not run, "
-                  "which the SDK stops the game on",
-                  (unsigned long long)base, (unsigned long long)c->x[0]);
+            fatal_as(
+                SNX_ERROR_GAME_STOPPED,
+                "linker: the game unloads the NRO at %llx while %llu of its thread-local destructors have not run, "
+                "which the SDK stops the game on",
+                (unsigned long long)base, (unsigned long long)c->x[0]);
     }
     run(c, fini, lr); /* its destructors, while the others still hold its addresses */
     c->x[30] = lr;
@@ -392,9 +396,10 @@ int linker_nro_unload(CPU* c, u64 inside) {
     l->loaded--;
     pm_unlock(&l->lock);
     if (ldr_own_unload(base))
-        fatal("linker: the NRO at %llx that the game unloads is not mapped as it was loaded, which the SDK stops "
-              "the game on",
-              (unsigned long long)base);
+        fatal_as(SNX_ERROR_GAME_STOPPED,
+                 "linker: the NRO at %llx that the game unloads is not mapped as it was loaded, which the SDK stops "
+                 "the game on",
+                 (unsigned long long)base);
     LOG("linker: unlinked the NRO at %llx: %llu words of the other modules pointed into it, %llu PLT slots of them "
         "are bound again to what the modules left define, the others are 0, or their slot's lazy value, again\n",
         (unsigned long long)base, (unsigned long long)words, (unsigned long long)rebound);

@@ -87,12 +87,12 @@ static void unimplemented_at(u64 entry) {
     char version[32];
     int versioned = 0;
     if (!m)
-        fatal("nvn: the game called an NVN function at %llx, which nvn doesn't implement yet",
-              (unsigned long long)entry);
+        fatal_as(SNX_ERROR_NOT_YET, "nvn: the game called an NVN function at %llx, which nvn doesn't implement yet",
+                 (unsigned long long)entry);
     implemented(m->name, &versioned);
     hook_version_text(version, sizeof version, HOOK_NVN, g_nvn.loader.api);
-    fatal("nvn: the game called %s%s%s, which nvn doesn't implement yet", m->name, versioned ? " for NVN API " : "",
-          versioned ? version : "");
+    fatal_as(SNX_ERROR_NOT_YET, "nvn: the game called %s%s%s, which nvn doesn't implement yet", m->name,
+             versioned ? " for NVN API " : "", versioned ? version : "");
 }
 static void unimplemented(CPU* c, u64 entry) {
     (void)c;

@@ -46,13 +46,16 @@ void network_room_init(void) {
         LOG("room: airplane_mode=1 keeps this console out of the Eden room\n");
         return;
     }
-    if (!g_settings.eden_room[0]) fatal("ldn=room needs the Eden room's address in the .ini: room=host or room=host:port");
-    if (room_address(g_settings.eden_room, host, sizeof host, &port, why, sizeof why)) fatal("%s", why);
+    if (!g_settings.eden_room[0])
+        fatal_given(1, &(SnxError){.kind = SNX_ERROR_SETTING_VALUE, .key = "room"},
+                    "ldn=room needs the Eden room's address in the .ini: room=host or room=host:port");
+    if (room_address(g_settings.eden_room, host, sizeof host, &port, why, sizeof why))
+        fatal_given(1, &(SnxError){.kind = SNX_ERROR_SETTING_VALUE, .key = "room"}, "%s", why);
     dir = snx_users_dir(g_exedir[0] ? g_exedir : ".");
     if (!dir) fatal("Out of memory finding the users folder");
     r = snx_users_room_password(dir, password, sizeof password, &others, why, sizeof why);
     free(dir);
-    if (r) fatal("The Eden room's password: %s", why);
+    if (r) fatal_given(1, &(SnxError){.kind = SNX_ERROR_NETWORK, .key = "room"}, "The Eden room's password: %s", why);
     if (snx_config_others_said(&others, SNX_USERS_ONLINE, said, sizeof said)) LOG("room: %s\n", said);
     u64 t0 = snx_tracy_attached() ? plat_ns() : 0;
     r = snx_room_join(&room, host, port, snx_users_room_nickname(user), password, g_exename, g_hle.kernel.title_id, "",
@@ -62,8 +65,9 @@ void network_room_init(void) {
         SNX_ZONE_T(z_net_room, "hle: net room error", "join refused: %s", snx_room_why_text(refused));
     }
     if (r) /* the user by number: the nickname can name the player, and players attach the log to public reports */
-        fatal("The Eden room at %s:%u, as user %d: %s (errno %d)", host, port, snx_users_selected_number(),
-              snx_room_why_text(refused), -r);
+        fatal_given(1, &(SnxError){.kind = SNX_ERROR_NETWORK, .key = "room"},
+                    "The Eden room at %s:%u, as user %d: %s (errno %d)", host, port, snx_users_selected_number(),
+                    snx_room_why_text(refused), -r);
     network_set_room(room);
 }
 void network_room_leave(void) {

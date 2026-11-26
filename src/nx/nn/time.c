@@ -327,11 +327,12 @@ static u32 span_between(const u8* sa, const u8* sb, i64* span) {
 /* ============================================================ the hooks */
 /* the SDK stops the game on these */
 [[noreturn]] static void precondition(const char* function, const char* what) {
-    fatal("nn::time::%s: %s, which the SDK stops the game on", function, what);
+    fatal_as(SNX_ERROR_GAME_STOPPED, "nn::time::%s: %s, which the SDK stops the game on", function, what);
 }
 [[noreturn]] static void result_abort(const char* function, u32 r) {
-    fatal("nn::time::%s failed with result 0x%x (error %04u-%04u), which the SDK stops the game on", function, r,
-          2000 + (r & 0x1ff), (r >> 9) & 0x1fff);
+    fatal_as(SNX_ERROR_GAME_STOPPED,
+             "nn::time::%s failed with result 0x%x (error %04u-%04u), which the SDK stops the game on", function, r,
+             2000 + (r & 0x1ff), (r >> 9) & 0x1fff);
 }
 static int initialized(void) { return atomic_load_explicit(&g_hle.time.count, memory_order_acquire) != 0; }
 static void need_initialized(const char* function) {
@@ -346,8 +347,9 @@ static u32 initialize(u32 mode) {
     if (atomic_load_explicit(&g_hle.time.count, memory_order_relaxed)) {
         if (g_hle.time.mode != mode) {
             pm_unlock(&g_nntime.lock);
-            fatal("nn::time::Initialize* of mode %u after one of mode %u, which the SDK stops the game on", mode,
-                  g_hle.time.mode);
+            fatal_as(SNX_ERROR_GAME_STOPPED,
+                     "nn::time::Initialize* of mode %u after one of mode %u, which the SDK stops the game on", mode,
+                     g_hle.time.mode);
         }
         atomic_store_explicit(&g_hle.time.count, atomic_load_explicit(&g_hle.time.count, memory_order_relaxed) + 1,
                               memory_order_relaxed);

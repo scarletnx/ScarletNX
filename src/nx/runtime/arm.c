@@ -170,7 +170,7 @@ static void stop(KThread* t, const char* what, u32 pc, u32 detail) {
     WARN("\n*** The game's thread %llu stopped at %x: %s (%x) ***\n", (unsigned long long)t->id, pc, what, detail);
     kernel_dump_regs(&t->cpu);
     save_hints();
-    fatal("The game stopped at %x: %s. See the .log for details.", pc, what);
+    fatal_as(SNX_ERROR_GAME_STOPPED, "The game stopped at %x: %s. See the .log for details.", pc, what);
 }
 
 /* the block at c's r15, in the state its CPSR says */
@@ -255,7 +255,7 @@ static void rt_undefined(SnxArmCPU* c, u32 word, u32 reason) {
          reason == SNX_ARM_BACKEND_UNSUPPORTED ? " (the block compiler can't run it)" : "");
     if (t) kernel_dump_regs(&t->cpu);
     save_hints();
-    fatal("Unsupported instruction %08x at %x", word, c->r[15]);
+    fatal_as(SNX_ERROR_NOT_YET, "Unsupported instruction %08x at %x", word, c->r[15]);
 }
 
 /* The system registers a 32-bit process reads at EL0 on the console. The generic timer's counters (CNTPCT, CNTVCT,

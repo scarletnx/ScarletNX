@@ -142,6 +142,8 @@ target_link_libraries(snx_platform PRIVATE snx_rnnoise)
 target_link_libraries(snx_platform PRIVATE snx_vk_common)
 # the on-screen controls, which the other consoles' windows share (src/common/utilities/vpad.h, vpad_sdl.h)
 target_link_libraries(snx_platform PUBLIC snx_vpad snx_vpad_sdl)
+# what stops a game, its kinds and actions (src/common/utilities/error_kind.h)
+target_link_libraries(snx_platform PUBLIC snx_error)
 # the tracy-capture a capture needs (tracy.c), the client's release (cmake/dependencies.cmake)
 target_compile_definitions(snx_platform PRIVATE SNX_TRACY_VERSION="${SNX_TRACY_VERSION}")
 
