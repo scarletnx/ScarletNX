@@ -138,6 +138,21 @@ jobs:
         env:
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: echo "short=${SHA::7}" >> "$GITHUB_OUTPUT"
+      # A nightly's build names itself by the day (UTC) its run began, nightly-YYYY-MM-DD, in place of its branch
+      # (cmake/commit.cmake's SNX_BUILD_NAME): the day publish.yml tags the nightly with, read from the same run
+      - &nightly-name
+        name: Name the nightly
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          day=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" |
+            grep -o '"created_at": *"[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\}' | head -n 1 | grep -o '[0-9-]*$')
+          [ -n "$day" ] || { echo "run $GITHUB_RUN_ID gave no created_at day" >&2; exit 1; }
+          echo "SNX_BUILD_NAME=nightly-$day" >> "$GITHUB_ENV"
+          echo "this build is nightly-$day"
       - name: Name the week
         id: week
         run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
@@ -993,6 +1008,7 @@ jobs:
         env:
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: echo "short=${SHA::7}" >> "$GITHUB_OUTPUT"
+      - *nightly-name
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
@@ -1203,7 +1219,7 @@ jobs:
       - name: Cross-build and install
         run: |
           docker exec -i -e CCACHE_DIR=/src/.cache/ccache -e CCACHE_BASEDIR=/src -e CCACHE_NOHASHDIR=true \
-            -e SNX_DEPS_CACHE=/src/.cache/deps build sh -s <<'EOF'
+            -e SNX_DEPS_CACHE=/src/.cache/deps -e SNX_BUILD_NAME build sh -s <<'EOF'
           set -eu
           git config --global --add safe.directory '*'
           export SNX_SYSROOT=/src/sysroot
@@ -1421,6 +1437,7 @@ jobs:
         env:
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: echo "short=${SHA::7}" >> "$GITHUB_OUTPUT"
+      - *nightly-name
       - uses: actions/checkout@v7
       # as the other jobs' fail-fast-watch, with the runner's Python: MSYS2's comes later
       - name: Cancel the run when another job fails
@@ -1666,6 +1683,7 @@ jobs:
         env:
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: echo "short=${SHA::7}" >> "$GITHUB_OUTPUT"
+      - *nightly-name
       - uses: actions/checkout@v7
       - *fail-fast-watch
       # One cache for both ABIs, and the restore key carries a cpmfile.json bump over
@@ -1895,6 +1913,7 @@ jobs:
         env:
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: echo "short=${SHA::7}" >> "$GITHUB_OUTPUT"
+      - *nightly-name
       - uses: actions/checkout@v7
       - *fail-fast-watch
       # macOS and iOS fetch the same sources (SDL3's among them, which Linux takes from its package): one cache, and
