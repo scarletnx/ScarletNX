@@ -38,6 +38,8 @@ typedef struct AgbHost AgbHost;
    kept), the GBA's (vpad_consoles.h), whose settings are read by then (vpad_settings) */
 AgbHost* agb_host_open(const char* title, const char* ini, bool fullscreen, char* error, size_t error_size);
 void agb_host_close(AgbHost* host);
+/* the gain the game's sound plays at, the player's Volume over 100; -1 without sound */
+float agb_host_volume(const AgbHost* host);
 /* the events since the last call: the keys held after them (AGB_KEY_), the on-screen controls' among them, none while
    their layout is edited; false once the window is closed */
 bool agb_host_poll(AgbHost* host, uint16_t* keys);

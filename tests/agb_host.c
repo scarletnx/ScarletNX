@@ -468,6 +468,17 @@ int main(void) {
     }
     SDL_free(windows);
     agb_host_close(host);
+    /* the player's Volume on the game's sound, as a Switch game's */
+    SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "dummy");
+    SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "dummy");
+    g_settings.volume = 40;
+    host = agb_host_open("agb_host", ini, false, error, sizeof error);
+    if (!host || agb_host_volume(host) < 0.39f || agb_host_volume(host) > 0.41f) {
+        fprintf(stderr, "agb_host: volume=40 plays at a gain of %.2f, not 0.40 (%s)\n", agb_host_volume(host),
+                host ? "" : error);
+        failed = 1;
+    }
+    agb_host_close(host);
     if (snx_remove_tree(dir)) fprintf(stderr, "agb_host: %s could not be removed\n", dir);
     free(ini);
     free(dir);
