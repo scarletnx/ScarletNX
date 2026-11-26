@@ -4600,38 +4600,39 @@ if(SNX_X64)
     add_test(NAME x64_sse_helped COMMAND snx-test-x64-sse-helped)
     set_tests_properties(x64_sse_helped PROPERTIES SKIP_RETURN_CODE 77)
     add_test(NAME recompiler_backends_no_pclmul COMMAND snx-test-recompiler-backends --without 0x3D80 --states 48
-             --ops PMULL_p64)
+             --ops PMULL_p64 --frozen ${snx_backends_frozen}/no_pclmul.txt)
     add_test(NAME recompiler_backends_refused_no_pclmul COMMAND snx-test-recompiler-backends --refused --target max
              --without 0x3D80 --ops PMULL_p64)
     # and a Penryn's, without SSE4.2 too: the 64-bit compares and CRC32C
     add_test(NAME recompiler_backends_no_sse42 COMMAND snx-test-recompiler-backends --without 0x3DC0 --states 48
              --ops CMGT_v CMHI_v CMGE_v CMHS_v CMGT_s CMLT0_v CMLE0_v FCMGT_v FACGT_v FADD_v FMUL_v FRINTN_v SQXTN_v
-             UQADD_v SCVTF_vi CRC32C)
+             UQADD_v SCVTF_vi CRC32C --frozen ${snx_backends_frozen}/no_sse42.txt)
     add_test(NAME recompiler_backends_refused_no_sse42 COMMAND snx-test-recompiler-backends --refused --target max
              --without 0x3DC0)
     # and without SSSE3: every constant permutation's PSHUFB, PALIGNR, PABS and PMULHRSW
     add_test(NAME recompiler_backends_no_ssse3 COMMAND snx-test-recompiler-backends --without 0x3D10 --states 24
              --ops ABS_v ADDP_v ADDV CLS_v CLZ_v CNT_v EXT_d EXT_q FADDP_v FMAXP_v MUL_vi REV16_v REV32_v REV64_v
              SHRN_v SMAXV SQDMULH_vi SQRDMULH_v SQRDMULH_vi SQXTN_v SQXTUN_v TBL_TBX TRN1 TRN2 UMULL_vi UQXTN_v UZP1
-             UZP2 XTN ZIP1 ZIP2 LD_single_repl)
+             UZP2 XTN ZIP1 ZIP2 LD_single_repl --frozen ${snx_backends_frozen}/no_ssse3.txt)
     add_test(NAME recompiler_backends_refused_no_ssse3 COMMAND snx-test-recompiler-backends --refused --target max
              --without 0x3D10)
     # PALIGNR's one use, SHA256SU1's beside SHA-NI's (on a host with them)
     add_test(NAME recompiler_backends_no_ssse3_sha COMMAND snx-test-recompiler-backends --without 0x1D10 --states 40
-             --ops SHA256SU1)
+             --ops SHA256SU1 --frozen ${snx_backends_frozen}/no_ssse3_sha.txt)
     # and without SSE4.1: its lane moves by SSE2's forms, the rest by the helper
     add_test(NAME recompiler_backends_no_sse41 COMMAND snx-test-recompiler-backends --target max --without 0x3D20
              --states 24 --ops MUL_v CMEQ_v CMEQ0_v FRINTN_v FRINTP_v FRINTM_v FRINTZ_v FRINTA_v RBIT_v SABD_v SADALP_v
              SADDLP_v SADDLV SADDL_v SADDW SCVTF_vi SDOT_v SHLL_v SMAXP_v SMAX_v SMIN_v SMLAL_v SMULL_v SQABS_v
              SQDMULH_v SQNEG_v SQRDMLAH_v SQRSHL_v SQSHL_v SRHADD_v SSHLL_v SSHL_v SSUBW ST_mult ST_single UABD_v UADDLV
-             UCVTF_vi UDOT_v UMAX_v UMIN_v UMULL_v UQSHL_v URSHL_v USHLL_v XAR)
+             UCVTF_vi UDOT_v UMAX_v UMIN_v UMULL_v UQSHL_v URSHL_v USHLL_v XAR
+             --frozen ${snx_backends_frozen}/no_sse41.txt)
     add_test(NAME recompiler_backends_no_sse41_functions COMMAND snx-test-recompiler-backends --without 0x3D20
-             --functions 400 --states 8)
+             --functions 400 --states 8 --frozen ${snx_backends_frozen}/functions_400.txt)
     add_test(NAME recompiler_backends_refused_no_sse41 COMMAND snx-test-recompiler-backends --refused --target max
              --without 0x3D20)
     # and with SSE2 alone, which is all the back end needs: every word made, the functions LLVM's word by word
     add_test(NAME recompiler_backends_sse2 COMMAND snx-test-recompiler-backends --without 0x3FFF --target max
-             --functions 400 --states 8)
+             --functions 400 --states 8 --frozen ${snx_backends_frozen}/max_functions_400.txt)
     add_test(NAME recompiler_backends_refused_sse2 COMMAND snx-test-recompiler-backends --refused --target max
              --without 0x3FFF)
     set_tests_properties(recompiler_backends_no_ssse3 recompiler_backends_no_sse41
@@ -4727,9 +4728,11 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
                          PROPERTIES TIMEOUT 600)
     # a frame of more slots than STP X29, X30's pre-index takes (arm64_frame_code.c's last row): a SUB and ADD of SP
     add_test(NAME recompiler_arm64_frame COMMAND snx-test-recompiler-arm64 --without 0x7ffff --made --states 40 --words
-             4e284820 4e284841 4e284862 4e284883 4e2848a4 4e2848c5 4e2848e6 4e284907)
+             4e284820 4e284841 4e284862 4e284883 4e2848a4 4e2848c5 4e2848e6 4e284907
+             --frozen ${snx_backends_frozen}/frame.txt)
     add_test(NAME recompiler_arm64_frame_jit COMMAND snx-test-recompiler-arm64 --without 0x7ffff --made --states 40
-             --jit --words 4e284820 4e284841 4e284862 4e284883 4e2848a4 4e2848c5 4e2848e6 4e284907)
+             --jit --words 4e284820 4e284841 4e284862 4e284883 4e2848a4 4e2848c5 4e2848e6 4e284907
+             --frozen ${snx_backends_frozen}/frame.txt)
     set_tests_properties(recompiler_arm64_frame recompiler_arm64_frame_jit PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
     # calls of functions the unit made before the caller, past their entry's check with no target given, and the stale
     # checks a game's module has (of no stale code); in an AOT module and in a JIT unit
@@ -4769,17 +4772,19 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
                               "${SNX_UNICORN_LIBRARY}")
         snx_decodetree_a64(snx-test-recompiler-x64cpu)
         add_test(NAME recompiler_x64cpu_nehalem COMMAND snx-test-recompiler-x64cpu --cpu Nehalem --functions 200
-                 --states 8)
+                 --states 8 --frozen ${snx_backends_frozen}/functions_200.txt)
         add_test(NAME recompiler_x64cpu_nehalem_ops COMMAND snx-test-recompiler-x64cpu --cpu Nehalem --states 16 --ops
-                 PMULL_p64)
+                 PMULL_p64 --frozen ${snx_backends_frozen}/x64cpu_nehalem_ops.txt)
         add_test(NAME recompiler_x64cpu_penryn COMMAND snx-test-recompiler-x64cpu --cpu Penryn --functions 200
-                 --states 8)
+                 --states 8 --frozen ${snx_backends_frozen}/functions_200.txt)
         add_test(NAME recompiler_x64cpu_penryn_ops COMMAND snx-test-recompiler-x64cpu --cpu Penryn --states 16 --ops
-                 PMULL_p64 CMGT_v CMHI_v CMGE_v CMHS_v CMGT_s CMLT0_v CMLE0_v FCMGT_v FACGT_v)
+                 PMULL_p64 CMGT_v CMHI_v CMGE_v CMHS_v CMGT_s CMLT0_v CMLE0_v FCMGT_v FACGT_v
+                 --frozen ${snx_backends_frozen}/x64cpu_penryn_ops.txt)
         # CRC32C of each size, in one function: --ops' words that write X30 return to the CRC under Unicorn, where
         # LLVM's run stops at the miss
         add_test(NAME recompiler_x64cpu_penryn_crc32c COMMAND snx-test-recompiler-x64cpu --cpu Penryn --made --states 40
-                 --words 1ac35000 1ac45421 1ac55842 9ac65c63 1ac15be9 9adf5c0a)
+                 --words 1ac35000 1ac45421 1ac55842 9ac65c63 1ac15be9 9adf5c0a
+                 --frozen ${snx_backends_frozen}/x64cpu_penryn_crc32c.txt)
         set_tests_properties(recompiler_x64cpu_nehalem recompiler_x64cpu_nehalem_ops recompiler_x64cpu_penryn
                              recompiler_x64cpu_penryn_ops recompiler_x64cpu_penryn_crc32c PROPERTIES TIMEOUT 600
                              SKIP_RETURN_CODE 77)
@@ -4788,18 +4793,19 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
         foreach(cpu qemu64 kvm64 phenom Opteron_G1 Opteron_G3 Conroe)
             string(TOLOWER "${cpu}" name)
             add_test(NAME recompiler_x64cpu_${name} COMMAND snx-test-recompiler-x64cpu --cpu ${cpu} --functions 200
-                     --states 8)
+                     --states 8 --frozen ${snx_backends_frozen}/functions_200.txt)
             set_tests_properties(recompiler_x64cpu_${name} PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
         endforeach()
         add_test(NAME recompiler_x64cpu_conroe_ops COMMAND snx-test-recompiler-x64cpu --cpu Conroe --target max
                  --states 8 --ops MUL_v CMEQ_v CMEQ0_v FRINTN_v FRINTP_v FRINTM_v FRINTZ_v FRINTA_v RBIT_v SABD_v
                  SADALP_v SADDLP_v SADDLV SADDL_v SADDW SCVTF_vi SDOT_v SHLL_v SMAXP_v SMAX_v SMIN_v SMLAL_v SMULL_v
                  SQABS_v SQDMULH_v SQNEG_v SQRDMLAH_v SQRSHL_v SQSHL_v SRHADD_v SSHLL_v SSHL_v SSUBW ST_mult ST_single
-                 UABD_v UADDLV UCVTF_vi UDOT_v UMAX_v UMIN_v UMULL_v UQSHL_v URSHL_v USHLL_v XAR)
+                 UABD_v UADDLV UCVTF_vi UDOT_v UMAX_v UMIN_v UMULL_v UQSHL_v URSHL_v USHLL_v XAR
+                 --frozen ${snx_backends_frozen}/x64cpu_conroe_ops.txt)
         add_test(NAME recompiler_x64cpu_qemu64_ops COMMAND snx-test-recompiler-x64cpu --cpu qemu64 --states 8 --ops
                  ABS_v ADDP_v ADDV CLS_v CLZ_v CNT_v EXT_d EXT_q FADDP_v FMAXP_v MUL_vi REV16_v REV32_v REV64_v
                  SHRN_v SMAXV SQDMULH_vi SQRDMULH_v SQRDMULH_vi SQXTN_v SQXTUN_v TBL_TBX TRN1 TRN2 UMULL_vi UQXTN_v
-                 UZP1 UZP2 XTN ZIP1 ZIP2 LD_single_repl)
+                 UZP1 UZP2 XTN ZIP1 ZIP2 LD_single_repl --frozen ${snx_backends_frozen}/x64cpu_qemu64_ops.txt)
         set_tests_properties(recompiler_x64cpu_conroe_ops recompiler_x64cpu_qemu64_ops PROPERTIES TIMEOUT 600
                              SKIP_RETURN_CODE 77)
     endif()
