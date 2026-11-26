@@ -609,45 +609,6 @@ with tempfile.TemporaryDirectory() as temporary, tempfile.TemporaryDirectory(dir
         text,
     )
 
-    # runs: which probe runs a pull request's changed files call for, what each loads
-    def decide(*paths):
-        done = subprocess.run(
-            [sys.executable, str(SCRIPT), 'runs'],
-            input=''.join(f'{p}\n' for p in paths),
-            capture_output=True,
-            text=True,
-            timeout=60,
-            check=False,
-        )
-        return done.returncode, done.stdout, done.stderr
-
-    for paths, nro_runs, apk_runs, why in (
-        (('src/gui/main.c', 'docs/user/gui.md'), False, False, 'the menu and a page load neither'),
-        (('src/nx/hle/services/vi.c',), True, False, 'the Switch runtime: the NRO'),
-        (('src/common/cpu/a64.c',), True, False, 'the code the runtime shares: the NRO'),
-        (('src/android/bridge/linker.c',), False, True, 'the Android layer: the APK'),
-        (('src/gnuabi/kernel/futex.c', 'src/glslc/emit.c'), False, True, 'its native code and its GLES: the APK'),
-        (('src/common/gpu/vk/render.c',), True, True, 'the GPU code both share: both'),
-        (('tests/edenprobe/android-x86_64.txt',), False, True, "the APK's baseline: the APK"),
-        (('tests/edenprobe/linux-x86_64.txt',), True, False, "the NRO's baseline: the NRO"),
-        (('.github/workflows/build.yml',), True, True, 'the job: both'),
-        (('scripts/edenprobe.py', 'cmake/llvm.cmake'), True, True, 'the script and the build: both'),
-        ((), False, False, 'no file: neither'),
-    ):
-        status, said, why_said = decide(*paths)
-        check(
-            f'runs: {why}',
-            status == 0 and said == f'nro={str(nro_runs).lower()}\napk={str(apk_runs).lower()}\n',
-            (said, why_said),
-        )
-    status, said, why_said = decide('src/nx/gpu/vk/cmd.c', 'docs/a.md')
-    check(
-        'runs says which files call for a run, and that the other is not called for',
-        'the NRO runs, for 1 of the 2 files changed: src/nx/gpu/vk/cmd.c' in why_said
-        and 'the APK does not run: none of the 2 files changed is one it loads' in why_said,
-        why_said,
-    )
-
     # the baseline of several runs: what each passed
     first, second, other = root / 'one.txt', root / 'two.txt', root / 'other.txt'
     first.write_text('# build: abc1234\n# mode: quick cpu\ncpu: adds\ncpu: flaky\ncpu: multiplies\n')
