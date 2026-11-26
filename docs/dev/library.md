@@ -114,7 +114,8 @@ snx_recompiler_free(r);
 ```
 
 `snx_recompiler_new` takes the backend: `SNX_RECOMPILER_FLAG_LLVM`, the only one.
-`snx_recompiler_has` tells whether LLVM can target this host.
+`snx_recompiler_has` tells whether LLVM can target this host; in a build without LLVM
+(`SNX_WITH_LLVM=OFF`), whether the host has a native back end, which then makes all of the code.
 The recompiler also takes the `-O` level (`snx_recompiler_set_optimization`, `2` by
 default), how many code units compile at once (`snx_recompiler_set_jobs`, on
 threads),

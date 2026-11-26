@@ -3,6 +3,7 @@
 /* The fallback made by LLVM (fallback.h), in builds with the backend. LLVM starts at the first thing asked of it, for
    the process. C in the target's GNU C23, for the LLVM-C headers */
 #include "common/cpu/recompiler/fallback.h"
+#include "common/cpu/recompiler/library_descriptor.h"
 #include "common/cpu/arm/llvm.h"
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/recompiler/object/link.h"
@@ -176,6 +177,97 @@ int snx_fallback_rtlib(char opt, unsigned char** object, size_t* size, char* err
     *object = NULL;
     *size = 0;
     return snx_ir_init(error, error_size) || snx_ir_rtlib_object(opt, object, size, error, error_size) ? -1 : 0;
+}
+
+int snx_fallback_start(char* error, size_t error_size) { return snx_ir_init(error, error_size); }
+
+/* the runtime library's bitcode (llvm/CMakeLists.txt's), which snx_ir_rtlib_object compiles */
+extern const unsigned char snx_rtlib_bitcode[];
+extern const unsigned long snx_rtlib_bitcode_size;
+void snx_fallback_key(int rtlib, void (*put)(void* user, const void* data, size_t size), void* user) {
+    if (rtlib) put(user, snx_rtlib_bitcode, snx_rtlib_bitcode_size);
+    char* cpu = LLVMGetHostCPUName();
+    char* features = snx_ir_host_features();
+    put(user, cpu, strlen(cpu) + 1);
+    put(user, features, strlen(features) + 1);
+    LLVMDisposeMessage(cpu);
+    LLVMDisposeMessage(features);
+}
+
+/* ---- the library's module ---- */
+
+/* the descriptor as IR: constant tables, and SNX_LIBRARY_DESCRIPTOR_FN filling the SnxLibraryDescriptor (generated
+   code's misses go to RtAPI.miss since SNX_ABI 8, and the library's default_miss's to the module's JIT) */
+static int library_descriptor(SnxIr* ir, const SnxCodegen* codegen, const uint64_t* address, const size_t* function,
+                              size_t count, int stale_checks, char* error, size_t error_size) {
+    size_t n = count ? count : 1;
+    LLVMValueRef* values = (LLVMValueRef*)calloc(n, sizeof(*values));
+    if (!values) {
+        snprintf(error, error_size, "out of memory");
+        return -1;
+    }
+    for (size_t i = 0; i < n; ++i) values[i] = ir_i64(ir, i < count ? address[i] : 0);
+    LLVMTypeRef t_addresses = LLVMArrayType(ir->t_i64, (unsigned)n);
+    LLVMValueRef addresses = LLVMAddGlobal(ir->mod, t_addresses, "snx_lib_addresses");
+    LLVMSetLinkage(addresses, LLVMInternalLinkage);
+    LLVMSetInitializer(addresses, LLVMConstArray(ir->t_i64, values, (unsigned)n));
+    LLVMSetGlobalConstant(addresses, 1);
+    for (size_t i = 0; i < n; ++i)
+        values[i] =
+            i < count ? snx_ir_guest_function(ir, codegen->functions[function[i]].start) : LLVMConstNull(ir->t_ptr);
+    LLVMTypeRef t_functions = LLVMArrayType(ir->t_ptr, (unsigned)n);
+    LLVMValueRef functions = LLVMAddGlobal(ir->mod, t_functions, "snx_lib_functions");
+    LLVMSetLinkage(functions, LLVMInternalLinkage);
+    LLVMSetInitializer(functions, LLVMConstArray(ir->t_ptr, values, (unsigned)n));
+    LLVMSetGlobalConstant(functions, 1);
+    LLVMValueRef stale = LLVMConstNull(ir->t_ptr);
+    if (stale_checks) {
+        const size_t stale_count = codegen->function_count ? codegen->function_count : 1;
+        const LLVMTypeRef t_stale = LLVMArrayType(ir->t_i8, (unsigned)stale_count);
+        stale = LLVMAddGlobal(ir->mod, t_stale, "snx_stale");
+        LLVMSetInitializer(stale, LLVMConstNull(t_stale));
+        LLVMSetVisibility(stale, LLVMHiddenVisibility);
+    }
+    free(values);
+    /* static SnxLibraryDescriptor DESC, written at run time at the C offsets */
+    LLVMValueRef desc =
+        LLVMAddGlobal(ir->mod, LLVMArrayType(ir->t_i8, sizeof(SnxLibraryDescriptor)), "snx_lib_descriptor");
+    LLVMSetLinkage(desc, LLVMInternalLinkage);
+    LLVMSetInitializer(desc, LLVMConstNull(LLVMArrayType(ir->t_i8, sizeof(SnxLibraryDescriptor))));
+    LLVMSetAlignment(desc, 8);
+    LLVMValueRef fn = LLVMAddFunction(ir->mod, SNX_LIBRARY_DESCRIPTOR_FN, LLVMFunctionType(ir->t_ptr, NULL, 0, 0));
+    if (ir->windows) LLVMSetDLLStorageClass(fn, LLVMDLLExportStorageClass);
+    ir->fn = fn;
+    LLVMBasicBlockRef block = LLVMAppendBasicBlockInContext(ir->ctx, fn, "entry");
+    LLVMPositionBuilderAtEnd(ir->b, block);
+#define FIELD(member, value)                                                                                           \
+    do {                                                                                                               \
+        LLVMValueRef index__ = ir_i64(ir, offsetof(SnxLibraryDescriptor, member));                                     \
+        LLVMBuildStore(ir->b, value, LLVMBuildInBoundsGEP2(ir->b, ir->t_i8, desc, &index__, 1, ""));                   \
+    } while (0)
+    FIELD(abi, ir_i32(ir, SNX_ABI));
+    FIELD(count, ir_i64(ir, count));
+    FIELD(addresses, addresses);
+    FIELD(functions, functions);
+    FIELD(interp, LLVMConstNull(ir->t_ptr));
+    FIELD(stale, stale);
+#undef FIELD
+    LLVMBuildRet(ir->b, desc);
+    return 0;
+}
+int snx_fallback_library_descriptor(const SnxCodegen* codegen, const uint64_t* addresses, const size_t* functions,
+                                    size_t count, int stale, char opt, const char* keep_ir, unsigned char** object,
+                                    size_t* size, char* error, size_t error_size) {
+    *object = NULL;
+    *size = 0;
+    SnxIr* ir = snx_ir_init(error, error_size) ? NULL : snx_ir_new("module", opt, error, error_size);
+    int rc = !ir || library_descriptor(ir, codegen, addresses, functions, count, stale, error, error_size) ||
+                     (keep_ir && save_ir(ir, keep_ir, "module", error, error_size)) ||
+                     snx_ir_object(ir, opt, object, size, error, error_size)
+                 ? -1
+                 : 0;
+    snx_ir_free(ir);
+    return rc;
 }
 
 /* ---- AArch32 blocks ---- */
