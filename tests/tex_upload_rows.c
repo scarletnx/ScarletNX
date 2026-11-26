@@ -2721,3 +2721,13 @@ int main(void) {
 /* the split's surface views (draw_batches=2): this test records into no list */
 void vk_surf_before_reset(const Surf* s) { (void)s; }
 VkImageLayout vk_surf_layout(const Surf* s) { return s->layout; }
+
+/* the split run's calls (draw_batches=2, render.c and device.c): this test runs no split */
+int gpu_spec(void) { return 0; }
+void gpu_spec_fail(const char* why) { (void)why; }
+int vk_compute_pending_held(u64 a, u64 n) {
+    (void)a;
+    (void)n;
+    return 0;
+}
+void vk_shared_note(u32 which) { (void)which; }

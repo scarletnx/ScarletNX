@@ -282,11 +282,17 @@ static void* list_push(RecFn fn, u64 size) {
     return h + 1;
 }
 /* room for a packet of size bytes of arguments, filled in and then made known by rec_commit */
+static void rendering_run(const void* p);   /* TEMPDBG */
+static void CmdEndRendering_run(const void* p); /* TEMPDBG */
+static int g_ring_pass_open; /* TEMPDBG */
+int vk_rec_ring_pass_open(void) { return g_ring_pass_open; } /* TEMPDBG */
 static void* rec_push(RecFn fn, u64 size) {
     if (t_list) {
         if (fn != barrier_run) barrier_flush();
         return list_push(fn, size);
     }
+    if (fn == rendering_run) g_ring_pass_open = 1; /* TEMPDBG */
+    if (fn == CmdEndRendering_run) g_ring_pass_open = 0; /* TEMPDBG */
     if (fn != barrier_run) barrier_flush(); /* a pending batch of barriers ends before any other command */
     u64 need = (sizeof(RecHdr) + size + 15) & ~15ull, at = g_pending & (REC_CAP - 1);
     /* one that could never fit would wait for room forever, with vk_lock held and every thread that takes it behind */
@@ -374,6 +380,10 @@ void vk_rec_defer(VkDeferFn fn, const void* arg, u64 size) {
     if (size) memcpy((u8*)x + REC_AL(sizeof *x), arg, (size_t)size);
 }
 int vk_rec_listing(void) { return t_list != NULL; }
+/* a list's deferred call is running (vk_rec_list_splice): a pass the list's commands began may be open in the ring,
+   which the splicing thread's own pass state doesn't know */
+static int g_splicing;
+int vk_rec_splicing(void) { return g_splicing; }
 void vk_rec_list_names(VkRecList* l, VkCommandBuffer cb, VkCommandBuffer up) {
     l->named = cb;
     l->named_up = up;
@@ -407,7 +417,9 @@ void vk_rec_list_splice(VkRecList* l) {
             DeferArgs x;
             memcpy(&x, h + 1, sizeof x);
             barrier_flush();
+            g_splicing++;
             x.fn((const u8*)(h + 1) + REC_AL(sizeof x));
+            g_splicing--;
         } else {
             u8* p = rec_push(h->fn, args);
             memcpy(p, h + 1, (size_t)args);

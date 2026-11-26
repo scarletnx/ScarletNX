@@ -287,3 +287,9 @@ int main(void) {
 }
 /* the draw slot of this thread (render.c): this test sets up no draws on a worker */
 u32 vk_render_slot(void) { return 0; }
+
+/* the split run's calls (draw_batches=2, render.c and device.c): this test runs no split */
+_Atomic int g_vk_share_on;
+void vk_shared_note(u32 which) { (void)which; }
+void vk_share_lock(void) {}
+u32 vk_uma_prep_mark(void) { return 0; }

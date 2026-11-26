@@ -56,6 +56,13 @@ typedef struct {
     u32 cur;  /* the chunk it hands out of: its index in g_cmd.chunk, plus one; 0 for none */
     u32 n;    /* chunks it took in this use of the frame */
     u64 used; /* bytes of cur handed out */
+    /* cur's buffer, memory, mapping, size and where its memory is, copied when it was taken: a split run's thread
+       hands out of its ring with no lock (stage_alloc), and g_cmd.chunk moves when it grows */
+    VkBuffer buf;
+    DevMem mem;
+    u8* ptr;
+    u64 size;
+    u32 in;
 } Ring;
 
 #define SPARE_SETS 32
@@ -70,7 +77,8 @@ typedef struct {
     u64 last;             /* the timeline value of the frame's last submission, 0 when it has none */
     u64 hold;             /* the next frame's submission that reads buffers in this one's rings (vk_frame_hold), or 0 */
     int recording, fresh; /* fresh: just ended up current, not yet reset for its new use */
-    Ring ring[FRAME_RINGS]; /* by XRING_ index */
+    /* by draw slot (vk_render_slot: the two threads of a split run hand out of their own) and XRING_ index */
+    Ring ring[VK_RC_SLOTS][FRAME_RINGS];
     u64 filled;             /* bytes of the chunks its rings filled in this use, and of its big buffers */
     /* destroyed once this frame's work is done */
     Dead* dead;
@@ -677,7 +685,7 @@ static VkCommandBuffer cmd_locked(void) {
 }
 
 /* What the rings handed out, by ring and by where its memory is (above), for vk_buffer_stats */
-static u64 g_xfer[XRING_N][XFER_N];
+static u64 g_xfer[VK_RC_SLOTS][XRING_N][XFER_N]; /* by draw slot, as its rings */
 static u32 xfer_where(const DevMemInfo* info) {
     const VkPhysicalDeviceMemoryProperties* mp;
     VkMemoryPropertyFlags f;
@@ -699,10 +707,13 @@ void vk_stage_report(void) {
     static const char* const ring[XRING_N] = {"staging", "output", "back", "device", "readback", "stream"};
     char line[512];
     int at = 0;
-    for (u32 r = 0; r < XRING_N; r++)
-        at = snx_appendf(
-            line, sizeof line, at, " %s %llu/%llu/%llu", ring[r], (unsigned long long)(g_xfer[r][XFER_HOST] >> 20),
-            (unsigned long long)(g_xfer[r][XFER_MAPPED] >> 20), (unsigned long long)(g_xfer[r][XFER_DEVICE] >> 20));
+    for (u32 r = 0; r < XRING_N; r++) {
+        u64 x[XFER_N] = {0};
+        for (u32 slot = 0; slot < VK_RC_SLOTS; slot++)
+            for (u32 w = 0; w < XFER_N; w++) x[w] += g_xfer[slot][r][w];
+        at = snx_appendf(line, sizeof line, at, " %s %llu/%llu/%llu", ring[r], (unsigned long long)(x[XFER_HOST] >> 20),
+                         (unsigned long long)(x[XFER_MAPPED] >> 20), (unsigned long long)(x[XFER_DEVICE] >> 20));
+    }
     LOG("vulkan: ring MB over 600 presents (in host/mapped device/device memory):%s; the rings hold %llu MiB, %llu "
         "buffers made for them in all, %llu of the device ring's in system memory for want of the device's\n",
         line, (unsigned long long)(vk_ring_bytes() >> 20), (unsigned long long)g_cmd.made,
@@ -956,7 +967,7 @@ u8* vk_stream_upload(u64 size, u64 align, VkBuffer* buf, u64* off) {
     c->freed = g_frame_id; /* when it was last used: stream_trim */
     chunk_written(c);
     if (at + size > c->handed) c->handed = at + size;
-    g_xfer[XRING_STREAM][c->in] += size;
+    g_xfer[vk_render_slot()][XRING_STREAM][c->in] += size;
     g_cmd.stream_since += c->big ? c->size : size;
     *buf = c->buf;
     *off = at;
@@ -1043,11 +1054,39 @@ static void pool_recycle(Frame* f) {
 /* size bytes of the frame's ring at *off of *buf, the chunk's memory in *mem: the chunk, NULL when none could be had.
    A request no bigger than a chunk is handed out of the ring's chunk, or of the next one when that is full (a big
    buffer chunk_take lent it, counted as a big one); a bigger one gets a big buffer of its own */
-static const Chunk* ring_take(Frame* f, u32 ring, u64 size, u64 align, VkBuffer* buf, u64* off, DevMem* mem) {
-    Ring* r = &f->ring[ring];
-    u32 slot = (u32)(f - g_fr) + 1;
+/* the frame's chunks the rings of a kind hold, in all the draw slots (the window's share, BAR_RING_MAX) */
+static u32 ring_chunks(const Frame* f, u32 ring) {
+    u32 n = 0;
+    for (u32 slot = 0; slot < VK_RC_SLOTS; slot++) n += f->ring[slot][ring].n;
+    return n;
+}
+/* size bytes out of the chunk this draw slot's ring holds, with nothing shared touched: NULL when it has none or no
+   room (ring_alloc, under the lock where a run is split) */
+static u8* ring_fast(Frame* f, u32 ring, u64 size, u64 align, VkBuffer* buf, u64* off, DevMem* mem) {
+    const u32 slot = vk_render_slot();
+    Ring* r = &f->ring[slot][ring];
+    if (align < 16) align = 16;
+    const u64 at = (r->used + align - 1) & ~(align - 1);
+    if (!r->cur || size > r->size || at + size > r->size) return NULL;
+    r->used = at + size;
+    g_xfer[slot][ring][r->in] += size;
+    *buf = r->buf;
+    *off = at;
+    if (mem) *mem = r->mem;
+    return r->ptr + at;
+}
+/* size bytes of the frame's ring at *off of *buf, the chunk's memory in *mem: the pointer, NULL when none could be
+   had. A request no bigger than a chunk is handed out of the ring's chunk, or of the next one when that is full (a big
+   buffer chunk_take lent it, counted as a big one); a bigger one gets a big buffer of its own. Each draw slot has its
+   ring (vk_render_slot) */
+static u8* ring_alloc(Frame* f, u32 ring, u64 size, u64 align, VkBuffer* buf, u64* off, DevMem* mem) {
+    if (size <= chunk_size()) {
+        u8* p = ring_fast(f, ring, size, align, buf, off, mem);
+        if (p) return p;
+    }
+    const u32 slot = (u32)(f - g_fr) + 1, rs = vk_render_slot();
+    Ring* r = &f->ring[rs][ring];
     Chunk* c;
-    u64 at;
     if (align < 16) align = 16;
     if (size > g_vk.alloc_cap) return NULL; /* no allocation is bigger (memory.c) */
     if (size > chunk_size()) {              /* in host memory, past the window's share (BAR_RING_MAX) */
@@ -1057,35 +1096,32 @@ static const Chunk* ring_take(Frame* f, u32 ring, u64 size, u64 align, VkBuffer*
         c = &g_cmd.chunk[big - 1];
         chunk_written(c);
         f->filled += c->size;
-        at = 0;
-    } else {
-        at = (r->used + align - 1) & ~(align - 1);
-        if (!r->cur || at + size > g_cmd.chunk[r->cur - 1].size) {
-            if (r->cur) { /* full: what was written to it is flushed with the next submit */
-                chunk_written(&g_cmd.chunk[r->cur - 1]);
-                f->filled += g_cmd.chunk[r->cur - 1].size;
-            }
-            r->used = 0;
-            r->cur = chunk_take(ring, chunk_size(), 0,
-                                ring == XRING_OUTPUT && (r->n + 1) * chunk_size() <= BAR_RING_MAX, slot);
-            if (!r->cur) return NULL;
-            r->n++;
-            g_cmd.took[g_cmd.itook][ring][g_cmd.chunk[r->cur - 1].big]++; /* a big buffer lent counts as one */
-            at = 0;
-        }
-        c = &g_cmd.chunk[r->cur - 1];
-        r->used = at + size;
+        if (size > c->handed) c->handed = size;
+        g_xfer[rs][ring][c->in] += size;
+        *buf = c->buf;
+        *off = 0;
+        if (mem) *mem = c->mem;
+        return c->ptr;
     }
-    if (at + size > c->handed) c->handed = at + size;
-    g_xfer[ring][c->in] += size;
-    *buf = c->buf;
-    *off = at;
-    if (mem) *mem = c->mem;
-    return c;
-}
-static u8* ring_alloc(Frame* f, u32 ring, u64 size, u64 align, VkBuffer* buf, u64* off, DevMem* mem) {
-    const Chunk* c = ring_take(f, ring, size, align, buf, off, mem);
-    return c ? c->ptr + *off : NULL;
+    if (r->cur) { /* full: what was written to it is flushed with the next submit */
+        Chunk* old = &g_cmd.chunk[r->cur - 1];
+        if (r->used > old->handed) old->handed = r->used;
+        chunk_written(old);
+        f->filled += old->size;
+    }
+    r->used = 0;
+    r->cur = chunk_take(ring, chunk_size(), 0, ring == XRING_OUTPUT && (ring_chunks(f, ring) + 1) * chunk_size() <= BAR_RING_MAX,
+                        slot);
+    if (!r->cur) return NULL;
+    r->n++;
+    c = &g_cmd.chunk[r->cur - 1];
+    g_cmd.took[g_cmd.itook][ring][c->big]++; /* a big buffer lent counts as one */
+    r->buf = c->buf;
+    r->mem = c->mem;
+    r->ptr = c->ptr;
+    r->size = c->size;
+    r->in = c->in;
+    return ring_fast(f, ring, size, align, buf, off, mem);
 }
 
 static u8* stage_alloc(u64 size, u64 align, VkBuffer* buf, u64* off, DevMem* mem, int output)
@@ -1094,7 +1130,16 @@ static u8* stage_alloc(u64 size, u64 align, VkBuffer* buf, u64* off, DevMem* mem
 
 	vk_cmd(); /* completion of the slot's previous use precedes any reuse */
 	f = &g_fr[g_cur];
-	return ring_alloc(f, output ? XRING_OUTPUT : XRING_STAGE, size, align, buf, off, mem);
+	const u32 ring = output ? XRING_OUTPUT : XRING_STAGE;
+	/* a split run's thread: its own ring's chunk with no lock, the pool's under the share lock */
+	if (size <= chunk_size()) {
+		u8* p = ring_fast(f, ring, size, align, buf, off, mem);
+		if (p) return p;
+	}
+	vk_share_lock();
+	u8* p = ring_alloc(f, ring, size, align, buf, off, mem);
+	vk_share_unlock();
+	return p;
 }
 u8* vk_stage_output(u64 size, u64 align, VkBuffer* buf, u64* off, DevMem* mem)
 {
@@ -1160,14 +1205,15 @@ int vk_stage_device_at(const char* file, int line, u64 size, u64 align, VkBuffer
             break;
         }
     }
-    return ring_take(&g_fr[g_cur], XRING_DEVICE, size, align, buf, off, NULL) != NULL;
+    return ring_alloc(&g_fr[g_cur], XRING_DEVICE, size, align, buf, off, NULL) != NULL;
 }
 
 /* the host writes to the chunks the staging and output rings hand out of, and to those they filled and the frame's
    big buffers since the last submit, made visible to the GPU */
 static void rings_flush_host(const Frame* f) {
-    for (u32 r = XRING_STAGE; r <= XRING_OUTPUT; r++)
-        if (f->ring[r].cur) vk_devmem_flush(g_cmd.chunk[f->ring[r].cur - 1].mem, 0, VK_WHOLE_SIZE);
+    for (u32 slot = 0; slot < VK_RC_SLOTS; slot++)
+        for (u32 r = XRING_STAGE; r <= XRING_OUTPUT; r++)
+            if (f->ring[slot][r].cur) vk_devmem_flush(f->ring[slot][r].mem, 0, VK_WHOLE_SIZE);
     for (u32 i = 0; g_cmd.unflushed && i < g_cmd.nchunk; i++)
         if (g_cmd.chunk[i].flush) {
             vk_devmem_flush(g_cmd.chunk[i].mem, 0, VK_WHOLE_SIZE);
@@ -1547,7 +1593,8 @@ void vk_frame_next(void) {
    big buffers */
 static u64 frame_rings(const Frame* f) {
     u64 n = f->filled;
-    for (u32 r = 0; r < FRAME_RINGS; r++) n += f->ring[r].used;
+    for (u32 slot = 0; slot < VK_RC_SLOTS; slot++)
+        for (u32 r = 0; r < FRAME_RINGS; r++) n += f->ring[slot][r].used;
     return n;
 }
 /* the bytes a frame writes to its rings before it ends, as it has written rings already: VK_FRAME_RING_CAPS
@@ -1855,7 +1902,7 @@ u8* vk_readback_buffer(u64 size, VkBuffer* buf) {
         g_rb_cap = cap;
         g_rb_in = xfer_where(&info);
     }
-    g_xfer[XRING_READBACK][g_rb_in] += size;
+    g_xfer[vk_render_slot()][XRING_READBACK][g_rb_in] += size;
     *buf = g_rb;
     return g_rb_ptr;
 }

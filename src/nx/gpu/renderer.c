@@ -195,15 +195,9 @@ static void ds_run(const void* arg, u64 bytes) {
     if ((u64)(p - (const u8*)arg) + (u64)r.indices * 4 > bytes) fatal("gpu: a draw record is short\n");
     /* an owner's draws off: its draws, clears, textures and discards are skipped, as the front ends skipped them
        when they decided. A discard waits for no predicate: the draws it would keep may run */
-    if (arg == g_ds_join_at) { /* a worker's batch starts here: its list goes in first (gpu_ds_join_at) */
-        g_ds_join_at = NULL;
-        g_ds_join_fn();
-    }
-    /* a draw a worker drew in its batch (gpu_ds_batch_done), skipped or not: its record is applied above */
-    if (r.kind == DR_DRAW && g_ds_skip) {
-        g_ds_skip--;
-        return;
-    }
+    /* a worker's batch starts here: its list goes in first (gpu_ds_join_at). A draw a worker drew in its batch
+       (gpu_ds_batch_done), skipped or not: its record is applied above */
+    if (r.kind == DR_DRAW ? gpu_ds_batch_skip(arg) : arg == g_ds_join_at && !gpu_ds_batch_skip(arg)) return;
     if (off == 1 && r.kind != DR_XFB) return;
     if (r.kind == DR_DISCARD && pred) return;
     switch (r.kind) {
@@ -399,32 +393,6 @@ void gpu_ds_peek_log(void) { gq_peek_log(ds_run); }
    the renderer's side passes over the draws the worker drew (gpu_ds_batch_done), with their records still applied to
    its copy */
 static u32 g_ds_batch_synced; /* the slots taken from the renderer's copy in this batch */
-u32 gpu_ds_batch(const void** recs, u32 max) {
-    u64 sizes[64];
-    if (max > 64) max = 64;
-    const u32 n = gq_peek_calls(ds_run, recs, sizes, max);
-    u32 k = 0;
-    extern u32 g_tdbg_peek_stop; /* TEMPDBG */
-    static u64 why[8], peeks, got; /* TEMPDBG */
-    int w = n == max ? 0 : (int)g_tdbg_peek_stop;
-    for (; k < n; k++) {
-        DsRecord r;
-        if (sizes[k] < sizeof r) break;
-        memcpy(&r, recs[k], sizeof r);
-        if (r.kind != DR_DRAW || r.slot >= DS_COPIES || r.fresh || r.reload) {
-            w = r.kind != DR_DRAW ? 3 : r.slot >= DS_COPIES ? 4 : r.fresh ? 5 : 6;
-            break;
-        }
-    }
-    why[w]++; peeks++; got += k; /* TEMPDBG */
-    if (!(peeks % 200000))
-        LOG("TEMPDBG peeks %llu, draws a peek %.1f; stops: max %llu, queue end %llu, other record %llu, not a draw %llu, "
-            "copy slot %llu, fresh %llu, reload %llu\n", (unsigned long long)peeks, (double)got / (double)peeks,
-            (unsigned long long)why[0], (unsigned long long)why[1], (unsigned long long)why[2], (unsigned long long)why[3],
-            (unsigned long long)why[4], (unsigned long long)why[5], (unsigned long long)why[6]);
-    g_ds_batch_synced = 0;
-    return k;
-}
 /* the worker's copies of a slot's state and owner, taken from the renderer's side once a batch: only the groups whose
    generation differs, as gpu_ds_peek_draw takes them. The worker's copy got the same records as the renderer's, so a
    group with the same generation holds the same bytes. A whole copy of each slot cost about 13 us a split */
@@ -444,10 +412,11 @@ static void ds_batch_sync(u32 slot) {
 }
 /* draw_batches=2: the copies of the slots the records use, taken now on the renderer's side, before it runs the records
    after the running one (the worker runs at the same time) */
-void gpu_ds_batch_snapshot(const void* const* recs, u32 n) {
+void gpu_ds_batch_snapshot(const void* const* recs, const u8* defer, u32 n) {
     gq_keep(); /* the worker reads the records that this side runs first: the front end must not put over them */
     g_ds_batch_synced = 0;
     for (u32 i = 0; i < n; i++) {
+        if (defer && defer[i]) continue;
         DsRecord r;
         memcpy(&r, recs[i], sizeof r);
         ds_batch_sync(r.slot);
@@ -585,6 +554,77 @@ typedef struct {
     u32 op; /* RC_ */
     u32 a, b;
 } RendererCall;
+/* the records a split's worker carries besides draws (draw_batches=2): the calls of resets of the samples-passed
+   counter, and those the front ends register (gpu_ds_batch_carries: the counter's reports). The worker leaves each to
+   the splice, where the renderer thread runs it in its place among the worker's commands (vk_rec_defer), after its
+   own half: the counter's state stays the renderer thread's, in the order of the records. One game resets the counter
+   before almost every draw of its town and reports after it, and a batch that stopped at them took 1.3 draws */
+static GqFn g_ds_carry[4];
+static u32 g_ds_ncarry;
+void gpu_ds_batch_carries(GqFn fn) {
+    for (u32 i = 0; i < g_ds_ncarry; i++)
+        if (g_ds_carry[i] == fn) return;
+    if (g_ds_ncarry < sizeof g_ds_carry / sizeof *g_ds_carry) g_ds_carry[g_ds_ncarry++] = fn;
+}
+static void call_run(const void* arg, u64 bytes);
+/* the last batch's records' functions and sizes, for gpu_ds_batch_run */
+static struct {
+    const void* rec[64];
+    GqFn fn[64];
+    u64 size[64];
+    u32 n;
+} g_ds_last;
+u32 gpu_ds_batch(const void** recs, u8* defer, u32 max) {
+    GqFn fns[2 + sizeof g_ds_carry / sizeof *g_ds_carry] = {ds_run, call_run};
+    const u32 nfns = defer ? 2 + g_ds_ncarry : 1;
+    for (u32 i = 0; i < g_ds_ncarry; i++) fns[2 + i] = g_ds_carry[i];
+    if (max > 64) max = 64;
+    const u32 n = gq_peek_records(fns, nfns, g_ds_last.fn, recs, g_ds_last.size, max);
+    u32 k = 0;
+    for (; k < n; k++) {
+        g_ds_last.rec[k] = recs[k];
+        if (g_ds_last.fn[k] == call_run) { /* a reset of the counter alone */
+            RendererCall c;
+            if (g_ds_last.size[k] < sizeof c) break;
+            memcpy(&c, recs[k], sizeof c);
+            if (c.op != RC_SAMPLES_RESET) break;
+            defer[k] = 1;
+            continue;
+        }
+        if (g_ds_last.fn[k] != ds_run) {
+            defer[k] = 1;
+            continue;
+        }
+        DsRecord r;
+        if (g_ds_last.size[k] < sizeof r) break;
+        memcpy(&r, recs[k], sizeof r);
+        if (r.kind != DR_DRAW || r.slot >= DS_COPIES || r.fresh || r.reload) break;
+        if (defer) defer[k] = 0;
+    }
+    g_ds_last.n = k;
+    g_ds_batch_synced = 0;
+    return k;
+}
+/* a record of the last batch that the worker left to the splice, run there on the renderer thread */
+void gpu_ds_batch_run(const void* rec) {
+    for (u32 i = 0; i < g_ds_last.n; i++)
+        if (g_ds_last.rec[i] == rec) {
+            g_ds_last.fn[i](rec, g_ds_last.size[i]);
+            return;
+        }
+    fatal("gpu: a split's deferred record is not in its batch\n");
+}
+/* a record the renderer thread meets at the place of a worker's batch: the join at its first, and each of the batch
+   then skipped (gpu_ds_batch_done), as the worker drew it or left it to the splice */
+int gpu_ds_batch_skip(const void* arg) {
+    if (arg == g_ds_join_at) {
+        g_ds_join_at = NULL;
+        g_ds_join_fn();
+    }
+    if (!g_ds_skip) return 0;
+    g_ds_skip--;
+    return 1;
+}
 /* the front end's syncpoint increments queued for the renderer's side, and those of them it took (gpu_release_value):
    nvdrv's 128 syncpoints. queued is the front end's alone */
 #define RC_SYNCPTS 128
@@ -592,6 +632,7 @@ static _Atomic u32 g_incr_queued[RC_SYNCPTS], g_incr_taken[RC_SYNCPTS];
 static void call_run(const void* arg, u64 bytes) {
     RendererCall c;
     (void)bytes;
+    if (gpu_ds_batch_skip(arg)) return; /* a worker's batch left it to its splice */
     memcpy(&c, arg, sizeof c);
     switch (c.op) {
         case RC_BARRIER: g_renderer->method_barrier((int)c.a); break;
