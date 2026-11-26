@@ -11,8 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define QUADS 4096 /* a panel's: its letters and fills, a long message's rows on a wide window */
-#define PADS  8
+#define PADS 8
 
 static void say(const SnxErrorSdlHooks* hooks, const char* line) {
     if (hooks && hooks->say)
@@ -30,8 +29,7 @@ static void said_set(SnxErrorPanel* p, const SnxErrorSdlHooks* hooks, const char
     free(shown);
 }
 
-/* the actions that keep the panel: done here, said on it */
-static void act(SnxErrorPanel* p, const SnxError* e, int action, const SnxErrorSdlHooks* hooks) {
+int snx_error_sdl_act(SnxErrorPanel* p, const SnxError* e, int action, const SnxErrorSdlHooks* hooks) {
     char said[1400], url[3608], made[1300];
     if (action == SNX_ACTION_SHARE_LOG) {
         char* folder = snx_dirname(e->log);
@@ -60,8 +58,9 @@ static void act(SnxErrorPanel* p, const SnxError* e, int action, const SnxErrorS
         else
             snprintf(said, sizeof said, "Opened %s.", path);
     } else
-        return;
+        return 0;
     said_set(p, hooks, said);
+    return 1;
 }
 
 /* the renderer: software where the video driver gives a window pixels of its own, else SDL's choice */
@@ -114,7 +113,7 @@ static void pad_names(SnxErrorPanel* p, SDL_Gamepad* pad) {
 }
 
 int snx_error_sdl_run(SDL_Window* window, SnxError* e, const SnxErrorSdlHooks* hooks, char* why, size_t why_size) {
-    SnxUiQuad* quads = malloc(QUADS * sizeof *quads);
+    SnxUiQuad* quads = malloc(SNX_ERROR_PANEL_QUADS * sizeof *quads);
     SnxUiRects rects = {0};
     SnxErrorPanel panel = {.back_key = hooks && hooks->back_key};
     SDL_Gamepad* pads[PADS] = {0};
@@ -139,7 +138,7 @@ int snx_error_sdl_run(SDL_Window* window, SnxError* e, const SnxErrorSdlHooks* h
     say(hooks, line);
     while (action == SNX_ACTION_NONE) {
         SDL_Event ev;
-        SnxUiList l = {quads, 0, QUADS};
+        SnxUiList l = {quads, 0, SNX_ERROR_PANEL_QUADS};
         int w = 0, h = 0, k;
         float x, y;
         SDL_GetCurrentRenderOutputSize(r, &w, &h);
@@ -222,11 +221,7 @@ int snx_error_sdl_run(SDL_Window* window, SnxError* e, const SnxErrorSdlHooks* h
                     break;
                 default: break;
             }
-            if (action == SNX_ACTION_SHARE_LOG || action == SNX_ACTION_COPY_TEXT || action == SNX_ACTION_OPEN_LOG ||
-                action == SNX_ACTION_OPEN_FOLDER) {
-                act(&panel, e, action, hooks);
-                action = SNX_ACTION_NONE;
-            }
+            if (snx_error_sdl_act(&panel, e, action, hooks)) action = SNX_ACTION_NONE;
         }
         if (action != SNX_ACTION_NONE) break;
         snx_error_panel_draw(&panel, e, &l, w, h);

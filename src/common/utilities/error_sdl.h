@@ -19,6 +19,9 @@ typedef struct {
     int back_key; /* the system has a Back key (Android's), which the foot names */
 } SnxErrorSdlHooks;
 
+/* action done here when it is one that keeps the panel (Share Log, Copy Text, Open Log, Open Folder), what it did said
+   on p and through hooks: 1, else 0 for the caller's */
+int snx_error_sdl_act(SnxErrorPanel* p, const SnxError* e, int action, const SnxErrorSdlHooks* hooks);
 /* The panel in window until an action ends it: CLOSE, TRY_AGAIN or one of the launcher's (Open Settings, GPU Drivers,
    Updates and DLCs, Recompile, Locate..., Install Keys). The window's close is CLOSE. On the thread SDL's video started
    on, with SDL_INIT_GAMEPAD for the pads. Its renderer: software where the video driver gives a window its own pixels

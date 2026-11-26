@@ -919,13 +919,41 @@ static void run_error_lines(App* app) {
     app->run_log = path;
     assert(!snx_write_file(path, shown, sizeof shown - 1));
     app->finished = app->abnormal_exit = true;
-    assert(run_error_after(app) && !app->finished);
+    assert(run_error_after(app, path) && !app->finished);
     at = app->group_first[app->group] + app->editor.row;
     assert(app->form == GUI_FORM_GROUP && !strcmp(screen_settings(app)->values[at].key, "hooks"));
     leave_editor(app);
-    assert(!snx_write_file(path, "error: crash shown=0\n", 21));
+    /* one its game could not show: the box shows it over the run's screen, its stop's message from the log (its time
+       stamps skipped), Open Settings in focus; no press counts in its first half second */
+    {
+        static const char unshown[] =
+            "[   2.80] FATAL: the setting hooks is off\n[   2.81] error: setting shown=0 key=hooks\n";
+        Uint64 clock_was = app->clock;
+        assert(!snx_write_file(path, unshown, sizeof unshown - 1));
+        app->clock = 20000;
+        app->finished = true;
+        assert(!run_error_after(app, path) && app->finished && app->confirm.shown && app->box_panel_on);
+        assert(app->box_error.kind == SNX_ERROR_SETTING && !strcmp(app->box_error.key, "hooks") &&
+               !strcmp(app->box_error.message, "the setting hooks is off") && app->box_error.from_launcher);
+        render(app);
+        assert(app->box_panel.items >= 3 && app->box_panel.action[0] == SNX_ACTION_OPEN_SETTINGS &&
+               app->box_panel.action[app->box_panel.items - 1] == SNX_ACTION_CLOSE);
+        key(app, SDLK_RETURN); /* in the wait */
+        assert(app->confirm.shown && app->finished);
+        app->clock += SNX_ERROR_PANEL_WAIT_MS;
+        key(app, SDLK_X); /* no key of the panel's */
+        assert(app->confirm.shown);
+        key(app, SDLK_RETURN);
+        assert(!app->confirm.shown && !app->finished && app->form == GUI_FORM_GROUP);
+        at = app->group_first[app->group] + app->editor.row;
+        assert(!strcmp(screen_settings(app)->values[at].key, "hooks"));
+        leave_editor(app);
+        app->clock = clock_was;
+    }
+    /* a line of no error: the run's screen as it was */
+    assert(!snx_write_file(path, "the fake driver ran\n", 20));
     app->finished = true;
-    assert(!run_error_after(app) && app->finished);
+    assert(!run_error_after(app, path) && app->finished && !app->confirm.shown);
     leave_run(app);
     remove(path);
     free(path);

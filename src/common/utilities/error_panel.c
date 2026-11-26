@@ -186,7 +186,7 @@ static int take(SnxErrorPanel* p, const SnxError* e, int i) {
 
 int snx_error_panel_key(SnxErrorPanel* p, const SnxError* e, int key, int input, u64 now_ms) {
     int items[SNX_ERROR_PANEL_ITEMS], n = page_items(p, e, items);
-    if (now_ms < p->shown_ms + SNX_ERROR_PANEL_WAIT_MS) return SNX_ACTION_NONE;
+    if (!p->at_once && now_ms < p->shown_ms + SNX_ERROR_PANEL_WAIT_MS) return SNX_ACTION_NONE;
     p->input = input;
     switch (key) {
         case SNX_ERROR_KEY_UP: p->focus = (p->focus + n - 1) % n; return SNX_ACTION_NONE;
@@ -217,7 +217,7 @@ int snx_error_panel_press(SnxErrorPanel* p, const SnxError* e, float x, float y,
     int at = hit(p, x, y), was = p->pressed;
     if (touch) p->input = SNX_ERROR_INPUT_TOUCH;
     if (down) {
-        p->pressed = now_ms < p->shown_ms + SNX_ERROR_PANEL_WAIT_MS ? -1 : at;
+        p->pressed = !p->at_once && now_ms < p->shown_ms + SNX_ERROR_PANEL_WAIT_MS ? -1 : at;
         return SNX_ACTION_NONE;
     }
     p->pressed = -1;
