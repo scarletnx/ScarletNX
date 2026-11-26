@@ -366,9 +366,8 @@ static inline void sgx_cold_vwarm(SgXAsm* a, const SgXIns* i, int out, size_t ba
     sgx_vpool(a, &sgx_v_ptest, s[kind ? 1 : 0], mlo, mhi);
     to_restore[nrestore++] = sgx_cold_jcc(c, 0x85);
     if (nfz) { /* under FZ an argument's denormal lane (x64_vec.c's fdenormal) is flushed: the call's */
-        size_t no_fz;
         sgx_cold_test_state(c, i->disp, 1u << 24);
-        no_fz = sgx_cold_jcc(c, 0x84);
+        size_t no_fz = sgx_cold_jcc(c, 0x84);
         for (k = 1; k <= (int)nfz; ++k) {
             sgx_cold_varg(a, s[1], i->in[k]);
             sgx_vrr(a, add, s[1], s[1]);

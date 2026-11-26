@@ -482,13 +482,10 @@ static int fbinary(SgCtx* g, unsigned op, unsigned sz, int n, int a, int b) {
 }
 /* d + n * m rounded once (sub: d - n * m, n negated first): VFMADD231 where the host has FMA */
 static int ffma(SgCtx* g, unsigned sz, int n_, int d, int a, int b, int sub) {
-    int r;
     if (sub) a = vxor(g, a, fsplat(g, sz, 1ull << (sz ? 63 : 31)));
     if (!(X->features & SGX_F_FMA)) return fcold(g, sg_bool(g, 1), vzero(g), d, a, b, FDESC(1, sz, n_));
-    {
-        int in[4] = {d, a, b, 0};
-        r = sgx_vins(X, sz ? &sgx_v_vfmadd231pd : &sgx_v_vfmadd231ps, 0, 1, in, 0, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
-    }
+    int in[4] = {d, a, b, 0};
+    int r = sgx_vins(X, sz ? &sgx_v_vfmadd231pd : &sgx_v_vfmadd231ps, 0, 1, in, 0, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
     /* exact zeros where a or b (arguments 2 and 3) is one; d, a and b FZ may flush */
     return fwarm(g, r, fnot_roomy(g, sz, r), sz, n_, d, a, b, FDESC(1, sz, n_), 2 | 4 | 3u << 3);
 }

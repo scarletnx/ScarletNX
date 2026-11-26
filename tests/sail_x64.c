@@ -1005,12 +1005,11 @@ static int run(int argc, char** argv) {
 }
 int main(int argc, char** argv) {
     const char* cold = snx_x64_cold_pool();
-    int rc;
     if (cold) {
         fprintf(stderr, "FAIL: the cold code's pool operand: %s\n", cold);
         return 1;
     }
-    rc = run(argc, argv);
+    int rc = run(argc, argv);
     free(g_test.rows);
     free(g_test.offset);
     free(g_test.sequences);
