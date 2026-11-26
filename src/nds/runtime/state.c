@@ -27,8 +27,8 @@
 #include "common/utilities/build_info.h"
 #include "common/utilities/common.h"
 #include "common/utilities/state_header.h"
-#include "nx/runtime/state_file.h"
-#include "nx/runtime/state_io.h"
+#include "common/utilities/state_file.h"
+#include "common/utilities/state_io.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

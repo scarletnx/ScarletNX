@@ -180,10 +180,9 @@ if(TARGET snx_libdeflate)
     target_link_libraries(snx_zip PUBLIC scarletnx-common PRIVATE snx_libdeflate)
     target_compile_options(snx_zip PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 endif()
-# A save state's file (state_file.h), which the GBA's and the DS's states are, as the Switch's: the Switch's runtime
-# compiles its own, with its profiler's zones
+# A save state's file (state_file.h), every console's: the Switch's runtime plots its counts in its profiler
 if(TARGET snx_zstd)
-    add_library(snx_state_file STATIC "${PROJECT_SOURCE_DIR}/src/nx/runtime/state_file.c")
+    add_library(snx_state_file STATIC "${PROJECT_SOURCE_DIR}/src/common/utilities/state_file.c")
     target_link_libraries(snx_state_file PUBLIC scarletnx-common PRIVATE snx_zstd)
     target_compile_options(snx_state_file PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 endif()

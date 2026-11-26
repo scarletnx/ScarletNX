@@ -27,7 +27,7 @@
 #include "nx/gpu/video/nvdec_regs.h"
 #include "nx/gpu/video/vic_regs.h"
 #include "nx/runtime/platform/tracy.h"
-#include "nx/runtime/state_io.h"
+#include "common/utilities/state_io.h"
 #include <stdatomic.h>
 
 /* NvResult, the codes these ioctls answer with */

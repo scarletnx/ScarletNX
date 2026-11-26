@@ -11,7 +11,7 @@
    GpuDmaOp (gpu.h) and done on the GPU by the renderer's dma_copy (vk/dma.c), which covers Eden's CopyPitchToPitch,
    CopyBlockLinearToPitch and CopyPitchToBlockLinear by each side's layout. Also the copies of linear sources read at
    submission (dma_snap_*), which gpu.c's submission scan makes. Register names are maxwell_dma_regs.h's */
-#include "nx/runtime/state_io.h"
+#include "common/utilities/state_io.h"
 #include "nx/gpu/maxwell/engines_int.h"
 #include "nx/gpu/gpu_queue.h"
 #include "nx/gpu/maxwell/maxwell_dma_regs.h"

@@ -5,7 +5,7 @@
    its pixels back. A layer's stencil is 9 bytes: each layer of each aspect is copied at an offset that is a multiple
    of 4, as a depth or stencil copy must be (the validation layer says so where it runs), and the state holds the
    layers' bytes alone, one after another */
-#include "nx/runtime/state_io.h"
+#include "common/utilities/state_io.h"
 typedef struct {
     u8* p;
     u64 n, cap, at;

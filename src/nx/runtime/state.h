@@ -4,9 +4,11 @@
    going on where they were. The frontend's thread calls both */
 #ifndef SNX_STATE_H
 #define SNX_STATE_H
-#include "nx/runtime/state_file.h"
+#include "common/utilities/state_file.h"
 #include <stddef.h>
 
+/* the state file's counts as the profiler's plots and its workers named for it (state_file.h), once at the start */
+void state_profiler(void);
 /* the game saved to path: 0, or -1 with the reason in why */
 int state_save(const char* path, char* why, size_t whysize);
 /* the state at path put in place of the running game: 0, or -1 with the reason in why when it was refused before

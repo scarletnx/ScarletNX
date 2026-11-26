@@ -84,6 +84,8 @@ if(SNX_TEST_SANITIZERS)
         snx_notice
         # the on-screen controls, their consoles' tables and their side of an SDL window
         snx_vpad snx_vpad_consoles snx_vpad_sdl
+        # the save states' file, every console's
+        snx_state_file
         # the shader corpus translator, which shaderc_sm86 runs
         snx-shaderc
         # GLSL ES into SPIR-V
@@ -5338,7 +5340,7 @@ if(UNIX)
         add_test(NAME hle_flat COMMAND snx-test-hle-flat)
     if(NOT WIN32)
         # a save state's file: sections read back, damage refused, a failed save leaves the old state (state_file.c)
-        add_executable(snx-test-state-file state_file.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/state_file.c")
+        add_executable(snx-test-state-file state_file.c "${PROJECT_SOURCE_DIR}/src/common/utilities/state_file.c")
         snx_test_target(snx-test-state-file gnu23)
         target_link_libraries(snx-test-state-file PRIVATE snx_zstd scarletnx-common)
         add_test(NAME state_file COMMAND snx-test-state-file "${CMAKE_CURRENT_BINARY_DIR}")

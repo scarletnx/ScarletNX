@@ -279,6 +279,9 @@ SnxU64 snx_file_time(const char* path);
 int snx_set_file_time(const char* path, SnxU64 seconds);
 int snx_make_executable(const char* path);
 unsigned snx_cpu_count(void);
+/* how many host CPUs the process may run on, for workers that run on any of them: plat_cpus's where it lists them
+   (desktop Linux, whose affinity a taskset narrows), else the system's every one (snx_cpu_count). At least 1 */
+int plat_cpu_count(void);
 /* the threads an AOT pass (a game's recompile) is given when its count is left open: the physical cores where the
    system says them, else the processors, capped at 75% of that (a reserve of one whole core, or a quarter), so a
    part of the computer stays free; at least 1, never more than snx_cpu_count() */

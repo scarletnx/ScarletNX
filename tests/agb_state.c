@@ -23,7 +23,7 @@
 #include "common/utilities/state_header.h"
 #include "common/utilities/hotkeys.h"
 #include "common/utilities/vpad_sdl.h"
-#include "nx/runtime/state_file.h"
+#include "common/utilities/state_file.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

@@ -32,7 +32,7 @@
 #include "nx/gpu/texture/blocklinear.h"
 #include "nx/memory/own.h"
 #include "nx/runtime/platform/tracy.h"
-#include "nx/runtime/state_io.h"
+#include "common/utilities/state_io.h"
 
 /* The table of surfaces, one row each, as columns indexed by row (a struct of arrays). Row 0 is none: its columns stay
    zero, so a surface without a row (a copy, the CPU frame) is in no list. A surface has a row from the time it enters

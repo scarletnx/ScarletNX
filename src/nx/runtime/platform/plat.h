@@ -26,12 +26,6 @@
 #endif
 
 /* ---- threads: plat_thread and plat_cpus are common/platform/thread.h's */
-/* how many host CPUs the process may run on, for workers that run on any of them: plat_cpus's where it lists them
-   (desktop Linux, whose affinity a taskset narrows), else the system's every one (snx_cpu_count). At least 1 */
-static inline int plat_cpu_count(void) {
-    int ids[1024], n = plat_cpus(ids, 1024);
-    return n > 0 ? n : (int)snx_cpu_count();
-}
 /* the host for the log's header, so a report needn't describe it: "<OS and version>, <CPU>, <n> threads, <n> GB RAM",
    the CPU left out where the host doesn't name it. Nothing that names the machine or its user */
 void plat_system_info(char* out, size_t cap);

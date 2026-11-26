@@ -41,7 +41,7 @@
 #include "nx/runtime/platform/wait_screen.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/state_fns.h"
-#include "nx/runtime/state_io.h"
+#include "common/utilities/state_io.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1218,6 +1218,13 @@ static void video_install(VideoStaged* v) {
     host1x_iova_install(v->iova);
     for (i = 0; i < NV_FDS; i++) g_hle.nvdrv.nvf[i].h1x = v->ch[i];
     memset(v, 0, sizeof *v);
+}
+/* the state file's counts as the profiler's plots, and its workers named for it */
+static void state_plot(const char* name, double value) { SNX_PLOT(name, value); }
+static void state_thread(const char* name) { SNX_THREAD_NAME(name); }
+void state_profiler(void) {
+    static const SnxStateFileProfiler profiler = {state_plot, state_thread};
+    snx_state_file_profiler(&profiler);
 }
 int state_save(const char* path, char* why, size_t whysize) {
     SnxStateHeader h;

@@ -7,6 +7,15 @@
 #include "common/cpu/aarch64/cpu.h"
 #include "common/utilities/state_header.h" /* the header and the thumbnail, which the launcher reads too */
 
+/* the profiler's (the Switch runtime's Tracy sets them: nx/runtime/state.c): plot, where the file's counts go, what a
+   write copied and wrote and what a read copied, at their ends; name, a compressing worker's thread named for it as
+   it starts. NULL, the default, for none: the worker then has the system's name alone (snx_thread_name) */
+typedef struct {
+    void (*plot)(const char* name, double value);
+    void (*name)(const char* thread);
+} SnxStateFileProfiler;
+void snx_state_file_profiler(const SnxStateFileProfiler* p);
+
 typedef struct StateWriter StateWriter;
 typedef struct StateReader StateReader;
 

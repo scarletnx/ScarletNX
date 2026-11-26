@@ -9,10 +9,11 @@
      0    the header and the thumbnail (common/utilities/state_header.c)
      ...  the sections
      table_off  nsections entries: char tag[8], u64 schema, u64 offset, u64 stored size, u64 size */
-#include "nx/runtime/state_file.h"
+#include "common/utilities/state_file.h"
 #include "common/utilities/endian.h"
-#include "nx/runtime/platform/plat.h"
-#include "nx/runtime/platform/tracy.h"
+#include "common/platform/file.h"
+#include "common/platform/thread.h"
+#include "common/utilities/common.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -69,6 +70,13 @@ struct StateReader {
     ZSTD_inBuffer ib;
 };
 
+static struct {
+    SnxStateFileProfiler profiler;
+} g_state_file;
+void snx_state_file_profiler(const SnxStateFileProfiler* p) { g_state_file.profiler = *p; }
+static void plot(const char* name, double value) {
+    if (g_state_file.profiler.plot) g_state_file.profiler.plot(name, value);
+}
 static void why_set(char* why, size_t n, const char* text) {
     if (why && n) snprintf(why, n, "%s", text);
 }
@@ -80,7 +88,10 @@ static int out(StateWriter* w, const void* p, size_t n);
 static void worker(void* arg) {
     StateWriter* w = (StateWriter*)arg;
     ZSTD_CCtx* z = ZSTD_createCCtx();
-    SNX_THREAD_NAME("state compress");
+    if (g_state_file.profiler.name)
+        g_state_file.profiler.name("state compress");
+    else
+        snx_thread_name("state compress");
     if (z) {
         ZSTD_CCtx_setParameter(z, ZSTD_c_compressionLevel, LEVEL);
         ZSTD_CCtx_setParameter(z, ZSTD_c_checksumFlag, 1);
@@ -98,13 +109,7 @@ static void worker(void* arg) {
         }
         c->state = CH_BUSY;
         pm_unlock(&w->lk);
-        {
-            SNX_ZONE_CS(z_compress, "state compress", 0);
-            SNX_ZONE_VALUE(z_compress, (u64)c->in_n); /* the input bytes, outside the lock and its wait */
-            c->out_n = z ? ZSTD_compress2(z, c->out, ZSTD_compressBound(CHUNK), c->in, c->in_n) : 0;
-            SNX_ZONE_TEXT(z_compress, "%llu -> %llu bytes", (unsigned long long)c->in_n,
-                          (unsigned long long)c->out_n);
-        }
+        c->out_n = z ? ZSTD_compress2(z, c->out, ZSTD_compressBound(CHUNK), c->in, c->in_n) : 0;
         pm_lock(&w->lk);
         c->state = !z || ZSTD_isError(c->out_n) ? CH_FAILED : CH_DONE;
         pc_broadcast(&w->cv);
@@ -290,8 +295,8 @@ int sw_finish(StateWriter* w, char* why, size_t whysize) {
         why_set(why, whysize, "the file can't be moved into place");
         remove(w->part);
     }
-    SNX_PLOT("rt state write copied", (double)w->copied);
-    SNX_PLOT("rt state write file", (double)w->at);
+    plot("rt state write copied", (double)w->copied);
+    plot("rt state write file", (double)w->at);
     writer_free(w);
     return r;
 }
@@ -413,7 +418,7 @@ int sr_get(StateReader* r, void* p, u64 n) {
 u64 sr_left(const StateReader* r) { return r->cur < 0 ? 0 : r->out_left; }
 void sr_close(StateReader* r) {
     if (!r) return;
-    SNX_PLOT("rt state read copied", (double)r->copied);
+    plot("rt state read copied", (double)r->copied);
     if (r->f) fclose(r->f);
     ZSTD_freeDCtx(r->z);
     free(r->in);
