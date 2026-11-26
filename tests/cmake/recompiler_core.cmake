@@ -57,3 +57,17 @@ foreach(fallback IN LISTS snx_fallback_tests)
     endif()
     add_test(NAME recompiler_fallback_${fallback} COMMAND ${target} WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
 endforeach()
+
+# the recompiler's library (library.c) with no LLVM: the same sources and fallback as recompiler_fallback_none's, the
+# AArch32 executor beside them (cpu/arm/exec.c), and the program that recompiles and runs through it
+set(target snx-test-recompiler-library-none)
+add_executable(${target} "${PROJECT_SOURCE_DIR}/tests/recompiler_library_none.c"
+                         "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/library.c" "${jit}/jit_service.c"
+                         "${jit}/jit_cache.c" "${jit}/jit_cache_key.c"
+                         "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/exec.c")
+snx_test_target(${target} gnu23)
+target_link_libraries(${target} PRIVATE snx_fallback_none snx_arm_rt Threads::Threads ${CMAKE_DL_LIBS})
+if(NOT WIN32)
+    target_link_libraries(${target} PRIVATE m)
+endif()
+add_test(NAME recompiler_library_none COMMAND ${target})
