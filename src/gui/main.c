@@ -1281,6 +1281,7 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 /* a failure of the system's (a file not written, a picker that did not open): in a box over the screen, whole, until
    OK, once in the session; the tips or the note keep it after. Over a run or another question, those alone. In the
    launcher's log once in the session either way */
+static void error_box_open(App* app, const SnxError* e, bool wait);
 static void say_failure(App* app, const char* text) {
     uint32_t hash = snx_fnv1a32(SNX_FNV32_BASIS, text, strlen(text));
     int i;
@@ -1295,7 +1296,13 @@ static void say_failure(App* app, const char* text) {
         if (app->errors_said[i] == hash) return;
     app->errors_said[app->errors_count++ % (int)SDL_arraysize(app->errors_said)] = hash;
     snprintf(app->error_line, sizeof app->error_line, "%s", text);
-    gui_confirm_open(&app->confirm, GUI_ASK_ERROR, false);
+    {
+        SnxError box = {.notice = 1, .from_launcher = 1};
+        /* a line longer than the panel holds ends in "...": the launcher's log has it whole (gui_log above) */
+        snprintf(box.message, sizeof box.message, "%s", text);
+        if (strlen(text) >= sizeof box.message) memcpy(box.message + sizeof box.message - 4, "...", 4);
+        error_box_open(app, &box, false);
+    }
 }
 static SDL_Color rgb(GuiRgb c) {
     SDL_Color out = {c.r, c.g, c.b, 255};
@@ -1358,6 +1365,7 @@ static void error_box_done(App* app, int action) {
     }
     if (snx_error_sdl_act(&app->box_panel, &app->box_error, action, &hooks)) return;
     app->confirm.shown = app->box_panel_on = false;
+    if (app->box_error.notice) return;
     gui_log("error: action %s", snx_error_action_name(action));
     if (app->finished) leave_run(app);
     if (action != SNX_ACTION_CLOSE) error_action(app, action, app->box_error.key, app->box_error.program);

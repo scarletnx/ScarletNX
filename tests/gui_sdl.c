@@ -3,6 +3,7 @@
 /* Exercise the actual renderer and SDL event handlers without production test flags. */
 #define SNX_GUI_NO_MAIN
 #include "gui/main.c"
+#include "common/utilities/ui_colors.h"
 #define SNX_SCREEN_TEST "gui_sdl.c"
 #include "gui_screen.h"
 /* whether More's box (screen_more, the foot's own past its first three) holds the sentence label, its key key */
@@ -955,6 +956,16 @@ static void run_error_lines(App* app) {
     app->finished = true;
     assert(!run_error_after(app, path) && app->finished && !app->confirm.shown);
     leave_run(app);
+    /* the launcher's own failure on the same panel: its line whole, OK alone, Enter at once; Run Amberlith's counts
+       keep the theme's box */
+    say_failure(app, "The folder /x cannot be read: Permission denied");
+    assert(app->confirm.shown && app->confirm.ask == GUI_ASK_ERROR && app->box_panel_on && app->box_error.notice);
+    render(app);
+    assert(app->box_panel.items == 1 && app->box_panel.action[0] == SNX_ACTION_CLOSE);
+    key(app, SDLK_DOWN);
+    assert(app->confirm.shown);
+    key(app, SDLK_RETURN);
+    assert(!app->confirm.shown && !app->box_panel_on);
     remove(path);
     free(path);
     app->run_log = was;
@@ -7996,7 +8007,14 @@ int main(int argc, char** argv) {
         said = whole;
         assert(app.confirm.shown && app.confirm.ask == GUI_ASK_ERROR && !strcmp(app.error_line, said));
         render(&app);
-        shows(&app, said, rgb(app.theme.warning));
+        { /* on the error's panel: in its ink as its quads keep it (ui_rgba), at its scale (an item's row is 16 of its
+             pixels) */
+            int s = (int)app.box_panel.item[0].h / 16;
+            u32 kept = ui_rgba(UI_INK);
+            SDL_Color ink = {(Uint8)kept, (Uint8)(kept >> 8), (Uint8)(kept >> 16), 255};
+            assert(s > 0 && s % app.scale == 0);
+            shows_big(&app, said, ink, s / app.scale);
+        }
         free(app.data_dir), free(app.games_dir), free(app.themes_dirs[0]), free(app.work_dir), free(app.keys_path);
         free(app.home_dir);
         app.data_dir = data, app.games_dir = games, app.themes_dirs[0] = themes, app.work_dir = work;
@@ -8005,11 +8023,9 @@ int main(int argc, char** argv) {
         free(blocker);
         free(said);
     }
-    shows(&app, "- OK", yellow);
-    {
-        GuiChoices c;
-        assert(ask_place(&app, &c) == 1 && c.count == 1); /* OK alone */
-    }
+    /* OK alone, the panel's one item */
+    assert(app.box_panel.items == 1 && app.box_panel.action[0] == SNX_ACTION_CLOSE &&
+           !strcmp(snx_error_action_label(app.box_panel.action[0], &app.box_error), "OK"));
     key(&app, SDLK_DOWN); /* its one choice: nothing to move to, nothing closes */
     assert(app.confirm.shown && !app.confirm.selected);
     key(&app, SDLK_RETURN);

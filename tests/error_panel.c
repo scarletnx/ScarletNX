@@ -197,6 +197,22 @@ int main(void) {
         assert(snx_error_panel_press(&p, &e, 1, 1, 1, 0, 1800) == SNX_ACTION_NONE &&
                snx_error_panel_press(&p, &e, 1, 1, 0, 0, 1850) == SNX_ACTION_NONE);
     }
+    /* a notice (the launcher's own failure): its message whole, no game's name, OK alone and the key that does it; at
+       once when it follows no game's press */
+    {
+        SnxError n = {.notice = 1, .from_launcher = 1, .message = "Could not make /x/dumps: Permission denied"};
+        float s = 16.0f * (float)snx_menu_scale(1280, 720, 100);
+        p = (SnxErrorPanel){.percent = 100};
+        snx_error_panel_start(&p, 1000);
+        p.at_once = 1;
+        l = draw(&p, &n, 1280, 720);
+        assert(p.items == 1 && p.action[0] == SNX_ACTION_CLOSE &&
+               !strcmp(snx_error_action_label(p.action[0], &n), "OK"));
+        assert(says(&l, p.box.y, "SCARLETNX / ERROR") && says(&l, p.box.y + 2 * s, "Could not make /x/dumps"));
+        assert(says(&l, foot_y(&p, 1280, 720), "Enter: do Esc: close") && !says(&l, foot_y(&p, 1280, 720), "move"));
+        assert(snx_error_panel_key(&p, &n, SNX_ERROR_KEY_DOWN, SNX_ERROR_INPUT_KEYS, 1001) == SNX_ACTION_NONE);
+        assert(snx_error_panel_key(&p, &n, SNX_ERROR_KEY_DO, SNX_ERROR_INPUT_KEYS, 1001) == SNX_ACTION_CLOSE);
+    }
     puts("error_panel: ok");
     return 0;
 }

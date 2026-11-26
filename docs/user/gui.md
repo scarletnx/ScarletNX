@@ -483,7 +483,9 @@ two; left out, none), `probe_mode` (Amberlith Mode's `quick`, the default, or `f
   ([When a game stops](usage.md#when-a-game-stops)) is not said again: its run's screen leaves, and the action taken on
   the panel is done here (Settings at the setting's row, GPU Drivers, Install Keys, the game again, its box for Updates
   and DLCs, Recompile and Locate...); the run's output has its `error: ` lines. One the game could not show, the
-  launcher shows on the same panel over the run's screen, its message from the game's log. A queued recompile that
+  launcher shows on the same panel over the run's screen, its message from the game's log. The launcher's own
+  failures (a folder it cannot make, keys it cannot read, a driver it cannot install) show on that panel too, the line
+  whole and OK alone; Run Amberlith's counts keep the theme's box. A queued recompile that
   fails says the driver's reason after its status (`Compile failed (status 1). ROM header starts with ...`). The start also gives the data folder's disk, `disk: 51200 MiB free of 953344 MiB` (on iOS the
   banner's, [macOS and iOS](../hosts/apple.md)). Debug's Log level at 2 adds a line at each start and end of a run and of a recompile,
   with its status, its time and the disk then (`run: ended, status 7, after 12.3 s; disk: ...`); and on Android and
