@@ -258,3 +258,10 @@ int main(void) {
     puts("VERTEX_ARRAY_INSTANCE_FIRST draws its range; each SUBSEQUENT of it is one more instance");
     return 0;
 }
+
+/* the split run's calls (draw_batches=2, render.c and device.c): this test runs no split */
+void gpu_ds_batch_carries(void (*fn)(const void* arg, u64 bytes)) { (void)fn; }
+int gpu_ds_batch_skip(const void* rec) {
+    (void)rec;
+    return 0;
+}

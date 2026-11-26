@@ -514,3 +514,14 @@ void vk_shared_note(u32 which) { (void)which; }
 void vk_rec_list_flush(void) {}
 /* the draw slot of this thread (render.c): this test sets up no draws on a worker */
 u32 vk_render_slot(void) { return 0; }
+
+/* the split run's calls (draw_batches=2, render.c and device.c): this test runs no split */
+int gpu_spec(void) { return 0; }
+void gpu_spec_fail(const char* why) { (void)why; }
+int vk_rec_listing(void) { return 0; }
+int vk_rec_list_names_cb(VkCommandBuffer cb) {
+    (void)cb;
+    return 0;
+}
+void vk_share_lock(void) {}
+void vk_share_unlock(void) {}

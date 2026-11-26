@@ -390,3 +390,6 @@ int main(void) {
     puts("vk_pagespace: ok");
     return 0;
 }
+
+/* the split run's calls (draw_batches=2, render.c and device.c): this test runs no split */
+void vk_shared_note(u32 which) { (void)which; }

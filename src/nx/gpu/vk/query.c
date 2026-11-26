@@ -35,6 +35,7 @@
 
    Everything here runs with vk_lock held. */
 #include <stdlib.h>
+#include <execinfo.h> /* TEMPDBG */
 #include <string.h>
 #include <stdatomic.h>
 #include "nx/gpu/gpu.h"
@@ -226,6 +227,16 @@ void vk_query_pass_end(VkCommandBuffer cb) {
 }
 void vk_query_flush(VkCommandBuffer cb) {
     if (g_q.copied == g_q.next) return;
+    if (vk_rec_ring_pass_open() && !vk_rec_listing()) { /* TEMPDBG */
+        static int told;
+        if (told++ < 2) {
+            void* bt[40];
+            int n = backtrace(bt, 40);
+            LOG("TEMPDBG query flush in an open pass (splicing %d, slot %u, listing %d):\n", vk_rec_splicing(), vk_render_slot(), vk_rec_listing());
+            char** sym = backtrace_symbols(bt, n);
+            for (int i = 0; sym && i < n; i++) LOG("TEMPDBG   %s\n", sym[i]);
+        }
+    }
     /* the segment results a report needs are read back here; the value is how many segments this submit copies */
     SNX_ZONE_TV(z_qcopy, "vk pres query copy", g_q.next - g_q.copied, "segments %llu..%llu read back for reports",
                 (unsigned long long)g_q.copied, (unsigned long long)g_q.next);
@@ -257,6 +268,9 @@ void vk_query_flush(VkCommandBuffer cb) {
    next draw no query reset to begin, and its counter's reports made up */
 static void copy_if_full(void) {
     if (g_q.next - g_q.copied < QN / 2) return;
+    /* a split's report or reset run at its splice (render.c): the worker's commands around it may be in a pass that
+       this thread's state doesn't know, which no copy can go in. The submit's copies take them, as below */
+    if (vk_rec_splicing()) return;
     /* Rare: half the segment ring is full, so the copies go out now and the rendering pass ends here. */
     SNX_ZONE_T(z_qfull, "vk pres query ring half full", "copy %u of %u segments now", QN / 2, QN);
     vk_render_end();

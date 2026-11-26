@@ -102,3 +102,10 @@ int main(void) {
     puts("DRAW_TEXTURE reaches the renderer once, on its last word, with all its words; a lower-left one from its top");
     return 0;
 }
+
+/* the split run's calls (draw_batches=2, render.c and device.c): this test runs no split */
+void gpu_ds_batch_carries(void (*fn)(const void* arg, u64 bytes)) { (void)fn; }
+int gpu_ds_batch_skip(const void* rec) {
+    (void)rec;
+    return 0;
+}
