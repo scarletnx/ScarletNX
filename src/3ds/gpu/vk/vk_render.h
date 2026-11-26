@@ -98,6 +98,20 @@ void snx_ctr_vk_pipeline_cache_open(const char* directory);
 /* The cache written when a pipeline went into it since: at_exit always, else only after a quiet time with no
    pipeline made, queued or being made, so the write never holds one up. Asked at each frame shown, and at the end */
 void snx_ctr_vk_pipeline_cache_save(bool at_exit);
+/* prepare_shaders: the shaders and pipelines the game made, in <directory>/shader_cache/vk_prepared.<driver>.bin,
+   read here before the first draw: each shader made again from the program it was made from, and each pipeline
+   made before the first draw (2) or on the pipeline workers while the game runs (1), a draw that needs one meanwhile
+   making its own. Every shader and pipeline made after it goes into it, packed with compress_prepared_shaders.
+   prepare_shaders=0, or shader objects, neither read nor write it. Its key is the build's: another build's file
+   starts over */
+void snx_ctr_vk_prepared_open(const char* directory);
+/* what a run read from the file and made of it */
+typedef struct {
+    uint32_t shaders, pipelines; /* read */
+    uint32_t made;               /* of the pipelines read, made and kept */
+    uint32_t drawn;              /* pipelines a draw made itself, the ones the file lacked or a draw asked for first */
+} SnxCtrVkPrepared;
+SnxCtrVkPrepared snx_ctr_vk_prepared(void);
 /* async_pipelines, for a test: the workers take no job until snx_ctr_vk_pipelines_wait, so a draw finds the pipeline
    or the shader objects it asked for still to be made, however fast a worker would have made them */
 void snx_ctr_vk_pipelines_hold(void);
