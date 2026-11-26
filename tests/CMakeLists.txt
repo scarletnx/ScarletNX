@@ -4233,7 +4233,7 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
     set(snx_plain_ops_features 0x7ffff)
     set(snx_plain_fma_features 0x7ffff)
 endif()
-# LLVM alone's ends, recorded where the build has it (tests/recompiler_backends_record.py): each test whose
+# LLVM alone's ends, recorded while the build had LLVM (test-references' recompiler_backends/): each test whose
 # reference they are reads its programs' file, a hash a function (recompiler_backends.c's --frozen)
 set(snx_backends_frozen "${test-references_SOURCE_DIR}/recompiler_backends")
 add_executable(snx-test-recompiler-backends recompiler_backends.c llvm_qemu_words.c qemu_ref/qemu_ref.c

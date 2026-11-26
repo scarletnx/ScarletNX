@@ -4,15 +4,14 @@
    function at a time, through the recompiler's own interface (snx_recompiler.h): random functions of a few words and
    a RET, made from encodings of what the back ends build themselves (the SIMD&FP loads and stores in every addressing
    mode, MOVI, MVNI, ORR, BIC and FMOV of an immediate, MRS, MSR and the cache maintenance) among the scalar floating
-   point and integer words sailgen's emitters make. One program is recompiled twice, by a recompiler with the native
-   back end and one with LLVM alone; each function runs from the same random state in both, and every register, the
-   flags, FPCR, FPSR, TPIDR_EL0 and the data memory must match. The native back end must make the functions
-   (snx_recompiled_x64_functions), or the test would compare LLVM with itself. LLVM alone's ends can be kept
-   (--record) and the native back end held to them in a build with no LLVM (--frozen).
+   point and integer words sailgen's emitters make. The program is recompiled by the native back end and each function
+   run from random states; every register, the flags, FPCR, FPSR, TPIDR_EL0 and the data memory are hashed and held to
+   the hashes LLVM alone's ends had, recorded while the build had LLVM (--frozen). The native back end must make the
+   functions (snx_recompiled_x64_functions).
      snx-test-recompiler-backends [--functions N] [--states N] [--seed N] [--without MASK] [--target NAME] [--verbose]
          [--hook] [--jit] [--words HEX...] [--made] [--ops OP...] [--refused] [--coverage]
          [--qemu QEMU RUNNER DIR] [--programs] [--calls] [--calls-back] [--long N BYTES] [--cpu NAME]
-         [--record FILE | --frozen FILE] [--without-llvm]
+         [--frozen FILE] [--without-llvm]
    --without MASK: the back end goes without these features of the host, as on a host that lacks them: x86-64's
    (sailgen's SGX_F_*: FMA 0x800, AVX 0x400, F16C 0x100, BMI1, BMI2 and LZCNT 7, AES-NI 0x1000, SHA-NI 0x2000), arm64's
    (SNX_ARM64_F_*: 0x7ffff all of them). Another machine's back end has none to go without: it is skipped
@@ -37,13 +36,10 @@
    unit makes them before it (arm64 calls one of those past its entry's check, with no target given)
    --coverage: a line of each of the target's ops, how many of its words the back end makes with its own instructions
    alone, with an exact helper's call, and leaves, and the first of those, and stops there
-   --record FILE: the run as without it, and LLVM alone's ends kept in FILE (support/frozen.h): the generator's options
-   given, and a hash a function of its end states and data memory. Only where the build has LLVM, and with none of
-   --qemu, --programs, --refused and --coverage, whose reference is not LLVM's; written whatever the native back end did
-   --frozen FILE: the native back end held to FILE's hashes, its programs drawn with the generator's options of FILE's
-   args line, which those given beside it must be; where the build has LLVM, LLVM alone's ends are held to the file
-   too, so a host whose LLVM ends otherwise says so. tests/recompiler_backends_record.py records the files again
-   --without-llvm: as in a build with no LLVM: with --frozen, the native back end held to the file alone
+   --frozen FILE: the native back end held to FILE's hashes (support/frozen.h), its programs drawn with the generator's
+   options of FILE's args line, which those given beside it must be. A run of none of --frozen, --qemu, --programs,
+   --refused and --coverage has nothing to compare with, and fails saying so
+   --without-llvm: what every run is now, taken as before
    --qemu and --programs run nothing of LLVM: their reference is QEMU's, and C's
    On a host with no native back end it is skipped, saying so.
 
@@ -1244,8 +1240,8 @@ int main(int argc, char** argv) {
     char** ops = NULL;
     OpWord* opw = NULL;
     uint32_t words[SLOT];
-    struct snx_recompiler *rx = NULL, *rl = NULL;
-    struct snx_recompiled *mx = NULL, *ml = NULL;
+    struct snx_recompiler* rx = NULL;
+    struct snx_recompiled* mx = NULL;
     uint8_t *mem[2] = {0}, *data0 = NULL;
     uint64_t* hints = NULL;
     int result = 1, hook = 0; /* every exit past the allocations frees them, so the sanitizers' leak check reads the
@@ -1267,36 +1263,33 @@ int main(int argc, char** argv) {
 #ifdef SNX_TEST_X64CPU
     const char* cpu = NULL;
 #endif
-    /* --record FILE and --frozen FILE, then the rest: --frozen's generator options are its file's, put first */
+    /* --frozen FILE, then the rest: its generator options are its file's, put first */
     static SnxFrozen file;
     static char *all[SNX_FROZEN_LINE / 2 + 256], *rest[256], split[SNX_FROZEN_LINE];
-    const char* record = NULL;
     char ferr[1024];
-    int nall = 1, nrest = 0, frozen = 0, without_llvm = 0;
+    int nall = 1, nrest = 0, frozen = 0;
     if ((size_t)argc > sizeof rest / sizeof *rest) {
         fprintf(stderr, "%d words of options: at most %zu\n", argc - 1, sizeof rest / sizeof *rest - 1);
         return 2;
     }
     for (int a = 1; a < argc; ++a) {
-        if (strcmp(argv[a], "--record") && strcmp(argv[a], "--frozen")) {
+        if (strcmp(argv[a], "--frozen")) {
             rest[nrest++] = argv[a];
             continue;
         }
-        if (a + 1 == argc || record || frozen) {
-            fprintf(stderr, "%s%s%s: one --record FILE or --frozen FILE a run\n", argv[a], a + 1 < argc ? " " : "",
+        if (a + 1 == argc || frozen) {
+            fprintf(stderr, "%s%s%s: one --frozen FILE a run\n", argv[a], a + 1 < argc ? " " : "",
                     a + 1 < argc ? argv[a + 1] : "");
             return 2;
         }
-        if (argv[a][2] == 'r')
-            record = argv[a + 1];
-        else if (snx_frozen_read(&file, argv[a + 1], FROZEN_GENERATOR, ferr, sizeof ferr)) {
+        if (snx_frozen_read(&file, argv[a + 1], FROZEN_GENERATOR, ferr, sizeof ferr)) {
             fprintf(stderr, "FAIL: --frozen %s\n", ferr);
             return 1;
         } else
             frozen = 1;
         ++a;
     }
-    /* the generator's options given, in their order: what --record keeps, and what --frozen's file must have */
+    /* the generator's options given, in their order: what --frozen's file must have */
     static char given[SNX_FROZEN_LINE];
     for (int a = 0; a < nrest; ++a)
         for (int k = 0, n = generator_option(nrest, rest, a); k < n; ++k) {
@@ -1307,11 +1300,9 @@ int main(int argc, char** argv) {
             }
             snprintf(given + used, sizeof given - used, "%s%s", used ? " " : "", rest[a + k]);
         }
-    if (record) snprintf(file.args, sizeof file.args, "%s", given);
     if (frozen && *given && strcmp(given, file.args)) {
         fprintf(stderr,
-                "FAIL: the generator's options \"%s\" beside --frozen %s, whose programs were drawn with \"%s\": it is "
-                "recorded again with them (tests/recompiler_backends_record.py)\n",
+                "FAIL: the generator's options \"%s\" beside --frozen %s, whose programs were drawn with \"%s\"\n",
                 given, file.path, file.args);
         return 1;
     }
@@ -1332,8 +1323,8 @@ int main(int argc, char** argv) {
             go_without(g_without = (unsigned)strtoul(argv[++i], NULL, 0));
         else if (!strcmp(argv[i], "--verbose"))
             verbose = 1;
-        else if (!strcmp(argv[i], "--without-llvm"))
-            without_llvm = 1;
+        else if (!strcmp(argv[i], "--without-llvm")) {
+        } /* every run's now: the frozen file is the reference */
         else if (!strcmp(argv[i], "--hook"))
             hook = 1;
 #ifdef SNX_TEST_NATIVE
@@ -1397,13 +1388,10 @@ int main(int argc, char** argv) {
         }
     }
     (void)hook;
-    /* LLVM alone's ends are the reference, as recorded in --frozen's file: no LLVM is left to make them (--without-llvm,
-       which every run is now, says so) */
-    const int has_llvm = 0, other = qemu || branches || refused;
-    (void)without_llvm;
-    if ((record || frozen) && other) {
-        fprintf(stderr, "--%s: with %s the reference is %s, not LLVM's: nothing to freeze\n",
-                record ? "record" : "frozen",
+    /* LLVM alone's ends are the reference, as recorded in --frozen's file, or QEMU's or C's */
+    const int other = qemu || branches || refused;
+    if (frozen && other) {
+        fprintf(stderr, "--%s: with %s the reference is %s, not LLVM's: nothing to freeze\n", "frozen",
                 qemu           ? "--qemu"
                 : branches     ? "--programs"
                 : refused == 2 ? "--coverage"
@@ -1413,15 +1401,10 @@ int main(int argc, char** argv) {
                            : "no run's");
         return 2;
     }
-    if (record) {
-        fprintf(stderr, "--record %s: no LLVM is left to make the ends the file keeps\n", record);
-        return 2;
-    }
     if (!frozen && !other) {
         fprintf(stderr, "FAIL: no --frozen FILE: nothing to compare with\n");
         return 1;
     }
-    const int llvm = has_llvm && !qemu && !branches;
 #ifndef SNX_TEST_NATIVE
     if (g_without && snx_native_available() && !snx_x64_available() && !snx_arm64_available()) {
         printf("SKIP: the %s back end has no features to go without: nothing to compare\n", snx_native_name());
@@ -1495,18 +1478,14 @@ int main(int argc, char** argv) {
                cpu ? cpu : "qemu64", has, g_without | (host & ~has), host);
     }
 #endif
-    rx = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
-    if (llvm) rl = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
-    if (!rx || (llvm && !rl)) {
+    rx = snx_recompiler_new(SNX_RECOMPILER_FLAG_NATIVE);
+    if (!rx) {
         fprintf(stderr, "FAIL: no recompiler\n");
         goto out;
     }
-    snx_recompiler_set_backend(rx, 1);
-    if (rl) snx_recompiler_set_backend(rl, 0);
     if (g_features != SNX_A64_TARGET_SWITCH) {
         int target = g_features == SNX_A64_TARGET_ANDROID ? SNX_RECOMPILER_A64_ANDROID : SNX_RECOMPILER_A64_MAX;
         (void)snx_recompiler_set_a64_target(rx, target);
-        if (rl) (void)snx_recompiler_set_a64_target(rl, target);
     }
     if (branches) {
         size_t count;
@@ -1597,7 +1576,6 @@ int main(int argc, char** argv) {
         mx = snx_recompile_ranges(rx, &range, 1, hints, functions);
 #endif
         range.code = mem[1] + CODE;
-        if (rl) ml = snx_recompile_ranges(rl, &range, 1, hints, functions);
     }
 #ifdef SNX_TEST_NATIVE
     {
@@ -1697,14 +1675,12 @@ int main(int argc, char** argv) {
         free(made), free(object);
         snx_codegen_free(&cg);
     }
-    if (rl && !ml) {
 #else
-    if (!mx || (rl && !ml)) {
-#endif
-        fprintf(stderr, "FAIL: recompiling: %s / %s\n", mx ? "" : snx_recompiler_error(rx),
-                ml ? "" : snx_recompiler_error(rl));
+    if (!mx) {
+        fprintf(stderr, "FAIL: recompiling: %s\n", snx_recompiler_error(rx));
         goto out;
     }
+#endif
     printf("recompiler backends: %lu words of the decoder's AdvSIMD rows to draw from\n", (unsigned long)g_nrows);
 #ifdef SNX_TEST_NATIVE
     if (opw && made_native < functions) {
@@ -1767,10 +1743,6 @@ int main(int argc, char** argv) {
     if (frozen && (file.parts != 1 || file.items[0] != functions)) {
         fprintf(stderr, "FAIL: %s: items %zu%s, and its args draw %u functions\n", file.path, file.items[0],
                 file.parts != 1 ? " in more than a part" : "", functions);
-        goto out;
-    }
-    if (record && !(file.hashes = (uint64_t*)calloc(functions, sizeof *file.hashes))) {
-        fprintf(stderr, "FAIL: no memory for %u hashes\n", functions);
         goto out;
     }
     if (qemu) {
@@ -1871,24 +1843,21 @@ int main(int argc, char** argv) {
                 c[1] = *ucpu;
                 if (ran && ran[(size_t)i * states + s]) c[1] = own[(size_t)i * states + s], c[1].rt = urt;
             }
-            for (k = 0; k < 1 && ml; ++k) {
-                struct snx_recompiled* m = ml;
 #else
-            for (k = !ml; k < 2; ++k) {
-                struct snx_recompiled* m = k ? mx : ml;
-#endif
-                memcpy(mem[k] + DATA, data0, data_len);
-                c[k] = start;
-                c[k].mem = mem[k];
-                c[k].rt = &rt;
-                c[k].x[30] = STOP;
-                if (snx_recompiled_bind(m, &c[k])) {
+            {
+                memcpy(mem[1] + DATA, data0, data_len);
+                c[1] = start;
+                c[1].mem = mem[1];
+                c[1].rt = &rt;
+                c[1].x[30] = STOP;
+                if (snx_recompiled_bind(mx, &c[1])) {
                     fprintf(stderr, "FAIL: bind\n");
                     goto out;
                 }
                 g_running = hints[i];
-                snx_recompiled_run(m, &c[k], hints[i], STOP);
+                snx_recompiled_run(mx, &c[1], hints[i], STOP);
             }
+#endif
             if (branches) {
                 c[0] = start;
                 c[0].rt = c[1].rt, c[0].pc = c[1].pc, c[0].x[30] = c[1].x[30];
@@ -1902,9 +1871,8 @@ int main(int argc, char** argv) {
             }
             c[0].mem = c[1].mem = NULL;
             c[0].disp = c[1].disp = NULL;
-            if (ml) hashed[0] = snx_frozen_bytes(state_mix(hashed[0], &c[0]), mem[0] + DATA, data_len);
             hashed[1] = snx_frozen_bytes(state_mix(hashed[1], &c[1]), mem[1] + DATA, data_len);
-            if ((ml || other) && (differs(&c[0], &c[1]) || memcmp(mem[0] + DATA, mem[1] + DATA, data_len))) {
+            if (other && (differs(&c[0], &c[1]) || memcmp(mem[0] + DATA, mem[1] + DATA, data_len))) {
                 unsigned n;
                 ++failures;
                 fprintf(stderr, "FAIL: the function at %llx, state %u:", (unsigned long long)hints[i], s);
@@ -1923,12 +1891,10 @@ int main(int argc, char** argv) {
                             (unsigned long long)start.v[rm].d[1], (unsigned long long)start.v[rm].d[0]);
                 }
                 if (verbose) report(&c[0], &c[1]);
-                if (failures > 40 && !record) goto done;
+                if (failures > 40) goto done;
             }
         }
-        if (record)
-            file.hashes[i] = hashed[0];
-        else if (frozen && !unmade) {
+        if (frozen && !unmade) {
             const uint64_t want = snx_frozen_hash(&file, 0, i);
             char text[SLOT * 9 + 1];
             function_words(mem[0], hints[i], text, sizeof text);
@@ -1938,12 +1904,6 @@ int main(int argc, char** argv) {
                                     "LLVM alone's to %016llx\n",
                                     file.path, snx_frozen_line(&file, 0, i), (unsigned long long)hints[i], text,
                                     native_back_end(), (unsigned long long)hashed[1], (unsigned long long)want);
-            if (ml && hashed[0] != want)
-                ++failures, fprintf(stderr,
-                                    "FAIL: %s:%zu, the function at %llx (%s): LLVM alone's ends hash to %016llx here, "
-                                    "and to %016llx where the file was recorded\n",
-                                    file.path, snx_frozen_line(&file, 0, i), (unsigned long long)hints[i], text,
-                                    (unsigned long long)hashed[0], (unsigned long long)want);
             if (failures > 40) goto done;
         }
     }
@@ -1956,19 +1916,6 @@ done:
                 "FROZEN_GENERATOR still %u\n",
                 file.path, (unsigned long long)inputs, (unsigned long long)file.inputs, FROZEN_GENERATOR);
     }
-    if (record) {
-        file.generator = FROZEN_GENERATOR;
-        snprintf(file.what, sizeof file.what,
-                 "recompiler_backends frozen reference: LLVM alone's ends, a hash a function over its %u states",
-                 states);
-        file.parts = 1, file.items[0] = functions, file.inputs = inputs;
-        snprintf(file.recorded, sizeof file.recorded, "LLVM alone (snx_recompiler_set_backend 0)");
-        if (snx_frozen_write(&file, record, ferr, sizeof ferr))
-            ++failures, fprintf(stderr, "FAIL: --record %s\n", ferr);
-        else
-            printf("recompiler backends: recorded %s: %u functions, %u states each, from \"%s\"\n", record, functions,
-                   states, file.args);
-    }
 #ifdef SNX_TEST_UNWINDS
     {
         size_t bad, unwound = hostuc_unwound(uc, &bad);
@@ -1980,13 +1927,11 @@ done:
     result = failures != 0;
 out:
     snx_recompiled_free(mx);
-    snx_recompiled_free(ml);
 #ifdef SNX_TEST_NATIVE
     hostuc_free(uc);
     mem[1] = NULL; /* Unicorn's mapping */
 #endif
     snx_recompiler_free(rx);
-    snx_recompiler_free(rl);
     free(mem[0]), free(mem[1]), free(data0), free(hints), free(opw), free(starts), free(ends);
 #ifdef SNX_TEST_NATIVE
     free(own), free(ran);
