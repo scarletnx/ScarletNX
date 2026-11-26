@@ -456,6 +456,18 @@ int main(void) {
         return 1;
     }
     agb_host_close(host);
+    /* --fullscreen's window starts fullscreen, as a Switch game's with fullscreen=1 (SDL_Quit dropped the hints) */
+    SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "dummy");
+    SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "dummy");
+    host = agb_host_open("agb_host", ini, true, error, sizeof error);
+    windows = host ? SDL_GetWindows(&count) : NULL;
+    if (!windows || count != 1 || !SDL_SyncWindow(windows[0]) ||
+        !(SDL_GetWindowFlags(windows[0]) & SDL_WINDOW_FULLSCREEN)) {
+        fprintf(stderr, "agb_host: the window opened with fullscreen is not fullscreen (%s)\n", host ? "" : error);
+        failed = 1;
+    }
+    SDL_free(windows);
+    agb_host_close(host);
     if (snx_remove_tree(dir)) fprintf(stderr, "agb_host: %s could not be removed\n", dir);
     free(ini);
     free(dir);

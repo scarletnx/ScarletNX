@@ -370,7 +370,7 @@ int snx_nds_main(int argc, char** argv) {
     const char *output = cli.value[SNX_CLI_OUTPUT], *game = cli.value[SNX_CLI_GAME], *script = cli.value[SNX_CLI_SCRIPT];
     long frames = cli.frames;
     double seconds = cli.seconds;
-    int recompile = !!(cli.flags & SNX_CLI_BIT(SNX_CLI_RECOMPILE)), fullscreen = cli.fullscreen == 1;
+    int recompile = !!(cli.flags & SNX_CLI_BIT(SNX_CLI_RECOMPILE)), fullscreen = cli.fullscreen;
     int headless = !!(cli.flags & SNX_CLI_BIT(SNX_CLI_HEADLESS));
     /* the WFC service, refused before anything is made when the setting names none */
     uint8_t wfc_dns[4];
@@ -497,8 +497,9 @@ int snx_nds_main(int argc, char** argv) {
         char* title = snx_format("ScarletNX - %s (NDS)", rom.title[0] ? rom.title : name);
         vpad_set_say(nds_host_say);
         vpad_settings(folder, name, argc, argv);
-        host = nds_host_open(board, title, ini, wav, headless || frames >= 0, fullscreen && !(seconds > 0), error,
-                             sizeof error);
+        if (fullscreen >= 0) g_settings.fullscreen = fullscreen; /* -f's over the settings' */
+        host = nds_host_open(board, title, ini, wav, headless || frames >= 0, g_settings.fullscreen && !(seconds > 0),
+                             error, sizeof error);
         free(title);
         if (!host) {
             fprintf(stderr, "scarletnx-nds: %s\n", error);

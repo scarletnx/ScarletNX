@@ -136,7 +136,7 @@ static void barrier(VkCommandBuffer cb, VkImage image, VkImageLayout old, VkImag
 
 static void notice_log(const char* text) { fprintf(stderr, "scarletnx-agb: %s\n", text); }
 
-AgbVk* agb_vk_open(const char* title, int width, int height, bool fullscreen, char* error, size_t error_size) {
+AgbVk* agb_vk_open(const char* title, int width, int height, char* error, size_t error_size) {
     AgbVk* v = calloc(1, sizeof *v);
     if (!v) {
         snprintf(error, error_size, "out of memory");
@@ -151,8 +151,6 @@ AgbVk* agb_vk_open(const char* title, int width, int height, bool fullscreen, ch
         agb_vk_close(v);
         return NULL;
     }
-    if (fullscreen && !SDL_SetWindowFullscreen(v->host.window, true))
-        fprintf(stderr, "scarletnx-agb: the window cannot go fullscreen: %s\n", SDL_GetError());
     snx_window_icon(v->host.window);
     /* what the GBA can't go without: the window's swapchain, and a portability driver's subset */
     const VkExtensionNeed need[2] = {

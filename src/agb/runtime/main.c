@@ -286,7 +286,7 @@ int snx_agb_main(int argc, char** argv) {
     const char *shot = cli.value[SNX_CLI_SHOT], *data = cli.value[SNX_CLI_DATA], *outdir = cli.value[SNX_CLI_OUTDIR];
     const char *output = cli.value[SNX_CLI_OUTPUT], *game = cli.value[SNX_CLI_GAME], *script = cli.value[SNX_CLI_SCRIPT];
     long frames = cli.frames;
-    int recompile = !!(cli.flags & SNX_CLI_BIT(SNX_CLI_RECOMPILE)), fullscreen = cli.fullscreen == 1;
+    int recompile = !!(cli.flags & SNX_CLI_BIT(SNX_CLI_RECOMPILE)), fullscreen = cli.fullscreen;
     SnxCliRecompile asked = snx_cli_recompile(&cli);
     int jobs = cli.jobs;
     snx_cli_free(&cli);
@@ -475,9 +475,10 @@ int snx_agb_main(int argc, char** argv) {
         /* the window's settings, and a run's with none (state_save, state_load) */
         vpad_set_say(agb_host_say);
         vpad_settings(folder, name, argc, argv);
+        if (fullscreen >= 0) g_settings.fullscreen = fullscreen; /* -f's over the settings' */
         if (frames < 0) {
             char* title = snx_format("ScarletNX - %s (GBA)", board.cartridge.title[0] ? board.cartridge.title : name);
-            host = agb_host_open(title, ini, fullscreen, error, sizeof error);
+            host = agb_host_open(title, ini, g_settings.fullscreen, error, sizeof error);
             free(title);
             if (!host) {
                 fprintf(stderr, "scarletnx-agb: %s\n", error);

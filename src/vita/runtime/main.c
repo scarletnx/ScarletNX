@@ -434,8 +434,7 @@ int snx_vita_main(int argc, char** argv) {
     }
     bool recompile = cli.flags & SNX_CLI_BIT(SNX_CLI_RECOMPILE);
     double seconds = cli.seconds;
-    /* the window's (gpu/vk.c), set here and not through the Display table, whose set functions are the Switch's */
-    if (cli.fullscreen >= 0) g_settings.fullscreen = cli.fullscreen;
+    int fullscreen = cli.fullscreen; /* the window's (gpu/vk.c), -1 unsaid */
     snx_cli_free(&cli);
     if (old_at)
         snx_error("VITA_LOCKSTEP=%s is deprecated, %s: vita_lockstep=%d (docs/user/deprecations.md)", old_at,
@@ -500,6 +499,7 @@ int snx_vita_main(int argc, char** argv) {
     char *ini = vita_game_file(folder, ".ini"), *name = last_part(folder);
     vpad_set_say(vita_present_say);
     if (name) vpad_settings(folder, name, argc, argv);
+    if (fullscreen >= 0) g_settings.fullscreen = fullscreen; /* -f's over the settings' */
     free(name);
     status = play(folder, ini, recompile, seconds, shot, runtime, &asked);
     free(ini);

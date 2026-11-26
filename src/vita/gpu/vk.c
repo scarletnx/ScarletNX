@@ -7,6 +7,7 @@
 #include "common/gpu/vk/present_fx.h"
 #include "common/gpu/vk/rects.h"
 #include "common/utilities/vpad_sdl.h"
+#include "common/utilities/window_fullscreen.h"
 #include "common/utilities/window_icon.h"
 #include "snx_settings.h"
 #include <SDL3/SDL.h>
@@ -176,8 +177,9 @@ bool vita_vk_init(const char* title, char* error, size_t error_size) {
         return false;
     if (v->host.window) snx_window_icon(v->host.window);
     /* the window on the whole screen, as the Switch's fullscreen=1 asks, which a phone's launcher always gives */
-    if (v->host.window && g_settings.fullscreen && !SDL_SetWindowFullscreen(v->host.window, true))
-        fprintf(stderr, "scarletnx-vita: the window cannot go fullscreen: %s\n", SDL_GetError());
+    char why[256];
+    if (v->host.window && !snx_window_fullscreen(v->host.window, g_settings.fullscreen, why, sizeof why))
+        fprintf(stderr, "scarletnx-vita: %s\n", why);
     VkExtensionNeed need[2];
     VkExtensionSetting settings[VK_EXTENSION_SETTINGS];
     SnxVkDeviceRequest request = {.who = "scarletnx-vita",

@@ -9,6 +9,7 @@
 #include "common/utilities/pad_sdl.h"
 #include "common/utilities/hotkeys.h"
 #include "common/utilities/vpad_sdl.h"
+#include "common/utilities/window_fullscreen.h"
 #include "common/utilities/window_icon.h"
 #include <SDL3/SDL.h>
 #include <stdio.h>
@@ -149,16 +150,14 @@ AgbHost* agb_host_open(const char* title, const char* ini, bool fullscreen, char
        renderer, said */
     {
         char why[256];
-        host->vk = agb_vk_open(title, AGB_SCREEN_WIDTH * START_SCALE, AGB_SCREEN_HEIGHT * START_SCALE, fullscreen, why,
-                               sizeof why);
+        host->vk = agb_vk_open(title, AGB_SCREEN_WIDTH * START_SCALE, AGB_SCREEN_HEIGHT * START_SCALE, why, sizeof why);
         if (!host->vk)
             fprintf(stderr, "scarletnx-agb: no Vulkan window (%s): the screen shows through SDL's renderer\n", why);
     }
     if (host->vk)
         host->window = agb_vk_window(host->vk);
     else if (!SDL_CreateWindowAndRenderer(title, AGB_SCREEN_WIDTH * START_SCALE, AGB_SCREEN_HEIGHT * START_SCALE,
-                                          SDL_WINDOW_RESIZABLE | (fullscreen ? SDL_WINDOW_FULLSCREEN : 0),
-                                          &host->window, &host->renderer) ||
+                                          SDL_WINDOW_RESIZABLE, &host->window, &host->renderer) ||
              !(host->texture = SDL_CreateTexture(host->renderer, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING,
                                                  AGB_SCREEN_WIDTH, AGB_SCREEN_HEIGHT)) ||
              !SDL_SetTextureScaleMode(host->texture, SDL_SCALEMODE_NEAREST) ||
@@ -178,6 +177,8 @@ AgbHost* agb_host_open(const char* title, const char* ini, bool fullscreen, char
                     SDL_GetError());
         snx_window_icon(host->window);
     }
+    char why[256];
+    if (!snx_window_fullscreen(host->window, fullscreen, why, sizeof why)) fprintf(stderr, "scarletnx-agb: %s\n", why);
     snx_pad_map_position(&host->pad); /* A where the console has it, east */
     g_host.open = host;
     host->state_ask = -1;

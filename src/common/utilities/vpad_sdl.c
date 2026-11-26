@@ -14,6 +14,7 @@
 #include "common/utilities/notice.h"
 #include "common/utilities/quit_key.h"
 #include "common/utilities/ui_colors.h"
+#include "common/utilities/window_fullscreen.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -351,11 +352,10 @@ static SnxVpadEvent key_event(const SDL_KeyboardEvent* k, int* action) {
     if (a == HOTKEY_FULLSCREEN || a == HOTKEY_FULLSCREEN_2) { /* the window it was pressed in, of a console's two */
         SDL_Window* w = k->windowID ? SDL_GetWindowFromID(k->windowID) : NULL;
         if (!w) w = g_vpad_sdl.window;
-        if (!SDL_SetWindowFullscreen(w, !(SDL_GetWindowFlags(w) & SDL_WINDOW_FULLSCREEN))) {
-            char line[256];
-            snprintf(line, sizeof line, "the window cannot switch fullscreen: %s", SDL_GetError());
-            if (g_vpad_sdl.say) g_vpad_sdl.say(line);
-        }
+        char why[256];
+        if (!snx_window_fullscreen(w, !(SDL_GetWindowFlags(w) & SDL_WINDOW_FULLSCREEN), why, sizeof why) &&
+            g_vpad_sdl.say)
+            g_vpad_sdl.say(why);
         return SNX_VPAD_TAKEN;
     }
     if (a >= 0 && a != HOTKEY_MENU) {

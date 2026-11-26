@@ -21091,8 +21091,11 @@ static void launch(App* app, char* absolute, bool prepared) {
     if (app->menu.selected == GUI_VITA && !make) n += gui_settings_vita_options(s, argv + n);
     if (app->menu.selected == GUI_ANDROID && !make) n += gui_settings_android_options(s, argv + n);
     if (app->menu.selected == GUI_NDS && !make) n += gui_settings_nds_options(s, argv + n);
-    if ((app->menu.selected == GUI_VITA || app->menu.selected == GUI_GBA || app->menu.selected == GUI_NDS) && !make)
+    /* the on-screen controls', and the window's start fullscreen as a Switch game's; a compile opens none */
+    if ((app->menu.selected == GUI_VITA || app->menu.selected == GUI_GBA || app->menu.selected == GUI_NDS) && !make) {
         n += gui_settings_controls_options(s, argv + n);
+        n += gui_settings_one(s, "fullscreen", argv + n);
+    }
     /* the launcher's GPU driver and Freedreno variables, where the game's .ini has none of its own */
     if ((app->menu.selected == GUI_SWITCH || app->menu.selected == GUI_VITA) && !make) {
         free(app->run_driver);
@@ -21120,9 +21123,6 @@ static void launch(App* app, char* absolute, bool prepared) {
         argv[n++] = "--outdir";
         argv[n++] = app->dest_out ? app->dest_out : app->games_dir;
     }
-    /* the GBA's window, the DS's and the Vita's start fullscreen as a Switch game's does; a compile opens none */
-    if ((app->menu.selected == GUI_GBA || app->menu.selected == GUI_NDS || app->menu.selected == GUI_VITA) && !make)
-        n += gui_settings_one(s, "fullscreen", argv + n);
     if (app->menu.selected == GUI_GBA && !make) n += gui_settings_gba(s, argv + n); /* its screen's colors */
     /* the Vita's presenter takes the Switch's upscaler and anti-aliasing (vita/gpu/vk.c), each at most once in s */
     if (app->menu.selected == GUI_VITA && !make) {
