@@ -30,6 +30,7 @@
 #define NO_LANGUAGE   "it has no system language"
 #define NO_UPDATES    "a cartridge has no updates or DLCs"
 #define SWITCH_NET    "it is the Switch's online service: the console's own is in its section"
+#define NOT_OFFERED   "it is not offered, and its game plays offline as in flight mode"
 #define ONE_USER      "its games play as one user"
 #define OWN_ROW       "it has a row of its own in its section"
 #define VULKAN_13     "its renderer runs on Vulkan 1.3 only"
@@ -37,7 +38,6 @@
 /* what is not made yet */
 #define SOON          "not made yet"
 #define NO_MIC_SAMPLES "its microphone requests are answered with no samples yet"
-#define OFFLINE       "its network is the console's own alone, as in flight mode"
 #define SOON_LOG      "its game log has no levels yet"
 #define TRACY_PICTURES "it sends no frame's picture to Tracy yet"
 #define TRACY_MEMORY   "its allocations are not in Tracy yet"
@@ -187,10 +187,10 @@ const SnxConsoleSetting g_console_settings[] = {
     {.key = "hotkey_upscaler"},
     {.key = "hotkey_anti_aliasing"},
     /* Network */
-    {"network", {[V] = LATER(OFFLINE), [G] = NA(NO_NETWORK)}},
-    {"airplane_mode", {[V] = LATER(OFFLINE), [G] = NA(NO_NETWORK)}},
-    {"ldn", {[V] = LATER(SOON), [G] = NA(NO_NETWORK), [D] = LATER(SOON)}},
-    {"room", {[V] = LATER(SOON), [G] = NA(NO_NETWORK), [D] = LATER(SOON)}},
+    {"network", {[V] = NA(NOT_OFFERED), [G] = NA(NO_NETWORK)}},
+    {"airplane_mode", {[V] = NA(NOT_OFFERED), [G] = NA(NO_NETWORK)}},
+    {"ldn", {[V] = NA(NOT_OFFERED), [G] = NA(NO_NETWORK), [D] = LATER(SOON)}},
+    {"room", {[V] = NA(NOT_OFFERED), [G] = NA(NO_NETWORK), [D] = LATER(SOON)}},
     {"switch_online", OTHERS(NA(SWITCH_NET))},
     {"user_uid", OTHERS(NA(ONE_USER))},
     /* Debug */
