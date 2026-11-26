@@ -164,11 +164,18 @@ def main():
             '--gpu-pstate=auto',
             '--perf-map=0',
             '--frame-pacing=2',
+            '--vk-gpu-profile=0',
+            '--vk-checkpoints=0',
         ],
         0,
         'Old 3DS',
     )
     run(['--board-info', '--stats=1', '--showcase-corner=tl', '--state-save=junk'], 0, 'Old 3DS')
+    run(
+        ['--board-info', '--shader-corpus=x'],
+        2,
+        "--shader-corpus=x does nothing in a 3DS game: its shaders are the PICA's",
+    )
     run(['--board-info', '--shadows=0'], 2, "--shadows=0 does nothing in a 3DS game: it tunes the Switch's GPU")
     # the GPU driver package, Freedreno's variables and the validation layer, as a Switch game's window takes them
     run(['--board-info', '--gpu-driver=', '--freedreno-env=', '--vk-validation=1'], 0, 'Old 3DS')

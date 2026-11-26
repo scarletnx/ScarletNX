@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "vita/gpu/vk.h"
+#include "common/gpu/vk/marks.h"
 #include "common/gpu/vk/gpu_pstate.h"
 #include "common/gpu/vk/device_settings.h"
 #include "common/gpu/vk/gpu_driver_load.h"
@@ -114,6 +115,7 @@ static bool choose(SnxVkChoice* c, void* user) {
     void* const enable[] = {&want, &want12, &want13, v->raster_order ? &want_ro : NULL,
                             v->local_read ? &want_lr : NULL};
     snx_vk_chain(enable, sizeof enable / sizeof *enable);
+    v->checkpoints = snx_vk_marks_choose(c, g_settings.gpu_checkpoints);
     want.pNext = snx_vk_pacing_choose(&v->pacing, c, g_settings.frame_pacing, want.pNext);
     if (!snx_vk_choice_create(c, &want, NULL, NULL, 0)) return false;
     VkPhysicalDeviceExternalMemoryHostPropertiesEXT host = {
@@ -233,6 +235,9 @@ bool vita_vk_init(const char* title, char* error, size_t error_size) {
                                      .poolSizeCount = sizeof sizes / sizeof *sizes,
                                      .pPoolSizes = sizes};
     bool made = snx_vk_ring_init(&v->ring, v->device, v->queue, v->family, VITA_VK_SLOTS, &dp, v->timeline);
+    if (made)
+        v->ring.marks = snx_vk_marks_new(v->phys, v->device, v->family, g_settings.gpu_profile,
+                                         g_settings.gpu_checkpoints, v->checkpoints, "scarletnx-vita", "frame");
     for (unsigned i = 0; i < VITA_VK_SLOTS && made; ++i)
         made = vkCreateSemaphore(v->device, &semaphore, NULL, &v->acquired[i]) == VK_SUCCESS;
     for (unsigned i = 0; i < SNX_VK_SWAP_IMAGES && made; ++i)
@@ -279,6 +284,7 @@ void vita_vk_free(void) {
             if (v->acquired[i]) vkDestroySemaphore(v->device, v->acquired[i], NULL);
         for (unsigned i = 0; i < SNX_VK_SWAP_IMAGES; ++i)
             if (v->rendered[i]) vkDestroySemaphore(v->device, v->rendered[i], NULL);
+        snx_vk_marks_free(v->ring.marks, v->device);
         snx_vk_ring_free(&v->ring);
         vkDestroyDevice(v->device, NULL);
     }
