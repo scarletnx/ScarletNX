@@ -24,7 +24,9 @@ struct PendPages {
     PendLeaf* gpu[1u << 16]; /* by GPU page: each one's count is that of the guest page the GMMU maps it to */
     u64 total;    /* every page's count added up */
     _Atomic u64 adds; /* results added so far: unchanged, no result covers what was checked without a hit since */
-    u64 overflow; /* pages past 2^40 results cover, read as covering every page */
+    /* pages past 2^40 results cover, read as covering every page. Written under pend_lock. Atomic: the texture memo
+       of draws reads it with no lock (draw_batches=2), and each change also bumps all of ADDR_GENS_GPU after it */
+    _Atomic u64 overflow;
     /* a table every page this one gains or loses is counted in as well, NULL for none: one table then answers whether
        anything at all is pending on a page (g_pend_any) */
     PendPages* also;

@@ -2110,7 +2110,7 @@ static int tex_memo_unpended(TexMemo* m, u64 tic_at, u64 tsc_at, u64 adds) {
        (a result added elsewhere moves only the count). Not with results past the tables (overflow, which pend_hit reads
        as over every page), nor the sum a way is kept with (pgen_ok): its first check goes the full way */
     u32 g_tic = 0, g_tsc = 0, g_tex = 0;
-    const int gens = !g_pend_any.overflow && addr_gens_read(ADDR_GENS_GPU, tic_at, 32, &g_tic) &&
+    const int gens = !atomic_load_explicit(&g_pend_any.overflow, memory_order_relaxed) && addr_gens_read(ADDR_GENS_GPU, tic_at, 32, &g_tic) &&
                      addr_gens_read(ADDR_GENS_GPU, tsc_at, 32, &g_tsc) &&
                      addr_gens_read(ADDR_GENS_GPU, m->t->gva, size, &g_tex);
     if (gens && m->pgen_ok && g_tic + g_tsc + g_tex == m->pgen) {

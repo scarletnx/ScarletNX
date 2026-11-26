@@ -163,7 +163,10 @@ static int leaves_hit(PendLeaf* const* leaf, u64 first, u64 last) {
 static void count_pages(PendPages* t, u64 first, u64 last, int delta) {
     t->total += (last - first + 1) * (u64)(i64)delta;
     if (last >= TABLE_PAGES) {
-        t->overflow += (last - (first > TABLE_PAGES ? first : TABLE_PAGES) + 1) * (u64)(i64)delta;
+        atomic_store_explicit(&t->overflow,
+                              atomic_load_explicit(&t->overflow, memory_order_relaxed) +
+                                  (last - (first > TABLE_PAGES ? first : TABLE_PAGES) + 1) * (u64)(i64)delta,
+                              memory_order_relaxed);
         if (first >= TABLE_PAGES) return;
         last = TABLE_PAGES - 1;
     }
@@ -283,7 +286,7 @@ int pend_hit(const PendPages* t, u64 gva, u64 size) {
     u64 r[4];
     int n, i;
     if (!t->total || !size) return 0;
-    if (t->overflow) return 1;
+    if (atomic_load_explicit(&t->overflow, memory_order_relaxed)) return 1;
     for (i = 0, n = gpu_ranges(gva, size, r); i < n; i++)
         if (leaves_hit(t->gpu, r[2 * i], r[2 * i + 1])) return 1;
     if (alias_check_on() && each_run(gva, size, hit_pages, (void*)t, 0)) {
@@ -295,7 +298,7 @@ int pend_hit(const PendPages* t, u64 gva, u64 size) {
 }
 int pend_hit_guest(const PendPages* t, u64 a, u64 size) {
     if (!t->total || !size) return 0;
-    if (t->overflow) return 1;
+    if (atomic_load_explicit(&t->overflow, memory_order_relaxed)) return 1;
     u64 first = a >> 12, last = (a + size - 1 < a ? ~0ull : a + size - 1) >> 12;
     if (first >= TABLE_PAGES) return 0;
     return leaves_hit(t->leaf, first, last < TABLE_PAGES ? last : TABLE_PAGES - 1);
@@ -355,13 +358,13 @@ void pend_add_va(PendPages* t, u64 gva, u64 size, int delta) {
 int pend_hit_va(const PendPages* t, u64 gva, u64 size) {
     u64 first = gva >> 12, last = (gva + size - 1 < gva ? ~0ull : gva + size - 1) >> 12;
     if (!t->total) return 0;
-    if (t->overflow) return 1;
+    if (atomic_load_explicit(&t->overflow, memory_order_relaxed)) return 1;
     return size && first < TABLE_PAGES && leaves_hit(t->leaf, first, last < TABLE_PAGES ? last : TABLE_PAGES - 1);
 }
 int pend_empty(const PendPages* t) { return !t->total; }
 u64 pend_guest_group(const PendPages* t, u64 g) {
     if (!t->total) return 0;
-    if (t->overflow) return ~0ull;
+    if (atomic_load_explicit(&t->overflow, memory_order_relaxed)) return ~0ull;
     if (g >= TABLE_PAGES / 64) return 0;
     const PendLeaf* l = t->leaf[g / (LEAF_PAGES / 64)];
     return l && l->pages ? l->group[g % (LEAF_PAGES / 64)] : 0;
@@ -369,6 +372,6 @@ u64 pend_guest_group(const PendPages* t, u64 g) {
 void pend_set_any_watch(void (*fn)(u64 first, u64 last)) { g_pending_pages.any_watch = fn; }
 int pend_hit_pages(const PendPages* t, u64 first, u64 last) {
     if (!t->total) return 0;
-    if (t->overflow) return 1;
+    if (atomic_load_explicit(&t->overflow, memory_order_relaxed)) return 1;
     return first < TABLE_PAGES && leaves_hit(t->leaf, first, last < TABLE_PAGES ? last : TABLE_PAGES - 1);
 }
