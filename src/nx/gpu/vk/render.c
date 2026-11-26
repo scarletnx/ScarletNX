@@ -10077,6 +10077,15 @@ resolved:
         }
         const u32 at[4] = {block_at, 0, 0, 0};
         rec_CmdPushConstants(cb, g_vk_playout, VK_PUSH_STAGES, 0, sizeof at, at);
+    } else if (g_vk.has_descriptor_heaps) {
+        /* around the stage sets' address slots, which the block leaves free (vk_descriptor_heap_push_at) */
+        const u32 n = vk_push_bytes();
+        static const u32 piece[3][2] = {{0, 168}, {176, 216}, {224, 232}};
+        for (u32 i = 0; i < 3 && piece[i][0] < n; i++) {
+            const u32 end = piece[i][1] < n ? piece[i][1] : n;
+            rec_CmdPushConstants(cb, g_vk_playout, VK_PUSH_STAGES, piece[i][0], end - piece[i][0],
+                                 (const u8*)pc + piece[i][0]);
+        }
     } else
         rec_CmdPushConstants(cb, g_vk_playout, VK_PUSH_STAGES, 0, vk_push_bytes(), pc);
 

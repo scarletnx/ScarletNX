@@ -16,7 +16,6 @@ typedef struct {
     uint32_t push_bytes;    /* maxPushConstantsSize */
     uint32_t uniform_range; /* maxUniformBufferRange */
     uint32_t uniform_cbufs; /* the constant buffers bound as uniform buffers (g_spirv_translate.uniform_cbufs) */
-    int heaps;              /* descriptor heaps hold the sets */
     /* the extension bans' line on maxPushConstantsSize that holds for the driver, as vk_ban_why says it; NULL for
        none */
     const char* ban;
@@ -41,11 +40,6 @@ static inline int snx_vk_cb_windows_say(char* out, size_t n, const SnxVkCbWindow
                  (unsigned)d->uniform_range, SNX_VK_CB_WINDOW_BYTES);
     else if (!d->uniform_cbufs)
         snprintf(why, sizeof why, "none of the 18 is bound as a uniform buffer");
-    else if (d->heaps)
-        snprintf(
-            why, sizeof why,
-            "descriptor heaps push their sets' addresses from byte 128 (VK_DESCRIPTOR_HEAP_PUSH_OFFSET), where the "
-            "windows' offsets go");
     else if (asked == SNX_VK_CB_WINDOWS_OFF)
         snprintf(why, sizeof why, "vk_cb_windows=0 (Off)");
     else if (d->ban && asked == SNX_VK_CB_WINDOWS_ON)

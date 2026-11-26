@@ -831,8 +831,7 @@ void vk_pipeline_init(void) {
         char ban[1200] = "", line[2048];
         if (g_vk.cb_windows_ban) vk_ban_why(g_vk.cb_windows_ban, ban, sizeof ban);
         const SnxVkCbWindowDevice wd = {g_vk.props.limits.maxPushConstantsSize, g_vk.props.limits.maxUniformBufferRange,
-                                        g_spirv_translate.uniform_cbufs, g_vk.has_descriptor_heap_support,
-                                        ban[0] ? ban : NULL};
+                                        g_spirv_translate.uniform_cbufs, ban[0] ? ban : NULL};
         g_spirv_translate.cb_windows =
             snx_vk_cb_windows_say(line, sizeof line, &wd, SH_PUSH_BYTES_WINDOWS, g_settings.constant_buffer_windows);
         LOG("%s\n", line);
