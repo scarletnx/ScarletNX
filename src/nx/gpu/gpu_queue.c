@@ -269,7 +269,7 @@ static struct {
     _Atomic u64 n, busy;
 } g_gq_site[GQ_SITES];
 void gq_stats_log(u64 presents) {
-    gq_timed_log(presents);
+    if (g_settings.draw_timing) gq_timed_log(presents);
     if (!g_gq.started || !presents) return;
     u64 v[GQS_N];
     for (int i = 0; i < GQS_N; i++) v[i] = atomic_exchange_explicit(&g_gqs[i], 0, memory_order_relaxed);
@@ -308,9 +308,12 @@ static u32 gq_take_one(void) {
     g_gq.next_at = tail + bytes; /* where the record after this one starts (gq_peek_call) */
     g_gq_seq_all++;
     if (r->kind == GQ_WRITE_CB) g_gq_seq_cb++;
-    const u64 t0 = __builtin_readcyclecounter();
-    gq_run(r);
-    gq_timed_add(r, __builtin_readcyclecounter() - t0);
+    if (g_settings.draw_timing) {
+        const u64 t0 = __builtin_readcyclecounter();
+        gq_run(r);
+        gq_timed_add(r, __builtin_readcyclecounter() - t0);
+    } else
+        gq_run(r);
     atomic_store_explicit(&g_gq.tail, tail + bytes, memory_order_release);
     atomic_store_explicit(&g_gq.done, fence, memory_order_release);
     atomic_fetch_add_explicit(&g_gq.progress, 1, memory_order_seq_cst);

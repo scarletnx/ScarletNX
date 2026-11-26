@@ -603,7 +603,8 @@ static void call_run(const void* arg, u64 bytes) {
 /* the names of this file's queued calls, for the stats line of the records' time (gq_name) */
 static void calls_named(void) {
     static int done;
-    if (done++) return;
+    if (done) return;
+    done = 1;
     static const char* const draws[] = {"draw", "clear", "texture", "discard", "xfb"};
     static const char* const calls[] = {"barrier", "stream incr", "stream end", "ready", "stream run",
                                         "samples reset", "samples enable", "mem seen", "mem changed",

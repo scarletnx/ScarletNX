@@ -3412,7 +3412,9 @@ static int vin_kept(u64 gva, u64 len) {
     return gva && len <= 0xFFFFFFFFull && cb_kept(vin_entry(gva), gva, (u32)len, 1, vk_ww_epoch());
 }
 static int vin_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
-    if (!gva || len > 0xFFFFFFFFull || g_settings.draw_state_check) return vk_buf_get_input(gva, len, align, buf, off);
+    /* only in split runs: elsewhere the buffer cache's lookup is as on main */
+    if (g_settings.draw_batches != 2 || !gva || len > 0xFFFFFFFFull || g_settings.draw_state_check)
+        return vk_buf_get_input(gva, len, align, buf, off);
     const u32 epoch = vk_ww_epoch();
     CbEntry* e = vin_entry(gva);
     vin_count(1);
