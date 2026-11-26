@@ -743,6 +743,8 @@ static int make_program(const MakeArgs* a, int index) {
     if (!compile.quiet) say_recompiling(title, index, a->programs, program.module_count);
     if (!no_build && !ios && !gen.interp_only && snx_native_floor(why, sizeof why))
         snx_error("%s: LLVM makes the code", why);
+    else if (!no_build && !ios && !gen.interp_only && !compile.quiet && snx_native_fallback(why, sizeof why))
+        printf("%s\n", why);
     /* an add-on's files: its dump, read in place, or what the driver extracts into its data folder. An extracted game
        the game's .ini names as its source= is read in place as a dump is: nothing of it copied */
     if (addon ? snx_mkdirs(data)

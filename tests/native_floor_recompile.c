@@ -21,7 +21,7 @@
 /* the host's floor without one of its features, and the line of it */
 #if defined(__x86_64__)
 static void take_out(int on) { snx_x64_without(on ? SNX_X64_SSE42 : 0); }
-#define LACKS "cpu: needs SSE4.2, this host has SSE3, SSSE3, SSE4.1, PCLMULQDQ and POPCNT"
+#define LACKS "cpu: needs SSE4.2, this host has SSE3, SSSE3, SSE4.1 and POPCNT"
 #else
 static void take_out(int on) { (void)on; }
 #define LACKS ""

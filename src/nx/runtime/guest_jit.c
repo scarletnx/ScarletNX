@@ -372,6 +372,8 @@ void jit_init(void) {
             (unsigned long)warm);
         char why[256];
         if (snx_native_floor(why, sizeof why)) WARN("jit: %s: LLVM makes the code\n", why);
+        else if (snx_native_fallback(why, sizeof why))
+            LOG("jit: %s\n", why);
     }
     /* mapping, permission and write-back changes drop the slots and images the range's code filled (mem.c) */
     mem_set_code_invalidate(jit_code_invalidate);

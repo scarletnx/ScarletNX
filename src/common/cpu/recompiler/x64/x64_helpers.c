@@ -23,6 +23,7 @@ u64 snx_x64_fp_jcvt(CPU* c, u64 a, u64 fpcr);
 u64 snx_x64_fp_bfcvt(CPU* c, u64 a, u64 fpcr);
 void snx_x64_fp_vec(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
 void snx_x64_crypto(CPU* c, void* out, const void* x, const void* y, const void* z, u32 op);
+void snx_x64_sse(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
 u64 snx_x64_aes(u64 x, u32 op);
 u64 snx_x64_estimate(u64 a, u32 sqrt);
 u64 snx_x64_half(u64 a, u64 fpcr);
@@ -202,6 +203,31 @@ void snx_x64_crypto(CPU* c, void* out, const void* x, const void* y, const void*
     else
         v_sha1(&s, op, 0, 1, 2);
     memcpy(out, &s.v[0], 16);
+}
+
+/* an SSE instruction where the host has none of it (tools/sailgen/x64.h's sgx_vf_helped_forms, whose places are the
+   numbers below): out = the instruction of x (its first operand) and y (its second), desc its number and its
+   immediate (bits 8 to 15) */
+enum { SSE_PCLMULQDQ };
+void snx_x64_sse(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc) {
+    const unsigned imm = desc >> 8 & 0xFF;
+    u64 a[2], b[2], r[2] = {0, 0};
+    (void)c, (void)z;
+    memcpy(a, x, 16);
+    memcpy(b, y, 16);
+    switch (desc & 0xFF) {
+        case SSE_PCLMULQDQ: { /* the carryless product of x's and y's doublewords imm bit 0 and bit 4 choose */
+            const u64 p = a[imm & 1], q = b[imm >> 4 & 1];
+            for (unsigned k = 0; k < 64; ++k)
+                if (q >> k & 1) {
+                    r[0] ^= p << k;
+                    if (k) r[1] ^= p >> (64 - k);
+                }
+            break;
+        }
+        default: break;
+    }
+    memcpy(out, r, 16);
 }
 
 /* AES's SubBytes (op 0) and its inverse (1) of eight bytes, MixColumns (2) and its inverse (3) of two columns: cpu.h's

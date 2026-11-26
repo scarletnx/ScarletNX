@@ -57,6 +57,9 @@ int snx_native_floor(char* why, size_t size);
    LLVM (SNX_WITH_LLVM=OFF). 0 with LLVM, which makes the code there, and the line is said beside it; error is as it
    was then */
 int snx_native_refused(char* error, size_t size);
+/* What this host lacks that its back end does without, through its fallback (x86-64's PCLMULQDQ): 1 with the line of
+   it in why ("cpu: this host has no PCLMULQDQ, done by the fallback"); 0 and "" for a host that has it all */
+int snx_native_fallback(char* why, size_t size);
 /* for a test: from here on as a build without LLVM (1) or as this one (0) */
 void snx_native_set_alone(int on);
 /* a feature a back end takes of every host: its name, and its bit of the host's */
@@ -66,6 +69,8 @@ typedef struct {
 } SnxNativeFeature;
 /* snx_native_floor's line of the features of need that has lacks into why: 1, or 0 and "" for a host that has them */
 int snx_native_lacks(const SnxNativeFeature* need, size_t count, unsigned has, char* why, size_t size);
+/* snx_native_fallback's of the features of done that has lacks: 1, or 0 and "" */
+int snx_native_done(const SnxNativeFeature* done, size_t count, unsigned has, char* why, size_t size);
 /* the object of the functions [first, last) of codegen the host's back end can make, made[i - first] 1 for each, as
    snx_x64_object and snx_arm64_object make it (for this host's features) */
 int snx_native_object(SnxCodegen* codegen, size_t first, size_t last, const SnxNativeOptions* options,

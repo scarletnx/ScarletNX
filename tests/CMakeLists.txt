@@ -4489,6 +4489,21 @@ set(snx_floor_folder "${CMAKE_CURRENT_BINARY_DIR}/native-floor")
 add_test(NAME native_floor_recompile COMMAND snx-test-native-floor-recompile "${snx_floor_folder}")
 set_tests_properties(native_floor_recompile PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77 ENVIRONMENT
     "HOME=${snx_floor_folder}-home;XDG_DATA_HOME=${snx_floor_folder}-home/data;XDG_CONFIG_HOME=${snx_floor_folder}-home/config;XDG_STATE_HOME=${snx_floor_folder}-home/state;XDG_CACHE_HOME=${snx_floor_folder}-home/cache")
+# the x86-64 back end's helpers of the SSE instructions a host lacks (x64_helpers.c's snx_x64_sse) against the
+# instructions, and its code without them against LLVM's, word by word (Nehalem's features: no PCLMULQDQ, no AVX)
+if(SNX_X64)
+    add_executable(snx-test-x64-sse-helped x64_sse_helped.c
+                   "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
+                   "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
+    snx_cpu_helpers_flags(snx-test-x64-sse-helped)
+    snx_test_target(snx-test-x64-sse-helped gnu23)
+    add_test(NAME x64_sse_helped COMMAND snx-test-x64-sse-helped)
+    set_tests_properties(x64_sse_helped PROPERTIES SKIP_RETURN_CODE 77)
+    add_test(NAME recompiler_backends_no_pclmul COMMAND snx-test-recompiler-backends --without 0x3D80 --states 48
+             --ops PMULL_p64)
+    add_test(NAME recompiler_backends_refused_no_pclmul COMMAND snx-test-recompiler-backends --refused --target max
+             --without 0x3D80 --ops PMULL_p64)
+endif()
 # a big-endian PowerPC64's guest doublewords with LDBRX and without (tools/sailgen/ppc64.h), the code run under
 # qemu-ppc64 on CPUs before ISA 2.06 and after (skipped without qemu-ppc64)
 if(NOT WIN32)
