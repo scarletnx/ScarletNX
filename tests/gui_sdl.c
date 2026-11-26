@@ -99,6 +99,13 @@ static void ask_boxes(App* app, GuiRect* r, GuiChoices* choices) {
     ask_place(app, choices);
     *r = choices->box;
 }
+/* the error panel's box (box_panel_on) with its wait (SNX_ERROR_PANEL_WAIT_MS) over, as if that time had passed: for a
+   check of what the box does with a key, not of its wait, which run_error_lines checks */
+static void box_waited(App* app) {
+    Uint64 now = now_ms(app);
+    if (app->confirm.shown && app->confirm.ask == GUI_ASK_ERROR && app->box_panel_on)
+        app->box_panel.shown_ms = now > SNX_ERROR_PANEL_WAIT_MS ? now - SNX_ERROR_PANEL_WAIT_MS : 0;
+}
 static void key(App* app, SDL_Keycode code) {
     SDL_Event e = {0};
     e.type = SDL_EVENT_KEY_DOWN;
@@ -522,6 +529,7 @@ static void row_start(const char* path, char* out, size_t size) {
 static void picker_box_closed(App* app) {
     if (!app->confirm.shown) return;
     assert(app->confirm.ask == GUI_ASK_ERROR && strstr(app->error_line, "The folder picker could not open: "));
+    box_waited(app);
     key(app, SDLK_ESCAPE); /* Back closes it as OK does */
     assert(!app->confirm.shown);
 }
@@ -957,16 +965,25 @@ static void run_error_lines(App* app) {
     app->finished = true;
     assert(!run_error_after(app, path) && app->finished && !app->confirm.shown);
     leave_run(app);
-    /* the launcher's own failure on the same panel: its line whole, OK alone, Enter at once; Run Amberlith's counts
-       keep the theme's box */
-    say_failure(app, "The folder /x cannot be read: Permission denied");
-    assert(app->confirm.shown && app->confirm.ask == GUI_ASK_ERROR && app->box_panel_on && app->box_error.notice);
-    render(app);
-    assert(app->box_panel.items == 1 && app->box_panel.action[0] == SNX_ACTION_CLOSE);
-    key(app, SDLK_DOWN);
-    assert(app->confirm.shown);
-    key(app, SDLK_RETURN);
-    assert(!app->confirm.shown && !app->box_panel_on);
+    /* the launcher's own failure on the same panel: its line whole, OK alone, after the wait every panel has (an Enter
+       in its first half second, held from the row that failed, does nothing); Run Amberlith's counts keep the theme's
+       box */
+    {
+        Uint64 clock_was = app->clock;
+        app->clock = 30000;
+        say_failure(app, "The folder /x cannot be read: Permission denied");
+        assert(app->confirm.shown && app->confirm.ask == GUI_ASK_ERROR && app->box_panel_on && app->box_error.notice);
+        render(app);
+        assert(app->box_panel.items == 1 && app->box_panel.action[0] == SNX_ACTION_CLOSE);
+        key(app, SDLK_RETURN); /* in the wait */
+        assert(app->confirm.shown);
+        app->clock += SNX_ERROR_PANEL_WAIT_MS;
+        key(app, SDLK_DOWN);
+        assert(app->confirm.shown);
+        key(app, SDLK_RETURN);
+        assert(!app->confirm.shown && !app->box_panel_on);
+        app->clock = clock_was;
+    }
     remove(path);
     free(path);
     app->run_log = was;
@@ -990,6 +1007,7 @@ static void open_pages(App* app) {
     snx_gui_open("bogus:x");
     open_asked(app);
     assert(app->confirm.shown && strstr(app->error_line, "--open=bogus:x is not settings:KEY"));
+    box_waited(app);
     key(app, SDLK_RETURN);
     assert(!app->confirm.shown);
     settings_forget(app);
@@ -3630,13 +3648,16 @@ static void add_mod(App* app, const char* temporary) {
     assert(!app->addon_adding && !app->adding_game && app->addons_shown);
     assert(!strncmp(app->message, "Add Mod: the folder picker could not open: ", 43) && app->message[43]);
     assert(app->confirm.shown && app->confirm.ask == GUI_ASK_ERROR && !strcmp(app->error_line, app->message));
+    box_waited(app);
     key(app, SDLK_ESCAPE);
     assert(!app->confirm.shown && app->addons_shown);
     /* none picked */
+    box_waited(app);
     key(app, SDLK_RETURN);
     addon_answer_is(app, NULL);
     assert(!strcmp(app->message, "Add Mod: no folder was picked.") && !app->addon_adding);
     /* a phone's folder of an app or a cloud, which no path reaches */
+    box_waited(app);
     key(app, SDLK_RETURN);
     addon_answer_is(app, cloud);
     snprintf(want, sizeof want, "Not added: %s is not a folder of this device's storage", cloud);
@@ -3725,6 +3746,7 @@ static void add_mod(App* app, const char* temporary) {
         addon_answer_is(app, linked);
         snprintf(want, sizeof want, "Not added: %s is a link, which a mod cannot hold", link);
         assert(!strcmp(app->message, want) && app->confirm.shown && !strcmp(app->error_line, want));
+        box_waited(app);
         key(app, SDLK_ESCAPE);
         assert(!snx_path_exists(gone) && !snx_path_exists(staged) && app->mods_count == 2 && app->addons_shown);
         free(staged);
@@ -3747,6 +3769,7 @@ static void add_mod(App* app, const char* temporary) {
             key(app, SDLK_RETURN);
             addon_answer_is(app, locked);
             assert(!strcmp(app->message, want) && app->confirm.shown);
+            box_waited(app);
             key(app, SDLK_ESCAPE);
             assert(!snx_path_exists(gone) && !snx_path_exists(staged) && app->mods_count == 2);
             free(into);
@@ -3892,12 +3915,15 @@ static void add_cheats(App* app, const char* temporary) {
     assert(!app->addon_adding && app->addons_shown);
     assert(!strncmp(app->message, "Add Cheats: the file picker could not open: ", 44) && app->message[44]);
     assert(app->confirm.shown && app->confirm.ask == GUI_ASK_ERROR && !strcmp(app->error_line, app->message));
+    box_waited(app);
     key(app, SDLK_ESCAPE);
     assert(!app->confirm.shown && app->addons_shown && app->addons_focus == 2);
     /* none picked; a phone's document of an app or a cloud; a folder; not a .txt; past 1 MiB; no cheat in it */
+    box_waited(app);
     key(app, SDLK_RETURN);
     addon_answer_is(app, NULL);
     assert(!strcmp(app->message, "Add Cheats: no file was picked."));
+    box_waited(app);
     key(app, SDLK_RETURN);
     addon_answer_is(app, cloud);
     snprintf(want, sizeof want, "Not added: %s is not a file of this device's storage", cloud);
@@ -4014,6 +4040,7 @@ static void add_cheats(App* app, const char* temporary) {
         key(app, SDLK_RETURN);
         addon_answer_is(app, full);
         assert(!strcmp(app->message, want) && app->confirm.shown && !strcmp(app->error_line, want));
+        box_waited(app);
         key(app, SDLK_ESCAPE);
         assert(!snx_path_exists(gone) && !snx_path_exists(staged) && app->cheats_count == 4);
         free(staged);
@@ -4033,6 +4060,7 @@ static void add_cheats(App* app, const char* temporary) {
             key(app, SDLK_RETURN);
             addon_answer_is(app, locked);
             assert(!strcmp(app->message, want) && app->confirm.shown && !strcmp(app->error_line, want));
+            box_waited(app);
             key(app, SDLK_ESCAPE);
             assert(!snx_path_exists(gone) && !snx_path_exists(staged) && app->cheats_count == 4);
         }
@@ -5341,10 +5369,13 @@ static void paths_asked(App* app, const char* temporary) {
            strstr(app->editor.note, "exit code 2. Enter on its row now types it") && app->path_typed);
     /* and in the box every failure of the system's has, with the row's name: Enter is its OK, then types */
     assert(app->confirm.shown && app->confirm.ask == GUI_ASK_ERROR && !strcmp(app->error_line, app->editor.note));
+    box_waited(app);
     key(app, SDLK_RETURN);
     assert(!app->confirm.shown && !app->editor.typing);
+    box_waited(app);
     key(app, SDLK_RETURN);
     assert(app->editor.typing && !strcmp(app->editor.text, "/tmp/dropped"));
+    box_waited(app);
     key(app, SDLK_ESCAPE);
     /* a list of paths (Java home's): Enter steps its words, so it names the paste that still gives it one */
     app->path_typed = false;
@@ -5354,6 +5385,7 @@ static void paths_asked(App* app, const char* temporary) {
     note_waited(app);
     assert(strstr(app->editor.note, "Java home: the picker could not open: ") &&
            strstr(app->editor.note, "exit code 2. Ctrl+V pastes its path"));
+    box_waited(app);
     if (app->confirm.shown) key(app, SDLK_RETURN);
     assert(SDL_SetClipboardText("/opt/a jdk"));
     memset(&e, 0, sizeof e);
@@ -6673,6 +6705,7 @@ static void locate_answer(App* app, const char* program, const char* path) {
         assert(app->confirm.ask == GUI_ASK_ERROR &&
                (strstr(app->error_line, "Locate...: the file picker could not open: ") ||
                 strstr(app->error_line, "Locate...: the folder picker could not open: ")));
+        box_waited(app);
         key(app, SDLK_ESCAPE);
     }
     assert(app->missing_picked && !app->confirm.shown);
@@ -6849,6 +6882,7 @@ static void missing_file(App* app, const char* dir) {
     want = snx_format("Removed games not kept: %s could not be written (", unwritable);
     assert(!strncmp(app->error_line, want, strlen(want)));
     free(want);
+    box_waited(app);
     key(app, SDLK_ESCAPE);
     assert(app->removed_count == 1 && removed_has(app, program) && listed_at(app, "lost game") == app->games.count);
     for (int i = 0; i < app->recent.count; ++i) assert(strcmp(app->recent.game[i].path, program));
@@ -7276,6 +7310,7 @@ static void ctr_own_console(App* app, const char* dir) {
         assert(!app->editing && !app->own_picks && app->confirm.shown && app->confirm.ask == GUI_ASK_ERROR &&
                !strcmp(app->message, "a file is no recompiled Switch, 3DS, Vita, GBA or DS game: only they have "
                                      "settings of their own"));
+        box_waited(app);
         key(app, SDLK_ESCAPE);
         assert(!app->confirm.shown);
         app->message[0] = 0;
@@ -7988,6 +8023,7 @@ int main(int argc, char** argv) {
        the test's home (APPDATA, Application Support) does, and has none */
     while (app.confirm.shown) {
         assert(app.confirm.ask == GUI_ASK_ERROR);
+        box_waited(&app);
         key(&app, SDLK_RETURN);
     }
     app.message[0] = 0;
@@ -8036,6 +8072,7 @@ int main(int argc, char** argv) {
     /* OK alone, the panel's one item */
     assert(app.box_panel.items == 1 && app.box_panel.action[0] == SNX_ACTION_CLOSE &&
            !strcmp(snx_error_action_label(app.box_panel.action[0], &app.box_error), "OK"));
+    box_waited(&app);
     key(&app, SDLK_DOWN); /* its one choice: nothing to move to, nothing closes */
     assert(app.confirm.shown && !app.confirm.selected);
     key(&app, SDLK_RETURN);
@@ -8047,6 +8084,7 @@ int main(int argc, char** argv) {
         assert(!app.confirm.shown);
         say_failure(&app, "Not saved: x could not be written");
         assert(app.confirm.shown && !strcmp(app.error_line, "Not saved: x could not be written"));
+        box_waited(&app);
         key(&app, SDLK_RETURN);
         assert(!app.confirm.shown);
     }
@@ -8083,6 +8121,7 @@ int main(int argc, char** argv) {
         pads_follow(&app);
         assert(app.confirm.shown && app.confirm.ask == GUI_ASK_ERROR &&
                !strcmp(app.error_line, "Controllers cannot be read: no pad driver here"));
+        box_waited(&app);
         key(&app, SDLK_RETURN);
         pads_follow(&app);
         assert(!app.confirm.shown && !app.pads.started); /* not asked again, nor said */
@@ -8636,6 +8675,7 @@ int main(int argc, char** argv) {
     pack_picked(&app, NULL, "no portal", true);
     assert(strstr(app.message, "could not open: no portal") != NULL); /* said whole in the box of failures too */
     assert(app.confirm.shown && app.confirm.ask == GUI_ASK_ERROR && strstr(app.error_line, "no portal"));
+    box_waited(&app);
     key(&app, SDLK_RETURN);
     assert(!app.confirm.shown);
     app.message[0] = 0;
@@ -9545,6 +9585,7 @@ int main(int argc, char** argv) {
         key(&app, SDLK_UP);
         key(&app, SDLK_RETURN); /* kept: a box says it is not, whole, until OK; the note after */
         assert(app.confirm.shown && app.confirm.ask == GUI_ASK_ERROR && !strcmp(app.error_line, expected));
+        box_waited(&app);
         key(&app, SDLK_RETURN);
         assert(!app.confirm.shown && app.menu.text_size == 1 && !snx_is_file(app.app_file));
         assert(!strcmp(app.editor.note, expected));
@@ -11174,6 +11215,7 @@ int main(int argc, char** argv) {
                      app.app_file);
             assert(!app.place[GUI_PLACE_CACHE] && !strcmp(app.editor.note, line));
             assert(app.confirm.shown && app.confirm.ask == GUI_ASK_ERROR && !strcmp(app.error_line, line)); /* whole */
+            box_waited(&app);
             key(&app, SDLK_RETURN);
             assert(!app.confirm.shown && !snx_is_file(app.app_file));
             free(app.app_file);
@@ -11606,6 +11648,7 @@ int main(int argc, char** argv) {
         assert(app.menu.selected == GUI_SWITCH && !app.menu.running && !app.queue.count);
         assert(!strcmp(app.message, "a card.cci opens with Load 3DS game, not Load Switch NSP/XCI/NRO."));
         assert(app.confirm.shown && app.confirm.ask == GUI_ASK_ERROR);
+        box_waited(&app);
         key(&app, SDLK_RETURN);
         assert(!app.confirm.shown && app.menu.view == GUI_LOAD_DROP);
         assert(!rename(ctr, aside)); /* gone within the second the loads were looked for in */
@@ -11613,6 +11656,7 @@ int main(int argc, char** argv) {
         assert(!app.menu.running && !app.queue.count && app.confirm.shown);
         assert(!strcmp(app.message,
                        "a card.cci opens with Load 3DS game: cannot find scarletnx-3ds beside ScarletNX or on PATH."));
+        box_waited(&app);
         key(&app, SDLK_RETURN);
         assert(!rename(aside, ctr));
         set_env("PATH", path);
@@ -11642,6 +11686,7 @@ int main(int argc, char** argv) {
         play_made(&app);
         assert(!app.menu.running && !strcmp(app.message, "Cannot find scarletnx beside ScarletNX or on PATH."));
         assert(app.confirm.shown && app.confirm.ask == GUI_ASK_ERROR && !strcmp(app.error_line, app.message));
+        box_waited(&app);
         key(&app, SDLK_RETURN); /* in the box too, whole, until OK */
         assert(!app.confirm.shown);
         set_env("PATH", path);
@@ -11896,7 +11941,10 @@ int main(int argc, char** argv) {
         launch(&app, snx_strdup(dump), false);
         assert(!app.dests_shown && !launched(&app) &&
                strstr(app.message, "Main is off and no Extra of it can take a game: Add to Library on its Main"));
-        while (app.confirm.shown) key(&app, SDLK_RETURN);
+        while (app.confirm.shown) {
+            box_waited(&app);
+            key(&app, SDLK_RETURN);
+        }
         app.message[0] = 0;
         folder_keep(&app, extra, GUI_LIBRARY_RECOMPILED, false);
         launch(&app, snx_strdup(dump), false);
@@ -17293,6 +17341,7 @@ int main(int argc, char** argv) {
                     assert(!strcmp(app.editor.note, "User 1's new nickname is not written: no users/ folder"));
                     assert(app.confirm.shown && app.confirm.ask == GUI_ASK_ERROR &&
                            !strcmp(app.error_line, app.editor.note));
+                    box_waited(&app);
                     key(&app, SDLK_RETURN); /* OK */
                     assert(!app.confirm.shown && !strcmp(app.users_form.nick[0], "Aogo") &&
                            !strcmp(app.user_name, "Aogo"));
@@ -17942,6 +17991,7 @@ int main(int argc, char** argv) {
             gui_log_folder(logs);
             say_failure(&app, "a failure the log keeps");
             assert(app.confirm.shown && app.confirm.ask == GUI_ASK_ERROR);
+            box_waited(&app);
             key(&app, SDLK_RETURN);
             say_failure(&app, "a failure the log keeps"); /* not shown again, nor written */
             assert(!app.confirm.shown);
@@ -18182,6 +18232,7 @@ int main(int argc, char** argv) {
             share_pick(&app, 1);
             assert(!held || (!strncmp(app.message, said, strlen(said)) && app.message[strlen(said)] && !g_opened[0] &&
                              snx_is_file(stuck) && app.confirm.shown));
+            box_waited(&app);
             if (app.confirm.shown) key(&app, SDLK_RETURN);
             assert(!chmod(share, 0755));
             free(said);
@@ -18200,6 +18251,7 @@ int main(int argc, char** argv) {
             share_pick(&app, 0);
             assert(!strncmp(app.message, said, strlen(said)) && app.message[strlen(said)] && !g_opened[0]);
             assert(app.confirm.shown && app.confirm.ask == GUI_ASK_ERROR && !strcmp(app.error_line, app.message));
+            box_waited(&app);
             key(&app, SDLK_RETURN); /* in the box too, whole, until OK */
             free(app.state_dir);
             app.state_dir = logs;

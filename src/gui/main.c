@@ -1281,7 +1281,7 @@ static const char* entry_text(int item) { return ui_menu_texts + ui_menu_items[G
 /* a failure of the system's (a file not written, a picker that did not open): in a box over the screen, whole, until
    OK, once in the session; the tips or the note keep it after. Over a run or another question, those alone. In the
    launcher's log once in the session either way */
-static void error_box_open(App* app, const SnxError* e, bool wait);
+static void error_box_open(App* app, const SnxError* e);
 static void say_failure(App* app, const char* text) {
     uint32_t hash = snx_fnv1a32(SNX_FNV32_BASIS, text, strlen(text));
     int i;
@@ -1301,7 +1301,7 @@ static void say_failure(App* app, const char* text) {
         /* a line longer than the panel holds ends in "...": the launcher's log has it whole (gui_log above) */
         snprintf(box.message, sizeof box.message, "%s", text);
         if (strlen(text) >= sizeof box.message) memcpy(box.message + sizeof box.message - 4, "...", 4);
-        error_box_open(app, &box, false);
+        error_box_open(app, &box);
     }
 }
 static SDL_Color rgb(GuiRgb c) {
@@ -1309,10 +1309,9 @@ static SDL_Color rgb(GuiRgb c) {
     return out;
 }
 static Uint64 now_ms(const App* app) { return app->clock ? app->clock : SDL_GetTicks(); }
-/* GUI_ASK_ERROR's box as the error's panel, e in it, the action that fixes it in focus. wait: a run's error, whose game
-   may have had a key down as it stopped, takes no press for SNX_ERROR_PANEL_WAIT_MS; the launcher's own failure follows
-   a press of the launcher's, and takes the next at once */
-static void error_box_open(App* app, const SnxError* e, bool wait) {
+/* GUI_ASK_ERROR's box as the error's panel, e in it, the action that fixes it in focus; as every panel, it takes no press
+   for SNX_ERROR_PANEL_WAIT_MS, so a key held from what came before (a run's game, the launcher's own row) does nothing */
+static void error_box_open(App* app, const SnxError* e) {
     float scale = app->window ? SDL_GetWindowDisplayScale(app->window) : 0.0f;
     app->box_error = *e;
     app->box_panel =
@@ -1323,7 +1322,6 @@ static void error_box_open(App* app, const SnxError* e, bool wait) {
     app->box_panel.back_key = 1;
 #endif
     snx_error_panel_start(&app->box_panel, now_ms(app));
-    app->box_panel.at_once = !wait;
     app->box_panel_on = true;
     gui_confirm_open(&app->confirm, GUI_ASK_ERROR, false);
 }
@@ -17704,7 +17702,7 @@ static bool run_error_after(App* app, const char* path) {
         if (e.kind == SNX_ERROR_DISK || e.kind == SNX_ERROR_SAVE)
             snprintf(e.folder, sizeof e.folder, "%s", app->data_dir ? app->data_dir : "");
         gui_log("run: its error (%s) did not show on its own panel: it shows here", snx_error_kind_name(error.kind));
-        error_box_open(app, &e, true);
+        error_box_open(app, &e);
         free(log);
     }
     if (error.kind < 0 || !error.shown) {
