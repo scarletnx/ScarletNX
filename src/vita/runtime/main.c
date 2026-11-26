@@ -28,7 +28,7 @@
 #include <time.h>
 
 /* the common options scarletnx-vita takes (common/utilities/cli.h): a VPK is always extracted, and the Vita runtime
-   has no keys, frame count, fullscreen setting or window-less run */
+   has no keys, frame count or window-less run */
 static const unsigned vita_cli = SNX_CLI_BIT(SNX_CLI_EXTRACT) | SNX_CLI_BIT(SNX_CLI_RECOMPILE) |
                                  SNX_CLI_BIT(SNX_CLI_GAME) | SNX_CLI_BIT(SNX_CLI_UPDATE) | SNX_CLI_BIT(SNX_CLI_DATA) |
                                  SNX_CLI_BIT(SNX_CLI_OUTDIR) | SNX_CLI_BIT(SNX_CLI_OUTPUT) |
@@ -370,8 +370,8 @@ int snx_vita_main(int argc, char** argv) {
         if (!strncmp(a, "--", 2) && strchr(a, '=')) {
             /* the Vita debug and run tables', --press-len= and --shot-every= being vita_press_len and vita_shot_every
                (a Switch game's are g_unattended_ini's), vulkan_video (which the Vita's AVC decoder doesn't take yet),
-               the upscaler and the anti-aliasing (the presenter's, gpu/vk.c), a Vulkan extension's (vk_ext_*) and
-               gamepad_map */
+               the upscaler and the anti-aliasing (the presenter's, gpu/vk.c), fullscreen (its window's), a Vulkan
+               extension's (vk_ext_*) and gamepad_map */
             char key[64];
             const char* value = settings_arg(a, key, sizeof key);
             const IniOpt* o = NULL;
@@ -389,6 +389,7 @@ int snx_vita_main(int argc, char** argv) {
                                                                           : key);
                 if (!o) o = ini_find(g_vita_debug_ini, key);
                 if (!o) o = ini_find(g_debug_ini, key);
+                if (!o && !strcmp(key, "fullscreen")) o = ini_find(g_display_ini, key);
                 if (!o && (!strcmp(key, "vulkan_video") || !strcmp(key, "upscaler") ||
                            !strcmp(key, "upscaler_sharpness") || !strcmp(key, "anti_aliasing")))
                     o = ini_find(g_graphics_ini, key);
