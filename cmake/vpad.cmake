@@ -27,10 +27,11 @@ target_compile_options(snx_vpad_consoles PRIVATE -pedantic-errors -Wall -Wextra 
 if(TARGET SDL3::SDL3)
     include("${CMAKE_CURRENT_LIST_DIR}/notice.cmake") # the menu's letters' scale
     include("${CMAKE_CURRENT_LIST_DIR}/pad_sdl.cmake") # a key's text (key_text.c)
+    include("${CMAKE_CURRENT_LIST_DIR}/window_icon.cmake") # a window to fullscreen and back
     add_library(snx_vpad_sdl STATIC "${PROJECT_SOURCE_DIR}/src/common/utilities/vpad_sdl.c"
                                     "${PROJECT_SOURCE_DIR}/src/common/utilities/hotkeys.c")
     target_include_directories(snx_vpad_sdl PRIVATE "${PROJECT_BINARY_DIR}/generated")
-    target_link_libraries(snx_vpad_sdl PUBLIC snx_vpad SDL3::SDL3 snx_pad_sdl PRIVATE snx_notice)
+    target_link_libraries(snx_vpad_sdl PUBLIC snx_vpad SDL3::SDL3 snx_pad_sdl PRIVATE snx_notice snx_window_icon)
     set_target_properties(snx_vpad_sdl PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
     target_compile_options(snx_vpad_sdl PRIVATE -pedantic-errors -Wall -Wextra -Werror=missing-prototypes
                                                 -Werror=missing-variable-declarations)

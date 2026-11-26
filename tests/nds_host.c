@@ -179,6 +179,18 @@ int main(void) {
     else
         printf("nds_host: no Vulkan window here (%s): skipped\n", error);
     nds_host_close(host);
+    /* --fullscreen's window starts fullscreen, as a Switch game's with fullscreen=1 */
+    if (opened && !failed) {
+        SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "offscreen"); /* SDL_Quit, as a host closes, drops the hints */
+        SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "dummy");
+        host = nds_host_open(NULL, "nds_host", ini, NULL, 0, 1, error, sizeof error);
+        SDL_Window* window = host && nds_vk() ? nds_vk()->host.window : NULL;
+        if (!window || !SDL_SyncWindow(window) || !(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN)) {
+            fprintf(stderr, "nds_host: the window opened with fullscreen is not fullscreen (%s)\n", host ? "" : error);
+            failed = 1;
+        }
+        nds_host_close(host);
+    }
     if (snx_remove_tree(dir)) fprintf(stderr, "nds_host: %s could not be removed\n", dir);
     free(ini);
     free(dir);

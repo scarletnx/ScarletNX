@@ -32,6 +32,7 @@
 #include "common/utilities/vpad_sdl.h"
 #include "common/utilities/state_header.h"
 #include "common/platform/file.h"
+#include "common/utilities/window_fullscreen.h"
 #include "common/utilities/window_icon.h"
 #include "snx_settings.h"
 #include <signal.h>
@@ -569,9 +570,8 @@ static void pointer_event(const SDL_Event* event) {
 }
 /* a window to fullscreen and back, said when the system refuses */
 static void fullscreen(SDL_Window* window, bool on) {
-    if (!SDL_SetWindowFullscreen(window, on))
-        fprintf(stderr, "3ds gpu: the window cannot go %s: %s\n", on ? "fullscreen" : "back from fullscreen",
-                SDL_GetError());
+    char why[256];
+    if (!snx_window_fullscreen(window, on, why, sizeof why)) fprintf(stderr, "3ds gpu: %s\n", why);
 }
 void snx_ctr_present_fullscreen(void) {
     const SnxCtrVk* v = snx_ctr_vk();

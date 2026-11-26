@@ -91,7 +91,7 @@ int main(void) {
         fprintf(stderr, "agb_host_vk: SDL's offscreen video: %s\n", SDL_GetError());
         return 1;
     }
-    AgbVk* vk = agb_vk_open("agb_host_vk", AGB_SCREEN_WIDTH * 4, AGB_SCREEN_HEIGHT * 4, false, error, sizeof error);
+    AgbVk* vk = agb_vk_open("agb_host_vk", AGB_SCREEN_WIDTH * 4, AGB_SCREEN_HEIGHT * 4, error, sizeof error);
     if (!vk) {
         printf("agb_host_vk: the placement passed; no Vulkan window here (%s): the rest skipped\n", error);
         SDL_Quit();

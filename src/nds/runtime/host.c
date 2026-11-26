@@ -11,6 +11,7 @@
 #include "common/utilities/hotkeys.h"
 #include "common/utilities/state_header.h"
 #include "common/utilities/vpad_sdl.h"
+#include "common/utilities/window_fullscreen.h"
 #include "common/utilities/window_icon.h"
 #include <SDL3/SDL.h>
 #include <stdio.h>
@@ -211,7 +212,8 @@ NdsHost* nds_host_open(NdsBoard* board, const char* title, const char* ini, cons
     NdsVk* v = nds_vk();
     if (v && v->host.window) {
         snx_window_icon(v->host.window);
-        if (fullscreen) SDL_SetWindowFullscreen(v->host.window, true);
+        char said[256];
+        if (!snx_window_fullscreen(v->host.window, fullscreen, said, sizeof said)) nds_host_say(said);
         snx_pad_map_position(&host->pad);
         snx_vpad_window_open(v->host.window, ini, nds_host_say, nds_vk_notice);
     }
