@@ -38,7 +38,7 @@
    writes, an event's add of v to what is there) */
 enum { FX_FENCE, FX_WRITE, FX_ADD };
 
-enum { JOB_SUBMIT, JOB_FENCE, JOB_PRESENT, JOB_DESTROY, JOB_WAIT, JOB_SETTLE };
+enum { JOB_SUBMIT, JOB_FENCE, JOB_PRESENT, JOB_DESTROY, JOB_WAIT, JOB_SETTLE, JOB_WRITE };
 
 u32 nvn_replay_queue(void) {
     u32 i;
@@ -495,6 +495,70 @@ static void present_run(const void* arg, u64 bytes) {
     else
         syncpt_incr(c.syncpt);
 }
+/* a write's bytes into guest memory, as the game wrote them, recorded for the renderer's kept descriptors as
+   nvn_object.c's write did. On the GPU thread: memory the GPU owns there lands first (own_acquire), as a fault on it
+   would wait for the renderer's lock */
+static void write_land(u64 gva, const u8* data, u32 len) {
+    if (own_any()) own_acquire(gva, len);
+    memcpy(GP(gva), data, len);
+    gpu_mem_written_cpu(gva, len);
+}
+/* each lane's work stopped at a wait (under g_nvn.replay.lock): its seq by queue (1 up), 0 where none waits. Only a
+   lane's first work waits. One pass over the work */
+static void lanes_stopped(u64 stop[NVN_QUEUES + 2]) {
+    for (u32 i = 0; i < NVN_QUEUES + 2; i++) stop[i] = 0;
+    for (u32 i = 0; i < NVN_JOBS; i++) {
+        const NvnJob* c = &g_nvn.replay.jobs[i];
+        if (c->queue && c->queue < NVN_QUEUES + 2 && c->waiting) stop[c->queue] = c->seq;
+    }
+}
+/* whether group g's writes may land (under the lock): each lane reached its JOB_WRITE, or stopped at a wait before it,
+   after which the console's GPU reads what the CPU wrote meanwhile (a game registers a sampler between a recording's
+   event wait and that event's signal) */
+static int group_ready(u64 g) {
+    u64 stop[NVN_QUEUES + 2];
+    lanes_stopped(stop);
+    for (u32 i = 0; i < NVN_JOBS; i++) {
+        const NvnJob* c = &g_nvn.replay.jobs[i];
+        if (c->queue && c->kind == JOB_WRITE && c->handles[0] == g && !c->applied &&
+            !(c->queue < NVN_QUEUES + 2 && stop[c->queue] && stop[c->queue] < c->seq))
+            return 0;
+    }
+    return 1;
+}
+/* the groups that may land, oldest first (GPU thread) */
+static void writes_land(void) {
+    NvnReplayState* st = &g_nvn.replay;
+    for (;;) {
+        u8 data[64][32];
+        u64 at[64];
+        u32 len[64], n = 0;
+        pm_lock(&st->lock);
+        if (!st->wq_count || !group_ready(st->wq[st->wq_head].group)) {
+            pm_unlock(&st->lock);
+            return;
+        }
+        const u64 g = st->wq[st->wq_head].group;
+        if (st->group_open == g) st->group_open = 0; /* it takes no more writes */
+        while (st->wq_count && st->wq[st->wq_head].group == g && n < 64) {
+            at[n] = st->wq[st->wq_head].gva;
+            len[n] = st->wq[st->wq_head].len;
+            memcpy(data[n], st->wq[st->wq_head].data, len[n]);
+            n++;
+            st->wq_head = (st->wq_head + 1) % NVN_WRITES;
+            st->wq_count--;
+        }
+        const int whole = !st->wq_count || st->wq[st->wq_head].group != g;
+        pm_unlock(&st->lock);
+        for (u32 k = 0; k < n; k++) write_land(at[k], data[k], len[k]);
+        atomic_fetch_sub_explicit(&st->writes, n, memory_order_release);
+        if (whole) {
+            pm_lock(&st->lock);
+            st->group_landed = g;
+            pm_unlock(&st->lock);
+        }
+    }
+}
 static int run(void* arg) {
     NvnJob* j = (NvnJob*)arg;
     NvnReplayQueue* q = j->kind == JOB_SETTLE ? NULL : &g_nvn.replay.q[j->queue - 1]; /* JOB_SETTLE is no queue's */
@@ -533,18 +597,40 @@ static int run(void* arg) {
                 SNX_PLOT("gpu nvn replay build us", (double)(build_ns / 1000));
                 SNX_PLOT("gpu nvn replay land us", (double)(land_ns / 1000));
             }
-            if (!done) return 0;
+            if (!done) {
+                if (j->waiting) writes_land(); /* its lane's writes behind the wait may land now */
+                return 0;
+            }
             break;
         }
         case JOB_WAIT:
             if (!sync_over(&j->wait)) {
                 if (!j->waiting && g_renderer->stream_end) gpu_stream_end();
                 j->waiting = 1;
+                writes_land();
                 gpu_poll_why(GPU_POLL_SYNC);
                 return 0;
             }
             break;
         case JOB_FENCE: stream_incr(q->syncpt); break;
+        case JOB_WRITE: { /* the lane's later work waits until its group lands */
+            const u64 g = j->handles[0];
+            pm_lock(&g_nvn.replay.lock);
+            j->applied = 1;
+            int landed = g_nvn.replay.group_landed >= g;
+            pm_unlock(&g_nvn.replay.lock);
+            if (!landed) {
+                writes_land();
+                pm_lock(&g_nvn.replay.lock);
+                landed = g_nvn.replay.group_landed >= g;
+                pm_unlock(&g_nvn.replay.lock);
+            }
+            if (!landed) {
+                gpu_poll_why(GPU_POLL_SETTLE);
+                return 0;
+            }
+            break;
+        }
         case JOB_SETTLE:
             if (!settled()) {
                 gpu_poll_why(GPU_POLL_SETTLE);
@@ -623,6 +709,7 @@ static NvnJob* job(u32 queue, u32 kind, u32 n) {
     j->queue = queue;
     j->kind = kind;
     j->n = n;
+    j->seq = ++g_nvn.replay.job_seq;
     return j;
 }
 void nvn_replay_submit(u32 queue, u32 n, u64 handles, u64* ready, u32* shown) {
@@ -678,6 +765,63 @@ void nvn_replay_submit(u32 queue, u32 n, u64 handles, u64* ready, u32* shown) {
     *shown = p.shown;
 }
 u64 nvn_replay_submitted(void) { return atomic_load_explicit(&g_nvn.replay.submitted, memory_order_acquire); }
+u32 nvn_replay_writes_pending(void) { return atomic_load_explicit(&g_nvn.replay.writes, memory_order_acquire); }
+int nvn_replay_write(u64 gva, const void* data, u32 len) {
+    NvnReplayState* st = &g_nvn.replay;
+    if (len > sizeof st->wq[0].data) return 0;
+    pm_lock(&st->lock);
+    u32 lanes[NVN_QUEUES], live = 0;
+    for (u32 i = 0; i < NVN_QUEUES; i++)
+        if (st->q[i].syncpt) lanes[live++] = i;
+    /* nothing queued: no work reads it before, and every live lane is idle or stopped at a wait, behind which it reads
+       what the CPU wrote meanwhile. The write lands at once */
+    int now = !st->wq_count;
+    if (now) {
+        u64 stop[NVN_QUEUES + 2];
+        lanes_stopped(stop);
+        for (u32 k = 0; k < live && now; k++)
+            if (!stop[lanes[k] + 1] && gpu_lane_busy(lanes[k])) now = 0;
+    }
+    if (now) {
+        pm_unlock(&st->lock);
+        write_land(gva, data, len);
+        return 1;
+    }
+    if (st->wq_count == NVN_WRITES) {
+        pm_unlock(&st->lock);
+        return 0;
+    }
+    u64 g = st->group_open;
+    if (!g || st->group_open_seq != st->job_seq) { /* work was queued since the open group's markers: a new group */
+        NvnJob* taken[NVN_QUEUES];
+        u32 n = 0;
+        while (n < live && (taken[n] = POOL_TRY(st->jobs, st->next_job))) taken[n++]->queue = ~0u; /* held */
+        if (n < live) {
+            while (n) POOL_PUT(taken[--n]);
+            pm_unlock(&st->lock);
+            return 0;
+        }
+        g = ++st->group_next;
+        for (u32 k = 0; k < live; k++) {
+            NvnJob* m = taken[k];
+            m->queue = lanes[k] + 1;
+            m->kind = JOB_WRITE;
+            m->seq = ++st->job_seq;
+            m->handles[0] = g;
+            gpu_call_poll(run, m, lanes[k]);
+        }
+        st->group_open = g;
+        st->group_open_seq = st->job_seq;
+    }
+    u32 at = (st->wq_head + st->wq_count++) % NVN_WRITES;
+    st->wq[at].gva = gva;
+    st->wq[at].group = g;
+    st->wq[at].len = len;
+    memcpy(st->wq[at].data, data, len);
+    atomic_fetch_add_explicit(&st->writes, 1, memory_order_relaxed);
+    pm_unlock(&st->lock);
+    return 1;
+}
 u64 nvn_replay_walked(void) { return atomic_load_explicit(&g_nvn.replay.walked, memory_order_acquire); }
 void nvn_replay_wait(u32 queue, const NvnSync* s) {
     if (!atomic_load_explicit(&s->fenced, memory_order_acquire) || !s->syncpt) return;

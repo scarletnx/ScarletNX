@@ -8,14 +8,21 @@
 include_guard(GLOBAL)
 include("${CMAKE_CURRENT_LIST_DIR}/sailgen.cmake")
 
-# on by default where the back end runs: x86-64, but Android (its APKs have been made without it)
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$" AND NOT ANDROID)
+# on by default where the back end's code runs: every x86-64 system, Android's APK of it among them
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
     set(snx_sail_x64_default ON)
 else()
     set(snx_sail_x64_default OFF)
 endif()
 option(SNX_SAIL_X64 "Build the x86-64 back end: without it LLVM makes every function" ${snx_sail_x64_default})
 set(SNX_X64 "${SNX_SAIL_X64}" CACHE INTERNAL "the x86-64 back end is built (SNX_SAIL_X64)")
+# in the log: a tree keeps the SNX_SAIL_X64 it was first configured with
+if(SNX_X64)
+    set(snx_x64_built "built")
+else()
+    set(snx_x64_built "not built")
+endif()
+message(STATUS "x86-64 back end: ${snx_x64_built} for ${CMAKE_SYSTEM_PROCESSOR} (SNX_SAIL_X64=${SNX_SAIL_X64})")
 
 # the file path, of the package cache: downloaded from url where it is not there, and the revision's that isel.py makes
 # the selection from (its SHA-256), or the configure stops: with what came, what was expected and what to do

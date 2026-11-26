@@ -41,7 +41,9 @@ static struct {
     u64 presented[2];
     u64 unfinished;
     u32 trace_records, trace_flushes, trace_starts; /* the replay's calls of nvn_trace.c */
+    u32 saw[16], nsaw; /* the word at DESC each draw found, as a draw reads a descriptor when it binds */
 } fixture;
+#define DESC 0xA00
 
 void pm_init(PMutex* m) { (void)m; }
 void pm_lock(PMutex* m) { (void)m; }
@@ -87,6 +89,13 @@ void gpu_call(void (*fn)(void*), void* arg, const u32* chans, u32 n) {
     fixture.jobs[i].fn = fn;
     fixture.jobs[i].poll = NULL;
     fixture.jobs[i].arg = arg;
+}
+int gpu_lane_busy(u32 lane) {
+    for (u32 k = 0; k < fixture.count; k++) {
+        const u32 i = (fixture.head + k) % 64;
+        if (fixture.jobs[i].poll && fixture.jobs[i].lane == lane) return 1;
+    }
+    return 0;
 }
 void gpu_call_poll(int (*fn)(void*), void* arg, u32 lane) {
     assert(fixture.count < 64 && lane < 64);
@@ -223,6 +232,7 @@ int nvn_draw_record(NvnDraw* d, u32 op, u64 payload, u32 size) {
     }
     if (op != OP_DRAW) return 0;
     fixture.draws++;
+    fixture.saw[fixture.nsaw++ % 16] = gr32(DESC);
     return 1;
 }
 /* gpu_hook_trace (nvn_trace.c's) on, the replay's calls counted: each record offered, a wait and the end of a
@@ -652,6 +662,70 @@ static void finish_all(void) {
     nvn_replay_queue_free(a);
     nvn_replay_queue_free(c);
 }
+/* A descriptor written over another while work queued before it is not replayed (nvn_replay_write): that work reads the
+   one it replaces, the work queued after reads the new one, and the game does not wait. A queue stopped at a wait reads
+   after it what the CPU wrote meanwhile, as the console's GPU does: a write lands at once there, and one queued before
+   the queue stopped lands as it stops. With two live queues it holds each queue's later work back until it lands */
+static void ordered_writes(void) {
+    u32 a = nvn_replay_queue(), two = 2, three = 3, four = 4;
+    u64 ready = 0;
+    u32 shown = 0;
+    gw32(DESC, 1);
+    *(NvnRecHdr*)(void*)GP(0x400) = (NvnRecHdr){OP_DRAW | NVN_REC_LAST, 8};
+    gw64(0x108, 0x400);
+    nvn_replay_submit(a, 1, 0x108, &ready, &shown);
+    u32 at = fixture.nsaw;
+    assert(nvn_replay_write(DESC, &two, 4) && gr32(DESC) == 1 && nvn_replay_writes_pending() == 1);
+    nvn_replay_submit(a, 1, 0x108, &ready, &shown);
+    drain();
+    assert(fixture.nsaw == at + 2 && fixture.saw[at % 16] == 1 && fixture.saw[(at + 1) % 16] == 2);
+    assert(gr32(DESC) == 2 && !nvn_replay_writes_pending());
+
+    /* stopped at an event the game signals later: the write lands now, and the draw behind the wait reads it */
+    gw32(0x800, 0);
+    *(NvnRecHdr*)(void*)GP(0x400) = (NvnRecHdr){OP_WAIT_EVENT, 24};
+    *(NvnPWaitEvent*)(void*)GP(0x408) = (NvnPWaitEvent){0x800, NVN_EVENT_WAIT_MODE_EQUAL, 1};
+    *(NvnRecHdr*)(void*)GP(0x418) = (NvnRecHdr){OP_DRAW | NVN_REC_LAST, 8};
+    nvn_replay_submit(a, 1, 0x108, &ready, &shown);
+    assert(!pump());
+    at = fixture.nsaw;
+    assert(nvn_replay_write(DESC, &three, 4) && gr32(DESC) == 3 && !nvn_replay_writes_pending());
+    gw32(0x800, 1);
+    drain();
+    assert(fixture.nsaw == at + 1 && fixture.saw[at % 16] == 3);
+
+    /* queued before the work in front of it stops: the draw before the wait reads the old one, the one behind it the
+       new one, which lands as the queue stops */
+    gw32(0x800, 0);
+    *(NvnRecHdr*)(void*)GP(0x400) = (NvnRecHdr){OP_DRAW, 8};
+    *(NvnRecHdr*)(void*)GP(0x408) = (NvnRecHdr){OP_WAIT_EVENT, 24};
+    *(NvnPWaitEvent*)(void*)GP(0x410) = (NvnPWaitEvent){0x800, NVN_EVENT_WAIT_MODE_EQUAL, 1};
+    *(NvnRecHdr*)(void*)GP(0x420) = (NvnRecHdr){OP_DRAW | NVN_REC_LAST, 8};
+    nvn_replay_submit(a, 1, 0x108, &ready, &shown);
+    at = fixture.nsaw;
+    assert(nvn_replay_write(DESC, &four, 4) && gr32(DESC) == 3);
+    assert(!pump() && gr32(DESC) == 4 && !nvn_replay_writes_pending());
+    gw32(0x800, 1);
+    drain();
+    assert(fixture.nsaw == at + 2 && fixture.saw[at % 16] == 3 && fixture.saw[(at + 1) % 16] == 4);
+
+    /* two live queues: a's draw queued before the write reads the old one, b's queued after it the new one, though b
+       had no work before it. Two writes with no work between them go in one group */
+    u32 b = nvn_replay_queue();
+    *(NvnRecHdr*)(void*)GP(0x400) = (NvnRecHdr){OP_DRAW | NVN_REC_LAST, 8};
+    nvn_replay_submit(a, 1, 0x108, &ready, &shown);
+    at = fixture.nsaw;
+    assert(nvn_replay_write(DESC, &two, 4) && nvn_replay_write(DESC + 4, &three, 4) && gr32(DESC) == 4);
+    assert(nvn_replay_writes_pending() == 2);
+    nvn_replay_submit(b, 1, 0x108, &ready, &shown);
+    drain();
+    assert(fixture.nsaw == at + 2 && gr32(DESC) == 2 && gr32(DESC + 4) == 3 && !nvn_replay_writes_pending());
+    u32 saw_a = fixture.saw[at % 16], saw_b = fixture.saw[(at + 1) % 16];
+    assert((saw_a == 4 && saw_b == 2) || (saw_a == 2 && saw_b == 4)); /* the lanes' order is the GPU thread's */
+    assert(saw_a + saw_b == 6);
+    nvn_replay_queue_free(b);
+    nvn_replay_queue_free(a);
+}
 /* nvn_replay_finish_all returns with a queue stopped at a wait that only the game ends, and never before a wait that
    ends without the game. */
 static void finish_all_waits(void) {
@@ -743,6 +817,10 @@ static void bench_replay(void) {
         nvn_replay_queue_free(queue);
     }
 }
+/* a descriptor write's landing, recorded for the renderer (nvn_replay.c's write_land): nothing keeps them here */
+void gpu_mem_written_cpu(u64 cpu, u64 size) {
+    (void)cpu, (void)size;
+}
 int main(int argc, char** argv) {
     NvnRecHdr draw = {OP_DRAW, 8}, stride = {OP_COPY_STRIDE, 24}, end = {OP_END, 8};
     memcpy(GP(0x200), &draw, sizeof draw);
@@ -796,6 +874,7 @@ int main(int argc, char** argv) {
     own_headers();
     finish_all();
     finish_all_waits();
+    ordered_writes();
     if (argc == 2 && !strcmp(argv[1], "--bench-replay")) bench_replay();
     puts("nvn_queue_lifetime: ok");
     return 0;

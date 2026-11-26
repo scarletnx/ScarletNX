@@ -6,13 +6,17 @@
 #define SNX_FATAL_SCREEN_H
 #include <stddef.h>
 
-#define FATAL_ROW 1024 /* bytes of one row: cols code points of up to 4 bytes */
+#define FATAL_BOX_COLS 100  /* code points of a row of the box SDL shows */
+#define FATAL_ROW      1024 /* bytes of one row: cols code points of up to 4 bytes */
 
 /* what msg (the text fatal() logged) means, in a sentence; NULL for an error with no known cause */
 const char* fatal_hint(const char* msg);
 /* text in rows of cols code points at most, broken at a space when one is in the row, else cut: up to max rows into
    rows. Returns the rows the text takes, which may be more than max (those past it are not written) */
 int fatal_wrap(const char* text, int cols, char (*rows)[FATAL_ROW], int max);
+/* text with each of its lines cut into rows of cols code points as fatal_wrap cuts them, the rows apart by a newline and
+   its empty lines kept: for a box as wide as its longest line (SDL's on Windows). malloc'd, NULL out of memory */
+char* fatal_lines(const char* text, int cols);
 /* text as typed, spaces kept, in rows of cols code points: its last max rows into rows, the first of them first.
    Returns the rows written */
 int fatal_cut(const char* text, int cols, char (*rows)[FATAL_ROW], int max);

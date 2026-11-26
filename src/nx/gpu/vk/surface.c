@@ -1177,10 +1177,15 @@ static void rt_load_rows(VkCommandBuffer cb, Surf* s, VkBuffer buf, u32 pitch, u
    at most (a row of blocks at least), as the scratch buffer stays as big as the most asked of it. Each band is staged
    from where it lies and deswizzled into the start of the scratch buffer: the barrier before its move orders the copy
    of the band before out of there */
-static int load_bands(Surf* s, u32 pitch) {
+/* whether guest memory [gva, gva + n) was written since s's draw baseline (draw_gw, draw_wseen): by the GPU or the CPU,
+   or where the CPU's writes can't be told */
+static int band_changed(const Surf* s, u64 gva, u64 n) {
+    return gpu_mem_dirty_since(s->draw_gw, gva, n) || vk_written_since(gmem_host(gva, n), n, s->draw_wseen) != 0;
+}
+static int load_bands(Surf* s, u32 pitch, int changed) {
     u32 h = guest_h(s), band = 8u << bl_height(h, s->bh);
     u32 rows = (u32)(g_vk.alloc_cap / VK_PART_SHARE / pitch) / band * band;
-    if (!rows) rows = band;
+    if (!rows || changed) rows = band; /* changed: a row of blocks at a time, to load the written ones alone */
     for (u32 l = 0; l < s->layers; l++)
         for (u32 y = 0; y < h; y += rows) {
             VkBlMove m = rt_bl_move(s, pitch);
@@ -1190,6 +1195,7 @@ static int load_bands(Surf* s, u32 pitch) {
             m.rows = h - y < rows ? h - y : rows;
             vk_bl_range(&m, &lo, &hi);
             u64 from = s->gva + (u64)l * s->layer_size + lo;
+            if (changed && !band_changed(s, from, hi - lo)) continue;
             if (!vk_guest_in_place(from, hi - lo, 16, &staged, &off)) { /* else read in a region */
                 u8* p = vk_stage_guest_input(from, hi - lo, hi - lo, &staged, &off);
                 if (!p) return load_fail(s, l, y, "staging", hi - lo);
@@ -1220,7 +1226,7 @@ static int surf_load_bl(Surf* s) {
     u64 off;
     vk_render_end();
     if (lin > g_vk.alloc_cap / VK_PART_SHARE && !s->msaa && s->sw == s->w && s->sh == s->h && !surf_volume(s))
-        return load_bands(s, pitch);
+        return load_bands(s, pitch, 0);
     const int in_place = vk_guest_in_place(s->gva, sz, 16, &staged, &off);
     u8* p = in_place ? NULL : vk_stage_guest_input(s->gva, sz, sz, &staged, &off);
     if (!in_place && !p) return load_fail(s, 0, 0, "staging", sz);
@@ -2595,13 +2601,27 @@ static void rt_stride_keep(Surf* s, u64 layer_size) {
     if (s->layer_size < layer_size) s->layer_size = layer_size;
 }
 /* Newer guest memory at this address takes precedence, as it does where a texture takes a target's draw
-   (vk_rt_drawn_fresh, tex_take_drawn): where the CPU wrote the target's memory since it was drawn, the target is loaded
-   again from it. What the draw left is in that memory before the write lands: a live target is watched and published at
-   the CPU's first access (vk_rt_watch_hit), and a parked one was published as it was parked (rt_park_publish). A depth
-   target holds nothing a load takes, and one never drawn has no baseline to tell by */
+   (vk_rt_drawn_fresh, tex_take_drawn): where memory was written since the target was drawn, the target takes those
+   bytes again from it. A block linear one takes the rows of blocks written since alone (load_bands): the rest of its
+   draw is in it, not in memory, when it was parked (its pages left the watch, and a parked target is not published) or
+   the GPU wrote there. It is drawn after that, as memory lacks the rest. Another loads all of it again, as a target
+   made over memory does. A depth target holds nothing a load takes, and one never drawn has no baseline to tell by */
 static void rt_stride_written(Surf* s) {
-    if (!s->f.depth && s->draw_wseen && s->layout != VK_IMAGE_LAYOUT_UNDEFINED && !vk_rt_drawn_fresh(s))
-        vk_rt_reload(s->gva);
+    if (s->f.depth || !s->draw_wseen || s->layout == VK_IMAGE_LAYOUT_UNDEFINED || vk_rt_drawn_fresh(s)) return;
+    if (s->bl && s->f.raw && moves_scaled(s) && s->sw == s->w && s->sh == s->h && !s->msaa && !surf_volume(s) &&
+        flush_bytes(s)) {
+        vk_render_end();
+        vk_stamp_runtime_begin(); /* the runtime's work, as vk_rt_reload's */
+        const int ok = load_bands(s, (guest_w(s) * s->f.bpp + 15) & ~15u, 1);
+        vk_stamp_runtime_end();
+        if (ok) {
+            vk_surf_wrote(s);
+            s->draw_wseen = 0; /* a new baseline from now: memory's writes are in it */
+            vk_rt_drawn(s);
+            return;
+        }
+    }
+    vk_rt_reload(s->gva);
 }
 /* A target parked at gva of the shape of want, or NULL: first the one of want's layer size, else, for a single layer, the
    same target whose layer only its padding differs in (*padding is 1 then). The copy that names a target knows its
@@ -2628,12 +2648,21 @@ static Surf* rt_find_parked(u64 gva, const Surf* want, u32 fkey, int* padding) {
     return found;
 }
 static void rt_publish_now(Surf* s, int why);
-/* A target that takes its address from another parks it, which drops its pages from the watch (rt_pages): a CPU write
-   there is no access vk_rt_watch_hit sees, and lands over bytes the draw never wrote back, so the target is published
-   first, whatever of its pixels memory lacks */
-static void rt_park_publish(u64 gva) {
+/* A new target that takes its address from another loads that memory (rt_create_): the live one is published first,
+   whatever of its pixels memory lacks, as the console's memory holds its draw there.
+
+   Not when a parked target comes back (back): it loads nothing, it holds its own pixels, and the live one keeps its own
+   while parked. What reads the parked one's draw from memory takes it otherwise: the live one named again takes only
+   the rows written since (rt_stride_written), and one the caches let go is published then (rt_give_way). Published at
+   each park, the targets that games draw in turn at one address (a blur chain's levels over shared scratch memory, a
+   2560x1440 target and a 640x360 one) were written back each frame: about 10 MB a present in an Ounce game's race,
+   1.3 ms of the GPU's copies. Those write-backs were also newer than the draws over the memory they share, so a
+   texture took none of the levels and loaded them from memory, which held another shape's bytes: an area name's
+   backdrop showed as stripes on each load into the world */
+static void rt_park_publish(u64 gva, const Surf* back) {
     Surf* live = vk_rt_find(gva);
-    if (live && flush_bytes(live) && !rt_superseded(live)) rt_publish_now(live, VK_PUB_OTHER);
+    if (!live || back) return;
+    if (flush_bytes(live) && !rt_superseded(live)) rt_publish_now(live, VK_PUB_OTHER);
 }
 static Surf* rt_create_(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, int depth, u32 pitch, u32 layers, u64 layer_size,
                         int volume, u32 msaa);
@@ -2708,7 +2737,7 @@ static Surf* rt_create_(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, int depth, u32
         /* cur's own pixels, which no target takes, go to memory as it is parked. After its freshness is asked, as the
            publish's write to memory is newer than its draw to vk_rt_drawn_fresh, and before the parked targets are
            looked up for good, as it can let some go */
-        rt_park_publish(gva);
+        rt_park_publish(gva, parked);
         if (cur && vk_rt_find(gva) != cur) cur = NULL, cur_fresh = 0;
         parked = rt_find_parked(gva, &want, fkey, &padding);
     }
@@ -3342,6 +3371,16 @@ static void rt_aside_check(Surf* s) {
    memory (rt_demote) and stays there, where it frees none of the GPU's memory. One that can't move stays for its age,
    and goes under the pressure with its pixels, said */
 static u64 rt_give_way(Surf* s, int lossy) {
+    /* a parked one with pixels memory lacks, memory not written by the GPU since its draw: published at its address,
+       then it goes as memory has its pixels. Its park didn't publish it (rt_park_publish), and the console's memory has
+       its draw. The CPU's writes since stay over it (surf_publish keeps them) */
+    if ((s->gva >> 63) && s->is_rt && s->draw_wseen && flush_bytes(s) && vk_surf_can_writeback(s) &&
+        !gpu_mem_dirty_since(s->draw_gw, s->gva & ~(1ull << 63), rt_bytes(s))) {
+        const u64 parked = s->gva;
+        s->gva = parked & ~(1ull << 63);
+        rt_publish_now(s, VK_PUB_OTHER);
+        s->gva = parked;
+    }
     if (lossless(s)) {
         SNX_ZONE_T(z, "vk mem target reclaim", "%ux%u %lluKB, epoch %u: memory has its pixels, evict", s->w, s->h,
                    (unsigned long long)(s->bytes >> 10), vk_ww_epoch());

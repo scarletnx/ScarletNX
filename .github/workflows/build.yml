@@ -1777,6 +1777,16 @@ jobs:
               done
             done
           done
+          # x86_64's recompiler has the x86-64 back end (cmake/sdm.cmake): its library lacks the words of a build without
+          # one, which arm64-v8a's holds
+          none='no x86-64 back end in this build'
+          grep -qaF "$none" apk/lib/arm64-v8a/libscarletnx.so ||
+            { echo "arm64-v8a/libscarletnx.so does not hold \"$none\": x86_64's lacking it would prove nothing" >&2; exit 1; }
+          if grep -qaF "$none" apk/lib/x86_64/libscarletnx.so; then
+            echo "x86_64/libscarletnx.so holds \"$none\": it has no x86-64 back end" >&2
+            exit 1
+          fi
+          ls -l apk/lib/*/libscarletnx.so
       - uses: actions/upload-artifact@v7
         with:
           path: ScarletNX-android-universal-${{ steps.commit.outputs.short }}.apk
@@ -1793,6 +1803,13 @@ jobs:
           path: ScarletNX-android-arm64-v8a-${{ steps.commit.outputs.short }}.apk
           archive: false
           if-no-files-found: error
+      # Robolectric fetches the Android it runs the tests on (android-all-instrumented) from Maven Central as they start, into
+      # ~/.m2, not Gradle's cache: kept between runs, as Maven Central refuses a cold run's fetch at times (HTTP 429)
+      - uses: actions/cache@v5
+        with:
+          path: ~/.m2/repository/org/robolectric
+          key: robolectric-${{ hashFiles('dist/android/build.gradle') }}
+          restore-keys: robolectric-
       # The app's unit tests (docs/hosts/android-app.md), on the stage the APK was packed from: its classes build against SDL's
       # Java and the icon there. Last, so a test that fails fails the job and still leaves the APKs to try
       - name: Test the app's Java

@@ -806,8 +806,7 @@ static V recip_exact(SnxIr* ir, V a, V exponent, unsigned width) {
     result = LLVMBuildSelect(B, LLVMBuildICmp(B, LLVMIntEQ, exponent, ir_vec_like(ir, a, 2 * bias), ""), subnormal2, result, "");
     V large = both(ir, LLVMBuildICmp(B, LLVMIntUGE, exponent, ir_vec_like(ir, a, 2 * bias - 1), ""),
                    LLVMBuildICmp(B, LLVMIntULT, exponent, ir_vec_like(ir, a, emax), ""));
-    V underflow = width == 16 ? LLVMConstNull(LLVMTypeOf(large))
-                             : LLVMBuildSelect(B, fz, large, LLVMConstNull(LLVMTypeOf(large)), "");
+    V underflow = LLVMBuildSelect(B, fz, large, LLVMConstNull(LLVMTypeOf(large)), "");
     result = LLVMBuildSelect(B, underflow, zero, result, "");
     V mode = ir_vec_splat(ir, ir_cast(ir, fpcr_rmode(ir), LLVMGetElementType(LLVMTypeOf(a)), 0), ir_vec_count(a));
     V negative = LLVMBuildICmp(B, LLVMIntNE, sign, zero, "");
