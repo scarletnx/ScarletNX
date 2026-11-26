@@ -5072,6 +5072,12 @@ if(NOT WIN32)
     snx_sailgen_a64_encoders(snx-test-arm64-fpenv-code)
     add_test(NAME arm64_fpenv_code COMMAND snx-test-arm64-fpenv-code)
     set_tests_properties(arm64_fpenv_code PROPERTIES TIMEOUT 600)
+    # a loop's turn with no poll pending: one branch, the poll's CBZ back to the header (arm64_loop_code.c)
+    add_executable(snx-test-arm64-loop-code arm64_loop_code.c)
+    snx_test_target(snx-test-arm64-loop-code gnu23)
+    target_link_libraries(snx-test-arm64-loop-code PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+    snx_decodetree_a64(snx-test-arm64-loop-code)
+    add_test(NAME arm64_loop_code COMMAND snx-test-arm64-loop-code)
 endif()
 
 # NCE's patcher (src/nx/runtime/nce/nce_patch.c) on a synthetic module: the words that Eden's patcher changes, found

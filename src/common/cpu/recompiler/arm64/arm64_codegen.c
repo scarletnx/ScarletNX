@@ -85,6 +85,8 @@ static const signed char mg_pin_hosts[9] = {20, 21, 22, 23, 24, 25, 26, 27, 28};
 #define MG_JTAB            1
 #define MG_JTAB_CLOBBER    0u /* X16 and X17 alone */
 #define MG_JTAB_LEADERS    24 /* fewer: the dispatch block (x86-64's measure; an arm64 device's is to come) */
+#define MG_POLL_INLINE     1  /* a loop's turn: LDR and CBZ of the poll back to its header, the call out of line */
+#define MG_POLL_FLIP       1  /* past the FP window's MSR FPCR: CBNZ of the poll out, B back (mg_poll_flip) */
 #define MG_VPIN(k) (31 - (k))
 #define MG_NVPINS 8
 #define MG_XRESERVED 0xFF80u /* V8-V15 (the callee's low halves), V7 (arm64_vec.c's scratch) */
@@ -319,12 +321,37 @@ static void check_return(Unit* u, SnxU64 next) {
     }
 }
 /* the poll of a backward branch: if (c->poll) { c->pc = resume; c->rt->poll(c); F_start(c, resume); return; } */
-static void poll_then(Unit* u, SnxU64 resume) {
-    int run = new_label(u);
-    char sym[40];
+static void poll_jz(Unit* u, int label) {
     state_ldst(u, 1, 4, SGA_X16, offsetof(CPU, poll));
-    fixup(u, run, FIX_CBZ);
+    if (u->far) { /* past CBZ's 1 MiB: CBNZ over a B */
+        w32(u, sge_a64_cbnz(SGA_X16, 2, 0));
+        jmp(u, label);
+        return;
+    }
+    fixup(u, label, FIX_CBZ);
     w32(u, sge_a64_cbz(SGA_X16, 0, 0));
+}
+/* the pending poll's jump out to label, where a loop's latch jumps back unconditionally (mg_poll_flip) */
+static void poll_jnz(Unit* u, int label) {
+    state_ldst(u, 1, 4, SGA_X16, offsetof(CPU, poll));
+    if (u->far) { /* past CBNZ's 1 MiB: CBZ over a B */
+        w32(u, sge_a64_cbz(SGA_X16, 2, 0));
+        jmp(u, label);
+        return;
+    }
+    fixup(u, label, FIX_CBZ);
+    w32(u, sge_a64_cbnz(SGA_X16, 0, 0));
+}
+/* a region that leaves the guest's FPCR (arm64_vec.c's SGX_M_FPLEAVE: MRS FPSR, MSR FPCR) before its latch: there a
+   Cortex-A73 takes a loop's conditional CBZ back a nanosecond a turn slower than a CBNZ out and a B back (fadd.4s's
+   loop, 47.2 against 48.2 ns), where with no such region the CBZ is the faster (add.4s's, 26.4 against 26.8) */
+static int mg_poll_flip(const SgX* x, int n) {
+    for (int k = 0; k < n; ++k)
+        if (!x->ins[k].dead && x->ins[k].kind == SGX_K_MACHINE && x->ins[k].op == SGX_M_FPLEAVE) return 1;
+    return 0;
+}
+static void poll_slow(Unit* u, SnxU64 resume) {
+    char sym[40];
     pins(u, 1);
     set_pc(u, resume);
     mov_x0_state(u);
@@ -335,6 +362,13 @@ static void poll_then(Unit* u, SnxU64 resume) {
     fname(sym, sizeof sym, "F_", u->f->start);
     reloc(u, u->b.n, sym, A64_JUMP26, 0);
     w32(u, sge_a64_b_uncond(0));
+}
+static void poll_then(Unit* u, SnxU64 resume) {
+    int run = new_label(u);
+    state_ldst(u, 1, 4, SGA_X16, offsetof(CPU, poll));
+    fixup(u, run, FIX_CBZ); /* the slow path's few words: always in reach */
+    w32(u, sge_a64_cbz(SGA_X16, 0, 0));
+    poll_slow(u, resume);
     bind(u, run);
 }
 /* a switch's jump, X1 the target (SGX_FN_TARGET): if (!c->poll && X1 - lo <= span && !(X1 & 3)) goto table +
