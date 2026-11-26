@@ -38,6 +38,8 @@ target_link_libraries(snx_vita_program PUBLIC snx_vita_loader snx_vita_usse scar
 target_link_libraries(snx_vita_program PUBLIC snx_state_file) # the save states (runtime/state.c), the Switch's file
 # the shaders and pipelines prepared from earlier runs (gpu/render.c, common/gpu/vk/prepared.h)
 target_link_libraries(snx_vita_program PRIVATE snx_prepared)
+# the microphone sceAudioIn records (hle/audio.c, common/utilities/mic.h)
+target_link_libraries(snx_vita_program PRIVATE snx_mic)
 target_include_directories(snx_vita_program PUBLIC "${volk_SOURCE_DIR}")
 # the imports the runtime answers, by NID: hle/*.hook, read by hookgen --vita into vita/hle/hle.hook.{h,inc}
 # (cmake/hookgen.cmake)

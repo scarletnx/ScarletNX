@@ -54,7 +54,7 @@ and plays its sound test.
 | CPU | ARMv7 code compiled ahead of time through the block compiler (`src/vita/aot/`, `src/common/cpu/arm/`), and the code that the offline pass missed at run time (`src/vita/runtime/jit.c`) | [Code compiled at run time](#code-compiled-at-run-time) |
 | Kernel and HLE | the process, threads and memory (`src/vita/runtime/`), the system libraries by NID (`src/vita/hle/`) | [How it fits together](#how-it-fits-together) |
 | GPU | sceGxm on Vulkan, USSE programs to SPIR-V (`src/vita/gpu/`) | [The shader corpus](#the-shader-corpus) |
-| Audio | the audio ports, NGS and the audio decoders (`src/vita/hle/audio.c`, `ngs.c`, `audiodec.c`) | this page |
+| Audio | the audio ports, the input port recording the host's microphone (`src/common/utilities/mic.h`), NGS and the audio decoders (`src/vita/hle/audio.c`, `ngs.c`, `audiodec.c`) | this page |
 | Input | SceCtrl and touch from the keyboard, the mouse, fingers, the gamepads and the on-screen controls (`src/vita/platform/input.c`) | this page |
 | Platform | the host layer that every driver shares (`src/common/platform/`) | [Build](../../dev/build.md) |
 
