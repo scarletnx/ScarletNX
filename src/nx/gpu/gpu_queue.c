@@ -842,12 +842,15 @@ void gq_call(GqFn fn, const void* arg, u64 bytes) {
     if (bytes) memcpy(p, arg, (size_t)bytes);
     gq_call_end();
 }
-void gq_call_writes(GqFn fn, const void* arg, u64 bytes, u64 gva, u64 size) {
+void gq_call_writes(GqFn fn, const void* arg, u64 bytes, const GqRange* ranges, u32 n) {
     void* p = gq_call_begin(fn, bytes);
     if (bytes) memcpy(p, arg, (size_t)bytes);
-    if (g_gq.open && size) { /* in the queue (a call too big for it runs now, after every record) */
-        gq_mark(gva, size, g_gq.open->fence);
-        gq_recent_add(gva, size, g_gq.open->fence, gq_head(), 0); /* nothing to forward: the call makes its bytes */
-    }
+    if (g_gq.open) /* in the queue (a call too big for it runs now, after every record) */
+        for (u32 i = 0; i < n; i++) {
+            if (!ranges[i].size) continue;
+            gq_mark(ranges[i].gva, ranges[i].size, g_gq.open->fence);
+            /* nothing to forward: the call makes its bytes, or reads them */
+            gq_recent_add(ranges[i].gva, ranges[i].size, g_gq.open->fence, gq_head(), 0);
+        }
     gq_call_end();
 }

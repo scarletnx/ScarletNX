@@ -848,16 +848,24 @@ i32 nvn_SamplerPoolGetSize(CPU* c, u64 sp) {
    Recorded as a GPU-side write of its 32 bytes, so what the renderer keeps of the descriptor (the texture memo, the
    pool map) checks it again at its next lookup, not only after the next submission. The descriptor the slot already
    holds is no write, unless a write before it is still queued (memory doesn't hold that one yet) */
-static void descriptor_write(u64 slot, const u32 desc[8]) {
-    if (!nvn_replay_writes_pending() && !memcmp(GP(slot), desc, NVN_DESCRIPTOR_SIZE)) return;
-    if (nvn_replay_write(slot, desc, NVN_DESCRIPTOR_SIZE)) return;
+static void descriptor_write(u64 dp, i32 id, u64 slot, const u32 desc[8]) {
+    /* the slot's GPU address, which the queued copies' ranges use (a pool's GPU range is not its guest memory) */
+    const NvnDescPool* p = NVN_OBJ(NvnDescPool, dp);
+    const u64 pool_gpu = nvn_pool_gpu(p->pool);
+    const u64 gpu = pool_gpu ? pool_gpu + p->offset + (u64)id * NVN_DESCRIPTOR_SIZE : 0;
+    /* a queued copy over the slot that has not run lands its bytes after this write: the write still counts */
+    const int copy_over = gpu && nvn_copy_queued_over(gpu, NVN_DESCRIPTOR_SIZE);
+    if (!nvn_replay_writes_pending() && !copy_over && !memcmp(GP(slot), desc, NVN_DESCRIPTOR_SIZE)) return;
+    if (nvn_replay_write(slot, gpu, desc, NVN_DESCRIPTOR_SIZE)) return;
     kthread_host_wait_begin();
+    if (gpu)
+        nvn_copy_wait_over(gpu, NVN_DESCRIPTOR_SIZE); /* the queued copies over the slot, with no lane to order it */
     nvn_replay_finish_all();
     kthread_host_wait_end();
     memcpy(GP(slot), desc, NVN_DESCRIPTOR_SIZE); /* guest memory: every byte the game sees */
     gpu_mem_written_cpu(slot, NVN_DESCRIPTOR_SIZE);
 }
-static void texture_write(u64 slot, const u32 tic[8]) { descriptor_write(slot, tic); }
+static void texture_write(u64 tp, i32 id, u64 slot, const u32 tic[8]) { descriptor_write(tp, id, slot, tic); }
 /* an image's descriptor is in the texture pool's ID space too (nvnDeviceGetImageHandle is the ID) */
 static void register_texture(u64 tp, i32 id, u64 t, u64 v, int image) {
     u64 slot = desc_slot(tp, id, "texture");
@@ -866,7 +874,7 @@ static void register_texture(u64 tp, i32 id, u64 t, u64 v, int image) {
     u32 tic[8] = {0};
     if (!slot) return;
     if (!t) { /* no texture: an empty descriptor */
-        texture_write(slot, tic);
+        texture_write(tp, id, slot, tic);
         return;
     }
     memcpy(&tex, GP(t), sizeof tex);
@@ -874,7 +882,7 @@ static void register_texture(u64 tp, i32 id, u64 t, u64 v, int image) {
     if (!nvn_tic_encode(&tex, v ? &view : NULL, image, g_nvn.loader.api, tic))
         LOG_LIMIT(8, "nvn: a texture of format %#x, which has no texture descriptor: an empty one at %d\n",
                   v && (view.set & NVN_VIEW_FORMAT) ? view.format : tex.d.format, id);
-    texture_write(slot, tic);
+    texture_write(tp, id, slot, tic);
 }
 void nvn_TexturePoolRegisterTexture(CPU* c, u64 tp, i32 id, u64 t, u64 v) {
     (void)c;
@@ -885,14 +893,14 @@ void nvn_TexturePoolRegisterImage(CPU* c, u64 tp, i32 id, u64 t, u64 v) {
     register_texture(tp, id, t, v, 1);
 }
 /* a sampler descriptor written over another: as a texture's (descriptor_write) */
-static void sampler_write(u64 slot, const u32 tsc[8]) { descriptor_write(slot, tsc); }
+static void sampler_write(u64 sp, i32 id, u64 slot, const u32 tsc[8]) { descriptor_write(sp, id, slot, tsc); }
 void nvn_SamplerPoolRegisterSampler(CPU* c, u64 sp, i32 id, u64 s) {
     u64 slot = desc_slot(sp, id, "sampler");
     u32 tsc[8];
     (void)c;
     if (!slot) return;
     nvn_tsc_encode(&NVN_OBJ(const NvnSampler, s)->p, tsc);
-    sampler_write(slot, tsc);
+    sampler_write(sp, id, slot, tsc);
 }
 /* a sampler's descriptor straight from a builder's state, as the game's driver writes it with no sampler object */
 void nvn_SamplerPoolRegisterSamplerBuilder(CPU* c, u64 sp, i32 id, u64 b) {
@@ -901,7 +909,7 @@ void nvn_SamplerPoolRegisterSamplerBuilder(CPU* c, u64 sp, i32 id, u64 b) {
     (void)c;
     if (!slot) return;
     nvn_tsc_encode(&NVN_OBJ(const NvnSamplerBuilder, b)->p, tsc);
-    sampler_write(slot, tsc);
+    sampler_write(sp, id, slot, tsc);
 }
 
 /* ============================================================ textures */

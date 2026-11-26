@@ -310,7 +310,8 @@ void gpu_mem_written_cpu(u64 cpu, u64 size) {
    reads it. Here it lands at once, as with nothing left to replay */
 static u32 g_ordered, g_ordered_saw[8];
 static u64 g_ordered_at;
-int nvn_replay_write(u64 gva, const void* data, u32 len) {
+int nvn_replay_write(u64 gva, u64 gpu, const void* data, u32 len) {
+    (void)gpu;
     g_ordered++;
     if (g_ordered_at == gva) memcpy(g_ordered_saw, GP(gva), sizeof g_ordered_saw);
     memcpy(GP(gva), data, len);
@@ -318,6 +319,15 @@ int nvn_replay_write(u64 gva, const void* data, u32 len) {
     return 1;
 }
 u32 nvn_replay_writes_pending(void) { return 0; }
+int nvn_copy_queued_over(u64 gva, u64 len) { /* no DMA copy is queued here */
+    (void)gva;
+    (void)len;
+    return 0;
+}
+void nvn_copy_wait_over(u64 gva, u64 len) {
+    (void)gva;
+    (void)len;
+}
 void nvn_replay_wait(u32 queue, const NvnSync* sync) {
     (void)queue;
     (void)sync;

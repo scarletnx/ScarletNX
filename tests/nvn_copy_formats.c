@@ -158,6 +158,13 @@ u32 nvn_tex_msaa(int samples) {
 void pm_init(PMutex* m) { (void)m; }
 void pm_lock(PMutex* m) { (void)m; }
 void pm_unlock(PMutex* m) { (void)m; }
+/* the copy ring's wait (nvn_copy_wait_over): one thread here, so no copy is queued */
+void plat_wait_word(_Atomic uint32_t* w, uint32_t v, int64_t timeout_ns) {
+    (void)w;
+    (void)v;
+    (void)timeout_ns;
+}
+void plat_wake_word(_Atomic uint32_t* w) { (void)w; }
 u64 gmmu_space_alloc(u64 size, u64 align) {
     (void)size, (void)align;
     return 0;
