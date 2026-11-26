@@ -44,3 +44,23 @@ static const SnxVpadControl vita[] = {
     {SNX_VPAD_Y, "Square", "\xfe", {0.000f, 0.000f}, {0.690f, 0.770f}},
 };
 const SnxVpadConsole snx_vpad_vita = {"Vita", vita, sizeof vita / sizeof *vita, 1};
+
+/* the 3DS's, both screens over them upright (to 55% of the height): wide, Select and Start beside L and R and Home over
+   Start; upright, the Vita's arrangement under the screens */
+static const SnxVpadControl ctr[] = {
+    {SNX_VPAD_L, "L", "L", {0.000f, 0.000f}, {0.160f, 0.630f}},
+    {SNX_VPAD_R, "R", "R", {0.000f, 0.000f}, {0.840f, 0.630f}},
+    {SNX_VPAD_ZL, "ZL", "ZL", {0.000f, 0.000f}, {0.160f, 0.585f}},
+    {SNX_VPAD_ZR, "ZR", "ZR", {0.000f, 0.000f}, {0.840f, 0.585f}},
+    {SNX_VPAD_MINUS, "Select", "SE", {0.210f, 0.210f}, {0.360f, 0.630f}},
+    {SNX_VPAD_PLUS, "Start", "ST", {0.790f, 0.210f}, {0.640f, 0.630f}},
+    {SNX_VPAD_HOME, "Home", "\x7f", {0.790f, 0.080f}, {0.500f, 0.965f}},
+    {SNX_VPAD_DPAD, "D-pad", "", {0.000f, 0.000f}, {0.270f, 0.925f}},
+    {SNX_VPAD_STICK_L, "Circle Pad", "", {0.000f, 0.000f}, {0.120f, 0.770f}},
+    {SNX_VPAD_STICK_R, "C-Stick", "", {0.000f, 0.000f}, {0.770f, 0.915f}},
+    {SNX_VPAD_A, "A", "A", {0.000f, 0.000f}, {0.910f, 0.740f}},
+    {SNX_VPAD_B, "B", "B", {0.000f, 0.000f}, {0.800f, 0.785f}},
+    {SNX_VPAD_X, "X", "X", {0.000f, 0.000f}, {0.800f, 0.695f}},
+    {SNX_VPAD_Y, "Y", "Y", {0.000f, 0.000f}, {0.690f, 0.740f}},
+};
+const SnxVpadConsole snx_vpad_3ds = {"3DS", ctr, sizeof ctr / sizeof *ctr, 1};

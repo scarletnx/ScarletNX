@@ -43,7 +43,7 @@ void snx_vpad_window_close(void);
 /* window's clear part (its safe area, whole when fullscreen) in its pixels: x, y, w, h */
 void snx_vpad_window_safe(int safe[4]);
 /* where a finger's event, or the mouse's motion or button, is in the window's pixels: false for the mouse's that SDL made
-   of a finger, and where the window has no size */
+   of a finger, for one in another window, and where the window has no size */
 bool snx_vpad_window_point(const SDL_Event* e, float* x, float* y);
 /* an event of the window's: PASS for one that is not the controls' nor a runtime's key, TAKEN for one that is (the game
    gets none of it), QUIT for the quit key's second press within quit_key.h's time (hotkey_quit, Esc), whose first says
@@ -78,6 +78,12 @@ bool snx_vpad_window_states_waiting(void);
 /* the runtime's key action said on say and show to do nothing in this window, with why: "F3 (Screenshot) does nothing
    in a GBA game: why" */
 void snx_vpad_window_none(int action, const char* why);
+/* the window the last key was pressed in (a console's with two windows says over that one), 0 for none */
+SDL_WindowID snx_vpad_window_key_window(void);
+/* fps_limit's pace as the keys left it (common/utilities/pace.h's SNX_PACE_), for a console that keeps its own clock */
+int snx_vpad_window_pace(void);
+/* that pace set to the console's clock's, the one F4 then turns off and back to */
+void snx_vpad_window_set_pace(int pace);
 /* vpad_state, with the buzz they ask for: nothing held while their layout is edited */
 void snx_vpad_window_state(u64* buttons, i32 sticks[4]);
 /* what the game got of player 1 this frame, from every keyboard, pad and the controls, for the showcase (F6): the

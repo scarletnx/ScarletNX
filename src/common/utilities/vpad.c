@@ -458,23 +458,46 @@ enum { BAR_LESS, BAR_SIZE, BAR_MORE, BAR_DONE, BAR_COUNT };
 enum { BAR_COLS_SIZE = 18 }; /* the middle part's cells: the longest name, a space and "200%" fit */
 static const int BAR_COLS[BAR_COUNT] = {5, BAR_COLS_SIZE, 5, 8};
 static int g_scale = 1; /* the menu's letters' scale as vpad_draw last had it: the bar's, drawn and pressed */
-static void bar(const int safe[4], float r[BAR_COUNT][4]) {
-    int i, s = g_scale, total = 0;
-    float x, y = (float)(safe[1] + 8 * s), gap = 0.025f * vpad_side(safe);
-    for (i = 0; i < BAR_COUNT; ++i) total += BAR_COLS[i] + (i ? 2 : 0);
-    x = (float)safe[0] + ((float)safe[2] - (float)(total * 8 * s)) / 2;
+/* the bar's row at letters' scale s over safe: the highest whose ground keeps gap from every control there and stays
+   in the picture (the top, or right under one of them), -1 for none. x: the bar's left */
+static float bar_row(const int safe[4], int s, float x, int total, float gap) {
     float left = x - (float)(8 * s), right = x + (float)((total + 1) * 8 * s); /* the ground's, as vpad_draw fills it */
-    for (int moved = 1, pass = 0; moved && pass < SNX_VPAD_COUNT; ++pass) {
-        moved = 0;
-        for (int c = 0; c < SNX_VPAD_COUNT; ++c) {
-            float b[4];
+    float top = (float)(safe[1] + 8 * s), best = -1, b[4];
+    for (int k = -1; k < SNX_VPAD_COUNT; ++k) {
+        float at = top;
+        if (k >= 0) {
+            if (!has(k) || !g_settings.control_shown[k]) continue;
+            vpad_box(k, safe, b);
+            at = ceilf(b[1] + b[3] + gap) + (float)(4 * s);
+        }
+        if (at < top || (best >= 0 && at >= best) || at + (float)(20 * s) > (float)(safe[1] + safe[3])) continue;
+        int clear = 1;
+        for (int c = 0; c < SNX_VPAD_COUNT && clear; ++c) {
             if (!has(c) || !g_settings.control_shown[c]) continue;
             vpad_box(c, safe, b);
-            if (b[0] - gap < right && b[0] + b[2] + gap > left && b[1] - gap < y + (float)(20 * s) &&
-                b[1] + b[3] + gap > y - (float)(4 * s))
-                y = b[1] + b[3] + gap + (float)(4 * s), moved = 1;
+            clear = !(b[0] - gap < right && b[0] + b[2] + gap > left && b[1] - gap < at + (float)(20 * s) &&
+                      b[1] + b[3] + gap > at - (float)(4 * s));
         }
+        if (clear) best = at;
     }
+    return best;
+}
+/* the bar's parts over safe into r, in the menu's letters (g_scale) or a step smaller while no row keeps it clear of the
+   controls, down to 1, the top at the menu's where none does: its letters' scale */
+static int bar(const int safe[4], float r[BAR_COUNT][4]) {
+    int i, s, total = 0;
+    float gap = 0.025f * vpad_side(safe), x = 0, y = -1;
+    for (i = 0; i < BAR_COUNT; ++i) total += BAR_COLS[i] + (i ? 2 : 0);
+    for (s = g_scale; s >= 1 && y < 0; --s) {
+        x = (float)safe[0] + ((float)safe[2] - (float)(total * 8 * s)) / 2;
+        y = bar_row(safe, s, x, total, gap);
+    }
+    if (y < 0) { /* none: the menu's letters at the top */
+        s = g_scale;
+        x = (float)safe[0] + ((float)safe[2] - (float)(total * 8 * s)) / 2;
+        y = (float)(safe[1] + 8 * s);
+    } else
+        ++s;
     for (i = 0; i < BAR_COUNT; ++i) {
         r[i][0] = x;
         r[i][1] = y;
@@ -482,11 +505,11 @@ static void bar(const int safe[4], float r[BAR_COUNT][4]) {
         r[i][3] = (float)(16 * s);
         x += (float)((BAR_COLS[i] + 2) * 8 * s);
     }
+    return s;
 }
 int vpad_edit_bar(const int safe[4], float box[4]) {
     float b[BAR_COUNT][4];
-    int s = g_scale;
-    bar(safe, b);
+    int s = bar(safe, b);
     box[0] = b[0][0] - (float)(8 * s), box[1] = b[0][1] - (float)(4 * s);
     box[2] = b[BAR_DONE][0] + b[BAR_DONE][2] - b[0][0] + (float)(16 * s), box[3] = (float)(24 * s);
     return g_edit;
@@ -710,7 +733,7 @@ static void edit_draw(SnxUiList* l, const int safe[4]) {
         vpad_box(g_selected, safe, r);
         outline(l, r, (float)(2 * s), UI_PICKED);
     }
-    bar(safe, b);
+    s = bar(safe, b); /* the bar's letters from here */
     vpad_edit_bar(safe, r);
     ui_fill(l, r[0], r[1], r[2], r[3], UI_INK);
     ui_text(l, b[BAR_LESS][0], b[BAR_LESS][1], s, "[ - ]", UI_PAGE);

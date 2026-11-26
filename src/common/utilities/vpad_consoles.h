@@ -14,4 +14,6 @@ extern const SnxVpadConsole snx_vpad_gba;
 extern const SnxVpadConsole snx_vpad_nds;
 /* the Vita's keys and its two sticks. Its touch screen is the front one */
 extern const SnxVpadConsole snx_vpad_vita;
+/* the 3DS's: the Circle Pad the left stick, the C-Stick the right one, ZL and ZR the New 3DS's */
+extern const SnxVpadConsole snx_vpad_3ds;
 #endif
