@@ -5,6 +5,7 @@
 
 import ctypes as C
 import hashlib
+import os
 import re
 from pathlib import Path
 import shutil
@@ -296,13 +297,17 @@ def main():
     with tempfile.TemporaryDirectory(prefix='snx-ctr-aot-') as temp:
         root = Path(temp)
 
-        def run(blob, status=0, message='Guest ExitProcess', extra=(), extension='cia'):
+        def run(blob, status=0, message='Guest ExitProcess', extra=(), extension='cia', env=None):
             nonlocal cases
             cases += 1
             source, output = root / f'input {cases};literal.{extension}', root / f'out {cases};literal'
             source.write_bytes(blob)
             p = subprocess.run(
-                [driver, *extra, '--output', str(output), str(source)], text=True, capture_output=True, timeout=90
+                [driver, *extra, '--output', str(output), str(source)],
+                text=True,
+                capture_output=True,
+                timeout=90,
+                env=env,
             )
             text = p.stdout + p.stderr
             assert p.returncode == status, (cases, p.returncode, text)
@@ -411,7 +416,10 @@ def main():
         legacy = struct.pack('<II6H', 0xE28F0001, 0xE12FFF10, 0xF000, 0xF802, 0xDF03, 0x46C0, 0x202C, 0x4770)
         _, text = run(application(raw=legacy), message='Guest ExitProcess: r0=44 blocks=7')
         same_through_llvm(text)
-        run(application([0xEAFFFFFE]), 3, 'block budget exhausted', extra=('--max-blocks', '3'))
+        # a budget's end shows no panel: on SDL's dummy video, where one would wait for a key nobody presses, the run
+        # ends within its timeout
+        unseen = dict(os.environ, SDL_VIDEO_DRIVER='dummy')
+        run(application([0xEAFFFFFE]), 3, 'block budget exhausted', extra=('--max-blocks', '3'), env=unseen)
         # a budget across the run's dispatch slices (a million blocks each) is still exact
         run(application([0xEAFFFFFE]), 3, 'blocks=2500001', extra=('--max-blocks', '2500001'))
         run(application([0xEF00007F]), 3, 'unsupported guest operation')

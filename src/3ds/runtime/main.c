@@ -935,8 +935,8 @@ int snx_ctr_main(int argc, char** argv) {
     bool headless = cli.flags & SNX_CLI_BIT(SNX_CLI_HEADLESS);
     const char* shot = cli.value[SNX_CLI_SHOT]; /* the last frame's PPM, NULL for none */
     /* a stop shows its panel where someone is at the window: not a recompile, whose launcher says it, nor a run with
-       none or with a budget */
-    snx_error_note_quiet(recompile || headless || seconds > 0 || cli.frames >= 0);
+       none or with a budget (of time, frames or blocks) */
+    snx_error_note_quiet(recompile || headless || seconds > 0 || cli.frames >= 0 || max_blocks);
     snx_error_launched(cli.value[SNX_CLI_FROM_LAUNCHER] != NULL);
     const char* updates[MAX_UPDATES]; /* --update's files, an update's or a DLC's each */
     unsigned update_count = 0;
