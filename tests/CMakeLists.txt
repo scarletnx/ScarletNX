@@ -3991,6 +3991,40 @@ snx_test_target(snx-test-arm-module-refused gnu23)
 target_link_libraries(snx-test-arm-module-refused PRIVATE snx_driver_llvm ${CMAKE_DL_LIBS})
 add_test(NAME arm_module_refused COMMAND snx-test-arm-module-refused)
 set_tests_properties(arm_module_refused PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+# a game module through the fallback (nx/loader/module_fallback.h): the builders in the program, which links none (no
+# LLVM at all) and, where the build has it, LLVM's; a module of the native back end's code is the same file with each
+set(snx_nx_fallback_tests none)
+if(SNX_WITH_LLVM)
+    list(APPEND snx_nx_fallback_tests llvm)
+endif()
+foreach(fallback IN LISTS snx_nx_fallback_tests)
+    set(target snx-test-nx-module-fallback-${fallback})
+    add_executable(${target} nx_module_fallback.c nx_module_fallback_arm.c
+                   "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/jit/jit_cache.c")
+    snx_test_target(${target} gnu23)
+    target_link_libraries(${target} PRIVATE snx_nx_fallback_${fallback} snx_nx_descriptor snx_nx_module snx_settings)
+    if(fallback STREQUAL none)
+        target_link_libraries(${target} PRIVATE snx_fallback_none)
+    endif()
+    add_test(NAME nx_module_fallback_${fallback} COMMAND ${target}
+             "${CMAKE_CURRENT_BINARY_DIR}/nx-module-fallback/${fallback}")
+    set_tests_properties(nx_module_fallback_${fallback} PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77
+                         FIXTURES_SETUP nx_module_fallback_${fallback})
+endforeach()
+if(SNX_WITH_LLVM)
+    if(WIN32)
+        set(suffix .dll)
+    else()
+        set(suffix .so)
+    endif()
+    foreach(bits a64 a32)
+        add_test(NAME nx_module_fallback_same_${bits} COMMAND "${CMAKE_COMMAND}" -E compare_files
+                 "${CMAKE_CURRENT_BINARY_DIR}/nx-module-fallback/none/${bits}${suffix}"
+                 "${CMAKE_CURRENT_BINARY_DIR}/nx-module-fallback/llvm/${bits}${suffix}")
+        set_tests_properties(nx_module_fallback_same_${bits} PROPERTIES
+                             FIXTURES_REQUIRED "nx_module_fallback_none;nx_module_fallback_llvm")
+    endforeach()
+endif()
 # the AArch32 dispatch loop's lookup keeps no frame and no stack canary: compile(), its slow path, stays out of line
 # (arm_dispatch_frame.py reads arm.c's object with the build's llvm-objdump). With ThinLTO the object is bitcode and the
 # link makes the machine code, so it reads the program, which the line table ties to arm.c (cmake/lto.cmake)

@@ -181,7 +181,7 @@ the driver recompiles a game whose `<id>.abi` stamp is stale when it is played. 
 in memory while the process runs, under the SHA-256 of what each is made from (`src/common/cpu/recompiler/x64/x64_cache.c`),
 close to Rosetta's content key; nothing is kept on the disk. The module
 records each executable's build ID and segment layout, and the runtime refuses an executable that changed
-(`snx_module_mods` in `src/nx/loader/module_llvm.c`, `src/nx/runtime/loader.c`). Discovery
+(`snx_module_mods` in `src/nx/loader/module_fallback_llvm.c`, `src/nx/runtime/loader.c`). Discovery
 (`src/common/cpu/recompiler/codegen.c`, `src/nx/loader/loader.c`) starts from the dynamic symbols, the addends of
 relative relocations, the `.eh_frame` ranges (swept word by word), hints from earlier runs and `ADR` or `ADRP`+`ADD`
 address loads, then follows branches. Jump table cases are not followed. Units group sorted functions up to the
