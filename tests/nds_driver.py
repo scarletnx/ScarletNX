@@ -82,7 +82,11 @@ def main():
                 failures.append(f'{given} refused:\n{out}')
         run(['-r', '--touch=3', *missing], 2, 'scarletnx-nds: touch=3 ')
         # the Switch's settings a DS game takes (common/utilities/console_settings.c): taken, the run goes to the image
-        for given in (['--vsync=0', '--volume=40'], ['--gamepad-swap-ab=1', '--gpu-driver=', '--vk-validation=1']):
+        for given in (
+            ['--vsync=0', '--volume=40'],
+            ['--gamepad-swap-ab=1', '--gpu-driver=', '--vk-validation=1'],
+            ['--vk-pipeline-cache=1'],
+        ):
             out = run(['-r', *given, *missing], 1, 'scarletnx-nds: ')
             if 'unexpected argument' in out or 'does nothing' in out:
                 failures.append(f'{given} refused:\n{out}')

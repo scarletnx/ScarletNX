@@ -94,6 +94,11 @@ int snx_vk_pipeline_low_workers(int workers);
 #define SNX_VK_DRIVER_TAG 96
 void snx_vk_driver_tag(char* out, size_t n, uint32_t driver_id, uint32_t vendor, uint32_t device, const char* package);
 void snx_vk_driver_path(char* out, size_t n, const char* dir, const char* name, const char* tag, const char* ext);
+/* The file of a game's Vulkan cache kept between runs (vk_pipeline_cache), name's on the device phys and its driver:
+   <directory>/shader_cache/<name>-<the driver's tag>.bin, as the Switch's and the 3DS's are, its folder made where it
+   is missing. 0, else -1 with why saying the folder that could not be made and the system's reason */
+int snx_vk_cache_file(VkPhysicalDevice phys, const char* directory, const char* name, char* path, size_t n, char* why,
+                      size_t wn);
 /* Whether size bytes at data, a pipeline cache's file, may go to the driver: they start with the header Vulkan puts
    first in a pipeline cache's data (VkPipelineCacheHeaderVersionOne, least significant byte first), and it names
    props' device: its vendor, device and pipelineCacheUUID, which changes with the driver's build. Vulkan lets a driver

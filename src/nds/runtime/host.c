@@ -191,9 +191,12 @@ NdsHost* nds_host_open(NdsBoard* board, const char* title, const char* ini, cons
     char why[256] = "";
     if (nds_vk_init(title, headless != 0, why, sizeof why)) {
         if (nds_vk_render3d_init(why, sizeof why) && nds_vk_frame_init(why, sizeof why) &&
-            nds_vk_present_init(why, sizeof why))
+            nds_vk_present_init(why, sizeof why)) {
             host->gpu = 1;
-        else {
+            char* folder = ini ? snx_dirname(ini) : NULL; /* the game's, beside its save */
+            nds_vk_pipeline_cache_open(folder);
+            free(folder);
+        } else {
             nds_vk_present_free();
             nds_vk_frame_free();
             nds_vk_render3d_free();

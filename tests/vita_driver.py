@@ -58,7 +58,15 @@ def main():
     # the Switch's settings a Vita game takes, as the controls' (common/utilities/console_settings.c); one it does not
     # take said with why
     run(
-        ['--fullscreen=1', '--upscaler=fsr1', '--vulkan-ban-ignore=x', '--vsync=0', '--volume=40', '--help'],
+        [
+            '--fullscreen=1',
+            '--upscaler=fsr1',
+            '--vulkan-ban-ignore=x',
+            '--vsync=0',
+            '--volume=40',
+            '--vk-pipeline-cache=1',
+            '--help',
+        ],
         0,
         'Vita options:',
     )

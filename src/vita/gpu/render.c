@@ -135,6 +135,8 @@ typedef struct {
 } Bound;
 struct VitaRender {
     VitaVk* vk;
+    VkPipelineCache cache; /* the driver's pipelines kept between runs (vk_pipeline_cache), VK_NULL_HANDLE for none */
+    char cache_path[1200];
     unsigned char* mem; /* the guest's memory */
     Import imports[IMPORTS];
     Writeback* writeback; /* the GPU's writes to copied guest memory waiting for their submission */
@@ -725,6 +727,19 @@ bool vita_render_init(VitaProcess* p) {
     if (!r) return false;
     r->vk = v;
     r->mem = p->mem;
+    /* the pipelines an earlier run made, as the Switch's and the 3DS's keep them (vk_pipeline_cache) */
+    if (g_settings.vulkan_pipeline_cache && p->folder) {
+        char why[512];
+        size_t loaded = 0;
+        if (snx_vk_cache_file(v->phys, p->folder, "vk_pipelines", r->cache_path, sizeof r->cache_path, why, sizeof why))
+            fprintf(stderr, "scarletnx-vita: no pipeline cache kept between runs: %s\n", why);
+        else {
+            r->cache = snx_vk_pipeline_cache_load(v->device, &v->properties, r->cache_path, &loaded, why, sizeof why);
+            if (why[0]) fprintf(stderr, "scarletnx-vita: %s: %s\n", r->cache_path, why);
+            if (loaded)
+                fprintf(stderr, "scarletnx-vita: the pipeline cache of earlier runs loaded (%zu KB)\n", loaded >> 10);
+        }
+    }
     VkDescriptorSetLayoutBinding bindings[3 + USSE_TEXTURES];
     for (unsigned i = 0; i < 2; ++i)
         bindings[i] = (VkDescriptorSetLayoutBinding){i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1,
@@ -864,6 +879,15 @@ void vita_render_free(VitaProcess* p) {
     }
     for (unsigned i = 0; i < PIPELINES; ++i)
         if (r->pipelines[i].pipeline) vkDestroyPipeline(d, r->pipelines[i].pipeline, NULL);
+    if (r->cache) {
+        char why[512];
+        size_t saved = 0;
+        if (snx_vk_pipeline_cache_save(d, r->cache, r->cache_path, &saved, why, sizeof why))
+            fprintf(stderr, "scarletnx-vita: the pipeline cache could not be written to %s: %s\n", r->cache_path, why);
+        else
+            fprintf(stderr, "scarletnx-vita: the pipeline cache written (%zu KB)\n", saved >> 10);
+        vkDestroyPipelineCache(d, r->cache, NULL);
+    }
     for (unsigned i = 0; i < SURFACES; ++i)
         if (r->surfaces[i].image) {
             vkDestroyImageView(d, r->surfaces[i].view, NULL);
@@ -1356,7 +1380,7 @@ static VkPipeline pipeline_for(struct VitaRender* r, GxmContext* c, const GxmVer
                                        .pDynamicState = &dynamic,
                                        .layout = r->layout};
     VkPipeline pipeline = VK_NULL_HANDLE;
-    if (vkCreateGraphicsPipelines(r->vk->device, VK_NULL_HANDLE, 1, &gi, NULL, &pipeline) != VK_SUCCESS) {
+    if (vkCreateGraphicsPipelines(r->vk->device, r->cache, 1, &gi, NULL, &pipeline) != VK_SUCCESS) {
         once(r, 6, "the device refuses a pipeline");
         return VK_NULL_HANDLE;
     }

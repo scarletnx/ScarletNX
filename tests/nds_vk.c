@@ -10,6 +10,7 @@
 #include "nds/gpu/vk/vk.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
+#include "snx_settings.h"
 #include "support/nds_image.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -80,6 +81,11 @@ int main(void) {
           nds_vk_present_init(error, sizeof error));
     char* dir = snx_temp_dir(NULL);
     char* image = dir ? snx_path_join(dir, "test.nds") : NULL;
+    /* the 3D pipelines kept between runs in the game's folder (vk_pipeline_cache), written as the renderer ends */
+    char cache[1200], why[512];
+    CHECK(dir && !snx_vk_cache_file(nds_vk()->phys, dir, "vk_pipelines", cache, sizeof cache, why, sizeof why));
+    g_settings.vulkan_pipeline_cache = 1;
+    nds_vk_pipeline_cache_open(dir);
     CHECK(image && nds_test_image(image, nds_test_program, nds_test_program_words));
     NdsRom rom;
     CHECK(nds_rom_open(&rom, image, NULL, error, sizeof error));
@@ -226,6 +232,7 @@ int main(void) {
     nds_vk_present_free();
     nds_vk_frame_free();
     nds_vk_render3d_free();
+    CHECK(snx_file_size(cache) > 0);
     nds_vk_free();
     (void)snx_remove_tree(dir);
     free(image);

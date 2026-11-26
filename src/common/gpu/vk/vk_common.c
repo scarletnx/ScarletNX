@@ -479,3 +479,22 @@ float snx_vk_anisotropy(int asked, bool feature, float most, char* line, size_t 
     return value;
 }
 
+int snx_vk_cache_file(VkPhysicalDevice phys, const char* directory, const char* name, char* path, size_t n, char* why,
+                      size_t wn) {
+    char dir[1100], tag[SNX_VK_DRIVER_TAG], reason[256];
+    snprintf(dir, sizeof dir, "%s/shader_cache", directory);
+    snx_path_native(dir);
+    if (!snx_is_dir(dir) && plat_mkdir(dir)) {
+        snprintf(why, wn, "cannot create %s: %s", dir, snx_os_error(reason, sizeof reason));
+        return -1;
+    }
+    /* each driver's file apart: d<driver ID>-<vendor>-<device> */
+    VkPhysicalDeviceDriverProperties driver = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+    VkPhysicalDeviceProperties2 props = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &driver};
+    vkGetPhysicalDeviceProperties2(phys, &props);
+    snx_vk_driver_tag(tag, sizeof tag, (uint32_t)driver.driverID, props.properties.vendorID, props.properties.deviceID,
+                      NULL);
+    snx_vk_driver_path(path, n, dir, name, tag, ".bin");
+    snx_path_native(path);
+    return 0;
+}

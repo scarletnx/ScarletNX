@@ -198,7 +198,7 @@ const SnxConsoleSetting g_console_settings[] = {
     {"auto_stub_ipc", {[C] = NA(OWN_ROW), [V] = NA(SWITCH_OS), [G] = NA(SWITCH_OS), [D] = NA(SWITCH_OS)}},
     {"diag", OTHERS(NA(SWITCH_GPU))},
     {"vk_validation"},
-    {"vk_pipeline_cache", {[V] = LATER(SOON), [G] = NA(ONE_PIPELINE), [D] = LATER(SOON)}},
+    {"vk_pipeline_cache", {[G] = NA(ONE_PIPELINE)}},
     {"vk_mirror_past_limit", OTHERS(NA(SWITCH_GPU))},
     {"vk_api", OTHERS(NA(VULKAN_13))},
     {"native_astc", OTHERS(NA(SWITCH_GPU))},
