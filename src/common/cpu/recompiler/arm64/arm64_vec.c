@@ -206,9 +206,8 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
         sg_PSTATE_write(g, SG_PSTATE_N, 4, sgx_nzcv(X, ins));
         return 1;
     }
-    if (strstr(name, "_gen") || strstr(name, "float_int") || strstr(name, "float_fix") || !strncmp(name, "fcmp", 4) ||
-        !strncmp(name, "fccmp", 5) || !strncmp(name, "umov", 4) ||
-        !strncmp(name, "smov", 4) || !strncmp(name, "fjcvtzs", 7))
+    if (strstr(name, "_gen") || !strncmp(name, "fcmp", 4) || !strncmp(name, "fccmp", 5) || !strncmp(name, "umov", 4) ||
+        !strncmp(name, "smov", 4))
         return 0;
     {
         /* a by-element form's Rm of 4 bits is M:Rm, 5 bits, for elements of 32 and 64 bits ("size" 2 or 3, or "sz"
@@ -223,7 +222,9 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
             if (!strcmp(fn, "M")) has_m = 1;
             if (!strcmp(fn, "sz") || (!strcmp(fn, "size") && (word >> lo & 3) >= 2)) wide = 1;
             if (strcmp(fn, "Rd") && strcmp(fn, "Rn") && strcmp(fn, "Rm") && strcmp(fn, "Ra")) {
-                if (!strncmp(fn, "Rt", 2) || !strcmp(fn, "Rs")) return 0; /* a general-purpose register's */
+                /* a general-purpose register's, or its width: sf, every conversion to or from one's (FCVTNS,
+                   FCVTZS, SCVTF, FMOV, FJCVTZS), whose Rd or Rn is that register */
+                if (!strncmp(fn, "Rt", 2) || !strcmp(fn, "Rs") || !strcmp(fn, "sf")) return 0;
                 continue;
             }
             if (width == 4 && !strcmp(fn, "Rm")) rm4 = 1;
