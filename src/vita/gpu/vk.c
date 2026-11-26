@@ -118,6 +118,9 @@ static bool choose(SnxVkChoice* c, void* user) {
     snx_vk_chain(enable, sizeof enable / sizeof *enable);
     v->checkpoints = snx_vk_marks_choose(c, g_settings.gpu_checkpoints);
     want.pNext = snx_vk_pacing_choose(&v->pacing, c, g_settings.frame_pacing, want.pNext);
+    char gpl_line[256];
+    want.pNext = snx_vk_gpl_choose(&v->gpl, c, g_settings.pipeline_libraries, want.pNext, gpl_line, sizeof gpl_line);
+    fprintf(stderr, "scarletnx-vita: %s\n", gpl_line);
     if (!snx_vk_choice_create(c, &want, NULL, NULL, 0)) return false;
     VkPhysicalDeviceExternalMemoryHostPropertiesEXT host = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT};

@@ -124,7 +124,7 @@ const SnxConsoleSetting g_console_settings[] = {
     {.key = "gpu_pstate"},
     {"pipeline_threads", {[G] = NA(ONE_PIPELINE)}},
     {"async_pipelines", {[G] = NA(ONE_PIPELINE)}},
-    {"pipeline_libraries", {[V] = LATER(SOON), [G] = NA(NO_SHADERS), [D] = NA(NO_SHADERS)}},
+    {"pipeline_libraries", {[G] = NA(NO_SHADERS), [D] = NA(NO_SHADERS)}},
     {"prepare_shaders", {[G] = NA(NO_SHADERS), [D] = NA(NO_SHADERS)}},
     {"compress_prepared_shaders", {[G] = NA(NO_SHADERS), [D] = NA(NO_SHADERS)}},
     {"nce", OTHERS(NA(SWITCH_CODE))},

@@ -65,6 +65,12 @@ typedef struct {
     unsigned drawn;              /* pipelines a draw made itself */
 } VitaPrepared;
 VitaPrepared vita_render_prepared(VitaProcess* p);
+/* pipeline_libraries: the pipelines linked from parts so far, fast (a draw's, until its optimized one replaces it)
+   and optimized (a worker's), the parts made and reused, and the fast links replaced */
+typedef struct {
+    unsigned linked, optimized, parts, reused, replaced;
+} VitaLibraries;
+VitaLibraries vita_render_libraries(VitaProcess* p);
 /* for a test: until the workers made every pipeline handed to them, collected at the next scene */
 void vita_render_pipelines_wait(VitaProcess* p);
 #endif

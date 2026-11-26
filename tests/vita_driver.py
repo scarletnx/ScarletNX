@@ -75,6 +75,7 @@ def main():
             '--pipeline-threads=2',
             '--renderdoc=',
             '--log-max=8',
+            '--pipeline-libraries=0',
             '--prepare-shaders=1',
             '--compress-prepared-shaders=0',
             '--vk-gpu-profile=0',

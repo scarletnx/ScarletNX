@@ -122,7 +122,8 @@ typedef struct Shader {
 typedef struct {
     uint64_t key;
     VkPipeline pipeline;
-    uint8_t job; /* while a worker makes it (async_pipelines), its job's index plus 1 */
+    uint8_t job;    /* while a worker makes it (async_pipelines), its job's index plus 1 */
+    uint8_t better; /* while a worker makes the optimized one of a pipeline linked fast, its job's index plus 1 */
 } Pipeline;
 /* what a pipeline is made of, all of it its own, so that a worker can make it while the draws go on */
 typedef struct {
@@ -139,6 +140,7 @@ typedef struct {
     VkPipelineCache cache;
     VkPipeline made;           /* a job's, once made */
     uint32_t vs_prep, fs_prep; /* its shaders' records in the prepared file plus 1 (Shader.prep) */
+    VkPipeline linked[SNX_VK_GPL_PARTS]; /* a fast link's parts, for its optimized one: the job links those alone */
 } PipeDesc;
 /* a pipeline of the prepared file (prepare_shaders): its key, its shaders by their records' numbers, and what it is
    made of, its handles none in the file */
@@ -195,6 +197,18 @@ struct VitaRender {
     size_t prep_pipe_room;
     SnxVkFeed feed;
     VitaPrepared counts;
+    /* pipeline_libraries: the parts made so far, the pipelines linked fast and optimized (the workers' too) and the
+       fast links replaced, and the fast links an optimized one replaced, each kept until the work recorded before
+       it is done (the serial of the recording open then) */
+    SnxVkGplParts parts;
+    _Atomic unsigned gpl_linked, gpl_optimized;
+    unsigned gpl_replaced;
+    _Atomic int gpl_failed;
+    struct {
+        VkPipeline pipeline;
+        uint64_t serial;
+    } buried[64];
+    unsigned buried_count;
     VkDescriptorSetLayout set_layout;
     VkPipelineLayout layout;
     VkSampler samplers[2][2][4]; /* min/mag linear, mip, address mode */
@@ -904,6 +918,13 @@ bool vita_render_init(VitaProcess* p) {
 }
 static void retire(unsigned slot, uint64_t serial) {
     if (!g_retiring) return;
+    struct VitaRender* r = g_retiring;
+    for (unsigned i = 0; i < r->buried_count;)
+        if (r->buried[i].serial <= serial) {
+            vkDestroyPipeline(r->vk->device, r->buried[i].pipeline, NULL);
+            r->buried[i] = r->buried[--r->buried_count];
+        } else
+            ++i;
     mirror_drain(g_retiring, serial, IMPORTS);
     g_retiring->staging[slot].used = 0, g_retiring->linear[slot].used = 0;
 }
@@ -950,6 +971,15 @@ void vita_render_free(VitaProcess* p) {
     }
     for (unsigned i = 0; i < PIPELINES; ++i)
         if (r->pipelines[i].pipeline) vkDestroyPipeline(d, r->pipelines[i].pipeline, NULL);
+    for (unsigned i = 0; i < r->buried_count; ++i) vkDestroyPipeline(d, r->buried[i].pipeline, NULL);
+    if (r->vk->gpl.on)
+        fprintf(stderr,
+                "scarletnx-vita: pipeline_libraries=%d linked %u pipeline%s fast and %u optimized, from %zu parts (%u "
+                "reused)\n",
+                g_settings.pipeline_libraries, atomic_load_explicit(&r->gpl_linked, memory_order_relaxed),
+                atomic_load_explicit(&r->gpl_linked, memory_order_relaxed) == 1 ? "" : "s",
+                atomic_load_explicit(&r->gpl_optimized, memory_order_relaxed), r->parts.count, r->parts.reused);
+    snx_vk_gpl_parts_free(&r->parts, d);             /* after the pipelines linked from them */
     for (uint32_t i = 0; i < r->prepared_count; ++i) /* the file's shaders no program took */
         if (r->prepared[i]) {
             if (r->prepared[i]->module) vkDestroyShaderModule(d, r->prepared[i]->module, NULL);
@@ -1302,6 +1332,7 @@ static void prep_add_pipe(struct VitaRender* r, uint64_t key, const PipeDesc* d)
     PrepPipe k = {.key = key, .vs = d->vs_prep - 1, .fs = d->fs_prep - 1, .d = *d};
     k.d.vs = k.d.fs = VK_NULL_HANDLE, k.d.cache = VK_NULL_HANDLE, k.d.made = VK_NULL_HANDLE;
     k.d.vs_prep = k.d.fs_prep = 0;
+    memset(k.d.linked, 0, sizeof k.d.linked);
     (void)snx_prep_add(&r->prep, PREP_PIPE, &k, sizeof k, NULL, 0);
 }
 static bool grow(void** items, size_t* room, size_t count, size_t size) {
@@ -1386,7 +1417,7 @@ static void prep_feed(struct VitaRender* r, bool all) {
     snx_vk_jobs_feed(&r->pool, &r->feed, all, prep_fill, prep_made);
 }
 static void job_make(void* owner, unsigned job);
-static VkPipeline make_pipe(VkDevice device, VkPipelineLayout layout, const PipeDesc* d);
+static VkPipeline make_pipe(struct VitaRender* r, const PipeDesc* d, bool optimize, VkPipeline linked[]);
 /* the workers, as the draws' pipelines and the prepared ones share them: how many there are */
 static unsigned pipe_workers(struct VitaRender* r) {
     r->pool.make = job_make, r->pool.owner = r, r->pool.who = "scarletnx-vita", r->pool.thread = "Vita pipelines";
@@ -1415,7 +1446,7 @@ static void prepared_open(struct VitaRender* r, VitaProcess* p) {
     else if (now)
         for (; r->feed.next < r->feed.count; ++r->feed.next) {
             PrepPipe* k = &r->prep_pipes[r->feed.next];
-            prep_adopt(r, k->key, make_pipe(r->vk->device, r->layout, &k->d));
+            prep_adopt(r, k->key, make_pipe(r, &k->d, true, NULL));
         }
     if (now || !r->feed.count)
         fprintf(stderr,
@@ -1432,6 +1463,18 @@ static void prepared_open(struct VitaRender* r, VitaProcess* p) {
 void vita_render_pipelines_wait(VitaProcess* p) {
     struct VitaRender* r = render_of(p);
     if (r) snx_vk_jobs_wait(&r->pool, false, NULL);
+}
+VitaLibraries vita_render_libraries(VitaProcess* p) {
+    struct VitaRender* r = render_of(p);
+    if (!r) return (VitaLibraries){0};
+    SDL_LockMutex(r->parts.lock);
+    VitaLibraries l = {.linked = atomic_load_explicit(&r->gpl_linked, memory_order_relaxed),
+                       .optimized = atomic_load_explicit(&r->gpl_optimized, memory_order_relaxed),
+                       .parts = (unsigned)r->parts.count,
+                       .reused = r->parts.reused,
+                       .replaced = r->gpl_replaced};
+    SDL_UnlockMutex(r->parts.lock);
+    return l;
 }
 VitaPrepared vita_render_prepared(VitaProcess* p) {
     const struct VitaRender* r = render_of(p);
@@ -1522,7 +1565,11 @@ static VkBlendOp blend_op(unsigned f) {
     return f < sizeof ops / sizeof *ops ? ops[f] : VK_BLEND_OP_ADD;
 }
 /* the pipeline d describes, made now: VK_NULL_HANDLE where the device refuses it */
-static VkPipeline make_pipe(VkDevice device, VkPipelineLayout layout, const PipeDesc* d) {
+/* the pipeline d describes, whole or linked from its parts (pipeline_libraries), optimized or fast, linked then the
+   parts a fast one took (for its optimized one): VK_NULL_HANDLE where the device refuses it */
+static VkPipeline make_pipe(struct VitaRender* r, const PipeDesc* d, bool optimize, VkPipeline linked[]) {
+    const VkDevice device = r->vk->device;
+    const VkPipelineLayout layout = r->layout;
     VkPipelineShaderStageCreateInfo stages[2] = {{.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                                                   .stage = VK_SHADER_STAGE_VERTEX_BIT,
                                                   .module = d->vs,
@@ -1570,14 +1617,43 @@ static VkPipeline make_pipe(VkDevice device, VkPipelineLayout layout, const Pipe
                                        .pColorBlendState = &blending,
                                        .pDynamicState = &dynamic,
                                        .layout = layout};
-    VkPipeline pipeline = VK_NULL_HANDLE;
-    if (vkCreateGraphicsPipelines(device, d->cache, 1, &gi, NULL, &pipeline) != VK_SUCCESS) return VK_NULL_HANDLE;
+    VkPipeline pipeline = VK_NULL_HANDLE, parts[SNX_VK_GPL_PARTS];
+    if (r->vk->gpl.on) {
+        VkResult made = snx_vk_gpl_make(&r->parts, device, d->cache, &gi, optimize, linked ? linked : parts, &pipeline);
+        if (made != VK_SUCCESS) {
+            if (!atomic_exchange_explicit(&r->gpl_failed, 1, memory_order_relaxed))
+                fprintf(stderr,
+                        "scarletnx-vita: a pipeline from libraries failed (VkResult %d): made whole (said for the "
+                        "first)\n",
+                        (int)made);
+            pipeline = VK_NULL_HANDLE;
+            if (linked) linked[0] = VK_NULL_HANDLE;
+        } else
+            atomic_fetch_add_explicit(optimize ? &r->gpl_optimized : &r->gpl_linked, 1, memory_order_relaxed);
+    }
+    if (!pipeline && vkCreateGraphicsPipelines(device, d->cache, 1, &gi, NULL, &pipeline) != VK_SUCCESS)
+        return VK_NULL_HANDLE;
     return pipeline;
 }
 /* a job's pipeline made, on a worker */
 static void job_make(void* owner, unsigned job) {
     struct VitaRender* r = owner;
-    r->jobs[job].made = make_pipe(r->vk->device, r->layout, &r->jobs[job]);
+    PipeDesc* d = &r->jobs[job];
+    if (d->linked[0]) {
+        if (snx_vk_gpl_optimize(r->vk->device, r->cache, d->linked, r->layout, &d->made) == VK_SUCCESS)
+            atomic_fetch_add_explicit(&r->gpl_optimized, 1, memory_order_relaxed);
+    } else
+        d->made = make_pipe(r, d, true, NULL); /* a worker's: optimized at once */
+}
+/* a fast link an optimized pipeline replaced: destroyed once the work recorded so far is done (retire) */
+static void bury_pipeline(struct VitaRender* r, VkPipeline p) {
+    if (r->buried_count == sizeof r->buried / sizeof *r->buried) { /* no room to keep it: wait for the device */
+        vkDeviceWaitIdle(r->vk->device);
+        vkDestroyPipeline(r->vk->device, p, NULL);
+        return;
+    }
+    r->buried[r->buried_count].pipeline = p;
+    r->buried[r->buried_count++].serial = r->vk->ring.submitted + 1;
 }
 /* what picks a draw's pipeline: its shaders by their programs (a Shader freed and another made where it was is another
    program's), then the state the pipeline bakes in */
@@ -1623,7 +1699,18 @@ static VkPipeline pipeline_for(struct VitaRender* r, GxmContext* c, const GxmVer
             }
             return e->pipeline;
         }
-        if (e->key == key && e->pipeline) return e->pipeline;
+        if (e->key == key && e->pipeline) {
+            if (e->better && snx_vk_jobs_take(&r->pool, e->better - 1u)) { /* the optimized one, in the link's place */
+                if (r->jobs[e->better - 1].made) {
+                    bury_pipeline(r, e->pipeline);
+                    e->pipeline = r->jobs[e->better - 1].made;
+                    ++r->gpl_replaced;
+                }
+                r->jobs[e->better - 1] = (PipeDesc){0};
+                e->better = 0;
+            }
+            return e->pipeline;
+        }
         if (!e->pipeline && !e->job) break;
     }
     if (r->pipelines[slot].pipeline || r->pipelines[slot].job) {
@@ -1720,13 +1807,22 @@ static VkPipeline pipeline_for(struct VitaRender* r, GxmContext* c, const GxmVer
         *making = true;
         return VK_NULL_HANDLE;
     }
-    VkPipeline pipeline = make_pipe(r->vk->device, r->layout, &d);
+    VkPipeline linked[SNX_VK_GPL_PARTS] = {0};
+    VkPipeline pipeline = make_pipe(r, &d, false, linked);
     if (!pipeline) {
         once(r, 6, "the device refuses a pipeline");
         return VK_NULL_HANDLE;
     }
     r->pipelines[slot].key = key, r->pipelines[slot].pipeline = pipeline;
     prep_add_pipe(r, key, &d);
+    /* a fast link: its optimized one made on a worker where one is free, which replaces it once made */
+    int job = linked[0] && pipe_workers(r) ? snx_vk_jobs_free(&r->pool) : -1;
+    if (job >= 0) {
+        r->jobs[job] = (PipeDesc){0};
+        memcpy(r->jobs[job].linked, linked, sizeof linked);
+        r->pipelines[slot].better = (uint8_t)(job + 1);
+        snx_vk_jobs_queue(&r->pool, (unsigned)job);
+    }
     return pipeline;
 }
 /* SceGxmTextureFormat's U8U8U8U8 (four bytes, R in the first for ABGR), U8U8U8 (three bytes expanded to RGBA8),
