@@ -26,6 +26,8 @@ static struct {
     int pace, pace_before; /* fps_limit's (pace.h), and F4's pace before none */
     char fps_limit[16];    /* its text as read */
     int slot;              /* the save states' slot F7 and F8 use, 1 to state_slots, F9's step */
+    char state_save[256], state_load[1024]; /* an unattended run's (state_save, state_load) */
+    uint32_t saves_done, loads_done;        /* a bit for each of their items done */
     uint64_t quit_by; /* a second Back before this quits (quit_key.h), the first one's line shown until then */
     SnxUiRects rects;
     int made, warned, w, h; /* what the rectangles are made for: a first time, with the line or not, the picture */
@@ -105,8 +107,21 @@ static const IniOpt FPS_LIMIT = {.key = "fps_limit",
                                  .var = g_vpad_sdl.fps_limit,
                                  .size = sizeof g_vpad_sdl.fps_limit,
                                  .set = fps_limit_set};
+/* state_save and state_load, read as they are and done by snx_vpad_window_states_due */
+static const IniOpt STATE_SAVE = {.key = "state_save",
+                                  .def = "",
+                                  .type = INI_TEXT,
+                                  .var = g_vpad_sdl.state_save,
+                                  .size = sizeof g_vpad_sdl.state_save};
+static const IniOpt STATE_LOAD = {.key = "state_load",
+                                  .def = "",
+                                  .type = INI_TEXT,
+                                  .var = g_vpad_sdl.state_load,
+                                  .size = sizeof g_vpad_sdl.state_load};
 static const IniOpt* setting(const char* key) {
     if (!strcmp(key, "fps_limit")) return &FPS_LIMIT;
+    if (!strcmp(key, "state_save")) return &STATE_SAVE;
+    if (!strcmp(key, "state_load")) return &STATE_LOAD;
     if (!strcmp(key, "state_slots") || !strcmp(key, "state_auto_backup")) return ini_find(g_game_ini, key);
     return hotkey_setting(key);
 }
@@ -152,7 +167,10 @@ void snx_vpad_window_safe(int safe[4]) {
 }
 /* line on say and show */
 static void say_shown(const char* line) {
-    if (g_vpad_sdl.say) g_vpad_sdl.say(line);
+    if (g_vpad_sdl.say)
+        g_vpad_sdl.say(line);
+    else
+        snx_error("%s", line); /* a run with no window: its log alone */
     if (g_vpad_sdl.show) g_vpad_sdl.show(line);
 }
 bool snx_vpad_window_paused(void) { return g_vpad_sdl.paused; }
@@ -164,6 +182,45 @@ bool snx_vpad_window_paused(void) { return g_vpad_sdl.paused; }
     vsnprintf(line, sizeof line, fmt, ap);
     va_end(ap);
     say_shown(line);
+}
+/* a state's file by what an item names: a slot's number, auto, or a path */
+static void item_path(char* out, size_t size, const SnxVpadStates* s, const char* what, size_t n) {
+    size_t digits = strspn(what, "0123456789");
+    if ((digits && digits == n) || (n == 4 && !strncmp(what, "auto", 4)))
+        snprintf(out, size, "%sstates/%s.%.*s" SNX_STATE_EXT, s->prefix, s->name, (int)n, what);
+    else
+        snprintf(out, size, "%.*s", (int)n, what);
+}
+/* the items of list due by ms and not done (a bit each in *done) saved or loaded, said with their path */
+static void due(const char* list, uint32_t* done, int load, uint64_t ms, const SnxVpadStates* s, const uint8_t* thumb) {
+    char path[SNX_PATH_SIZE], why[256];
+    int i = 0;
+    for (const char* at = list; *at && i < 32; ++i) {
+        const char *end = at + strcspn(at, ","), *colon = memchr(at, ':', (size_t)(end - at));
+        char* stop;
+        unsigned long long when = strtoull(at, &stop, 10);
+        if (!colon || stop != colon) {
+            if (!(*done >> i & 1))
+                states_say("state_%s=%s: %.*s is not at:slot or at:path", load ? "load" : "save", list, (int)(end - at),
+                           at);
+            *done |= 1u << i;
+        } else if (!(*done >> i & 1) && when <= ms) {
+            *done |= 1u << i;
+            item_path(path, sizeof path, s, colon + 1, (size_t)(end - colon - 1));
+            if (load ? s->load(s->game, path, why, sizeof why) : s->save(s->game, path, thumb, why, sizeof why))
+                states_say("Not %s: %s", load ? "loaded" : "saved", why);
+            else
+                states_say("%s %s", load ? "Loaded" : "Saved", path);
+        }
+        at = *end ? end + 1 : end;
+    }
+}
+bool snx_vpad_window_states_waiting(void) {
+    return (g_vpad_sdl.state_save[0] && ~g_vpad_sdl.saves_done) || (g_vpad_sdl.state_load[0] && ~g_vpad_sdl.loads_done);
+}
+void snx_vpad_window_states_due(uint64_t ms, const SnxVpadStates* s, const uint8_t* thumb) {
+    if (g_vpad_sdl.state_save[0]) due(g_vpad_sdl.state_save, &g_vpad_sdl.saves_done, 0, ms, s, thumb);
+    if (g_vpad_sdl.state_load[0]) due(g_vpad_sdl.state_load, &g_vpad_sdl.loads_done, 1, ms, s, thumb);
 }
 void snx_vpad_window_states(int action, const SnxVpadStates* s, const uint8_t* thumb) {
     char name[16], label[24], start[24], path[SNX_PATH_SIZE], why[256], when[32];
