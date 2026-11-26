@@ -3284,6 +3284,9 @@ VkSh* vk_shader_mesh(const DsState* ds, u64 gva, int stage, const DsMeshKey* k, 
 /* whether the constant buffer words s's translation read still hold in ds's bound buffers (vk_shader_get's check on
    a hit, for a caller that kept s) */
 int vk_shader_cb_hold(const DsState* ds, const VkSh* s);
+/* whether nothing wrote the code of s at gva (and its VertexA's at gva_a, 0 for none) since wseen (vk_ww_now) and gw
+   (gpu_mem_generation): vk_shader_get's own check of a shader it found at that address before */
+int vk_shader_code_quiet(const VkSh* s, u64 gva, u64 gva_a, u32 wseen, u64 gw);
 /* counts the translations put in the shader table: after a new one, vk_shader_get can give another translation of
    a program than it gave before */
 u32 vk_shader_fold_gen(void);
