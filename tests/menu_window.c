@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The game's menu in a console's window (common/utilities/menu_window.c), a GBA game's: F2 opens it over the picture
+/* The game's menu in a console's window (common/utilities/menu_window.c), a GBA game's: F2 or Back opens it over the picture
    and Escape closes it; it has the console's items alone (no gamepads' page, no TV mode, no recordings of input); its
    Save states page lists the game's slots, with a slot's thumbnail beside it in the window's rectangles, and a slot's
    Save is the window's save of that slot, between two frames; Exit ends the run. A plain window under SDL's offscreen
@@ -103,6 +103,9 @@ int main(void) {
     r = snx_vpad_window_rects(w, h);
     CHECK(r && r->count > closed);
     CHECK(key(SDLK_ESCAPE, &action) == SNX_VPAD_TAKEN && !overlay_shown());
+    /* Android's Back too, and again to close it, never the layout's editing */
+    CHECK(key(SDLK_AC_BACK, &action) == SNX_VPAD_TAKEN && overlay_shown() && !vpad_editing());
+    CHECK(key(SDLK_AC_BACK, &action) == SNX_VPAD_TAKEN && !overlay_shown() && !vpad_editing());
     /* its items: Controls, Save states, Shortcuts, Exit (no gamepads' page, no TV mode, no capture, no settings) */
     CHECK(key(SDLK_F2, &action) == SNX_VPAD_TAKEN && overlay_shown());
     CHECK(key(SDLK_DOWN, &action) == SNX_VPAD_TAKEN); /* Save states, second */
@@ -129,7 +132,7 @@ int main(void) {
     CHECK(key(SDLK_ESCAPE, &action) != SNX_VPAD_QUIT);
     for (int i = 0; i < 4 && overlay_shown(); ++i) (void)key(SDLK_ESCAPE, &action);
     CHECK(key(SDLK_F2, &action) == SNX_VPAD_TAKEN && overlay_shown());
-    CHECK(key(SDLK_UP, &action) == SNX_VPAD_TAKEN); /* round to the last */
+    CHECK(key(SDLK_UP, &action) == SNX_VPAD_TAKEN);                        /* round to the last */
     CHECK(key(SDLK_RETURN, &action) == SNX_VPAD_TAKEN && overlay_shown()); /* asked first, Cancel in focus */
     CHECK(key(SDLK_UP, &action) == SNX_VPAD_TAKEN);
     CHECK(key(SDLK_RETURN, &action) == SNX_VPAD_QUIT);
