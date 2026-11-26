@@ -414,6 +414,9 @@ void snx_ctr_shared_page_time(SnxCtrProcess* p);
 /* HLE shared pages live past the application pool but inside board FCRAM;
    each call reserves the next page-aligned block, or returns 0. */
 uint32_t snx_ctr_shared_pages(SnxCtrProcess* p, uint32_t size);
+/* where the process sees a shared block (its owner's range, or where it mapped the block with MapMemoryBlock), 0 when
+   it sees it nowhere */
+uint32_t snx_ctr_shared_va(const SnxCtrProcess* p, uint32_t object);
 /* The old linear heap address of the FCRAM page at `physical`; 0 below FCRAM, as for a block with no pages */
 uint32_t snx_ctr_linear_address(uint32_t physical);
 uint32_t snx_ctr_named_connect(SnxCtrProcess* p, uint32_t name_address, uint32_t* out);

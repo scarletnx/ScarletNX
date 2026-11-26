@@ -374,5 +374,12 @@ uint32_t snx_ctr_shared_pages(SnxCtrProcess* p, uint32_t size) {
     p->physical_shared += size;
     return at;
 }
+uint32_t snx_ctr_shared_va(const SnxCtrProcess* p, uint32_t object) {
+    uint32_t address = p->objects[object].data.shared.address;
+    if (address) return address;
+    for (unsigned i = 0; i < sizeof p->shared_maps / sizeof *p->shared_maps; ++i)
+        if (p->shared_maps[i].object == object && p->shared_maps[i].va) return p->shared_maps[i].va;
+    return 0;
+}
 SnxArmCPU* snx_ctr_process_cpu(SnxCtrProcess* p) { return p ? &p->cpu.state.cpu : NULL; }
 SnxCtrAddressSpace* snx_ctr_process_space(SnxCtrProcess* p) { return p ? p->space : NULL; }

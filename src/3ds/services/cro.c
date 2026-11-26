@@ -161,19 +161,8 @@ static uint8_t rd8(SnxCtrProcess* p, uint32_t at) {
 /* a write through the guest view, or, for a page the process may only read (the static module's text, which the
    service relocates), through the physical memory behind it, as a service's own mapping would */
 static bool write_raw(SnxCtrProcess* p, uint32_t at, const void* data, size_t size) {
-    if (snx_ctr_write_ram(p->space, at, data, size) == SNX_CTR_MEM_OK) return true;
-    const uint8_t* bytes = data;
-    while (size) {
-        uint32_t pa = 0;
-        size_t n = SNX_CTR_PAGE_SIZE - at % SNX_CTR_PAGE_SIZE;
-        if (n > size) n = size;
-        if (snx_ctr_query(p->space, at, &pa, NULL) != SNX_CTR_MEM_OK) return false;
-        if (snx_ctr_phys_write(p->memory, pa, bytes, n) != SNX_CTR_MEM_OK) return false;
-        at += (uint32_t)n;
-        bytes += n;
-        size -= n;
-    }
-    return true;
+    return snx_ctr_write_ram(p->space, at, data, size) == SNX_CTR_MEM_OK ||
+           snx_ctr_write_behind(p->space, p->memory, at, data, size) == SNX_CTR_MEM_OK;
 }
 /* keeps the bytes a write is about to replace, so that a transaction that fails puts them back */
 static bool record_undo(SnxCtrProcess* p, uint32_t at, size_t size) {
