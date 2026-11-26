@@ -134,6 +134,8 @@ menu's driver:
   copied into it first. The thread has a 64 MiB stack, which LLVM's passes need.
 - **A game** runs in the app's process once the menu closes (`src/nx/runtime/entry.c`): the runtime starts once per
   process, so the app ends with the game.
+- **A game that stops** shows the error's panel in its window ([When a game stops](../user/usage.md#when-a-game-stops)),
+  whose Share Log opens the share sheet with the log.
 - **Share Log** asks how, then saves `scarletnx-logs-<date>.zip` or `scarletnx.log` in `logs/share/` of its Documents
   and opens that folder in the Files app, or opens `logs/`.
 - **Logs.** Everything the app prints goes to the day it starts on's `logs/scarletnx-console-<date>.log` in its

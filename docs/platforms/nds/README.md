@@ -53,6 +53,10 @@ The driver uses melonDS as its reference and ports parts of it ([Source provenan
 `--outdir`, `--output`, `--frames`, `--seconds`, `--shot`, `--script`, `-f`, `-H` and `-h`, each value as
 `--option VALUE` or `--option=VALUE`.
 
+A stop (an image it cannot read, code it cannot run, no Vulkan device for the window, a GPU that stops answering)
+shows the error's panel ([When a game stops](../../user/usage.md#when-a-game-stops)), unless the run is a recompile,
+headless or has a number of frames.
+
 `scarletnx-nds Game.nds` plays the image in a window with both screens, the upper one above the lower one, scaled to
 the window at the console's shape. The keyboard is the other consoles': the arrows are the D-pad, X or Space A, Z B,
 S X, A Y, Q L, E R, Enter Start and Backspace Select. A gamepad's buttons are where the console has them. A finger or
