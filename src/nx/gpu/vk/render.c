@@ -4157,34 +4157,41 @@ u64 g_vk_dset_new, g_vk_dset_reused;
 static alignas(64) typeof(g_vk_dset_new) w_g_vk_dset_new;
 static alignas(64) typeof(g_vk_dset_reused) w_g_vk_dset_reused;
 typedef struct {
-    u64 h1, h2, frame;
-    VkDescriptorSet set;
-    u32 seq; /* odd while its thread writes it: the other thread of a split run reads it (dset_peer) */
+    _Atomic u64 h1, h2, frame;
+    _Atomic(VkDescriptorSet) set;
+    _Atomic u32 seq; /* odd while its thread writes it: the other thread of a split run reads it (dset_peer) */
 } DescSetEntry;
 /* An entry of this thread's slot, written so that the other thread of a split run (draw_batches=2) can read it with
    no lock: a sequence count around the writes, as a seqlock does */
 static void dset_put(DescSetEntry* e, u64 h1, u64 h2, u64 frame, VkDescriptorSet set) {
-    const u32 s = __atomic_load_n(&e->seq, __ATOMIC_RELAXED);
-    __atomic_store_n(&e->seq, s + 1, __ATOMIC_RELAXED);
-    __atomic_thread_fence(__ATOMIC_RELEASE);
-    __atomic_store_n(&e->h1, h1, __ATOMIC_RELAXED);
-    __atomic_store_n(&e->h2, h2, __ATOMIC_RELAXED);
-    __atomic_store_n(&e->frame, frame, __ATOMIC_RELAXED);
-    __atomic_store_n(&e->set, set, __ATOMIC_RELAXED);
-    __atomic_store_n(&e->seq, s + 2, __ATOMIC_RELEASE);
+    const u32 s = atomic_load_explicit(&e->seq, memory_order_relaxed);
+    atomic_store_explicit(&e->seq, s + 1, memory_order_relaxed);
+    atomic_thread_fence(memory_order_release);
+    atomic_store_explicit(&e->h1, h1, memory_order_relaxed);
+    atomic_store_explicit(&e->h2, h2, memory_order_relaxed);
+    atomic_store_explicit(&e->frame, frame, memory_order_relaxed);
+    atomic_store_explicit(&e->set, set, memory_order_relaxed);
+    atomic_store_explicit(&e->seq, s + 2, memory_order_release);
+}
+/* the entry's own thread reads it: no other thread writes it */
+static u64 dset_frame(const DescSetEntry* e) { return atomic_load_explicit(&e->frame, memory_order_relaxed); }
+static int dset_is(const DescSetEntry* e, u64 h1, u64 h2) {
+    return atomic_load_explicit(&e->h1, memory_order_relaxed) == h1 &&
+           atomic_load_explicit(&e->h2, memory_order_relaxed) == h2;
 }
 /* the set of the other slot's bucket with these writes in this frame, else none. A set made by either thread is good
    for the frame, as its pools keep it to the frame's end */
 static VkDescriptorSet dset_peer(const DescSetEntry* bucket, u64 h1, u64 h2, u64 frame) {
     for (u32 i = 0; i < 2; i++) {
         const DescSetEntry* e = &bucket[i];
-        const u32 s = __atomic_load_n(&e->seq, __ATOMIC_ACQUIRE);
+        const u32 s = atomic_load_explicit(&e->seq, memory_order_acquire);
         if (s & 1) continue;
-        const u64 a = __atomic_load_n(&e->h1, __ATOMIC_RELAXED), b = __atomic_load_n(&e->h2, __ATOMIC_RELAXED),
-                  f = __atomic_load_n(&e->frame, __ATOMIC_RELAXED);
-        const VkDescriptorSet set = __atomic_load_n(&e->set, __ATOMIC_RELAXED);
-        __atomic_thread_fence(__ATOMIC_ACQUIRE);
-        if (__atomic_load_n(&e->seq, __ATOMIC_RELAXED) != s) continue;
+        const u64 a = atomic_load_explicit(&e->h1, memory_order_relaxed),
+                  b = atomic_load_explicit(&e->h2, memory_order_relaxed),
+                  f = atomic_load_explicit(&e->frame, memory_order_relaxed);
+        const VkDescriptorSet set = atomic_load_explicit(&e->set, memory_order_relaxed);
+        atomic_thread_fence(memory_order_acquire);
+        if (atomic_load_explicit(&e->seq, memory_order_relaxed) != s) continue;
         if (f == frame && a == h1 && b == h2 && set) return set;
     }
     return VK_NULL_HANDLE;
@@ -4271,9 +4278,9 @@ static VkDescriptorSet desc_set_cached_(VkDescriptorSetLayout layout, DescWrites
     VkDescriptorSet set = VK_NULL_HANDLE;
     DescSetEntry* bucket = cache[t_rc][hash[0] >> 50];
     for (u32 i = 0; i < 2 && !set; i++)
-        if (bucket[i].frame == frame && bucket[i].h1 == hash[0] && bucket[i].h2 == hash[1]) {
+        if (dset_frame(&bucket[i]) == frame && dset_is(&bucket[i], hash[0], hash[1])) {
             CNT(g_vk_dset_reused)++;
-            set = bucket[i].set;
+            set = atomic_load_explicit(&bucket[i].set, memory_order_relaxed);
         }
     /* a split run's worker (draw_batches=2) takes a set the renderer thread made this frame. Not the other way: with
        the recording thread a new set is a stand-in until the ring runs the packet that makes it, and the worker's
@@ -4285,14 +4292,14 @@ static VkDescriptorSet desc_set_cached_(VkDescriptorSetLayout layout, DescWrites
     if (!set) {
         /* for the statistics (the GPU plan's M3c): a set an earlier frame made with these writes */
         for (u32 i = 0; i < 2; i++)
-            if (bucket[i].frame != frame && bucket[i].h1 == hash[0] && bucket[i].h2 == hash[1]) {
+            if (dset_frame(&bucket[i]) != frame && dset_is(&bucket[i], hash[0], hash[1])) {
                 CNT(g_dset_earlier)[(u32)stage >= DS_GFX_STAGES]++;
                 break;
             }
         CNT(g_dset_new_kind)[(u32)stage >= DS_GFX_STAGES]++;
-        DescSetEntry* e = bucket[0].frame != frame   ? &bucket[0]
-                          : bucket[1].frame != frame ? &bucket[1]
-                                                     : &bucket[hash[1] >> 63];
+        DescSetEntry* e = dset_frame(&bucket[0]) != frame   ? &bucket[0]
+                          : dset_frame(&bucket[1]) != frame ? &bucket[1]
+                                                            : &bucket[hash[1] >> 63];
         set = (g_vk.has_descriptor_buffers || g_vk.has_descriptor_heaps) ? vk_descriptors_write(layout, d->n, d->w, d->cb_addr)
                                                                          : vk_rec_new_set(layout, d->n, d->w);
         if (!set) return VK_NULL_HANDLE;
