@@ -318,29 +318,20 @@ static void beside_llvm(const char* of) {
         check_line(why, line, "why LLVM makes the A32 blocks");
     }
     snx_arm_exec_free(exec);
-    check(snx_recompiler_has(SNX_RECOMPILER_FLAG_LLVM), "the library has its back end", of);
-    /* and its code is LLVM's */
-    struct snx_recompiler* r = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
-    struct snx_code_range range = {CODE, g_floor.memory + CODE, 8};
-    const uint64_t entry = CODE;
-    struct snx_recompiled* m = r ? snx_recompile_ranges(r, &range, 1, &entry, 1) : NULL;
-    check(m && !snx_recompiled_x64_functions(m), r && !m ? snx_recompiler_error(r) : "the library's LLVM functions",
-          of);
-    snx_recompiled_free(m);
-    snx_recompiler_free(r);
+    /* the library's code is the native back end's alone: below its floor there is no recompiler, LLVM or not */
+    check(!snx_recompiler_has(SNX_RECOMPILER_FLAG_LLVM) && !snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM),
+          "the library has no recompiler", of);
 }
 
-/* the recompiles' lines on stdout, from here on in path: the A32 maker's of its blocks, the library's of its functions */
+/* the recompiles' lines on stdout, from here on in path: the A32 maker's of its blocks (the library has no recompiler
+   below the floor, beside_llvm) */
 static void printed(const char* path, const char* of) {
     char line[256], want[320], error[512] = "";
     size_t consumed = 0, size = 0;
     SnxArmCodegenOptions options = {SNX_ARM_CODEGEN_OPTIONS_ABI, SNX_ARM_PROFILE_A57, SNX_ARM_MEMORY_FLAT, 0, 0};
     unsigned char code[8];
     SnxArmAot* aot = snx_arm_aot_new('0', NULL);
-    struct snx_recompiler* r = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
-    struct snx_code_range range = {CODE, g_floor.memory + CODE, 8};
-    const uint64_t entry = CODE;
-    check(snx_native_floor(line, sizeof line) && aot && r && freopen(path, "wb", stdout), "starts", of);
+    check(snx_native_floor(line, sizeof line) && aot && freopen(path, "wb", stdout), "starts", of);
     for (int i = 0; i < 8; ++i) code[i] = (unsigned char)(k_a32[i / 4] >> (8 * (i % 4)));
     if (aot) {
         check(!snx_arm_aot_block(aot, "block", code, 2, 0x1000, 0, &options, &consumed, error, sizeof error), error,
@@ -348,18 +339,11 @@ static void printed(const char* path, const char* of) {
         snx_arm_aot_report(snx_arm_aot_count(aot), "test", 0);
     }
     snx_arm_aot_free(aot);
-    if (r) {
-        snx_recompiler_set_verbose(r, 1);
-        snx_recompiled_free(snx_recompile_ranges(r, &range, 1, &entry, 1));
-    }
-    snx_recompiler_free(r);
     fflush(stdout);
     char* text = (char*)snx_read_file(path, &size);
     char* lines = (char*)calloc(size + 1, 1);
     if (text && lines) memcpy(lines, text, size);
     snprintf(want, sizeof want, "LLVM: 1 blocks (%s)\n", line);
-    check(lines && strstr(lines, want) != NULL, want, of);
-    snprintf(want, sizeof want, "%s: LLVM makes the code\n", line);
     check(lines && strstr(lines, want) != NULL, want, of);
     free(text), free(lines);
 }
@@ -369,10 +353,11 @@ static void printed(const char* path, const char* of) {
 static void printed_done(const char* path, const char* of) {
     char line[256], want[300];
     size_t size = 0;
-    struct snx_recompiler* r = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
     struct snx_code_range range = {CODE, g_floor.memory + CODE, 8};
     const uint64_t entry = CODE;
     take_out(DONE);
+    /* made once the host has its floor again: the library's code is the native back end's alone */
+    struct snx_recompiler* r = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
     check(!snx_native_floor(line, sizeof line) && snx_native_fallback(line, sizeof line) && r &&
               freopen(path, "wb", stdout),
           "starts", of);
