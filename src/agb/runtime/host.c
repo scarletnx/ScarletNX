@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
+#include "common/gpu/vk/renderdoc.h"
 #include "agb/runtime/host.h"
 #include "common/utilities/sdl_desktop.h"
 #include "agb/apu/apu.h"
@@ -125,6 +126,10 @@ static void key_action(AgbHost* host, int action) {
     }
     if (action == HOTKEY_SAVE_STATE || action == HOTKEY_LOAD_STATE || action == HOTKEY_NEXT_SLOT) {
         host->state_ask = action;
+        return;
+    }
+    if (action == HOTKEY_CAPTURE) { /* RenderDoc's, the frame after the next present */
+        (void)snx_renderdoc_capture(1);
         return;
     }
     snx_vpad_window_none(action, action == HOTKEY_THREAD_DUMP ? "it runs on one CPU, with no threads"

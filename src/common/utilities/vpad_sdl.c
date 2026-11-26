@@ -394,6 +394,17 @@ static SnxVpadEvent key_event(const SDL_KeyboardEvent* k, int* action) {
     }
     return SNX_VPAD_TAKEN;
 }
+void snx_vpad_window_notice(const char* line) {
+    if (g_vpad_sdl.show) g_vpad_sdl.show(line);
+}
+void snx_vpad_window_log(int warn, const char* line) {
+    if (g_vpad_sdl.say)
+        g_vpad_sdl.say(line);
+    else
+        snx_error("%s", line); /* a failure or a fact alike: there is no window to say it in */
+    (void)warn;
+}
+uint64_t snx_vpad_window_ms(void) { return SDL_GetTicks(); }
 SDL_WindowID snx_vpad_window_key_window(void) { return g_vpad_sdl.key_window; }
 int snx_vpad_window_pace(void) { return g_vpad_sdl.pace; }
 void snx_vpad_window_set_pace(int pace) { g_vpad_sdl.pace = pace; }

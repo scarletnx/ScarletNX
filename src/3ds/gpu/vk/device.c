@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
+#include "common/gpu/vk/renderdoc.h"
 #include "3ds/gpu/present.h"
 #include "3ds/gpu/vk/vk.h"
 #include "3ds/gpu/vk/vk_render.h"
@@ -597,6 +598,7 @@ static bool init(SnxCtrMemory* memory, bool headless, char* error, size_t error_
     memset(v, 0, sizeof *v);
     /* a window first: a display server and a Vulkan surface make it the output; without one, and in a headless run
        whatever the host has, frames go to the frame dumps only */
+    snx_renderdoc_load_window(); /* before the instance: RenderDoc's capture layer is an implicit one */
     if (headless) {
         if (!snx_vk_headless_open("scarletnx-ctr", &v->host, error, error_size)) return false;
         fprintf(stderr, "3ds gpu: headless: no SDL video, window or surface; frames go to the dumps only\n");

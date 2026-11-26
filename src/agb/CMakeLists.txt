@@ -33,7 +33,7 @@ target_link_libraries(snx_agb_program PUBLIC scarletnx-agb SDL3::SDL3 snx_window
 target_link_libraries(snx_agb_program PUBLIC snx_state_file) # the save states (runtime/state.c), the Switch's file
 # the window through Vulkan (runtime/vk.c), as the other consoles' windows; volk's loader compiled here, as every
 # frontend does. snx_settings_runtime: the vk_ext_* table (g_vk_extension_settings) its device takes
-target_link_libraries(snx_agb_program PUBLIC snx_vk_common Vulkan::Headers snx_settings_runtime)
+target_link_libraries(snx_agb_program PUBLIC snx_vk_common snx_vk_renderdoc Vulkan::Headers snx_settings_runtime)
 target_include_directories(snx_agb_program PUBLIC "${volk_SOURCE_DIR}")
 set_source_files_properties("${volk_SOURCE_DIR}/volk.c" PROPERTIES COMPILE_OPTIONS "${snx_third_party_flags}")
 set_target_properties(snx_agb_program PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)

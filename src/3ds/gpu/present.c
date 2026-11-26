@@ -24,6 +24,7 @@
 #include "common/utilities/bits.h"
 #include "common/gpu/vk/notice.h"
 #include "common/gpu/vk/rects.h"
+#include "common/gpu/vk/renderdoc.h"
 #include "common/gpu/vk/present_fx.h"
 #include "common/gpu/vk/swapchain.h"
 #include "common/utilities/build_info.h"
@@ -108,6 +109,7 @@ static struct {
     char* game;            /* the game's folder with its separator, whose captures/ a screenshot goes in */
     SDL_FingerID finger;   /* the finger holding the touch screen, while one does (by_finger) */
     unsigned up : 1, closed : 1, separate : 1, by_finger : 1, keys : 1;
+    uint64_t presents; /* the frames shown in the first window, RenderDoc's captures counting by them */
 } g_present;
 
 static void image_barrier(VkCommandBuffer cb, VkImage image, VkImageLayout old, VkImageLayout next);
@@ -605,6 +607,8 @@ static void key_action(int action) {
         g_present.state_ask = action + 1;
     else if (action == HOTKEY_THREAD_DUMP)
         g_present.dump = true;
+    else if (action == HOTKEY_CAPTURE)
+        (void)snx_renderdoc_capture(1); /* the frame after the next present, said in the log and over the game */
     else if (action == HOTKEY_UPSCALER || action == HOTKEY_ANTI_ALIASING) { /* both screens', for the run */
         int* at = action == HOTKEY_ANTI_ALIASING ? &g_present.fx_config.aa : &g_present.fx_config.upscaler;
         *at = action == HOTKEY_ANTI_ALIASING ? snx_fx_aa_next(*at) : snx_fx_upscale_next(*at);
@@ -863,6 +867,7 @@ bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigne
                                     .swapchainCount = 1,
                                     .pSwapchains = &g_present.swap[window_index].swapchain,
                                     .pImageIndices = &index};
+        if (!window_index) snx_renderdoc_present(v->host.instance.instance, ++g_present.presents);
         snx_gpu_pstate_present(); /* a kgsl hold lasts while frames are presented */
         snx_vk_pacing_present(&v->pacing, &g_present.paced[window_index], v->device,
                               g_present.swap[window_index].swapchain,

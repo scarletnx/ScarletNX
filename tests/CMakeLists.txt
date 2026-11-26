@@ -3651,6 +3651,11 @@ if(NOT SNX_TOOLS_ONLY)
     foreach(case none missing started setting write theirs)
         add_test(NAME vk_renderdoc_${case} COMMAND snx-test-vk-renderdoc ${case})
     endforeach()
+    # RenderDoc's lines in a console's window (common/gpu/vk/renderdoc_window.c): its say and notice take them
+    add_executable(snx-test-vk-renderdoc-window vk_renderdoc_window.c)
+    snx_test_target(snx-test-vk-renderdoc-window gnu23)
+    target_link_libraries(snx-test-vk-renderdoc-window PRIVATE snx_vk_renderdoc)
+    add_test(NAME vk_renderdoc_window COMMAND snx-test-vk-renderdoc-window)
     # vertex_input_dynamic_state (gpu/vk/vertex_input.c): its values, read from a .ini without it and with it, the
     # ban the table holds for stand-in devices and the log line of each case
     include("${PROJECT_SOURCE_DIR}/cmake/vk_extension_bans.cmake")

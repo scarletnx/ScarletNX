@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* The run's side of the host: the Vulkan device and its window (gpu/vk), the keyboard, the gamepads, the on-screen
    controls and the pen, and the pace of the console's frames. */
+#include "common/gpu/vk/renderdoc.h"
 #include "nds/runtime/host.h"
 #include "nds/audio/spu.h"
 #include "nds/gpu/vk/vk.h"
@@ -270,6 +271,10 @@ static void key_action(NdsHost* host, int action) {
     }
     if (action == HOTKEY_SAVE_STATE || action == HOTKEY_LOAD_STATE || action == HOTKEY_NEXT_SLOT) {
         host->state_ask = action;
+        return;
+    }
+    if (action == HOTKEY_CAPTURE) { /* RenderDoc's, the frame after the next present */
+        (void)snx_renderdoc_capture(1);
         return;
     }
     snx_vpad_window_none(action, action == HOTKEY_THREAD_DUMP ? "its ARM9 runs the game's code alone, with no threads"

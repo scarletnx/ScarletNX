@@ -65,6 +65,7 @@ typedef struct {
     SnxVkPacing pacing; /* frame_pacing's (common/gpu/vk/pacing.h) */
     uint32_t scale;     /* the 3D picture's and the frame's size in the screens' pixels, the resolution setting's */
     bool checkpoints;   /* the device is made with vk_checkpoints' extension (common/gpu/vk/marks.h) */
+    uint64_t presents; /* the frames shown, RenderDoc's captures counting by them */
 } NdsVk;
 
 /* the device, once nds_vk_init made it; NULL before, and after nds_vk_free */

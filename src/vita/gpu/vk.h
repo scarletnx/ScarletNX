@@ -47,6 +47,7 @@ typedef struct {
     /* a submission slot's acquired image, a swapchain image's rendering done */
     VkSemaphore acquired[VITA_VK_SLOTS], rendered[SNX_VK_SWAP_IMAGES];
     SnxVkRing ring; /* the submissions in flight, VITA_VK_SLOTS of them */
+    uint64_t presents; /* the frames shown, RenderDoc's captures counting by them */
 } VitaVk;
 
 /* the device and the window (none headless, or without a display). False with the reason when the host has no

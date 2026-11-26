@@ -3,6 +3,7 @@
 /* The GBA runner's Vulkan window (agb/runtime/vk.h). The board's 240x160 RGBA frame goes to a device image through a
    host-visible staging buffer, and is copied to the window's image at the whole step of the screen it holds, as SDL's
    renderer shows it (host.c) */
+#include "common/gpu/vk/renderdoc.h"
 #include "agb/runtime/vk.h"
 #include "common/gpu/vk/gpu_pstate.h"
 #include "agb/ppu/ppu.h"
@@ -47,6 +48,7 @@ struct AgbVk {
     SnxVkPaced paced;
     VkSemaphore acquired[AGB_VK_SLOTS], rendered[SNX_VK_SWAP_IMAGES];
     SnxVkRing ring;
+    u64 presents; /* the frames shown, RenderDoc's captures counting by them */
     AgbFrame frame[AGB_VK_SLOTS];
     SnxVkNotice* notice;
     SnxVkRects* controls;
@@ -165,6 +167,7 @@ AgbVk* agb_vk_open(const char* title, int width, int height, char* error, size_t
         snprintf(error, error_size, "out of memory");
         return NULL;
     }
+    snx_renderdoc_load_window(); /* before the instance: RenderDoc's capture layer is an implicit one */
     if (!snx_vk_window_open("scarletnx-agb", title, width, height, &v->host, error, error_size)) {
         free(v);
         return NULL;
@@ -337,6 +340,7 @@ bool agb_vk_frame(AgbVk* v, const uint32_t* framebuffer, const SnxNotice* notice
                            .swapchainCount = 1,
                            .pSwapchains = &v->swap.swapchain,
                            .pImageIndices = &index};
+    snx_renderdoc_present(v->host.instance.instance, ++v->presents);
     snx_gpu_pstate_present(); /* a kgsl hold lasts while frames are presented */
     snx_vk_pacing_present(&v->pacing, &v->paced, v->device, v->swap.swapchain,
                           g_settings.vsync && snx_vpad_window_frame_ns(1) == 1, &pi, "scarletnx-agb");
