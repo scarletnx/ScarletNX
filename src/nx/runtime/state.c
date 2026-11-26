@@ -33,7 +33,7 @@
 #include "nx/runtime/pause.h"
 #include "nx/runtime/platform/backend.h"
 #include "nx/runtime/platform/log.h"
-#include "nx/runtime/platform/overlay.h"
+#include "common/utilities/overlay.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
 #include "nx/runtime/platform/ui.h"

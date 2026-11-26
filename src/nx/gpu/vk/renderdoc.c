@@ -4,7 +4,7 @@
    clock --script counts from, and its recording ring's submit before a capture ends */
 #include "nx/gpu/vk/vk.h"
 #include "nx/runtime/platform/log.h"
-#include "nx/runtime/platform/overlay.h"
+#include "common/utilities/overlay.h"
 #include "nx/runtime/platform/unattended.h"
 #include "common/utilities/hotkeys.h"
 

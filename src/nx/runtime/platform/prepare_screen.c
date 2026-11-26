@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "nx/runtime/platform/prepare_screen.h"
 #include "common/utilities/fatal_screen.h"
-#include "nx/runtime/platform/overlay.h"
+#include "common/utilities/overlay.h"
 #include "gui/splash.h"
 #include "nx/gpu/renderer.h"
 #include "common/utilities/ui_colors.h"

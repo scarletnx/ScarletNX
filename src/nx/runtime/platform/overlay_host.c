@@ -4,7 +4,7 @@
    input recording, the TV mode, the touch screen, the gamepads, the screens before the game, the atlas's pictures, the
    controller applet, the debug HUD and Tracy */
 #include "nx/runtime/platform/overlay_host.h"
-#include "nx/runtime/platform/overlay.h"
+#include "common/utilities/overlay.h"
 #include "nx/runtime/platform/backend.h"
 #include "nx/runtime/platform/ctrl_applet.h"
 #include "nx/runtime/platform/gamepad.h"

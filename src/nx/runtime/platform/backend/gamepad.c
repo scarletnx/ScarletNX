@@ -7,7 +7,7 @@
 #include "nx/runtime/main.h"
 #include "nx/runtime/platform/backend.h"
 #include "nx/runtime/platform/connect.h"
-#include "nx/runtime/platform/overlay.h"
+#include "common/utilities/overlay.h"
 #include "nx/runtime/pause.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/ui.h"

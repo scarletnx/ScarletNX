@@ -36,4 +36,13 @@ if(TARGET SDL3::SDL3)
     set_target_properties(snx_vpad_sdl PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
     target_compile_options(snx_vpad_sdl PRIVATE -pedantic-errors -Wall -Wextra -Werror=missing-prototypes
                                                 -Werror=missing-variable-declarations)
+    # the game's menu over the game, the Switch's and every console's (src/common/utilities/overlay.c, its runtime's
+    # parts through SnxMenuHost), and F1's text (help.c): its dialogs' text is the error's (snx_error's fatal_screen.c)
+    include("${CMAKE_CURRENT_LIST_DIR}/error.cmake")
+    add_library(snx_menu STATIC "${PROJECT_SOURCE_DIR}/src/common/utilities/overlay.c"
+                                "${PROJECT_SOURCE_DIR}/src/common/utilities/help.c")
+    target_include_directories(snx_menu PRIVATE "${PROJECT_BINARY_DIR}/generated")
+    target_link_libraries(snx_menu PUBLIC snx_vpad_sdl snx_notice snx_error snx_settings_runtime)
+    set_target_properties(snx_menu PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
+    target_compile_options(snx_menu PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 endif()
