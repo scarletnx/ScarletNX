@@ -31,6 +31,27 @@ int main(void) {
     expect(16, false, 16, 0,
            "anisotropy=16 asks for anisotropic filtering, which the device has none of: textures are filtered as the "
            "game asks");
+    /* the resolution setting as a renderer of whole scales takes it, what is not as asked said with both */
+    {
+        static const struct {
+            float asked;
+            int scale;
+            const char* said;
+        } scales[] = {{1.0f, 1, ""},
+                      {2.0f, 2, ""},
+                      {2.5f, 2, "resolution=2.5: drawn at 2x, the whole scale from 1 to 8 at or under it"},
+                      {0.5f, 1, "resolution=0.5: drawn at 1x, the whole scale from 1 to 8 at or under it"},
+                      {16.0f, 8, "resolution=16: drawn at 8x, the whole scale from 1 to 8 at or under it"}};
+        for (size_t i = 0; i < sizeof scales / sizeof *scales; ++i) {
+            char line[160];
+            int scale = snx_vk_whole_scale(scales[i].asked, 8, line, sizeof line);
+            ++checks;
+            if (scale != scales[i].scale || strcmp(line, scales[i].said)) {
+                fprintf(stderr, "vk anisotropy: resolution=%g gave %d, \"%s\"\n", (double)scales[i].asked, scale, line);
+                return 1;
+            }
+        }
+    }
     printf("vk anisotropy: %d checks\n", checks);
     return 0;
 }

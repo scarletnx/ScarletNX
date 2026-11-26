@@ -36,7 +36,7 @@ typedef struct {
     float toon[32][4], edge[8][4], fog_color[4], fog_density[36];
     int32_t disp_cnt, fog_offset, fog_shift, alpha_ref;
     /* the clear plane as the passes over the picture use it (shaders/config3d.glsl, std140's places) */
-    int32_t clear_offset[2], pad[2];
+    int32_t clear_offset[2], scale, pad;
     float clear_color[4], clear_depth, clear_id_unorm;
     int32_t clear_id;
 } Config;
@@ -440,7 +440,7 @@ static void draw_translucent(VkCommandBuffer cb, const NdsGpu3D* g) {
     }
 }
 
-static void fill_config(const NdsGpu3D* g, Config* c) {
+static void fill_config(const NdsGpu3D* g, uint32_t scale, Config* c) {
     memset(c, 0, sizeof *c);
     for (unsigned i = 0; i < 32; ++i)
         for (unsigned k = 0; k < 3; ++k) c->toon[i][k] = (float)(g->render_toon_table[i] >> (k * 5) & 0x1F) / 31.0f;
@@ -455,6 +455,7 @@ static void fill_config(const NdsGpu3D* g, Config* c) {
     c->alpha_ref = g->render_alpha_ref;
     uint32_t a1 = g->render_clear_attr1, a2 = g->render_clear_attr2;
     c->clear_offset[0] = (int32_t)(a2 >> 16 & 0xFF), c->clear_offset[1] = (int32_t)(a2 >> 24 & 0xFF);
+    c->scale = (int32_t)scale; /* the picture's pixels a screen pixel has across */
     for (unsigned k = 0; k < 3; ++k) c->clear_color[k] = (float)(a1 >> (k * 5) & 0x1F) / 31.0f;
     c->clear_color[3] = (float)(a1 >> 16 & 0x1F) / 31.0f;
     c->clear_depth = (float)(((a2 & 0x7FFF) * 0x200u) + 0x1FFu) / 16777216.0f;
@@ -498,6 +499,7 @@ static VkDescriptorSet make_set(NdsVkBuffer* stage) {
 /* The scene's rendering begun: the picture, its attributes and its depth, cleared to the clear plane. The plane is its
    color and alpha, its polygon ID and fog bit, its depth, and the stencil's 0xFF */
 static void begin_scene(VkCommandBuffer cb, const NdsGpu3D* g, VkDescriptorSet set) {
+    const NdsVk* v = nds_vk();
     NdsVkImage *color = &g_3d.color, *attribute = &g_3d.attribute, *depth_image = &g_3d.depth;
     uint32_t a1 = g->render_clear_attr1;
     VkAttachmentLoadOp load = VK_ATTACHMENT_LOAD_OP_CLEAR;
@@ -527,14 +529,14 @@ static void begin_scene(VkCommandBuffer cb, const NdsGpu3D* g, VkDescriptorSet s
         .clearValue = {.depthStencil = {(float)(((g->render_clear_attr2 & 0x7FFF) * 0x200u) + 0x1FFu) / 16777216.0f,
                                         0xFF}}};
     VkRenderingInfo rendering = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-                                 .renderArea = {{0, 0}, {NDS_SCREEN_WIDTH, NDS_SCREEN_HEIGHT}},
+                                 .renderArea = {{0, 0}, {NDS_SCREEN_WIDTH * v->scale, NDS_SCREEN_HEIGHT * v->scale}},
                                  .layerCount = 1,
                                  .colorAttachmentCount = 2,
                                  .pColorAttachments = colors,
                                  .pDepthAttachment = &depth_attachment,
                                  .pStencilAttachment = &depth_attachment};
-    VkViewport viewport = {0, 0, NDS_SCREEN_WIDTH, NDS_SCREEN_HEIGHT, 0, 1};
-    VkRect2D scissor = {{0, 0}, {NDS_SCREEN_WIDTH, NDS_SCREEN_HEIGHT}};
+    VkViewport viewport = {0, 0, (float)(NDS_SCREEN_WIDTH * v->scale), (float)(NDS_SCREEN_HEIGHT * v->scale), 0, 1};
+    VkRect2D scissor = {{0, 0}, {NDS_SCREEN_WIDTH * v->scale, NDS_SCREEN_HEIGHT * v->scale}};
     float constants[4] = {(float)(g->render_fog_color & 0x1F) / 31.0f, (float)(g->render_fog_color >> 5 & 0x1F) / 31.0f,
                           (float)(g->render_fog_color >> 10 & 0x1F) / 31.0f,
                           (float)(g->render_fog_color >> 16 & 0x1F) / 31.0f};
@@ -555,6 +557,7 @@ static void begin_scene(VkCommandBuffer cb, const NdsGpu3D* g, VkDescriptorSet s
 
 /* a pass over a picture, which reads the scene's attributes and depth: its rendering begun */
 static void begin_over(VkCommandBuffer cb, const NdsGpu3D* g, NdsVkImage* color, VkDescriptorSet set) {
+    const NdsVk* v = nds_vk();
     nds_vk_layout(cb, color, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     VkRenderingAttachmentInfo attachment = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
                                             .imageView = color->view,
@@ -562,12 +565,12 @@ static void begin_over(VkCommandBuffer cb, const NdsGpu3D* g, NdsVkImage* color,
                                             .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
                                             .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
     VkRenderingInfo rendering = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-                                 .renderArea = {{0, 0}, {NDS_SCREEN_WIDTH, NDS_SCREEN_HEIGHT}},
+                                 .renderArea = {{0, 0}, {NDS_SCREEN_WIDTH * v->scale, NDS_SCREEN_HEIGHT * v->scale}},
                                  .layerCount = 1,
                                  .colorAttachmentCount = 1,
                                  .pColorAttachments = &attachment};
-    VkViewport viewport = {0, 0, NDS_SCREEN_WIDTH, NDS_SCREEN_HEIGHT, 0, 1};
-    VkRect2D scissor = {{0, 0}, {NDS_SCREEN_WIDTH, NDS_SCREEN_HEIGHT}};
+    VkViewport viewport = {0, 0, (float)(NDS_SCREEN_WIDTH * v->scale), (float)(NDS_SCREEN_HEIGHT * v->scale), 0, 1};
+    VkRect2D scissor = {{0, 0}, {NDS_SCREEN_WIDTH * v->scale, NDS_SCREEN_HEIGHT * v->scale}};
     float constants[4] = {(float)(g->render_fog_color & 0x1F) / 31.0f, (float)(g->render_fog_color >> 5 & 0x1F) / 31.0f,
                           (float)(g->render_fog_color >> 10 & 0x1F) / 31.0f,
                           (float)(g->render_fog_color >> 16 & 0x1F) / 31.0f};
@@ -593,7 +596,7 @@ void nds_vk_render3d(NdsBoard* board) {
     nds_vram_copy(board, NDS_SPACE_TEXTURE, stage->map);
     nds_vram_copy(board, NDS_SPACE_TEXPAL, stage->map + NDS_VK_TEXPAL);
     Config config;
-    fill_config(g, &config);
+    fill_config(g, v->scale, &config);
     memcpy(stage->map + STAGE_CONFIG, &config, sizeof config);
     uint32_t vertex_count = 0;
     build(g, stage->map + STAGE_VERTICES, &vertex_count);
@@ -646,19 +649,20 @@ void nds_vk_render3d(NdsBoard* board) {
 bool nds_vk_render3d_init(char* error, size_t error_size) {
     NdsVk* v = nds_vk();
     VkImageUsageFlags attachment = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    bool ok = nds_vk_image(&g_3d.color, VK_FORMAT_R8G8B8A8_UNORM, NDS_SCREEN_WIDTH, NDS_SCREEN_HEIGHT,
-                           attachment | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                               VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                           VK_IMAGE_ASPECT_COLOR_BIT) &&
-              nds_vk_image(&g_3d.attribute, VK_FORMAT_R8G8B8A8_UNORM, NDS_SCREEN_WIDTH, NDS_SCREEN_HEIGHT, attachment,
-                           VK_IMAGE_ASPECT_COLOR_BIT) &&
-              nds_vk_image(&g_3d.depth, v->depth_format, NDS_SCREEN_WIDTH, NDS_SCREEN_HEIGHT,
-                           VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                           VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT) &&
-              nds_vk_image(&g_3d.blended, VK_FORMAT_R8G8B8A8_UNORM, NDS_SCREEN_WIDTH, NDS_SCREEN_HEIGHT,
-                           attachment | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                               VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                           VK_IMAGE_ASPECT_COLOR_BIT);
+    bool ok =
+        nds_vk_image(&g_3d.color, VK_FORMAT_R8G8B8A8_UNORM, NDS_SCREEN_WIDTH * v->scale, NDS_SCREEN_HEIGHT * v->scale,
+                     attachment | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                         VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                     VK_IMAGE_ASPECT_COLOR_BIT) &&
+        nds_vk_image(&g_3d.attribute, VK_FORMAT_R8G8B8A8_UNORM, NDS_SCREEN_WIDTH * v->scale,
+                     NDS_SCREEN_HEIGHT * v->scale, attachment, VK_IMAGE_ASPECT_COLOR_BIT) &&
+        nds_vk_image(&g_3d.depth, v->depth_format, NDS_SCREEN_WIDTH * v->scale, NDS_SCREEN_HEIGHT * v->scale,
+                     VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                     VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT) &&
+        nds_vk_image(&g_3d.blended, VK_FORMAT_R8G8B8A8_UNORM, NDS_SCREEN_WIDTH * v->scale, NDS_SCREEN_HEIGHT * v->scale,
+                     attachment | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                         VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                     VK_IMAGE_ASPECT_COLOR_BIT);
     VkImageViewCreateInfo view = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
                                   .image = g_3d.depth.image,
                                   .viewType = VK_IMAGE_VIEW_TYPE_2D,

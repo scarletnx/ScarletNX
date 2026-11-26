@@ -18,6 +18,7 @@
 #define NO_VIDEO      "it has no video decoder"
 #define CPU_SCREEN    "it draws its screen on the CPU"
 #define NO_SHADERS    "its GPU runs no shaders of the game's"
+#define NO_UPSCALER   "its games have no upscaler of their own"
 #define PICA_SHADERS  "its shaders are the PICA's, which snx-shaderc does not read"
 #define ONE_PIPELINE  "its picture takes one pipeline"
 #define NEAREST       "its GPU samples the nearest texel, with no mipmaps"
@@ -73,8 +74,8 @@ const SnxConsoleSetting g_console_settings[] = {
     {"stats"},
     {"stats_corner"},
     /* Graphics */
-    {"resolution", {[C] = NA(OWN_ROW), [V] = LATER(SOON), [G] = NA(CPU_SCREEN), [D] = LATER(SOON)}},
-    {"internal_resolution", {[C] = NA(OWN_ROW), [V] = LATER(SOON), [G] = NA(CPU_SCREEN), [D] = LATER(SOON)}},
+    {"resolution", {[C] = NA(OWN_ROW), [V] = LATER(SOON), [G] = NA(CPU_SCREEN)}},
+    {"internal_resolution", {[C] = NA(OWN_ROW), [V] = NA(NO_UPSCALER), [G] = NA(CPU_SCREEN), [D] = NA(NO_UPSCALER)}},
     {"render_upscaler", OTHERS(NA(SWITCH_GPU))},
     {"render_anti_aliasing", OTHERS(NA(SWITCH_GPU))},
     {"smaa_quality", OTHERS(NA(SWITCH_GPU))},

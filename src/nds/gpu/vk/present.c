@@ -150,11 +150,11 @@ void nds_vk_present(void) {
     /* the upscaler's and the anti-aliasing's passes but their last, which draws in the window's rendering */
     nds_vk_layout(cb, frame, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     VkRect2D to = {{x0, y0}, {w, h}};
-    bool drawn =
-        w && h &&
-        snx_fx_prepare(g_present.fx, cb, slot, frame->view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, NDS_SCREEN_WIDTH,
-                       NDS_SCREEN_HEIGHT * 2, 0, 0, NDS_SCREEN_WIDTH, NDS_SCREEN_HEIGHT * 2, 0, to,
-                       g_present.swap.format.format, g_present.fx_config.upscaler, g_present.fx_config.aa);
+    bool drawn = w && h &&
+                 snx_fx_prepare(g_present.fx, cb, slot, frame->view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                NDS_SCREEN_WIDTH * v->scale, NDS_SCREEN_HEIGHT * 2 * v->scale, 0, 0,
+                                NDS_SCREEN_WIDTH * v->scale, NDS_SCREEN_HEIGHT * 2 * v->scale, 0, to,
+                                g_present.swap.format.format, g_present.fx_config.upscaler, g_present.fx_config.aa);
     snx_vk_swapchain_begin(cb, &g_present.swap, index);
     if (drawn) snx_fx_draw(g_present.fx, cb, slot);
     (void)snx_vk_notice_draw(g_present.notice_vk, cb, slot, g_present.swap.format.format, extent.width, extent.height,
