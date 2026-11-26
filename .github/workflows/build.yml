@@ -46,6 +46,13 @@ concurrency:
 # The Linux x86-64 and AArch64 tests' options, the appimage job's: SNX_TEST_OPTIONS go on the default tree,
 # SNX_HEADLESS_OPTIONS make the headless Vulkan tree
 env:
+  # The tests are a pull request's, a run by hand's and a version's tag's, whose release waits on them: a push to main
+  # and the nightly's schedule build, package and publish, and run none. A test step is `if: env.SNX_TESTS == 'true'`
+  # (tests/build_tests_test.py holds them to it), and the trees every event builds keep the compiler cache warm for the
+  # pull requests that test them
+  SNX_TESTS: >-
+    ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' ||
+    startsWith(github.ref, 'refs/tags/') }}
   SNX_TEST_OPTIONS: -DSNX_TEST_VP9_VECTORS=ON -DSNX_TEST_ARM_AOT=ON -DSNX_TEST_ARM_DIFF=ON -DSNX_TEST_LLVM_SWEEP=ON
   SNX_HEADLESS_OPTIONS: -DSNX_BUILD_GUI=OFF -DSNX_DEPLOY=OFF -DSNX_TEST_VULKAN=ON -DSNX_TEST_AV1_VECTORS=ON
   # the jobs that may fail without failing the run (continue-on-error), whose failure cancels nothing
@@ -88,8 +95,9 @@ jobs:
           esac
   # Each Linux architecture's one job, on every event: the runtime installed into /usr and the AppImage made of it, then
   # the same tree with its tests on (ninja builds only what they change) and the headless Vulkan tree, each in its own
-  # folder where its flags differ, all through one compiler cache; their tests; on a push the AppImage run as installed;
-  # and on x86-64 Amberlith's probes on the AppImage's runtime. pkgforge's Arch image and tools
+  # folder where its flags differ, all through one compiler cache. Where SNX_TESTS: their tests, the AppImage run as
+  # installed, and on x86-64 the other machines' back ends under Unicorn and Amberlith's probes on the AppImage's
+  # runtime. pkgforge's Arch image and tools
   # (https://github.com/pkgforge-dev/Anylinux-AppImages), see scripts/make-appimage.sh
   appimage:
     name: Linux AppImage (${{ matrix.arch }})
@@ -243,49 +251,20 @@ jobs:
         with:
           path: /var/cache/pacman/pkg
           key: ${{ steps.pacman.outputs.cache-primary-key }}
-      # Which of Amberlith's runs this run calls for, before anything is built, so a pull request that calls for none
-      # says so even when the job fails before the runs: the paths each loads are scripts/edenprobe.py's (runs), which
-      # edenprobe_script tests. A push, a tag, the nightly's schedule and a run by hand run both, and Amberlith's main
-      # beside the release; a pull request runs each only when it changes what that run loads, never the main's
-      - name: Look for what each of Amberlith's runs loads
+      # Amberlith's runs, on x86-64 where SNX_TESTS: the NRO and the APK, held to their baselines, and Amberlith's main
+      # beside the release. Said before anything is built, so a run that calls for none says so even when the job fails
+      - name: Name Amberlith's runs
         id: runs
         if: matrix.arch == 'x86_64'
         shell: bash
         run: |
-          if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
+          if [ "$SNX_TESTS" = true ]; then
             printf 'nro=true\napk=true\nmain=true\nany=true\n' >> "$GITHUB_OUTPUT"
             echo "a $GITHUB_EVENT_NAME runs the NRO and the APK, and Amberlith's main beside the release"
-            exit 0
-          fi
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          changed=$(git diff --name-only HEAD^1 HEAD)
-          said=$(python3 scripts/edenprobe.py runs <<<"$changed")
-          printf '%s\nmain=false\n' "$said" >> "$GITHUB_OUTPUT"
-          if [ "$said" = $'nro=false\napk=false' ]; then
-            echo "any=false" >> "$GITHUB_OUTPUT"
-            count=0
-            [ -z "$changed" ] || count=$(wc -l <<<"$changed")
-            why="none of the $count files changed is one the NRO or the APK loads"
-            echo "::notice title=edenprobe::Amberlith: not run, $why"
           else
-            echo "any=true" >> "$GITHUB_OUTPUT"
+            printf 'nro=false\napk=false\nmain=false\nany=false\n' >> "$GITHUB_OUTPUT"
+            echo "a $GITHUB_EVENT_NAME builds alone: no run of Amberlith"
           fi
-      # Whether the native back ends of the other machines are tested under Unicorn (ctest -L unicorn), which takes long:
-      # a push, a tag, the nightly's schedule and a run by hand test them, a pull request only where it changes what they
-      # test, by the script that says so in recompiler-changes too. Not that job's output: this job would wait for it
-      - name: Look for what the tests under Unicorn test
-        id: unicorn
-        if: matrix.arch == 'x86_64'
-        shell: bash
-        run: |
-          if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
-            echo "unicorn=true" >> "$GITHUB_OUTPUT"
-            echo "a $GITHUB_EVENT_NAME runs them"
-            exit 0
-          fi
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          changed=$(git diff --name-only HEAD^1 HEAD)
-          python3 scripts/recompiler-changes.py <<<"$changed" >> "$GITHUB_OUTPUT"
       # LLVM's libraries linked into the runtime, with the host's code generator alone (scripts/linux-llvm.sh), where
       # Arch's libLLVM is one library with every target. Built once for each version, the image's LLVM's,
       # whose opt prints the pipelines of the LLVM settings (cmake/settings.cmake)
@@ -333,12 +312,11 @@ jobs:
           path: |
             dist/*.AppImage*
             dist/appinfo
-      # The AppImage as a user gets it (scripts/check-package.sh), on a push, the nightly and a run by hand: a pull
-      # request's run checks no package. In a container of its own, a plain Ubuntu with none of this job's tools and
-      # libraries, where the checkout and build tree the runtime was built in (/__w/...) are not: this job's own
-      # checkout would stand in for what an installed copy lacks. The workspace is there at /github/workspace
+      # The AppImage as a user gets it (scripts/check-package.sh). In a container of its own, a plain Ubuntu with none
+      # of this job's tools and libraries, where the checkout and build tree the runtime was built in (/__w/...) are
+      # not: this job's own checkout would stand in for what an installed copy lacks. The workspace is there at
+      # /github/workspace
       - name: Run the AppImage as a user would
-        if: github.event_name != 'pull_request'
         uses: docker://ubuntu:24.04
         with:
           entrypoint: bash
@@ -384,11 +362,12 @@ jobs:
           done
       # The test options on the AppImage's tree, its tests on, and the headless tree, whose options change what every
       # target builds, in a folder of its own with this job's LLVM. The A64 disassembler, which the AppImage leaves out,
-      # is back in AArch64's test tree; on x86-64 linux-sanitizers' tree has it
+      # is back in AArch64's test tree; on x86-64 linux-sanitizers' tree has it, and this one the other machines' back
+      # ends under Unicorn. Built on every event, tested where SNX_TESTS
       - name: Build the tests and the headless Vulkan tree
         shell: bash
         env:
-          UNICORN: ${{ steps.unicorn.outputs.unicorn }}
+          UNICORN: ${{ matrix.arch == 'x86_64' }}
         run: |
           ccache --zero-stats
           options=()
@@ -408,18 +387,8 @@ jobs:
           cmake --build build/headless --parallel "$(getconf _NPROCESSORS_ONLN)"
           ccache --show-stats
       # The SDL3 fallback is CMake's (cpmfile.json pins SDL3) and the Windows job builds the same SDL3 from source.
-      # Built on every push; on a pull request on AArch64 alone, when it changes a CMake file, a pin or this workflow
-      - name: Look for CMake changes
-        id: cmake-changed
-        if: matrix.arch == 'aarch64' && github.event_name == 'pull_request'
-        run: |
-          changed=$(git diff --name-only HEAD^1 HEAD)
-          printf '%s\n' "$changed"
-          if grep -qE '(^|/)CMakeLists\.txt$|\.cmake$|^CMakePresets\.json$|^cpmfile\.json$|^\.github/workflows/build\.yml$' <<<"$changed"; then
-            echo "yes=true" >> "$GITHUB_OUTPUT"
-          fi
+      # Built on every event
       - name: Build the SDL3 fallback without a system package
-        if: github.event_name != 'pull_request' || steps.cmake-changed.outputs.yes == 'true'
         run: |
           ccache --zero-stats
           cmake --preset default -B build/sdl-fallback -DCMAKE_DISABLE_FIND_PACKAGE_SDL3=ON \
@@ -462,6 +431,7 @@ jobs:
       # As many at a time as the runner has cores, as each run keeps its shaders and frames in a folder of its own
       # (tests/vulkan_headless.c)
       - name: Test headless Vulkan and NX runtime
+        if: env.SNX_TESTS == 'true'
         run: ctest --test-dir build/headless -R '^(vulkan_headless|vulkan_headless_options|vulkan_headless_vic_validation|vulkan_headless_pipeline_library_whole|vulkan_headless_pipeline_library_linked|vulkan_headless_libraries_off|vulkan_headless_vk12|vulkan_headless_descriptor_buffers|vulkan_headless_cb_windows|vulkan_headless_vertex_input_off|vulkan_headless_uma|vulkan_headless_hot|vulkan_recorder|vulkan_tex_partial|vulkan_video_av1|nx_runtime_homebrew|nx_runtime_homebrew_64k_pages|vulkan_storage_buffer_keep|vulkan_nvn_savestate|vulkan_owned_page_reads|vulkan_owned_page_reads_protection|astc_vulkan_sync|astc_vulkan_encode_dot)$' --output-on-failure --parallel "$(getconf _NPROCESSORS_ONLN)"
       # The game modules compile src/common/cpu/aarch64/cpu_helpers.c, which no CMake target does
       - name: Check the ABI helpers compile
@@ -469,6 +439,7 @@ jobs:
       # Then how many functions and blocks of whole programs the native back end made (scripts/recompile-census.py), which
       # ctest does not show of tests that pass
       - name: Test native tooling and indexed filesystems
+        if: env.SNX_TESTS == 'true'
         shell: bash
         run: |
           status=0
@@ -479,7 +450,7 @@ jobs:
       # The code of the native back ends that no job runs, each test by its name, then what each machine ran: one that ran
       # none fails (scripts/unicorn-tests.py), as ctest passes a test the build has not
       - name: Test the native back ends under Unicorn
-        if: steps.unicorn.outputs.unicorn == 'true'
+        if: matrix.arch == 'x86_64' && env.SNX_TESTS == 'true'
         shell: bash
         run: |
           status=0
@@ -488,6 +459,7 @@ jobs:
           python3 scripts/unicorn-tests.py unicorn.xml || status=1
           exit "$status"
       - name: Check optional Python diagnostics
+        if: env.SNX_TESTS == 'true'
         run: |
           python -m compileall -q tools
           python tools/run_game.py --help > /dev/null
@@ -601,13 +573,13 @@ jobs:
             *.log
             times.txt
           if-no-files-found: ignore
-      # The x86-64 back end's instruction selection (tools/sailgen/sdm/x64_isel.inc) made again from the Intel SDM, on the
-      # nightly's schedule, a run by hand and a pull request that changes what it is made from. The manual is downloaded
-      # here alone (SNX_TEST_SDM), and Intel's link serves the latest revision: where that is not 093US, or it doesn't
-      # answer, this step fails, saying what it got and what it expected, and no other pull request does. The last of the
-      # job's tests, so that what it says hides none of the others
+      # The x86-64 back end's instruction selection (tools/sailgen/sdm/x64_isel.inc) made again from the Intel SDM, on a
+      # run by hand and a pull request that changes what it is made from. The manual is downloaded here alone
+      # (SNX_TEST_SDM), and Intel's link serves the latest revision: where that is not 093US, or it doesn't answer, this
+      # step fails, saying what it got and what it expected, and no other pull request does. The last of the job's
+      # tests, so that what it says hides none of the others
       - name: Make the x86-64 instruction selection again
-        if: matrix.arch == 'x86_64' && github.event_name != 'push'
+        if: matrix.arch == 'x86_64' && env.SNX_TESTS == 'true'
         shell: bash
         run: |
           if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
@@ -652,7 +624,8 @@ jobs:
   # past its end fails on every run, not only where it happens to crash. A report stops the program that made it, a code
   # generator of the build or a test, and fails the job, printed whole. A job of its own, so a run waits for the longer
   # of the two and not for both. The sources and the FFmpeg, OpenSSL and SPIRV-Tools builds, which the sanitizers leave
-  # as they are, are x86-64's appimage job's, restored and not saved
+  # as they are, are x86-64's appimage job's, restored and not saved. A push and the nightly build it, so its compiler
+  # cache stays the pull requests', and test nothing
   linux-sanitizers:
     name: Linux (x86_64, ASan + UBSan)
     runs-on: ubuntu-26.04
@@ -753,36 +726,10 @@ jobs:
       # The leaks of the system's libraries that are theirs to free (tests/lsan.supp), by the absolute path LSan needs:
       # the tests start programs from folders of their own
       - name: Test under the sanitizers
+        if: env.SNX_TESTS == 'true'
         run: |
           LSAN_OPTIONS="$LSAN_OPTIONS:suppressions=$PWD/tests/lsan.supp" \
             ctest --test-dir build/sanitizers --output-on-failure --parallel 4
-      - *fail-fast-file
-      - *fail-fast-mark
-
-  # Which of the recompiler's long tests a pull request changes what they test of (scripts/recompiler-changes.py): the A64
-  # differential on the cross builds (qemu-reference's recording, appimage-cross's run of it), which no pull request makes
-  # now, and the native back ends of the other machines under Unicorn (the appimage job, which asks the script itself). A
-  # push, a nightly and a run by hand run them whatever changed, and every Linux job's tests run the differential on their
-  # own host
-  recompiler-changes:
-    name: Recompiler changes
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-26.04
-    timeout-minutes: 5
-    outputs:
-      differential: ${{ steps.changed.outputs.differential }}
-      unicorn: ${{ steps.changed.outputs.unicorn }}
-    steps:
-      # the pull request's merge commit and the base it is diffed against
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 2
-      - name: Look for what the recompiler's long tests test
-        id: changed
-        shell: bash
-        run: |
-          changed=$(git diff --name-only HEAD^1 HEAD)
-          python3 scripts/recompiler-changes.py <<<"$changed" >> "$GITHUB_OUTPUT"
       - *fail-fast-file
       - *fail-fast-mark
 
@@ -792,9 +739,10 @@ jobs:
   # are x86-64's appimage job's, restored and not saved; pacman's packages its own, Arch's image being another
   qemu-reference:
     name: A64 differential's QEMU reference
-    needs: recompiler-changes
-    # the cross builds' reference alone (appimage-cross), which a pull request does not run
-    if: ${{ github.event_name != 'pull_request' && !cancelled() }}
+    # the cross builds' test alone (appimage-cross) reads it: where SNX_TESTS, which a job's if cannot read
+    if: >-
+      github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' ||
+      startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-26.04
     timeout-minutes: 60
     container: archlinux:latest
@@ -883,16 +831,14 @@ jobs:
   # LoongArch). Big-endian ppc64's has every runtime (the 3DS one builds there but isn't ported to a big-endian host):
   # Arch POWER's glibc there is ELFv2, not Debian ports' ELFv1, which no job builds or tests. No POWER, RISC-V or
   # LoongArch machine has run the AppImages yet, so like the macOS and iOS jobs they may fail without failing the run
-  # (scripts/publish-builds.py, OPTIONAL). On a push the AppImage made is run as installed at the end, through qemu
+  # (scripts/publish-builds.py, OPTIONAL). Where SNX_TESTS, the tests through qemu, the A64 differential against
+  # qemu-reference's recording, and the AppImage made run as installed at the end, through qemu
   appimage-cross:
     name: Linux AppImage (${{ matrix.arch }})
     needs: qemu-reference
-    # Not in a pull request: the nightlies' builds (a push, a schedule or a manual run). Pull requests left out
-    # big-endian ppc64, their one cross build, to make their runs shorter. Without a reference to run against, the
-    # build and the launcher's tests alone
+    # on every event: qemu-reference is skipped where nothing tests
     if: >-
-      ${{ !cancelled() && github.event_name != 'pull_request' &&
-      (needs.qemu-reference.result == 'success' || needs.qemu-reference.result == 'skipped') }}
+      ${{ !cancelled() && (needs.qemu-reference.result == 'success' || needs.qemu-reference.result == 'skipped') }}
     runs-on: ubuntu-26.04
     # LLVM's cross build (scripts/linux-llvm.sh) adds about half an hour where its cache misses
     timeout-minutes: 180
@@ -954,7 +900,7 @@ jobs:
       # before the handlers below are registered, as its package's systemd trigger can clear the handlers registered
       # before it. No recommends: qemu-user-binfmt would register handlers of its own. ppc64's step installs its own
       - name: Install qemu-user
-        if: github.event_name != 'pull_request' && matrix.platform != 'ppc64'
+        if: env.SNX_TESTS == 'true' && matrix.platform != 'ppc64'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu-user
       # The script's checks run the AppImage it made: the kernel runs the target's programs through qemu once their
       # binfmt handlers are registered, in the container too
@@ -997,15 +943,14 @@ jobs:
           key: pacman-${{ github.job }}-${{ steps.week.outputs.week }}
           restore-keys: pacman-${{ github.job }}-
       # The target container is where the packages and then the runtime go: / is the image, so pacman, quick-sharun
-      # and get-debloated-pkgs work unmodified. A pull request bundles nothing, so it starts none
+      # and get-debloated-pkgs work unmodified
       - name: Start the build and target containers
         run: |
           mkdir -p "$RUNNER_TEMP/pacman"
           docker run --detach --name build --volume "$PWD:/src" --volume "$RUNNER_TEMP/pacman:/var/cache/pacman/pkg" \
             --workdir /src ghcr.io/pkgforge-dev/archlinux:latest sleep infinity
-          [ "$GITHUB_EVENT_NAME" = pull_request ] ||
-            docker run --detach --name target --platform linux/${{ matrix.platform }} \
-              --volume "$PWD:/src" --workdir /src ghcr.io/pkgforge-dev/archlinux:latest sleep infinity
+          docker run --detach --name target --platform linux/${{ matrix.platform }} \
+            --volume "$PWD:/src" --workdir /src ghcr.io/pkgforge-dev/archlinux:latest sleep infinity
       - name: Unpack the ${{ matrix.arch }} system root
         if: steps.sysroot.outputs.cache-hit != 'true'
         run: |
@@ -1019,7 +964,6 @@ jobs:
       # links libLLVM), ICU and Opus, so it runs last. Each pacman is tried 3 times, as in the appimage job. The token
       # is get-debloated-pkgs' api.github.com rate limit, the one the appimage job's copy is given
       - name: Install the target container's tools and libraries
-        if: github.event_name != 'pull_request'
         env:
           LINUX_ONLY: ${{ matrix.linux-only && '1' || '' }}
           GITHUB_TOKEN: ${{ github.token }}
@@ -1050,7 +994,6 @@ jobs:
       # The build machine's packaging tool: quick-sharun makes the AppImage, and this appimagetool compresses natively,
       # takes the target's runtime from APPIMAGE_ARCH, and resolves mkdwarfs for this machine rather than the target's
       - name: Install the packaging tools
-        if: github.event_name != 'pull_request'
         run: |
           docker exec -i -e QUICK_SHARUN -e QUICK_SHARUN_SHA -e APPIMAGETOOL_URL -e APPIMAGETOOL_SHA build sh -s <<'EOF'
           set -eu
@@ -1149,7 +1092,7 @@ jobs:
       # The A64 differential against the qemu-reference job's recording: the cross build's tests are off, so the
       # one test is configured and built alone, then run here through qemu-user, with and without the generic path
       - name: Run the A64 differential against the recorded QEMU reference
-        if: needs.qemu-reference.result == 'success'
+        if: env.SNX_TESTS == 'true' && needs.qemu-reference.result == 'success'
         run: |
           docker exec -i -e CCACHE_DIR=/src/.cache/ccache -e CCACHE_BASEDIR=/src -e CCACHE_NOHASHDIR=true \
             -e SNX_DEPS_CACHE=/src/.cache/deps build sh -s <<'EOF'
@@ -1189,6 +1132,7 @@ jobs:
       # writes, on a big-endian host too. The tree is the differential's, with every launcher test built. gui_sdl_events
       # stops at the Settings' groups under qemu in these containers, whatever the architecture (#2017)
       - name: Run the launcher's tests through qemu
+        if: env.SNX_TESTS == 'true'
         run: |
           docker exec -i -e CCACHE_DIR=/src/.cache/ccache -e CCACHE_BASEDIR=/src -e CCACHE_NOHASHDIR=true \
             -e SNX_DEPS_CACHE=/src/.cache/deps build sh -s <<'EOF'
@@ -1205,6 +1149,7 @@ jobs:
       # The census of whole programs, as in the appimage job, of the target's native back end: its drivers recompile them
       # through qemu-user, in the launcher tests' tree, and none is run
       - name: Recompile whole programs through qemu
+        if: env.SNX_TESTS == 'true'
         run: |
           docker exec -i -e CCACHE_DIR=/src/.cache/ccache -e CCACHE_BASEDIR=/src -e CCACHE_NOHASHDIR=true \
             -e SNX_DEPS_CACHE=/src/.cache/deps build sh -s <<'EOF'
@@ -1250,10 +1195,8 @@ jobs:
           path: .cache/deps
           key: ${{ steps.deps-used.outputs.key }}
       # Packaging runs where / is the target's system root, so quick-sharun reads it and the licenses' packages come
-      # from its pacman database; the AppImage itself is compressed on the build machine. Not on a pull request: no
-      # one runs its AppImage, which took half of the job's time, and a push to main and the nightly bundle it
+      # from its pacman database; the AppImage itself is compressed on the build machine
       - name: Bundle the AppImage
-        if: github.event_name != 'pull_request'
         run: |
           for try in 1 2 3; do
             if docker exec -i target sh -s <<'EOF'
@@ -1270,7 +1213,6 @@ jobs:
             sleep 30
           done
       - name: Make the AppImage
-        if: github.event_name != 'pull_request'
         run: |
           docker exec -i -e GITHUB_REPOSITORY -e GITHUB_REF_TYPE -e VERSION="$(git describe --always --dirty)" \
             -e MAKE_APPIMAGE_ONLY=1 -e ARCH=${{ matrix.arch }} -e APPIMAGETOOL=/usr/local/bin/appimagetool \
@@ -1279,15 +1221,13 @@ jobs:
           scripts/make-appimage.sh
           EOF
       - name: Check the AppImage
-        if: github.event_name != 'pull_request'
         run: |
           docker exec -i -e ARCH=${{ matrix.arch }} build sh -s <<'EOF'
           set -eu
           scripts/check-appimage.sh
           EOF
       # Only what the script made: dist/ also holds the tracked desktop entry and icon
-      - if: github.event_name != 'pull_request'
-        uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v7
         with:
           name: ScarletNX-linux-${{ matrix.arch }}-${{ steps.commit.outputs.short }}.AppImage
           path: |
@@ -1301,15 +1241,15 @@ jobs:
           # tar saves a link as a link, whatever it points at
           unreadable=$(find .cache/cpm ! -type l ! -readable)
           [ -z "$unreadable" ] || { printf 'actions/cache cannot read:\n%s\n' "$unreadable" >&2; exit 1; }
-      # The AppImage as a user gets it, on a push, the nightly and a run by hand, on this runner, which has neither the
-      # checkout nor the build tree where the build container had them (/src). Each game the AppImage makes is a copy of
+      # The AppImage as a user gets it where SNX_TESTS, on this runner, which has neither the checkout nor the build
+      # tree where the build container had them (/src). Each game the AppImage makes is a copy of
       # it, and an AppImage carries "AI\x02" in its ELF header's padding, where the target's handler wants zeros: one
       # more handler, made from the AppImage's own first 20 bytes with the padding left out, runs them through
       # qemu-user. P keeps argv[0], by which the AppImage's runtime runs the dwarfs tool it carries as itself; both
       # handlers are printed. e_type's low byte, executable or shared, is left to either: byte 16 of a little-endian
       # header, 17 of a big-endian one (EI_DATA 2, PowerPC64 BE's)
       - name: Run ${{ matrix.arch }} AppImages through qemu-user
-        if: github.event_name != 'pull_request'
+        if: env.SNX_TESTS == 'true'
         run: |
           set -- $(head -c 20 dist/*.AppImage | od -An -v -tx1)
           low=$(($6 == 2 ? 17 : 16))
@@ -1323,7 +1263,7 @@ jobs:
           grep -qx enabled /proc/sys/fs/binfmt_misc/appimage-${{ matrix.qemu }}
           head -n 3 /proc/sys/fs/binfmt_misc/qemu-${{ matrix.qemu }} /proc/sys/fs/binfmt_misc/appimage-${{ matrix.qemu }}
       - name: Run the AppImage as a user would
-        if: github.event_name != 'pull_request'
+        if: env.SNX_TESTS == 'true'
         run: |
           grep -qx enabled /proc/sys/fs/binfmt_misc/qemu-${{ matrix.qemu }} ||
             { echo "no binfmt handler runs ${{ matrix.qemu }} programs here" >&2; exit 1; }
@@ -1529,6 +1469,7 @@ jobs:
           build/default/scarletnx.exe --recomp --help > /dev/null
       # and the census of whole programs, as in the appimage job
       - name: Test native tooling and indexed filesystems
+        if: env.SNX_TESTS == 'true'
         run: |
           set -euo pipefail
           status=0
@@ -1568,12 +1509,11 @@ jobs:
           name: ScarletNX-windows-${{ matrix.arch }}-${{ steps.commit.outputs.short }}
           path: stage
           if-no-files-found: error
-      # The zip as a user gets it (scripts/check-package.sh), on a push, the nightly and a run by hand: a pull request's
-      # run checks no package. In Git Bash: setup-msys2 puts only its msys2.cmd's folder on PATH, so no DLL of MSYS2's
-      # stands in for one the zip lacks. A copy installed from a build tree never takes that tree's checkout
-      # (snx_checkout), so the checkout and build/ left in place stand in for nothing either
+      # The zip as a user gets it (scripts/check-package.sh), where SNX_TESTS. In Git Bash: setup-msys2 puts only its
+      # msys2.cmd's folder on PATH, so no DLL of MSYS2's stands in for one the zip lacks. A copy installed from a build
+      # tree never takes that tree's checkout (snx_checkout), so the checkout and build/ left in place stand in for
+      # nothing either
       - name: Run the zip's scarletnx.exe as a user would
-        if: github.event_name != 'pull_request'
         shell: bash
         run: bash scripts/check-package.sh stage/bin/scarletnx.exe
       - *fail-fast-file
@@ -1813,6 +1753,7 @@ jobs:
       # The app's unit tests (docs/hosts/android-app.md), on the stage the APK was packed from: its classes build against SDL's
       # Java and the icon there. Last, so a test that fails fails the job and still leaves the APKs to try
       - name: Test the app's Java
+        if: env.SNX_TESTS == 'true'
         run: JAVA_HOME=$JAVA_HOME_21_X64 gradle -p dist/android testDebugUnitTest -Pscarletnx.stage="$PWD/stage"
       - *fail-fast-file
       - *fail-fast-mark
@@ -1861,10 +1802,8 @@ jobs:
         with:
           path: apple-llvm
           key: macos-llvm-${{ hashFiles('scripts/apple-llvm.sh') }}-${{ steps.xcode.outputs.version }}
-      # iOS is the nightlies' alone: a pull request builds and tests macOS (the iOS steps below skip there too)
       - uses: actions/cache/restore@v5
         id: ios-llvm
-        if: github.event_name != 'pull_request'
         with:
           path: ios-llvm
           key: ios-llvm-${{ hashFiles('scripts/apple-llvm.sh') }}-${{ steps.xcode.outputs.version }}
@@ -1882,9 +1821,9 @@ jobs:
           key: ${{ steps.macos-llvm.outputs.cache-primary-key }}
       - name: Build LLVM's libraries for iOS
         id: ios-llvm-build
-        if: ${{ !cancelled() && github.event_name != 'pull_request' && steps.ios-llvm.outputs.cache-hit != 'true' }}
+        if: ${{ !cancelled() && steps.ios-llvm.outputs.cache-hit != 'true' }}
         run: scripts/apple-llvm.sh ios "$PWD/ios-llvm"
-      - if: ${{ !cancelled() && github.event_name != 'pull_request' && steps.ios-llvm.outputs.cache-hit != 'true' }}
+      - if: ${{ !cancelled() && steps.ios-llvm.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v5
         with:
           path: ios-llvm
@@ -1926,7 +1865,7 @@ jobs:
           cmake --build --preset macos --parallel "$(getconf _NPROCESSORS_ONLN)"
       - name: Build the app for iOS
         id: ios-build
-        if: ${{ !cancelled() && github.event_name != 'pull_request' && steps.ios-llvm-build.outcome != 'failure' }}
+        if: ${{ !cancelled() && steps.ios-llvm-build.outcome != 'failure' }}
         run: |
           cmake --preset ios -DLLVM_DIR="$PWD/ios-llvm/lib/cmake/llvm" \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
@@ -1960,7 +1899,7 @@ jobs:
         run: clang -std=gnu23 -fsyntax-only -Wall -I src src/common/cpu/aarch64/cpu_helpers.c
       # and the census of whole programs, as in the appimage job
       - name: Test native tooling and indexed filesystems
-        if: ${{ !cancelled() && steps.macos-build.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.macos-build.outcome == 'success' && env.SNX_TESTS == 'true' }}
         run: |
           status=0
           ctest --test-dir build/macos --output-on-failure --parallel 4 --output-junit "$PWD/tests.xml" || status=$?

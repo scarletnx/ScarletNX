@@ -85,15 +85,10 @@ OPTIONAL = {
     'ScarletNX-macos-arm64.zip',
     'ScarletNX-ios-arm64.ipa',
 }
-# The packages only a run a nightly can come of makes (build.yml's appimage-cross, which bundles none on a pull
-# request): a pull request's notes leave them out, where a nightly's say they were not built.
+# The packages only a run a nightly can come of makes: a pull request's notes leave them out, where a nightly's say
+# they were not built. None: a pull request's run makes every package (build.yml), as it tests them.
 # tests/publish_builds_test.py holds them to build.yml
-NIGHTLY_ONLY = {
-    'ScarletNX-linux-ppc64le.AppImage',
-    'ScarletNX-linux-ppc64.AppImage',
-    'ScarletNX-linux-riscv64.AppImage',
-    'ScarletNX-linux-loongarch64.AppImage',
-}
+NIGHTLY_ONLY = set()
 
 
 def published(release):
