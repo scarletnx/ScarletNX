@@ -6302,10 +6302,10 @@ static void compile_first(App* app, const char* dir) {
     queue_drop(app, 0);
     assert(!snx_remove_tree(made));
     free(made);
-    { /* refused, the host below its back end's floor: a Penryn, without POPCNT
+    { /* refused, the host below its back end's floor: a test's, without SSE2
          (recompiler/x64/x64_codegen.c). What the host lacks follows how the recompile ended, and the panel shows the
          driver's line: YoRHa's as the failed step's, the classic theme's in its output */
-        static const char lacks[] = "cpu: needs POPCNT, this host has SSE3";
+        static const char lacks[] = "cpu: needs SSE2, this host has none";
         char *say = snx_format("Recompiling first compile (1 modules)\nscarletnx: %s", lacks),
              *said = snx_format("Compile failed (status 1). %s", lacks), *line = snx_format("first compile: %s", said);
         GuiTheme theme = app->theme;
@@ -6331,8 +6331,8 @@ static void compile_first(App* app, const char* dir) {
                 assert(SDL_SetWindowSize(app->window, looks[k].w, looks[k].h));
                 const SDL_Color color =
                     rgb(app->theme.run == GUI_RUN_STEPS ? app->theme.run_colors.failure : app->theme.ink);
-                slid_half(app, "cpu: needs POPCNT", color);
-                slid_half(app, "this host has SSE3", color);
+                slid_half(app, "cpu: needs SSE2", color);
+                slid_half(app, "this host has none", color);
             }
             app->clock = 0;
             assert(SDL_SetWindowSize(app->window, w, h));

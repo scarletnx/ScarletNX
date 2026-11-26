@@ -56,7 +56,9 @@ enum {
     SGX_F_AES = 4096, SGX_F_SHA = 8192,
     /* not CPUID's: the code's calling convention is Microsoft's x64 one (a Windows host's), System V's otherwise */
     SGX_F_WIN64 = 16384,
-    SGX_F_AVX2 = 32768, SGX_F_GFNI = 65536, SGX_F_SM4 = 131072
+    SGX_F_AVX2 = 32768, SGX_F_GFNI = 65536, SGX_F_SM4 = 131072,
+    /* every form's that names no other, which every x86-64 processor has */
+    SGX_F_SSE2 = 262144
 };
 
 #include "x64_isel.inc"
