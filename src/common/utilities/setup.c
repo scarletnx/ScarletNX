@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "common/utilities/setup.h"
+#include "common/utilities/bits.h"
 #include "common/utilities/vita_keys.h"
 #include "common/utilities/common.h"
 #include "common/platform/file.h"
@@ -455,20 +456,54 @@ int snx_ctr_keys_install(const char* folder, char* why, size_t why_size) {
     return rc;
 }
 char* snx_vita_keys_path(void) { return snx_vita_keys_dir(); }
-unsigned snx_vita_keys_count(const char* dir) {
-    unsigned count = 0;
+unsigned snx_vita_keys_have(const char* dir) {
+    unsigned have = 0;
     for (int key = 0; dir && key < SNX_VITA_KEY_COUNT; ++key) {
         char* file = snx_path_join(dir, snx_vita_key_file(key));
-        count += file && snx_is_file(file) && snx_file_size(file) == snx_vita_key_size(key);
+        if (file && snx_is_file(file) && snx_file_size(file) == snx_vita_key_size(key)) have |= 1u << key;
         free(file);
     }
-    return count;
+    char* file = dir ? snx_path_join(dir, SNX_VITA_KEYS_FILE) : NULL;
+    size_t size = 0;
+    unsigned char* text = file && snx_is_file(file) ? snx_read_file(file, &size) : NULL;
+    unsigned char bytes[SNX_VITA_KEY_COUNT][32];
+    unsigned lines = 0;
+    char why[256];
+    if (text && snx_vita_keys_parse((const char*)text, size, file, bytes, &lines, NULL, NULL, why, sizeof why))
+        have |= lines;
+    free(text);
+    free(file);
+    return have;
 }
+unsigned snx_vita_keys_count(const char* dir) { return snx_popcount64(snx_vita_keys_have(dir)); }
 char* snx_vita_keys_found(void) {
     char* dir = snx_vita_keys_dir();
     if (dir && snx_vita_keys_count(dir)) return dir;
     free(dir);
     return NULL;
+}
+int snx_vita_keys_install_file(const char* source, const char* dir, char* why, size_t why_size) {
+    size_t size = 0;
+    unsigned char *text = snx_read_file(source, &size), bytes[SNX_VITA_KEY_COUNT][32];
+    unsigned have = 0;
+    char *to = dir ? snx_path_join(dir, SNX_VITA_KEYS_FILE) : NULL, reason[256];
+    int count = -1;
+    if (!dir)
+        snprintf(why, why_size, "%s", "HOME is not set");
+    else if (!text)
+        snprintf(why, why_size, "%s could not be read", source);
+    else if (snx_vita_keys_parse((const char*)text, size, source, bytes, &have, NULL, NULL, why, why_size)) {
+        if (!have)
+            snprintf(why, why_size, "%s has no line name = hex of a Vita key (pfs-iv-0, npdrm-key-0, app-key-1...)",
+                     source);
+        else if (snx_keys_put(to, text, size, reason, sizeof reason))
+            snprintf(why, why_size, "%s could not be written: %s", to, reason);
+        else
+            count = (int)snx_popcount64(have);
+    }
+    free(to);
+    free(text);
+    return count;
 }
 int snx_vita_keys_install(const char* folder, const char* dir, char* why, size_t why_size) {
     int count = 0;

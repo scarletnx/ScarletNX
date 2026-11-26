@@ -100,6 +100,7 @@ typedef enum {
     GUI_ASK_FORGET,    /* a Joy-Con 2 forgotten (Controllers > Bluetooth): games no longer connect it */
     GUI_ASK_UPDATES,   /* Check for updates on Ask: Yes (On), No (asked again at the next start) or Don't Ask Again */
     GUI_ASK_NIGHTLY,   /* a newer nightly: its changes, Close or Open Page */
+    GUI_ASK_DECRYPT,   /* an encrypted Vita dump decrypted into its game's folder: what, about how much, and where */
     GUI_ASK_ERROR      /* a failure of the system's, or Run Amberlith's counts, said whole: OK alone, which closes it */
 } GuiAsk;
 typedef struct {

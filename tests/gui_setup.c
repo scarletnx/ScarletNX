@@ -1245,6 +1245,7 @@ static void test_ask_tones(App* app) {
                 {GUI_ASK_FORGET, UI_ATTR_CAUTION},
                 {GUI_ASK_UPDATES, 0},
                 {GUI_ASK_NIGHTLY, 0},
+                {GUI_ASK_DECRYPT, UI_ATTR_CAUTION},
                 {GUI_ASK_ERROR, 0}};
     GuiConfirm was = app->confirm;
     assert(SDL_arraysize(asks) == GUI_ASK_ERROR + 1);

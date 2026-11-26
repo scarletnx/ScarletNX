@@ -1968,6 +1968,10 @@ msgstr ""
 msgid "Open Page"
 msgstr ""
 
+#: src/gui/main.c
+msgid "Decrypt"
+msgstr ""
+
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
@@ -4762,7 +4766,7 @@ msgstr "; aes_keys.txt em %s"
 
 #: src/gui/main.c
 #, c-format
-msgid "; %d Vita key files to %s"
+msgid "; %d Vita keys to %s"
 msgstr ""
 
 #: src/gui/main.c
@@ -5093,7 +5097,7 @@ msgid "only encrypted 3DS games need it"
 msgstr "só jogos de 3DS criptografados precisam dele"
 
 #: src/gui/main.c
-msgid "only encrypted Vita dumps need its key files"
+msgid "only encrypted Vita dumps need it"
 msgstr ""
 
 #: src/gui/main.c
@@ -5868,6 +5872,24 @@ msgstr "%s já está na fila"
 
 #: src/gui/main.c
 #, c-format
+msgid "%s is an encrypted Vita dump. Decrypt the game%s and %u add-ons into %s? It writes about %s there (%s free), with the keys of ~/.vita; the dump is only read."
+msgstr ""
+
+#: src/gui/main.c
+msgid ", its update"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Not decrypted: nothing was written in %s."
+msgstr ""
+
+#: src/gui/main.c
+msgid "Not decrypted: scarletnx-vita, which decrypts it, is not beside the launcher."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "%s: compiled, but no game of %s names it as its source, so it does not play"
 msgstr "%s: compilado, mas nenhum jogo de %s o indica como origem, então ele não roda"
 
@@ -5911,6 +5933,16 @@ msgstr "Pacote AOT gerado."
 
 #: src/gui/main.c
 #, c-format
+msgid "Decrypt failed: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Decrypted: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "Compile failed (status %d)."
 msgstr "A compilação falhou (status %d)."
 
@@ -5936,6 +5968,10 @@ msgstr "Pacote AOT gerado"
 #: src/gui/main.c
 msgid "Compiled"
 msgstr "Compilado"
+
+#: src/gui/main.c
+msgid "Decrypted"
+msgstr ""
 
 #: src/gui/main.c
 msgid "SDL gave no reason"
@@ -6047,17 +6083,13 @@ msgid "%s could not be read, or has over %d bytes: the DS's ARM7 BIOS has %u."
 msgstr "Não foi possível ler %s, ou ele tem mais de %d bytes: o BIOS ARM7 do DS tem %u."
 
 #: src/gui/main.c
-msgid "This file's folder cannot be named."
-msgstr ""
-
-#: src/gui/main.c
 #, c-format
 msgid "Cannot install the Vita keys: %s"
 msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "%s has no Vita key files (pfs-iv-0, npdrm-key-0, app-key-1 and the others docs/platforms/vita/README.md names)."
+msgid "%s has no Vita keys (vita.keys, or files named pfs-iv-0, npdrm-key-0, app-key-1 and the others docs/platforms/vita/README.md names)."
 msgstr ""
 
 #: src/gui/main.c
@@ -6117,7 +6149,7 @@ msgstr "Escolha o arquivo no armazenamento deste computador (%s)."
 
 #: src/gui/main.c
 #, c-format
-msgid "The Vita's keys are a folder of files, each named for its key: pick one of them from the device's storage, and the folder's keys are installed (%s)."
+msgid "The Vita's vita.keys has to be picked from the device's storage, where its name and folder show (%s)."
 msgstr ""
 
 #: src/gui/main.c
@@ -6653,11 +6685,6 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "Not kept: %s"
-msgstr ""
-
-#: src/gui/main.c
-#, c-format
-msgid "%s plays from %s now: it is encrypted, and its next run decrypts it into the game's folder."
 msgstr ""
 
 #: src/gui/main.c
@@ -7215,6 +7242,10 @@ msgstr "Misto"
 #: src/gui/steps.c
 msgid "EXTRACT"
 msgstr "EXTRAIR"
+
+#: src/gui/steps.c
+msgid "DECRYPT"
+msgstr ""
 
 #: src/gui/steps.c
 msgid "LAUNCH"

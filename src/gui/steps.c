@@ -61,9 +61,19 @@ static void line(GuiSteps* steps, const char* s, uint64_t now) {
         last->total = total;
         last->megabytes = 1;
         return;
+    } else if (last && !strcmp(last->label, "DECRYPT") && sscanf(s, " decrypted %u of %u MB", &value, &total) == 2) {
+        /* an encrypted Vita dump's content, as an extraction's: the step's own line shows it */
+        last->value = value;
+        last->total = total;
+        last->megabytes = 1;
+        return;
     } else if (prefix(s, "Extracting ")) /* the labels show translated */
         begin(steps, SNX_TR_NOOP("EXTRACT"), s + 11, strlen(s + 11), now);
-    else if (prefix(s, "Recompiling ")) {
+    else if (prefix(s, "Decrypting ")) {
+        const char* name = s + 11;
+        const char* end = strstr(name, " into ");
+        begin(steps, SNX_TR_NOOP("DECRYPT"), name, end ? (size_t)(end - name) : strlen(name), now);
+    } else if (prefix(s, "Recompiling ")) {
         const char* name = s + 12;
         const char* end = strstr(name, " (");
         begin(steps, SNX_TR_NOOP("RECOMPILE"), name, end ? (size_t)(end - name) : strlen(name), now);
@@ -79,8 +89,7 @@ static void line(GuiSteps* steps, const char* s, uint64_t now) {
             if (n > k && !strcmp(s + 12 + n - k, consoles[i])) n -= k;
         }
         begin(steps, SNX_TR_NOOP("LAUNCH"), s + 12, n, now);
-    }
-    else if (prefix(s, "Ready "))
+    } else if (prefix(s, "Ready "))
         begin(steps, SNX_TR_NOOP("READY"), s + 6, strlen(s + 6), now);
     else if (prefix(s, "The game starts its program ") && sscanf(s, "The game starts its program %d,", &program) == 1 &&
              strchr(s, ',')) { /* sscanf counts the number alone, with or without the comma after it */
@@ -137,7 +146,7 @@ int gui_steps_percent(const GuiSteps* steps) {
         const GuiStep* s = &steps->step[i];
         if (!strcmp(s->label, "RECOMPILE"))
             percent = s->state == GUI_STEP_DONE ? 100 : s->total ? (int)(s->value * 100ull / s->total) : 0;
-        else if (!strcmp(s->label, "EXTRACT"))
+        else if (!strcmp(s->label, "EXTRACT") || !strcmp(s->label, "DECRYPT"))
             percent = s->state == GUI_STEP_DONE ? 100 : s->total ? (int)(s->value * 100ull / s->total) : -1;
         else if (!strcmp(s->label, "BUILD") || !strcmp(s->label, "LAUNCH") || !strcmp(s->label, "READY"))
             percent = 100;

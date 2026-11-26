@@ -128,7 +128,7 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   it the same way. R on it says that it runs as it is. See [Android apps](../platforms/android-apps/README.md).
 - **Install Keys**, immediately after the five load entries, blinks red (the theme's `failure` colour, at its
   `blink_ms`) while no keys are in use, the Switch's, the 3DS's or the Vita's. Its screen has a row for each console's file,
-  **Switch** `prod.keys`, **3DS** `aes_keys.txt`, **Vita** its key files and **NDS** `bios7.bin`, each *Installed* or *Not installed* (the Vita's, how many of its keys): Up and
+  **Switch** `prod.keys`, **3DS** `aes_keys.txt`, **Vita** `vita.keys` and **NDS** `bios7.bin`, each *Installed* or *Not installed* (the Vita's, how many of its keys): Up and
   Down (a pad's D-pad) go over them, a click on one picks its file, and under them the row in focus says where its
   file goes (*Installs to*). It prompts you to
   pick a keys file (a click on the blinking **[ Pick or drop a keys file ]** in the middle of
@@ -138,19 +138,20 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   `%USERPROFILE%\.switch\prod.keys` on Windows; on Linux, in the user's data folder, it is put there
   instead, `~/.local/share/scarletnx/prod.keys`, which the driver reads before
   `~/.switch`, and names the keys of `~/.switch` it would use until then), and an `aes_keys.txt` is the 3DS's, installed
-  to `~/.3ds/aes_keys.txt` (`%USERPROFILE%\.3ds` on Windows), where the 3DS driver reads it. The Vita's keys are a
-  folder with a file for each key, as vitakeys keeps them: a folder dropped, or one of its key files picked or dropped
-  (any file on the Vita row), installs every Vita key file of that folder in `~/.vita` (`%USERPROFILE%\.vita` on
-  Windows), where `scarletnx-vita` reads them to decrypt an encrypted dump; the row says how many of the 22 are there,
-  and the screen which one is still missing ([An encrypted dump](../platforms/vita/README.md#an-encrypted-dump) names
-  them and where each is published; ScarletNX carries none). Any other file is the
+  to `~/.3ds/aes_keys.txt` (`%USERPROFILE%\.3ds` on Windows), where the 3DS driver reads it. A `vita.keys` (lines
+  `name = hex`, as `prod.keys`), or any file picked or dropped on the Vita row, is the Vita's, installed as
+  `~/.vita/vita.keys` (`%USERPROFILE%\.vita` on Windows), where `scarletnx-vita` reads it to decrypt an encrypted dump;
+  a folder of key files as vitakeys keeps them, dropped or one of its files picked, has its key files (and its
+  `vita.keys`) installed there too. The row says how many of the 22 keys are there, and the screen which one is still
+  missing ([An encrypted dump](../platforms/vita/README.md#an-encrypted-dump) names them and where each is published;
+  ScarletNX carries none). Any other file is the
   DS's ARM7 BIOS when it is named `bios7.bin`, has 16384 bytes or the NDS row has the focus: it is installed as
   `bios7.bin` in the data folder (`~/.local/share/scarletnx/bios7.bin`, `%APPDATA%\scarletnx\bios7.bin` on Windows)
   when its CRC-32 is 0x1280F0D5, the console's, and refused otherwise, the screen saying its size or its CRC-32 and the
   BIOS's. `scarletnx-nds` decrypts with it a card image whose secure area is still encrypted
   ([The DS](../platforms/nds/README.md#the-secure-area)). Only **encrypted** 3DS files need the
   3DS keys: a decrypted or homebrew 3DS game runs without an `aes_keys.txt`, and only an encrypted Vita dump needs
-  its key files. It creates the
+  `vita.keys`. It creates the
   folder if needed. Existing keys trigger the bright-red warning
   **Keys already setup. This will overwrite the previous ones**. The screen then says what the try
   did, *Installed* or *Not installed* and why, and goes back to the menu by itself after 3 seconds
@@ -600,8 +601,8 @@ moved away goes, and with none left the setup goes on. With nothing else due the
   (an Extra of Settings > App > Folders), each through the folder picker, the page listing what is there now: Recompiled, Dumps
   (the data folder's `dumps/`, with its subfolders), then the player's folders.
 - **Keys**: `prod.keys` and `title.keys` where the Switch driver reads them, `aes_keys.txt` in `~/.3ds`, for the
-  encrypted 3DS games, and the Vita's key files in `~/.vita`, for the encrypted Vita dumps; Use these, Choose folder (a
-  folder with `prod.keys`, `title.keys` if it has one, and `aes_keys.txt` and the Vita's key files if it has them,
+  encrypted 3DS games, and `vita.keys` in `~/.vita`, for the encrypted Vita dumps; Use these, Choose folder (a
+  folder with `prod.keys`, `title.keys` if it has one, and `aes_keys.txt` and `vita.keys` (or Vita key files) if it has them,
   installed where Install Keys installs them) or Later.
 - **User**: with `users/users.ini` there, its users with their pictures and uids, then Keep or Overwrite, which asks
   first (the file is kept as `users.ini.old`); without one, or to overwrite it, the nickname typed (`Player` to start with; Backspace takes a letter out) and Enter. A nickname
@@ -690,7 +691,11 @@ cannot be read is named and the others still listed.
   (its folder picker for an extracted game's folder and a Vita game's), and what is picked, a dump (`.nsp`, `.xci`) or
   an extracted game's folder for a Switch game, a ROM (`.gba`) for a GBA game, a `.cia`, `.cci`, `.3ds` or `.cxi` for a
   3DS game, is what the game plays from from then on, in its `.ini`; a dumped Vita game's folder (with its
-  `sce_sys/param.sfo`) gets the game's `app/` linked to it, and its update beside it (`patch/<title ID>`) its `patch/`.
+  `sce_sys/param.sfo`) gets the game's `app/` linked to it, and its update beside it (`patch/<title ID>`) its `patch/`;
+  one still encrypted (its `sce_pfs/`) is decrypted into the game's folder instead, once a box says what (the game, its
+  update, its add-ons), about how much it writes, where and the room there, and **Decrypt** is pressed: the queue runs
+  it, its line showing how far it went and, at its end, what came in or the key that was missing; **Cancel**, in focus,
+  writes nothing. A run of a Vita game whose `app/` still links an encrypted dump asks the same first.
   Another kind is refused, the message naming it and the file the game keeps; so is another game's, by its title: a
   Switch dump's as its driver reads it with the keys (the `title.ini` of its icon, asked for and waited on when it has
   none yet), an extracted game's from its `main.npdm`, a 3DS game's from its CIA's TMD, its cartridge image's or its

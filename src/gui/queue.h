@@ -15,7 +15,8 @@
    addons= can check (SNX_ADDONS_MAX), which a game's recompile with them gives the driver */
 #define GUI_QUEUE_ARGS (64 + 2 * 2048)
 typedef enum { GUI_JOB_WAITING, GUI_JOB_RUNNING, GUI_JOB_OK, GUI_JOB_FAILED } GuiJobState;
-typedef enum { GUI_JOB_RECOMPILE, GUI_JOB_AOT, GUI_JOB_COMPILE } GuiJobKind;
+/* a recompile, an AOT pack, a first compile, or an encrypted Vita dump's decryption into its game's folder */
+typedef enum { GUI_JOB_RECOMPILE, GUI_JOB_AOT, GUI_JOB_COMPILE, GUI_JOB_DECRYPT } GuiJobKind;
 typedef struct {
     /* the block: where each of argv's strings is in it, argc 32-bit offsets, then the strings, the file, its path
        listed and the name, a NUL each */

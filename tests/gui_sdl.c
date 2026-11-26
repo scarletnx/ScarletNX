@@ -7169,6 +7169,70 @@ static void missing_consoles(App* app, const char* dir) {
         assert((target = snx_link_target(patch_link)) && !strcmp(target, update));
         free(target);
         assert(!app->games_missing[listed_at(app, "PCSE00000")]);
+        /* its dump went again, and the one Locate... finds is encrypted: asked first, saying what and where; Cancel
+           writes nothing, Decrypt queues scarletnx-vita -x --output <the game's folder> <the dump> */
+        char *enc = snx_path_join(dir, "vita enc/app/PCSE00000"), *pfs = snx_path_join(enc, "sce_pfs"),
+             *enc_sys = snx_path_join(enc, "sce_sys");
+        assert(!snx_remove_tree(now) && !snx_mkdirs(pfs) && !snx_mkdirs(enc_sys));
+        sfo_file(enc, "PCSE00000");
+        fixture_file(pfs, "files.db", "SCENGPFS");
+        for (int answer = 0; answer < 2; ++answer) {
+            int jobs = app->queue.count;
+            focus_game(app, "PCSE00000");
+            assert(app->games_missing[listed_at(app, "PCSE00000")]);
+            key(app, SDLK_RETURN);
+            key(app, SDLK_DOWN);
+            key(app, SDLK_RETURN);
+            locate_answer(app, program, enc);
+            want = snx_format("%s is an encrypted Vita dump. Decrypt the game and 0 add-ons into %s? It writes about ",
+                              enc, folder);
+            assert(app->confirm.shown && app->confirm.ask == GUI_ASK_DECRYPT && strstr(app->ask_line, want) &&
+                   strstr(app->ask_line, "with the keys of ~/.vita; the dump is only read."));
+            free(want);
+            if (!answer) { /* Cancel, in focus */
+                key(app, SDLK_RETURN);
+                want = snx_format("Not decrypted: nothing was written in %s.", folder);
+                assert(!app->confirm.shown && !strcmp(app->message, want) && app->queue.count == jobs);
+                assert((target = snx_link_target(app_link)) && !strcmp(target, now)); /* the link as it was */
+                free(target);
+                free(want);
+                continue;
+            }
+            char* argv_file = snx_path_join(dir, "decrypt argv");
+            driver_will(argv_file, 0,
+                        "Decrypting the dump into the game's folder, the keys from ~/.vita\n decrypted 1 of 2 MB\n"
+                        "PCSE00000/app: 3 files decrypted");
+            key(app, SDLK_RIGHT); /* Decrypt */
+            key(app, SDLK_RETURN);
+            assert(!app->confirm.shown && app->queue.count == jobs + 1 &&
+                   app->queue.job[jobs].kind == GUI_JOB_DECRYPT && app->queue.job[jobs].console == GUI_VITA);
+            /* its line through to its end as pump reads it: how far, then what came in (the driver's last line) */
+            Uint64 until = SDL_GetTicks() + 10000;
+            while (gui_queue_running(&app->queue) == jobs && SDL_GetTicks() < until) {
+                pump(app);
+                render(app);
+                SDL_Delay(5);
+            }
+            assert(app->queue.job[jobs].state == GUI_JOB_OK && app->queue.job[jobs].percent == 100 &&
+                   !strcmp(app->queue.job[jobs].said, "Decrypted: PCSE00000/app: 3 files decrypted"));
+            const GuiStep* step = &app->ended_steps.step[app->ended_steps.count - 1];
+            assert(!strcmp(step->label, "DECRYPT") && step->value == 1 && step->total == 2 && step->megabytes);
+            size_t argv_size;
+            char* argv = (char*)snx_read_file(argv_file, &argv_size);
+            assert(argv && !remove(argv_file));
+            assert(strstr(argv, "scarletnx-vita") && has_arg(argv, "-x", "--output") &&
+                   has_arg(argv, "--output", folder) && has_arg(argv, folder, enc));
+            go_tab(app, GUI_TAB_RECOMPILE); /* its line seen, and gone with the tab */
+            app->queue_focus = jobs;
+            key(app, SDLK_ESCAPE);
+            go_tab(app, GUI_TAB_MENU);
+            driver_will(NULL, 0, NULL);
+            free(argv_file);
+            free(argv);
+        }
+        free(enc_sys);
+        free(pfs);
+        free(enc);
         made_gone(app, folder);
         free(program);
         free(patch_link);
@@ -7809,7 +7873,8 @@ int main(int argc, char** argv) {
         /* a driver doing what the test asked (driver_will): its argv kept, a string a line, for the test to check */
         FILE* kept = fopen(getenv("SNX_TEST_ARGV"), "wb"); /* "\n" alone, as has_arg reads, on Windows too */
         int compiling = 0, status;
-        for (int i = 1; i < argc; ++i) compiling |= !strcmp(argv[i], "-r");
+        for (int i = 1; i < argc; ++i)
+            compiling |= !strcmp(argv[i], "-r") || !strcmp(argv[i], "-x"); /* plays nothing */
         for (int i = 0; kept && i < argc; ++i) fprintf(kept, "%s\n", argv[i]);
         assert(kept && !fclose(kept));
         puts(getenv("SNX_TEST_SAY") ? getenv("SNX_TEST_SAY") : "the fake driver ran");
@@ -8506,9 +8571,10 @@ int main(int argc, char** argv) {
         free(source_3ds);
         free(ctr_dir);
     }
-    /* the Vita's keys, a file each as vitakeys keeps them: a folder dropped, or one of its key files, installs every key
-       file of it in ~/.vita where scarletnx-vita reads them, whatever row has the focus; the screen says how many and
-       the first one still missing; a key file of another size installs nothing, naming it */
+    /* the Vita's keys: a vita.keys (lines name = hex, as prod.keys), dropped on any row or any file on the Vita row,
+       installed as ~/.vita/vita.keys where scarletnx-vita reads it; a folder of key files as vitakeys keeps them, or one
+       of them, installs every key file of it there; the screen says how many and the first still missing; a line of a
+       key of another size installs nothing, both sizes said */
     {
         char *vita_dir = snx_path_join(temporary, ".vita"), *vita_from = snx_path_join(temporary, "vitakeys"), *file;
         unsigned char bytes[32] = {0};
@@ -8528,33 +8594,40 @@ int main(int argc, char** argv) {
         app.keys_of = GUI_KEYS_3DS;
         drop(&app, vita_from, false);
         assert(app.keys_of == GUI_KEYS_VITA && snx_vita_keys_count(vita_dir) == SNX_VITA_KEY_COUNT - 1);
-        assert(strstr(app.message, "21 Vita keys installed in "));
-        assert(strstr(app.message, "; app-iv-5 and 0 others are still missing, which some dumps need."));
+        assert(strstr(app.message, "21 Vita keys installed in ") &&
+               strstr(app.message, "; app-iv-5 and 0 others are still missing, which some dumps need."));
         file = snx_path_join(vita_dir, "gpkg-key-2");
         assert(!snx_path_exists(file));
         free(file);
         keys_outcome(&app, true);
-        file = snx_path_join(vita_from, "app-iv-5"); /* the last one, dropped alone: its folder's keys again */
-        assert(!snx_write_file(file, bytes, 16));
+        /* vita.keys, the last key's line in it beside a name no Vita key has: installed whole as vita.keys */
+        char* keys_file_text = snx_format("# the test's\nsome-other-key = 00\napp-iv-5 = %032d\n", 0);
+        file = snx_path_join(temporary, "vita.keys");
+        assert(!snx_write_file(file, keys_file_text, strlen(keys_file_text)));
         app.menu.view = GUI_LOAD_KEYS;
         app.keys_of = GUI_KEYS_SWITCH;
         drop(&app, file, false);
-        free(file);
         assert(snx_vita_keys_count(vita_dir) == SNX_VITA_KEY_COUNT &&
-               strstr(app.message, "22 Vita keys installed in ") &&
+               strstr(app.message, "1 Vita keys installed in ") &&
                strstr(app.message, ": encrypted Vita dumps can be decrypted now."));
-        assert(keys_place(&app, GUI_KEYS_VITA) == app.keysv_path && !strcmp(keys_file(GUI_KEYS_VITA), "key files"));
+        char* installed_keys = snx_path_join(vita_dir, "vita.keys");
+        keys_data = snx_read_file(installed_keys, &keys_size);
+        assert(keys_data && keys_size == strlen(keys_file_text) && !memcmp(keys_data, keys_file_text, keys_size));
+        free(keys_data);
+        free(installed_keys);
+        assert(keys_place(&app, GUI_KEYS_VITA) == app.keysv_path && !strcmp(keys_file(GUI_KEYS_VITA), "vita.keys"));
         keys_outcome(&app, true);
-        file = snx_path_join(vita_from, "pfs-iv-0"); /* of another size: refused, named */
-        assert(!snx_write_file(file, bytes, 15));
+        /* a key of another size: nothing installed, both sizes said */
+        assert(!snx_write_file(file, "pfs-iv-0 = 0011\n", 16));
         app.menu.view = GUI_LOAD_KEYS;
         drop(&app, file, false);
         assert(strstr(app.message, "Cannot install the Vita keys: ") &&
-               strstr(app.message, "pfs-iv-0 is 15 bytes, and the key pfs-iv-0 is 16"));
-        free(file);
+               strstr(app.message, "vita.keys:1: pfs-iv-0 is 16 bytes, and the line gives 4 hex digits, 2 bytes"));
         keys_outcome(&app, false);
         app.menu.view = GUI_LOAD_NONE;
         app.keys_of = GUI_KEYS_SWITCH;
+        free(keys_file_text);
+        free(file);
         free(vita_from);
     }
     /* the DS's ARM7 BIOS, the NDS row of the same screen: a file of the BIOS's size, or named bios7.bin, or any picked
@@ -8628,7 +8701,7 @@ int main(int argc, char** argv) {
         render(&app);
         shows(&app, "Switch  prod.keys", yellow);
         shows(&app, "3DS     aes_keys.txt   Not installed", rgb(app.theme.ink));
-        shows(&app, "Vita    key files      22 of 22 keys", rgb(app.theme.ink));
+        shows(&app, "Vita    vita.keys      22 of 22 keys", rgb(app.theme.ink));
         shows(&app, "NDS     bios7.bin      Installed", rgb(app.theme.ink));
         shows(&app, "Installs to: ", rgb(app.theme.ink)); /* the path's own length wraps it or not */
         assert(keys_place(&app, app.keys_of) == app.keys_path);

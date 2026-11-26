@@ -88,12 +88,17 @@ char* snx_ctr_keys_path(void);
 char* snx_ctr_keys_found(void);
 /* the folder's aes_keys.txt installed at that path: 0, 1 when the folder has none, else -1 with why */
 int snx_ctr_keys_install(const char* folder, char* why, size_t why_size);
-/* the Vita keys' folder, ~/.vita (%USERPROFILE%\.vita on Windows), a file for each key (common/utilities/vita_keys.h),
-   where the Vita driver reads them to decrypt a dump; NULL with no home. found: it, when it holds a key. count: the keys
-   dir holds, each file of its key's size */
+/* the Vita keys' folder, ~/.vita (%USERPROFILE%\.vita on Windows), where the Vita driver reads them to decrypt a dump:
+   its vita.keys and, as vitakeys keeps them, its key files (common/utilities/vita_keys.h); NULL with no home. found:
+   it, when it holds a key. count: the keys dir holds, from either */
 char* snx_vita_keys_path(void);
 char* snx_vita_keys_found(void);
 unsigned snx_vita_keys_count(const char* dir);
+/* the keys dir holds, a bit for each SnxVitaKey: its key files of their key's size, and its vita.keys when it reads whole */
+unsigned snx_vita_keys_have(const char* dir);
+/* the vita.keys at source (lines name = hex) installed as dir's vita.keys: how many keys it gives, else -1 with why
+   (a line that is not name = hex, a key of another size or given twice, no Vita key in it, no dir) */
+int snx_vita_keys_install_file(const char* source, const char* dir, char* why, size_t why_size);
 /* every Vita key file of folder (by its name) installed in dir (snx_vita_keys_path's; NULL with no home): how many, 0
    when folder has none, else -1 with why (no dir, a file of another size than its key's, one not written) */
 int snx_vita_keys_install(const char* folder, const char* dir, char* why, size_t why_size);

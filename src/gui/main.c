@@ -485,7 +485,7 @@ typedef struct App {
     uint64_t loads_key;
     Uint64 loads_at;
     char *cwd, *file, *games_dir, *keys_path, *keys3_path;
-    char* keysv_path; /* the Vita's keys' folder, ~/.vita, a file each: scarletnx-vita decrypts a dump with them */
+    char* keysv_path; /* the Vita's keys' folder, ~/.vita (vita.keys): scarletnx-vita decrypts a dump with them */
     char* bios7_path; /* the DS's ARM7 BIOS in the data folder: scarletnx-nds decrypts secure areas with it */
     int keys_of;      /* the keys screen's console in focus (GUI_KEYS_*): the one a file picked is for */
     char*
@@ -940,6 +940,9 @@ typedef struct App {
     int addons_item;
     bool addons_redo;
     char* made_file; /* a dump whose game is made, asked about (GUI_ASK_MADE): played or recompiled, by made_item */
+    /* an encrypted Vita dump asked about (GUI_ASK_DECRYPT): its app/<title ID> (NULL for a game whose app/ links one),
+       the game's folder it goes into and the game's program, which its queue line names */
+    char *decrypt_dump, *decrypt_folder, *decrypt_program;
     int made_item;
     bool made_ok;    /* asked and answered Play: the dump runs, its driver playing the game made */
     /* a made game whose file to play from is not there, asked about (GUI_PICKS_MISSING): its program and that file,
@@ -1596,7 +1599,7 @@ static const char* const keys_consoles[GUI_KEYS_CONSOLES] = {"Switch", "3DS", "V
 static const char* keys_file(int console) {
     return console == GUI_KEYS_SWITCH ? "prod.keys"
            : console == GUI_KEYS_3DS  ? "aes_keys.txt"
-           : console == GUI_KEYS_VITA ? "key files"
+           : console == GUI_KEYS_VITA ? SNX_VITA_KEYS_FILE
                                       : NDS_BIOS7_FILE;
 }
 /* where it is installed: NULL when no folder can be named (no home) */
@@ -1606,8 +1609,8 @@ static const char* keys_place(const App* app, int console) {
            : console == GUI_KEYS_VITA ? app->keysv_path
                                       : app->bios7_path;
 }
-/* the console's file its driver reads, installed or, the Switch's, found in ~/.switch, the Vita's folder of key files
-   when it holds one; NULL when none */
+/* the console's file its driver reads, installed or, the Switch's, found in ~/.switch, the Vita's folder of keys when
+   it holds one; NULL when none */
 static char* keys_there(const App* app, int console) {
     const char* place = keys_place(app, console);
     if (console == GUI_KEYS_SWITCH) return switch_keys_in_use(app);
@@ -3064,7 +3067,8 @@ static const char* ask_question(App* app) {
         case GUI_ASK_FORGET: return app->ask_line;
         case GUI_ASK_OVERWRITE: return snx_tr("Overwrite users.ini? It is kept as users.ini.old");
         case GUI_ASK_UPDATES: return snx_tr("Check for new nightlies?");
-        case GUI_ASK_NIGHTLY: return app->ask_line;
+        case GUI_ASK_NIGHTLY:
+        case GUI_ASK_DECRYPT: return app->ask_line;
         case GUI_ASK_ERROR: return app->error_line;
         case GUI_ASK_CLOSE:
             if (!app->menu.running && !app->finished) return job_leaving(app);
@@ -3517,6 +3521,7 @@ static const char* const ask_choices[][3] = {{SNX_TR_NOOP("Continue"), SNX_TR_NO
                                              {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Forget")},
                                              {SNX_TR_NOOP("Yes"), SNX_TR_NOOP("No"), SNX_TR_NOOP("Don't Ask Again")},
                                              {SNX_TR_NOOP("Close"), SNX_TR_NOOP("Open Page")},
+                                             {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Decrypt")},
                                              {SNX_TR_NOOP("OK"), NULL}};
 /* a question added to GuiAsk takes its choices here, in its place */
 typedef char snx_gui_ask_choices[SDL_arraysize(ask_choices) == GUI_ASK_ERROR + 1 ? 1 : -1];
@@ -3549,6 +3554,7 @@ static const unsigned ask_tones[] = {UI_ATTR_CAUTION, /* Abort: the run ends */
                                      UI_ATTR_CAUTION, /* Forget: a Joy-Con 2, synced again with its sync button */
                                      0,               /* No: asked again at the next start */
                                      0,               /* Open Page */
+                                     UI_ATTR_CAUTION, /* Decrypt: the game's folder takes the decrypted dump */
                                      0};
 typedef char snx_gui_ask_tones[SDL_arraysize(ask_tones) == GUI_ASK_ERROR + 1 ? 1 : -1];
 /* the question shown, over the whole screen in the middle or at its foot, a choice asked twice saying so once pressed:
@@ -8448,12 +8454,12 @@ bool ui_keys_rows_get_row_info(App* app, size_t row, int width, UiRowInfo* info)
     (void)width;
     if (row >= GUI_KEYS_CONSOLES) return false;
     place = keys_place(app, (int)row);
-    if (row == GUI_KEYS_VITA) { /* a file for each key: how many of them are there */
+    if (row == GUI_KEYS_VITA) { /* how many of its keys ~/.vita holds, from vita.keys or key files */
         char count[64];
         snprintf(count, sizeof count, snx_tr("%u of %d keys"), place ? snx_vita_keys_count(place) : 0u,
                  SNX_VITA_KEY_COUNT);
-        snprintf(app->row_text, sizeof app->row_text, "%-6s  %-13s  %s", keys_consoles[row],
-                 snx_tr(keys_file((int)row)), count);
+        snprintf(app->row_text, sizeof app->row_text, "%-6s  %-13s  %s", keys_consoles[row], keys_file((int)row),
+                 count);
     } else
         snprintf(app->row_text, sizeof app->row_text, "%-6s  %-13s  %s", keys_consoles[row], keys_file((int)row),
                  place && snx_is_file(place) ? snx_tr("Installed") : snx_tr("Not installed"));
@@ -16302,13 +16308,20 @@ static void setup_keys_from(App* app, const char* folder, const char* error) {
             }
             free(ctr);
         }
-        char* vita = snx_vita_keys_path(); /* and its Vita key files, where there is a home for them */
+        char* vita =
+            snx_vita_keys_path(); /* and its Vita keys (vita.keys, key files), where there is a home for them */
+        char* vita_file = vita ? snx_path_join(folder, SNX_VITA_KEYS_FILE) : NULL;
         int vita_count = vita ? snx_vita_keys_install(folder, vita, why, sizeof why) : 0;
+        if (vita_count >= 0 && vita_file && snx_is_file(vita_file)) {
+            int more = snx_vita_keys_install_file(vita_file, vita, why, sizeof why);
+            vita_count = more < 0 ? -1 : vita_count + more;
+        }
+        free(vita_file);
         if (vita_count > 0) {
             if (vita) {
                 snx_home_short(vita, shown, sizeof shown);
-                snprintf(note + strlen(note), sizeof note - strlen(note), snx_tr("; %d Vita key files to %s"),
-                         vita_count, shown);
+                snprintf(note + strlen(note), sizeof note - strlen(note), snx_tr("; %d Vita keys to %s"), vita_count,
+                         shown);
             }
         } else if (vita_count < 0)
             snprintf(note + strlen(note), sizeof note - strlen(note), snx_tr("; the Vita keys were not installed: %s"),
@@ -17337,8 +17350,9 @@ static void setup_panes(App* app, GuiRect r) {
                        ctr ? shown : snx_tr("only encrypted 3DS games need it"));
             vita = snx_vita_keys_found();
             snx_home_short(vita ? vita : "", shown, sizeof shown);
-            SETUP_LINE("%s%-13s%s%s", m, ".vita/", setup_pad(pad, sizeof pad, found[!vita], setup_cols(found, 2, 2)),
-                       vita ? shown : snx_tr("only encrypted Vita dumps need its key files"));
+            SETUP_LINE("%s%-13s%s%s", m, SNX_VITA_KEYS_FILE,
+                       setup_pad(pad, sizeof pad, found[!vita], setup_cols(found, 2, 2)),
+                       vita ? shown : snx_tr("only encrypted Vita dumps need it"));
             setup_box(app, r, snx_tr("Keys"), lines, n);
             free(path);
             free(other);
@@ -21035,8 +21049,22 @@ static bool run_start(App* app, const char* const* argv, char* file, bool native
 static bool openable(const App* app, const char* path) {
     return path && (snx_is_file(path) || (app->menu.selected == GUI_SWITCH && snx_extracted_game(path)));
 }
+static void decrypt_ask(App* app, const char* dump, const char* folder, const char* program);
+static bool vita_encrypted(const char* folder);
 static void launch(App* app, char* absolute, bool prepared) {
     int queued;
+    /* a Vita game whose app/ still links an encrypted dump: decrypted first, once the player says so, and not played */
+    if (app->menu.selected == GUI_VITA && !app->recompile && absolute && snx_is_file(absolute)) {
+        char *folder = snx_dirname(absolute), *linked = folder ? snx_path_join(folder, "app") : NULL;
+        bool encrypted = linked && vita_encrypted(linked);
+        if (encrypted) decrypt_ask(app, NULL, folder, absolute);
+        free(linked);
+        free(folder);
+        if (encrypted) {
+            free(absolute);
+            return;
+        }
+    }
     if (!openable(app, absolute)) {
         snprintf(app->message, sizeof(app->message), "%s",
                  snx_tr("That path is not a readable file. Try again or press ESC."));
@@ -21771,6 +21799,83 @@ static void job_add(App* app, const char* const* argv, const char* file, bool na
     }
     join_said(app, i, run, name);
 }
+/* whether folder holds an encrypted Vita dump: its sce_pfs/files.db */
+static bool vita_encrypted(const char* folder) {
+    char* db = snx_path_join(folder, "sce_pfs/files.db");
+    bool is = db && snx_is_file(db);
+    free(db);
+    return is;
+}
+/* an encrypted Vita dump's decryption into folder, asked first (GUI_ASK_DECRYPT): what it decrypts (the game, its
+   update, its add-ons), about how much it writes, where, and the room there; nothing is written before the answer.
+   dump NULL: the game whose app/ in folder links one */
+static void decrypt_ask(App* app, const char* dump, const char* folder, const char* program) {
+    char *game = dump ? snx_strdup(dump) : snx_path_join(folder, "app"), *full = game ? snx_absolute(game) : NULL;
+    char *parent = full ? snx_dirname(full) : NULL, *root = parent ? snx_dirname(parent) : NULL;
+    char title[32] = "", other[SNX_PATH_SIZE], size_text[32], free_text[32], **names = NULL;
+    _Atomic int stop = 0;
+    uint64_t bytes = full ? gui_tree_size(full, &stop) : 0;
+    unsigned addons = 0;
+    size_t count = 0;
+    bool update = false;
+    if (full && !gui_vita_title(full, title, sizeof title)) title[0] = 0;
+    if (root && title[0] && !snx_path_format(other, sizeof other, "%s/patch/%s", root, title) && vita_encrypted(other))
+        update = true, bytes += gui_tree_size(other, &stop);
+    if (root && title[0] && !snx_path_format(other, sizeof other, "%s/addcont/%s", root, title) &&
+        !snx_list_dir(other, &names, &count))
+        for (size_t i = 0; i < count; ++i) {
+            char* addon = snx_path_join(other, names[i]);
+            if (addon && vita_encrypted(addon)) ++addons, bytes += gui_tree_size(addon, &stop);
+            free(addon);
+        }
+    snx_free_strings(names, count);
+    gui_size_text(size_text, sizeof size_text, bytes);
+    gui_size_text(free_text, sizeof free_text, free_space(folder));
+    snprintf(app->ask_line, sizeof app->ask_line,
+             snx_tr("%s is an encrypted Vita dump. Decrypt the game%s and %u add-ons into %s? It writes about %s "
+                    "there (%s free), with the keys of ~/.vita; the dump is only read."),
+             full ? full : folder, update ? snx_tr(", its update") : "", addons, folder, size_text, free_text);
+    free(app->decrypt_dump);
+    free(app->decrypt_folder);
+    free(app->decrypt_program);
+    app->decrypt_dump = dump ? snx_strdup(dump) : NULL;
+    app->decrypt_folder = snx_strdup(folder);
+    app->decrypt_program = program ? snx_strdup(program) : NULL;
+    gui_confirm_open(&app->confirm, GUI_ASK_DECRYPT, false);
+    free(root);
+    free(parent);
+    free(full);
+    free(game);
+}
+/* the answer: Cancel writes nothing; Decrypt queues scarletnx-vita -x into the game's folder (--output and the dump,
+   or --game for a game whose app/ links one), its progress and its end on the queue's line */
+static void decrypt_answer(App* app, bool taken) {
+    char *dump = app->decrypt_dump, *folder = app->decrypt_folder, *program = app->decrypt_program;
+    app->decrypt_dump = app->decrypt_folder = app->decrypt_program = NULL;
+    char* driver = taken ? find_driver(app, GUI_VITA) : NULL;
+    if (!taken)
+        snprintf(app->message, sizeof app->message, snx_tr("Not decrypted: nothing was written in %s."),
+                 folder ? folder : "?");
+    else if (!driver || !folder)
+        snprintf(app->message, sizeof app->message, "%s",
+                 snx_tr("Not decrypted: scarletnx-vita, which decrypts it, is not beside the launcher."));
+    else {
+        const char* argv[8] = {driver, "-x"};
+        size_t n = 2;
+        if (dump)
+            argv[n++] = "--output", argv[n++] = folder, argv[n++] = dump;
+        else
+            argv[n++] = "--game", argv[n++] = folder;
+        int item = app->menu.selected;
+        app->menu.selected = GUI_VITA; /* the job's console */
+        job_add(app, argv, program ? program : folder, true, false, GUI_JOB_DECRYPT);
+        app->menu.selected = item;
+    }
+    free(driver);
+    free(program);
+    free(folder);
+    free(dump);
+}
 /* job i's line out of the queue, the focus kept on the row it was on */
 static void queue_drop(App* app, int i) {
     gui_queue_remove(&app->queue, i);
@@ -21861,6 +21966,10 @@ static void job_ended(App* app, int i, int status) {
                      snx_tr("AOT pack built, but no cached function matched the game."));
         else
             snprintf(job->said, sizeof job->said, "%s", snx_tr("AOT pack built."));
+    } else if (job->kind == GUI_JOB_DECRYPT) { /* the driver's last line: what came in, or the key that was missing */
+        const GuiSteps* st = &app->job_steps;
+        const char* last = st->notes ? st->note[st->notes - 1].text : "";
+        snprintf(job->said, sizeof job->said, failed ? snx_tr("Decrypt failed: %s") : snx_tr("Decrypted: %s"), last);
     } else if (job->kind == GUI_JOB_COMPILE) {
         if (failed)
             snprintf(job->said, sizeof job->said, snx_tr("Compile failed (status %d)."), status);
@@ -21880,6 +21989,7 @@ static void job_ended(App* app, int i, int status) {
     app->told_result = failed                         ? SNX_TR_NOOP("Failed")
                        : job->kind == GUI_JOB_AOT     ? SNX_TR_NOOP("AOT pack built")
                        : job->kind == GUI_JOB_COMPILE ? SNX_TR_NOOP("Compiled")
+                       : job->kind == GUI_JOB_DECRYPT ? SNX_TR_NOOP("Decrypted")
                                                       : SNX_TR_NOOP("Recompiled");
 #endif
     if (job->kind == GUI_JOB_COMPILE && !failed) job_play(app, i);
@@ -22532,52 +22642,62 @@ static void bios7_unread(App* app, const char* file) {
              NDS_BIOS7_SIZE);
     keys_result(app, false);
 }
-/* the Vita's keys: every key file of folder (vitakeys' way, a file for each: common/utilities/vita_keys.h) installed in
-   ~/.vita, where scarletnx-vita reads them, the screen saying how many and the first key a dump may need that is not
-   there */
-static void vita_keys_write(App* app, const char* folder) {
-    char why[1024], shown[SNX_PATH_SIZE];
-    int count = folder ? snx_vita_keys_install(folder, app->keysv_path, why, sizeof why) : -1;
+/* what installing the Vita's keys did: count keys installed in ~/.vita, the first one a dump may need still missing, or
+   why nothing was (why, of what) */
+static void vita_keys_said(App* app, int count, const char* why, const char* what) {
+    char shown[SNX_PATH_SIZE];
+    unsigned have = app->keysv_path ? snx_vita_keys_have(app->keysv_path) : 0;
+    int missing = 0;
+    while (missing < SNX_VITA_KEY_COUNT && have >> missing & 1) ++missing;
     app->keys_of = GUI_KEYS_VITA;
-    if (!folder)
-        snprintf(app->message, sizeof app->message, "%s", snx_tr("This file's folder cannot be named."));
-    else if (count < 0)
+    snx_home_short(app->keysv_path ? app->keysv_path : "", shown, sizeof shown);
+    if (count < 0)
         snprintf(app->message, sizeof app->message, snx_tr("Cannot install the Vita keys: %s"), why);
     else if (!count)
         snprintf(app->message, sizeof app->message,
-                 snx_tr("%s has no Vita key files (pfs-iv-0, npdrm-key-0, app-key-1 and the others "
-                        "docs/platforms/vita/README.md names)."),
-                 folder);
-    else {
-        int missing = -1;
-        for (int key = 0; key < SNX_VITA_KEY_COUNT && missing < 0; ++key) {
-            char* file = app->keysv_path ? snx_path_join(app->keysv_path, snx_vita_key_file(key)) : NULL;
-            if (!file || !snx_is_file(file)) missing = key;
-            free(file);
-        }
-        snx_home_short(app->keysv_path ? app->keysv_path : "", shown, sizeof shown);
-        if (missing < 0)
-            snprintf(app->message, sizeof app->message,
-                     snx_tr("%d Vita keys installed in %s: encrypted Vita dumps can be decrypted now."), count, shown);
-        else
-            snprintf(app->message, sizeof app->message,
-                     snx_tr("%d Vita keys installed in %s; %s and %u others are still missing, which some dumps need."),
-                     count, shown, snx_vita_key_file(missing),
-                     SNX_VITA_KEY_COUNT - 1u - (app->keysv_path ? snx_vita_keys_count(app->keysv_path) : 0u));
-    }
+                 snx_tr("%s has no Vita keys (vita.keys, or files named pfs-iv-0, npdrm-key-0, app-key-1 and the "
+                        "others docs/platforms/vita/README.md names)."),
+                 what);
+    else if (missing == SNX_VITA_KEY_COUNT)
+        snprintf(app->message, sizeof app->message,
+                 snx_tr("%d Vita keys installed in %s: encrypted Vita dumps can be decrypted now."), count, shown);
+    else
+        snprintf(app->message, sizeof app->message,
+                 snx_tr("%d Vita keys installed in %s; %s and %u others are still missing, which some dumps need."),
+                 count, shown, snx_vita_key_file(missing), SNX_VITA_KEY_COUNT - 1u - snx_popcount64(have));
     keys_result(app, count > 0);
+}
+/* the Vita's keys from source: a vita.keys (any file on the Vita row) installed as ~/.vita/vita.keys; a folder, or one
+   of its key files as vitakeys keeps them, its key files and its vita.keys installed in ~/.vita */
+static void vita_keys_install(App* app, const char* source) {
+    char why[1024], *folder = NULL;
+    int count;
+    if (snx_is_file(source) && snx_vita_key_named(snx_path_leaf(source)) < 0) {
+        count = snx_vita_keys_install_file(source, app->keysv_path, why, sizeof why);
+        vita_keys_said(app, count, why, source);
+        return;
+    }
+    folder = snx_is_dir(source) ? snx_strdup(source) : snx_dirname(source);
+    count = folder ? snx_vita_keys_install(folder, app->keysv_path, why, sizeof why) : -1;
+    if (!folder) snprintf(why, sizeof why, "%s's folder cannot be named", source);
+    char* file = folder && count >= 0 ? snx_path_join(folder, SNX_VITA_KEYS_FILE) : NULL;
+    if (file && snx_is_file(file)) { /* its vita.keys too */
+        int more = snx_vita_keys_install_file(file, app->keysv_path, why, sizeof why);
+        count = more < 0 ? -1 : count + more;
+    }
+    vita_keys_said(app, count, why, folder ? folder : source);
+    free(file);
+    free(folder);
 }
 static void install_keys(App* app, const char* source) {
     const char* name = source ? snx_path_leaf(source) : NULL;
     char* data = NULL;
     size_t size = 0;
     int console = -1;
-    /* the Vita's are a folder of files: the folder dropped, or one of its key files (any file on the Vita row) */
-    if (source && (snx_is_dir(source) || snx_vita_key_named(name) >= 0 ||
+    /* the Vita's: its vita.keys by its name (any file on the Vita row), a folder dropped, or a key file of one */
+    if (source && (!strcmp(name, SNX_VITA_KEYS_FILE) || snx_is_dir(source) || snx_vita_key_named(name) >= 0 ||
                    (app->keys_of == GUI_KEYS_VITA && snx_is_file(source)))) {
-        char* folder = snx_is_dir(source) ? snx_strdup(source) : snx_dirname(source);
-        vita_keys_write(app, folder);
-        free(folder);
+        vita_keys_install(app, source);
         return;
     }
     /* the name says which console's keys: prod.keys the Switch's, aes_keys.txt the 3DS's, each installed where its
@@ -22633,8 +22753,8 @@ static void install_keys_document(App* app, const char* uri) {
     char* data = app->keys_of == GUI_KEYS_VITA ? NULL : keys_read(uri, &size);
     if (app->keys_of == GUI_KEYS_VITA) { /* a document has no name nor folder, which say the key and its others */
         snprintf(app->message, sizeof app->message,
-                 snx_tr("The Vita's keys are a folder of files, each named for its key: pick one of them from the "
-                        "device's storage, and the folder's keys are installed (%s)."),
+                 snx_tr("The Vita's vita.keys has to be picked from the device's storage, where its name and folder "
+                        "show (%s)."),
                  uri);
         keys_result(app, false);
     } else if (app->keys_of == GUI_KEYS_NDS && data)
@@ -23819,6 +23939,7 @@ static void abort_run(App* app) {
 }
 static void pack_answer(App* app, bool taken, bool xci);
 static void updates_answer(App* app, int taken);
+static void decrypt_answer(App* app, bool taken);
 /* a key on the question shown (gui_confirm_key); answered, what it asked about: the menu closed, a run aborted or
    started, a folder added or used as the choice says */
 static void ask_key(App* app, GuiKey key) {
@@ -23840,6 +23961,8 @@ static void ask_key(App* app, GuiKey key) {
         room_answer(app, second);
     else if (ask == GUI_ASK_MADE)
         made_answer(app, key == GUI_SELECT, second);
+    else if (ask == GUI_ASK_DECRYPT)
+        decrypt_answer(app, second);
     else if (ask == GUI_ASK_ADDONS)
         addons_answer(app, key == GUI_SELECT, second);
     else if (ask == GUI_ASK_CLEAN_OWN)
@@ -24682,6 +24805,10 @@ static void missing_check(App* app, char* program, char* path) {
             goto done;
         case TITLE_SAME: break;
     }
+    if (kind == MISSING_VITA && vita_encrypted(path)) { /* decrypted into the game's folder, once the player says so */
+        decrypt_ask(app, path, folder, program);
+        goto done;
+    }
     if (kind == MISSING_VITA) {
         if (vita_relink(folder, name, path, why, sizeof why)) {
             snprintf(app->message, sizeof app->message, snx_tr("Not kept: %s"), why);
@@ -24699,14 +24826,7 @@ static void missing_check(App* app, char* program, char* path) {
         }
     }
     if (app->menu.view == GUI_LOAD_GAMES) games_relist(app);
-    char pfs[SNX_PATH_SIZE];
-    if (kind == MISSING_VITA && !snx_path_format(pfs, sizeof pfs, "%s/sce_pfs/files.db", path) && snx_is_file(pfs))
-        /* an encrypted dump: scarletnx-vita decrypts it into the game's folder before the game plays */
-        snprintf(app->message, sizeof app->message,
-                 snx_tr("%s plays from %s now: it is encrypted, and its next run decrypts it into the game's folder."),
-                 shown ? shown : name, path);
-    else
-        snprintf(app->message, sizeof app->message, snx_tr("%s plays from %s now."), shown ? shown : name, path);
+    snprintf(app->message, sizeof app->message, snx_tr("%s plays from %s now."), shown ? shown : name, path);
 done:
     free(ini);
     free(was);
@@ -25733,6 +25853,9 @@ static void forget(App* app) {
     free(app->keys_path);
     free(app->keys3_path);
     free(app->keysv_path);
+    free(app->decrypt_dump);
+    free(app->decrypt_folder);
+    free(app->decrypt_program);
     free(app->bios7_path);
     free(app->recent_file);
     snx_free_strings(app->removed, app->removed_count);
