@@ -30,6 +30,9 @@ typedef struct {
     unsigned slot;                 /* the recording's, or the next one's */
     bool recording, uploading;     /* uploading: the recording's uploads are begun */
     uint64_t submitted, completed; /* the last serial submitted, the last one done */
+    /* VK_SUCCESS, or what the first submission the device refused returned (VK_ERROR_DEVICE_LOST): nothing it was
+       given ran, and the frontend stops on it, as nothing more will */
+    VkResult lost;
     /* the frontend's, each optional: a recording begun in slot, a recording about to end (a rendering pass closed),
        a submission done and its slot free again */
     void (*begin)(unsigned slot);
