@@ -240,7 +240,7 @@ static void quiet(const char* root, const char* name) {
     CHECK(lines == LINES, "%s: %d of the %d lines in the log", name, lines, LINES);
     CHECK(log && count(log, "] Exit.\n") == 1, "%s: the log lacks the run's Exit.", name);
     if (!strcmp(name, "refused"))
-        CHECK(log && count(log, "] log: the terminal refused the run's output (") == 1,
+        CHECK(log && count(log, "] log: the terminal refused the run's output (") >= 1, /* each pipe's says it */
               "%s: the log does not say the terminal refused", name);
     free(log), free(dir);
 }
