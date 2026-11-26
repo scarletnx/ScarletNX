@@ -9,7 +9,6 @@ the how and why.
                              --mode WORDS --out DIR [--baseline FILE | --advisory REPORT | --advisory-baseline FILE]
                              [--summary FILE] [--timeout SECONDS] [--launches N] [--jobs N]
     scripts/edenprobe.py baseline BASELINE... -o FILE
-    git diff --name-only BASE HEAD | scripts/edenprobe.py runs
 
 run recompiles the NRO into DIR/work, writes WORDS to its card's mode file, sdmc:/amberlith/mode (sdmc:/edenprobe/mode
 for a build from before 1.0.0, whose NRO does not carry "sdmc:/amberlith"), with machine=scarletnx@<the runtime's
@@ -32,14 +31,6 @@ fails: its cases REPORT lacks that do not pass, REPORT's passing cases that it d
 the run are warnings (GitHub's ::warning:: lines). --advisory-baseline FILE takes the pinned release's baseline in place
 of its report: its cases are the ones the release ends as it says on this machine, so the probe's main runs without
 the release's run before it.
-
-runs reads the files a pull request changed, a path a line, and prints which of the Build's probe runs they call for,
-nro=true|false and apk=true|false (for $GITHUB_OUTPUT), each with the files that call for it on stderr. The NRO's run
-loads the Switch runtime and what it shares (src/nx/, src/common/) and is held to tests/edenprobe/linux-x86_64.txt; the
-APK's loads the Android layer (src/android/), the GNU ABI kernel its native code runs on (src/gnuabi/), the GLES shader
-compiler (src/glslc/) and the GPU code it shares (src/common/gpu/), held to tests/edenprobe/android-x86_64.txt; both
-load the program's main (src/multicall/), this script, the workflow (.github/workflows/build.yml) and the build's own
-files (CMakeLists.txt, CMakePresets.json, cpmfile.json, cmake/).
 
 baseline writes the cases that end the same way in every BASELINE given (baseline.txt of runs of one build and one
 mode): a case that passes only now and then stays out.
@@ -71,15 +62,6 @@ APPS = [
     Path('scarletnx', 'android', 'data', f'org.scarletnx.{card}', 'external', 'files', card)
     for card in (CARD, OLD_CARD)
 ]
-# the paths each probe run of the Build loads (runs, above), and the ones both do
-RUN_PATHS = {
-    'nro': r'^(src/(nx|common)/|tests/edenprobe/linux-x86_64\.txt$)',
-    'apk': r'^(src/(android|gnuabi|glslc)/|src/common/gpu/|tests/edenprobe/android-x86_64\.txt$)',
-}
-BOTH_PATHS = (
-    r'^(\.github/workflows/build\.yml$|scripts/edenprobe\.py$|CMakeLists\.txt$|CMakePresets\.json$|cpmfile\.json$|'
-    r'cmake/|src/multicall/)'
-)
 # the longest folder the probe takes for its own (RUNNER_ROOT_MAX of its source/runner.h): the APK refuses a longer one
 ROOT_MAX = 160
 
@@ -528,25 +510,6 @@ def baseline(args):
     return 0
 
 
-def which_runs(changed):
-    """nro=... and apk=... for the files changed, the files that call for each said on stderr"""
-    files = [line.strip() for line in changed if line.strip()]
-    for run, paths in RUN_PATHS.items():
-        hits = [path for path in files if re.search(paths, path) or re.search(BOTH_PATHS, path)]
-        print(f'{run}={"true" if hits else "false"}')
-        if hits:
-            shown = ', '.join(hits[:10]) + (f' and {len(hits) - 10} more' if len(hits) > 10 else '')
-            print(
-                f'the {run.upper()} runs, for {len(hits)} of the {len(files)} files changed: {shown}', file=sys.stderr
-            )
-        else:
-            print(
-                f'the {run.upper()} does not run: none of the {len(files)} files changed is one it loads',
-                file=sys.stderr,
-            )
-    return 0
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest='command', required=True)
@@ -580,11 +543,8 @@ def main():
     writes = commands.add_parser('baseline', help='the cases that end the same way in every baseline.txt given')
     writes.add_argument('baselines', type=Path, nargs='+')
     writes.add_argument('-o', '--output', type=Path, required=True)
-    commands.add_parser('runs', help="the probe runs a pull request's changed files, on stdin, call for")
     args = parser.parse_args()
     try:
-        if args.command == 'runs':
-            return which_runs(sys.stdin)
         return run(args) if args.command == 'run' else baseline(args)
     except Failed as error:
         sys.exit(str(error))
