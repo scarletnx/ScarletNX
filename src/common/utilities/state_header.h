@@ -36,6 +36,15 @@ int snx_state_header_read(const uint8_t b[SNX_STATE_HEADER], SnxStateHeader* h, 
 /* The header of the state at path, and when thumb isn't NULL its thumbnail in a new allocation the caller frees (NULL
    for none): 0, or -1 with the reason in why */
 int snx_state_peek(const char* path, SnxStateHeader* h, uint8_t** thumb, char* why, size_t whysize);
+/* a console's frame (w x h RGBA8, pitch bytes a row) as a state's thumbnail, SNX_STATE_THUMB_W x SNX_STATE_THUMB_H
+   RGBA8 into thumb: the frame whole at the largest size that fits, nearest texel, centred on black */
+void snx_state_thumb(const uint8_t* rgba, int w, int h, size_t pitch, uint8_t* thumb);
+/* a slot's name in its file's: its number, or "auto" for slot 0 (the one a load saves the game to first) */
+void snx_state_slot_name(char* out, size_t size, int slot);
+/* a slot as a sentence names it, at its start (Slot 2) or within it (slot 2) */
+void snx_state_slot_label(char* out, size_t size, int slot, int start);
+/* when a state was made and the game's play time then, as the menu and F9 say it: 2026-11-25 21:30  1:02:03 */
+void snx_state_slot_when(char* out, size_t size, const SnxStateHeader* h);
 /* whether a state can be loaded into the game title whose program is stamped stamp (its .abi file, "" for none) by a
    runtime of this SNX_ABI: 0, or -1 with the reason */
 int snx_state_fits(const SnxStateHeader* h, uint64_t title, const char* stamp, char* why, size_t whysize);

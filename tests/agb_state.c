@@ -21,6 +21,8 @@
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
 #include "common/utilities/state_header.h"
+#include "common/utilities/hotkeys.h"
+#include "common/utilities/vpad_sdl.h"
 #include "nx/runtime/state_file.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -369,6 +371,45 @@ static int refused(Machine* m, const char* dir, const char* path, const char* co
     return 0;
 }
 
+/* the window's last line about the save states (vpad_sdl.c's snx_vpad_window_states) */
+static char g_said[320];
+static void said(const char* line) { snprintf(g_said, sizeof g_said, "%s", line); }
+/* the GBA's pair as the runner's loop hands it to the window */
+static int pair_save(void* game, const char* path, const uint8_t* thumb, char* why, size_t whysize) {
+    Machine* m = (Machine*)game;
+    return snx_agb_state_save(&m->board, &m->cpu, path, thumb, why, whysize);
+}
+static int pair_load(void* game, const char* path, char* why, size_t whysize) {
+    Machine* m = (Machine*)game;
+    return snx_agb_state_load(&m->board, &m->cpu, path, why, whysize);
+}
+/* The window's keys on them, as a Switch game's F7, F8 and F9: the slot F9 picks, a save to it and over it, an empty
+   one said so, a load with the game first in the auto slot; each said as a Switch game's */
+static int keys(Machine* m, const char* dir) {
+    char* prefix = snx_format("%s/", dir);
+    SnxVpadStates states = {prefix, "a game", m, pair_save, pair_load};
+    char *two = snx_format("%s/states/a game.2.snxstate", dir),
+         *back = snx_format("%s/states/a game.auto.snxstate", dir);
+    CHECK(prefix && two && back);
+    snx_vpad_window_open(NULL, NULL, said, NULL);
+    snx_vpad_window_states(HOTKEY_NEXT_SLOT, &states, NULL);
+    CHECK(!strcmp(g_said, "Slot 2: empty"));
+    snx_vpad_window_states(HOTKEY_SAVE_STATE, &states, NULL);
+    CHECK(!strcmp(g_said, "Saved to slot 2") && snx_is_file(two));
+    snx_vpad_window_states(HOTKEY_SAVE_STATE, &states, NULL);
+    CHECK(!strcmp(g_said, "Saved over slot 2"));
+    snx_vpad_window_states(HOTKEY_NEXT_SLOT, &states, NULL);
+    snx_vpad_window_states(HOTKEY_LOAD_STATE, &states, NULL);
+    CHECK(!strcmp(g_said, "Slot 3 is empty") && !snx_is_file(back));
+    for (int i = 0; i < 9; ++i) snx_vpad_window_states(HOTKEY_NEXT_SLOT, &states, NULL); /* 10 slots: round to 2 */
+    CHECK(!strncmp(g_said, "Slot 2: 20", 10));
+    snx_vpad_window_states(HOTKEY_LOAD_STATE, &states, NULL);
+    CHECK(!strcmp(g_said, "Loaded slot 2") && snx_is_file(back));
+    snx_vpad_window_close();
+    remove(two), remove(back);
+    free(two), free(back), free(prefix);
+    return 0;
+}
 int main(int argc, char** argv) {
     const char* dir = argc > 1 ? argv[1] : ".";
     char why[512] = {0}, *base = snx_format("%s/agb_state.code", dir),
@@ -472,6 +513,7 @@ int main(int argc, char** argv) {
         CHECK(!copy_changed(saved, changed, 0, 0, (size_t)table + 20));
         if (refused(&n, dir, changed, cut)) return 1;
     }
+    if (keys(&m, dir)) return 1;
     machine_close(&n);
     machine_close(&m);
     output_free(&ref);

@@ -56,6 +56,19 @@ SnxVpadEvent snx_vpad_window_event(const SDL_Event* e, int* action);
 /* the pause key's (hotkey_pause): the game held while it is on, which the window still shows and takes keys in. Each
    press said on say and show, as a Switch game's ("Pause: on") */
 bool snx_vpad_window_paused(void);
+/* A console's save states, as its window's keys ask for them: the game's folder with its separator (prefix) and its
+   name, whose states are states/<name>.<slot>.snxstate there as a Switch game's, and the console's pair that saves and
+   loads game (common/utilities/state_header.h's layout) */
+typedef struct {
+    const char *prefix, *name;
+    void* game;
+    int (*save)(void* game, const char* path, const uint8_t* thumb, char* why, size_t whysize);
+    int (*load)(void* game, const char* path, char* why, size_t whysize);
+} SnxVpadStates;
+/* the save states' key action (HOTKEY_SAVE_STATE, F7; HOTKEY_LOAD_STATE, F8; HOTKEY_NEXT_SLOT, F9) done on the game,
+   between two of its frames, as a Switch game's: the slot F9 picks, 1 to state_slots, saved (thumb its picture) or
+   loaded, the game saved to the auto slot first with state_auto_backup on; each said on say and show */
+void snx_vpad_window_states(int action, const SnxVpadStates* states, const uint8_t* thumb);
 /* the runtime's key action said on say and show to do nothing in this window, with why: "F3 (Screenshot) does nothing
    in a GBA game: why" */
 void snx_vpad_window_none(int action, const char* why);

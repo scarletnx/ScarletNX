@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 void snx_state_header_write(uint8_t b[SNX_STATE_HEADER], const SnxStateHeader* h, uint64_t table_off,
                             uint32_t sections) {
@@ -62,6 +63,45 @@ int snx_state_header_read(const uint8_t b[SNX_STATE_HEADER], SnxStateHeader* h, 
         return -1;
     }
     return 0;
+}
+void snx_state_thumb(const uint8_t* rgba, int w, int h, size_t pitch, uint8_t* thumb) {
+    const int tw = SNX_STATE_THUMB_W, th = SNX_STATE_THUMB_H;
+    int dw = w * th >= h * tw ? tw : w * th / h, dh = w * th >= h * tw ? h * tw / w : th;
+    int x0 = (tw - dw) / 2, y0 = (th - dh) / 2;
+    for (int y = 0; y < th; ++y)
+        for (int x = 0; x < tw; ++x) {
+            uint8_t* to = thumb + ((size_t)y * (size_t)tw + (size_t)x) * 4;
+            if (x < x0 || x >= x0 + dw || y < y0 || y >= y0 + dh) {
+                to[0] = to[1] = to[2] = 0, to[3] = 255;
+                continue;
+            }
+            const uint8_t* from = rgba + (size_t)((y - y0) * h / dh) * pitch + (size_t)((x - x0) * w / dw) * 4;
+            to[0] = from[0], to[1] = from[1], to[2] = from[2], to[3] = 255;
+        }
+}
+void snx_state_slot_name(char* out, size_t size, int slot) {
+    if (slot)
+        snprintf(out, size, "%d", slot);
+    else
+        snprintf(out, size, "auto");
+}
+void snx_state_slot_label(char* out, size_t size, int slot, int start) {
+    if (slot)
+        snprintf(out, size, "%s %d", start ? "Slot" : "slot", slot);
+    else
+        snprintf(out, size, "%s auto slot", start ? "The" : "the");
+}
+void snx_state_slot_when(char* out, size_t size, const SnxStateHeader* h) {
+    time_t t = (time_t)h->created;
+    struct tm tm;
+    uint64_t s = h->guest_ns / 1000000000u;
+#ifdef _WIN32
+    localtime_s(&tm, &t);
+#else
+    localtime_r(&t, &tm);
+#endif
+    snprintf(out, size, "%04d-%02d-%02d %02d:%02d  %llu:%02u:%02u", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+             tm.tm_hour, tm.tm_min, (unsigned long long)(s / 3600), (unsigned)(s / 60 % 60), (unsigned)(s % 60));
 }
 int snx_state_peek(const char* path, SnxStateHeader* h, uint8_t** thumb, char* why, size_t whysize) {
     FILE* f = snx_fopen(path, "rb");
