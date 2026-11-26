@@ -104,6 +104,13 @@ int main(void) {
     CHECK(snx_console_arg(SNX_SYSTEM_3DS, "--ctr-model=new", error, sizeof error) == 0);
     CHECK(snx_console_arg(SNX_SYSTEM_GBA, "game.gba", error, sizeof error) == 0);
     CHECK(snx_console_arg(SNX_SYSTEM_GBA, "--no-such-setting=1", error, sizeof error) == 0);
+    /* online: network on and airplane mode off, as the 3DS and the DS go by */
+    g_settings.network = 1, g_settings.airplane_mode = 0;
+    CHECK(snx_console_online());
+    g_settings.airplane_mode = 1;
+    CHECK(!snx_console_online());
+    g_settings.network = 0, g_settings.airplane_mode = 0;
+    CHECK(!snx_console_online());
     printf("console_settings: %d rows of the Switch's settings with their lines (%d of the consoles' own aside)\n",
            rows, owned);
     for (int c = 1; c < SNX_SYSTEMS; ++c)
