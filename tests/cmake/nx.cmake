@@ -603,7 +603,9 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     else()
         set(snx_astc_plat runtime/platform/plat_posix.c runtime/platform/plat_sdl.c)
     endif()
+    # support/fatal_kind.c: cmd.c's and astc.c's stops with a kind of error, through the test's own fatal
     add_executable(snx-test-astc-vulkan "${PROJECT_SOURCE_DIR}/tests/astc_vulkan.c" "${PROJECT_SOURCE_DIR}/tests/tracy_stubs.c"
+        "${PROJECT_SOURCE_DIR}/tests/support/fatal_kind.c"
         "${PROJECT_SOURCE_DIR}/tests/support/astc.c" gpu/vk/astc.c gpu/vk/bc7_cache.c
         gpu/vk/blocklinear.c gpu/texture/blocklinear.c gpu/vk/texconv.c "${PROJECT_SOURCE_DIR}/tests/support/etc2.c"
         "${PROJECT_SOURCE_DIR}/tests/support/bcn.c"
