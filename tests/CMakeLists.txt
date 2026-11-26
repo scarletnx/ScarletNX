@@ -4360,6 +4360,11 @@ add_executable(snx-test-recompiler-library recompiler_library.c)
 snx_test_target(snx-test-recompiler-library gnu23)
 target_link_libraries(snx-test-recompiler-library PRIVATE scarletnx-recompiler)
 add_test(NAME recompiler_library COMMAND snx-test-recompiler-library)
+# the order of its code units, white box: library.c with its parts' libraries
+add_executable(snx-test-recompiler-library-schedule recompiler_library_schedule.c)
+snx_test_target(snx-test-recompiler-library-schedule gnu23)
+target_link_libraries(snx-test-recompiler-library-schedule PRIVATE snx_recompiler_jit ${CMAKE_DL_LIBS})
+add_test(NAME recompiler_library_schedule COMMAND snx-test-recompiler-library-schedule)
 # the same run with an inaccessible page kept below every code arena (arena_guard_below.c, preloaded): a call that
 # reads the bytes before an arena's first function faults there in every run, where it faulted only in the runs whose
 # system had mapped nothing below the arena (the function sanitizer's check of an indirect call, SNX_TEST_SANITIZERS)

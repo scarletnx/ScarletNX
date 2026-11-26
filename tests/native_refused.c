@@ -8,8 +8,8 @@
    - with none (alone 1) the function is made, and the line says it raises an undefined instruction.
    On an x86-64 host the code made alone runs: the function that never reaches its word returns, the other calls the
    runtime's undef with the instruction's pc and word, whose text (snx_a64_word_text) names the op and the feature. And
-   through the library, with words LLVM has no code for (FP8's): the lines and their count, and the undefined
-   instruction where one runs */
+   through the library, whose code is the native back end's alone: each function made, the lines and their count, and
+   the undefined instruction where one runs */
 #include "common/cpu/aarch64/a64_decoder.h"
 #include "common/cpu/recompiler/arm64/arm64_codegen.h"
 #include "common/cpu/recompiler/la64/la64_codegen.h"
@@ -272,7 +272,7 @@ int main(void) {
                 check_run(&c, f, k_functions[f].word && k_functions[f].runs, of);
             }
         snx_code_loader_free(loader);
-        /* and through the library: words LLVM has no code for either, undefined where they run */
+        /* and through the library: its functions all the native back end's, the words undefined where they run */
         for (f = 0; f < REFUSED; ++f) {
             uint32_t w = f < 2 ? F1CVTL : FSCALE;
             size_t at = f * EACH + (k_functions[f].runs ? 0 : 4);
@@ -293,19 +293,22 @@ int main(void) {
         else {
             char last[128];
             check(g_test.count == REFUSED + 1, "a line each and their count", "the library");
-            snprintf(last, sizeof last, "%u of %u functions have an instruction it has no code for: LLVM made them",
+            snprintf(last, sizeof last,
+                     "%u of %u functions have an instruction it has no code for: each made, the instruction undefined "
+                     "where it runs",
                      REFUSED, FUNCTIONS);
             check(g_test.count && strstr(g_test.lines[g_test.count - 1], last) != NULL, "the count, at the end",
                   "the library");
             if (g_test.count) --g_test.count;
-            check_lines("the library", ": LLVM makes the function");
-            check(snx_recompiled_x64_functions(made) == 1, "LLVM makes the ones with one", "the library");
+            check_lines("the library", ": it raises an undefined instruction where it runs");
+            check(snx_recompiled_x64_functions(made) == FUNCTIONS, "the native back end makes every one",
+                  "the library");
             for (f = 0; f < FUNCTIONS; ++f) {
                 CPU c;
                 run_begin(&c, &rt, mem);
                 check(!snx_recompiled_bind(made, &c), "bound", "the library");
                 snx_recompiled_run(made, &c, g_hints[f], STOP);
-                check_run(&c, f, k_functions[f].word && k_functions[f].runs, "the library's LLVM code");
+                check_run(&c, f, k_functions[f].word && k_functions[f].runs, "the library's code");
             }
             snx_recompiled_free(made);
         }
