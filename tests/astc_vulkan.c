@@ -2638,3 +2638,5 @@ _Atomic int g_vk_share_on;
 void vk_shared_note(u32 which) { (void)which; }
 void vk_share_lock(void) {}
 void vk_share_unlock(void) {}
+/* the draw slot of this thread (render.c): this test sets up no draws on a worker */
+u32 vk_render_slot(void) { return 0; }

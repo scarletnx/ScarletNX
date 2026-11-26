@@ -445,7 +445,9 @@ void vk_surf_batch_end(void) {
    readers of a surface's layout ask vk_surf_layout. A surface in the view is never made over, loaded again or freed
    before the list's calls ran: vk_surf_before_reset puts the list into the ring first */
 #define SURF_VIEWS 256
-static _Thread_local struct {
+/* one for each draw slot (vk_render_slot), not thread-local: each thread's storage holds every thread-local of the
+   program, at most 16 KiB (the runtime_tls test), and only the threads that set up draws use the views */
+static struct {
     u32 n;
     struct {
         const Surf* s;
@@ -453,7 +455,8 @@ static _Thread_local struct {
         VkPipelineStageFlags2 stage;
         VkAccessFlags2 access;
     } v[SURF_VIEWS];
-} t_sv;
+} g_sv[VK_RC_SLOTS];
+#define t_sv (g_sv[vk_render_slot()])
 static int sv_find(const Surf* s) {
     for (u32 i = 0; i < t_sv.n; i++)
         if (t_sv.v[i].s == s) return (int)i;

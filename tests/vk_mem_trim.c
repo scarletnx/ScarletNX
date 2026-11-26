@@ -512,3 +512,5 @@ void vk_pool_map_swapped(const Surf* t) { (void)t; }
 /* the split's lists (draw_batches=2): this test records into no list */
 void vk_shared_note(u32 which) { (void)which; }
 void vk_rec_list_flush(void) {}
+/* the draw slot of this thread (render.c): this test sets up no draws on a worker */
+u32 vk_render_slot(void) { return 0; }
