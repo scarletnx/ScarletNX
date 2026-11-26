@@ -95,6 +95,44 @@ static int functions(SnxCodegen* cg, unsigned char* image, size_t size, uint64_t
     return snx_codegen_analyze(cg, &view, 1, hints, 2, 1, 0) || cg->function_count != 2;
 }
 
+/* an AOT module's unit as LLVM makes it: the functions after those they call, one in the --layout order's section, its IR
+   kept, another machine's triple asked for, and the runtime library */
+static void made_unit(SnxCodegen* cg) {
+    SnxNativeOptions aot = {.stale = 1};
+    const size_t rank[2] = {SIZE_MAX, 0};
+#if defined(_WIN32) || defined(__APPLE__)
+    const int elf = 0; /* --layout's sections are an ELF module's */
+#else
+    const int elf = 1;
+#endif
+    SnxFallbackUnit unit = {.keep_ir = ".", .rank = elf ? rank : NULL, .callees_first = 1, .stats = (char*)rank};
+    unsigned char* object = NULL;
+    size_t size = 0;
+    char error[512] = "", text[64] = "";
+    CHECK(!snx_fallback_object(cg, 0, 2, &aot, NULL, &unit, "aot_unit", '0', &object, &size, error, sizeof error) &&
+              object && holds(object, size, "F_10000") && holds(object, size, "F_10040"),
+          "a unit of both functions: %s", error);
+    CHECK(!elf || (object && holds(object, size, ".text.snx_hot.0")),
+          "the second function is not in the order's section");
+    CHECK(!unit.stats, "IR counts nobody asked for (ir_stats is off)");
+    free(object);
+    FILE* f = fopen("aot_unit.ll", "r");
+    size_t n = f ? fread(text, 1, sizeof text - 1, f) : 0;
+    if (f) fclose(f);
+    CHECK(n && strstr(text, "aot_unit"), "the unit's IR is not kept in aot_unit.ll: %s", text);
+    remove("aot_unit.ll");
+    /* another machine's module: its triple is the target asked of LLVM, which has none of this name */
+    SnxFallbackUnit other = {.triple = "nosuchmachine-unknown-none"};
+    object = NULL;
+    CHECK(snx_fallback_object(cg, 0, 2, &aot, NULL, &other, "other", '0', &object, &size, error, sizeof error) < 0 &&
+              !object && strstr(error, "LLVM target nosuchmachine-unknown-none"),
+          "a module for another machine's triple: %s", error);
+    object = NULL;
+    CHECK(!snx_fallback_rtlib('2', &object, &size, error, sizeof error) && object && holds(object, size, "roundf"),
+          "the runtime library at -O2: %s", error);
+    free(object);
+}
+
 /* the A64 functions by LLVM: a JIT unit run, an AOT one's half */
 static void made_functions(SnxCodegen* cg, const uint64_t hints[2]) {
     SnxNativeOptions jit = {.jit = 1, .table_name = "unit_table"}, aot = {0};
@@ -102,7 +140,7 @@ static void made_functions(SnxCodegen* cg, const uint64_t hints[2]) {
     unsigned char* object = NULL;
     size_t size = 0;
     char error[512] = "";
-    CHECK(!snx_fallback_object(cg, 0, 2, &jit, NULL, "unit", '0', &object, &size, error, sizeof error) && object,
+    CHECK(!snx_fallback_object(cg, 0, 2, &jit, NULL, NULL, "unit", '0', &object, &size, error, sizeof error) && object,
           "a JIT unit's object: %s", error);
     SnxCodeLoader* loader = snx_code_loader_new(0, error, sizeof error);
     SnxLinkInput rtlib = {
@@ -129,19 +167,20 @@ static void made_functions(SnxCodegen* cg, const uint64_t hints[2]) {
     snx_code_loader_free(loader);
     free(object);
     object = NULL;
-    CHECK(!snx_fallback_object(cg, 0, 2, &aot, half, "aot", '0', &object, &size, error, sizeof error) && object,
+    CHECK(!snx_fallback_object(cg, 0, 2, &aot, half, NULL, "aot", '0', &object, &size, error, sizeof error) && object,
           "the function the native back end left: %s", error);
     if (object)
         CHECK(holds(object, size, "F_10040") && !holds(object, size, "F_10000"), "the object is of the one left alone");
     free(object);
     object = NULL;
     size = 1;
-    CHECK(!snx_fallback_object(cg, 0, 2, &aot, whole, "aot", '0', &object, &size, error, sizeof error) && !object &&
-              !size,
+    CHECK(!snx_fallback_object(cg, 0, 2, &aot, whole, NULL, "aot", '0', &object, &size, error, sizeof error) &&
+              !object && !size,
           "a unit made whole leaves nothing to make: %s", error);
-    CHECK(snx_fallback_object(cg, 0, 2, &jit, half, "unit", '0', &object, &size, error, sizeof error) < 0 && !object &&
-              strstr(error, "a JIT unit's functions are one object's, and 1 of codegen's 2 are asked for"),
+    CHECK(snx_fallback_object(cg, 0, 2, &jit, half, NULL, "unit", '0', &object, &size, error, sizeof error) < 0 &&
+              !object && strstr(error, "a JIT unit's functions are one object's, and 1 of codegen's 2 are asked for"),
           "a JIT unit half made: %s", error);
+    made_unit(cg);
 }
 /* AArch32 and Thumb blocks by LLVM, one object */
 static void made_blocks(void) {
@@ -373,8 +412,8 @@ static void refused_code(SnxCodegen* cg) {
     for (size_t i = 0; i < sizeof k_asked / sizeof *k_asked; ++i) {
         object = &dummy;
         size = 1;
-        CHECK(snx_fallback_object(cg, 0, 2, &jit, k_asked[i].made, "unit", '0', &object, &size, error, sizeof error) <
-                      0 &&
+        CHECK(snx_fallback_object(cg, 0, 2, &jit, k_asked[i].made, NULL, "unit", '0', &object, &size, error,
+                                  sizeof error) < 0 &&
                   !object && !size,
               "functions left to none are made");
         for (size_t k = 0; k < 6 && k_asked[i].want[k]; ++k)
@@ -383,8 +422,19 @@ static void refused_code(SnxCodegen* cg) {
               error);
     }
     object = &dummy;
-    CHECK(!snx_fallback_object(cg, 0, 2, &jit, whole, "unit", '0', &object, &size, error, sizeof error) && !object,
+    CHECK(!snx_fallback_object(cg, 0, 2, &jit, whole, NULL, "unit", '0', &object, &size, error, sizeof error) &&
+              !object,
           "a unit made whole is refused: %s", error);
+    SnxFallbackUnit unit = {.keep_ir = ".", .stats = (char*)&dummy};
+    object = &dummy;
+    CHECK(snx_fallback_object(cg, 0, 2, &jit, NULL, &unit, "kept", '0', &object, &size, error, sizeof error) < 0 &&
+              !object && !unit.stats && strstr(error, "kept: the function at 0x10000"),
+          "a unit with its IR kept: %s", error);
+    object = &dummy;
+    CHECK(snx_fallback_rtlib('2', &object, &size, error, sizeof error) < 0 && !object && !size &&
+              strstr(error, "the runtime library at -O2") && strstr(error, "SNX_WITH_LLVM=OFF"),
+          "the runtime library: %s", error);
+    CHECK(!snx_fallback_dump_pc() && !snx_fallback_stats(), "none asks for a function's IR or a unit's counts");
     SnxFallbackArm* f = snx_fallback_arm_new("a32exec", '0', 1);
     if (!f) {
         CHECK(0, "out of memory");

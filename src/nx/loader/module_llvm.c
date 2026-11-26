@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "nx/loader/module_ir.h"
 #include "nx/loader/module_variants.h"
+#include "common/cpu/recompiler/fallback.h"
 #include "common/cpu/recompiler/codegen.h"
 #include "common/cpu/recompiler/auto_workers.h"
 #include "common/cpu/recompiler/compile_thread.h"
@@ -33,9 +34,9 @@ typedef struct {
     size_t first, last; /* functions */
     unsigned char* object;
     size_t size;
-    SnxIrStats stats;
-    /* the x86-64 back end's object of the functions it made (x64_codegen.h); LLVM's (object) has the rest, NULL when
-       there is none */
+    char* stats; /* the fallback's IR counts of the unit (ir_stats), NULL for none */
+    /* the x86-64 back end's object of the functions it made (x64_codegen.h); the fallback's (object) has the rest, NULL
+       when there is none */
     unsigned char* x64;
     size_t x64_size, x64_made;
     size_t x64_refused; /* of the others, those with an instruction it has no code for */
@@ -156,63 +157,8 @@ static SnxIr* new_ir(const SnxLlvmBuild* build, const char* name, char* error, s
                          : snx_ir_new(name, build->opt, error, error_size);
 }
 
-/* The unit's functions [first, last) in an order that emits each one after the functions of the unit it calls
-   directly (BL) or jumps to (B): a post-order of those calls, so ir_promote.c has a callee's summary when it promotes
-   the calls of it. In a cycle of calls the first one reached goes before the callers it summarizes, which then call
-   it as they call any other function. NULL out of memory (the address order then) */
-static size_t* callees_first(SnxCodegen* codegen, size_t first, size_t last) {
-    size_t n = last - first, top = 0, done = 0;
-    size_t *order = (size_t*)malloc((n ? n : 1) * sizeof(size_t)),
-           *stack = (size_t*)malloc((n ? n : 1) * sizeof(size_t));
-    size_t* next = (size_t*)calloc(n ? n : 1, sizeof(size_t));   /* the instruction each function's walk goes on from */
-    unsigned char* state = (unsigned char*)calloc(n ? n : 1, 1); /* 1 on the walk, 2 placed */
-    if (!order || !stack || !next || !state) {
-        free(order);
-        order = NULL;
-        goto end;
-    }
-    for (size_t root = 0; root < n; ++root) {
-        if (state[root]) continue;
-        state[root] = 1;
-        stack[top++] = root;
-        while (top) {
-            size_t f = stack[top - 1];
-            const SnxFunction* fn = &codegen->functions[first + f];
-            size_t callee = n;
-            while (next[f] < fn->count && callee == n) {
-                SnxU64 address = snx_function_address(fn, next[f]++), target;
-                SnxU32 word = 0;
-                SnxA64Insn insn;
-                const SnxFunction* to;
-                if (!snx_codegen_word(codegen, address, &word)) continue;
-                snx_a64_decode_word(word, codegen->features, &insn);
-                if (insn.flow != SNX_A64_FLOW_BL && insn.flow != SNX_A64_FLOW_B) continue;
-                target = snx_a64_branch_target(&insn, address);
-                to = snx_codegen_function(codegen, target);
-                if (!to || to->start != target) continue;
-                if ((size_t)(to - codegen->functions) < first || (size_t)(to - codegen->functions) >= last) continue;
-                if (!state[(size_t)(to - codegen->functions) - first])
-                    callee = (size_t)(to - codegen->functions) - first;
-            }
-            if (callee < n) {
-                state[callee] = 1;
-                stack[top++] = callee;
-            } else {
-                state[f] = 2;
-                order[done++] = first + f;
-                --top;
-            }
-        }
-    }
-end:
-    free(stack);
-    free(next);
-    free(state);
-    return order;
-}
-
-/* SnxIr.bound: the function the BR at address reaches once it is bound, 0 for none, and whether its slot may hold
-   another */
+/* SnxNativeOptions.bound: the function the BR at address reaches once it is bound, 0 for none, and whether its slot
+   may hold another */
 static SnxU64 bound_at(void* user, SnxU64 address, int* guard) {
     const Queue* q = (const Queue*)user;
     size_t lo = 0, hi = q->bound_count;
@@ -227,7 +173,7 @@ static SnxU64 bound_at(void* user, SnxU64 address, int* guard) {
     *guard = q->bound[lo].guard;
     return q->bound[lo].target;
 }
-/* SnxIr.direct: nonzero for a target the module imports, which its snx_aot_<target> calls */
+/* SnxNativeOptions.direct: nonzero for a target the module imports, which its snx_aot_<target> calls */
 static SnxU64 imported(void* user, SnxU64 target) {
     const Queue* q = (const Queue*)user;
     size_t lo = 0, hi = q->import_count;
@@ -241,30 +187,29 @@ static SnxU64 imported(void* user, SnxU64 target) {
     return lo < q->import_count && q->imports[lo] == target;
 }
 
-/* one chunk of functions, as module.c's code_NNN.c. A function of the --layout order gets its own code section, which
-   the linker places by its rank: the function's code is the same, only where it goes changes */
+/* one chunk of functions, as module.c's code_NNN.c: the native back end's where it makes them, the fallback's the rest.
+   A function of the --layout order gets its own code section, which the linker places by its rank: the function's
+   code is the same, only where it goes changes */
 static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) {
     Unit* u = &q->units[index];
     char name[32];
     size_t i;
-    SnxIr* ir;
     int rc;
-    size_t* order;
     unsigned char* made = NULL;
+    SnxNativeOptions options = {0};
     sprintf(name, "code_%03lu", (unsigned long)index);
+    options.stale = 1;
+    options.llvm_at = snx_fallback_dump_pc();
+    options.refused = &u->x64_refused;
+    if (q->bound_count) {
+        options.bound = bound_at;
+        options.bound_user = q;
+    }
+    if (q->import_count) {
+        options.direct = imported;
+        options.direct_user = q;
+    }
     if (q->x64) {
-        SnxNativeOptions options = {0};
-        options.stale = 1;
-        options.llvm_at = snx_ir_dump_pc();
-        options.refused = &u->x64_refused;
-        if (q->bound_count) {
-            options.bound = bound_at;
-            options.bound_user = q;
-        }
-        if (q->import_count) {
-            options.direct = imported;
-            options.direct_user = q;
-        }
         made = (unsigned char*)snx_alloc(u->last - u->first);
         rc = q->build->triple ? snx_native_target_object(q->build->triple, q->codegen, u->first, u->last, &options,
                                                          made, &u->x64, &u->x64_size, error, error_size)
@@ -280,39 +225,16 @@ static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) 
             return 0;
         }
     }
-    u->reused = 0; /* LLVM makes the rest of the unit */
-    ir = new_ir(q->build, name, error, error_size);
-    if (!ir) {
-        free(made);
-        return -1;
-    }
-    snx_ir_tune(ir, q->build->tuning);
-    snx_ir_stale_checks(ir);
-    if (q->bound_count) {
-        ir->bound = bound_at;
-        ir->bound_user = q;
-    }
-    if (q->import_count) {
-        ir->direct = imported;
-        ir->direct_user = q;
-    }
-    order = callees_first(q->codegen, u->first, u->last);
-    for (size_t k = u->first; k < u->last; ++k) {
-        i = order ? order[k - u->first] : k;
-        if (made && made[i - u->first]) continue;
-        snx_ir_emit(ir, q->codegen, &q->codegen->functions[i]);
-        if (q->rank && q->rank[i] != NO_RANK) {
-            char section[sizeof(SNX_LINK_HOT_TEXT) + 24];
-            sprintf(section, SNX_LINK_HOT_TEXT "%lu", (unsigned long)q->rank[i]);
-            LLVMSetSection(snx_ir_guest_function(ir, q->codegen->functions[i].start), section);
-        }
-    }
-    free(order);
+    u->reused = 0; /* the fallback makes the rest of the unit */
+    SnxFallbackUnit unit = {.triple = q->build->triple,
+                            .tuning = q->build->tuning,
+                            .keep_ir = q->build->keep_ir,
+                            .rank = q->rank,
+                            .callees_first = 1};
+    rc = snx_fallback_object(q->codegen, u->first, u->last, &options, made, &unit, name, q->build->opt, &u->object,
+                             &u->size, error, error_size);
+    u->stats = unit.stats;
     free(made);
-    u->stats = ir->stats;
-    rc = q->build->keep_ir && save_ir(ir, q->build->keep_ir, name, error, error_size);
-    if (!rc) rc = snx_ir_object(ir, q->build->opt, &u->object, &u->size, error, error_size);
-    snx_ir_free(ir);
     return rc;
 }
 
@@ -352,22 +274,7 @@ static void worker(Queue* q) {
             /* every unit: a line every few seconds or minutes, whichever the machine manages */
             sprintf(name, "code_%03lu", (unsigned long)i);
             snx_report_unit(q->done, q->count + 1, name, label, q->units[i].reused, seconds); /* + the descriptor */
-            const SnxIrStats* s = &q->units[i].stats;
-            if (s->enabled)
-                printf(
-                    "  IR stats %s: %llu functions (%llu promoted), %llu registers made locals (%llu left in the CPU "
-                    "structure), %llu calls (%llu FP, %llu vector, %llu guest, %llu indirect), %llu sync stores "
-                    "(%llu at calls, %llu on edges, %llu bytes), %llu reloads (%llu bytes), %llu lookups, "
-                    "%llu polls, %llu stale checks, %llu return checks\n",
-                    name, (unsigned long long)s->functions, (unsigned long long)s->promoted_functions,
-                    (unsigned long long)s->promoted_slots, (unsigned long long)s->memory_slots,
-                    (unsigned long long)s->call_sites, (unsigned long long)s->fp_calls,
-                    (unsigned long long)s->vector_calls, (unsigned long long)s->guest_calls,
-                    (unsigned long long)s->indirect_calls, (unsigned long long)s->sync_stores,
-                    (unsigned long long)s->call_stores, (unsigned long long)s->edge_stores,
-                    (unsigned long long)s->store_bytes, (unsigned long long)s->sync_reloads,
-                    (unsigned long long)s->reload_bytes, (unsigned long long)s->lookups, (unsigned long long)s->polls,
-                    (unsigned long long)s->stale_checks, (unsigned long long)s->return_checks);
+            if (q->units[i].stats) printf("  IR stats %s: %s\n", name, q->units[i].stats);
         }
         unlock(q);
         free(label);
@@ -902,12 +809,12 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     q.codegen = &codegen;
     q.build = build;
     /* the host's native back end for this host's module (mach/native.h), or the one that makes another machine's
-       objects (snx_native_target: iOS's), LLVM making what it can't: not where the IR is kept or counted (ir_stats),
-       nor with a --layout (each function's own hot section is LLVM's). With every call through the table
+       objects (snx_native_target: iOS's), the fallback making what it can't: not where the IR is kept or counted
+       (ir_stats), nor with a --layout (each function's own hot section is LLVM's). With every call through the table
        (hook_direct_calls) its calls go through CPU.disp too */
     const char* native = build->triple ? "arm64" : snx_native_name();
     q.x64 = (build->triple ? snx_native_target(build->triple) : snx_native_available()) && !build->keep_ir &&
-            !build->layout_count && !snx_ir_stats_on();
+            !build->layout_count && !snx_fallback_stats();
     /* the bound branches, and what they import: a target that is no function of this module's own. With every call
        through CPU.disp (--hook-direct-calls) none is bound */
     if (options->bound_count && !options->hook_direct_calls) {
@@ -1134,6 +1041,7 @@ done:
     for (i = 0; i < q.count; ++i) {
         free(q.units[i].object);
         free(q.units[i].x64);
+        free(q.units[i].stats);
     }
     free(q.units);
     free(q.rank);

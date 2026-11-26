@@ -511,8 +511,8 @@ static int emit_unit(SnxJitService* s, SnxCodegen* codegen, const char* table_na
             if (*object) return 0;
         }
     }
-    return snx_fallback_object(codegen, 0, codegen->function_count, &options, NULL, "jit", s->config.opt, object, size,
-                               error, error_size);
+    return snx_fallback_object(codegen, 0, codegen->function_count, &options, NULL, NULL, "jit", s->config.opt, object,
+                               size, error, error_size);
 }
 
 /* function i's code in a loaded unit's table */
