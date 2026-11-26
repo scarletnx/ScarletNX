@@ -33,8 +33,8 @@ const SnxVpadConsole snx_vpad_nds = {"DS", nds, sizeof nds / sizeof *nds, 1};
 static const SnxVpadControl vita[] = {
     {SNX_VPAD_L, "L", "L", {0.000f, 0.000f}, {0.160f, 0.670f}},
     {SNX_VPAD_R, "R", "R", {0.000f, 0.000f}, {0.840f, 0.670f}},
-    {SNX_VPAD_MINUS, "Select", "SE", {0.210f, 0.210f}, {0.330f, 0.670f}},
-    {SNX_VPAD_PLUS, "Start", "ST", {0.790f, 0.210f}, {0.670f, 0.670f}},
+    {SNX_VPAD_MINUS, "Select", "SE", {0.210f, 0.210f}, {0.360f, 0.670f}},
+    {SNX_VPAD_PLUS, "Start", "ST", {0.790f, 0.210f}, {0.640f, 0.670f}},
     {SNX_VPAD_DPAD, "D-pad", "", {0.000f, 0.000f}, {0.270f, 0.935f}},
     {SNX_VPAD_STICK_L, "Left stick", "", {0.000f, 0.000f}, {0.120f, 0.809f}},
     {SNX_VPAD_STICK_R, "Right stick", "", {0.000f, 0.000f}, {0.770f, 0.921f}},
