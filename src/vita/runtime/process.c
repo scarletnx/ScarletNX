@@ -327,7 +327,13 @@ VitaProcess* vita_process_new(const VitaImage* image, const char* folder, char* 
     p->app = p->folder ? snx_path_join(p->folder, "app") : NULL;
     p->ux0 = p->folder ? snx_path_join(p->folder, "ux0") : NULL;
     p->patch = p->folder ? snx_path_join(p->folder, "patch") : NULL;
-    p->user = (VitaRegion){VITA_USER_BASE, VITA_USER_END, VITA_USER_BASE};
+    /* the memory blocks go past the image's segments, a module's .bss that passes 16 MB among them */
+    uint32_t user = VITA_USER_BASE;
+    for (unsigned i = 0; i < image->segment_count; ++i) {
+        uint64_t end = (uint64_t)image->segment[i].address + image->segment[i].size;
+        if (end > user) user = (uint32_t)((end + 0xfffffu) & ~(uint64_t)0xfffffu);
+    }
+    p->user = (VitaRegion){user, VITA_USER_END, user};
     p->cdram = (VitaRegion){VITA_CDRAM_BASE, VITA_CDRAM_END, VITA_CDRAM_BASE};
     p->start_ns = plat_ns();
     p->unknown_logged = calloc(image->import_count ? image->import_count : 1, sizeof *p->unknown_logged);
