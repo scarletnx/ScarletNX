@@ -80,7 +80,7 @@ endforeach()
 # The driver: the offline compiler and the runner, and its command line (runtime/main.c's snx_ctr_main), which
 # scarletnx runs as scarletnx-3ds (src/multicall). SNX_SOURCE_DIR: its checkout, where an older version kept work/
 # (snx_checkout)
-add_library(snx_ctr_program STATIC runtime/main.c)
+add_library(snx_ctr_program STATIC runtime/main.c runtime/game_record.c)
 target_link_libraries(snx_ctr_program PUBLIC snx_ctr_board snx_ctr_loader)
 set_target_properties(snx_ctr_program PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
 target_compile_options(snx_ctr_program PRIVATE -Wall -Wextra -Werror=missing-prototypes)

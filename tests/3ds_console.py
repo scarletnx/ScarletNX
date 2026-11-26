@@ -78,21 +78,25 @@ def main():
         played(NEW)
         played(OLD, '--ctr-model=old', '--launcher-picks=1')
 
-        # its own pick, the last line's, over the launcher's and its record; under the command line's, auto there too
+        # its own pick, the last line's, said with both, over the launcher's and its record; under the command line's,
+        # auto there too
         ini.write_text(f'source={game}\nmodel=old\nsystem=3ds\n')
         pick('; its own\n[3DS]\nctr_model=old\nctr_model=new\n')
-        played(NEW, own=('a New', 'new'))
-        played(NEW, '--ctr-model=old', '--launcher-picks=1', own=('a New', 'new'))
+        twice = (
+            f'settings: {picks}: ctr_model is given twice, ctr_model=old on line 3 and ctr_model=new on line 4: the '
+            "last line's is taken"
+        )
+        played(NEW, own=('a New', 'new'), said=[twice])
+        played(NEW, '--ctr-model=old', '--launcher-picks=1', own=('a New', 'new'), said=[twice])
         played(OLD, '--model', 'old', '--ctr-model=new', '--launcher-picks=1')
         played(OLD, '--ctr-model=old')
         played(OLD, '--ctr-model=auto', '--launcher-picks=0')
 
-        # its picks' other keys said; auto there is no pick, nor a picks file without the key
+        # its picks' other keys named, never by their values, once a run; auto there is no pick, nor a picks file
+        # without the key
         ini.write_text(f'source={game}\nmodel=new\nsystem=3ds\n')
         pick('[3DS]\nctr_model=old\n[Other]\nunknown=1\n')
-        other = (
-            f"settings: unknown=1 in {picks} is no setting a 3DS game's picks take: it is kept there and does nothing"
-        )
+        other = f'settings: {picks}: this version does not read unknown, which stays as it is'
         played(OLD, '--ctr-model=new', '--launcher-picks=1', own=('an Old', 'old'), said=[other])
         pick('[3DS]\nctr_model=auto\n')
         played(NEW)
@@ -116,7 +120,7 @@ def main():
         picks.mkdir()
         text = run(f'--game={folder}', '--ctr-model=old', '--launcher-picks=1')
         assert OLD in text and re.search(
-            rf'^settings: {re.escape(str(picks))} could not be read \(.+\): ctr_model keeps old$', text, re.M
+            rf'^settings: {re.escape(str(picks))} cannot be read \(.+\): ctr_model keeps old$', text, re.M
         ), text
         picks.rmdir()
 
