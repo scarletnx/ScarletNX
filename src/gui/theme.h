@@ -123,12 +123,12 @@ int gui_theme_check(const GuiThemeKey* key, const char* value);
 void gui_theme_get(const void* object, const GuiThemeKey* key, char* out, size_t size);
 
 /* What a theme's file says beyond the theme, to be written back: its base and ErET's layout, ErET's places for the
-   ring, the boot word and the texture (written again with the theme's values), and the keys the GUI does not read,
-   as "[section]\nkey = value\n" lines kept for the programs that do */
+   ring, the boot word and the texture (written again with the theme's values), and the lines of the keys the GUI does
+   not read, byte for byte, kept for the programs that do (config_file.h) */
 typedef struct {
     char base[64], layout[16];
     int ring_side, loading_title, colors_texture;
-    char* others;
+    char *top, *others; /* the lines of the keys the GUI does not write, as they were: of no section, of a section */
 } GuiThemeFile;
 /* text's: a built-in's to start from it. False when out of memory */
 int gui_theme_file_read(GuiThemeFile* file, const char* text, size_t size);

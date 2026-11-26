@@ -1,12 +1,5 @@
 # What still differs from the rule of tests/config_files.h, "<file's id> <situation>" a line: the fix of each takes its
 # line out (config_files_* fail on a line whose situation holds), and the last of them takes this file's lines all out.
-theme.ini unknown-key
-theme.ini unknown-section
-theme.ini no-equals
-theme.ini repeated
-theme.ini unreadable
-theme.ini closed
-theme.ini write-fails
 last-run.ini unknown-key
 last-run.ini unknown-section
 last-run.ini no-equals
