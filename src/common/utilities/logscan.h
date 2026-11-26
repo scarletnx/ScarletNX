@@ -153,6 +153,9 @@ typedef struct SnxLogScan {
     struct SnxLogScan* run; /* the last run's scan while the game log after it is read, malloc'd; its texts stay in
                                the pool */
     unsigned long seen;     /* lines read */
+    /* the last frontend's line read since the run's last "Exit." (frontend_error), the stop it ended on unless the run
+       says "Exit." after it: a warning of the GBA's ("no sound") is said the same way and the run goes on */
+    unsigned frontend;
     /* A log of several starts of the launcher (gui/apple.m's day log): how many lines said one began, the last start
        that ran a game or failed while the one after it is read, malloc'd with a pool of its own, and how the starts
        before the one this summary is of ended, the last SNX_LOGSCAN_STARTS of them */
