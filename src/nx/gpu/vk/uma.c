@@ -337,10 +337,13 @@ static void untracked_count(void) {
 }
 /* the in-place writes of the draw or dispatch being set up, for each thread: two draws are set up at once in a
    split run (draw_batches=2) */
-static _Thread_local struct {
+/* one for each draw slot (vk_render_slot), not thread-local: each thread's storage holds every thread-local of the
+   program, at most 16 KiB (the runtime_tls test), and only the threads that set up draws use these */
+static struct {
     Out prep[UMA_PREP_N];
     u32 n;
-} t_uma_prep;
+} g_uma_prep[VK_RC_SLOTS];
+#define t_uma_prep (g_uma_prep[vk_render_slot()])
 /* this thread's: vk_uma_gpu_reads, the caller copies the in-place writes pending on the GPU */
 static _Thread_local struct {
     int gpu_reads;

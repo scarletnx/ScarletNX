@@ -204,7 +204,9 @@ static struct {
 } g_buffer;
 /* Each thread's lookup (parallel draw batches, docs/dev/parallel-draw-batches.md): what the lookup being made and the
    last one found, which the same thread reads after it, and the scratch of a patch */
-static _Thread_local struct {
+/* one for each draw slot (vk_render_slot), not thread-local: each thread's storage holds every thread-local of the
+   program, at most 16 KiB (the runtime_tls test), and only the threads that set up draws use the lookups' state */
+static struct {
     int chain_only; /* buf_get_ takes no fast path: fast_check asks the chain itself */
     /* the lookup being made, for the log's counts: its kind (LK_*, set by the entry points) and why the fast path did
        not bind it (NF_*, set by buf_get_). A window's own lookup keeps those of the storage binding that made it */
@@ -222,7 +224,8 @@ static _Thread_local struct {
     /* the map of a draw with nothing aliased, staged in the frame map_none_frame - 1 (0: never): draw_map_none */
     VkBuffer map_none;
     u64 map_none_off, map_none_frame;
-} t_lookup;
+} g_lookup[VK_RC_SLOTS];
+#define t_lookup (g_lookup[vk_render_slot()])
 /* why keep_new turned a writable binding away (temporary diagnosis of the writeback cost) */
 enum {
     KF_NONE,
