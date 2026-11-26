@@ -60,6 +60,8 @@
 #endif
 
 static int win64(const SnxX64Arm* c);
+/* the helpers that compute with the host's floating point (x64_codegen.h's): a block that calls one checks MXCSR */
+#define MG_HOST_FP_HELPER snx_x64_host_fp_helper
 #include "common/cpu/recompiler/mach/mach_arm.inc"
 
 /* ---- the x86-64 glue ---- */
@@ -209,8 +211,10 @@ static void mg_prologue(MG_ARM* c, SnxU32 pc, int* bad) {
     c->own = b->n;
     sgx_bytes(b, win64(c) ? "53 48 89 CB" : "53 48 89 FB"); /* push rbx; mov rbx, rdi (rcx) */
     frame(c, 0);
-    if (c->a.slots_max < 1) c->a.slots_max = 1; /* the frame's first slot, SNX_X64_MXCSR_ENTRY's */
-    sgx_bytes(b, SNX_X64_MXCSR_ENTRY);
+    if (c->fp_entry) { /* a block with floating point of the host's (mach_arm.inc's block) */
+        if (c->a.slots_max < 1) c->a.slots_max = 1; /* the frame's first slot, SNX_X64_MXCSR_ENTRY's */
+        sgx_bytes(b, SNX_X64_MXCSR_ENTRY);
+    }
 }
 /* where a check of the entry failed: ESI the block's address, EDX its first word (a Thumb block's halfword; Windows' EDX
    and R8D), and snx_x64_arm_entry_exit or snx_x64_thumb_entry (the object's own, which set the exit) */

@@ -12,15 +12,29 @@
 #include "common/cpu/recompiler/codegen.h"
 #include "common/cpu/recompiler/mach/native.h"
 #include <stddef.h>
+#include <string.h>
 
 typedef SnxNativeOptions SnxX64Options;
 
 /* The MXCSR the FP hot paths assume (tools/sailgen/x64_a64.h, mach_arm.inc's VFP): round to nearest, no FTZ or DAZ,
-   every exception masked. The thread's may be another, as what the runtime called before left it, so an A64
-   function's entry and an A32 block's write it where it drifted, as the LLVM functions do (cpu.h's snx_fp_env). The
-   frame's first slot holds it: nothing is in it before a region spills. stmxcsr [rsp]; and dword [rsp], -64 (the
+   every exception masked. The thread's may be another, as what the runtime called before left it, so the entry of an
+   A64 function or an A32 block with floating point of the host's (snx_x64_host_fp_helper) writes it where it drifted,
+   as the LLVM functions do (cpu.h's snx_fp_env). The frame's first slot holds it: nothing is in it before a region
+   spills. stmxcsr [rsp]; and dword [rsp], -64 (the
    sticky flags out); cmp dword [rsp], 0x1F80; je past the write; mov dword [rsp], 0x1F80; ldmxcsr [rsp] */
 #define SNX_X64_MXCSR_ENTRY "0F AE 1C 24 83 24 24 C0 81 3C 24 80 1F 00 00 74 0B C7 04 24 80 1F 00 00 0F AE 14 24"
+/* 1 for a helper whose arithmetic is the host's, so the MXCSR the code that calls it runs under: the A64 FP ones
+   (x64_helpers.c's snx_x64_fp_* and snx_x64_fp8_*, which try the host's arithmetic first, and are the cold path of
+   every SSE fast path), the estimates, the halves, BFDOT, and the A32 VFP's snx_arm_fp_x64. Code that calls none has
+   no floating point of the host's, and its entry no check (as ir.c's uses_host_fp keeps snx_fp_env out) */
+static inline int snx_x64_host_fp_helper(const char* sym) {
+    static const char* const exact[] = {"snx_x64_estimate", "snx_x64_half", "snx_x64_bfdot", "snx_arm_fp_x64"};
+    if (!sym) return 0;
+    if (!strncmp(sym, "snx_x64_fp", 10)) return 1;
+    for (size_t k = 0; k < sizeof exact / sizeof *exact; ++k)
+        if (!strcmp(sym, exact[k])) return 1;
+    return 0;
+}
 
 /* 1 where this host runs the x86-64 back end's code and its objects load (x86-64, with what its code needs) */
 int snx_x64_available(void);
