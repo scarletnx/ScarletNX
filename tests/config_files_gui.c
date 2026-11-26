@@ -32,13 +32,11 @@ static void said_since(void) {
 /* ---- settings.ini and a game's own picks ---- */
 static int settings_any(const char* dir, char* state, size_t size, const char* name, int game) {
     GuiSettings s = {0};
-    char *path = snx_path_join(dir, name), old[1024], unread[1024];
+    char *path = snx_path_join(dir, name), old[1024];
     const char* v;
     if (game ? gui_settings_read_game(&s, list) : gui_settings_read(&s, list)) return 1;
     gui_settings_mark(&s);
-    if (gui_settings_load(&s, path, old, sizeof old)) config_say("%s: %s", path, old);
-    if (game && gui_settings_unread(&s, path, unread, sizeof unread)) /* the note a game's picks open with */
-        config_say("%s holds what no setting takes, which the next change leaves out: %s", path, unread);
+    if (gui_settings_load(&s, path, old, sizeof old)) config_say("%s: %s", path, old); /* the log, the note */
     const char* docked = gui_settings_value(&s, "docked");
     v = gui_settings_value(&s, "language");
     snprintf(state, size, "language %s docked %s", v ? v : "-", docked ? docked : "-");
@@ -310,9 +308,9 @@ int main(void) {
              .repeated_first = "2",
              .repeated_last = "3",
              .repeated_as = "[Display]\nlanguage=3\n",
-             .bad = "[Display]\nlanguage=99\n",
-             .bad_given = "language=99",
-             .bad_kept = "Global now",
+             .bad = "[Display]\ndocked=7\nlanguage=3\n",
+             .bad_given = "docked=7",
+             .bad_kept = "docked=Global now",
              .load = picks_load,
              .save = picks_save,
              .staged = ".new"},

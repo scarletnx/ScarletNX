@@ -1,19 +1,5 @@
 # What still differs from the rule of tests/config_files.h, "<file's id> <situation>" a line: the fix of each takes its
 # line out (config_files_* fail on a line whose situation holds), and the last of them takes this file's lines all out.
-settings.ini unknown-key
-settings.ini unknown-section
-settings.ini no-equals
-settings.ini repeated
-settings.ini bad-value
-settings.ini unreadable
-settings.ini closed
-game.picks launcher unknown-key
-game.picks launcher unknown-section
-game.picks launcher no-equals
-game.picks launcher repeated
-game.picks launcher bad-value
-game.picks launcher unreadable
-game.picks launcher closed
 app.ini unknown-key
 app.ini unknown-section
 app.ini no-equals
