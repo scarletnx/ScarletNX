@@ -791,7 +791,10 @@ const void* gq_peek_call(GqFn fn, u64* bytes) {
 }
 /* The payloads of the calls of fn that follow the record the taker runs, while it runs that one, up to max: their
    count. The bytes stay until the taker passes them */
+extern u32 g_tdbg_peek_stop; /* TEMPDBG */
+u32 g_tdbg_peek_stop;
 u32 gq_peek_calls(GqFn fn, const void** args, u64* sizes, u32 max) {
+    g_tdbg_peek_stop = 1; /* TEMPDBG */
     u64 at = g_gq.next_at, head = atomic_load_explicit(&g_gq.head, memory_order_acquire);
     u32 n = 0;
     while (n < max && at != head) {
@@ -799,7 +802,20 @@ u32 gq_peek_calls(GqFn fn, const void** args, u64* sizes, u32 max) {
         if (r->kind != GQ_SKIP) {
             GqFn f;
             memcpy(&f, &r->gva, sizeof f);
-            if (r->kind != GQ_CALL || f != fn) break;
+            if (r->kind != GQ_CALL || f != fn) { /* TEMPDBG */
+                g_tdbg_peek_stop = 2;
+                static struct { GqFn f; u32 kind; u64 n; } top[16];
+                static u64 all;
+                u32 i = 0;
+                GqFn key = r->kind == GQ_CALL ? f : NULL;
+                while (i < 16 && top[i].n && !(top[i].f == key && top[i].kind == r->kind)) i++;
+                if (i < 16) { top[i].f = key; top[i].kind = r->kind; top[i].n++; }
+                if (!(++all % 1000000))
+                    for (u32 j = 0; j < 16 && top[j].n; j++)
+                        LOG("TEMPDBG peek stopped by kind %u fn +%#llx: %llu\n", top[j].kind,
+                            (unsigned long long)((uintptr_t)top[j].f - (uintptr_t)(void*)gq_peek_calls), (unsigned long long)top[j].n);
+                break;
+            }
             args[n] = r + 1;
             sizes[n++] = r->size;
         }

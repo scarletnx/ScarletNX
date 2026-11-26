@@ -435,6 +435,9 @@ void vk_rec_list_splice(VkRecList* l);
 /* the frame's and the uploads' command buffers that l's packets name (a split run's, at its start): the splice names
    the ring's current ones in their place where it submitted since */
 void vk_rec_list_names(VkRecList* l, VkCommandBuffer cb, VkCommandBuffer up);
+/* whether this thread's list takes cb's commands (the command buffers its packets name): a command for another one (the
+   compute queue's, made at once) is made at once */
+int vk_rec_list_names_cb(VkCommandBuffer cb);
 u64 vk_rec_list_bytes(const VkRecList* l);
 /* A call that chooses by the order of all earlier work (barriers, passes): from a thread with a list, it goes into the
    list and the renderer thread runs it at the splice, at its place; else it runs now. arg's size bytes are copied.

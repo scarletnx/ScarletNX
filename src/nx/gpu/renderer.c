@@ -404,12 +404,24 @@ u32 gpu_ds_batch(const void** recs, u32 max) {
     if (max > 64) max = 64;
     const u32 n = gq_peek_calls(ds_run, recs, sizes, max);
     u32 k = 0;
+    extern u32 g_tdbg_peek_stop; /* TEMPDBG */
+    static u64 why[8], peeks, got; /* TEMPDBG */
+    int w = n == max ? 0 : (int)g_tdbg_peek_stop;
     for (; k < n; k++) {
         DsRecord r;
         if (sizes[k] < sizeof r) break;
         memcpy(&r, recs[k], sizeof r);
-        if (r.kind != DR_DRAW || r.slot >= DS_COPIES || r.fresh || r.reload) break;
+        if (r.kind != DR_DRAW || r.slot >= DS_COPIES || r.fresh || r.reload) {
+            w = r.kind != DR_DRAW ? 3 : r.slot >= DS_COPIES ? 4 : r.fresh ? 5 : 6;
+            break;
+        }
     }
+    why[w]++; peeks++; got += k; /* TEMPDBG */
+    if (!(peeks % 200000))
+        LOG("TEMPDBG peeks %llu, draws a peek %.1f; stops: max %llu, queue end %llu, other record %llu, not a draw %llu, "
+            "copy slot %llu, fresh %llu, reload %llu\n", (unsigned long long)peeks, (double)got / (double)peeks,
+            (unsigned long long)why[0], (unsigned long long)why[1], (unsigned long long)why[2], (unsigned long long)why[3],
+            (unsigned long long)why[4], (unsigned long long)why[5], (unsigned long long)why[6]);
     g_ds_batch_synced = 0;
     return k;
 }

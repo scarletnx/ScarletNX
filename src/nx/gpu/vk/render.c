@@ -1575,7 +1575,7 @@ static struct {
     u8 slot[2][DS_TARGETS_MAX];
     u32 sets, parity, wmask;
     VkSh* fs; /* the save draw's fragment program */
-} g_predraw;
+} g_predraw[RC_SLOTS]; /* each draw slot's (vk_render_slot): a draw's, and two are set up at once in a split */
 u64 g_vk_predraws, g_vk_predraw_refused;
 static alignas(64) typeof(g_vk_predraws) w_g_vk_predraws;
 static alignas(64) typeof(g_vk_predraw_refused) w_g_vk_predraw_refused;
@@ -1605,22 +1605,22 @@ void vk_predraw_report(void) {
             (unsigned long long)g_predraw_stats.target_copied, (unsigned long long)g_predraw_stats.save_copied);
 }
 static void predraw_probe(u32 i, const TexRes* x, Surf* t) {
-    if (!g_predraw.probe || i >= 64) return;
-    g_predraw.in_place |= i < 32 ? 1u << i : 0;
-    if (i >= 32) g_predraw.probe = 0; /* the in-place mask takes 32 slots */
-    for (u32 k = 0; k < g_predraw.n; k++)
-        if (g_predraw.target[k] == t) return;
-    if (g_predraw.n == DS_TARGETS_MAX) {
-        g_predraw.probe = 0;
+    if (!g_predraw[t_rc].probe || i >= 64) return;
+    g_predraw[t_rc].in_place |= i < 32 ? 1u << i : 0;
+    if (i >= 32) g_predraw[t_rc].probe = 0; /* the in-place mask takes 32 slots */
+    for (u32 k = 0; k < g_predraw[t_rc].n; k++)
+        if (g_predraw[t_rc].target[k] == t) return;
+    if (g_predraw[t_rc].n == DS_TARGETS_MAX) {
+        g_predraw[t_rc].probe = 0;
         return;
     }
-    g_predraw.tex[g_predraw.n] = *x;
-    g_predraw.target[g_predraw.n++] = t;
+    g_predraw[t_rc].tex[g_predraw[t_rc].n] = *x;
+    g_predraw[t_rc].target[g_predraw[t_rc].n++] = t;
 }
 static Surf* predraw_sample(int i, Surf* t) {
-    if (g_predraw.phase != 2 || i >= 32 || !(g_predraw.in_place >> i & 1)) return t;
-    for (u32 k = 0; k < g_predraw.n; k++)
-        if (g_predraw.target[k] == t) return g_predraw.save[g_predraw.parity][k];
+    if (g_predraw[t_rc].phase != 2 || i >= 32 || !(g_predraw[t_rc].in_place >> i & 1)) return t;
+    for (u32 k = 0; k < g_predraw[t_rc].n; k++)
+        if (g_predraw[t_rc].target[k] == t) return g_predraw[t_rc].save[g_predraw[t_rc].parity][k];
     return t;
 }
 
@@ -4612,16 +4612,17 @@ static int storage_recent_same(const StorageRecent* a, const StorageRecent* b) {
 /* with split sets (ShCaps.split_sets): the texture set stage_set_ made last for each stage's buffer set number (0 to 4) */
 static VkDescriptorSet g_stage_tex_set[RC_SLOTS][5];
 /* an indirect mesh draw's first group, which mesh_indirect copied for the draw: the uniform buffer stage_set binds */
-static VkBuffer g_mesh_first;
-static u64 g_mesh_first_off;
+static _Thread_local VkBuffer g_mesh_first; /* the draw's, as g_mesh_payload is */
+static _Thread_local u64 g_mesh_first_off;
 static void index_barrier(VkCommandBuffer cb, VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
                           VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access);
 /* The compute-task path's buffer for the draws of a frame (sm86.h): the record, the counts and the task programs'
    payloads, one buffer for each frame in flight and one for all of its draws, as the buffer's slots are cut to what a
    draw needs. g_mesh_payload is the frame's */
 static VkBuffer g_mesh_payload_slot[VK_FRAMES];
-static VkBuffer g_mesh_payload;
-static u64 g_mesh_payload_bytes, g_mesh_groups, g_mesh_cap;
+/* the draw's: each thread's that sets up draws (draw_batches=2), as every draw clears them at its start */
+static _Thread_local VkBuffer g_mesh_payload;
+static _Thread_local u64 g_mesh_payload_bytes, g_mesh_groups, g_mesh_cap;
 /* make the frame's buffer, once (it holds the most slots any task program's payload takes) */
 static VkBuffer mesh_payload(void) {
     const u32 slot = vk_frame_slot();
@@ -5034,8 +5035,8 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
            made was built from */
         /* the save draw's fetch k takes the texture the guest's draw bound in place (predraw_run) */
         u32 predraw_k = st->cbuf_off - SNX_PREDRAW_HANDLE;
-        int predrawn = g_predraw.phase == 1 && stage == ST_FS && predraw_k < g_predraw.n;
-        u32 handle = predrawn                ? g_predraw.tex[predraw_k].handle
+        int predrawn = g_predraw[t_rc].phase == 1 && stage == ST_FS && predraw_k < g_predraw[t_rc].n;
+        u32 handle = predrawn                ? g_predraw[t_rc].tex[predraw_k].handle
                      : res && res[i].have ? res[i].handle
                      : !res               ? handles[i]
                                           : tex_handle(ds, stage, tcb, &s->si, i);
@@ -5045,7 +5046,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         }
         /* what fs_key resolved, unless it is a render target or a copy of one: a crop of the same target at
            another size, for another stage, replaces it. Other textures stay until the next present */
-        TexRes own, *x = predrawn ? &g_predraw.tex[predraw_k] : res ? &res[i] : NULL;
+        TexRes own, *x = predrawn ? &g_predraw[t_rc].tex[predraw_k] : res ? &res[i] : NULL;
         if (!predrawn && (!x || !x->have || x->handle != handle || (x->t && x->t->is_rt))) {
             x = &own;
             tex_resolve(ds, handle, x);
@@ -5113,7 +5114,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                sample in place: the guest's draw reads the save attachment, which it doesn't write */
             if (written && !(s->si.predraw_slots >> i & 1) && g_vk.feedback_mode == VK_FEEDBACK_INTERLOCK) slots = 0;
         }
-        if (g_predraw.phase && stage == ST_FS && t && !slots) {
+        if (g_predraw[t_rc].phase && stage == ST_FS && t && !slots) {
             if (t->predraw) g_predraw_stats.save_copied++;
             else if (predrawn) g_predraw_stats.target_copied++;
         }
@@ -7213,16 +7214,16 @@ static int predraw_enabled(void) { return g_vk.feedback_mode == VK_FEEDBACK_PRED
    save draw on, so the guest's draw keeps the pass */
 static u32 predraw_pass_slots(Surf* const* rt, u32 n) {
     u32 slots = 0;
-    for (u32 i = 0; g_predraw.phase && i < n; i++)
-        for (u32 k = 0; k < g_predraw.n; k++)
-            if (rt[i] && (rt[i] == g_predraw.target[k] || rt[i]->predraw)) slots |= 1u << i;
+    for (u32 i = 0; g_predraw[t_rc].phase && i < n; i++)
+        for (u32 k = 0; k < g_predraw[t_rc].n; k++)
+            if (rt[i] && (rt[i] == g_predraw[t_rc].target[k] || rt[i]->predraw)) slots |= 1u << i;
     return slots;
 }
 /* 1 when the draw writes a slot that holds a target it samples in place */
 static int predraw_writes_sampled(const DsState* ds, const VkSh* fs, Surf* const* rt, u32 n) {
     for (u32 i = 0; i < n; i++)
-        for (u32 k = 0; k < g_predraw.n; k++)
-            if (rt[i] == g_predraw.target[k] && (ds->blend.mask[i] & (fs->si.sph[18] >> (i * 4) & 15))) return 1;
+        for (u32 k = 0; k < g_predraw[t_rc].n; k++)
+            if (rt[i] == g_predraw[t_rc].target[k] && (ds->blend.mask[i] & (fs->si.sph[18] >> (i * 4) & 15))) return 1;
     return 0;
 }
 /* 1 when the stages before the fragment's store nothing, which a draw done two times would store two times */
@@ -7244,7 +7245,7 @@ static int predraw_keeps_depth(const DsState* ds, const VkSh* fs) {
    target to, where the save attachments go (a guest may bind 8 slots and leave some without a format). NULL when
    done, else why the save draw wasn't drawn: the caller draws in place */
 static const char* predraw_run(const DsState* ds, const DrawCall* dc, DrawOwner* o, u32 free, const VkSh* fs) {
-    u32 m = g_predraw.n, ints = 0, sints = 0, room = g_vk.props.limits.maxColorAttachments;
+    u32 m = g_predraw[t_rc].n, ints = 0, sints = 0, room = g_vk.props.limits.maxColorAttachments;
     if (room > DS_TARGETS_MAX) room = DS_TARGETS_MAX;
     u8 slots[DS_TARGETS_MAX];
     u32 c = 0;
@@ -7259,23 +7260,23 @@ static const char* predraw_run(const DsState* ds, const DrawCall* dc, DrawOwner*
     }
     /* two sets where they fit: one by-region barrier for each feedback draw, not two. The save attachments of a set
        take its slots from the lowest up, in the order of the save program's outputs */
-    g_predraw.sets = c >= 2 * m ? 2 : 1;
-    for (u32 s = 0; s < g_predraw.sets; s++)
+    g_predraw[t_rc].sets = c >= 2 * m ? 2 : 1;
+    for (u32 s = 0; s < g_predraw[t_rc].sets; s++)
         for (u32 k = 0; k < m; k++) {
-            g_predraw.save[s][k] = vk_rt_save(g_predraw.target[k], s);
-            if (!g_predraw.save[s][k]) return "samples a target that has no save attachment (layered, multisampled)";
-            g_predraw.slot[s][k] = slots[s * m + k];
+            g_predraw[t_rc].save[s][k] = vk_rt_save(g_predraw[t_rc].target[k], s);
+            if (!g_predraw[t_rc].save[s][k]) return "samples a target that has no save attachment (layered, multisampled)";
+            g_predraw[t_rc].slot[s][k] = slots[s * m + k];
         }
     for (u32 k = 0; k < m; k++) {
-        if (g_predraw.target[k]->f.is_int) ints |= 1u << k;
-        if (g_predraw.target[k]->f.sint) sints |= 1u << k;
+        if (g_predraw[t_rc].target[k]->f.is_int) ints |= 1u << k;
+        if (g_predraw[t_rc].target[k]->f.sint) sints |= 1u << k;
     }
-    u32 parity = g_predraw.sets == 2 ? g_predraw.parity ^ 1 : 0;
-    g_predraw.wmask = 0;
-    for (u32 k = 0; k < m; k++) g_predraw.wmask |= 1u << g_predraw.slot[parity][k];
-    g_predraw.fs = vk_predraw_fragment(m, g_predraw.wmask, ints, sints);
-    if (!g_predraw.fs || g_predraw.fs->failed) return "has no save draw program (not translated)";
-    g_predraw.parity = parity;
+    u32 parity = g_predraw[t_rc].sets == 2 ? g_predraw[t_rc].parity ^ 1 : 0;
+    g_predraw[t_rc].wmask = 0;
+    for (u32 k = 0; k < m; k++) g_predraw[t_rc].wmask |= 1u << g_predraw[t_rc].slot[parity][k];
+    g_predraw[t_rc].fs = vk_predraw_fragment(m, g_predraw[t_rc].wmask, ints, sints);
+    if (!g_predraw[t_rc].fs || g_predraw[t_rc].fs->failed) return "has no save draw program (not translated)";
+    g_predraw[t_rc].parity = parity;
     static DsState pre; /* under the renderer's lock, as each draw is */
     pre = *ds;
     /* the tests stay where they pass a superset of the guest draw's fragments: fewer fragments to save */
@@ -7289,17 +7290,17 @@ static const char* predraw_run(const DsState* ds, const DrawCall* dc, DrawOwner*
     DrawCall call = *dc;
     call.state_flags &= ~DS_DRAW_DEPTH_BOUNDS;
     u64 drawn = g_vk_drawn;
-    g_predraw.phase = 1;
+    g_predraw[t_rc].phase = 1;
     render_draw(&pre, &call, o, NULL, NULL);
     int saved = g_vk_drawn != drawn;
     if (saved) {
         g_vk_drawn = drawn; /* the guest's draw is counted, not the save draw */
-        g_predraw.phase = 2;
+        g_predraw[t_rc].phase = 2;
         render_draw(ds, dc, o, NULL, NULL);
         if (g_vk_drawn != drawn) CNT(g_vk_predraws)++;
     }
-    g_predraw.phase = 0;
-    g_predraw.n = g_predraw.in_place = 0;
+    g_predraw[t_rc].phase = 0;
+    g_predraw[t_rc].n = g_predraw[t_rc].in_place = 0;
     draw_forget(); /* the next draw keeps nothing of these two */
     return saved ? NULL : "had its save draw skipped (the log says why above)";
 }
@@ -8046,7 +8047,7 @@ retry:
        part is made here when it doesn't (and when draw_state_check compares). Only draws of the guest's own state look,
        and only they keep what they made: a draw of a texture, a capture's slices and a save draw draw other state,
        which a later draw of the same bytes must not take */
-    int capture = g_capture_draw.images != NULL, own = !texture && !capture && !g_predraw.phase;
+    int capture = g_capture_draw.images != NULL, own = !texture && !capture && !g_predraw[t_rc].phase;
     if (!own) AHEAD_FAIL("not a draw of the guest's state");
     if (ahead) prep_stamps(&ahead->st);
     /* the result made ahead, once: a retry resolves in full. With draw_state_check=1 the draw resolves in full, and
@@ -8161,11 +8162,11 @@ retry:
     }
     /* the save attachments of a feedback draw drawn two times, after the guest's slots (predraw_run). An ordinary draw
        of the same pass keeps them, with nothing written to them, so the pass doesn't end for it */
-    if (g_predraw.phase) {
-        for (u32 s = 0; s < g_predraw.sets; s++)
-            for (u32 k = 0; k < g_predraw.n; k++) {
-                u32 j = g_predraw.slot[s][k];
-                rt[j] = g_predraw.save[s][k];
+    if (g_predraw[t_rc].phase) {
+        for (u32 s = 0; s < g_predraw[t_rc].sets; s++)
+            for (u32 k = 0; k < g_predraw[t_rc].n; k++) {
+                u32 j = g_predraw[t_rc].slot[s][k];
+                rt[j] = g_predraw[t_rc].save[s][k];
                 if (j + 1 > n) n = j + 1;
             }
     } else if (!capture && !texture && g_rp[t_rc].open) {
@@ -8369,8 +8370,8 @@ retry:
         }
         if (!texture && fs && fs != sh.fs0) res = fs_slot_res(ds, sh.fs0, fres, fs, vres);
     }
-    if (g_predraw.phase == 1) {
-        fs = g_predraw.fs; /* the save draw's program, whose textures stage_set_ takes from g_predraw */
+    if (g_predraw[t_rc].phase == 1) {
+        fs = g_predraw[t_rc].fs; /* the save draw's program, whose textures stage_set_ takes from g_predraw[t_rc] */
         res = NULL;
     }
     DrawShaders drawn = sh; /* the stages drawn: sh's, with a per-vertex pass's vertex or geometry program */
@@ -8516,14 +8517,14 @@ retry:
             }
         }
         /* a save attachment: written only by the save draw, with no blend; and the save draw writes nothing else */
-        if (saves || g_predraw.phase == 1) {
-            if (g_predraw.phase == 1) made_k.logic_op = 0;
+        if (saves || g_predraw[t_rc].phase == 1) {
+            if (g_predraw[t_rc].phase == 1) made_k.logic_op = 0;
             for (u32 i = 0; i < n; i++) {
                 int save = rt[i] && rt[i]->predraw;
-                if (!save && g_predraw.phase != 1) continue;
+                if (!save && g_predraw[t_rc].phase != 1) continue;
                 memset(&made_k.blend[i], 0, sizeof made_k.blend[i]);
                 made_k.blend[i].mask =
-                    save && g_predraw.phase == 1 && (g_predraw.wmask >> i & 1) ? 15 : 0;
+                    save && g_predraw[t_rc].phase == 1 && (g_predraw[t_rc].wmask >> i & 1) ? 15 : 0;
             }
         }
         if (programmable_blend) {
@@ -8878,9 +8879,9 @@ resolved:
         return;
     }
     ScreenSlots screen = screen_slots(ds, fs, vs, !tcs && !tes && !sh.gs && !sh.swizzle);
-    g_predraw.probe = !predraw_refused && !g_predraw.phase && !capture && !texture && !mesh && !programmable_blend && !late_depth &&
+    g_predraw[t_rc].probe = !predraw_refused && !g_predraw[t_rc].phase && !capture && !texture && !mesh && !programmable_blend && !late_depth &&
                       !xfb_on && predraw_enabled();
-    if (!g_predraw.phase) g_predraw.n = g_predraw.in_place = 0; /* the two draws keep what the probe found */
+    if (!g_predraw[t_rc].phase) g_predraw[t_rc].n = g_predraw[t_rc].in_place = 0; /* the two draws keep what the probe found */
     /* The compute-task path's buffers for this draw: the payloads of its task workgroups, their counts and the draw's
        record (sm86.h), and the vec4 of the first workgroup and the groups the buffer holds, which both stages take
        from SNX_VKB_RS. Its task program's dispatch then writes them, before the pass opens */
@@ -8963,8 +8964,8 @@ resolved:
         CNT(g_vk_skipped)++;
         return;
     }
-    if (g_predraw.probe) {
-        g_predraw.probe = 0;
+    if (g_predraw[t_rc].probe) {
+        g_predraw[t_rc].probe = 0;
         const VkSh* staged_pre[] = {vs, tcs, tes, gs};
         /* the slots the guest binds no target to (read_targets keeps the last answer: no lookup again) */
         Surf* guest[8];
@@ -8973,7 +8974,7 @@ resolved:
         read_targets(ds, guest, &guest_zt, &guest_n);
         for (u32 j = 0; j < DS_TARGETS_MAX; j++)
             if (!guest[j]) free |= 1u << j;
-        const char* why = !g_predraw.n || !fs || !predraw_writes_sampled(ds, fs, rt, n) ? NULL
+        const char* why = !g_predraw[t_rc].n || !fs || !predraw_writes_sampled(ds, fs, rt, n) ? NULL
                           : !predraw_pre_raster_pure(staged_pre)                         ? "stores from its vertex stages"
                           : dc->raster_samples                                           ? "has more raster samples"
                           : dc->multisample_flags & DS_MS_COVERAGE_TO_COLOR              ? "writes coverage to color"
@@ -8993,14 +8994,14 @@ resolved:
             draw_images_discard(&images);
             why = predraw_run(ds, dc, o, free, fs);
             if (!why) return;
-            g_predraw.n = g_predraw.in_place = 0; /* drawn once, in place, as before */
+            g_predraw[t_rc].n = g_predraw[t_rc].in_place = 0; /* drawn once, in place, as before */
             predraw_refused = 1;
         }
         if (why) {
             predraw_refuse(why);
             if (predraw_refused) goto retry;
         }
-        g_predraw.n = g_predraw.in_place = 0;
+        g_predraw[t_rc].n = g_predraw[t_rc].in_place = 0;
     }
     /* indices, up to the end of the index buffer (inclusive). What is made into other indices on the CPU (quads,
        8-bit indices, another restart index) is capped */
@@ -9217,7 +9218,7 @@ resolved:
         pipe = vk_pipeline_get_deferred(k);
     /* the fragment program's words a translation that folds more would hold, counted, and that translation's pipeline
        for this key made beside the draws once it is made. Before the check below: it can read guest memory */
-    if (fs && !texture && !vk_host_programs(&ds->prog) && g_predraw.phase != 1)
+    if (fs && !texture && !vk_host_programs(&ds->prog) && g_predraw[t_rc].phase != 1)
         vk_shader_fold_draw(ds, fs, ds->prog.code[5], pipe ? k : NULL);
     /* the pipeline's key hash, the one pipeline.c names its entry by, for the draw's zone text */
     if (snx_tracy_attached()) g_draw_pipe_hash = vk_hash(k, sizeof *k);
@@ -9322,7 +9323,7 @@ resolved:
        frame and the cliff in the next, in patches. Ordered, each reads the draws before it, as a copy of the target
        before each draw gives too, the same every frame. Only with dynamicRenderingLocalRead: without it the order
        would begin the pass again at each such draw */
-    int strict_feedback = g_predraw.phase == 1 || (!g_predraw.phase && fb && g_vk.feedback_mode == VK_FEEDBACK_PREDRAW &&
+    int strict_feedback = g_predraw[t_rc].phase == 1 || (!g_predraw[t_rc].phase && fb && g_vk.feedback_mode == VK_FEEDBACK_PREDRAW &&
                                                    g_vk.has_local_read);
     const u64 pass_t0 = g_draw_depth == 1 ? ph_now() : 0;
     g_rp[t_rc].rate_want = dc->shading_rate;
@@ -9373,7 +9374,7 @@ resolved:
             memcpy(g_ph.loose, loose, sizeof loose);
         }
     }
-    const int early = own && !capture && !texture && !g_predraw.phase && g_draw_depth == 1 && !xbound &&
+    const int early = own && !capture && !texture && !g_predraw[t_rc].phase && g_draw_depth == 1 && !xbound &&
                       !late_depth && !xfb_stores.range.declared && !predraw && !images.n && !programmable_blend &&
                       !mesh && vk_prep_on() && gpu_ds_running() && vk_buf_writable_none();
     if (early) {
@@ -9805,7 +9806,7 @@ resolved:
 
     /* counted by the channel's samples-passed counter when it runs: the targets' samples, which the guest's are. Not
        the save draw (predraw_run): it ends the open query, and the guest's draw after it begins another */
-    if (g_predraw.phase == 1)
+    if (g_predraw[t_rc].phase == 1)
         vk_query_pass_end(cb);
     else
         vk_query_draw(cb, ds->owner);
@@ -9878,7 +9879,7 @@ static void draw_commit(const DsState* ds, const DrawOwner* o, const DrawShaders
     vk_buf_writable_commit();
     draw_images_commit(images);
     feedback_done(fb, writes);
-    if (fb && g_predraw.phase != 1) CNT(g_vk_fb_draws)++; /* the guest's draws: a save draw is the renderer's own */
+    if (fb && g_predraw[t_rc].phase != 1) CNT(g_vk_fb_draws)++; /* the guest's draws: a save draw is the renderer's own */
     if (predraw) vk_predraw_drawn();
     for (u32 i = 0; i < n; i++)
         if ((writes >> i & 1) && !capture && !g_rp[t_rc].rt[i]->predraw) target_written(g_rp[t_rc].rt[i]);
