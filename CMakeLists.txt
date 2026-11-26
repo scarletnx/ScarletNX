@@ -148,6 +148,7 @@ if(DEFINED CACHE{SNX_MULTICALL}) # an option before, said and taken out of the c
     message(STATUS "SNX_MULTICALL is no longer an option: scarletnx is every driver the build has")
     unset(SNX_MULTICALL CACHE)
 endif()
+include(cmake/removed_options.cmake)
 if(SNX_BUILD_GUI AND SNX_TOOLS_ONLY)
     message(FATAL_ERROR "SNX_BUILD_GUI requires a runtime build, not a tools-only build")
 endif()

@@ -626,7 +626,7 @@ documentation:
 ```sh
 scripts/linux-llvm.sh "$(uname -m)" ~/linux-llvm &&
 cmake --preset default -B build/appimage -DSNX_DEPLOY=OFF -DCMAKE_INSTALL_PREFIX=/usr \
-  -DLLVM_DIR="$HOME/linux-llvm/lib/cmake/llvm" -DSNX_A64_DISASM=OFF &&
+  -DLLVM_DIR="$HOME/linux-llvm/lib/cmake/llvm" &&
 cmake --build build/appimage &&
 cmake --install build/appimage &&
 GITHUB_REPOSITORY=scarletnx/ScarletNX scripts/make-appimage.sh
@@ -639,8 +639,7 @@ takes the version in `LLVM_VERSION` (CI gives it the container's, whose `opt` pr
 and with `SNX_SYSROOT` set it cross-builds for another architecture. `scripts/llvm-source.sh` downloads that version's
 source for it, as for the Android and Apple LLVM scripts, and checks it against the SHA-256 `scripts/llvm-source.sha256`
 pins: a version without a line there is refused, so a new LLVM in CI's image needs its line first, the hash taken from
-the digest on the release's page. `SNX_A64_DISASM=OFF` leaves out `scarletnx --mcp`'s A64 disassembler, which is for
-working on the runtime.
+the digest on the release's page.
 
 `scarletnx` is every driver the build has (`src/multicall`): each driver is a library with no `main` of its own,
 and the program, whichever drivers are on (`SNX_BUILD_NX` among them), runs the one its name says, so LLVM, SDL and
