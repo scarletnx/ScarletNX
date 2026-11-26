@@ -64,3 +64,5 @@ target_link_libraries(snx_nds_program PUBLIC snx_state_file) # the save states (
 set_target_properties(snx_nds_program PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
 target_compile_options(snx_nds_program PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 include("${PROJECT_SOURCE_DIR}/tests/cmake/nds.cmake") # its tests
+# a stop noted for the error's panel, which the program shows once this driver returned (error_kind.h)
+target_link_libraries(snx_nds_program PUBLIC snx_error)

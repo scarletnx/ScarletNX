@@ -6,6 +6,7 @@
 #include "nx/runtime/options.h"
 #include "common/utilities/common.h"
 #include "common/utilities/config_file.h"
+#include "common/utilities/error_kind.h"
 #include "common/utilities/game_ini.h"
 #include "common/utilities/ini_lines.h"
 #include "common/utilities/key_said.h"
@@ -256,7 +257,8 @@ static const IniOpt* find_row(const char* key, int* own) {
 }
 
 int snx_setting_known(const char* key) {
-    return find_row(key, NULL) || unattended_known(key) || !strcmp(key, SNX_LAUNCHER_PICKS);
+    return find_row(key, NULL) || unattended_known(key) || !strcmp(key, SNX_LAUNCHER_PICKS) ||
+           !strcmp(key, SNX_FROM_LAUNCHER);
 }
 
 int snx_setting_text(const char* key, char* out, size_t size) {
@@ -781,7 +783,8 @@ static void apply_all(void) {
     for (i = 0; i < g_nstore; i++)
         if (!find_row(g_store[i].key, NULL) && !override_of(g_store[i].key)) apply(g_store[i].key, g_store[i].value);
     for (i = 0; i < g_nover; i++)
-        if (!find_row(g_over[i].key, NULL) && strcmp(g_over[i].key, SNX_LAUNCHER_PICKS))
+        if (!find_row(g_over[i].key, NULL) && strcmp(g_over[i].key, SNX_LAUNCHER_PICKS) &&
+            strcmp(g_over[i].key, SNX_FROM_LAUNCHER))
             apply(g_over[i].key, g_over[i].value);
 }
 
@@ -1090,6 +1093,14 @@ static void launcher_picks(void) {
         return;
     }
     for (i = 0; i < g_nover; i++) g_over[i].launcher = strcmp(g_over[i].key, SNX_LAUNCHER_PICKS) != 0;
+}
+/* --from-launcher=1: the launcher reads this run's output, and an error's action goes to it there (error_kind.h) */
+static void from_launcher(void) {
+    const char* v = override_of(SNX_FROM_LAUNCHER);
+    if (v && strcmp(v, "1"))
+        WARN("settings: --%s=%s is not 1: this run is no launcher's, and an error's action starts the launcher\n",
+             SNX_FROM_LAUNCHER, v);
+    snx_error_launched(v && !strcmp(v, "1"));
 }
 
 /* the keys Clean Old Settings would take out, counted for the menu's row */
@@ -1589,6 +1600,7 @@ void ini_open(const char* path) {
             strcmp(g_over[i].key, "emulated_cores") && strcmp(g_over[i].key, "emulated-cores"))
             WARN("--%s is not a setting, so it does nothing\n", g_over[i].key);
     launcher_picks();
+    from_launcher();
     options_old_environment();
     picks_load();
     text = snx_read_file(g_path, &size);

@@ -2758,7 +2758,7 @@ add_test(NAME ini_deprecated COMMAND snx-test-ini-deprecated)
 # showcase's and stats's keys; the rest of the runtime stubbed
 add_executable(snx-test-options-tv-mode options_tv_mode.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/options.c")
 snx_test_target(snx-test-options-tv-mode gnu23)
-target_link_libraries(snx-test-options-tv-mode PRIVATE scarletnx-common)
+target_link_libraries(snx-test-options-tv-mode PRIVATE scarletnx-common snx_error) # --from-launcher's note
 add_test(NAME options_tv_mode COMMAND snx-test-options-tv-mode)
 # the game's .ini and picks through tests/config_files.h's situations (config_files_options.c), a process each
 add_test(NAME config_files_options COMMAND snx-test-options-tv-mode --config-files game.ini)

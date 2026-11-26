@@ -205,6 +205,21 @@ int main(void) {
                   strstr(g_test.said[before + 2], "--interp-only is --jit-only now"),
               "%d lines: %s", g_test.said_count - before, g_test.said[before]);
     }
+    /* the launcher's run: --from-launcher=1, any other value refused, naming it */
+    {
+        char* argv[] = {"prog", "--from-launcher=1", "--from-launcher=2", NULL};
+        SnxCli cli;
+        snx_cli_init(&cli, "scarletnx-test", ALL);
+        i = 1;
+        CHECK(snx_cli_take(&cli, 3, argv, &i, error, sizeof error) == SNX_CLI_FROM_LAUNCHER &&
+                  cli.value[SNX_CLI_FROM_LAUNCHER] && !strcmp(cli.value[SNX_CLI_FROM_LAUNCHER], "1"),
+              "--from-launcher=1: %s", error);
+        i = 2;
+        CHECK(snx_cli_take(&cli, 3, argv, &i, error, sizeof error) == SNX_CLI_ERROR &&
+                  !strcmp(error, "scarletnx-test: --from-launcher=2 is not 1"),
+              "--from-launcher=2: %s", error);
+        snx_cli_free(&cli);
+    }
     /* a run's options together: --update given again, each kept */
     {
         char* argv[] = {"prog",        "--update", "a.cia", "--update=b.cia", "-r", "--game",    "g",  "--fullscreen=0",

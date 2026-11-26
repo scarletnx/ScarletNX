@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "common/utilities/error_kind.h"
 #include "common/utilities/common.h"
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -307,6 +308,29 @@ int snx_error_heard(const char* line, SnxErrorHeard* heard) {
     }
     return 1;
 }
+
+/* the console's stop noted last (snx_error_note), and whether nobody is at its window */
+static struct {
+    SnxError e;
+    int noted, quiet, from_launcher;
+} g_error_note;
+void snx_error_note(int kind, const char* program, const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(g_error_note.e.message, sizeof g_error_note.e.message, fmt, ap);
+    va_end(ap);
+    g_error_note.e.kind = kind >= 0 && kind < SNX_ERROR_KINDS ? kind : SNX_ERROR_INTERNAL;
+    g_error_note.noted = 1;
+    fprintf(stderr, "%s: %s\n", program, g_error_note.e.message);
+}
+void snx_error_note_game(const char* game) { snprintf(g_error_note.e.game, sizeof g_error_note.e.game, "%s", game); }
+void snx_error_note_quiet(int quiet) { g_error_note.quiet = quiet; }
+const SnxError* snx_error_noted(void) {
+    g_error_note.e.from_launcher = g_error_note.from_launcher;
+    return g_error_note.noted && !g_error_note.quiet ? &g_error_note.e : NULL;
+}
+void snx_error_launched(int from_launcher) { g_error_note.from_launcher = from_launcher; }
+int snx_error_from_launcher(void) { return g_error_note.from_launcher; }
 
 void snx_error_open_value(const SnxError* e, int action, char* out, size_t size) {
     switch (action) {

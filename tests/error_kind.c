@@ -148,6 +148,21 @@ int main(int argc, char** argv) {
         snx_error_open_value(&e, SNX_ACTION_SHARE_LOG, text, sizeof text);
         assert(!text[0]);
     }
+    /* a console's stop: noted with its kind and said on stderr; none shown where nobody is at the window; the launcher's
+       run carried */
+    {
+        const SnxError* n;
+        assert(!snx_error_noted());
+        snx_error_note(SNX_ERROR_BAD_FILE, "scarletnx-test", "%s is %d bytes", "x.gba", 3);
+        n = snx_error_noted();
+        assert(n && n->kind == SNX_ERROR_BAD_FILE && !strcmp(n->message, "x.gba is 3 bytes") && !n->from_launcher);
+        snx_error_note_game("A GAME");
+        snx_error_launched(1);
+        n = snx_error_noted();
+        assert(!strcmp(n->game, "A GAME") && n->from_launcher && snx_error_from_launcher());
+        snx_error_note_quiet(1);
+        assert(!snx_error_noted());
+    }
     puts("error_kind: ok");
     return 0;
 }

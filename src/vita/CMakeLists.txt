@@ -74,3 +74,5 @@ endforeach()
 
 # the driver's command line (runtime/main.c's snx_vita_main), which scarletnx runs as scarletnx-vita (src/multicall)
 target_sources(snx_vita_program PRIVATE runtime/main.c)
+# a stop noted for the error's panel, which the program shows once this driver returned (error_kind.h)
+target_link_libraries(snx_vita_program PUBLIC snx_error)

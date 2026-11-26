@@ -26,6 +26,7 @@ typedef enum {
     SNX_CLI_SCRIPT,            /* --script SPEC */
     SNX_CLI_FULLSCREEN,        /* -f, --fullscreen[=0|1] */
     SNX_CLI_HEADLESS,          /* -H, --headless */
+    SNX_CLI_FROM_LAUNCHER,     /* --from-launcher=1 (game_ini.h's SNX_FROM_LAUNCHER) */
     /* the recompile's, each driver's that compiles a game's code */
     SNX_CLI_OPT,       /* -O LEVEL, -OLEVEL, --opt LEVEL: LLVM's level, gone with it: said once, nothing done */
     SNX_CLI_JOBS,      /* --jobs N: the setting aot_threads */
