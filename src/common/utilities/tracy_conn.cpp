@@ -8,7 +8,7 @@
    the trace parameters and the source-contents callback. Their callbacks and registry live here so no C file
    has to include a C++ header. */
 extern "C" {
-#include "nx/runtime/platform/tracy.h"
+#include "common/utilities/tracy.h"
 }
 #include "common/utilities/bits.h"
 #include <errno.h>

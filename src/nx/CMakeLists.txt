@@ -9,15 +9,9 @@
 #   shader    Maxwell shaders to SPIR-V
 #   vk        the renderer                                            platform  the OS layer and a window backend
 
-add_library(snx_tracy INTERFACE)
-if(SNX_TRACY)
-    target_compile_definitions(snx_tracy INTERFACE SNX_TRACY=1)
-    target_link_libraries(snx_tracy INTERFACE Tracy::TracyClient)
-endif()
-
 add_library(snx_nx_flags INTERFACE)
 target_link_libraries(snx_nx_flags INTERFACE scarletnx-common scarletnx-net scarletnx-ldn scarletnx-filesystem
-                                           snx_settings snx_tracy)
+                                           snx_settings snx_tracy snx_tracy_client) # cmake/tracy.cmake
 # Every function and global used across files is declared once, in the header of the file that defines it, and
 # everything else is static: a declaration that disagrees with the definition is then a compile error instead of a
 # miscompile. Third-party sources keep their own warnings off.
@@ -108,7 +102,7 @@ snx_ship_walk(gpu/shipped_pass.c)
 include("${PROJECT_SOURCE_DIR}/cmake/gui_themes.cmake")
 set(platform runtime/platform/log.c runtime/platform/plat_sdl.c runtime/platform/unattended.c
              runtime/platform/backend/sdl3.c runtime/platform/audio_downmix.c
-             runtime/platform/backend/gamepad.c runtime/platform/connect.c runtime/platform/tracy.c
+             runtime/platform/backend/gamepad.c runtime/platform/connect.c
              runtime/platform/ctrl_applet.c runtime/platform/ctrl_request.c runtime/platform/ctrl_scan.c
              runtime/platform/joycon2.c runtime/platform/joycon2_sdl.c runtime/platform/joycon2_session.c
              runtime/platform/joycon2_proto.c runtime/platform/joycon2_att.c runtime/platform/joycon2_link.c
@@ -130,10 +124,6 @@ if(APPLE)
     # under ARC, as gui/apple.m is: the global that holds the activity's token keeps it
     set_source_files_properties(runtime/platform/plat_apple.m PROPERTIES COMPILE_OPTIONS -fobjc-arc)
 endif()
-if(SNX_TRACY)
-    # the C++ client's connection id, which the C layer's GPU track keys its epochs on
-    list(APPEND platform runtime/platform/tracy_conn.cpp)
-endif()
 snx_component(platform ${platform})
 # the microphone's neural noise reduction (runtime/platform/audio_denoise.c), from cmake/dependencies.cmake
 target_link_libraries(snx_platform PRIVATE snx_rnnoise)
@@ -143,8 +133,6 @@ target_link_libraries(snx_platform PRIVATE snx_vk_common)
 target_link_libraries(snx_platform PUBLIC snx_vpad snx_vpad_sdl snx_menu)
 # what stops a game, its kinds and actions (src/common/utilities/error_kind.h)
 target_link_libraries(snx_platform PUBLIC snx_error snx_error_sdl)
-# the tracy-capture a capture needs (tracy.c), the client's release (cmake/dependencies.cmake)
-target_compile_definitions(snx_platform PRIVATE SNX_TRACY_VERSION="${SNX_TRACY_VERSION}")
 
 snx_component(shader gpu/shader/shader.c gpu/shader/decode.c gpu/shader/corpus.c gpu/shader/shipped.c
                      gpu/shader/spirv_translate.c gpu/shader/spirv_compute.c gpu/shader/structure.c

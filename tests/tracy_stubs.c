@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* A test that includes a runtime source file which emits zones sees SNX_TRACY (snx_nx_flags) and links
    Tracy::TracyClient, but not the runtime's tracy.c: the gate is gated out here. */
-#include "nx/runtime/platform/tracy.h"
+#include "common/utilities/tracy.h"
 #if defined(SNX_TRACY)
 _Atomic int snx_tracy_memory_detail;
 _Atomic int snx_tracy_memory_detail_ever;
@@ -50,8 +50,12 @@ void snx_tracy_fiber_leave(void) {}
 void snx_tracy_fiber_leave_all(void) {}
 /* The lifetime and message calls tracy.c owns: this build has no client, so they consume their arguments and do
    nothing. The header declares them for a SNX_TRACY build, which does not link tracy.c. */
-int snx_tracy_init(const char* title) {
-    (void)title;
+int snx_tracy_init(const char* title, const SnxTracyHost* host) {
+    (void)title, (void)host;
+    return 0;
+}
+int snx_tracy_console(const char* folder, const char* name, int headless) {
+    (void)folder, (void)name, (void)headless;
     return 0;
 }
 void snx_tracy_capture_now(void) {}

@@ -5,7 +5,7 @@
    nvn_queue_context_set (gpu/nvn/nvn_queue.h), whose arguments are read only with a client */
 #undef SNX_TRACY
 #include "nx/gpu/nvn/nvn_queue.h"
-#include "nx/runtime/platform/tracy.h"
+#include "common/utilities/tracy.h"
 #include <stdio.h>
 
 static struct {
