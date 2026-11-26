@@ -70,6 +70,7 @@ int vk_ok_(VkResult r, const char* what, const char* file, int line) {
 }
 uint64_t plat_ns(void) { return 0; }
 int vk_uma(void) { return 0; }
+void vk_shared_note(u32 which) { (void)which; } /* draw_batches=2 (render.c): no run is split here */
 u64 gmmu_run(u64 gva, u64 max, u64* cpu) {
     if (gva < GVA || gva - GVA >= SPACE) return 0;
     *cpu = gva - GVA;

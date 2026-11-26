@@ -110,6 +110,15 @@ int gpu_mem_dirty_since(u64 since, u64 a, u64 sz) { STUB(); }
 u64 gpu_mem_generation(void) { STUB(); }
 void gpu_mem_written(u64 gva, u64 size) { STUB(); }
 int gpu_texture_live(u64 gva) { STUB(); }
+/* draw_batches=2 (render.c, record.c): no run is split here, so no use is listed for a splice */
+int gpu_spec(void) { return 0; }
+void gpu_spec_fail(const char* why) { (void)why; }
+void vk_shared_note(u32 which) { (void)which; }
+int vk_rec_listing(void) { return 0; }
+void vk_rec_defer(VkDeferFn fn, const void* arg, u64 size) { (void)fn, (void)arg, (void)size; STUB(); }
+void vk_rec_list_flush(void) {}
+void vk_share_lock(void) {}
+void vk_share_unlock(void) {}
 u64 gpu_textures_added(void) { STUB(); }
 u32 gpu_textures_ended(u64* out, u32 cap) { STUB(); }
 int mem_lock_held(void) { STUB(); }
