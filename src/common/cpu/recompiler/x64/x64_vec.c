@@ -1239,10 +1239,9 @@ static int vrolw(SgCtx* g, int a, unsigned n) { return vor(g, vshl(g, 2, a, n), 
 static int vaes_last(SgCtx* g, int a, int inv) {
     SgX* x = X;
     const SgXIns* i = x->v[a].def >= 0 && x->v[a].def < x->n ? &x->ins[x->v[a].def] : NULL;
-    const SgXIns* key;
     if (!i || i->kind != SGX_K_VEC || i->def != a || i->vf != (inv ? &sgx_v_aesdeclast : &sgx_v_aesenclast)) return 0;
-    key = &x->ins[x->v[i->in[1]].def];
-    return key->kind == SGX_K_VEC && key->vzero ? i->in[0] : 0;
+    int key = x->v[i->in[1]].def;
+    return key >= 0 && key < x->n && x->ins[key].kind == SGX_K_VEC && x->ins[key].vzero ? i->in[0] : 0;
 }
 
 /* the cryptographic extensions' instructions: the host's AES-NI, SHA-NI and SM4 where it has them, else the portable
