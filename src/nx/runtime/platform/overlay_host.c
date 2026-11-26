@@ -18,6 +18,21 @@
 #include <string.h>
 
 static int capture(int ask) { return g_renderer->capture(ask); }
+/* a setting's row among the Switch's tables: the menu's own rows' (the backend's, the gamepads') and the sections' */
+static const IniOpt* row(const char* key) {
+    static const IniOpt* const tables[] = {g_display_ini, g_audio_ini, g_backend_ini, g_gamepad_ini,
+                                           g_gamepad_players_ini};
+    for (size_t i = 0; i < sizeof tables / sizeof *tables; ++i) {
+        const IniOpt* o = ini_find(tables[i], key);
+        if (o) return o;
+    }
+    for (int s = 0; s < g_ini_sections_count; ++s)
+        for (int t = 0; t < 3 && g_ini_sections[s].table[t]; ++t) {
+            const IniOpt* o = ini_find(g_ini_sections[s].table[t], key);
+            if (o) return o;
+        }
+    return NULL;
+}
 static int pad_map(int player, SnxPadMap* own) {
     if (!player) {
         *own = gamepad_config()->own;
@@ -60,6 +75,8 @@ static void plot(const char* name, double value) { SNX_PLOT(name, value); }
 #endif
 
 static const SnxMenuHost g_overlay_host = {
+    .row = row,
+    .sections = g_ini_sections,
     .set = ini_set_apply,
     .picked = ini_picked,
     .unpick = ini_unpick,
@@ -100,4 +117,9 @@ static const SnxMenuHost g_overlay_host = {
     .plot = plot,
 #endif
 };
-void overlay_host_nx(void) { overlay_set_host(&g_overlay_host); }
+void overlay_host_nx(void) {
+    static SnxMenuHost host; /* the table above with the sections' count, which is no constant expression */
+    host = g_overlay_host;
+    host.sections_count = g_ini_sections_count;
+    overlay_set_host(&host);
+}

@@ -19,7 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define QUADS 4096 /* the controls' (vpad.c), a line of letters, the showcase's and the stats' box */
+#define QUADS 12288 /* the controls' (vpad.c), a line of letters, the showcase's, the stats' box and the menu's */
 
 static struct {
     SDL_Window* window;
@@ -42,6 +42,11 @@ static struct {
     int over;               /* and with the showcase or the stats, which change every frame */
     SDL_WindowID key_window; /* the window the last key was pressed in, 0 for none: a console's of two (the 3DS's) */
     u32 presents;           /* the frames presented, the showcase's frames a second */
+    int asked_slot;         /* a slot the game's menu asked a save or a load for, once, -1 for F9's own */
+    /* the game's menu (menu_window.c): its events, the window's key action given, 1 taken, 2 quit, 3 an action into
+       *out; and its quads over the picture, 1 while it or a notification of its shows */
+    int (*menu_event)(const SDL_Event* e, int action, int* out);
+    int (*menu_draw)(SnxUiList* l, int w, int h);
     SnxUiQuad quads[QUADS];
 } g_vpad_sdl;
 
@@ -162,6 +167,7 @@ uint64_t snx_vpad_window_frame_ns(uint64_t console_ns) {
 void snx_vpad_window_open(SDL_Window* window, const char* ini, void (*say)(const char* line),
                           void (*show)(const char* line)) {
     g_vpad_sdl.window = window;
+    g_vpad_sdl.asked_slot = -1;
     g_vpad_sdl.ini = ini ? snx_strdup(ini) : NULL;
     g_vpad_sdl.say = say;
     g_vpad_sdl.show = show;
@@ -273,6 +279,9 @@ void snx_vpad_window_states(int action, const SnxVpadStates* s, const uint8_t* t
     int slot = g_vpad_sdl.slot < 1 || g_vpad_sdl.slot > g_settings.save_state_slots ? 1 : g_vpad_sdl.slot;
     if (action == HOTKEY_NEXT_SLOT) slot = slot % g_settings.save_state_slots + 1;
     g_vpad_sdl.slot = slot;
+    if (g_vpad_sdl.asked_slot >= 0 && action != HOTKEY_NEXT_SLOT) /* the menu's, F9's left as it was */
+        slot = g_vpad_sdl.asked_slot;
+    g_vpad_sdl.asked_slot = -1;
     snx_state_slot_name(name, sizeof name, slot);
     snx_state_slot_label(label, sizeof label, slot, 0);
     snx_state_slot_label(start, sizeof start, slot, 1);
@@ -406,6 +415,13 @@ void snx_vpad_window_log(int warn, const char* line) {
 }
 uint64_t snx_vpad_window_ms(void) { return SDL_GetTicks(); }
 SDL_WindowID snx_vpad_window_key_window(void) { return g_vpad_sdl.key_window; }
+SDL_Window* snx_vpad_window_sdl(void) { return g_vpad_sdl.window; }
+void snx_vpad_window_slot(int slot) { g_vpad_sdl.asked_slot = slot; }
+void snx_vpad_window_menu(int (*event)(const SDL_Event* e, int action, int* out),
+                          int (*draw)(SnxUiList* l, int w, int h)) {
+    g_vpad_sdl.menu_event = event;
+    g_vpad_sdl.menu_draw = draw;
+}
 int snx_vpad_window_pace(void) { return g_vpad_sdl.pace; }
 void snx_vpad_window_set_pace(int pace) { g_vpad_sdl.pace = pace; }
 bool snx_vpad_window_point(const SDL_Event* e, float* x, float* y) {
@@ -440,6 +456,17 @@ SnxVpadEvent snx_vpad_window_event(const SDL_Event* e, int* action) {
     int safe[4];
     float x, y;
     *action = -1;
+    if (g_vpad_sdl.menu_event) { /* the game's menu first: its keys, Back and F2 to open it, its taps while it shows */
+        int also, out = -1;
+        int key = e->type == SDL_EVENT_KEY_DOWN ? hotkey_find(e->key.key, hotkey_mods(e->key.mod), &also) : -1;
+        int took = g_vpad_sdl.menu_event(e, key, &out);
+        if (took == 2) return SNX_VPAD_QUIT;
+        if (took == 3) {
+            *action = out;
+            return SNX_VPAD_ACTION;
+        }
+        if (took) return SNX_VPAD_TAKEN;
+    }
     switch (e->type) {
         case SDL_EVENT_KEY_DOWN: return key_event(&e->key, action);
         case SDL_EVENT_GAMEPAD_ADDED:
@@ -510,6 +537,7 @@ const SnxUiRects* snx_vpad_window_rects(int w, int h) {
     stats_draw(&l, safe, scale, now);
     ui_unlock();
     over |= l.n > before;
+    if (g_vpad_sdl.menu_draw) over |= g_vpad_sdl.menu_draw(&l, w, h); /* it takes ui_lock itself */
     if (how == VPAD_DRAW_HIDDEN && !over && !g_vpad_sdl.over) return NULL;
     int warn = vpad_editing() && now < g_vpad_sdl.quit_by;
     if (how == VPAD_DRAW_LAID || over || g_vpad_sdl.over || !g_vpad_sdl.made || warn != g_vpad_sdl.warned ||

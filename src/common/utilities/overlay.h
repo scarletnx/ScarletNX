@@ -11,6 +11,7 @@
 #include "common/utilities/run_theme.h"
 #include "common/utilities/ui_ring.h"
 #include "common/utilities/pad_map.h"
+#include "snx_settings.h" /* IniOpt, IniSection */
 
 /* the 3DS's, the Vita's and the GBA's notices are drawn as this menu's (common/utilities/notice.h) */
 #define OVERLAY_COLS        SNX_MENU_COLS   /* the panel, in cells of the 8x16 font: the narrowest */
@@ -40,6 +41,14 @@ enum {
    says it lacks. The Switch's gives them all (runtime/platform/overlay_host.c); a console's window the few it has */
 enum { OVERLAY_ZONE_DRAW, OVERLAY_ZONE_TOAST_LAY, OVERLAY_ZONE_MENU_LAY }; /* the profiler's zones, by what they time */
 typedef struct {
+    /* whether the runtime reads the setting key at all, which its pages then show: every one where NULL (the Switch's);
+       a console's own (console_settings.h's snx_console_opt) */
+    int (*setting_shown)(const char* key);
+    /* the row of a setting by its key (the Switch's tables', a console's of g_console_ini), NULL for none; and the game's
+       .ini's sections the Settings page lists, NULL for none, which leaves that page out */
+    const IniOpt* (*row)(const char* key);
+    const IniSection* sections;
+    int sections_count;
     /* the game's own settings (its picks): key set to value, applied and kept; whether the game set key itself, and the
        key given back to the launcher's; the value a startup setting takes at the next start (1 with it in out); a
        count of the picks' changes; the old settings the .ini still has (their count), and taken out */

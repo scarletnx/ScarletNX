@@ -45,7 +45,7 @@ snx_sailgen_gpu(snx_ctr_gpu pica DIR "${CMAKE_CURRENT_SOURCE_DIR}/gpu/sail")
 # archive once (GNU ld) needs it after snx_ctr_gpu
 target_link_libraries(snx_ctr_gpu PUBLIC snx_ctr_memory scarletnx-common Vulkan::Headers SDL3::SDL3 snx_settings
                                          snx_settings_runtime snx_build_info snx_window_icon snx_vk_common snx_pad_sdl
-                                         snx_vpad_sdl snx_vpad_consoles snx_vk_renderdoc ${CMAKE_DL_LIBS})
+                                         snx_vpad_sdl snx_vpad_consoles snx_vk_renderdoc snx_menu ${CMAKE_DL_LIBS})
 # the shaders and pipelines prepared from earlier runs (gpu/vk/render.c, common/gpu/vk/prepared.h)
 target_link_libraries(snx_ctr_gpu PRIVATE snx_prepared)
 set_source_files_properties("${volk_SOURCE_DIR}/volk.c" PROPERTIES COMPILE_OPTIONS "${snx_third_party_flags}")
