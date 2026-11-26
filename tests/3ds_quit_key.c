@@ -42,7 +42,10 @@ static bool esc(SDL_Keymod mod, bool repeat) { return press(SDLK_ESCAPE, mod, re
 
 int main(void) {
     SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "offscreen");
-    CHECK(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) && (g_window = SDL_CreateWindow("3ds_quit_key", 400, 480, 0)));
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) || !(g_window = SDL_CreateWindow("3ds_quit_key", 400, 480, 0))) {
+        printf("3ds_quit_key: no window under SDL's offscreen driver here (%s): skipped\n", SDL_GetError());
+        return 77;
+    }
     snx_ctr_present_keys(g_window, NULL);
     CHECK(!snx_ctr_present_closed() && !strcmp(snx_ctr_present_notice(), ""));
     /* F4: the clock at no pace, then back to the console's, each said over the game */
