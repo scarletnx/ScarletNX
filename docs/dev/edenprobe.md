@@ -101,18 +101,15 @@ pinned by `EDENPROBE_SHA256`, on lavapipe with the words of `EDENPROBE_MODE`, ag
 summary and in the pull request's comment of builds; the artifact `edenprobe-<commit>-<attempt>` holds the report,
 pictures, logs and `baseline.txt`.
 
-A regression there fails the Build run, and a run that failed publishes nothing: neither the nightly nor a version.
+A regression there fails the Build run, and a run that failed publishes nothing: neither a pull request's
+prerelease nor a version.
 
-A push, a tag, the nightly's schedule and a run by hand run every run. A pull request runs each only when it changes
-what that run loads (a step before the build: `git diff --name-only` of its merge commit through
-`scripts/edenprobe.py runs`): the NRO for `src/nx/`, `src/common/` and its baseline; the APK for `src/android/`,
-`src/gnuabi/`, `src/glslc/`, `src/common/gpu/` and its baseline; both for `src/multicall/`, `scripts/edenprobe.py`, this
-workflow, `CMakeLists.txt`, `CMakePresets.json`, `cpmfile.json` and `cmake/`. One that changes neither runs neither,
-its notice (and the comment's line) saying why. The runs called for go one after the other, each with
+A pull request, a run by hand and a version's tag run them, as every test of the workflow (`SNX_TESTS`); a push to
+`main` and the nightly's schedule build and publish, and run none. The runs go one after the other, each with
 its own output, summary and exit (side by side, with the others at the lowest priority so that the NRO's kernel family,
 which times its threads, passes, they took no less time in all), and the job fails when the NRO's or the APK's does.
 
-On every run but a pull request's, the job also runs Amberlith's main, the NRO of its `nightly` release (checked by its
+The job also runs Amberlith's main, the NRO of its `nightly` release (checked by its
 `.sha256`), with `scripts/edenprobe.py run --advisory-baseline tests/edenprobe/linux-x86_64.txt`: beside the pinned
 release's baseline it never fails. A case the release has not got that does not pass, a case the
 release passes that does not pass here, a run that ends early, or a nightly that cannot be fetched is a warning on the

@@ -2956,7 +2956,10 @@ if(Python3_Interpreter_FOUND)
     # and its compiler caches, which a pull request's run does not save
     add_test(NAME build_caches COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/build_caches_test.py"
                                        "${PROJECT_SOURCE_DIR}")
-    # which of the recompiler's long tests build.yml runs for a pull request (scripts/recompiler-changes.py), and what
+    # build.yml's tests, on a pull request, a run by hand and a version's tag, and on no push to main or nightly
+    add_test(NAME build_tests COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/build_tests_test.py"
+                                      "${PROJECT_SOURCE_DIR}")
+    # which of the recompiler's long tests a change calls for (scripts/recompiler-changes.py), and what
     # each machine's tests under Unicorn did, in ctest's JUnit file (scripts/unicorn-tests.py)
     add_test(NAME recompiler_changes COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/recompiler_changes_test.py")
     add_test(NAME unicorn_tests COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/unicorn_tests_test.py")
