@@ -29,7 +29,15 @@ static void said(const char* line) {
     fprintf(stderr, "%s\n", line);
     if (strstr(line, "the panel shows")) SDL_SetAtomicInt(&g_shown, 1);
 }
-static const SnxErrorSdlHooks g_hooks = {.say = said};
+static SDL_AtomicInt g_returned; /* the refused panel's call came back */
+/* the window's close 3 s on, unless the call came back first: what ends a panel that waited where it should not */
+static int close_later(void* data) {
+    (void)data;
+    for (int i = 0; i < 300 && !SDL_GetAtomicInt(&g_returned); ++i) SDL_Delay(10);
+    if (!SDL_GetAtomicInt(&g_returned)) SDL_PushEvent(&(SDL_Event){.type = SDL_EVENT_QUIT});
+    return 0;
+}
+static const SnxErrorSdlHooks g_hooks = {.say = said, .unseen = 1}; /* SDL's dummy video: this test's own presses */
 
 static int press(void* data) {
     const Presses* p = data;
@@ -71,11 +79,20 @@ int main(int argc, char** argv) {
         SDL_Thread* t;
         SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS);
         t = SDL_CreateThread(press, "presses", &later);
-        int status = snx_error_screen_main(argc, argv);
+        int status = snx_error_screen_run(argc, argv, &g_hooks);
         SDL_WaitThread(t, NULL);
         return status;
     }
     assert(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS));
+    /* on a video driver that shows nothing no panel waits, unless a test drives it (unseen): -1, with why; an Esc a
+       moment later would close one that waited */
+    {
+        SDL_Thread* t = SDL_CreateThread(close_later, "safety", NULL);
+        int action = snx_error_sdl_window(&e, NULL, why, sizeof why);
+        SDL_SetAtomicInt(&g_returned, 1);
+        SDL_WaitThread(t, NULL);
+        assert(action == -1 && strstr(why, "SDL's dummy video driver shows nothing"));
+    }
     /* after the wait: Down, then Enter takes the second action (Try Again, GPU Drivers, ...) */
     {
         Presses p = {.delay_ms = 700, .keys = {SDLK_DOWN, SDLK_RETURN}, .n = 2};
