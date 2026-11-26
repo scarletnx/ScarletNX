@@ -20,7 +20,7 @@
 #include <string.h>
 
 #define BASE          0x10000u
-#define MOST          12u
+#define MOST          32u
 #define NEEDS_AVX2    32768u
 #define NEEDS_GFNI    65536u
 #define NEEDS_SHA     8192u
@@ -45,6 +45,8 @@
 /* INSERTPS (66 0F 3A 21) and MOVQ xmm, xmm/m64 (F3 0F 7E), or their VEX forms: a scalar's upper bits made 0 in XMM */
 #define INSERTPS      "66 0F 3A 21|C4 ?? ?? 21"
 #define MOVQ_XMM      "F3 0F 7E|C5 FA 7E|C5 7A 7E"
+/* MOVDQU of V30's field (disp32 0x2F8 off RBX) to XMM8-XMM15 (REX.R, or VEX's inverted R): a pin's load */
+#define V30_PIN_LOAD  "F3 44 0F 6F ?? F8 02 00 00|C5 7A 6F ?? F8 02 00 00"
 /* MOVDQU xmm, m128: a V register's load from the state, or a constant's from the pool */
 #define MOVDQU_LOAD   "F3 0F 6F"
 /* GF2P8AFFINEQB xmm, xmm/m128, imm8 (66 0F 3A CE) and its VEX.128 form (C4, two bytes, CE); SHA1RNDS4 (0F 3A CC),
@@ -144,6 +146,13 @@ static const Row k_rows[] = {
     {"fsqrt v0.4s, v1.4s (the hot code's one lane mask)", 0, 0, 784, -1, "=1 " MOVMSKPS, "6EA1F820"},
     {"frintm v0.4s, v1.4s (the hot code's one lane mask)", 0, 0, 576, -1, "=1 " MOVMSKPS, "4E219820"},
     {"fcvtzs v0.4s, v1.4s (the hot code's one lane mask)", 0, 0, 608, -1, "=1 " MOVMSKPS, "4EA1B820"},
+    /* a loop of eight ADD, EOR, EOR into V30 (simd_ab's): V3 to V10 and V30 each save a load and a store a turn, so
+       of the nine that tie, V30, read and written eight times a turn, takes a pin (else its chain goes through memory
+       at each turn) */
+    {"a loop's accumulator V30 among nine V registers that tie", 0, 0, 1216, -1, V30_PIN_LOAD,
+     "D2800C90 4EFF8463 6E221C70 6E301FDE 4EFF8484 6E221C91 6E311FDE 4EFF84A5 6E221CB2 6E321FDE 4EFF84C6 6E221CD3 "
+     "6E331FDE 4EFF84E7 6E221CF4 6E341FDE 4EFF8508 6E221D15 6E351FDE 4EFF8529 6E221D36 6E361FDE 4EFF854A 6E221D57 "
+     "6E371FDE F1000610 54FFFCE1"},
 };
 
 static struct {
@@ -210,6 +219,12 @@ static void check(const Row* row, int print) {
     unsigned count = 0;
     g_x64_vec_code.row = row;
     while (*at && count < MOST) words[count++] = (uint32_t)strtoul(at, &at, 16);
+    while (*at == ' ') ++at;
+    if (*at) { /* a row cut short would test other code */
+        fprintf(stderr, "FAIL: %s: words past the %u a row holds\n", row->what, MOST);
+        ++g_x64_vec_code.failures;
+        return;
+    }
     for (unsigned i = 0; i <= count; ++i)
         for (unsigned b = 0; b < 4; ++b)
             image[4 * i + b] = (unsigned char)((i < count ? words[i] : 0xD65F03C0u) >> (8 * b));

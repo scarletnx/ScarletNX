@@ -2083,6 +2083,7 @@ static void pin_dirt(Unit* u, const SnxFunction* f, const int* succ, const unsig
    read the state (a system register's helper, WFE, SEV) */
 static void choose_pins(Unit* u, const SnxFunction* f) {
     SnxU64 weight[33], vweight[32]; /* weight[32]: the guest memory's base */
+    SnxU64 vuses[32];               /* each V register's instructions, weighted as vweight: its ties' breaker */
     unsigned k, best, nhosts;
     int fixed = 0; /* an exclusive, an atomic or CRC32: the last pins' registers may be their machine instructions' */
     unsigned char *loop, *sk;
@@ -2100,6 +2101,7 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
     u->a.reserved = 0;
     u->a.xreserved = MG_XRESERVED;
     memset(vweight, 0, sizeof vweight);
+    memset(vuses, 0, sizeof vuses);
     loop = (unsigned char*)calloc(2 * (f->count + 1), 1);
     sk = loop + f->count + 1; /* each instruction's kind for pin_dirt */
     succ = (int*)malloc(2 * f->count * sizeof *succ);
@@ -2252,6 +2254,7 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
             vrd |= vuse & ~vwr;
             for (m = vdef & ~vwr; m; m &= m - 1) vweight[snx_ctz32(m)] += wt;
             vwr |= vdef;
+            for (m = vuse | vdef; m; m &= m - 1) vuses[snx_ctz32(m)] += wt;
             regs_of(w, &use, &def);
             if (use == LIVE_ALL) continue; /* a call, a return, what isn't classified: a flush anyway */
             for (r = 0; r < 32; ++r) {
@@ -2275,13 +2278,16 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
         if (MG_PIN_RESERVED(mg_pin_hosts[k])) u->a.reserved |= 1u << mg_pin_hosts[k];
         u->pinned = 1;
     }
-    /* the V registers most used, in the machine's vector pins (x86-64's XMM15 down to XMM8) */
+    /* the V registers most used, in the machine's vector pins (x86-64's XMM15 down to XMM8); of two that save as many
+       loads and stores, the one more instructions read or write: a loop's accumulator, whose chain would otherwise go
+       through memory at each turn */
     for (k = 0; k < MG_NVPINS; ++k) {
         unsigned r;
-        SnxU64 top = 0;
+        SnxU64 top = 0, uses = 0;
         best = 32;
         for (r = 0; r < 32; ++r)
-            if (u->vpin[r] < 0 && vweight[r] > top) top = vweight[r], best = r;
+            if (u->vpin[r] < 0 && (vweight[r] > top || (vweight[r] == top && vuses[r] > uses)))
+                top = vweight[r], uses = vuses[r], best = r;
         if (best == 32 || top < 8u) break;
         u->vpin[best] = (signed char)MG_VPIN(k);
         u->a.xreserved |= 1u << MG_VPIN(k);
