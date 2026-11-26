@@ -11,6 +11,7 @@
 #include "common/utilities/state_io.h"
 #include "snx_settings.h"
 #include "support/mic_fake.h"
+#include <SDL3/SDL.h>
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,7 +41,7 @@ static int get(void* ctx, void* p, u64 n) {
 }
 
 int main(void) {
-    setenv("SDL_AUDIO_DRIVER", "dummy", 1);    /* the process's audio starts SDL's, which reaches no sound server */
+    SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "dummy"); /* the process's audio starts SDL's, which reaches no sound server */
     g_settings.microphone[0] = 0;              /* the system's default device, the fake one; "off" by default */
     g_settings.microphone_noise_reduction = 0; /* the samples as recorded */
     char *root = snx_temp_dir(NULL), *folder = root ? snx_path_join(root, "game") : NULL, error[256] = {0};
