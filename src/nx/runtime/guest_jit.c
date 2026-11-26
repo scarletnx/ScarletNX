@@ -269,6 +269,10 @@ static void jit_log(const SnxJitReport* r) {
         LOGV("jit: %llx and %lu more pcs compiled, %lu functions, %lu instructions, %lu KiB, %.1f ms\n",
              (unsigned long long)r->pc, (unsigned long)(r->pcs - 1), (unsigned long)r->functions,
              (unsigned long)r->instructions, (unsigned long)(r->bytes >> 10), r->seconds * 1000.0);
+    if (r->seconds > 0.25)
+        LOG("jit: a slow batch: %lu pcs, %lu functions, %lu instructions, %.0f ms, dropped %d\n",
+            (unsigned long)r->pcs, (unsigned long)r->functions, (unsigned long)r->instructions, r->seconds * 1000.0,
+            r->dropped);
     jit_report_plots(r);
 }
 
