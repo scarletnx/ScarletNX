@@ -349,6 +349,10 @@ int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel
         uint64_t slice = frames_limit != UINT64_MAX ? SNX_CTR_FRAME_SLICE : SNX_CTR_RUN_SLICE, n = 0;
         if (limit && limit - executed < slice) slice = limit - executed;
         states_step(process, directory, (snx_seconds() - started) * 1000.0);
+        if (snx_ctr_present_dump_asked()) { /* F5, as a Switch game's thread dump */
+            printf("Threads (the thread dump's key):\n");
+            report_threads(process);
+        }
         state = snx_ctr_dispatch(native.module, process, slice, &n);
         executed += n;
         /* a service, or a save state loaded only in part, may end the run between two dispatches */

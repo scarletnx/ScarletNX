@@ -52,6 +52,9 @@ int main(void) {
     /* F7: a save asked of the run, once */
     CHECK(snx_ctr_present_state_ask() < 0 && !press(SDLK_F7, SDL_KMOD_NONE, false));
     CHECK(snx_ctr_present_state_ask() == HOTKEY_SAVE_STATE && snx_ctr_present_state_ask() < 0);
+    /* F5: the threads listed by the run, once */
+    CHECK(!snx_ctr_present_dump_asked() && !press(SDLK_F5, SDL_KMOD_NONE, false));
+    CHECK(snx_ctr_present_dump_asked() && !snx_ctr_present_dump_asked());
     { /* a finger on the controls' A in the window presses it; the same place in the lower screen's own window, none */
         SDL_Window* lower = SDL_CreateWindow("3ds_quit_key lower", 400, 480, 0);
         u64 held = 0;

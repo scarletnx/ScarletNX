@@ -23,6 +23,7 @@ static struct {
     bool shot_req;  /* the screenshot key's: the frame saved at the vblank's end */
     char* name;     /* the game's, its .ini's without .ini: its states are states/<name>.<slot>.snxstate */
     int state_ask;  /* a save states' key (HOTKEY_SAVE_STATE...) asked, done between two slices; -1 for none */
+    bool dump;      /* the thread dump's key (F5): the threads listed between two slices */
 } g_present = {.state_ask = -1};
 static volatile sig_atomic_t g_interrupted;
 static void on_signal(int signal) {
@@ -54,6 +55,11 @@ static int state_save(void* game, const char* path, const uint8_t* thumb, char* 
 }
 static int state_load(void* game, const char* path, char* why, size_t whysize) {
     return snx_vita_state_load((VitaProcess*)game, path, why, whysize);
+}
+bool vita_present_dump_asked(void) {
+    bool asked = g_present.dump;
+    g_present.dump = false;
+    return asked;
 }
 void vita_present_states(VitaProcess* p, uint64_t ms) {
     int ask = g_present.state_ask;
@@ -92,6 +98,8 @@ static bool vblank(VitaProcess* p, bool again) {
         else if (took == SNX_VPAD_ACTION &&
                  (action == HOTKEY_SAVE_STATE || action == HOTKEY_LOAD_STATE || action == HOTKEY_NEXT_SLOT))
             g_present.state_ask = action;
+        else if (took == SNX_VPAD_ACTION && action == HOTKEY_THREAD_DUMP)
+            g_present.dump = true;
         else if (took == SNX_VPAD_ACTION)
             snx_vpad_window_none(action, action == HOTKEY_MOUSE     ? "its mouse is the front panel's finger and the "
                                                                       "pointer of the on-screen controls"
