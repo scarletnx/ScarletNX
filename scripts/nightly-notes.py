@@ -181,24 +181,26 @@ def system(name):
     return ', '.join(SYSTEMS[ordered([name])[0]][:2])
 
 
-def table(files, download, sizes=None, missing=(), why=''):
+def table(files, download, sizes=None, missing=(), why='', building=()):
     """The files, a row each in the order of SYSTEMS, linked from the release they are in, with their sizes; a file
-    the run did not build says so, linking why"""
+    the run did not build says so, linking why, and one its job is still making (building) says that"""
     sizes = sizes or {}
     rows = ['| System | Architecture | Download | Size |', '|---|---|---|---|']
-    for name in ordered([*files, *missing]):
+    for name in ordered([*files, *missing, *building]):
         named, arch, kind = SYSTEMS[name]
         if name in files:
             got, weight = f'[{kind}]({download}/{name})', size(sizes[name]) if name in sizes else ''
+        elif name in building:
+            got, weight = f'building, [see the run]({why})' if why else 'building', ''
         else:
             got, weight = f'not built, [see the run]({why})' if why else 'not built', ''
         rows.append(f'| **{named}** | {arch} | {got} | {weight} |')
     return rows
 
 
-def downloads(files, download, url, sha, sizes=None, missing=(), why='', updates='the newest nightly'):
+def downloads(files, download, url, sha, sizes=None, missing=(), why='', updates='the newest nightly', building=()):
     """the downloads: the table, how each system's file runs, and the documents"""
-    lines = ['## Downloads', '', *table(files, download, sizes, missing, why), '']
+    lines = ['## Downloads', '', *table(files, download, sizes, missing, why, building), '']
     shown = dict.fromkeys(SYSTEMS[name][0] for name in ordered(files))
     lines += [f'- **{name}**: {RUNNING[name].format(updates=updates)}' for name in shown]
     lines += [
@@ -251,15 +253,17 @@ def notes(
     missing=(),
     why='',
     pulls=None,
+    building=(),
 ):
     """download: where the release's files are; kept: what becomes of the release; since: what previous was; sizes:
     each file's bytes; lead: what the first line calls the build; updates: the release AppImageUpdate takes it to;
     missing: the files the run did not build, a row each linking why; pulls: the pull request that merged each commit
-    (commit to Pull), which the changes need: an empty one says no commit came in by a pull request"""
+    (commit to Pull), which the changes need: an empty one says no commit came in by a pull request; building: the
+    files their jobs are still making"""
     url = f'{SERVER}/{repo}'
     date = git(checkout, 'log', '-1', '--format=%cs', sha).strip()
     lines = [f'{lead} [`{sha[:7]}`]({url}/commit/{sha}), committed {date}.' + (f' {kept}' if kept else ''), '']
-    lines += downloads(files, download, url, sha, sizes, missing, why, updates=updates)
+    lines += downloads(files, download, url, sha, sizes, missing, why, updates=updates, building=building)
     if previous and pulls is None:
         raise ValueError('the changes need the pull request of each commit: pass pulls')
     items = changes(checkout, previous, sha, pulls)
@@ -309,6 +313,11 @@ def readme(repo, to, optional=()):
             "- **Pull requests**, `pr-<number>`: an open pull request's builds, replaced at each push to it. They are "
             'deleted when it closes without a merge, or once merged, when a nightly has its change. They are '
             'prereleases, not reviewed releases.'
+        ),
+        '',
+        (
+            f"The build of the newest push to `main` is not here: it is [{repo}]({url}/releases)'s one prerelease, "
+            "`main-<commit>`, each package added as its job ends and the whole replaced by the next push's."
         ),
         '',
         "Each release's notes say which file is for which system, what changed and where its source is. This repository",

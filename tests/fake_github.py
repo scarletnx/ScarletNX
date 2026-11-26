@@ -2,7 +2,7 @@
 # Copyright 2026 the ScarletNX contributors
 """A fake gh (a small GitHub kept in a JSON file: releases and tags, pull requests, issues and their comments, the
 users' permissions, Build runs, their jobs and their cancel, files of a branch, the pull requests a commit came in
-by) and a fake Discord (a local HTTP server keeping each webhook's messages), for tests/publish_builds_test.py and
+by, a run's artifacts) and a fake Discord (a local HTTP server keeping each webhook's messages), for tests/publish_builds_test.py and
 tests/cancel_pr_runs_test.py. Offline."""
 
 import http.server
@@ -201,6 +201,9 @@ elif re.fullmatch(r'actions/runs/\d+', rest):
         run.update(status=step['status'], conclusion=step.get('conclusion'), jobs=step['jobs'])
         save()
     out(run)
+elif re.fullmatch(r'actions/runs/\d+/artifacts', rest):  # a run's artifacts: s['run_artifacts'] by run, their names
+    names = s.get('run_artifacts', {}).get(rest.split('/')[2], [])
+    out({'artifacts': [{'id': n, 'name': name, 'expired': False} for n, name in enumerate(names)][(page - 1) * per:page * per]})
 elif re.fullmatch(r'actions/runs/\d+/jobs', rest):
     run = next(r for r in s['runs'] if r['id'] == int(rest.split('/')[2]))
     out({'jobs': run.get('jobs', [])})

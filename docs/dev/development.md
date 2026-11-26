@@ -61,17 +61,21 @@ version tag pushed (`v1.0.0`; `v1.0.0-rc1` a prerelease) as this repository's re
 listing the changes since the version before; the first scheduled run of `main` of each day (UTC) that builds
 everywhere, or a run of it by hand, as that day's nightly in
 [scarletnx/nightly](https://github.com/scarletnx/nightly/releases), `nightly-<day>-<commit>`, where every nightly stays
-(this repository's `nightly` prerelease shows the latest's notes, and the nightly repository's README is
-`scripts/nightly-notes.py`'s, written at each nightly); a day whose runs failed says so, with the run, at the top of the
-newest nightly until the next one; each pull request as a prerelease there, `pr-<number>`, deleted when it closes
-without a merge, or, merged, by the first nightly that has its change, which also deletes any a close's run left behind.
-The notes and the messages link each download with its size and list what changed: a line for each pull request the
-commits came in by, grouped by the `[area]` of its title, with its commits counted, and one for each commit no pull
-request merged (a pull request's own builds list its commits). A fork's pull request is published once someone of the
-team labels it `publish builds`, after each push. The Discord cards of each pull request, each issue and each nightly
-are ReiWimsy's, the bot of [scarletnx/wimsy-core](https://github.com/scarletnx/wimsy-core), which asks GitHub what
-changed every 30 s: no job of this repository draws them. The secrets: `NIGHTLY_TOKEN` (writes that repository's
-contents) and `DISCORD_WEBHOOK_RELEASES` (a version's message).
+(the nightly repository's README is `scripts/nightly-notes.py`'s, written at each nightly); a day whose runs failed says
+so, with the run, at the top of the newest nightly until the next one; each push to `main` as this repository's one
+prerelease of main, `main-<commit>`, a tag that never moves: each packaging job of `build.yml` starts `publish.yml` by
+hand with its run once its package is uploaded, so the package joins at once, and the run's end does it once more; the
+first package of a newer build replaces the prerelease and its tag, a build that ends with no package leaves none, and
+an older one changes nothing (`publish.yml`'s concurrency runs one at a time); each pull request as a prerelease there,
+`pr-<number>`, deleted when it closes without a merge, or, merged, by the first nightly that has its change, which also
+deletes any a close's run left behind. The notes and the messages link each download with its size and list what
+changed: a line for each pull request the commits came in by, grouped by the `[area]` of its title, with its commits
+counted, and one for each commit no pull request merged (a pull request's own builds list its commits). A fork's pull
+request is published once someone of the team labels it `publish builds`, after each push. The Discord cards of each
+pull request, each issue and each nightly are ReiWimsy's, the bot of
+[scarletnx/wimsy-core](https://github.com/scarletnx/wimsy-core), which asks GitHub what changed every 30 s: no job of
+this repository draws them. The secrets: `NIGHTLY_TOKEN` (writes that repository's contents) and
+`DISCORD_WEBHOOK_RELEASES` (a version's message).
 Verify affected scenes manually, repeat intermittent failures, record evidence/scope.
 Test guest semantics + malformed IPC with synthetic cases.
 

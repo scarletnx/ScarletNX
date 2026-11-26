@@ -12,9 +12,12 @@ the run whose artifacts publish takes (kind, run, sha, short, pr, tag), when the
 - a Build run that ended (workflow_run): a push of a version tag (v...) that built everywhere becomes REPO's release of
   that tag, the latest (a prerelease for a tag with a '-', v1.0.0-rc1); a scheduled run of main, or one by hand, that
   built everywhere becomes the day's nightly, NIGHTLY's release nightly-<day>-<commit> (the day the run began, UTC),
-  the latest there, every nightly kept, and REPO's prerelease "nightly" a link to it; one that failed says so at the top
-  of the newest nightly, until the next comes out; a push to main publishes nothing here; a pull request's run becomes
-  NIGHTLY's prerelease pr-<number>, its files and notes replaced at each push;
+  the latest there, every nightly kept; one that failed says so at the top of the newest nightly, until the next comes
+  out; a push to main becomes REPO's one prerelease of main, tagged main-<commit>, a tag that never moves: each package
+  joins it as its job ends (build.yml starts this workflow by hand with the run, and the run's end does once more),
+  the build before and its tag go when the first package of a newer one comes, a build that ends with no package
+  leaves no prerelease, and an older build changes nothing; a pull request's run becomes NIGHTLY's prerelease
+  pr-<number>, its files and notes replaced at each push;
 - a pull request closed (pull_request_target) without a merge: its prerelease and tag are deleted; merged: they stay
   until a nightly has its merge commit, so its change can be had in between, and each nightly published deletes the
   ones it now has, with those of pull requests closed since, listed first (the sweep);
@@ -67,7 +70,24 @@ PULLS_ASKED = 50
 TEAM = {'admin', 'maintain', 'write'}
 VERSION = re.compile(r'v\d[0-9A-Za-z.+-]*')
 DAY = re.compile(r'\d{4}-\d{2}-\d{2}')
+# what this repository's prerelease that linked the newest nightly was tagged, a tag that moved at each one: deleted
 ROLLING = 'nightly'
+# main's prerelease in this repository: its title, and its tags' prefix, main-<commit>, a tag that never moves
+MAIN = 'main'
+# the job of build.yml that makes each release file, whose state main's prerelease says while the file is not there
+JOBS = {
+    'ScarletNX-linux-x86_64.AppImage': 'Linux AppImage (x86_64)',
+    'ScarletNX-linux-aarch64.AppImage': 'Linux AppImage (aarch64)',
+    'ScarletNX-linux-ppc64le.AppImage': 'Linux AppImage (ppc64le)',
+    'ScarletNX-linux-ppc64.AppImage': 'Linux AppImage (ppc64)',
+    'ScarletNX-linux-riscv64.AppImage': 'Linux AppImage (riscv64)',
+    'ScarletNX-linux-loongarch64.AppImage': 'Linux AppImage (loongarch64)',
+    'ScarletNX-windows-x86_64.zip': 'Windows (Clang + LLVM)',
+    'ScarletNX-windows-aarch64.zip': 'Windows (Clang + LLVM, aarch64)',
+    'ScarletNX-android-universal.apk': 'Android APK',
+    'ScarletNX-macos-arm64.zip': 'macOS and iOS (arm64)',
+    'ScarletNX-ios-arm64.ipa': 'macOS and iOS (arm64)',
+}
 # the line a nightly's notes open with while the day after it has none
 MISSED = '<!-- missed -->'
 # A run's artifacts, by the commit's first 7 digits: the release file each gives, ScarletNX-<system>-<arch>
@@ -405,30 +425,10 @@ class Publisher(Hub):
             pulls=pulls,
         )
         title = nightly_notes.title(day, sha)
-        made, new = self.put_release(self.to, tag, title, body, False, uploads)
+        new = self.put_release(self.to, tag, title, body, False, uploads)[1]
         print(f'{"published" if new else "replaced the files of"} {tag}')
         for old in older[:1]:  # the day it stood for has its nightly now
             self.unsay_missed(old)
-        url = made.get('html_url', f'{SERVER}/{self.to}/releases/tag/{tag}')
-        lead = (
-            f'The newest nightly, [{title}]({url}), from [{self.to}]({SERVER}/{self.to}/releases) where every nightly '
-            'stays. Built from main at'
-        )
-        rolling = nightly_notes.notes(
-            self.checkout,
-            sha,
-            previous,
-            self.repo,
-            list(files),
-            download,
-            '',
-            sizes=sizes,
-            lead=lead,
-            missing=missing,
-            why=why,
-            pulls=pulls,
-        )
-        self.point_rolling(title, rolling, sha)
         self.put_readme()
         self.sweep()
 
@@ -488,20 +488,118 @@ class Publisher(Hub):
         self.write(self.to, 'PUT', path, data)
         print(f'{self.to} README.md written')
 
-    def point_rolling(self, title, body, sha):
-        """REPO's rolling prerelease ROLLING: no files, the latest nightly's notes, its tag on that commit"""
-        rolling = self.release(self.repo, ROLLING)
-        fields = {'name': f'{title}, in {self.to}', 'body': body, 'prerelease': True, 'make_latest': 'false'}
-        if not rolling:
-            self.write(
-                self.repo, 'POST', f'repos/{self.repo}/releases', dict(fields, tag_name=ROLLING, target_commitish=sha)
+    # ---- main's prerelease: the build of the newest push, its packages each as its job ends
+    def main_releases(self):
+        """REPO's main prereleases, the newest first: one, but for a run that stopped between making one and deleting
+        the one before"""
+        return sorted(
+            (r for r in self.releases(self.repo) if r['tag_name'].startswith(f'{MAIN}-')), key=published, reverse=True
+        )
+
+    @staticmethod
+    def commit_of(release):
+        """the commit a release's notes were built from, the first they name; '' for none"""
+        found = re.search(r'[0-9a-f]{40}', (release or {}).get('body') or '')
+        return found.group(0) if found else ''
+
+    def main_plan(self, run):
+        """the packages of run, a push to main, to download for main's prerelease: those its artifacts have and the
+        prerelease lacks. None for a run older than the build the prerelease is of"""
+        sha = run['head_sha']
+        current = next(iter(self.main_releases()), None)
+        built = self.commit_of(current)
+        if current and built != sha and self.contains(sha, built):
+            print(f"{sha[:7]} is older than main's prerelease, {built[:7]}: it stays")
+            return
+        have = {a['name'] for a in current['assets']} if current and built == sha else set()
+        made = {
+            a['name']
+            for a in self.pages(f'repos/{self.repo}/actions/runs/{run["id"]}/artifacts')
+            if not a.get('expired')
+        }
+        need = [
+            file for pattern, file in ARTIFACTS.items() if pattern.format(short=sha[:7]) in made and file not in have
+        ]
+        self.take('main', run, need=need)
+
+    def main_build(self, run_id, sha):
+        """main's prerelease brought to run, a push to main: a new build takes it at its first package, tagged
+        main-<commit>, and the one before goes; each package joins as it comes; the notes say what is built, building
+        and not built; a build that ended with no package leaves no prerelease. An older build changes nothing"""
+        run = self.read(f'repos/{self.repo}/actions/runs/{run_id}')
+        releases = self.main_releases()
+        current = releases[0] if releases else None
+        built = self.commit_of(current)
+        if current and built != sha and self.contains(sha, built):
+            print(f"{sha[:7]} is older than main's prerelease, {built[:7]}: it stays")
+            return
+        ours = current if current and built == sha else None
+        files, uploads, _ = self.packages(sha)
+        tag = f'{MAIN}-{sha[:7]}'
+        if not ours and not files:
+            if run['status'] != 'completed':
+                print(f'no package of {sha[:7]} yet: {current["tag_name"] if current else "no prerelease"} stays')
+                return
+            for old in releases:
+                self.drop_release(self.repo, old)
+                print(f'deleted {old["tag_name"]}: the build of {sha[:7]}, newer, ended with no package')
+            self.drop_rolling()
+            return
+        if not ours:
+            fields = {'tag_name': tag, 'target_commitish': sha, 'name': f'{MAIN} ({sha[:7]})', 'body': '',
+                      'prerelease': True, 'make_latest': 'false'}  # fmt: skip
+            ours = dict(self.write(self.repo, 'POST', f'repos/{self.repo}/releases', fields) or fields, assets=[])
+            print(f"made {tag}, main's prerelease, at its first package")
+        have = {a['name']: a.get('size', 0) for a in ours.get('assets', [])}
+        new = {name: path for name, path in uploads.items() if name not in have}
+        if new:
+            self.gh(
+                ['release', 'upload', tag, *map(str, new.values()), '--repo', self.repo, '--clobber'],
+                self.repo,
+                write=True,
             )
-        else:
-            self.write(self.repo, 'PATCH', f'repos/{self.repo}/git/refs/tags/{ROLLING}', {'sha': sha, 'force': True})
-            self.write(self.repo, 'PATCH', f'repos/{self.repo}/releases/{rolling["id"]}', fields)
-            for asset in rolling.get('assets', []):
-                self.write(self.repo, 'DELETE', f'repos/{self.repo}/releases/assets/{asset["id"]}')
-        print(f'{self.repo} "{ROLLING}" links {title}')
+            print(f'{tag}: {", ".join(sorted(n for n in new if n in JOBS))} added')
+        present = [name for name in JOBS if name in have or name in files]
+        sizes = {**{n: have[n] for n in present if n in have}, **{n: files[n].stat().st_size for n in files}}
+        jobs = {j['name']: j for j in self.pages(f'repos/{self.repo}/actions/runs/{run_id}/jobs', self.repo)}
+        building = [n for n in JOBS if n not in present and (jobs.get(JOBS[n]) or {}).get('status') != 'completed'
+                    and run['status'] != 'completed']  # fmt: skip
+        missing = [n for n in JOBS if n not in present and n not in building]
+        why = run.get('html_url') or f'{SERVER}/{self.repo}/actions/runs/{run_id}'
+        begun = run.get('run_started_at') or run.get('created_at') or ''
+        said = (
+            f'Its run, [{run_id}]({why}), began {begun.replace("T", " ").rstrip("Z")} UTC. The build of each green push '
+            f"to main, which the next push's first package replaces; what changed is in the nightlies of "
+            f'[{self.to}]({SERVER}/{self.to}/releases).'
+        )
+        body = nightly_notes.notes(
+            self.checkout,
+            sha,
+            '',
+            self.repo,
+            present,
+            f'{SERVER}/{self.repo}/releases/download/{tag}',
+            said,
+            sizes=sizes,
+            lead='The build of `main` at',
+            missing=missing,
+            why=why,
+            building=building,
+        )
+        self.write(self.repo, 'PATCH', f'repos/{self.repo}/releases/{ours["id"]}', {'body': body})
+        print(f'{tag}: {len(present)} built, {len(building)} building, {len(missing)} not built')
+        for old in releases:
+            if old['tag_name'] != tag:
+                self.drop_release(self.repo, old)
+                print(f'deleted {old["tag_name"]}: {tag} is newer')
+        self.drop_rolling()
+
+    def drop_rolling(self):
+        """the prerelease ROLLING, which linked the newest nightly with a tag that moved, deleted where it is still"""
+        rolling = self.release(self.repo, ROLLING)
+        if rolling:
+            self.drop_release(self.repo, rolling)
+            print(f'deleted {self.repo} "{ROLLING}" and its tag, which moved at each nightly')
 
     def version(self, run, sha, tag):
         files, uploads, missing = self.complete(run, sha)
@@ -732,8 +830,9 @@ class Publisher(Hub):
         pulls = self.pages(f'repos/{self.repo}/pulls?state=open', self.repo)
         return next((pr for pr in pulls if pr['head']['sha'] == sha), None)
 
-    def take(self, kind, run, pr=None, tag=''):
-        """the run publish takes the artifacts of, for the workflow to download them; a nightly's day, the one it began"""
+    def take(self, kind, run, pr=None, tag='', need=None):
+        """the run publish takes the artifacts of, for the workflow to download them; a nightly's day, the one it began;
+        for main's prerelease, the files it needs, each between spaces"""
         self.output = {
             'kind': kind,
             'run': str(run['id']),
@@ -742,6 +841,7 @@ class Publisher(Hub):
             'pr': str(pr['number']) if pr else '',
             'tag': tag,
             'day': run['created_at'][:10] if kind == 'nightly' else '',
+            'need': f' {" ".join(need)} ' if need else '',
         }
         print(f'to publish: the {kind} builds of run {run["id"]} ({run["head_sha"][:7]})')
 
@@ -759,8 +859,8 @@ class Publisher(Hub):
                 print(f'a push to {run["head_repository"]["full_name"]}: nothing to publish')
             elif name != 'main' and not (VERSION.fullmatch(name) and self.tagged(name)):
                 print(f'a push to {name}: neither main nor a version tag, nothing to publish')
-            elif name == 'main' and run['event'] == 'push':
-                print(f"run {run['id']}, a push to main: a nightly is a day's scheduled run, not a push's")
+            elif name == 'main' and run['event'] == 'push':  # whatever it ended as: main's prerelease says it
+                self.main_plan(run)
             elif run['conclusion'] != 'success':
                 print(f'run {run["id"]} of {name} ended {run["conclusion"]}: nothing published')
                 if name == 'main':
@@ -783,6 +883,16 @@ class Publisher(Hub):
             print(f'#{pr["number"]} is a fork\'s: it waits for the team\'s "{LABEL}" label on this push')
         else:
             self.take('pr', run, pr)
+
+    def on_package(self, run_id):
+        """a job of a Build run of main's push uploaded its package: main's prerelease takes it"""
+        if not str(run_id).isdigit():
+            raise RuntimeError(f'the run of a package is a run id, not {run_id!r}')
+        run = self.read(f'repos/{self.repo}/actions/runs/{run_id}')
+        if run['event'] != 'push' or run['head_branch'] != 'main' or run['head_repository']['full_name'] != self.repo:
+            print(f'run {run_id} is a {run["event"]} of {run["head_branch"]}, not a push to main: nothing to publish')
+            return
+        self.main_plan(run)
 
     def on_pull(self, action, pr, label):
         if action == 'closed':
@@ -811,7 +921,7 @@ def main():
     parser.add_argument('step', choices=['plan', 'publish'])
     parser.add_argument('--repo', required=True)
     parser.add_argument('--to', required=True, help='the nightly repository')
-    parser.add_argument('--kind', choices=['nightly', 'pr', 'release'])
+    parser.add_argument('--kind', choices=['nightly', 'pr', 'release', 'main'])
     parser.add_argument('--run', help='the Build run the artifacts are of')
     parser.add_argument('--sha', help='the commit it built')
     parser.add_argument('--pr', type=int, help="the pull request's number")
@@ -836,6 +946,8 @@ def main():
                 publisher.nightly(args.run, args.sha, args.day)
             elif args.kind == 'release':
                 publisher.version(args.run, args.sha, args.tag)
+            elif args.kind == 'main':
+                publisher.main_build(args.run, args.sha)
             else:
                 publisher.pull(publisher.read(f'repos/{args.repo}/pulls/{args.pr}'), args.sha, args.run)
             return
@@ -846,6 +958,8 @@ def main():
             publisher.on_run(event['workflow_run'])
         elif name == 'pull_request_target':
             publisher.on_pull(event['action'], event['pull_request'], event.get('label', {}).get('name'))
+        elif name == 'workflow_dispatch':  # a package of main's push, just uploaded (build.yml)
+            publisher.on_package((event.get('inputs') or {}).get('run', ''))
         else:
             print(f'{name}: nothing to publish')
         if publisher.output and os.environ.get('GITHUB_OUTPUT'):

@@ -220,6 +220,18 @@ jobs:
           path: |
             dist/*.AppImage*
             dist/appinfo
+      # A push to main: the package goes to main's prerelease now, not once the run ends (publish.yml, run by hand
+      # with this run, which GITHUB_TOKEN may start; scripts/publish-builds.py)
+      - &publish-main
+        name: Put the package in main's prerelease
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/publish.yml/dispatches" \
+            -d "{\"ref\": \"main\", \"inputs\": {\"run\": \"$GITHUB_RUN_ID\"}}"
       # in a plain Ubuntu, where neither the checkout nor the build tree stands in for what an install lacks
       - name: Run the AppImage as a user would
         uses: docker://ubuntu:24.04
@@ -653,6 +665,7 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: scripts/ci/cross.sh check_appimage
       - *appimage-upload
+      - *publish-main
       - name: Give the dependency sources back to the runner
         run: scripts/ci/cross.sh cpm_owner
       - name: Run ${{ matrix.arch }} AppImages through qemu-user
@@ -752,6 +765,7 @@ jobs:
           name: ScarletNX-windows-${{ matrix.arch }}-${{ steps.commit.outputs.short }}
           path: stage
           if-no-files-found: error
+      - *publish-main
       # in Git Bash, where no DLL of MSYS2's stands in for one the zip lacks
       - name: Run the zip's scarletnx.exe as a user would
         shell: bash
@@ -882,6 +896,7 @@ jobs:
           path: ScarletNX-android-arm64-v8a-${{ steps.commit.outputs.short }}.apk
           archive: false
           if-no-files-found: error
+      - *publish-main
       # Robolectric fetches the Android it runs the tests on (android-all-instrumented) from Maven Central as they start, into
       # ~/.m2, not Gradle's cache: kept between runs, as Maven Central refuses a cold run's fetch at times (HTTP 429)
       - uses: actions/cache@v5
@@ -1036,3 +1051,13 @@ jobs:
           path: ScarletNX-ios-arm64-${{ steps.commit.outputs.short }}.ipa
           archive: false
           if-no-files-found: error
+      # macOS's and iOS's, whichever built: either may fail, and the job with it, without failing the run
+      - name: Put the packages in main's prerelease
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/publish.yml/dispatches" \
+            -d "{\"ref\": \"main\", \"inputs\": {\"run\": \"$GITHUB_RUN_ID\"}}"

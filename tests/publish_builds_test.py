@@ -2,9 +2,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 """scripts/publish-builds.py against a fake gh (a small GitHub kept in a JSON file) and a fake Discord (a local HTTP
-server): a version tag's release in the repository; the nightly made in the nightly repository, kept to the newest N,
-never one older than the latest, and linked from the repository's rolling prerelease; a pull request's prerelease
-replaced at each push and gone when it closes; a fork's only once the team labels it
+server): a version tag's release in the repository; the day's nightly made in the nightly repository, every one kept,
+never one older than the latest, a failed day said atop the newest, the nightly repository's README written; main's
+prerelease in the repository, each package as its job ends, the build before gone at the newer's first, none left by
+a build with no package, an older build changing nothing; a pull request's prerelease replaced at each push, gone when
+it closes without a merge or once a nightly has it, and the sweep of those left; a fork's only once the team labels it
 after its last push; and the writes to the nightly repository made with its own token. Each release's notes link every
 download with its size and say what changed: the changes since the last one, a pull request's commits and the main
 commit it stands on; a version's message, each download. No card is posted, a nightly's or a pull request's: those are
@@ -266,25 +268,26 @@ with tempfile.TemporaryDirectory() as temporary:
     )
     done, planned = run('plan', event=push_run(sha, number=41))
     check(
-        "a green push to main is no nightly: a day's scheduled run is",
-        not planned and done.returncode == 0 and 'a push to main' in done.stdout,
+        "a green push to main is no nightly: it is planned for main's prerelease",
+        planned.get('kind') == 'main' and planned.get('need') == '' and done.returncode == 0,
         done.stdout + done.stderr,
     )
     done, planned = run('plan', event=push_run(sha, number=44, event='schedule'))
     check(
         'a green scheduled run of main is planned as the nightly of the day it began',
-        planned == {'kind': 'nightly', 'run': '44', 'sha': sha, 'short': sha[:7], 'pr': '', 'tag': '', 'day': DAY},
+        planned
+        == {'kind': 'nightly', 'run': '44', 'sha': sha, 'short': sha[:7], 'pr': '', 'tag': '', 'day': DAY, 'need': ''},
         planned,
     )
     done, planned = run('plan', event=push_run(sha, number=45, event='workflow_dispatch'))
     check(
         'a green run of main by hand is planned as a nightly',
-        planned == {'kind': 'nightly', 'run': '45', 'sha': sha, 'short': sha[:7], 'pr': '', 'tag': '', 'day': DAY},
+        planned
+        == {'kind': 'nightly', 'run': '45', 'sha': sha, 'short': sha[:7], 'pr': '', 'tag': '', 'day': DAY, 'need': ''},
         planned,
     )
     for event, why in (
         (push_run(sha, branch='dev', event='workflow_dispatch'), 'a run by hand of another branch'),
-        (push_run(sha, 'failure'), 'a failed run'),
         (push_run(sha, branch='dev'), 'another branch'),
         (push_run(sha, branch='v9.9.9'), 'a branch named like a version, no tag'),
     ):
@@ -387,27 +390,17 @@ with tempfile.TemporaryDirectory() as temporary:
         and ' | 0.0 MB |' in made['body'],
         made and made['body'],
     )
-    linked = find('nightly', REPO, s)
     check(
-        "the rolling prerelease: no files, a link to the latest, its tag moved there, the latest's downloads and changes",
-        linked
-        and not linked['assets']
-        and linked['prerelease']
-        and f'https://github.com/{TO}/releases/tag/{tag}' in linked['body']
-        and f'[APK](https://github.com/{TO}/releases/download/{tag}/ScarletNX-android-universal.apk)' in linked['body']
-        and f'([#5](https://github.com/{REPO}/pull/5), 1 commit, by someone)' in linked['body']
-        and s['tags'][REPO]['nightly'] == sha,
-        linked,
+        'the nightly moves no tag of this repository: the rolling prerelease and its tag stay as they were',
+        find('nightly', REPO, s) == rolling and s['tags'][REPO]['nightly'] == oldest,
+        find('nightly', REPO, s),
     )
     writes = [c for c in calls() if '-X' in c['args'] or c['args'][0] == 'release']
     to_writes = [c for c in writes if TO in ' '.join(c['args'])]
     repo_writes = [c for c in writes if REPO in ' '.join(c['args'])]
     check(
-        'the nightly repository written with its token, the repository with its own',
-        to_writes
-        and repo_writes
-        and all(c['token'] == 'nightly-token' for c in to_writes)
-        and all(c['token'] == 'repo-token' for c in repo_writes),
+        'the nightly repository written with its token, and nothing of this repository',
+        to_writes and not repo_writes and all(c['token'] == 'nightly-token' for c in to_writes),
         writes,
     )
     check(
@@ -507,15 +500,15 @@ with tempfile.TemporaryDirectory() as temporary:
         and 'would run: gh api -X POST' in done.stdout,
         done.stdout + done.stderr,
     )
-    # no rolling prerelease yet: made, on the commit
+    # this repository without the rolling prerelease: a nightly makes none
     save_state(with_releases(REPO, []))
     done = publish('nightly', *everything(sha), '--checkout', str(checkout), '--day', DAY)
-    linked = find('nightly', REPO)
     check(
-        'a rolling prerelease made when there is none',
-        done.returncode == 0 and linked and linked['target_commitish'] == sha and linked['prerelease'],
+        'a nightly makes no prerelease in this repository',
+        done.returncode == 0 and not releases(REPO) and find(tag),
         done.stdout + done.stderr,
     )
+    save_state(with_releases(REPO, [rolling]))
 
     # ---- a version tag: the repository's release
     first = {
@@ -812,6 +805,256 @@ with tempfile.TemporaryDirectory() as temporary:
     )
     save_state({k: v for k, v in state().items() if k != 'pull_errors'})
 
+    # ---- main's prerelease, package by package
+    def main_run(number, commit, status='in_progress', conclusion=None, jobs=()):
+        return {
+            'id': number,
+            'event': 'push',
+            'head_branch': 'main',
+            'head_sha': commit,
+            'status': status,
+            'conclusion': conclusion,
+            'created_at': '2026-10-17T08:00:00Z',
+            'run_started_at': '2026-10-17T08:00:05Z',
+            'html_url': f'https://github.com/{REPO}/actions/runs/{number}',
+            'head_repository': {'full_name': REPO},
+            'jobs': [{'name': name, 'status': st, 'conclusion': co} for name, st, co in jobs],
+        }
+
+    short = sha[:7]
+    going = [
+        ('Linux AppImage (x86_64)', 'completed', 'success'),
+        ('Windows (Clang + LLVM)', 'in_progress', None),
+        ('Android APK', 'queued', None),
+    ]
+    before = {
+        'id': 95,
+        'tag_name': f'main-{previous[:7]}',
+        'name': f'main ({previous[:7]})',
+        'created_at': '2026-10-01T00:00:00Z',
+        'published_at': '2026-10-16T00:00:00Z',
+        'body': f'The build of `main` at [`{previous[:7]}`](https://github.com/{REPO}/commit/{previous}).',
+        'assets': [{'id': 96, 'name': 'ScarletNX-linux-x86_64.AppImage', 'size': 5}],
+        'prerelease': True,
+    }
+    s = state()
+    s['releases'][REPO] = [rolling, before]
+    s['tags'][REPO].update({'nightly': oldest, f'main-{previous[:7]}': previous})
+    s['runs'] = [main_run(70, sha, jobs=going)]
+    s['run_artifacts'] = {'70': [f'ScarletNX-linux-x86_64-{short}.AppImage']}
+    save_state(s)
+
+    def main_files(name, *keep):
+        # only the packages named in keep downloaded, as publish.yml's steps take what plan needs: each artifact skipped
+        # whole by its name before the commit
+        prefixes = [pattern.split('{short}')[0] for pattern in publish_module.ARTIFACTS]
+        return str(artifacts(name, sha, [p for p in prefixes if not any(f'-{part}-' in p for part in keep)]))
+
+    done, planned = run('plan', '--checkout', str(checkout), name='workflow_dispatch', event={'inputs': {'run': '70'}})
+    check(
+        "a package of main's push: planned as main, needing the one its artifacts have",
+        planned.get('kind') == 'main'
+        and planned.get('run') == '70'
+        and planned.get('need') == ' ScarletNX-linux-x86_64.AppImage ',
+        done.stdout + done.stderr,
+    )
+    done = publish(
+        'main',
+        '--run',
+        '70',
+        '--sha',
+        sha,
+        '--artifacts',
+        main_files('m1', 'linux-x86_64'),
+        '--checkout',
+        str(checkout),
+    )
+    s = state()
+    made = find(f'main-{short}', REPO, s)
+    check(
+        "the first package of a newer build: main's prerelease made for it, tagged main-<commit>, on the commit",
+        done.returncode == 0
+        and made
+        and made['prerelease']
+        and made['make_latest'] == 'false'
+        and made['target_commitish'] == sha
+        and sorted(a['name'] for a in made['assets'])
+        == ['ScarletNX-linux-x86_64.AppImage', 'ScarletNX-linux-x86_64.AppImage.zsync'],
+        done.stdout + done.stderr,
+    )
+    check(
+        'its notes: the build, its run and when it began, the package built, those building and those not',
+        made
+        and made['body'].startswith(f'The build of `main` at [`{short}`](https://github.com/{REPO}/commit/{sha})')
+        and f'[70](https://github.com/{REPO}/actions/runs/70), began 2026-10-17 08:00:05 UTC' in made['body']
+        and f'[AppImage](https://github.com/{REPO}/releases/download/main-{short}/ScarletNX-linux-x86_64.AppImage)'
+        in made['body']
+        and f'| **Windows** | x86-64 | building, [see the run](https://github.com/{REPO}/actions/runs/70) |  |'
+        in made['body']
+        and '| **Android** | ARM64, x86-64 | building' in made['body']
+        and '## Changes' not in made['body'],
+        made and made['body'],
+    )
+    check(
+        'the build before gone with its tag, and the rolling prerelease of the nightlies with its moving tag',
+        not find(f'main-{previous[:7]}', REPO, s)
+        and f'main-{previous[:7]}' not in s['tags'][REPO]
+        and not find('nightly', REPO, s)
+        and 'nightly' not in s['tags'][REPO],
+        [r['tag_name'] for r in releases(REPO, s)],
+    )
+    # the next package: added, the first one left as it is
+    s = state()
+    s['runs'] = [main_run(70, sha, jobs=[going[0], ('Windows (Clang + LLVM)', 'completed', 'success'), going[2]])]
+    s['run_artifacts']['70'].append(f'ScarletNX-windows-x86_64-{short}')
+    save_state(s)
+    done, planned = run('plan', '--checkout', str(checkout), name='workflow_dispatch', event={'inputs': {'run': '70'}})
+    check(
+        'the next package needs only itself',
+        planned.get('need') == ' ScarletNX-windows-x86_64.zip ',
+        planned,
+    )
+    log_file.unlink(missing_ok=True)
+    done = publish(
+        'main',
+        '--run',
+        '70',
+        '--sha',
+        sha,
+        '--artifacts',
+        main_files('m2', 'windows-x86_64'),
+        '--checkout',
+        str(checkout),
+    )
+    made = find(f'main-{short}', REPO)
+    check(
+        "the next package joins main's prerelease, the ones before kept, the notes saying it",
+        done.returncode == 0
+        and sorted(a['name'] for a in made['assets'])
+        == sorted(
+            ['ScarletNX-linux-x86_64.AppImage', 'ScarletNX-linux-x86_64.AppImage.zsync', 'ScarletNX-windows-x86_64.zip']
+        )
+        and '[zip](' in made['body']
+        and '| **Android** | ARM64, x86-64 | building' in made['body']
+        and not [c for c in calls() if c['args'][:3] == ['api', '-X', 'DELETE']],
+        done.stdout + done.stderr + (made['body'] if made else ''),
+    )
+    # the run ends, Android failed: said not built
+    s = state()
+    s['runs'] = [
+        main_run(
+            70,
+            sha,
+            'completed',
+            'failure',
+            [going[0], ('Windows (Clang + LLVM)', 'completed', 'success'), ('Android APK', 'completed', 'failure')],
+        )
+    ]
+    save_state(s)
+    done = publish('main', '--run', '70', '--sha', sha, '--artifacts', main_files('m3'), '--checkout', str(checkout))
+    made = find(f'main-{short}', REPO)
+    check(
+        'the run ended: a package its job did not make said not built, with the run, none said building',
+        done.returncode == 0
+        and f'| **Android** | ARM64, x86-64 | not built, [see the run](https://github.com/{REPO}/actions/runs/70) |  |'
+        in made['body']
+        and 'building' not in made['body'],
+        made['body'],
+    )
+    # an older build arriving later: nothing changes
+    s = state()
+    s['runs'].append(main_run(69, previous, jobs=going))
+    s['run_artifacts']['69'] = [f'ScarletNX-linux-x86_64-{previous[:7]}.AppImage']
+    save_state(s)
+    done, planned = run('plan', '--checkout', str(checkout), name='workflow_dispatch', event={'inputs': {'run': '69'}})
+    check(
+        'an older build is not planned', not planned and 'is older than main' in done.stdout, done.stdout + done.stderr
+    )
+    held = find(f'main-{short}', REPO)
+    done = publish(
+        'main',
+        '--run',
+        '69',
+        '--sha',
+        previous,
+        '--artifacts',
+        str(artifacts('m4', previous)),
+        '--checkout',
+        str(checkout),
+    )
+    check(
+        "an older build's packages arriving later change nothing",
+        done.returncode == 0 and find(f'main-{short}', REPO) == held and not find(f'main-{previous[:7]}', REPO),
+        done.stdout + done.stderr,
+    )
+    # a newer build with no package yet: the one there stays; ended with none: no prerelease left
+    s = state()
+    s['runs'].append(main_run(71, later, jobs=going))
+    save_state(s)
+    done = publish(
+        'main', '--run', '71', '--sha', later, '--artifacts', str(root / 'none'), '--checkout', str(checkout)
+    )
+    check(
+        'a newer build with no package yet leaves the prerelease there',
+        done.returncode == 0 and find(f'main-{short}', REPO) and 'no package of' in done.stdout,
+        done.stdout + done.stderr,
+    )
+    s = state()
+    s['runs'][-1] = main_run(71, later, 'completed', 'failure', [('Linux AppImage (x86_64)', 'completed', 'failure')])
+    save_state(s)
+    done, planned = run('plan', '--checkout', str(checkout), event={'workflow_run': s['runs'][-1]})
+    check(
+        "a push to main's run that ended is planned as main whatever it ended as, needing nothing",
+        planned.get('kind') == 'main' and planned.get('need') == '',
+        done.stdout + done.stderr,
+    )
+    done = publish(
+        'main', '--run', '71', '--sha', later, '--artifacts', str(root / 'none'), '--checkout', str(checkout)
+    )
+    s = state()
+    check(
+        "a newer build that ended with no package: main's prerelease and its tag gone, no old package passing for it",
+        done.returncode == 0
+        and not [r for r in releases(REPO, s) if r['tag_name'].startswith('main-')]
+        and f'main-{short}' not in s['tags'][REPO],
+        done.stdout + done.stderr,
+    )
+    done, planned = run('plan', '--checkout', str(checkout), name='workflow_dispatch', event={'inputs': {'run': 'x1'}})
+    check(
+        'a run by hand with no run id is refused, naming it',
+        done.returncode != 0 and "not 'x1'" in done.stderr,
+        done.stderr,
+    )
+    s = state()
+    s['runs'].append(dict(main_run(72, later), event='pull_request'))
+    save_state(s)
+    done, planned = run('plan', '--checkout', str(checkout), name='workflow_dispatch', event={'inputs': {'run': '72'}})
+    check(
+        "a run by hand naming a pull request's run publishes nothing",
+        not planned and 'not a push to main' in done.stdout,
+        done.stdout,
+    )
+    workflow_text = (Path(__file__).resolve().parent.parent / '.github' / 'workflows' / 'build.yml').read_text()
+    may_fail = re.compile(re.search(r"SNX_OPTIONAL_JOBS: '([^']+)'", workflow_text).group(1))
+    check(
+        "JOBS: a job for every release file, the optional files' jobs those build.yml lets fail, the rest not",
+        set(publish_module.JOBS) == set(publish_module.ARTIFACTS.values())
+        and all(
+            bool(may_fail.fullmatch(job)) == (name in publish_module.OPTIONAL)
+            for name, job in publish_module.JOBS.items()
+        ),
+        publish_module.JOBS,
+    )
+    templates = (
+        'Linux AppImage (${{ matrix.arch }})',
+        "Windows (Clang + LLVM${{ matrix.arch == 'aarch64' && ', aarch64' || '' }})",
+        'Android APK',
+        'macOS and iOS (arm64)',
+    )
+    check(
+        "JOBS's jobs are build.yml's, by the names it gives them", all(f'name: {t}' in workflow_text for t in templates)
+    )
+
     # ---- a fork's pull request
     def labeled(login, at):
         return {'event': 'labeled', 'label': {'name': 'publish builds'}, 'actor': {'login': login}, 'created_at': at}
@@ -964,7 +1207,7 @@ def pull_skipped(text):
     """the artifacts publish.yml leaves out of a pull request's download, by an if: of the plan's kind"""
     out = set()
     for step in re.finditer(r'^      - name: Download [^\n]*\n((?:        .*\n)+)', text, re.M):
-        cond = re.search(r'^        if: (.*)$', step[1], re.M)
+        cond = re.search(r'^        if: (.*(?:\n          .*)*)', step[1], re.M)  # a folded if's lines too
         name = re.search(r'^          name: (.*)$', step[1], re.M)
         if cond and name and "kind != 'pr'" in cond[1]:
             out.add(name[1])
@@ -986,7 +1229,7 @@ check(
     'a download skipped for a pull request is seen',
     pull_skipped(
         publish.replace(
-            '      - name: Download the RISC-V 64 AppImage\n        if: steps.plan.outputs.run\n',
+            '      - name: Download the RISC-V 64 AppImage\n        if: >-\n          steps.plan.outputs.run &&\n',
             "      - name: Download the RISC-V 64 AppImage\n        if: steps.plan.outputs.run && steps.plan.outputs.kind != 'pr'\n",
         )
     )
@@ -1060,6 +1303,81 @@ for what, copy in {
         copy != workflow and any(installed_checks(copy).values()),
         what,
     )
+
+
+def main_publishing(text):
+    """{job id: what is wrong} of build.yml's steps that put a package in main's prerelease: in each job that uploads a
+    package, after its last package's upload, on main's push alone, starting publish.yml by hand with the run; and
+    none in a job that uploads none"""
+    out = {}
+    anchor = re.search(r'^      - &publish-main\n((?:        .*\n)*)', text, re.M)
+    jobs = text[text.index('\njobs:\n') :]
+    for block in re.split(r'\n(?=  [\w-]+:\n)', jobs)[1:]:
+        name = block.split(':', 1)[0].strip()
+        uploads = [
+            m.start()
+            for m in re.finditer(
+                r'uses: actions/upload-artifact@\S+\n(?:        .*\n)*?.*ScarletNX-(?:linux|windows|android-universal|macos|ios)-',
+                block,
+            )
+        ] + [m.start() for m in re.finditer(r'^      - \*appimage-upload\n', block, re.M)]  # its alias
+        steps = [
+            (m.start(), anchor[1] if m[1] else m[2])
+            for m in re.finditer(
+                r"^      - (?:(\*publish-main|&publish-main)\n|name: Put the packages? in main's prerelease\n((?:        .*\n)*))",
+                block + '\n',
+                re.M,
+            )
+        ]
+        wrong = []
+        if not uploads:
+            if steps:
+                wrong.append("puts a package in main's prerelease with none of its own")
+            if wrong:
+                out[name] = wrong
+            continue
+        if not steps:
+            wrong.append("uploads a package and does not put it in main's prerelease")
+        elif max(at for at, _ in steps) < max(uploads):
+            wrong.append("puts its packages in main's prerelease before its last package is uploaded")
+        for _, body in steps:
+            cond = re.search(r'^        if: (.*)$', body or '', re.M)
+            cond = cond[1] if cond else ''
+            if "github.event_name == 'push'" not in cond or "github.ref == 'refs/heads/main'" not in cond:
+                wrong.append(f"runs off main's push: {cond}")
+            if 'actions/workflows/publish.yml/dispatches' not in (body or '') or '$GITHUB_RUN_ID' not in (body or ''):
+                wrong.append('starts no publish.yml with its run')
+        out[name] = wrong
+    return out
+
+
+got = main_publishing(workflow)
+check(
+    "each job that makes a package puts it in main's prerelease once uploaded, on main's push alone",
+    set(got) == {'android', 'apple', 'appimage', 'appimage-cross', 'windows'} and not any(got.values()),
+    got,
+)
+for what, copy in {
+    'on every event': workflow.replace(
+        "        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'\n",
+        '        if: success()\n',
+    ),
+    'not in the Windows job': workflow.replace(
+        '          if-no-files-found: error\n      - *publish-main\n', '          if-no-files-found: error\n', 1
+    ),
+}.items():
+    check(
+        f"a build.yml that puts packages in main's prerelease {what} is named wrong",
+        copy != workflow and any(main_publishing(copy).values()),
+        what,
+    )
+publisher_workflow = (Path(__file__).resolve().parent.parent / '.github' / 'workflows' / 'publish.yml').read_text()
+check(
+    "publish.yml runs by hand with the run, one at a time with main's other runs",
+    'workflow_dispatch:\n    inputs:\n      run:' in publisher_workflow
+    and "publish-${{ github.event_name == 'workflow_dispatch' && 'main' ||" in publisher_workflow
+    and "github.event_name == 'workflow_dispatch' ||" in publisher_workflow,
+)
 
 # the pull requests of many commits, asked 50 at a time, each commit by its own alias, only one merged into main kept
 publish_builds = publish_module
