@@ -28,7 +28,8 @@ Say what ran, for how long and how it ended:
 ## Which build
 
 - A nightly: its tag, `nightly-<date>-<commit>`.
-- A pull request's build: `pr-<number>` and the commit in its release notes. The next push replaces it.
+- A pull request's build: `pr-<number>` and the commit in its release notes. The next push replaces it; once the pull
+  request is merged, it stays until a nightly has the change.
 - A build from source: `git rev-parse --short HEAD`, and whether the tree was clean.
 
 The game's log starts with a `build:` line that says the same. A game's code is recompiled only when the recompiler
