@@ -114,10 +114,11 @@ static int state_load(void* game, const char* path, char* why, size_t whysize) {
     StateGame* g = (StateGame*)game;
     return snx_agb_state_load(g->board, g->cpu, path, why, whysize);
 }
-/* a save states' key asked of host done between two frames, the frame shown its picture */
-static void states_ask(AgbHost* host, AgbBoard* board, AgbCpu* cpu, const char* folder, const char* name) {
-    int ask = agb_host_state_ask(host);
-    if (ask < 0) return;
+/* between two frames: a save states' key asked of host (none without a window), and the unattended saves and loads
+   due at ms of the run's clock, the frame shown their picture */
+static void states_step(AgbHost* host, AgbBoard* board, AgbCpu* cpu, const char* folder, const char* name, double ms) {
+    int ask = host ? agb_host_state_ask(host) : -1;
+    if (ask < 0 && !snx_vpad_window_states_waiting()) return;
     uint8_t* thumb = malloc((size_t)SNX_STATE_THUMB_W * SNX_STATE_THUMB_H * 4);
     char* prefix = folder ? snx_format("%s/", folder) : NULL;
     StateGame game = {board, cpu};
@@ -125,7 +126,8 @@ static void states_ask(AgbHost* host, AgbBoard* board, AgbCpu* cpu, const char* 
     if (thumb)
         snx_state_thumb((const uint8_t*)board->ppu.framebuffer, AGB_SCREEN_WIDTH, AGB_SCREEN_HEIGHT,
                         AGB_SCREEN_WIDTH * 4, thumb);
-    snx_vpad_window_states(ask, &states, thumb);
+    if (ask >= 0) snx_vpad_window_states(ask, &states, thumb);
+    snx_vpad_window_states_due((uint64_t)ms, &states, thumb);
     free(prefix);
     free(thumb);
 }
@@ -470,10 +472,11 @@ int snx_agb_main(int argc, char** argv) {
         }
         audio = (int16_t*)malloc(2 * sizeof(int16_t) * AGB_APU_RATE);
         if (!audio) goto done;
+        /* the window's settings, and a run's with none (state_save, state_load) */
+        vpad_set_say(agb_host_say);
+        vpad_settings(folder, name, argc, argv);
         if (frames < 0) {
             char* title = snx_format("ScarletNX - %s (GBA)", board.cartridge.title[0] ? board.cartridge.title : name);
-            vpad_set_say(agb_host_say);
-            vpad_settings(folder, name, argc, argv);
             host = agb_host_open(title, ini, fullscreen, error, sizeof error);
             free(title);
             if (!host) {
@@ -499,7 +502,7 @@ int snx_agb_main(int argc, char** argv) {
             uint16_t keys = 0;
             if (host && !agb_host_poll(host, &keys)) break;
             if (host && agb_host_held(host, board.ppu.framebuffer)) { /* paused: the board stopped */
-                states_ask(host, &board, &cpu, folder, name);
+                states_step(host, &board, &cpu, folder, name, (double)frame * FRAME_MS);
                 --frame;
                 continue;
             }
@@ -521,7 +524,7 @@ int snx_agb_main(int argc, char** argv) {
                 told_swi_number = cpu.unknown_swi;
             }
             if (host) agb_host_frame(host, board.ppu.framebuffer, audio, written);
-            if (host) states_ask(host, &board, &cpu, folder, name);
+            states_step(host, &board, &cpu, folder, name, (double)frame * FRAME_MS);
             if (board.save.dirty && written_at < 0) written_at = frame;
             if (written_at >= 0 && frame - written_at >= SAVE_QUIET_FRAMES && board.save.dirty &&
                 agb_save_size(&board)) {

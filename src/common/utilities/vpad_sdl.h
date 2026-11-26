@@ -69,6 +69,12 @@ typedef struct {
    between two of its frames, as a Switch game's: the slot F9 picks, 1 to state_slots, saved (thumb its picture) or
    loaded, the game saved to the auto slot first with state_auto_backup on; each said on say and show */
 void snx_vpad_window_states(int action, const SnxVpadStates* states, const uint8_t* thumb);
+/* an unattended run's saves and loads, the Switch's state_save and state_load settings ("at:slot,...": at ms of the
+   run's clock, a slot's number, auto, or a state's path, as the launcher's Play from a state gives "0:path"), each due
+   by ms done on the game between two frames, once, and said as the keys' are */
+void snx_vpad_window_states_due(uint64_t ms, const SnxVpadStates* states, const uint8_t* thumb);
+/* whether one of them is yet to be done: the picture a save takes is then worth making */
+bool snx_vpad_window_states_waiting(void);
 /* the runtime's key action said on say and show to do nothing in this window, with why: "F3 (Screenshot) does nothing
    in a GBA game: why" */
 void snx_vpad_window_none(int action, const char* why);

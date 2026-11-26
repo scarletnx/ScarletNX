@@ -75,6 +75,9 @@ if(BUILD_TESTING)
             "${SNX_AGB_PROGRAM}")
         add_test(NAME agb_irq COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/agb_irq.py"
             "${SNX_AGB_PROGRAM}")
+        # the run's unattended save states (state_save, state_load), done between two frames by its loop
+        add_test(NAME agb_states COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/agb_states.py"
+            "${SNX_AGB_PROGRAM}")
         add_test(NAME agb_reset COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/agb_reset.py"
             "${SNX_AGB_PROGRAM}")
         add_test(NAME agb_open_bus COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/agb_open_bus.py"

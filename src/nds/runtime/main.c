@@ -243,15 +243,18 @@ static int state_load(void* game, const char* path, char* why, size_t whysize) {
     StateGame* g = (StateGame*)game;
     return snx_nds_state_load(g->board, g->cpu, path, why, whysize);
 }
-/* a save states' key asked of host done between two frames, both screens shown its picture */
-static void states_ask(NdsHost* host, NdsBoard* board, NdsCpu* cpu, const char* folder, const char* name) {
+/* between two frames: a save states' key asked of host, and the unattended saves and loads due at ms of the run's
+   clock, both screens shown their picture */
+static void states_step(NdsHost* host, NdsBoard* board, NdsCpu* cpu, const char* folder, const char* name, double ms) {
     int ask = nds_host_state_ask(host);
-    if (ask < 0) return;
+    if (ask < 0 && !snx_vpad_window_states_waiting()) return;
     uint8_t* thumb = malloc((size_t)SNX_STATE_THUMB_W * SNX_STATE_THUMB_H * 4);
     char* prefix = folder ? snx_format("%s/", folder) : NULL;
     StateGame game = {board, cpu};
     SnxVpadStates states = {prefix ? prefix : "./", name, &game, state_save, state_load};
-    snx_vpad_window_states(ask, &states, thumb && nds_host_thumb(host, thumb) ? thumb : NULL);
+    const uint8_t* picture = thumb && nds_host_thumb(host, thumb) ? thumb : NULL;
+    if (ask >= 0) snx_vpad_window_states(ask, &states, picture);
+    snx_vpad_window_states_due((uint64_t)ms, &states, picture);
     free(prefix);
     free(thumb);
 }
@@ -512,7 +515,7 @@ int snx_nds_main(int argc, char** argv) {
         NdsInput input = {0};
         if (!nds_host_poll(host, &input)) break;
         if (nds_host_held(host)) { /* paused: the board stopped */
-            states_ask(host, board, cpu, folder, name);
+            states_step(host, board, cpu, folder, name, (double)frame * FRAME_MS);
             --frame;
             continue;
         }
@@ -541,7 +544,7 @@ int snx_nds_main(int argc, char** argv) {
             told_swi = cpu->unknown_swi;
         }
         nds_host_frame(host);
-        states_ask(host, board, cpu, folder, name);
+        states_step(host, board, cpu, folder, name, (double)frame * FRAME_MS);
         if (shot && shot_every && frame && !(frame % shot_every)) {
             char* each = snx_format("%s.%06ld.ppm", shot, frame);
             if (each) (void)nds_host_shot(host, each);
