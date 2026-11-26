@@ -778,6 +778,9 @@ static int simd_copy(Unit* u, SnxU32 word) {
         sgx_vd_write(g, rd, 1, q ? r : sgx_const(64, 0));
         return 1;
     }
+#ifdef MG_X64_VEC_INS
+    if ((word & 0xFFE0FC00u) == 0x4E001C00u || (word & 0xFFE08400u) == 0x6E000400u) return 0; /* INS: vec()'s */
+#endif
     if ((word & 0xFFE0FC00u) == 0x4E001C00u) { /* INS (general) */
         elem_write(g, rd, idx, esize, rn == 31 ? sgx_const(64, 0) : sg_GPR_read(g, rn));
         return 1;
