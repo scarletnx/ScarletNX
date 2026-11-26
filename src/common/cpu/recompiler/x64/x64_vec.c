@@ -151,10 +151,10 @@ static int vshr(SgCtx* g, unsigned size, int a, unsigned n, int arith) {
 
 /* ---- byte shuffles ----
    r's byte i is a's idx[i] (below 16), b's idx[i] - 16 (16 to 31), or 0 (any other): PSHUFB of each, ORed */
-static int vperm(SgCtx* g, int a, int b, const int* idx) {
+static int vpshufb(SgCtx* g, int a, int b, const int* idx) {
     SnxU64 ma[2] = {0, 0}, mb[2] = {0, 0};
-    int i, any_a = 0, any_b = 0, ra = 0, rb = 0;
-    for (i = 0; i < 16; ++i) {
+    int any_a = 0, any_b = 0, ra = 0, rb = 0;
+    for (int i = 0; i < 16; ++i) {
         unsigned ka = 0x80, kb = 0x80;
         if (idx[i] >= 0 && idx[i] < 16) ka = (unsigned)idx[i], any_a = 1;
         else if (idx[i] >= 16 && idx[i] < 32)
@@ -169,6 +169,117 @@ static int vperm(SgCtx* g, int a, int b, const int* idx) {
     if (!any_a) return rb;
     return vor(g, ra, rb);
 }
+/* whether a form's bytes m (its first operand's byte k as k, its second's as 16 + k, 0 as -1), its operands the
+   sources at x and y (a 0, b 16, as idx numbers them), are idx's first len bytes */
+static int vshuf_is(const int* idx, int len, const int* m, int x, int y) {
+    for (int i = 0; i < len; ++i) {
+        int want = idx[i] >= 0 && idx[i] < 32 ? idx[i] : -1;
+        int got = m[i] < 0 ? -1 : m[i] < 16 ? x + m[i] : y + m[i] - 16;
+        if (want != got) return 0;
+    }
+    return 1;
+}
+/* PSHUFD's immediate for idx's first len bytes, each doubleword one of the source's at s (a 0, b 16) whole; -1 for
+   none */
+static int vshuf_pshufd(const int* idx, int len, int s) {
+    int imm = 0, m[16];
+    for (int d = 0; d < 4; ++d) {
+        int e = d;
+        if (4 * d < len) {
+            if (idx[4 * d] < s || idx[4 * d] >= s + 16 || (idx[4 * d] - s) % 4) return -1;
+            e = (idx[4 * d] - s) / 4;
+        }
+        imm |= e << (2 * d);
+        for (int k = 0; k < 4; ++k) m[4 * d + k] = 4 * e + k;
+    }
+    return vshuf_is(idx, len, m, s, s) ? imm : -1;
+}
+/* PBLENDW's immediate for idx's first len bytes, each word the first operand's (at x) or the second's (at y) in its
+   place, the second's bytes my (its source's k, or -1: a shifted source); -1 for none */
+static int vshuf_blend(const int* idx, int len, int x, int y, const int* my) {
+    int imm = 0, m[16];
+    for (int w = 0; w < 8; ++w) {
+        int from_y = 0;
+        if (2 * w < len) {
+            int want = idx[2 * w] >= 0 && idx[2 * w] < 32 ? idx[2 * w] : -1;
+            from_y = want != x + 2 * w;
+        }
+        imm |= from_y << w;
+        for (int k = 2 * w; k < 2 * w + 2; ++k) m[k] = from_y ? (my[k] < 0 ? -1 : 16 + my[k]) : k;
+    }
+    return vshuf_is(idx, len, m, x, y) ? imm : -1;
+}
+/* idx's first len bytes (the rest any) in one host instruction where one has them: PSHUFD, a byte shift, an unpack,
+   PALIGNR, SHUFPS, PBLENDW; in two: PBLENDW of one operand shifted, or the low doublewords of a and b
+   (PUNPCKLQDQ) under one of the one-source forms or PSHUFB; else PSHUFB of each, ORed. b 0: a alone */
+static int vshuf(SgCtx* g, int a, int b, const int* idx, int len) {
+    static const SgXVForm* const k_lo[4] = {&sgx_v_punpcklbw, &sgx_v_punpcklwd, &sgx_v_punpckldq, &sgx_v_punpcklqdq};
+    static const SgXVForm* const k_hi[4] = {&sgx_v_punpckhbw, &sgx_v_punpckhwd, &sgx_v_punpckhdq, &sgx_v_punpckhqdq};
+    int m[16], src[2] = {a, b}, full[16];
+    for (int s = 0; s < (b ? 2 : 1); ++s) {
+        int imm = vshuf_pshufd(idx, len, 16 * s);
+        if (imm >= 0) return imm == 0xE4 ? src[s] : sgx_v1(X, &sgx_v_pshufd, src[s], imm);
+        for (int n = 1; n < 16; ++n) {
+            for (int i = 0; i < 16; ++i) m[i] = i + n < 16 ? i + n : -1;
+            if (vshuf_is(idx, len, m, 16 * s, 16 * s)) return opi(g, &sgx_v_psrldq, src[s], n);
+            for (int i = 0; i < 16; ++i) m[i] = i >= n ? i - n : -1;
+            if (vshuf_is(idx, len, m, 16 * s, 16 * s)) return opi(g, &sgx_v_pslldq, src[s], n);
+        }
+    }
+    for (int o = 0; b && o < 2; ++o) {
+        int x = o ? b : a, y = o ? a : b, xs = o ? 16 : 0, ys = o ? 0 : 16, imm, my[16];
+        for (int e = 0; e < 4; ++e) {
+            int eb = 1 << e;
+            for (int half = 0; half < 2; ++half) {
+                for (int i = 0; i < 16; ++i) m[i] = (i / eb & 1 ? 16 : 0) + 8 * half + i / (2 * eb) * eb + i % eb;
+                if (vshuf_is(idx, len, m, xs, ys)) return op2(g, (half ? k_hi : k_lo)[e], x, y);
+            }
+        }
+        for (int n = 1; n < 16; ++n) { /* PALIGNR x, y: y's bytes from n, then x's */
+            for (int i = 0; i < 16; ++i) m[i] = i + n < 16 ? 16 + i + n : i + n - 16;
+            if (vshuf_is(idx, len, m, xs, ys)) return sgx_v2(X, &sgx_v_palignr, x, y, n);
+        }
+        imm = 0; /* SHUFPS x, y: two of x's doublewords, then two of y's */
+        for (int d = 0; d < 4; ++d) {
+            int want = 4 * d < len ? idx[4 * d] - (d < 2 ? xs : ys) : d;
+            int e = 4 * d < len ? want / 4 : d % 4;
+            if (want < 0 || want >= 16) e = -1;
+            if (e < 0) {
+                imm = -1;
+                break;
+            }
+            imm |= e << (2 * d);
+        }
+        if (imm >= 0) {
+            for (int i = 0; i < 16; ++i) m[i] = (i < 8 ? 0 : 16) + 4 * (imm >> (2 * (i / 4)) & 3) + i % 4;
+            if (vshuf_is(idx, len, m, xs, ys)) return sgx_v2(X, &sgx_v_shufps, x, y, imm);
+        }
+        for (int i = 0; i < 16; ++i) my[i] = i;
+        if ((imm = vshuf_blend(idx, len, xs, ys, my)) >= 0) return sgx_v2(X, &sgx_v_pblendw, x, y, imm);
+        for (int n = 1; n < 16; ++n) { /* PBLENDW x, y shifted by n bytes up (and below, down) */
+            for (int i = 0; i < 16; ++i) my[i] = i >= n ? i - n : -1;
+            if ((imm = vshuf_blend(idx, len, xs, ys, my)) >= 0)
+                return sgx_v2(X, &sgx_v_pblendw, x, opi(g, &sgx_v_pslldq, y, n), imm);
+            for (int i = 0; i < 16; ++i) my[i] = i + n < 16 ? i + n : -1;
+            if ((imm = vshuf_blend(idx, len, xs, ys, my)) >= 0)
+                return sgx_v2(X, &sgx_v_pblendw, x, opi(g, &sgx_v_psrldq, y, n), imm);
+        }
+    }
+    for (int i = 0; i < 16; ++i) full[i] = i < len && idx[i] >= 0 && idx[i] < 32 ? idx[i] : -1;
+    if (b && len <= 8) { /* a's and b's low doublewords in one register, then that one's shuffle */
+        int lo = 1, of_a = 0, of_b = 0, one[16];
+        for (int i = 0; i < 16; ++i) {
+            one[i] = full[i] < 0 ? -1 : full[i] < 16 ? full[i] : full[i] - 8;
+            if (full[i] >= 0 && full[i] % 16 >= 8) lo = 0;
+            of_a |= full[i] >= 0 && full[i] < 16;
+            of_b |= full[i] >= 16;
+        }
+        if (lo && of_a && of_b) return vshuf(g, op2(g, &sgx_v_punpcklqdq, a, b), 0, one, len);
+    }
+    return vpshufb(g, a, b, full);
+}
+/* r's byte i is a's idx[i] (below 16), b's idx[i] - 16 (16 to 31), or 0 (any other) */
+static int vperm(SgCtx* g, int a, int b, const int* idx) { return vshuf(g, a, b, idx, 16); }
 /* element e (of eb bytes) of the pair a:b (n elements each) as idx: a's, then b's */
 static void put_elem(int* idx, int at, int eb, int from_b, int e) {
     int k;
@@ -187,7 +298,7 @@ static int vzip(SgCtx* g, int kind, unsigned size, int q, int a, int b) {
         case 4: put_elem(idx, i, eb, i & 1, (i & ~1)); break;
         default: put_elem(idx, i, eb, i & 1, (i & ~1) + 1); break;
         }
-    return vperm(g, a, b, idx);
+    return vshuf(g, a, b, idx, n * eb);
 }
 /* the low half of each element of 16 << size bits (high: the high half), into the low doubleword */
 static int vnarrow(SgCtx* g, unsigned size, int a, int high) {
@@ -1553,7 +1664,7 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
                    : insn->op == SNX_A64_OP_TRN1 ? 4
                                                  : 5;
         if (size == 3 && !q) return -1;
-        vwrite(g, rd, vzip(g, kind, size, q, vread(g, rn), vread(g, rm)), 1);
+        vwrite(g, rd, vzip(g, kind, size, q, vread(g, rn), vread(g, rm)), q);
         return 1;
     }
     case SNX_A64_OP_EXT_d:
@@ -1561,7 +1672,7 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
         int idx[16], i, imm4 = (int)(word >> 11 & 15), len = q ? 16 : 8;
         if (!q && imm4 >= 8) return -1;
         for (i = 0; i < 16; ++i) idx[i] = i < len ? (imm4 + i < len ? imm4 + i : 16 + imm4 + i - len) : -1;
-        vwrite(g, rd, vperm(g, vread(g, rn), vread(g, rm), idx), 1);
+        vwrite(g, rd, vshuf(g, vread(g, rn), vread(g, rm), idx, len), q);
         return 1;
     }
     case SNX_A64_OP_REV16_v:
@@ -1574,7 +1685,7 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
             int c = i / cb * cb, e = (i - c) / eb, k = (i - c) % eb;
             idx[i] = i < len ? c + (cb / eb - 1 - e) * eb + k : -1;
         }
-        vwrite(g, rd, vperm(g, vread(g, rn), 0, idx), 1);
+        vwrite(g, rd, vshuf(g, vread(g, rn), 0, idx, len), q);
         return 1;
     }
     case SNX_A64_OP_CNT_v: { /* each byte's ones: a table of the nibbles' (PSHUFB) */
