@@ -21,6 +21,7 @@ typedef struct {
     int bit;    /* its HidNpadButton bit, -1 for none */
     float size; /* its longer side, of the clear part's shorter one, as rEden sizes it */
     float x, y; /* where it starts: the console's controllers, the left one's on the left */
+    float tx, ty; /* and in a window taller than wide, under the picture: the Vita's places, ZL and ZR over L and R */
 } Info;
 /* a control's look, the art's shapes: a shoulder button's box as wide as the art's (367 x 148), a stick's button's as
    tall (157 x 168) */
@@ -30,28 +31,28 @@ typedef struct {
 /* each control: its SNX_VPAD_ name, then its Info. INFO is made from this list, its order is checked against vpad.h's
    enum, and the keys of settings.txt's list controls against SNX_VPAD_IDS' on first use */
 #define VPAD_CONTROLS(ROW)                                                                                             \
-    ROW(L, "L", LOOK(UI_SHAPE_ROUND, "L", WIDE), KIND_BUTTON, 6, 0.26f, 0.09f, 0.21f)                                  \
-    ROW(R, "R", LOOK(UI_SHAPE_ROUND, "R", WIDE), KIND_BUTTON, 7, 0.26f, 0.91f, 0.21f)                                  \
-    ROW(ZL, "ZL", LOOK(UI_SHAPE_ROUND, "ZL", WIDE), KIND_BUTTON, 8, 0.26f, 0.09f, 0.08f)                               \
-    ROW(ZR, "ZR", LOOK(UI_SHAPE_ROUND, "ZR", WIDE), KIND_BUTTON, 9, 0.26f, 0.91f, 0.08f)                               \
-    ROW(MINUS, "-", LOOK(UI_SHAPE_CIRCLE, "-", 1), KIND_BUTTON, 11, 0.07f, 0.25f, 0.07f)                               \
-    ROW(PLUS, "+", LOOK(UI_SHAPE_CIRCLE, "+", 1), KIND_BUTTON, 10, 0.07f, 0.75f, 0.07f)                                \
-    ROW(CAPTURE, "Capture", LOOK(UI_SHAPE_ROUND, "\x07", 1), KIND_BUTTON, -1, 0.07f, 0.36f, 0.90f)                     \
-    ROW(HOME, "Home", LOOK(UI_SHAPE_CIRCLE, "\x7f", 1), KIND_BUTTON, -1, 0.07f, 0.64f, 0.90f)                          \
-    ROW(L3, "L3", LOOK(UI_SHAPE_CIRCLE, "L3", TALL), KIND_BUTTON, 4, 0.155f, 0.25f, 0.36f)                             \
-    ROW(R3, "R3", LOOK(UI_SHAPE_CIRCLE, "R3", TALL), KIND_BUTTON, 5, 0.155f, 0.64f, 0.62f)                             \
-    ROW(DPAD, "D-pad", LOOK(UI_SHAPE_CROSS, "", 1), KIND_DPAD, -1, 0.25f, 0.23f, 0.78f)                                \
-    ROW(STICK_L, "Left stick", LOOK(UI_SHAPE_CIRCLE, "", 1), KIND_STICK, -1, 0.30f, 0.12f, 0.47f)                      \
-    ROW(STICK_R, "Right stick", LOOK(UI_SHAPE_CIRCLE, "", 1), KIND_STICK, -1, 0.30f, 0.77f, 0.78f)                     \
-    ROW(A, "A", LOOK(UI_SHAPE_CIRCLE, "A", 1), KIND_BUTTON, 0, 0.11f, 0.93f, 0.47f)                                    \
-    ROW(B, "B", LOOK(UI_SHAPE_CIRCLE, "B", 1), KIND_BUTTON, 1, 0.11f, 0.87f, 0.60f)                                    \
-    ROW(X, "X", LOOK(UI_SHAPE_CIRCLE, "X", 1), KIND_BUTTON, 2, 0.11f, 0.87f, 0.34f)                                    \
-    ROW(Y, "Y", LOOK(UI_SHAPE_CIRCLE, "Y", 1), KIND_BUTTON, 3, 0.11f, 0.81f, 0.47f)
-#define INFO_ROW(id, name, look, kind, bit, size, x, y) {name, look, kind, bit, size, x, y},
+    ROW(L, "L", LOOK(UI_SHAPE_ROUND, "L", WIDE), KIND_BUTTON, 6, 0.26f, 0.09f, 0.21f, 0.160f, 0.670f)                  \
+    ROW(R, "R", LOOK(UI_SHAPE_ROUND, "R", WIDE), KIND_BUTTON, 7, 0.26f, 0.91f, 0.21f, 0.840f, 0.670f)                  \
+    ROW(ZL, "ZL", LOOK(UI_SHAPE_ROUND, "ZL", WIDE), KIND_BUTTON, 8, 0.26f, 0.09f, 0.08f, 0.160f, 0.615f)               \
+    ROW(ZR, "ZR", LOOK(UI_SHAPE_ROUND, "ZR", WIDE), KIND_BUTTON, 9, 0.26f, 0.91f, 0.08f, 0.840f, 0.615f)               \
+    ROW(MINUS, "-", LOOK(UI_SHAPE_CIRCLE, "-", 1), KIND_BUTTON, 11, 0.07f, 0.25f, 0.07f, 0.330f, 0.670f)               \
+    ROW(PLUS, "+", LOOK(UI_SHAPE_CIRCLE, "+", 1), KIND_BUTTON, 10, 0.07f, 0.75f, 0.07f, 0.670f, 0.670f)                \
+    ROW(CAPTURE, "Capture", LOOK(UI_SHAPE_ROUND, "\x07", 1), KIND_BUTTON, -1, 0.07f, 0.36f, 0.90f, 0.450f, 0.965f)     \
+    ROW(HOME, "Home", LOOK(UI_SHAPE_CIRCLE, "\x7f", 1), KIND_BUTTON, -1, 0.07f, 0.64f, 0.90f, 0.580f, 0.965f)          \
+    ROW(L3, "L3", LOOK(UI_SHAPE_CIRCLE, "L3", TALL), KIND_BUTTON, 4, 0.155f, 0.25f, 0.36f, 0.350f, 0.745f)             \
+    ROW(R3, "R3", LOOK(UI_SHAPE_CIRCLE, "R3", TALL), KIND_BUTTON, 5, 0.155f, 0.64f, 0.62f, 0.520f, 0.870f)             \
+    ROW(DPAD, "D-pad", LOOK(UI_SHAPE_CROSS, "", 1), KIND_DPAD, -1, 0.25f, 0.23f, 0.78f, 0.270f, 0.935f)                \
+    ROW(STICK_L, "Left stick", LOOK(UI_SHAPE_CIRCLE, "", 1), KIND_STICK, -1, 0.30f, 0.12f, 0.47f, 0.120f, 0.809f)      \
+    ROW(STICK_R, "Right stick", LOOK(UI_SHAPE_CIRCLE, "", 1), KIND_STICK, -1, 0.30f, 0.77f, 0.78f, 0.770f, 0.921f)     \
+    ROW(A, "A", LOOK(UI_SHAPE_CIRCLE, "A", 1), KIND_BUTTON, 0, 0.11f, 0.93f, 0.47f, 0.910f, 0.770f)                    \
+    ROW(B, "B", LOOK(UI_SHAPE_CIRCLE, "B", 1), KIND_BUTTON, 1, 0.11f, 0.87f, 0.60f, 0.800f, 0.815f)                    \
+    ROW(X, "X", LOOK(UI_SHAPE_CIRCLE, "X", 1), KIND_BUTTON, 2, 0.11f, 0.87f, 0.34f, 0.800f, 0.725f)                    \
+    ROW(Y, "Y", LOOK(UI_SHAPE_CIRCLE, "Y", 1), KIND_BUTTON, 3, 0.11f, 0.81f, 0.47f, 0.690f, 0.770f)
+#define INFO_ROW(id, name, look, kind, bit, size, x, y, tx, ty) {name, look, kind, bit, size, x, y, tx, ty},
 static const Info INFO[SNX_VPAD_COUNT] = {VPAD_CONTROLS(INFO_ROW)};
-#define ORDER_INDEX(id, name, look, kind, bit, size, x, y) ORDER_##id,
+#define ORDER_INDEX(id, name, look, kind, bit, size, x, y, tx, ty) ORDER_##id,
 enum { VPAD_CONTROLS(ORDER_INDEX) ORDER_COUNT };
-#define ORDER_CHECK(id, name, look, kind, bit, size, x, y)                                                             \
+#define ORDER_CHECK(id, name, look, kind, bit, size, x, y, tx, ty)                                                     \
     typedef char vpad_order_##id[SNX_VPAD_##id == ORDER_##id ? 1 : -1];
 VPAD_CONTROLS(ORDER_CHECK)
 typedef char vpad_order_count[ORDER_COUNT == SNX_VPAD_COUNT ? 1 : -1];
@@ -105,19 +106,23 @@ static const SnxVpadControl* own(int c) {
 static int has(int c) { return !g_console || own(c); }
 static const char* name_of(int c) { return g_console ? own(c)->name : INFO[c].name; }
 static const char* label_of(int c) { return g_console ? own(c)->label : INFO[c].label; }
-/* where c starts: the Switch's place, a console's D-pad in the left stick's where it has none; in a console's window
-   taller than wide, the console's own place for it */
+/* where c starts: the Switch's place, or the console's own where it has one (wide.x 0 for none); in a window taller
+   than wide the console's own place for it, or the Switch's for that window */
 static void default_place(int c, SnxVpadPlace* p) {
-    int from = g_console && c == SNX_VPAD_DPAD && !has(SNX_VPAD_STICK_L) ? SNX_VPAD_STICK_L : c;
-    const SnxVpadControl* o = g_console && g_tall ? own(c) : NULL;
-    p->x = o ? o->tall.x : INFO[from].x;
-    p->y = o ? o->tall.y : INFO[from].y;
+    const SnxVpadControl* o = g_console ? own(c) : NULL;
+    if (g_tall) {
+        p->x = o ? o->tall.x : INFO[c].tx;
+        p->y = o ? o->tall.y : INFO[c].ty;
+    } else {
+        p->x = o && o->wide.x > 0 ? o->wide.x : INFO[c].x;
+        p->y = o && o->wide.x > 0 ? o->wide.y : INFO[c].y;
+    }
     p->size = DEF_SIZE;
 }
 /* a console's window turned: the controls the player never moved go where they start in the other */
 static void turned(const int safe[4]) {
     int c, tall = safe[3] > safe[2];
-    if (!g_console || tall == g_tall) return;
+    if (tall == g_tall) return;
     g_tall = tall;
     ++g_version;
     for (c = 0; c < SNX_VPAD_COUNT; ++c)

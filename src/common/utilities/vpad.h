@@ -49,14 +49,14 @@ typedef struct {
 /* A console's own pad: its controls, each the Switch's where it sits (its .ini key, its shape, its size and its button
    bit), with the console's name and label for it; a control it has none of is not there, and each is whole in the
    window. In a window wider than tall they start where the Switch's do, so whoever knows the Switch's pad finds each in
-   the same place (the D-pad in the left stick's place where the console has none); in one taller than wide, at the
-   console's own place for it, under its picture (tall). touch: it has a touch screen */
+   the same place, but where the console puts one elsewhere (wide, x 0 for the Switch's place); in one taller than wide,
+   at the console's own place for it, under its picture (tall). touch: it has a touch screen */
 typedef struct {
     int control; /* SNX_VPAD_ */
     const char *name, *label;
     struct {
         float x, y;
-    } tall;
+    } wide, tall;
 } SnxVpadControl;
 typedef struct {
     const char* name; /* the console's, as a line says it: "GBA" */
