@@ -7,6 +7,7 @@
 #if !defined(_WIN32) && !defined(_DEFAULT_SOURCE)
 #define _DEFAULT_SOURCE /* sigaltstack */
 #endif
+#include "vita/gpu/present.h"
 #include "vita/runtime/process.h"
 #include "vita/runtime/jit.h"
 #include "vita/runtime/lockstep.h"
@@ -415,7 +416,7 @@ static bool runtime_page_step(VitaProcess* p, VitaThread* t, uint32_t pc) {
 int vita_run(VitaProcess* p, double seconds) {
     char why[256];
     if (!(p->jit = vita_jit_new(p, why, sizeof why))) printf("No run-time compiler (%s): only the module's blocks run\n", why);
-    uint64_t end = seconds > 0 ? plat_ns() + (uint64_t)(seconds * 1e9) : 0;
+    uint64_t start = plat_ns(), end = seconds > 0 ? start + (uint64_t)(seconds * 1e9) : 0;
     int result = 0;
     bool closed = false;
     p->display.next_ns = plat_ns() + VBLANK_NS;
@@ -443,6 +444,7 @@ int vita_run(VitaProcess* p, double seconds) {
     if (!vita_watch_init(p)) printf("vita: guest memory's writes aren't watched: the GPU copies its memory each time\n");
     bool vblank_late = false; /* this vblank waited for a frame: the next one is due a period after it */
     while (!p->exited) {
+        vita_present_states(p, (plat_ns() - start) / 1000000u); /* between two slices: no thread runs */
         uint64_t now = plat_ns(), wake;
         if (now >= p->display.next_ns && vblank_waits(p, now)) vblank_late = true;
         else if (now >= p->display.next_ns) {
