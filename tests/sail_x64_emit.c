@@ -50,9 +50,6 @@ u64 snx_x64_fp_to_int(CPU* c, u64 a, u64 fpcr, u32 desc);
 u64 snx_x64_fp_from_int(CPU* c, u64 a, u64 fpcr, u32 desc);
 u64 snx_x64_fp_jcvt(CPU* c, u64 a, u64 fpcr);
 u64 snx_x64_fp_bfcvt(CPU* c, u64 a, u64 fpcr);
-void snx_x64_shl_v(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
-void snx_x64_shl_w(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
-void snx_x64_reduce_v(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
 u64 snx_x64_aes(u64 x, u32 op);
 u64 snx_x64_estimate(u64 a, u32 sqrt);
 u64 snx_x64_half(u64 a, u64 fpcr);
@@ -111,8 +108,7 @@ static SnxU64 resolve(const char* sym) {
                  SNX_X64_COUNTED(snx_x64_fp_to_int, counted_to_int),
                  SNX_X64_FN(snx_x64_fp_from_int),
                  SNX_X64_FN(snx_x64_fp_jcvt),
-                 SNX_X64_FN(snx_x64_fp_bfcvt), SNX_X64_FN(snx_x64_shl_v),
-                 SNX_X64_FN(snx_x64_shl_w), SNX_X64_FN(snx_x64_reduce_v),
+                 SNX_X64_FN(snx_x64_fp_bfcvt),
                  SNX_X64_FN(snx_x64_aes),
                  SNX_X64_FN(snx_x64_estimate),
                  SNX_X64_FN(snx_x64_half),
