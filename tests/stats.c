@@ -11,8 +11,8 @@
    its failure in the failure colour) and the debugger's, the box wider for a line that needs it and a file's name cut
    from its start past the safe area, RenderDoc's lines kept while stats is off; and on Linux and FreeBSD a child the
    test traces shows the test as its debugger */
-#include "nx/runtime/platform/stats.h"
-#include "nx/runtime/platform/vpad.h"
+#include "common/utilities/stats.h"
+#include "common/utilities/vpad_showcase.h"
 #include "nx/runtime/platform/plat.h"
 #include "gui/icons.h"
 #include "gui_theme_colors.h"
@@ -230,7 +230,10 @@ static u64 frames(u64 at, int n, u64 ms, u64 busy_ms) {
     return at;
 }
 
+/* a setting's line, said as an error (snx_error), the Switch's log's WARN line */
+static void error_line(const char* line) { snprintf(g_test.logged, sizeof g_test.logged, "%s\n", line); }
 int main(void) {
+    snx_error_sink(error_line);
     const IniOpt *corner = ini_find(g_display_ini, "stats_corner"),
                  *showcase = ini_find(g_display_ini, "showcase_corner");
     const SnxUiQuadView* newest;

@@ -86,6 +86,8 @@ const char* vpad_name(int control); /* a control's name, as edit mode shows it: 
 const char* vpad_console_name(void); /* the console vpad_console gave ("GBA"), "Switch" before it */
 /* the length a control's size is a share of, for the clear part safe (x, y, w, h): its shorter side */
 float vpad_side(const int safe[4]);
+/* the window's console has control (every one for the Switch's) */
+int vpad_has(int control);
 /* control's rectangle in safe, x, y, w, h into r: its place's middle, its size, whole in the window */
 void vpad_box(int control, const int safe[4], float r[4]);
 /* places, sizes and the shown ones back to their defaults, kept */

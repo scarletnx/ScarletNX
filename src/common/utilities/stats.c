@@ -1,8 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-#include "nx/runtime/platform/stats.h"
-#include "nx/runtime/platform/log.h"
-#include "nx/runtime/platform/vpad.h"
+#include "common/utilities/stats.h"
+#include "common/utilities/vpad_showcase.h"
 #include "common/utilities/common.h"
 #include "gui/icons.h"
 #include "common/utilities/ui_colors.h"
@@ -101,7 +100,7 @@ void stats_corner_set(const IniOpt* o, const char* v) {
         return;
     }
     i = atomic_load_explicit(&g_stats.corner, memory_order_relaxed);
-    LOG("settings: stats_corner=%s is not tl, tr, bl or br: it keeps %s\n", v, vpad_corner_word(i));
+    snx_error("settings: stats_corner=%s is not tl, tr, bl or br: it keeps %s", v, vpad_corner_word(i));
     snprintf((char*)o->var, o->size, "%s", vpad_corner_word(i));
 }
 void stats_measured(const SnxStatsMeasure* m) {

@@ -28,7 +28,7 @@
 #include "common/utilities/hotkeys.h"
 #include "nx/runtime/platform/overlay.h"
 #include "nx/runtime/platform/plat.h"
-#include "nx/runtime/platform/stats.h"
+#include "common/utilities/stats.h"
 #include "nx/runtime/platform/unattended.h"
 
 #if defined(__NetBSD__)

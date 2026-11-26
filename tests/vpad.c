@@ -3,7 +3,7 @@
 /* The on-screen controls (common/utilities/vpad.c, and the Switch's showcase of them, runtime/platform/vpad.c): what
    fingers on them press, edit mode, the .ini keys, the draw, and controls=2's Auto by the device's touch screen and
    gamepads */
-#include "nx/runtime/platform/vpad.h"
+#include "common/utilities/vpad_showcase.h"
 #include <assert.h>
 #include <stdarg.h>
 #include <math.h>
@@ -142,7 +142,10 @@ static const SnxUiQuadView* drawn(const SnxUiList* l, int look) {
     return NULL;
 }
 
+/* a setting's line, said as an error (snx_error), the Switch's log's WARN line */
+static void error_line(const char* line) { snprintf(logged, sizeof logged, "%s\n", line); }
 int main(void) {
+    snx_error_sink(error_line);
     SnxVpadConfig d;
     SnxUiList l;
     i32 st[4];

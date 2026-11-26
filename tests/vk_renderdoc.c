@@ -21,7 +21,7 @@
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
-#include "nx/runtime/platform/stats.h"
+#include "common/utilities/stats.h"
 #include "nx/runtime/platform/unattended.h"
 #include "renderdoc_app.h"
 #include "common/utilities/hotkeys.h"

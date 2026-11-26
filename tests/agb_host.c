@@ -351,6 +351,44 @@ int main(void) {
         char* back[] = {"scarletnx-agb", "--fps-limit=game", NULL};
         vpad_settings(dir, "a game", 2, back);
     }
+    /* F12 and F6: the stats and the showcase over the game, on and off for the run, said as a Switch game's; the
+       showcase draws what the game gets, the keyboard's A (Space) here, and both leave nothing drawn once off */
+    {
+        static const uint32_t frame[AGB_SCREEN_WIDTH * AGB_SCREEN_HEIGHT];
+        static const SDL_Keycode key[2] = {SDLK_F12, SDLK_F6};
+        int w = 0, h = 0;
+        CHECK(SDL_GetCurrentRenderOutputSize(SDL_GetRenderer(window), &w, &h));
+        const SnxUiRects* r = snx_vpad_window_rects(w, h);
+        size_t bare = r ? r->count : 0;
+        for (int i = 0; i < 2; ++i) {
+            int* setting = i ? &g_settings.showcase : &g_settings.stats;
+            CHECK(press(host, key[i], SDL_KMOD_NONE, false) && *setting == 1);
+            agb_host_frame(host, frame, NULL, 0);
+            r = snx_vpad_window_rects(w, h);
+            size_t on = r ? r->count : 0;
+            CHECK(on > bare);
+            if (i) { /* the A the game gets, drawn pressed in the showcase */
+                SnxUiRect* was = malloc(on * sizeof *was);
+                CHECK(was);
+                memcpy(was, r->rect, on * sizeof *was);
+                SDL_Event e = {0};
+                e.type = SDL_EVENT_KEY_DOWN;
+                e.key.key = SDLK_SPACE;
+                e.key.scancode = SDL_SCANCODE_SPACE;
+                e.key.down = true;
+                CHECK(SDL_PushEvent(&e) && keys(host) == AGB_KEY_A);
+                r = snx_vpad_window_rects(w, h);
+                int same = r && r->count == on && !memcmp(r->rect, was, on * sizeof *was);
+                free(was);
+                e.type = SDL_EVENT_KEY_UP;
+                e.key.down = false;
+                CHECK(SDL_PushEvent(&e) && keys(host) == 0);
+                CHECK(!same);
+            }
+            CHECK(press(host, key[i], SDL_KMOD_NONE, false) && *setting == 0);
+            CHECK(notice_read(host, SDL_GetRenderer(window), window, i ? "Showcase: off" : "Stats: off") == 0);
+        }
+    }
     /* the pause key holds the game and says so, as a Switch game's */
     static const uint32_t held[AGB_SCREEN_WIDTH * AGB_SCREEN_HEIGHT];
     for (int i = 0; i < 2; ++i)

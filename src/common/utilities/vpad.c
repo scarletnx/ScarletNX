@@ -104,6 +104,7 @@ static const SnxVpadControl* own(int c) {
     return NULL;
 }
 static int has(int c) { return !g_console || own(c); }
+int vpad_has(int control) { return control >= 0 && control < SNX_VPAD_COUNT && has(control); }
 static const char* name_of(int c) { return g_console ? own(c)->name : INFO[c].name; }
 static const char* label_of(int c) { return g_console ? own(c)->label : INFO[c].label; }
 /* where c starts: the Switch's place, or the console's own where it has one (wide.x 0 for none); in a window taller

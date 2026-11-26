@@ -47,7 +47,4 @@ void ui_atlas_put(u32* atlas, int rows);
 const u32* ui_atlas(int* w, int* h, u32* version);
 void ui_atlas_done(void);
 
-/* the controls and the menu change on the main thread while the renderer draws them on its own: both under this */
-void ui_lock(void);
-void ui_unlock(void);
 #endif

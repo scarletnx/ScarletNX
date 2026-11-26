@@ -1,7 +1,12 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "common/utilities/ui_quads.h"
+#include "common/platform/thread.h"
 #include <string.h>
+
+static PMutex g_lock = PMUTEX_INIT;
+void ui_lock(void) { pm_lock(&g_lock); }
+void ui_unlock(void) { pm_unlock(&g_lock); }
 
 _Static_assert(sizeof(SnxUiQuad) == 20, "a quad is the renderer's instance, with no padding");
 

@@ -80,7 +80,12 @@ bool snx_vpad_window_states_waiting(void);
 void snx_vpad_window_none(int action, const char* why);
 /* vpad_state, with the buzz they ask for: nothing held while their layout is edited */
 void snx_vpad_window_state(u64* buttons, i32 sticks[4]);
-/* their rectangles over a picture w by h pixels, the window's: NULL while there are none to draw */
+/* what the game got of player 1 this frame, from every keyboard, pad and the controls, for the showcase (F6): the
+   buttons as the Switch's bits for the console's own (key, each bit's in the console's keys, 0 for none), whole: a bit
+   whose console key is held; sticks as the Switch's (-32767 to 32767, up positive), NULL for none */
+void snx_vpad_window_showcase(u64 keys, unsigned (*key)(int bit), const i32 sticks[4]);
+/* their rectangles over a picture w by h pixels, the window's, a frame presented: with the showcase (F6) and the stats
+   (F12) while they are on, as a Switch game's, the GPU's numbers said as unknown. NULL while there is nothing to draw */
 const SnxUiRects* snx_vpad_window_rects(int w, int h);
 /* those drawn by SDL's renderer, over what it drew */
 void snx_vpad_window_render(SDL_Renderer* renderer);

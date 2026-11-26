@@ -15,7 +15,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-static PMutex g_lock = PMUTEX_INIT;
 static u32* g_atlas;
 static u32 g_version;
 static u8 g_image[SNX_UI_IMAGE_W * SNX_UI_IMAGE_H * 4];
@@ -29,9 +28,6 @@ _Static_assert(SNX_UI_ICONS_X + 16 * GUI_ICON_COUNT <= SNX_UI_ATLAS_W, "the icon
 #ifndef SNX_GUI_THEME_YORHA_PICTURE
 #error "the YoRHa theme names no [head] picture"
 #endif
-
-void ui_lock(void) { pm_lock(&g_lock); }
-void ui_unlock(void) { pm_unlock(&g_lock); }
 
 _Static_assert(GUI_ICON_COUNT <= 256, "an icon is a quad's glyph byte");
 

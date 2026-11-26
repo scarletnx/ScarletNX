@@ -10,10 +10,10 @@
 #include "nx/runtime/platform/hud.h"
 #include "nx/runtime/platform/plat.h" /* the notices' lock */
 #include "nx/runtime/platform/prepare_screen.h"
-#include "nx/runtime/platform/stats.h"
+#include "common/utilities/stats.h"
 #include "nx/runtime/platform/touch.h"
 #include "nx/runtime/platform/unattended.h"
-#include "nx/runtime/platform/vpad.h"
+#include "common/utilities/vpad_showcase.h"
 #include "nx/runtime/options.h"
 #include "nx/gpu/renderer.h"
 #include "common/utilities/ui_colors.h"

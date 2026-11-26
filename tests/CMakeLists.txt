@@ -2684,9 +2684,7 @@ if(TARGET SDL3::SDL3) # F1's and the Shortcuts pages name the runtime's keys as 
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/fatal_screen.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/prepare_screen.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/wait_screen.c"
-        "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/vpad.c"
-        "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/ui_ring.c"
-        "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/stats.c"
+        "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/hud.c"
         "${PROJECT_SOURCE_DIR}/src/common/utilities/hotkeys.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/key_text.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
@@ -2723,8 +2721,7 @@ add_executable(snx-test-wait-screen wait_screen.c "${PROJECT_SOURCE_DIR}/src/nx/
 snx_test_target(snx-test-wait-screen gnu23)
 add_test(NAME wait_screen COMMAND snx-test-wait-screen)
 
-add_executable(snx-test-vpad vpad.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/vpad.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/ui_ring.c" "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/stats.c"
+add_executable(snx-test-vpad vpad.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
 snx_test_target(snx-test-vpad gnu23)
 target_link_libraries(snx-test-vpad PRIVATE snx_vpad scarletnx-common snx_splash m)
@@ -2781,9 +2778,7 @@ snx_test_target(snx-test-help c23)
 target_include_directories(snx-test-help PRIVATE "${PROJECT_SOURCE_DIR}/src")
 add_test(NAME help COMMAND snx-test-help)
 
-add_executable(snx-test-stats stats.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/stats.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/vpad.c"
-    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/ui_ring.c"
+add_executable(snx-test-stats stats.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/ini.c")
 snx_test_target(snx-test-stats gnu23)
 target_link_libraries(snx-test-stats PRIVATE snx_vpad scarletnx-common snx_splash m)
