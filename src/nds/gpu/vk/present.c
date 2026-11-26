@@ -7,6 +7,8 @@
 #include "common/gpu/vk/rects.h"
 #include "common/utilities/vpad_sdl.h"
 #include <SDL3/SDL.h>
+#include "common/gpu/vk/notice.h"
+#include "common/utilities/notice.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -14,6 +16,8 @@ static struct {
     SnxVkSwapchain swap;
     VkSemaphore acquire[NDS_VK_SLOTS], presented[NDS_VK_SLOTS];
     SnxVkRects* controls;
+    SnxNotice notice;
+    SnxVkNotice* notice_vk;
     VkOffset2D rect[2]; /* where the frame is in the window */
     bool up;
 } g_present;
@@ -42,7 +46,8 @@ bool nds_vk_present_init(char* error, size_t error_size) {
             return false;
         }
     g_present.controls = snx_vk_rects_create(v->phys, v->device, NDS_VK_SLOTS);
-    if (!g_present.controls || !swap_make()) {
+    g_present.notice_vk = snx_vk_notice_create(v->phys, v->device, NDS_VK_SLOTS);
+    if (!g_present.controls || !g_present.notice_vk || !swap_make()) {
         snprintf(error, error_size, "cannot make the window's swapchain");
         return false;
     }
@@ -60,6 +65,7 @@ void nds_vk_present_free(void) {
     }
     if (g_present.swap.swapchain) snx_vk_swapchain_free(v->device, &g_present.swap);
     snx_vk_rects_destroy(g_present.controls);
+    snx_vk_notice_destroy(g_present.notice_vk);
     memset(&g_present, 0, sizeof g_present);
 }
 
@@ -73,6 +79,10 @@ bool nds_vk_present_point(float x, float y, int* frame_x, int* frame_y) {
 }
 
 static void controls_log(const char* text) { fprintf(stderr, "nds gpu: %s\n", text); }
+void nds_vk_notice(const char* text) { snx_notice_show(&g_present.notice, text, SDL_GetTicksNS()); }
+const char* nds_vk_notice_text(void) {
+    return snx_notice_shown(&g_present.notice, SDL_GetTicksNS()) ? g_present.notice.text : "";
+}
 
 void nds_vk_present(void) {
     NdsVk* v = nds_vk();
@@ -132,6 +142,9 @@ void nds_vk_present(void) {
     if (w && h)
         vkCmdBlitImage(cb, frame->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target,
                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_NEAREST);
+    (void)snx_vk_notice_record(g_present.notice_vk, cb, slot, target, g_present.swap.format.format, extent.width,
+                               extent.height, snx_display_percent(SDL_GetWindowDisplayScale(v->host.window)),
+                               &g_present.notice, SDL_GetTicksNS(), controls_log);
     (void)snx_vk_rects_record(g_present.controls, cb, slot, target, g_present.swap.views[index],
                               g_present.swap.format.format, extent.width, extent.height,
                               snx_vpad_window_rects((int)extent.width, (int)extent.height), controls_log);
