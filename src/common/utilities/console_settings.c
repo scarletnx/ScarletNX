@@ -36,6 +36,7 @@
 #define OWN_FILE      "its driver reads it from the game's folder itself"
 /* what is not made yet */
 #define SOON          "not made yet"
+#define NO_MIC_SAMPLES "its microphone requests are answered with no samples yet"
 #define OFFLINE       "its network is the console's own alone, as in flight mode"
 #define SOON_LOG      "its game log has no levels yet"
 #define TRACY_PICTURES "it sends no frame's picture to Tracy yet"
@@ -64,8 +65,8 @@ const SnxConsoleSetting g_console_settings[] = {
     {.key = "state_slots"},
     {.key = "state_auto_backup"},
     {"save_layout", OTHERS(NA(SWITCH_OS))},
-    {"microphone", {[C] = LATER(SOON), [V] = LATER(SOON), [G] = NA(NO_MIC), [D] = LATER(SOON)}},
-    {"mic_noise_reduction", {[C] = LATER(SOON), [V] = LATER(SOON), [G] = NA(NO_MIC), [D] = LATER(SOON)}},
+    {"microphone", {[G] = NA(NO_MIC), [D] = LATER(NO_MIC_SAMPLES)}},
+    {"mic_noise_reduction", {[G] = NA(NO_MIC), [D] = LATER(NO_MIC_SAMPLES)}},
     /* Display */
     {"docked", OTHERS(NA(DOCK))},
     {"tv_refresh_rate", OTHERS(NA(DOCK))},
