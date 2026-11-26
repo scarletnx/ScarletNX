@@ -21,13 +21,14 @@
 #include <string.h>
 
 #define BASE 0x10000u
-#define MOST 16u
+#define MOST 96u
 
 typedef struct {
     const char* what;
     unsigned xstores, xloads; /* the most stores and loads of X pins (X20-X28 to or from the state's X) */
     unsigned vstores, vloads; /* the same of V pins (V24-V31 to or from the state's V) */
     unsigned adds;            /* the most ADDs of X16 = X19 + an immediate, the address of a field made first */
+    unsigned tables;          /* the least jumps through a table (LDRSW X16, [X17, X16]; ADD; BR X16) */
     const char* words;        /* the function's words before its RET, in hex */
 } Row;
 
@@ -35,10 +36,23 @@ static const Row k_rows[] = {
     /* a loop (pins are a loop's) writing x1, x9 and x10 and reading x6, x7 and x8, then a call, then x0 from x9 and x1:
        the stores are of the three written (at the call, the loop's poll, the dispatch block), none at the exits; every
        pin at each of those is 42 stores and 24 loads */
-    {"X pins: a loop, then a call", 12, 18, 0, 0, 0, "F94000C1 8B070021 8B080129 F100054A 54FFFF81 97FFFFFB 8B010120"},
+    {"X pins: a loop, then a call", 12, 18, 0, 0, 0, 0,
+     "F94000C1 8B070021 8B080129 F100054A 54FFFF81 97FFFFFB 8B010120"},
     /* the same of V: v2 and v3 written in the loop, v0 and v1 only read, then a call and v4 from v2 and v3; every pin
        is 28 stores and 16 loads of V */
-    {"V pins: a loop, then a call", 4, 3, 8, 12, 0, "4E20D442 6E21DC63 F100054A 54FFFFA1 97FFFFFC 4E23D444 3D800084"},
+    {"V pins: a loop, then a call", 4, 3, 8, 12, 0, 0,
+     "4E20D442 6E21DC63 F100054A 54FFFFA1 97FFFFFC 4E23D444 3D800084"},
+    /* a switch of 32 cases through a compressed byte table (recompiler_library.c's switch64): CMP W0, #31; B.HI the
+       default; ADR, LDRB, ADD, BR; each case MOVZ X0 and RET; then the table's bytes. Its BR jumps through a table of
+       the function's own, past the poll and the range check, not along the dispatch block's 34 compares */
+    {"a switch of 32 cases", 99, 99, 99, 99, 99, 1,
+     "71007C1F 540008E8 2A0003E8 100008E9 1000008A 3868692B 8B0B094A D61F0140 D2800060 D65F03C0 D2800140 D65F03C0 "
+     "D2800220 D65F03C0 D2800300 D65F03C0 D28003E0 D65F03C0 D28004C0 D65F03C0 D28005A0 D65F03C0 D2800680 D65F03C0 "
+     "D2800760 D65F03C0 D2800840 D65F03C0 D2800920 D65F03C0 D2800A00 D65F03C0 D2800AE0 D65F03C0 D2800BC0 D65F03C0 "
+     "D2800CA0 D65F03C0 D2800D80 D65F03C0 D2800E60 D65F03C0 D2800F40 D65F03C0 D2801020 D65F03C0 D2801100 D65F03C0 "
+     "D28011E0 D65F03C0 D28012C0 D65F03C0 D28013A0 D65F03C0 D2801480 D65F03C0 D2801560 D65F03C0 D2801640 D65F03C0 "
+     "D2801720 D65F03C0 D2801800 D65F03C0 D28018E0 D65F03C0 D28019C0 D65F03C0 D2801AA0 D65F03C0 D2801B80 D65F03C0 "
+     "D2807CE0 D65F03C0 1E140A00 063C3228 2E241A10 160C0238 3E342A20 261C1208 0E043A30 362C2218"},
 };
 
 static struct {
@@ -67,6 +81,14 @@ static const unsigned char* text_of(const unsigned char* o, size_t size, size_t*
    SNX_ARM64_STATE_BIAS past it): STR or LDR Xt of X20-X28, unsigned offset or unscaled (STUR, LDUR), at [X19] in the
    state's X; STR or LDR Qt (unsigned offset) of V24-V31 at [X19] in the state's V, or at [X16] an ADD X16, X19, #off
    just before makes. *adds: the ADDs of X16 = X19 + an immediate */
+/* the code's jumps through a table: LDRSW X16, [X17, X16], then ADD X16, X17, X16 and BR X16 */
+static unsigned table_jumps(const unsigned char* t, size_t n) {
+    unsigned jumps = 0;
+    for (size_t i = 0; i + 12 <= n; i += 4)
+        jumps += snx_ld_le32(t + i) == 0xB8B06A30u && snx_ld_le32(t + i + 4) == 0x8B100230u &&
+                 snx_ld_le32(t + i + 8) == 0xD61F0200u;
+    return jumps;
+}
 static void pin_moves(const unsigned char* t, size_t n, int load, unsigned* x, unsigned* v, unsigned* adds) {
     const uint32_t xop = load ? 0xF9400000u : 0xF9000000u, uop = load ? 0xF8400000u : 0xF8000000u,
                    qop = load ? 0x3DC00000u : 0x3D800000u;
@@ -102,24 +124,27 @@ static void check(const Row* row, int print) {
     const SnxU64 hint = BASE;
     SnxCodeImage module = {.image = image, .base = BASE};
     SnxNativeOptions options = {0};
-    unsigned char made[4] = {0};
+    unsigned char made[4] = {0}; /* the row's function, and a RET past a switch's table */
     uint32_t words[MOST];
     size_t size = 0, length = 0;
     char error[256] = "", *at = (char*)row->words;
     SnxCodegen codegen;
-    unsigned count = 0, xs, vs, xl, vl, adds;
+    unsigned count = 0, xs, vs, xl, vl, adds, tables;
     g_arm64_pins_code.row = row;
     while (*at && count < MOST) words[count++] = (uint32_t)strtoul(at, &at, 16);
     for (unsigned i = 0; i <= count; ++i)
         for (unsigned b = 0; b < 4; ++b)
             image[4 * i + b] = (unsigned char)((i < count ? words[i] : 0xD65F03C0u) >> (8 * b));
     module.image_size = module.text_size = (count + 1) * 4;
-    if (snx_codegen_analyze(&codegen, &module, 1, &hint, 1, 1, SNX_A64_TARGET_SWITCH) || codegen.function_count != 1) {
-        fail("functions the analysis found in its words", (unsigned)codegen.function_count, 1);
+    if (snx_codegen_analyze(&codegen, &module, 1, &hint, 1, 1, SNX_A64_TARGET_SWITCH) || !codegen.function_count ||
+        codegen.function_count > 4) {
+        fail("functions the analysis found in its words", (unsigned)codegen.function_count, 4);
         return;
     }
     options.stale = 1;
-    if (snx_arm64_object(&codegen, 0, 1, &options, 0, made, &object, &size, error, sizeof error) < 0 || !made[0]) {
+    if (snx_arm64_object(&codegen, 0, codegen.function_count, &options, 0, made, &object, &size, error, sizeof error) <
+            0 ||
+        !made[0]) {
         fprintf(stderr, "FAIL: %s: not made: %s\n", row->what, error);
         ++g_arm64_pins_code.failures;
     } else if (!(text = text_of(object, size, &length))) {
@@ -128,10 +153,16 @@ static void check(const Row* row, int print) {
     } else {
         pin_moves(text, length, 0, &xs, &vs, &adds);
         pin_moves(text, length, 1, &xl, &vl, &adds);
+        tables = table_jumps(text, length);
         if (print)
-            printf("%s: %zu bytes; X pins %u stored, %u loaded; V pins %u stored, %u loaded; %u ADDs of X19\n",
-                   row->what, length, xs, xl, vs, vl, adds);
+            printf("%s: %zu bytes; X pins %u stored, %u loaded; V pins %u stored, %u loaded; %u ADDs of X19; %u table "
+                   "jumps\n",
+                   row->what, length, xs, xl, vs, vl, adds, tables);
         else {
+            if (tables < row->tables) {
+                fprintf(stderr, "FAIL: %s: %u jumps through a table, at least %u\n", row->what, tables, row->tables);
+                ++g_arm64_pins_code.failures;
+            }
             if (xs > row->xstores) fail("stores of X pins", xs, row->xstores);
             if (xl > row->xloads) fail("loads of X pins", xl, row->xloads);
             if (vs > row->vstores) fail("stores of V pins", vs, row->vstores);

@@ -82,6 +82,9 @@ static const signed char mg_pin_hosts[9] = {20, 21, 22, 23, 24, 25, 26, 27, 28};
 #define MG_BOUND 1
 #define MG_FAR_JUMPS 1             /* past B.cond's 1 MiB: the opposite over a B */
 #define MG_POOL_REACH (512u << 10) /* LDR (literal)'s is 1 MiB */
+#define MG_JTAB            1
+#define MG_JTAB_CLOBBER    0u /* X16 and X17 alone */
+#define MG_JTAB_LEADERS    24 /* fewer: the dispatch block (x86-64's measure; an arm64 device's is to come) */
 #define MG_VPIN(k) (31 - (k))
 #define MG_NVPINS 8
 #define MG_XRESERVED 0xFF80u /* V8-V15 (the callee's low halves), V7 (arm64_vec.c's scratch) */
@@ -95,7 +98,9 @@ static void unit_reloc(void* machine, size_t at, const char* sym, long long adde
 /* the code is for Windows */
 static int windows(const Unit* u) { return (u->g->x.features & SNX_ARM64_F_WIN) != 0; }
 
-enum { FIX_B, FIX_BCOND, FIX_CBZ }; /* a fixup's word: B's imm26, B.cond's and CBZ's imm19 */
+/* a fixup's word: B's imm26, B.cond's and CBZ's imm19, ADR's immhi:immlo; FIX_TAB + a table's label: a jump table's
+   word, the label's distance from the table */
+enum { FIX_B, FIX_BCOND, FIX_CBZ, FIX_ADR, FIX_TAB };
 
 static void w32(Unit* u, SnxU32 w) { sga_w(&u->b, w); }
 static void fixup(Unit* u, int label, int kind) {
@@ -310,6 +315,43 @@ static void poll_then(Unit* u, SnxU64 resume) {
     w32(u, sge_a64_b_uncond(0));
     bind(u, run);
 }
+/* a switch's jump, X1 the target (SGX_FN_TARGET): if (!c->poll && X1 - lo <= span && !(X1 & 3)) goto table +
+   table[X1 - lo] (ADR, LDRSW, ADD, BR), else the dispatch block (CPU.pc holds the target). A function of more than ADR's
+   1 MiB (far) takes the dispatch block */
+static void jtab_jump(Unit* u, int k) {
+    const struct JTab* t = &u->jtabs[k];
+    if (u->far) {
+        jmp(u, u->d_label);
+        return;
+    }
+    state_ldst(u, 1, 4, SGA_X16, offsetof(CPU, poll));
+    fixup(u, u->d_label, FIX_CBZ);
+    w32(u, sge_a64_cbnz(SGA_X16, 0, 0));
+    movi(u, SGA_X16, t->lo);
+    w32(u, sge_a64_sub_addsub_shift(SGA_X16, 1, 0, SGA_X16, 0, 1));         /* X16 = X1 - lo */
+    w32(u, sge_a64_subs_addsub_imm(SGA_ZR, SGA_X16, (t->n - 1) * 4, 0, 1)); /* CMP X16, #span (under 4 KiB) */
+    jcc(u, 8, u->d_label);                                                  /* B.HI */
+    w32(u, sge_a64_ands_log_imm(SGA_ZR, SGA_X16, 1, 0, 1, 1));              /* TST X16, #3 */
+    jcc(u, 1, u->d_label);                                                  /* B.NE */
+    fixup(u, t->label, FIX_ADR);
+    w32(u, sge_a64_adr(SGA_X17, 0, 0));
+    w32(u, sge_a64_ldrsw_reg(SGA_X16, SGA_X17, 0, 3, SGA_X16)); /* LDRSW X16, [X17, X16] */
+    w32(u, sge_a64_add_addsub_shift(SGA_X16, SGA_X17, 0, SGA_X16, 0, 1));
+    w32(u, sge_a64_br(SGA_X16));
+}
+/* each table: a word a slot, its label's distance from the table (FIX_TAB) */
+static void jtab_emit(Unit* u) {
+    int k;
+    for (k = 0; k < u->njtabs; ++k) {
+        const struct JTab* t = &u->jtabs[k];
+        unsigned s;
+        bind(u, t->label);
+        for (s = 0; s < t->n; ++s) {
+            fixup(u, u->jslots[t->first + s], FIX_TAB + t->label);
+            w32(u, 0);
+        }
+    }
+}
 static void mg_undef(Unit* u, SnxU64 address, SnxU32 word) {
     pins(u, 1);
     set_pc(u, address);
@@ -393,6 +435,9 @@ static int put_offset(Unit* u, size_t at, long long d, int kind) {
     if (kind == FIX_B) {
         if (d < -(1ll << 25) || d >= (1ll << 25)) return 0;
         w = (w & ~0x3FFFFFFu) | ((SnxU32)d & 0x3FFFFFFu);
+    } else if (kind == FIX_ADR) {
+        if (d < -(1ll << 18) || d >= (1ll << 18)) return 0; /* d words: immhi, immlo 0 */
+        w = (w & ~(3u << 29 | 0x7FFFFu << 5)) | ((SnxU32)d & 0x7FFFFu) << 5;
     } else {
         if (d < -(1ll << 18) || d >= (1ll << 18)) return 0;
         w = (w & ~(0x7FFFFu << 5)) | ((SnxU32)d & 0x7FFFFu) << 5;
@@ -418,7 +463,12 @@ static int mg_finish(Unit* u, size_t fix0) {
     for (i = 0; i < u->nframe; ++i) sga_frame_imm(&u->b, u->frame_at[i], i12, sh);
     for (i = fix0; i < u->nfixups; ++i) {
         long long t = u->label_at[u->fixups[i].label];
-        if (t < 0 || !put_offset(u, u->fixups[i].at, (t - (long long)u->fixups[i].at) / 4, u->fixups[i].kind)) return 0;
+        if (t < 0) return 0;
+        if (u->fixups[i].kind >= FIX_TAB) {
+            if (u->fixups[i].at + 4 <= u->b.cap)
+                snx_link_put32(u->b.p + u->fixups[i].at, (uint32_t)(t - u->label_at[u->fixups[i].kind - FIX_TAB]));
+        } else if (!put_offset(u, u->fixups[i].at, (t - (long long)u->fixups[i].at) / 4, u->fixups[i].kind))
+            return 0;
     }
     return 1;
 }
