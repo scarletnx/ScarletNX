@@ -216,6 +216,8 @@ if(TARGET Vulkan::Headers AND TARGET SDL3::SDL3)
     # snx_vulkan_driver)
     target_link_libraries(snx_vk_common PUBLIC Vulkan::Headers SDL3::SDL3 scarletnx-common)
     target_link_libraries(snx_vk_common PUBLIC snx_notice) # a window's notice copied over its picture (gpu/vk/notice.c)
+    # g_settings: the GPU driver and the validation layer a console's window takes (gpu/vk/window.c)
+    target_link_libraries(snx_vk_common PUBLIC snx_settings)
     # the spatial upscalers and the anti-aliasing (gpu/vk/present_fx.c, gpu/vk/fx/)
     include("${PROJECT_SOURCE_DIR}/cmake/glsl.cmake")
     foreach(pair IN ITEMS "fsr.vert=fx_fsr_vert" "copy.frag=fx_copy"
