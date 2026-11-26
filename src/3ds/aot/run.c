@@ -21,6 +21,8 @@
 #include "3ds/runtime/state.h"
 #include "common/utilities/game_ini.h"
 #include "common/utilities/vpad_sdl.h"
+#include "common/utilities/hotkeys.h"
+#include "common/utilities/state_header.h"
 #include "common/utilities/vpad_consoles.h"
 #include "snx_settings.h"
 #include <inttypes.h>
@@ -208,14 +210,20 @@ static int state_load(void* game, const char* path, char* why, size_t whysize) {
     return snx_ctr_state_load((SnxCtrProcess*)game, path, why, whysize);
 }
 /* between two dispatches: a save states' key asked (F7, F8, F9) and the unattended saves and loads due at ms of the run's
-   clock, in states/ of the game's folder as a Switch game's; a state keeps no picture of the screens yet */
+   clock, in states/ of the game's folder as a Switch game's, the screens' last frames their picture */
 static void states_step(SnxCtrProcess* process, const char* directory, double ms) {
     int ask = snx_ctr_present_state_ask();
     if (ask < 0 && !snx_vpad_window_states_waiting()) return;
     char* prefix = snx_format("%s/", directory);
+    /* the screens read back from the GPU only for a save: none drawn yet, no picture */
+    uint8_t* thumb = ask == HOTKEY_SAVE_STATE || snx_vpad_window_save_due((uint64_t)ms)
+                         ? malloc((size_t)SNX_STATE_THUMB_W * SNX_STATE_THUMB_H * 4)
+                         : NULL;
+    if (thumb && !snx_ctr_present_thumb(thumb)) free(thumb), thumb = NULL;
     SnxVpadStates states = {prefix ? prefix : "./", snx_path_leaf(directory), process, state_save, state_load};
-    if (ask >= 0) snx_vpad_window_states(ask, &states, NULL);
-    snx_vpad_window_states_due((uint64_t)ms, &states, NULL);
+    if (ask >= 0) snx_vpad_window_states(ask, &states, thumb);
+    snx_vpad_window_states_due((uint64_t)ms, &states, thumb);
+    free(thumb);
     free(prefix);
 }
 int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel model, uint64_t limit, double seconds,
