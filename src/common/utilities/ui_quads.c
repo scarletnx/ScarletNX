@@ -8,7 +8,7 @@ static PMutex g_lock = PMUTEX_INIT;
 void ui_lock(void) { pm_lock(&g_lock); }
 void ui_unlock(void) { pm_unlock(&g_lock); }
 
-_Static_assert(sizeof(SnxUiQuad) == 20, "a quad is the renderer's instance, with no padding");
+static_assert(sizeof(SnxUiQuad) == 20, "a quad is the renderer's instance, with no padding");
 
 /* v in quarters of a pixel, rounded, within lo and hi */
 static int quarters(float v, int lo, int hi) {
