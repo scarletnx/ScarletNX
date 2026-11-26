@@ -20,22 +20,19 @@ static int ini_load(const char* dir, char* state, size_t size) {
     free(path);
     return 0;
 }
+/* the runtime writes the whole .ini as it opens it (a pick of the game's menu goes to its picks): written, or not */
 static int ini_save(const char* dir) {
-    char* path = snx_path_join(dir, "game.ini");
+    char *path = snx_path_join(dir, "game.ini"), *text;
+    size_t size;
     int failed;
     g_test.write = 1;
-    ini_open(path);
     g_test.said[0] = 0;
-    ini_set("volume", "55");
-    ini_poll(1);
+    ini_open(path);
     options_said();
-    { /* written, or not: a failure is warned once a run, which the reading before may have been */
-        size_t size;
-        char* text = (char*)snx_read_file(path, &size);
-        failed = !text || !strstr(text, "\nvolume=55\n");
-        if (failed) config_say("%s was not written", path);
-        free(text);
-    }
+    text = (char*)snx_read_file(path, &size);
+    failed = !text || !strstr(text, ": ScarletNX settings\n");
+    if (failed) config_say("%s was not written", path);
+    free(text);
     free(path);
     return failed;
 }
@@ -52,19 +49,21 @@ static int picks_load_ini(const char* dir, char* state, size_t size) {
     return 0;
 }
 static int picks_save_ini(const char* dir) {
-    char *path = snx_path_join(dir, "game.ini"), *picks = snx_path_join(dir, "game.picks"), *before;
+    char *path = snx_path_join(dir, "game.ini"), *picks = snx_path_join(dir, "game.picks"), *after;
     size_t size;
     int failed;
     g_test.write = 1;
     if (!snx_is_file(path)) snx_write_file(path, "[Audio]\nvolume=100\n", 19);
     ini_open(path);
-    before = (char*)snx_read_file(picks, &size);
     g_test.said[0] = 0;
     ini_set("fps_limit", "45");
     ini_poll(1);
-    failed = strstr(g_test.said, "could not write") != NULL || strstr(g_test.said, "cannot") != NULL;
     options_said();
-    free(before);
+    after =
+        (char*)snx_read_file(picks, &size); /* a failure is warned once a run, which a reading before may have been */
+    failed = !after || !strstr(after, "\nfps_limit=45\n");
+    if (failed) config_say("%s was not written", picks);
+    free(after);
     free(picks);
     free(path);
     return failed;

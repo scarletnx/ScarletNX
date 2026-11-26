@@ -5,6 +5,7 @@
    runs, and the values the game's menu changes, written back */
 #include "nx/runtime/options.h"
 #include "common/utilities/common.h"
+#include "common/utilities/config_file.h"
 #include "common/utilities/game_ini.h"
 #include "common/utilities/ini_lines.h"
 #include "common/utilities/key_said.h"
@@ -328,6 +329,7 @@ static struct {
     Entry next[16];
     int nnext;
     _Atomic int clean_soon; /* atomic: the game's menu's Clean Old Settings, taken at the next tick */
+    int unread;             /* the file is there and could not be read: nothing is written over it */
 } g_picks;
 static PMutex g_picks_lock = PMUTEX_INIT;
 
@@ -426,22 +428,48 @@ static void line_left(void* ctx, int line, const char* text, const char* does) {
     (void)ctx;
     WARN("settings: line %d of the file, \"%.60s\", %s\n", line, text, does);
 }
+/* a key of the game's .ini this version knows: a setting's, a deprecated one's or an unattended run's */
+static int ini_known(void* ctx, const char* section, const char* key) {
+    (void)ctx;
+    (void)section;
+    return find_row(key, NULL) || ini_deprecated(key) || unattended_known(key);
+}
 /* a key the file gives twice takes its last line's value (sections only group the keys), and the file is written back
-   with that one line */
+   with that one line. One this version does not know is named once a run, never its value, which may be a secret */
 static void store_parse(char* text) {
     SnxIni ini;
-    char *key, *value;
+    SnxConfigOthers others = {0};
+    char *key, *value, said[2048];
     g_nstore = 0;
     snx_ini_start(&ini, text);
     ini.left = line_left;
     while (snx_ini_next(&ini, &key, &value)) {
         const Entry* e = store_find(key);
+        if (!ini_known(NULL, ini.section, key)) /* by its name: its section is only where the file groups it */
+            snx_config_other_key(&others, "", key, ini.line);
         if (e && strcmp(e->value, value))
             WARN("settings: %s is in the file twice, %s=%s and then %s=%s: it takes %s, the last, and the file keeps "
                  "that line only\n",
                  key, key, e->value, key, value, value);
         store_put(key, value);
     }
+    if (snx_config_others_said(&others, g_path, said, sizeof said)) WARN("settings: %s\n", said);
+}
+/* a key whose line a write of the .ini makes: one this version knows, and one the store no longer has */
+static int ini_written(void* ctx, const char* section, const char* key) {
+    return ini_known(ctx, section, key) || !store_find(key);
+}
+/* the lines of file's keys owns does not take, as the file has them now; NULL for none or no file */
+static char* lines_kept(const char* file, SnxConfigOwns owns) {
+    size_t size;
+    char* text = (char*)snx_read_file(file, &size);
+    char* kept = text ? snx_config_kept(text, size, -1, owns, NULL) : NULL;
+    free(text);
+    if (kept && !kept[0]) {
+        free(kept);
+        kept = NULL;
+    }
+    return kept;
 }
 /* a setting's value: this run's command line's, else the game's pick, else the launcher's pick for every game (its
    command line's too), else the .ini's, else its default */
@@ -818,6 +846,7 @@ static int write_file(void) {
     char tmp[sizeof g_path + 8], why[256];
     FILE* f;
     int s, t, i, other = 0, failed;
+    char* kept;
     unsigned char* text;
     size_t size;
     snprintf(tmp, sizeof tmp, "%s.tmp", g_path);
@@ -835,11 +864,17 @@ static int write_file(void) {
             put_rows(f, g_ini_sections[s].table[t]);
         }
     }
-    for (i = 0; i < g_nstore; i++) /* a newer version's keys, typos, the unattended options: as they are */
-        if (!find_row(g_store[i].key, NULL) && !ini_deprecated(g_store[i].key)) {
+    /* a newer version's keys, typos: their lines as the file has them; the unattended options as the store has them */
+    kept = lines_kept(g_path, ini_written);
+    for (i = 0; i < g_nstore; i++)
+        if (!find_row(g_store[i].key, NULL) && !ini_deprecated(g_store[i].key) &&
+            (unattended_known(g_store[i].key) || !kept)) {
             if (!other++) fprintf(f, "\n[Other]\n; keys this version does not know, kept as they are\n");
             fprintf(f, "%s=%s\n", g_store[i].key, g_store[i].value);
         }
+    if (kept)
+        fprintf(f, "%s%s", other++ ? "" : "\n[Other]\n; keys this version does not know, kept as they are\n", kept);
+    free(kept);
     for (i = 0, other = 0; i < g_nstore; i++) /* last, so the launcher's Clean Old Settings cuts to the end */
         if (ini_deprecated(g_store[i].key)) {
             if (!other++) ini_deprecated_head(f);
@@ -882,29 +917,62 @@ static void picks_emulated_cores_old(void) {
          "(docs/user/deprecations.md)\n",
          now, g_picks.path, now, words[now]);
 }
-/* the picks as they are on the disk now, none where there is no file; a key given twice takes its last line's. One no
-   pick takes (a newer version's, a typo, a control's place) is said with its value, kept in the file and does
-   nothing */
+/* a key whose line a write of the picks makes: one they take, and one taken out since (Clean Old Settings, an older
+   key carried over); a key it keeps is neither */
+static int picks_owns(void* ctx, const char* section, const char* key) {
+    (void)ctx;
+    (void)section;
+    return picks_key(key) || !picks_find(key);
+}
+static void picks_left(void* ctx, int line, const char* text, const char* does) {
+    (void)text;
+    (void)does;
+    snx_config_other_line((SnxConfigOthers*)ctx, line);
+}
+/* the picks as they are on the disk now, none where there is no file; a key given twice takes its last line's, said.
+   One no pick takes (a newer version's, a typo, a control's place) is named once a run, kept in the file and does
+   nothing. A file that cannot be read is said, and nothing is written over it */
 static void picks_load(void) {
     size_t size;
-    unsigned char* text = snx_read_file(g_picks.path, &size);
+    char *text, *key, *value, why[1024], said[2048];
     SnxIni ini;
-    char *key, *value;
-    int i;
+    SnxConfigOthers others = {0};
+    int lines[STORE_MAX] = {0}, read;
     pm_lock(&g_picks_lock);
     g_picks.n = 0;
     pm_unlock(&g_picks_lock);
+    read = snx_config_read(g_picks.path, &text, &size, why, sizeof why);
+    g_picks.unread = read < 0;
+    if (read < 0 && snx_config_first(g_picks.path, "cannot be read"))
+        WARN("settings: %s: this game's own settings are not read, and nothing is written over them\n", why);
     g_picks.hash = g_picks.seen = text ? snx_fnv1a(SNX_FNV_BASIS, text, size) : 0;
     if (text) {
-        snx_ini_start(&ini, (char*)text);
-        while (snx_ini_next(&ini, &key, &value)) picks_put(key, value);
+        snx_ini_start(&ini, text);
+        ini.left = picks_left;
+        ini.ctx = &others;
+        while (snx_ini_next(&ini, &key, &value)) {
+            const Entry* e = picks_find(key);
+            if (e && e - g_picks.entry < STORE_MAX) /* the last line's, said with both */
+                snx_config_twice(&others, "", key, e->value, lines[e - g_picks.entry], value, ini.line);
+            picks_put(key, value);
+            if ((e = picks_find(key)) != NULL) lines[e - g_picks.entry] = ini.line;
+        }
     }
     free(text);
-    picks_emulated_cores_old();
-    for (i = 0; i < g_picks.n; i++)
-        if (!picks_key(g_picks.entry[i].key))
-            WARN("settings: %s=%s in %s is no setting a game's picks take: it is kept there and does nothing\n",
-                 g_picks.entry[i].key, g_picks.entry[i].value, g_picks.path);
+    { /* the keys no pick takes, by their names, once an older one is carried over to its new key */
+        Entry* kept = (Entry*)calloc(STORE_MAX, sizeof *kept); /* a key each, its line in its value */
+        int n = 0, i;
+        for (i = 0; kept && i < g_picks.n; i++)
+            if (!picks_key(g_picks.entry[i].key)) {
+                memcpy(kept[n].key, g_picks.entry[i].key, KEY_MAX);
+                snprintf(kept[n++].value, VALUE_MAX, "%d", lines[i]);
+            }
+        picks_emulated_cores_old();
+        for (i = 0; i < n; i++)
+            if (picks_find(kept[i].key)) snx_config_other_key(&others, "", kept[i].key, atoi(kept[i].value));
+        free(kept);
+    }
+    if (snx_config_others_said(&others, g_picks.path, said, sizeof said)) WARN("settings: %s\n", said);
     atomic_fetch_add_explicit(&g_picks.changes, 1, memory_order_release);
 }
 /* the picks into their file by the .ini's sections, the keys no pick takes after them as they were; beside it, then
@@ -913,8 +981,14 @@ static int picks_write(void) {
     char tmp[sizeof g_picks.path + 8], why[256];
     FILE* f;
     int s, t, i, other = 0, failed;
+    char* kept;
     unsigned char* text;
     size_t size;
+    if (g_picks.unread) { /* what it holds is not known: the change waits */
+        WARN_LIMIT(1, "settings: %s cannot be read: this game's pick is not saved, and nothing is written over it\n",
+                   g_picks.path);
+        return -1;
+    }
     if (!g_picks.n) {
         if (remove(g_picks.path) && snx_path_exists(g_picks.path)) {
             WARN_LIMIT(1, "settings: could not remove %s, which has no pick left: %s\n", g_picks.path,
@@ -943,11 +1017,14 @@ static int picks_write(void) {
                 }
         }
     }
-    for (i = 0; i < g_picks.n; i++)
+    kept = lines_kept(g_picks.path, picks_owns); /* as the file has them, else as they were read */
+    for (i = 0; !kept && i < g_picks.n; i++)
         if (!picks_key(g_picks.entry[i].key)) {
             if (!other++) fprintf(f, "\n[Other]\n; keys no pick of this version takes, kept as they are\n");
             fprintf(f, "%s=%s\n", g_picks.entry[i].key, g_picks.entry[i].value);
         }
+    if (kept) fprintf(f, "\n[Other]\n; keys no pick of this version takes, kept as they are\n%s", kept);
+    free(kept);
     failed = ferror(f);
     if (fclose(f)) failed = 1;
     if (failed || plat_replace_file(tmp, g_picks.path)) {
@@ -966,12 +1043,14 @@ static int picks_write(void) {
 static void picks_said(void) {
     char line[2048];
     size_t at;
-    int i;
-    if (!g_picks.n) return;
+    int i, shown = 0;
+    for (i = 0; i < g_picks.n && !picks_key(g_picks.entry[i].key); i++) {}
+    if (i == g_picks.n) return;
     at = (size_t)snprintf(line, sizeof line, "settings: this game's own, from %s:", g_picks.path);
     for (i = 0; i < g_picks.n && at < sizeof line; i++) {
         const char* run = picks_key(g_picks.entry[i].key) ? run_value(g_picks.entry[i].key) : NULL;
-        at += (size_t)snprintf(line + at, sizeof line - at, "%s %s=%s", i ? "," : "", g_picks.entry[i].key,
+        if (!picks_key(g_picks.entry[i].key)) continue; /* named, never its value, as picks_load says */
+        at += (size_t)snprintf(line + at, sizeof line - at, "%s %s=%s", shown++ ? "," : "", g_picks.entry[i].key,
                                g_picks.entry[i].value);
         if (run && at < sizeof line)
             at += (size_t)snprintf(line + at, sizeof line - at, " (this run plays %s=%s, its command line's)",
@@ -1014,12 +1093,13 @@ static void launcher_picks(void) {
 static void old_counted(void) {
     int i, n = 0;
     for (i = 0; i < g_nstore; i++) n += ini_deprecated(g_store[i].key) != NULL;
-    for (i = 0; i < g_picks.n; i++) n += !picks_key(g_picks.entry[i].key);
+    for (i = 0; i < g_picks.n; i++) n += ini_deprecated(g_picks.entry[i].key) != NULL;
     if (atomic_exchange_explicit(&g_picks.old, n, memory_order_acq_rel) != n) /* the menu's row comes or goes */
         atomic_fetch_add_explicit(&g_picks.changes, 1, memory_order_release);
 }
-/* Clean Old Settings from the game's menu: the .ini's deprecated keys and the picks' keys no pick takes taken out,
-   both files written without them, and each said in the log with its value */
+/* Clean Old Settings from the game's menu: the deprecated keys of the .ini and of the picks taken out, both files
+   written without them, and each said in the log with its value. Another version's keys stay, as the rule of every
+   settings file keeps them (docs/user/deprecations.md) */
 static void clean_old(void) {
     char line[2048];
     size_t at = (size_t)snprintf(line, sizeof line, "settings: Clean Old Settings took out");
@@ -1033,7 +1113,7 @@ static void clean_old(void) {
         } else
             i++;
     for (i = 0; i < g_picks.n;)
-        if (!picks_key(g_picks.entry[i].key)) {
+        if (ini_deprecated(g_picks.entry[i].key)) {
             if (at < sizeof line)
                 at += (size_t)snprintf(line + at, sizeof line - at, "%s %s=%s (%s)", n++ ? "," : "",
                                        g_picks.entry[i].key, g_picks.entry[i].value, g_picks.path);
@@ -1516,7 +1596,7 @@ void ini_open(const char* path) {
     text = snx_read_file(g_path, &size);
     if (!text) snx_os_error(why, sizeof why);
     if (!text && snx_path_exists(g_path)) {
-        WARN("settings: cannot read %s (%s): every setting takes its default, and the file is not written over\n",
+        WARN("settings: %s cannot be read (%s): every setting takes its default, and the file is not written over\n",
              g_path, why);
         vk_descriptors_old(); /* the command line's */
         write_tracking_hot_old();
