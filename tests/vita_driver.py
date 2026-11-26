@@ -70,6 +70,7 @@ def main():
             '--perf-map=0',
             '--gdb-jit=0',
             '--stats=0',
+            '--frame-pacing=2',
             '--help',
         ],
         0,

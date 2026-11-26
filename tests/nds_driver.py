@@ -90,6 +90,7 @@ def main():
             ['--slp-vectorizer=0', '--perf-map=0', '--gdb-jit=0'],
             ['--stats=0', '--stats-corner=br', '--showcase=0', '--showcase-corner=bl'],
             ['--gamepad-rumble=50', '--nds-slot2=rumble'],
+            ['--frame-pacing=2'],
         ):
             out = run(['-r', *given, *missing], 1, 'scarletnx-nds: ')
             if 'unexpected argument' in out or 'does nothing' in out:

@@ -119,6 +119,7 @@ static bool choose(SnxVkChoice* c, void* user) {
     want.features.samplerAnisotropy = features.features.samplerAnisotropy;
     void* const enable[] = {&want, &want12, &want13, index8 ? &want_index : NULL, objects ? &want_object : NULL};
     snx_vk_chain(enable, sizeof enable / sizeof *enable);
+    want.pNext = snx_vk_pacing_choose(&v->pacing, c, g_settings.frame_pacing, want.pNext);
     if (!snx_vk_choice_create(c, &want, NULL, NULL, 0)) return false;
     v->index8 = index8 && index_features.indexTypeUint8;
     v->shader_object = objects;

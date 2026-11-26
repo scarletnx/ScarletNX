@@ -3,6 +3,7 @@
 #ifndef SNX_CTR_VK_H
 #define SNX_CTR_VK_H
 #include "3ds/memory/ctr_memory.h"
+#include "common/gpu/vk/pacing.h"
 #include "common/gpu/vk/ring.h"
 #include "common/gpu/vk/vk_common.h"
 #include "common/gpu/vk/window.h"
@@ -76,6 +77,7 @@ typedef struct {
     /* the submissions in flight, SNX_CTR_VK_SLOTS of them: each recording's command buffer, fence and descriptor
        sets, free again once its fence passed and its serial is completed */
     SnxVkRing ring;
+    SnxVkPacing pacing; /* frame_pacing's (common/gpu/vk/pacing.h) */
 } SnxCtrVk;
 /* the device, once snx_ctr_vk_init made it; NULL before */
 SnxCtrVk* snx_ctr_vk(void);

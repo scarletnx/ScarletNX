@@ -114,6 +114,7 @@ static bool choose(SnxVkChoice* c, void* user) {
     void* const enable[] = {&want, &want12, &want13, v->raster_order ? &want_ro : NULL,
                             v->local_read ? &want_lr : NULL};
     snx_vk_chain(enable, sizeof enable / sizeof *enable);
+    want.pNext = snx_vk_pacing_choose(&v->pacing, c, g_settings.frame_pacing, want.pNext);
     if (!snx_vk_choice_create(c, &want, NULL, NULL, 0)) return false;
     VkPhysicalDeviceExternalMemoryHostPropertiesEXT host = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT};
@@ -252,6 +253,8 @@ bool vita_vk_init(const char* title, char* error, size_t error_size) {
     if (v->swap.swapchain) {
         char said[160];
         snx_vk_present_said(v->swap.mode, g_settings.vsync, said, sizeof said);
+        fprintf(stderr, "scarletnx-vita: %s\n", said);
+        snx_vk_pacing_said(&v->pacing, g_settings.frame_pacing, said, sizeof said);
         fprintf(stderr, "scarletnx-vita: %s\n", said);
     }
     if (!fx_init(v)) {
@@ -426,6 +429,8 @@ bool vita_vk_present(VkBuffer buffer, VkDeviceSize offset, uint32_t pitch, uint3
                            .pSwapchains = &v->swap.swapchain,
                            .pImageIndices = &index};
     snx_gpu_pstate_present(); /* a kgsl hold lasts while frames are presented */
+    snx_vk_pacing_present(&v->pacing, &v->paced, v->device, v->swap.swapchain,
+                          g_settings.vsync && snx_vpad_window_frame_ns(1) == 1, &pi, "scarletnx-vita");
     r = vkQueuePresentKHR(v->queue, &pi);
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) swapchain_make(v);
     return r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR;

@@ -15,7 +15,7 @@ NdsVk* nds_vk(void) { return g_device.up ? &g_device.vk : NULL; }
 
 /* the NDS's device on a physical device and queue family (common/gpu/vk/device.h) */
 static bool choose(SnxVkChoice* c, void* user) {
-    const NdsVk* v = user;
+    NdsVk* v = user;
     if (v->host.surface && !snx_vk_choice_enable(c, VK_KHR_SWAPCHAIN_EXTENSION_NAME))
         return snx_vk_choice_refuse(c, "has no VK_KHR_swapchain to draw the window with");
     snx_vk_choice_enable(c, "VK_KHR_portability_subset");
@@ -28,6 +28,7 @@ static bool choose(SnxVkChoice* c, void* user) {
                                                .dynamicRendering = VK_TRUE};
     VkPhysicalDeviceFeatures2 want = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &want13};
     want.features.independentBlend = VK_TRUE;
+    want.pNext = snx_vk_pacing_choose(&v->pacing, c, g_settings.frame_pacing, want.pNext);
     return snx_vk_choice_create(c, &want, NULL, NULL, 0);
 }
 

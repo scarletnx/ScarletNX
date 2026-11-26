@@ -164,6 +164,7 @@ def main():
             '--gpu-pstate=auto',
             '--slp-vectorizer=0',
             '--perf-map=0',
+            '--frame-pacing=2',
         ],
         0,
         'Old 3DS',

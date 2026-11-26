@@ -12,6 +12,7 @@
 #include "common/gpu/vk/rects.h"
 #include "common/gpu/vk/ring.h"
 #include "common/gpu/vk/swapchain.h"
+#include "common/gpu/vk/pacing.h"
 #include "common/gpu/vk/vk_common.h"
 #include "common/gpu/vk/window.h"
 #include "common/utilities/vpad_sdl.h"
@@ -40,6 +41,8 @@ struct AgbVk {
     VkQueue queue;
     uint32_t family;
     SnxVkSwapchain swap;
+    SnxVkPacing pacing; /* frame_pacing's (common/gpu/vk/pacing.h) */
+    SnxVkPaced paced;
     VkSemaphore acquired[AGB_VK_SLOTS], rendered[SNX_VK_SWAP_IMAGES];
     SnxVkRing ring;
     AgbFrame frame[AGB_VK_SLOTS];
@@ -53,7 +56,7 @@ struct AgbVk {
 
 /* the GBA's device on a physical device and queue family (common/gpu/vk/device.h) */
 static bool choose(SnxVkChoice* c, void* user) {
-    (void)user;
+    AgbVk* v = user;
     if (!snx_vk_choice_enable(c, VK_KHR_SWAPCHAIN_EXTENSION_NAME))
         return snx_vk_choice_refuse(c, "has no VK_KHR_swapchain to draw the window with");
     snx_vk_choice_enable(c, "VK_KHR_portability_subset");
@@ -61,6 +64,7 @@ static bool choose(SnxVkChoice* c, void* user) {
                                                .synchronization2 = VK_TRUE, /* every 1.3 device has both */
                                                .dynamicRendering = VK_TRUE};
     VkPhysicalDeviceFeatures2 want = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &want13};
+    want.pNext = snx_vk_pacing_choose(&v->pacing, c, g_settings.frame_pacing, want.pNext);
     return snx_vk_choice_create(c, &want, NULL, NULL, 0);
 }
 
@@ -180,6 +184,7 @@ AgbVk* agb_vk_open(const char* title, int width, int height, char* error, size_t
                                   .queues = VK_QUEUE_GRAPHICS_BIT,
                                   .surface = v->host.surface,
                                   .choose = choose,
+                                  .user = v,
                                   .need = need,
                                   .needs = 2};
     snx_vk_device_settings(&request, settings);
@@ -212,6 +217,8 @@ AgbVk* agb_vk_open(const char* title, int width, int height, char* error, size_t
     }
     char said[512];
     snx_vk_present_said(v->swap.mode, g_settings.vsync, said, sizeof said);
+    fprintf(stderr, "scarletnx-agb: %s\n", said);
+    snx_vk_pacing_said(&v->pacing, g_settings.frame_pacing, said, sizeof said);
     fprintf(stderr, "scarletnx-agb: %s\n", said);
     /* the upscaler and the anti-aliasing the settings ask for, said once */
     if (snx_fx_settings(&v->fx_config, g_settings.upscaler, g_settings.upscaler_sharpness, g_settings.anti_aliasing,
@@ -324,6 +331,8 @@ bool agb_vk_frame(AgbVk* v, const uint32_t* framebuffer, const SnxNotice* notice
                            .pSwapchains = &v->swap.swapchain,
                            .pImageIndices = &index};
     snx_gpu_pstate_present(); /* a kgsl hold lasts while frames are presented */
+    snx_vk_pacing_present(&v->pacing, &v->paced, v->device, v->swap.swapchain,
+                          g_settings.vsync && snx_vpad_window_frame_ns(1) == 1, &pi, "scarletnx-agb");
     r = vkQueuePresentKHR(v->queue, &pi);
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) (void)swapchain_make(v);
     return r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR;
