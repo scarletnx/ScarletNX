@@ -90,8 +90,10 @@ static void keys_line(const SnxErrorPanel* p, const SnxError* e, int items, char
 
 void snx_error_panel_draw(SnxErrorPanel* p, const SnxError* e, SnxUiList* l, int sw, int sh) {
     int items[SNX_ERROR_PANEL_ITEMS], n = page_items(p, e, items);
-    int s = snx_menu_scale(sw, sh, p->percent), cols = snx_menu_cols(sw, s),
-        finger = (FINGER_ROW * p->percent + 50) / 100;
+    /* a notice's line is the launcher's whole failure, a path in it often: the window's width less a column each side,
+       where the game's menu takes three quarters of it */
+    int s = snx_menu_scale(sw, sh, p->percent), menu = snx_menu_cols(sw, s), wide = sw / (8 * s) - 2,
+        cols = e->notice && wide > menu ? wide : menu, finger = (FINGER_ROW * p->percent + 50) / 100;
     int ch = 16 * s, rh = p->fingers && finger > ch ? finger : ch, total = 0, msg_rows = 0, fixed;
     int whole = p->details || e->notice, named = !e->notice; /* the message whole, scrolled; the game's name row */
     char name[256], keys[96], *message = NULL, *log = NULL, logline[1100];
