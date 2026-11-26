@@ -7,8 +7,8 @@
 #include <stdint.h>
 
 /* A content's license, the console's .rif: a game's sce_sys/package/work.bin, an add-on's
-   license/addcont/<title ID>/<its ID>/<name>.rif, or the same 512 bytes as a zRIF (NoPayStation's text form: base64 of the
-   .rif deflated against a dictionary of the IDs' common parts). Its klicensee decrypts the content's files. A license
+   license/addcont/<title ID>/<its ID>/<name>.rif, or the same 512 bytes as a zRIF (its text form: base64 of the .rif
+   deflated against a dictionary of the IDs' common parts). Its klicensee decrypts the content's files. A license
    NoNpDrm wrote holds it as it is, its account ID 0x0123456789abcdef; a console's own license keeps it encrypted to that
    console, which the import cannot undo, and its files then do not verify */
 #define VITA_LICENSE_SIZE    512u
