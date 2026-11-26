@@ -4,14 +4,14 @@
    feeding direct sound through DMA1 and one interrupting, the square channel retuned each frame, the vertical blank's
    interrupt through the BIOS's wait, a line drawn on the bitmap screen each frame and copied by DMA3, the cartridge's
    prefetch unit on. The frame's count and a random number run on in registers, the IRQ mode's stack moves with the
-   frame, and a busy stretch of a frame or more, loading words of the ROM's start, has vertical blanks land inside the
-   ROM's code with the prefetch unit in any state; the frame shows a timer's count of the cycles where the stretch
-   ends, so the frames show the machine's time to the cycle. A state saved
-   after 30 frames, loaded in the same machine and in a fresh one that ran on its own meanwhile, gives the same next 30
-   frames as the run that went on: each frame's picture and sound word for word, and the same state after them,
-   section by section. A state of another game, of another version, with a section of another layout, damaged or cut
-   short is refused before anything changes, its reason naming the values; its header and thumbnail read as the
-   launcher reads them */
+   frame, and a busy stretch of a frame or more with interrupts held off, loading words of the ROM's start, has
+   vertical blanks land inside the ROM's code with the prefetch unit in any state; the frame shows a timer's count of
+   the cycles where the stretch ends, so the frames show the machine's time to the cycle. A state saved after 33
+   frames, loaded in the same machine and in a fresh one that ran on its own meanwhile, gives the same next 30 frames as
+   the run that went on: each frame's picture and sound word for word, and the same state after them, section by
+   section. A state of another game, of another version, with a section of another layout, damaged or cut short is
+   refused before anything changes, its reason naming the values; its header and thumbnail read as the launcher reads
+   them */
 #include "agb/board/board.h"
 #include "agb/cpu/agb_cpu.h"
 #include "agb/cpu/memmap.h"
@@ -34,7 +34,10 @@
         }                                                                                                              \
     } while (0)
 
-#define WARM         30 /* the frames before the state */
+/* the frames before the state: it lands in the busy stretch, the prefetch unit reading on, where the fresh machine's
+   8th frame ends in the BIOS's wait, the unit stopped */
+#define WARM         33
+#define FRESH        8
 #define FRAMES       30 /* the frames after it, compared */
 #define FRAME_CYCLES (AGB_SCANLINE_CYCLES * AGB_FRAME_LINES)
 #define PIXELS       (AGB_SCREEN_WIDTH * AGB_SCREEN_HEIGHT)
@@ -42,41 +45,41 @@
 /* The ROM's code at 0x080000C0, after its header (llvm-mc -triple=armv4t) */
 static const uint32_t code[] = {
     0xE3A0C301, /* start: mov r12, #0x04000000 */
-    0xE59F01D4, /* ldr r0, =(handler - start + 0x080000C0) */
-    0xE59F11D4, /* ldr r1, =0x03007FFC */
+    0xE59F01DC, /* ldr r0, =(handler - start + 0x080000C0) */
+    0xE59F11DC, /* ldr r1, =0x03007FFC */
     0xE5810000, /* str r0, [r1] */
-    0xE59F01D0, /* ldr r0, =0x4317 */
+    0xE59F01D8, /* ldr r0, =0x4317 */
     0xE28C1C02, /* add r1, r12, #0x200 */
     0xE1C100B4, /* strh r0, [r1, #4] */
     0xE3A00402, /* mov r0, #0x02000000 */
     0xE3A01000, /* mov r1, #0 */
-    0xE59F21C0, /* ldr r2, =0x9E3779B1 */
+    0xE59F21C8, /* ldr r2, =0x9E3779B1 */
     0xE0030291, /* fill: mul r3, r1, r2 */
     0xE7803101, /* str r3, [r0, r1, lsl #2] */
     0xE2811001, /* add r1, r1, #1 */
     0xE3510901, /* cmp r1, #0x4000 */
     0x1AFFFFFA, /* bne fill */
-    0xE59F01AC, /* ldr r0, =0x0403 */
+    0xE59F01B4, /* ldr r0, =0x0403 */
     0xE1CC00B0, /* strh r0, [r12] */
     0xE3A00080, /* mov r0, #0x80 */
     0xE1CC08B4, /* strh r0, [r12, #0x84] */
-    0xE59F01A0, /* ldr r0, =0xFF77 */
+    0xE59F01A8, /* ldr r0, =0xFF77 */
     0xE1CC08B0, /* strh r0, [r12, #0x80] */
-    0xE59F019C, /* ldr r0, =0x0B06 */
+    0xE59F01A4, /* ldr r0, =0x0B06 */
     0xE1CC08B2, /* strh r0, [r12, #0x82] */
     0xE3A00000, /* mov r0, #0 */
     0xE1CC06B0, /* strh r0, [r12, #0x60] */
-    0xE59F0190, /* ldr r0, =0xF080 */
+    0xE59F0198, /* ldr r0, =0xF080 */
     0xE1CC06B2, /* strh r0, [r12, #0x62] */
     0xE3A00402, /* mov r0, #0x02000000 */
     0xE58C00BC, /* str r0, [r12, #0xBC] */
-    0xE59F0184, /* ldr r0, =0x040000A0 */
+    0xE59F018C, /* ldr r0, =0x040000A0 */
     0xE58C00C0, /* str r0, [r12, #0xC0] */
-    0xE59F0180, /* ldr r0, =0xB640 */
+    0xE59F0188, /* ldr r0, =0xB640 */
     0xE1CC0CB6, /* strh r0, [r12, #0xC6] */
-    0xE59F017C, /* ldr r0, =0x0080FC00 */
+    0xE59F0184, /* ldr r0, =0x0080FC00 */
     0xE58C0100, /* str r0, [r12, #0x100] */
-    0xE59F0178, /* ldr r0, =0x00C18000 */
+    0xE59F0180, /* ldr r0, =0x00C18000 */
     0xE58C0108, /* str r0, [r12, #0x108] */
     0xE3A00502, /* mov r0, #0x00800000 */
     0xE58C010C, /* str r0, [r12, #0x10C] */
@@ -88,13 +91,13 @@ static const uint32_t code[] = {
     0xE3A00001, /* mov r0, #1 */
     0xE1C100B8, /* strh r0, [r1, #8] */
     0xE3A06000, /* mov r6, #0 */
-    0xE59F714C, /* ldr r7, =0x12345678 */
-    0xE59F914C, /* ldr r9, =0x41C64E6D */
-    0xE59FA14C, /* ldr r10, =12345 */
+    0xE59F7154, /* ldr r7, =0x12345678 */
+    0xE59F9154, /* ldr r9, =0x41C64E6D */
+    0xE59FA154, /* ldr r10, =12345 */
     0xEF050000, /* frame: swi 0x050000 */
     0xE2866001, /* add r6, r6, #1 */
     0xE321F0D2, /* msr cpsr_c, #0xD2 */
-    0xE59FD140, /* ldr sp, =0x03007FA0 */
+    0xE59FD148, /* ldr sp, =0x03007FA0 */
     0xE3160001, /* tst r6, #1 */
     0x124DD040, /* subne sp, sp, #0x40 */
     0xE321F01F, /* msr cpsr_c, #0x1F */
@@ -106,9 +109,9 @@ static const uint32_t code[] = {
     0xE3A01E1E, /* mov r1, #480 */
     0xE0050190, /* mul r5, r0, r1 */
     0xE2855406, /* add r5, r5, #0x06000000 */
-    0xE59F1114, /* ldr r1, =0x123 */
+    0xE59F111C, /* ldr r1, =0x123 */
     0xE0020196, /* mul r2, r6, r1 */
-    0xE59F1110, /* ldr r1, =0x7FFF */
+    0xE59F1118, /* ldr r1, =0x7FFF */
     0xE0022001, /* and r2, r2, r1 */
     0xE3A03000, /* mov r3, #0 */
     0xE0851083, /* line: add r1, r5, r3, lsl #1 */
@@ -119,28 +122,30 @@ static const uint32_t code[] = {
     0x1AFFFFF9, /* bne line */
     0xE58C50D4, /* str r5, [r12, #0xD4] */
     0xE2850C96, /* add r0, r5, #0x9600 */
-    0xE59F10E8, /* ldr r1, =0x06012C00 */
+    0xE59F10F0, /* ldr r1, =0x06012C00 */
     0xE1500001, /* cmp r0, r1 */
     0x20400001, /* subhs r0, r0, r1 */
     0x22800406, /* addhs r0, r0, #0x06000000 */
     0xE58C00D8, /* str r0, [r12, #0xD8] */
-    0xE59F00D8, /* ldr r0, =0x800000F0 */
+    0xE59F00E0, /* ldr r0, =0x800000F0 */
     0xE58C00DC, /* str r0, [r12, #0xDC] */
     0xE3A01025, /* mov r1, #37 */
     0xE0000196, /* mul r0, r6, r1 */
-    0xE59F10CC, /* ldr r1, =0x7FF */
+    0xE59F10D4, /* ldr r1, =0x7FF */
     0xE0000001, /* and r0, r0, r1 */
     0xE3800902, /* orr r0, r0, #0x8000 */
     0xE1CC06B4, /* strh r0, [r12, #0x64] */
     0xE2068007, /* and r8, r6, #7 */
     0xE1A08588, /* mov r8, r8, lsl #11 */
     0xE3A03302, /* mov r3, #0x08000000 */
+    0xE321F09F, /* msr cpsr_c, #0x9F */
     0xE02BA997, /* busy: mla r11, r7, r9, r10 */
     0xE20B00FC, /* and r0, r11, #0xFC */
     0xE7930000, /* ldr r0, [r3, r0] */
     0xE02B7000, /* eor r7, r11, r0 */
     0xE2588001, /* subs r8, r8, #1 */
     0x5AFFFFF9, /* bpl busy */
+    0xE321F01F, /* msr cpsr_c, #0x1F */
     0xE59F108C, /* ldr r1, =0x7FFF */
     0xE0070001, /* and r0, r7, r1 */
     0xE3A01406, /* mov r1, #0x06000000 */
@@ -148,7 +153,7 @@ static const uint32_t code[] = {
     0xE28C2C01, /* add r2, r12, #0x100 */
     0xE1D200BC, /* ldrh r0, [r2, #0x0C] */
     0xE1C100B2, /* strh r0, [r1, #2] */
-    0xEAFFFFC5, /* b frame */
+    0xEAFFFFC3, /* b frame */
     0xE2801C02, /* handler: add r1, r0, #0x200 */
     0xE1D120B2, /* ldrh r2, [r1, #2] */
     0xE1C120B2, /* strh r2, [r1, #2] */
@@ -161,7 +166,7 @@ static const uint32_t code[] = {
     0xE2800001, /* add r0, r0, #1 */
     0xE7830102, /* str r0, [r3, r2, lsl #2] */
     0xE12FFF1E, /* bx lr */
-    0x08000270, /* the interrupt handler */
+    0x08000278, /* the interrupt handler */
     0x03007FFC, /* its vector */
     0x00004317, /* WAITCNT: prefetch on */
     0x9E3779B1, /* noise */
@@ -408,8 +413,8 @@ int main(int argc, char** argv) {
     if (run(&m, FRAMES, &loaded) || same_output("loaded in the same machine", &ref, &loaded)) return 1;
     CHECK(!snx_agb_state_save(&m.board, &m.cpu, again, NULL, why, sizeof why));
     if (same_state("loaded in the same machine", went_on, again)) return 1;
-    /* loaded in a fresh machine that ran 7 frames of its own: nothing of it stays */
-    if (machine_open(&n, "STATE TEST", base) || run(&n, 7, NULL)) return 1;
+    /* loaded in a fresh machine that ran frames of its own: nothing of it stays */
+    if (machine_open(&n, "STATE TEST", base) || run(&n, FRESH, NULL)) return 1;
     if (snx_agb_state_load(&n.board, &n.cpu, saved, why, sizeof why)) {
         fprintf(stderr, "agb_state: %s\n", why);
         return 1;
