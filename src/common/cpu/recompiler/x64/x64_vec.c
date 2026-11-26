@@ -94,13 +94,12 @@ enum { VGF_ARITH, VGF_REVERSE, VGF_BIT }; /* VGF_BIT: bit n alone, as bit 0 */
 static int vgfni(const SgCtx* g) { return (g->x.features & SGX_F_GFNI) != 0; }
 static int vgf(SgCtx* g, int a, int kind, unsigned n) {
     SnxU64 rows = 0;
-    int i, m;
-    for (i = 0; i < 8; ++i) {
+    for (int i = 0; i < 8; ++i) {
         int from = kind == VGF_REVERSE ? 7 - i : kind == VGF_BIT ? (i ? 8 : (int)n) : i + (int)n;
         if (kind == VGF_ARITH && from > 7) from = 7;
         if (from >= 0 && from < 8) rows |= (SnxU64)1 << (8 * (7 - i) + from);
     }
-    m = kconst(g, rows, rows);
+    int m = kconst(g, rows, rows);
     if (X->features & SGX_F_AVX) {
         int in[4] = {0, a, m, 0};
         return sgx_vins(X, &sgx_v_vgf2p8affineqb, 0, 0, in, 0, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
@@ -110,15 +109,14 @@ static int vgf(SgCtx* g, int a, int kind, unsigned n) {
 /* RBIT of a W or an X: each byte's bits reversed there, then the bytes */
 static SgD mg_rbit(Unit* u, SgD v) {
     SgCtx* g = u->g;
-    unsigned w = v.w;
-    int in[4] = {0, 0, 0, 0}, r;
     if (!vgfni(g)) return sg_d_bitreverse(g, v);
-    in[1] = sgx_reg(X, &v);
-    r = sgx_vins(X, w == 64 ? &sgx_v_movq_xr : &sgx_v_movd_xr, 0, 0, in, 0, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
+    unsigned w = v.w;
+    int in[4] = {0, sgx_reg(X, &v), 0, 0};
+    int r = sgx_vins(X, w == 64 ? &sgx_v_movq_xr : &sgx_v_movd_xr, 0, 0, in, 0, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
     v = sgx_val(w, sgx_v1(X, w == 64 ? &sgx_v_movq_rx : &sgx_v_movd_rx, vgf(g, r, VGF_REVERSE, 0), 0));
     return SGX_OP(X, rev, w, v);
 }
-/* a << n, n below the element's bits (the bytes by GFNI, or by words, their spill masked) */
+/* a << n, n below the element's bits (the bytes by words, their spill masked) */
 static int vshl(SgCtx* g, unsigned size, int a, unsigned n) {
     if (n >= 8u << size) return vzero(g);
     if (!n) return a;
@@ -716,30 +714,25 @@ static int vec_fp(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
 static void set_qc(SgCtx* g, int v, int bytes) {
     SgX* x = X;
     int in[4] = {v, bytes < 16 ? kconst(g, sg_ones(8u * (unsigned)bytes), 0) : v, 0, 0}; /* bytes: 1, 2, 4, 8 or 16 */
-    SgD any, owed;
     sgx_vins(x, &sgx_v_ptest, -1, 0, in, 0, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
-    any = sg_d_zext(g, sgx_bool_bits(x, sgx_bool(x, SGX_B_CC, x->flags_ins, 5)), 32); /* NE: a bit set */
-    owed = g->qc_owed ? sg_d_or(g, sgx_val(32, g->qc_owed), any) : any;
+    SgD any = sg_d_zext(g, sgx_bool_bits(x, sgx_bool(x, SGX_B_CC, x->flags_ins, 5)), 32); /* NE: a bit set */
+    SgD owed = g->qc_owed ? sg_d_or(g, sgx_val(32, g->qc_owed), any) : any;
     g->qc_owed = sgx_reg(x, &owed);
 }
 static void mg_qc(Unit* u) {
     SgCtx* g = u->g;
     SgX* x = X;
-    SgXIns* i;
-    SgD fpsr, bit;
-    bit = sg_d_lsl(g, sgx_val(32, g->qc_owed), 27); /* 0 or 1 */
-    i = sgx_append(x, SGX_K_LOAD);
-    i->w = 32;
-    i->disp = (int)offsetof(CPU, fpsr);
-    i->def = sgx_vreg(x, x->n - 1, 32);
-    fpsr = sg_d_or(g, sgx_val(32, i->def), bit);
-    {
-        int r = sgx_reg(x, &fpsr);
-        SgXIns* st = sgx_append(x, SGX_K_STORE);
-        st->w = 32;
-        st->in[0] = r;
-        st->disp = (int)offsetof(CPU, fpsr);
-    }
+    SgD bit = sg_d_lsl(g, sgx_val(32, g->qc_owed), 27); /* qc_owed: 0 or 1 */
+    SgXIns* load = sgx_append(x, SGX_K_LOAD);
+    load->w = 32;
+    load->disp = (int)offsetof(CPU, fpsr);
+    load->def = sgx_vreg(x, x->n - 1, 32);
+    SgD fpsr = sg_d_or(g, sgx_val(32, load->def), bit);
+    int r = sgx_reg(x, &fpsr);
+    SgXIns* st = sgx_append(x, SGX_K_STORE);
+    st->w = 32;
+    st->in[0] = r;
+    st->disp = (int)offsetof(CPU, fpsr);
 }
 /* the signed (or unsigned) limits of 8 << size bits */
 static SnxU64 smax_of(unsigned size) { return sg_ones((8u << size) - 1); }
@@ -777,14 +770,13 @@ static int vqaddmixed(SgCtx* g, unsigned size, int d, int n, int uns, int* sat) 
 }
 /* SQABS, SQNEG (neg): the smallest's magnitude or negation the largest */
 static int vqabsneg(SgCtx* g, unsigned size, int a, int neg, int* sat) {
-    int r, res, m;
     if (neg && size < 2) {
-        res = op2(g, size ? &sgx_v_psubsw : &sgx_v_psubsb, vzero(g), a);
+        int res = op2(g, size ? &sgx_v_psubsw : &sgx_v_psubsb, vzero(g), a);
         *sat = vxor(g, res, vneg(g, size, a));
         return res;
     }
-    r = neg ? vneg(g, size, a) : vabs(g, size, a);
-    m = veq(g, size, r, vsplat(g, size, smin_of(size)));
+    int r = neg ? vneg(g, size, a) : vabs(g, size, a);
+    int m = veq(g, size, r, vsplat(g, size, smin_of(size)));
     *sat = m;
     return vxor(g, r, m);
 }
@@ -1039,13 +1031,11 @@ static int velement(SgCtx* g, unsigned size, SnxU32 word) {
 /* SQDMULL: twice the products of the low (hi: high) halves' lanes, of twice their bits. Only the smallest by itself is
    past the largest, and wraps to the smallest of those bits, which no other product gives */
 static int vqdmull(SgCtx* g, unsigned size, int a, int b, int hi, int* sat) {
-    int p, m;
-    if (size == 1)
-        p = op2(g, hi ? &sgx_v_punpckhwd : &sgx_v_punpcklwd, op2(g, &sgx_v_pmullw, a, b), op2(g, &sgx_v_pmulhw, a, b));
-    else
-        p = op2(g, &sgx_v_pmuldq, vwiden(g, 2, a, hi, 1), vwiden(g, 2, b, hi, 1));
+    int p = size == 1 ? op2(g, hi ? &sgx_v_punpckhwd : &sgx_v_punpcklwd, op2(g, &sgx_v_pmullw, a, b),
+                            op2(g, &sgx_v_pmulhw, a, b))
+                      : op2(g, &sgx_v_pmuldq, vwiden(g, 2, a, hi, 1), vwiden(g, 2, b, hi, 1));
     p = vadd(g, size + 1, p, p);
-    m = veq(g, size + 1, p, vsplat(g, size + 1, smin_of(size + 1)));
+    int m = veq(g, size + 1, p, vsplat(g, size + 1, smin_of(size + 1)));
     *sat = m;
     return vxor(g, p, m);
 }
