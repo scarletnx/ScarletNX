@@ -109,16 +109,18 @@ SnxJitService* snx_jit_service_new(const SnxJitConfig* config, char* error, size
     return (SnxJitService*)(void*)&sentinel;
 }
 
-/* native.h's: whether the host is below its back end's floor (--below), and its line */
-static int g_below;
+/* native.h's: whether the host is below its back end's floor (--below), or lacks what its fallback does (--done),
+   and its line */
+static int g_below, g_done;
 #define BELOW "cpu: needs POPCNT, this host has SSE3, SSSE3 and SSE4.1"
+#define DONE  "cpu: this host has no PCLMULQDQ, done by the fallback"
 int snx_native_floor(char* why, size_t size) {
     snprintf(why, size, "%s", g_below ? BELOW : "");
     return g_below;
 }
 int snx_native_fallback(char* why, size_t size) {
-    if (size) why[0] = 0;
-    return 0;
+    snprintf(why, size, "%s", g_done && !g_below ? DONE : "");
+    return g_done && !g_below;
 }
 
 GuestFn snx_jit_resolve(SnxJitService* service, SnxU64 pc) {
@@ -218,10 +220,14 @@ static void (*g_invalidate)(u64, u64);
 void mem_set_code_invalidate(void (*fn)(u64, u64)) { g_invalidate = fn; }
 
 static char g_logged[512]; /* the last LOG line */
+static char g_logs[2048];  /* every LOG line */
 void logf_(int lvl, const char* fmt, ...) {
-    size_t at = strlen(g_warned);
-    va_list ap;
+    size_t at = strlen(g_warned), logs = strlen(g_logs);
+    va_list ap, again;
     va_start(ap, fmt);
+    va_copy(again, ap);
+    if (lvl == 1) vsnprintf(g_logs + logs, sizeof g_logs - logs, fmt, again);
+    va_end(again);
     if (lvl == 1) vsnprintf(g_logged, sizeof g_logged, fmt, ap);
     if (lvl == 0) vsnprintf(g_warned + at, sizeof g_warned - at, fmt, ap); /* WARN's level */
     va_end(ap);
@@ -482,6 +488,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; i++) {
         if (!strncmp(argv[i], "--jit-opt=", 10)) jit_opt = argv[i] + 10;
         if (!strcmp(argv[i], "--below")) g_below = 1;
+        if (!strcmp(argv[i], "--done")) g_done = 1;
     }
     memcpy(g_memory + START, words, sizeof(words));
     memcpy(g_memory + OUT, words2, sizeof(words2));
@@ -538,6 +545,8 @@ int main(int argc, char** argv) {
     /* the host below its back end's floor: LLVM makes the JIT's code, said with what the host lacks; none otherwise */
     CHECK(!g_below == !strstr(g_warned, "jit: " BELOW ": LLVM makes the code\n"));
     CHECK(g_below || !strstr(g_warned, "LLVM makes the code"));
+    /* one that lacks what the back end does by its fallback: logged, not warned, and nothing of it otherwise */
+    CHECK(!g_done == !strstr(g_logs, "jit: " DONE "\n") && !strstr(g_warned, "fallback"));
     if (argc == 2 && !strcmp(argv[1], "--bench-no-pack")) {
         g_variants = NULL;
         for (u64 i = 0; i < 20000000; i++)

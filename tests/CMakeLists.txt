@@ -4085,6 +4085,8 @@ add_test(NAME runtime_variants_jit_opt_letter COMMAND snx-test-runtime-variants 
 add_test(NAME runtime_variants_jit_opt_empty COMMAND snx-test-runtime-variants --jit-opt=)
 # and the JIT on a host below its native back end's floor (recompiler/mach/native.h)
 add_test(NAME runtime_variants_below COMMAND snx-test-runtime-variants --below)
+# and on one that lacks what its fallback does
+add_test(NAME runtime_variants_done COMMAND snx-test-runtime-variants --done)
 add_executable(snx-test-runtime-hints runtime_hints.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/hints.c")
 snx_test_target(snx-test-runtime-hints gnu23)
 target_link_libraries(snx-test-runtime-hints PRIVATE scarletnx-common scarletnx-filesystem snx_settings Threads::Threads)
