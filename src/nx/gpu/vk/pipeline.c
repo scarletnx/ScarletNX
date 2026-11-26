@@ -837,15 +837,16 @@ void vk_pipeline_init(void) {
         LOG("%s\n", line);
     }
     /* SM86 programs' plain textures through the texture table (table.c), a set after the stages' sets: where the
-       constant buffers are in windows (the words take one), the sets are plain ones, and the device pushes the
-       words' offsets and binds one more set */
+       constant buffers are in windows (the words take one), and the device pushes the words' offsets and binds one
+       more set. With descriptor buffers the table has a buffer of its own, which lasts from frame to frame: without
+       it, each frame wrote its stages' tables of textures again (785k of 805k texture tables a 600 presents in one
+       game's world were the same as an earlier frame's) */
     g_spirv_translate.tex_table = 0;
     if (g_shader_sm86) {
         const u32 table_set = g_spirv_translate.split_sets ? 10 : g_vk_stage_sets;
         char why[160] = "";
         const char* no = !g_spirv_translate.cb_windows ? "constant buffers are not bound as windows"
-                         : g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support
-                             ? "descriptor buffers or heaps hold the sets"
+                         : g_vk.has_descriptor_heap_support ? "descriptor heaps hold the sets"
                          : g_vk.props.limits.maxPushConstantsSize < SH_PUSH_BYTES_TABLE
                              ? "the device pushes fewer than 240 bytes"
                          : g_vk.props.limits.maxBoundDescriptorSets <= table_set ? "the device binds fewer sets"

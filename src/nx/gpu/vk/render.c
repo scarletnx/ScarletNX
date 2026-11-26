@@ -9760,7 +9760,10 @@ resolved:
         const u32 at = g_spirv_translate.table_set;
         if (fresh || g_dyn[t_rc].sets[at] != table) {
             g_dyn[t_rc].sets[at] = table;
-            vk_descriptors_bind(cb, layout, at, 1, &table, 0, NULL);
+            if (g_vk.has_descriptor_buffers && !g_vk.has_descriptor_heaps)
+                vk_descriptors_bind_table(cb, layout, at); /* its own buffer (table.c) */
+            else
+                vk_descriptors_bind(cb, layout, at, 1, &table, 0, NULL);
         }
     }
     /* a program that fetches its own attributes takes an empty layout: its pipeline has the layout static and ignores

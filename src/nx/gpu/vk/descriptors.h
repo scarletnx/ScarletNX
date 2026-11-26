@@ -33,12 +33,18 @@ typedef struct {
 void vk_descriptors_get_stats(VkDescriptorStats* stats);
 VkResult vk_buffer_create(const VkBufferCreateInfo* info, const DevMemWant* allocation, VkBuffer* buffer,
                           DevMem* memory, DevMemInfo* details);
-void rec_CmdBindDescriptorBuffersEXT(VkCommandBuffer cb, VkDeviceAddress address);
+/* the frame's arena at buffer index 0, and the texture table's own buffer at index 1 where table is not 0 */
+void rec_CmdBindDescriptorBuffersEXT(VkCommandBuffer cb, VkDeviceAddress address, VkDeviceAddress table);
 void rec_CmdSetDescriptorBufferOffsetsEXT(VkCommandBuffer cb, VkPipelineLayout layout, u32 first, u32 count,
                                          const VkDeviceSize* offsets);
-/* the same at another bind point, a compute pipeline's (vk_descriptors_bind_compute) */
+/* the same at another bind point, a compute pipeline's (vk_descriptors_bind_compute), with the sets in the bound
+   descriptor buffer of index buffer */
 void rec_CmdSetDescriptorBufferOffsetsBP(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipelineLayout layout, u32 first,
-                                         u32 count, const VkDeviceSize* offsets);
+                                         u32 count, const VkDeviceSize* offsets, u32 buffer);
+/* With descriptor buffers: the texture table's own descriptor buffer (table.c), bound at index 1 with each frame's
+   arena from then on, and its set bound at set number at (offset 0 in it) */
+void vk_descriptors_table(VkDeviceAddress table);
+void vk_descriptors_bind_table(VkCommandBuffer cb, VkPipelineLayout layout, u32 at);
 /* a compute dispatch's set, at the compute bind point: descriptor sets, or descriptor buffers where the renderer
    uses them (descriptor heaps have no compute path) */
 void vk_descriptors_bind_compute(VkCommandBuffer cb, VkPipelineLayout layout, u32 first, VkDescriptorSet set);

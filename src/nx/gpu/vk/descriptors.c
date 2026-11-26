@@ -52,6 +52,7 @@ static struct {
        plays after the renderer thread's commands, both recorded at the same time (vk_descriptors_stream_reset) */
     u32 bound_cb[VK_RC_SLOTS];
     u64 bound_sets[VK_RC_SLOTS];
+    VkDeviceAddress table; /* the texture table's own descriptor buffer (vk_descriptors_table), 0 for none */
     VkDescriptorStats stats, reported;
     u8* images;
     size_t image_stride;
@@ -328,6 +329,25 @@ void vk_descriptors_stream_reset(u32 slot) {
     if (slot < VK_RC_SLOTS) g_descriptors.bound_cb[slot] = 0;
     if (g_vk.has_descriptor_heap_support) vk_descriptor_heaps_stream_reset(slot);
 }
+/* the frame's arena (and the texture table's buffer) bound in this command buffer, and no descriptor set bound since:
+   a compute pass's (a copy's, a conversion's) between two draws unbinds them, and the second draw's offsets went
+   unbound */
+static void buffers_bound(VkCommandBuffer cb) {
+    const u32 begun = vk_cb_begun();
+    const u64 binds = vk_rec_set_binds();
+    if (g_descriptors.bound_cb[g_vk_slot] != begun || g_descriptors.bound_sets[g_vk_slot] != binds) {
+        rec_CmdBindDescriptorBuffersEXT(cb, g_descriptors.frame[vk_frame_slot()].address, g_descriptors.table);
+        if (g_vk.has_descriptor_heap_support) vk_descriptor_heaps_buffer_bound(begun);
+        g_descriptors.bound_cb[g_vk_slot] = begun;
+        g_descriptors.bound_sets[g_vk_slot] = binds;
+    }
+}
+void vk_descriptors_table(VkDeviceAddress table) { g_descriptors.table = table; }
+void vk_descriptors_bind_table(VkCommandBuffer cb, VkPipelineLayout layout, u32 at) {
+    buffers_bound(cb);
+    const VkDeviceSize zero = 0;
+    rec_CmdSetDescriptorBufferOffsetsBP(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, at, 1, &zero, 1);
+}
 void vk_descriptors_bind(VkCommandBuffer cb, VkPipelineLayout layout, u32 first, u32 count, const VkDescriptorSet* sets,
                          u32 ndyn, const u32* dyn) {
     if (g_vk.has_descriptor_heaps) {
@@ -341,16 +361,7 @@ void vk_descriptors_bind(VkCommandBuffer cb, VkPipelineLayout layout, u32 first,
     }
     if (ndyn) fatal("vulkan: dynamic descriptors with descriptor buffers or heaps");
     if (count > 5) fatal("vulkan: too many graphics descriptor stages");
-    u32 begun = vk_cb_begun();
-    u64 binds = vk_rec_set_binds();
-    /* in this command buffer, and no descriptor set bound since: a compute pass's (a copy's, a conversion's) between
-       two draws unbinds them, and the second draw's offsets went unbound */
-    if (g_descriptors.bound_cb[g_vk_slot] != begun || g_descriptors.bound_sets[g_vk_slot] != binds) {
-        rec_CmdBindDescriptorBuffersEXT(cb, g_descriptors.frame[vk_frame_slot()].address);
-        if (g_vk.has_descriptor_heap_support) vk_descriptor_heaps_buffer_bound(begun);
-        g_descriptors.bound_cb[g_vk_slot] = begun;
-        g_descriptors.bound_sets[g_vk_slot] = binds;
-    }
+    buffers_bound(cb);
     VkDeviceSize offsets[5];
     for (u32 i = 0; i < count; i++) offsets[i] = (u64)(uintptr_t)sets[i] - 1;
     rec_CmdSetDescriptorBufferOffsetsEXT(cb, layout, first, count, offsets);
@@ -363,9 +374,9 @@ void vk_descriptors_bind_compute(VkCommandBuffer cb, VkPipelineLayout layout, u3
         rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, layout, first, 1, &set, 0, NULL);
         return;
     }
-    rec_CmdBindDescriptorBuffersEXT(cb, g_descriptors.frame[vk_frame_slot()].address);
+    rec_CmdBindDescriptorBuffersEXT(cb, g_descriptors.frame[vk_frame_slot()].address, g_descriptors.table);
     VkDeviceSize offset = (u64)(uintptr_t)set - 1;
-    rec_CmdSetDescriptorBufferOffsetsBP(cb, VK_PIPELINE_BIND_POINT_COMPUTE, layout, first, 1, &offset);
+    rec_CmdSetDescriptorBufferOffsetsBP(cb, VK_PIPELINE_BIND_POINT_COMPUTE, layout, first, 1, &offset, 0);
 }
 void vk_descriptors_stats(void) {
     if (g_vk.has_descriptor_heaps) {
