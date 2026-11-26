@@ -769,12 +769,15 @@ static void spill_tail(u64 cb) {
     o->cur = from;
     o->piece = 0;
 }
-/* The pieces whose recording's JUMP is gone (spill_link), or whose command memory is: taken under the lock, the game's
-   memory read without it (mem_mapped_run takes mem.c's), and each given back under it again while it is still the same
-   piece */
+/* The pieces whose recording's JUMP is gone (spill_link), or whose command memory is, and those of a recording with no
+   command bytes whose control memory the game wrote over (csig): taken under the lock, the game's memory read without
+   it (mem_mapped_run takes mem.c's), and each given back under it again while it is still the same piece. One game
+   gives a command buffer new control memory each frame, which moved over 1.3 GB of its heap: no write of control
+   memory reached its old recordings' anchors, and their pieces were 32,000 of the 65,000 in use within three minutes,
+   which spill_back walked at each recording's end */
 static void spill_sweep(NvnCmdState* st) {
     typedef struct {
-        u64 at, mark;
+        u64 at, mark, sig; /* sig: a piece with no command bytes (mark 0), its csig */
         u32 slot, serial;
     } Seen;
     u32 n = 0, gone = 0;
@@ -786,17 +789,22 @@ static void spill_sweep(NvnCmdState* st) {
                         sizeof *seen);
     for (u32 i = 1; seen && i <= st->slots && n < atomic_load_explicit(&st->np, memory_order_relaxed); i++)
         if (st->p[i].anchor && st->p[i].mark)
-            seen[n++] = (Seen){(st->p[i].anchor + 7) & ~7ull, st->p[i].mark, i, st->p[i].serial};
+            seen[n++] = (Seen){(st->p[i].anchor + 7) & ~7ull, st->p[i].mark, 0, i, st->p[i].serial};
+        else if (st->p[i].anchor && (st->p[i].flags & NVN_PIECE_NO_COMMAND) && st->p[i].canchor)
+            seen[n++] = (Seen){st->p[i].canchor, 0, st->p[i].csig, i, st->p[i].serial}; /* the control memory's test */
     pm_unlock(&st->lock);
     u32 dead = 0;
-    for (u32 j = 0; seen && j < n; j++)
-        if (mem_mapped_run(seen[j].at, 16) < 16 || NVN_REC_OP(gr32(seen[j].at)) != OP_JUMP ||
-            gr64(seen[j].at + 8) != seen[j].mark)
+    for (u32 j = 0; seen && j < n; j++) {
+        if (!seen[j].mark ? mem_mapped_run(seen[j].at, 8) < 8 || gr64(seen[j].at) != seen[j].sig
+                    : mem_mapped_run(seen[j].at, 16) < 16 || NVN_REC_OP(gr32(seen[j].at)) != OP_JUMP ||
+                          gr64(seen[j].at + 8) != seen[j].mark)
             seen[dead++] = seen[j];
+    }
     pm_lock(&st->lock);
     for (u32 j = 0; j < dead; j++) {
         const NvnSpillPiece* q = &st->p[seen[j].slot];
-        if (q->anchor && q->serial == seen[j].serial && q->mark == seen[j].mark) {
+        if (q->anchor && q->serial == seen[j].serial && q->mark == seen[j].mark &&
+            (q->mark || (q->flags & NVN_PIECE_NO_COMMAND))) {
             piece_drop(st, seen[j].slot);
             gone++;
         }
@@ -1131,10 +1139,22 @@ u64 nvn_CommandBufferEndRecording(CPU* c, u64 cb) {
     } else
         h = empty_recording();
     if (t && t->start && no_command) {
+        /* only its control memory gives its pieces back: its entries there as they are now, which the game writes
+           over once it uses the memory for something else (spill_sweep) */
+        const u64 sig = mem_mapped_run(t->rec, 8) >= 8 ? gr64(t->rec) : 0;
         pm_lock(&g_nvn.cmd.lock);
-        /* only its control memory gives its pieces back */
         for (u32 i = g_nvn.cmd.cbucket[NVN_SPILL_BUCKET(t->rec)]; i; i = g_nvn.cmd.p[i].cnext)
-            if (g_nvn.cmd.p[i].canchor == t->rec) g_nvn.cmd.p[i].flags |= NVN_PIECE_NO_COMMAND;
+            if (g_nvn.cmd.p[i].canchor == t->rec && !(g_nvn.cmd.p[i].flags & NVN_PIECE_NO_COMMAND)) {
+                NvnSpillPiece* q = &g_nvn.cmd.p[i];
+                q->flags |= NVN_PIECE_NO_COMMAND;
+                q->csig = sig;
+                /* out of the command memory's chain, whose look (spill_back) never gives it back: one game anchored
+                   32,000 such pieces in 768 bytes of command memory, three chains that each recording's end walked */
+                u32* at = &g_nvn.cmd.bucket[NVN_SPILL_BUCKET(q->anchor)];
+                while (*at && *at != i) at = &g_nvn.cmd.p[*at].next;
+                if (*at) *at = q->next;
+                q->next = 0;
+            }
         pm_unlock(&g_nvn.cmd.lock);
     }
     spill_end(cb);

@@ -28,6 +28,7 @@ typedef struct {
    A piece moved into the small store has seg NVN_SPILL_SMALL plus its class, and at its block */
 typedef struct {
     u64 anchor, canchor, mark, at;
+    u64 csig; /* NVN_PIECE_NO_COMMAND: the 8 bytes at canchor as the recording ended (spill_sweep's test) */
     u32 seg, serial, next, cnext, flags, ctl;
 } NvnSpillPiece;
 /* its recording counted no bytes of command memory: the driver keeps it all in control memory, so only a look at the
