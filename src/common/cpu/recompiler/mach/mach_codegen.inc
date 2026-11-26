@@ -13,8 +13,7 @@
    last ones, MG_PIN_RESERVED(h) whether a pin's register is one values may be in), the vector pins' (MG_VPIN(k),
    the k-th, MG_NVPINS) and the vector registers no value may take (MG_XRESERVED: the callee's). MG_FAR_JUMPS where its
    jumps have a longer form (Unit.far), MG_POOL_REACH how far the code goes past the first LDR of a literal before the
-   literals are put in it (mg_pool_island), MG_POLL_FLIP where a loop's latch jumps back unconditionally in a region
-   the machine says a conditional jump back is slower after (mg_poll_flip), its pending poll a jump out (poll_jnz).
+   literals are put in it (mg_pool_island).
 
    Each basic block's instructions are sailgen's emitters', appended to one SSA region (registers read once, flags
    reused, constants folded) and assembled when the block ends. The guest's registers are in the CPU structure at
@@ -172,12 +171,6 @@ static void poll_then(Unit* u, SnxU64 resume);
    is pending (it may change the host's flags), and the pending poll's call alone, out of line */
 static void poll_jz(Unit* u, int label);
 static void poll_slow(Unit* u, SnxU64 resume);
-#endif
-#ifdef MG_POLL_FLIP
-/* whether a loop's latch after the region's instructions [0, n) jumps back unconditionally, its pending poll a jump out
-   to label (poll_jnz) rather than its jump back conditional (poll_jz) */
-static int mg_poll_flip(const SgX* x, int n);
-static void poll_jnz(Unit* u, int label);
 #endif
 #ifdef MG_JTAB
 /* a BR's jump through table k (the target in SGX_FN_TARGET): to the case's label, else (a poll pending, the target
@@ -373,14 +366,6 @@ static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r) {
            taken, to the header where no poll is pending, else to the poll's stub (imm) */
         int skip = new_label(u);
         jcc(u, i->cc ^ 1, skip);
-#ifdef MG_POLL_FLIP
-        if (mg_poll_flip(a->x, at)) {
-            poll_jnz(u, (int)i->imm);
-            jmp(u, i->disp);
-            bind(u, skip);
-            break;
-        }
-#endif
         poll_jz(u, i->disp);
         jmp(u, (int)i->imm);
         bind(u, skip);
@@ -1467,9 +1452,6 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
     SnxA64Insn insn;
     SnxU64 next = address + 4, target;
     int terminal = 0;
-#ifdef MG_POLL_FLIP
-    int flip = 0;
-#endif
     snx_a64_decode_word(word, u->codegen->features, &insn);
     /* a long block is several regions: the guest's registers are in the state at each one's end */
     if (x->n > SGX_MAXI - SGX_MAXI / 4 || x->nv > SGX_MAXV - SGX_MAXV / 4 || x->nb > SGX_MAXB - SGX_MAXB / 4)
@@ -1548,21 +1530,10 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
         break;
     case SNX_A64_FLOW_B:
         target = snx_a64_branch_target(&insn, address);
-#ifdef MG_POLL_FLIP
-        flip = mg_poll_flip(x, x->n); /* before the region is assembled */
-#endif
         flush_to(u, target);
         if (snx_function_contains(f, target)) {
 #ifdef MG_POLL_INLINE
             if (target <= address) {
-#ifdef MG_POLL_FLIP
-                if (flip) {
-                    poll_jnz(u, add_stub(u, 3, target, address));
-                    jmp(u, (int)index_of(f, target));
-                    terminal = 1;
-                    break;
-                }
-#endif
                 poll_jz(u, (int)index_of(f, target));
                 jmp(u, add_stub(u, 3, target, address));
                 terminal = 1;
