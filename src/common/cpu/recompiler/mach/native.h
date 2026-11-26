@@ -46,6 +46,9 @@ void snx_native_without(struct snx_recompiler* r, const SnxU32* words, size_t co
 int snx_native_available(void);
 /* its name, for the recompiler's lines ("x86-64", "arm64"; "none") */
 const char* snx_native_name(void);
+/* the host's features its code is made with (SGX_F_* of x64.h's on x86-64, with Windows' ABI; arm64_codegen.h's on
+   arm64), for what a cache of that code is keyed by: 0 on the other machines, whose code takes none */
+unsigned snx_native_features(void);
 /* the object of the functions [first, last) of codegen the host's back end can make, made[i - first] 1 for each, as
    snx_x64_object and snx_arm64_object make it (for this host's features) */
 int snx_native_object(SnxCodegen* codegen, size_t first, size_t last, const SnxNativeOptions* options,

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The lock of a recompile's queue of units and the threads that run its worker, which need no LLVM: the AArch32 AOT
-   compilers' (3ds, vita and nds aot/compiler.c) and, through workers.h, the others' */
+   compilers' (3ds, vita and nds aot/compiler.c), and the library's (library.c) */
 #ifndef SNX_RECOMPILER_WORKER_THREADS_H
 #define SNX_RECOMPILER_WORKER_THREADS_H
 #include "common/cpu/recompiler/compile_thread.h"

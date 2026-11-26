@@ -17,19 +17,20 @@
 #include "common/cpu/aarch64/a64_decoder.h"
 #include "common/cpu/arm/exec.h"
 #include "common/cpu/arm/simd.h"
-#include "common/cpu/recompiler/llvm/ir.h"
+#include "common/cpu/recompiler/fallback.h"
+#include "common/cpu/recompiler/library_descriptor.h"
 #include "common/cpu/recompiler/jit/jit_service.h"
 #include "common/cpu/recompiler/object/link.h"
 #include "common/cpu/recompiler/loader/code_loader.h"
 #include "common/cpu/recompiler/object/objects_pack.h"
 #include "common/cpu/recompiler/mach/native.h"
 #include "common/cpu/recompiler/x64/x64_codegen.h"
-#include "common/cpu/recompiler/workers.h"
+#include "common/cpu/recompiler/worker_threads.h"
+#include "common/cpu/recompiler/x64/x64_elf.h"
+#include "common/cpu/recompiler/rtlib/rtlib_object.h"
 #include "common/utilities/endian.h"
 #include "common/platform/time.h"
 #include "common/platform/file.h"
-#include <llvm-c/Support.h>
-#include <llvm-c/TargetMachine.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,10 +48,6 @@
 #endif
 #endif
 
-/* the runtime library's bitcode the LLVM backend compiles (llvm/ir.c), which names its cached object */
-extern const unsigned char snx_rtlib_bitcode[];
-extern const unsigned long snx_rtlib_bitcode_size;
-
 /* weighted instructions (function_weight) per code unit (an LLVM module): whole functions until a unit reaches it.
    Smaller than the game workflow's default (the setting unit_instructions): a cold recompile of a large program on
    several threads finishes sooner when no unit is long enough to run alone at the end, and LLVM compiles a smaller
@@ -63,20 +60,17 @@ extern const unsigned long snx_rtlib_bitcode_size;
 /* the dispatch table holds a pointer per instruction slot of the code range: a range this wide is not a program */
 #define MAX_CODE_SPAN ((uint64_t)1 << 30)
 
-/* ---- the descriptor the generated module exports, read back by load_descriptor ----
-   Written by the LLVM backend field by field at these offsets, into a byte array of this size, so it doesn't have to
-   describe the struct's layout. abi comes first: a module of another contract is recognized before anything else */
-typedef struct {
-    uint32_t abi;
-    uint32_t reserved;
-    uint64_t count;            /* entries: every leader of every function, by address */
-    const uint64_t* addresses; /* ascending */
-    const GuestFn* functions;  /* the function each leader belongs to (its F_, which dispatches on the entry) */
-    GuestFn interp;            /* NULL: there is no interpreter, the module's JIT compiles what it lacks */
-    uint8_t* stale;             /* one byte per discovered function; set when its source code changes */
-} Descriptor;
-#define DESCRIPTOR_SYMBOL "snx_lib_module"
-typedef const Descriptor* (*DescriptorFn)(void);
+/* ---- the descriptor the generated module exports (library_descriptor.h), read back by load_descriptor ---- */
+typedef SnxLibraryDescriptor Descriptor;
+/* the symbol the module exports it by: LLVM's function, or with no fallback the data (native_descriptor) */
+static const char* descriptor_symbol(void) {
+    return snx_fallback_available() ? SNX_LIBRARY_DESCRIPTOR_FN : SNX_LIBRARY_DESCRIPTOR_DATA;
+}
+/* the descriptor at the address of descriptor_symbol's, NULL for none */
+static const Descriptor* descriptor_at(void* address) {
+    if (!address) return NULL;
+    return snx_fallback_available() ? ((SnxLibraryDescriptorFn)(uintptr_t)address)() : (const Descriptor*)address;
+}
 
 struct snx_recompiler {
     char opt;
@@ -208,7 +202,7 @@ static void fail(struct snx_recompiler* r, const char* fmt, ...) {
 
 int snx_recompiler_has(int flags) {
     char error[256];
-    if (flags == SNX_RECOMPILER_FLAG_LLVM) return !snx_ir_init(error, sizeof(error));
+    if (flags == SNX_RECOMPILER_FLAG_LLVM) return !snx_fallback_start(error, sizeof(error));
     return 0;
 }
 
@@ -672,7 +666,9 @@ static int llvm_unit(Queue* q, size_t index, char* error, size_t error_size) {
     if (q->r->x64 && !q->r->keep_ir && u->last > u->first) {
         /* the x86-64 back end first: LLVM makes only what it can't (and all of it where the IR is to be kept) */
         SnxNativeOptions options = {0};
-        options.llvm_at = snx_ir_dump_pc();
+        options.llvm_at = snx_fallback_dump_pc();
+        /* with no fallback, an instruction it has no code for is undefined where it runs, and its function is made */
+        options.alone = !snx_fallback_available();
         options.refused = &u->x64_refused;
         options.without = q->r->without;
         options.without_count = q->r->without_count;
@@ -693,21 +689,14 @@ static int llvm_unit(Queue* q, size_t index, char* error, size_t error_size) {
             return 0;
         }
     }
-    SnxIr* ir = snx_ir_new(name, q->r->opt, error, error_size);
-    if (!ir) {
-        free(made);
-        return -1;
-    }
-    if (q->codegen->hook_direct_calls) snx_ir_stale_checks(ir);
-    for (size_t i = u->first; i < u->last; ++i)
-        if (!made || !made[i - u->first]) snx_ir_emit(ir, q->codegen, &q->codegen->functions[i]);
+    /* the fallback's options are the native back end's (it was not given the stale checks LLVM's code makes with
+       every call through the table) */
+    SnxNativeOptions options = {0};
+    SnxFallbackUnit unit = {.keep_ir = q->r->keep_ir};
+    options.stale = q->codegen->hook_direct_calls;
+    rc = snx_fallback_object(q->codegen, u->first, u->last, &options, made, &unit, name, q->r->opt, &u->object,
+                             &u->size, error, error_size);
     free(made);
-    if (q->r->keep_ir && snx_save_ir(ir, q->r->keep_ir, name)) {
-        snprintf(error, error_size, "cannot save the IR of %s in %s", name, q->r->keep_ir);
-        rc = -1;
-    }
-    if (!rc) rc = snx_ir_object(ir, q->r->opt, &u->object, &u->size, error, error_size);
-    snx_ir_free(ir);
     return rc;
 }
 
@@ -760,70 +749,41 @@ static void run_queue(Queue* q, unsigned jobs) {
     snx_work_lock_destroy(&q->lock);
 }
 
-/* the descriptor as IR: constant tables, and DESCRIPTOR_SYMBOL filling the Descriptor (generated code's misses go to
-   RtAPI.miss since SNX_ABI 8, and default_miss's to the module's JIT) */
-static int llvm_descriptor(SnxIr* ir, const SnxCodegen* codegen, char* error, size_t error_size) {
-    size_t count;
-    Entry* e = entries(codegen, &count);
-    if (!e) {
+/* The descriptor without LLVM (native.h's snx_native_data), as data: SNX_LIBRARY_DESCRIPTOR_DATA, its tables of the
+   entries' addresses and functions beside it, and with stale checks the functions' bytes (snx_stale). Its object
+   (malloc'd): 0, or -1 with the reason in error */
+static int native_descriptor(const SnxCodegen* codegen, const uint64_t* address, const size_t* function, size_t count,
+                             int stale, unsigned char** object, size_t* size, char* error, size_t error_size) {
+    unsigned pointer = 0;
+    char name[32];
+    Descriptor d = {.abi = SNX_ABI, .count = count};
+    SnxXElf* o = snx_native_data(&pointer);
+    if (!o) {
         snprintf(error, error_size, "out of memory");
         return -1;
     }
-    size_t n = count ? count : 1;
-    LLVMValueRef* values = (LLVMValueRef*)calloc(n, sizeof(*values));
-    if (!values) {
-        free(e);
-        snprintf(error, error_size, "out of memory");
-        return -1;
+    const size_t addresses = snx_xelf_put(o, SNX_ELF_RODATA, address, (count ? count : 1) * sizeof *address, 8);
+    snx_xelf_symbol(o, "snx_lib_addresses", SNX_ELF_RODATA, addresses, count * sizeof *address, SNX_ELF_LOCAL);
+    const size_t functions = snx_xelf_put(o, SNX_ELF_RELRO, NULL, (count ? count : 1) * sizeof(GuestFn), 8);
+    snx_xelf_symbol(o, "snx_lib_functions", SNX_ELF_RELRO, functions, count * sizeof(GuestFn), SNX_ELF_LOCAL);
+    for (size_t i = 0; i < count; ++i) {
+        snprintf(name, sizeof name, "F_%llX", (unsigned long long)codegen->functions[function[i]].start);
+        snx_xelf_reloc(o, SNX_ELF_RELRO, functions + i * sizeof(GuestFn), name, pointer, 0);
     }
-    for (size_t i = 0; i < n; ++i) values[i] = ir_i64(ir, i < count ? e[i].address : 0);
-    LLVMTypeRef t_addresses = LLVMArrayType(ir->t_i64, (unsigned)n);
-    LLVMValueRef addresses = LLVMAddGlobal(ir->mod, t_addresses, "snx_lib_addresses");
-    LLVMSetLinkage(addresses, LLVMInternalLinkage);
-    LLVMSetInitializer(addresses, LLVMConstArray(ir->t_i64, values, (unsigned)n));
-    LLVMSetGlobalConstant(addresses, 1);
-    for (size_t i = 0; i < n; ++i)
-        values[i] =
-            i < count ? snx_ir_guest_function(ir, codegen->functions[e[i].function].start) : LLVMConstNull(ir->t_ptr);
-    LLVMTypeRef t_functions = LLVMArrayType(ir->t_ptr, (unsigned)n);
-    LLVMValueRef functions = LLVMAddGlobal(ir->mod, t_functions, "snx_lib_functions");
-    LLVMSetLinkage(functions, LLVMInternalLinkage);
-    LLVMSetInitializer(functions, LLVMConstArray(ir->t_ptr, values, (unsigned)n));
-    LLVMSetGlobalConstant(functions, 1);
-    LLVMValueRef stale = LLVMConstNull(ir->t_ptr);
-    if (codegen->hook_direct_calls) {
-        const size_t stale_count = codegen->function_count ? codegen->function_count : 1;
-        const LLVMTypeRef t_stale = LLVMArrayType(ir->t_i8, (unsigned)stale_count);
-        stale = LLVMAddGlobal(ir->mod, t_stale, "snx_stale");
-        LLVMSetInitializer(stale, LLVMConstNull(t_stale));
-        LLVMSetVisibility(stale, LLVMHiddenVisibility);
+    const size_t at = snx_xelf_put(o, SNX_ELF_RELRO, &d, sizeof d, 8);
+    snx_xelf_symbol(o, SNX_LIBRARY_DESCRIPTOR_DATA, SNX_ELF_RELRO, at, sizeof d, SNX_ELF_GLOBAL);
+    snx_xelf_reloc(o, SNX_ELF_RELRO, at + offsetof(Descriptor, addresses), "snx_lib_addresses", pointer, 0);
+    snx_xelf_reloc(o, SNX_ELF_RELRO, at + offsetof(Descriptor, functions), "snx_lib_functions", pointer, 0);
+    if (stale) {
+        const size_t bytes = codegen->function_count ? codegen->function_count : 1;
+        snx_xelf_symbol(o, "snx_stale", SNX_ELF_BSS, snx_xelf_put(o, SNX_ELF_BSS, NULL, bytes, 8), bytes,
+                        SNX_ELF_GLOBAL | SNX_ELF_HIDDEN);
+        snx_xelf_reloc(o, SNX_ELF_RELRO, at + offsetof(Descriptor, stale), "snx_stale", pointer, 0);
     }
-    free(values);
-    free(e);
-    /* static Descriptor DESC, written at run time at the C offsets */
-    LLVMValueRef desc = LLVMAddGlobal(ir->mod, LLVMArrayType(ir->t_i8, sizeof(Descriptor)), "snx_lib_descriptor");
-    LLVMSetLinkage(desc, LLVMInternalLinkage);
-    LLVMSetInitializer(desc, LLVMConstNull(LLVMArrayType(ir->t_i8, sizeof(Descriptor))));
-    LLVMSetAlignment(desc, 8);
-    LLVMValueRef fn = LLVMAddFunction(ir->mod, DESCRIPTOR_SYMBOL, LLVMFunctionType(ir->t_ptr, NULL, 0, 0));
-    if (ir->windows) LLVMSetDLLStorageClass(fn, LLVMDLLExportStorageClass);
-    ir->fn = fn;
-    LLVMBasicBlockRef block = LLVMAppendBasicBlockInContext(ir->ctx, fn, "entry");
-    LLVMPositionBuilderAtEnd(ir->b, block);
-#define FIELD(member, value)                                                                                           \
-    do {                                                                                                               \
-        LLVMValueRef index__ = ir_i64(ir, offsetof(Descriptor, member));                                               \
-        LLVMBuildStore(ir->b, value, LLVMBuildInBoundsGEP2(ir->b, ir->t_i8, desc, &index__, 1, ""));                   \
-    } while (0)
-    FIELD(abi, ir_i32(ir, SNX_ABI));
-    FIELD(count, ir_i64(ir, count));
-    FIELD(addresses, addresses);
-    FIELD(functions, functions);
-    FIELD(interp, LLVMConstNull(ir->t_ptr));
-    FIELD(stale, stale);
-#undef FIELD
-    LLVMBuildRet(ir->b, desc);
-    return 0;
+    const int rc = snx_xelf_write(o, object, size);
+    snx_xelf_free(o);
+    if (rc) snprintf(error, error_size, "the descriptor's object: %s", rc == -1 ? "out of memory" : "no form of it");
+    return rc ? -1 : 0;
 }
 
 /* ---- the module cache ----
@@ -839,6 +799,8 @@ static void key_bytes(CacheKey* k, const void* data, size_t size) {
     k->a = snx_fnv1a(k->a, data, size);
     k->b = snx_fnv1a(k->b, data, size);
 }
+/* snx_fallback_key's put */
+static void key_put(void* user, const void* data, size_t size) { key_bytes((CacheKey*)user, data, size); }
 static void key_u64(CacheKey* k, uint64_t v) {
     unsigned char bytes[8];
     snx_st_le64(bytes, v);
@@ -854,12 +816,7 @@ static char* cache_path(struct snx_recompiler* r, SnxCodegen* codegen) {
     key_u64(&k, r->features);
     key_u64(&k, (uint64_t)codegen->hook_direct_calls);
     key_u64(&k, (uint64_t)r->x64); /* which back end made the functions */
-    char* cpu = LLVMGetHostCPUName();
-    char* features = snx_ir_host_features();
-    key_bytes(&k, cpu, strlen(cpu) + 1);
-    key_bytes(&k, features, strlen(features) + 1);
-    LLVMDisposeMessage(cpu);
-    LLVMDisposeMessage(features);
+    snx_fallback_key(0, key_put, &k);
     key_u64(&k, codegen->function_count);
     for (size_t i = 0; i < codegen->function_count; ++i) {
         const SnxFunction* f = &codegen->functions[i];
@@ -886,8 +843,9 @@ static char* cache_path(struct snx_recompiler* r, SnxCodegen* codegen) {
     );
     return snx_path_join(r->cache, name);
 }
-/* The runtime library compiled for this CPU (snx_ir_rtlib_object), once per optimization level and process: it takes
-   seconds, and nothing else a recompiler sets changes it. Kept until the process ends */
+/* The runtime library compiled for this CPU (the fallback's, snx_fallback_rtlib), once per optimization level and
+   process: it takes seconds, and nothing else a recompiler sets changes it. Kept until the process ends. Without a
+   fallback, the object the build compiled (rtlib_object.h), as the JIT loads it */
 #ifdef _WIN32
 static SRWLOCK rtlib_lock = SRWLOCK_INIT;
 #else
@@ -906,13 +864,7 @@ static char* rtlib_cache_path(const char* cache, char opt) {
     key_bytes(&k, "snx-rtlib-cache-1", 17);
     key_u64(&k, SNX_ABI);
     key_u64(&k, (uint64_t)(unsigned char)opt);
-    key_bytes(&k, snx_rtlib_bitcode, snx_rtlib_bitcode_size);
-    char* cpu = LLVMGetHostCPUName();
-    char* features = snx_ir_host_features();
-    key_bytes(&k, cpu, strlen(cpu) + 1);
-    key_bytes(&k, features, strlen(features) + 1);
-    LLVMDisposeMessage(cpu);
-    LLVMDisposeMessage(features);
+    snx_fallback_key(1, key_put, &k);
     snprintf(name, sizeof(name), "rtlib-%016llx%016llx.o", (unsigned long long)k.a, (unsigned long long)k.b);
     return snx_path_join(cache, name);
 }
@@ -923,6 +875,11 @@ static int rtlib_object(const char* cache, char opt, const unsigned char** data,
     const char* level = opt ? strchr(levels, opt) : NULL;
     size_t i = level ? (size_t)(level - levels) : 2;
     int rc = 0;
+    if (!snx_fallback_available()) {
+        *data = snx_rtlib_object;
+        *size = (size_t)snx_rtlib_object_size;
+        return 0;
+    }
 #ifdef _WIN32
     AcquireSRWLockExclusive(&rtlib_lock);
 #else
@@ -932,11 +889,11 @@ static int rtlib_object(const char* cache, char opt, const unsigned char** data,
         char* path = rtlib_cache_path(cache, levels[i]);
         rtlib_objects[i] = snx_read_file(path, &rtlib_sizes[i]);
         if (!rtlib_objects[i] &&
-            !(rc = snx_ir_rtlib_object(levels[i], &rtlib_objects[i], &rtlib_sizes[i], error, error_size)))
+            !(rc = snx_fallback_rtlib(levels[i], &rtlib_objects[i], &rtlib_sizes[i], error, error_size)))
             save_cached(path, rtlib_objects[i], rtlib_sizes[i]);
         free(path);
     } else if (!rtlib_objects[i])
-        rc = snx_ir_rtlib_object(levels[i], &rtlib_objects[i], &rtlib_sizes[i], error, error_size);
+        rc = snx_fallback_rtlib(levels[i], &rtlib_objects[i], &rtlib_sizes[i], error, error_size);
     *data = rtlib_objects[i];
     *size = rtlib_sizes[i];
 #ifdef _WIN32
@@ -955,8 +912,8 @@ static int load_cached(struct snx_recompiler* r, struct snx_recompiled* m, const
     int rc = -1;
     if (!data) return -1;
     if (!load_image(r, m, data, size)) {
-        DescriptorFn describe = (DescriptorFn)(uintptr_t)image_symbol(m, DESCRIPTOR_SYMBOL);
-        rc = describe ? load_descriptor(r, m, describe()) : -1;
+        const Descriptor* describe = descriptor_at(image_symbol(m, descriptor_symbol()));
+        rc = describe ? load_descriptor(r, m, describe) : -1;
         if (rc) {
             free(m->dispatch);
             m->dispatch = NULL;
@@ -985,7 +942,7 @@ static void save_cached(const char* path, const unsigned char* data, size_t size
    with the runtime library first when there is none. The objects' globals stay the module's (each one's descriptor
    has the same name) */
 static int arena_load(struct snx_recompiler* r, struct snx_recompiled* m, const SnxLinkInput* inputs, size_t count) {
-    const char* name = DESCRIPTOR_SYMBOL;
+    const char* name = descriptor_symbol();
     SnxU64 address = 0;
     char error[1024];
     if (!r->arena) {
@@ -1007,7 +964,7 @@ static int arena_load(struct snx_recompiler* r, struct snx_recompiled* m, const 
     m->arena_owner = r;
     ++r->arena_modules;
     /* an ELFv1 function's address is its descriptor, as a pointer to it is */
-    return load_descriptor(r, m, ((DescriptorFn)(uintptr_t)address)());
+    return load_descriptor(r, m, descriptor_at((void*)(uintptr_t)address));
 }
 
 /* the cached module's objects at path, loaded; nonzero when there are none or they can't be (then made again) */
@@ -1030,9 +987,11 @@ done:
 }
 #endif
 
+/* what a failure the fallback reports starts with: its own name, where it is LLVM */
+static const char* fallback_said(void) { return snx_fallback_available() ? "LLVM backend: " : ""; }
+
 static int recompile_llvm(struct snx_recompiler* r, struct snx_recompiled* m, SnxCodegen* codegen) {
     Queue q;
-    SnxIr* ir = NULL;
     SnxLinkInput* inputs = NULL;
     SnxLinkOutput linked = {0};
     unsigned char* descriptor_object = NULL;
@@ -1042,7 +1001,7 @@ static int recompile_llvm(struct snx_recompiler* r, struct snx_recompiled* m, Sn
     char* cached = NULL;
     memset(&q, 0, sizeof(q));
     error[0] = 0;
-    if (snx_ir_init(error, sizeof(error))) {
+    if (snx_fallback_start(error, sizeof(error))) {
         fail(r, "%s", error);
         return -1;
     }
@@ -1081,23 +1040,44 @@ static int recompile_llvm(struct snx_recompiler* r, struct snx_recompiled* m, Sn
     q.codegen = codegen;
     q.functions_total = units[count];
     if (r->progress) r->progress(r->progress_user, 0, q.weight_total, 0, q.functions_total);
-    report(r, "LLVM: %lu code unit%s and the descriptor\n", (unsigned long)count, count == 1 ? "" : "s");
+    if (snx_fallback_available())
+        report(r, "LLVM: %lu code unit%s and the descriptor\n", (unsigned long)count, count == 1 ? "" : "s");
+    else
+        report(r, "%s back end: %lu code unit%s and the descriptor\n", snx_native_name(), (unsigned long)count,
+               count == 1 ? "" : "s");
     if (count) run_queue(&q, r->jobs);
     if (q.failed) {
-        fail(r, "LLVM backend: %s", q.error);
+        fail(r, "%s%s", fallback_said(), q.error);
         goto done;
     }
-    ir = snx_ir_new("module", r->opt, error, sizeof(error));
-    if (!ir || llvm_descriptor(ir, codegen, error, sizeof(error)) ||
-        (r->keep_ir && snx_save_ir(ir, r->keep_ir, "module")) ||
-        snx_ir_object(ir, r->opt, &descriptor_object, &descriptor_size, error, sizeof(error))) {
-        fail(r, "LLVM backend: %s", error[0] ? error : "cannot save the descriptor's IR");
-        goto done;
+    {
+        /* the descriptor: LLVM's, or with no fallback (where the native back end made every function) its own */
+        size_t entry_count = 0;
+        Entry* e = entries(codegen, &entry_count);
+        uint64_t* addresses = (uint64_t*)calloc(entry_count ? entry_count : 1, sizeof *addresses);
+        size_t* functions = (size_t*)calloc(entry_count ? entry_count : 1, sizeof *functions);
+        int failed = !e || !addresses || !functions;
+        if (failed) snprintf(error, sizeof(error), "out of memory");
+        for (i = 0; !failed && i < entry_count; ++i) addresses[i] = e[i].address, functions[i] = e[i].function;
+        if (!failed)
+            failed = snx_fallback_available()
+                         ? snx_fallback_library_descriptor(codegen, addresses, functions, entry_count,
+                                                           codegen->hook_direct_calls, r->opt, r->keep_ir,
+                                                           &descriptor_object, &descriptor_size, error, sizeof(error))
+                         : native_descriptor(codegen, addresses, functions, entry_count, codegen->hook_direct_calls,
+                                             &descriptor_object, &descriptor_size, error, sizeof(error));
+        free(e);
+        free(addresses);
+        free(functions);
+        if (failed) {
+            fail(r, "%s%s", fallback_said(), error);
+            goto done;
+        }
     }
     const unsigned char* rtlib = NULL;
     size_t rtlib_size = 0;
     if (rtlib_object(r->cache, r->opt, &rtlib, &rtlib_size, error, sizeof(error))) {
-        fail(r, "LLVM backend: %s", error);
+        fail(r, "%s%s", fallback_said(), error);
         goto done;
     }
     /* link: runtime library, descriptor, units */
@@ -1129,14 +1109,16 @@ static int recompile_llvm(struct snx_recompiler* r, struct snx_recompiled* m, Sn
         for (i = 0; i < count; ++i) x64_made += q.units[i].x64_made, refused += q.units[i].x64_refused;
         r->x64_made = x64_made;
         if (r->x64)
-            report(r, "%s back end: %lu of %lu functions, LLVM the rest\n", snx_native_name(), (unsigned long)x64_made,
-                   (unsigned long)codegen->function_count);
+            report(r, "%s back end: %lu of %lu functions%s\n", snx_native_name(), (unsigned long)x64_made,
+                   (unsigned long)codegen->function_count, snx_fallback_available() ? ", LLVM the rest" : "");
         if (refused)
-            snx_error("native back end: %lu of %lu functions have an instruction it has no code for: LLVM made them",
-                      (unsigned long)refused, (unsigned long)codegen->function_count);
+            snx_error("native back end: %lu of %lu functions have an instruction it has no code for: %s",
+                      (unsigned long)refused, (unsigned long)codegen->function_count,
+                      snx_fallback_available() ? "LLVM made them"
+                                               : "each made, the instruction undefined where it runs");
     }
     const char* exports[1];
-    exports[0] = DESCRIPTOR_SYMBOL;
+    exports[0] = descriptor_symbol();
 #if defined(__powerpc64__)
     /* into the arena instead of a module file of its own (arena_load): the cache keeps the objects */
     (void)exports;
@@ -1158,16 +1140,17 @@ static int recompile_llvm(struct snx_recompiler* r, struct snx_recompiled* m, Sn
         fail(r, "linking the recompiled module failed: %s", error);
         goto done;
     }
-    report(r, "LLVM module: %.1f MB\n", (double)linked.size / 1000000.0);
+    report(r, "%s module: %.1f MB\n", snx_fallback_available() ? "LLVM" : snx_native_name(),
+           (double)linked.size / 1000000.0);
     if (load_image(r, m, linked.data, linked.size)) goto done;
     if (cached) save_cached(cached, linked.data, linked.size);
     {
-        DescriptorFn describe = (DescriptorFn)(uintptr_t)image_symbol(m, DESCRIPTOR_SYMBOL);
+        const Descriptor* describe = descriptor_at(image_symbol(m, descriptor_symbol()));
         if (!describe) {
             fail(r, "the recompiled module exports no descriptor");
             goto done;
         }
-        if (load_descriptor(r, m, describe())) goto done;
+        if (load_descriptor(r, m, describe)) goto done;
     }
     rc = 0;
 done:
@@ -1181,7 +1164,6 @@ done:
     free(descriptor_object);
     free(linked.data);
     free(cached);
-    snx_ir_free(ir);
     return rc;
 }
 

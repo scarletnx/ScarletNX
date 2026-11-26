@@ -121,7 +121,9 @@ the game's image read from that image.
   through `src/nx/loader/module_fallback.h` (the descriptor of a module whose code LLVM made some of, a 32-bit program's
   blocks chained, the profile cache's key: `module_fallback_llvm.c`, or `module_fallback_none.c`). Without LLVM the
   native back end makes a function with an instruction it has no code for, the instruction undefined where it runs
-  (`SnxNativeOptions.alone`). The other AOT compilers and the library still call LLVM themselves.
+  (`SnxNativeOptions.alone`). The recompiler's library (`library.c`) asks it the same way, for its units, its
+  descriptor (`library_descriptor.h`: LLVM's a function, a build without LLVM's data) and the runtime library and the
+  cache keys of what LLVM makes.
   `tests/architecture.py` lists the files that take LLVM's headers (`LLVM_USERS`), which only LLVM code moved out of
   another joins.
 - The code generator, LLVM (`src/common/cpu/recompiler/llvm/`, a required dependency), builds LLVM IR with the

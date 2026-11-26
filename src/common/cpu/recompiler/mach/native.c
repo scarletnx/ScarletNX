@@ -44,6 +44,9 @@ const char* snx_native_name(void) {
            : snx_s390x_available()    ? "s390x"
                                    : "none";
 }
+unsigned snx_native_features(void) {
+    return snx_x64_available() ? snx_x64_features() : snx_arm64_available() ? snx_arm64_features() : 0;
+}
 
 int snx_native_object(SnxCodegen* codegen, size_t first, size_t last, const SnxNativeOptions* options,
                       unsigned char* made, unsigned char** object, size_t* size, char* error, size_t error_size) {
