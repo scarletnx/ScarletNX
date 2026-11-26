@@ -605,8 +605,7 @@ static int ffrom_int(SgCtx* g, unsigned sz, int n, int a, int uns, int fbits) {
 /* FRECPS (2 - a b) and FRSQRTS ((3 - a b) / 2) rounded once: the host's FMA, an infinity by a zero and the rest the FMA
    would get wrong (a NaN, a result not normal) going cold through the exact helper, whose special cases are its own */
 static int fstep(SgCtx* g, unsigned sz, int n, int a, int b, int sqrt) {
-    int t, r, bad, op = sqrt ? SNX_FP_RSQRTS : SNX_FP_RECPS;
-    SgB cold;
+    int t, r, op = sqrt ? SNX_FP_RSQRTS : SNX_FP_RECPS;
     if (!(X->features & SGX_F_FMA))
         return fcold(g, sg_bool(g, 1), vzero(g), a, b, 0, FDESC(0, sz, n) | (SnxU32)op << 12);
     {
@@ -617,9 +616,8 @@ static int fstep(SgCtx* g, unsigned sz, int n, int a, int b, int sqrt) {
     }
     /* halving a result whose half is normal is exact */
     r = sqrt ? op2(g, k_fmul[sz], t, fsplat(g, sz, sz ? 0x3FE0000000000000ull : 0x3F000000u)) : t;
-    bad = fnot_roomy(g, sz, r);
-    cold = sg_b_or(g, fstate(g, SGX_FPCR_RMODE, 1), fflushed(g, sz, n, a, b, 0));
-    return fcold(g, sg_b_or(g, cold, vany(g, bad, sz, n)), r, a, b, 0, FDESC(0, sz, n) | (SnxU32)op << 12);
+    /* a zero only where a b is exactly 2 (3), so every one exact; a and b FZ may flush */
+    return fwarm(g, r, fnot_roomy(g, sz, r), sz, n, a, b, 0, FDESC(0, sz, n) | (SnxU32)op << 12, 1 | 2u << 3);
 }
 /* FRECPE, FRSQRTE as ir_vec_fp.c's fast_estimate makes them, where every lane is normal with a normal estimate
    (FRSQRTE's positive): the exponent, and the low 8 bits of (2^19 / a' + 1) / 2 (FRSQRTE's: of the root of 2^28 / a'),
