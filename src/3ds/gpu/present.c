@@ -13,6 +13,7 @@
    from its render target while the GPU keeps that newer than memory, or from the copy that a display transfer made
    of it. */
 #include "3ds/gpu/present.h"
+#include "common/utilities/tracy.h"
 #include "common/gpu/vk/gpu_pstate.h"
 #include "3ds/board/clock.h"
 #include "3ds/input/input.h"
@@ -727,6 +728,7 @@ static void show_screens(VkCommandBuffer cb, unsigned window, uint32_t index, un
 }
 bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigned height, unsigned format,
                            unsigned pitch, uint64_t* hash) {
+    SNX_ZONE(z_present, "3ds present"); /* a screen's drawing and present, in a Tracy capture (F10) */
     if (!g_present.up || screen > 1 || !width || !height || width > MAX_SIDE || height > MAX_SIDE || format > 4)
         return false;
     if (!screen) snx_ctr_vk_pipeline_cache_save(false); /* once the game made no pipeline for a while */
@@ -873,6 +875,7 @@ bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigne
                               g_present.swap[window_index].swapchain,
                               g_settings.vsync && g_present.pace == SNX_PACE_CONSOLE, &present, "3ds gpu");
         VkResult shown = vkQueuePresentKHR(v->queue, &present);
+        if (!window_index) SNX_FRAME_MARK(); /* a frame of the capture's timeline, at the top screen's */
         if (shown == VK_ERROR_OUT_OF_DATE_KHR || shown == VK_SUBOPTIMAL_KHR) (void)swap_create(window_index);
     }
     pump();

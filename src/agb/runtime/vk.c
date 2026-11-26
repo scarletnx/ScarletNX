@@ -3,8 +3,9 @@
 /* The GBA runner's Vulkan window (agb/runtime/vk.h). The board's 240x160 RGBA frame goes to a device image through a
    host-visible staging buffer, and is copied to the window's image at the whole step of the screen it holds, as SDL's
    renderer shows it (host.c) */
-#include "common/gpu/vk/renderdoc.h"
 #include "agb/runtime/vk.h"
+#include "common/utilities/tracy.h"
+#include "common/gpu/vk/renderdoc.h"
 #include "common/gpu/vk/gpu_pstate.h"
 #include "agb/ppu/ppu.h"
 #include "common/gpu/vk/device_settings.h"
@@ -283,6 +284,7 @@ void agb_vk_place(uint32_t w, uint32_t h, int32_t rect[4]) {
 }
 
 bool agb_vk_frame(AgbVk* v, const uint32_t* framebuffer, const SnxNotice* notice) {
+    SNX_ZONE(z_present, "agb present"); /* the frame's drawing and present, in a Tracy capture (F10) */
     uint32_t slot, index = 0;
     VkResult r;
     /* a window the swapchain was not made for: the driver need not say the surface is out of date, and the screen
@@ -345,6 +347,7 @@ bool agb_vk_frame(AgbVk* v, const uint32_t* framebuffer, const SnxNotice* notice
     snx_vk_pacing_present(&v->pacing, &v->paced, v->device, v->swap.swapchain,
                           g_settings.vsync && snx_vpad_window_frame_ns(1) == 1, &pi, "scarletnx-agb");
     r = vkQueuePresentKHR(v->queue, &pi);
+    SNX_FRAME_MARK(); /* a frame of the capture's timeline */
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) (void)swapchain_make(v);
     return r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR;
 }

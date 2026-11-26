@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "3ds/aot/ctr_module.h"
 #include "common/utilities/game_log.h"
+#include "common/utilities/tracy.h"
 #include "common/utilities/menu_window.h"
 #include "3ds/loader/smdh.h"
 #include "3ds/aot/ctr_compile.h"
@@ -326,6 +327,8 @@ int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel
     snx_vpad_sdl_settings(SNX_SYSTEM_3DS);
     vpad_settings(directory, snx_path_leaf(directory), g_run.argc, g_run.argv);
     snx_menu_window_open(SNX_SYSTEM_3DS, directory, snx_path_leaf(directory)); /* the game's menu: Back, F2, Home */
+    if (snx_tracy_console(directory, snx_path_leaf(directory), headless))
+        fputs("scarletnx-3ds: tracy: no capture this run; it goes on without one\n", stderr);
     if (!snx_ctr_present_init(process->memory, frame_dir, headless)) {
         printf("The presenter did not start: no frames will be drawn, shown or saved\n");
         /* a window someone plays at, no budget: it would show nothing */
@@ -436,8 +439,10 @@ int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel
             if (!result) result = 1;
         }
     }
+    snx_tracy_shutdown();       /* a capture's lines before the last */
     if (!result) puts("Exit."); /* a run that ended well says so last, as every driver's */
 done:
+    snx_tracy_shutdown(); /* a stop before the end: the capture keeps what came */
     ctr_host_faults(NULL, NULL, NULL, NULL);
     snx_ctr_jit_free(jit);
     snx_ctr_present_free();
