@@ -20,8 +20,10 @@
      snx_a64_decode(word, features, insn): it scans the word's bucket for the first row whose mask, value and features
      fit and ends in snx_a64_row, a tail call, which fills insn from the row and runs the row's body (its fields,
      predicates and conditional features, every body in one switch). A row whose body refuses the word hands the rows
-     after it to snx_a64_rest, which is kept out of line. It ends with SNX_A64_DECODE_HASH, the FNV-1a hash of
-     everything before it. */
+     after it to snx_a64_rest, which is kept out of line. Then SNX_A64_DECODE_HASH, the FNV-1a hash of everything
+     before it, and after it, for an instruction's text where SNX_A64_DECODE_ARGS is defined, the arguments' names,
+     each op's arguments in its argument set's order and their values: they decode nothing, so the hash leaves them
+     out. */
 #include "decodetree.h"
 #include <ctype.h>
 #include <stdarg.h>
@@ -127,6 +129,7 @@ typedef struct {
     int node; /* its node in decodetree.c's tree, for check_overlaps */
     unsigned long long feat;
     int body;
+    int text[MAX_ASSIGN], ntext; /* its arguments in its argument set's order (rd rn imm sf of &rri_sf) */
 } Row;
 
 typedef struct {
@@ -452,6 +455,15 @@ static void load_rows(void) {
             else
                 add_assign(&r->p, arg, make_field(p->all.name[k], p->all.node[k]) + 1, 0);
         }
+        /* decodetree.c holds a pattern's fields to its argument set's members, every one given */
+        const Args* set = &args[formats[p->base].base];
+        for (k = 0; k < set->nfields; k++) {
+            int arg = arg_index(set->fields[k], 0);
+            if (arg < 0 || r->ntext == MAX_ASSIGN)
+                fail("&%s's %s is not an argument of the row", set->name, set->fields[k]);
+            r->text[r->ntext++] = arg;
+        }
+        if (r->ntext != r->p.nas) fail("&%s has %d members but %d arguments are given", set->name, r->ntext, r->p.nas);
         finish_row(r);
     }
     g.where = NULL;
@@ -1154,6 +1166,48 @@ static void write_bitmask_ok(void) {
         ok[1], ok[0]);
 }
 
+/* an instruction's text, where SNX_A64_DECODE_ARGS is defined: each argument's name; each op's arguments, those of its
+   first row in its argument set's order, then any a later row adds; and an argument's value. After the hash, which
+   they would only change */
+static void write_text(void) {
+    int* list = (int*)malloc((size_t)(g.nnames * MAX_ASSIGN + 1) * sizeof *list);
+    int total = 0;
+    if (!list) fail("out of memory");
+    if (g.nargs > 256) fail("%d argument names, over the 256 a byte numbers", g.nargs);
+    out("\n#ifdef SNX_A64_DECODE_ARGS\n/* the arguments' names, by their numbers here */\n"
+        "static const char* const snx_a64_arg_names[%d] = {",
+        g.nargs ? g.nargs : 1);
+    for (int i = 0; i < g.nargs; i++) out("%s\"%s\",", i % 8 == 0 ? "\n    " : " ", g.args[i]);
+    if (!g.nargs) out("\"\"");
+    out("\n};\n\n/* each op's arguments: count of snx_a64_op_arg_list from first */\n"
+        "typedef struct {\n    uint16_t first;\n    uint8_t count;\n} SnxA64OpArgs;\n\n"
+        "static const SnxA64OpArgs snx_a64_op_args[SNX_A64_OP_COUNT] = {\n    {0, 0}, /* UNDEF */");
+    for (int i = 0; i < g.nnames; i++) {
+        int first = total;
+        for (int r = 0; r < g.nrows; r++) {
+            if (g.rows[r].name != i) continue;
+            for (int k = 0; k < g.rows[r].ntext; k++) {
+                int j;
+                for (j = first; j < total && list[j] != g.rows[r].text[k]; j++) {}
+                if (j == total) {
+                    if (total - first == MAX_ASSIGN) fail("%s has more than %d arguments", g.names[i].name, MAX_ASSIGN);
+                    list[total++] = g.rows[r].text[k];
+                }
+            }
+        }
+        if (first > 0xFFFF) fail("the op's argument list passes 65535 entries at %s", g.names[i].name);
+        out("%s{%d, %d},", i % 8 == 0 ? "\n    " : " ", first, total - first);
+    }
+    out("\n};\n\nstatic const uint8_t snx_a64_op_arg_list[%d] = {", total ? total : 1);
+    for (int i = 0; i < total; i++) out("%s%d,", i % 16 == 0 ? "\n    " : " ", list[i]);
+    if (!total) out("0");
+    out("\n};\n\n/* argument arg's value in a, as an int, which each type promotes to */\n"
+        "static inline int snx_a64_arg_value(const SnxA64Args* a, unsigned arg) {\n    switch (arg) {\n");
+    for (int i = 0; i < g.nargs; i++) out("    case %d: return a->%s;\n", i, g.args[i]);
+    out("    default: return 0;\n    }\n}\n#endif\n");
+    free(list);
+}
+
 static void write_decoder(const char* path) {
     unsigned long long hash;
     int i;
@@ -1246,6 +1300,7 @@ static void write_decoder(const char* path) {
     out("/* FNV-1a of everything above: names this decoder in caches of code it decoded */\n"
         "#define SNX_A64_DECODE_HASH 0x%016llxull\n",
         hash);
+    write_text();
     flush(path);
 }
 

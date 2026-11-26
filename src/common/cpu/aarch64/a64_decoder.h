@@ -25,6 +25,10 @@ const char* snx_a64_target_text(SnxU64 features);
 /* what word is to a decoder that knows every feature, for the text of an undefined instruction: "SM4E, which needs
    FEAT_SM4", "ADD_v" of a base one, or "no instruction". out of size bytes */
 void snx_a64_word_text(SnxU32 word, char* out, size_t size);
+/* word's op and arguments to a decoder that knows every feature, EL1's too, as a64.decode names them, for a listing:
+   "ADD_i rd=1 rn=2 imm=291 sf=1", the arguments in their argument set's order and in decimal, out of size bytes.
+   0, with out empty, for a word no row matches */
+int snx_a64_word_fields(SnxU32 word, char* out, size_t size);
 /* names the decoding (the .decode files and the profile) in the keys of caches of code it decoded */
 SnxU64 snx_a64_decoder_hash(void);
 

@@ -5,12 +5,15 @@
    a { } group, FIRST refuses rd 31 by a predicate, SECOND needs FEAT_AES from rd 30 on, THIRD takes every one; ALONE
    has FIRST's predicate and no row after it. a64.decode has no word that one row refuses and a later one takes.
    An argument's type: the narrowest that holds every value its rows give it, so the EDGE rows' arguments stop at 8,
-   9, 16 and 17 bits, at a constant, and at the ends of a function's values. */
+   9, 16 and 17 bits, at a constant, and at the ends of a function's values.
+   An instruction's text (SNX_A64_DECODE_ARGS): each op's arguments in its argument set's order, an inferred set's in
+   the order the line gives them, with their values, constants and functions' too. */
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "a64_decode.h"
+#define SNX_A64_DECODE_ARGS
 #include "a64_decode.inc"
 
 static int g_failures;
@@ -83,6 +86,38 @@ static void edges(void) {
     eq((long long)sizeof(SnxA64Args), 28, "sizeof(SnxA64Args)", __LINE__);
 }
 
+/* word's op and its arguments as name=value, as a64_decoder.c's snx_a64_word_fields writes them */
+static void text(uint32_t word, const char* want, int line) {
+    SnxA64Insn d;
+    char got[128];
+    SnxA64Op op = snx_a64_decode(word, SNX_A64_TARGET_MAX, &d);
+    int n = snprintf(got, sizeof got, "%s", snx_a64_op_name(op));
+    for (unsigned i = 0; i < snx_a64_op_args[op].count; i++) {
+        unsigned arg = snx_a64_op_arg_list[snx_a64_op_args[op].first + i];
+        n += snprintf(got + n, sizeof got - (size_t)n, " %s=%d", snx_a64_arg_names[arg],
+                      snx_a64_arg_value(&d.args, arg));
+    }
+    if (strcmp(got, want)) {
+        fprintf(stderr, "a64_decode_group.c:%d: 0x%08x reads \"%s\", expected \"%s\"\n", line, (unsigned)word, got,
+                want);
+        g_failures++;
+    }
+}
+
+static void texts(void) {
+    text(0x0000001eu, "FIRST rd=30", __LINE__);
+    text(0x0000001fu, "SECOND rd=31", __LINE__);
+    /* an inferred argument set, in the line's order */
+    text(0x810080ffu, "EDGE_8 u8=128 s8=-1", __LINE__);
+    text(0x8203fe00u, "EDGE_9 u9=511 s9=0", __LINE__);
+    /* constants, and functions of fields */
+    text(0x87000000u, "EDGE_K k=-200 m=70000", __LINE__);
+    text(0x8800011fu, "EDGE_F down=-23 swap=3", __LINE__);
+    /* a word of no row has no arguments */
+    text(0x02000000u, "UNDEF", __LINE__);
+    eq(snx_a64_op_args[SNX_A64_OP_UNDEF].count, 0, "UNDEF's arguments", __LINE__);
+}
+
 int main(void) {
     /* the first row of the group takes what its predicate allows */
     DEC(0x00000000u, BASE, FIRST, 0, PLAIN, 0, V8);
@@ -97,6 +132,7 @@ int main(void) {
     /* a word of no row */
     DEC(0x02000000u, MAX, UNDEF, 0, UNDEF, 0, 0);
     edges();
+    texts();
     if (g_failures) {
         fprintf(stderr, "a64_decode_group: %d failures\n", g_failures);
         return 1;
