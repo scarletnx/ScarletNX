@@ -776,7 +776,6 @@ LLVM_USERS = {
     'src/nx/runtime/driver/disasm.c',
     'src/nx/runtime/driver/llvm_tuning.c',
     'src/nx/runtime/settings_llvm.h',
-    'src/vita/aot/compiler.c',
 }
 
 
