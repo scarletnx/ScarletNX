@@ -1,5 +1,34 @@
 # Parallel draw batches (design, not built)
 
+## Index
+
+* [The problem](#the-problem)
+* [Prior art](#prior-art)
+* [Two forms](#two-forms)
+  * [Form A: lookups serial, encoding on workers (the Ryujinx and Eden split)](#form-a-lookups-serial-encoding-on-workers-the-ryujinx-and-eden-split)
+  * [Form B: whole batches on workers](#form-b-whole-batches-on-workers)
+* [Form B in detail](#form-b-in-detail)
+  * [Batches](#batches)
+  * [Workers and the order](#workers-and-the-order)
+  * [The state each thread owns](#the-state-each-thread-owns)
+  * [Shared caches](#shared-caches)
+  * [Batches that depend on others](#batches-that-depend-on-others)
+* [Gain](#gain)
+* [Build steps, each with a gate](#build-steps-each-with-a-gate)
+* [Risks](#risks)
+* [Built so far (uncommitted)](#built-so-far-uncommitted)
+  * [Shared calls of a batch's draws (measured)](#shared-calls-of-a-batchs-draws-measured)
+  * [The buffer cache's hit path (mapped)](#the-buffer-caches-hit-path-mapped)
+* [Barriers at the splice: predict and check](#barriers-at-the-splice-predict-and-check)
+  * [The deferral, one funnel](#the-deferral-one-funnel)
+  * [Rewrite progress (serial batches, the picture right after each)](#rewrite-progress-serial-batches-the-picture-right-after-each)
+  * [Split runs (`draw_batches=2`): what the validation runs showed](#split-runs-draw_batches2-what-the-validation-runs-showed)
+  * [Split runs: the measured cost (one build, one scene of about 6,860 draws a present)](#split-runs-the-measured-cost-one-build-one-scene-of-about-6860-draws-a-present)
+  * [Split runs: the renderer thread is the limit of this scene](#split-runs-the-renderer-thread-is-the-limit-of-this-scene)
+  * [Split runs: the changes that made the split gain](#split-runs-the-changes-that-made-the-split-gain)
+  * [Split runs: fewer takes of the share lock](#split-runs-fewer-takes-of-the-share-lock)
+  * [The search for a scene that the renderer thread limits](#the-search-for-a-scene-that-the-renderer-thread-limits)
+
 Status: a design for review. Nothing here is built. The numbers come from one game's open world on Windows (RTX 4090,
 `gpu_split=2`, fps unlocked), from probes in the uncommitted work of `parallel-draw-prep.md` and `draw-fast-path.md`.
 
