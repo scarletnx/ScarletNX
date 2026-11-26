@@ -4645,6 +4645,16 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
     add_test(NAME recompiler_arm64_frame_jit COMMAND snx-test-recompiler-arm64 --without 0x7ffff --made --states 40
              --jit --words 4e284820 4e284841 4e284862 4e284883 4e2848a4 4e2848c5 4e2848e6 4e284907)
     set_tests_properties(recompiler_arm64_frame recompiler_arm64_frame_jit PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
+    # calls of functions the unit made before the caller, past their entry's check with no target given, and the stale
+    # checks a game's module has (of no stale code); in an AOT module and in a JIT unit
+    add_test(NAME recompiler_arm64_calls_stale COMMAND snx-test-recompiler-arm64 --calls --stale --functions 40
+             --states 4)
+    add_test(NAME recompiler_arm64_calls_back COMMAND snx-test-recompiler-arm64 --calls-back --stale --functions 40
+             --states 4)
+    add_test(NAME recompiler_arm64_calls_back_jit COMMAND snx-test-recompiler-arm64 --calls-back --stale --jit
+             --functions 40 --states 4)
+    set_tests_properties(recompiler_arm64_calls_stale recompiler_arm64_calls_back recompiler_arm64_calls_back_jit
+                         PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
     # a function longer than a machine's short jumps reach: B's 128 KiB on MIPS64, JAL's 1 MiB on riscv64, B.cond's and
     # LDR (literal)'s 1 MiB on arm64 (words an optional feature would make short); in an AOT module and in a JIT unit
     foreach(long IN ITEMS "mips64;0;400;131072;4ee20c20;1e622820" "mips64be;0;400;131072;4ee20c20;1e622820"
@@ -4728,8 +4738,11 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
              --states 8 --seed 4)
     add_test(NAME recompiler_arm64win_long COMMAND snx-test-recompiler-arm64win --without 0x7ffff --states 8
              --long 1200 1048576 --words 4e056000 5e024020)
+    add_test(NAME recompiler_arm64win_calls_back COMMAND snx-test-recompiler-arm64win --calls-back --stale
+             --functions 40 --states 4)
     set_tests_properties(recompiler_arm64win recompiler_arm64win_step recompiler_arm64win_jit recompiler_arm64win_hook
-                         recompiler_arm64win_plain recompiler_arm64win_long PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
+                         recompiler_arm64win_plain recompiler_arm64win_long recompiler_arm64win_calls_back PROPERTIES
+                         TIMEOUT 600 SKIP_RETURN_CODE 77)
     # their A32 blocks (arm64_arm.c, rv64_arm.c) against LLVM's, as arm_x64's, under Unicorn; again with three host
     # registers
     foreach(m arm64 rv64 ppc64 mips64 la64 ppc64be mips64be s390x)
@@ -5078,6 +5091,12 @@ if(NOT WIN32)
     target_link_libraries(snx-test-arm64-loop-code PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
     snx_decodetree_a64(snx-test-arm64-loop-code)
     add_test(NAME arm64_loop_code COMMAND snx-test-arm64-loop-code)
+    # how its functions are entered: the check before the frame, a call of the unit's own past it (arm64_entry_code.c)
+    add_executable(snx-test-arm64-entry-code arm64_entry_code.c)
+    snx_test_target(snx-test-arm64-entry-code gnu23)
+    target_link_libraries(snx-test-arm64-entry-code PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+    snx_decodetree_a64(snx-test-arm64-entry-code)
+    add_test(NAME arm64_entry_code COMMAND snx-test-arm64-entry-code)
 endif()
 
 # NCE's patcher (src/nx/runtime/nce/nce_patch.c) on a synthetic module: the words that Eden's patcher changes, found

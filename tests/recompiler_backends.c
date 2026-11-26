@@ -10,7 +10,7 @@
    (snx_recompiled_x64_functions), or the test would compare LLVM with itself.
      snx-test-recompiler-backends [--functions N] [--states N] [--seed N] [--without MASK] [--target NAME] [--verbose]
          [--hook] [--jit] [--words HEX...] [--made] [--ops OP...] [--refused] [--coverage]
-         [--qemu QEMU RUNNER DIR] [--programs] [--calls] [--long N BYTES] [--cpu NAME]
+         [--qemu QEMU RUNNER DIR] [--programs] [--calls] [--calls-back] [--long N BYTES] [--cpu NAME]
    --without MASK: the back end goes without these features of the host, as on a host that lacks them: x86-64's
    (sailgen's SGX_F_*: FMA 0x800, AVX 0x400, F16C 0x100, BMI1, BMI2 and LZCNT 7, AES-NI 0x1000, SHA-NI 0x2000), arm64's
    (SNX_ARM64_F_*: 0x7ffff all of them). Another machine's back end has none to go without: it is skipped
@@ -31,6 +31,8 @@
    FEAT_MOPS's SET and CPY, FEAT_LSE128's atomics
    --calls: functions that call each other, in four layers: BL, BLR and tail B, loops (some with a call in them), SVCs
    that change registers, switches through a table, a pending poll in every other state
+   --calls-back: --calls with the layers from the highest address down, each function's callees below it, so that a
+   unit makes them before it (arm64 calls one of those past its entry's check, with no target given)
    --coverage: a line of each of the target's ops, how many of its words the back end makes with its own instructions
    alone, with an exact helper's call, and leaves, and the first of those, and stops there
    On a host with no native back end it is skipped, saying so.
@@ -38,7 +40,8 @@
    Built with SNX_TEST_ARM64 or SNX_TEST_RV64 (snx-test-recompiler-arm64, -rv64), the same programs hold that native
    back end (src/common/cpu/recompiler/arm64, rv64) to LLVM on any host: its object, made for the program's
    functions, runs under Unicorn (support/host_unicorn.c), the native side's memory and state mapped into it, the
-   helpers and the runtime's functions it calls trapped to this process's. --hook makes it with every call through
+   helpers and the runtime's functions it calls trapped to this process's, with --stale its functions' stale checks
+   in it (options.stale, as a game's module has them), of an snx_stale of zeros. --hook makes it with every call through
    CPU.disp (hook_direct_calls, as NVN's handlers want), which holds each function; --jit makes it a JIT unit, its
    functions its table's. With SNX_TEST_WIN64 (snx-test-recompiler-win64) it is the x86-64 back end's code for Windows
    that runs, on an x86-64 host itself, entered and called out of as that convention wants, its frames unwound by its
@@ -498,12 +501,15 @@ static void calls_switch(Calls* f) {
     f->w[adr] = 0x10000012u | (table - adr) << 5;
     for (k = 0; k < cases; ++k) f->w[join[k]] = 0x14000000u | (f->n - join[k]);
 }
-/* function i of n, at at, in the first of four layers of as many: what it calls is in the next */
-static void calls_function(Calls* f, unsigned i, unsigned n, uint64_t at) {
+/* the address of function i of n: the first layer's lowest, or (below, --calls-back) highest */
+static uint64_t calls_at(unsigned i, unsigned n, int below) {
+    return CODE + (uint64_t)(below ? n - 1 - i : i) * CALLS_SLOT * 4;
+}
+/* function i of n, at at, in the first of four layers of as many: what it calls is in the next, below it where below */
+static void calls_function(Calls* f, unsigned i, unsigned n, uint64_t at, int below) {
     unsigned layer = i * 4 / n, first = (layer + 1) * n / 4, count = (layer + 2) * n / 4 - first;
     unsigned calls = layer < 3 && count ? 2 : 0, leaf = !calls && pick(2), blocks = 2 + pick(4), done = 0;
-    uint64_t base = at - (uint64_t)i * CALLS_SLOT * 4;
-#define CALLEE (base + (uint64_t)(first + pick(count)) * CALLS_SLOT * 4)
+#define CALLEE calls_at(first + pick(count), n, below)
     f->n = 0;
     if (!leaf) {
         calls_put(f, 0xA9BE7BFDu), calls_put(f, 0xF9000BF3u); /* STP x29, x30, [sp, #-32]!; STR x19, [sp, #16] */
@@ -1191,10 +1197,11 @@ int main(int argc, char** argv) {
     uint64_t* hints = NULL;
     int result = 1, hook = 0; /* every exit past the allocations frees them, so the sanitizers' leak check reads the
                                  test */
+    int callees_below = 0;    /* --calls-back */
     RtAPI rt;
 #ifdef SNX_TEST_NATIVE
     size_t longer = 0;
-    int jit = 0;
+    int jit = 0, stale = 0;
 #endif
 #ifdef SNX_TEST_UNWINDS
     int step = 0;
@@ -1221,6 +1228,8 @@ int main(int argc, char** argv) {
 #ifdef SNX_TEST_NATIVE
         else if (!strcmp(argv[i], "--jit"))
             jit = 1;
+        else if (!strcmp(argv[i], "--stale"))
+            stale = 1;
 #endif
 #ifdef SNX_TEST_UNWINDS
         else if (!strcmp(argv[i], "--step"))
@@ -1240,6 +1249,8 @@ int main(int argc, char** argv) {
             branches = 1;
         else if (!strcmp(argv[i], "--calls"))
             g_calls = 1;
+        else if (!strcmp(argv[i], "--calls-back"))
+            g_calls = callees_below = 1;
         else if (!strcmp(argv[i], "--long") && i + 2 < (unsigned)argc) {
             times = (unsigned)atoi(argv[++i]);
 #ifdef SNX_TEST_NATIVE
@@ -1390,7 +1401,7 @@ int main(int argc, char** argv) {
     }
     /* the program, in both memories: each function its words then RET */
     for (i = 0; i < functions; ++i) {
-        uint64_t at = CODE + (uint64_t)i * slot * 4;
+        uint64_t at = g_calls ? calls_at(i, functions, callees_below) : CODE + (uint64_t)i * slot * 4;
         unsigned n = branches ? 1 + (more[i][0] != 0) + (more[i][1] != 0)
                      : opw    ? 1
                      : nwords ? nwords
@@ -1398,7 +1409,7 @@ int main(int argc, char** argv) {
         hints[i] = at;
         if (g_calls) {
             Calls f;
-            calls_function(&f, i, functions, at);
+            calls_function(&f, i, functions, at, callees_below);
             for (k = 0; k < slot; ++k) put32(mem[0], at + 4 * k, k < f.n ? f.w[k] : 0xD65F03C0u);
             continue;
         }
@@ -1474,6 +1485,7 @@ int main(int argc, char** argv) {
         made = (unsigned char*)calloc(cg.function_count + 1, 1);
         cg.hook_direct_calls = hook;
         options.jit = jit;
+        options.stale = stale;
         options.table_name = "UNIT_TABLE";
         if (NATIVE_OBJECT(&cg, &options, made, &object, &object_size, error) < 0) {
             fprintf(stderr, "FAIL: the %s object: %s\n", native_name, error);
@@ -1503,6 +1515,13 @@ int main(int argc, char** argv) {
         hostuc_native_wide(uc, "snx_x64_casp", (void*)casp_between);
 #endif
 #undef NATIVE
+        if (stale) {
+            void* bytes = hostuc_alloc(uc, cg.function_count + 1); /* zeroed: no function's code is stale */
+            if (!bytes || hostuc_define(uc, "snx_stale", (uint64_t)(uintptr_t)bytes)) {
+                fprintf(stderr, "FAIL: no memory for snx_stale's %zu bytes\n", cg.function_count + 1);
+                goto out;
+            }
+        }
         if (object && hostuc_load(uc, object, object_size, error, sizeof error)) {
             fprintf(stderr, "FAIL: loading the %s object: %s\n", native_name, error);
             goto out;
