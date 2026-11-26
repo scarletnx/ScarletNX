@@ -290,10 +290,8 @@ def main():
 
     gh.add_issue(5, url(1, 'Some%20Game.log'), pr=True)
     check(reports.triage(gh, {'issue': gh.issue(5)}, SCAN, fetch) == 'not an issue', 'a pull request is skipped')
-    check(
-        reports.attachments(['see https://example.com/files/1/a.log and ' + url(7, 'b.txt')]) == [url(7, 'b.txt')],
-        'only GitHub attachment URLs are fetched',
-    )
+    found = reports.sources({'body': 'see https://example.com/files/1/a.log and ' + url(7, 'b.txt')}, [])
+    check([link for _, _, link, _ in found] == [url(7, 'b.txt')], 'only GitHub attachment URLs are fetched')
     # a maintainer's confirmed label: one comment, ready for an edenprobe case, with the report's signature
     calls = len(gh.calls)
     check(
