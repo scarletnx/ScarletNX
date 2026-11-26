@@ -159,7 +159,7 @@ static void fp_enter(SgCtx* g) {
 
 static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     SgCtx* g = u->g;
-    int k = vclause(word), in[4] = {0, 0, 0, 0}, r;
+    int k = vclause(word), in[4] = {0, 0, 0, 0}, r, flags = -1;
     unsigned f, rd = word & 31, rn = word >> 5 & 31, rm = word >> 16 & 31, ra = word >> 10 & 31;
     long long imm = word;
     const char* name;
@@ -194,13 +194,16 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
         /* the host's NZCV the guest's: PSTATE written from them, and a B.cond after it reads them (origin); FCCMP's
            condition is on the guest's flags, in the host's first */
         int ins, cin[4] = {vread(g, rn), vread(g, rm), 0, 0};
-        if (name[2] == 'c') flags_into_host(g);
-        else
+        if (name[2] == 'c') {
+            flags_into_host(g);
+            flags = X->flags_ins;
+        } else
             imm |= 1ll << 36; /* FCMP's bit 3: the compare with zero (FCCMP's is nzcv's) */
         fp_enter(g);
         sgx_vins(X, &sga_v_pcmp_f, -1, 0, cin, imm, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
         ins = X->flags_ins;
         X->ins[ins].side = 1;
+        X->ins[ins].flags_from = flags;        /* FCCMP reads the flags it is on: what made them stays */
         X->ins[ins].fsel = &sgx_sel_cmp_64[0]; /* the identity of Arm's flags as the host's */
         sgx_simple(g, SGX_M_FPLEAVE);
         sg_PSTATE_write(g, SG_PSTATE_N, 4, sgx_nzcv(X, ins));
@@ -247,11 +250,15 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     if (imm >> 32 & 1) in[1] = vread(g, rn);
     if (imm >> 33 & 1) in[2] = vread(g, rm);
     if (imm >> 34 & 1) in[3] = vread(g, ra);
-    if (!strcmp(name, "fcsel_float")) flags_into_host(g); /* its condition the guest's flags' */
+    if (!strcmp(name, "fcsel_float")) {
+        flags_into_host(g); /* its condition the guest's flags' */
+        flags = X->flags_ins;
+    }
     fp_enter(g);
     r = sgx_vins(X, &sga_v_pass_f, 0, 1, in, imm, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
     i = &X->ins[X->v[r].def];
-    i->side = 1; /* its FPSR flags, though nothing reads its value */
+    i->side = 1;           /* its FPSR flags, though nothing reads its value */
+    i->flags_from = flags; /* FCSEL reads the host's flags: what made them stays though later ones are the guest's */
     sgx_simple(g, SGX_M_FPLEAVE);
     sg__V_write(g, rd, sgx_xval(128, r));
     return 1;
