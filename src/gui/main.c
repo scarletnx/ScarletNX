@@ -1699,6 +1699,29 @@ static int option_word(int option, const char* value) {
     for (w = 0; w < option_words(option) && strcmp(value, option_keys[option].words[w]); ++w) {}
     return w < option_words(option) ? w : -1;
 }
+static void app_left(void* ctx, int line, const char* text, const char* does) {
+    (void)text;
+    (void)does;
+    snx_config_other_line((SnxConfigOthers*)ctx, line);
+}
+/* a key app.ini's reading takes, in [app] or [folders] (games, the name an older version wrote for recompiled) */
+static int app_known(void* ctx, const char* section, const char* key) {
+    static const char* const own[] = {
+        "theme",         "ui_scale",         "text_size",  "side_box",   "background_recompile", "recompile_background",
+        "animations",    "dumps_subfolders", "dumps_main", "probe_mode", "recompiled_main",      "gpu_driver",
+        "freedreno_env", "language"};
+    (void)ctx;
+    if (!strcmp(section, "app")) {
+        if (option_of(key) >= 0) return 1;
+        for (size_t i = 0; i < sizeof own / sizeof *own; ++i)
+            if (!strcmp(key, own[i])) return 1;
+        return 0;
+    }
+    if (strcmp(section, "folders")) return 0;
+    for (int i = 0; i < GUI_PLACES; ++i)
+        if (!strcmp(key, place_names[i])) return 1;
+    return !strcmp(key, "games");
+}
 /* the options as Games reads them: the recent games over the list, the dumps in it, sorted by the last opened, a
    grid of icons */
 static bool recent_on(const App* app) { return app->options[GUI_OPTION_RECENT] == 0; }
@@ -1712,8 +1735,8 @@ static void games_defaults(App* app) {
 }
 /* Settings > App's picks and Games' options written to app_file: 0, else nonzero, said by the caller */
 static int app_write(App* app) {
-    char *text, *dir, *staged;
-    size_t size = 256 + 32 * GUI_OPTIONS + sizeof app->gpu_driver + sizeof app->freedreno + 40 + 32;
+    char *text, *was = NULL, *top, *rest, *whole, why[1024] = "";
+    size_t size = 256 + 32 * GUI_OPTIONS + sizeof app->gpu_driver + sizeof app->freedreno + 40 + 32, was_size = 0;
     int n, failed, i;
     if (!app->app_file || app->look_only) return 0;
     for (i = 0; i < GUI_PLACES; ++i) size += 16 + (app->place[i] ? strlen(app->place[i]) : 0);
@@ -1743,14 +1766,22 @@ static int app_write(App* app) {
         for (i = 0; i < GUI_PLACES; ++i)
             n += snprintf(text + n, size - (size_t)n, "%s = %s\n", place_names[i], app->place[i] ? app->place[i] : "");
     }
-    /* staged beside it, then put in place: a crash mid-write leaves the old picks */
-    dir = snx_dirname(app->app_file);
-    staged = snx_format("%s.new", app->app_file);
-    failed = !dir || !staged || snx_mkdirs(dir) || snx_write_file(staged, text, (size_t)n) ||
-             plat_replace_file(staged, app->app_file);
-    if (failed && staged) remove(staged);
-    free(dir);
-    free(staged);
+    /* the lines of the keys it does not read, as they were: those before [app] first, the others' after; a file that
+       cannot be read is not written over */
+    failed = snx_config_read(app->app_file, &was, &was_size, why, sizeof why) < 0;
+    top = failed ? NULL : snx_config_kept(was ? was : "", was_size, 1, app_known, NULL);
+    rest = failed ? NULL : snx_config_kept(was ? was : "", was_size, 0, app_known, NULL);
+    whole =
+        top && rest
+            ? snx_format("; Settings > App and Games' View in the launcher, as they were left\n%s%s%s", top,
+                         text + strlen("; Settings > App and Games' View in the launcher, as they were left\n"), rest)
+            : NULL;
+    failed = failed || !whole || snx_config_write(app->app_file, ".new", whole, strlen(whole), why, sizeof why);
+    if (failed) gui_log("%s", why[0] ? why : "out of memory");
+    free(whole);
+    free(rest);
+    free(top);
+    free(was);
     free(text);
     return failed;
 }
@@ -1792,10 +1823,21 @@ static void language_apply(App* app) { snx_tr_use(app->language ? app->language 
 /* what app_save kept, read: applied as the menu opens (apply), else only looked at. A value the menu does not know, or a
    theme no longer there, leaves what the menu has, named in bad as key = value (an option's with the word it keeps,
    the file's last it knows or the menu's); how many. A language named in another form of its tag (pt_BR, which builds
-   before the tags wrote) is that language, the form read kept in renamed */
-static int app_read(App* app, bool apply, char* bad, size_t size, char* renamed, size_t renamed_size) {
+   before the tags wrote) is that language, the form read kept in renamed. A key, a section or a line it does not read,
+   another version's or program's, and a key given twice are named once a run in others (config_file.h), as a file that
+   cannot be read is, with the system's reason */
+static int app_read(App* app, bool apply, char* bad, size_t size, char* renamed, size_t renamed_size, char* others_said,
+                    size_t others_size) {
     size_t bytes = 0, i;
-    char *text = app->app_file ? (char*)snx_read_file(app->app_file, &bytes) : NULL, *key, *value, *copy;
+    char *text = NULL, *key, *value, *copy, why[1024];
+    int read = app->app_file ? snx_config_read(app->app_file, &text, &bytes, why, sizeof why) : 0;
+    SnxConfigOthers others = {0};
+    struct {
+        char section[16], key[32];
+        const char* value;
+        int line;
+    } seen[48];
+    int seen_count = 0;
     char* places[GUI_PLACES] = {NULL};
     const char* const* dirs = (const char* const*)app->themes_dirs;
     int scale = app->menu.text_size, language = app->language, n = 0, count = 0, moved = 0;
@@ -1809,8 +1851,11 @@ static int app_read(App* app, bool apply, char* bad, size_t size, char* renamed,
     SnxIni ini;
     if (size) bad[0] = 0;
     if (renamed_size) renamed[0] = 0;
+    if (others_size) others_said[0] = 0;
     snprintf(driver, sizeof driver, "%s", app->gpu_driver);
     snprintf(freedreno, sizeof freedreno, "%s", app->freedreno);
+    if (read < 0 && others_size && snx_config_first(app->app_file, "cannot be read"))
+        snprintf(others_said, others_size, "%s: Settings > App keeps what it has", why);
     if (!text) return 0;
     /* the options' words first, on a copy (a read cuts the text): a word it does not know is then said with the one
        the file leaves in use */
@@ -1832,10 +1877,27 @@ static int app_read(App* app, bool apply, char* bad, size_t size, char* renamed,
     if (!kept_new && old_background >= 0) background = old_background;
     kept = background; /* what a word it does not know leaves in use */
     snx_ini_start(&ini, text);
+    ini.left = app_left;
+    ini.ctx = &others;
     while (snx_ini_next(&ini, &key, &value)) {
         char* end = NULL;
         long number = strtol(value, &end, 10);
-        int place = GUI_PLACES, option = strcmp(ini.section, "app") ? -1 : option_of(key);
+        int place = GUI_PLACES, option = strcmp(ini.section, "app") ? -1 : option_of(key), k;
+        if (!app_known(NULL, ini.section, key)) { /* another version's or program's: kept, named */
+            snx_config_other_key(&others, ini.section, key, ini.line);
+            continue;
+        }
+        for (k = 0; k < seen_count && (strcmp(seen[k].section, ini.section) || strcmp(seen[k].key, key)); ++k) {}
+        if (k < seen_count) /* the last line's, said with both */
+            snx_config_twice(&others, ini.section, key, seen[k].value, seen[k].line, value, ini.line);
+        else if (seen_count < (int)(sizeof seen / sizeof *seen))
+            ++seen_count;
+        if (k < (int)(sizeof seen / sizeof *seen)) {
+            snprintf(seen[k].section, sizeof seen[k].section, "%s", ini.section);
+            snprintf(seen[k].key, sizeof seen[k].key, "%s", key);
+            seen[k].value = value;
+            seen[k].line = ini.line;
+        }
         if (!strcmp(ini.section, "folders")) {
             for (place = 0; place < GUI_PLACES && strcmp(key, place_names[place]); ++place) {}
             if (place == GUI_PLACES && !strcmp(key, "games")) { /* recompiled = as an older version named it */
@@ -1963,7 +2025,30 @@ static int app_read(App* app, bool apply, char* bad, size_t size, char* renamed,
             n += snprintf(bad + n, size - (size_t)n, snx_tr(" (it keeps %s)"), driver[0] ? driver : "\"\"");
         else if (n < (int)size && !strcmp(ini.section, "app") && !strcmp(key, "freedreno_env"))
             n += snprintf(bad + n, size - (size_t)n, snx_tr(" (it keeps %s)"), freedreno[0] ? freedreno : "\"\"");
+        else if (n < (int)size && !strcmp(ini.section, "app") && !strcmp(key, "theme"))
+            n += snprintf(bad + n, size - (size_t)n, snx_tr(" (it keeps %s)"), app->theme.id);
+        else if (n < (int)size && !strcmp(ini.section, "app") &&
+                 (!strcmp(key, "ui_scale") || !strcmp(key, "text_size")))
+            n += snprintf(bad + n, size - (size_t)n, snx_tr(" (it keeps %d)"),
+                          scale ? scale : SDL_max(1, app->auto_scale));
+        else if (n < (int)size && !strcmp(ini.section, "app") && !strcmp(key, "side_box"))
+            n += snprintf(bad + n, size - (size_t)n, snx_tr(" (it keeps %s)"), side_words[side]);
+        else if (n < (int)size && !strcmp(ini.section, "app") && !strcmp(key, "animations"))
+            n += snprintf(bad + n, size - (size_t)n, snx_tr(" (it keeps %d)"), !still);
+        else if (n < (int)size && !strcmp(ini.section, "app") && !strcmp(key, "language"))
+            n += snprintf(bad + n, size - (size_t)n, snx_tr(" (it keeps %s)"),
+                          language ? snx_gui_languages[language - 1].code : "auto");
+        else if (n < (int)size && place < GUI_PLACES)
+            n += snprintf(bad + n, size - (size_t)n, snx_tr(" (it keeps %s)"),
+                          places[place]       ? places[place]
+                          : app->place[place] ? app->place[place]
+                                              : "none");
         if (n >= (int)size) n = (int)size - 1;
+    }
+    if (others_size) {
+        char said[1024];
+        if (snx_config_others_said(&others, app->app_file, said, sizeof said))
+            snprintf(others_said, others_size, "%s", said);
     }
     free(text);
     if (apply) app->scale_new = !scale_read;
@@ -2002,8 +2087,8 @@ static int app_read(App* app, bool apply, char* bad, size_t size, char* renamed,
 }
 /* app.ini as the menu opens, what it does not take named in the message */
 static void app_load(App* app) {
-    char bad[384], renamed[64];
-    app_read(app, true, bad, sizeof bad, renamed, sizeof renamed);
+    char bad[384], renamed[64], others[1024];
+    app_read(app, true, bad, sizeof bad, renamed, sizeof renamed, others, sizeof others);
     /* an older form of the language's tag: the tag in its place, the file's other lines as they were, said once */
     if (renamed[0] && app->language) {
         const char* code = snx_gui_languages[app->language - 1].code;
@@ -2023,6 +2108,10 @@ static void app_load(App* app) {
         snprintf(app->message + m, sizeof app->message - m, "%s", m ? " " : "");
         m = strlen(app->message);
         snprintf(app->message + m, sizeof app->message - m, snx_tr("Not used from %s: %s"), app->app_file, bad);
+    }
+    if (others[0]) { /* what another version keeps there, or a file that cannot be read */
+        size_t m = strlen(app->message);
+        snprintf(app->message + m, sizeof app->message - m, "%s%s", m ? " " : "", others);
     }
     /* [folders] games =, [app] text_size = and recompile_background =, the names an older version wrote, and Auto or a
        part of it as UI scale: written again as recompiled =, ui_scale =, background_recompile = and the number, each
@@ -14107,9 +14196,7 @@ static int settings_unread(App* app, char* out, size_t size);
    reads every game's .ini) and again after a clean and with F5 */
 static int clean_left(App* app) {
     char unread[16];
-    if (app->clean_found < 0)
-        app->clean_found = clean_inis(app, NULL) + settings_unread(app, unread, sizeof unread) +
-                           app_read(app, false, unread, sizeof unread, NULL, 0);
+    if (app->clean_found < 0) app->clean_found = clean_inis(app, NULL) + settings_unread(app, unread, sizeof unread);
     return app->clean_found;
 }
 /* a row of App, Folders, GPU Drivers or a group of settings with nothing to do now, greyed, whose Enter says why
@@ -17947,12 +18034,12 @@ static void left_move_ask(App* app) {
     gui_cleaned_free(&plan);
     gui_confirm_open(&app->confirm, GUI_ASK_MOVE, false);
 }
-/* what Clean Old Settings would take out: the .ini files with a [Deprecated] section in inis, the keys of the menu's
-   own files nothing reads in keys; both */
+/* what Clean Old Settings would take out: the .ini files with a [Deprecated] section in inis, an older version's keys
+   of settings.ini in keys; both */
 static int clean_count(App* app, int* inis, int* keys, int* own) {
     char unread[16];
     *inis = clean_inis(app, NULL);
-    *keys = settings_unread(app, unread, sizeof unread) + app_read(app, false, unread, sizeof unread, NULL, 0);
+    *keys = settings_unread(app, unread, sizeof unread);
     clean_picks(app, NULL, own);
     return *inis + *keys + *own;
 }

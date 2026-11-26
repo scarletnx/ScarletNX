@@ -2237,7 +2237,7 @@ static bool games_lists(const App* app, const char* shown) {
 }
 /* Games' View box (V): Recent Games and Dumps, on by default, and Sort, by title; each changed by Enter, Left, Right
    or a click, kept in app.ini at once and Games listed again by it; an app.ini without them (an older version's) has
-   the defaults, iOS's off; a word it does not know named with the one it keeps */
+   the defaults, iOS's off; a word it does not read named with the one it keeps */
 /* the presses of a player who goes on while Games is read: Tab, then a pad's R1 (RB, Tab's button) and their
    releases, pushed on SDL's queue from SDL's timer thread, after which the listing is done */
 static const Uint32 pressed_during[] = {SDL_EVENT_KEY_DOWN, SDL_EVENT_KEY_UP, SDL_EVENT_GAMEPAD_BUTTON_DOWN,
@@ -2495,21 +2495,28 @@ static void view_box(App* app, const char* temporary) {
                  "Not used from %s: recent_games = maybe (it keeps on), games_dumps = none (it keeps off), "
                  "games_sort = newest (it keeps title)",
                  app->app_file);
-        assert(recent_on(app) && !dumps_on(app) && !by_last_opened(app) && !strcmp(app->message, expected));
+        /* and a key given twice, by both lines, as every settings file says it */
+        assert(recent_on(app) && !dumps_on(app) && !by_last_opened(app) &&
+               !strncmp(app->message, expected, strlen(expected)) &&
+               strstr(app->message,
+                      "[app] games_dumps is given twice, games_dumps=off on line 3 and games_dumps=none on "
+                      "line 4: the last line's is taken"));
         broken = "[app]\nrecent_games = maybe\nrecent_games = off\n"; /* the file's own after it, in use after it */
         assert(!snx_write_file(app->app_file, broken, strlen(broken)));
         games_defaults(app);
         app->message[0] = 0;
         app_load(app);
         snprintf(expected, sizeof expected, "Not used from %s: recent_games = maybe (it keeps off)", app->app_file);
-        assert(!recent_on(app) && dumps_on(app) && !strcmp(app->message, expected));
+        assert(!recent_on(app) && dumps_on(app) && !strncmp(app->message, expected, strlen(expected)) &&
+               strstr(app->message, "[app] recent_games is given twice"));
         broken = "[app]\ngames_icons = large\ngames_icons = huge\n"; /* Icon size's three words */
         assert(!snx_write_file(app->app_file, broken, strlen(broken)));
         games_defaults(app);
         app->message[0] = 0;
         app_load(app);
         snprintf(expected, sizeof expected, "Not used from %s: games_icons = huge (it keeps large)", app->app_file);
-        assert(app->options[GUI_OPTION_ICONS] == 2 && !strcmp(app->message, expected));
+        assert(app->options[GUI_OPTION_ICONS] == 2 && !strncmp(app->message, expected, strlen(expected)) &&
+               strstr(app->message, "[app] games_icons is given twice"));
         games_defaults(app);
         app->message[0] = 0;
     }
@@ -4526,7 +4533,8 @@ static void run_amberlith(App* app, const char* temporary) {
         app->message[0] = 0;
         app_load(app);
         ini = snx_format("Not used from %s: probe_mode = slow (it keeps full)", app->app_file);
-        assert(app->probe_full && !strcmp(app->message, ini));
+        assert(app->probe_full && !strncmp(app->message, ini, strlen(ini)) &&
+               strstr(app->message, "[app] probe_mode is given twice"));
         free(ini);
         free(broken);
     }
@@ -8584,30 +8592,29 @@ int main(int argc, char** argv) {
         hides(&app, "- Layout", normal);
         { /* a row with nothing to do greyed, still there (#614): Move Old Files with nothing left, Clean Old Settings
              with nothing to clean; something to do, F5 looking again, in ink; Enter on a greyed one says why */
-            size_t size = 0;
-            char *was = (char*)snx_read_file(app.app_file, &size), *old;
-            int row = app.editor.row;
+            /* an older version's keys: a game's .ini with them under [Deprecated] */
+            char* old = snx_path_join(app.games_dir, "Old game.ini");
+            int row = app.editor.row, had_games = snx_is_dir(app.games_dir);
             assert(!app.lefts);
             shows(&app, "- " ICON_FOLDER_INPUT " Move Old Files", rgb(app.theme.soft));
             app.editor.row = GUI_APP_CLEAN;
             key(&app, SDLK_RETURN);
             assert(!app.confirm.shown && strstr(app.editor.note, "Nothing to clean"));
             app.lefts = 1;
-            old = snx_format("%s[app]\nan_old_key = 1\n", was ? was : "");
-            assert(!snx_write_file(app.app_file, old, strlen(old)));
+            assert(!snx_mkdirs(app.games_dir) && !snx_write_file(old, "[Deprecated]\nrenderer=gl\n", 25));
             app.editor.row = row; /* off them: the warning colour they want, unfocused */
             key(&app, SDLK_F5);
             render(&app);
             shows(&app, "- " ICON_FOLDER_INPUT " Move Old Files", rgb(app.theme.warning));
             shows(&app, "- " ICON_ERASER " Clean Old Settings", rgb(app.theme.warning));
-            assert(!snx_write_file(app.app_file, was ? was : "", was ? size : 0));
+            assert(!remove(old));
+            if (!had_games) snx_remove_empty_dir(app.games_dir);
             app.lefts = 0;
             app.clean_found = -1;
             app.editor.row = row;
             app.editor.note[0] = 0;
             render(&app);
             free(old);
-            free(was);
         }
         key(&app, SDLK_RIGHT);
         assert(strcmp(app.theme.name, first) && !strcmp(app.app_form.theme, app.theme.name));
@@ -8986,16 +8993,30 @@ int main(int argc, char** argv) {
             app_load(&app);
             assert(app.menu.text_size == 2 && !app.message[0]);
         }
-        /* a file a hand broke: what it does not know is left, named, and the menu keeps what it has */
+        /* a file a hand broke: a value it does not take said with the one it keeps; another version's keys named,
+           never by their values, and left; a key given twice said with both lines; the menu keeps what it has */
         assert(!snx_write_file(app.app_file, broken, strlen(broken)));
         app_load(&app);
         assert(!strcmp(app.theme.id, first_id) && app.menu.text_size == start);
         snprintf(expected, sizeof expected,
-                 "Not used from %s: theme = gone, text_size = 9, layout = boxes, colour = red, text_size = 2x, "
-                 "[other] layout = panels",
-                 app.app_file);
-        assert(!strcmp(app.message, expected));
+                 "Not used from %s: theme = gone (it keeps %s), text_size = 9 (it keeps %d), text_size = 2x (it keeps "
+                 "%d) %s: this version does not read [app] layout, [app] colour, [other] layout, which stay as they "
+                 "are; [app] text_size is given twice, text_size=9 on line 3 and text_size=2x on line 6: the last "
+                 "line's is taken",
+                 app.app_file, first_id, start, start, app.app_file);
+        if (strcmp(app.message, expected)) fprintf(stderr, "said: %s\nnot:  %s\n", app.message, expected);
+        assert(!strcmp(app.message, expected) && !strstr(app.message, "boxes") && !strstr(app.message, "panels"));
         app.message[0] = 0;
+        { /* written again, the keys it does not read stay as they were, after its own; taken out by hand for what
+             follows, which reads the file whole */
+            size_t written_size = 0;
+            char* written;
+            assert(!app_save(&app) && (written = (char*)snx_read_file(app.app_file, &written_size)));
+            assert(strstr(written, "\n[app]\nlayout = boxes\ncolour = red\n[other]\nlayout = panels\n") &&
+                   !strstr(written, "theme = gone") && !strstr(written, "text_size"));
+            free(written);
+            assert(!remove(app.app_file));
+        }
         /* a file that cannot be written: the pick holds for the session, and the note says it is not kept */
         assert(!snx_write_file(blocker, "file", 4));
         app.app_file = snx_path_join(blocker, "app.ini");
@@ -9102,7 +9123,9 @@ int main(int argc, char** argv) {
         assert(!snx_write_file(app.app_file, unknown, strlen(unknown)));
         app_load(&app);
         assert(app.language == 2 && snx_tr_language() == 1);
-        snprintf(expected, sizeof expected, "Fora de uso em %s: language = tlh", app.app_file); /* in xx: its words */
+        /* in xx: its words, and the language it keeps in English, which xx has no words for */
+        snprintf(expected, sizeof expected, "Fora de uso em %s: language = tlh (it keeps xx)", app.app_file);
+        if (strcmp(app.message, expected)) fprintf(stderr, "said: %s\nnot:  %s\n", app.message, expected);
         assert(!strcmp(app.message, expected));
         app.message[0] = 0;
         /* zh_TW, as a build before the tags wrote zh-Hant-TW: that language, its tag written in place of it, the file's
@@ -9287,9 +9310,10 @@ int main(int argc, char** argv) {
         shows_half(&app, "this version no longer reads. Asks first", normal);
         key(&app, SDLK_RETURN); /* a box says what it would take out, Back in focus */
         assert(app.confirm.shown && app.confirm.ask == GUI_ASK_CLEAN && !app.cleaned_shown && snx_is_file(old_ini));
-        assert(!strcmp(app.ask_line, "Clean Old Settings? [Deprecated] in 1 .ini, 2 old keys"));
+        /* app.ini's theme = gone is a value it does not take, said as it opens, no older version's key */
+        assert(!strcmp(app.ask_line, "Clean Old Settings? [Deprecated] in 1 .ini, 1 old key"));
         render(&app);
-        shows(&app, "Clean Old Settings? [Deprecated] in 1 .ini, 2 old keys", rgb(app.theme.warning));
+        shows(&app, "Clean Old Settings? [Deprecated] in 1 .ini, 1 old key", rgb(app.theme.warning));
         shows(&app, "- Cancel", yellow);
         shows(&app, "- Clean", rgb(app.theme.warning));
         key(&app, SDLK_ESCAPE); /* Back: nothing taken out */
@@ -9722,7 +9746,7 @@ int main(int argc, char** argv) {
     key(&app, SDLK_LEFT);
     key(&app, SDLK_LEFT);
     assert(app.side_box == GUI_SIDE_AUTO && !strcmp(app.app_form.side, "Auto"));
-    /* app.ini's side_box read back: on taken; a word it does not know named, the side box as the line before left it */
+    /* app.ini's side_box read back: on taken; a word it does not read named, the side box as the line before left it */
     {
         size_t size;
         char *kept = (char*)snx_read_file(app.app_file, &size), *text, said[512];
@@ -9770,7 +9794,7 @@ int main(int argc, char** argv) {
     key(&app, SDLK_RETURN);
     assert(app.background_mode == GUI_BACKGROUND_AUTO);
     app.power_test = 0;
-    /* read back: gentle taken; a word it does not know named, with the one the file leaves in use; an older version's
+    /* read back: gentle taken; a word it does not read named, with the one the file leaves in use; an older version's
        recompile_background read while background_recompile has none, its full (the default it wrote) as auto and its
        gentle as gentle, written again so, said once; an app.ini without either, Auto as the menu opens, the key
        written with the next save */
@@ -10715,12 +10739,18 @@ int main(int argc, char** argv) {
         {
             char* dumps = snx_path_join(app.data_dir, "dumps");
             char* unmade = snx_is_dir(dumps) ? snx_strdup("") : snx_format("Could not make %s ", dumps);
-            snprintf(line, sizeof line, "%sNot used from %s: [folders] work = relative/work, [folders] shaders = /x",
-                     unmade, app.app_file);
+            snprintf(
+                line, sizeof line,
+                "%sNot used from %s: [folders] work = relative/work (it keeps none) %s: this version does not read "
+                "[folders] shaders, which stays as it is; [folders] work is given twice, work= on line 21 and "
+                "work=relative/work on line 25: the last line's is taken",
+                unmade, app.app_file, app.app_file);
             free(unmade);
             free(dumps);
         }
-        assert(!strcmp(app.message, line) && app.place[GUI_PLACE_GAMES] && !strcmp(app.games_dir, app.place[1]));
+        if (strcmp(app.message, line)) fprintf(stderr, "said: %s\nnot:  %s\n", app.message, line);
+        assert(!strcmp(app.message, line) && !strstr(app.message, "/x") && app.place[GUI_PLACE_GAMES] &&
+               !strcmp(app.games_dir, app.place[1]));
         assert(!app.place[GUI_PLACE_WORK] && !strcmp(app.work_dir, work));
         app.message[0] = 0;
         /* app.ini as an older version wrote it, [folders] games =: read as recompiled =, written again so, said once */
