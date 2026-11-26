@@ -2712,7 +2712,7 @@ add_test(NAME llvm_dependency COMMAND "${CMAKE_COMMAND}"
 include("${PROJECT_SOURCE_DIR}/cmake/gui_themes.cmake")
 if(TARGET SDL3::SDL3) # F1's and the Shortcuts pages name the runtime's keys as SDL names them
     add_executable(snx-test-overlay overlay.c tracy_stubs.c
-        "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/overlay.c"
+        "${PROJECT_SOURCE_DIR}/src/common/utilities/overlay.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/overlay_host.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ctrl_applet.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ctrl_request.c"
@@ -2836,9 +2836,9 @@ if(TARGET SDL3::SDL3) # the keys' names are SDL's
     target_link_libraries(snx-test-sdl-desktop-hints PRIVATE SDL3::SDL3)
     add_test(NAME sdl_desktop_hints COMMAND snx-test-sdl-desktop-hints)
 endif()
-# F1's text (runtime/platform/help.c): Ctrl+Shift+F12 while RenderDoc can capture, the debugger while one traces the
+# F1's text (common/utilities/help.c): Ctrl+Shift+F12 while RenderDoc can capture, the debugger while one traces the
 # game
-add_executable(snx-test-help help.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/help.c")
+add_executable(snx-test-help help.c "${PROJECT_SOURCE_DIR}/src/common/utilities/help.c")
 snx_test_target(snx-test-help c23)
 target_include_directories(snx-test-help PRIVATE "${PROJECT_SOURCE_DIR}/src")
 add_test(NAME help COMMAND snx-test-help)

@@ -23,7 +23,7 @@
 #include "nx/runtime/platform/gamepad.h"
 #include "nx/runtime/platform/hud.h"
 #include "nx/runtime/platform/log.h"
-#include "nx/runtime/platform/overlay.h"
+#include "common/utilities/overlay.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/unattended.h"
 #include "common/utilities/vpad_showcase.h"

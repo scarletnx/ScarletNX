@@ -113,7 +113,7 @@ set(platform runtime/platform/log.c runtime/platform/plat_sdl.c runtime/platform
              runtime/platform/joycon2.c runtime/platform/joycon2_sdl.c runtime/platform/joycon2_session.c
              runtime/platform/joycon2_proto.c runtime/platform/joycon2_att.c runtime/platform/joycon2_link.c
              runtime/platform/joycon2_known.c
-             runtime/platform/help.c runtime/platform/hud.c runtime/platform/overlay.c runtime/platform/overlay_host.c
+             runtime/platform/hud.c runtime/platform/overlay_host.c
              runtime/platform/touch.c
              runtime/platform/audio_denoise.c
              runtime/platform/ui.c
@@ -140,7 +140,7 @@ target_link_libraries(snx_platform PRIVATE snx_rnnoise)
 # the GPU driver a run asks for (src/common/gpu/vk/gpu_driver_load.h), which the other renderers share
 target_link_libraries(snx_platform PRIVATE snx_vk_common)
 # the on-screen controls, which the other consoles' windows share (src/common/utilities/vpad.h, vpad_sdl.h)
-target_link_libraries(snx_platform PUBLIC snx_vpad snx_vpad_sdl)
+target_link_libraries(snx_platform PUBLIC snx_vpad snx_vpad_sdl snx_menu)
 # what stops a game, its kinds and actions (src/common/utilities/error_kind.h)
 target_link_libraries(snx_platform PUBLIC snx_error snx_error_sdl)
 # the tracy-capture a capture needs (tracy.c), the client's release (cmake/dependencies.cmake)

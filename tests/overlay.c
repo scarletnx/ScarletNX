@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The game's menu (runtime/platform/overlay.c): where it goes, its pages, what a tap, a move or a step does, its look;
+/* The game's menu (common/utilities/overlay.c): where it goes, its pages, what a tap, a move or a step does, its look;
    and ui.c's atlas and text */
-#include "nx/runtime/platform/overlay.h"
+#include "common/utilities/overlay.h"
 #include "nx/runtime/platform/overlay_host.h"
 #include <math.h>
 #include "nx/runtime/platform/hud.h"

@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* F1's text (runtime/platform/help.c): the keys up to F12's and Esc last, with neither RenderDoc nor a debugger
+/* F1's text (common/utilities/help.c): the keys up to F12's and Esc last, with neither RenderDoc nor a debugger
    nothing of them; Ctrl+Shift+F12's line between F12's and Esc's while RenderDoc can capture; the debugger's name after
    the keys while one traces the game, ? as given; a room too small cut, with the whole length said */
-#include "nx/runtime/platform/help.h"
+#include "common/utilities/help.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>

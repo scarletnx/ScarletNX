@@ -12,7 +12,7 @@
 #include "nx/runtime/main.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/log.h"
-#include "nx/runtime/platform/overlay.h" /* the keyboard's box's line, which am's answer holds */
+#include "common/utilities/overlay.h" /* the keyboard's box's line, which am's answer holds */
 #include "nx/runtime/platform/plat.h"
 #include <stdlib.h>
 #include <string.h>

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-#include "nx/runtime/platform/help.h"
+#include "common/utilities/help.h"
 #include <stdio.h>
 
 /* It follows keymap (the game's buttons), hotkey and menu_event (the runtime's keys) in backend/sdl3.c: a binding

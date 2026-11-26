@@ -2,8 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* The runtime's keys (nx/runtime/platform/backend/sdl3.c): an action each, its key a setting of settings.txt's
    Shortcuts (hotkey_<action>), the key as SDL names it after Ctrl+, Alt+, Shift+ or GUI+ for the modifiers held with
-   it, empty for none. F1's help (nx/runtime/platform/help.c) and the stats box's RenderDoc line show them, and the
-   game's menu's Shortcuts page sets them (nx/runtime/platform/overlay.c). The main thread's, and the renderer's reading
+   it, empty for none. F1's help (common/utilities/help.c) and the stats box's RenderDoc line show them, and the
+   game's menu's Shortcuts page sets them (common/utilities/overlay.c). The main thread's, and the renderer's reading
    a key's text under ui_lock, which the settings' reads (backend_ini) and the menu hold too. What they say goes through
    snx_error */
 #ifndef SNX_HOTKEYS_H

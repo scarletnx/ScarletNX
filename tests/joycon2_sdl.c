@@ -9,7 +9,7 @@
 #include "nx/runtime/platform/gamepad.h"
 #include "nx/runtime/platform/backend.h"
 #include "nx/runtime/pause.h"
-#include "nx/runtime/platform/overlay.h"
+#include "common/utilities/overlay.h"
 #include "nx/runtime/platform/plat.h"
 #include "common/utilities/common.h"
 #include "support/sdl_real_pads.h"

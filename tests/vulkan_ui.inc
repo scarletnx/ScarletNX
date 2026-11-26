@@ -8,7 +8,7 @@
    the box's letters, none, the line's length, the box's corner, and take the box away and back, so the device's buffer
    holds every kind of change */
 #include "nx/runtime/platform/hud.h"
-#include "nx/runtime/platform/overlay.h"
+#include "common/utilities/overlay.h"
 #include "common/utilities/stats.h"
 #include "nx/runtime/platform/ui.h"
 #include "common/utilities/vpad_showcase.h"

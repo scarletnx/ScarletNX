@@ -55,7 +55,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/shader/shader.h"
 #include "nx/gpu/texture/blocklinear.h"
-#include "nx/runtime/platform/overlay.h"
+#include "common/utilities/overlay.h"
 #include "nx/runtime/platform/prepare_screen.h"
 #include "nx/runtime/platform/resources.h"
 #include "nx/runtime/platform/plat.h"

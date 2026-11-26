@@ -18,7 +18,7 @@
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
 #include "nx/runtime/platform/unattended.h"
-#include "nx/runtime/platform/overlay.h"
+#include "common/utilities/overlay.h"
 #include "nx/runtime/platform/ctrl_applet.h"
 #include "nx/runtime/platform/ctrl_scan.h"
 #include "nx/runtime/platform/connect.h"
@@ -34,7 +34,7 @@
 #include "nx/runtime/platform/gamepad.h"
 #include "nx/runtime/platform/joycon2.h"
 #include "nx/runtime/platform/joycon2_sdl.h" /* joycon2_mouse */
-#include "nx/runtime/platform/help.h"
+#include "common/utilities/help.h"
 #include "common/utilities/hotkeys.h"
 #include "common/utilities/pad_sdl.h"
 #include "common/utilities/quit_key.h"
