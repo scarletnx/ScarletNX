@@ -55,6 +55,11 @@ def main():
     run(['--controls=1', '--controls-stick-l-shown=0', '--touch=1', '--launcher-picks=1', '--help'], 0, 'Vita options:')
     run(['--controls=3', 'game.vpk'], 2, 'scarletnx-vita: controls=3 ')
     run(['--touch=x', 'game.vpk'], 2, 'scarletnx-vita: touch=x ')
+    # the Switch's settings a Vita game takes, as the controls' (common/utilities/console_settings.c); one it does not
+    # take said with why
+    run(['--fullscreen=1', '--upscaler=fsr1', '--vulkan-ban-ignore=x', '--help'], 0, 'Vita options:')
+    run(['--docked=1', 'game.vpk'], 2, 'scarletnx-vita: --docked=1 does nothing in a Vita game: it has no dock')
+    run(['--log=2', 'game.vpk'], 2, 'scarletnx-vita: --log=2 does nothing in a Vita game: it writes no game log yet')
     # the key as the .ini writes it, the older spelling: still read, and said once a run with the name now
     out = run(
         ['--vita_hle_trace=1', '--vita_hle_trace=2', '--help'],

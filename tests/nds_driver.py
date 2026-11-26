@@ -82,6 +82,8 @@ def main():
                 failures.append(f'{given} refused:\n{out}')
         run(['-r', '--touch=3', *missing], 2, 'scarletnx-nds: touch=3 ')
         run(['-r', '--controls-scale=big', *missing], 2, 'scarletnx-nds: controls_scale=big ')
+        # one of the Switch's settings a DS game does not take: said with why (common/utilities/console_settings.c)
+        run(['-r', '--docked=1', *missing], 2, 'scarletnx-nds: --docked=1 does nothing in a DS game: it has no dock')
         # the WFC service: a word the list has not, refused with it and the list
         run(['-r', '--nds-wfc=official', *missing], 2, '"official" is none of off, auto, custom, kaeru, wiilink')
         run(['-r', '--nds-wfc=custom', *missing], 2, 'nds_wfc_dns=: the custom DNS server "" is not an IPv4 address')

@@ -169,22 +169,15 @@ const char* gui_settings_value(const GuiSettings* settings, const char* key);
    has one. With launch the launcher's too, -S -s for the stub, --tmpfs and --extract-container. Their count, count + 5
    at most */
 size_t gui_settings_options(GuiSettings* settings, int launch, const char* game_ini, const char** argv);
-/* argv's --key=value for each of the 3DS driver's settings picked: its tables' (keys that start with ctr_) and the
-   Switch's it takes too (3ds/runtime/main.h's snx_ctr_shared_setting, vk_memory); with one a game has of its own among
-   them (its console), --launcher-picks=1 after them, which puts the game's over it. Its count */
-size_t gui_settings_ctr_options(GuiSettings* settings, const char** argv);
-/* argv's --key=value for each of the Vita driver's settings picked: its Debug page's (keys that start with vita_). Its
+/* argv's --key=value for each setting picked of a run of a game of console (console_settings.h's SnxSystem, not the
+   Switch): its own tables' (keys that start with ctr_, vita_, gba_ or nds_, but the DS's WFC service's, which that
+   driver reads from settings.ini) and each of the Switch's its driver takes (snx_console_why), the on-screen controls'
+   among them; --launcher-picks=1 after them, which puts the game's own picks over them. Its count */
+size_t gui_settings_console_options(GuiSettings* settings, int console, const char** argv);
+/* argv's --key=value for each of a Linux program's settings picked (linux_), and an Android app's (android_): its
    count */
-size_t gui_settings_vita_options(GuiSettings* settings, const char** argv);
-/* argv's --key=value for each of the on-screen controls' settings picked (Show controls' always, gui_settings_always)
-   and the touch screen's, which a GBA, a DS and a Vita game's driver take (one its console has nothing for said there),
-   --launcher-picks=1 after them, which puts the game's own over them. Its count */
-size_t gui_settings_controls_options(GuiSettings* settings, const char** argv);
-/* the same for a Linux program's run (linux_), an Android app's (android_) and a DS game's (nds_, but the WFC
-   service's, which that driver reads from settings.ini) */
 size_t gui_settings_linux_options(GuiSettings* settings, const char** argv);
 size_t gui_settings_android_options(GuiSettings* settings, const char** argv);
-size_t gui_settings_nds_options(GuiSettings* settings, const char** argv);
 /* Extract to tmpfs: --tmpfs while it is on, else NULL (extractions on disk) */
 const char* gui_settings_tmpfs(const GuiSettings* settings);
 /* Extract dump: --extract-container while it is on, else NULL (a dump read in place, nothing extracted).

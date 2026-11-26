@@ -74,10 +74,15 @@ def main():
     run(['--ctr-model=other', '--board-info'], 2, 'scarletnx-3ds: ctr_model=other is not auto, old or new')
     run(['--board-info', 'game.cia'], 2, 'Usage:')
     run(['--backend=gcc'], 2, 'unknown setting: --backend=gcc')  # --key=value is the 3DS tables'
-    # and the Switch's the 3DS takes too (vk_memory), never another of the Switch's Debug table
+    # and the Switch's the 3DS takes too (vk_memory), never another of the Switch's Debug table, which is refused
+    # with why (common/utilities/console_settings.c)
     run(['--board-info', '--vk-memory=1'], 0, 'Old 3DS')
     run(['--board-info', '--async-pipelines=1', '--pipeline-threads=2'], 0, 'Old 3DS')
-    run(['--board-info', '--vk-budget-mb=64'], 2, 'unknown setting: --vk-budget-mb=64')
+    run(
+        ['--board-info', '--vk-budget-mb=64'],
+        2,
+        "--vk-budget-mb=64 does nothing in a 3DS game: it tunes the Switch's GPU",
+    )
     # ctr_separate_windows is retired: screen layout 4 replaced it, so the old option is an unknown setting
     run(['--board-info', '--ctr-separate-windows=1'], 2, 'unknown setting: --ctr-separate-windows=1')
     # the recompile's threads, the Switch's setting, which the launcher's queue gives every driver: a value it does
@@ -124,7 +129,11 @@ def main():
     # the Controllers table's A and B and dead zone, read as the Switch's (a dead zone past 90 is 90, said), never
     # its vibration, which the 3DS has none of
     run(['--board-info', '--gamepad-swap-ab=1', '--gamepad-deadzone=30'], 0, 'Old 3DS')
-    run(['--board-info', '--gamepad-rumble=50'], 2, 'unknown setting: --gamepad-rumble=50')
+    run(
+        ['--board-info', '--gamepad-rumble=50'],
+        2,
+        '--gamepad-rumble=50 does nothing in a 3DS game: it has no vibration',
+    )
     # and its button map, which the 3DS input reads itself: a map it cannot read keeps the one before, a control sent
     # to a button the 3DS lacks sends nothing, each said with the value
     out = run(['--board-info', '--gamepad-map=south:A east:B'], 0, 'Old 3DS')
@@ -145,13 +154,13 @@ def main():
     # the On-screen controls table's touch screen, as the Switch's (0 to 2), never its on-screen controls
     run(['--board-info', '--touch=1'], 0, 'Old 3DS')
     run(['--board-info', '--touch=5'], 0, 'settings: touch=5 is not a whole number from 0 to 2: it keeps 2')
-    run(['--board-info', '--controls-haptics=0'], 2, 'unknown setting: --controls-haptics=0')
+    run(['--board-info', '--controls-haptics=0'], 2, '--controls-haptics=0 does nothing in a 3DS game: its on-screen')
     # the Graphics table's vsync, never another of its rows
     run(['--board-info', '--vsync=0', '--anisotropy=16'], 0, 'Old 3DS')
-    run(['--board-info', '--shadows=0'], 2, 'unknown setting: --shadows=0')
+    run(['--board-info', '--shadows=0'], 2, "--shadows=0 does nothing in a 3DS game: it tunes the Switch's GPU")
     # and the Display table's fullscreen, never its others
     run(['--board-info', '--fullscreen=1'], 0, 'Old 3DS')
-    run(['--board-info', '--docked=0'], 2, 'unknown setting: --docked=0')
+    run(['--board-info', '--docked=0'], 2, '--docked=0 does nothing in a 3DS game: it has no dock')
     # and the Performance table's fps_limit, read as the Switch reads it, a value not taken as given said
     out = run(['--board-info', '--fps-limit=120'], 0, 'Old 3DS')
     assert 'fps_limit' not in out, out

@@ -1158,6 +1158,10 @@ static void write_h(const char* dir) {
     for (t = 0; t < ntables; t++) out("extern const IniOpt %s[];\n", tables[t].name);
     outs("/* the game's settings the recompile takes too (recompile), in the recompiler's file */\n"
          "extern const IniOpt g_recompile_game_ini[];\n");
+    outs("/* every row of the game's .ini's sections without its set function, which is the Switch runtime's: what the\n"
+         "   other consoles' drivers read a setting of the Switch's by (common/utilities/console_settings.h), acting on\n"
+         "   its g_settings member themselves */\n"
+         "extern const IniOpt g_console_ini[];\n");
     outs("/* the vulkan table's Vulkan extensions, in its order: each one's name, its setting's value (auto, on or "
          "off) and\n   the Vulkan version it was promoted to (13 for 1.3), 0 for none */\n"
          "typedef struct {\n    const char* name;\n    const char* value;\n    int core;\n} SettingsVkExtension;\n"
@@ -1249,6 +1253,7 @@ static char* key_of(const Setting* s, const char* what, const char* value) {
     return k;
 }
 
+static int g_no_set; /* out_row leaves the set function out: g_console_ini's rows */
 static void out_row(const Setting* s, int index, const char* key, const char* label) {
     const char* def = s->once ? NULL : s->def;
     out("    {");
@@ -1294,7 +1299,8 @@ static void out_row(const Setting* s, int index, const char* key, const char* la
         out("g_settings.%s", s->member);
     else
         out("&g_settings.%s", s->member);
-    out(", %s, %s, %s, ", s->type == T_TEXT ? "0" : s->lo, s->type == T_TEXT ? "0" : s->hi, s->set ? s->set : "NULL");
+    out(", %s, %s, %s, ", s->type == T_TEXT ? "0" : s->lo, s->type == T_TEXT ? "0" : s->hi,
+        s->set && !g_no_set ? s->set : "NULL");
     out_string(label);
     outs(", ");
     out_string(s->words);
@@ -1311,9 +1317,30 @@ static void out_row(const Setting* s, int index, const char* key, const char* la
     outs("},\n");
 }
 
+/* table t's rows, after its head (const IniOpt name[] = {) */
+static void table_rows(int t);
 static void write_table(int t) {
-    int i, k, n = 0, first;
     out("const IniOpt %s[] = {\n", tables[t].name);
+    table_rows(t);
+    outs("    {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0, NULL}};\n");
+}
+/* every runtime or vulkan table a section of the game's .ini names, its rows one after the other, without their set
+   functions */
+static void write_console(void) {
+    int t, i, j, listed;
+    g_no_set = 1;
+    outs("const IniOpt g_console_ini[] = {\n");
+    for (t = 0; t < ntables; t++) {
+        if (!is_runtime_scope(tables[t].scope)) continue;
+        for (listed = i = 0; i < nsections && !listed; i++)
+            for (j = 0; j < sections[i].ntables; j++) listed |= !sections[i].launcher && !strcmp(sections[i].table[j], tables[t].name);
+        if (listed) table_rows(t);
+    }
+    outs("    {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0, NULL}};\n");
+    g_no_set = 0;
+}
+static void table_rows(int t) {
+    int i, k, n = 0, first;
     for (i = 0; i < nsettings; i = first) {
         const Setting* s = &settings[i];
         first = i + 1;
@@ -1344,7 +1371,6 @@ static void write_table(int t) {
             n++;
         }
     }
-    outs("    {NULL, NULL, NULL, 0, 0, NULL, 0, 0, NULL, NULL, NULL, 0, 0, 0, NULL}};\n");
     (void)n;
 }
 
@@ -1504,6 +1530,9 @@ static void write_tables(const char* dir, int runtime) {
         table_head(1);
         write_sections("g_ini_sections", 0);
         flush(dir, "settings_runtime.c");
+        table_head(1);
+        write_console();
+        flush(dir, "settings_console.c");
         return;
     }
     table_head(0);

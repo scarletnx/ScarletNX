@@ -14,6 +14,7 @@
 #include "common/utilities/cli.h"
 #include "common/utilities/common.h"
 #include "common/platform/file.h"
+#include "common/utilities/console_settings.h"
 #include "common/utilities/game_ini.h"
 #include "3ds/runtime/game_record.h"
 #include "common/utilities/ini_lines.h"
@@ -797,7 +798,7 @@ int snx_ctr_main(int argc, char** argv) {
         if (common == SNX_CLI_SCRIPT)
             ini_read(ini_find(g_ctr_run_ini, "ctr_script"), cli.value[SNX_CLI_SCRIPT]);
         else if (common == SNX_CLI_FULLSCREEN)
-            ini_read(ini_find(g_display_ini, "fullscreen"), cli.fullscreen ? "1" : "0");
+            g_settings.fullscreen = cli.fullscreen;
         else if (common == SNX_CLI_OPT) /* the Switch's settings, as --aot-threads= is: the last given counts */
             ini_read(ini_find(g_recompile_ini, "opt"), cli.value[SNX_CLI_OPT]);
         else if (common == SNX_CLI_JOBS)
@@ -850,9 +851,8 @@ int snx_ctr_main(int argc, char** argv) {
             launcher = value[0] == '1';
         } else if (!positional && !strncmp(arg, "--", 2) && strchr(arg, '=')) {
             /* a setting of the 3DS display, debug or run table (g_ctr_display_ini, g_ctr_debug_ini, g_ctr_run_ini, in
-               src/nx/runtime/settings.txt), one of the Switch's the 3DS takes too (snx_ctr_shared_setting), or a
-               Vulkan extension's (vk_ext_*, g_vk_extensions_ini), --key=value, its key's _ a - or not. gamepad_map
-               is the input's to read: its row's setter keeps the map for a Switch game's pads */
+               src/nx/runtime/settings.txt), or one of the Switch's the 3DS takes too (console_settings.h), a Vulkan
+               extension's among them, --key=value, its key's _ a - or not. gamepad_map is the input's to read */
             char key[64];
             const char* value = settings_arg(arg, key, sizeof key);
             const IniOpt* o = NULL;
@@ -870,24 +870,20 @@ int snx_ctr_main(int argc, char** argv) {
                 if (!o) o = ini_find(g_ctr_debug_ini, key);
                 if (!o) o = ini_find(g_ctr_run_ini, key);
                 if (!o) o = ini_find(g_ctr_network_ini, key);
-                if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_debug_ini, key);
-                if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_performance_ini, key);
-                if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_gamepad_ini, key);
-                if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_backend_ini, key);
-                if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_graphics_ini, key);
-                if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_display_ini, key);
-                if (!o && snx_ctr_shared_setting(key)) o = ini_find(g_audio_ini, key);
-                if (!o) o = ini_find(g_vk_extensions_ini, key);
                 map = !strcmp(key, "gamepad_map");
                 model_key = model_key || !strcmp(key, "ctr_model");
             }
+            int shared = map || o ? 0 : snx_console_arg(SNX_SYSTEM_3DS, arg, error, sizeof error);
             if (map)
                 snx_ctr_input_map(value);
-            else if (!o) {
-                fprintf(stderr, "scarletnx-3ds: unknown setting: %s\n", arg);
+            else if (!o && shared <= 0) {
+                if (shared)
+                    fprintf(stderr, "scarletnx-3ds: %s\n", error);
+                else
+                    fprintf(stderr, "scarletnx-3ds: unknown setting: %s\n", arg);
                 snx_cli_free(&cli);
                 return 2;
-            } else
+            } else if (o)
                 ini_read(o, value);
         } else if ((!positional && arg[0] == '-') || input) {
             fprintf(stderr, "scarletnx-3ds: unexpected argument: %s\n", arg);

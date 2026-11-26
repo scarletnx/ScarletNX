@@ -82,8 +82,9 @@ if(SNX_TEST_SANITIZERS)
         snx_window_icon snx-test-window-icon snx_pad_sdl snx_gui_pad
         # the notice of the 3DS's, the Vita's and the GBA's windows
         snx_notice
-        # the on-screen controls, their consoles' tables and their side of an SDL window
-        snx_vpad snx_vpad_consoles snx_vpad_sdl
+        # the on-screen controls, their consoles' tables and their side of an SDL window, and the settings each
+        # console takes
+        snx_vpad snx_vpad_consoles snx_vpad_sdl snx_console_settings
         # the save states' file, every console's
         snx_state_file
         # the shader corpus translator, which shaderc_sm86 runs
@@ -2729,6 +2730,12 @@ snx_test_target(snx-test-vpad gnu23)
 target_link_libraries(snx-test-vpad PRIVATE snx_vpad scarletnx-common snx_splash m)
 target_include_directories(snx-test-vpad PRIVATE "${PROJECT_BINARY_DIR}/generated") # ui.c's theme
 add_test(NAME vpad COMMAND snx-test-vpad)
+# every row of the Switch's settings with its line for each console, and the drivers' reading by those lines
+# (common/utilities/console_settings.c)
+add_executable(snx-test-console-settings console_settings.c)
+snx_test_target(snx-test-console-settings c23)
+target_link_libraries(snx-test-console-settings PRIVATE snx_console_settings scarletnx-common)
+add_test(NAME console_settings COMMAND snx-test-console-settings)
 # a console's own on-screen controls and its game's settings of them (common/utilities/vpad.c)
 add_executable(snx-test-vpad-console vpad_console.c)
 snx_test_target(snx-test-vpad-console c23)

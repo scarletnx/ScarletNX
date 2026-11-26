@@ -7073,9 +7073,10 @@ static void ctr_own_console(App* app, const char* dir) {
         made_gone(app, switch_folder);
         free(played);
     }
-    /* a Vita, a GBA and a DS game's own, by M on it and by its box: its on-screen controls alone, the touch screen
-       where it has one, each control by its name there, kept in its picks; and the launcher's for its run, marked as
-       such: Show controls' always, as the Switch's runs have it */
+    /* a Vita, a GBA and a DS game's own, by M on it and by its box: the Switch's settings its driver takes
+       (common/utilities/console_settings.c), its on-screen controls among them, the touch screen where it has one,
+       each control by its name there, kept in its picks; and the launcher's for its run, marked as such: Show
+       controls' always, as the Switch's runs have it */
     {
         static const struct {
             int item;
@@ -7099,16 +7100,18 @@ static void ctr_own_console(App* app, const char* dir) {
             own = snx_game_picks(beside);
             key(app, SDLK_M);
             assert(app->editing && app->own_picks && same_path(app->own_picks, own));
-            assert(app->groups == 2 && !strcmp(app->group_keys[0].key, "Overlay") &&
-                   !strcmp(app->group_keys[1].key, "Reset to Global"));
+            assert(app->groups == 3 && !strcmp(app->group_keys[0].key, "Display") &&
+                   !strcmp(app->group_keys[1].key, "Overlay") && !strcmp(app->group_keys[2].key, "Reset to Global"));
             assert(gui_settings_value(&app->game_settings, "controls") == NULL);
+            key(app, SDLK_DOWN);
             key(app, SDLK_RETURN); /* Overlay */
             assert(app->form == GUI_FORM_GROUP);
             snprintf(said, sizeof said, "%s own controls", consoles[c].name);
             foot_shot(app, said);
             key(app, SDLK_ESCAPE);
             assert(app->editing && app->form == GUI_FORM_SETTINGS);
-            assert(!gui_settings_set(&app->game_settings, "fullscreen", "1") &&
+            assert(!gui_settings_set(&app->game_settings, "ctr_hooks", "0") &&
+                   !gui_settings_set(&app->game_settings, "vita_hle_trace", "1") &&
                    !gui_settings_set(&app->game_settings, "controls_zl_shown", "0"));
             assert(gui_settings_set(&app->game_settings, "touch", "1") == consoles[c].touch);
             assert(gui_settings_set(&app->game_settings, "controls_plus_shown", "0") &&
@@ -7208,8 +7211,8 @@ static void ctr_own_console(App* app, const char* dir) {
         app->games_drivers = drivers_was;
         app->browser = browser_was;
     }
-    /* the launcher's Console and the game's run: passed, and marked as the launcher's, under the game's own; with none
-       picked no mark */
+    /* the launcher's Console and the game's run: passed, and marked as the launcher's, under the game's own, as every
+       pick of a console's run is (fullscreen here) */
     {
         char* argv_got;
         fixture_text(picks, "[3DS]\nctr_model=old\n");
@@ -7220,8 +7223,7 @@ static void ctr_own_console(App* app, const char* dir) {
             app->menu.selected = GUI_3DS;
             launch(app, snx_strdup(program), true);
             argv_got = ran(app, 0);
-            assert(has_arg(argv_got, "--ctr-model=new", NULL) == way &&
-                   has_arg(argv_got, "--launcher-picks=1", NULL) == way);
+            assert(has_arg(argv_got, "--ctr-model=new", NULL) == way && has_arg(argv_got, "--launcher-picks=1", NULL));
             free(argv_got);
             leave_run(app);
         }
@@ -7410,22 +7412,21 @@ static void check_play_args(App* app, const char* root) {
     assert(play_args(app, GUI_SWITCH, prog, argv, 512, &own) >= 1);
     assert(!strncmp(argv[0], "--game=", 7) && !strcmp(argv[0] + 7, prog));
     play_args_free(&own);
-    /* a setting the 3DS takes goes to the 3DS and to no other console */
-    app->menu.selected = GUI_3DS;
-    if (gui_settings_set(settings_of(app), "vsync", "0")) {
-        bool ctr = false, gba = false;
-        (void)play_args(app, GUI_3DS, dir, argv, 512, &own);
-        for (size_t i = 0; argv[i]; i++)
-            if (!strcmp(argv[i], "--vsync=0")) ctr = true;
-        assert(ctr);
-        play_args_free(&own);
-        app->menu.selected = GUI_GBA;
-        (void)play_args(app, GUI_GBA, dir, argv, 512, &own);
-        for (size_t i = 0; argv[i]; i++)
-            if (!strcmp(argv[i], "--vsync=0")) gba = true;
-        assert(!gba);
-        play_args_free(&own);
-        (void)gui_settings_set(settings_of(app), "vsync", "1");
+    /* a setting of the Switch's goes to the consoles whose drivers take it (common/utilities/console_settings.c):
+       anisotropy to the 3DS and not to the GBA, which draws its screen on the CPU */
+    if (gui_settings_set(settings_of(app), "anisotropy", "8")) {
+        static const int items[] = {GUI_3DS, GUI_VITA, GUI_GBA, GUI_NDS};
+        for (size_t k = 0; k < sizeof items / sizeof *items; ++k) {
+            bool anisotropy = false;
+            app->menu.selected = items[k];
+            (void)play_args(app, items[k], dir, argv, 512, &own);
+            for (size_t i = 0; argv[i]; i++) {
+                anisotropy |= !strcmp(argv[i], "--anisotropy=8");
+            }
+            assert(anisotropy == (items[k] == GUI_3DS));
+            play_args_free(&own);
+        }
+        (void)gui_settings_set(settings_of(app), "anisotropy", "0");
     }
     /* the on-screen controls' go to the consoles whose windows have them, the launcher's picks under the game's own */
     if (gui_settings_set(settings_of(app), "controls", "1")) {
@@ -7438,7 +7439,7 @@ static void check_play_args(App* app, const char* root) {
                 shown += !strcmp(argv[i], "--controls=1");
                 picks += !strcmp(argv[i], "--launcher-picks=1");
             }
-            assert(shown == (items[k] != GUI_3DS) && picks == shown);
+            assert(shown == (items[k] != GUI_3DS) && picks == 1); /* every console's picks marked: fullscreen's */
             play_args_free(&own);
         }
         (void)gui_settings_set(settings_of(app), "controls", "2");

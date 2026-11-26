@@ -254,7 +254,7 @@ int main(void) {
     SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "dummy");
     sdl_real_pads_hide();
     vpad_console(&snx_vpad_gba);
-    snx_vpad_sdl_settings(); /* the runtime's keys and fps_limit read with the controls', as main.c reads them */
+    snx_vpad_sdl_settings(SNX_SYSTEM_GBA); /* the runtime's keys and the Switch's settings, as main.c reads them */
     char *root = snx_temp_root(), *dir = root ? snx_temp_dir(root) : NULL;
     char* ini = dir ? snx_path_join(dir, "a game.ini") : NULL;
     if (!ini || snx_write_file(ini, "[Game]\nsystem=gba\n", strlen("[Game]\nsystem=gba\n"))) {
