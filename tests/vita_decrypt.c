@@ -378,7 +378,8 @@ static void make_dump(const char* dump) {
 /* ---- checks ---- */
 typedef struct {
     char text[16384];
-    unsigned errors;
+    unsigned errors, progress;
+    uint64_t done, total;
 } Said;
 static void said(void* context, const char* line, bool error) {
     Said* s = context;
@@ -386,6 +387,14 @@ static void said(void* context, const char* line, bool error) {
     snprintf(s->text + n, sizeof s->text - n, "%s%s\n", error ? "ERROR " : "", line);
     s->errors += error;
 }
+/* the progress: each content's bytes counted up to its whole, the last call at it */
+static void went(void* context, uint64_t done, uint64_t total) {
+    Said* s = context;
+    assert(done <= total && (s->done <= done || s->total != total));
+    s->done = done, s->total = total, ++s->progress;
+}
+/* a line the keys' load told */
+static void said_line(void* context, const char* line) { said(context, line, false); }
 static void same(const char* folder, const char* rel, const void* data, size_t n) {
     char* path = snx_path_join(folder, rel);
     size_t size = 0;
@@ -408,7 +417,7 @@ static bool import(const char* dump, const char* folder, const char* keys, const
     char app[SNX_PATH_SIZE];
     snprintf(app, sizeof app, "%s/app/" TITLE, dump);
     *s = (Said){0};
-    VitaDumpImport d = {app, NULL, TITLE, folder, keys, zrif, said, s};
+    VitaDumpImport d = {app, NULL, TITLE, folder, keys, zrif, said, went, s};
     bool ok = vita_dump_import(&d, error, error_size);
     if (getenv("VITA_DECRYPT_VERBOSE")) printf("%s%s%s\n", s->text, ok ? "" : "FAILED: ", ok ? "" : error);
     return ok;
@@ -425,20 +434,54 @@ static void keys_files(const char* dir) {
     char error[1024], path[SNX_PATH_SIZE], file[SNX_PATH_SIZE];
     snprintf(path, sizeof path, "%s/keys-check", dir);
     write_keys(path, SNX_VITA_KEY_COUNT);
-    assert(vita_keys_load(path, &k, error, sizeof error) && k.have == g_vita_decrypt.keys.have);
+    assert(vita_keys_load(path, &k, NULL, NULL, error, sizeof error) && k.have == g_vita_decrypt.keys.have);
     for (int key = 0; key < SNX_VITA_KEY_COUNT; ++key)
         assert(!memcmp(k.bytes[key], g_vita_decrypt.keys.bytes[key], snx_vita_key_size(key)));
     write_keys(path, SNX_VITA_KEY_NPDRM0_IV);
-    assert(vita_keys_load(path, &k, error, sizeof error));
+    assert(vita_keys_load(path, &k, NULL, NULL, error, sizeof error));
     assert(!vita_key(&k, SNX_VITA_KEY_NPDRM0_IV, "eboot.bin", error, sizeof error));
-    assert(strstr(error, "/keys-check has no npdrm-iv-0 (a file of 16 bytes), which eboot.bin needs"));
-    snprintf(file, sizeof file, "%s/app-key-3", path); /* a key of another size: named, its size and the key's */
+    assert(strstr(error, "/keys-check has no npdrm-iv-0 (16 bytes: a line npdrm-iv-0 = hex in vita.keys), which "
+                         "eboot.bin needs"));
+    /* vita.keys beside the key files: the one missing given there, another given differently (its line taken, said),
+       a name no Vita key has (said, passed over) */
+    Said told = {0};
+    char text[4096], hex[65];
+    for (int i = 0; i < 16; ++i) snprintf(hex + 2 * i, 3, "%02x", g_vita_decrypt.keys.bytes[SNX_VITA_KEY_NPDRM0_IV][i]);
+    snprintf(text, sizeof text, "# from the test\r\nnpdrm-iv-0 = %s\r\ngpkg-key-2 = 00\npfs-iv-0 = %032d\n", hex, 7);
+    snprintf(file, sizeof file, "%s/vita.keys", path);
+    assert(!snx_write_file(file, text, strlen(text)));
+    assert(vita_keys_load(path, &k, said_line, &told, error, sizeof error) && k.have == g_vita_decrypt.keys.have);
+    assert(!memcmp(k.bytes[SNX_VITA_KEY_NPDRM0_IV], g_vita_decrypt.keys.bytes[SNX_VITA_KEY_NPDRM0_IV], 16));
+    assert(k.bytes[SNX_VITA_KEY_PFS_IV0][15] == 7 && k.bytes[SNX_VITA_KEY_PFS_IV0][0] == 0);
+    assert(strstr(told.text, "vita.keys:3: gpkg-key-2 is no Vita key the import reads, and the line is passed over"));
+    assert(strstr(told.text, "vita.keys gives pfs-iv-0 another value than the key file pfs-iv-0 beside it: "
+                             "vita.keys's is taken"));
+    /* vita.keys given itself, as --keys can: its lines alone */
+    assert(vita_keys_load(file, &k, NULL, NULL, error, sizeof error) &&
+           k.have == (1u << SNX_VITA_KEY_NPDRM0_IV | 1u << SNX_VITA_KEY_PFS_IV0));
+    static const struct {
+        const char *text, *part;
+    } bad[] = {
+        {"pfs-iv-0 0011\n", "vita.keys:1: \"pfs-iv-0 0011\" is not a line name = hex"},
+        {"pfs-iv-0 = 0011\n", "vita.keys:1: pfs-iv-0 is 16 bytes, and the line gives 4 hex digits, 2 bytes"},
+        {"pfs-iv-0 = 00112233445566778899aabbccddeeff zz\n", "vita.keys:1: pfs-iv-0's value has something besides hex"},
+        {"npdrm-iv-1 = 000102030405060708090a0b0c0d0e0f\n\nnpdrm-iv-1 = 000102030405060708090a0b0c0d0e0f\n",
+         "vita.keys:3: npdrm-iv-1 is given on line 1 too"},
+    };
+    for (size_t i = 0; i < sizeof bad / sizeof *bad; ++i) {
+        assert(!snx_write_file(file, bad[i].text, strlen(bad[i].text)));
+        expect(vita_keys_load(path, &k, NULL, NULL, error, sizeof error), error, bad[i].part);
+    }
+    assert(!remove(file));
+    snprintf(file, sizeof file, "%s/app-key-3", path); /* a key file of another size: named, its size and the key's */
     assert(!snx_write_file(file, "short", 5));
-    expect(vita_keys_load(path, &k, error, sizeof error), error,
+    expect(vita_keys_load(path, &k, NULL, NULL, error, sizeof error), error,
            "/keys-check/app-key-3 is 5 bytes, and the key app-key-3 is 32");
     snprintf(path, sizeof path, "%s/none", dir);
-    expect(vita_keys_load(path, &k, error, sizeof error), error, "there are no Vita keys to decrypt it with in");
-    assert(strstr(error, "/none (") && strstr(error, "Install Keys puts them in ~/.vita, a file for each key"));
+    expect(vita_keys_load(path, &k, NULL, NULL, error, sizeof error), error,
+           "there are no Vita keys to decrypt it with in");
+    assert(strstr(error, "/none (") &&
+           strstr(error, "Install Keys puts vita.keys there, a line name = hex for each key"));
     assert(snx_vita_key_named("pfs-contract-key-0") == SNX_VITA_KEY_PFS_CONTRACT0 &&
            snx_vita_key_named("gpkg-key-2") < 0);
 }
@@ -507,6 +550,11 @@ int main(void) {
 
     /* the import */
     assert(import(dump, game, keys, NULL, &s, error, sizeof error));
+    { /* the last content the add-on, its addon.dat and param.sfo whole */
+        size_t sfo_size;
+        free(make_sfo(ADDON1, &sfo_size));
+        assert(s.progress >= 3 && s.done == s.total && s.total == sizeof g_vita_decrypt.addon + sfo_size);
+    }
     char app[SNX_PATH_SIZE];
     snprintf(app, sizeof app, "%s/app", game);
     same(app, "data/big.bin", g_vita_decrypt.big, BIG);
@@ -554,7 +602,7 @@ int main(void) {
     /* again: the decryption kept, the add-on too */
     assert(import(dump, game, keys, NULL, &s, error, sizeof error));
     assert(strstr(s.text, "Using the decryption in") && strstr(s.text, "Using the add-on in") &&
-           !strstr(s.text, "Decrypting"));
+           !strstr(s.text, "files decrypted") && !strstr(s.text, "Decrypting the add-on"));
 
     /* a game folder whose app/ links the dump, as an earlier import made one: replaced, the dump as it was */
     char linked[SNX_PATH_SIZE], link[SNX_PATH_SIZE], source[SNX_PATH_SIZE];
@@ -577,6 +625,22 @@ int main(void) {
         free(after);
     }
 
+    /* the keys as one vita.keys, given itself: the same import */
+    {
+        char text[8192] = "", file[SNX_PATH_SIZE];
+        size_t at = 0;
+        for (int key = 0; key < SNX_VITA_KEY_COUNT; ++key) {
+            at += (size_t)snprintf(text + at, sizeof text - at, "%s = ", snx_vita_key_file(key));
+            for (size_t b = 0; b < snx_vita_key_size(key); ++b)
+                at += (size_t)snprintf(text + at, sizeof text - at, "%02X", g_vita_decrypt.keys.bytes[key][b]);
+            at += (size_t)snprintf(text + at, sizeof text - at, "\n");
+        }
+        snprintf(file, sizeof file, "%s/vita.keys", dir);
+        snprintf(fresh, sizeof fresh, "%s/one-file/" TITLE, dir);
+        assert(!snx_write_file(file, text, at) && import(dump, fresh, file, NULL, &s, error, sizeof error));
+        snprintf(app, sizeof app, "%s/app", fresh);
+        same(app, "data/big.bin", g_vita_decrypt.big, BIG);
+    }
     /* a zRIF given for a dump with its own license: not read, said; the license from it once the work.bin is gone */
     snprintf(fresh, sizeof fresh, "%s/zrif-not/" TITLE, dir);
     assert(import(dump, fresh, keys, GAME_ZRIF, &s, error, sizeof error));
@@ -611,10 +675,11 @@ int main(void) {
     write_keys(keys, SNX_VITA_KEY_PFS_CONTRACT0);
     snprintf(fresh, sizeof fresh, "%s/nokey/" TITLE, dir);
     expect(import(dump, fresh, keys, NULL, &s, error, sizeof error), error,
-           "/keys has no pfs-contract-key-0 (a file of 16 bytes), which the files' key needs");
+           "/keys has no pfs-contract-key-0 (16 bytes: a line pfs-contract-key-0 = hex in vita.keys), which the "
+           "files' key needs");
     write_keys(keys, SNX_VITA_KEY_APP2);
     expect(import(dump, fresh, keys, NULL, &s, error, sizeof error), error,
-           "/keys has no app-key-2 (a file of 32 bytes), which");
+           "/keys has no app-key-2 (32 bytes: a line app-key-2 = hex in vita.keys), which");
     assert(strstr(error, "eboot.bin of ") && strstr(error, "/app/" TITLE " (key revision 2) needs") &&
            !there(fresh, "app"));
     snprintf(work, sizeof work, "%s/missing", dir);
@@ -641,8 +706,7 @@ int main(void) {
         snprintf(path, sizeof path, "%s/other.self", dir);
         assert(!snx_write_file(path, self, n));
         assert(vita_self_decrypt(path, "other.self", other, &g_vita_decrypt.keys, error, sizeof error) < 0);
-        assert(
-            strstr(error, "other.self: its metadata does not decrypt with the license's klicensee and app-key-2"));
+        assert(strstr(error, "other.self: its metadata does not decrypt with the license's klicensee and app-key-2"));
         free(self);
     }
     if (!getenv("VITA_DECRYPT_KEEP")) snx_remove_tree(dir);

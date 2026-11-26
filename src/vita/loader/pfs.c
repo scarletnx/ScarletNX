@@ -86,6 +86,9 @@ typedef struct {
     const char* source;
     char* error;
     size_t error_size;
+    VitaPfsProgress progress;
+    void* context;
+    uint64_t done, total; /* the bytes of the files decrypted so far, of all of them */
 } Pfs;
 
 [[gnu::format(printf, 2, 3)]] static bool fail(Pfs* p, const char* fmt, ...) {
@@ -410,6 +413,8 @@ static bool decrypt_file(Pfs* p, const Entry* e, const Table* t, const char* rel
             char why[256];
             ok = fail(p, "cannot write %s: %s", to, snx_os_error(why, sizeof why));
         }
+        p->done += n;
+        if (p->progress && (s % 256 == 255 || s + 1 == sectors)) p->progress(p->context, p->done, p->total);
     }
     if (out && fclose(out) && ok) {
         char why[256];
@@ -478,8 +483,9 @@ static void left_out(Pfs* p, const char* const* taken, size_t taken_count, const
 }
 
 bool vita_pfs_decrypt(const char* source, const char* dest, const unsigned char klicensee[16], const VitaKeys* keys,
-                      VitaPfsNote note, void* context, VitaPfsCount* count, char* error, size_t error_size) {
-    Pfs pfs = {.source = source, .error = error, .error_size = error_size};
+                      VitaPfsNote note, VitaPfsProgress progress, void* context, VitaPfsCount* count, char* error,
+                      size_t error_size) {
+    Pfs pfs = {.source = source, .error = error, .error_size = error_size, .progress = progress, .context = context};
     Pfs* p = &pfs;
     Paths taken = {0};
     unsigned char* buffer = NULL;
@@ -529,6 +535,8 @@ bool vita_pfs_decrypt(const char* source, const char* dest, const unsigned char 
     else if (ok && !db)
         ok = false;
     if (ok && !snx_path_format(path, sizeof path, "%s/sce_pfs/unicv.db", source)) ok = read_icv(p, path);
+    for (uint32_t i = 0; ok && i < p->entry_count; ++i)
+        if (!is_folder(p->entries[i].type)) p->total += p->entries[i].size;
     if (ok && snx_mkdirs(dest)) ok = fail(p, "cannot make %s", dest);
     /* the folders, the empty ones too, then the files */
     char rel[SNX_PATH_SIZE], found[SNX_PATH_SIZE], to[SNX_PATH_SIZE], from[SNX_PATH_SIZE];

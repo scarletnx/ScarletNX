@@ -4,6 +4,7 @@
 #define SNX_VITA_DUMP_H
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 /* An encrypted dump of a game, as a console's memory card holds it and NoNpDrm leaves its licenses beside it:
    <dump>/app/<title ID>/ (sce_pfs/ and sce_sys/, its license sce_sys/package/work.bin), its update
@@ -21,14 +22,19 @@ typedef struct {
     const char* patch;  /* its update's folder, NULL for none */
     const char* title;  /* its title ID */
     const char* folder; /* the game's folder, which app/, patch/ and ux0/addcont/ go into */
-    const char* keys;   /* the Vita keys' folder, a file for each key (common/utilities/vita_keys.h) */
+    const char* keys;   /* the Vita keys: their folder or its vita.keys (common/utilities/vita_keys.h) */
     const char* zrif;   /* the game's license as a zRIF, for a dump without one; NULL for none */
     VitaDumpSay say;
+    /* how far the content being decrypted went (its files' bytes), each content from 0 after its "Decrypting" line */
+    void (*progress)(void* context, uint64_t done, uint64_t total);
     void* context;
 } VitaDumpImport;
 
 /* whether the dumped game's folder is encrypted: sce_pfs/files.db in it */
 bool vita_dump_encrypted(const char* app);
+/* about what the import writes: the bytes of the files of app, of update (NULL for none) and of the dump's add-ons of
+   title, their sce_pfs/ and sce_sys/package/ left out; *addons the add-ons counted */
+uint64_t vita_dump_bytes(const char* app, const char* update, const char* title, unsigned* addons);
 /* the import: false with error saying why the game (or its update) could not be. An app/ already decrypted there (a
    folder, no sce_pfs/ in it) is kept, and an add-on already there; a link app/ (an earlier import that linked the
    dump) or an encrypted copy is replaced */

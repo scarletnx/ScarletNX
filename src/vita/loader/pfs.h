@@ -23,6 +23,8 @@ typedef struct {
 } VitaPfsCount;
 /* told each file of the dump that files.db does not list, which the decryption leaves out, by its path in source */
 typedef void (*VitaPfsNote)(void* context, const char* path);
+/* told how far the decryption went: the bytes of files.db's files done of all of them, every 8 MiB and at the end */
+typedef void (*VitaPfsProgress)(void* context, uint64_t done, uint64_t total);
 
 /* whether folder holds an encrypted content: its sce_pfs/files.db */
 bool vita_pfs_present(const char* folder);
@@ -31,5 +33,6 @@ bool vita_pfs_present(const char* folder);
    sector or the page, and why: the klicensee another content's (files.db's header does not verify), a key keys lacks,
    a file files.db lists that the dump does not have, a sector changed. dest may then hold some of the files */
 bool vita_pfs_decrypt(const char* source, const char* dest, const unsigned char klicensee[16], const VitaKeys* keys,
-                      VitaPfsNote note, void* context, VitaPfsCount* count, char* error, size_t error_size);
+                      VitaPfsNote note, VitaPfsProgress progress, void* context, VitaPfsCount* count, char* error,
+                      size_t error_size);
 #endif

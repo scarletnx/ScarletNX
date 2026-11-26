@@ -5,8 +5,8 @@
 (common/utilities/cli.h) in its help, each value they do not take stopping the run with it, and none of them with -x,
 which compiles no code. Given the import's test (snx-test-vita-decrypt), an encrypted dump it makes: -x decrypts it
 into the game's folder with --keys (a folder of key files), the add-on without a license said; without --keys the keys
-are ~/.vita's, and with none there the import stops naming it; a game whose app/ links the dump is decrypted before it
-plays, the dump's license read before --zrif."""
+are ~/.vita's, and with none there the import stops naming it; a game whose app/ links the dump is decrypted by -x
+--game, a run without -x writing nothing, the dump's license read before --zrif."""
 
 import os
 import pathlib
@@ -116,7 +116,10 @@ def main():
                 os.symlink(app, os.path.join(linked, 'app'), target_is_directory=True)
             except OSError:
                 linked = None
-            if linked:
+            if linked:  # without -x nothing is written: the decryption waits for the player's yes
+                run(['--game', linked, '--keys', keys], 1, 'so it waits for a yes; scarletnx-vita -x --game=')
+                if not os.path.islink(os.path.join(linked, 'app')) or os.listdir(linked) != ['app']:
+                    failures.append(f'without -x the linked game changed: {os.listdir(linked)}')
                 out = run(['-x', '--game', linked, '--keys', keys, '--zrif', 'eA=='], 0, 'files decrypted')
                 if '--zrif is not read: the dump has the game' not in out or os.path.islink(
                     os.path.join(linked, 'app')

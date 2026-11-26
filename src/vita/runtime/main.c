@@ -69,10 +69,11 @@ static void usage(FILE* out) {
         "ID>), --shot saves PATH.ppm, and --script=ms:buttons,... is the setting vita_script.\n"
         "\n"
         "A dumped game still encrypted (its sce_pfs/ folder) is decrypted into the game's folder instead of linked, and\n"
-        "a game whose app/ still links one is decrypted before it plays: its license is its sce_sys/package/work.bin,\n"
+        "a game whose app/ still links one by -x --game=<its folder>: its license is its sce_sys/package/work.bin,\n"
         "or the dump's license/app/<title ID>/, or --zrif=TEXT, a zRIF, when the dump has none; its add-ons' licenses\n"
-        "the dump's license/addcont/<title ID>/<add-on>/. --keys is the folder of the Vita keys, a file for each\n"
-        "(default ~/.vita, where Install Keys puts them; docs/platforms/vita/README.md names them). The dump is only\n"
+        "the dump's license/addcont/<title ID>/<add-on>/. --keys is where the Vita keys are (default ~/.vita): a folder\n"
+        "with vita.keys, a line name = hex for each key as Install Keys puts it there, or a file for each key as\n"
+        "vitakeys keeps them, or a vita.keys itself; docs/platforms/vita/README.md names the keys. The dump is only\n"
         "read.\n",
         out);
 }
@@ -159,6 +160,16 @@ static bool link_dump(const char* folder, const char* name, const char* target) 
     free(full);
     return ok;
 }
+/* an encrypted dump's import's progress, as the launcher's queue reads an extraction's (gui/steps.c): a line a second
+   at most, and the last */
+static void import_went(void* context, uint64_t done, uint64_t total) {
+    time_t* last = context;
+    time_t now = time(NULL);
+    if (done < total && now == *last) return;
+    *last = now;
+    printf(" decrypted %llu of %llu MB\n", (unsigned long long)(done >> 20), (unsigned long long)(total >> 20));
+    fflush(stdout);
+}
 /* an encrypted dump's import's lines: what it does on stdout, an add-on it could not import on stderr */
 static void say_import(void* context, const char* line, bool error) {
     (void)context;
@@ -186,7 +197,8 @@ static char* dump_title(const char* dump) {
 static bool import_dump(const char* app, const char* update, const char* title, const char* folder, const char* keys,
                         const char* zrif) {
     char *dir = keys ? snx_strdup(keys) : snx_vita_keys_dir(), why[2048];
-    VitaDumpImport import = {app, update, title, folder, dir, zrif, say_import, NULL};
+    time_t last = 0;
+    VitaDumpImport import = {app, update, title, folder, dir, zrif, say_import, import_went, &last};
     bool ok = vita_dump_import(&import, why, sizeof why);
     if (!ok) fprintf(stderr, "scarletnx-vita: %s\n", why);
     free(dir);
@@ -550,16 +562,24 @@ int snx_vita_main(int argc, char** argv) {
             char patch_dir[SNX_PATH_SIZE], *update = NULL;
             if (!snx_path_format(patch_dir, sizeof patch_dir, "%s/patch", folder) && vita_dump_encrypted(patch_dir))
                 update = snx_absolute(patch_dir);
-            bool ready = source && title && import_dump(source, update, title, folder, keys_given, zrif);
+            /* nothing written without -x, the player's yes to the decryption (the launcher asks it first) */
+            unsigned addons = 0;
+            uint64_t bytes = source && title && !extract_only ? vita_dump_bytes(source, update, title, &addons) : 0;
+            if (source && title && !extract_only)
+                fprintf(
+                    stderr,
+                    "scarletnx-vita: %s/app is an encrypted dump (%s): decrypting it and its %u add-ons writes about "
+                    "%llu MB into %s, so it waits for a yes; scarletnx-vita -x --game=%s decrypts it\n",
+                    folder, source, addons, (unsigned long long)(bytes >> 20), folder, folder);
+            bool ready =
+                source && title && extract_only && import_dump(source, update, title, folder, keys_given, zrif);
             if (source && !title) fprintf(stderr, "scarletnx-vita: %s has no title ID in its param.sfo\n", source);
             free(update);
             free(title);
             free(source);
             if (!ready) goto done;
-            if (extract_only) { /* -x: decrypted, and nothing played */
-                status = 0;
-                goto done;
-            }
+            status = 0; /* -x: decrypted, and nothing played */
+            goto done;
         }
     }
     status = play(folder, recompile, seconds, shot, runtime, &asked);

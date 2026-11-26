@@ -1,7 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "common/utilities/vita_keys.h"
+#include "common/utilities/ascii.h"
 #include "common/utilities/common.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -37,4 +39,57 @@ char* snx_vita_keys_dir(void) {
     const char* home = getenv("HOME");
 #endif
     return home && home[0] ? snx_path_join(home, ".vita") : NULL;
+}
+bool snx_vita_keys_parse(const char* text, size_t size, const char* path, unsigned char (*bytes)[32], unsigned* have,
+                         void (*unknown)(void* context, const char* name, unsigned line), void* context, char* why,
+                         size_t why_size) {
+    unsigned line_of[SNX_VITA_KEY_COUNT] = {0}, number = 0;
+    for (size_t at = 0; at < size;) {
+        const char *line = text + at, *end = memchr(line, '\n', size - at);
+        size_t n = end ? (size_t)(end - line) : size - at, i = 0;
+        at += n + 1;
+        ++number;
+        while (n && snx_is_space((unsigned char)line[n - 1])) --n; /* CR and trailing blanks */
+        while (i < n && snx_is_blank((unsigned char)line[i])) ++i;
+        if (i == n || line[i] == '#') continue;
+        size_t name = i;
+        while (i < n && (snx_is_alnum((unsigned char)line[i]) || line[i] == '_' || line[i] == '-')) ++i;
+        size_t name_length = i - name;
+        while (i < n && snx_is_blank((unsigned char)line[i])) ++i;
+        if (!name_length || name_length > 63 || i == n || line[i] != '=') {
+            snprintf(why, why_size, "%s:%u: \"%.*s\" is not a line name = hex", path, number, (int)(n > 80 ? 80 : n),
+                     line);
+            return false;
+        }
+        char key_name[64];
+        snprintf(key_name, sizeof key_name, "%.*s", (int)name_length, line + name);
+        for (++i; i < n && snx_is_blank((unsigned char)line[i]); ++i) continue;
+        size_t hex = i;
+        while (i < n && snx_is_hex((unsigned char)line[i])) ++i;
+        int key = snx_vita_key_named(key_name);
+        if (key < 0) {
+            if (unknown) unknown(context, key_name, number);
+            continue;
+        }
+        size_t digits = i - hex, want = key_files[key].size;
+        if (i != n) {
+            snprintf(why, why_size, "%s:%u: %s's value has something besides hex digits", path, number, key_name);
+            return false;
+        }
+        if (digits != 2 * want) {
+            snprintf(why, why_size, "%s:%u: %s is %zu bytes, and the line gives %zu hex digits, %zu%s bytes", path,
+                     number, key_name, want, digits, digits / 2, digits % 2 ? " and a half" : "");
+            return false;
+        }
+        if (line_of[key]) {
+            snprintf(why, why_size, "%s:%u: %s is given on line %u too", path, number, key_name, line_of[key]);
+            return false;
+        }
+        line_of[key] = number;
+        for (size_t b = 0; b < want; ++b)
+            bytes[key][b] = (unsigned char)(snx_hex_value((unsigned char)line[hex + 2 * b]) << 4 |
+                                            snx_hex_value((unsigned char)line[hex + 2 * b + 1]));
+        *have |= 1u << key;
+    }
+    return true;
 }

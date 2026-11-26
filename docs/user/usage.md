@@ -66,7 +66,7 @@ On GNU ABI and Android the code compiles as it runs: `-O` is their JIT's level (
 | `--data DIR` (`--repo`) | The data folder ([Folders](#folders)) | yes | yes | yes | yes | yes | | yes |
 | `--outdir DIR` | The folder of the games, in which the game's folder is made (default: `recompiled/` of the data folder) | yes | yes | yes | yes | yes | | |
 | `--output DIR` | The game's folder itself (default: `<outdir>/<the game's name>`) | | yes | yes | yes | yes | | |
-| `--keys FILE` | The console's keys: `prod.keys` for the Switch, Azahar's `aes_keys.txt` for the 3DS, the folder of the key files for an encrypted Vita dump (`~/.vita`, [An encrypted dump](../platforms/vita/README.md#an-encrypted-dump)) | yes | yes | yes | | | | |
+| `--keys FILE` | The console's keys: `prod.keys` for the Switch, Azahar's `aes_keys.txt` for the 3DS, `vita.keys` (or a folder of key files) for an encrypted Vita dump (`~/.vita`, [An encrypted dump](../platforms/vita/README.md#an-encrypted-dump)) | yes | yes | yes | | | | |
 | `--seconds N` | Stop after N seconds | yes | yes | yes | | yes | | |
 | `--frames N` | Stop after N frames (the AGB's run has no window, sound or pacing) | yes | yes | | yes | yes | | |
 | `--shot PATH` | Save the screen to PATH when the run ends (Android: each frame `--shot-frame` names) | yes | yes | yes | yes | yes | yes | |

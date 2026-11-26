@@ -2,12 +2,16 @@
    Copyright 2026 the ScarletNX contributors */
 #ifndef SNX_VITA_KEYS_FILES_H
 #define SNX_VITA_KEYS_FILES_H
+#include <stdbool.h>
 #include <stddef.h>
 
-/* The console's keys an encrypted Vita dump's import decrypts with (vita/loader/dump.h), as the user keeps them: a file
-   for each key, its raw bytes, in ~/.vita (%USERPROFILE%\.vita on Windows), the folder and the naming vitakeys and
-   vitatool use (<what>-key-<n>, <what>-iv-<n>). None of them is in ScarletNX; docs/platforms/vita/README.md says what
-   each is and where it is published. The PFS ones open the game's files, the NPDRM and app ones its SELFs */
+/* The console's keys an encrypted Vita dump's import decrypts with (vita/loader/dump.h), as the user keeps them in ~/.vita
+   (%USERPROFILE%\.vita on Windows): the file vita.keys, a line name = hex for each key as prod.keys holds the Switch's,
+   which Install Keys puts there; or, as vitakeys and vitatool keep them, a file of raw bytes for each key named as
+   the key is (<what>-key-<n>, <what>-iv-<n>). With both, vita.keys's line is the key, said where they differ. None of
+   them is in ScarletNX; docs/platforms/vita/README.md says what each is and where it is published. The PFS ones open
+   the game's files, the NPDRM and app ones its SELFs */
+#define SNX_VITA_KEYS_FILE "vita.keys"
 typedef enum {
     SNX_VITA_KEY_PFS_HMAC0,     /* pfs-hmac-key-0, 20 bytes: each file's sector masks */
     SNX_VITA_KEY_PFS_HMAC1,     /* pfs-hmac-key-1, 20 bytes: the files' integrity secret */
@@ -39,7 +43,13 @@ const char* snx_vita_key_file(int key);
 size_t snx_vita_key_size(int key);
 /* the key whose file is named name, -1 for none */
 int snx_vita_key_named(const char* name);
-/* ~/.vita (%USERPROFILE%\.vita on Windows), where Install Keys puts the files and the Vita driver reads them; NULL with
-   no home. The caller's to free */
+/* ~/.vita (%USERPROFILE%\.vita on Windows), where Install Keys puts vita.keys and the Vita driver reads the keys; NULL
+   with no home. The caller's to free */
 char* snx_vita_keys_dir(void);
+/* the lines name = hex of text, a vita.keys named path in the messages: each key into bytes and its bit into *have, a
+   name that is no Vita key told to unknown (with its line), # a comment. False with why naming the line for one that
+   is not name = hex, a key of another size (both sizes said), a key given twice */
+bool snx_vita_keys_parse(const char* text, size_t size, const char* path, unsigned char (*bytes)[32], unsigned* have,
+                         void (*unknown)(void* context, const char* name, unsigned line), void* context, char* why,
+                         size_t why_size);
 #endif

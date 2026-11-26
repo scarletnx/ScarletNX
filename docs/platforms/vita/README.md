@@ -69,13 +69,42 @@ loader reads them. An add-on without its license is said and left out; the game 
 whose `app/` already holds a decryption keeps it; one whose `app/` links the dump (an older import) gets the
 decryption in its place, the dump untouched.
 
-The keys are the console's, and ScarletNX carries none. The import reads them from a folder with a file of raw bytes
-for each key, as vitakeys and vitatool keep them: `~/.vita/` (`%USERPROFILE%\.vita\` on Windows), where **Install
-Keys** puts them, or the folder `--keys` names. Files of other keys there (vitakeys' `gpkg-key-*`, `index-*`, `psp-*`)
-are left alone. A key the game needs that the folder lacks stops the import, naming its file; a key file of another
-size than its key's stops it too, saying both sizes.
+The keys are the console's, and ScarletNX carries none. The import reads them from `~/.vita/` (`%USERPROFILE%\.vita\`
+on Windows), or what `--keys` names: its `vita.keys`, a line `name = hex` for each key as `prod.keys` holds the
+Switch's, which **Install Keys** puts there; or, as vitakeys and vitatool keep them, a file of raw bytes for each key,
+named as the key is; or a `vita.keys` given itself. With both in the folder, a key `vita.keys` gives is taken from it,
+and where its value differs from the key's file the import says so: `vita.keys` is the one Install Keys writes. A
+line naming no Vita key is said and passed over (vitakeys' `gpkg-*`, `index-*` and `psp-*` files are left alone); a
+key of another size than its own stops the import, saying both sizes, as does a key given twice in `vita.keys`. A key
+the game needs that none of them gives stops it, naming the key.
 
-| File | Bytes | What it opens | Where it is published |
+```
+# vita.keys: a line for each key, its bytes in hex (values are the console's, not shown here)
+pfs-hmac-key-0 = <40 hex digits>
+pfs-hmac-key-1 = <40 hex digits>
+pfs-iv-0 = <32 hex digits>
+pfs-contract-key-0 = <32 hex digits>
+npdrm-key-0 = <32 hex digits>
+npdrm-iv-0 = <32 hex digits>
+npdrm-key-1 = <32 hex digits>
+npdrm-iv-1 = <32 hex digits>
+app-key-0-100 = <64 hex digits>
+app-iv-0-100 = <32 hex digits>
+app-key-0-180 = <64 hex digits>
+app-iv-0-180 = <32 hex digits>
+app-key-1 = <64 hex digits>
+app-iv-1 = <32 hex digits>
+app-key-2 = <64 hex digits>
+app-iv-2 = <32 hex digits>
+app-key-3 = <64 hex digits>
+app-iv-3 = <32 hex digits>
+app-key-4 = <64 hex digits>
+app-iv-4 = <32 hex digits>
+app-key-5 = <64 hex digits>
+app-iv-5 = <32 hex digits>
+```
+
+| Key | Bytes | What it opens | Where it is published |
 | --- | --- | --- | --- |
 | `pfs-hmac-key-0` | 20 | each file's sector masks | psvpfsparser's `PfsKeys.cpp` (`hmac_key0`) |
 | `pfs-hmac-key-1` | 20 | the files' integrity secret | psvpfsparser's `PfsKeys.cpp` (`hmac_key1`) |
@@ -91,8 +120,12 @@ size than its key's stops it too, saying both sizes.
 reads. A dump without a license of its own takes one as a zRIF, `--zrif=TEXT`; with its own, `--zrif` is not read, and
 the import says so.
 
-A game whose `app/` still holds an encrypted dump, linked by an older import or by the launcher's Locate..., is
-decrypted into its folder the next time it plays, its link replaced.
+Nothing is written without the player's yes. The launcher asks before it decrypts: Locate... on a game whose dump moved,
+when the dump it finds is encrypted, and a run of a game whose `app/` still links an encrypted dump (an older import)
+say what it decrypts (the game, its update, its add-ons), about how much it writes and where; Decrypt runs
+`scarletnx-vita -x` in the queue, its progress and its end on the queue's line, and Cancel writes nothing. On the command
+line the dump given is the yes; a game whose `app/` links one is decrypted by `-x --game=<its folder>`, and a run
+without `-x` says so and writes nothing.
 
 ## Layers
 

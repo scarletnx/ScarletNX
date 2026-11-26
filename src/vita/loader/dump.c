@@ -22,6 +22,46 @@
 }
 bool vita_dump_encrypted(const char* app) { return vita_pfs_present(app); }
 
+/* the bytes of the files under path, its sce_pfs/ and its top sce_sys/package/ left out (top: path is a content's
+   folder; system: path is its sce_sys/) */
+static uint64_t content_bytes(const char* path, bool top, bool system) {
+    char** names = NULL;
+    size_t count = 0;
+    uint64_t total = 0;
+    if (snx_list_dir(path, &names, &count)) return 0;
+    for (size_t i = 0; i < count; ++i) {
+        if (!strcmp(names[i], "sce_pfs") || (system && !strcmp(names[i], "package"))) continue;
+        char* entry = snx_path_join(path, names[i]);
+        if (entry && snx_is_dir(entry))
+            total += content_bytes(entry, false, top && !strcmp(names[i], "sce_sys"));
+        else if (entry)
+            total += snx_file_size(entry);
+        free(entry);
+    }
+    snx_free_strings(names, count);
+    return total;
+}
+uint64_t vita_dump_bytes(const char* app, const char* update, const char* title, unsigned* addons) {
+    char *full = snx_absolute(app), *parent = full ? snx_dirname(full) : NULL,
+         *root = parent ? snx_dirname(parent) : NULL;
+    char addcont[SNX_PATH_SIZE], **names = NULL;
+    size_t count = 0;
+    uint64_t total = content_bytes(app, true, false) + (update ? content_bytes(update, true, false) : 0);
+    *addons = 0;
+    if (root && !snx_path_format(addcont, sizeof addcont, "%s/addcont/%s", root, title) &&
+        !snx_list_dir(addcont, &names, &count))
+        for (size_t i = 0; i < count; ++i) {
+            char* source = snx_path_join(addcont, names[i]);
+            if (source && vita_pfs_present(source)) total += content_bytes(source, true, false), ++*addons;
+            free(source);
+        }
+    snx_free_strings(names, count);
+    free(root);
+    free(parent);
+    free(full);
+    return total;
+}
+
 /* the content's CONTENT_ID from its sce_sys/param.sfo, owned; NULL when it has none */
 static char* content_id(const char* folder) {
     char path[SNX_PATH_SIZE];
@@ -73,6 +113,10 @@ typedef struct {
 static void left_out(void* context, const char* path) {
     const Note* n = context;
     say(n->d, false, "%s/%s is not in its files.db, and the import leaves it out", n->what, path);
+}
+static void went(void* context, uint64_t done, uint64_t total) {
+    const Note* n = context;
+    if (n->d->progress) n->d->progress(n->d->context, done, total);
 }
 /* every SELF under rel in root decrypted in place, named in the messages by its path in source: false with error */
 static bool decrypt_selfs(const char* root, const char* rel, const char* source, const unsigned char klicensee[16],
@@ -126,9 +170,10 @@ static bool decrypt_content(const VitaDumpImport* d, const VitaKeys* keys, const
     Note note = {d, source};
     VitaPfsCount count;
     unsigned selfs_done = 0;
-    bool ok = vita_pfs_decrypt(source, stage, license->klicensee, keys, left_out, &note, &count, error, error_size) &&
-              (!selfs || decrypt_selfs(stage, "", source, license->klicensee, keys, &selfs_done, decrypted,
-                                       sizeof decrypted, error, error_size));
+    bool ok =
+        vita_pfs_decrypt(source, stage, license->klicensee, keys, left_out, went, &note, &count, error, error_size) &&
+        (!selfs || decrypt_selfs(stage, "", source, license->klicensee, keys, &selfs_done, decrypted, sizeof decrypted,
+                                 error, error_size));
     if (ok && snx_path_exists(target) && snx_remove_tree(target)) {
         snprintf(error, error_size, "cannot remove %s, which the import replaces", target);
         ok = false;
@@ -149,6 +194,7 @@ static bool decrypt_content(const VitaDumpImport* d, const VitaKeys* keys, const
         count.left_out ? "; some of the dump's files left out" : "");
     return true;
 }
+static void keys_note(void* context, const char* line) { say(context, false, "%s", line); }
 static bool kept(const char* target) { return snx_is_dir(target) && !snx_is_link(target) && !vita_pfs_present(target); }
 
 bool vita_dump_import(const VitaDumpImport* d, char* error, size_t error_size) {
@@ -160,8 +206,10 @@ bool vita_dump_import(const VitaDumpImport* d, char* error, size_t error_size) {
     char why[1024] = "";
     bool ok = full && root;
     error[0] = 0;
+    /* the first line, before anything can stop it: what a launcher's queue shows the import's progress and end under */
+    say(d, false, "Decrypting %s into %s, the keys from %s", d->app, d->folder, d->keys ? d->keys : "~/.vita");
     if (!ok) snprintf(error, error_size, "cannot resolve %s", d->app);
-    if (ok && !vita_keys_load(d->keys, &keys, why, sizeof why)) {
+    if (ok && !vita_keys_load(d->keys, &keys, keys_note, (void*)d, why, sizeof why)) {
         snprintf(error, error_size, "%s is encrypted, and %s", d->app, why);
         ok = false;
     }
