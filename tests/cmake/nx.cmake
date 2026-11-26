@@ -15,6 +15,21 @@ if(BUILD_TESTING)
     set_tests_properties(vk_replay_bogus PROPERTIES PASS_REGULAR_EXPRESSION "unknown option: --bogus")
     add_test(NAME vk_replay_no_record COMMAND snx-vk-replay "${CMAKE_CURRENT_BINARY_DIR}")
     set_tests_properties(vk_replay_no_record PROPERTIES PASS_REGULAR_EXPRESSION "device.txt is neither in ")
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        # a host without a Vulkan loader, as a macOS runner is: glibc's loader stops at the first libvulkan it finds
+        # in LD_LIBRARY_PATH, and this one is no library. The record is read first all the same
+        set(snx_no_vulkan "${CMAKE_CURRENT_BINARY_DIR}/no-vulkan")
+        file(WRITE "${snx_no_vulkan}/libvulkan.so.1" "not a library\n")
+        file(WRITE "${snx_no_vulkan}/libvulkan.so" "not a library\n")
+        file(WRITE "${snx_no_vulkan}/record/device.txt" "vendorID 0\n")
+        file(WRITE "${snx_no_vulkan}/record/pipeline.txt" "pipelines 0\n")
+        add_test(NAME vk_replay_no_loader COMMAND snx-vk-replay "${CMAKE_CURRENT_BINARY_DIR}")
+        set_tests_properties(vk_replay_no_loader PROPERTIES ENVIRONMENT "LD_LIBRARY_PATH=${snx_no_vulkan}"
+            PASS_REGULAR_EXPRESSION "device.txt is neither in ")
+        add_test(NAME vk_replay_no_loader_record COMMAND snx-vk-replay "${snx_no_vulkan}/record")
+        set_tests_properties(vk_replay_no_loader_record PROPERTIES ENVIRONMENT "LD_LIBRARY_PATH=${snx_no_vulkan}"
+            PASS_REGULAR_EXPRESSION "no Vulkan loader on this system")
+    endif()
     add_executable(snx-test-shader-direct "${PROJECT_SOURCE_DIR}/tests/shader_direct.c")
     snx_test_target(snx-test-shader-direct gnu23)
     target_link_libraries(snx-test-shader-direct PRIVATE snx_shader)

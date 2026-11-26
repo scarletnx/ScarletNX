@@ -67,10 +67,9 @@ int main(int argc, char** argv) {
 #endif
     VkResult made = VK_SUCCESS;
     char why[1024];
-    if (volkInitialize() != VK_SUCCESS) {
-        fprintf(stderr, "snx-vk-replay: no Vulkan loader on this system\n");
-        return 1;
-    }
+    /* the loader where there is one: without it the replay still reads the record first, so a folder that holds
+       none is said the same on every host, and a record says the loader is missing */
+    (void)volkInitialize();
     if (vk_pipeline_replay(VK_NULL_HANDLE, argv[1], &made, why, sizeof why)) {
         fprintf(stderr, "snx-vk-replay: %s: %s\n", argv[1], why);
         return 1;

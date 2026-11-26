@@ -471,7 +471,7 @@ int vk_pipeline_replay(VkInstance instance, const char* dir, VkResult* made, cha
     /* the files first: a folder that holds no record is said before any driver is opened */
     if (!(device_text = read_text(&r, "device.txt")) || !(pipeline_text = read_text(&r, "pipeline.txt"))) goto done;
     if (!vkGetInstanceProcAddr) {
-        snprintf(why, n, "no Vulkan loader (volkInitialize was not done, or found none)");
+        snprintf(why, n, "no Vulkan loader on this system (volk found none, or was not asked)");
         goto done;
     }
     if (!instance) {
