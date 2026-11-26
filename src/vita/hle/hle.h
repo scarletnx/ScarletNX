@@ -121,11 +121,9 @@ uint32_t vita_net_offline_error(const char* library);
 void vita_net_free(VitaProcess* p);
 /* trophy.c: the trophy contexts, freed with the process */
 void vita_trophy_free(VitaProcess* p);
-/* what a save state can't hold, which a save is refused while the game has: mp4 files, video and audio decoders,
-   sockets */
+/* what a save state can't hold, which a save is refused while the game has: mp4 files, video decoders, sockets */
 unsigned vita_mp4_in_use(const VitaProcess* p);
 unsigned vita_videodec_in_use(const VitaProcess* p);
-unsigned vita_audiodec_in_use(const VitaProcess* p);
 unsigned vita_net_in_use(const VitaProcess* p);
 /* Save states (vita/runtime/state.c) of SceGxm (gxm.c), SceNgs (ngs.c) and the trophies (trophy.c): each into io (0, or
    -1 with why where it can refuse); its layout's hash; a state's read and checked (NULL with why), which install puts
@@ -146,6 +144,13 @@ int vita_trophy_state_save(VitaProcess* p, struct StateIo* io);
 void* vita_trophy_state_parse(struct StateIo* io, char* why, size_t whysize);
 void vita_trophy_state_install(VitaProcess* p, void* staged);
 void vita_trophy_state_drop(void* staged);
+/* audiodec.c's: each decoder made again from its configuration by a load (the first frame decoded after it without
+   what the decoder kept of the frames before) */
+uint64_t vita_audiodec_state_schema(void);
+int vita_audiodec_state_save(VitaProcess* p, struct StateIo* io);
+void* vita_audiodec_state_parse(struct StateIo* io, char* why, size_t whysize);
+void vita_audiodec_state_install(VitaProcess* p, void* staged);
+void vita_audiodec_state_drop(void* staged);
 /* io.c: the files the game left open */
 void vita_io_close_all(VitaProcess* p);
 /* sceIoOpen's and sceIoClose's work, for SceLibc's stdio: a descriptor or an error; a descriptor's host file, NULL

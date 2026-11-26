@@ -142,16 +142,20 @@ names and types of what it holds (`src/vita/runtime/state.c`):
 | IO | each file and folder open, as its host path, sceIoOpen's flags and its place, and the FIOS2 archives mounted (`hle/io.c`) |
 | GXM | sceGxm's contexts, programs, targets, mappings and display queue (`hle/gxm.c`) |
 | AUDIO, NGS, TROPHY | the sound ports, SceNgs's racks and voices, the trophy contexts (`hle/audio.c`, `ngs.c`, `trophy.c`) |
+| AUDIODEC | each audio decoder (AAC, ATRAC9) as its configuration, an ATRAC9 superframe not all handed out yet, the codec engine's blocks (`hle/audiodec.c`) |
 
 A save waits for the GPU, so what it wrote is in guest memory and what sceGxm notes is written; a load makes the
 renderer again, which draws from the GXPs and surfaces in memory as at the game's start. A file open is opened again
-at its place, never truncated: the game's save data and what it wrote since stay, as a Switch game's files do. The
+at its place, never truncated: the game's save data and what it wrote since stay, as a Switch game's files do. An
+audio decoder is made again from its configuration: what FFmpeg's decoder keeps of the frames before (the overlap of
+their transforms) starts empty, so the first frame it decodes after a load differs from the console's, a click of one
+frame at most, and the frames after it are the same. The
 game is its title ID and its image's segments. A load reads and checks every section before it changes anything, and
 refuses another game's state (both named), another `SNX_VITA_STATE_VERSION` (both versions), a section of another
 layout (both hashes), a damaged file and one naming a file that is gone. A save is refused, saying what, while a
 thread runs, while one is inside a call of the runtime's into the game (a sort's comparison, a callback), while a
-scene is being drawn, and while the game has mp4 files, video or audio decoders or sockets open, which a state can't
-keep. The threads run by the host's clock, so `vita_state` (`tests/vita_state.c`) checks what a load puts back of a
+scene is being drawn, and while the game plays a movie (an mp4 file or a video decoder: the demuxer's place and the
+pictures H.264 decodes the next ones from can't be put back) or has sockets open, which a state can't keep. The threads run by the host's clock, so `vita_state` (`tests/vita_state.c`) checks what a load puts back of a
 process the test drives through the imports, and that a save right after it is the same, rather than frames.
 
 ## Checking the CPU backend
