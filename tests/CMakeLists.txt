@@ -4420,6 +4420,15 @@ add_test(NAME recompiler_backends_undef_pins COMMAND snx-test-recompiler-backend
 set(snx_fp_int 1e200041 9e610083 1e6400c5 9e250207 9e680149 1e290008 1e30018b 9e7101cd 1e78004f 9e390093 1e220034
     9e630075 1e2600b6 9e58e06c 1e03c0ce)
 add_test(NAME recompiler_backends_fp_int COMMAND snx-test-recompiler-backends --made --states 40 --words ${snx_fp_int})
+# what the arm64 back end makes of those conversions, by its code's size and calls (arm64_vec_code.c): ELF objects, so
+# not on Windows
+if(NOT WIN32)
+    add_executable(snx-test-arm64-vec-code arm64_vec_code.c)
+    snx_test_target(snx-test-arm64-vec-code gnu23)
+    target_link_libraries(snx-test-arm64-vec-code PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+    snx_decodetree_a64(snx-test-arm64-vec-code)
+    add_test(NAME arm64_vec_code COMMAND snx-test-arm64-vec-code)
+endif()
 # FADD, then CMP; FCSEL (LT); TST; FCSEL (NE): the compare's flags only the first FCSEL reads, from the host's own
 set(snx_fp_flags 1e242863 7100051f 1e20bc20 7200029f 1e201c20)
 add_test(NAME recompiler_backends_fp_flags COMMAND snx-test-recompiler-backends --made --states 40 --words

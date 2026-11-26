@@ -104,6 +104,9 @@ SGA_VE(pass) {
     sga_w(b, w);
 }
 static const SgXVForm sga_v_pass_f = {sga_v_pass, 0, 4, 0, 1, 2, 15, 0, NULL};
+/* the word with Rd a general-purpose register and Rn a V one (a conversion to a W or X), or the other way round */
+static const SgXVForm sga_v_pass_gv_f = {sga_v_pass, 0, 2, 0, 1, 2, 2, 0, NULL};
+static const SgXVForm sga_v_pass_vg_f = {sga_v_pass, 0, 2, 0, 1, 2, 1, 0, NULL};
 /* FCMP, FCMPE, FCCMP and FCCMPE: the word with Rn and Rm the registers r[0] and r[1] (but FCMP's with zero, imm's bit
    36 and the word's 3); it writes the flags alone */
 SGA_VE(pcmp) {
@@ -208,6 +211,36 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
         sgx_simple(g, SGX_M_FPLEAVE);
         sg_PSTATE_write(g, SG_PSTATE_N, 4, sgx_nzcv(X, ins));
         return 1;
+    }
+    {
+        /* a float's conversion to a W or X register (FCVTNS... of each rounding, FCVTZS of a fixed point) or a W's or
+           an X's to a float (SCVTF, UCVTF): the word of the host's own, its general-purpose register a value of the
+           region's (Rn 31 the zero register; Rd 31 none, the FPSR flags kept). FMOV and FJCVTZS stay the emitters' */
+        int sf = 0, to_gpr, from_gpr;
+        for (f = 0; f < sge_a64_table[k].nfields; ++f) sf |= !strcmp(sge_a64_table[k].fields[f].name, "sf");
+        to_gpr = sf && !strncmp(name, "fcvt", 4);
+        from_gpr = sf && (!strncmp(name, "scvtf", 5) || !strncmp(name, "ucvtf", 5));
+        if (to_gpr || from_gpr) {
+            int cin[4] = {0, 0, 0, 0}, wide = (int)(word >> 31);
+            if (to_gpr)
+                cin[1] = vread(g, rn);
+            else {
+                SgD n = rn == 31 ? sgx_const(64, 0) : sg_GPR_read(g, rn);
+                cin[1] = sgx_reg(X, &n);
+            }
+            fp_enter(g);
+            r = sgx_vins(X, to_gpr ? &sga_v_pass_gv_f : &sga_v_pass_vg_f, 0, 0, cin, imm | 1ll << 32, 0, SGX_VM_NONE, 0,
+                         0, 0, 0, 0);
+            X->ins[X->v[r].def].side = 1; /* its FPSR flags */
+            sgx_simple(g, SGX_M_FPLEAVE);
+            if (from_gpr)
+                sg__V_write(g, rd, sgx_xval(128, r));
+            else if (rd != 31) {
+                if (!wide) X->v[r].zab = 32; /* a W's: the X's upper half zero */
+                sg_GPR_write(g, rd, wide ? sgx_val(64, r) : sg_d_zext(g, sgx_val(32, r), 64));
+            }
+            return 1;
+        }
     }
     if (strstr(name, "_gen") || !strncmp(name, "fcmp", 4) || !strncmp(name, "fccmp", 5) || !strncmp(name, "umov", 4) ||
         !strncmp(name, "smov", 4))
