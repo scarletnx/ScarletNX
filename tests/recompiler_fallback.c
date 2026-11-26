@@ -2,10 +2,10 @@
    Copyright 2026 the ScarletNX contributors */
 /* What makes the code the native back end leaves (recompiler/fallback.h), as a program's link gives it:
    - LLVM's: a JIT unit's object, whose table's functions run; the functions of a unit the native back end did not make,
-     alone in an object; AArch32 and Thumb blocks in one object, hidden in an AOT module's, and their IR; an AOT
-     module's index of tables, integers and structs, and its descriptor, with what lays them out otherwise than C; and a
-     block of the executor's (exec.c, here, its loads counted and refused as the test asks) whose native object does
-     not load, run;
+     alone in an object; AArch32 and Thumb blocks in one object, hidden in an AOT module's; a block's length alone,
+     blocks chained and an import's stub, and their IR; an AOT module's index of tables, integers and structs, and its
+     descriptor, with what lays them out otherwise than C; and a block of the executor's (exec.c, here, its loads
+     counted and refused as the test asks) whose native object does not load, run;
    - none (fallback_none.c, a program that links no LLVM): each refused with an error that names the code or the global
      asked for, its address and first instruction, why the native back end left it and that the build has no LLVM, and
      nothing else said. An executor on a host with no native back end is refused with it too, the functions all made are
@@ -58,9 +58,15 @@ static int seam_load(SnxCodeLoader* loader, const SnxLinkInput* inputs, size_t c
 
 static const uint32_t k_arm[2] = {0xE3A00007u, 0xEF000000u}; /* mov r0, #7; svc #0 */
 static const uint16_t k_thumb[2] = {0x2009u, 0xDF00u};       /* movs r0, #9; svc #0 */
-/* hosted blocks, as the Vita's */
+static const uint32_t k_svc = 0xEF000003u;                   /* svc #3: an import's stub's */
+/* hosted blocks, as the Vita's, and the chaining they take: the poll and the lookup table past the cpu, and an import's
+   function after them */
 static const SnxArmCodegenOptions k_hosted = {SNX_ARM_CODEGEN_OPTIONS_ABI, SNX_ARM_PROFILE_A9, SNX_ARM_MEMORY_HOSTED, 0,
                                               0};
+static const SnxArmChainedOptions k_chained = {
+    .options = {SNX_ARM_CHAINED_OPTIONS_ABI, SNX_ARM_PROFILE_A9, SNX_ARM_MEMORY_HOSTED, 0, 0},
+    .poll = sizeof(SnxArmCPU),
+    .lookup = sizeof(SnxArmCPU) + 8};
 
 /* the bytes hold the name, a symbol's of one of the three object formats */
 static int holds(const unsigned char* bytes, size_t size, const char* name) {
@@ -197,6 +203,68 @@ static void made_hidden(void) {
     snx_fallback_arm_free(aot);
     snx_fallback_arm_free(jit);
 }
+/* a block's length by LLVM, nothing made of it; blocks chained to their successors, one through the lookup, and an
+   import's stub; what chaining refuses */
+static void made_chained(void) {
+    unsigned char* object = NULL;
+    size_t size = 0, took = 0;
+    char error[512] = "";
+    SnxFallbackArm* f = snx_fallback_arm_new("chained", '1', 0);
+    if (!f) {
+        CHECK(0, "out of memory");
+        return;
+    }
+    CHECK(!snx_fallback_arm_length(f, k_arm, 2, 0x1000, 0, &k_hosted, "", &took, error, sizeof error) && took == 2,
+          "an ARM block's length, %zu words: %s", took, error);
+    CHECK(!snx_fallback_arm_length(f, k_thumb, 2, 0x2000, 1, &k_hosted, "", &took, error, sizeof error) && took == 2,
+          "a Thumb block's length, %zu halfwords: %s", took, error);
+    CHECK(snx_fallback_arm_length(f, k_arm, 0, 0x1000, 0, &k_hosted, "", &took, error, sizeof error) < 0 && !took &&
+              strstr(error, "LLVM takes no such block"),
+          "the length of a block of no words: %s", error);
+    CHECK(snx_fallback_arm_object(f, &object, &size, error, sizeof error) < 0 && !object &&
+              strstr(error, "no block was made"),
+          "lengths make no object: %s", error);
+    const uint32_t next[2] = {0x2001, 0x1000}, after = 0x3004;
+    const char *const names[2] = {"thumb_next", "a_back"}, *const stub_next[1] = {"after_stub"};
+    CHECK(!snx_fallback_arm_block(f, "a_back", k_arm, 2, 0x1000, 0, &k_hosted, "", &took, error, sizeof error) &&
+              !snx_fallback_arm_block(f, "a_stub", &k_svc, 1, 0x3000, 0, &k_hosted, "", &took, error, sizeof error),
+          "the blocks to chain: %s", error);
+    CHECK(!snx_fallback_arm_chain(f, "a_back", 0x1000, &k_chained, next, names, 2, error, sizeof error),
+          "a block chained: %s", error);
+    SnxArmChainedOptions stub = k_chained;
+    stub.direct = sizeof(SnxArmCPU) + 16, stub.import = 3;
+    CHECK(!snx_fallback_arm_chain(f, "a_stub", 0x3000, &stub, &after, stub_next, 1, error, sizeof error),
+          "a stub chained: %s", error);
+    CHECK(snx_fallback_arm_chain(f, "a_stub", 0x3000, &stub, next, names, 2, error, sizeof error) < 0 &&
+              strstr(error, "chained: the stub block a_stub goes on to 2 blocks, of 1 at most"),
+          "a stub that goes on to two: %s", error);
+    SnxArmChainedOptions bad = k_chained;
+    bad.poll = 0; /* a lookup with no poll */
+    CHECK(snx_fallback_arm_chain(f, "a_back", 0x1000, &bad, next, names, 2, error, sizeof error) < 0 &&
+              strstr(error, "chained: the block a_back: chaining options no block compiler takes"),
+          "chaining options of a lookup with no poll: %s", error);
+    CHECK(snx_fallback_arm_chain(f, "thumb_next", 0x2001, &k_chained, next, names, 0, error, sizeof error) < 0 &&
+              strstr(error, "chained: the block thumb_next to chain is none of the object's"),
+          "a block declared, not made: %s", error);
+    char* text = arm_text(f);
+    static const char* const k_said[] = {"define hidden void @a_back(",
+                                         "define hidden void @a_stub(",
+                                         "declare hidden void @thumb_next(ptr noalias)",
+                                         "musttail call void @a_back(",
+                                         "musttail call void @thumb_next(",
+                                         "musttail call void @after_stub(",
+                                         "declare hidden void @after_stub(ptr noalias)",
+                                         "probe:"};
+    for (size_t k = 0; text && k < sizeof k_said / sizeof *k_said; ++k)
+        CHECK(strstr(text, k_said[k]), "the chained blocks' IR lacks \"%s\"", k_said[k]);
+    free(text);
+    CHECK(!snx_fallback_arm_object(f, &object, &size, error, sizeof error) && object && holds(object, size, "a_back") &&
+              holds(object, size, "a_stub"),
+          "the chained blocks' object: %s", error);
+    free(object);
+    snx_fallback_arm_free(f);
+}
+
 /* ---- an AOT module's index ---- */
 
 typedef struct {
@@ -340,6 +408,12 @@ static void refused_code(SnxCodegen* cg) {
     CHECK(snx_fallback_arm_object(f, &object, &size, error, sizeof error) < 0 && !object && !size &&
               strstr(error, "no block was made"),
           "an object: %s", error);
+    CHECK(snx_fallback_arm_length(f, k_arm, 2, 0x1000, 0, &k_hosted, why, &took, error, sizeof error) < 0 && !took &&
+              strstr(error, "a32exec: the ARM block at 0x00001000, which starts with e3a00007: its name is too long"),
+          "an ARM block's length: %s", error);
+    CHECK(snx_fallback_arm_chain(f, "b", 0x1000, &k_chained, NULL, NULL, 0, error, sizeof error) < 0 &&
+              strstr(error, "a32exec: the block b to chain was not made, and this build has no LLVM"),
+          "a block chained: %s", error);
     char* text = (char*)&dummy;
     CHECK(snx_fallback_arm_ir(f, &text, error, sizeof error) < 0 && !text && strstr(error, "no block was made"),
           "the blocks' IR: %s", error);
@@ -500,6 +574,7 @@ int main(void) {
         made_functions(&cg, hints);
         made_blocks();
         made_hidden();
+        made_chained();
         made_data();
     } else {
         refused_code(&cg);

@@ -40,6 +40,19 @@ int snx_fallback_arm_start(SnxFallbackArm* f, char* error, size_t error_size);
 int snx_fallback_arm_block(SnxFallbackArm* f, const char* name, const void* code, size_t count, uint32_t pc, int thumb,
                            const SnxArmCodegenOptions* options, const char* why, size_t* consumed, char* error,
                            size_t error_size);
+/* How many of the count words or halfwords the block at pc would cover, as snx_fallback_arm_block makes it, for a
+   discovery that goes on past it: 0 with *consumed, or -1 with the reason in error. Nothing goes in the object */
+int snx_fallback_arm_length(SnxFallbackArm* f, const void* code, size_t count, uint32_t pc, int thumb,
+                            const SnxArmCodegenOptions* options, const char* why, size_t* consumed, char* error,
+                            size_t error_size);
+/* The block name of the object being made, at key (its address, bit 0 set for Thumb), made to go on by itself as the
+   native back ends' blocks do for chained (cpu/arm/codegen.h): where it ends at one of the count keys of next, a tail
+   call to its function names[i], the object's or declared for the linker, the poll counted down first for one at or
+   before key; any other target through the lookup table. With chained->direct it is an import's stub, whose SVC calls
+   chained->import through the function there and goes on past it to next[0] (count 1). 0, or -1 with the reason */
+int snx_fallback_arm_chain(SnxFallbackArm* f, const char* name, uint32_t key, const SnxArmChainedOptions* chained,
+                           const uint32_t* next, const char* const* names, size_t count, char* error,
+                           size_t error_size);
 /* The text of the blocks since the last object as the block compiler made them, before the passes (--keep-ir), into
    *text (malloc'd): 0, or -1 with the reason in error */
 int snx_fallback_arm_ir(SnxFallbackArm* f, char** text, char* error, size_t error_size);

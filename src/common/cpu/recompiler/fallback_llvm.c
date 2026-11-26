@@ -6,6 +6,7 @@
 #include "common/cpu/arm/llvm.h"
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/utilities/common.h"
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -74,6 +75,9 @@ int snx_fallback_object(SnxCodegen* codegen, size_t first, size_t last, const Sn
 struct SnxFallbackArm {
     SnxIr* ir;            /* the context and target machine every block's module is made with, made for the first */
     LLVMModuleRef module; /* the blocks since the last object, NULL for none */
+    /* the blocks made for their length alone, in a context of their own, made for the first of them */
+    LLVMContextRef scratch_context;
+    LLVMModuleRef scratch;
     char name[32];
     char opt;
     int jit;
@@ -91,6 +95,8 @@ void snx_fallback_arm_free(SnxFallbackArm* f) {
     if (!f) return;
     if (f->module) LLVMDisposeModule(f->module);
     if (f->ir) snx_ir_free(f->ir);
+    if (f->scratch) LLVMDisposeModule(f->scratch);
+    if (f->scratch_context) LLVMContextDispose(f->scratch_context);
     free(f);
 }
 int snx_fallback_arm_start(SnxFallbackArm* f, char* error, size_t error_size) {
@@ -125,6 +131,226 @@ int snx_fallback_arm_block(SnxFallbackArm* f, const char* name, const void* code
     }
     snprintf(error, error_size, "LLVM takes no such block");
     return -1;
+}
+int snx_fallback_arm_length(SnxFallbackArm* f, const void* code, size_t count, uint32_t pc, int thumb,
+                            const SnxArmCodegenOptions* options, const char* why, size_t* consumed, char* error,
+                            size_t error_size) {
+    (void)why;
+    *consumed = 0;
+    if (!f->scratch) {
+        if (!f->scratch_context) f->scratch_context = LLVMContextCreate();
+        f->scratch = LLVMModuleCreateWithNameInContext(f->name, f->scratch_context);
+    }
+    LLVMValueRef fn =
+        thumb ? snx_thumb_llvm_block_ex(f->scratch, "block", (const uint16_t*)code, count, pc, consumed, options)
+              : snx_arm_llvm_block_ex(f->scratch, "block", (const uint32_t*)code, count, pc, consumed, options);
+    if (!fn) {
+        snprintf(error, error_size, "LLVM takes no such block");
+        return -1;
+    }
+    LLVMDeleteFunction(fn);
+    return 0;
+}
+
+/* Chaining, as the native back ends' chained blocks go on (cpu/arm/codegen.h's SnxArmChainedOptions): each return of
+   the block becomes a return when it set an exit (an SVC, a fault), else for each successor a musttail call when r15
+   and the Thumb state are its own, else the lookup. A successor at or before the block's start (every loop has one)
+   first counts down the poll, and the block returns when it runs out, so the loop gets to run the rest */
+static LLVMValueRef cpu_field(SnxIr* ir, LLVMValueRef cpu, size_t offset) {
+    return LLVMBuildGEP2(ir->b, ir->t_i8, cpu, (LLVMValueRef[]){ir_i64(ir, offset)}, 1, "");
+}
+/* the function of the block named, declared where the module lacks it, for a musttail call. It keeps the caller's
+   parameter attributes, and a hosted block's cpu is noalias */
+static LLVMValueRef block_target(SnxIr* ir, LLVMModuleRef mod, const char* name) {
+    LLVMValueRef target = LLVMGetNamedFunction(mod, name);
+    if (!target) {
+        LLVMTypeRef block_type = LLVMFunctionType(ir->t_void, &ir->t_ptr, 1, 0);
+        target = LLVMAddFunction(mod, name, block_type);
+        LLVMSetVisibility(target, LLVMHiddenVisibility);
+        LLVMAddAttributeAtIndex(target, 1 /* first parameter */,
+                                LLVMCreateEnumAttribute(ir->ctx, LLVMGetEnumAttributeKindForName("noalias", 7), 0));
+    }
+    return target;
+}
+/* The end of a block's tail when no successor matched, an indirect branch. The target is looked up in the runtime's
+   block table (SnxArmLookup), which its loop fills as it dispatches, and the block goes on to it by a musttail call
+   when it is there and no IT block is under way. Else, or with no table, it returns to the loop. A target at or before
+   the block's own start counts down the poll as a backward successor does: every cycle of blocks has one such edge, so
+   a loop made of indirect branches still ends the slice */
+static void chain_lookup(SnxIr* ir, const SnxArmChainedOptions* chained, LLVMValueRef fn, LLVMValueRef cpu,
+                         uint32_t key, LLVMValueRef pc, LLVMValueRef cpsr, LLVMValueRef thumb, LLVMBasicBlockRef out) {
+    LLVMTypeRef block_type = LLVMFunctionType(ir->t_void, &ir->t_ptr, 1, 0);
+    LLVMBasicBlockRef probe = LLVMAppendBasicBlockInContext(ir->ctx, fn, "probe"),
+                      hit = LLVMAppendBasicBlockInContext(ir->ctx, fn, "hit"),
+                      run = LLVMAppendBasicBlockInContext(ir->ctx, fn, "run");
+    LLVMValueRef table = LLVMBuildLoad2(ir->b, ir->t_ptr, cpu_field(ir, cpu, chained->lookup), "");
+    LLVMBuildCondBr(ir->b, LLVMBuildICmp(ir->b, LLVMIntNE, table, LLVMConstNull(ir->t_ptr), ""), probe, out);
+    LLVMPositionBuilderAtEnd(ir->b, probe);
+    LLVMValueRef target = LLVMBuildOr(ir->b, pc,
+                                      LLVMBuildSelect(ir->b, LLVMBuildICmp(ir->b, LLVMIntNE, thumb, ir_i32(ir, 0), ""),
+                                                      ir_i32(ir, 1), ir_i32(ir, 0), ""),
+                                      "");
+    LLVMValueRef slot = LLVMBuildZExt(
+        ir->b,
+        LLVMBuildAnd(ir->b, LLVMBuildLShr(ir->b, target, ir_i32(ir, 1), ""), ir_i32(ir, SNX_ARM_LOOKUP_SLOTS - 1), ""),
+        ir->t_i64, "");
+    LLVMValueRef entry =
+        LLVMBuildGEP2(ir->b, ir->t_i8, table,
+                      (LLVMValueRef[]){LLVMBuildMul(ir->b, slot, ir_i64(ir, sizeof(SnxArmLookup)), "")}, 1, "");
+    LLVMValueRef seen = LLVMBuildLoad2(ir->b, ir->t_i32, entry, "");
+    LLVMValueRef block = LLVMBuildLoad2(ir->b, ir->t_ptr, cpu_field(ir, entry, offsetof(SnxArmLookup, block)), "");
+    /* ITSTATE sits in CPSR bits 26 and 25 and bits 15 to 10, and a hosted block is entered with it clear (llvm.h) */
+    LLVMValueRef plain =
+        LLVMBuildICmp(ir->b, LLVMIntEQ, LLVMBuildAnd(ir->b, cpsr, ir_i32(ir, 0x0600fc00u), ""), ir_i32(ir, 0), "");
+    LLVMValueRef found = LLVMBuildAnd(ir->b, LLVMBuildICmp(ir->b, LLVMIntEQ, seen, target, ""),
+                                      LLVMBuildICmp(ir->b, LLVMIntNE, block, LLVMConstNull(ir->t_ptr), ""), "");
+    LLVMBuildCondBr(ir->b, LLVMBuildAnd(ir->b, found, plain, ""), hit, out);
+    LLVMPositionBuilderAtEnd(ir->b, hit);
+    LLVMValueRef at = cpu_field(ir, cpu, chained->poll);
+    LLVMValueRef back = LLVMBuildICmp(ir->b, LLVMIntULE, pc, ir_i32(ir, key & ~1u), "");
+    LLVMValueRef left =
+        LLVMBuildSub(ir->b, LLVMBuildLoad2(ir->b, ir->t_i32, at, ""), LLVMBuildZExt(ir->b, back, ir->t_i32, ""), "");
+    LLVMBuildStore(ir->b, left, at);
+    LLVMBuildCondBr(ir->b, LLVMBuildICmp(ir->b, LLVMIntSGT, left, ir_i32(ir, 0), ""), run, out);
+    LLVMPositionBuilderAtEnd(ir->b, run);
+    LLVMValueRef site = LLVMBuildCall2(ir->b, block_type, block, &cpu, 1, "");
+    LLVMSetTailCallKind(site, LLVMTailCallKindMustTail);
+    LLVMAddCallSiteAttribute(site, 1 /* first parameter */,
+                             LLVMCreateEnumAttribute(ir->ctx, LLVMGetEnumAttributeKindForName("noalias", 7), 0));
+    LLVMBuildRetVoid(ir->b);
+}
+/* the block's returns through one tail, to its successors, the lookup or the loop: 0, -1 out of memory */
+static int chain_block(SnxIr* ir, LLVMModuleRef mod, const SnxArmChainedOptions* chained, LLVMValueRef fn, uint32_t key,
+                       const uint32_t* next, const char* const* names, size_t count) {
+    LLVMTypeRef block_type = LLVMFunctionType(ir->t_void, &ir->t_ptr, 1, 0);
+    LLVMValueRef cpu = LLVMGetParam(fn, 0);
+    LLVMValueRef* rets = malloc((LLVMCountBasicBlocks(fn) + 1) * sizeof *rets);
+    size_t nrets = 0;
+    if (!rets) return -1;
+    for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(fn); bb; bb = LLVMGetNextBasicBlock(bb)) {
+        LLVMValueRef t = LLVMGetBasicBlockTerminator(bb);
+        if (t && LLVMGetInstructionOpcode(t) == LLVMRet) rets[nrets++] = t;
+    }
+    /* one tail for all of them, which takes a block's exits back out */
+    LLVMBasicBlockRef tail = LLVMAppendBasicBlockInContext(ir->ctx, fn, "chain"),
+                      go = LLVMAppendBasicBlockInContext(ir->ctx, fn, "next"),
+                      out = LLVMAppendBasicBlockInContext(ir->ctx, fn, "out");
+    for (size_t i = 0; i < nrets; ++i) {
+        LLVMPositionBuilderBefore(ir->b, rets[i]);
+        LLVMBuildBr(ir->b, tail);
+        LLVMInstructionEraseFromParent(rets[i]);
+    }
+    free(rets);
+    LLVMPositionBuilderAtEnd(ir->b, out);
+    LLVMBuildRetVoid(ir->b);
+    LLVMPositionBuilderAtEnd(ir->b, tail);
+    LLVMValueRef c = LLVMBuildLoad2(ir->b, ir->t_i32, cpu_field(ir, cpu, offsetof(SnxArmCPU, exit)), "");
+    c = LLVMBuildICmp(ir->b, LLVMIntEQ, c, ir_i32(ir, SNX_ARM_OK), "");
+    LLVMBuildCondBr(ir->b, c, go, out);
+    LLVMPositionBuilderAtEnd(ir->b, go);
+    LLVMValueRef pc = LLVMBuildLoad2(ir->b, ir->t_i32, cpu_field(ir, cpu, offsetof(SnxArmCPU, r) + 15 * 4), "");
+    LLVMValueRef cpsr = LLVMBuildLoad2(ir->b, ir->t_i32, cpu_field(ir, cpu, offsetof(SnxArmCPU, cpsr)), "");
+    LLVMValueRef t = LLVMBuildAnd(ir->b, cpsr, ir_i32(ir, SNX_ARM_T), "");
+    for (size_t k = 0; k < count; ++k) {
+        LLVMBasicBlockRef call = LLVMAppendBasicBlockInContext(ir->ctx, fn, "call"),
+                          miss = LLVMAppendBasicBlockInContext(ir->ctx, fn, "other");
+        c = LLVMBuildAnd(ir->b, LLVMBuildICmp(ir->b, LLVMIntEQ, pc, ir_i32(ir, next[k] & ~1u), ""),
+                         LLVMBuildICmp(ir->b, LLVMIntEQ, t, ir_i32(ir, next[k] & 1 ? SNX_ARM_T : 0), ""), "");
+        LLVMBuildCondBr(ir->b, c, call, miss);
+        LLVMPositionBuilderAtEnd(ir->b, call);
+        if (chained->poll && (next[k] & ~1u) <= (key & ~1u)) {
+            LLVMBasicBlockRef run = LLVMAppendBasicBlockInContext(ir->ctx, fn, "run");
+            LLVMValueRef at = cpu_field(ir, cpu, chained->poll);
+            LLVMValueRef left = LLVMBuildSub(ir->b, LLVMBuildLoad2(ir->b, ir->t_i32, at, ""), ir_i32(ir, 1), "");
+            LLVMBuildStore(ir->b, left, at);
+            LLVMBuildCondBr(ir->b, LLVMBuildICmp(ir->b, LLVMIntSGT, left, ir_i32(ir, 0), ""), run, out);
+            LLVMPositionBuilderAtEnd(ir->b, run);
+        }
+        LLVMValueRef site = LLVMBuildCall2(ir->b, block_type, block_target(ir, mod, names[k]), &cpu, 1, "");
+        LLVMSetTailCallKind(site, LLVMTailCallKindMustTail);
+        LLVMBuildRetVoid(ir->b);
+        LLVMPositionBuilderAtEnd(ir->b, miss);
+    }
+    if (chained->lookup)
+        chain_lookup(ir, chained, fn, cpu, key, pc, cpsr, t, out);
+    else
+        LLVMBuildBr(ir->b, out);
+    return 0;
+}
+/* The block of an import's stub, which is the stub's svc instruction. Where the loop would take the SVC and then run
+   the stub's bx lr, this calls the import through the cpu's direct function and goes on to the bx lr block (next, NULL
+   where the module lacks it) when the call needs nothing from the loop. Without the function it is the SVC block as
+   the block compiler makes it, with the immediate (the import's index) in the syndrome */
+static void stub_block(SnxIr* ir, LLVMModuleRef mod, const SnxArmChainedOptions* chained, LLVMValueRef fn,
+                       uint32_t after, const char* next) {
+    LLVMTypeRef block_type = LLVMFunctionType(ir->t_void, &ir->t_ptr, 1, 0);
+    LLVMTypeRef params[2] = {ir->t_ptr, ir->t_i32};
+    LLVMTypeRef call_type = LLVMFunctionType(ir->t_i32, params, 2, 0);
+    /* the function stays, as blocks of the object may already call it. Its body goes, last instruction first */
+    for (LLVMBasicBlockRef bb = LLVMGetLastBasicBlock(fn); bb; bb = LLVMGetPreviousBasicBlock(bb))
+        for (LLVMValueRef in = LLVMGetLastInstruction(bb); in;) {
+            LLVMValueRef before = LLVMGetPreviousInstruction(in);
+            if (LLVMGetTypeKind(LLVMTypeOf(in)) != LLVMVoidTypeKind)
+                LLVMReplaceAllUsesWith(in, LLVMGetUndef(LLVMTypeOf(in)));
+            LLVMInstructionEraseFromParent(in);
+            in = before;
+        }
+    while (LLVMGetFirstBasicBlock(fn)) LLVMDeleteBasicBlock(LLVMGetFirstBasicBlock(fn));
+    LLVMValueRef cpu = LLVMGetParam(fn, 0);
+    LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(ir->ctx, fn, "entry"),
+                      plain = LLVMAppendBasicBlockInContext(ir->ctx, fn, "svc"),
+                      fast = LLVMAppendBasicBlockInContext(ir->ctx, fn, "call"),
+                      go = LLVMAppendBasicBlockInContext(ir->ctx, fn, "next"),
+                      out = LLVMAppendBasicBlockInContext(ir->ctx, fn, "out");
+    LLVMPositionBuilderAtEnd(ir->b, entry);
+    LLVMValueRef hook = LLVMBuildLoad2(ir->b, ir->t_ptr, cpu_field(ir, cpu, chained->direct), "");
+    LLVMBuildCondBr(ir->b, LLVMBuildICmp(ir->b, LLVMIntEQ, hook, LLVMConstNull(ir->t_ptr), ""), plain, fast);
+    LLVMPositionBuilderAtEnd(ir->b, plain);
+    LLVMBuildStore(ir->b, ir_i32(ir, chained->import), cpu_field(ir, cpu, offsetof(SnxArmCPU, syndrome)));
+    LLVMBuildStore(ir->b, ir_i32(ir, SNX_ARM_SVC), cpu_field(ir, cpu, offsetof(SnxArmCPU, exit)));
+    LLVMBuildStore(ir->b, ir_i32(ir, after), cpu_field(ir, cpu, offsetof(SnxArmCPU, r) + 15 * 4));
+    LLVMBuildRetVoid(ir->b);
+    LLVMPositionBuilderAtEnd(ir->b, fast);
+    /* r15 is past the svc while the import runs, as it is when the loop takes the SVC */
+    LLVMBuildStore(ir->b, ir_i32(ir, after), cpu_field(ir, cpu, offsetof(SnxArmCPU, r) + 15 * 4));
+    LLVMValueRef args[2] = {cpu, ir_i32(ir, chained->import)};
+    LLVMValueRef done = LLVMBuildCall2(ir->b, call_type, hook, args, 2, "");
+    LLVMBuildCondBr(ir->b, LLVMBuildICmp(ir->b, LLVMIntNE, done, ir_i32(ir, 0), ""), next ? go : out, out);
+    LLVMPositionBuilderAtEnd(ir->b, go);
+    if (next) {
+        LLVMValueRef site = LLVMBuildCall2(ir->b, block_type, block_target(ir, mod, next), &cpu, 1, "");
+        LLVMSetTailCallKind(site, LLVMTailCallKindMustTail);
+    }
+    LLVMBuildRetVoid(ir->b);
+    LLVMPositionBuilderAtEnd(ir->b, out);
+    LLVMBuildRetVoid(ir->b);
+}
+int snx_fallback_arm_chain(SnxFallbackArm* f, const char* name, uint32_t key, const SnxArmChainedOptions* chained,
+                           const uint32_t* next, const char* const* names, size_t count, char* error,
+                           size_t error_size) {
+    LLVMValueRef fn = f->module ? LLVMGetNamedFunction(f->module, name) : NULL;
+    if (!fn || !LLVMCountBasicBlocks(fn)) {
+        snprintf(error, error_size, "%s: the block %s to chain is none of the object's", f->name, name);
+        return -1;
+    }
+    if (!snx_arm_chained_options_valid(chained)) {
+        snprintf(error, error_size, "%s: the block %s: chaining options no block compiler takes", f->name, name);
+        return -1;
+    }
+    if (chained->direct && count > 1) {
+        snprintf(error, error_size, "%s: the stub block %s goes on to %zu blocks, of 1 at most", f->name, name, count);
+        return -1;
+    }
+    if (chained->direct) {
+        const uint32_t after = (key & ~1u) + (key & 1 ? 2u : 4u);
+        stub_block(f->ir, f->module, chained, fn, after, count ? names[0] : NULL);
+        return 0;
+    }
+    if (chain_block(f->ir, f->module, chained, fn, key, next, names, count)) {
+        snprintf(error, error_size, "%s: out of memory chaining the block %s", f->name, name);
+        return -1;
+    }
+    return 0;
 }
 int snx_fallback_arm_ir(SnxFallbackArm* f, char** text, char* error, size_t error_size) {
     *text = NULL;

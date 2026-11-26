@@ -54,9 +54,9 @@ static inline int snx_arm_codegen_options_valid(const SnxArmCodegenOptions* o) {
                    (o->profile == SNX_ARM_PROFILE_ARM7TDMI && o->trace && o->skipped && o->trace != o->skipped)));
 }
 /* Options for hosted blocks that go on to the next by themselves, for a runtime whose dispatch loop runs one thread's
-   blocks a slice at a time (the Vita's). The native back ends take these where options.abi says so; LLVM's blocks go on
-   by what their compiler adds to them (vita/aot/compiler.c). poll, lookup and direct are where the runtime keeps a thing
-   past the pointer its blocks get, 0 for none of it:
+   blocks a slice at a time (the Vita's). The native back ends take these where options.abi says so; the fallback's go
+   on by what it adds to them (fallback.h's snx_fallback_arm_chain). poll, lookup and direct are where the runtime keeps
+   a thing past the pointer its blocks get, 0 for none of it:
    - poll: an int32_t, the steps back (to a block at or before the one that ends) the slice may still take. A block counts
      its own down and returns to the loop where they run out, so every loop of blocks ends the slice;
    - lookup (with poll alone): a pointer to a table of SNX_ARM_LOOKUP_SLOTS SnxArmLookups, or null. A target that is none

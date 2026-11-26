@@ -53,11 +53,9 @@ int snx_fallback_arm_start(SnxFallbackArm* f, char* error, size_t error_size) {
              f->name, snx_native_name());
     return -1;
 }
-int snx_fallback_arm_block(SnxFallbackArm* f, const char* name, const void* code, size_t count, uint32_t pc, int thumb,
-                           const SnxArmCodegenOptions* options, const char* why, size_t* consumed, char* error,
-                           size_t error_size) {
-    (void)name;
-    (void)options;
+/* the block asked for, refused */
+static int refuse_block(const SnxFallbackArm* f, const void* code, size_t count, uint32_t pc, int thumb,
+                        const char* why, size_t* consumed, char* error, size_t error_size) {
     *consumed = 0;
     if (!count)
         snprintf(error, error_size, "%s: the %s block at 0x%08x, of no instructions: %s, and " NO_LLVM, f->name,
@@ -68,6 +66,30 @@ int snx_fallback_arm_block(SnxFallbackArm* f, const char* name, const void* code
     else
         snprintf(error, error_size, "%s: the ARM block at 0x%08x, which starts with %08x: %s, and " NO_LLVM, f->name,
                  (unsigned)pc, (unsigned)((const uint32_t*)code)[0], why);
+    return -1;
+}
+int snx_fallback_arm_block(SnxFallbackArm* f, const char* name, const void* code, size_t count, uint32_t pc, int thumb,
+                           const SnxArmCodegenOptions* options, const char* why, size_t* consumed, char* error,
+                           size_t error_size) {
+    (void)name;
+    (void)options;
+    return refuse_block(f, code, count, pc, thumb, why, consumed, error, error_size);
+}
+int snx_fallback_arm_length(SnxFallbackArm* f, const void* code, size_t count, uint32_t pc, int thumb,
+                            const SnxArmCodegenOptions* options, const char* why, size_t* consumed, char* error,
+                            size_t error_size) {
+    (void)options;
+    return refuse_block(f, code, count, pc, thumb, why, consumed, error, error_size);
+}
+int snx_fallback_arm_chain(SnxFallbackArm* f, const char* name, uint32_t key, const SnxArmChainedOptions* chained,
+                           const uint32_t* next, const char* const* names, size_t count, char* error,
+                           size_t error_size) {
+    (void)key;
+    (void)chained;
+    (void)next;
+    (void)names;
+    (void)count;
+    snprintf(error, error_size, "%s: the block %s to chain was not made, and " NO_LLVM, f->name, name);
     return -1;
 }
 int snx_fallback_arm_ir(SnxFallbackArm* f, char** text, char* error, size_t error_size) {
