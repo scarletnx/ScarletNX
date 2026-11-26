@@ -47,6 +47,7 @@ static struct {
        *out; and its quads over the picture, 1 while it or a notification of its shows */
     int (*menu_event)(const SDL_Event* e, int action, int* out);
     int (*menu_draw)(SnxUiList* l, int w, int h);
+    const uint8_t* (*menu_image)(void); /* the picture its UI_IMAGE quads draw, NULL for none */
     SnxUiQuad quads[QUADS];
 } g_vpad_sdl;
 
@@ -418,9 +419,10 @@ SDL_WindowID snx_vpad_window_key_window(void) { return g_vpad_sdl.key_window; }
 SDL_Window* snx_vpad_window_sdl(void) { return g_vpad_sdl.window; }
 void snx_vpad_window_slot(int slot) { g_vpad_sdl.asked_slot = slot; }
 void snx_vpad_window_menu(int (*event)(const SDL_Event* e, int action, int* out),
-                          int (*draw)(SnxUiList* l, int w, int h)) {
+                          int (*draw)(SnxUiList* l, int w, int h), const uint8_t* (*image)(void)) {
     g_vpad_sdl.menu_event = event;
     g_vpad_sdl.menu_draw = draw;
+    g_vpad_sdl.menu_image = image;
 }
 int snx_vpad_window_pace(void) { return g_vpad_sdl.pace; }
 void snx_vpad_window_set_pace(int pace) { g_vpad_sdl.pace = pace; }
@@ -543,6 +545,7 @@ const SnxUiRects* snx_vpad_window_rects(int w, int h) {
     if (how == VPAD_DRAW_LAID || over || g_vpad_sdl.over || !g_vpad_sdl.made || warn != g_vpad_sdl.warned ||
         w != g_vpad_sdl.w || h != g_vpad_sdl.h) {
         if (warn) warning_draw(&l, safe, scale);
+        g_vpad_sdl.rects.image = g_vpad_sdl.menu_image ? g_vpad_sdl.menu_image() : NULL;
         if (!snx_ui_rects(&g_vpad_sdl.rects, &l, w, h) && g_vpad_sdl.say)
             g_vpad_sdl.say("out of memory for the on-screen controls' picture: they are not drawn");
         g_vpad_sdl.made = 1, g_vpad_sdl.warned = warn, g_vpad_sdl.over = over;

@@ -168,10 +168,31 @@ int main(void) {
         CHECK(g_picture[10][15] == 0xFF0000FFu && g_picture[99][15] == 0xFF0000FFu); /* a full one, slow */
         CHECK(!g_picture[90][5]);                                                    /* height 0: nothing */
     }
+    /* the picture apart (a state's thumbnail): its left half one colour and its right another, drawn at half its size,
+       each texel the nearest at a pixel's middle, a run of one colour a rectangle; none without the picture */
+    {
+        static u8 image[SNX_UI_IMAGE_H][SNX_UI_IMAGE_W][4];
+        for (int y = 0; y < SNX_UI_IMAGE_H; ++y)
+            for (int x = 0; x < SNX_UI_IMAGE_W; ++x) {
+                const u8 left[4] = {0x20, 0x80, 0xF8, 0xFF}, right[4] = {0xF8, 0x40, 0x08, 0xFF};
+                memcpy(image[y][x], x < SNX_UI_IMAGE_W / 2 ? left : right, 4);
+            }
+        SnxUiList li = {g_quads, 0, 64};
+        ui_quad_add(&li, 4, 6, SNX_UI_IMAGE_W / 2, SNX_UI_IMAGE_H / 2, 0, 0, SNX_UI_IMAGE_W, SNX_UI_IMAGE_H,
+                    0xFFFFFFFFu, 0, UI_IMAGE, UI_ATLAS, 0);
+        CHECK(fill(&li) == 0 && g_rects.count == 0);
+        g_rects.image = &image[0][0][0];
+        CHECK(fill(&li) == 0 && g_rects.count == 2 * SNX_UI_IMAGE_H / 2);
+        CHECK(g_picture[6][4] == ui_rgba(0xFFF88020u) &&
+              g_picture[6 + SNX_UI_IMAGE_H / 2 - 1][4 + 79] == ui_rgba(0xFFF88020u));
+        CHECK(g_picture[50][4 + 80] == ui_rgba(0xFF0840F8u) && g_picture[50][4 + 159] == ui_rgba(0xFF0840F8u));
+        CHECK(!g_picture[50][4 + 160] && !g_picture[6 + SNX_UI_IMAGE_H / 2][50] && !g_picture[5][50]);
+        g_rects.image = NULL;
+    }
     snx_ui_rects_free(&g_rects);
     CHECK(!g_rects.rect && !g_rects.count);
     printf(
-        "ui_rects: %ld shapes, %ld pixels as ui.frag writes them, %zu rectangles at most; letters, fills, icons, grounds and the ring passed\n",
+        "ui_rects: %ld shapes, %ld pixels as ui.frag writes them, %zu rectangles at most; letters, fills, icons, grounds, the ring and the picture passed\n",
         cases, all, most);
     return 0;
 }

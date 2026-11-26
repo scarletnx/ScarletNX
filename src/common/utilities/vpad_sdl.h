@@ -96,10 +96,11 @@ SDL_Window* snx_vpad_window_sdl(void);
    stays */
 void snx_vpad_window_slot(int slot);
 /* the game's menu in the window (menu_window.c's): its event, the key's runtime action given, 1 for taken, 2 to quit,
-   3 for an action of the window's into *out (a state's, the capture); its quads over the picture, 1 while some show.
-   NULL both: none */
+   3 for an action of the window's into *out (a state's, the capture); its quads over the picture, 1 while some show;
+   and the picture apart its quads draw (a state's thumbnail, SNX_UI_IMAGE_W x SNX_UI_IMAGE_H R G B A), NULL for
+   none. NULL all: none */
 void snx_vpad_window_menu(int (*event)(const SDL_Event* e, int action, int* out),
-                          int (*draw)(SnxUiList* l, int w, int h));
+                          int (*draw)(SnxUiList* l, int w, int h), const uint8_t* (*image)(void));
 /* the window the last key was pressed in (a console's with two windows says over that one), 0 for none */
 SDL_WindowID snx_vpad_window_key_window(void);
 /* fps_limit's pace as the keys left it (common/utilities/pace.h's SNX_PACE_), for a console that keeps its own clock */

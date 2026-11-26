@@ -145,11 +145,47 @@ static int shape_row(const SnxUiQuadView* q, const Label* l, unsigned label, int
     return n;
 }
 
+/* out's picture under q (its texels u, v, uw by vh) on a picture w by h, as snx_ui_rects says: false when out of memory */
+static bool image_put(SnxUiRects* out, const SnxUiQuadView* q, int w, int h) {
+    int y0 = from(q->y), y1 = from(q->y + q->h), x0 = from(q->x), x1 = from(q->x + q->w);
+    if (y0 < 0) y0 = 0;
+    if (y1 > h) y1 = h;
+    if (x0 < 0) x0 = 0;
+    if (x1 > w) x1 = w;
+    for (int y = y0; y < y1; ++y) {
+        int tv = q->v + (int)(((float)y + 0.5f - q->y) * (float)q->vh / q->h);
+        tv = tv < 0 ? 0 : tv >= SNX_UI_IMAGE_H ? SNX_UI_IMAGE_H - 1 : tv;
+        const u8* row = out->image + (size_t)tv * SNX_UI_IMAGE_W * 4;
+        u32 run = 0;
+        for (int x = x0; x < x1; ++x) {
+            int tu = q->u + (int)(((float)x + 0.5f - q->x) * (float)q->uw / q->w);
+            tu = tu < 0 ? 0 : tu >= SNX_UI_IMAGE_W ? SNX_UI_IMAGE_W - 1 : tu;
+            const u8* p = row + (size_t)tu * 4;
+            u32 c = ui_rgba((u32)p[0] | (u32)p[1] << 8 | (u32)p[2] << 16 | 0xFF000000u);
+            if (x > x0 && c == run) {
+                ++out->rect[out->count - 1].w;
+                continue;
+            }
+            if (!room_for(out, 1)) return false;
+            out->rect[out->count++] = (SnxUiRect){(i16)x, (i16)y, 1, 1, c};
+            run = c;
+        }
+    }
+    return true;
+}
+
 bool snx_ui_rects(SnxUiRects* out, const SnxUiList* quads, int w, int h) {
     out->count = 0;
     ++out->version;
     for (int i = 0; i < quads->n; ++i) {
         const SnxUiQuadView q = ui_drawn(&quads->q[i]); /* a ring's bar where its slot puts it */
+        if (q.sample == UI_IMAGE && q.ink == UI_ATLAS) { /* the picture apart: the state's thumbnail */
+            if (out->image && q.uw && !image_put(out, &q, w, h)) {
+                out->count = 0;
+                return false;
+            }
+            continue;
+        }
         SnxUiQuadView ground;
         if (ui_drawn_ground(&quads->q[i],
                             &ground)) { /* a backed letter's or icon's ground first, as the SDL renderer */
