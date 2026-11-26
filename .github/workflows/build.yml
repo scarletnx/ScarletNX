@@ -95,9 +95,9 @@ jobs:
           esac
   # Each Linux architecture's one job, on every event: the runtime installed into /usr and the AppImage made of it, then
   # the same tree with its tests on (ninja builds only what they change) and the headless Vulkan tree, each in its own
-  # folder where its flags differ, all through one compiler cache. Where SNX_TESTS: their tests, the AppImage run as
-  # installed, and on x86-64 the other machines' back ends under Unicorn and Amberlith's probes on the AppImage's
-  # runtime. pkgforge's Arch image and tools
+  # folder where its flags differ, all through one compiler cache. Where SNX_TESTS: their tests but the ones under
+  # Unicorn (linux-unicorn), the AppImage run as installed, and on x86-64 Amberlith's probes on the AppImage's runtime.
+  # pkgforge's Arch image and tools
   # (https://github.com/pkgforge-dev/Anylinux-AppImages), see scripts/make-appimage.sh
   appimage:
     name: Linux AppImage (${{ matrix.arch }})
@@ -362,8 +362,8 @@ jobs:
           done
       # The test options on the AppImage's tree, its tests on, and the headless tree, whose options change what every
       # target builds, in a folder of its own with this job's LLVM. The A64 disassembler, which the AppImage leaves out,
-      # is back in AArch64's test tree; on x86-64 linux-sanitizers' tree has it, and this one the other machines' back
-      # ends under Unicorn. Built on every event, tested where SNX_TESTS
+      # is back in AArch64's test tree; on x86-64 linux-sanitizers' tree has it. x86-64's has the other machines' back
+      # ends under Unicorn too, whose tests linux-unicorn runs. Built on every event, tested where SNX_TESTS
       - name: Build the tests and the headless Vulkan tree
         shell: bash
         env:
@@ -446,17 +446,6 @@ jobs:
           ctest --test-dir build/default -LE '^(unicorn|sdm)$' --output-on-failure --parallel 4 \
             --output-junit "$PWD/tests.xml" || status=$?
           python3 scripts/recompile-census.py tests.xml || status=1
-          exit "$status"
-      # The code of the native back ends that no job runs, each test by its name, then what each machine ran: one that ran
-      # none fails (scripts/unicorn-tests.py), as ctest passes a test the build has not
-      - name: Test the native back ends under Unicorn
-        if: matrix.arch == 'x86_64' && env.SNX_TESTS == 'true'
-        shell: bash
-        run: |
-          status=0
-          ctest --test-dir build/default -L '^unicorn$' --no-tests=error --output-on-failure --parallel 4 \
-            --output-junit "$PWD/unicorn.xml" || status=$?
-          python3 scripts/unicorn-tests.py unicorn.xml || status=1
           exit "$status"
       - name: Check optional Python diagnostics
         if: env.SNX_TESTS == 'true'
@@ -730,6 +719,130 @@ jobs:
         run: |
           LSAN_OPTIONS="$LSAN_OPTIONS:suppressions=$PWD/tests/lsan.supp" \
             ctest --test-dir build/sanitizers --output-on-failure --parallel 4
+      - *fail-fast-file
+      - *fail-fast-mark
+
+  # x86-64's tests of the other machines' native back ends under Unicorn (ctest -L unicorn): a job of its own, beside
+  # the appimage job, whose longest test they were. The tree is that job's test tree, with Arch's LLVM, as
+  # linux-sanitizers' is; a push and the nightly build it, so its compiler cache stays the pull requests', and test
+  # nothing. The sources and the FFmpeg, OpenSSL and SPIRV-Tools builds are x86-64's appimage job's, restored and not
+  # saved
+  linux-unicorn:
+    name: Linux (x86_64, other machines under Unicorn)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 90
+    container: archlinux:latest
+    steps:
+      - name: Name the week
+        id: week
+        run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+      # pacman's packages, which it takes before its mirrors: this week's cache, else last week's
+      - uses: actions/cache/restore@v5
+        id: pacman
+        with:
+          path: /var/cache/pacman/pkg
+          key: pacman-${{ github.job }}-${{ steps.week.outputs.week }}
+          restore-keys: pacman-${{ github.job }}-
+      # the appimage job's build tools and those its tests under Unicorn run with, without the AppImage's
+      - name: Install tools
+        run: |
+          for try in 1 2 3; do
+            pacman -Syu --noconfirm --needed cmake ninja meson make patch nasm perl python git clang lld llvm pkgconf sdl3 libx11 libxtst libxrandr libxss mesa vulkan-icd-loader ccache glslang jdk21-openjdk && break
+            [ "$try" = 3 ] && exit 1
+            sleep 5
+          done
+      # Saved once a week, as in the appimage job
+      - name: Keep the installed packages
+        if: steps.pacman.outputs.cache-hit != 'true'
+        run: pacman -Sc --noconfirm >/dev/null
+      - if: steps.pacman.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: /var/cache/pacman/pkg
+          key: ${{ steps.pacman.outputs.cache-primary-key }}
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - *fail-fast-watch
+      - uses: actions/cache/restore@v5
+        with:
+          path: .cache/cpm
+          key: cpmutil-linux-x86_64-${{ hashFiles('cpmfile.json', '.patch/**') }}
+          restore-keys: cpmutil-linux-x86_64-
+      - uses: actions/cache/restore@v5
+        with:
+          path: .cache/deps
+          key: deps-appimage-x86_64-${{ github.run_id }}
+          restore-keys: deps-appimage-x86_64-
+      # this job's newest, else the appimage job's
+      - uses: actions/cache/restore@v5
+        with:
+          path: .cache/ccache
+          key: ccache-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ccache-${{ github.job }}-
+            ccache-appimage-x86_64-
+      - name: Set up the caches
+        shell: bash
+        run: |
+          ws=${GITHUB_WORKSPACE//\\//}
+          {
+            echo "CCACHE_DIR=$ws/.cache/ccache"
+            echo "CCACHE_BASEDIR=$ws"
+            echo "CCACHE_NOHASHDIR=true"
+            echo "SNX_DEPS_CACHE=$ws/.cache/deps"
+            echo "SNX_CCACHE_START=$(date +%s)"
+          } >> "$GITHUB_ENV"
+      # Unicorn 2.1.4, as the appimage job installs it: the header and library the tests link, and the A32 and Thumb
+      # differentials' reference, in a venv. PyPI drops a connection now and then, so it is tried 3 times, 5 s apart
+      - name: Install Unicorn
+        run: |
+          python -m venv --system-site-packages .cache/unicorn
+          cat > .cache/unicorn/requirements.txt <<'EOF'
+          unicorn==2.1.4 \
+            --hash=sha256:9d6e6dea140560de4ebd8446661f7ef84a357d428c14a3ef09dacd306ec8c239 \
+            --hash=sha256:bd1fb0c9af5f57e356d8a96928b4fe045b2e18f308ef23b481d5f970008aa722
+          EOF
+          for try in 1 2 3; do
+            .cache/unicorn/bin/pip install --quiet --require-hashes --only-binary :all: -r .cache/unicorn/requirements.txt && break
+            [ "$try" = 3 ] && exit 1
+            sleep 5
+          done
+      - name: Build the tests under Unicorn
+        shell: bash
+        run: |
+          git config --global --add safe.directory '*'
+          ccache --zero-stats
+          wheel=$(.cache/unicorn/bin/python -c 'import os, unicorn; print(os.path.dirname(os.path.abspath(unicorn.__file__)))')
+          cmake --preset default -B build/unicorn ${{ env.SNX_TEST_OPTIONS }} -DBUILD_TESTING=ON -DSNX_DEPLOY=OFF \
+            -DSNX_A64_DISASM=OFF -DPython3_EXECUTABLE="$PWD/.cache/unicorn/bin/python" \
+            -DSNX_UNICORN_INCLUDE_DIR="$wheel/include" -DSNX_UNICORN_LIBRARY="$wheel/lib/libunicorn.so.2" \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build build/unicorn --parallel "$(getconf _NPROCESSORS_ONLN)"
+          ccache --show-stats
+      # Trimmed and saved as in the appimage job
+      - name: Trim the compiler cache
+        run: |
+          ccache --evict-older-than "$(( $(date +%s) - SNX_CCACHE_START ))s"
+          ccache --zero-stats
+          du -sh "$CCACHE_DIR"
+          df -h .
+      - if: github.event_name != 'pull_request'
+        uses: actions/cache/save@v5
+        with:
+          path: .cache/ccache
+          key: ccache-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
+      # The code of the native back ends that no job runs, each test by its name, then what each machine ran: one that ran
+      # none fails (scripts/unicorn-tests.py), as ctest passes a test the build has not
+      - name: Test the native back ends under Unicorn
+        if: env.SNX_TESTS == 'true'
+        shell: bash
+        run: |
+          status=0
+          ctest --test-dir build/unicorn -L '^unicorn$' --no-tests=error --output-on-failure --parallel 4 \
+            --output-junit "$PWD/unicorn.xml" || status=$?
+          python3 scripts/unicorn-tests.py unicorn.xml || status=1
+          exit "$status"
       - *fail-fast-file
       - *fail-fast-mark
 
