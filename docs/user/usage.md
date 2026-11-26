@@ -934,7 +934,7 @@ which ends the game, in the failure colour and asked first. The game waits while
 **Record input** and **Play input**, record player 1's buttons into a slot and play them back: Left and Right choose
 the slot, shown as a list's value (`< Slot 3 >`), and Enter takes it, a recording over another asked first. Before a load the game is saved to the auto slot,
 listed first, so a load can be undone (`state_auto_backup`). The game's own save files are never part of a state,
-and loading one leaves them as they are. A state loads only into the game, update and mods it was saved with. A newer
+and loading one leaves them as they are: a GBA cartridge's or a DS card's save memory too, the game's `<name>.sav`. A state loads only into the game, update and mods it was saved with. A newer
 ScarletNX loads it too, unless it changed the recompiled code (`SNX_ABI`) or the layout of what a state holds, and
 then it says so. A save is refused, saying why, while the game holds what a state can't keep yet: a network
 connection, local play with others, code modules it loaded, or NVN work waiting on the GPU.
