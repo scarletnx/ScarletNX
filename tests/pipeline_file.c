@@ -1579,12 +1579,46 @@ static void check_build_words(void) {
     }
 }
 
+/* The files as they are written, byte for byte: one appended to as its records come (pack 0), one whose records are
+   held and saved as zstd units (PF_PACK_UNITS) and one whose shaders are packed one by one (PF_PACK_SHADERS), the
+   same records in each, every one the same bytes from one version of the code to the next: the FNV-1a of each file
+   as its format last changed */
+static void bytes_stable(void) {
+    static const struct {
+        int pack;
+        u64 hash;
+    } files[3] = {
+        {0, 0x53A8ACD77EE9C0D4ull}, {PF_PACK_UNITS, 0xECD04744322B703Aull}, {PF_PACK_SHADERS, 0xCFA0CEBE66B3A9D5ull}};
+    for (int f = 0; f < 3; ++f) {
+        PFile pf;
+        u32 loaded[2];
+        remove(PATH);
+        unit_open_as(&pf, 0x200000, loaded, files[f].pack);
+        unit_add(&pf, 0, 12, 0);
+        close_file(&pf);
+        long n = file_size();
+        u8* d = n > 0 ? malloc((size_t)n) : NULL;
+        FILE* in = d ? fopen(PATH, "rb") : NULL;
+        CHECK(in && fread(d, 1, (size_t)n, in) == (size_t)n);
+        if (in) fclose(in);
+        u64 h = 0xCBF29CE484222325ull;
+        for (long i = 0; d && i < n; ++i) h = (h ^ d[i]) * 0x100000001B3ull;
+        free(d);
+        if (h != files[f].hash)
+            fprintf(stderr, "pipeline_file: the file of pack %d is %ld bytes of FNV-1a 0x%016llX, not 0x%016llX\n",
+                    files[f].pack, n, (unsigned long long)h, (unsigned long long)files[f].hash);
+        CHECK(h == files[f].hash);
+    }
+    remove(PATH);
+}
+
 int main(void) {
     PFile pf;
     u32 loaded[2];
     long whole, header;
     remove(PATH);
     check_build_words();
+    bytes_stable();
 
     /* a first run: no file, records written as shaders and pipelines are made */
     open_file(&pf, "key one", 0xA0, 0, loaded);
