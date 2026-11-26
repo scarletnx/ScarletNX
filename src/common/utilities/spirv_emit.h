@@ -844,6 +844,10 @@ uint32_t spv_emit_type_image(SpvEmitter* e, uint32_t sampled_type, uint32_t dim,
 uint32_t spv_emit_type_sampled_image(SpvEmitter* e, uint32_t image);
 /* a struct of its own each time (structs are decorated, as blocks): members with their byte offsets */
 uint32_t spv_emit_type_struct(SpvEmitter* e, const uint32_t* members, const uint32_t* offsets, size_t count);
+/* a block of built-ins (gl_PerVertex), a struct of its own each time: member i decorated BuiltIn builtins[i], the
+   struct Block, no offsets, as a stage's Input or Output block is (a built-in held in a block, not in a variable of its
+   own, as glslang writes them: a driver's compiler has failed on the variables) */
+uint32_t spv_emit_type_builtin_block(SpvEmitter* e, const uint32_t* members, const uint32_t* builtins, size_t count);
 /* OpTypeCooperativeMatrixKHR (SPV_KHR_cooperative_matrix) of component: its scope (3 Subgroup), rows, columns and
    use (0 MatrixA, 1 MatrixB, 2 MatrixAccumulator) as numbers, made constants here */
 uint32_t spv_emit_type_cooperative_matrix(SpvEmitter* e, uint32_t component, uint32_t scope, uint32_t rows,
