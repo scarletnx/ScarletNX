@@ -482,7 +482,9 @@ times are folded when sailgen runs and when the emitter runs as for LLVM, and wh
 of the block's x86 instructions (`SgXIns`: a selected candidate, virtual registers for its operands, an immediate),
 the assembly itself. The emitter does what costs little as it appends: constants fold, an operand that is a constant
 picks the candidate whose immediate it fits (`imm8` sign extended before `imm32`), a candidate needing a feature the
-host lacks is passed over (SHLX for SHL CL; a primitive none can make leaves the word to another back end), an input a
+host lacks is passed over (SHLX for SHL CL; an SSE form of XMM registers alone that `x64.h`'s `sgx_vf_helped_forms`
+lists is a cold call of `x64_helpers.c`'s `snx_x64_sse`, the instruction in C, and CRC32C without SSE4.2 a table's, as
+CRC32's; a primitive none can make leaves the word to another back end), an input a
 form reads whole is zero extended only where its register isn't (each value knows the bits of its register above it
 that are 0: the selection said which forms leave their result so), NOT stays unmade until something reads it (a
 subtraction takes the operand it was of), and a chain of operations with constants folds into its first (`x AND k1 AND

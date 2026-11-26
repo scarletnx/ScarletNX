@@ -29,10 +29,10 @@ int main(void) {
 #if defined(__x86_64__)
     if (snx_native_available()) {
         char lacks[256];
-        snx_x64_without(SNX_X64_SSE42);
+        snx_x64_without(SNX_X64_POPCNT);
         snx_native_set_alone(1);
         assert(snx_native_floor(lacks, sizeof lacks) && !bridge_init(NULL, error, sizeof error));
-        assert(!strcmp(error, lacks) && !strncmp(error, "cpu: needs SSE4.2, this host has ", 33));
+        assert(!strcmp(error, lacks) && !strncmp(error, "cpu: needs POPCNT, this host has ", 33));
         snx_native_set_alone(0);
         snx_x64_without(0);
     }

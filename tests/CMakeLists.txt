@@ -4503,6 +4503,12 @@ if(SNX_X64)
              --ops PMULL_p64)
     add_test(NAME recompiler_backends_refused_no_pclmul COMMAND snx-test-recompiler-backends --refused --target max
              --without 0x3D80 --ops PMULL_p64)
+    # and a Penryn's, without SSE4.2 too: the 64-bit compares and CRC32C
+    add_test(NAME recompiler_backends_no_sse42 COMMAND snx-test-recompiler-backends --without 0x3DC0 --states 48
+             --ops CMGT_v CMHI_v CMGE_v CMHS_v CMGT_s CMLT0_v CMLE0_v FCMGT_v FACGT_v FADD_v FMUL_v FRINTN_v SQXTN_v
+             UQADD_v SCVTF_vi CRC32C)
+    add_test(NAME recompiler_backends_refused_no_sse42 COMMAND snx-test-recompiler-backends --refused --target max
+             --without 0x3DC0)
 endif()
 # a big-endian PowerPC64's guest doublewords with LDBRX and without (tools/sailgen/ppc64.h), the code run under
 # qemu-ppc64 on CPUs before ISA 2.06 and after (skipped without qemu-ppc64)

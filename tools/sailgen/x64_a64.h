@@ -511,9 +511,10 @@ static inline void sg_Hint_WFI(SgCtx* g) { (void)g; }
 static inline void sg_SendEvent(SgCtx* g) { sgx_call(g, NULL, (int)offsetof(RtAPI, sev), 0, NULL, 0, 0); }
 static inline void sg_SendEventLocal(SgCtx* g) { sg_SendEvent(g); }
 /* CRC32 and CRC32C: the reflected update (BitReverse(Poly32Mod2(...)) as README.md's builtins say): CRC32C SSE4.2's
-   CRC32 instruction; CRC32 of a word or a doubleword by Barrett's reduction, two PCLMULQDQs: x, the value XOR the
-   accumulator at the top of 64 bits, times the low 64 bits of x^96 / P reflected, whose low half times P reflected has
-   the remainder in bits 95:64 (both linear: equal on a basis of x, the task's proof); of a byte or a halfword a byte at a
+   CRC32 instruction, or where the host has no SSE4.2 a byte at a time through its own table in x64_helpers.c; CRC32
+   of a word or a doubleword by Barrett's reduction, two PCLMULQDQs: x, the value XOR the accumulator at the top of 64
+   bits, times the low 64 bits of x^96 / P reflected, whose low half times P reflected has the remainder in bits 95:64
+   (both linear: equal on a basis of x, the task's proof); of a byte or a halfword, or without PCLMULQDQ, a byte at a
    time through x64_helpers.c's table (SGX_M_CRC) */
 static inline SgD sg_crc32(SgCtx* g, SgD acc_bits, SgD value_bits, long long size, SgS poly) {
     static const signed char fix[2] = {SGX_RAX, SGX_RDX};
@@ -532,8 +533,11 @@ static inline SgD sg_crc32(SgCtx* g, SgD acc_bits, SgD value_bits, long long siz
     }
     in[0] = sg_d_zext(g, acc_bits, 64);
     in[1] = sg_d_zext(g, value_bits, 64);
-    return sg_d_slice(g, sgx_mach(g, SGX_M_CRC, in, fix, 2, size / 8 | (poly.v == 0x1EDC6F41u) << 4,
-                                  1u << SGX_RCX | 1u << SGX_RDX | 1u << SGX_R11, 1, 64), 31, 0);
+    const int c = poly.v == 0x1EDC6F41u, sse42 = (sgx(g)->features & SGX_F_SSE42) != 0;
+    return sg_d_slice(g,
+                      sgx_mach(g, SGX_M_CRC, in, fix, 2, size / 8 | (c && sse42) << 4 | (c && !sse42) << 5,
+                               1u << SGX_RCX | 1u << SGX_RDX | 1u << SGX_R11, 1, 64),
+                      31, 0);
 }
 
 /* an x86 load is an acquire one (Vol. 3A, 10.2.2: loads are not reordered with other loads, nor stores with older
@@ -715,12 +719,13 @@ static inline void sgx_machine_inline(SgXAsm* a, SgXIns* i) {
             return;
         }
         /* the table's address in R11: a relocation of the object's, or the address resolve gives */
+        const char* table = i->imm & 32 ? "snx_x64_crc32c_table" : "snx_x64_crc32_table";
         if (a->reloc) {
             sgx_bytes(b, "4C 8D 1D"); /* lea r11, [rip + table] */
-            a->reloc(a->machine, b->n, "snx_x64_crc32_table", -4);
+            a->reloc(a->machine, b->n, table, -4);
             sgx_imm(b, 0, 4);
         } else {
-            SnxU64 t = a->resolve ? a->resolve("snx_x64_crc32_table") : 0;
+            SnxU64 t = a->resolve ? a->resolve(table) : 0;
             if (!t) sg_fail("a table nothing resolves", 0, 0);
             sgx_bytes(b, "49 BB"); /* mov r11, imm64 */
             sgx_imm(b, (long long)t, 8);

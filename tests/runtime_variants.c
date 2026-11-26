@@ -111,7 +111,7 @@ SnxJitService* snx_jit_service_new(const SnxJitConfig* config, char* error, size
 
 /* native.h's: whether the host is below its back end's floor (--below), and its line */
 static int g_below;
-#define BELOW "cpu: needs POPCNT, this host has SSE3, SSSE3, SSE4.1 and SSE4.2"
+#define BELOW "cpu: needs POPCNT, this host has SSE3, SSSE3 and SSE4.1"
 int snx_native_floor(char* why, size_t size) {
     snprintf(why, size, "%s", g_below ? BELOW : "");
     return g_below;

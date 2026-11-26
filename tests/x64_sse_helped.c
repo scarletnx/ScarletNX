@@ -42,6 +42,11 @@ static void operand(unsigned k, u64 v[2]) {
     }
     _mm_storeu_si128((__m128i*)r, z);
 }
+[[gnu::target("sse4.2")]] static void pcmpgtq(const u64* a, const u64* b, unsigned imm, u64* r) {
+    (void)imm;
+    _mm_storeu_si128((__m128i*)r,
+                     _mm_cmpgt_epi64(_mm_loadu_si128((const __m128i*)a), _mm_loadu_si128((const __m128i*)b)));
+}
 static void check(const char* form, unsigned number, unsigned imm,
                   void (*real)(const u64*, const u64*, unsigned, u64*)) {
     for (unsigned k = 0; k < 4096; ++k) {
@@ -67,13 +72,14 @@ int main(void) {
 #if defined(__x86_64__)
     unsigned a, b, c, d;
     g_sse.seed = 0x9e3779b97f4a7c15ull;
-    if (!__get_cpuid(1, &a, &b, &c, &d) || !(c & (1u << 1))) {
-        printf("x64_sse_helped: this host has no PCLMULQDQ to hold the helper to\n");
+    if (!__get_cpuid(1, &a, &b, &c, &d) || !(c & (1u << 1)) || !(c & (1u << 20))) {
+        printf("x64_sse_helped: this host has no PCLMULQDQ or SSE4.2 to hold the helpers to\n");
         return 77;
     }
     /* x64.h's sgx_vf_helped_forms, in order; PMULL's immediates */
     for (unsigned imm = 0; imm < 0x12; imm += imm == 0x01 ? 0x0F : 1)
         if (imm <= 0x01 || imm >= 0x10) check("PCLMULQDQ", 0, imm, pclmulqdq);
+    check("PCMPGTQ", 1, 0, pcmpgtq);
     printf("x64_sse_helped: %d failures\n", g_sse.failures);
     return g_sse.failures != 0;
 #else
