@@ -13,8 +13,8 @@
               from its own
      MEMORY   the image's segments, the runtime's page with the threads' TLS, the imported variables' slots and every
               memory block, in that order
-     IO, GXM, AUDIO, NGS, TROPHY  the files open, sceGxm, the sound ports, SceNgs and the trophies, each its own
-              (io.c, gxm.c, audio.c, ngs.c, trophy.c)
+     IO, GXM, AUDIO, NGS, TROPHY, AUDIODEC  the files open, sceGxm, the sound ports, SceNgs, the trophies and the
+              audio decoders, each its own (io.c, gxm.c, audio.c, ngs.c, trophy.c, audiodec.c)
 
    The structs go as their bytes, as the Switch's g_hle does: a state whose types had other fields has another schema,
    and is refused. The game's identity is its title ID's and its image's segments' hash */
@@ -127,7 +127,6 @@ static int savable(VitaProcess* p, char* why, size_t whysize) {
         const char* what;
     } held[] = {{vita_mp4_in_use(p), "mp4 files open"},
                 {vita_videodec_in_use(p), "video decoders"},
-                {vita_audiodec_in_use(p), "audio decoders"},
                 {vita_net_in_use(p), "sockets open"}};
     for (size_t i = 0; i < sizeof held / sizeof *held; ++i)
         if (held[i].n) {
@@ -242,7 +241,8 @@ int snx_vita_state_save(VitaProcess* p, const char* path, const uint8_t* thumb, 
     failed = failed || sw_end(w) || sw_begin(w, "IO", 1) || vita_io_state_save(p, &io) || sw_end(w) ||
              sw_begin(w, "AUDIO", vita_audio_state_schema()) || vita_audio_state_save(p, &io) || sw_end(w) ||
              sw_begin(w, "NGS", vita_ngs_state_schema()) || vita_ngs_state_save(p, &io) || sw_end(w) ||
-             sw_begin(w, "TROPHY", vita_trophy_state_schema()) || vita_trophy_state_save(p, &io) || sw_end(w);
+             sw_begin(w, "TROPHY", vita_trophy_state_schema()) || vita_trophy_state_save(p, &io) || sw_end(w) ||
+             sw_begin(w, "AUDIODEC", vita_audiodec_state_schema()) || vita_audiodec_state_save(p, &io) || sw_end(w);
     if (!failed) {
         r = sw_finish(w, why, whysize);
         w = NULL;
@@ -332,7 +332,7 @@ int snx_vita_state_load(VitaProcess* p, const char* path, char* why, size_t whys
     int64_t offsets[TIMES_MOST];
     uint32_t nt = 0;
     size_t nr = 0;
-    void *files = NULL, *gxm = NULL, *audio = NULL, *ngs = NULL, *trophy = NULL;
+    void *files = NULL, *gxm = NULL, *audio = NULL, *ngs = NULL, *trophy = NULL, *audiodec = NULL;
     int refused = 1;
     if (!c || !at)
         snprintf(why, whysize, "out of memory for the state's process (%zu bytes)", sizeof *c);
@@ -367,7 +367,9 @@ int snx_vita_state_load(VitaProcess* p, const char* path, char* why, size_t whys
                  !begin(r, "NGS", vita_ngs_state_schema(), why, whysize) &&
                  (ngs = parsed(r, "NGS", vita_ngs_state_parse(&io, why, whysize), why, whysize)) &&
                  !begin(r, "TROPHY", vita_trophy_state_schema(), why, whysize) &&
-                 (trophy = parsed(r, "TROPHY", vita_trophy_state_parse(&io, why, whysize), why, whysize)))
+                 (trophy = parsed(r, "TROPHY", vita_trophy_state_parse(&io, why, whysize), why, whysize)) &&
+                 !begin(r, "AUDIODEC", vita_audiodec_state_schema(), why, whysize) &&
+                 (audiodec = parsed(r, "AUDIODEC", vita_audiodec_state_parse(&io, why, whysize), why, whysize)))
             refused = 0;
     }
     if (refused) {
@@ -377,6 +379,7 @@ int snx_vita_state_load(VitaProcess* p, const char* path, char* why, size_t whys
         free(audio);
         vita_ngs_state_drop(ngs);
         vita_trophy_state_drop(trophy);
+        vita_audiodec_state_drop(audiodec);
         free(c);
         free(at);
         if (!why[0]) snprintf(why, whysize, "it couldn't be read");
@@ -387,7 +390,6 @@ int snx_vita_state_load(VitaProcess* p, const char* path, char* why, size_t whys
     vita_render_free(p);
     vita_mp4_free(p);
     vita_videodec_free(p);
-    vita_audiodec_free(p);
     vita_net_free(p);
     char fatal[256] = "";
     if (vita_memory_adopt(p, c->allocations, fatal, sizeof fatal)) {
@@ -421,6 +423,7 @@ int snx_vita_state_load(VitaProcess* p, const char* path, char* why, size_t whys
     vita_audio_state_install(p, audio);
     vita_ngs_state_install(p, ngs);
     vita_trophy_state_install(p, trophy);
+    vita_audiodec_state_install(p, audiodec);
     uint64_t* fields[TIMES_MOST];
     size_t have = times(p, fields);
     int64_t now = (int64_t)plat_ns();

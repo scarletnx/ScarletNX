@@ -18,7 +18,8 @@
 /* The game saved to path (its folder made when it is missing), with thumb as its picture (SNX_STATE_THUMB_W x
    SNX_STATE_THUMB_H RGBA8, or NULL for none): 0, or -1 with the reason in why. Refused, with what the game holds,
    while it holds what a state can't: a thread inside a call of the runtime's into the game (a sort's comparison, a
-   callback), a scene being drawn, mp4 files, video or audio decoders, sockets */
+   callback), a scene being drawn, an mp4 file or a video decoder (the movie's place and the pictures H.264 decodes the
+   next from can't be put back), sockets */
 int snx_vita_state_save(VitaProcess* p, const char* path, const uint8_t* thumb, char* why, size_t whysize);
 /* The state at path put in place of the running game: 0, or -1 with the reason in why, when it was refused before
    anything changed (another game's state, another version or layout, a damaged file, a file the game had open that

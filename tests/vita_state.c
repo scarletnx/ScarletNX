@@ -9,7 +9,9 @@
    right after holds the same sections byte for byte (the times within a second); a fresh process takes it the same.
    A state of another game, another version, with a section of another layout, damaged, cut short, or naming a file
    that is gone, is refused before anything changes; a save is refused while a thread runs, while one is inside a
-   call of the runtime's into the game, and while a socket is open, each naming what */
+   call of the runtime's into the game, and while a socket is open, each naming what. An AAC decoder that decoded frames
+   before the save decodes the frames after it the same once loaded, but for the first, which its transform's overlap
+   reaches */
 #if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
 #define _POSIX_C_SOURCE 200809L /* setenv */
 #endif
@@ -67,9 +69,60 @@ static uint32_t text(VitaProcess* p, uint32_t at, const char* s) {
 /* the byte of the data file at offset */
 static uint8_t data_byte(uint32_t offset) { return (uint8_t)(offset * 7 + 3); }
 
+/* AAC LC frames the test writes (FFmpeg here has no AAC encoder): one channel, one long window, band 0 (four
+   coefficients) in codebook 11 at the global gain, its two pairs of values of the frame's, so each frame differs and
+   what FFmpeg keeps of one (its transform's overlap) reaches the next */
+#define AAC_FRAMES 10
+#define AAC_GAIN   170
+typedef struct {
+    uint8_t* p;
+    size_t bits;
+} Bits;
+static void put_bits(Bits* b, uint32_t value, unsigned n) {
+    for (unsigned i = n; i-- > 0; ++b->bits)
+        if (value >> i & 1) b->p[b->bits / 8] |= (uint8_t)(0x80u >> b->bits % 8);
+}
+/* a pair of codebook 11's (each 0 to 2), its code (ff_aac_spectral_codes[10][17 * y + z]) and signs */
+static void put_pair(Bits* b, unsigned y, unsigned z, bool negative) {
+    static const uint16_t code[3][3] = {{0x000, 0x006, 0x019}, {0x005, 0x001, 0x008}, {0x017, 0x007, 0x009}};
+    static const uint8_t bits[3][3] = {{4, 5, 6}, {5, 4, 5}, {6, 5, 5}};
+    put_bits(b, code[y][z], bits[y][z]);
+    if (y) put_bits(b, negative, 1);
+    if (z) put_bits(b, 0, 1);
+}
+static void aac_frame(VitaProcess* p, uint32_t at, unsigned f) {
+    uint8_t* out = vita_ptr(p, at);
+    memset(out, 0, 64);
+    Bits b = {out, 0};
+    put_bits(&b, 0, 3);        /* a single channel element */
+    put_bits(&b, 0, 4);        /* its tag */
+    put_bits(&b, AAC_GAIN, 8); /* global_gain */
+    put_bits(&b, 0, 4);        /* ics_info: reserved, ONLY_LONG_SEQUENCE, the sine window */
+    put_bits(&b, 1, 6);        /* max_sfb */
+    put_bits(&b, 0, 1);        /* no prediction */
+    put_bits(&b, 11, 4);       /* a section in codebook 11 */
+    put_bits(&b, 1, 5);        /* of one band */
+    put_bits(&b, 0, 1);        /* band 0's scalefactor the global gain: the code of a difference of 0 */
+    put_bits(&b, 0, 3);        /* no pulse data, TNS or gain control */
+    put_pair(&b, 1 + f % 2, f % 3, f & 4);
+    put_pair(&b, f % 3, 1 + f / 3 % 2, false);
+    put_bits(&b, 7, 3); /* the end */
+}
+/* frame f decoded by the decoder of ctrl into out (the PCM's bytes there, at most 4096): 0, or 1 having said why */
+static int aac_decode(VitaProcess* p, VitaThread* t, uint32_t ctrl, unsigned f, uint8_t* out, uint32_t* got) {
+    uint32_t es = ctrl + 0x800, pcm = ctrl + 0x1000;
+    aac_frame(p, es, f);
+    vita_write32(p, ctrl + 8, es), vita_write32(p, ctrl + 0x14, pcm);
+    CHECK(CALL("sceAudiodecDecode", ctrl) == 0);
+    *got = vita_read32(p, ctrl + 0x18);
+    CHECK(*got && *got <= 4096);
+    if (out) memcpy(out, vita_ptr(p, pcm), *got);
+    return 0;
+}
+
 /* what the test made in a process */
 typedef struct {
-    uint32_t mem, block, sema, worker, file, written, folder;
+    uint32_t mem, block, sema, worker, file, written, folder, decoder;
 } Made;
 /* a process of the game in root/name: 0, or 1 having said why */
 static int make(const char* root, const char* name, VitaProcess** out) {
@@ -113,6 +166,17 @@ static int setup(VitaProcess* p, Made* m) {
     CHECK(CALL("sceKernelGetMemBlockBase", m->block, mem + 0x3100) == 0 && (base = vita_read32(p, mem + 0x3100)));
     CHECK(CALL("sceGxmMapMemory", base, 0x40000) == 0);
     CHECK(CALL("sceAudioOutOpenPort", 0, 256, 48000, 1) == 1); /* its ID */
+    /* an AAC decoder, one channel at 48 kHz (its SceAudiodecCtrl at decoder, its SceAudiodecInfoAac after it), which
+       decoded frames 0 to 2 */
+    uint32_t ctrl = m->decoder = mem + 0x4000, info = ctrl + 0x40;
+    vita_write32(p, ctrl, 0x28), vita_write32(p, ctrl + 0x24, info);
+    vita_write32(p, info, 0x14), vita_write32(p, info + 4, 0), vita_write32(p, info + 8, 1);
+    vita_write32(p, info + 12, 48000), vita_write32(p, info + 16, 0);
+    CHECK(CALL("sceAudiodecCreateDecoder", ctrl, 0x1005) == 0);
+    for (unsigned f = 0; f < 3; ++f) {
+        uint32_t got;
+        if (aac_decode(p, t, ctrl, f, NULL, &got)) return 1;
+    }
     return 0;
 }
 /* every section of two states but TIME byte for byte, TIME within a second: 0, or 1 naming the first difference */
@@ -206,6 +270,21 @@ static int files_back(VitaProcess* p, const Made* m, uint32_t mem) {
     return 0;
 }
 
+/* the decoder made again by the load decodes frames 3 on: the first as many bytes, the ones after it the same */
+static int decodes_the_same(VitaProcess* p, const Made* m, uint8_t ref[][4096], const uint32_t* ref_got,
+                            uint8_t back[][4096], uint32_t* back_got) {
+    VitaThread* t = &p->threads[0];
+    for (unsigned f = 3; f < AAC_FRAMES; ++f) {
+        if (aac_decode(p, t, m->decoder, f, back[f], &back_got[f])) return 1;
+        CHECK(back_got[f] == ref_got[f]);
+        if (f > 3 && memcmp(back[f], ref[f], ref_got[f])) {
+            fprintf(stderr, "vita_state: AAC frame %u decodes otherwise after the load\n", f);
+            return 1;
+        }
+    }
+    return 0;
+}
+
 int main(void) {
 #ifdef _WIN32
     _putenv_s("SDL_AUDIO_DRIVER", "dummy"); /* the sound port's stream, on no device of the host's */
@@ -237,6 +316,15 @@ int main(void) {
     CHECK(vita_read32(p, mem + 0x8000 + 4) == 0x9E3779B1u);
     uint32_t r4 = vita_thread(p, m.worker)->cpu.r[4];
     CHECK(!snx_vita_state_save(p, saved, NULL, why, sizeof why));
+    /* the frames after the state, as the decoder that went on gives them */
+    static uint8_t ref[AAC_FRAMES][4096], back[AAC_FRAMES][4096];
+    uint32_t ref_got[AAC_FRAMES] = {0}, back_got[AAC_FRAMES] = {0};
+    size_t loud = 0;
+    for (unsigned f = 3; f < AAC_FRAMES; ++f) {
+        if (aac_decode(p, t, m.decoder, f, ref[f], &ref_got[f])) return 1;
+        for (uint32_t i = 0; i < ref_got[f]; ++i) loud += ref[f][i] != 0;
+    }
+    CHECK(loud > 1000);
     /* everything changed */
     for (uint32_t i = 0; i < 0x1000; ++i) vita_write32(p, mem + 0x8000 + i * 4, 0xDEADBEEFu);
     CHECK(CALL("sceIoRead", m.file, mem + 0x100, 200) == 200);
@@ -258,6 +346,7 @@ int main(void) {
     CHECK(!snx_vita_state_save(p, again, NULL, why, sizeof why));
     if (same_state("loaded in the same process", saved, again)) return 1;
     if (files_back(p, &m, mem)) return 1;
+    if (decodes_the_same(p, &m, ref, ref_got, back, back_got)) return 1;
     /* a fresh process of the game takes it the same */
     VitaProcess* q;
     if (make(root, "game", &q)) return 1;
@@ -268,6 +357,7 @@ int main(void) {
     CHECK(!snx_vita_state_save(q, fresh, NULL, why, sizeof why));
     if (same_state("loaded in a fresh process", saved, fresh)) return 1;
     if (files_back(q, &m, mem)) return 1;
+    if (decodes_the_same(q, &m, ref, ref_got, back, back_got)) return 1;
     vita_process_free(q);
     /* refused: another game's, another version's, a section of another layout, a damaged one, one cut short */
     {
@@ -291,7 +381,7 @@ int main(void) {
         const char* const layout[] = {"GXM", "another layout", NULL};
         CHECK(!copy_changed(saved, changed, (long long)table + 8, 0x5A, 0));
         if (refused(p, root, changed, layout)) return 1;
-        const char* const damaged[] = {"trophies", "damaged", NULL};
+        const char* const damaged[] = {"audio decoders", "damaged", NULL};
         CHECK(!copy_changed(saved, changed, (long long)table - 6, 0x40, 0));
         if (refused(p, root, changed, damaged)) return 1;
     }
