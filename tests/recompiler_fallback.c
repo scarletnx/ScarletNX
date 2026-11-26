@@ -2,13 +2,14 @@
    Copyright 2026 the ScarletNX contributors */
 /* What makes the code the native back end leaves (recompiler/fallback.h), as a program's link gives it:
    - LLVM's: a JIT unit's object, whose table's functions run; the functions of a unit the native back end did not make,
-     alone in an object; AArch32 and Thumb blocks in one object, hidden in an AOT module's, and their IR; and a block of
-     the executor's (exec.c, here, its loads counted and refused as the test asks) whose native object does not load,
-     run;
-   - none (fallback_none.c, a program that links no LLVM): each refused with an error that names the code asked for, its
-     address and first instruction, why the native back end left it and that the build has no LLVM, and nothing else
-     said. An executor on a host with no native back end is refused with it too, the functions all made are none's to
-     refuse, and the AOT compilers' maker of blocks (cpu/arm/aot.c, here) has the native back end's alone */
+     alone in an object; AArch32 and Thumb blocks in one object, hidden in an AOT module's, and their IR; an AOT
+     module's index of tables, integers and structs, and its descriptor, with what lays them out otherwise than C; and a
+     block of the executor's (exec.c, here, its loads counted and refused as the test asks) whose native object does
+     not load, run;
+   - none (fallback_none.c, a program that links no LLVM): each refused with an error that names the code or the global
+     asked for, its address and first instruction, why the native back end left it and that the build has no LLVM, and
+     nothing else said. An executor on a host with no native back end is refused with it too, the functions all made are
+     none's to refuse, and the AOT compilers' maker of blocks (cpu/arm/aot.c, here) has the native back end's alone */
 #include "common/cpu/aarch64/cpu.h"
 #include "common/cpu/recompiler/codegen.h"
 #include "common/cpu/recompiler/fallback.h"
@@ -196,6 +197,92 @@ static void made_hidden(void) {
     snx_fallback_arm_free(aot);
     snx_fallback_arm_free(jit);
 }
+/* ---- an AOT module's index ---- */
+
+typedef struct {
+    uint32_t a;
+    uint64_t b;
+    const void* p;
+} DataPair;
+typedef struct {
+    uint64_t magic;
+    unsigned char id[4];
+    const DataPair* pairs;
+} DataDescriptor;
+static const unsigned char k_id[4] = {1, 2, 3, 0xF0};
+static const SnxFallbackField k_pairs[6] = {{.bits = 32, .value = 1, .offset = offsetof(DataPair, a)},
+                                            {.bits = 64, .value = 2, .offset = offsetof(DataPair, b)},
+                                            {.global = "keys", .offset = offsetof(DataPair, p)},
+                                            {.bits = 32, .value = 3, .offset = offsetof(DataPair, a)},
+                                            {.bits = 64, .value = 4, .offset = offsetof(DataPair, b)},
+                                            {.offset = offsetof(DataPair, p)}};
+static const SnxFallbackField k_descriptor[3] = {
+    {.bits = 64, .value = 0x1122, .offset = offsetof(DataDescriptor, magic)},
+    {.bytes = k_id, .count = sizeof k_id, .offset = offsetof(DataDescriptor, id)},
+    {.global = "pairs", .offset = offsetof(DataDescriptor, pairs)}};
+static const uint32_t k_keys[2] = {7, 9};
+/* every slot a block but the second */
+static int data_name(void* user, size_t i, char* out, size_t size) {
+    (void)user;
+    if (i == 1) return 0;
+    snprintf(out, size, "block_%zu", i);
+    return 1;
+}
+/* the index by LLVM: its globals in the IR as asked, its object exporting the descriptor, and what it refuses */
+static void made_data(void) {
+    char error[512] = "", *text = NULL;
+    unsigned char* object = NULL;
+    size_t size = 0;
+    SnxFallbackData* d = snx_fallback_data_new("unit", "unit-index", '1', "no native back end on this host");
+    if (!d) {
+        CHECK(0, "out of memory");
+        return;
+    }
+    CHECK(!snx_fallback_data_blocks(d, "table", 3, data_name, NULL, error, sizeof error), "the table: %s", error);
+    CHECK(!snx_fallback_data_blocks(d, "again", 1, data_name, NULL, error, sizeof error), "a second: %s", error);
+    CHECK(!snx_fallback_data_integers(d, "keys", 32, 2, k_keys, error, sizeof error), "the keys: %s", error);
+    CHECK(!snx_fallback_data_structs(d, "pairs", 2, k_pairs, 3, sizeof(DataPair), error, sizeof error),
+          "the structs: %s", error);
+    CHECK(!snx_fallback_data_structs(d, "empty", 0, k_pairs, 3, sizeof(DataPair), error, sizeof error),
+          "no structs: %s", error);
+    CHECK(!snx_fallback_data_descriptor(d, "desc", k_descriptor, 3, sizeof(DataDescriptor), error, sizeof error),
+          "the descriptor: %s", error);
+    CHECK(snx_fallback_data_integers(d, "odd", 16, 2, k_keys, error, sizeof error) < 0 &&
+              strstr(error, "unit: odd of integers of 16 bits, which are 8, 32 or 64"),
+          "integers of 16 bits: %s", error);
+    SnxFallbackField lost[3] = {k_descriptor[0], k_descriptor[1], k_descriptor[2]};
+    lost[2].global = "missing";
+    CHECK(snx_fallback_data_descriptor(d, "lost", lost, 3, sizeof(DataDescriptor), error, sizeof error) < 0 &&
+              strstr(error, "unit: lost points to missing, which no global before it is"),
+          "a pointer to no global: %s", error);
+    lost[2].global = "pairs", lost[2].offset += 8;
+    CHECK(snx_fallback_data_descriptor(d, "moved", lost, 3, sizeof(DataDescriptor), error, sizeof error) < 0 &&
+              strstr(error, "unit: moved is laid out otherwise for the target LLVM makes it for") &&
+              strstr(error, "field 2 at 16) than in C (24 bytes, field 2 at 24)"),
+          "a field C has elsewhere: %s", error);
+    CHECK(!snx_fallback_data_ir(d, &text, error, sizeof error) && text, "the index's IR: %s", error);
+    static const char* const k_said[] = {
+        "; ModuleID = 'unit-index'",
+        "@table = internal constant [3 x ptr] [ptr @block_0, ptr null, ptr @block_2]",
+        "@again = internal constant [1 x ptr] [ptr @block_0]",
+        "@keys = internal constant [2 x i32] [i32 7, i32 9]",
+        ("@pairs = internal constant [2 x { i32, i64, ptr }] [{ i32, i64, ptr } { i32 1, i64 2, ptr @keys }, { i32, i64, "
+         "ptr } { i32 3, i64 4, ptr null }]"),
+        "@empty = internal constant [0 x { i32, i64, ptr }] zeroinitializer",
+        "@desc = constant { i64, [4 x i8], ptr } { i64 4386, [4 x i8] c\"\\01\\02\\03\\F0\", ptr @pairs }",
+        "declare hidden void @block_0(ptr)",
+        "declare hidden void @block_2(ptr)"};
+    for (size_t k = 0; text && k < sizeof k_said / sizeof *k_said; ++k)
+        CHECK(strstr(text, k_said[k]), "the index's IR lacks \"%s\":\n%s", k_said[k], text);
+    CHECK(text && !strstr(text, "@lost") && !strstr(text, "@moved") && !strstr(text, "@odd"),
+          "what is refused is not made: %s", text ? text : "");
+    free(text);
+    CHECK(!snx_fallback_data_object(d, &object, &size, error, sizeof error) && object && holds(object, size, "desc"),
+          "the index's object: %s", error);
+    free(object);
+    snx_fallback_data_free(d);
+}
+
 /* the same asked of none: what is refused, and how it is said */
 static void refused_code(SnxCodegen* cg) {
     static const struct {
@@ -258,6 +345,39 @@ static void refused_code(SnxCodegen* cg) {
           "the blocks' IR: %s", error);
     snx_fallback_arm_free(f);
 }
+/* the index asked of none: each global refused, with the module's name and why it was asked */
+static void refused_data(void) {
+    unsigned char dummy = 0, *object = &dummy;
+    char error[512] = "", *text = (char*)&dummy;
+    size_t size = 1;
+    SnxFallbackData* d = snx_fallback_data_new("unit", "unit-index", '1', "no native back end on this host");
+    if (!d) {
+        CHECK(0, "out of memory");
+        return;
+    }
+    static const char k_index[] = " of the index unit-index: no native back end on this host, and this build has no "
+                                  "LLVM to make it (SNX_WITH_LLVM=OFF)";
+    CHECK(snx_fallback_data_blocks(d, "table", 3, data_name, NULL, error, sizeof error) < 0 &&
+              strstr(error, "unit: table") && strstr(error, k_index),
+          "a table: %s", error);
+    CHECK(snx_fallback_data_integers(d, "keys", 32, 2, k_keys, error, sizeof error) < 0 &&
+              strstr(error, "unit: keys") && strstr(error, k_index),
+          "integers: %s", error);
+    CHECK(snx_fallback_data_structs(d, "pairs", 2, k_pairs, 3, sizeof(DataPair), error, sizeof error) < 0 &&
+              strstr(error, "unit: pairs") && strstr(error, k_index),
+          "structs: %s", error);
+    CHECK(snx_fallback_data_descriptor(d, "desc", k_descriptor, 3, sizeof(DataDescriptor), error, sizeof error) < 0 &&
+              strstr(error, "unit: desc") && strstr(error, k_index),
+          "a descriptor: %s", error);
+    CHECK(snx_fallback_data_ir(d, &text, error, sizeof error) < 0 && !text && strstr(error, "unit: the IR") &&
+              strstr(error, k_index),
+          "the index's IR: %s", error);
+    CHECK(snx_fallback_data_object(d, &object, &size, error, sizeof error) < 0 && !object &&
+              strstr(error, "unit: the object") && strstr(error, k_index),
+          "the index's object: %s", error);
+    snx_fallback_data_free(d);
+}
+
 /* the AOT compilers' blocks (aot.c, above) with none: the native back end's made, the others refused by name, with
    why the native back end left them, and the IR asked for of none */
 static void refused_aot(void) {
@@ -380,8 +500,10 @@ int main(void) {
         made_functions(&cg, hints);
         made_blocks();
         made_hidden();
+        made_data();
     } else {
         refused_code(&cg);
+        refused_data();
         refused_aot();
     }
     executor();
