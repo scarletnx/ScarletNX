@@ -61,8 +61,8 @@
    uses (t_rc). Every thread uses slot 0 today. The workers of parallel batches (docs/dev/parallel-draw-batches.md)
    will each take one, so that their memos stay apart and warm on their own cores */
 #define RC_SLOTS VK_RC_SLOTS
-static _Thread_local u32 t_rc;
-u32 vk_render_slot(void) { return t_rc; }
+_Thread_local u32 g_vk_slot;
+#define t_rc g_vk_slot
 /* The statistics counters that a draw adds to: a worker's draws (t_rc) add to its own copy of each (w_ beside it, on a
    cache line of its own), which the renderer thread folds in at the join (cnt_fold). Both threads adding to one count
    at each draw moved its line between the two cores */
@@ -1604,14 +1604,16 @@ static Surf* predraw_sample(int i, Surf* t) {
    (vk_render_stats_log), which tell how much of a draw's setup a later draw can keep: the kept draw states, the
    constant buffer and texture lookups, the descriptor sets, the submissions and the write tracking epochs. Each
    thread's own (draw_batches=2): TEST */
-static _Thread_local struct {
+static struct {
     VkDrawCounts n, was;
     u32 epoch; /* the last draw's write tracking epoch */
     u64 present, drawn, kept, dset_new, dset_reused, targets_kept, submits[VK_SUB_N];
     u64 restrided, restrides; /* the vertex streams restrided so far (restride), and at the last report */
     u32 ww_epoch;
     u64 heap_buffer_calls, heap_buffer_hits, heap_image_calls, heap_image_hits, heap_cb_addresses;
-} g_stats;
+} g_stats_slot[VK_RC_SLOTS];
+/* each thread's by its slot (vk_render_slot), not thread-local: the thread-local storage of every thread comes out of its stack on glibc, and tests/runtime_tls.py holds it to 16 KiB */
+#define g_stats (g_stats_slot[vk_render_slot()])
 /* by TIC index, the present (tic_stamp) that a draw of the slot's thread last named it in: VK_SLOT_TICS counts each
    index once a present, with no walk. Not in g_stats: 2 MiB of thread-local storage is more than a thread's 1 MiB
    stack, where glibc puts it, and each plat_thread failed with EINVAL */

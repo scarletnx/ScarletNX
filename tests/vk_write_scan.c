@@ -213,6 +213,7 @@ _Atomic int g_vk_share_on;
 void vk_share_lock(void) {}
 void vk_shared_note(u32 which) { (void)which; }
 u32 vk_uma_prep_mark(void) { return 0; }
+_Thread_local u32 g_vk_slot; /* render.c's: every thread uses slot 0 here */
 int vk_uma_pending(u64 gva, u64 len) { abort(); }
 int vk_uma_write(u64 gva, u64 len, u64 align, int ordered, VkBuffer* buf, u64* off) { abort(); }
 void vk_uma_order_request(void) { abort(); }

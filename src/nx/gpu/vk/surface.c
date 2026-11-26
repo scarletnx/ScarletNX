@@ -281,13 +281,15 @@ VkImageAspectFlags vk_aspect(const VkFmt* f) {
    when the batch ends: barriers on different images in one call are the same as one call each, in their order. A
    pass's start puts a barrier on each of its targets, and a copy on its two surfaces */
 #define SURF_BATCH 16
-static _Thread_local struct {
+static struct {
     VkImageMemoryBarrier2 b[SURF_BATCH];
     const Surf* s[SURF_BATCH];
     VkCommandBuffer cb;
     u32 n;
     int on;
-} g_surf_batch;
+} g_surf_batch_slot[VK_RC_SLOTS];
+/* each thread's by its slot (vk_render_slot), not thread-local: the thread-local storage of every thread comes out of its stack on glibc, and tests/runtime_tls.py holds it to 16 KiB */
+#define g_surf_batch (g_surf_batch_slot[vk_render_slot()])
 static void surf_batch_flush(void) {
     if (!g_surf_batch.n) return;
     VkDependencyInfo dependency = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
@@ -445,7 +447,7 @@ void vk_surf_batch_end(void) {
    readers of a surface's layout ask vk_surf_layout. A surface in the view is never made over, loaded again or freed
    before the list's calls ran: vk_surf_before_reset puts the list into the ring first */
 #define SURF_VIEWS 256
-static _Thread_local struct {
+static struct {
     u32 n;
     struct {
         const Surf* s;
@@ -453,7 +455,9 @@ static _Thread_local struct {
         VkPipelineStageFlags2 stage;
         VkAccessFlags2 access;
     } v[SURF_VIEWS];
-} t_sv;
+} t_sv_slot[VK_RC_SLOTS];
+/* each thread's by its slot (vk_render_slot), not thread-local: the thread-local storage of every thread comes out of its stack on glibc, and tests/runtime_tls.py holds it to 16 KiB */
+#define t_sv (t_sv_slot[vk_render_slot()])
 static int sv_find(const Surf* s) {
     for (u32 i = 0; i < t_sv.n; i++)
         if (t_sv.v[i].s == s) return (int)i;

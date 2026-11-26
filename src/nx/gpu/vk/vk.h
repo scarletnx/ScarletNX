@@ -460,7 +460,8 @@ void vk_surf_view_reset(void);
 void vk_surf_before_reset(const struct Surf* s);
 /* the slot of the per-draw memos this thread uses (render.c's RC_SLOTS): 0 but on a batch's worker */
 #define VK_RC_SLOTS 4
-u32 vk_render_slot(void);
+extern _Thread_local u32 g_vk_slot; /* render.c's t_rc */
+static inline u32 vk_render_slot(void) { return g_vk_slot; }
 void vk_prep_times(u64* lat, u64* work, u64* joined, u64* join_wait); /* in counter ticks */
 /* Lets go of vk_lock for work that needs nothing it guards, when this thread holds it once (an outer hold can't be let
    go of here): 1 when it let go. vk_lock_resume(that) takes it again. What the hold saw before can have changed when

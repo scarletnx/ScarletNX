@@ -74,6 +74,7 @@ void vk_rec_defer(VkDeferFn fn, const void* arg, u64 size) { stub_hit("vk_rec_de
 void vk_rec_list_flush(void) {}
 void vk_share_lock(void) {}
 void vk_share_unlock(void) {}
+_Thread_local u32 g_vk_slot; /* render.c's: every thread uses slot 0 here */
 u64 gpu_textures_added(void) { stub_hit("gpu_textures_added"); }
 int own_covered(u64 addr, u64 size) { stub_hit("own_covered"); }
 int own_hash(u64 addr, u64 size, u64* h) {
