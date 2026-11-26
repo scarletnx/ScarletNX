@@ -112,6 +112,7 @@ set(platform runtime/platform/log.c runtime/platform/plat_sdl.c runtime/platform
              runtime/platform/ctrl_applet.c runtime/platform/ctrl_request.c runtime/platform/ctrl_scan.c
              runtime/platform/joycon2.c runtime/platform/joycon2_sdl.c runtime/platform/joycon2_session.c
              runtime/platform/joycon2_proto.c runtime/platform/joycon2_att.c runtime/platform/joycon2_link.c
+             runtime/platform/joycon2_known.c
              runtime/platform/help.c runtime/platform/hotkeys.c runtime/platform/hud.c runtime/platform/overlay.c
              runtime/platform/stats.c
              runtime/platform/touch.c
