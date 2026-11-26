@@ -115,6 +115,10 @@ void vpad_settings_also(const IniOpt* (*find)(const char* key));
    under them (the launcher's picks for every game). One the console has nothing for does nothing, and is said with its
    value */
 void vpad_settings(const char* folder, const char* name, int argc, char** argv);
+/* the rows of the controls and of what reads with them (vpad_settings_also) in the settings file at path, the last line
+   of a key counting; the file's other keys, its game's other settings, left to their reader. One that is there but
+   cannot be read is said, and nothing of it is in effect */
+void vpad_settings_file(const char* path);
 /* where changed settings go: called with each key and its value (the game's .ini) */
 void vpad_set_store(void (*store)(const char* key, const char* value));
 /* where what the controls say goes, a line without its newline (vpad_auto's): the game's log */
