@@ -3,7 +3,8 @@
 /* A DS game's save state, in sections each with the schema hash of what it holds:
 
      BOARD   the NdsBoard as it is, but for what the running process keeps: the memory's window and objects, the card
-             image, the devices' pointers, the card's save memory (the game's save file) and the board's notes
+             image, the devices' pointers, the card's save memory (the game's save file) and the board's notes; and
+             but for the lines' registers, which each visible line records again before the frame is composed
      CPU     the NdsCpu as it is, but for its pointers (the board, the block cache, the window, the bus hook, the
              runtime's calls)
      MEMORY  main memory, the shared work RAM, the ITCM, the DTCM, the palettes, the OAM and the nine VRAM banks
@@ -92,6 +93,7 @@ static void board_strip(NdsBoard* b) {
     b->save_dirty = 0;
     memset(b->told, 0, sizeof b->told);
     b->trace = 0;
+    memset(b->lines, 0, sizeof b->lines);
 }
 static void cpu_strip(NdsCpu* c) {
     c->arm.mem = NULL;
@@ -292,6 +294,7 @@ int snx_nds_state_load(NdsBoard* board, NdsCpu* cpu, const char* path, char* why
     b->save_dirty = board->save_dirty;
     memcpy(b->told, board->told, sizeof b->told);
     b->trace = board->trace;
+    memcpy(b->lines, board->lines, sizeof b->lines);
     memcpy(board, b, sizeof *board);
     c->arm.mem = cpu->arm.mem;
     c->arm.io = cpu->arm.io;
