@@ -50,7 +50,6 @@ typedef struct {
     SnxErrorRect box, item[SNX_ERROR_PANEL_ITEMS];
     int action[SNX_ERROR_PANEL_ITEMS], items, rows, rows_shown;
     int pressed; /* the item a press went down on, -1 for none */
-    int at_once; /* no wait: what it follows was no game's press (the launcher's own failure), set after the start */
 } SnxErrorPanel;
 
 /* the panel at its start, shown at now_ms, the action that fixes e in focus */
