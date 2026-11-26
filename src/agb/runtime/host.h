@@ -40,6 +40,9 @@ AgbHost* agb_host_open(const char* title, const char* ini, bool fullscreen, char
 void agb_host_close(AgbHost* host);
 /* the gain the game's sound plays at, the player's Volume over 100; -1 without sound */
 float agb_host_volume(const AgbHost* host);
+/* the gamepads shaken for the frame by share (0 to 1) of it the cartridge's motor ran, as strongly as gamepad_rumble
+   says; a gamepad that cannot, said once */
+void agb_host_rumble(AgbHost* host, float share);
 /* the events since the last call: the keys held after them (AGB_KEY_), the on-screen controls' among them, none while
    their layout is edited; false once the window is closed */
 bool agb_host_poll(AgbHost* host, uint16_t* keys);

@@ -104,6 +104,7 @@ def main():
             '--perf-map=0',
             '--gdb-jit=0',
             '--stats-corner=br',
+            '--gamepad-rumble=50',
         ):
             keys(args.runner, work, option)
         for option, said in (

@@ -48,6 +48,7 @@ struct AgbHost {
                   limit */
     SDL_Texture* notice_texture;
     int notice_w, notice_h, notice_failed;
+    bool rumbling, rumble_said; /* the gamepads shake, as the cartridge's motor last asked; one that could not, said */
 };
 
 uint16_t agb_host_key(int scancode) {
@@ -207,6 +208,17 @@ AgbHost* agb_host_open(const char* title, const char* ini, bool fullscreen, char
         fprintf(stderr, "scarletnx-agb: %s\n", why);
     host->due = SDL_GetTicksNS() + FRAME_NS;
     return host;
+}
+
+void agb_host_rumble(AgbHost* host, float share) {
+    if (share <= 0 && !host->rumbling) return;
+    host->rumbling = share > 0;
+    char why[256];
+    /* two frames' worth, which the next frame's call renews: a motor the game keeps on shakes without a gap */
+    if (snx_pads_rumble(share, g_settings.vibration, 34, why, sizeof why) && !host->rumble_said) {
+        host->rumble_said = true;
+        fprintf(stderr, "scarletnx-agb: %s\n", why);
+    }
 }
 
 float agb_host_volume(const AgbHost* host) {
