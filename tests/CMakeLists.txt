@@ -751,6 +751,14 @@ if(TARGET snx_ctr_board)
             target_link_libraries(snx-test-3ds-state PRIVATE snx_ctr_process snx_state_file)
             add_test(NAME 3ds_state COMMAND snx-test-3ds-state)
             set_tests_properties(3ds_state PROPERTIES TIMEOUT 120 ENVIRONMENT "SDL_AUDIO_DRIVER=dummy")
+            # and with the GPU's work in it, on each path the device takes to the RAM
+            add_executable(snx-test-3ds-state-gpu 3ds_state_gpu.c support/3ds_guest.c)
+            snx_test_target(snx-test-3ds-state-gpu gnu23)
+            target_link_libraries(snx-test-3ds-state-gpu PRIVATE snx_ctr_process snx_state_file)
+            add_test(NAME 3ds_state_gpu_copy COMMAND snx-test-3ds-state-gpu --vk_memory=1)
+            add_test(NAME 3ds_state_gpu_in_place COMMAND snx-test-3ds-state-gpu --vk_memory=2)
+            set_tests_properties(3ds_state_gpu_copy 3ds_state_gpu_in_place PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120
+                                 ENVIRONMENT "SDL_AUDIO_DRIVER=dummy")
             add_test(NAME ctr_swipc_validation COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ctr_swipc.py"
                 $<TARGET_FILE:snx-swipc>)
             add_test(NAME 3ds_driver COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_driver.py"
