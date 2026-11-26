@@ -33,7 +33,7 @@
    to 3.9 GiB, as the end of the code isn't known yet when the layout is made */
 #define LAYOUT39                                                                                                       \
     {0x8000000ull, AS_MAX,          0x1100000000ull, 8 * GIB,         0x100000000ull,                                  \
-     64 * GIB,     0x1300000000ull, 2 * GIB,         0x1380000000ull, 0x13C0000000ull}
+     64 * GIB,     0x1300000000ull, 2 * GIB,         0x1380000000ull, 0x13C0000000ull, 0}
 MemLayout g_layout = LAYOUT39;
 u64 g_as_size = AS_MAX;
 u8* g_mem;
@@ -1004,6 +1004,24 @@ static void layout_for(u64 size) {
     }
     g_layout.kern_end = size;
 }
+/* A game with a system resource size manages its address space itself (nn::os's VammManager): it takes the alias region
+   the kernel reports and asks for 12 GiB of it, mapping pages in with svcMapPhysicalMemory as it grows. The console
+   reports 64 GiB. Here the region is reported at that size and backed as far as the address space reaches: a game that
+   maps past that is refused, and it has no more memory than the app is allowed in any case. Under 12 GiB the heap
+   region (which that game never sets) shrinks to make the room, the alias region taking all that is left above the code */
+void mem_layout_vamm(void) {
+    if (g_as_size >= 64 * GIB) return;
+    if (g_as_size < 12 * GIB) {
+        g_layout.alias = GIB;
+        g_layout.kern = g_as_size - GIB / 4;
+        g_layout.stack = g_layout.kern - GIB / 4;
+        g_layout.stack_size = GIB / 4;
+        g_layout.heap = g_layout.stack - GIB / 4;
+        g_layout.heap_size = GIB / 4;
+        g_layout.alias_size = g_layout.heap - g_layout.alias;
+    }
+    g_layout.alias_virtual = 64 * GIB;
+}
 #ifdef __APPLE__
 #include <mach/mach.h>
 #include <mach/vm_map.h>
@@ -1050,12 +1068,20 @@ static u64 largest_hole(void) { return UINT64_MAX; }
    RLIMIT_AS holds to less; an iOS app without the extended virtual addressing entitlement). NCE's reservation takes
    them up to AS_MAX */
 static const u64 tiers[] = {512 * GIB, 256 * GIB, 128 * GIB, 64 * GIB, 48 * GIB, 32 * GIB, 24 * GIB,
-                            16 * GIB,  12 * GIB,  8 * GIB,   7 * GIB,  6 * GIB,  5 * GIB};
+                            16 * GIB,  12 * GIB,  8 * GIB,   7 * GIB,  6 * GIB,  5 * GIB,  4 * GIB};
 /* Windows makes the written-page tracking with the reservation (plat_vm_reserve), and a reservation without it leaves
    the caches comparing guest memory's contents: so every tier with it comes before any without. Elsewhere the tracking
    comes after the reservation (plat_vm_track), plat_vm_reserve_unwatched answers ENOSYS, and the first pass is all */
 static u8* reserve_tiers(void) {
     u64 hole = largest_hole();
+#if defined(__APPLE__) && TARGET_OS_IOS
+    /* On iOS without extended virtual addressing, reserving the entire free run leaves no address space
+       for thread stacks, malloc heaps, Metal memory and code arenas. Keep at least 1.5 GiB of headroom. */
+    if (hole > (1536ull << 20))
+        hole -= (1536ull << 20);
+    else
+        hole = 0;
+#endif
     for (int watched = 1; watched >= 0; watched--) {
         for (size_t i = 0; i < sizeof tiers / sizeof *tiers; ++i) {
             u8* p;
@@ -1181,7 +1207,7 @@ void mem_reserve(void) {
     if (nce_wanted() && mem_reserve_identity(SNX_NCE_MOVE_FROM)) return;
 #endif
     g_mem = reserve_tiers();
-    if (!g_mem) fatal("Could not reserve even 5 GiB of address space for the game's memory");
+    if (!g_mem) fatal("Could not reserve even 4 GiB of address space for the game's memory");
     if (g_as_size == AS_TOP)
         LOG("memory: %llu GiB of address space reserved, the console's\n", (unsigned long long)(g_as_size >> 30));
     else

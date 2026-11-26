@@ -31,6 +31,7 @@ typedef struct {
     u64 alias, alias_size;
     u64 stack, stack_size;
     u64 kern, kern_end; /* the kernel's own pages (TLS) */
+    u64 alias_virtual;  /* the alias region's size GetInfo reports when it is larger than the host backs: 0, alias_size */
 } MemLayout;
 #define AS_BASE    (g_layout.base)
 #define AS_END     (g_layout.end)
@@ -136,6 +137,8 @@ int mem_ww_probe(void (*cb)(u8* p, u64 size));
 int mem_reserve_identity(u64 from);
 /* every region of the layout, and AS_SIZE, by more: the guest's addresses start that far up (NCE on Android) */
 void mem_layout_move(u64 by);
+/* the layout of a game with a system resource size (VAMM), once the program's metadata says so: before mem_init */
+void mem_layout_vamm(void);
 /* how far mem_layout_move moved the layout, 0 when it stays at the console's addresses */
 u64 mem_moved(void);
 void mem_init(void);

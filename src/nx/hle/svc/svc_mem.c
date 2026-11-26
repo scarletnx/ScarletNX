@@ -1220,7 +1220,7 @@ static u32 process_info(u32 id, u64* out) {
         case 0: *out = g_hle.svcmem.core_mask; R_SUCCEED();
         case 1: *out = g_hle.svcmem.prio_mask; R_SUCCEED();
         case 2: *out = ALIAS_BASE; R_SUCCEED();
-        case 3: *out = ALIAS_SIZE; R_SUCCEED();
+        case 3: *out = g_layout.alias_virtual ? g_layout.alias_virtual : ALIAS_SIZE; R_SUCCEED();
         case 4: *out = HEAP_BASE; R_SUCCEED();
         case 5: *out = HEAP_SIZE; R_SUCCEED();
         case 6: *out = process_memory_total(); R_SUCCEED();

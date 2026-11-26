@@ -252,11 +252,13 @@ static const SnxModule* load_pack(const char* path) {
     const char* names[1];
     SnxU64 address = 0;
     ModuleFn get;
-    size_t size = 0, count = 0, need[3], rtlib_need[3], k;
-    unsigned char* data = (unsigned char*)snx_read_file(path, &size);
+    size_t count = 0, need[3], rtlib_need[3], k;
+    PFileMap map;
+    const unsigned char* data;
     char error[1024];
-    if (!data) fatal("%s could not be read", path);
-    inputs = snx_objects_unpack(data, size, "game code", &count);
+    if (plat_file_map(&map, path) || !map.data) fatal("%s could not be read", path);
+    data = (const unsigned char*)map.data;
+    inputs = snx_objects_unpack(data, (size_t)map.size, "game code", &count);
     if (!inputs) fatal("%s is not a pack of recompiled code: recompile the game with --target ios", path);
     memset(&rtlib, 0, sizeof(rtlib));
     rtlib.data = snx_rtlib_object;
@@ -268,7 +270,7 @@ static const SnxModule* load_pack(const char* path) {
     for (k = 0; k < 3; ++k) need[k] += rtlib_need[k];
     LOG("game: a code arena of %.1f MiB of code, %.1f MiB of read-only data and %.1f MiB of data for its %.1f MB of "
         "objects\n",
-        (double)need[0] / 1048576.0, (double)need[1] / 1048576.0, (double)need[2] / 1048576.0, (double)size / 1e6);
+        (double)need[0] / 1048576.0, (double)need[1] / 1048576.0, (double)need[2] / 1048576.0, (double)map.size / 1e6);
     loader = snx_code_loader_new_regions(need, error, sizeof(error));
     if (!loader) fatal("The game's code cannot be loaded: %s", error);
     names[0] = "snx_module";
@@ -276,7 +278,7 @@ static const SnxModule* load_pack(const char* path) {
         snx_code_load(loader, inputs, count, names, 1, &address, error, sizeof(error)))
         fatal("The game's code cannot be loaded: %s", error);
     free(inputs);
-    free(data); /* the loaded code is a copy */
+    plat_file_unmap(&map); /* the loaded code is a copy */
     {
         SnxU64 variants = 0;
         SnxU64 routes = 0;
@@ -636,6 +638,10 @@ static void npdm_layout(void) {
     if (meta && (d[0x0c] & 1) && ((d[0x0c] >> 1) & 7) == 1) {
         mem_layout36();
         LOG("npdm: a 36-bit address space: 64 GiB, the code region at a fixed 128 MiB\n");
+    }
+    if (meta && snx_ld_le32(d + 0x14)) {
+        mem_layout_vamm();
+        LOG("npdm: system resource size %u: vamm alias region\n", snx_ld_le32(d + 0x14));
     }
     free(d);
 }
