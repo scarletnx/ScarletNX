@@ -14,7 +14,7 @@
 
 #include "common/cpu/aarch64/cpu.h"
 #include "common/cpu/recompiler/codegen.h"
-#include "common/cpu/recompiler/llvm/code_loader.h"
+#include "common/cpu/recompiler/loader/code_loader.h"
 #include "common/cpu/recompiler/mach/native.h"
 
 /* what of the host the back end may use (native_steps_begin's form) */
