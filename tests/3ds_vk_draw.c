@@ -729,6 +729,50 @@ static void prepared_records(const char* path, unsigned* records, unsigned* pack
     }
     free(d);
 }
+/* pipeline_libraries: a draw's pipeline linked from its parts draws what the CPU reference draws; a second one that
+   differs in its blending alone links the parts the first made but its fragment output one; once the workers made
+   their optimized pipelines a draw binds them in the links' place, and draws the same */
+static void libraries(SnxCtrMemory* m) {
+    if (snx_ctr_vk()->shader_object || !snx_ctr_vk()->gpl.on) {
+        printf("%-24s skipped: %s\n", "libraries",
+               snx_ctr_vk()->shader_object ? "draws bind shader objects"
+                                           : "the device makes no pipeline from libraries");
+        return;
+    }
+    static unsigned char start[W * H * 4], none[W * H * 4], sw[W * H * 4], gpu[W * H * 4], sw_depth[W * H * 4],
+        gpu_depth[W * H * 4];
+    random_fill(start, sizeof start);
+    Scene* plain = triangle_scene("libraries", 3);
+    Scene* blended = scene("libraries, blended", 0, 0xff);
+    put(&blended->list, 0x100, 1u << 8);
+    put(&blended->list, 0x101, 0u | 0u << 8 | 6u << 16 | 7u << 20 | 6u << 24 | 7u << 28);
+    triangles(blended, 3);
+    array_draw(blended);
+    list_end(&blended->list);
+    SnxCtrVkLibraries counts[4];
+    Scene* const order[3] = {plain, blended, plain};
+    counts[0] = snx_ctr_vk_libraries();
+    for (int i = 0; i < 3; ++i) {
+        if (i == 2) snx_ctr_vk_pipelines_wait(); /* the optimized ones, bound by the next draw */
+        setup(m, order[i], start, none);
+        bool a = draw(m, order[i], &software, sw, sw_depth);
+        setup(m, order[i], start, none);
+        bool b = draw(m, order[i], &vulkan, gpu, gpu_depth);
+        if (drew(order[i], a, b)) compare(order[i], sw, gpu, sw_depth, gpu_depth);
+        counts[i + 1] = snx_ctr_vk_libraries();
+    }
+    for (int i = 1; i < 4; ++i)
+        printf("%-24s after draw %d: %u linked, %u optimized, %u parts, %u reused, %u replaced\n", "libraries", i,
+               counts[i].linked, counts[i].optimized, counts[i].parts, counts[i].reused, counts[i].replaced);
+    bool ok = counts[1].linked > counts[0].linked && counts[1].parts >= counts[0].parts + SNX_VK_GPL_PARTS &&
+              counts[2].linked > counts[1].linked && counts[2].parts == counts[1].parts + 1 &&
+              counts[2].reused >= counts[1].reused + SNX_VK_GPL_PARTS - 1 && counts[3].linked == counts[2].linked &&
+              counts[3].optimized >= counts[2].linked && counts[3].replaced > counts[2].replaced;
+    printf("%-24s %s\n", "libraries", ok ? "ok" : "FAIL");
+    failures += !ok;
+    free(plain);
+    free(blended);
+}
 /* the device made again, as a second run makes it */
 static bool restart(SnxCtrMemory* m) {
     char why[256];
@@ -2817,6 +2861,7 @@ static const Mode modes[] = {
     {"--async", "the draws with async_pipelines", async_pipelines},
     {"--pipeline-cache", "the pipeline cache kept between runs", pipeline_cache},
     {"--prepared", "the shaders and pipelines prepared from earlier runs", prepared},
+    {"--libraries", "the pipelines linked from parts", libraries},
     {"--scaled-texture-from-target", "the textures made from scaled targets", scaled_texture_from_target},
     {"--scaled-transfer-into-target", "a display transfer into a destination at render scale",
      scaled_transfer_into_target},
@@ -2846,6 +2891,14 @@ int main(int argc, char** argv) {
         g_vertices = 0x1f000000u;
     }
     int vk_memory = test_ctr_vk_memory(&argc, argv);
+    /* --pipeline-libraries=0: each pipeline made whole, where the default links them from parts */
+    for (int i = 1; i < argc; ++i)
+        if (!strcmp(argv[i], "--pipeline-libraries=0")) {
+            g_settings.pipeline_libraries = 0;
+            memmove(&argv[i], &argv[i + 1], (size_t)(argc - i) * sizeof *argv);
+            --argc;
+            break;
+        }
     test_ctr_vk_extensions(&argc, argv);
     const Mode* mode = &scenes;
     if (argc > 1) {

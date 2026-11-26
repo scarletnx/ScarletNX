@@ -171,6 +171,7 @@ typedef struct {
     VkBuffer buffer;
     VkDeviceMemory memory;
     uint64_t serial;
+    VkPipeline pipeline; /* a fast link an optimized one replaced */
 } Dead;
 
 /* what picks a pipeline besides its shaders: plain data, zeroed before it is filled */
@@ -219,7 +220,8 @@ typedef struct {
     uint64_t hash;
     PipeKey key;
     VkPipeline pipeline;
-    uint32_t job; /* while a worker makes it (async_pipelines), its PipeJob's index plus 1; else 0 */
+    uint32_t job;    /* while a worker makes it (async_pipelines), its PipeJob's index plus 1; else 0 */
+    uint32_t better; /* while a worker makes the optimized one of a pipeline linked fast, its job's index plus 1 */
 } Pipe;
 /* a pipeline a worker makes (common/gpu/vk/jobs.h): its key and the shader modules the draw found, then the
    pipeline. Or a shader object: its stage, its SPIR-V (the job's until it is collected) and its binary's key, then the
@@ -227,6 +229,7 @@ typedef struct {
 typedef struct {
     PipeKey key;
     VkShaderModule vs, fs;
+    VkPipeline linked[SNX_VK_GPL_PARTS]; /* a fast link's parts, for its optimized one: the job links those alone */
     VkPipeline made;
     VkShaderStageFlagBits stage;
     uint32_t* words;
@@ -383,6 +386,11 @@ static struct {
     size_t prep_pipe_capacity;
     SnxVkFeed feed; /* prep_pipes's count, the next one a worker takes, the jobs making them */
     SnxCtrVkPrepared prepared;
+    /* pipeline_libraries: the parts made so far, and the pipelines linked fast and optimized (the workers' too) */
+    SnxVkGplParts parts;
+    _Atomic unsigned gpl_linked, gpl_optimized;
+    unsigned gpl_replaced; /* fast links an optimized pipeline replaced, the draw thread's */
+    _Atomic int gpl_failed;
 } g;
 
 static VkDevice device(void) { return snx_ctr_vk()->device; }
@@ -856,19 +864,28 @@ static void set_texture(Texture* t, bool valid) {
     for (unsigned f = 0; f < (t->cube ? 6u : 1u); ++f) count(t->pa[f], t->bytes, valid ? 1 : -1, 0);
 }
 static void dead_free(Dead* d) {
+    if (d->pipeline) vkDestroyPipeline(device(), d->pipeline, NULL);
     image_free(&d->image);
     if (d->buffer) vkDestroyBuffer(device(), d->buffer, NULL);
     if (d->memory) vkFreeMemory(device(), d->memory, NULL);
 }
 /* an image or buffer the recordings in flight, the open one included, may still use: destroyed when they are done.
    The image or the buffer may be absent */
+static void keep_dead(Dead d);
 static void bury(Image* image, VkBuffer* buffer, VkDeviceMemory* memory) {
-    Dead d = {image ? *image : (Image){0}, buffer ? *buffer : VK_NULL_HANDLE, memory ? *memory : VK_NULL_HANDLE,
-              snx_ctr_vk_serial()};
+    Dead d = {.image = image ? *image : (Image){0},
+              .buffer = buffer ? *buffer : VK_NULL_HANDLE,
+              .memory = memory ? *memory : VK_NULL_HANDLE,
+              .serial = snx_ctr_vk_serial()};
     if (image) *image = (Image){0};
     if (buffer) *buffer = VK_NULL_HANDLE;
     if (memory) *memory = VK_NULL_HANDLE;
-    if (!d.image.image && !d.buffer && !d.memory) return;
+    keep_dead(d);
+}
+/* a pipeline the recordings in flight may still use, the open one included: destroyed when they are done */
+static void bury_pipeline(VkPipeline p) { keep_dead((Dead){.serial = snx_ctr_vk_serial(), .pipeline = p}); }
+static void keep_dead(Dead d) {
+    if (!d.image.image && !d.buffer && !d.memory && !d.pipeline) return;
     if (g.dead_count == g.dead_capacity) {
         size_t n = g.dead_capacity ? g.dead_capacity * 2 : 32;
         Dead* grown = (Dead*)realloc(g.dead, n * sizeof *grown);
@@ -1838,7 +1855,10 @@ static const VkLogicOp logic_op[16] = {
 
 /* k's pipeline, of the shader modules vs and fs, which a worker passes as the draw found them: g.vs and g.fs move as
    they grow. It reads only what made() set */
-static VkPipeline make_pipeline(const PipeKey* k, VkShaderModule vs, VkShaderModule fs) {
+/* k's pipeline, of its shaders vs and fs: whole, or linked from its parts (pipeline_libraries), optimized or fast,
+   linked then the parts a fast one took (for its optimized one) */
+static VkPipeline make_pipeline(const PipeKey* k, VkShaderModule vs, VkShaderModule fs, bool optimize,
+                                VkPipeline linked[SNX_VK_GPL_PARTS]) {
     SnxCtrVk* v = snx_ctr_vk();
     VkPipelineShaderStageCreateInfo stages[2] = {
         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -1941,8 +1961,20 @@ static VkPipeline make_pipeline(const PipeKey* k, VkShaderModule vs, VkShaderMod
                                        .pColorBlendState = &blend,
                                        .pDynamicState = &dynamic,
                                        .layout = g.layout};
-    VkPipeline pipeline = VK_NULL_HANDLE;
-    if (vkCreateGraphicsPipelines(v->device, g.cache, 1, &pi, NULL, &pipeline) != VK_SUCCESS) return VK_NULL_HANDLE;
+    VkPipeline pipeline = VK_NULL_HANDLE, parts[SNX_VK_GPL_PARTS];
+    if (v->gpl.on) {
+        VkResult r = snx_vk_gpl_make(&g.parts, v->device, g.cache, &pi, optimize, linked ? linked : parts, &pipeline);
+        if (r != VK_SUCCESS) {
+            if (!atomic_exchange_explicit(&g.gpl_failed, 1, memory_order_relaxed))
+                fprintf(stderr,
+                        "3ds gpu: a pipeline from libraries failed (VkResult %d): made whole (said for the first)\n",
+                        (int)r);
+            pipeline = VK_NULL_HANDLE;
+        } else
+            atomic_fetch_add_explicit(optimize ? &g.gpl_optimized : &g.gpl_linked, 1, memory_order_relaxed);
+    }
+    if (!pipeline && vkCreateGraphicsPipelines(v->device, g.cache, 1, &pi, NULL, &pipeline) != VK_SUCCESS)
+        return VK_NULL_HANDLE;
     if (g.cache) {
         atomic_store_explicit(&g.cache_used_ms, (uint64_t)(snx_seconds() * 1000), memory_order_relaxed);
         atomic_store_explicit(&g.cache_dirty, 1, memory_order_relaxed);
@@ -1959,8 +1991,11 @@ static void job_make(void* owner, unsigned job) {
         bool compiled;
         if (snx_vk_shader_object(device(), NULL, j->binary_key, &info, &j->object, &compiled) == VK_SUCCESS)
             compiled_now();
+    } else if (j->linked[0]) {
+        if (snx_vk_gpl_optimize(device(), g.cache, j->linked, g.layout, &j->made) == VK_SUCCESS)
+            atomic_fetch_add_explicit(&g.gpl_optimized, 1, memory_order_relaxed);
     } else
-        j->made = make_pipeline(&j->key, j->vs, j->fs);
+        j->made = make_pipeline(&j->key, j->vs, j->fs, true, NULL); /* a worker's: optimized at once */
 }
 /* the workers, started at the first pipeline async_pipelines hands them (common/gpu/vk/jobs.h): how many there are */
 static unsigned pipe_workers(void) {
@@ -1986,6 +2021,15 @@ static VkPipeline pipeline(const PipeKey* k, bool* pending) {
             g.jobs[e->job - 1] = (PipeJob){0};
             e->job = 0;
             prep_add_pipe(k, e->pipeline);
+        }
+        if (e->better && snx_vk_jobs_take(&g.pool, e->better - 1)) { /* the optimized one, in the fast link's place */
+            if (g.jobs[e->better - 1].made) {
+                bury_pipeline(e->pipeline);
+                e->pipeline = g.jobs[e->better - 1].made;
+                ++g.gpl_replaced;
+            }
+            g.jobs[e->better - 1] = (PipeJob){0};
+            e->better = 0;
         }
         *pending = e->job != 0;
         g.skipped += *pending;
@@ -2013,9 +2057,18 @@ static VkPipeline pipeline(const PipeKey* k, bool* pending) {
         if (e->job) ++g.pipe_count;
         return VK_NULL_HANDLE;
     }
-    e->pipeline = make_pipeline(k, g.vs[k->vs].module, g.fs[k->fs].module);
+    VkPipeline linked[SNX_VK_GPL_PARTS] = {0};
+    e->pipeline = make_pipeline(k, g.vs[k->vs].module, g.fs[k->fs].module, false, linked);
     if (e->pipeline) ++g.pipe_count;
     prep_add_pipe(k, e->pipeline);
+    /* a fast link: its optimized one made on a worker where one is free, which replaces it once made */
+    int job = linked[0] && e->pipeline && pipe_workers() ? snx_vk_jobs_free(&g.pool) : -1;
+    if (job >= 0) {
+        g.jobs[job] = (PipeJob){.key = *k};
+        memcpy(g.jobs[job].linked, linked, sizeof linked);
+        e->better = (uint32_t)job + 1;
+        snx_vk_jobs_queue(&g.pool, (unsigned)job);
+    }
     return e->pipeline;
 }
 /* a job dropped before a worker began it: the SPIR-V it held */
@@ -2198,7 +2251,7 @@ void snx_ctr_vk_prepared_open(const char* directory) {
     else if (now)
         for (; g.feed.next < g.feed.count; ++g.feed.next) {
             const PipeKey* k = &g.prep_pipes[g.feed.next];
-            prep_adopt(k, make_pipeline(k, g.vs[k->vs].module, g.fs[k->fs].module));
+            prep_adopt(k, make_pipeline(k, g.vs[k->vs].module, g.fs[k->fs].module, true, NULL));
         }
     if (now || !g.feed.count)
         fprintf(stderr,
@@ -2213,6 +2266,16 @@ void snx_ctr_vk_prepared_open(const char* directory) {
                 path, g.prepared.shaders, g.prepared.pipelines);
 }
 SnxCtrVkPrepared snx_ctr_vk_prepared(void) { return g.prepared; }
+SnxCtrVkLibraries snx_ctr_vk_libraries(void) {
+    SDL_LockMutex(g.parts.lock);
+    SnxCtrVkLibraries l = {.linked = atomic_load_explicit(&g.gpl_linked, memory_order_relaxed),
+                           .optimized = atomic_load_explicit(&g.gpl_optimized, memory_order_relaxed),
+                           .parts = (unsigned)g.parts.count,
+                           .reused = g.parts.reused,
+                           .replaced = g.gpl_replaced};
+    SDL_UnlockMutex(g.parts.lock);
+    return l;
+}
 
 /* ---- draws ---- */
 
@@ -3169,6 +3232,13 @@ void snx_ctr_vk_render_free(void) {
     free(g.prep_fs_of);
     free(g.prep_pipes);
     snx_ctr_vk_pipeline_cache_save(true); /* every pipeline made, the workers stopped */
+    if (snx_ctr_vk()->gpl.on)
+        fprintf(
+            stderr,
+            "3ds gpu: pipeline_libraries=%d linked %u pipeline%s fast and %u optimized, from %zu parts (%u reused)\n",
+            g_settings.pipeline_libraries, atomic_load_explicit(&g.gpl_linked, memory_order_relaxed),
+            atomic_load_explicit(&g.gpl_linked, memory_order_relaxed) == 1 ? "" : "s",
+            atomic_load_explicit(&g.gpl_optimized, memory_order_relaxed), g.parts.count, g.parts.reused);
     if (g.cache) vkDestroyPipelineCache(d, g.cache, NULL);
     snx_vk_jobs_stop(&g.pool, job_drop); /* the lock and conditions of workers that never started */
     if (g.skipped)
@@ -3198,6 +3268,7 @@ void snx_ctr_vk_render_free(void) {
         if (g.shown[i].kept_memory) vkFreeMemory(d, g.shown[i].kept_memory, NULL);
     }
     for (size_t i = 0; i < g.pipe_count; ++i) vkDestroyPipeline(d, g.pipes[i].pipeline, NULL);
+    snx_vk_gpl_parts_free(&g.parts, d); /* after the pipelines linked from them */
     for (size_t i = 0; i < g.vs_count; ++i) {
         if (g.vs[i].module) vkDestroyShaderModule(d, g.vs[i].module, NULL);
         if (g.vs[i].so.object) vkDestroyShaderEXT(d, g.vs[i].so.object, NULL);
