@@ -512,32 +512,19 @@ static inline void sg_SendEvent(SgCtx* g) { sgx_call(g, NULL, (int)offsetof(RtAP
 static inline void sg_SendEventLocal(SgCtx* g) { sg_SendEvent(g); }
 /* CRC32 and CRC32C: the reflected update (BitReverse(Poly32Mod2(...)) as README.md's builtins say): CRC32C SSE4.2's
    CRC32 instruction, or where the host has no SSE4.2 a byte at a time through its own table in x64_helpers.c; CRC32
-   of a word or a doubleword by Barrett's reduction, two PCLMULQDQs: x, the value XOR the accumulator at the top of 64
-   bits, times the low 64 bits of x^96 / P reflected, whose low half times P reflected has the remainder in bits 95:64
-   (both linear: equal on a basis of x, the task's proof); of a byte or a halfword, or without PCLMULQDQ, a byte at a
-   time through x64_helpers.c's table (SGX_M_CRC) */
+   of a halfword, a word or a doubleword by x64_helpers.c's slicing tables, a lookup a byte of the value XOR the
+   accumulator, all at once (SGX_M_CRC), of a byte through the first table */
 static inline SgD sg_crc32(SgCtx* g, SgD acc_bits, SgD value_bits, long long size, SgS poly) {
     static const signed char fix[2] = {SGX_RAX, SGX_RDX};
     SgD in[2];
-    if (poly.v == 0x04C11DB7u && size >= 32 && (sgx(g)->features & SGX_F_PCLMUL)) {
-        SgX* x = sgx(g);
-        int k = sgx_xconst(x, 0xB4E5B025F7011641ull, 0x1DB710641ull), t, vin[4] = {0, 0, 0, 0};
-        SgD v = sg_d_xor(g, sg_d_zext(g, acc_bits, 64), sg_d_zext(g, value_bits, 64));
-        if (size == 32) v = sg_d_lsl(g, v, 32);
-        vin[1] = sgx_reg(x, &v);
-        t = sgx_vins(x, &sgx_v_movq_xr, 0, 0, vin, 0, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
-        t = sgx_v2(x, &sgx_v_pclmulqdq, t, k, 0x00);
-        t = sgx_v2(x, &sgx_v_pclmulqdq, t, k, 0x10);
-        vin[1] = t;
-        return sgx_val(32, sgx_vins(x, &sgx_v_pextrd, 0, 0, vin, 2, 0, SGX_VM_NONE, 0, 0, 0, 0, 0));
-    }
     in[0] = sg_d_zext(g, acc_bits, 64);
     in[1] = sg_d_zext(g, value_bits, 64);
-    const int c = poly.v == 0x1EDC6F41u, sse42 = (sgx(g)->features & SGX_F_SSE42) != 0;
-    return sg_d_slice(g,
-                      sgx_mach(g, SGX_M_CRC, in, fix, 2, size / 8 | (c && sse42) << 4 | (c && !sse42) << 5,
-                               1u << SGX_RCX | 1u << SGX_RDX | 1u << SGX_R11, 1, 64),
-                      31, 0);
+    const int c = poly.v == 0x1EDC6F41u, sse42 = (sgx(g)->features & SGX_F_SSE42) != 0, slices = !c && size >= 16;
+    return sg_d_slice(
+        g,
+        sgx_mach(g, SGX_M_CRC, in, fix, 2, size / 8 | (c && sse42) << 4 | (c && !sse42) << 5 | slices << 6,
+                 1u << SGX_RCX | 1u << SGX_RDX | 1u << SGX_R11 | (slices && size == 64 ? 1u << SGX_R8 : 0u), 1, 64),
+        31, 0);
 }
 
 /* an x86 load is an acquire one (Vol. 3A, 10.2.2: loads are not reordered with other loads, nor stores with older
@@ -729,6 +716,33 @@ static inline void sgx_machine_inline(SgXAsm* a, SgXIns* i) {
             if (!t) sg_fail("a table nothing resolves", 0, 0);
             sgx_bytes(b, "49 BB"); /* mov r11, imm64 */
             sgx_imm(b, (long long)t, 8);
+        }
+        if ((i->imm & 64) && bytes == 8) {
+            /* a doubleword: x = acc XOR value, its low half's bytes through tables 7 to 4 into R8D and its high half's
+               (in EDX) through 3 to 0 into EAX, two chains, then XORed. xor rax, rdx; mov rdx, rax; shr rdx, 32; then
+               movzx ecx, al; mov r8d, [r11 + rcx*4 + 7168]; movzx ecx, ah; xor r8d, [... + 6144]; shr eax, 16; the
+               same of 5120 and 4096; then of DL and DH into EAX from 3072, shr edx, 16, down to 0; xor eax, r8d */
+            sgx_bytes(b, "48 31 D0 48 89 C2 48 C1 EA 20 0F B6 C8 45 8B 84 8B 00 1C 00 00");
+            sgx_bytes(b, "0F B6 CC 45 33 84 8B 00 18 00 00 C1 E8 10 0F B6 C8 45 33 84 8B 00 14 00 00");
+            sgx_bytes(b, "0F B6 CC 45 33 84 8B 00 10 00 00");
+            sgx_bytes(b, "0F B6 CA 41 8B 84 8B 00 0C 00 00 0F B6 CE 41 33 84 8B 00 08 00 00");
+            sgx_bytes(b, "C1 EA 10 0F B6 CA 41 33 84 8B 00 04 00 00 0F B6 CE 41 33 04 8B 44 31 C0");
+            return;
+        }
+        if ((i->imm & 64) && bytes == 2) {
+            /* a halfword: x = acc XOR value in EDX, (acc >> 16, x's) XOR table 1's of x's low byte XOR table 0's of the
+               next. xor edx, eax; shr eax, 16; movzx ecx, dl; xor eax, [r11 + rcx*4 + 1024]; movzx ecx, dh; xor eax,
+               [r11 + rcx*4] */
+            sgx_bytes(b, "31 C2 C1 E8 10 0F B6 CA 41 33 84 8B 00 04 00 00 0F B6 CE 41 33 04 8B");
+            return;
+        }
+        if (i->imm & 64) {
+            /* a word: x = acc XOR value in EDX, its bytes from the first up through tables 3, 2, 1 and 0 into EAX. xor
+               edx, eax; movzx ecx, dl; mov eax, [r11 + rcx*4 + 3072]; movzx ecx, dh; xor eax, [r11 + rcx*4 + 2048];
+               shr edx, 16; movzx ecx, dl; xor eax, [r11 + rcx*4 + 1024]; movzx ecx, dh; xor eax, [r11 + rcx*4] */
+            sgx_bytes(b, "31 C2 0F B6 CA 41 8B 84 8B 00 0C 00 00 0F B6 CE 41 33 84 8B 00 08 00 00");
+            sgx_bytes(b, "C1 EA 10 0F B6 CA 41 33 84 8B 00 04 00 00 0F B6 CE 41 33 04 8B");
+            return;
         }
         for (k = 0; k < bytes; ++k)
             /* mov ecx, eax; xor cl, dl; movzx ecx, cl; shr eax, 8; xor eax, [r11 + rcx*4]; shr rdx, 8 */
