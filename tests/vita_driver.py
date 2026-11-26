@@ -73,6 +73,7 @@ def main():
             '--frame-pacing=2',
             '--async-pipelines=1',
             '--pipeline-threads=2',
+            '--renderdoc=',
             '--vk-gpu-profile=0',
             '--vk-checkpoints=0',
             '--help',
