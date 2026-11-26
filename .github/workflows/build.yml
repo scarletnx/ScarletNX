@@ -267,7 +267,6 @@ jobs:
         run: scripts/ci/linux.sh unicorn_venv
       - name: Build the tests and the headless Vulkan tree
         env:
-          A64_DISASM: ${{ matrix.arch == 'aarch64' && 'ON' || 'OFF' }}
           ARCH: ${{ matrix.arch }}
           UNICORN: ${{ matrix.arch == 'x86_64' }}
         run: scripts/ci/linux.sh test_trees

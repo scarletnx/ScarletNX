@@ -10,7 +10,7 @@ target_link_libraries(snx_nx_module PUBLIC scarletnx-common)
 include("${PROJECT_SOURCE_DIR}/cmake/hookgen.cmake")
 snx_hook_routes(snx_nx_module)
 add_library(snx_driver STATIC driver.c container.c extract.c game_name.c fabricate.c nros.c pack.c recompile.c setup.c toolchain.c mcp.c
-                              mcp_edenprobe.c mcp_gdb.c ../../loader/loader.c ../../loader/match.c ../../loader/relocate.c)
+                              mcp_edenprobe.c mcp_gdb.c disasm.c ../../loader/loader.c ../../loader/match.c ../../loader/relocate.c)
 set_target_properties(snx_driver PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_compile_definitions(snx_driver PRIVATE
     SNX_SOURCE_DIR="${PROJECT_SOURCE_DIR}" SNX_BUILD_DIR="${PROJECT_BINARY_DIR}" _CRT_SECURE_NO_WARNINGS
@@ -59,17 +59,11 @@ set_target_properties(snx_nx_aot PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON
 target_compile_options(snx_nx_aot PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 target_link_libraries(snx_nx_aot PUBLIC ${snx_nx_fallback} snx_nx_descriptor snx_recompiler_jit snx_nx_module
                                         snx_settings)
-# the driver's own LLVM: its settings, and scarletnx --mcp's disassembler; GNU C23 for the LLVM-C headers, the driver
-# itself stays ISO C23
-add_library(snx_driver_llvm STATIC llvm_tuning.c disasm.c "${SNX_SETTINGS_LLVM}")
+# the driver's own LLVM: its settings; GNU C23 for the LLVM-C headers, the driver itself stays ISO C23
+add_library(snx_driver_llvm STATIC llvm_tuning.c "${SNX_SETTINGS_LLVM}")
 set_target_properties(snx_driver_llvm PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS ON)
 target_compile_options(snx_driver_llvm PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 target_link_libraries(snx_driver_llvm PUBLIC snx_nx_aot snx_recompiler_jit snx_llvm snx_arm_llvm snx_nx_module snx_settings)
-# scarletnx --mcp's disassembler (disasm.c), where LLVM has its AArch64 target (cmake/llvm.cmake)
-if(SNX_LLVM_A64_DISASM)
-    target_compile_definitions(snx_driver_llvm PRIVATE SNX_A64_DISASM)
-    target_link_libraries(snx_driver_llvm PUBLIC ${SNX_LLVM_DISASM_LIBS})
-endif()
 target_link_libraries(snx_driver PUBLIC snx_driver_llvm)
 # a build of the host tools: the Switch driver scarletnx runs (src/multicall) is the driver alone, which plays nothing
 if(SNX_TOOLS_ONLY)

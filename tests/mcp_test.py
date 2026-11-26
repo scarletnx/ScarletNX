@@ -516,10 +516,18 @@ def main():
 
     sym = text('symbolize').splitlines()
     check(sym[0].startswith('8000080 main') and 'not a hexadecimal address' in sym[1], f'symbolize: {sym}')
-    dis = text('disassemble')
-    if 'no A64 disassembler' not in dis:
-        check('b\t0x80' in dis.replace(' ', '\t') or '8000080' in dis.splitlines()[0], f'the first branch:\n{dis}')
-        check('svc' in dis and 'adr' in dis, f'the code disassembled:\n{dis}')
+    # make_nro's words, each the A64 decoder's: B over the headers, then ADR X0, MOV X1, SVC #0x27, SVC #7 and BRK
+    dis = text('disassemble').splitlines()
+    check('A64 decoder' in tools['disassemble']['description'], 'disassemble says how it writes an instruction')
+    check(dis[0].startswith('  8000000:  14000020  B imm=128  ; 8000080'), f'the first branch: {dis}')
+    for want in (
+        '  8000080:  10000400  ADR rd=0 imm=128  ; 8000100',
+        'MOVZ rd=1 sf=1 imm=',
+        'SVC imm=39',
+        'SVC imm=7',
+        '  8000090:  d4200000  BRK imm=0',
+    ):
+        check(any(want in line for line in dis), f'{want} in the code disassembled: {dis}')
     check(failed('no_range') and 'name a function, or a range' in text('no_range'), 'disassemble without a target')
     check(failed('no_game') and 'title ID' in text('no_game'), 'a title ID with no game')
     # without a game under the stub (and on Windows, where they are UNIX only) the GDB tools fail, saying why

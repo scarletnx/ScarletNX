@@ -112,8 +112,8 @@ EOF
 
 # Through ccache, without debug information, which no one reads in these builds and the AppImage would carry.
 # LLVM is the one built above (-DSNX_LLVM_CONFIG= drops the preset's, the system root's), SDL3 the system root's
-# package (SNX_SYSTEM_SDL3: a root without it, or with one too old, stops the configure), and a release leaves
-# out scarletnx --mcp's A64 disassembler (SNX_A64_DISASM). The container gets a nightly's name (SNX_BUILD_NAME)
+# package (SNX_SYSTEM_SDL3: a root without it, or with one too old, stops the configure). The container gets a
+# nightly's name (SNX_BUILD_NAME)
 # env: ARCH PRESET
 build() {
   docker exec -i -e PRESET -e ARCH -e CCACHE_DIR=/src/.cache/ccache -e CCACHE_BASEDIR=/src -e CCACHE_NOHASHDIR=true \
@@ -123,7 +123,7 @@ git config --global --add safe.directory '*'
 export SNX_SYSROOT=/src/sysroot
 cmake --preset ${PRESET} -DCMAKE_INSTALL_PREFIX=/usr -DBUILD_TESTING=OFF \
   -DSNX_OPT_FLAGS="-O2 -g0" -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-  -DLLVM_DIR=/src/.cache/llvm/${ARCH}/lib/cmake/llvm -DSNX_LLVM_CONFIG= -DSNX_A64_DISASM=OFF \
+  -DLLVM_DIR=/src/.cache/llvm/${ARCH}/lib/cmake/llvm -DSNX_LLVM_CONFIG= \
   -DSNX_SYSTEM_SDL3=ON
 cmake --build --preset ${PRESET} --parallel "$(getconf _NPROCESSORS_ONLN)"
 DESTDIR=/src/stage cmake --install build/${PRESET}
@@ -143,7 +143,7 @@ git config --global --add safe.directory '*'
 export SNX_SYSROOT=/src/sysroot
 cmake --preset ${PRESET} -DBUILD_TESTING=ON \
   -DSNX_OPT_FLAGS="-O2 -g0" -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-  -DLLVM_DIR=/src/.cache/llvm/${ARCH}/lib/cmake/llvm -DSNX_LLVM_CONFIG= -DSNX_A64_DISASM=OFF \
+  -DLLVM_DIR=/src/.cache/llvm/${ARCH}/lib/cmake/llvm -DSNX_LLVM_CONFIG= \
   -DSNX_SYSTEM_SDL3=ON
 cmake --build --preset ${PRESET} --parallel "$(getconf _NPROCESSORS_ONLN)" \
   --target snx-test-llvm-qemu-differential
@@ -184,7 +184,7 @@ git config --global --add safe.directory '*'
 export SNX_SYSROOT=/src/sysroot
 cmake --preset ${PRESET} -DBUILD_TESTING=ON \
   -DSNX_OPT_FLAGS="-O2 -g0" -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-  -DLLVM_DIR=/src/.cache/llvm/${ARCH}/lib/cmake/llvm -DSNX_LLVM_CONFIG= -DSNX_A64_DISASM=OFF \
+  -DLLVM_DIR=/src/.cache/llvm/${ARCH}/lib/cmake/llvm -DSNX_LLVM_CONFIG= \
   -DSNX_SYSTEM_SDL3=ON
 cmake --build --preset ${PRESET} --parallel "$(getconf _NPROCESSORS_ONLN)" --target snx_gui_tests
 ctest --preset ${PRESET} -R '^gui_' -E '^gui_sdl_events$' -j"$(getconf _NPROCESSORS_ONLN)"

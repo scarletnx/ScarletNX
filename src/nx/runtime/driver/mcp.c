@@ -12,7 +12,7 @@
      was saved, the play time then, the runtime and stamp that saved it, and whether this build can load it.
    - symbolize: game addresses (a backtrace's, a crash report's) named by the game's symbols, as tools/symbols.py does.
    - disassemble: a game function, by name or address range, with its branches named (disasm.h), as tools/disasm.py
-     does, where this build has an A64 disassembler.
+     does, each instruction as the A64 decoder's op and arguments.
    - edenprobe_scaffold, edenprobe_check, edenprobe_run, edenprobe_finding (mcp_edenprobe.c): a confirmed failure as a
      new edenprobe case, written into a local checkout, checked on the host, run on this build, and written up.
    - gdb_attach, gdb_command, gdb_threads, gdb_guest, gdb_memory, gdb_detach (mcp_gdb.c, UNIX only): GDB on a game
@@ -607,7 +607,7 @@ typedef struct {
     Text* t;
     const Game* g;
 } Listing;
-static void listed(void* ctx, SnxU64 address, SnxU32 word, const char* text, SnxU64 target) {
+static void listed(void* ctx, SnxU64 address, SnxU32 word, const char* text) {
     Listing* l = (Listing*)ctx;
     char w[9];
     if (l->t->lines >= MAX_LINES) return;
@@ -618,6 +618,7 @@ static void listed(void* ctx, SnxU64 address, SnxU32 word, const char* text, Snx
     mcp_put(l->t, w);
     mcp_put(l->t, "  ");
     mcp_put(l->t, text);
+    SnxU64 target = snx_disasm_a64_target(word, address);
     if (target) {
         mcp_put(l->t, "  ; ");
         mcp_put_hex(l->t, target);
@@ -683,10 +684,7 @@ static char* disassemble(Mcp* m, const char* game, const char* function, const c
     if (to - mi->base > mi->image_size) to = mi->base + mi->image_size;
     l.t = &t;
     l.g = g;
-    if (snx_disasm_a64(mi->image + (from - mi->base), (size_t)(to - from), from, listed, &l)) {
-        mcp_put(err, "this build has no A64 disassembler (its LLVM has no AArch64 target): tools/disasm.py has one");
-        goto done;
-    }
+    snx_disasm_a64(mi->image + (from - mi->base), (size_t)(to - from), from, listed, &l);
     if (t.lines >= MAX_LINES) mcp_put(&t, "... (cut at 400 instructions: give a range for the rest)\n");
     if (found > 1) {
         mcp_put(&t, "(");
@@ -777,7 +775,9 @@ static yyjson_mut_val* tools(yyjson_mut_doc* d) {
         "and offset. game is a folder, a game folder of work/, or a title ID.";
     static const char dis_says[] =
         "Disassembles a game function named by a part of its symbol (demangled or not), or the range start to end "
-        "(hexadecimal), with each branch's target named. 400 instructions at most. game as for symbolize.";
+        "(hexadecimal), with each branch's target named. 400 instructions at most. game as for symbolize. Each "
+        "instruction is ScarletNX's A64 decoder's: its name in a64.decode, then its arguments as name=value, in "
+        "decimal.";
     static const char* const scaffold_names[] = {"checkout", "suite", "id", "name", "tier", "issue", "family"};
     static const char* const scaffold_types[] = {"string", "string", "string", "string", "string", "integer", "string"};
     static const char* const check_names[] = {"checkout", "suite"};
