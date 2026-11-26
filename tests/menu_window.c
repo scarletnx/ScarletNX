@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The game's menu in a console's window (common/utilities/menu_window.c), a GBA game's: F2 or Back opens it over the picture
-   and Escape closes it; it has the console's items alone (no gamepads' page, no TV mode, no recordings of input); its
+/* The game's menu in a console's window (common/utilities/menu_window.c), a GBA game's: F2 or Back opens it over the
+   picture and Escape closes it; it has the console's items alone (no gamepads' page, no TV mode, no recordings of input); its
    Save states page lists the game's slots, with a slot's thumbnail beside it in the window's rectangles, and a slot's
    Save is the window's save of that slot, between two frames; Exit ends the run. A plain window under SDL's offscreen
    driver */

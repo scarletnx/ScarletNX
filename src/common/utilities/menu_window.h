@@ -7,7 +7,8 @@
 #define SNX_MENU_WINDOW_H
 #include "common/utilities/game_ini.h"
 
-/* the menu over the window snx_vpad_window_open opened, for console's game name in folder (its states/ and its picks) */
+/* the menu over the window snx_vpad_window_open opened, for console's game name in folder (its states/ and its
+   picks) */
 void snx_menu_window_open(SnxSystem console, const char* folder, const char* name);
 void snx_menu_window_close(void);
 #endif

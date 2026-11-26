@@ -145,7 +145,8 @@ static int shape_row(const SnxUiQuadView* q, const Label* l, unsigned label, int
     return n;
 }
 
-/* out's picture under q (its texels u, v, uw by vh) on a picture w by h, as snx_ui_rects says: false when out of memory */
+/* out's picture under q (its texels u, v, uw by vh) on a picture w by h, as snx_ui_rects says: false when out of
+   memory */
 static bool image_put(SnxUiRects* out, const SnxUiQuadView* q, int w, int h) {
     int y0 = from(q->y), y1 = from(q->y + q->h), x0 = from(q->x), x1 = from(q->x + q->w);
     if (y0 < 0) y0 = 0;
