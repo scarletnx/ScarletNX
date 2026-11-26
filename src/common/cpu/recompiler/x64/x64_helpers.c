@@ -22,6 +22,15 @@ u64 snx_x64_fp_from_int(CPU* c, u64 a, u64 fpcr, u32 desc);
 u64 snx_x64_fp_jcvt(CPU* c, u64 a, u64 fpcr);
 u64 snx_x64_fp_bfcvt(CPU* c, u64 a, u64 fpcr);
 void snx_x64_fp_vec(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
+void snx_x64_reduce_v(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
+void snx_x64_pmul_v(CPU* c, void* out, const void* x, const void* y, const void* z, u32 q);
+void snx_x64_pmull_p8(CPU* c, void* out, const void* x, const void* y, const void* z, u32 q);
+void snx_x64_shl_v(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
+void snx_x64_shl_w(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
+void snx_x64_sqrdmlah_v(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
+void snx_x64_sqrdmlsh_v(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
+void snx_x64_sqdmlal_vi(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
+void snx_x64_sqdmlsl_vi(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
 void snx_x64_crypto(CPU* c, void* out, const void* x, const void* y, const void* z, u32 op);
 u64 snx_x64_aes(u64 x, u32 op);
 u64 snx_x64_estimate(u64 a, u32 sqrt);
@@ -34,6 +43,7 @@ u64 snx_x64_fp8_narrow(CPU* c, u64 a, u32 width);
 u64 snx_x64_fp8_dot(u64 add, u64 a, u64 b, u32 desc);
 void snx_x64_set(CPU* c, u64 a, u64 size, u64 value);
 void snx_x64_copy(CPU* c, u64 to, u64 from, u64 size);
+void snx_x64_struct_mult(CPU* c, u64 address, u32 desc);
 extern const u32 snx_x64_crc32_table[256];
 
 /* ---- floating point: cpu.h's helpers, which LLVM's slow paths call, with the state ----
@@ -180,6 +190,316 @@ void snx_x64_fp_vec(CPU* c, void* out, const void* x, const void* y, const void*
     memcpy(out, r, 16);
 }
 
+/* across-lane integer reductions: one call for the instruction. ADDV wraps at the lane's bits; the long forms
+   sum in twice the lane's bits, where no sum can overflow; min and max fold the lanes in order, which is the
+   tree's result. The result's element is out's first bytes, the rest of the 16 zero, as the scalar write needs */
+static inline i64 snx_x64_red_sext(u64 v, unsigned bytes) {
+    return bytes == 4 ? (i64)(i32)(u32)v : bytes == 2 ? (i64)(i16)(u16)v : (i64)(i8)(u8)v;
+}
+void snx_x64_reduce_v(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc) {
+    unsigned op = desc & 7, size = desc >> 3 & 3, q = desc >> 5 & 1;
+    unsigned eb = 1u << size, n = (q ? 16 : 8) >> size, i, wide = op == 1 || op == 2;
+    unsigned char r[16] = {0};
+    u64 acc = 0, best = 0;
+    (void)c;
+    (void)y;
+    (void)z;
+    if (op <= 2) {
+        u64 mask = eb == 4 ? 0xFFFFFFFFu : eb == 2 ? 0xFFFFu : 0xFFu;
+        for (i = 0; i < n; ++i) {
+            u64 v = snx_x64_lane_get(x, i, eb);
+            if (op == 0) acc = (acc + v) & mask;
+            else if (op == 1) acc += (u64)snx_x64_red_sext(v, eb);
+            else acc += v;
+        }
+        snx_x64_lane_put(r, 0, wide ? eb * 2 : eb, acc);
+    } else {
+        int uns = op >= 5, minimum = op == 4 || op == 6;
+        best = snx_x64_lane_get(x, 0, eb);
+        for (i = 1; i < n; ++i) {
+            u64 v = snx_x64_lane_get(x, i, eb);
+            int take = uns ? (minimum ? v < best : v > best)
+                           : (minimum ? snx_x64_red_sext(v, eb) < snx_x64_red_sext(best, eb)
+                                      : snx_x64_red_sext(v, eb) > snx_x64_red_sext(best, eb));
+            if (take) best = v;
+        }
+        snx_x64_lane_put(r, 0, eb, best);
+    }
+    memcpy(out, r, sizeof r);
+}
+
+/* Byte polynomial multiply. PMUL keeps the low byte of each product. PMULL widens each product to a halfword.
+   Portable C avoids PCLMULQDQ, which is a 64-bit product with a host feature. */
+static inline u16 snx_x64_clmul8(u8 x, u8 y) {
+    u16 p = 0;
+    for (unsigned k = 0; k < 8; ++k)
+        if (y >> k & 1) p ^= (u16)x << k;
+    return p;
+}
+void snx_x64_pmul_v(CPU* c, void* out, const void* x, const void* y, const void* z, u32 q) {
+    V128 a, b, r = {0};
+    unsigned n = q ? 16 : 8, i;
+    (void)c;
+    (void)z;
+    memcpy(&a, x, sizeof a);
+    memcpy(&b, y, sizeof b);
+    for (i = 0; i < n; ++i) r.b[i] = (u8)snx_x64_clmul8(a.b[i], b.b[i]);
+    memcpy(out, &r, sizeof r);
+}
+void snx_x64_pmull_p8(CPU* c, void* out, const void* x, const void* y, const void* z, u32 q) {
+    V128 a, b, r = {0};
+    unsigned off = q ? 8 : 0, i;
+    (void)c;
+    (void)z;
+    memcpy(&a, x, sizeof a);
+    memcpy(&b, y, sizeof b);
+    for (i = 0; i < 8; ++i) {
+        u16 p = snx_x64_clmul8(a.b[off + i], b.b[off + i]);
+        r.b[2 * i] = (u8)p;
+        r.b[2 * i + 1] = (u8)(p >> 8);
+    }
+    memcpy(out, &r, sizeof r);
+}
+
+/* Byte and halfword shifts by register. desc: size, q, unsigned, round, saturate. The signed low byte of Vm
+   shifts Vn. This follows vector.c's vec_sqrshl_bhs and vec_uqrshl_bhs, QEMU's oracle. Saturation sets FPSR.QC. */
+static u32 snx_x64_shl_signed(u32 src, i32 shift, unsigned bits, int round, u32* sat) {
+    u32 sign = 1u << (bits - 1), mask = (1u << bits) - 1, low;
+    i32 s = (i32)(src ^ sign) - (i32)sign; /* the src lane, sign extended from its bits */
+    if (shift <= -(i32)bits) return round ? 0 : (s < 0 ? ~0u : 0u);
+    if (shift < 0) {
+        i32 r;
+        if (round) {
+            s >>= -shift - 1;
+            r = (s >> 1) + (s & 1);
+        } else
+            r = s >> -shift;
+        return (u32)r;
+    }
+    if (shift < (i32)bits) {
+        u32 val = (u32)s << shift;
+        low = val & mask;
+        if (!sat || val == ((val & sign) ? low | ~mask : low)) return low;
+    } else if (!sat || s == 0)
+        return 0;
+    *sat = 1;
+    return sign - (s >= 0);
+}
+static u32 snx_x64_shl_unsigned(u32 src, i32 shift, unsigned bits, int round, u32* sat) {
+    u32 mask = (1u << bits) - 1;
+    if (shift <= -(i32)(bits + (u32)round)) return 0;
+    if (shift < 0) {
+        if (round) {
+            src >>= -shift - 1;
+            return (src >> 1) + (src & 1);
+        }
+        return src >> -shift;
+    }
+    if (shift < (i32)bits) {
+        u32 val = src << shift;
+        if (!sat || val == (val & mask)) return val & mask;
+    } else if (!sat || src == 0)
+        return 0;
+    *sat = 1;
+    return mask;
+}
+void snx_x64_shl_v(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc) {
+    unsigned size = desc & 3, q = desc >> 2 & 1, uns = desc >> 3 & 1, round = desc >> 4 & 1, sat = desc >> 5 & 1;
+    unsigned bits = 8u << size, lanes = (q ? 16u : 8u) >> size;
+    V128 a, m, r = {0};
+    u32 qc = 0;
+    (void)z;
+    memcpy(&a, x, sizeof a);
+    memcpy(&m, y, sizeof m);
+    for (unsigned i = 0; i < lanes; ++i) {
+        u32 v = size ? SNX_VH(a, i) : SNX_VB(a, i), by = size ? SNX_VH(m, i) : SNX_VB(m, i);
+        i32 shift = (i8)by;
+        u32 res = uns ? snx_x64_shl_unsigned(v, shift, bits, round, sat ? &qc : NULL)
+                      : snx_x64_shl_signed(v, shift, bits, round, sat ? &qc : NULL);
+        if (size) SNX_VSET_H(r, i, res);
+        else SNX_VSET_B(r, i, res);
+    }
+    if (qc) c->fpsr |= 1u << 27;
+    memcpy(out, &r, sizeof r);
+}
+
+/* Word shifts by register, from helpers/vector.c and QEMU's vec_internal.h.
+   LGPL-2.1-or-later, Copyright (c) 2020 Linaro, Copyright (C) 2013 - 2018 Linaro Ltd <ard.biesheuvel@linaro.org>.
+   desc: q, unsigned, round, saturate. Saturation sets FPSR.QC. */
+static i32 snx_x64_sqrshl_bhs(i32 src, i32 shift, int bits, int round, u32* sat) {
+    if (shift <= -bits) return round ? 0 : src >> 31;
+    if (shift < 0) {
+        if (round) {
+            src >>= -shift - 1;
+            return (src >> 1) + (src & 1);
+        }
+        return src >> -shift;
+    }
+    if (shift < bits) {
+        i32 val = (i32)((u32)src << shift);
+        if (bits == 32) {
+            if (!sat || val >> shift == src) return val;
+        } else {
+            i32 extval = (i32)((u32)val << (32 - bits)) >> (32 - bits);
+            if (!sat || val == extval) return extval;
+        }
+    } else if (!sat || src == 0)
+        return 0;
+    *sat = 1;
+    return (i32)((1u << (bits - 1)) - (src >= 0));
+}
+static u32 snx_x64_uqrshl_bhs(u32 src, i32 shift, int bits, int round, u32* sat) {
+    if (shift <= -(bits + round)) return 0;
+    if (shift < 0) {
+        if (round) {
+            src >>= -shift - 1;
+            return (src >> 1) + (src & 1);
+        }
+        return src >> -shift;
+    }
+    if (shift < bits) {
+        u32 val = src << shift;
+        if (bits == 32) {
+            if (!sat || val >> shift == src) return val;
+        } else {
+            u32 extval = val & ((1u << bits) - 1);
+            if (!sat || val == extval) return extval;
+        }
+    } else if (!sat || src == 0)
+        return 0;
+    *sat = 1;
+    return bits == 32 ? 0xFFFFFFFFu : (1u << bits) - 1;
+}
+void snx_x64_shl_w(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc) {
+    unsigned lanes = (desc & 1) ? 4 : 2, uns = desc >> 1 & 1, round = desc >> 2 & 1;
+    u32 sat = 0, *qc = (desc >> 3 & 1) ? &sat : NULL;
+    V128 a, m, r = {0};
+    (void)z;
+    memcpy(&a, x, sizeof a);
+    memcpy(&m, y, sizeof m);
+    for (unsigned i = 0; i < lanes; ++i) {
+        u32 src = SNX_VS(a, i);
+        i32 shift = (i8)(u8)SNX_VS(m, i);
+        u32 val = uns ? snx_x64_uqrshl_bhs(src, shift, 32, round, qc)
+                      : (u32)snx_x64_sqrshl_bhs((i32)src, shift, 32, round, qc);
+        SNX_VSET_S(r, i, val);
+    }
+    if (sat) c->fpsr |= 1u << 27;
+    memcpy(out, &r, sizeof r);
+}
+
+/* Doubling multiply and add. desc: q, size, Vm lane. Saturation follows the Sail and sets FPSR.QC.
+   The intermediates fit i64. */
+static inline i64 snx_x64_qdm_sat(i64 v, unsigned bits, u32* qc) {
+    i64 hi, lo;
+    if (bits >= 64) return v;
+    hi = (1ll << (bits - 1)) - 1;
+    lo = -hi - 1;
+    if (v > hi) {
+        *qc = 1;
+        return hi;
+    }
+    if (v < lo) {
+        *qc = 1;
+        return lo;
+    }
+    return v;
+}
+/* signed saturating add or subtract of two i64s, with no signed overflow on the way */
+static inline i64 snx_x64_qdm_addsub(i64 a, i64 b, int sub, u32* qc) {
+    if (!sub) {
+        if (b > 0 && a > INT64_MAX - b) {
+            *qc = 1;
+            return INT64_MAX;
+        }
+        if (b < 0 && a < INT64_MIN - b) {
+            *qc = 1;
+            return INT64_MIN;
+        }
+        return a + b;
+    }
+    if (b < 0 && a > INT64_MAX + b) {
+        *qc = 1;
+        return INT64_MAX;
+    }
+    if (b > 0 && a < INT64_MIN + b) {
+        *qc = 1;
+        return INT64_MIN;
+    }
+    return a - b;
+}
+/* twice the product, saturated to the wide lane before it is accumulated */
+static inline i64 snx_x64_qdm_double(i64 p, unsigned wide, u32* qc) {
+    if (wide >= 64) {
+        if (p > INT64_MAX / 2) {
+            *qc = 1;
+            return INT64_MAX;
+        }
+        if (p < INT64_MIN / 2) {
+            *qc = 1;
+            return INT64_MIN;
+        }
+    }
+    return snx_x64_qdm_sat(p + p, wide, qc);
+}
+/* (acc << bits + 2ab (+ round)) >> bits, all in i64: acc << (bits - 1) + ab + 2^(bits - 2) cannot overflow there */
+static void snx_x64_qrdmlah(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc, int sub) {
+    unsigned size = desc >> 1 & 3, bits = 8u << size, lanes = (desc & 1 ? 16 : 8) / (bits / 8);
+    V128 d, n, m, r = {0};
+    u32 qc = 0;
+    memcpy(&d, x, sizeof d);
+    memcpy(&n, y, sizeof n);
+    memcpy(&m, z, sizeof m);
+    for (unsigned i = 0; i < lanes; ++i) {
+        i64 a = size == 1 ? (i16)SNX_VH(n, i) : (i32)SNX_VS(n, i);
+        i64 b = size == 1 ? (i16)SNX_VH(m, i) : (i32)SNX_VS(m, i);
+        i64 acc = size == 1 ? (i16)SNX_VH(d, i) : (i32)SNX_VS(d, i);
+        i64 p = a * b;
+        if (sub) p = -p;
+        p += acc << (bits - 1);
+        p += 1ll << (bits - 2);
+        i64 v = snx_x64_qdm_sat(p >> (bits - 1), bits, &qc);
+        if (size == 1) SNX_VSET_H(r, i, v);
+        else SNX_VSET_S(r, i, v);
+    }
+    if (qc) c->fpsr |= 1u << 27;
+    memcpy(out, &r, sizeof r);
+}
+void snx_x64_sqrdmlah_v(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc) {
+    snx_x64_qrdmlah(c, out, x, y, z, desc, 0);
+}
+void snx_x64_sqrdmlsh_v(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc) {
+    snx_x64_qrdmlah(c, out, x, y, z, desc, 1);
+}
+/* SQDMLAL, SQDMLSL by element: the q half of Vn times Vm's element, doubled and saturated to the wide lane, then
+   saturated into Vd's wide lane. q selects Vn's half (part Q); all the wide lanes are written */
+static void snx_x64_qdmlal(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc, int sub) {
+    unsigned size = desc >> 1 & 3, wide = 16u << size, lanes = 128u / wide;
+    unsigned off = (desc & 1) ? lanes : 0, idx = desc >> 8 & 15;
+    V128 d, n, m, r = {0};
+    u32 qc = 0;
+    memcpy(&d, x, sizeof d);
+    memcpy(&n, y, sizeof n);
+    memcpy(&m, z, sizeof m);
+    i64 elem = size == 1 ? (i16)SNX_VH(m, idx) : (i32)SNX_VS(m, idx);
+    for (unsigned i = 0; i < lanes; ++i) {
+        i64 a = size == 1 ? (i16)SNX_VH(n, off + i) : (i32)SNX_VS(n, off + i);
+        i64 acc = size == 1 ? (i32)SNX_VS(d, i) : (i64)SNX_VD(d, i);
+        i64 p = snx_x64_qdm_double(a * elem, wide, &qc);
+        i64 v = snx_x64_qdm_sat(snx_x64_qdm_addsub(acc, p, sub, &qc), wide, &qc);
+        if (size == 1) SNX_VSET_S(r, i, v);
+        else SNX_VSET_D(r, i, v);
+    }
+    if (qc) c->fpsr |= 1u << 27;
+    memcpy(out, &r, sizeof r);
+}
+void snx_x64_sqdmlal_vi(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc) {
+    snx_x64_qdmlal(c, out, x, y, z, desc, 0);
+}
+void snx_x64_sqdmlsl_vi(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc) {
+    snx_x64_qdmlal(c, out, x, y, z, desc, 1);
+}
+
 /* the cryptographic instructions where the host has none for them: out from Vd's, Vn's and Vm's values (x, y, z); op
    v_sha1's or v_sha256's, or from 0x20 AESE, AESD (x with the key y), AESMC, AESIMC (of x) */
 void snx_x64_crypto(CPU* c, void* out, const void* x, const void* y, const void* z, u32 op) {
@@ -268,6 +588,39 @@ void snx_x64_set(CPU* c, u64 a, u64 size, u64 value) {
 void snx_x64_copy(CPU* c, u64 to, u64 from, u64 size) {
     u8* M = c->mem;
     if (size) memmove(MP(to), MP(from), (size_t)size);
+}
+
+/* One call for a Q-form LD_mult or ST_mult. desc: Rt, count, size, load. Elements follow guest address order
+   so a page fault lands on the first missing byte. */
+void snx_x64_struct_mult(CPU* c, u64 address, u32 desc) {
+    unsigned rt = desc & 31, count = (desc >> 5 & 3) + 2, size = desc >> 7 & 3, load = desc >> 9 & 1;
+    unsigned esize = 1u << size, ne = 16u / esize, e, s;
+    u8* M = c->mem;
+    V128 data[4] = {0}, reg[4] = {0};
+    /* the chunks are copied in guest address order: a page fault reaches the byte the Sail's first access reaches */
+    if (load)
+        for (s = 0; s < count; ++s) memcpy(data[s].b, MP(address + 16u * s), 16);
+    else
+        for (s = 0; s < count; ++s) memcpy(data[s].b, c->v[(rt + s) & 31].b, 16);
+    for (e = 0; e < ne; ++e)
+        for (s = 0; s < count; ++s) {
+            unsigned off = (e * count + s) * esize, ci = off >> 4, cb = off & 15;
+            u8 *from, *to;
+            if (load) from = data[ci].b + cb, to = reg[s].b + e * esize;
+            else
+                from = data[s].b + e * esize, to = reg[ci].b + cb;
+            /* a constant size keeps memcpy a load and a store, not a call */
+            switch (size) {
+            case 0: memcpy(to, from, 1); break;
+            case 1: memcpy(to, from, 2); break;
+            case 2: memcpy(to, from, 4); break;
+            default: memcpy(to, from, 8); break;
+            }
+        }
+    if (load)
+        for (s = 0; s < count; ++s) memcpy(c->v[(rt + s) & 31].b, reg[s].b, 16);
+    else
+        for (s = 0; s < count; ++s) memcpy(MP(address + 16u * s), reg[s].b, 16);
 }
 
 /* CRC32's (not CRC32C's) reflected table of the bytes: the x86-64 back end's CRC32 a byte at a time (x64_a64.h's

@@ -153,6 +153,19 @@ static int vzip(SgCtx* g, int kind, unsigned size, int q, int a, int b) {
     return vperm(g, a, b, idx);
 }
 /* the low half of each element of 16 << size bits (high: the high half), into the low doubleword */
+/* even and odd elements of two vectors: SHUFPS or UNPACK where vzip needed a constant pool and two PSHUFB */
+static void vfpairs(SgCtx* g, unsigned sz, int q, int a, int b, int* ev, int* od) {
+    if (sz) {
+        *ev = op2(g, &sgx_v_punpcklqdq, a, b);
+        *od = op2(g, &sgx_v_punpckhqdq, a, b);
+    } else if (q) {
+        *ev = sgx_v2(X, &sgx_v_shufps, a, b, 0x88);
+        *od = sgx_v2(X, &sgx_v_shufps, a, b, 0xDD);
+    } else {
+        *ev = op2(g, &sgx_v_punpckldq, a, b);
+        *od = sgx_v2(X, &sgx_v_shufps, *ev, *ev, 0xEE);
+    }
+}
 static int vnarrow(SgCtx* g, unsigned size, int a, int high) {
     int idx[16], i, k, eb = 1 << size;
     for (i = 0; i < 16; ++i) idx[i] = -1;
@@ -180,6 +193,14 @@ static int vdup(SgCtx* g, unsigned size, int a, int e) {
     for (i = 0; i < 16; ++i) idx[i] = e * eb + i % eb;
     return vperm(g, a, 0, idx);
 }
+/* imm5's element's size exponent (0-3) and index, -1 where no size is encoded */
+static int copy_size(unsigned imm5, unsigned* idx) {
+    unsigned k = 0;
+    if (!(imm5 & 15)) return -1;
+    while (!((imm5 >> k) & 1)) ++k;
+    *idx = imm5 >> (k + 1);
+    return (int)k;
+}
 /* a * b of 8 << size bits (the bytes by words: the even bytes' products and the odd ones' moved up) */
 static int vmul(SgCtx* g, unsigned size, int a, int b) {
     if (size == 1) return op2(g, &sgx_v_pmullw, a, b);
@@ -191,23 +212,6 @@ static int vmul(SgCtx* g, unsigned size, int a, int b) {
     }
     sg_fail("a vector product of doublewords", size, 0);
 }
-/* the operation folded over a's first n elements: element 0 */
-static int vreduce(SgCtx* g, unsigned size, int a, int n, int (*op)(SgCtx*, unsigned, int, int, int, int), int uns,
-                   int minimum) {
-    int eb = 1 << size;
-    while (n > 1) {
-        int idx[16], i;
-        for (i = 0; i < 16; ++i) idx[i] = i + n / 2 * eb < 16 ? i + n / 2 * eb : -1;
-        a = op(g, size, a, vperm(g, a, 0, idx), uns, minimum);
-        n /= 2;
-    }
-    return a;
-}
-static int red_add(SgCtx* g, unsigned size, int a, int b, int uns, int minimum) {
-    (void)uns, (void)minimum;
-    return vadd(g, size, a, b);
-}
-
 /* ---- the lanes one at a time: what x86 has no form for ---- */
 
 static const SgXVForm* const k_pextr[4] = {&sgx_v_pextrb, &sgx_v_pextrw, &sgx_v_pextrd, &sgx_v_pextrq};
@@ -272,34 +276,63 @@ static SgB vany(SgCtx* g, int m, unsigned sz, int n) {
 }
 /* a lane's floating-point constant */
 static int fsplat(SgCtx* g, unsigned sz, SnxU64 bits) { return vsplat(g, sz + 2, bits); }
-/* the lanes that are not normal numbers above the smallest: zero, tiny, infinite, NaN (the doubled magnitude, minus
-   that of the smallest normal and one, not below the range to infinity's, unsigned: a signed compare of them with
-   their tops flipped) */
-static int fnot_roomy(SgCtx* g, unsigned sz, int r) {
+/* the lanes that are not normal numbers above the smallest: zero, tiny, infinite, NaN (m2 is r + r, shared with the
+   exact-zero test: the doubled magnitude, minus that of the smallest normal and one, not below the range to
+   infinity's, unsigned: a signed compare of them with their tops flipped) */
+static int fnot_roomy2(SgCtx* g, unsigned sz, int m2) {
     unsigned size = sz + 2;
     SnxU64 normal = sz ? 0x0010000000000000ull : 0x00800000u, inf = sz ? 0x7FF0000000000000ull : 0x7F800000u;
     SnxU64 flip = 1ull << ((8u << size) - 1);
-    int m2 = vadd(g, size, r, r), t = vsub(g, size, m2, vsplat(g, size, (normal + 1) << 1));
+    int t = vsub(g, size, m2, vsplat(g, size, (normal + 1) << 1));
     return vgt(g, size, vxor(g, t, vsplat(g, size, flip)), vsplat(g, size, (((inf - normal - 1) << 1) - 1) ^ flip), 0);
 }
-static int fzero(SgCtx* g, unsigned sz, int a) { return veq(g, sz + 2, vadd(g, sz + 2, a, a), vzero(g)); }
-/* the denormal lanes (the doubled magnitude less 2 below the doubled smallest normal less 2, unsigned: a signed
-   compare with their tops flipped) */
+static int fnot_roomy(SgCtx* g, unsigned sz, int r) { return fnot_roomy2(g, sz, vadd(g, sz + 2, r, r)); }
+/* the exact zeros of a doubled value a2: a + a is zero only for the two zeros */
+static int fzero2(SgCtx* g, unsigned sz, int a2) { return veq(g, sz + 2, a2, vzero(g)); }
+static int fzero(SgCtx* g, unsigned sz, int a) { return fzero2(g, sz, vadd(g, sz + 2, a, a)); }
+/* the denormal lanes (the magnitude less one, its sign bit set, compared signed below the smallest normal less one
+   with its sign set; a zero's borrow puts it above the bound) */
 static int fdenormal(SgCtx* g, unsigned sz, int a) {
     unsigned size = sz + 2;
     SnxU64 normal = sz ? 0x0010000000000000ull : 0x00800000u, flip = 1ull << ((8u << size) - 1);
-    int t = vsub(g, size, vadd(g, size, a, a), vsplat(g, size, 2));
-    return vgt(g, size, vsplat(g, size, ((normal << 1) - 2) ^ flip), vxor(g, t, vsplat(g, size, flip)), 0);
+    int t = vor(g, vsub(g, size, a, vsplat(g, size, 1)), vsplat(g, size, flip));
+    return vgt(g, size, vsplat(g, size, (normal - 1) | flip), t, 0);
 }
 static int fnan(SgCtx* g, unsigned sz, int a) { return sgx_v2(X, k_fcmp[sz], a, a, 3); /* CMPUNORD */ }
-static SgB fstate(SgCtx* g, SnxU32 mask, int ixc) { return sgx_fp_bad(g, sg_FPCR_read(g), mask, ixc); }
-/* FPCR.FZ set and a denormal in the first n lanes of a, b or c (0: none), which it flushes, raising IDC: the helpers'
-   case (ir_vec_fp.c's unflushed) */
-static SgB fflushed(SgCtx* g, unsigned sz, int n, int a, int b, int c) {
+/* the same check's bits, cached once a region: a vector guard joins them with its lane mask, so one TEST and one
+   branch decide the cold path instead of a SETcc for each check and an OR of the two */
+static SgD fstate_bits(SgCtx* g, SnxU32 mask, int ixc) {
+    SgX* x = X;
+    SgD f = sg_d_and(g, sg_d_zext(g, sg_d_slice(g, sg_FPCR_read(g), 31, 0), 32), sgx_const(32, mask));
+    if (ixc) {
+        SgXIns* i = sgx_append(x, SGX_K_LOAD);
+        SgD fpsr;
+        i->w = 32;
+        i->disp = (int)offsetof(CPU, fpsr);
+        i->def = sgx_vreg(x, x->n - 1, 32);
+        fpsr = sgx_val(32, i->def);
+        f = sg_d_or(g, f, sg_d_xor(g, sg_d_and(g, fpsr, sgx_const(32, SGX_FPSR_IXC)), sgx_const(32, SGX_FPSR_IXC)));
+    }
+    return f;
+}
+/* lane bits 0-3, then the state's bits: a nonzero state makes the whole mask nonzero */
+static SgB vany_state(SgCtx* g, int m, unsigned sz, int n, SgD s1) {
+    SgD bits = sgx_val(32, sgx_v1(X, k_fmask[sz], m, 0));
+    bits = sg_d_or(g, sg_d_and(g, bits, sgx_const(32, (1u << n) - 1)), sg_d_lsl(g, s1, 4));
+    return sg_b_not(g, sg_d_is_zero(g, bits));
+}
+static SgB vany_states(SgCtx* g, int m, unsigned sz, int n, SgD s1, SgD s2) {
+    SgD bits = sgx_val(32, sgx_v1(X, k_fmask[sz], m, 0));
+    bits = sg_d_or(g, sg_d_and(g, bits, sgx_const(32, (1u << n) - 1)),
+                   sg_d_or(g, sg_d_lsl(g, s1, 4), sg_d_lsl(g, s2, 5)));
+    return sg_b_not(g, sg_d_is_zero(g, bits));
+}
+/* the lanes of a, b or c that are denormal (0: none) */
+static int fdenorms(SgCtx* g, unsigned sz, int a, int b, int c) {
     int m = fdenormal(g, sz, a);
     if (b) m = vor(g, m, fdenormal(g, sz, b));
     if (c) m = vor(g, m, fdenormal(g, sz, c));
-    return sg_b_and(g, fstate(g, SGX_FPCR_FZ, 0), vany(g, m, sz, n));
+    return m;
 }
 static int fcold(SgCtx* g, SgB bad, int fast, int a, int b, int d, SnxU32 desc) {
     return sgx_vcold(X, bad, fast, "snx_x64_fp_vec", a, b, d, desc);
@@ -309,15 +342,18 @@ static int fcold(SgCtx* g, SgB bad, int fast, int a, int b, int d, SnxU32 desc) 
 /* FADD, FSUB, FMUL, FDIV by lanes; FABD the difference's magnitude */
 static int fbinary(SgCtx* g, unsigned op, unsigned sz, int n, int a, int b) {
     const SgXVForm* f = op == SNX_FP_ADD ? k_fadd[sz] : op == SNX_FP_MUL ? k_fmul[sz] : op == SNX_FP_DIV ? k_fdiv[sz] : k_fsub[sz];
-    int r = op2(g, f, a, b), bad = fnot_roomy(g, sz, r), zok;
-    if (op == SNX_FP_ADD || op == SNX_FP_SUB || op == SNX_FP_ABD) zok = fzero(g, sz, r);
+    int r = op2(g, f, a, b), r2 = vadd(g, sz + 2, r, r), bad = fnot_roomy2(g, sz, r2), zok;
+    if (op == SNX_FP_ADD || op == SNX_FP_SUB || op == SNX_FP_ABD) zok = fzero2(g, sz, r2);
     else if (op == SNX_FP_MUL)
-        zok = vand(g, fzero(g, sz, r), vor(g, fzero(g, sz, a), fzero(g, sz, b)));
+        zok = vand(g, fzero2(g, sz, r2), vor(g, fzero(g, sz, a), fzero(g, sz, b)));
     else
-        zok = vand(g, fzero(g, sz, r), fzero(g, sz, a));
+        zok = vand(g, fzero2(g, sz, r2), fzero(g, sz, a));
     bad = vandn(g, zok, bad);
-    r = fcold(g, sg_b_or(g, sg_b_or(g, fstate(g, SGX_FPCR_RMODE, 1), fflushed(g, sz, n, a, b, 0)), vany(g, bad, sz, n)),
-              r, a, b, 0, FDESC(0, sz, n) | (op == SNX_FP_ABD ? SNX_FP_SUB : op) << 12);
+    /* one MOVMSK for the result and the flushed operands: with FZ clear the helper still gives the exact result, so
+       a denormal only costs a cold call */
+    bad = vor(g, bad, fdenorms(g, sz, a, b, 0));
+    r = fcold(g, vany_state(g, bad, sz, n, fstate_bits(g, SGX_FPCR_RMODE, 1)), r, a, b, 0,
+              FDESC(0, sz, n) | (op == SNX_FP_ABD ? SNX_FP_SUB : op) << 12);
     if (op == SNX_FP_ABD) r = vandn(g, fsplat(g, sz, 1ull << (sz ? 63 : 31)), r);
     return r;
 }
@@ -330,25 +366,33 @@ static int ffma(SgCtx* g, unsigned sz, int n_, int d, int a, int b, int sub) {
         int in[4] = {d, a, b, 0};
         r = sgx_vins(X, sz ? &sgx_v_vfmadd231pd : &sgx_v_vfmadd231ps, 0, 1, in, 0, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
     }
-    zok = vand(g, fzero(g, sz, r), vor(g, fzero(g, sz, a), fzero(g, sz, b)));
-    bad = vandn(g, zok, fnot_roomy(g, sz, r));
-    return fcold(
-        g, sg_b_or(g, sg_b_or(g, fstate(g, SGX_FPCR_RMODE, 1), fflushed(g, sz, n_, d, a, b)), vany(g, bad, sz, n_)), r,
-        d, a, b, FDESC(1, sz, n_));
+    {
+        int r2 = vadd(g, sz + 2, r, r);
+        zok = vand(g, fzero2(g, sz, r2), vor(g, fzero(g, sz, a), fzero(g, sz, b)));
+        bad = vandn(g, zok, fnot_roomy2(g, sz, r2));
+    }
+    bad = vor(g, bad, fdenorms(g, sz, d, a, b));
+    return fcold(g, vany_state(g, bad, sz, n_, fstate_bits(g, SGX_FPCR_RMODE, 1)), r, d, a, b, FDESC(1, sz, n_));
 }
-/* FMAX, FMIN (numeric: FMAXNM, FMINNM): MAXPx's lanes, equal ones ANDed (ORed for the minimum); a NaN goes cold */
-static int fminmax(SgCtx* g, unsigned sz, int n, int a, int b, int minimum, int numeric) {
+/* FMAX, FMIN: MAXPx's lanes, equal ones ANDed or ORed, with no guards */
+static int fminmax_lanes(SgCtx* g, unsigned sz, int a, int b, int minimum) {
     int eq = sgx_v2(X, k_fcmp[sz], a, b, 0), t = minimum ? vor(g, a, b) : vand(g, a, b);
     int r = op2(g, minimum ? k_fmin[sz] : k_fmax[sz], a, b);
-    r = vsel(g, eq, t, r);
-    return fcold(g, sg_b_or(g, fflushed(g, sz, n, a, b, 0), vany(g, vor(g, fnan(g, sz, a), fnan(g, sz, b)), sz, n)), r,
-                 a, b, 0, FDESC(3, sz, n) | (SnxU32)minimum << 12 | (SnxU32)numeric << 16);
+    return vsel(g, eq, t, r);
+}
+static int fminmax(SgCtx* g, unsigned sz, int n, int a, int b, int minimum, int numeric) {
+    int r = fminmax_lanes(g, sz, a, b, minimum);
+    /* one MOVMSK: a NaN or an FZ-flushed operand, under FPCR.FZ, goes cold */
+    int bad = vor(g, vor(g, fnan(g, sz, a), fnan(g, sz, b)), fdenorms(g, sz, a, b, 0));
+    return fcold(g, vany_state(g, bad, sz, n, fstate_bits(g, SGX_FPCR_FZ, 0)), r, a, b, 0,
+                 FDESC(3, sz, n) | (SnxU32)minimum << 12 | (SnxU32)numeric << 16);
 }
 static int fsqrt(SgCtx* g, unsigned sz, int n, int a) {
     int r = sgx_v1(X, k_fsqrt[sz], a, 0), bad = vandn(g, fzero(g, sz, a), fnot_roomy(g, sz, r));
-    return fcold(g,
-                 sg_b_or(g, sg_b_or(g, fstate(g, SGX_FPCR_RMODE, 1), fflushed(g, sz, n, a, 0, 0)), vany(g, bad, sz, n)),
-                 r, a, 0, 0, FDESC(2, sz, n) | SNX_FP_SQRT << 12);
+    /* a denormal operand goes cold in either FZ mode: the helper is exact and keeps FPSR */
+    bad = vor(g, bad, fdenormal(g, sz, a));
+    return fcold(g, vany_state(g, bad, sz, n, fstate_bits(g, SGX_FPCR_RMODE, 1)), r, a, 0, 0,
+                 FDESC(2, sz, n) | SNX_FP_SQRT << 12);
 }
 /* FCMEQ (cmp 0), FCMGE (1), FCMGT (2) of a and b (abs: FACGE, FACGT): CMPPx's EQ, LE and LT the other way; an
    unordered lane goes cold (a signalling NaN, or any NaN for GE and GT, raises IOC) */
@@ -360,8 +404,10 @@ static int fcompare(SgCtx* g, unsigned sz, int n, int a, int b, int cmp, int abs
         b = vand(g, b, m);
     }
     r = cmp == 0 ? sgx_v2(X, k_fcmp[sz], a, b, 0) : sgx_v2(X, k_fcmp[sz], b, a, cmp == 1 ? 2 : 1);
-    return fcold(g, sg_b_or(g, fflushed(g, sz, n, a, b, 0), vany(g, sgx_v2(X, k_fcmp[sz], a, b, 3), sz, n)), r, a, b, 0,
-                 FDESC(4, sz, n) | (SnxU32)cmp << 12);
+    return fcold(g,
+                 vany_state(g, vor(g, sgx_v2(X, k_fcmp[sz], a, b, 3), fdenorms(g, sz, a, b, 0)), sz, n,
+                            fstate_bits(g, SGX_FPCR_FZ, 0)),
+                 r, a, b, 0, FDESC(4, sz, n) | (SnxU32)cmp << 12);
 }
 /* FCVTZS, FCVTZU (to integers of the lanes' width, toward zero) of a scaled by 2^fbits */
 static int fto_int(SgCtx* g, unsigned sz, int n, int a, int uns, int fbits) {
@@ -377,9 +423,9 @@ static int fto_int(SgCtx* g, unsigned sz, int n, int a, int uns, int fbits) {
             int hi = vxor(g, sgx_v1(X, &sgx_v_cvttps2dq, op2(g, &sgx_v_subps, x, fsplat(g, 0, 0x4F000000u)), 0),
                           vsplat(g, 2, 0x80000000u));
             r = vsel(g, big, hi, lo);
-            bad = vor(g, sgx_v2(X, &sgx_v_cmpps, x, fsplat(g, 0, 0xBF800000u), 2),  /* x <= -1 */
+            /* NGE of -1 and x: x <= -1, or unordered. One CMPPS for both tests. */
+            bad = vor(g, sgx_v2(X, &sgx_v_cmpps, fsplat(g, 0, 0xBF800000u), x, 5),
                       sgx_v2(X, &sgx_v_cmpps, fsplat(g, 0, 0x4F800000u), x, 2)); /* 2^32 <= x */
-            bad = vor(g, bad, fnan(g, 0, x));
         }
     } else {
         /* the two doubles one at a time (CVTTSD2SI), unsigned ones from 2^63 up cold */
@@ -390,7 +436,8 @@ static int fto_int(SgCtx* g, unsigned sz, int n, int a, int uns, int fbits) {
         if (uns) bad = vor(g, bad, vor(g, sgx_v2(X, &sgx_v_cmppd, x, fsplat(g, 1, 0xBFF0000000000000ull), 2),
                                        vgt(g, 3, vzero(g), r, 0)));
     }
-    return fcold(g, sg_b_or(g, sg_b_or(g, fstate(g, 0, 1), fflushed(g, sz, n, a, 0, 0)), vany(g, bad, sz, n)), r, a, 0,
+    bad = vor(g, bad, fdenormal(g, sz, a)); /* a denormal goes cold in either FZ mode */
+    return fcold(g, vany_state(g, bad, sz, n, fstate_bits(g, 0, 1)), r, a, 0,
                  0, FDESC(6, sz, n) | (SnxU32)uns << 12 | (SnxU32)fbits << 16 | 4u << 24);
 }
 /* SCVTF, UCVTF (from integers of the lanes' width), scaled by 2^-fbits: exact where every integer fits the
@@ -424,10 +471,11 @@ static int ffrom_int(SgCtx* g, unsigned sz, int n, int a, int uns, int fbits) {
         fit = vgt(g, size, vsplat(g, size, lim ^ flip), vxor(g, v, vsplat(g, size, flip)), 0);
     }
     {
-        SgB bad = sg_b_and(g, fstate(g, SGX_FPCR_RMODE, 1), vany(g, vnot(g, fit), sz, n));
+        int bad = vnot(g, fit);
         /* an unsigned doubleword from 2^63 up, which CVTSI2SD takes as negative */
-        if (sz && uns) bad = sg_b_or(g, bad, vany(g, vgt(g, 3, vzero(g), a, 0), 1, n));
-        return fcold(g, bad, r, a, 0, 0, FDESC(7, sz, n) | (SnxU32)uns << 12 | (SnxU32)fbits << 16);
+        if (sz && uns) bad = vor(g, bad, vgt(g, 3, vzero(g), a, 0));
+        return fcold(g, vany_state(g, bad, sz, n, fstate_bits(g, SGX_FPCR_RMODE, 1)), r, a, 0, 0,
+                     FDESC(7, sz, n) | (SnxU32)uns << 12 | (SnxU32)fbits << 16);
     }
 }
 
@@ -435,7 +483,6 @@ static int ffrom_int(SgCtx* g, unsigned sz, int n, int a, int uns, int fbits) {
    would get wrong (a NaN, a result not normal) going cold through the exact helper, whose special cases are its own */
 static int fstep(SgCtx* g, unsigned sz, int n, int a, int b, int sqrt) {
     int t, r, bad, op = sqrt ? SNX_FP_RSQRTS : SNX_FP_RECPS;
-    SgB cold;
     if (!(X->features & SGX_F_FMA))
         return fcold(g, sg_bool(g, 1), vzero(g), a, b, 0, FDESC(0, sz, n) | (SnxU32)op << 12);
     {
@@ -446,9 +493,9 @@ static int fstep(SgCtx* g, unsigned sz, int n, int a, int b, int sqrt) {
     }
     /* halving a result whose half is normal is exact */
     r = sqrt ? op2(g, k_fmul[sz], t, fsplat(g, sz, sz ? 0x3FE0000000000000ull : 0x3F000000u)) : t;
-    bad = fnot_roomy(g, sz, r);
-    cold = sg_b_or(g, fstate(g, SGX_FPCR_RMODE, 1), fflushed(g, sz, n, a, b, 0));
-    return fcold(g, sg_b_or(g, cold, vany(g, bad, sz, n)), r, a, b, 0, FDESC(0, sz, n) | (SnxU32)op << 12);
+    bad = vor(g, fnot_roomy(g, sz, r), fdenorms(g, sz, a, b, 0)); /* the helper is exact when FZ is clear too */
+    return fcold(g, vany_state(g, bad, sz, n, fstate_bits(g, SGX_FPCR_RMODE, 1)), r, a, b, 0,
+                 FDESC(0, sz, n) | (SnxU32)op << 12);
 }
 /* FRECPE, FRSQRTE as ir_vec_fp.c's fast_estimate makes them, where every lane is normal with a normal estimate
    (FRSQRTE's positive): the exponent, and the low 8 bits of (2^19 / a' + 1) / 2 (FRSQRTE's: of the root of 2^28 / a'),
@@ -485,8 +532,8 @@ static int fround(SgCtx* g, unsigned sz, int n, int a, int rm) {
     int r;
     if (rm == 4) return fcold(g, sg_bool(g, 1), vzero(g), a, 0, 0, FDESC(8, sz, n) | (SnxU32)(rm + 1) << 12);
     r = sgx_v1(X, sz ? &sgx_v_roundpd : &sgx_v_roundps, a, imm[rm]);
-    return fcold(g, sg_b_or(g, fflushed(g, sz, n, a, 0, 0), vany(g, fnan(g, sz, a), sz, n)), r, a, 0, 0,
-                 FDESC(8, sz, n) | (SnxU32)(rm + 1) << 12);
+    return fcold(g, vany_state(g, vor(g, fnan(g, sz, a), fdenormal(g, sz, a)), sz, n, fstate_bits(g, SGX_FPCR_FZ, 0)),
+                 r, a, 0, 0, FDESC(8, sz, n) | (SnxU32)(rm + 1) << 12);
 }
 
 /* the FP instructions by lanes; 0 for the rest */
@@ -601,24 +648,26 @@ static int vec_fp(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
             /* a NaN half (magnitude above 0x7C00), AHP, or no F16C: the helper */
             nan = vgt(g, 1, vand(g, src, vsplat(g, 1, 0x7FFF)), vsplat(g, 1, 0x7C00), 0);
             {
-                SgB bad = sg_b_or(g, fstate(g, SGX_FPCR_AHP, 0),
-                                  sg_b_not(g, sg_d_is_zero(g, sg_d_and(g, sgx_val(32, sgx_v1(X, &sgx_v_pmovmskb, nan, 0)),
-                                                                     sgx_const(32, 0xFF)))));
-                if (!f16) bad = sg_bool(g, 1);
-                r = fcold(g, bad, r, src, 0, 0, (SnxU32)5 | 2u << 4 | 4u << 8 | 4u << 12);
+                SgD bits = sg_d_or(g,
+                    sg_d_and(g, sgx_val(32, sgx_v1(X, &sgx_v_pmovmskb, nan, 0)), sgx_const(32, 0xFF)),
+                    sg_d_lsl(g, fstate_bits(g, SGX_FPCR_AHP, 0), 4));
+                if (!f16) bits = sgx_const(32, 1);
+                r = fcold(g, sg_b_not(g, sg_d_is_zero(g, bits)), r, src, 0, 0,
+                          (SnxU32)5 | 2u << 4 | 4u << 8 | 4u << 12);
             }
             vwrite(g, rd, r, 1);
             return 1;
         }
         src = q ? sgx_v1(X, &sgx_v_pshufd, vread(g, rn), 0xEE) : vread(g, rn);
         r = sgx_v1(X, &sgx_v_cvtps2pd, src, 0);
-        r = fcold(g, sg_b_or(g, fflushed(g, 0, 2, src, 0, 0), vany(g, fnan(g, 0, src), 0, 2)), r, src, 0, 0,
-                  FDESC(5, 0, 2) | 8u << 12);
+        r = fcold(g,
+                  vany_state(g, vor(g, fnan(g, 0, src), fdenormal(g, 0, src)), 0, 2, fstate_bits(g, SGX_FPCR_FZ, 0)),
+                  r, src, 0, 0, FDESC(5, 0, 2) | 8u << 12);
         vwrite(g, rd, r, 1);
         return 1;
     }
     case SNX_A64_OP_FCVTN_v: { /* doubles to singles (FCVTN2: into the high doubleword); singles to halves by F16C */
-        int a, bad;
+        int a;
         SgD bits;
         if (!sz) {
             int f16 = (X->features & SGX_F_F16C) != 0, notroomy, zin;
@@ -636,9 +685,13 @@ static int vec_fp(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
                 notroomy = vgt(g, 1, vxor(g, t, vsplat(g, 1, 0x8000)), vsplat(g, 1, (0xEFFEu - 1) ^ 0x8000u), 0);
             }
             zin = op2(g, &sgx_v_packssdw, fzero(g, 0, a), fzero(g, 0, a));
-            cold = sg_b_or(g, sg_b_or(g, fstate(g, SGX_FPCR_RMODE | SGX_FPCR_FZ, 1), fstate(g, SGX_FPCR_AHP, 0)),
-                           sg_b_not(g, sg_d_is_zero(g, sg_d_and(g, sgx_val(32, sgx_v1(X, &sgx_v_pmovmskb, vandn(g, zin, notroomy), 0)),
-                                                              sgx_const(32, 0xFF)))));
+            {
+                SgD bits = sg_d_or(g,
+                    sg_d_and(g, sgx_val(32, sgx_v1(X, &sgx_v_pmovmskb, vandn(g, zin, notroomy), 0)), sgx_const(32, 0xFF)),
+                    sg_d_or(g, sg_d_lsl(g, fstate_bits(g, SGX_FPCR_RMODE | SGX_FPCR_FZ, 1), 4),
+                               sg_d_lsl(g, fstate_bits(g, SGX_FPCR_AHP, 0), 5)));
+                cold = sg_b_not(g, sg_d_is_zero(g, bits));
+            }
             if (!f16) cold = sg_bool(g, 1);
             r = fcold(g, cold, r, a, 0, 0, (SnxU32)5 | 4u << 4 | 4u << 8 | 2u << 12);
             vwrite_narrow(g, rd, r, q);
@@ -649,13 +702,9 @@ static int vec_fp(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
         /* lanes not roomy as singles (MOVMSKPS's first two) and not from a zero double (MOVMSKPD's) */
         bits = sg_d_and(g, sgx_val(32, sgx_v1(X, &sgx_v_movmskps, fnot_roomy(g, 0, r), 0)),
                         sg_d_not(g, sgx_val(32, sgx_v1(X, &sgx_v_movmskpd, fzero(g, 1, a), 0))));
-        bad = 0;
         /* a denormal double gives a zero single, not roomy: it goes cold whatever FZ is */
-        r = fcold(
-            g,
-            sg_b_or(g, fstate(g, SGX_FPCR_RMODE, 1), sg_b_not(g, sg_d_is_zero(g, sg_d_and(g, bits, sgx_const(32, 3))))),
-            r, a, 0, 0, FDESC(5, 1, 2) | 4u << 12);
-        (void)bad;
+        bits = sg_d_or(g, sg_d_and(g, bits, sgx_const(32, 3)), sg_d_lsl(g, fstate_bits(g, SGX_FPCR_RMODE, 1), 4));
+        r = fcold(g, sg_b_not(g, sg_d_is_zero(g, bits)), r, a, 0, 0, FDESC(5, 1, 2) | 4u << 12);
         vwrite_narrow(g, rd, r, q);
         return 1;
     }
@@ -675,7 +724,9 @@ static void set_qc(SgCtx* g, int mask, int bytes) {
     SgX* x = X;
     SgXIns* i;
     SgD fpsr, bits = sgx_val(32, sgx_v1(x, &sgx_v_pmovmskb, mask, 0));
-    SgB any = sg_b_not(g, sg_d_is_zero(g, sg_d_and(g, bits, sgx_const(32, (1u << bytes) - 1))));
+    /* 32: a wide-lane mask, every bit of MOVMSKB's result belongs to a lane */
+    SgB any = bytes == 32 ? sg_b_not(g, sg_d_is_zero(g, bits))
+                          : sg_b_not(g, sg_d_is_zero(g, sg_d_and(g, bits, sgx_const(32, (1u << bytes) - 1))));
     i = sgx_append(x, SGX_K_LOAD);
     i->w = 32;
     i->disp = (int)offsetof(CPU, fpsr);
@@ -689,6 +740,25 @@ static void set_qc(SgCtx* g, int mask, int bytes) {
         st->disp = (int)offsetof(CPU, fpsr);
     }
 }
+/* FPSR.QC set where a GPR boolean says a lane saturated: the vector path builds the mask in GPRs already */
+static void set_qc_b(SgCtx* g, SgB any) {
+    SgX* x = X;
+    SgXIns* i;
+    SgD fpsr;
+    i = sgx_append(x, SGX_K_LOAD);
+    i->w = 32;
+    i->disp = (int)offsetof(CPU, fpsr);
+    i->def = sgx_vreg(x, x->n - 1, 32);
+    fpsr = sg_d_or(g, sgx_val(32, i->def), sg_d_select(g, any, sgx_const(32, 1u << 27), sgx_const(32, 0)));
+    {
+        int r = sgx_reg(x, &fpsr);
+        SgXIns* st = sgx_append(x, SGX_K_STORE);
+        st->w = 32;
+        st->in[0] = r;
+        st->disp = (int)offsetof(CPU, fpsr);
+    }
+}
+
 /* the signed (or unsigned) limits of 8 << size bits */
 static SnxU64 smax_of(unsigned size) { return sg_ones((8u << size) - 1); }
 static SnxU64 smin_of(unsigned size) { return 1ull << ((8u << size) - 1); }
@@ -792,6 +862,91 @@ static int vqshl_reg(SgCtx* g, unsigned size, int q, int a, int m, int* sat) {
     return r;
 }
 
+/* SRSHL, URSHL, UQSHL, SQRSHL, UQRSHL by register, lane by lane: left where the amount is positive (saturating
+   where bits are lost, QC), right (rounded where asked) where negative */
+static int vqrshl_reg(SgCtx* g, unsigned size, int q, int a, int m, int uns, int round, int sat, int* sat_mask) {
+    unsigned e = 8u << size;
+    int n = (q ? 16 : 8) >> size, i, r = vzero(g), smask = vzero(g);
+    for (i = 0; i < n; ++i) {
+        SgD lane = lane_get(g, size, a, i), v, s, neg, cnt, sl, rl, l, rr, res;
+        SgB left, big;
+        v = uns ? sg_d_zext(g, lane, 64) : sg_d_sext(g, lane, 64);
+        s = sg_d_sext(g, sg_d_slice(g, lane_get(g, size, m, i), 7, 0), 64);
+        neg = sg_d_sub(g, sgx_const(64, 0), s);
+        left = sgx_d_ult(g, s, sgx_const(64, 1ull << 63)); /* s >= 0 */
+        /* clamp every count before the shifts, also in the lanes whose other branch is taken */
+        sl = sg_d_select(g, sgx_d_ult(g, s, sgx_const(64, 64)), s, sgx_const(64, 63));
+        cnt = round ? sg_d_sub(g, neg, sgx_const(64, 1)) : neg;
+        rl = sg_d_select(g, sgx_d_ult(g, cnt, sgx_const(64, e)), cnt, sgx_const(64, e - 1));
+        big = sg_b_not(g, sgx_d_ult(g, s, sgx_const(64, e))); /* past the lane's bits */
+        l = sg_d_shift_dyn(g, v, sl, 0);
+        if (sat) {
+            SgD back = sg_d_shift_dyn(g, l, sl, uns ? 1 : 2);
+            SgD lim = uns ? sgx_const(64, sg_ones(e))
+                          : sg_d_select(g, sgx_d_ult(g, v, sgx_const(64, 1ull << 63)), sgx_const(64, smax_of(size)),
+                                        sgx_const(64, smin_of(size) | ~sg_ones(e)));
+            SgB lost = sg_b_or(g, sg_b_not(g, sg_d_eq(g, back, v)),
+                               sg_b_and(g, big, sg_b_not(g, sg_d_is_zero(g, v))));
+            if (uns)
+                lost = sg_b_or(g, lost, sg_b_not(g, sgx_d_ult(g, l, sgx_const(64, 1ull << e))));
+            else /* l fits e signed bits: l + 2^(e-1) below 2^e */
+                lost = sg_b_and(g, sg_b_or(g, lost,
+                                           sg_b_not(g, sgx_d_ult(g, sg_d_add(g, l, sgx_const(64, smin_of(size))),
+                                                                sgx_const(64, 1ull << e)))),
+                                sg_b_not(g, sg_d_is_zero(g, v)));
+            l = sg_d_select(g, lost, lim, l);
+            smask = lane_put(g, size, smask, i,
+                             sg_d_select(g, sg_b_and(g, left, lost), sgx_const(e, sg_ones(e)), sgx_const(e, 0)));
+        } else
+            l = sg_d_select(g, big, sgx_const(64, 0), l);
+        /* right: half up by the last shifted-out bit; past the lane's bits gives zero where the ISA asks */
+        rr = sg_d_shift_dyn(g, v, rl, uns ? 1 : 2);
+        if (round) {
+            rr = sg_d_add(g, sg_d_shift_dyn(g, rr, sgx_const(64, 1), uns ? 1 : 2), sg_d_and(g, rr, sgx_const(64, 1)));
+            rr = sg_d_select(g, sgx_d_ult(g, sgx_const(64, (SnxU64)(uns ? e : e - 1)), neg), sgx_const(64, 0), rr);
+        } else if (uns)
+            rr = sg_d_select(g, sgx_d_ult(g, sgx_const(64, (SnxU64)(e - 1)), neg), sgx_const(64, 0), rr);
+        res = sg_d_select(g, left, l, rr);
+        r = lane_put(g, size, r, i, sg_d_slice(g, res, e - 1, 0));
+    }
+    if (sat) *sat_mask = smask;
+    return r;
+}
+
+/* SQSHL by register, the two 64-bit lanes of a 128-bit vector: the shift amounts are sign-extended bytes kept in
+   32-bit registers, so the clamps and compares need no 64-bit constants; the data lanes stay 64-bit. A left shift
+   saturates where the value differs from its shift back. 1 made, 0 for another shape (the generic helper's). */
+static int vqshl_reg_d(SgCtx* g, unsigned size, int q, int a, int m, int* out) {
+    int i, r = vzero(g);
+    SgB qc = 0;
+    if (size != 3 || !q) return 0;
+    for (i = 0; i < 2; ++i) {
+        SgD v = lane_get(g, 3, a, i), s = sg_d_sext(g, sg_d_slice(g, lane_get(g, 3, m, i), 7, 0), 32), neg, sl, l, back, rr, res;
+        SgD satv;
+        SgB left = sgx_d_ult(g, s, sgx_const(32, 0x80000000u)), lost, big;
+        neg = sg_d_sub(g, sgx_const(32, 0), s);
+        sl = sg_d_select(g, sgx_d_ult(g, s, sgx_const(32, 64)), s, sgx_const(32, 63));
+        l = sg_d_shift_dyn(g, v, sl, 0);
+        /* at s >= 64 the clamped shift back would be the sign: make it 0, so a nonzero value is lost there too */
+        big = sg_b_not(g, sgx_d_ult(g, s, sgx_const(32, 64)));
+        back = sg_d_select(g, big, sgx_const(64, 0), sg_d_shift_dyn(g, l, sl, 2));
+        lost = sg_b_not(g, sg_d_eq(g, back, v));
+        /* the sign spread, with the top bit cleared: the largest for a positive value, the smallest for a negative */
+        satv = sg_d_xor(g, sg_d_asr(g, v, 63), sgx_const(64, smax_of(3)));
+        l = sg_d_select(g, lost, satv, l);
+        rr = sg_d_shift_dyn(g, v, sg_d_select(g, sgx_d_ult(g, neg, sgx_const(32, 64)), neg, sgx_const(32, 63)), 2);
+        res = sg_d_select(g, left, l, rr);
+        r = lane_put(g, 3, r, i, res);
+        {
+            SgB lane_qc = sg_b_and(g, left, lost);
+            qc = i ? sg_b_or(g, qc, lane_qc) : lane_qc;
+        }
+    }
+    set_qc_b(g, qc);
+    *out = r;
+    return 1;
+}
+
 /* |a - b|'s building blocks and the rest of the lanes' integer arithmetic the instructions below share */
 static int vabs(SgCtx* g, unsigned size, int a) {
     if (k_abs[size]) return sgx_v1(X, k_abs[size], a, 0);
@@ -820,19 +975,6 @@ static int vaddlp(SgCtx* g, unsigned size, int a, int sign) {
                 sign ? vshr(g, size + 1, vshl(g, size + 1, a, e), e, 1) : vand(g, a, vsplat(g, size + 1, sg_ones(e))),
                 vshr(g, size + 1, a, e, sign));
 }
-/* UADDLV, SADDLV: every lane's sum in the low 16 << size bits of the result, the rest of the register not cleared */
-static int vaddlv(SgCtx* g, unsigned size, int q, int a, int sign) {
-    if (size == 0) { /* the eights' sums (PSADBW); signed bytes by their sign flipped, 128 less each */
-        int r = op2(g, &sgx_v_psadbw, sign ? vxor(g, a, vsplat(g, 0, 0x80)) : a, vzero(g));
-        if (q) r = vadd(g, 3, r, sgx_v1(X, &sgx_v_pshufd, r, 0xEE));
-        return sign ? vsub(g, 3, r, kconst(g, 128u * (q ? 16 : 8), 0)) : r;
-    }
-    if (size == 1) return vreduce(g, 2, vaddlp(g, 1, a, sign), q ? 4 : 2, red_add, 0, 0);
-    { /* words: the two doublewords' sums */
-        int t = vadd(g, 3, vwiden(g, 2, a, 0, sign), vwiden(g, 2, a, 1, sign));
-        return vadd(g, 3, t, sgx_v1(X, &sgx_v_pshufd, t, 0xEE));
-    }
-}
 /* CLZ by lanes (bytes, halfwords, words): each byte's by nibbles (PSHUFB), then each half's where the upper is all 0 */
 static int vclz(SgCtx* g, unsigned size, int a) {
     int t = kconst(g, 0x0101010102020304ull, 0); /* clz of a nibble: 4 3 2 2 1 1 1 1 0 ... */
@@ -847,6 +989,22 @@ static int vclz(SgCtx* g, unsigned size, int a) {
         r = vadd(g, 2, up, vand(g, low, veq(g, 2, up, vsplat(g, 2, 16))));
     }
     return r;
+}
+/* RBIT of a whole GPR word: a nibble table (PSHUFB) reverses each byte's bits, then a byte shuffle reverses the word */
+static int vrbit_word(SgCtx* g, SgD a, unsigned w) {
+    int x, tl, th, lo, hi, r, idx[16], i, n;
+    if (w != 32 && w != 64) return 0;
+    x = sgx_xreg(X, &a);
+    tl = kconst(g, 0xe060a020c0408000ull, 0xf070b030d0509010ull); /* bit-reversed low nibbles, shifted up */
+    th = kconst(g, 0x0e060a020c040800ull, 0x0f070b030d050901ull); /* bit-reversed high nibbles */
+    if (w == 32) x = vand(g, x, vsplat(g, 2, 0xFFFFFFFFu));
+    lo = vand(g, x, vsplat(g, 0, 15));
+    hi = vand(g, opi(g, &sgx_v_psrlw_i, x, 4), vsplat(g, 0, 15));
+    r = vor(g, op2(g, &sgx_v_pshufb, tl, lo), op2(g, &sgx_v_pshufb, th, hi));
+    for (i = 0; i < 16; ++i) idx[i] = -1;
+    n = (int)w / 8;
+    for (i = 0; i < n; ++i) idx[i] = n - 1 - i;
+    return vperm(g, r, 0, idx);
 }
 /* a scalar result (element 0 of 8 << size bits) into V[d], the rest of the register cleared */
 static void vwrite_scalar(SgCtx* g, unsigned d, unsigned size, int r) {
@@ -895,8 +1053,7 @@ static int vec_fp_more(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
         int a, b, ev, od;
         if (sz && !q) return -1; /* 1D: reserved */
         a = vread(g, rn), b = vread(g, rm);
-        ev = vzip(g, 2, sz + 2, (int)q, a, b);
-        od = vzip(g, 3, sz + 2, (int)q, a, b);
+        vfpairs(g, sz, (int)q, a, b, &ev, &od);
         if (insn->op == SNX_A64_OP_FADDP_v)
             r = fbinary(g, SNX_FP_ADD, sz, n, ev, od);
         else
@@ -921,13 +1078,21 @@ static int vec_fp_more(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     case SNX_A64_OP_FMAXV_s:
     case SNX_A64_OP_FMINV_s:
     case SNX_A64_OP_FMAXNMV_s:
-    case SNX_A64_OP_FMINNMV_s: { /* (0 op 1) op (2 op 3) */
-        int a = vread(g, rn), t;
+    case SNX_A64_OP_FMINNMV_s: { /* (0 op 1) op (2 op 3), one guard for both stages: ordinary inputs cannot make a NaN
+                                    or a denormal, so both helper calls see the same condition */
+        int a = vread(g, rn), ev, od, t, odd, desc;
         int mn = insn->op == SNX_A64_OP_FMINV_s || insn->op == SNX_A64_OP_FMINNMV_s;
         int num = insn->op == SNX_A64_OP_FMAXNMV_s || insn->op == SNX_A64_OP_FMINNMV_s;
-        t = fminmax(g, 0, 2, sgx_v1(X, &sgx_v_pshufd, a, 0x88), sgx_v1(X, &sgx_v_pshufd, a, 0xDD), mn, num);
+        int bits = vor(g, fnan(g, 0, a), fdenorms(g, 0, a, 0, 0));
+        SgB cold = vany_state(g, bits, 0, 4, fstate_bits(g, SGX_FPCR_FZ, 0));
+        desc = FDESC(3, 0, 2) | (SnxU32)mn << 12 | (SnxU32)num << 16;
+        ev = sgx_v1(X, &sgx_v_pshufd, a, 0x88);
+        od = sgx_v1(X, &sgx_v_pshufd, a, 0xDD);
+        t = fcold(g, cold, fminmax_lanes(g, 0, ev, od, mn), ev, od, 0, desc);
         scalar = n = 1;
-        r = fminmax(g, 0, 1, t, sgx_v1(X, &sgx_v_pshufd, t, 0x55), mn, num);
+        odd = sgx_v1(X, &sgx_v_pshufd, t, 0x55);
+        r = fcold(g, cold, fminmax_lanes(g, 0, t, odd, mn), t, odd, 0,
+                  FDESC(3, 0, 1) | (SnxU32)mn << 12 | (SnxU32)num << 16);
         break;
     }
     case SNX_A64_OP_FRECPE_v:
@@ -1064,6 +1229,14 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     unsigned rd = word & 31, rn = word >> 5 & 31, rm = word >> 16 & 31;
     int a, b, r;
     switch (insn->op) {
+    case SNX_A64_OP_RBIT: { /* Wd or Xd: the whole word's bits reversed */
+        unsigned w = word >> 31 & 1 ? 64 : 32;
+        SgD src = rn == 31 ? sgx_const(64, 0) : sg_GPR_read(g, rn);
+        r = vrbit_word(g, src, w);
+        if (!r) return 0;
+        if (rd != 31) sg_GPR_write(g, rd, sgx_xval(64, r));
+        return 1;
+    }
     /* bitwise, the whole register */
     case SNX_A64_OP_AND_v: vwrite(g, rd, vand(g, vread(g, rn), vread(g, rm)), q); return 1;
     case SNX_A64_OP_BIC_v: vwrite(g, rd, vandn(g, vread(g, rm), vread(g, rn)), q); return 1;
@@ -1083,6 +1256,27 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     case SNX_A64_OP_BIF_v: { /* d = d ^ ((d ^ n) & ~m) */
         int d = vread(g, rd);
         vwrite(g, rd, vxor(g, d, vandn(g, vread(g, rm), vxor(g, d, vread(g, rn)))), q);
+        return 1;
+    }
+    /* the inserts of one element (the other copy forms are mach_codegen.inc's): PEXTR/PINSR. DUP's scalar form
+       stays on simd_copy's, which makes it in fewer host instructions */
+    case SNX_A64_OP_INS_general: {
+        unsigned idx;
+        int k = copy_size(word >> 16 & 31, &idx);
+        SgD v;
+        if (k < 0) return 0;
+        v = rn == 31 ? sgx_const(64, 0) : sg_GPR_read(g, rn);
+        if (k < 3) v = sg_d_slice(g, v, (8u << k) - 1, 0);
+        vwrite(g, rd, lane_put(g, (unsigned)k, vread(g, rd), (int)idx, v), 1);
+        return 1;
+    }
+    case SNX_A64_OP_INS_element: {
+        unsigned idx;
+        int k = copy_size(word >> 16 & 31, &idx);
+        SgD e;
+        if (k < 0) return 0;
+        e = lane_get(g, (unsigned)k, vread(g, rn), (int)((word >> 11 & 15) >> k));
+        vwrite(g, rd, lane_put(g, (unsigned)k, vread(g, rd), (int)idx, e), 1);
         return 1;
     }
     /* integer arithmetic, compares, minimum and maximum, lane by lane */
@@ -1162,11 +1356,8 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     case SNX_A64_OP_CMLT0_v:
     case SNX_A64_OP_CMEQ0_s:
     case SNX_A64_OP_CMGT0_s:
-    case SNX_A64_OP_CMGE0_s:
-    case SNX_A64_OP_CMLE0_s:
     case SNX_A64_OP_CMLT0_s: {
-        int sc = insn->op == SNX_A64_OP_CMEQ0_s || insn->op == SNX_A64_OP_CMGT0_s || insn->op == SNX_A64_OP_CMGE0_s ||
-                 insn->op == SNX_A64_OP_CMLE0_s || insn->op == SNX_A64_OP_CMLT0_s;
+        int sc = insn->op == SNX_A64_OP_CMEQ0_s || insn->op == SNX_A64_OP_CMGT0_s || insn->op == SNX_A64_OP_CMLT0_s;
         if (sc && size != 3) return -1;
         if (size == 3 && !q && !sc) return -1;
         a = vread(g, rn);
@@ -1175,10 +1366,8 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
         case SNX_A64_OP_CMEQ0_s: r = veq(g, size, a, vzero(g)); break;
         case SNX_A64_OP_CMGT0_v:
         case SNX_A64_OP_CMGT0_s: r = vgt(g, size, a, vzero(g), 0); break;
-        case SNX_A64_OP_CMGE0_v:
-        case SNX_A64_OP_CMGE0_s: r = vnot(g, vgt(g, size, vzero(g), a, 0)); break;
-        case SNX_A64_OP_CMLE0_v:
-        case SNX_A64_OP_CMLE0_s: r = vnot(g, vgt(g, size, a, vzero(g), 0)); break;
+        case SNX_A64_OP_CMGE0_v: r = vnot(g, vgt(g, size, vzero(g), a, 0)); break;
+        case SNX_A64_OP_CMLE0_v: r = vnot(g, vgt(g, size, a, vzero(g), 0)); break;
         default: r = vgt(g, size, vzero(g), a, 0); break;
         }
         vwrite(g, rd, r, sc ? 0 : q);
@@ -1224,15 +1413,15 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     case SNX_A64_OP_SMINV:
     case SNX_A64_OP_UMAXV:
     case SNX_A64_OP_UMINV: {
-        int n = (q ? 16 : 8) >> size;
+        unsigned code = insn->op == SNX_A64_OP_ADDV   ? 0
+                        : insn->op == SNX_A64_OP_SMAXV ? 3
+                        : insn->op == SNX_A64_OP_SMINV ? 4
+                        : insn->op == SNX_A64_OP_UMAXV ? 5
+                                                      : 6;
         if (size == 3 || (size == 2 && !q)) return -1;
-        a = vread(g, rn);
-        if (insn->op == SNX_A64_OP_ADDV) r = vreduce(g, size, a, n, red_add, 0, 0);
-        else
-            r = vreduce(g, size, a, n, (int (*)(SgCtx*, unsigned, int, int, int, int))vmax,
-                        insn->op == SNX_A64_OP_UMAXV || insn->op == SNX_A64_OP_UMINV,
-                        insn->op == SNX_A64_OP_SMINV || insn->op == SNX_A64_OP_UMINV);
-        sg__V_write(g, rd, sgx_xval(128, sgx_xclear(X, r, 8u << size)));
+        r = sgx_vcold(X, sg_bool(g, 1), vzero(g), "snx_x64_reduce_v", vread(g, rn), 0, 0,
+                      SNX_X64_RED_DESC(code, size, q));
+        sg__V_write(g, rd, sgx_xval(128, r));
         return 1;
     }
     /* the permutes */
@@ -1252,8 +1441,7 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
         vwrite(g, rd, vzip(g, kind, size, q, vread(g, rn), vread(g, rm)), 1);
         return 1;
     }
-    case SNX_A64_OP_EXT_d:
-    case SNX_A64_OP_EXT_q: {
+    case SNX_A64_OP_EXT_d: {
         int idx[16], i, imm4 = (int)(word >> 11 & 15), len = q ? 16 : 8;
         if (!q && imm4 >= 8) return -1;
         for (i = 0; i < 16; ++i) idx[i] = i < len ? (imm4 + i < len ? imm4 + i : 16 + imm4 + i - len) : -1;
@@ -1271,6 +1459,16 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
             idx[i] = i < len ? c + (cb / eb - 1 - e) * eb + k : -1;
         }
         vwrite(g, rd, vperm(g, vread(g, rn), 0, idx), 1);
+        return 1;
+    }
+    case SNX_A64_OP_RBIT_v: { /* each byte's bits reversed: two tables of the nibbles' (PSHUFB) */
+        int tl, th, lo, hi;
+        a = vread(g, rn);
+        tl = kconst(g, 0xe060a020c0408000ull, 0xf070b030d0509010ull);
+        th = kconst(g, 0x0e060a020c040800ull, 0x0f070b030d050901ull);
+        lo = vand(g, a, vsplat(g, 0, 15));
+        hi = vand(g, opi(g, &sgx_v_psrlw_i, a, 4), vsplat(g, 0, 15));
+        vwrite(g, rd, vor(g, op2(g, &sgx_v_pshufb, tl, lo), op2(g, &sgx_v_pshufb, th, hi)), q);
         return 1;
     }
     case SNX_A64_OP_CNT_v: { /* each byte's ones: a table of the nibbles' (PSHUFB) */
@@ -1308,10 +1506,9 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     case SNX_A64_OP_USRA_v:
     case SNX_A64_OP_SSRA_v:
     case SNX_A64_OP_SHL_s:
-    case SNX_A64_OP_USHR_s:
-    case SNX_A64_OP_SSHR_s: {
+    case SNX_A64_OP_USHR_s: {
         unsigned sz, left, right;
-        int scalar = insn->op == SNX_A64_OP_SHL_s || insn->op == SNX_A64_OP_USHR_s || insn->op == SNX_A64_OP_SSHR_s;
+        int scalar = insn->op == SNX_A64_OP_SHL_s || insn->op == SNX_A64_OP_USHR_s;
         if (shift_imm(word, &sz, &left, &right) < 0 || (sz == 3 && !q && !scalar) || (scalar && sz != 3)) return -1;
         if (scalar) q = 0;
         a = vread(g, rn);
@@ -1320,8 +1517,7 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
         case SNX_A64_OP_SHL_s: r = vshl(g, sz, a, left); break;
         case SNX_A64_OP_USHR_v:
         case SNX_A64_OP_USHR_s: r = vshr(g, sz, a, right, 0); break;
-        case SNX_A64_OP_SSHR_v:
-        case SNX_A64_OP_SSHR_s: r = vshr(g, sz, a, right, 1); break;
+        case SNX_A64_OP_SSHR_v: r = vshr(g, sz, a, right, 1); break;
         case SNX_A64_OP_USRA_v: r = vadd(g, sz, vread(g, rd), vshr(g, sz, a, right, 0)); break;
         default: r = vadd(g, sz, vread(g, rd), vshr(g, sz, a, right, 1)); break;
         }
@@ -1430,6 +1626,19 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
         vwrite(g, rd, r, q);
         return 1;
     /* saturating, QC where a lane saturates */
+    /* SQABS, SQNEG: the smallest maps to the largest, QC where a lane held it */
+    case SNX_A64_OP_SQABS_v:
+    case SNX_A64_OP_SQNEG_v: {
+        int sat;
+        if (size == 3 && !q) return 0;
+        a = vread(g, rn);
+        sat = veq(g, size, a, vsplat(g, size, smin_of(size)));
+        r = insn->op == SNX_A64_OP_SQABS_v ? vabs(g, size, a) : vneg(g, size, a);
+        r = vsel(g, sat, vsplat(g, size, smax_of(size)), r);
+        set_qc(g, sat, q ? 16 : 8);
+        vwrite(g, rd, r, q);
+        return 1;
+    }
     case SNX_A64_OP_SQADD_v:
     case SNX_A64_OP_UQADD_v:
     case SNX_A64_OP_SQSUB_v:
@@ -1440,6 +1649,18 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
                      insn->op == SNX_A64_OP_SQSUB_v || insn->op == SNX_A64_OP_UQSUB_v, &sat);
         set_qc(g, sat, q ? 16 : 8);
         vwrite(g, rd, r, q);
+        return 1;
+    }
+    /* SUQADD, USQADD: flip the accumulator into the addend's domain, then vqaddsub's saturating add */
+    case SNX_A64_OP_SUQADD_v:
+    case SNX_A64_OP_USQADD_v: {
+        int sat, sign;
+        if (size == 3 && !q) return 0;
+        sign = vsplat(g, size, 1ull << ((8u << size) - 1));
+        a = vxor(g, vread(g, rn), sign);
+        r = vqaddsub(g, size, a, vread(g, rm), insn->op == SNX_A64_OP_SUQADD_v, 0, &sat);
+        set_qc(g, sat, q ? 16 : 8);
+        vwrite(g, rd, vxor(g, r, sign), q);
         return 1;
     }
     case SNX_A64_OP_SQXTN_v:
@@ -1480,11 +1701,96 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
         vwrite(g, rd, r, q);
         return 1;
     }
-    case SNX_A64_OP_SQSHL_v: {
-        int sat;
-        if (size == 3 && !q) return -1;
-        r = vqshl_reg(g, size, (int)q, vread(g, rn), vread(g, rm), &sat);
+    /* SQSHL, UQSHL, SQSHLU by an immediate: a lane saturates where its bits don't survive the shift back */
+    case SNX_A64_OP_SQSHL_vi:
+    case SNX_A64_OP_UQSHL_vi:
+    case SNX_A64_OP_SQSHLU_vi: {
+        unsigned sz, left, right;
+        int sign = insn->op != SNX_A64_OP_UQSHL_vi, uns = insn->op != SNX_A64_OP_SQSHL_vi;
+        int neg, sat, lim;
+        if (shift_imm(word, &sz, &left, &right) < 0 || (sz == 3 && !q)) return -1;
+        a = vread(g, rn);
+        if (!left && !uns) {
+            vwrite(g, rd, a, q); /* a copy, no lane can saturate */
+            return 1;
+        }
+        neg = sign ? vgt(g, sz, vzero(g), a, 0) : 0; /* a is negative */
+        r = vshl(g, sz, a, left);
+        /* back-shift the result: where it doesn't give the operand, the lane was out of range */
+        sat = vnot(g, veq(g, sz, vshr(g, sz, r, left, sign && !uns), a));
+        if (uns) {
+            lim = vsplat(g, sz, sg_ones(8u << sz));
+            if (sign) sat = vor(g, sat, neg); /* SQSHLU: a negative operand is out of range too */
+            r = vsel(g, sat, lim, r);
+            if (sign) r = vandn(g, neg, r); /* and gives zero */
+        } else {
+            r = vsel(g, sat, vsel(g, neg, vsplat(g, sz, smin_of(sz)), vsplat(g, sz, smax_of(sz))), r);
+        }
         set_qc(g, sat, q ? 16 : 8);
+        vwrite(g, rd, r, q);
+        return 1;
+    }
+    /* SQRDMLAH, SQRDMLSH, SQDMLAL by element and SQDMLSL by element: the exact helper sets FPSR.QC. 32-bit lanes
+       stay on the generated Sail path, which has no 65-bit product shortcut here */
+    case SNX_A64_OP_SQRDMLAH_v:
+    case SNX_A64_OP_SQRDMLSH_v:
+    case SNX_A64_OP_SQDMLAL_vi:
+    case SNX_A64_OP_SQDMLSL_vi: {
+        const char* name;
+        unsigned idx = 0, src = rm;
+        int long_form = insn->op == SNX_A64_OP_SQDMLAL_vi || insn->op == SNX_A64_OP_SQDMLSL_vi;
+        if (size == 2) return 0;
+        if (size != 1) return -1;
+        name = insn->op == SNX_A64_OP_SQRDMLAH_v ? "snx_x64_sqrdmlah_v"
+               : insn->op == SNX_A64_OP_SQRDMLSH_v ? "snx_x64_sqrdmlsh_v"
+               : insn->op == SNX_A64_OP_SQDMLAL_vi ? "snx_x64_sqdmlal_vi" : "snx_x64_sqdmlsl_vi";
+        if (long_form) {
+            idx = (word >> 11 & 1) << 2 | (word >> 21 & 1) << 1 | (word >> 20 & 1);
+            src &= 15;
+        }
+        a = vread(g, rd);
+        r = sgx_vcold(X, sg_bool(g, 1), vzero(g), name, a, vread(g, rn), vread(g, src),
+                      SNX_X64_QDM_DESC(q, size, idx));
+        vwrite(g, rd, r, long_form ? 1 : (int)q);
+        return 1;
+    }
+    /* SQSHL, SRSHL, URSHL, UQSHL, SQRSHL, UQRSHL by register: byte and halfword lanes use one exact helper call
+       for the whole instruction; words use their own exact helper call; 64-bit lanes keep the lane helpers (SQSHL's
+       verified one), since the other ops have no x86 form there and take the exact Sail path */
+    case SNX_A64_OP_SQSHL_v:
+    case SNX_A64_OP_SRSHL_v:
+    case SNX_A64_OP_URSHL_v:
+    case SNX_A64_OP_UQSHL_v:
+    case SNX_A64_OP_SQRSHL_v:
+    case SNX_A64_OP_UQRSHL_v: {
+        int u = insn->op == SNX_A64_OP_URSHL_v || insn->op == SNX_A64_OP_UQSHL_v ||
+                insn->op == SNX_A64_OP_UQRSHL_v;
+        int rnd = insn->op == SNX_A64_OP_SRSHL_v || insn->op == SNX_A64_OP_URSHL_v ||
+                  insn->op == SNX_A64_OP_SQRSHL_v || insn->op == SNX_A64_OP_UQRSHL_v;
+        int satf = insn->op == SNX_A64_OP_SQSHL_v || insn->op == SNX_A64_OP_UQSHL_v ||
+                   insn->op == SNX_A64_OP_SQRSHL_v || insn->op == SNX_A64_OP_UQRSHL_v;
+        int sats, made_d = 0;
+        if (size == 3 && !q) return -1;
+        if (size == 3 && insn->op != SNX_A64_OP_SQSHL_v) return 0;
+        if (size < 2) {
+            vwrite(g, rd,
+                   sgx_vcold(X, sg_bool(g, 1), vzero(g), "snx_x64_shl_v", vread(g, rn), vread(g, rm), 0,
+                             SNX_X64_SHL_DESC(q, size, u, rnd, satf)), q);
+            return 1;
+        } else if (size == 2) {
+            /* words: one exact helper call for every lane, the helper sets FPSR.QC where asked */
+            r = sgx_vcold(X, sg_bool(g, 1), vzero(g), "snx_x64_shl_w", vread(g, rn), vread(g, rm), 0,
+                          SNX_X64_SHL_W_DESC((unsigned)q, (unsigned)u, (unsigned)rnd, (unsigned)satf));
+            satf = 0;
+        }
+        else if (insn->op == SNX_A64_OP_SQSHL_v) {
+            a = vread(g, rn);
+            b = vread(g, rm);
+            made_d = vqshl_reg_d(g, size, (int)q, a, b, &r);
+            if (!made_d) r = vqshl_reg(g, size, (int)q, a, b, &sats);
+        }
+        else r = vqrshl_reg(g, size, (int)q, vread(g, rn), vread(g, rm), u, rnd, satf, &sats);
+        if (satf && !made_d) set_qc(g, sats, size < 2 ? 32 : q ? 16 : 8);
         vwrite(g, rd, r, q);
         return 1;
     }
@@ -1492,8 +1798,9 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     case SNX_A64_OP_UADDLV:
     case SNX_A64_OP_SADDLV:
         if (size == 3 || (size == 2 && !q)) return -1;
-        r = vaddlv(g, size, (int)q, vread(g, rn), insn->op == SNX_A64_OP_SADDLV);
-        vwrite_scalar(g, rd, size + 1, r);
+        r = sgx_vcold(X, sg_bool(g, 1), vzero(g), "snx_x64_reduce_v", vread(g, rn), 0, 0,
+                      SNX_X64_RED_DESC(insn->op == SNX_A64_OP_SADDLV ? 1 : 2, size, q));
+        sg__V_write(g, rd, sgx_xval(128, r));
         return 1;
     case SNX_A64_OP_UADDLP_v:
     case SNX_A64_OP_SADDLP_v:
@@ -1516,11 +1823,10 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
         return 1;
     case SNX_A64_OP_SRI_v:
     case SNX_A64_OP_SRI_s:
-    case SNX_A64_OP_SLI_v:
-    case SNX_A64_OP_SLI_s: {
+    case SNX_A64_OP_SLI_v: {
         unsigned sz, left, right;
-        int scalar = insn->op == SNX_A64_OP_SRI_s || insn->op == SNX_A64_OP_SLI_s;
-        int left_in = insn->op == SNX_A64_OP_SLI_v || insn->op == SNX_A64_OP_SLI_s;
+        int scalar = insn->op == SNX_A64_OP_SRI_s;
+        int left_in = insn->op == SNX_A64_OP_SLI_v;
         SnxU64 ones;
         if (shift_imm(word, &sz, &left, &right) < 0 || (sz == 3 && !q && !scalar) || (scalar && sz != 3)) return -1;
         ones = sg_ones(8u << sz);
@@ -1536,17 +1842,12 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     case SNX_A64_OP_URSHR_v:
     case SNX_A64_OP_SRSRA_v:
     case SNX_A64_OP_URSRA_v:
-    case SNX_A64_OP_SRSHR_s:
     case SNX_A64_OP_URSHR_s:
-    case SNX_A64_OP_SRSRA_s:
     case SNX_A64_OP_URSRA_s: {
         unsigned sz, left, right;
-        int scalar = insn->op == SNX_A64_OP_SRSHR_s || insn->op == SNX_A64_OP_URSHR_s ||
-                     insn->op == SNX_A64_OP_SRSRA_s || insn->op == SNX_A64_OP_URSRA_s;
-        int sign = insn->op == SNX_A64_OP_SRSHR_v || insn->op == SNX_A64_OP_SRSRA_v || insn->op == SNX_A64_OP_SRSHR_s ||
-                   insn->op == SNX_A64_OP_SRSRA_s;
-        int acc = insn->op == SNX_A64_OP_SRSRA_v || insn->op == SNX_A64_OP_URSRA_v || insn->op == SNX_A64_OP_SRSRA_s ||
-                  insn->op == SNX_A64_OP_URSRA_s;
+        int scalar = insn->op == SNX_A64_OP_URSHR_s || insn->op == SNX_A64_OP_URSRA_s;
+        int sign = insn->op == SNX_A64_OP_SRSHR_v || insn->op == SNX_A64_OP_SRSRA_v;
+        int acc = insn->op == SNX_A64_OP_SRSRA_v || insn->op == SNX_A64_OP_URSRA_v || insn->op == SNX_A64_OP_URSRA_s;
         if (shift_imm(word, &sz, &left, &right) < 0 || (sz == 3 && !q && !scalar) || (scalar && sz != 3)) return -1;
         r = vrshr(g, sz, vread(g, rn), right, sign);
         if (acc) r = vadd(g, sz, vread(g, rd), r);
@@ -1689,6 +1990,54 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
             vwrite_narrow(g, rd, r, q);
         return 1;
     }
+    /* the scalar doublewords with the shortest code next to LLVM's: EXT_q's extract is one PALIGNR, the compares
+       one PCMPGTQ and a mask, the shifts their shift and, where rounded, one add. Each leaves a shape it does not
+       cover to the exact LLVM path. */
+    case SNX_A64_OP_EXT_q: { /* (Vn.16B:Vm.16B) >> (imm4 * 8) */
+        unsigned imm4 = (word >> 11) & 15;
+        if (q != 1) return 0;
+        vwrite(g, rd, sgx_v2(X, &sgx_v_palignr, vread(g, rm), vread(g, rn), (int)imm4), 1);
+        return 1;
+    }
+    case SNX_A64_OP_CMGE0_s:
+    case SNX_A64_OP_CMLE0_s: {
+        if (size != 3) return 0;
+        a = vread(g, rn);
+        r = insn->op == SNX_A64_OP_CMGE0_s ? vnot(g, vgt(g, size, vzero(g), a, 0))
+                                           : vnot(g, vgt(g, size, a, vzero(g), 0));
+        vwrite_scalar(g, rd, size, r);
+        return 1;
+    }
+    case SNX_A64_OP_SSHR_s: {
+        unsigned sz, left, right;
+        if (shift_imm(word, &sz, &left, &right) < 0 || sz != 3) return 0;
+        vwrite_scalar(g, rd, 3, vshr(g, 3, vread(g, rn), right, 1));
+        return 1;
+    }
+    case SNX_A64_OP_SLI_s: {
+        unsigned sz, left, right;
+        SnxU64 keep;
+        if (shift_imm(word, &sz, &left, &right) < 0 || sz != 3) return 0;
+        keep = left ? sg_ones(left) : 0; /* Vd's low bits the shift does not replace */
+        r = vor(g, vshl(g, 3, vread(g, rn), left), vand(g, vread(g, rd), vsplat(g, 3, keep)));
+        vwrite_scalar(g, rd, 3, r);
+        return 1;
+    }
+    case SNX_A64_OP_SRSHR_s:
+    case SNX_A64_OP_SRSRA_s: {
+        unsigned sz, left, right;
+        if (shift_imm(word, &sz, &left, &right) < 0 || sz != 3) return 0;
+        r = vrshr(g, 3, vread(g, rn), right, 1);
+        if (insn->op == SNX_A64_OP_SRSRA_s) r = vadd(g, 3, vread(g, rd), r);
+        vwrite_scalar(g, rd, 3, r);
+        return 1;
+    }
+    case SNX_A64_OP_PMUL_v: /* each byte's carryless product's low byte, whole register */
+        vwrite(g, rd, sgx_vcold(X, sg_bool(g, 1), vzero(g), "snx_x64_pmul_v", vread(g, rn), vread(g, rm), 0, q), 1);
+        return 1;
+    case SNX_A64_OP_PMULL_p8: /* each byte's carryless product in a halfword, from the half q chooses */
+        vwrite(g, rd, sgx_vcold(X, sg_bool(g, 1), vzero(g), "snx_x64_pmull_p8", vread(g, rn), vread(g, rm), 0, q), 1);
+        return 1;
     case SNX_A64_OP_PMULL_p64: /* PMULL, PMULL2 of a doubleword (q: the upper ones): the 128-bit carryless product */
         vwrite(g, rd, sgx_v2(X, &sgx_v_pclmulqdq, vread(g, rn), vread(g, rm), q ? 0x11 : 0x00), 1);
         return 1;

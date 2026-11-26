@@ -231,6 +231,7 @@ static void pins_all(Unit* u, SgXBuf* b, int store, int caller) {
     u->cur_dirty = d, u->vcur_dirty = vd, u->pin_sel = sel, u->vpin_sel = vsel;
 }
 static void pins_flush(void* machine) { pins_all((Unit*)machine, ((Unit*)machine)->a.b, 1, 0); }
+static void pins_reload(void* machine) { pins_all((Unit*)machine, ((Unit*)machine)->a.b, 0, 0); }
 /* the region assembler's: into the buffer it writes (the cold one on a cold path) */
 static void pins_cs(void* machine, int store) { pins_all((Unit*)machine, ((Unit*)machine)->a.b, store, 1); }
 
@@ -787,6 +788,161 @@ static void vstore(SgCtx* g, SgD address, int r, int bytes) {
     sgx_vins(x, f, f->rm, 0, in, 0, f->rm, SGX_VM_GUEST, base, index, disp, 0, 0);
 }
 
+#ifdef MG_X64_STRUCT_FAST
+/* Wide LD_mult and ST_mult through 16-byte chunks. PUNPCK handles two registers, PSHUFB the others.
+   Return 0 for shapes that are not whole chunks, so the Sail loop makes them. Chunks follow address order. */
+static int struct_ldst_fast(SgCtx* g, unsigned selem, unsigned size, int load, unsigned rt, SgD base, int q) {
+    SgX* x = sgx(g);
+    unsigned esize = 1u << size, c, s, j;
+    unsigned nchunks;
+    int chunk[4];
+    static const SgXVForm* const lo[4] = {&sgx_v_punpcklbw, &sgx_v_punpcklwd, &sgx_v_punpckldq,
+                                          &sgx_v_punpcklqdq};
+    static const SgXVForm* const hi[4] = {&sgx_v_punpckhbw, &sgx_v_punpckhwd, &sgx_v_punpckhdq,
+                                          &sgx_v_punpckhqdq};
+    if (selem < 2 || selem > 4 || size > 3 || !(x->features & SGX_F_SSSE3)) return 0;
+    nchunks = selem * (q ? 16 : 8) / 16;
+    if (selem * (q ? 16u : 8u) != 16u * nchunks) return 0; /* not a whole number of chunks */
+    if (load)
+        for (c = 0; c < nchunks; ++c)
+            chunk[c] = vload(g, sg_d_add(g, base, sgx_const(64, 16 * c)), 16);
+    if (q && load && selem == 2) {
+        /* one mask gathers a register's elements from either chunk, so the two masks serve both loads */
+        if (size == 3) {
+            /* two quadwords per chunk: the halves of the chunks are the registers already */
+            vwrite(g, rt & 31, sgx_v2(x, &sgx_v_punpcklqdq, chunk[0], chunk[1], 0), 1);
+            vwrite(g, (rt + 1) & 31, sgx_v2(x, &sgx_v_punpckhqdq, chunk[0], chunk[1], 0), 1);
+            return 1;
+        }
+        for (s = 0; s < 2; ++s) {
+            SnxU64 lo = 0, hi = 0;
+            int mask, sh0, sh1;
+            for (j = 0; j < 16; ++j) {
+                SnxU64 b = j < 8 ? (SnxU64)((2 * (j / esize) + s) * esize + j % esize) : 0x80ull;
+                if (j < 8) lo |= b << (8 * j);
+                else
+                    hi |= b << (8 * (j - 8));
+            }
+            mask = sgx_xconst(x, lo, hi);
+            sh0 = sgx_v2(x, &sgx_v_pshufb, chunk[0], mask, 0);
+            sh1 = sgx_v2(x, &sgx_v_pshufb, chunk[1], mask, 0);
+            vwrite(g, (rt + s) & 31, sgx_v2(x, &sgx_v_punpcklqdq, sh0, sh1, 0), 1);
+        }
+        return 1;
+    }
+    if (q && !load && selem == 2) {
+        /* an unpack of the two registers makes each chunk: no PSHUFB mask, and each register is read once */
+        int v0 = vread(g, rt & 31), v1 = vread(g, (rt + 1) & 31);
+        vstore(g, base, sgx_v2(x, lo[size], v0, v1, 0), 16);
+        vstore(g, sg_d_add(g, base, sgx_const(64, 16)), sgx_v2(x, hi[size], v0, v1, 0), 16);
+        return 1;
+    }
+    if (q && !load && selem == 4) {
+        /* a butterfly of unpacks makes each chunk from the four registers, in address order, with no PSHUFB mask
+           and no OR layer: the first unpacks pair Vt with Vt+1 and Vt+2 with Vt+3, and the second interleave
+           puts one element of each of the four in each group of four bytes. A pair of quadwords (size 3) is
+           already a chunk: the second interleave would be of 16-byte halves, which no instruction makes */
+        int v[4], a01, a23, b01, b23, ci;
+        for (s = 0; s < 4; ++s) v[s] = vread(g, (rt + s) & 31);
+        if (size == 3) {
+            vstore(g, base, sgx_v2(x, &sgx_v_punpcklqdq, v[0], v[1], 0), 16);
+            vstore(g, sg_d_add(g, base, sgx_const(64, 16)), sgx_v2(x, &sgx_v_punpcklqdq, v[2], v[3], 0), 16);
+            vstore(g, sg_d_add(g, base, sgx_const(64, 32)), sgx_v2(x, &sgx_v_punpckhqdq, v[0], v[1], 0), 16);
+            vstore(g, sg_d_add(g, base, sgx_const(64, 48)), sgx_v2(x, &sgx_v_punpckhqdq, v[2], v[3], 0), 16);
+            return 1;
+        }
+        a01 = sgx_v2(x, lo[size], v[0], v[1], 0);
+        a23 = sgx_v2(x, lo[size], v[2], v[3], 0);
+        b01 = sgx_v2(x, hi[size], v[0], v[1], 0);
+        b23 = sgx_v2(x, hi[size], v[2], v[3], 0);
+        for (ci = 0; ci < 4; ++ci) {
+            int lo01 = ci & 2 ? b01 : a01, lo23 = ci & 2 ? b23 : a23;
+            int wide = sgx_v2(x, ci & 1 ? hi[size + 1] : lo[size + 1], lo01, lo23, 0);
+            vstore(g, sg_d_add(g, base, sgx_const(64, 16 * ci)), wide, 16);
+        }
+        return 1;
+    }
+    if (q && load && selem == 4) {
+        /* the inverse butterfly: unpacks at the element's width gather each register's elements in order, one
+           fewer round for each doubling of the element; the quadword unpacks then join the register's two halves.
+           No PSHUFB mask and no OR layer. q is 1 here, as the caller only takes this path for Q forms */
+        int t[4] = {chunk[0], chunk[1], chunk[2], chunk[3]}, a01, a23, b01, b23, round;
+        for (round = 0; round < 3 - (int)size; ++round) {
+            a01 = sgx_v2(x, lo[size], t[0], t[1], 0);
+            b01 = sgx_v2(x, hi[size], t[0], t[1], 0);
+            a23 = sgx_v2(x, lo[size], t[2], t[3], 0);
+            b23 = sgx_v2(x, hi[size], t[2], t[3], 0);
+            t[0] = a01, t[1] = b01, t[2] = a23, t[3] = b23;
+        }
+        vwrite(g, rt & 31, sgx_v2(x, &sgx_v_punpcklqdq, t[0], t[2], 0), 1);
+        vwrite(g, (rt + 1) & 31, sgx_v2(x, &sgx_v_punpckhqdq, t[0], t[2], 0), 1);
+        vwrite(g, (rt + 2) & 31, sgx_v2(x, &sgx_v_punpcklqdq, t[1], t[3], 0), 1);
+        vwrite(g, (rt + 3) & 31, sgx_v2(x, &sgx_v_punpckhqdq, t[1], t[3], 0), 1);
+        return 1;
+    }
+    if (!q && load && selem == 2 && size == 2) {
+        /* one chunk: two quadwords per register. PSHUFD gathers either register's pair of elements. */
+        int c0 = chunk[0];
+        vwrite(g, rt & 31, sgx_v1(x, &sgx_v_pshufd, c0, 0x08), 0);
+        vwrite(g, (rt + 1) & 31, sgx_v1(x, &sgx_v_pshufd, c0, 0x8D), 0);
+        return 1;
+    }
+    if (!q && load && selem == 4 && size >= 1) {
+        /* two chunks hold the four D registers' halves: pair the chunks at the element's width, then unpack the
+           pairs into one register each. The high quadwords hold the next register; vwrite clears the other half. */
+        int a, b, u0, u1;
+        a = size == 2 ? chunk[0] : sgx_v2(x, lo[1], chunk[0], chunk[1], 0);
+        b = size == 2 ? chunk[1] : sgx_v2(x, hi[1], chunk[0], chunk[1], 0);
+        u0 = sgx_v2(x, size == 2 ? lo[2] : lo[1], a, b, 0);
+        u1 = sgx_v2(x, size == 2 ? hi[2] : hi[1], a, b, 0);
+        vwrite(g, rt & 31, u0, 0);
+        vwrite(g, (rt + 1) & 31, sgx_v2(x, &sgx_v_punpckhqdq, u0, u0, 0), 0);
+        vwrite(g, (rt + 2) & 31, u1, 0);
+        vwrite(g, (rt + 3) & 31, sgx_v2(x, &sgx_v_punpckhqdq, u1, u1, 0), 0);
+        return 1;
+    }
+    if (!q && !load) return 0; /* the D stores stay element-wise: no wide form is cheaper here */
+    if (load) {
+        for (s = 0; s < selem; ++s) {
+            int reg = 0;
+            for (c = 0; c < nchunks; ++c) {
+                SnxU64 lo = 0, hi = 0;
+                int sh;
+                for (j = 0; j < 16; ++j) {
+                    unsigned off = (j / esize) * selem * esize + s * esize + j % esize;
+                    SnxU64 b = off >= 16 * c && off < 16 * (c + 1) ? (SnxU64)(off - 16 * c) : 0x80ull;
+                    if (j < 8) lo |= b << (8 * j);
+                    else
+                        hi |= b << (8 * (j - 8));
+                }
+                sh = sgx_v2(x, &sgx_v_pshufb, chunk[c], sgx_xconst(x, lo, hi), 0);
+                reg = c ? sgx_v2(x, &sgx_v_por, reg, sh, 0) : sh;
+            }
+            vwrite(g, (rt + s) & 31, reg, q);
+        }
+    } else {
+        for (c = 0; c < nchunks; ++c) {
+            int wide = 0;
+            for (s = 0; s < selem; ++s) {
+                SnxU64 lo = 0, hi = 0;
+                int sh, src = vread(g, (rt + s) & 31);
+                for (j = 0; j < 16; ++j) {
+                    unsigned off = 16 * c + j, k = off / esize;
+                    SnxU64 b = k % selem == s ? (SnxU64)(k / selem * esize + off % esize) : 0x80ull;
+                    if (j < 8) lo |= b << (8 * j);
+                    else
+                        hi |= b << (8 * (j - 8));
+                }
+                sh = sgx_v2(x, &sgx_v_pshufb, src, sgx_xconst(x, lo, hi), 0);
+                wide = s ? sgx_v2(x, &sgx_v_por, wide, sh, 0) : sh;
+            }
+            vstore(g, sg_d_add(g, base, sgx_const(64, 16 * c)), wide, 16);
+        }
+    }
+    return 1;
+}
+#endif
+
 /* 1 made, 0 not one of these, -1 UNDEF */
 static int struct_ldst(Unit* u, SnxU32 word) {
     if (!SGX_HAS_VREGS) return 0; /* vector values: the Sail's emitters make it in doublewords */
@@ -820,18 +976,39 @@ static int struct_ldst(Unit* u, SnxU32 word) {
                     vstore(g, a, vread(g, (rt + r) & 31), (int)len);
             }
         } else {
-            /* interleaved: structure e's element s is V[t + s]'s element e, one at a time */
-            int regs[4];
-            for (s = 0; s < selem; ++s) regs[s] = l ? vzero(g) : vread(g, (rt + s) & 31);
-            for (e = 0; e < ne; ++e)
+#ifdef MG_X64_STRUCT_FAST
+            if (q && selem >= 2 && selem <= 4) {
+                /* The helper writes the V registers. The side flag saves and reloads every pin.
+                   It reads elements in address order, so a fault lands on the first missing byte. */
+                SgD args[2];
+                unsigned v;
+                args[0] = base;
+                args[1] = sgx_const(32, (u32)rt | (u32)(selem - 2) << 5 | size << 7 | l << 9);
+                sgx_call(g, "snx_x64_struct_mult", 0, 1, args, 2, 0);
+                sgx(g)->ins[sgx(g)->n - 1].side = 1;
                 for (s = 0; s < selem; ++s) {
-                    a = sg_d_add(g, base, sgx_const(64, (e * selem + s) * eb));
-                    if (l) regs[s] = lane_put(g, size, regs[s], (int)e, sg_GuestMemRead(g, a, eb, 0));
-                    else
-                        sg_GuestMemWrite(g, a, eb, 0, lane_get(g, size, regs[s], (int)e));
+                    v = (rt + s) & 31;
+                    g->vx[v] = 0;
+                    g->vd[v][0] = g->vd[v][1] = 0;
                 }
-            if (l)
-                for (s = 0; s < selem; ++s) vwrite(g, (rt + s) & 31, regs[s], (int)q);
+            } else if (struct_ldst_fast(g, selem, size, l, rt, base, (int)q)) {
+                /* the helper made the access */
+            } else
+#endif
+            {
+                /* interleaved: structure e's element s is V[t + s]'s element e, one at a time */
+                int regs[4];
+                for (s = 0; s < selem; ++s) regs[s] = l ? vzero(g) : vread(g, (rt + s) & 31);
+                for (e = 0; e < ne; ++e)
+                    for (s = 0; s < selem; ++s) {
+                        a = sg_d_add(g, base, sgx_const(64, (e * selem + s) * eb));
+                        if (l) regs[s] = lane_put(g, size, regs[s], (int)e, sg_GuestMemRead(g, a, eb, 0));
+                        else
+                            sg_GuestMemWrite(g, a, eb, 0, lane_get(g, size, regs[s], (int)e));
+                    }
+                if (l)
+                    for (s = 0; s < selem; ++s) vwrite(g, (rt + s) & 31, regs[s], (int)q);
+            }
         }
     } else if ((word & 0xBF9F0000u) == 0x0D000000u || (word & 0xBF800000u) == 0x0D800000u) {
         /* single structure: one element of selem registers (or each register's every element: LDnR) */
@@ -1420,7 +1597,7 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
         mg_undef(u, address, word);
         after_call(u);
         leave(u);
-        return 1;
+        return 2;
     case SNX_A64_FLOW_PLAIN:
         if (insn.op == SNX_A64_OP_SYS) {
             int k = sys(u, word);
@@ -1461,7 +1638,7 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
             flush(u);
             after_call(u);
             leave(u);
-            return 1;
+            return 2;
         }
         break;
     case SNX_A64_FLOW_B:
@@ -1653,7 +1830,7 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
         flush(u);
         call_target(u, next, 1);
     }
-    return 1;
+    return terminal ? 2 : 1; /* 2: the instruction ended the function, no fall-through's leave to make */
 }
 
 /* ---- liveness: which guest registers and flags an instruction reads and writes ----
@@ -2230,7 +2407,7 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
 /* the function's code, or 0 (the unit as it was) where an instruction isn't this back end's */
 static int function(Unit* u, const SnxFunction* f, size_t index) {
     size_t i, at0 = u->b.n, fix0 = u->nfixups, rel0 = u->nrelocs, sym0 = u->nsyms;
-    int lab0 = u->nlabels, ok = 1;
+    int lab0 = u->nlabels, ok = 1, single_entry = 0;
     SnxU64 pin_rest = 0;
     SnxU32 vpin_rest = 0;
     jmp_buf jb;
@@ -2272,6 +2449,7 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
     u->g->mempin = u->mempin;
     u->a.pin_cs = pins_cs;
     u->a.pin_flush = pins_flush;
+    u->a.pin_reload = pins_reload;
     /* the prologue loads the pins live where the function starts; the mismatch's path (another entry) the others */
     if (u->pinned && u->live && f->count && snx_function_address(f, 0) == f->start) {
         u->pin_sel = u->live[0];
@@ -2281,11 +2459,15 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
     prologue(u);
     pin_rest = ~u->pin_sel, vpin_rest = ~u->vpin_sel;
     u->pin_sel = ~(SnxU64)0, u->vpin_sel = ~0u; /* every other load of the pins: all of them */
-    /* if (snx_stale[index]) { c->pc = e; return; } if (e != start) goto mismatch */
-    mg_entry(u, index, f->start);
+    /* Only a function with one leader at its start can skip the entry compare and mismatch dispatch. */
+    single_entry = !u->options->stale && f->leader_count == 1 && f->count &&
+                   snx_function_address(f, 0) == f->start;
+    if (!single_entry)
+        mg_entry(u, index, f->start);
     if (f->count && snx_function_address(f, 0) != f->start) jmp(u, (int)index_of(f, f->start));
     {
         volatile size_t vi = 0;
+        int ended = 0;
         if (setjmp(jb)) {
             ok = 0;
             goto out;
@@ -2293,6 +2475,7 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
         for (; vi < f->count; ++vi) {
             SnxU64 address = snx_function_address(f, vi);
             SnxU32 word = 0;
+            int made;
             if (f->leaders[vi]) {
                 flush_to(u, address);
                 bind(u, lab0 + (int)vi);
@@ -2300,25 +2483,31 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
             (void)snx_codegen_word((SnxCodegen*)u->codegen, address, &word);
             u->at = vi;
             if (u->pinned) u->cur_dirty = u->dsync[vi], u->vcur_dirty = u->vdsync[vi];
-            if (!instruction(u, vi, address, word)) {
+            made = instruction(u, vi, address, word);
+            if (!made) {
                 ok = 0;
                 goto out;
             }
+            ended = made == 2;
+        }
+        if (!ended) { /* an instruction that left the function made its own return: no fall-through's leave */
+            flush(u);
+            u->at = f->count;
+            leave(u); /* off the end */
         }
     }
-    flush(u);
-    u->at = f->count;
-    leave(u); /* off the end */
-    /* mismatch: { c->pc = e; goto D; } or { CALLDYN(e); return; }; D: the poll, then switch (c->pc) over the
-       leaders, else CALLDYN(c->pc) */
-    bind(u, u->mismatch_label);
-    u->cur_dirty = ~(SnxU64)0, u->vcur_dirty = ~0u; /* the dispatch block's: a BR's way in too */
-    if (pin_rest || vpin_rest) {
-        u->pin_sel = pin_rest, u->vpin_sel = vpin_rest;
-        pins(u, 0);
-        u->pin_sel = ~(SnxU64)0, u->vpin_sel = ~0u;
+    if (!single_entry) {
+        /* mismatch: { c->pc = e; goto D; } or { CALLDYN(e); return; }; D: the poll, then switch (c->pc) over the
+           leaders, else CALLDYN(c->pc) */
+        bind(u, u->mismatch_label);
+        u->cur_dirty = ~(SnxU64)0, u->vcur_dirty = ~0u; /* the dispatch block's: a BR's way in too */
+        if (pin_rest || vpin_rest) {
+            u->pin_sel = pin_rest, u->vpin_sel = vpin_rest;
+            pins(u, 0);
+            u->pin_sel = ~(SnxU64)0, u->vpin_sel = ~0u;
+        }
+        mg_dispatch(u, lab0);
     }
-    mg_dispatch(u, lab0);
     for (i = 0; i < (size_t)u->nstubs; ++i) {
         struct Stub s = u->stubs[i];
         bind(u, s.label);

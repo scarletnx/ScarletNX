@@ -144,6 +144,19 @@ static void stale_test(Unit* u, size_t index) {
     imm(u, 0, 4);
     byte(u, 0);
 }
+/* xor al, byte [rip + snx_stale + index]: the stale byte changes RAX's low byte, so the entry's compare of the
+   target with the start fails on a stale function too. Both cold paths then take one branch, and the hot path has
+   one compare and one jump less (mg_dispatch tells the two apart) */
+static void stale_xor(Unit* u, size_t index) {
+    byte(u, 0x32);
+    byte(u, 0x05);
+    u->relocs = (Reloc*)grow(u->relocs, &u->cap_relocs, u->nrelocs + 1, sizeof *u->relocs);
+    u->relocs[u->nrelocs].at = u->b.n;
+    u->relocs[u->nrelocs].sym = strdup("snx_stale");
+    u->relocs[u->nrelocs].type = R_X86_64_PC32;
+    u->relocs[u->nrelocs++].addend = (long long)index - 4; /* from the end of the instruction */
+    imm(u, 0, 4);
+}
 /* the helpers' calls the emitters make (sgx_call): relocations of the unit */
 static void unit_reloc(void* machine, size_t at, const char* sym, long long addend) {
     Unit* u = (Unit*)machine;
@@ -194,12 +207,26 @@ static void state_arg(Unit* u) { sgx_state_arg(&u->a, &u->b); }
 /* RAX = the target (RSI, RDX), and the target = RAX */
 static void mov_rax_target(Unit* u) { byte(u, 0x48), byte(u, 0x89), byte(u, win64(u) ? 0xD0 : 0xF0); }
 static void mov_target_rax(Unit* u) { byte(u, 0x48), byte(u, 0x89), byte(u, win64(u) ? 0xC2 : 0xC6); }
+/* the state's field at off = the target (RSI, RDX): store it where it is, with no scratch */
+static void store_target(Unit* u, int off) {
+    byte(u, 0x48);
+    byte(u, 0x89);
+    byte(u, win64(u) ? 0x93 : 0xB3); /* mov [rbx + disp32], rdx (rsi) */
+    imm(u, off, 4);
+}
 /* the state's field at off = RAX, and RAX = it */
 static void store_rax(Unit* u, int off) {
     byte(u, 0x48);
     byte(u, 0x89);
     byte(u, 0x83);
     imm(u, off, 4);
+}
+/* c->pc = the entry (RSI, RDX) straight from the argument, with no MOV through RAX */
+static void store_target_pc(Unit* u) {
+    byte(u, 0x48);
+    byte(u, 0x89);
+    byte(u, win64(u) ? 0x93 : 0xB3); /* mov [rbx + disp32], rdx / rsi */
+    imm(u, (long long)offsetof(CPU, pc), 4);
 }
 static void load_rax(Unit* u, int off) {
     byte(u, 0x48);
@@ -319,18 +346,16 @@ static void prologue(Unit* u) {
     if (pushed >> 7 & 1) byte(u, 0x57);                            /* push rdi */
     if (pushed >> 6 & 1) byte(u, 0x56);                            /* push rsi */
     byte(u, 0x48), byte(u, 0x89), byte(u, win64(u) ? 0xCB : 0xFB); /* mov rbx, rdi (rcx) */
-    if (u->again) {
+    if (u->again && win64(u)) {
         /* a frame of a page or more: each page read first, nearest first (sgx_stack_probe) */
         sgx_stack_probe(&u->b);
         u->frame_at = (size_t*)grow(u->frame_at, &u->cap_frame, u->nframe + 1, sizeof *u->frame_at);
         u->frame_at[u->nframe++] = u->b.n - SGX_STACK_PROBE_SIZE + 1;
     }
-    byte(u, 0x48); /* sub rsp, imm32 */
-    byte(u, 0x81);
-    byte(u, 0xEC);
+    sgx_frame(&u->b, 0, u->again); /* four bytes where the frame fits an imm8, seven on the function made again */
     u->frame_at = (size_t*)grow(u->frame_at, &u->cap_frame, u->nframe + 1, sizeof *u->frame_at);
     u->frame_at[u->nframe++] = u->b.n;
-    imm(u, 0, 4);
+    imm(u, 0, u->again ? 4 : 1);
     xsaved(u, 0);
     pins(u, 0);
 }
@@ -340,12 +365,10 @@ static void epilogue(Unit* u) {
     unsigned pushed = pushed_pins(u);
     int n;
     xsaved(u, 1);
-    byte(u, 0x48); /* add rsp, imm32 */
-    byte(u, 0x81);
-    byte(u, 0xC4);
+    sgx_frame(&u->b, 1, u->again);
     u->frame_at = (size_t*)grow(u->frame_at, &u->cap_frame, u->nframe + 1, sizeof *u->frame_at);
     u->frame_at[u->nframe++] = u->b.n;
-    imm(u, 0, 4);
+    imm(u, 0, u->again ? 4 : 1);
     if (pushed >> 6 & 1) byte(u, 0x5E); /* pop rsi */
     if (pushed >> 7 & 1) byte(u, 0x5F); /* pop rdi */
     for (n = 15; n >= 12; --n)
@@ -413,13 +436,13 @@ static void call_sym(Unit* u, const char* sym, int tail) {
     if (!tail) pins(u, 0);
 }
 
-/* if (c->pc != next) return: the callee changed the code it returns to, or left for another pc */
+/* if (c->pc != next) return: the callee changed the code it returns to, or left for another pc. The equal case
+   jumps over the leave, so the leave lies fall-through and takes no jump of its own */
 static void check_return(Unit* u, SnxU64 next) {
     int stay = new_label(u), go = new_label(u);
     mov_rax_imm(u, next);
     byte(u, 0x48), byte(u, 0x39), byte(u, 0x83), imm(u, (long long)offsetof(CPU, pc), 4); /* cmp [rbx+pc], rax */
-    jcc(u, 0x5, go);
-    jmp(u, stay);
+    jcc(u, 0x4, stay); /* equal: stay */
     bind(u, go);
     leave(u);
     bind(u, stay);
@@ -537,14 +560,19 @@ static void mg_entry(Unit* u, size_t index, SnxU64 start) {
         int live = new_label(u);
         stale_test(u, index);
         jcc(u, 0x4, live);
-        mov_rax_target(u);
-        store_rax(u, (int)offsetof(CPU, pc));
+        store_target(u, (int)offsetof(CPU, pc));
         epilogue(u); /* no pin changed yet (and not every one loaded): none stored */
         byte(u, 0xC3);
         bind(u, live);
     }
-    mov_rax_imm(u, start);
-    byte(u, 0x48), byte(u, 0x39), byte(u, win64(u) ? 0xC2 : 0xC6); /* cmp rsi, rax */
+    if (start < 0x80000000u) {
+        /* cmp rsi (rdx), imm32: sign extended, so no scratch register and no mov */
+        byte(u, 0x48), byte(u, 0x81), byte(u, win64(u) ? 0xFA : 0xFE);
+        imm(u, (long long)start, 4);
+    } else {
+        mov_rax_imm(u, start);
+        byte(u, 0x48), byte(u, 0x39), byte(u, win64(u) ? 0xC2 : 0xC6);
+    }
     jcc(u, 0x5, u->mismatch_label);
 }
 /* cmp rax, value (RDX the value where it is no imm32) */
@@ -581,9 +609,14 @@ static void dispatch_tree(Unit* u, int lab0, const SnxU64* at, const size_t* ind
 static void mg_dispatch(Unit* u, int lab0) {
     const SnxFunction* f = u->f;
     size_t i;
+    int stale_ret = -1;
+    if (u->options->stale) {
+        stale_ret = new_label(u);
+        stale_test(u, u->index);
+        jcc(u, 0x5, stale_ret); /* stale: pc = the entry and back to the runtime */
+    }
     if (u->dispatch) {
-        mov_rax_target(u);
-        store_rax(u, (int)offsetof(CPU, pc));
+        store_target_pc(u);
         jmp(u, u->d_label);
     } else
         calldyn(u, 1);
@@ -621,21 +654,30 @@ static void mg_dispatch(Unit* u, int lab0) {
         mov_target_rax(u);
         calldyn(u, 1);
     }
+    if (stale_ret >= 0) {
+        bind(u, stale_ret);
+        store_target_pc(u);
+        epilogue(u); /* no pin changed yet (and not every one loaded): none stored */
+        byte(u, 0xC3);
+    }
 }
 static int mg_finish(Unit* u, size_t fix0) {
     size_t i;
     /* RSP 16-aligned in the body: the return address and RBX, and the pushed pins' registers: 8 more where those are
        an odd number of doublewords */
     int size = ((u->a.slots_max * 8 + 15) & ~15) + (int)snx_popcount64(pushed_pins(u)) % 2 * 8;
-    if (win64(u) && size >= 4096 && !u->again) {
-        u->again = 1; /* a page or more, whose prologue reads each page first (the guard page): made again with it */
+    int small = !u->again; /* the first make has four-byte frame instructions, the one again seven */
+    if (small && size > 127) {
+        u->again = 1; /* an imm8 can't hold it: made again with imm32 ones, and a page's probe on Windows */
         return 0;
     }
     for (i = 0; i < u->nframe; ++i)
-        if (u->frame_at[i] + 4 <= u->b.cap) {
-            unsigned char* p = u->b.p + u->frame_at[i];
-            p[0] = (unsigned char)size, p[1] = (unsigned char)(size >> 8), p[2] = (unsigned char)(size >> 16),
-            p[3] = (unsigned char)(size >> 24);
+        if (u->frame_at[i] + (small ? 1 : 4) <= u->b.cap) {
+            if (!i && !size) { /* no frame: a four-byte NOP in the prologue, as x64_elf.c's unwind reader knows */
+                unsigned char* p = u->b.p + u->frame_at[i] - 3;
+                p[0] = 0x0F, p[1] = 0x1F, p[2] = 0x40, p[3] = 0x00;
+            } else
+                sgx_frame_patch(&u->b, u->frame_at[i], size, u->again);
         }
     for (i = fix0; i < u->nfixups; ++i) {
         long long t = u->label_at[u->fixups[i].label];
