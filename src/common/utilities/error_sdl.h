@@ -17,6 +17,9 @@ typedef struct {
     /* where what the panel did goes, a line without its newline (the game's log); NULL: stderr */
     void (*say)(const char* line);
     int back_key; /* the system has a Back key (Android's), which the foot names */
+    /* the panel runs on a video driver that shows nothing (SDL's dummy and offscreen): a test's, which pushes its own
+       events. Without it no panel waits there, where no one could answer it: -1, said in why */
+    int unseen;
 } SnxErrorSdlHooks;
 
 /* action done here when it is one that keeps the panel (Share Log, Copy Text, Open Log, Open Folder), what it did said
@@ -25,7 +28,8 @@ int snx_error_sdl_act(SnxErrorPanel* p, const SnxError* e, int action, const Snx
 /* The panel in window until an action ends it: CLOSE, TRY_AGAIN or one of the launcher's (Open Settings, GPU Drivers,
    Updates and DLCs, Recompile, Locate..., Install Keys). The window's close is CLOSE. On the thread SDL's video started
    on, with SDL_INIT_GAMEPAD for the pads. Its renderer: software where the video driver gives a window its own pixels
-   (X11's, Windows'), which needs no GPU, else SDL's choice; -1, why in why, when none can be made */
+   (X11's, Windows'), which needs no GPU, else SDL's choice; -1, why in why, when none can be made or SDL's video
+   shows nothing (hooks' unseen) */
 int snx_error_sdl_run(SDL_Window* window, SnxError* e, const SnxErrorSdlHooks* hooks, char* why, size_t why_size);
 /* the same in a window of its own, made and destroyed here (SDL's video and pads started when they are not) */
 int snx_error_sdl_window(SnxError* e, const SnxErrorSdlHooks* hooks, char* why, size_t why_size);
@@ -36,4 +40,6 @@ int snx_error_sdl_window(SnxError* e, const SnxErrorSdlHooks* hooks, char* why, 
 #define SNX_ERROR_SCREEN    "--error-screen="
 #define SNX_ERROR_EXIT_BASE 100
 int snx_error_screen_main(int argc, char** argv);
+/* the same with hooks: a test's own process of the panel (unseen) */
+int snx_error_screen_run(int argc, char** argv, const SnxErrorSdlHooks* hooks);
 #endif

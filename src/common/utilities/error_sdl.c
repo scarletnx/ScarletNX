@@ -112,6 +112,13 @@ static void pad_names(SnxErrorPanel* p, SDL_Gamepad* pad) {
         snprintf(p->pad_back, sizeof p->pad_back, "%s", labels[east]);
 }
 
+/* SDL's video shows nothing anyone sees (the dummy and offscreen drivers, a test's or a run with no display): its
+   driver's name, else NULL */
+static const char* unseen_video(void) {
+    const char* driver = SDL_GetCurrentVideoDriver();
+    return driver && (!strcmp(driver, "dummy") || !strcmp(driver, "offscreen")) ? driver : NULL;
+}
+
 int snx_error_sdl_run(SDL_Window* window, SnxError* e, const SnxErrorSdlHooks* hooks, char* why, size_t why_size) {
     SnxUiQuad* quads = malloc(SNX_ERROR_PANEL_QUADS * sizeof *quads);
     SnxUiRects rects = {0};
@@ -122,6 +129,13 @@ int snx_error_sdl_run(SDL_Window* window, SnxError* e, const SnxErrorSdlHooks* h
     int action = SNX_ACTION_NONE, button = -1, fingered = 0, stick = 0;
     float finger_y = 0;
     char line[160];
+    if (unseen_video() && !(hooks && hooks->unseen)) {
+        snprintf(why, why_size, "SDL's %s video driver shows nothing: no one could answer the error's panel there",
+                 unseen_video());
+        if (r) SDL_DestroyRenderer(r);
+        free(quads);
+        return -1;
+    }
     if (!r) {
         snprintf(why, why_size, "no renderer for the error's panel: %s", quads ? SDL_GetError() : "out of memory");
         free(quads);
@@ -252,6 +266,12 @@ int snx_error_sdl_window(SnxError* e, const SnxErrorSdlHooks* hooks, char* why, 
         snprintf(why, why_size, "SDL's video did not start for the error's panel: %s", SDL_GetError());
         return -1;
     }
+    if (unseen_video() && !(hooks && hooks->unseen)) { /* no window for no one */
+        snprintf(why, why_size, "SDL's %s video driver shows nothing: no one could answer the error's panel there",
+                 unseen_video());
+        if (started) SDL_QuitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD);
+        return -1;
+    }
     /* the line in the title too, which a screen reader reads and a task bar shows */
     snprintf(title, sizeof title, "%s%s%s", e->game[0] ? e->game : "ScarletNX", " - ", snx_error_line(e));
     window = SDL_CreateWindow(title, 1280, 720, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
@@ -267,7 +287,8 @@ int snx_error_sdl_window(SnxError* e, const SnxErrorSdlHooks* hooks, char* why, 
     return action;
 }
 
-int snx_error_screen_main(int argc, char** argv) {
+int snx_error_screen_main(int argc, char** argv) { return snx_error_screen_run(argc, argv, NULL); }
+int snx_error_screen_run(int argc, char** argv, const SnxErrorSdlHooks* hooks) {
     SnxError e;
     char why[1400];
     const char* path = argc > 1 && !strncmp(argv[1], SNX_ERROR_SCREEN, strlen(SNX_ERROR_SCREEN))
@@ -283,7 +304,7 @@ int snx_error_screen_main(int argc, char** argv) {
         fprintf(stderr, "scarletnx: %s%s: %s\n", SNX_ERROR_SCREEN, path, why);
         return 2;
     }
-    action = snx_error_sdl_window(&e, NULL, why, sizeof why);
+    action = snx_error_sdl_window(&e, hooks, why, sizeof why);
     if (action < 0) {
         fprintf(stderr, "scarletnx: %s\n", why);
         return 2;

@@ -10,7 +10,9 @@ file(COPY_FILE "${RUNTIME}" "${dir}/MyGame")
 execute_process(COMMAND "${CMAKE_COMMAND}" -E env --unset=DISPLAY --unset=WAYLAND_DISPLAY SDL_VIDEO_DRIVER=dummy
                         "${dir}/MyGame"
                 WORKING_DIRECTORY "${dir}" TIMEOUT 20 RESULT_VARIABLE result OUTPUT_VARIABLE out ERROR_VARIABLE out)
-if(result EQUAL 0 OR NOT result MATCHES "^[0-9]+$" OR NOT out MATCHES "Cannot find the recompiled code")
+# and nothing waits for anyone: SDL's dummy video shows no panel, and the run's line says the error did not show
+if(result EQUAL 0 OR NOT result MATCHES "^[0-9]+$" OR NOT out MATCHES "Cannot find the recompiled code"
+   OR NOT out MATCHES "error: code-missing shown=0")
     file(REMOVE_RECURSE "${dir}")
     message(FATAL_ERROR "a game's copy without its code ended with ${result}, not its error:\n${out}")
 endif()

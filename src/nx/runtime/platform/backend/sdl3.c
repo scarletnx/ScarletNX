@@ -952,10 +952,12 @@ static void fatal_said(const SnxError* e, int shown) {
 }
 /* SDL's box of an error, where no panel could show: on Windows it is as wide as its longest line, so the text goes in
    broken into lines */
-static void fatal_box(const char* msg) {
+static int fatal_box(const char* msg) {
     char* lines = fatal_lines(msg, FATAL_BOX_COLS);
-    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "ScarletNX", lines ? lines : msg, g_sdl3.win);
+    int shown = SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "ScarletNX", lines ? lines : msg, g_sdl3.win);
+    if (!shown) LOG("error: SDL's box did not show either: %s\n", SDL_GetError());
     free(lines);
+    return shown;
 }
 /* the action taken on the error's panel done: for the launcher that waits, the run's line it reads; with none, Try
    Again starts the game again and a page of the launcher's starts the launcher there (error_console.h) */
@@ -979,16 +981,16 @@ static int fatal_spawn(const SnxError* e) {
 }
 /* the error shown on the main thread, which owns the window: the panel there, else in its own process, else SDL's box */
 static void fatal_show(SnxError* e) {
-    int action;
+    int action, shown = 1;
     if (!snx_error_spawn_ready()) fatal_prepare(); /* an error before the window opened */
     fatal_fill(e);
     action = fatal_panel(e);
     if (action < 0) action = fatal_spawn(e);
     if (action < 0) {
-        fatal_box(e->message);
+        shown = fatal_box(e->message);
         action = SNX_ACTION_CLOSE;
     }
-    fatal_said(e, 1);
+    fatal_said(e, shown); /* none showed (no display): the launcher shows it */
     fatal_done(e, action);
 }
 void win_fatal_crash(const SnxError* e) {
