@@ -49,6 +49,9 @@ void agb_host_draw(AgbHost* host, const uint32_t* framebuffer);
 const char* agb_host_notice(const AgbHost* host);
 /* the frame drawn and shown, its count frames of stereo samples, then the wait to the next frame's time */
 void agb_host_frame(AgbHost* host, const uint32_t* framebuffer, const int16_t* samples, uint32_t count);
+/* the save states' key pressed since the last call (HOTKEY_SAVE_STATE, _LOAD_STATE, _NEXT_SLOT), for the loop to do
+   between two frames (vpad_sdl.h's snx_vpad_window_states); -1 for none */
+int agb_host_state_ask(AgbHost* host);
 /* a frame of the pause (snx_vpad_window_paused): true while it holds, framebuffer shown again at the frames' pace with
    no sound; false, doing nothing, when the game runs */
 bool agb_host_held(AgbHost* host, const uint32_t* framebuffer);

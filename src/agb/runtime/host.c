@@ -40,6 +40,7 @@ struct AgbHost {
     SnxNotice notice;
     char* captures; /* the game's folder with its separator, whose captures/ a screenshot goes in */
     bool shot;      /* the screenshot key's: the next frame saved */
+    int state_ask;  /* a save states' key (HOTKEY_SAVE_STATE...) for the loop between two frames, -1 none */
     int vsync; /* SDL's renderer's: on at the console's pace, off at another, as a Switch game's follows its limit */
     SDL_Texture* notice_texture;
     int notice_w, notice_h, notice_failed;
@@ -117,6 +118,10 @@ static void key_action(AgbHost* host, int action) {
         host->shot = true;
         return;
     }
+    if (action == HOTKEY_SAVE_STATE || action == HOTKEY_LOAD_STATE || action == HOTKEY_NEXT_SLOT) {
+        host->state_ask = action;
+        return;
+    }
     snx_vpad_window_none(action, action == HOTKEY_THREAD_DUMP ? "it runs on one CPU, with no threads"
                                  : action == HOTKEY_MOUSE     ? "its mouse is the pointer of the on-screen controls"
                                  : action == HOTKEY_TV_MODE   ? "the TV mode is the Switch's console docked"
@@ -172,6 +177,7 @@ AgbHost* agb_host_open(const char* title, const char* ini, bool fullscreen, char
     }
     snx_pad_map_position(&host->pad); /* A where the console has it, east */
     g_host.open = host;
+    host->state_ask = -1;
     {
         char* folder = ini ? snx_dirname(ini) : NULL;
         host->captures = snx_format("%s/", folder ? folder : ".");
@@ -306,6 +312,11 @@ static void shot(AgbHost* host, const uint32_t* framebuffer) {
     snprintf(line, sizeof line, "screenshot: %s", path);
     agb_host_say(line);
     show("Screenshot saved in captures");
+}
+int agb_host_state_ask(AgbHost* host) {
+    int ask = host->state_ask;
+    host->state_ask = -1;
+    return ask;
 }
 bool agb_host_held(AgbHost* host, const uint32_t* framebuffer) {
     if (!snx_vpad_window_paused()) return false;

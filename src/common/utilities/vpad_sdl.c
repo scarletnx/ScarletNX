@@ -5,6 +5,8 @@
 #include "common/utilities/hotkeys.h"
 #include "common/utilities/key_said.h"
 #include "common/utilities/pace.h"
+#include "common/utilities/state_header.h"
+#include <stdarg.h>
 #include "common/utilities/notice.h"
 #include "common/utilities/quit_key.h"
 #include "common/utilities/ui_colors.h"
@@ -23,6 +25,7 @@ static struct {
     bool paused;           /* the pause key's */
     int pace, pace_before; /* fps_limit's (pace.h), and F4's pace before none */
     char fps_limit[16];    /* its text as read */
+    int slot;              /* the save states' slot F7 and F8 use, 1 to state_slots, F9's step */
     uint64_t quit_by; /* a second Back before this quits (quit_key.h), the first one's line shown until then */
     SnxUiRects rects;
     int made, warned, w, h; /* what the rectangles are made for: a first time, with the line or not, the picture */
@@ -102,7 +105,11 @@ static const IniOpt FPS_LIMIT = {.key = "fps_limit",
                                  .var = g_vpad_sdl.fps_limit,
                                  .size = sizeof g_vpad_sdl.fps_limit,
                                  .set = fps_limit_set};
-static const IniOpt* setting(const char* key) { return strcmp(key, "fps_limit") ? hotkey_setting(key) : &FPS_LIMIT; }
+static const IniOpt* setting(const char* key) {
+    if (!strcmp(key, "fps_limit")) return &FPS_LIMIT;
+    if (!strcmp(key, "state_slots") || !strcmp(key, "state_auto_backup")) return ini_find(g_game_ini, key);
+    return hotkey_setting(key);
+}
 void snx_vpad_sdl_settings(void) { vpad_settings_also(setting); }
 uint64_t snx_vpad_window_frame_ns(uint64_t console_ns) {
     return g_vpad_sdl.pace == SNX_PACE_NONE      ? 0
@@ -149,6 +156,54 @@ static void say_shown(const char* line) {
     if (g_vpad_sdl.show) g_vpad_sdl.show(line);
 }
 bool snx_vpad_window_paused(void) { return g_vpad_sdl.paused; }
+/* a line of the save states', on say and show */
+[[gnu::format(printf, 1, 2)]] static void states_say(const char* fmt, ...) {
+    char line[320];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(line, sizeof line, fmt, ap);
+    va_end(ap);
+    say_shown(line);
+}
+void snx_vpad_window_states(int action, const SnxVpadStates* s, const uint8_t* thumb) {
+    char name[16], label[24], start[24], path[SNX_PATH_SIZE], why[256], when[32];
+    SnxStateHeader h;
+    int slot = g_vpad_sdl.slot < 1 || g_vpad_sdl.slot > g_settings.save_state_slots ? 1 : g_vpad_sdl.slot;
+    if (action == HOTKEY_NEXT_SLOT) slot = slot % g_settings.save_state_slots + 1;
+    g_vpad_sdl.slot = slot;
+    snx_state_slot_name(name, sizeof name, slot);
+    snx_state_slot_label(label, sizeof label, slot, 0);
+    snx_state_slot_label(start, sizeof start, slot, 1);
+    snprintf(path, sizeof path, "%sstates/%s.%s" SNX_STATE_EXT, s->prefix, s->name, name);
+    if (action == HOTKEY_NEXT_SLOT) {
+        if (snx_state_peek(path, &h, NULL, why, sizeof why))
+            states_say("Slot %d: empty", slot);
+        else {
+            snx_state_slot_when(when, sizeof when, &h);
+            states_say("Slot %d: %s", slot, when);
+        }
+    } else if (action == HOTKEY_SAVE_STATE) {
+        int over = snx_is_file(path);
+        if (s->save(s->game, path, thumb, why, sizeof why))
+            states_say("Not saved: %s", why);
+        else
+            states_say("Saved %s %s", over ? "over" : "to", label);
+    } else if (action == HOTKEY_LOAD_STATE) {
+        if (snx_state_peek(path, &h, NULL, why, sizeof why)) {
+            states_say("%s is empty", start);
+            return;
+        }
+        if (g_settings.save_state_backup) { /* the game as it was, kept to go back to */
+            char back[SNX_PATH_SIZE], bwhy[256];
+            snprintf(back, sizeof back, "%sstates/%s.auto" SNX_STATE_EXT, s->prefix, s->name);
+            if (s->save(s->game, back, thumb, bwhy, sizeof bwhy)) states_say("No auto slot before the load: %s", bwhy);
+        }
+        if (s->load(s->game, path, why, sizeof why))
+            states_say("Not loaded: %s", why);
+        else
+            states_say("Loaded %s", label);
+    }
+}
 void snx_vpad_window_none(int action, const char* why) {
     const IniOpt* o = hotkey_row(action);
     const char* name = o && o->name ? o->name : "";

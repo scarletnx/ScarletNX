@@ -18,6 +18,9 @@
 #include "common/utilities/script.h"
 #include "common/utilities/vpad_consoles.h"
 #include "common/utilities/vpad_sdl.h"
+#include "common/utilities/state_header.h"
+#include "agb/runtime/state.h"
+#include "common/utilities/hotkeys.h"
 #include "snx_settings.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -98,6 +101,34 @@ static int write_shot(const char* path, const uint32_t* framebuffer) {
 static int multiboot_rom(const char* path) { return snx_ends_with_nocase(path, ".mb"); }
 
 /* the ROM's file name without its folder and its last extension: the game's folder's name */
+/* the GBA's pair as the window's save states call it */
+typedef struct {
+    AgbBoard* board;
+    AgbCpu* cpu;
+} StateGame;
+static int state_save(void* game, const char* path, const uint8_t* thumb, char* why, size_t whysize) {
+    StateGame* g = (StateGame*)game;
+    return snx_agb_state_save(g->board, g->cpu, path, thumb, why, whysize);
+}
+static int state_load(void* game, const char* path, char* why, size_t whysize) {
+    StateGame* g = (StateGame*)game;
+    return snx_agb_state_load(g->board, g->cpu, path, why, whysize);
+}
+/* a save states' key asked of host done between two frames, the frame shown its picture */
+static void states_ask(AgbHost* host, AgbBoard* board, AgbCpu* cpu, const char* folder, const char* name) {
+    int ask = agb_host_state_ask(host);
+    if (ask < 0) return;
+    uint8_t* thumb = malloc((size_t)SNX_STATE_THUMB_W * SNX_STATE_THUMB_H * 4);
+    char* prefix = folder ? snx_format("%s/", folder) : NULL;
+    StateGame game = {board, cpu};
+    SnxVpadStates states = {prefix ? prefix : "./", name, &game, state_save, state_load};
+    if (thumb)
+        snx_state_thumb((const uint8_t*)board->ppu.framebuffer, AGB_SCREEN_WIDTH, AGB_SCREEN_HEIGHT,
+                        AGB_SCREEN_WIDTH * 4, thumb);
+    snx_vpad_window_states(ask, &states, thumb);
+    free(prefix);
+    free(thumb);
+}
 static char* game_name(const char* rom) {
     char* name = snx_strdup(snx_path_leaf(rom));
     char* dot = strrchr(name, '.');
@@ -468,6 +499,7 @@ int snx_agb_main(int argc, char** argv) {
             uint16_t keys = 0;
             if (host && !agb_host_poll(host, &keys)) break;
             if (host && agb_host_held(host, board.ppu.framebuffer)) { /* paused: the board stopped */
+                states_ask(host, &board, &cpu, folder, name);
                 --frame;
                 continue;
             }
@@ -489,6 +521,7 @@ int snx_agb_main(int argc, char** argv) {
                 told_swi_number = cpu.unknown_swi;
             }
             if (host) agb_host_frame(host, board.ppu.framebuffer, audio, written);
+            if (host) states_ask(host, &board, &cpu, folder, name);
             if (board.save.dirty && written_at < 0) written_at = frame;
             if (written_at >= 0 && frame - written_at >= SAVE_QUIET_FRAMES && board.save.dirty &&
                 agb_save_size(&board)) {

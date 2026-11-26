@@ -24,6 +24,11 @@ NdsHost* nds_host_open(NdsBoard* board, const char* title, const char* ini, cons
 bool nds_host_poll(NdsHost* host, NdsInput* input);
 /* a frame of the console's is done: its sound goes out, and the run waits for the frame's time */
 void nds_host_frame(NdsHost* host);
+/* the save states' key pressed since the last call (HOTKEY_SAVE_STATE, _LOAD_STATE, _NEXT_SLOT), for the loop to do
+   between two frames (vpad_sdl.h's snx_vpad_window_states); -1 for none */
+int nds_host_state_ask(NdsHost* host);
+/* both screens as they show as a state's thumbnail (state_header.h's snx_state_thumb): false where there is no frame */
+bool nds_host_thumb(NdsHost* host, uint8_t* thumb);
 /* a frame of the pause (snx_vpad_window_paused): true while it holds, the last frame shown again at the frames' pace,
    with no sound (and a screenshot asked for taken); false, doing nothing, when the game runs */
 bool nds_host_held(NdsHost* host);

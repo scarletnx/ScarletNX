@@ -9,6 +9,7 @@
 #include "common/utilities/common.h"
 #include "common/utilities/pad_sdl.h"
 #include "common/utilities/hotkeys.h"
+#include "common/utilities/state_header.h"
 #include "common/utilities/vpad_sdl.h"
 #include "common/utilities/window_icon.h"
 #include <SDL3/SDL.h>
@@ -24,6 +25,7 @@ struct NdsHost {
     NdsBoard* board;
     char* captures; /* the game's folder with its separator, whose captures/ a screenshot goes in */
     bool shot;      /* the screenshot key's: saved at the frame's end */
+    int state_ask;  /* a save states' key (HOTKEY_SAVE_STATE...) for the loop between two frames, -1 none */
     int headless, gpu, paced;
     SnxPadMap pad;
     uint16_t keyboard;
@@ -168,6 +170,7 @@ NdsHost* nds_host_open(NdsBoard* board, const char* title, const char* ini, cons
         return NULL;
     }
     host->board = board;
+    host->state_ask = -1;
     {
         char* folder = ini ? snx_dirname(ini) : NULL;
         host->captures = snx_format("%s/", folder ? folder : ".");
@@ -248,6 +251,10 @@ void nds_host_close(NdsHost* host) {
 static void key_action(NdsHost* host, int action) {
     if (action == HOTKEY_SCREENSHOT) {
         host->shot = true;
+        return;
+    }
+    if (action == HOTKEY_SAVE_STATE || action == HOTKEY_LOAD_STATE || action == HOTKEY_NEXT_SLOT) {
+        host->state_ask = action;
         return;
     }
     snx_vpad_window_none(action, action == HOTKEY_THREAD_DUMP ? "its ARM9 runs the game's code alone, with no threads"
@@ -332,6 +339,18 @@ bool nds_host_held(NdsHost* host) {
     if (now < host->due) SDL_DelayPrecise(host->due - now);
     host->due = SDL_GetTicksNS() + FRAME_NS;
     return true;
+}
+int nds_host_state_ask(NdsHost* host) {
+    int ask = host->state_ask;
+    host->state_ask = -1;
+    return ask;
+}
+bool nds_host_thumb(NdsHost* host, uint8_t* thumb) {
+    unsigned char* rgba = host->gpu ? malloc(NDS_SCREEN_WIDTH * NDS_SCREEN_HEIGHT * 2 * 4) : NULL;
+    bool read = rgba && nds_vk_frame_read(rgba);
+    if (read) snx_state_thumb(rgba, NDS_SCREEN_WIDTH, NDS_SCREEN_HEIGHT * 2, NDS_SCREEN_WIDTH * 4, thumb);
+    free(rgba);
+    return read;
 }
 int nds_host_shot(NdsHost* host, const char* path) {
     if (!host->gpu) return -1;

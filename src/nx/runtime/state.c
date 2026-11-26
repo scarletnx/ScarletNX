@@ -1582,19 +1582,6 @@ static int g_slot = 1;        /* the slot F7 and F8 use, 1 to state_slots */
 static int g_ask, g_ask_slot; /* a save, load or delete asked for, done at the next pass */
 static int g_menu_pause;      /* the save states' pages hold the game: 1 paused, -1 it didn't stop */
 
-static void slot_name(char* out, size_t size, int slot) {
-    if (slot)
-        snprintf(out, size, "%d", slot);
-    else
-        snprintf(out, size, "auto");
-}
-/* a slot as a sentence names it, at its start (Slot 2) or within it (slot 2) */
-static void slot_label(char* out, size_t size, int slot, int start) {
-    if (slot)
-        snprintf(out, size, "%s %d", start ? "Slot" : "slot", slot);
-    else
-        snprintf(out, size, "%s auto slot", start ? "The" : "the");
-}
 static void toast(const char* fmt, ...) {
     char text[OVERLAY_COLS_MAX + 1];
     va_list ap;
@@ -1604,19 +1591,6 @@ static void toast(const char* fmt, ...) {
     ui_lock();
     overlay_state_toast(text, plat_ns());
     ui_unlock();
-}
-/* a state's date and the play time then, as the menu lists them */
-static void slot_when(char* out, size_t size, const SnxStateHeader* h) {
-    time_t t = (time_t)h->created;
-    struct tm tm;
-    u64 s = h->guest_ns / 1000000000u;
-#ifdef _WIN32
-    localtime_s(&tm, &t);
-#else
-    localtime_r(&t, &tm);
-#endif
-    snprintf(out, size, "%04d-%02d-%02d %02d:%02d  %llu:%02u:%02u", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-             tm.tm_hour, tm.tm_min, (unsigned long long)(s / 3600), (unsigned)(s / 60 % 60), (unsigned)(s % 60));
 }
 /* the slots the menu lists, read from their files' headers and thumbnails */
 static void slots_list(void) {
@@ -1628,10 +1602,10 @@ static void slots_list(void) {
         char name[16], path[sizeof g_exedir + sizeof g_exename + 64], why[256];
         SnxStateHeader h;
         u8* thumb = NULL;
-        slot_name(name, sizeof name, i);
+        snx_state_slot_name(name, sizeof name, i);
         state_path(path, sizeof path, name);
         if (snx_state_peek(path, &h, &thumb, why, sizeof why)) continue;
-        slot_when(list[i].when, sizeof list[i].when, &h);
+        snx_state_slot_when(list[i].when, sizeof list[i].when, &h);
         if (state_check(&h, why, sizeof why)) snprintf(list[i].why, sizeof list[i].why, "It can't load: %s.", why);
         if (thumb && h.thumb_w == SNX_UI_IMAGE_W && h.thumb_h == SNX_UI_IMAGE_H)
             list[i].thumb = thumb;
@@ -1650,12 +1624,12 @@ void state_slot_next(void) {
     char name[16], path[sizeof g_exedir + sizeof g_exename + 64], why[256], when[32];
     SnxStateHeader h;
     g_slot = g_slot % g_settings.save_state_slots + 1;
-    slot_name(name, sizeof name, g_slot);
+    snx_state_slot_name(name, sizeof name, g_slot);
     state_path(path, sizeof path, name);
     if (snx_state_peek(path, &h, NULL, why, sizeof why))
         toast("Slot %d: empty", g_slot);
     else {
-        slot_when(when, sizeof when, &h);
+        snx_state_slot_when(when, sizeof when, &h);
         toast("Slot %d: %s", g_slot, when);
     }
 }
@@ -1714,9 +1688,9 @@ static void loading_over(int failed) {
 static void ask_do(int op, int slot) {
     char name[16], label[24], start[24], path[sizeof g_exedir + sizeof g_exename + 64], why[256];
     SnxStateHeader h;
-    slot_name(name, sizeof name, slot);
-    slot_label(label, sizeof label, slot, 0);
-    slot_label(start, sizeof start, slot, 1);
+    snx_state_slot_name(name, sizeof name, slot);
+    snx_state_slot_label(label, sizeof label, slot, 0);
+    snx_state_slot_label(start, sizeof start, slot, 1);
     state_path(path, sizeof path, name);
     if (op == STATE_SAVE) {
         int over = snx_is_file(path); /* a state there, replaced: said so, F7 asking nothing */
