@@ -125,19 +125,21 @@ static void dump_map(SnxDump* dump, PFileMap* base_map, PFileMap* addon_map, con
                      int index, const char* keys, const char* title_keys, const char* repo) {
     snx_hac_on_exit(dump_exit, NULL);
     if (snx_dump_open(dump, base, addon, index, keys, title_keys, repo, 0))
-        fatal("Could not read the game's dump %s, which it reads its files from: the line before says why",
-              addon ? addon : base);
+        fatal_as(SNX_ERROR_DUMP_MISSING,
+                 "Could not read the game's dump %s, which it reads its files from: the line before says why",
+                 addon ? addon : base);
     if ((dump->program.found && snx_nca_keys(dump, &dump->program, "The game's Program NCA")) ||
         (dump->patch.found && snx_nca_keys(dump, &dump->patch, "The update's Program NCA")) ||
         (dump->aoc.found && snx_nca_keys(dump, &dump->aoc, "The DLC's Data NCA")))
-        fatal("A dump the game reads in place needs keys its keys file does not have: the line before says which");
+        fatal_as(SNX_ERROR_KEYS,
+                 "A dump the game reads in place needs keys its keys file does not have: the line before says which");
     snx_hac_on_restart(ncz_restart, NULL);
     solid_said(dump, &dump->program, "The game's Program NCA");
     solid_said(dump, &dump->patch, "The update's Program NCA");
     solid_said(dump, &dump->aoc, "The DLC's Data NCA");
     if (base && (plat_file_map_sized(base_map, base, snx_file_size(base)) ||
                  snx_hac_map(dump->hac, dump->base, base_map->data, base_map->size)))
-        fatal("Could not map the game's dump %s", base);
+        fatal_as(SNX_ERROR_DUMP_MISSING, "Could not map the game's dump %s", base);
     if (addon && (plat_file_map_sized(addon_map, addon, snx_file_size(addon)) ||
                   snx_hac_map(dump->hac, dump->update, addon_map->data, addon_map->size)))
         fatal("Could not map the add-on's dump %s", addon);
@@ -172,7 +174,9 @@ static void folder_open(const char* folder) {
         if (!fs_tree_lookup(&g_hle.fs.tree, NULL, names[i], &node)) continue; /* the data folder's own */
         part = snx_extracted_part(folder, i);
         if (!part && !i)
-            fatal("The game's folder %s, its source= setting, has no exefs/ to read the game's program from", folder);
+            fatal_as(SNX_ERROR_DUMP_MISSING,
+                     "The game's folder %s, its source= setting, has no exefs/ to read the game's program from",
+                     folder);
         if (!part) {
             LOG("fs: the game's folder %s has no romfs/: the game runs without a RomFS\n", folder);
             continue;
@@ -209,8 +213,9 @@ static void dump_open(const char* keys, const char* title_keys) {
         own = snx_format("%s%s.ini", g_confdir, g_addonrec); /* the update's own record, its programs' too */
         addon = extracted ? NULL : snx_ini_value(own, "source");
         if (!extracted && (!addon || !snx_is_file(addon)))
-            fatal("The update %s can't be read: its settings %s name %s. Play its dump again to record it", g_exename,
-                  own, addon ? "a dump that is not there" : "no dump (source=)");
+            fatal_as(SNX_ERROR_DUMP_MISSING,
+                     "The update %s can't be read: its settings %s name %s. Play its dump again to record it",
+                     g_exename, own, addon ? "a dump that is not there" : "no dump (source=)");
         free(own);
         if (extracted) LOG("fs: the update's files from its extraction in %s\n", g_addondir);
     }
@@ -234,12 +239,14 @@ static void dump_open(const char* keys, const char* title_keys) {
         ini = snx_absolute(ini_file()); /* a game beside its .ini runs in its folder: "./Game.ini" */
         /* the loader also takes the main module from the data folder's root, as older versions put it */
         if (addon && kind == SNX_ADDON_UPDATE)
-            fatal("The update reads its files over the game's dump, and %s names %s: %s", ini ? ini : ini_file(),
-                  !g_settings.game_dump[0]                   ? "none (source=)"
-                  : snx_extracted_game(g_settings.game_dump) ? "the game's folder, which has no update's files to read"
-                                                             : "a dump that is not there",
-                  snx_extracted_game(g_settings.game_dump) ? "extract the update with Extract dump"
-                                                           : "play the game's dump to record it");
+            fatal_as(SNX_ERROR_DUMP_MISSING, "The update reads its files over the game's dump, and %s names %s: %s",
+                     ini ? ini : ini_file(),
+                     !g_settings.game_dump[0] ? "none (source=)"
+                     : snx_extracted_game(g_settings.game_dump)
+                         ? "the game's folder, which has no update's files to read"
+                         : "a dump that is not there",
+                     snx_extracted_game(g_settings.game_dump) ? "extract the update with Extract dump"
+                                                              : "play the game's dump to record it");
         if (g_settings.game_dump[0])
             WARN("fs: the game's %s %s, its source= setting, is not there; its settings are %s\n",
                  snx_source_kind(source), source, ini ? ini : ini_file());
@@ -258,7 +265,9 @@ static void dump_open(const char* keys, const char* title_keys) {
              keys, title_keys, repo);
     snx_hac_on_exit(dump_exit, NULL);
     g_hle.fs.dfs = snx_dump_fs(&g_hle.fs.dump);
-    if (!g_hle.fs.dfs) fatal("Could not read the game's program in its dump %s: the line before says why", source);
+    if (!g_hle.fs.dfs)
+        fatal_as(SNX_ERROR_DUMP_MISSING, "Could not read the game's program in its dump %s: the line before says why",
+                 source);
     snx_hac_on_exit(NULL, NULL);
     pm_init(&g_host.fs.dlock);
     if (g_program)
@@ -318,7 +327,9 @@ static void dlcs_open(const char* keys, const char* title_keys) {
             dump_map(&aoc->dump, NULL, &aoc->map, NULL, dump, 0, keys, title_keys, repo);
             snx_hac_on_exit(dump_exit, NULL);
             aoc->fs = snx_dump_aoc_fs(&aoc->dump);
-            if (!aoc->fs) fatal("Could not read the DLC in its dump %s: the line before says why", dump);
+            if (!aoc->fs)
+                fatal_as(SNX_ERROR_DUMP_MISSING, "Could not read the DLC in its dump %s: the line before says why",
+                         dump);
             snx_hac_on_exit(NULL, NULL);
             if (aoc->dump.aoc.title_id != ids[i].id)
                 WARN("fs: the DLC's dump %s holds %016llx, and the DLC is %s: it is served by its own\n", dump,
@@ -1099,8 +1110,9 @@ void romfs_init(void) {
         snprintf(extracting, sizeof extracting, "%s%s.extracting", g_exedir, g_gamename) < (int)sizeof extracting &&
         (snx_path_exists(copying) || snx_is_file(extracting))) {
         LOG("RomFS: %s is not all of it: %s is there\n", own, snx_path_exists(copying) ? copying : extracting);
-        fatal("The game's RomFS is a copy that stopped before it ended: started from the launcher or scarletnx with "
-              "Extract dump, it is extracted again from the game's dump");
+        fatal_as(SNX_ERROR_DUMP_MISSING,
+                 "The game's RomFS is a copy that stopped before it ended: started from the launcher or scarletnx with "
+                 "Extract dump, it is extracted again from the game's dump");
     }
     if (!fs_tree_lookup(&g_hle.fs.tree, NULL, "romfs.bin", &node) && !node->is_dir) {
         if (atomic_load_explicit(&node->fd, memory_order_relaxed) >= 0)
@@ -1111,7 +1123,7 @@ void romfs_init(void) {
             if (fs_tree_path(&g_hle.fs.tree, node, path, sizeof path)) snprintf(path, sizeof path, "romfs.bin");
             /* the path in the log, not in the fatal: a game report's signature is the fatal's text */
             LOG("RomFS: cannot open %s: %s\n", path, why);
-            fatal("Could not open the game's romfs.bin: %s", why);
+            fatal_as(SNX_ERROR_DUMP_MISSING, "Could not open the game's romfs.bin: %s", why);
         }
         g_hle.fs.rtotal = node->size;
         image = 1;
@@ -1137,8 +1149,9 @@ void romfs_init(void) {
             WARN("Extract the game's RomFS into %sromfs/ before running it\n", g_datadir);
             /* a console game reads its RomFS before its first frame: without it, it stops later on what it asks next */
             if (game_title())
-                fatal("The game has no RomFS: started from the launcher or scarletnx with Extract dump, it is "
-                      "extracted from the game's dump before the game starts");
+                fatal_as(SNX_ERROR_DUMP_MISSING,
+                         "The game has no RomFS: started from the launcher or scarletnx with Extract dump, it is "
+                         "extracted from the game's dump before the game starts");
         }
     }
     if (!folder && !g_hle.fs.nmromfs) {
@@ -2008,7 +2021,7 @@ void fs_saves_init(const char* root) {
         FsTreeResult r = fs_tree_graft_writable(&g_hle.fs.tree, name, host);
         if (r != FS_TREE_OK && r != FS_TREE_EXISTS) {
             WARN("fs: could not index the saves in %s: %s %s\n", host, tree_at(host), tree_why(r));
-            fatal("Could not index the saves, as one %s: the line before says which", tree_why(r));
+            fatal_as(SNX_ERROR_SAVE, "Could not index the saves, as one %s: the line before says which", tree_why(r));
         }
     }
     pm_unlock(&g_hle.fs.tree.lock);

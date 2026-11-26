@@ -130,7 +130,7 @@ static struct {
     void* driver_module;
     int driver_looked;
 #endif
-    char* _Atomic fatal_left; /* an error another thread left for the main thread to show */
+    SnxError* _Atomic fatal_left; /* an error another thread left for the main thread to show, malloc'd */
     _Atomic int fatal_taken;  /* the main thread is showing it */
     /* fatal_screen's: as many as the renderer's list, a long message's rows on a wide window */
     SnxUiQuad fatal_quads[4096];
@@ -606,8 +606,10 @@ static void controls_auto(void) { snx_vpad_sdl_auto(g_touch_seen); }
    another reason than the device's Vulkan version was said as that before */
 static void renderer_failed(const char* what) {
     const char* why = g_renderer->start_failure ? g_renderer->start_failure() : "";
-    if (why && why[0]) fatal("%s: %s.", what, why);
-    fatal("%s (see the log).", what);
+    /* a device with no Vulkan 1.3 is one another driver of it may give it; a start that failed otherwise, its driver's */
+    int kind = why && strstr(why, "needs Vulkan 1.3") ? SNX_ERROR_GPU_OLD : SNX_ERROR_GPU_START;
+    if (why && why[0]) fatal_as(kind, "%s: %s.", what, why);
+    fatal_as(kind, "%s (see the log).", what);
 }
 /* The Vulkan driver this run picked (the game's vulkan_driver, docs/hosts/apple.md): on a Mac the library SDL loads, and for
    KosmicKrisp the ICD the Vulkan loader takes; elsewhere the system's, which moltenvk and kosmickrisp also take, said.
@@ -632,7 +634,7 @@ static const SnxVulkanDriver* vulkan_driver(void) {
     free(self);
     /* A value that is no driver stops, as a menu that shows no other would hide the mistake. A driver the system has
        not plays auto's in its place, so that a game still starts, and the warning names it */
-    if (!found) fatal("%s", reason);
+    if (!found) fatal_given(1, &(SnxError){.kind = SNX_ERROR_SETTING_VALUE, .key = "vulkan_driver"}, "%s", reason);
     if (g_sdl3.driver.instead)
         WARN("vulkan: vulkan_driver=%s: %s\n", asked, reason);
     else if (reason[0])
@@ -642,7 +644,7 @@ static const SnxVulkanDriver* vulkan_driver(void) {
     if (g_sdl3.driver.icd && setenv("VK_DRIVER_FILES", g_sdl3.driver.icd, 1)) {
         char error[256];
         LOG("vulkan: VK_DRIVER_FILES=%s could not be set: %s\n", g_sdl3.driver.icd, snx_os_error(error, sizeof error));
-        fatal("vulkan: VK_DRIVER_FILES could not be set for KosmicKrisp's ICD (see the log)");
+        fatal_as(SNX_ERROR_GPU_START, "vulkan: VK_DRIVER_FILES could not be set for KosmicKrisp's ICD (see the log)");
     }
     /* the setting's driver over a library SDL_VULKAN_LIBRARY names, which only auto leaves */
     if (g_sdl3.driver.library)
@@ -665,7 +667,8 @@ void video_init(const char* title, const char* addons) {
     /* a finger and the mouse each reach the touch screen once, and Android's Back opens the game's menu (overlay.c) */
     snx_vpad_sdl_hints();
     snx_sdl_desktop_hints();
-    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) fatal("SDL could not start its video: %s", SDL_GetError());
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD))
+        fatal_as(SNX_ERROR_GPU_START, "SDL could not start its video: %s", SDL_GetError());
     gamepad_scan();
     joycon2_start(); /* the Joy-Con 2 host, when joycon2 is on: each one it connects is a gamepad too */
     /* SDL subsystem initialization belongs to the main thread, before the guest can open audout sessions. */
@@ -694,7 +697,7 @@ void video_init(const char* title, const char* addons) {
        each way, which the display server stretches, the game and what is drawn over it blurred alike */
     g_sdl3.win =
         SDL_CreateWindow(header, w, h, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
-    if (!g_sdl3.win) fatal("SDL could not open a Vulkan window: %s", SDL_GetError());
+    if (!g_sdl3.win) fatal_as(SNX_ERROR_GPU_START, "SDL could not open a Vulkan window: %s", SDL_GetError());
     snx_window_icon(g_sdl3.win);
     overlay_set_display_scale(SDL_GetWindowDisplayScale(g_sdl3.win));
 #if defined(__ANDROID__) || defined(SDL_PLATFORM_IOS)
@@ -724,7 +727,7 @@ void video_init(const char* title, const char* addons) {
 /* the shared GPU driver loader (common/gpu/vk/gpu_driver_load.h), told what this run asks and where to say it: its
    lines go to the run's log, and one that stops the run is a fatal error of it */
 static void gpu_driver_say(const char* line) { LOG("%s", line); }
-static void gpu_driver_stop(const char* line) { fatal("%s", line); }
+static void gpu_driver_stop(const char* line) { fatal_as(SNX_ERROR_GPU_START, "%s", line); }
 static void* gpu_driver_begin(void) {
     SnxGpuDriverRun run = {.driver = g_settings.gpu_driver,
                            .freedreno = g_settings.freedreno_variables,
@@ -1168,7 +1171,14 @@ static void fatal_box(const char* msg) {
    From another thread, the main thread's loop (video_poll) shows it, and this thread waits for the exit; when the main
    thread doesn't come (held up elsewhere), Windows' own box (it takes any thread) and none on Linux: the error is in
    the log and on stderr. Nothing for an unattended run, where nobody would close it */
-void win_fatal_box(const char* msg) {
+/* the run's line that says the error and whether it showed (error_kind.h), which the launcher reads in its output */
+static void fatal_said(const SnxError* e, int shown) {
+    char line[160];
+    snx_error_said(e, shown, line, sizeof line);
+    LOG("%s\n", line);
+}
+void win_fatal_box(const SnxError* e) {
+    const char* msg = e->message;
     /* beside the launcher's log (docs/user/usage.md#folders), whose Share Log sends it, for a game of a data folder: in that
        folder's state folder; another folder's game beside its own log, or before it has one in its folder; on iOS in
        the app's Documents' logs/, which the Files app shows, since a phone shows no stderr */
@@ -1196,24 +1206,29 @@ void win_fatal_box(const char* msg) {
         free(path);
         free(folder);
     }
-    if (g_opt_headless || unattended_active()) return;
+    if (g_opt_headless || unattended_active()) {
+        fatal_said(e, 0);
+        return;
+    }
     if (SDL_IsMainThread()) {
         /* an error another thread left first: this one followed from it */
-        char* left = atomic_load_explicit(&g_sdl3.fatal_left, memory_order_acquire);
+        SnxError* left = atomic_load_explicit(&g_sdl3.fatal_left, memory_order_acquire);
         atomic_store_explicit(&g_sdl3.fatal_taken, 1, memory_order_release);
-        if (!fatal_screen(left ? left : msg)) fatal_box(left ? left : msg);
+        if (left) e = left;
+        if (!fatal_screen(e->message)) fatal_box(e->message);
+        fatal_said(e, 1);
         return;
     }
     if (g_sdl3.win) {
-        char* none = NULL;
-        char* copy = SDL_strdup(msg);
+        SnxError *none = NULL, *copy = malloc(sizeof *copy);
         int i;
+        if (copy) *copy = *e;
         /* the renderer stops presenting and lets go of the window here: the main thread may be waiting for it */
         atomic_store_explicit(&g_sdl3.given_up, 1, memory_order_release);
         if (g_renderer_up && g_renderer->release_window) g_renderer->release_window();
         if (!copy || !atomic_compare_exchange_strong_explicit(&g_sdl3.fatal_left, &none, copy, memory_order_acq_rel,
                                                               memory_order_acquire))
-            SDL_free(copy); /* a second error: the first one shows */
+            free(copy); /* a second error: the first one shows */
         for (i = 0; i < 300; ++i) {
             if (atomic_load_explicit(&g_sdl3.fatal_taken, memory_order_acquire))
                 for (;;) SDL_Delay(1000); /* the main thread shows it and ends the process */
@@ -1226,6 +1241,9 @@ void win_fatal_box(const char* msg) {
         MessageBoxW(NULL, w, L"ScarletNX", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
     else
         MessageBoxA(NULL, msg, "ScarletNX", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+    fatal_said(e, 1);
+#else
+    fatal_said(e, 0);
 #endif
 }
 
@@ -1884,10 +1902,11 @@ static void keyboard_sync(void) {
 }
 /* another thread's fatal error, left for this thread to show: shown, and the process ends */
 static void fatal_left_show(void) {
-    char* left = atomic_load_explicit(&g_sdl3.fatal_left, memory_order_acquire);
+    SnxError* left = atomic_load_explicit(&g_sdl3.fatal_left, memory_order_acquire);
     if (!left) return;
     atomic_store_explicit(&g_sdl3.fatal_taken, 1, memory_order_release);
-    if (!fatal_screen(left)) fatal_box(left);
+    if (!fatal_screen(left->message)) fatal_box(left->message);
+    fatal_said(left, 1);
     plat_exit_now(1);
 }
 /* what the window's own events say of it (its size, its safe part, whether it is seen, its display): taken as they

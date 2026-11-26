@@ -147,9 +147,10 @@ static void refuse_dumps(int argc, char** argv, const char* game) {
     for (i = 1; !dump && i < argc && strcmp(argv[i], "--"); i++)
         if (argv[i][0] != '-' && is_dump(argv[i])) dump = argv[i];
     if (dump)
-        fatal("%s is a dump, and this runs games already recompiled. Open the dump without --game "
-              "(scarletnx Game.nsp) to prepare and play it, or point --game at a recompiled game's folder",
-              dump);
+        fatal_as(SNX_ERROR_BAD_FILE,
+                 "%s is a dump, and this runs games already recompiled. Open the dump without --game "
+                 "(scarletnx Game.nsp) to prepare and play it, or point --game at a recompiled game's folder",
+                 dump);
 }
 
 static void drop_suffix(char* name, const char* suffix) {
@@ -255,26 +256,27 @@ static const SnxModule* load_pack(const char* path) {
     size_t size = 0, count = 0, need[3], rtlib_need[3], k;
     unsigned char* data = (unsigned char*)snx_read_file(path, &size);
     char error[1024];
-    if (!data) fatal("%s could not be read", path);
+    if (!data) fatal_as(SNX_ERROR_CODE_MISSING, "%s could not be read", path);
     inputs = snx_objects_unpack(data, size, "game code", &count);
-    if (!inputs) fatal("%s is not a pack of recompiled code: recompile the game with --target ios", path);
+    if (!inputs)
+        fatal_as(SNX_ERROR_CODE_OLD, "%s is not a pack of recompiled code: recompile the game with --target ios", path);
     memset(&rtlib, 0, sizeof(rtlib));
     rtlib.data = snx_rtlib_object;
     rtlib.size = snx_rtlib_object_size;
     rtlib.name = "rtlib";
     if (snx_code_need(&rtlib, 1, rtlib_need, error, sizeof(error)) ||
         snx_code_need(inputs, count, need, error, sizeof(error)))
-        fatal("The game's code cannot be loaded: %s", error);
+        fatal_as(SNX_ERROR_CODE_OLD, "The game's code cannot be loaded: %s", error);
     for (k = 0; k < 3; ++k) need[k] += rtlib_need[k];
     LOG("game: a code arena of %.1f MiB of code, %.1f MiB of read-only data and %.1f MiB of data for its %.1f MB of "
         "objects\n",
         (double)need[0] / 1048576.0, (double)need[1] / 1048576.0, (double)need[2] / 1048576.0, (double)size / 1e6);
     loader = snx_code_loader_new_regions(need, error, sizeof(error));
-    if (!loader) fatal("The game's code cannot be loaded: %s", error);
+    if (!loader) fatal_as(SNX_ERROR_CODE_OLD, "The game's code cannot be loaded: %s", error);
     names[0] = "snx_module";
     if (snx_code_load(loader, &rtlib, 1, NULL, 0, NULL, error, sizeof(error)) ||
         snx_code_load(loader, inputs, count, names, 1, &address, error, sizeof(error)))
-        fatal("The game's code cannot be loaded: %s", error);
+        fatal_as(SNX_ERROR_CODE_OLD, "The game's code cannot be loaded: %s", error);
     free(inputs);
     free(data); /* the loaded code is a copy */
     {
@@ -284,7 +286,7 @@ static const SnxModule* load_pack(const char* path) {
             VariantsFn get_variants = (VariantsFn)(uintptr_t)variants;
             g_variants = get_variants();
             if (!g_variants || g_variants->version != SNX_VARIANTS_VERSION)
-                fatal("%s has a runtime variant table of another version", path);
+                fatal_as(SNX_ERROR_CODE_OLD, "%s has a runtime variant table of another version", path);
         }
         if (snx_code_lookup(loader, "snx_routes", &routes)) routes_load((RoutesFn)(uintptr_t)routes);
     }
@@ -302,16 +304,17 @@ static const SnxModule* load_module(const char* path) {
     const SnxModule* m;
     if (snx_module_static) return snx_module_static();
     if (!snx_is_file(path))
-        fatal("Cannot find the recompiled code: %s. A copy of the runtime runs the game it is named after, with "
-              "that code beside it, or --game=PATH names the game (--game=recompiled/Game)",
-              path);
+        fatal_as(SNX_ERROR_CODE_MISSING,
+                 "Cannot find the recompiled code: %s. A copy of the runtime runs the game it is named after, with "
+                 "that code beside it, or --game=PATH names the game (--game=recompiled/Game)",
+                 path);
 #ifdef MODULE_PACK
     m = load_pack(path);
-    if (!m) fatal("%s could not be loaded: it describes no game", path);
+    if (!m) fatal_as(SNX_ERROR_CODE_OLD, "%s could not be loaded: it describes no game", path);
     return m;
 #endif
     lib = plat_dl_open(path);
-    if (!lib) fatal("%s could not be loaded: %s", path, plat_dl_error());
+    if (!lib) fatal_as(SNX_ERROR_CODE_OLD, "%s could not be loaded: %s", path, plat_dl_error());
     if ((sym = plat_dl_sym(lib, "snx_module")) != NULL) {
         memcpy(&get, &sym, sizeof get); /* ISO C has no conversion from an object pointer to a function's */
         m = get();
@@ -322,20 +325,22 @@ static const SnxModule* load_module(const char* path) {
            reports are grouped by */
         if (arm && arm->abi != SNX_ARM_MODULE_ABI) {
             WARN("game: its code is %s\n", path);
-            fatal("The recompiled code is from another ScarletNX version (32-bit ABI %08x, where this one runs %08x): "
-                  "recompile the game with this one",
-                  (unsigned)arm->abi, (unsigned)SNX_ARM_MODULE_ABI);
+            fatal_as(
+                SNX_ERROR_CODE_OLD,
+                "The recompiled code is from another ScarletNX version (32-bit ABI %08x, where this one runs %08x): "
+                "recompile the game with this one",
+                (unsigned)arm->abi, (unsigned)SNX_ARM_MODULE_ABI);
         }
         m = arm_module(arm);
     } else
-        fatal("%s is not a ScarletNX game module", path);
-    if (!m) fatal("%s could not be loaded: it describes no game", path);
+        fatal_as(SNX_ERROR_CODE_OLD, "%s is not a ScarletNX game module", path);
+    if (!m) fatal_as(SNX_ERROR_CODE_OLD, "%s could not be loaded: it describes no game", path);
     plat_crash_code_module(sym); /* the module its descriptor's function is in */
     if ((sym = plat_dl_sym(lib, "snx_variants")) != NULL) {
         memcpy(&get_variants, &sym, sizeof get_variants);
         g_variants = get_variants();
         if (!g_variants || g_variants->version != SNX_VARIANTS_VERSION)
-            fatal("%s has a runtime variant table of another version", path);
+            fatal_as(SNX_ERROR_CODE_OLD, "%s has a runtime variant table of another version", path);
     }
     if ((sym = plat_dl_sym(lib, "snx_routes")) != NULL) {
         RoutesFn get_routes;
@@ -457,9 +462,10 @@ static void addon_init(char* ini, size_t ini_size, char* base, size_t base_size)
         snx_title_parse(dir + cut, &game);
         kind = snx_addon_kind(game, id);
         if (kind == SNX_ADDON_DLC)
-            fatal("%s is a DLC's program, which an older version made: a DLC plays with its game, checked in the "
-                  "game's list of updates and DLCs (addons= in its .ini). Play the DLC's dump again",
-                  g_exename);
+            fatal_as(SNX_ERROR_CODE_OLD,
+                     "%s is a DLC's program, which an older version made: a DLC plays with its game, checked in the "
+                     "game's list of updates and DLCs (addons= in its .ini). Play the DLC's dump again",
+                     g_exename);
         g_program = snx_program_index(game, id);
         if (kind == SNX_ADDON_UPDATE || id - game > SNX_PROGRAMS_MAX) { /* the update's, or its patch of a program */
             char entry[32];
@@ -1509,9 +1515,11 @@ int snx_main(int argc, char** argv) {
     mod = load_module(module);
     if (mod->abi != SNX_ABI) {
         WARN("game: its code is %s\n", module);
-        fatal("The recompiled code is from another ScarletNX version (ABI %u, where this one runs %u): recompile the "
-              "game with this one",
-              (unsigned)mod->abi, (unsigned)SNX_ABI);
+        fatal_as(
+            SNX_ERROR_CODE_OLD,
+            "The recompiled code is from another ScarletNX version (ABI %u, where this one runs %u): recompile the "
+            "game with this one",
+            (unsigned)mod->abi, (unsigned)SNX_ABI);
     }
     game_dirs();
     if (g_arm_mod) mem_layout32(g_arm_mod->aspace); /* before anything sizes or reads guest memory */
@@ -1621,9 +1629,9 @@ int snx_main(int argc, char** argv) {
         SNX_SECTION_SCOPED_C(snx_game_load, "game load", 1);
         int loaded = loader_load();
         if (loaded == -2)
-            fatal_code(SNX_EXIT_REMAKE,
-                       "The game's recompiled code was made from another copy of the game: recompile it, or remove "
-                       "its folder");
+            fatal_given(SNX_EXIT_REMAKE, &(SnxError){.kind = SNX_ERROR_CODE_OLD},
+                        "The game's recompiled code was made from another copy of the game: recompile it, or remove "
+                        "its folder");
         if (loaded) fatal("Could not load the game executables. See the .log for details.");
     }
     nce_init(); /* the patches of native code, before the hooks take their functions */

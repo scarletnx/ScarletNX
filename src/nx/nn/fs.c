@@ -200,8 +200,9 @@ static int abort_needed(u32 r) {
     return ((r >> 9) & 0x1fff) >= 1000;
 }
 [[noreturn]] static void stop(const char* function, u32 r) {
-    fatal("nn::fs::%s failed with result 0x%x (error %04u-%04u), which the SDK stops the game on", function, r,
-          2000 + (r & 0x1ff), (r >> 9) & 0x1fff);
+    fatal_as(SNX_ERROR_GAME_STOPPED,
+             "nn::fs::%s failed with result 0x%x (error %04u-%04u), which the SDK stops the game on", function, r,
+             2000 + (r & 0x1ff), (r >> 9) & 0x1fff);
 }
 /* the end of a function that returns a Result. An error is rare, so it gets a trace message naming the call and why
    it failed; a successful call pays one test of r. The reason is the Result's module and description, the same numbers
@@ -990,9 +991,11 @@ static void stop_if_open(int m) {
     }
     if (!files && !dirs) return;
     u32 r = files ? R_FILE_NOT_CLOSED : R_DIR_NOT_CLOSED;
-    fatal("nn::fs::Unmount(\"%s\") failed with result 0x%x (error %04u-%04u), which the SDK stops the game on (open on "
-          "it, each logged above: files %u, directories %u)",
-          mt->name, r, 2000 + (r & 0x1ff), (r >> 9) & 0x1fff, files, dirs);
+    fatal_as(
+        SNX_ERROR_GAME_STOPPED,
+        "nn::fs::Unmount(\"%s\") failed with result 0x%x (error %04u-%04u), which the SDK stops the game on (open on "
+        "it, each logged above: files %u, directories %u)",
+        mt->name, r, 2000 + (r & 0x1ff), (r >> 9) & 0x1fff, files, dirs);
 }
 
 void nnfs_unmount(CPU* c, u64 name) {
@@ -1288,7 +1291,7 @@ i32 nnfs_get_file_open_mode(CPU* c, u64 h) {
 /* the queries the game does not import: a native handle in one is a gap of this layer, said plainly */
 static u32 unsupported(CPU* c, const char* symbol, const char* function, u64 h) {
     if (!is_native(h)) return (u32)sdk_own(c, symbol);
-    fatal("nn::fs::%s on a native file is not implemented yet", function);
+    fatal_as(SNX_ERROR_NOT_YET, "nn::fs::%s on a native file is not implemented yet", function);
 }
 u32 nnfs_query_range(CPU* c, u64 info, u64 h, i64 offset, i64 size) {
     (void)info, (void)offset, (void)size;

@@ -544,9 +544,11 @@ static void missing(CPU* RESTRICT c, u64 entry) {
     (void)c;
     for (u32 i = 0; i < g_gvk.nexports; i++)
         if (g_gvk.exports[i].addr == entry)
-            fatal("gvk: the game called %s, which the guest's Vulkan on the host (guest_vulkan) doesn't implement",
-                  g_gvk.exports[i].name);
-    fatal("gvk: the game called a Vulkan function at %llx that gvk doesn't know", (unsigned long long)entry);
+            fatal_as(SNX_ERROR_NOT_YET,
+                     "gvk: the game called %s, which the guest's Vulkan on the host (guest_vulkan) doesn't implement",
+                     g_gvk.exports[i].name);
+    fatal_as(SNX_ERROR_NOT_YET, "gvk: the game called a Vulkan function at %llx that gvk doesn't know",
+             (unsigned long long)entry);
 }
 
 static void set_slot(u64 addr, GuestFn fn) {

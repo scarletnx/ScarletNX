@@ -53,10 +53,11 @@ int snx_audio_guest_ok(u64 addr, u64 size, u32 perm) {
 [[noreturn]] static void native_only(const char* service, const char* what) {
     WARN("\n*** The program asked %s for %s, which the runtime answers only natively ***\n", service, what);
     kernel_dump_threads();
-    fatal("%s: the program asked for %s, which the runtime answers only in the SDK's own functions, nn::audio "
-          "(nn/audio.c). A game got here through an SDK function that is not native yet (the calls of its thread, "
-          "in the log's thread list before this, name it)",
-          service, what);
+    fatal_as(SNX_ERROR_NOT_YET,
+             "%s: the program asked for %s, which the runtime answers only in the SDK's own functions, nn::audio "
+             "(nn/audio.c). A game got here through an SDK function that is not native yet (the calls of its thread, "
+             "in the log's thread list before this, name it)",
+             service, what);
 }
 
 /* ============================================================ the native audio manager (aud:u) */

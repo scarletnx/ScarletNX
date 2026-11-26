@@ -458,7 +458,7 @@ static void cs_submit(void) {
     vk_queue_unlock(g_vk.compute);
     if (r == VK_ERROR_DEVICE_LOST) {
         vk_ck_report();
-        fatal("vulkan: the GPU device was lost (driver reset or crash)");
+        fatal_as(SNX_ERROR_GPU_LOST, "vulkan: the GPU device was lost (driver reset or crash)");
     }
     g_recording = 0;
     g_inflight = 1;

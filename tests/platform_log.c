@@ -16,7 +16,11 @@ static jmp_buf g_exit_jump;
 static char g_box[256];
 u64 plat_ns(void) { return g_clock += 10000000u; }
 void plat_exit_now(int code) { longjmp(g_exit_jump, code + 1); }
-void win_fatal_box(const char* msg) { snprintf(g_box, sizeof g_box, "%s", msg); }
+static SnxError g_shown; /* the error the box was given */
+void win_fatal_box(const SnxError* e) {
+    snprintf(g_box, sizeof g_box, "%s", e->message);
+    g_shown = *e;
+}
 
 static unsigned checks, failures;
 #define CHECK(c, what)                                                                                                 \
@@ -214,6 +218,22 @@ int main(int argc, char** argv) {
     CHECK(code == 2, "fatal did not exit with 1");
     CHECK(!strcmp(g_box, "boom 42"), "fatal did not show its box");
     CHECK(strstr(slurp(log), "] FATAL: boom 42\n") != NULL, "fatal's line is not in the log");
+    CHECK(g_shown.kind == SNX_ERROR_INTERNAL, "a fatal with no kind is not INTERNAL");
+    /* the kinds: given, from the words of running out of memory, and with the setting's key and the panel's line */
+    code = setjmp(g_exit_jump);
+    if (!code) fatal("vulkan: out of memory for %d command buffers", 3);
+    CHECK(code == 2 && g_shown.kind == SNX_ERROR_MEMORY, "out of memory is not MEMORY");
+    code = setjmp(g_exit_jump);
+    if (!code) fatal_as(SNX_ERROR_GPU_LOST, "vulkan: the GPU device was lost (%s)", "test");
+    CHECK(code == 2 && g_shown.kind == SNX_ERROR_GPU_LOST && !strcmp(g_box, "vulkan: the GPU device was lost (test)"),
+          "fatal_as did not give its kind");
+    code = setjmp(g_exit_jump);
+    if (!code)
+        fatal_given(7, &(SnxError){.kind = SNX_ERROR_SETTING, .key = "hooks", .line = "Native hooks is off."},
+                    "sm: hooks=%d", 0);
+    CHECK(code == 8 && g_shown.kind == SNX_ERROR_SETTING && !strcmp(g_shown.key, "hooks") &&
+              !strcmp(g_shown.line, "Native hooks is off.") && !strcmp(g_shown.message, "sm: hooks=0"),
+          "fatal_given did not give its key, line, message and status");
 
     log_crash_mode();
     LOG("in crash mode\n");

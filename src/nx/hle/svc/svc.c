@@ -509,7 +509,7 @@ static void svc_break(CPU* c, u32 reason, u64 info, u64 size) {
     kernel_dump_regs(c);
     kernel_dump_threads();
     save_hints();
-    fatal("The game stopped (svcBreak, reason %x). See the .log for details.", reason);
+    fatal_as(SNX_ERROR_GAME_STOPPED, "The game stopped (svcBreak, reason %x). See the .log for details.", reason);
 }
 /* svcGetResourceLimit{Limit,Current,Peak}Value: physical memory, threads, events, transfer memories, sessions. The
    peak reads as the limit; the counts the runtime doesn't keep are 0 */
@@ -784,7 +784,7 @@ static void svc_ReturnFromException(u32 result) {
     WARN("\n*** The game returned from an exception it had no handler for (%x) ***\n", result);
     kernel_dump_regs(&kthread_cur()->cpu);
     save_hints();
-    fatal("The game stopped (ReturnFromException %x). See the .log for details.", result);
+    fatal_as(SNX_ERROR_GAME_STOPPED, "The game stopped (ReturnFromException %x). See the .log for details.", result);
 }
 static u32 svc_GetInfo(u64* out, u32 info_type, u32 handle, u64 info_subtype) {
     return get_info(info_type, handle, info_subtype, out);

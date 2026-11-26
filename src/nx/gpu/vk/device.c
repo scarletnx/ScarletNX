@@ -1509,7 +1509,8 @@ static bool choose_device(SnxVkChoice* c, void* user) {
        way without it. extension_bans.txt's "warn" lines on it are said (vk_bans_filter): an "off" line could not be
        kept, and the log says so */
     if (!q12.timelineSemaphore)
-        fatal("vulkan: %s has no timeline semaphores, which Vulkan 1.2 requires", g_vk.props.deviceName);
+        fatal_as(SNX_ERROR_GPU_OLD, "vulkan: %s has no timeline semaphores, which Vulkan 1.2 requires",
+                 g_vk.props.deviceName);
     if (vk_ban_find("timelineSemaphore"))
         WARN("vulkan: extension_bans.txt turns timelineSemaphore off on this driver, but the renderer has no way "
              "without it: it stays on\n");
@@ -1643,8 +1644,9 @@ static bool choose_device(SnxVkChoice* c, void* user) {
         uint32_t ban_line = vk_ban_find(VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME);
         if (ban_line) vk_ban_why(ban_line, ban, sizeof ban);
         if (mode < 0)
-            fatal("settings: vertex_input_dynamic_state=%s is not auto, on or off",
-                  g_settings.vertex_input_dynamic_state);
+            fatal_given(1, &(SnxError){.kind = SNX_ERROR_SETTING_VALUE, .key = "vertex_input_dynamic_state"},
+                        "settings: vertex_input_dynamic_state=%s is not auto, on or off",
+                        g_settings.vertex_input_dynamic_state);
 #if defined(__ANDROID__)
         int android = 1;
 #else
@@ -2694,7 +2696,9 @@ static void gpu_pstate_hold(int mode, int has_drm, const char* boost_lacks) {
 static int create_device(void) {
     /* the GPU's clocks held (gpu_pstate_hold): read here, as an NVIDIA device is made with what holds them */
     int pstate = snx_gpu_pstate_mode(g_settings.gpu_pstate);
-    if (pstate < 0) fatal("settings: gpu_pstate=%s is not auto, on or off", g_settings.gpu_pstate);
+    if (pstate < 0)
+        fatal_given(1, &(SnxError){.kind = SNX_ERROR_SETTING_VALUE, .key = "gpu_pstate"},
+                    "settings: gpu_pstate=%s is not auto, on or off", g_settings.gpu_pstate);
     DeviceChoice d = {.vk = g_vk, .translate = g_spirv_translate, .pstate = pstate};
     VkExtensionSetting settings[VK_EXTENSION_SETTINGS];
     char none[160], err[1024];
@@ -2719,8 +2723,8 @@ static int create_device(void) {
         /* a table that does not read is the build's fault, and which bans hold would be unknown; a setting that does
            not read stops the game, as the player meant a ban, a hidden command or an extension's value the run would
            otherwise leave as it is */
-        if (made.refused == SNX_VK_REFUSED_TABLE) fatal("vulkan: %s", err);
-        if (made.refused == SNX_VK_REFUSED_SETTING) fatal("settings: %s", err);
+        if (made.refused == SNX_VK_REFUSED_TABLE) fatal_as(SNX_ERROR_GPU_START, "vulkan: %s", err);
+        if (made.refused == SNX_VK_REFUSED_SETTING) fatal_as(SNX_ERROR_SETTING_VALUE, "settings: %s", err);
         WARN("vulkan: %s\n", err);
         /* each device and what it lacks, where the choice said nothing of its own */
         if (made.passed_over && !g_vk.start_failure[0]) start_failure_devices();
@@ -3243,7 +3247,8 @@ int vk_init(void) {
     u32 cap;
     /* the instance is made for the version the setting allows, so it is read before. A value it takes not stops the
        game, as a player who wrote vk_api=1.3 would otherwise play the way they meant to leave */
-    if (!vk_api_setting(g_settings.vulkan_api, &cap, why, sizeof why)) fatal("settings: %s", why);
+    if (!vk_api_setting(g_settings.vulkan_api, &cap, why, sizeof why))
+        fatal_given(1, &(SnxError){.kind = SNX_ERROR_SETTING_VALUE, .key = "vk_api"}, "settings: %s", why);
     if (cap) g_vk.api_cap = cap;
     pm_init(&g_vklock);
     pm_init(&g_vk.sc_lock);
