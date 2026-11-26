@@ -17,8 +17,8 @@ typedef SnxNativeOptions SnxX64Options;
 
 /* 1 where this host runs the x86-64 back end's code and its objects load (x86-64, with what its code needs) */
 int snx_x64_available(void);
-/* 1 on an x86-64 host without what the back end's code needs (SSE4.2, PCLMULQDQ, POPCNT...), with the line of it in
-   why (snx_native_floor); 0 and "" elsewhere */
+/* 1 on an x86-64 host without what the back end's code needs (SSE2: a test's alone), with the line of it in why
+   (snx_native_floor); 0 and "" elsewhere */
 int snx_x64_floor(char* why, size_t size);
 /* 1 on an x86-64 host without features the back end does without, through its helpers (SSSE3 to SSE4.2, PCLMULQDQ), with
    line of it in why (snx_native_fallback); 0 and "" elsewhere */

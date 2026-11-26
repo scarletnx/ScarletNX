@@ -667,8 +667,8 @@ static struct {
     _Atomic unsigned without;
     _Atomic int win64;
 } g_x64_codegen;
-/* the back end's code needs SSE3 and POPCNT */
-static const SnxNativeFeature k_x64_floor[] = {{"SSE3", SGX_F_SSE3}, {"POPCNT", SGX_F_POPCNT}};
+/* the back end's code needs SSE2, which every x86-64 processor has: none is below it but a test's (snx_x64_without) */
+static const SnxNativeFeature k_x64_floor[] = {{"SSE2", SGX_F_SSE2}};
 /* and does without these, the instructions of them it uses its helpers' (x64.h's sgx_vf_helped_forms). Android's x86_64
    ABI (x86-64-v2, developer.android.com/ndk/guides/abis) has all of the floor's and none of these */
 static const SnxNativeFeature k_x64_helped[] = {
@@ -696,6 +696,7 @@ unsigned snx_x64_features_of(const unsigned leaf1[4], const unsigned leaf7[4], u
     if (leaf7[1] & (1u << 29)) f |= SGX_F_SHA;
     if (leaf7[2] & (1u << 8)) f |= SGX_F_GFNI;
     if (ext1[2] & (1u << 5)) f |= SGX_F_LZCNT;
+    if (leaf1[3] & (1u << 26)) f |= SGX_F_SSE2;
     if (c & 1u) f |= SGX_F_SSE3;
     if (c & (1u << 1)) f |= SGX_F_PCLMUL;
     if (c & (1u << 9)) f |= SGX_F_SSSE3;

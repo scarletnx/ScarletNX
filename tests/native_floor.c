@@ -62,14 +62,14 @@ static void check_line(const char* got, const char* want, const char* of) {
 
 /* ---- x86-64's features, in the order its line names them ---- */
 
-static const SnxNativeFeature k_x64[] = {{"SSE3", SNX_X64_SSE3}, {"POPCNT", SNX_X64_POPCNT}};
+static const SnxNativeFeature k_x64[] = {{"SSE2", SNX_X64_SSE2}};
 /* and what it does without, through its helpers */
 static const SnxNativeFeature k_x64_done[] = {
     {"SSSE3", SNX_X64_SSSE3}, {"SSE4.1", SNX_X64_SSE41}, {"SSE4.2", SNX_X64_SSE42}, {"PCLMULQDQ", SNX_X64_PCLMUL}};
 enum {
     X64_FEATURES = sizeof k_x64 / sizeof *k_x64,
     X64_DONE = sizeof k_x64_done / sizeof *k_x64_done,
-    X64_ALL = SNX_X64_SSE3 | SNX_X64_POPCNT
+    X64_ALL = SNX_X64_SSE2
 };
 
 /* "A, B and C" of k_x64's in bits, "none" for no one */
@@ -98,8 +98,7 @@ static void x64_lines(void) {
         unsigned has;
         const char* line;
     } hosts[] = {
-        {"a K8", 0, "cpu: needs SSE3 and POPCNT, this host has none"},
-        {"a Penryn", SNX_X64_SSE3 | SNX_X64_SSSE3 | SNX_X64_SSE41, "cpu: needs POPCNT, this host has SSE3"},
+        {"a test's without SSE2", SNX_X64_SSE3 | SNX_X64_POPCNT, "cpu: needs SSE2, this host has none"},
     };
     char line[256], want[256], cut[24];
     for (size_t k = 0; k < sizeof hosts / sizeof *hosts; ++k) {
@@ -122,7 +121,7 @@ static void x64_lines(void) {
         check(snx_native_lacks(k_x64, X64_FEATURES, has, NULL, 0) == below, "without a line", want);
     }
     snx_native_lacks(k_x64, X64_FEATURES, 0, cut, sizeof cut);
-    check_line(cut, "cpu: needs SSE3 and POP", "a line cut to its room");
+    check_line(cut, "cpu: needs SSE2, this h", "a line cut to its room");
     /* what it does without: an Android x86_64 device with what its ABI promises alone (developer.android.com/ndk/
        guides/abis: SSE3 to SSE4.2 and POPCNT, no PCLMULQDQ), a Nehalem */
     const unsigned nehalem = X64_ALL | SNX_X64_SSSE3 | SNX_X64_SSE41 | SNX_X64_SSE42;
@@ -174,7 +173,7 @@ static void ppc64_lines(void) {} /* the ppc64 back ends are not built there */
 static const SnxNativeFeature* const k_names = k_x64;
 enum { NAMES = X64_FEATURES, DONE = SNX_X64_SSSE3 | SNX_X64_SSE41 | SNX_X64_SSE42 | SNX_X64_PCLMUL };
 static void take_out(unsigned bits) { snx_x64_without(bits); }
-static const char* const k_none = "cpu: needs SSE3 and POPCNT, this host has none";
+static const char* const k_none = "cpu: needs SSE2, this host has none";
 #else
 static const SnxNativeFeature* const k_names = NULL;
 enum { NAMES = 0, DONE = 0 };
@@ -431,6 +430,10 @@ int main(int argc, char** argv) {
     snx_native_set_alone(1);
     const int below = snx_native_floor(line, sizeof line);
     check(snx_native_refused(line, sizeof line) == below, "is refused where it is below the floor alone", "this host");
+#if defined(__x86_64__)
+    /* SSE2 is every x86-64 processor's: none is below the floor, and the back end's tests skip none for it */
+    check(!snx_x64_floor(line, sizeof line), line, "this x86-64 host, above the floor");
+#endif
     if (has_floor()) {
         char error[512] = "";
         masked();

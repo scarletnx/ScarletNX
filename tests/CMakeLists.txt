@@ -4531,8 +4531,13 @@ if(SNX_X64)
              --functions 400 --states 8)
     add_test(NAME recompiler_backends_refused_no_sse41 COMMAND snx-test-recompiler-backends --refused --target max
              --without 0x3D20)
+    # and with SSE2 alone, which is all the back end needs: every word made, the functions LLVM's word by word
+    add_test(NAME recompiler_backends_sse2 COMMAND snx-test-recompiler-backends --without 0x3FFF --target max
+             --functions 400 --states 8)
+    add_test(NAME recompiler_backends_refused_sse2 COMMAND snx-test-recompiler-backends --refused --target max
+             --without 0x3FFF)
     set_tests_properties(recompiler_backends_no_ssse3 recompiler_backends_no_sse41
-                         recompiler_backends_no_sse41_functions PROPERTIES TIMEOUT 600)
+                         recompiler_backends_no_sse41_functions recompiler_backends_sse2 PROPERTIES TIMEOUT 600)
 endif()
 # a big-endian PowerPC64's guest doublewords with LDBRX and without (tools/sailgen/ppc64.h), the code run under
 # qemu-ppc64 on CPUs before ISA 2.06 and after (skipped without qemu-ppc64)
