@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The DS's save states (src/nds/runtime/state.c). The CPU tests' program (support/nds_image.c) runs its interrupt
-   handler and its waits, and each frame the test writes what a game's frame would: a cell of engine A's background
-   and palette colors, one of them the count of a timer started again every eighth frame; a triangle for the 3D engine
-   whose color and corner move; a display capture into bank B, which the GPU gives back after the frame; and every
+/* The DS's save states (src/nds/runtime/state.c). The test's ARM9 program runs an interrupt handler and the vertical
+   blank's wait, its IRQ mode's stack moving with the frame, and each frame the test writes what a game's frame would:
+   a cell of engine A's background and palette colors, one of them the count of a timer started again every eighth
+   frame; a triangle for the 3D engine whose color and corner move; a display capture into bank B, which the GPU gives
+   back after the frame; a write and a read of the power chip's registers through the ARM7, its answers kept; and every
    fourth frame a command list for the ARM7's sound driver over the FIFO that retunes a square wave, a noise channel
    playing beside it. A state saved after 30 frames, loaded in the same machine and in a fresh one that ran on its own
    meanwhile, gives the same next 30 frames as the run that went on: each frame's picture as the Vulkan device composed
@@ -41,6 +42,57 @@
 #define PICTURE (NDS_SCREEN_WIDTH * NDS_SCREEN_HEIGHT * 2) /* both screens' pixels, RGBA8 words */
 #define SAMPLES 4096u                                      /* a frame's stereo samples at most, and more */
 #define LISTS   0x02200000u                                /* where the test's sound command lists go */
+#define REPLIES 0x02110000u /* where the test keeps the ARM7's answers it read, 256 words around */
+
+/* The ARM9's program at 0x02000000 (llvm-mc -triple=armv5te): its interrupt handler and the vertical blank's wait
+   as the CPU tests' program has them, the frame counted in a register, and the IRQ mode's stack, where the BIOS's
+   interrupt entry saves registers, moved with the frame's parity */
+static const uint32_t program[] = {
+    0xE59F0090, /* entry: ldr r0, =0x03003FFC */
+    0xE59F1090, /* ldr r1, =(handler - entry + 0x02000000) */
+    0xE5801000, /* str r1, [r0] */
+    0xE3A00301, /* mov r0, #0x04000000 */
+    0xE3A01008, /* mov r1, #8 */
+    0xE1C010B4, /* strh r1, [r0, #4] */
+    0xE2802C02, /* add r2, r0, #0x200 */
+    0xE3A01001, /* mov r1, #1 */
+    0xE5821010, /* str r1, [r2, #0x10] */
+    0xE5821008, /* str r1, [r2, #8] */
+    0xE10F3000, /* mrs r3, cpsr */
+    0xE3C33080, /* bic r3, r3, #0x80 */
+    0xE121F003, /* msr cpsr_c, r3 */
+    0xE3A06000, /* mov r6, #0 */
+    0xE3A04621, /* ldr r4, =0x02100000 */
+    0xEF050000, /* frame: swi 0x050000 */
+    0xE2866001, /* add r6, r6, #1 */
+    0xE5846014, /* str r6, [r4, #20] */
+    0xE10F3000, /* mrs r3, cpsr */
+    0xE321F0D2, /* msr cpsr_c, #0xD2 */
+    0xE59FD048, /* ldr sp, =0x03003F80 */
+    0xE3160001, /* tst r6, #1 */
+    0x124DD040, /* subne sp, sp, #0x40 */
+    0xE121F003, /* msr cpsr_c, r3 */
+    0xEAFFFFF5, /* b frame */
+    0xE3A00301, /* handler: mov r0, #0x04000000 */
+    0xE2800C02, /* add r0, r0, #0x200 */
+    0xE5901014, /* ldr r1, [r0, #0x14] */
+    0xE5801014, /* str r1, [r0, #0x14] */
+    0xE59F2028, /* ldr r2, =0x03003FF8 */
+    0xE5923000, /* ldr r3, [r2] */
+    0xE1833001, /* orr r3, r3, r1 */
+    0xE5823000, /* str r3, [r2] */
+    0xE59F201C, /* ldr r2, =0x02100018 */
+    0xE5923000, /* ldr r3, [r2] */
+    0xE2833001, /* add r3, r3, #1 */
+    0xE5823000, /* str r3, [r2] */
+    0xE12FFF1E, /* bx lr */
+    0x03003FFC, /* the DTCM's last word, the handler's */
+    0x02000064, /* the interrupt handler */
+    0x03003F80, /* the IRQ stack */
+    0x03003FF8, /* the BIOS's flags */
+    0x02100018, /* the interrupts counted */
+};
+#define PROGRAM_WORDS (sizeof program / sizeof *program)
 
 typedef struct {
     NdsRom rom;
@@ -130,6 +182,13 @@ static void stimulus(NdsBoard* b, unsigned f) {
     gx(b, 0x50, 0);
     /* the frame captured into bank B, which the GPU gives back after the frame: a state between two holds it */
     nds_io_write(b, IO + 0x064, 4, 0x80000000u | 3u << 20 | 1u << 16);
+    /* the power chip's register f & 7 written with a byte of the frame's, and register f + 1 read back, which the write
+       seven frames before set: what the ARM7 answers is read from the FIFO and kept */
+    static const uint32_t power[] = {1u << 25 | 0x6400, 1u << 24 | 1u << 16, 1u << 25 | 0x6500, 1u << 24 | 1u << 16};
+    uint32_t args[] = {f & 7, f * 37 & 0xFF, (f + 1) & 7, 0};
+    for (unsigned i = 0; i < 4; ++i) nds_io_write(b, IO + 0x188, 4, 8 | (power[i] | args[i]) << 6);
+    for (unsigned k = 0; !(nds_io_read(b, IO + 0x184, 2) & 0x100); ++k)
+        snx_st_le32(w + REPLIES + (f * 4 + k) % 256 * 4, nds_io_read(b, IO + 0x100000, 4));
     if (f % 4) return;
     /* the square wave on channel 8 at a pitch of the frame's, and once the noise on channel 14, then both started */
     uint32_t list = LISTS + (f / 4 % 2) * 0x80, at = list;
@@ -290,14 +349,12 @@ int main(int argc, char** argv) {
          *again = snx_format("%s/nds_state_c.snxstate", dir), *fresh = snx_format("%s/nds_state_d.snxstate", dir),
          *changed = snx_format("%s/nds_state_x.snxstate", dir);
     CHECK(image && other && saved && went_on && again && fresh && changed);
-    CHECK(nds_test_image(image, nds_test_program, nds_test_program_words));
+    CHECK(nds_test_image(image, program, PROGRAM_WORDS));
     /* another game: the same program with a word more */
-    uint32_t* longer = malloc((nds_test_program_words + 1) * sizeof *longer);
-    CHECK(longer);
-    memcpy(longer, nds_test_program, nds_test_program_words * sizeof *longer);
-    longer[nds_test_program_words] = 0xE1A00000; /* mov r0, r0 */
-    CHECK(nds_test_image(other, longer, nds_test_program_words + 1));
-    free(longer);
+    uint32_t longer[PROGRAM_WORDS + 1];
+    memcpy(longer, program, sizeof program);
+    longer[PROGRAM_WORDS] = 0xE1A00000; /* mov r0, r0 */
+    CHECK(nds_test_image(other, longer, PROGRAM_WORDS + 1));
     Output ref, loaded, alone;
     CHECK(!output_new(&ref) && !output_new(&loaded) && !output_new(&alone));
     Machine m;
@@ -310,7 +367,9 @@ int main(int argc, char** argv) {
     uint64_t t1 = plat_ns();
     if (run(&m, WARM, FRAMES, &ref)) return 1;
     CHECK(!snx_nds_state_save(m.board, m.cpu, went_on, NULL, why, sizeof why));
-    /* the frames moved and the sound played */
+    /* the program counted its frames, the ARM7 answered, the frames moved and the sound played */
+    CHECK(snx_ld_le32(m.board->mem.base + 0x02100014) > WARM);
+    CHECK((snx_ld_le32(m.board->mem.base + REPLIES + (WARM + FRAMES - 1) * 4 % 256 * 4) & 0x1F) == 8); /* PXI_POWER */
     CHECK(memcmp(ref.picture, ref.picture + PICTURE, PICTURE * 4));
     {
         size_t loud = 0;
