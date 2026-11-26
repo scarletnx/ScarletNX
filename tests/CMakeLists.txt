@@ -484,7 +484,7 @@ if(TARGET snx_ctr_board)
     # the GPU's draws against the software renderer, the CPU reference they replaced, scene by scene
     add_executable(snx-test-3ds-vk-draw 3ds_vk_draw.c)
     snx_test_target(snx-test-3ds-vk-draw gnu23)
-    target_link_libraries(snx-test-3ds-vk-draw PRIVATE snx_ctr_gpu_reference)
+    target_link_libraries(snx-test-3ds-vk-draw PRIVATE snx_ctr_gpu_reference snx_prepared)
     add_test(NAME 3ds_vk_draw COMMAND snx-test-3ds-vk-draw)
     # async_pipelines: the draw skipped while its pipeline is made on a worker, then drawn
     add_test(NAME 3ds_vk_draw_async COMMAND snx-test-3ds-vk-draw --async)
@@ -494,6 +494,9 @@ if(TARGET snx_ctr_board)
     # the pipeline cache kept between runs: the file named for the driver, and a failed write made again by the next.
     # Through pipelines, as a device with shader objects makes none (3ds_vk_shader_object checks their binaries)
     add_test(NAME 3ds_vk_draw_pipeline_cache COMMAND snx-test-3ds-vk-draw --pipeline-cache --vk_ext_shader_object=off)
+    # prepare_shaders: a draw's shaders and pipeline kept, then made by a second run before its first draw or on the
+    # workers, packed or not, and a record changed on disk ending the file there
+    add_test(NAME 3ds_vk_draw_prepared COMMAND snx-test-3ds-vk-draw --prepared --vk_ext_shader_object=off)
     # the stand-in shaders (shaders/standin.vert and standin.frag) given every draw they draw, against the CPU
     # reference
     add_test(NAME 3ds_vk_draw_stand_in COMMAND snx-test-3ds-vk-draw --ctr_stand_in=2)
@@ -613,7 +616,8 @@ if(TARGET snx_ctr_board)
         set_tests_properties(${snx_tests} PROPERTIES SKIP_RETURN_CODE 77)
     endforeach()
     set_tests_properties(3ds_vk_draw 3ds_vk_draw_async 3ds_vk_draw_pipelines 3ds_vk_draw_async_pipelines
-                         3ds_vk_draw_pipeline_cache 3ds_vk_draw_stand_in 3ds_vk_draw_present 3ds_vk_draw_scaled_present
+                         3ds_vk_draw_pipeline_cache 3ds_vk_draw_prepared 3ds_vk_draw_stand_in 3ds_vk_draw_present
+                         3ds_vk_draw_scaled_present
                          PROPERTIES SKIP_RETURN_CODE 77)
     # the GPU's copy of the RAM, page by page: what is copied in and back, and when, and every byte where it belongs
     add_executable(snx-test-3ds-vk-copies 3ds_vk_copies.c)

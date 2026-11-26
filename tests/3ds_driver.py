@@ -34,6 +34,7 @@ def main():
     assert '--ctr-screen-layout=4' in help_text and '--ctr-top-resolution=2' in help_text
     assert '--vk-memory=N' in help_text
     assert '--async-pipelines=1' in help_text and '--pipeline-threads=N' in help_text
+    assert '--prepare-shaders=2' in help_text and '--compress-prepared-shaders=0' in help_text
     assert '--gamepad-swap-ab=1' in help_text and '--gamepad-deadzone=N' in help_text
     assert '--gamepad-map=MAP' in help_text and '--touch=N' in help_text
     assert '--vsync=0' in help_text and '--fullscreen=1' in help_text and '--anisotropy=N' in help_text
@@ -78,6 +79,7 @@ def main():
     # with why (common/utilities/console_settings.c)
     run(['--board-info', '--vk-memory=1'], 0, 'Old 3DS')
     run(['--board-info', '--async-pipelines=1', '--pipeline-threads=2'], 0, 'Old 3DS')
+    run(['--board-info', '--prepare-shaders=1', '--compress-prepared-shaders=0'], 0, 'Old 3DS')
     run(
         ['--board-info', '--vk-budget-mb=64'],
         2,

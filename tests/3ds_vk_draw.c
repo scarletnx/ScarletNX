@@ -15,6 +15,7 @@
 #include "3ds/gpu/vk/vk_transfer.h"
 #include "3ds/gpu/vk/vk_y2r.h"
 #include "3ds/input/input.h"
+#include "common/gpu/vk/prepared.h"
 #include "common/gpu/vk/vk_common.h"
 #include "common/platform/file.h"
 #include "common/utilities/bits.h"
@@ -713,6 +714,123 @@ static void async_pipelines(SnxCtrMemory* m) {
         ++failures;
     }
     free(s);
+}
+/* the records of the prepared file at path: how many, and how many packed */
+static void prepared_records(const char* path, unsigned* records, unsigned* packed) {
+    size_t size = 0;
+    unsigned char* d = snx_read_file(path, &size);
+    uint32_t type, len, key = 0;
+    *records = *packed = 0;
+    if (d && size >= 16) memcpy(&key, d + 12, 4);
+    for (size_t at = (16 + (size_t)key + 7) & ~(size_t)7; d && snx_prep_record(d, at, size, &type, &len);
+         at += SNX_PREP_REC + len) {
+        ++*records;
+        *packed += (type & SNX_PREP_PACKED) != 0;
+    }
+    free(d);
+}
+/* the device made again, as a second run makes it */
+static bool restart(SnxCtrMemory* m) {
+    char why[256];
+    snx_ctr_vk_transfer_free();
+    snx_ctr_vk_y2r_free();
+    snx_ctr_present_free();
+    snx_ctr_vk_free();
+    if (snx_ctr_vk_init(m, false, why, sizeof why)) return true;
+    printf("prepared: the device made again failed (%s): FAIL\n", why);
+    ++failures;
+    return false;
+}
+/* prepare_shaders: a draw's shaders and pipeline go into the prepared file named for the driver; a second run, on a
+   device made again, makes them from it, before its first draw (2) or on the workers (1, collected as the recording
+   begins), so the draw makes no pipeline of its own and draws what the first did, with compress_prepared_shaders too
+   (none packed without it); a record changed on disk ends the file there */
+static void prepared(SnxCtrMemory* m) {
+    if (snx_ctr_vk()->shader_object) {
+        printf("%-24s skipped: draws bind shader objects, which prepare nothing\n", "prepared");
+        return;
+    }
+    static unsigned char start[W * H * 4], none[W * H * 4], first[W * H * 4], second[W * H * 4], depth[W * H * 4];
+    char* base = snx_temp_dir(NULL);
+    char* folder = base ? snx_path_join(base, "prepared") : NULL;
+    free(base);
+    if (!folder) {
+        printf("prepared: no temporary folder: FAIL\n");
+        ++failures;
+        return;
+    }
+    VkPhysicalDeviceDriverProperties driver = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+    VkPhysicalDeviceProperties2 props = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &driver};
+    vkGetPhysicalDeviceProperties2(snx_ctr_vk()->phys, &props);
+    char tag[SNX_VK_DRIVER_TAG], dir[512], path[640];
+    snx_vk_driver_tag(tag, sizeof tag, (uint32_t)driver.driverID, props.properties.vendorID, props.properties.deviceID,
+                      NULL);
+    snprintf(dir, sizeof dir, "%s/shader_cache", folder);
+    snx_vk_driver_path(path, sizeof path, dir, "vk_prepared", tag, ".bin");
+    random_fill(start, sizeof start);
+    for (int round = 0; round < 3; ++round) {
+        /* 0: made before the first draw, unpacked; 1: on the workers, packed; 2: the same file with a byte changed.
+           Each round's first run on a device of its own: a renderer opens its file once */
+        const int mode = round == 1 ? 1 : 2;
+        if (round && !restart(m)) break;
+        (void)snx_remove_tree(folder);
+        (void)plat_mkdir(folder);
+        g_settings.prepare_shaders = 2;
+        g_settings.compress_prepared_shaders = round == 1;
+        Scene* s = triangle_scene("prepared", 3);
+        snx_ctr_vk_prepared_open(folder);
+        setup(m, s, start, none);
+        bool a = draw(m, s, &vulkan, first, depth);
+        SnxCtrVkPrepared one = snx_ctr_vk_prepared();
+        unsigned records, packed;
+        prepared_records(path, &records, &packed);
+        if (round == 2) { /* the third record's check: the first two are kept */
+            size_t size = 0;
+            unsigned char* d = snx_read_file(path, &size);
+            uint32_t key = 0, len;
+            if (d && size >= 16) memcpy(&key, d + 12, 4);
+            size_t at = (16 + (size_t)key + 7) & ~(size_t)7;
+            for (int i = 0; d && i < 2; ++i) {
+                memcpy(&len, d + at + 4, 4);
+                at += SNX_PREP_REC + len;
+            }
+            if (d && at + 8 < size) d[at + 8] ^= 0x5A;
+            FILE* f = d ? fopen(path, "wb") : NULL;
+            if (f) {
+                fwrite(d, 1, size, f);
+                fclose(f);
+            }
+            free(d);
+        }
+        if (!restart(m)) {
+            free(s);
+            break;
+        }
+        g_settings.prepare_shaders = mode;
+        snx_ctr_vk_prepared_open(folder);
+        SnxCtrVkPrepared two = snx_ctr_vk_prepared();
+        if (mode == 1) snx_ctr_vk_pipelines_wait(); /* the workers' pipelines, collected as the recording begins */
+        setup(m, s, start, none);
+        bool b = draw(m, s, &vulkan, second, depth);
+        SnxCtrVkPrepared after = snx_ctr_vk_prepared();
+        bool ok;
+        if (round < 2) /* the scene's program is a few words, which zstd makes no smaller: prepared_file packs one */
+            ok = a && b && !one.shaders && !one.pipelines && one.drawn && records >= 3 && (round == 1 || !packed) &&
+                 two.shaders >= 2 && two.pipelines >= 1 && (mode == 2 ? two.made : !two.made) &&
+                 after.made == after.pipelines && !after.drawn && !memcmp(first, second, sizeof first);
+        else /* the first vertex and fragment shaders kept, the pipeline record cut: the draw makes its own */
+            ok = a && b && two.shaders == 2 && !two.pipelines && after.drawn && !memcmp(first, second, sizeof first);
+        printf(
+            "%-24s prepare_shaders=%d, compress %d%s: %u records (%u packed), then %u shaders and %u pipelines read, "
+            "%u made, %u drawn: %s\n",
+            "prepared", mode, round == 1, round == 2 ? ", a record changed" : "", records, packed, two.shaders,
+            two.pipelines, after.made, after.drawn, ok ? "ok" : "FAIL");
+        failures += !ok;
+        free(s);
+    }
+    g_settings.prepare_shaders = 0;
+    (void)snx_remove_tree(folder);
+    free(folder);
 }
 /* the pipeline cache kept between runs: a draw's pipeline goes into the file named for the driver, in the folder's
    shader_cache, and a write that fails, onto a folder in the file's place, is made again by the next one */
@@ -2698,11 +2816,11 @@ static const Mode modes[] = {
     {"--draw-after-submit", "a draw after a submission", draw_after_submit},
     {"--async", "the draws with async_pipelines", async_pipelines},
     {"--pipeline-cache", "the pipeline cache kept between runs", pipeline_cache},
+    {"--prepared", "the shaders and pipelines prepared from earlier runs", prepared},
     {"--scaled-texture-from-target", "the textures made from scaled targets", scaled_texture_from_target},
     {"--scaled-transfer-into-target", "a display transfer into a destination at render scale",
      scaled_transfer_into_target},
-    {"--scaled-transfer-overlap", "a display transfer into a destination over a target",
-     scaled_transfer_overlap},
+    {"--scaled-transfer-overlap", "a display transfer into a destination over a target", scaled_transfer_overlap},
     {"--shadow-scaled", "the shadow maps at the render scale", shadow_scaled},
     {"--scaled-texture-from-depth", "the textures made from scaled depth buffers", scaled_texture_from_depth},
     {"--scaled-shared-depth", "two targets over one depth buffer at render scale", scaled_shared_depth},

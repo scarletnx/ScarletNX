@@ -22,10 +22,12 @@
 #include "3ds/gpu/vk/vk.h"
 #include "3ds/gpu/vk/vsgen.h"
 #include "common/gpu/vk/jobs.h"
+#include "common/gpu/vk/prepared.h"
 #include "common/gpu/vk/shader_object.h"
 #include "common/gpu/vk/vk_common.h"
 #include "common/platform/file.h"
 #include "common/utilities/bits.h"
+#include "common/utilities/build_info.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
 #include "snx_settings.h"
@@ -195,13 +197,15 @@ typedef struct {
     uint64_t key; /* its binary's (snx_vk_shader_key) */
     VkShaderStageFlagBits stage;
 } ShaderObject;
-/* a shader: its module for the pipelines, or with shader objects its object */
+/* a shader: its module for the pipelines, or with shader objects its object; prep its record's number in the prepared
+   file plus 1, 0 for none */
 typedef struct {
     uint64_t hash;
     SnxCtrVsConfig config;
     VkShaderModule module;
     ShaderObject so;
     const char* why;
+    uint32_t prep;
 } VsShader;
 typedef struct {
     uint64_t hash;
@@ -209,6 +213,7 @@ typedef struct {
     VkShaderModule module;
     ShaderObject so;
     const char* why;
+    uint32_t prep;
 } FsShader;
 typedef struct {
     uint64_t hash;
@@ -364,6 +369,22 @@ static struct {
     VkShaderEXT bound[2];
     ObjectState object_state;
     bool object_set;
+    /* prepare_shaders: the file of the shaders and pipelines made (common/gpu/vk/prepared.h, snx_ctr_vk_prepared_open),
+       its records of each kind, by whose numbers a pipeline's record names its shaders, and while it is read each
+       one's shader (UINT32_MAX for one not made from it) and the program a vertex one is made from; the pipelines of
+       earlier runs to make, the next one a worker takes, the jobs making them (each one's index plus 1, 0 for a
+       draw's job) and how many; and the counts a run says */
+    SnxPrepFile prep;
+    bool prep_reading;
+    uint32_t prep_vs, prep_fs;
+    uint32_t *prep_vs_of, *prep_fs_of;
+    size_t prep_vs_capacity, prep_fs_capacity;
+    SnxCtrShaderSetup* prep_setup;
+    PipeKey* prep_pipes;
+    size_t prep_pipe_count, prep_pipe_capacity, prep_next;
+    uint32_t prep_job[SNX_VK_JOBS];
+    unsigned prep_making;
+    SnxCtrVkPrepared prepared;
 } g;
 
 static VkDevice device(void) { return snx_ctr_vk()->device; }
@@ -1701,7 +1722,9 @@ static bool object_pending(ShaderObject* o, const char** why) {
 }
 /* whether a shader object is made or on its way */
 static bool object_usable(const ShaderObject* o) { return o->object || o->job || o->words; }
-static bool vs_shader(const SnxCtrPica* p, const SnxCtrVsConfig* c, uint32_t* index, const char** why) {
+static void prep_add_vs(const SnxCtrShaderSetup* setup, VsShader* s);
+static void prep_add_fs(FsShader* s);
+static bool vs_shader(const SnxCtrShaderSetup* setup, const SnxCtrVsConfig* c, uint32_t* index, const char** why) {
     uint64_t h = snx_fnv1a(SNX_FNV_BASIS, c, sizeof *c);
     for (size_t i = 0; i < g.vs_count; ++i)
         if (g.vs[i].hash == h && !memcmp(&g.vs[i].config, c, sizeof *c)) {
@@ -1719,7 +1742,7 @@ static bool vs_shader(const SnxCtrPica* p, const SnxCtrVsConfig* c, uint32_t* in
     memcpy(&s->config, c, sizeof *c); /* its padding too: lookups memcmp it */
     uint32_t* words;
     size_t count;
-    if (snx_ctr_vs_spirv(&p->vs, c, snx_ctr_vk()->preserve_infnan, &words, &count, &s->why)) {
+    if (snx_ctr_vs_spirv(setup, c, snx_ctr_vk()->preserve_infnan, &words, &count, &s->why)) {
         if (snx_ctr_vk()->shader_object)
             object_new(&s->so, VK_SHADER_STAGE_VERTEX_BIT, words, count, &s->why);
         else
@@ -1727,6 +1750,7 @@ static bool vs_shader(const SnxCtrPica* p, const SnxCtrVsConfig* c, uint32_t* in
     }
     bool usable = s->module || object_usable(&s->so);
     if (!usable) fprintf(stderr, "3ds gpu: a vertex program at 0x%x cannot be drawn: %s\n", c->main_offset, s->why);
+    if (usable && !g.prep_reading) prep_add_vs(setup, s);
     *index = (uint32_t)g.vs_count++;
     *why = s->why;
     return usable;
@@ -1754,6 +1778,7 @@ static bool fs_shader(const SnxCtrFsConfig* c, uint32_t* index, const char** why
         object_new(&s->so, VK_SHADER_STAGE_FRAGMENT_BIT, words, count, &s->why);
     else
         s->module = module(words, count, &s->why);
+    if ((s->module || object_usable(&s->so)) && !g.prep_reading) prep_add_fs(s);
     *index = (uint32_t)g.fs_count++;
     *why = s->why;
     return s->module || object_usable(&s->so);
@@ -1949,6 +1974,9 @@ static unsigned pipe_workers(void) {
 /* The pipeline for k. Without async_pipelines it is made now. With it a worker makes a new one while the draws that
    need it are skipped: *pending, and VK_NULL_HANDLE, until it is done. VK_NULL_HANDLE alone when the device refuses
    it */
+static void prep_add_pipe(const PipeKey* k, VkPipeline made);
+static bool prep_listed(const PipeKey* k);
+static void prep_feed(bool all);
 static VkPipeline pipeline(const PipeKey* k, bool* pending) {
     *pending = false;
     uint64_t h = snx_fnv1a(SNX_FNV_BASIS, k, sizeof *k);
@@ -1959,10 +1987,17 @@ static VkPipeline pipeline(const PipeKey* k, bool* pending) {
             e->pipeline = g.jobs[e->job - 1].made;
             g.jobs[e->job - 1] = (PipeJob){0};
             e->job = 0;
+            prep_add_pipe(k, e->pipeline);
         }
         *pending = e->job != 0;
         g.skipped += *pending;
         return e->pipeline;
+    }
+    if (g.prep_making && prep_listed(k)) { /* one of the file's: a worker may have made it since the recording began */
+        const size_t before = g.pipe_count;
+        prep_feed(false);
+        for (size_t i = before; i < g.pipe_count; ++i)
+            if (g.pipes[i].hash == h && !memcmp(&g.pipes[i].key, k, sizeof *k)) return g.pipes[i].pipeline;
     }
     if (!grow((void**)&g.pipes, &g.pipe_capacity, g.pipe_count, sizeof *g.pipes)) return VK_NULL_HANDLE;
     Pipe* e = &g.pipes[g.pipe_count];
@@ -1982,6 +2017,7 @@ static VkPipeline pipeline(const PipeKey* k, bool* pending) {
     }
     e->pipeline = make_pipeline(k, g.vs[k->vs].module, g.fs[k->fs].module);
     if (e->pipeline) ++g.pipe_count;
+    prep_add_pipe(k, e->pipeline);
     return e->pipeline;
 }
 /* a job dropped before a worker began it: the SPIR-V it held */
@@ -1996,6 +2032,201 @@ uint64_t snx_ctr_vk_pipelines_wait(void) {
     snx_vk_jobs_wait(&g.pool, false, job_drop);
     return g.skipped;
 }
+
+/* ---- the prepared shaders kept between runs (prepare_shaders) ---- */
+
+/* the file's records: a vertex shader (PrepVs, then its program's code and swizzle words), a fragment one (its
+   SnxCtrFsConfig) and a pipeline (its PipeKey, naming its shaders by their records' numbers) */
+enum { PREP_VS = 1, PREP_FS, PREP_PIPE };
+#define PREP_MAGIC   "SNXCTRPS"
+#define PREP_VERSION 1
+typedef struct {
+    SnxCtrVsConfig config;
+    uint32_t code, swizzle; /* the words up to the last one not zero, the rest zero */
+} PrepVs;
+static uint32_t words_used(const uint32_t* w, uint32_t n) {
+    while (n && !w[n - 1]) --n;
+    return n;
+}
+static void prep_add_vs(const SnxCtrShaderSetup* setup, VsShader* s) {
+    if (!g.prep.f) return;
+    PrepVs h = {
+        .config = s->config, .code = words_used(setup->code, 4096), .swizzle = words_used(setup->swizzle, 4096)};
+    uint32_t* body = malloc(((size_t)h.code + h.swizzle) * 4 + 4);
+    if (!body) return;
+    memcpy(body, setup->code, (size_t)h.code * 4);
+    memcpy(body + h.code, setup->swizzle, (size_t)h.swizzle * 4);
+    if (!snx_prep_add(&g.prep, PREP_VS, &h, sizeof h, body, ((size_t)h.code + h.swizzle) * 4)) s->prep = ++g.prep_vs;
+    free(body);
+}
+static void prep_add_fs(FsShader* s) {
+    if (g.prep.f && !snx_prep_add(&g.prep, PREP_FS, &s->config, sizeof s->config, NULL, 0)) s->prep = ++g.prep_fs;
+}
+/* whether k is a pipeline of the file's, made or still to make */
+static bool prep_listed(const PipeKey* k) {
+    for (size_t i = 0; i < g.prep_pipe_count; ++i)
+        if (!memcmp(&g.prep_pipes[i], k, sizeof *k)) return true;
+    return false;
+}
+/* a pipeline a draw made: into the file, its shaders named by their records, unless the file has it */
+static void prep_add_pipe(const PipeKey* k, VkPipeline made) {
+    if (!made) return;
+    ++g.prepared.drawn;
+    if (!g.prep.f || !g.vs[k->vs].prep || !g.fs[k->fs].prep || prep_listed(k)) return;
+    PipeKey r = *k;
+    r.vs = g.vs[k->vs].prep - 1;
+    r.fs = g.fs[k->fs].prep - 1;
+    (void)snx_prep_add(&g.prep, PREP_PIPE, &r, sizeof r, NULL, 0);
+}
+/* a record's shader: its index (UINT32_MAX for none) at its number in map */
+static bool prep_map(uint32_t** map, size_t* capacity, uint32_t at, uint32_t index) {
+    if (!grow((void**)map, capacity, at, sizeof **map)) return false;
+    (*map)[at] = index;
+    return true;
+}
+/* one record read: its shader made, or its pipeline listed; false for one this build cannot read, which ends the file */
+static bool prep_each(void* ctx, uint32_t type, const uint8_t* payload, uint32_t len) {
+    (void)ctx;
+    uint32_t index = UINT32_MAX;
+    const char* why;
+    if (type == PREP_VS && len >= sizeof(PrepVs)) {
+        PrepVs h;
+        memcpy(&h, payload, sizeof h);
+        if (h.code > 4096 || h.swizzle > 4096 || ((uint64_t)h.code + h.swizzle) * 4 > len - sizeof h) return false;
+        SnxCtrShaderSetup* setup = g.prep_setup;
+        memset(setup, 0, sizeof *setup);
+        memcpy(setup->code, payload + sizeof h, (size_t)h.code * 4);
+        memcpy(setup->swizzle, payload + sizeof h + (size_t)h.code * 4, (size_t)h.swizzle * 4);
+        /* a program whose words no longer give its hash makes no shader: a draw makes its own */
+        bool same = snx_ctr_vs_hash(setup) == h.config.program_hash;
+        if (same) {
+            (void)vs_shader(setup, &h.config, &index, &why);
+            if (index == UINT32_MAX) return false; /* out of memory */
+            if (!g.vs[index].prep) g.vs[index].prep = g.prep_vs + 1;
+        }
+        g.prepared.shaders += same;
+        return prep_map(&g.prep_vs_of, &g.prep_vs_capacity, g.prep_vs++, same ? index : UINT32_MAX);
+    }
+    if (type == PREP_FS && len >= sizeof(SnxCtrFsConfig)) {
+        SnxCtrFsConfig c;
+        memcpy(&c, payload, sizeof c);
+        (void)fs_shader(&c, &index, &why);
+        if (index == UINT32_MAX) return false;
+        if (!g.fs[index].prep) g.fs[index].prep = g.prep_fs + 1;
+        ++g.prepared.shaders;
+        return prep_map(&g.prep_fs_of, &g.prep_fs_capacity, g.prep_fs++, index);
+    }
+    if (type == PREP_PIPE && len >= sizeof(PipeKey)) {
+        PipeKey k;
+        memcpy(&k, payload, sizeof k);
+        if (k.vs >= g.prep_vs || k.fs >= g.prep_fs) return false;
+        k.vs = g.prep_vs_of[k.vs];
+        k.fs = g.prep_fs_of[k.fs];
+        ++g.prepared.pipelines;
+        /* one of a shader not made: none, as a draw of it would have */
+        if (k.vs == UINT32_MAX || k.fs == UINT32_MAX || !g.vs[k.vs].module || !g.fs[k.fs].module) return true;
+        if (!grow((void**)&g.prep_pipes, &g.prep_pipe_capacity, g.prep_pipe_count, sizeof *g.prep_pipes)) return false;
+        g.prep_pipes[g.prep_pipe_count++] = k;
+        return true;
+    }
+    return false;
+}
+/* a pipeline of the file's, made: into the table, unless a draw made it first */
+static void prep_adopt(const PipeKey* k, VkPipeline made) {
+    if (!made) return;
+    uint64_t h = snx_fnv1a(SNX_FNV_BASIS, k, sizeof *k);
+    for (size_t i = 0; i < g.pipe_count; ++i)
+        if (g.pipes[i].hash == h && !memcmp(&g.pipes[i].key, k, sizeof *k)) {
+            vkDestroyPipeline(device(), made, NULL);
+            return;
+        }
+    if (!grow((void**)&g.pipes, &g.pipe_capacity, g.pipe_count, sizeof *g.pipes)) {
+        vkDestroyPipeline(device(), made, NULL);
+        return;
+    }
+    g.pipes[g.pipe_count++] = (Pipe){.hash = h, .key = *k, .pipeline = made};
+    ++g.prepared.made;
+}
+/* the pipelines made on the workers collected, and the next ones handed to them, half the jobs at most so that a
+   draw's own (async_pipelines) still finds one free; with stopping every one, until all are made */
+static void prep_feed(bool all) {
+    for (;;) {
+        for (unsigned i = 0; i < SNX_VK_JOBS; ++i)
+            if (g.prep_job[i] && snx_vk_jobs_take(&g.pool, i)) {
+                prep_adopt(&g.prep_pipes[g.prep_job[i] - 1], g.jobs[i].made);
+                g.jobs[i] = (PipeJob){0};
+                g.prep_job[i] = 0;
+                --g.prep_making;
+            }
+        while (g.prep_next < g.prep_pipe_count && g.prep_making < (all ? SNX_VK_JOBS : SNX_VK_JOBS / 2)) {
+            int i = snx_vk_jobs_free(&g.pool);
+            if (i < 0) break;
+            const PipeKey* k = &g.prep_pipes[g.prep_next];
+            g.jobs[i] = (PipeJob){.key = *k, .vs = g.vs[k->vs].module, .fs = g.fs[k->fs].module};
+            g.prep_job[i] = (uint32_t)++g.prep_next;
+            ++g.prep_making;
+            snx_vk_jobs_queue(&g.pool, (unsigned)i);
+        }
+        if (!all || !g.prep_making) return;
+        snx_vk_jobs_wait(&g.pool, false, NULL);
+    }
+}
+void snx_ctr_vk_prepared_open(const char* directory) {
+    const SnxCtrVk* v = snx_ctr_vk();
+    if (!v || !g_settings.prepare_shaders || g.prep.who) return;
+    g.prep.who = "3ds gpu";
+    if (v->shader_object) {
+        fprintf(stderr,
+                "3ds gpu: prepare_shaders=%d prepares nothing where the draws bind shader objects: their binaries of "
+                "earlier runs are what is kept\n",
+                g_settings.prepare_shaders);
+        return;
+    }
+    if (!made()) { /* the layout and formats its pipelines are made with */
+        fprintf(stderr, "3ds gpu: prepare_shaders=%d prepares nothing: the renderer could not be made\n",
+                g_settings.prepare_shaders);
+        return;
+    }
+    char path[1200], why[512], key[256];
+    if (snx_vk_cache_file(v->phys, directory, "vk_prepared", path, sizeof path, why, sizeof why)) {
+        fprintf(stderr, "3ds gpu: prepare_shaders=%d keeps no shaders between runs: %s\n", g_settings.prepare_shaders,
+                why);
+        return;
+    }
+    if (!(g.prep_setup = malloc(sizeof *g.prep_setup))) return;
+    /* the records are the game's programs and the renderer's keys as this build lays them out */
+    snprintf(key, sizeof key, "guest=%d sizes=%zu,%zu,%zu; %s", PREP_VERSION, sizeof(SnxCtrVsConfig),
+             sizeof(SnxCtrFsConfig), sizeof(PipeKey), snx_build_commit());
+    g.prep.pack = g_settings.compress_prepared_shaders;
+    const double t0 = snx_seconds();
+    g.prep_reading = true;
+    (void)snx_prep_open(&g.prep, path, PREP_MAGIC, PREP_VERSION, key, prep_each, NULL);
+    g.prep_reading = false;
+    free(g.prep_setup);
+    g.prep_setup = NULL;
+    if (!g.prepared.shaders && !g.prepared.pipelines) return;
+    const bool workers = g.prep_pipe_count && pipe_workers();
+    const bool now = g.prep_pipe_count && (g_settings.prepare_shaders == 2 || !workers);
+    if (workers)
+        prep_feed(now); /* every one, or the first ones to the workers */
+    else if (now)
+        for (; g.prep_next < g.prep_pipe_count; ++g.prep_next) {
+            const PipeKey* k = &g.prep_pipes[g.prep_next];
+            prep_adopt(k, make_pipeline(k, g.vs[k->vs].module, g.fs[k->fs].module));
+        }
+    if (now || !g.prep_pipe_count)
+        fprintf(stderr,
+                "3ds gpu: %s: %u shaders and %u pipelines of earlier runs, %u of the pipelines made before the first "
+                "draw in %.0f ms%s\n",
+                path, g.prepared.shaders, g.prepared.pipelines, g.prepared.made, (snx_seconds() - t0) * 1000,
+                now && g_settings.prepare_shaders == 1 ? " (prepare_shaders=1, but no pipeline worker started)" : "");
+    else
+        fprintf(stderr,
+                "3ds gpu: %s: %u shaders and %u pipelines of earlier runs, the pipelines made on the workers while "
+                "the game runs (prepare_shaders=1)\n",
+                path, g.prepared.shaders, g.prepared.pipelines);
+}
+SnxCtrVkPrepared snx_ctr_vk_prepared(void) { return g.prepared; }
 
 /* ---- draws ---- */
 
@@ -2520,7 +2751,7 @@ static SnxCtrPicaResult record(SnxCtrPica* p, Source source, bool indexed) {
         vs.program_hash = g.program_hash;
     }
     vs.clip_planes = snx_ctr_vk()->clip_distance;
-    if (!vs_shader(p, &vs, &k.vs, &why) || !fs_shader(&fs, &k.fs, &why)) return stop(p, why);
+    if (!vs_shader(&p->vs, &vs, &k.vs, &why) || !fs_shader(&fs, &k.fs, &why)) return stop(p, why);
     /* the fixed state */
     uint32_t om = r[OM_DEPTH_COLOR];
     bool depth = key.depth_format != NO_DEPTH;
@@ -2790,6 +3021,7 @@ SnxCtrPicaResult snx_ctr_vk_vertices_end(SnxCtrPica* p, SnxCtrMemory* memory) {
 }
 
 void snx_ctr_vk_render_begin(unsigned slot) {
+    if (g.prep_next < g.prep_pipe_count || g.prep_making) prep_feed(false);
     g.slot = slot;
     g.ring_at = 0;
     g.vs_uploaded = g.fs_uploaded = g.lut_uploaded = false; /* the last uploads were the other slot's */
@@ -2942,6 +3174,14 @@ void snx_ctr_vk_render_free(void) {
                 free(g.jobs[i].words);
             }
     }
+    if (g.prep_pipe_count && g_settings.prepare_shaders == 1)
+        fprintf(stderr,
+                "3ds gpu: prepare_shaders=1 made %u of the %zu pipelines of earlier runs before the game ended\n",
+                g.prepared.made, g.prep_pipe_count);
+    snx_prep_close(&g.prep);
+    free(g.prep_vs_of);
+    free(g.prep_fs_of);
+    free(g.prep_pipes);
     snx_ctr_vk_pipeline_cache_save(true); /* every pipeline made, the workers stopped */
     if (g.cache) vkDestroyPipelineCache(d, g.cache, NULL);
     snx_vk_jobs_stop(&g.pool, job_drop); /* the lock and conditions of workers that never started */

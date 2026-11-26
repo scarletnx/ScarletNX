@@ -341,6 +341,7 @@ int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel
         }
     } else {
         snx_ctr_vk_pipeline_cache_open(directory); /* before the first draw */
+        snx_ctr_vk_prepared_open(directory);       /* with the driver's cache, which its pipelines are made with */
         {                                          /* the runtime's keys and the on-screen controls in its window */
             char* ini = snx_game_ini(directory, snx_path_leaf(directory));
             snx_ctr_present_game(directory, ini);
