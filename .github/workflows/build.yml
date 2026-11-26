@@ -447,7 +447,7 @@ jobs:
       - name: Install tools
         run: |
           for try in 1 2 3; do
-            pacman -Syu --noconfirm --needed cmake ninja meson make patch nasm perl python git clang lld llvm pkgconf sdl3 libx11 libxtst libxrandr libxss mesa vulkan-icd-loader ccache glslang jdk21-openjdk && break
+            pacman -Syu --noconfirm --needed cmake ninja meson make patch nasm perl python git clang lld llvm qemu-user pkgconf sdl3 libx11 libxtst libxrandr libxss mesa vulkan-icd-loader ccache glslang jdk21-openjdk && break
             [ "$try" = 3 ] && exit 1
             sleep 5
           done
@@ -497,8 +497,9 @@ jobs:
       - *fail-fast-mark
 
   # The QEMU side of the A64 differential, recorded once for the cross jobs, which can't run qemu-aarch64 beside
-  # their own qemu-user, and for Windows and macOS, which have none. A pull request records it where it changes what the
-  # differential tests; a skip is named with recompiler-changes' reason
+  # their own qemu-user, and for Windows and macOS, which have none; and QEMU's ends of sail_x64's words, for Windows.
+  # A pull request records it where it changes what the differential tests; a skip is named with recompiler-changes'
+  # reason
   qemu-reference:
     name: >-
       ${{ needs.recompiler-changes.outputs.differential == 'false'
@@ -542,7 +543,9 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: ScarletNX-llvm-qemu-reference-${{ steps.commit.outputs.short }}
-          path: build/llvm_qemu_reference.bin
+          path: |
+            build/llvm_qemu_reference.bin
+            build/sail_qemu_reference.bin
       - *fail-fast-file
       - *fail-fast-mark
 
