@@ -26,10 +26,14 @@
 #define NEEDS_SHA     8192u
 #define NEEDS_AES     4096u
 #define NEEDS_AVX     1024u
+#define NEEDS_FMA     2048u
 /* ROUNDPS and ROUNDPD (66 0F 3A 08 and 09) and their VEX.128 forms (C4, two bytes, 08 or 09) */
 #define ROUNDPS       "66 0F 3A 08|66 0F 3A 09|C4 ?? ?? 08|C4 ?? ?? 09"
 /* MOV R9D, the descriptor of FMULX of four singles (x64_vec.c's FDESC): the vector helper's, on the cold path */
 #define FMULX_4S      "41 B9 40 44 00 00"
+/* MOVMSKPS and MOVMSKPD r32, xmm (0F 50, 66 0F 50): a lane mask the hot code tests */
+#define MOVMSKPS      "0F 50"
+#define MOVMSKPD      "66 0F 50"
 /* MOVDQU xmm, m128: a V register's load from the state, or a constant's from the pool */
 #define MOVDQU_LOAD   "F3 0F 6F"
 /* GF2P8AFFINEQB xmm, xmm/m128, imm8 (66 0F 3A CE) and its VEX.128 form (C4, two bytes, CE); SHA1RNDS4 (0F 3A CC),
@@ -110,8 +114,11 @@ static const Row k_rows[] = {
     {"frinta s0, s1", 0, 0, 448, -1, ROUNDPS, "1E264020"},
     {"fcvtas v0.4s, v1.4s", 0, 0, 608, -1, ROUNDPS, "4E21C820"},
     {"fcvtas s0, s1", 0, 0, 512, -1, ROUNDPS, "5E21C820"},
-    {"fmulx v0.4s, v1.4s, v2.4s", 0, 0, 656, -1, FMULX_4S, "4E22DC20"},
-    {"fmulx v0.4s, v1.4s, v2.s[1]", 0, 0, 656, -1, FMULX_4S, "6FA29020"},
+    {"fmulx v0.4s, v1.4s, v2.4s", 0, 0, 880, -1, FMULX_4S, "4E22DC20"},
+    {"fmulx v0.4s, v1.4s, v2.s[1]", 0, 0, 880, -1, FMULX_4S, "6FA29020"},
+    {"fadd v0.4s, v1.4s, v2.4s (the hot code's one lane mask)", 0, 0, 816, -1, "=1 " MOVMSKPS, "4E22D420"},
+    {"fmul v0.2d, v1.2d, v2.2d (the hot code's one lane mask)", 0, 0, 864, -1, "=1 " MOVMSKPD, "6E62DC20"},
+    {"fmla v0.4s, v1.4s, v2.4s (the hot code's one lane mask)", NEEDS_FMA, 0, 928, -1, "=1 " MOVMSKPS, "4E22CC20"},
 };
 
 static struct {

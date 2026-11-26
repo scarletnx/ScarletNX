@@ -29,6 +29,7 @@ static inline SgB sgx_fp_bad(SgCtx* g, SgD fpcr, SnxU32 mask, int ixc) {
     SgD f, bad;
     if (mask == SGX_FPCR_RMODE && g->fp_state[ixc]) return g->fp_state[ixc];
     if (mask == SGX_FPCR_FZ && !ixc && g->fp_fz) return g->fp_fz;
+    if (mask == (SGX_FPCR_RMODE | SGX_FPCR_FZ) && ixc && g->fp_any) return g->fp_any;
     f = sg_d_and(g, sg_d_zext(g, sg_d_slice(g, fpcr, 31, 0), 32), sgx_const(32, mask));
     if (ixc) {
         SgXIns* i = sgx_append(x, SGX_K_LOAD);
@@ -44,6 +45,7 @@ static inline SgB sgx_fp_bad(SgCtx* g, SgD fpcr, SnxU32 mask, int ixc) {
         SgB b = sg_b_not(g, sg_d_is_zero(g, bad));
         if (mask == SGX_FPCR_RMODE) g->fp_state[ixc] = b;
         if (mask == SGX_FPCR_FZ && !ixc) g->fp_fz = b;
+        if (mask == (SGX_FPCR_RMODE | SGX_FPCR_FZ) && ixc) g->fp_any = b;
         return b;
     }
 }

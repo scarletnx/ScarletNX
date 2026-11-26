@@ -1405,6 +1405,20 @@ static inline int sgx_vcold(SgX* x, SgB c, int tied, const char* sym, int a, int
     return i->def;
 }
 
+/* sgx_vcold whose cold path tests first (zacc, the machine's sgx_cold_vwarm: x64_asm.h's says its bits) and goes back
+   to the hot code without the call where they all pass; FPCR and FPSR at fpcr and fpsr in the state */
+static inline int sgx_vcold_warm(SgX* x, SgB c, int tied, const char* sym, int a, int b, int d, SnxU32 desc,
+                                 unsigned zacc, int fpcr, int fpsr) {
+    int n = x->n, v = sgx_vcold(x, c, tied, sym, a, b, d, desc);
+    if (x->n > n) {
+        SgXIns* i = &x->ins[x->n - 1];
+        i->zacc = (unsigned char)zacc;
+        i->disp = fpcr;
+        i->mdisp = fpsr;
+    }
+    return v;
+}
+
 static inline SgB sg_b_not(SgCtx* g, SgB a) {
     SgX* x = sgx(g);
     SgXBool b = x->b[a];
