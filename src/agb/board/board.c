@@ -2,6 +2,7 @@
    Copyright 2026 the mGBA contributors
    Copyright 2026 the ScarletNX contributors */
 #include "agb/board/board.h"
+#include "agb/board/mobile.h"
 #include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
 #include <stdio.h>
@@ -60,6 +61,7 @@ uint32_t agb_board_entry(const AgbBoard* board) {
 }
 
 void agb_board_destroy(AgbBoard* board) {
+    agb_mobile_close(board->mobile);
     agb_cartridge_unload(&board->cartridge);
     agb_memory_free(&board->memory);
     memset(board, 0, sizeof(*board));
@@ -179,7 +181,8 @@ static uint16_t io_written(AgbBoard* board, uint32_t byte, uint32_t offset) {
 /* SIOCNT with no link cable plugged, as the console answers it (mGBA's suite's sio-read.c and sio-timing.c): the
    multi-player mode's SI says a child with no parent and SD that the line is ready, the normal modes' SI is pulled up.
    A transfer on the internal clock keeps the start bit set for its bits' time and 2 cycles more (agb_sio_step), then
-   ends with the data no partner sent, 0, and the serial interrupt when SIOCNT asks for it. One that waits for a
+   ends with the data no partner sent, 0, and the serial interrupt when SIOCNT asks for it; with the Mobile Adapter GB
+   on the cable (mobile.c), with the adapter's byte or word instead. One that waits for a
    partner's clock, a multi-player child's or the normal modes' external one, keeps its start bit set and never ends,
    as the console's times out */
 static void sio_write(AgbBoard* board, uint16_t value) {
@@ -210,8 +213,16 @@ void agb_sio_step(AgbBoard* board, uint32_t cycles) {
     }
     board->sio_cycles = 0;
     uint16_t siocnt = board->io[0x128 >> 1];
-    board->io[0x12A >> 1] = 0; /* SIODATA8, and SIODATA32's halves */
-    board->io[0x120 >> 1] = board->io[0x122 >> 1] = 0;
+    uint32_t back = 0;            /* no partner: 0 */
+    bool word = siocnt >> 12 & 1; /* SIODATA32's transfer, else SIODATA8's */
+    if (board->mobile) {
+        uint32_t sent =
+            word ? board->io[0x120 >> 1] | (uint32_t)board->io[0x122 >> 1] << 16 : board->io[0x12A >> 1] & 0xFFu;
+        back = agb_mobile_exchange(board->mobile, sent, word);
+    }
+    board->io[0x12A >> 1] = word ? 0 : (uint16_t)back; /* SIODATA8, and SIODATA32's halves */
+    board->io[0x120 >> 1] = word ? (uint16_t)back : 0;
+    board->io[0x122 >> 1] = word ? (uint16_t)(back >> 16) : 0;
     board->io[0x128 >> 1] = (uint16_t)(siocnt & ~0x0080);
     if (siocnt & 0x4000) agb_irq_request(board, AGB_IRQ_SERIAL);
 }

@@ -104,7 +104,7 @@ The board is under construction, piece by piece:
 | Keypad (HID) | done: KEYINPUT and the KEYCNT interrupt, from the keyboard and gamepads |
 | Save memory | SRAM and flash, kept in the game's folder; EEPROM not yet |
 | CPU, DMA, timers, interrupts | done, and the BIOS's IntrWait waits for the game's handler to flag the interrupt |
-| Serial (link) | no cable: answers as a console with none plugged, where a transfer that waits for a partner never ends |
+| Serial (link) | no cable: answers as a console with none plugged, where a transfer that waits for a partner never ends. With `gba_mobile=1` the Mobile Adapter GB is on it (libmobile, `src/agb/board/mobile.c`): each byte or word the game clocks in the Normal mode gets the adapter's answer, for REON's service |
 
 A ROM is recompiled when it is loaded, the same process the other system
 types use, and runs on the board from its native module.

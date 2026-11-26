@@ -27,6 +27,13 @@ if(BUILD_TESTING)
     target_compile_options(snx-test-agb-board PRIVATE -Wall -Wextra -Werror)
     set_target_properties(snx-test-agb-board PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
     add_test(NAME agb_board COMMAND snx-test-agb-board)
+    # the Mobile Adapter GB on the link port: a packet out and libmobile's answer back
+    add_executable(snx-test-agb-mobile "${PROJECT_SOURCE_DIR}/tests/agb_mobile.c")
+    target_link_libraries(snx-test-agb-mobile PRIVATE scarletnx-agb)
+    target_compile_options(snx-test-agb-mobile PRIVATE -Wall -Wextra -Werror)
+    set_target_properties(snx-test-agb-mobile PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
+    add_test(NAME agb_mobile COMMAND snx-test-agb-mobile)
+    set_tests_properties(agb_mobile PROPERTIES TIMEOUT 60)
     add_executable(snx-test-agb-bios "${PROJECT_SOURCE_DIR}/tests/agb_bios.c")
     target_link_libraries(snx-test-agb-bios PRIVATE scarletnx-agb m)
     target_compile_options(snx-test-agb-bios PRIVATE -Wall -Wextra -Werror)
@@ -114,6 +121,6 @@ endif()
 
 if(COMMAND snx_sanitizer_path) # tests/CMakeLists.txt: this folder's tests
     snx_test_sanitize(snx-test-agb-board snx-test-agb-bios snx-test-agb-ppu snx-test-agb-apu snx-test-agb-cpu
-                      snx-test-agb-host snx-test-agb-host-vk)
+                      snx-test-agb-host snx-test-agb-host-vk snx-test-agb-mobile)
     snx_sanitizer_path()
 endif()

@@ -99,6 +99,8 @@ typedef struct AgbBoard {
        when they did not) */
     uint32_t held_cartridge;
     uint32_t sio_cycles;       /* the cycles left of the serial transfer SIOCNT started, 0 with none */
+    /* the Mobile Adapter GB on the link port (mobile.c), NULL for none: the board's to close */
+    struct AgbMobile* mobile;
     uint32_t counted_cycles;   /* while counting is set, the cycles of the accesses through agb_read and agb_write */
     uint8_t counting;
     uint16_t keys;             /* the keypad's keys held, KEYINPUT's bits set (the register reads them inverted) */

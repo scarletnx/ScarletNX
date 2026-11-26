@@ -15,6 +15,7 @@ if(NOT TARGET snx_arm_llvm)
 endif()
 
 add_library(scarletnx-agb STATIC board/board.c board/memory.c board/dma.c board/timers.c board/save.c board/gpio.c
+                                 board/mobile.c
                                  cartridge/cartridge.c bios/bios.c bios/bios_time.c ppu/ppu.c apu/apu.c cpu/memmap.c cpu/recomp.c
                                  cpu/cpu.c cpu/timing.c)
 set_target_properties(scarletnx-agb PROPERTIES OUTPUT_NAME scarletnx-agb-runtime C_STANDARD 23 C_STANDARD_REQUIRED ON)
@@ -22,6 +23,8 @@ set_target_properties(scarletnx-agb PROPERTIES OUTPUT_NAME scarletnx-agb-runtime
 # the module's objects and their helpers (armlib.c) linked by its linker, and the blocks a run reaches compiled in
 # this process by its executor (exec.c), as the 3DS and the Vita do
 target_link_libraries(scarletnx-agb PUBLIC scarletnx-common snx_arm_llvm snx_llvm)
+# the Mobile Adapter GB on the link port (board/mobile.c): libmobile, its sockets on the emulated network stack
+target_link_libraries(scarletnx-agb PRIVATE snx_libmobile scarletnx-net)
 target_compile_options(scarletnx-agb PRIVATE -Wall -Wextra -Werror)
 
 # the runner: the board in a window, with sound and the keypad (runtime/host.c), SDL here and never in the board. Its
