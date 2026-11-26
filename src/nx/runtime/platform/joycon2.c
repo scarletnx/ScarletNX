@@ -9,6 +9,7 @@
      lights it wants. It frees a device's slot once the host thread closed its link */
 #include "nx/runtime/platform/joycon2.h"
 #include "nx/runtime/platform/joycon2_att.h"
+#include "nx/runtime/platform/joycon2_known.h"
 #include "nx/runtime/platform/joycon2_sdl.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/platform/log.h"
@@ -99,50 +100,35 @@ static void known_path(char* out, size_t n) {
     free(path);
     free(dir);
 }
-static int parse_address(const char* s, u8 out[6]) {
-    for (int i = 0; i < 6; i++, s += 3) {
-        int hi = snx_hex_value(s[0]), lo = snx_hex_value(s[1]);
-        if (hi < 0 || lo < 0 || (i < 5 && s[2] != ':')) return 0;
-        out[i] = (u8)(hi << 4 | lo);
-    }
-    return 1;
-}
 static void known_load(void) {
-    char path[1100], line[128];
+    char path[1100];
+    Jc2KnownLine lines[JC2_KNOWN];
+    int n;
     known_path(path, sizeof path);
-    FILE* f = fopen(path, "r");
+    n = joycon2_known_load(path, lines, JC2_KNOWN); /* what it does not read, and a file it cannot, said */
     g_joycon2.known_n = 0;
-    if (!f) return;
-    while (g_joycon2.known_n < JC2_KNOWN && fgets(line, sizeof line, f)) {
+    for (int i = 0; i < n; i++) {
         Jc2Known k = {0};
-        char side = 0;
-        if (strlen(line) < 19 || !parse_address(line, k.address) || sscanf(line + 17, " %c %16s", &side, k.serial) < 1 ||
-            (side != 'L' && side != 'R' && side != 'P'))
-            continue;
-        k.side = side == 'P' ? JC2_SIDE_PRO : side == 'R' ? JC2_SIDE_RIGHT : JC2_SIDE_LEFT;
+        memcpy(k.address, lines[i].address, 6);
+        memcpy(k.serial, lines[i].serial, sizeof k.serial);
+        k.side = lines[i].side == 'P' ? JC2_SIDE_PRO : lines[i].side == 'R' ? JC2_SIDE_RIGHT : JC2_SIDE_LEFT;
         k.type = -1;
         g_joycon2.known[g_joycon2.known_n++] = k;
     }
-    fclose(f);
     LOG("joycon2: %d known controllers in %s\n", g_joycon2.known_n, path);
 }
 static void known_save(void) {
     char path[1100];
+    Jc2KnownLine lines[JC2_KNOWN];
     known_path(path, sizeof path);
-    FILE* f = fopen(path, "w");
-    if (!f) {
-        WARN("joycon2: cannot write %s\n", path);
-        return;
-    }
     for (int i = 0; i < g_joycon2.known_n; i++) {
-        const u8* a = g_joycon2.known[i].address;
-        fprintf(f, "%02X:%02X:%02X:%02X:%02X:%02X %c %s\n", a[0], a[1], a[2], a[3], a[4], a[5],
-                g_joycon2.known[i].side == JC2_SIDE_PRO     ? 'P'
-                : g_joycon2.known[i].side == JC2_SIDE_RIGHT ? 'R'
-                                                            : 'L',
-                g_joycon2.known[i].serial);
+        memcpy(lines[i].address, g_joycon2.known[i].address, 6);
+        memcpy(lines[i].serial, g_joycon2.known[i].serial, sizeof lines[i].serial);
+        lines[i].side = g_joycon2.known[i].side == JC2_SIDE_PRO     ? 'P'
+                        : g_joycon2.known[i].side == JC2_SIDE_RIGHT ? 'R'
+                                                                    : 'L';
     }
-    fclose(f);
+    joycon2_known_save(path, lines, g_joycon2.known_n); /* said when it cannot */
 }
 static int known_index(const u8 address[6]) { /* under the lock */
     for (int i = 0; i < g_joycon2.known_n; i++)
