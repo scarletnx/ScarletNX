@@ -19,7 +19,8 @@
    generated code's contract with the caller is cpu.h (the CPU state, SNX_ABI) and runtime/interface.h (RtAPI).
 
    A32: snx_recompile32 wraps the AArch32 block compiler (cpu/arm/exec.h): blocks are compiled on first use, the state
-   is SnxArmCPU (cpu/arm/arm.h), and the SVC handler is an snx_svc_call32. LLVM only.
+   is SnxArmCPU (cpu/arm/arm.h), and the SVC handler is an snx_svc_call32. The native back end makes the blocks it has
+   code for, the fallback (fallback.h) the rest.
 
    This header needs the GNU C dialect cpu.h is written in (Clang or GCC). Not thread-safe per object: one thread
    uses a given snx_recompiler or snx_recompiled at a time; a recompiled module may be bound to many CPUs run by
@@ -47,8 +48,8 @@ extern "C" {
 
 /* ---- the recompiler ---- */
 
-/* flags of snx_recompiler_new: the backend. LLVM is the only one to name: the x86-64 back end, where it is built, makes
-   what it can of the code beside it (snx_recompiler_set_backend) */
+/* flags of snx_recompiler_new: the backend, the one this flag names, LLVM's in earlier versions: the host's native back
+   end (x86-64's, arm64's and the other machines', mach/native.h), which makes all of the A64 code */
 #define SNX_RECOMPILER_FLAG_LLVM 1
 
 struct snx_recompiler;
@@ -59,14 +60,15 @@ SNX_RECOMPILER_API void snx_recompiler_free(struct snx_recompiler* r);
 /* In the child of a fork(), before it compiles anything: the modules' code made the child's own where the parent
    shares it (PowerPC64 loads every module into one code arena of shared memory). 0, or -1 (snx_recompiler_error) */
 SNX_RECOMPILER_API int snx_recompiler_forked(struct snx_recompiler* r);
-/* 1 when a recompiler with these flags can be made in this build, on this host */
+/* 1 when a recompiler with these flags can be made in this build, on this host: one with a native back end */
 SNX_RECOMPILER_API int snx_recompiler_has(int flags);
 /* The contract version of the code this library generates (SNX_ABI of its cpu.h): a caller built against another
    cpu.h must not run it */
 SNX_RECOMPILER_API unsigned snx_recompiler_abi(void);
 /* The last failure of a call on r, as text owned by r (valid until the next call on r); "" when none */
 SNX_RECOMPILER_API const char* snx_recompiler_error(const struct snx_recompiler* r);
-/* The -O letter the generated code is optimized at: '0', '1', '2' (the default), '3', 's' or 'z' */
+/* The -O letter the generated code is optimized at: '0', '1', '2' (the default), '3', 's' or 'z'. The native back end's
+   A64 code is the same at every one; the module cache and the JIT's keep it */
 SNX_RECOMPILER_API int snx_recompiler_set_optimization(struct snx_recompiler* r, char opt);
 /* The A64 features of the guest's CPU (FEAT_* of the Arm ARM): an encoding that needs one the target lacks raises an
    undefined instruction, as on a CPU without it. SNX_RECOMPILER_A64_SWITCH, the default, is the Switch's Cortex-A57
@@ -80,8 +82,8 @@ SNX_RECOMPILER_API int snx_recompiler_set_optimization(struct snx_recompiler* r,
 #define SNX_RECOMPILER_A64_ANDROID 2
 SNX_RECOMPILER_API int snx_recompiler_set_a64_target(struct snx_recompiler* r, int target);
 /* Code units compiled at once, on host threads; 0, the default, uses one per processor */
-SNX_RECOMPILER_API /* the code generator: 1 the x86-64 back end with LLVM making what it can't (the default where it is built:
-   x86-64), 0 LLVM alone. SNX_RECOMPILER_BACKEND=llvm in the environment is 0 too */
+SNX_RECOMPILER_API /* the code generator: 1 the native back end (the default), 0 LLVM alone, which the recompile refuses: the
+   library makes its code with the native back end alone */
 SNX_RECOMPILER_API void snx_recompiler_set_backend(struct snx_recompiler* r, int x64);
 void snx_recompiler_set_jobs(struct snx_recompiler* r, unsigned jobs);
 /* How far a recompile is, for a caller's progress bar: called once with the totals and nothing done, then as each code
@@ -99,11 +101,11 @@ SNX_RECOMPILER_API void snx_recompiler_set_live_code(struct snx_recompiler* r, i
 SNX_RECOMPILER_API void snx_recompiler_set_hook_direct_calls(struct snx_recompiler* r, int enabled);
 /* Progress lines on stdout, as the scarletnx command prints them; off by default */
 SNX_RECOMPILER_API void snx_recompiler_set_verbose(struct snx_recompiler* r, int verbose);
-/* A folder the generated code's text (LLVM IR as .ll) is saved in, for inspection; NULL (the
-   default) saves nothing. The string is copied */
+/* A folder for the generated code's IR, which was LLVM's: refused (-1, the folder named in snx_recompiler_error), as the
+   library makes no IR; NULL, the default, is 0 */
 SNX_RECOMPILER_API int snx_recompiler_set_keep_ir(struct snx_recompiler* r, const char* folder);
-/* A folder of linked modules (LLVM), made if missing, by a hash of everything a module is made from: the code and its
-   addresses, the entries, the settings, SNX_ABI and the host CPU. A module found there is loaded instead of compiled,
+/* A folder of linked modules, made if missing, by a hash of everything a module is made from: the code and its
+   addresses, the entries, the settings, SNX_ABI, the native back end and the host's features it uses. A module found there is loaded instead of compiled,
    and one compiled is saved there. The units its lazy JIT compiles are kept in library-jit.cache in the folder, and
    loaded again when their code is the same: modules and processes may share it. NULL (the default) keeps neither. The
    string is copied. 0, or -1 when the folder can't be made */
@@ -167,8 +169,7 @@ SNX_RECOMPILER_API void snx_recompiled_range(const struct snx_recompiled* m, uin
    callers of earlier versions still link) */
 SNX_RECOMPILER_API size_t snx_recompiled_functions(const struct snx_recompiled* m);
 SNX_RECOMPILER_API size_t snx_recompiled_fallbacks(const struct snx_recompiled* m);
-/* Of the functions, those the x86-64 back end made (snx_recompiler_set_backend), not LLVM: 0 for a module from the
-   cache folder */
+/* Of the functions, those the native back end made: all of them, and 0 for a module from the cache folder */
 SNX_RECOMPILER_API size_t snx_recompiled_x64_functions(const struct snx_recompiled* m);
 /* Points cpu at the module: its dispatch table and code range (cpu->disp, code_lo, code_hi). cpu->mem and cpu->rt
    are the caller's and must be set before, cpu->rt with svc, undef, brk and miss (snx_runtime_defaults' miss compiles
