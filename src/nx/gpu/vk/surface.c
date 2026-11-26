@@ -493,6 +493,10 @@ typedef struct {
     VkPipelineStageFlags2 stage;
     VkAccessFlags2 access;
     int barrier; /* the worker's prediction: it ended the pass for a barrier here */
+    /* the use was the uploads' command buffer's, not the frame's: it goes there, in its order with the uploads' copies.
+       In the frame's, after them, the copy into an image made in a split ran on it in UNDEFINED, and its draws sampled
+       an image with no texels */
+    int upload;
 } SurfUse;
 static u64 g_surf_mispredicted;
 static void surf_use_now(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineStageFlags2 stage,
@@ -504,14 +508,33 @@ static void surf_use_splice(const void* arg) {
     const Surf* v = u.s->host ? u.s->host : u.s; /* a hosted target's state is its host's */
     const int wrote = surf_access_writes(v->access), writes = surf_access_writes(u.access);
     const int barrier = !(v->layout == u.layout && !writes && !wrote) || (u.stage & ~v->stage);
+    if (barrier != u.barrier) /* TEMPDBG */
+        LOG_LIMIT(60, "TEMPDBG mispredict: %ux%u %s at %llx host %d: layout now %d (wanted %d), predicted %d, needed %d\n", u.s->w, u.s->h,
+                  u.s->is_rt ? "rt" : "tex", (unsigned long long)u.s->gva, u.s->host != NULL, (int)v->layout, (int)u.layout, u.barrier, barrier);
     if (barrier != u.barrier && !g_surf_mispredicted++)
         WARN("vulkan: draw_batches: a deferred surface use needed %s barrier than the worker predicted\n",
              barrier ? "a" : "no");
-    surf_use_now(vk_cmd(), u.s, u.layout, u.stage, u.access, 0);
+    surf_use_now(u.upload ? vk_cmd_upload(1) : vk_cmd(), u.s, u.layout, u.stage, u.access, 0);
 }
 void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineStageFlags2 stage,
                  VkAccessFlags2 access) {
     vk_shared_note(0);
+    if (vk_rec_listing() && !vk_rec_list_names_cb(cb)) {
+        /* a command buffer the list doesn't take (the compute queue's ASTC uploads, made and submitted at once): the
+           use now, before the commands that follow it there, and the worker's view of the image takes it. Deferred to
+           the splice, it came after the copy it was for, which wrote an image in UNDEFINED */
+        vk_share_lock();
+        surf_use_now(cb, s, layout, stage, access, 0);
+        const Surf* v = s->host ? s->host : s;
+        const int i = sv_find(v);
+        if (i >= 0) {
+            t_sv.v[i].layout = v->layout;
+            t_sv.v[i].stage = v->stage;
+            t_sv.v[i].access = v->access;
+        }
+        vk_share_unlock();
+        return;
+    }
     if (vk_rec_listing()) {
         /* the same rule as surf_use_now, on the worker's view */
         if (g_vk.has_unified_layouts && layout == VK_IMAGE_LAYOUT_GENERAL && !surf_access_writes(access)) {
@@ -548,7 +571,7 @@ void vk_surf_use(VkCommandBuffer cb, Surf* s, VkImageLayout layout, VkPipelineSt
             t_sv.v[i].access = access;
         }
         if (barrier) vk_render_end(); /* no barriers on images inside a rendering pass: ended here, in the list */
-        const SurfUse u = {s, layout, stage, access, barrier};
+        const SurfUse u = {s, layout, stage, access, barrier, cb != vk_cmd()};
         vk_rec_defer(surf_use_splice, &u, sizeof u);
         return;
     }
@@ -4447,7 +4470,7 @@ void vk_surf_bytes(Surf* s, u64 bytes) {
     s->bytes = bytes;
 }
 
-int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, DevMem* mem, u32 owner, u64* bytes) {
+static int cache_image_create_tdbg(const VkImageCreateInfo* ii, VkImage* img, DevMem* mem, u32 owner, u64* bytes) {
     VkDeviceImageMemoryRequirements q = {.sType = VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS,
                                          .pCreateInfo = ii};
     VkMemoryRequirements2 req = {.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2};
@@ -4498,6 +4521,13 @@ int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, DevMem* mem
         }
     }
     return 0;
+}
+int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, DevMem* mem, u32 owner, u64* bytes) { /* TEMPDBG */
+    int r = cache_image_create_tdbg(ii, img, mem, owner, bytes);
+    if (r) LOG("TEMPDBG image %#llx %ux%ux%u fmt %d layers %u levels %u slot %u from %p\n", (unsigned long long)(uintptr_t)*img,
+               ii->extent.width, ii->extent.height, ii->extent.depth, (int)ii->format, ii->arrayLayers, ii->mipLevels,
+               vk_render_slot(), __builtin_return_address(0));
+    return r;
 }
 
 /* A nearest depth/stencil transform when the format has no image blit support. Copy each aspect into device rows,
