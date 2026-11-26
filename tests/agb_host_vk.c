@@ -10,6 +10,7 @@
 #include "agb/ppu/ppu.h"
 #include "agb/runtime/host.h"
 #include "agb/runtime/vk.h"
+#include "snx_settings.h"
 #include <SDL3/SDL.h>
 #include <stdio.h>
 #include <string.h>
@@ -91,11 +92,24 @@ int main(void) {
         fprintf(stderr, "agb_host_vk: SDL's offscreen video: %s\n", SDL_GetError());
         return 1;
     }
+    /* a gpu_pstate that is none of auto, on and off refuses the device, saying it, as it stops a Switch game */
+    snprintf(g_settings.gpu_pstate, sizeof g_settings.gpu_pstate, "%s", "of");
+    AgbVk* refused = agb_vk_open("agb_host_vk", AGB_SCREEN_WIDTH, AGB_SCREEN_HEIGHT, error, sizeof error);
+    snprintf(g_settings.gpu_pstate, sizeof g_settings.gpu_pstate, "%s", "auto");
+    bool pstate_said = strstr(error, "settings: gpu_pstate=of is not auto, on or off") != NULL;
+    if (refused) {
+        fprintf(stderr, "agb_host_vk: the window opened with gpu_pstate=of\n");
+        return 1;
+    }
     AgbVk* vk = agb_vk_open("agb_host_vk", AGB_SCREEN_WIDTH * 4, AGB_SCREEN_HEIGHT * 4, error, sizeof error);
     if (!vk) {
         printf("agb_host_vk: the placement passed; no Vulkan window here (%s): the rest skipped\n", error);
         SDL_Quit();
         return 77;
+    }
+    if (!pstate_said) {
+        fprintf(stderr, "agb_host_vk: gpu_pstate=of was not refused by its name\n");
+        return 1;
     }
     /* three frames bare, three with a notice; then the window resized, which the next frame's swapchain follows */
     for (int k = 0; k < 12; ++k) {

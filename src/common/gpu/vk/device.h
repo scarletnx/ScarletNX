@@ -88,6 +88,9 @@ typedef struct {
     uint32_t setting_count;
     const char *ban_ignore, *hide;
     const char* bans; /* the extension bans' text, NULL for the build's (extension_bans.txt) */
+    /* the player's gpu_pstate (auto, on, off; common/gpu/vk/gpu_pstate.h): the GPU's clocks held once the device is
+       made, a value it does not take refused with it; NULL for a renderer that holds them its own way (the Switch's) */
+    const char* pstate;
     VkBanSay say;     /* each line of the log; NULL for stderr, a warning's after "warning: " */
 } SnxVkDeviceRequest;
 

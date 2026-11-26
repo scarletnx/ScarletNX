@@ -64,6 +64,7 @@ def main():
             '--vulkan-ban-ignore=x',
             '--vsync=0',
             '--volume=40',
+            '--gpu-pstate=auto',
             '--vk-pipeline-cache=1',
             '--help',
         ],

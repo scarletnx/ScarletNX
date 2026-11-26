@@ -17,5 +17,6 @@ static inline void snx_vk_device_settings(SnxVkDeviceRequest* r, VkExtensionSett
     r->setting_count = (uint32_t)g_vk_extension_settings_count;
     r->ban_ignore = g_settings.vulkan_ban_ignore;
     r->hide = g_settings.vulkan_hidden_commands;
+    r->pstate = g_settings.gpu_pstate;
 }
 #endif
