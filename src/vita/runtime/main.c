@@ -4,11 +4,14 @@
    in app/, its memory card in ux0/, the module <title ID>_code.so, the hints, a copy of the runtime named after the
    title that plays it), compiled when the module is missing or no longer matches, then played. A game dumped as a
    folder (a console's ux0:app/<title ID>, its update in ux0:patch/<title ID>) is linked there instead: app/ and patch/
-   name the dump's folders, whose files stay where they are */
+   name the dump's folders, whose files stay where they are. One still encrypted (its sce_pfs/) is decrypted into them
+   with its license and the user's Vita keys, its add-ons into ux0/addcont/ (vita/loader/dump.h) */
 #include "vita/runtime/main.h"
 #include "vita/aot/module.h"
 #include "vita/gpu/present.h"
 #include "vita/hle/hle.h"
+#include "vita/loader/dump.h"
+#include "vita/loader/keys.h"
 #include "vita/loader/vpk.h"
 #include "vita/platform/input.h"
 #include "vita/runtime/process.h"
@@ -25,11 +28,11 @@
 #include <string.h>
 #include <time.h>
 
-/* the common options scarletnx-vita takes (common/utilities/cli.h): a VPK is always extracted, and the Vita runtime
-   has no keys, frame count, fullscreen setting or window-less run */
+/* the common options scarletnx-vita takes (common/utilities/cli.h): a VPK is always extracted, the keys are an encrypted
+   dump's (vita_keys.txt), and the Vita runtime has no frame count, fullscreen setting or window-less run */
 static const unsigned vita_cli = SNX_CLI_BIT(SNX_CLI_EXTRACT) | SNX_CLI_BIT(SNX_CLI_RECOMPILE) |
-                                 SNX_CLI_BIT(SNX_CLI_GAME) | SNX_CLI_BIT(SNX_CLI_UPDATE) | SNX_CLI_BIT(SNX_CLI_DATA) |
-                                 SNX_CLI_BIT(SNX_CLI_OUTDIR) | SNX_CLI_BIT(SNX_CLI_OUTPUT) |
+                                 SNX_CLI_BIT(SNX_CLI_KEYS) | SNX_CLI_BIT(SNX_CLI_GAME) | SNX_CLI_BIT(SNX_CLI_UPDATE) |
+                                 SNX_CLI_BIT(SNX_CLI_DATA) | SNX_CLI_BIT(SNX_CLI_OUTDIR) | SNX_CLI_BIT(SNX_CLI_OUTPUT) |
                                  SNX_CLI_BIT(SNX_CLI_SECONDS) | SNX_CLI_BIT(SNX_CLI_SHOT) |
                                  SNX_CLI_BIT(SNX_CLI_SCRIPT) | SNX_CLI_BIT(SNX_CLI_HELP) | SNX_CLI_RECOMPILE_OPTIONS;
 static void usage(FILE* out) {
@@ -63,7 +66,12 @@ static void usage(FILE* out) {
         "<title ID>_build of the game's folder.\n"
         "\n"
         "On the Vita, --update is the dumped game's update folder (default: patch/<title ID> beside its app/<title\n"
-        "ID>), --shot saves PATH.ppm, and --script=ms:buttons,... is the setting vita_script.\n",
+        "ID>), --shot saves PATH.ppm, and --script=ms:buttons,... is the setting vita_script.\n"
+        "\n"
+        "A dumped game still encrypted (its sce_pfs/ folder) is decrypted into the game's folder instead of linked: its\n"
+        "license is its sce_sys/package/work.bin, its add-ons' licenses the dump's license/addcont/<title ID>/<add-on>/,\n"
+        "and --keys is the Vita keys' file, vita_keys.txt (default ~/.vita/vita_keys.txt, where Install Keys puts it;\n"
+        "docs/platforms/vita/README.md names the keys it holds). The dump is only read.\n",
         out);
 }
 static bool vpk_path(const char* path) {
@@ -148,6 +156,14 @@ static bool link_dump(const char* folder, const char* name, const char* target) 
     free(link);
     free(full);
     return ok;
+}
+/* an encrypted dump's import's lines: what it does on stdout, an add-on it could not import on stderr */
+static void say_import(void* context, const char* line, bool error) {
+    (void)context;
+    if (error)
+        fprintf(stderr, "scarletnx-vita: %s\n", line);
+    else
+        printf("%s\n", line);
 }
 /* a dumped game's update: patch/<title ID> beside its app/<title ID> */
 static char* dump_patch(const char* app, const char* title) {
@@ -238,8 +254,8 @@ static int play(const char* folder, bool recompile, double seconds, const char* 
                library.import_count, base);
         vita_image_free(&library);
     }
-    printf("Module %s: %u imports, %u exports, module_start 0x%08x\n", image.name,
-           (unsigned)image.import_count, (unsigned)image.export_count, (unsigned)image.module_start);
+    printf("Module %s: %u imports, %u exports, module_start 0x%08x\n", image.name, (unsigned)image.import_count,
+           (unsigned)image.export_count, (unsigned)image.module_start);
     /* An existing module that matches is played as it is, else it is compiled first: decided from its file, before it
        is loaded, which happens once */
     bool current = !recompile && vita_module_current(module, &image);
@@ -400,6 +416,7 @@ int snx_vita_main(int argc, char** argv) {
     }
     const char *output = cli.value[SNX_CLI_OUTPUT], *outdir = cli.value[SNX_CLI_OUTDIR];
     const char *repo = cli.value[SNX_CLI_DATA], *game = cli.value[SNX_CLI_GAME], *shot = cli.value[SNX_CLI_SHOT];
+    const char* keys_given = cli.value[SNX_CLI_KEYS];
     const char* patch = cli.update_count ? cli.updates[0] : NULL;
     bool extract_only = cli.flags & SNX_CLI_BIT(SNX_CLI_EXTRACT);
     /* the recompile's options, for the game's code, which -x makes none of */
@@ -460,10 +477,24 @@ int snx_vita_main(int argc, char** argv) {
         }
         folder = output ? snx_strdup(output) : game_folder(repo, outdir, argv[0], title);
         char* update = !dump ? NULL : patch ? snx_strdup(patch) : dump_patch(input, title);
+        bool encrypted = dump && vita_dump_encrypted(input), ready = folder && !snx_mkdirs(folder);
+        if (ready && encrypted) {
+            char *keys = keys_given ? snx_strdup(keys_given) : vita_keys_default_path(), why[2048];
+            VitaDumpImport import = {input, update, title, folder, keys, NULL, say_import, NULL};
+            ready = vita_dump_import(&import, why, sizeof why);
+            if (!ready) fprintf(stderr, "scarletnx-vita: %s\n", why);
+            free(keys);
+        }
+        if (keys_given && !encrypted)
+            printf("--keys %s is not read: %s is not encrypted, and only an encrypted dump's import takes keys\n",
+                   keys_given, input);
         free(title);
-        bool ready = folder && !snx_mkdirs(folder) &&
-                     (dump ? link_dump(folder, "app", input) && (!update || link_dump(folder, "patch", update))
-                           : extract(input, folder));
+        /* a plain update beside an encrypted game is linked, as a plain game's is */
+        ready =
+            ready &&
+            (dump ? (encrypted || link_dump(folder, "app", input)) &&
+                        (!update || (encrypted && vita_dump_encrypted(update)) || link_dump(folder, "patch", update))
+                  : extract(input, folder));
         if (ready && update) printf("The update is %s\n", update);
         free(update);
         if (!ready) goto done;

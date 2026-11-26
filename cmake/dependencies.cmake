@@ -407,10 +407,11 @@ if(SNX_BUILD_ANDROID AND NOT SNX_TOOLS_ONLY)
 endif()
 
 # miniz (MIT) for the launcher's Share Log, the logs in one zip (src/gui/logzip.c): the zip around the deflate
-# libdeflate makes. Its one-file release, miniz.c, built alone, without its stdio functions (the zip is made in memory
-# and written as every file is, for Windows' UTF-8 paths) and without zlib's names, which another library's zlib could
-# share
-if(SNX_BUILD_GUI)
+# libdeflate makes; and for the Vita's zRIF, a license deflated against a dictionary, which libdeflate does not take
+# (src/vita/loader/license.c). Its one-file release, miniz.c, built alone, without its stdio functions (the zip is made
+# in memory and written as every file is, for Windows' UTF-8 paths) and without zlib's names, which another library's
+# zlib could share
+if(SNX_BUILD_GUI OR snx_vita_runtime)
     AddJsonPackage(NAME miniz DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
     add_library(snx_miniz STATIC "${miniz_SOURCE_DIR}/miniz.c")
     target_include_directories(snx_miniz SYSTEM PUBLIC "${miniz_SOURCE_DIR}")

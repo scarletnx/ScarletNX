@@ -97,6 +97,8 @@ a source keep that source's copyright lines and license, most with the revision 
 | `src/vita/hle/kernel.c` (the signals of a thread: a wait that ends at once for a signal sent before it) | Vita3K (`ThreadState::wait_for_signal` and `send_signal`) | GPL-2.0-or-later |
 | `src/vita/hle/hle.c` (the values of SceLibc's `__sce_libcparam` and ScePerf's `_pLibPerfCaptureFlagPtr`) | Vita3K (the `VAR_EXPORT`s of those modules) | GPL-2.0-or-later |
 | `variable_references` in `src/vita/loader/image.c` (the form of a variable import's reference entries) | Vita3K (`EntryFormat1Alt`) | GPL-2.0-or-later |
+| `src/vita/loader/selfcrypt.c` (an app SELF's decryption: the NPDRM and SELF keys' order, the metadata's layout, the keys chosen by key revision and system version), `src/vita/loader/license.c` (the license's fields) and `src/vita/loader/dump.c` (an encrypted dump installed: the licenses it takes, where each content goes) | Vita3K (`packages/src/sce_utils.cpp`, `license.cpp`, `pkg.cpp`, `interface.cpp`), after TeamMolecule's sceutils (MIT) | GPL-2.0-or-later |
+| the zRIF dictionary in `src/vita/loader/license.c` | pkg2zip (`pkg2zip_zrif.c`) | Unlicense (public domain) |
 | `src/vita/hle/` (the NIDs and the error codes) | vita-headers (`db/`, `include/psp2/`) | MIT |
 | `src/nx/runtime/nce/nce_patch.c` (the instructions that NCE patches, and the ordered forms of the exclusives) | Eden and yuzu (`src/core/arm/nce/patcher.cpp`, `instructions.h`) | GPL-3.0-or-later, GPL-2.0-or-later |
 | `src/3ds/gpu/shader.c`, `shader.h` and `pica.decode` (the opcodes, the instruction formats and their fields) | nihstro | BSD-3-Clause |

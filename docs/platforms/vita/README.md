@@ -4,6 +4,7 @@
 
 ## Index
 
+* [An encrypted dump](#an-encrypted-dump)
 * [Layers](#layers)
 * [How it fits together](#how-it-fits-together)
 * [The system's functions by NID](#the-systems-functions-by-nid)
@@ -23,12 +24,13 @@ kept as hints (`<title ID>.hints`) for the next offline compile.
 ```sh
 build/scarletnx-vita game.vpk                    # extract, compile and play
 build/scarletnx-vita ux0/app/PCSE00001           # a dumped game: linked, its update from ux0/patch/PCSE00001
+build/scarletnx-vita -x dump/app/PCSE00001       # an encrypted dump: decrypted into the game's folder
 build/scarletnx-vita -x game.vpk                 # extract only
 build/scarletnx-vita --game=~/.local/share/scarletnx/recompiled/LVBT00001 --seconds=30 --shot=/tmp/frame
 ```
 
 `scarletnx-vita` takes the [common options](../../user/usage.md#common-options) that fit it: `-x`, `-r`, `--game`, `--update`, `--data`,
-`--outdir`, `--output`, `--seconds`, `--shot`, `--script`, `-h` and the recompile's (`-O`, `--jobs`, `--chunk`,
+`--outdir`, `--output`, `--keys`, `--seconds`, `--shot`, `--script`, `-h` and the recompile's (`-O`, `--jobs`, `--chunk`,
 `--jit-cache`, `--jit-only`, `--keep-ir`, `-q`), each value as `--option VALUE` or `--option=VALUE`.
 
 A dumped game's folder (decrypted, as a console's `ux0:app/<title ID>`) is linked into the game's folder rather than
@@ -44,6 +46,45 @@ when there is one, and by the runtime when there is none.
 
 The first homebrew it targets is the Lua Vita Tester (lpp-vita with vita2d). It draws its screen, reads the buttons
 and plays its sound test.
+
+## An encrypted dump
+
+A game dumped as the console keeps it on its memory card is still encrypted: its `sce_pfs/` folder holds `files.db`
+and `unicv.db`, and its files and its `eboot.bin` only make sense decrypted. `scarletnx-vita` decrypts such a dump
+into the game's folder as Vita3K installs one (`src/vita/loader/dump.h`), and reads the dump without writing to it:
+
+| From the dump | Into the game's folder | Its license |
+| --- | --- | --- |
+| `app/<title ID>/` | `app/` | its own `sce_sys/package/work.bin`, else `license/app/<title ID>/*.rif` |
+| `patch/<title ID>/` (or `--update`) | `patch/` | the game's |
+| `addcont/<title ID>/<add-on ID>/` | `ux0/addcont/<title ID>/<add-on ID>/` | `license/addcont/<title ID>/<add-on ID>/*.rif` |
+
+A license is the 512-byte `.rif` NoNpDrm leaves beside a dump; its klicensee opens the content. One whose content ID or
+key is another content's, or a console's own (its key encrypted to that console), is refused: `files.db` does not
+verify with it, and the message says so. Every sector of every file is checked against its `unicv.db` signature before
+it is decrypted; a changed one stops the import, naming the file and the sector. A file of the dump that `files.db`
+does not list is left out, each one said; `sce_sys/package/` (the licenses) is not copied. The game's and the update's
+SELFs (`eboot.bin`, `sce_module/*.suprx`) are decrypted in place after their files, each segment marked plain, as the
+loader reads them. An add-on without its license is said and left out; the game is still imported. A game folder
+whose `app/` already holds a decryption keeps it; one whose `app/` links the dump (an older import) gets the
+decryption in its place, the dump untouched.
+
+The keys are the console's, and ScarletNX carries none. The import reads them from `vita_keys.txt`, in
+`~/.vita/` (`%USERPROFILE%\.vita\` on Windows), where **Install Keys** puts it, or the file `--keys` names: a line
+`name = hex` for each, `#` for a comment. A key the game needs and the file lacks stops the import, naming the key.
+
+| Name | Bytes | What it opens | Where it is published |
+| --- | --- | --- | --- |
+| `pfs_hmac_key0` | 20 | each file's sector masks | psvpfsparser's `PfsKeys.cpp` (`hmac_key0`) |
+| `pfs_hmac_key1` | 20 | the files' integrity secret | psvpfsparser's `PfsKeys.cpp` (`hmac_key1`) |
+| `pfs_iv0` | 16 | the files' integrity secret | psvpfsparser's `PfsKeys.cpp` (`iv0`) |
+| `pfs_contract_key0` | 16 | the files' key, from the klicensee | psvpfsparser's `F00DNativeKeyEncryptor.cpp` (`contract_key0`) |
+| `npdrm_key0`, `npdrm_key1`, `npdrm_iv` | 16 each | an app SELF's key block, key revision 0 and 1, then 2 and up | Vita3K's `sce_utils.cpp`, `register_keys`, the `KeyType::NPDRM` keys and their IV |
+| `self_app_key0_169`, `self_app_iv0_169` | 32, 16 | an app SELF of key revision 0 made for system 1.692 or older | the same, `KeyType::METADATA` of `SelfType::APP`, revision 0 up to `0x16920000000` |
+| `self_app_key0` to `self_app_key5`, `self_app_iv0` to `self_app_iv5` | 32, 16 | an app SELF of that key revision | the same, revisions 0 (from `0x18000000000`) to 5 |
+
+`register_keys` lists them twice; the import's are the second set's (`case 1`), the one Vita3K's own SELF decryption
+reads.
 
 ## Layers
 
@@ -158,6 +199,12 @@ comparing after M groups). This is how the Thumb backend's bugs this driver ran 
   of the data), and those of the other modules aren't. A C++ exception the game throws ends it.
 
 ## Sources
+
+- The PFS (`src/vita/loader/pfs.c`): the scheme psvpfsparser reads (motoharu-gosuto's psvpfstools, the copy in
+  Vita3K's `external/psvpfstools`); its code carries no license, so nothing of it is in ScarletNX, only the format.
+- The SELF's decryption (`src/vita/loader/selfcrypt.c`), the license's fields and an encrypted dump's install
+  (`src/vita/loader/dump.c`): Vita3K (`packages/src/sce_utils.cpp`, `license.cpp`, `pkg.cpp`, `interface.cpp`).
+- The zRIF's dictionary (`src/vita/loader/license.c`): pkg2zip.
 
 The GXM semantics, the GXP layout and the USSE translator are ported from Vita3K (GPL-2.0-or-later). The NIDs and
 error codes come from vita-headers (MIT). vios was read as a quick reference. See [Credits](../../CREDITS.md).

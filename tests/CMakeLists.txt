@@ -5078,6 +5078,11 @@ if(TARGET snx_vita_loader AND TARGET snx_miniz)
     snx_test_target(snx-test-vita-inflate gnu23)
     target_link_libraries(snx-test-vita-inflate PRIVATE snx_vita_loader snx_miniz)
     add_test(NAME vita_inflate COMMAND snx-test-vita-inflate)
+    # an encrypted dump's import, on a dump the test makes with keys of its own (vita/loader/dump.c)
+    add_executable(snx-test-vita-decrypt vita_decrypt.c)
+    snx_test_target(snx-test-vita-decrypt gnu23)
+    target_link_libraries(snx-test-vita-decrypt PRIVATE snx_vita_loader snx_miniz OpenSSL::Crypto)
+    add_test(NAME vita_decrypt COMMAND snx-test-vita-decrypt)
 endif()
 if(TARGET snx_vita_program AND NOT SNX_VITA_LOCKSTEP)
     # vita_lockstep in a build without Unicorn, said; the variables an older version read for it
@@ -5139,8 +5144,9 @@ if(TARGET snx_vita_program)
     add_test(NAME vita_quit_key COMMAND snx-test-vita-quit-key)
     # the driver's command line, the recompile's options every driver shares: no game
     if(Python3_Interpreter_FOUND)
+        # and an encrypted dump's import through it, on the dump snx-test-vita-decrypt makes
         add_test(NAME vita_driver COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/vita_driver.py"
-            "${PROJECT_BINARY_DIR}/scarletnx-vita${CMAKE_EXECUTABLE_SUFFIX}")
+            "${PROJECT_BINARY_DIR}/scarletnx-vita${CMAKE_EXECUTABLE_SUFFIX}" $<TARGET_FILE:snx-test-vita-decrypt>)
     endif()
 endif()
 if(TARGET snx_vita_usse)
