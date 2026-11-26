@@ -163,6 +163,7 @@ def main():
             '--anisotropy=16',
             '--gpu-pstate=auto',
             '--perf-map=0',
+            '--frame-pacing=2',
         ],
         0,
         'Old 3DS',

@@ -4,6 +4,7 @@
 #define SNX_VITA_VK_H
 #include "common/gpu/vk/ring.h"
 #include "common/gpu/vk/swapchain.h"
+#include "common/gpu/vk/pacing.h"
 #include "common/gpu/vk/window.h"
 #include <stdbool.h>
 #include <stdint.h>
@@ -40,6 +41,8 @@ typedef struct {
        primitive order within a draw (VK_EXT_rasterization_order_attachment_access) */
     bool local_read, raster_order;
     SnxVkSwapchain swap;
+    SnxVkPacing pacing; /* frame_pacing's (common/gpu/vk/pacing.h) */
+    SnxVkPaced paced;
     /* a submission slot's acquired image, a swapchain image's rendering done */
     VkSemaphore acquired[VITA_VK_SLOTS], rendered[SNX_VK_SWAP_IMAGES];
     SnxVkRing ring; /* the submissions in flight, VITA_VK_SLOTS of them */

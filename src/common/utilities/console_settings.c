@@ -84,7 +84,7 @@ const SnxConsoleSetting g_console_settings[] = {
     {"dlss_preset", OTHERS(NA(SWITCH_GPU))},
     {"shadows", OTHERS(NA(SWITCH_GPU))},
     {"vsync"},
-    {"frame_pacing", OTHERS(LATER(SOON))},
+    {"frame_pacing"},
     {"anisotropy", {[G] = NA(CPU_SCREEN), [D] = NA(NEAREST)}},
     {"upscaler"},
     {"upscaler_sharpness"},
