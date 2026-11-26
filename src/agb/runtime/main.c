@@ -6,6 +6,7 @@
    code before playing. */
 #include "agb/board/board.h"
 #include "common/utilities/game_log.h"
+#include "common/utilities/tracy.h"
 #include "common/utilities/menu_window.h"
 #include "agb/cpu/agb_cpu.h"
 #include "agb/cpu/memmap.h"
@@ -501,6 +502,8 @@ int snx_agb_main(int argc, char** argv) {
         vpad_set_say(agb_host_say);
         vpad_settings(folder, name, argc, argv);
         snx_menu_window_open(SNX_SYSTEM_GBA, folder, name); /* the game's menu: Back, F2 or a pad's Home */
+        if (snx_tracy_console(folder, name, frames >= 0))
+            fputs("scarletnx-agb: tracy: no capture this run; it goes on without one\n", stderr);
         if (snx_cli_fullscreen_flag(argc, argv)) g_settings.fullscreen = 1; /* -f's over the settings' */
         if (frames < 0) {
             char* title = snx_format("ScarletNX - %s (GBA)", board.cartridge.title[0] ? board.cartridge.title : name);
@@ -577,6 +580,7 @@ int snx_agb_main(int argc, char** argv) {
                    recomp.compiled);
         if (agb_recomp_save(&recomp, &board, error, sizeof error))
             fprintf(stderr, "scarletnx-agb: cannot save the recompiled ROM: %s\n", error);
+        snx_tracy_shutdown();                 /* a capture's lines before the last */
         if (played && !status) puts("Exit."); /* a run that ended well says so last, as every driver's */
         free(audio);
         free(presses);

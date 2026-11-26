@@ -38,7 +38,11 @@
 #define SOON          "not made yet"
 #define OFFLINE       "its network is the console's own alone, as in flight mode"
 #define SOON_LOG      "its game log has no levels yet"
-#define SOON_TRACY    "it has no Tracy zones yet"
+#define TRACY_PICTURES "it sends no frame's picture to Tracy yet"
+#define TRACY_MEMORY   "its allocations are not in Tracy yet"
+#define TRACY_GPU      "its GPU's work is not in Tracy yet"
+#define TRACY_LOCKS    "its guest's locks are not in Tracy yet"
+#define NO_KERNEL      "its game runs with no kernel, so with no lock of one"
 
 #define NA(text)    {text, false}
 #define LATER(text) {text, true}
@@ -275,20 +279,21 @@ const SnxConsoleSetting g_console_settings[] = {
     {"vk_budget_mb", OTHERS(NA(SWITCH_GPU))},
     {.key = "renderdoc"},
     {.key = "renderdoc_frames"},
-    {"tracy_profiler", OTHERS(LATER(SOON_TRACY))},
-    {"tracy_capture", OTHERS(LATER(SOON_TRACY))},
-    {"tracy_capture_seconds", OTHERS(LATER(SOON_TRACY))},
-    {"tracy_sampling", OTHERS(LATER(SOON_TRACY))},
-    {"tracy_context_switches", OTHERS(LATER(SOON_TRACY))},
-    {"tracy_frame_images", OTHERS(LATER(SOON_TRACY))},
-    {"tracy_port", OTHERS(LATER(SOON_TRACY))},
-    {"tracy_capture_tool", OTHERS(LATER(SOON_TRACY))},
-    {"tracy_open_trace", OTHERS(LATER(SOON_TRACY))},
-    {"tracy_zone_callstack", OTHERS(LATER(SOON_TRACY))},
-    {"tracy_memory_detail", OTHERS(LATER(SOON_TRACY))},
-    {"tracy_memory_callstack", OTHERS(LATER(SOON_TRACY))},
-    {"tracy_lock_marks", OTHERS(LATER(SOON_TRACY))},
-    {"tracy_gpu_zone_callstack", OTHERS(LATER(SOON_TRACY))},
+    {.key = "tracy_profiler"},
+    {.key = "tracy_capture"},
+    {.key = "tracy_capture_seconds"},
+    {.key = "tracy_sampling"},
+    {.key = "tracy_context_switches"},
+    {"tracy_frame_images", OTHERS(LATER(TRACY_PICTURES))},
+    {.key = "tracy_port"},
+    {.key = "tracy_capture_tool"},
+    {.key = "tracy_open_trace"},
+    {.key = "tracy_zone_callstack"},
+    {"tracy_memory_detail", OTHERS(LATER(TRACY_MEMORY))},
+    {"tracy_memory_callstack", OTHERS(LATER(TRACY_MEMORY))},
+    {"tracy_lock_marks",
+     {[C] = LATER(TRACY_LOCKS), [V] = LATER(TRACY_LOCKS), [G] = NA(NO_KERNEL), [D] = NA(NO_KERNEL)}},
+    {"tracy_gpu_zone_callstack", OTHERS(LATER(TRACY_GPU))},
     {.key = "perf_map"},
     {.key = NULL},
 };

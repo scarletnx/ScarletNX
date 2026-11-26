@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "common/utilities/vpad_sdl.h"
+#include "common/utilities/tracy.h"
 #include "common/utilities/console_settings.h"
 #include "common/utilities/game_ini.h"
 #include "common/utilities/hotkeys.h"
@@ -368,6 +369,11 @@ static SnxVpadEvent key_event(const SDL_KeyboardEvent* k, int* action) {
         if (g_vpad_sdl.say) g_vpad_sdl.say(line);
         snx_key_now(line, sizeof line, what, on ? "on" : "off");
         if (g_vpad_sdl.show) g_vpad_sdl.show(line);
+        return SNX_VPAD_TAKEN;
+    }
+    if (a ==
+        HOTKEY_TRACY) { /* a capture of tracy_capture_seconds, as a Switch game's F10; a build with Tracy binds it */
+        snx_tracy_capture_now();
         return SNX_VPAD_TAKEN;
     }
     if (a == HOTKEY_PAUSE) {

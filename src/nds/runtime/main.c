@@ -6,6 +6,7 @@
    there is nothing to extract and no update to add, so its folder is made as a GBA game's is. */
 #include "nds/runtime/main.h"
 #include "common/utilities/game_log.h"
+#include "common/utilities/tracy.h"
 #include "common/utilities/menu_window.h"
 #include "common/cpu/recompiler/llvm/jit_settings.h"
 #include "common/utilities/endian.h"
@@ -509,6 +510,8 @@ int snx_nds_main(int argc, char** argv) {
     vpad_set_say(nds_host_say);
     vpad_settings(folder, name, argc, argv);
     snx_menu_window_open(SNX_SYSTEM_NDS, folder, name);                 /* the game's menu: Back, F2 or a pad's Home */
+    if (snx_tracy_console(folder, name, headless || frames >= 0))
+        fputs("scarletnx-nds: tracy: no capture this run; it goes on without one\n", stderr);
     if (snx_cli_fullscreen_flag(argc, argv)) g_settings.fullscreen = 1; /* -f's over the settings' */
     /* the player's language, the Switch's setting, as the firmware's: one the DS has none of said */
     int language = snx_language_nds(g_settings.language);
@@ -654,9 +657,11 @@ report: {
         fprintf(stderr, " POWCNT %04X DISP3DCNT %04X\n", board->powcnt, board->lcd[0][0x30]);
     }
     if (shot && nds_host_shot(host, shot)) fprintf(stderr, "scarletnx-nds: cannot write %s\n", shot);
+    snx_tracy_shutdown(); /* a capture's lines before the last */
     if (!status) puts("Exit.");
 }
 done:
+    snx_tracy_shutdown(); /* a stop before the end: the capture keeps what came */
     if (board && board->save_dirty) save_store(board, save);
     nds_host_close(host);
     nds_recomp_free(recomp);

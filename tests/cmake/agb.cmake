@@ -67,6 +67,18 @@ if(BUILD_TESTING)
     set_target_properties(snx-test-agb-host-vk PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
     add_test(NAME agb_host_vk COMMAND snx-test-agb-host-vk)
     set_tests_properties(agb_host_vk PROPERTIES SKIP_RETURN_CODE 77)
+    if(SNX_TRACY AND NOT WIN32)
+        # a console's Tracy capture is not empty: F10's over a GBA window, read back by Tracy's tracy-csvexport
+        # (agb_tracy.c); skipped without Tracy's tools, found on PATH or given by these two
+        find_program(SNX_TRACY_CAPTURE_TOOL tracy-capture)
+        find_program(SNX_TRACY_CSVEXPORT tracy-csvexport)
+        add_executable(snx-test-agb-tracy "${PROJECT_SOURCE_DIR}/tests/agb_tracy.c")
+        target_link_libraries(snx-test-agb-tracy PRIVATE snx_agb_program)
+        target_compile_options(snx-test-agb-tracy PRIVATE -Wall -Wextra -Werror)
+        set_target_properties(snx-test-agb-tracy PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
+        add_test(NAME agb_tracy COMMAND snx-test-agb-tracy "${SNX_TRACY_CAPTURE_TOOL}" "${SNX_TRACY_CSVEXPORT}")
+        set_tests_properties(agb_tracy PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+    endif()
     find_package(Python3 COMPONENTS Interpreter)
     # the runner's scripted presses, the BIOS's interrupt wait and its SoftReset, the open bus a write-only register
     # reads and an EEPROM save, each through a ROM the test makes
