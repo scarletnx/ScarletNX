@@ -683,7 +683,11 @@ static struct {
     u64 own[2];
 } g_map_draw[RC_SLOTS];
 /* the bytes of a draw's block: the push constants' words, and with the pool map its words (SH_DRAW_MAP) */
-static u32 draw_block_bytes(void) { return g_spirv_translate.pool_map ? SH_DRAW_BYTES_MAP : SH_PUSH_BYTES_TABLE; }
+static u32 draw_block_bytes(void) {
+    return g_spirv_translate.cb_sizes   ? SH_DRAW_BYTES_SIZES
+           : g_spirv_translate.pool_map ? SH_DRAW_BYTES_MAP
+                                        : SH_PUSH_BYTES_TABLE;
+}
 static int draw_block_take(void) {
     VkBuffer b;
     u64 o;
@@ -4518,6 +4522,8 @@ typedef struct {
 #define CB_WINDOW_WORDS 18
 static CbWindow g_cb_windows[RC_SLOTS][2][19];
 static u16 g_cb_offsets[RC_SLOTS][2][19]; /* the draw's offsets, by the stage's set (0 vertex, 1 fragment) and bank */
+/* and each bank's guest size in 16-byte units, which an SM86 program reads 0 past (ShCaps.cb_sizes) */
+static u16 g_cb_sizes[RC_SLOTS][2][18];
 /* the draw's dynamic offsets of the constant buffers that the vertex and fragment sets bind as dynamic uniform buffers
    (cb_dynamic.h), by the stage's set and slot: 0 for a slot the program has not, whose descriptor no draw reads */
 static u32 g_cb_dyn[RC_SLOTS][2][VK_CB_DYNAMIC_SLOTS];
@@ -4836,8 +4842,9 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                                    ? ds->bind.cb_size[stage][i]
                                    : 65536,
                   reads = s->si.cbuf_max[i] ? s->si.cbuf_max[i] : 65536;
-        const int windowed =
-            s->si.cb_window && vs_fs < 2 && (u32)i < g_spirv_translate.uniform_cbufs && guest_size >= reads;
+        /* a program that reads 0 past the bank's size (si.cb_sizes) takes the window whatever the guest's size */
+        const int windowed = s->si.cb_window && vs_fs < 2 && (u32)i < g_spirv_translate.uniform_cbufs &&
+                             (guest_size >= reads || s->si.cb_sizes);
         /* a windowed bank takes its bytes where the GPU mirror has them at any 16 bytes, which a descriptor of its
            own can't: the mirror copied them out instead, and ended the rendering pass for it (most of one game's
            pass ends). One whose window can't be placed takes them again at the descriptor's alignment */
@@ -4859,6 +4866,8 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
             g_cb_move.buf[vs_fs][i] = b;
             if (!placed) g_cb_move.slot[vs_fs][i]++;
         }
+        if (vs_fs < 2) /* a bank that binds alone: its descriptor's range ends it */
+            g_cb_sizes[t_rc][vs_fs][i] = (u16)(placed ? (guest_size + 15) >> 4 : 4096);
         if (placed) {
             g_cb_offsets[t_rc][vs_fs][i] = (u16)((o - base) >> 4);
             dw_cbuf(&d, set, vs_fs, i, b, base, (u32)range);
@@ -10075,6 +10084,11 @@ resolved:
                               (u32)(g_map_draw[t_rc].own[1] >> 32)};
             for (u32 k = 0; k < 8; k++) snx_st_le32(block + SH_PUSH_BYTES_TABLE + 4 * k, w[k]);
         }
+        if (g_spirv_translate.cb_sizes) /* each windowed bank's guest size (SH_DRAW_CB_SIZES) */
+            for (u32 st = 0; st < 2; st++)
+                for (u32 w = 0; w < 9; w++)
+                    snx_st_le32(block + 4 * ((st ? SH_DRAW_CB_SIZES_FS : SH_DRAW_CB_SIZES) + w),
+                                (u32)g_cb_sizes[t_rc][st][2 * w] | (u32)g_cb_sizes[t_rc][st][2 * w + 1] << 16);
         const u32 at[4] = {block_at, 0, 0, 0};
         rec_CmdPushConstants(cb, g_vk_playout, VK_PUSH_STAGES, 0, sizeof at, at);
     } else if (g_vk.has_descriptor_heaps) {

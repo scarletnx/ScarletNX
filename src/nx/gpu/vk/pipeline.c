@@ -836,6 +836,12 @@ void vk_pipeline_init(void) {
             snx_vk_cb_windows_say(line, sizeof line, &wd, SH_PUSH_BYTES_WINDOWS, g_settings.constant_buffer_windows);
         LOG("%s\n", line);
     }
+    /* SM86 banks shorter than their reads in windows too, with their sizes in the per-draw block: where descriptor
+       buffers or heaps hold the sets, which have no dynamic uniform buffers for them */
+    g_spirv_translate.cb_sizes = g_shader_sm86 && g_spirv_translate.cb_windows &&
+                                 (g_vk.has_descriptor_buffers || g_vk.has_descriptor_heap_support);
+    if (g_spirv_translate.cb_sizes)
+        LOG("vulkan: SM86 constant banks shorter than their reads in windows, with their sizes in the draw's block\n");
     /* SM86 programs' plain textures through the texture table (table.c), a set after the stages' sets: where the
        constant buffers are in windows (the words take one), and the device pushes the words' offsets and binds one
        more set. With descriptor buffers the table has a buffer of its own, which lasts from frame to frame: without
@@ -3721,7 +3727,7 @@ static void pf_key(char* out, size_t n, size_t* guest) {
                   (u32)g_vk.has_fragment_interlock,
                   arrays,
                   (u32)g_spirv_translate.split_sets,
-                  (u32)g_spirv_translate.cb_windows,
+                  (u32)g_spirv_translate.cb_windows | (u32)g_spirv_translate.cb_sizes << 1,
                   (u32)g_spirv_translate.tex_table | (u32)g_spirv_translate.pool_map << 1,
                   (u32)g_spirv_translate.gbuf_address,
                   (u32)g_spirv_translate.vertex_fetch,
