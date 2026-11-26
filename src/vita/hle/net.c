@@ -561,3 +561,11 @@ uint32_t vita_net_np_compare_ids(VitaProcess* p, VitaThread* t, uint32_t x, uint
         return SCE_NP_UTIL_ERROR_NOT_MATCH;
     return 0;
 }
+
+/* the sockets and epolls open, which a save state can't hold (the host's): a save is refused while there are */
+unsigned vita_net_in_use(const VitaProcess* p) {
+    unsigned n = 0;
+    for (unsigned i = 0; p->net && i < SOCKETS; ++i) n += p->net->sockets[i].used;
+    for (unsigned i = 0; p->net && i < EPOLLS; ++i) n += p->net->epolls[i].used;
+    return n;
+}

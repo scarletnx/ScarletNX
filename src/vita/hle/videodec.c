@@ -224,3 +224,10 @@ uint32_t vita_videodec_decode_flush(VitaProcess* p, VitaThread* t, uint32_t ctrl
     d->draining = false;
     return 0;
 }
+
+/* the decoders made, which a save state can't hold (FFmpeg's): a save is refused while there are */
+unsigned vita_videodec_in_use(const VitaProcess* p) {
+    unsigned n = 0;
+    for (unsigned i = 0; p->videodec && i < DECODERS; ++i) n += p->videodec->decoders[i].used;
+    return n;
+}

@@ -11,7 +11,10 @@
 #include "vita/hle/hle.h"
 #include "vita/hle/hle.hook.h"
 #include "common/utilities/endian.h"
+#include "common/utilities/bits.h"
 #include "common/utilities/common.h"
+#include "common/utilities/state_header.h"
+#include "common/utilities/state_io.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -257,4 +260,45 @@ uint32_t vita_trophy_unlock_trophy(VitaProcess* p, VitaThread* t, uint32_t conte
     if (out) vita_write32(p, out, platinum);
     record_write(p, c);
     return 0;
+}
+
+/* ---- save states (vita/runtime/state.c): the trophy contexts and handles as they are ---- */
+/* a state's trophies, in an allocation of its own, which the process takes: NULL when the state has none */
+typedef struct {
+    struct VitaTrophy* trophy;
+} TrophyStaged;
+uint64_t vita_trophy_state_schema(void) {
+    static const struct VitaTrophy s; /* only walked */
+    uint64_t h = SNX_FNV_BASIS ^ sizeof s;
+    __builtin_dump_struct(&s, snx_state_schema_out, &h);
+    __builtin_dump_struct(&s.contexts[0], snx_state_schema_out, &h);
+    return h;
+}
+int vita_trophy_state_save(VitaProcess* p, StateIo* io) {
+    uint8_t present = p->trophy != NULL;
+    return io_put(io, &present, 1) || (present && io_put(io, p->trophy, sizeof *p->trophy)) ? -1 : 0;
+}
+void vita_trophy_state_drop(void* staged) {
+    TrophyStaged* s = staged;
+    if (s) free(s->trophy);
+    free(s);
+}
+void* vita_trophy_state_parse(StateIo* io, char* why, size_t whysize) {
+    TrophyStaged* s = calloc(1, sizeof *s);
+    uint8_t present = 0;
+    if (!s || io_get(io, &present, 1) || (present && !(s->trophy = malloc(sizeof *s->trophy))))
+        snprintf(why, whysize, "its trophies' section is damaged, or no memory is left for it (%zu bytes)",
+                 sizeof(struct VitaTrophy));
+    else if (s->trophy && io_get(io, s->trophy, sizeof *s->trophy))
+        snprintf(why, whysize, "its trophies' section is damaged or cut short");
+    else
+        return s;
+    vita_trophy_state_drop(s);
+    return NULL;
+}
+void vita_trophy_state_install(VitaProcess* p, void* staged) {
+    TrophyStaged* s = staged;
+    vita_trophy_free(p);
+    p->trophy = s->trophy;
+    free(s);
 }
