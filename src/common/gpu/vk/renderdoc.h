@@ -33,4 +33,6 @@ int snx_renderdoc_capture(int ask);
 /* at the present that ends frame `present` of the window's instance, after its last submit and before the swapchain
    present: the capture of this frame ends here, and the next frame's starts */
 void snx_renderdoc_present(VkInstance instance, u64 present);
+/* snx_renderdoc_load for a console's window: its notice, its log and its clock (common/utilities/vpad_sdl.h's) */
+void snx_renderdoc_load_window(void);
 #endif

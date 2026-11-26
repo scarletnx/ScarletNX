@@ -3,6 +3,7 @@
 /* The window: the frame image, the upper screen above the lower one as on the console, scaled into the window's
    swapchain image at the frame's shape through the upscaler and the anti-aliasing the Switch's settings ask for (sharp
    pixels with both off), the on-screen controls over it, and each submission sent with it. */
+#include "common/gpu/vk/renderdoc.h"
 #include "nds/gpu/vk/vk.h"
 #include "common/gpu/vk/gpu_pstate.h"
 #include "nds/gpu/vk/vk_present.h"
@@ -170,6 +171,7 @@ void nds_vk_present(void) {
                                 .swapchainCount = 1,
                                 .pSwapchains = &g_present.swap.swapchain,
                                 .pImageIndices = &index};
+    snx_renderdoc_present(v->host.instance.instance, ++v->presents);
     snx_gpu_pstate_present(); /* a kgsl hold lasts while frames are presented */
     snx_vk_pacing_present(&v->pacing, &g_present.paced, v->device, g_present.swap.swapchain,
                           g_settings.vsync && snx_vpad_window_frame_ns(1) == 1, &present, "scarletnx-nds");

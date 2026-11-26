@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
+#include "common/gpu/vk/renderdoc.h"
 #include "nds/gpu/vk/vk.h"
 #include "common/gpu/vk/marks.h"
 #include "common/gpu/vk/device_settings.h"
@@ -38,6 +39,7 @@ bool nds_vk_init(const char* title, bool headless, char* error, size_t error_siz
     NdsVk* v = &g_device.vk;
     memset(v, 0, sizeof *v);
     v->headless = headless;
+    snx_renderdoc_load_window(); /* before the instance: RenderDoc's capture layer is an implicit one */
     if (headless) {
         /* no window: the loader and an instance alone */
         if (!snx_vk_headless_open("scarletnx-nds", &v->host, error, error_size)) return false;

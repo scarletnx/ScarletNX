@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
+#include "common/gpu/vk/renderdoc.h"
 #include "vita/gpu/present.h"
 #include "common/gpu/vk/vk_common.h"
 #include "common/utilities/common.h"
@@ -103,6 +104,8 @@ static bool vblank(VitaProcess* p, bool again) {
             g_present.state_ask = action;
         else if (took == SNX_VPAD_ACTION && action == HOTKEY_THREAD_DUMP)
             g_present.dump = true;
+        else if (took == SNX_VPAD_ACTION && action == HOTKEY_CAPTURE)
+            (void)snx_renderdoc_capture(1); /* RenderDoc's, the frame after the next present */
         else if (took == SNX_VPAD_ACTION && (action == HOTKEY_UPSCALER || action == HOTKEY_ANTI_ALIASING))
             snx_vpad_window_effect(action, vita_vk_effect_step(action == HOTKEY_ANTI_ALIASING));
         else if (took == SNX_VPAD_ACTION)

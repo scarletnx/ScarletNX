@@ -85,6 +85,11 @@ void snx_vpad_window_effect(int action, const char* label);
 /* the runtime's key action said on say and show to do nothing in this window, with why: "F3 (Screenshot) does nothing
    in a GBA game: why" */
 void snx_vpad_window_none(int action, const char* why);
+/* a line over the game (show) and in the run's log (say, a failure with warn), and the run's milliseconds since SDL
+   started: the window's own, for what else speaks in it (RenderDoc's captures) */
+void snx_vpad_window_notice(const char* line);
+void snx_vpad_window_log(int warn, const char* line);
+uint64_t snx_vpad_window_ms(void);
 /* the window the last key was pressed in (a console's with two windows says over that one), 0 for none */
 SDL_WindowID snx_vpad_window_key_window(void);
 /* fps_limit's pace as the keys left it (common/utilities/pace.h's SNX_PACE_), for a console that keeps its own clock */
