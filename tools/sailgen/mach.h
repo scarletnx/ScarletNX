@@ -115,11 +115,11 @@ typedef struct {
     /* SGX_K_VEC: the form; its result's operand (-1 none: a store, a compare), which reads in[vout] first when vtied;
        vzero: the result is made 0 first (PXOR of itself), no input; the memory operand (mplace) is the state's
        [base + mdisp] (mstate), the constant pool's kv (mrip), or guest memory [in[5] + in[6] + mdisp]; vflags: it
-       writes the flags (UCOMISS, PTEST) */
+       writes the flags (UCOMISS, PTEST); vfold: an AVX twin, whose operand 2 may be memory (sgx_fold_loads) */
     unsigned mclobber; /* SGX_K_MACHINE's: the host registers it changes besides its results' (SGX_RET, SGX_RET2) */
     const SgXVForm* vf;
     signed char vout;
-    unsigned char vtied, vzero, mstate, mrip, vflags;
+    unsigned char vtied, vzero, mstate, mrip, vflags, vfold;
     SnxU64 kv[2];
     /* SGX_K_COLD of sgx_cold_fp: its call reads and writes the state's 32-bit fields at disp (FPCR) and mdisp (FPSR)
        alone (cstate); argument cfpcr - 1 is the field at disp, ckat - 1 the constant imm, both loaded on the cold path
@@ -365,9 +365,12 @@ static inline int sgx_vins(SgX* x, const SgXVForm* f, int out, int tied, const i
     SgXIns* i;
     int k;
     if (tied > 0 && mode == SGX_VM_NONE && f->vex && (x->features & SGX_F_AVX) && out == 0 && f->nops == 2 && in) {
-        /* the AVX twin: a op= b is c = a op b, no copy of a where a is read after */
-        int vin[4] = {0, in[0], in[1], 0};
-        return sgx_vins(x, f->vex, 0, 0, vin, imm, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
+        /* the AVX twin: a op= b is c = a op b, no copy of a where a is read after. isel.c makes each one
+           'VMNEM xmm1, xmm2, xmm3/m', so b may be memory there */
+        int vin[4] = {0, in[0], in[1], 0}, n = x->n;
+        int v = sgx_vins(x, f->vex, 0, 0, vin, imm, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
+        if (x->n > n) x->ins[x->n - 1].vfold = 1;
+        return v;
     }
     if (mode == SGX_VM_NONE && out >= 0 && tied >= 0 && in) {
         int v = sgx_vcse_find(x, f, out, tied, in, imm);
@@ -2031,9 +2034,59 @@ static inline SgD sg_d_logic_flags(SgCtx* g, SgD r) {
 
 /* the instructions nothing reads are dropped; one whose result nothing reads but whose flags something does becomes
    its flags-only form (SUBS's result to the zero register: CMP) */
+/* whether nothing between instructions d and i may change the state's 16 bytes at disp: no store of them, no call,
+   no store at all of guest memory (it is not the state, but nothing here proves an address of it is not) */
+static inline int sgx_state_kept(const SgX* x, int d, int i, int disp) {
+    unsigned q = (unsigned)disp >> 2;
+    for (int j = d + 1; j < i; ++j) {
+        const SgXIns* s = &x->ins[j];
+        if (s->dead) continue;
+        if (s->kind == SGX_K_MACHINE || s->kind == SGX_K_COLD || s->kind == SGX_K_UNDEF || s->side) return 0;
+        if (s->kind == SGX_K_STORE || s->kind == SGX_K_STORE_FLAG) {
+            unsigned w0 = (unsigned)s->disp >> 2, nw = s->kind != SGX_K_STORE_FLAG && s->w == 64 ? 2 : 1;
+            if (w0 < q + 4 && q < w0 + nw) return 0;
+        }
+        if (s->kind == SGX_K_VEC && s->mstate && s->vout == s->mplace) return 0; /* a store of a V register */
+    }
+    return 1;
+}
+/* an AVX twin's operand 2 that a load of the state or of the constant pool made, read there alone: the load is its
+   memory operand ([base + disp] or [rip + k]), and no register holds it. The VEX forms take an operand at any
+   address, the SSE ones only a 16-byte aligned one, which nothing makes the state's V registers */
+static inline void sgx_fold_loads(SgX* x) {
+    unsigned char* uses = x->vlive; /* each value's readers, 2 for more than one; sgx_optimize clears it after */
+    memset(uses, 0, (size_t)x->nv + 1);
+    for (int i = 0; i < x->n; ++i) {
+        const SgXIns* s = &x->ins[i];
+        if (s->dead) continue;
+        for (int k = 0; k < SGX_INS_IN; ++k)
+            if (s->in[k] > 0 && s->in[k] < x->nv && uses[s->in[k]] < 2) ++uses[s->in[k]];
+    }
+    for (int i = 0; i < x->n; ++i) {
+        SgXIns* s = &x->ins[i];
+        int v = s->in[2];
+        if (s->dead || s->kind != SGX_K_VEC || !s->vfold || s->mplace >= 0 || v <= 0 || v >= x->nv || uses[v] != 1)
+            continue;
+        int d = x->v[v].def;
+        if (d < 0 || d >= i) continue;
+        SgXIns* l = &x->ins[d];
+        if (l->dead || l->kind != SGX_K_VEC || l->vf != SGX_VF_LD16 || l->def != v || !(l->mstate || l->mrip)) continue;
+        if (l->mstate && !sgx_state_kept(x, d, i, l->mdisp)) continue;
+        s->mplace = 2;
+        s->mstate = l->mstate;
+        s->mrip = l->mrip;
+        s->mdisp = l->mdisp;
+        s->kv[0] = l->kv[0];
+        s->kv[1] = l->kv[1];
+        s->in[2] = 0;
+        l->dead = 1;
+        for (int k = 0; k < SGX_INS_IN; ++k) l->in[k] = 0;
+    }
+}
 static inline void sgx_optimize(SgX* x) {
     unsigned char *vlive = x->vlive, *flive = x->flive; /* the region's part cleared */
     int i, k;
+    sgx_fold_loads(x);
     memset(vlive, 0, (size_t)x->nv + 1);
     memset(flive, 0, (size_t)x->n + 1);
     /* a store later ones to the same place overwrite, with no load of it and no call of the runtime (which reads the
