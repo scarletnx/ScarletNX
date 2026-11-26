@@ -123,6 +123,11 @@ static bool choose(SnxVkChoice* c, void* user) {
     snx_vk_chain(enable, sizeof enable / sizeof *enable);
     v->checkpoints = snx_vk_marks_choose(c, g_settings.gpu_checkpoints);
     want.pNext = snx_vk_pacing_choose(&v->pacing, c, g_settings.frame_pacing, want.pNext);
+    /* with shader objects no pipeline is made: the libraries would serve nothing */
+    char gpl_line[256];
+    want.pNext = snx_vk_gpl_choose(&v->gpl, c, objects ? 0 : g_settings.pipeline_libraries, want.pNext, gpl_line,
+                                   sizeof gpl_line);
+    if (!objects) fprintf(stderr, "3ds gpu: %s\n", gpl_line);
     if (!snx_vk_choice_create(c, &want, NULL, NULL, 0)) return false;
     v->index8 = index8 && index_features.indexTypeUint8;
     v->shader_object = objects;

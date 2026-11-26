@@ -112,6 +112,12 @@ typedef struct {
     uint32_t drawn;              /* pipelines a draw made itself, the ones the file lacked or a draw asked for first */
 } SnxCtrVkPrepared;
 SnxCtrVkPrepared snx_ctr_vk_prepared(void);
+/* pipeline_libraries: the pipelines linked from parts so far, fast (a draw's, until its optimized one replaces it)
+   and optimized (a worker's), the parts made and reused, and the fast links replaced */
+typedef struct {
+    unsigned linked, optimized, parts, reused, replaced;
+} SnxCtrVkLibraries;
+SnxCtrVkLibraries snx_ctr_vk_libraries(void);
 /* async_pipelines, for a test: the workers take no job until snx_ctr_vk_pipelines_wait, so a draw finds the pipeline
    or the shader objects it asked for still to be made, however fast a worker would have made them */
 void snx_ctr_vk_pipelines_hold(void);

@@ -497,6 +497,10 @@ if(TARGET snx_ctr_board)
     # prepare_shaders: a draw's shaders and pipeline kept, then made by a second run before its first draw or on the
     # workers, packed or not, and a record changed on disk ending the file there
     add_test(NAME 3ds_vk_draw_prepared COMMAND snx-test-3ds-vk-draw --prepared --vk_ext_shader_object=off)
+    # pipeline_libraries: the pipelines linked from parts, a second one taking the first's parts but one, then their
+    # optimized ones in the links' place; and every scene with each pipeline made whole
+    add_test(NAME 3ds_vk_draw_libraries COMMAND snx-test-3ds-vk-draw --libraries --vk_ext_shader_object=off)
+    add_test(NAME 3ds_vk_draw_whole COMMAND snx-test-3ds-vk-draw --pipeline-libraries=0 --vk_ext_shader_object=off)
     # the stand-in shaders (shaders/standin.vert and standin.frag) given every draw they draw, against the CPU
     # reference
     add_test(NAME 3ds_vk_draw_stand_in COMMAND snx-test-3ds-vk-draw --ctr_stand_in=2)
@@ -554,6 +558,11 @@ if(TARGET snx_ctr_board)
     set_tests_properties(3ds_vk_draw_scaled_layout_effects PROPERTIES SKIP_RETURN_CODE 77
                          ENVIRONMENT "SDL_VIDEO_DRIVER=offscreen")
     if(NOT WIN32 AND Python3_Interpreter_FOUND)
+        # the parts, their links and the optimized pipelines, under Khronos validation
+        add_test(NAME 3ds_vk_draw_libraries_validation
+                 COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_vk_validation.py"
+                     $<TARGET_FILE:snx-test-3ds-vk-draw> --libraries --vk_ext_shader_object=off)
+        set_tests_properties(3ds_vk_draw_libraries_validation PROPERTIES SKIP_RETURN_CODE 77)
         # the copies' blits, lookups and compare, under Khronos validation
         add_test(NAME 3ds_vk_draw_scaled_transfer_validation
                  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_vk_validation.py"
@@ -616,7 +625,8 @@ if(TARGET snx_ctr_board)
         set_tests_properties(${snx_tests} PROPERTIES SKIP_RETURN_CODE 77)
     endforeach()
     set_tests_properties(3ds_vk_draw 3ds_vk_draw_async 3ds_vk_draw_pipelines 3ds_vk_draw_async_pipelines
-                         3ds_vk_draw_pipeline_cache 3ds_vk_draw_prepared 3ds_vk_draw_stand_in 3ds_vk_draw_present
+                         3ds_vk_draw_pipeline_cache 3ds_vk_draw_prepared 3ds_vk_draw_libraries 3ds_vk_draw_whole
+                         3ds_vk_draw_stand_in 3ds_vk_draw_present
                          3ds_vk_draw_scaled_present
                          PROPERTIES SKIP_RETURN_CODE 77)
     # the GPU's copy of the RAM, page by page: what is copied in and back, and when, and every byte where it belongs
@@ -3707,9 +3717,10 @@ if(NOT SNX_TOOLS_ONLY)
     # condition that turns them off named, and the dynamic pre-rasterization state each device member gives where the
     # table of bans holds none for it
     add_executable(snx-test-vk-pipeline-parts vk_pipeline_parts.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/pipeline_parts.c"
-                   ${snx_vk_extension_bans_sources})
+                   ${snx_vk_extension_bans_sources} "${volk_SOURCE_DIR}/volk.c")
     snx_test_target(snx-test-vk-pipeline-parts gnu23)
     target_link_libraries(snx-test-vk-pipeline-parts PRIVATE snx_nx_flags snx_vk_common) # the off reasons, every renderer's
+    set_source_files_properties("${volk_SOURCE_DIR}/volk.c" PROPERTIES COMPILE_OPTIONS "${snx_third_party_flags}")
     add_test(NAME vk_pipeline_parts COMMAND snx-test-vk-pipeline-parts)
     # an Ounce's shading rate image (gpu/vk/shading_rate_table.c, shading_rate.glsl): the extension each stand-in
     # device takes, each palette entry's value, the NVN palette, and the conversion's body run on the CPU
