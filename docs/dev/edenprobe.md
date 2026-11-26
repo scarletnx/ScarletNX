@@ -105,9 +105,9 @@ A regression there fails the Build run, and a run that failed publishes nothing:
 prerelease nor a version.
 
 A pull request, a run by hand and a version's tag run them, as every test of the workflow (`SNX_TESTS`); a push to
-`main` and the nightly's schedule build and publish, and run none. The runs go one after the other, each with
-its own output, summary and exit (side by side, with the others at the lowest priority so that the NRO's kernel family,
-which times its threads, passes, they took no less time in all), and the job fails when the NRO's or the APK's does.
+`main` and the nightly's schedule build and publish, and run none. The runs go one after the other, as the NRO's
+kernel family times its threads, each with its own output, summary and exit (`scripts/ci/linux.sh amberlith_run`), and
+the job fails when the NRO's or the APK's does.
 
 The job also runs Amberlith's main, the NRO of its `nightly` release (checked by its
 `.sha256`), with `scripts/edenprobe.py run --advisory-baseline tests/edenprobe/linux-x86_64.txt`: beside the pinned

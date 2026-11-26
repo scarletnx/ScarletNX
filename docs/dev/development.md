@@ -45,15 +45,17 @@ zero leaves that list, and fails the target from then on.
 FS tests use production tree/HLE + synthetic temp data; `--only tree|service` selects a suite.
 
 CI (`.github/workflows/build.yml`) has one job for each platform and architecture, which builds its package, then
-tests and checks it with the same tree and compiler cache: each Linux AppImage (x86-64 and AArch64) with ABI syntax,
-native tool/FS regressions, headless Vulkan on lavapipe and optional Python diagnostics, x86-64's also under ASan and
-UBSan, the other machines' back ends under Unicorn and [edenprobe](edenprobe.md)'s probes on lavapipe against the
-cases that passed before (`scripts/edenprobe.py`); the cross-built AppImages through qemu, the Windows zips (x86-64 and
-AArch64), the Android APK and the macOS and iOS apps, and the AppImages and the zips run as installed, at the end of
-their jobs. A pull request, a run by hand and a version's tag run every test (`SNX_TESTS`); a push to `main` and the
+tests it with the same tree and compiler cache and runs it as installed: each Linux AppImage (x86-64 and AArch64) with
+the ABI helpers' syntax, native tool and FS regressions, headless Vulkan on lavapipe and the optional Python
+diagnostics, x86-64's with [Amberlith](edenprobe.md)'s probes on lavapipe against the cases that passed before
+(`scripts/edenprobe.py`); the cross-built AppImages through qemu; the Windows zips (x86-64 and AArch64), the Android
+APK and the macOS and iOS apps. x86-64 under ASan and UBSan and the other machines' back ends under Unicorn have a job
+each. A pull request, a run by hand and a version's tag run every test (`SNX_TESTS`); a push to `main` and the
 nightly's schedule build every package, run the x86-64 and AArch64 AppImages and the Windows zips as a user would and
 publish them, and test nothing else, so a merge that breaks a test shows on the next pull request's run. A push to
 `main` cancels the build of the one before it still running, as a push to a pull request does that pull request's.
+The steps' commands are in `scripts/ci/`, a file for each job and a function for each step (`scripts/ci/cross.sh
+build`), held to the workflow by `tests/ci_scripts_test.py`.
 `.github/workflows/publish.yml` publishes what builds everywhere, each said on Discord (`scripts/publish-builds.py`): a
 version tag pushed (`v1.0.0`; `v1.0.0-rc1` a prerelease) as this repository's release of it, the latest, its notes
 listing the changes since the version before;
