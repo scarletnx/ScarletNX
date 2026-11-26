@@ -6,6 +6,29 @@ include("${CMAKE_CURRENT_LIST_DIR}/llvm_components.cmake")
 # scarletnx --mcp's A64 disassembler (src/nx/runtime/driver/disasm.c), where LLVM has the AArch64 target. A release
 # leaves it out: it is for working on the runtime, and a static LLVM then links no AArch64 code into a host of another
 option(SNX_A64_DISASM "Build scarletnx --mcp's A64 disassembler, where LLVM has the AArch64 target" ON)
+# LLVM 22's -O2 makes a lane of A32's VRSHL and VQSHL wrong on a host with AVX-512 (#2914): its x86 machine scheduler, on
+# the 128-bit lanes its vectorizer makes of them. 19, 21 and 23.1.6 make them right. The configure stops on it, but with
+# this option, and a build that takes it says so in its log when LLVM starts (src/common/cpu/recompiler/llvm/ir.c)
+option(SNX_ACCEPT_LLVM22_MISCOMPILE
+       "Build with LLVM 22, whose -O2 makes A32's VRSHL and VQSHL wrong on an AVX-512 host (#2914)" OFF)
+function(snx_llvm_refuse_miscompile)
+    string(REGEX MATCH "^[0-9]+" major "${SNX_LLVM_VERSION}")
+    if(NOT major STREQUAL "22")
+        return()
+    endif()
+    set(text "LLVM ${SNX_LLVM_VERSION} makes wrong code: at -O2, on a host with AVX-512, a lane of A32's VRSHL and "
+             "VQSHL comes out wrong in a 32-bit program's blocks (#2914). LLVM 23.1.6 makes them right: point "
+             "SNX_LLVM_CONFIG or LLVM_DIR at it")
+    if(NOT SNX_ACCEPT_LLVM22_MISCOMPILE)
+        message(FATAL_ERROR ${text} ", or configure with -DSNX_ACCEPT_LLVM22_MISCOMPILE=ON to build with LLVM "
+                            "${SNX_LLVM_VERSION} and this defect.")
+    endif()
+    get_property(said GLOBAL PROPERTY SNX_LLVM_MISCOMPILE_SAID)
+    if(NOT said) # llvm.cmake is read once in each folder that needs LLVM
+        set_property(GLOBAL PROPERTY SNX_LLVM_MISCOMPILE_SAID ON)
+        message(WARNING "SNX_ACCEPT_LLVM22_MISCOMPILE=ON: " ${text} ". The recompiler says so in its log.")
+    endif()
+endfunction()
 # a folder of the sysroot as the program sees it on the target: a cross build's LLVM folder is under CMAKE_SYSROOT,
 # which a run path leaves out (src/3ds, src/vita)
 function(snx_target_path output path)
@@ -49,6 +72,7 @@ if(ANDROID OR IOS OR (LLVM_DIR AND NOT SNX_LLVM_CONFIG))
     set(SNX_LLVM_LIBRARY_DIR "${LLVM_LIBRARY_DIRS}")
     set(SNX_LLVM_SYSTEM_LIBS "")
     message(STATUS "LLVM backend: LLVM ${SNX_LLVM_VERSION} (${LLVM_DIR})")
+    snx_llvm_refuse_miscompile()
     return()
 endif()
 set(snx_llvm_names llvm-config)
@@ -129,3 +153,4 @@ if(WIN32)
     endif()
 endif()
 message(STATUS "LLVM backend: LLVM ${SNX_LLVM_VERSION} (${SNX_LLVM_CONFIG})")
+snx_llvm_refuse_miscompile()

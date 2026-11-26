@@ -37,6 +37,10 @@ Run from checkout root. [Extract/AOT/run](../user/usage.md) · [Tests/diagnostic
   SHA-256-checked llvm-mingw/Clang, CMake, Ninja, NASM, Strawberry Perl and w64devkit in `deps/tools`. llvm-mingw has
   no LLVM libraries, so that route also needs a MinGW LLVM's `llvm-config` set with
   `-DSNX_LLVM_CONFIG=/path/to/llvm-config`. CMake fails without it.
+- **LLVM 22** is refused by the configure step: its -O2 makes a lane of A32's VRSHL and VQSHL wrong on a host with
+  AVX-512 (#2914), which LLVM 19, 21 and 23.1.6 make right. Build with another LLVM (CI's is 23), or pass
+  `-DSNX_ACCEPT_LLVM22_MISCOMPILE=ON` (off by default) to build with LLVM 22 as it is: the configure step then warns,
+  and the recompiler writes a line of it to its log when LLVM starts.
 - **Shaders:** glslang's `glslangValidator` compiles them at build time (CMake fetches its pinned release on Linux
   x86-64, Windows x86-64 and macOS; elsewhere it takes the system's `glslang`), and SPIRV-Tools' `spirv-opt` and
   `spirv-val` optimize and validate them (`cmake/glsl.cmake`). Those two are the SPIRV-Tools release CMake pins, built
@@ -145,7 +149,8 @@ pass `-DSNX_SYSTEM_SDL3=OFF` for the pinned SDL3 source build instead.
 The `llvm` package is LLVM 19, which the Switch, 3DS and Vita drivers build with. The Android driver
 ([Android apps](../platforms/android-apps/README.md)) compiles an app's native code at run time with the same LLVM, and LLVM 19's
 code generator crashes on some of it (a trap in its DAG combiner at an engine's login). Build it with LLVM 22: install
-`llvm22` and pass `-DSNX_LLVM_CONFIG=/usr/local/llvm22/bin/llvm-config` to the configure step.
+`llvm22` and pass `-DSNX_LLVM_CONFIG=/usr/local/llvm22/bin/llvm-config` and `-DSNX_ACCEPT_LLVM22_MISCOMPILE=ON`, which
+takes LLVM 22's -O2 miscompile ([Prerequisites](#prerequisites)), to the configure step.
 
 ### Configure and build
 

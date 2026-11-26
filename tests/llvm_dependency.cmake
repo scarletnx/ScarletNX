@@ -11,7 +11,11 @@ if(DEFINED CASE AND CASE MATCHES "^package_")
     # link (pkgsrc's), which is built with every target
     set(dir "${SNX_TEST_DIR}/${CASE}")
     file(MAKE_DIRECTORY "${dir}")
-    file(WRITE "${dir}/LLVMConfig.cmake" "set(LLVM_PACKAGE_VERSION 21.1.8)\nset(LLVM_TARGETS_TO_BUILD X86 AArch64)\n"
+    set(version 21.1.8)
+    if(CASE MATCHES "_22")
+        set(version 22.1.8)
+    endif()
+    file(WRITE "${dir}/LLVMConfig.cmake" "set(LLVM_PACKAGE_VERSION ${version})\nset(LLVM_TARGETS_TO_BUILD X86 AArch64)\n"
          "function(llvm_map_components_to_libnames output)\n    set(\${output} LLVMCore LLVMSupport PARENT_SCOPE)\n"
          "endfunction()\n")
     if(CASE STREQUAL "package_dylib")
@@ -63,6 +67,9 @@ if(DEFINED CASE)
         set(value "")
         if(name STREQUAL "version")
             set(value "23.1.0")
+            if(CASE MATCHES "^llvm22")
+                set(value "22.1.8")
+            endif()
         elseif(name STREQUAL "includedir")
             set(value "${SNX_TEST_DIR}/include")
             if(CASE STREQUAL "missing_header")
@@ -141,6 +148,35 @@ foreach(case package_dylib package_static)
         "-DCASE=${case}" -P "${CMAKE_CURRENT_LIST_FILE}" RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE error)
     if(NOT result EQUAL 0 OR NOT output MATCHES "LLVM backend: LLVM 21.1.8")
         message(FATAL_ERROR "${case}: ${output}${error}")
+    endif()
+endforeach()
+# LLVM 22's -O2 miscompile (#2914): refused, by llvm-config and by package, but with SNX_ACCEPT_LLVM22_MISCOMPILE, which
+# says it in a warning; another LLVM says nothing of it
+set(refused "LLVM 22.1.8 makes wrong code: at -O2, on a host with AVX-512, a lane of A32's VRSHL and VQSHL comes out wrong")
+foreach(case llvm22 llvm22_accepted valid package_22 package_22_accepted package_static)
+    set(accept OFF)
+    if(case MATCHES "_accepted$")
+        set(accept ON)
+    endif()
+    execute_process(COMMAND "${CMAKE_COMMAND}" "-DSNX_SOURCE_DIR=${SNX_SOURCE_DIR}" "-DSNX_TEST_DIR=${SNX_TEST_DIR}"
+        "-DCASE=${case}" "-DSNX_ACCEPT_LLVM22_MISCOMPILE=${accept}" -P "${CMAKE_CURRENT_LIST_FILE}"
+        RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE error)
+    string(REGEX REPLACE "[ \n]+" " " said "${output}${error}") # the message as its words, unwrapped
+    if(case STREQUAL "llvm22" OR case STREQUAL "package_22")
+        if(result EQUAL 0 OR NOT said MATCHES "CMake Error" OR NOT said MATCHES "${refused}.*\\(#2914\\)" OR
+           NOT said MATCHES "LLVM 23\\.1\\.6 makes them right" OR
+           NOT said MATCHES "-DSNX_ACCEPT_LLVM22_MISCOMPILE=ON to build with LLVM 22\\.1\\.8")
+            message(FATAL_ERROR "${case}: LLVM 22.1.8 must stop the configure, naming it, #2914, 23.1.6 and the option: "
+                                "status ${result}, ${said}")
+        endif()
+    elseif(accept)
+        if(NOT result EQUAL 0 OR NOT said MATCHES "CMake Warning" OR
+           NOT said MATCHES "SNX_ACCEPT_LLVM22_MISCOMPILE=ON: ${refused}.*\\(#2914\\)")
+            message(FATAL_ERROR "${case}: SNX_ACCEPT_LLVM22_MISCOMPILE=ON must take LLVM 22.1.8 with a warning: "
+                                "status ${result}, ${said}")
+        endif()
+    elseif(NOT result EQUAL 0 OR said MATCHES "#2914|SNX_ACCEPT_LLVM22_MISCOMPILE")
+        message(FATAL_ERROR "${case}: an LLVM other than 22 must say nothing of #2914: status ${result}, ${said}")
     endif()
 endforeach()
 message(STATUS "LLVM dependency discovery: native, Windows, cross-build and package policies passed")

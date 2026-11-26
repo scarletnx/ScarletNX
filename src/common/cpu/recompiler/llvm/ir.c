@@ -133,6 +133,17 @@ void snx_ir_diagnostics(int stats, const char* dump_pc) {
 int snx_ir_volatile(void) { return g_ir.volatile_memory; }
 int snx_ir_stats_on(void) { return g_ir.stats; }
 SnxU64 snx_ir_dump_pc(void) { return g_ir.dump ? g_ir.dump_pc : 0; }
+#ifndef SNX_IR_LLVM22_MISCOMPILE
+#define SNX_IR_LLVM22_MISCOMPILE 0
+#endif
+void snx_ir_say_miscompile(FILE* out, int accepted, const char* version) {
+    if (accepted)
+        fprintf(
+            out,
+            "LLVM %s: this build took it with SNX_ACCEPT_LLVM22_MISCOMPILE, and its -O2 makes a lane of A32's VRSHL "
+            "and VQSHL wrong on a host with AVX-512 (#2914)\n",
+            version);
+}
 static int init_llvm(char* error, size_t error_size) {
     /* the asm parser for the runtime library's inline assembly (rtlib.c's divq, cpu.h's compiler barrier) */
     if (LLVMInitializeNativeTarget() || LLVMInitializeNativeAsmPrinter() || LLVMInitializeNativeAsmParser()) {
@@ -235,6 +246,7 @@ static int init_llvm(char* error, size_t error_size) {
         snx_ir_host.mips64 = 1;
     }
     g_ir.initialized = 1;
+    snx_ir_say_miscompile(stderr, SNX_IR_LLVM22_MISCOMPILE, LLVM_VERSION_STRING);
     return x86 || arm || ppc || other ? 0 : -1;
 }
 static void init_once(void) { g_ir.ready = init_llvm(g_ir.error, sizeof g_ir.error) ? -1 : 1; }

@@ -53,8 +53,9 @@ only where you would run a program from the same source.
 
 ## Running an app
 
-Build it with LLVM 22 (`-DSNX_LLVM_CONFIG=` its `llvm-config`, [Build](../../dev/build.md)). The JIT compiles an app's
-native code with the LLVM the build links, and LLVM 19, FreeBSD's `llvm` package, crashes on some of an engine's code.
+Build it with LLVM 22 or newer (`-DSNX_LLVM_CONFIG=` its `llvm-config`, [Build](../../dev/build.md); LLVM 22 also needs
+`-DSNX_ACCEPT_LLVM22_MISCOMPILE=ON`, #2914). The JIT compiles an app's native code with the LLVM the build links, and LLVM
+19, FreeBSD's `llvm` package, crashes on some of an engine's code.
 The configure step warns when the Android driver is built with an older one.
 
 `build/scarletnx-android APP.apk` runs an app in a window, with the left mouse button as a finger and the keyboard

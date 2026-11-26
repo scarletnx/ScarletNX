@@ -14,6 +14,7 @@
 #include <llvm-c/Target.h>
 #include <llvm-c/TargetMachine.h>
 #include <llvm-c/Transforms/PassBuilder.h>
+#include <stdio.h>
 
 /* cpu.h's inline functions and macro bodies, built on first use in each module */
 enum {
@@ -250,6 +251,9 @@ LLVMValueRef ir_flags_cond(SnxIr* ir, unsigned cond);
 int snx_ir_init(char* error, size_t error_size);
 /* whether snx_ir_init started LLVM, which a native back end's work never does */
 int snx_ir_started(void);
+/* The line a build that took LLVM 22 with SNX_ACCEPT_LLVM22_MISCOMPILE (cmake/llvm.cmake, #2914) writes to out, once, when
+   snx_ir_init starts LLVM, of LLVM version: nothing where accepted is 0 */
+void snx_ir_say_miscompile(FILE* out, int accepted, const char* version);
 /* Tests': takes every host feature whose name begins with prefix out of what snx_ir_init reads into snx_ir_host and
    of the target machines snx_ir_new and snx_ir_new_jit make, so the host runs as one without them (prefix "avx512":
    an x86-64 with AVX2 and no AVX-512). prefix names a whole family, as "avx512" does: a feature left in that needs

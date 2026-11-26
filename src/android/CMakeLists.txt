@@ -12,7 +12,7 @@
 if(SNX_LLVM_VERSION)
     string(REGEX MATCH "^[0-9]+" snx_android_llvm_major "${SNX_LLVM_VERSION}")
     if(snx_android_llvm_major AND snx_android_llvm_major LESS 22)
-        message(WARNING "The Android driver is built with LLVM ${SNX_LLVM_VERSION}: build it with LLVM 22 "
+        message(WARNING "The Android driver is built with LLVM ${SNX_LLVM_VERSION}: build it with LLVM 22 or newer "
                         "(-DSNX_LLVM_CONFIG=), as LLVM ${snx_android_llvm_major}'s code generator crashes on some "
                         "apps' native code (docs/platforms/android-apps/README.md)")
     endif()

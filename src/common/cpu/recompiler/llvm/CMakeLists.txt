@@ -167,6 +167,9 @@ set_source_files_properties(elf_object.c code_loader.c code_loader_coff.c gdb_ji
 target_include_directories(snx_llvm SYSTEM PUBLIC "${SNX_LLVM_INCLUDE_DIR}")
 target_compile_options(snx_llvm PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 target_compile_definitions(snx_llvm PRIVATE _CRT_SECURE_NO_WARNINGS)
+if(snx_llvm_major STREQUAL "22") # taken with SNX_ACCEPT_LLVM22_MISCOMPILE (cmake/llvm.cmake): ir.c says so
+    target_compile_definitions(snx_llvm PRIVATE SNX_IR_LLVM22_MISCOMPILE=1)
+endif()
 target_link_directories(snx_llvm PUBLIC "${SNX_LLVM_LIBRARY_DIR}")
 target_link_libraries(snx_llvm PUBLIC snx_recompiler_base snx_arm_llvm ${SNX_LLVM_LIBS} ${SNX_LLVM_SYSTEM_LIBS}
                       Threads::Threads)

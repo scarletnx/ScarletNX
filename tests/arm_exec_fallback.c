@@ -2,8 +2,10 @@
    Copyright 2026 the ScarletNX contributors */
 /* The AArch32 executor where the loader does not take a native block's object: LLVM makes the block, its reason counted
    and said once however many blocks have it, and a block LLVM's object cannot load either is NULL, said too. exec.c is
-   here, its loads counted and refused as the test asks */
+   here, its loads counted and refused as the test asks. A build that took LLVM 22 (SNX_ACCEPT_LLVM22_MISCOMPILE, #2914)
+   says so once as LLVM starts, and only that build */
 #include "common/cpu/recompiler/llvm/code_loader.h"
+#include <llvm/Config/llvm-config.h>
 #include <stdio.h>
 static struct {
     int refuse; /* the loads to refuse from here on */
@@ -66,10 +68,28 @@ int main(void) {
     if (f) fclose(f);
     said[n] = 0;
     remove(path);
-    size_t lines = 0;
+    size_t lines = 0, took22 = LLVM_VERSION_MAJOR == 22; /* the configure refuses 22 without the option */
     for (const char* p = said; *p; ++p) lines += *p == '\n';
-    CHECK(lines == 2 && strstr(said, "LLVM makes a block it leaves: ") && strstr(said, "nothing makes a block: "),
-          "%zu lines said, 2 wanted, LLVM's and nobody's:\n%s", lines, said);
+    CHECK(lines == 2 + took22 && strstr(said, "LLVM makes a block it leaves: ") &&
+              strstr(said, "nothing makes a block: "),
+          "%zu lines said, %zu wanted, LLVM's and nobody's:\n%s", lines, 2 + took22, said);
+    CHECK(!strstr(said, "#2914") == !took22, "LLVM %s's start %s of #2914:\n%s", LLVM_VERSION_STRING,
+          took22 ? "says nothing" : "speaks", said);
+    /* the line itself, said or not */
+    for (int accepted = 0; accepted < 2; ++accepted) {
+        char line[512] = "";
+        FILE* out = tmpfile();
+        if (!out) return 1;
+        snx_ir_say_miscompile(out, accepted, "22.1.8");
+        rewind(out);
+        n = fread(line, 1, sizeof line - 1, out);
+        fclose(out);
+        line[n] = 0;
+        CHECK(accepted ? strstr(line, "LLVM 22.1.8: ") == line && strstr(line, "SNX_ACCEPT_LLVM22_MISCOMPILE") &&
+                             strstr(line, "VRSHL and VQSHL") && strstr(line, "(#2914)\n")
+                       : !n,
+              "accepted %d: \"%s\"", accepted, line);
+    }
     if (!g_fallback.failures) puts("a native block's object that does not load is LLVM's, said once");
     return g_fallback.failures != 0;
 }
