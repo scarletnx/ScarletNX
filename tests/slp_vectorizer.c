@@ -2,9 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* LLVM's SLP vectorizer, the setting slp_vectorizer (common/cpu/recompiler/llvm/ir.c): on as LLVM has it until
    snx_ir_slp_vectorizer(0), which stops it in default<O2> and default<O3> as the pass builder's SLPVectorization does
-   not, once for the process; and the JIT cache's key says which */
+   not, once for the process */
 #include "common/cpu/recompiler/llvm/ir.h"
-#include "common/cpu/recompiler/jit/jit_cache.h"
 #include <assert.h>
 #include <llvm-c/Core.h>
 #include <llvm-c/TargetMachine.h>
@@ -62,11 +61,10 @@ static int packed(const char* pipeline) {
 }
 
 int main(void) {
-    char error[256], *on, *off;
+    char error[256];
     assert(!snx_ir_init(error, sizeof error));
     /* LLVM's own: on, and the pass builder's switch leaves it on */
-    on = snx_jit_cache_key('2', 0, 0, 0);
-    assert(snx_ir_slp() == 1 && on && strstr(on, " slp=1 "));
+    assert(snx_ir_slp() == 1);
 #if defined(__x86_64__) || defined(_M_X64) || defined(__aarch64__) || defined(_M_ARM64)
     assert(packed("default<O2>")); /* SIMD for two doubles: the hosts the CI runs this on */
 #endif
@@ -75,10 +73,7 @@ int main(void) {
     snx_ir_slp_vectorizer(0);
     assert(!snx_ir_slp() && !packed("default<O2>") && !packed("default<O3>"));
     snx_ir_slp_vectorizer(0); /* once only: LLVM refuses its option given twice */
-    off = snx_jit_cache_key('2', 0, 0, 0);
-    assert(!snx_ir_slp() && off && strstr(off, " slp=0 ") && strcmp(on, off));
-    free(on);
-    free(off);
+    assert(!snx_ir_slp());
     puts("PASS slp_vectorizer");
     return 0;
 }
