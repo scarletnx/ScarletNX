@@ -32,11 +32,12 @@ TEST_STEPS = {
         'Run the AppImage as a user would',
         'Test headless Vulkan and NX runtime',
         'Test native tooling and indexed filesystems',
-        'Test the native back ends under Unicorn',
         'Check optional Python diagnostics',
         'Make the x86-64 instruction selection again',
     ],
     'linux-sanitizers': ['Test under the sanitizers'],
+    # a job of its own, beside the appimage job, whose longest test it was
+    'linux-unicorn': ['Test the native back ends under Unicorn'],
     'appimage-cross': [
         'Install qemu-user',
         'Run the A64 differential against the recorded QEMU reference',
@@ -52,6 +53,7 @@ TEST_STEPS = {
 # the steps that make the packages, which every event runs: a pull request's run makes what main's publishes
 BUILD_STEPS = {
     'appimage': ['Build and install into /usr', 'Make the AppImage', 'Build the tests and the headless Vulkan tree'],
+    'linux-unicorn': ['Build the tests under Unicorn'],
     'appimage-cross': [
         "Install the target container's tools and libraries",
         'Install the packaging tools',
@@ -136,7 +138,7 @@ def check(text):
 
 def self_test(text):
     """the checks on copies of the workflow made wrong, each named: (the copies they missed, how many)"""
-    unicorn = "        if: matrix.arch == 'x86_64' && env.SNX_TESTS == 'true'\n"
+    unicorn = "      - name: Test the native back ends under Unicorn\n        if: env.SNX_TESTS == 'true'\n"
     cases = {
         'a test step on every event': text.replace(
             "      - name: Test under the sanitizers\n        if: env.SNX_TESTS == 'true'\n",
@@ -149,9 +151,12 @@ def self_test(text):
             "        if: env.SNX_TESTS == 'true' && github.event_name != 'pull_request'\n",
         ),
         "the tests under Unicorn on a pull request's changes": text.replace(
-            '      - name: Test the native back ends under Unicorn\n' + unicorn,
+            unicorn,
             '      - name: Test the native back ends under Unicorn\n'
-            "        if: matrix.arch == 'x86_64' && env.SNX_TESTS == 'true' && steps.unicorn.outputs.unicorn == 'true'\n",
+            "        if: env.SNX_TESTS == 'true' && steps.unicorn.outputs.unicorn == 'true'\n",
+        ),
+        "the tests under Unicorn on main's push": text.replace(
+            unicorn, '      - name: Test the native back ends under Unicorn\n'
         ),
         "main's push testing": text.replace(
             "github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' ||\n",
