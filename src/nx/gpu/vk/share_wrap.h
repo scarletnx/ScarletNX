@@ -728,6 +728,9 @@ static inline Surf* sh_vk_rt_snapshot(Surf* rt, int pixels) {
 }
 static inline VkSampler sh_vk_sampler(const u32* tsc, int raise, int integer) {
     if (!vk_share_on()) return vk_sampler(tsc, raise, integer);
+    /* a sampler made before: its table entry is written one time, and read with no share lock */
+    VkSampler const found = vk_sampler_find(tsc, raise, integer);
+    if (found) return found;
     vk_share_lock_at(96);
     VkSampler const r = vk_sampler(tsc, raise, integer);
     vk_share_unlock();
@@ -828,20 +831,6 @@ static inline int sh_vk_surf_can_writeback(const Surf* s) {
     vk_share_unlock();
     return r;
 }
-static inline u32 sh_vk_surf_epoch_at(u64 gva) {
-    if (!vk_share_on()) return vk_surf_epoch_at(gva);
-    vk_share_lock_at(110);
-    u32 const r = vk_surf_epoch_at(gva);
-    vk_share_unlock();
-    return r;
-}
-static inline u64 sh_vk_surf_guest_size(const Surf* s) {
-    if (!vk_share_on()) return vk_surf_guest_size(s);
-    vk_share_lock_at(111);
-    u64 const r = vk_surf_guest_size(s);
-    vk_share_unlock();
-    return r;
-}
 static inline int sh_vk_surf_keep_begin(Surf* s, VkImageKeep* k) {
     if (!vk_share_on()) return vk_surf_keep_begin(s, k);
     vk_share_lock_at(112);
@@ -866,13 +855,6 @@ static inline void sh_vk_surf_wrote(Surf* s) {
     vk_share_lock_at(114);
     vk_surf_wrote(s);
     vk_share_unlock();
-}
-static inline VkDescriptorSet sh_vk_table_set(void) {
-    if (!vk_share_on()) return vk_table_set();
-    vk_share_lock_at(115);
-    VkDescriptorSet const r = vk_table_set();
-    vk_share_unlock();
-    return r;
 }
 static inline int sh_vk_table_words(const VkImageView* views, const VkImageLayout* layouts, const VkSampler* samplers, u32 n, u32* words) {
     if (!vk_share_on()) return vk_table_words(views, layouts, samplers, n, words);
@@ -1179,12 +1161,15 @@ static const char* const sh_names[] = {"vk_all_barrier_by", "vk_astc_bcn", "vk_b
 #define vk_surf_batch_begin sh_vk_surf_batch_begin
 #define vk_surf_batch_end sh_vk_surf_batch_end
 #define vk_surf_can_writeback sh_vk_surf_can_writeback
-#define vk_surf_epoch_at sh_vk_surf_epoch_at
-#define vk_surf_guest_size sh_vk_surf_guest_size
+/* vk_surf_epoch_at (sh_names' 110) reads one bucket's epoch, an atomic word as g_vk_surf_epoch is: no share lock. It
+   was among the lock's most taken functions, about 3,100 takes a present in one game's town, with the most waits */
+/* vk_surf_guest_size (sh_names' 111) reads a target's rt_size, set one time when the target is made, or a texture's
+   size fields, which do not change: no share lock. About 2,300 takes a present in one game's town */
 #define vk_surf_keep_begin sh_vk_surf_keep_begin
 #define vk_surf_view_reset sh_vk_surf_view_reset
 #define vk_surf_wrote sh_vk_surf_wrote
-#define vk_table_set sh_vk_table_set
+/* vk_table_set (sh_names' 115) returns the table's set, which vk_table_init makes before any draw: no share lock.
+   Each draw of the texture table took the lock for it, about 4,600 takes a present in one game's town */
 #define vk_table_words sh_vk_table_words
 #define vk_tc_index sh_vk_tc_index
 #define vk_tc_restride sh_vk_tc_restride

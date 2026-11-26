@@ -249,12 +249,14 @@ void vk_surf_textures(void (*fn)(Surf* t, void* ctx), void* ctx) {
 }
 static _Thread_local int g_rt_flushing;
 _Atomic u32 g_vk_surf_epoch;
-static u32 g_surf_bucket_epoch[SURFH];
-u32 vk_surf_epoch_at(u64 gva) { return g_surf_bucket_epoch[hkey(gva)]; }
+/* atomic as g_vk_surf_epoch: a draw of draw_batches=2 reads them with no share lock (share_wrap.h), and the changes
+   come under it */
+static _Atomic u32 g_surf_bucket_epoch[SURFH];
+u32 vk_surf_epoch_at(u64 gva) { return atomic_load_explicit(&g_surf_bucket_epoch[hkey(gva)], memory_order_acquire); }
 /* a change of the surface table at gva: of its own bucket (a parked target's high bit leaves it in the same one) */
 static void surf_changed(u64 gva) {
     atomic_fetch_add_explicit(&g_vk_surf_epoch, 1, memory_order_relaxed);
-    g_surf_bucket_epoch[hkey(gva)]++;
+    atomic_fetch_add_explicit(&g_surf_bucket_epoch[hkey(gva)], 1, memory_order_release);
     /* item 7b's events: a surface made or freed changes no texel, its draws do (vk_rt_drawn), so its first byte alone */
     if (g_settings.texture_events_shadow && !(gva >> 63)) addr_gens_bump(ADDR_GENS_WRITE, gva, 1);
 }

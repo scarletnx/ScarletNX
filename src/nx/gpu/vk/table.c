@@ -271,6 +271,31 @@ int vk_table_words(const VkImageView* views, const VkImageLayout* layouts, const
     pm_unlock(&g_table.lock);
     return ok;
 }
+/* vk_table_words where each view and sampler is in its near entry: the table makes no entry and forgets none, so the
+   call touches nothing outside the table and its own lock. A draw of draw_batches=2 calls it with no share lock
+   (share_wrap.h), where vk_table_words took it at each draw of the table. 0 where one is not there, with words not
+   all written: vk_table_words then */
+int vk_table_words_near(const VkImageView* views, const VkImageLayout* layouts, const VkSampler* samplers, u32 n,
+                        u32* words) {
+    int ok = 1;
+    const u64 frame = vk_frame_id();
+    pm_lock(&g_table.lock);
+    for (u32 i = 0; i < n && ok; i++) {
+        if (!views[i]) {
+            words[i] = 0;
+            continue;
+        }
+        const TableView* v = &g_table.near_views[near_view_index(views[i], layouts[i])];
+        const TableSampler* s = &g_table.near_samplers[near_sampler_index(samplers[i])];
+        ok = v->view == views[i] && v->layout == layouts[i] && s->sampler == samplers[i];
+        if (ok) {
+            g_table.slot_frame[v->slot] = frame;
+            words[i] = v->slot | s->slot << SNX_TABLE_SAMPLER_SHIFT;
+        }
+    }
+    pm_unlock(&g_table.lock);
+    return ok;
+}
 /* each entry of view goes (forget_entry) */
 void vk_table_forget_view(VkImageView view) {
     if (!g_table.set || !view) return;
