@@ -35,6 +35,16 @@
    covered by that: less than it */
 #define JOIN_US (10 * 1000000)
 #define GONE_US (8 * 1000000)
+/* a call that waits on the guest's clock, never on the host's: under 100 ms of it since before_us. The bound is the
+   host's clock, which also goes on while this process waits for a CPU: what it took is said */
+static void prompt(const char* what, int64_t before_us) {
+    int64_t took = snx_net_now_us() - before_us;
+    if (took >= 100000)
+        fprintf(stderr,
+                "%s took %.1f ms of the host's clock, not under 100: it waited on the host, or the host made it wait\n",
+                what, (double)took / 1000.0);
+    assert(took < 100000);
+}
 /* a request's answer: no transport error, and a result code of 0 */
 static void replied(SnxCtrProcess* p, const uint32_t* words, uint32_t result) {
     assert(!result);
@@ -47,7 +57,7 @@ static void request(SnxCtrProcess* p, uint32_t handle, const uint32_t* words, un
     int64_t before = snx_net_now_us();
     SnxCtrSvcResult state = snx_ctr_ipc_send(p, handle, &result);
     if (state == SNX_CTR_SVC_BLOCKED) {
-        assert(snx_net_now_us() - before < 100000);
+        prompt("a join's request", before);
         assert((words[0] >> 16) == 0x1e);
         uint32_t caller = p->current_thread;
         assert(snx_ctr_thread(p)->wake_ns > snx_ctr_now_ns());
@@ -418,7 +428,7 @@ static void join_failures(void) {
         uint32_t refs = p->objects[caller].refs;
         int64_t start = snx_net_now_us();
         assert(snx_ctr_ipc_send(p, handle, &result) == SNX_CTR_SVC_BLOCKED);
-        assert(snx_net_now_us() - start < 100000);
+        prompt("a join's request", start);
         assert(p->objects[caller].refs == refs + 1);
         uint32_t worker;
         const uint32_t registers[5] = {0x31, 0x100000, 0, SNX_CTR_STACK_TOP - 0x1000, 0xfffffffe};
@@ -429,12 +439,16 @@ static void join_failures(void) {
         ++p->objects[p->gsp.shared_object].refs;
         p->dsp.core = snx_ctr_dsp_new(p->memory, NULL, NULL);
         assert(p->dsp.core);
-        p->gsp.next_vblank_ns = p->dsp.next_frame_ns = snx_ctr_now_ns();
+        uint64_t due = snx_ctr_now_ns();
+        p->gsp.next_vblank_ns = p->dsp.next_frame_ns = due;
         assert(snx_ctr_schedule(p) == SNX_CTR_SCHED_RUN);
         assert(p->current_thread == snx_ctr_handle_object(p, worker));
         uint32_t worker_tls = p->cpu.state.cpu.tpidruro + 0x80;
         ctr_put(p, worker_tls, 0xfeedface);
-        assert(p->gsp.vblank_count && p->dsp.next_frame_ns > snx_ctr_now_ns());
+        /* the display's frame and the DSP's ran under the blocked join, and the DSP's next is a frame after the one
+           that was due or later: by its own times, not the host's clock, which goes on while this process waits
+           for a CPU */
+        assert(p->gsp.vblank_count && p->dsp.next_frame_ns >= due + SNX_CTR_DSP_FRAME_NS);
         if (scenario == 1) { /* CLOSE before SYNC: own node ID is still zero. */
             uint8_t incoming[2048];
             SnxSockAddr source;
@@ -687,7 +701,7 @@ int main(int argc, char** argv) {
     for (int64_t end = snx_net_now_us() + WAIT_US;;) {
         int64_t before = snx_net_now_us();
         request(client, client_h, scanning, 21);
-        assert(snx_net_now_us() - before < 100000); /* never host-sleep for 300 ms */
+        prompt("a scan's request", before); /* never host-sleep for 300 ms */
         assert(snx_ctr_thread(client)->wake_ns > snx_ctr_now_ns());
         ++scans;
         if (ctr_word(client, BUFFER + 8) || snx_net_now_us() >= end) break;
@@ -853,7 +867,7 @@ int main(int argc, char** argv) {
     assert(snx_ctr_schedule(client) == SNX_CTR_SCHED_RUN);
     assert(client->current_thread != scanning_thread);
     assert(client->current_thread == snx_ctr_handle_object(client, worker));
-    assert(snx_net_now_us() - schedule_start < 100000);
+    prompt("the scheduler's pass to a thread that can run", schedule_start);
     snx_ctr_process_free(client);
     snx_ctr_process_free(host);
     if (room) {

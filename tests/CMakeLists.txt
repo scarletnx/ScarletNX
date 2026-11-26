@@ -1048,7 +1048,7 @@ if(SNX_BUILD_3DS)
     add_test(NAME 3ds_uds_relay COMMAND snx-test-3ds-uds)
     add_test(NAME 3ds_uds_delayed_relay COMMAND snx-test-3ds-uds --delay)
     # a wait of the two lasts 30 s at most and says what is missing (3ds_uds.c), which ctest's own limit must not precede
-    # alone: a request within 100 ms and a DSP frame 4.9 ms away are the host's clock, which tests beside them take
+    # alone: a request within 100 ms is the host's clock, which tests beside them take
     set_tests_properties(3ds_uds_delayed_relay 3ds_uds_relay PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE)
     # nim:aoc's Initialize answers the no-network error a console gives (tests/3ds_nim_aoc.c)
     add_executable(snx-test-3ds-nim-aoc 3ds_nim_aoc.c support/3ds_guest.c)
