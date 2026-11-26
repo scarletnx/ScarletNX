@@ -16,4 +16,5 @@ build folder. `a64.decode` says that QEMU's `scripts/decodetree.py` reads it. Sc
 script: `tools/decodetree` is a port of it in C, and the A32, T32 and T16 decoders come from the same tool. The
 generated files are derived from `a64.decode` and carry its license. `tests/a64_decode_test.c` checks them, and
 `tests/a64_decode_group.c` a decoder of four rows of its own (`tests/a64_decode_group/`), for the rows a word falls to
-when the body of an earlier one refuses it.
+when the body of an earlier one refuses it, and for an instruction's text: its name and its arguments as these files
+name them, in their argument set's order (`snx_a64_word_fields`, which `scarletnx --mcp` lists A64 code with).
