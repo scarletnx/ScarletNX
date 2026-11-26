@@ -1698,7 +1698,7 @@ static u32 imp_get(u64 cpu, u64 len) {
                 pick = k;
         }
         if (pick < g_uma.nimp) old = pick;
-        if (g_uma.no_wait && region_writes_wait(g_uma.imp[old].cpu, g_uma.imp[old].cpu + g_uma.imp[old].size)) {
+        if ((g_uma.no_wait || vk_share_on()) && region_writes_wait(g_uma.imp[old].cpu, g_uma.imp[old].cpu + g_uma.imp[old].size)) {
             g_uma.would_wait++;
             return ~0u;
         }
@@ -1710,7 +1710,7 @@ static u32 imp_get(u64 cpu, u64 len) {
        the move copies what their pages hold (mem_migrate), and a write landing after it would land in a buffer no
        page maps any more (a copy engine's results into a region read nought past the lookup that grew it) */
     if (g_uma.migrate && last > first) {
-        if (g_uma.no_wait && region_writes_wait(lo, hi)) {
+        if ((g_uma.no_wait || vk_share_on()) && region_writes_wait(lo, hi)) {
             g_uma.would_wait++;
             return ~0u;
         }

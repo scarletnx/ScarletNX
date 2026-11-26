@@ -403,6 +403,8 @@ extern _Atomic int g_vk_share_on;
 static inline int vk_share_on(void) { return atomic_load_explicit(&g_vk_share_on, memory_order_acquire); }
 void vk_share_lock(void);
 void vk_share_unlock(void);
+u32 vk_share_release_all(void);  /* this thread's holds let go whole: their depth */
+void vk_share_retake(u32 depth); /* and taken again, to that depth */
 /* a take for the wrapped function fn (share_wrap.h), counted for it, and its counts since the last call */
 void vk_share_lock_at(u32 fn);
 void vk_share_fn_times(u32 fn, u64* takes, u64* wait);
@@ -429,7 +431,10 @@ typedef struct VkRecList VkRecList;
 VkRecList* vk_rec_list_new(void);
 void vk_rec_list_begin(VkRecList* l);
 int vk_rec_list_end(void);
-void vk_rec_list_splice(const VkRecList* l);
+void vk_rec_list_splice(VkRecList* l);
+/* the frame's and the uploads' command buffers that l's packets name (a split run's, at its start): the splice names
+   the ring's current ones in their place where it submitted since */
+void vk_rec_list_names(VkRecList* l, VkCommandBuffer cb, VkCommandBuffer up);
 u64 vk_rec_list_bytes(const VkRecList* l);
 /* A call that chooses by the order of all earlier work (barriers, passes): from a thread with a list, it goes into the
    list and the renderer thread runs it at the splice, at its place; else it runs now. arg's size bytes are copied.
@@ -451,6 +456,13 @@ void vk_surf_before_reset(const struct Surf* s);
 /* the slot of the per-draw memos this thread uses (render.c's RC_SLOTS): 0 but on a batch's worker */
 #define VK_RC_SLOTS 4
 u32 vk_render_slot(void);
+/* a split run's worker (draw_batches=2) that needs the recording ring itself: back when the renderer thread's half is
+   in the ring and it waits in the join (render.c) */
+void vk_split_go_serial(void);
+/* record.c's: this thread a split run's worker that needs the ring or the frame's state: serial from here */
+void vk_rec_list_serial(void);
+/* the command buffers a split run's worker records against (begun at the split), or none (cmd.c) */
+void vk_cmd_split(VkCommandBuffer cb, VkCommandBuffer up);
 void vk_prep_times(u64* lat, u64* work, u64* joined, u64* join_wait); /* in counter ticks */
 /* Lets go of vk_lock for work that needs nothing it guards, when this thread holds it once (an outer hold can't be let
    go of here): 1 when it let go. vk_lock_resume(that) takes it again. What the hold saw before can have changed when

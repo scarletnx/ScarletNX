@@ -168,7 +168,7 @@ void vk_share_lock(void) {
     int waited = 0;
     while (atomic_exchange_explicit(&g_share_taken, 1, memory_order_acquire)) {
         waited = 1;
-        while (atomic_load_explicit(&g_share_taken, memory_order_relaxed)) __builtin_ia32_pause();
+        while (atomic_load_explicit(&g_share_taken, memory_order_relaxed)) plat_spin_hint();
     }
     t_share_at = timed ? __builtin_readcyclecounter() : 0;
     typeof(g_share_stats[0])* const st = &g_share_stats[vk_render_slot() != 0];
@@ -181,6 +181,20 @@ void vk_share_lock(void) {
     share_add(&st->c[SH_WAITED], (u64)waited);
     share_add(&st->c[SH_WAIT], t_share_at - t0);
     t_share_held = 1;
+}
+/* this thread's holds let go whole, while it waits for the other thread (vk_split_go_serial): the depth, for
+   vk_share_retake */
+u32 vk_share_release_all(void) {
+    const u32 depth = t_share_depth;
+    if (!depth) return 0;
+    t_share_depth = 1;
+    vk_share_unlock();
+    return depth;
+}
+void vk_share_retake(u32 depth) {
+    if (!depth) return;
+    vk_share_lock();
+    t_share_depth = depth;
 }
 void vk_share_unlock(void) {
     if (--t_share_depth) return;
