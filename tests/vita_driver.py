@@ -71,6 +71,8 @@ def main():
             '--gdb-jit=0',
             '--stats=0',
             '--frame-pacing=2',
+            '--vk-gpu-profile=0',
+            '--vk-checkpoints=0',
             '--help',
         ],
         0,

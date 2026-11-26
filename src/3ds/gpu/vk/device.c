@@ -3,6 +3,7 @@
 #include "3ds/gpu/present.h"
 #include "3ds/gpu/vk/vk.h"
 #include "3ds/gpu/vk/vk_render.h"
+#include "common/gpu/vk/marks.h"
 #include "common/gpu/vk/device_settings.h"
 #include "common/gpu/vk/vk_common.h"
 #include "common/memory/host.h"
@@ -119,6 +120,7 @@ static bool choose(SnxVkChoice* c, void* user) {
     want.features.samplerAnisotropy = features.features.samplerAnisotropy;
     void* const enable[] = {&want, &want12, &want13, index8 ? &want_index : NULL, objects ? &want_object : NULL};
     snx_vk_chain(enable, sizeof enable / sizeof *enable);
+    v->checkpoints = snx_vk_marks_choose(c, g_settings.gpu_checkpoints);
     want.pNext = snx_vk_pacing_choose(&v->pacing, c, g_settings.frame_pacing, want.pNext);
     if (!snx_vk_choice_create(c, &want, NULL, NULL, 0)) return false;
     v->index8 = index8 && index_features.indexTypeUint8;
@@ -673,6 +675,8 @@ static bool init(SnxCtrMemory* memory, bool headless, char* error, size_t error_
         snx_ctr_vk_free();
         return false;
     }
+    v->ring.marks = snx_vk_marks_new(v->phys, v->device, v->family, g_settings.gpu_profile, g_settings.gpu_checkpoints,
+                                     v->checkpoints, "3ds gpu", "frame");
     /* a recording opens the renderer's per-slot state, a rendering pass ends with its command buffer, and what the
        renderer kept for a submission goes when it is done */
     v->ring.begin = snx_ctr_vk_render_begin;
@@ -728,6 +732,7 @@ void snx_ctr_vk_free(void) {
                 snx_ctr_track_set(v->memory, v->ram[i].base, v->ram[i].size, SNX_CTR_TRACK_NONE);
         }
         release_ram(v);
+        snx_vk_marks_free(v->ring.marks, v->device);
         snx_vk_ring_free(&v->ring);
         vkDestroyDevice(v->device, NULL);
     }

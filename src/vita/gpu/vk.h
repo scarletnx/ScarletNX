@@ -42,6 +42,7 @@ typedef struct {
     bool local_read, raster_order;
     SnxVkSwapchain swap;
     SnxVkPacing pacing; /* frame_pacing's (common/gpu/vk/pacing.h) */
+    bool checkpoints;   /* the device is made with vk_checkpoints' extension (common/gpu/vk/marks.h) */
     SnxVkPaced paced;
     /* a submission slot's acquired image, a swapchain image's rendering done */
     VkSemaphore acquired[VITA_VK_SLOTS], rendered[SNX_VK_SWAP_IMAGES];

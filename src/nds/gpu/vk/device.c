@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "nds/gpu/vk/vk.h"
+#include "common/gpu/vk/marks.h"
 #include "common/gpu/vk/device_settings.h"
 #include <SDL3/SDL.h>
 #include <stdio.h>
@@ -28,6 +29,7 @@ static bool choose(SnxVkChoice* c, void* user) {
                                                .dynamicRendering = VK_TRUE};
     VkPhysicalDeviceFeatures2 want = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &want13};
     want.features.independentBlend = VK_TRUE;
+    v->checkpoints = snx_vk_marks_choose(c, g_settings.gpu_checkpoints);
     want.pNext = snx_vk_pacing_choose(&v->pacing, c, g_settings.frame_pacing, want.pNext);
     return snx_vk_choice_create(c, &want, NULL, NULL, 0);
 }
@@ -92,6 +94,8 @@ bool nds_vk_init(const char* title, bool headless, char* error, size_t error_siz
         snx_vk_window_close(&v->host);
         return false;
     }
+    v->ring.marks = snx_vk_marks_new(v->phys, v->device, v->family, g_settings.gpu_profile, g_settings.gpu_checkpoints,
+                                     v->checkpoints, "nds gpu", "frame");
     g_device.up = true;
     return true;
 }
@@ -100,6 +104,7 @@ void nds_vk_free(void) {
     NdsVk* v = &g_device.vk;
     if (!g_device.up) return;
     vkDeviceWaitIdle(v->device);
+    snx_vk_marks_free(v->ring.marks, v->device);
     snx_vk_ring_free(&v->ring);
     vkDestroyDevice(v->device, NULL);
     snx_vk_window_close(&v->host);

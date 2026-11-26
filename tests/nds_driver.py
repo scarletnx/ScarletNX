@@ -91,6 +91,7 @@ def main():
             ['--stats=0', '--stats-corner=br', '--showcase=0', '--showcase-corner=bl'],
             ['--gamepad-rumble=50', '--nds-slot2=rumble'],
             ['--frame-pacing=2'],
+            ['--vk-gpu-profile=0', '--vk-checkpoints=0'],
         ):
             out = run(['-r', *given, *missing], 1, 'scarletnx-nds: ')
             if 'unexpected argument' in out or 'does nothing' in out:

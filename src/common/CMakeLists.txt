@@ -205,7 +205,7 @@ if(TARGET Vulkan::Headers AND TARGET SDL3::SDL3)
                                      gpu/vk/extension_commands.c "${snx_vk_extension_commands_c}" gpu/vk/ring.c
                                      gpu/vk/shader_object.c gpu/vk/swapchain.c gpu/vk/window.c gpu/vk/notice.c
                                      gpu/vk/rects.c gpu/vk/present_fx.c gpu/vk/fx/fx_fsr.c gpu/vk/gpu_pstate.c
-                                     gpu/vk/pacing.c)
+                                     gpu/vk/pacing.c gpu/vk/marks.c)
     set_target_properties(snx_vk_common PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
     # the GPU's clocks held while a game runs (gpu/vk/gpu_pstate.h): the kernel's interface, which the strict standard
     # of the files above hides, as it does POSIX's open and ioctl
