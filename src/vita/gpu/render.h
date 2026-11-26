@@ -51,4 +51,20 @@ void vita_render_shader_free(VitaProcess* p, void* shader);
 /* for a test: the key of the pipeline a draw of primitive (SceGxmPrimitiveType) with c's programs and state takes in
    the scene being recorded, its shaders made as the draw makes them; 0 with no scene or a program not translated */
 uint64_t vita_render_pipeline_key(VitaProcess* p, GxmContext* c, uint32_t primitive);
+/* for a test: whether that draw has its pipeline, made now as the draw makes it */
+bool vita_render_pipeline_made(VitaProcess* p, GxmContext* c, uint32_t primitive);
+/* prepare_shaders: the shaders and pipelines the game made, in <folder>/shader_cache/vk_prepared.<driver>.bin, read as
+   the renderer starts: each shader made again from its program's bytes, taken by the first program of them drawn, and
+   each pipeline made before the first draw (2) or on the pipeline workers while the game runs (1), a draw that needs
+   one meanwhile making its own. Every shader and pipeline made after it goes into it, packed with
+   compress_prepared_shaders. prepare_shaders=0 neither reads nor writes it. Its key is the build's. What a run read
+   and made of it */
+typedef struct {
+    unsigned shaders, pipelines; /* read */
+    unsigned made;               /* of the pipelines read, made and kept */
+    unsigned drawn;              /* pipelines a draw made itself */
+} VitaPrepared;
+VitaPrepared vita_render_prepared(VitaProcess* p);
+/* for a test: until the workers made every pipeline handed to them, collected at the next scene */
+void vita_render_pipelines_wait(VitaProcess* p);
 #endif

@@ -4,7 +4,10 @@
    draw recorded. A program released and another made in its place, its shader made where the first one's was freed,
    takes a pipeline of its own, not the first one's: the key names a shader by its program, not by its address. A
    fragment program that samples a texture takes a shader for each format of it, found again for a format it had,
-   and one whose texture it does not sample changes nothing; its bytes are read at its first draw alone, not at each. The GXP programs are the translator's smallest: a
+   and one whose texture it does not sample changes nothing; its bytes are read at its first draw alone, not at each.
+   prepare_shaders: a draw's shaders and pipeline go into the prepared file named for the driver, and a second run
+   makes them from it, before its first draw (2) or on the workers (1, collected as a scene begins), so its draw
+   makes no pipeline of its own; packed with compress_prepared_shaders; a record changed on disk ends the file there. The GXP programs are the translator's smallest: a
    header, and one with a cube sampler (vita_usse_cube.c's). Skips (77) without a Vulkan device */
 #include "vita/gpu/gxm.h"
 #include "vita/gpu/gxp.h"
@@ -12,6 +15,10 @@
 #include "vita/gpu/vk.h"
 #include "vita/runtime/process.h"
 #include "vita/runtime/watch.h"
+#include "snx_settings.h"
+#include "common/gpu/vk/prepared.h"
+#include "common/gpu/vk/vk_common.h"
+#include "common/platform/file.h"
 #include "common/platform/vm.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
@@ -31,9 +38,10 @@ static unsigned g_failures;
     } while (0)
 
 /* a process with its memory, its sceGxm state and the renderer, and nothing else of a game's */
-static VitaProcess* process_make(void) {
+static VitaProcess* process_make(const char* folder) {
     VitaProcess* p = calloc(1, sizeof *p);
     if (!p) return NULL;
+    p->folder = folder ? snx_strdup(folder) : NULL; /* where the renderer keeps its files */
     p->user = (VitaRegion){VITA_USER_BASE, VITA_USER_END, VITA_USER_BASE};
     p->cdram = (VitaRegion){VITA_CDRAM_BASE, VITA_CDRAM_END, VITA_CDRAM_BASE};
     p->mem = plat_mem_reserve(VITA_SPACE + 0x10000, 0);
@@ -50,6 +58,7 @@ static void process_free(VitaProcess* p) {
     plat_mem_release(p->mem, VITA_SPACE + 0x10000);
     free(p->page_refs);
     free(p->gxm);
+    free(p->folder);
     free(p);
 }
 /* the smallest GXP the translator takes at at: its header, a vertex program's or a fragment one's, and mark in a byte
@@ -138,13 +147,135 @@ static void check_formats(VitaProcess* p, GxmContext* c, uint32_t code) {
           "texture 0's first format back took another shader, or the program's bytes were read again");
 }
 
+/* a scene on a 16 x 16 surface, the sampling program over the first vertex program, texture 0 of the first format */
+static uint32_t scene_begin(VitaProcess* p) {
+    uint32_t surface = vita_alloc(p, &p->cdram, 0x40000, 0x40000), code = vita_alloc(p, &p->user, 0x1000, 0x1000);
+    vita_render_map(p, surface, 0x40000);
+    GxmContext* c = &p->gxm->context;
+    p->gxm->targets[0] = (GxmTarget){.width = 16, .height = 16};
+    c->has_color = true, c->target = 0;
+    c->color = (GxmColorSurface){.width = 16, .height = 16, .stride = 16, .data = surface, .type = 0};
+    vita_render_begin_scene(p, c);
+    return code;
+}
+static void programs(VitaProcess* p, uint32_t code) {
+    GxmContext* c = &p->gxm->context;
+    p->gxm->vertex[0] = (GxmVertexProgram){.references = 1, .program = program(p, code, false, 1)};
+    p->gxm->fragment[0] =
+        (GxmFragmentProgram){.references = 1, .program = sampling(p, code + 0x300), .blend_info = 0xf};
+    c->vertex_program = GXM_HANDLE_VERTEX;
+    c->fragment_program = GXM_HANDLE_FRAGMENT;
+    texture_format(c, 0, 0x00);
+}
+/* the records of the prepared file at path: how many, and how many packed */
+static void records_of(const char* path, unsigned* records, unsigned* packed) {
+    size_t size = 0;
+    unsigned char* d = snx_read_file(path, &size);
+    uint32_t type, len, key = 0;
+    *records = *packed = 0;
+    if (d && size >= 16) memcpy(&key, d + 12, 4);
+    for (size_t at = (16 + (size_t)key + 7) & ~(size_t)7; d && snx_prep_record(d, at, size, &type, &len);
+         at += SNX_PREP_REC + len) {
+        ++*records;
+        *packed += (type & SNX_PREP_PACKED) != 0;
+    }
+    free(d);
+}
+/* the third record's check changed, the first two kept */
+static void change_third(const char* path) {
+    size_t size = 0;
+    unsigned char* d = snx_read_file(path, &size);
+    uint32_t key = 0, len;
+    if (d && size >= 16) memcpy(&key, d + 12, 4);
+    size_t at = (16 + (size_t)key + 7) & ~(size_t)7;
+    for (int i = 0; d && i < 2 && at + 8 <= size; ++i) {
+        memcpy(&len, d + at + 4, 4);
+        at += SNX_PREP_REC + len;
+    }
+    if (d && at + 8 < size) d[at + 8] ^= 0x5A;
+    if (d) CHECK(!snx_write_file(path, d, size), "cannot write %s", path);
+    free(d);
+}
+/* two runs on a folder of their own each round: the first's draw kept, the second's made from it */
+static void check_prepared(void) {
+    char* base = snx_temp_dir(NULL);
+    char* folder = base ? snx_path_join(base, "prepared") : NULL;
+    free(base);
+    if (!folder) {
+        CHECK(false, "no temporary folder");
+        return;
+    }
+    VkPhysicalDeviceDriverProperties driver = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+    VkPhysicalDeviceProperties2 props = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &driver};
+    vkGetPhysicalDeviceProperties2(vita_vk()->phys, &props);
+    char tag[SNX_VK_DRIVER_TAG], dir[1100], path[1300];
+    snx_vk_driver_tag(tag, sizeof tag, (uint32_t)driver.driverID, props.properties.vendorID, props.properties.deviceID,
+                      NULL);
+    snprintf(dir, sizeof dir, "%s/shader_cache", folder);
+    snx_vk_driver_path(path, sizeof path, dir, "vk_prepared", tag, ".bin");
+    for (int round = 0; round < 3; ++round) {
+        /* 0: made before the first draw, unpacked; 1: on the workers, packed; 2: the same file with a byte changed */
+        const int mode = round == 1 ? 1 : 2;
+        (void)snx_remove_tree(folder);
+        (void)plat_mkdir(folder);
+        g_settings.prepare_shaders = 2;
+        g_settings.compress_prepared_shaders = round == 1;
+        VitaProcess* p = process_make(folder);
+        if (!p) {
+            CHECK(false, "no process");
+            break;
+        }
+        programs(p, scene_begin(p));
+        bool a = vita_render_pipeline_made(p, &p->gxm->context, 0);
+        VitaPrepared one = vita_render_prepared(p);
+        vita_render_wait(p, vita_render_end_scene(p, &p->gxm->context));
+        process_free(p);
+        unsigned records, packed;
+        records_of(path, &records, &packed);
+        if (round == 2) change_third(path);
+        g_settings.prepare_shaders = mode;
+        p = process_make(folder);
+        if (!p) {
+            CHECK(false, "no second process");
+            break;
+        }
+        VitaPrepared two = vita_render_prepared(p);
+        if (mode == 1) vita_render_pipelines_wait(p); /* the workers' pipelines, collected as the scene begins */
+        programs(p, scene_begin(p));
+        bool b = vita_render_pipeline_made(p, &p->gxm->context, 0);
+        VitaPrepared after = vita_render_prepared(p);
+        vita_render_wait(p, vita_render_end_scene(p, &p->gxm->context));
+        process_free(p);
+        printf("prepared: prepare_shaders=%d, compress %d%s: %u records (%u packed), then %u shaders and %u pipelines "
+               "read, %u made, %u drawn\n",
+               mode, round == 1, round == 2 ? ", a record changed" : "", records, packed, two.shaders, two.pipelines,
+               after.made, after.drawn);
+        CHECK(a && b && !one.shaders && !one.pipelines && one.drawn == 1 && records == 3 &&
+                  (round == 1 ? packed >= 1 : !packed),
+              "the first run made %u pipelines and kept %u records, %u packed", one.drawn, records, packed);
+        if (round < 2)
+            CHECK(two.shaders == 2 && two.pipelines == 1 && (mode == 2 ? two.made == 1 : !two.made) &&
+                      after.made == 1 && !after.drawn,
+                  "the second run read %u shaders and %u pipelines, made %u, and its draw made %u", two.shaders,
+                  two.pipelines, after.made, after.drawn);
+        else /* the shaders kept, the pipeline record cut: the draw makes its own */
+            CHECK(two.shaders == 2 && !two.pipelines && after.drawn == 1,
+                  "with a record changed the second run read %u shaders and %u pipelines, and its draw made %u",
+                  two.shaders, two.pipelines, after.drawn);
+    }
+    g_settings.prepare_shaders = 0;
+    (void)snx_remove_tree(folder);
+    free(folder);
+}
+
 int main(void) {
     char why[512];
     if (!vita_vk_init(NULL, why, sizeof why)) {
         printf("SKIP no Vulkan device (%s)\n", why);
         return 77;
     }
-    VitaProcess* p = process_make();
+    g_settings.prepare_shaders = 0; /* the first checks' process keeps no file: it has no folder */
+    VitaProcess* p = process_make(NULL);
     if (!p) {
         fprintf(stderr, "FAIL no process\n");
         return 1;
@@ -160,6 +291,7 @@ int main(void) {
     check_formats(p, c, code);
     vita_render_wait(p, vita_render_end_scene(p, c));
     process_free(p);
+    check_prepared();
     vita_vk_free();
     printf("%s\n", g_failures ? "FAIL" : "ok");
     return g_failures ? 1 : 0;

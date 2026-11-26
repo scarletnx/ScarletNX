@@ -15,6 +15,9 @@
 #include "vita/gpu/usse.h"
 #include "vita/gpu/vk.h"
 #include "common/gpu/vk/jobs.h"
+#include "common/gpu/vk/prepared.h"
+#include "common/platform/time.h"
+#include "common/utilities/build_info.h"
 #include "vita/runtime/watch.h"
 /* compiled from swizzle.comp, picture.comp, yuv.comp and rgb24.comp by the build (cmake/glsl.cmake) */
 #include "vita/gpu/picture_spv.h"
@@ -113,6 +116,7 @@ typedef struct Shader {
     bool failed;
     uint64_t code; /* its program's bytes, read at the program's first draw */
     uint64_t id;   /* those and the hints it was made for, which a pipeline's key names it by */
+    uint32_t prep; /* its record's number in the prepared file plus 1, 0 for none */
     struct Shader* next;
 } Shader;
 typedef struct {
@@ -133,8 +137,16 @@ typedef struct {
     VkPipelineColorBlendStateCreateFlags blend_flags;
     VkFormat color, depth_format, stencil_format;
     VkPipelineCache cache;
-    VkPipeline made; /* a job's, once made */
+    VkPipeline made;           /* a job's, once made */
+    uint32_t vs_prep, fs_prep; /* its shaders' records in the prepared file plus 1 (Shader.prep) */
 } PipeDesc;
+/* a pipeline of the prepared file (prepare_shaders): its key, its shaders by their records' numbers, and what it is
+   made of, its handles none in the file */
+typedef struct {
+    uint64_t key;
+    uint32_t vs, fs;
+    PipeDesc d;
+} PrepPipe;
 /* what the graphics bind point of the open recording holds, so a draw that changes none of it records nothing for it.
    Forgotten (zeroed) when a scene begins and when its rendering resumes: a submit may have put a new command buffer
    under it, which holds none of this */
@@ -171,6 +183,18 @@ struct VitaRender {
     SnxVkJobs pool;
     PipeDesc jobs[SNX_VK_JOBS];
     uint64_t skipped;
+    /* prepare_shaders: the file of the shaders and pipelines made (common/gpu/vk/prepared.h), its shader records, by
+       whose numbers a pipeline's names its shaders; the shaders read from it (prepared_count of them, by record), each
+       until a program takes it; the pipelines of earlier runs to make, on the workers (common/gpu/vk/jobs.h's feed);
+       and what the run says of them */
+    SnxPrepFile prep;
+    uint32_t prep_shaders, prepared_count;
+    Shader** prepared;
+    size_t prepared_room;
+    PrepPipe* prep_pipes;
+    size_t prep_pipe_room;
+    SnxVkFeed feed;
+    VitaPrepared counts;
     VkDescriptorSetLayout set_layout;
     VkPipelineLayout layout;
     VkSampler samplers[2][2][4]; /* min/mag linear, mip, address mode */
@@ -742,6 +766,11 @@ static void depth_attachments(const struct VitaRender* r, const GxmContext* c, b
     *stencil = *depth;
 }
 
+/* the prepared shaders kept between runs (prepare_shaders): the file read as the renderer starts, and the pipelines
+   its workers made collected as a scene begins */
+static void prepared_open(struct VitaRender* r, VitaProcess* p);
+static void prep_feed(struct VitaRender* r, bool all);
+
 /* ---- the renderer ---- */
 #define COMPUTE_PUSH 64u /* the compute shaders' push constants, the largest */
 static bool compute_pipeline(struct VitaRender* r, const u32* words, size_t size, VkPipeline* out) {
@@ -870,6 +899,7 @@ bool vita_render_init(VitaProcess* p) {
         vita_render_free(p);
         return false;
     }
+    prepared_open(r, p); /* with the layout and the driver's cache its pipelines are made with */
     return true;
 }
 static void retire(unsigned slot, uint64_t serial) {
@@ -900,6 +930,12 @@ void vita_render_free(VitaProcess* p) {
     if (r->skipped)
         fprintf(stderr, "scarletnx-vita: async_pipelines=%d skipped %llu draw%s while their pipelines were made\n",
                 g_settings.async_pipelines, (unsigned long long)r->skipped, r->skipped == 1 ? "" : "s");
+    if (r->feed.count && g_settings.prepare_shaders == 1)
+        fprintf(
+            stderr,
+            "scarletnx-vita: prepare_shaders=1 made %u of the %zu pipelines of earlier runs before the game ended\n",
+            r->counts.made, r->feed.count);
+    snx_prep_close(&r->prep);
     vkDeviceWaitIdle(d);
     vita_vk_on_retire(NULL);
     vita_vk_on_submit(NULL);
@@ -914,6 +950,13 @@ void vita_render_free(VitaProcess* p) {
     }
     for (unsigned i = 0; i < PIPELINES; ++i)
         if (r->pipelines[i].pipeline) vkDestroyPipeline(d, r->pipelines[i].pipeline, NULL);
+    for (uint32_t i = 0; i < r->prepared_count; ++i) /* the file's shaders no program took */
+        if (r->prepared[i]) {
+            if (r->prepared[i]->module) vkDestroyShaderModule(d, r->prepared[i]->module, NULL);
+            free(r->prepared[i]);
+        }
+    free(r->prepared);
+    free(r->prep_pipes);
     if (r->cache) {
         char why[512];
         size_t saved = 0;
@@ -1014,6 +1057,7 @@ static uint32_t color_bytes(const GxmContext* c) {
 void vita_render_begin_scene(VitaProcess* p, GxmContext* c) {
     struct VitaRender* r = render_of(p);
     if (!r) return;
+    if (r->feed.next < r->feed.count || r->feed.making) prep_feed(r, false);
     ++r->scene;
     r->rendering = false;
     r->color = r->depth = NULL;
@@ -1217,8 +1261,186 @@ static uint64_t shader_id(uint64_t code, const UsseHints* hints, uint32_t sample
         if (!(sampled & (1u << i))) h.texture_formats[i] = 0;
     return snx_fnv1a(code, &h, sizeof h);
 }
+/* ---- the prepared shaders kept between runs (prepare_shaders) ---- */
+
+/* the file's records: a shader (PrepShader, then its program's bytes) and a pipeline (PrepPipe) */
+enum { PREP_SHADER = 1, PREP_PIPE };
+#define PREP_MAGIC   "SNXVITPS"
+#define PREP_VERSION 1
+typedef struct {
+    UsseHints hints; /* the formats of the textures it does not sample zeroed */
+    uint32_t size, pad;
+} PrepShader;
+/* a shader of the file's that a program of code, drawn with hints, is made into, taken from the list: NULL for none */
+static Shader* prepared_take(struct VitaRender* r, uint64_t code, const UsseHints* hints) {
+    for (uint32_t i = 0; i < r->prepared_count; ++i) {
+        Shader* s = r->prepared[i];
+        if (s && s->code == code && s->id == shader_id(code, hints, s->meta.sampler_mask)) {
+            r->prepared[i] = NULL;
+            return s;
+        }
+    }
+    return NULL;
+}
+static void prep_add_shader(struct VitaRender* r, const void* gxp, uint32_t size, const UsseHints* hints, Shader* s) {
+    if (!r->prep.f) return;
+    PrepShader h = {.hints = *hints, .size = size};
+    for (unsigned i = 0; i < USSE_TEXTURES; ++i)
+        if (!(s->meta.sampler_mask & (1u << i))) h.hints.texture_formats[i] = 0;
+    if (!snx_prep_add(&r->prep, PREP_SHADER, &h, sizeof h, gxp, size)) s->prep = ++r->prep_shaders;
+}
+/* whether key is a pipeline of the file's, made or still to make */
+static bool prep_listed(const struct VitaRender* r, uint64_t key) {
+    for (size_t i = 0; i < r->feed.count; ++i)
+        if (r->prep_pipes[i].key == key) return true;
+    return false;
+}
+/* a pipeline a draw made: into the file, its shaders named by their records, unless the file has it */
+static void prep_add_pipe(struct VitaRender* r, uint64_t key, const PipeDesc* d) {
+    ++r->counts.drawn;
+    if (!r->prep.f || !d->vs_prep || !d->fs_prep || prep_listed(r, key)) return;
+    PrepPipe k = {.key = key, .vs = d->vs_prep - 1, .fs = d->fs_prep - 1, .d = *d};
+    k.d.vs = k.d.fs = VK_NULL_HANDLE, k.d.cache = VK_NULL_HANDLE, k.d.made = VK_NULL_HANDLE;
+    k.d.vs_prep = k.d.fs_prep = 0;
+    (void)snx_prep_add(&r->prep, PREP_PIPE, &k, sizeof k, NULL, 0);
+}
+static bool grow(void** items, size_t* room, size_t count, size_t size) {
+    if (count < *room) return true;
+    size_t n = *room ? *room * 2 : 16;
+    void* p = realloc(*items, n * size);
+    if (!p) return false;
+    *items = p;
+    *room = n;
+    return true;
+}
+/* one record read: its shader made from its program, or its pipeline listed; false for one this build cannot read,
+   which ends the file */
+static bool prep_each(void* ctx, uint32_t type, const uint8_t* payload, uint32_t len) {
+    struct VitaRender* r = ctx;
+    if (type == PREP_SHADER && len >= sizeof(PrepShader)) {
+        PrepShader h;
+        memcpy(&h, payload, sizeof h);
+        if (h.size > len - sizeof h ||
+            !grow((void**)&r->prepared, &r->prepared_room, r->prepared_count, sizeof *r->prepared))
+            return false;
+        Shader* s = calloc(1, sizeof *s);
+        if (!s) return false;
+        const uint8_t* gxp = payload + sizeof h;
+        char error[256];
+        UsseShader out;
+        s->code = snx_fnv1a(SNX_FNV_BASIS, gxp, h.size);
+        s->prep = ++r->prep_shaders;
+        if (usse_translate(gxp, h.size, &h.hints, r->vk->preserve_infnan, &out, error, sizeof error)) {
+            VkShaderModuleCreateInfo mi = {
+                .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = out.count * 4, .pCode = out.words};
+            if (vkCreateShaderModule(r->vk->device, &mi, NULL, &s->module) != VK_SUCCESS) s->module = VK_NULL_HANDLE;
+            free(out.words);
+            out.words = NULL;
+            s->meta = out;
+        }
+        s->failed = !s->module;
+        s->id = shader_id(s->code, &h.hints, s->meta.sampler_mask);
+        r->prepared[r->prepared_count++] = s;
+        ++r->counts.shaders;
+        return true;
+    }
+    if (type == PREP_PIPE && len >= sizeof(PrepPipe)) {
+        PrepPipe k;
+        memcpy(&k, payload, sizeof k);
+        if (k.vs >= r->prepared_count || k.fs >= r->prepared_count) return false;
+        ++r->counts.pipelines;
+        const Shader *vs = r->prepared[k.vs], *fs = r->prepared[k.fs];
+        if (!vs->module || !fs->module) return true; /* one of a program not translated: none, as a draw of it */
+        if (!grow((void**)&r->prep_pipes, &r->prep_pipe_room, r->feed.count, sizeof *r->prep_pipes)) return false;
+        k.d.vs = vs->module, k.d.fs = fs->module, k.d.cache = r->cache;
+        r->prep_pipes[r->feed.count++] = k;
+        return true;
+    }
+    return false;
+}
+/* a pipeline of the file's, made: at its key, unless a draw made it first or the table is full */
+static void prep_adopt(struct VitaRender* r, uint64_t key, VkPipeline made) {
+    if (!made) return;
+    unsigned slot = (unsigned)(key % PIPELINES);
+    for (unsigned probe = 0; probe < PIPELINES; ++probe, slot = (slot + 1) % PIPELINES) {
+        Pipeline* e = &r->pipelines[slot];
+        if (e->key == key && (e->pipeline || e->job)) break;
+        if (!e->pipeline && !e->job) {
+            *e = (Pipeline){.key = key, .pipeline = made};
+            ++r->counts.made;
+            return;
+        }
+    }
+    vkDestroyPipeline(r->vk->device, made, NULL);
+}
+static void prep_fill(void* owner, unsigned job, size_t item) {
+    struct VitaRender* r = owner;
+    r->jobs[job] = r->prep_pipes[item].d;
+}
+static void prep_made(void* owner, unsigned job, size_t item) {
+    struct VitaRender* r = owner;
+    prep_adopt(r, r->prep_pipes[item].key, r->jobs[job].made);
+    r->jobs[job] = (PipeDesc){0};
+}
+static void prep_feed(struct VitaRender* r, bool all) {
+    snx_vk_jobs_feed(&r->pool, &r->feed, all, prep_fill, prep_made);
+}
+static void job_make(void* owner, unsigned job);
+static VkPipeline make_pipe(VkDevice device, VkPipelineLayout layout, const PipeDesc* d);
+/* the workers, as the draws' pipelines and the prepared ones share them: how many there are */
+static unsigned pipe_workers(struct VitaRender* r) {
+    r->pool.make = job_make, r->pool.owner = r, r->pool.who = "scarletnx-vita", r->pool.thread = "Vita pipelines";
+    return snx_vk_jobs_start(&r->pool, g_settings.pipeline_threads);
+}
+static void prepared_open(struct VitaRender* r, VitaProcess* p) {
+    if (!g_settings.prepare_shaders || !p->folder) return;
+    char path[1200], why[512], key[256];
+    r->prep.who = "scarletnx-vita";
+    if (snx_vk_cache_file(r->vk->phys, p->folder, "vk_prepared", path, sizeof path, why, sizeof why)) {
+        fprintf(stderr, "scarletnx-vita: prepare_shaders=%d keeps no shaders between runs: %s\n",
+                g_settings.prepare_shaders, why);
+        return;
+    }
+    /* the records are the game's programs and the renderer's state as this build lays them out */
+    snprintf(key, sizeof key, "guest=%d sizes=%zu,%zu; %s", PREP_VERSION, sizeof(UsseHints), sizeof(PipeDesc),
+             snx_build_commit());
+    r->prep.pack = g_settings.compress_prepared_shaders;
+    const uint64_t t0 = plat_ns();
+    (void)snx_prep_open(&r->prep, path, PREP_MAGIC, PREP_VERSION, key, prep_each, r);
+    if (!r->counts.shaders && !r->counts.pipelines) return;
+    const bool workers = r->feed.count && pipe_workers(r);
+    const bool now = r->feed.count && (g_settings.prepare_shaders == 2 || !workers);
+    if (workers)
+        prep_feed(r, now); /* every one, or the first ones to the workers */
+    else if (now)
+        for (; r->feed.next < r->feed.count; ++r->feed.next) {
+            PrepPipe* k = &r->prep_pipes[r->feed.next];
+            prep_adopt(r, k->key, make_pipe(r->vk->device, r->layout, &k->d));
+        }
+    if (now || !r->feed.count)
+        fprintf(stderr,
+                "scarletnx-vita: %s: %u shaders and %u pipelines of earlier runs, %u of the pipelines made before the "
+                "first draw in %.0f ms%s\n",
+                path, r->counts.shaders, r->counts.pipelines, r->counts.made, (double)(plat_ns() - t0) / 1e6,
+                now && g_settings.prepare_shaders == 1 ? " (prepare_shaders=1, but no pipeline worker started)" : "");
+    else
+        fprintf(stderr,
+                "scarletnx-vita: %s: %u shaders and %u pipelines of earlier runs, the pipelines made on the workers "
+                "while the game runs (prepare_shaders=1)\n",
+                path, r->counts.shaders, r->counts.pipelines);
+}
+void vita_render_pipelines_wait(VitaProcess* p) {
+    struct VitaRender* r = render_of(p);
+    if (r) snx_vk_jobs_wait(&r->pool, false, NULL);
+}
+VitaPrepared vita_render_prepared(VitaProcess* p) {
+    const struct VitaRender* r = render_of(p);
+    return r ? r->counts : (VitaPrepared){0};
+}
+
 /* The program's shader for hints: the slot's, a list each program keeps (its first shader), one made for the formats
-   of the textures it samples, which the first one's translation says; a new one made and put after the others */
+   of the textures it samples, which the first one's translation says, or taken from the prepared file's; a new one
+   made, put after the others and into the file */
 static Shader* shader_for(struct VitaRender* r, VitaProcess* p, void** slot, uint32_t program, const UsseHints* hints) {
     Shader* first = *slot;
     if (first) {
@@ -1226,16 +1448,19 @@ static Shader* shader_for(struct VitaRender* r, VitaProcess* p, void** slot, uin
         for (Shader* s = first; s; s = s->next)
             if (s->id == id) return s;
     }
-    Shader* s = calloc(1, sizeof *s);
-    if (!s) return NULL;
-    s->code =
+    const uint64_t code =
         first ? first->code : snx_fnv1a(SNX_FNV_BASIS, vita_ptr(p, program), snx_ld_le32(vita_ptr(p, program + 8)));
+    Shader* s = prepared_take(r, code, hints);
+    const bool made = s != NULL;
+    if (!s && !(s = calloc(1, sizeof *s))) return NULL;
+    s->code = code;
     if (first) {
         Shader* last = first;
         while (last->next) last = last->next;
         last->next = s;
     } else
         *slot = s;
+    if (made) return s;
     char error[256];
     UsseShader out;
     if (g_settings.vita_shader_corpus[0] &&
@@ -1260,6 +1485,7 @@ static Shader* shader_for(struct VitaRender* r, VitaProcess* p, void** slot, uin
     out.words = NULL;
     s->meta = out;
     s->id = shader_id(s->code, hints, out.sampler_mask);
+    if (s->module) prep_add_shader(r, vita_ptr(p, program), snx_ld_le32(vita_ptr(p, program + 8)), hints, s);
     return s;
 }
 /* SceGxmAttributeFormat and a component count as a vertex format */
@@ -1389,6 +1615,7 @@ static VkPipeline pipeline_for(struct VitaRender* r, GxmContext* c, const GxmVer
         if (e->key == key && e->job) {
             if (!snx_vk_jobs_take(&r->pool, e->job - 1u)) return *making = true, VK_NULL_HANDLE;
             e->pipeline = r->jobs[e->job - 1].made;
+            if (e->pipeline) prep_add_pipe(r, key, &r->jobs[e->job - 1]);
             e->job = 0;
             if (!e->pipeline) { /* the device refused it: the slot free again, the draws after it asking again */
                 e->key = 0;
@@ -1403,7 +1630,16 @@ static VkPipeline pipeline_for(struct VitaRender* r, GxmContext* c, const GxmVer
         once(r, 4, "the pipeline cache is full");
         return VK_NULL_HANDLE;
     }
-    PipeDesc d = {.vs = vs->module, .fs = fs->module, .topology = topology, .cache = r->cache};
+    if (r->feed.making && prep_listed(r, key)) { /* one of the file's: a worker may have made it since */
+        prep_feed(r, false);
+        if (r->pipelines[slot].key == key && r->pipelines[slot].pipeline) return r->pipelines[slot].pipeline;
+    }
+    PipeDesc d = {.vs = vs->module,
+                  .fs = fs->module,
+                  .topology = topology,
+                  .cache = r->cache,
+                  .vs_prep = vs->prep,
+                  .fs_prep = fs->prep};
     for (unsigned i = 0; i < vp->stream_count; ++i)
         d.bindings[d.binding_count++] = (VkVertexInputBindingDescription){
             i, vp->streams[i].stride,
@@ -1474,8 +1710,7 @@ static VkPipeline pipeline_for(struct VitaRender* r, GxmContext* c, const GxmVer
     d.color = r->color->vk_format;
     d.depth_format = r->depth ? r->depth->vk_format : VK_FORMAT_UNDEFINED;
     d.stencil_format = stencil ? r->depth->vk_format : VK_FORMAT_UNDEFINED;
-    r->pool.make = job_make, r->pool.owner = r, r->pool.who = "scarletnx-vita", r->pool.thread = "Vita pipelines";
-    if (g_settings.async_pipelines && snx_vk_jobs_start(&r->pool, g_settings.pipeline_threads)) {
+    if (g_settings.async_pipelines && pipe_workers(r)) {
         int job = snx_vk_jobs_free(&r->pool);
         if (job >= 0) { /* with every job in hand the pipeline is asked for again at the next draw */
             r->jobs[job] = d;
@@ -1491,6 +1726,7 @@ static VkPipeline pipeline_for(struct VitaRender* r, GxmContext* c, const GxmVer
         return VK_NULL_HANDLE;
     }
     r->pipelines[slot].key = key, r->pipelines[slot].pipeline = pipeline;
+    prep_add_pipe(r, key, &d);
     return pipeline;
 }
 /* SceGxmTextureFormat's U8U8U8U8 (four bytes, R in the first for ABGR), U8U8U8 (three bytes expanded to RGBA8),
@@ -2226,6 +2462,17 @@ uint64_t vita_render_pipeline_key(VitaProcess* p, GxmContext* c, uint32_t primit
     draw_shaders(r, p, c, vp, fp, &vs, &fs);
     if (!vs || !fs || vs->failed || fs->failed) return 0;
     return pipeline_key(r, c, vp, vs, fp, fs, topologies[primitive >> 26]);
+}
+bool vita_render_pipeline_made(VitaProcess* p, GxmContext* c, uint32_t primitive) {
+    struct VitaRender* r = render_of(p);
+    if (!r || !r->rendering || primitive >> 26 >= 6) return false;
+    GxmVertexProgram* vp = &p->gxm->vertex[(c->vertex_program - GXM_HANDLE_VERTEX) / GXM_PROGRAM_HANDLE];
+    GxmFragmentProgram* fp = &p->gxm->fragment[(c->fragment_program - GXM_HANDLE_FRAGMENT) / GXM_PROGRAM_HANDLE];
+    Shader *vs, *fs;
+    draw_shaders(r, p, c, vp, fp, &vs, &fs);
+    bool making;
+    return vs && fs && !vs->failed && !fs->failed &&
+           pipeline_for(r, c, vp, vs, fp, fs, topologies[primitive >> 26], &making) != VK_NULL_HANDLE;
 }
 static const char* draw(VitaProcess* p, GxmContext* c, uint32_t primitive, uint32_t index_format, uint32_t indices,
                         uint32_t count, uint32_t instances) {
