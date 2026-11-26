@@ -80,6 +80,11 @@ SnxCtrMemResult snx_ctr_write_ram(SnxCtrAddressSpace* space, uint32_t va, const 
    epoch like CPU stores. MMIO is refused (SNX_CTR_MEM_DEVICE). */
 SnxCtrMemResult snx_ctr_phys_read(SnxCtrMemory* memory, uint32_t pa, void* output, size_t size);
 SnxCtrMemResult snx_ctr_phys_write(SnxCtrMemory* memory, uint32_t pa, const void* input, size_t size);
+/* size bytes at va written page by page through the physical memory behind it, whatever rights the space's mapping
+   gives: a service's write, whose own mapping of a block a game lent it (or of a module it relocates) has rights the
+   game's view lacks. It stops at the first page that is not mapped, with that page's failure */
+SnxCtrMemResult snx_ctr_write_behind(const SnxCtrAddressSpace* space, SnxCtrMemory* memory, uint32_t va,
+                                     const void* input, size_t size);
 
 /* Write tracking: what the GPU keeps of guest RAM, by physical page, so the CPU's accesses come to it first (the
    renderer's surfaces and textures, docs/platforms/3ds/README.md). A page's level, in order:

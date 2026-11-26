@@ -18,27 +18,11 @@ enum { IR_CONNECTION_STATUS = 8, IR_TRYING_TO_CONNECT = 9, IR_CONNECTED = 12, IR
 #define IR_NO_DATA       0xc8810fefu /* NotFound, NoData: the receive queue never holds a packet */
 #define IR_COMMANDS      0x1au       /* the last command ir:USER has (SetOwnMachineId) */
 
-static uint32_t shared_address(SnxCtrProcess* p, uint32_t object) {
-    uint32_t address = p->objects[object].data.shared.address;
-    if (address) return address;
-    for (unsigned i = 0; i < sizeof p->shared_maps / sizeof *p->shared_maps; ++i)
-        if (p->shared_maps[i].object == object && p->shared_maps[i].va) return p->shared_maps[i].va;
-    return 0;
-}
 /* The service is another process: it writes the block's header with the block's other-process permission, which can
    exceed the owner's own mapping (libctru makes the IR block read-only for the owner and writable for the service).
    The single guest mapping cannot carry both rights, so the write goes through the physical pages it maps. */
 static bool write_shared(SnxCtrProcess* p, uint32_t va, const unsigned char* bytes, size_t size) {
-    for (size_t done = 0; done < size;) {
-        uint32_t at = va + (uint32_t)done, pa = 0;
-        size_t run = 4096 - (at & 4095);
-        if (run > size - done) run = size - done;
-        if (snx_ctr_query(p->space, at, &pa, NULL) != SNX_CTR_MEM_OK ||
-            snx_ctr_phys_write(p->memory, pa, bytes + done, run) != SNX_CTR_MEM_OK)
-            return false;
-        done += run;
-    }
-    return true;
+    return snx_ctr_write_behind(p->space, p->memory, va, bytes, size) == SNX_CTR_MEM_OK;
 }
 static void reply(SnxCtrIpc* c, unsigned normal, unsigned translated) {
     c->out[0] = (c->in[0] & 0xffff0000u) | normal << 6 | translated;
@@ -89,7 +73,7 @@ static void initialize(SnxCtrIpc* c) {
         snx_ctr_ipc_error_reply(c, IR_WRONG_PERMISSION);
         return;
     }
-    uint32_t address = shared_address(p, object);
+    uint32_t address = snx_ctr_shared_va(p, object);
     unsigned char metadata[IR_METADATA_SIZE] = {0}; /* header, then the empty receive BufferInfo */
     metadata[IR_INITIALIZED] = 1;
     if (!address || !write_shared(p, address, metadata, sizeof metadata)) {
@@ -114,7 +98,7 @@ static void finalize(SnxCtrIpc* c) {
 }
 /* a byte of the adopted block's header; nothing before InitializeIrNopShared gave a block */
 static void set_header(SnxCtrProcess* p, unsigned offset, unsigned char value) {
-    uint32_t address = p->ir.shared ? shared_address(p, p->ir.shared) : 0;
+    uint32_t address = p->ir.shared ? snx_ctr_shared_va(p, p->ir.shared) : 0;
     if (address) (void)write_shared(p, address + offset, &value, 1);
 }
 static void require_connection(SnxCtrIpc* c) {
