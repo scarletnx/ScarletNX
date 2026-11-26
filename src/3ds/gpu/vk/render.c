@@ -21,6 +21,7 @@
 #include "3ds/gpu/vk/shaders/texture_spv.h"
 #include "3ds/gpu/vk/vk.h"
 #include "3ds/gpu/vk/vsgen.h"
+#include "common/gpu/vk/jobs.h"
 #include "common/gpu/vk/shader_object.h"
 #include "common/gpu/vk/vk_common.h"
 #include "common/platform/file.h"
@@ -49,8 +50,6 @@
    transfer wrote, with no byte cap: about 1.5 GB at scale 16 for 240x400 RGBA8 ones, and 6 MB more for those bytes */
 #define SHOWN             16
 #define SPANS     4096 /* the memory spans a submission reads or writes, re-levelled when it is done */
-#define PIPE_JOBS         64   /* the pipelines or shader objects the workers have in hand at once (async_pipelines) */
-#define WORKERS           32   /* pipeline_threads's most */
 
 enum {
     CULL_MODE = 0x040,
@@ -217,9 +216,9 @@ typedef struct {
     VkPipeline pipeline;
     uint32_t job; /* while a worker makes it (async_pipelines), its PipeJob's index plus 1; else 0 */
 } Pipe;
-/* a pipeline a worker makes: its key and the shader modules the draw found, then the pipeline. Or a shader object:
-   its stage, its SPIR-V (the job's until it is collected) and its binary's key, then the object */
-enum { JOB_FREE, JOB_QUEUED, JOB_MAKING, JOB_DONE };
+/* a pipeline a worker makes (common/gpu/vk/jobs.h): its key and the shader modules the draw found, then the
+   pipeline. Or a shader object: its stage, its SPIR-V (the job's until it is collected) and its binary's key, then the
+   object */
 typedef struct {
     PipeKey key;
     VkShaderModule vs, fs;
@@ -229,7 +228,6 @@ typedef struct {
     size_t count;
     uint64_t binary_key;
     VkShaderEXT object;
-    uint8_t state; /* under g.job_lock */
 } PipeJob;
 /* The stand-in fragment shader's push constants (shaders/standin.frag): a fragment config's stages, switches and
    lighting, packed as the shader's comment says, for a draw whose own shader is still being made */
@@ -336,15 +334,10 @@ static struct {
     SnxCtrVertex (*triangles)[3];
     size_t triangle_count, triangle_capacity, triangle_first;
     SnxCtrVkTraffic traffic;
-    /* async_pipelines: the threads that make the new pipelines while the draws that need them are skipped, started
-       at the first one and stopped with the renderer, their jobs, and the lock and conditions over those. jobs_held:
-       a test's hold (snx_ctr_vk_pipelines_hold), under which they take no job */
-    SDL_Thread* workers[WORKERS];
-    unsigned worker_count;
-    bool workers_tried, jobs_stop, jobs_held;
-    SDL_Mutex* job_lock;
-    SDL_Condition *job_queued, *job_done;
-    PipeJob jobs[PIPE_JOBS];
+    /* async_pipelines: the workers that make the new pipelines while the draws that need them are skipped, started at
+       the first one and stopped with the renderer, and what each job makes */
+    SnxVkJobs pool;
+    PipeJob jobs[SNX_VK_JOBS];
     uint64_t skipped; /* the draws skipped while their pipeline or shader objects were made */
     /* with shader objects: the stand-in fragment and vertex shaders (VK_NULL_HANDLE when ctr_stand_in leaves them out
        or the device refuses them), and the draws each drew while their own shaders were made */
@@ -356,7 +349,6 @@ static struct {
     bool program_uploaded;
     uint64_t program_uploaded_hash;
     VkDeviceSize program_at;
-    _Atomic int low_refused; /* a worker's low priority was refused, which the first one refused says (atomic) */
     /* the driver's pipelines kept between runs (snx_ctr_vk_pipeline_cache_open): the cache every pipeline is made
        with, its file, whether a pipeline went into it since it was written and when the last one did (atomic: the
        workers make pipelines too) */
@@ -1660,17 +1652,13 @@ static void compiled_now(void) {
 }
 /* o's words handed to a free job of the workers, which then owns them: whether one was free */
 static bool object_queue(ShaderObject* o) {
-    SDL_LockMutex(g.job_lock);
-    for (unsigned i = 0; i < PIPE_JOBS && !o->job; ++i)
-        if (g.jobs[i].state == JOB_FREE) {
-            g.jobs[i] = (PipeJob){
-                .stage = o->stage, .words = o->words, .count = o->count, .binary_key = o->key, .state = JOB_QUEUED};
-            o->job = i + 1;
-            o->words = NULL;
-            SDL_SignalCondition(g.job_queued);
-        }
-    SDL_UnlockMutex(g.job_lock);
-    return o->job != 0;
+    int i = snx_vk_jobs_free(&g.pool);
+    if (i < 0) return false;
+    g.jobs[i] = (PipeJob){.stage = o->stage, .words = o->words, .count = o->count, .binary_key = o->key};
+    o->job = (uint32_t)i + 1;
+    o->words = NULL;
+    snx_vk_jobs_queue(&g.pool, (unsigned)i);
+    return true;
 }
 /* The shader object of generated words, which it frees or keeps: made now from the binary an earlier run kept, which
    costs no compile; with async_pipelines handed to the workers (o->job), or kept until a job is free (o->words), so
@@ -1699,15 +1687,13 @@ static bool object_pending(ShaderObject* o, const char** why) {
     if (o->words && !object_queue(o)) return true;
     if (!o->job) return false;
     PipeJob* j = &g.jobs[o->job - 1];
-    SDL_LockMutex(g.job_lock);
-    bool done = j->state == JOB_DONE;
+    bool done = snx_vk_jobs_take(&g.pool, o->job - 1);
     if (done) {
         o->object = j->object;
         free(j->words);
         *j = (PipeJob){0};
         o->job = 0;
     }
-    SDL_UnlockMutex(g.job_lock);
     if (done && o->object && g.binaries_open)
         (void)snx_vk_shader_binaries_keep(&g.binaries, device(), o->key, o->object);
     if (done && !o->object) *why = "the device refuses a shader object";
@@ -1940,69 +1926,25 @@ static VkPipeline make_pipeline(const PipeKey* k, VkShaderModule vs, VkShaderMod
     }
     return pipeline;
 }
-/* A worker: makes the queued pipelines one by one, until the renderer stops them. One past the first two runs at the
-   system's low priority (low, snx_vk_pipeline_low_workers) */
-static int SDLCALL pipe_worker(void* low) {
-    char why[256];
-    if (low && snx_thread_priority_low(why, sizeof why) &&
-        !atomic_exchange_explicit(&g.low_refused, 1, memory_order_relaxed))
-        fprintf(
-            stderr,
-            "3ds gpu: a pipeline worker asked for %s, the system's low priority: %s (said for the first one refused)\n",
-            snx_thread_priority_low_name(), why);
-    SDL_LockMutex(g.job_lock);
-    while (!g.jobs_stop) {
-        PipeJob* j = NULL;
-        for (unsigned i = 0; i < PIPE_JOBS && !j && !g.jobs_held; ++i)
-            if (g.jobs[i].state == JOB_QUEUED) j = &g.jobs[i];
-        if (!j) {
-            SDL_WaitCondition(g.job_queued, g.job_lock);
-            continue;
-        }
-        j->state = JOB_MAKING;
-        SDL_UnlockMutex(g.job_lock);
-        VkPipeline made_pipeline = VK_NULL_HANDLE;
-        VkShaderEXT made_object = VK_NULL_HANDLE;
-        if (j->words) {
-            /* no binary of it was kept: the draw thread makes those, and keeps this one's once it collects it */
-            VkShaderCreateInfoEXT info = object_info(j->stage, j->words, j->count);
-            bool compiled;
-            if (snx_vk_shader_object(device(), NULL, j->binary_key, &info, &made_object, &compiled) == VK_SUCCESS)
-                compiled_now();
-        } else
-            made_pipeline = make_pipeline(&j->key, j->vs, j->fs);
-        SDL_LockMutex(g.job_lock);
-        j->made = made_pipeline;
-        j->object = made_object;
-        j->state = JOB_DONE;
-        SDL_BroadcastCondition(g.job_done);
-    }
-    SDL_UnlockMutex(g.job_lock);
-    return 0;
+/* a job's thing made, on a worker (common/gpu/vk/jobs.h): its shader object, or its pipeline */
+static void job_make(void* owner, unsigned job) {
+    (void)owner;
+    PipeJob* j = &g.jobs[job];
+    if (j->words) {
+        /* no binary of it was kept: the draw thread makes those, and keeps this one's once it collects it */
+        VkShaderCreateInfoEXT info = object_info(j->stage, j->words, j->count);
+        bool compiled;
+        if (snx_vk_shader_object(device(), NULL, j->binary_key, &info, &j->object, &compiled) == VK_SUCCESS)
+            compiled_now();
+    } else
+        j->made = make_pipeline(&j->key, j->vs, j->fs);
 }
-/* the workers, started at the first pipeline async_pipelines hands them: pipeline_threads of them, or the common count
-   (snx_vk_pipeline_workers). How many there are; with none the draws wait for their pipelines, as with
-   async_pipelines=0, which the log says once */
+/* the workers, started at the first pipeline async_pipelines hands them (common/gpu/vk/jobs.h): how many there are */
 static unsigned pipe_workers(void) {
-    if (g.workers_tried) return g.worker_count;
-    g.workers_tried = true;
-    unsigned n = (unsigned)snx_vk_pipeline_workers(g_settings.pipeline_threads, SDL_GetNumLogicalCPUCores());
-    if (n > WORKERS) n = WORKERS;
-    unsigned low = (unsigned)snx_vk_pipeline_low_workers((int)n);
-    if ((g.job_lock = SDL_CreateMutex()) && (g.job_queued = SDL_CreateCondition()) &&
-        (g.job_done = SDL_CreateCondition()))
-        while (g.worker_count < n) {
-            SDL_Thread* t =
-                SDL_CreateThread(pipe_worker, "3DS pipelines", (void*)(uintptr_t)(g.worker_count >= n - low));
-            if (!t) break;
-            g.workers[g.worker_count++] = t;
-        }
-    if (!g.worker_count)
-        fprintf(stderr,
-                "3ds gpu: async_pipelines=1, but no pipeline worker could start (%s): the draws wait for "
-                "their pipelines, as with async_pipelines=0\n",
-                SDL_GetError());
-    return g.worker_count;
+    g.pool.make = job_make;
+    g.pool.who = "3ds gpu";
+    g.pool.thread = "3DS pipelines";
+    return snx_vk_jobs_start(&g.pool, g_settings.pipeline_threads);
 }
 /* The pipeline for k. Without async_pipelines it is made now. With it a worker makes a new one while the draws that
    need it are skipped: *pending, and VK_NULL_HANDLE, until it is done. VK_NULL_HANDLE alone when the device refuses
@@ -2013,17 +1955,12 @@ static VkPipeline pipeline(const PipeKey* k, bool* pending) {
     for (size_t i = 0; i < g.pipe_count; ++i) {
         Pipe* e = &g.pipes[i];
         if (e->hash != h || memcmp(&e->key, k, sizeof *k)) continue;
-        if (e->job) {
-            PipeJob* j = &g.jobs[e->job - 1];
-            SDL_LockMutex(g.job_lock);
-            if (j->state == JOB_DONE) {
-                e->pipeline = j->made;
-                *j = (PipeJob){0};
-                e->job = 0;
-            }
-            SDL_UnlockMutex(g.job_lock);
-            *pending = e->job != 0;
+        if (e->job && snx_vk_jobs_take(&g.pool, e->job - 1)) {
+            e->pipeline = g.jobs[e->job - 1].made;
+            g.jobs[e->job - 1] = (PipeJob){0};
+            e->job = 0;
         }
+        *pending = e->job != 0;
         g.skipped += *pending;
         return e->pipeline;
     }
@@ -2034,15 +1971,12 @@ static VkPipeline pipeline(const PipeKey* k, bool* pending) {
         /* with every job in hand the draw is skipped all the same, and its pipeline asked for again at the next */
         *pending = true;
         ++g.skipped;
-        SDL_LockMutex(g.job_lock);
-        for (unsigned i = 0; i < PIPE_JOBS && !e->job; ++i)
-            if (g.jobs[i].state == JOB_FREE) {
-                g.jobs[i] =
-                    (PipeJob){.key = *k, .vs = g.vs[k->vs].module, .fs = g.fs[k->fs].module, .state = JOB_QUEUED};
-                e->job = i + 1;
-                SDL_SignalCondition(g.job_queued);
-            }
-        SDL_UnlockMutex(g.job_lock);
+        int i = snx_vk_jobs_free(&g.pool);
+        if (i >= 0) {
+            g.jobs[i] = (PipeJob){.key = *k, .vs = g.vs[k->vs].module, .fs = g.fs[k->fs].module};
+            e->job = (uint32_t)i + 1;
+            snx_vk_jobs_queue(&g.pool, (unsigned)i);
+        }
         if (e->job) ++g.pipe_count;
         return VK_NULL_HANDLE;
     }
@@ -2050,31 +1984,16 @@ static VkPipeline pipeline(const PipeKey* k, bool* pending) {
     if (e->pipeline) ++g.pipe_count;
     return e->pipeline;
 }
-/* async_pipelines: waits until every pipeline asked for is made. Stopping, the ones not yet begun are dropped first */
-static void pipes_wait(bool stopping) {
-    if (!g.worker_count) return;
-    SDL_LockMutex(g.job_lock);
-    for (unsigned i = 0; i < PIPE_JOBS; ++i) {
-        if (stopping && g.jobs[i].state == JOB_QUEUED) {
-            free(g.jobs[i].words);
-            g.jobs[i] = (PipeJob){0};
-        }
-        while (g.jobs[i].state == JOB_QUEUED || g.jobs[i].state == JOB_MAKING)
-            SDL_WaitCondition(g.job_done, g.job_lock);
-    }
-    SDL_UnlockMutex(g.job_lock);
+/* a job dropped before a worker began it: the SPIR-V it held */
+static void job_drop(void* owner, unsigned job) {
+    (void)owner;
+    free(g.jobs[job].words);
+    g.jobs[job] = (PipeJob){0};
 }
-/* the workers' hold set or ended; before they start, the flag alone, which they read once started */
-static void pipes_held(bool held) {
-    if (g.job_lock) SDL_LockMutex(g.job_lock);
-    g.jobs_held = held;
-    if (g.job_queued) SDL_BroadcastCondition(g.job_queued);
-    if (g.job_lock) SDL_UnlockMutex(g.job_lock);
-}
-void snx_ctr_vk_pipelines_hold(void) { pipes_held(true); }
+void snx_ctr_vk_pipelines_hold(void) { snx_vk_jobs_hold(&g.pool, true); }
 uint64_t snx_ctr_vk_pipelines_wait(void) {
-    pipes_held(false);
-    pipes_wait(false);
+    snx_vk_jobs_hold(&g.pool, false);
+    snx_vk_jobs_wait(&g.pool, false, job_drop);
     return g.skipped;
 }
 
@@ -2982,14 +2901,7 @@ void snx_ctr_vk_pipeline_cache_save(bool at_exit) {
     if (!at_exit) {
         uint64_t now = (uint64_t)(snx_seconds() * 1000);
         if (now - atomic_load_explicit(&g.cache_used_ms, memory_order_relaxed) < CACHE_QUIET_MS) return;
-        bool busy = false;
-        if (g.job_lock) {
-            SDL_LockMutex(g.job_lock);
-            for (unsigned i = 0; i < PIPE_JOBS && !busy; ++i)
-                busy = g.jobs[i].state == JOB_QUEUED || g.jobs[i].state == JOB_MAKING;
-            SDL_UnlockMutex(g.job_lock);
-        }
-        if (busy) return;
+        if (snx_vk_jobs_busy(&g.pool)) return;
     }
     size_t saved = 0;
     char why[512];
@@ -3018,15 +2930,10 @@ void snx_ctr_vk_render_free(void) {
     }
     copy_every_page_back();
     VkDevice d = device();
-    if (g.worker_count) {
-        pipes_wait(true);
-        SDL_LockMutex(g.job_lock);
-        g.jobs_stop = true;
-        SDL_BroadcastCondition(g.job_queued);
-        SDL_UnlockMutex(g.job_lock);
-        for (unsigned i = 0; i < g.worker_count; ++i) SDL_WaitThread(g.workers[i], NULL);
-        for (unsigned i = 0; i < PIPE_JOBS; ++i)
-            if (g.jobs[i].state == JOB_DONE) {
+    if (g.pool.count) {
+        snx_vk_jobs_stop(&g.pool, job_drop);
+        for (unsigned i = 0; i < SNX_VK_JOBS; ++i)
+            if (snx_vk_jobs_done(&g.pool, i)) {
                 vkDestroyPipeline(d, g.jobs[i].made, NULL);
                 /* a shader no draw collected: its binary kept all the same */
                 if (g.jobs[i].object && g.binaries_open)
@@ -3037,9 +2944,7 @@ void snx_ctr_vk_render_free(void) {
     }
     snx_ctr_vk_pipeline_cache_save(true); /* every pipeline made, the workers stopped */
     if (g.cache) vkDestroyPipelineCache(d, g.cache, NULL);
-    if (g.job_done) SDL_DestroyCondition(g.job_done);
-    if (g.job_queued) SDL_DestroyCondition(g.job_queued);
-    if (g.job_lock) SDL_DestroyMutex(g.job_lock);
+    snx_vk_jobs_stop(&g.pool, job_drop); /* the lock and conditions of workers that never started */
     if (g.skipped)
         fprintf(stderr, "3ds gpu: async_pipelines=%d skipped %llu draw%s while their %s made\n",
                 g_settings.async_pipelines, (unsigned long long)g.skipped, g.skipped == 1 ? "" : "s",

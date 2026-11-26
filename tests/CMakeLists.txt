@@ -426,6 +426,13 @@ if(TARGET snx_ctr_board)
         add_test(NAME 3ds_vk_hidden_commands COMMAND snx-test-3ds-vk-hidden-commands)
         set_tests_properties(3ds_vk_hidden_commands PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
     endif()
+    # a renderer's background compiles (common/gpu/vk/jobs.c): the workers, each job made and taken once, the hold, the stop
+    add_executable(snx-test-vk-jobs vk_jobs.c "${volk_SOURCE_DIR}/volk.c")
+    set_source_files_properties("${volk_SOURCE_DIR}/volk.c" PROPERTIES COMPILE_OPTIONS "${snx_third_party_flags}")
+    snx_test_target(snx-test-vk-jobs gnu23)
+    target_link_libraries(snx-test-vk-jobs PRIVATE snx_vk_common)
+    add_test(NAME vk_jobs COMMAND snx-test-vk-jobs)
+    set_tests_properties(vk_jobs PROPERTIES TIMEOUT 60)
     # vk_gpu_profile and vk_checkpoints in a console's renderer (common/gpu/vk/marks.c), on fakes of the driver's calls
     add_executable(snx-test-vk-marks vk_marks.c "${volk_SOURCE_DIR}/volk.c")
     set_source_files_properties("${volk_SOURCE_DIR}/volk.c" PROPERTIES COMPILE_OPTIONS "${snx_third_party_flags}")
