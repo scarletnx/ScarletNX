@@ -5,19 +5,17 @@
 # architecture (pkgforge's image of it, unpacked: .github/workflows/build.yml, appimage-cross). Run as root on an Arch
 # machine. CI keeps the root this makes a week at a time, keyed by this file, so a change here makes it again.
 #
-#   scripts/appimage-sysroot.sh ROOT [--linux-only]
+#   scripts/appimage-sysroot.sh ROOT
 #
-# The target's: gcc for the crt files, libgcc and libstdc++ Clang links the target's programs with, and with the Switch
-# and 3DS runtimes the root's sdl3, which the build links (SNX_SYSTEM_SDL3): SDL opens its window, audio and input
-# libraries at run time, so the build needs none of them. --linux-only, for the Linux runtime alone, is the GCC
-# runtime only. They go in by the root's own pacman.conf (its architecture, repositories and mirrors, under the root)
-# and its own keys. Install scriptlets are the target's programs, left out. Each pacman is tried 3 times, as mirrors
-# drop a connection now and then.
+# The target's: gcc for the crt files, libgcc and libstdc++ Clang links the target's programs with, and the root's
+# sdl3, which the build links (SNX_SYSTEM_SDL3): SDL opens its window, audio and input libraries at run time, so the
+# build needs none of them. They go in by the root's own pacman.conf (its architecture, repositories and mirrors,
+# under the root) and its own keys. Install scriptlets are the target's programs, left out. Each pacman is tried 3
+# times, as mirrors drop a connection now and then.
 set -eu
-[ $# -ge 1 ] || { sed -n '4,15p' "$0"; exit 2; }
+[ $# = 1 ] || { sed -n '4,14p' "$0"; echo "it takes one ROOT, and was given $#: $*" >&2; exit 2; }
 root=$1
-libraries=gcc
-[ "${2:-}" = --linux-only ] || libraries="$libraries sdl3"
+libraries="gcc sdl3"
 retry() { for try in 1 2 3; do "$@" && return; [ "$try" = 3 ] && return 1; sleep 5; done; }
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT

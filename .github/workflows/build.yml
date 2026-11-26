@@ -1053,16 +1053,14 @@ jobs:
       # is get-debloated-pkgs' api.github.com rate limit, the one the appimage job's copy is given
       - name: Install the target container's tools and libraries
         env:
-          LINUX_ONLY: ${{ matrix.linux-only && '1' || '' }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           docker exec -i -e QUICK_SHARUN -e QUICK_SHARUN_SHA -e DEBLOATED_PACKAGES -e DEBLOATED_PACKAGES_SHA \
-            -e LINUX_ONLY -e GITHUB_TOKEN target sh -s <<'EOF'
+            -e GITHUB_TOKEN target sh -s <<'EOF'
           set -eu
-          libraries="patchelf binutils"
-          [ -n "$LINUX_ONLY" ] || libraries="$libraries sdl3 libx11 mesa vulkan-icd-loader vulkan-radeon vulkan-swrast
-            libxext libxcursor libxfixes libxi libxinerama libxrandr libxrender libxss libxtst libxkbcommon wayland
-            wayland-protocols libdecor alsa-lib libpulse libpipewire hidapi libusb"
+          libraries="patchelf binutils sdl3 libx11 mesa vulkan-icd-loader vulkan-radeon vulkan-swrast libxext libxcursor
+            libxfixes libxi libxinerama libxrandr libxrender libxss libxtst libxkbcommon wayland wayland-protocols libdecor
+            alsa-lib libpulse libpipewire hidapi libusb"
           retry() { for try in 1 2 3; do "$@" && return; [ "$try" = 3 ] && return 1; sleep 5; done; }
           # A port whose openssl is already 4 while some of its packages still link OpenSSL 3 refuses the upgrade
           # unless its openssl-3 comes along; a port still on OpenSSL 3 has no such package
@@ -1075,9 +1073,7 @@ jobs:
           chmod +x /usr/local/bin/quick-sharun /usr/local/bin/get-debloated-pkgs
           printf '%s  %s\n' "$QUICK_SHARUN_SHA" /usr/local/bin/quick-sharun \
                            "$DEBLOATED_PACKAGES_SHA" /usr/local/bin/get-debloated-pkgs | sha256sum -c
-          debloated="opus-mini icu-mini"
-          [ -n "$LINUX_ONLY" ] || debloated="mesa-nano $debloated"
-          get-debloated-pkgs $debloated
+          get-debloated-pkgs mesa-nano opus-mini icu-mini
           EOF
       # The build machine's packaging tool: quick-sharun makes the AppImage, and this appimagetool compresses natively,
       # takes the target's runtime from APPIMAGE_ARCH, and resolves mkdwarfs for this machine rather than the target's
@@ -1117,12 +1113,10 @@ jobs:
       # runner's user saves it, and the root's files are root's
       - name: Install the target's libraries
         if: steps.sysroot.outputs.cache-hit != 'true'
-        env:
-          LINUX_ONLY: ${{ matrix.linux-only && '--linux-only' || '' }}
         run: |
-          docker exec -i -e LINUX_ONLY build sh -s <<'EOF'
+          docker exec -i build sh -s <<'EOF'
           set -eu
-          scripts/appimage-sysroot.sh /src/sysroot $LINUX_ONLY
+          scripts/appimage-sysroot.sh /src/sysroot
           chown -R "$(stat -c %u:%g /src)" /src/sysroot
           chmod -R u+rwX /src/sysroot
           EOF
