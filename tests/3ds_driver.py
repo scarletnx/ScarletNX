@@ -151,11 +151,11 @@ def main():
     run(['--board-info', '--gamepad-map=ls:L3'], 0, "settings: gamepad_map's ls:L3 sends nothing: the 3DS has no L3")
     out = run(['--board-info', '--gamepad-map=lb:ZL rb:ZR'], 0, 'Old 3DS')  # ir:rst's, which the runtime has
     assert 'sends nothing' not in out, out
-    # the On-screen controls table's touch screen, as the Switch's (0 to 2), never its on-screen controls
+    # the On-screen controls table's touch screen, as the Switch's (0 to 2), and the window's controls, keys and states
     run(['--board-info', '--touch=1'], 0, 'Old 3DS')
     run(['--board-info', '--touch=5'], 0, 'settings: touch=5 is not a whole number from 0 to 2: it keeps 2')
-    run(['--board-info', '--controls-haptics=0'], 2, '--controls-haptics=0 does nothing in a 3DS game: its on-screen')
-    # the Switch's rows a 3DS game takes (common/utilities/console_settings.c), and the stats it shows none of yet
+    run(['--board-info', '--controls-haptics=0', '--hotkey-help=F1', '--state-slots=4'], 0, 'Old 3DS')
+    # the Switch's rows a 3DS game takes (common/utilities/console_settings.c), the stats' and the states' among them
     run(
         [
             '--board-info',
@@ -167,7 +167,7 @@ def main():
         0,
         'Old 3DS',
     )
-    run(['--board-info', '--stats=1'], 2, '--stats=1 does nothing in a 3DS game: its window shows no stats')
+    run(['--board-info', '--stats=1', '--showcase-corner=tl', '--state-save=junk'], 0, 'Old 3DS')
     run(['--board-info', '--shadows=0'], 2, "--shadows=0 does nothing in a 3DS game: it tunes the Switch's GPU")
     # the GPU driver package, Freedreno's variables and the validation layer, as a Switch game's window takes them
     run(['--board-info', '--gpu-driver=', '--freedreno-env=', '--vk-validation=1'], 0, 'Old 3DS')

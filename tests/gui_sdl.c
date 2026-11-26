@@ -7767,7 +7767,8 @@ static void check_play_args(App* app, const char* root) {
         (void)gui_settings_set(settings_of(app), "anisotropy", "0");
         (void)gui_settings_set(settings_of(app), "vsync", "1");
     }
-    /* the on-screen controls' go to the consoles whose windows have them, the launcher's picks under the game's own */
+    /* the on-screen controls' go to every console's game, each window has them, the launcher's picks under the game's
+       own */
     if (gui_settings_set(settings_of(app), "controls", "1")) {
         static const int items[] = {GUI_VITA, GUI_GBA, GUI_NDS, GUI_3DS};
         for (size_t k = 0; k < sizeof items / sizeof *items; ++k) {
@@ -7778,7 +7779,7 @@ static void check_play_args(App* app, const char* root) {
                 shown += !strcmp(argv[i], "--controls=1");
                 picks += !strcmp(argv[i], "--launcher-picks=1");
             }
-            assert(shown == (items[k] != GUI_3DS) && picks == 1); /* every console's picks marked: fullscreen's */
+            assert(shown == 1 && picks == 1); /* every console's picks marked: fullscreen's */
             play_args_free(&own);
         }
         (void)gui_settings_set(settings_of(app), "controls", "2");
