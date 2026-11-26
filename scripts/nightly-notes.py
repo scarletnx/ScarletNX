@@ -159,8 +159,9 @@ def counted(items):
     return f'{said}, {len(items)} commit{"" if len(items) == 1 else "s"} in all' if pulls else said
 
 
-def title(checkout, sha):
-    return f'Nightly {git(checkout, "log", "-1", "--format=%cs", sha).strip()} ({sha[:7]})'
+def title(day, sha):
+    """a nightly's title: the day (UTC) its run began, and its commit"""
+    return f'Nightly {day} ({sha[:7]})'
 
 
 def size(count):
@@ -268,4 +269,93 @@ def notes(
         lines += ['', f'## Changes since {since}', '', f'[`{previous[:7]}...{sha[:7]}`]({compare}): {said}.']
         lines += grouped(items, pulls, url, compare) if items else ['', 'None: the same commit, built again.']
     lines += ['', *source(f'{url}/tree/{sha}')]
+    return '\n'.join(lines) + '\n'
+
+
+# what a file of SYSTEMS asks after the download, in the README's table: the system's step, and for the packages a run
+# may lack (scripts/publish-builds.py's OPTIONAL) that it is there only when its job built
+AFTER = {
+    'Linux': '`chmod +x` it and run it',
+    'Windows': 'Unzip it and run `bin\\scarletnx.exe`',
+    'Android': 'Install it. [The Android app]({docs}/hosts/android-app.md) has the first run',
+    'macOS': "Unzip it, then *Open* from the Finder's menu, as the app is signed ad hoc",
+    'iOS': 'Sideload it',
+}
+
+
+def readme(repo, to, optional=()):
+    """the nightly repository's README: what it holds, which file is whose, the first run, a pull request's build, where
+    a problem goes; optional: the files a release may lack"""
+    url, docs = f'{SERVER}/{repo}', f'{SERVER}/{repo}/blob/main/docs'
+    rows = ['| System | File | After downloading |', '| --- | --- | --- |']
+    for name, (system_, arch, _kind) in SYSTEMS.items():
+        step = AFTER[system_].format(docs=docs)
+        if name in optional:
+            step += '. Present only when its job built'
+        rows.append(f'| {system_}, {arch} | `{name}` | {step} |')
+    lines = [
+        '<!-- publish.yml writes this file at each nightly (scripts/nightly-notes.py, readme): change it there -->',
+        '# ScarletNX nightly builds',
+        '',
+        f'Builds of [ScarletNX]({url}), published by its [publish workflow]({url}/blob/main/.github/workflows/publish.yml):',
+        '',
+        (
+            '- **Nightlies**, `nightly-<day>-<commit>`: one a day, of `main` as the first scheduled build of the day '
+            '(UTC) that built everywhere. Every nightly stays here, and '
+            f'[the latest]({SERVER}/{to}/releases/latest) is always the newest. When a day has none, the newest says '
+            'at its top which build failed.'
+        ),
+        (
+            "- **Pull requests**, `pr-<number>`: an open pull request's builds, replaced at each push to it. They are "
+            'deleted when it closes without a merge, or once merged, when a nightly has its change. They are '
+            'prereleases, not reviewed releases.'
+        ),
+        '',
+        "Each release's notes say which file is for which system, what changed and where its source is. This repository",
+        f'holds only the releases: the code is in [{repo}]({url}).',
+        '',
+        '## Which file is mine',
+        '',
+        "Every release lists the same files. The newest nightly's links never change, so a bookmark stays current.",
+        '',
+        *rows,
+        '',
+        (
+            'Games hardly run on macOS or iOS yet, so those two are for people testing the builds themselves '
+            f"([macOS and iOS]({docs}/hosts/apple.md)). Each AppImage has a `.zsync` file beside it, which AppImage's update "
+            'tools use to download only what changed. Games need a Vulkan 1.3 driver.'
+        ),
+        '',
+        '## First run',
+        '',
+        (
+            'Started with no arguments, the program opens the launcher. **Install Keys** installs your `prod.keys`, and '
+            '**Load Switch NSP/XCI/NRO** takes a dump you made from your own console. Keys and games are never part of a '
+            f'release. [Usage]({docs}/user/usage.md) covers the command line and the folders.'
+        ),
+        '',
+        "## Trying a pull request's build",
+        '',
+        (
+            "Open the pull request's release, `pr-<number>`, and take the file for your system from the table above. A pull "
+            "request's build is made from its latest push and is replaced at the next one, so check the commit named in the "
+            'notes against the one you mean to test. A pull request from a fork has no build until someone on the team '
+            'labels it `publish builds`.'
+        ),
+        '',
+        (
+            "When you report what you saw, say which build it was (the nightly's tag, or the pull request's number and its "
+            'commit) and add your system, processor, graphics card and driver version. The '
+            f'[testing guide]({docs}/user/testing.md) has the form.'
+        ),
+        '',
+        '## Problems',
+        '',
+        (
+            f'A game that does not run as it should goes to the [Game report]({url}/issues/new?template=game-report.yml) '
+            "form, with the log attached. A fault in a build's packaging, or a file missing from a release, goes to "
+            f'[{repo}]({url}/issues) as an issue starting with `[ci]`, since the workflow that builds and publishes the '
+            'files lives there.'
+        ),
+    ]
     return '\n'.join(lines) + '\n'

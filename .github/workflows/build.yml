@@ -22,14 +22,14 @@ on:
       - 'docs/user/deprecations.md'
       - 'docs/user/gui.md'
   workflow_dispatch:
-  # main every three hours, so a nightly comes out while merges cancel main's pushes' runs; a run whose commit already
-  # has its nightly cancels itself (nightly-due)
+  # main every three hours, off the hour's start, when GitHub drops scheduled runs the most: the first that builds
+  # everywhere on a day (UTC) is that day's nightly, and the day's later runs cancel themselves (nightly-due)
   schedule:
     - cron: '23 */3 * * *'
 
 # Jobs only read the repository, and a failed job has the rest of its run cancelled (scripts/fail-fast.py). A
-# push to main, a scheduled run or a run of main by hand that builds everywhere becomes a nightly, and a pull request's
-# run a prerelease, in scarletnx/nightly: publish.yml does it once this workflow ends
+# scheduled run or a run of main by hand that builds everywhere becomes the day's nightly, and a pull request's run a
+# prerelease, in scarletnx/nightly: publish.yml does it once this workflow ends
 permissions:
   contents: read
   actions: write
@@ -72,24 +72,25 @@ env:
 # main's (the appimage job says why). The artifacts are what `cmake --install` puts in place: the binaries with the
 # licenses that go with them.
 jobs:
-  # A scheduled run of a commit that has its nightly already: the run cancels itself, this job with it, which fails
-  # nothing
+  # A scheduled run on a day (UTC) that has its nightly already, or of the commit the newest nightly was built from: the
+  # run cancels itself, this job with it, which fails nothing
   nightly-due:
     name: Nightly due
     if: github.event_name == 'schedule'
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
-      - name: Cancel the run when this commit has its nightly
+      - name: Cancel the run when the day or this commit has its nightly
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           latest=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
             "$GITHUB_API_URL/repos/scarletnx/nightly/releases/latest" | python3 -c 'import json, sys; print(json.load(sys.stdin)["tag_name"])')
-          echo "the newest nightly: $latest; this run: ${GITHUB_SHA::7}"
+          today=$(date -u +%F)
+          echo "the newest nightly: $latest; this run: $today, ${GITHUB_SHA::7}"
           case $latest in
-          *-"${GITHUB_SHA::7}")
+          nightly-"$today"-* | *-"${GITHUB_SHA::7}")
             curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
               "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/cancel" ;;
           esac

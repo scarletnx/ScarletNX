@@ -51,22 +51,25 @@ UBSan, the other machines' back ends under Unicorn and [edenprobe](edenprobe.md)
 cases that passed before (`scripts/edenprobe.py`); the cross-built AppImages through qemu, the Windows zips (x86-64 and
 AArch64), the Android APK and the macOS and iOS apps, and the AppImages and the zips run as installed, at the end of
 their jobs. A pull request, a run by hand and a version's tag run every test (`SNX_TESTS`); a push to `main` and the
-nightly's schedule build every package and publish it, and test nothing, so a merge that breaks a test shows on the
-next pull request's run. A push to `main` cancels the build of the one before it still running, as a push to a pull
-request does that pull request's.
+nightly's schedule build every package, the schedule publishing them, and test nothing, so a merge that breaks a test
+shows on the next pull request's run. A push to `main` cancels the build of the one before it still running, as a push
+to a pull request does that pull request's.
 `.github/workflows/publish.yml` publishes what builds everywhere, each said on Discord (`scripts/publish-builds.py`): a
 version tag pushed (`v1.0.0`; `v1.0.0-rc1` a prerelease) as this repository's release of it, the latest, its notes
-listing the changes since the version before;
-each push to `main` as a release of [scarletnx/nightly](https://github.com/scarletnx/nightly/releases), the newest 30
-kept (this repository's `nightly` prerelease shows the latest's notes); each pull request as a prerelease there,
-`pr-<number>`, deleted when it closes without a merge, or, merged, by the first nightly that has its change, which also
-deletes any a close's run left behind. The notes and the messages link each download with its size and list what changed: a line for each
-pull request the commits came in by, grouped by the `[area]` of its title, with its commits counted, and one for each
-commit no pull request merged (a pull request's own builds list its commits). A fork's pull request is published once someone of the team labels it `publish builds`, after each
-push. The Discord cards of each pull request, each issue and each push to `main` are ReiWimsy's, the bot of
-[scarletnx/wimsy-core](https://github.com/scarletnx/wimsy-core), which asks GitHub what changed every 30 s: no job
-of this repository draws them. The secrets: `NIGHTLY_TOKEN` (writes that repository's contents) and
-`DISCORD_WEBHOOK_RELEASES` (a version's message).
+listing the changes since the version before; the first scheduled run of `main` of each day (UTC) that builds
+everywhere, or a run of it by hand, as that day's nightly in
+[scarletnx/nightly](https://github.com/scarletnx/nightly/releases), `nightly-<day>-<commit>`, where every nightly stays
+(this repository's `nightly` prerelease shows the latest's notes, and the nightly repository's README is
+`scripts/nightly-notes.py`'s, written at each nightly); a day whose runs failed says so, with the run, at the top of the
+newest nightly until the next one; each pull request as a prerelease there, `pr-<number>`, deleted when it closes
+without a merge, or, merged, by the first nightly that has its change, which also deletes any a close's run left behind.
+The notes and the messages link each download with its size and list what changed: a line for each pull request the
+commits came in by, grouped by the `[area]` of its title, with its commits counted, and one for each commit no pull
+request merged (a pull request's own builds list its commits). A fork's pull request is published once someone of the
+team labels it `publish builds`, after each push. The Discord cards of each pull request, each issue and each nightly
+are ReiWimsy's, the bot of [scarletnx/wimsy-core](https://github.com/scarletnx/wimsy-core), which asks GitHub what
+changed every 30 s: no job of this repository draws them. The secrets: `NIGHTLY_TOKEN` (writes that repository's
+contents) and `DISCORD_WEBHOOK_RELEASES` (a version's message).
 Verify affected scenes manually, repeat intermittent failures, record evidence/scope.
 Test guest semantics + malformed IPC with synthetic cases.
 

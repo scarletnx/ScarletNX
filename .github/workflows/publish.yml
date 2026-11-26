@@ -3,9 +3,10 @@
 name: Publish builds
 
 # The builds as releases (scripts/publish-builds.py), and a version said on Discord: a version tag (v...) pushed that
-# builds everywhere a release of this repository; every push to main that builds everywhere a nightly of scarletnx/nightly,
-# the newest 30 kept, which this repository's "nightly" prerelease links; every pull request a prerelease there,
-# pr-<number>, replaced at each push and deleted when it closes. A fork's pull request only once someone of the team
+# builds everywhere a release of this repository; the first scheduled run of main of a day (UTC) that builds everywhere,
+# or one by hand, that day's nightly in scarletnx/nightly, every one kept, which this repository's "nightly" prerelease
+# links; every pull request a prerelease there, pr-<number>, replaced at each push and deleted when it closes without a
+# merge, or once a nightly has it. A fork's pull request only once someone of the team
 # labels it "publish builds" after its last push. Nothing of a pull request runs here: the files are its Build run's
 # artifacts, and the checkout is main's. The secrets: NIGHTLY_TOKEN may write scarletnx/nightly's contents;
 # DISCORD_WEBHOOK_RELEASES is the releases channel's webhook (without it, nothing is posted there and the run says so).
@@ -171,9 +172,11 @@ jobs:
           SHA: ${{ steps.plan.outputs.sha }}
           PR: ${{ steps.plan.outputs.pr }}
           TAG: ${{ steps.plan.outputs.tag }}
+          DAY: ${{ steps.plan.outputs.day }}
         run: |
           python3 scripts/publish-builds.py publish --repo "$GITHUB_REPOSITORY" --to "$NIGHTLY_REPO" --kind "$KIND" \
-            --run "$RUN" --sha "$SHA" ${PR:+--pr "$PR"} ${TAG:+--tag "$TAG"} --artifacts artifacts --checkout .
+            --run "$RUN" --sha "$SHA" ${PR:+--pr "$PR"} ${TAG:+--tag "$TAG"} ${DAY:+--day "$DAY"} --artifacts artifacts \
+            --checkout .
       # Once a Build run of a pull request of this repository ends, one comment on the pull request, which each run
       # rewrites, links its builds and names the jobs that did not build (scripts/pr-builds.sh), main's script: here,
       # where the end of a Build already takes a runner, and after the publishing, whatever became of it. A fork's
