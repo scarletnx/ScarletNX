@@ -209,6 +209,14 @@ function(snx_test_target target dialect)
     endif()
     snx_test_sanitize(${target})
 endfunction()
+# the tests' reference values, recorded where the build had LLVM (scarletnx/test-references, pinned in cpmfile.json): an
+# input of the tests, which the configure stops without. A local copy comes in by -DCPM_test-references_SOURCE=<folder>
+AddJsonPackage(NAME test-references DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
+if(NOT IS_DIRECTORY "${test-references_SOURCE_DIR}/recompiler_backends")
+    message(FATAL_ERROR "the tests' reference values are not in ${test-references_SOURCE_DIR}/recompiler_backends: the "
+                        "package test-references (cpmfile.json) did not come, or CPM_test-references_SOURCE names a "
+                        "folder without them")
+endif()
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/recompiler_core.cmake") # the recompiler's core, which has no LLVM
 # scarletnx --mcp's A64 listing through the A64 decoder (src/nx/runtime/driver/disasm.c), in a program that links no
 # LLVM, in every build, SNX_WITH_LLVM=OFF's too
@@ -921,6 +929,11 @@ add_executable(snx-test-game-stamp game_stamp.c)
 snx_test_target(snx-test-game-stamp c23)
 target_link_libraries(snx-test-game-stamp PRIVATE scarletnx-common)
 add_test(NAME game_stamp COMMAND snx-test-game-stamp)
+# the frozen references' files (support/frozen.c): one written and read back the same, and each kind of file that is
+# not one refused with its line
+add_executable(snx-test-frozen-file frozen_file.c support/frozen.c)
+snx_test_target(snx-test-frozen-file c23)
+add_test(NAME frozen_file COMMAND snx-test-frozen-file)
 if(SNX_TEST_ARM_AOT)
     include(arm_checked.cmake)
 endif()
@@ -4435,12 +4448,19 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
     set(snx_plain_ops_features 0x7ffff)
     set(snx_plain_fma_features 0x7ffff)
 endif()
-add_executable(snx-test-recompiler-backends recompiler_backends.c llvm_qemu_words.c qemu_ref/qemu_ref.c)
+# LLVM alone's ends, recorded where the build has it (tests/recompiler_backends_record.py): each test whose
+# reference they are reads its programs' file, a hash a function (recompiler_backends.c's --frozen)
+set(snx_backends_frozen "${test-references_SOURCE_DIR}/recompiler_backends")
+add_executable(snx-test-recompiler-backends recompiler_backends.c llvm_qemu_words.c qemu_ref/qemu_ref.c
+               support/frozen.c)
 snx_test_target(snx-test-recompiler-backends gnu23)
 target_include_directories(snx-test-recompiler-backends PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(snx-test-recompiler-backends PRIVATE scarletnx-recompiler scarletnx-common)
 snx_decodetree_a64(snx-test-recompiler-backends)
-add_test(NAME recompiler_backends COMMAND snx-test-recompiler-backends)
+add_test(NAME recompiler_backends COMMAND snx-test-recompiler-backends --frozen ${snx_backends_frozen}/default.txt)
+# the same as a build with no LLVM runs it: the native back end held to the file alone
+add_test(NAME recompiler_backends_without_llvm COMMAND snx-test-recompiler-backends --without-llvm
+         --frozen ${snx_backends_frozen}/default.txt)
 # the back ends' Advanced SIMD (x64_vec.c, arm64_vec.c), a family at a time: each word of these ops (the decoder's samples
 # of them) made by the host's back end, a function of its own, and its results LLVM's from states of the lanes' edge
 # values
@@ -4463,7 +4483,8 @@ foreach(family IN ITEMS
         "doubling;SQDMULH_v;SQRDMULH_v;SQDMULH_vi;SQRDMULH_vi;SQDMULH_s;SQRDMULH_s;SQDMULH_si;SQRDMULH_si;SQDMULL_v;SQDMLAL_v;SQDMLSL_v;SQDMULL_vi;SQDMLAL_vi;SQDMLSL_vi;SQDMULL_si;SQDMLAL_si;SQDMLSL_si;SRHADD_v;RADDHN;RSUBHN"
         "crypto;AESE;AESD;AESMC;AESIMC;SHA1C;SHA1P;SHA1M;SHA1SU0;SHA1H;SHA1SU1;SHA256H;SHA256H2;SHA256SU0;SHA256SU1;PMULL_p64")
     list(POP_FRONT family name)
-    add_test(NAME recompiler_backends_${name} COMMAND snx-test-recompiler-backends --states 48 --ops ${family})
+    add_test(NAME recompiler_backends_${name} COMMAND snx-test-recompiler-backends --states 48 --ops ${family}
+             --frozen ${snx_backends_frozen}/ops_${name}.txt)
     set_tests_properties(recompiler_backends_${name} PROPERTIES TIMEOUT 600)
 endforeach()
 # half precision (an Android phone's): the ops whose words x64_vec.c makes of singles and doubles
@@ -4473,32 +4494,34 @@ add_test(NAME recompiler_backends_half COMMAND snx-test-recompiler-backends --ta
          FCMLT0_v FCVTZS_vi FCVTZU_vi SCVTF_vi UCVTF_vi FCVTZS_vf FCVTZU_vf SCVTF_vf UCVTF_vf SCVTF_f UCVTF_f FCVTZS_f
          FCVTZU_f FADDP_v FADDP_s FMAXP_v FMINP_v FMAXNMP_v FMINNMP_v FMAXP_s FMINP_s FMAXNMP_s FMINNMP_s FMAXV_h FMINV_h
          FMAXNMV_h FMINNMV_h FMUL_si FMLA_si FMLS_si FRECPE_v FRECPE_s FRSQRTE_v FRSQRTE_s FRECPS_v FRECPS_s FRSQRTS_v
-         FRSQRTS_s FRINTN_v FRINTP_v FRINTM_v FRINTZ_v FRINTA_v)
+         FRSQRTS_s FRINTN_v FRINTP_v FRINTM_v FRINTZ_v FRINTA_v --frozen ${snx_backends_frozen}/half.txt)
 set_tests_properties(recompiler_backends_half PROPERTIES TIMEOUT 900)
 # the same without the host's optional features (FMA, AES-NI and SHA-NI, or all of arm64's), where the helpers do their work
 add_test(NAME recompiler_backends_plain_ops COMMAND snx-test-recompiler-backends --without ${snx_plain_ops_features}
          --states 48 --ops
          FRECPS_v FRECPS_s FRSQRTS_v FRSQRTS_s FMLA_si FMLS_si AESE AESD AESMC AESIMC SHA256H SHA256H2 SHA256SU0
-         SHA256SU1)
+         SHA256SU1 --frozen ${snx_backends_frozen}/plain_ops.txt)
 set_tests_properties(recompiler_backends_plain_ops PROPERTIES TIMEOUT 600)
 # the lanes' shifts and the saturating sums without GFNI (0x10000) and AVX2 (0x8000)
 add_test(NAME recompiler_backends_plain_lanes COMMAND snx-test-recompiler-backends --without 0x18000 --states 32 --ops
          SHL_v USHR_v SSHR_v SRSHR_v URSRA_v SRI_v SLI_v RBIT_v RBIT SSHL_v USHL_v SRSHL_v URSHL_v SQSHL_v UQSHL_v
-         SQRSHL_v UQRSHL_v SQSHL_s UQRSHL_s)
+         SQRSHL_v UQRSHL_v SQSHL_s UQRSHL_s --frozen ${snx_backends_frozen}/plain_lanes.txt)
 set_tests_properties(recompiler_backends_plain_lanes PROPERTIES TIMEOUT 600)
 # half-precision words (an Android phone's): x64_vec.c makes singles and doubles of no half's lanes
 set(snx_half_words 0e421420 4ec31462 6e441c83 2e453ca4 0e460cc5)
 add_test(NAME recompiler_backends_half_words COMMAND snx-test-recompiler-backends --target android --states 40 --words
-         ${snx_half_words})
+         ${snx_half_words} --frozen ${snx_backends_frozen}/half_words.txt)
 # a loop that keeps its vector registers in host ones, left by a BR (its target in the link register): the registers
 # stored on the way to the dispatch
 set(snx_br_pins d2800070 1e210800 1f010802 1e232843 1e653884 1e61c086 1e274867 1e2020e0 9a83b041 f1000610 54fffee1
     d61f03c0)
-add_test(NAME recompiler_backends_br_pins COMMAND snx-test-recompiler-backends --words ${snx_br_pins})
+add_test(NAME recompiler_backends_br_pins COMMAND snx-test-recompiler-backends --words ${snx_br_pins}
+         --frozen ${snx_backends_frozen}/br_pins.txt)
 # X17 written in a loop, kept in a host register, and then an undefined word, whose runtime function changes it in the
 # state: the exit past it stores none
 set(snx_undef_pins d2800050 91000631 f1000610 54ffffc1 00000000)
-add_test(NAME recompiler_backends_undef_pins COMMAND snx-test-recompiler-backends --words ${snx_undef_pins})
+add_test(NAME recompiler_backends_undef_pins COMMAND snx-test-recompiler-backends --words ${snx_undef_pins}
+         --frozen ${snx_backends_frozen}/undef_pins.txt)
 # a loop that keeps seven guest registers in host ones around a CRC32X and a CRC32W (a byte or a halfword would make
 # the function keep its pins out of R11 anyway), whose tables' address goes in R11 (MG_CRC_FIXED)
 set(snx_crc_pins d2800069 91000421 91000442 91000463 91000484 910004a5 910004c6 910004e7 9ac24c00 1ac24800 f1000529
@@ -4508,7 +4531,8 @@ add_test(NAME recompiler_backends_crc_pins COMMAND snx-test-recompiler-backends 
 # fixed point, SCVTF, FMOV), whose Rd or Rn is a general-purpose register: none is an Advanced SIMD word of the host's
 set(snx_fp_int 1e200041 9e610083 1e6400c5 9e250207 9e680149 1e290008 1e30018b 9e7101cd 1e78004f 9e390093 1e220034
     9e630075 1e2600b6 9e58e06c 1e03c0ce)
-add_test(NAME recompiler_backends_fp_int COMMAND snx-test-recompiler-backends --made --states 40 --words ${snx_fp_int})
+add_test(NAME recompiler_backends_fp_int COMMAND snx-test-recompiler-backends --made --states 40 --words ${snx_fp_int}
+         --frozen ${snx_backends_frozen}/fp_int.txt)
 # what the arm64 back end makes of those conversions, by its code's size and calls (arm64_vec_code.c): ELF objects, so
 # not on Windows
 if(NOT WIN32)
@@ -4521,20 +4545,24 @@ endif()
 # FADD, then CMP; FCSEL (LT); TST; FCSEL (NE): the compare's flags only the first FCSEL reads, from the host's own
 set(snx_fp_flags 1e242863 7100051f 1e20bc20 7200029f 1e201c20)
 add_test(NAME recompiler_backends_fp_flags COMMAND snx-test-recompiler-backends --made --states 40 --words
-         ${snx_fp_flags})
+         ${snx_fp_flags} --frozen ${snx_backends_frozen}/fp_flags.txt)
 # X30 kept in a host register, in step with the state (an SVC), and then stripped by XPACLRI: what the exit stores
 add_test(NAME recompiler_backends_xpac COMMAND snx-test-recompiler-backends --target max --words aa0003fe d4000001
-         d2800050 8b1e03c2 f1000610 54ffffc1 d50320ff d2800005 d65f00a0)
+         d2800050 8b1e03c2 f1000610 54ffffc1 d50320ff d2800005 d65f00a0 --frozen ${snx_backends_frozen}/xpac.txt)
 # functions that call each other, with loops, SVCs, polls and switches: what a call, an exit and an entry keep of the
 # registers kept in host ones
-add_test(NAME recompiler_backends_calls COMMAND snx-test-recompiler-backends --calls --functions 120 --states 8)
-add_test(NAME recompiler_backends_calls_2 COMMAND snx-test-recompiler-backends --calls --functions 120 --states 8 --seed 2)
-add_test(NAME recompiler_backends_calls_3 COMMAND snx-test-recompiler-backends --calls --functions 1000 --states 8 --seed 4)
+add_test(NAME recompiler_backends_calls COMMAND snx-test-recompiler-backends --calls --functions 120 --states 8
+         --frozen ${snx_backends_frozen}/calls.txt)
+add_test(NAME recompiler_backends_calls_2 COMMAND snx-test-recompiler-backends --calls --functions 120 --states 8 --seed 2
+         --frozen ${snx_backends_frozen}/calls_2.txt)
+add_test(NAME recompiler_backends_calls_3 COMMAND snx-test-recompiler-backends --calls --functions 1000 --states 8 --seed 4
+         --frozen ${snx_backends_frozen}/calls_3.txt)
 set_tests_properties(recompiler_backends_calls recompiler_backends_calls_2 recompiler_backends_calls_3 PROPERTIES
                      TIMEOUT 600)
 # words of the lanes' arithmetic, each a function of its own that the back end must make, from the lanes' edge values
 add_test(NAME recompiler_backends_lanes COMMAND snx-test-recompiler-backends --states 48 --ops ADD_v SUB_v MUL_v MLA_v
-         FADD_v FMUL_v FMLA_v FMAX_v FMINNM_v FCMGE_v SQADD_v UQXTN_v SQSHL_v ADDV ZIP1 TBL_TBX)
+         FADD_v FMUL_v FMLA_v FMAX_v FMINNM_v FCMGE_v SQADD_v UQXTN_v SQSHL_v ADDV ZIP1 TBL_TBX
+         --frozen ${snx_backends_frozen}/lanes.txt)
 set_tests_properties(recompiler_backends_lanes PROPERTIES TIMEOUT 600)
 # what the native back ends say of an instruction they have no code for, at the recompile and where it runs, on every
 # machine's (native_refused.c)
@@ -4644,7 +4672,7 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
     foreach(m arm64 rv64 ppc64 mips64 la64 ppc64be mips64be s390x)
         string(TOUPPER "${m}" upper)
         add_executable(snx-test-recompiler-${m} recompiler_backends.c llvm_qemu_words.c qemu_ref/qemu_ref.c
-                       support/host_unicorn.c support/la64_interp.c
+                       support/host_unicorn.c support/la64_interp.c support/frozen.c
                        "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
                        "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
         snx_cpu_helpers_flags(snx-test-recompiler-${m})
@@ -4654,21 +4682,26 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
         target_link_libraries(snx-test-recompiler-${m} PRIVATE scarletnx-recompiler snx_llvm scarletnx-common
                               "${SNX_UNICORN_LIBRARY}")
         snx_decodetree_a64(snx-test-recompiler-${m})
-        add_test(NAME recompiler_${m} COMMAND snx-test-recompiler-${m})
+        add_test(NAME recompiler_${m} COMMAND snx-test-recompiler-${m} --frozen ${snx_backends_frozen}/default.txt)
         # a JIT unit's: its literals hold addresses on MIPS64
         add_test(NAME recompiler_${m}_jit COMMAND snx-test-recompiler-${m} --jit --made --states 40 --words 1e622820 1e621841
-                 9ac10c00 d65f03c0)
-        add_test(NAME recompiler_${m}_br_pins COMMAND snx-test-recompiler-${m} --words ${snx_br_pins})
-        add_test(NAME recompiler_${m}_undef_pins COMMAND snx-test-recompiler-${m} --words ${snx_undef_pins})
-        add_test(NAME recompiler_${m}_fp_int COMMAND snx-test-recompiler-${m} --made --states 40 --words ${snx_fp_int})
+                 9ac10c00 d65f03c0 --frozen ${snx_backends_frozen}/jit_words.txt)
+        add_test(NAME recompiler_${m}_br_pins COMMAND snx-test-recompiler-${m} --words ${snx_br_pins}
+                 --frozen ${snx_backends_frozen}/br_pins.txt)
+        add_test(NAME recompiler_${m}_undef_pins COMMAND snx-test-recompiler-${m} --words ${snx_undef_pins}
+                 --frozen ${snx_backends_frozen}/undef_pins.txt)
+        add_test(NAME recompiler_${m}_fp_int COMMAND snx-test-recompiler-${m} --made --states 40 --words ${snx_fp_int}
+                 --frozen ${snx_backends_frozen}/fp_int.txt)
         add_test(NAME recompiler_${m}_fp_flags COMMAND snx-test-recompiler-${m} --made --states 40 --words
-                 ${snx_fp_flags})
-        add_test(NAME recompiler_${m}_calls COMMAND snx-test-recompiler-${m} --calls --functions 40 --states 4)
+                 ${snx_fp_flags} --frozen ${snx_backends_frozen}/fp_flags.txt)
+        add_test(NAME recompiler_${m}_calls COMMAND snx-test-recompiler-${m} --calls --functions 40 --states 4
+                 --frozen ${snx_backends_frozen}/calls_40.txt)
         set_tests_properties(recompiler_${m}_calls PROPERTIES TIMEOUT 600)
         add_test(NAME recompiler_${m}_half_words COMMAND snx-test-recompiler-${m} --target android --states 40 --words
-                 ${snx_half_words})
+                 ${snx_half_words} --frozen ${snx_backends_frozen}/half_words.txt)
         # MRS and MSR of EL0's registers, the cache maintenance, DC ZVA
-        add_test(NAME recompiler_${m}_system COMMAND snx-test-recompiler-${m} --ops SYS)
+        add_test(NAME recompiler_${m}_system COMMAND snx-test-recompiler-${m} --ops SYS
+                 --frozen ${snx_backends_frozen}/system.txt)
         set_tests_properties(recompiler_${m}_system PROPERTIES TIMEOUT 600)
         # no Unicorn of the machine (an unpatched one's PPC64): skipped, as it compares nothing
         set_tests_properties(recompiler_${m} recompiler_${m}_jit recompiler_${m}_br_pins recompiler_${m}_undef_pins
@@ -4685,9 +4718,11 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
     # and of CRC32's
     add_test(NAME recompiler_arm64_refused_plain COMMAND snx-test-recompiler-arm64 --refused --without 0x7ffff
              --target max)
-    add_test(NAME recompiler_arm64_plain COMMAND snx-test-recompiler-arm64 --without 0x7ffff)
+    add_test(NAME recompiler_arm64_plain COMMAND snx-test-recompiler-arm64 --without 0x7ffff
+             --frozen ${snx_backends_frozen}/default.txt)
     add_test(NAME recompiler_arm64_plain_crc32 COMMAND snx-test-recompiler-arm64 --without 0x7ffff --made --states 40
-             --words 1ac14000 1ac24400 1ac34800 9ac44c00 1ac55000 1ac65400 1ac75800 9ac85c00 1ac14be9 9adf5c0a)
+             --words 1ac14000 1ac24400 1ac34800 9ac44c00 1ac55000 1ac65400 1ac75800 9ac85c00 1ac14be9 9adf5c0a
+             --frozen ${snx_backends_frozen}/crc32.txt)
     set_tests_properties(recompiler_arm64_refused_plain recompiler_arm64_plain recompiler_arm64_plain_crc32
                          PROPERTIES TIMEOUT 600)
     # a frame of more slots than STP X29, X30's pre-index takes (arm64_frame_code.c's last row): a SUB and ADD of SP
@@ -4712,9 +4747,9 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
             "rv64;0;3000;1048576;4ee20c20;1e622820" "arm64;0x7ffff;1200;1048576;4e056000;5e024020")
         list(POP_FRONT long m without times bytes)
         add_test(NAME recompiler_${m}_long COMMAND snx-test-recompiler-${m} --without ${without} --states 8
-                 --long ${times} ${bytes} --words ${long})
+                 --long ${times} ${bytes} --words ${long} --frozen ${snx_backends_frozen}/long_${times}.txt)
         add_test(NAME recompiler_${m}_long_jit COMMAND snx-test-recompiler-${m} --without ${without} --states 8 --jit
-                 --long ${times} ${bytes} --words ${long})
+                 --long ${times} ${bytes} --words ${long} --frozen ${snx_backends_frozen}/long_${times}.txt)
         set_tests_properties(recompiler_${m}_long recompiler_${m}_long_jit PROPERTIES TIMEOUT 600)
     endforeach()
     # the x86-64 back end's own code on older processors (QEMU's models under Unicorn), made for what each one's CPUID
@@ -4771,7 +4806,7 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
     # arm64's functions as a Windows host's: COFF objects, loaded by the JIT's own loader, their frames unwound by the
     # function table where they call out, with --step at every instruction; one of more than a record's 1 MiB
     add_executable(snx-test-recompiler-arm64win recompiler_backends.c llvm_qemu_words.c qemu_ref/qemu_ref.c
-                   support/host_unicorn.c support/la64_interp.c
+                   support/host_unicorn.c support/la64_interp.c support/frozen.c
                    "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
                    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
     snx_cpu_helpers_flags(snx-test-recompiler-arm64win)
@@ -4781,14 +4816,17 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
     target_link_libraries(snx-test-recompiler-arm64win PRIVATE scarletnx-recompiler snx_llvm scarletnx-common
                           "${SNX_UNICORN_LIBRARY}")
     snx_decodetree_a64(snx-test-recompiler-arm64win)
-    add_test(NAME recompiler_arm64win COMMAND snx-test-recompiler-arm64win)
-    add_test(NAME recompiler_arm64win_step COMMAND snx-test-recompiler-arm64win --step --functions 60 --states 2)
-    add_test(NAME recompiler_arm64win_jit COMMAND snx-test-recompiler-arm64win --jit --functions 200 --states 8 --seed 2)
-    add_test(NAME recompiler_arm64win_hook COMMAND snx-test-recompiler-arm64win --hook --functions 200 --states 8 --seed 3)
+    add_test(NAME recompiler_arm64win COMMAND snx-test-recompiler-arm64win --frozen ${snx_backends_frozen}/default.txt)
+    add_test(NAME recompiler_arm64win_step COMMAND snx-test-recompiler-arm64win --step --functions 60 --states 2
+             --frozen ${snx_backends_frozen}/step.txt)
+    add_test(NAME recompiler_arm64win_jit COMMAND snx-test-recompiler-arm64win --jit --functions 200 --states 8 --seed 2
+             --frozen ${snx_backends_frozen}/seed2_200.txt)
+    add_test(NAME recompiler_arm64win_hook COMMAND snx-test-recompiler-arm64win --hook --functions 200 --states 8 --seed 3
+             --frozen ${snx_backends_frozen}/seed3_200.txt)
     add_test(NAME recompiler_arm64win_plain COMMAND snx-test-recompiler-arm64win --without 0x7ffff --functions 200
-             --states 8 --seed 4)
+             --states 8 --seed 4 --frozen ${snx_backends_frozen}/seed4_200.txt)
     add_test(NAME recompiler_arm64win_long COMMAND snx-test-recompiler-arm64win --without 0x7ffff --states 8
-             --long 1200 1048576 --words 4e056000 5e024020)
+             --long 1200 1048576 --words 4e056000 5e024020 --frozen ${snx_backends_frozen}/long_1200.txt)
     add_test(NAME recompiler_arm64win_calls_back COMMAND snx-test-recompiler-arm64win --calls-back --stale
              --functions 40 --states 4)
     set_tests_properties(recompiler_arm64win recompiler_arm64win_step recompiler_arm64win_jit recompiler_arm64win_hook
@@ -4844,7 +4882,7 @@ endif()
 # as Windows' C would call them (support/host_win64.c): against LLVM, as the other machines' under Unicorn
 if(snx_host_win64)
     add_executable(snx-test-recompiler-win64 recompiler_backends.c llvm_qemu_words.c qemu_ref/qemu_ref.c
-                   support/host_win64.c
+                   support/host_win64.c support/frozen.c
                    "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
                    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
     snx_cpu_helpers_flags(snx-test-recompiler-win64)
@@ -4853,13 +4891,19 @@ if(snx_host_win64)
     target_include_directories(snx-test-recompiler-win64 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(snx-test-recompiler-win64 PRIVATE scarletnx-recompiler snx_llvm scarletnx-common)
     snx_decodetree_a64(snx-test-recompiler-win64)
-    add_test(NAME recompiler_win64 COMMAND snx-test-recompiler-win64)
-    add_test(NAME recompiler_win64_jit COMMAND snx-test-recompiler-win64 --jit)
-    add_test(NAME recompiler_win64_hook COMMAND snx-test-recompiler-win64 --hook --functions 300 --seed 2)
-    add_test(NAME recompiler_win64_plain COMMAND snx-test-recompiler-win64 --without 0x3d07 --functions 300 --seed 3)
-    add_test(NAME recompiler_win64_br_pins COMMAND snx-test-recompiler-win64 --words ${snx_br_pins})
-    add_test(NAME recompiler_win64_undef_pins COMMAND snx-test-recompiler-win64 --words ${snx_undef_pins})
-    add_test(NAME recompiler_win64_calls COMMAND snx-test-recompiler-win64 --calls --functions 120 --states 8)
+    add_test(NAME recompiler_win64 COMMAND snx-test-recompiler-win64 --frozen ${snx_backends_frozen}/default.txt)
+    add_test(NAME recompiler_win64_jit COMMAND snx-test-recompiler-win64 --jit
+             --frozen ${snx_backends_frozen}/default.txt)
+    add_test(NAME recompiler_win64_hook COMMAND snx-test-recompiler-win64 --hook --functions 300 --seed 2
+             --frozen ${snx_backends_frozen}/seed2_300.txt)
+    add_test(NAME recompiler_win64_plain COMMAND snx-test-recompiler-win64 --without 0x3d07 --functions 300 --seed 3
+             --frozen ${snx_backends_frozen}/seed3_300.txt)
+    add_test(NAME recompiler_win64_br_pins COMMAND snx-test-recompiler-win64 --words ${snx_br_pins}
+             --frozen ${snx_backends_frozen}/br_pins.txt)
+    add_test(NAME recompiler_win64_undef_pins COMMAND snx-test-recompiler-win64 --words ${snx_undef_pins}
+             --frozen ${snx_backends_frozen}/undef_pins.txt)
+    add_test(NAME recompiler_win64_calls COMMAND snx-test-recompiler-win64 --calls --functions 120 --states 8
+             --frozen ${snx_backends_frozen}/calls.txt)
     set_tests_properties(recompiler_win64 recompiler_win64_jit recompiler_win64_hook recompiler_win64_plain PROPERTIES
                          TIMEOUT 600)
 endif()
@@ -4942,7 +4986,7 @@ endforeach()
 # the tags' loads and stores, which LLVM's back end has
 foreach(m IN LISTS backends)
     add_test(NAME recompiler_${m}_past_tags COMMAND snx-test-recompiler-${m} --target max --states 16 --ops STG STZG ST2G
-             STZ2G STGP LDG)
+             STZ2G STGP LDG --frozen ${snx_backends_frozen}/past_tags.txt)
     if(m MATCHES "^ppc64")
         set_tests_properties(recompiler_${m}_past_tags PROPERTIES SKIP_RETURN_CODE 77)
     endif()
@@ -4984,28 +5028,31 @@ if(snx_host_win64)
 endif()
 # a division in a loop of enough registers that R10 and R11 hold pins, where DIV moves what RAX and RDX held
 add_test(NAME recompiler_backends_div_pins COMMAND snx-test-recompiler-backends --words d2800070 d503201f d503201f
-         d503201f d503201f d503201f d503201f d503201f d503201f 8b0600ed 1ac50ce5 9ac90d0f f9000f21 f1000610 54fffe61)
+         d503201f d503201f d503201f d503201f d503201f d503201f 8b0600ed 1ac50ce5 9ac90d0f f9000f21 f1000610 54fffe61
+         --frozen ${snx_backends_frozen}/div_pins.txt)
 # one where no register of the pool is free when DIV takes RDX from the divisor it holds
 add_test(NAME recompiler_backends_div_divisor COMMAND snx-test-recompiler-backends --words d2800030 f9400ac7 1acc096b
-         d503201f aa0b00cd aa0b000a d503201f d503201f d503201f d503201f 9ac8092e d503201f f9401746 f1000610 54fffe61)
+         d503201f aa0b00cd aa0b000a d503201f d503201f d503201f d503201f 9ac8092e d503201f f9401746 f1000610 54fffe61
+         --frozen ${snx_backends_frozen}/div_divisor.txt)
 # scalar floating point in a loop, its results made in the registers the loop keeps them in and its cold paths taken from
 # each of their tests
 add_test(NAME recompiler_backends_fp_pins COMMAND snx-test-recompiler-backends --states 600 --words d2800070 1e210800
-         1f010802 1e232843 1e653884 1e61c086 1e274867 1e2020e0 9a83b041 f1000610 54fffee1)
+         1f010802 1e232843 1e653884 1e61c086 1e274867 1e2020e0 9a83b041 f1000610 54fffee1
+         --frozen ${snx_backends_frozen}/fp_pins.txt)
 # SHA256H of a value that XMM0 holds and nothing reads after, where SHA256RNDS2 wants the message in XMM0 (on a host with
 # SHA-NI: elsewhere a helper makes the word, and the path does not run)
 add_test(NAME recompiler_backends_sha_xmm0 COMMAND snx-test-recompiler-backends --made --states 40 --words 4ea684a5
-         5e0640c5)
+         5e0640c5 --frozen ${snx_backends_frozen}/sha_xmm0.txt)
 # FMLA of a vector in a loop on an x86-64 host with AVX and F16C but no FMA (0x800, FMA alone, taken away), where it is a
 # cold call always taken (on arm64 the words run without its optional features): its result stays in the destination's
 # pin, past the pins' reload
 add_test(NAME recompiler_backends_cold_pin COMMAND snx-test-recompiler-backends --without ${snx_plain_fma_features}
          --states 40 --words
-         d2800030 4ee1d41f 4f821bff 9a8211c3 0f406000 f1000610 54ffff61)
+         d2800030 4ee1d41f 4f821bff 9a8211c3 0f406000 f1000610 54ffff61 --frozen ${snx_backends_frozen}/cold_pin.txt)
 # random functions on a host without optional features: SSE4.2 alone (no BMI1, BMI2, LZCNT, F16C, AVX or FMA) on x86-64,
 # the architecture's baseline on arm64
 add_test(NAME recompiler_backends_plain COMMAND snx-test-recompiler-backends --without ${snx_plain_features} --seed 209458
-         --functions 1200)
+         --functions 1200 --frozen ${snx_backends_frozen}/plain.txt)
 # what the library's archive needs from outside it: LLVM and the system's libraries alone
 # (tests/recompiler_symbols.cmake). Its program links every object of the archive with those, named here rather than
 # taken from the archive's own link line, which a new library would join. Built by the test, so a library more fails
