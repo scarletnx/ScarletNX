@@ -29,6 +29,7 @@
 #include "common/utilities/build_info.h"
 #include "common/utilities/cli.h"
 #include "common/utilities/mods.h"
+#include "common/utilities/old_llvm_caches.h"
 #include "common/utilities/patches.h"
 #include "common/platform/file.h"
 #include <ctype.h>
@@ -874,25 +875,15 @@ static int make_program(const MakeArgs* a, int index) {
             snx_error("--layout %s: the native back end has no section of its own for each function: the code keeps "
                       "its order",
                       layout);
-        { /* units/ of the cache folder, where an older version kept the code units: never read now, said with its room */
+        { /* units/ of the cache folder, where LLVM kept the code units: said with where it is deleted, never here */
             char* folder = snx_menu_dir(paths->repo, SNX_USER_CACHE);
             char* units = folder ? snx_path_join(folder, "units") : NULL;
-            if (units && snx_is_dir(units) && !compile.quiet) {
-                char** names = NULL;
-                size_t count = 0;
-                SnxU64 bytes = 0;
-                if (!snx_list_dir(units, &names, &count)) {
-                    for (size_t n = 0; n < count; ++n) {
-                        char* path = snx_path_join(units, names[n]);
-                        bytes += snx_file_size(path);
-                        free(path);
-                    }
-                    snx_free_strings(names, count);
-                }
-                printf("unit cache: %s holds %.1f MB of an older version's code units, which nothing reads now: "
-                       "deleting it frees that room\n",
-                       units, (double)bytes / 1e6);
-            }
+            SnxLlvmCaches old = {0};
+            char said[1400];
+            if (units && !compile.quiet && !snx_llvm_caches_scan(folder, &old) &&
+                snx_llvm_caches_said(&old, units, SNX_LLVM_CACHES_WHERE, said, sizeof said))
+                printf("unit cache: %s\n", said);
+            snx_llvm_caches_free(&old);
             free(units);
             free(folder);
         }

@@ -25,6 +25,7 @@
 #include "common/cpu/recompiler/mach/native.h"
 #include "common/platform/dl.h"
 #include "common/utilities/common.h"
+#include "common/utilities/old_llvm_caches.h"
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
@@ -356,6 +357,14 @@ void jit_init(void) {
     config.thread = jit_thread_log;
     snprintf(g_jit_cache, sizeof(g_jit_cache), "%s%s.jitcache", g_cachedir, g_exename);
     config.cache_path = g_jit_cache;
+    { /* a .jitcache LLVM made: said with where it is deleted, never deleted here (the JIT starts another beside its key) */
+        SnxLlvmCaches old = {0};
+        char said[1600];
+        if (snx_llvm_caches_jit(g_jit_cache, &old) == 1 &&
+            snx_llvm_caches_said(&old, NULL, SNX_LLVM_CACHE_JIT_WHERE, said, sizeof said))
+            LOG("jit: %s\n", said);
+        snx_llvm_caches_free(&old);
+    }
     g_jit = snx_jit_service_new(&config, error, sizeof(error));
     if (!g_jit) {
         snprintf(g_jit_error, sizeof(g_jit_error), "%s", error);
