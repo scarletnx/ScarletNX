@@ -262,6 +262,13 @@ static struct {
     u64 content[2];
 } g_astc_key;
 u64 vk_bc7_strip_blocks(void) { abort(); }
+/* a format's attachment support (format.c): no device features here, so no texture takes the attachment usage and
+   the uploads go to the images as before */
+int vk_format_attachable(VkFormat f, int depth) {
+    (void)f;
+    (void)depth;
+    return 0;
+}
 /* the ASTC stream on the compute queue (astc.c): no texture here goes to it, so its images take the graphics queue
    alone and nothing else of it runs */
 int vk_astc_stream_fits(const Surf* t) {
