@@ -16,9 +16,8 @@ import subprocess
 import sys
 import tempfile
 
-spec = importlib.util.spec_from_file_location(
-    'nightly_notes', Path(__file__).resolve().parent.parent / 'scripts' / 'nightly-notes.py'
-)
+ROOT = Path(__file__).resolve().parent.parent
+spec = importlib.util.spec_from_file_location('nightly_notes', ROOT / 'scripts' / 'nightly-notes.py')
 nightly = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(nightly)
 failures = []
@@ -147,7 +146,29 @@ with tempfile.TemporaryDirectory() as repo:
     )
     check('no changes without a previous nightly', nightly.changes(repo, '', sha, pulls) is None)
     check('no changes from a commit that is not an ancestor', nightly.changes(repo, unmerged, sha, pulls) is None)
-    check('the title', nightly.title(repo, sha) == f'Nightly 2026-10-15 ({sha[:7]})')
+    check(
+        'the title: the day its run began, and its commit',
+        nightly.title('2026-10-16', sha) == f'Nightly 2026-10-16 ({sha[:7]})',
+    )
+    readme = nightly.readme('owner/repo', 'owner/nightly', {'ScarletNX-windows-aarch64.zip'})
+    rows = [line for line in readme.splitlines() if line.startswith('| ') and '`ScarletNX-' in line]
+    check(
+        "the README's table: a row for every file of SYSTEMS, in its order, the optional ones said to be so",
+        [re.search(r'`([^`]+)`', row).group(1) for row in rows] == list(nightly.SYSTEMS)
+        and '| Windows, ARM64 | `ScarletNX-windows-aarch64.zip` | Unzip it and run `bin\\scarletnx.exe`. Present only when its job built |'
+        in rows
+        and not any('Present only' in row for row in rows if 'x86_64.zip' in row),
+    )
+    check(
+        "the README says every nightly stays, how a pull request's builds go, and links the docs main has",
+        'Every nightly stays here' in readme
+        and 'once merged, when a nightly has its change' in readme
+        and 'https://github.com/owner/repo/blob/main/docs/user/testing.md' in readme
+        and 'https://github.com/owner/nightly/releases/latest' in readme
+        and readme.startswith('<!-- publish.yml writes this file'),
+    )
+    for linked in re.findall(r'/blob/main/([^)#]+)', readme):
+        check(f'the README links {linked}, which the checkout has', (ROOT / linked).exists())
 
     files = ['ScarletNX-android-universal.apk', 'ScarletNX-linux-aarch64.AppImage', 'ScarletNX-linux-x86_64.AppImage']
     sizes = {name: 94_563_085 for name in files}

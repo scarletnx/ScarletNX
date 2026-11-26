@@ -5,20 +5,22 @@
 
     scripts/publish-builds.py plan --repo OWNER/REPO --to OWNER/NIGHTLY
     scripts/publish-builds.py publish --repo OWNER/REPO --to OWNER/NIGHTLY --kind nightly|pr|release --run ID
-        --sha SHA [--pr N] [--tag TAG] --artifacts DIR [--checkout DIR] [--keep N]
+        --sha SHA [--pr N] [--tag TAG] [--day YYYY-MM-DD] --artifacts DIR [--checkout DIR]
 
 plan follows the event GitHub Actions ran it for (GITHUB_EVENT_NAME, GITHUB_EVENT_PATH), and writes to GITHUB_OUTPUT
 the run whose artifacts publish takes (kind, run, sha, short, pr, tag), when there is one to publish:
 - a Build run that ended (workflow_run): a push of a version tag (v...) that built everywhere becomes REPO's release of
-  that tag, the latest (a prerelease for a tag with a '-', v1.0.0-rc1); a push to main that built everywhere becomes
-  NIGHTLY's release nightly-<date>-<commit>, the latest there, only the newest N nightlies staying, and REPO's
-  prerelease "nightly" a link to it; a pull request's run becomes NIGHTLY's prerelease pr-<number>, its files and notes
-  replaced at each push;
+  that tag, the latest (a prerelease for a tag with a '-', v1.0.0-rc1); a scheduled run of main, or one by hand, that
+  built everywhere becomes the day's nightly, NIGHTLY's release nightly-<day>-<commit> (the day the run began, UTC),
+  the latest there, every nightly kept, and REPO's prerelease "nightly" a link to it; one that failed says so at the top
+  of the newest nightly, until the next comes out; a push to main publishes nothing here; a pull request's run becomes
+  NIGHTLY's prerelease pr-<number>, its files and notes replaced at each push;
 - a pull request closed (pull_request_target) without a merge: its prerelease and tag are deleted; merged: they stay
   until a nightly has its merge commit, so its change can be had in between, and each nightly published deletes the
   ones it now has, with those of pull requests closed since, listed first (the sweep);
 - a fork's pull request is published only once someone of the team (write, maintain or admin) labels it LABEL after
   its last push, which a new push takes off (synchronize). The label put on a finished run publishes it at once.
+Each nightly also writes NIGHTLY's README (scripts/nightly-notes.py's readme), so that page says what it holds.
 Nothing is built: the files come from the run's artifacts, which the workflow downloads into DIR between the two (one
 folder each, as actions/download-artifact puts them), and no code of the pull request runs. Each file is named
 ScarletNX-<system>-<arch> (scripts/nightly-notes.py), an AppImage with the .zsync AppImageUpdate reads beside it.
@@ -31,6 +33,7 @@ writes REPO with GH_TOKEN, and NIGHTLY with NIGHTLY_TOKEN. --dry-run reads and p
 """
 
 import argparse
+import base64
 import datetime
 import importlib.util
 import json
@@ -63,7 +66,10 @@ MOST_LINES = 10
 PULLS_ASKED = 50
 TEAM = {'admin', 'maintain', 'write'}
 VERSION = re.compile(r'v\d[0-9A-Za-z.+-]*')
+DAY = re.compile(r'\d{4}-\d{2}-\d{2}')
 ROLLING = 'nightly'
+# the line a nightly's notes open with while the day after it has none
+MISSED = '<!-- missed -->'
 # A run's artifacts, by the commit's first 7 digits: the release file each gives, ScarletNX-<system>-<arch>
 ARTIFACTS = {
     'ScarletNX-linux-x86_64-{short}.AppImage': 'ScarletNX-linux-x86_64.AppImage',
@@ -240,7 +246,7 @@ def listed(lines, more_url, most):
 class Publisher(Hub):
     def __init__(self, args):
         super().__init__(args.repo, args.to, args.dry_run)
-        self.checkout, self.keep = args.checkout, args.keep
+        self.checkout = args.checkout
         self.artifacts = Path(args.artifacts) if args.artifacts else None
         self.work = Path(tempfile.mkdtemp(prefix='publish-builds-'))
         self.output = {}
@@ -365,24 +371,23 @@ class Publisher(Hub):
         return subprocess.run(command, capture_output=True, check=False).returncode == 0
 
     # ---- what each event publishes
-    def nightly(self, run, sha):
+    def nightlies(self):
+        """NIGHTLY's nightlies, the newest published first"""
+        return sorted(
+            (r for r in self.releases(self.to) if r['tag_name'].startswith('nightly-')), key=published, reverse=True
+        )
+
+    def nightly(self, run, sha, day):
         files, uploads, missing = self.complete(run, sha)
         why = f'{SERVER}/{self.repo}/actions/runs/{run}'
-        date = nightly_notes.git(self.checkout, 'log', '-1', '--format=%cs', sha).strip()
-        tag = f'nightly-{date}-{sha[:7]}'
-        older = sorted(
-            (r for r in self.releases(self.to) if r['tag_name'].startswith('nightly-') and r['tag_name'] != tag),
-            key=published,
-            reverse=True,
-        )
+        tag = f'nightly-{day}-{sha[:7]}'
+        older = [r for r in self.nightlies() if r['tag_name'] != tag]
         previous = next((m.group(0) for r in older[:1] for m in [re.search(r'[0-9a-f]{40}', r['body'] or '')] if m), '')
         if self.older(sha, previous):  # a run that ended after a newer commit's: that one stays the latest
             print(f'{sha[:7]} is older than the newest nightly, {previous[:7]}: not published')
             return
         latest = f'{SERVER}/{self.to}/releases/latest'
-        kept = (
-            f'This repository keeps the newest {self.keep} nightlies; [the latest]({latest}) is always the newest one.'
-        )
+        kept = f'Every nightly stays in this repository; [the latest]({latest}) is always the newest one.'
         download = f'{SERVER}/{self.to}/releases/download/{tag}'
         sizes = {name: path.stat().st_size for name, path in files.items()}
         pulls = self.pulls(previous, sha)
@@ -399,16 +404,15 @@ class Publisher(Hub):
             why=why,
             pulls=pulls,
         )
-        title = nightly_notes.title(self.checkout, sha)
+        title = nightly_notes.title(day, sha)
         made, new = self.put_release(self.to, tag, title, body, False, uploads)
-        for old in older[self.keep - 1 :]:
-            self.drop_release(self.to, old)
-            print(f'deleted {old["tag_name"]}: past the newest {self.keep}')
         print(f'{"published" if new else "replaced the files of"} {tag}')
+        for old in older[:1]:  # the day it stood for has its nightly now
+            self.unsay_missed(old)
         url = made.get('html_url', f'{SERVER}/{self.to}/releases/tag/{tag}')
         lead = (
-            f'The newest nightly, [{title}]({url}), from [{self.to}]({SERVER}/{self.to}/releases) where the newest '
-            f'{self.keep} are kept. Built from main at'
+            f'The newest nightly, [{title}]({url}), from [{self.to}]({SERVER}/{self.to}/releases) where every nightly '
+            'stays. Built from main at'
         )
         rolling = nightly_notes.notes(
             self.checkout,
@@ -425,7 +429,64 @@ class Publisher(Hub):
             pulls=pulls,
         )
         self.point_rolling(title, rolling, sha)
+        self.put_readme()
         self.sweep()
+
+    # ---- a day whose nightly did not come out, said where the newest one is
+    def missed(self, run):
+        """run, a scheduled one of main or one by hand, did not build everywhere: unless its day has its nightly, the
+        newest nightly says at its top that the day's is not out, which run failed and in what"""
+        day = run['created_at'][:10]
+        newest = next(iter(self.nightlies()), None)
+        if not newest:
+            print(f'run {run["id"]} ended {run["conclusion"]}, and there is no nightly to say it on')
+            return
+        if newest['tag_name'].startswith(f'nightly-{day}-'):
+            print(f'run {run["id"]} ended {run["conclusion"]}: {day} has its nightly, {newest["tag_name"]}')
+            return
+        jobs = self.pages(f'repos/{self.repo}/actions/runs/{run["id"]}/jobs', self.repo)
+        failed = sorted(j['name'] for j in jobs if j.get('conclusion') in ('failure', 'timed_out', 'cancelled'))
+        where = ', '.join(failed) if failed else f'no job: the run ended {run["conclusion"]}'
+        url = run.get('html_url') or f'{SERVER}/{self.repo}/actions/runs/{run["id"]}'
+        line = (
+            f'{MISSED} **The nightly of {day} is not out: [its newest try]({url}) failed in {nightly_notes.escape(where)}.'
+            f'** This one is of {newest["tag_name"][8:18]}.'
+        )
+        body = '\n'.join([line, '', *self.without_missed(newest['body'] or '').splitlines()]) + '\n'
+        self.write(self.to, 'PATCH', f'repos/{self.to}/releases/{newest["id"]}', {'body': body})
+        print(f'{newest["tag_name"]} says the nightly of {day} is not out: run {run["id"]} failed in {where}')
+
+    @staticmethod
+    def without_missed(body):
+        """body without the line missed put at its top, and the blank line after it"""
+        lines = body.splitlines()
+        if lines and lines[0].startswith(MISSED):
+            lines = lines[2:] if len(lines) > 1 and not lines[1].strip() else lines[1:]
+        return '\n'.join(lines) + ('\n' if lines else '')
+
+    def unsay_missed(self, release):
+        body = release.get('body') or ''
+        if body.startswith(MISSED):
+            self.write(
+                self.to, 'PATCH', f'repos/{self.to}/releases/{release["id"]}', {'body': self.without_missed(body)}
+            )
+            print(f'{release["tag_name"]} no longer says a nightly is not out')
+
+    def put_readme(self):
+        """NIGHTLY's README as nightly-notes.py's readme has it, written when it differs"""
+        text = nightly_notes.readme(self.repo, self.to, OPTIONAL)
+        path = f'repos/{self.to}/contents/README.md'
+        now = self.missing(path, self.to)
+        if now and base64.b64decode(now.get('content', '')).decode() == text:
+            return
+        data = {
+            'message': 'Describe the nightlies as publish.yml makes them',
+            'content': base64.b64encode(text.encode()).decode(),
+            'branch': 'main',
+            **({'sha': now['sha']} if now else {}),
+        }
+        self.write(self.to, 'PUT', path, data)
+        print(f'{self.to} README.md written')
 
     def point_rolling(self, title, body, sha):
         """REPO's rolling prerelease ROLLING: no files, the latest nightly's notes, its tag on that commit"""
@@ -672,7 +733,7 @@ class Publisher(Hub):
         return next((pr for pr in pulls if pr['head']['sha'] == sha), None)
 
     def take(self, kind, run, pr=None, tag=''):
-        """the run publish takes the artifacts of, for the workflow to download them"""
+        """the run publish takes the artifacts of, for the workflow to download them; a nightly's day, the one it began"""
         self.output = {
             'kind': kind,
             'run': str(run['id']),
@@ -680,6 +741,7 @@ class Publisher(Hub):
             'short': run['head_sha'][:7],
             'pr': str(pr['number']) if pr else '',
             'tag': tag,
+            'day': run['created_at'][:10] if kind == 'nightly' else '',
         }
         print(f'to publish: the {kind} builds of run {run["id"]} ({run["head_sha"][:7]})')
 
@@ -697,8 +759,12 @@ class Publisher(Hub):
                 print(f'a push to {run["head_repository"]["full_name"]}: nothing to publish')
             elif name != 'main' and not (VERSION.fullmatch(name) and self.tagged(name)):
                 print(f'a push to {name}: neither main nor a version tag, nothing to publish')
+            elif name == 'main' and run['event'] == 'push':
+                print(f"run {run['id']}, a push to main: a nightly is a day's scheduled run, not a push's")
             elif run['conclusion'] != 'success':
                 print(f'run {run["id"]} of {name} ended {run["conclusion"]}: nothing published')
+                if name == 'main':
+                    self.missed(run)
             elif name == 'main':
                 self.take('nightly', run)
             else:
@@ -752,11 +818,11 @@ def main():
     parser.add_argument('--tag', help="the release's version tag")
     parser.add_argument('--artifacts', help='the folder the workflow downloaded the artifacts into')
     parser.add_argument('--checkout', default='.', help="REPO's history and tags, for the notes")
-    parser.add_argument('--keep', type=int, default=30, help='the nightlies kept')
+    parser.add_argument('--day', help="a nightly's day, YYYY-MM-DD: the day (UTC) its run began")
     parser.add_argument('--dry-run', action='store_true', help='read, and print each write instead')
     args = parser.parse_args()
-    if args.keep < 1:
-        parser.error('--keep takes 1 or more')
+    if args.kind == 'nightly' and not (args.day and DAY.fullmatch(args.day)):
+        parser.error(f'--kind nightly takes its --day as YYYY-MM-DD, not {args.day!r}')
     if args.step == 'publish' and not (args.kind and args.run and args.sha and args.artifacts):
         parser.error('publish takes --kind, --run, --sha and --artifacts')
     if args.kind == 'pr' and not args.pr:
@@ -767,7 +833,7 @@ def main():
     try:
         if args.step == 'publish':
             if args.kind == 'nightly':
-                publisher.nightly(args.run, args.sha)
+                publisher.nightly(args.run, args.sha, args.day)
             elif args.kind == 'release':
                 publisher.version(args.run, args.sha, args.tag)
             else:

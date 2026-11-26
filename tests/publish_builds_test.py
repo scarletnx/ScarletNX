@@ -22,7 +22,13 @@ from pathlib import Path
 from fake_github import FAKE_GH, posted, serve
 
 SCRIPT = Path(__file__).resolve().parent.parent / 'scripts' / 'publish-builds.py'
+spec = importlib.util.spec_from_file_location('publish_builds', SCRIPT)
+publish_module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(publish_module)
+notes_module = publish_module.nightly_notes
 REPO, TO = 'owner/repo', 'owner/nightly'
+# the day (UTC) the scheduled runs below began: their nightly's
+DAY = '2026-10-16'
 FILES = [
     'ScarletNX-linux-x86_64.AppImage',
     'ScarletNX-linux-aarch64.AppImage',
@@ -260,24 +266,23 @@ with tempfile.TemporaryDirectory() as temporary:
     )
     done, planned = run('plan', event=push_run(sha, number=41))
     check(
-        'a green push to main is planned as a nightly',
-        planned == {'kind': 'nightly', 'run': '41', 'sha': sha, 'short': sha[:7], 'pr': '', 'tag': ''},
-        planned,
+        "a green push to main is no nightly: a day's scheduled run is",
+        not planned and done.returncode == 0 and 'a push to main' in done.stdout,
+        done.stdout + done.stderr,
     )
     done, planned = run('plan', event=push_run(sha, number=44, event='schedule'))
     check(
-        'a green scheduled run of main is planned as a nightly',
-        planned == {'kind': 'nightly', 'run': '44', 'sha': sha, 'short': sha[:7], 'pr': '', 'tag': ''},
+        'a green scheduled run of main is planned as the nightly of the day it began',
+        planned == {'kind': 'nightly', 'run': '44', 'sha': sha, 'short': sha[:7], 'pr': '', 'tag': '', 'day': DAY},
         planned,
     )
     done, planned = run('plan', event=push_run(sha, number=45, event='workflow_dispatch'))
     check(
         'a green run of main by hand is planned as a nightly',
-        planned == {'kind': 'nightly', 'run': '45', 'sha': sha, 'short': sha[:7], 'pr': '', 'tag': ''},
+        planned == {'kind': 'nightly', 'run': '45', 'sha': sha, 'short': sha[:7], 'pr': '', 'tag': '', 'day': DAY},
         planned,
     )
     for event, why in (
-        (push_run(sha, 'failure', event='schedule'), 'a failed scheduled run'),
         (push_run(sha, branch='dev', event='workflow_dispatch'), 'a run by hand of another branch'),
         (push_run(sha, 'failure'), 'a failed run'),
         (push_run(sha, branch='dev'), 'another branch'),
@@ -285,11 +290,56 @@ with tempfile.TemporaryDirectory() as temporary:
     ):
         done, planned = run('plan', event=event)
         check(f'{why} is not planned', not planned and done.returncode == 0, done.stdout + done.stderr)
+    # a failed scheduled run: the newest nightly says the day's is not out, which run failed, and in what
+    failed = dict(
+        push_run(sha, 'failure', number=46, event='schedule')['workflow_run'],
+        html_url='https://github.com/owner/repo/actions/runs/46',
+        jobs=[
+            {'name': 'Windows (Clang + LLVM)', 'conclusion': 'failure'},
+            {'name': 'Android APK', 'conclusion': 'success'},
+            {'name': 'Linux AppImage (x86_64)', 'conclusion': 'cancelled'},
+        ],
+    )
+    save_state(dict(state(), runs=[failed]))
+    done, planned = run('plan', event={'workflow_run': failed})
+    said = find(f'nightly-2026-10-15-{previous[:7]}')
+    check(
+        'a failed scheduled run: the newest nightly says at its top the day has none, which run and what failed',
+        not planned
+        and done.returncode == 0
+        and said['body'].startswith(
+            '<!-- missed --> **The nightly of 2026-10-16 is not out: [its newest try]'
+            '(https://github.com/owner/repo/actions/runs/46) failed in Android APK'[:95]
+        )
+        and 'failed in Linux AppImage (x86\\_64), Windows (Clang + LLVM).** This one is of 2026-10-15.' in said['body']
+        and said['body'].count('<!-- missed -->') == 1,
+        done.stdout + done.stderr + said['body'],
+    )
+    done, planned = run('plan', event={'workflow_run': failed})
+    check(
+        'failing again says it once, the newest try',
+        find(f'nightly-2026-10-15-{previous[:7]}')['body'].count('<!-- missed -->') == 1,
+        find(f'nightly-2026-10-15-{previous[:7]}')['body'],
+    )
     log_file.unlink(missing_ok=True)
-    done = publish('nightly', *everything(sha), '--checkout', str(checkout), '--keep', '2')
+    done = publish('nightly', *everything(sha), '--checkout', str(checkout), '--day', DAY)
     check('the nightly publishes', done.returncode == 0, done.stdout + done.stderr)
     s = state()
-    tag = f'nightly-2026-10-15-{sha[:7]}'
+    tag = f'nightly-{DAY}-{sha[:7]}'
+    check(
+        "the nightly out, the one before no longer says the day's is not",
+        '<!-- missed -->' not in find(f'nightly-2026-10-15-{previous[:7]}', s=s)['body']
+        and find(f'nightly-2026-10-15-{previous[:7]}', s=s)['body'].startswith('Built from'),
+        find(f'nightly-2026-10-15-{previous[:7]}', s=s)['body'],
+    )
+    readme = s.get('files', {}).get(TO, {}).get('main:README.md')
+    check(
+        "the nightly repository's README written as nightly-notes.py's readme has it",
+        readme
+        and __import__('base64').b64decode(readme['content']).decode()
+        == notes_module.readme(REPO, TO, publish_module.OPTIONAL),
+        readme,
+    )
     made = find(tag, s=s)
     check(
         'the release made, the latest, not a prerelease',
@@ -308,7 +358,7 @@ with tempfile.TemporaryDirectory() as temporary:
         and f'**ci**\n\n- its title ([#5](https://github.com/{REPO}/pull/5), 1 commit, by someone)' in made['body']
         and '#9' not in made['body']
         and f'https://github.com/{REPO}/tree/{sha}' in made['body']
-        and 'newest 2 nightlies' in made['body']
+        and 'Every nightly stays in this repository' in made['body']
         and f'[`{previous[:7]}...{sha[:7]}`]' in made['body']
         and '.AppImage.zsync' not in made['body'],
         made and made['body'],
@@ -322,9 +372,10 @@ with tempfile.TemporaryDirectory() as temporary:
         {k: v[:20] for k, v in data.items()},
     )
     check(
-        'only the newest 2 kept, the oldest and its tag gone',
-        sorted(r['tag_name'] for r in releases(s=s)) == sorted([tag, f'nightly-2026-10-15-{previous[:7]}'])
-        and f'nightly-2026-10-15-{oldest[:7]}' not in s['tags'][TO],
+        'every nightly kept, the oldest with its tag',
+        sorted(r['tag_name'] for r in releases(s=s))
+        == sorted([tag, f'nightly-2026-10-15-{previous[:7]}', f'nightly-2026-10-15-{oldest[:7]}'])
+        and f'nightly-2026-10-15-{oldest[:7]}' in s['tags'][TO],
         s['tags'][TO],
     )
     check(
@@ -365,15 +416,36 @@ with tempfile.TemporaryDirectory() as temporary:
         posted('nightly'),
     )
     # the run again: the files replaced, no news
-    done = publish('nightly', *everything(sha), '--checkout', str(checkout), '--keep', '2')
+    done = publish('nightly', *everything(sha), '--checkout', str(checkout), '--day', DAY)
     check(
         'a run again replaces, posting nothing',
-        done.returncode == 0 and posted('nightly') == [] and len(releases()) == 2,
+        done.returncode == 0 and posted('nightly') == [] and len(releases()) == 3,
         done.stdout + done.stderr,
     )
+    puts = [c for c in calls() if c['args'][:4] == ['api', '-X', 'PUT', f'repos/{TO}/contents/README.md']]
+    check('the README written once while its text stays the same', len(puts) == 1, puts)
+    s = state()
+    s['files'][TO]['main:README.md']['content'] = __import__('base64').b64encode(b'an older README').decode()
+    save_state(s)
+    done = publish('nightly', *everything(sha), '--checkout', str(checkout), '--day', DAY)
+    readme = state()['files'][TO]['main:README.md']
+    check(
+        'a README that differs written again over the one there (its sha given)',
+        done.returncode == 0
+        and __import__('base64').b64decode(readme['content']).decode()
+        == notes_module.readme(REPO, TO, publish_module.OPTIONAL),
+        done.stdout + done.stderr,
+    )
+    for day in (None, '2026-1-16', 'today'):
+        done = publish('nightly', *everything(sha), '--checkout', str(checkout), *(['--day', day] if day else []))
+        check(
+            f'a nightly with --day {day} is refused, naming it',
+            done.returncode == 2 and f'not {day!r}' in done.stderr,
+            done.stderr,
+        )
     # GitHub not answering which pull request merged a commit: the nightly stops, saying what gh said
     save_state(dict(state(), graphql_fail='gh: HTTP 502: Server Error'))
-    done = publish('nightly', *everything(sha), '--checkout', str(checkout), '--keep', '2')
+    done = publish('nightly', *everything(sha), '--checkout', str(checkout), '--day', DAY)
     check(
         "the pull requests unread stop the nightly with GitHub's answer",
         done.returncode != 0 and 'HTTP 502' in done.stderr,
@@ -386,18 +458,19 @@ with tempfile.TemporaryDirectory() as temporary:
         state().get('graphql_asked'),
     )
     # a run of an older commit ending last: not published over the newest
-    older_files = ['--run', '40', '--sha', oldest, '--artifacts', str(artifacts('old', oldest))]
+    older_files = ['--run', '40', '--sha', oldest, '--day', DAY, '--artifacts', str(artifacts('old', oldest))]
     done = publish('nightly', *older_files, '--checkout', str(checkout))
     check(
         'an older commit is not published',
         done.returncode == 0
         and 'older than the newest nightly' in done.stdout
-        and all(oldest[:7] not in r['tag_name'] for r in releases()),
+        and not find(f'nightly-{DAY}-{oldest[:7]}'),
         done.stdout + done.stderr,
     )
     # a nightly without one of its packages, or an AppImage without its .zsync, stops, saying which
     for skip, said in (('ScarletNX-windows', 'Windows, x86-64'), ('AppImage.zsync', 'has no ScarletNX-linux')):
-        partial = ['--run', '42', '--sha', sha, '--artifacts', str(artifacts(f'part-{len(skip)}', sha, (skip,)))]
+        partial = ['--run', '42', '--sha', sha, '--day', DAY, '--artifacts']
+        partial.append(str(artifacts(f'part-{len(skip)}', sha, (skip,))))
         done = publish('nightly', *partial, '--checkout', str(checkout))
         check(f'a nightly missing {skip} stops', done.returncode != 0 and said in done.stderr, done.stderr)
     # macOS and iOS may fail without failing the run (continue-on-error): the nightly goes out without them and says so
@@ -406,6 +479,8 @@ with tempfile.TemporaryDirectory() as temporary:
         '43',
         '--sha',
         sha,
+        '--day',
+        DAY,
         '--artifacts',
         str(artifacts('part-apple', sha, ('ScarletNX-macos', 'ScarletNX-ios'))),
     ]
@@ -424,7 +499,7 @@ with tempfile.TemporaryDirectory() as temporary:
     # dry run: reads only
     log_file.unlink(missing_ok=True)
     save_state(with_releases(TO, [r for r in releases() if r['tag_name'] != tag]))
-    done = publish('nightly', *everything(sha), '--checkout', str(checkout), '--dry-run')
+    done = publish('nightly', *everything(sha), '--checkout', str(checkout), '--day', DAY, '--dry-run')
     check(
         '--dry-run writes nothing',
         done.returncode == 0
@@ -434,7 +509,7 @@ with tempfile.TemporaryDirectory() as temporary:
     )
     # no rolling prerelease yet: made, on the commit
     save_state(with_releases(REPO, []))
-    done = publish('nightly', *everything(sha), '--checkout', str(checkout))
+    done = publish('nightly', *everything(sha), '--checkout', str(checkout), '--day', DAY)
     linked = find('nightly', REPO)
     check(
         'a rolling prerelease made when there is none',
@@ -611,7 +686,7 @@ with tempfile.TemporaryDirectory() as temporary:
         'the main commit it stands on links its nightly, to set the two side by side',
         pre
         and f'on main at [`{sha[:7]}`](https://github.com/{REPO}/commit/{sha}) '
-        f'([its nightly](https://github.com/{TO}/releases/tag/nightly-2026-10-15-{sha[:7]})).'
+        f'([its nightly](https://github.com/{TO}/releases/tag/nightly-{DAY}-{sha[:7]})).'
         in pre['body'],
         pre and pre['body'],
     )
@@ -708,7 +783,7 @@ with tempfile.TemporaryDirectory() as temporary:
     s['releases'][TO] += [pr_release(n) for n in left]
     s['tags'][TO].update({f'pr-{n}': 'x' for n in left})
     save_state(dict(s, pulls=list(left.values())))
-    done = publish('nightly', *everything(sha), '--checkout', str(checkout), '--keep', '5')
+    done = publish('nightly', *everything(sha), '--checkout', str(checkout), '--day', DAY)
     swept = done.stdout
     check(
         "the sweep lists the closed and the merged-and-built pull requests' builds, then deletes each, saying why",
@@ -729,7 +804,7 @@ with tempfile.TemporaryDirectory() as temporary:
         [r['tag_name'] for r in releases()],
     )
     save_state(dict(state(), pull_errors={'20': 'gh: HTTP 502: Server Error'}))
-    done = publish('nightly', *everything(sha), '--checkout', str(checkout), '--keep', '5')
+    done = publish('nightly', *everything(sha), '--checkout', str(checkout), '--day', DAY)
     check(
         'a pull request GitHub cannot answer for stops the sweep with its answer, deleting nothing',
         done.returncode != 0 and 'HTTP 502' in done.stderr and find('pr-20') and find('pr-23'),
@@ -987,9 +1062,7 @@ for what, copy in {
     )
 
 # the pull requests of many commits, asked 50 at a time, each commit by its own alias, only one merged into main kept
-spec = importlib.util.spec_from_file_location('publish_builds', SCRIPT)
-publish_builds = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(publish_builds)
+publish_builds = publish_module
 with tempfile.TemporaryDirectory() as temporary:
     history = Path(temporary)
 

@@ -27,7 +27,7 @@ Say what ran, for how long and how it ended:
 
 ## Which build
 
-- A nightly: its tag, `nightly-<date>-<commit>`.
+- A nightly: its tag, `nightly-<day>-<commit>`, the day (UTC) its build began.
 - A pull request's build: `pr-<number>` and the commit in its release notes. The next push replaces it; once the pull
   request is merged, it stays until a nightly has the change.
 - A build from source: `git rev-parse --short HEAD`, and whether the tree was clean.

@@ -15,7 +15,7 @@ construction.
 
 ## Download and run
 
-The newest build of `main` for Linux (AppImage), Windows and Android is in
+The newest nightly, the day's build of `main`, for Linux (AppImage), Windows and Android is in
 [scarletnx/nightly](https://github.com/scarletnx/nightly/releases/latest); [Install](docs/user/install.md) lists each
 download. Games need a Vulkan 1.3 driver, and keys and games must be dumped from your own console.
 
