@@ -12,13 +12,20 @@
    is taken, the slots no frame in flight used go back (table_reclaim): textures stay alive while memory lasts, and a
    game's thousands of them would otherwise run the table out, and skip each draw that samples one more. A sampler takes a slot for good, as vk_sampler keeps
    its samplers. The set is UPDATE_AFTER_BIND with its slots partially bound: a new slot is written while command
-   buffers that bind the set are pending, and those do not read it (UPDATE_UNUSED_WHILE_PENDING). */
+   buffers that bind the set are pending, and those do not read it (UPDATE_UNUSED_WHILE_PENDING).
+
+   With descriptor buffers the set is a descriptor buffer of its own, which lasts the run, where each frame's arena
+   holds the stages' sets only for the frame (descriptors.c). A new slot's descriptor goes into its bytes at once
+   (vkGetDescriptorEXT), under the same rules: no pending command buffer reads a slot that is written. Each frame's
+   arena binds with it, at buffer index 1 (vk_descriptors_table). */
 #include <string.h>
 #include "common/platform/thread.h"
 #include "common/utilities/bits.h"
 #include "nx/gpu/shader/shader.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptors.h"
+#include "nx/gpu/vk/devmem.h"
+#include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/pool_map.h"
 #include "nx/runtime/platform/log.h"
 
@@ -39,7 +46,12 @@ typedef struct {
 static struct {
     VkDescriptorSetLayout layout;
     VkDescriptorPool pool;
-    VkDescriptorSet set;
+    VkDescriptorSet set; /* with descriptor buffers, 1: the table is there (dmap) */
+    /* with descriptor buffers: the table's own descriptor buffer, mapped, and each binding's offset and descriptor size */
+    VkBuffer dbuf;
+    DevMem dmem;
+    u8* dmap;
+    VkDeviceSize at[2], size[2];
     VkBuffer scratch; /* gbuf_address's scratch words */
     DevMem scratch_mem;
     u64 scratch_address;
@@ -69,6 +81,91 @@ static u32 sampler_home(VkSampler s) {
     return (u32)(snx_fnv_step(SNX_FNV_BASIS, (u64)(uintptr_t)s) & (TABLE_SAMPLERS - 1));
 }
 
+/* the table in a descriptor buffer of its own (descriptors.c binds it with each frame's arena): a layout of descriptor
+   buffers has no update-after-bind, and its counts go against the plain limits */
+static int table_init_buffer(char* why, size_t size, u32 images, u32 samplers) {
+    const VkPhysicalDeviceLimits* l = &g_vk.props.limits;
+    const VkPhysicalDeviceDescriptorBufferPropertiesEXT* p = &g_vk.descriptor_props;
+    const char* no = !g_vk.has_table_features ? "the device lacks a feature of descriptor indexing"
+                     : l->maxPerStageDescriptorSampledImages < images || l->maxDescriptorSetSampledImages < images
+                         ? "the device binds fewer sampled images"
+                     : l->maxPerStageDescriptorSamplers < samplers || l->maxDescriptorSetSamplers < samplers
+                         ? "the device binds fewer samplers"
+                     : l->maxPerStageResources < images + samplers ? "the device binds fewer resources a stage"
+                     : p->maxDescriptorBufferBindings < 2 || p->maxResourceDescriptorBufferBindings < 2 ||
+                             p->maxSamplerDescriptorBufferBindings < 2
+                         ? "the device binds fewer than two descriptor buffers"
+                         : NULL;
+    if (no) {
+        snprintf(why, size, "%s", no);
+        return 0;
+    }
+    const VkDescriptorBindingFlags binding_flags[2] = {VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT,
+                                                       VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT};
+    const VkShaderStageFlags stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    const VkDescriptorSetLayoutBinding b[2] = {{0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, SNX_TABLE_IMAGES, stages, NULL},
+                                               {1, VK_DESCRIPTOR_TYPE_SAMPLER, SNX_TABLE_SAMPLERS, stages, NULL}};
+    const VkDescriptorSetLayoutBindingFlagsCreateInfo bf = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
+        .bindingCount = 2,
+        .pBindingFlags = binding_flags};
+    const VkDescriptorSetLayoutCreateInfo dl = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                                                .pNext = &bf,
+                                                .flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT,
+                                                .bindingCount = 2,
+                                                .pBindings = b};
+    if (!VK_OK(vkCreateDescriptorSetLayout(g_vk.dev, &dl, NULL, &g_table.layout))) {
+        snprintf(why, size, "the device made no layout for it");
+        return 0;
+    }
+    VkDeviceSize bytes = 0;
+    vkGetDescriptorSetLayoutSizeEXT(g_vk.dev, g_table.layout, &bytes);
+    for (u32 i = 0; i < 2; i++) vkGetDescriptorSetLayoutBindingOffsetEXT(g_vk.dev, g_table.layout, i, &g_table.at[i]);
+    g_table.size[0] = p->sampledImageDescriptorSize;
+    g_table.size[1] = p->samplerDescriptorSize;
+    /* in the GPU's memory where the CPU maps it, as the arenas are: the CPU only writes it */
+    const VkBufferCreateInfo bi = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = bytes,
+        .usage = VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT | VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT |
+                 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    const DevMemWant want = {
+        .at = DM_WINDOW, .mapped = 1, .need = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT};
+    DevMemInfo details;
+    if (!bytes || !VK_OK(vk_devmem_buffer(&bi, &want, &g_table.dbuf, &g_table.dmem, &details)) || !details.ptr) {
+        snprintf(why, size, "no memory for its descriptor buffer");
+        return 0;
+    }
+    vk_mem_track(g_table.dmem, VK_OWN_DESCRIPTORS);
+    g_table.dmap = details.ptr;
+    vk_descriptors_table(vk_buffer_address(g_table.dbuf));
+    g_table.set = (VkDescriptorSet)(uintptr_t)1;
+    why[0] = 0;
+    return 1;
+}
+/* slot of binding (0 the images, 1 the samplers) names ii's view in its layout, or its sampler */
+static void table_write(u32 binding, u32 slot, const VkDescriptorImageInfo* ii) {
+    const VkDescriptorType type = binding ? VK_DESCRIPTOR_TYPE_SAMPLER : VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    if (g_table.dmap) {
+        VkDescriptorGetInfoEXT get = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT, .type = type};
+        if (binding)
+            get.data.pSampler = &ii->sampler;
+        else
+            get.data.pSampledImage = ii;
+        vkGetDescriptorEXT(g_vk.dev, &get, g_table.size[binding],
+                           g_table.dmap + g_table.at[binding] + (VkDeviceSize)slot * g_table.size[binding]);
+        return;
+    }
+    const VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                    .dstSet = g_table.set,
+                                    .dstBinding = binding,
+                                    .dstArrayElement = slot,
+                                    .descriptorCount = 1,
+                                    .descriptorType = type,
+                                    .pImageInfo = ii};
+    vkUpdateDescriptorSets(g_vk.dev, 1, &w, 0, NULL);
+}
 int vk_table_init(char* why, size_t size) {
     VkPhysicalDeviceVulkan12Properties p12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES};
     VkPhysicalDeviceProperties2 pp2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &p12};
@@ -76,6 +173,7 @@ int vk_table_init(char* why, size_t size) {
     /* a pipeline layout with the table counts every set against the update-after-bind limits: the stages' own
        textures and arrays come on top of the table (1024 of room) */
     const u32 images = SNX_TABLE_IMAGES + 1024, samplers = SNX_TABLE_SAMPLERS + 1024;
+    if (g_vk.has_descriptor_buffers) return table_init_buffer(why, size, images, samplers);
     const char* no = !g_vk.has_table_features ? "the device lacks a feature of descriptor indexing"
                      : p12.maxPerStageDescriptorUpdateAfterBindSampledImages < images ||
                              p12.maxDescriptorSetUpdateAfterBindSampledImages < images
@@ -217,14 +315,7 @@ static u32 view_slot(VkImageView view, VkImageLayout layout) {
         *e = (TableView){view, layout, slot};
         g_table.slot_view[slot] = *e;
         const VkDescriptorImageInfo ii = {VK_NULL_HANDLE, view, layout};
-        const VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                        .dstSet = g_table.set,
-                                        .dstBinding = 0,
-                                        .dstArrayElement = slot,
-                                        .descriptorCount = 1,
-                                        .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-                                        .pImageInfo = &ii};
-        vkUpdateDescriptorSets(g_vk.dev, 1, &w, 0, NULL);
+        table_write(0, slot, &ii);
     }
     *hit = *e;
     g_table.slot_frame[e->slot] = vk_frame_id();
@@ -243,14 +334,7 @@ static u32 sampler_slot(VkSampler sampler) {
         }
         *e = (TableSampler){sampler, g_table.next_sampler++};
         const VkDescriptorImageInfo ii = {sampler, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED};
-        const VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                        .dstSet = g_table.set,
-                                        .dstBinding = 1,
-                                        .dstArrayElement = e->slot,
-                                        .descriptorCount = 1,
-                                        .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
-                                        .pImageInfo = &ii};
-        vkUpdateDescriptorSets(g_vk.dev, 1, &w, 0, NULL);
+        table_write(1, e->slot, &ii);
     }
     *hit = *e;
     return e->slot;
@@ -318,20 +402,9 @@ int vk_table_null(VkImageView view, VkSampler sampler) {
     if (!view || !sampler || !g_table.set) return 0;
     const VkDescriptorImageInfo image = {VK_NULL_HANDLE, view, VK_IMAGE_LAYOUT_GENERAL}, smp = {sampler, VK_NULL_HANDLE,
                                                                                                 VK_IMAGE_LAYOUT_UNDEFINED};
-    const VkWriteDescriptorSet w[2] = {{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                        .dstSet = g_table.set,
-                                        .dstBinding = 0,
-                                        .descriptorCount = 1,
-                                        .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-                                        .pImageInfo = &image},
-                                       {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                        .dstSet = g_table.set,
-                                        .dstBinding = 1,
-                                        .descriptorCount = 1,
-                                        .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
-                                        .pImageInfo = &smp}};
     pm_lock(&g_table.lock);
-    vkUpdateDescriptorSets(g_vk.dev, 2, w, 0, NULL);
+    table_write(0, 0, &image);
+    table_write(1, 0, &smp);
     pm_unlock(&g_table.lock);
     return 1;
 }

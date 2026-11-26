@@ -1534,18 +1534,21 @@ void rec_CmdBindDescriptorSets(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPip
 
 typedef struct {
     VkCommandBuffer cb;
-    VkDeviceAddress address;
+    VkDeviceAddress address, table;
 } DescriptorBufferArgs;
 static void descriptor_buffer_run(const void* p) {
     const DescriptorBufferArgs* x = p;
-    VkDescriptorBufferBindingInfoEXT info = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT,
-        .address = x->address,
-        .usage = VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT | VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT};
-    vkCmdBindDescriptorBuffersEXT(x->cb, 1, &info);
+    const VkBufferUsageFlags usage =
+        VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT | VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT;
+    const VkDescriptorBufferBindingInfoEXT info[2] = {
+        {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT, .address = x->address, .usage = usage},
+        {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT, .address = x->table, .usage = usage}};
+    vkCmdBindDescriptorBuffersEXT(x->cb, x->table ? 2 : 1, info);
 }
-void rec_CmdBindDescriptorBuffersEXT(VkCommandBuffer cb, VkDeviceAddress address) {
+/* the frame's arena at buffer index 0, and the texture table's own buffer at index 1 where it has one (table, else 0) */
+void rec_CmdBindDescriptorBuffersEXT(VkCommandBuffer cb, VkDeviceAddress address, VkDeviceAddress table) {
     vk_descriptor_heaps_invalidate();
-    DescriptorBufferArgs args = {cb, address};
+    DescriptorBufferArgs args = {cb, address, table};
     if (!rec_on(cb)) {
         descriptor_buffer_run(&args);
         return;
@@ -1557,25 +1560,27 @@ void rec_CmdBindDescriptorBuffersEXT(VkCommandBuffer cb, VkDeviceAddress address
 typedef struct {
     VkCommandBuffer cb;
     VkPipelineLayout layout;
-    u32 first, count;
+    u32 first, count, buffer;
     VkPipelineBindPoint bp;
     VkDeviceSize offsets[5];
 } DescriptorOffsetsArgs;
 static void descriptor_offsets_run(const void* p) {
     const DescriptorOffsetsArgs* x = p;
-    const u32 indices[5] = {0};
+    const u32 indices[5] = {x->buffer, x->buffer, x->buffer, x->buffer, x->buffer};
     vkCmdSetDescriptorBufferOffsetsEXT(x->cb, x->bp, x->layout,
                                         x->first, x->count, indices, x->offsets);
 }
 void rec_CmdSetDescriptorBufferOffsetsEXT(VkCommandBuffer cb, VkPipelineLayout layout, u32 first, u32 count,
                                          const VkDeviceSize* offsets) {
-    rec_CmdSetDescriptorBufferOffsetsBP(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, first, count, offsets);
+    rec_CmdSetDescriptorBufferOffsetsBP(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, first, count, offsets, 0);
 }
-/* the offsets of a set bound at another bind point: a compute pipeline's (vk_descriptors_bind_compute) */
+/* the offsets of a set bound at another bind point: a compute pipeline's (vk_descriptors_bind_compute). buffer: the
+   index of the bound descriptor buffer that the sets are in (rec_CmdBindDescriptorBuffersEXT) */
 void rec_CmdSetDescriptorBufferOffsetsBP(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipelineLayout layout, u32 first,
-                                         u32 count, const VkDeviceSize* offsets) {
+                                         u32 count, const VkDeviceSize* offsets, u32 buffer) {
     vk_descriptor_heaps_invalidate();
-    DescriptorOffsetsArgs args = {.cb = cb, .layout = layout, .first = first, .count = count, .bp = bp};
+    DescriptorOffsetsArgs args = {
+        .cb = cb, .layout = layout, .first = first, .count = count, .buffer = buffer, .bp = bp};
     for (u32 i = 0; i < count && i < 5; i++) args.offsets[i] = offsets[i];
     if (!rec_on(cb)) {
         descriptor_offsets_run(&args);
