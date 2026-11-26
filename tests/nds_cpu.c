@@ -174,23 +174,22 @@ int main(void) {
     CHECK(run(&rom, NULL, 12) == 0);
     /* ahead of time: every block the run needs is in the module */
     SnxArmAotCount made = {0};
-    if (nds_aot_compile(&rom, module, NULL, 1, 0, NULL, &made, error, sizeof error)) {
+    if (nds_aot_compile(&rom, module, NULL, 1, 0, &made, error, sizeof error)) {
         fprintf(stderr, "%s\n", error);
         return 1;
     }
     CHECK(nds_module_current(module, &rom));
     const uint64_t from_module = run(&rom, module, 12);
     CHECK(from_module >= 8);
-    /* every block the native back end's where the host has one, LLVM's where it has none */
-    CHECK(snx_native_arm_available() ? made.native && !made.llvm : !made.native && made.llvm);
+    CHECK(made.native); /* the native back end's blocks */
     unsigned blocks, longer;
     const uint64_t index = index_hash(module, &blocks, &longer);
     if (index != NDS_FROZEN_INDEX || blocks != NDS_FROZEN_BLOCKS || longer != NDS_FROZEN_LONGER ||
-        made.native + made.llvm != NDS_FROZEN_BLOCKS || from_module != NDS_FROZEN_FROM_MODULE) {
+        made.native != NDS_FROZEN_BLOCKS || from_module != NDS_FROZEN_FROM_MODULE) {
         fprintf(stderr,
                 "nds_cpu: the module's index is %016llx, of %u blocks (%zu made), %u of more than a unit, %llu of them "
                 "run; LLVM alone's was %016llx, of %u blocks, %u of more than a unit, %llu of them run\n",
-                (unsigned long long)index, blocks, made.native + made.llvm, longer, (unsigned long long)from_module,
+                (unsigned long long)index, blocks, made.native, longer, (unsigned long long)from_module,
                 (unsigned long long)NDS_FROZEN_INDEX, NDS_FROZEN_BLOCKS, NDS_FROZEN_LONGER, NDS_FROZEN_FROM_MODULE);
         return 1;
     }

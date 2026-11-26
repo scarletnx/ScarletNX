@@ -9,7 +9,6 @@
 #include "common/cpu/aarch64/cpu.h"
 #include "common/cpu/recompiler/loader/code_loader_int.h"
 #include "common/cpu/recompiler/object/elf_object.h"
-#include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/recompiler/object/objects_pack.h"
 #include "common/cpu/recompiler/mach/native.h"
 #include "common/runtime/interface.h"
@@ -168,8 +167,6 @@ int main(int argc, char** argv) {
         fprintf(stderr, "the pack was not built\n");
         return 1;
     }
-    /* LLVM made none of it: never started */
-    CHECK(!snx_ir_started());
     data = (unsigned char*)snx_read_file(argv[1], &size);
     inputs = data ? snx_objects_unpack(data, size, "pack", &count) : NULL;
     CHECK(inputs && count >= 3); /* the descriptor, f0's unit and f1's, with f2 in it or of its own */

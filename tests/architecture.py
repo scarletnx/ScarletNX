@@ -756,18 +756,12 @@ def check_weak_declarations(repo):
 
 # LLVM's headers, and what of src/ builds on them: the backend's folder, and the files named here, which include one or
 # a header of the project's that does. A file leaves the list when it stops, and one joins it only with the LLVM code of
-# files that leave, never new code: what wants the code the native back ends leave asks for it through
-# recompiler/fallback.h (a game module's own through nx/loader/module_fallback.h), and the rest of the recompiler
-# (snx_recompiler_core) builds without LLVM
+# files that leave, never new code: the rest of the recompiler (snx_recompiler_core) builds without LLVM
 LLVM_HEADER = re.compile(r'llvm(?:-c)?/')
 LLVM_FOLDER = 'src/common/cpu/recompiler/llvm/'
 LLVM_USERS = {
     'src/common/cpu/arm/llvm.c',
     'src/common/cpu/arm/llvm.h',
-    'src/common/cpu/recompiler/fallback_llvm.c',
-    'src/nx/loader/module_fallback_llvm.c',
-    'src/nx/loader/module_variants.c',
-    'src/nx/loader/module_variants.h',
     'src/nx/runtime/driver/llvm_tuning.c',
     'src/nx/runtime/settings_llvm.h',
 }
@@ -799,7 +793,7 @@ def check_llvm(repo):
                 pending.append(shown)
     errors = [
         f'{shown}: includes {by[shown]}, which takes LLVM: the recompiler builds without it but for the files of '
-        'LLVM_USERS (tests/architecture.py), which none joins: ask recompiler/fallback.h'
+        'LLVM_USERS (tests/architecture.py), which none joins'
         for shown in sorted(by)
         if not shown.startswith(LLVM_FOLDER) and shown not in LLVM_USERS
     ]
@@ -998,7 +992,7 @@ def check_graph(graph):
         ('snx_ctr_process', ('scarletnx-nx', 'scarletnx-gnuabi', 'snx_driver', 'snx_nx_module', 'snx_arm_llvm')),
         ('snx_ctr_native', ('scarletnx-nx', 'scarletnx-gnuabi', 'snx_driver', 'snx_nx_module', 'snx_arm_llvm')),
         ('snx_recompiler_core', ('snx_llvm', 'snx_arm_llvm', 'snx_recompiler_jit', 'scarletnx-common')),
-        ('snx_nx_fallback_none', ('snx_llvm', 'snx_arm_llvm', 'snx_recompiler_jit', 'snx_nx_fallback_llvm')),
+        ('snx_nx_aot', ('snx_llvm', 'snx_arm_llvm')),
     ):
         if owner not in by_name:
             if owner == 'scarletnx-common':
@@ -1008,7 +1002,7 @@ def check_graph(graph):
         for target in forbidden:
             if target in dependencies:
                 errors.append(f'{owner} transitively links forbidden target {target}')
-        if owner in ('snx_recompiler_core', 'snx_nx_fallback_none'):
+        if owner in ('snx_recompiler_core', 'snx_nx_aot'):
             for target in dependencies:
                 if re.search(r'(?:^|[/\\]|-l|lib)LLVM', target):
                     errors.append(f'{owner} transitively links LLVM: {target}')

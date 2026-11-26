@@ -68,7 +68,6 @@
 #include "qemu_ref/qemu_ref.h"
 #include "common/cpu/aarch64/a64_decoder.h"
 #include "common/cpu/recompiler/codegen.h"
-#include "common/cpu/recompiler/fallback.h"
 #include "support/frozen.h"
 #include "common/utilities/common.h"
 #include <stdio.h>
@@ -1398,8 +1397,10 @@ int main(int argc, char** argv) {
         }
     }
     (void)hook;
-    /* where LLVM alone's ends are the reference, whether this build has it, and whether it runs */
-    const int has_llvm = snx_fallback_available() && !without_llvm, other = qemu || branches || refused;
+    /* LLVM alone's ends are the reference, as recorded in --frozen's file: no LLVM is left to make them (--without-llvm,
+       which every run is now, says so) */
+    const int has_llvm = 0, other = qemu || branches || refused;
+    (void)without_llvm;
     if ((record || frozen) && other) {
         fprintf(stderr, "--%s: with %s the reference is %s, not LLVM's: nothing to freeze\n",
                 record ? "record" : "frozen",
@@ -1412,22 +1413,12 @@ int main(int argc, char** argv) {
                            : "no run's");
         return 2;
     }
-    if (record && !has_llvm) {
-        if (without_llvm)
-            fprintf(stderr, "--record %s with --without-llvm: the file keeps LLVM alone's ends\n", record);
-        else
-            fprintf(stderr, "--record %s: this build has no LLVM (its fallback is %s), whose ends the file keeps\n",
-                    record, snx_fallback_name());
+    if (record) {
+        fprintf(stderr, "--record %s: no LLVM is left to make the ends the file keeps\n", record);
         return 2;
     }
-    if (!record && !frozen && !other && !has_llvm) {
-        if (without_llvm)
-            fprintf(stderr, "FAIL: --without-llvm and no --frozen FILE: nothing to compare with\n");
-        else
-            fprintf(stderr,
-                    "FAIL: this build has no LLVM (its fallback is %s) and no --frozen FILE: nothing to compare "
-                    "with\n",
-                    snx_fallback_name());
+    if (!frozen && !other) {
+        fprintf(stderr, "FAIL: no --frozen FILE: nothing to compare with\n");
         return 1;
     }
     const int llvm = has_llvm && !qemu && !branches;
@@ -1971,7 +1962,7 @@ done:
                  "recompiler_backends frozen reference: LLVM alone's ends, a hash a function over its %u states",
                  states);
         file.parts = 1, file.items[0] = functions, file.inputs = inputs;
-        snprintf(file.recorded, sizeof file.recorded, "%s alone (snx_recompiler_set_backend 0)", snx_fallback_name());
+        snprintf(file.recorded, sizeof file.recorded, "LLVM alone (snx_recompiler_set_backend 0)");
         if (snx_frozen_write(&file, record, ferr, sizeof ferr))
             ++failures, fprintf(stderr, "FAIL: --record %s\n", ferr);
         else

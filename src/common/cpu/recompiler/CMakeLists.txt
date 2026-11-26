@@ -5,13 +5,12 @@
 #   snx_recompiler_core   the native back ends (mach/ and a folder a machine), what links and loads their objects
 #                         (object/, loader/) and the runtime library's objects (rtlib/). No LLVM: the tests
 #                         runtime_architecture and recompiler_core_symbols hold it to that
-#   snx_llvm              the LLVM backend (llvm/), where the build has it (SNX_WITH_LLVM), and the fallback it is
-#                         (fallback.h): it makes what the native back ends leave. snx_fallback_none refuses it instead
+#   snx_llvm              the LLVM backend (llvm/), where the build has it (SNX_WITH_LLVM): the tests' reference
 #   snx_recompiler_jit    what makes the code a running program reaches (jit/, cpu/arm/exec.c), and the AArch32 blocks
 #                         of the AOT compilers (cpu/arm/aot.c)
 #   scarletnx-recompiler  the library (snx_recompiler.h, docs/dev/library.md): an archive of all their objects
-# A build without LLVM has the core, snx_fallback_none, the AArch32 executor and AOT blocks, the JIT and its cache
-# alone: the others still call it
+# A build without LLVM has the core, the AArch32 executor and AOT blocks, the JIT and its cache alone: the others still
+# call it
 
 # The runtime library every module links (rtlib.c): the helpers, compiled here with this Clang and the flags toolchain.c
 # gives generated C
@@ -134,10 +133,6 @@ endif()
 # generates with the A64 Sail's encoders; built on every host (its code is arm64's, which the tests run under
 # Unicorn; not on Windows on another machine), the default code generator on arm64's ELF hosts and Windows
 target_sources(snx_recompiler_core PRIVATE arm64/arm64_codegen.c arm64/arm64_arm.c mach/native.c)
-# without LLVM a host below its back end's floor is refused (native.h's snx_native_refused): nothing else makes its code
-if(NOT SNX_WITH_LLVM)
-    target_compile_definitions(snx_recompiler_core PRIVATE SNX_NATIVE_ALONE=1)
-endif()
 snx_sailgen_a64_arm64(snx_recompiler_core)
 snx_sailgen_a32_arm64(snx_recompiler_core)
 # the riscv64 back end (src/common/cpu/recompiler/rv64): the same functions in RV64, from the emitters sailgen
@@ -189,12 +184,6 @@ add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/native_code.c"
     COMMENT "Hashing the native back ends' code" VERBATIM)
 target_sources(snx_recompiler_core PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/native_code.c")
 
-# no fallback: each thing asked of it is an error that names it. The tests link it in every build
-add_library(snx_fallback_none STATIC EXCLUDE_FROM_ALL fallback_none.c)
-set_target_properties(snx_fallback_none PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
-target_compile_options(snx_fallback_none PRIVATE -pedantic-errors -Wall -Wextra -Werror=missing-prototypes)
-target_link_libraries(snx_fallback_none PUBLIC snx_recompiler_core)
-
 add_library(snx_recompiler_jit STATIC "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/exec.c" jit/jit_cache.c
                                       jit/jit_cache_key.c "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/aot.c"
                                       jit/jit_service.c)
@@ -203,11 +192,9 @@ target_compile_options(snx_recompiler_jit PRIVATE -Wall -Wextra -Werror=missing-
 target_compile_definitions(snx_recompiler_jit PRIVATE _CRT_SECURE_NO_WARNINGS)
 target_link_libraries(snx_recompiler_jit PUBLIC snx_recompiler_core snx_arm_rt)
 if(NOT SNX_WITH_LLVM)
-    target_link_libraries(snx_recompiler_jit PUBLIC snx_fallback_none)
     return()
 endif()
 add_subdirectory(llvm)
-target_link_libraries(snx_recompiler_jit PUBLIC snx_llvm)
 
 # The recompiler as a library (snx_recompiler.h): the backends and the function discovery behind one C interface,
 # without the Switch runtime. One archive holds everything of this tree the interface needs (the objects of the

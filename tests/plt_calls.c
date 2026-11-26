@@ -7,10 +7,8 @@
    the PLT slot: whatever links the game binds it to that function, so the call is the same while the slot still
    holds the address a game's own linker leaves there until the stub's first call, or anything else. Such a stub
    entered as a function, through a pointer, reads its slot and goes where it says. Two's stub, a stub of a function
-   a hook names and every stub of a recompile with --hook-direct-calls must call through the table. The call is made
-   where the BL or B is (the IR of the calling function calls the three functions itself), and goes to the stub's own
-   function once the guest has changed the stub's code. The function whose IR is printed is LLVM's; built again
-   without the print, every function is the x86-64 back end's where it is built, and runs the same.
+   a hook names and every stub of a recompile with --hook-direct-calls must call through the table. The call goes to
+   the stub's own function once the guest has changed the stub's code.
      plt_calls SCARLETNX DATA */
 #include "common/utilities/common.h"
 #include "common/cpu/aarch64/cpu.h"
@@ -167,17 +165,6 @@ static void sdk_image(unsigned char* image, const char* ext) {
     put32(image, SDK_TWO, 0x91100000), put32(image, SDK_TWO + 4, 0xD65F03C0);   /* add x0, x0, #0x400; ret */
     put32(image, EXT_TAIL, 0x91000C00), put32(image, EXT_TAIL + 4, 0xD65F03C0); /* add x0, x0, #3; ret */
     dynamic(image, symbols, 3, NULL, 0);
-}
-
-/* Whether the function the recompile dumped the IR of (the setting ir_dump_pc, in the recompile's output text) calls
-   the function at callee itself */
-static int ir_calls(const char* text, unsigned long long callee) {
-    const char *from = text ? strstr(text, "IR before promotion:") : NULL, *hit;
-    const char* to = from ? strstr(from, "IR after promotion:") : NULL;
-    char call[40];
-    snprintf(call, sizeof call, "@F_%llX(", callee);
-    hit = from ? strstr(from, call) : NULL;
-    return hit && to && hit < to;
 }
 
 /* snx_run, its output with every line ended as this file writes them: Windows' text streams end a line with CR LF */
@@ -419,14 +406,12 @@ int main(int argc, char** argv) {
     static unsigned char file[0x3100], main_bytes[0x3000], sdk_bytes[0x3000];
     char *root, *game, *exefs, *path, *out, *module, *text = NULL;
     const char *args[16], *hooked = NULL;
-    char dump[40];
     const char* bound_line =
         "PLT: 4 calls through 3 stubs made direct, 1 stubs of their module's own functions and 2 of "
         "another module's\n";
     size_t r;
     int k, pass;
     if (argc != 3) return 2;
-    snprintf(dump, sizeof dump, "--ir_dump_pc=%llx", (unsigned long long)SNX_CODE_BASE + CALLER);
     root = snx_temp_dir(NULL);
     if (!root) return 1;
     game = snx_path_join(root, "Game"); /* the name its folder gives it */
@@ -441,9 +426,8 @@ int main(int argc, char** argv) {
         hooked = candidate;
     }
     check(hooked && strlen(hooked) < 100 && snx_hook_routed(hooked), "the route list names a symbol");
-    /* 0: as it is, printing the calling function's IR. 1: as it is. 2: ext_add by a name a hook names. 3: with every
-       call through its dispatch slot */
-    for (pass = 0; pass < 4; ++pass) {
+    /* 1: as it is. 2: ext_add by a name a hook names. 3: with every call through its dispatch slot */
+    for (pass = 1; pass < 4; ++pass) {
         const char* ext = pass == 2 && hooked ? hooked : "ext_add";
         main_image(main_bytes, ext);
         sdk_image(sdk_bytes, ext);
@@ -463,7 +447,6 @@ int main(int argc, char** argv) {
         args[k++] = out;
         args[k++] = "--nce=0"; /* code made ahead of time, which an NCE recompile has none of */
         if (pass == 3) args[k++] = "--hook-direct-calls";
-        if (!pass) args[k++] = dump; /* the IR of the function that calls through the stubs, in the output */
         args[k] = NULL;
         if (run_cli(args, root, &text)) {
             fprintf(stderr, "%s\n", text ? text : "");
@@ -474,20 +457,6 @@ int main(int argc, char** argv) {
         check(text && (pass == 3 ? !strstr(text, "PLT: ") : strstr(text, bound_line) != NULL),
               pass == 3 ? "nothing is bound when every call goes through its dispatch slot"
                         : "the recompile says how many calls through the PLT it made direct");
-        if (!pass) { /* the call is made where the BL or B is, not in the stub's function */
-            const SnxU64 a = SNX_CODE_BASE, b = SNX_CODE_BASE + 0x4000;
-            check(ir_calls(text, a + CALLER), "the recompile prints the IR of the function that calls");
-            check(ir_calls(text, b + EXT_ADD) && ir_calls(text, a + OWN_ADD) && ir_calls(text, b + EXT_TAIL),
-                  "the calling function calls the three bound functions itself");
-            check(!ir_calls(text, a + MAIN_TWO) && !ir_calls(text, b + SDK_TWO),
-                  "and neither function of the symbol two modules define");
-            /* its last branch too, which keeps the call of the stub for a slot that holds another address */
-            check(ir_calls(text, a + STUB + 48), "the branch to a stub is run in the stub's place");
-        }
-        if (text && strstr(text, "x86-64 back end: ") && pass < 2)
-            check(pass ? !strstr(text, ", LLVM the rest") : strstr(text, ", LLVM the rest") != NULL,
-                  pass ? "the x86-64 back end makes every function, the calling one too"
-                       : "the function whose IR is printed is LLVM's");
         free(text);
         text = NULL;
         module_runs(module, main_bytes, sdk_bytes, pass == 3 ? TABLE : pass == 2 ? ROUTED : BOUND);

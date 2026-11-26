@@ -55,13 +55,13 @@ if(SNX_TEST_SANITIZERS)
         snx_ble_system
         snx-logscan
         # the recompiler, its backends and what they take of the common code
-        snx_recompiler_base snx_recompiler_core snx_llvm snx_fallback_none snx_recompiler_jit snx_arm_llvm snx_arm_decode
+        snx_recompiler_base snx_recompiler_core snx_llvm snx_recompiler_jit snx_arm_llvm snx_arm_decode
         snx_arm_rt scarletnx-recompiler scarletnx-recompiler-shared
         # the driver, its extraction, the first start's setup, the settings and the build's line
         snx_driver snx_nx_module snx_driver_llvm hactool_lib snx_setup snx_settings snx_settings_runtime snx_build_info
         snx-test-build-info
-        # the game module ahead of time: its builders, its descriptor and the fallback's part of it, LLVM's and none's
-        snx_nx_aot snx_nx_descriptor snx_nx_fallback_llvm snx_nx_fallback_none
+        # the game module ahead of time: its builders and its descriptor
+        snx_nx_aot snx_nx_descriptor
         # the Switch runtime: its components, the shader translator, the Vulkan backend and its upscalers
         scarletnx snx_core snx_kernel snx_hle snx_video snx_gpu snx_platform snx_shader snx_vk snx_fsr2 snx_upscaler
         # the GNU ABI runtime and its kernel
@@ -1195,12 +1195,6 @@ add_executable(snx-test-arm-exec arm_exec_test.c)
 snx_test_target(snx-test-arm-exec gnu23)
 target_link_libraries(snx-test-arm-exec PRIVATE snx_recompiler_jit)
 add_test(NAME arm_exec_dry_svc COMMAND snx-test-arm-exec)
-# the same executor where the loader does not take a native block's object (exec.c itself, its loads the test's)
-add_executable(snx-test-arm-exec-fallback arm_exec_fallback.c)
-snx_test_target(snx-test-arm-exec-fallback gnu23)
-target_include_directories(snx-test-arm-exec-fallback PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(snx-test-arm-exec-fallback PRIVATE snx_llvm)
-add_test(NAME arm_exec_fallback COMMAND snx-test-arm-exec-fallback WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
 # the AOT compilers' blocks: the native back end's, LLVM's where it refuses one or the IR is kept, and who made them said
 add_executable(snx-test-arm-aot arm_aot.c)
 snx_test_target(snx-test-arm-aot gnu23)
@@ -3939,40 +3933,14 @@ snx_test_target(snx-test-arm-module-refused gnu23)
 target_link_libraries(snx-test-arm-module-refused PRIVATE snx_driver_llvm ${CMAKE_DL_LIBS})
 add_test(NAME arm_module_refused COMMAND snx-test-arm-module-refused)
 set_tests_properties(arm_module_refused PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
-# a game module through the fallback (nx/loader/module_fallback.h): the builders in the program, which links none (no
-# LLVM at all) and, where the build has it, LLVM's; a module of the native back end's code is the same file with each
-set(snx_nx_fallback_tests none)
-if(SNX_WITH_LLVM)
-    list(APPEND snx_nx_fallback_tests llvm)
-endif()
-foreach(fallback IN LISTS snx_nx_fallback_tests)
-    set(target snx-test-nx-module-fallback-${fallback})
-    add_executable(${target} nx_module_fallback.c nx_module_fallback_arm.c
-                   "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/jit/jit_cache.c")
-    snx_test_target(${target} gnu23)
-    target_link_libraries(${target} PRIVATE snx_nx_fallback_${fallback} snx_nx_descriptor snx_nx_module snx_settings)
-    if(fallback STREQUAL none)
-        target_link_libraries(${target} PRIVATE snx_fallback_none)
-    endif()
-    add_test(NAME nx_module_fallback_${fallback} COMMAND ${target}
-             "${CMAKE_CURRENT_BINARY_DIR}/nx-module-fallback/${fallback}")
-    set_tests_properties(nx_module_fallback_${fallback} PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77
-                         FIXTURES_SETUP nx_module_fallback_${fallback})
-endforeach()
-if(SNX_WITH_LLVM)
-    if(WIN32)
-        set(suffix .dll)
-    else()
-        set(suffix .so)
-    endif()
-    foreach(bits a64 a32)
-        add_test(NAME nx_module_fallback_same_${bits} COMMAND "${CMAKE_COMMAND}" -E compare_files
-                 "${CMAKE_CURRENT_BINARY_DIR}/nx-module-fallback/none/${bits}${suffix}"
-                 "${CMAKE_CURRENT_BINARY_DIR}/nx-module-fallback/llvm/${bits}${suffix}")
-        set_tests_properties(nx_module_fallback_same_${bits} PROPERTIES
-                             FIXTURES_REQUIRED "nx_module_fallback_none;nx_module_fallback_llvm")
-    endforeach()
-endif()
+# a game module of the native back end's code (nx/loader/module_llvm.c, module_arm.c): the builders in the program, and
+# what each refuses
+add_executable(snx-test-nx-module-native nx_module_native.c nx_module_native_arm.c
+               "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/jit/jit_cache.c")
+snx_test_target(snx-test-nx-module-native gnu23)
+target_link_libraries(snx-test-nx-module-native PRIVATE snx_nx_descriptor snx_nx_module snx_recompiler_jit snx_settings)
+add_test(NAME nx_module_native COMMAND snx-test-nx-module-native "${CMAKE_CURRENT_BINARY_DIR}/nx-module-native")
+set_tests_properties(nx_module_native PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
 # the AArch32 dispatch loop's lookup keeps no frame and no stack canary: compile(), its slow path, stays out of line
 # (arm_dispatch_frame.py reads arm.c's object with the build's llvm-objdump). With ThinLTO the object is bitcode and the
 # link makes the machine code, so it reads the program, which the line table ties to arm.c (cmake/lto.cmake)

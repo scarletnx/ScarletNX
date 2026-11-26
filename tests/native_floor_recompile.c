@@ -2,14 +2,12 @@
    Copyright 2026 the ScarletNX contributors */
 /* scarletnx -r on a host below its native back end's floor (recompiler/mach/native.h), an NRO of two instructions made
    in one process, over the game made before on the same host whole:
-   - in a build without LLVM the recompile fails with the line of what the host lacks, after the line the launcher
-     starts its step with, and the game made already stays as it was, with its stamp;
-   - with LLVM the game is made, by LLVM, and the same line says why;
-   - a host that lacks only what the back end does by its fallback has the game made by the back end, with or without
-     LLVM, and a line on stdout says what it lacks and that the fallback does it;
+   - the recompile fails with the line of what the host lacks, after the line the launcher starts its step with, and the
+     game made already stays as it was, with its stamp;
+   - a host that lacks only what the back end does by its fallback has the game made by the back end, and a line on
+     stdout says what it lacks and that the fallback does it;
    - the host whole says none of them.
    Where the host's back end has no floor, it passes having said so (77, skipped) */
-#include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/recompiler/mach/native.h"
 #include "common/cpu/recompiler/x64/x64_codegen.h"
 #include "common/platform/file.h"
@@ -104,13 +102,8 @@ int main(int argc, char** argv) {
     File first_stamp = {0}, first_code = {0};
     static const struct {
         const char* of;
-        int below, alone, done;
-    } runs[] = {{"the host whole, without LLVM", 0, 1, 0},
-                {"below the floor, without LLVM", 1, 1, 0},
-                {"without what the fallback does, without LLVM", 0, 1, 1},
-                {"below the floor, with LLVM", 1, 0, 0},
-                {"without what the fallback does, with LLVM", 0, 0, 1},
-                {"the host whole, with LLVM", 0, 0, 0}};
+        int below, done;
+    } runs[] = {{"the host whole", 0, 0}, {"below the floor", 1, 0}, {"without what the fallback does", 0, 1}};
     snx_error_sink(sink);
     for (unsigned k = 0; k < sizeof runs / sizeof *runs; ++k) {
         char* args[] = {nro, "--name", "floor", "--outdir", out, "--runtime", runtime};
@@ -118,7 +111,6 @@ int main(int argc, char** argv) {
         char line[256], refused[300];
         g_test.said[0] = 0;
         take_out(runs[k].done ? 2 : runs[k].below);
-        snx_native_set_alone(runs[k].alone);
         check(snx_native_floor(line, sizeof line) == runs[k].below &&
                   (!runs[k].below || !strncmp(line, LACKS, strlen(LACKS))),
               "the host's line", of);
@@ -132,23 +124,18 @@ int main(int argc, char** argv) {
         if (!lines) return 1;
         if (text.data) memcpy(lines, text.data, text.size);
         check(strstr(lines, "Recompiling floor (1 modules)\n") != NULL, "the line of the launcher's step", of);
-        if (runs[k].below && runs[k].alone) {
+        if (runs[k].below) {
             check(rc != 0, "fails", of);
             snprintf(refused, sizeof refused, "%s\n", line);
-            check(!strcmp(g_test.said, refused), "says what the host lacks, alone", of);
+            check(!strcmp(g_test.said, refused), "says what the host lacks", of);
             check(same(stamped, first_stamp) && same(made, first_code), "leaves the game made before as it was", of);
-            check(!snx_ir_started(), "starts no LLVM", of);
         } else {
             check(rc == 0, "makes the game", of);
             check(stamped.data && made.data, "with its stamp and its module", of);
-            snprintf(refused, sizeof refused, "%s: LLVM makes the code\n", line);
-            check(!runs[k].below || strstr(g_test.said, refused) != NULL, "says why LLVM makes it", of);
-            check(runs[k].below || !g_test.said[0], "says nothing else", of);
-            check(!runs[k].below == !strstr(lines, "LLVM: 1 code unit"), "makes it by LLVM below the floor alone", of);
+            check(!g_test.said[0], "says nothing else", of);
+            check(!strstr(lines, "LLVM"), "says nothing of LLVM", of);
             check(!runs[k].done == !strstr(lines, DONE "\n"), "says what the fallback does, on stdout", of);
             check(runs[k].done || !strstr(lines, "fallback"), "and nothing of it otherwise", of);
-            check(!runs[k].done || !runs[k].alone || !snx_ir_started(), "starts no LLVM for it", of);
-            check(!runs[k].below || snx_ir_started(), "which starts for it", of);
         }
         if (!k)
             first_stamp = stamped, first_code = made;
@@ -159,7 +146,6 @@ int main(int argc, char** argv) {
     }
     snx_error_sink(NULL);
     take_out(0);
-    snx_native_set_alone(0);
     free(first_stamp.data), free(first_code.data);
     free(nro), free(out), free(runtime), free(printed), free(base), free(stamp), free(code), free(folder);
     fprintf(stderr, "native_floor_recompile: %d failures\n", g_test.failures);
