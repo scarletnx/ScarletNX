@@ -139,7 +139,11 @@ static const signed char sgx_pool_win64[] = {8, 9, 1, 10, 11, 0, 2}; /* RCX, no 
 #define SGX_XPIN 16
 #define SGX_RET 0
 #define SGX_RET2 2
-#define SGX_F_GPR (SGX_F_BMI1 | SGX_F_BMI2 | SGX_F_LZCNT)
+/* BSR's `highest` needs no feature of its own. Its DEST is guarded by the SDM's SRC <> 0, so mach.h's CLZ uses
+   a zero guard with it where the host has no LZCNT */
+#define SGX_HAS_HIGHEST 1
+#define SGX_F_GPR (SGX_F_BMI1 | SGX_F_BMI2 | SGX_F_LZCNT | SGX_F_POPCNT)
+#define SGX_HAS_POPCNT 1 /* mach.h's BitCount uses the selection when the host has SGX_F_POPCNT */
 /* the flag a carry in is (ADC's CF: flag_of's index), and whether the division is Arm's (0: DIV and IDIV fault where
    Arm's give 0 and the dividend, and mach.h keeps them from those divisors) */
 /* the state's address (RBX, the callee's), and a call's arguments after the state's (RDI) */
