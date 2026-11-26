@@ -40,7 +40,7 @@ int main(void) {
     }
     free(units);
     /* a host without a native back end has no recompiler, and so no cache */
-    struct snx_recompiler* r = snx_native_available() ? snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM) : NULL;
+    struct snx_recompiler* r = snx_native_available() ? snx_recompiler_new(SNX_RECOMPILER_FLAG_NATIVE) : NULL;
     if (snx_native_available())
         t_check(r && !snx_recompiler_set_cache(r, "library-schedule-cache"), "a recompiler with a cache folder");
     if (r && r->cache) {

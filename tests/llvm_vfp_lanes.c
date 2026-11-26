@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The FP instructions whose fast paths run on the host's arithmetic (ir_vec_fp.c for the vectors, ir_fpu.c for the
-   scalar FADD, FSUB, FMUL, FDIV and FRINTs) through the LLVM backend's steps (llvm_steps.c), against the soft-float helpers
+/* The FP instructions whose fast paths run on the host's arithmetic (the vectors, and the scalar FADD, FSUB, FMUL, FDIV
+   and FRINTs) through the native back end's steps (native_steps.c), against the soft-float helpers
    lane by lane: every lane's bits and FPSR after the whole instruction, and a scalar's cleared upper lanes. The
    operands mix lanes the host can take (normal values) with lanes it can't (zeros, denormals, infinities, NaNs, the
    normal range's ends) in one vector, which the fast paths must leave to the helpers or get exactly right; FPCR and

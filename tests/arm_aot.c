@@ -1,11 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The AOT compilers' blocks (cpu/arm/aot.h): the native back end's, LLVM's for one it refuses (a name longer than it
-   keeps), and every one LLVM's where the IR is kept, linked into a module and run; the counts of who made them and why,
-   and the lines that say them; a data object of the native back end's (native.h's snx_native_data) whose pointers are
-   the blocks', as an AOT module's index has them */
+/* The AOT compilers' blocks (cpu/arm/aot.h): the native back end's, linked into a module and run, and one it refuses (a
+   name longer than it keeps) an error naming the block and the reason; the counts and the line that says them; a data
+   object of the native back end's (native.h's snx_native_data) whose pointers are the blocks', as an AOT module's index
+   has them */
 #include "common/cpu/arm/aot.h"
-#include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/recompiler/rtlib/rtlib_object.h"
 #include "common/cpu/recompiler/mach/native.h"
 #include "common/cpu/recompiler/x64/x64_elf.h"
@@ -28,7 +27,6 @@
 static struct {
     int failures;
     char* folder;
-    char whys[SNX_ARM_AOT_WHYS + 2][16]; /* reasons that stay, as the maker's do */
 } g_test;
 
 #define PC 0x00100000u
@@ -89,159 +87,98 @@ static SnxLinkInput armlib(void) {
     return (SnxLinkInput){(const unsigned char*)snx_armlib_object, (size_t)snx_armlib_object_size, "armlib"};
 }
 
-/* the native back end's blocks and the one it refuses, in one module, with an index of them in native data */
+/* the native back end's blocks in one module, with an index of them in native data, and the one it refuses an error */
 static void test_blocks(void) {
-    static const char* const names[] = {"plain_arm", "plain_thumb", LONG_NAME, "index_of_blocks"};
-    const int native = snx_native_arm_available();
+    static const char* const names[] = {"plain_arm", "plain_thumb", "index_of_blocks"};
     char error[512] = "";
-    SnxArmAot* a = snx_arm_aot_new('1', NULL);
-    SnxLinkInput in[4] = {armlib()};
+    SnxArmAot* a = snx_arm_aot_new(error, sizeof error);
+    SnxLinkInput in[3] = {armlib()};
+    if (!a) printf("%s\n", error);
     CHECK(a != NULL);
     if (!a) return;
-    int rc = make(a, names[0], 0, error, sizeof error) || make(a, names[1], 1, error, sizeof error);
-    if (native) CHECK(!snx_ir_started()); /* its work starts no LLVM */
-    if (rc || make(a, names[2], 0, error, sizeof error)) {
+    if (make(a, names[0], 0, error, sizeof error) || make(a, names[1], 1, error, sizeof error)) {
         printf("%s\n", error);
         ++g_test.failures;
         snx_arm_aot_free(a);
         return;
     }
-    const SnxArmAotCount* c = snx_arm_aot_count(a);
-    CHECK(c->native + c->llvm == 3);
-    if (native) {
-        CHECK(c->native == 2 && c->llvm == 1 && c->nwhys == 1 && !strcmp(c->whys[0].why, "a block's name too long"));
-        CHECK(c->whys[0].count == 1 && c->whys[0].lowest == PC);
-    } else
-        CHECK(c->llvm == 3 && c->nwhys == 1 && c->whys[0].why == snx_arm_aot_none);
-    int n = snx_arm_aot_objects(a, "blocks", in + 1, error, sizeof error);
+    error[0] = 0;
+    CHECK(make(a, LONG_NAME, 0, error, sizeof error) < 0);
+    CHECK(strstr(error, "ARM block at 0x00100000") && strstr(error, "a block's name too long"));
+    if (g_test.failures) printf("the refusal: %s\n", error);
+    CHECK(snx_arm_aot_count(a)->native == 2);
+    int n = snx_arm_aot_objects(a, in + 1, error, sizeof error);
     if (n < 0) printf("%s\n", error);
-    CHECK(n == (native ? 2 : 1));
+    CHECK(n == 1);
     /* none made since: no object */
-    SnxLinkInput none[2];
-    CHECK(snx_arm_aot_objects(a, "none", none, error, sizeof error) == 0 && !none[0].data && !none[1].data);
-    size_t count = 1 + (size_t)(n > 0 ? n : 0);
+    SnxLinkInput none;
+    CHECK(snx_arm_aot_objects(a, &none, error, sizeof error) == 0 && !none.data);
     unsigned pointer = 0;
     SnxXElf* o = snx_native_data(&pointer);
-    CHECK(!o == !native);
+    CHECK(o != NULL);
+    size_t count = 1 + (size_t)(n > 0);
     if (o) {
         unsigned char* object = NULL;
-        size_t size = 0, at = snx_xelf_put(o, SNX_ELF_RELRO, NULL, 3 * sizeof(SnxArmBlock), sizeof(SnxArmBlock));
-        snx_xelf_symbol(o, names[3], SNX_ELF_RELRO, at, 3 * sizeof(SnxArmBlock), SNX_ELF_GLOBAL);
-        for (size_t k = 0; k < 3; ++k)
+        size_t size = 0, at = snx_xelf_put(o, SNX_ELF_RELRO, NULL, 2 * sizeof(SnxArmBlock), sizeof(SnxArmBlock));
+        snx_xelf_symbol(o, names[2], SNX_ELF_RELRO, at, 2 * sizeof(SnxArmBlock), SNX_ELF_GLOBAL);
+        for (size_t k = 0; k < 2; ++k)
             snx_xelf_reloc(o, SNX_ELF_RELRO, at + k * sizeof(SnxArmBlock), names[k], pointer, 0);
         CHECK(!snx_xelf_write(o, &object, &size));
         snx_xelf_free(o);
         in[count++] = (SnxLinkInput){object, size, "index"};
     }
-    void* library = load("arm_aot_blocks.so", in, count, names, native ? 4 : 3);
+    void* library = load("arm_aot_blocks.so", in, count, names, 3);
     CHECK(library != NULL);
     if (library) {
-        for (int k = 0; k < 3; ++k) check_block(plat_dl_sym(library, names[k]), k == 1);
-        SnxArmBlock* index = native ? (SnxArmBlock*)plat_dl_sym(library, names[3]) : NULL;
-        CHECK(!native || index);
-        for (int k = 0; index && k < 3; ++k) CHECK((void*)index[k] == plat_dl_sym(library, names[k]));
+        for (int k = 0; k < 2; ++k) check_block(plat_dl_sym(library, names[k]), k == 1);
+        SnxArmBlock* index = (SnxArmBlock*)plat_dl_sym(library, names[2]);
+        CHECK(index != NULL);
+        for (int k = 0; index && k < 2; ++k) CHECK((void*)index[k] == plat_dl_sym(library, names[k]));
         plat_dl_close(library);
     }
     for (size_t k = 1; k < count; ++k) free((void*)in[k].data);
     snx_arm_aot_free(a);
 }
-/* --keep-ir: every block LLVM's, whatever the host's back end, and their IR in the folder */
-static void test_kept(void) {
-    static const char* const names[] = {"kept_arm", "kept_thumb"};
-    char error[512] = "";
-    SnxArmAot* a = snx_arm_aot_new('1', g_test.folder);
-    SnxLinkInput in[3] = {armlib()};
-    CHECK(a != NULL);
-    if (!a) return;
-    CHECK(!make(a, names[0], 0, error, sizeof error) && !make(a, names[1], 1, error, sizeof error));
-    const SnxArmAotCount* c = snx_arm_aot_count(a);
-    CHECK(!c->native && c->llvm == 2 && c->nwhys == 1 && c->whys[0].why == snx_arm_aot_kept);
-    CHECK(c->whys[0].count == 2 && c->whys[0].lowest == PC);
-    CHECK(snx_arm_aot_objects(a, "kept_blocks", in + 1, error, sizeof error) == 1 && in[1].data && !in[2].data);
-    char* path = snx_path_join(g_test.folder, "kept_blocks.ll");
-    size_t size = 0;
-    unsigned char* text = path ? snx_read_file(path, &size) : NULL;
-    CHECK(text && size > 0);
-    char* ir = text ? malloc(size + 1) : NULL;
-    if (ir) {
-        memcpy(ir, text, size);
-        ir[size] = 0;
-        CHECK(strstr(ir, "@kept_arm(") && strstr(ir, "@kept_thumb("));
-    }
-    void* library = load("arm_aot_kept.so", in, 2, names, 2);
-    CHECK(library != NULL);
-    if (library) {
-        for (int k = 0; k < 2; ++k) check_block(plat_dl_sym(library, names[k]), k);
-        plat_dl_close(library);
-    }
-    free(ir);
-    free(text);
-    free(path);
-    free((void*)in[1].data);
-    snx_arm_aot_free(a);
-}
 /* a block no compiler takes is an error that names it */
-static void test_refused_by_both(void) {
+static void test_refused(void) {
     char error[512] = "";
     unsigned char code[12];
     size_t consumed = 5;
-    SnxArmAot* a = snx_arm_aot_new('1', NULL);
+    SnxArmAot* a = snx_arm_aot_new(error, sizeof error);
     CHECK(a != NULL);
     if (!a) return;
     code_bytes(code, 0);
     CHECK(snx_arm_aot_block(a, "odd", code, 3, PC + 2, 0, &options, &consumed, error, sizeof error) < 0);
-    CHECK(strstr(error, "0x00100002") && strstr(error, "ARM"));
+    CHECK(strstr(error, "0x00100002") && strstr(error, "ARM") && !consumed);
     SnxArmCodegenOptions bad = options;
     bad.abi = 99;
     error[0] = 0;
-    CHECK(snx_arm_aot_block(a, "bad", code, 3, PC, 0, &bad, &consumed, error, sizeof error) < 0 && error[0]);
-    const SnxArmAotCount* c = snx_arm_aot_count(a);
-    CHECK(!c->native && !c->llvm);
+    CHECK(snx_arm_aot_block(a, "bad", code, 3, PC, 0, &bad, &consumed, error, sizeof error) < 0);
+    CHECK(strstr(error, "options no block compiler takes"));
+    CHECK(!snx_arm_aot_count(a)->native);
     snx_arm_aot_free(a);
 }
-/* the counts of the threads together: a reason once, with its lowest block, and the reasons past the list's room
-   counted apart. Their lines: the native back end's blocks on stdout, the others' on stderr with the reason, how many
-   and the first one's address */
+/* the counts of the threads together, and their line: none when quiet or of no blocks */
 static void test_report(void) {
-    SnxArmAotCount one = {.native = 10}, two = {.native = 5}, all = {0};
-    snx_arm_aot_refused(&one, "reason a", 0x2001);
-    snx_arm_aot_refused(&one, "reason b", 0x3000);
-    snx_arm_aot_refused(&two, "reason a", 0x1000);
-    snx_arm_aot_refused(&two, "reason a", 0x5001);
+    SnxArmAotCount one = {.native = 10}, two = {.native = 5}, all = {0}, empty = {0};
     snx_arm_aot_add(&all, &one);
     snx_arm_aot_add(&all, &two);
-    CHECK(all.native == 15 && all.llvm == 4 && all.nwhys == 2 && !all.unlisted);
-    CHECK(all.whys[0].count == 3 && all.whys[0].lowest == 0x1000 && all.whys[1].count == 1);
-    char *path = snx_path_join(g_test.folder, "stderr.txt"), text[2048] = "";
-    size_t size = 0;
-    CHECK(path && freopen(path, "w", stderr));
-    snx_arm_aot_report(&all, "scarletnx-test", 1);
-    SnxArmAotCount kept = {0}, full = {0}, both = {0};
-    snx_arm_aot_refused(&kept, snx_arm_aot_kept, 0x1000);
-    snx_arm_aot_report(&kept, "scarletnx-test", 1); /* none refused: no line of it on stderr */
-    fflush(stderr);
-    unsigned char* read = path ? snx_read_file(path, &size) : NULL;
-    if (read && size < sizeof text) memcpy(text, read, size), text[size] = 0;
+    CHECK(all.native == 15);
+    char text[256] = "", want[96];
+    FILE* out = tmpfile();
+    CHECK(out != NULL);
+    if (!out) return;
+    snx_arm_aot_report(&all, out);
+    snx_arm_aot_report(&all, NULL);
+    snx_arm_aot_report(&empty, out);
+    rewind(out);
+    size_t size = fread(text, 1, sizeof text - 1, out);
+    text[size] = 0;
+    fclose(out);
     snx_test_text_lines(text);
-    CHECK(strstr(text, "scarletnx-test: 3 blocks made by LLVM, the first the ARM one at 0x00001000: reason a\n"));
-    CHECK(strstr(text, "scarletnx-test: 1 block made by LLVM, the first the ARM one at 0x00003000: reason b\n"));
-    CHECK(!strstr(text, "keep-ir"));
-    if (g_test.failures) printf("the lines on stderr:\n%s", text);
-    for (int k = 0; k < SNX_ARM_AOT_WHYS + 2; ++k) {
-        snprintf(g_test.whys[k], sizeof g_test.whys[k], "reason %d", k);
-        snx_arm_aot_refused(&full, g_test.whys[k], 0x1000u + 4u * (unsigned)k);
-    }
-    CHECK(full.llvm == SNX_ARM_AOT_WHYS + 2 && full.nwhys == SNX_ARM_AOT_WHYS && full.unlisted == 2);
-    snx_arm_aot_add(&both, &full);
-    CHECK(both.llvm == SNX_ARM_AOT_WHYS + 2 && both.unlisted == 2);
-    /* the folder's file closed, so that the folder goes where an open file keeps it */
-#ifdef _WIN32
-    CHECK(freopen("NUL", "w", stderr));
-#else
-    CHECK(freopen("/dev/null", "w", stderr));
-#endif
-    free(read);
-    free(path);
+    snprintf(want, sizeof want, "%s back end: 15 of 15 blocks\n", snx_native_name());
+    CHECK(!strcmp(text, want));
+    if (strcmp(text, want)) printf("the lines:\n%s", text);
 }
 
 int main(void) {
@@ -250,8 +187,7 @@ int main(void) {
         return 1;
     }
     test_blocks();
-    test_kept();
-    test_refused_by_both();
+    test_refused();
     test_report();
     (void)snx_remove_tree(g_test.folder);
     free(g_test.folder);

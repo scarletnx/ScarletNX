@@ -69,7 +69,6 @@ int main(void) {
         fprintf(stderr, "the function: %zu found\n", codegen.function_count);
         return 1;
     }
-    options.alone = 1;
     if (snx_native_object(&codegen, 0, 1, &options, made, &object, &size, error, sizeof(error)) || !made[0]) {
         fprintf(stderr, "the %s back end: %s\n", snx_native_name(), error[0] ? error : "the function not made");
         return 1;

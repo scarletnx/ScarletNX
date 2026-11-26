@@ -1,11 +1,12 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The game module of a 64-bit program: its functions found (module.c's analysis), made in units on threads by the
-   host's native back end (recompiler/mach/native.h), what it leaves by the fallback (recompiler/fallback.h), and the
-   descriptor of module_abi.h, linked with the runtime library by recompiler/object/link.c. Where the native back end
-   made every function the descriptor is its own (module_x64.c), else the fallback's (module_fallback.h) */
-#include "nx/loader/module_fallback.h"
-#include "common/cpu/recompiler/fallback.h"
+   host's native back end (recompiler/mach/native.h), and the descriptor of module_abi.h (module_x64.c), linked with the
+   runtime library by recompiler/object/link.c. An instruction the back end has no code for is undefined where it runs,
+   its function made */
+#include "nx/loader/module_llvm.h"
+#include "common/cpu/recompiler/jit/jit_cache.h"
+#include "common/cpu/aarch64/a64_decoder.h"
 #include "common/cpu/recompiler/codegen.h"
 #include "common/cpu/recompiler/auto_workers.h"
 #include "common/cpu/recompiler/compile_thread.h"
@@ -33,18 +34,12 @@
 
 typedef struct {
     size_t first, last; /* functions */
-    unsigned char* object;
-    size_t size;
-    char* stats; /* the fallback's IR counts of the unit (ir_stats), NULL for none */
-    /* the x86-64 back end's object of the functions it made (x64_codegen.h); the fallback's (object) has the rest, NULL
-       when there is none */
+    /* the native back end's object of the unit (x64_codegen.h) */
     unsigned char* x64;
     size_t x64_size, x64_made;
     size_t x64_refused; /* of the others, those with an instruction it has no code for */
     int reused; /* the x86-64 back end's object came from memory (x64_cache.h) */
 } Unit;
-
-#define NO_RANK ((size_t)-1)
 
 typedef struct {
     SnxCodegen* codegen;
@@ -56,14 +51,12 @@ typedef struct {
     SnxU64* imports;
     size_t import_count;
     Unit* units;
-    size_t* rank; /* per function: its place in the --layout order, or NO_RANK. NULL without one */
     size_t count, next, done;
     /* for the control of threads left open (auto_workers.h): the units under way, and the bytes of code the finished
        ones keep in memory */
     unsigned active;
     SnxU64 held;
     int failed;
-    int x64; /* the x86-64 back end makes what it can */
     char error[1024];
 #ifdef _WIN32
     CRITICAL_SECTION lock;
@@ -87,8 +80,7 @@ static void unlock(Queue* q) {
 #endif
 }
 
-/* The pack's write (snx_objects_pack_write) of inputs, some of them the units' objects, LLVM's or a native back end's:
-   each freed once written */
+/* The pack's write (snx_objects_pack_write) of inputs, some of them the units' objects: each freed once written */
 typedef struct {
     Unit* units;
     const SnxLinkInput* inputs;
@@ -99,11 +91,6 @@ static void written_unit(void* arg, size_t index) {
     const unsigned char* data = p->inputs[index].data;
     for (size_t i = 0; data && i < p->count; ++i) {
         Unit* u = &p->units[i];
-        if (u->object == data) {
-            free(u->object);
-            u->object = NULL;
-            return;
-        }
         if (u->x64 == data) {
             free(u->x64);
             u->x64 = NULL;
@@ -142,21 +129,14 @@ static SnxU64 imported(void* user, SnxU64 target) {
     return lo < q->import_count && q->imports[lo] == target;
 }
 
-/* one chunk of functions, as module.c's code_NNN.c: the native back end's where it makes them, the fallback's the rest.
-   A function of the --layout order gets its own code section, which the linker places by its rank: the function's
-   code is the same, only where it goes changes */
+/* one chunk of functions, as module.c's code_NNN.c, the native back end's: with alone set, an instruction it has no
+   code for is undefined where it runs, and its function is made */
 static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) {
     Unit* u = &q->units[index];
-    char name[32];
     size_t i;
     int rc;
-    unsigned char* made = NULL;
     SnxNativeOptions options = {0};
-    sprintf(name, "code_%03lu", (unsigned long)index);
     options.stale = 1;
-    options.llvm_at = snx_fallback_dump_pc();
-    /* with no fallback, an instruction it has no code for is undefined where it runs, and its function is made */
-    options.alone = !snx_fallback_available();
     options.refused = &u->x64_refused;
     if (q->bound_count) {
         options.bound = bound_at;
@@ -166,31 +146,27 @@ static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) 
         options.direct = imported;
         options.direct_user = q;
     }
-    if (q->x64) {
-        made = (unsigned char*)snx_alloc(u->last - u->first);
-        rc = q->build->triple ? snx_native_target_object(q->build->triple, q->codegen, u->first, u->last, &options,
-                                                         made, &u->x64, &u->x64_size, error, error_size)
-                              : snx_native_cached_object(q->codegen, u->first, u->last, &options, made, &u->x64,
-                                                         &u->x64_size, &u->reused, error, error_size);
-        if (rc) {
-            free(made);
-            return -1;
-        }
-        for (i = 0; i < u->last - u->first; ++i) u->x64_made += made[i];
-        if (u->x64_made == u->last - u->first) {
-            free(made);
-            return 0;
-        }
+    unsigned char* made = (unsigned char*)snx_alloc(u->last - u->first);
+    rc = q->build->triple ? snx_native_target_object(q->build->triple, q->codegen, u->first, u->last, &options, made,
+                                                     &u->x64, &u->x64_size, error, error_size)
+                          : snx_native_cached_object(q->codegen, u->first, u->last, &options, made, &u->x64,
+                                                     &u->x64_size, &u->reused, error, error_size);
+    for (i = 0; !rc && i < u->last - u->first; ++i) u->x64_made += made[i];
+    for (i = 0; !rc && i < u->last - u->first && made[i]; ++i) {}
+    if (!rc && i < u->last - u->first) {
+        const SnxFunction* f = &q->codegen->functions[u->first + i];
+        char text[64] = "no instruction";
+        SnxU32 word = 0;
+        if (snx_codegen_word(q->codegen, f->start, &word)) snx_a64_word_text(word, text, sizeof text);
+        char more[48] = "";
+        const size_t left = u->last - u->first - u->x64_made;
+        if (left > 1) snprintf(more, sizeof more, ", nor %zu more of the unit's functions", left - 1);
+        snprintf(error, error_size,
+                 "code_%03lu: the function at 0x%llx, which starts with %s (%08x): the native back end (%s) did not "
+                 "make it%s",
+                 (unsigned long)index, (unsigned long long)f->start, text, (unsigned)word, snx_native_name(), more);
+        rc = -1;
     }
-    u->reused = 0; /* the fallback makes the rest of the unit */
-    SnxFallbackUnit unit = {.triple = q->build->triple,
-                            .tuning = q->build->tuning,
-                            .keep_ir = q->build->keep_ir,
-                            .rank = q->rank,
-                            .callees_first = 1};
-    rc = snx_fallback_object(q->codegen, u->first, u->last, &options, made, &unit, name, q->build->opt, &u->object,
-                             &u->size, error, error_size);
-    u->stats = unit.stats;
     free(made);
     return rc;
 }
@@ -222,7 +198,7 @@ static void worker(Queue* q) {
         lock(q);
         ++q->done;
         --q->active;
-        if (q->units[i].object) q->held += q->units[i].size;
+        if (q->units[i].x64) q->held += q->units[i].x64_size;
         if (rc && !q->failed) {
             q->failed = 1;
             snprintf(q->error, sizeof(q->error), "%s", error);
@@ -231,7 +207,6 @@ static void worker(Queue* q) {
             /* every unit: a line every few seconds or minutes, whichever the machine manages */
             sprintf(name, "code_%03lu", (unsigned long)i);
             snx_report_unit(q->done, q->count + 1, name, label, q->units[i].reused, seconds); /* + the descriptor */
-            if (q->units[i].stats) printf("  IR stats %s: %s\n", name, q->units[i].stats);
         }
         unlock(q);
         free(label);
@@ -318,8 +293,6 @@ static void run(Queue* q, unsigned jobs, int open) {
 }
 
 unsigned snx_module_abi(void) { return SNX_ABI; }
-/* what a failure the fallback reports starts with: its own name, where it is LLVM */
-static const char* fallback_said(void) { return snx_fallback_available() ? "LLVM backend: " : ""; }
 static const char* base_name(const char* path) {
     const char *name = path, *p;
     for (p = path; *p; ++p)
@@ -333,24 +306,22 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     SnxJitCache* cache = NULL;
     SnxLinkInput* inputs = NULL;
     SnxLinkOutput linked;
-    unsigned char *module_object = NULL, *rtlib_object = NULL;
-    size_t module_size = 0, rtlib_size = 0, first, last, count, limit, i, entry_count = 0, wrapped = 0, n = 0;
+    unsigned char* module_object = NULL;
+    size_t module_size = 0, first, last, count, limit, i, entry_count = 0, n = 0;
     size_t cache_count = 0, variant_count = 0, export_count = 1;
     const char* exports[5];
     char error[1024], *tmp = NULL;
     double start;
-    int rc = -1, x64_only = 0, rtlib_static = 0;
+    int rc = -1;
     memset(&codegen, 0, sizeof(codegen));
     memset(&q, 0, sizeof(q));
     memset(&linked, 0, sizeof(linked));
     if (!loaded->module_count) return snx_error("no modules to generate");
-    /* what LLVM's code alone has: its IR, and its functions' own sections */
-    if (!snx_fallback_available() && build->keep_ir)
-        return snx_error("--keep-ir: the IR it keeps in %s is LLVM's, and this build has no LLVM (SNX_WITH_LLVM=OFF)",
-                         build->keep_ir);
-    if (!snx_fallback_available() && build->layout_count)
-        return snx_error("--layout: the order of its %zu addresses puts LLVM's functions in sections of their own, and "
-                         "this build has no LLVM (SNX_WITH_LLVM=OFF)",
+    /* what LLVM's code alone had: its IR, and its functions' own sections */
+    if (build->keep_ir) return snx_error("--keep-ir %s: the native back end keeps no IR to put there", build->keep_ir);
+    if (build->layout_count)
+        return snx_error("--layout: the native back end has no section of its own for each function to put in the "
+                         "order of its %zu addresses",
                          build->layout_count);
     if (options->jit_cache && build->triple) {
         snx_error("--jit-cache cannot go with --target %s: a JIT cache is this host's", build->triple);
@@ -359,10 +330,9 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     /* the program's CPU (loader/ounce.h): the runtime JIT takes the same features from the same NPDM */
     SnxU64 features = snx_guest_features(loaded->npdm.ounce, g_settings.cpu_extensions);
     if (options->jit_cache) {
-        char* key = snx_module_fallback_cache_key(options->jit_cache, build->opt, options->hook_direct_calls, features,
-                                                  error, sizeof(error));
+        char* key = snx_jit_cache_key(build->opt, options->hook_direct_calls, 1, features);
         if (!key) {
-            snx_error("%s%s", fallback_said(), error);
+            snx_error("--jit-cache %s: out of memory for its key", options->jit_cache);
             goto done;
         }
         cache = snx_jit_cache_open(options->jit_cache, key, error, sizeof(error));
@@ -394,20 +364,17 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     q.codegen = &codegen;
     q.build = build;
     /* the host's native back end for this host's module (mach/native.h), or the one that makes another machine's
-       objects (snx_native_target: iOS's), the fallback making what it can't: not where the IR is kept or counted
-       (ir_stats), nor with a --layout (each function's own hot section is LLVM's). With every call through the table
-       (hook_direct_calls) its calls go through CPU.disp too */
+       objects (snx_native_target: iOS's). With every call through the table (hook_direct_calls) its calls go through
+       CPU.disp too */
     const char* native = build->triple ? "arm64" : snx_native_name();
-    q.x64 = (build->triple ? snx_native_target(build->triple) : snx_native_available()) && !build->keep_ir &&
-            !build->layout_count && !snx_fallback_stats();
-    if (!q.x64 && !snx_fallback_available()) {
+    if (build->triple ? !snx_native_target(build->triple) : !snx_native_available()) {
+        char floor[256];
         if (build->triple)
-            snx_error("the arm64 back end makes no module for %s on this host, and this build has no LLVM to make it "
-                      "(SNX_WITH_LLVM=OFF)",
-                      build->triple);
+            snx_error("the arm64 back end makes no module for %s on this host", build->triple);
+        else if (snx_native_floor(floor, sizeof floor))
+            snx_error("%s", floor);
         else
-            snx_error("this host has no native back end, and this build has no LLVM to make the module "
-                      "(SNX_WITH_LLVM=OFF)");
+            snx_error("this host has no native back end to make the module");
         goto done;
     }
     /* the bound branches, and what they import: a target that is no function of this module's own. With every call
@@ -425,67 +392,34 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
         q.import_count = n;
         n = 0;
     }
-    if (build->layout_count) {
-#if defined(_WIN32) || defined(__APPLE__)
-        int elf = 0;
-#else
-        int elf = !build->triple;
-#endif
-        size_t placed = 0;
-        if (!elf)
-            fprintf(stderr, "--layout: only an ELF module for this host takes an order: the code keeps its own\n");
-        else if (codegen.function_count) {
-            q.rank = (size_t*)snx_alloc(codegen.function_count * sizeof(*q.rank));
-            for (i = 0; i < codegen.function_count; ++i) q.rank[i] = NO_RANK;
-            for (i = 0; i < build->layout_count; ++i) {
-                const SnxFunction* f = snx_codegen_function(&codegen, build->layout[i]);
-                if (f && q.rank[f - codegen.functions] == NO_RANK) q.rank[f - codegen.functions] = placed++;
-            }
-        }
-        if (elf && !options->quiet)
-            printf("layout: %lu functions first, in the order of %lu addresses\n", (unsigned long)placed,
-                   (unsigned long)build->layout_count);
-    }
     if (!options->quiet)
-        printf("%s%s: %lu code unit%s and the module descriptor\n", q.x64 ? native : "LLVM",
-               !q.x64                     ? ""
-               : snx_fallback_available() ? " back end (LLVM where it can't)"
-                                          : " back end",
-               (unsigned long)q.count, q.count == 1 ? "" : "s");
-    /* the x86-64 back end's units are quick and small: their threads all at once, not opened one a second as for
-       LLVM's (the memory a unit of LLVM's takes is what the opening waits on) */
-    if (q.count && q.x64 && build->jobs_open && !options->quiet) {
+        printf("%s back end: %lu code unit%s and the module descriptor\n", native, (unsigned long)q.count,
+               q.count == 1 ? "" : "s");
+    /* the native back end's units are quick and small: their threads all at once, not opened one a second */
+    if (q.count && build->jobs_open && !options->quiet) {
         unsigned n = build->jobs < 1 ? 1 : build->jobs;
         if (n > q.count) n = (unsigned)q.count;
         printf("aot_threads=0 (Auto): %u thread%s at once, the x86-64 back end's units\n", n, n == 1 ? "" : "s");
     }
-    if (q.count) run(&q, build->jobs, q.x64 ? 0 : build->jobs_open);
+    if (q.count) run(&q, build->jobs, 0);
     if (q.failed) {
-        snx_error("%s%s", fallback_said(), q.error);
+        snx_error("%s back end: %s", native, q.error);
         goto done;
     }
     {
         size_t refused = 0;
         for (i = 0; i < q.count; ++i) refused += q.units[i].x64_refused;
         if (refused)
-            snx_error("native back end: %lu of %lu functions have an instruction it has no code for: %s",
-                      (unsigned long)refused, (unsigned long)codegen.function_count,
-                      snx_fallback_available() ? "LLVM made them"
-                                               : "each made, the instruction undefined where it runs");
+            snx_error("native back end: %lu of %lu functions have an instruction it has no code for: each made, the "
+                      "instruction undefined where it runs",
+                      (unsigned long)refused, (unsigned long)codegen.function_count);
     }
-    if (q.x64 && !options->quiet) {
-        size_t made = 0;
-        for (i = 0; i < q.count; ++i) made += q.units[i].x64_made;
-        printf("%s back end: %lu of %lu functions%s\n", native, (unsigned long)made,
-               (unsigned long)codegen.function_count, made == codegen.function_count ? "" : ", LLVM the rest");
-    }
-    /* the module descriptor: the native back end's where it made every function (with the profile cache's units'
-       variants and wrappers), the fallback's otherwise */
+    if (!options->quiet)
+        printf("%s back end: %lu of %lu functions\n", native, (unsigned long)codegen.function_count,
+               (unsigned long)codegen.function_count);
+    /* the module descriptor, with the profile cache's units' variants and wrappers */
     start = snx_seconds();
-    x64_only = q.x64;
-    for (i = 0; x64_only && i < q.count; ++i)
-        if (q.units[i].object || q.units[i].x64_made != q.units[i].last - q.units[i].first) x64_only = 0;
-    if (x64_only) {
+    {
         SnxJitCacheRecord* records = cache_count ? (SnxJitCacheRecord*)calloc(cache_count, sizeof *records) : NULL;
         size_t nrecords = 0;
         if (cache_count && !records) {
@@ -506,58 +440,29 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
         if (options->jit_cache && !options->quiet)
             printf("AOT pack: %lu cached function%s%s\n", (unsigned long)variant_count, variant_count == 1 ? "" : "s",
                    variant_count ? "" : " (the cache did not match the game)");
-        goto descriptor_done;
     }
-    if (snx_module_fallback_descriptor(&codegen, options, loaded, build, q.imports, q.import_count,
-                                       cache_count ? cache : NULL, &module_object, &module_size, &entry_count, &wrapped,
-                                       &variant_count, error, sizeof(error))) {
-        snx_error("%s%s", fallback_said(), error);
-        goto done;
-    }
-    if (build->wrappers) *build->wrappers = wrapped;
-    if (options->jit_cache && !options->quiet)
-        printf("AOT pack: %lu cached function%s%s\n", (unsigned long)variant_count, variant_count == 1 ? "" : "s",
-               variant_count ? "" : " (the cache did not match the game)");
-descriptor_done:
     if (!options->quiet) {
         char* label = snx_format("SnxModule descriptor, %lu entries", (unsigned long)entry_count);
         snx_report_unit(q.count + 1, q.count + 1, "module", label, 0, snx_seconds() - start);
         free(label);
     }
-    /* link: runtime library, descriptor, chunks. A module for another machine has no runtime library of its own
-       (this host has none for that machine): the app that loads it brings its own */
-    if (x64_only && !build->triple) {
-        /* the one the recompiler's build compiled (rtlib_object.h), as the JIT links: no LLVM */
-        rtlib_object = (unsigned char*)snx_rtlib_object;
-        rtlib_size = (size_t)snx_rtlib_object_size;
-        rtlib_static = 1;
-    } else if (!build->triple && snx_fallback_rtlib(build->opt, &rtlib_object, &rtlib_size, error, sizeof(error))) {
-        snx_error("%s%s", fallback_said(), error);
-        goto done;
-    }
-    /* link: runtime library, descriptor, chunks, the profile cache's units. A module for another machine has no
-       runtime library of its own (this host has none for that machine): the app that loads it brings its own */
-    inputs = (SnxLinkInput*)snx_alloc((2 * q.count + 2 + cache_count) * sizeof(*inputs));
-    if (rtlib_object) {
-        inputs[n].data = rtlib_object;
-        inputs[n].size = rtlib_size;
+    /* link: runtime library (the one the recompiler's build compiled, rtlib_object.h, as the JIT links), descriptor,
+       chunks, the profile cache's units. A module for another machine has no runtime library of its own (this host has
+       none for that machine): the app that loads it brings its own */
+    inputs = (SnxLinkInput*)snx_alloc((q.count + 2 + cache_count) * sizeof(*inputs));
+    if (!build->triple) {
+        inputs[n].data = (unsigned char*)snx_rtlib_object;
+        inputs[n].size = (size_t)snx_rtlib_object_size;
         inputs[n++].name = "rtlib";
     }
     inputs[n].data = module_object;
     inputs[n].size = module_size;
     inputs[n++].name = "module";
-    for (i = 0; i < q.count; ++i) {
-        if (q.units[i].object || !q.units[i].x64) {
-            inputs[n].data = q.units[i].object;
-            inputs[n].size = q.units[i].size;
-            inputs[n++].name = "code chunk";
-        }
-    }
     for (i = 0; i < q.count; ++i)
         if (q.units[i].x64) {
             inputs[n].data = q.units[i].x64;
             inputs[n].size = q.units[i].x64_size;
-            inputs[n++].name = "x86-64 code chunk";
+            inputs[n++].name = "code chunk";
         }
     for (i = 0; i < cache_count; ++i) {
         const SnxJitCacheRecord* record = snx_jit_cache_record(cache, i);
@@ -605,22 +510,15 @@ descriptor_done:
         }
     }
     if (!options->quiet) {
-        printf("%s module: %.1f MB, %lu entries\n", x64_only ? native : "LLVM", (double)linked.size / 1000000.0,
-               (unsigned long)entry_count);
+        printf("%s module: %.1f MB, %lu entries\n", native, (double)linked.size / 1000000.0, (unsigned long)entry_count);
     }
     rc = 0;
 done:
-    for (i = 0; i < q.count; ++i) {
-        free(q.units[i].object);
-        free(q.units[i].x64);
-        free(q.units[i].stats);
-    }
+    for (i = 0; i < q.count; ++i) free(q.units[i].x64);
     free(q.units);
-    free(q.rank);
     free(q.imports);
     free(inputs);
     free(module_object);
-    if (!rtlib_static) free(rtlib_object);
     free(linked.data);
     free(tmp);
     snx_jit_cache_close(cache);

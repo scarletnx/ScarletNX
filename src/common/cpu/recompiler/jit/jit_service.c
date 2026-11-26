@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The runtime JIT (jit_service.h). ISO C in style. The host's native back end makes every unit, alone: an
-   instruction it has no code for raises an undefined instruction where it runs (SnxNativeOptions.alone) */
+/* The runtime JIT (jit_service.h). ISO C in style. The host's native back end makes every unit: an instruction it has
+   no code for raises an undefined instruction where it runs */
 #if defined(__linux__) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE 1 /* sched_getaffinity: the CPUs this process may run on */
 #endif
@@ -494,7 +494,7 @@ static uint64_t aot_toc(const SnxJitConfig* config) {
    locals, so it isn't split between two objects): 0, or -1 with why in error */
 static int emit_unit(SnxJitService* s, SnxCodegen* codegen, const char* table_name, unsigned char** object,
                      size_t* size, char* error, size_t error_size) {
-    SnxNativeOptions options = {.jit = 1, .table_name = table_name, .direct = direct, .direct_user = s, .alone = 1};
+    SnxNativeOptions options = {.jit = 1, .table_name = table_name, .direct = direct, .direct_user = s};
     codegen->hook_direct_calls = s->config.hook_direct_calls; /* every call through CPU.disp (call_target) */
     codegen->direct_svc = s->config.direct_svc;
     *object = NULL;

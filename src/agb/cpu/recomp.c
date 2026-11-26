@@ -30,7 +30,6 @@ void agb_recomp_init(AgbRecomp* recomp, const char* base) {
     *recomp = (AgbRecomp){0};
     recomp->base = (char*)malloc(strlen(base) + 1);
     if (recomp->base) strcpy(recomp->base, base);
-    recomp->opt = '2';
 }
 
 void agb_recomp_free(AgbRecomp* recomp) {
@@ -39,7 +38,6 @@ void agb_recomp_free(AgbRecomp* recomp) {
     free(recomp->blocks);
     free(recomp->steps);
     free(recomp->base);
-    free(recomp->keep_ir);
     *recomp = (AgbRecomp){0};
 }
 
@@ -270,17 +268,17 @@ static void discover(AgbRecomp* recomp, AgbBoard* board, uint32_t pc, int thumb)
 /* ---- linking ---- */
 
 
-/* Emits every block into <base>.so: by the host's native back end, and the fallback for what that does not make
-   (cpu/arm/aot.h), with the helpers they call (armlib.c), and linked by the backend's own linker, which exports each
-   block's function by its name */
+/* Emits every block into <base>.so: by the host's native back end (cpu/arm/aot.h), with the helpers they call
+   (armlib.c), and linked by the backend's own linker, which exports each block's function by its name */
 static int emit_module(AgbRecomp* recomp, AgbBoard* board, char* error, size_t error_size) {
     size_t count = recomp->count;
     char **names = (char**)calloc(count ? count : 1, sizeof(*names)), *library = snx_format("%s.so", recomp->base), *tmp = NULL;
-    SnxArmAot* aot = snx_arm_aot_new(recomp->opt, recomp->keep_ir);
-    SnxLinkInput inputs[3] = {{(const unsigned char*)snx_armlib_object, (size_t)snx_armlib_object_size, "armlib"}};
+    SnxArmAot* aot = snx_arm_aot_new(error, error_size);
+    SnxLinkInput inputs[2] = {{(const unsigned char*)snx_armlib_object, (size_t)snx_armlib_object_size, "armlib"}};
     SnxLinkOutput linked = {NULL, 0};
     int result = -1, objects;
-    if (!names || !library || !aot) {
+    if (!aot) goto done;
+    if (!names || !library) {
         snprintf(error, error_size, "out of memory");
         goto done;
     }
@@ -307,7 +305,7 @@ static int emit_module(AgbRecomp* recomp, AgbBoard* board, char* error, size_t e
         block->instructions = (uint16_t)consumed;
         block->code = code_hash(board, block->pc, block->thumb, block->instructions);
     }
-    if ((objects = snx_arm_aot_objects(aot, "blocks", inputs + 1, error, error_size)) < 0) goto done;
+    if ((objects = snx_arm_aot_objects(aot, inputs + 1, error, error_size)) < 0) goto done;
     recomp->made = *snx_arm_aot_count(aot);
     if (snx_link(inputs, 1 + (size_t)objects, (const char* const*)names, count, snx_path_leaf(library), &linked, error,
                  error_size))
@@ -326,7 +324,7 @@ done:
     free(names);
     free(library);
     free(tmp);
-    for (int k = 1; k < 3; ++k) free((void*)inputs[k].data);
+    free((void*)inputs[1].data);
     free(linked.data);
     snx_arm_aot_free(aot);
     return result;

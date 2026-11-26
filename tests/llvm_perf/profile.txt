@@ -1,2 +1,0 @@
-# guest_pc instruction_word branch_taken fallthrough
-1000 d65f03c0 100 20

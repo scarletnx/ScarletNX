@@ -5,7 +5,7 @@
 
 This is a memory-codegen differential, not an independent ISA oracle. The
 A57 tests separately compare against Unicorn. Both blocks are the native back
-end's, or LLVM's, made for a profile and a memory mode (arm_blocks.py).
+end's, made for a profile and a memory mode (arm_blocks.py).
 """
 
 import argparse

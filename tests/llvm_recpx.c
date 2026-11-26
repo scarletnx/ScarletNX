@@ -29,12 +29,6 @@ static int run(int jit, char opt, unsigned long long* count) {
     if (steps_begin_opt(&steps, jit, 0, opt, error, sizeof error)) return snx_error("%s", error);
     steps_add(&steps, 0x5EA1F820u, 0x1000, 0);
     steps_add(&steps, 0x5EE1F820u, 0x1000, 0);
-#ifndef SNX_TEST_NATIVE_STEPS
-    if (LLVMGetNamedFunction(steps.ir->mod, "snx_fp_unary")) {
-        steps_end(&steps);
-        return snx_error("FRECPX still contains a lane helper");
-    }
-#endif
     if (steps_load(&steps, error, sizeof error)) return snx_error("%s", error);
     int failed = 0;
     for (unsigned form = 0; form < 2 && !failed; ++form) {

@@ -3,8 +3,8 @@
 # Copyright 2026 the ScarletNX contributors
 """The ARM7TDMI profile (the AGB board's CPU) and A57, on the same words.
 
-Each witness runs under both profiles, its values in all the host registers and in three, so that they spill (or
-LLVM's blocks at each --opt level): the ARM7TDMI's rules (misaligned loads rotate and stores align, PC + 12 stores,
+Each witness runs under both profiles, its values in all the host registers and in three, so that they spill: the
+ARM7TDMI's rules (misaligned loads rotate and stores align, PC + 12 stores,
 STM's written back base, an unaligned LDM base, Thumb's POP {pc} without interworking and the bus hook, BL's halves
 apart) must hold there, and none of them may reach A57's blocks.
 """

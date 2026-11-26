@@ -65,7 +65,7 @@ add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/rtlib_bitcode.c"
     DEPENDS "${snx_rtlib_gen}" "${CMAKE_CURRENT_BINARY_DIR}/rtlib.bc" VERBATIM)
 
 add_library(snx_llvm STATIC ir.c ir_state.c ir_promote.c ir_emit.c ir_profile.c ir_helpers.c ir_int.c ir_sail.c
-    ir_ldst.c ir_fpu.c ir_vec.c ir_vec_fp.c ir_vec_crypto.c ir_codegen.c ../fallback_llvm.c
+    ir_ldst.c ir_fpu.c ir_vec.c ir_vec_fp.c ir_vec_crypto.c ir_codegen.c
     "${CMAKE_CURRENT_BINARY_DIR}/rtlib_bitcode.c")
 set_target_properties(snx_llvm PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS ON)
 target_include_directories(snx_llvm SYSTEM PUBLIC "${SNX_LLVM_INCLUDE_DIR}")

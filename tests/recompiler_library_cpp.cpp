@@ -48,7 +48,7 @@ static bool test_concurrent_updates() {
     const u32 ret = 0xd65f03c0;
     place(target + 8, &ret, 1);
 
-    struct snx_recompiler* recompiler = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
+    struct snx_recompiler* recompiler = snx_recompiler_new(SNX_RECOMPILER_FLAG_NATIVE);
     if (!recompiler) return false;
     struct snx_recompiled* module = snx_recompile(recompiler, entry, memory.data() + entry, image_size);
     if (!module) {

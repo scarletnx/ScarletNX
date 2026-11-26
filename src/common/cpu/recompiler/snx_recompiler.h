@@ -5,7 +5,7 @@
    SVC handler, and runs the result on CPU states it owns.
 
    A64, the recompiled path:
-     struct snx_recompiler* r = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
+     struct snx_recompiler* r = snx_recompiler_new(SNX_RECOMPILER_FLAG_NATIVE);
      struct snx_recompiled* m = snx_recompile(r, 0x1000, code, size);  // code at guest address 0x1000
      RtAPI rt; snx_runtime_defaults(&rt);
      rt.svc = my_svc; rt.undef = my_undef; rt.brk = my_brk;              // my_svc is an snx_svc_call64
@@ -48,9 +48,11 @@ extern "C" {
 
 /* ---- the recompiler ---- */
 
-/* flags of snx_recompiler_new: the backend, the one this flag names, LLVM's in earlier versions: the host's native back
-   end (x86-64's, arm64's and the other machines', mach/native.h), which makes all of the A64 code */
-#define SNX_RECOMPILER_FLAG_LLVM 1
+/* flags of snx_recompiler_new: the backend, the host's native back end (x86-64's, arm64's and the other machines',
+   mach/native.h), which makes all of the code. SNX_RECOMPILER_FLAG_LLVM is the flag's name in earlier versions, still
+   taken as the native back end's, said once a process */
+#define SNX_RECOMPILER_FLAG_NATIVE 2
+#define SNX_RECOMPILER_FLAG_LLVM   1
 
 struct snx_recompiler;
 
@@ -83,8 +85,8 @@ SNX_RECOMPILER_API int snx_recompiler_set_optimization(struct snx_recompiler* r,
 #define SNX_RECOMPILER_A64_ANDROID 2
 SNX_RECOMPILER_API int snx_recompiler_set_a64_target(struct snx_recompiler* r, int target);
 /* Code units compiled at once, on host threads; 0, the default, uses one per processor */
-SNX_RECOMPILER_API /* the code generator: 1 the native back end (the default), 0 LLVM alone, the reference the tests compare
-   the native back end with, in builds with LLVM (another refuses it at the recompile); its modules are not cached */
+SNX_RECOMPILER_API /* the code generator: 1 the native back end (the default); 0, LLVM alone in earlier versions, is refused at
+   the recompile, as there is no LLVM */
 SNX_RECOMPILER_API void snx_recompiler_set_backend(struct snx_recompiler* r, int x64);
 void snx_recompiler_set_jobs(struct snx_recompiler* r, unsigned jobs);
 /* How far a recompile is, for a caller's progress bar: called once with the totals and nothing done, then as each code

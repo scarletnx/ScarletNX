@@ -7,7 +7,6 @@
    AOT_ADDRESSES is the host-endian u64 table of known entries. ROOTS has hex PCs, one per line.
    Captured images, tables, profiles and reports stay outside the repository. */
 #include "common/cpu/recompiler/jit/jit_service.h"
-#include "common/cpu/recompiler/llvm/ir.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -107,7 +106,6 @@ int main(int argc, char** argv) {
     if (!region && strcmp(argv[8], "0") && strcmp(argv[8], "auto")) return 2;
     config.region_instructions = !strcmp(argv[8], "auto") ? 0 : region ? region : SIZE_MAX;
     config.cache_path = argc == 10 ? argv[9] : NULL;
-    snx_ir_fpsr_flags(1);
     SnxJitService* service = snx_jit_service_new(&config, error, sizeof error);
     if (!service) { fprintf(stderr, "%s\n", error); return 1; }
     for (size_t i = modules; i < image_count; i++)

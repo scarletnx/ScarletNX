@@ -98,7 +98,7 @@ typedef struct {
     size_t index; /* the function's in the codegen: its snx_stale byte */
     size_t at;    /* the index of the function's instruction being made, its count past them */
     int far;      /* the function's jumps are the machine's longest (MG_FAR_JUMPS): its short ones did not reach */
-    /* the addresses of the function's instructions there is no code for (options.alone), undefined where they run */
+    /* the addresses of the function's instructions there is no code for, undefined where they run */
     SnxU64* none;
     size_t nnone, cap_none;
     int again;    /* the machine's glue refused the function to make it again its way (mg_finish), once */
@@ -1464,15 +1464,14 @@ static int past_guests(Unit* u, const SnxA64Insn* insn, SnxU32 word, SnxU64 addr
    NULL): said, once a function, with what it becomes */
 static void no_code(Unit* u, const char* why) {
     const SnxFunction* f = u->f;
-    const char* becomes =
-        u->options->alone ? "it raises an undefined instruction where it runs" : "LLVM makes the function";
+    const char* becomes = "it raises an undefined instruction where it runs";
     SnxU64 address;
     SnxU32 word = 0;
     SnxA64Insn insn;
     if (u->options->refused) ++*u->options->refused;
     if (u->at >= f->count) {
-        snx_error("native back end: the function at 0x%llx: %s%s", (unsigned long long)f->start,
-                  why ? why : "longer than its branches reach", u->options->alone ? "" : ": LLVM makes the function");
+        snx_error("native back end: the function at 0x%llx: %s", (unsigned long long)f->start,
+                  why ? why : "longer than its branches reach");
         return;
     }
     address = snx_function_address(f, u->at);
@@ -2882,10 +2881,6 @@ static int mach_object(SnxCodegen* codegen, size_t first, size_t last, const Snx
     u.g->x.nb = 1;
     for (i = first; i < last; ++i) {
         size_t before = u.b.n, relocs = u.nrelocs, syms = u.nsyms;
-        if (options->llvm_at && codegen->functions[i].start == options->llvm_at) {
-            if (options->jit) break; /* made[] stays 0: LLVM's, for the IR it prints */
-            continue;
-        }
         if (u.b.cap - u.b.n < codegen->functions[i].count * 400 + 4096) {
             u.b.cap = u.b.cap * 2 + codegen->functions[i].count * 400 + 4096;
             u.b.p = (unsigned char*)realloc(u.b.p, u.b.cap);
@@ -2915,7 +2910,7 @@ static int mach_object(SnxCodegen* codegen, size_t first, size_t last, const Snx
 #endif
         if (!made[i - first]) {
             if (!u.nnone) no_code(&u, g_why);
-            if (options->alone && u.at < codegen->functions[i].count) {
+            if (u.at < codegen->functions[i].count) {
                 SnxU64 address = snx_function_address(&codegen->functions[i], u.at);
                 if (!u.nnone || u.none[u.nnone - 1] != address) {
                     /* made again, that instruction undefined */

@@ -1,8 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The game module ahead of time: its code in units, compiled in parallel by the host's native back end and the fallback
-   (recompiler/fallback.h) where it leaves some, linked with the runtime library by recompiler/object/link.c. No header
-   of LLVM's: what is LLVM's alone (the IR kept, its settings, a --layout) goes through module_fallback.h */
+/* The game module ahead of time: its code in units, compiled in parallel by the host's native back end, linked with the
+   runtime library by recompiler/object/link.c */
 #ifndef SNX_NX_MODULE_LLVM_H
 #define SNX_NX_MODULE_LLVM_H
 

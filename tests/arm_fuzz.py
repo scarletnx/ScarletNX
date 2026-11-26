@@ -20,8 +20,7 @@ the PC where it isn't allowed, register lists past d31, should-be-zero bits set)
 and QEMU 5 checks no alignment for LDRD, LDM, VLDM or VLDn, which the A57 faults on: the run fails on wrong state and on
 refused blocks, and reports the rest. No game assets.
 
-With --mc and --objdump (LLVM's, as the LLVM blocks are tested with: --blocks snx-test-arm-blocks-llvm --opt 2) their
-verdict is had too: the words run are only those llvm-objdump has for the Cortex-A57, and a difference on one that
+With --mc and --objdump (the toolchain's llvm-mc and llvm-objdump) their verdict is had too: the words run are only those llvm-objdump has for the Cortex-A57, and a difference on one that
 llvm-mc warns of (SoftFail: the Arm ARM calls it UNPREDICTABLE) is not counted. Where they are not there, it says so and
 exits with 77.
 """
@@ -504,7 +503,6 @@ def main():
     p.add_argument('--states', type=int, default=6, help='random states per encoding')
     p.add_argument('--seed', type=int, default=1)
     p.add_argument('--pool', type=int, help="a native back end's: the host registers its values are in (0: all)")
-    p.add_argument('--opt', type=int, choices=(0, 2), help="LLVM's runner's: the passes' -O level")
     p.add_argument('--mc', help="llvm-mc, for LLVM's verdict (with --objdump)")
     p.add_argument('--objdump', help='llvm-objdump, which keeps the words the Cortex-A57 has')
     p.add_argument('--examples', type=int, default=3)
@@ -521,7 +519,7 @@ def main():
     if args.only:
         isa, words = args.only.split(':')
         item = [int(w, 16) for w in words.split(',')]
-        blocks = Blocks(args.blocks, [(isa, PC, item)], pool=args.pool, opt=args.opt)
+        blocks = Blocks(args.blocks, [(isa, PC, item)], pool=args.pool)
         blocks.refuse()
         uni = Unicorn(isa != 'arm')
         print(blocks.name, ' '.join(blocks.names[0]), *(disassemble(tools, isa, [item]) if tools else ()))
@@ -541,7 +539,7 @@ def main():
         drawn = len(items)
         if tools:
             items = a57_words(tools, isa, items)
-        blocks = Blocks(args.blocks, [(isa, PC, item) for item in items], pool=args.pool, opt=args.opt)
+        blocks = Blocks(args.blocks, [(isa, PC, item) for item in items], pool=args.pool)
         uni = Unicorn(isa != 'arm')
         report = collections.defaultdict(lambda: collections.defaultdict(list))
         runs = 0

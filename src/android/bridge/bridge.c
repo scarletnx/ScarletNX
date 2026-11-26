@@ -275,7 +275,7 @@ void bridge_set_keep_ir(const char* folder) {
 bool bridge_init(const char* cache, char* error, size_t error_size) {
     if (b.window) return true;
     /* before anything of the bridge is kept: b.window says it started, and a start that failed is tried whole again */
-    struct snx_recompiler* recompiler = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
+    struct snx_recompiler* recompiler = snx_recompiler_new(SNX_RECOMPILER_FLAG_NATIVE);
     if (!recompiler) {
         if (!snx_native_refused(error, error_size))
             snprintf(error, error_size, "no recompiler for this host: its native back end (%s) makes none",

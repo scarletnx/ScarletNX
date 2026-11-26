@@ -4,11 +4,10 @@
 # same options as test-references' arm/ keeps them (arm_x64.c's --frozen; arm_frozen.py records them), arm_x64.c's
 # --profile, --memory and --trace there. The Cortex-A57 on flat memory is arm_<machine> itself
 
-# snx_arm_frozen_program(<target>): a program of arm_x64.c with the frozen files' reader, and LLVM's blocks beside the
-# back end's (SNX_TEST_LLVM): each block's results held to LLVM's as it runs, and LLVM's to the file's
+# snx_arm_frozen_program(<target>): a program of arm_x64.c with the frozen files' reader: each block's results held to
+# LLVM's as the file keeps them
 function(snx_arm_frozen_program target)
     target_sources(${target} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/support/frozen.c")
-    target_compile_definitions(${target} PRIVATE SNX_TEST_LLVM=1)
 endfunction()
 
 # snx_arm_native_modes(<machine> [<argument>...]): arm_<machine>_<mode> for each mode of snx-test-arm-<machine>, the

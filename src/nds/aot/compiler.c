@@ -1,12 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The offline compiler, part of the driver, after the 3DS's (3ds/aot/compiler.c): the blocks discovery found in the
-   image's regions, compiled in chunks on a worker per thread by the host's native back end, and the fallback for what
-   that does not make (cpu/arm/aot.h, recompiler/fallback.h), an index of them for each region, and the helpers they
-   call, linked by the backend's own linker into the module the run loads. */
+   image's regions, compiled in chunks on a worker per thread by the host's native back end (cpu/arm/aot.h), an index of
+   them for each region, and the helpers they call, linked by the backend's own linker into the module the run loads. */
 #include "nds/aot/nds_module.h"
 #include "common/cpu/arm/aot.h"
-#include "common/cpu/recompiler/fallback.h"
 #include "common/cpu/recompiler/rtlib/rtlib_object.h"
 #include "common/cpu/recompiler/object/link.h"
 #include "common/cpu/recompiler/mach/native.h"
@@ -28,12 +26,11 @@ static void name(char out[48], const Entry* e) {
     snprintf(out, 48, "nds_%u_%c_%u", e->region, e->mode ? 't' : 'a', e->index);
 }
 
-/* The entries' blocks into objects (two at most: cpu/arm/aot.h), the fallback's IR kept as id.ll where it is kept. A
-   block the backend ends sooner than discovery planned goes on as a block of its own at the instruction after. *made
-   gets every block that was made, with the length the backend gave it (*made_count of them, the caller's to free), for
-   the index */
-static bool chunk(SnxArmAot* aot, const NdsRom* rom, const Entry* entries, unsigned count, SnxLinkInput output[2],
-                  const char* id, Entry** made, unsigned* made_count, char* error, size_t size) {
+/* The entries' blocks into an object (cpu/arm/aot.h). A block the backend ends sooner than discovery planned goes on as a
+   block of its own at the instruction after. *made gets every block that was made, with the length the backend gave it
+   (*made_count of them, the caller's to free), for the index */
+static bool chunk(SnxArmAot* aot, const NdsRom* rom, const Entry* entries, unsigned count, SnxLinkInput* output,
+                  Entry** made, unsigned* made_count, char* error, size_t size) {
     unsigned capacity = 0;
     const SnxArmCodegenOptions options = {SNX_ARM_CODEGEN_OPTIONS_ABI, SNX_ARM_PROFILE_ARM946E, SNX_ARM_MEMORY_FLAT, 0,
                                           0};
@@ -63,7 +60,7 @@ static bool chunk(SnxArmAot* aot, const NdsRom* rom, const Entry* entries, unsig
             e.length = (uint8_t)(e.length - consumed);
         }
     }
-    return snx_arm_aot_objects(aot, id, output, error, size) >= 0;
+    return snx_arm_aot_objects(aot, output, error, size) >= 0;
 }
 
 /* The module's descriptor, its regions' address the linker's */
@@ -77,14 +74,17 @@ static NdsModule describe(const NdsRom* rom) {
                        .region_count = rom->region_count,
                        .identity = rom->identity};
 }
-/* The index without LLVM (native.h's snx_native_data): each region's two tables of blocks and of their lengths, the
-   regions, and the descriptor the run reads, the object's one global. entries are sorted by region, mode and slot. 1, 0
-   where this host's native back end has no objects, -1 with the reason in error */
+/* The index (native.h's snx_native_data): each region's two tables of blocks and of their lengths, the regions, and the
+   descriptor the run reads, the object's one global. entries are sorted by region, mode and slot. 0, or -1 with the
+   reason in error */
 static int native_index(const NdsRom* rom, const Entry* entries, unsigned count, SnxLinkInput* output, char* error,
                         size_t size) {
     unsigned pointer = 0, cursor = 0;
     SnxXElf* o = snx_native_data(&pointer);
-    if (!o) return 0;
+    if (!o) {
+        snprintf(error, size, "this host's native back end (%s) makes no module index", snx_native_name());
+        return -1;
+    }
     NdsModuleRegion* regions = calloc(rom->region_count ? rom->region_count : 1, sizeof *regions);
     unsigned char* object = NULL;
     int rc = -1;
@@ -137,100 +137,13 @@ static int native_index(const NdsRom* rom, const Entry* entries, unsigned count,
     const size_t at = snx_xelf_put(o, SNX_ELF_RELRO, &m, sizeof m, alignof(NdsModule));
     snx_xelf_symbol(o, NDS_MODULE_SYMBOL, SNX_ELF_RELRO, at, sizeof m, SNX_ELF_GLOBAL);
     snx_xelf_reloc(o, SNX_ELF_RELRO, at + offsetof(NdsModule, regions), "nds_regions", pointer, 0);
-    if (!snx_xelf_write(o, &object, &output->size)) rc = 1;
+    if (!snx_xelf_write(o, &object, &output->size)) rc = 0;
     output->data = object;
 done:
     if (rc < 0) snprintf(error, size, "out of memory for the module's index");
     free(regions);
     snx_xelf_free(o);
     return rc;
-}
-
-/* ---- the index by the fallback, where the host has no native back end or its IR is kept ---- */
-/* the slots of a region's table of a state, i by i: each is the block of the first of the entries there, which are
-   that table's sorted by place, from cursor on */
-typedef struct {
-    const Entry* entries;
-    unsigned count, cursor;
-} Slots;
-static int slot_name(void* user, size_t i, char* out, size_t size) {
-    Slots* s = user;
-    while (s->cursor < s->count && s->entries[s->cursor].index < i) ++s->cursor;
-    if (s->cursor == s->count || s->entries[s->cursor].index != i) return 0;
-    char id[48];
-    name(id, &s->entries[s->cursor]);
-    snprintf(out, size, "%s", id);
-    return 1;
-}
-/* each region's tables, of blocks and of their lengths, as global names */
-typedef char Tables[4][32];
-static bool fallback_index(const NdsRom* rom, const Entry* entries, unsigned count, SnxLinkInput* output,
-                           const char* keep_ir, char* error, size_t size) {
-    enum { FIELDS = 7 };
-    const unsigned regions = rom->region_count;
-    SnxFallbackData* d = snx_fallback_data_new("nds-static-aot", "nds-static-aot-v1", '1',
-                                               keep_ir ? snx_arm_aot_kept : snx_arm_aot_none);
-    Tables* tables = calloc(regions ? regions : 1, sizeof *tables);
-    SnxFallbackField* fields = calloc((size_t)(regions ? regions : 1) * FIELDS, sizeof *fields);
-    unsigned cursor = 0;
-    bool ok = d && tables && fields;
-    if (!ok) snprintf(error, size, "out of memory for the module's index");
-    for (unsigned r = 0; ok && r < regions; ++r) {
-        const NdsRegion* region = &rom->regions[r];
-        for (unsigned mode = 0; ok && mode < 2; ++mode) {
-            const size_t n = region->size / (mode ? 2 : 4);
-            const unsigned first = cursor;
-            uint8_t* units = calloc(n ? n : 1, 1);
-            if (!units) {
-                snprintf(error, size, "out of memory for the module's index");
-                ok = false;
-                break;
-            }
-            for (; cursor < count && entries[cursor].region == r && entries[cursor].mode == mode; ++cursor)
-                if (entries[cursor].index < n && !units[entries[cursor].index])
-                    units[entries[cursor].index] = entries[cursor].length;
-            Slots slots = {entries + first, cursor - first, 0};
-            snprintf(tables[r][mode], sizeof tables[r][mode], "nds_%u_%s", r, mode ? "thumb" : "arm");
-            snprintf(tables[r][2 + mode], sizeof tables[r][2 + mode], "nds_%u_%s_units", r, mode ? "thumb" : "arm");
-            ok = !snx_fallback_data_blocks(d, tables[r][mode], n, slot_name, &slots, error, size) &&
-                 !snx_fallback_data_integers(d, tables[r][2 + mode], 8, n, units, error, size);
-            free(units);
-        }
-        SnxFallbackField* f = &fields[r * FIELDS];
-        f[0] = (SnxFallbackField){.bits = 32, .value = region->address, .offset = offsetof(NdsModuleRegion, address)};
-        f[1] = (SnxFallbackField){.bits = 32, .value = region->size, .offset = offsetof(NdsModuleRegion, size)};
-        f[2] = (SnxFallbackField){.bits = 64, .value = region->hash, .offset = offsetof(NdsModuleRegion, hash)};
-        f[3] = (SnxFallbackField){.global = tables[r][0], .offset = offsetof(NdsModuleRegion, arm)};
-        f[4] = (SnxFallbackField){.global = tables[r][1], .offset = offsetof(NdsModuleRegion, thumb)};
-        f[5] = (SnxFallbackField){.global = tables[r][2], .offset = offsetof(NdsModuleRegion, arm_units)};
-        f[6] = (SnxFallbackField){.global = tables[r][3], .offset = offsetof(NdsModuleRegion, thumb_units)};
-    }
-    if (ok && !regions) /* the fields' kinds alone */
-        for (unsigned k = 0; k < FIELDS; ++k) fields[k].bits = k < 2 ? 32 : k == 2 ? 64 : 0;
-    ok = ok &&
-         !snx_fallback_data_structs(d, "nds_regions", regions, fields, FIELDS, sizeof(NdsModuleRegion), error, size);
-    const NdsModule m = describe(rom);
-#define FIELD(field, width)                                                                                            \
-    { .bits = width, .value = m.field, .offset = offsetof(NdsModule, field) }
-    const SnxFallbackField descriptor[] = {FIELD(magic, 64),
-                                           FIELD(abi, 32),
-                                           FIELD(arm_abi, 32),
-                                           FIELD(cpu_size, 32),
-                                           FIELD(pointer_size, 32),
-                                           FIELD(profile, 32),
-                                           FIELD(region_count, 32),
-                                           FIELD(identity, 64),
-                                           {.global = "nds_regions", .offset = offsetof(NdsModule, regions)}};
-#undef FIELD
-    ok = ok && !snx_fallback_data_descriptor(d, NDS_MODULE_SYMBOL, descriptor, sizeof descriptor / sizeof *descriptor,
-                                             sizeof(NdsModule), error, size);
-    unsigned char* object = NULL;
-    ok = ok && !snx_fallback_data_object(d, &object, &output->size, error, size);
-    output->data = object;
-    free(fields);
-    free(tables);
-    snx_fallback_data_free(d);
-    return ok;
 }
 
 /* the hints: a region's index and pc | 1 a line, in hex. *count pairs, the caller's to free */
@@ -256,9 +169,8 @@ static uint32_t* read_hints(const char* path, size_t* count) {
 typedef struct {
     const NdsRom* rom;
     const Entry* entries;
-    SnxLinkInput* objects; /* chunk i's are objects[2 * i] and the next, no data for one it lacks */
+    SnxLinkInput* objects; /* chunk i's is objects[i], no data for one with no blocks */
     unsigned count, chunks, next, finished;
-    const char* keep_ir; /* where LLVM's IR goes, NULL for nowhere */
     bool failed;
     Entry* made; /* every block the chunks made */
     unsigned made_count;
@@ -269,8 +181,8 @@ typedef struct {
 
 static void worker(void* arg) {
     Work* w = arg;
-    char error[512] = "out of memory for a maker of blocks";
-    SnxArmAot* aot = snx_arm_aot_new('1', w->keep_ir);
+    char error[512];
+    SnxArmAot* aot = snx_arm_aot_new(error, sizeof error);
     bool ok = aot != NULL;
     for (;;) {
         snx_work_lock(&w->lock);
@@ -285,9 +197,7 @@ static void worker(void* arg) {
         if (n > CHUNK_ENTRIES) n = CHUNK_ENTRIES;
         Entry* made = NULL;
         unsigned made_count = 0;
-        char id[24];
-        snprintf(id, sizeof id, "blocks_%03u", i);
-        ok = chunk(aot, w->rom, w->entries + begin, n, &w->objects[2 * i], id, &made, &made_count, error, sizeof error);
+        ok = chunk(aot, w->rom, w->entries + begin, n, &w->objects[i], &made, &made_count, error, sizeof error);
         snx_work_lock(&w->lock);
         Entry* merged = made_count ? realloc(w->made, (w->made_count + made_count) * sizeof *merged) : w->made;
         if (ok && made_count && !merged) {
@@ -320,7 +230,7 @@ static int by_place(const void* a, const void* b) {
 }
 
 int nds_aot_compile(const NdsRom* rom, const char* path, const char* hints_path, int threads, int most,
-                    const char* keep_ir, SnxArmAotCount* blocks_made, char* error, size_t error_size) {
+                    SnxArmAotCount* blocks_made, char* error, size_t error_size) {
     int result = 1;
     NdsPlan* plans = NULL;
     SnxLinkInput* objects = NULL;
@@ -370,9 +280,8 @@ int nds_aot_compile(const NdsRom* rom, const char* path, const char* hints_path,
     work = (Work){.rom = rom,
                   .entries = entries,
                   .count = count,
-                  .keep_ir = keep_ir,
                   .chunks = (count + CHUNK_ENTRIES - 1) / CHUNK_ENTRIES};
-    files = 2 + 2 * work.chunks; /* the helpers, the index, two at most for each chunk */
+    files = 2 + work.chunks; /* the helpers, the index, one for each chunk */
     objects = calloc(files, sizeof *objects);
     if (!objects) {
         snprintf(error, error_size, "out of memory for native chunks");
@@ -395,15 +304,10 @@ int nds_aot_compile(const NdsRom* rom, const char* path, const char* hints_path,
         snprintf(error, error_size, "%s", work.error);
         goto done;
     }
-    snx_arm_aot_report(&work.blocks, "scarletnx-nds", 0);
+    snx_arm_aot_report(&work.blocks, stdout);
     if (blocks_made) *blocks_made = work.blocks;
     qsort(work.made, work.made_count, sizeof *work.made, by_place);
-    {
-        const int indexed = keep_ir ? 0 : native_index(rom, work.made, work.made_count, &objects[1], error, error_size);
-        if (indexed < 0 ||
-            (!indexed && !fallback_index(rom, work.made, work.made_count, &objects[1], keep_ir, error, error_size)))
-            goto done;
-    }
+    if (native_index(rom, work.made, work.made_count, &objects[1], error, error_size)) goto done;
     objects[0].data = (unsigned char*)snx_armlib_object, objects[0].size = (size_t)snx_armlib_object_size;
     unsigned linking = 2; /* the objects there are */
     for (unsigned i = 2; i < files; ++i)

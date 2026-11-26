@@ -2,11 +2,9 @@
    Copyright 2026 the ScarletNX contributors */
 /* An instruction a native back end has no code for (SnxNativeOptions.without: here a word of SHA512 and one of SM4, each
    in a function that never runs it and in one that does), and what is said of it. Of every machine's back end, on any
-   host:
-   - beside another back end (alone 0) the function is left, and the line at the recompile names the function, the op,
-     its word, its address, the feature and the target, once a function, and counts it;
-   - with none (alone 1) the function is made, and the line says it raises an undefined instruction.
-   On an x86-64 host the code made alone runs: the function that never reaches its word returns, the other calls the
+   host, the function is made, and the line at the recompile names the function, the op, its word, its address, the
+   feature and the target, once a function, says it raises an undefined instruction, and counts it.
+   On an x86-64 host the code made runs: the function that never reaches its word returns, the other calls the
    runtime's undef with the instruction's pc and word, whose text (snx_a64_word_text) names the op and the feature. And
    through the library, whose code is the native back end's alone: each function made, the lines and their count, and
    the undefined instruction where one runs */
@@ -137,7 +135,7 @@ static const struct {
                   {"ppc64le", make_ppc64},   {"ppc64", make_ppc64be},    {"mips64el", make_mips64},
                   {"mips64", make_mips64be}, {"loongarch64", make_la64}, {"s390x", make_s390x}};
 
-/* a machine's back end beside another and alone; its object made alone in *alone (the caller's) */
+/* a machine's back end; its object in *alone (the caller's) */
 static void machine(const char* name, MakeObject make, SnxCodegen* cg, unsigned char** alone, size_t* alone_size) {
     SnxNativeOptions options = {0};
     unsigned char made[FUNCTIONS], *object = NULL;
@@ -146,18 +144,7 @@ static void machine(const char* name, MakeObject make, SnxCodegen* cg, unsigned 
     options.refused = &refused;
     options.without = k_without;
     options.without_count = sizeof k_without / sizeof *k_without;
-    snprintf(of, sizeof of, "%s beside another back end", name);
-    g_test.count = 0;
-    check(make(cg, &options, made, &object, &size, error, sizeof error) >= 0, error, of);
-    for (f = 0; f < FUNCTIONS; ++f)
-        check(made[f] == !k_functions[f].word, "leaves the functions with one, no other", of);
-    check(refused == REFUSED, "counts them", of);
-    check_lines(of, ": LLVM makes the function");
-    free(object);
-    object = NULL;
-    snprintf(of, sizeof of, "%s alone", name);
-    options.alone = 1;
-    refused = 0;
+    snprintf(of, sizeof of, "%s", name);
     g_test.count = 0;
     check(make(cg, &options, made, &object, &size, error, sizeof error) >= 0, error, of);
     for (f = 0; f < FUNCTIONS; ++f) check(made[f], "makes every function", of);
@@ -241,10 +228,10 @@ int main(void) {
                 !snx_x64_cached_object(&cg, 0, FUNCTIONS, &options, made, &object, &size, &reused, error, sizeof error),
                 error, "the unit cache");
             check(!reused && refused == REFUSED, "made each time, and counted", "the unit cache");
-            check_lines("the unit cache", ": LLVM makes the function");
+            check_lines("the unit cache", ": it raises an undefined instruction where it runs");
             free(object);
         }
-        /* the code made alone, run */
+        /* the code made, run */
         SnxCodeLoader* loader = snx_code_loader_new(0, error, sizeof error);
         SnxLinkInput input = {0};
         const char* names[FUNCTIONS];
@@ -281,7 +268,7 @@ int main(void) {
             k_functions[f].feature = "FEAT_FP8";
             for (unsigned b = 0; b < 4; ++b) mem[CODE + at + b] = (uint8_t)(w >> (8 * b));
         }
-        struct snx_recompiler* r = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
+        struct snx_recompiler* r = snx_recompiler_new(SNX_RECOMPILER_FLAG_NATIVE);
         struct snx_code_range range = {CODE, mem + CODE, sizeof g_code};
         struct snx_recompiled* made = NULL;
         g_test.count = 0;

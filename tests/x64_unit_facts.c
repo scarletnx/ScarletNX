@@ -212,7 +212,6 @@ int main(void) {
               "a JIT unit's table name changes them");
         free(f.bytes);
     }
-    check(!kept(&base, &one, &(SnxX64Options){.llvm_at = F0}), "the function ir_dump_pc names changes them");
 
     /* other code below f0, one function as before: f0 never reaches it */
     image(MOV_RET);

@@ -22,11 +22,6 @@ typedef struct {
        on the machines that compare the slot (MG_BOUND: x86-64 and arm64) */
     SnxU64 (*bound)(void* user, SnxU64 address, int* guard);
     void* bound_user;
-    /* a function left to LLVM, 0 for none: the one whose IR the setting ir_dump_pc prints */
-    SnxU64 llvm_at;
-    /* no other back end makes what this one can't: an instruction it has no code for raises an undefined instruction
-       where it runs, and its function is made. 0: the function is left to LLVM */
-    int alone;
     /* where not NULL, how many functions it could not make whole, added to it; each is said once (snx_error) */
     size_t* refused;
     /* words taken as ones there is no code for, how many: what a test of that asks for */
@@ -62,15 +57,12 @@ unsigned snx_native_features(void);
    SSE3, SSSE3, SSE4.1, PCLMULQDQ and POPCNT"); 0 and "" where there is a back end, or none of the architecture is
    built */
 int snx_native_floor(char* why, size_t size);
-/* 1 where nothing makes this host's code, snx_native_floor's line in error: a host below the floor, in a build without
-   LLVM (SNX_WITH_LLVM=OFF). 0 with LLVM, which makes the code there, and the line is said beside it; error is as it
-   was then */
+/* 1 where nothing makes this host's code, snx_native_floor's line in error: a host below the floor. 0, error as it was,
+   elsewhere */
 int snx_native_refused(char* error, size_t size);
 /* What this host lacks that its back end does without, through its fallback (x86-64's PCLMULQDQ): 1 with the line of
    it in why ("cpu: this host has no PCLMULQDQ, done by the fallback"); 0 and "" for a host that has it all */
 int snx_native_fallback(char* why, size_t size);
-/* for a test: from here on as a build without LLVM (1) or as this one (0) */
-void snx_native_set_alone(int on);
 /* a feature a back end takes of every host: its name, and its bit of the host's */
 typedef struct {
     const char* name;
