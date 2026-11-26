@@ -72,7 +72,7 @@ jobs:
         id: plan
         run: python3 scripts/publish-builds.py plan --repo "$GITHUB_REPOSITORY" --to "$NIGHTLY_REPO"
       # Each by its name, as the release job takes them, into a folder of its own. A pull request's job that failed made
-      # none: its notes say so. A pull request makes no cross AppImage (build.yml's appimage-cross)
+      # none: its notes say so. A pull request makes the cross AppImages too (build.yml's appimage-cross)
       - name: Download the x86-64 AppImage
         if: >-
           steps.plan.outputs.run &&
@@ -97,7 +97,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Download the PowerPC64 LE AppImage
         if: >-
-          steps.plan.outputs.run && steps.plan.outputs.kind != 'pr' &&
+          steps.plan.outputs.run &&
           (steps.plan.outputs.kind != 'main' || contains(steps.plan.outputs.need, ' ScarletNX-linux-ppc64le.AppImage '))
         continue-on-error: true # its job may fail without failing the run: the notes say not built
         uses: actions/download-artifact@v8
@@ -108,7 +108,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Download the PowerPC64 BE AppImage
         if: >-
-          steps.plan.outputs.run && steps.plan.outputs.kind != 'pr' &&
+          steps.plan.outputs.run &&
           (steps.plan.outputs.kind != 'main' || contains(steps.plan.outputs.need, ' ScarletNX-linux-ppc64.AppImage '))
         continue-on-error: true # its job may fail without failing the run: the notes say not built
         uses: actions/download-artifact@v8
@@ -119,7 +119,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Download the RISC-V 64 AppImage
         if: >-
-          steps.plan.outputs.run && steps.plan.outputs.kind != 'pr' &&
+          steps.plan.outputs.run &&
           (steps.plan.outputs.kind != 'main' || contains(steps.plan.outputs.need, ' ScarletNX-linux-riscv64.AppImage '))
         continue-on-error: true # its job may fail without failing the run: the notes say not built
         uses: actions/download-artifact@v8
@@ -130,7 +130,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Download the LoongArch64 AppImage
         if: >-
-          steps.plan.outputs.run && steps.plan.outputs.kind != 'pr' &&
+          steps.plan.outputs.run &&
           (steps.plan.outputs.kind != 'main' || contains(steps.plan.outputs.need, ' ScarletNX-linux-loongarch64.AppImage '))
         continue-on-error: true # its job may fail without failing the run: the notes say not built
         uses: actions/download-artifact@v8

@@ -1323,6 +1323,14 @@ for what, copy in {
     )
 publisher_workflow = (Path(__file__).resolve().parent.parent / '.github' / 'workflows' / 'publish.yml').read_text()
 check(
+    'publish.yml downloads every package for a pull request, the cross AppImages too, as its run makes them',
+    "steps.plan.outputs.kind != 'pr'" not in publisher_workflow
+    and all(
+        f'name: {pattern.replace("{short}", "${{ steps.plan.outputs.short }}")}' in publisher_workflow
+        for pattern in publish_module.ARTIFACTS
+    ),
+)
+check(
     "publish.yml runs by hand with the run, one at a time with main's other runs",
     'workflow_dispatch:\n    inputs:\n      run:' in publisher_workflow
     and "publish-${{ github.event_name == 'workflow_dispatch' && 'main' ||" in publisher_workflow
