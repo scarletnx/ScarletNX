@@ -139,16 +139,20 @@ static int scan(const char* folder, const SnxLlvmCacheKind* kinds, size_t kind_c
     return rc;
 }
 
+int snx_llvm_caches_library(const char* folder, SnxLlvmCaches* found) {
+    static const SnxLlvmCacheKind library[] = {SNX_LLVM_CACHE_RTLIB, SNX_LLVM_CACHE_MODULE, SNX_LLVM_CACHE_JIT};
+    return scan(folder, library, sizeof library / sizeof *library, found);
+}
+
 int snx_llvm_caches_scan(const char* cache_root, SnxLlvmCaches* found) {
     static const SnxLlvmCacheKind units[] = {SNX_LLVM_CACHE_UNITS};
-    static const SnxLlvmCacheKind library[] = {SNX_LLVM_CACHE_RTLIB, SNX_LLVM_CACHE_MODULE, SNX_LLVM_CACHE_JIT};
     static const char* const libraries[] = {"linux-jit", "android-jit"};
     char* folder = snx_path_join(cache_root, "units");
     int rc = folder ? scan(folder, units, 1, found) : -1;
     free(folder);
     for (size_t i = 0; !rc && i < sizeof libraries / sizeof *libraries; ++i) {
         folder = snx_path_join(cache_root, libraries[i]);
-        rc = folder ? scan(folder, library, sizeof library / sizeof *library, found) : -1;
+        rc = folder ? snx_llvm_caches_library(folder, found) : -1;
         free(folder);
     }
     return rc;
@@ -187,6 +191,16 @@ size_t snx_llvm_caches_delete(const SnxLlvmCaches* found, uint64_t* bytes, char*
         ++gone, *bytes += c->bytes;
     }
     return gone;
+}
+
+size_t snx_llvm_caches_said(const SnxLlvmCaches* found, const char* folder, const char* where, char* out, size_t size) {
+    uint64_t bytes = found->bytes;
+    const size_t count = folder ? snx_llvm_caches_in(found, folder, &bytes) : found->count;
+    if (size) out[0] = 0;
+    if (!count) return 0;
+    snprintf(out, size, "%zu file%s, %.1f MB of LLVM's old caches in %s, which nothing reads now: %s", count,
+             count == 1 ? "" : "s", (double)bytes / 1e6, folder ? folder : found->files[0].path, where);
+    return count;
 }
 
 void snx_llvm_caches_free(SnxLlvmCaches* found) {

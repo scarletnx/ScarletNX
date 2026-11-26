@@ -114,6 +114,32 @@ int main(void) {
     for (size_t i = 0; i < found.count; ++i) all += found.files[i].bytes;
     CHECK(all == found.bytes, "the bytes add up (%llu, %llu)", (unsigned long long)all,
           (unsigned long long)found.bytes);
+    /* one library folder alone, as a runtime reads its own, and the line it says of it: linux-jit/'s three; none in
+       android-jit/, which says nothing; the game's .jitcache by its path */
+    {
+        SnxLlvmCaches lib = {0}, none = {0}, game = {0};
+        char said[1024];
+        char *dir = snx_path_join(g_root, "linux-jit"), *native = snx_path_join(g_root, "android-jit");
+        char* old_jit = at("game", "old.jitcache");
+        CHECK(!snx_llvm_caches_library(dir, &lib) && lib.count == 3, "linux-jit/ alone: %zu files, not 3", lib.count);
+        CHECK(snx_llvm_caches_said(&lib, dir, SNX_LLVM_CACHES_WHERE, said, sizeof said) == 3 &&
+                  !strncmp(said, "3 files, ", 9) && strstr(said, " MB of LLVM's old caches in ") && strstr(said, dir) &&
+                  strstr(said, "which nothing reads now: the launcher deletes them in Settings > App > Move Old Files"),
+              "linux-jit/ said: %s", said);
+        CHECK(!snx_llvm_caches_library(native, &none) && !none.count &&
+                  !snx_llvm_caches_said(&none, native, SNX_LLVM_CACHES_WHERE, said, sizeof said) && !said[0],
+              "android-jit/ said: %s", said);
+        CHECK(snx_llvm_caches_jit(old_jit, &game) == 1 &&
+                  snx_llvm_caches_said(&game, NULL, SNX_LLVM_CACHE_JIT_WHERE, said, sizeof said) == 1 &&
+                  !strncmp(said, "1 file, ", 8) && strstr(said, old_jit) && strstr(said, "Delete Old Caches"),
+              "the .jitcache said: %s", said);
+        snx_llvm_caches_free(&lib);
+        snx_llvm_caches_free(&none);
+        snx_llvm_caches_free(&game);
+        free(dir);
+        free(native);
+        free(old_jit);
+    }
     /* found, not deleted: every file is still there */
     CHECK(there("units", HEX64 ".o") && there("linux-jit", "rtlib-" HEX32 ".o") && there("linux-jit", HEX32 ".so"),
           "the scan deleted a file");
