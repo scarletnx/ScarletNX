@@ -868,9 +868,18 @@ static int vec_fp(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
    bytes, not shifted to it: two shuffles fewer */
 static void set_qc(SgCtx* g, int v, int bytes) {
     SgX* x = X;
-    int in[4] = {v, bytes < 16 ? kconst(g, sg_ones(8u * (unsigned)bytes), 0) : v, 0, 0}; /* bytes: 1, 2, 4, 8 or 16 */
-    sgx_vins(x, &sgx_v_ptest, -1, 0, in, 0, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
-    SgD any = sg_d_zext(g, sgx_bool_bits(x, sgx_bool(x, SGX_B_CC, x->flags_ins, 5)), 32); /* NE: a bit set */
+    const int mask = bytes < 16 ? kconst(g, sg_ones(8u * (unsigned)bytes), 0) : v; /* bytes: 1, 2, 4, 8 or 16 */
+    SgD any;
+    if (x->features & SGX_F_SSE41) {
+        int in[4] = {v, mask, 0, 0};
+        sgx_vins(x, &sgx_v_ptest, -1, 0, in, 0, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
+        any = sg_d_zext(g, sgx_bool_bits(x, sgx_bool(x, SGX_B_CC, x->flags_ins, 5)), 32); /* NE: a bit set */
+    } else { /* SSE2's: the bytes that are 0 (PCMPEQB), their mask (PMOVMSKB), which is not all of them */
+        const int bits = op2(g, &sgx_v_pcmpeqb, bytes < 16 ? op2(g, &sgx_v_pand, v, mask) : v, kconst(g, 0, 0));
+        SgD zero = sgx_val(32, sgx_v1(x, &sgx_v_pmovmskb, bits, 0));
+        any =
+            sg_d_zext(g, sgx_bool_bits(x, sg_b_not(g, sg_d_is_zero(g, sg_d_xor(g, zero, sgx_const(32, 0xFFFF))))), 32);
+    }
     SgD owed = g->qc_owed ? sg_d_or(g, sgx_val(32, g->qc_owed), any) : any;
     g->qc_owed = sgx_reg(x, &owed);
 }
