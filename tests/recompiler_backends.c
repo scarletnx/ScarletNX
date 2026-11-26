@@ -10,10 +10,11 @@
    (snx_recompiled_x64_functions), or the test would compare LLVM with itself.
      snx-test-recompiler-backends [--functions N] [--states N] [--seed N] [--without MASK] [--target NAME] [--verbose]
          [--hook] [--jit] [--words HEX...] [--made] [--ops OP...] [--refused] [--coverage]
-         [--qemu QEMU RUNNER DIR] [--programs] [--calls] [--long N BYTES]
+         [--qemu QEMU RUNNER DIR] [--programs] [--calls] [--long N BYTES] [--cpu NAME]
    --without MASK: the back end goes without these features of the host, as on a host that lacks them: x86-64's
    (sailgen's SGX_F_*: FMA 0x800, AVX 0x400, F16C 0x100, BMI1, BMI2 and LZCNT 7, AES-NI 0x1000, SHA-NI 0x2000), arm64's
    (SNX_ARM64_F_*: 0x7ffff all of them). Another machine's back end has none to go without: it is skipped
+   --cpu NAME: snx-test-recompiler-x64cpu's processor (qemu64 without it)
    --long N BYTES: --words' words N times over in one function, entered past them by a CBZ, gone over twice by a B.NE
    back, and left by a B back over them: more than BYTES of a native back end's code, which is what its short jumps reach
    --target NAME: the guest's features, switch (the default), android, max or, with --refused, ounce
@@ -43,7 +44,9 @@
    that runs, on an x86-64 host itself, entered and called out of as that convention wants, its frames unwound by its
    function table where it calls out, or with --step after every instruction (support/host_win64.c). With
    SNX_TEST_ARM64WIN beside SNX_TEST_ARM64 (snx-test-recompiler-arm64win) it is arm64's for Windows, in COFF objects,
-   unwound the same way (HOSTUC_ARM64_WIN) */
+   unwound the same way (HOSTUC_ARM64_WIN). With SNX_TEST_X64CPU (snx-test-recompiler-x64cpu) it is the x86-64 back
+   end's own code, made for the features an older processor's CPUID gives and run on that processor under Unicorn
+   (--cpu: QEMU's name of it, HOSTUC_X64), where an instruction it lacks stops the code */
 #include "common/cpu/recompiler/snx_recompiler.h"
 #include "common/cpu/recompiler/arm64/arm64_codegen.h"
 #include "common/cpu/recompiler/mach/native.h"
@@ -59,7 +62,7 @@
 #include <unistd.h>
 #if defined(SNX_TEST_ARM64) || defined(SNX_TEST_RV64) || defined(SNX_TEST_PPC64) || defined(SNX_TEST_MIPS64) ||        \
     defined(SNX_TEST_LA64) || defined(SNX_TEST_PPC64BE) || defined(SNX_TEST_MIPS64BE) || defined(SNX_TEST_S390X) ||    \
-    defined(SNX_TEST_WIN64)
+    defined(SNX_TEST_WIN64) || defined(SNX_TEST_X64CPU)
 #define SNX_TEST_NATIVE 1
 #include "common/cpu/recompiler/object/elf_object.h"
 #include "support/host_unicorn.h"
@@ -80,13 +83,18 @@
 #define NATIVE_OBJECT(cg, options, made, object, size, error)                                                          \
     snx_arm64_object(cg, 0, (cg)->function_count, options, (SNX_ARM64_F_ALL & ~g_without) | NATIVE_WINDOWS, made,      \
                      object, size, error, sizeof error)
-#elif defined(SNX_TEST_WIN64)
-#define NATIVE_UC       HOSTUC_WIN64
+#elif defined(SNX_TEST_WIN64) || defined(SNX_TEST_X64CPU)
+#ifdef SNX_TEST_WIN64
+#define NATIVE_UC HOSTUC_WIN64
+#else
+#define NATIVE_UC HOSTUC_X64
+#endif
 #define NATIVE_MIN_MADE 90
 #define NATIVE_OBJECT(cg, options, made, object, size, error)                                                          \
     snx_x64_object(cg, 0, (cg)->function_count, options, made, object, size, error, sizeof error)
 void snx_x64_fp_vec(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
 void snx_x64_crypto(CPU* c, void* out, const void* x, const void* y, const void* z, u32 op);
+void snx_x64_sse(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
 extern const u32 snx_x64_crc32_table[256], snx_x64_crc32c_table[256];
 #elif defined(SNX_TEST_LA64)
 #include "common/cpu/recompiler/la64/la64_codegen.h"
@@ -973,7 +981,7 @@ static int branch_taken(uint32_t w, uint64_t a, uint64_t b) {
 
 /* --programs: the writes of another thread to come between a pair's read and its compare and swap */
 static unsigned g_between;
-#if defined(SNX_TEST_NATIVE) && !defined(SNX_TEST_WIN64)
+#if defined(SNX_TEST_NATIVE) && !defined(SNX_TEST_WIN64) && !defined(SNX_TEST_X64CPU)
 static typeof(snx_x64_casp(NULL, 0, 0, 0, 0, 0)) casp_between(CPU* c, u64 a, u64 e0, u64 e1, u64 d0, u64 d1) {
     if (g_between) --g_between, c->mem[a] ^= 0x10;
     return snx_x64_casp(c, a, e0, e1, d0, d1);
@@ -1195,6 +1203,9 @@ int main(int argc, char** argv) {
         printf("SKIP: %s: nothing to compare\n", argv[2]);
         return 77;
     }
+#ifdef SNX_TEST_X64CPU
+    const char* cpu = NULL;
+#endif
     for (i = 1; i < (unsigned)argc; ++i) {
         if (!strcmp(argv[i], "--functions") && i + 1 < (unsigned)argc) functions = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--states") && i + 1 < (unsigned)argc)
@@ -1214,6 +1225,10 @@ int main(int argc, char** argv) {
 #ifdef SNX_TEST_UNWINDS
         else if (!strcmp(argv[i], "--step"))
             step = 1;
+#endif
+#ifdef SNX_TEST_X64CPU
+        else if (!strcmp(argv[i], "--cpu") && i + 1 < (unsigned)argc)
+            cpu = argv[++i];
 #endif
         else if (!strcmp(argv[i], "--refused"))
             refused = 1;
@@ -1299,7 +1314,12 @@ int main(int argc, char** argv) {
         return 2;
     }
 #ifdef SNX_TEST_NATIVE
+#ifdef SNX_TEST_X64CPU
+    HostUc* uc = hostuc_new_cpu(NATIVE_UC, (size_t)64 << 20, cpu);
+    if (!uc && cpu) return 2;
+#else
     HostUc* uc = hostuc_new(NATIVE_UC, (size_t)64 << 20);
+#endif
     const char* native_name = hostuc_name(NATIVE_UC);
     CPU* ucpu = NULL;
     RtAPI* urt = NULL;
@@ -1308,6 +1328,24 @@ int main(int argc, char** argv) {
     if (!uc) {
         printf("SKIP: no Unicorn of %s: nothing to compare\n", native_name);
         return 77;
+    }
+#endif
+#ifdef SNX_TEST_X64CPU
+    {
+        /* the back end made for what the processor's CPUID says it has, as on that host (no AVX: no XSAVE state) */
+        unsigned leaf0[4], leaf1[4], leaf7[4] = {0, 0, 0, 0}, ext1[4], has, host;
+        if (hostuc_cpuid(uc, 0, leaf0) || hostuc_cpuid(uc, 1, leaf1) || hostuc_cpuid(uc, 0x80000001u, ext1) ||
+            (leaf0[0] >= 7 && hostuc_cpuid(uc, 7, leaf7))) {
+            fprintf(stderr, "FAIL: no CPUID of the %s\n", cpu ? cpu : "processor");
+            hostuc_free(uc);
+            return 1;
+        }
+        has = snx_x64_features_of(leaf1, leaf7, 0, ext1, 0);
+        snx_x64_without(0);
+        host = snx_x64_features();
+        snx_x64_without(g_without | (host & ~has));
+        printf("recompiler x86-64 on %s: its CPUID's features %#x, the back end without %#x of this host's %#x\n",
+               cpu ? cpu : "qemu64", has, g_without | (host & ~has), host);
     }
 #endif
     rx = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
@@ -1453,8 +1491,8 @@ int main(int argc, char** argv) {
 #ifdef SNX_TEST_UNWINDS
         hostuc_step(uc, step);
 #endif
-#ifdef SNX_TEST_WIN64
-        NATIVE(snx_x64_fp_vec), NATIVE(snx_x64_crypto);
+#if defined(SNX_TEST_WIN64) || defined(SNX_TEST_X64CPU)
+        NATIVE(snx_x64_fp_vec), NATIVE(snx_x64_crypto), NATIVE(snx_x64_sse);
         void* crc32_table = hostuc_alloc(uc, sizeof snx_x64_crc32_table);
         if (crc32_table) memcpy(crc32_table, snx_x64_crc32_table, sizeof snx_x64_crc32_table);
         hostuc_define(uc, "snx_x64_crc32_table", (uint64_t)(uintptr_t)crc32_table);

@@ -27,6 +27,11 @@ int snx_x64_fallback(char* why, size_t size);
    levels, PCLMULQDQ, POPCNT, AES-NI, SHA-NI, GFNI, and AVX, AVX2, FMA and F16C where the system keeps the YMM
    state), and SGX_F_WIN64 where the code is Windows'; 0 where unavailable */
 unsigned snx_x64_features(void);
+/* the features (SGX_F_*) a processor's CPUID gives, leaf 1's, leaf 7's (subleaf 0) and leaf 0x80000001's registers
+   (EAX, EBX, ECX, EDX) and leaf 7 subleaf 1's EAX, the VEX forms' where XCR0 keeps the YMM state: this host's
+   (snx_x64_features), and a test's of another processor (0 where the back end is not built) */
+unsigned snx_x64_features_of(const unsigned leaf1[4], const unsigned leaf7[4], unsigned leaf7_1a, const unsigned ext1[4],
+                             unsigned xcr0);
 /* 1 where the code is made for Windows: its calling convention, in COFF objects */
 int snx_x64_win64(void);
 /* the features (SGX_F_*) the back end goes without from here on though the host has them, for a test of a host without

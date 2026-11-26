@@ -31,6 +31,7 @@ MACHINES = {
     'mips64be': ALL,
     'la64': ALL,
     's390x': ALL,
+    'x64cpu': ('recompiler',),
 }
 # each machine's blocks against Unicorn's ARM core (tests/arm_blocks.cmake: arm_<machine>_<test>), which a build without
 # SNX_TEST_ARM_DIFF has none of

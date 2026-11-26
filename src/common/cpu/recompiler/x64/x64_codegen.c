@@ -687,26 +687,15 @@ void snx_x64_without(unsigned features) {
 }
 void snx_x64_set_win64(int on) { atomic_store_explicit(&g_x64_codegen.win64, on, memory_order_relaxed); }
 
-/* CPUID's BMI1, BMI2, SHA, GFNI, SM4 and LZCNT (ABM), and Windows' ABI */
-static unsigned host_features(void) {
-    unsigned a, b, c, d, f = 0, leaf7b, leaf7a = 0;
-#if defined(_WIN32)
-    f |= SGX_F_WIN64;
-#else
-    if (atomic_load_explicit(&g_x64_codegen.win64, memory_order_relaxed)) f |= SGX_F_WIN64;
-#endif
-    __asm__("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(7), "c"(0));
-    if (b & (1u << 3)) f |= SGX_F_BMI1;
-    if (b & (1u << 8)) f |= SGX_F_BMI2;
-    if (b & (1u << 29)) f |= SGX_F_SHA;
-    if (c & (1u << 8)) f |= SGX_F_GFNI;
-    leaf7b = b;
-    if (a >= 1) __asm__("cpuid" : "=a"(leaf7a), "=b"(b), "=c"(c), "=d"(d) : "a"(7), "c"(1));
-    __asm__("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(0x80000001u), "c"(0));
-    if (c & (1u << 5)) f |= SGX_F_LZCNT;
-    /* leaf 1's: SSE3, PCLMULQDQ, SSSE3, SSE4.1, SSE4.2, POPCNT, AES; the VEX forms' (AVX, FMA, F16C, leaf 7's AVX2 and
-       its subleaf 1's SM4) where the system keeps the YMM state (OSXSAVE, and XCR0's SSE and AVX bits) */
-    __asm__("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(1), "c"(0));
+unsigned snx_x64_features_of(const unsigned leaf1[4], const unsigned leaf7[4], unsigned leaf7_1a, const unsigned ext1[4],
+                             unsigned xcr0) {
+    const unsigned c = leaf1[2];
+    unsigned f = 0;
+    if (leaf7[1] & (1u << 3)) f |= SGX_F_BMI1;
+    if (leaf7[1] & (1u << 8)) f |= SGX_F_BMI2;
+    if (leaf7[1] & (1u << 29)) f |= SGX_F_SHA;
+    if (leaf7[2] & (1u << 8)) f |= SGX_F_GFNI;
+    if (ext1[2] & (1u << 5)) f |= SGX_F_LZCNT;
     if (c & 1u) f |= SGX_F_SSE3;
     if (c & (1u << 1)) f |= SGX_F_PCLMUL;
     if (c & (1u << 9)) f |= SGX_F_SSSE3;
@@ -714,17 +703,40 @@ static unsigned host_features(void) {
     if (c & (1u << 20)) f |= SGX_F_SSE42;
     if (c & (1u << 23)) f |= SGX_F_POPCNT;
     if (c & (1u << 25)) f |= SGX_F_AES;
-    if ((c & (1u << 27)) && (c & (1u << 28))) {
-        unsigned lo, hi;
-        __asm__("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
-        if ((lo & 6) == 6) {
-            f |= SGX_F_AVX;
-            if (c & (1u << 12)) f |= SGX_F_FMA;
-            if (c & (1u << 29)) f |= SGX_F_F16C;
-            if (leaf7b & (1u << 5)) f |= SGX_F_AVX2;
-            if (leaf7a & (1u << 2)) f |= SGX_F_SM4;
-        }
+    /* the VEX forms' (AVX, FMA, F16C, leaf 7's AVX2 and its subleaf 1's SM4) where the system keeps the YMM state:
+       OSXSAVE, and XCR0's SSE and AVX bits */
+    if ((c & (1u << 27)) && (c & (1u << 28)) && (xcr0 & 6) == 6) {
+        f |= SGX_F_AVX;
+        if (c & (1u << 12)) f |= SGX_F_FMA;
+        if (c & (1u << 29)) f |= SGX_F_F16C;
+        if (leaf7[1] & (1u << 5)) f |= SGX_F_AVX2;
+        if (leaf7_1a & (1u << 2)) f |= SGX_F_SM4;
     }
+    return f;
+}
+static void cpuid(unsigned leaf, unsigned r[4]) {
+    __asm__("cpuid" : "=a"(r[0]), "=b"(r[1]), "=c"(r[2]), "=d"(r[3]) : "a"(leaf), "c"(0));
+}
+/* this processor's, and Windows' ABI */
+static unsigned host_features(void) {
+    unsigned leaf0[4], leaf1[4], leaf7[4] = {0, 0, 0, 0}, leaf7_1[4] = {0, 0, 0, 0}, ext1[4], xcr0 = 0, f = 0;
+#if defined(_WIN32)
+    f |= SGX_F_WIN64;
+#else
+    if (atomic_load_explicit(&g_x64_codegen.win64, memory_order_relaxed)) f |= SGX_F_WIN64;
+#endif
+    /* leaf 7 where leaf 0 says there is one: past the last, Intel's answer the last's; its subleaf 1 where its EAX
+       says there is one */
+    cpuid(0, leaf0), cpuid(1, leaf1), cpuid(0x80000001u, ext1);
+    if (leaf0[0] >= 7) cpuid(7, leaf7);
+    if (leaf0[0] >= 7 && leaf7[0] >= 1)
+        __asm__("cpuid" : "=a"(leaf7_1[0]), "=b"(leaf7_1[1]), "=c"(leaf7_1[2]), "=d"(leaf7_1[3]) : "a"(7), "c"(1));
+    if ((leaf1[2] & (1u << 27)) && (leaf1[2] & (1u << 28))) {
+        unsigned hi;
+        __asm__("xgetbv" : "=a"(xcr0), "=d"(hi) : "c"(0));
+        (void)hi;
+    }
+    f |= snx_x64_features_of(leaf1, leaf7, leaf7_1[0], ext1, xcr0);
     return f & ~atomic_load_explicit(&g_x64_codegen.without, memory_order_relaxed);
 }
 
@@ -821,6 +833,11 @@ int snx_x64_fallback(char* why, size_t size) {
     return 0;
 }
 unsigned snx_x64_features(void) { return 0; }
+unsigned snx_x64_features_of(const unsigned leaf1[4], const unsigned leaf7[4], unsigned leaf7_1a, const unsigned ext1[4],
+                             unsigned xcr0) {
+    (void)leaf1, (void)leaf7, (void)leaf7_1a, (void)ext1, (void)xcr0;
+    return 0;
+}
 int snx_x64_win64(void) { return 0; }
 void snx_x64_without(unsigned features) { (void)features; }
 void snx_x64_set_win64(int on) { (void)on; }

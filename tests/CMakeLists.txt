@@ -4604,6 +4604,38 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
                  --long ${times} ${bytes} --words ${long})
         set_tests_properties(recompiler_${m}_long recompiler_${m}_long_jit PROPERTIES TIMEOUT 600)
     endforeach()
+    # the x86-64 back end's own code on older processors (QEMU's models under Unicorn), made for what each one's CPUID
+    # gives: an instruction it lacks stops the code, and the results are held to LLVM's. A Nehalem has no PCLMULQDQ,
+    # a Penryn no SSE4.2 either
+    if(SNX_X64 AND NOT WIN32)
+        add_executable(snx-test-recompiler-x64cpu recompiler_backends.c llvm_qemu_words.c qemu_ref/qemu_ref.c
+                       support/host_unicorn.c support/la64_interp.c
+                       "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
+                       "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
+        snx_cpu_helpers_flags(snx-test-recompiler-x64cpu)
+        snx_test_target(snx-test-recompiler-x64cpu gnu23)
+        target_compile_definitions(snx-test-recompiler-x64cpu PRIVATE SNX_TEST_X64CPU=1)
+        target_include_directories(snx-test-recompiler-x64cpu PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}"
+                                   "${SNX_UNICORN_INCLUDE_DIR}")
+        target_link_libraries(snx-test-recompiler-x64cpu PRIVATE scarletnx-recompiler snx_llvm scarletnx-common
+                              "${SNX_UNICORN_LIBRARY}")
+        snx_decodetree_a64(snx-test-recompiler-x64cpu)
+        add_test(NAME recompiler_x64cpu_nehalem COMMAND snx-test-recompiler-x64cpu --cpu Nehalem --functions 200
+                 --states 8)
+        add_test(NAME recompiler_x64cpu_nehalem_ops COMMAND snx-test-recompiler-x64cpu --cpu Nehalem --states 16 --ops
+                 PMULL_p64)
+        add_test(NAME recompiler_x64cpu_penryn COMMAND snx-test-recompiler-x64cpu --cpu Penryn --functions 200
+                 --states 8)
+        add_test(NAME recompiler_x64cpu_penryn_ops COMMAND snx-test-recompiler-x64cpu --cpu Penryn --states 16 --ops
+                 PMULL_p64 CMGT_v CMHI_v CMGE_v CMHS_v CMGT_s CMLT0_v CMLE0_v FCMGT_v FACGT_v)
+        # CRC32C of each size, in one function: --ops' words that write X30 return to the CRC under Unicorn, where
+        # LLVM's run stops at the miss
+        add_test(NAME recompiler_x64cpu_penryn_crc32c COMMAND snx-test-recompiler-x64cpu --cpu Penryn --made --states 40
+                 --words 1ac35000 1ac45421 1ac55842 9ac65c63 1ac15be9 9adf5c0a)
+        set_tests_properties(recompiler_x64cpu_nehalem recompiler_x64cpu_nehalem_ops recompiler_x64cpu_penryn
+                             recompiler_x64cpu_penryn_ops recompiler_x64cpu_penryn_crc32c PROPERTIES TIMEOUT 600
+                             SKIP_RETURN_CODE 77)
+    endif()
     # arm64's functions as a Windows host's: COFF objects, loaded by the JIT's own loader, their frames unwound by the
     # function table where they call out, with --step at every instruction; one of more than a record's 1 MiB
     add_executable(snx-test-recompiler-arm64win recompiler_backends.c llvm_qemu_words.c qemu_ref/qemu_ref.c
@@ -6115,7 +6147,7 @@ endforeach()
 if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
     get_property(snx_tests DIRECTORY PROPERTY TESTS)
     foreach(snx_test IN LISTS snx_tests)
-        if(snx_test MATCHES "^(sail|recompiler|arm)_(arm64win|arm64|rv64|ppc64be|ppc64|mips64be|mips64|la64|s390x)(_|$)")
+        if(snx_test MATCHES "^(sail|recompiler|arm)_(arm64win|arm64|rv64|ppc64be|ppc64|mips64be|mips64|la64|s390x|x64cpu)(_|$)")
             set_property(TEST ${snx_test} APPEND PROPERTY LABELS unicorn ${CMAKE_MATCH_2})
         elseif(snx_test MATCHES "^module_desc_(arm64win|arm64|riscv64|ppc64le|mips64el|loongarch64)$")
             set(snx_machine ${CMAKE_MATCH_1})
