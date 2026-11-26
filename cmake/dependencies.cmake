@@ -108,7 +108,7 @@ if(SNX_BUILD_NX OR SNX_BUILD_3DS OR BUILD_TESTING)
     endif()
     snx_quiet(snx_enet)
 endif()
-# zstd for the GBA's and the DS's save states too (src/nx/runtime/state_file.c)
+# zstd for the GBA's and the DS's save states too (src/common/utilities/state_file.c)
 if(SNX_BUILD_NX OR SNX_BUILD_3DS OR SNX_BUILD_AGB OR SNX_BUILD_NDS OR BUILD_TESTING)
     AddJsonPackage(NAME zstd DOWNLOAD_ONLY FORCE_BUNDLED_PACKAGE ON)
     file(GLOB snx_zstd_sources "${zstd_SOURCE_DIR}/lib/common/*.c" "${zstd_SOURCE_DIR}/lib/compress/*.c"

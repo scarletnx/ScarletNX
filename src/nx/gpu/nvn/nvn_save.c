@@ -22,7 +22,7 @@
 #include "nx/gpu/draw_state.h"
 #include "nx/gpu/renderer.h"
 #include "nx/runtime/platform/plat.h"
-#include "nx/runtime/state_io.h"
+#include "common/utilities/state_io.h"
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>

@@ -24,7 +24,7 @@
    (Eden's Puller: semaphores, syncpoints, binding a class to a subchannel), the others to the engine of the class
    bound to the call's subchannel (engines.c, compute.c, fermi2d.c, dma.c). */
 #include "nx/runtime/state_fns.h"
-#include "nx/runtime/state_io.h"
+#include "common/utilities/state_io.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdatomic.h>

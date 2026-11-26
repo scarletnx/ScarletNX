@@ -12,7 +12,7 @@
    process's guest memory */
 #include "nx/runtime/pause.h"
 #include "nx/runtime/state.h"
-#include "nx/runtime/state_io.h"
+#include "common/utilities/state_io.h"
 #include "common/filesystem/tree.h"
 #include "nx/hle/hle.h"
 #include "nx/hle/services/services_int.h"

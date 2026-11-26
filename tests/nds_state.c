@@ -22,7 +22,7 @@
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
 #include "common/utilities/state_header.h"
-#include "nx/runtime/state_file.h"
+#include "common/utilities/state_file.h"
 #include "support/nds_image.h"
 #include <stdio.h>
 #include <stdlib.h>

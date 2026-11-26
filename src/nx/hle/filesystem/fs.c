@@ -8,7 +8,7 @@
 #include "nx/hle/filesystem/fs_tree.h"
 #include "common/utilities/mii_model.h"
 #include "nx/runtime/main.h"
-#include "nx/runtime/state_io.h"
+#include "common/utilities/state_io.h"
 #include "nx/runtime/options.h"
 #include "nx/hle/services/services.h"
 #include "nx/hle/services/services_int.h"

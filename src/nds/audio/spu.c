@@ -8,7 +8,7 @@
 #include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
 #include "common/utilities/state_header.h"
-#include "nx/runtime/state_io.h"
+#include "common/utilities/state_io.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
