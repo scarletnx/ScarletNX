@@ -32,6 +32,7 @@ struct NdsHost {
     int headless, gpu, paced;
     SnxPadMap pad;
     uint16_t keyboard;
+    bool rumbling, rumble_said; /* the gamepads shake for the Rumble Pak's last move; one that could not, said */
     /* the pen: one finger, or the mouse's left button, the first that pressed the lower screen, until it lets go; its
        id and where it is, in the window's pixels */
     struct {
@@ -326,6 +327,17 @@ void nds_host_frame(NdsHost* host) {
         host->wav_frames += count;
     }
     if (host->shot) shot(host);
+    /* each move of the Rumble Pak's motor shakes the gamepads for two frames, which the next move renews */
+    bool moved = nds_slot2_rumble(host->board);
+    if (moved || host->rumbling) {
+        char why[256];
+        host->rumbling = moved;
+        if (snx_pads_rumble(moved ? 1.0f : 0.0f, g_settings.vibration, 34, why, sizeof why) &&
+            !host->rumble_said) {
+            host->rumble_said = true;
+            fprintf(stderr, "scarletnx-nds: %s\n", why);
+        }
+    }
     if (!host->paced) return;
     /* the frame's time by the host's clock, at fps_limit's pace (F4 switches it): a late frame does not hurry the ones
        after it past a frame's worth */

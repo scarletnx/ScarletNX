@@ -89,6 +89,7 @@ def main():
             ['--gpu-pstate=auto'],
             ['--slp-vectorizer=0', '--perf-map=0', '--gdb-jit=0'],
             ['--stats=0', '--stats-corner=br', '--showcase=0', '--showcase-corner=bl'],
+            ['--gamepad-rumble=50', '--nds-slot2=rumble'],
         ):
             out = run(['-r', *given, *missing], 1, 'scarletnx-nds: ')
             if 'unexpected argument' in out or 'does nothing' in out:
@@ -96,6 +97,8 @@ def main():
         run(['-r', '--controls-scale=big', *missing], 2, 'scarletnx-nds: controls_scale=big ')
         # one of the Switch's settings a DS game does not take: said with why (common/utilities/console_settings.c)
         run(['-r', '--docked=1', *missing], 2, 'scarletnx-nds: --docked=1 does nothing in a DS game: it has no dock')
+        # slot 2: a word that is no device said with the one in effect, and the run goes on to the image
+        run(['-r', '--nds-slot2=gba', *missing], 1, 'settings: nds_slot2=gba is not none or rumble: it keeps none')
         # the WFC service: a word the list has not, refused with it and the list
         run(['-r', '--nds-wfc=official', *missing], 2, '"official" is none of off, auto, custom, kaeru, wiilink')
         run(['-r', '--nds-wfc=custom', *missing], 2, 'nds_wfc_dns=: the custom DNS server "" is not an IPv4 address')
