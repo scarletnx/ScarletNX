@@ -200,14 +200,13 @@ static int check_rt_aside(void) {
     CHECK(aside_targets() == held - 1 && now.lost == was.lost + 1);
     vk_unlock();
 
-    /* a target memory holds, parked as a parked one comes back: it keeps its pixels (surface.c rt_park_publish), and
-       its age publishes them and lets it go (rt_give_way), and what the CPU wrote meanwhile is what the target made again
-       at its next use holds */
+    /* a target memory holds is published as it is parked: its age takes it, its pixels memory's, and what the CPU wrote
+       meanwhile is what the target made again at its next use holds */
     for (int wrote = 0; wrote < 2; wrote++) {
         aside_bytes(ASIDE_CPU);
         g_renderer->mem_may_have_changed();
         t = aside_draw(ch, ASIDE_GA, ASIDE_RAW);
-        CHECK(t && aside_park(ASIDE_GA) != t && (t->gva >> 63) && vk_surf_flush_size(t));
+        CHECK(t && aside_park(ASIDE_GA) != t && (t->gva >> 63) && !vk_surf_flush_size(t));
         CHECK(!aside_read(t, ref));
         g_vk.mem_model = VK_MEM_UMA;
         before = aside_oldest(t);
