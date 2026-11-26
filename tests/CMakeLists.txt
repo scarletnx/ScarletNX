@@ -2719,7 +2719,7 @@ add_test(NAME vpad COMMAND snx-test-vpad)
 # a console's own on-screen controls and its game's settings of them (common/utilities/vpad.c)
 add_executable(snx-test-vpad-console vpad_console.c)
 snx_test_target(snx-test-vpad-console c23)
-target_link_libraries(snx-test-vpad-console PRIVATE snx_vpad scarletnx-common)
+target_link_libraries(snx-test-vpad-console PRIVATE snx_vpad snx_vpad_consoles scarletnx-common)
 add_test(NAME vpad_console COMMAND snx-test-vpad-console)
 set(vpad_home "${CMAKE_CURRENT_BINARY_DIR}/vpad-console-home") # a home of its own: the config folder each system keeps
 set_tests_properties(vpad_console PROPERTIES ENVIRONMENT

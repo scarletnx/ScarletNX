@@ -47,14 +47,16 @@ typedef struct {
     SnxVpadPlace at[SNX_VPAD_COUNT];
 } SnxVpadConfig;
 /* A console's own pad: its controls, each the Switch's where it sits (its .ini key, its shape, its size and its button
-   bit), with the console's name and label for it and where it starts, in a window wider than it is tall and in one that
-   is not; a control it has none of is not there, and each is whole in the window. touch: it has a touch screen */
+   bit), with the console's name and label for it; a control it has none of is not there, and each is whole in the
+   window. In a window wider than tall they start where the Switch's do, so whoever knows the Switch's pad finds each in
+   the same place (the D-pad in the left stick's place where the console has none); in one taller than wide, at the
+   console's own place for it, under its picture (tall). touch: it has a touch screen */
 typedef struct {
     int control; /* SNX_VPAD_ */
     const char *name, *label;
     struct {
         float x, y;
-    } wide, tall;
+    } tall;
 } SnxVpadControl;
 typedef struct {
     const char* name; /* the console's, as a line says it: "GBA" */
@@ -82,6 +84,8 @@ int vpad_auto_said(int touch, int pads, char* out, size_t n);
 void vpad_auto(int touch, int pads);
 const char* vpad_name(int control); /* a control's name, as edit mode shows it: "A", "D-pad" */
 const char* vpad_console_name(void); /* the console vpad_console gave ("GBA"), "Switch" before it */
+/* the length a control's size is a share of, for the clear part safe (x, y, w, h): its shorter side */
+float vpad_side(const int safe[4]);
 /* places, sizes and the shown ones back to their defaults, kept */
 void vpad_reset_layout(void);
 /* the settings' tables (settings.h): g_vpad_ini, controls, controls_scale..., a control's place (controls_a); and
