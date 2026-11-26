@@ -2853,29 +2853,26 @@ static Surf* rt_create_(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, int depth, u32
                 rt_stride_written(s);
                 return s;
             }
-    /* another size, format or layout at this address: park the current one, reuse a parked one that fits */
-    Surf* parked = NULL;
-    /* the one parked here, whose freshness is asked while it holds the address (not when only the size changes, as
-       dynamic resolution does every frame in some games) */
+    /* another size, format or layout at this address: park the current one, reuse a parked one that fits. Its freshness
+       is asked while it holds the address (not when only the size changes, as dynamic resolution does every frame in
+       some games) */
     Surf* cur = depth ? NULL : vk_rt_find(gva);
     int cur_fresh = cur && cur->w == w && cur->h == h && cur->layers == layers && !volume && vk_rt_drawn_fresh(cur);
-    for (Surf* s = vk_surf_first(gva); s; s = vk_surf_next(s))
-        if (s->gva == (gva | 1ull << 63) && s->is_rt && s->w == w && s->h == h && s->fkey == fkey && s->bl == bl &&
-            s->bh == bh && s->pitch == pitch && s->layers == layers && s->layer_size == layer_size && s->bd == bd &&
-            s->volume == volume && s->msaa == msaa && !parked)
-            parked = s;
-    /* The same target parked here, whose single layer only its padding differed in. The copy that names a target
-       knows its pixels but not the stride the game laid its layer out in, so it asks for the least one: without this
-       it makes a second target at the address, where its pixels arrive that no draw and no texture looks at, and the
-       draw's target stays parked with the pixels it had (a minimap's terrain, every frame). Of those parked, the one
-       with the greatest stride, so that naming it with a smaller one never lowers what the game laid out */
-    int padding = 0; /* the parked one was found by its padding alone */
-    if (!parked && layers == 1 && !volume)
-        for (Surf* s = vk_surf_first(gva); s; s = vk_surf_next(s))
-            if (s->gva == (gva | 1ull << 63) && s->is_rt && s->w == w && s->h == h && s->fkey == fkey && s->bl == bl &&
-                s->bh == bh && s->pitch == pitch && s->layers == 1 && s->bd == bd && !s->volume && s->msaa == msaa &&
-                (!parked || s->layer_size > parked->layer_size))
-                parked = s, padding = 1;
+    const Surf want = {.f = layout_fmt,
+                       .w = w,
+                       .h = h,
+                       .sw = vk_sc(w),
+                       .sh = vk_sc(h),
+                       .bl = bl,
+                       .bh = bh,
+                       .bd = bd,
+                       .pitch = pitch,
+                       .layers = layers,
+                       .layer_size = layer_size,
+                       .volume = volume,
+                       .msaa = msaa};
+    int padding; /* the parked one was found by its padding alone */
+    Surf* parked = rt_find_parked(gva, &want, fkey, &padding);
     for (Surf* s = vk_surf_first(gva); s; s = vk_surf_next(s))
         if (s->gva == gva && s->is_rt) {
             rt_pages(s, -1);
