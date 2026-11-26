@@ -2777,6 +2777,12 @@ int vk_mirror_slice(u64 gva, u64 len, VkBuffer* buf, u64* off);
 int vk_mirror_slice_at(u64 gva, u64 cpu, u64 len, VkBuffer* buf, u64* off);
 /* a program recorded now writes [cpu, cpu + len) of the mirror: pending until the submit's harvest lands it */
 void vk_mirror_wrote(u64 cpu, u64 len);
+/* a draw's writable binding [gva, gva + len) over the mirror's pending writes, bound in the mirror at an offset that
+   align divides and written there: 0 when it can't be (another owner's bytes, not one run) */
+int vk_mirror_write_in_place(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
+/* the writes in place so far, a count, and a split's join: each half's writes before the other's commands after them */
+u64 vk_mirror_inplace_count(void);
+void vk_mirror_order_join(void);
 /* a buffer in the mirror that a dispatch writes: its guest bytes [cpu, cpu + len) and its part of the write log */
 typedef struct {
     u64 cpu;

@@ -7727,6 +7727,7 @@ static struct {
     _Atomic u32 granted;
     _Atomic u64 handovers;
     u64 submit; /* the submission the worker's commands name their command buffer in */
+    u64 inplace; /* vk_mirror_inplace_count at the split's start */
     u64 splits, draws;
     /* the ticks of render_split's steps and of the join, for the stats line: the batch's peek, the copies, the
        hold and the command buffers, the kick, the join */
@@ -7841,6 +7842,8 @@ static void render_split_join(void) {
     atomic_store_explicit(&g_split.granted, 1, memory_order_release);
     plat_wake_word(&g_split.granted);
     vk_prep_join_wait();
+    /* a draw of either half that wrote the mirror in place: its writes before the other half's commands after them */
+    if (vk_mirror_inplace_count() != g_split.inplace) vk_mirror_order_join();
     cnt_fold();
     vk_share_active(0);
     if (!g_split.ok) fatal("vulkan: draw_batches=2: a worker's command list ran out of memory\n");
@@ -7884,14 +7887,15 @@ static void render_split(void) {
     vk_lock(); /* until the join */
     /* nothing submits until the join: a finish there waits for what was submitted and lands it (cmd.c), and a
        draw's read of the mirror's pages waits for their batch (vk_mirror_mem_need). So the results that the commands
-       being recorded added, and their writes of the mirror, are submitted first. The split's draws write no page of
-       the mirror (its programs are compute's). The mirror's pages that wait for their publish go now, as the split
-       publishes none (vk_mirror_publish) */
+       being recorded added, and their writes of the mirror, are submitted first. A draw that writes the mirror in
+       place (vk_mirror_write_in_place) adds its range to the next harvest. The mirror's pages that wait for their
+       publish go now, as the split publishes none (vk_mirror_publish) */
     vk_mirror_publish();
     if (vk_recording_results() || vk_mirror_recording()) vk_submit_open();
     (void)vk_cmd(); /* the command buffer both halves record into, begun now */
     (void)vk_cmd_upload(1); /* and the uploads' command buffer, which a worker's draw can't begin (its ring) */
     g_split.submit = vk_submit_number();
+    g_split.inplace = vk_mirror_inplace_count();
     atomic_store_explicit(&g_split.granted, 0, memory_order_relaxed); /* the ring is the renderer thread's */
     vk_share_active(1); /* before the worker's first call */
     const u64 t3 = ph_now();

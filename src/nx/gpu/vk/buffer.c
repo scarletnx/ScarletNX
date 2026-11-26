@@ -3241,6 +3241,10 @@ static int copy_writable(u64 gva, u32 len, VkBuffer* buf, u64* off, int ordered)
         else if (vk_uma_write(gva, len, bind_align, ordered, buf, off))
             return 1;
     }
+    /* over writes of the mirror's programs that haven't landed: written in the mirror, which has them. A result's
+       original bytes come from guest memory, so gmem_need below finishes the GPU's work and lands them first */
+    if (!pending && !g_bind_log && vk_mirror_pending(gva, len) && vk_mirror_write_in_place(gva, len, bind_align, buf, off))
+        return 1;
     /* a logged result has no original bytes: its input goes straight into the buffer the shader writes */
     int logged = g_bind_log != NULL;
     /* where in place couldn't be, a logged one is written back on the GPU after its dispatch (back_record). Its input
@@ -5208,9 +5212,10 @@ static void buf_frame(void) {
             vk_mirror_stats(&gr, &hv, &pg, &ld, &ov, &room);
             if (gr)
                 LOG("vulkan: GPU mirror: %llu MB bound, %llu harvests, %llu pages written, %llu bytes landed, %llu "
-                    "harvests past their room (now %u pages)\n",
+                    "harvests past their room (now %u pages), %llu draw bindings written in place\n",
                     (unsigned long long)(gr * 2), (unsigned long long)hv, (unsigned long long)pg,
-                    (unsigned long long)ld, (unsigned long long)ov, room);
+                    (unsigned long long)ld, (unsigned long long)ov, room,
+                    (unsigned long long)vk_mirror_inplace_count());
             if (gr)
                 LOG("vulkan: GPU mirror: of its %llu granules, %llu took no binding in the last 120 presents and "
                     "%llu in the last 600; %llu let go so far\n",
