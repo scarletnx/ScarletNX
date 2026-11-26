@@ -14,6 +14,10 @@
 
 /* VkResult's name ("VkResult" for one it doesn't name) */
 const char* snx_vk_result_str(VkResult r);
+/* The samplers' anisotropy for the Switch's anisotropy setting (asked): none below 2 or on a device without the
+   samplerAnisotropy feature (feature), else asked held to the device's most. line gets what the run says of it on the
+   standard error, with the value asked and the one in effect ("" below 2) */
+float snx_vk_anisotropy(int asked, bool feature, float most, char* line, size_t line_size);
 
 /* the instance has the layer, or the extension (of the loader or its implicit layers) */
 bool snx_vk_has_layer(const char* name);

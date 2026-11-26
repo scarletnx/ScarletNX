@@ -19,6 +19,7 @@
 #define CPU_SCREEN    "it draws its screen on the CPU"
 #define NO_SHADERS    "its GPU runs no shaders of the game's"
 #define ONE_PIPELINE  "its picture takes one pipeline"
+#define NEAREST       "its GPU samples the nearest texel, with no mipmaps"
 #define NO_BUFFERS    "its GPU reads no buffers of the game's"
 #define NO_NETWORK    "it has no network"
 #define NO_MIC        "it has no microphone"
@@ -88,7 +89,7 @@ const SnxConsoleSetting g_console_settings[] = {
     {"shadows", OTHERS(NA(SWITCH_GPU))},
     {"vsync"},
     {"frame_pacing", OTHERS(LATER(SOON))},
-    {"anisotropy", {[V] = LATER(SOON), [G] = NA(CPU_SCREEN), [D] = LATER(SOON)}},
+    {"anisotropy", {[G] = NA(CPU_SCREEN), [D] = NA(NEAREST)}},
     {"upscaler", {[G] = LATER(SOON), [D] = LATER(SOON)}},
     {"upscaler_sharpness", {[G] = LATER(SOON), [D] = LATER(SOON)}},
     {"anti_aliasing", {[G] = LATER(SOON), [D] = LATER(SOON)}},

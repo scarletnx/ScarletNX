@@ -780,11 +780,15 @@ bool vita_render_init(VitaProcess* p) {
                 static const VkSamplerAddressMode modes[4] = {
                     VK_SAMPLER_ADDRESS_MODE_REPEAT, VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT,
                     VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER};
+                /* the Switch's anisotropy on a mipmapped texture filtered linearly, as the 3DS's */
+                float anisotropy = lin && mip ? v->anisotropy : 0;
                 VkSamplerCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+                                          .anisotropyEnable = anisotropy > 0,
+                                          .maxAnisotropy = anisotropy,
                                           .magFilter = lin ? VK_FILTER_LINEAR : VK_FILTER_NEAREST,
                                           .minFilter = lin ? VK_FILTER_LINEAR : VK_FILTER_NEAREST,
-                                          .mipmapMode = mip ? VK_SAMPLER_MIPMAP_MODE_LINEAR
-                                                            : VK_SAMPLER_MIPMAP_MODE_NEAREST,
+                                          .mipmapMode =
+                                              mip ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST,
                                           .addressModeU = modes[mode],
                                           .addressModeV = modes[mode],
                                           .addressModeW = modes[mode],
