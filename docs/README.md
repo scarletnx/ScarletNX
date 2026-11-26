@@ -84,6 +84,8 @@ keeps audits and measurements as they were taken.
 - CPU (`layers/cpu/`)
   - [CPU implementation plan](layers/cpu/plan.md): Rosetta 2's design, part by part, applied to ScarletNX
   - [Working on the plan](layers/cpu/guide.md): setup, rules, how work is handed back, and the first milestone
+  - [Sail native back end instruction density](layers/cpu/sail-native-density.md): how the x86-64 back end's host
+    instructions per guest word are counted and held
 - GPU (`layers/gpu/`)
   - [NVN](layers/gpu/nvn.md): how games draw through NVN, and how the runtime replays it
   - [Upscalers](layers/gpu/upscalers.md): the one interface a DLSS evaluation and a hook module upscale through, its

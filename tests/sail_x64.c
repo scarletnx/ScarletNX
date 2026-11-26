@@ -14,7 +14,9 @@
    later one overwrites dropped), run beside the code of each word alone at its pc, one after another.
      snx-test-sail-x64 (--qemu QEMU RUNNER DIR [--record FILE] | --reference[-if-there] FILE | --skip REASON)
                        [--frozen FILE] [--states N] [--samples N] [--sequences N] [--pool N] [--xmm N] [--verbose]
-                       [--dump WORD...]
+                       [--dump WORD...] [--counts FILE]
+   --counts FILE: no state run, no QEMU: one line per word the back end makes, the word, its op, and the hex bytes of
+   its step on this host's features and on the plain host's ("-" where none), which x64_density.py --sail counts
    --pool N gives the back end N host registers of its nine, so it spills (ctest runs it with 3 too), --xmm N of its
    sixteen vector ones (ctest: 6 with 3). --record also writes QEMU's ends of every word a host of any feature makes;
    --reference-if-there skips (77) where the file is not there
@@ -66,6 +68,7 @@ static struct {
     /* what run allocates, which main frees after every one of its ways out */
     u32* rows;
     void* words; /* run's Words */
+    size_t made_bytes; /* make's last code's bytes, which --counts writes */
     void* sequences;
 } g_test;
 
@@ -795,7 +798,7 @@ static size_t check_fp_rows(void) {
 #define USAGE                                                                                                           \
     "usage: snx-test-sail-x64 (--qemu QEMU RUNNER DIR [--record FILE] | --reference[-if-there] FILE | --skip REASON)\n" \
     "                         [--frozen FILE] [--states N] [--samples N] [--sequences N] [--pool N] [--xmm N]\n"        \
-    "                         [--verbose]\n"
+    "                         [--verbose] [--counts FILE]\n"
 /* whether path is there to read */
 static int there(const char* path) {
     FILE* f = fopen(path, "rb");
@@ -813,6 +816,7 @@ static int there(const char* path) {
 typedef struct {
     u32 word;
     size_t code[2];    /* NONE where not made */
+    size_t bytes[2];   /* each form's code's bytes (--counts), 0 where not made */
     size_t pair[2][2]; /* the load-exclusive at SAIL_PAIR_PC, the word at SAIL_PAIR_PC + 4 */
 } Word;
 
@@ -833,6 +837,7 @@ static size_t make(u32 word, u64 pc, unsigned host, unsigned char* code, size_t*
     g_test.jumping = 0;
     if (*failed || !got) return NONE;
     *at += (got + 15) & ~(size_t)15;
+    g_test.made_bytes = got;
     return where;
 }
 
@@ -872,7 +877,7 @@ static int run(int argc, char** argv) {
     SailRef ref = {0};
     int reference_kind = 0; /* 1: --reference, 2: --reference-if-there */
     char error[1024];
-    const char *reference = NULL, *frozen = NULL;
+    const char *reference = NULL, *frozen = NULL, *counts_path = NULL;
     u32* list;
     Made made_code;
     RtAPI rt = {.cas128 = snx_runtime_cas128};
@@ -901,6 +906,8 @@ static int run(int argc, char** argv) {
             hold.record = argv[++i];
         else if (!strcmp(argv[i], "--frozen") && i + 1 < (unsigned)argc)
             frozen = argv[++i];
+        else if (!strcmp(argv[i], "--counts") && i + 1 < (unsigned)argc)
+            counts_path = argv[++i];
         else if (!strcmp(argv[i], "--skip") && i + 1 < (unsigned)argc) {
             printf("sail_x64 skipped: %s\n", argv[i + 1]);
             return 77;
@@ -923,7 +930,7 @@ static int run(int argc, char** argv) {
             return 2;
         }
     }
-    if (!hold.qemu == !reference_kind) {
+    if (!counts_path && !hold.qemu == !reference_kind) {
         fprintf(stderr,
                 "snx-test-sail-x64: the words are held to QEMU (--qemu) or to a reference of it (--reference): "
                 "%s\n" USAGE,
@@ -966,12 +973,14 @@ static int run(int argc, char** argv) {
         g_test.memory[k] = snx_test_pages(MEMORY_SIZE);
         if (g_test.memory[k] == NULL) return 1;
     }
-    failures += check_fz_hot();
-    failures += check_fcmp_paths();
-    failures += check_fcmp_image();
-    failures += check_fp_guards();
-    failures += check_fp_rows();
-    failures += check_casp();
+    if (!counts_path) { /* --counts makes the words' code alone */
+        failures += check_fz_hot();
+        failures += check_fcmp_paths();
+        failures += check_fcmp_image();
+        failures += check_fp_guards();
+        failures += check_fp_rows();
+        failures += check_casp();
+    }
     for (i = 0; i < MEMORY_SIZE; ++i) g_test.memory[2][i] = (unsigned char)rnd();
     memcpy(g_test.memory[0], g_test.memory[2], MEMORY_SIZE);
     memcpy(g_test.memory[1], g_test.memory[2], MEMORY_SIZE);
@@ -996,6 +1005,7 @@ static int run(int argc, char** argv) {
             x->word = w;
             for (form = 0; form < 2 && !failed; ++form) {
                 x->code[form] = make(w, SAIL_PC, hosts[form], code, &code_at, code_cap, &failed);
+                x->bytes[form] = x->code[form] != NONE ? g_test.made_bytes : 0;
                 x->pair[form][0] = x->pair[form][1] = NONE;
                 if (x->code[form] != NONE && sail_pair(w, 1)) {
                     x->pair[form][0] =
@@ -1022,6 +1032,25 @@ static int run(int argc, char** argv) {
             }
             ++n;
         }
+    }
+    if (counts_path) {
+        /* each word's code, its bytes as hex on this host's features and the plain host's ("-" where none) */
+        FILE* f = fopen(counts_path, "w");
+        if (!f) {
+            fprintf(stderr, "FAIL: can't write %s\n", counts_path);
+            return 1;
+        }
+        for (i = 0; i < n; ++i) {
+            fprintf(f, "%08x\t%s\t", (unsigned)words[i].word, op_name(words[i].word) ? op_name(words[i].word) : "?");
+            for (int form = 0; form < 2; ++form) {
+                if (!words[i].bytes[form]) fputc('-', f);
+                for (size_t b = 0; b < words[i].bytes[form]; ++b) fprintf(f, "%02x", code[words[i].code[form] + b]);
+                fputc(form ? '\n' : '\t', f);
+            }
+        }
+        fclose(f);
+        printf("sail_x64: %zu words in %s, nothing run\n", n, counts_path);
+        return 0;
     }
     if (snx_test_pages_exec(code, code_cap, 1)) {
         fprintf(stderr, "FAIL: the code can't be made executable\n");

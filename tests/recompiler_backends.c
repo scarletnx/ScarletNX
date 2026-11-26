@@ -9,9 +9,9 @@
    and held to the hashes LLVM alone's ends had, recorded while the build had LLVM (--frozen). The native back end must
    make the functions (snx_recompiled_x64_functions).
      snx-test-recompiler-backends [--functions N] [--states N] [--seed N] [--without MASK] [--target NAME] [--verbose]
-         [--hook] [--jit] [--words HEX...] [--made] [--ops OP...] [--refused] [--coverage]
-         [--qemu QEMU RUNNER DIR] [--programs] [--calls] [--calls-back] [--long N BYTES] [--cpu NAME]
-         [--frozen FILE]
+         [--hook] [--jit] [--words HEX...] [--made] [--ops OP...] [--refused] [--coverage] [--counts FILE]
+         [--counts-blocks N FILE] [--qemu QEMU RUNNER DIR] [--programs] [--calls] [--calls-back] [--long N BYTES]
+         [--cpu NAME] [--frozen FILE]
    --without MASK: the back end goes without these features of the host, as on a host that lacks them: x86-64's
    (sailgen's SGX_F_*: FMA 0x800, AVX 0x400, F16C 0x100, BMI1, BMI2 and LZCNT 7, AES-NI 0x1000, SHA-NI 0x2000), arm64's
    (SNX_ARM64_F_*: 0x7ffff all of them). Another machine's back end has none to go without: it is skipped
@@ -40,6 +40,9 @@
    options of FILE's args line, which those given beside it must be. A run of none of --frozen, --qemu, --programs,
    --refused and --coverage has nothing to compare with, and fails saying so
    --qemu and --programs take no recorded ends: their reference is QEMU's, and C's
+   --counts FILE: each target op's words with RETs, the native object's bytes: OP, name, size, then a line of hex
+   --counts-blocks N FILE: the same records, but N guest words in each function before its RET, so the prologue and
+   epilogue are shared; a word that ends its block (a branch out, a RET, a BRK or an UNDEF) ends the function there
    On a host with no native back end it is skipped, saying so.
 
    Built with SNX_TEST_ARM64 or SNX_TEST_RV64 (snx-test-recompiler-arm64, -rv64), the same programs hold that native
@@ -102,8 +105,11 @@
 #define NATIVE_OBJECT(cg, options, made, object, size, error)                                                          \
     snx_x64_object(cg, 0, (cg)->function_count, options, made, object, size, error, sizeof error)
 void snx_x64_fp_vec(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
+void snx_x64_shl_v(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
+void snx_x64_shl_w(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
 void snx_x64_crypto(CPU* c, void* out, const void* x, const void* y, const void* z, u32 op);
 void snx_x64_sse(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
+void snx_x64_reduce_v(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
 extern const u32 snx_x64_crc32_table[8 * 256], snx_x64_crc32c_table[256];
 #elif defined(SNX_TEST_LA64)
 #include "common/cpu/recompiler/la64/la64_codegen.h"
@@ -968,6 +974,76 @@ static int list_coverage(void) {
     return 0;
 }
 
+/* --counts and --counts-blocks: each op's words as one native object made the way made_count makes it:
+   snx_codegen_analyze finds the functions, then the native back end writes its object, with vec()'s interceptions
+   before the Sail emitters (mach_codegen.inc calls vec() before sg_decode()). One record per op: OP, the op's name and
+   the byte count, then a line of the object's hex bytes. Stops here like --coverage. Switch target by default.
+   block is the guest words of a function: one with --counts, N with --counts-blocks. A word that ends its block
+   (a branch out, a RET, a BRK, an UNDEF) ends the function there, so that no guest word is left out */
+static int counts_write(const char* path, unsigned block) {
+    size_t count, i, j;
+    OpWord* list = op_words(NULL, 0, 0, &count);
+    uint8_t* code = (uint8_t*)calloc(1, count * 8 + 8);
+    uint64_t* at = (uint64_t*)malloc((count + 1) * sizeof *at);
+    FILE* out = fopen(path, "w");
+    int bad = 0;
+    if (!out) {
+        fprintf(stderr, "--counts%s: cannot write %s\n", block == 1 ? "" : "-blocks", path);
+        free(list), free(code), free(at);
+        return 1;
+    }
+    for (i = 0; i < count && !bad; i = j) {
+        SnxCodegen cg;
+        SnxCodeImage view = {0};
+        SnxNativeOptions options = {0};
+        unsigned char *made, *object = NULL;
+        size_t object_size = 0;
+        char error[256];
+        size_t nfunc = 0, pos = 0, in_block = 0;
+        for (j = i; j < count && !strcmp(list[j].op, list[i].op); ++j) {
+            uint32_t w = list[j].word;
+            SnxA64Flow flow;
+            int ends;
+            if (!in_block) at[nfunc++] = CODE + pos;
+            put32(code, pos, w);
+            pos += 4;
+            flow = snx_a64_flow(w, g_features);
+            ends = flow == SNX_A64_FLOW_B || flow == SNX_A64_FLOW_BR || flow == SNX_A64_FLOW_RET ||
+                   flow == SNX_A64_FLOW_BRK || flow == SNX_A64_FLOW_UNDEF;
+            if (ends || ++in_block == block || j + 1 == count || strcmp(list[j + 1].op, list[i].op)) {
+                put32(code, pos, 0xD65F03C0u);
+                pos += 4;
+                in_block = 0;
+            }
+        }
+        view.image = code;
+        view.image_size = view.text_size = pos;
+        view.base = CODE;
+        if (snx_codegen_analyze(&cg, &view, 1, at, nfunc, 1, g_features)) {
+            bad = 1;
+            break;
+        }
+        made = (unsigned char*)calloc(cg.function_count + 1, 1);
+#ifdef SNX_TEST_NATIVE
+        if (NATIVE_OBJECT(&cg, &options, made, &object, &object_size, error) < 0) bad = 1;
+#else
+        if (snx_x64_object(&cg, 0, cg.function_count, &options, made, &object, &object_size, error, sizeof error) < 0)
+            bad = 1;
+#endif
+        if (bad) fprintf(stderr, "FAIL: %s: %s\n", list[i].op, error);
+        else {
+            fprintf(out, "OP\t%s\t%zu\n", list[i].op, object_size);
+            for (size_t k = 0; k < object_size; ++k) fprintf(out, "%02x", object[k]);
+            fputc('\n', out);
+        }
+        free(made), free(object);
+        snx_codegen_free(&cg);
+    }
+    fclose(out);
+    free(list), free(code), free(at);
+    return bad;
+}
+
 /* --programs: CB<cc>, CBB<cc> and CBH<cc> of x1 and x2 and of x1 and an integer, over an ADD; SET's and CPY's three, of
    x9, x10 and x11; LDCLRP, LDSETP and SWPP of x1 and x2 at x20. The words after each one's first in more, 0 for none */
 static OpWord* programs(size_t* count, uint32_t (**more)[2]) {
@@ -1237,6 +1313,8 @@ int main(int argc, char** argv) {
     size_t data_len = DATA_LEN;
     uint32_t (*more)[2] = NULL; /* --programs' words after the first */
     char** ops = NULL;
+    char* counts = NULL; /* --counts' and --counts-blocks' file */
+    unsigned counts_block = 0; /* --counts-blocks' guest words per function */
     OpWord* opw = NULL;
     uint32_t words[SLOT];
     struct snx_recompiler* rx = NULL;
@@ -1344,6 +1422,16 @@ int main(int argc, char** argv) {
             must_make = 1;
         else if (!strcmp(argv[i], "--coverage"))
             refused = 2;
+        else if (!strcmp(argv[i], "--counts") && i + 1 < (unsigned)argc)
+            counts = argv[++i];
+        else if (!strcmp(argv[i], "--counts-blocks") && i + 2 < (unsigned)argc) {
+            counts_block = (unsigned)strtoul(argv[++i], NULL, 0);
+            counts = argv[++i];
+            if (!counts_block || counts_block > 1024) {
+                fprintf(stderr, "--counts-blocks: N must be 1 to 1024\n");
+                return 2;
+            }
+        }
         else if (!strcmp(argv[i], "--programs"))
             branches = 1;
         else if (!strcmp(argv[i], "--calls"))
@@ -1409,9 +1497,27 @@ int main(int argc, char** argv) {
     }
 #endif
 #ifdef SNX_TEST_WIN64
+    if (counts) {
+#ifndef SNX_TEST_NATIVE
+        if (!snx_x64_available()) {
+            printf("recompiler backends: no x86-64 back end on this host: nothing to list\n");
+            return 0;
+        }
+#endif
+        return counts_write(counts, counts_block ? counts_block : 1);
+    }
     snx_x64_set_win64(1);
 #endif
     rows_init();
+    if (counts) {
+#ifndef SNX_TEST_NATIVE
+        if (!snx_x64_available()) {
+            printf("recompiler backends: no x86-64 back end on this host: nothing to list\n");
+            return 0;
+        }
+#endif
+        return counts_write(counts, counts_block ? counts_block : 1);
+    }
     if (refused) {
 #ifndef SNX_TEST_NATIVE
         if (!snx_native_available()) {
@@ -1617,7 +1723,8 @@ int main(int argc, char** argv) {
         hostuc_step(uc, step);
 #endif
 #if defined(SNX_TEST_WIN64) || defined(SNX_TEST_X64CPU)
-        NATIVE(snx_x64_fp_vec), NATIVE(snx_x64_crypto), NATIVE(snx_x64_sse);
+        NATIVE(snx_x64_fp_vec), NATIVE(snx_x64_shl_v), NATIVE(snx_x64_shl_w), NATIVE(snx_x64_crypto), NATIVE(snx_x64_sse);
+        NATIVE(snx_x64_reduce_v);
         void* crc32_table = hostuc_alloc(uc, sizeof snx_x64_crc32_table);
         if (crc32_table) memcpy(crc32_table, snx_x64_crc32_table, sizeof snx_x64_crc32_table);
         hostuc_define(uc, "snx_x64_crc32_table", (uint64_t)(uintptr_t)crc32_table);
