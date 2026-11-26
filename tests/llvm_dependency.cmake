@@ -28,6 +28,16 @@ if(DEFINED CASE AND CASE MATCHES "^package_")
         message(FATAL_ERROR "${CASE}: LLVM libraries ${SNX_LLVM_LIBS} (shared ${SNX_LLVM_SHARED}), expected ${expected} "
                             "(shared ${expected_shared})")
     endif()
+    # every target's libraries for the tests that make other machines' objects: the shared library has them
+    if(CASE STREQUAL "package_dylib")
+        set(expected_all "")
+    else()
+        set(expected_all "LLVMCore;LLVMSupport")
+    endif()
+    if(NOT SNX_LLVM_ALL_TARGETS_LIBS STREQUAL expected_all)
+        message(FATAL_ERROR "${CASE}: every target's LLVM libraries ${SNX_LLVM_ALL_TARGETS_LIBS}, "
+                            "expected ${expected_all}")
+    endif()
     # a folder of the sysroot without it (a cross build's run path), and any other one as it is
     set(CMAKE_SYSROOT "/x/sysroot")
     foreach(pair "/x/sysroot/usr/pkg/lib=/usr/pkg/lib" "/x/sysroot2/lib=/x/sysroot2/lib" "/usr/lib=/usr/lib")
@@ -102,6 +112,15 @@ if(DEFINED CASE)
     endif()
     if(NOT CASE STREQUAL "empty_system" AND NOT SNX_LLVM_SYSTEM_LIBS STREQUAL "-lz;-lm")
         message(FATAL_ERROR "LLVM system link arguments were not preserved")
+    endif()
+    # a static LLVM (no --shared-mode here): every target's libraries, then their system libraries as they are
+    set(expected_all "${expected}")
+    if(NOT CASE STREQUAL "empty_system")
+        list(APPEND expected_all -lz -lm)
+    endif()
+    if(NOT SNX_LLVM_ALL_TARGETS_LIBS STREQUAL expected_all)
+        message(FATAL_ERROR "Wrong libraries of every LLVM target: ${SNX_LLVM_ALL_TARGETS_LIBS}, "
+                            "expected ${expected_all}")
     endif()
     return()
 endif()
