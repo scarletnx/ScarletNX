@@ -15315,6 +15315,39 @@ int main(int argc, char** argv) {
                     free(idx);
                     app.addons_focus = 17;
                 }
+                { /* a code cache LLVM made (SNXJIT01, its key naming llvm=): an old cache too, said with its size and
+                     place; Back keeps it, Delete takes it and nothing else; this version's code cache is none */
+                    static const char key_text[] = "abi=19 obj=5 llvm=22.1.8 triple=x86_64-pc-linux-gnu cpu=znver4";
+                    unsigned char jit[256] = "SNXJIT01";
+                    const size_t key_n = sizeof key_text - 1, jit_n = 12 + key_n + 7;
+                    char old[32];
+                    const int rows = addons_rows(&app);
+                    jit[8] = (unsigned char)key_n;
+                    memcpy(jit + 12, key_text, key_n);
+                    memcpy(jit + 12 + key_n, "records", 7);
+                    assert(!app.addons_old_caches && !snx_write_file(caches[1], jit, jit_n));
+                    old_caches_refresh(&app);
+                    assert(app.addons_old_caches == jit_n && addons_rows(&app) == rows + 1 &&
+                           addons_row(&app, 18) == ROW_OLD_CACHES);
+                    app.addons_focus = 18;
+                    key(&app, SDLK_RETURN);
+                    gui_size_text(old, sizeof old, jit_n);
+                    assert(app.confirm.shown && app.confirm.ask == GUI_ASK_CACHE && strstr(app.ask_line, old) &&
+                           strstr(app.ask_line, "a code cache LLVM made") && strstr(app.ask_line, caches[1]) &&
+                           !strstr(app.ask_line, ".vkbc7"));
+                    key(&app, SDLK_ESCAPE);
+                    assert(!app.confirm.shown && snx_is_file(caches[1]));
+                    key(&app, SDLK_RETURN);
+                    key(&app, SDLK_DOWN);
+                    key(&app, SDLK_RETURN);
+                    snprintf(want, sizeof want, "Deleted the old caches of %s: %s", app.addons_title, old);
+                    assert(!app.confirm.shown && !strcmp(app.message, want) && !snx_path_exists(caches[1]) &&
+                           snx_is_file(shader) && addons_rows(&app) == rows);
+                    assert(!snx_write_file(caches[1], bytes, 100)); /* this version's again, for Clean Cache below */
+                    old_caches_refresh(&app);
+                    assert(!app.addons_old_caches);
+                    app.addons_focus = 17;
+                }
                 key(&app, SDLK_RETURN);
                 key(&app, SDLK_DOWN);
                 key(&app, SDLK_RETURN);

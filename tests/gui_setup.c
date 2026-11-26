@@ -1101,6 +1101,89 @@ static void test_old_files(App* app) {
     puts("PASS the old files a page each, Move All, Delete All asked twice keeping saves, Not Now");
 }
 
+/* an object file of LLVM's (ELF64, type 1, a relocatable object) at path */
+static void put_object(const char* path) {
+    unsigned char b[80] = {0x7f, 'E', 'L', 'F', 2, 1, 1};
+    char* dir = snx_dirname(path);
+    b[16] = 1;
+    b[18] = 62;
+    assert(dir && !snx_mkdirs(dir) && !snx_write_file(path, b, sizeof b));
+    free(dir);
+}
+/* what only LLVM left in the cache folder: a page of its own after the old files', a folder a line with its files and
+   MB; Delete LLVM's Caches asks first (Cancel deletes none), then deletes the files it recognizes and no other; Not
+   Now keeps them; Settings > App > Move Old Files opens the page when only they are left */
+static void test_llvm_caches(App* app) {
+    char *config = config_of(app), *file = join(config, "setup.ini"), *cache = menu_folder(app, SNX_USER_CACHE, false);
+    char *units = join(cache, "units"), *library = join(cache, "linux-jit");
+    char *unit = join(units, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.o");
+    char *rtlib = join(library, "rtlib-0123456789abcdef0123456789abcdef.o"), *notes = join(units, "notes.o");
+    const char* labels[GUI_SETUP_CHOICES];
+    put(file, "[setup]\nversion = 1\nnotices = 99\n");
+    put_object(unit);
+    put_object(rtlib);
+    put_object(notes); /* an object, but not of the name LLVM gave its units: it stays */
+    left_behind(app);
+    assert(!app->lefts && app->llvm_old.count == 2);
+    setup_start(app);
+    assert(app->setup_on && app->setup_count == 1 && page(app) == SETUP_LLVM);
+    assert(setup_labels(app, labels) == 2 && !strcmp(labels[0], "Delete LLVM's Caches") &&
+           !strcmp(labels[1], "Not Now") && !strcmp(choice_label(app), "Not Now"));
+    {
+        char tab[64];
+        tab_label(app, 0, tab, sizeof tab);
+        assert(!strcmp(tab, ICON_TRASH " LLVM's Caches"));
+    }
+    render(app);
+    shows(app, "LLVM's Caches", rgb(head_ink(app)));
+    /* asked first: each folder with its files and MB; Cancel deletes none */
+    app->setup_choice.focus = 0;
+    key(app, SDLK_RETURN);
+    assert(app->confirm.shown && app->confirm.ask == GUI_ASK_LLVM && !app->confirm.twice);
+    assert(strstr(app->ask_line, "Delete LLVM's Caches? ") && strstr(app->ask_line, "units: 1 file, ") &&
+           strstr(app->ask_line, "linux-jit: 1 file, ") && strstr(app->ask_line, "Only these files go"));
+    {
+        UiRowInfo keep = {0}, go = {0};
+        app->choices_of = GUI_CHOICES_ASK;
+        assert(ui_choices_rows_get_row_info(app, 0, 0, &keep) && !strcmp(keep.label, "Cancel") &&
+               !(keep.attr & UI_ATTR_DANGER));
+        assert(ui_choices_rows_get_row_info(app, 1, 0, &go) && !strcmp(go.label, "Delete") &&
+               (go.attr & UI_ATTR_DANGER));
+    }
+    key(app, SDLK_ESCAPE);
+    assert(!app->confirm.shown && !app->llvm_did && snx_is_file(unit) && snx_is_file(rtlib) && snx_is_file(notes));
+    /* Delete taken: the two it recognizes go, the other object stays */
+    app->setup_choice.focus = 0;
+    key(app, SDLK_RETURN);
+    key(app, SDLK_RIGHT);
+    key(app, SDLK_RETURN);
+    assert(!app->confirm.shown && app->llvm_did && !snx_path_exists(unit) && !snx_path_exists(rtlib) &&
+           snx_is_file(notes));
+    assert(!strncmp(app->llvm_said, "Deleted 2 files, ", 17) && !app->llvm_old.count);
+    assert(setup_labels(app, labels) == 1 && !strcmp(labels[0], "OK"));
+    key(app, SDLK_RETURN);
+    assert(!app->setup_on);
+    /* Settings > App > Move Old Files with LLVM's alone: their page; Not Now keeps them */
+    put_object(unit);
+    left_behind(app);
+    move_row(app);
+    assert(app->setup_on && !app->editing && page(app) == SETUP_LLVM && !strcmp(choice_label(app), "Not Now"));
+    key(app, SDLK_RETURN);
+    assert(!app->setup_on && snx_is_file(unit) && snx_is_file(notes));
+    assert(!snx_remove_tree(units) && !snx_remove_tree(library));
+    left_behind(app);
+    assert(!app->llvm_old.count);
+    free(notes);
+    free(rtlib);
+    free(unit);
+    free(library);
+    free(units);
+    free(cache);
+    free(file);
+    free(config);
+    puts("PASS LLVM's old caches: their page, asked first, Cancel keeps them, Delete only theirs, Not Now");
+}
+
 /* the games' own saves, however many games, one Old Files page: how many games and a line each, rolling under the
    page's lines when they do not fit, how many more said; Delete All deletes none of them, Move All moves them all, its
    page then a line a game */
@@ -1239,6 +1322,7 @@ static void test_ask_tones(App* app) {
                 {GUI_ASK_CRASH, UI_ATTR_DANGER},
                 {GUI_ASK_ADDONS, 0},
                 {GUI_ASK_DELETE_OLD, UI_ATTR_DANGER},
+                {GUI_ASK_LLVM, UI_ATTR_DANGER},
                 {GUI_ASK_OVERWRITE, UI_ATTR_CAUTION},
                 {GUI_ASK_SAVES, UI_ATTR_CAUTION},
                 {GUI_ASK_PACK, 0},
@@ -1793,6 +1877,7 @@ int main(void) {
     test_clean_notice(&app);
     test_last_run(&app);
     test_old_files(&app);
+    test_llvm_caches(&app);
     test_saves_one_page(&app);
     test_data_saves(&app);
     test_ask_tones(&app);

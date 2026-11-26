@@ -94,6 +94,7 @@ typedef enum {
     GUI_ASK_ADDONS,    /* a game's dump made with its updates' and DLCs' among the dumps, Yes first, or alone */
     /* the setup's Old Files: Delete All, how many go and how many stay, pressed twice */
     GUI_ASK_DELETE_OLD,
+    GUI_ASK_LLVM,      /* the setup's LLVM's Old Caches: Delete LLVM's Caches, the files and MB of each folder */
     GUI_ASK_OVERWRITE, /* the setup's user page: Overwrite users.ini, which is kept as users.ini.old */
     GUI_ASK_SAVES,     /* an import of saves over saves there, which go to the trash first (Import Saves) */
     GUI_ASK_PACK,      /* a folder of NCAs picked to pack: into an NSP or an XCI */
