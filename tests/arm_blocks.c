@@ -218,6 +218,7 @@ static const struct {
 } natives[] = {
     {"snx_arm_fp", (void*)snx_arm_fp},
     {"snx_arm_fp_x64", (void*)snx_arm_fp_x64},
+    {"snx_arm_fp_env", (void*)snx_arm_fp_env},
     {"snx_arm_crypto", (void*)snx_arm_crypto},
     {"snx_arm_undefined", (void*)snx_arm_undefined},
     {"snx_arm_coproc", (void*)snx_arm_coproc},
