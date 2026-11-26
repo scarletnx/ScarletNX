@@ -69,6 +69,11 @@ int snx_fallback_arm_block(SnxFallbackArm* f, const char* name, const void* code
                  (unsigned)pc, (unsigned)((const uint32_t*)code)[0], why);
     return -1;
 }
+int snx_fallback_arm_ir(SnxFallbackArm* f, char** text, char* error, size_t error_size) {
+    *text = NULL;
+    snprintf(error, error_size, "%s: no block was made, and " NO_LLVM, f->name);
+    return -1;
+}
 int snx_fallback_arm_object(SnxFallbackArm* f, unsigned char** object, size_t* size, char* error, size_t error_size) {
     *object = NULL;
     *size = 0;

@@ -5,6 +5,7 @@
 #include "common/cpu/recompiler/fallback.h"
 #include "common/cpu/arm/llvm.h"
 #include "common/cpu/recompiler/llvm/ir.h"
+#include "common/utilities/common.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -113,12 +114,29 @@ int snx_fallback_arm_block(SnxFallbackArm* f, const char* name, const void* code
     LLVMValueRef fn =
         thumb ? snx_thumb_llvm_block_ex(f->module, name, (const uint16_t*)code, count, pc, consumed, options)
               : snx_arm_llvm_block_ex(f->module, name, (const uint32_t*)code, count, pc, consumed, options);
-    if (fn) return 0;
+    if (fn) {
+        /* an AOT module exports what its linker is told to, the descriptor or the blocks by name */
+        if (!f->jit) LLVMSetVisibility(fn, LLVMHiddenVisibility);
+        return 0;
+    }
     if (first) {
         LLVMDisposeModule(f->module);
         f->module = NULL;
     }
     snprintf(error, error_size, "LLVM takes no such block");
+    return -1;
+}
+int snx_fallback_arm_ir(SnxFallbackArm* f, char** text, char* error, size_t error_size) {
+    *text = NULL;
+    if (!f->module) {
+        snprintf(error, error_size, "%s: no block was made", f->name);
+        return -1;
+    }
+    char* printed = LLVMPrintModuleToString(f->module);
+    *text = snx_strdup(printed);
+    LLVMDisposeMessage(printed);
+    if (*text) return 0;
+    snprintf(error, error_size, "%s: out of memory for the IR of its blocks", f->name);
     return -1;
 }
 int snx_fallback_arm_object(SnxFallbackArm* f, unsigned char** object, size_t* size, char* error, size_t error_size) {

@@ -10,7 +10,8 @@
 #   snx_recompiler_jit    what makes the code a running program reaches (jit/, cpu/arm/exec.c), and the AArch32 blocks
 #                         of the AOT compilers (cpu/arm/aot.c)
 #   scarletnx-recompiler  the library (snx_recompiler.h, docs/dev/library.md): an archive of all their objects
-# A build without LLVM has the core, snx_fallback_none and the AArch32 executor alone: the others still call it
+# A build without LLVM has the core, snx_fallback_none and the AArch32 executor and AOT blocks alone: the others still
+# call it
 
 # The runtime library every module links (rtlib.c): the helpers, compiled here with this Clang and the flags toolchain.c
 # gives generated C
@@ -166,7 +167,8 @@ set_target_properties(snx_fallback_none PROPERTIES C_STANDARD 23 C_STANDARD_REQU
 target_compile_options(snx_fallback_none PRIVATE -pedantic-errors -Wall -Wextra -Werror=missing-prototypes)
 target_link_libraries(snx_fallback_none PUBLIC snx_recompiler_core)
 
-add_library(snx_recompiler_jit STATIC "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/exec.c")
+add_library(snx_recompiler_jit STATIC "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/exec.c"
+                                      "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/aot.c")
 set_target_properties(snx_recompiler_jit PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS ON)
 target_compile_options(snx_recompiler_jit PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 target_compile_definitions(snx_recompiler_jit PRIVATE _CRT_SECURE_NO_WARNINGS)
@@ -177,8 +179,7 @@ if(NOT SNX_WITH_LLVM)
 endif()
 add_subdirectory(llvm)
 # these call LLVM themselves
-target_sources(snx_recompiler_jit PRIVATE jit/jit_service.c jit/jit_cache.c
-                                          "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/aot.c")
+target_sources(snx_recompiler_jit PRIVATE jit/jit_service.c jit/jit_cache.c)
 target_link_libraries(snx_recompiler_jit PUBLIC snx_llvm)
 
 # The recompiler as a library (snx_recompiler.h): the backends and the function discovery behind one C interface,
