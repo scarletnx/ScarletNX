@@ -149,14 +149,17 @@ renderer again, which draws from the GXPs and surfaces in memory as at the game'
 at its place, never truncated: the game's save data and what it wrote since stay, as a Switch game's files do. An
 audio decoder is made again from its configuration: what FFmpeg's decoder keeps of the frames before (the overlap of
 their transforms) starts empty, so the first frame it decodes after a load differs from the console's, a click of one
-frame at most, and the frames after it are the same. The
-game is its title ID and its image's segments. A load reads and checks every section before it changes anything, and
-refuses another game's state (both named), another `SNX_VITA_STATE_VERSION` (both versions), a section of another
-layout (both hashes), a damaged file and one naming a file that is gone. A save is refused, saying what, while a
-thread runs, while one is inside a call of the runtime's into the game (a sort's comparison, a callback), while a
-scene is being drawn, and while the game plays a movie (an mp4 file or a video decoder: the demuxer's place and the
-pictures H.264 decodes the next ones from can't be put back) or has sockets open, which a state can't keep. The threads run by the host's clock, so `vita_state` (`tests/vita_state.c`) checks what a load puts back of a
-process the test drives through the imports, and that a save right after it is the same, rather than frames.
+frame at most, and the frames after it are the same. The game is its title ID and its image's segments. A load reads
+and checks every section before it changes anything, and refuses another game's state (both named), another
+`SNX_VITA_STATE_VERSION` (both versions), a section of another layout (both hashes), a damaged file and one naming a
+file that is gone. A save is refused, saying what, while a thread runs, while one is inside a call of the runtime's
+into the game (a sort's comparison, a callback), while a scene is being drawn, and while the game plays a movie (an
+mp4 file or a video decoder: the demuxer's place and the pictures H.264 decodes the next ones from can't be put back)
+or has sockets open, which a state can't keep. The threads run by the host's clock, so `vita_state`
+(`tests/vita_state.c`) checks what a load puts back of a process the test drives through the imports, and that a save
+right after it is the same, rather than frames; `vita_state_gpu` (`tests/vita_state_gpu.c`) that a save holds the
+GPU's work it waited for (a scene, a copy) and that the renderer a load makes draws from the state's memory, on a
+device that imports guest memory and on one that copies it.
 
 ## Checking the CPU backend
 

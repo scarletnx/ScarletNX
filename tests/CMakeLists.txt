@@ -5081,6 +5081,13 @@ if(TARGET snx_vita_program)
     target_link_libraries(snx-test-vita-render-memory PRIVATE snx_vita_program)
     add_test(NAME vita_render_memory COMMAND snx-test-vita-render-memory)
     set_tests_properties(vita_render_memory PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+    # the save states with the GPU's work in them: waited for by a save, the renderer made again by a load, on an
+    # importing device and on a copying one (vita_state_gpu.c)
+    add_executable(snx-test-vita-state-gpu vita_state_gpu.c)
+    snx_test_target(snx-test-vita-state-gpu gnu23)
+    target_link_libraries(snx-test-vita-state-gpu PRIVATE snx_vita_program)
+    add_test(NAME vita_state_gpu COMMAND snx-test-vita-state-gpu)
+    set_tests_properties(vita_state_gpu PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
     # the window's Esc, asked twice, as SDL sends it: no device or window
     add_executable(snx-test-vita-quit-key vita_quit_key.c)
     snx_test_target(snx-test-vita-quit-key gnu23)
