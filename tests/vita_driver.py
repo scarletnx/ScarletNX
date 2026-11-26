@@ -72,6 +72,7 @@ def main():
             '--frame-pacing=2',
             '--async-pipelines=1',
             '--pipeline-threads=2',
+            '--renderdoc=',
             '--pipeline-libraries=0',
             '--prepare-shaders=1',
             '--compress-prepared-shaders=0',
