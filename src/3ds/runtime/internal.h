@@ -178,11 +178,16 @@ typedef struct {
     uint32_t period_ms, index;
     bool raw_c_stick;
 } SnxCtrIrrst;
-/* mic:u's state (services/mic.c): the buffer full event (retained, made at the first request for it), whether
-   sampling runs, its encoding and rate, and the settings a game stored */
+/* mic:u's state (services/mic.c): the buffer full event (retained, made at the first request for it), the block
+   MapSharedMem lent (retained until UnmapSharedMem) and the size it gave, the part of it StartSampling fills (from
+   start, size bytes, looping or not) and where the next sample goes in that part, the host monotonic ns the next
+   samples are due (0: not sampling), whether sampling runs, its encoding and rate, the settings a game stored, and the
+   host's recording (never in a state: a load opens its own) */
 typedef struct {
-    uint32_t event;
-    uint8_t sampling, encoding, sample_rate, gain, power, clamp, allow_shell_closed;
+    uint32_t event, shared, shared_size, start, size, offset;
+    uint64_t next_ns;
+    uint8_t sampling, encoding, sample_rate, loop, gain, power, clamp, allow_shell_closed;
+    struct SnxMic* recording;
 } SnxCtrMic;
 /* cam:u's state (services/cam.c), as Azahar's Module: three cameras, each with two contexts (its current one the
    picture's), and two ports, the first the outer left or the inner camera's, the second the outer right one's */
