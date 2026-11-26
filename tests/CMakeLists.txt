@@ -4478,17 +4478,17 @@ set_tests_properties(gdb_jit PROPERTIES SKIP_RETURN_CODE 77)
 if(NOT WIN32)
     # the relocations both ELF paths share (elf_object.c), AArch64's included, checked on any ELF host and on macOS,
     # whose JIT loads ELF objects
-    add_executable(snx-test-elf-relocate elf_relocate.c)
+    add_executable(snx-test-elf-relocate elf_relocate.c native_objects.c)
     snx_test_target(snx-test-elf-relocate gnu23)
-    target_link_libraries(snx-test-elf-relocate PRIVATE snx_llvm ${SNX_LLVM_ALL_TARGETS_LIBS})
+    target_link_libraries(snx-test-elf-relocate PRIVATE snx_recompiler_core)
     add_test(NAME elf_relocate COMMAND snx-test-elf-relocate)
     set_tests_properties(elf_relocate PROPERTIES TIMEOUT 120)
 endif()
 # Windows on Arm's COFF objects (code_loader_coff.c, link_coff.c): relocations, veneers, a module and a JIT load, read
 # back on any host
-add_executable(snx-test-coff-arm64 coff_arm64.c)
+add_executable(snx-test-coff-arm64 coff_arm64.c native_objects.c)
 snx_test_target(snx-test-coff-arm64 gnu23)
-target_link_libraries(snx-test-coff-arm64 PRIVATE snx_llvm ${SNX_LLVM_ALL_TARGETS_LIBS})
+target_link_libraries(snx-test-coff-arm64 PRIVATE snx_recompiler_core)
 add_test(NAME coff_arm64 COMMAND snx-test-coff-arm64)
 set_tests_properties(coff_arm64 PROPERTIES TIMEOUT 120)
 # not a test: timings of the generated code (llvm_bench SCARLETNX REPO CLANG)

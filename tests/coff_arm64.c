@@ -2,18 +2,17 @@
    Copyright 2026 the ScarletNX contributors */
 /* ARM64 COFF, Windows on Arm's objects, as the AOT linker (link_coff.c) and the JIT loader (code_loader_coff.c) take
    them, checked on any host: every relocation type snx_coff_a64_relocate writes and both veneers, against encodings
-   worked out by hand from the Arm ARM, each with the addend COFF keeps in the field; then objects of the LLVM backend
-   for aarch64-w64-windows-gnu (when its LLVM has the AArch64 target) linked into a DLL whose header, function table,
-   base relocations and calls are read back, again with more code between a call and its target than B and BL reach (the
+   worked out by hand from the Arm ARM, each with the addend COFF keeps in the field; then ARM64 COFF objects carrying the
+   native back ends' relocations (native_objects.c) linked into a DLL whose header, function table, base relocations
+   and calls are read back, again with more code between a call and its target than B and BL reach (the
    call then takes the veneer after its object's code, and a branch with an addend is refused), and loaded into an ARM64
    arena whose code is only read, never run: a call to a table symbol lands on it directly when in reach, else on a stub
    through its slot */
 #include "common/utilities/common.h"
 #include "common/cpu/recompiler/loader/code_loader.h"
 #include "common/cpu/recompiler/object/coff_defs.h"
-#include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/recompiler/object/link.h"
-#include <llvm-c/Target.h>
+#include "native_objects.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -107,7 +106,7 @@ static void relocations(void) {
     check(snx_coff_a64_veneer(p, 0, (uint64_t)1 << 32, 0) == SNX_LINK_RANGE, "veneer at 4 GiB");
 }
 
-/* ---- the LLVM backend's objects ---- */
+/* ---- objects of the native back ends' relocations (native_objects.c) ---- */
 
 static int64_t sign(uint64_t value, unsigned bits) {
     uint64_t m = (uint64_t)1 << (bits - 1);
@@ -151,60 +150,24 @@ static uint64_t veneer_target(const unsigned char* v, uint64_t address, int* ind
     return page + (second >> 10 & 0xFFF);
 }
 
-/* asynchronous unwind tables for function, as the generated code's (ir_codegen.c): its .pdata entry */
-static void unwind_table(SnxIr* ir, LLVMValueRef function) {
-    unsigned kind = LLVMGetEnumAttributeKindForName("uwtable", 7);
-    LLVMAddAttributeAtIndex(function, LLVMAttributeFunctionIndex, LLVMCreateEnumAttribute(ir->ctx, kind, 2));
+/* An ARM64 COFF object: caller() returns callee(*ext_data + 1) + 1, ext_data's address in a slot of its .rdata */
+static int caller_object(const char* callee_name, const char* caller_name, unsigned char** data, size_t* size) {
+    char error[1024];
+    return nobj_a64_caller(1, callee_name, "ext_data", caller_name, data, size, error, sizeof error)
+               ? snx_error("%s", error)
+               : 0;
 }
 
-/* An object: caller() returns callee(*data + 1) + 1 */
-static int caller_object(const char* triple, const char* callee_name, const char* caller_name, unsigned char** data,
-                         size_t* size) {
+/* the definitions caller_object() calls into, ext_data and ext_fn, of machine */
+static int definitions_object(unsigned machine, unsigned char** data, size_t* size) {
     char error[1024];
-    SnxIr* ir = snx_ir_new_target("caller", '2', triple, error, sizeof(error));
-    LLVMTypeRef params[1];
-    if (!ir) return snx_error("%s", error);
-    params[0] = ir->t_i64;
-    LLVMValueRef value = LLVMAddGlobal(ir->mod, ir->t_i64, "ext_data");
-    LLVMValueRef callee = ir_extern(ir, callee_name, ir->t_i64, params, 1);
-    LLVMValueRef caller = LLVMAddFunction(ir->mod, caller_name, LLVMFunctionType(ir->t_i64, NULL, 0, 0));
-    unwind_table(ir, caller);
-    LLVMPositionBuilderAtEnd(ir->b, LLVMAppendBasicBlockInContext(ir->ctx, caller, "entry"));
-    LLVMValueRef args[1] = {
-        LLVMBuildAdd(ir->b, LLVMBuildLoad2(ir->b, ir->t_i64, value, "v"), LLVMConstInt(ir->t_i64, 1, 0), "a")};
-    LLVMValueRef result = LLVMBuildCall2(ir->b, LLVMGlobalGetValueType(callee), callee, args, 1, "c");
-    LLVMBuildRet(ir->b, LLVMBuildAdd(ir->b, result, LLVMConstInt(ir->t_i64, 1, 0), "r"));
-    if (snx_ir_object(ir, '2', data, size, error, sizeof(error))) return snx_error("%s", error);
-    snx_ir_free(ir);
-    return 0;
+    return nobj_definitions(machine, 1, data, size, error, sizeof error) ? snx_error("%s", error) : 0;
 }
-/* what caller_object calls into: ext_data, 41, and ext_fn(x), x * 3 */
-static int definitions_object(const char* triple, unsigned char** data, size_t* size) {
+
+/* an object of nothing but bytes of code */
+static int filler_object(size_t bytes, unsigned char** data, size_t* size) {
     char error[1024];
-    SnxIr* ir = snx_ir_new_target("definitions", '2', triple, error, sizeof(error));
-    LLVMTypeRef params[1];
-    if (!ir) return snx_error("%s", error);
-    params[0] = ir->t_i64;
-    LLVMValueRef value = LLVMAddGlobal(ir->mod, ir->t_i64, "ext_data");
-    LLVMSetInitializer(value, LLVMConstInt(ir->t_i64, 41, 0));
-    LLVMValueRef callee = ir_extern(ir, "ext_fn", ir->t_i64, params, 1);
-    unwind_table(ir, callee);
-    LLVMPositionBuilderAtEnd(ir->b, LLVMAppendBasicBlockInContext(ir->ctx, callee, "entry"));
-    LLVMBuildRet(ir->b, LLVMBuildMul(ir->b, LLVMGetParam(callee, 0), LLVMConstInt(ir->t_i64, 3, 0), "m"));
-    if (snx_ir_object(ir, '2', data, size, error, sizeof(error))) return snx_error("%s", error);
-    snx_ir_free(ir);
-    return 0;
-}
-/* an object of nothing but bytes of code in .text, module assembly */
-static int filler_object(const char* triple, size_t bytes, unsigned char** data, size_t* size) {
-    char error[1024], text[64];
-    SnxIr* ir = snx_ir_new_target("filler", '2', triple, error, sizeof(error));
-    if (!ir) return snx_error("%s", error);
-    snprintf(text, sizeof text, ".text\n.space %zu\n", bytes);
-    LLVMSetModuleInlineAsm2(ir->mod, text, strlen(text));
-    if (snx_ir_object(ir, '2', data, size, error, sizeof(error))) return snx_error("%s", error);
-    snx_ir_free(ir);
-    return 0;
+    return nobj_filler(NOBJ_AARCH64, 1, bytes, data, size, error, sizeof error) ? snx_error("%s", error) : 0;
 }
 
 /* a PE image as link_coff.c writes it, read back */
@@ -298,7 +261,7 @@ static void module(const unsigned char* caller, size_t caller_size, const unsign
         check(first_branch(code, call) == fn, "caller's BL reaches ext_fn");
         uint64_t slot = first_slot(code, call);
         const unsigned char* held = slot ? pe_at(&pe, (uint32_t)slot, 8) : NULL;
-        check(held && get64(held) == IMAGE_BASE + data, "caller's .refptr slot holds ext_data's address");
+        check(held && get64(held) == IMAGE_BASE + data, "caller's slot of ext_data holds its address");
         check(slot && pe_rebased(&pe, (uint32_t)slot), "the slot is rebased (.reloc DIR64)");
     }
     uint32_t size, dir = pe_directory(&pe, 3, &size);
@@ -313,7 +276,7 @@ static void module(const unsigned char* caller, size_t caller_size, const unsign
     free(linked.data);
 }
 
-/* An ARM64 object written by hand, as LLVM writes none: two_call() is BL ext_fn, then BL ext_fn+8, its addend in the
+/* An ARM64 object written byte by byte, as native_objects.c's builder writes none: two_call() is BL ext_fn, then BL ext_fn+8, its addend in the
    field as COFF keeps it. The header, .text's section header, its 8 bytes and 2 relocations, 2 symbols and an empty
    string table */
 #define TWO_CALLS_SIZE 128
@@ -349,8 +312,7 @@ static void two_calls_object(unsigned char* o) {
 
 /* AOT: more code between caller and ext_fn than BL reaches: the call takes the veneer after caller's code. A branch
    whose field holds an addend is refused: the one veneer of its symbol is the other branches' too */
-static void large_module(const unsigned char* caller, size_t caller_size, const unsigned char* defs, size_t defs_size,
-                         const char* triple) {
+static void large_module(const unsigned char* caller, size_t caller_size, const unsigned char* defs, size_t defs_size) {
     static const char* const exports[] = {"caller", "ext_fn"};
     unsigned char* filler;
     size_t filler_size;
@@ -358,7 +320,7 @@ static void large_module(const unsigned char* caller, size_t caller_size, const 
     char error[1024];
     Pe pe;
     int indirect = -1;
-    if (filler_object(triple, (size_t)140 << 20, &filler, &filler_size)) {
+    if (filler_object((size_t)140 << 20, &filler, &filler_size)) {
         check(0, "the filler object");
         return;
     }
@@ -399,7 +361,7 @@ static void large_module(const unsigned char* caller, size_t caller_size, const 
 static SnxU64 probe_fn(SnxU64 a) { return a; }
 
 /* JIT: the objects loaded into an ARM64 arena, read and never run */
-static void jit(const char* triple, const unsigned char* caller_data, size_t caller_size) {
+static void jit(const unsigned char* caller_data, size_t caller_size) {
     char error[1024];
     unsigned char* data;
     size_t size;
@@ -434,9 +396,9 @@ static void jit(const char* triple, const unsigned char* caller_data, size_t cal
     }
     slot = first_slot(code, caller);
     check(slot && get64((const unsigned char*)(size_t)slot) == (SnxU64)(size_t)&g_coff_arm64.probe_data,
-          "the .refptr slot of ext_data holds its address");
+          "the object's slot of ext_data holds its address");
     /* a later load calling the first, in reach: directly */
-    if (caller_object(triple, "caller", "second", &data, &size)) return;
+    if (caller_object("caller", "second", &data, &size)) return;
     input = (SnxLinkInput){data, size, "second"};
     names[0] = "second";
     if (snx_code_load(loader, &input, 1, names, 1, &other, error, sizeof(error)))
@@ -446,7 +408,7 @@ static void jit(const char* triple, const unsigned char* caller_data, size_t cal
     free(data);
     /* and one to a symbol in the arena beyond BL's reach: through its stub */
     if (snx_code_define(loader, "far_in_arena", caller + ((SnxU64)300 << 20))) check(0, "far_in_arena defined");
-    if (caller_object(triple, "far_in_arena", "third", &data, &size)) return;
+    if (caller_object("far_in_arena", "third", &data, &size)) return;
     input = (SnxLinkInput){data, size, "third"};
     names[0] = "third";
     if (snx_code_load(loader, &input, 1, names, 1, &other, error, sizeof(error)))
@@ -461,33 +423,18 @@ static void jit(const char* triple, const unsigned char* caller_data, size_t cal
     snx_code_loader_free(loader);
 }
 
-static int llvm_objects(void) {
-    static const char* const triple = "aarch64-w64-windows-gnu";
+static int native_objects(void) {
     char error[1024];
     unsigned char *caller, *defs, *x64;
     size_t caller_size, defs_size, x64_size;
-    LLVMInitializeAllTargetInfos();
-    LLVMInitializeAllTargets();
-    LLVMInitializeAllTargetMCs();
-    LLVMInitializeAllAsmPrinters();
-    LLVMInitializeAllAsmParsers(); /* the filler is module assembly */
-    if (snx_ir_init(error, sizeof(error))) return snx_error("%s", error);
-    SnxIr* probe = snx_ir_new_target("probe", '2', triple, error, sizeof(error));
-    if (!probe) {
-        printf("skipped the LLVM objects: %s\n", error);
-        return 0;
-    }
-    snx_ir_free(probe);
-    if (caller_object(triple, "ext_fn", "caller", &caller, &caller_size) ||
-        definitions_object(triple, &defs, &defs_size))
+    if (caller_object("ext_fn", "caller", &caller, &caller_size) || definitions_object(NOBJ_AARCH64, &defs, &defs_size))
         return 1;
-    check(caller_size > 2 && (caller[0] | caller[1] << 8) == COFF_ARM64,
-          "LLVM writes ARM64 COFF for aarch64-w64-windows-gnu");
+    check(caller_size > 2 && (caller[0] | caller[1] << 8) == COFF_ARM64, "the objects are ARM64 COFF");
     module(caller, caller_size, defs, defs_size);
-    large_module(caller, caller_size, defs, defs_size, triple);
-    jit(triple, caller, caller_size);
+    large_module(caller, caller_size, defs, defs_size);
+    jit(caller, caller_size);
     /* objects of two machines in one module: refused, saying the first's */
-    if (!definitions_object("x86_64-w64-windows-gnu", &x64, &x64_size)) {
+    if (!definitions_object(NOBJ_X86_64, &x64, &x64_size)) {
         SnxLinkInput inputs[2] = {{caller, caller_size, "caller"}, {x64, x64_size, "x86-64"}};
         static const char* const exports[] = {"caller"};
         SnxLinkOutput linked;
@@ -503,7 +450,7 @@ static int llvm_objects(void) {
 
 int main(void) {
     relocations();
-    if (llvm_objects()) return 1;
+    if (native_objects()) return 1;
     printf("coff_arm64: %s\n", g_coff_arm64.failures ? "FAILED" : "passed");
     return g_coff_arm64.failures ? 1 : 0;
 }
