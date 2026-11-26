@@ -18013,6 +18013,16 @@ static const char* stop_of(const char* line) {
         return NULL;
     return colon + 2;
 }
+/* a log's line, cut at its end ('\n', which becomes the end of the string): its CR before it gone (a Windows program's
+   text mode ends its lines with both); the next line, or NULL after the last */
+static char* line_end(char* line) {
+    char* next = strchr(line, '\n');
+    size_t n;
+    if (next) *next++ = 0;
+    n = strlen(line);
+    if (n && line[n - 1] == '\r') line[n - 1] = 0;
+    return next;
+}
 /* a log's time stamp ("[  15.22] ") before a line, skipped */
 static char* unstamped(char* line) {
     char* end = line[0] == '[' ? strstr(line, "] ") : NULL;
@@ -18030,8 +18040,7 @@ static bool run_error_after(App* app, const char* path) {
     for (char *at = text, *next; at && *at; at = next) {
         char* line;
         const char* why;
-        next = strchr(at, '\n');
-        if (next) *next++ = 0;
+        next = line_end(at);
         line = unstamped(at);
         if ((why = stop_of(line))) snprintf(stop, sizeof stop, "%s", why);
         if (snx_error_heard(line, &heard) < 1) continue;
@@ -22260,8 +22269,7 @@ static void log_stop(const char* path, char* out, size_t size) {
     out[0] = 0;
     for (char *line = text, *next; line && *line; line = next) {
         const char* why;
-        next = strchr(line, '\n');
-        if (next) *next++ = 0;
+        next = line_end(line);
         if (!strncmp(line, "$ ", 2))
             out[0] = 0;
         else if ((why = stop_of(line)))
