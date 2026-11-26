@@ -21,6 +21,7 @@
 #include "common/utilities/script.h"
 #include "common/utilities/vpad_consoles.h"
 #include "common/utilities/vpad_sdl.h"
+#include "common/utilities/console_language.h"
 #include "common/utilities/console_settings.h"
 #include "common/utilities/state_header.h"
 #include "nds/runtime/state.h"
@@ -481,6 +482,12 @@ int snx_nds_main(int argc, char** argv) {
     vpad_set_say(nds_host_say);
     vpad_settings(folder, name, argc, argv);
     if (snx_cli_fullscreen_flag(argc, argv)) g_settings.fullscreen = 1; /* -f's over the settings' */
+    /* the player's language, the Switch's setting, as the firmware's: one the DS has none of said */
+    int language = snx_language_nds(g_settings.language);
+    if (language < 0)
+        fprintf(stderr, "settings: language=%d (%s) is no language of the DS: it plays in English\n",
+                g_settings.language, snx_language_name(g_settings.language));
+    nds_board_language(board, language < 0 ? 1 : language);
     /* offline, as the Switch's network and airplane mode say (the 3DS's too): no Wi-Fi connection set */
     if (wfc && !snx_console_online()) {
         printf("WFC: nds_wfc=%s, and %s: the firmware's Wi-Fi connections are not set\n", g_settings.ds_wfc_service,

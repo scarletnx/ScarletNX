@@ -455,6 +455,10 @@ int main(void) {
     CHECK(board && nds_board_init(board, &rom, error, sizeof error));
     CHECK(nds_read32(board, NDS_TEST_ADDRESS) == nds_test_program[0]);
     CHECK(!memcmp(board->mem.base + 0x027FFE00, "SNXTEST", 7)); /* the header where the firmware leaves it */
+    /* the user settings' language: English as the firmware starts, the one asked after, the backlight kept */
+    CHECK((nds_read16(board, 0x027FFC80u + 0x64) & 7) == 1);
+    nds_board_language(board, 3);
+    CHECK(nds_read16(board, 0x027FFC80u + 0x64) == (3 | 3 << 4));
     test_blz();
     test_memory(board);
     test_registers(board);
