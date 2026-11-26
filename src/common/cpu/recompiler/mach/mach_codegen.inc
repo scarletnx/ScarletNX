@@ -943,9 +943,8 @@ static int bitfield(Unit* u, SnxU32 word) {
 static int reverse(Unit* u, SnxU32 word) {
     SgCtx* g = u->g;
     unsigned sf = word >> 31, opc = word >> 10 & 3, rn = word >> 5 & 31, rd = word & 31, w = sf ? 64 : 32;
-    SgD v, r;
     if ((word & 0x7FFFF000u) != 0x5AC00000u || (opc == 3 && !sf)) return 0;
-    v = xzr_or(g, rn);
+    SgD v = xzr_or(g, rn), r;
     if (!sf) v = sg_d_slice(g, v, 31, 0);
     if (!opc)
         r = MG_RBIT(u, v);
