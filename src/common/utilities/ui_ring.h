@@ -40,4 +40,11 @@ int ui_drawn_ground(const SnxUiQuad* q, SnxUiQuadView* fill);
 #define SNX_UI_ICONS_X SNX_UI_PICTURE
 float ui_icon(SnxUiList* l, float x, float y, int scale, unsigned icon, u32 rgba);
 float ui_icon_backed(SnxUiList* l, float x, float y, int scale, unsigned icon, u32 rgba); /* backed (UI_BACKED) */
+/* The launcher's ring that turns while a screen waits (src/gui/main.c's ring), centred at cx, cy for letters at scale
+   (s): a thin outer circle 7 s pixels in radius in dim, its edge 0.5 s, one 0.62 of it in soft whose edge is 1.5 s,
+   each rounded up to whole pixels, and on it a bar of 70 degrees in ink going round a turn every 1.44 s of now_ms,
+   from 3 o'clock clockwise; at 0 degrees when still (the wait over). Shapes (UI_SHAPE_CIRCLE), the bar's a row of
+   filled ones */
+#define UI_RING_BAR_DOTS 8
+void ui_loading_ring(SnxUiList* l, float cx, float cy, int scale, u64 now_ms, int still, u32 dim, u32 soft, u32 ink);
 #endif

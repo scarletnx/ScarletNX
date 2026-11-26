@@ -152,6 +152,9 @@ int ui_fades(SnxUiFade fades[SNX_UI_FADES]);
 #define SNX_UI_PICTURE   96
 #define SNX_UI_PICTURE_Y 256
 
+/* the picture apart from the atlas, the menu's save state thumbnail: its size */
+#define SNX_UI_IMAGE_W 320
+#define SNX_UI_IMAGE_H 180
 /* the controls, the stats, the showcase and the Switch's menu change on the main thread while the renderer draws them on
    its own: all under this */
 void ui_lock(void);
