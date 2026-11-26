@@ -199,6 +199,7 @@ static int recent_load(const char* dir, char* state, size_t size) {
     char* path = snx_path_join(dir, "recent.txt");
     size_t n = 0;
     gui_recent_load(&r, path);
+    if (r.said[0]) config_say("%s", r.said); /* the launcher's log */
     for (int i = 0; i < r.count && n < size; ++i) n += (size_t)snprintf(state + n, size - n, "%s; ", r.game[i].name);
     free(path);
     return 0;
@@ -221,6 +222,7 @@ static int joycon_load(const char* dir, char* state, size_t size) {
     GuiBt bt = {0};
     char* path = snx_path_join(dir, "joycon2.txt");
     int known = gui_bt_read(&bt, path);
+    if (bt.said[0]) config_say("%s", bt.said); /* the page's note */
     snprintf(state, size, "%d known", known);
     free(path);
     return 0;

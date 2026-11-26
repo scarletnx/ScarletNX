@@ -2218,6 +2218,7 @@ static void recent_open(App* app, char* file) {
     free(app->recent_file);
     app->recent_file = file;
     gui_recent_load(&app->recent, file);
+    if (app->recent.said[0]) gui_log("%s", app->recent.said); /* another version's lines, or a file not read */
     app->browser.head = games_head(app);
 }
 /* still the menu, fading out, while a run starts */
@@ -9152,9 +9153,14 @@ static int folders_save(App* app);
    both for both, the file written again so and said once, each folder named with where it went */
 static void folders_load(App* app) {
     size_t size = 0, said = 0;
-    char *text = app->folders_file ? (char*)snx_read_file(app->folders_file, &size) : NULL, *line, *next;
+    char *text = NULL, *line, *next, why[1024];
     char moved[sizeof app->message];
     moved[0] = 0;
+    if (app->folders_file && snx_config_read(app->folders_file, &text, &size, why, sizeof why) < 0) {
+        size_t m = strlen(app->message); /* said, and never written over (folders_save) */
+        snprintf(app->message + m, sizeof app->message - m, snx_tr("%s%s: no folder of it is listed"), m ? " " : "",
+                 why);
+    }
     for (line = text; line && *line && app->folder_count < GUI_FOLDERS_MAX; line = next) {
         size_t n, deep_n = sizeof GUI_FOLDER_DEEP - 1;
         int library = -1, l;
@@ -9205,7 +9211,7 @@ static void folders_load(App* app) {
 /* 0, else the note says why not */
 static int folders_save(App* app) {
     size_t size = 1, n;
-    char *text, *dir;
+    char *text, why[1024];
     int i, failed;
     if (!app->folders_file) return 0;
     for (i = 0; i < app->folder_count; ++i) size += strlen(app->folders[i]) + sizeof GUI_FOLDER_DEEP + 12;
@@ -9213,14 +9219,13 @@ static int folders_save(App* app) {
     for (i = 0, n = 0; text && i < app->folder_count; ++i)
         n += (size_t)snprintf(text + n, size - n, "%s %s%s\n", library_words[app->folders_library[i]], app->folders[i],
                               app->folders_deep[i] ? GUI_FOLDER_DEEP : "");
-    dir = snx_dirname(app->folders_file);
-    failed = !text || !dir || snx_mkdirs(dir) || snx_write_file(app->folders_file, text, n);
+    /* beside it first, then over it; never over one that cannot be read */
+    failed = !text || snx_config_write(app->folders_file, ".new", text, n, why, sizeof why);
     if (failed) {
-        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Not saved: %s could not be written"),
-                 app->folders_file);
+        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("Not saved: %s"),
+                 text ? why : snx_tr("out of memory"));
         say_failure(app, app->editor.note);
     }
-    free(dir);
     free(text);
     return failed;
 }
@@ -12879,7 +12884,9 @@ static void open_bluetooth(App* app) {
         snprintf(app->editor.note, sizeof app->editor.note, "%s",
                  snx_tr("No config folder: controllers cannot be synced here"));
     else if (gui_bt_read(&app->bt, app->bt_path) < 0)
-        snprintf(app->editor.note, sizeof app->editor.note, snx_tr("%s does not read"), app->bt_path);
+        snprintf(app->editor.note, sizeof app->editor.note, "%s", app->bt.said);
+    else if (app->bt.said[0]) /* its lines that name no controller, once a run */
+        snprintf(app->editor.note, sizeof app->editor.note, "%s", app->bt.said);
     else if (!on)
         snprintf(app->editor.note, sizeof app->editor.note, "%s",
                  snx_tr("Joy-Con 2 is Off: games connect no controller until it is On"));
@@ -18939,42 +18946,44 @@ static void removed_add(App* app, const char* path) {
 /* removed.txt written again through a file beside it, or taken away once no game is off Games. 0; else said, with
    the system's reason */
 static int removed_save(App* app) {
-    char *dir, *staged, *text, why[160], note[sizeof app->message];
-    size_t size = 1, n = 0, i;
+    char *was = NULL, *text, why[1024], note[sizeof app->message];
+    size_t size = 1, n = 0, i, was_size;
     int failed;
     if (!app->removed_file) return 0;
     for (i = 0; i < app->removed_count; ++i) size += strlen(app->removed[i]) + 1;
     text = (char*)snx_alloc(size);
     for (i = 0; i < app->removed_count; ++i) n += (size_t)snprintf(text + n, size - n, "%s\n", app->removed[i]);
-    dir = snx_dirname(app->removed_file);
-    staged = snx_format("%s.new", app->removed_file);
-    if (!app->removed_count)
-        failed = snx_path_exists(app->removed_file) && remove(app->removed_file) != 0;
-    else
-        failed = !dir || !staged || snx_mkdirs(dir) || snx_write_file(staged, text, n) ||
-                 plat_replace_file(staged, app->removed_file);
-    if (failed) {
-        snx_os_error(why, sizeof why);
-        if (staged && snx_path_exists(staged)) remove(staged);
-        snprintf(note, sizeof note, snx_tr("Removed games not kept: %s could not be written (%s)."), app->removed_file,
-                 why);
-        say_failure(app, note);
+    if (!app->removed_count) { /* none left: no file, but one that cannot be read, which stays */
+        failed = snx_config_read(app->removed_file, &was, &was_size, why, sizeof why) < 0 ||
+                 (was && remove(app->removed_file) != 0);
+        if (failed && !was) snprintf(note, sizeof note, snx_tr("Removed games not kept: %s."), why);
+        if (failed && was)
+            snprintf(note, sizeof note, snx_tr("Removed games not kept: %s could not be removed (%s)."),
+                     app->removed_file, snx_os_error(why, sizeof why));
+    } else {
+        failed = snx_config_write(app->removed_file, ".new", text, n, why, sizeof why);
+        if (failed) snprintf(note, sizeof note, snx_tr("Removed games not kept: %s."), why);
     }
-    free(staged);
-    free(dir);
+    if (failed) say_failure(app, note);
+    free(was);
     free(text);
     return failed;
 }
 /* removed.txt, file (owned; NULL keeps none), read: a program a line, each once */
 static void removed_open(App* app, char* file) {
     size_t size = 0;
-    char *text, *line, *next;
+    char *text, *line, *next, why[1024];
     free(app->removed_file);
     app->removed_file = file;
     snx_free_strings(app->removed, app->removed_count);
     app->removed = NULL;
     app->removed_count = 0;
-    text = file ? (char*)snx_read_file(file, &size) : NULL;
+    text = NULL;
+    if (file && snx_config_read(file, &text, &size, why, sizeof why) < 0) { /* said, and never written over */
+        size_t m = strlen(app->message);
+        snprintf(app->message + m, sizeof app->message - m, snx_tr("%s%s: no game is taken off Games by it"),
+                 m ? " " : "", why);
+    }
     for (line = text; line && *line; line = next) {
         char* end = line + strcspn(line, "\r\n");
         next = end + strspn(end, "\r\n");

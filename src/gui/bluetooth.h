@@ -36,10 +36,13 @@ typedef struct {
 typedef struct {
     GuiBtDevice dev[GUI_BT_MAX]; /* the known ones first, as joycon2.txt has them, then the others as heard */
     int count;
+    /* what the last read says: why joycon2.txt cannot be read, or its lines that name no controller, which stay
+       (config_file.h), once a run; "" for nothing */
+    char said[512];
 } GuiBt;
 
 /* joycon2.txt at path read again: the rows it names known (with their side and serial), the others not; a row neither
-   known nor heard goes. How many it knows; -1 when it is there but does not read */
+   known nor heard goes. How many it knows; -1 when it is there but does not read, said in bt->said */
 int gui_bt_read(GuiBt* bt, const char* path);
 /* an advert heard at now: a Joy-Con 2's updates its row, or adds one (none past GUI_BT_MAX). 1 when it was one */
 int gui_bt_heard(GuiBt* bt, const SnxBleAdvert* advert, uint64_t now_ms);

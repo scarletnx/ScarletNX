@@ -6,17 +6,6 @@ last-run.ini no-equals
 last-run.ini repeated
 last-run.ini bad-value
 last-run.ini closed
-folders.txt unreadable
-folders.txt closed
-folders.txt write-fails
-removed.txt unreadable
-removed.txt closed
-recent.txt unknown-key
-recent.txt unreadable
-recent.txt closed
-joycon2.txt unknown-key
-joycon2.txt unreadable
-joycon2.txt closed
 settings.ini 3DS adapter
 settings.ini NDS adapter
 settings.ini Android adapter
