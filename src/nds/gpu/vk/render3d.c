@@ -20,6 +20,7 @@
 #include "nds/gpu/gpu3d_state.h"
 #include "nds/gpu/vk/shaders/poly_spv.h"
 #include "nds/gpu/vk/shaders/post_spv.h"
+#include "snx_settings.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -67,6 +68,8 @@ static struct {
     int first_translucent;
     uint64_t frames;
     bool up, cleared;
+    VkPipelineCache cache; /* the driver's pipelines kept between runs (vk_pipeline_cache), VK_NULL_HANDLE for none */
+    char cache_path[1200];
 } g_3d;
 
 NdsVkImage* nds_vk_render3d_image(void) {
@@ -182,7 +185,7 @@ static VkPipeline pipeline(unsigned kind, unsigned blend, bool color_on, unsigne
                                          .pColorBlendState = &blending,
                                          .pDynamicState = &dynamic,
                                          .layout = g_3d.layout};
-    if (vkCreateGraphicsPipelines(v->device, VK_NULL_HANDLE, 1, &info, NULL, slot) != VK_SUCCESS) *slot = VK_NULL_HANDLE;
+    if (vkCreateGraphicsPipelines(v->device, g_3d.cache, 1, &info, NULL, slot) != VK_SUCCESS) *slot = VK_NULL_HANDLE;
     return *slot;
 }
 
@@ -716,9 +719,33 @@ bool nds_vk_render3d_init(char* error, size_t error_size) {
     return true;
 }
 
+void nds_vk_pipeline_cache_open(const char* folder) {
+    NdsVk* v = nds_vk();
+    char why[512];
+    size_t loaded = 0;
+    if (!v || g_3d.cache || !folder || !g_settings.vulkan_pipeline_cache) return;
+    if (snx_vk_cache_file(v->phys, folder, "vk_pipelines", g_3d.cache_path, sizeof g_3d.cache_path, why, sizeof why)) {
+        fprintf(stderr, "nds gpu: no pipeline cache kept between runs: %s\n", why);
+        return;
+    }
+    g_3d.cache = snx_vk_pipeline_cache_load(v->device, &v->properties, g_3d.cache_path, &loaded, why, sizeof why);
+    if (why[0]) fprintf(stderr, "nds gpu: %s: %s\n", g_3d.cache_path, why);
+    if (loaded) fprintf(stderr, "nds gpu: the pipeline cache of earlier runs loaded (%zu KB)\n", loaded >> 10);
+}
+
 void nds_vk_render3d_free(void) {
     NdsVk* v = nds_vk();
     if (!v) return;
+    if (g_3d.cache) { /* every pipeline made: written for the next run */
+        char why[512];
+        size_t saved = 0;
+        if (snx_vk_pipeline_cache_save(v->device, g_3d.cache, g_3d.cache_path, &saved, why, sizeof why))
+            fprintf(stderr, "nds gpu: the pipeline cache could not be written to %s: %s\n", g_3d.cache_path, why);
+        else
+            fprintf(stderr, "nds gpu: the pipeline cache written (%zu KB)\n", saved >> 10);
+        vkDestroyPipelineCache(v->device, g_3d.cache, NULL);
+        g_3d.cache = VK_NULL_HANDLE;
+    }
     for (unsigned k = 0; k < PIPE_KINDS; ++k)
         for (unsigned b = 0; b < BLEND_COUNT; ++b)
             for (unsigned c = 0; c < 2; ++c)

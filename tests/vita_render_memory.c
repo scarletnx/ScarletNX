@@ -12,6 +12,7 @@
 #include "vita/runtime/process.h"
 #include "vita/runtime/watch.h"
 #include "common/platform/vm.h"
+#include "common/utilities/common.h"
 #include "nx/runtime/ini.h"
 #include "snx_settings.h"
 #include <stdio.h>
@@ -450,12 +451,36 @@ static void check_picture(VitaProcess* p) {
           "the bytes around the picture are wrong");
 }
 
+/* the pipelines kept between runs in the game's folder (vk_pipeline_cache): loaded as the renderer starts, written as
+   it ends */
+static void check_pipeline_cache(VitaProcess* p) {
+    char* dir = snx_temp_dir(NULL);
+    char path[1200], why[512] = "";
+    CHECK(dir && !snx_vk_cache_file(vita_vk()->phys, dir, "vk_pipelines", path, sizeof path, why, sizeof why),
+          "no cache file in a temporary folder: %s", why);
+    if (!dir || why[0]) {
+        free(dir);
+        return;
+    }
+    vita_render_free(p);
+    p->folder = dir;
+    g_settings.vulkan_pipeline_cache = 1;
+    CHECK(vita_render_init(p), "the renderer is not made with a game folder");
+    vita_render_free(p);
+    CHECK(snx_file_size(path) > 0, "%s was not written as the renderer ended", path);
+    p->folder = NULL;
+    CHECK(vita_render_init(p), "the renderer is not made again");
+    (void)snx_remove_tree(dir);
+    free(dir);
+}
+
 static const struct {
     const char* name;
     void (*run)(VitaProcess* p);
     bool copy_only; /* what the import leaves to its driver */
 } checks[] = {
     {"round_trip", check_round_trip, false},
+    {"pipeline_cache", check_pipeline_cache, false},
     {"chain", check_chain, false},
     {"serials", check_serials, false},
     {"unmap", check_unmap, false},
