@@ -67,6 +67,48 @@ _Thread_local u32 g_vk_slot;
    cache line of its own), which the renderer thread folds in at the join (cnt_fold). Both threads adding to one count
    at each draw moved its line between the two cores */
 #define CNT(x) (*(t_rc ? &w_##x : &x))
+/* The small staging writes of the draws (the per-draw block, the texture table's words, inline constants and the
+   rest) out of a block of each thread's own (t_rc), STAGE_ARENA_BYTES taken from the frame's ring at a time. A
+   block holds while its frame and its submission do: the ring's chunk lives for the frame, and the submission flushes
+   the bytes handed out of the chunk, the block's whole range among them. With draw_batches=2 each vk_stage took the
+   share lock, the most taken of its calls: about 7,500 takes a present in one game's busiest town, about one in
+   eight of all its takes. A block takes it once for many draws. Requests past STAGE_ARENA_MAX, or of an alignment past
+   the ring's own, go to vk_stage as before */
+#define STAGE_ARENA_BYTES 16384u
+#define STAGE_ARENA_MAX   4096u
+typedef struct {
+    u8* p; /* the block's bytes, NULL for none */
+    VkBuffer b;
+    u64 base, used; /* the block's offset in b, and the bytes handed out of it */
+    u64 frame, sub; /* the frame (vk_frame_id) and submission (vk_submit_number) it was taken in */
+} StageArena;
+static StageArena g_stage_arena[RC_SLOTS];
+static u8* stage_small(u64 size, u64 align, VkBuffer* buf, u64* off) {
+    const u64 ring_align = vk_stage_align();
+    if (size > STAGE_ARENA_MAX || align > ring_align || (align & (align - 1))) return sh_vk_stage(size, align, buf, off);
+    if (align < 16) align = 16; /* as the ring's own (ring_take) */
+    StageArena* a = &g_stage_arena[t_rc];
+    const u64 frame = vk_frame_id(), sub = vk_submit_number();
+    u64 at = (a->base + a->used + align - 1) & ~(align - 1);
+    if (!a->p || a->frame != frame || a->sub != sub || at + size > a->base + STAGE_ARENA_BYTES) {
+        VkBuffer b;
+        u64 o;
+        u8* p = sh_vk_stage(STAGE_ARENA_BYTES, ring_align, &b, &o);
+        if (!p) {
+            a->p = NULL;
+            return NULL;
+        }
+        /* the submission number after the take: a take that submitted (a full ring) starts the block in the new one */
+        *a = (StageArena){.p = p, .b = b, .base = o, .frame = vk_frame_id(), .sub = vk_submit_number()};
+        at = o;
+    }
+    a->used = at + size - a->base;
+    *buf = a->b;
+    *off = at;
+    return a->p + (at - a->base);
+}
+#undef vk_stage
+#define vk_stage stage_small
 static struct {
     Surf* rt[8];
     Surf* zt;
@@ -5399,7 +5441,10 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
     if (table && nt) {
         for (int i = 0; i < nt; i++)
             if (s->si.tex[i].flags & SNX_TEX_INDEXED) tviews[i] = VK_NULL_HANDLE; /* in the stage's set: word 0 */
-        if (!vk_table_words(tviews, tlayouts, tsamplers, (u32)nt, words)) return VK_NULL_HANDLE;
+        /* the near entries first, with no share lock (vk_table_words_near) */
+        if (!vk_table_words_near(tviews, tlayouts, tsamplers, (u32)nt, words) &&
+            !vk_table_words(tviews, tlayouts, tsamplers, (u32)nt, words))
+            return VK_NULL_HANDLE;
         /* the slots whose records did not hold their view and sampler: the records hold them for the draws after */
         for (u64 m = learn; m; m &= m - 1) {
             const int i = (int)snx_ctz64(m);

@@ -2583,6 +2583,9 @@ VkDescriptorSet vk_table_set(void);
    when the table is full */
 int vk_table_words(const VkImageView* views, const VkImageLayout* layouts, const VkSampler* samplers, u32 n,
                    u32* words);
+/* vk_table_words where each view and sampler already has its near entry, with no share lock: 0 where one hasn't */
+int vk_table_words_near(const VkImageView* views, const VkImageLayout* layouts, const VkSampler* samplers, u32 n,
+                        u32* words);
 /* a view that is destroyed now (vk_image_view_destroy): its slots are free again */
 void vk_table_forget_view(VkImageView view);
 /* The pool map's use of the table (ShCaps.pool_map): image slot 0 and sampler slot 0 kept for the null texture and
@@ -2636,6 +2639,8 @@ static inline u32 vk_sb_round(u32 bytes) {
 /* the sampler for a TSC: raise lets anisotropy= raise its filtering (a 2D texture with mipmaps), integer gives its
    border color as integers (an integer texture) */
 VkSampler vk_sampler(const u32* tsc, int raise, int integer);
+/* the sampler that vk_sampler made before for this state, or VK_NULL_HANDLE: no share lock */
+VkSampler vk_sampler_find(const u32* tsc, int raise, int integer);
 extern int g_vk_anisotropy; /* anisotropy=, read once at start: the sampler table keeps the samplers it made */
 void vk_tex_frame(void);    /* a frame was presented: evicts what wasn't used for a while */
 /* After a frame's present, its own submission: the BC7 encoder makes the BC7 images of ASTC textures held as BC7 from

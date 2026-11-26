@@ -4679,25 +4679,43 @@ static VkSamplerAddressMode wrap(u32 m) {
 /* tsc[0] bit 9 compare, bits 10-12 the compare function; tsc[1] filters (gpu/vk/render.c forces nearest for integer
    textures and the compare mode the shader declares) */
 int g_vk_anisotropy;
-VkSampler vk_sampler(const u32* tsc, int raise, int integer) {
-    vk_shared_note(15);
-    /* samplers are kept for good, and a device allows at least 4000 (maxSamplerAllocationCount): past 3072, a quarter
-       of the table left free for probing, new sampler states get the first sampler made */
-    enum { TAB = 4096, MAX = 3072 };
-    static struct {
-        u32 tsc[8];
-        int raise, integer;
-        VkSampler s;
-    } tab[TAB];
-    static u32 n, ncustom;
-    static VkSampler first;
-    u32 hk = 2166136261u;
+/* samplers are kept for good, and a device allows at least 4000 (maxSamplerAllocationCount): past 3072, a quarter
+   of the table left free for probing, new sampler states get the first sampler made. An entry is written one time,
+   its state first and then its sampler with a release store, so that vk_sampler_find reads it with no share lock */
+enum { SAMPLER_TAB = 4096, SAMPLER_MAX = 3072 };
+static struct {
+    u32 tsc[8];
+    int raise, integer;
+    _Atomic(VkSampler) s;
+} g_sampler_tab[SAMPLER_TAB];
+static u32 sampler_slot(const u32* tsc, int raise, int integer) {
+    u32 hk = 2166136261u; /* 32-bit FNV-1a */
     for (int i = 0; i < 8; i++) hk = (hk ^ tsc[i]) * 16777619u;
     hk = (hk ^ (u32)(raise << 1 | integer)) * 16777619u;
-    u32 j = hk & (TAB - 1);
-    for (u32 probe = 0; probe < TAB && tab[j].s; probe++, j = (j + 1) & (TAB - 1))
-        if (!memcmp(tab[j].tsc, tsc, 32) && tab[j].raise == raise && tab[j].integer == integer) return tab[j].s;
-    if (n >= MAX || tab[j].s) {
+    return hk & (SAMPLER_TAB - 1);
+}
+VkSampler vk_sampler_find(const u32* tsc, int raise, int integer) {
+    u32 j = sampler_slot(tsc, raise, integer);
+    for (u32 probe = 0; probe < SAMPLER_TAB; probe++, j = (j + 1) & (SAMPLER_TAB - 1)) {
+        VkSampler const s = atomic_load_explicit(&g_sampler_tab[j].s, memory_order_acquire);
+        if (!s) return VK_NULL_HANDLE;
+        if (!memcmp(g_sampler_tab[j].tsc, tsc, 32) && g_sampler_tab[j].raise == raise &&
+            g_sampler_tab[j].integer == integer)
+            return s;
+    }
+    return VK_NULL_HANDLE;
+}
+VkSampler vk_sampler(const u32* tsc, int raise, int integer) {
+    vk_shared_note(15);
+    enum { TAB = SAMPLER_TAB, MAX = SAMPLER_MAX };
+    static u32 n, ncustom;
+    static VkSampler first;
+    VkSampler const found = vk_sampler_find(tsc, raise, integer);
+    if (found) return found;
+    u32 j = sampler_slot(tsc, raise, integer);
+    for (u32 probe = 0; probe < TAB && atomic_load_explicit(&g_sampler_tab[j].s, memory_order_relaxed); probe++)
+        j = (j + 1) & (TAB - 1);
+    if (n >= MAX || atomic_load_explicit(&g_sampler_tab[j].s, memory_order_relaxed)) {
         LOG_LIMIT(1, "vulkan: more than %d sampler states: the others use the first one\n", MAX);
         return first;
     }
@@ -4787,10 +4805,10 @@ VkSampler vk_sampler(const u32* tsc, int raise, int integer) {
     }
     VkSampler s;
     if (!VK_OK(vk_sampler_create(g_vk.dev, &si, NULL, &s))) return VK_NULL_HANDLE;
-    memcpy(tab[j].tsc, tsc, 32);
-    tab[j].raise = raise;
-    tab[j].integer = integer;
-    tab[j].s = s;
+    memcpy(g_sampler_tab[j].tsc, tsc, 32);
+    g_sampler_tab[j].raise = raise;
+    g_sampler_tab[j].integer = integer;
+    atomic_store_explicit(&g_sampler_tab[j].s, s, memory_order_release);
     ncustom += custom;
     if (!n++) first = s;
     return s;
