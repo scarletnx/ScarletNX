@@ -2568,6 +2568,10 @@ msgid "Last Run"
 msgstr ""
 
 #: src/gui/main.c
+msgid "LLVM's Caches"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Status"
 msgstr "状态"
 
@@ -4725,6 +4729,40 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "%s%s: %d file, %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s%s: %d files, %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Delete LLVM's Caches? %s. Only these files go: this version neither reads nor makes them"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Deleted %d file, %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Deleted %d files, %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Deleted %d of %d files, %s; %d stay: %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "they changed since they were found, so they are not LLVM's now"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "%s: the setup asks again"
 msgstr "%s：初始设置将再次询问"
 
@@ -4833,12 +4871,20 @@ msgid "Skip"
 msgstr "跳过"
 
 #: src/gui/main.c
+msgid "Delete LLVM's Caches"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Changed since the last version"
 msgstr "自上一版本以来的变更"
 
 #: src/gui/main.c
 msgid "Changed in older versions"
 msgstr "旧版本中的变更"
+
+#: src/gui/main.c
+msgid "What only LLVM made: this version neither reads nor makes it"
+msgstr ""
 
 #: src/gui/main.c
 #, c-format
@@ -4884,6 +4930,10 @@ msgstr "提示：--no-setup 可跳过初始设置"
 
 #: src/gui/main.c
 msgid "Tip: Settings > App > Move Old Files moves them later"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Tip: Settings > App > Move Old Files deletes them later"
 msgstr ""
 
 #: src/gui/main.c
@@ -4968,6 +5018,20 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "Continue goes on from its journal: %d cases so far"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "    %d file, %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "    %d files, %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Delete LLVM's Caches deletes these files alone, after asking; one that changed since stays"
 msgstr ""
 
 #: src/gui/main.c

@@ -996,7 +996,7 @@ typedef struct App {
     bool setup_on;
     char play_held[17]; /* the title ID a PLAY asked for while the setup shows, played once it ends (play_asked) */
     SnxSetup setup;     /* setup.ini as it was read, a newer one's numbers kept when it is written */
-    int setup_pages[SNX_SETUP_STEPS + 3], setup_count, setup_page;
+    int setup_pages[SNX_SETUP_STEPS + 4], setup_count, setup_page;
     GuiChoice setup_choice; /* the page's choices, the one in focus */
     int setup_top;          /* the notice shown, one a page: the last one's OK goes on; the old files' folder */
     /* what Clean Old Settings would take, as the last notice found it (-1 before), and its Clean Now done: its box
@@ -1007,6 +1007,11 @@ typedef struct App {
        its folder's Move All and Delete All would do, an entry a page */
     int left_did;
     GuiCleaned left_plan, left_drop;
+    /* what only LLVM left in the cache folder (old_llvm_caches.h: units/, linux-jit/, android-jit/), as left_behind last
+       found it: the setup's page of its own after the old files', and its Delete LLVM's Caches done, what went said */
+    SnxLlvmCaches llvm_old;
+    bool llvm_did;
+    char llvm_said[1400];
     int setup_language;     /* Settings > App's Language as the setup found it, 0 Auto: kept Auto on the system's */
     int setup_row;          /* the Appearance page's focus, a GUI_APPEARANCE_* row or its Next */
     bool setup_typing;      /* the first user's nickname being typed, setup_name, to go with setup_uid */
@@ -3052,6 +3057,7 @@ static const char* ask_question(App* app) {
         case GUI_ASK_ADDONS:
         case GUI_ASK_SAVES:
         case GUI_ASK_DELETE_OLD:
+        case GUI_ASK_LLVM:
         case GUI_ASK_PACK:
         case GUI_ASK_FORGET: return app->ask_line;
         case GUI_ASK_OVERWRITE: return snx_tr("Overwrite users.ini? It is kept as users.ini.old");
@@ -3503,6 +3509,7 @@ static const char* const ask_choices[][3] = {{SNX_TR_NOOP("Continue"), SNX_TR_NO
                                              {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Clear")},
                                              {SNX_TR_NOOP("Yes"), SNX_TR_NOOP("No")},
                                              {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Delete")},
+                                             {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Delete")},
                                              {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Overwrite")},
                                              {SNX_TR_NOOP("Cancel"), SNX_TR_NOOP("Import")},
                                              {SNX_TR_NOOP("NSP"), SNX_TR_NOOP("XCI")},
@@ -3535,6 +3542,7 @@ static const unsigned ask_tones[] = {UI_ATTR_CAUTION, /* Abort: the run ends */
                                      UI_ATTR_DANGER,  /* Clear: the crash list */
                                      0,               /* No */
                                      UI_ATTR_DANGER,  /* Delete: what an older version left */
+                                     UI_ATTR_DANGER,  /* Delete: LLVM's old caches */
                                      UI_ATTR_CAUTION, /* Overwrite: users.ini, kept as users.ini.old */
                                      UI_ATTR_CAUTION, /* Import: the saves there to the trash */
                                      0,               /* XCI: a pack that changes nothing kept */
@@ -7266,15 +7274,15 @@ static int recompile_tab(const App* app, char* out, size_t size) {
 }
 /* the tabs while the setup shows: its pages, the notices' then each step's, numbered, then what older versions left.
    A page's kind: a step's, the notices', the old files' or the Last Run's */
-enum { SETUP_NOTICE = SNX_SETUP_STEPS, SETUP_LEFT, SETUP_STOPPED };
+enum { SETUP_NOTICE = SNX_SETUP_STEPS, SETUP_LEFT, SETUP_STOPPED, SETUP_LLVM };
 static const char* const setup_step_names[SNX_SETUP_STEPS] = {SNX_TR_NOOP("Appearance"), SNX_TR_NOOP("Install"),
                                                               SNX_TR_NOOP("Folders"), SNX_TR_NOOP("Keys"),
                                                               SNX_TR_NOOP("User")};
 /* each step's icon in its tab, before its name where its number was (the page's head says it, 1/5): the tabs keep
-   the width they had; the notices', the old files' (Move Old Files') and the Last Run's after them */
-static const unsigned setup_step_icons[SNX_SETUP_STEPS + 3] = {
-    GUI_ICON_PALETTE, GUI_ICON_HARD_DRIVE_DOWNLOAD, GUI_ICON_FOLDER,  GUI_ICON_KEY_ROUND, GUI_ICON_USER,
-    GUI_ICON_INFO,    GUI_ICON_FOLDER_INPUT,        GUI_ICON_ACTIVITY};
+   the width they had; the notices', the old files' (Move Old Files'), the Last Run's and LLVM's old caches' after them */
+static const unsigned setup_step_icons[SNX_SETUP_STEPS + 4] = {
+    GUI_ICON_PALETTE, GUI_ICON_HARD_DRIVE_DOWNLOAD, GUI_ICON_FOLDER,   GUI_ICON_KEY_ROUND, GUI_ICON_USER,
+    GUI_ICON_INFO,    GUI_ICON_FOLDER_INPUT,        GUI_ICON_ACTIVITY, GUI_ICON_TRASH};
 static int tab_count(const App* app) {
     if (app->setup_on && !app->editing) return app->setup_count;
     return app->queue.count ? GUI_TABS : GUI_TAB_RECOMPILE;
@@ -7298,6 +7306,7 @@ static void tab_label(const App* app, int i, char* out, size_t size) {
                  app->setup_pages[i] == SETUP_NOTICE    ? snx_tr("Notice")
                  : app->setup_pages[i] == SETUP_LEFT    ? snx_tr("Old Files")
                  : app->setup_pages[i] == SETUP_STOPPED ? snx_tr("Last Run")
+                 : app->setup_pages[i] == SETUP_LLVM    ? snx_tr("LLVM's Caches")
                                                         : snx_tr(setup_step_names[app->setup_pages[i]]));
     }
 }
@@ -9246,8 +9255,8 @@ static void app_values(App* app) {
         else
             snprintf(f->freedreno, sizeof f->freedreno, "%s", snx_tr("None"));
     }
-    if (app->lefts) /* as the menu last looked: when it opened, or App did; a folder each, as the setup's pages */
-        snprintf(f->moves, sizeof f->moves, snx_tr("%d left"), left_groups(app));
+    if (app->lefts || app->llvm_old.count) /* as the menu last looked: a folder each, as the setup's pages, and LLVM's */
+        snprintf(f->moves, sizeof f->moves, snx_tr("%d left"), left_groups(app) + (app->llvm_old.count ? 1 : 0));
     else
         snprintf(f->moves, sizeof f->moves, "%s", snx_tr("Nothing left"));
     /* the three folders under the rows, as Folders' value has no room for them; one in the data folder from it */
@@ -15900,7 +15909,7 @@ static int setup_steps(const App* app) {
    before any it would take */
 static int setup_skips(const App* app) {
     return app->setup_page == (app->setup_pages[0] == SETUP_STOPPED) && setup_page_of(app) != SETUP_LEFT &&
-           setup_page_of(app) != SETUP_STOPPED;
+           setup_page_of(app) != SETUP_STOPPED && setup_page_of(app) != SETUP_LLVM;
 }
 /* the old files' pages show */
 static bool left_page(const App* app) { return app->setup_on && setup_page_of(app) == SETUP_LEFT; }
@@ -16000,12 +16009,15 @@ typedef enum {
     SETUP_DOES_CONTINUE,
     SETUP_DOES_CLEAN,
     SETUP_DOES_MOVE,
-    SETUP_DOES_DELETE
+    SETUP_DOES_DELETE,
+    SETUP_DOES_LLVM
 } SetupDoes;
 static SetupDoes setup_does(const App* app, int i) {
     int page = setup_page_of(app), list[SNX_NOTICES], backs = app->setup_top > 0;
     if (page == SETUP_STOPPED) /* Run Amberlith's Continue and Not Now, a game's OK */
         return app->stopped.probe ? (i == 0 ? SETUP_DOES_CONTINUE : SETUP_DOES_NOT_NOW) : SETUP_DOES_OK;
+    if (page == SETUP_LLVM) /* Delete LLVM's Caches and Not Now, OK once it is done */
+        return app->llvm_did ? SETUP_DOES_OK : i == 0 ? SETUP_DOES_LLVM : SETUP_DOES_NOT_NOW;
     if (page != SETUP_NOTICE && page != SETUP_LEFT) return SETUP_DOES_OTHER;
     if (setup_skips(app) && i == app->setup_choice.count) return SETUP_DOES_SKIP;
     if (page == SETUP_LEFT && app->left_did) return SETUP_DOES_OK;
@@ -16040,9 +16052,10 @@ static int setup_order_row(const App* app, int choice) {
    App's row that does the same (Clean Old Settings, Move Old Files); none for another page's */
 static const unsigned setup_icons[] = {
     GUI_ICON_NONE,         GUI_ICON_ARROW_LEFT, GUI_ICON_CHECK,  GUI_ICON_CHECK,        GUI_ICON_X,
-    GUI_ICON_SKIP_FORWARD, GUI_ICON_PLAY,       GUI_ICON_ERASER, GUI_ICON_FOLDER_INPUT, GUI_ICON_TRASH};
+    GUI_ICON_SKIP_FORWARD, GUI_ICON_PLAY,       GUI_ICON_ERASER, GUI_ICON_FOLDER_INPUT, GUI_ICON_TRASH,
+    GUI_ICON_TRASH};
 /* a SetupDoes added takes its icon here, in its place */
-typedef char snx_setup_icons[SDL_arraysize(setup_icons) == SETUP_DOES_DELETE + 1 ? 1 : -1];
+typedef char snx_setup_icons[SDL_arraysize(setup_icons) == SETUP_DOES_LLVM + 1 ? 1 : -1];
 /* what the choice on row i (setup_order) does; SETUP_DOES_OTHER between the groups */
 static SetupDoes setup_row_does(const App* app, int row) {
     int rows[GUI_SETUP_ROWS], n = setup_order(app, rows);
@@ -16054,7 +16067,7 @@ static unsigned setup_icon(const App* app, int row) { return setup_icons[setup_r
    (users.ini kept as users.ini.old) want care */
 static unsigned setup_tone(const App* app, int row) {
     SetupDoes does = setup_row_does(app, row);
-    if (does == SETUP_DOES_DELETE) return UI_ATTR_DANGER;
+    if (does == SETUP_DOES_DELETE || does == SETUP_DOES_LLVM) return UI_ATTR_DANGER;
     if (does == SETUP_DOES_MOVE || does == SETUP_DOES_CLEAN) return UI_ATTR_CAUTION;
     return setup_page_of(app) == SNX_SETUP_USER && !app->setup_typing && row == 1 ? UI_ATTR_CAUTION : 0;
 }
@@ -16127,6 +16140,74 @@ static void left_delete(App* app) {
     delete_old(app, &app->cleaned, &app->moved, true, false);
     left_done(app, 2);
 }
+/* the folders LLVM's old caches are in (app->llvm_old), each once and in the order found, up to most: how many, each
+   owned in out */
+static int llvm_folders(const App* app, char** out, int most) {
+    int n = 0, i;
+    for (size_t f = 0; f < app->llvm_old.count && n < most; ++f) {
+        char* folder = snx_dirname(app->llvm_old.files[f].path);
+        for (i = 0; folder && i < n && strcmp(out[i], folder); ++i) {}
+        if (folder && i == n)
+            out[n++] = folder;
+        else
+            free(folder);
+    }
+    return n;
+}
+/* "<folder>: N files, SIZE" for each folder of LLVM's old caches, joined by sep, into out */
+static void llvm_said_folders(const App* app, const char* sep, char* out, size_t size) {
+    char* folders[8];
+    int n = llvm_folders(app, folders, 8), i;
+    size_t used = 0;
+    out[0] = 0;
+    for (i = 0; i < n; ++i) {
+        uint64_t bytes = 0;
+        char shown[1024], megs[32];
+        size_t count = snx_llvm_caches_in(&app->llvm_old, folders[i], &bytes);
+        snx_home_short(folders[i], shown, sizeof shown);
+        gui_size_text(megs, sizeof megs, bytes);
+        snprintf(out + used, size - used,
+                 count == 1 ? snx_tr("%s%s: %d file, %s") : snx_tr("%s%s: %d files, %s"), i ? sep : "", shown,
+                 (int)count, megs);
+        used += strlen(out + used);
+        free(folders[i]);
+    }
+}
+/* Delete LLVM's Caches pressed: asked first (GUI_ASK_LLVM), each folder with its files and MB; Cancel deletes none */
+static void llvm_ask(App* app) {
+    char folders[2048];
+    left_behind(app); /* as they are now */
+    if (!app->llvm_old.count) {
+        setup_next(app);
+        return;
+    }
+    llvm_said_folders(app, "; ", folders, sizeof folders);
+    snprintf(app->ask_line, sizeof app->ask_line,
+             snx_tr("Delete LLVM's Caches? %s. Only these files go: this version neither reads nor makes them"),
+             folders);
+    gui_confirm_open(&app->confirm, GUI_ASK_LLVM, false);
+}
+/* its Delete: each file found deleted while it is still LLVM's (snx_llvm_caches_delete), what went and what did not said
+   on the page and in the log; OK goes on */
+static void llvm_delete(App* app) {
+    char error[1100] = "", megs[32];
+    uint64_t bytes = 0;
+    const size_t asked = app->llvm_old.count,
+                 gone = snx_llvm_caches_delete(&app->llvm_old, &bytes, error, sizeof error);
+    gui_size_text(megs, sizeof megs, bytes);
+    if (gone == asked)
+        snprintf(app->llvm_said, sizeof app->llvm_said,
+                 gone == 1 ? snx_tr("Deleted %d file, %s") : snx_tr("Deleted %d files, %s"), (int)gone, megs);
+    else
+        snprintf(app->llvm_said, sizeof app->llvm_said, snx_tr("Deleted %d of %d files, %s; %d stay: %s"), (int)gone,
+                 (int)asked, megs, (int)(asked - gone),
+                 error[0] ? error : snx_tr("they changed since they were found, so they are not LLVM's now"));
+    gui_log("LLVM's old caches: %s", app->llvm_said);
+    app->llvm_did = true;
+    left_behind(app); /* what stays, found again */
+    app->setup_choice.count = 1;
+    app->setup_choice.focus = 0;
+}
 /* the page shown from its start: its choices, the one in focus the one in use */
 static void setup_enter(App* app) {
     int page = setup_page_of(app);
@@ -16163,6 +16244,17 @@ static void setup_enter(App* app) {
             break;
         case SETUP_STOPPED: /* Continue, in focus, and Not Now for Run Amberlith; OK for a game */
             app->setup_choice.count = app->stopped.probe ? 2 : 1;
+            break;
+        case SETUP_LLVM: /* LLVM's old caches, looked for now: Delete LLVM's Caches, and Not Now in focus */
+            app->llvm_did = false;
+            app->llvm_said[0] = 0;
+            left_behind(app);
+            if (!app->llvm_old.count) { /* deleted meanwhile */
+                setup_next(app);
+                return;
+            }
+            app->setup_choice.count = 2;
+            app->setup_choice.focus = 1;
             break;
         case SETUP_LEFT: /* what an older version left, a folder a page, looked for now */
             app->left_did = 0;
@@ -16213,6 +16305,7 @@ static void setup_start(App* app) {
     for (i = 0; i < SNX_SETUP_STEPS; ++i)
         if (snx_setup_asks(&app->setup, i) && snx_setup_here(i)) app->setup_pages[app->setup_count++] = i;
     if (app->lefts > 0) app->setup_pages[app->setup_count++] = SETUP_LEFT; /* what an older version left, last */
+    if (app->llvm_old.count) app->setup_pages[app->setup_count++] = SETUP_LLVM; /* and what only LLVM left */
     app->setup_on = app->setup_count > 0;
     app->setup_save = app->setup_moved = false;
     app->setup_language = app->language;
@@ -16269,9 +16362,10 @@ static void setup_finish(App* app) {
     if (app->setup_moved) { /* in the folders it has now: what an older version left there, its pages */
         app->setup_moved = false;
         left_behind(app);
-        if (app->lefts > 0) {
+        if (app->lefts > 0 || app->llvm_old.count) {
             app->setup_count = app->setup_page = 0;
-            app->setup_pages[app->setup_count++] = SETUP_LEFT;
+            if (app->lefts > 0) app->setup_pages[app->setup_count++] = SETUP_LEFT;
+            if (app->llvm_old.count) app->setup_pages[app->setup_count++] = SETUP_LLVM;
             app->setup_on = true;
             setup_enter(app);
         }
@@ -16465,6 +16559,12 @@ static void setup_take(App* app) {
                 return;
             }
             setup_next(app);
+            return;
+        case SETUP_LLVM: /* Delete LLVM's Caches, asked first; Not Now keeps them; OK once deleted */
+            if (!app->llvm_did && choice == 0)
+                llvm_ask(app);
+            else
+                setup_next(app);
             return;
         case SETUP_LEFT: { /* a folder a page; on the last Move All (asked), Delete All (asked, pressed twice) or Not Now,
                               which keeps them for Settings > App > Move Old Files; OK after either */
@@ -16671,7 +16771,8 @@ static int setup_labels(const App* app, const char** labels) {
                                 SNX_TR_NOOP("Continue"),
                                 clean[0],
                                 left[0],
-                                left[1]};
+                                left[1],
+                                SNX_TR_NOOP("Delete LLVM's Caches")};
     int i, page = setup_page_of(app), count = app->setup_choice.count;
     for (i = 0; i < count; ++i)
         labels[i] = setup_does(app, i)                             ? snx_tr(does[setup_does(app, i) - SETUP_DOES_BACK])
@@ -16689,6 +16790,7 @@ static const char* setup_question(const App* app, char* out, size_t size) {
         case SETUP_NOTICE:
             return app->setup.version ? snx_tr("Changed since the last version") : snx_tr("Changed in older versions");
         case SETUP_LEFT: return snx_tr(SAY_LEFT_TITLE);
+        case SETUP_LLVM: return snx_tr("What only LLVM made: this version neither reads nor makes it");
         case SETUP_STOPPED:
             snprintf(out, size,
                      app->stopped_end.how == RUN_CUT && app->stopped_end.system.known &&
@@ -16718,6 +16820,7 @@ static const char* setup_tip(const App* app) {
     switch (setup_page_of(app)) {
         case SETUP_NOTICE: return snx_tr("Tip: --no-setup skips the setup");
         case SETUP_LEFT: return snx_tr("Tip: Settings > App > Move Old Files moves them later");
+        case SETUP_LLVM: return snx_tr("Tip: Settings > App > Move Old Files deletes them later");
         case SETUP_STOPPED:
             return app->stopped.probe ? snx_tr("Tip: Settings > App > GPU Drivers' Continue goes on with it later")
                                       : snx_tr("Tip: Share Log sends the game's log");
@@ -16737,6 +16840,7 @@ static const char* setup_keys_said(const App* app) {
     return app->setup_typing                     ? SAY_SETUP_TYPING
            : setup_page_of(app) == SETUP_NOTICE  ? SAY_SETUP_NOTICE
            : setup_page_of(app) == SETUP_STOPPED ? SAY_SETUP_NOTICE
+           : setup_page_of(app) == SETUP_LLVM    ? SAY_SETUP_NOTICE
            : setup_page_of(app) == SETUP_LEFT    ? SAY_SETUP_LEFT
            : app->setup_page                     ? SAY_SETUP
                                                  : SAY_SETUP_FIRST;
@@ -17017,6 +17121,35 @@ static void setup_stopped_box(App* app, GuiRect r) {
     }
 #undef STOPPED_LINE
     setup_box(app, r, snx_tr("Last Run"), lines, k);
+}
+/* LLVM's old caches: a folder a line with its files and MB, then what Delete LLVM's Caches does; once done, what went */
+static void setup_llvm_box(App* app, GuiRect r) {
+    char text[10][1400], *folders[8];
+    const char* lines[10];
+    int k = 0, n, i;
+    if (app->llvm_did) {
+        lines[k++] = app->llvm_said;
+        setup_box(app, r, snx_tr("LLVM's Caches"), lines, k);
+        return;
+    }
+    n = llvm_folders(app, folders, 8);
+    for (i = 0; i < n; ++i) {
+        uint64_t bytes = 0;
+        char shown[1024], megs[32];
+        size_t count = snx_llvm_caches_in(&app->llvm_old, folders[i], &bytes);
+        snx_home_short(folders[i], shown, sizeof shown);
+        gui_size_text(megs, sizeof megs, bytes);
+        snprintf(text[k], sizeof text[k], "%s%s", app->theme.marker, shown);
+        lines[k] = text[k], ++k;
+        snprintf(text[k], sizeof text[k], count == 1 ? snx_tr("    %d file, %s") : snx_tr("    %d files, %s"),
+                 (int)count, megs);
+        lines[k] = text[k], ++k;
+        free(folders[i]);
+    }
+    snprintf(text[k], sizeof text[k], "%s",
+             snx_tr("Delete LLVM's Caches deletes these files alone, after asking; one that changed since stays"));
+    lines[k] = text[k], ++k;
+    setup_box(app, r, snx_tr("LLVM's Caches"), lines, k);
 }
 /* lines a row each in text from its top, all when they fit; else as many as fit but one roll a line every
    GUI_SETUP_ROWS_MS to the last and back, an arrow at text's right while some are above or under them and a scroll bar
@@ -17328,6 +17461,7 @@ static void setup_panes(App* app, GuiRect r) {
         case SETUP_NOTICE: setup_notices_box(app, r); break;
         case SETUP_LEFT: setup_left_box(app, r); break;
         case SETUP_STOPPED: setup_stopped_box(app, r); break;
+        case SETUP_LLVM: setup_llvm_box(app, r); break;
         case SNX_SETUP_LANGUAGE: {
             GuiAppearanceBoxes a;
             appearance_boxes(app, r, &a);
@@ -18339,6 +18473,11 @@ static void left_behind(App* app) {
     }
     left_count(app);
     app->left_pages = left_pages_of(app);
+    snx_llvm_caches_free(&app->llvm_old); /* and what only LLVM left in the cache folder, found by format and key */
+    old = menu_folder(app, SNX_USER_CACHE, false);
+    if (old && snx_llvm_caches_scan(old, &app->llvm_old)) snx_llvm_caches_free(&app->llvm_old); /* out of memory */
+    free(old);
+    old = NULL;
     free(kept);
     free(moved);
     free(work);
@@ -18714,6 +18853,16 @@ static void move_row(App* app) {
     left_behind(app);
     app_values(app);
     moves = move_old(app, &plan, &folders, false, false);
+    if (!plan.count && app->llvm_old.count) { /* only what LLVM left: its page, as the setup shows it */
+        gui_cleaned_free(&folders);
+        leave_editor(app);
+        app->setup_count = app->setup_page = 0;
+        app->setup_pages[app->setup_count++] = SETUP_LLVM;
+        app->setup_on = true;
+        setup_enter(app);
+        layout(app);
+        return;
+    }
     if (!plan.count) {
         gui_cleaned_free(&folders);
         snprintf(app->editor.note, sizeof app->editor.note, "%s", snx_tr("Nothing left by an older version"));
@@ -23877,6 +24026,8 @@ static void ask_key(App* app, GuiKey key) {
         closing_start(app);
     else if (ask == GUI_ASK_DELETE_OLD && second)
         left_delete(app);
+    else if (ask == GUI_ASK_LLVM && second)
+        llvm_delete(app);
     else if (ask == GUI_ASK_OVERWRITE && second)
         setup_type(app);
     else if (ask == GUI_ASK_ABORT && second)
@@ -25719,6 +25870,7 @@ static void forget(App* app) {
     gui_cleaned_free(&app->left_plan);
     gui_cleaned_free(&app->left_drop);
     free(app->left);
+    snx_llvm_caches_free(&app->llvm_old);
     if (app->run_locked) snx_unlock_file(app->run_lock);
     app->run_locked = false;
     free(app->self);
