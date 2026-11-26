@@ -711,13 +711,12 @@ static int vec_fp(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
 
 /* FPSR.QC owed where any bit of v's first bytes is set (the lanes that saturated, or the bits a result differs in from
    the wrapped one): the saturating instructions'. The region's are an OR of PTEST's answers in a general-purpose
-   register, no vector register held for it, which mg_qc tests once */
+   register, no vector register held for it, which mg_qc tests once. A narrower v is tested against a mask of its
+   bytes, not shifted to it: two shuffles fewer */
 static void set_qc(SgCtx* g, int v, int bytes) {
     SgX* x = X;
-    int in[4] = {0, 0, 0, 0};
+    int in[4] = {v, bytes < 16 ? kconst(g, sg_ones(8u * (unsigned)bytes), 0) : v, 0, 0}; /* bytes: 1, 2, 4, 8 or 16 */
     SgD any, owed;
-    if (bytes < 16) v = sgx_xclear(x, v, 8u * (unsigned)bytes);
-    in[0] = in[1] = v;
     sgx_vins(x, &sgx_v_ptest, -1, 0, in, 0, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
     any = sg_d_zext(g, sgx_bool_bits(x, sgx_bool(x, SGX_B_CC, x->flags_ins, 5)), 32); /* NE: a bit set */
     owed = g->qc_owed ? sg_d_or(g, sgx_val(32, g->qc_owed), any) : any;
