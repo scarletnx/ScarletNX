@@ -122,22 +122,19 @@ static SnxU64 resolve(const char* sym) {
 [[gnu::constructor]] static void set_resolver(void) { g_ctx.resolve = resolve; }
 
 const char* snx_x64_cold_pool(void) {
-    static unsigned char code[512];
+    unsigned char code[512];
     const SnxU64 lo = 0x0123456789ABCDEFull, hi = 0x0FEDCBA987654321ull;
     SgXBuf hot = {.p = code, .cap = sizeof code, .index = -1};
     SgXAsm a = {.b = &hot};
     const char* why = NULL;
-    size_t base, at, end;
     sgx_vpool(&a, &sgx_v_movdqu_ld, 1, 1, 2); /* the hot code's own, first in the pool */
     sgx_cold_room(&a, 64);
     a.cold.index = -1;
     a.b = &a.cold;
     sgx_byte(&a.cold, 0x90); /* the cold code not at its buffer's start */
     sgx_vpool(&a, &sgx_v_movdqu_ld, 2, lo, hi);
-    at = a.rips[1].at;
-    end = a.rips[1].end;
+    size_t at = a.rips[1].at, end = a.rips[1].end, base = hot.n;
     a.b = &hot;
-    base = hot.n;
     sgx_cold_emit(&a);
     sgx_pool_emit(&a);
     if (hot.n > hot.cap)
