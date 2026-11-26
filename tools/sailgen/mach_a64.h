@@ -253,7 +253,7 @@ enum {
     SGX_M_CAS,  /* CAS: imm log2; the old value */
     SGX_M_CASP, /* CASP of doublewords: the old pair */
     SGX_M_RMW,  /* LDADD...SWP: imm op << 2 | log2 (x64_helpers.c's snx_x64_rmw's); the old value */
-    SGX_M_CRC,  /* CRC32, CRC32C: imm bytes | castagnoli << 4; the result */
+    SGX_M_CRC,  /* CRC32, CRC32C: imm bytes | SSE4.2's CRC32C << 4 | CRC32C's table << 5 | CRC32's slices << 6 */
     SGX_M_FENCE_LD, /* a barrier of loads alone (a machine whose loads are no acquires) */
     SGX_M_FENCE_ST, /* of stores alone */
     SGX_M_FPENTER,  /* the guest's FPCR into the host's, its FPSR cleared (a machine running the guest's own floating
