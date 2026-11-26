@@ -9480,7 +9480,7 @@ int main(int argc, char** argv) {
     /* the App's picks kept at once in app.ini, which the next start reads back */
     {
         size_t size = 0;
-        char *kept, expected[512], id[64], first_id[64];
+        char *kept, expected[sizeof app.message], id[64], first_id[64]; /* a message whole, long folders in it */
         const char* broken = "[app]\ntheme = gone\ntext_size = 9\nlayout = boxes\ncolour = red\ntext_size = 2x\n"
                              "[other]\nlayout = panels\n";
         char* blocker = snx_path_join(temporary, "not a folder");
@@ -10966,8 +10966,13 @@ int main(int argc, char** argv) {
             /* folders.txt as an older version wrote it, a path a line: each folder in the library of what it holds,
                both for both, none or gone the dumps'; written again with them, said once naming each */
             {
-                char *ready = snx_path_join(temporary, "old ready"), *dumped = snx_path_join(temporary, "old dumps"),
-                     *both = snx_path_join(temporary, "old both"), *empty = snx_path_join(temporary, "old empty");
+                /* folders named long, as a deep profile's are: the message says each whole, past 512 bytes */
+#define LONG_NAME ", a folder named as long as a deep profile's are, and as a runner's temporary folder makes them"
+                char *ready = snx_path_join(temporary, "old ready" LONG_NAME),
+                     *dumped = snx_path_join(temporary, "old dumps" LONG_NAME),
+                     *both = snx_path_join(temporary, "old both" LONG_NAME),
+                     *empty = snx_path_join(temporary, "old empty" LONG_NAME);
+#undef LONG_NAME
                 char *game = snx_path_join(ready, GAME("Ready")), *nsp = snx_path_join(dumped, "a.nsp"),
                      *both_game = snx_path_join(both, GAME("Ready")), *both_nsp = snx_path_join(both, "b.xci");
                 char *old_text, *want, *read;
@@ -11070,7 +11075,7 @@ int main(int argc, char** argv) {
         char* games_default = snx_recompiled_dir(data); /* the test's own games/ is elsewhere, set by hand */
         char *keys = snx_strdup(app.keys_path), *themes = snx_strdup(app.themes_dirs[0]); /* so are these */
         char *picked = snx_path_join(temporary, "picked games"), *file = snx_path_join(temporary, "not a folder.txt");
-        char *kept, line[512];
+        char *kept, line[sizeof app.message];
         size_t size;
         assert(app.editor.row == GUI_APP_PLACES && !strcmp(app.app_form.places, "Defaults, 1 Extra(s)"));
         key(&app, SDLK_RETURN);
