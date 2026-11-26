@@ -507,3 +507,5 @@ int main(void) {
         "target's storage result landed nothing\n");
     return 0;
 }
+/* the pool map's views of a texture whose image changed (vk_rt_host): this test makes no pool map */
+void vk_pool_map_swapped(const Surf* t) { (void)t; }
