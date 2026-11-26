@@ -367,6 +367,11 @@ msgstr ""
 
 #: src/gui/editor.c src/gui/main.c
 #, c-format
+msgid "Not saved: %s"
+msgstr ""
+
+#: src/gui/editor.c src/gui/main.c
+#, c-format
 msgid "Not saved: %s could not be written"
 msgstr ""
 
@@ -1494,6 +1499,11 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid " (it keeps %s)"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid " (it keeps %d)"
 msgstr ""
 
 #: src/gui/main.c
@@ -2949,6 +2959,11 @@ msgid "Nothing left"
 msgstr ""
 
 #: src/gui/main.c
+#, c-format
+msgid "%s%s: no folder of it is listed"
+msgstr ""
+
+#: src/gui/main.c
 msgid "recompiled"
 msgstr ""
 
@@ -3957,11 +3972,6 @@ msgid "%s is no recompiled Switch or 3DS game: only they have settings of their 
 msgstr ""
 
 #: src/gui/main.c
-#, c-format
-msgid "%s holds what no setting takes, which the next change leaves out: %s"
-msgstr ""
-
-#: src/gui/main.c
 msgid "Keep"
 msgstr ""
 
@@ -4083,11 +4093,6 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "No config folder: controllers cannot be synced here"
-msgstr ""
-
-#: src/gui/main.c
-#, c-format
-msgid "%s does not read"
 msgstr ""
 
 #: src/gui/main.c
@@ -5306,7 +5311,17 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "Removed games not kept: %s could not be written (%s)."
+msgid "Removed games not kept: %s."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Removed games not kept: %s could not be removed (%s)."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s%s: no game is taken off Games by it"
 msgstr ""
 
 #: src/gui/main.c
@@ -6871,6 +6886,11 @@ msgstr ""
 
 #: src/gui/settings.c
 #, c-format
+msgid "%s=%s is not a value of %s: %s=%s now"
+msgstr ""
+
+#: src/gui/settings.c
+#, c-format
 msgid "%d on, %d other"
 msgstr ""
 
@@ -7218,11 +7238,6 @@ msgstr ""
 
 #: src/gui/theme.c
 #, c-format
-msgid "[%s] %s = %s is not a key of a theme"
-msgstr ""
-
-#: src/gui/theme.c
-#, c-format
 msgid "[body] %s = %s does nothing: ui.txt lays out the lists now (delete it)"
 msgstr ""
 
@@ -7234,6 +7249,11 @@ msgstr ""
 #: src/gui/theme.c
 #, c-format
 msgid "%s could not be read (out of memory): it shows %s"
+msgstr ""
+
+#: src/gui/theme.c
+#, c-format
+msgid "%s: it shows %s"
 msgstr ""
 
 #: src/gui/theme.c
