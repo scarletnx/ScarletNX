@@ -102,6 +102,10 @@ typedef struct {
     SnxU64* none;
     size_t nnone, cap_none;
     int again;    /* the machine's glue refused the function to make it again its way (mg_finish), once */
+    /* the function calls a helper that computes with the host's floating point (MG_HOST_FP_HELPER names them), so its
+       entry puts the host's FP environment back: fp_entry, which the machine's mg_finish sets where the function it
+       made has host_fp and no check, to make it again with one (the function with no floating point has none) */
+    int host_fp, fp_entry;
     int dispatch, d_label, mismatch_label;
     int start_label; /* the function's first word, its entry for any target */
 #ifdef MG_DIRECT_ENTRY
@@ -373,6 +377,10 @@ static void flush(Unit* u) {
     SgCtx* g = u->g;
     int k;
     qc_pay(u);
+#ifdef MG_HOST_FP_HELPER
+    for (k = 0; k < g->x.n && !u->host_fp; ++k)
+        u->host_fp = MG_HOST_FP_HELPER(g->x.ins[k].sym); /* only a call keeps a symbol */
+#endif
     if (g->x.n) sgx_assemble_region(&u->a, &g->x);
 #ifdef MG_POOL_REACH
     if (u->a.nrips && u->b.n - u->a.rips[0].at > MG_POOL_REACH) mg_pool_island(u);
@@ -2363,6 +2371,7 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
     u->a.ncjumps = u->a.nccalls = 0;
     u->a.npool = u->a.nrips = 0;
     u->a.slots_max = 0;
+    u->host_fp = 0;
     u->nstubs = 0;
     u->njtabs = 0;
     u->njslots = 0;
@@ -2827,9 +2836,10 @@ static int mach_object(SnxCodegen* codegen, size_t first, size_t last, const Snx
             u.b.cap = u.b.cap * 2 + codegen->functions[i].count * 400 + 4096;
             u.b.p = (unsigned char*)realloc(u.b.p, u.b.cap);
         }
-        u.again = 0;
+        u.again = u.fp_entry = 0;
         made[i - first] = (unsigned char)function(&u, &codegen->functions[i], i);
-        if (!made[i - first] && u.again) made[i - first] = (unsigned char)function(&u, &codegen->functions[i], i);
+        if (!made[i - first] && (u.again || u.fp_entry))
+            made[i - first] = (unsigned char)function(&u, &codegen->functions[i], i);
         if (u.b.n > u.b.cap) {
             /* past the buffer: grown, and made again, its symbol and relocations too */
             for (; u.nrelocs > relocs; --u.nrelocs) free(u.relocs[u.nrelocs - 1].sym);

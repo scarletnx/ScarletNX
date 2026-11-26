@@ -93,6 +93,8 @@ static const signed char g_pin_hosts[2][7] = {{5, 12, 13, 14, 15, 11, 10}, {5, 1
 #define MG_JTAB_CLOBBER (1u << 0 | 1u << (MG_WIN64(u) ? 8 : 2)) /* RAX, RDX (Windows' R8) */
 #define MG_JTAB_LEADERS 24 /* fewer: the dispatch block (measured on an i5-9400: 12 cases, 14 leaders, 17% quicker) */
 static void unit_reloc(void* machine, size_t at, const char* sym, long long addend);
+/* the helpers that compute with the host's floating point (x64_codegen.h's): a function that calls one checks MXCSR */
+#define MG_HOST_FP_HELPER snx_x64_host_fp_helper
 
 #include "common/cpu/recompiler/mach/mach_codegen.inc"
 
@@ -545,8 +547,10 @@ static void mg_entry(Unit* u, size_t index, SnxU64 start) {
         byte(u, 0xC3);
         bind(u, live);
     }
-    if (u->a.slots_max < 1) u->a.slots_max = 1; /* the frame's first slot, SNX_X64_MXCSR_ENTRY's */
-    sgx_bytes(&u->b, SNX_X64_MXCSR_ENTRY);
+    if (u->fp_entry) {                              /* a function with floating point of the host's (mg_finish) */
+        if (u->a.slots_max < 1) u->a.slots_max = 1; /* the frame's first slot, SNX_X64_MXCSR_ENTRY's */
+        sgx_bytes(&u->b, SNX_X64_MXCSR_ENTRY);
+    }
     mov_rax_imm(u, start);
     byte(u, 0x48), byte(u, 0x39), byte(u, win64(u) ? 0xC2 : 0xC6); /* cmp rsi, rax */
     jcc(u, 0x5, u->mismatch_label);
@@ -628,13 +632,18 @@ static void mg_dispatch(Unit* u, int lab0) {
 }
 static int mg_finish(Unit* u, size_t fix0) {
     size_t i;
+    int again = 0, size;
+    /* floating point of the host's and no check at the entry: made again with it, the frame's first slot its */
+    if (u->host_fp && !u->fp_entry) {
+        if (u->a.slots_max < 1) u->a.slots_max = 1;
+        u->fp_entry = again = 1;
+    }
     /* RSP 16-aligned in the body: the return address and RBX, and the pushed pins' registers: 8 more where those are
        an odd number of doublewords */
-    int size = ((u->a.slots_max * 8 + 15) & ~15) + (int)snx_popcount64(pushed_pins(u)) % 2 * 8;
-    if (win64(u) && size >= 4096 && !u->again) {
-        u->again = 1; /* a page or more, whose prologue reads each page first (the guard page): made again with it */
-        return 0;
-    }
+    size = ((u->a.slots_max * 8 + 15) & ~15) + (int)snx_popcount64(pushed_pins(u)) % 2 * 8;
+    /* a page or more, whose prologue reads each page first (the guard page): made again with it */
+    if (win64(u) && size >= 4096 && !u->again) u->again = again = 1;
+    if (again) return 0;
     for (i = 0; i < u->nframe; ++i)
         if (u->frame_at[i] + 4 <= u->b.cap) {
             unsigned char* p = u->b.p + u->frame_at[i];

@@ -63,6 +63,10 @@ typedef struct {
 
 struct MG_ARM {
     SgCtx g;
+    /* the block calls a helper that computes with the host's floating point (MG_HOST_FP_HELPER names them), so its
+       entry puts the host's FP environment back: fp_entry, set where a block made with host_fp had no check, to make it
+       again with one (the machine's mg_prologue; a block with no floating point has none) */
+    int host_fp, fp_entry;
     SnxArmChainedOptions options; /* the next blocks', no chaining in those that ask for none */
     SgXAsm a;
     SgXBuf b;
@@ -260,6 +264,10 @@ static void mg_entry_exit_fn(SnxXElf* o);
 static void flush(MG_ARM* c) {
     SgCtx* g = &c->g;
     sg_flags_flush(g);
+#ifdef MG_HOST_FP_HELPER
+    for (int k = 0; k < g->x.n && !c->host_fp; ++k)
+        c->host_fp = MG_HOST_FP_HELPER(g->x.ins[k].sym); /* only a call keeps a symbol */
+#endif
     if (g->x.n) sgx_assemble_region(&c->a, &g->x);
     for (int k = 0; k < 15; ++k) g->gpr[k] = 0;
     g->cpsr = 0;
@@ -2082,6 +2090,7 @@ static size_t block(MG_ARM* c, const unsigned char* code, size_t count, SnxU32 p
     /* the assembler's state of a function (its buffers kept) */
     c->a.nframe = 0;
     c->a.slots_max = 0;
+    c->host_fp = 0;
     c->a.cold.n = 0;
     c->a.ncjumps = c->a.nccalls = c->a.npool = c->a.nrips = 0;
     c->a.x = x;
@@ -2194,6 +2203,11 @@ static size_t block(MG_ARM* c, const unsigned char* code, size_t count, SnxU32 p
     sgx_a32_bind(g, b, g->ret);
     mg_return(c);
     sgx_cold_emit(&c->a);
+    if (c->host_fp && !c->fp_entry) {
+        t_mach_arm.fail = saved;
+        c->fp_entry = 1; /* floating point of the host's and no check at the entry: made again with it */
+        return (size_t)-1;
+    }
     c->end = b->n;
     if (entered && MG_ARM_EXIT_LAST(c)) mg_entry_exit(c, pc, first, bad);
     sgx_pool_emit(&c->a);
@@ -2255,11 +2269,11 @@ static int make(MG_ARM* c, const char* name, const unsigned char* code, size_t c
         c->why = "a block of no words, too many, or at a misaligned address";
         return 0;
     }
-    c->big = 0;
+    c->big = c->fp_entry = 0;
     size_t size;
     for (;;) {
         size = block(c, code, count, pc, thumb, consumed, next, user);
-        if (size == (size_t)-1) continue; /* its frame passes an 8-bit immediate: made again with 32-bit ones */
+        if (size == (size_t)-1) continue; /* made again: 32-bit frame sizes, or the entry's FP check */
         if (!size) {
             c->why = t_mach_arm.why ? t_mach_arm.why : "unknown";
             *consumed = 0;
