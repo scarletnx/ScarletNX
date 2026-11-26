@@ -295,9 +295,11 @@
   ".txt": "an extension, of cheats, shipped shaders and a GPU bench's record",
   "CMakeLists.txt": "a checkout's, which a build from it is told by",
   "aes_keys.txt": "the player's 3DS keys, read in place, never written",
+  "device.txt": "a pipeline record's device (pipeline_records), which snx-vk-replay reads",
   "gamecontrollerdb.txt": "SDL's mappings, which SDL reads",
   "manifest.ini": "a 3DS extraction's output",
   "modules.txt": "a recompile's output",
+  "pipeline.txt": "a pipeline record's pipeline (pipeline_records), which snx-vk-replay reads",
   "summary.txt": "the Share Log's report",
   "threads.txt": "a run's thread dump"
  }
