@@ -88,6 +88,12 @@ char* snx_ctr_keys_path(void);
 char* snx_ctr_keys_found(void);
 /* the folder's aes_keys.txt installed at that path: 0, 1 when the folder has none, else -1 with why */
 int snx_ctr_keys_install(const char* folder, char* why, size_t why_size);
+/* the Vita keys' file, ~/.vita/vita_keys.txt (%USERPROFILE%\.vita on Windows) where the Vita driver reads it to decrypt
+   an encrypted dump (vita/loader/keys.h), as the 3DS's are in ~/.3ds; NULL with no home. found: it, if it is there */
+char* snx_vita_keys_path(void);
+char* snx_vita_keys_found(void);
+/* the folder's vita_keys.txt installed at that path: 0, 1 when the folder has none, else -1 with why */
+int snx_vita_keys_install(const char* folder, char* why, size_t why_size);
 
 /* path as the setup shows it: ~/ for the home folder at its start (not on Windows) */
 void snx_home_short(const char* path, char* out, size_t size);

@@ -8003,8 +8003,8 @@ int main(int argc, char** argv) {
     char* self = snx_executable(argv[0]);
     char* input = snx_path_join(temporary, "game with spaces;literal.nro");
     assert(!snx_write_file(input, "0", 1));
-    const char* names[] = {"runtime", "scarletnx-gnuabi", "scarletnx-3ds", "scarletnx-vita", "scarletnx-agb",
-                           "scarletnx-nds",    "scarletnx-android"};
+    const char* names[] = {"runtime",       "scarletnx-gnuabi", "scarletnx-3ds",    "scarletnx-vita",
+                           "scarletnx-agb", "scarletnx-nds",    "scarletnx-android"};
     for (size_t i = 0; i < sizeof names / sizeof *names; ++i) {
 #ifdef _WIN32
         char* filename = snx_format("%s.exe", names[i]);
@@ -8499,12 +8499,34 @@ int main(int argc, char** argv) {
         app.menu.view = GUI_LOAD_KEYS;
         event(&app, &ctr_event);
         assert(!snx_is_file(app.keys3_path) &&
-               strstr(app.message, "is not prod.keys, aes_keys.txt or the DS's ARM7 BIOS"));
+               strstr(app.message, "is not prod.keys, aes_keys.txt, vita_keys.txt or the DS's ARM7 BIOS"));
         keys_outcome(&app, false);
         app.menu.view = GUI_LOAD_NONE;
         free(wrong);
         free(source_3ds);
         free(ctr_dir);
+    }
+    /* the Vita's keys: a vita_keys.txt, installed to ~/.vita where scarletnx-vita reads it to decrypt a dump, whatever
+       row has the focus */
+    {
+        char *vita_dir = snx_path_join(temporary, ".vita"), *vita_keys = snx_path_join(vita_dir, "vita_keys.txt");
+        char* source_vita = snx_path_join(temporary, "vita_keys.txt");
+        free(app.keysv_path);
+        app.keysv_path = vita_keys;
+        assert(!snx_write_file(source_vita, "npdrm_iv = 00", 13));
+        app.menu.view = GUI_LOAD_KEYS;
+        app.keys_of = GUI_KEYS_3DS;
+        drop(&app, source_vita, false);
+        keys_data = snx_read_file(app.keysv_path, &keys_size);
+        assert(app.keys_of == GUI_KEYS_VITA && keys_data && keys_size == 13 && !memcmp(keys_data, "npdrm_iv = 00", 13));
+        assert(!strcmp(app.message, "vita_keys.txt installed: encrypted Vita dumps can be decrypted now."));
+        assert(keys_place(&app, GUI_KEYS_VITA) == app.keysv_path && !strcmp(keys_file(GUI_KEYS_VITA), "vita_keys.txt"));
+        free(keys_data);
+        keys_outcome(&app, true);
+        app.menu.view = GUI_LOAD_NONE;
+        app.keys_of = GUI_KEYS_SWITCH;
+        free(source_vita);
+        free(vita_dir);
     }
     /* the DS's ARM7 BIOS, the NDS row of the same screen: a file of the BIOS's size, or named bios7.bin, or any picked
        on that row, is checked by its size and CRC-32 and installed as bios7.bin where scarletnx-nds reads it; another is
@@ -8539,7 +8561,7 @@ int main(int argc, char** argv) {
         app.menu.view = GUI_LOAD_KEYS;
         app.keys_of = GUI_KEYS_SWITCH;
         drop(&app, game, false); /* neither, on another row: no console's */
-        said = snx_format("%s is not prod.keys, aes_keys.txt or the DS's ARM7 BIOS.", game);
+        said = snx_format("%s is not prod.keys, aes_keys.txt, vita_keys.txt or the DS's ARM7 BIOS.", game);
         assert(app.keys_of == GUI_KEYS_SWITCH && !strcmp(app.message, said));
         free(said);
         keys_outcome(&app, false);
@@ -8576,12 +8598,14 @@ int main(int argc, char** argv) {
         app.keys_of = GUI_KEYS_SWITCH;
         render(&app);
         shows(&app, "Switch  prod.keys", yellow);
-        shows(&app, "3DS     aes_keys.txt  Not installed", rgb(app.theme.ink));
-        shows(&app, "NDS     bios7.bin     Installed", rgb(app.theme.ink));
+        shows(&app, "3DS     aes_keys.txt   Not installed", rgb(app.theme.ink));
+        shows(&app, "Vita    vita_keys.txt  Installed", rgb(app.theme.ink));
+        shows(&app, "NDS     bios7.bin      Installed", rgb(app.theme.ink));
         shows(&app, "Installs to: ", rgb(app.theme.ink)); /* the path's own length wraps it or not */
         assert(keys_place(&app, app.keys_of) == app.keys_path);
         key(&app, SDLK_UP); /* the first: nothing above it */
         assert(app.keys_of == GUI_KEYS_SWITCH);
+        key(&app, SDLK_DOWN);
         key(&app, SDLK_DOWN);
         key(&app, SDLK_DOWN);
         key(&app, SDLK_DOWN); /* the last: nothing under it */

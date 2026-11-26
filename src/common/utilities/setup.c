@@ -453,6 +453,41 @@ int snx_ctr_keys_install(const char* folder, char* why, size_t why_size) {
     free(home);
     return rc;
 }
+/* ~/.vita (%USERPROFILE%\.vita on Windows), the Vita keys' folder as ~/.3ds is the 3DS's; NULL with no home. The Vita
+   driver names the same file (vita_keys_default_path, vita/loader/keys.c) */
+static char* vita_keys_home(void) {
+#ifdef _WIN32
+    const char* home = getenv("USERPROFILE");
+    if (!home || !home[0]) home = getenv("HOME");
+#else
+    const char* home = getenv("HOME");
+#endif
+    return home && home[0] ? snx_path_join(home, ".vita") : NULL;
+}
+char* snx_vita_keys_path(void) {
+    char *home = vita_keys_home(), *path = home ? snx_path_join(home, "vita_keys.txt") : NULL;
+    free(home);
+    return path;
+}
+char* snx_vita_keys_found(void) {
+    char *path = snx_vita_keys_path(), *found = NULL;
+    if (path && snx_is_file(path))
+        found = path;
+    else
+        free(path);
+    return found;
+}
+int snx_vita_keys_install(const char* folder, char* why, size_t why_size) {
+    char* home = vita_keys_home();
+    int rc;
+    if (!home) {
+        snprintf(why, why_size, "%s", "HOME is not set");
+        return -1;
+    }
+    rc = keys_copy(folder, home, "vita_keys.txt", why, why_size);
+    free(home);
+    return rc;
+}
 
 void snx_home_short(const char* path, char* out, size_t size) {
 #ifndef _WIN32

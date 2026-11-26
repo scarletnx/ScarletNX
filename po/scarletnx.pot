@@ -4754,6 +4754,11 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "; vita_keys.txt to %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "This copy is portable: to install it, first move away %s"
 msgstr ""
 
@@ -5072,6 +5077,10 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "only encrypted 3DS games need it"
+msgstr ""
+
+#: src/gui/main.c
+msgid "only encrypted Vita dumps need it"
 msgstr ""
 
 #: src/gui/main.c
@@ -5989,7 +5998,15 @@ msgid "Cannot install aes_keys.txt: neither USERPROFILE nor HOME is set"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Cannot install vita_keys.txt: neither USERPROFILE nor HOME is set"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Cannot install aes_keys.txt: HOME is not set"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Cannot install vita_keys.txt: HOME is not set"
 msgstr ""
 
 #: src/gui/main.c
@@ -5998,6 +6015,10 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "aes_keys.txt installed: encrypted 3DS games can be decrypted now."
+msgstr ""
+
+#: src/gui/main.c
+msgid "vita_keys.txt installed: encrypted Vita dumps can be decrypted now."
 msgstr ""
 
 #: src/gui/main.c
@@ -6031,7 +6052,7 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "%s is not prod.keys, aes_keys.txt or the DS's ARM7 BIOS."
+msgid "%s is not prod.keys, aes_keys.txt, vita_keys.txt or the DS's ARM7 BIOS."
 msgstr ""
 
 #: src/gui/main.c
@@ -6041,12 +6062,12 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "This file could not be read. Pick prod.keys or aes_keys.txt again, from the device's storage (%s)."
+msgid "This file could not be read. Pick prod.keys, aes_keys.txt or vita_keys.txt again, from the device's storage (%s)."
 msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "This file is not prod.keys or aes_keys.txt. Pick the keys file (%s)."
+msgid "This file is not prod.keys, aes_keys.txt or vita_keys.txt. Pick the keys file (%s)."
 msgstr ""
 
 #: src/gui/main.c
@@ -6056,12 +6077,12 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "The picked file could not be read as prod.keys or aes_keys.txt (%s)."
+msgid "The picked file could not be read as prod.keys, aes_keys.txt or vita_keys.txt (%s)."
 msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "The picked file is not prod.keys or aes_keys.txt (%s)."
+msgid "The picked file is not prod.keys, aes_keys.txt or vita_keys.txt (%s)."
 msgstr ""
 
 #: src/gui/main.c
