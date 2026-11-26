@@ -16,6 +16,7 @@
    pixel across its edge, which shows what the console has under the edge pixel (shaders/aa.frag). A line is drawn as
    a line, and the clear bitmap by a pass that reads it from texture memory (shaders/clear.frag). */
 #include "nds/gpu/vk/vk.h"
+#include "common/gpu/vk/jobs.h"
 #include "nds/gpu/gpu3d.h"
 #include "nds/gpu/gpu3d_state.h"
 #include "nds/gpu/vk/shaders/poly_spv.h"
@@ -69,6 +70,17 @@ static struct {
     uint64_t frames;
     bool up, cleared;
     VkPipelineCache cache; /* the driver's pipelines kept between runs (vk_pipeline_cache), VK_NULL_HANDLE for none */
+    /* async_pipelines: the workers that make the new pipelines while the draws that need them are skipped
+       (common/gpu/vk/jobs.h), each job's pipeline, the job of each pipeline in the making (its index plus 1), whether
+       the draws are skipped now (the last pipeline asked for is not there), and the draws skipped so far */
+    SnxVkJobs pool;
+    struct {
+        uint8_t kind, blend, color_on, attribute_mask;
+        VkPipeline made;
+    } jobs[SNX_VK_JOBS];
+    uint8_t job_of[PIPE_KINDS][BLEND_COUNT][2][16];
+    bool skip, making; /* making: skipped as a worker makes the pipeline, not as the device refused it */
+    uint64_t skipped;
     char cache_path[1200];
 } g_3d;
 
@@ -85,10 +97,11 @@ NdsVkImage* nds_vk_render3d_image(void) {
     return g_3d.shown ? g_3d.shown : &g_3d.color;
 }
 
-static VkPipeline pipeline(unsigned kind, unsigned blend, bool color_on, unsigned attribute_mask) {
+/* the pipeline of a kind, a blend, the color's mask and the attributes', made now: VK_NULL_HANDLE where the device
+   refuses it */
+static VkPipeline make(unsigned kind, unsigned blend, bool color_on, unsigned attribute_mask) {
     NdsVk* v = nds_vk();
-    VkPipeline* slot = &g_3d.pipelines[kind][blend][color_on][attribute_mask & 15];
-    if (*slot) return *slot;
+    VkPipeline made = VK_NULL_HANDLE;
     VkPipelineShaderStageCreateInfo stages[2] = {
         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
          .stage = VK_SHADER_STAGE_VERTEX_BIT,
@@ -185,15 +198,61 @@ static VkPipeline pipeline(unsigned kind, unsigned blend, bool color_on, unsigne
                                          .pColorBlendState = &blending,
                                          .pDynamicState = &dynamic,
                                          .layout = g_3d.layout};
-    if (vkCreateGraphicsPipelines(v->device, g_3d.cache, 1, &info, NULL, slot) != VK_SUCCESS) *slot = VK_NULL_HANDLE;
+    if (vkCreateGraphicsPipelines(v->device, g_3d.cache, 1, &info, NULL, &made) != VK_SUCCESS) made = VK_NULL_HANDLE;
+    return made;
+}
+/* a job's pipeline made, on a worker */
+static void job_make(void* owner, unsigned job) {
+    (void)owner;
+    g_3d.jobs[job].made =
+        make(g_3d.jobs[job].kind, g_3d.jobs[job].blend, g_3d.jobs[job].color_on, g_3d.jobs[job].attribute_mask);
+}
+/* The pipeline. Without async_pipelines it is made now. With it a worker makes a new one while the draws that need
+   it are skipped: VK_NULL_HANDLE until it is done, as where the device refuses it */
+static VkPipeline pipeline(unsigned kind, unsigned blend, bool color_on, unsigned attribute_mask) {
+    VkPipeline* slot = &g_3d.pipelines[kind][blend][color_on][attribute_mask & 15];
+    uint8_t* job = &g_3d.job_of[kind][blend][color_on][attribute_mask & 15];
+    g_3d.making = false;
+    if (*slot) return *slot;
+    if (*job) {
+        if (!snx_vk_jobs_take(&g_3d.pool, *job - 1u)) return g_3d.making = true, VK_NULL_HANDLE;
+        *slot = g_3d.jobs[*job - 1u].made;
+        *job = 0;
+        return *slot;
+    }
+    g_3d.pool.make = job_make, g_3d.pool.who = "nds gpu", g_3d.pool.thread = "DS pipelines";
+    if (g_settings.async_pipelines && snx_vk_jobs_start(&g_3d.pool, g_settings.pipeline_threads)) {
+        int i = snx_vk_jobs_free(&g_3d.pool);
+        if (i >= 0) { /* with every job in hand the pipeline is asked for again at the next draw */
+            g_3d.jobs[i].kind = (uint8_t)kind, g_3d.jobs[i].blend = (uint8_t)blend;
+            g_3d.jobs[i].color_on = color_on, g_3d.jobs[i].attribute_mask = (uint8_t)(attribute_mask & 15);
+            g_3d.jobs[i].made = VK_NULL_HANDLE;
+            *job = (uint8_t)(i + 1);
+            snx_vk_jobs_queue(&g_3d.pool, (unsigned)i);
+        }
+        g_3d.making = true;
+        return VK_NULL_HANDLE;
+    }
+    *slot = make(kind, blend, color_on, attribute_mask);
     return *slot;
 }
 
 /* ---- the frame's state, as each draw sets it ---- */
 
+/* the pipeline bound, or, where it is not there yet (async_pipelines) or the device refused it, the draws after it
+   skipped until the next one */
 static void use(VkCommandBuffer cb, unsigned kind, unsigned blend, bool color_on, unsigned attribute_mask) {
     VkPipeline p = pipeline(kind, blend, color_on, attribute_mask);
+    g_3d.skip = !p;
     if (p) vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
+}
+/* a draw of count vertices from first, unless its pipeline is not there */
+static void draw(VkCommandBuffer cb, uint32_t count, uint32_t first) {
+    if (g_3d.skip) {
+        g_3d.skipped += g_3d.making;
+        return;
+    }
+    if (count) vkCmdDraw(cb, count, 1, first, 0);
 }
 static void mode(VkCommandBuffer cb, int32_t value) {
     vkCmdPushConstants(cb, g_3d.layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, 4, &value);
@@ -216,14 +275,14 @@ static VkCompareOp depth_op(const NdsPolygon* p) {
 }
 static int draw_one(VkCommandBuffer cb, uint32_t i) {
     const Drawn* d = &g_3d.drawn[i];
-    if (d->vertex_count) vkCmdDraw(cb, d->vertex_count, 1, d->first_vertex, 0);
+    draw(cb, d->vertex_count, d->first_vertex);
     return 1;
 }
 /* the polygons from i on that are drawn the same way, in one draw */
 static int draw_batch(VkCommandBuffer cb, uint32_t i) {
     uint32_t key = g_3d.drawn[i].key, count = 0, end = i;
     for (; end < g_3d.drawn_count && g_3d.drawn[end].key == key; ++end) count += g_3d.drawn[end].vertex_count;
-    if (count) vkCmdDraw(cb, count, 1, g_3d.drawn[i].first_vertex, 0);
+    draw(cb, count, g_3d.drawn[i].first_vertex);
     return (int)(end - i);
 }
 /* the pipeline polygon i is drawn with: its triangles', or its line's */
@@ -401,7 +460,7 @@ static void draw_translucent(VkCommandBuffer cb, const NdsGpu3D* g) {
             use(cb, PIPE_STENCIL, BLEND_NONE, false, 0);
             depth(cb, VK_COMPARE_OP_ALWAYS, false);
             stencil(cb, VK_COMPARE_OP_ALWAYS, 0, 0xFF, KEEP, KEEP, VK_STENCIL_OP_ZERO, 0x80);
-            vkCmdDraw(cb, 3, 1, 0, 0);
+            draw(cb, 3, 0);
             use_for(cb, i, BLEND_NONE, false, 0);
             mode(cb, 2);
             depth(cb, VK_COMPARE_OP_LESS, false);
@@ -551,7 +610,7 @@ static void begin_scene(VkCommandBuffer cb, const NdsGpu3D* g, VkDescriptorSet s
         depth(cb, VK_COMPARE_OP_ALWAYS, true);
         stencil(cb, VK_COMPARE_OP_ALWAYS, 0xFF, 0xFF, VK_STENCIL_OP_REPLACE, VK_STENCIL_OP_REPLACE, VK_STENCIL_OP_REPLACE,
                 0xFF);
-        vkCmdDraw(cb, 3, 1, 0, 0);
+        draw(cb, 3, 0);
     }
 }
 
@@ -622,12 +681,12 @@ void nds_vk_render3d(NdsBoard* board) {
         if (g->render_disp_cnt & (1u << 5)) {
             use(cb, PIPE_POST, BLEND_EDGE, true, 0);
             mode(cb, 1);
-            vkCmdDraw(cb, 3, 1, 0, 0);
+            draw(cb, 3, 0);
         }
         if (g->render_disp_cnt & (1u << 7)) {
             use(cb, PIPE_POST, g->render_disp_cnt & (1u << 6) ? BLEND_FOG_ALPHA : BLEND_FOG, true, 0);
             mode(cb, 2);
-            vkCmdDraw(cb, 3, 1, 0, 0);
+            draw(cb, 3, 0);
         }
         vkCmdEndRendering(cb);
     }
@@ -637,7 +696,7 @@ void nds_vk_render3d(NdsBoard* board) {
         nds_vk_layout(cb, &g_3d.color, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         begin_over(cb, g, &g_3d.blended, set);
         use(cb, PIPE_AA, BLEND_NONE, true, 0);
-        vkCmdDraw(cb, 3, 1, 0, 0);
+        draw(cb, 3, 0);
         vkCmdEndRendering(cb);
         g_3d.shown = &g_3d.blended;
     }
@@ -740,6 +799,13 @@ void nds_vk_pipeline_cache_open(const char* folder) {
 void nds_vk_render3d_free(void) {
     NdsVk* v = nds_vk();
     if (!v) return;
+    /* the workers stopped, every pipeline begun made, and the ones no draw collected freed */
+    snx_vk_jobs_stop(&g_3d.pool, NULL);
+    for (unsigned i = 0; i < SNX_VK_JOBS; ++i)
+        if (snx_vk_jobs_done(&g_3d.pool, i) && g_3d.jobs[i].made) vkDestroyPipeline(v->device, g_3d.jobs[i].made, NULL);
+    if (g_3d.skipped)
+        fprintf(stderr, "nds gpu: async_pipelines=%d skipped %llu draw%s while their pipelines were made\n",
+                g_settings.async_pipelines, (unsigned long long)g_3d.skipped, g_3d.skipped == 1 ? "" : "s");
     if (g_3d.cache) { /* every pipeline made: written for the next run */
         char why[512];
         size_t saved = 0;
