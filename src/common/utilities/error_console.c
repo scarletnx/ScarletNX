@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "common/utilities/error_console.h"
+#include "common/utilities/game_log.h"
 #include "common/utilities/common.h"
 #include "common/utilities/error_sdl.h"
 #include <SDL3/SDL.h>
@@ -92,6 +93,8 @@ int snx_error_console_end(int status, const char* const* argv) {
     int action;
     if (!status || !noted) return status;
     e = *noted;
+    snx_game_log_sync(); /* the panel's Share Log takes the game log with the stop's own lines */
+    if (!e.log[0] && snx_game_log_path()) snprintf(e.log, sizeof e.log, "%s", snx_game_log_path());
     self = snx_executable(NULL);
     if (self) snprintf(e.program, sizeof e.program, "%s", self); /* what Try Again runs again */
     action = snx_error_sdl_window(&e, NULL, why, sizeof why);

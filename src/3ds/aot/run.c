@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-#include "common/utilities/menu_window.h"
 #include "3ds/aot/ctr_module.h"
+#include "common/utilities/game_log.h"
+#include "common/utilities/menu_window.h"
 #include "3ds/loader/smdh.h"
 #include "3ds/aot/ctr_compile.h"
 #include "3ds/aot/ctr_jit.h"
@@ -242,6 +243,10 @@ int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel
     SnxCtrNative native = {0};
     char *module_path = NULL, *frame_dir = NULL, *wav = NULL, title[192];
     int result = 1;
+    /* the game's log, before any thread of the run's: every line from here in <name>.log too */
+    char logged[1600];
+    if (snx_game_log_start(directory, snx_path_leaf(directory), &g_settings.log_size_limit, logged, sizeof logged))
+        fprintf(stderr, "scarletnx-3ds: %s: the run's lines are on the terminal alone\n", logged);
     if (!(game ? snx_ctr_image_from_source(game, &image, error, error_size)
               : snx_ctr_image_load(directory, &image, error, error_size)))
         goto done;

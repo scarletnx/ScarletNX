@@ -4,6 +4,7 @@
 #define _GNU_SOURCE /* sigaltstack, SA_ONSTACK */
 #endif
 #include "3ds/memory/host.h"
+#include "common/utilities/game_log.h"
 #include "common/memory/host.h"
 #include <stdio.h>
 #include <string.h>
@@ -79,8 +80,7 @@ static void fault(int signal, siginfo_t* info, void* context) {
         char line[] = "3ds: guest data abort at 0x000000000 in the block at 0x00000000\n";
         hex(line + 27, (uint64_t)(at - g_host.base), 9);
         hex(line + 55, g_host.pc ? *g_host.pc : 0, 8);
-        ssize_t written = write(2, line, sizeof line - 1);
-        (void)written;
+        snx_game_log_crash(line, sizeof line - 1); /* in the game log too, before the pipe's reader is gone */
         _exit(1);
     }
     /* someone else's fault: the handler before, or the default (the signal again, without this handler) */

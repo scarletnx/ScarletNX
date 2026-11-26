@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "common/utilities/menu_window.h"
 #include "common/utilities/console_settings.h"
+#include "common/utilities/game_log.h"
 #include "common/utilities/hotkeys.h"
 #include "common/utilities/menu_sdl.h"
 #include "common/utilities/overlay.h"
@@ -105,8 +106,13 @@ static int event(const SDL_Event* e, int action, int* out) {
 }
 static int draw(SnxUiList* l, int w, int h) {
     if (overlay_states_stale() || (g_menu_window.relist && !--g_menu_window.relist)) slots_list();
-    int before = l->n;
+    int before = l->n, full = snx_game_log_full_take();
     ui_lock();
+    if (full) { /* the game log's first cut (game_log.c), said over the game once, as the Switch's */
+        char said[96];
+        snprintf(said, sizeof said, "Log full at %d MiB: older lines cut (Debug > Log size limit)", full);
+        overlay_setting_toast("log_max", said, SDL_GetTicksNS());
+    }
     overlay_draw(l, w, h, SDL_GetTicksNS());
     ui_unlock();
     return l->n > before;
