@@ -15,7 +15,7 @@
    functions. Each imported variable gets a slot of VITA_VARIABLE_SIZE bytes from VITA_VARIABLES, and the code
    referring to it is relocated to that slot. The placement is stable, so compiled blocks hold the same guest addresses. */
 #define VITA_LOAD_BASE  0x81000000u
-#define VITA_IMAGE_END  0x82000000u /* where the user memory starts (vita/runtime/process.h) */
+#define VITA_IMAGE_END  0x90000000u /* the most an image reaches; the user memory past it (vita/runtime/process.c) */
 #define VITA_SEGMENTS   32u
 /* The imported variables of every loaded module share one table, below VITA_LOAD_BASE and clear of the runtime's own
    page (0x80000000) and the threads' TLS (0x80010000..0x80050000). The stride is generous enough for any variable
