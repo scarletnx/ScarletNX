@@ -22,6 +22,7 @@
 #include "common/cpu/recompiler/loader/code_loader.h"
 #include "common/cpu/recompiler/object/objects_pack.h"
 #include "common/cpu/recompiler/mach/native.h"
+#include "common/cpu/recompiler/fallback.h"
 #include "common/cpu/recompiler/x64/x64_codegen.h"
 #include "common/cpu/recompiler/worker_threads.h"
 #include "common/cpu/recompiler/x64/x64_elf.h"
@@ -81,7 +82,7 @@ struct snx_recompiler {
     int live_code; /* the modules' JIT reads the caller's code ranges in place, not a copy */
     char* cache;   /* folder of linked modules by the hash of what they were made from, NULL for none */
     /* the host's native back end makes the code (mach/native.h): 0 once snx_recompiler_set_backend asks for LLVM
-       alone, which the recompile refuses */
+       alone, the tests' reference for it (fallback.h) */
     int x64;
     size_t x64_made;       /* the last module's functions the native back end made */
     const SnxU32* without; /* snx_native_without's */
@@ -627,6 +628,8 @@ static int load_descriptor(struct snx_recompiler* r, struct snx_recompiled* m, c
 typedef struct {
     size_t first, last; /* functions */
     size_t weight;      /* its functions' function_weight: the units start largest first, and progress counts it */
+    unsigned char* object; /* LLVM's, of all of them, where it was asked for alone */
+    size_t size;
     /* the native back end's object of the unit's functions (mach/native.h) */
     unsigned char* x64;
     size_t x64_size, x64_made;
@@ -650,6 +653,16 @@ typedef struct {
 static int native_unit(Queue* q, size_t index, char* error, size_t error_size) {
     Unit* u = &q->units[index];
     if (u->last == u->first) return 0;
+    if (!q->r->x64) {
+        /* LLVM alone: every function of the unit, with the stale checks of every call through the table */
+        char name[32];
+        SnxNativeOptions options = {0};
+        SnxFallbackUnit unit = {0};
+        snprintf(name, sizeof(name), "code_%03lu", (unsigned long)index);
+        options.stale = q->codegen->hook_direct_calls;
+        return snx_fallback_object(q->codegen, u->first, u->last, &options, NULL, &unit, name, q->r->opt, &u->object,
+                                   &u->size, error, error_size);
+    }
     SnxNativeOptions options = {0};
     options.alone = 1;
     options.refused = &u->x64_refused;
@@ -919,14 +932,14 @@ static int recompile_native(struct snx_recompiler* r, struct snx_recompiled* m, 
     char* cached = NULL;
     memset(&q, 0, sizeof(q));
     error[0] = 0;
-    if (!r->x64) {
+    if (!r->x64 && !snx_fallback_available()) {
         fail(r,
-             "the code generator asked for is LLVM alone (snx_recompiler_set_backend 0), and the library makes its "
-             "code with the %s back end alone",
+             "the code generator asked for is LLVM alone (snx_recompiler_set_backend 0), and this build has no LLVM "
+             "(SNX_WITH_LLVM=OFF): only the %s back end makes code here",
              snx_native_name());
         return -1;
     }
-    if (r->cache) {
+    if (r->cache && r->x64) { /* LLVM alone's modules, the tests' reference, are not kept */
         cached = cache_path(r, codegen);
 #if defined(__powerpc64__)
         if (!load_cached_objects(r, m, cached)) {
@@ -963,8 +976,8 @@ static int recompile_native(struct snx_recompiler* r, struct snx_recompiled* m, 
     if (r->progress) r->progress(r->progress_user, 0, q.weight_total, 0, q.functions_total);
     char why[256];
     /* (a host below its back end's floor has no recompiler here: snx_recompiler_has) */
-    if (snx_native_fallback(why, sizeof why)) report(r, "%s\n", why);
-    report(r, "%s back end: %lu code unit%s and the descriptor\n", snx_native_name(), (unsigned long)count,
+    if (r->x64 && snx_native_fallback(why, sizeof why)) report(r, "%s\n", why);
+    report(r, "%s: %lu code unit%s and the descriptor\n", r->x64 ? snx_native_name() : "LLVM", (unsigned long)count,
            count == 1 ? "" : "s");
     if (count) run_queue(&q, r->jobs);
     if (q.failed) {
@@ -992,7 +1005,7 @@ static int recompile_native(struct snx_recompiler* r, struct snx_recompiled* m, 
         }
     }
     /* link: the runtime library (the build's object, rtlib_object.h), the descriptor, the units */
-    inputs = (SnxLinkInput*)calloc(count + 2, sizeof(*inputs));
+    inputs = (SnxLinkInput*)calloc(2 * count + 2, sizeof(*inputs));
     if (!inputs) {
         fail(r, "out of memory");
         goto done;
@@ -1003,18 +1016,25 @@ static int recompile_native(struct snx_recompiler* r, struct snx_recompiled* m, 
     inputs[n].data = descriptor_object;
     inputs[n].size = descriptor_size;
     inputs[n++].name = "descriptor";
-    for (i = 0; i < count; ++i)
+    for (i = 0; i < count; ++i) {
+        if (q.units[i].object) {
+            inputs[n].data = q.units[i].object;
+            inputs[n].size = q.units[i].size;
+            inputs[n++].name = "LLVM's code unit";
+        }
         if (q.units[i].x64) {
             inputs[n].data = q.units[i].x64;
             inputs[n].size = q.units[i].x64_size;
             inputs[n++].name = "code unit";
         }
+    }
     {
         size_t x64_made = 0, refused = 0;
         for (i = 0; i < count; ++i) x64_made += q.units[i].x64_made, refused += q.units[i].x64_refused;
         r->x64_made = x64_made;
-        report(r, "%s back end: %lu of %lu functions\n", snx_native_name(), (unsigned long)x64_made,
-               (unsigned long)codegen->function_count);
+        if (r->x64)
+            report(r, "%s back end: %lu of %lu functions\n", snx_native_name(), (unsigned long)x64_made,
+                   (unsigned long)codegen->function_count);
         if (refused)
             snx_error("native back end: %lu of %lu functions have an instruction it has no code for: each made, the "
                       "instruction undefined where it runs",
@@ -1043,7 +1063,7 @@ static int recompile_native(struct snx_recompiler* r, struct snx_recompiled* m, 
         fail(r, "linking the recompiled module failed: %s", error);
         goto done;
     }
-    report(r, "%s module: %.1f MB\n", snx_native_name(), (double)linked.size / 1000000.0);
+    report(r, "%s module: %.1f MB\n", r->x64 ? snx_native_name() : "LLVM", (double)linked.size / 1000000.0);
     if (load_image(r, m, linked.data, linked.size)) goto done;
     if (cached) save_cached(cached, linked.data, linked.size);
     {
@@ -1056,7 +1076,10 @@ static int recompile_native(struct snx_recompiler* r, struct snx_recompiled* m, 
     }
     rc = 0;
 done:
-    for (i = 0; i < count; ++i) free(q.units[i].x64);
+    for (i = 0; i < count; ++i) {
+        free(q.units[i].object);
+        free(q.units[i].x64);
+    }
     free(q.units);
     free(units);
     free(inputs);
