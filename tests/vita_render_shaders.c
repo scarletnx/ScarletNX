@@ -7,7 +7,9 @@
    and one whose texture it does not sample changes nothing; its bytes are read at its first draw alone, not at each.
    prepare_shaders: a draw's shaders and pipeline go into the prepared file named for the driver, and a second run
    makes them from it, before its first draw (2) or on the workers (1, collected as a scene begins), so its draw
-   makes no pipeline of its own; packed with compress_prepared_shaders; a record changed on disk ends the file there. The GXP programs are the translator's smallest: a
+   makes no pipeline of its own; packed with compress_prepared_shaders; a record changed on disk ends the file there.
+   pipeline_libraries: a pipeline linked from parts, a second one taking the first's parts but one, then the
+   optimized one in the first's place. The GXP programs are the translator's smallest: a
    header, and one with a cube sampler (vita_usse_cube.c's). Skips (77) without a Vulkan device */
 #include "vita/gpu/gxm.h"
 #include "vita/gpu/gxp.h"
@@ -197,6 +199,46 @@ static void change_third(const char* path) {
     if (d) CHECK(!snx_write_file(path, d, size), "cannot write %s", path);
     free(d);
 }
+/* pipeline_libraries: a draw's pipeline linked from its parts; another that differs in its blending alone links the
+   parts the first made but its fragment output one; once the workers made their optimized pipelines, a draw takes
+   them in the links' place */
+static void check_libraries(void) {
+    if (!vita_vk()->gpl.on) {
+        printf("libraries: skipped, the device makes no pipeline from libraries\n");
+        return;
+    }
+    VitaProcess* p = process_make(NULL);
+    if (!p) {
+        CHECK(false, "no process");
+        return;
+    }
+    GxmContext* c = &p->gxm->context;
+    programs(p, scene_begin(p));
+    VitaLibraries counts[4];
+    counts[0] = vita_render_libraries(p);
+    bool made = vita_render_pipeline_made(p, c, 0);
+    counts[1] = vita_render_libraries(p);
+    p->gxm->fragment[0].blend = true;
+    p->gxm->fragment[0].blend_info = 0xf | 1u << 8 | 4u << 16 | 5u << 20 | 4u << 24 | 5u << 28;
+    made = made && vita_render_pipeline_made(p, c, 0);
+    counts[2] = vita_render_libraries(p);
+    vita_render_pipelines_wait(p); /* the optimized ones, taken by the next draw of each */
+    p->gxm->fragment[0].blend = false;
+    p->gxm->fragment[0].blend_info = 0xf;
+    made = made && vita_render_pipeline_made(p, c, 0);
+    counts[3] = vita_render_libraries(p);
+    vita_render_wait(p, vita_render_end_scene(p, c));
+    process_free(p);
+    for (int i = 1; i < 4; ++i)
+        printf("libraries: after draw %d, %u linked, %u optimized, %u parts, %u reused, %u replaced\n", i,
+               counts[i].linked, counts[i].optimized, counts[i].parts, counts[i].reused, counts[i].replaced);
+    CHECK(made && counts[1].linked == counts[0].linked + 1 && counts[1].parts == counts[0].parts + 4 &&
+              counts[2].linked == counts[1].linked + 1 && counts[2].parts == counts[1].parts + 1 &&
+              counts[2].reused >= counts[1].reused + 3 && counts[3].linked == counts[2].linked &&
+              counts[3].optimized >= 2 && counts[3].replaced == counts[2].replaced + 1,
+          "the libraries' counts are not a link of four parts, then one of three of them and a new one, then an "
+          "optimized one in the first's place");
+}
 /* two runs on a folder of their own each round: the first's draw kept, the second's made from it */
 static void check_prepared(void) {
     char* base = snx_temp_dir(NULL);
@@ -294,6 +336,7 @@ int main(void) {
     vita_render_wait(p, vita_render_end_scene(p, c));
     process_free(p);
     check_prepared();
+    check_libraries();
     vita_vk_free();
     printf("%s\n", g_failures ? "FAIL" : "ok");
     return g_failures ? 1 : 0;

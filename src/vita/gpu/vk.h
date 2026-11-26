@@ -4,6 +4,7 @@
 #define SNX_VITA_VK_H
 #include "common/gpu/vk/ring.h"
 #include "common/gpu/vk/swapchain.h"
+#include "common/gpu/vk/gpl.h"
 #include "common/gpu/vk/pacing.h"
 #include "common/gpu/vk/window.h"
 #include <stdbool.h>
@@ -42,6 +43,7 @@ typedef struct {
     bool local_read, raster_order;
     SnxVkSwapchain swap;
     SnxVkPacing pacing; /* frame_pacing's (common/gpu/vk/pacing.h) */
+    SnxVkGpl gpl;       /* pipeline_libraries's (common/gpu/vk/gpl.h): the pipelines linked from parts */
     bool checkpoints;   /* the device is made with vk_checkpoints' extension (common/gpu/vk/marks.h) */
     SnxVkPaced paced;
     /* a submission slot's acquired image, a swapchain image's rendering done */
