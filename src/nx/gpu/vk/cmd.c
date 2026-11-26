@@ -1210,10 +1210,23 @@ static u64 results_added(void) {
    recorded added any, as a finish in it lands only what was submitted before */
 static u64 g_sub_adds;
 int vk_recording_results(void) { return results_added() != g_sub_adds; }
+/* the submissions that the renderer thread held in split runs until their join (submit) */
+static _Atomic u64 g_split_held;
 static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo* xs, int land, int why) {
     /* a worker in a split run takes the ring first, before this changes the frame's state (render.c's
        vk_split_ring_wait) */
     vk_rec_ring_take();
+    /* In a split run (draw_batches=2) the renderer thread submits nothing until its join, as finish() does: the
+       worker's commands name the command buffer being recorded, and the results they add name its submission. The
+       renderer thread's half asked for submissions in a texture's load: a sparse image's bind (memory.c's
+       vk_image_resident) and an ASTC upload's split and pace (astc.c). Each goes with the join's submission: the bind
+       goes in the batch before the next submission, and the upload in fewer submissions. One that waits for or
+       signals a semaphore can't wait */
+    if (vk_share_on() && !vk_rec_listing()) {
+        if (xw || xs) fatal("vulkan: draw_batches=2: the renderer thread submitted with a semaphore in a split run\n");
+        atomic_fetch_add_explicit(&g_split_held, 1, memory_order_relaxed);
+        return;
+    }
     SNX_ZONE(z_submit, "vk submit");
     /* the ASTC uploads recorded for the compute queue first: this submission waits for them (below), as its draws
        sample their textures and its frame's staging and descriptor sets hold what they read */
@@ -1496,6 +1509,10 @@ void vk_finishes_log(void) {
     for (u32 i = 0; i < FINISH_SITES && g_finish_sites[i].file; i++) g_finish_sites[i].n = g_finish_sites[i].ns = 0;
     const u64 split = atomic_exchange_explicit(&g_split_finishes, 0, memory_order_relaxed);
     if (split) LOG("vulkan:   %llu of them in split runs of draws, which submitted nothing\n", (unsigned long long)split);
+    const u64 held = atomic_exchange_explicit(&g_split_held, 0, memory_order_relaxed);
+    if (held)
+        LOG("vulkan:   %llu submissions the renderer thread asked for in split runs of draws went with their join's\n",
+            (unsigned long long)held);
     u64 hosts = atomic_exchange_explicit(&g_host_waits, 0, memory_order_relaxed),
         host_ns = atomic_exchange_explicit(&g_host_wait_ns, 0, memory_order_relaxed);
     if (hosts)
