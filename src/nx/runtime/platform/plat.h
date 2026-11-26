@@ -215,7 +215,6 @@ void plat_freeze(u8* p, u64 size);
 void plat_thaw(void);
 
 /* ---- the environment */
-int plat_setenv(const char* name, const char* value); /* for this process and what it loads; 0 on success */
 
 /* Host audio output of interleaved signed 16-bit samples, little-endian as the guest's are, implemented by the window
    backend. plat_audio_open gives a paused stream, or NULL when there is no device (always when headless).

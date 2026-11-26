@@ -2747,7 +2747,6 @@ static int frozen_wait(void* a, int access) {
 }
 
 /* ================================================================ environment */
-int plat_setenv(const char* name, const char* value) { return setenv(name, value, 1); }
 
 /* ================================================================ the crash handler */
 static _Atomic int g_crash_reporting; /* a thread is reporting a crash */
