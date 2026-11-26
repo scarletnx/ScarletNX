@@ -39,6 +39,17 @@ static void stray(void* ctx, int line, const char* text, const char* does) {
     (void)does;
     snx_config_other_line((SnxConfigOthers*)ctx, line);
 }
+/* whether users other than its owner may read path: never on Windows, whose files have no such bits; apart, so
+   g_secret is read on every platform (-Wunused-but-set-global) */
+static int others_read(const char* path) {
+#ifndef _WIN32
+    struct stat st;
+    return !stat(path, &st) && (st.st_mode & 077);
+#else
+    (void)path;
+    return 0;
+#endif
+}
 /* a=0 to 9, its default 5: the rule's reader */
 static int fake_load(const char* dir, char* state, size_t size) {
     char *path = snx_path_join(dir, "fake.ini"), *text, *key, *value, why[1024], said[1024], first[16] = "";
@@ -49,15 +60,12 @@ static int fake_load(const char* dir, char* state, size_t size) {
     int read = snx_config_read(path, &text, &n, why, sizeof why);
     if (read < 0 && g_defect != SILENT_UNREADABLE) config_say("%s", why);
     if (read == 0 && g_defect == SAYS_ABSENT) config_say("%s is not there", path);
-#ifndef _WIN32
-    struct stat st;
-    if (g_secret && read > 0 && !stat(path, &st) && (st.st_mode & 077) && g_defect != TAKES_READABLE) {
+    if (g_secret && read > 0 && others_read(path) && g_defect != TAKES_READABLE) {
         config_say("%s can be read by others: chmod 600 it", path);
         free(text);
         free(path);
         return 1;
     }
-#endif
     if (read > 0) {
         snx_ini_start(&ini, text);
         ini.left = stray;
