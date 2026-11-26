@@ -142,7 +142,7 @@ const SnxConsoleSetting g_console_settings[] = {
     /* Controllers */
     {"gamepad_swap_ab"},
     {"gamepad_deadzone", {[G] = NA(NO_STICK), [D] = NA(NO_STICK)}},
-    {"gamepad_rumble", {[C] = NA(NO_MOTOR), [V] = NA(NO_MOTOR), [D] = LATER(SOON)}},
+    {"gamepad_rumble", {[C] = NA(NO_MOTOR), [V] = NA(NO_MOTOR)}},
     {"gamepad_background"},
     {"gamepad_joycon_pair", OTHERS(NA(SWITCH_PADS))},
     {"gamepad_assign", OTHERS(NA(PLAYERS))},

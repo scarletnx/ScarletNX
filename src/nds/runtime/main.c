@@ -381,6 +381,13 @@ int snx_nds_main(int argc, char** argv) {
     double seconds = cli.seconds;
     int recompile = !!(cli.flags & SNX_CLI_BIT(SNX_CLI_RECOMPILE));
     int headless = !!(cli.flags & SNX_CLI_BIT(SNX_CLI_HEADLESS));
+    /* slot 2, the GBA cartridge's: empty, or a Rumble Pak (nds_slot2) */
+    int slot2 = nds_slot2_device(g_settings.ds_slot_2_device);
+    if (slot2 < 0) {
+        fprintf(stderr, "settings: nds_slot2=%s is not none or rumble: it keeps none\n", g_settings.ds_slot_2_device);
+        snprintf(g_settings.ds_slot_2_device, sizeof g_settings.ds_slot_2_device, "none");
+        slot2 = NDS_SLOT2_NONE;
+    }
     /* the WFC service, refused before anything is made when the setting names none */
     uint8_t wfc_dns[4];
     char wfc_why[512];
@@ -480,6 +487,11 @@ int snx_nds_main(int argc, char** argv) {
         goto done;
     }
     board->trace = trace;
+    if (!nds_slot2_insert(board, slot2, error, sizeof error)) {
+        fprintf(stderr, "scarletnx-nds: %s\n", error);
+        goto done;
+    }
+    if (slot2 == NDS_SLOT2_RUMBLE) printf("Slot 2: a Rumble Pak (nds_slot2=rumble)\n");
     /* the window's and the board's settings, the network's among them, read before the firmware's Wi-Fi */
     vpad_set_say(nds_host_say);
     vpad_settings(folder, name, argc, argv);
