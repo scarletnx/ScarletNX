@@ -3897,14 +3897,24 @@ if(NOT WIN32)
         add_test(NAME llvm_sail_ir_${part} COMMAND snx-test-llvm-sail-ir --part ${part}/3)
         set_tests_properties(llvm_sail_ir_${part} PROPERTIES TIMEOUT 600)
     endforeach()
-    # sailgen's x86-64 back end (its instruction selection derived from the Intel SDM, cmake/sdm.cmake) against its LLVM
-    # back end: the same registers, flags, next pc and UNDEF from the same random states, word by word, on the host's
-    # BMI1, BMI2 and LZCNT and without them
+    # sailgen's x86-64 back end (its instruction selection derived from the Intel SDM, cmake/sdm.cmake) against QEMU:
+    # the same registers, flags, vector registers, memory, next pc and UNDEF from the same states, word by word, on the
+    # host's BMI1, BMI2 and LZCNT and without them
     # sailgen's other native back ends against the LLVM back end (sail_mach.c, one executable each: arm64's encoders the
     # A64 Sail's, riscv64's LLVM's TableGen records'), their code run under Unicorn on any host (the test's memory
     # mapped into it at the same addresses), where Unicorn is installed
     find_path(SNX_UNICORN_INCLUDE_DIR unicorn/unicorn.h)
     find_library(SNX_UNICORN_LIBRARY unicorn)
+    # a sail_mach.c test held to QEMU here (SNX_QEMU_REF), or skipped saying why: these run on Linux alone
+    function(snx_sail_mach_test name m)
+        if(SNX_QEMU_REF)
+            add_test(NAME ${name} COMMAND snx-test-sail-${m} --qemu "${SNX_QEMU_AARCH64}" "${SNX_QEMU_REF_RUNNER}"
+                     "${CMAKE_CURRENT_BINARY_DIR}/${name}" ${ARGN})
+        else()
+            add_test(NAME ${name} COMMAND snx-test-sail-${m} --skip "${SNX_QEMU_REF_MISSING}")
+        endif()
+        set_tests_properties(${name} PROPERTIES TIMEOUT 900 SKIP_RETURN_CODE 77)
+    endfunction()
     if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
         # machine, Unicorn's architecture (host_unicorn.h), the machine's features the code may use
         # (a big-endian host's, ppc64be and mips64be: its machine's emitters with RK_BIG_ENDIAN)
@@ -3915,7 +3925,7 @@ if(NOT WIN32)
             list(GET parts 1 uc)
             list(GET parts 2 features)
             string(REGEX REPLACE "be$" "" gen "${m}")
-            add_executable(snx-test-sail-${m} sail_mach.c sail_mach_emit.c llvm_qemu_words.c llvm_steps.c
+            add_executable(snx-test-sail-${m} sail_mach.c sail_mach_emit.c sail_qemu.c llvm_qemu_words.c
                            qemu_ref/qemu_ref.c support/host_unicorn.c support/la64_interp.c
                            "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
                            "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
@@ -3934,20 +3944,20 @@ if(NOT WIN32)
             else()
                 snx_sailgen_a64_risc(snx-test-sail-${m} ${gen})
             endif()
-            add_test(NAME sail_${m} COMMAND snx-test-sail-${m})
-            add_test(NAME sail_${m}_spill COMMAND snx-test-sail-${m} --pool 3 --states 32)
-            set_tests_properties(sail_${m} sail_${m}_spill PROPERTIES TIMEOUT 900)
+            if(SNX_QEMU_REF)
+                add_dependencies(snx-test-sail-${m} snx_qemu_ref_runner)
+            endif()
+            snx_sail_mach_test(sail_${m} ${m})
+            snx_sail_mach_test(sail_${m}_spill ${m} --pool 3 --states 32)
             if(NOT m STREQUAL "arm64")
                 # the Advanced SIMD a machine without vector registers makes of its integers' exact values, of the
                 # floating-point helpers, and of tables: the back end must make words of each op
-                add_test(NAME sail_${m}_integers COMMAND snx-test-sail-${m} --states 16 --ops SQADD_v UQSUB_s SUQADD_v
-                         SQABS_v SQRSHL_v UQSHL_s SRSHL_v SQSHLU_vi SQRSHRUN_v SQXTN_v SQDMULH_v SQDMULL_v SQRDMULH_vi
-                         SABA_v URHADD_v RADDHN SSHR_v UMAX_v)
-                add_test(NAME sail_${m}_floats COMMAND snx-test-sail-${m} --states 16 --ops FRECPE_v FRSQRTS_v FMULX_v
-                         FRECPX_s FCVTXN_v FCMGT_v FACGE_s FMAXNMV_s FMAXNMP_s URECPE_v)
-                add_test(NAME sail_${m}_tables COMMAND snx-test-sail-${m} --states 16 --ops TBL_TBX CNT_v AESE AESIMC
-                         SHA1C SHA256H)
-                set_tests_properties(sail_${m}_integers sail_${m}_floats sail_${m}_tables PROPERTIES TIMEOUT 900)
+                snx_sail_mach_test(sail_${m}_integers ${m} --states 16 --ops SQADD_v UQSUB_s SUQADD_v SQABS_v SQRSHL_v
+                                   UQSHL_s SRSHL_v SQSHLU_vi SQRSHRUN_v SQXTN_v SQDMULH_v SQDMULL_v SQRDMULH_vi SABA_v
+                                   URHADD_v RADDHN SSHR_v UMAX_v)
+                snx_sail_mach_test(sail_${m}_floats ${m} --states 16 --ops FRECPE_v FRSQRTS_v FMULX_v FRECPX_s FCVTXN_v
+                                   FCMGT_v FACGE_s FMAXNMV_s FMAXNMP_s URECPE_v)
+                snx_sail_mach_test(sail_${m}_tables ${m} --states 16 --ops TBL_TBX CNT_v AESE AESIMC SHA1C SHA256H)
             endif()
             if(gen STREQUAL "ppc64") # an unpatched Unicorn has none: skipped, as it compares nothing
                 set_tests_properties(sail_${m} sail_${m}_spill sail_${m}_integers sail_${m}_floats sail_${m}_tables
@@ -3963,7 +3973,7 @@ if(SNX_X64 AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(snx_host_win64 ON)
 endif()
 if(SNX_X64)
-    add_executable(snx-test-sail-x64 sail_x64.c sail_x64_emit.c llvm_qemu_words.c llvm_steps.c
+    add_executable(snx-test-sail-x64 sail_x64.c sail_x64_emit.c sail_qemu.c llvm_qemu_words.c qemu_ref/qemu_ref.c
                    "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
                    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
     snx_cpu_helpers_flags(snx-test-sail-x64)
@@ -3972,7 +3982,25 @@ if(SNX_X64)
     target_link_libraries(snx-test-sail-x64 PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
     snx_decodetree_a64(snx-test-sail-x64)
     snx_sailgen_a64_x64(snx-test-sail-x64)
-    add_test(NAME sail_x64 COMMAND snx-test-sail-x64)
+    if(SNX_QEMU_REF)
+        add_dependencies(snx-test-sail-x64 snx_qemu_ref_runner)
+    endif()
+    # its words held to QEMU here (SNX_QEMU_REF), to the reference the qemu-reference job records of them
+    # (SNX_SAIL_QEMU_REFERENCE, which the Windows job downloads), or skipped saying why
+    set(SNX_SAIL_QEMU_REFERENCE "" CACHE FILEPATH "The sail tests' QEMU reference another host recorded, for a host without qemu-aarch64")
+    function(snx_sail_x64_test name)
+        if(SNX_QEMU_REF)
+            add_test(NAME ${name} COMMAND snx-test-sail-x64 --qemu "${SNX_QEMU_AARCH64}" "${SNX_QEMU_REF_RUNNER}"
+                     "${CMAKE_CURRENT_BINARY_DIR}/${name}" ${ARGN})
+        elseif(SNX_SAIL_QEMU_REFERENCE)
+            add_test(NAME ${name} COMMAND snx-test-sail-x64 --reference-if-there "${SNX_SAIL_QEMU_REFERENCE}" ${ARGN})
+        else()
+            add_test(NAME ${name} COMMAND snx-test-sail-x64 --skip
+                     "${SNX_QEMU_REF_MISSING}, and SNX_SAIL_QEMU_REFERENCE names no recorded one")
+        endif()
+        set_tests_properties(${name} PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
+    endfunction()
+    snx_sail_x64_test(sail_x64)
     # three registers for values; on Windows four, as a pair's and a shift count's fixed ones are among its first (x64.h)
     set(snx_x64_pool 3)
     set(snx_x64_xmm 6)
@@ -3980,13 +4008,12 @@ if(SNX_X64)
         set(snx_x64_pool 4)
         set(snx_x64_xmm 4) # it has six
     endif()
-    add_test(NAME sail_x64_spill COMMAND snx-test-sail-x64 --pool ${snx_x64_pool} --states 32)
-    add_test(NAME sail_x64_spill_xmm COMMAND snx-test-sail-x64 --pool ${snx_x64_pool} --xmm ${snx_x64_xmm} --states 16)
-    set_tests_properties(sail_x64 sail_x64_spill sail_x64_spill_xmm PROPERTIES TIMEOUT 600)
+    snx_sail_x64_test(sail_x64_spill --pool ${snx_x64_pool} --states 32)
+    snx_sail_x64_test(sail_x64_spill_xmm --pool ${snx_x64_pool} --xmm ${snx_x64_xmm} --states 16)
     # its code for Windows (the calling convention), run by this host's processor as Windows' C would call it
     # (support/host_win64.c): the same words against LLVM, as the other machines' under Unicorn
     if(snx_host_win64)
-        add_executable(snx-test-sail-win64 sail_mach.c sail_mach_emit.c llvm_qemu_words.c llvm_steps.c
+        add_executable(snx-test-sail-win64 sail_mach.c sail_mach_emit.c sail_qemu.c llvm_qemu_words.c
                        qemu_ref/qemu_ref.c support/host_win64.c
                        "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
                        "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
@@ -3998,11 +4025,13 @@ if(SNX_X64)
         target_link_libraries(snx-test-sail-win64 PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
         snx_decodetree_a64(snx-test-sail-win64)
         snx_sailgen_a64_x64(snx-test-sail-win64)
-        add_test(NAME sail_win64 COMMAND snx-test-sail-win64)
-        add_test(NAME sail_win64_spill COMMAND snx-test-sail-win64 --pool 4 --states 32)
-        add_test(NAME sail_win64_spill_xmm COMMAND snx-test-sail-win64 --pool 4 --xmm 4 --states 16)
-        add_test(NAME sail_win64_plain COMMAND snx-test-sail-win64 --without 0x3d07 --states 16)
-        set_tests_properties(sail_win64 sail_win64_spill sail_win64_spill_xmm sail_win64_plain PROPERTIES TIMEOUT 600)
+        if(SNX_QEMU_REF)
+            add_dependencies(snx-test-sail-win64 snx_qemu_ref_runner)
+        endif()
+        snx_sail_mach_test(sail_win64 win64)
+        snx_sail_mach_test(sail_win64_spill win64 --pool 4 --states 32)
+        snx_sail_mach_test(sail_win64_spill_xmm win64 --pool 4 --xmm 4 --states 16)
+        snx_sail_mach_test(sail_win64_plain win64 --without 0x3d07 --states 16)
     endif()
     # its A32 blocks (x64_arm.c) against the AArch32 block compiler's LLVM ones: the same words consumed and the
     # same results from random states, the A32 instructions it makes alone and in rows; again with three host

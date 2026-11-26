@@ -560,10 +560,15 @@ around a C call, which keeps all of them.
 
 **The test** (`tests/sail_x64.c`, `sail_x64` with `SNX_SAIL_X64`): every word of the decoder's rows the roots take
 (again with Rd, Rn and Rm 31) is made into x86-64 code twice, on the host's BMI1, BMI2 and LZCNT and without them, and
-run beside the LLVM back end's step of it (`llvm_steps.c`) from random states: every register, the flags, the next pc and
-UNDEF must match (`sail_x64_spill` again with three host registers, `--pool 3`, so the values spill). Then random
-sequences of two to four of the words are made one block each and run beside their LLVM
-steps one after another (`--sequences N`), which is what holds the block's folds, dropped stores and reused flags. `--dump WORD` prints a word's code for a disassembler (`llvm-mc --disassemble -triple=x86_64`).
+run beside `qemu-aarch64 -cpu max` (`tests/qemu_ref`) from states of the word's own seed (`tests/sail_qemu.h`): every
+register, the flags, FPCR, FPSR, the vector registers, the memory it changed, the next pc and UNDEF must be QEMU's
+(`sail_x64_spill` again with three host registers, `--pool 3`, so the values spill). A store-exclusive runs after the
+load-exclusive that arms its monitor in half the states. Where QEMU can't run beside it (Windows), the words are held
+to a reference of QEMU's ends, a hash of each word's every state, which the qemu-reference job records (`--record`) and
+the Windows job reads (`SNX_SAIL_QEMU_REFERENCE`). Then random sequences of two to four of the words are made one
+block each and run beside the code of each word alone at its pc, one after another (`--sequences N`), which is what
+holds the block's folds, dropped stores and reused flags. `--dump WORD` prints a word's code for a disassembler
+(`llvm-mc --disassemble -triple=x86_64`).
 
 The code for Windows is run by an x86-64 Linux host too (`sail_win64`, and over whole functions and AArch32 blocks
 `recompiler_win64` and `arm_win64`): `tests/support/host_win64.c` enters it as Windows' C would, with RBX, RBP, RSI, RDI,
@@ -669,10 +674,10 @@ epilogues'; an epilogue's return or jump right after it, where the unwinder has 
 its pages first (`sga_stack_probe`, X16 and X17); an AArch32 block's code of no frame, the exit of a failed entry check,
 past the range its frame covers; and `snx_stale` past the 1 MiB COFF's ADRP holds read with an ADD more.
 
-**The test** (`tests/sail_arm64.c`, `sail_arm64` where Unicorn is installed): the words of `sail_x64`'s rows, and
-blocks of two to four of them, made into arm64 code and run under Unicorn (QEMU's AArch64, its "max" CPU) beside the
-LLVM back end's steps from the same random states; registers, flags, the SIMD&FP state, guest memory, the next pc and
-UNDEF must match. The test's memory is mapped into Unicorn at its own addresses, so the code and the test's C share
+**The test** (`tests/sail_mach.c`, `sail_arm64` where Unicorn is installed): the words of `sail_x64`'s rows, made into
+arm64 code and run under Unicorn (QEMU's AArch64, its "max" CPU) beside `qemu-aarch64 -cpu max` from the same states as
+`sail_x64`'s; registers, flags, the SIMD&FP state, guest memory, the next pc and UNDEF must be QEMU's. Blocks of two to
+four of them run beside the code of each word alone, one after another. The test's memory is mapped into Unicorn at its own addresses, so the code and the test's C share
 every pointer; a call out goes to a page of traps whose hook calls the native helper. `sail_arm64_spill` gives it
 three registers (`--pool 3`); `--dump WORD...` prints a block for a disassembler.
 
