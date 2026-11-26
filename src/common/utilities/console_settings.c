@@ -79,7 +79,7 @@ const SnxConsoleSetting g_console_settings[] = {
     {.key = "stats"},
     {.key = "stats_corner"},
     /* Graphics */
-    {"resolution", {[C] = NA(OWN_ROW), [V] = LATER(SOON), [G] = NA(CPU_SCREEN)}},
+    {"resolution", {[C] = NA(OWN_ROW), [G] = NA(CPU_SCREEN)}},
     {"internal_resolution", {[C] = NA(OWN_ROW), [V] = NA(NO_UPSCALER), [G] = NA(CPU_SCREEN), [D] = NA(NO_UPSCALER)}},
     {"render_upscaler", OTHERS(NA(SWITCH_GPU))},
     {"render_anti_aliasing", OTHERS(NA(SWITCH_GPU))},
