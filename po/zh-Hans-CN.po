@@ -370,6 +370,11 @@ msgstr "保存"
 
 #: src/gui/editor.c src/gui/main.c
 #, c-format
+msgid "Not saved: %s"
+msgstr ""
+
+#: src/gui/editor.c src/gui/main.c
+#, c-format
 msgid "Not saved: %s could not be written"
 msgstr "未保存：无法写入 %s"
 
@@ -1498,6 +1503,11 @@ msgstr "下次启动时不保留：无法写入 %s"
 #, c-format
 msgid " (it keeps %s)"
 msgstr " （保留 %s）"
+
+#: src/gui/main.c
+#, c-format
+msgid " (it keeps %d)"
+msgstr ""
 
 #: src/gui/main.c
 #, c-format
@@ -2952,6 +2962,11 @@ msgid "Nothing left"
 msgstr "没有剩余"
 
 #: src/gui/main.c
+#, c-format
+msgid "%s%s: no folder of it is listed"
+msgstr ""
+
+#: src/gui/main.c
 msgid "recompiled"
 msgstr "已重编译"
 
@@ -3960,11 +3975,6 @@ msgid "%s is no recompiled Switch or 3DS game: only they have settings of their 
 msgstr ""
 
 #: src/gui/main.c
-#, c-format
-msgid "%s holds what no setting takes, which the next change leaves out: %s"
-msgstr ""
-
-#: src/gui/main.c
 msgid "Keep"
 msgstr "保留"
 
@@ -4086,11 +4096,6 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "No config folder: controllers cannot be synced here"
-msgstr ""
-
-#: src/gui/main.c
-#, c-format
-msgid "%s does not read"
 msgstr ""
 
 #: src/gui/main.c
@@ -5309,7 +5314,17 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "Removed games not kept: %s could not be written (%s)."
+msgid "Removed games not kept: %s."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Removed games not kept: %s could not be removed (%s)."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s%s: no game is taken off Games by it"
 msgstr ""
 
 #: src/gui/main.c
@@ -6874,6 +6889,11 @@ msgstr "%s=%s 是旧的设置，且不是 %s 的有效值：现在为 %s=%s"
 
 #: src/gui/settings.c
 #, c-format
+msgid "%s=%s is not a value of %s: %s=%s now"
+msgstr ""
+
+#: src/gui/settings.c
+#, c-format
 msgid "%d on, %d other"
 msgstr ""
 
@@ -7221,11 +7241,6 @@ msgstr "[theme] layout = %s 不是 menu、loading、plain、debug 或 skip：从
 
 #: src/gui/theme.c
 #, c-format
-msgid "[%s] %s = %s is not a key of a theme"
-msgstr "[%s] %s = %s 不是主题的键"
-
-#: src/gui/theme.c
-#, c-format
 msgid "[body] %s = %s does nothing: ui.txt lays out the lists now (delete it)"
 msgstr "[body] %s = %s 已无效：列表现在由 ui.txt 布局（请删除）"
 
@@ -7238,6 +7253,11 @@ msgstr "[%s] %s = %s 已无效：画面现在由 ui.txt 布局（请删除）"
 #, c-format
 msgid "%s could not be read (out of memory): it shows %s"
 msgstr "%s 无法读取（内存不足）：显示 %s"
+
+#: src/gui/theme.c
+#, c-format
+msgid "%s: it shows %s"
+msgstr ""
 
 #: src/gui/theme.c
 #, c-format
@@ -7848,6 +7868,9 @@ msgstr ""
 #: src/nx/runtime/settings.txt
 msgid "GBA"
 msgstr ""
+
+#~ msgid "[%s] %s = %s is not a key of a theme"
+#~ msgstr "[%s] %s = %s 不是主题的键"
 
 #~ msgid "Unit cache limit"
 #~ msgstr "单元缓存上限"
