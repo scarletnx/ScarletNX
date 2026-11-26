@@ -4795,11 +4795,12 @@ static int nightly_get(const char* url, const SnxHttpsOptions* o, SnxHttpsRespon
     out->size = strlen(out->body);
     return 0;
 }
-/* app.ini holds line */
+/* app.ini holds line, and no other check_updates: a key app.ini reads is written once, never also kept as one it does
+   not */
 static bool app_ini_has(const App* app, const char* line) {
     size_t size;
-    char* kept = (char*)snx_read_file(app->app_file, &size);
-    bool has = kept && strstr(kept, line);
+    char *kept = (char*)snx_read_file(app->app_file, &size), *first = kept ? strstr(kept, "\ncheck_updates =") : NULL;
+    bool has = first && strstr(kept, line) && !strstr(first + 1, "\ncheck_updates =");
     free(kept);
     return has;
 }
@@ -11305,8 +11306,8 @@ int main(int argc, char** argv) {
             snprintf(
                 line, sizeof line,
                 "%sNot used from %s: [folders] work = relative/work (it keeps none) %s: this version does not read "
-                "[folders] shaders, which stays as it is; [folders] work is given twice, work= on line 21 and "
-                "work=relative/work on line 25: the last line's is taken",
+                "[folders] shaders, which stays as it is; [folders] work is given twice, work= on line 22 and "
+                "work=relative/work on line 26: the last line's is taken",
                 unmade, app.app_file, app.app_file);
             free(unmade);
             free(dumps);
