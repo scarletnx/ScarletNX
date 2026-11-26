@@ -598,6 +598,8 @@ static void finish(App* app, int status) {
     char expected[80];
     snprintf(expected, sizeof(expected),
              status ? "Program ended abnormally (status %d)." : "The run ended with status %d.", status);
+    if (strcmp(app->message, expected))
+        fprintf(stderr, "finish: the message is \"%s\", not \"%s\"\n", app->message, expected);
     assert(!strcmp(app->message, expected) && app->abnormal_exit == (status != 0) && app->has_output);
     assert(app->log_due == (status != 0)); /* Share Log blinks after a crash, and stops after a run that ends well */
     shows_foot(app, "Press [ESC] to return to menu", red);   /* where the keys go, in their letters */
@@ -902,6 +904,56 @@ static int slider_step_x(App* app, GuiRect bar, int k) {
    never round, the foot saying the end, each step kept at once; a click on the slider takes the step under it and the
    knob follows the mouse held down, past either end staying there, until the button lifts; a finger the same, its lift
    no tap; Del back to its default; the group in focus among the groups shows it in its own colour */
+/* A run that stopped on an error its own panel showed (error_kind.h's "error: " lines in the run's output): the run's
+   screen does not say it again, and the action taken on the panel is done here, Settings at the setting's row. One
+   its panel did not show keeps the run's screen */
+static void run_error_lines(App* app) {
+    static const char list[] = "Debug\thooks\t1\tint\t0\t1\tGames need it on\tNative hooks\t0=Off|1=On\t\t\t\n";
+    static const char shown[] = "log: written to /x.log\nerror: setting shown=1 key=hooks\n"
+                                "error: action open-settings key=hooks\n";
+    char *was = app->run_log, *path = snx_strdup("run-error-lines.log");
+    int at;
+    settings_forget(app);
+    assert(!gui_settings_read(&app->settings, list));
+    gui_settings_mark(&app->settings);
+    app->run_log = path;
+    assert(!snx_write_file(path, shown, sizeof shown - 1));
+    app->finished = app->abnormal_exit = true;
+    assert(run_error_after(app) && !app->finished);
+    at = app->group_first[app->group] + app->editor.row;
+    assert(app->form == GUI_FORM_GROUP && !strcmp(screen_settings(app)->values[at].key, "hooks"));
+    leave_editor(app);
+    assert(!snx_write_file(path, "error: crash shown=0\n", 21));
+    app->finished = true;
+    assert(!run_error_after(app) && app->finished);
+    leave_run(app);
+    remove(path);
+    free(path);
+    app->run_log = was;
+    settings_forget(app);
+}
+/* scarletnx --open=VALUE, what an error's panel offers a game that ran with no launcher: the menu at the setting's row;
+   a value of no page said with the value given; asked once */
+static void open_pages(App* app) {
+    static const char list[] = "Debug\thooks\t1\tint\t0\t1\tGames need it on\tNative hooks\t0=Off|1=On\t\t\t\n";
+    int at;
+    settings_forget(app);
+    assert(!gui_settings_read(&app->settings, list));
+    gui_settings_mark(&app->settings);
+    snx_gui_open("settings:hooks");
+    open_asked(app);
+    at = app->group_first[app->group] + app->editor.row;
+    assert(app->form == GUI_FORM_GROUP && !strcmp(screen_settings(app)->values[at].key, "hooks"));
+    leave_editor(app);
+    open_asked(app); /* nothing asked again */
+    assert(!app->editing);
+    snx_gui_open("bogus:x");
+    open_asked(app);
+    assert(app->confirm.shown && strstr(app->error_line, "--open=bogus:x is not settings:KEY"));
+    key(app, SDLK_RETURN);
+    assert(!app->confirm.shown);
+    settings_forget(app);
+}
 static void volume_view(App* app) {
     static const char list[] =
         "Audio\tvolume\t100\tint\t0\t100\tHow loud the game plays\tVolume\t0=Mute|5=5%|10=10%|15=15%|20=20%|25=25%|"
@@ -7137,7 +7189,7 @@ static void ctr_own_console(App* app, const char* dir) {
                 launch(app, snx_strdup(played), true);
                 argv_got = ran(app, 0);
                 assert(has_arg(argv_got, way ? "--controls=1" : "--controls=2", NULL) &&
-                       has_arg(argv_got, "--launcher-picks=1", NULL));
+                       has_arg(argv_got, "--launcher-picks=1", NULL) && has_arg(argv_got, "--from-launcher=1", NULL));
                 assert(has_arg(argv_got, "--touch=1", NULL) == way);
                 free(argv_got);
                 leave_run(app);
@@ -7659,12 +7711,17 @@ int main(int argc, char** argv) {
         SDL_WaitThread(thread, NULL); /* Never returns. ESC must kill, not request a graceful exit. */
         return 1;
     }
+    /* the launcher's run says so last (--from-launcher=1): taken off, so a check of the arguments sees them as before,
+       and kept for the argv file */
+    int from_launcher = argc > 1 && !strcmp(argv[argc - 1], "--from-launcher=1");
+    if (from_launcher) argv[--argc] = NULL;
     if (argc > 1 && getenv("SNX_TEST_ARGV")) {
         /* a driver doing what the test asked (driver_will): its argv kept, a string a line, for the test to check */
         FILE* kept = fopen(getenv("SNX_TEST_ARGV"), "wb"); /* "\n" alone, as has_arg reads, on Windows too */
         int compiling = 0, status;
         for (int i = 1; i < argc; ++i) compiling |= !strcmp(argv[i], "-r");
         for (int i = 0; kept && i < argc; ++i) fprintf(kept, "%s\n", argv[i]);
+        if (kept && from_launcher) fprintf(kept, "--from-launcher=1\n");
         assert(kept && !fclose(kept));
         puts(getenv("SNX_TEST_SAY") ? getenv("SNX_TEST_SAY") : "the fake driver ran");
         status = getenv("SNX_TEST_STATUS") ? atoi(getenv("SNX_TEST_STATUS")) : 0;
@@ -11538,7 +11595,8 @@ int main(int argc, char** argv) {
         size_t size;
         char* kept = (char*)snx_read_file(app.run_log, &size);
         char* line = snx_format(
-            "game with spaces;literal.nro --fullscreen=1 --controls=2 --launcher-picks=1 --data %s\n", app.data_dir);
+            "game with spaces;literal.nro --fullscreen=1 --controls=2 --launcher-picks=1 --data %s --from-launcher=1\n",
+            app.data_dir);
         assert(kept && line && !app.run_out && !strncmp(kept, "$ ", 2) && strstr(kept, line));
         free(line);
         assert(strstr(kept, "driver stdout") && strstr(kept, "driver stderr") && strstr(kept, "\n[ended, status 0]\n"));
@@ -18805,6 +18863,8 @@ int main(int argc, char** argv) {
     setting_lists(&app);
     boxes_form(&app);
     volume_view(&app);
+    run_error_lines(&app);
+    open_pages(&app);
     bluetooth_settings(&app, temporary); /* its rows of the runtime's settings */
 #if !defined(_WIN32) && !defined(__APPLE__) && !defined(SDL_PLATFORM_ANDROID) /* where the config folder is XDG's */
     bluetooth_page(&app, temporary); /* Controllers > Bluetooth on the fake scan, then back to its row */
