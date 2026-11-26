@@ -30,6 +30,7 @@
 #include "3ds/services/frd.h"
 #include "3ds/services/fs.h"
 #include "3ds/services/ldr.h"
+#include "3ds/services/mic.h"
 #include "3ds/services/soc.h"
 #include "3ds/services/uds.h"
 #include "common/filesystem/tree.h"
@@ -120,6 +121,7 @@ static size_t times(SnxCtrProcess* p, uint64_t** out) {
     out[n++] = &p->dsp.next_frame_ns;
     out[n++] = &p->y2r.done_ns;
     out[n++] = &p->irrst.next_ns;
+    out[n++] = &p->mic.next_ns;
     for (unsigned i = 0; i < 2; ++i) out[n++] = &p->cam.port[i].vsync_ns, out[n++] = &p->cam.port[i].done_ns;
     out[n++] = &p->csnd.frame_start_ns;
     out[n++] = &p->csnd.next_frame_ns;
@@ -191,6 +193,7 @@ static void strip(SnxCtrProcess* c) {
     c->aot_stale = NULL;
     c->dsp.core = NULL;
     c->uds = NULL;
+    c->mic.recording = NULL;
     c->soc = NULL;
     c->frd = NULL;
     c->compile = NULL;
@@ -841,6 +844,7 @@ int snx_ctr_state_load(SnxCtrProcess* p, const char* path, char* why, size_t why
     c->ldr_modules = p->ldr_modules, c->ldr_capacity = p->ldr_capacity;
     c->aot_stale = p->aot_stale;
     c->uds = p->uds, c->soc = p->soc, c->frd = p->frd;
+    c->mic.recording = p->mic.recording; /* closed below, and one opened for the state when it samples */
     c->compile = p->compile, c->compiler = p->compiler, c->flush = p->flush, c->reclaim = p->reclaim;
     c->hooks = p->hooks;
     memcpy(p, c, bytes);
@@ -861,6 +865,7 @@ int snx_ctr_state_load(SnxCtrProcess* p, const char* path, char* why, size_t why
     p->aot_stale = ldr.stale;
     p->gsp.pica = pica;
     p->dsp.core = dsp;
+    snx_ctr_mic_reopen(p);
     p->y2r.serial = 0; /* the conversion's GPU work was in memory at the save */
     /* the save data as it is now: a state never takes it back */
     if (p->tree) {

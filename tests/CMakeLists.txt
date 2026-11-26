@@ -333,7 +333,7 @@ if(TARGET snx_ctr_board)
         add_test(NAME 3ds_ir_${case} COMMAND snx-test-3ds-ir ${case})
     endforeach()
     # mic:u with no input device, as Azahar's
-    add_executable(snx-test-3ds-mic 3ds_mic.c support/3ds_guest.c)
+    add_executable(snx-test-3ds-mic 3ds_mic.c support/3ds_guest.c support/mic_fake.c)
     snx_test_target(snx-test-3ds-mic gnu23)
     target_link_libraries(snx-test-3ds-mic PRIVATE snx_ctr_process)
     add_test(NAME 3ds_mic COMMAND snx-test-3ds-mic)

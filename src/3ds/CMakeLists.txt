@@ -29,6 +29,8 @@ target_link_libraries(snx_ctr_process PUBLIC scarletnx-ldn)
 target_link_libraries(snx_ctr_process PRIVATE snx_online snx_https)
 # its save states' file, the Switch's (runtime/state.c)
 target_link_libraries(snx_ctr_process PRIVATE snx_state_file)
+# the microphone mic:u records (services/mic.c, common/utilities/mic.h)
+target_link_libraries(snx_ctr_process PRIVATE snx_mic)
 # the player's input lives beside the presenter, whose window's events it reads
 add_library(snx_ctr_gpu STATIC gpu/present.c input/input.c gpu/transfer.c gpu/y2r.c gpu/vk/y2r.c gpu/vk/device.c gpu/vk/transfer.c
             gpu/vk/vsgen.c gpu/vk/fsgen.c gpu/vk/render.c gpu/pica.c gpu/shader.c gpu/draw.c "${volk_SOURCE_DIR}/volk.c")

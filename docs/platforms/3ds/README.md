@@ -549,10 +549,17 @@ down), what they gained and lost since the entry before, and the C-stick's posit
 the raw C-stick, which Azahar does not model either, gives the position without its
 direction bits; each is said on the standard error with the value asked for.
 
-`mic:u` (`services/mic.c`, ported from Azahar's `mic_u.cpp`) answers as Azahar does
-with no input device: sampling starts and stops, the settings a game stores (gain,
-power, clamp, the shell closed) read back, and the buffer full event is a real event
-that is never signalled, as no sample is ever written.
+`mic:u` (`services/mic.c`, ported from Azahar's `mic_u.cpp`) records the host's
+microphone, as the microphone and mic_noise_reduction settings say
+(`src/common/utilities/mic.h`, the Switch's recording): while it samples, 15 samples
+at a time on the rate's clock go to the part of the block the game lent that
+StartSampling names, in the encoding asked, and the block's last word holds the
+offset after the last one. The host wakes for them at most about once a
+millisecond, and a clock later than 100 ms writes the last 100 ms. A looping part
+starts again at its end, one that does not stays full, and the buffer full event
+is signalled each time the part fills, as libctru's header says (Azahar never
+signals it). The gain, power and clamp a game sets read back but change no sample,
+as in Azahar. A state does not keep the recording: a load opens its own.
 
 `cam:u` (`services/cam.c`, ported from Azahar's `cam.cpp`) has Azahar's blank camera
 behind it: the ports activate, capture and receive as Azahar's do, a receiving
