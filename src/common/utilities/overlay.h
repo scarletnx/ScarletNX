@@ -37,15 +37,15 @@ enum {
     OVERLAY_CONTROLLERS
 };
 
-/* What the runtime the menu shows over gives it: each NULL where that runtime has none, which the menu then leaves out or
-   says it lacks. The Switch's gives them all (runtime/platform/overlay_host.c); a console's window the few it has */
+/* What the runtime the menu shows over gives it: each NULL where that runtime has none, which the menu then leaves out
+   or says it lacks. The Switch's gives them all (runtime/platform/overlay_host.c); a console's window the few it has */
 enum { OVERLAY_ZONE_DRAW, OVERLAY_ZONE_TOAST_LAY, OVERLAY_ZONE_MENU_LAY }; /* the profiler's zones, by what they time */
 typedef struct {
     /* whether the runtime reads the setting key at all, which its pages then show: every one where NULL (the Switch's);
        a console's own (console_settings.h's snx_console_opt) */
     int (*setting_shown)(const char* key);
-    /* the row of a setting by its key (the Switch's tables', a console's of g_console_ini), NULL for none; and the game's
-       .ini's sections the Settings page lists, NULL for none, which leaves that page out */
+    /* the row of a setting by its key (the Switch's tables', a console's of g_console_ini), NULL for none; and the
+       game's .ini's sections the Settings page lists, NULL for none, which leaves that page out */
     const IniOpt* (*row)(const char* key);
     const IniSection* sections;
     int sections_count;

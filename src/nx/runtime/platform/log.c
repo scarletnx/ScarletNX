@@ -53,7 +53,8 @@ void log_crash_mode(void) {
 }
 
 static size_t log_compose(char* out, size_t cap, const char* text);
-/* The run before this one: its log (path) into logs/ beside it (run_log.h). What went wrong into why, "" when nothing */
+/* The run before this one: its log (path) into logs/ beside it (run_log.h). What went wrong into why, "" when
+   nothing */
 static void log_keep_run(const char* path, char* why, size_t size) {
     char dir[1400];
     snprintf(dir, sizeof dir, "%slogs", g_statedir);

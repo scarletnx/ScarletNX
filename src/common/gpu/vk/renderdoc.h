@@ -16,8 +16,8 @@
 #else
 #define SNX_VK_RENDERDOC_LIBRARY "librenderdoc.so"
 #endif
-/* what the runtime gives it, each NULL for none: a line over the game; a line of its log, a failure with warn; its run's
-   clock in ms, which renderdoc_frames' times count on; and the frame's commands submitted before a capture ends */
+/* what the runtime gives it, each NULL for none: a line over the game; a line of its log, a failure with warn; its
+   run's clock in ms, which renderdoc_frames' times count on; and the frame's commands submitted before a capture ends */
 typedef struct {
     void (*notice)(const char* text);
     void (*say)(int warn, const char* line);
