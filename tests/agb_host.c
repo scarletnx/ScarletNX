@@ -245,9 +245,9 @@ static int controls(AgbHost* host, SDL_Window* window, const char* dir, const ch
     return 0;
 }
 
-/* a gamepad's south button as the window that opens takes it: B where the console has it, A with A and B swapped
-   (gamepad_swap_ab), what gamepad_map names over that; and its input while the window has no focus as
-   gamepad_background says */
+/* the Switch's settings a GBA game's window takes as it opens: a gamepad's south button B where the console has it,
+   A with A and B swapped (gamepad_swap_ab), what gamepad_map names over that; its input while the window has no focus
+   as gamepad_background says; and vsync */
 static int gamepad_settings(const char* ini) {
     char error[256] = {0};
     static const struct {
@@ -283,6 +283,21 @@ static int gamepad_settings(const char* ini) {
     }
     g_settings.swap_a_b = g_settings.background_input = 0;
     g_settings.button_map[0] = 0;
+    /* vsync off: SDL's renderer shows each frame at once, as a Switch game's window */
+    SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "dummy");
+    SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "dummy");
+    g_settings.vsync = 0;
+    AgbHost* host = agb_host_open("agb_host", ini, false, error, sizeof error);
+    SDL_Window** windows = host ? SDL_GetWindows(NULL) : NULL;
+    int vsync = -1;
+    CHECK(windows && SDL_GetRenderVSync(SDL_GetRenderer(windows[0]), &vsync));
+    SDL_free(windows);
+    agb_host_close(host);
+    g_settings.vsync = 1;
+    if (vsync) {
+        fprintf(stderr, "agb_host: vsync=0 left the renderer's vsync %d\n", vsync);
+        return 1;
+    }
     return 0;
 }
 

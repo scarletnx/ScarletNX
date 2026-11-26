@@ -146,7 +146,8 @@ static bool swapchain_make(VitaVk* v) {
                                .format_count = sizeof formats / sizeof *formats,
                                .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
                                .window = snx_vk_window_extent(&v->host, (VkExtent2D){960, 544}),
-                               .views = true};
+                               .views = true,
+                               .unsynced = !g_settings.vsync};
     return snx_vk_swapchain_make(v->phys, v->device, &info, &v->swap);
 }
 static void fx_log(const char* text) { fprintf(stderr, "scarletnx-vita: %s\n", text); }
@@ -245,6 +246,11 @@ bool vita_vk_init(const char* title, char* error, size_t error_size) {
     }
     g.up = true;
     if (v->host.surface && !swapchain_make(v)) fprintf(stderr, "scarletnx-vita: no swapchain for the window yet\n");
+    if (v->swap.swapchain) {
+        char said[160];
+        snx_vk_present_said(v->swap.mode, g_settings.vsync, said, sizeof said);
+        fprintf(stderr, "scarletnx-vita: %s\n", said);
+    }
     if (!fx_init(v)) {
         snprintf(error, error_size, "the frame's draw into the window could not be made on this device");
         vita_vk_free();

@@ -290,12 +290,9 @@ bool snx_ctr_present_init(SnxCtrMemory* memory, const char* frame_dir, bool head
     if (g_present.separate) (void)swap_create(1);
     /* vsync's effect: FIFO waits for the display's refresh, mailbox and immediate do not */
     if (g_present.swap[0].swapchain) {
-        VkPresentModeKHR mode = g_present.swap[0].mode;
-        fprintf(stderr, "3ds gpu: the window shows its images %s (vsync=%d)\n",
-                mode == VK_PRESENT_MODE_FIFO_KHR      ? "at the display's refresh, in order (fifo)"
-                : mode == VK_PRESENT_MODE_MAILBOX_KHR ? "the newest at the next refresh (mailbox)"
-                                                      : "at once, tearing (immediate)",
-                g_settings.vsync);
+        char said[160];
+        snx_vk_present_said(g_present.swap[0].mode, g_settings.vsync, said, sizeof said);
+        fprintf(stderr, "3ds gpu: %s\n", said);
     }
     return true;
 }

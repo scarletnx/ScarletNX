@@ -3,6 +3,7 @@
 #ifndef SNX_COMMON_VK_SWAPCHAIN_H
 #define SNX_COMMON_VK_SWAPCHAIN_H
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <volk.h>
 /* A window's swapchain, and the choices every frontend makes for one (vk_common.h) */
@@ -39,6 +40,9 @@ typedef struct {
    vsync FIFO, which every surface has; without, mailbox (the newest image at the next refresh), else immediate (at
    once), else FIFO all the same */
 VkPresentModeKHR snx_vk_present_mode(const VkPresentModeKHR* modes, uint32_t count, bool vsync);
+/* what a window's presentation does, as a run says it at start, with the vsync setting it was made for: "the window
+   shows its images at the display's refresh, in order (fifo) (vsync=1)" */
+void snx_vk_present_said(VkPresentModeKHR mode, int vsync, char* out, size_t size);
 /* what a swapchain is made of: the formats wanted, in order (the surface's first one when it has none of them), its
    images' usage, the window's size in pixels and its presentation (snx_vk_present_mode: FIFO unless unsynced asks
    for vsync off), an image more than the least; views, a view of each image (snx_vk_swapchain_begin's) */
