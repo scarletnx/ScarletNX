@@ -7,8 +7,9 @@
    frames, the file's bytes, the folder's next entry, the objects' answers, the registers, the memory and the tick count.
    More work then undoes it all (memory written and unmapped, the file and folder closed, the DSP gone, the registers
    and objects changed, a second gone by); a load gives the same record word for word, and so does a fresh process's. A
-   state saved right after a load holds what the first held. Another version, another game, a damaged file and a file
-   gone since are refused with nothing changed, and immediate-mode vertices not drawn refuse a save */
+   state saved right after a load holds what the first held. Another version, another layout of the process, another
+   game, a damaged file and a file gone since are refused with nothing changed, the version and the layout's schema
+   named as the state has them and as this build reads them, and immediate-mode vertices not drawn refuse a save */
 #include "3ds/runtime/state.h"
 #include "3ds/runtime/internal.h"
 #include "3ds/audio/internal.h"
@@ -17,6 +18,7 @@
 #include "3ds/ipc/ctr_ipc.h"
 #include "3ds/services/dsp.h"
 #include "common/utilities/common.h"
+#include "common/utilities/endian.h"
 #include "common/utilities/state_file.h"
 #include "snx_settings.h"
 #include "support/3ds_guest.h"
@@ -351,6 +353,26 @@ static void copy_file(const char* from, const char* to, long keep, unsigned abi)
     fclose(in);
     CHECK(!fclose(out));
 }
+/* a copy of the state whose PROCESS section has another schema, as a build whose process had other fields writes:
+   the schema it then has, and this build's */
+static void other_layout(const char* from, const char* to, uint64_t* had, uint64_t* ours) {
+    long size = file_size(from);
+    unsigned char* bytes = malloc((size_t)size);
+    FILE* in = fopen(from, "rb");
+    CHECK(bytes && in && fread(bytes, 1, (size_t)size, in) == (size_t)size);
+    fclose(in);
+    unsigned char* entry = NULL; /* the section table's entry, past every section */
+    for (long i = size - 8; i >= 0 && !entry; --i)
+        if (!memcmp(bytes + i, "PROCESS", 8)) entry = bytes + i;
+    CHECK(entry);
+    *ours = snx_ld_le64(entry + 8);
+    *had = *ours ^ 1;
+    snx_st_le64(entry + 8, *had);
+    FILE* out = fopen(to, "wb");
+    CHECK(out && fwrite(bytes, 1, (size_t)size, out) == (size_t)size);
+    CHECK(!fclose(out));
+    free(bytes);
+}
 static void refused(SnxCtrProcess* p, const Game* g, const char* path, const char* expect) {
     char why[512];
     uint32_t word = ctr_word(p, g->heap), objects = ctr_object_count(p), current = p->current_thread;
@@ -422,8 +444,15 @@ int main(void) {
     same(&before, &fresh, "a fresh process");
     snx_ctr_process_free(q);
     /* refusals, with nothing changed */
+    char expect[160];
     copy_file(saved, bad, file_size(saved), 9);
-    refused(p, &g, bad, "version 9");
+    snprintf(expect, sizeof expect, "version 9, and this ScarletNX reads version %u", (unsigned)SNX_CTR_STATE_VERSION);
+    refused(p, &g, bad, expect);
+    uint64_t had, ours;
+    other_layout(saved, bad, &had, &ours);
+    snprintf(expect, sizeof expect, "another layout (schema %016" PRIX64 ", this ScarletNX's %016" PRIX64 ")", had,
+             ours);
+    refused(p, &g, bad, expect);
     copy_file(saved, bad, file_size(saved) / 2, 0);
     refused(p, &g, bad, "");
     uint64_t title = p->title_id;
