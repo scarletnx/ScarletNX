@@ -172,7 +172,8 @@ static const signed char sgx_a32_strex_win64[3] = {9, 2, 10};
 #define SGX_VF_G2X64 (&sgx_v_movq_xr)
 /* the SSE forms of two XMM operands a host without their feature gets from x64_helpers.c's snx_x64_sse, the
    instruction's own semantics on the cold path (mach.h's sgx_vins): a form's number is its place here */
-static const SgXVForm* const sgx_vf_helped_forms[] = {&sgx_v_pclmulqdq, &sgx_v_pcmpgtq};
+static const SgXVForm* const sgx_vf_helped_forms[] = {&sgx_v_pclmulqdq, &sgx_v_pcmpgtq, &sgx_v_pshufb, &sgx_v_palignr,
+                                                      &sgx_v_pabsb,     &sgx_v_pabsw,   &sgx_v_pabsd,  &sgx_v_pmulhrsw};
 #define SGX_VF_HELPER "snx_x64_sse"
 static inline int sgx_vf_helped(const SgXVForm* f) {
     for (int k = 0; k < (int)(sizeof sgx_vf_helped_forms / sizeof *sgx_vf_helped_forms); ++k)

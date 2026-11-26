@@ -26,7 +26,7 @@
 static void take_out(int how) {
     snx_x64_without(how == 1 ? SNX_X64_POPCNT : how == 2 ? SNX_X64_SSE42 | SNX_X64_PCLMUL : 0);
 }
-#define LACKS "cpu: needs POPCNT, this host has SSE3, SSSE3 and SSE4.1"
+#define LACKS "cpu: needs POPCNT, this host has SSE3 and SSE4.1"
 #define DONE  "cpu: this host has no SSE4.2 and PCLMULQDQ, done by the fallback"
 #else
 static void take_out(int how) { (void)how; }

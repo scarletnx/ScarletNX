@@ -26,9 +26,17 @@ static u64 rnd(void) {
 }
 /* operand k of a run: the edges first, then random */
 static void operand(unsigned k, u64 v[2]) {
-    static const u64 edges[] = {0, ~0ull, 1, 1ull << 63, 0x8000000000000001ull};
-    if (k < 25)
-        v[0] = edges[k % 5], v[1] = edges[k / 5];
+    static const u64 edges[] = {0,
+                                ~0ull,
+                                1,
+                                1ull << 63,
+                                0x8000000000000001ull,
+                                0x8080808080808080ull,
+                                0x7FFF80007FFF8000ull,
+                                0x0F0E0D0C8B0A0908ull};
+    enum { EDGES = sizeof edges / sizeof *edges };
+    if (k < EDGES * EDGES)
+        v[0] = edges[k % EDGES], v[1] = edges[k / EDGES];
     else
         v[0] = rnd(), v[1] = rnd();
 }
@@ -46,6 +54,54 @@ static void operand(unsigned k, u64 v[2]) {
     (void)imm;
     _mm_storeu_si128((__m128i*)r,
                      _mm_cmpgt_epi64(_mm_loadu_si128((const __m128i*)a), _mm_loadu_si128((const __m128i*)b)));
+}
+[[gnu::target("ssse3")]] static void pshufb(const u64* a, const u64* b, unsigned imm, u64* r) {
+    (void)imm;
+    _mm_storeu_si128((__m128i*)r,
+                     _mm_shuffle_epi8(_mm_loadu_si128((const __m128i*)a), _mm_loadu_si128((const __m128i*)b)));
+}
+/* PALIGNR's immediate, a constant of the instruction's: every one the back end gives (EXT's 1 to 15), and 0, 16, 31 */
+[[gnu::target("ssse3")]] static void palignr(const u64* a, const u64* b, unsigned imm, u64* r) {
+    __m128i x = _mm_loadu_si128((const __m128i*)a), y = _mm_loadu_si128((const __m128i*)b), z;
+    switch (imm) {
+        case 0: z = _mm_alignr_epi8(x, y, 0); break;
+        case 1: z = _mm_alignr_epi8(x, y, 1); break;
+        case 2: z = _mm_alignr_epi8(x, y, 2); break;
+        case 3: z = _mm_alignr_epi8(x, y, 3); break;
+        case 4: z = _mm_alignr_epi8(x, y, 4); break;
+        case 5: z = _mm_alignr_epi8(x, y, 5); break;
+        case 6: z = _mm_alignr_epi8(x, y, 6); break;
+        case 7: z = _mm_alignr_epi8(x, y, 7); break;
+        case 8: z = _mm_alignr_epi8(x, y, 8); break;
+        case 9: z = _mm_alignr_epi8(x, y, 9); break;
+        case 10: z = _mm_alignr_epi8(x, y, 10); break;
+        case 11: z = _mm_alignr_epi8(x, y, 11); break;
+        case 12: z = _mm_alignr_epi8(x, y, 12); break;
+        case 13: z = _mm_alignr_epi8(x, y, 13); break;
+        case 14: z = _mm_alignr_epi8(x, y, 14); break;
+        case 15: z = _mm_alignr_epi8(x, y, 15); break;
+        case 16: z = _mm_alignr_epi8(x, y, 16); break;
+        default: z = _mm_alignr_epi8(x, y, 31); break;
+    }
+    _mm_storeu_si128((__m128i*)r, z);
+}
+/* PABS's: of the second operand (the back end gives the source as both) */
+[[gnu::target("ssse3")]] static void pabsb(const u64* a, const u64* b, unsigned imm, u64* r) {
+    (void)a, (void)imm;
+    _mm_storeu_si128((__m128i*)r, _mm_abs_epi8(_mm_loadu_si128((const __m128i*)b)));
+}
+[[gnu::target("ssse3")]] static void pabsw(const u64* a, const u64* b, unsigned imm, u64* r) {
+    (void)a, (void)imm;
+    _mm_storeu_si128((__m128i*)r, _mm_abs_epi16(_mm_loadu_si128((const __m128i*)b)));
+}
+[[gnu::target("ssse3")]] static void pabsd(const u64* a, const u64* b, unsigned imm, u64* r) {
+    (void)a, (void)imm;
+    _mm_storeu_si128((__m128i*)r, _mm_abs_epi32(_mm_loadu_si128((const __m128i*)b)));
+}
+[[gnu::target("ssse3")]] static void pmulhrsw(const u64* a, const u64* b, unsigned imm, u64* r) {
+    (void)imm;
+    _mm_storeu_si128((__m128i*)r,
+                     _mm_mulhrs_epi16(_mm_loadu_si128((const __m128i*)a), _mm_loadu_si128((const __m128i*)b)));
 }
 static void check(const char* form, unsigned number, unsigned imm,
                   void (*real)(const u64*, const u64*, unsigned, u64*)) {
@@ -80,6 +136,12 @@ int main(void) {
     for (unsigned imm = 0; imm < 0x12; imm += imm == 0x01 ? 0x0F : 1)
         if (imm <= 0x01 || imm >= 0x10) check("PCLMULQDQ", 0, imm, pclmulqdq);
     check("PCMPGTQ", 1, 0, pcmpgtq);
+    check("PSHUFB", 2, 0, pshufb);
+    for (unsigned imm = 0; imm <= 17; ++imm) check("PALIGNR", 3, imm == 17 ? 31 : imm, palignr);
+    check("PABSB", 4, 0, pabsb);
+    check("PABSW", 5, 0, pabsw);
+    check("PABSD", 6, 0, pabsd);
+    check("PMULHRSW", 7, 0, pmulhrsw);
     printf("x64_sse_helped: %d failures\n", g_sse.failures);
     return g_sse.failures != 0;
 #else

@@ -4511,6 +4511,17 @@ if(SNX_X64)
              UQADD_v SCVTF_vi CRC32C)
     add_test(NAME recompiler_backends_refused_no_sse42 COMMAND snx-test-recompiler-backends --refused --target max
              --without 0x3DC0)
+    # and without SSSE3: every constant permutation's PSHUFB, PALIGNR, PABS and PMULHRSW
+    add_test(NAME recompiler_backends_no_ssse3 COMMAND snx-test-recompiler-backends --without 0x3D10 --states 24
+             --ops ABS_v ADDP_v ADDV CLS_v CLZ_v CNT_v EXT_d EXT_q FADDP_v FMAXP_v MUL_vi REV16_v REV32_v REV64_v
+             SHRN_v SMAXV SQDMULH_vi SQRDMULH_v SQRDMULH_vi SQXTN_v SQXTUN_v TBL_TBX TRN1 TRN2 UMULL_vi UQXTN_v UZP1
+             UZP2 XTN ZIP1 ZIP2 LD_single_repl)
+    add_test(NAME recompiler_backends_refused_no_ssse3 COMMAND snx-test-recompiler-backends --refused --target max
+             --without 0x3D10)
+    # PALIGNR's one use, SHA256SU1's beside SHA-NI's (on a host with them)
+    add_test(NAME recompiler_backends_no_ssse3_sha COMMAND snx-test-recompiler-backends --without 0x1D10 --states 40
+             --ops SHA256SU1)
+    set_tests_properties(recompiler_backends_no_ssse3 PROPERTIES TIMEOUT 600)
 endif()
 # a big-endian PowerPC64's guest doublewords with LDBRX and without (tools/sailgen/ppc64.h), the code run under
 # qemu-ppc64 on CPUs before ISA 2.06 and after (skipped without qemu-ppc64)
