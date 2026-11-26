@@ -48,6 +48,24 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* SNX_OVERLAY_DUMP=FILE: every list the menu draws appended to FILE, its quads' bytes as they are, so two builds of
+   the menu can be compared byte for byte over the same states */
+static void dump_draw(SnxUiList* l, int sw, int sh, u64 now_ns) {
+    static FILE* out;
+    static int opened;
+    (overlay_draw)(l, sw, sh, now_ns);
+    if (!opened) {
+        const char* path = getenv("SNX_OVERLAY_DUMP");
+        opened = 1;
+        out = path && *path ? fopen(path, "wb") : NULL;
+    }
+    if (!out) return;
+    fprintf(out, "draw %dx%d %llu: %d\n", sw, sh, (unsigned long long)now_ns, l->n);
+    fwrite(l->q, sizeof *l->q, (size_t)l->n, out);
+    fflush(out);
+}
+#define overlay_draw dump_draw
+
 /* a quad as it holds it (ui.h's ui_view): its place in pixels, its colour widened back to 8 bits */
 static SnxUiQuadView qv(const SnxUiQuad* q) { return ui_view(q); }
 
