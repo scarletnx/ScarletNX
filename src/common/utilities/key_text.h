@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* A key as a setting holds it (settings.txt's Shortcuts): SDL's name of the key after Ctrl+, Alt+, Shift+ or GUI+ for
-   the modifiers held with it (Ctrl+Shift+F12), "" for none. The runtime's keys (nx/runtime/platform/hotkeys.c) and the
+   the modifiers held with it (Ctrl+Shift+F12), "" for none. The runtime's keys (common/utilities/hotkeys.c) and the
    launcher's Shortcuts rows, which take a key pressed, read and write them alike */
 #ifndef SNX_KEY_TEXT_H
 #define SNX_KEY_TEXT_H

@@ -3828,7 +3828,7 @@ void vk_gpuprof_cb_begin(VkCommandBuffer cb);
 void vk_gpuprof_cb_end(VkCommandBuffer cb, int why, u64 value);
 void vk_gpuprof_waited(u64 value, int kind);
 void vk_gpuprof_frame_done(u32 slot);
-/* The stats box's GPU line (runtime/platform/stats.c): while stats is on, each command buffer of the frame gets a
+/* The stats box's GPU line (common/utilities/stats.c): while stats is on, each command buffer of the frame gets a
    timestamp at its begin and its end, and no pass does unless the profile asks. vk_gpuprof_timed: whether the graphics
    queue can be timed. vk_gpuprof_busy_ns: the time it was busy with the frames timed, summed, read when each frame
    slot is reused (its work is done then: no wait). g_vk_timestamps: the timestamps written, none while stats and the

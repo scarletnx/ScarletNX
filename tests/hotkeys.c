@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The runtime's keys (runtime/platform/hotkeys.c): settings.txt's Shortcuts a row an action, each default today's
+/* The runtime's keys (common/utilities/hotkeys.c): settings.txt's Shortcuts a row an action, each default today's
    key; a key's text read as SDL names keys, its modifiers before it in any case, and said back in one way; the action
    a key pressed with modifiers does, Shift's loose match below an exact one, and a key two actions share; a setting
    read from the .ini, an empty one no key, and one that isn't a key refused with the value given and the one in

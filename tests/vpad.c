@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The on-screen controls (common/utilities/vpad.c, and the Switch's showcase of them, runtime/platform/vpad.c): what
+/* The on-screen controls (common/utilities/vpad.c, and the showcase of them, common/utilities/vpad_showcase.c): what
    fingers on them press, edit mode, the .ini keys, the draw, and controls=2's Auto by the device's touch screen and
    gamepads */
 #include "common/utilities/vpad_showcase.h"
