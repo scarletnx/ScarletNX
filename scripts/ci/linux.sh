@@ -7,15 +7,14 @@ set -eo pipefail
 
 packaging_check() {
   sha256sum -c <<'EOF'
-0aea2f589658e5db1659a6ccb8d29546c4e03028f1e29b37c6450cece917249a  /usr/local/bin/quick-sharun
-d215f7676785f1a1bb8784e69085d66c1df81488ef31f1ba7198325a5be05130  /usr/local/bin/get-debloated-pkgs
+a7994d3bd3debf72b67a131b17f061cc312dc1461e4d083d9607d2ca5af41d8b  /usr/local/bin/quick-sharun
+ed6040110f3c5793be0cb577dc60f2922c90a32ba7e108e37cc1aa0e49fed43b  /usr/local/bin/get-debloated-pkgs
 86afbf5045b78020c93fcd35bf0f642765a8dc339bb2dce534a0461ce3d3508d  /usr/local/bin/make-aur-package
 EOF
 }
 
 # jdk21-openjdk: the Android app driver's javac and jni.h, and the JVM for Amberlith's APK; meson: dav1d; poppler:
-# pdftotext for the x86-64 instruction selection. get-debloated-pkgs reads api.github.com, so it gets the token
-# env: GITHUB_TOKEN
+# pdftotext for the x86-64 instruction selection
 build_tools() {
   # poppler: pdftotext, which makes the x86-64 back end's instruction selection again (below)
   for try in 1 2 3; do

@@ -41,12 +41,10 @@ sysroot() {
 
 # The pinned Anylinux-AppImages tools and the target's libraries the runtime links and bundles: binutils and
 # patchelf are what quick-sharun needs on PATH. get-debloated-pkgs then replaces the full Mesa (its libgallium
-# links libLLVM), ICU and Opus, so it runs last. Each pacman is tried 3 times, as in the appimage job. The token
-# is get-debloated-pkgs' api.github.com rate limit, the one the appimage job's copy is given
-# env: GITHUB_TOKEN
+# links libLLVM), ICU and Opus, so it runs last. Each pacman is tried 3 times, as in the appimage job
 target_tools() {
   docker exec -i -e QUICK_SHARUN -e QUICK_SHARUN_SHA -e DEBLOATED_PACKAGES -e DEBLOATED_PACKAGES_SHA \
-    -e GITHUB_TOKEN target sh -s <<'EOF'
+    target sh -s <<'EOF'
 set -eu
 libraries="patchelf binutils sdl3 libx11 mesa vulkan-icd-loader vulkan-radeon vulkan-swrast libxext libxcursor
   libxfixes libxi libxinerama libxrandr libxrender libxss libxtst libxkbcommon wayland wayland-protocols libdecor
