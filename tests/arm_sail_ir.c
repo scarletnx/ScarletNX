@@ -430,6 +430,7 @@ static void judge(int r, const Config* c, int place, uint32_t h, const char* a, 
 static SnxCodeLoader* new_loader(char* error, size_t size) {
     SnxCodeLoader* loader = snx_code_loader_new(0, error, size);
     if (loader && (snx_code_define(loader, "snx_arm_fp", (SnxU64)(uintptr_t)snx_arm_fp) ||
+                   snx_code_define(loader, "snx_arm_fp_env", (SnxU64)(uintptr_t)snx_arm_fp_env) ||
                    snx_code_define(loader, "snx_arm_crypto", (SnxU64)(uintptr_t)snx_arm_crypto) ||
                    snx_code_define(loader, "snx_arm_undefined", (SnxU64)(uintptr_t)snx_arm_undefined) ||
                    snx_code_define(loader, "snx_arm_coproc", (SnxU64)(uintptr_t)snx_arm_coproc) ||

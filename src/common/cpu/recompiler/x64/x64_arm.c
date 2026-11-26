@@ -209,6 +209,8 @@ static void mg_prologue(MG_ARM* c, SnxU32 pc, int* bad) {
     c->own = b->n;
     sgx_bytes(b, win64(c) ? "53 48 89 CB" : "53 48 89 FB"); /* push rbx; mov rbx, rdi (rcx) */
     frame(c, 0);
+    if (c->a.slots_max < 1) c->a.slots_max = 1; /* the frame's first slot, SNX_X64_MXCSR_ENTRY's */
+    sgx_bytes(b, SNX_X64_MXCSR_ENTRY);
 }
 /* where a check of the entry failed: ESI the block's address, EDX its first word (a Thumb block's halfword; Windows' EDX
    and R8D), and snx_x64_arm_entry_exit or snx_x64_thumb_entry (the object's own, which set the exit) */

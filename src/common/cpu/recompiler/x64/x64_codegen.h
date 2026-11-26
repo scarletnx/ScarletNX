@@ -15,6 +15,13 @@
 
 typedef SnxNativeOptions SnxX64Options;
 
+/* The MXCSR the FP hot paths assume (tools/sailgen/x64_a64.h, mach_arm.inc's VFP): round to nearest, no FTZ or DAZ,
+   every exception masked. The thread's may be another, as what the runtime called before left it, so an A64
+   function's entry and an A32 block's write it where it drifted, as the LLVM functions do (cpu.h's snx_fp_env). The
+   frame's first slot holds it: nothing is in it before a region spills. stmxcsr [rsp]; and dword [rsp], -64 (the
+   sticky flags out); cmp dword [rsp], 0x1F80; je past the write; mov dword [rsp], 0x1F80; ldmxcsr [rsp] */
+#define SNX_X64_MXCSR_ENTRY "0F AE 1C 24 83 24 24 C0 81 3C 24 80 1F 00 00 74 0B C7 04 24 80 1F 00 00 0F AE 14 24"
+
 /* 1 where this host runs the x86-64 back end's code and its objects load (x86-64, with what its code needs) */
 int snx_x64_available(void);
 /* 1 on an x86-64 host without what the back end's code needs (SSE2: a test's alone), with the line of it in why

@@ -45,6 +45,13 @@
 #if !defined(SNX_TEST_NATIVE)
 #include "common/cpu/recompiler/x64/x64_elf.h"
 #endif
+/* --csr-llvm and --csr-x64: where both sides' blocks run on this host's own x86-64 processor */
+#if (defined(__x86_64__) || defined(_M_X64)) && !defined(SNX_TEST_NATIVE)
+#define HOST_CSR 1
+#include <xmmintrin.h>
+#else
+#define HOST_CSR 0
+#endif
 #include "common/utilities/bits.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
@@ -106,6 +113,7 @@ static struct {
     unsigned char* callee; /* --callee's object, callee_size bytes */
     size_t callee_size;
     SnxArmRt rt[2]; /* with it, each side's runtime */
+    unsigned csr[2]; /* --csr-llvm, --csr-x64: the host's MXCSR each side's blocks start under, 0 for the default */
     uint32_t (*io[2])(SnxArmCPU* cpu, uint32_t address, uint32_t size_write, uint32_t value); /* and hook */
 } g_test;
 static int legacy(void) {
@@ -394,6 +402,20 @@ static int windows_new(void) {
 [[clang::no_sanitize("function")]] static void run_block(SnxU64 addr, SnxArmCPU* cpu) {
     ((SnxArmBlock)(uintptr_t)addr)(cpu);
 }
+#if HOST_CSR
+/* a side's block run under the MXCSR --csr-llvm or --csr-x64 gave it, as other code on the thread may leave it; the
+   default after */
+static void run_block_under(int side, SnxU64 addr, SnxArmCPU* cpu) {
+    if (g_test.csr[side]) _mm_setcsr(g_test.csr[side]);
+    run_block(addr, cpu);
+    _mm_setcsr(0x1F80);
+}
+#else
+static void run_block_under(int side, SnxU64 addr, SnxArmCPU* cpu) {
+    (void)side;
+    run_block(addr, cpu);
+}
+#endif
 static void start(RunState* s, unsigned k, uint32_t pc) {
     SnxArmCPU* cpu = &s->cpu;
     s->checked = (SnxArmCheckedCPU){0};
@@ -568,6 +590,7 @@ static uint64_t counted_fp(SnxArmCPU* cpu, uint64_t x, uint64_t y, uint64_t add,
 static SnxCodeLoader* new_loader(char* error, size_t size) {
     SnxCodeLoader* loader = snx_code_loader_new(0, error, size);
     if (loader && (snx_code_define(loader, "snx_arm_fp", (SnxU64)(uintptr_t)snx_arm_fp) ||
+                   snx_code_define(loader, "snx_arm_fp_env", (SnxU64)(uintptr_t)snx_arm_fp_env) ||
                    snx_code_define(loader, "snx_arm_fp_x64", (SnxU64)(uintptr_t)counted_fp) ||
                    snx_code_define(loader, "snx_arm_crypto", (SnxU64)(uintptr_t)snx_arm_crypto) ||
                    snx_code_define(loader, "snx_arm_undefined", (SnxU64)(uintptr_t)snx_arm_undefined) ||
@@ -929,7 +952,7 @@ static int run_chunk(SnxIr* ir, Back* x64, Block* blocks, size_t count) {
                     continue;
                 }
 #endif
-                run_block(side ? xaddr[i] : laddr[i], &s[side].cpu);
+                run_block_under(side, side ? xaddr[i] : laddr[i], &s[side].cpu);
             }
             ++g_test.ran;
             *(legacy() ? &g_test.hooked : &g_test.transfers) += s[0].calls;
@@ -2147,6 +2170,22 @@ int main(int argc, char** argv) {
 #if !defined(SNX_TEST_NATIVE)
             return fprintf(stderr, "--callee %s: the x86-64 blocks run here, with the host's functions\n", argv[i]), 2;
 #endif
+        } else if ((!strcmp(argv[i], "--csr-llvm") || !strcmp(argv[i], "--csr-x64")) && i + 1 < argc) {
+            int side = !strcmp(argv[i], "--csr-x64");
+            char* end;
+            unsigned long csr = strtoul(argv[i + 1], &end, 16);
+#if HOST_CSR
+            if (*end || end == argv[i + 1] || csr > 0xFFFF || (csr & 0x3F))
+                return fprintf(stderr, "%s %s is not an MXCSR of 16 bits with its flags clear\n", argv[i], argv[i + 1]),
+                       2;
+            g_test.csr[side] = (unsigned)csr;
+            ++i;
+#else
+            (void)side, (void)end, (void)csr;
+            return fprintf(stderr, "%s %s: only the x86-64 host's own runs have an MXCSR to set\n", argv[i],
+                           argv[i + 1]),
+                   2;
+#endif
         } else if (!strcmp(argv[i], "--dump"))
             g_test.dump = 1;
 #if defined(SNX_TEST_UNWINDS)
@@ -2195,7 +2234,7 @@ int main(int argc, char** argv) {
             return fprintf(
                        stderr,
                        "usage: snx-test-arm-x64 [--profile NAME] [--memory NAME] [--trace] [--blocks N] [--thumb N] [--states N] [--pool N] [--features MASK] "
-                       "[--seed N] [--object FILE] [--callee OBJECT] [--word HEX]... "
+                       "[--seed N] [--object FILE] [--callee OBJECT] [--csr-llvm HEX] [--csr-x64 HEX] [--word HEX]... "
                        "[--halves HEX[,HEX]...]\n%s is not one of "
                        "these\n",
                        argv[i]),
@@ -2329,6 +2368,9 @@ int main(int argc, char** argv) {
     printf("%zu blocks of %zu words (%zu in the blocks LLVM made of them), %zu compared from %u states each: %zu runs, "
            "%zu refused by the " BACK_NAME " back end\n",
            done, g_test.words, g_test.consumed_words, g_test.compared, g_test.states, g_test.ran, g_test.refused);
+    if (g_test.csr[0] || g_test.csr[1])
+        printf("the blocks started under MXCSR %04x (LLVM's) and %04x (" BACK_NAME "'s)\n",
+               g_test.csr[0] ? g_test.csr[0] : 0x1F80, g_test.csr[1] ? g_test.csr[1] : 0x1F80);
     {
         static const SnxArmVectorOp hot[] = {AV_FADD,  AV_FSUB,  AV_FMUL,  AV_FDIV, AV_FMLA, AV_FMLS,
                                              AV_FNMLA, AV_FNMLS, AV_FNMUL, AV_FCMP, AV_FCMPE};

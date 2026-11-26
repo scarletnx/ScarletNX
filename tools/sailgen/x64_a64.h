@@ -16,7 +16,7 @@
    set, and a guard of FZ clear sent all of their arithmetic to the helpers), FPSR's IXC is set already where the
    operation may be inexact (the inline code doesn't raise it), and the result is a normal number above the smallest
    (no underflow, overflow or NaN: no flag but IXC, and nothing FZ flushes) or a zero that is exact. The host's MXCSR
-   is its default, round to nearest without FTZ or DAZ, as each function's entry makes it (x64_codegen.c's mg_entry) */
+   is its default, round to nearest without FTZ or DAZ, as each function's entry makes it (SNX_X64_MXCSR_ENTRY) */
 
 #define SGX_FPCR_RMODE (3u << 22)
 #define SGX_FPCR_FZ (1u << 24)

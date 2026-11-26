@@ -36,6 +36,7 @@ typedef struct {
     unsigned transfer_bytes, transfer_operation;
     LLVMValueRef yield; /* ARM7TDMI: what the bus hook's writes returned, ORed: nonzero ends the block (yield_check) */
     int yields;         /* the instruction being emitted wrote through the bus hook */
+    int fp_env;         /* the block's entry calls snx_arm_fp_env (fp_call's first fast path put it there) */
 } ArmIR;
 
 /* codegen.h: flat memory in a window of 2^32 guest addresses with a guard after it, the cpu private to the running
