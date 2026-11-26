@@ -671,6 +671,11 @@ static int vec_fp(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     case SNX_A64_OP_FCMGE_s:
     case SNX_A64_OP_FCMEQ_s:
     case SNX_A64_OP_FABD_s: scalar = 1; break;
+    case SNX_A64_OP_FNEG_s:
+    case SNX_A64_OP_FABS_s:
+        if ((word >> 22 & 3) > 1) return 0; /* a half: the Sail's */
+        scalar = 1;
+        break;
     case SNX_A64_OP_SCVTF_f:
     case SNX_A64_OP_UCVTF_f:
     case SNX_A64_OP_FCVTZS_f:
@@ -694,6 +699,8 @@ static int vec_fp(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     case SNX_A64_OP_FCMGT_s: case SNX_A64_OP_FCMGE_s: case SNX_A64_OP_FCMEQ_s: case SNX_A64_OP_FABD_s:
     case SNX_A64_OP_FCVTZS_vf: case SNX_A64_OP_FCVTZU_vf: case SNX_A64_OP_SCVTF_vf: case SNX_A64_OP_UCVTF_vf:
     case SNX_A64_OP_FCVTL_v: case SNX_A64_OP_FCVTN_v: break;
+    case SNX_A64_OP_FNEG_s:
+    case SNX_A64_OP_FABS_s: break;
     case SNX_A64_OP_SCVTF_f: case SNX_A64_OP_UCVTF_f: case SNX_A64_OP_FCVTZS_f: case SNX_A64_OP_FCVTZU_f:
         if (!scalar) return 0; /* the general-purpose register forms: the Sail's */
         break;
@@ -731,8 +738,10 @@ static int vec_fp(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
             r = ffma(g, sz, n, vread(g, rd), vread(g, rn), m, insn->op == SNX_A64_OP_FMLS_vi);
         break;
     }
-    case SNX_A64_OP_FNEG_v: r = vxor(g, vread(g, rn), fsplat(g, sz, 1ull << (sz ? 63 : 31))); break;
-    case SNX_A64_OP_FABS_v: r = vandn(g, fsplat(g, sz, 1ull << (sz ? 63 : 31)), vread(g, rn)); break;
+    case SNX_A64_OP_FNEG_v:
+    case SNX_A64_OP_FNEG_s: r = vxor(g, vread(g, rn), fsplat(g, sz, 1ull << (sz ? 63 : 31))); break;
+    case SNX_A64_OP_FABS_v:
+    case SNX_A64_OP_FABS_s: r = vandn(g, fsplat(g, sz, 1ull << (sz ? 63 : 31)), vread(g, rn)); break;
     case SNX_A64_OP_FSQRT_v: r = fsqrt(g, sz, n, vread(g, rn)); break;
     case SNX_A64_OP_FCMEQ_v:
     case SNX_A64_OP_FCMEQ_s: r = fcompare(g, sz, n, vread(g, rn), vread(g, rm), 0, 0); break;
