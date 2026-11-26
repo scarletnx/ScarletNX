@@ -7,7 +7,9 @@ holds none and an item that is no at:slot said with what was given.
 """
 
 import argparse
+import os
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -29,23 +31,41 @@ def run(runner, work, *options):
     return done.stdout + done.stderr
 
 
+def names(said, verb, expected):
+    """Whether said has a line "verb PATH" whose PATH is the file expected, however the runner spells it: its own
+    separators (a Windows path with a / before states), the folder's real path (macOS's /private/var for /var)."""
+    for path in re.findall(r'(?:^|: )%s (.+)$' % verb, said, re.MULTILINE):
+        try:
+            if os.path.samefile(path.strip(), expected):
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('runner')
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix='snx-agb-states-', ignore_cleanup_errors=True) as temporary:
-        work = pathlib.Path(temporary)
+        work = pathlib.Path(temporary) / 'real'
+        work.mkdir()
+        try:  # the work folder by a link, as macOS's temporary one is: the runner names it by its real path
+            (pathlib.Path(temporary) / 'link').symlink_to(work, target_is_directory=True)
+            work = pathlib.Path(temporary) / 'link'
+        except OSError:
+            pass  # Windows without the right to make links
         (work / 'keys.gba').write_bytes(rom())
         said = run(args.runner, work, '--state-save=100:1,200:auto')
         states = work / 'keys' / 'states'
         made = sorted(p.name for p in states.glob('*.snxstate')) if states.is_dir() else []
-        if made != ['keys.1.snxstate', 'keys.auto.snxstate'] or 'Saved %s' % (states / 'keys.1.snxstate') not in said:
+        if made != ['keys.1.snxstate', 'keys.auto.snxstate'] or not names(said, 'Saved', states / 'keys.1.snxstate'):
             sys.exit('agb_states: state_save=100:1,200:auto made %s\n%s' % (made, said))
         said = run(args.runner, work, '--state-load=0:1')
-        if 'Loaded %s' % (states / 'keys.1.snxstate') not in said:
+        if not names(said, 'Loaded', states / 'keys.1.snxstate'):
             sys.exit('agb_states: state_load=0:1 did not load slot 1\n%s' % said)
         said = run(args.runner, work, '--state-load=0:%s' % (states / 'keys.auto.snxstate'))
-        if 'Loaded %s' % (states / 'keys.auto.snxstate') not in said:
+        if not names(said, 'Loaded', states / 'keys.auto.snxstate'):
             sys.exit('agb_states: state_load=0:PATH did not load that file\n%s' % said)
         said = run(args.runner, work, '--state-load=0:7', '--state-save=junk')
         if 'Not loaded: ' not in said or 'state_save=junk: junk is not at:slot or at:path' not in said:
