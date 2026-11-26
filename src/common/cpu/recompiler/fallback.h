@@ -34,12 +34,17 @@ SnxFallbackArm* snx_fallback_arm_new(const char* name, char opt, int jit);
 void snx_fallback_arm_free(SnxFallbackArm* f);
 /* Whether it can make code for this host, for what has no other: 0, or -1 with why not in error. A block starts it */
 int snx_fallback_arm_start(SnxFallbackArm* f, char* error, size_t error_size);
-/* The block at pc, of count words or halfwords (thumb) at most, as host integers, into the object being made, as name:
-   0 with *consumed how many it covers, or -1 with the reason in error. why is the reason the native back end gave */
+/* The block at pc, of count words or halfwords (thumb) at most, as host integers, into the object being made, as name
+   (hidden in an AOT module's): 0 with *consumed how many it covers, or -1 with the reason in error. why is the reason
+   the native back end gave */
 int snx_fallback_arm_block(SnxFallbackArm* f, const char* name, const void* code, size_t count, uint32_t pc, int thumb,
                            const SnxArmCodegenOptions* options, const char* why, size_t* consumed, char* error,
                            size_t error_size);
+/* The text of the blocks since the last object as the block compiler made them, before the passes (--keep-ir), into
+   *text (malloc'd): 0, or -1 with the reason in error */
+int snx_fallback_arm_ir(SnxFallbackArm* f, char** text, char* error, size_t error_size);
 /* The object of the blocks since the last one (malloc'd): 0, or -1 with the reason in error. Either way the next block
    starts another */
 int snx_fallback_arm_object(SnxFallbackArm* f, unsigned char** object, size_t* size, char* error, size_t error_size);
+
 #endif

@@ -1,8 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "common/cpu/arm/aot.h"
-#include "common/cpu/arm/llvm.h"
-#include "common/cpu/recompiler/llvm/ir.h"
+#include "common/cpu/recompiler/fallback.h"
 #include "common/cpu/recompiler/mach/native.h"
 #include "common/platform/file.h"
 #include "common/utilities/common.h"
@@ -15,13 +14,11 @@ const char snx_arm_aot_none[] = "no native back end on this host";
 const char snx_arm_aot_kept[] = "--keep-ir keeps LLVM's IR of every block";
 
 struct SnxArmAot {
-    SnxNativeArm* native; /* NULL where every block is LLVM's */
-    const char* every;    /* why, where it is */
-    SnxIr* ir;            /* the context and target machine of LLVM's blocks, made for the first of them */
-    LLVMModuleRef module; /* LLVM's blocks since the last objects, NULL for none */
-    size_t made;          /* the native back end's since then */
+    SnxNativeArm* native;     /* NULL where every block is the fallback's */
+    const char* every;        /* why, where it is */
+    SnxFallbackArm* fallback; /* the blocks the native back end leaves (recompiler/fallback.h) */
+    size_t made, left;        /* the native back end's and the fallback's since the last objects */
     const char* keep_ir;
-    char opt;
     SnxArmAotCount count;
 };
 
@@ -79,7 +76,6 @@ void snx_arm_aot_report(const SnxArmAotCount* c, const char* program, int quiet)
 SnxArmAot* snx_arm_aot_new(char opt, const char* keep_ir) {
     SnxArmAot* a = calloc(1, sizeof *a);
     if (!a) return NULL;
-    a->opt = opt;
     a->keep_ir = keep_ir;
     if (keep_ir)
         a->every = snx_arm_aot_kept;
@@ -89,33 +85,26 @@ SnxArmAot* snx_arm_aot_new(char opt, const char* keep_ir) {
         free(a);
         return NULL;
     }
+    if (!(a->fallback = snx_fallback_arm_new("arm-aot", opt, 0))) {
+        snx_arm_aot_free(a);
+        return NULL;
+    }
     return a;
 }
 void snx_arm_aot_free(SnxArmAot* a) {
     if (!a) return;
-    if (a->module) LLVMDisposeModule(a->module);
-    snx_ir_free(a->ir);
+    snx_fallback_arm_free(a->fallback);
     snx_native_arm_free(a->native);
     free(a);
 }
 const SnxArmAotCount* snx_arm_aot_count(const SnxArmAot* a) { return &a->count; }
 
-/* the module LLVM's next blocks go in */
-static LLVMModuleRef llvm_module(SnxArmAot* a, char* error, size_t error_size) {
-    if (a->module) return a->module;
-    if (!a->ir) {
-        if (snx_ir_init(error, error_size)) return NULL;
-        if (!(a->ir = snx_ir_new("arm-aot", a->opt, error, error_size))) return NULL;
-    }
-    a->module = LLVMModuleCreateWithNameInContext("arm-aot", a->ir->ctx);
-    LLVMSetTarget(a->module, LLVMGetTarget(a->ir->mod));
-    LLVMSetDataLayout(a->module, LLVMGetDataLayoutStr(a->ir->mod));
-    return a->module;
-}
-static int llvm_block(SnxArmAot* a, const char* name, const unsigned char* code, size_t count, uint32_t pc, int thumb,
-                      const SnxArmCodegenOptions* options, size_t* consumed, char* error, size_t error_size) {
-    LLVMModuleRef module = llvm_module(a, error, error_size);
-    if (!module) return -1;
+/* the block by the fallback, which why left to it */
+static int fallback_block(SnxArmAot* a, const char* name, const unsigned char* code, size_t count, uint32_t pc,
+                          int thumb, const SnxArmCodegenOptions* options, const char* why, size_t* consumed,
+                          char* error, size_t error_size) {
+    /* LLVM says why it does not start; none, at the block, why nothing makes it */
+    if (snx_fallback_available() && snx_fallback_arm_start(a->fallback, error, error_size)) return -1;
     /* it reads host integers */
     void* units = malloc((count ? count : 1) * (thumb ? 2 : 4));
     if (!units) {
@@ -127,16 +116,13 @@ static int llvm_block(SnxArmAot* a, const char* name, const unsigned char* code,
             ((uint16_t*)units)[i] = snx_ld_le16(code + i * 2);
         else
             ((uint32_t*)units)[i] = snx_ld_le32(code + i * 4);
-    LLVMValueRef fn = thumb ? snx_thumb_llvm_block_ex(module, name, units, count, pc, consumed, options)
-                            : snx_arm_llvm_block_ex(module, name, units, count, pc, consumed, options);
+    const int rc =
+        snx_fallback_arm_block(a->fallback, name, units, count, pc, thumb, options, why, consumed, error, error_size);
     free(units);
-    if (!fn) {
+    if (rc && snx_fallback_available())
         snprintf(error, error_size, "the block compiler refused the %s block at 0x%08x, of %zu instructions at most",
                  thumb ? "Thumb" : "ARM", (unsigned)pc, count);
-        return -1;
-    }
-    LLVMSetVisibility(fn, LLVMHiddenVisibility);
-    return 0;
+    return rc;
 }
 /* a block's length, which the caller goes on from */
 static int covers(const char* by, size_t consumed, size_t count, uint32_t pc, int thumb, char* error,
@@ -164,24 +150,26 @@ int snx_arm_aot_block(SnxArmAot* a, const char* name, const unsigned char* code,
         }
         why = snx_native_arm_why(a->native);
     }
-    if (llvm_block(a, name, code, count, pc, thumb, options, consumed, error, error_size) ||
-        covers("LLVM", *consumed, count, pc, thumb, error, error_size))
+    if (fallback_block(a, name, code, count, pc, thumb, options, why, consumed, error, error_size) ||
+        covers(snx_fallback_name(), *consumed, count, pc, thumb, error, error_size))
         return -1;
+    ++a->left;
     snx_arm_aot_refused(&a->count, why, pc | (thumb ? 1u : 0u));
     return 0;
 }
 
-/* the module's IR as the block compiler made it, before LLVM's passes, as keep_ir/id.ll */
+/* the fallback's blocks' IR as the block compiler made them, before LLVM's passes, as keep_ir/id.ll */
 static int save_ir(const SnxArmAot* a, const char* id, char* error, size_t error_size) {
-    char *text = LLVMPrintModuleToString(a->module), *file = snx_format("%s.ll", id);
-    char* path = file ? snx_path_join(a->keep_ir, file) : NULL;
+    char* text = NULL;
+    if (snx_fallback_arm_ir(a->fallback, &text, error, error_size)) return -1;
+    char *file = snx_format("%s.ll", id), *path = file ? snx_path_join(a->keep_ir, file) : NULL;
     int rc = !path || snx_write_file(path, text, strlen(text)) ? -1 : 0;
     if (rc) {
         char why[256];
         snprintf(error, error_size, "cannot save the IR of %s in %s: %s", id, a->keep_ir,
                  snx_os_error(why, sizeof why));
     }
-    LLVMDisposeMessage(text);
+    free(text);
     free(file);
     free(path);
     return rc;
@@ -201,13 +189,12 @@ int snx_arm_aot_objects(SnxArmAot* a, const char* id, SnxLinkInput out[2], char*
         a->made = 0;
         n = 1;
     }
-    if (a->module) {
+    if (a->left) {
         unsigned char* object = NULL;
         size_t size = 0;
         int rc = a->keep_ir ? save_ir(a, id, error, error_size) : 0;
-        if (!rc) rc = snx_ir_module_object(a->ir, a->module, a->opt, &object, &size, error, error_size);
-        LLVMDisposeModule(a->module);
-        a->module = NULL;
+        if (!rc) rc = snx_fallback_arm_object(a->fallback, &object, &size, error, error_size);
+        a->left = 0;
         if (rc) {
             free((void*)out[0].data);
             out[0] = (SnxLinkInput){0};

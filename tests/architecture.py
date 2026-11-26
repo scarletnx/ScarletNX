@@ -762,7 +762,6 @@ LLVM_HEADER = re.compile(r'llvm(?:-c)?/')
 LLVM_FOLDER = 'src/common/cpu/recompiler/llvm/'
 LLVM_USERS = {
     'src/3ds/aot/compiler.c',
-    'src/common/cpu/arm/aot.c',
     'src/common/cpu/arm/llvm.c',
     'src/common/cpu/arm/llvm.h',
     'src/common/cpu/recompiler/fallback_llvm.c',

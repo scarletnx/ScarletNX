@@ -2,12 +2,13 @@
    Copyright 2026 the ScarletNX contributors */
 /* What makes the code the native back end leaves (recompiler/fallback.h), as a program's link gives it:
    - LLVM's: a JIT unit's object, whose table's functions run; the functions of a unit the native back end did not make,
-     alone in an object; AArch32 and Thumb blocks in one object; and a block of the executor's (exec.c, here, its loads
-     counted and refused as the test asks) whose native object does not load, run;
+     alone in an object; AArch32 and Thumb blocks in one object, hidden in an AOT module's, and their IR; and a block of
+     the executor's (exec.c, here, its loads counted and refused as the test asks) whose native object does not load,
+     run;
    - none (fallback_none.c, a program that links no LLVM): each refused with an error that names the code asked for, its
      address and first instruction, why the native back end left it and that the build has no LLVM, and nothing else
-     said. An executor on a host with no native back end is refused with it too, and the functions all made are none's
-     to refuse */
+     said. An executor on a host with no native back end is refused with it too, the functions all made are none's to
+     refuse, and the AOT compilers' maker of blocks (cpu/arm/aot.c, here) has the native back end's alone */
 #include "common/cpu/aarch64/cpu.h"
 #include "common/cpu/recompiler/codegen.h"
 #include "common/cpu/recompiler/fallback.h"
@@ -43,6 +44,7 @@ static int seam_load(SnxCodeLoader* loader, const SnxLinkInput* inputs, size_t c
 #define snx_code_load seam_load
 #include "common/cpu/arm/exec.c"
 #undef snx_code_load
+#include "common/cpu/arm/aot.c"
 
 #define CHECK(x, ...)                                                                                                  \
     do {                                                                                                               \
@@ -55,6 +57,9 @@ static int seam_load(SnxCodeLoader* loader, const SnxLinkInput* inputs, size_t c
 
 static const uint32_t k_arm[2] = {0xE3A00007u, 0xEF000000u}; /* mov r0, #7; svc #0 */
 static const uint16_t k_thumb[2] = {0x2009u, 0xDF00u};       /* movs r0, #9; svc #0 */
+/* hosted blocks, as the Vita's */
+static const SnxArmCodegenOptions k_hosted = {SNX_ARM_CODEGEN_OPTIONS_ABI, SNX_ARM_PROFILE_A9, SNX_ARM_MEMORY_HOSTED, 0,
+                                              0};
 
 /* the bytes hold the name, a symbol's of one of the three object formats */
 static int holds(const unsigned char* bytes, size_t size, const char* name) {
@@ -161,6 +166,36 @@ static void made_blocks(void) {
     snx_fallback_arm_free(f);
 }
 
+/* the IR's text, or NULL with the failure counted */
+static char* arm_text(SnxFallbackArm* f) {
+    char error[512] = "", *text = NULL;
+    CHECK(!snx_fallback_arm_ir(f, &text, error, sizeof error) && text, "the blocks' IR: %s", error);
+    return text;
+}
+/* AArch32 blocks by LLVM as an AOT module has them, hidden there, and as a JIT's object has them, not; their IR */
+static void made_hidden(void) {
+    size_t took = 0;
+    char error[512] = "";
+    SnxFallbackArm *aot = snx_fallback_arm_new("aot", '1', 0), *jit = snx_fallback_arm_new("jit", '0', 1);
+    if (!aot || !jit) {
+        CHECK(0, "out of memory");
+        snx_fallback_arm_free(aot);
+        snx_fallback_arm_free(jit);
+        return;
+    }
+    CHECK(!snx_fallback_arm_block(aot, "aot_block", k_arm, 2, 0x1000, 0, NULL, "", &took, error, sizeof error) &&
+              !snx_fallback_arm_block(jit, "jit_block", k_arm, 2, 0x1000, 0, NULL, "", &took, error, sizeof error),
+          "the blocks: %s", error);
+    char *aot_text = arm_text(aot), *jit_text = arm_text(jit);
+    CHECK(aot_text && strstr(aot_text, "; ModuleID = 'aot'") && strstr(aot_text, "define hidden void @aot_block("),
+          "an AOT module's block is hidden: %s", aot_text ? aot_text : "");
+    CHECK(jit_text && strstr(jit_text, "define void @jit_block(") && !strstr(jit_text, "hidden"),
+          "a JIT's block is not hidden: %s", jit_text ? jit_text : "");
+    free(aot_text);
+    free(jit_text);
+    snx_fallback_arm_free(aot);
+    snx_fallback_arm_free(jit);
+}
 /* the same asked of none: what is refused, and how it is said */
 static void refused_code(SnxCodegen* cg) {
     static const struct {
@@ -218,7 +253,53 @@ static void refused_code(SnxCodegen* cg) {
     CHECK(snx_fallback_arm_object(f, &object, &size, error, sizeof error) < 0 && !object && !size &&
               strstr(error, "no block was made"),
           "an object: %s", error);
+    char* text = (char*)&dummy;
+    CHECK(snx_fallback_arm_ir(f, &text, error, sizeof error) < 0 && !text && strstr(error, "no block was made"),
+          "the blocks' IR: %s", error);
     snx_fallback_arm_free(f);
+}
+/* the AOT compilers' blocks (aot.c, above) with none: the native back end's made, the others refused by name, with
+   why the native back end left them, and the IR asked for of none */
+static void refused_aot(void) {
+    static const uint32_t words[3] = {0xE2800001u, 0xE0800181u, 0xEF000007u}; /* add, add, svc #7 */
+    unsigned char code[12];
+    char error[512] = "";
+    size_t consumed = 0;
+    for (size_t i = 0; i < 12; ++i) code[i] = (unsigned char)(words[i / 4] >> (i % 4 * 8));
+    SnxArmAot *a = snx_arm_aot_new('1', NULL), *kept = snx_arm_aot_new('1', ".");
+    if (!a || !kept) {
+        CHECK(0, "out of memory");
+        snx_arm_aot_free(a);
+        snx_arm_aot_free(kept);
+        return;
+    }
+    const SnxArmCodegenOptions* plain = &k_hosted;
+    if (snx_native_arm_available()) {
+        CHECK(!snx_arm_aot_block(a, "plain", code, 3, 0x1000, 0, plain, &consumed, error, sizeof error) &&
+                  consumed == 3,
+              "the native back end's block: %s", error);
+        CHECK(snx_arm_aot_block(a, "a_block_of_a_name_too_long", code, 3, 0x2000, 0, plain, &consumed, error,
+                                sizeof error) < 0 &&
+                  strstr(error, "arm-aot: the ARM block at 0x00002000, which starts with e2800001: a block's name too "
+                                "long, and this build has no LLVM to make it (SNX_WITH_LLVM=OFF)"),
+              "a block the native back end refuses: %s", error);
+        SnxLinkInput out[2];
+        CHECK(snx_arm_aot_objects(a, "blocks", out, error, sizeof error) == 1 && out[0].data && !out[1].data,
+              "the native back end's object alone: %s", error);
+        free((void*)out[0].data);
+        const SnxArmAotCount* c = snx_arm_aot_count(a);
+        CHECK(c->native == 1 && !c->llvm && !c->nwhys, "who made them: %zu native, %zu more", c->native, c->llvm);
+    } else
+        CHECK(snx_arm_aot_block(a, "plain", code, 3, 0x1000, 0, plain, &consumed, error, sizeof error) < 0 &&
+                  strstr(error, "0x00001000, which starts with e2800001: no native back end on this host, and this "
+                                "build has no LLVM"),
+              "a block on a host with no native back end: %s", error);
+    CHECK(snx_arm_aot_block(kept, "kept", code, 3, 0x1000, 0, plain, &consumed, error, sizeof error) < 0 &&
+              strstr(error, "arm-aot: the ARM block at 0x00001000, which starts with e2800001: --keep-ir keeps "
+                            "LLVM's IR of every block, and this build has no LLVM to make it (SNX_WITH_LLVM=OFF)"),
+          "a block of a kept IR: %s", error);
+    snx_arm_aot_free(a);
+    snx_arm_aot_free(kept);
 }
 
 /* ---- the executor (exec.c, above) ---- */
@@ -298,8 +379,11 @@ int main(void) {
     if (snx_fallback_available()) {
         made_functions(&cg, hints);
         made_blocks();
-    } else
+        made_hidden();
+    } else {
         refused_code(&cg);
+        refused_aot();
+    }
     executor();
     snx_codegen_free(&cg);
     if (!g_seam.failures) printf("the fallback (%s): as it should be\n", snx_fallback_name());
