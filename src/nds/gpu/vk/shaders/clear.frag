@@ -13,7 +13,7 @@ layout(location = 0) out vec4 o_color;
 layout(location = 1) out vec4 o_attribute;
 
 void main() {
-    uvec2 at = uvec2(ivec2(gl_FragCoord.xy) + clear_offset) & 255u;
+    uvec2 at = uvec2(ivec2(gl_FragCoord.xy) / scale + clear_offset) & 255u;
     uint offset = (at.y * 256u + at.x) * 2u;
     uint c = tex16(0x40000u + offset), d = tex16(0x60000u + offset);
     uvec3 c5 = uvec3(c & 0x1Fu, (c >> 5) & 0x1Fu, (c >> 10) & 0x1Fu);

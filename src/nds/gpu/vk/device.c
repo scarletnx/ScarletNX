@@ -94,6 +94,9 @@ bool nds_vk_init(const char* title, bool headless, char* error, size_t error_siz
         snx_vk_window_close(&v->host);
         return false;
     }
+    char scaled[160];
+    v->scale = (uint32_t)snx_vk_whole_scale(g_settings.resolution_scale, 8, scaled, sizeof scaled);
+    if (scaled[0]) fprintf(stderr, "nds gpu: %s\n", scaled);
     v->ring.marks = snx_vk_marks_new(v->phys, v->device, v->family, g_settings.gpu_profile, g_settings.gpu_checkpoints,
                                      v->checkpoints, "nds gpu", "frame");
     g_device.up = true;

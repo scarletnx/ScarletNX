@@ -92,6 +92,7 @@ def main():
             ['--gamepad-rumble=50', '--nds-slot2=rumble'],
             ['--frame-pacing=2'],
             ['--vk-gpu-profile=0', '--vk-checkpoints=0'],
+            ['--resolution=2'],
         ):
             out = run(['-r', *given, *missing], 1, 'scarletnx-nds: ')
             if 'unexpected argument' in out or 'does nothing' in out:
@@ -99,6 +100,11 @@ def main():
         run(['-r', '--controls-scale=big', *missing], 2, 'scarletnx-nds: controls_scale=big ')
         # one of the Switch's settings a DS game does not take: said with why (common/utilities/console_settings.c)
         run(['-r', '--docked=1', *missing], 2, 'scarletnx-nds: --docked=1 does nothing in a DS game: it has no dock')
+        run(
+            ['-r', '--internal-resolution=2', *missing],
+            2,
+            'scarletnx-nds: --internal-resolution=2 does nothing in a DS game: its games have no upscaler of their own',
+        )
         # slot 2: a word that is no device said with the one in effect, and the run goes on to the image
         run(['-r', '--nds-slot2=gba', *missing], 1, 'settings: nds_slot2=gba is not none or rumble: it keeps none')
         # the WFC service: a word the list has not, refused with it and the list

@@ -63,6 +63,7 @@ typedef struct {
     VkFormat depth_format;
     bool headless;
     SnxVkPacing pacing; /* frame_pacing's (common/gpu/vk/pacing.h) */
+    uint32_t scale;     /* the 3D picture's and the frame's size in the screens' pixels, the resolution setting's */
     bool checkpoints;   /* the device is made with vk_checkpoints' extension (common/gpu/vk/marks.h) */
 } NdsVk;
 

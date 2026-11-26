@@ -20,7 +20,7 @@ layout(location = 0) out vec4 o_color;
 
 const ivec2 ACROSS[4] = ivec2[4](ivec2(-1, 0), ivec2(1, 0), ivec2(0, -1), ivec2(0, 1));
 
-bool within(ivec2 at) { return at.x >= 0 && at.y >= 0 && at.x <= 255 && at.y <= 191; }
+bool within(ivec2 at) { return all(greaterThanEqual(at, ivec2(0))) && all(lessThan(at, textureSize(picture, 0))); }
 
 void main() {
     ivec2 at = ivec2(gl_FragCoord.xy);
