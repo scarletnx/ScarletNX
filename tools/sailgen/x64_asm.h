@@ -198,15 +198,18 @@ static inline void sgx_op_pool(SgXAsm* a, int op, int reg, SnxU64 k) {
     sgx_byte(b, (unsigned char)(0x48 | (reg >> 3) << 2));
     sgx_byte(b, (unsigned char)op);
     sgx_byte(b, (unsigned char)((reg & 7) << 3 | 5)); /* [rip + disp32] */
-    if (a->nrips == a->cap_rips) {
-        a->cap_rips = a->cap_rips ? 2 * a->cap_rips : 32;
-        a->rips = (struct SgXRip*)realloc(a->rips, (size_t)a->cap_rips * sizeof *a->rips);
-        if (!a->rips) sg_fail("out of memory", 0, 0);
-    }
-    a->rips[a->nrips].at = b->n;
     sgx_imm(b, 0, 4);
-    a->rips[a->nrips].end = b->n;
-    a->rips[a->nrips++].idx = sgx_pool_index(a, k, 0);
+    sgx_rip_add(a, b->n - 4, b->n, k, 0);
+}
+/* an SSE form f of the XMM register xr and the pool's 16 bytes (lo, hi): its ModRM.rm operand (SSE's: 16-aligned) */
+static inline void sgx_vpool(SgXAsm* a, const SgXVForm* f, int xr, SnxU64 lo, SnxU64 hi) {
+    unsigned char r[4] = {0, 0, 0, 0};
+    r[(int)f->reg] = (unsigned char)xr;
+    r[(int)f->rm] = SGX_POOLR;
+    a->b->disp = 0;
+    a->b->index = -1;
+    f->enc(a->b, r, 0, 0);
+    sgx_rip_add(a, a->b->rip_at, a->b->n, lo, hi);
 }
 /* the jumps of a cold path's hot code into it: the condition's on the flags it has, then each test's. The result's
    register is out (an XMM one where cls). What the tests need in registers is put there before the first jump, as the
@@ -506,6 +509,12 @@ static inline void sgx_cold_emit(SgXAsm* a) {
         }
     }
     for (k = 0; k < (size_t)a->nccalls; ++k) a->reloc(a->machine, base + a->ccalls[k].at, a->ccalls[k].sym, -4);
+    for (k = 0; k < (size_t)a->nrips; ++k) /* the cold code's pool operands: where it is now */
+        if (a->rips[k].cold) {
+            a->rips[k].at += base;
+            a->rips[k].end += base;
+            a->rips[k].cold = 0;
+        }
     a->cold.n = 0;
     a->ncjumps = a->nccalls = 0;
 }

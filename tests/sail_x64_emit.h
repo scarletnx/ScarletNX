@@ -42,5 +42,8 @@ int snx_x64_xpool(void);
 unsigned snx_x64_instructions(void);
 /* the calls of the floating-point helpers the code made so far */
 unsigned long snx_x64_fp_calls(void);
+/* a pool operand the assembler writes in the cold buffer: NULL where, past the code and the pool, it reaches its 16
+   bytes, else what is wrong */
+const char* snx_x64_cold_pool(void);
 
 #endif
