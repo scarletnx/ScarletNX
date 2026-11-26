@@ -3,6 +3,7 @@
 /* Every row of the Switch's settings (settings.txt's g_console_ini) has its line in the consoles' table
    (common/utilities/console_settings.c), a console's own rows aside: each console takes the row, or the line says why
    not. No line names a row the settings lack, none twice, and a driver reads by them (snx_console_arg) */
+#include "common/utilities/console_language.h"
 #include "common/utilities/console_settings.h"
 #include "snx_settings.h"
 #include <ctype.h>
@@ -104,6 +105,13 @@ int main(void) {
     CHECK(snx_console_arg(SNX_SYSTEM_3DS, "--ctr-model=new", error, sizeof error) == 0);
     CHECK(snx_console_arg(SNX_SYSTEM_GBA, "game.gba", error, sizeof error) == 0);
     CHECK(snx_console_arg(SNX_SYSTEM_GBA, "--no-such-setting=1", error, sizeof error) == 0);
+    /* the Switch's language as each console's system gives it: Spanish (Latin America) is the 3DS's and the DS's
+       Spanish and the Vita's 3; Korean has no DS code; Portuguese (Brazil) is the Vita's own 17 */
+    CHECK(snx_language_ctr(14) == 5 && snx_language_vita(14) == 3 && snx_language_nds(14) == 5);
+    CHECK(snx_language_ctr(7) == 7 && snx_language_vita(7) == 9 && snx_language_nds(7) == -1);
+    CHECK(snx_language_vita(17) == 17 && snx_language_ctr(17) == 9 && snx_language_vita(12) == 18);
+    CHECK(snx_language_ctr(99) == 1 && snx_language_nds(-1) == -1 &&
+          !strcmp(snx_language_name(15), "Chinese (simplified)"));
     /* online: network on and airplane mode off, as the 3DS and the DS go by */
     g_settings.network = 1, g_settings.airplane_mode = 0;
     CHECK(snx_console_online());

@@ -162,6 +162,8 @@ struct NdsBoard {
 /* The board with rom in its slot and the state the firmware leaves a game it started: the header and the program in
    main memory, the user's settings, the registers. False with the reason in error */
 bool nds_board_init(NdsBoard* board, NdsRom* rom, char* error, size_t error_size);
+/* the language the firmware's user settings give the game, the DS's code (0 Japanese to 6 Chinese) */
+void nds_board_language(NdsBoard* board, int language);
 void nds_board_free(NdsBoard* board);
 void nds_irq(NdsBoard* board, unsigned line);
 static inline bool nds_irq_pending(const NdsBoard* board) { return (board->ime & 1) && (board->ie & board->irf); }

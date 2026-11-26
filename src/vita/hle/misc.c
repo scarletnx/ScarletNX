@@ -7,6 +7,8 @@
 #include "vita/hle/hle.hook.h"
 #include "common/utilities/endian.h"
 #include "common/utilities/common.h"
+#include "common/utilities/console_language.h"
+#include "snx_settings.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -35,13 +37,13 @@ uint32_t vita_misc_arm_clock(VitaProcess* p, VitaThread* t) {
     (void)p, (void)t;
     return 444;
 }
-/* sceAppUtilSystemParamGetInt(id, *value): the system's language (1, English), enter button (1, cross), date and
-   time formats, the time zone */
+/* sceAppUtilSystemParamGetInt(id, *value): the system's language (the Switch's setting language), enter button (1,
+   cross), date and time formats, the time zone */
 uint32_t vita_misc_system_param_int(VitaProcess* p, VitaThread* t, uint32_t id, uint32_t out) {
     (void)t;
     uint32_t value = 0;
     switch (id) {
-        case 1: value = 1; break; /* SCE_SYSTEM_PARAM_ID_LANG: English (United States) */
+        case 1: value = (uint32_t)snx_language_vita(g_settings.language); break; /* SCE_SYSTEM_PARAM_ID_LANG */
         case 2: value = 1; break; /* SCE_SYSTEM_PARAM_ID_ENTER_BUTTON: cross */
         default: value = 0; break;
     }

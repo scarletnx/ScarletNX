@@ -60,8 +60,13 @@ static void user_settings(NdsBoard* board) {
     s[0x5C] = 0, s[0x5D] = 0;
     snx_st_le16(s + 0x5E, 255 << 4), snx_st_le16(s + 0x60, 191 << 4);
     s[0x62] = 255, s[0x63] = 191;
-    snx_st_le16(s + 0x64, 1 | 3 << 4); /* English, the backlight at its brightest */
+    snx_st_le16(s + 0x64, 1 | 3 << 4); /* English, the backlight at its brightest (nds_board_language) */
     s[0x66] = 26;                      /* the year, from 2000 */
+}
+
+void nds_board_language(NdsBoard* board, int language) {
+    unsigned char* s = board->mem.base + 0x027FFC80u;
+    snx_st_le16(s + 0x64, (uint16_t)((snx_ld_le16(s + 0x64) & ~7u) | ((unsigned)language & 7u)));
 }
 
 bool nds_board_init(NdsBoard* board, NdsRom* rom, char* error, size_t error_size) {

@@ -69,7 +69,7 @@ const SnxConsoleSetting g_console_settings[] = {
     {"tv_resolution", OTHERS(NA(DOCK))},
     {"fullscreen"},
     {"transition_screen", OTHERS(NA(ONE_PROGRAM))},
-    {"language", {[C] = LATER(SOON), [V] = LATER(SOON), [G] = NA(NO_LANGUAGE), [D] = LATER(SOON)}},
+    {"language", {[G] = NA(NO_LANGUAGE)}},
     {"showcase", OTHERS(LATER(SOON_OVERLAY))},
     {"showcase_corner", OTHERS(LATER(SOON_OVERLAY))},
     {"stats", OTHERS(LATER(SOON_OVERLAY))},

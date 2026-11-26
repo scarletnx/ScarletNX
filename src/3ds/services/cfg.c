@@ -11,8 +11,10 @@
 #include "3ds/services/cfg.h"
 #include "3ds/memory/ctr_memory.h"
 #include "3ds/runtime/internal.h"
+#include "common/utilities/console_language.h"
 #include "common/utilities/endian.h"
 #include "common/utilities/users.h"
+#include "snx_settings.h"
 #include <openssl/evp.h>
 #include <stdio.h>
 #include <string.h>
@@ -21,21 +23,52 @@
 #define CFG_ERR_NOT_FOUND    0xd90103fau /* NotFound, Config, WrongArgument, Permanent */
 #define CFG_LANGUAGE_EN      1u
 enum { MODEL_3DS_XL = 1, MODEL_NEW_3DS_XL = 4 };
-/* Azahar's AdjustLanguageInfoBlock: the console's region, its language and country for the title */
+/* the Switch's language the console's said it took the place of, once a run */
+static struct {
+    bool said;
+} g_cfg;
+/* Azahar's AdjustLanguageInfoBlock: the console's region, its language and country for the title. The player's
+   language (the Switch's setting language) where one of the title's regions has it, else that region's first,
+   English where one has it, said once */
 typedef struct {
     uint32_t region, language, country;
 } Locale;
 static Locale locale(const SnxCtrProcess* p) {
-    /* each region's first language, whether it has English, and a country of it (JPN, USA, EUR, AUS, CHN, KOR, TWN) */
+    /* each region's first language, whether it has English, a country of it (JPN, USA, EUR, AUS, CHN, KOR, TWN) and
+       its languages, a bit each */
     static const uint8_t first[7] = {0, 1, 1, 1, 6, 7, 11}, english[7] = {0, 1, 1, 1, 0, 0, 0};
     static const uint8_t country[7] = {1, 49, 110, 65, 160, 136, 128};
-    uint32_t lockout = p->region_lockout & 0x7f;
+    static const uint16_t languages[7] = {1u << 0,
+                                          1u << 1 | 1u << 2 | 1u << 5 | 1u << 9,
+                                          1u << 1 | 1u << 2 | 1u << 3 | 1u << 4 | 1u << 5 | 1u << 8 | 1u << 9 |
+                                              1u << 10,
+                                          1u << 1,
+                                          1u << 6,
+                                          1u << 7,
+                                          1u << 11};
+    uint32_t lockout = p->region_lockout & 0x7f, wanted = (uint32_t)snx_language_ctr(g_settings.language);
     if (!lockout) lockout = 2; /* unknown: Azahar's USA */
     for (uint32_t r = 0; r < 7; ++r)
-        if ((lockout >> r & 1) && english[r]) return (Locale){r, CFG_LANGUAGE_EN, r == 1 ? 49u : country[r]};
+        if ((lockout >> r & 1) && (languages[r] >> wanted & 1)) return (Locale){r, wanted, r == 1 ? 49u : country[r]};
+    Locale kept = {0, 0, 0};
     uint32_t r = 0;
-    while (!(lockout >> r & 1)) ++r;
-    return (Locale){r, first[r], country[r]};
+    for (r = 0; r < 7; ++r)
+        if ((lockout >> r & 1) && english[r]) break;
+    if (r < 7)
+        kept = (Locale){r, CFG_LANGUAGE_EN, r == 1 ? 49u : country[r]};
+    else {
+        for (r = 0; !(lockout >> r & 1); ++r) {}
+        kept = (Locale){r, first[r], country[r]};
+    }
+    if (!g_cfg.said) {
+        g_cfg.said = true;
+        static const char* const names[12] = {"Japanese", "English", "French", "German",     "Italian", "Spanish",
+                                              "Chinese",  "Korean",  "Dutch",  "Portuguese", "Russian", "Taiwanese"};
+        fprintf(stderr, "settings: language=%d (%s) is no language of the game's regions: it plays in %s\n",
+                g_settings.language, snx_language_name(g_settings.language),
+                kept.language < 12 ? names[kept.language] : "?");
+    }
+    return kept;
 }
 
 uint32_t snx_ctr_cfg_language(const SnxCtrProcess* p) { return locale(p).language; }
