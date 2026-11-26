@@ -564,6 +564,8 @@ static void mark_said(void* data, const SnxRunMark* mark) {
 }
 /* the game's start's mark (run_mark.h) in its log's folder, after each start of it that left its own there unended is
    said. On iOS the game runs under the launcher's, in the launcher's process */
+/* the profiler's lines (common/utilities/tracy.c) in the log: a failure's as a warning */
+static void tracy_said(int warn, const char* line) { logf_(warn ? 0 : 1, "%s", line); }
 static void mark_start(void) {
     char why[1024];
     int any = 0, made = snx_run_mark_start(g_statedir[0] ? g_statedir : ".", mark_said, &any, why, sizeof why);
@@ -1576,7 +1578,9 @@ int snx_main(int argc, char** argv) {
     }
     /* after the header, so the client's own lines do not come before it and a capture that cannot start still leaves
        a log: it is asked for by a setting, and a run without it is better than no run */
-    if (snx_tracy_init(title)) WARN("tracy: no capture this run; it goes on without one\n");
+    if (snx_tracy_init(title, &(SnxTracyHost){g_exedir, g_exename, g_opt_tracy_capture, g_opt_tracy_client,
+                                              g_opt_headless, tracy_said}))
+        WARN("tracy: no capture this run; it goes on without one\n");
     say_old_layout();
     mark_start();
     /* before the JIT's first load (jit_init, arm.c's blocks, the GPU's macros), and only when asked: GDB stops the

@@ -1,11 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The Tracy client's lifetime (src/nx/runtime/platform/tracy.c) over a stand-in client: the emissions' gate shut
+/* The Tracy client's lifetime (src/common/utilities/tracy.c) over a stand-in client: the emissions' gate shut
    before the client starts, open while it runs and shut for good once shutdown has run; the client started and shut
    down once each, the zone shutdown finds open ended once, and a capture asked for after the shutdown starts nothing.
    The GPU calibration anchor is kept across a connection: the context is announced once, so a new connection replays
    that announcement and the caller's delta starts from it again. */
-#include "nx/runtime/platform/tracy.c"
+#include "common/utilities/tracy.c"
 #include <assert.h>
 #include <pthread.h>
 
@@ -197,13 +197,12 @@ void ___tracy_after_try_lock_lockable_ctx(struct __tracy_lockable_context_data* 
 }
 uint64_t snx_tracy_connection_id(void) { return g_test.conn ? g_test.conn : 1; }
 
-/* the runtime around it */
-char g_datadir[1024], g_exename[256], g_exedir[1024];
-int g_opt_headless, g_opt_tracy_capture, g_opt_tracy_client;
-void logf_(int lvl, const char* fmt, ...) {
-    (void)lvl, (void)fmt;
+/* the runtime around it, its log counting the lines */
+static void said(int warn, const char* line) {
+    (void)warn, (void)line;
     g_test.logs++;
 }
+static SnxTracyHost g_host = {.name = "tracy_state", .log = said};
 int plat_setenv(const char* name, const char* value) {
     (void)name, (void)value;
     return 0;
@@ -295,8 +294,8 @@ int main(void) {
     CHECK(!snx_tracy_zone_begin(&where).active);
     snx_tracy_shutdown();
     CHECK(g_test.shutdowns == 0);
-    g_opt_tracy_client = 1;
-    CHECK(snx_tracy_init("tracy_state") == 0 && g_test.startups == 1);
+    g_host.client = 1;
+    CHECK(snx_tracy_init("tracy_state", &g_host) == 0 && g_test.startups == 1);
     /* running: the gate open, a zone emitted once a server is attached */
     CHECK(snx_tracy_gate_open() && snx_tracy_enter());
     snx_tracy_leave();
@@ -319,7 +318,7 @@ int main(void) {
        another one is dropped, where the server would fault on a query it never saw */
     {
         uint64_t ep;
-        u16 q = snx_tracy_gpu_zone_begin("gpu pass", 0, 0, &ep), e;
+        uint16_t q = snx_tracy_gpu_zone_begin("gpu pass", 0, 0, &ep), e;
         CHECK(q && g_test.gpu_begins == 3); /* the announcement's pair (the second is sent nothing) and the zone */
         /* the name's block is the client's own, one per zone: it frees it once it has sent it, so a runtime that
            kept one per name would hand it a freed block, which aborted the game */

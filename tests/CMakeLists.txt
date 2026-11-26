@@ -3240,7 +3240,7 @@ if(SNX_TRACY)
 endif()
 add_test(NAME startup_options COMMAND snx-test-startup)
 if(SNX_TRACY)
-    # the Tracy client's lifetime (runtime/platform/tracy.c) over a stand-in client, Tracy's headers without its
+    # the Tracy client's lifetime (common/utilities/tracy.c) over a stand-in client, Tracy's headers without its
     # library: the gate shut before the start and for good after the stop, the client started and stopped once
     add_executable(snx-test-tracy-state tracy_state.c)
     snx_test_target(snx-test-tracy-state gnu23)
@@ -3254,7 +3254,7 @@ if(SNX_TRACY)
     add_test(NAME tracy_state COMMAND snx-test-tracy-state)
 endif()
 
-# the profiler's macros without its client (runtime/platform/tracy.h): none evaluates an argument, so a clock read or a
+# the profiler's macros without its client (common/utilities/tracy.h): none evaluates an argument, so a clock read or a
 # lookup written into one costs nothing in a build without Tracy; and nvn_queue.h's context setter likewise
 add_executable(snx-test-tracy-off tracy_off.c)
 snx_test_target(snx-test-tracy-off c23)

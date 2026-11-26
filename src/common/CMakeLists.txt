@@ -194,6 +194,7 @@ if(TARGET snx_zstd)
     target_link_libraries(snx_prepared PUBLIC scarletnx-common PRIVATE snx_zstd)
 endif()
 include("${PROJECT_SOURCE_DIR}/cmake/console_settings.cmake") # which settings each console takes
+include("${PROJECT_SOURCE_DIR}/cmake/tracy.cmake") # the profiler (snx_tracy, snx_tracy_client)
 include("${PROJECT_SOURCE_DIR}/cmake/vpad.cmake") # the on-screen controls (snx_vpad)
 include("${PROJECT_SOURCE_DIR}/cmake/error.cmake") # what stops a game, its kinds and actions (snx_error)
 # What the Vulkan frontends (src/nx/gpu/vk, src/3ds/gpu/vk, src/vita/gpu) share of a device: the instance, queries,
