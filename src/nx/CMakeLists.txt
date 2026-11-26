@@ -109,7 +109,6 @@ set(platform runtime/platform/log.c runtime/platform/plat_sdl.c runtime/platform
              runtime/platform/joycon2_known.c
              runtime/platform/hud.c runtime/platform/overlay_host.c
              runtime/platform/touch.c
-             runtime/platform/audio_denoise.c
              runtime/platform/ui.c
              runtime/platform/prepare_screen.c runtime/platform/wait_screen.c runtime/platform/resources.c)
 if(WIN32)
@@ -125,8 +124,8 @@ if(APPLE)
     set_source_files_properties(runtime/platform/plat_apple.m PROPERTIES COMPILE_OPTIONS -fobjc-arc)
 endif()
 snx_component(platform ${platform})
-# the microphone's neural noise reduction (runtime/platform/audio_denoise.c), from cmake/dependencies.cmake
-target_link_libraries(snx_platform PRIVATE snx_rnnoise)
+# the microphone a game hears, which every console's shares (src/common/utilities/mic.h, cmake/mic.cmake)
+target_link_libraries(snx_platform PUBLIC snx_mic)
 # the GPU driver a run asks for (src/common/gpu/vk/gpu_driver_load.h), which the other renderers share
 target_link_libraries(snx_platform PRIVATE snx_vk_common)
 # the on-screen controls, which the other consoles' windows share (src/common/utilities/vpad.h, vpad_sdl.h)
