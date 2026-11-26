@@ -3651,6 +3651,13 @@ if(NOT SNX_TOOLS_ONLY)
     foreach(case none missing started setting write theirs)
         add_test(NAME vk_renderdoc_${case} COMMAND snx-test-vk-renderdoc ${case})
     endforeach()
+    # the game's menu in a console's window (common/utilities/menu_window.c), under SDL's offscreen driver
+    add_executable(snx-test-menu-window menu_window.c)
+    snx_test_target(snx-test-menu-window gnu23)
+    target_link_libraries(snx-test-menu-window PRIVATE snx_menu snx_vpad_consoles)
+    target_include_directories(snx-test-menu-window PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}") # support/
+    add_test(NAME menu_window COMMAND snx-test-menu-window)
+    set_tests_properties(menu_window PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
     # RenderDoc's lines in a console's window (common/gpu/vk/renderdoc_window.c): its say and notice take them
     add_executable(snx-test-vk-renderdoc-window vk_renderdoc_window.c)
     snx_test_target(snx-test-vk-renderdoc-window gnu23)

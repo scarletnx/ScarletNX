@@ -90,6 +90,16 @@ void snx_vpad_window_none(int action, const char* why);
 void snx_vpad_window_notice(const char* line);
 void snx_vpad_window_log(int warn, const char* line);
 uint64_t snx_vpad_window_ms(void);
+/* the window the controls are drawn in, NULL for none */
+SDL_Window* snx_vpad_window_sdl(void);
+/* the next save or load of snx_vpad_window_states for slot (0 the auto one) once, as the game's menu asks; F9's slot
+   stays */
+void snx_vpad_window_slot(int slot);
+/* the game's menu in the window (menu_window.c's): its event, the key's runtime action given, 1 for taken, 2 to quit,
+   3 for an action of the window's into *out (a state's, the capture); its quads over the picture, 1 while some show.
+   NULL both: none */
+void snx_vpad_window_menu(int (*event)(const SDL_Event* e, int action, int* out),
+                          int (*draw)(SnxUiList* l, int w, int h));
 /* the window the last key was pressed in (a console's with two windows says over that one), 0 for none */
 SDL_WindowID snx_vpad_window_key_window(void);
 /* fps_limit's pace as the keys left it (common/utilities/pace.h's SNX_PACE_), for a console that keeps its own clock */

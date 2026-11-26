@@ -4,6 +4,7 @@
 /* scarletnx-agb: the AGB (Game Boy Advance) system type. A ROM goes through the ARM recompiler into a
    native module, then runs on the emulated board, the way the NX and GNU ABI system types prepare their
    code before playing. */
+#include "common/utilities/menu_window.h"
 #include "agb/board/board.h"
 #include "agb/cpu/agb_cpu.h"
 #include "agb/cpu/memmap.h"
@@ -494,6 +495,7 @@ int snx_agb_main(int argc, char** argv) {
         /* the window's settings, and a run's with none (state_save, state_load) */
         vpad_set_say(agb_host_say);
         vpad_settings(folder, name, argc, argv);
+        snx_menu_window_open(SNX_SYSTEM_GBA, folder, name); /* the game's menu: Back, F2 or a pad's Home */
         if (snx_cli_fullscreen_flag(argc, argv)) g_settings.fullscreen = 1; /* -f's over the settings' */
         if (frames < 0) {
             char* title = snx_format("ScarletNX - %s (GBA)", board.cartridge.title[0] ? board.cartridge.title : name);

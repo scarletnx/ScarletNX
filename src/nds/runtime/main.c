@@ -4,6 +4,7 @@
    (aot/), as a 3DS game's is, and runs on the board (board/), whose second processor, BIOS and firmware are answered
    by the runtime (hle/, bios/) and whose picture is drawn on the GPU (gpu/). A game is its image, read where it lies:
    there is nothing to extract and no update to add, so its folder is made as a GBA game's is. */
+#include "common/utilities/menu_window.h"
 #include "nds/runtime/main.h"
 #include "common/cpu/recompiler/llvm/jit_settings.h"
 #include "common/utilities/endian.h"
@@ -502,6 +503,7 @@ int snx_nds_main(int argc, char** argv) {
     /* the window's and the board's settings, the network's among them, read before the firmware's Wi-Fi */
     vpad_set_say(nds_host_say);
     vpad_settings(folder, name, argc, argv);
+    snx_menu_window_open(SNX_SYSTEM_NDS, folder, name);                 /* the game's menu: Back, F2 or a pad's Home */
     if (snx_cli_fullscreen_flag(argc, argv)) g_settings.fullscreen = 1; /* -f's over the settings' */
     /* the player's language, the Switch's setting, as the firmware's: one the DS has none of said */
     int language = snx_language_nds(g_settings.language);

@@ -5,6 +5,7 @@
    title that plays it), compiled when the module is missing or no longer matches, then played. A game dumped as a
    folder (a console's ux0:app/<title ID>, its update in ux0:patch/<title ID>) is linked there instead: app/ and patch/
    name the dump's folders, whose files stay where they are */
+#include "common/utilities/menu_window.h"
 #include "vita/runtime/main.h"
 #include "vita/aot/module.h"
 #include "vita/gpu/present.h"
@@ -512,6 +513,7 @@ int snx_vita_main(int argc, char** argv) {
     char *ini = vita_game_file(folder, ".ini"), *name = last_part(folder);
     vpad_set_say(vita_present_say);
     if (name) vpad_settings(folder, name, argc, argv);
+    if (name) snx_menu_window_open(SNX_SYSTEM_VITA, folder, name);       /* the game's menu: Back, F2 or a pad's Home */
     if (snx_cli_fullscreen_flag(argc, argv)) g_settings.fullscreen = 1;  /* -f's over the settings' */
     if (g_settings.button_map[0]) vita_input_map(g_settings.button_map); /* the input's to read, as the 3DS's */
     free(name);

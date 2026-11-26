@@ -28,6 +28,8 @@ static int host_next_start(const char* key, char* out, size_t n) {
     return g_host->next_start ? g_host->next_start(key, out, n) : 0;
 }
 static int host_old_settings(void) { return g_host->old_settings ? g_host->old_settings() : 0; }
+static int host_reads(const char* key) { return !g_host->setting_shown || g_host->setting_shown(key); }
+static const IniOpt* host_row(const char* key) { return g_host->row ? g_host->row(key) : NULL; }
 static const _Atomic int g_no_changes; /* the picks' count of a runtime that keeps none */
 static void host_pad_store(const int* setting) {
     if (g_host->pad_store) g_host->pad_store(setting);
@@ -89,7 +91,7 @@ static const unsigned MAIN_ICONS[M_COUNT] = {
     GUI_ICON_IMAGE,   GUI_ICON_ERASER,    GUI_ICON_LOG_OUT};
 /* the Settings page's entries: the sections of the game's .ini (settings.txt's) the launcher's Settings group, those
    the menu has a page of its own for left out, in the launcher's order with Debug last, a section's own page (Vulkan
-   Extensions) after it. Each a table of g_ini_sections, the game's own rows (INI_IN_GAME) left out of its page */
+   Extensions) after it. Each a table of the host's sections, the game's own rows (INI_IN_GAME) left out of its page */
 static const char* const SETTINGS_SECTIONS[] = {"Display", "Graphics", "Audio", "Performance", "Network", "Debug"};
 enum { ENTRIES_MAX = 3 * (int)(sizeof SETTINGS_SECTIONS / sizeof *SETTINGS_SECTIONS) };
 static struct {
@@ -102,10 +104,12 @@ static void settings_entries(void) {
     const IniOpt* o;
     nentries = 0;
     for (k = 0; k < sizeof SETTINGS_SECTIONS / sizeof *SETTINGS_SECTIONS; ++k)
-        for (s = 0; s < g_ini_sections_count; ++s)
-            for (t = 0; !strcmp(g_ini_sections[s].name, SETTINGS_SECTIONS[k]) && t < 3 && g_ini_sections[s].table[t];
+        for (s = 0; s < g_host->sections_count; ++s)
+            for (t = 0;
+                 !strcmp(g_host->sections[s].name, SETTINGS_SECTIONS[k]) && t < 3 && g_host->sections[s].table[t];
                  ++t) {
-                for (o = g_ini_sections[s].table[t]; o->key && (o->flags & INI_IN_GAME); ++o) continue;
+                for (o = g_host->sections[s].table[t]; o->key && ((o->flags & INI_IN_GAME) || !host_reads(o->key)); ++o)
+                    continue;
                 if (o->key && nentries < ENTRIES_MAX) {
                     entries[nentries].section = s;
                     entries[nentries++].table = t;
@@ -113,14 +117,14 @@ static void settings_entries(void) {
             }
 }
 static const char* entry_name(int e) {
-    const IniSection* sec = &g_ini_sections[entries[e].section];
+    const IniSection* sec = &g_host->sections[entries[e].section];
     return sec->page[entries[e].table] ? sec->page[entries[e].table] : sec->name;
 }
 /* entry e's row i, NULL past its last */
 static const IniOpt* entry_row(int e, int i) {
     const IniOpt* o;
-    for (o = g_ini_sections[entries[e].section].table[entries[e].table]; o->key; ++o)
-        if (!(o->flags & INI_IN_GAME) && !i--) return o;
+    for (o = g_host->sections[entries[e].section].table[entries[e].table]; o->key; ++o)
+        if (!(o->flags & INI_IN_GAME) && host_reads(o->key) && !i--) return o;
     return NULL;
 }
 static int entry_rows(int e) {
@@ -287,7 +291,14 @@ static char refused[2 * OVERLAY_COLS_MAX];
 static int slot_item(int i) { return slot_at ? i : i + 1; }
 /* the first page's item m shown now */
 static int main_shows(int m) {
-    return m == M_CAPTURE ? host_capture() != 0 : m == M_CLEAN ? host_old_settings() > 0 : 1;
+    return m == M_CAPTURE    ? host_capture() != 0
+           : m == M_CLEAN    ? host_old_settings() > 0
+           : m == M_PADS     ? g_host->pad_name != NULL /* a runtime with its own gamepads' page */
+           : m == M_TV_MODE  ? g_host->tv_step != NULL
+           : m == M_VOLUME   ? host_reads("volume") && host_row("volume")
+           : m == M_STATS    ? host_row("stats") != NULL
+           : m == M_SETTINGS ? g_host->sections != NULL
+                             : 1;
 }
 /* the first page's item shown at i, those that do not show now skipped */
 static int main_item(int i) {
@@ -349,7 +360,7 @@ static int items(void) {
            : page == PAGE_SHORTCUTS ? shortcuts() + 1
            : page == PAGE_CONTROLS  ? C_COUNT
            : page == PAGE_PADS      ? P_COUNT
-           : page == PAGE_STATES    ? nslots + T_COUNT
+           : page == PAGE_STATES    ? nslots + (g_host->tas_record ? T_COUNT : 0) /* a runtime's own recordings */
            : page == PAGE_SLOT      ? S_COUNT - !slot_at
            : page == PAGE_ASK       ? 2
            : page == PAGE_KEYS      ? keys_rows()
@@ -413,17 +424,15 @@ static int all_shown(void) {
 static const IniOpt* setting(int i) {
     if (page == PAGE_SECTION) return entry_row(entry_at, i);
     if (page == PAGE_MAIN)
-        return main_item(i) == M_STATS    ? ini_find(g_display_ini, "stats")
-               : main_item(i) == M_VOLUME ? ini_find(g_audio_ini, "volume")
-                                          : NULL;
-    if (page == PAGE_CONTROLS) return ini_find(i == C_TOUCH ? g_backend_ini : g_vpad_ini, CONTROLS[i]);
+        return main_item(i) == M_STATS ? host_row("stats") : main_item(i) == M_VOLUME ? host_row("volume") : NULL;
+    if (page == PAGE_CONTROLS) return i == C_TOUCH ? host_row(CONTROLS[i]) : ini_find(g_vpad_ini, CONTROLS[i]);
     if (page == PAGE_PADS && i == P_PLAYER) return NULL;
     if (page == PAGE_PADS && pad_player && (i == P_SWAP || i == P_RUMBLE)) { /* the player's own */
         char key[32];
         snprintf(key, sizeof key, "gamepad_p%d_%s", pad_player, i == P_SWAP ? "swap_ab" : "rumble");
-        return ini_find(g_gamepad_players_ini, key);
+        return host_row(key);
     }
-    if (page == PAGE_PADS) return ini_find(g_gamepad_ini, PADS[i]);
+    if (page == PAGE_PADS) return host_row(PADS[i]);
     return page == PAGE_BUTTONS && i > 0 && i <= SNX_VPAD_COUNT ? &g_vpad_shown_ini[i - 1] : NULL;
 }
 /* the key of item i that the game's picks can hold: a setting's, and TV mode's (docked); NULL for an action */
@@ -582,7 +591,7 @@ static void label(int i, char* text, size_t size, char* value, size_t vsize) {
         char word[OVERLAY_COLS];
         snprintf(text, size, "%s", main_items[main_item(i)]);
         if (main_item(i) == M_TV_MODE) { /* the choice in effect, in docked's words */
-            ini_word(ini_find(g_display_ini, "docked"), host_tv_choice(), word, sizeof word);
+            ini_word(host_row("docked"), host_tv_choice(), word, sizeof word);
             snprintf(value, vsize, "%s%s", word, own);
         } else if (main_item(i) < M_CAPTURE)
             snprintf(value, vsize, ">");
@@ -899,9 +908,10 @@ static int act(int i, int step) {
             top = 0;
             return OVERLAY_NONE;
         }
-        page_open(i == M_PADS        ? PAGE_PADS
-                  : i == M_STATES    ? PAGE_STATES
-                  : i == M_SHORTCUTS ? PAGE_SHORTCUTS
+        int m = main_item(i); /* the item, those that do not show now skipped */
+        page_open(m == M_PADS        ? PAGE_PADS
+                  : m == M_STATES    ? PAGE_STATES
+                  : m == M_SHORTCUTS ? PAGE_SHORTCUTS
                                      : PAGE_CONTROLS);
         return OVERLAY_NONE;
     }
@@ -1073,12 +1083,12 @@ void overlay_toast(unsigned icon, const char* text, u64 now_ns) {
 int overlay_toasting(u64 now_ns) { return now_ns < atomic_load_explicit(&toasts_until, memory_order_relaxed); }
 unsigned overlay_setting_icon(const char* key) {
     int s, t;
-    for (s = 0; s < g_ini_sections_count; ++s)
-        for (t = 0; t < 3 && g_ini_sections[s].table[t]; ++t)
-            if (ini_find(g_ini_sections[s].table[t], key)) {
-                const char* in = g_ini_sections[s].page[t];
+    for (s = 0; s < g_host->sections_count; ++s)
+        for (t = 0; t < 3 && g_host->sections[s].table[t]; ++t)
+            if (ini_find(g_host->sections[s].table[t], key)) {
+                const char* in = g_host->sections[s].page[t];
                 unsigned icon = in ? gui_page_icon(in) : GUI_ICON_NONE;
-                return icon != GUI_ICON_NONE ? icon : gui_group_icon(gui_group_name(g_ini_sections[s].name));
+                return icon != GUI_ICON_NONE ? icon : gui_group_icon(gui_group_name(g_host->sections[s].name));
             }
     return GUI_ICON_NONE;
 }
