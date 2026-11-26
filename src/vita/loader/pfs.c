@@ -70,6 +70,16 @@ typedef struct {
 typedef struct {
     uint32_t page, sectors, version, at; /* at: the table's page's offset in unicv.db */
 } Table;
+/* the dump as its disk names it, listed once: a record for each file and folder under the source, a byte of DISK_
+   flags, its path with / between the parts, and a 0, so files.db's names are found in any case and the files left
+   out are told the same way whatever the file system's case and separator; order, the records' paths in strcmp's
+   order, then the same paths in that order of their lower case */
+enum { DISK_FOLDER = 1, DISK_QUIET = 2, DISK_TAKEN = 4 }; /* quiet: no file of this content, told of by no note */
+typedef struct {
+    char* text;
+    size_t used, room, count;
+    char** order;
+} Disk;
 /* the decryption's state: the two databases read whole, their entries and tables in one block */
 typedef struct {
     VitaCrypto crypto;
@@ -89,6 +99,7 @@ typedef struct {
     VitaPfsProgress progress;
     void* context;
     uint64_t done, total; /* the bytes of the files decrypted so far, of all of them */
+    Disk disk;
 } Pfs;
 
 [[gnu::format(printf, 2, 3)]] static bool fail(Pfs* p, const char* fmt, ...) {
@@ -312,46 +323,124 @@ static bool entry_path(Pfs* p, const Entry* e, char* out, size_t size) {
     at += (size_t)snprintf(out + at, at < size ? size - at : 0, "%s", e->name);
     return at < size || fail(p, "files.db's %s is too deep a path", e->name);
 }
+static bool disk_add(Disk* d, const char* path, int flags) {
+    size_t n = strlen(path) + 2;
+    if (d->used + n > d->room) {
+        size_t room = (d->room ? d->room * 2 : 4096) + n;
+        char* text = realloc(d->text, room);
+        if (!text) return false;
+        d->text = text, d->room = room;
+    }
+    d->text[d->used] = (char)flags;
+    memcpy(d->text + d->used + 1, path, n - 1);
+    d->used += n, ++d->count;
+    return true;
+}
+/* the files and folders under rel into the disk's records, quiet below sce_pfs/, sce_sys/package/ and a folder's
+   sce_sys/ with a keystone of its own below the root (another content's) */
+static bool walk(Pfs* p, const char* rel, bool quiet) {
+    char here[SNX_PATH_SIZE], **names = NULL;
+    size_t count = 0;
+    if (snx_path_format(here, sizeof here, "%s%s%s", p->source, rel[0] ? "/" : "", rel))
+        return fail(p, "%s/%s is too long a path", p->source, rel);
+    if (snx_list_dir(here, &names, &count)) {
+        char why[256];
+        return fail(p, "cannot list the folder %s: %s", here, snx_os_error(why, sizeof why));
+    }
+    bool ok = true;
+    for (size_t i = 0; ok && i < count; ++i) {
+        char inner[SNX_PATH_SIZE], full[SNX_PATH_SIZE], keystone[SNX_PATH_SIZE];
+        int length = snprintf(inner, sizeof inner, "%s%s%s", rel, rel[0] ? "/" : "", names[i]);
+        if (length < 0 || (size_t)length >= sizeof inner || snx_path_format(full, sizeof full, "%s/%s", here, names[i]))
+            ok = fail(p, "%s/%s is too long a path", here, names[i]);
+        bool folder = ok && snx_is_dir(full);
+        bool hush =
+            quiet ||
+            (folder && (!strcmp(names[i], "sce_pfs") || !strcmp(inner, "sce_sys/package") ||
+                        (rel[0] && !strcmp(names[i], "sce_sys") &&
+                         !snx_path_format(keystone, sizeof keystone, "%s/keystone", full) && snx_is_file(keystone))));
+        if (ok && !disk_add(&p->disk, inner, (folder ? DISK_FOLDER : 0) | (hush ? DISK_QUIET : 0)))
+            ok = fail(p, "out of memory");
+        if (ok && folder) ok = walk(p, inner, hush);
+    }
+    snx_free_strings(names, count);
+    return ok;
+}
+static int name_order(const void* a, const void* b) { return strcmp(*(char* const*)a, *(char* const*)b); }
+static int fold_compare(const char* a, const char* b) {
+    for (;; ++a, ++b) {
+        int x = snx_to_lower((unsigned char)*a), y = snx_to_lower((unsigned char)*b);
+        if (x != y || !x) return x - y;
+    }
+}
+static int fold_order(const void* a, const void* b) {
+    const char *x = *(char* const*)a, *y = *(char* const*)b;
+    int order = fold_compare(x, y);
+    return order ? order : strcmp(x, y);
+}
+static bool disk_sort(Pfs* p) {
+    Disk* d = &p->disk;
+    d->order = malloc((d->count ? d->count : 1) * 2 * sizeof *d->order);
+    if (!d->order) return fail(p, "out of memory");
+    size_t i = 0;
+    for (size_t at = 0; at < d->used; at += strlen(d->text + at + 1) + 2, ++i)
+        d->order[i] = d->order[d->count + i] = d->text + at + 1;
+    qsort(d->order, d->count, sizeof *d->order, name_order);
+    qsort(d->order + d->count, d->count, sizeof *d->order, fold_order);
+    return true;
+}
+/* the record of path in its own case, or else of the one path that is path's first at bytes then the rest in another
+   case: NULL with *matches the paths in other cases, none or two and more */
+static char* disk_find(const Disk* d, char* path, size_t at, size_t* matches) {
+    char* const* exact = bsearch(&path, d->order, d->count, sizeof *d->order, name_order);
+    *matches = exact != NULL;
+    if (exact) return *exact;
+    char* const* fold = d->order + d->count;
+    size_t low = 0, high = d->count;
+    while (low < high) {
+        size_t middle = low + (high - low) / 2;
+        if (fold_compare(fold[middle], path) < 0)
+            low = middle + 1;
+        else
+            high = middle;
+    }
+    char* record = NULL;
+    for (; low < d->count && !fold_compare(fold[low], path); ++low)
+        if (!memcmp(fold[low], path, at) && ++*matches == 1) record = fold[low];
+    return *matches == 1 ? record : NULL;
+}
 /* rel, files.db's path, as the dump has it, each part found by its name in any case (files.db's case and the dump's
-   may differ), into found, relative to source: 1; -1 when the dump lacks a part, found then the parts it has and
-   files.db's names after them, the error said; 0 with the error said for two in different cases or too long a path */
+   may differ), into found, relative to source, its record taken: 1; -1 when the dump lacks a part, found then the
+   parts it has and files.db's names after them, the error said; 0 with the error said for two in different cases
+   or too long a path */
 static int locate(Pfs* p, const char* rel, char* found, size_t size) {
-    char part[NAME + 1];
+    char path[SNX_PATH_SIZE], *record = NULL;
     size_t at = 0;
     int result = 1;
     found[0] = 0;
     for (const char* s = rel; *s;) {
-        size_t n = strcspn(s, "/");
-        snprintf(part, sizeof part, "%.*s", (int)n, s);
-        char here[SNX_PATH_SIZE], there[SNX_PATH_SIZE];
-        if (snx_path_format(here, sizeof here, "%s%s%s", p->source, at ? "/" : "", found) ||
-            snx_path_format(there, sizeof there, "%s/%s", here, part))
+        size_t n = strcspn(s, "/"), matches = 0;
+        int length = snprintf(path, sizeof path, "%s%s%.*s", found, at ? "/" : "", (int)n, s);
+        if (length < 0 || (size_t)length >= sizeof path || (size_t)length >= size)
             return fail(p, "%s/%s is too long a path", p->source, rel);
-        const char* name = part;
-        char** names = NULL;
-        size_t count = 0, match = 0;
-        if (result > 0 && !snx_path_exists(there)) {
-            if (!snx_list_dir(here, &names, &count))
-                for (size_t i = 0; i < count; ++i) {
-                    bool same = strlen(names[i]) == n;
-                    for (size_t j = 0; same && j < n; ++j)
-                        same = snx_to_lower((unsigned char)names[i][j]) == snx_to_lower((unsigned char)part[j]);
-                    if (same && match++ == 0) name = names[i];
-                }
-            if (match > 1) {
-                snx_free_strings(names, count);
-                return fail(p, "files.db's %s is %zu files of %s, in different cases", rel, match, here);
-            }
-            if (!match) {
-                fail(p, "files.db lists %s, which the dump does not have (no %s in %s)", rel, part, here);
+        if (result > 0) {
+            record = disk_find(&p->disk, path, at, &matches);
+            if (matches > 1)
+                return fail(p, "files.db's %s is %zu files of %s%s%s, in different cases", rel, matches, p->source,
+                            at ? "/" : "", found);
+            if (!record) {
+                fail(p, "files.db lists %s, which the dump does not have (no %.*s in %s%s%s)", rel, (int)n, s,
+                     p->source, at ? "/" : "", found);
                 result = -1;
             }
         }
-        at += (size_t)snprintf(found + at, at < size ? size - at : 0, "%s%s", at ? "/" : "", name);
-        snx_free_strings(names, count);
+        /* the same length either way: a path in another case has as many bytes */
+        memcpy(found, result > 0 ? record : path, (size_t)length + 1);
+        at = (size_t)length;
         s += n + (s[n] == '/');
     }
-    return at < size ? result : fail(p, "%s/%s is too long a path", p->source, rel);
+    if (result > 0 && record) record[-1] = (char)(record[-1] | DISK_TAKEN);
+    return result;
 }
 /* the file's sectors checked against their signatures and decrypted (a plain file's only checked), from from to to */
 static bool decrypt_file(Pfs* p, const Entry* e, const Table* t, const char* rel, const char* from, const char* to,
@@ -424,62 +513,14 @@ static bool decrypt_file(Pfs* p, const Entry* e, const Table* t, const char* rel
     return ok;
 }
 
-/* the paths of the dump the decryption took, to tell the ones it leaves out */
-typedef struct {
-    char* text;
-    size_t used, room;
-    size_t* at;
-    size_t count, slots;
-} Paths;
-static bool paths_add(Paths* s, const char* path) {
-    size_t n = strlen(path) + 1;
-    if (s->used + n > s->room) {
-        size_t room = (s->room ? s->room * 2 : 4096) + n;
-        char* text = realloc(s->text, room);
-        if (!text) return false;
-        s->text = text, s->room = room;
+/* each file of the dump the decryption did not take, told, in strcmp's order of the paths */
+static void left_out(const Disk* d, VitaPfsNote note, void* context, VitaPfsCount* count) {
+    for (size_t i = 0; i < d->count; ++i) {
+        const char* path = d->order[i];
+        if (path[-1] & (DISK_FOLDER | DISK_QUIET | DISK_TAKEN)) continue;
+        ++count->left_out;
+        if (note) note(context, path);
     }
-    if (s->count == s->slots) {
-        size_t slots = s->slots ? s->slots * 2 : 256;
-        size_t* at = realloc(s->at, slots * sizeof *at);
-        if (!at) return false;
-        s->at = at, s->slots = slots;
-    }
-    memcpy(s->text + s->used, path, n);
-    s->at[s->count++] = s->used;
-    s->used += n;
-    return true;
-}
-static int path_order(const void* a, const void* b) { return strcmp(*(const char* const*)a, *(const char* const*)b); }
-/* whether path is one of the count paths of sorted, in strcmp's order */
-static bool paths_has(const char* const* sorted, size_t count, const char* path) {
-    return bsearch(&path, sorted, count, sizeof *sorted, path_order) != NULL;
-}
-/* each file under rel that the decryption did not take, told: sce_pfs/ and the package's sce_sys/package/ are no
-   files of the content, nor a folder's sce_sys/ with a keystone of its own below the root (another content's) */
-static void left_out(Pfs* p, const char* const* taken, size_t taken_count, const char* rel, VitaPfsNote note,
-                     void* context, VitaPfsCount* count) {
-    char here[SNX_PATH_SIZE], **names = NULL;
-    size_t n = 0;
-    if (snx_path_format(here, sizeof here, "%s%s%s", p->source, rel[0] ? "/" : "", rel) ||
-        snx_list_dir(here, &names, &n))
-        return;
-    for (size_t i = 0; i < n; ++i) {
-        char inner[SNX_PATH_SIZE], full[SNX_PATH_SIZE], keystone[SNX_PATH_SIZE];
-        if (snx_path_format(inner, sizeof inner, "%s%s%s", rel, rel[0] ? "/" : "", names[i]) ||
-            snx_path_format(full, sizeof full, "%s/%s", here, names[i]))
-            continue;
-        if (snx_is_dir(full)) {
-            bool skip = !strcmp(names[i], "sce_pfs") || !strcmp(inner, "sce_sys/package") ||
-                        (!strcmp(names[i], "sce_sys") && rel[0] &&
-                         !snx_path_format(keystone, sizeof keystone, "%s/keystone", full) && snx_is_file(keystone));
-            if (!skip) left_out(p, taken, taken_count, inner, note, context, count);
-        } else if (!paths_has(taken, taken_count, inner)) {
-            ++count->left_out;
-            if (note) note(context, inner);
-        }
-    }
-    snx_free_strings(names, n);
 }
 
 bool vita_pfs_decrypt(const char* source, const char* dest, const unsigned char klicensee[16], const VitaKeys* keys,
@@ -487,7 +528,6 @@ bool vita_pfs_decrypt(const char* source, const char* dest, const unsigned char 
                       size_t error_size) {
     Pfs pfs = {.source = source, .error = error, .error_size = error_size, .progress = progress, .context = context};
     Pfs* p = &pfs;
-    Paths taken = {0};
     unsigned char* buffer = NULL;
     char path[SNX_PATH_SIZE];
     *count = (VitaPfsCount){0};
@@ -537,6 +577,7 @@ bool vita_pfs_decrypt(const char* source, const char* dest, const unsigned char 
     if (ok && !snx_path_format(path, sizeof path, "%s/sce_pfs/unicv.db", source)) ok = read_icv(p, path);
     for (uint32_t i = 0; ok && i < p->entry_count; ++i)
         if (!is_folder(p->entries[i].type)) p->total += p->entries[i].size;
+    if (ok) ok = walk(p, "", false) && disk_sort(p);
     if (ok && snx_mkdirs(dest)) ok = fail(p, "cannot make %s", dest);
     /* the folders, the empty ones too, then the files */
     char rel[SNX_PATH_SIZE], found[SNX_PATH_SIZE], to[SNX_PATH_SIZE], from[SNX_PATH_SIZE];
@@ -557,7 +598,6 @@ bool vita_pfs_decrypt(const char* source, const char* dest, const unsigned char 
                    snx_path_format(to, sizeof to, "%s/%s", dest, found)))
             ok = fail(p, "%s/%s is too long a path", dest, found);
         if (ok && !snx_is_file(from)) ok = fail(p, "files.db's file %s is a folder in the dump", rel);
-        if (ok && !paths_add(&taken, found)) ok = fail(p, "out of memory");
         if (!ok) break;
         char* folder = snx_dirname(to);
         if (!folder || snx_mkdirs(folder)) ok = fail(p, "cannot make the folder of %s", to);
@@ -580,19 +620,9 @@ bool vita_pfs_decrypt(const char* source, const char* dest, const unsigned char 
             count->bytes += e->size;
         }
     }
-    if (ok) {
-        const char** sorted = malloc((taken.count ? taken.count : 1) * sizeof *sorted);
-        if (!sorted)
-            ok = fail(p, "out of memory");
-        else {
-            for (size_t i = 0; i < taken.count; ++i) sorted[i] = taken.text + taken.at[i];
-            qsort(sorted, taken.count, sizeof *sorted, path_order);
-            left_out(p, sorted, taken.count, "", note, context, count);
-            free(sorted);
-        }
-    }
-    free(taken.text);
-    free(taken.at);
+    if (ok) left_out(&p->disk, note, context, count);
+    free(p->disk.text);
+    free(p->disk.order);
     free(buffer);
     free(p->block);
     free(p->db);

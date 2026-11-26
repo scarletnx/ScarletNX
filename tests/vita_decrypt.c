@@ -412,6 +412,30 @@ static bool there(const char* folder, const char* rel) {
     free(path);
     return is;
 }
+/* whether rel in folder has name as its listing gives it, this very case: a file system that ignores case finds
+   "Data" by "data", and only the listing tells which the import made */
+static bool named(const char* folder, const char* rel, const char* name) {
+    char* path = snx_path_join(folder, rel);
+    char** names = NULL;
+    size_t count = 0;
+    bool has = false;
+    assert(path && !snx_list_dir(path, &names, &count));
+    for (size_t i = 0; i < count; ++i) has |= !strcmp(names[i], name);
+    snx_free_strings(names, count);
+    free(path);
+    return has;
+}
+/* how many times part is in text */
+static unsigned times(const char* text, const char* part) {
+    unsigned n = 0;
+    for (const char* at = strstr(text, part); at; at = strstr(at + 1, part)) ++n;
+    return n;
+}
+/* text with the separator a path the import makes has on this system, where it names one */
+static const char* native(char* out, size_t size, const char* text) {
+    assert(!snx_path_format(out, size, "%s", text));
+    return out;
+}
 static bool import(const char* dump, const char* folder, const char* keys, const char* zrif, Said* s, char* error,
                    size_t error_size) {
     char app[SNX_PATH_SIZE];
@@ -475,8 +499,9 @@ static void keys_files(const char* dir) {
     assert(!remove(file));
     snprintf(file, sizeof file, "%s/app-key-3", path); /* a key file of another size: named, its size and the key's */
     assert(!snx_write_file(file, "short", 5));
+    char want[SNX_PATH_SIZE + 64];
     expect(vita_keys_load(path, &k, NULL, NULL, error, sizeof error), error,
-           "/keys-check/app-key-3 is 5 bytes, and the key app-key-3 is 32");
+           native(want, sizeof want, "/keys-check/app-key-3 is 5 bytes, and the key app-key-3 is 32"));
     snprintf(path, sizeof path, "%s/none", dir);
     expect(vita_keys_load(path, &k, NULL, NULL, error, sizeof error), error,
            "there are no Vita keys to decrypt it with in");
@@ -570,7 +595,15 @@ int main(void) {
     assert(there(app, "save") && !there(app, "readme_extra.txt") && !there(app, "sce_pfs") &&
            !there(app, "sce_sys/package"));
     assert(!there(app, "ghost") && !there(game, ".app.decrypting"));
+    /* the one file files.db lacks, every other found under its name in files.db's case or the dump's, the dump's
+       case made: a check of the file system for files.db's name would find "Data" where case is ignored */
     assert(strstr(s.text, "readme_extra.txt is not in its files.db, and the import leaves it out"));
+    if (times(s.text, "is not in its files.db") != 1) {
+        fprintf(stderr, "the import leaves out more than readme_extra.txt:\n%s", s.text);
+        abort();
+    }
+    assert(named(app, "", "data") && !named(app, "", "Data") && named(app, "data", "mixed.bin") &&
+           !named(app, "data", "Mixed.BIN") && named(app, "", "save"));
     assert(strstr(s.text, "SELFs decrypted: eboot.bin, sce_module/libtest.suprx"));
     {
         VitaImage image;
@@ -644,8 +677,9 @@ int main(void) {
     /* a zRIF given for a dump with its own license: not read, said; the license from it once the work.bin is gone */
     snprintf(fresh, sizeof fresh, "%s/zrif-not/" TITLE, dir);
     assert(import(dump, fresh, keys, GAME_ZRIF, &s, error, sizeof error));
+    char want[SNX_PATH_SIZE];
     assert(strstr(s.text, "--zrif is not read: the dump has the game's license, ") &&
-           strstr(s.text, "/sce_sys/package/work.bin (" GAME ")"));
+           strstr(s.text, native(want, sizeof want, "/sce_sys/package/work.bin (" GAME ")")));
     snprintf(work, sizeof work, "%s/app/" TITLE "/sce_sys/package/work.bin", dump);
     snprintf(moved, sizeof moved, "%s/work.bin", dir);
     assert(!rename(work, moved));

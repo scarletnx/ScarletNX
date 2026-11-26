@@ -84,6 +84,12 @@ def main():
             ):
                 if line not in out:
                     failures.append(f'the import does not say "{line}"\n{out}')
+            if out.count('is not in its files.db') != 1:
+                failures.append(f'the import leaves out more than readme_extra.txt:\n{out}')
+            # the dump's case, as its listing gives it: where case is ignored "Data" is found by "data" too
+            made = pathlib.Path(games, 'SNXT00001', 'app')
+            if 'data' not in os.listdir(made) or 'mixed.bin' not in os.listdir(made / 'data'):
+                failures.append(f"the import named its files in files.db's case: {sorted(os.listdir(made))}")
             for rel in ('app/data/big.bin', 'app/data/mixed.bin', 'app/sce_sys/icon0.png'):
                 got = pathlib.Path(games, 'SNXT00001', rel).read_bytes()
                 plain = pathlib.Path(tmp, 'plain', 'SNXT00001', rel[4:]).read_bytes()

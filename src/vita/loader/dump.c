@@ -129,9 +129,9 @@ static bool decrypt_selfs(const char* root, const char* rel, const char* source,
         return true;
     for (size_t i = 0; ok && i < count; ++i) {
         char inner[SNX_PATH_SIZE], full[SNX_PATH_SIZE];
-        if (snx_path_format(inner, sizeof inner, "%s%s%s", rel, rel[0] ? "/" : "", list[i]) ||
-            snx_path_format(full, sizeof full, "%s/%s", here, list[i]))
-            continue;
+        /* full, longer than inner, says when it is too long; inner, the path the messages name, keeps / as files.db's */
+        if (snx_path_format(full, sizeof full, "%s/%s", here, list[i])) continue;
+        snprintf(inner, sizeof inner, "%s%s%s", rel, rel[0] ? "/" : "", list[i]);
         if (snx_is_dir(full)) {
             ok = decrypt_selfs(root, inner, source, klicensee, keys, done, names, names_size, error, error_size);
             continue;
