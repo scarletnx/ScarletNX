@@ -24,9 +24,9 @@
     } while (0)
 
 static const int safe[4] = {0, 0, 2000, 1000};
-static const SnxVpadControl pad[] = {{SNX_VPAD_PLUS, "Start", "ST", {0.60f, 0.90f}},
-                                     {SNX_VPAD_DPAD, "D-pad", "", {0.10f, 0.80f}},
-                                     {SNX_VPAD_A, "A", "A", {0.80f, 0.99f}}};
+static const SnxVpadControl pad[] = {{SNX_VPAD_PLUS, "Start", "ST", {0, 0}, {0.60f, 0.90f}},
+                                     {SNX_VPAD_DPAD, "D-pad", "", {0, 0}, {0.10f, 0.80f}},
+                                     {SNX_VPAD_A, "A", "A", {0, 0}, {0.80f, 0.99f}}};
 static const SnxVpadConsole none = {"GBA", pad, 3, 0}, touch = {"NDS", pad, 3, 1};
 /* the Switch's places, which every console's controls start at */
 static SnxVpadConfig g_switch;
@@ -80,10 +80,61 @@ static int settings(const SnxVpadConsole* console, const char* ini, const char* 
     return !failed;
 }
 
-/* Every console's controls in a window wider than tall where the Switch's are, its D-pad in the left stick's place
-   where it has none; in one taller than wide its own places, L and R over the D-pad and the buttons, the Vita's sticks
-   where the Switch's are in the band under its picture (from 64% of the height down). In both, a finger at a button's
-   middle presses that button alone: none lies over another */
+/* a button's bit, as vpad_state gives it */
+static u64 bit_of(int control) {
+    static const u64 bits[SNX_VPAD_COUNT] = {
+        [SNX_VPAD_A] = 1u,       [SNX_VPAD_B] = 2u,       [SNX_VPAD_X] = 4u,          [SNX_VPAD_Y] = 8u,
+        [SNX_VPAD_L3] = 1u << 4, [SNX_VPAD_R3] = 1u << 5, [SNX_VPAD_L] = 1u << 6,     [SNX_VPAD_R] = 1u << 7,
+        [SNX_VPAD_ZL] = 1u << 8, [SNX_VPAD_ZR] = 1u << 9, [SNX_VPAD_PLUS] = 1u << 10, [SNX_VPAD_MINUS] = 1u << 11};
+    return bits[control];
+}
+/* a finger at each button's middle in window presses that button alone (none lies over another): the controls of
+   pad, or the Switch's every one where pad is NULL */
+static int alone(const SnxVpadConsole* pad, const int window[4]) {
+    for (int c = 0; c < SNX_VPAD_COUNT; ++c) {
+        int has = !pad;
+        for (int i = 0; pad && i < pad->count; ++i) has |= pad->pad[i].control == c;
+        if (!has || !bit_of(c)) continue;
+        const SnxVpadPlace* at = &vpad_config()->at[c];
+        CHECK(vpad_down(1, at->x * (float)window[2], at->y * (float)window[3], window));
+        CHECK(buttons() == bit_of(c) && vpad_up(1));
+        vpad_release();
+    }
+    return 0;
+}
+/* The Switch's own in a window taller than wide (a phone upright): the Vita's arrangement under the picture, ZL and ZR
+   over L and R, minus and plus beside them, Capture and Home at the foot, each button pressed alone; turned back,
+   the wide places as before; and a place the game's .ini gave stays in both, as the player put it */
+static int switch_tall(void) {
+    static SnxUiQuad q[512];
+    static const int wide[4] = {0, 0, 2340, 1080}, tall[4] = {0, 0, 1080, 2340};
+    SnxUiList l = {q, 0, 512};
+    const SnxVpadPlace* at = vpad_config()->at;
+    g_settings.show_controls = 1;
+    CHECK(vpad_draw(&l, tall, 2) == VPAD_DRAW_LAID);
+    CHECK(at[SNX_VPAD_ZL].x == 0.16f && at[SNX_VPAD_ZL].y < at[SNX_VPAD_L].y && at[SNX_VPAD_L].y == 0.67f);
+    CHECK(at[SNX_VPAD_MINUS].y == at[SNX_VPAD_L].y && at[SNX_VPAD_MINUS].x > at[SNX_VPAD_L].x);
+    CHECK(at[SNX_VPAD_PLUS].y == at[SNX_VPAD_R].y && at[SNX_VPAD_PLUS].x < at[SNX_VPAD_R].x);
+    CHECK(at[SNX_VPAD_STICK_L].x == snx_vpad_vita.pad[5].tall.x &&
+          at[SNX_VPAD_STICK_L].y == snx_vpad_vita.pad[5].tall.y);
+    CHECK(at[SNX_VPAD_HOME].y > 0.9f && at[SNX_VPAD_CAPTURE].y > 0.9f);
+    if (alone(NULL, tall)) return 1;
+    l.n = 0;
+    CHECK(vpad_draw(&l, wide, 2) == VPAD_DRAW_LAID);
+    for (int c = 0; c < SNX_VPAD_COUNT; ++c) CHECK(at[c].x == g_switch.at[c].x && at[c].y == g_switch.at[c].y);
+    if (alone(NULL, wide)) return 1;
+    CHECK(vpad_ini("controls_a", "0.400 0.300 100"));
+    l.n = 0;
+    CHECK(vpad_draw(&l, tall, 2) == VPAD_DRAW_LAID && at[SNX_VPAD_A].x == 0.4f && at[SNX_VPAD_A].y == 0.3f);
+    l.n = 0;
+    CHECK(vpad_draw(&l, wide, 2) == VPAD_DRAW_LAID && at[SNX_VPAD_A].x == 0.4f && at[SNX_VPAD_A].y == 0.3f);
+    vpad_reset_layout();
+    return 0;
+}
+/* Every console's controls in a window wider than tall where the Switch's are, but where the console puts one
+   elsewhere (the GBA's and the DS's L right over their D-pad, the Vita's Select and Start beside L and R); in one
+   taller than wide its own places, L and R over the D-pad and the buttons, the Vita's sticks where the Switch's are in
+   the band under its picture (from 64% of the height down). In both, each button pressed alone */
 static int switch_places(void) {
     static const SnxVpadConsole* const consoles[] = {&snx_vpad_gba, &snx_vpad_nds, &snx_vpad_vita};
     static SnxUiQuad q[512];
@@ -100,30 +151,26 @@ static int switch_places(void) {
             const SnxVpadPlace* at = vpad_config()->at;
             CHECK(vpad_draw(&l, window, 2) == VPAD_DRAW_LAID);
             for (int i = 0; i < c->count; ++i) {
-                int control = c->pad[i].control, from = control == SNX_VPAD_DPAD && !stick ? SNX_VPAD_STICK_L : control;
-                float x = t ? c->pad[i].tall.x : g_switch.at[from].x, y = t ? c->pad[i].tall.y : g_switch.at[from].y;
-                if (t && (control == SNX_VPAD_STICK_L || control == SNX_VPAD_STICK_R))
-                    CHECK(fabsf(x - g_switch.at[control].x) < 0.001f &&
-                          fabsf(y - (0.64f + 0.36f * g_switch.at[control].y)) < 0.001f);
-                CHECK(at[control].x == x && at[control].y == y);
-                if (control == SNX_VPAD_DPAD || control == SNX_VPAD_STICK_L || control == SNX_VPAD_STICK_R) continue;
-                u64 bit = control == SNX_VPAD_A      ? 1u
-                          : control == SNX_VPAD_B    ? 2u
-                          : control == SNX_VPAD_X    ? 4u
-                          : control == SNX_VPAD_Y    ? 8u
-                          : control == SNX_VPAD_L    ? 1u << 6
-                          : control == SNX_VPAD_R    ? 1u << 7
-                          : control == SNX_VPAD_PLUS ? 1u << 10
-                                                     : 1u << 11;
-                CHECK(vpad_down(1, at[control].x * (float)window[2], at[control].y * (float)window[3], window));
-                CHECK(buttons() == bit && vpad_up(1));
-                vpad_release();
+                const SnxVpadControl* o = &c->pad[i];
+                int own = o->wide.x > 0;
+                float x = t ? o->tall.x : own ? o->wide.x : g_switch.at[o->control].x;
+                float y = t ? o->tall.y : own ? o->wide.y : g_switch.at[o->control].y;
+                if (t && (o->control == SNX_VPAD_STICK_L || o->control == SNX_VPAD_STICK_R))
+                    CHECK(fabsf(x - g_switch.at[o->control].x) < 0.001f &&
+                          fabsf(y - (0.64f + 0.36f * g_switch.at[o->control].y)) < 0.001f);
+                CHECK(at[o->control].x == x && at[o->control].y == y);
             }
-            int left = t || !stick ? SNX_VPAD_DPAD : SNX_VPAD_STICK_L;
-            if (t && stick) left = SNX_VPAD_STICK_L;
+            if (alone(c, window)) return 1;
+            int left = stick && !t ? SNX_VPAD_STICK_L : stick ? SNX_VPAD_STICK_L : SNX_VPAD_DPAD;
             CHECK(at[SNX_VPAD_L].y < at[left].y && fabsf(at[SNX_VPAD_L].x - at[left].x) < 0.07f);
             CHECK(at[SNX_VPAD_R].y < at[SNX_VPAD_A].y && fabsf(at[SNX_VPAD_R].x - at[SNX_VPAD_A].x) < 0.11f);
             CHECK(at[SNX_VPAD_MINUS].x < 0.5f && at[SNX_VPAD_PLUS].x > 0.5f);
+            if (!t && !stick) /* the D-pad where the Switch's is, the L over it */
+                CHECK(at[SNX_VPAD_DPAD].x == g_switch.at[SNX_VPAD_DPAD].x &&
+                      at[SNX_VPAD_DPAD].y == g_switch.at[SNX_VPAD_DPAD].y);
+            if (stick) /* the Vita's Select and Start beside L and R */
+                CHECK(at[SNX_VPAD_MINUS].y == at[SNX_VPAD_L].y && at[SNX_VPAD_PLUS].y == at[SNX_VPAD_R].y &&
+                      at[SNX_VPAD_MINUS].x > at[SNX_VPAD_L].x && at[SNX_VPAD_PLUS].x < at[SNX_VPAD_R].x);
         }
     }
     return 0;
@@ -134,16 +181,16 @@ int main(void) {
     char error[256];
     SnxUiList l = {quads, 0, 256};
     vpad_defaults(&g_switch);
+    if (switch_tall()) return 1;
     vpad_set_say(say);
     vpad_set_store(store);
     vpad_console(&none);
     g_settings.show_controls = 1;
-    /* the console's three where the Switch has them, its D-pad in the left stick's place as it has no stick, and no
-       other of the Switch's */
+    /* the console's three where the Switch has them, and no other of the Switch's */
     CHECK(vpad_down(1, 1860, 470, safe) && buttons() == 1u && vpad_up(1) && !buttons());
     CHECK(vpad_down(1, 1500, 100, safe) && buttons() == 1u << 10 && vpad_up(1));
     vpad_release();
-    CHECK(taken(0.12f, 0.47f) && !taken(0.23f, 0.78f) && !taken(0.87f, 0.60f) && !taken(0.77f, 0.78f));
+    CHECK(taken(0.23f, 0.78f) && !taken(0.12f, 0.47f) && !taken(0.87f, 0.60f) && !taken(0.77f, 0.78f));
     CHECK(!taken(0.64f, 0.90f) && !taken(0.36f, 0.90f) &&
           !(vpad_actions() & ~SNX_VPAD_DO_BUZZ)); /* no Home, no Capture */
     CHECK(!strcmp(vpad_name(SNX_VPAD_PLUS), "Start") && !strcmp(vpad_name(SNX_VPAD_B), "?"));
