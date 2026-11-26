@@ -212,6 +212,15 @@ int main(void) {
         assert(says(&l, foot_y(&p, 1280, 720), "Enter: do Esc: close") && !says(&l, foot_y(&p, 1280, 720), "move"));
         assert(snx_error_panel_key(&p, &n, SNX_ERROR_KEY_DOWN, SNX_ERROR_INPUT_KEYS, 1001) == SNX_ACTION_NONE);
         assert(snx_error_panel_key(&p, &n, SNX_ERROR_KEY_DO, SNX_ERROR_INPUT_KEYS, 1001) == SNX_ACTION_CLOSE);
+        /* a failure with a long path (a Windows runner's temporary folder) in one row on a 1280 by 800 window, as wide
+           as the window less a column each side, where the menu's three quarters would break it at "a file" */
+        snprintf(n.message, sizeof n.message, "%s",
+                 "Could not make C:\\a\\_temp\\msys64\\tmp\\.snx-9508-1468890-0\\a file\\data\\dumps");
+        p = (SnxErrorPanel){.percent = 100};
+        snx_error_panel_start(&p, 1000);
+        l = draw(&p, &n, 1280, 800);
+        s = 16.0f * (float)snx_menu_scale(1280, 800, 100);
+        assert(says(&l, p.box.y + 2 * s, n.message) && p.box.x >= 0 && p.box.x + p.box.w <= 1280.0f);
     }
     puts("error_panel: ok");
     return 0;
