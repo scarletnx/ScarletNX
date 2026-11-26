@@ -3017,6 +3017,9 @@ if(Python3_Interpreter_FOUND)
         # LLVM's release source by its pinned SHA-256 (scripts/llvm-source.sh, which the LLVM scripts download
         # through), against a fake curl
         add_test(NAME llvm_source COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/llvm_source_test.py")
+        # the arguments scripts/appimage-sysroot.sh refuses
+        add_test(NAME appimage_sysroot
+                 COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/appimage_sysroot_test.py")
     endif()
 endif()
 
