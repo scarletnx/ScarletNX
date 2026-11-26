@@ -12,4 +12,6 @@ if(BUILD_TESTING)
              "-DOUT=${snx_commit_header}" -DCHECK=1 -P "${PROJECT_SOURCE_DIR}/cmake/commit.cmake")
     add_test(NAME build_info_no_git COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
              "-DOUT=${PROJECT_BINARY_DIR}/build_info_no_git.h" -P "${PROJECT_SOURCE_DIR}/tests/build_info_no_git.cmake")
+    add_test(NAME build_info_nightly COMMAND "${CMAKE_COMMAND}" "-DSRC=${PROJECT_SOURCE_DIR}"
+             "-DOUT=${PROJECT_BINARY_DIR}/build_info_nightly.h" -P "${PROJECT_SOURCE_DIR}/tests/build_info_nightly.cmake")
 endif()

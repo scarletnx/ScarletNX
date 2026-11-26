@@ -113,11 +113,11 @@ EOF
 # Through ccache, without debug information, which no one reads in these builds and the AppImage would carry.
 # LLVM is the one built above (-DSNX_LLVM_CONFIG= drops the preset's, the system root's), SDL3 the system root's
 # package (SNX_SYSTEM_SDL3: a root without it, or with one too old, stops the configure), and a release leaves
-# out scarletnx --mcp's A64 disassembler (SNX_A64_DISASM)
+# out scarletnx --mcp's A64 disassembler (SNX_A64_DISASM). The container gets a nightly's name (SNX_BUILD_NAME)
 # env: ARCH PRESET
 build() {
   docker exec -i -e PRESET -e ARCH -e CCACHE_DIR=/src/.cache/ccache -e CCACHE_BASEDIR=/src -e CCACHE_NOHASHDIR=true \
-    -e SNX_DEPS_CACHE=/src/.cache/deps build sh -s <<'EOF'
+    -e SNX_DEPS_CACHE=/src/.cache/deps -e SNX_BUILD_NAME build sh -s <<'EOF'
 set -eu
 git config --global --add safe.directory '*'
 export SNX_SYSROOT=/src/sysroot
