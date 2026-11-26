@@ -3,6 +3,18 @@
 # The tests of the Switch runtime (src/nx), included by src/nx/CMakeLists.txt where they were: they run in its scope, so
 # its variables hold here, and a relative path is from src/nx
 if(BUILD_TESTING)
+    # snx-vk-replay RECORD: a pipeline record (pipeline_records, gpu/vk/pipeline_record.h) made again away from the game;
+    # its refusals here, which open no driver
+    add_executable(snx-vk-replay "${PROJECT_SOURCE_DIR}/tests/vk_pipeline_replay.c"
+        "${CMAKE_CURRENT_SOURCE_DIR}/gpu/vk/pipeline_replay.c" "${volk_SOURCE_DIR}/volk.c")
+    snx_test_target(snx-vk-replay gnu23)
+    target_link_libraries(snx-vk-replay PRIVATE snx_nx_flags snx_vk_common ${CMAKE_DL_LIBS})
+    add_test(NAME vk_replay_usage COMMAND snx-vk-replay)
+    set_tests_properties(vk_replay_usage PROPERTIES PASS_REGULAR_EXPRESSION "usage: snx-vk-replay RECORD")
+    add_test(NAME vk_replay_bogus COMMAND snx-vk-replay --bogus)
+    set_tests_properties(vk_replay_bogus PROPERTIES PASS_REGULAR_EXPRESSION "unknown option: --bogus")
+    add_test(NAME vk_replay_no_record COMMAND snx-vk-replay "${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties(vk_replay_no_record PROPERTIES PASS_REGULAR_EXPRESSION "device.txt is neither in ")
     add_executable(snx-test-shader-direct "${PROJECT_SOURCE_DIR}/tests/shader_direct.c")
     snx_test_target(snx-test-shader-direct gnu23)
     target_link_libraries(snx-test-shader-direct PRIVATE snx_shader)
@@ -182,7 +194,7 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         "${PROJECT_SOURCE_DIR}/tests/support/sm86_ref.c" "${PROJECT_SOURCE_DIR}/tests/glsl/bc7_cpu.cpp"
         "${PROJECT_SOURCE_DIR}/tests/glsl/astc_bc7_cpu.cpp" "${PROJECT_SOURCE_DIR}/tests/glsl/astc_bcn_cpu.cpp"
         "${PROJECT_SOURCE_DIR}/tests/support/bcn.c"
-        "${PROJECT_SOURCE_DIR}/tests/support/ui_shape_ref.c")
+        "${PROJECT_SOURCE_DIR}/tests/support/ui_shape_ref.c" "${CMAKE_CURRENT_SOURCE_DIR}/gpu/vk/pipeline_replay.c")
     target_include_directories(snx-test-vulkan PRIVATE "${PROJECT_SOURCE_DIR}/tests")
     target_link_libraries(snx-test-vulkan PRIVATE snx_nx_flags ${components} snx_driver snx_glslc FFmpeg::avutil
                                                   Threads::Threads ${CMAKE_DL_LIBS})
@@ -278,6 +290,13 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
     add_test(NAME vulkan_recorder COMMAND snx-test-vulkan -H)
     set_tests_properties(vulkan_recorder PROPERTIES TIMEOUT 30 ENVIRONMENT "SNX_TEST_RECORDER_ONLY=1"
         PASS_REGULAR_EXPRESSION "PASS headless Vulkan recorder only")
+    # pipeline_records (check_pipeline_records): a pipeline the driver fails on purpose kept whole and made again by the
+    # replay, the failure's message naming the record; the PASS line and no line of a failed check
+    add_test(NAME vulkan_pipeline_records COMMAND snx-test-vulkan -H
+        "--pipeline-records=${CMAKE_CURRENT_BINARY_DIR}/vulkan_pipeline_records")
+    set_tests_properties(vulkan_pipeline_records PROPERTIES TIMEOUT 60 ENVIRONMENT "SNX_TEST_PIPELINE_RECORDS_ONLY=1"
+        PASS_REGULAR_EXPRESSION "failed a graphics pipeline with VK_ERROR_OUT_OF_DEVICE_MEMORY \\(-2\\): the record is in "
+        FAIL_REGULAR_EXPRESSION "vulkan_headless:[0-9]+:;vulkan validation:;pipeline records: ")
     # pipeline_stats' rows of compute pipelines (check_pipeline_stats_compute), where the driver has the statistics
     add_test(NAME vulkan_pipeline_stats COMMAND snx-test-vulkan -H
         "--pipeline-stats=${CMAKE_CURRENT_BINARY_DIR}/vulkan_pipeline_stats.csv")

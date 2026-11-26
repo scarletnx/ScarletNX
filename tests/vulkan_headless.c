@@ -7863,6 +7863,7 @@ static int check_pipeline_stats_compute(void) {
     printf("pipeline stats: %d rows of compute pipelines, each naming its program in the cs column\n", rows);
     return 0;
 }
+#include "vulkan_pipeline_records.inc"
 #include "vulkan_storage_atomics.inc"
 #include "vulkan_hidden_commands.inc"
 #include "vulkan_surface_loads.inc"
@@ -9074,6 +9075,13 @@ static int run_headless(int argc, char** argv) {
         vk_finish();
         vk_pipeline_quiesce();
         printf("PASS headless Vulkan Ounce integer targets only: %u validation messages\n", g_vk_validation_messages);
+        return 0;
+    }
+    if (getenv("SNX_TEST_PIPELINE_RECORDS_ONLY")) { /* pipeline_records alone: run with --pipeline-records */
+        CHECK(!check_pipeline_records());
+        vk_finish();
+        vk_pipeline_quiesce();
+        printf("PASS headless Vulkan pipeline records only: %u validation messages\n", g_vk_validation_messages);
         return 0;
     }
     if (getenv("SNX_TEST_PIPELINE_STATS_ONLY")) { /* pipeline_stats' compute rows alone: run with --pipeline-stats */
