@@ -4,8 +4,9 @@
    (aot/), as a 3DS game's is, and runs on the board (board/), whose second processor, BIOS and firmware are answered
    by the runtime (hle/, bios/) and whose picture is drawn on the GPU (gpu/). A game is its image, read where it lies:
    there is nothing to extract and no update to add, so its folder is made as a GBA game's is. */
-#include "common/utilities/menu_window.h"
 #include "nds/runtime/main.h"
+#include "common/utilities/game_log.h"
+#include "common/utilities/menu_window.h"
 #include "common/cpu/recompiler/llvm/jit_settings.h"
 #include "common/utilities/endian.h"
 #include "nds/aot/nds_module.h"
@@ -440,6 +441,10 @@ int snx_nds_main(int argc, char** argv) {
         own = NULL;
         name = folder ? program_name(folder) : NULL;
     }
+    /* the game's log, before any thread of the run's: every line from here in <name>.log too */
+    char logged[1600];
+    if (folder && name && snx_game_log_start(folder, name, &g_settings.log_size_limit, logged, sizeof logged))
+        fprintf(stderr, "scarletnx-nds: %s: the run's lines are on the terminal alone\n", logged);
     ini = folder && name ? snx_format("%s/%s.ini", folder, name) : NULL;
     if (!image && ini && !(image = snx_ini_value(ini, "source")))
         snx_error_note(SNX_ERROR_DUMP_MISSING, "scarletnx-nds", "%s names no image: source= in %s", folder, ini);

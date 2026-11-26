@@ -4,8 +4,9 @@
 /* scarletnx-agb: the AGB (Game Boy Advance) system type. A ROM goes through the ARM recompiler into a
    native module, then runs on the emulated board, the way the NX and GNU ABI system types prepare their
    code before playing. */
-#include "common/utilities/menu_window.h"
 #include "agb/board/board.h"
+#include "common/utilities/game_log.h"
+#include "common/utilities/menu_window.h"
 #include "agb/cpu/agb_cpu.h"
 #include "agb/cpu/memmap.h"
 #include "agb/cpu/recomp.h"
@@ -344,6 +345,10 @@ int snx_agb_main(int argc, char** argv) {
             own = NULL;
             name = folder ? program_name(folder) : NULL;
         }
+        /* the game's log, before any thread of the run's: every line from here in <name>.log too */
+        char logged[1600];
+        if (folder && name && snx_game_log_start(folder, name, &g_settings.log_size_limit, logged, sizeof logged))
+            fprintf(stderr, "scarletnx-agb: %s: the run's lines are on the terminal alone\n", logged);
         /* the folder's own, as a 3DS or Vita game's: source= and system=, which the launcher and the deploy read */
         ini = folder && name ? snx_format("%s/%s.ini", folder, name) : NULL;
         if (!rom && ini && !(rom = snx_ini_value(ini, "source")))

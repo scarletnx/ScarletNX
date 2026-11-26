@@ -5665,6 +5665,13 @@ add_test(NAME unattended_script COMMAND snx-test-unattended-script "${CMAKE_CURR
 add_executable(snx-test-deprecated-env deprecated_env.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/deprecated_env.c")
 snx_test_target(snx-test-deprecated-env gnu23)
 add_test(NAME deprecated_env COMMAND snx-test-deprecated-env)
+# a console's game log: its lines from threads, a crash's, no terminal, the cut past log_max, the runs before
+# (common/utilities/game_log.c), each case a process of the test's own
+add_executable(snx-test-game-log game_log.c)
+snx_test_target(snx-test-game-log gnu23)
+target_link_libraries(snx-test-game-log PRIVATE scarletnx-common)
+add_test(NAME game_log COMMAND snx-test-game-log)
+set_tests_properties(game_log PROPERTIES TIMEOUT 120)
 # the log's file, early lines, stamps, redirect, limits, fatal and crash mode (platform/log.c)
 add_executable(snx-test-platform-log platform_log.c "${PROJECT_SOURCE_DIR}/src/common/platform/file.c"
         "${PROJECT_SOURCE_DIR}/src/common/platform/file_map.c" "${PROJECT_SOURCE_DIR}/src/common/platform/file_share.c"
