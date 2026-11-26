@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* The whole machine: a hand assembled ROM goes through the AOT recompiler and runs on the board, through
    a BIOS call and an interrupt, and the board's memory shows what happened. Its module is the host's native back end's,
-   and the machine runs the same from one LLVM alone makes. */
+   and the machine ends as it did from the module LLVM alone made (AGB_FROZEN_*). */
 #include "agb/bios/bios.h"
 #include "agb/board/board.h"
 #include "agb/cpu/agb_cpu.h"
@@ -184,7 +184,7 @@ static int rom_mirrors(void) {
     return 0;
 }
 
-/* ---- the module's blocks, by the native back end and by LLVM alone ---- */
+/* ---- the module's blocks, against the machine LLVM alone's module ran to ---- */
 
 /* ARM code in IWRAM that stores over its own block, three instructions ahead of the store: a block ends with it */
 #define AHEAD 0x03000A00u
@@ -208,7 +208,7 @@ static uint64_t hash_words(AgbBoard* board, uint64_t hash, uint32_t from, uint32
 /* The machine after five frames of the ROM and the code above, its memory, registers and sound hashed. Its module is
    recompiled from what the ROM's entry reaches, or (again) from the blocks the run before reached too: the Thumb ones,
    which only a BX goes to, and those in IWRAM */
-static int machine(const char* base, int llvm, int again, uint64_t* hash, SnxArmAotCount* made) {
+static int machine(const char* base, int again, uint64_t* hash, SnxArmAotCount* made) {
     AgbBoard board;
     AgbMap map;
     AgbCpu cpu;
@@ -225,14 +225,13 @@ static int machine(const char* base, int llvm, int again, uint64_t* hash, SnxArm
     agb_cpu_init(&cpu, &board, map.base);
     for (uint32_t i = 0; i < sizeof ahead / sizeof *ahead; ++i) agb_write32(&board, AHEAD + i * 4, ahead[i]);
     agb_recomp_init(&recomp, base);
-    if (llvm) recomp.keep_ir = snx_strdup("."); /* blocks.ll */
     if ((again && agb_recomp_load_map(&recomp, &board, error, sizeof error)) ||
         agb_recomp_build(&recomp, &board, error, sizeof error)) {
         fprintf(stderr, "agb_cpu: recompiling the ROM: %s\n", error);
         return 1;
     }
     *made = recomp.made;
-    if (!llvm && snx_native_arm_available())
+    if (snx_native_arm_available())
         CHECK(made->native && !made->llvm);
     else
         CHECK(!made->native && made->llvm);
@@ -268,29 +267,36 @@ static int machine(const char* base, int llvm, int again, uint64_t* hash, SnxArm
     free(audio);
     return 0;
 }
+/* The machine LLVM alone's module ran to, the reference the native back end's is held to: its hash, and how many
+   blocks the module had, from the ROM's entry and then with the blocks that run reached. The board and the code
+   above decide them as much as the recompiler: a change there that moves them gives the new values in its commit */
+#define AGB_FROZEN_HASH   0xfc70be1a7a258dc3ull
+#define AGB_FROZEN_BLOCKS 8u
+#define AGB_FROZEN_AGAIN  18u
+static_assert(AGB_FROZEN_BLOCKS < AGB_FROZEN_AGAIN, "the second module has the blocks the first run reached too");
 static int modes(void) {
-    static const char* const bases[] = {"agb_cpu_native.code", "agb_cpu_llvm.code"};
-    uint64_t hash[4];
-    size_t blocks[4];
-    for (int k = 0; k < 4; ++k) {
+    static const char base[] = "agb_cpu_native.code";
+    static const size_t frozen[] = {AGB_FROZEN_BLOCKS, AGB_FROZEN_AGAIN};
+    char* files[] = {snx_format("%s.so", base), snx_format("%s.map", base)};
+    int rc = 0;
+    CHECK(files[0] && files[1]);
+    remove(files[0]), remove(files[1]); /* a run that stopped left them */
+    for (int again = 0; again < 2; ++again) {
         SnxArmAotCount made;
-        char* files[] = {snx_format("%s.so", bases[k >> 1]), snx_format("%s.map", bases[k >> 1])};
-        CHECK(files[0] && files[1]);
-        if (!(k & 1)) remove(files[0]), remove(files[1]); /* a run that stopped left them */
-        if (machine(bases[k >> 1], k >> 1, k & 1, &hash[k], &made)) return 1;
-        blocks[k] = made.native + made.llvm;
-        if (k & 1) remove(files[0]), remove(files[1]);
-        free(files[0]), free(files[1]);
+        uint64_t hash;
+        if (machine(base, again, &hash, &made)) return 1;
+        if (hash != AGB_FROZEN_HASH || made.native + made.llvm != frozen[again]) {
+            fprintf(stderr,
+                    "agb_cpu: the machine from the %s module of %zu blocks is %016llx, and from LLVM alone's of %zu "
+                    "blocks it was %016llx\n",
+                    again ? "second" : "first", made.native + made.llvm, (unsigned long long)hash, frozen[again],
+                    (unsigned long long)AGB_FROZEN_HASH);
+            rc = 1;
+        }
     }
-    remove("blocks.ll");
-    if (blocks[0] >= blocks[1] || blocks[0] != blocks[2] || blocks[1] != blocks[3] || hash[0] != hash[1] ||
-        hash[0] != hash[2] || hash[0] != hash[3]) {
-        for (int k = 0; k < 4; ++k)
-            fprintf(stderr, "agb_cpu: the machine from %s's module of %zu blocks is %016llx\n", bases[k >> 1],
-                    blocks[k], (unsigned long long)hash[k]);
-        return 1;
-    }
-    return 0;
+    remove(files[0]), remove(files[1]);
+    free(files[0]), free(files[1]);
+    return rc;
 }
 
 int main(void) {
