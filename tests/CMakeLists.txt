@@ -60,6 +60,8 @@ if(SNX_TEST_SANITIZERS)
         # the driver, its extraction, the first start's setup, the settings and the build's line
         snx_driver snx_nx_module snx_driver_llvm hactool_lib snx_setup snx_settings snx_settings_runtime snx_build_info
         snx-test-build-info
+        # the game module ahead of time: its builders, its descriptor and the fallback's part of it, LLVM's and none's
+        snx_nx_aot snx_nx_descriptor snx_nx_fallback_llvm snx_nx_fallback_none
         # the Switch runtime: its components, the shader translator, the Vulkan backend and its upscalers
         scarletnx snx_core snx_kernel snx_hle snx_video snx_gpu snx_platform snx_shader snx_vk snx_fsr2 snx_upscaler
         # the GNU ABI runtime and its kernel
