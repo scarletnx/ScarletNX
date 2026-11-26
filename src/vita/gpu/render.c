@@ -109,6 +109,7 @@ typedef struct {
     VkShaderModule module;
     UsseShader meta; /* without its words */
     bool failed;
+    uint64_t id; /* its program's bytes and the hints it was made for, which a pipeline's key names it by */
 } Shader;
 typedef struct {
     uint64_t key;
@@ -1202,11 +1203,17 @@ uint64_t vita_render_submitted(VitaProcess* p) {
 }
 
 /* ---- draws ---- */
+/* a shader's id: the program's bytes, as many as its header says it has, and the hints, zeroed before they are set */
+static uint64_t shader_id(VitaProcess* p, uint32_t program, const UsseHints* hints) {
+    uint64_t h = snx_fnv1a(SNX_FNV_BASIS, vita_ptr(p, program), snx_ld_le32(vita_ptr(p, program + 8)));
+    return snx_fnv1a(h, hints, sizeof *hints);
+}
 static Shader* shader_for(struct VitaRender* r, VitaProcess* p, void** slot, uint32_t program, const UsseHints* hints) {
     if (*slot) return *slot;
     Shader* s = calloc(1, sizeof *s);
     if (!s) return NULL;
     *slot = s;
+    s->id = shader_id(p, program, hints);
     char error[256];
     UsseShader out;
     if (g_settings.vita_shader_corpus[0] &&
@@ -1324,10 +1331,14 @@ static void job_make(void* owner, unsigned job) {
 }
 /* The pipeline of a draw. Without async_pipelines it is made now. With it a worker makes a new one while the draws
    that need it are skipped: VK_NULL_HANDLE and *making until it is done; VK_NULL_HANDLE alone where it cannot be */
-static VkPipeline pipeline_for(struct VitaRender* r, GxmContext* c, const GxmVertexProgram* vp, Shader* vs,
-                               const GxmFragmentProgram* fp, Shader* fs, VkPrimitiveTopology topology, bool* making) {
+/* what picks a draw's pipeline: its shaders by their programs (a Shader freed and another made where it was is another
+   program's), then the state the pipeline bakes in */
+static uint64_t pipeline_key(const struct VitaRender* r, const GxmContext* c, const GxmVertexProgram* vp,
+                             const Shader* vs, const GxmFragmentProgram* fp, const Shader* fs,
+                             VkPrimitiveTopology topology) {
     uint64_t key = SNX_FNV_BASIS;
-    key = snx_fnv_step(key, (uintptr_t)vs), key = snx_fnv_step(key, (uintptr_t)fs), key = snx_fnv_step(key, fp->blend_info | (uint64_t)fp->blend << 32);
+    key = snx_fnv_step(key, vs->id), key = snx_fnv_step(key, fs->id),
+    key = snx_fnv_step(key, fp->blend_info | (uint64_t)fp->blend << 32);
     key = snx_fnv_step(key, topology), key = snx_fnv_step(key, c->cull_mode), key = snx_fnv_step(key, r->depth != NULL);
     key = snx_fnv_step(key, r->color->vk_format), key = snx_fnv_step(key, r->depth ? r->depth->vk_format : 0);
     key = snx_fnv_step(key, c->depth_func), key = snx_fnv_step(key, c->depth_write);
@@ -1341,6 +1352,12 @@ static VkPipeline pipeline_for(struct VitaRender* r, GxmContext* c, const GxmVer
         key = snx_fnv_step(key, a->stream | (uint64_t)a->offset << 8 | (uint64_t)a->format << 24 | (uint64_t)a->components << 32 |
                             (uint64_t)a->reg << 40);
     }
+    return key;
+}
+static VkPipeline pipeline_for(struct VitaRender* r, GxmContext* c, const GxmVertexProgram* vp, Shader* vs,
+                               const GxmFragmentProgram* fp, Shader* fs, VkPrimitiveTopology topology, bool* making) {
+    const uint64_t key = pipeline_key(r, c, vp, vs, fp, fs, topology);
+    const bool stencil = r->depth && r->depth->stencil;
     unsigned slot = (unsigned)(key % PIPELINES);
     *making = false;
     for (unsigned probe = 0; probe < PIPELINES; ++probe, slot = (slot + 1) % PIPELINES) {
@@ -2157,13 +2174,14 @@ static void bind_vertex(Bound* b, VkCommandBuffer cb, unsigned i, VkBuffer buffe
     b->vertex[i] = buffer, b->vertex_at[i] = at;
 }
 /* a draw recorded into the scene, or why it isn't */
-static const char* draw(VitaProcess* p, GxmContext* c, uint32_t primitive, uint32_t index_format, uint32_t indices,
-                        uint32_t count, uint32_t instances) {
-    struct VitaRender* r = render_of(p);
-    if (!r || !r->rendering) return "no scene being drawn";
-    VitaGxm* g = p->gxm;
-    GxmVertexProgram* vp = &g->vertex[(c->vertex_program - GXM_HANDLE_VERTEX) / GXM_PROGRAM_HANDLE];
-    GxmFragmentProgram* fp = &g->fragment[(c->fragment_program - GXM_HANDLE_FRAGMENT) / GXM_PROGRAM_HANDLE];
+/* SceGxmPrimitiveType: triangles, lines, points, a strip, a fan (bits 26 to 28) */
+static const VkPrimitiveTopology topologies[6] = {
+    VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,  VK_PRIMITIVE_TOPOLOGY_LINE_LIST,    VK_PRIMITIVE_TOPOLOGY_POINT_LIST,
+    VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
+/* a draw's shaders, each made for what the translator is told of it: the vertex program's attributes, the fragment
+   program's texture formats (NULL for one that cannot be) */
+static void draw_shaders(struct VitaRender* r, VitaProcess* p, const GxmContext* c, GxmVertexProgram* vp,
+                         GxmFragmentProgram* fp, Shader** vs, Shader** fs) {
     UsseHints vh = {0}, fh = {0};
     for (unsigned i = 0; i < vp->attribute_count && i < USSE_ATTRIBUTES; ++i) {
         vh.attributes[i].reg = vp->attributes[i].reg;
@@ -2172,13 +2190,29 @@ static const char* draw(VitaProcess* p, GxmContext* c, uint32_t primitive, uint3
     }
     vh.attribute_count = vp->attribute_count;
     for (unsigned i = 0; i < USSE_TEXTURES; ++i) fh.texture_formats[i] = gxm_texture_format(&c->textures[i]);
-    Shader* vs = shader_for(r, p, &vp->shader, vp->program, &vh);
-    Shader* fs = shader_for(r, p, &fp->shader, fp->program, &fh);
+    *vs = shader_for(r, p, &vp->shader, vp->program, &vh);
+    *fs = shader_for(r, p, &fp->shader, fp->program, &fh);
+}
+uint64_t vita_render_pipeline_key(VitaProcess* p, GxmContext* c, uint32_t primitive) {
+    struct VitaRender* r = render_of(p);
+    if (!r || !r->rendering || primitive >> 26 >= 6) return 0;
+    GxmVertexProgram* vp = &p->gxm->vertex[(c->vertex_program - GXM_HANDLE_VERTEX) / GXM_PROGRAM_HANDLE];
+    GxmFragmentProgram* fp = &p->gxm->fragment[(c->fragment_program - GXM_HANDLE_FRAGMENT) / GXM_PROGRAM_HANDLE];
+    Shader *vs, *fs;
+    draw_shaders(r, p, c, vp, fp, &vs, &fs);
+    if (!vs || !fs || vs->failed || fs->failed) return 0;
+    return pipeline_key(r, c, vp, vs, fp, fs, topologies[primitive >> 26]);
+}
+static const char* draw(VitaProcess* p, GxmContext* c, uint32_t primitive, uint32_t index_format, uint32_t indices,
+                        uint32_t count, uint32_t instances) {
+    struct VitaRender* r = render_of(p);
+    if (!r || !r->rendering) return "no scene being drawn";
+    VitaGxm* g = p->gxm;
+    GxmVertexProgram* vp = &g->vertex[(c->vertex_program - GXM_HANDLE_VERTEX) / GXM_PROGRAM_HANDLE];
+    GxmFragmentProgram* fp = &g->fragment[(c->fragment_program - GXM_HANDLE_FRAGMENT) / GXM_PROGRAM_HANDLE];
+    Shader *vs, *fs;
+    draw_shaders(r, p, c, vp, fp, &vs, &fs);
     if (!vs || !fs || vs->failed || fs->failed) return "a program not translated";
-    /* SceGxmPrimitiveType: triangles, lines, points, a strip, a fan (bits 26 to 28) */
-    static const VkPrimitiveTopology topologies[6] = {
-        VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_PRIMITIVE_TOPOLOGY_POINT_LIST,
-        VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
     unsigned kind = primitive >> 26;
     if (kind >= 6) {
         once_value(r, 10, primitive, "primitive type 0x%08" PRIx32, primitive);

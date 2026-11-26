@@ -47,4 +47,7 @@ bool vita_render_picture(VitaProcess* p, uint32_t address, uint32_t pitch, uint3
                          uint32_t height, const uint8_t* const planes[3], const int linesize[3]);
 /* a program's shader, made for its first draw, freed with it */
 void vita_render_shader_free(VitaProcess* p, void* shader);
+/* for a test: the key of the pipeline a draw of primitive (SceGxmPrimitiveType) with c's programs and state takes in
+   the scene being recorded, its shaders made as the draw makes them; 0 with no scene or a program not translated */
+uint64_t vita_render_pipeline_key(VitaProcess* p, GxmContext* c, uint32_t primitive);
 #endif
