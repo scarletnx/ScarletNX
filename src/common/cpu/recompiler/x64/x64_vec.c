@@ -87,9 +87,9 @@ static int vmax(SgCtx* g, unsigned size, int a, int b, int uns, int minimum) {
     }
 }
 /* ---- each byte's bits moved (GFNI) ----
-   GF2P8AFFINEQB: bit i of each byte of a its own bit i + n (VGF_ARITH, past 7 the sign's), bit 7 - i (VGF_REVERSE), or
-   bit 0 bit n (VGF_BIT); a bit from past the byte 0. The matrix' row of bit i, in its byte 7 - i, is the mask of the bits
-   it adds. Where SSE takes a shift and a mask (a logical shift) it is that: GF2P8AFFINEQB's latency is longer */
+   GF2P8AFFINEQB: bit i of each byte of a its own bit i + n (VGF_ARITH, past 7 the sign's), bit 7 - i (VGF_REVERSE),
+   or bit 0 bit n (VGF_BIT); a bit from past the byte 0. The matrix' row of bit i, in its byte 7 - i, is the mask of the
+   bits it adds. Where SSE takes a shift and a mask (a logical shift) it is that: GF2P8AFFINEQB's latency is longer */
 enum { VGF_ARITH, VGF_REVERSE, VGF_BIT }; /* VGF_BIT: bit n alone, as bit 0 */
 static int vgfni(const SgCtx* g) { return (g->x.features & SGX_F_GFNI) != 0; }
 static int vgf(SgCtx* g, int a, int kind, unsigned n) {
