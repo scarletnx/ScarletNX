@@ -74,6 +74,7 @@ def main():
             '--async-pipelines=1',
             '--pipeline-threads=2',
             '--renderdoc=',
+            '--log-max=8',
             '--prepare-shaders=1',
             '--compress-prepared-shaders=0',
             '--vk-gpu-profile=0',
@@ -85,7 +86,7 @@ def main():
     )
     run(['--gpu-driver=', '--vk-validation=1', '--gamepad-swap-ab=1', '--help'], 0, 'Vita options:')
     run(['--docked=1', 'game.vpk'], 2, 'scarletnx-vita: --docked=1 does nothing in a Vita game: it has no dock')
-    run(['--log=2', 'game.vpk'], 2, 'scarletnx-vita: --log=2 does nothing in a Vita game: it writes no game log yet')
+    run(['--log=2', 'game.vpk'], 2, 'scarletnx-vita: --log=2 does nothing in a Vita game: its game log has no levels yet')
     # the key as the .ini writes it, the older spelling: still read, and said once a run with the name now
     out = run(
         ['--vita_hle_trace=1', '--vita_hle_trace=2', '--help'],

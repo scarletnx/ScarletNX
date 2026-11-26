@@ -37,7 +37,7 @@
 /* what is not made yet */
 #define SOON          "not made yet"
 #define OFFLINE       "its network is the console's own alone, as in flight mode"
-#define SOON_LOG      "it writes no game log yet"
+#define SOON_LOG      "its game log has no levels yet"
 #define SOON_TRACY    "it has no Tracy zones yet"
 
 #define NA(text)    {text, false}
@@ -192,7 +192,7 @@ const SnxConsoleSetting g_console_settings[] = {
     {"fsr_input_conventions", OTHERS(NA(SWITCH_GPU))},
     {"log", OTHERS(LATER(SOON_LOG))},
     {"emulated_cores_mode", OTHERS(NA(SWITCH_OS))},
-    {"log_max", OTHERS(LATER(SOON_LOG))},
+    {"log_max"},
     {"auto_stub_ipc", {[C] = NA(OWN_ROW), [V] = NA(SWITCH_OS), [G] = NA(SWITCH_OS), [D] = NA(SWITCH_OS)}},
     {"diag", OTHERS(NA(SWITCH_GPU))},
     {"vk_validation"},

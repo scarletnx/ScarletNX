@@ -80,6 +80,7 @@ def main():
     run(['--board-info', '--vk-memory=1'], 0, 'Old 3DS')
     run(['--board-info', '--async-pipelines=1', '--pipeline-threads=2'], 0, 'Old 3DS')
     run(['--board-info', '--prepare-shaders=1', '--compress-prepared-shaders=0'], 0, 'Old 3DS')
+    run(['--board-info', '--log-max=8'], 0, 'Old 3DS')
     run(
         ['--board-info', '--vk-budget-mb=64'],
         2,
