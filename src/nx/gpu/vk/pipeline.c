@@ -29,6 +29,7 @@
 #ifndef SNX_SHADER_FLAGS
 #error "SNX_SHADER_FLAGS, the translator's compile flags for the shader files' key, comes from cmake/shader_flags.cmake"
 #endif
+#include "common/gpu/vk/gpl.h"
 #include "nx/gpu/vk/pipeline_parts.h"
 #include "nx/gpu/vk/shading_rate.h"
 #include "nx/gpu/vk/pipeline_stats.h"
@@ -2222,29 +2223,21 @@ static VkPipeline lib_create(const PipeLib* l, int* hit) {
     VkPipelineDynamicStateCreateInfo dy = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
                                            .dynamicStateCount = vk_pipe_dynamic(l->part, &o.dyn, dyn),
                                            .pDynamicStates = dyn};
-    VkGraphicsPipelineLibraryCreateInfoEXT gl = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_LIBRARY_CREATE_INFO_EXT,
-                                                 .flags = l->part == VK_PART_VI ? VK_GRAPHICS_PIPELINE_LIBRARY_VERTEX_INPUT_INTERFACE_BIT_EXT
-                                                          : l->part == VK_PART_PR ? VK_GRAPHICS_PIPELINE_LIBRARY_PRE_RASTERIZATION_SHADERS_BIT_EXT
-                                                          : l->part == VK_PART_FS ? VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_SHADER_BIT_EXT
-                                                                                  : VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_OUTPUT_INTERFACE_BIT_EXT};
+    VkGraphicsPipelineLibraryCreateInfoEXT gl;
     /* the feedback loop's flag, without its dynamic state, on the parts that read and write the attachment */
     VkPipelineCreateFlags feedback = o.flags & VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;
-    VkGraphicsPipelineCreateInfo gi = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-                                       .pNext = &gl,
-                                       .flags = VK_PIPELINE_CREATE_LIBRARY_BIT_KHR |
-                                                VK_PIPELINE_CREATE_RETAIN_LINK_TIME_OPTIMIZATION_INFO_BIT_EXT |
-                                                (o.flags & VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT) |
-                                                vk_vrs_pipeline_flags() | vk_pipeline_stats_flags(),
-                                       .pDynamicState = &dy};
+    VkPipelineCreateFlags flags =
+        (o.flags & VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT) | vk_vrs_pipeline_flags() | vk_pipeline_stats_flags();
+    VkGraphicsPipelineCreateInfo gi = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pDynamicState = &dy};
     VkPipelineCache cache = VK_NULL_HANDLE; /* the interfaces cost microseconds: nothing worth a cache entry */
     switch (l->part) {
     case VK_PART_VI:
-        gl.pNext = pipe_tail(&o, 1);
+        gi.pNext = pipe_tail(&o, 1);
         gi.pVertexInputState = &o.vi;
         gi.pInputAssemblyState = &o.ia;
         break;
     case VK_PART_PR:
-        gl.pNext = pipe_tail(&o, 1);
+        gi.pNext = pipe_tail(&o, 1);
         gi.stageCount = o.npr;
         gi.pStages = o.st;
         gi.pTessellationState = l->src.tes ? &o.ts : NULL;
@@ -2254,8 +2247,8 @@ static VkPipeline lib_create(const PipeLib* l, int* hit) {
         cache = g_pipeline.pcache;
         break;
     case VK_PART_FS:
-        gl.pNext = pipe_tail(&o, 0);
-        gi.flags |= feedback;
+        gi.pNext = pipe_tail(&o, 0);
+        flags |= feedback;
         gi.stageCount = o.nst - o.npr;
         gi.pStages = o.st + o.npr;
         gi.pDepthStencilState = &o.ds;
@@ -2265,16 +2258,22 @@ static VkPipeline lib_create(const PipeLib* l, int* hit) {
         cache = g_pipeline.pcache;
         break;
     default:
-        gl.pNext = &o.ri;
+        gi.pNext = &o.ri;
         if (o.ri.pNext)
             o.attachment_samples.pNext = pipe_tail(&o, 0);
         else
             o.ri.pNext = pipe_tail(&o, 0);
-        gi.flags |= feedback;
+        flags |= feedback;
         gi.pColorBlendState = &o.cb;
         gi.pMultisampleState = &o.ms;
         break;
     }
+    snx_vk_gpl_part_info(&gi, &gl,
+                         l->part == VK_PART_VI   ? VK_GRAPHICS_PIPELINE_LIBRARY_VERTEX_INPUT_INTERFACE_BIT_EXT
+                         : l->part == VK_PART_PR ? VK_GRAPHICS_PIPELINE_LIBRARY_PRE_RASTERIZATION_SHADERS_BIT_EXT
+                         : l->part == VK_PART_FS ? VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_SHADER_BIT_EXT
+                                                 : VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_OUTPUT_INTERFACE_BIT_EXT,
+                         flags);
     /* descriptor heaps: every part has the heaps' flag (the link's parts agree), the stage parts their stages' mappings
        (pipe_info) */
     VkPipelineCreateFlags2CreateInfo flags2;
@@ -2356,19 +2355,14 @@ static VkPipeline gpl_link(const Pipe* e, int mode, int* hit) {
                                                         .depthStencilAttachmentSamples =
                                                             e->k.depth || e->k.stencil ? (VkSampleCountFlagBits)raster_samples
                                                                                        : 0};
-    VkPipelineLibraryCreateInfoKHR li = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LIBRARY_CREATE_INFO_KHR,
-                                         .pNext = e->k.coverage.raster_samples ? (void*)&attachment_samples : (void*)&fi,
-                                         .libraryCount = 4,
-                                         .pLibraries = libs};
-    VkGraphicsPipelineCreateInfo gi = {
-        .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-        .pNext = &li,
-        .flags = (g_vk.has_descriptor_buffers ? VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT : 0) |
-                 (e->k.feedback ? VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT : 0) |
-                 (lto ? VK_PIPELINE_CREATE_LINK_TIME_OPTIMIZATION_BIT_EXT : 0) |
-                 (mode == GPL_CACHED ? VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT : 0) |
-                 vk_vrs_pipeline_flags() | vk_pipeline_stats_flags(),
-        .layout = e->layout};
+    VkPipelineLibraryCreateInfoKHR li;
+    VkGraphicsPipelineCreateInfo gi;
+    snx_vk_gpl_link_info(&gi, &li, libs, 4, lto,
+                         (g_vk.has_descriptor_buffers ? VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT : 0) |
+                             (e->k.feedback ? VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT : 0) |
+                             (mode == GPL_CACHED ? VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT : 0) |
+                             vk_vrs_pipeline_flags() | vk_pipeline_stats_flags(),
+                         e->layout, e->k.coverage.raster_samples ? (void*)&attachment_samples : (void*)&fi);
     /* descriptor heaps: the heaps' flag as the parts have it; the mappings are the stage parts' */
     VkPipelineCreateFlags2CreateInfo flags2;
     if (e->k.heaps) pipe_heaps(&gi, &flags2);

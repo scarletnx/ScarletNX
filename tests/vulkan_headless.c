@@ -27,6 +27,7 @@
 #include "common/gpu/vk/extension_commands.h"
 #include "nx/gpu/vk/pipeline_parts.h"
 #include "nx/gpu/vk/present_quad.h"
+#include <SDL3/SDL_mutex.h>
 #include "nx/gpu/shader/shader.h"
 #include "nx/gpu/maxwell/kepler_compute_regs.h"
 #include "nx/gpu/maxwell/engines_int.h"
@@ -61,6 +62,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdatomic.h>
+static void gpl_record_install(void); /* SNX_TEST_GPL_RECORD (below) */
 
 #define CHECK(x)                                                                                                       \
     do {                                                                                                               \
@@ -8672,6 +8674,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_rec_queue_submissions());
     CHECK(!check_cb_grow_at_recycle());
     viw_install();
+    gpl_record_install();
     /* every check with each draw binding the pipeline linked from its parts and never the one made whole
        (SNX_TEST_GPL=linked), or with each pipeline made whole, with the dynamic state the libraries gave (whole) */
     g_mx_fixed_libraries = g_vk.has_gpl;
@@ -9656,6 +9659,48 @@ static int run_headless(int argc, char** argv) {
         "render targets over one another newest on top, "
         "16 cropped/flipped/rotated readbacks and PPMs, no WSI");
     return 0;
+}
+
+/* SNX_TEST_GPL_RECORD=FILE: each graphics pipeline the renderer asks the driver for, written to FILE as a line of
+   what it asks (its flags, stages, the parts and libraries it makes or links, its pNext chain, its states and their
+   dynamic ones), the handles left out, so that two builds' requests compare line for line once sorted */
+static PFN_vkCreateGraphicsPipelines g_gpl_record_driver;
+static FILE* g_gpl_record;
+static SDL_Mutex* g_gpl_record_lock;
+static VKAPI_ATTR VkResult VKAPI_CALL gpl_record(VkDevice device, VkPipelineCache cache, uint32_t count,
+                                                 const VkGraphicsPipelineCreateInfo* infos,
+                                                 const VkAllocationCallbacks* allocator, VkPipeline* out) {
+    SDL_LockMutex(g_gpl_record_lock);
+    for (uint32_t i = 0; i < count; ++i) {
+        const VkGraphicsPipelineCreateInfo* gi = &infos[i];
+        fprintf(g_gpl_record, "flags %x cache %d layout %d stages %u", (unsigned)gi->flags, cache != VK_NULL_HANDLE,
+                gi->layout != VK_NULL_HANDLE, gi->stageCount);
+        for (uint32_t k = 0; k < gi->stageCount; ++k) fprintf(g_gpl_record, " %x", (unsigned)gi->pStages[k].stage);
+        for (const VkBaseInStructure* b = gi->pNext; b; b = b->pNext) {
+            fprintf(g_gpl_record, " next %d", (int)b->sType);
+            if (b->sType == VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_LIBRARY_CREATE_INFO_EXT)
+                fprintf(g_gpl_record, " part %x", (unsigned)((const VkGraphicsPipelineLibraryCreateInfoEXT*)b)->flags);
+            if (b->sType == VK_STRUCTURE_TYPE_PIPELINE_LIBRARY_CREATE_INFO_KHR)
+                fprintf(g_gpl_record, " libraries %u", ((const VkPipelineLibraryCreateInfoKHR*)b)->libraryCount);
+        }
+        fprintf(g_gpl_record, " states %d%d%d%d%d%d%d%d%d", gi->pVertexInputState != NULL,
+                gi->pInputAssemblyState != NULL, gi->pTessellationState != NULL, gi->pViewportState != NULL,
+                gi->pRasterizationState != NULL, gi->pMultisampleState != NULL, gi->pDepthStencilState != NULL,
+                gi->pColorBlendState != NULL, gi->pDynamicState != NULL);
+        if (gi->pDynamicState)
+            for (uint32_t k = 0; k < gi->pDynamicState->dynamicStateCount; ++k)
+                fprintf(g_gpl_record, " d%d", (int)gi->pDynamicState->pDynamicStates[k]);
+        fputc('\n', g_gpl_record);
+    }
+    fflush(g_gpl_record);
+    SDL_UnlockMutex(g_gpl_record_lock);
+    return g_gpl_record_driver(device, cache, count, infos, allocator, out);
+}
+static void gpl_record_install(void) {
+    const char* path = getenv("SNX_TEST_GPL_RECORD");
+    if (!path || !(g_gpl_record = fopen(path, "w")) || !(g_gpl_record_lock = SDL_CreateMutex())) return;
+    g_gpl_record_driver = vkCreateGraphicsPipelines;
+    vkCreateGraphicsPipelines = gpl_record;
 }
 
 int main(int argc, char** argv) {

@@ -3709,7 +3709,7 @@ if(NOT SNX_TOOLS_ONLY)
     add_executable(snx-test-vk-pipeline-parts vk_pipeline_parts.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/pipeline_parts.c"
                    ${snx_vk_extension_bans_sources})
     snx_test_target(snx-test-vk-pipeline-parts gnu23)
-    target_link_libraries(snx-test-vk-pipeline-parts PRIVATE snx_nx_flags)
+    target_link_libraries(snx-test-vk-pipeline-parts PRIVATE snx_nx_flags snx_vk_common) # the off reasons, every renderer's
     add_test(NAME vk_pipeline_parts COMMAND snx-test-vk-pipeline-parts)
     # an Ounce's shading rate image (gpu/vk/shading_rate_table.c, shading_rate.glsl): the extension each stand-in
     # device takes, each palette entry's value, the NVN palette, and the conversion's body run on the CPU
