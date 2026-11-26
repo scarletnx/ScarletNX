@@ -572,7 +572,9 @@ static void start_state(CPU* c, unsigned s) {
 
 /* a state of --ops: in three of four, the SIMD&FP registers' elements (of one size a register) are values where the
    integers' arithmetic turns, small ones (a shift by a register's amounts), or a float's: zeros, infinities, NaNs,
-   denormals, the normals' ends, halfway cases, ordinary numbers; QC set in some, FZ16 random with FPCR's other bits */
+   denormals, the normals' ends, halfway cases, ordinary numbers; QC set in some, FZ16 random with FPCR's other bits;
+   in half, the first 16 general-purpose registers integers at the conversions' steps: the ends, ties of a single's and
+   a double's rounding (below 2^63 and above it, where UCVTF of an X converts a half) with a 1 past them or one short */
 static void ops_state(CPU* c, unsigned s) {
     static const uint64_t k32[] = {0, 0x80000000u, 0x3f800000u, 0xbf800000u, 0x40000000u, 0x7f800000u, 0xff800000u,
                                    0x7fc00000u, 0xffc00001u, 0x7fa00000u, 0xff800001u, 0x00000001u, 0x80000001u,
@@ -592,8 +594,17 @@ static void ops_state(CPU* c, unsigned s) {
                                    0x47efffffe0000000ull, 0x380fffffc0000000ull, 0x36a0000000000000ull};
     static const uint64_t k16[] = {0, 0x8000, 0x3c00, 0xbc00, 0x4000, 0x7c00, 0xfc00, 0x7e00, 0x7d00, 0xfe01,
                                    1, 0x8001, 0x3ff, 0x400, 0x8400, 0x7bff, 0xfbff, 0x3800, 0x3e00, 0x7800, 0x0100};
+    static const uint64_t kint[] = {
+        0x0000000000000000ull, 0x0000000000000001ull, 0x7fffffffffffffffull, 0x8000000000000000ull,
+        0x8000000000000001ull, 0xffffffffffffffffull, 0x8000008000000000ull, 0x8000018000000000ull,
+        0x8000008000000001ull, 0x8000007fffffffffull, 0xffffff8000000000ull, 0x8000000000000400ull,
+        0x8000000000000c00ull, 0x8000000000000401ull, 0x80000000000003ffull, 0xfffffffffffffc00ull,
+        0x0000000001000001ull, 0x0000000001000003ull, 0x0020000000000001ull, 0x0020000000000003ull,
+        0xfffffffffeffffffull, 0xffdfffffffffffffull};
     unsigned r, i;
     start_state(c, s);
+    if (s & 8)
+        for (r = 0; r < 16; ++r) c->x[r] = kint[rnd() % (sizeof kint / sizeof *kint)];
     if (s & 2) c->fpsr |= 1u << 27;
     if (s & 1) c->fpcr |= (uint32_t)rnd() & 1u << 19;
     if ((s >> 2 & 3) == 3) return;
