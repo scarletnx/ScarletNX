@@ -76,6 +76,11 @@ void snx_pad_map_sent(SnxPadMap* map, const SnxPadMap* own, int swap_ab);
    bits[] (0 where it has none, console naming it). A text that does not read keeps *own and says why on stderr, as
    does each control that sends a button the console lacks */
 void snx_pad_map_setting(SnxPadMap* own, const char* text, const unsigned bits[SNX_PAD_BUTTONS], const char* console);
+/* What each control sends for a console whose button for each of the console buttons above is button(bit) (0 where it
+   has none, console naming it): the button in its place, the player's map text over it (snx_pad_map_setting, which
+   says what it cannot take) and A and B swapped when swap_ab is set, as a Switch game's pad sends them */
+void snx_pad_map_console(SnxPadMap* map, unsigned (*button)(int bit), const char* console, const char* text,
+                         int swap_ab);
 /* A stick at x and y past a round dead zone of radius zone, its rim at rim (1, or 32767 for SDL's axes): scaled so the
    zone's edge is the stick at rest and the rim stays the rim, so a stick pushed along one axis keeps the small part of
    the other. 0 with x and y zeroed when it is inside the zone, else 1 */

@@ -28,7 +28,7 @@ enum {
 uint16_t agb_host_key(int scancode);
 /* the keys a console button holds (pad_map.h's bits: A, B, L and ZL, R and ZR, Plus, Minus, the D-pad): 0 for X, Y and
    the sticks' clicks */
-uint16_t agb_host_button(int bit);
+unsigned agb_host_button(int bit);
 
 /* what the on-screen controls say, on stderr */
 void agb_host_say(const char* line);
