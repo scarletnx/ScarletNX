@@ -47,10 +47,13 @@ FS tests use production tree/HLE + synthetic temp data; `--only tree|service` se
 CI (`.github/workflows/build.yml`) has one job for each platform and architecture, which builds its package, then
 tests and checks it with the same tree and compiler cache: each Linux AppImage (x86-64 and AArch64) with ABI syntax,
 native tool/FS regressions, headless Vulkan on lavapipe and optional Python diagnostics, x86-64's also under ASan and
-UBSan and with [edenprobe](edenprobe.md)'s probes on lavapipe against the cases that passed before
-(`scripts/edenprobe.py`); the cross-built AppImages, the Windows zips (x86-64 and AArch64), the Android APK and the
-macOS and iOS apps. On `main` the AppImages and the zips also run as installed, at the end of their jobs. A push to
-`main` cancels the build of the one before it still running, as a push to a pull request does that pull request's.
+UBSan, the other machines' back ends under Unicorn and [edenprobe](edenprobe.md)'s probes on lavapipe against the
+cases that passed before (`scripts/edenprobe.py`); the cross-built AppImages through qemu, the Windows zips (x86-64 and
+AArch64), the Android APK and the macOS and iOS apps, and the AppImages and the zips run as installed, at the end of
+their jobs. A pull request, a run by hand and a version's tag run every test (`SNX_TESTS`); a push to `main` and the
+nightly's schedule build every package and publish it, and test nothing, so a merge that breaks a test shows on the
+next pull request's run. A push to `main` cancels the build of the one before it still running, as a push to a pull
+request does that pull request's.
 `.github/workflows/publish.yml` publishes what builds everywhere, each said on Discord (`scripts/publish-builds.py`): a
 version tag pushed (`v1.0.0`; `v1.0.0-rc1` a prerelease) as this repository's release of it, the latest, its notes
 listing the changes since the version before;

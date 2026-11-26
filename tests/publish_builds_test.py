@@ -44,9 +44,8 @@ ZSYNC = [
     'ScarletNX-linux-riscv64.AppImage.zsync',
     'ScarletNX-linux-loongarch64.AppImage.zsync',
 ]
-# what a pull request's run makes: every cross AppImage is a nightly's alone, big-endian PowerPC64's built and tested
-# there without its AppImage
-NIGHTLY_ONLY = ('ppc64le', 'ppc64', 'riscv64', 'loongarch64')
+# what a pull request's run makes: every package, the cross AppImages too, as it tests them
+NIGHTLY_ONLY = ()
 PR_FILES = [name for name in FILES + ZSYNC if not any(f'-{arch}.' in name for arch in NIGHTLY_ONLY)]
 failures = []
 
@@ -552,11 +551,9 @@ with tempfile.TemporaryDirectory() as temporary:
         pre,
     )
     check(
-        'no row for what only a nightly makes: no cross AppImage, the big-endian PowerPC64 one either',
+        'a row for every cross AppImage, made by a pull request as by a nightly, the big-endian PowerPC64 one too',
         pre
-        and all(
-            f'| {arch} |' not in pre['body'] for arch in ('PowerPC64 LE', 'PowerPC64 BE', 'RISC-V 64', 'LoongArch64')
-        )
+        and all(f'| {arch} |' in pre['body'] for arch in ('PowerPC64 LE', 'PowerPC64 BE', 'RISC-V 64', 'LoongArch64'))
         and '| **Linux** | x86-64 |' in pre['body'],
         pre and pre['body'],
     )
@@ -733,16 +730,16 @@ skips_pulls = bool(job_if) and "github.event_name != 'pull_request'" in job_if[1
 legs = re.search(r"github\.event_name == 'pull_request' && '(\[.*?\])' \|\| '(\[.*?\])'", cross, re.S)
 listed = re.findall(r'\n          - \{arch: ([\w-]+),', head)
 check(
-    "build.yml's appimage-cross has a pull request's legs and the others, or skips a pull request with its legs listed",
-    legs or (skips_pulls and listed),
+    "build.yml's appimage-cross has a pull request's legs and the others, or its legs listed for every event",
+    legs or listed,
     cross[:400],
 )
 bundle = re.search(r'\n      - name: Bundle the AppImage\n        if: ([^\n]*)\n', cross)
-if legs or (skips_pulls and listed):
+if legs or listed:
     if legs:
         pull_arches, every_arch = ({leg['arch'] for leg in json.loads(text)} for text in legs.groups())
     else:
-        pull_arches, every_arch = set(), set(listed)
+        pull_arches, every_arch = (set() if skips_pulls else set(listed)), set(listed)
     pull_made = set() if bundle and bundle[1] == "github.event_name != 'pull_request'" else pull_arches
     expected = {f'ScarletNX-linux-{arch}.AppImage' for arch in every_arch - pull_made}
     check(
@@ -767,44 +764,48 @@ check(
 
 def installed_checks(text):
     """{job id: what is wrong with when it runs} of build.yml's checks of the packages as installed, the steps named
-    "Run ... as a user would" at the end of the jobs that make them: a version's release waits on them (a run that
-    builds everywhere), so they run on every push, main's and a tag's, the nightly and a run by hand, and never on a
-    pull request"""
+    "Run ... as a user would" at the end of the jobs that make them: tests, so they run where SNX_TESTS, a pull
+    request, a run by hand and a version's tag, whose release waits on them (a run that builds everywhere), and not on
+    main's push or the nightly, which build and publish alone"""
     out = {}
-    jobs = text[text.index('\njobs:\n') :]
+    head, jobs = text[: text.index('\njobs:\n')], text[text.index('\njobs:\n') :]
     for block in re.split(r'\n(?=  [\w-]+:\n)', jobs)[1:]:
         for step in re.finditer(r'^      - name: Run [^\n]* as a user would\n((?:        .*\n)*)', block + '\n', re.M):
             cond = re.search(r'^        if: (.*)$', step[1], re.M)
             cond = cond[1] if cond else ''
             wrong = []
-            if "github.event_name != 'pull_request'" not in cond:
-                wrong.append('runs on a pull request')
-            if 'refs/heads' in cond or "'push'" in cond or "'schedule'" in cond:
-                wrong.append(f'leaves out a push, a tag or the nightly: {cond}')
+            if "env.SNX_TESTS == 'true'" not in cond:
+                wrong.append(f"runs on main's push and the nightly: {cond}")
+            if 'event_name' in cond or 'refs/' in cond:
+                wrong.append(f'picks its events apart from SNX_TESTS: {cond}')
             out.setdefault(block.split(':', 1)[0].strip(), []).extend(wrong)
-    if "tags: ['v*']" not in text[: text.index('\njobs:\n')]:
+    if "tags: ['v*']" not in head:
         out['on'] = ["a version's tag starts no Build"]
+    tests = re.search(r'\n  SNX_TESTS: >-\n((?:    .*\n)+)', head)
+    if not tests or "startsWith(github.ref, 'refs/tags/')" not in tests[1]:
+        out['env'] = ["a version's tag does not test"]
     return out
 
 
 got = installed_checks(workflow)
 check(
-    "the checks as installed, in the jobs that make the packages, run on every push, a version's tag's among them, and"
-    ' on no pull request',
+    "the checks as installed, in the jobs that make the packages, run on a pull request, a run by hand and a version's"
+    " tag, and not on main's push or the nightly",
     sorted(got) == ['appimage', 'appimage-cross', 'windows'] and not any(got.values()),
     got,
 )
 for what, copy in {
-    'on pull requests too': workflow.replace(
-        "      - name: Run the AppImage as a user would\n        if: github.event_name != 'pull_request'\n",
+    "on main's pushes too": workflow.replace(
+        "      - name: Run the AppImage as a user would\n        if: env.SNX_TESTS == 'true'\n",
         '      - name: Run the AppImage as a user would\n',
     ),
     "on main's pushes alone": workflow.replace(
-        "      - name: Run the zip's scarletnx.exe as a user would\n        if: github.event_name != 'pull_request'\n",
+        "      - name: Run the zip's scarletnx.exe as a user would\n        if: env.SNX_TESTS == 'true'\n",
         "      - name: Run the zip's scarletnx.exe as a user would\n"
         "        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'\n",
     ),
     'without the tags': workflow.replace("tags: ['v*']", 'tags: []'),
+    "on no version's tag": workflow.replace(" ||\n    startsWith(github.ref, 'refs/tags/') }}", ' }}', 1),
 }.items():
     check(
         f'a build.yml whose checks as installed run {what} is named wrong',

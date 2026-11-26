@@ -1,0 +1,195 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright 2026 the ScarletNX contributors
+"""Which events of the Build workflow (.github/workflows/build.yml) test, and which only build.
+
+A pull request, a run by hand and a version's tag run every test; a push to main and the nightly's schedule build,
+package and publish, and run none. SNX_TESTS, in the workflow's env, says which: each test step below is
+`if: env.SNX_TESTS == 'true'`, with nothing in its condition that leaves out a pull request or picks one by what it
+changes (a step that ran only where a pull request changed what it tests, by scripts/recompiler-changes.py or
+scripts/edenprobe.py runs, ran none of it on most). Every step that runs ctest is one of them, and the steps that make
+and publish the packages run on every event, a pull request's too. The A64 differential's QEMU reference, a test's
+input alone, is a job of the testing events. Then the same checks on copies of the workflow made to fail them. Offline.
+
+    tests/build_tests_test.py [REPO]   (default: the checkout this file is in)"""
+
+import re
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from build_caches_test import jobs
+
+WORKFLOW = Path('.github/workflows/build.yml')
+TESTS = "env.SNX_TESTS == 'true'"
+TESTING = (
+    "github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || "
+    "startsWith(github.ref, 'refs/tags/')"
+)
+# the steps that test, by job: every one is there, and each runs where SNX_TESTS alone
+TEST_STEPS = {
+    'appimage': [
+        'Run the AppImage as a user would',
+        'Test headless Vulkan and NX runtime',
+        'Test native tooling and indexed filesystems',
+        'Test the native back ends under Unicorn',
+        'Check optional Python diagnostics',
+        'Make the x86-64 instruction selection again',
+    ],
+    'linux-sanitizers': ['Test under the sanitizers'],
+    'appimage-cross': [
+        'Install qemu-user',
+        'Run the A64 differential against the recorded QEMU reference',
+        "Run the launcher's tests through qemu",
+        'Recompile whole programs through qemu',
+        'Run ${{ matrix.arch }} AppImages through qemu-user',
+        'Run the AppImage as a user would',
+    ],
+    'windows': ['Test native tooling and indexed filesystems', "Run the zip's scarletnx.exe as a user would"],
+    'android': ["Test the app's Java"],
+    'apple': ['Test native tooling and indexed filesystems'],
+}
+# the steps that make the packages, which every event runs: a pull request's run makes what main's publishes
+BUILD_STEPS = {
+    'appimage': ['Build and install into /usr', 'Make the AppImage', 'Build the tests and the headless Vulkan tree'],
+    'appimage-cross': [
+        "Install the target container's tools and libraries",
+        'Install the packaging tools',
+        'Cross-build and install',
+        'Bundle the AppImage',
+        'Make the AppImage',
+        'Check the AppImage',
+    ],
+    'windows': ['Build the runtime and pinned dependencies'],
+    'android': ["Build each ABI's native libraries and APK"],
+    'apple': ['Build the runtime for macOS', 'Build the app for iOS', 'Make the macOS app', 'Make the IPA'],
+}
+# what picked a pull request's tests by what it changes
+FILTERS = re.compile(r'recompiler-changes|steps\.unicorn\.|edenprobe\.py runs|cmake-changed')
+# the one test a pull request runs only where it changes what it is made from: it downloads Intel's manual, whose
+# link a pull request that changes nothing of it would fail on as often as the site does
+CHANGE_FILTERED = {('appimage', 'Make the x86-64 instruction selection again')}
+# the checks of what is published that run a test of ctest on every event: the zip's build line, which a nightly
+# carries
+PACKAGE_CHECKS = {('windows', 'Check the build line names the checkout as it is')}
+
+
+def job_if(text, job):
+    """a job's if: of the workflow's text, its lines joined; '' where it has none"""
+    start = text.find(f'\n  {job}:\n')
+    if start < 0:
+        return None
+    rest = text[start + len(job) + 5 :]
+    end = re.search(r'\n  [\w-]+:\n', rest)
+    block = rest[: end.start() + 1] if end else rest
+    found = re.search(r'^    if: >-\n((?:      .*\n)+)', block, re.MULTILINE) or re.search(
+        r'^    if: (.*)$', block, re.MULTILINE
+    )
+    return ' '.join(found[1].split()) if found else ''
+
+
+def check(text):
+    """what is wrong with when the workflow's text tests, one line each; none when it is as the top says"""
+    wrong = []
+    env = re.search(r'\n  SNX_TESTS: >-\n((?:    .*\n)+)', text)
+    said = ' '.join(env[1].split()) if env else ''
+    if said != '${{ ' + TESTING + ' }}':
+        wrong.append(f'SNX_TESTS is "{said}", not the testing events: ${{{{ {TESTING} }}}}')
+    found = jobs(text)
+    for job, names in TEST_STEPS.items():
+        steps = {step.get('name'): step for step in found.get(job, [])}
+        for name in names:
+            step = steps.get(name)
+            if step is None:
+                wrong.append(f'{job}: no step "{name}": a pull request no longer runs that test')
+                continue
+            cond = step.get('if', '')
+            if TESTS not in cond:
+                wrong.append(f'{job}: "{name}" runs if "{cond}", on main\'s pushes too: its if: needs {TESTS}')
+            if 'event_name' in cond or FILTERS.search(cond):
+                wrong.append(f'{job}: "{name}" runs if "{cond}": a pull request is held to SNX_TESTS alone')
+            if (job, name) not in CHANGE_FILTERED and 'git diff' in step.get('run', ''):
+                wrong.append(f'{job}: "{name}" looks at what a pull request changes: it runs on every one')
+    for job, steps in found.items():
+        for step in steps:
+            name = step.get('name', step.get('uses', ''))
+            ctest = re.search(r'(^|\s)ctest\s', step.get('run', ''))
+            if ctest and TESTS not in step.get('if', '') and (job, name) not in PACKAGE_CHECKS:
+                wrong.append(f'{job}: "{name}" runs ctest if "{step.get("if", "")}": its if: needs {TESTS}')
+            if FILTERS.search(step.get('if', '') + '\n' + step.get('run', '')):
+                wrong.append(f'{job}: "{name}" picks the tests by what a pull request changes')
+    for job, names in BUILD_STEPS.items():
+        steps = {step.get('name'): step for step in found.get(job, [])}
+        for name in names:
+            step = steps.get(name)
+            if step is None:
+                wrong.append(f'{job}: no step "{name}": this check reads the workflow as it was')
+            elif 'SNX_TESTS' in step.get('if', '') or "event_name != 'pull_request'" in step.get('if', ''):
+                wrong.append(f'{job}: "{name}" runs if "{step["if"]}": what main publishes a pull request makes')
+    reference = job_if(text, 'qemu-reference')
+    if reference != TESTING:
+        wrong.append(f'qemu-reference runs if "{reference}", not on the testing events: {TESTING}')
+    if job_if(text, 'recompiler-changes') is not None:
+        wrong.append('a job recompiler-changes picks the tests of a pull request')
+    return wrong
+
+
+def self_test(text):
+    """the checks on copies of the workflow made wrong, each named: (the copies they missed, how many)"""
+    unicorn = "        if: matrix.arch == 'x86_64' && env.SNX_TESTS == 'true'\n"
+    cases = {
+        'a test step on every event': text.replace(
+            "      - name: Test under the sanitizers\n        if: env.SNX_TESTS == 'true'\n",
+            '      - name: Test under the sanitizers\n',
+        ),
+        'a test step gone': text.replace("      - name: Test the app's Java\n", '      - name: Test the Java\n'),
+        'a test step a pull request skips': text.replace(
+            "      - name: Run the zip's scarletnx.exe as a user would\n        if: env.SNX_TESTS == 'true'\n",
+            "      - name: Run the zip's scarletnx.exe as a user would\n"
+            "        if: env.SNX_TESTS == 'true' && github.event_name != 'pull_request'\n",
+        ),
+        "the tests under Unicorn on a pull request's changes": text.replace(
+            '      - name: Test the native back ends under Unicorn\n' + unicorn,
+            '      - name: Test the native back ends under Unicorn\n'
+            "        if: matrix.arch == 'x86_64' && env.SNX_TESTS == 'true' && steps.unicorn.outputs.unicorn == 'true'\n",
+        ),
+        "main's push testing": text.replace(
+            "github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' ||\n",
+            "github.event_name == 'pull_request' || github.event_name == 'push' ||\n",
+            1,
+        ),
+        'the iOS app left to the nightlies': text.replace(
+            "        if: ${{ !cancelled() && steps.ios-llvm-build.outcome != 'failure' }}\n",
+            "        if: ${{ !cancelled() && github.event_name != 'pull_request' && steps.ios-llvm-build.outcome != 'failure' }}\n",
+        ),
+        'the QEMU reference on every event': re.sub(
+            r'(\n  qemu-reference:\n(?:    #.*\n|    name: .*\n)*)    if: >-\n(?:      .*\n)+',
+            lambda found: found[1] + '    if: ${{ !cancelled() }}\n',
+            text,
+        ),
+    }
+    missed = [name for name, copy in cases.items() if copy == text or not check(copy)]
+    return missed, len(cases)
+
+
+def main():
+    if len(sys.argv) > 2:
+        sys.exit('usage: tests/build_tests_test.py [REPO]')
+    repo = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path(__file__).resolve().parent.parent
+    text = (repo / WORKFLOW).read_text(encoding='utf-8')
+    wrong = check(text)
+    if wrong:
+        sys.exit(f'build_tests: {WORKFLOW}:\n  ' + '\n  '.join(wrong))
+    missed, cases = self_test(text)
+    if missed:
+        sys.exit('build_tests: the check misses a workflow made wrong:\n  ' + '\n  '.join(missed))
+    count = sum(len(names) for names in TEST_STEPS.values())
+    print(
+        f'build_tests: {count} test steps on the testing events alone, every ctest among them, the packages made on'
+        f' every event; {cases} wrong copies named'
+    )
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
