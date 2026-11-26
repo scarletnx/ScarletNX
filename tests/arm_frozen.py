@@ -69,6 +69,21 @@ for halfword in ('b400', 'bc00'):
 CONFIGS['step_bus'] = '--profile arm7tdmi --trace --blocks 300 --thumb 200 --states 2 --seed 5'.split()
 CONFIGS['step_checked'] = '--memory checked --blocks 300 --thumb 200 --states 2 --seed 6'.split()
 CONFIGS['step_hosted'] = '--memory hosted --blocks 300 --thumb 200 --states 2 --seed 4'.split()
+# the random blocks and words of the tests that compared with LLVM as they ran (tests/CMakeLists.txt, arm_call_abi.cmake):
+# the generator's options of each, which those of the same share
+CONFIGS['seed2_2000'] = '--blocks 2000 --seed 2'.split()
+CONFIGS['seed3_2000'] = '--blocks 2000 --seed 3'.split()
+CONFIGS['win64_step'] = '--blocks 600 --thumb 600 --states 2 --seed 4'.split()
+CONFIGS['arm64win'] = '--blocks 1500 --thumb 1000 --states 8'.split()
+CONFIGS['arm64win_spill'] = '--blocks 1500 --thumb 1000 --states 8 --seed 2'.split()
+CONFIGS['arm64win_step'] = '--blocks 300 --thumb 200 --states 2 --seed 3'.split()
+CONFIGS['half_words'] = (
+    '--word eef21ae3 --word eeb21a44 --word eeb25be4 --word eeb26b6f --word eef35ac2 --word eeb36a62 --word eef36bc3 --word eeb37bc3 --word eef37b42'
+).split()
+CONFIGS['odd_words'] = '--word eef82bef --word eef82b6f'.split()
+CONFIGS['call_abi'] = '--blocks 600 --states 8'.split()
+for profile in ('arm946e', 'arm7tdmi'):
+    CONFIGS['call_abi_' + profile] = f'--profile {profile} --blocks 600 --states 8'.split()
 
 RECORDED = re.compile(
     r'^recorded (\S+): (\d+) A32 and (\d+) Thumb blocks, (.*), LLVM\'s results; the .* back end\'s '

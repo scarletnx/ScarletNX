@@ -4064,8 +4064,10 @@ if(SNX_X64)
     target_link_libraries(snx-test-arm-x64 PRIVATE snx_llvm snx_arm_llvm snx_driver ${CMAKE_DL_LIBS})
     snx_arm_frozen_program(snx-test-arm-x64)
     add_test(NAME arm_x64 COMMAND snx-test-arm-x64)
-    add_test(NAME arm_x64_spill COMMAND snx-test-arm-x64 --pool ${snx_x64_pool} --blocks 2000 --seed 2)
-    add_test(NAME arm_x64_plain COMMAND snx-test-arm-x64 --features 0 --blocks 2000 --seed 3)
+    add_test(NAME arm_x64_spill COMMAND snx-test-arm-x64 --pool ${snx_x64_pool}
+             --frozen ${test-references_SOURCE_DIR}/arm/seed2_2000.txt)
+    add_test(NAME arm_x64_plain COMMAND snx-test-arm-x64 --features 0
+             --frozen ${test-references_SOURCE_DIR}/arm/seed3_2000.txt)
     # each side's blocks run where other code left the host's MXCSR rounding up and flushing to zero: both put back the
     # default on entry
     add_test(NAME arm_x64_mxcsr COMMAND snx-test-arm-x64 --csr-x64 DF80 --blocks 1500 --thumb 500 --seed 7)
@@ -4090,9 +4092,12 @@ if(SNX_X64)
         target_link_libraries(snx-test-arm-win64 PRIVATE snx_llvm snx_arm_llvm snx_driver ${CMAKE_DL_LIBS})
         snx_arm_frozen_program(snx-test-arm-win64)
         add_test(NAME arm_win64 COMMAND snx-test-arm-win64)
-        add_test(NAME arm_win64_spill COMMAND snx-test-arm-win64 --pool 4 --blocks 2000 --seed 2)
-        add_test(NAME arm_win64_plain COMMAND snx-test-arm-win64 --features 0 --blocks 2000 --seed 3)
-        add_test(NAME arm_win64_step COMMAND snx-test-arm-win64 --step --blocks 600 --thumb 600 --states 2 --seed 4)
+        add_test(NAME arm_win64_spill COMMAND snx-test-arm-win64 --pool 4
+                 --frozen ${test-references_SOURCE_DIR}/arm/seed2_2000.txt)
+        add_test(NAME arm_win64_plain COMMAND snx-test-arm-win64 --features 0
+                 --frozen ${test-references_SOURCE_DIR}/arm/seed3_2000.txt)
+        add_test(NAME arm_win64_step COMMAND snx-test-arm-win64 --step
+                 --frozen ${test-references_SOURCE_DIR}/arm/win64_step.txt)
         add_test(NAME arm_win64_step_bus COMMAND snx-test-arm-win64 --step --frozen
                  ${test-references_SOURCE_DIR}/arm/step_bus.txt)
         add_test(NAME arm_win64_step_checked COMMAND snx-test-arm-win64 --step --frozen
@@ -5013,13 +5018,15 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
                               ${CMAKE_DL_LIBS})
         snx_arm_frozen_program(snx-test-arm-${m})
         add_test(NAME arm_${m} COMMAND snx-test-arm-${m})
-        add_test(NAME arm_${m}_spill COMMAND snx-test-arm-${m} --pool 3 --blocks 2000 --seed 2)
+        add_test(NAME arm_${m}_spill COMMAND snx-test-arm-${m} --pool 3
+                 --frozen ${test-references_SOURCE_DIR}/arm/seed2_2000.txt)
         # VCVTB and VCVTT, from and to a single and a double, the half in the top of an S register or at its start: a
         # big-endian host's word has it elsewhere, and some hosts load aligned words only
-        add_test(NAME arm_${m}_half COMMAND snx-test-arm-${m} --word eef21ae3 --word eeb21a44 --word eeb25be4
-                 --word eeb26b6f --word eef35ac2 --word eeb36a62 --word eef36bc3 --word eeb37bc3 --word eef37b42)
+        add_test(NAME arm_${m}_half COMMAND snx-test-arm-${m}
+                 --frozen ${test-references_SOURCE_DIR}/arm/half_words.txt)
         # VCVT of an odd S register to a double, both signs: a load of a double there is not aligned
-        add_test(NAME arm_${m}_odd COMMAND snx-test-arm-${m} --word eef82bef --word eef82b6f)
+        add_test(NAME arm_${m}_odd COMMAND snx-test-arm-${m}
+                 --frozen ${test-references_SOURCE_DIR}/arm/odd_words.txt)
         set_tests_properties(arm_${m} arm_${m}_spill arm_${m}_half arm_${m}_odd PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
         snx_arm_native_modes(${m} --blocks 800 --thumb 1500)
     endforeach()
@@ -5031,9 +5038,12 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
     target_link_libraries(snx-test-arm-arm64win PRIVATE snx_llvm snx_arm_llvm snx_driver "${SNX_UNICORN_LIBRARY}"
                           ${CMAKE_DL_LIBS})
     snx_arm_frozen_program(snx-test-arm-arm64win)
-    add_test(NAME arm_arm64win COMMAND snx-test-arm-arm64win --blocks 1500 --thumb 1000 --states 8)
-    add_test(NAME arm_arm64win_spill COMMAND snx-test-arm-arm64win --pool 3 --blocks 1500 --thumb 1000 --states 8 --seed 2)
-    add_test(NAME arm_arm64win_step COMMAND snx-test-arm-arm64win --step --blocks 300 --thumb 200 --states 2 --seed 3)
+    add_test(NAME arm_arm64win COMMAND snx-test-arm-arm64win
+             --frozen ${test-references_SOURCE_DIR}/arm/arm64win.txt)
+    add_test(NAME arm_arm64win_spill COMMAND snx-test-arm-arm64win --pool 3
+             --frozen ${test-references_SOURCE_DIR}/arm/arm64win_spill.txt)
+    add_test(NAME arm_arm64win_step COMMAND snx-test-arm-arm64win --step
+             --frozen ${test-references_SOURCE_DIR}/arm/arm64win_step.txt)
     foreach(mode hosted bus checked)
         add_test(NAME arm_arm64win_step_${mode} COMMAND snx-test-arm-arm64win --step --frozen
                  ${test-references_SOURCE_DIR}/arm/step_${mode}.txt --blocks 200 --thumb 150)

@@ -2591,9 +2591,6 @@ static int frozen_prepare(void) {
     SnxFrozen* f = &g_test.frozen;
     unsigned major = 0, minor = 0, patch = 0;
     if (!g_test.record) return 0;
-    if (g_test.callee)
-        return fprintf(stderr, "--callee beside --record %s: LLVM's blocks call the host's functions\n", g_test.record),
-               2;
     if (strlen(g_test.record) >= sizeof f->path)
         return fprintf(stderr, "--record %s: a path of more than %zu bytes\n", g_test.record, sizeof f->path - 1), 2;
     strcpy(f->path, g_test.record);
@@ -2613,7 +2610,9 @@ static int frozen_prepare(void) {
 #else
     const char* host = "another";
 #endif
-    snprintf(f->recorded, sizeof f->recorded, "LLVM %u.%u.%u -O0 on %s host", major, minor, patch, host);
+    /* with --callee LLVM's blocks call the test's runtime callbacks, as a --callee run's are held to them */
+    snprintf(f->recorded, sizeof f->recorded, "LLVM %u.%u.%u -O0 on %s host%s", major, minor, patch, host,
+             g_test.callee ? ", the test's runtime callbacks (--callee)" : "");
     f->parts = 2;
     f->items[0] = g_test.nhalves ? 0 : g_test.nonly ? g_test.nonly : g_test.blocks;
     f->items[1] = g_test.nhalves ? 1 : g_test.nonly ? 0 : g_test.thumb;
