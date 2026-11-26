@@ -366,6 +366,9 @@ static inline int sgx_vcse_find(SgX* x, const SgXVForm* f, int out, int tied, co
 static inline int sgx_vcold(SgX* x, SgB c, int tied, const char* sym, int a, int b, int d, SnxU32 desc);
 static inline SgB sgx_bool(SgX* x, int kind, int v, int cc);
 static inline int sgx_xconst(SgX* x, SnxU64 lo, SnxU64 hi);
+#ifdef SGX_VF_LOWER
+static inline int SGX_VF_LOWER(SgX* x, const SgXVForm* f, const int* in, long long imm);
+#endif
 static inline int sgx_vins(SgX* x, const SgXVForm* f, int out, int tied, const int* in, long long imm, int memk,
                            int mode, int base, int index, int disp, SnxU64 lo, SnxU64 hi) {
     SgXIns* i;
@@ -383,6 +386,10 @@ static inline int sgx_vins(SgX* x, const SgXVForm* f, int out, int tied, const i
         if (v) return v;
     }
     if (f->feature & ~x->features & ~(unsigned)SGX_F_GPR) {
+#ifdef SGX_VF_LOWER
+        /* of registers, done by forms the host has: the machine's sequence of them, 0 where it has none for f */
+        if (mode == SGX_VM_NONE && out == 0 && in && (k = SGX_VF_LOWER(x, f, in, imm))) return k;
+#endif
 #ifdef SGX_VF_HELPER
         /* of two XMM registers (and an immediate): the machine's helper of the instruction (x64.h's sgx_vf_helped),
            the operands its first (the tied one, else the source) and second, the form's number and immediate its

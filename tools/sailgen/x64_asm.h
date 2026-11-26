@@ -811,6 +811,46 @@ static inline int sgx_xdown(SgX* x, int v, unsigned lo) {
 }
 /* PUNPCKLQDQ: the low's high bits the high's low ones */
 static inline int sgx_xconcat(SgX* x, int lo, int hi) { return sgx_v2(x, &sgx_v_punpcklqdq, lo, hi, 0); }
+/* SSE4.1's lane moves of general-purpose registers on a host without it (mach.h's sgx_vins), SSE2's forms in their
+   place: PEXTRB, D and Q the lane brought down (PSRLDQ, PSHUFD) and moved out (MOVD, MOVQ), a byte's register holding
+   the bytes above it too (no SSE form's result is known to be 0 above its bits: sgx_vreg's zab 64); PINSRB, D and Q the
+   value moved in, its byte alone of a PINSRB's, put at its lane (PSLLDQ, PSHUFD, PUNPCKLQDQ) and merged under a mask.
+   Their result, 0 for another form */
+static inline int sgx_vlower(SgX* x, const SgXVForm* f, const int* in, long long imm) {
+    const unsigned k = (unsigned)imm;
+    int t, in2[4] = {0, 0, 0, 0};
+    if (f == &sgx_v_pextrq) return sgx_v1(x, &sgx_v_movq_rx, k & 1 ? sgx_v1(x, &sgx_v_pshufd, in[1], 0xEE) : in[1], 0);
+    if (f == &sgx_v_pextrd) return sgx_v1(x, &sgx_v_movd_rx, k & 3 ? sgx_v1(x, &sgx_v_pshufd, in[1], k & 3) : in[1], 0);
+    if (f == &sgx_v_pextrb) {
+        t = in[1];
+        if (k & 15) {
+            in2[0] = t;
+            t = sgx_vins(x, &sgx_v_psrldq, 0, 1, in2, k & 15, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
+        }
+        return sgx_v1(x, &sgx_v_movd_rx, t, 0);
+    }
+    if (f == &sgx_v_pinsrq) { /* (low, the value) or (the value, high) */
+        t = sgx_v1(x, &sgx_v_movq_xr, in[1], 0);
+        return k & 1 ? sgx_v2(x, &sgx_v_punpcklqdq, in[0], t, 0)
+                     : sgx_v2(x, &sgx_v_punpcklqdq, t, sgx_v1(x, &sgx_v_pshufd, in[0], 0xEE), 0);
+    }
+    if (f == &sgx_v_pinsrd || f == &sgx_v_pinsrb) {
+        const unsigned bits = f == &sgx_v_pinsrd ? 32 : 8, at = (k & (128 / bits - 1)) * bits;
+        const SnxU64 ones = (1ull << bits) - 1;
+        t = sgx_v1(x, &sgx_v_movd_xr, in[1], 0);
+        if (bits == 8) t = sgx_v2(x, &sgx_v_pand, t, sgx_xconst(x, ones, 0), 0);
+        if (at) { /* PSHUFD: word 0 at its lane, word 1 (0) at the others; PSLLDQ: the byte up */
+            in2[0] = t;
+            t = bits == 32 ? sgx_v1(x, &sgx_v_pshufd, t, 0x55 & ~(3u << (at / 16)))
+                           : sgx_vins(x, &sgx_v_pslldq, 0, 1, in2, at / 8, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
+        }
+        return sgx_v2(
+            x, &sgx_v_por,
+            sgx_v2(x, &sgx_v_pandn, sgx_xconst(x, at < 64 ? ones << at : 0, at < 64 ? 0 : ones << (at - 64)), in[0], 0),
+            t, 0);
+    }
+    return 0;
+}
 /* an XMM value's bits w and up, to 128, made 0: MOVQ for a doubleword, INSERTPS for a word, byte shifts below */
 static inline int sgx_xclear(SgX* x, int v, unsigned w) {
     if (w >= 128) return v;

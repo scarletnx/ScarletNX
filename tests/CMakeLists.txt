@@ -4521,7 +4521,18 @@ if(SNX_X64)
     # PALIGNR's one use, SHA256SU1's beside SHA-NI's (on a host with them)
     add_test(NAME recompiler_backends_no_ssse3_sha COMMAND snx-test-recompiler-backends --without 0x1D10 --states 40
              --ops SHA256SU1)
-    set_tests_properties(recompiler_backends_no_ssse3 PROPERTIES TIMEOUT 600)
+    # and without SSE4.1: its lane moves by SSE2's forms, the rest by the helper
+    add_test(NAME recompiler_backends_no_sse41 COMMAND snx-test-recompiler-backends --target max --without 0x3D20
+             --states 24 --ops MUL_v CMEQ_v CMEQ0_v FRINTN_v FRINTP_v FRINTM_v FRINTZ_v FRINTA_v RBIT_v SABD_v SADALP_v
+             SADDLP_v SADDLV SADDL_v SADDW SCVTF_vi SDOT_v SHLL_v SMAXP_v SMAX_v SMIN_v SMLAL_v SMULL_v SQABS_v
+             SQDMULH_v SQNEG_v SQRDMLAH_v SQRSHL_v SQSHL_v SRHADD_v SSHLL_v SSHL_v SSUBW ST_mult ST_single UABD_v UADDLV
+             UCVTF_vi UDOT_v UMAX_v UMIN_v UMULL_v UQSHL_v URSHL_v USHLL_v XAR)
+    add_test(NAME recompiler_backends_no_sse41_functions COMMAND snx-test-recompiler-backends --without 0x3D20
+             --functions 400 --states 8)
+    add_test(NAME recompiler_backends_refused_no_sse41 COMMAND snx-test-recompiler-backends --refused --target max
+             --without 0x3D20)
+    set_tests_properties(recompiler_backends_no_ssse3 recompiler_backends_no_sse41
+                         recompiler_backends_no_sse41_functions PROPERTIES TIMEOUT 600)
 endif()
 # a big-endian PowerPC64's guest doublewords with LDBRX and without (tools/sailgen/ppc64.h), the code run under
 # qemu-ppc64 on CPUs before ISA 2.06 and after (skipped without qemu-ppc64)
@@ -4645,6 +4656,25 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
                  --words 1ac35000 1ac45421 1ac55842 9ac65c63 1ac15be9 9adf5c0a)
         set_tests_properties(recompiler_x64cpu_nehalem recompiler_x64cpu_nehalem_ops recompiler_x64cpu_penryn
                              recompiler_x64cpu_penryn_ops recompiler_x64cpu_penryn_crc32c PROPERTIES TIMEOUT 600
+                             SKIP_RETURN_CODE 77)
+        # a Conroe has no SSE4.1; QEMU's qemu64 and kvm64, a Phenom and an Opteron of the third generation no SSSE3
+        # either, and a first Opteron not even SSE3
+        foreach(cpu qemu64 kvm64 phenom Opteron_G1 Opteron_G3 Conroe)
+            string(TOLOWER "${cpu}" name)
+            add_test(NAME recompiler_x64cpu_${name} COMMAND snx-test-recompiler-x64cpu --cpu ${cpu} --functions 200
+                     --states 8)
+            set_tests_properties(recompiler_x64cpu_${name} PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
+        endforeach()
+        add_test(NAME recompiler_x64cpu_conroe_ops COMMAND snx-test-recompiler-x64cpu --cpu Conroe --target max
+                 --states 8 --ops MUL_v CMEQ_v CMEQ0_v FRINTN_v FRINTP_v FRINTM_v FRINTZ_v FRINTA_v RBIT_v SABD_v
+                 SADALP_v SADDLP_v SADDLV SADDL_v SADDW SCVTF_vi SDOT_v SHLL_v SMAXP_v SMAX_v SMIN_v SMLAL_v SMULL_v
+                 SQABS_v SQDMULH_v SQNEG_v SQRDMLAH_v SQRSHL_v SQSHL_v SRHADD_v SSHLL_v SSHL_v SSUBW ST_mult ST_single
+                 UABD_v UADDLV UCVTF_vi UDOT_v UMAX_v UMIN_v UMULL_v UQSHL_v URSHL_v USHLL_v XAR)
+        add_test(NAME recompiler_x64cpu_qemu64_ops COMMAND snx-test-recompiler-x64cpu --cpu qemu64 --states 8 --ops
+                 ABS_v ADDP_v ADDV CLS_v CLZ_v CNT_v EXT_d EXT_q FADDP_v FMAXP_v MUL_vi REV16_v REV32_v REV64_v
+                 SHRN_v SMAXV SQDMULH_vi SQRDMULH_v SQRDMULH_vi SQXTN_v SQXTUN_v TBL_TBX TRN1 TRN2 UMULL_vi UQXTN_v
+                 UZP1 UZP2 XTN ZIP1 ZIP2 LD_single_repl)
+        set_tests_properties(recompiler_x64cpu_conroe_ops recompiler_x64cpu_qemu64_ops PROPERTIES TIMEOUT 600
                              SKIP_RETURN_CODE 77)
     endif()
     # arm64's functions as a Windows host's: COFF objects, loaded by the JIT's own loader, their frames unwound by the

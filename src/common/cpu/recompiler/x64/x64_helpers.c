@@ -210,7 +210,68 @@ void snx_x64_crypto(CPU* c, void* out, const void* x, const void* y, const void*
 /* an SSE instruction where the host has none of it (tools/sailgen/x64.h's sgx_vf_helped_forms, whose places are the
    numbers below): out = the instruction of x (its first operand) and y (its second), desc its number and its
    immediate (bits 8 to 15) */
-enum { SSE_PCLMULQDQ, SSE_PCMPGTQ, SSE_PSHUFB, SSE_PALIGNR, SSE_PABSB, SSE_PABSW, SSE_PABSD, SSE_PMULHRSW };
+enum {
+    SSE_PCLMULQDQ,
+    SSE_PCMPGTQ,
+    SSE_PSHUFB,
+    SSE_PALIGNR,
+    SSE_PABSB,
+    SSE_PABSW,
+    SSE_PABSD,
+    SSE_PMULHRSW,
+    SSE_PMULLD,
+    SSE_PMULDQ,
+    SSE_PCMPEQQ,
+    SSE_PMAXSB,
+    SSE_PMAXSD,
+    SSE_PMAXUW,
+    SSE_PMAXUD,
+    SSE_PMINSB,
+    SSE_PMINSD,
+    SSE_PMINUW,
+    SSE_PMINUD,
+    SSE_PMOVSXBW,
+    SSE_PMOVSXWD,
+    SSE_PMOVSXDQ,
+    SSE_PMOVZXBW,
+    SSE_PMOVZXWD,
+    SSE_PMOVZXDQ,
+    SSE_ROUNDPS,
+    SSE_ROUNDPD
+};
+/* element k of bits bits of v; v with it e */
+static u64 sse_get(const u64* v, unsigned bits, unsigned k) {
+    return bits == 64 ? v[k] : v[k * bits / 64] >> (k * bits % 64) & ((1ull << bits) - 1);
+}
+static void sse_put(u64* v, unsigned bits, unsigned k, u64 e) {
+    if (bits == 64)
+        v[k] = e;
+    else
+        v[k * bits / 64] |= (e & ((1ull << bits) - 1)) << (k * bits % 64);
+}
+/* e of bits bits sign extended, as unsigned; biased so that unsigned order is the signed one */
+static u64 sse_sext(u64 e, unsigned bits) { return (e ^ 1ull << (bits - 1)) - (1ull << (bits - 1)); }
+static u64 sse_biased(u64 e, unsigned bits) { return sse_sext(e, bits) ^ 1ull << 63; }
+/* ROUNDPS's and ROUNDPD's element v of a binary format (fraction bits f, exponent bits x) to an integer in mode: 0 to
+   nearest even, 1 down, 2 up, 3 toward zero; a NaN quieted, as the instruction does */
+static u64 sse_round(u64 v, unsigned f, unsigned x, unsigned mode) {
+    const unsigned bias = (1u << (x - 1)) - 1, e = (unsigned)(v >> f) & ((1u << x) - 1);
+    const u64 sign = v >> (f + x) & 1, one = (u64)bias << f, magnitude = v & ((1ull << (f + x)) - 1);
+    if (e == (1u << x) - 1) return v & ((1ull << f) - 1) ? v | 1ull << (f - 1) : v;
+    if (e >= bias + f) return v; /* no fraction */
+    /* a magnitude a unit up: past a half to nearest (a half to an even one), any part away from zero down or up */
+    if (e < bias) { /* below 1: a zero of its sign, or one */
+        const int half_up = e == bias - 1 && (v & ((1ull << f) - 1));
+        const int up = mode == 0 ? half_up : mode != 3 && magnitude && sign == (mode == 1);
+        return sign << (f + x) | (up ? one : 0);
+    }
+    const unsigned below = bias + f - e;
+    const u64 mask = (1ull << below) - 1, part = v & mask, half = 1ull << (below - 1);
+    u64 r = v & ~mask;
+    const int up = mode == 0 ? part > half || (part == half && (r >> below & 1)) : mode != 3 && sign == (mode == 1);
+    if (part && up) r += 1ull << below; /* the fraction's carry goes into the exponent */
+    return r;
+}
 void snx_x64_sse(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc) {
     const unsigned imm = desc >> 8 & 0xFF;
     u64 a[2], b[2], r[2] = {0, 0};
@@ -254,6 +315,53 @@ void snx_x64_sse(CPU* c, void* out, const void* x, const void* y, const void* z,
                 const u64 e = b[k * bits / 64] >> at & mask;
                 r[k * bits / 64] |= (e & sign ? (0 - e) & mask : e) << at;
             }
+            break;
+        }
+        case SSE_PMULLD: /* each word pair's product, its low word */
+            for (unsigned k = 0; k < 4; ++k) sse_put(r, 32, k, sse_get(a, 32, k) * sse_get(b, 32, k));
+            break;
+        case SSE_PMULDQ: /* words 0 and 2's signed product, a doubleword each */
+            for (unsigned k = 0; k < 2; ++k)
+                r[k] = sse_sext(sse_get(a, 32, 2 * k), 32) * sse_sext(sse_get(b, 32, 2 * k), 32);
+            break;
+        case SSE_PCMPEQQ:
+            for (unsigned k = 0; k < 2; ++k) r[k] = a[k] == b[k] ? ~0ull : 0;
+            break;
+        case SSE_PMAXSB: /* the greater of each pair, signed (the bias) or not */
+        case SSE_PMAXSD:
+        case SSE_PMAXUW:
+        case SSE_PMAXUD:
+        case SSE_PMINSB:
+        case SSE_PMINSD:
+        case SSE_PMINUW:
+        case SSE_PMINUD: {
+            static const unsigned char bits[8] = {8, 32, 16, 32, 8, 32, 16, 32};
+            const unsigned op = (desc & 0xFF) - SSE_PMAXSB, e = bits[op], sign = op % 4 < 2, max = op < 4;
+            for (unsigned k = 0; k < 128 / e; ++k) {
+                const u64 x = sse_get(a, e, k), y = sse_get(b, e, k);
+                const u64 kx = sign ? sse_biased(x, e) : x, ky = sign ? sse_biased(y, e) : y;
+                sse_put(r, e, k, (kx > ky) == max ? x : y);
+            }
+            break;
+        }
+        case SSE_PMOVSXBW: /* the low elements of y, each widened, sign extended or not */
+        case SSE_PMOVSXWD:
+        case SSE_PMOVSXDQ:
+        case SSE_PMOVZXBW:
+        case SSE_PMOVZXWD:
+        case SSE_PMOVZXDQ: {
+            const unsigned op = (desc & 0xFF) - SSE_PMOVSXBW, e = 8u << op % 3;
+            for (unsigned k = 0; k < 64 / e; ++k) {
+                const u64 v = sse_get(b, e, k);
+                sse_put(r, 2 * e, k, op < 3 ? sse_sext(v, e) : v);
+            }
+            break;
+        }
+        case SSE_ROUNDPS: /* each element of y to an integer, in imm's mode (bit 2: MXCSR's, the default's nearest) */
+        case SSE_ROUNDPD: {
+            const unsigned d = (desc & 0xFF) == SSE_ROUNDPD, e = d ? 64 : 32, mode = imm & 4 ? 0 : imm & 3;
+            for (unsigned k = 0; k < 128 / e; ++k)
+                sse_put(r, e, k, sse_round(sse_get(b, e, k), d ? 52 : 23, d ? 11 : 8, mode));
             break;
         }
         case SSE_PMULHRSW: /* each halfword pair's signed product, 2^-15 of it rounded: ((x * y >> 14) + 1) >> 1 */
