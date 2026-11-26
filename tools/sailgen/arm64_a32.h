@@ -83,7 +83,7 @@ static inline SnxU32 sga_a32_stlxr(unsigned bytes, int rs, int rt) {
 static inline void sgx_a32_movi(SgXBuf* b, int reg, SnxU32 v) { sga_movi(b, reg, v, 0); }
 /* a call of the runtime library's sym, the state its first argument */
 static inline void sgx_a32_call_out(SgXAsm* a, SgXBuf* b, const char* sym) {
-    sga_w(b, sge_a64_orr_log_shift(0, SGA_ZR, 0, SGX_BASE, 0, 1)); /* MOV X0, X19 */
+    sga_state_out(b);
     if (a->reloc) {
         a->reloc(a->machine, b->n, sym, 0); /* BL, which the object's CALL26 fills */
         sga_w(b, sge_a64_bl(0));

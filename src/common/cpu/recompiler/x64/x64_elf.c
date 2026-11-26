@@ -395,7 +395,7 @@ typedef struct {
     size_t words;
 } A64Frame;
 /* the prologue of words words at most at code, as arm64_codegen.c's prologue and arm64_arm.c's mg_prologue write it:
-   STP X29, X30 with the frame's base in X29, the pairs saved, MOV X19, X0, a frame of a page's probe (arm64_asm.h's
+   STP X29, X30 with the frame's base in X29, the pairs saved, ADD X19, X0, #8, a frame of a page's probe (arm64_asm.h's
    sga_stack_probe), then SUB SP; and the epilogue they have: ADD SP, the pairs back (the first, X19's, last), LDP X29,
    X30. The prologue's words, 0 where it is none */
 static size_t a64_prologue(const unsigned char* code, size_t words, A64Frame* f) {
@@ -413,7 +413,7 @@ static size_t a64_prologue(const unsigned char* code, size_t words, A64Frame* f)
             a64_code(&step[k], A64_SET_FP);
         else if (pairs < sizeof pair / sizeof *pair && a64_pair(&step[k], w))
             pair[pairs++] = w;
-        else if (w == 0xAA0003F3u ||                                                         /* MOV X19, X0 */
+        else if (w == 0x91002013u ||                                                         /* ADD X19, X0, #8 */
                  w == 0x910003F1u || (w & 0xFF8003FFu) == 0xD10003F0u || w == 0xD1400631u || /* the probe's */
                  w == 0x3940023Fu || w == 0xEB10023Fu || w == 0x54FFFFA8u)
             a64_code(&step[k], A64_NOP);
