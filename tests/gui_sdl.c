@@ -3,9 +3,8 @@
 /* Exercise the actual renderer and SDL event handlers without production test flags. */
 #define SNX_GUI_NO_MAIN
 #include "gui/main.c"
+#include "common/utilities/fatal_screen.h"
 #include "common/utilities/ui_colors.h"
-#include "common/utilities/fatal_screen.h" /* the error panel's rows */
-#include "common/utilities/notice.h"       /* its columns */
 #define SNX_SCREEN_TEST "gui_sdl.c"
 #include "gui_screen.h"
 /* whether More's box (screen_more, the foot's own past its first three) holds the sentence label, its key key */
@@ -8347,21 +8346,21 @@ int main(int argc, char** argv) {
         assert(app.confirm.shown && app.confirm.ask == GUI_ASK_ERROR && !strcmp(app.error_line, said));
         render(&app);
         { /* on the error's panel: in its ink as its quads keep it (ui_rgba), at its scale (an item's row is 16 of its
-             pixels), row by row as the panel breaks it at its columns (fatal_wrap_spans): one row or more, as long as
-             the temporary folder this host gives makes it */
-            int s = (int)app.box_panel.item[0].h / 16, at[16], len[16], rows;
+             pixels), row by row as the panel breaks it (fatal_wrap_spans at its width less a column each side), the
+             homes as ~ (fatal_shown): one row or more, as long as the temporary folder this host gives makes it */
+            int s = (int)app.box_panel.item[0].h / 16, cols = s ? (int)app.box_panel.box.w / (8 * s) - 2 : 0;
+            int at[8], len[8], rows;
             u32 kept = ui_rgba(UI_INK);
             SDL_Color ink = {(Uint8)kept, (Uint8)(kept >> 8), (Uint8)(kept >> 16), 255};
-            SDL_Rect view;
-            char row[1100];
-            assert(s > 0 && s % app.scale == 0);
-            SDL_GetRenderViewport(app.renderer, &view);
-            rows = fatal_wrap_spans(said, snx_menu_cols(view.w, s) - 2, 0, at, len, 16);
-            assert(rows > 0 && rows <= 16);
+            char *shown = fatal_shown(said), row[256];
+            assert(s > 0 && s % app.scale == 0 && cols > 0 && shown);
+            rows = fatal_wrap_spans(shown, cols, 0, at, len, 8);
+            assert(rows >= 1 && rows <= 8);
             for (int i = 0; i < rows; ++i) {
-                snprintf(row, sizeof row, "%.*s", len[i], said + at[i]);
+                snprintf(row, sizeof row, "%.*s", len[i], shown + at[i]);
                 shows_big(&app, row, ink, s / app.scale);
             }
+            free(shown);
         }
         free(app.data_dir), free(app.games_dir), free(app.themes_dirs[0]), free(app.work_dir), free(app.keys_path);
         free(app.home_dir);
