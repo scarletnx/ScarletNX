@@ -116,16 +116,21 @@ the game's image read from that image.
 - `toolchain.c`: the runtime build for deployment.
 - The native back ends (`src/common/cpu/recompiler/mach/` and a folder a machine) make the guest's code where the host
   has one. What they leave is the fallback's (`recompiler/fallback.h`): LLVM's (`fallback_llvm.c`), or, in a build
-  without it, none (`fallback_none.c`), which refuses it and names what was asked. The JIT and the AArch32 executor ask
-  it there; the AOT compilers and the library still call LLVM themselves. `tests/architecture.py` lists the files that
-  take LLVM's headers (`LLVM_USERS`), which none joins.
+  without it, none (`fallback_none.c`), which refuses it and names what was asked. The JIT, the AArch32 executor and the
+  Switch's AOT modules (`src/nx/loader/module_llvm.c`, `module_arm.c`) ask it there, and a game module's own part of it
+  through `src/nx/loader/module_fallback.h` (the descriptor of a module whose code LLVM made some of, a 32-bit program's
+  blocks chained, the profile cache's key: `module_fallback_llvm.c`, or `module_fallback_none.c`). Without LLVM the
+  native back end makes a function with an instruction it has no code for, the instruction undefined where it runs
+  (`SnxNativeOptions.alone`). The other AOT compilers and the library still call LLVM themselves.
+  `tests/architecture.py` lists the files that take LLVM's headers (`LLVM_USERS`), which only LLVM code moved out of
+  another joins.
 - The code generator, LLVM (`src/common/cpu/recompiler/llvm/`, a required dependency), builds LLVM IR with the
   LLVM-C API: `ir_int.c`, `ir_ldst.c` and `ir_vec*.c`, ported from QEMU's `translate-a64.c`, and
   `ir_sail.c`, the integer data-processing ops, the hints, the barriers, the branch operands, the general-purpose
   registers' loads and stores, the scalar floating point and the SIMD integer ops of one element per lane, the
   pairwise ones and those across lanes `tools/sailgen` generates from the Arm architecture's Sail
   (`src/common/cpu/aarch64/sail/`), emit each op of the generated decoder, `ir_codegen.c` the functions of `codegen.c`,
-  and `src/nx/loader/module_llvm.c` the chunks and `SnxModule` of `module.c`. It links the objects itself (`link_elf.c`,
+  and `src/nx/loader/module_fallback_llvm.c` the `SnxModule` of `module.c`. It links the objects itself (`link_elf.c`,
   `link_coff.c`, `link_macho.c` in `src/common/cpu/recompiler/object/`) with `rtlib/rtlib.c`, the helpers compiled when
   the recompiler is built, into a module
   with no imports, for the host it runs on: x86-64 (ELF or COFF), AArch64 (ELF, COFF on Windows, or on macOS and iOS a Mach-O dylib
@@ -138,7 +143,7 @@ the game's image read from that image.
   assembly kernels.
 - `-r --layout FILE` orders the module's code by a profile. `tools/layout.py record` samples a scene's taken branches
   (`perf record -j any,u`), and `tools/layout.py order` clusters each function after its most frequent caller (C3,
-  as lld's `CallGraphSort.cpp`) and writes their guest addresses. `module_llvm.c` gives each listed function a code
+  as lld's `CallGraphSort.cpp`) and writes their guest addresses. LLVM gives each listed function a code
   section of its own (`SNX_LINK_HOT_TEXT` and its rank), and `link_elf.c` puts those sections first, in rank order.
   No instruction changes. ELF modules for this host only, and only when no object needs veneers.
 - The generated code polls `CPU.poll` on backward branches inside a function and at the `D_` dispatch, as `codegen.c`'s C
