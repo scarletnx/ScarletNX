@@ -19,6 +19,11 @@ char* snx_game_picks(const char* ini);
 #define SNX_GAME_PICKS_HEAD                                                                                            \
     "; This game's own settings, set for it alone in its menu or the launcher's Settings of the game. Each\n"         \
     "; goes over the launcher's for every game and over the game's .ini; one taken out goes back to them\n"
+/* the folders a game's <name>.folders at record names (the driver's snx_record_folders): config=, state= and cache=,
+   each owned into dirs[kind - SNX_USER_CONFIG], NULL for none. 1; 0 for no record; -1 with why in said for one that
+   cannot be read. Its other keys (another version's), a line with no = and a key given twice are named once a run in
+   said (config_file.h), "" for nothing */
+int snx_folders_read(const char* record, char* dirs[3], char* said, size_t said_size);
 /* key's value in the .ini at path, the last one's, malloc'd: NULL for none, an empty one or no such file */
 char* snx_ini_value(const char* path, const char* key);
 /* key=value in [Game] of the .ini at path, every older key= taken out and the file made when there is none, left as
