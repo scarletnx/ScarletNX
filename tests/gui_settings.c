@@ -1179,20 +1179,20 @@ int main(int argc, char** argv) {
                gui_settings_set(&s, "anisotropy", "8") && gui_settings_set(&s, "fps_limit", "120"));
         assert(gui_settings_set(&s, "volume", "50"));
         /* a row of the 3DS group's Debug page, passed as its screens' are; the picks are the launcher's
-           (--launcher-picks=1 last) */
-        assert(gui_settings_console_options(&s, SNX_SYSTEM_3DS, options) == 15 &&
+           (--launcher-picks=1 last); the on-screen controls' rows too, which the 3DS's window has */
+        assert(gui_settings_console_options(&s, SNX_SYSTEM_3DS, options) == 16 &&
                gui_settings_set(&s, "ctr_hooks", "0") &&
-               gui_settings_console_options(&s, SNX_SYSTEM_3DS, options) == 16 &&
+               gui_settings_console_options(&s, SNX_SYSTEM_3DS, options) == 17 &&
                !strcmp(options[3], "--ctr-hooks=0") && gui_settings_set(&s, "ctr_hooks", "1"));
-        assert(gui_settings_console_options(&s, SNX_SYSTEM_3DS, options) == 15 &&
+        assert(gui_settings_console_options(&s, SNX_SYSTEM_3DS, options) == 16 &&
                !strcmp(options[0], "--fullscreen=1") && !strcmp(options[1], "--ctr-separate-windows=1") &&
                !strcmp(options[2], "--ctr-top-resolution=2") && !strcmp(options[3], "--vsync=0") &&
                !strcmp(options[4], "--anisotropy=8") && !strcmp(options[5], "--async-pipelines=1") &&
                !strcmp(options[6], "--pipeline-threads=2") && !strcmp(options[7], "--fps-limit=120") &&
                !strcmp(options[8], "--gamepad-swap-ab=1") && !strcmp(options[9], "--gamepad-deadzone=35") &&
                !strcmp(options[10], "--gamepad-map=south:A east:B") && !strcmp(options[11], "--touch=1") &&
-               !strcmp(options[12], "--vk-memory=1"));
-        assert(!strcmp(options[13], "--volume=50") && !strcmp(options[14], "--" SNX_LAUNCHER_PICKS "=1"));
+               !strcmp(options[12], "--controls-haptics=0") && !strcmp(options[13], "--vk-memory=1"));
+        assert(!strcmp(options[14], "--volume=50") && !strcmp(options[15], "--" SNX_LAUNCHER_PICKS "=1"));
         gui_settings_free(&s);
     }
     /* a Vita game's run gets its Debug page's picks (keys that start with vita_) and the Switch's its driver takes:
