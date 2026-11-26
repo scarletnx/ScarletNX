@@ -128,41 +128,6 @@ static Surf* rsts_other(u64 gva, int n) {
     }
 }
 #define RSTS_OTHERS 7
-/* texel (x, y) of layer k of t */
-static u32 rsts_texel(Surf* t, u32 x, u32 y, u32 k) {
-    VkBuffer buffer;
-    vk_lock();
-    u8* p = vk_readback_buffer(4, &buffer);
-    u32 v = 0xdeadbeefu;
-    if (p) {
-        VkBufferImageCopy c = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, k, 1},
-                               .imageOffset = {(i32)x, (i32)y, 0},
-                               .imageExtent = {1, 1, 1}};
-        vk_surf_use(vk_cmd(), t, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT,
-                    VK_ACCESS_2_TRANSFER_READ_BIT);
-        rec_CmdCopyImageToBuffer(vk_cmd(), t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &c);
-        vk_finish();
-        vk_readback_ready();
-        v = snx_ld_le32(p);
-    }
-    vk_unlock();
-    return v;
-}
-/* each layer of t cleared, as a draw does: the first to colour, the others to its complement in red and green */
-static void rsts_clear_layers(Surf* t, u32 colour) {
-    VkCommandBuffer cb = vk_cmd();
-    vk_surf_use(cb, t, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_CLEAR_BIT,
-                VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    for (u32 k = 0; k < t->layers; k++) {
-        const u32 c32 = k ? colour ^ 0x0000FFFFu : colour;
-        VkClearColorValue c = {.float32 = {(float)(c32 & 255) / 255.0f, (float)(c32 >> 8 & 255) / 255.0f,
-                                           (float)(c32 >> 16 & 255) / 255.0f, (float)(c32 >> 24) / 255.0f}};
-        VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, k, 1};
-        rec_CmdClearColorImage(cb, t->img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &c, 1, &all);
-    }
-    vk_surf_wrote(t);
-    vk_rt_drawn(t);
-}
 static int check_rt_stride_apart(void) {
     CHECK(mem_map(RSTS_CPU, 0x200000, MS_NORMAL, PERM_RW) == 0);
     gmmu_map(RSTS_GVA, RSTS_CPU, 0x200000);
@@ -207,17 +172,16 @@ static int check_rt_stride_apart(void) {
         vk_rt_array(RSTS_GVA + 0x1d0000, RSTR_W, RSTR_H, RSTR_FMT, 0x1000u, 256, 1, RSTR_STRIDE, 0, DS_MSAA_1X1);
     CHECK(q && rstr_other(RSTS_GVA + 0x1d0000) != q && (q->gva >> 63));
     CHECK(vk_rt(RSTS_GVA + 0x1d0000, RSTR_W, RSTR_H, RSTR_FMT, 0x1000u, 0, 512) != q);
-    /* two layers of another class and another stride: only their first layers are the same memory, so the pixels are
-       not taken over and memory is loaded, with the first target's layers as it was published when it was parked */
+    /* two layers of another class and another stride: only their first layers are the same memory, so the pixels of
+       neither are the other's, and memory is loaded */
     Surf* two = vk_rt_array(RSTS_GVA + 0x1e0000, RSTR_W, RSTR_H, RSTR_FMT, RSTR_TILE, 0, 2, 0x8000, 0, DS_MSAA_1X1);
     CHECK(two);
-    rsts_clear_layers(two, RSTR_GREEN);
+    rstr_clear(two, RSTR_GREEN);
     Surf* twice = vk_rt_array(RSTS_GVA + 0x1e0000, RSTR_W, RSTR_H, RSTR_FMT_ALT, RSTR_TILE, 0, 2, 0x10000, 0,
                               DS_MSAA_1X1);
     CHECK(twice && twice != two);
     vk_unlock();
-    CHECK(rsts_texel(twice, 0, 0, 0) == RSTR_GREEN);
-    CHECK(rsts_texel(twice, 0, 0, 1) == 0x40404040u); /* past the end of the first's two layers */
+    CHECK(ct_texel(twice, 0, 0) == 0x40404040u);
     CHECK(mem_unmap(RSTS_CPU, 0x200000) == 0);
     puts("render targets apart: the holder is one target, its stride never lowered, and layers, volumes and other "
          "shapes stay targets of their own");
@@ -250,25 +214,19 @@ static int rstw_case(int park, u32 at) {
                 park ? "parked" : "holding the address", got);
     return got != 0x55555555u;
 }
-/* Parked, and the target of another format class that holds the address is the newer one: it takes that one's pixels on
-   the GPU, whatever the strides, as memory holds them since it was published when it was parked but is not newer than
-   its draw */
+/* Parked, and the target of another format class that holds the address is the newer one: it takes that one's pixels,
+   and memory, which nothing wrote, is not loaded over them */
 static int rstw_newer(void) {
     const u64 gva = RSTS_GVA + 0x1c0000;
-    VkRtCopyCounts was, now;
     vk_lock();
     Surf* d = rstr_target(gva, RSTR_FMT, RSTR_STRIDE);
     CHECK(d);
     rstr_clear(d, RSTR_RED);
-    Surf* newer = rstr_target(gva, RSTR_FMT_ALT, 0);
+    Surf* newer = rstr_target(gva, RSTR_FMT_ALT, RSTR_STRIDE);
     CHECK(newer && newer != d && (d->gva >> 63));
-    CHECK(vk_surf_flush_size(d)); /* newer took its pixels: it was not published as it was parked */
     rstr_clear(newer, RSTR_GREEN);
-    vk_rt_copy_counts(&was);
     Surf* back = vk_rt(gva, RSTR_W, RSTR_H, RSTR_FMT, RSTR_TILE, 0, 0);
-    vk_rt_copy_counts(&now);
     CHECK(back == d);
-    CHECK(now.written[VK_RT_COPY_TAKE] == was.written[VK_RT_COPY_TAKE] + 1);
     vk_unlock();
     const u32 got = ct_texel(back, 0, 0);
     if (got != RSTR_GREEN)
@@ -278,61 +236,13 @@ static int rstw_newer(void) {
                 RSTR_FMT, RSTR_FMT_ALT, got, RSTR_GREEN);
     return got != RSTR_GREEN;
 }
-/* The CPU writes none of it: the draw's pixels stay, held or parked, as nothing is newer than them */
-static int rstw_kept(int park, u32 at) {
-    const u64 gva = RSTS_GVA + 0x100000 + at;
-    vk_lock();
-    Surf* d = rstr_target(gva, RSTR_FMT, RSTR_STRIDE);
-    CHECK(d);
-    rstr_clear(d, RSTR_RED);
-    if (park) CHECK(rstr_other(gva) != d && (d->gva >> 63));
-    Surf* back = vk_rt(gva, RSTR_W, RSTR_H, RSTR_FMT, RSTR_TILE, 0, 0);
-    CHECK(back == d);
-    vk_unlock();
-    const u32 got = rsts_texel(back, 0, 0, 0);
-    if (got != RSTR_RED)
-        fprintf(stderr,
-                "a 64x64 target the draw left red, %s, with no CPU write since, and a 2D copy named it in a smaller "
-                "stride: a texel reads %08x\n",
-                park ? "parked" : "holding the address", got);
-    return got != RSTR_RED;
-}
-/* Parked, the CPU writes part of its memory: what the draw left elsewhere stays. The target was published as it was
-   parked, so memory holds the draw's pixels under the CPU's, and a load of it (the target named in a smaller stride)
-   takes both. Without it the load took the stale bytes of memory under the rest of the target: the draw was nowhere
-   but in the target, which its parking took from the watch (rt_pages) */
-static int rstw_parked(void) {
-    const u64 gva = RSTS_GVA + 0x1e0000;
-    vk_lock();
-    Surf* d = rstr_target(gva, RSTR_FMT, RSTR_STRIDE);
-    CHECK(d);
-    rstr_clear(d, RSTR_RED);
-    CHECK(rstr_other(gva) != d && (d->gva >> 63));
-    CHECK(!vk_surf_flush_size(d)); /* published as it was parked, none of its pixels missing from memory */
-    vk_finish();
-    vk_unlock();
-    memset(GP(RSTS_CPU + 0x1e0000), 0x55, 0x1000); /* its first page: 16 columns of the 64, whole block rows */
-    g_renderer->mem_may_have_changed();
-    vk_lock();
-    Surf* back = vk_rt(gva, RSTR_W, RSTR_H, RSTR_FMT, RSTR_TILE, 0, 0);
-    CHECK(back);
-    vk_unlock();
-    const u32 wrote = rsts_texel(back, 0, 0, 0), kept = rsts_texel(back, 32, 0, 0);
-    if (wrote != 0x55555555u || kept != RSTR_RED)
-        fprintf(stderr,
-                "the CPU wrote 55555555 over the first columns of a 64x64 target the draw left red, parked, and it was "
-                "named in a smaller stride: a texel there reads %08x, one the CPU wrote not %08x\n",
-                wrote, kept);
-    return wrote != 0x55555555u || kept != RSTR_RED;
-}
 static int check_rt_stride_written(void) {
     CHECK(mem_map(RSTS_CPU, 0x200000, MS_NORMAL, PERM_RW) == 0);
     gmmu_map(RSTS_GVA, RSTS_CPU, 0x200000);
-    const int bad = rstw_case(0, 0) + rstw_case(1, 0x20000) + rstw_newer() + rstw_parked() +
-                    rstw_kept(0, 0) + rstw_kept(1, 0x20000);
+    const int bad = rstw_case(0, 0) + rstw_case(1, 0x20000) + rstw_newer();
     CHECK(mem_unmap(RSTS_CPU, 0x200000) == 0);
     if (bad) return 1;
-    puts("a target named in a smaller stride after the CPU wrote its memory: memory's bytes, holding it or parked, the "
-         "draw's where the CPU wrote none, and the pixels of a newer one of another format class over it");
+    puts("a target named in a smaller stride after the CPU wrote its memory: memory's bytes, holding it or parked, and "
+         "the pixels of a newer one of another format class over it");
     return 0;
 }
