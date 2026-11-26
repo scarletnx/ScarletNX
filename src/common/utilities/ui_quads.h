@@ -147,4 +147,9 @@ int ui_fades(SnxUiFade fades[SNX_UI_FADES]);
 #define SNX_UI_FONT_Y  0
 #define SNX_UI_WHITE_X 128
 #define SNX_UI_WHITE_Y 0
+/* the picture of the user playing (nx/runtime/platform/ui.h's ui_picture), SNX_UI_PICTURE texels square from row
+   SNX_UI_PICTURE_Y, and the icons beside it */
+#define SNX_UI_PICTURE   96
+#define SNX_UI_PICTURE_Y 256
+
 #endif

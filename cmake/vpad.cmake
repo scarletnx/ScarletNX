@@ -7,7 +7,8 @@
 include_guard(GLOBAL)
 include("${CMAKE_CURRENT_LIST_DIR}/gui_themes.cmake")
 add_library(snx_vpad STATIC "${PROJECT_SOURCE_DIR}/src/common/utilities/vpad.c"
-                            "${PROJECT_SOURCE_DIR}/src/common/utilities/ui_rects.c")
+                            "${PROJECT_SOURCE_DIR}/src/common/utilities/ui_rects.c"
+                            "${PROJECT_SOURCE_DIR}/src/common/utilities/ui_ring.c")
 target_include_directories(snx_vpad PRIVATE "${PROJECT_BINARY_DIR}/generated")
 target_link_libraries(snx_vpad PUBLIC scarletnx-common snx_settings_runtime)
 set_target_properties(snx_vpad PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
