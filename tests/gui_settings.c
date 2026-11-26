@@ -3,6 +3,7 @@
 /* The menu's Settings (src/gui/settings.c): the runtime's list read into the form's rows, a setting's pick and the
    options a run gets. With a runtime's path, its own --settings list too */
 #include "common/utilities/common.h"
+#include "common/utilities/config_file.h"
 #include "common/utilities/game_ini.h"
 #include "gui/editor.h"
 #include "gui/settings.h"
@@ -519,10 +520,10 @@ int main(int argc, char** argv) {
         gui_settings_load(&s, path, NULL, 0);                        /* and the file's picks again */
         gui_settings_load(&s, "/nonexistent/settings.ini", NULL, 0); /* none: nothing changes */
         assert(!strcmp(gui_settings_value(&s, "language"), "3"));
-        /* what the file holds that no row takes, a key gone from the runtime or a value its row does not have, named
-           without changing the rows; the next save leaves it out */
+        /* what the file holds that no row takes: an older version's key, which Clean Old Settings takes out and a save
+           keeps; a value its row does not have, said with the row's own; a key given twice, said with both lines */
         {
-            char unread[256];
+            char unread[256], old[1024];
             assert(!gui_settings_unread(&s, path, unread, sizeof unread) && !unread[0]);
             assert(!gui_settings_unread(&s, NULL, unread, sizeof unread) && !unread[0]);
             text = (char*)snx_read_file(path, &size);
@@ -533,11 +534,17 @@ int main(int argc, char** argv) {
                 free(more);
             }
             free(text);
-            assert(gui_settings_unread(&s, path, unread, sizeof unread) == 2);
-            assert(!strcmp(unread, "renderer=opengl, touch=9"));
+            assert(gui_settings_unread(&s, path, unread, sizeof unread) == 1);
+            assert(!strcmp(unread, "renderer=opengl"));
             assert(!strcmp(gui_settings_value(&s, "language"), "3") && !strcmp(gui_settings_value(&s, "touch"), "1"));
-            assert(gui_settings_unread(&s, path, unread, 10) == 2 && !strcmp(unread, "renderer="));
-            assert(!gui_settings_save(&s, path) && !gui_settings_unread(&s, path, unread, sizeof unread));
+            assert(gui_settings_unread(&s, path, unread, 10) == 1 && !strcmp(unread, "renderer="));
+            snx_config_forget();
+            assert(gui_settings_load(&s, path, old, sizeof old) == 2);
+            assert(strstr(old, "touch=9 is not a value of Touch screen: touch=1 now") &&
+                   strstr(old, "language is given twice, language=3 on line ") && strstr(old, "language=4 on line ") &&
+                   !strcmp(gui_settings_value(&s, "touch"), "1") && !strcmp(gui_settings_value(&s, "language"), "4"));
+            assert(!gui_settings_save(&s, path) && gui_settings_unread(&s, path, unread, sizeof unread) == 1);
+            assert(!gui_settings_clean(&s, path) && !gui_settings_unread(&s, path, unread, sizeof unread));
         }
         {
             char *plain = snx_path_join(dir, "a file"), *under = snx_path_join(plain, "settings.ini");
@@ -718,12 +725,14 @@ int main(int argc, char** argv) {
     }
     assert(!gui_settings_read(&s, "") && s.count == s.own); /* no runtime: the launcher's alone */
     assert(gui_settings_options(&s, 1, NULL, options) == 0 && !gui_settings_set(&s, "touch", "1"));
-    /* and a pick of theirs kept then: the runtime's picks in the file, which no row has, stay as they were */
+    /* and a pick of theirs kept then: the runtime's picks in the file, which no row has, stay as they were, byte for
+       byte */
     {
         char *dir = snx_temp_dir(NULL), *path = snx_path_join(dir, "settings.ini"), *text;
         const char* picks = "; picks\n[Launch]\ngdbstub=on\n[Display]\nfullscreen = 1\nlanguage=3\n"
                             "[On-screen controls/Buttons]\ncontrols_b_shown=0\n";
-        const char* theirs = "[Display]\nfullscreen=1\nlanguage=3\n[On-screen controls/Buttons]\ncontrols_b_shown=0\n";
+        const char* theirs =
+            "[Display]\nfullscreen = 1\nlanguage=3\n[On-screen controls/Buttons]\ncontrols_b_shown=0\n";
         size_t size;
         assert(!snx_write_file(path, picks, strlen(picks)));
         gui_settings_mark(&s);
@@ -736,7 +745,7 @@ int main(int argc, char** argv) {
         /* the launcher's own again: first, by their section, the runtime's after them */
         assert(gui_settings_set(&s, "gdbstub", "on") && !gui_settings_save(&s, path));
         text = (char*)snx_read_file(path, &size);
-        assert(text && strstr(text, "\n[Launch]\ngdbstub=on\n[Display]\nfullscreen=1\n") && strstr(text, theirs));
+        assert(text && strstr(text, "\n[Launch]\ngdbstub=on\n[Display]\nfullscreen = 1\n") && strstr(text, theirs));
         free(text);
 #ifndef _WIN32
         if (geteuid()) { /* one it cannot read is not written over, which would lose them */
@@ -1117,11 +1126,13 @@ int main(int argc, char** argv) {
                !gui_settings_unread(&game, picks, out, sizeof out));
         gui_settings_reset(&game, v);
         assert(!gui_settings_value(&game, "ctr_model") && !gui_settings_changed(&game));
-        /* an old game's, with keys of its own and no ctr_model: Global; and one that is none of its rows' is said */
+        /* an old game's, with keys of its own and no ctr_model: Global; and one that is none of its rows' is named, never
+           by its value, and stays for Clean Old Settings too, as no older version's key */
         text = snx_strdup("[3DS]\nother=1\n");
-        assert(!snx_write_file(picks, text, strlen(text)) && !gui_settings_load(&game, picks, NULL, 0));
-        assert(!gui_settings_value(&game, "ctr_model") && gui_settings_unread(&game, picks, out, sizeof out) == 1 &&
-               !strcmp(out, "other=1"));
+        snx_config_forget();
+        assert(!snx_write_file(picks, text, strlen(text)) && gui_settings_load(&game, picks, out, sizeof out) == 1 &&
+               !strcmp(out, "this version does not read other, which stays as it is"));
+        assert(!gui_settings_value(&game, "ctr_model") && !gui_settings_unread(&game, picks, out, sizeof out));
         free(text);
         gui_settings_free(&game);
         gui_settings_free(&global);

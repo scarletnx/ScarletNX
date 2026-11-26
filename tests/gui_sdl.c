@@ -6840,17 +6840,17 @@ static void ctr_own_console(App* app, const char* dir) {
         recent_changed(app);
         assert(!remove(picks));
     }
-    /* Clean Old Settings, the games' own with them: a 3DS game's picks keep its console and lose the rest; a Switch
-       game's, a console's key in them too, are as they were */
+    /* Clean Old Settings, the games' own with them: a 3DS game's picks keep its console and another console's key,
+       and lose an older version's; a Switch game's, a console's key in them too, are as they were */
     {
         GuiCleaned done = {0};
         char* other = snx_path_join(app->games_dir, "a switch game.picks");
         int keys_taken = 0;
-        fixture_text(picks, "[3DS]\nctr_model=old\n[Display]\nfullscreen=1\n");
+        fixture_text(picks, "[3DS]\nctr_model=old\n[Display]\nfullscreen=1\nvk_defrag=1\n");
         fixture_text(other, "[Display]\nfullscreen=1\n[3DS]\nctr_model=old\n");
         assert(clean_picks(app, &done, &keys_taken) == 1 && keys_taken == 1 && done.count == 1);
         assert((text = (char*)snx_read_file(picks, &size)) && strstr(text, "ctr_model=old\n") &&
-               !strstr(text, "fullscreen"));
+               strstr(text, "\nfullscreen=1\n") && !strstr(text, "vk_defrag"));
         free(text);
         assert((text = (char*)snx_read_file(other, &size)) &&
                !strcmp(text, "[Display]\nfullscreen=1\n[3DS]\nctr_model=old\n"));
@@ -9300,37 +9300,36 @@ int main(int argc, char** argv) {
         key(&app, SDLK_RETURN);
         key(&app, SDLK_DOWN);
         key(&app, SDLK_RETURN);
-        assert(!app.confirm.shown && app.cleaned_shown && app.cleaned.count == 3 && app.cleaned.done == 3);
-        assert(!strcmp(app.editor.note, "Cleaned: 3 done, 0 not"));
+        assert(!app.confirm.shown && app.cleaned_shown && app.cleaned.count == 2 && app.cleaned.done == 2);
+        assert(!strcmp(app.editor.note, "Cleaned: 2 done, 0 not"));
         kept = (char*)snx_read_file(old_ini, &size);
         assert(kept && !strcmp(kept, "[Other]\nlanguage=en\n"));
         free(kept);
         assert(!settings_unread(&app, unread, sizeof unread) && setting_is(&app, "fullscreen", "1"));
-        snprintf(expected, sizeof expected,
-                 "+\t%s\t[Deprecated] removed\n+\t%s\tRemoved renderer=opengl\n+\t%s\tRemoved theme = gone\n", old_ini,
-                 app.settings_file, app.app_file);
+        snprintf(expected, sizeof expected, "+\t%s\t[Deprecated] removed\n+\t%s\tRemoved renderer=opengl\n", old_ini,
+                 app.settings_file);
         assert(!strcmp(app.cleaned.text, expected));
-        kept = (char*)snx_read_file(app.app_file, &size); /* the picks as the menu has them */
-        snprintf(expected, sizeof expected, "\ntheme = %s\n", app.theme.id);
-        assert(kept && strstr(kept, expected) && !strstr(kept, "gone"));
+        kept = (char*)snx_read_file(app.app_file, &size); /* app.ini as it was: Clean takes no value out */
+        assert(kept && !strcmp(kept, gone));
         free(kept);
         render(&app);
-        shows(&app, "Clean Old Settings: 3 done", title);
+        shows(&app, "Clean Old Settings: 2 done", title);
         shows(&app, "[Deprecated] removed", rgb(app.theme.soft));
         shows(&app, "- OK", yellow);
-        key(&app, SDLK_DOWN); /* the three show: nothing to go to */
+        key(&app, SDLK_DOWN); /* the two show: nothing to go to */
         assert(app.cleaned_shown && !app.files_top && app.editor.row == GUI_APP_CLEAN);
         key(&app, SDLK_LEFT); /* closes it, and does nothing else */
         assert(!app.cleaned_shown && app.editing && app.form == GUI_FORM_APP && app.editor.row == GUI_APP_CLEAN);
         render(&app);
-        hides(&app, "Clean Old Settings: 3 done", title);
+        hides(&app, "Clean Old Settings: 2 done", title);
         key(&app, SDLK_RETURN);
         assert(!app.confirm.shown && !strncmp(app.editor.note, "Nothing to clean", 16));
-        /* a game's own picks keeping a key no setting takes: asked with them, the games' own in focus; Back and Keep
-           the Games' Own leave the file, With the Games' Own writes it without the key, an entry of the report */
+        /* a game's own picks keeping an older version's key: asked with them, the games' own in focus; Back and Keep
+           the Games' Own leave the file, With the Games' Own writes it without the key, an entry of the report. A key
+           of another version, which no older one had, stays */
         {
             char* picks = snx_path_join(app.games_dir, "Old game.picks");
-            const char* own = "[Display]\nfullscreen=1\n[Other]\nnewer_key=5\n";
+            const char* own = "[Display]\nfullscreen=1\n[Other]\nvk_defrag=5\nnewer_key=5\n";
             assert(!snx_write_file(picks, own, strlen(own)));
             key(&app, SDLK_RETURN);
             assert(app.confirm.shown && app.confirm.ask == GUI_ASK_CLEAN_OWN && app.confirm.selected == 1 &&
@@ -9352,9 +9351,9 @@ int main(int argc, char** argv) {
             key(&app, SDLK_RETURN);
             key(&app, SDLK_RETURN); /* With the Games' Own, in focus */
             assert(!app.confirm.shown && app.cleaned_shown && app.cleaned.count == 1 && app.cleaned.done == 1 &&
-                   strstr(app.cleaned.text, "\tRemoved newer_key=5\n"));
+                   strstr(app.cleaned.text, "\tRemoved vk_defrag=5\n"));
             assert((kept = (char*)snx_read_file(picks, &size)) && strstr(kept, "\n[Display]\nfullscreen=1\n") &&
-                   !strstr(kept, "newer_key"));
+                   !strstr(kept, "vk_defrag") && strstr(kept, "\nnewer_key=5\n"));
             free(kept);
             key(&app, SDLK_LEFT); /* the report closed */
             assert(!app.cleaned_shown);

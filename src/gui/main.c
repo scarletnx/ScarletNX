@@ -12211,7 +12211,7 @@ static void game_settings_close(App* app) {
 }
 /* the game whose program is at program, named title, its Settings open; from_box: Back goes to its M box again */
 static void open_game_settings(App* app, const char* program, const char* title, bool from_box) {
-    char *folder, *name, *ini = NULL, old[sizeof app->message], unread[512];
+    char *folder, *name, *ini = NULL, old[sizeof app->message];
     int console = own_game(program, &folder, &name);
     if (console) ini = snx_game_ini(folder, name);
     free(folder);
@@ -12238,13 +12238,8 @@ static void open_game_settings(App* app, const char* program, const char* title,
     free(ini);
     gui_settings_load(&app->game_settings, app->own_picks, old, sizeof old);
     settings_top(app, 0);
-    /* what its picks file holds that no row takes, which the next change leaves out, said as the launcher's is */
-    if (gui_settings_unread(&app->game_settings, app->own_picks, unread, sizeof unread))
-        snprintf(app->editor.note, sizeof app->editor.note,
-                 snx_tr("%s holds what no setting takes, which the next change leaves out: %s"), app->own_picks,
-                 unread);
-    else if (old[0])
-        snprintf(app->editor.note, sizeof app->editor.note, "%s: %s", app->own_picks, old);
+    /* what its picks file holds that no row takes, kept there and named once a run, said as the launcher's is */
+    if (old[0]) snprintf(app->editor.note, sizeof app->editor.note, "%s: %s", app->own_picks, old);
 }
 static void leave_editor(App* app) {
     gui_editor_stop(&app->editor);
@@ -17621,7 +17616,7 @@ static int clean_picks(App* app, GuiCleaned* done, int* keys) {
             if (!done) continue;
             gui_settings_reset(game, -1);
             gui_settings_load(game, paths[k], NULL, 0);
-            failed = gui_settings_changed(game) ? gui_settings_save(game, paths[k]) : remove(paths[k]) != 0;
+            failed = gui_settings_clean(game, paths[k]);
             snprintf(what, sizeof what, failed ? snx_tr("Not written without %s") : snx_tr("Removed %s"), unread);
             gui_cleaned_add(done, !failed, paths[k], what);
         }
@@ -17640,9 +17635,7 @@ static void clean_old(App* app, bool own) {
     clean_inis(app, &app->cleaned);
     if (own) clean_picks(app, &app->cleaned, &keys);
     if (settings_unread(app, unread, sizeof unread))
-        clean_keys(app, app->settings_file, unread, gui_settings_save(&app->settings, app->settings_file));
-    if (app_read(app, false, unread, sizeof unread, NULL, 0)) /* the picks as the menu has them, nothing else */
-        clean_keys(app, app->app_file, unread, app_save(app));
+        clean_keys(app, app->settings_file, unread, gui_settings_clean(&app->settings, app->settings_file));
     app->cleaned_shown = app->cleaned.count > 0;
     app->files_top = 0;
 }
