@@ -7249,6 +7249,9 @@ static void ctr_own_console(App* app, const char* dir) {
             assert(!remove(own));
             driver_will(argv_file, 0, "own controls");
             assert(gui_settings_set(&app->settings, "fullscreen", "1")); /* as finish() reads a run's */
+            /* the AOT threads, which each of their drivers reads, passed as picked */
+            assert(gui_settings_set(&app->settings, "aot_threads", "3") &&
+                   gui_settings_set(&app->settings, "aot_threads_most", "2"));
             for (way = 0; way < 2; ++way) {
                 char* argv_got;
                 assert(gui_settings_set(&app->settings, "controls", way ? "1" : "2") &&
@@ -7259,9 +7262,12 @@ static void ctr_own_console(App* app, const char* dir) {
                 assert(has_arg(argv_got, way ? "--controls=1" : "--controls=2", NULL) &&
                        has_arg(argv_got, "--launcher-picks=1", NULL) && has_arg(argv_got, "--from-launcher=1", NULL));
                 assert(has_arg(argv_got, "--touch=1", NULL) == way);
+                assert(has_arg(argv_got, "--aot-threads=3", NULL) && has_arg(argv_got, "--aot-threads-most=2", NULL));
                 free(argv_got);
                 leave_run(app);
             }
+            assert(gui_settings_set(&app->settings, "aot_threads", "0") &&
+                   gui_settings_set(&app->settings, "aot_threads_most", "0"));
             driver_will(NULL, 0, NULL);
             assert(gui_settings_set(&app->settings, "controls", "2") && gui_settings_set(&app->settings, "touch", "2"));
             /* a GBA or DS game's save states: S lists them from its folder, as a Switch game's, and Enter plays it from

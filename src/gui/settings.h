@@ -189,9 +189,10 @@ const char* gui_settings_extract(const GuiSettings* settings);
    (settings.txt's recompile: NCE, Debug's SLP vectorizer) picked, which a run gets with the game's options: the game's
    own pick where its picks beside game_ini (NULL: none) have one, else the launcher's. Their count */
 size_t gui_settings_recompile(GuiSettings* settings, int make, const char* game_ini, const char** argv);
-/* argv's --key=value for each of the recompile's settings every driver that recompiles takes picked: the optimization
-   level and the AOT threads, which the 3DS, Vita and GBA drivers read as the Switch's does. Their count */
-size_t gui_settings_recompile_shared(GuiSettings* settings, const char** argv);
+/* argv's --key=value for each of the recompile's settings every driver that recompiles takes picked: the AOT threads,
+   which the 3DS, Vita, GBA and DS drivers read as the Switch's does, and with opt the optimization level, which the
+   DS's does not take yet. Their count */
+size_t gui_settings_recompile_shared(GuiSettings* settings, bool opt, const char** argv);
 /* argv's --key=value of the game's setting key when it is picked: its count, 1 or 0 */
 size_t gui_settings_one(GuiSettings* settings, const char* key, const char** argv);
 /* argv's --gba-color=raw for a GBA game's run, when the launcher's GBA colors (gba_color) is Raw, not its default: 1, else 0 */

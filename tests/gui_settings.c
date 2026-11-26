@@ -125,9 +125,11 @@ int main(int argc, char** argv) {
            gui_settings_set(&s, "aot_threads", "4"));
     assert(gui_settings_recompile(&s, 0, NULL, options) == 2 && !strcmp(options[0], "--opt=s") &&
            !strcmp(options[1], "--aot-threads=4"));
-    /* the 3DS, Vita and GBA drivers' recompiles take the level and the threads, never LLVM Internals' */
-    assert(gui_settings_set(&s, "llvm_batch", "ipo") && gui_settings_recompile_shared(&s, options) == 2 &&
+    /* the 3DS, Vita and GBA drivers' recompiles take the level and the threads, never LLVM Internals'; the DS's the
+       threads alone */
+    assert(gui_settings_set(&s, "llvm_batch", "ipo") && gui_settings_recompile_shared(&s, true, options) == 2 &&
            !strcmp(options[0], "--opt=s") && !strcmp(options[1], "--aot-threads=4") &&
+           gui_settings_recompile_shared(&s, false, options) == 1 && !strcmp(options[0], "--aot-threads=4") &&
            gui_settings_set(&s, "llvm_batch", "full"));
     assert(!strcmp(s.keys[opt + 1].section, "Launch") && !strcmp(s.keys[opt + 1].key, "LLVM batch") &&
            !strcmp(s.values[opt + 1].key, "llvm_batch") && !strcmp(s.values[opt + 1].def, "full") &&

@@ -979,10 +979,10 @@ size_t gui_settings_recompile(GuiSettings* s, int make, const char* game_ini, co
     free(picks);
     return n;
 }
-size_t gui_settings_recompile_shared(GuiSettings* s, const char** argv) {
+size_t gui_settings_recompile_shared(GuiSettings* s, bool opt, const char** argv) {
     static const char* const shared[] = {"opt", "aot_threads", "aot_threads_most"};
     size_t n = 0;
-    for (size_t k = 0; k < sizeof shared / sizeof *shared; ++k) {
+    for (size_t k = opt ? 0 : 1; k < sizeof shared / sizeof *shared; ++k) {
         int i = find(s, shared[k]);
         const char* value = i < s->own ? picked(s, i) : NULL;
         if (!value) continue;
