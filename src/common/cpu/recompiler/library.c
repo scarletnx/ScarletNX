@@ -806,7 +806,9 @@ static void key_u64(CacheKey* k, uint64_t v) {
     snx_st_le64(bytes, v);
     key_bytes(k, bytes, sizeof(bytes));
 }
-static char* cache_path(struct snx_recompiler* r, SnxCodegen* codegen) {
+/* the module of codegen's name in the cache folder, for the native back end's code at version code (snx_native_code: a
+   module made before a change to that code is not loaded) */
+static char* cache_path_of(struct snx_recompiler* r, SnxCodegen* codegen, const char* code) {
     char name[64];
     CacheKey k = {0xcbf29ce484222325ull, 0x84222325cbf29ce4ull};
     key_bytes(&k, "snx-module-cache-4", 18);
@@ -822,6 +824,7 @@ static char* cache_path(struct snx_recompiler* r, SnxCodegen* codegen) {
         snx_st_le32(features, snx_native_features());
         key_bytes(&k, native, strlen(native) + 1);
         key_bytes(&k, features, sizeof(features));
+        key_bytes(&k, code, strlen(code) + 1);
     }
     key_u64(&k, codegen->function_count);
     for (size_t i = 0; i < codegen->function_count; ++i) {
@@ -848,6 +851,9 @@ static char* cache_path(struct snx_recompiler* r, SnxCodegen* codegen) {
 #endif
     );
     return snx_path_join(r->cache, name);
+}
+static char* cache_path(struct snx_recompiler* r, SnxCodegen* codegen) {
+    return cache_path_of(r, codegen, snx_native_code());
 }
 #if !defined(__powerpc64__) /* (load_cached_objects there) */
 /* the cached module at path, loaded; nonzero when there is none or it can't be loaded (then it is made again) */
