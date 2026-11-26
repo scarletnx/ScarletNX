@@ -125,6 +125,28 @@ void snx_vk_jobs_stop(SnxVkJobs* j, void (*drop)(void* owner, unsigned job)) {
 
 bool snx_vk_jobs_done(const SnxVkJobs* j, unsigned job) { return j->state[job] == SNX_VK_JOB_DONE; }
 
+void snx_vk_jobs_feed(SnxVkJobs* j, SnxVkFeed* f, bool all, void (*fill)(void* owner, unsigned job, size_t item),
+                      void (*made)(void* owner, unsigned job, size_t item)) {
+    for (;;) {
+        for (unsigned i = 0; i < SNX_VK_JOBS; ++i)
+            if (f->item[i] && snx_vk_jobs_take(j, i)) {
+                made(j->owner, i, f->item[i] - 1);
+                f->item[i] = 0;
+                --f->making;
+            }
+        while (f->next < f->count && f->making < (all ? SNX_VK_JOBS : SNX_VK_JOBS / 2)) {
+            int i = snx_vk_jobs_free(j);
+            if (i < 0) break;
+            fill(j->owner, (unsigned)i, f->next);
+            f->item[i] = (uint32_t)++f->next;
+            ++f->making;
+            snx_vk_jobs_queue(j, (unsigned)i);
+        }
+        if (!all || !f->making) return;
+        snx_vk_jobs_wait(j, false, NULL);
+    }
+}
+
 bool snx_vk_jobs_busy(SnxVkJobs* j) {
     bool busy = false;
     if (!j->lock) return false;

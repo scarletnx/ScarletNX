@@ -372,8 +372,7 @@ static struct {
     /* prepare_shaders: the file of the shaders and pipelines made (common/gpu/vk/prepared.h, snx_ctr_vk_prepared_open),
        its records of each kind, by whose numbers a pipeline's record names its shaders, and while it is read each
        one's shader (UINT32_MAX for one not made from it) and the program a vertex one is made from; the pipelines of
-       earlier runs to make, the next one a worker takes, the jobs making them (each one's index plus 1, 0 for a
-       draw's job) and how many; and the counts a run says */
+       earlier runs to make, on the workers (common/gpu/vk/jobs.h's feed); and the counts a run says */
     SnxPrepFile prep;
     bool prep_reading;
     uint32_t prep_vs, prep_fs;
@@ -381,9 +380,8 @@ static struct {
     size_t prep_vs_capacity, prep_fs_capacity;
     SnxCtrShaderSetup* prep_setup;
     PipeKey* prep_pipes;
-    size_t prep_pipe_count, prep_pipe_capacity, prep_next;
-    uint32_t prep_job[SNX_VK_JOBS];
-    unsigned prep_making;
+    size_t prep_pipe_capacity;
+    SnxVkFeed feed; /* prep_pipes's count, the next one a worker takes, the jobs making them */
     SnxCtrVkPrepared prepared;
 } g;
 
@@ -1993,7 +1991,7 @@ static VkPipeline pipeline(const PipeKey* k, bool* pending) {
         g.skipped += *pending;
         return e->pipeline;
     }
-    if (g.prep_making && prep_listed(k)) { /* one of the file's: a worker may have made it since the recording began */
+    if (g.feed.making && prep_listed(k)) { /* one of the file's: a worker may have made it since the recording began */
         const size_t before = g.pipe_count;
         prep_feed(false);
         for (size_t i = before; i < g.pipe_count; ++i)
@@ -2064,7 +2062,7 @@ static void prep_add_fs(FsShader* s) {
 }
 /* whether k is a pipeline of the file's, made or still to make */
 static bool prep_listed(const PipeKey* k) {
-    for (size_t i = 0; i < g.prep_pipe_count; ++i)
+    for (size_t i = 0; i < g.feed.count; ++i)
         if (!memcmp(&g.prep_pipes[i], k, sizeof *k)) return true;
     return false;
 }
@@ -2125,8 +2123,8 @@ static bool prep_each(void* ctx, uint32_t type, const uint8_t* payload, uint32_t
         ++g.prepared.pipelines;
         /* one of a shader not made: none, as a draw of it would have */
         if (k.vs == UINT32_MAX || k.fs == UINT32_MAX || !g.vs[k.vs].module || !g.fs[k.fs].module) return true;
-        if (!grow((void**)&g.prep_pipes, &g.prep_pipe_capacity, g.prep_pipe_count, sizeof *g.prep_pipes)) return false;
-        g.prep_pipes[g.prep_pipe_count++] = k;
+        if (!grow((void**)&g.prep_pipes, &g.prep_pipe_capacity, g.feed.count, sizeof *g.prep_pipes)) return false;
+        g.prep_pipes[g.feed.count++] = k;
         return true;
     }
     return false;
@@ -2147,30 +2145,18 @@ static void prep_adopt(const PipeKey* k, VkPipeline made) {
     g.pipes[g.pipe_count++] = (Pipe){.hash = h, .key = *k, .pipeline = made};
     ++g.prepared.made;
 }
-/* the pipelines made on the workers collected, and the next ones handed to them, half the jobs at most so that a
-   draw's own (async_pipelines) still finds one free; with stopping every one, until all are made */
-static void prep_feed(bool all) {
-    for (;;) {
-        for (unsigned i = 0; i < SNX_VK_JOBS; ++i)
-            if (g.prep_job[i] && snx_vk_jobs_take(&g.pool, i)) {
-                prep_adopt(&g.prep_pipes[g.prep_job[i] - 1], g.jobs[i].made);
-                g.jobs[i] = (PipeJob){0};
-                g.prep_job[i] = 0;
-                --g.prep_making;
-            }
-        while (g.prep_next < g.prep_pipe_count && g.prep_making < (all ? SNX_VK_JOBS : SNX_VK_JOBS / 2)) {
-            int i = snx_vk_jobs_free(&g.pool);
-            if (i < 0) break;
-            const PipeKey* k = &g.prep_pipes[g.prep_next];
-            g.jobs[i] = (PipeJob){.key = *k, .vs = g.vs[k->vs].module, .fs = g.fs[k->fs].module};
-            g.prep_job[i] = (uint32_t)++g.prep_next;
-            ++g.prep_making;
-            snx_vk_jobs_queue(&g.pool, (unsigned)i);
-        }
-        if (!all || !g.prep_making) return;
-        snx_vk_jobs_wait(&g.pool, false, NULL);
-    }
+/* a pipeline of the file's to a worker's job, and one a worker made into the table */
+static void prep_fill(void* owner, unsigned job, size_t item) {
+    (void)owner;
+    const PipeKey* k = &g.prep_pipes[item];
+    g.jobs[job] = (PipeJob){.key = *k, .vs = g.vs[k->vs].module, .fs = g.fs[k->fs].module};
 }
+static void prep_made(void* owner, unsigned job, size_t item) {
+    (void)owner;
+    prep_adopt(&g.prep_pipes[item], g.jobs[job].made);
+    g.jobs[job] = (PipeJob){0};
+}
+static void prep_feed(bool all) { snx_vk_jobs_feed(&g.pool, &g.feed, all, prep_fill, prep_made); }
 void snx_ctr_vk_prepared_open(const char* directory) {
     const SnxCtrVk* v = snx_ctr_vk();
     if (!v || !g_settings.prepare_shaders || g.prep.who) return;
@@ -2205,16 +2191,16 @@ void snx_ctr_vk_prepared_open(const char* directory) {
     free(g.prep_setup);
     g.prep_setup = NULL;
     if (!g.prepared.shaders && !g.prepared.pipelines) return;
-    const bool workers = g.prep_pipe_count && pipe_workers();
-    const bool now = g.prep_pipe_count && (g_settings.prepare_shaders == 2 || !workers);
+    const bool workers = g.feed.count && pipe_workers();
+    const bool now = g.feed.count && (g_settings.prepare_shaders == 2 || !workers);
     if (workers)
         prep_feed(now); /* every one, or the first ones to the workers */
     else if (now)
-        for (; g.prep_next < g.prep_pipe_count; ++g.prep_next) {
-            const PipeKey* k = &g.prep_pipes[g.prep_next];
+        for (; g.feed.next < g.feed.count; ++g.feed.next) {
+            const PipeKey* k = &g.prep_pipes[g.feed.next];
             prep_adopt(k, make_pipeline(k, g.vs[k->vs].module, g.fs[k->fs].module));
         }
-    if (now || !g.prep_pipe_count)
+    if (now || !g.feed.count)
         fprintf(stderr,
                 "3ds gpu: %s: %u shaders and %u pipelines of earlier runs, %u of the pipelines made before the first "
                 "draw in %.0f ms%s\n",
@@ -3021,7 +3007,7 @@ SnxCtrPicaResult snx_ctr_vk_vertices_end(SnxCtrPica* p, SnxCtrMemory* memory) {
 }
 
 void snx_ctr_vk_render_begin(unsigned slot) {
-    if (g.prep_next < g.prep_pipe_count || g.prep_making) prep_feed(false);
+    if (g.feed.next < g.feed.count || g.feed.making) prep_feed(false);
     g.slot = slot;
     g.ring_at = 0;
     g.vs_uploaded = g.fs_uploaded = g.lut_uploaded = false; /* the last uploads were the other slot's */
@@ -3174,10 +3160,10 @@ void snx_ctr_vk_render_free(void) {
                 free(g.jobs[i].words);
             }
     }
-    if (g.prep_pipe_count && g_settings.prepare_shaders == 1)
+    if (g.feed.count && g_settings.prepare_shaders == 1)
         fprintf(stderr,
                 "3ds gpu: prepare_shaders=1 made %u of the %zu pipelines of earlier runs before the game ended\n",
-                g.prepared.made, g.prep_pipe_count);
+                g.prepared.made, g.feed.count);
     snx_prep_close(&g.prep);
     free(g.prep_vs_of);
     free(g.prep_fs_of);

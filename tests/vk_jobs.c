@@ -25,6 +25,19 @@ static void drop(void* owner, unsigned job) {
     ++g_dropped[job];
 }
 
+/* the feed's items: each job's item as filled, and how often each item was made and taken */
+static size_t g_filled[SNX_VK_JOBS];
+static int g_taken[200];
+static void fill(void* owner, unsigned job, size_t item) {
+    (void)owner;
+    g_filled[job] = item;
+}
+static void taken(void* owner, unsigned job, size_t item) {
+    (void)owner;
+    CHECK(g_filled[job] == item);
+    ++g_taken[item];
+}
+
 int main(void) {
     static SnxVkJobs jobs = {.make = make, .who = "vk_jobs", .thread = "test jobs"};
     if (!SDL_Init(0)) return 77;
@@ -49,11 +62,25 @@ int main(void) {
     snx_vk_jobs_hold(&jobs, false);
     snx_vk_jobs_wait(&jobs, false, drop);
     CHECK(g_made[0] == 2 && snx_vk_jobs_take(&jobs, 0));
+    /* a feed of 200 items: half the jobs at most in hand, a draw's job beside them left alone; with all, each item
+       made and taken once */
+    SnxVkFeed feed = {.count = 200};
+    int own = snx_vk_jobs_free(&jobs);
+    snx_vk_jobs_hold(&jobs, true);
+    snx_vk_jobs_queue(&jobs, (unsigned)own);
+    snx_vk_jobs_feed(&jobs, &feed, false, fill, taken);
+    CHECK(feed.making == SNX_VK_JOBS / 2 && feed.next == SNX_VK_JOBS / 2 && !feed.item[own]);
+    snx_vk_jobs_hold(&jobs, false);
+    snx_vk_jobs_feed(&jobs, &feed, true, fill, taken);
+    int once = 1;
+    for (int i = 0; i < 200; ++i) once &= g_taken[i] == 1;
+    CHECK(once && feed.next == 200 && !feed.making && snx_vk_jobs_take(&jobs, (unsigned)own));
     /* held as they stop: the queued job dropped, never made */
+    const int made = g_made[5];
     snx_vk_jobs_hold(&jobs, true);
     snx_vk_jobs_queue(&jobs, 5);
     snx_vk_jobs_stop(&jobs, drop);
-    CHECK(g_dropped[5] == 1 && g_made[5] == 0 && !jobs.count && !jobs.lock);
+    CHECK(g_dropped[5] == 1 && g_made[5] == made && !jobs.count && !jobs.lock);
     SDL_Quit();
     if (!g_failed) puts("vk_jobs: ok");
     return g_failed;
