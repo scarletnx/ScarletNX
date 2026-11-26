@@ -219,6 +219,11 @@ void vk_uma_host_barrier(VkCommandBuffer cb, u64 frame) { abort(); }
 u64 vk_uma_import_in(u64 cpu, u64 end, u64* hi) { abort(); }
 u64 vk_uma_import_part(u64 cpu, u64 len, int* held) { abort(); }
 int vk_uma_imports_dear(void) { abort(); }
+/* draw_batches=2 (render.c): no run is split here, so the share lock is never taken, and no draw writes in place */
+_Atomic int g_vk_share_on;
+void vk_share_lock(void) {}
+void vk_shared_note(u32 which) { (void)which; }
+u32 vk_uma_prep_mark(void) { return 0; }
 int vk_uma_pending(u64 gva, u64 len) { abort(); }
 int vk_uma_write(u64 gva, u64 len, u64 align, int ordered, VkBuffer* buf, u64* off) { abort(); }
 void vk_uma_order_request(void) {}
