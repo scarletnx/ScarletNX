@@ -1386,6 +1386,7 @@ VkResult vk_devmem_flush(DevMem m, u64 off, u64 size) {
     if (!m || g_devmem.coherent || !atoms(m, off, size, &range)) return VK_SUCCESS;
     return vkFlushMappedMemoryRanges(g_vk.dev, 1, &range);
 }
+int vk_devmem_coherent(void) { return g_devmem.coherent; }
 VkResult vk_devmem_invalidate(DevMem m, u64 off, u64 size) {
     VkMappedMemoryRange range;
     if (!m || g_devmem.coherent || !atoms(m, off, size, &range)) return VK_SUCCESS;

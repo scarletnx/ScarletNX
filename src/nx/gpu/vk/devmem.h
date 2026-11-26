@@ -142,6 +142,7 @@ void vk_devmem_priority(DevMem mem, u32 prio);
 /* the CPU wrote [off, off + size) of a mapped allocation, or reads it next (size VK_WHOLE_SIZE: to its end): what
    memory that is not coherent needs, and nothing for memory that is */
 VkResult vk_devmem_flush(DevMem mem, u64 off, u64 size);
+int vk_devmem_coherent(void); /* every mapped allocation is host coherent: vk_devmem_flush does nothing */
 VkResult vk_devmem_invalidate(DevMem mem, u64 off, u64 size);
 
 /* each heap's state, VK_MAX_MEMORY_HEAPS of them. The driver's numbers are asked again at vk_devmem_frame (each
