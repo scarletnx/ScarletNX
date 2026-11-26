@@ -9,45 +9,6 @@
    address from RDI into RBX, kept as RBX is the callee's), the runtime's UNDEF (cpu.h's RtAPI.undef(state, pc, word))
    and the return (the next pc in RAX) */
 
-/* PMUL, PMULL of bytes (x64_helpers.c): one call per instruction, q the encoding's Q bit in desc. The arguments
-   and result follow snx_x64_fp_vec's, so sgx_vcold can call them */
-void snx_x64_pmul_v(CPU* c, void* out, const void* x, const void* y, const void* z, u32 q);
-void snx_x64_pmull_p8(CPU* c, void* out, const void* x, const void* y, const void* z, u32 q);
-
-/* SQSHL, UQSHL, SRSHL, URSHL, SQRSHL and UQRSHL of byte and halfword lanes (x64_helpers.c): one call per
-   instruction, with the arguments and result as snx_x64_fp_vec's. desc is size (bits 0-1), q (bit 2), unsigned
-   (bit 3), rounding (bit 4) and saturating (bit 5); the helper sets FPSR.QC */
-#define SNX_X64_SHL_DESC(q, size, uns, round, sat)                                                                     \
-    ((u32)(size) | (u32)(q) << 2 | (u32)(uns) << 3 | (u32)(round) << 4 | (u32)(sat) << 5)
-void snx_x64_shl_v(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
-
-/* SQSHL, UQSHL, SQRSHL, UQRSHL of words (x64_helpers.c): one call per instruction, the arguments and result as
-   snx_x64_fp_vec's. desc is q (bit 0), unsigned (bit 1), round (bit 2) and saturating (bit 3); the helper sets
-   FPSR.QC */
-#define SNX_X64_SHL_W_DESC(q, uns, round, sat)                                                                         \
-    ((u32)(q) | (u32)(uns) << 1 | (u32)(round) << 2 | (u32)(sat) << 3)
-void snx_x64_shl_w(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
-
-/* SQRDMLAH, SQRDMLSH, SQDMLAL by element and SQDMLSL by element (x64_helpers.c): one call per instruction, with the
-   arguments and result as snx_x64_fp_vec's. desc is q (bit 0), size (bits 1-2) and Vm's lane (bits 8-11) */
-#define SNX_X64_QDM_DESC(q, size, idx) ((u32)(q) | (u32)(size) << 1 | (u32)(idx) << 8)
-void snx_x64_sqrdmlah_v(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
-void snx_x64_sqrdmlsh_v(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
-void snx_x64_sqdmlal_vi(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
-void snx_x64_sqdmlsl_vi(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
-
-/* across-lane integer reductions (x64_helpers.c): one call for ADDV, SADDLV, UADDLV, SMAXV, SMINV, UMAXV,
-   UMINV. desc is op (bits 0-2: 0 ADDV, 1 SADDLV, 2 UADDLV, 3 SMAXV, 4 SMINV, 5 UMAXV, 6 UMINV), size (bits
-   3-4) and Q (bit 5) */
-#define SNX_X64_RED_DESC(op, size, q) ((u32)(op) | (u32)(size) << 3 | (u32)(q) << 5)
-void snx_x64_reduce_v(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
-
-/* LD_mult and ST_mult's Q forms of 2 to 4 registers: one call for the whole access (x64_helpers.c). desc packs
-   Rt (bits 0-4), the register count less 2 (bits 5-6), the element size's log2 (bits 7-8) and a load in bit 9.
-   The helper reads and writes the SIMD&FP registers of the state, so the call's side flag keeps every pin stored
-   and reloaded around it */
-void snx_x64_struct_mult(CPU* c, u64 address, u32 desc);
-
 /* mach_codegen.inc's struct_ldst_fast deinterleaves 16-byte structures with PSHUFB on this back end */
 #define MG_X64_STRUCT_FAST 1
 
@@ -886,10 +847,7 @@ static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r) {
         case SGX_M_CALL:
         case SGX_M_CALL_RT:
             sgx_call_room(a);
-            /* a helper whose side flag is set wrote the state's SIMD&FP registers: every pin, not just the
-               caller-saved ones, goes to the state and comes back around the call */
-            if (i->side && a->pin_flush) a->pin_flush(a->machine);
-            else if (a->pin_cs) a->pin_cs(a->machine, 1); /* the caller-saved pins around the call */
+            if (a->pin_cs) a->pin_cs(a->machine, 1); /* the caller-saved pins around the call */
             if (i->w) sgx_state_arg(a, b);
             if (i->op == SGX_M_CALL_RT) {
                 sgx_byte(b, 0x48); /* mov rax, [rbx + rt] */
@@ -912,8 +870,7 @@ static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r) {
                 sgx_byte(b, 0xFF);
                 sgx_byte(b, 0xD0);
             }
-            if (i->side && a->pin_reload) a->pin_reload(a->machine);
-            else if (a->pin_cs) a->pin_cs(a->machine, 0);
+            if (a->pin_cs) a->pin_cs(a->machine, 0);
             return;
         default: sgx_machine_op(a, at, r); return;
         }

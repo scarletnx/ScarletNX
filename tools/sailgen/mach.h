@@ -2423,8 +2423,6 @@ typedef struct SgXAsm {
     void (*reloc)(void* machine, size_t at, const char* sym, long long addend);
     SnxU64 (*resolve)(const char* sym);
     void (*pin_flush)(void* machine); /* the guest registers kept in host ones to the state (before UNDEF's call) */
-    /* the same pins back from the state, after a call whose helper wrote registers there */
-    void (*pin_reload)(void* machine);
     /* the pins in caller-saved registers (R10, R11, XMM8-15) to the state (store) or back, around a call; the host
        registers pins hold, which no value is given (reserved, xreserved) */
     void (*pin_cs)(void* machine, int store);
