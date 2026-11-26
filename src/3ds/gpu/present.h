@@ -44,6 +44,10 @@ bool snx_ctr_layout_rects(SnxCtrLayout layout, bool swap, uint32_t window_width,
    window. frame_dir receives bounded PPM dumps (the 3DS framebuffer is 240x400/320 portrait,
    shown rotated 90 degrees clockwise, like the console's landscape screens). */
 bool snx_ctr_present_init(SnxCtrMemory* memory, const char* frame_dir, bool headless);
+/* why the last init failed ("" none) */
+const char* snx_ctr_present_why(void);
+/* the GPU stopped answering (its ring's loss, common/gpu/vk/ring.h): true with why */
+bool snx_ctr_present_lost(char* why, size_t why_size);
 /* The window's title, as a Switch game's: the game's name, what it is played with in parentheses when anything (an
    update, DLC), then the build ("ScarletNX <branch> <commit> (<compiler>, <OS> <arch>)"); and the program's icon */
 void snx_ctr_present_title(const char* name, const char* addons);

@@ -588,6 +588,10 @@ int snx_nds_main(int argc, char** argv) {
             told_swi = cpu->unknown_swi;
         }
         nds_host_frame(host);
+        if (nds_host_lost(host, error, sizeof error)) {
+            snx_error_note(SNX_ERROR_GPU_LOST, "scarletnx-nds", "%s", error);
+            goto report;
+        }
         states_step(host, board, cpu, folder, name, (double)frame * FRAME_MS);
         if (shot && shot_every && frame && !(frame % shot_every)) {
             char* each = snx_format("%s.%06ld.ppm", shot, frame);

@@ -316,7 +316,19 @@ static int play(const char* folder, const char* ini, bool recompile, double seco
     free(header);
     free(sfo);
     free(title);
+    /* a window someone plays at, not a timed run: without the device it would show nothing */
+    if (vita_present_why()[0] && !(seconds > 0)) {
+        snx_error_note(SNX_ERROR_GPU_START, "scarletnx-vita", "no Vulkan device for the game's window: %s",
+                       vita_present_why());
+        vita_present_free();
+        status = 1;
+        goto done;
+    }
     status = vita_run(process, seconds);
+    if (vita_present_lost(error, sizeof error)) {
+        snx_error_note(SNX_ERROR_GPU_LOST, "scarletnx-vita", "%s", error);
+        if (!status) status = 1;
+    }
     vita_present_shot(process);
     vita_gxm_free(process); /* the renderer, before the device it draws on */
     vita_present_free();

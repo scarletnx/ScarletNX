@@ -63,6 +63,7 @@ typedef struct {
     unsigned scale;         /* the render scale it shows: 1 is the console's */
 } Frame;
 static struct {
+    char why[1024]; /* the last init's failure */
     SnxCtrVkCompute decode;
     Frame frames[2];
     Frame source_dummy; /* bound where a frame is decoded from the guest, which the shader does not read */
@@ -237,6 +238,7 @@ bool snx_ctr_present_init(SnxCtrMemory* memory, const char* frame_dir, bool head
     if (!snx_ctr_vk_init(memory, headless, why, sizeof why)) {
         fprintf(stderr, "3ds gpu: %s\n", why);
         memset(&g_present, 0, sizeof g_present);
+        snprintf(g_present.why, sizeof g_present.why, "%s", why);
         return false; /* the signal handlers stay for a headless run with no Vulkan device */
     }
     /* the device is up: from here the presenter's free unwinds a partial start too */
@@ -317,6 +319,14 @@ void snx_ctr_present_title(const char* name, const char* addons) {
     snx_window_icon(v->host.window);
 }
 bool snx_ctr_present_ready(void) { return g_present.up; }
+const char* snx_ctr_present_why(void) { return g_present.why; }
+bool snx_ctr_present_lost(char* why, size_t why_size) {
+    const SnxCtrVk* v = g_present.up ? snx_ctr_vk() : NULL;
+    if (!v || v->ring.lost == VK_SUCCESS) return false;
+    snprintf(why, why_size, "the GPU stopped answering (%s): no frame is drawn after it",
+             snx_vk_result_str(v->ring.lost));
+    return true;
+}
 bool snx_ctr_present_windowed(void) { return g_present.swap[0].swapchain || g_present.swap[1].swapchain; }
 bool snx_ctr_present_separate(void) {
     return g_present.up && g_present.separate && g_present.swap[0].swapchain && g_present.swap[1].swapchain;

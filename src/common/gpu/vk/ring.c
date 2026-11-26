@@ -128,14 +128,14 @@ uint64_t snx_vk_ring_submit(SnxVkRing* ring, VkSemaphore wait, VkSemaphore signa
                          NULL);
     SnxVkRingSlot* s = &ring->slots[ring->slot];
     VkCommandBuffer buffers[2] = {s->uploads, cb};
-    bool ended = true;
+    VkResult ended = VK_SUCCESS;
     if (ring->uploading) { /* what the uploads wrote, for every command after them */
         VkMemoryBarrier uploaded = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
                                     .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
                                     .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT};
         vkCmdPipelineBarrier(s->uploads, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1,
                              &uploaded, 0, NULL, 0, NULL);
-        ended = vkEndCommandBuffer(s->uploads) == VK_SUCCESS;
+        ended = vkEndCommandBuffer(s->uploads);
     }
     VkPipelineStageFlags stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
     /* the swapchain's binary semaphore, if any, then the timeline's serial (a binary one's value is not read) */
@@ -157,8 +157,12 @@ uint64_t snx_vk_ring_submit(SnxVkRing* ring, VkSemaphore wait, VkSemaphore signa
                        .signalSemaphoreCount = ns,
                        .pSignalSemaphores = signals};
     ring->recording = ring->uploading = false;
-    if (vkEndCommandBuffer(cb) != VK_SUCCESS || !ended || vkQueueSubmit(ring->queue, 1, &si, s->fence) != VK_SUCCESS) {
+    VkResult r = vkEndCommandBuffer(cb);
+    if (r == VK_SUCCESS) r = ended;
+    if (r == VK_SUCCESS) r = vkQueueSubmit(ring->queue, 1, &si, s->fence);
+    if (r != VK_SUCCESS) {
         /* a lost device: nothing more runs, and the slot is free as if it had */
+        if (ring->lost == VK_SUCCESS) ring->lost = r;
         vkResetCommandBuffer(cb, 0);
         vkResetCommandBuffer(s->uploads, 0);
         return ring->submitted;

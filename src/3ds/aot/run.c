@@ -321,6 +321,12 @@ int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel
     vpad_settings(directory, snx_path_leaf(directory), g_run.argc, g_run.argv);
     if (!snx_ctr_present_init(process->memory, frame_dir, headless)) {
         printf("The presenter did not start: no frames will be drawn, shown or saved\n");
+        /* a window someone plays at, no budget: it would show nothing */
+        if (!headless && !(seconds > 0) && !limit && frames_limit == UINT64_MAX) {
+            snprintf(error, error_size, "no Vulkan device for the game's window: %s", snx_ctr_present_why());
+            result = SNX_CTR_RUN_NO_GPU;
+            goto done;
+        }
         if (frames_limit != UINT64_MAX && frames_limit > 0) {
             snprintf(error, error_size, "--frames needs a Vulkan presenter");
             result = 1;
@@ -345,7 +351,7 @@ int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel
     /* Runs until the game exits or its window is closed, as a Switch game does, or for the --max-blocks, --seconds
        or --frames budget. The dispatch goes in slices so the window's events are seen between them */
     uint64_t executed = 0;
-    bool closed = false, timed = false, ran_frames = frames_limit == 0;
+    bool closed = false, timed = false, ran_frames = frames_limit == 0, lost = false;
     double deadline = seconds > 0 ? snx_seconds() + seconds : 0;
     SnxCtrRunResult state = SNX_CTR_RUN_BUDGET;
     printf("Running ARM11 static AOT%s\n", snx_ctr_space_base(process->space) ? " in a flat 4 GiB space" : "");
@@ -366,6 +372,7 @@ int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel
         /* a service, or a save state loaded only in part, may end the run between two dispatches */
         if (state != SNX_CTR_RUN_BUDGET || process->stopped[0] || (limit && executed >= limit)) break;
         if ((closed = snx_ctr_present_closed())) break;
+        if ((lost = snx_ctr_present_lost(error, error_size))) break;
         if (frames_limit != UINT64_MAX && snx_ctr_present_frames() >= frames_limit) {
             ran_frames = true;
             break;
@@ -373,7 +380,10 @@ int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel
         if ((timed = deadline && snx_seconds() >= deadline)) break;
     }
     SnxArmCPU* cpu = snx_ctr_process_cpu(process);
-    if (state == SNX_CTR_RUN_EXIT) {
+    if (lost) {
+        report_threads(process);
+        result = SNX_CTR_RUN_GPU_LOST;
+    } else if (state == SNX_CTR_RUN_EXIT) {
         /* ExitThread ends the process when it was the last thread, and its r0 means nothing then */
         if (process->last_svc == 0x09)
             printf("Guest's last thread exited: blocks=%" PRIu64 "\n", executed);

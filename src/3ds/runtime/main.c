@@ -331,6 +331,13 @@ out:
     free(staging);
     return result;
 }
+/* the kind of error a run's status past 0 is (snx_ctr_aot_run) */
+static int run_kind(int status) {
+    return status == 3                      ? SNX_ERROR_NOT_YET
+           : status == SNX_CTR_RUN_NO_GPU   ? SNX_ERROR_GPU_START
+           : status == SNX_CTR_RUN_GPU_LOST ? SNX_ERROR_GPU_LOST
+                                            : SNX_ERROR_INTERNAL;
+}
 /* The default: nothing extracted. The game is mapped and checked as the extraction checks it, its ExeFS and RomFS
    read where they lie, and folder keeps the title's state alone: an extraction an earlier --extract-container left
    there is taken away, as the game has all of it */
@@ -361,7 +368,7 @@ static int play_game(const SnxCtrSource* game, const char* folder, SnxCtrModel m
     }
     status = snx_ctr_aot_run(state, game, model, max_blocks, seconds, frames, headless, shot, flags, ipc_stubs, runtime,
                              asked, error, error_size);
-    if (status) snx_error_note(status == 3 ? SNX_ERROR_NOT_YET : SNX_ERROR_INTERNAL, "scarletnx-3ds", "%s", error);
+    if (status) snx_error_note(run_kind(status), "scarletnx-3ds", "%s", error);
 done:
     free(state);
     return status;
@@ -454,7 +461,7 @@ static int play(const char* input, SnxCtrSource* source, char* extracted, SnxCtr
     int status = snx_ctr_aot_run(extracted, NULL, model, max_blocks, seconds, frames, headless, shot, flags, ipc_stubs,
                                  runtime, asked, error, sizeof error);
     free(extracted);
-    if (status) snx_error_note(status == 3 ? SNX_ERROR_NOT_YET : SNX_ERROR_INTERNAL, "scarletnx-3ds", "%s", error);
+    if (status) snx_error_note(run_kind(status), "scarletnx-3ds", "%s", error);
     return status;
 }
 /* The last part of path, a separator at its end dropped, and ".exe" with it on Windows; the caller's to free */

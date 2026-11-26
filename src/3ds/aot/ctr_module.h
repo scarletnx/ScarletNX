@@ -83,6 +83,9 @@ char* snx_ctr_game_file(const char* directory, const char* suffix);
    ends. The title is the extraction in directory, or with game the game read where it lies, directory then its state
    folder. The module is trusted as code the driver compiled itself, never as a sandbox. */
 enum { SNX_CTR_RECOMPILE = 1, SNX_CTR_COMPILE_ONLY = 2 };
+/* snx_ctr_aot_run's status past 0 (ended well), 1 (an error) and 3 (what the runtime does not do yet): the window's
+   GPU did not start, or stopped answering */
+enum { SNX_CTR_RUN_NO_GPU = 4, SNX_CTR_RUN_GPU_LOST = 5 };
 /* ipc_stubs: the services whose unknown commands answer success instead of stopping when the ctr_auto_stub_ipc setting
    is off (snx_ctr_ipc_stub_mask). runtime: the program copied into the folder as the game's own once its module is
    ready (snx_ctr_game_file's name, .exe on Windows), NULL for none. asked: the recompile's options (ctr_compile.h),

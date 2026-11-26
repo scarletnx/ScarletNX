@@ -4,7 +4,8 @@
    then a fill of its source recorded in the uploads, copies the fill's bytes, as the uploads run first; a recording
    with no uploads submits as before; and the slots' uploads are begun afresh after each submission, past a turn of
    the ring. Each with the slots' fences, then with the ring's timeline semaphore where the device has one (Vulkan
-   1.2). On whatever Vulkan device there is; none is a skip. */
+   1.2). A submission the device refuses is kept as the ring's loss, its serial not taken. On whatever Vulkan device
+   there is; none is a skip. */
 #include "common/gpu/vk/device.h"
 #include "common/gpu/vk/ring.h"
 #include "common/gpu/vk/window.h"
@@ -71,6 +72,12 @@ static int recordings(const Made* m, VkQueue queue, VkBuffer buffer, uint32_t* w
         if (binary[k]) vkDestroySemaphore(m->device, binary[k], NULL);
     return failures;
 }
+/* vkQueueSubmit as a lost device answers it */
+static VKAPI_ATTR VkResult VKAPI_CALL refused(VkQueue queue, uint32_t count, const VkSubmitInfo* submits,
+                                              VkFence fence) {
+    (void)queue, (void)count, (void)submits, (void)fence;
+    return VK_ERROR_DEVICE_LOST;
+}
 int main(void) {
     SnxVkWindow w;
     char why[256];
@@ -128,6 +135,23 @@ int main(void) {
     for (int present = 0; present < 2; ++present) {
         failures += recordings(&m, queue, buffer, words, &dp, false, present);
         if (m.timeline) failures += recordings(&m, queue, buffer, words, &dp, true, present);
+    }
+    {
+        SnxVkRing ring;
+        PFN_vkQueueSubmit submit = vkQueueSubmit;
+        uint64_t serial;
+        if (!snx_vk_ring_init(&ring, m.device, queue, m.family, 2, &dp, false)) abort();
+        (void)snx_vk_ring_commands(&ring);
+        vkQueueSubmit = refused;
+        serial = snx_vk_ring_submit(&ring, VK_NULL_HANDLE, VK_NULL_HANDLE);
+        vkQueueSubmit = submit;
+        if (ring.lost != VK_ERROR_DEVICE_LOST || serial || ring.submitted) {
+            printf("a refused submission: lost %d, serial %llu, submitted %llu, not %d, 0 and 0\n", (int)ring.lost,
+                   (unsigned long long)serial, (unsigned long long)ring.submitted, (int)VK_ERROR_DEVICE_LOST);
+            ++failures;
+        }
+        vkDeviceWaitIdle(m.device);
+        snx_vk_ring_free(&ring);
     }
     vkDestroyBuffer(m.device, buffer, NULL);
     vkFreeMemory(m.device, memory, NULL);
