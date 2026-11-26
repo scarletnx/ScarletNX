@@ -17,15 +17,37 @@
 int snx_fallback_available(void);
 /* its name, for the lines a recompile prints ("LLVM"; "none") */
 const char* snx_fallback_name(void);
+/* the function the fallback is to make whatever the native back end can, its IR printed (the setting ir_dump_pc), for
+   SnxNativeOptions.llvm_at: 0 for none, as always without LLVM */
+SnxU64 snx_fallback_dump_pc(void);
+/* 1 where the fallback counts each unit's code (the setting ir_stats), 0 without LLVM */
+int snx_fallback_stats(void);
+
+struct SnxIrTuning; /* recompiler/llvm/ir.h's */
+/* What an AOT module's unit asks of the fallback besides its code, all of it LLVM's own: snx_fallback_object takes
+   NULL for none of it, as a JIT unit asks */
+typedef struct {
+    const char* triple;               /* another machine's module (snx_native_target's), NULL for this host's */
+    const struct SnxIrTuning* tuning; /* the game code's LLVM settings (snx_llvm_tuning), NULL for LLVM's own */
+    const char* keep_ir;              /* where the unit's IR is kept, as <name>.ll (--keep-ir); NULL for nowhere */
+    /* per function of codegen, its place in the --layout order, which puts it in a code section of its own
+       (SNX_LINK_HOT_TEXT and the place), or SIZE_MAX; NULL for no order */
+    const size_t* rank;
+    int callees_first; /* each function made after those of the unit it calls or jumps to: ir_promote.c's summaries */
+    char* stats;       /* its answer: the unit's IR counts (snx_fallback_stats) as a line's text, malloc'd; or NULL */
+} SnxFallbackUnit;
 
 /* The object of the functions [first, last) of codegen the native back end did not make (made as it left it, 1 for each
    it did; NULL: none of them), as it makes them for options (jit, table_name, direct, bound and stale; its llvm_at,
-   alone, refused and without are its own): an AOT module's, or code the JIT's loader loads into this process
-   (options->jit). name is the unit's, and opt the -O letter: 0, 1, 2, 3, s or z. 0, with *object (malloc'd) NULL where
-   every function was made; -1 with the reason in error */
+   alone, refused and without are its own) and unit (NULL: none of it): an AOT module's, or code the JIT's loader loads
+   into this process (options->jit). name is the unit's, and opt the -O letter: 0, 1, 2, 3, s or z. 0, with *object
+   (malloc'd) NULL where every function was made; -1 with the reason in error */
 int snx_fallback_object(SnxCodegen* codegen, size_t first, size_t last, const SnxNativeOptions* options,
-                        const unsigned char* made, const char* name, char opt, unsigned char** object, size_t* size,
-                        char* error, size_t error_size);
+                        const unsigned char* made, SnxFallbackUnit* unit, const char* name, char opt,
+                        unsigned char** object, size_t* size, char* error, size_t error_size);
+/* The runtime library (rtlib.c) made for this host's processor at opt, as a module whose code the fallback made links
+   it: 0 with the object (malloc'd), or -1 with the reason in error */
+int snx_fallback_rtlib(char opt, unsigned char** object, size_t* size, char* error, size_t error_size);
 
 /* AArch32 and Thumb blocks: a maker of them for one thread, for an AOT module or (jit) for code the JIT's loader loads
    into this process, at opt's -O level. NULL out of memory */

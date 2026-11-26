@@ -5,16 +5,102 @@
 #include "common/cpu/recompiler/fallback.h"
 #include "common/cpu/arm/llvm.h"
 #include "common/cpu/recompiler/llvm/ir.h"
+#include "common/cpu/recompiler/object/link.h"
 #include "common/utilities/common.h"
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 int snx_fallback_available(void) { return 1; }
 const char* snx_fallback_name(void) { return "LLVM"; }
+SnxU64 snx_fallback_dump_pc(void) { return snx_ir_dump_pc(); }
+int snx_fallback_stats(void) { return snx_ir_stats_on(); }
 
 /* ---- A64 functions ---- */
+
+/* The unit's functions [first, last) in an order that emits each one after the functions of the unit it calls
+   directly (BL) or jumps to (B): a post-order of those calls, so ir_promote.c has a callee's summary when it promotes
+   the calls of it. In a cycle of calls the first one reached goes before the callers it summarizes, which then call
+   it as they call any other function. NULL out of memory (the address order then) */
+static size_t* callees_first(SnxCodegen* codegen, size_t first, size_t last) {
+    size_t n = last - first, top = 0, done = 0;
+    size_t *order = (size_t*)malloc((n ? n : 1) * sizeof(size_t)),
+           *stack = (size_t*)malloc((n ? n : 1) * sizeof(size_t));
+    size_t* next = (size_t*)calloc(n ? n : 1, sizeof(size_t));   /* the instruction each function's walk goes on from */
+    unsigned char* state = (unsigned char*)calloc(n ? n : 1, 1); /* 1 on the walk, 2 placed */
+    if (!order || !stack || !next || !state) {
+        free(order);
+        order = NULL;
+        goto end;
+    }
+    for (size_t root = 0; root < n; ++root) {
+        if (state[root]) continue;
+        state[root] = 1;
+        stack[top++] = root;
+        while (top) {
+            size_t f = stack[top - 1];
+            const SnxFunction* fn = &codegen->functions[first + f];
+            size_t callee = n;
+            while (next[f] < fn->count && callee == n) {
+                SnxU64 address = snx_function_address(fn, next[f]++), target;
+                SnxU32 word = 0;
+                SnxA64Insn insn;
+                const SnxFunction* to;
+                if (!snx_codegen_word(codegen, address, &word)) continue;
+                snx_a64_decode_word(word, codegen->features, &insn);
+                if (insn.flow != SNX_A64_FLOW_BL && insn.flow != SNX_A64_FLOW_B) continue;
+                target = snx_a64_branch_target(&insn, address);
+                to = snx_codegen_function(codegen, target);
+                if (!to || to->start != target) continue;
+                if ((size_t)(to - codegen->functions) < first || (size_t)(to - codegen->functions) >= last) continue;
+                if (!state[(size_t)(to - codegen->functions) - first])
+                    callee = (size_t)(to - codegen->functions) - first;
+            }
+            if (callee < n) {
+                state[callee] = 1;
+                stack[top++] = callee;
+            } else {
+                state[f] = 2;
+                order[done++] = first + f;
+                --top;
+            }
+        }
+    }
+end:
+    free(stack);
+    free(next);
+    free(state);
+    return order;
+}
+
+/* name's IR kept in dir (--keep-ir): nonzero, with error saying which and where, when it could not be written */
+static int save_ir(SnxIr* ir, const char* dir, const char* name, char* error, size_t error_size) {
+    char *text = snx_ir_text(ir), *file = snx_format("%s.ll", name), *path = snx_path_join(dir, file);
+    int rc = snx_write_file(path, text, strlen(text));
+    if (rc) snprintf(error, error_size, "cannot save the IR of %s in %s", name, dir);
+    LLVMDisposeMessage(text);
+    free(file);
+    free(path);
+    return rc;
+}
+
+/* the unit's IR counts (ir_stats), as a recompile's line says them */
+static char* stats_text(const SnxIrStats* s) {
+    return snx_format(
+        "%llu functions (%llu promoted), %llu registers made locals (%llu left in the CPU structure), "
+        "%llu calls (%llu FP, %llu vector, %llu guest, %llu indirect), %llu sync stores (%llu at calls, "
+        "%llu on edges, %llu bytes), %llu reloads (%llu bytes), %llu lookups, %llu polls, %llu stale "
+        "checks, %llu return checks",
+        (unsigned long long)s->functions, (unsigned long long)s->promoted_functions,
+        (unsigned long long)s->promoted_slots, (unsigned long long)s->memory_slots, (unsigned long long)s->call_sites,
+        (unsigned long long)s->fp_calls, (unsigned long long)s->vector_calls, (unsigned long long)s->guest_calls,
+        (unsigned long long)s->indirect_calls, (unsigned long long)s->sync_stores, (unsigned long long)s->call_stores,
+        (unsigned long long)s->edge_stores, (unsigned long long)s->store_bytes, (unsigned long long)s->sync_reloads,
+        (unsigned long long)s->reload_bytes, (unsigned long long)s->lookups, (unsigned long long)s->polls,
+        (unsigned long long)s->stale_checks, (unsigned long long)s->return_checks);
+}
 
 /* the unit's one global, an array of its functions' addresses in codegen's order: they are internal to it, so that two
    units' F_<address> do not clash in the loader's table, where every global stays. 0, or -1 out of memory */
@@ -36,11 +122,12 @@ static int unit_table(SnxIr* ir, SnxCodegen* codegen, const char* name) {
 }
 
 int snx_fallback_object(SnxCodegen* codegen, size_t first, size_t last, const SnxNativeOptions* options,
-                        const unsigned char* made, const char* name, char opt, unsigned char** object, size_t* size,
-                        char* error, size_t error_size) {
+                        const unsigned char* made, SnxFallbackUnit* unit, const char* name, char opt,
+                        unsigned char** object, size_t* size, char* error, size_t error_size) {
     size_t left = 0;
     *object = NULL;
     *size = 0;
+    if (unit) unit->stats = NULL;
     for (size_t i = first; i < last; ++i) left += !made || !made[i - first];
     if (!left) return 0;
     if (options->jit && (first || last != codegen->function_count || left != last - first)) {
@@ -49,25 +136,46 @@ int snx_fallback_object(SnxCodegen* codegen, size_t first, size_t last, const Sn
                  codegen->function_count);
         return -1;
     }
+    const char* triple = unit ? unit->triple : NULL;
     SnxIr* ir = snx_ir_init(error, error_size) ? NULL
                 : options->jit                 ? snx_ir_new_jit(name, opt, error, error_size)
+                : triple                       ? snx_ir_new_target(name, opt, triple, error, error_size)
                                                : snx_ir_new(name, opt, error, error_size);
     if (!ir) return -1;
+    if (unit) snx_ir_tune(ir, unit->tuning);
     ir->direct = options->direct;
     ir->direct_user = options->direct_user;
     ir->bound = options->bound;
     ir->bound_user = options->bound_user;
     if (options->stale) snx_ir_stale_checks(ir);
-    for (size_t i = first; i < last; ++i)
-        if (!made || !made[i - first]) snx_ir_emit(ir, codegen, &codegen->functions[i]);
+    size_t* order = unit && unit->callees_first ? callees_first(codegen, first, last) : NULL;
+    for (size_t k = first; k < last; ++k) {
+        size_t i = order ? order[k - first] : k;
+        if (made && made[i - first]) continue;
+        snx_ir_emit(ir, codegen, &codegen->functions[i]);
+        if (unit && unit->rank && unit->rank[i] != SIZE_MAX) {
+            char section[sizeof(SNX_LINK_HOT_TEXT) + 24];
+            snprintf(section, sizeof section, SNX_LINK_HOT_TEXT "%zu", unit->rank[i]);
+            LLVMSetSection(snx_ir_guest_function(ir, codegen->functions[i].start), section);
+        }
+    }
+    free(order);
     int rc = 0;
     if (options->jit && unit_table(ir, codegen, options->table_name)) {
         snprintf(error, error_size, "out of memory");
         rc = -1;
     }
+    if (unit && ir->stats.enabled) unit->stats = stats_text(&ir->stats);
+    if (!rc && unit && unit->keep_ir) rc = save_ir(ir, unit->keep_ir, name, error, error_size);
     if (!rc) rc = snx_ir_object(ir, opt, object, size, error, error_size);
     snx_ir_free(ir);
     return rc;
+}
+
+int snx_fallback_rtlib(char opt, unsigned char** object, size_t* size, char* error, size_t error_size) {
+    *object = NULL;
+    *size = 0;
+    return snx_ir_init(error, error_size) || snx_ir_rtlib_object(opt, object, size, error, error_size) ? -1 : 0;
 }
 
 /* ---- AArch32 blocks ---- */

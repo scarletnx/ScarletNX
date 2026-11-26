@@ -17,16 +17,19 @@ struct SnxFallbackArm {
 
 int snx_fallback_available(void) { return 0; }
 const char* snx_fallback_name(void) { return "none"; }
+SnxU64 snx_fallback_dump_pc(void) { return 0; }
+int snx_fallback_stats(void) { return 0; }
 
 int snx_fallback_object(SnxCodegen* codegen, size_t first, size_t last, const SnxNativeOptions* options,
-                        const unsigned char* made, const char* name, char opt, unsigned char** object, size_t* size,
-                        char* error, size_t error_size) {
+                        const unsigned char* made, SnxFallbackUnit* unit, const char* name, char opt,
+                        unsigned char** object, size_t* size, char* error, size_t error_size) {
     const SnxFunction* f = NULL;
     size_t left = 0;
     (void)options;
     (void)opt;
     *object = NULL;
     *size = 0;
+    if (unit) unit->stats = NULL;
     for (size_t i = first; i < last; ++i)
         if ((!made || !made[i - first]) && !left++) f = &codegen->functions[i];
     if (!f) return 0;
@@ -37,6 +40,14 @@ int snx_fallback_object(SnxCodegen* codegen, size_t first, size_t last, const Sn
     snprintf(error, error_size,
              "%s: the function at 0x%llx, which starts with %s (%08x)%s: the native back end (%s) left it and " NO_LLVM,
              name, (unsigned long long)f->start, text, (unsigned)word, more, snx_native_name());
+    return -1;
+}
+
+int snx_fallback_rtlib(char opt, unsigned char** object, size_t* size, char* error, size_t error_size) {
+    *object = NULL;
+    *size = 0;
+    snprintf(error, error_size, "the runtime library at -O%c, for a module of code the native back end left: " NO_LLVM,
+             opt);
     return -1;
 }
 
