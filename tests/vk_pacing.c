@@ -31,7 +31,36 @@ static uint64_t presented(const VkPresentInfoKHR* present) {
     return id && id->sType == VK_STRUCTURE_TYPE_PRESENT_ID_KHR && id->swapchainCount == 1 ? id->pPresentIds[0] : 0;
 }
 
+/* the device's features: present id and present wait */
+static VKAPI_ATTR void VKAPI_CALL fake_features(VkPhysicalDevice phys, VkPhysicalDeviceFeatures2* f) {
+    (void)phys;
+    for (VkBaseOutStructure* s = f->pNext; s; s = s->pNext) {
+        if (s->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR)
+            ((VkPhysicalDevicePresentIdFeaturesKHR*)s)->presentId = VK_TRUE;
+        if (s->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR)
+            ((VkPhysicalDevicePresentWaitFeaturesKHR*)s)->presentWait = VK_TRUE;
+    }
+}
+/* a device that has both extensions, made with a swapchain or headless: only the one that presents takes them, as they
+   require VK_KHR_swapchain (VUID-vkCreateDevice-ppEnabledExtensionNames-01387) */
+static void choose(void) {
+    vkGetPhysicalDeviceFeatures2 = fake_features;
+    VkExtensionProperties has[3] = {{VK_KHR_SWAPCHAIN_EXTENSION_NAME, 1},
+                                    {VK_KHR_PRESENT_ID_EXTENSION_NAME, 1},
+                                    {VK_KHR_PRESENT_WAIT_EXTENSION_NAME, 1}};
+    SnxVkExtensions list = {has, 3};
+    for (int windowed = 0; windowed < 2; ++windowed) {
+        SnxVkChoice c = {.list = &list};
+        if (windowed) c.extensions[c.extension_count++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+        SnxVkPacing p;
+        int head = 0;
+        void* chain = snx_vk_pacing_choose(&p, &c, 1, &head);
+        CHECK(p.on == windowed && c.extension_count == (windowed ? 3u : 0u) && (chain == &head) == !windowed);
+    }
+}
+
 int main(void) {
+    choose();
     vkWaitForPresentKHR = fake_wait;
     SnxVkPacing off = {0}, on = {.on = true};
     SnxVkPaced w = {0};
