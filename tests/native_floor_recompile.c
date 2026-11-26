@@ -5,7 +5,9 @@
    - in a build without LLVM the recompile fails with the line of what the host lacks, after the line the launcher
      starts its step with, and the game made already stays as it was, with its stamp;
    - with LLVM the game is made, by LLVM, and the same line says why;
-   - the host whole says neither.
+   - a host that lacks only what the back end does by its fallback has the game made by the back end, with or without
+     LLVM, and a line on stdout says what it lacks and that the fallback does it;
+   - the host whole says none of them.
    Where the host's back end has no floor, it passes having said so (77, skipped) */
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/recompiler/mach/native.h"
@@ -18,13 +20,18 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* the host's floor without one of its features, and the line of it */
+/* the host's floor without one of its features (1), or without features the back end's fallback does (2), and the
+   line of each */
 #if defined(__x86_64__)
-static void take_out(int on) { snx_x64_without(on ? SNX_X64_POPCNT : 0); }
+static void take_out(int how) {
+    snx_x64_without(how == 1 ? SNX_X64_POPCNT : how == 2 ? SNX_X64_SSE42 | SNX_X64_PCLMUL : 0);
+}
 #define LACKS "cpu: needs POPCNT, this host has SSE3, SSSE3 and SSE4.1"
+#define DONE  "cpu: this host has no SSE4.2 and PCLMULQDQ, done by the fallback"
 #else
-static void take_out(int on) { (void)on; }
+static void take_out(int how) { (void)how; }
 #define LACKS ""
+#define DONE  ""
 #endif
 
 static struct {
@@ -97,22 +104,25 @@ int main(int argc, char** argv) {
     File first_stamp = {0}, first_code = {0};
     static const struct {
         const char* of;
-        int below, alone;
-    } runs[] = {{"the host whole, without LLVM", 0, 1},
-                {"below the floor, without LLVM", 1, 1},
-                {"below the floor, with LLVM", 1, 0},
-                {"the host whole, with LLVM", 0, 0}};
+        int below, alone, done;
+    } runs[] = {{"the host whole, without LLVM", 0, 1, 0},
+                {"below the floor, without LLVM", 1, 1, 0},
+                {"without what the fallback does, without LLVM", 0, 1, 1},
+                {"below the floor, with LLVM", 1, 0, 0},
+                {"without what the fallback does, with LLVM", 0, 0, 1},
+                {"the host whole, with LLVM", 0, 0, 0}};
     snx_error_sink(sink);
     for (unsigned k = 0; k < sizeof runs / sizeof *runs; ++k) {
         char* args[] = {nro, "--name", "floor", "--outdir", out, "--runtime", runtime};
         const char* of = runs[k].of;
         char line[256], refused[300];
         g_test.said[0] = 0;
-        take_out(runs[k].below);
+        take_out(runs[k].done ? 2 : runs[k].below);
         snx_native_set_alone(runs[k].alone);
         check(snx_native_floor(line, sizeof line) == runs[k].below &&
                   (!runs[k].below || !strncmp(line, LACKS, strlen(LACKS))),
               "the host's line", of);
+        check(runs[k].below || snx_native_fallback(line, sizeof line) == runs[k].done, "the fallback's line", of);
         fflush(stdout);
         if (!freopen(printed, "wb", stdout)) return 1;
         const int rc = snx_recompile_game(sizeof args / sizeof *args, args, &paths);
@@ -135,6 +145,9 @@ int main(int argc, char** argv) {
             check(!runs[k].below || strstr(g_test.said, refused) != NULL, "says why LLVM makes it", of);
             check(runs[k].below || !g_test.said[0], "says nothing else", of);
             check(!runs[k].below == !strstr(lines, "LLVM: 1 code unit"), "makes it by LLVM below the floor alone", of);
+            check(!runs[k].done == !strstr(lines, DONE "\n"), "says what the fallback does, on stdout", of);
+            check(runs[k].done || !strstr(lines, "fallback"), "and nothing of it otherwise", of);
+            check(!runs[k].done || !runs[k].alone || !snx_ir_started(), "starts no LLVM for it", of);
             check(!runs[k].below || snx_ir_started(), "which starts for it", of);
         }
         if (!k)

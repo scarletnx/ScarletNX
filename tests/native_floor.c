@@ -10,6 +10,7 @@
      ahead of time and the library are refused with that line, and LLVM never starts;
    - with LLVM the same host runs what LLVM makes, the JIT's functions and the A32 blocks, as before, and nothing is
      refused;
+   - without what the back end's fallback does, the library's line on stdout says so;
    - a host with all of it is refused nothing, with LLVM or without.
 
      snx-test-native-floor [--without=NAME,...]
@@ -171,12 +172,12 @@ static void ppc64_lines(void) {} /* the ppc64 back ends are not built there */
 /* the features of this host's floor a test takes out of it, none where its back end has no floor */
 #if defined(__x86_64__)
 static const SnxNativeFeature* const k_names = k_x64;
-enum { NAMES = X64_FEATURES };
+enum { NAMES = X64_FEATURES, DONE = SNX_X64_SSE42 | SNX_X64_PCLMUL };
 static void take_out(unsigned bits) { snx_x64_without(bits); }
 static const char* const k_none = "cpu: needs SSE3, SSSE3, SSE4.1 and POPCNT, this host has none";
 #else
 static const SnxNativeFeature* const k_names = NULL;
-enum { NAMES = 0 };
+enum { NAMES = 0, DONE = 0 };
 static void take_out(unsigned bits) { (void)bits; }
 static const char* const k_none = "";
 #endif
@@ -364,6 +365,33 @@ static void printed(const char* path, const char* of) {
     free(text), free(lines);
 }
 
+/* the library's lines on stdout, from here on in path, where the host lacks what the back end's fallback does (DONE):
+   that line, and none of LLVM's making the code */
+static void printed_done(const char* path, const char* of) {
+    char line[256], want[300];
+    size_t size = 0;
+    struct snx_recompiler* r = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
+    struct snx_code_range range = {CODE, g_floor.memory + CODE, 8};
+    const uint64_t entry = CODE;
+    take_out(DONE);
+    check(!snx_native_floor(line, sizeof line) && snx_native_fallback(line, sizeof line) && r &&
+              freopen(path, "wb", stdout),
+          "starts", of);
+    if (r) {
+        snx_recompiler_set_verbose(r, 1);
+        snx_recompiled_free(snx_recompile_ranges(r, &range, 1, &entry, 1));
+    }
+    snx_recompiler_free(r);
+    fflush(stdout);
+    char* text = (char*)snx_read_file(path, &size);
+    char* lines = (char*)calloc(size + 1, 1);
+    if (text && lines) memcpy(lines, text, size);
+    snprintf(want, sizeof want, "%s\n", line);
+    check(lines && strstr(lines, want) != NULL, want, of);
+    check(lines && !strstr(lines, "LLVM makes the code"), "says nothing of LLVM making it", of);
+    free(text), free(lines);
+}
+
 /* the features named, "A,B", of this host's floor: their bits, or -1 for a name it has none of, said */
 static int named(const char* names, unsigned* bits) {
     *bits = 0;
@@ -426,6 +454,7 @@ int main(int argc, char** argv) {
         }
         take_out(all_names());
         printed("native_floor_printed.txt", "the lines on stdout");
+        printed_done("native_floor_done.txt", "the lines on stdout without what the fallback does");
         take_out(0);
     } else
         printf("native_floor: no floor to take this host below (%s%s): the lines alone\n", snx_native_name(),
