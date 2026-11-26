@@ -105,11 +105,14 @@ typedef struct {
 typedef struct {
     uint32_t words, src_at, dst_at, width, height, stride, pack, bgr;
 } Rgb24Params;
-typedef struct {
+/* a program's shader for what the translator was told of it; the program's others after it, one per set of the formats
+   of the textures it samples */
+typedef struct Shader {
     VkShaderModule module;
     UsseShader meta; /* without its words */
     bool failed;
     uint64_t id; /* its program's bytes and the hints it was made for, which a pipeline's key names it by */
+    struct Shader* next;
 } Shader;
 typedef struct {
     uint64_t key;
@@ -879,10 +882,11 @@ static void submitting(void) {
 }
 void vita_render_shader_free(VitaProcess* p, void* shader) {
     struct VitaRender* r = render_of(p);
-    Shader* s = shader;
-    if (!s) return;
-    if (r && s->module) vkDestroyShaderModule(r->vk->device, s->module, NULL);
-    free(s);
+    for (Shader *s = shader, *next; s; s = next) {
+        next = s->next;
+        if (r && s->module) vkDestroyShaderModule(r->vk->device, s->module, NULL);
+        free(s);
+    }
 }
 void vita_render_free(VitaProcess* p) {
     struct VitaRender* r = render_of(p);
@@ -1203,17 +1207,32 @@ uint64_t vita_render_submitted(VitaProcess* p) {
 }
 
 /* ---- draws ---- */
-/* a shader's id: the program's bytes, as many as its header says it has, and the hints, zeroed before they are set */
-static uint64_t shader_id(VitaProcess* p, uint32_t program, const UsseHints* hints) {
-    uint64_t h = snx_fnv1a(SNX_FNV_BASIS, vita_ptr(p, program), snx_ld_le32(vita_ptr(p, program + 8)));
-    return snx_fnv1a(h, hints, sizeof *hints);
+/* a shader's id: the program's bytes, as many as its header says it has, and the hints, zeroed before they are set,
+   with the formats of the textures sampled (the mask's) alone, the others telling the translator nothing */
+static uint64_t shader_id(VitaProcess* p, uint32_t program, const UsseHints* hints, uint32_t sampled) {
+    UsseHints h = *hints;
+    for (unsigned i = 0; i < USSE_TEXTURES; ++i)
+        if (!(sampled & (1u << i))) h.texture_formats[i] = 0;
+    return snx_fnv1a(snx_fnv1a(SNX_FNV_BASIS, vita_ptr(p, program), snx_ld_le32(vita_ptr(p, program + 8))), &h,
+                     sizeof h);
 }
+/* The program's shader for hints: the slot's, a list each program keeps (its first shader), one made for the formats
+   of the textures it samples, which the first one's translation says; a new one made and put after the others */
 static Shader* shader_for(struct VitaRender* r, VitaProcess* p, void** slot, uint32_t program, const UsseHints* hints) {
-    if (*slot) return *slot;
+    Shader* first = *slot;
+    if (first) {
+        const uint64_t id = shader_id(p, program, hints, first->meta.sampler_mask);
+        for (Shader* s = first; s; s = s->next)
+            if (s->id == id) return s;
+    }
     Shader* s = calloc(1, sizeof *s);
     if (!s) return NULL;
-    *slot = s;
-    s->id = shader_id(p, program, hints);
+    if (first) {
+        Shader* last = first;
+        while (last->next) last = last->next;
+        last->next = s;
+    } else
+        *slot = s;
     char error[256];
     UsseShader out;
     if (g_settings.vita_shader_corpus[0] &&
@@ -1224,6 +1243,7 @@ static Shader* shader_for(struct VitaRender* r, VitaProcess* p, void** slot, uin
                         error, sizeof error)) {
         printf("gxm: the program at 0x%08" PRIx32 " is not drawn: %s\n", program, error);
         s->failed = true;
+        s->id = shader_id(p, program, hints, first ? first->meta.sampler_mask : 0);
         return s;
     }
     VkShaderModuleCreateInfo mi = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
@@ -1236,6 +1256,7 @@ static Shader* shader_for(struct VitaRender* r, VitaProcess* p, void** slot, uin
     free(out.words);
     out.words = NULL;
     s->meta = out;
+    s->id = shader_id(p, program, hints, out.sampler_mask);
     return s;
 }
 /* SceGxmAttributeFormat and a component count as a vertex format */

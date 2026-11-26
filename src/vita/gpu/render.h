@@ -45,7 +45,8 @@ bool vita_render_show(VitaProcess* p, uint32_t address, uint32_t pitch, uint32_t
    recorded (a scene being recorded goes on after it). False when it can't be */
 bool vita_render_picture(VitaProcess* p, uint32_t address, uint32_t pitch, uint32_t pixel_type, uint32_t width,
                          uint32_t height, const uint8_t* const planes[3], const int linesize[3]);
-/* a program's shader, made for its first draw, freed with it */
+/* a program's shaders, made for the draws of it (a fragment program's for the formats of the textures it samples),
+   freed with it */
 void vita_render_shader_free(VitaProcess* p, void* shader);
 /* for a test: the key of the pipeline a draw of primitive (SceGxmPrimitiveType) with c's programs and state takes in
    the scene being recorded, its shaders made as the draw makes them; 0 with no scene or a program not translated */
