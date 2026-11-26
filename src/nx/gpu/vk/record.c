@@ -255,6 +255,7 @@ struct VkRecList {
 };
 static _Thread_local VkRecList* t_list;
 static int list_names(VkCommandBuffer cb) { return t_list && cb && (cb == t_list->named || cb == t_list->named_up); }
+int vk_rec_list_names_cb(VkCommandBuffer cb) { return list_names(cb); }
 static VkRecList* list_pause_at(const char* why);
 #define list_pause() list_pause_at(__func__)
 static void list_resume(VkRecList* l);
