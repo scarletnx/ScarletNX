@@ -3004,6 +3004,8 @@ if(Python3_Interpreter_FOUND)
     if(NOT WIN32)
         add_test(NAME publish_builds
                  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/publish_builds_test.py")
+        # build.yml's Nightly due: a scheduled run on a day, or of a commit, that has its nightly cancels itself
+        add_test(NAME nightly_due COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/nightly_due_test.py")
         # edenprobe's runs held against a baseline (scripts/edenprobe.py), with a fake runtime and game
         add_test(NAME edenprobe_script COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/edenprobe_test.py")
         # a Build run cancelled once a job of it failed, by the jobs still running (scripts/fail-fast.py), against a

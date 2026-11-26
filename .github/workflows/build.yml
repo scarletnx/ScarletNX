@@ -21,12 +21,13 @@ on:
       - 'docs/user/deprecations.md'
       - 'docs/user/gui.md'
   workflow_dispatch:
-  # main every three hours; a commit that has its nightly already cancels its run (nightly-due)
+  # main every three hours, off the hour's start; the first run of a day (UTC) that builds everywhere is its nightly,
+  # and the day's later runs cancel themselves (nightly-due)
   schedule:
     - cron: '23 */3 * * *'
 
-# A failed job cancels the rest of its run (scripts/fail-fast.py). A run of main that builds everywhere becomes a
-# nightly and a pull request's a prerelease, in scarletnx/nightly (publish.yml)
+# A failed job cancels the rest of its run (scripts/fail-fast.py). A scheduled run of main, or one by hand, that builds
+# everywhere becomes the day's nightly and a pull request's run a prerelease, in scarletnx/nightly (publish.yml)
 permissions:
   contents: read
   actions: write
@@ -63,16 +64,17 @@ jobs:
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
-      - name: Cancel the run when this commit has its nightly
+      - name: Cancel the run when the day or this commit has its nightly
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           latest=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
             "$GITHUB_API_URL/repos/scarletnx/nightly/releases/latest" | python3 -c 'import json, sys; print(json.load(sys.stdin)["tag_name"])')
-          echo "the newest nightly: $latest; this run: ${GITHUB_SHA::7}"
+          today=$(date -u +%F)
+          echo "the newest nightly: $latest; this run: $today, ${GITHUB_SHA::7}"
           case $latest in
-          *-"${GITHUB_SHA::7}")
+          nightly-"$today"-* | *-"${GITHUB_SHA::7}")
             curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
               "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/cancel" ;;
           esac
