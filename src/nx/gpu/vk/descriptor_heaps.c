@@ -110,12 +110,18 @@ typedef struct {
     VkDescriptorHeapCacheTag cache_frame;
     int exhausted[VK_FRAMES];
     u8 *scratch, *sampler_bytes;
-    u32 begun;
-    u64 epoch, bound_epoch;
+    /* What each recording stream (g_vk_slot) bound. With draw_batches=1 or 2 a worker records into a list that
+       goes into the ring after the renderer thread's commands, while both record: one stream's binds and classic
+       commands say nothing about the other's (vk_descriptor_heaps_stream_reset) */
+    struct {
+        u32 begun, buffer_begun;
+        _Atomic u64 epoch;
+        u64 bound_epoch;
+        _Atomic int active;
+    } stream[VK_RC_SLOTS];
     size_t scratch_size;
     VkDescriptorHeapStats stats, reported;
-    int ready, active;
-    u32 buffer_begun;
+    int ready;
     VkDescriptorSetLayout transition_descriptors;
     VkPipelineLayout transition_layout;
     VkDescriptorPool transition_pool;
@@ -1337,18 +1343,21 @@ VkDescriptorSet vk_descriptor_heaps_write(VkDescriptorSetLayout layout, u32 coun
 void vk_descriptor_heaps_bind(VkCommandBuffer cb, u32 first, u32 count, const VkDescriptorSet* sets) {
     if (!g_heaps.ready || first > 5 || count > 5 - first || !count) return;
     u32 begun = vk_cb_begun();
-    if (g_heaps.buffer_begun == begun) {
+    typeof(g_heaps.stream[0])* st = &g_heaps.stream[g_vk_slot];
+    if (st->buffer_begun == begun) {
         /* Heap binding invalidates all non-heap state by specification. VVL1.4.367 nevertheless retains and
            validates old buffer offsets against the heap pipeline. An incompatible classic set0 bind
            explicitly disturbs those slots before the heap bind, without a draw, submission or wait between them.
            The one immutable empty set is device-owned; ordinary heap draws never take this transition. */
-        int active = g_heaps.active;
+        int active = atomic_load_explicit(&st->active, memory_order_relaxed);
         rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_heaps.transition_layout,
             0, 1, &g_heaps.transition_set, 0, NULL);
-        g_heaps.active = active; /* the pipeline did not change: subsequent graphics constants still use push data */
-        g_heaps.buffer_begun = 0;
+        /* the pipeline did not change: subsequent graphics constants still use push data */
+        atomic_store_explicit(&st->active, active, memory_order_relaxed);
+        st->buffer_begun = 0;
     }
-    if (g_heaps.begun != begun || g_heaps.bound_epoch != g_heaps.epoch) {
+    const u64 epoch = atomic_load_explicit(&st->epoch, memory_order_relaxed);
+    if (st->begun != begun || st->bound_epoch != epoch) {
         VkBindHeapInfoEXT resource = {.sType = VK_STRUCTURE_TYPE_BIND_HEAP_INFO_EXT,
             .heapRange = {g_heaps.resource.address, g_heaps.resource.plan.range_size},
             .reservedRangeOffset = g_heaps.resource.plan.reserved_offset, .reservedRangeSize = g_heaps.resource.plan.reserved_size};
@@ -1356,8 +1365,8 @@ void vk_descriptor_heaps_bind(VkCommandBuffer cb, u32 first, u32 count, const Vk
             .heapRange = {g_heaps.sampler.address, g_heaps.sampler.plan.range_size},
             .reservedRangeOffset = g_heaps.sampler.plan.reserved_offset, .reservedRangeSize = g_heaps.sampler.plan.reserved_size};
         rec_CmdBindDescriptorHeapsEXT(cb, &resource, &sampler);
-        g_heaps.begun = begun;
-        g_heaps.bound_epoch = g_heaps.epoch;
+        st->begun = begun;
+        st->bound_epoch = epoch;
     }
     u32 addresses[10];
     for (u32 i = 0; i < count; i++) {
@@ -1431,8 +1440,16 @@ void vk_descriptor_heaps_stats(void) {
             (unsigned long long)(s->memo_differs - p->memo_differs));
     g_heaps.reported = *s;
 }
-void vk_descriptor_heaps_invalidate(void) { g_heaps.epoch++; g_heaps.active = 0; }
-void vk_descriptor_heaps_buffer_bound(u32 begun) { if (g_heaps.ready) g_heaps.buffer_begun = begun; }
+void vk_descriptor_heaps_invalidate(void) {
+    atomic_fetch_add_explicit(&g_heaps.stream[g_vk_slot].epoch, 1, memory_order_relaxed);
+    atomic_store_explicit(&g_heaps.stream[g_vk_slot].active, 0, memory_order_relaxed);
+}
+void vk_descriptor_heaps_buffer_bound(u32 begun) { if (g_heaps.ready) g_heaps.stream[g_vk_slot].buffer_begun = begun; }
+void vk_descriptor_heaps_stream_reset(u32 slot) {
+    if (slot >= VK_RC_SLOTS) return;
+    g_heaps.stream[slot].begun = g_heaps.stream[slot].buffer_begun = 0;
+    atomic_fetch_add_explicit(&g_heaps.stream[slot].epoch, 1, memory_order_relaxed);
+}
 void vk_descriptor_heaps_destroy(void) {
     lasting_destroy();
     transition_destroy();
@@ -1440,8 +1457,17 @@ void vk_descriptor_heaps_destroy(void) {
     heap_discard(&g_heaps.sampler);
     free(g_heaps.scratch);
     for (u32 i = 0; i < g_heaps.nlayouts; i++) free(g_heaps.layouts[i].memo);
-    g_heaps = (HeapState){.epoch = g_heaps.epoch + 1};
+    u64 epoch[VK_RC_SLOTS];
+    for (u32 i = 0; i < VK_RC_SLOTS; i++) epoch[i] = atomic_load_explicit(&g_heaps.stream[i].epoch, memory_order_relaxed);
+    g_heaps = (HeapState){0};
+    for (u32 i = 0; i < VK_RC_SLOTS; i++) atomic_store_explicit(&g_heaps.stream[i].epoch, epoch[i] + 1, memory_order_relaxed);
 }
-uint64_t vk_descriptor_heaps_epoch(void) { return g_heaps.epoch; }
-void vk_descriptor_heaps_pipeline_state(int active) { g_heaps.active = active && g_heaps.ready; }
-int vk_descriptor_heaps_active(void) { return g_heaps.active; }
+uint64_t vk_descriptor_heaps_epoch(void) {
+    return atomic_load_explicit(&g_heaps.stream[g_vk_slot].epoch, memory_order_relaxed);
+}
+void vk_descriptor_heaps_pipeline_state(int active) {
+    atomic_store_explicit(&g_heaps.stream[g_vk_slot].active, active && g_heaps.ready, memory_order_relaxed);
+}
+int vk_descriptor_heaps_active(void) {
+    return atomic_load_explicit(&g_heaps.stream[g_vk_slot].active, memory_order_relaxed);
+}
