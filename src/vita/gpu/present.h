@@ -14,6 +14,10 @@ void vita_present_init(const char* title, const char* ini, const char* shot);
 void vita_present_say(const char* line);
 /* a vblank: the framebuffer shown, the window's events read. False once the player closed the window */
 bool vita_present_vblank(VitaProcess* p);
+/* between two slices (no thread running, p->current NULL): a save states' key asked (F7 save, F8 load, F9 the next
+   slot) and the unattended saves and loads due at ms of the run's clock (state_save, state_load), as a Switch game's,
+   in states/ of the game's folder; the framebuffer shown their picture */
+void vita_present_states(VitaProcess* p, uint64_t ms);
 /* the screenshot of the framebuffer shown last, at the end of the run */
 void vita_present_shot(VitaProcess* p);
 void vita_present_free(void);

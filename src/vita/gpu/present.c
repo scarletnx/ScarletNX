@@ -7,6 +7,8 @@
 #include "vita/gpu/render.h"
 #include "vita/gpu/vk.h"
 #include "vita/platform/input.h"
+#include "vita/runtime/state.h"
+#include "common/utilities/state_header.h"
 #include "snx_settings.h"
 #include <SDL3/SDL.h>
 #include <signal.h>
@@ -19,7 +21,9 @@ static struct {
     bool video;
     char* captures; /* the game's folder with its separator, whose captures/ a screenshot goes in */
     bool shot_req;  /* the screenshot key's: the frame saved at the vblank's end */
-} g_present;
+    char* name;     /* the game's, its .ini's without .ini: its states are states/<name>.<slot>.snxstate */
+    int state_ask;  /* a save states' key (HOTKEY_SAVE_STATE...) asked, done between two slices; -1 for none */
+} g_present = {.state_ask = -1};
 static volatile sig_atomic_t g_interrupted;
 static void on_signal(int signal) {
     (void)signal;
@@ -35,12 +39,35 @@ void vita_present_init(const char* title, const char* ini, const char* shot) {
         char* folder = ini ? snx_dirname(ini) : NULL;
         g_present.captures = snx_format("%s/", folder ? folder : ".");
         free(folder);
+        g_present.name = snx_strdup(ini ? snx_path_leaf(ini) : "game");
+        char* dot = strrchr(g_present.name, '.');
+        if (dot && dot != g_present.name) *dot = 0;
     }
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
     vita_input_init();
     if (vita_vk() && vita_vk()->host.window)
         snx_vpad_window_open(vita_vk()->host.window, ini, vita_present_say, vita_vk_notice);
+}
+static int state_save(void* game, const char* path, const uint8_t* thumb, char* why, size_t whysize) {
+    return snx_vita_state_save((VitaProcess*)game, path, thumb, why, whysize);
+}
+static int state_load(void* game, const char* path, char* why, size_t whysize) {
+    return snx_vita_state_load((VitaProcess*)game, path, why, whysize);
+}
+void vita_present_states(VitaProcess* p, uint64_t ms) {
+    int ask = g_present.state_ask;
+    if (ask < 0 && !snx_vpad_window_states_waiting()) return;
+    g_present.state_ask = -1;
+    uint8_t* thumb = p->display.base ? malloc((size_t)SNX_STATE_THUMB_W * SNX_STATE_THUMB_H * 4) : NULL;
+    if (thumb)
+        snx_state_thumb(vita_ptr(p, p->display.base), (int)p->display.width, (int)p->display.height,
+                        (size_t)p->display.pitch * 4, thumb);
+    SnxVpadStates states = {g_present.captures ? g_present.captures : "./", g_present.name ? g_present.name : "game", p,
+                            state_save, state_load};
+    if (ask >= 0) snx_vpad_window_states(ask, &states, thumb);
+    snx_vpad_window_states_due(ms, &states, thumb);
+    free(thumb);
 }
 /* the framebuffer shown last as PATH<suffix>.ppm, once the GPU drew it */
 static void shot_write(VitaProcess* p, const char* suffix);
@@ -62,6 +89,9 @@ static bool vblank(VitaProcess* p, bool again) {
         if (took == SNX_VPAD_QUIT) return false;
         if (took == SNX_VPAD_ACTION && action == HOTKEY_SCREENSHOT)
             g_present.shot_req = true;
+        else if (took == SNX_VPAD_ACTION &&
+                 (action == HOTKEY_SAVE_STATE || action == HOTKEY_LOAD_STATE || action == HOTKEY_NEXT_SLOT))
+            g_present.state_ask = action;
         else if (took == SNX_VPAD_ACTION)
             snx_vpad_window_none(action, action == HOTKEY_MOUSE     ? "its mouse is the front panel's finger and the "
                                                                       "pointer of the on-screen controls"
@@ -127,5 +157,7 @@ void vita_present_free(void) {
     vita_vk_free();
     free(g_present.shot);
     free(g_present.captures);
+    free(g_present.name);
     memset(&g_present, 0, sizeof g_present);
+    g_present.state_ask = -1;
 }

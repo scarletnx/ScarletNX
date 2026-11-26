@@ -247,6 +247,30 @@ static int controls(SDL_Window* window, const char* dir, const char* ini) {
         free(captures);
         free(mem);
     }
+    /* F7 and F8: the game saved to slot 1 between two slices, in states/ of its folder, and loaded back: a word of its
+       memory changed after the save is the saved one again */
+    {
+        char error[256] = {0}, *states = snx_path_join(dir, "states");
+        char* slot = states ? snx_path_join(states, "a game.1.snxstate") : NULL;
+        VitaImage image = {0};
+        VitaProcess* p = vita_process_new(&image, dir, error, sizeof error);
+        CHECK(p && slot);
+        uint32_t word = vita_alloc(p, &p->user, 0x1000, 0x1000);
+        CHECK(word);
+        vita_write32(p, word, 0x1234);
+        CHECK(vpad_test_key(window, SDLK_F7) && !vblank());
+        vita_present_states(p, 0);
+        CHECK(snx_is_file(slot));
+        vita_write32(p, word, 0x5678);
+        CHECK(vpad_test_key(window, SDLK_F8) && !vblank());
+        vita_present_states(p, 0);
+        CHECK(vita_read32(p, word) == 0x1234);
+        vita_present_states(p, 0); /* asked once: nothing more */
+        vita_process_free(p);
+        CHECK(!snx_remove_tree(states));
+        free(slot);
+        free(states);
+    }
     vpad_console(&snx_vpad_vita);
     vpad_settings(dir, "a game", 0, NULL);
     CHECK(vpad_config()->at[SNX_VPAD_STICK_R].x == 0.5f && vpad_config()->at[SNX_VPAD_STICK_R].y == 0.5f);
