@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "gui/editor.h"
+#include "common/utilities/config_file.h"
 #include "common/utilities/common.h"
 #include "gui/i18n.h"
 #include <stdio.h>
@@ -24,7 +25,7 @@ void gui_editor_start(GuiEditor* editor, const GuiTheme* theme, GuiThemeFile* fi
     editor->theme = *theme;
     if (file) {
         editor->file = *file;
-        file->others = NULL; /* the editor's now */
+        file->others = file->top = NULL; /* the editor's now */
     } else
         snprintf(editor->file.base, sizeof editor->file.base, "%s", gui_theme_builtin(theme->id) ? theme->id : "");
     snprintf(editor->id, sizeof editor->id, "%s", id);
@@ -349,8 +350,12 @@ int gui_editor_save(GuiEditor* editor, const char* themes_dir) {
     char* folder = themes_dir ? snx_path_join(themes_dir, editor->id) : NULL;
     char* path = folder ? snx_path_join(folder, "theme.ini") : NULL;
     char* text = gui_theme_write(&editor->theme, &editor->file);
-    int failed = !path || !text || snx_mkdirs(folder) || snx_write_file(path, text, strlen(text));
-    if (failed)
+    char why[1024] = "";
+    /* beside it first, never over one that cannot be read */
+    int failed = !path || !text || snx_config_write(path, ".new", text, strlen(text), why, sizeof why);
+    if (failed && why[0])
+        snprintf(editor->note, sizeof editor->note, snx_tr("Not saved: %s"), why);
+    else if (failed)
         snprintf(editor->note, sizeof editor->note, snx_tr("Not saved: %s could not be written"),
                  path ? path : snx_tr("the themes folder"));
     else {

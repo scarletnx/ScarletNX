@@ -38,7 +38,9 @@ static int round_trip(const char* text, size_t size, const char* id, const char*
     assert(gui_theme_parse(&read, id, text, size, NULL, 0) && gui_theme_file_read(&file, text, size));
     *written = gui_theme_write(&read, &file);
     assert(*written && gui_theme_parse(&again, id, *written, strlen(*written), said, sizeof said));
-    assert(!said[0]); /* what the GUI writes it reads whole */
+    /* what the GUI writes it reads whole: no value it does not take; another program's keys, kept, are only named */
+    if (strstr(said, " is not ") || strstr(said, "keeps")) fprintf(stderr, "%s: %s\n", what, said);
+    assert(!strstr(said, " is not ") && !strstr(said, "keeps"));
     assert(gui_theme_file_read(&file_again, *written, strlen(*written)));
     text_again = gui_theme_write(&again, &file_again);
     ok = same_theme(&read, &again, what);
@@ -64,7 +66,7 @@ int main(void) {
     /* the built-ins, as their own files say them */
     for (i = 0; i < 2; ++i) {
         const GuiTheme* b = gui_theme_builtin(builtins[i]);
-        GuiThemeFile file = {"", "", 0, 0, 0, NULL};
+        GuiThemeFile file = {"", "", 0, 0, 0, NULL, NULL};
         snprintf(file.base, sizeof file.base, "%s", builtins[i]);
         written = gui_theme_write(b, &file);
         assert(written && gui_theme_parse(&t, builtins[i], written, strlen(written), said, sizeof said) && !said[0]);
