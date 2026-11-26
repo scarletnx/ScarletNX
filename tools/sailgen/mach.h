@@ -2320,6 +2320,7 @@ typedef struct SgXAsm {
     struct SgXRip {
         size_t at, end;
         int idx;
+        unsigned char cold; /* at and end are the cold buffer's, until sgx_cold_emit puts it after the code */
     } * rips;
     int nrips, cap_rips;
     /* the cold paths (SGX_K_COLD's calls), after the function's code and before its pool (sgx_cold_emit): their
@@ -2731,6 +2732,18 @@ static inline int sgx_pool_index(SgXAsm* a, SnxU64 lo, SnxU64 hi) {
     a->pool[a->npool][1] = hi;
     return a->npool++;
 }
+/* a pool operand's displacement at at, its instruction ending at end, in the buffer the assembler writes now */
+static inline void sgx_rip_add(SgXAsm* a, size_t at, size_t end, SnxU64 lo, SnxU64 hi) {
+    if (a->nrips == a->cap_rips) {
+        a->cap_rips = a->cap_rips ? 2 * a->cap_rips : 32;
+        a->rips = (struct SgXRip*)realloc(a->rips, (size_t)a->cap_rips * sizeof *a->rips);
+        if (!a->rips) sg_fail("out of memory", 0, 0);
+    }
+    a->rips[a->nrips].at = at;
+    a->rips[a->nrips].end = end;
+    a->rips[a->nrips].cold = a->b == &a->cold;
+    a->rips[a->nrips++].idx = sgx_pool_index(a, lo, hi);
+}
 /* a vector form (SGX_K_VEC): its operands in registers (a tied result copied from its input unless that dies here),
    a memory operand the state's (SGX_MEMR of the base), the constant pool's (SGX_POOLR, its displacement recorded for
    sgx_pool_emit to patch) or guest memory's (SGX_MEMR of in[5], b's index in[6] and disp) */
@@ -2829,16 +2842,7 @@ static inline void sgx_assemble_vec(SgXAsm* a, int at) {
     }
     f->enc(b, r, i->imm, 0);
     b->index = -1;
-    if (i->mrip) {
-        if (a->nrips == a->cap_rips) {
-            a->cap_rips = a->cap_rips ? 2 * a->cap_rips : 32;
-            a->rips = (struct SgXRip*)realloc(a->rips, (size_t)a->cap_rips * sizeof *a->rips);
-            if (!a->rips) sg_fail("out of memory", 0, 0);
-        }
-        a->rips[a->nrips].at = b->rip_at;
-        a->rips[a->nrips].end = b->n;
-        a->rips[a->nrips++].idx = sgx_pool_index(a, i->kv[0], i->kv[1]);
-    }
+    if (i->mrip) sgx_rip_add(a, b->rip_at, b->n, i->kv[0], i->kv[1]);
     for (k = 0; k < SGX_NREG; ++k)
         if (a->owner[k] == -1) a->owner[k] = 0;
     for (k = 0; k < SGX_NXREG; ++k)
