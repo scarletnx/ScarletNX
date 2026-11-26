@@ -237,6 +237,9 @@ static void switch64(struct snx_recompiler* r, uint8_t* mem) {
    (k 0..31); high: movz x0, #888; ret. The table's 32 entries name the cases; with x1 zero the index is not masked, and
    entry 32 names low, before the first case, 33 case 0's RET, between two, and 34 high, past the last */
 #define PAST64 0xB000u
+#define FCVT64 0xC000u
+/* fcvtpu x9, s0 (0x9e290009); mov x0, x9 (0xaa0903e0); ret (0xd65f03c0) */
+static const uint32_t fcvt_words[] = {0x9e290009, 0xaa0903e0, 0xd65f03c0};
 static const uint32_t past_words[] = {
     0x34000041, 0x92401000, 0x10000929, 0x1000008a, 0x3860692b, 0x8b0b094a, 0xd61f0140, 0xd2806120, 0xd65f03c0,
     0xd2800060, 0xd65f03c0, 0xd2800140, 0xd65f03c0, 0xd2800220, 0xd65f03c0, 0xd2800300, 0xd65f03c0, 0xd28003e0,
@@ -292,6 +295,41 @@ static void switch_past64(struct snx_recompiler* r, uint8_t* mem) {
                      (unsigned long long)index, past_polls, k >= 35);
             check(past_polls == (k >= 35), what);
         }
+        snx_recompiled_free(m);
+    }
+    snx_recompiler_set_backend(r, 1);
+}
+
+static void fcvt64(struct snx_recompiler* r, uint8_t* mem) {
+    int backend;
+    place(mem, FCVT64, fcvt_words, sizeof(fcvt_words) / sizeof(fcvt_words[0]));
+    for (backend = 1; backend >= 0; --backend) {
+        struct snx_recompiled* m;
+        RtAPI rt;
+        CPU cpu = {0};
+        Seen seen = {0};
+        char what[160];
+        snx_recompiler_set_backend(r, backend);
+        m = snx_recompile(r, FCVT64, mem + FCVT64, sizeof(fcvt_words));
+        snprintf(what, sizeof(what), "fcvt, back end %d: snx_recompile: %s", backend, snx_recompiler_error(r));
+        check(m != NULL, what);
+        if (!m) continue;
+        snx_runtime_defaults(&rt);
+        rt.svc = svc64;
+        rt.undef = undef64;
+        rt.brk = brk64;
+        cpu.mem = mem;
+        cpu.rt = &rt;
+        cpu.thread = &seen;
+        check(snx_recompiled_bind(m, &cpu) == 0, "fcvt: bind");
+        cpu.x[9] = 0;
+        cpu.x[0] = 0;
+        cpu.x[30] = STOP;
+        cpu.v[0].s[0] = 0x3f924925; /* ~1.142857f (1.0f / 0.875f) */
+        snx_recompiled_run(m, &cpu, FCVT64, STOP);
+        snprintf(what, sizeof(what), "fcvt, back end %d: x9 gives %llu, not 2", backend,
+                 (unsigned long long)cpu.x[9]);
+        check(cpu.x[9] == 2 && cpu.x[0] == 2 && cpu.pc == STOP && !seen.brks && !seen.undefs, what);
         snx_recompiled_free(m);
     }
     snx_recompiler_set_backend(r, 1);
@@ -1005,6 +1043,7 @@ int main(int argc, char** argv) {
         run64(r, "llvm", mem, keep_ir);
         switch64(r, mem);
         switch_past64(r, mem);
+        fcvt64(r, mem);
         progress64(r, mem);
         schedule64(r);
         invalidate64(r, mem);

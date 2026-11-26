@@ -200,8 +200,9 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
         sg_PSTATE_write(g, SG_PSTATE_N, 4, sgx_nzcv(X, ins));
         return 1;
     }
-    if (strstr(name, "_gen") || strstr(name, "float_int") || strstr(name, "float_fix") || !strncmp(name, "fcmp", 4) ||
-        !strncmp(name, "fccmp", 5) || !strncmp(name, "umov", 4) ||
+    if (strstr(name, "_gen") || strstr(name, "float_int") || strstr(name, "float_fix") ||
+        (strncmp(name, "fcvt", 4) == 0 && strstr(name, "_float") != NULL && strcmp(name, "fcvt_float") != 0) ||
+        !strncmp(name, "fcmp", 4) || !strncmp(name, "fccmp", 5) || !strncmp(name, "umov", 4) ||
         !strncmp(name, "smov", 4) || !strncmp(name, "fjcvtzs", 7))
         return 0;
     {
