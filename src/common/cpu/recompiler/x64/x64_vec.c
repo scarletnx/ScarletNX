@@ -458,7 +458,14 @@ static int fcold(SgCtx* g, SgB bad, int fast, int a, int b, int d, SnxU32 desc) 
    that every lane of r is a normal number (nr: fnot_roomy's); the cold path tests the rest before its call
    (x64_asm.h's sgx_cold_vwarm: zacc's bits), back to r where it holds: exact zeros, FZ with no denormal argument */
 static int fwarm(SgCtx* g, int r, int nr, unsigned sz, int n, int a, int b, int d, SnxU32 desc, unsigned zacc) {
-    SgB hot = sg_b_or(g, fstate(g, SGX_FPCR_RMODE | SGX_FPCR_FZ, 1), vany(g, nr, sz, n));
+    /* one test of nr's lane bits ORed with the state's bits, once a region: no condition made of each */
+    SgD lanes = sgx_val(32, sgx_v1(X, k_fmask[sz], nr, 0));
+    if (!g->fp_any_bits) {
+        SgD bits = sgx_fp_bad_bits(g, sg_FPCR_read(g), SGX_FPCR_RMODE | SGX_FPCR_FZ, 1);
+        g->fp_any_bits = sgx_reg(X, &bits);
+    }
+    if (n < (sz ? 2 : 4)) lanes = sg_d_and(g, lanes, sgx_const(32, (1u << n) - 1));
+    SgB hot = sg_b_not(g, sg_d_is_zero(g, sg_d_or(g, lanes, sgx_val(32, g->fp_any_bits))));
     return sgx_vcold_warm(X, hot, r, "snx_x64_fp_vec", a, b, d, desc, 0x80 | 0x20 | zacc, (int)offsetof(CPU, fpcr),
                           (int)offsetof(CPU, fpsr), 0);
 }

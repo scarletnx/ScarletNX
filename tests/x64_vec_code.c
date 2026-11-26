@@ -34,6 +34,8 @@
 /* MOVMSKPS and MOVMSKPD r32, xmm (0F 50, 66 0F 50): a lane mask the hot code tests */
 #define MOVMSKPS      "0F 50"
 #define MOVMSKPD      "66 0F 50"
+/* SETNE r/m8 (0F 95): a condition made a value */
+#define SETNE         "0F 95"
 /* MOVDQU xmm, m128: a V register's load from the state, or a constant's from the pool */
 #define MOVDQU_LOAD   "F3 0F 6F"
 /* GF2P8AFFINEQB xmm, xmm/m128, imm8 (66 0F 3A CE) and its VEX.128 form (C4, two bytes, CE); SHA1RNDS4 (0F 3A CC),
@@ -119,6 +121,7 @@ static const Row k_rows[] = {
     {"fadd v0.4s, v1.4s, v2.4s (the hot code's one lane mask)", 0, 0, 816, -1, "=1 " MOVMSKPS, "4E22D420"},
     {"fmul v0.2d, v1.2d, v2.2d (the hot code's one lane mask)", 0, 0, 864, -1, "=1 " MOVMSKPD, "6E62DC20"},
     {"fmla v0.4s, v1.4s, v2.4s (the hot code's one lane mask)", NEEDS_FMA, 0, 928, -1, "=1 " MOVMSKPS, "4E22CC20"},
+    {"fmul v0.4s, v1.4s, v2.4s (the hot test with no SETNE)", 0, 0, 832, -1, "!" SETNE, "6E22DC20"},
     {"fmax v0.4s, v1.4s, v2.4s (the hot code's one lane mask)", 0, 0, 656, -1, "=1 " MOVMSKPS, "4E22F420"},
     {"fcmeq v0.4s, v1.4s, v2.4s (the hot code's one lane mask)", 0, 0, 640, -1, "=1 " MOVMSKPS, "4E22E420"},
     {"fsqrt v0.4s, v1.4s (the hot code's one lane mask)", 0, 0, 784, -1, "=1 " MOVMSKPS, "6EA1F820"},

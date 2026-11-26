@@ -337,7 +337,7 @@ static void flush(Unit* u) {
     g->x.end_vdead = 0;
     for (k = 0; k < 32; ++k) g->gpr[k] = g->vd[k][0] = g->vd[k][1] = g->vx[k] = g->gk_known[k] = 0;
     g->fp_state[0] = g->fp_state[1] = 0, g->fp_bound[0] = g->fp_bound[1] = 0;
-    g->fp_dbound[0] = g->fp_dbound[1] = 0, g->fp_fz = g->fp_any = 0;
+    g->fp_dbound[0] = g->fp_dbound[1] = 0, g->fp_fz = g->fp_any = 0, g->fp_any_bits = 0;
     g->mem = 0;
     g->origin = -1;
     g->x.flags_ins = -1;
@@ -757,7 +757,7 @@ static int sys(Unit* u, SnxU32 word) {
         case SYSREG(3, 4, 4, 1): /* FPSR: the bits the A57 keeps (integer.c's A57_FPSR_MASK) */
             sgx_state_store(g, (int)offsetof(CPU, fpsr), 32, sg_d_and(g, sg_d_slice(g, xzr_or(g, rt), 31, 0), sgx_const(32, 0xF800009Fu)));
             g->fp_state[0] = g->fp_state[1] = 0, g->fp_bound[0] = g->fp_bound[1] = 0;
-            g->fp_dbound[0] = g->fp_dbound[1] = 0, g->fp_fz = g->fp_any = 0;
+            g->fp_dbound[0] = g->fp_dbound[1] = 0, g->fp_fz = g->fp_any = 0, g->fp_any_bits = 0;
             return 1;
         case SYSREG(3, 4, 4, 0): { /* FPCR: the runtime's hook too (snx_msr), a call */
             SgD args[2];
