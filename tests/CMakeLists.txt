@@ -456,11 +456,13 @@ if(TARGET snx_ctr_board)
         add_test(NAME 3ds_vk_hidden_commands COMMAND snx-test-3ds-vk-hidden-commands)
         set_tests_properties(3ds_vk_hidden_commands PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
     endif()
-    # the samplers' anisotropy for the Switch's setting, and what the run says of it
-    add_executable(snx-test-3ds-vk-anisotropy 3ds_vk_anisotropy.c)
-    snx_test_target(snx-test-3ds-vk-anisotropy gnu23)
-    target_link_libraries(snx-test-3ds-vk-anisotropy PRIVATE snx_ctr_gpu)
-    add_test(NAME 3ds_vk_anisotropy COMMAND snx-test-3ds-vk-anisotropy)
+    # the samplers' anisotropy for the Switch's setting, and what the run says of it (common/gpu/vk/vk_common.c, which
+    # calls volk's pointers)
+    add_executable(snx-test-vk-anisotropy vk_anisotropy.c "${volk_SOURCE_DIR}/volk.c")
+    set_source_files_properties("${volk_SOURCE_DIR}/volk.c" PROPERTIES COMPILE_OPTIONS "${snx_third_party_flags}")
+    snx_test_target(snx-test-vk-anisotropy gnu23)
+    target_link_libraries(snx-test-vk-anisotropy PRIVATE snx_vk_common)
+    add_test(NAME vk_anisotropy COMMAND snx-test-vk-anisotropy)
     # the RAM as the GPU has it, imported or the device's own memory: the guest's bytes and the GPU's are one memory,
     # in every view, before, during and after the device
     add_executable(snx-test-3ds-vk-ram 3ds_vk_ram.c)

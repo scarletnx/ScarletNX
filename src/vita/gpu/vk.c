@@ -109,6 +109,7 @@ static bool choose(SnxVkChoice* c, void* user) {
     want.features.shaderClipDistance = features.features.shaderClipDistance;
     want.features.textureCompressionBC = features.features.textureCompressionBC;
     want.features.depthClamp = features.features.depthClamp;
+    want.features.samplerAnisotropy = features.features.samplerAnisotropy;
     void* const enable[] = {&want, &want12, &want13, v->raster_order ? &want_ro : NULL,
                             v->local_read ? &want_lr : NULL};
     snx_vk_chain(enable, sizeof enable / sizeof *enable);
@@ -123,6 +124,7 @@ static bool choose(SnxVkChoice* c, void* user) {
     v->preserve_infnan = p12.shaderSignedZeroInfNanPreserveFloat32;
     v->bc = features.features.textureCompressionBC;
     v->depth_clamp = features.features.depthClamp;
+    v->anisotropic = features.features.samplerAnisotropy;
     v->timeline = v12.timelineSemaphore;
     VkFormatProperties d16;
     vkGetPhysicalDeviceFormatProperties(phys, VK_FORMAT_D16_UNORM, &d16);
@@ -211,6 +213,11 @@ bool vita_vk_init(const char* title, char* error, size_t error_size) {
     v->family = device.family;
     vkGetDeviceQueue(v->device, v->family, 0, &v->queue);
     vkGetPhysicalDeviceProperties(v->phys, &v->properties);
+    /* the Switch's anisotropy for the samplers render.c makes, as the 3DS's, said with the value in effect */
+    char aniso[256];
+    v->anisotropy = snx_vk_anisotropy(g_settings.anisotropic_filtering, v->anisotropic,
+                                      v->properties.limits.maxSamplerAnisotropy, aniso, sizeof aniso);
+    if (aniso[0]) fprintf(stderr, "scarletnx-vita: %s\n", aniso);
     if (g.copy_why)
         fprintf(stderr, "scarletnx-vita: %s %s: guest memory is copied\n", v->properties.deviceName, g.copy_why);
     vkGetPhysicalDeviceMemoryProperties(v->phys, &v->memory_properties);

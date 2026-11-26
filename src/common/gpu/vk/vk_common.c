@@ -462,3 +462,20 @@ void snx_vk_storage_buffers(VkDevice dev, VkDescriptorSet set, const VkDescripto
         first += n;
     }
 }
+float snx_vk_anisotropy(int asked, bool feature, float most, char* line, size_t line_size) {
+    if (line_size) line[0] = 0;
+    if (asked < 2) return 0;
+    if (!feature) {
+        snprintf(line, line_size,
+                 "anisotropy=%d asks for anisotropic filtering, which the device has none of: textures are filtered as "
+                 "the game asks",
+                 asked);
+        return 0;
+    }
+    float value = (float)asked < most ? (float)asked : most;
+    snprintf(line, line_size,
+             "anisotropy=%d: a mipmapped texture the game filters linearly is filtered anisotropically, at most %gx%s",
+             asked, (double)value, value < (float)asked ? ", the device's most" : "");
+    return value;
+}
+
