@@ -2,10 +2,17 @@
    Copyright 2026 the ScarletNX contributors */
 #include "common/gpu/vk/pacing.h"
 #include <stdio.h>
+#include <string.h>
 
+/* the device is made with VK_KHR_swapchain, which the two extensions require: a window's, not a headless one's */
+static bool presents(const SnxVkChoice* c) {
+    for (uint32_t i = 0; i < c->extension_count; ++i)
+        if (!strcmp(c->extensions[i], VK_KHR_SWAPCHAIN_EXTENSION_NAME)) return true;
+    return false;
+}
 void* snx_vk_pacing_choose(SnxVkPacing* p, SnxVkChoice* c, int pacing, void* next) {
     *p = (SnxVkPacing){0}; /* asked anew of each device choose is called for */
-    if (pacing <= 0 || !snx_vk_choice_has(c, VK_KHR_PRESENT_ID_EXTENSION_NAME) ||
+    if (pacing <= 0 || !presents(c) || !snx_vk_choice_has(c, VK_KHR_PRESENT_ID_EXTENSION_NAME) ||
         !snx_vk_choice_has(c, VK_KHR_PRESENT_WAIT_EXTENSION_NAME))
         return next;
     VkPhysicalDevicePresentIdFeaturesKHR id = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR};
