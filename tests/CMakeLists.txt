@@ -4420,6 +4420,10 @@ add_test(NAME recompiler_backends_undef_pins COMMAND snx-test-recompiler-backend
 set(snx_fp_int 1e200041 9e610083 1e6400c5 9e250207 9e680149 1e290008 1e30018b 9e7101cd 1e78004f 9e390093 1e220034
     9e630075 1e2600b6 9e58e06c 1e03c0ce)
 add_test(NAME recompiler_backends_fp_int COMMAND snx-test-recompiler-backends --made --states 40 --words ${snx_fp_int})
+# FADD, then CMP; FCSEL (LT); TST; FCSEL (NE): the compare's flags only the first FCSEL reads, from the host's own
+set(snx_fp_flags 1e242863 7100051f 1e20bc20 7200029f 1e201c20)
+add_test(NAME recompiler_backends_fp_flags COMMAND snx-test-recompiler-backends --made --states 40 --words
+         ${snx_fp_flags})
 # X30 kept in a host register, in step with the state (an SVC), and then stripped by XPACLRI: what the exit stores
 add_test(NAME recompiler_backends_xpac COMMAND snx-test-recompiler-backends --target max --words aa0003fe d4000001
          d2800050 8b1e03c2 f1000610 54ffffc1 d50320ff d2800005 d65f00a0)
@@ -4476,6 +4480,8 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
         add_test(NAME recompiler_${m}_br_pins COMMAND snx-test-recompiler-${m} --words ${snx_br_pins})
         add_test(NAME recompiler_${m}_undef_pins COMMAND snx-test-recompiler-${m} --words ${snx_undef_pins})
         add_test(NAME recompiler_${m}_fp_int COMMAND snx-test-recompiler-${m} --made --states 40 --words ${snx_fp_int})
+        add_test(NAME recompiler_${m}_fp_flags COMMAND snx-test-recompiler-${m} --made --states 40 --words
+                 ${snx_fp_flags})
         add_test(NAME recompiler_${m}_calls COMMAND snx-test-recompiler-${m} --calls --functions 40 --states 4)
         set_tests_properties(recompiler_${m}_calls PROPERTIES TIMEOUT 600)
         add_test(NAME recompiler_${m}_half_words COMMAND snx-test-recompiler-${m} --target android --states 40 --words
@@ -4485,8 +4491,8 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
         set_tests_properties(recompiler_${m}_system PROPERTIES TIMEOUT 600)
         # no Unicorn of the machine (an unpatched one's PPC64): skipped, as it compares nothing
         set_tests_properties(recompiler_${m} recompiler_${m}_jit recompiler_${m}_br_pins recompiler_${m}_undef_pins
-                             recompiler_${m}_fp_int recompiler_${m}_calls recompiler_${m}_half_words
-                             recompiler_${m}_system PROPERTIES SKIP_RETURN_CODE 77)
+                             recompiler_${m}_fp_int recompiler_${m}_fp_flags recompiler_${m}_calls
+                             recompiler_${m}_half_words recompiler_${m}_system PROPERTIES SKIP_RETURN_CODE 77)
         # the exclusives whatever the fields they leave unused hold
         add_test(NAME recompiler_${m}_exclusives COMMAND snx-test-recompiler-${m} --refused --ops LDXR LDXP STXR)
         foreach(target switch android ounce max)
