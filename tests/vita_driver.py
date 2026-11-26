@@ -68,6 +68,7 @@ def main():
             '--vk-pipeline-cache=1',
             '--perf-map=0',
             '--gdb-jit=0',
+            '--stats=0',
             '--help',
         ],
         0,

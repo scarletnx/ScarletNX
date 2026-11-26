@@ -88,6 +88,7 @@ def main():
             ['--vk-pipeline-cache=1'],
             ['--gpu-pstate=auto'],
             ['--perf-map=0', '--gdb-jit=0'],
+            ['--stats=0', '--stats-corner=br', '--showcase=0', '--showcase-corner=bl'],
         ):
             out = run(['-r', *given, *missing], 1, 'scarletnx-nds: ')
             if 'unexpected argument' in out or 'does nothing' in out:

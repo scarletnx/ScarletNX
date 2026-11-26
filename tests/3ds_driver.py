@@ -167,6 +167,7 @@ def main():
         0,
         'Old 3DS',
     )
+    run(['--board-info', '--stats=1'], 2, '--stats=1 does nothing in a 3DS game: its window shows no stats')
     run(['--board-info', '--shadows=0'], 2, "--shadows=0 does nothing in a 3DS game: it tunes the Switch's GPU")
     # the GPU driver package, Freedreno's variables and the validation layer, as a Switch game's window takes them
     run(['--board-info', '--gpu-driver=', '--freedreno-env=', '--vk-validation=1'], 0, 'Old 3DS')

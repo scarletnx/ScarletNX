@@ -34,6 +34,7 @@ static struct {
     int slot;              /* the save states' slot F7 and F8 use, 1 to state_slots, F9's step */
     char state_save[256], state_load[1024]; /* an unattended run's (state_save, state_load) */
     SnxSystem console;                      /* whose settings of the Switch's the rest are (console_settings.h) */
+    IniOpt with_set[2];                     /* rows of COMMON_SETS, the console table's with their set function */
     uint32_t saves_done, loads_done;        /* a bit for each of their items done */
     uint64_t quit_by; /* a second Back before this quits (quit_key.h), the first one's line shown until then */
     SnxUiRects rects;
@@ -128,12 +129,26 @@ static const IniOpt STATE_LOAD = {.key = "state_load",
                                   .type = INI_TEXT,
                                   .var = g_vpad_sdl.state_load,
                                   .size = sizeof g_vpad_sdl.state_load};
+/* the Switch's rows whose set functions are common code, which the console table leaves out with every other one's */
+static const struct {
+    const char* key;
+    void (*set)(const IniOpt* o, const char* v);
+} COMMON_SETS[] = {{"stats_corner", stats_corner_set}, {"showcase_corner", vpad_showcase_corner_set}};
+static_assert(sizeof COMMON_SETS / sizeof *COMMON_SETS == sizeof g_vpad_sdl.with_set / sizeof *g_vpad_sdl.with_set);
 static const IniOpt* setting(const char* key) {
     if (!strcmp(key, "fps_limit")) return &FPS_LIMIT;
     if (!strcmp(key, "state_save")) return &STATE_SAVE;
     if (!strcmp(key, "state_load")) return &STATE_LOAD;
     const IniOpt* o = hotkey_setting(key);
-    return o ? o : snx_console_opt(g_vpad_sdl.console, key);
+    if (o) return o;
+    o = snx_console_opt(g_vpad_sdl.console, key);
+    for (size_t i = 0; o && i < sizeof COMMON_SETS / sizeof *COMMON_SETS; ++i)
+        if (!strcmp(key, COMMON_SETS[i].key)) {
+            g_vpad_sdl.with_set[i] = *o;
+            g_vpad_sdl.with_set[i].set = COMMON_SETS[i].set;
+            return &g_vpad_sdl.with_set[i];
+        }
+    return o;
 }
 void snx_vpad_sdl_settings(SnxSystem console) {
     g_vpad_sdl.console = console;
