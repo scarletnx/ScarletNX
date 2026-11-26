@@ -842,3 +842,12 @@ void gq_call(GqFn fn, const void* arg, u64 bytes) {
     if (bytes) memcpy(p, arg, (size_t)bytes);
     gq_call_end();
 }
+void gq_call_writes(GqFn fn, const void* arg, u64 bytes, u64 gva, u64 size) {
+    void* p = gq_call_begin(fn, bytes);
+    if (bytes) memcpy(p, arg, (size_t)bytes);
+    if (g_gq.open && size) { /* in the queue (a call too big for it runs now, after every record) */
+        gq_mark(gva, size, g_gq.open->fence);
+        gq_recent_add(gva, size, g_gq.open->fence, gq_head(), 0); /* nothing to forward: the call makes its bytes */
+    }
+    gq_call_end();
+}

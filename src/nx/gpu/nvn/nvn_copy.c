@@ -14,6 +14,7 @@
 #include "nx/gpu/nvn/nvn_draw.h"
 #include "nx/gpu/gpu.h"
 #include "nx/gpu/gpu_queue.h"
+#include "common/utilities/bits.h"
 #include "nx/gpu/nvn/nvn_object.h"
 #include "nx/gpu/nvn/nvn_state.h"
 #include "nx/gpu/nvn/nvn_tex.h"
@@ -123,7 +124,7 @@ static void tex_side(const TexPlane* p, i32 x, i32 y, i32 z, GpuDmaSide* s) {
     s->oy = (u32)y / (u32)p->bhp;
 }
 /* the copy, on the GPU; a render target over the destination takes the new bytes */
-static void launch(const GpuDmaOp* o) {
+static void launch_now(const GpuDmaOp* o) {
     SNX_ZONE(z, "nvn dma copy");
     u32 why = CP_OK;
     if (!g_renderer_up || !g_renderer->dma_copy) {
@@ -141,6 +142,39 @@ done:
 #if defined(SNX_TRACY)
     SNX_ZONE_TEXT(z, "copy dma bytes=%llu %s", (unsigned long long)o->line_out * o->lines, copy_skip(why));
 #endif
+}
+static void launch_run(const void* arg, u64 bytes) {
+    GpuDmaOp o;
+    (void)bytes;
+    memcpy(&o, arg, sizeof o);
+    launch_now(&o);
+}
+/* the bytes of guest memory a copy can write: a pitch linear destination's span, or a block linear one's surface up
+   to the depth block of its slice */
+static void dst_range(const GpuDmaOp* o, u64* at, u64* len) {
+    const GpuDmaSide* d = &o->dst;
+    if (!d->bl) {
+        *at = d->addr + (u64)gpu_dma_low(d, o->lines);
+        *len = gpu_dma_span(d, o->lines, o->line_out);
+        return;
+    }
+    const u64 rows = snx_align_up(d->h ? d->h : 1, 8ull << d->bh), depth = ((u64)(d->z >> d->bd) + 1) << d->bd;
+    *at = d->addr;
+    *len = snx_align_up(d->wb ? d->wb : 1, 64) * rows * depth;
+}
+/* The copy in its place in the renderer thread's queue, as maxwell/dma.c's launches (Eden's MaxwellDMA::Launch does
+   it in the command stream, with no wait). The copy waited for every queued record (gpu_renderer_now): with
+   draw_batches=2 the front end waited 10 ms a present there, and the two threads ran in turn. Its destination counts as
+   a queued write, so a read of it on the front end waits for the record. A copy from a snapshot (a texel write) stays
+   here: its bytes are the caller's, freed when the copy returns */
+static void launch(const GpuDmaOp* o) {
+    if (o->snap || !gq_queues()) {
+        launch_now(o);
+        return;
+    }
+    u64 at = 0, len = 0;
+    dst_range(o, &at, &len);
+    gq_call_writes(launch_run, o, sizeof *o, at, len);
 }
 /* lines of a region w texels wide and h high on the plane */
 static void region_lines(const TexPlane* p, i32 w, i32 h, GpuDmaOp* o) {

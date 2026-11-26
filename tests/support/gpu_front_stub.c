@@ -91,4 +91,9 @@ void gpu_inline_end(int kind, u64 bytes, GpuInlineMark m) {
 #ifndef SNX_TEST_GPU_QUEUE
 void gq_call(GqFn fn, const void* arg, u64 bytes) { fn(arg, bytes); }
 int gq_queues(void) { return 0; } /* no renderer thread: the front end calls the renderer itself */
+void gq_call_writes(GqFn fn, const void* arg, u64 bytes, u64 gva, u64 size) {
+    (void)gva;
+    (void)size;
+    fn(arg, bytes);
+}
 #endif
