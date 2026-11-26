@@ -9,6 +9,10 @@
    become one block each, one SSA (a register read once, a compare's flags read by the next word's condition, the stores
    a later one overwrites dropped), run beside the LLVM steps of the words one after another, each at its pc.
      snx-test-sail-x64 [--states N] [--samples N] [--sequences N] [--pool N] [--xmm N] [--verbose] [--dump WORD...]
+                       [--counts FILE]
+   --counts FILE writes one line per word of the decoder's rows: the word, its op, and the hex bytes of the x86-64
+   step on this host's features and on the baseline without BMI1, BMI2 and LZCNT. It makes no steps and runs no
+   states. A driver counts the host instructions of each byte string (for example with capstone or llvm-mc).
    --pool N gives the back end N host registers of its nine, so it spills (ctest runs it with 3 too), --xmm N of its
    sixteen vector ones (ctest: 6 with 3)
    A word the x86-64 back end takes but can't make (its sg_fail) is a failure too, named with why */
@@ -700,7 +704,8 @@ static int run(int argc, char** argv) {
     size_t count, n = 0, failures = 0, unmade = 0, compared = 0, bytes = 0, made = 0, plain_unmade = 0;
     unsigned char* code;
     size_t code_at = 0, code_cap = (size_t)1 << 26;
-    size_t (*offset)[2];
+    size_t (*offset)[2], *sizes = NULL;
+    const char* counts_path = NULL;
     LlvmSteps set;
     char error[1024];
     RtAPI rt = {.undef = on_undef, .sev = on_sev, .wfe = on_wfe, .cas128 = snx_runtime_cas128};
@@ -721,6 +726,8 @@ static int run(int argc, char** argv) {
             g_test.verbose = 1;
         else if (!strcmp(argv[i], "--trace"))
             g_test.verbose = 2; /* each word named before it runs: a crash's */
+        else if (!strcmp(argv[i], "--counts") && i + 1 < (unsigned)argc)
+            counts_path = argv[++i];
         else if (!strcmp(argv[i], "--dump") && i + 1 < (unsigned)argc) {
             /* the words' x86-64 code as one block on this host's features, as hex bytes (for a disassembler) */
             unsigned char buf[CODE_MAX];
@@ -772,7 +779,8 @@ static int run(int argc, char** argv) {
     rows = g_test.rows;
     /* the offsets of the words' code, then the words: one block */
     offset = g_test.offset = malloc((sizeof *offset + sizeof *words) * (count * 8 + 1));
-    if (!offset) return 1;
+    sizes = malloc(sizeof *sizes * (count * 8 + 1));
+    if (!offset || !sizes) return 1;
     words = (u32*)(offset + count * 8 + 1);
     for (i = 0; i < count; ++i) {
         static const u32 fields[3] = {0x1fu, 0x1fu << 5, 0x1fu << 16};
@@ -813,10 +821,32 @@ static int run(int argc, char** argv) {
                     offset[n][1] = (size_t)-1;
                 }
                 bytes += got[0];
+                sizes[n] = got[0];
                 ++made;
                 words[n++] = w;
             }
         }
+    }
+    if (counts_path) {
+        FILE* f = fopen(counts_path, "w");
+        size_t b;
+        if (!f) {
+            fprintf(stderr, "FAIL: can't write %s\n", counts_path);
+            return 1;
+        }
+        for (i = 0; i < n; ++i) {
+            fprintf(f, "%08x\t%s\t", (unsigned)words[i], op_name(words[i]) ? op_name(words[i]) : "?");
+            for (b = 0; b < sizes[i]; ++b) fprintf(f, "%02x", code[offset[i][0] + b]);
+            fputc('\t', f);
+            if (offset[i][1] == (size_t)-1)
+                fputc('-', f);
+            else
+                for (b = 0; b < sizes[i]; ++b) fprintf(f, "%02x", code[offset[i][1] + b]);
+            fputc('\n', f);
+        }
+        fclose(f);
+        printf("sail_x64: %zu words in %s\n", n, counts_path);
+        return 0;
     }
     if (snx_test_pages_exec(code, code_cap, 1)) {
         fprintf(stderr, "FAIL: the code can't be made executable\n");
@@ -1001,6 +1031,7 @@ static int run(int argc, char** argv) {
     printf("sail_x64: %zu words made (%zu bytes of x86-64 on this host's features, %.1f a word; %zu of them not without "
            "BMI1, BMI2 and LZCNT), %zu runs, %zu failures (%zu words not made)\n",
            made, bytes, made ? (double)bytes / (double)made : 0.0, plain_unmade, compared, failures, unmade);
+    free(sizes);
     return failures ? 1 : 0;
 }
 int main(int argc, char** argv) {

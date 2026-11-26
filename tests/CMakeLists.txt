@@ -4334,6 +4334,20 @@ target_include_directories(snx-test-recompiler-backends PRIVATE "${CMAKE_CURRENT
 target_link_libraries(snx-test-recompiler-backends PRIVATE scarletnx-recompiler scarletnx-common)
 snx_decodetree_a64(snx-test-recompiler-backends)
 add_test(NAME recompiler_backends COMMAND snx-test-recompiler-backends)
+# the density of the same back end's code: --counts writes one native object per op, the script counts the host
+# instructions in them with llvm-objdump and compares each op's mean per guest word with the checked-in limits
+if(Python3_Interpreter_FOUND)
+    if(SNX_LLVM_CONFIG)
+        get_filename_component(snx_density_llvm_bin "${SNX_LLVM_CONFIG}" DIRECTORY)
+    endif()
+    find_program(SNX_LLVM_OBJDUMP llvm-objdump HINTS "${snx_density_llvm_bin}" NO_DEFAULT_PATH)
+    if(SNX_LLVM_OBJDUMP)
+        add_test(NAME recompiler_backends_density COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/x64_density.py" --backend $<TARGET_FILE:snx-test-recompiler-backends>
+            --objdump "${SNX_LLVM_OBJDUMP}" --targets "${CMAKE_CURRENT_SOURCE_DIR}/x64_density_targets.txt")
+        set_tests_properties(recompiler_backends_density PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
+    endif()
+endif()
 # x64_vec.c's Advanced SIMD, a family at a time: each word of these ops (the decoder's samples of them) made by the x86-64
 # back end, a function of its own, and its results LLVM's from states of the lanes' edge values
 foreach(family IN ITEMS
