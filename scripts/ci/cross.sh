@@ -242,9 +242,12 @@ EOF
   done
 }
 
+# The container gets the ref and a nightly's name (SNX_BUILD_NAME), whose release the AppImage updates to
+# (scripts/appimage-update-info.sh)
 # env: ARCH
 appimage() {
-  docker exec -i -e GITHUB_REPOSITORY -e GITHUB_REF_TYPE -e GITHUB_REF -e VERSION="$(git describe --always --dirty)" \
+  docker exec -i -e GITHUB_REPOSITORY -e GITHUB_REF_TYPE -e GITHUB_REF -e SNX_BUILD_NAME \
+    -e VERSION="$(git describe --always --dirty)" \
     -e MAKE_APPIMAGE_ONLY=1 -e ARCH -e APPIMAGETOOL=/usr/local/bin/appimagetool \
     build sh -s <<'EOF'
 set -eu
