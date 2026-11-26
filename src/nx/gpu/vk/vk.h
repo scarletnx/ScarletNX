@@ -2790,6 +2790,8 @@ void vk_mirror_wrote(u64 cpu, u64 len);
 int vk_mirror_write_in_place(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
 /* the writes in place so far, a count, and a split's join: each half's writes before the other's commands after them */
 u64 vk_mirror_inplace_count(void);
+/* a draw starts: the writes in place of the draw before it are ordered before the next use of the mirror */
+void vk_mirror_draw_begin(void);
 void vk_mirror_order_join(void);
 /* a buffer in the mirror that a dispatch writes: its guest bytes [cpu, cpu + len) and its part of the write log */
 typedef struct {

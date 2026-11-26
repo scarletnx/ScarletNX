@@ -624,15 +624,23 @@ int vk_mirror_pending(u64 gva, u64 len) { return g_mir.on > 0 && len && pend_hit
    same thread records: each thread's own, as the two halves of a split run record their own commands. The join orders
    one half's writes before the other's commands (vk_mirror_order_join) */
 static _Thread_local int t_mir_unordered;
+/* a write in place in the draw being set up: its stores come after each use of the mirror in its setup, so those
+   uses keep the barrier for the next one, and the next draw's start takes it (vk_mirror_draw_begin) */
+static _Thread_local int t_mir_inflight;
 static void barrier(VkCommandBuffer cb, VkPipelineStageFlags2 ss, VkAccessFlags2 sa, VkPipelineStageFlags2 ds,
                     VkAccessFlags2 da);
 static _Atomic u64 g_mir_inplace; /* the writes in place, a count: a split's join looks at it */
 static void mir_order(void) {
     if (!t_mir_unordered) return;
-    t_mir_unordered = 0;
+    t_mir_unordered = t_mir_inflight;
     vk_render_end();
     barrier(vk_cmd(), VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
             VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
+}
+void vk_mirror_draw_begin(void) {
+    if (!t_mir_inflight) return;
+    t_mir_inflight = 0;
+    t_mir_unordered = 1;
 }
 u64 vk_mirror_inplace_count(void) { return atomic_load_explicit(&g_mir_inplace, memory_order_relaxed); }
 void vk_mirror_order_join(void) {
@@ -666,10 +674,12 @@ static int others_own(u64 cpu, u64 len) {
    were lost, and the draws added to the bytes from before that write. The old path compares with the bytes taken at
    the binding, and lands each byte that the draw changed. In one game, two buffers that its draws write about 230
    times a present and its CPU reads back each frame were written in place: 64-pixel squares of wrong lighting
-   covered its world */
+   covered its world.
+   Only in split runs (draw_batches=2), where the finish stopped both threads. The CPU reads are noted where a trap
+   lands them, so with no traps the old path stays */
 int vk_mirror_write_in_place(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
     u64 cpu = 0;
-    if (g_mir.on <= 0 || !len || gmmu_run(gva, len, &cpu) != len || (cpu & (align - 1)) || others_own(cpu, len) ||
+    if (g_settings.draw_batches != 2 || !own_traps() || g_mir.on <= 0 || !len || gmmu_run(gva, len, &cpu) != len || (cpu & (align - 1)) || others_own(cpu, len) ||
         vk_own_cpu_read(cpu, len, MIR_HOT_PRESENTS))
         return 0;
     if (!vk_mirror_slice_at(gva, cpu, len, buf, off)) return 0;
@@ -681,7 +691,7 @@ int vk_mirror_write_in_place(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* of
     const u64 m0 = cpu / 32 * 4, m1 = (cpu + len + 31) / 32 * 4;
     rec_CmdFillBuffer(cb, g_mir.mask, m0, m1 - m0, ~0u);
     vk_mirror_wrote(cpu, len);
-    t_mir_unordered = 1;
+    t_mir_unordered = t_mir_inflight = 1;
     atomic_fetch_add_explicit(&g_mir_inplace, 1, memory_order_relaxed);
     return 1;
 }

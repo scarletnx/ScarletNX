@@ -7525,6 +7525,7 @@ static const char* render_draw(const DsState* ds, const DrawCall* dc, DrawOwner*
     g_vk_drawing = atomic_fetch_add_explicit(&serial, 1, memory_order_relaxed) + 1;
     const int top = !g_draw_depth && !texture;
     if (top) {
+        vk_mirror_draw_begin();
         bp_draw();
         g_ph.at[0] = ph_now();
         g_ph.at[1] = g_ph.at[2] = 0;
