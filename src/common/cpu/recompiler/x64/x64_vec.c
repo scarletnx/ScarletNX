@@ -433,13 +433,13 @@ static int fnot_roomy(SgCtx* g, unsigned sz, int r) {
     return vgt(g, size, vxor(g, t, vsplat(g, size, flip)), vsplat(g, size, (((inf - normal - 1) << 1) - 1) ^ flip), 0);
 }
 static int fzero(SgCtx* g, unsigned sz, int a) { return veq(g, sz + 2, vadd(g, sz + 2, a, a), vzero(g)); }
-/* the denormal lanes (the doubled magnitude less 2 below the doubled smallest normal less 2, unsigned: a signed
-   compare with their tops flipped) */
+/* the denormal lanes (the bits less one with the sign bit set, below the smallest normal's less one with it set,
+   signed: either zero's borrow puts it above) */
 static int fdenormal(SgCtx* g, unsigned sz, int a) {
     unsigned size = sz + 2;
     SnxU64 normal = sz ? 0x0010000000000000ull : 0x00800000u, flip = 1ull << ((8u << size) - 1);
-    int t = vsub(g, size, vadd(g, size, a, a), vsplat(g, size, 2));
-    return vgt(g, size, vsplat(g, size, ((normal << 1) - 2) ^ flip), vxor(g, t, vsplat(g, size, flip)), 0);
+    int t = vor(g, vsub(g, size, a, vsplat(g, size, 1)), vsplat(g, size, flip));
+    return vgt(g, size, vsplat(g, size, (normal - 1) | flip), t, 0);
 }
 static int fnan(SgCtx* g, unsigned sz, int a) { return sgx_v2(X, k_fcmp[sz], a, a, 3); /* CMPUNORD */ }
 static SgB fstate(SgCtx* g, SnxU32 mask, int ixc) { return sgx_fp_bad(g, sg_FPCR_read(g), mask, ixc); }
@@ -549,9 +549,8 @@ static int fto_int(SgCtx* g, unsigned sz, int n, int a, int uns, int fbits, int 
             int hi = vxor(g, sgx_v1(X, &sgx_v_cvttps2dq, op2(g, &sgx_v_subps, x, fsplat(g, 0, 0x4F000000u)), 0),
                           vsplat(g, 2, 0x80000000u));
             r = vsel(g, big, hi, lo);
-            bad = vor(g, sgx_v2(X, &sgx_v_cmpps, x, fsplat(g, 0, 0xBF800000u), 2),  /* x <= -1 */
-                      sgx_v2(X, &sgx_v_cmpps, fsplat(g, 0, 0x4F800000u), x, 2)); /* 2^32 <= x */
-            bad = vor(g, bad, fnan(g, 0, x));
+            bad = vor(g, sgx_v2(X, &sgx_v_cmpps, fsplat(g, 0, 0xBF800000u), x, 5), /* not -1 < x: x <= -1 or a NaN */
+                      sgx_v2(X, &sgx_v_cmpps, fsplat(g, 0, 0x4F800000u), x, 2));   /* 2^32 <= x */
         }
     } else {
         /* the two doubles one at a time (CVTTSD2SI), unsigned ones from 2^63 up cold */
