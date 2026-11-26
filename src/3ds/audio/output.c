@@ -88,7 +88,7 @@ void snx_ctr_audio_frame(const int16_t frame[SNX_CTR_DSP_SAMPLES][2]) {
     int pace = snx_ctr_clock_pace();
     if (g_output.stream && pace != g_output.pace) {
         char limit[16];
-        snx_ctr_clock_text(pace, limit, sizeof limit);
+        snx_pace_text(pace, limit, sizeof limit);
         if (pace == SNX_CTR_PACE_NONE)
             fprintf(stderr, "3ds audio: fps_limit=%s runs the game as fast as it goes: its sound is not played\n",
                     limit);

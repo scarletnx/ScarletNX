@@ -14,6 +14,7 @@
 #include "vita/hle/hle.h"
 #include "vita/gpu/render.h"
 #include "common/utilities/common.h"
+#include "common/utilities/vpad_sdl.h"
 #include "snx_settings.h"
 #include <inttypes.h>
 #include <setjmp.h>
@@ -446,9 +447,11 @@ int vita_run(VitaProcess* p, double seconds) {
         if (now >= p->display.next_ns && vblank_waits(p, now)) vblank_late = true;
         else if (now >= p->display.next_ns) {
             ++p->display.vblanks;
-            p->display.next_ns = vblank_late ? now + VBLANK_NS : p->display.next_ns + VBLANK_NS;
+            /* at fps_limit's pace (the screen's, none, or N a second), which F4 switches */
+            uint64_t period = snx_vpad_window_frame_ns(VBLANK_NS);
+            p->display.next_ns = vblank_late ? now + period : p->display.next_ns + period;
             vblank_late = false;
-            if (p->display.next_ns < now) p->display.next_ns = now + VBLANK_NS;
+            if (p->display.next_ns < now) p->display.next_ns = now + period;
             if (!vita_display_vblank(p)) {
                 closed = true;
                 break;

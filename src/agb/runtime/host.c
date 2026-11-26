@@ -40,6 +40,7 @@ struct AgbHost {
     SnxNotice notice;
     char* captures; /* the game's folder with its separator, whose captures/ a screenshot goes in */
     bool shot;      /* the screenshot key's: the next frame saved */
+    int vsync; /* SDL's renderer's: on at the console's pace, off at another, as a Switch game's follows its limit */
     SDL_Texture* notice_texture;
     int notice_w, notice_h, notice_failed;
 };
@@ -162,6 +163,7 @@ AgbHost* agb_host_open(const char* title, const char* ini, bool fullscreen, char
     /* each frame whole on screen, as the launcher presents its own (the Vulkan window's images go at the display's
        refresh too) */
     if (!host->vk) {
+        host->vsync = 1;
         if (!SDL_SetRenderVSync(host->renderer, 1))
             fprintf(stderr,
                     "scarletnx-agb: the display refused vsync 1 (%s): frames go on screen with vsync 0 and may tear\n",
@@ -310,15 +312,19 @@ void agb_host_frame(AgbHost* host, const uint32_t* framebuffer, const int16_t* s
     if (host->vk)
         (void)agb_vk_frame(host->vk, framebuffer, &host->notice); /* no image for it: the next frame goes */
     else {
+        int vsync = snx_vpad_window_frame_ns(FRAME_NS) == FRAME_NS;
+        if (vsync != host->vsync && SDL_SetRenderVSync(host->renderer, vsync)) host->vsync = vsync;
         agb_host_draw(host, framebuffer);
         SDL_RenderPresent(host->renderer);
     }
     if (host->audio && SDL_GetAudioStreamQueued(host->audio) < (int)(QUEUED_FRAMES * count * 4))
         SDL_PutAudioStreamData(host->audio, samples, (int)(count * 4));
-    uint64_t now = SDL_GetTicksNS();
+    /* at fps_limit's pace (the console's, none, or N frames a second), which F4 switches */
+    uint64_t now = SDL_GetTicksNS(), step = snx_vpad_window_frame_ns(FRAME_NS);
+    if (!step) return;
     if (host->due > now)
         SDL_DelayPrecise(host->due - now);
-    else if (now - host->due > 3 * FRAME_NS) /* behind by more than a few frames: start the count again, no rush */
+    else if (now - host->due > 3 * step) /* behind by more than a few frames: start the count again, no rush */
         host->due = now;
-    host->due += FRAME_NS;
+    host->due += step;
 }

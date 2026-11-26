@@ -4,6 +4,7 @@
 #include "common/utilities/game_ini.h"
 #include "common/utilities/hotkeys.h"
 #include "common/utilities/key_said.h"
+#include "common/utilities/pace.h"
 #include "common/utilities/notice.h"
 #include "common/utilities/quit_key.h"
 #include "common/utilities/ui_colors.h"
@@ -19,7 +20,9 @@ static struct {
     void (*show)(const char* line);
     SDL_Haptic* buzzer;
     int finger_seen;
-    bool paused;      /* the pause key's */
+    bool paused;           /* the pause key's */
+    int pace, pace_before; /* fps_limit's (pace.h), and F4's pace before none */
+    char fps_limit[16];    /* its text as read */
     uint64_t quit_by; /* a second Back before this quits (quit_key.h), the first one's line shown until then */
     SnxUiRects rects;
     int made, warned, w, h; /* what the rectangles are made for: a first time, with the line or not, the picture */
@@ -84,7 +87,28 @@ void snx_vpad_sdl_buzz(SDL_Haptic* buzzer) {
 static void store(const char* key, const char* value) {
     if (g_vpad_sdl.ini) (void)snx_ini_record_in(g_vpad_sdl.ini, SNX_VPAD_PAGE, key, value);
 }
-void snx_vpad_sdl_settings(void) { vpad_settings_also(hotkey_setting); }
+/* fps_limit read into the window's pace, a value not taken as given said with the one in effect */
+static void fps_limit_set(const IniOpt* o, const char* v) {
+    char line[192];
+    int pace = g_vpad_sdl.pace;
+    (void)snx_pace_parse(v, &pace, line, sizeof line);
+    if (line[0]) snx_error("settings: %s", line);
+    g_vpad_sdl.pace = pace;
+    snx_pace_text(pace, (char*)o->var, o->size);
+}
+static const IniOpt FPS_LIMIT = {.key = "fps_limit",
+                                 .def = "game",
+                                 .type = INI_TEXT,
+                                 .var = g_vpad_sdl.fps_limit,
+                                 .size = sizeof g_vpad_sdl.fps_limit,
+                                 .set = fps_limit_set};
+static const IniOpt* setting(const char* key) { return strcmp(key, "fps_limit") ? hotkey_setting(key) : &FPS_LIMIT; }
+void snx_vpad_sdl_settings(void) { vpad_settings_also(setting); }
+uint64_t snx_vpad_window_frame_ns(uint64_t console_ns) {
+    return g_vpad_sdl.pace == SNX_PACE_NONE      ? 0
+           : g_vpad_sdl.pace == SNX_PACE_CONSOLE ? console_ns
+                                                 : 1000000000ull / (uint64_t)g_vpad_sdl.pace;
+}
 void snx_vpad_window_open(SDL_Window* window, const char* ini, void (*say)(const char* line),
                           void (*show)(const char* line)) {
     g_vpad_sdl.window = window;
@@ -147,6 +171,15 @@ static SnxVpadEvent key_event(const SDL_KeyboardEvent* k, int* action) {
         if (hotkey_quit_press(SDL_GetTicksNS())) return SNX_VPAD_QUIT;
         snx_quit_warning(line, sizeof line, hotkey_text(HOTKEY_QUIT));
         tell(line);
+        return SNX_VPAD_TAKEN;
+    }
+    if (a == HOTKEY_FPS_LIMIT) { /* none, or back to the pace before it, as a Switch game's F4 */
+        char line[96], now[16];
+        snx_pace_toggle(&g_vpad_sdl.pace, &g_vpad_sdl.pace_before, line, sizeof line);
+        if (g_vpad_sdl.say) g_vpad_sdl.say(line);
+        snx_pace_text(g_vpad_sdl.pace, now, sizeof now);
+        snx_fps_limit_now(line, sizeof line, now);
+        if (g_vpad_sdl.show) g_vpad_sdl.show(line);
         return SNX_VPAD_TAKEN;
     }
     if (a == HOTKEY_PAUSE) {
