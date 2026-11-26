@@ -66,7 +66,20 @@ static const Arch g_arch[] = {
                           {UC_ARM64_REG_X0, UC_ARM64_REG_X1, UC_ARM64_REG_X2, UC_ARM64_REG_X3, UC_ARM64_REG_X4,
                            UC_ARM64_REG_X5},
                           {UC_ARM64_REG_X0, UC_ARM64_REG_X1}, UC_ARM64_REG_SP, UC_ARM64_REG_X30, UC_ARM64_REG_PC, 0},
+    /* RET in each byte; no link register: the return address is on the stack */
+    [HOSTUC_X64] = {"x86-64", UC_ARCH_X86, UC_MODE_64, UC_CPU_X86_QEMU64, EM_X86_64, 0xC3C3C3C3u,
+                    {UC_X86_REG_RDI, UC_X86_REG_RSI, UC_X86_REG_RDX, UC_X86_REG_RCX, UC_X86_REG_R8, UC_X86_REG_R9},
+                    {UC_X86_REG_RAX, UC_X86_REG_RDX}, UC_X86_REG_RSP, -1, UC_X86_REG_RIP, 0},
 };
+/* HOSTUC_X64's processors, by QEMU's names */
+static const struct {
+    const char* name;
+    int cpu;
+} k_x86_cpus[] = {{"qemu64", UC_CPU_X86_QEMU64},         {"kvm64", UC_CPU_X86_KVM64},
+                  {"phenom", UC_CPU_X86_PHENOM},         {"Opteron_G1", UC_CPU_X86_OPTERON_G1},
+                  {"Opteron_G2", UC_CPU_X86_OPTERON_G2}, {"Opteron_G3", UC_CPU_X86_OPTERON_G3},
+                  {"Conroe", UC_CPU_X86_CONROE},         {"Penryn", UC_CPU_X86_PENRYN},
+                  {"Nehalem", UC_CPU_X86_NEHALEM},       {"Westmere", UC_CPU_X86_WESTMERE}};
 /* MIPS's virtual TLB: every address its own */
 static bool identity(uc_engine* uc, uint64_t vaddr, uc_mem_type type, uc_tlb_entry* r, void* user) {
     (void)uc, (void)type, (void)user;
@@ -433,7 +446,21 @@ static int la_trap(La64* c, void* user) {
     return 1;
 }
 
-HostUc* hostuc_new(HostUcArch arch, size_t code_cap) {
+HostUc* hostuc_new(HostUcArch arch, size_t code_cap) { return hostuc_new_cpu(arch, code_cap, NULL); }
+HostUc* hostuc_new_cpu(HostUcArch arch, size_t code_cap, const char* cpu) {
+    int model = g_arch[arch].cpu;
+    if (cpu) {
+        size_t k = 0, n = sizeof k_x86_cpus / sizeof *k_x86_cpus;
+        while (arch == HOSTUC_X64 && k < n && strcmp(k_x86_cpus[k].name, cpu)) ++k;
+        if (arch != HOSTUC_X64 || k == n) {
+            fprintf(stderr, "%s unicorn: no processor %s: ", g_arch[arch].name, cpu);
+            for (k = 0; arch == HOSTUC_X64 && k < n; ++k)
+                fprintf(stderr, "%s%s", k_x86_cpus[k].name, k + 1 < n ? ", " : "");
+            fprintf(stderr, "%s\n", arch == HOSTUC_X64 ? "" : "it has its own alone");
+            return NULL;
+        }
+        model = k_x86_cpus[k].cpu;
+    }
     HostUc* u = (HostUc*)calloc(1, sizeof *u);
     uc_hook hook;
     unsigned k;
@@ -463,7 +490,7 @@ HostUc* hostuc_new(HostUcArch arch, size_t code_cap) {
         free(u);
         return NULL;
     }
-    uc_ctl_set_cpu_model(u->uc, u->a->cpu);
+    uc_ctl_set_cpu_model(u->uc, model);
     if (arch == HOSTUC_PPC64LE || arch == HOSTUC_PPC64) {
         /* 64-bit (SF), the hypervisor's real mode (HV: every address its own), little-endian (LE) or not */
         uint64_t msr = 1ull << 63 | 1ull << 60 | (arch == HOSTUC_PPC64LE), got = 0;
@@ -486,6 +513,15 @@ HostUc* hostuc_new(HostUcArch arch, size_t code_cap) {
     u->cap = code_cap;
     u->trap = u->code + code_cap;
     for (k = 0; k < PAGE / 4; ++k) put_word(u->a, u->trap + 4 * k, u->a->ret);
+    if (arch == HOSTUC_X64) {
+        /* SSE on, as a system's kernel leaves it: CR4's OSFXSR and OSXMMEXCPT, CR0's MP and not EM */
+        uint64_t cr0 = 0, cr4 = 0;
+        uc_reg_read(u->uc, UC_X86_REG_CR0, &cr0);
+        uc_reg_read(u->uc, UC_X86_REG_CR4, &cr4);
+        cr0 = (cr0 & ~(uint64_t)4) | 2, cr4 |= 3u << 9;
+        uc_reg_write(u->uc, UC_X86_REG_CR0, &cr0);
+        uc_reg_write(u->uc, UC_X86_REG_CR4, &cr4);
+    }
     if (arch == HOSTUC_S390X) {
         /* 64-bit addressing (the PSW mask's EA and BA bits, 31 and 32 of its big-endian numbering) */
         uint64_t pswm = 0;
@@ -711,6 +747,21 @@ static int load(HostUc* u, const unsigned char* object, size_t size, char* error
     return 0;
 }
 
+int hostuc_cpuid(HostUc* u, unsigned leaf, unsigned r[4]) {
+    static const unsigned char code[] = {0x0F, 0xA2}; /* cpuid */
+    static const int regs[4] = {UC_X86_REG_RAX, UC_X86_REG_RBX, UC_X86_REG_RCX, UC_X86_REG_RDX};
+    uint64_t at, v = leaf, zero = 0;
+    if (!u->uc || u->a->arch != UC_ARCH_X86 || !(at = hostuc_code(u, code, sizeof code))) return -1;
+    uc_reg_write(u->uc, UC_X86_REG_RAX, &v);
+    uc_reg_write(u->uc, UC_X86_REG_RCX, &zero);
+    if (uc_emu_start(u->uc, at, at + sizeof code, 0, 1) != UC_ERR_OK) return -1;
+    for (unsigned k = 0; k < 4; ++k) {
+        uc_reg_read(u->uc, regs[k], &v);
+        r[k] = (unsigned)v;
+    }
+    return 0;
+}
+
 int hostuc_call(HostUc* u, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t* result) {
     /* the stack's top less a caller's frame header (ELFv2's callee saves LR at 16(r1), in its caller's frame) */
     uint64_t sp = (uint64_t)(uintptr_t)(u->stack + STACK_SIZE - 256), lr = (uint64_t)(uintptr_t)(u->trap + PAGE - 16);
@@ -729,8 +780,12 @@ int hostuc_call(HostUc* u, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t* resu
     }
     uc_reg_write(u->uc, u->a->args[0], &a0);
     uc_reg_write(u->uc, u->a->args[1], &a1);
+    if (u->a->lr < 0) { /* x86-64: the return address pushed, the stack 8 off 16 as a call leaves it */
+        sp -= 8;
+        memcpy((void*)(uintptr_t)sp, &lr, 8);
+    } else
+        uc_reg_write(u->uc, u->a->lr, &lr);
     uc_reg_write(u->uc, u->a->sp, &sp);
-    uc_reg_write(u->uc, u->a->lr, &lr);
     if (u->a->arch == UC_ARCH_PPC) uc_reg_write(u->uc, UC_PPC_REG_12, &fn); /* an ELFv2 global entry's */
     if (u->a->arch == UC_ARCH_MIPS) uc_reg_write(u->uc, UC_MIPS_REG_25, &fn); /* t9: an n64 PIC callee's */
     size_t failures = u->w.failures;
@@ -742,8 +797,14 @@ int hostuc_call(HostUc* u, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t* resu
     if (e != UC_ERR_OK) {
         uint64_t pc;
         uc_reg_read(u->uc, u->a->pc, &pc);
-        fprintf(stderr, "%s unicorn: stopped at %llx (%+lld from the code): %s\n", u->a->name, (unsigned long long)pc,
+        fprintf(stderr, "%s unicorn: stopped at %llx (%+lld from the code): %s", u->a->name, (unsigned long long)pc,
                 (long long)(pc - (uint64_t)(uintptr_t)u->code), uc_strerror(e));
+        /* the instruction's bytes, where they are the region's */
+        if (pc >= (uint64_t)(uintptr_t)u->code && pc + 8 <= (uint64_t)(uintptr_t)u->trap + PAGE) {
+            fprintf(stderr, ", its bytes");
+            for (unsigned k = 0; k < 8; ++k) fprintf(stderr, " %02x", ((const unsigned char*)(uintptr_t)pc)[k]);
+        }
+        fprintf(stderr, "\n");
         return -1;
     }
     if (result) uc_reg_read(u->uc, u->a->result[0], result);
