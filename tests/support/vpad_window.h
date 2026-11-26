@@ -59,7 +59,7 @@ static inline void vpad_test_middle(int control, float* x, float* y) {
 static inline float vpad_test_side(float size) {
     int safe[4];
     snx_vpad_window_safe(safe);
-    return size * (float)(safe[2] < safe[3] ? safe[2] : safe[3]);
+    return size * vpad_side(safe);
 }
 /* a virtual gamepad connected: its id, 0 where SDL has none */
 static inline SDL_JoystickID vpad_test_gamepad(void) {

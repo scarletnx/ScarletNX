@@ -105,10 +105,13 @@ static const SnxVpadControl* own(int c) {
 static int has(int c) { return !g_console || own(c); }
 static const char* name_of(int c) { return g_console ? own(c)->name : INFO[c].name; }
 static const char* label_of(int c) { return g_console ? own(c)->label : INFO[c].label; }
+/* where c starts: the Switch's place, a console's D-pad in the left stick's where it has none; in a console's window
+   taller than wide, the console's own place for it */
 static void default_place(int c, SnxVpadPlace* p) {
-    const SnxVpadControl* o = g_console ? own(c) : NULL;
-    p->x = !o ? INFO[c].x : g_tall ? o->tall.x : o->wide.x;
-    p->y = !o ? INFO[c].y : g_tall ? o->tall.y : o->wide.y;
+    int from = g_console && c == SNX_VPAD_DPAD && !has(SNX_VPAD_STICK_L) ? SNX_VPAD_STICK_L : c;
+    const SnxVpadControl* o = g_console && g_tall ? own(c) : NULL;
+    p->x = o ? o->tall.x : INFO[from].x;
+    p->y = o ? o->tall.y : INFO[from].y;
     p->size = DEF_SIZE;
 }
 /* a console's window turned: the controls the player never moved go where they start in the other */
@@ -382,8 +385,9 @@ void vpad_settings(const char* folder, const char* name, int argc, char** argv) 
 }
 
 /* a control's rectangle (x, y, w, h) on a clear part of safe: its look's shape, its longer side size */
+float vpad_side(const int safe[4]) { return (float)(safe[2] < safe[3] ? safe[2] : safe[3]); }
 static void box(int c, const int safe[4], float r[4]) {
-    float shorter = (float)(safe[2] < safe[3] ? safe[2] : safe[3]), aspect = INFO[c].aspect;
+    float shorter = vpad_side(safe), aspect = INFO[c].aspect;
     float scale = shorter * (float)(g_settings.controls_scale + 50) / 100 * (float)g_vpad.at[c].size / 100;
     float side = INFO[c].size * scale;
     r[2] = aspect >= 1 ? side : side * aspect;
