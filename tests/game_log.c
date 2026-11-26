@@ -41,9 +41,16 @@ static unsigned g_checks, g_failures;
 /* ---- the cases, each in its own process */
 static int g_limit = 16;
 static _Atomic int g_running;
+static PMutex g_line = PMUTEX_INIT;
+/* a thread's lines, each written whole while the others wait: the C library may write one in pieces (Windows'
+   unbuffered streams a byte at a time), which two threads would mix in the pipe itself, before the log */
 static void lines(void* arg) {
     int t = (int)(intptr_t)arg;
-    for (int i = 0; i < LINES; ++i) fprintf(i & 1 ? stderr : stdout, "thread %d line %d\n", t, i);
+    for (int i = 0; i < LINES; ++i) {
+        pm_lock(&g_line);
+        fprintf(i & 1 ? stderr : stdout, "thread %d line %d\n", t, i);
+        pm_unlock(&g_line);
+    }
     atomic_fetch_sub_explicit(&g_running, 1, memory_order_acq_rel);
 }
 static int start(const char* dir) {
@@ -138,12 +145,16 @@ static int child(const char* name, const char* dir, const char* out, const char*
     free(command);
     return status;
 }
+/* dir's file, its "\r\n" (a Windows log's and terminal's line ends) read as "\n"; its bytes on disk into *n */
 static char* slurp(const char* dir, const char* file, size_t* n) {
     char* path = snx_path_join(dir, file);
-    size_t size = 0;
+    size_t size = 0, to = 0;
     char* text = path ? (char*)snx_read_file(path, &size) : NULL;
     free(path);
     if (n) *n = text ? size : 0;
+    for (size_t i = 0; text && i < size; ++i)
+        if (text[i] != '\r' || i + 1 >= size || text[i + 1] != '\n') text[to++] = text[i];
+    if (text) text[to] = 0;
     return text;
 }
 static int count(const char* text, const char* what) {

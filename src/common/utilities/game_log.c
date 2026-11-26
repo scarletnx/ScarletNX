@@ -35,12 +35,16 @@ static const int FATAL[] = {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT};
 #endif
 #define FATALS (sizeof FATAL / sizeof *FATAL)
 
-typedef struct {             /* each stream's copy writes its own: a cache line each */
+typedef struct {          /* each stream's copy writes its own: a cache line each */
     alignas(64) int from; /* the pipe's end the copy reads */
-    int terminal;        /* the descriptor stdout or stderr had, -1 for none */
-    _Atomic int to;      /* terminal while it takes the copy's writes, -1 once it refused one */
-    _Atomic int copying; /* a chunk read and not yet all written */
-    _Atomic int done;    /* the copy read the pipe's end */
+    int terminal;         /* the descriptor stdout or stderr had, -1 for none */
+    _Atomic int to;       /* terminal while it takes the copy's writes, -1 once it refused one */
+    _Atomic int copying;  /* from a read until the pipe is quiet with no line held */
+    _Atomic int done;     /* the copy read the pipe's end */
+    /* the line it read the start of, kept for the log until its end comes or the pipe goes quiet: the other stream's
+       lines go in whole between two of this one's */
+    char held[CHUNK];
+    size_t nheld;
 } GameLogStream;
 
 static struct {
@@ -205,7 +209,26 @@ static void lines(const char* text, size_t n) {
     cut_when_full(file);
 }
 
-/* a stream's copy: the pipe to its terminal and the file, to the pipe's end */
+/* what s's copy read, n bytes: to the log its whole lines, with the line held before, holding the last one when it ends
+   in none and fits. Under lock */
+static void log_read(GameLogStream* s, const char* text, size_t n) {
+    char joined[2 * CHUNK];
+    size_t all = s->nheld + n, whole = all;
+    memcpy(joined, s->held, s->nheld);
+    memcpy(joined + s->nheld, text, n);
+    while (whole && joined[whole - 1] != '\n') --whole;
+    if (all - whole >= CHUNK) whole = all; /* a line longer than that goes in its pieces */
+    lines(joined, whole);
+    s->nheld = all - whole;
+    memcpy(s->held, joined + whole, s->nheld);
+}
+static void log_held(GameLogStream* s) {
+    pm_lock(&g_game_log.lock);
+    lines(s->held, s->nheld);
+    pm_unlock(&g_game_log.lock);
+    s->nheld = 0;
+}
+/* a stream's copy: the pipe to its terminal as it comes and to the file by lines, to the pipe's end */
 static void copy(void* arg) {
     GameLogStream* s = arg;
     char buf[CHUNK];
@@ -216,8 +239,21 @@ static void copy(void* arg) {
     pthread_sigmask(SIG_BLOCK, &gone, NULL);
 #endif
     for (;;) {
+        if (!pending(s->from)) { /* quiet: the line held goes as it is, a prompt's */
+            if (s->nheld) log_held(s);
+            atomic_store_explicit(&s->copying, 0, memory_order_release);
+        }
 #if defined(_WIN32)
-        int n = _read(s->from, buf, sizeof buf);
+        /* what the pipe holds, and only that read: a read that waits holds the handle (its I/O is synchronous), and
+           a crash's or a sync's look at the pipe (pending) would wait with it */
+        DWORD avail = 0;
+        if (!PeekNamedPipe((HANDLE)_get_osfhandle(s->from), NULL, 0, NULL, &avail, NULL)) break; /* no writer left */
+        if (!avail) {
+            Sleep(1);
+            continue;
+        }
+        atomic_store_explicit(&s->copying, 1, memory_order_release);
+        int n = _read(s->from, buf, avail < sizeof buf ? (unsigned)avail : (unsigned)sizeof buf);
 #else
         ssize_t n = read(s->from, buf, sizeof buf);
         if (n < 0 && errno == EINTR) continue;
@@ -234,11 +270,12 @@ static void copy(void* arg) {
         }
         pm_lock(&g_game_log.lock);
         if (said[0]) lines(said, strlen(said));
-        lines(buf, (size_t)n);
+        log_read(s, buf, (size_t)n);
         pm_unlock(&g_game_log.lock);
-        atomic_store_explicit(&s->copying, 0, memory_order_release);
     }
+    if (s->nheld) log_held(s);
     pm_lock(&g_game_log.lock);
+    atomic_store_explicit(&s->copying, 0, memory_order_release);
     atomic_store_explicit(&s->done, 1, memory_order_release);
     pc_broadcast(&g_game_log.ended);
     pm_unlock(&g_game_log.lock);
@@ -345,11 +382,27 @@ static int make_pipe(int ends[2]) {
 /* stdout's and stderr's descriptors are one file (a terminal, the launcher's pipe): one pipe keeps their order */
 static int same_file(void) {
 #if defined(_WIN32)
-    intptr_t out = _get_osfhandle(1), err = _get_osfhandle(2);
-    return out != -1 && out == err;
+    typedef BOOL(WINAPI * CompareFn)(HANDLE, HANDLE); /* Windows 10's: two handles of one object, a 2>&1's */
+    HANDLE out = (HANDLE)_get_osfhandle(1), err = (HANDLE)_get_osfhandle(2);
+    if (out == INVALID_HANDLE_VALUE || err == INVALID_HANDLE_VALUE) return 0;
+    HMODULE base = GetModuleHandleW(L"kernelbase.dll");
+    CompareFn same = base ? (CompareFn)(void (*)(void))GetProcAddress(base, "CompareObjectHandles") : NULL;
+    return out == err || (same && same(out, err));
 #else
     struct stat out, err;
     return !fstat(1, &out) && !fstat(2, &err) && out.st_dev == err.st_dev && out.st_ino == err.st_ino;
+#endif
+}
+
+/* stdout's lines each on its way at its end, so a crash finds them in the pipe, and in their order with stderr's: line
+   buffering where the C library has it; Windows' has none, and a stdout that is no terminal there writes in 4 KiB
+   blocks that end mid-line, so it goes unbuffered as stderr is: a printf a byte at a time, whose cost a console's few
+   lines can take */
+static void start_buffers(void) {
+#if defined(_WIN32)
+    setvbuf(stdout, NULL, _IONBF, 0);
+#else
+    setvbuf(stdout, NULL, _IOLBF, BUFSIZ);
 #endif
 }
 
@@ -378,7 +431,12 @@ int snx_game_log_start(const char* folder, const char* name, const int* limit_mi
     snx_run_log_keep(g_game_log.path, dir, kept, sizeof kept);
     FILE* f = snx_fopen(g_game_log.path, "wb");
     if (f) fclose(f);
-    g_game_log.stream = f ? snx_fopen(g_game_log.path, "ab") : NULL; /* each write at the end, a cut's too */
+#if defined(_WIN32)
+    const char* append = "a"; /* text mode: each line's end "\r\n", as the Switch's log's */
+#else
+    const char* append = "ab";
+#endif
+    g_game_log.stream = f ? snx_fopen(g_game_log.path, append) : NULL; /* each write at the end, a cut's too */
     if (!g_game_log.stream) {
         snprintf(why, size, "cannot make the game log %s: %s", g_game_log.path, snx_os_error(said, sizeof said));
         return -1;
@@ -422,12 +480,7 @@ int snx_game_log_start(const char* folder, const char* name, const int* limit_mi
         goto failed;
     }
     for (int i = 0; i < g_game_log.count; ++i) close_fd(ends[i][1]);
-    /* each line on its way at its end (a full buffer would hold a crash's last lines); Windows has no line buffering */
-#if defined(_WIN32)
-    setvbuf(stdout, NULL, _IONBF, 0);
-#else
-    setvbuf(stdout, NULL, _IOLBF, BUFSIZ);
-#endif
+    start_buffers();
     g_game_log.started = 1;
     atexit(end);
     for (size_t i = 0; i < FATALS; ++i) {
