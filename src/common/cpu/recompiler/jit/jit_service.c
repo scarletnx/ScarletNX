@@ -780,9 +780,9 @@ static int cache_index(Cache* c) {
 }
 
 /* Opens the cache: reads what an earlier run with the same key wrote, and starts the file over when there is none or
-   its key differs. A run that left a record unfinished, or a file past SNX_JIT_CACHE_MAX (an earlier build's appends
-   had no limit), is rewritten with the whole records the limit holds: refusing the file outright threw a full cache
-   away the run after it filled, so every other run started cold */
+   its key differs, said once with the field it differs in. A run that left a record unfinished, or a file past
+   SNX_JIT_CACHE_MAX (an earlier build's appends had no limit), is rewritten with the whole records the limit holds:
+   refusing the file outright threw a full cache away the run after it filled, so every other run started cold */
 static void cache_open(SnxJitService* s) {
     Cache* c = &s->cache;
     char* key = cache_key(s);
@@ -804,7 +804,14 @@ static void cache_open(SnxJitService* s) {
     if (f) fclose(f);
     if (c->buffer && (memcmp(c->buffer, SNX_JIT_CACHE_MAGIC, 8) || snx_ld_le32(c->buffer + 8) != key_length ||
                       memcmp(c->buffer + 12, key, key_length))) {
-        free(c->buffer); /* another build or host's: of no use here */
+        /* another build or host's: of no use here */
+        const size_t was = snx_ld_le32(c->buffer + 8);
+        if (!memcmp(c->buffer, SNX_JIT_CACHE_MAGIC, 8) && was <= size - 12) {
+            char change[512];
+            snx_jit_cache_key_change((const char*)c->buffer + 12, was, key, change, sizeof change);
+            fprintf(stderr, "JIT cache %s: %s: it starts over\n", s->config.cache_path, change);
+        }
+        free(c->buffer);
         c->buffer = NULL;
     }
     if (c->buffer) {

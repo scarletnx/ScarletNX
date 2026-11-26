@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The cache file read (jit_cache.h): no LLVM, which its key alone names (jit_cache_key.c) */
+/* The cache file read (jit_cache.h): no LLVM, which its key alone names (jit_cache_key.c; jit_cache_key_none.c in a
+   build without it) */
 #include "common/cpu/recompiler/jit/jit_cache.h"
 #include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
@@ -18,6 +19,58 @@ struct SnxJitCache {
     Record* records;
     size_t count;
 };
+
+/* the length of the field at the start of key's length bytes: a key's fields are name=value, a space between two */
+static size_t field_length(const char* key, size_t length) {
+    size_t n = 0;
+    while (n < length && key[n] && key[n] != ' ') ++n;
+    return n;
+}
+/* the length of field's name, before its = */
+static size_t name_length(const char* field, size_t length) {
+    const char* equals = (const char*)memchr(field, '=', length);
+    return equals ? (size_t)(equals - field) : length;
+}
+/* key's field (of its n bytes) named as field's first name bytes: NULL where it has none, else it with its length in
+   *found */
+static const char* field_named(const char* key, size_t n, const char* field, size_t name, size_t* found) {
+    for (size_t at = 0; at < n; ++at) {
+        const size_t here = field_length(key + at, n - at);
+        if (name_length(key + at, here) == name && !memcmp(key + at, field, name)) {
+            *found = here;
+            return key + at;
+        }
+        at += here;
+    }
+    return NULL;
+}
+/* the first field of a (an bytes) that b lacks or has otherwise, said into out as what a file was made for (a is the
+   file's, made) or (a is the build's) what the build makes that the file was not made for: 0 where there is none */
+static int key_field_change(const char* a, size_t an, const char* b, size_t bn, int made, char* out, size_t size) {
+    for (size_t at = 0; at < an; ++at) {
+        const size_t here = field_length(a + at, an - at), name = name_length(a + at, here);
+        size_t other = 0;
+        const char* in_b = here ? field_named(b, bn, a + at, name, &other) : NULL;
+        if (here && (!in_b || other != here || memcmp(in_b, a + at, here))) {
+            if (!made)
+                snprintf(out, size, "made for no %.*s, and this build makes %.*s", (int)name, a + at, (int)here,
+                         a + at);
+            else if (!in_b)
+                snprintf(out, size, "made for %.*s, and this build makes no %.*s", (int)here, a + at, (int)name,
+                         a + at);
+            else
+                snprintf(out, size, "made for %.*s, and this build makes %.*s", (int)here, a + at, (int)other, in_b);
+            return 1;
+        }
+        at += here;
+    }
+    return 0;
+}
+void snx_jit_cache_key_change(const char* was, size_t length, const char* key, char* out, size_t size) {
+    const size_t n = strlen(key);
+    if (!key_field_change(was, length, key, n, 1, out, size) && !key_field_change(key, n, was, length, 0, out, size))
+        snprintf(out, size, "made for the same key");
+}
 
 static void free_record(Record* r) {
     if (r->functions) {
@@ -190,8 +243,10 @@ SnxJitCache* snx_jit_cache_open(const char* path, const char* key, char* error, 
         return NULL;
     }
     if (key_length != strlen(key) || memcmp(buffer + 12, key, key_length)) {
+        char change[512];
+        snx_jit_cache_key_change((const char*)buffer + 12, key_length, key, change, sizeof change);
         free(buffer);
-        snprintf(error, error_size, "the cache key differs from the build's");
+        snprintf(error, error_size, "%s: the cache key differs from the build's: %s", path, change);
         return NULL;
     }
     SnxJitCache* cache = (SnxJitCache*)calloc(1, sizeof(*cache));

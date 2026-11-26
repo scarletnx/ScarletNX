@@ -116,8 +116,8 @@ typedef struct {
     /* once on each thread of the service as it starts, outside every lock of the service (NULL: none) */
     void (*thread)(const SnxJitThread* thread);
     /* the JIT's cache (NULL: none): every unit compiled is appended to this file, and a later run loads a unit again
-       instead of compiling it when the code it was compiled from is the same, byte for byte, and the file was written
-       by the same ABI, IR object version, target triple, LLVM, runtime library, host CPU and settings */
+       instead of compiling it when the code it was compiled from is the same, byte for byte, and the file has the same
+       key (jit_cache.h): another's is started over, and said once with the first part of the key that differs */
     const char* cache_path;
 } SnxJitConfig;
 
