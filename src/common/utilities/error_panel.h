@@ -17,6 +17,7 @@
 #include "common/utilities/ui_quads.h"
 
 #define SNX_ERROR_PANEL_WAIT_MS 500
+#define SNX_ERROR_PANEL_QUADS   4096 /* a panel's most: its letters and fills, a long message's rows on a wide window */
 #define SNX_ERROR_PANEL_ITEMS   SNX_ERROR_ACTIONS_MAX
 
 typedef struct {
@@ -49,6 +50,7 @@ typedef struct {
     SnxErrorRect box, item[SNX_ERROR_PANEL_ITEMS];
     int action[SNX_ERROR_PANEL_ITEMS], items, rows, rows_shown;
     int pressed; /* the item a press went down on, -1 for none */
+    int at_once; /* no wait: what it follows was no game's press (the launcher's own failure), set after the start */
 } SnxErrorPanel;
 
 /* the panel at its start, shown at now_ms, the action that fixes e in focus */

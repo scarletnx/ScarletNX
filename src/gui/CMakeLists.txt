@@ -60,7 +60,7 @@ target_link_libraries(snx_gui_support PUBLIC scarletnx-common snx_setup snx_i18n
 # Controllers > Bluetooth's controllers (bluetooth.c): the adverts a scan hears (common/platform/ble_scan.h)
 target_link_libraries(snx_gui_support PUBLIC snx_ble)
 # a run's "error: " lines and its panel's actions (src/common/utilities/error_kind.h)
-target_link_libraries(snx_gui_support PUBLIC snx_error)
+target_link_libraries(snx_gui_support PUBLIC snx_error_sdl)
 # Install Keys' check of the DS's ARM7 BIOS, its CRC-32 (snx_crc32, main.c)
 target_link_libraries(snx_gui_support PUBLIC snx_zip)
 # Download Driver's GitHub lists (gpu_driver_fetch.c), the newest nightly (nightly_check.c), Amberlith's report (probe.c)
