@@ -175,6 +175,33 @@ class ArchitectureTests(unittest.TestCase):
         }
         self.assertEqual(self.thread_errors(files), [])
 
+    def watch_errors(self, files):
+        with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
+            root = Path(temporary)
+            for name, text in files.items():
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text(text, encoding='ascii')
+            return architecture.check_watch_faults(root)
+
+    def test_a_test_that_starts_the_watch_without_its_faults_is_rejected(self):
+        files = {
+            'tests/vita_a.c': '/* vita_test_take_faults() is not called */\nint main(void) {\n'
+            '    return !vita_watch_init(p);\n}\n',
+        }
+        errors = self.watch_errors(files)
+        self.assertEqual(len(errors), 1)
+        self.assertIn('tests/vita_a.c:3: vita_watch_init and no handler of its faults', errors[0])
+        self.assertIn('call vita_test_take_faults (tests/support/vita_faults.h)', errors[0])
+
+    def test_a_test_that_takes_the_watchs_faults_passes(self):
+        files = {
+            'tests/vita_b.c': 'int main(void) {\n    vita_test_take_faults();\n    return !vita_watch_init(p);\n}\n',
+            'tests/vita_c.c': 'static void on(int s, siginfo_t* i, void* c) { (void)vita_watch_fault((uintptr_t)i); }\n'
+            'int main(void) { return !vita_watch_init(p); }\n',
+            'tests/vita_d.c': 'const char* s = "vita_watch_init(p)";\n',
+        }
+        self.assertEqual(self.watch_errors(files), [])
+
     def device_errors(self, files):
         with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
             root = Path(temporary)

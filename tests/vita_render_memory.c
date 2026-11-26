@@ -15,6 +15,7 @@
 #include "common/utilities/common.h"
 #include "nx/runtime/ini.h"
 #include "snx_settings.h"
+#include "support/vita_faults.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -42,13 +43,6 @@ static struct {
     } while (0)
 
 #ifndef _WIN32
-static void on_fault(int signal, siginfo_t* info, void* context) {
-    (void)context;
-    if (vita_watch_fault((uintptr_t)info->si_addr)) return;
-    static const char said[] = "a fault the watch does not know\n";
-    if (write(2, said, sizeof said - 1) < 0) _exit(3);
-    _exit(signal);
-}
 static void on_alarm(int signal) {
     (void)signal;
     static const char said[] = "a check hangs\n";
@@ -502,10 +496,8 @@ static const struct {
 };
 
 int main(int argc, char** argv) {
+    vita_test_take_faults();
 #ifndef _WIN32
-    struct sigaction action = {.sa_sigaction = on_fault, .sa_flags = SA_SIGINFO | SA_NODEFER};
-    sigaction(SIGSEGV, &action, NULL);
-    sigaction(SIGBUS, &action, NULL); /* macOS's, for a page whose protection refuses the write */
     signal(SIGALRM, on_alarm);
 #endif
     const char* devices[2] = {"import", "copy"};
