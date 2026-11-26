@@ -767,8 +767,6 @@ LLVM_USERS = {
     'src/common/cpu/recompiler/fallback_llvm.c',
     'src/common/cpu/recompiler/jit/jit_cache_key.c',
     'src/common/cpu/recompiler/jit/jit_service.c',
-    'src/common/cpu/recompiler/library.c',
-    'src/common/cpu/recompiler/workers.h',
     'src/nx/loader/module_fallback_llvm.c',
     'src/nx/loader/module_variants.c',
     'src/nx/loader/module_variants.h',

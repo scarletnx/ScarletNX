@@ -49,6 +49,9 @@ void snx_native_without(struct snx_recompiler* r, const SnxU32* words, size_t co
 int snx_native_available(void);
 /* its name, for the recompiler's lines ("x86-64", "arm64"; "none") */
 const char* snx_native_name(void);
+/* the host's features its code is made with (SGX_F_* of x64.h's on x86-64, with Windows' ABI; arm64_codegen.h's on
+   arm64), for what a cache of that code is keyed by: 0 on the other machines, whose code takes none */
+unsigned snx_native_features(void);
 
 /* What this host lacks of what its architecture's back end takes of every host past the program's own baseline: on
    x86-64 SSE3, SSSE3, SSE4.1, SSE4.2, PCLMULQDQ and POPCNT, on a big-endian PowerPC64 ISA 2.06's LDBRX and STDBRX and

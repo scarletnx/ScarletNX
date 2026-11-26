@@ -48,6 +48,20 @@ int snx_fallback_object(SnxCodegen* codegen, size_t first, size_t last, const Sn
 /* The runtime library (rtlib.c) made for this host's processor at opt, as a module whose code the fallback made links
    it: 0 with the object (malloc'd), or -1 with the reason in error */
 int snx_fallback_rtlib(char opt, unsigned char** object, size_t* size, char* error, size_t error_size);
+/* Whether the fallback can make this host's code, started where it must be (LLVM's targets, once a process): 0, or -1
+   with why not in error. None's 0 where the host has a native back end, which then makes all of it */
+int snx_fallback_start(char* error, size_t error_size);
+/* What the code made on this host depends on besides itself, handed to put for a cache's key: LLVM's the CPU's name and
+   features, each with its NUL, and with rtlib the runtime library's bitcode before them; none's the native back end's
+   name and features */
+void snx_fallback_key(int rtlib, void (*put)(void* user, const void* data, size_t size), void* user);
+/* The descriptor of a module of the library's (library_descriptor.h) where the fallback made some of its code, as its
+   object (malloc'd) at opt, its IR kept in keep_ir (NULL: nowhere): count entries, each an address (ascending) and the
+   function of codegen it is of, and with stale the functions' bytes stale checks read (snx_stale). 0, or -1 with the
+   reason in error */
+int snx_fallback_library_descriptor(const SnxCodegen* codegen, const uint64_t* addresses, const size_t* functions,
+                                    size_t count, int stale, char opt, const char* keep_ir, unsigned char** object,
+                                    size_t* size, char* error, size_t error_size);
 
 /* AArch32 and Thumb blocks: a maker of them for one thread, for an AOT module or (jit) for code the JIT's loader loads
    into this process, at opt's -O level. NULL out of memory */
