@@ -26,12 +26,13 @@
 #include <time.h>
 
 /* the common options scarletnx-vita takes (common/utilities/cli.h): a VPK is always extracted, and the Vita runtime
-   has no keys, frame count, fullscreen setting or window-less run */
+   has no keys, frame count or window-less run */
 static const unsigned vita_cli = SNX_CLI_BIT(SNX_CLI_EXTRACT) | SNX_CLI_BIT(SNX_CLI_RECOMPILE) |
                                  SNX_CLI_BIT(SNX_CLI_GAME) | SNX_CLI_BIT(SNX_CLI_UPDATE) | SNX_CLI_BIT(SNX_CLI_DATA) |
                                  SNX_CLI_BIT(SNX_CLI_OUTDIR) | SNX_CLI_BIT(SNX_CLI_OUTPUT) |
                                  SNX_CLI_BIT(SNX_CLI_SECONDS) | SNX_CLI_BIT(SNX_CLI_SHOT) |
-                                 SNX_CLI_BIT(SNX_CLI_SCRIPT) | SNX_CLI_BIT(SNX_CLI_HELP) | SNX_CLI_RECOMPILE_OPTIONS;
+                                 SNX_CLI_BIT(SNX_CLI_SCRIPT) | SNX_CLI_BIT(SNX_CLI_FULLSCREEN) |
+                                 SNX_CLI_BIT(SNX_CLI_HELP) | SNX_CLI_RECOMPILE_OPTIONS;
 static void usage(FILE* out) {
     fputs(
         "Usage: scarletnx-vita [OPTIONS] game.vpk\n"
@@ -411,6 +412,8 @@ int snx_vita_main(int argc, char** argv) {
     }
     bool recompile = cli.flags & SNX_CLI_BIT(SNX_CLI_RECOMPILE);
     double seconds = cli.seconds;
+    /* the window's (gpu/vk.c), set here and not through the Display table, whose set functions are the Switch's */
+    if (cli.fullscreen >= 0) g_settings.fullscreen = cli.fullscreen;
     snx_cli_free(&cli);
     if (old_at)
         snx_error("VITA_LOCKSTEP=%s is deprecated, %s: vita_lockstep=%d (docs/user/deprecations.md)", old_at,

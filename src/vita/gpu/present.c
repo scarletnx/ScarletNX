@@ -31,6 +31,22 @@ void vita_present_init(const char* title, const char* shot) {
     signal(SIGTERM, on_signal);
     vita_input_init();
 }
+/* F11, or Alt+Enter, switches the window it is pressed in to fullscreen and back, as the 3DS's (3ds/gpu/present.c);
+   not with Ctrl or the system key, the desktop's. True for one of those, which the game's input does not take */
+static bool fullscreen_key(const SDL_KeyboardEvent* key) {
+    bool alt = key->mod & SDL_KMOD_ALT;
+    if ((key->mod & (SDL_KMOD_CTRL | SDL_KMOD_GUI)) ||
+        !((key->key == SDLK_F11 && !alt) || (key->key == SDLK_RETURN && alt)))
+        return false;
+    SDL_Window* window = SDL_GetWindowFromID(key->windowID);
+    if (window && !key->repeat) {
+        bool on = !(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN);
+        if (!SDL_SetWindowFullscreen(window, on))
+            fprintf(stderr, "scarletnx-vita: the window cannot go %s: %s\n", on ? "fullscreen" : "back from fullscreen",
+                    SDL_GetError());
+    }
+    return true;
+}
 /* the framebuffer shown last as PATH<suffix>.ppm, once the GPU drew it */
 static void shot_write(VitaProcess* p, const char* suffix);
 bool vita_present_vblank(VitaProcess* p) {
@@ -55,6 +71,7 @@ bool vita_present_vblank(VitaProcess* p) {
             vita_vk_notice(warning);
             continue;
         }
+        if (event.type == SDL_EVENT_KEY_DOWN && fullscreen_key(&event.key)) continue;
         vita_input_event(&event);
     }
     return !g_interrupted;

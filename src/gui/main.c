@@ -16947,6 +16947,14 @@ static char* play_program(App* app, const char* game, bool next) {
     return path ? path : snx_strdup(game);
 }
 #endif
+/* a Vita run's picks that are no vita_ setting, each at most once: its window's fullscreen, and the Switch's upscaler
+   and anti-aliasing, which its presenter takes (vita/gpu/vk.c). For a run in a child and in the game activity alike */
+static size_t vita_present_options(GuiSettings* s, const char** argv) {
+    static const char* const keys[] = {"fullscreen", "upscaler", "upscaler_sharpness", "anti_aliasing"};
+    size_t n = 0;
+    for (size_t k = 0; k < sizeof keys / sizeof *keys; ++k) n += gui_settings_one(s, keys[k], argv + n);
+    return n;
+}
 /* The game activity's arguments for item playing game, apart so tests/gui_sdl.c keeps each console's list: the driver's
    name first where the console's driver is not the default, --game= the game's folder where its driver plays a folder
    (the Switch's its program), the console's settings only, and the Switch's and the Vita's GPU driver and Freedreno
@@ -16981,6 +16989,7 @@ typedef struct {
          : item == GUI_NDS    ? gui_settings_nds_options(s, argv + n)
          : item == GUI_SWITCH ? (size_t)gui_settings_options(s, 0, own->ini, argv + n)
                               : 0;
+    if (item == GUI_VITA) n += vita_present_options(s, argv + n);
     if ((item == GUI_SWITCH || item == GUI_VITA) && own->driver) argv[n++] = own->driver;
     if ((item == GUI_SWITCH || item == GUI_VITA) && own->freedreno) argv[n++] = own->freedreno;
     argv[n] = NULL;
@@ -20383,13 +20392,10 @@ static void launch(App* app, char* absolute, bool prepared) {
         argv[n++] = app->dest_out ? app->dest_out : app->games_dir;
     }
     /* the GBA's window, and the DS's, starts fullscreen as a Switch game's does; a compile opens none */
-    if ((app->menu.selected == GUI_GBA || app->menu.selected == GUI_NDS) && !make) n += gui_settings_one(s, "fullscreen", argv + n);
+    if ((app->menu.selected == GUI_GBA || app->menu.selected == GUI_NDS) && !make)
+        n += gui_settings_one(s, "fullscreen", argv + n);
     if (app->menu.selected == GUI_GBA && !make) n += gui_settings_gba(s, argv + n); /* its screen's colors */
-    /* the Vita's presenter takes the Switch's upscaler and anti-aliasing (vita/gpu/vk.c), each at most once in s */
-    if (app->menu.selected == GUI_VITA && !make) {
-        static const char* const effects[] = {"upscaler", "upscaler_sharpness", "anti_aliasing"};
-        for (size_t k = 0; k < sizeof effects / sizeof *effects; ++k) n += gui_settings_one(s, effects[k], argv + n);
-    }
+    if (app->menu.selected == GUI_VITA && !make) n += vita_present_options(s, argv + n);
     /* the picked extractions folder, which Extract to tmpfs leaves for the temporary one, and a Switch dump read in
        place (Extract dump off) has no use for */
     if (folders && app->place[GUI_PLACE_WORK] && app->menu.selected == GUI_SWITCH && !nro_file(absolute) &&
