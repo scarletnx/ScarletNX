@@ -79,7 +79,7 @@ int main(void) {
     /* linux-jit/: LLVM's runtime library and a module of LLVM's descriptor, a module of the native one, a module of
        both names (not LLVM's alone), the JIT's cache of LLVM's key */
     put("linux-jit", "rtlib-" HEX32 ".o", b, elf(b, 1, "snx_fp_env"));
-    put("linux-jit", "rtlib-nothex0123456789abcdef0123.o", b, elf(b, 1, "snx_fp_env"));
+    put("linux-jit", "rtlib-nothex0123456789abcdef0123456789.o", b, elf(b, 1, "snx_fp_env")); /* 32, not all hex */
     put("linux-jit", HEX32 ".so", b, elf(b, 3, "snx_lib_module"));
     put("linux-jit", "fedcba9876543210fedcba9876543210.so", b, elf(b, 3, "snx_lib_descriptor"));
     n = elf(b, 3, "snx_lib_module");
@@ -154,7 +154,7 @@ int main(void) {
           "each found file of its kind gone");
     CHECK(there("linux-jit", HEX32 ".so"), "the module changed since it was found stays");
     CHECK(there("units", "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210.o") &&
-              there("units", "notes.o") && there("linux-jit", "rtlib-nothex0123456789abcdef0123.o") &&
+              there("units", "notes.o") && there("linux-jit", "rtlib-nothex0123456789abcdef0123456789.o") &&
               there("linux-jit", "fedcba9876543210fedcba9876543210.so") &&
               there("linux-jit", "00000000000000000000000000000000.so") && there("android-jit", "library-jit.cache") &&
               there("game", "new.jitcache"),
