@@ -178,14 +178,12 @@ jobs:
       - name: Install the packaging tools
         uses: pkgforge-dev/anylinux-setup-action@ba7321e11074f9e387a0634e653d09b115d576cd # v6
         env:
-          QUICK_SHARUN: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/ab06090c5b7946beb6efb04b9feea39362f6898e/useful-tools/quick-sharun.sh
-          DEBLOATED_PACKAGES: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/ab06090c5b7946beb6efb04b9feea39362f6898e/useful-tools/get-debloated-pkgs.sh
+          QUICK_SHARUN: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/288605453d098f4b3c22c8fbdc5761d427865871/useful-tools/quick-sharun.sh
+          DEBLOATED_PACKAGES: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/288605453d098f4b3c22c8fbdc5761d427865871/useful-tools/get-debloated-pkgs.sh
           MAKE_AUR_PACKAGE: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/ab06090c5b7946beb6efb04b9feea39362f6898e/useful-tools/make-aur-package.sh
       - name: Check the packaging tools
         run: scripts/ci/linux.sh packaging_check
       - name: Install the build tools and the debloated Mesa
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
         run: scripts/ci/linux.sh build_tools
       - &fail-fast-watch
         name: Cancel the run when another job fails
@@ -532,12 +530,12 @@ jobs:
     timeout-minutes: 180
     continue-on-error: true
     env:
-      QUICK_SHARUN: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/ab06090c5b7946beb6efb04b9feea39362f6898e/useful-tools/quick-sharun.sh
-      QUICK_SHARUN_SHA: 0aea2f589658e5db1659a6ccb8d29546c4e03028f1e29b37c6450cece917249a
-      APPIMAGETOOL_URL: https://github.com/pkgforge-dev/appimagetool/releases/download/0.5.6/appimagetool-full-x86_64-linux
-      APPIMAGETOOL_SHA: a92214d831d234d1be31699657c572799e5c8417c9abf129e2f748cc9c612f85
-      DEBLOATED_PACKAGES: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/ab06090c5b7946beb6efb04b9feea39362f6898e/useful-tools/get-debloated-pkgs.sh
-      DEBLOATED_PACKAGES_SHA: d215f7676785f1a1bb8784e69085d66c1df81488ef31f1ba7198325a5be05130
+      QUICK_SHARUN: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/288605453d098f4b3c22c8fbdc5761d427865871/useful-tools/quick-sharun.sh
+      QUICK_SHARUN_SHA: a7994d3bd3debf72b67a131b17f061cc312dc1461e4d083d9607d2ca5af41d8b
+      APPIMAGETOOL_URL: https://github.com/pkgforge-dev/appimagetool/releases/download/0.7.1/appimagetool-full-x86_64-linux
+      APPIMAGETOOL_SHA: 072f5650fd6bc480f33598cddb1ac96a4676f41bb3f38cdef88d381ab1916d10
+      DEBLOATED_PACKAGES: https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/288605453d098f4b3c22c8fbdc5761d427865871/useful-tools/get-debloated-pkgs.sh
+      DEBLOATED_PACKAGES_SHA: ed6040110f3c5793be0cb577dc60f2922c90a32ba7e108e37cc1aa0e49fed43b
     strategy:
       fail-fast: false
       matrix:
@@ -599,8 +597,6 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
         run: scripts/ci/cross.sh sysroot
       - name: Install the target container's tools and libraries
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
         run: scripts/ci/cross.sh target_tools
       - name: Install the packaging tools
         run: scripts/ci/cross.sh packaging_tools
