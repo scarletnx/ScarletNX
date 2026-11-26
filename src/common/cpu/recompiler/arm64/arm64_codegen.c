@@ -143,16 +143,17 @@ static void call_rt(Unit* u, int off) {
     w32(u, sge_a64_blr(SGA_X16));
 }
 
-/* the pins to the state (store; none where none is newer than it) or from it: every one, or (caller) the vector ones,
-   which a call may change */
+/* the pins to the state (store: those written there since it was in step, cur_dirty) or from it (those pin_sel
+   names, the ones live there): every one, or (caller) the vector ones, which a call may change */
 static void pins_of(Unit* u, SgXBuf* b, int store, int caller) {
     int n;
-    if (!u->pinned || (store && !u->cur_dirty && !u->vcur_dirty)) return;
+    if (!u->pinned) return;
     if (u->mempin >= 0 && !store && !caller) sga_ldst(b, 1, 8, u->mempin, SGX_BASE, -1, (int)offsetof(CPU, mem));
     for (n = 0; n < 32; ++n) {
-        if (u->pin[n] >= 0 && !caller)
+        if (u->pin[n] >= 0 && !caller && (store ? (u->pin_wr & u->cur_dirty) >> n & 1 : u->pin_sel >> n & 1))
             sga_ldst(b, !store, 8, u->pin[n], SGX_BASE, -1, (int)(offsetof(CPU, x) + 8 * (size_t)n));
-        if (u->vpin[n] >= 0) sga_fp_ldst(b, !store, 16, u->vpin[n], SGX_BASE, -1, (int)(offsetof(CPU, v) + 16 * (size_t)n));
+        if (u->vpin[n] >= 0 && (store ? (u->vpin_wr & u->vcur_dirty) >> n & 1 : u->vpin_sel >> n & 1))
+            sga_fp_ldst(b, !store, 16, u->vpin[n], SGX_BASE, -1, (int)(offsetof(CPU, v) + 16 * (size_t)n));
     }
 }
 
@@ -342,7 +343,8 @@ static void mg_entry(Unit* u, size_t index, SnxU64 start) {
         stale_test(u, index);
         jcc(u, 0, live); /* B.EQ */
         state_ldst(u, 0, 8, 1, offsetof(CPU, pc));
-        leave(u);
+        epilogue(u); /* no pin changed yet (and not every one loaded): none stored */
+        w32(u, sge_a64_ret(30));
         bind(u, live);
     }
     movi(u, SGA_X16, start);

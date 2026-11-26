@@ -4899,6 +4899,15 @@ if(NOT WIN32)
     add_test(NAME x64_vec_code COMMAND snx-test-x64-vec-code)
     set_tests_properties(x64_vec_code PROPERTIES SKIP_RETURN_CODE 77)
 endif()
+# what the arm64 back end stores and loads of its pins around a call (arm64_pins_code.c): ELF objects, so not on
+# Windows
+if(NOT WIN32)
+    add_executable(snx-test-arm64-pins-code arm64_pins_code.c)
+    snx_test_target(snx-test-arm64-pins-code gnu23)
+    target_link_libraries(snx-test-arm64-pins-code PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+    snx_decodetree_a64(snx-test-arm64-pins-code)
+    add_test(NAME arm64_pins_code COMMAND snx-test-arm64-pins-code)
+endif()
 
 # NCE's patcher (src/nx/runtime/nce/nce_patch.c) on a synthetic module: the words that Eden's patcher changes, found
 # in the code and kept where the code reads them as data, and the words of their stubs. Words only, on any host
