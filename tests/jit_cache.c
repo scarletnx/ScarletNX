@@ -3,7 +3,8 @@
 /* The build-side reader of the runtime JIT's cache: the profile run writes a unit,
    the reader hands the AOT build its metadata and object, and a wrong key or a
    cut-off record is refused instead of linked. A file of another build, an older
-   LLVM's or one without LLVM's, is refused naming the field its key differs in. */
+   LLVM's, one whose native back ends made other code or one without LLVM's, is
+   refused naming the field its key differs in. */
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/recompiler/jit/jit_cache.h"
 #include "common/cpu/recompiler/jit/jit_service.h"
@@ -190,6 +191,17 @@ int main(void) {
             snprintf(older, strlen(key) + 32, "%.*s llvm=22.1.0%s", (int)(field - key), key, past ? past : "");
             snprintf(said, sizeof(said), "made for llvm=22.1.0, and this build makes llvm=%s", LLVM_VERSION_STRING);
             refused_other(old, older, key, said);
+            /* a build whose native back ends or sailgen made other code */
+            const char* code = strstr(key, " native_code=");
+            CHECK(code && strlen(snx_native_code()) == 16 && !strncmp(code + 13, snx_native_code(), 16));
+            if (code) {
+                snprintf(older, strlen(key) + 32, "%.*s native_code=0123456789abcdef%s", (int)(code - key), key,
+                         code + 13 + 16);
+                snprintf(said, sizeof(said),
+                         "made for native_code=0123456789abcdef, and this build makes native_code=%s",
+                         snx_native_code());
+                refused_other(old, older, key, said);
+            }
             snprintf(made, sizeof(made), "abi=%d native=%s rtlib=0 opt=2 hook=0 svc=0", SNX_ABI, snx_native_name());
             snprintf(said, sizeof(said), "made for native=%s, and this build makes no native", snx_native_name());
             refused_other(old, made, key, said);
