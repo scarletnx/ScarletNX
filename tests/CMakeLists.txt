@@ -4062,6 +4062,7 @@ if(SNX_X64)
     add_executable(snx-test-arm-x64 arm_x64.c)
     snx_test_target(snx-test-arm-x64 gnu23)
     target_link_libraries(snx-test-arm-x64 PRIVATE snx_llvm snx_arm_llvm snx_driver ${CMAKE_DL_LIBS})
+    snx_arm_frozen_program(snx-test-arm-x64)
     add_test(NAME arm_x64 COMMAND snx-test-arm-x64)
     add_test(NAME arm_x64_spill COMMAND snx-test-arm-x64 --pool ${snx_x64_pool} --blocks 2000 --seed 2)
     add_test(NAME arm_x64_plain COMMAND snx-test-arm-x64 --features 0 --blocks 2000 --seed 3)
@@ -4072,6 +4073,14 @@ if(SNX_X64)
     set_tests_properties(arm_x64 arm_x64_spill arm_x64_plain arm_x64_mxcsr arm_x64_mxcsr_llvm PROPERTIES TIMEOUT 600
                          SKIP_RETURN_CODE 77)
     snx_arm_native_modes(x64)
+    # --frozen on copies of a file made wrong: a block's hash, the generator, the inputs' digest, the args and the counts
+    # it is refused for, and a run of the first blocks
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME arm_x64_frozen_refusals COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/arm_frozen.py"
+                                                       selftest $<TARGET_FILE:snx-test-arm-x64>
+                                                       --out "${test-references_SOURCE_DIR}/arm")
+        set_tests_properties(arm_x64_frozen_refusals PROPERTIES TIMEOUT 300)
+    endif()
     # and as a Windows host's, run by this host's processor (support/host_win64.c)
     if(snx_host_win64)
         add_executable(snx-test-arm-win64 arm_x64.c support/host_win64.c)
@@ -4079,17 +4088,18 @@ if(SNX_X64)
         target_compile_definitions(snx-test-arm-win64 PRIVATE SNX_TEST_WIN64=1)
         target_include_directories(snx-test-arm-win64 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
         target_link_libraries(snx-test-arm-win64 PRIVATE snx_llvm snx_arm_llvm snx_driver ${CMAKE_DL_LIBS})
+        snx_arm_frozen_program(snx-test-arm-win64)
         add_test(NAME arm_win64 COMMAND snx-test-arm-win64)
         add_test(NAME arm_win64_spill COMMAND snx-test-arm-win64 --pool 4 --blocks 2000 --seed 2)
         add_test(NAME arm_win64_plain COMMAND snx-test-arm-win64 --features 0 --blocks 2000 --seed 3)
         add_test(NAME arm_win64_step COMMAND snx-test-arm-win64 --step --blocks 600 --thumb 600 --states 2 --seed 4)
-        add_test(NAME arm_win64_step_bus COMMAND snx-test-arm-win64 --step --profile arm7tdmi --trace --blocks 300
-                 --thumb 200 --states 2 --seed 5)
-        add_test(NAME arm_win64_step_checked COMMAND snx-test-arm-win64 --step --memory checked --blocks 300 --thumb 200
-                 --states 2 --seed 6)
+        add_test(NAME arm_win64_step_bus COMMAND snx-test-arm-win64 --step --frozen
+                 ${test-references_SOURCE_DIR}/arm/step_bus.txt)
+        add_test(NAME arm_win64_step_checked COMMAND snx-test-arm-win64 --step --frozen
+                 ${test-references_SOURCE_DIR}/arm/step_checked.txt)
         set_tests_properties(arm_win64 arm_win64_spill arm_win64_plain arm_win64_step arm_win64_step_bus
                              arm_win64_step_checked PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
-        snx_arm_native_modes(win64 --blocks 600 --states 8)
+        snx_arm_native_modes(win64 --blocks 800 --thumb 1500)
     endif()
 endif()
 if(NOT WIN32)
@@ -5001,6 +5011,7 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
         target_include_directories(snx-test-arm-${m} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${SNX_UNICORN_INCLUDE_DIR}")
         target_link_libraries(snx-test-arm-${m} PRIVATE snx_llvm snx_arm_llvm snx_driver "${SNX_UNICORN_LIBRARY}"
                               ${CMAKE_DL_LIBS})
+        snx_arm_frozen_program(snx-test-arm-${m})
         add_test(NAME arm_${m} COMMAND snx-test-arm-${m})
         add_test(NAME arm_${m}_spill COMMAND snx-test-arm-${m} --pool 3 --blocks 2000 --seed 2)
         # VCVTB and VCVTT, from and to a single and a double, the half in the top of an S register or at its start: a
@@ -5010,7 +5021,7 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
         # VCVT of an odd S register to a double, both signs: a load of a double there is not aligned
         add_test(NAME arm_${m}_odd COMMAND snx-test-arm-${m} --word eef82bef --word eef82b6f)
         set_tests_properties(arm_${m} arm_${m}_spill arm_${m}_half arm_${m}_odd PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
-        snx_arm_native_modes(${m} --blocks 600 --states 8)
+        snx_arm_native_modes(${m} --blocks 800 --thumb 1500)
     endforeach()
     # arm64's as a Windows host's
     add_executable(snx-test-arm-arm64win arm_x64.c support/host_unicorn.c support/la64_interp.c)
@@ -5019,15 +5030,14 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
     target_include_directories(snx-test-arm-arm64win PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${SNX_UNICORN_INCLUDE_DIR}")
     target_link_libraries(snx-test-arm-arm64win PRIVATE snx_llvm snx_arm_llvm snx_driver "${SNX_UNICORN_LIBRARY}"
                           ${CMAKE_DL_LIBS})
+    snx_arm_frozen_program(snx-test-arm-arm64win)
     add_test(NAME arm_arm64win COMMAND snx-test-arm-arm64win --blocks 1500 --thumb 1000 --states 8)
     add_test(NAME arm_arm64win_spill COMMAND snx-test-arm-arm64win --pool 3 --blocks 1500 --thumb 1000 --states 8 --seed 2)
     add_test(NAME arm_arm64win_step COMMAND snx-test-arm-arm64win --step --blocks 300 --thumb 200 --states 2 --seed 3)
-    add_test(NAME arm_arm64win_step_hosted COMMAND snx-test-arm-arm64win --step --memory hosted --blocks 200 --thumb 150
-             --states 2 --seed 4)
-    add_test(NAME arm_arm64win_step_bus COMMAND snx-test-arm-arm64win --step --profile arm7tdmi --trace --blocks 200
-             --thumb 150 --states 2 --seed 5)
-    add_test(NAME arm_arm64win_step_checked COMMAND snx-test-arm-arm64win --step --memory checked --blocks 200 --thumb 150
-             --states 2 --seed 6)
+    foreach(mode hosted bus checked)
+        add_test(NAME arm_arm64win_step_${mode} COMMAND snx-test-arm-arm64win --step --frozen
+                 ${test-references_SOURCE_DIR}/arm/step_${mode}.txt --blocks 200 --thumb 150)
+    endforeach()
     set_tests_properties(arm_arm64win arm_arm64win_spill arm_arm64win_step arm_arm64win_step_hosted
                          arm_arm64win_step_bus arm_arm64win_step_checked PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
     # rv64's ABI extends a narrow argument with its sign, arm64's does not (the control); la64's and the others' tests
