@@ -408,9 +408,14 @@ uint64_t vk_descriptor_heaps_forgets(void);
 void vk_descriptor_heaps_invalidate(void);
 /* Graphics descriptor-buffer offsets were actually bound in this command-buffer generation. */
 void vk_descriptor_heaps_buffer_bound(uint32_t begun);
+/* The epoch, the pipeline state and what the heaps' binds kept are the calling thread's recording stream's
+   (g_vk_slot): a worker's list plays after the renderer thread's commands, both recorded at the same time */
 uint64_t vk_descriptor_heaps_epoch(void);
 void vk_descriptor_heaps_pipeline_state(int active);
 int vk_descriptor_heaps_active(void);
+/* the stream of a slot starts again: its next draw binds the heaps again, whatever the command buffer holds. At a
+   worker list's start, and at the renderer thread's after the list goes into the ring */
+void vk_descriptor_heaps_stream_reset(uint32_t slot);
 
 /* Owned by the device registry. The copied pNext chain must remain valid in chain while the descriptor is encoded.
    Samplers return heap-compatible custom-border index state; unsupported chains return0. */
