@@ -34,7 +34,8 @@ Say what ran, for how long and how it ended:
   request is merged, it stays until a nightly has the change.
 - A build from source: `git rev-parse --short HEAD`, and whether the tree was clean.
 
-The game's log starts with a `build:` line that says the same. A game's code is recompiled only when the recompiler
+The game's log starts with a `build:` line that says the same: a nightly's names its `nightly-<day>` where another
+build names its branch. A game's code is recompiled only when the recompiler
 changes ([CLAUDE.md](../../CLAUDE.md)), so a `games/` folder made by an older build can still hold old code. Say so if you
 tested with one.
 
