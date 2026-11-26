@@ -11,7 +11,7 @@
 #                         of the AOT compilers (cpu/arm/aot.c)
 #   scarletnx-recompiler  the library (snx_recompiler.h, docs/dev/library.md): an archive of all their objects
 # A build without LLVM has the core, snx_fallback_none, the AArch32 executor and AOT blocks, the JIT and its cache
-# alone, the JIT cache's key the native back end's (jit/jit_cache_key_none.c): the others still call it
+# alone: the others still call it
 
 # The runtime library every module links (rtlib.c): the helpers, compiled here with this Clang and the flags toolchain.c
 # gives generated C
@@ -192,19 +192,17 @@ target_compile_options(snx_fallback_none PRIVATE -pedantic-errors -Wall -Wextra 
 target_link_libraries(snx_fallback_none PUBLIC snx_recompiler_core)
 
 add_library(snx_recompiler_jit STATIC "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/exec.c" jit/jit_cache.c
-                                      "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/aot.c" jit/jit_service.c)
+                                      jit/jit_cache_key.c "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/aot.c"
+                                      jit/jit_service.c)
 set_target_properties(snx_recompiler_jit PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS ON)
 target_compile_options(snx_recompiler_jit PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 target_compile_definitions(snx_recompiler_jit PRIVATE _CRT_SECURE_NO_WARNINGS)
 target_link_libraries(snx_recompiler_jit PUBLIC snx_recompiler_core snx_arm_rt)
 if(NOT SNX_WITH_LLVM)
-    target_sources(snx_recompiler_jit PRIVATE jit/jit_cache_key_none.c)
     target_link_libraries(snx_recompiler_jit PUBLIC snx_fallback_none)
     return()
 endif()
 add_subdirectory(llvm)
-# the JIT cache's key, which names LLVM and the target it makes for
-target_sources(snx_recompiler_jit PRIVATE jit/jit_cache_key.c)
 target_link_libraries(snx_recompiler_jit PUBLIC snx_llvm)
 
 # The recompiler as a library (snx_recompiler.h): the backends and the function discovery behind one C interface,

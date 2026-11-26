@@ -2,15 +2,13 @@
    Copyright 2026 the ScarletNX contributors */
 /* The build-side reader of the runtime JIT's cache: the profile run writes a unit,
    the reader hands the AOT build its metadata and object, and a wrong key or a
-   cut-off record is refused instead of linked. A file of another build, an older
-   LLVM's, one whose native back ends made other code or one without LLVM's, is
+   cut-off record is refused instead of linked. A file of another build, one
+   whose native back ends made other code or one of the key LLVM's code had, is
    refused naming the field its key differs in. */
-#include "common/cpu/recompiler/llvm/ir.h"
+#include "common/cpu/aarch64/cpu.h"
 #include "common/cpu/recompiler/jit/jit_cache.h"
 #include "common/cpu/recompiler/jit/jit_service.h"
 #include "common/cpu/recompiler/mach/native.h"
-#include <llvm-c/TargetMachine.h>
-#include <llvm/Config/llvm-config.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -119,26 +117,13 @@ int main(void) {
     ok = snx_jit_wait(service, CODE_LO) != NULL;
     CHECK(ok);
     snx_jit_service_free(service);
-    CHECK(!snx_native_available() || !snx_ir_started()); /* the host's back end made the unit: LLVM never started */
 
     key = snx_jit_cache_key('2', 0, 0, 0);
     CHECK(key != NULL);
-    CHECK(key && strstr(key, "fpsr=1") != NULL);
     if (key) {
-        char expected[32];
-        char* triple = LLVMGetDefaultTargetTriple();
-        snprintf(expected, sizeof(expected), "obj=%d", SNX_IR_OBJECT_VERSION);
-        CHECK(strstr(key, expected) != NULL);
-        CHECK(triple != NULL && strstr(key, triple) != NULL);
-        if (triple) LLVMDisposeMessage(triple);
-    }
-    if (key) {
-        char* loose;
-        snx_ir_fpsr_flags(0);
-        loose = snx_jit_cache_key('2', 0, 0, 0);
-        CHECK(loose != NULL && strstr(loose, "fpsr=0") != NULL && strcmp(key, loose));
-        free(loose);
-        snx_ir_fpsr_flags(1);
+        char native[64];
+        snprintf(native, sizeof native, " native=%s ", snx_native_name());
+        CHECK(strstr(key, native) != NULL && strstr(key, " opt=2 hook=0 ") != NULL && !strstr(key, "llvm="));
     }
     cache = snx_jit_cache_open(path, key, error, sizeof(error));
     CHECK(cache != NULL);
@@ -180,18 +165,12 @@ int main(void) {
         CHECK(snx_jit_cache_open(path, wrong, error, sizeof(error)) == NULL);
         free(wrong);
     }
-    /* the file of an older LLVM's build, and the one of a build without LLVM, whose key has the native back end where
-       this one's names LLVM */
+    /* the file of a build whose native back ends or sailgen made other code, and one of the key the code LLVM made had
+       (SNX_ABI 19's, obj=5 its IR's object version) */
     if (key) {
         static const char* old = "snx-test-jit-cache-reader-old.bin";
-        const char* field = strstr(key, " llvm=");
-        char *older = (char*)malloc(strlen(key) + 32), said[96], made[96];
-        if (older && field) {
-            const char* past = strchr(field + 1, ' ');
-            snprintf(older, strlen(key) + 32, "%.*s llvm=22.1.0%s", (int)(field - key), key, past ? past : "");
-            snprintf(said, sizeof(said), "made for llvm=22.1.0, and this build makes llvm=%s", LLVM_VERSION_STRING);
-            refused_other(old, older, key, said);
-            /* a build whose native back ends or sailgen made other code */
+        char *older = (char*)malloc(strlen(key) + 32), said[96], made[160];
+        if (older) {
             const char* code = strstr(key, " native_code=");
             CHECK(code && strlen(snx_native_code()) == 16 && !strncmp(code + 13, snx_native_code(), 16));
             if (code) {
@@ -202,9 +181,9 @@ int main(void) {
                          snx_native_code());
                 refused_other(old, older, key, said);
             }
-            snprintf(made, sizeof(made), "abi=%d native=%s rtlib=0 opt=2 hook=0 svc=0", SNX_ABI, snx_native_name());
-            snprintf(said, sizeof(said), "made for native=%s, and this build makes no native", snx_native_name());
-            refused_other(old, made, key, said);
+            snprintf(made, sizeof(made), "abi=%d obj=5 llvm=23.1.6 triple=x86_64-unknown-linux-gnu opt=2 hook=0 svc=0",
+                     SNX_ABI);
+            refused_other(old, made, key, "made for obj=5, and this build makes no obj");
         } else
             CHECK(0);
         free(older);

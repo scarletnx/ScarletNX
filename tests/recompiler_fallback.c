@@ -6,9 +6,8 @@
      blocks chained and an import's stub, and their IR; an AOT module's index of tables, integers and structs, and its
      descriptor, with what lays them out otherwise than C; and a block of the executor's (exec.c, here, its loads
      counted and refused as the test asks) whose native object does not load, run;
-   - either: the JIT (jit_service.c, linked beside it) compiling a function and loading it again from its cache, whose
-     key is LLVM's or, without it, the native back end's (jit_cache_key.c, jit_cache_key_none.c); refused, with none,
-     on a host with no native back end;
+   - either: the JIT (jit_service.c, linked beside it), which the native back end alone makes the code of, compiling a
+     function and loading it again from its cache, whose key is the native back end's; refused on a host with none;
    - none (fallback_none.c, a program that links no LLVM): each refused with an error that names the code or the global
      asked for, its address and first instruction, why the native back end left it and that the build has no LLVM, and
      nothing else said. An executor on a host with no native back end is refused with it too, the functions all made are
@@ -636,13 +635,9 @@ static void jit(void) {
     snprintf(code, sizeof code, " native_code=%s ", snx_native_code());
     CHECK(key && strstr(key, code), "the cache key names the native code's version (%s): %s", snx_native_code(),
           key ? key : "(none)");
-    if (snx_fallback_available())
-        CHECK(key && strstr(key, " llvm=") && strstr(key, " triple=") && !strstr(key, want), "LLVM's cache key: %s",
-              key ? key : "(none)");
-    else
-        CHECK(key && strstr(key, want) && strstr(key, " opt=0 hook=0 svc=0 ") && strstr(key, " features=") &&
-                  !strstr(key, "llvm="),
-              "the native back end's cache key: %s", key ? key : "(none)");
+    CHECK(key && strstr(key, want) && strstr(key, " opt=0 hook=0 svc=0 ") && strstr(key, " features=") &&
+              !strstr(key, "llvm="),
+          "the native back end's cache key: %s", key ? key : "(none)");
     free(key);
     SnxCodeImage image = {
         .image = g_seam.image, .image_size = sizeof g_seam.image, .base = CODE, .text_size = sizeof g_seam.image};
@@ -658,9 +653,8 @@ static void jit(void) {
         for (size_t i = 0; i < sizeof g_seam.dispatch / sizeof *g_seam.dispatch; ++i)
             atomic_store_explicit(&g_seam.dispatch[i], NULL, memory_order_relaxed);
         SnxJitService* s = snx_jit_service_new(&config, error, sizeof error);
-        if (!snx_native_available() && !snx_fallback_available()) {
-            CHECK(!s && strstr(error, "no native back end") && strstr(error, "SNX_WITH_LLVM=OFF"),
-                  "a JIT with no code generator: %s", error);
+        if (!snx_native_available()) {
+            CHECK(!s && strstr(error, "this host has no native back end"), "a JIT with no code generator: %s", error);
             snx_jit_service_free(s);
             break;
         }

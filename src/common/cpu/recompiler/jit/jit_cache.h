@@ -31,14 +31,12 @@ typedef struct {
     size_t object_size;
 } SnxJitCacheRecord;
 
-/* What the objects depend on beyond the code: the ABI, the IR object version,
-   the host target triple, LLVM, the runtime library, the version of the code
-   the native back ends make (mach/native.h's snx_native_code), the host CPU and its
-   features, the -O level, hooked direct calls, direct SVCs, SLP vectorization,
-   FPSR flag exactness, volatile guest accesses, the guest's A64 features (0: the
-   Switch's) and the decoder's tables; in a build without LLVM the native back
-   end and its host features in LLVM's place (jit_cache_key_none.c). The profile
-   run and the AOT build must pass the same. */
+/* What the objects depend on beyond the code: the ABI, the native back end that
+   makes them, the version of its code (mach/native.h's snx_native_code) and the
+   host's features it makes the code for, the runtime library, the -O level the
+   launcher reads (gui/aot.c), hooked direct calls, direct SVCs, the guest's A64
+   features (0: the Switch's) and the decoder's tables. The profile run and the
+   AOT build must pass the same. */
 char* snx_jit_cache_key(char opt, int hook, int svc, SnxU64 features);
 /* How the key a file was made with (was, length bytes) and key differ, the
    first field where they do, into out (size bytes): "made for opt=3, and this
