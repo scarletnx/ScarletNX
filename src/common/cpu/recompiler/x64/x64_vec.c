@@ -1553,6 +1553,33 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
         vwrite(g, rd, vxor(g, d, vandn(g, vread(g, rm), vxor(g, d, vread(g, rn)))), q);
         return 1;
     }
+    case SNX_A64_OP_INS_general: { /* an element from a general-purpose register: PINSR */
+        unsigned imm5 = word >> 16 & 31, k = 0;
+        SgD v;
+        if (!(imm5 & 15)) return -1;
+        while (!(imm5 >> k & 1)) ++k;
+        v = rn == 31 ? sgx_const(64, 0) : sg_GPR_read(g, rn);
+        if (k < 3) v = sg_d_slice(g, v, (8u << k) - 1, 0);
+        vwrite(g, rd, lane_put(g, k, vread(g, rd), (int)(imm5 >> (k + 1)), v), 1);
+        return 1;
+    }
+    case SNX_A64_OP_INS_element: { /* an element from another's: a blend or an unpack of the two registers (vshuf);
+                                      a byte, which those would take two shuffles by constants for, PEXTRB and PINSRB */
+        unsigned imm5 = word >> 16 & 31, k = 0, to, from;
+        int idx[16];
+        if (!(imm5 & 15)) return -1;
+        while (!(imm5 >> k & 1)) ++k;
+        to = imm5 >> (k + 1), from = (word >> 11 & 15) >> k;
+        a = vread(g, rd), b = vread(g, rn);
+        if (!k)
+            r = lane_put(g, 0, a, (int)to, lane_get(g, 0, b, (int)from));
+        else {
+            for (int i = 0; i < 16; ++i) idx[i] = (unsigned)i >> k == to ? 16 + (int)(from << k) + i % (1 << k) : i;
+            r = vperm(g, a, b, idx);
+        }
+        vwrite(g, rd, r, 1);
+        return 1;
+    }
     /* integer arithmetic, compares, minimum and maximum, lane by lane */
     case SNX_A64_OP_ADD_v:
     case SNX_A64_OP_SUB_v:

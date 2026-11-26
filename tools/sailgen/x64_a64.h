@@ -11,6 +11,8 @@
 
 /* mach_codegen.inc's struct_ldst_fast deinterleaves 16-byte structures with PSHUFB on this back end */
 #define MG_X64_STRUCT_FAST 1
+/* INS of an element is x64_vec.c's (PINSR, a blend), not mach_codegen.inc's simd_copy's through a doubleword */
+#define MG_X64_VEC_INS     1
 
 /* ---- the hot paths ----
    Each operation is the SSE instruction's, and the exact helper's (snx_x64_fp_*) on a cold path where the result
