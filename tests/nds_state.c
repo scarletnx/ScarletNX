@@ -46,10 +46,11 @@
 
 /* The ARM9's program at 0x02000000 (llvm-mc -triple=armv5te): its interrupt handler and the vertical blank's wait
    as the CPU tests' program has them, the frame counted in a register, and the IRQ mode's stack, where the BIOS's
-   interrupt entry saves registers, moved with the frame's parity */
+   interrupt entry saves registers, moved with the frame's parity: the handler keeps the stack each interrupt came in
+   on */
 static const uint32_t program[] = {
-    0xE59F0090, /* entry: ldr r0, =0x03003FFC */
-    0xE59F1090, /* ldr r1, =(handler - entry + 0x02000000) */
+    0xE59F009C, /* entry: ldr r0, =0x03003FFC */
+    0xE59F109C, /* ldr r1, =(handler - entry + 0x02000000) */
     0xE5801000, /* str r1, [r0] */
     0xE3A00301, /* mov r0, #0x04000000 */
     0xE3A01008, /* mov r1, #8 */
@@ -68,7 +69,7 @@ static const uint32_t program[] = {
     0xE5846014, /* str r6, [r4, #20] */
     0xE10F3000, /* mrs r3, cpsr */
     0xE321F0D2, /* msr cpsr_c, #0xD2 */
-    0xE59FD048, /* ldr sp, =0x03003F80 */
+    0xE59FD054, /* ldr sp, =0x03003F80 */
     0xE3160001, /* tst r6, #1 */
     0x124DD040, /* subne sp, sp, #0x40 */
     0xE121F003, /* msr cpsr_c, r3 */
@@ -77,20 +78,24 @@ static const uint32_t program[] = {
     0xE2800C02, /* add r0, r0, #0x200 */
     0xE5901014, /* ldr r1, [r0, #0x14] */
     0xE5801014, /* str r1, [r0, #0x14] */
-    0xE59F2028, /* ldr r2, =0x03003FF8 */
+    0xE59F2034, /* ldr r2, =0x03003FF8 */
     0xE5923000, /* ldr r3, [r2] */
     0xE1833001, /* orr r3, r3, r1 */
     0xE5823000, /* str r3, [r2] */
-    0xE59F201C, /* ldr r2, =0x02100018 */
+    0xE59F2028, /* ldr r2, =0x02100018 */
     0xE5923000, /* ldr r3, [r2] */
     0xE2833001, /* add r3, r3, #1 */
     0xE5823000, /* str r3, [r2] */
+    0xE203303F, /* and r3, r3, #63 */
+    0xE59F2018, /* ldr r2, =0x02100100 */
+    0xE782D103, /* str sp, [r2, r3, lsl #2] */
     0xE12FFF1E, /* bx lr */
     0x03003FFC, /* the DTCM's last word, the handler's */
     0x02000064, /* the interrupt handler */
     0x03003F80, /* the IRQ stack */
     0x03003FF8, /* the BIOS's flags */
     0x02100018, /* the interrupts counted */
+    0x02100100, /* the IRQ stacks seen */
 };
 #define PROGRAM_WORDS (sizeof program / sizeof *program)
 
