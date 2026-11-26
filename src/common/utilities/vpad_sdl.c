@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "common/utilities/vpad_sdl.h"
+#include "common/utilities/console_settings.h"
 #include "common/utilities/game_ini.h"
 #include "common/utilities/hotkeys.h"
 #include "common/utilities/key_said.h"
@@ -32,6 +33,7 @@ static struct {
     char fps_limit[16];    /* its text as read */
     int slot;              /* the save states' slot F7 and F8 use, 1 to state_slots, F9's step */
     char state_save[256], state_load[1024]; /* an unattended run's (state_save, state_load) */
+    SnxSystem console;                      /* whose settings of the Switch's the rest are (console_settings.h) */
     uint32_t saves_done, loads_done;        /* a bit for each of their items done */
     uint64_t quit_by; /* a second Back before this quits (quit_key.h), the first one's line shown until then */
     SnxUiRects rects;
@@ -130,10 +132,13 @@ static const IniOpt* setting(const char* key) {
     if (!strcmp(key, "fps_limit")) return &FPS_LIMIT;
     if (!strcmp(key, "state_save")) return &STATE_SAVE;
     if (!strcmp(key, "state_load")) return &STATE_LOAD;
-    if (!strcmp(key, "state_slots") || !strcmp(key, "state_auto_backup")) return ini_find(g_game_ini, key);
-    return hotkey_setting(key);
+    const IniOpt* o = hotkey_setting(key);
+    return o ? o : snx_console_opt(g_vpad_sdl.console, key);
 }
-void snx_vpad_sdl_settings(void) { vpad_settings_also(setting); }
+void snx_vpad_sdl_settings(SnxSystem console) {
+    g_vpad_sdl.console = console;
+    vpad_settings_also(setting);
+}
 uint64_t snx_vpad_window_frame_ns(uint64_t console_ns) {
     return g_vpad_sdl.pace == SNX_PACE_NONE      ? 0
            : g_vpad_sdl.pace == SNX_PACE_CONSOLE ? console_ns

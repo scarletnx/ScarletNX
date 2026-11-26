@@ -11,19 +11,6 @@ int snx_ctr_main(int argc, char** argv); /* extracts, recompiles and plays what 
 /* Whether the last part of path (".exe" dropped) is a 3DS application's title ID, 0004 and 12 more hex digits, as the
    game's folder and its copy of the runtime are named: a Switch title ID starts 01 */
 bool snx_ctr_title_name(const char* path);
-/* Whether key is one of the Switch's settings the 3DS driver takes too, with its meaning, its row and its key (the
-   Display, Graphics, Audio, Debug, Performance, Controllers and On-screen controls tables, g_display_ini,
-   g_graphics_ini, g_audio_ini, g_debug_ini, g_performance_ini, g_gamepad_ini, g_gamepad_map_ini and g_backend_ini in
-   src/nx/runtime/settings.txt), as
-   --key=value beside the 3DS tables' own: the launcher passes them to a 3DS game's run with those */
-static inline bool snx_ctr_shared_setting(const char* key) {
-    return !strcmp(key, "vk_memory") || !strcmp(key, "async_pipelines") || !strcmp(key, "pipeline_threads") ||
-           !strcmp(key, "gamepad_swap_ab") || !strcmp(key, "gamepad_deadzone") || !strcmp(key, "gamepad_map") ||
-           !strcmp(key, "touch") || !strcmp(key, "vsync") || !strcmp(key, "fullscreen") || !strcmp(key, "anisotropy") ||
-           !strcmp(key, "fps_limit") || !strcmp(key, "vk_pipeline_cache") || !strcmp(key, "vulkan_ban_ignore") ||
-           !strcmp(key, "vk_debug_hide_commands") || !strcmp(key, "volume") || !strcmp(key, "upscaler") ||
-           !strcmp(key, "upscaler_sharpness") || !strcmp(key, "anti_aliasing");
-}
 /* Whether key is a setting a 3DS game has of its own, in its picks (<title ID>.picks, common/utilities/game_ini.h),
    over the launcher's for every game: its console. The launcher's Settings of the game have its rows alone */
 static inline bool snx_ctr_game_setting(const char* key) { return !strcmp(key, "ctr_model"); }

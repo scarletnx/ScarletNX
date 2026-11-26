@@ -320,7 +320,7 @@ int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel
         { /* the runtime's keys in its window, and the on-screen controls' and keys' settings, from the game's .ini */
             char* ini = snx_game_ini(directory, snx_path_leaf(directory));
             vpad_console(&snx_vpad_3ds);
-            snx_vpad_sdl_settings();
+            snx_vpad_sdl_settings(SNX_SYSTEM_3DS);
             vpad_settings(directory, snx_path_leaf(directory), 0, NULL);
             snx_ctr_present_game(directory, ini);
             free(ini);

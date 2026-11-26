@@ -4,6 +4,7 @@
    options a run gets. With a runtime's path, its own --settings list too */
 #include "common/utilities/common.h"
 #include "common/utilities/config_file.h"
+#include "common/utilities/console_settings.h"
 #include "common/utilities/game_ini.h"
 #include "gui/editor.h"
 #include "gui/settings.h"
@@ -1161,22 +1162,25 @@ int main(int argc, char** argv) {
                gui_settings_set(&s, "shadows", "0") && gui_settings_set(&s, "docked", "0") &&
                gui_settings_set(&s, "anisotropy", "8") && gui_settings_set(&s, "fps_limit", "120"));
         assert(gui_settings_set(&s, "volume", "50"));
-        /* a row of the 3DS group's Debug page, passed as its screens' are */
-        assert(gui_settings_ctr_options(&s, options) == 14 && gui_settings_set(&s, "ctr_hooks", "0") &&
-               gui_settings_ctr_options(&s, options) == 15 && !strcmp(options[3], "--ctr-hooks=0") &&
-               gui_settings_set(&s, "ctr_hooks", "1"));
-        assert(gui_settings_ctr_options(&s, options) == 14 && !strcmp(options[0], "--fullscreen=1") &&
-               !strcmp(options[1], "--ctr-separate-windows=1") && !strcmp(options[2], "--ctr-top-resolution=2") &&
-               !strcmp(options[3], "--vsync=0") && !strcmp(options[4], "--anisotropy=8") &&
-               !strcmp(options[5], "--async-pipelines=1") && !strcmp(options[6], "--pipeline-threads=2") &&
-               !strcmp(options[7], "--fps-limit=120") && !strcmp(options[8], "--gamepad-swap-ab=1") &&
-               !strcmp(options[9], "--gamepad-deadzone=35") && !strcmp(options[10], "--gamepad-map=south:A east:B") &&
-               !strcmp(options[11], "--touch=1") && !strcmp(options[12], "--vk-memory=1"));
-        assert(!strcmp(options[13], "--volume=50"));
+        /* a row of the 3DS group's Debug page, passed as its screens' are; the picks are the launcher's
+           (--launcher-picks=1 last) */
+        assert(gui_settings_console_options(&s, SNX_SYSTEM_3DS, options) == 15 &&
+               gui_settings_set(&s, "ctr_hooks", "0") &&
+               gui_settings_console_options(&s, SNX_SYSTEM_3DS, options) == 16 &&
+               !strcmp(options[3], "--ctr-hooks=0") && gui_settings_set(&s, "ctr_hooks", "1"));
+        assert(gui_settings_console_options(&s, SNX_SYSTEM_3DS, options) == 15 &&
+               !strcmp(options[0], "--fullscreen=1") && !strcmp(options[1], "--ctr-separate-windows=1") &&
+               !strcmp(options[2], "--ctr-top-resolution=2") && !strcmp(options[3], "--vsync=0") &&
+               !strcmp(options[4], "--anisotropy=8") && !strcmp(options[5], "--async-pipelines=1") &&
+               !strcmp(options[6], "--pipeline-threads=2") && !strcmp(options[7], "--fps-limit=120") &&
+               !strcmp(options[8], "--gamepad-swap-ab=1") && !strcmp(options[9], "--gamepad-deadzone=35") &&
+               !strcmp(options[10], "--gamepad-map=south:A east:B") && !strcmp(options[11], "--touch=1") &&
+               !strcmp(options[12], "--vk-memory=1"));
+        assert(!strcmp(options[13], "--volume=50") && !strcmp(options[14], "--" SNX_LAUNCHER_PICKS "=1"));
         gui_settings_free(&s);
     }
-    /* a Vita game's run gets its Debug page's picks alone (keys that start with vita_): none of the Switch's or the
-       3DS's, which its driver refuses */
+    /* a Vita game's run gets its Debug page's picks (keys that start with vita_) and the Switch's its driver takes:
+       none of the 3DS's, which its driver refuses */
     {
         static const char vita[] = "Display\tfullscreen\t0\tint\t0\t1\tWhole screen\tFullscreen\t0=Off|1=On\n"
                                    "3DS/Debug\tctr_hooks\t1\tint\t0\t1\tStubs\tIPC hooks\t0=Off|1=On\n"
@@ -1184,17 +1188,19 @@ int main(int argc, char** argv) {
                                    "0=Off|1=Missing|2=All\n"
                                    "Vita/Debug\tvita_gxm_trace\t0\tint\t0\t1\tScenes\tGXM trace\t0=Off|1=On\n";
         assert(!gui_settings_read(&s, vita));
-        assert(!gui_settings_vita_options(&s, options) && gui_settings_set(&s, "fullscreen", "1") &&
-               gui_settings_set(&s, "ctr_hooks", "0") && !gui_settings_vita_options(&s, options));
-        assert(gui_settings_set(&s, "vita_hle_trace", "2") && gui_settings_vita_options(&s, options) == 1 &&
-               !strcmp(options[0], "--vita-hle-trace=2"));
-        assert(gui_settings_ctr_options(&s, options) == 2 && !strcmp(options[1], "--ctr-hooks=0"));
+        assert(!gui_settings_console_options(&s, SNX_SYSTEM_VITA, options) && gui_settings_set(&s, "ctr_hooks", "0") &&
+               !gui_settings_console_options(&s, SNX_SYSTEM_VITA, options));
+        assert(gui_settings_set(&s, "fullscreen", "1") && gui_settings_set(&s, "vita_hle_trace", "2") &&
+               gui_settings_console_options(&s, SNX_SYSTEM_VITA, options) == 3 &&
+               !strcmp(options[0], "--fullscreen=1") && !strcmp(options[1], "--vita-hle-trace=2") &&
+               !strcmp(options[2], "--" SNX_LAUNCHER_PICKS "=1"));
+        assert(gui_settings_console_options(&s, SNX_SYSTEM_3DS, options) == 3 && !strcmp(options[1], "--ctr-hooks=0"));
         gui_settings_free(&s);
     }
     /* a GBA, a DS or a Vita game's own: the on-screen controls it has and the touch screen, each control by the
-       console's name for it, and nothing else of the Switch's; and the launcher's for its run: the picks of those
-       settings, every one (the driver says what its console has nothing for), --launcher-picks=1 after them, none with
-       nothing picked */
+       console's name for it, and the Switch's settings its driver takes (console_settings.h), no other; and the
+       launcher's for its run: the picks of those settings, every one (the driver says what its console has nothing
+       for), --launcher-picks=1 after them, none with nothing picked */
     {
         static const char list[] =
             "Display\tfullscreen\t0\tint\t0\t1\tWhole screen\tFullscreen\t0=Off|1=On\n"
@@ -1213,8 +1219,8 @@ int main(int argc, char** argv) {
         for (size_t c = 0; c < sizeof consoles / sizeof *consoles; ++c) {
             GuiSettings game = {0};
             assert(!gui_settings_read_console(&game, list, consoles[c].game) && game.game == consoles[c].game);
-            assert(at(&game, "controls") == 0 && !strcmp(key(&game, "controls")->words[0], "Global"));
-            assert(at(&game, "fullscreen") < 0 && at(&game, "controller_applet") < 0);
+            assert(at(&game, "controls") >= 0 && !strcmp(key(&game, "controls")->words[0], "Global"));
+            assert(at(&game, "fullscreen") >= 0 && at(&game, "controller_applet") < 0);
             assert(at(&game, "controls_zl_shown") < 0);
             assert((at(&game, "touch") >= 0) == consoles[c].touch);
             assert((at(&game, "controls_rel_center") >= 0) == consoles[c].sticks);
@@ -1223,14 +1229,15 @@ int main(int argc, char** argv) {
             assert(!strcmp(key(&game, "controls_a_shown")->key, consoles[c].a));
             gui_settings_free(&game);
         }
-        assert(!gui_settings_read(&s, list) && !gui_settings_controls_options(&s, options));
-        assert(gui_settings_set(&s, "fullscreen", "1") && gui_settings_set(&s, "controller_applet", "1") &&
-               !gui_settings_controls_options(&s, options));
-        assert(gui_settings_set(&s, "controls", "1") && gui_settings_set(&s, "touch", "0") &&
-               gui_settings_set(&s, "controls_zl_shown", "0"));
-        assert(gui_settings_controls_options(&s, options) == 4 && !strcmp(options[0], "--controls=1") &&
-               !strcmp(options[1], "--touch=0") && !strcmp(options[2], "--controls-zl-shown=0") &&
-               !strcmp(options[3], "--" SNX_LAUNCHER_PICKS "=1"));
+        assert(!gui_settings_read(&s, list) && !gui_settings_console_options(&s, SNX_SYSTEM_GBA, options));
+        assert(gui_settings_set(&s, "controller_applet", "1") &&
+               !gui_settings_console_options(&s, SNX_SYSTEM_GBA, options));
+        assert(gui_settings_set(&s, "fullscreen", "1") && gui_settings_set(&s, "controls", "1") &&
+               gui_settings_set(&s, "touch", "0") && gui_settings_set(&s, "controls_zl_shown", "0"));
+        assert(gui_settings_console_options(&s, SNX_SYSTEM_GBA, options) == 5 &&
+               !strcmp(options[0], "--fullscreen=1") && !strcmp(options[1], "--controls=1") &&
+               !strcmp(options[2], "--touch=0") && !strcmp(options[3], "--controls-zl-shown=0") &&
+               !strcmp(options[4], "--" SNX_LAUNCHER_PICKS "=1"));
         gui_settings_free(&s);
     }
     /* the launcher's Console for a 3DS run: --launcher-picks=1 after the rest, which puts the game's own over it; with
@@ -1242,14 +1249,14 @@ int main(int argc, char** argv) {
                                   "Audio\tvolume\t100\tint\t0\t100\tLoud\tVolume\t0=Mute|50=50%|100=100%";
         assert(!gui_settings_read(&s, ctr));
         assert(gui_settings_set(&s, "fullscreen", "1") && gui_settings_set(&s, "volume", "50"));
-        assert(gui_settings_ctr_options(&s, options) == 2 && !strcmp(options[0], "--fullscreen=1") &&
-               !strcmp(options[1], "--volume=50"));
+        assert(gui_settings_console_options(&s, SNX_SYSTEM_3DS, options) == 3 &&
+               !strcmp(options[0], "--fullscreen=1") && !strcmp(options[1], "--volume=50"));
         assert(gui_settings_set(&s, "ctr_model", "auto"));
-        assert(gui_settings_ctr_options(&s, options) == 2 && !strcmp(options[1], "--volume=50"));
+        assert(gui_settings_console_options(&s, SNX_SYSTEM_3DS, options) == 3 && !strcmp(options[1], "--volume=50"));
         assert(gui_settings_set(&s, "ctr_model", "new"));
-        assert(gui_settings_ctr_options(&s, options) == 4 && !strcmp(options[0], "--fullscreen=1") &&
-               !strcmp(options[1], "--ctr-model=new") && !strcmp(options[2], "--volume=50") &&
-               !strcmp(options[3], "--" SNX_LAUNCHER_PICKS "=1"));
+        assert(gui_settings_console_options(&s, SNX_SYSTEM_3DS, options) == 4 &&
+               !strcmp(options[0], "--fullscreen=1") && !strcmp(options[1], "--ctr-model=new") &&
+               !strcmp(options[2], "--volume=50") && !strcmp(options[3], "--" SNX_LAUNCHER_PICKS "=1"));
         gui_settings_free(&s);
     }
     /* the Linux, Android and DS drivers': a run's options are its own group's, each only to its own driver; the DS's
@@ -1267,7 +1274,7 @@ int main(int argc, char** argv) {
                                       "off=Off|kaeru=Kaeru\n";
         assert(!gui_settings_read(&s, drivers));
         assert(!gui_settings_linux_options(&s, options) && !gui_settings_android_options(&s, options) &&
-               !gui_settings_nds_options(&s, options));
+               !gui_settings_console_options(&s, SNX_SYSTEM_NDS, options));
         assert(gui_settings_set(&s, "linux_isolated", "1") && gui_settings_set(&s, "linux_strace", "1") &&
                gui_settings_set(&s, "linux_root", "/a root") && gui_settings_set(&s, "android_jit_opt", "0") &&
                gui_settings_set(&s, "android_sample", "1") && gui_settings_set(&s, "nds_aot", "0") &&
@@ -1276,9 +1283,9 @@ int main(int argc, char** argv) {
                !strcmp(options[1], "--linux-root=/a root") && !strcmp(options[2], "--linux-strace=1"));
         assert(gui_settings_android_options(&s, options) == 2 && !strcmp(options[0], "--android-jit-opt=0") &&
                !strcmp(options[1], "--android-sample=1"));
-        assert(gui_settings_nds_options(&s, options) == 2 && !strcmp(options[0], "--nds-aot=0") &&
-               !strcmp(options[1], "--nds-trace=2"));
-        assert(gui_settings_vita_options(&s, options) == 0);
+        assert(gui_settings_console_options(&s, SNX_SYSTEM_NDS, options) == 3 && !strcmp(options[0], "--nds-aot=0") &&
+               !strcmp(options[1], "--nds-trace=2") && !strcmp(options[2], "--" SNX_LAUNCHER_PICKS "=1"));
+        assert(gui_settings_console_options(&s, SNX_SYSTEM_VITA, options) == 0);
         gui_settings_free(&s);
     }
     /* a slider's row (the runtime's twelfth column, settings.txt's slider): a plain word row whose steps stop at its

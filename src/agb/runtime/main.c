@@ -18,6 +18,7 @@
 #include "common/utilities/script.h"
 #include "common/utilities/vpad_consoles.h"
 #include "common/utilities/vpad_sdl.h"
+#include "common/utilities/console_settings.h"
 #include "common/utilities/state_header.h"
 #include "agb/runtime/state.h"
 #include "common/utilities/hotkeys.h"
@@ -217,7 +218,7 @@ int snx_agb_main(int argc, char** argv) {
     int lcd = 1; /* --gba-color: the original GBA's screen colours, raw the game's (settings.txt's gba_color) */
     SnxCli cli;
     vpad_console(&snx_vpad_gba);
-    snx_vpad_sdl_settings();
+    snx_vpad_sdl_settings(SNX_SYSTEM_GBA);
     snx_cli_init(&cli, "scarletnx-agb", agb_cli);
     for (int i = 1; i < argc; ++i) {
         char error[256];
@@ -239,6 +240,12 @@ int snx_agb_main(int argc, char** argv) {
             return 2;
         }
         if (controls) continue;
+        /* one of the Switch's settings a GBA game does not take, said with why */
+        if (snx_console_arg(SNX_SYSTEM_GBA, argv[i], error, sizeof error) < 0) {
+            fprintf(stderr, "scarletnx-agb: %s\n", error);
+            snx_cli_free(&cli);
+            return 2;
+        }
         /* the settings it takes, their keys' _ a - or not */
         char key[64];
         const char* value = settings_arg(argv[i], key, sizeof key);
@@ -282,7 +289,7 @@ int snx_agb_main(int argc, char** argv) {
     const char *shot = cli.value[SNX_CLI_SHOT], *data = cli.value[SNX_CLI_DATA], *outdir = cli.value[SNX_CLI_OUTDIR];
     const char *output = cli.value[SNX_CLI_OUTPUT], *game = cli.value[SNX_CLI_GAME], *script = cli.value[SNX_CLI_SCRIPT];
     long frames = cli.frames;
-    int recompile = !!(cli.flags & SNX_CLI_BIT(SNX_CLI_RECOMPILE)), fullscreen = cli.fullscreen;
+    int recompile = !!(cli.flags & SNX_CLI_BIT(SNX_CLI_RECOMPILE));
     SnxCliRecompile asked = snx_cli_recompile(&cli);
     int jobs = cli.jobs;
     snx_cli_free(&cli);
@@ -463,7 +470,7 @@ int snx_agb_main(int argc, char** argv) {
         /* the window's settings, and a run's with none (state_save, state_load) */
         vpad_set_say(agb_host_say);
         vpad_settings(folder, name, argc, argv);
-        if (fullscreen >= 0) g_settings.fullscreen = fullscreen; /* -f's over the settings' */
+        if (snx_cli_fullscreen_flag(argc, argv)) g_settings.fullscreen = 1; /* -f's over the settings' */
         if (frames < 0) {
             char* title = snx_format("ScarletNX - %s (GBA)", board.cartridge.title[0] ? board.cartridge.title : name);
             host = agb_host_open(title, ini, g_settings.fullscreen, error, sizeof error);

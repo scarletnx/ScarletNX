@@ -21,6 +21,7 @@
 #include "common/utilities/script.h"
 #include "common/utilities/vpad_consoles.h"
 #include "common/utilities/vpad_sdl.h"
+#include "common/utilities/console_settings.h"
 #include "common/utilities/state_header.h"
 #include "nds/runtime/state.h"
 #include "common/online/wfc.h"
@@ -272,7 +273,7 @@ int snx_nds_main(int argc, char** argv) {
     const char* dump_ram = NULL; /* main memory written there when the run ends, for a look at what the game holds */
     SnxCli cli;
     vpad_console(&snx_vpad_nds);
-    snx_vpad_sdl_settings();
+    snx_vpad_sdl_settings(SNX_SYSTEM_NDS);
     snx_cli_init(&cli, "scarletnx-nds", nds_cli);
     for (int i = 1; i < argc; ++i) {
         char error[256];
@@ -294,6 +295,12 @@ int snx_nds_main(int argc, char** argv) {
             return 2;
         }
         if (controls) continue;
+        /* one of the Switch's settings a DS game does not take, said with why */
+        if (snx_console_arg(SNX_SYSTEM_NDS, argv[i], error, sizeof error) < 0) {
+            fprintf(stderr, "scarletnx-nds: %s\n", error);
+            snx_cli_free(&cli);
+            return 2;
+        }
         char* end;
         /* the settings it takes, their keys' _ a - or not */
         char key[64];
@@ -370,7 +377,7 @@ int snx_nds_main(int argc, char** argv) {
     const char *output = cli.value[SNX_CLI_OUTPUT], *game = cli.value[SNX_CLI_GAME], *script = cli.value[SNX_CLI_SCRIPT];
     long frames = cli.frames;
     double seconds = cli.seconds;
-    int recompile = !!(cli.flags & SNX_CLI_BIT(SNX_CLI_RECOMPILE)), fullscreen = cli.fullscreen;
+    int recompile = !!(cli.flags & SNX_CLI_BIT(SNX_CLI_RECOMPILE));
     int headless = !!(cli.flags & SNX_CLI_BIT(SNX_CLI_HEADLESS));
     /* the WFC service, refused before anything is made when the setting names none */
     uint8_t wfc_dns[4];
@@ -497,7 +504,7 @@ int snx_nds_main(int argc, char** argv) {
         char* title = snx_format("ScarletNX - %s (NDS)", rom.title[0] ? rom.title : name);
         vpad_set_say(nds_host_say);
         vpad_settings(folder, name, argc, argv);
-        if (fullscreen >= 0) g_settings.fullscreen = fullscreen; /* -f's over the settings' */
+        if (snx_cli_fullscreen_flag(argc, argv)) g_settings.fullscreen = 1; /* -f's over the settings' */
         host = nds_host_open(board, title, ini, wav, headless || frames >= 0, g_settings.fullscreen && !(seconds > 0),
                              error, sizeof error);
         free(title);

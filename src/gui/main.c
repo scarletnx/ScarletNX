@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include <SDL3/SDL.h>
 #include "common/utilities/sdl_desktop.h"
+#include "common/utilities/console_settings.h"
 #include "common/utilities/ini_lines.h"
 #include "common/utilities/key_text.h"
 #include "common/utilities/old_llvm_caches.h"
@@ -17879,6 +17880,14 @@ static char* play_program(App* app, const char* game, bool next) {
     return path ? path : snx_strdup(game);
 }
 #endif
+/* the consoles' table's console of a menu's item (console_settings.h), the Switch's for one that is no console's */
+static int item_console(int item) {
+    return item == GUI_3DS    ? SNX_SYSTEM_3DS
+           : item == GUI_VITA ? SNX_SYSTEM_VITA
+           : item == GUI_GBA  ? SNX_SYSTEM_GBA
+           : item == GUI_NDS  ? SNX_SYSTEM_NDS
+                              : SNX_SYSTEM_SWITCH;
+}
 /* The game activity's arguments for item playing game, apart so tests/gui_sdl.c keeps each console's list: the driver's
    name first where the console's driver is not the default, --game= the game's folder where its driver plays a folder
    (the Switch's its program), the console's settings only, and the Switch's and the Vita's GPU driver and Freedreno
@@ -17905,15 +17914,11 @@ typedef struct {
     n = first ? 1 : 0;
     if (n) argv[0] = first;
     argv[n++] = own->option;
-    /* the settings the console's driver takes, as a run of it in a child gets (see run()): the Switch's all of the
-       launcher's, the 3DS's, the Vita's and the DS's their own, the on-screen controls' the Vita's, the GBA's and the
-       DS's, and the others' none, whose drivers refuse a setting they do not have */
-    n += item == GUI_3DS      ? gui_settings_ctr_options(s, argv + n)
-         : item == GUI_VITA   ? gui_settings_vita_options(s, argv + n)
-         : item == GUI_NDS    ? gui_settings_nds_options(s, argv + n)
-         : item == GUI_SWITCH ? (size_t)gui_settings_options(s, 0, own->ini, argv + n)
-                              : 0;
-    if (item == GUI_VITA || item == GUI_GBA || item == GUI_NDS) n += gui_settings_controls_options(s, argv + n);
+    /* the settings the console's driver takes, as a run of it in a child gets (see launch()): the Switch's all of the
+       launcher's, another console's its own and the Switch's it takes (console_settings.h), and the others' none,
+       whose drivers refuse a setting they do not have */
+    n += item == GUI_SWITCH ? (size_t)gui_settings_options(s, 0, own->ini, argv + n)
+                            : gui_settings_console_options(s, item_console(item), argv + n);
     if ((item == GUI_SWITCH || item == GUI_VITA) && own->driver) argv[n++] = own->driver;
     if ((item == GUI_SWITCH || item == GUI_VITA) && own->freedreno) argv[n++] = own->freedreno;
     argv[n] = NULL;
@@ -21463,15 +21468,9 @@ static void launch(App* app, char* absolute, bool prepared) {
         argv[n++] = "--program";
         argv[n++] = program;
     }
-    if (app->menu.selected == GUI_3DS && !make) n += gui_settings_ctr_options(s, argv + n);
-    if (app->menu.selected == GUI_VITA && !make) n += gui_settings_vita_options(s, argv + n);
     if (app->menu.selected == GUI_ANDROID && !make) n += gui_settings_android_options(s, argv + n);
-    if (app->menu.selected == GUI_NDS && !make) n += gui_settings_nds_options(s, argv + n);
-    /* the on-screen controls', and the window's start fullscreen as a Switch game's; a compile opens none */
-    if ((app->menu.selected == GUI_VITA || app->menu.selected == GUI_GBA || app->menu.selected == GUI_NDS) && !make) {
-        n += gui_settings_controls_options(s, argv + n);
-        n += gui_settings_one(s, "fullscreen", argv + n);
-    }
+    /* another console's game's: its own and the Switch's its driver takes (console_settings.h); a compile none */
+    if (!make) n += gui_settings_console_options(s, item_console(app->menu.selected), argv + n);
     /* the launcher's GPU driver and Freedreno variables, where the game's .ini has none of its own */
     if ((app->menu.selected == GUI_SWITCH || app->menu.selected == GUI_VITA) && !make) {
         free(app->run_driver);
@@ -21500,11 +21499,6 @@ static void launch(App* app, char* absolute, bool prepared) {
         argv[n++] = app->dest_out ? app->dest_out : app->games_dir;
     }
     if (app->menu.selected == GUI_GBA && !make) n += gui_settings_gba(s, argv + n); /* its screen's colors */
-    /* the Vita's presenter takes the Switch's upscaler and anti-aliasing (vita/gpu/vk.c), each at most once in s */
-    if (app->menu.selected == GUI_VITA && !make) {
-        static const char* const effects[] = {"upscaler", "upscaler_sharpness", "anti_aliasing"};
-        for (size_t k = 0; k < sizeof effects / sizeof *effects; ++k) n += gui_settings_one(s, effects[k], argv + n);
-    }
     /* the picked extractions folder, which Extract to tmpfs leaves for the temporary one, and a Switch dump read in
        place (Extract dump off) has no use for */
     if (folders && app->place[GUI_PLACE_WORK] && app->menu.selected == GUI_SWITCH && !nro_file(absolute) &&

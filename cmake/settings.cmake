@@ -7,7 +7,8 @@
 #
 #   snx_settings          g_settings, the launcher's and the recompiler's tables, ini.c: the launcher, the driver;
 #                         and settings_args.c, the settings' names on a command line (settings_arg): every driver
-#   snx_settings_runtime  the game's .ini's tables, a file each, and its sections: the set functions are the runtime's
+#   snx_settings_runtime  the game's .ini's tables, a file each, and its sections: the set functions are the runtime's;
+#                         and g_console_ini, those tables' rows without them (settings_console.c), for the other consoles
 include_guard(GLOBAL)
 if(CMAKE_CROSSCOMPILING)
     include("${CMAKE_CURRENT_LIST_DIR}/host_cc.cmake")
@@ -78,7 +79,7 @@ list(APPEND snx_settings_args --bans "${snx_settings_bans}" --hooks "${snx_setti
 # settings.txt's table lines
 file(STRINGS "${snx_settings_spec}" snx_settings_tables REGEX "^table ")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${snx_settings_source}")
-set(snx_settings_runtime_files settings_runtime.c)
+set(snx_settings_runtime_files settings_runtime.c settings_console.c)
 foreach(line IN LISTS snx_settings_tables)
     # nested: if() evaluates a parenthesized condition before the MATCHES that sets CMAKE_MATCH_<n>
     if(line MATCHES "^table +([A-Za-z0-9_]+) *([a-z]*)")

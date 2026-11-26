@@ -20,6 +20,7 @@
 #include "common/utilities/ini_lines.h"
 #include "common/utilities/vpad_consoles.h"
 #include "common/utilities/vpad_sdl.h"
+#include "common/utilities/console_settings.h"
 #include "snx_settings.h"
 #include <ctype.h>
 #include <stdio.h>
@@ -341,7 +342,7 @@ int snx_vita_main(int argc, char** argv) {
     int old_lockstep = g_settings.vita_lockstep, old_lockstep_steps = g_settings.vita_lockstep_steps;
     SnxCli cli;
     vpad_console(&snx_vpad_vita);
-    snx_vpad_sdl_settings();
+    snx_vpad_sdl_settings(SNX_SYSTEM_VITA);
     snx_cli_init(&cli, "scarletnx-vita", vita_cli);
     for (int i = 1; i < argc; ++i) {
         const char* a = argv[i];
@@ -368,11 +369,15 @@ int snx_vita_main(int argc, char** argv) {
             return 2;
         }
         if (controls) continue;
+        /* one of the Switch's settings a Vita game does not take, said with why */
+        if (snx_console_arg(SNX_SYSTEM_VITA, a, error, sizeof error) < 0) {
+            fprintf(stderr, "scarletnx-vita: %s\n", error);
+            snx_cli_free(&cli);
+            return 2;
+        }
         if (!strncmp(a, "--", 2) && strchr(a, '=')) {
             /* the Vita debug and run tables', --press-len= and --shot-every= being vita_press_len and vita_shot_every
-               (a Switch game's are g_unattended_ini's), vulkan_video (which the Vita's AVC decoder doesn't take yet),
-               the upscaler and the anti-aliasing (the presenter's, gpu/vk.c), a Vulkan extension's (vk_ext_*) and
-               gamepad_map */
+               (a Switch game's are g_unattended_ini's); the Switch's it takes are vpad_arg's above */
             char key[64];
             const char* value = settings_arg(a, key, sizeof key);
             const IniOpt* o = NULL;
@@ -389,18 +394,9 @@ int snx_vita_main(int argc, char** argv) {
                                              : !strcmp(key, "shot_every") ? "vita_shot_every"
                                                                           : key);
                 if (!o) o = ini_find(g_vita_debug_ini, key);
-                if (!o) o = ini_find(g_debug_ini, key);
-                if (!o && (!strcmp(key, "vulkan_video") || !strcmp(key, "upscaler") ||
-                           !strcmp(key, "upscaler_sharpness") || !strcmp(key, "anti_aliasing")))
-                    o = ini_find(g_graphics_ini, key);
-                /* the GPU driver package and Freedreno's variables, the Switch's settings (common/gpu/vk/gpu_driver_load.h) */
-                if (!o && (!strcmp(key, "gpu_driver") || !strcmp(key, "freedreno_env"))) o = ini_find(g_game_ini, key);
-                if (!o) o = ini_find(g_vk_extensions_ini, key); /* a Vulkan extension's, as the 3DS takes them */
             }
             if (o)
                 ini_read(o, value);
-            else if (value && !strcmp(key, "gamepad_map")) /* the input's to read, as the 3DS's */
-                vita_input_map(value);
             else {
                 fprintf(stderr, "scarletnx-vita: unknown setting: %s\n", a);
                 snx_cli_free(&cli);
@@ -433,7 +429,6 @@ int snx_vita_main(int argc, char** argv) {
     }
     bool recompile = cli.flags & SNX_CLI_BIT(SNX_CLI_RECOMPILE);
     double seconds = cli.seconds;
-    int fullscreen = cli.fullscreen; /* the window's (gpu/vk.c), -1 unsaid */
     snx_cli_free(&cli);
     if (old_at)
         snx_error("VITA_LOCKSTEP=%s is deprecated, %s: vita_lockstep=%d (docs/user/deprecations.md)", old_at,
@@ -498,7 +493,8 @@ int snx_vita_main(int argc, char** argv) {
     char *ini = vita_game_file(folder, ".ini"), *name = last_part(folder);
     vpad_set_say(vita_present_say);
     if (name) vpad_settings(folder, name, argc, argv);
-    if (fullscreen >= 0) g_settings.fullscreen = fullscreen; /* -f's over the settings' */
+    if (snx_cli_fullscreen_flag(argc, argv)) g_settings.fullscreen = 1;  /* -f's over the settings' */
+    if (g_settings.button_map[0]) vita_input_map(g_settings.button_map); /* the input's to read, as the 3DS's */
     free(name);
     status = play(folder, ini, recompile, seconds, shot, runtime, &asked);
     free(ini);
