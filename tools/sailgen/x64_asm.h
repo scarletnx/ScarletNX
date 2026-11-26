@@ -322,15 +322,17 @@ static inline void sgx_cold_vwarm(SgXAsm* a, int at, const SgXIns* i, int out, s
     const SnxU64 mhi = nb >= 16 ? ~0ull : nb > 8 ? (1ull << (8 * (nb - 8))) - 1 : 0;
     size_t to_call[2], to_restore[4];
     int s[3], kept[3] = {0, 0, 0}, ns = 0, ncall = 0, nrestore = 0, k;
-    unsigned avoid = 1u << out | a->xreserved;
+    unsigned avoid = 1u << out;
 #define SPLAT(v) ((v) & wide) | (dbl ? 0 : ((v) & wide) << 32), ((v) & wide) | (dbl ? 0 : ((v) & wide) << 32)
     if (nb == 0 || nb > 16 || (bytes != 4 && bytes != 8)) sg_fail("a warm path of these lanes", bytes, lanes);
     for (k = 1; k <= 6; ++k)
         if ((k <= 3 || (k == 6 && i->in[6])) && a->x->v[i->in[k]].reg >= 0) avoid |= 1u << a->x->v[i->in[k]].reg;
-    /* three XMM registers: the ones no value holds here first, then others, kept in the frame around the tests */
+    /* three XMM registers: the ones no value, pin or callee holds here first, then any other (Windows' callee-saved
+       among them), kept in the frame around the tests */
     for (k = 0; k < SGX_NXREG && ns < 3; ++k) {
         int o = a->xowner[k];
-        if (!(avoid >> k & 1) && (o == 0 || (o > 0 && a->x->v[o].last < at))) s[ns++] = k, avoid |= 1u << k;
+        if (!((avoid | a->xreserved) >> k & 1) && (o == 0 || (o > 0 && a->x->v[o].last < at)))
+            s[ns++] = k, avoid |= 1u << k;
     }
     for (k = 0; k < SGX_NXREG && ns < 3; ++k)
         if (!(avoid >> k & 1)) kept[ns] = 1, s[ns++] = k, avoid |= 1u << k;
