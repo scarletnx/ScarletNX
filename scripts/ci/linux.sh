@@ -25,8 +25,7 @@ build_tools() {
   get-debloated-pkgs mesa-nano opus-mini icu-mini
 }
 
-# A release leaves out scarletnx --mcp's A64 disassembler (SNX_A64_DISASM), which is for working on the runtime,
-# and the test programs, which the AppImage does not carry (half of this build's time). Each build
+# A release leaves out the test programs, which the AppImage does not carry (half of this build's time). Each build
 # step's compiler cache counts are its own: zeroed before, shown after. x86-64's nightlies and releases link with
 # ThinLTO (cmake/lto.cmake), and its test tree, which is this folder, then tests that build; a pull request's do not
 # env: ARCH LTO
@@ -34,7 +33,7 @@ release() {
   git config --global --add safe.directory '*'
   ccache --zero-stats
   cmake --preset default -DSNX_DEPLOY=OFF -DCMAKE_INSTALL_PREFIX=/usr \
-    -DLLVM_DIR="$PWD/.cache/llvm/${ARCH}/lib/cmake/llvm" -DSNX_A64_DISASM=OFF -DBUILD_TESTING=OFF \
+    -DLLVM_DIR="$PWD/.cache/llvm/${ARCH}/lib/cmake/llvm" -DBUILD_TESTING=OFF \
     -DSNX_LTO=${LTO} \
     -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
   cmake --build --preset default --parallel "$(getconf _NPROCESSORS_ONLN)"
@@ -73,10 +72,9 @@ EOF
 }
 
 # The test options on the AppImage's tree, its tests on, and the headless tree, whose options change what every
-# target builds, in a folder of its own with this job's LLVM. The A64 disassembler, which the AppImage leaves out,
-# is back in AArch64's test tree; on x86-64 linux-sanitizers' tree has it. x86-64's has the other machines' back
-# ends under Unicorn too, whose tests linux-unicorn runs. Built on every event, tested where SNX_TESTS
-# env: A64_DISASM ARCH UNICORN
+# target builds, in a folder of its own with this job's LLVM. x86-64's has the other machines' back ends under
+# Unicorn too, whose tests linux-unicorn runs. Built on every event, tested where SNX_TESTS
+# env: ARCH UNICORN
 test_trees() {
   ccache --zero-stats
   options=()
@@ -85,13 +83,12 @@ test_trees() {
     options=(-DSNX_UNICORN_INCLUDE_DIR="$wheel/include" -DSNX_UNICORN_LIBRARY="$wheel/lib/libunicorn.so.2")
   fi
   cmake build/default ${SNX_TEST_OPTIONS} -DBUILD_TESTING=ON \
-    -DSNX_A64_DISASM=${A64_DISASM} \
     -DPython3_EXECUTABLE="$PWD/.cache/unicorn/bin/python" "${options[@]}"
   cmake --build build/default --parallel "$(getconf _NPROCESSORS_ONLN)"
   ccache --show-stats
   ccache --zero-stats
   cmake --preset default -B build/headless ${SNX_HEADLESS_OPTIONS} -DBUILD_TESTING=ON \
-    -DLLVM_DIR="$PWD/.cache/llvm/${ARCH}/lib/cmake/llvm" -DSNX_A64_DISASM=OFF \
+    -DLLVM_DIR="$PWD/.cache/llvm/${ARCH}/lib/cmake/llvm" \
     -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
   cmake --build build/headless --parallel "$(getconf _NPROCESSORS_ONLN)"
   ccache --show-stats
@@ -228,7 +225,7 @@ unicorn_tree() {
   ccache --zero-stats
   wheel=$(.cache/unicorn/bin/python -c 'import os, unicorn; print(os.path.dirname(os.path.abspath(unicorn.__file__)))')
   cmake --preset default -B build/unicorn ${SNX_TEST_OPTIONS} -DBUILD_TESTING=ON -DSNX_DEPLOY=OFF \
-    -DSNX_A64_DISASM=OFF -DPython3_EXECUTABLE="$PWD/.cache/unicorn/bin/python" \
+    -DPython3_EXECUTABLE="$PWD/.cache/unicorn/bin/python" \
     -DSNX_UNICORN_INCLUDE_DIR="$wheel/include" -DSNX_UNICORN_LIBRARY="$wheel/lib/libunicorn.so.2" \
     -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
   cmake --build build/unicorn --parallel "$(getconf _NPROCESSORS_ONLN)"

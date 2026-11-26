@@ -206,6 +206,15 @@ function(snx_test_target target dialect)
     snx_test_sanitize(${target})
 endfunction()
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/recompiler_core.cmake") # the recompiler's core, which has no LLVM
+# scarletnx --mcp's A64 listing through the A64 decoder (src/nx/runtime/driver/disasm.c), in a program that links no
+# LLVM, in every build, SNX_WITH_LLVM=OFF's too
+add_executable(snx-test-disasm-a64 disasm_a64.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/driver/disasm.c")
+snx_test_target(snx-test-disasm-a64 c23)
+target_link_libraries(snx-test-disasm-a64 PRIVATE scarletnx-common)
+add_test(NAME disasm_a64 COMMAND snx-test-disasm-a64)
+# the options the build had, said when given (cmake/removed_options.cmake)
+add_test(NAME removed_options COMMAND "${CMAKE_COMMAND}" "-DSCRIPT=${PROJECT_SOURCE_DIR}/cmake/removed_options.cmake"
+         -P "${PROJECT_SOURCE_DIR}/tests/removed_options_test.cmake")
 
 if(TARGET snx_ctr_board)
     add_executable(snx-test-3ds-board 3ds_board.c)

@@ -3,9 +3,6 @@
 # LLVM's C API is required by the recompiler on every platform. SNX_LLVM_CONFIG selects an llvm-config that runs
 # on the build machine and describes the LLVM development files for the target, including when cross-compiling.
 include("${CMAKE_CURRENT_LIST_DIR}/llvm_components.cmake")
-# scarletnx --mcp's A64 disassembler (src/nx/runtime/driver/disasm.c), where LLVM has the AArch64 target. A release
-# leaves it out: it is for working on the runtime, and a static LLVM then links no AArch64 code into a host of another
-option(SNX_A64_DISASM "Build scarletnx --mcp's A64 disassembler, where LLVM has the AArch64 target" ON)
 # a folder of the sysroot as the program sees it on the target: a cross build's LLVM folder is under CMAKE_SYSROOT,
 # which a run path leaves out (src/3ds, src/vita)
 function(snx_target_path output path)
@@ -31,19 +28,10 @@ if(ANDROID OR IOS OR (LLVM_DIR AND NOT SNX_LLVM_CONFIG))
         # llvm-config route links a distribution's
         set(SNX_LLVM_LIBS LLVM)
         set(SNX_LLVM_ALL_TARGETS_LIBS "")
-        set(SNX_LLVM_DISASM_LIBS "")
-        set(SNX_LLVM_A64_DISASM ${SNX_A64_DISASM})
-        if(NOT "AArch64" IN_LIST LLVM_TARGETS_TO_BUILD)
-            set(SNX_LLVM_A64_DISASM OFF)
-        endif()
         set(SNX_LLVM_SHARED ON)
     else()
         llvm_map_components_to_libnames(SNX_LLVM_LIBS ${SNX_LLVM_COMPONENTS})
         llvm_map_components_to_libnames(SNX_LLVM_ALL_TARGETS_LIBS ${LLVM_TARGETS_TO_BUILD})
-        if(SNX_A64_DISASM AND "AArch64" IN_LIST LLVM_TARGETS_TO_BUILD AND TARGET LLVMAArch64Disassembler)
-            llvm_map_components_to_libnames(SNX_LLVM_DISASM_LIBS aarch64disassembler aarch64desc aarch64info)
-            set(SNX_LLVM_A64_DISASM ON)
-        endif()
         set(SNX_LLVM_SHARED OFF) # their libraries, each static
     endif()
     set(SNX_LLVM_VERSION "${LLVM_PACKAGE_VERSION}")
@@ -129,18 +117,9 @@ function(snx_llvm_windows_libraries output)
     endforeach()
     set(${output} "${libraries}" PARENT_SCOPE)
 endfunction()
-snx_llvm_query(snx_llvm_targets --targets-built)
-if(SNX_A64_DISASM AND snx_llvm_targets MATCHES "(^| )AArch64( |$)")
-    snx_llvm_query(SNX_LLVM_DISASM_LIBS --libs aarch64disassembler aarch64desc aarch64info)
-    separate_arguments(SNX_LLVM_DISASM_LIBS UNIX_COMMAND "${SNX_LLVM_DISASM_LIBS}")
-    set(SNX_LLVM_A64_DISASM ON)
-endif()
 if(WIN32)
     snx_llvm_windows_libraries(SNX_LLVM_LIBS ${SNX_LLVM_LIBS})
     snx_llvm_windows_libraries(SNX_LLVM_ALL_TARGETS_LIBS ${SNX_LLVM_ALL_TARGETS_LIBS})
-    if(SNX_LLVM_A64_DISASM)
-        snx_llvm_windows_libraries(SNX_LLVM_DISASM_LIBS ${SNX_LLVM_DISASM_LIBS})
-    endif()
 endif()
 list(APPEND SNX_LLVM_ALL_TARGETS_LIBS ${snx_llvm_all_targets_system}) # after WIN32's import libraries: -lz stays -lz
 message(STATUS "LLVM backend: LLVM ${SNX_LLVM_VERSION} (${SNX_LLVM_CONFIG})")
