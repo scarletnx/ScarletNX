@@ -1047,7 +1047,9 @@ local wireless (nwm::UDS) open or a friends login on its way, which a state can'
 done, and while the GPU holds immediate-mode vertices it hasn't drawn. The threads run by the host's clock, so
 `3ds_state` (`tests/3ds_state.c`) checks that what follows a save (the DSP's frames, a file's bytes, a folder's next
 entry, the objects' answers, the registers, the memory, the tick count) follows a load the same, word for word, in the
-process and in a fresh one, and that a save right after a load holds what the first held.
+process and in a fresh one, and that a save right after a load holds what the first held; `3ds_state_gpu`
+(`tests/3ds_state_gpu.c`, each path the device takes to the RAM) that a save holds the transfer engine's work it didn't
+wait for, and that after a load the GPU reads what the load wrote, not what it kept of its own writes.
 
 ## Experimental local wireless over rooms
 
