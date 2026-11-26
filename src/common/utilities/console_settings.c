@@ -113,7 +113,7 @@ const SnxConsoleSetting g_console_settings[] = {
     {"astc_compute_queue", OTHERS(NA(SWITCH_GPU))},
     {"astc_quick_mtexels", OTHERS(NA(SWITCH_GPU))},
     {"astc_background", OTHERS(NA(SWITCH_GPU))},
-    {"vk_<extension>"},
+    {.key = "vk_<extension>"},
     /* Audio */
     {.key = "volume"},
     /* Performance */
@@ -143,8 +143,8 @@ const SnxConsoleSetting g_console_settings[] = {
     {.key = "controls_rel_center"},
     {.key = "controls_dpad_slide"},
     {.key = "controls_haptics"},
-    {"controls_<ID>_shown"},
-    {"controls_<ID>"},
+    {.key = "controls_<ID>_shown"},
+    {.key = "controls_<ID>"},
     {.key = "touch"},
     /* Controllers */
     {.key = "gamepad_swap_ab"},
