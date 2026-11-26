@@ -472,14 +472,44 @@ jobs:
       - *fail-fast-file
       - *fail-fast-mark
 
+  # Whether a pull request changes what the A64 differential tests (scripts/recompiler-changes.py): qemu-reference and
+  # appimage-cross's run of its recording go where it does; a run by hand and a version's tag run them whatever changed
+  recompiler-changes:
+    name: Recompiler changes
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    outputs:
+      differential: ${{ steps.changed.outputs.differential }}
+      why: ${{ steps.changed.outputs.why }}
+    steps:
+      # the pull request's merge commit and the base it is diffed against
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+      - name: Look for what the A64 differential tests
+        id: changed
+        shell: bash
+        run: |
+          changed=$(git diff --name-only HEAD^1 HEAD)
+          python3 scripts/recompiler-changes.py <<<"$changed" | tee -a "$GITHUB_OUTPUT"
+          echo "A64 differential: $(sed -n 's/^why=//p' "$GITHUB_OUTPUT")" >> "$GITHUB_STEP_SUMMARY"
+      - *fail-fast-file
+      - *fail-fast-mark
+
   # The QEMU side of the A64 differential, recorded once for the cross jobs, which can't run qemu-aarch64 beside
-  # their own qemu-user
+  # their own qemu-user. A pull request records it where it changes what the differential tests; a skip is named
+  # with recompiler-changes' reason
   qemu-reference:
-    name: A64 differential's QEMU reference
-    # where SNX_TESTS, which a job's if cannot read
+    name: >-
+      ${{ needs.recompiler-changes.outputs.differential == 'false'
+      && format('A64 differential''s QEMU reference: skipped, {0}', needs.recompiler-changes.outputs.why)
+      || 'A64 differential''s QEMU reference' }}
+    needs: recompiler-changes
+    # where SNX_TESTS, which a job's if cannot read, and on a pull request where it changes what the differential tests
     if: >-
-      github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' ||
-      startsWith(github.ref, 'refs/tags/')
+      !cancelled() && (github.event_name == 'pull_request' && needs.recompiler-changes.outputs.differential == 'true' ||
+      github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/'))
     runs-on: ubuntu-26.04
     timeout-minutes: 60
     container: archlinux:latest
@@ -522,7 +552,7 @@ jobs:
   # through qemu, the A64 differential against qemu-reference's recording, and the AppImage run as installed
   appimage-cross:
     name: Linux AppImage (${{ matrix.arch }})
-    needs: qemu-reference
+    needs: [recompiler-changes, qemu-reference]
     if: >-
       ${{ !cancelled() && (needs.qemu-reference.result == 'success' || needs.qemu-reference.result == 'skipped') }}
     runs-on: ubuntu-26.04
@@ -648,6 +678,13 @@ jobs:
           ARCH: ${{ matrix.arch }}
           QEMU: ${{ matrix.qemu }}
         run: scripts/ci/cross.sh differential
+      - name: Say why the A64 differential is not run
+        if: env.SNX_TESTS == 'true' && needs.qemu-reference.result == 'skipped'
+        env:
+          WHY: ${{ needs.recompiler-changes.outputs.why }}
+        run: |
+          echo "The A64 differential is not run on this pull request: ${WHY:-qemu-reference did not run}" |
+            tee -a "$GITHUB_STEP_SUMMARY"
       - name: Run the launcher's tests through qemu
         if: env.SNX_TESTS == 'true'
         env:
