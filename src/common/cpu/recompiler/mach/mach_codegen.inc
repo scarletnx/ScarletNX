@@ -1755,7 +1755,7 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
         mg_undef(u, address, word);
         after_call(u);
         leave(u);
-        return 2;
+        return 1;
     case SNX_A64_FLOW_PLAIN:
         if (insn.op == SNX_A64_OP_SYS) {
             int k = sys(u, word);
@@ -1803,7 +1803,7 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
             flush(u);
             after_call(u);
             leave(u);
-            return 2;
+            return 1;
         }
         break;
     case SNX_A64_FLOW_B:
@@ -1995,7 +1995,7 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
         flush(u);
         call_target(u, next, 1);
     }
-    return terminal ? 2 : 1; /* 2: the instruction ended the function, no fall-through's leave to make */
+    return 1;
 }
 
 /* ---- liveness: which guest registers and flags an instruction reads and writes ----
@@ -2680,7 +2680,6 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
     if (f->count && snx_function_address(f, 0) != f->start) jmp(u, (int)index_of(f, f->start));
     {
         volatile size_t vi = 0;
-        int ended = 0;
         if (setjmp(jb)) {
             ok = 0;
             goto out;
@@ -2688,7 +2687,6 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
         for (; vi < f->count; ++vi) {
             SnxU64 address = snx_function_address(f, vi);
             SnxU32 word = 0;
-            int made;
             if (f->leaders[vi]) {
                 flush_to(u, address);
                 bind(u, lab0 + (int)vi);
@@ -2697,18 +2695,19 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
             u->at = vi;
             u->g->x.src = (int)vi;
             if (u->pinned) u->cur_dirty = u->dsync[vi], u->vcur_dirty = u->vdsync[vi];
-            made = instruction(u, vi, address, word);
-            if (!made) {
+            if (!instruction(u, vi, address, word)) {
                 ok = 0;
                 goto out;
             }
-            ended = made == 2;
         }
         u->g->x.src = -1; /* what follows is no word's */
-        if (!ended) { /* an instruction that left the function made its own return: no fall-through's leave */
+        /* every word made: a failure from here on is of the function's finish, a jump's reach (MG_FAR_JUMPS) */
+        u->at = f->count;
+        /* the last word left the function (a return, a branch, the tail call off its end): only a function of no
+           word returns here */
+        if (!f->count) {
             flush(u);
-            u->at = f->count;
-            leave(u); /* off the end */
+            leave(u);
         }
     }
 #ifdef MG_DIRECT_ENTRY
