@@ -69,6 +69,7 @@ def main():
             '--slp-vectorizer=0',
             '--perf-map=0',
             '--gdb-jit=0',
+            '--stats=0',
             '--help',
         ],
         0,

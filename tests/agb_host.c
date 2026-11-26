@@ -15,6 +15,7 @@
 #include "common/utilities/vpad_consoles.h"
 #include "common/utilities/hotkeys.h"
 #include "common/utilities/quit_key.h"
+#include "common/utilities/stats.h"
 #include "common/utilities/vpad_sdl.h"
 #include "support/sdl_real_pads.h"
 #include "support/vpad_window.h"
@@ -411,6 +412,28 @@ int main(void) {
         }
         char* back[] = {"scarletnx-agb", "--fps-limit=game", NULL};
         vpad_settings(dir, "a game", 2, back);
+    }
+    /* the stats from the Switch's rows: on, in the corner stats_corner names through its own set function, whose
+       message says a word that is no corner and the one it keeps */
+    {
+        char* on[] = {"scarletnx-agb", "--stats=1", "--stats-corner=br", NULL};
+        vpad_settings(dir, "a game", 3, on);
+        const int safe[4] = {0, 0, 1000, 1000};
+        float box[4];
+        stats_box(safe, 1, box);
+        CHECK(g_settings.stats == 1 && box[0] > 500 && box[1] > 500);
+        char* bad[] = {"scarletnx-agb", "--stats-corner=xx", NULL};
+        snx_error_sink(said);
+        vpad_settings(dir, "a game", 2, bad);
+        snx_error_sink(NULL);
+        if (strcmp(g_said, "settings: stats_corner=xx is not tl, tr, bl or br: it keeps br")) {
+            fprintf(stderr, "agb_host: --stats-corner=xx was not refused keeping br (%s)\n", g_said);
+            return 1;
+        }
+        char* off[] = {"scarletnx-agb", "--stats=0", "--stats-corner=tl", NULL};
+        vpad_settings(dir, "a game", 3, off);
+        stats_box(safe, 1, box);
+        CHECK(g_settings.stats == 0 && box[0] < 500 && box[1] < 500);
     }
     /* F12 and F6: the stats and the showcase over the game, on and off for the run, said as a Switch game's; the
        showcase draws what the game gets, the keyboard's A (Space) here, and both leave nothing drawn once off */

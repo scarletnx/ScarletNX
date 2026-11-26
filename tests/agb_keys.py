@@ -104,6 +104,7 @@ def main():
             '--slp-vectorizer=0',
             '--perf-map=0',
             '--gdb-jit=0',
+            '--stats-corner=br',
         ):
             keys(args.runner, work, option)
         for option, said in (
