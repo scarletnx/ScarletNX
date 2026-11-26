@@ -374,6 +374,7 @@ static u32 root_var(Ctx* c, u32 end) {
    past those of the tables before it, and an index stays in the tables */
 static u32 push_component(Ctx* c, u32 k);
 static u32 cbuf_window(Ctx* c, u32 bank, u32 element);
+static u32 cbuf_sized(Ctx* c, u32 bank, u32 element, u32 value);
 static u32 builtin_u32(Ctx* c, u32* var, u32 builtin);
 static u32 cbuf_load(Ctx* c, u32 bank, u32 off, u32 index) {
     /* The draw's base instance, which the console's driver writes into bank 0 for a vertex program to add to its
@@ -406,8 +407,10 @@ static u32 cbuf_load(Ctx* c, u32 bank, u32 off, u32 index) {
         element = cu(c, (off >> 4) & (elements - 1));
         component = cu(c, (off >> 2) & 3);
     }
-    if (!root) element = cbuf_window(c, bank, element);
-    return spv_emit_uniform_component(&c->e, c->cbuf_ptr, var, c->zero, element, component, c->t_u32);
+    if (root) return spv_emit_uniform_component(&c->e, c->cbuf_ptr, var, c->zero, element, component, c->t_u32);
+    const u32 in_window = cbuf_window(c, bank, element);
+    return cbuf_sized(c, bank, element,
+                      spv_emit_uniform_component(&c->e, c->cbuf_ptr, var, c->zero, in_window, component, c->t_u32));
 }
 /* NAK's MemType U8 (0), I8 (1), U16 (2), I16 (3) at byte offset off of a bank, plus index when it isn't 0: a byte or
    a halfword of the word that holds it, zero or sign extended, as mem_load takes one from memory. LDC's, ULDC's and
@@ -719,6 +722,18 @@ static u32 cbuf_window(Ctx* c, u32 bank, u32 element) {
     if (bank & 1) packed = spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, packed, cu(c, 16));
     return spv_emit_iadd_u32(&c->e, c->t_u32, element,
                              spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, packed, cu(c, 0xFFFF)));
+}
+/* value, the word read at element of a windowed bank, or 0 where element is at the bank's guest size or past it
+   (ShCaps.cb_sizes): the window reads on into the ring's next bytes, and the console reads 0 past a bank's size */
+static u32 cbuf_sized(Ctx* c, u32 bank, u32 element, u32 value) {
+    if (!g_spirv_translate.cb_sizes || !cb_windowed(c) || bank >= 18 || bank >= g_spirv_translate.uniform_cbufs)
+        return value;
+    c->si->cb_sizes = 1;
+    u32 packed = to_u(c, draw_component(c, (c->stage == ST_VS ? SH_DRAW_CB_SIZES : SH_DRAW_CB_SIZES_FS) + bank / 2));
+    if (bank & 1) packed = spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, packed, cu(c, 16));
+    const u32 size = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, packed, cu(c, 0xFFFF));
+    const u32 inside = spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, element, size);
+    return spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, inside, value, c->zero);
 }
 /* The depth fix of spirv_translate.c's vertex_depth_fix: with the push constant's y not 0, z becomes (z + w) / 2,
    from the console's clip space depth of -w to w to Vulkan's of 0 to w */

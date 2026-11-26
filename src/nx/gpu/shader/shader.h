@@ -323,6 +323,8 @@ typedef struct {
     u32 spec;          /* the specialization constants the module declares: bit SH_SPEC_ of each */
     /* the program adds each bank's window offset from push constants to its constant buffer reads (cb_windows) */
     u32 cb_window;
+    /* and it reads 0 past each windowed bank's guest size, from its per-draw block (ShCaps.cb_sizes) */
+    u32 cb_sizes;
     /* the program reads its plain texture slots through the texture table (ShCaps.tex_table): slot i's word,
        view slot | sampler slot << SNX_TABLE_SAMPLER_SHIFT, is word i of its words (SNX_VKB_TEXWORDS) */
     u32 tex_table; /* with SH_TEX_TABLE_MAP: its plain slots' view and sampler slots come from the pool map */
@@ -552,6 +554,13 @@ enum { SH_MAP_CLASS_2D, SH_MAP_CLASS_2D_ARRAY, SH_MAP_CLASS_3D, SH_MAP_CLASS_CUB
 #define SH_DRAW_MAP_WORDS_VS    (SH_DRAW_MAP + 4u)
 #define SH_DRAW_MAP_WORDS_FS    (SH_DRAW_MAP + 6u)
 #define SH_DRAW_BYTES_MAP       ((SH_DRAW_MAP + 8u) * 4u)
+/* With cb_sizes: the per-draw block's words SH_DRAW_CB_SIZES on (after the map's), 9 words for the vertex stage and 9
+   for the fragment stage, two banks a word: bank b's guest size in 16-byte units (4096 for 64 KiB, and for a bank that
+   binds alone, whose descriptor's range ends it) in the 16 bits at (b & 1) * 16 of word b / 2. A read of an element at
+   that size or past it is 0, as the console's past a bank's size */
+#define SH_DRAW_CB_SIZES        (SH_DRAW_MAP + 8u)
+#define SH_DRAW_CB_SIZES_FS     (SH_DRAW_CB_SIZES + 9u)
+#define SH_DRAW_BYTES_SIZES     ((SH_DRAW_CB_SIZES + 18u) * 4u)
 #define SNX_TABLE_MAP           2u
 #define SH_MAP_WINDOW           (16u << 20) /* the bytes of the storage buffer the program declares */
 #define SNX_TABLE_IMAGES        65536u
@@ -594,6 +603,11 @@ typedef struct {
        each bank's offset into its window comes from push constants (SH_PUSH_CB_WINDOW), so a draw that writes new
        constants keeps its buffer set (vk/render.c stage_set_) */
     unsigned cb_windows : 1;
+    /* with cb_windows, an SM86 vertex or fragment program reads 0 past each windowed bank's guest size, which the
+       per-draw block gives (SH_DRAW_CB_SIZES): a bank that the guest binds shorter than the program can read takes a
+       window too, where its window holds the ring's next bytes past it. Descriptor buffers and heaps take it: they have
+       no dynamic uniform buffers for those banks, and each new offset was a new table */
+    unsigned cb_sizes : 1;
     /* with cb_windows, an SM86 vertex or fragment program's plain textures come from the texture table at set
        table_set, by the words the renderer gives each draw (SH_PUSH_TEX_WORDS), not from its stage's set */
     unsigned tex_table : 1;
