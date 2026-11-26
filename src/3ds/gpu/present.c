@@ -30,6 +30,7 @@
 #include "common/utilities/quit_key.h"
 #include "common/utilities/hotkeys.h"
 #include "common/utilities/vpad_sdl.h"
+#include "common/utilities/state_header.h"
 #include "common/platform/file.h"
 #include "common/utilities/window_icon.h"
 #include "snx_settings.h"
@@ -925,11 +926,14 @@ static bool read_frame(unsigned screen, VkBuffer target, unsigned char* map, uns
     *height = f->height;
     return true;
 }
-bool snx_ctr_present_shot(const char* path) {
-    if (!g_present.up || !path || !path[0]) return false;
+/* both screens' last frames, the top above the bottom on black, read back from the GPU into one RGBA picture, owned,
+   its size into w and h; NULL where none was decoded or memory runs out */
+static unsigned char* shot_canvas(unsigned* w, unsigned* h) {
+    *w = *h = 0;
+    if (!g_present.up) return NULL;
     write_pending(true);
     SnxCtrVk* v = snx_ctr_vk();
-    unsigned char* screens[2] = {NULL, NULL};
+    unsigned char *screens[2] = {NULL, NULL}, *canvas = NULL;
     unsigned width[2] = {0, 0}, height[2] = {0, 0};
     VkDeviceSize bytes = 0;
     for (unsigned screen = 0; screen < 2; ++screen) {
@@ -949,37 +953,50 @@ bool snx_ctr_present_shot(const char* path) {
     shot_buffer_free(v, &shot);
     unsigned layout_w = width[0] > width[1] ? width[0] : width[1];
     unsigned layout_h = height[0] + height[1];
-    if (ok && layout_w && layout_h) {
-        unsigned char* canvas = calloc((size_t)layout_w * layout_h, 4);
-        ok = canvas != NULL;
-        if (ok) {
-            unsigned y = 0;
-            for (unsigned screen = 0; screen < 2; ++screen) {
-                if (!screens[screen]) continue;
-                unsigned x = (layout_w - width[screen]) / 2;
-                for (unsigned row = 0; row < height[screen]; ++row)
-                    memcpy(canvas + ((size_t)(y + row) * layout_w + x) * 4,
-                           screens[screen] + (size_t)row * width[screen] * 4, (size_t)width[screen] * 4);
-                y += height[screen];
-            }
-            char staged[1040], native[1024];
-            if (snx_path_format(native, sizeof native, "%s", path) ||
-                snx_path_format(staged, sizeof staged, "%s.partial", native))
-                ok = false;
-            else {
-                FILE* file = fopen(staged, "wb");
-                ok = file && !snx_ppm_write(file, layout_w, layout_h, canvas, 4, (ptrdiff_t)layout_w * 4, SNX_PPM_RGBA);
-                if (file && fclose(file)) ok = false;
-                if (ok)
-                    ok = !plat_replace_file(staged, native);
-                else
-                    remove(staged);
-            }
-            free(canvas);
+    if (ok && layout_w && layout_h && (canvas = calloc((size_t)layout_w * layout_h, 4))) {
+        unsigned y = 0;
+        for (unsigned screen = 0; screen < 2; ++screen) {
+            if (!screens[screen]) continue;
+            unsigned x = (layout_w - width[screen]) / 2;
+            for (unsigned row = 0; row < height[screen]; ++row)
+                memcpy(canvas + ((size_t)(y + row) * layout_w + x) * 4,
+                       screens[screen] + (size_t)row * width[screen] * 4, (size_t)width[screen] * 4);
+            y += height[screen];
         }
+        *w = layout_w, *h = layout_h;
     }
     for (unsigned screen = 0; screen < 2; ++screen) free(screens[screen]);
-    return ok && layout_w && layout_h;
+    return canvas;
+}
+bool snx_ctr_present_shot(const char* path) {
+    if (!g_present.up || !path || !path[0]) return false;
+    unsigned layout_w, layout_h;
+    unsigned char* canvas = shot_canvas(&layout_w, &layout_h);
+    bool ok = canvas != NULL;
+    if (ok) {
+        char staged[1040], native[1024];
+        if (snx_path_format(native, sizeof native, "%s", path) ||
+            snx_path_format(staged, sizeof staged, "%s.partial", native))
+            ok = false;
+        else {
+            FILE* file = fopen(staged, "wb");
+            ok = file && !snx_ppm_write(file, layout_w, layout_h, canvas, 4, (ptrdiff_t)layout_w * 4, SNX_PPM_RGBA);
+            if (file && fclose(file)) ok = false;
+            if (ok)
+                ok = !plat_replace_file(staged, native);
+            else
+                remove(staged);
+        }
+    }
+    free(canvas);
+    return ok;
+}
+bool snx_ctr_present_thumb(uint8_t* thumb) {
+    unsigned w, h;
+    unsigned char* canvas = shot_canvas(&w, &h);
+    if (canvas) snx_state_thumb(canvas, (int)w, (int)h, (size_t)w * 4, thumb);
+    free(canvas);
+    return canvas != NULL;
 }
 void snx_ctr_present_report(void) {
     if (!g_present.up) return;

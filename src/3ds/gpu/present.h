@@ -72,6 +72,9 @@ bool snx_ctr_present_shot(const char* path);
 /* the game's folder (its captures/ for F3) and its .ini (the on-screen controls' and the runtime keys' settings): the
    window then takes the runtime's keys, as every console's (common/utilities/vpad_sdl.h). A windowless run keeps none */
 void snx_ctr_present_game(const char* folder, const char* ini);
+/* a save state's picture (common/utilities/state_header.h's SNX_STATE_THUMB_W x _H, RGBA) of both screens as --shot
+   lays them out, into thumb: false, thumb as it was, where no frame was decoded */
+bool snx_ctr_present_thumb(uint8_t* thumb);
 /* the runtime's keys taken in window (the game's, or a test's), ini as above: what snx_ctr_present_game opens */
 void snx_ctr_present_keys(struct SDL_Window* window, const char* ini);
 /* a save states' key pressed since the last call (HOTKEY_SAVE_STATE, _LOAD_STATE, _NEXT_SLOT), -1 for none */
