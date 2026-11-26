@@ -2377,8 +2377,8 @@ msgid "%s has no save states: F7 saves one while it plays, the menu's Save state
 msgstr "%s não tem save states: F7 salva um durante o jogo, e a página Save states do menu também."
 
 #: src/gui/main.c
-msgid "S lists the save states of a recompiled Switch game in focus."
-msgstr "S lista os save states de um jogo de Switch recompilado em foco."
+msgid "S lists the save states of a recompiled Switch, GBA or DS game in focus."
+msgstr "S lista os save states de um jogo de Switch, GBA ou DS recompilado em foco."
 
 #: src/gui/main.c
 msgid "Settings of its own are a recompiled Switch, 3DS, Vita, GBA or DS game's, in focus."
@@ -8022,6 +8022,9 @@ msgstr ""
 #: src/nx/runtime/settings.txt
 msgid "GBA"
 msgstr ""
+
+#~ msgid "S lists the save states of a recompiled Switch game in focus."
+#~ msgstr "S lista os save states de um jogo de Switch recompilado em foco."
 
 #~ msgid "Settings of its own are a recompiled Switch or 3DS game's, in focus."
 #~ msgstr "Configurações próprias são de um jogo de Switch ou 3DS recompilado, em foco."

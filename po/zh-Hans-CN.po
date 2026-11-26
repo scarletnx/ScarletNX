@@ -2377,8 +2377,8 @@ msgid "%s has no save states: F7 saves one while it plays, the menu's Save state
 msgstr "%s 没有即时存档：游戏运行时按 F7 可保存一个，菜单的「即时存档」页也可以。"
 
 #: src/gui/main.c
-msgid "S lists the save states of a recompiled Switch game in focus."
-msgstr "S 列出选中的已重编译 Switch 游戏的即时存档。"
+msgid "S lists the save states of a recompiled Switch, GBA or DS game in focus."
+msgstr ""
 
 #: src/gui/main.c
 msgid "Settings of its own are a recompiled Switch, 3DS, Vita, GBA or DS game's, in focus."
@@ -8022,6 +8022,9 @@ msgstr ""
 #: src/nx/runtime/settings.txt
 msgid "GBA"
 msgstr ""
+
+#~ msgid "S lists the save states of a recompiled Switch game in focus."
+#~ msgstr "S 列出选中的已重编译 Switch 游戏的即时存档。"
 
 #~ msgid "[%s] %s = %s is not a key of a theme"
 #~ msgstr "[%s] %s = %s 不是主题的键"

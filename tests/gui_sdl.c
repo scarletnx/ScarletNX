@@ -7141,6 +7141,32 @@ static void ctr_own_console(App* app, const char* dir) {
             }
             driver_will(NULL, 0, NULL);
             assert(gui_settings_set(&app->settings, "controls", "2") && gui_settings_set(&app->settings, "touch", "2"));
+            /* a GBA or DS game's save states: S lists them from its folder, as a Switch game's, and Enter plays it from
+               one through its driver, --state-load= naming the file */
+            if (consoles[c].item != GUI_VITA) {
+                char *dir = snx_path_join(made, "states"), *leaf = snx_format("%s.1.snxstate", consoles[c].name);
+                char *file = snx_path_join(dir, leaf), *option = snx_format("--state-load=0:%s", file);
+                uint8_t bytes[SNX_STATE_HEADER] = {0};
+                SnxStateHeader h = {.format = SNX_STATE_FORMAT, .abi = 1, .title_id = 0x1234, .created = 1000};
+                snx_state_header_write(bytes, &h, 0, 0);
+                assert(dir && !snx_mkdirs(dir) && file && !snx_write_file(file, bytes, sizeof bytes));
+                go_tab(app, GUI_TAB_GAMES);
+                list_games(app);
+                layout(app);
+                focus_game(app, consoles[c].name);
+                key(app, SDLK_S);
+                assert(app->states_shown && app->states_count == 1 && strstr(app->states[0].label, "Slot 1 ") &&
+                       !app->states[0].why[0]);
+                driver_will(argv_file, 0, "from a state");
+                key(app, SDLK_RETURN);
+                char* argv_got = ran(app, 0);
+                assert(!app->states_shown && has_arg(argv_got, option, NULL));
+                free(argv_got);
+                leave_run(app);
+                driver_will(NULL, 0, NULL);
+                assert(!remove(file));
+                free(option), free(file), free(leaf), free(dir);
+            }
             free(own);
             free(beside);
             made_gone(app, made);

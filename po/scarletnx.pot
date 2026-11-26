@@ -2374,7 +2374,7 @@ msgid "%s has no save states: F7 saves one while it plays, the menu's Save state
 msgstr ""
 
 #: src/gui/main.c
-msgid "S lists the save states of a recompiled Switch game in focus."
+msgid "S lists the save states of a recompiled Switch, GBA or DS game in focus."
 msgstr ""
 
 #: src/gui/main.c

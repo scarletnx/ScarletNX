@@ -701,6 +701,7 @@ typedef struct App {
     char* states_title;
     struct GuiState* states;
     size_t states_count;
+    int states_driver; /* the driver its game plays with: the Switch's, the GBA's or the DS's */
     SDL_Texture* states_texture;
     char*
         state_load; /* the --state-load= option launch adds to a Switch game's run, while Play from a state starts it */
@@ -6748,7 +6749,8 @@ static void options_pointer(App* app, float x, float y, bool click) {
 /* ---- the box of a game's save states (S on Games): a row each, the newest first, saying its slot, when it was saved
    and the game's play time then; the focused one's picture beside the box. Enter plays the game from it, through its
    program (the game's own or an update's) with --state-load=, and Del deletes it, asked first. A state this build
-   can't load is drawn in the failure colour, and Enter says why ---- */
+   can't load is drawn in the failure colour, and Enter says why. A GBA or DS game's are its folder's too, named after
+   its program, which its driver plays; one of another game or version its driver refuses, saying why ---- */
 typedef struct GuiState {
     char *path, *program; /* the state's file, and the program it plays in */
     char label[96];       /* its slot, date and play time */
@@ -6792,6 +6794,7 @@ static char* state_program(const char* folder, const char* program) {
 }
 /* the states of game (a game's program in its folder) listed, title what it is shown as: the box open, or a message
    saying there are none */
+static int program_driver(const char* program);
 static void states_open(App* app, const char* game, const char* title) {
     char *folder = snx_dirname(game), *dir = NULL, **names = NULL;
     const char* name;
@@ -6800,7 +6803,9 @@ static void states_open(App* app, const char* game, const char* title) {
     states_close(app);
     for (name = folder + strlen(folder); name > folder && name[-1] != '/' && name[-1] != '\\'; --name) continue;
     dir = snx_path_join(folder, "states");
-    if (snx_title_parse(name, &id) && !snx_list_dir(dir, &names, &count) && count)
+    app->states_driver = program_driver(game);
+    int console = app->states_driver == GUI_GBA || app->states_driver == GUI_NDS; /* no title ID, its driver judges */
+    if ((console || snx_title_parse(name, &id)) && !snx_list_dir(dir, &names, &count) && count)
         app->states = (GuiState*)calloc(count, sizeof *app->states);
     for (i = 0; app->states && i < count; ++i) {
         GuiState* g = &app->states[app->states_count];
@@ -6822,7 +6827,7 @@ static void states_open(App* app, const char* game, const char* title) {
             continue;
         }
         snx_state_stamp(g->program, stamp, sizeof stamp);
-        if (snx_state_fits(&h, id, stamp, g->why, sizeof g->why)) g->why[0] = (char)SDL_toupper(g->why[0]);
+        if (!console && snx_state_fits(&h, id, stamp, g->why, sizeof g->why)) g->why[0] = (char)SDL_toupper(g->why[0]);
         g->created = h.created;
         g->thumb = thumb;
         g->thumb_w = (int)h.thumb_w;
@@ -6854,23 +6859,23 @@ static void states_open(App* app, const char* game, const char* title) {
     app->states_focus = 0;
     app->states_shown = true;
 }
+/* a 3DS game, a Vita VPK, a GBA ROM or an Android app: a package its driver makes a game of, or runs as it is */
+static bool package(const char* name) {
+    return gui_is_cia(name) || gui_is_vpk(name) || gui_is_gba(name) || gui_is_nds(name) || gui_is_apk(name);
+}
 /* S on Games: the box of the focused game's save states; else why not */
 static void states_focus(App* app) {
     size_t row = app->browser.selected, head = app->browser.head;
     size_t index = app->browser.page * app->browser.page_size + row - head;
     bool recent = row < head && (int)row < recent_shown(app), game = row >= head && index < app->games.count;
     const GuiRecentGame* r = recent ? &app->recent.game[recent_index(app, (int)row)] : NULL;
-    if (r && r->driver == GUI_SWITCH && r->prepared)
+    if (r && (r->driver == GUI_SWITCH || r->driver == GUI_GBA || r->driver == GUI_NDS) && r->prepared)
         states_open(app, r->path, r->name);
-    else if (game && !gui_is_cia(app->games.names[index]) && !gui_is_dump(app->games.names[index]))
+    else if (game && !package(app->games.names[index]) && !gui_is_dump(app->games.names[index]))
         states_open(app, app->games.paths[index], app->games.shown[index]);
     else
         snprintf(app->message, sizeof app->message, "%s",
-                 snx_tr("S lists the save states of a recompiled Switch game in focus."));
-}
-/* a 3DS game, a Vita VPK, a GBA ROM or an Android app: a package its driver makes a game of, or runs as it is */
-static bool package(const char* name) {
-    return gui_is_cia(name) || gui_is_vpk(name) || gui_is_gba(name) || gui_is_nds(name) || gui_is_apk(name);
+                 snx_tr("S lists the save states of a recompiled Switch, GBA or DS game in focus."));
 }
 /* a console but the Switch, whose made games have settings of their own (own_game) and no box of mods */
 static bool own_driver(int driver) {
@@ -6973,7 +6978,7 @@ static void state_play(App* app, int row) {
         char* program = snx_absolute(g->program);
         states_close(app);
         app->recompile = false;
-        app->menu.selected = GUI_SWITCH;
+        app->menu.selected = app->states_driver;
         launch(app, program, true);
     }
     free(app->state_load);
@@ -21092,7 +21097,9 @@ static void launch(App* app, char* absolute, bool prepared) {
     }
     free(game_ini);
     /* Play from a save state: the runtime loads it before the game's first frame */
-    if (app->menu.selected == GUI_SWITCH && !make && app->state_load) argv[n++] = app->state_load;
+    if ((app->menu.selected == GUI_SWITCH || app->menu.selected == GUI_GBA || app->menu.selected == GUI_NDS) && !make &&
+        app->state_load)
+        argv[n++] = app->state_load;
     /* Extract dump, which both drivers take, for a run and for R's recompile: off, nothing is extracted */
     if ((app->menu.selected == GUI_3DS || (app->menu.selected == GUI_SWITCH && make)) && gui_settings_extract(s))
         argv[n++] = gui_settings_extract(s);
