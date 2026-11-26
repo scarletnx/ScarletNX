@@ -116,6 +116,15 @@ void snx_pad_map_setting(SnxPadMap* own, const char* text, const unsigned bits[S
                     button, console, button);
         }
 }
+void snx_pad_map_console(SnxPadMap* map, unsigned (*button)(int bit), const char* console, const char* text,
+                         int swap_ab) {
+    unsigned bits[SNX_PAD_BUTTONS];
+    SnxPadMap own;
+    for (int b = 0; b < SNX_PAD_BUTTONS; ++b) bits[b] = button(b);
+    snx_pad_map_unset(&own);
+    if (text && text[0]) snx_pad_map_setting(&own, text, bits, console);
+    snx_pad_map_sent(map, &own, swap_ab);
+}
 int snx_pad_dead_zone(double* x, double* y, double zone, double rim) {
     double r = sqrt(*x * *x + *y * *y);
     if (r <= zone) {

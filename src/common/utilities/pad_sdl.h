@@ -34,6 +34,9 @@ void snx_pads_event(SDL_Gamepad** pads, int count, const SDL_Event* event, void 
 void snx_pads_close(SDL_Gamepad** pads, int count);
 /* a stick's axis, -1 to 1 */
 float snx_pad_axis(SDL_Gamepad* g, SDL_GamepadAxis which);
+/* a gamepad's input reaching the game while its window has no focus, on (the setting gamepad_background) or not:
+   before SDL's gamepad subsystem starts, and again when the setting changes */
+void snx_pad_background(int on);
 /* The console buttons (a bit for each of pad_map.h's) that the window's keys hold, as a Switch game's keyboard has
    them: X A, Z B, C X, V Y, Q L, E R, 1 ZL, 3 ZR, Enter Plus (not with Alt, which is the window's fullscreen),
    Backspace Minus and the arrows the D-pad. held is SDL_GetKeyboardState's */

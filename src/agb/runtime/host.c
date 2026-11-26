@@ -66,8 +66,7 @@ uint16_t agb_host_key(int scancode) {
     }
 }
 
-static unsigned agb_key(int bit) { return agb_host_button(bit); }
-uint16_t agb_host_button(int bit) {
+unsigned agb_host_button(int bit) {
     switch (bit) {
         case 0: return AGB_KEY_A;
         case 1: return AGB_KEY_B;
@@ -143,6 +142,7 @@ AgbHost* agb_host_open(const char* title, const char* ini, bool fullscreen, char
     }
     snx_sdl_desktop_hints();
     snx_vpad_sdl_hints();
+    snx_pad_background(g_settings.background_input);
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         snprintf(error, error_size, "cannot start SDL's video: %s", SDL_GetError());
         free(host);
@@ -181,7 +181,8 @@ AgbHost* agb_host_open(const char* title, const char* ini, bool fullscreen, char
     }
     char why[256];
     if (!snx_window_fullscreen(host->window, fullscreen, why, sizeof why)) fprintf(stderr, "scarletnx-agb: %s\n", why);
-    snx_pad_map_position(&host->pad); /* A where the console has it, east */
+    /* A where the console has it, east, the player's map over it and A and B swapped as the Switch's settings say */
+    snx_pad_map_console(&host->pad, agb_host_button, "GBA", g_settings.button_map, g_settings.swap_a_b);
     g_host.open = host;
     host->state_ask = -1;
     {
@@ -250,7 +251,7 @@ bool agb_host_poll(AgbHost* host, uint16_t* keys) {
     for (int bit = 0; bit < SNX_PAD_BUTTONS; ++bit)
         if (pressed >> bit & 1) *keys |= agb_host_button(bit);
     if (vpad_editing()) *keys = 0;
-    snx_vpad_window_showcase(*keys, agb_key, NULL);
+    snx_vpad_window_showcase(*keys, agb_host_button, NULL);
     return open;
 }
 

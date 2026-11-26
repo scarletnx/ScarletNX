@@ -245,6 +245,47 @@ static int controls(AgbHost* host, SDL_Window* window, const char* dir, const ch
     return 0;
 }
 
+/* a gamepad's south button as the window that opens takes it: B where the console has it, A with A and B swapped
+   (gamepad_swap_ab), what gamepad_map names over that; and its input while the window has no focus as
+   gamepad_background says */
+static int gamepad_settings(const char* ini) {
+    char error[256] = {0};
+    static const struct {
+        int swap, background;
+        const char* map;
+        uint16_t south;
+    } cases[] = {{0, 0, "", AGB_KEY_B}, {1, 1, "", AGB_KEY_A}, {0, 0, "south:L", AGB_KEY_L}, {1, 0, "south:X", 0}};
+    for (size_t i = 0; i < sizeof cases / sizeof *cases; ++i) {
+        SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "dummy"); /* SDL_Quit, as a host closes, drops the hints */
+        SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "dummy");
+        g_settings.swap_a_b = cases[i].swap;
+        g_settings.background_input = cases[i].background;
+        snprintf(g_settings.button_map, sizeof g_settings.button_map, "%s", cases[i].map);
+        AgbHost* host = agb_host_open("agb_host", ini, false, error, sizeof error);
+        CHECK(host);
+        CHECK(SDL_GetHintBoolean(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, false) == (cases[i].background != 0));
+        SDL_JoystickID id = vpad_test_gamepad();
+        SDL_Joystick* joystick = id ? SDL_OpenJoystick(id) : NULL;
+        CHECK(joystick);
+        SDL_UpdateJoysticks();
+        (void)keys(host); /* the gamepad's added event: the window opens it */
+        CHECK(SDL_SetJoystickVirtualButton(joystick, SDL_GAMEPAD_BUTTON_SOUTH, true));
+        SDL_UpdateJoysticks();
+        uint16_t held = keys(host);
+        if (held != cases[i].south) {
+            fprintf(stderr, "agb_host: swap_ab=%d gamepad_map=\"%s\": south sends 0x%X, not 0x%X\n", cases[i].swap,
+                    cases[i].map, held, cases[i].south);
+            return 1;
+        }
+        SDL_CloseJoystick(joystick);
+        CHECK(SDL_DetachVirtualJoystick(id));
+        agb_host_close(host);
+    }
+    g_settings.swap_a_b = g_settings.background_input = 0;
+    g_settings.button_map[0] = 0;
+    return 0;
+}
+
 int main(void) {
     char error[256] = {0};
     AgbHost* host;
@@ -479,6 +520,7 @@ int main(void) {
         failed = 1;
     }
     agb_host_close(host);
+    failed |= gamepad_settings(ini);
     if (snx_remove_tree(dir)) fprintf(stderr, "agb_host: %s could not be removed\n", dir);
     free(ini);
     free(dir);

@@ -23,6 +23,7 @@
 #define NO_NETWORK    "it has no network"
 #define NO_MIC        "it has no microphone"
 #define NO_MOTOR      "it has no vibration motor"
+#define NO_STICK      "it has no stick: a stick presses its D-pad past half its way"
 #define NO_LANGUAGE   "it has no system language"
 #define NO_UPDATES    "a cartridge has no updates or DLCs"
 #define SWITCH_NET    "it is the Switch's online service: the console's own is in its section"
@@ -141,15 +142,15 @@ const SnxConsoleSetting g_console_settings[] = {
     {"controls_<ID>", {[C] = LATER(SOON_CONTROLS)}},
     {"touch"},
     /* Controllers */
-    {"gamepad_swap_ab", {[G] = LATER(SOON), [D] = LATER(SOON)}},
-    {"gamepad_deadzone", {[G] = LATER(SOON), [D] = LATER(SOON)}},
+    {"gamepad_swap_ab"},
+    {"gamepad_deadzone", {[G] = NA(NO_STICK), [D] = NA(NO_STICK)}},
     {"gamepad_rumble", {[C] = NA(NO_MOTOR), [V] = NA(NO_MOTOR), [G] = LATER(SOON), [D] = LATER(SOON)}},
-    {"gamepad_background", OTHERS(LATER(SOON))},
+    {"gamepad_background"},
     {"gamepad_joycon_pair", OTHERS(NA(SWITCH_PADS))},
     {"gamepad_assign", OTHERS(NA(PLAYERS))},
     {"controller_applet", OTHERS(NA(SWITCH_PADS))},
     {"game_mouse", OTHERS(NA(SWITCH_PADS))},
-    {"gamepad_map", {[G] = LATER(SOON), [D] = LATER(SOON)}},
+    {"gamepad_map"},
     {"gamepad_p<N>_device", OTHERS(NA(PLAYERS))},
     {"gamepad_p<N>_connected", OTHERS(NA(PLAYERS))},
     {"gamepad_p<N>_type", OTHERS(NA(PLAYERS))},
