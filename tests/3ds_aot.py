@@ -273,14 +273,12 @@ class Descriptor(C.Structure):
 
 
 def native_blocks(text):
-    """the line of a recompile's end that says who made its blocks (cpu/arm/aot.c's snx_arm_aot_report): the native back
-    end's name, how many it made and of how many; None where the host has no native back end"""
-    line = re.search(r'^(\S+) back end: (\d+) of (\d+) blocks(, LLVM the rest)?$', text, re.M)
-    if not line:
-        assert re.search(r'^LLVM: \d+ blocks \(no native back end on this host\)$', text, re.M), text
-        return None
+    """the line of a recompile's end that says how many blocks the native back end made (cpu/arm/aot.c's
+    snx_arm_aot_report): its name, how many it made and of how many, all of them"""
+    line = re.search(r'^(\S+) back end: (\d+) of (\d+) blocks$', text, re.M)
+    assert line, text
     made, of = int(line[2]), int(line[3])
-    assert (made < of) == bool(line[4]) == bool(re.search(r'made by LLVM, the first the ', text)), text
+    assert made == of, text
     return line[1], made, of
 
 
@@ -536,13 +534,14 @@ def main():
         default, _ = recompile('-q')
         level, _ = recompile('--opt', '2', '-q')
         assert module_of(default).read_bytes() == module_of(level).read_bytes()
-        kept, _ = recompile('-q', '--keep-ir')
+        # the native back end's module, whatever the level and --keep-ir, which it says it keeps nothing of
+        kept, text = recompile('--keep-ir')
+        assert '--keep-ir: the native back end keeps no IR' in text, text
         unoptimized, _ = recompile('-q', '--keep-ir', '-O0')
-        assert module_of(kept).read_bytes() != module_of(unoptimized).read_bytes()
+        assert module_of(kept).read_bytes() == module_of(unoptimized).read_bytes()
         _, text = recompile('--chunk', '100')
-        native = native_blocks(text)
-        assert native is None or native[1] == native[2], text
-        assert (module_of(default).read_bytes() == module_of(quiet).read_bytes()) == (native is not None)
+        native_blocks(text)
+        assert module_of(default).read_bytes() == module_of(quiet).read_bytes()
         # --jit-only: a module of no blocks, every one compiled at run time when the game plays
         empty, text = recompile('--jit-only')
         assert 'No code ahead of time (--jit-only)' in text and "the module's index, 0 blocks" in text, text

@@ -5,7 +5,6 @@
 #include "common/cpu/arm/checked.h"
 #include "common/cpu/arm/codegen.h"
 #include "common/cpu/arm/exec.h"
-#include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/recompiler/mach/native.h"
 #include <stdio.h>
 #include <string.h>
@@ -210,7 +209,7 @@ static int modes_test(void) {
                 ++failures;
             }
             if (refused != (native ? 0u : 1u)) {
-                fprintf(stderr, "FAIL: %s %s: %zu blocks asked of LLVM: %s\n", modes[m].name, t ? "Thumb" : "A32",
+                fprintf(stderr, "FAIL: %s %s: %zu blocks refused: %s\n", modes[m].name, t ? "Thumb" : "A32",
                         refused, why);
                 ++failures;
             }
@@ -241,12 +240,11 @@ int main(void) {
     Svc svc = {0};
     int exit = snx_arm_exec_run(exec, &cpu, &range, 1, syscall, &svc);
     int failures = 0;
-    /* a program of the A57's blocks is the host's back end's, where it has one, and LLVM never starts for it */
+    /* a program of the A57's blocks is the host's back end's, none refused */
     const char* why = "";
     size_t refused = snx_arm_exec_refused(exec, &why);
-    if (snx_native_arm_available() ? refused || snx_ir_started() : !refused || !snx_ir_started()) {
-        fprintf(stderr, "FAIL: a program of the A57's blocks: %zu asked of LLVM (%s), LLVM started %d\n", refused, why,
-                snx_ir_started());
+    if (refused) {
+        fprintf(stderr, "FAIL: a program of the A57's blocks: %zu refused (%s)\n", refused, why);
         failures++;
     }
     /* a checked block loads without the compiler runtime's stack probe, which the JIT loader does not define */
@@ -357,7 +355,7 @@ int main(void) {
             failures++;
         }
         if (snx_native_arm_available() && helper_refused) {
-            fprintf(stderr, "FAIL: a block with helpers asked of LLVM: %s\n", helper_why);
+            fprintf(stderr, "FAIL: a block with helpers refused: %s\n", helper_why);
             failures++;
         }
         snx_arm_exec_free(helper_exec);

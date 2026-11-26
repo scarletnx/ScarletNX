@@ -254,14 +254,12 @@ int main(int argc, char** argv) {
     t->cpu.mem = p->memory.base;
     p->exited = 0;
 #if defined(__x86_64__)
-    if (snx_native_available()) { /* a host below its back end's floor, in a build without LLVM (native.h): why */
+    if (snx_native_available()) { /* a host below its back end's floor (native.h): why */
         GnuJit none = {0};
         char lacks[256];
         snx_x64_without(SNX_X64_SSE2);
-        snx_native_set_alone(1);
         CHECK(snx_native_floor(lacks, sizeof lacks) && gnu_jit_init(&none, NULL, error, sizeof error) != 0);
         CHECK(!strcmp(error, lacks) && !strncmp(error, "cpu: needs SSE2, this host has ", 31));
-        snx_native_set_alone(0);
         snx_x64_without(0);
     }
 #endif

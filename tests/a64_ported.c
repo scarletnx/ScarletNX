@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* rEden's A64 cases (a64_ported_cases.h) through the LLVM backend's step functions (llvm_steps.h, loaded with the
+/* rEden's A64 cases (a64_ported_cases.h) through the native back end's step functions (native_steps.h, loaded with the
    JIT's loader, or as a module file with --module): every case's expected values, on any host. Given qemu-aarch64
    and the runner (tests/qemu_ref), each run of a case also runs under QEMU (-cpu cortex-a57) from the state and
    memory the LLVM side started it from, and the two must end alike: every register, NZCV, FPCR, FPSR, where it went

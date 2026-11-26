@@ -11,9 +11,7 @@
    Then each block number read from stdin (32 bits, this host's order) runs on the state there and is answered by Reply:
    the run's end, or before it a call of the state's bus hook or access, which the test makes and answers with 32 bits.
    --pool N keeps the values in N host registers, so they spill. Without a back end, or a Unicorn of the machine, it
-   says why and exits with 77. Built with SNX_TEST_ARM_LLVM the blocks are LLVM's (support/arm_llvm_back.h), and in the
-   place of --pool it takes --opt 0|2, the passes' level, and --break before|after, the module spoiled there for the
-   verifier to refuse (arm_llvm_checks.py) */
+   says why and exits with 77 */
 #include "common/cpu/arm/simd.h"
 #include "common/cpu/recompiler/loader/code_loader.h"
 #include "support/arm_back.h"
@@ -280,11 +278,7 @@ static void make_blocks(void) {
         }
     }
     if (!made) return;
-#if defined(SNX_TEST_ARM_LLVM)
-    if (back_(object)(g_arm_blocks.back, &object, &size, NULL)) fail("the LLVM object", back_(why)(g_arm_blocks.back));
-#else
     if (back_(object)(g_arm_blocks.back, &object, &size, NULL)) fail("the " BACK_NAME " object", "out of memory");
-#endif
     load(object, size, made);
     free(object);
 }
@@ -381,16 +375,8 @@ int main(int argc, char** argv) {
                                            [SNX_ARM_PROFILE_ARM7TDMI] = "arm7tdmi",
                                            [SNX_ARM_PROFILE_ARM946E] = "arm946e"};
     static const char* const memories[] = {[SNX_ARM_MEMORY_FLAT] = "flat", [SNX_ARM_MEMORY_CHECKED] = "checked"};
-#if defined(SNX_TEST_ARM_LLVM)
-    static const char* const breaks[] = {
-        [ARM_LLVM_INTACT] = "", [ARM_LLVM_BREAK_BEFORE] = "before", [ARM_LLVM_BREAK_AFTER] = "after"};
-    static const char* const opts[] = {"0", "2"};
-    unsigned opt = 1, spoil = ARM_LLVM_INTACT;
-#define VARIANT "[--opt 0|2] [--break before|after]"
-#else
     int pool = 0;
 #define VARIANT "[--pool N]"
-#endif
     g_arm_blocks.options.abi = SNX_ARM_CODEGEN_OPTIONS_ABI;
     if (argc < 3) fail("usage", "snx-test-arm-blocks LIST STATE [--profile NAME] [--memory NAME] " VARIANT);
     for (int i = 3; i < argc; i += 2) {
@@ -399,15 +385,8 @@ int main(int argc, char** argv) {
             g_arm_blocks.options.profile = (SnxArmProfile)name_of("--profile", argv[i + 1], profiles, 5);
         else if (!strcmp(argv[i], "--memory"))
             g_arm_blocks.options.memory = (SnxArmMemoryMode)name_of("--memory", argv[i + 1], memories, 2);
-#if defined(SNX_TEST_ARM_LLVM)
-        else if (!strcmp(argv[i], "--opt"))
-            opt = name_of("--opt", argv[i + 1], opts, 2);
-        else if (!strcmp(argv[i], "--break"))
-            spoil = name_of("--break", argv[i + 1], breaks, 3);
-#else
         else if (!strcmp(argv[i], "--pool"))
             pool = (int)strtol(argv[i + 1], NULL, 10);
-#endif
         else
             fail("an unknown option", argv[i]);
     }
@@ -445,12 +424,7 @@ int main(int argc, char** argv) {
     if (!g_arm_blocks.back) fail("the " BACK_NAME " back end's compiler", "out of memory");
     if (back_(options)(g_arm_blocks.back, &g_arm_blocks.options))
         fail("no block compiler takes this", "profile and memory");
-#if defined(SNX_TEST_ARM_LLVM)
-    if (arm_llvm_opt(g_arm_blocks.back, opts[opt])) fail("--opt", opts[opt]);
-    arm_llvm_break(g_arm_blocks.back, (int)spoil);
-#else
     back_(limit)(g_arm_blocks.back, pool, ~0u);
-#endif
     make_blocks();
     printf("ready " BACK_NAME "\n");
     fflush(stdout);

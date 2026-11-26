@@ -184,6 +184,12 @@ static void switch64(struct snx_recompiler* r, uint8_t* mem) {
         snx_recompiler_set_backend(r, backend);
         m = snx_recompile(r, SWITCH64, mem + SWITCH64, sizeof(switch_words));
         snprintf(what, sizeof(what), "switch, back end %d: snx_recompile: %s", backend, snx_recompiler_error(r));
+        if (!backend) {
+            /* LLVM alone, which there is no more of */
+            check(!m && strstr(snx_recompiler_error(r), "LLVM alone"), what);
+            if (m) snx_recompiled_free(m);
+            continue;
+        }
         check(m != NULL, what);
         if (!m) continue;
 #if defined(__x86_64__) && !defined(_WIN32)
@@ -266,6 +272,11 @@ static void switch_past64(struct snx_recompiler* r, uint8_t* mem) {
         char what[160];
         snx_recompiler_set_backend(r, backend);
         m = snx_recompile(r, PAST64, mem + PAST64, sizeof(past_words));
+        if (!backend) {
+            check(!m && strstr(snx_recompiler_error(r), "LLVM alone"), "past the cases: LLVM alone is refused");
+            if (m) snx_recompiled_free(m);
+            continue;
+        }
         check(m != NULL, "past the cases: snx_recompile");
         if (!m) continue;
         snx_runtime_defaults(&rt);
@@ -772,7 +783,7 @@ static void test_update_code_live(void) {
     const uint32_t program[2] = {0x91000400, 0xd65f03c0}; /* add x0,x0,#1; ret */
     const uint32_t other = 0xd503201f;                      /* nop */
     uint8_t guest[4];
-    struct snx_recompiler* r = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
+    struct snx_recompiler* r = snx_recompiler_new(SNX_RECOMPILER_FLAG_NATIVE);
     check(r != NULL, "update_code live: a recompiler");
     if (!r) return;
     place(mem, CODE64, program, 2);
@@ -794,7 +805,7 @@ static void test_update_code_live(void) {
 static void test_repatch(void) {
     enum { AT = 0x4000, PATCHED = AT + 0x40 }; /* the entry's line and the patched word's line differ */
     static uint8_t mem[MEMORY];
-    struct snx_recompiler* r = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
+    struct snx_recompiler* r = snx_recompiler_new(SNX_RECOMPILER_FLAG_NATIVE);
     check(r != NULL, "repatch: a recompiler");
     if (!r) return;
     uint32_t words[18];
@@ -972,6 +983,14 @@ static void update_elsewhere64(struct snx_recompiler* r, uint8_t* mem) {
 }
 #endif
 
+/* the lines the library says while the old flag is tried */
+static unsigned old_flag_lines;
+static char old_flag_line_text[512];
+static void old_flag_line(const char* line) {
+    ++old_flag_lines;
+    snprintf(old_flag_line_text, sizeof old_flag_line_text, "%s", line);
+}
+
 int main(int argc, char** argv) {
     uint8_t* mem = (uint8_t*)calloc(MEMORY, 1);
     struct snx_recompiler* r;
@@ -984,13 +1003,27 @@ int main(int argc, char** argv) {
     test_repatch();
     check(snx_recompiler_abi() == SNX_ABI, "the library's ABI is this cpu.h's");
     check(!snx_recompiler_has(0) && !snx_recompiler_new(0), "flags must name a backend");
-    check(!snx_recompiler_has(2) && !snx_recompiler_new(2), "flags must name LLVM");
-    check(snx_recompiler_has(SNX_RECOMPILER_FLAG_LLVM), "this host's native back end makes the code");
+    check(!snx_recompiler_has(4) && !snx_recompiler_new(4), "flags must name the native back end");
+    {
+        /* earlier versions' name of the flag, LLVM's: the native back end's recompiler, said once */
+        old_flag_lines = 0;
+        snx_error_sink(old_flag_line);
+        struct snx_recompiler* a = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
+        struct snx_recompiler* b = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
+        snx_error_sink(NULL);
+        check(snx_recompiler_has(SNX_RECOMPILER_FLAG_LLVM) && a && b, "the old flag makes a recompiler");
+        check(old_flag_lines == 1 && strstr(old_flag_line_text, "SNX_RECOMPILER_FLAG_LLVM (1)") &&
+                  strstr(old_flag_line_text, "SNX_RECOMPILER_FLAG_NATIVE (2)"),
+              "the old flag said once, with both names and values");
+        snx_recompiler_free(a);
+        snx_recompiler_free(b);
+    }
+    check(snx_recompiler_has(SNX_RECOMPILER_FLAG_NATIVE), "this host's native back end makes the code");
     keep_ir = snx_temp_dir(NULL);
     check(keep_ir != NULL, "a folder for the IR");
     cache = snx_temp_dir(NULL);
     check(cache != NULL, "a folder for the caches");
-    r = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
+    r = snx_recompiler_new(SNX_RECOMPILER_FLAG_NATIVE);
     check(r != NULL, "snx_recompiler_new(LLVM)");
     if (r) {
         snx_recompiler_set_verbose(r, verbose);

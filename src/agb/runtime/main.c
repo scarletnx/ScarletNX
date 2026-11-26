@@ -425,19 +425,19 @@ int snx_agb_main(int argc, char** argv) {
             if (jobs >= 0) printf("--jobs %d: a ROM's code is one module, compiled on 1 thread\n", jobs);
             if (asked.chunk) printf("--chunk %d: a ROM's code is one module, compiled as one unit\n", asked.chunk);
             error[0] = 0;
-            recomp.opt = opt;
-            if (asked.keep_ir &&
-                (!(recomp.keep_ir = snx_format("%s/%s_build", folder, name)) || snx_mkdirs(recomp.keep_ir))) {
-                char why[256];
-                fprintf(stderr, "scarletnx-agb: cannot make the folder of the IR --keep-ir keeps, %s: %s\n",
-                        recomp.keep_ir ? recomp.keep_ir : "(out of memory)", snx_os_error(why, sizeof why));
-                goto done;
-            }
+            /* the native back end makes the blocks: it has no levels, and no IR to keep */
+            if (opt != '2')
+                fprintf(stderr, "scarletnx-agb: -O%c: the native back end has no optimization levels: it makes the "
+                                "blocks as at any\n",
+                        opt);
+            if (asked.keep_ir)
+                fputs("scarletnx-agb: --keep-ir: the native back end keeps no IR: the module is made without one\n",
+                      stderr);
             if (agb_recomp_build(&recomp, &board, error, sizeof error)) {
                 fprintf(stderr, "scarletnx-agb: %s\n", error);
                 goto done;
             }
-            snx_arm_aot_report(&recomp.made, "scarletnx-agb", asked.quiet);
+            snx_arm_aot_report(&recomp.made, asked.quiet ? NULL : stdout);
             if (!asked.quiet) printf("Built %zu blocks\n", recomp.count);
         }
         /* the game's copy of the runtime and its .ini, so the launcher's Games plays it as any game made */

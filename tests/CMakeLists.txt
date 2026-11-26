@@ -55,13 +55,13 @@ if(SNX_TEST_SANITIZERS)
         snx_ble_system
         snx-logscan
         # the recompiler, its backends and what they take of the common code
-        snx_recompiler_base snx_recompiler_core snx_llvm snx_fallback_none snx_recompiler_jit snx_arm_llvm snx_arm_decode
+        snx_recompiler_base snx_recompiler_core snx_llvm snx_recompiler_jit snx_arm_llvm snx_arm_decode
         snx_arm_rt scarletnx-recompiler scarletnx-recompiler-shared
         # the driver, its extraction, the first start's setup, the settings and the build's line
         snx_driver snx_nx_module snx_driver_llvm hactool_lib snx_setup snx_settings snx_settings_runtime snx_build_info
         snx-test-build-info
-        # the game module ahead of time: its builders, its descriptor and the fallback's part of it, LLVM's and none's
-        snx_nx_aot snx_nx_descriptor snx_nx_fallback_llvm snx_nx_fallback_none
+        # the game module ahead of time: its builders and its descriptor
+        snx_nx_aot snx_nx_descriptor
         # the Switch runtime: its components, the shader translator, the Vulkan backend and its upscalers
         scarletnx snx_core snx_kernel snx_hle snx_video snx_gpu snx_platform snx_shader snx_vk snx_fsr2 snx_upscaler
         # the GNU ABI runtime and its kernel
@@ -228,17 +228,16 @@ add_test(NAME disasm_a64 COMMAND snx-test-disasm-a64)
 add_test(NAME removed_options COMMAND "${CMAKE_COMMAND}" "-DSCRIPT=${PROJECT_SOURCE_DIR}/cmake/removed_options.cmake"
          -P "${PROJECT_SOURCE_DIR}/tests/removed_options_test.cmake")
 
-# The program of an instruction test over the step functions of a back end (steps.h), again over the host's native one's
-# (native_steps.c), as the test named: the same values LLVM's steps (llvm_steps.c) are held to. Every one is in one
-# executable, snx-test-native-steps (native_steps_main.c), below the last of them. A host with no native back end skips
-# it (77). ARGS: the program's arguments
+# The program of an instruction test over the step functions of the host's native back end (steps.h, native_steps.c),
+# as the test named. Every one is in one executable, snx-test-native-steps (native_steps_main.c), below the last of them.
+# A host with no native back end skips it (77). ARGS: the program's arguments
 function(snx_native_steps program test)
     cmake_parse_arguments(PARSE_ARGV 2 STEPS "" "" "ARGS")
     add_library(snx-test-native-${program} OBJECT ${program}.c)
     snx_test_target(snx-test-native-${program} gnu23)
     target_compile_definitions(snx-test-native-${program} PRIVATE SNX_TEST_NATIVE_STEPS "main=native_main_${program}")
     target_include_directories(snx-test-native-${program} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-    target_link_libraries(snx-test-native-${program} PRIVATE snx_llvm snx_driver)
+    target_link_libraries(snx-test-native-${program} PRIVATE snx_driver)
     set_property(GLOBAL APPEND PROPERTY snx_native_programs ${program})
     if(NOT test STREQUAL "NONE")
         add_test(NAME ${test} COMMAND snx-test-native-steps ${program} ${STEPS_ARGS})
@@ -1200,12 +1199,6 @@ add_executable(snx-test-arm-exec arm_exec_test.c)
 snx_test_target(snx-test-arm-exec gnu23)
 target_link_libraries(snx-test-arm-exec PRIVATE snx_recompiler_jit)
 add_test(NAME arm_exec_dry_svc COMMAND snx-test-arm-exec)
-# the same executor where the loader does not take a native block's object (exec.c itself, its loads the test's)
-add_executable(snx-test-arm-exec-fallback arm_exec_fallback.c)
-snx_test_target(snx-test-arm-exec-fallback gnu23)
-target_include_directories(snx-test-arm-exec-fallback PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(snx-test-arm-exec-fallback PRIVATE snx_llvm)
-add_test(NAME arm_exec_fallback COMMAND snx-test-arm-exec-fallback WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
 # the AOT compilers' blocks: the native back end's, LLVM's where it refuses one or the IR is kept, and who made them said
 add_executable(snx-test-arm-aot arm_aot.c)
 snx_test_target(snx-test-arm-aot gnu23)
@@ -1217,12 +1210,6 @@ add_executable(snx-test-arm-code-invalidate arm_code_invalidate.c "${PROJECT_SOU
 snx_test_target(snx-test-arm-code-invalidate gnu23)
 target_link_libraries(snx-test-arm-code-invalidate PRIVATE snx_recompiler_jit scarletnx-common)
 add_test(NAME arm_code_invalidate COMMAND snx-test-arm-code-invalidate)
-# a checked block links into the AOT module for Windows x86-64, which has no compiler runtime
-add_executable(snx-test-arm-checked-link arm_checked_link.c)
-snx_test_target(snx-test-arm-checked-link gnu23)
-target_link_libraries(snx-test-arm-checked-link PRIVATE snx_llvm)
-add_test(NAME arm_checked_link COMMAND snx-test-arm-checked-link)
-set_tests_properties(arm_checked_link PROPERTIES SKIP_RETURN_CODE 77)
 
 # Small architectural witnesses need neither game assets nor an emulator.
 add_executable(snx-test-a64-fp a64_fp_test.c "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
@@ -1233,12 +1220,8 @@ endif()
 snx_cpu_helpers_flags(snx-test-a64-fp)
 add_test(NAME a64_fp_witnesses COMMAND snx-test-a64-fp)
 
-# CRC32 and CRC32C through the LLVM steps, the host's instructions and the portable sliced tables, against the
+# CRC32 and CRC32C through the native steps, the host's instructions and the portable sliced tables, against the
 # bit-serial definition
-add_executable(snx-test-crc32-helper crc32_helper.c llvm_steps.c)
-snx_test_target(snx-test-crc32-helper gnu23)
-target_link_libraries(snx-test-crc32-helper PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
-add_test(NAME crc32_helper COMMAND snx-test-crc32-helper)
 snx_native_steps(crc32_helper native_crc32_helper)
 
 # the NVN header Part C builds on (src/nx/gpu/nvn/nvn.h, h1k421's, MIT) as strict ISO C23, against docs/layers/gpu/nvn.md's fields,
@@ -1277,44 +1260,14 @@ snx_test_target(snx-test-nvn-dlss-sizes c23)
 target_include_directories(snx-test-nvn-dlss-sizes PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(snx-test-nvn-dlss-sizes PRIVATE m)
 add_test(NAME nvn_dlss_sizes COMMAND snx-test-nvn-dlss-sizes)
-# the vector FP instructions with fast paths through the LLVM steps against the soft-float helpers, lane by lane,
+# the vector FP instructions with fast paths through the native steps against the soft-float helpers, lane by lane,
 # with lanes the host's arithmetic can and can't take in one vector
-add_executable(snx-test-llvm-vfp-lanes llvm_vfp_lanes.c llvm_steps.c
-    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
-snx_test_target(snx-test-llvm-vfp-lanes gnu23)
-snx_cpu_helpers_flags(snx-test-llvm-vfp-lanes)
-target_link_libraries(snx-test-llvm-vfp-lanes PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
-add_test(NAME llvm_vfp_lanes COMMAND snx-test-llvm-vfp-lanes)
 snx_native_steps(llvm_vfp_lanes native_vfp_lanes)
-add_executable(snx-test-llvm-vfp-batch llvm_vfp_batch.c llvm_steps.c
-    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
-snx_test_target(snx-test-llvm-vfp-batch gnu23)
-snx_cpu_helpers_flags(snx-test-llvm-vfp-batch)
-target_link_libraries(snx-test-llvm-vfp-batch PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
-add_test(NAME llvm_vfp_batch COMMAND snx-test-llvm-vfp-batch)
 snx_native_steps(llvm_vfp_batch native_vfp_batch)
 # exact vector comparisons, including NaN and flushed-denormal lanes
-add_executable(snx-test-llvm-vfp-compare llvm_vfp_compare.c llvm_steps.c
-    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
-snx_test_target(snx-test-llvm-vfp-compare gnu23)
-snx_cpu_helpers_flags(snx-test-llvm-vfp-compare)
-target_link_libraries(snx-test-llvm-vfp-compare PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
-add_test(NAME llvm_vfp_compare COMMAND snx-test-llvm-vfp-compare)
 snx_native_steps(llvm_vfp_compare native_vfp_compare)
-# the same fast paths taken for normal operands, with FPCR.FZ clear and set and without FPSR's flags: no helper call
-# left once LLVM folds the guards
-add_executable(snx-test-llvm-fp-fast llvm_fp_fast.c llvm_steps.c)
-snx_test_target(snx-test-llvm-fp-fast gnu23)
-target_link_libraries(snx-test-llvm-fp-fast PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
-add_test(NAME llvm_fp_fast COMMAND snx-test-llvm-fp-fast)
 
 # Exact vector reciprocal-square-root estimates, through real O0/O2 AOT and JIT steps.
-add_executable(snx-test-llvm-rsqrte llvm_rsqrte.c llvm_steps.c
-    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
-snx_test_target(snx-test-llvm-rsqrte gnu23)
-snx_cpu_helpers_flags(snx-test-llvm-rsqrte)
-target_link_libraries(snx-test-llvm-rsqrte PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
-add_test(NAME llvm_rsqrte COMMAND snx-test-llvm-rsqrte)
 snx_native_steps(llvm_rsqrte native_rsqrte)
 
 # the helpers' host fast paths (helpers/fp_host.c) against the soft-float they front, bits and FPSR
@@ -1325,150 +1278,27 @@ if(NOT WIN32)
     target_link_libraries(snx-test-fp-host PRIVATE m)
 endif()
 add_test(NAME fp_host_witnesses COMMAND snx-test-fp-host)
-add_executable(snx-test-llvm-recpe llvm_recpe.c llvm_steps.c
-    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
-snx_test_target(snx-test-llvm-recpe gnu23)
-snx_cpu_helpers_flags(snx-test-llvm-recpe)
-target_link_libraries(snx-test-llvm-recpe PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
-add_test(NAME llvm_recpe COMMAND snx-test-llvm-recpe)
 snx_native_steps(llvm_recpe native_recpe)
 
-add_executable(snx-test-llvm-recpx llvm_recpx.c llvm_steps.c
-    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
-snx_test_target(snx-test-llvm-recpx gnu23)
-snx_cpu_helpers_flags(snx-test-llvm-recpx)
-target_link_libraries(snx-test-llvm-recpx PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
-add_test(NAME llvm_recpx COMMAND snx-test-llvm-recpx)
 snx_native_steps(llvm_recpx native_recpx)
 
-add_executable(snx-test-llvm-simd-shift llvm_simd_shift.c llvm_steps.c
-    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
-snx_test_target(snx-test-llvm-simd-shift gnu23)
-snx_cpu_helpers_flags(snx-test-llvm-simd-shift)
-target_link_libraries(snx-test-llvm-simd-shift PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
-add_test(NAME llvm_simd_shift COMMAND snx-test-llvm-simd-shift)
 snx_native_steps(llvm_simd_shift native_simd_shift)
 
-add_executable(snx-test-llvm-fp-cold llvm_fp_cold.c llvm_steps.c
-    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
-snx_test_target(snx-test-llvm-fp-cold c23)
-snx_cpu_helpers_flags(snx-test-llvm-fp-cold)
-target_link_libraries(snx-test-llvm-fp-cold PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
-add_test(NAME llvm_fp_cold COMMAND snx-test-llvm-fp-cold)
-set_tests_properties(llvm_fp_cold PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
-
-add_executable(snx-test-llvm-fp-pointer-chain llvm_fp_pointer_chain.c llvm_steps.c
-    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
-snx_test_target(snx-test-llvm-fp-pointer-chain gnu23)
-snx_cpu_helpers_flags(snx-test-llvm-fp-pointer-chain)
-target_link_libraries(snx-test-llvm-fp-pointer-chain PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
-add_test(NAME llvm_fp_pointer_chain COMMAND snx-test-llvm-fp-pointer-chain)
-set_tests_properties(llvm_fp_pointer_chain PROPERTIES TIMEOUT 120)
-
-add_executable(snx-test-llvm-vfp-minmax llvm_vfp_minmax.c llvm_steps.c
-    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
-snx_test_target(snx-test-llvm-vfp-minmax gnu23)
-snx_cpu_helpers_flags(snx-test-llvm-vfp-minmax)
-target_link_libraries(snx-test-llvm-vfp-minmax PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
-add_test(NAME llvm_vfp_minmax COMMAND snx-test-llvm-vfp-minmax)
 snx_native_steps(llvm_vfp_minmax native_vfp_minmax)
-if(Python3_Interpreter_FOUND)
-    add_test(NAME llvm_half_order_math COMMAND "${Python3_EXECUTABLE}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/llvm_perf/half_order_math.py")
-    # llvm_perf/run.sh's NZCV harness takes the flag emitters out of ir_state.c by their signatures: that it still
-    # finds each one, where the harness itself (a JIT over the system's libLLVM) is run by hand
-    add_test(NAME llvm_perf_nzcv_source COMMAND "${Python3_EXECUTABLE}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/llvm_perf/test_nzcv.py" "${CMAKE_CURRENT_BINARY_DIR}/llvm_perf_nzcv.c")
-endif()
 
-add_executable(snx-test-llvm-round llvm_round.c llvm_steps.c
-    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
-snx_test_target(snx-test-llvm-round gnu23)
-snx_cpu_helpers_flags(snx-test-llvm-round)
-target_link_libraries(snx-test-llvm-round PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
-add_test(NAME llvm_round COMMAND snx-test-llvm-round)
 snx_native_steps(llvm_round native_round)
-if(Python3_Interpreter_FOUND)
-    add_test(NAME llvm_half_round_math COMMAND "${Python3_EXECUTABLE}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/llvm_perf/half_round_math.py")
-endif()
 
-add_executable(snx-test-llvm-estimates llvm_estimates.c llvm_steps.c
-    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
-snx_test_target(snx-test-llvm-estimates gnu23)
-snx_cpu_helpers_flags(snx-test-llvm-estimates)
-target_link_libraries(snx-test-llvm-estimates PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
-add_test(NAME llvm_estimates COMMAND snx-test-llvm-estimates)
 snx_native_steps(llvm_estimates native_estimates)
 
-add_executable(snx-test-llvm-unsigned-estimates llvm_unsigned_estimates.c llvm_steps.c
-    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
-snx_test_target(snx-test-llvm-unsigned-estimates gnu23)
-snx_cpu_helpers_flags(snx-test-llvm-unsigned-estimates)
-target_link_libraries(snx-test-llvm-unsigned-estimates PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
-add_test(NAME llvm_unsigned_estimates COMMAND snx-test-llvm-unsigned-estimates)
 snx_native_steps(llvm_unsigned_estimates native_unsigned_estimates)
 
-add_executable(snx-test-llvm-half llvm_half.c llvm_steps.c
-    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
-snx_test_target(snx-test-llvm-half gnu23)
-snx_cpu_helpers_flags(snx-test-llvm-half)
-target_link_libraries(snx-test-llvm-half PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
-add_test(NAME llvm_half COMMAND snx-test-llvm-half)
 snx_native_steps(llvm_half native_half)
-if(Python3_Interpreter_FOUND)
-    add_test(NAME llvm_half_widen_math COMMAND "${Python3_EXECUTABLE}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/llvm_perf/half_widen_math.py")
-endif()
 
-add_executable(snx-test-llvm-fma-residual llvm_fma_residual.c llvm_steps.c
-    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
-snx_test_target(snx-test-llvm-fma-residual gnu23)
-snx_cpu_helpers_flags(snx-test-llvm-fma-residual)
-target_link_libraries(snx-test-llvm-fma-residual PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
-add_test(NAME llvm_fma_residual COMMAND snx-test-llvm-fma-residual)
 snx_native_steps(llvm_fma_residual native_fma_residual)
 
-add_executable(snx-test-llvm-vfp-residual llvm_vfp_residual.c llvm_steps.c
-    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
-snx_test_target(snx-test-llvm-vfp-residual gnu23)
-snx_cpu_helpers_flags(snx-test-llvm-vfp-residual)
-target_link_libraries(snx-test-llvm-vfp-residual PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
-add_test(NAME llvm_vfp_residual COMMAND snx-test-llvm-vfp-residual)
 snx_native_steps(llvm_vfp_residual native_vfp_residual)
 
-add_executable(snx-test-llvm-fp-env llvm_fp_env.c llvm_steps.c)
-snx_test_target(snx-test-llvm-fp-env gnu23)
-target_link_libraries(snx-test-llvm-fp-env PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
-add_test(NAME llvm_fp_env COMMAND snx-test-llvm-fp-env)
 snx_native_steps(llvm_fp_env native_fp_env)
-
-add_executable(snx-test-llvm-fp-helper-effects llvm_fp_helper_effects.c)
-snx_test_target(snx-test-llvm-fp-helper-effects gnu23)
-target_link_libraries(snx-test-llvm-fp-helper-effects PRIVATE snx_llvm snx_driver)
-add_test(NAME llvm_fp_helper_effects COMMAND snx-test-llvm-fp-helper-effects)
-
-# ir_promote_registers at every boundary (SVC, BL, BLR, poll, dispatch entry, stale code, each helper class, a
-# register left in the CPU structure) with every register kind, against a C model and the same program at O0
-add_executable(snx-test-llvm-promote-edges llvm_promote_edges.c)
-snx_test_target(snx-test-llvm-promote-edges c23)
-target_link_libraries(snx-test-llvm-promote-edges PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
-add_test(NAME llvm_promote_edges COMMAND snx-test-llvm-promote-edges)
-set_tests_properties(llvm_promote_edges PROPERTIES TIMEOUT 120)
-
-add_executable(snx-test-llvm-promote-sync llvm_promote_sync.c llvm_steps.c)
-snx_test_target(snx-test-llvm-promote-sync c23)
-target_link_libraries(snx-test-llvm-promote-sync PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
-add_test(NAME llvm_promote_sync COMMAND snx-test-llvm-promote-sync)
-add_test(NAME llvm_promote_sync_portable COMMAND snx-test-llvm-promote-sync --portable)
-add_test(NAME llvm_promote_sync_abi COMMAND snx-test-llvm-promote-sync --abi-contract)
-add_test(NAME llvm_promote_sync_abi_portable COMMAND snx-test-llvm-promote-sync --portable --abi-contract)
-
-add_executable(snx-test-llvm-fp-reply-abi llvm_fp_reply_abi.c)
-snx_test_target(snx-test-llvm-fp-reply-abi gnu23)
-target_link_libraries(snx-test-llvm-fp-reply-abi PRIVATE snx_llvm snx_driver ${SNX_LLVM_ALL_TARGETS_LIBS})
-add_test(NAME llvm_fp_reply_abi COMMAND snx-test-llvm-fp-reply-abi)
-set_tests_properties(llvm_fp_reply_abi PROPERTIES SKIP_RETURN_CODE 77)
 
 add_executable(snx-test-a64-fp-arithmetic a64_fp_arithmetic_test.c
     "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
@@ -1505,7 +1335,6 @@ add_test(NAME decodetree_rows COMMAND snx-decodetree --rows=rows_fixture
          "${CMAKE_CURRENT_SOURCE_DIR}/decodetree_rows/rows.decode")
 set_tests_properties(decodetree_rows PROPERTIES PASS_REGULAR_EXPRESSION
     "SnxDecodeRow rows_fixture\\[\\] = {[^{]*{0xfff00000u, 0x1a000000u, {0x0000f000u, 0x00000f00u, 0x000f00ffu}}, /\\* ADD \\*/[^{]*{0xffffff00u, 0xf0000000u, {0}}, /\\* NOP")
-
 
 # sailgen (tools/sailgen/): --extract copies the closure of a root (its clause, what it calls, the enum it names) and
 # nothing else; --generate refuses a throw it has no meaning for, with its file and line
@@ -1743,7 +1572,6 @@ add_test(NAME sailgen_a32
                  -o "${CMAKE_CURRENT_BINARY_DIR}/sailgen/a32_sail.inc"
                  "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/sail/a32.sail"
                  --overlay "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/sail/arm.sail")
-
 
 # The QEMU reference (tests/qemu_ref/): hand-checked cases, the ported cases and the decoder's UNDEF sets under
 # qemu-aarch64 -cpu max and -cpu cortex-a57. Skipped (ctest's skip, code 77) without qemu-aarch64, ld.lld or a Clang
@@ -3789,56 +3617,8 @@ target_link_libraries(snx_recompiler_test PRIVATE snx_driver ${CMAKE_DL_LIBS})
 # LLVM is always available to the recompiler.
 add_test(NAME native_recompiler COMMAND snx_recompiler_test
     $<TARGET_FILE:scarletnx> "${PROJECT_SOURCE_DIR}" "${SNX_TARGET_C_COMPILER}")
-# the whole-encoding sweeps (llvm_qemu_differential_sweep): opt in, they cost minutes
-option(SNX_TEST_LLVM_SWEEP "Run the whole-encoding LLVM differential sweep (slow)" OFF)
-# The LLVM backend against QEMU (tests/qemu_ref), instruction by instruction: llvm_qemu_differential.c, with the
-# words of the generated decoder's rows (llvm_qemu_words.c, its table's own translation unit). The groups known to
-# differ are in llvm_qemu_expected.txt. Skipped as qemu_ref_selftest is
-if(NOT WIN32)
-    add_executable(snx-test-llvm-qemu-differential llvm_qemu_differential.c llvm_qemu_words.c llvm_steps.c
-        qemu_ref/qemu_ref.c)
-    snx_test_target(snx-test-llvm-qemu-differential gnu23)
-    target_include_directories(snx-test-llvm-qemu-differential PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-    target_link_libraries(snx-test-llvm-qemu-differential PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
-    snx_decodetree_a64(snx-test-llvm-qemu-differential)
-    set(snx_lqd_expected "${CMAKE_CURRENT_SOURCE_DIR}/llvm_qemu_expected.txt")
-    if(SNX_QEMU_REF)
-        add_dependencies(snx-test-llvm-qemu-differential snx_qemu_ref_runner)
-        add_test(NAME llvm_qemu_differential COMMAND snx-test-llvm-qemu-differential "${SNX_QEMU_AARCH64}"
-                 "${SNX_QEMU_REF_RUNNER}" "${CMAKE_CURRENT_BINARY_DIR}/llvm_qemu" "${snx_lqd_expected}" --quiet)
-        # the same steps loaded with the JIT's loader, built without the host's extensions (the emitters'
-        # portable forms), and built without its architecture too (the generic path PowerPC64, RISC-V, LoongArch and
-        # MIPS64 hosts take)
-        add_test(NAME llvm_qemu_differential_jit COMMAND snx-test-llvm-qemu-differential "${SNX_QEMU_AARCH64}"
-                 "${SNX_QEMU_REF_RUNNER}" "${CMAKE_CURRENT_BINARY_DIR}/llvm_qemu_jit" "${snx_lqd_expected}" --quiet
-                 --jit)
-        add_test(NAME llvm_qemu_differential_portable COMMAND snx-test-llvm-qemu-differential "${SNX_QEMU_AARCH64}"
-                 "${SNX_QEMU_REF_RUNNER}" "${CMAKE_CURRENT_BINARY_DIR}/llvm_qemu_portable" "${snx_lqd_expected}"
-                 --quiet --portable)
-        add_test(NAME llvm_qemu_differential_generic COMMAND snx-test-llvm-qemu-differential "${SNX_QEMU_AARCH64}"
-                 "${SNX_QEMU_REF_RUNNER}" "${CMAKE_CURRENT_BINARY_DIR}/llvm_qemu_generic" "${snx_lqd_expected}"
-                 --quiet --generic)
-        # an AVX-512 host as one with AVX2 alone (--without-avx512), skipped on a host without AVX-512
-        add_test(NAME llvm_qemu_differential_avx2 COMMAND snx-test-llvm-qemu-differential "${SNX_QEMU_AARCH64}"
-                 "${SNX_QEMU_REF_RUNNER}" "${CMAKE_CURRENT_BINARY_DIR}/llvm_qemu_avx2" "${snx_lqd_expected}" --quiet
-                 --without-avx512)
-        add_test(NAME llvm_qemu_differential_abi COMMAND snx-test-llvm-qemu-differential "${SNX_QEMU_AARCH64}"
-                 "${SNX_QEMU_REF_RUNNER}" "${CMAKE_CURRENT_BINARY_DIR}/llvm_qemu_abi" "${snx_lqd_expected}"
-                 --quiet --abi-contract)
-        set_tests_properties(llvm_qemu_differential_jit llvm_qemu_differential_portable llvm_qemu_differential_generic
-                             llvm_qemu_differential_abi PROPERTIES TIMEOUT 600)
-        set_tests_properties(llvm_qemu_differential_avx2 PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
-        if(SNX_TEST_LLVM_SWEEP)
-            add_test(NAME llvm_qemu_differential_sweep COMMAND snx-test-llvm-qemu-differential "${SNX_QEMU_AARCH64}"
-                     "${SNX_QEMU_REF_RUNNER}" "${CMAKE_CURRENT_BINARY_DIR}/llvm_qemu_sweep" "${snx_lqd_expected}"
-                     --quiet --sweep)
-            set_tests_properties(llvm_qemu_differential_sweep PROPERTIES TIMEOUT 3600 COST 100)
-        endif()
-    else()
-        add_test(NAME llvm_qemu_differential COMMAND snx-test-llvm-qemu-differential --skip "${SNX_QEMU_REF_MISSING}")
-    endif()
-    set_tests_properties(llvm_qemu_differential PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 600)
-endif()
+# the whole-encoding sweep (native_qemu_differential_sweep): opt in, it costs minutes
+option(SNX_TEST_LLVM_SWEEP "Run the whole-encoding QEMU differential sweep (slow)" OFF)
 # The host's native back end's, on every host: against QEMU here (SNX_QEMU_REF), or against what another host recorded
 # (SNX_QEMU_REFERENCE: build.yml's qemu-reference job, which the Windows and macOS jobs download), or skipped saying why.
 # The groups known to differ are in native_qemu_expected.txt. Its forms are the host's (linked as a module), the JIT's
@@ -3849,7 +3629,7 @@ add_executable(snx-test-llvm-qemu-differential-native llvm_qemu_differential.c l
 snx_test_target(snx-test-llvm-qemu-differential-native gnu23)
 target_compile_definitions(snx-test-llvm-qemu-differential-native PRIVATE SNX_TEST_NATIVE_STEPS)
 target_include_directories(snx-test-llvm-qemu-differential-native PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(snx-test-llvm-qemu-differential-native PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+target_link_libraries(snx-test-llvm-qemu-differential-native PRIVATE snx_driver ${CMAKE_DL_LIBS})
 snx_decodetree_a64(snx-test-llvm-qemu-differential-native)
 set(snx_nqd_expected "${CMAKE_CURRENT_SOURCE_DIR}/native_qemu_expected.txt")
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64|aarch64|arm64|ARM64)$")
@@ -3887,36 +3667,10 @@ if(SNX_QEMU_REF)
         set_tests_properties(native_qemu_differential_sweep PROPERTIES TIMEOUT 3600 COST 100 SKIP_RETURN_CODE 77)
     endif()
 endif()
-# the sail tests' LLVM ends of the words QEMU can't stand for (test-references' sail/, which snx-test-sail-frozen
-# records): every sail test holds those words to them (--frozen)
+# the sail tests' LLVM ends of the words QEMU can't stand for (test-references' sail/, recorded while the build had
+# LLVM): every sail test holds those words to them (--frozen)
 set(snx_sail_frozen "${test-references_SOURCE_DIR}/sail/frozen.txt")
 if(NOT WIN32)
-    # The lowering census (llvm_lowering.c): each A64 SIMD, FP and crypto op's class on nine emitter paths against
-    # llvm_lowering_expected.txt, which a change that moves an op updates in the same commit (--update)
-    add_executable(snx-test-llvm-lowering llvm_lowering.c llvm_qemu_words.c)
-    snx_test_target(snx-test-llvm-lowering c23)
-    target_include_directories(snx-test-llvm-lowering PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-    target_link_libraries(snx-test-llvm-lowering PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS}
-                          ${SNX_LLVM_ALL_TARGETS_LIBS})
-    snx_decodetree_a64(snx-test-llvm-lowering)
-    add_test(NAME llvm_lowering COMMAND snx-test-llvm-lowering "${CMAKE_CURRENT_SOURCE_DIR}/llvm_lowering_expected.txt")
-    set_tests_properties(llvm_lowering PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
-    # the integer, branch, general-purpose load and store and scalar floating-point emitters sailgen generates from the
-    # Sail against the hand-written ones they replaced (support/ir_int_reference.c, ir_ldst_reference.c,
-    # ir_fpu_reference.c): the same optimized IR word by word on three paths, the same results (registers, flags, FPCR,
-    # FPSR, guest memory) run here
-    add_executable(snx-test-llvm-sail-ir llvm_sail_ir.c llvm_qemu_words.c llvm_steps.c support/ir_int_reference.c
-                   support/ir_ldst_reference.c support/ir_fpu_reference.c support/ir_vec_reference.c)
-    snx_test_target(snx-test-llvm-sail-ir gnu23)
-    target_include_directories(snx-test-llvm-sail-ir PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-    target_link_libraries(snx-test-llvm-sail-ir PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS}
-                          ${SNX_LLVM_ALL_TARGETS_LIBS})
-    snx_decodetree_a64(snx-test-llvm-sail-ir)
-    # a third of the words each, so the sanitizers' build runs each part in its timeout and the parts run side by side
-    foreach(part 1 2 3)
-        add_test(NAME llvm_sail_ir_${part} COMMAND snx-test-llvm-sail-ir --part ${part}/3)
-        set_tests_properties(llvm_sail_ir_${part} PROPERTIES TIMEOUT 600)
-    endforeach()
     # sailgen's x86-64 back end (its instruction selection derived from the Intel SDM, cmake/sdm.cmake) against QEMU:
     # the same registers, flags, vector registers, memory, next pc and UNDEF from the same states, word by word, on the
     # host's BMI1, BMI2 and LZCNT and without them
@@ -4032,17 +3786,6 @@ if(SNX_X64)
     endif()
     snx_sail_x64_test(sail_x64_spill --pool ${snx_x64_pool} --states 32)
     snx_sail_x64_test(sail_x64_spill_xmm --pool ${snx_x64_pool} --xmm ${snx_x64_xmm} --states 16)
-    # what LLVM's steps give the sail tests' words QEMU can't stand for, while LLVM is there: snx-test-sail-frozen
-    # --record FILE writes the frozen file the tests' --frozen reads, and snx-test-sail-frozen FILE checks one
-    add_executable(snx-test-sail-frozen sail_frozen.c sail_qemu.c llvm_qemu_words.c llvm_steps.c qemu_ref/qemu_ref.c
-                   support/frozen.c "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
-    snx_cpu_helpers_flags(snx-test-sail-frozen)
-    snx_test_target(snx-test-sail-frozen gnu23)
-    target_include_directories(snx-test-sail-frozen PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-    target_link_libraries(snx-test-sail-frozen PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
-    snx_decodetree_a64(snx-test-sail-frozen)
-    add_test(NAME sail_frozen_llvm COMMAND snx-test-sail-frozen "${snx_sail_frozen}")
-    set_tests_properties(sail_frozen_llvm PROPERTIES TIMEOUT 600)
     # its code for Windows (the calling convention), run by this host's processor as Windows' C would call it
     # (support/host_win64.c): the same words against LLVM, as the other machines' under Unicorn
     if(snx_host_win64)
@@ -4119,68 +3862,6 @@ if(SNX_X64)
     endif()
 endif()
 if(NOT WIN32)
-    # the T16 emitters sailgen generates from the Sail against the ones written by hand they replaced
-    # (snx_thumb_llvm_block_t16_reference): the same optimized IR halfword by halfword on every profile and memory mode,
-    # alone and in an IT block, and the same results run here. Each part takes a sixteenth of its third, spread over
-    # every field: the whole (--every 1) takes 45 minutes on 4 threads
-    add_executable(snx-test-arm-sail-ir arm_sail_ir.c)
-    snx_test_target(snx-test-arm-sail-ir gnu23)
-    target_link_libraries(snx-test-arm-sail-ir PRIVATE snx_llvm snx_arm_llvm snx_driver ${CMAKE_DL_LIBS})
-    foreach(part 1 2 3)
-        add_test(NAME arm_sail_ir_${part} COMMAND snx-test-arm-sail-ir --part ${part}/3 --every 16)
-        set_tests_properties(arm_sail_ir_${part} PROPERTIES TIMEOUT 900)
-        # and the A32 data processing and branches, against llvm.c's (snx_arm_llvm_block_reference)
-        add_test(NAME arm_sail_ir_a32_${part} COMMAND snx-test-arm-sail-ir --a32 --part ${part}/3 --every 16)
-        set_tests_properties(arm_sail_ir_a32_${part} PROPERTIES TIMEOUT 900)
-    endforeach()
-    # snx_ir_object's check of the symbols an object names (llvm_object_symbols.c)
-    add_executable(snx-test-llvm-object-symbols llvm_object_symbols.c)
-    snx_test_target(snx-test-llvm-object-symbols c23)
-    target_link_libraries(snx-test-llvm-object-symbols PRIVATE snx_llvm ${SNX_LLVM_ALL_TARGETS_LIBS})
-    add_test(NAME llvm_object_symbols COMMAND snx-test-llvm-object-symbols)
-    set_tests_properties(llvm_object_symbols PROPERTIES SKIP_RETURN_CODE 77)
-    # the LSE atomics' read-modify-write as each target's LLVM lowers it right (llvm_atomic_rmw.c)
-    add_executable(snx-test-llvm-atomic-rmw llvm_atomic_rmw.c)
-    snx_test_target(snx-test-llvm-atomic-rmw c23)
-    target_link_libraries(snx-test-llvm-atomic-rmw PRIVATE snx_llvm ${SNX_LLVM_ALL_TARGETS_LIBS})
-    snx_decodetree_a64(snx-test-llvm-atomic-rmw)
-    add_test(NAME llvm_atomic_rmw COMMAND snx-test-llvm-atomic-rmw)
-    set_tests_properties(llvm_atomic_rmw PROPERTIES SKIP_RETURN_CODE 77)
-    add_executable(snx-test-llvm-block-fuzz llvm_block_fuzz.c llvm_steps.c llvm_qemu_words.c qemu_ref/qemu_ref.c)
-    snx_test_target(snx-test-llvm-block-fuzz gnu23)
-    snx_decodetree_a64(snx-test-llvm-block-fuzz)
-    target_link_libraries(snx-test-llvm-block-fuzz PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
-    if(SNX_QEMU_REF)
-        add_dependencies(snx-test-llvm-block-fuzz snx_qemu_ref_runner)
-        foreach(mode default o0 jit portable jit_o0 mutant exclusive_mutant)
-            set(args)
-            if(mode STREQUAL o0)
-                list(APPEND args --opt=0)
-            elseif(mode STREQUAL jit)
-                list(APPEND args --jit --hook)
-            elseif(mode STREQUAL portable)
-                list(APPEND args --portable --volatile)
-            elseif(mode STREQUAL jit_o0)
-                list(APPEND args --jit --opt=0 --hook --volatile)
-            elseif(mode STREQUAL mutant)
-                list(APPEND args --self-test)
-            elseif(mode STREQUAL exclusive_mutant)
-                list(APPEND args --self-test-exclusive)
-            endif()
-            add_test(NAME llvm_block_fuzz_${mode} COMMAND snx-test-llvm-block-fuzz "${SNX_QEMU_AARCH64}"
-                "${SNX_QEMU_REF_RUNNER}" "${CMAKE_CURRENT_BINARY_DIR}/block_fuzz_${mode}" ${args})
-            set_tests_properties(llvm_block_fuzz_${mode} PROPERTIES TIMEOUT 180)
-        endforeach()
-        if(Python3_Interpreter_FOUND)
-            add_test(NAME llvm_block_fuzz_seed_matrix COMMAND "${Python3_EXECUTABLE}"
-                "${CMAKE_CURRENT_SOURCE_DIR}/llvm_block_fuzz_matrix.py" $<TARGET_FILE:snx-test-llvm-block-fuzz>
-                "${SNX_QEMU_AARCH64}" "${SNX_QEMU_REF_RUNNER}" "${CMAKE_CURRENT_BINARY_DIR}/block_fuzz_seed_matrix")
-            set_tests_properties(llvm_block_fuzz_seed_matrix PROPERTIES TIMEOUT 600)
-        endif()
-    else()
-        add_test(NAME llvm_block_fuzz COMMAND snx-test-llvm-block-fuzz --skip "${SNX_QEMU_REF_MISSING}")
-        set_tests_properties(llvm_block_fuzz PROPERTIES SKIP_RETURN_CODE 77)
-    endif()
     snx_native_steps(llvm_block_fuzz NONE)
     if(SNX_QEMU_REF)
         foreach(mode default jit portable mutant exclusive_mutant)
@@ -4256,40 +3937,14 @@ snx_test_target(snx-test-arm-module-refused gnu23)
 target_link_libraries(snx-test-arm-module-refused PRIVATE snx_driver_llvm ${CMAKE_DL_LIBS})
 add_test(NAME arm_module_refused COMMAND snx-test-arm-module-refused)
 set_tests_properties(arm_module_refused PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
-# a game module through the fallback (nx/loader/module_fallback.h): the builders in the program, which links none (no
-# LLVM at all) and, where the build has it, LLVM's; a module of the native back end's code is the same file with each
-set(snx_nx_fallback_tests none)
-if(SNX_WITH_LLVM)
-    list(APPEND snx_nx_fallback_tests llvm)
-endif()
-foreach(fallback IN LISTS snx_nx_fallback_tests)
-    set(target snx-test-nx-module-fallback-${fallback})
-    add_executable(${target} nx_module_fallback.c nx_module_fallback_arm.c
-                   "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/jit/jit_cache.c")
-    snx_test_target(${target} gnu23)
-    target_link_libraries(${target} PRIVATE snx_nx_fallback_${fallback} snx_nx_descriptor snx_nx_module snx_settings)
-    if(fallback STREQUAL none)
-        target_link_libraries(${target} PRIVATE snx_fallback_none)
-    endif()
-    add_test(NAME nx_module_fallback_${fallback} COMMAND ${target}
-             "${CMAKE_CURRENT_BINARY_DIR}/nx-module-fallback/${fallback}")
-    set_tests_properties(nx_module_fallback_${fallback} PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77
-                         FIXTURES_SETUP nx_module_fallback_${fallback})
-endforeach()
-if(SNX_WITH_LLVM)
-    if(WIN32)
-        set(suffix .dll)
-    else()
-        set(suffix .so)
-    endif()
-    foreach(bits a64 a32)
-        add_test(NAME nx_module_fallback_same_${bits} COMMAND "${CMAKE_COMMAND}" -E compare_files
-                 "${CMAKE_CURRENT_BINARY_DIR}/nx-module-fallback/none/${bits}${suffix}"
-                 "${CMAKE_CURRENT_BINARY_DIR}/nx-module-fallback/llvm/${bits}${suffix}")
-        set_tests_properties(nx_module_fallback_same_${bits} PROPERTIES
-                             FIXTURES_REQUIRED "nx_module_fallback_none;nx_module_fallback_llvm")
-    endforeach()
-endif()
+# a game module of the native back end's code (nx/loader/module_llvm.c, module_arm.c): the builders in the program, and
+# what each refuses
+add_executable(snx-test-nx-module-native nx_module_native.c nx_module_native_arm.c
+               "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/jit/jit_cache.c")
+snx_test_target(snx-test-nx-module-native gnu23)
+target_link_libraries(snx-test-nx-module-native PRIVATE snx_nx_descriptor snx_nx_module snx_recompiler_jit snx_settings)
+add_test(NAME nx_module_native COMMAND snx-test-nx-module-native "${CMAKE_CURRENT_BINARY_DIR}/nx-module-native")
+set_tests_properties(nx_module_native PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
 # the AArch32 dispatch loop's lookup keeps no frame and no stack canary: compile(), its slow path, stays out of line
 # (arm_dispatch_frame.py reads arm.c's object with the build's llvm-objdump). With ThinLTO the object is bitcode and the
 # link makes the machine code, so it reads the program, which the line table ties to arm.c (cmake/lto.cmake)
@@ -4437,11 +4092,6 @@ add_executable(snx-test-jit-cache jit_cache.c)
 snx_test_target(snx-test-jit-cache gnu23)
 target_link_libraries(snx-test-jit-cache PRIVATE snx_recompiler_jit)
 add_test(NAME jit_cache COMMAND snx-test-jit-cache)
-# LLVM's SLP vectorizer turned off for a process (the setting slp_vectorizer), and the JIT cache's key saying so
-add_executable(snx-test-slp-vectorizer slp_vectorizer.c)
-snx_test_target(snx-test-slp-vectorizer gnu23)
-target_link_libraries(snx-test-slp-vectorizer PRIVATE snx_recompiler_jit)
-add_test(NAME slp_vectorizer COMMAND snx-test-slp-vectorizer)
 # the launcher's AOT pack action: the cache's path and header, and the optimization the AOT build must share
 add_executable(snx-test-aot-pack aot_pack.c "${PROJECT_SOURCE_DIR}/src/gui/aot.c")
 snx_test_target(snx-test-aot-pack gnu23)
@@ -4467,12 +4117,6 @@ add_executable(snx-test-code-loader-unwind code_loader_unwind.c)
 snx_test_target(snx-test-code-loader-unwind gnu23)
 target_link_libraries(snx-test-code-loader-unwind PRIVATE snx_recompiler_core)
 add_test(NAME code_loader_unwind COMMAND snx-test-code-loader-unwind)
-# a generated function's frame of a page or more probes the stack on Windows x86-64 (rtlib.c's snx_stack_probe)
-add_executable(snx-test-stack-probe stack_probe.c)
-snx_test_target(snx-test-stack-probe gnu23)
-target_link_libraries(snx-test-stack-probe PRIVATE snx_llvm ${SNX_LLVM_ALL_TARGETS_LIBS})
-add_test(NAME stack_probe COMMAND snx-test-stack-probe)
-set_tests_properties(stack_probe PROPERTIES SKIP_RETURN_CODE 77)
 # the loader's objects as GDB's JIT interface lists them (gdb_jit.c); skipped on Windows, which registers none
 add_executable(snx-test-gdb-jit gdb_jit.c gdb_jit_object.c)
 snx_test_target(snx-test-gdb-jit gnu23)
@@ -4499,45 +4143,9 @@ set_tests_properties(coff_arm64 PROPERTIES TIMEOUT 120)
 add_executable(snx-llvm-bench llvm_bench.c)
 snx_test_target(snx-llvm-bench gnu23)
 target_link_libraries(snx-llvm-bench PRIVATE snx_driver ${CMAKE_DL_LIBS})
-# not a test: a game's functions recompiled on their own (llvm_pieces DUMP ADDR...), for the recompile's time and output
-add_executable(snx-llvm-pieces llvm_pieces.c)
-snx_test_target(snx-llvm-pieces gnu23)
-target_link_libraries(snx-llvm-pieces PRIVATE scarletnx-recompiler)
-# the backend's own switches (ir.h), in the library's objects: its headers, not its target, whose objects the library
-# holds already
-target_include_directories(snx-llvm-pieces PRIVATE "$<TARGET_PROPERTY:snx_llvm,INTERFACE_INCLUDE_DIRECTORIES>")
-target_include_directories(snx-llvm-pieces SYSTEM PRIVATE "${SNX_LLVM_INCLUDE_DIR}")
 include(arm_blocks.cmake)
 
-# LLVM Internals: passes cut out of LLVM's pipelines (nx/runtime/driver/llvm_tuning.c), which LLVM still runs
-add_executable(snx-test-llvm-tuning llvm_tuning.c)
-snx_test_target(snx-test-llvm-tuning gnu23)
-target_link_libraries(snx-test-llvm-tuning PRIVATE snx_driver)
-add_test(NAME llvm_tuning COMMAND snx-test-llvm-tuning)
-# the offline branch profile (ir_profile.c, the setting ir_branch_profile): weights where address and word match, and
-# what it cannot read said
-add_executable(snx-test-llvm-branch-profile llvm_branch_profile.c)
-snx_test_target(snx-test-llvm-branch-profile gnu23)
-target_link_libraries(snx-test-llvm-branch-profile PRIVATE snx_driver)
-add_test(NAME llvm_branch_profile COMMAND snx-test-llvm-branch-profile "${CMAKE_CURRENT_BINARY_DIR}")
-# the X registers' cache within a block (tools/sailgen/llvm.h, ir.h's accessors by ir_sail.c)
-add_executable(snx-test-llvm-gpr-cache llvm_gpr_cache.c)
-snx_test_target(snx-test-llvm-gpr-cache gnu23)
-target_link_libraries(snx-test-llvm-gpr-cache PRIVATE snx_llvm snx_driver)
-add_test(NAME llvm_gpr_cache COMMAND snx-test-llvm-gpr-cache)
-# the flags' cache within a block, and the compare their origin gives a condition as (tools/sailgen/llvm.h)
-add_executable(snx-test-llvm-flags-cache llvm_flags_cache.c)
-snx_test_target(snx-test-llvm-flags-cache gnu23)
-target_link_libraries(snx-test-llvm-flags-cache PRIVATE snx_llvm snx_driver)
-add_test(NAME llvm_flags_cache COMMAND snx-test-llvm-flags-cache)
-add_executable(snx-test-llvm-fp-store llvm_fp_store.c llvm_steps.c)
-snx_test_target(snx-test-llvm-fp-store gnu23)
-target_link_libraries(snx-test-llvm-fp-store PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
-add_test(NAME llvm_fp_store COMMAND snx-test-llvm-fp-store)
 snx_native_steps(llvm_fp_store native_fp_store)
-add_executable(snx-test-llvm-module llvm_module.c llvm_steps.c)
-snx_test_target(snx-test-llvm-module gnu23)
-target_link_libraries(snx-test-llvm-module PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
 # the NROs of a game's RomFS made ahead of time: the game module's table of where they go, and each one's own module
 add_executable(snx-test-nro-modules nro_modules.c)
 snx_test_target(snx-test-nro-modules gnu23)
@@ -4549,8 +4157,6 @@ add_executable(snx-test-plt-calls plt_calls.c)
 snx_test_target(snx-test-plt-calls gnu23)
 target_link_libraries(snx-test-plt-calls PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
 add_test(NAME plt_calls COMMAND snx-test-plt-calls $<TARGET_FILE:scarletnx> "${CMAKE_CURRENT_BINARY_DIR}/plt-calls-data")
-add_test(NAME llvm_module COMMAND snx-test-llvm-module $<TARGET_FILE:scarletnx> "${PROJECT_SOURCE_DIR}")
-add_test(NAME llvm_module_stats COMMAND snx-test-llvm-module $<TARGET_FILE:scarletnx> "${PROJECT_SOURCE_DIR}" --stats)
 # the same module, the words outside its functions run by the native steps
 snx_native_steps(llvm_module native_module ARGS $<TARGET_FILE:scarletnx> "${PROJECT_SOURCE_DIR}")
 # what the host's native back end makes of whole programs (recompile_census.c): a fixed one of each kind the drivers
@@ -4626,7 +4232,7 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
     set(snx_plain_ops_features 0x7ffff)
     set(snx_plain_fma_features 0x7ffff)
 endif()
-# LLVM alone's ends, recorded where the build has it (tests/recompiler_backends_record.py): each test whose
+# LLVM alone's ends, recorded while the build had LLVM (test-references' recompiler_backends/): each test whose
 # reference they are reads its programs' file, a hash a function (recompiler_backends.c's --frozen)
 set(snx_backends_frozen "${test-references_SOURCE_DIR}/recompiler_backends")
 add_executable(snx-test-recompiler-backends recompiler_backends.c llvm_qemu_words.c qemu_ref/qemu_ref.c
@@ -5331,10 +4937,11 @@ if(TARGET OpenSSL::Crypto)
     endif()
 endif()
 
-# the generated decoder, function discovery, and LLVM steps against expected values (llvm_steps.c)
-add_executable(snx_codegen_test codegen_test.c llvm_steps.c)
-snx_test_target(snx_codegen_test c23)
-target_link_libraries(snx_codegen_test PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+# the generated decoder, function discovery, and the native steps against expected values (native_steps.c)
+add_executable(snx_codegen_test codegen_test.c native_steps.c)
+snx_test_target(snx_codegen_test gnu23)
+target_include_directories(snx_codegen_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(snx_codegen_test PRIVATE snx_driver ${CMAKE_DL_LIBS})
 add_test(NAME native_codegen COMMAND snx_codegen_test)
 # what an x86-64 unit's object is made from, which the unit cache keys it by (x64_unit_facts.c)
 add_executable(snx-test-x64-unit-facts x64_unit_facts.c)
@@ -5450,20 +5057,8 @@ else()
     endif()
 endif()
 
-# A64 cases ported from rEden's dynarmic tests (a64_ported_cases.h) through the LLVM backend's steps, loaded with the
-# JIT's loader (llvm_steps.c): their expected values on any host and, where qemu_ref runs, each run against QEMU
-# from the same state
-add_executable(snx-test-a64-ported a64_ported.c llvm_steps.c qemu_ref/qemu_ref.c)
-snx_test_target(snx-test-a64-ported gnu23)
-target_include_directories(snx-test-a64-ported PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(snx-test-a64-ported PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
-if(SNX_QEMU_REF)
-    add_dependencies(snx-test-a64-ported snx_qemu_ref_runner)
-    add_test(NAME a64_ported_cases COMMAND snx-test-a64-ported "${SNX_QEMU_AARCH64}" "${SNX_QEMU_REF_RUNNER}"
-             "${CMAKE_CURRENT_BINARY_DIR}/a64_ported")
-else()
-    add_test(NAME a64_ported_cases COMMAND snx-test-a64-ported)
-endif()
+# A64 cases ported from rEden's dynarmic tests (a64_ported_cases.h) through the native back end's steps: their expected
+# values on any host and, where qemu_ref runs, each run against QEMU from the same state
 snx_native_steps(a64_ported NONE)
 if(SNX_QEMU_REF)
     add_test(NAME native_a64_ported_cases COMMAND snx-test-native-steps a64_ported "${SNX_QEMU_AARCH64}"
@@ -5480,7 +5075,7 @@ add_executable(snx-test-native-steps native_steps_main.c native_steps.c qemu_ref
 snx_test_target(snx-test-native-steps gnu23)
 snx_cpu_helpers_flags(snx-test-native-steps)
 target_include_directories(snx-test-native-steps PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(snx-test-native-steps PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+target_link_libraries(snx-test-native-steps PRIVATE snx_driver ${CMAKE_DL_LIBS})
 snx_decodetree_a64(snx-test-native-steps)
 if(SNX_QEMU_REF)
     add_dependencies(snx-test-native-steps snx_qemu_ref_runner)
@@ -6585,7 +6180,7 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
 endif()
 # these recompile with --repo of the checkout, whose cache folder (the extractions' work/) is the user's: a folder of
 # the build tree's instead, where XDG names it
-foreach(snx_test native_recompiler llvm_module nro_modules plt_calls nx_runtime_homebrew nx_runtime_homebrew_64k_pages)
+foreach(snx_test native_recompiler nro_modules plt_calls nx_runtime_homebrew nx_runtime_homebrew_64k_pages)
     if(TEST ${snx_test})
         set_property(TEST ${snx_test} APPEND PROPERTY ENVIRONMENT "XDG_CACHE_HOME=${CMAKE_CURRENT_BINARY_DIR}/xdg-cache")
     endif()

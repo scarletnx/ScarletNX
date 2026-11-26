@@ -51,14 +51,6 @@ static int run(int jit, int portable, char opt) {
     }
     steps_add(&s, 0x4EA1D820u, 0x1000, 0); /* frecpe v0.4s, v1.4s */
     steps_add(&s, 0x0EA1D820u, 0x1000, 0); /* frecpe v0.2s, v1.2s */
-#ifndef SNX_TEST_NATIVE_STEPS
-    if (!s.ir->big_endian && (s.ir->features->x86 || s.ir->features->aarch64) &&
-        LLVMGetNamedFunction(s.ir->mod, "snx_fp_unary")) {
-        fprintf(stderr, "inline reciprocal still contains a lane helper\n");
-        steps_end(&s);
-        return 1;
-    }
-#endif
     if (steps_load(&s, error, sizeof error)) {
         fprintf(stderr, "%s\n", error);
         steps_end(&s);

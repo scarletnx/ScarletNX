@@ -40,10 +40,10 @@ typedef struct {
 
 /* Compiles rom's regions into the module at path, replacing an earlier one once the new one is whole. hints names the
    file of blocks earlier runs compiled, NULL for none; threads and most are the settings aot_threads and
-   aot_threads_most (snx_aot_threads). keep_ir is the folder LLVM's IR is kept in, every block LLVM's then (cpu/arm/aot.h),
-   NULL for nowhere. *made is who made the blocks (NULL: nobody asks). 0, else 1 with the reason in error */
-int nds_aot_compile(const NdsRom* rom, const char* path, const char* hints, int threads, int most, const char* keep_ir,
-                    SnxArmAotCount* made, char* error, size_t error_size);
+   aot_threads_most (snx_aot_threads). *made is how many blocks were made (NULL: nobody asks). 0, else 1 with the reason
+   in error */
+int nds_aot_compile(const NdsRom* rom, const char* path, const char* hints, int threads, int most, SnxArmAotCount* made,
+                    char* error, size_t error_size);
 
 /* Discovery: which instruction slots of each region start a block and how long each is */
 #define NDS_PLAN_VISITED 1u

@@ -231,10 +231,7 @@ static int machine(const char* base, int again, uint64_t* hash, SnxArmAotCount* 
         return 1;
     }
     *made = recomp.made;
-    if (snx_native_arm_available())
-        CHECK(made->native && !made->llvm);
-    else
-        CHECK(!made->native && made->llvm);
+    CHECK(made->native);
     *hash = SNX_FNV_BASIS;
     for (int frame = 0; frame < 6; ++frame) {
         uint32_t written = 0;
@@ -285,11 +282,11 @@ static int modes(void) {
         SnxArmAotCount made;
         uint64_t hash;
         if (machine(base, again, &hash, &made)) return 1;
-        if (hash != AGB_FROZEN_HASH || made.native + made.llvm != frozen[again]) {
+        if (hash != AGB_FROZEN_HASH || made.native != frozen[again]) {
             fprintf(stderr,
                     "agb_cpu: the machine from the %s module of %zu blocks is %016llx, and from LLVM alone's of %zu "
                     "blocks it was %016llx\n",
-                    again ? "second" : "first", made.native + made.llvm, (unsigned long long)hash, frozen[again],
+                    again ? "second" : "first", made.native, (unsigned long long)hash, frozen[again],
                     (unsigned long long)AGB_FROZEN_HASH);
             rc = 1;
         }

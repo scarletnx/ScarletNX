@@ -18,12 +18,11 @@
 #if defined(__ANDROID__)
 #include <android/api-level.h>
 #endif
-#include "common/cpu/recompiler/llvm/ir_settings.h"
 #include "common/cpu/recompiler/mach/native.h"
 #include "common/cpu/recompiler/x64/x64_cache.h"
 
 /* the triple of the iOS app's code: Darwin's calling convention and the generic AArch64 CPU, in the object format the
-   JIT loader reads (recompiler/llvm/ir.c's host_triple). The version only names the ABI */
+   JIT loader reads. The version only names the ABI */
 #define SNX_IOS_TRIPLE "arm64-apple-ios16.0-elf"
 #include "nx/runtime/driver/toolchain.h"
 #include "snx_settings.h"
@@ -741,9 +740,9 @@ static int make_program(const MakeArgs* a, int index) {
     gen.hints = hints = read_hints(base, program.npdm.is64, &gen.hint_count);
     if (move_hints(base, made_by, &program, hints, &gen.hint_count, compile.quiet)) goto done;
     if (!compile.quiet) say_recompiling(title, index, a->programs, program.module_count);
-    if (!no_build && !ios && !gen.interp_only && snx_native_floor(why, sizeof why))
-        snx_error("%s: LLVM makes the code", why);
-    else if (!no_build && !ios && !gen.interp_only && !compile.quiet && snx_native_fallback(why, sizeof why))
+    /* below the back end's floor the module builder says the line, as it makes no module */
+    if (!no_build && !ios && !gen.interp_only && !compile.quiet && !snx_native_floor(why, sizeof why) &&
+        snx_native_fallback(why, sizeof why))
         printf("%s\n", why);
     /* an add-on's files: its dump, read in place, or what the driver extracts into its data folder. An extracted game
        the game's .ini names as its source= is read in place as a dump is: nothing of it copied */
@@ -860,35 +859,21 @@ static int make_program(const MakeArgs* a, int index) {
     gen.nro_end = nros.end;
     code = ios ? snx_format("%s_code.snxobj", base) : snx_format("%s_code.%s", base, compile.target_win ? "dll" : "so");
     {
-        char* kept = keep_c ? snx_format("%s_build", base) : NULL;
         llvm.output = code;
         llvm.triple = ios ? SNX_IOS_TRIPLE : NULL;
         llvm.opt = compile.opt[0];
-        snx_ir_slp_vectorizer(g_settings.slp_vectorizer);
-        snx_ir_fpsr_flags(g_settings.fpsr_flags);
-        snx_ir_volatile_memory(g_settings.volatile_load_stores);
-        snx_ir_abi_contract(g_settings.abi_contract);
-        snx_ir_diagnostics(g_settings.ir_stats, g_settings.ir_dump_pc);
         snx_x64_cache_ceiling((SnxU64)g_settings.unit_cache_ceiling * 1000000ull);
         old_branch_profile();
-        snx_ir_branch_profile(g_settings.ir_branch_profile);
-        llvm.tuning = snx_llvm_tuning(llvm.opt, error, sizeof error);
-        if (!llvm.tuning) {
-            snx_error("%s", error);
-            goto done;
-        }
-        if (!compile.quiet) printf("LLVM: -O%c, llvm_batch=%s\n", llvm.opt, g_settings.llvm_batch);
         llvm.jobs = compile.jobs;
         llvm.jobs_open = compile.jobs_open;
         llvm.quiet = compile.quiet;
-        llvm.keep_ir = kept;
         llvm.found = &found;
-        if (layout && !snx_is_file(layout)) {
-            snx_error("--layout %s: no such file", layout);
-            free(kept);
-            goto done;
-        }
-        if (layout) llvm.layout = read_addresses(layout, 1, &llvm.layout_count);
+        /* what LLVM's code alone had, said and not done: the IR kept, each function's own section in an order */
+        if (keep_c) snx_error("--keep-ir: the native back end keeps no IR: nothing goes in %s_build", base);
+        if (layout)
+            snx_error("--layout %s: the native back end has no section of its own for each function: the code keeps "
+                      "its order",
+                      layout);
         { /* units/ of the cache folder, where an older version kept the code units: never read now, said with its room */
             char* folder = snx_menu_dir(paths->repo, SNX_USER_CACHE);
             char* units = folder ? snx_path_join(folder, "units") : NULL;
@@ -911,9 +896,8 @@ static int make_program(const MakeArgs* a, int index) {
             free(units);
             free(folder);
         }
-        i = kept && (snx_is_link(kept) || snx_mkdirs(kept));
-        if (i) snx_error("cannot save the generated code in %s", kept);
-        if (!i && !program.npdm.is64)
+        i = 0;
+        if (!program.npdm.is64)
             i = snx_build_module_arm(&program, &gen, &llvm);
         else if (!i)
             i = snx_build_module_llvm(&program, &gen, &llvm);
@@ -922,7 +906,6 @@ static int make_program(const MakeArgs* a, int index) {
             i = snx_nros_build(&nros, &program, &gen, &llvm, folder, compile.target_win);
             free(folder);
         }
-        free(kept);
         if (i) goto done;
     }
     if (ios) { /* the iOS app is the runtime: only the code is made here */
@@ -980,7 +963,6 @@ done:
     free(mods_stamp);
     free((void*)gen.hints);
     free((void*)gen.bound);
-    free((void*)llvm.layout);
     free(title);
     free(game);
     free(out);

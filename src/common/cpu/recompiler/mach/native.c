@@ -51,11 +51,6 @@ unsigned snx_native_features(void) {
 
 /* ---- the hosts below a back end's floor ---- */
 
-static struct {
-    _Atomic int alone; /* what a test asked: to be as a build without LLVM */
-} g_native;
-void snx_native_set_alone(int on) { atomic_store_explicit(&g_native.alone, on, memory_order_relaxed); }
-
 /* text after out's first *at bytes, *at past it: what doesn't fit is cut */
 static void append(char* out, size_t size, size_t* at, const char* text) {
     if (*at < size) snprintf(out + *at, size - *at, "%s", text);
@@ -102,9 +97,6 @@ int snx_native_done(const SnxNativeFeature* done, size_t count, unsigned has, ch
 int snx_native_floor(char* why, size_t size) { return snx_x64_floor(why, size) || snx_ppc64be_floor(why, size); }
 int snx_native_fallback(char* why, size_t size) { return snx_x64_fallback(why, size); }
 int snx_native_refused(char* error, size_t size) {
-#if !defined(SNX_NATIVE_ALONE)
-    if (!atomic_load_explicit(&g_native.alone, memory_order_relaxed)) return 0;
-#endif
     return !snx_native_available() && snx_native_floor(error, size);
 }
 

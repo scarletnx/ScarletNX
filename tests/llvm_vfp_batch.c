@@ -11,20 +11,6 @@ static const u32 conversions[] = {0x0e217820u, 0x4e217820u, 0x0e216820u, 0x4e216
 static const u32 edges[] = {0, 1, 0x8000, 0x3ff, 0x400, 0x3555, 0x7c00, 0x7d01, 0x7e02, 0xffff,
                             0x80000000, 0x007fffff, 0x00800000, 0x3fc00000, 0x7f800000, 0x7f800001,
                             0x7fc12345, 0xffffffff};
-#ifndef SNX_TEST_NATIVE_STEPS
-static unsigned convert_calls(LLVMValueRef function, const char* name) {
-    unsigned count = 0;
-    for (LLVMBasicBlockRef block = LLVMGetFirstBasicBlock(function); block; block = LLVMGetNextBasicBlock(block))
-        for (LLVMValueRef inst = LLVMGetFirstInstruction(block); inst; inst = LLVMGetNextInstruction(inst)) {
-            if (!LLVMIsACallInst(inst)) continue;
-            LLVMValueRef callee = LLVMGetCalledValue(inst);
-            size_t length = 0;
-            const char* called = LLVMGetValueName2(callee, &length);
-            if (length == strlen(name) && !memcmp(called, name, length)) count++;
-        }
-    return count;
-}
-#endif
 static void reference(CPU* c, unsigned index, int broadcast) {
     unsigned from = index < 2 ? 16 : 32, to = index < 2 ? 32 : 16;
     if (broadcast == 2) c->v[1] = (V128){0};
@@ -66,14 +52,6 @@ static int run(int jit, char opt) {
                                     .leaders = leaders[i], .leader_count = 1};
     }
     for (unsigned i = 0; i < 12; i++) steps_add_function(&steps, &code, &functions[i]);
-#ifndef SNX_TEST_NATIVE_STEPS
-    if (opt != '0' && !steps.ir->big_endian) {
-        if (snx_ir_module_optimize(steps.ir, steps.ir->mod, opt, error, sizeof error)) return snx_error("%s", error);
-        for (unsigned i = 0; i < 12; i++)
-            if (convert_calls(steps.fns[i], "snx_fp_convert") || convert_calls(steps.fns[i], "snx_fp_host_lanes"))
-                return snx_error("half conversion sequence %u still calls a helper at O%c", i, opt);
-    }
-#endif
     if (steps_load(&steps, error, sizeof error)) return snx_error("%s", error);
     for (unsigned i = 0; i < 12; i++) {
         GuestFn function = steps_function(&steps, i);

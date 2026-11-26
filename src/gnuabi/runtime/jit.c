@@ -200,7 +200,7 @@ int gnu_jit_init(GnuJit* jit, const char* cache, char* error, size_t error_size)
                  (uint64_t)TABLE_BYTES >> 30, snx_os_error(why, sizeof why));
         return -1;
     }
-    jit->recompiler = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
+    jit->recompiler = snx_recompiler_new(SNX_RECOMPILER_FLAG_NATIVE);
     if (!jit->recompiler) {
         if (!snx_native_refused(error, error_size))
             snprintf(error, error_size, "no recompiler for this host: its native back end (%s) makes none",
