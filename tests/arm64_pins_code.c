@@ -55,6 +55,22 @@ static const Row k_rows[] = {
      "D2807CE0 D65F03C0 1E140A00 063C3228 2E241A10 160C0238 3E342A20 261C1208 0E043A30 362C2218"},
 };
 
+/* rows whose code also loads V register vfield's field into a V pin (V24-V31) at least vpins times */
+static const struct {
+    Row row;
+    unsigned vfield, vpins;
+} k_field_rows[] = {
+    /* a loop of eight ADD, EOR, EOR into V30 (the native timing bench's): V3 to V10 and V30 each save a load and a
+       store a turn, so of the nine that tie V30, read and written eight times a turn, takes a pin (else its chain goes
+       through memory at each turn) */
+    {{"a loop's accumulator V30 among nine V registers that tie", 5, 2, 40, 16, 0, 0,
+      "D2800C90 4EFF8463 6E221C70 6E301FDE 4EFF8484 6E221C91 6E311FDE 4EFF84A5 6E221CB2 6E321FDE 4EFF84C6 6E221CD3 "
+      "6E331FDE 4EFF84E7 6E221CF4 6E341FDE 4EFF8508 6E221D15 6E351FDE 4EFF8529 6E221D36 6E361FDE 4EFF854A 6E221D57 "
+      "6E371FDE F1000610 54FFFCE1"},
+     .vfield = 30,
+     .vpins = 1},
+};
+
 static struct {
     const Row* row; /* the one being checked, for the messages */
     int failures;
@@ -118,7 +134,28 @@ static void pin_moves(const unsigned char* t, size_t n, int load, unsigned* x, u
     }
 }
 
-static void check(const Row* row, int print) {
+/* the LDR Q (unsigned offset) of a V pin (V24-V31) from V register r's field: at [X19], or at [X16] an ADD X16, X19,
+   #off just before makes */
+static unsigned field_pins(const unsigned char* t, size_t n, unsigned r) {
+    const long long bias = SNX_ARM64_STATE_BIAS, want = (long long)(offsetof(CPU, v) + 16 * (size_t)r);
+    unsigned pins = 0;
+    uint32_t prev = 0;
+    for (size_t i = 0; i + 4 <= n; i += 4) {
+        uint32_t w = snx_ld_le32(t + i), rt = w & 31, rn = w >> 5 & 31;
+        if ((w & 0xFFC00000u) == 0x3DC00000u && rt >= 24) {
+            long long off = -1;
+            if (rn == 19)
+                off = (w >> 10 & 0xFFF) * 16 + bias;
+            else if (rn == 16 && !(w >> 10 & 0xFFF) && (prev & 0xFFC003FFu) == (0x91000000u | 19u << 5 | 16u))
+                off = (prev >> 10 & 0xFFF) + bias;
+            pins += off == want;
+        }
+        prev = w;
+    }
+    return pins;
+}
+
+static void check(const Row* row, unsigned vfield, unsigned vpins, int print) {
     unsigned char image[(MOST + 1) * 4], *object = NULL;
     const unsigned char* text;
     const SnxU64 hint = BASE;
@@ -129,7 +166,7 @@ static void check(const Row* row, int print) {
     size_t size = 0, length = 0;
     char error[256] = "", *at = (char*)row->words;
     SnxCodegen codegen;
-    unsigned count = 0, xs, vs, xl, vl, adds, tables;
+    unsigned count = 0, xs, vs, xl, vl, adds, tables, fpins = 0;
     g_arm64_pins_code.row = row;
     while (*at && count < MOST) words[count++] = (uint32_t)strtoul(at, &at, 16);
     for (unsigned i = 0; i <= count; ++i)
@@ -154,6 +191,8 @@ static void check(const Row* row, int print) {
         pin_moves(text, length, 0, &xs, &vs, &adds);
         pin_moves(text, length, 1, &xl, &vl, &adds);
         tables = table_jumps(text, length);
+        if (vfield) fpins = field_pins(text, length, vfield);
+        if (print && vfield) printf("%s: V%u's field into a pin %u times\n", row->what, vfield, fpins);
         if (print)
             printf("%s: %zu bytes; X pins %u stored, %u loaded; V pins %u stored, %u loaded; %u ADDs of X19; %u table "
                    "jumps\n",
@@ -168,6 +207,11 @@ static void check(const Row* row, int print) {
             if (vs > row->vstores) fail("stores of V pins", vs, row->vstores);
             if (vl > row->vloads) fail("loads of V pins", vl, row->vloads);
             if (adds > row->adds) fail("ADDs of X19 before a field's load or store", adds, row->adds);
+            if (vfield && fpins < vpins) {
+                fprintf(stderr, "FAIL: %s: V%u's field into a pin %u times, at least %u\n", row->what, vfield, fpins,
+                        vpins);
+                ++g_arm64_pins_code.failures;
+            }
         }
     }
     free(object);
@@ -180,7 +224,10 @@ int main(int argc, char** argv) {
         fprintf(stderr, "%s: no such option\n", argv[1]);
         return 2;
     }
-    for (size_t i = 0; i < sizeof k_rows / sizeof *k_rows; ++i) check(&k_rows[i], print);
-    printf("arm64 pins code: %zu rows, %d failures\n", sizeof k_rows / sizeof *k_rows, g_arm64_pins_code.failures);
+    for (size_t i = 0; i < sizeof k_rows / sizeof *k_rows; ++i) check(&k_rows[i], 0, 0, print);
+    for (size_t i = 0; i < sizeof k_field_rows / sizeof *k_field_rows; ++i)
+        check(&k_field_rows[i].row, k_field_rows[i].vfield, k_field_rows[i].vpins, print);
+    printf("arm64 pins code: %zu rows, %d failures\n",
+           sizeof k_rows / sizeof *k_rows + sizeof k_field_rows / sizeof *k_field_rows, g_arm64_pins_code.failures);
     return g_arm64_pins_code.failures != 0;
 }
