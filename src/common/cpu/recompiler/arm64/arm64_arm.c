@@ -116,7 +116,7 @@ static void mg_prologue(MG_ARM* c, SnxU32 pc, int* bad) {
     sga_w(b, sge_a64_stp_gen_pre_idx(29, 31, 30, (SnxU32)-4 & 0x7F, 2)); /* STP X29, X30, [SP, #-32]! */
     sga_w(b, sge_a64_add_addsub_imm(29, 31, 0, 0, 1));                    /* MOV X29, SP */
     sga_w(b, sge_a64_stp_gen_general_offset(19, 31, 20, 2, 2));           /* STP X19, X20, [SP, #16] */
-    sga_w(b, sge_a64_orr_log_shift(SGX_BASE, SGA_ZR, 0, 0, 0, 1));        /* MOV X19, X0 */
+    sga_state_in(b);
     frame(c, 0);
 }
 /* where a check of the entry failed: W1 the block's address, W2 its first word (a Thumb block's halfword), and
@@ -167,7 +167,7 @@ static void mg_go_on(MG_ARM* c, SnxU32 key, int polled, const SnxU32* next, size
         sgx_a32_jmp(g, b, g->ret);
         sgx_a32_bind(g, b, go);
     }
-    sga_w(b, sge_a64_orr_log_shift(0, SGA_ZR, 0, SGX_BASE, 0, 1)); /* MOV X0, X19 */
+    sga_state_out(b);
     epilogue(c);
     char sym[24];
     name_of(sym + (public ? 0 : 1), sizeof sym - 1, key);
@@ -180,7 +180,7 @@ static void mg_go_on(MG_ARM* c, SnxU32 key, int polled, const SnxU32* next, size
 static void mg_tail(MG_ARM* c, int reg) {
     SgXBuf* b = &c->b;
     sga_w(b, sge_a64_orr_log_shift(SGA_X16, SGA_ZR, 0, (SnxU32)reg, 0, 1)); /* MOV X16, reg */
-    sga_w(b, sge_a64_orr_log_shift(0, SGA_ZR, 0, SGX_BASE, 0, 1));          /* MOV X0, X19 */
+    sga_state_out(b);
     epilogue(c);
     sga_w(b, sge_a64_br(SGA_X16));
 }

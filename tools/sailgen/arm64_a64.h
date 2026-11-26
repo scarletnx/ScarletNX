@@ -128,13 +128,14 @@ static inline void sgx_release(SgCtx* g, int after) {
 enum { SGX_M_NONE };
 static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r);
 
-/* STP X29, X30, [SP, #-32]!; STP X19, X20, [SP, #16]; MOV X29, SP; MOV X19, X0; SUB SP, SP, #frame (patched) */
+/* STP X29, X30, [SP, #-32]!; STP X19, X20, [SP, #16]; MOV X29, SP; X19 from X0 (sga_state_in); SUB SP, SP, #frame
+   (patched) */
 static inline void sgx_prologue(SgXAsm* a) {
     SgXBuf* b = a->b;
     sga_w(b, sge_a64_stp_gen_pre_idx(29, 31, 30, (SnxU32)-4 & 0x7F, 2));
     sga_w(b, sge_a64_stp_gen_general_offset(19, 31, 20, 2, 2));
     sga_w(b, sge_a64_add_addsub_imm(29, 31, 0, 0, 1));
-    sga_w(b, sge_a64_orr_log_shift(19, SGA_ZR, 0, 0, 0, 1));
+    sga_state_in(b);
     if (a->nframe < 256) a->frame_at[a->nframe++] = b->n;
     sga_w(b, sge_a64_sub_addsub_imm(31, 31, 0, 0, 1));
 }
@@ -337,7 +338,7 @@ static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r) {
         if (a->pin_flush) a->pin_flush(a->machine);
         sga_movi(b, 1, (SnxU64)i->imm, 1);
         sga_state(b, 0, 8, 1, offsetof(CPU, pc));
-        sga_w(b, sge_a64_orr_log_shift(0, SGA_ZR, 0, SGX_BASE, 0, 1));
+        sga_state_out(b);
         sga_movi(b, 2, (SnxU64)(SnxU32)i->disp, 0);
         sga_state(b, 1, 8, 16, offsetof(CPU, rt));
         sga_ldst(b, 1, 8, 16, 16, -1, (int)offsetof(RtAPI, undef));
@@ -377,7 +378,7 @@ static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r) {
         case SGX_M_CALL:
         case SGX_M_CALL_RT:
             if (a->pin_cs) a->pin_cs(a->machine, 1);
-            if (i->w) sga_w(b, sge_a64_orr_log_shift(0, SGA_ZR, 0, SGX_BASE, 0, 1)); /* MOV X0, X19: the state */
+            if (i->w) sga_state_out(b); /* X0, the state */
             if (i->op == SGX_M_CALL_RT) {
                 sga_state(b, 1, 8, 16, offsetof(CPU, rt));
                 sga_ldst(b, 1, 8, 16, 16, -1, i->disp);
