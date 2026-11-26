@@ -82,8 +82,8 @@ SNX_RECOMPILER_API int snx_recompiler_set_optimization(struct snx_recompiler* r,
 #define SNX_RECOMPILER_A64_ANDROID 2
 SNX_RECOMPILER_API int snx_recompiler_set_a64_target(struct snx_recompiler* r, int target);
 /* Code units compiled at once, on host threads; 0, the default, uses one per processor */
-SNX_RECOMPILER_API /* the code generator: 1 the native back end (the default), 0 LLVM alone, which the recompile refuses: the
-   library makes its code with the native back end alone */
+SNX_RECOMPILER_API /* the code generator: 1 the native back end (the default), 0 LLVM alone, the reference the tests compare
+   the native back end with, in builds with LLVM (another refuses it at the recompile); its modules are not cached */
 SNX_RECOMPILER_API void snx_recompiler_set_backend(struct snx_recompiler* r, int x64);
 void snx_recompiler_set_jobs(struct snx_recompiler* r, unsigned jobs);
 /* How far a recompile is, for a caller's progress bar: called once with the totals and nothing done, then as each code

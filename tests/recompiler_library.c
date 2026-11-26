@@ -184,12 +184,6 @@ static void switch64(struct snx_recompiler* r, uint8_t* mem) {
         snx_recompiler_set_backend(r, backend);
         m = snx_recompile(r, SWITCH64, mem + SWITCH64, sizeof(switch_words));
         snprintf(what, sizeof(what), "switch, back end %d: snx_recompile: %s", backend, snx_recompiler_error(r));
-        if (!backend) {
-            /* LLVM alone: the library makes its code with the native back end alone */
-            check(!m && strstr(snx_recompiler_error(r), "LLVM alone"), what);
-            if (m) snx_recompiled_free(m);
-            continue;
-        }
         check(m != NULL, what);
         if (!m) continue;
 #if defined(__x86_64__) && !defined(_WIN32)
@@ -272,11 +266,6 @@ static void switch_past64(struct snx_recompiler* r, uint8_t* mem) {
         char what[160];
         snx_recompiler_set_backend(r, backend);
         m = snx_recompile(r, PAST64, mem + PAST64, sizeof(past_words));
-        if (!backend) {
-            check(!m && strstr(snx_recompiler_error(r), "LLVM alone"), "past the cases: LLVM alone is refused");
-            if (m) snx_recompiled_free(m);
-            continue;
-        }
         check(m != NULL, "past the cases: snx_recompile");
         if (!m) continue;
         snx_runtime_defaults(&rt);

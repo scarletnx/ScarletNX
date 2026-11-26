@@ -121,9 +121,10 @@ the game's image read from that image.
   through `src/nx/loader/module_fallback.h` (the descriptor of a module whose code LLVM made some of, a 32-bit program's
   blocks chained, the profile cache's key: `module_fallback_llvm.c`, or `module_fallback_none.c`). Without LLVM the
   native back end makes a function with an instruction it has no code for, the instruction undefined where it runs
-  (`SnxNativeOptions.alone`). The recompiler's library (`library.c`) asks it nothing: its code is the native back
-  end's alone, an instruction it has no code for undefined where it runs, its descriptor data and its runtime library
-  the build's object (`rtlib_object.h`).
+  (`SnxNativeOptions.alone`). The recompiler's library (`library.c`) asks it only for LLVM alone
+  (`snx_recompiler_set_backend(r, 0)`), the tests' reference: its code is otherwise the native back end's alone, an
+  instruction it has no code for undefined where it runs, its descriptor data and its runtime library the build's
+  object (`rtlib_object.h`).
   `tests/architecture.py` lists the files that take LLVM's headers (`LLVM_USERS`), which only LLVM code moved out of
   another joins.
 - The code generator, LLVM (`src/common/cpu/recompiler/llvm/`, a required dependency), builds LLVM IR with the
