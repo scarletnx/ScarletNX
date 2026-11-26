@@ -14,7 +14,8 @@
    image added inside CPU.disp, as ldr:ro maps an NRO at the address its own AOT module was made for: its misses
    compile into the main table beside that module's entries, and removing it empties its slots. Then the
    cache: a second service on the same file loads the first one's units instead of compiling them, refuses a unit whose
-   code changed (and compiles the new code), and reads the records before one a run left unfinished. A change in the
+   code changed (and compiles the new code), and reads the records before one a run left unfinished; a file another
+   build made, at another level, is started over and said once, naming the field. A change in the
    middle of a function drops its whole unit, and a callee invalidated then compiled again by a later caller's batch is
    published, so the batches after it don't compile it again */
 #include "common/cpu/recompiler/jit/jit_service.h"
@@ -27,6 +28,9 @@
 #include <string.h>
 #include <time.h>
 #include <stdatomic.h>
+#ifndef _WIN32
+#include <unistd.h> /* dup, dup2: what the service says on stderr, read back */
+#endif
 #ifdef __linux__
 #include <errno.h>
 #include <sys/resource.h>
@@ -686,6 +690,60 @@ static void test_cache(void) {
     if (f) fclose(f);
     CHECK(size > 64 && size < (1 << 20));
 #endif
+    /* a file another build made, at -O3: the service starts it over, says so once with the field, and the run is
+       right */
+    {
+        char *other = snx_jit_cache_key('3', 0, 0, 0), *mine = snx_jit_cache_key('0', 0, 0, 0);
+        const size_t n = other ? strlen(other) : 0;
+        const unsigned char length[4] = {(unsigned char)n, (unsigned char)(n >> 8), (unsigned char)(n >> 16),
+                                         (unsigned char)(n >> 24)};
+        unsigned char head[12 + 4096];
+        size_t got = 0;
+        f = other ? fopen(path, "wb") : NULL;
+        CHECK(f && fwrite(SNX_JIT_CACHE_MAGIC, 1, 8, f) == 8 && fwrite(length, 1, 4, f) == 4 &&
+              fwrite(other, 1, n, f) == n);
+        if (f) fclose(f);
+#ifndef _WIN32
+        const char* said_path = "snx-test-jit-cache-said.txt";
+        int saved = dup(2);
+        fflush(stderr);
+        CHECK(saved >= 0 && freopen(said_path, "w", stderr) != NULL);
+#endif
+        service = start(0, 1);
+        if (service) {
+            CHECK(run_pair() == expected);
+            snx_jit_drain(service);
+            snx_jit_service_free(service);
+        }
+#ifndef _WIN32
+        fflush(stderr);
+        if (saved >= 0) {
+            dup2(saved, 2);
+            close(saved);
+        }
+        char said[2048] = "";
+        f = fopen(said_path, "rb");
+        if (f) {
+            said[fread(said, 1, sizeof said - 1, f)] = 0;
+            fclose(f);
+        }
+        remove(said_path);
+        const char* line =
+            strstr(said, "JIT cache snx-test-jit-cache.bin: made for opt=3, and this build makes opt=0: it "
+                         "starts over\n");
+        CHECK(line && !strstr(line + 1, "JIT cache snx-test-jit-cache.bin"));
+        if (!line) fprintf(stderr, "what the service said: %s", said);
+#endif
+        /* the file is the run's now */
+        f = fopen(path, "rb");
+        if (f) {
+            got = fread(head, 1, sizeof head, f);
+            fclose(f);
+        }
+        CHECK(mine && got >= 12 + strlen(mine) && !memcmp(head + 12, mine, strlen(mine)));
+        free(other);
+        free(mine);
+    }
     remove(path);
     cache_path = NULL;
 }
