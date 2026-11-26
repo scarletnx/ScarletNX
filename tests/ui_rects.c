@@ -6,6 +6,8 @@
    rectangles: a row like the one above it adds none */
 #include "common/utilities/font.h"
 #include "common/utilities/ui_rects.h"
+#include "common/utilities/ui_ring.h"
+#include "gui/icons.h"
 #include "support/ui_shape_ref.h"
 #include <math.h>
 #include <stdio.h>
@@ -131,10 +133,45 @@ int main(void) {
     CHECK(g_rects.rect[1].x + g_rects.rect[1].w == W && g_rects.rect[1].y + g_rects.rect[1].h == H);
     l.n = 0;
     CHECK(snx_ui_rects(&g_rects, &l, W, H) && !g_rects.count);
+    /* the menus' icons, their font's bits at whole scales (gui/icons.h) */
+    for (int scale = 1; scale <= 3; ++scale)
+        for (unsigned icon = GUI_ICON_FIRST; icon < GUI_ICON_END; icon += 7) {
+            SnxUiList li = {g_quads, 0, 64};
+            CHECK(ui_icon(&li, 10, 20, scale, icon, 0xFF00FF00u) == 16.0f * (float)scale && fill(&li) == 0);
+            for (int y = 0; y < 16 * scale; ++y)
+                for (int x = 0; x < 16 * scale; ++x) {
+                    unsigned i = icon - GUI_ICON_FIRST, half = (unsigned)(x / scale / 8), row = (unsigned)(y / scale);
+                    int on = gui_icon_font[(i * 2 + half) * 16 + row] >> (7 - x / scale % 8) & 1;
+                    CHECK((g_picture[20 + y][10 + x] != 0) == on);
+                }
+        }
+    /* a backed letter on its ground (ui_ground), every pixel of its cell one or the other */
+    {
+        SnxUiList lb = {g_quads, 0, 64};
+        ui_text_backed(&lb, 10, 20, 2, "A", 0xFFFFFFFFu);
+        CHECK(fill(&lb) > 0);
+        for (int y = 0; y < 32; ++y)
+            for (int x = 0; x < 16; ++x) {
+                int on = gui_vga_font['A' * 16 + y / 2] >> (7 - x / 2) & 1;
+                CHECK(g_picture[20 + y][10 + x] == (on ? 0xFFFFFFFFu : ui_ground()));
+            }
+    }
+    /* the ring's bars where their slots put them, the newest at the right, past slow_from in the slow colour, none for a
+       height of 0 */
+    {
+        static const u8 heights[3] = {0, 255, 128};
+        SnxUiList lr = {g_quads, 0, 64};
+        ui_ring_set(heights, 3, 2, 200, 0xFF0000FFu, 1);
+        ui_ring_bars(&lr, 0, 0, 30, 100, 3, 0xFF00FF00u);
+        CHECK(fill(&lr) == 0);
+        CHECK(g_picture[90][25] == 0xFF00FF00u && !g_picture[30][25]); /* the newest: half the graph's height */
+        CHECK(g_picture[10][15] == 0xFF0000FFu && g_picture[99][15] == 0xFF0000FFu); /* a full one, slow */
+        CHECK(!g_picture[90][5]);                                                    /* height 0: nothing */
+    }
     snx_ui_rects_free(&g_rects);
     CHECK(!g_rects.rect && !g_rects.count);
     printf(
-        "ui_rects: %ld shapes, %ld pixels as ui.frag writes them, %zu rectangles at most; letters and fills passed\n",
+        "ui_rects: %ld shapes, %ld pixels as ui.frag writes them, %zu rectangles at most; letters, fills, icons, grounds and the ring passed\n",
         cases, all, most);
     return 0;
 }

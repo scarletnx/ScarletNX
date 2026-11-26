@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "common/utilities/ui_rects.h"
+#include "common/utilities/ui_ring.h"
+#include "gui/icons.h"
 #include "common/utilities/font.h"
 #include <math.h>
 #include <stdlib.h>
@@ -147,7 +149,21 @@ bool snx_ui_rects(SnxUiRects* out, const SnxUiList* quads, int w, int h) {
     out->count = 0;
     ++out->version;
     for (int i = 0; i < quads->n; ++i) {
-        const SnxUiQuadView q = ui_view(&quads->q[i]);
+        const SnxUiQuadView q = ui_drawn(&quads->q[i]); /* a ring's bar where its slot puts it */
+        SnxUiQuadView ground;
+        if (ui_drawn_ground(&quads->q[i],
+                            &ground)) { /* a backed letter's or icon's ground first, as the SDL renderer */
+            Rows under = {.out = out, .w = w, .h = h, .rgba = ground.rgba, .y = -2};
+            int top = from(ground.y), foot = from(ground.y + ground.h);
+            for (int y = top < 0 ? 0 : top; y < (foot > h ? h : foot) && !under.failed; ++y) {
+                Run run = {from(ground.x), from(ground.x + ground.w), 0};
+                row_put(&under, y, &run, 1);
+            }
+            if (under.failed) {
+                out->count = 0;
+                return false;
+            }
+        }
         Rows rows = {.out = out, .w = w, .h = h, .rgba = q.rgba, .y = -2};
         int y0 = from(q.y), y1 = from(q.y + q.h);
         if (!q.uw) continue; /* a blank cell */
@@ -158,7 +174,7 @@ bool snx_ui_rects(SnxUiRects* out, const SnxUiList* quads, int w, int h) {
         for (int y = y0; y < y1 && !rows.failed; ++y) {
             Run runs[ROW_RUNS];
             int n = 0;
-            if (q.ink == UI_SOLID) {
+            if (q.ink == UI_SOLID || q.ink == UI_RING) {
                 runs[n++] = (Run){from(q.x), from(q.x + q.w), 0};
             } else if (q.ink == UI_GLYPH) {
                 int row = (int)(((float)y + 0.5f - q.y) * 16 / q.h);
@@ -166,6 +182,19 @@ bool snx_ui_rects(SnxUiRects* out, const SnxUiList* quads, int w, int h) {
                 for (int c = 0; c < 8; ++c) {
                     if (!(bits >> (15 - c) & 1)) continue;
                     int x0 = from(q.x + q.w * (float)c / 8), x1 = from(q.x + q.w * (float)(c + 1) / 8);
+                    if (n && runs[n - 1].x1 == x0)
+                        runs[n - 1].x1 = x1;
+                    else
+                        runs[n++] = (Run){x0, x1, 0};
+                }
+            } else if (q.ink == UI_ICON) { /* its two halves' rows, as the VGA font's (gui/icons.h) */
+                int row = (int)(((float)y + 0.5f - q.y) * 16 / q.h);
+                row = row < 0 ? 0 : row > 15 ? 15 : row;
+                unsigned bits = (unsigned)gui_icon_font[(q.glyph * 2u) * 16u + (unsigned)row] << 8 |
+                                gui_icon_font[(q.glyph * 2u + 1u) * 16u + (unsigned)row];
+                for (int c = 0; c < 16; ++c) {
+                    if (!(bits >> (15 - c) & 1)) continue;
+                    int x0 = from(q.x + q.w * (float)c / 16), x1 = from(q.x + q.w * (float)(c + 1) / 16);
                     if (n && runs[n - 1].x1 == x0)
                         runs[n - 1].x1 = x1;
                     else
