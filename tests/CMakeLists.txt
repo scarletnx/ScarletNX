@@ -4909,7 +4909,7 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
     # a Penryn no SSE4.2 either
     if(SNX_X64 AND NOT WIN32)
         add_executable(snx-test-recompiler-x64cpu recompiler_backends.c llvm_qemu_words.c qemu_ref/qemu_ref.c
-                       support/host_unicorn.c support/la64_interp.c
+                       support/host_unicorn.c support/la64_interp.c support/frozen.c
                        "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
                        "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
         snx_cpu_helpers_flags(snx-test-recompiler-x64cpu)
