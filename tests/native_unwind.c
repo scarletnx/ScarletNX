@@ -978,10 +978,10 @@ int main(void) {
 #if !defined(SNX_TEST_ARM64WIN)
     {
         /* a callee of the object's may be another compiler's, which has 32 bytes there to write (in an AOT module LLVM's):
-           push rbx; mov rbx, rcx; sub rsp, imm32 */
+           push rbx; mov rbx, rcx; sub rsp, imm8 or imm32, the frame's low byte after either's three bytes */
         const unsigned char* p =
             (const unsigned char*)(uintptr_t)atomic_load_explicit(&g_test.disp[F_DIRECT], memory_order_relaxed);
-        if (!p || memcmp(p, "\x53\x48\x89\xCB\x48\x81\xEC", 7) || p[7] < 32)
+        if (!p || memcmp(p, "\x53\x48\x89\xCB\x48", 5) || (p[5] != 0x81 && p[5] != 0x83) || p[6] != 0xEC || p[7] < 32)
             failed("its frame has no room for its callee's", F_DIRECT);
     }
 #endif
