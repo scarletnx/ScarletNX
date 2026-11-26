@@ -72,6 +72,20 @@ static inline void sgx_stack_probe(SgXBuf* b) { sgx_bytes(b, SGX_STACK_PROBE_BYT
 static inline void sgx_call_room(SgXAsm* a) {
     if (a->slots_max < SGX_SLOT0(a)) a->slots_max = SGX_SLOT0(a);
 }
+/* SUB or ADD RSP, the frame: the four-byte imm8 form where the whole frame fits in a signed byte, the seven-byte
+   imm32 form on a function made again for a bigger one (x64_codegen.c) or on a block whose size isn't known yet.
+   frame_at records the immediate's place; x64_elf.c's unwind reader knows both forms */
+static inline void sgx_frame(SgXBuf* b, int add, int big) {
+    sgx_byte(b, 0x48);
+    sgx_byte(b, big ? 0x81 : 0x83);
+    sgx_byte(b, add ? 0xC4 : 0xEC);
+}
+/* the frame's size in place at one of sgx_frame's immediates */
+static inline void sgx_frame_patch(SgXBuf* b, size_t at, int size, int big) {
+    unsigned char* p = b->p + at;
+    p[0] = (unsigned char)size;
+    if (big) p[1] = (unsigned char)(size >> 8), p[2] = (unsigned char)(size >> 16), p[3] = (unsigned char)(size >> 24);
+}
 
 /* ---- XMM registers: vectors' values and spilled general-purpose ones ---- */
 
@@ -376,7 +390,14 @@ static inline void sgx_assemble_cold(SgXAsm* a, int at) {
             outslot = a->slots + n;
             n += 2;
             for (k = 0; k < 3; ++k) {
-                SgXV* vv = &x->v[i->in[1 + k]];
+                int v = i->in[1 + k], j;
+                SgXV* vv = &x->v[v];
+                for (j = 0; j < k; ++j)
+                    if (i->in[1 + j] == v) break; /* the same operand: the helper reads the same 16 bytes */
+                if (j < k) {
+                    aslot[k] = aslot[j];
+                    continue;
+                }
                 if (vv->reg >= 0) {
                     aslot[k] = a->slots + n;
                     n += 2;
@@ -388,7 +409,15 @@ static inline void sgx_assemble_cold(SgXAsm* a, int at) {
             {
                 static const signed char lea_to[2][4] = {{6, 2, 1, 8}, {2, 8, 9, 0}};
                 for (k = 0; k < 4; ++k) {
-                    int dst = lea_to[win64][k], at8 = 8 * (k ? aslot[k - 1] : outslot);
+                    int dst = lea_to[win64][k], at8 = 8 * (k ? aslot[k - 1] : outslot), j;
+                    if (k) {
+                        for (j = 1; j < k; ++j)
+                            if (aslot[j - 1] == aslot[k - 1]) break;
+                        if (j < k) { /* an earlier argument's address: copy it, not a second LEA */
+                            sgx_mov_rr(a, dst, lea_to[win64][j]);
+                            continue;
+                        }
+                    }
                     sgx_byte(c, (unsigned char)(0x48 | (dst >> 3) << 2)); /* lea dst, [rsp + at8] */
                     sgx_byte(c, 0x8D);
                     sgx_byte(c, (unsigned char)(0x84 | (dst & 7) << 3));

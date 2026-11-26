@@ -293,6 +293,80 @@ static inline void sgx_e_ANDN_r64a_r64b_r_m64(SgXBuf* b, const unsigned char* r,
     sgx_modrm(b, r[0] & 7, r[2]);
 }
 
+/* BSF r16, r/m16: 0F BC /r (the SDM's BSF) */
+static inline void sgx_e_BSF_r16_r_m16(SgXBuf* b, const unsigned char* r, long long imm, int cc) {
+    (void)r, (void)imm, (void)cc;
+    sgx_byte(b, 0x66);
+    {
+        unsigned rex = 0x40 | (r[0] >> 3) << 2 | (r[1] & 15) >> 3 | sgx_rex_x(b, r[1]);
+        if (rex != 0x40) sgx_byte(b, (unsigned char)rex);
+    }
+    sgx_byte(b, 0x0F);
+    sgx_byte(b, 0xBC);
+    sgx_modrm(b, r[0] & 7, r[1]);
+}
+
+/* BSF r32, r/m32: 0F BC /r (the SDM's BSF) */
+static inline void sgx_e_BSF_r32_r_m32(SgXBuf* b, const unsigned char* r, long long imm, int cc) {
+    (void)r, (void)imm, (void)cc;
+    {
+        unsigned rex = 0x40 | (r[0] >> 3) << 2 | (r[1] & 15) >> 3 | sgx_rex_x(b, r[1]);
+        if (rex != 0x40) sgx_byte(b, (unsigned char)rex);
+    }
+    sgx_byte(b, 0x0F);
+    sgx_byte(b, 0xBC);
+    sgx_modrm(b, r[0] & 7, r[1]);
+}
+
+/* BSF r64, r/m64: REX.W + 0F BC /r (the SDM's BSF) */
+static inline void sgx_e_BSF_r64_r_m64(SgXBuf* b, const unsigned char* r, long long imm, int cc) {
+    (void)r, (void)imm, (void)cc;
+    {
+        unsigned rex = 0x48 | (r[0] >> 3) << 2 | (r[1] & 15) >> 3 | sgx_rex_x(b, r[1]);
+        sgx_byte(b, (unsigned char)rex);
+    }
+    sgx_byte(b, 0x0F);
+    sgx_byte(b, 0xBC);
+    sgx_modrm(b, r[0] & 7, r[1]);
+}
+
+/* BSR r16, r/m16: 0F BD /r (the SDM's BSR) */
+static inline void sgx_e_BSR_r16_r_m16(SgXBuf* b, const unsigned char* r, long long imm, int cc) {
+    (void)r, (void)imm, (void)cc;
+    sgx_byte(b, 0x66);
+    {
+        unsigned rex = 0x40 | (r[0] >> 3) << 2 | (r[1] & 15) >> 3 | sgx_rex_x(b, r[1]);
+        if (rex != 0x40) sgx_byte(b, (unsigned char)rex);
+    }
+    sgx_byte(b, 0x0F);
+    sgx_byte(b, 0xBD);
+    sgx_modrm(b, r[0] & 7, r[1]);
+}
+
+/* BSR r32, r/m32: 0F BD /r (the SDM's BSR) */
+static inline void sgx_e_BSR_r32_r_m32(SgXBuf* b, const unsigned char* r, long long imm, int cc) {
+    (void)r, (void)imm, (void)cc;
+    {
+        unsigned rex = 0x40 | (r[0] >> 3) << 2 | (r[1] & 15) >> 3 | sgx_rex_x(b, r[1]);
+        if (rex != 0x40) sgx_byte(b, (unsigned char)rex);
+    }
+    sgx_byte(b, 0x0F);
+    sgx_byte(b, 0xBD);
+    sgx_modrm(b, r[0] & 7, r[1]);
+}
+
+/* BSR r64, r/m64: REX.W + 0F BD /r (the SDM's BSR) */
+static inline void sgx_e_BSR_r64_r_m64(SgXBuf* b, const unsigned char* r, long long imm, int cc) {
+    (void)r, (void)imm, (void)cc;
+    {
+        unsigned rex = 0x48 | (r[0] >> 3) << 2 | (r[1] & 15) >> 3 | sgx_rex_x(b, r[1]);
+        sgx_byte(b, (unsigned char)rex);
+    }
+    sgx_byte(b, 0x0F);
+    sgx_byte(b, 0xBD);
+    sgx_modrm(b, r[0] & 7, r[1]);
+}
+
 /* BSWAP r32: 0F C8+rd (the SDM's BSWAP) */
 static inline void sgx_e_BSWAP_r32(SgXBuf* b, const unsigned char* r, long long imm, int cc) {
     (void)r, (void)imm, (void)cc;
@@ -1135,6 +1209,32 @@ static inline void sgx_e_OR_r64_r_m64(SgXBuf* b, const unsigned char* r, long lo
     sgx_modrm(b, r[0] & 7, r[1]);
 }
 
+/* POPCNT r32, r/m32: F3 0F B8 /r (the SDM's POPCNT) */
+static inline void sgx_e_POPCNT_r32_r_m32(SgXBuf* b, const unsigned char* r, long long imm, int cc) {
+    (void)r, (void)imm, (void)cc;
+    sgx_byte(b, 0xF3);
+    {
+        unsigned rex = 0x40 | (r[0] >> 3) << 2 | (r[1] & 15) >> 3 | sgx_rex_x(b, r[1]);
+        if (rex != 0x40) sgx_byte(b, (unsigned char)rex);
+    }
+    sgx_byte(b, 0x0F);
+    sgx_byte(b, 0xB8);
+    sgx_modrm(b, r[0] & 7, r[1]);
+}
+
+/* POPCNT r64, r/m64: F3 REX.W 0F B8 /r (the SDM's POPCNT) */
+static inline void sgx_e_POPCNT_r64_r_m64(SgXBuf* b, const unsigned char* r, long long imm, int cc) {
+    (void)r, (void)imm, (void)cc;
+    sgx_byte(b, 0xF3);
+    {
+        unsigned rex = 0x48 | (r[0] >> 3) << 2 | (r[1] & 15) >> 3 | sgx_rex_x(b, r[1]);
+        sgx_byte(b, (unsigned char)rex);
+    }
+    sgx_byte(b, 0x0F);
+    sgx_byte(b, 0xB8);
+    sgx_modrm(b, r[0] & 7, r[1]);
+}
+
 /* ROR r/m32, CL: D3 /1 (the SDM's RCL/RCR/ROL/ROR) */
 static inline void sgx_e_ROR_r_m32_CL(SgXBuf* b, const unsigned char* r, long long imm, int cc) {
     (void)r, (void)imm, (void)cc;
@@ -1714,6 +1814,20 @@ static inline void sgx_e_TEST_r_m64_r64(SgXBuf* b, const unsigned char* r, long 
     }
     sgx_byte(b, 0x85);
     sgx_modrm(b, r[1] & 7, r[0]);
+}
+
+/* TZCNT r16, r/m16: F3 0F BC /r (the SDM's TZCNT) */
+static inline void sgx_e_TZCNT_r16_r_m16(SgXBuf* b, const unsigned char* r, long long imm, int cc) {
+    (void)r, (void)imm, (void)cc;
+    sgx_byte(b, 0x66);
+    sgx_byte(b, 0xF3);
+    {
+        unsigned rex = 0x40 | (r[0] >> 3) << 2 | (r[1] & 15) >> 3 | sgx_rex_x(b, r[1]);
+        if (rex != 0x40) sgx_byte(b, (unsigned char)rex);
+    }
+    sgx_byte(b, 0x0F);
+    sgx_byte(b, 0xBC);
+    sgx_modrm(b, r[0] & 7, r[1]);
 }
 
 /* TZCNT r32, r/m32: F3 0F BC /r (the SDM's TZCNT) */
@@ -2394,16 +2508,52 @@ static const SgXSel sgx_sel_clz_64[] = {
     {sgx_e_LZCNT_r64_r_m64, SGX_F_LZCNT, 1, {1, -1, -1, -1}, 0x0, 0x0, 0, '-', 0, 1, 0, 0x0, 0x0, 0x3f, {-1, -1, -1, -1}, 0x0, 0, {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1}},
 };
 #define sgx_sel_clz_64_n 1
+static const SgXSel sgx_sel_highest_16[] = {
+    /* BSR r16, r/m16 */
+    {sgx_e_BSR_r16_r_m16, 0, 1, {1, -1, -1, -1}, 0x0, 0x0, 0, '-', 0, 0, 0, 0x0, 0x0, 0x3f, {-1, -1, -1, -1}, 0x0, 0, {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1}},
+};
+#define sgx_sel_highest_16_n 1
+static const SgXSel sgx_sel_highest_32[] = {
+    /* BSR r32, r/m32 */
+    {sgx_e_BSR_r32_r_m32, 0, 1, {1, -1, -1, -1}, 0x0, 0x0, 0, '-', 0, 1, 0, 0x0, 0x0, 0x3f, {-1, -1, -1, -1}, 0x0, 0, {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1}},
+};
+#define sgx_sel_highest_32_n 1
+static const SgXSel sgx_sel_highest_64[] = {
+    /* BSR r64, r/m64 */
+    {sgx_e_BSR_r64_r_m64, 0, 1, {1, -1, -1, -1}, 0x0, 0x0, 0, '-', 0, 1, 0, 0x0, 0x0, 0x3f, {-1, -1, -1, -1}, 0x0, 0, {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1}},
+};
+#define sgx_sel_highest_64_n 1
+static const SgXSel sgx_sel_ctz_16[] = {
+    /* TZCNT r16, r/m16 */
+    {sgx_e_TZCNT_r16_r_m16, SGX_F_BMI1, 1, {1, -1, -1, -1}, 0x0, 0x0, 0, '-', 0, 0, 0, 0x0, 0x0, 0x3f, {-1, -1, -1, -1}, 0x0, 0, {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1}},
+    /* BSF r16, r/m16 */
+    {sgx_e_BSF_r16_r_m16, 0, 1, {1, -1, -1, -1}, 0x0, 0x0, 0, '-', 0, 0, 0, 0x0, 0x0, 0x3f, {-1, -1, -1, -1}, 0x0, 0, {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1}},
+};
+#define sgx_sel_ctz_16_n 2
 static const SgXSel sgx_sel_ctz_32[] = {
     /* TZCNT r32, r/m32 */
     {sgx_e_TZCNT_r32_r_m32, SGX_F_BMI1, 1, {1, -1, -1, -1}, 0x0, 0x0, 0, '-', 0, 1, 0, 0x0, 0x0, 0x3f, {-1, -1, -1, -1}, 0x0, 0, {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1}},
+    /* BSF r32, r/m32 */
+    {sgx_e_BSF_r32_r_m32, 0, 1, {1, -1, -1, -1}, 0x0, 0x0, 0, '-', 0, 1, 0, 0x0, 0x0, 0x3f, {-1, -1, -1, -1}, 0x0, 0, {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1}},
 };
-#define sgx_sel_ctz_32_n 1
+#define sgx_sel_ctz_32_n 2
 static const SgXSel sgx_sel_ctz_64[] = {
     /* TZCNT r64, r/m64 */
     {sgx_e_TZCNT_r64_r_m64, SGX_F_BMI1, 1, {1, -1, -1, -1}, 0x0, 0x0, 0, '-', 0, 1, 0, 0x0, 0x0, 0x3f, {-1, -1, -1, -1}, 0x0, 0, {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1}},
+    /* BSF r64, r/m64 */
+    {sgx_e_BSF_r64_r_m64, 0, 1, {1, -1, -1, -1}, 0x0, 0x0, 0, '-', 0, 1, 0, 0x0, 0x0, 0x3f, {-1, -1, -1, -1}, 0x0, 0, {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1}},
 };
-#define sgx_sel_ctz_64_n 1
+#define sgx_sel_ctz_64_n 2
+static const SgXSel sgx_sel_bitcount_32[] = {
+    /* POPCNT r32, r/m32 */
+    {sgx_e_POPCNT_r32_r_m32, SGX_F_POPCNT, 1, {1, -1, -1, -1}, 0x0, 0x0, 0, '-', 0, 1, 0, 0x0, 0x0, 0x3f, {-1, -1, -1, -1}, 0x0, 0, {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1}},
+};
+#define sgx_sel_bitcount_32_n 1
+static const SgXSel sgx_sel_bitcount_64[] = {
+    /* POPCNT r64, r/m64 */
+    {sgx_e_POPCNT_r64_r_m64, SGX_F_POPCNT, 1, {1, -1, -1, -1}, 0x0, 0x0, 0, '-', 0, 1, 0, 0x0, 0x0, 0x3f, {-1, -1, -1, -1}, 0x0, 0, {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1}},
+};
+#define sgx_sel_bitcount_64_n 1
 static const SgXSel sgx_sel_rev_32[] = {
     /* BSWAP r32 */
     {sgx_e_BSWAP_r32, 0, -1, {0, -1, -1, -1}, 0x0, 0x0, 0, '-', 0, 1, 1, 0x0, 0x0, 0x0, {-1, -1, -1, -1}, 0x0, 0, {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1}},

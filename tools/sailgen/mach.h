@@ -19,7 +19,7 @@
    (SGX_CC_EXTRA: risc.h's kind of virtual flags); a division of two operands whose divisor mach.h makes 1 where it is 0
    or -1 under the most negative value (SGX_DIV_2OP, not x86's RDX:RAX); vector registers for values (SGX_HAS_VREGS:
    without them a SIMD&FP register is two doublewords in general-purpose ones); the floating point all helpers'
-   (SGX_FP_HELPERS) */
+   (SGX_FP_HELPERS); a POPCNT selection for BitCount (SGX_HAS_POPCNT) */
 #ifndef SGX_CC_EXTRA
 #define SGX_CC_EXTRA(fsel) 0
 #endif
@@ -31,6 +31,9 @@
 #endif
 #ifndef SGX_FP_HELPERS
 #define SGX_FP_HELPERS 0 /* mach_a64.h's exact helpers for all the floating point, not the machine's own code */
+#endif
+#ifndef SGX_HAS_POPCNT
+#define SGX_HAS_POPCNT 0
 #endif
 /* a machine of two calling conventions (x64.h's): the registers values may be in, a call's argument n's register (past
    the machine's registers, SGX_NREG + a slot of the frame, where the convention has it on the stack), the frame's first
@@ -1881,8 +1884,18 @@ static inline SgI sg_i_clz(SgCtx* g, SgD a) {
         return sgx_int(sg_d_sub(g, r.v, sgx_const(64, 32 - w)), 0);
     }
     if (w != 32 && w != 64) sg_fail("CLZ of a value not of 32 or 64 bits", w, 0);
-    if (!sgx_pick(x, SGX_TABLE(clz, w), SGX_TABLE_N(clz, w), 0, w, 0)) return sgx_int(sg_d_zext(g, sgx_clz_search(g, a), 64), 0);
-    return sgx_int(sg_d_zext(g, SGX_OP(x, clz, w, a), 64), 0);
+    if (sgx_pick(x, SGX_TABLE(clz, w), SGX_TABLE_N(clz, w), 0, w, 0))
+        return sgx_int(sg_d_zext(g, SGX_OP(x, clz, w, a), 64), 0);
+#ifdef SGX_HAS_HIGHEST
+    if (sgx_pick(x, SGX_TABLE(highest, w), SGX_TABLE_N(highest, w), 0, w, 0)) {
+        /* BSR's DEST is guarded by the SDM's SRC <> 0: test for 0 after the subtraction, so the CMOVcc reads
+           the test's flags, and CLZ(0) is W. W - 1 - index is unsigned at the operand's width */
+        SgD n = sg_d_sub(g, sgx_const(w, w - 1), SGX_OP(x, highest, w, a));
+        SgB zero = sg_d_is_zero(g, a);
+        return sgx_int(sg_d_zext(g, sg_d_select(g, zero, sgx_const(w, w), n), 64), 0);
+    }
+#endif
+    return sgx_int(sg_d_zext(g, sgx_clz_search(g, a), 64), 0);
 }
 
 /* ---- flags ----
@@ -2255,6 +2268,8 @@ typedef struct SgXAsm {
     void (*reloc)(void* machine, size_t at, const char* sym, long long addend);
     SnxU64 (*resolve)(const char* sym);
     void (*pin_flush)(void* machine); /* the guest registers kept in host ones to the state (before UNDEF's call) */
+    /* the same pins back from the state, after a call whose helper wrote registers there */
+    void (*pin_reload)(void* machine);
     /* the pins in caller-saved registers (R10, R11, XMM8-15) to the state (store) or back, around a call; the host
        registers pins hold, which no value is given (reserved, xreserved) */
     void (*pin_cs)(void* machine, int store);
@@ -3254,9 +3269,17 @@ static inline void sg_SignedSatQ(SgCtx* g, SgI i, long long n, SgD* result, SgB*
 static inline void sg_UnsignedSatQ(SgCtx* g, SgI i, long long n, SgD* result, SgB* saturated) {
     sg_SatQ(g, i, n, 1, result, saturated);
 }
-/* BitCount(x): the bits of each two, of each four, of each byte, then all the bytes' */
+/* BitCount(x): the bits of each two, of each four, of each byte, then all the bytes'. A host with POPCNT makes
+   the count in one instruction; the others keep this exact composition */
 static inline SgI sg_i_bitcount(SgCtx* g, SgD x) {
+    sgx_flat(sgx(g), &x);
+
     unsigned w = x.w;
+#if SGX_HAS_POPCNT
+    SgX* m = sgx(g);
+    if ((w == 32 || w == 64) && sgx_pick(m, SGX_TABLE(bitcount, w), SGX_TABLE_N(bitcount, w), 0, w, 0))
+        return sgx_int(sg_d_zext(g, SGX_OP(m, bitcount, w, x), 64), 0);
+#endif
     SgD v;
     if (w > 64) sg_fail("BitCount of over 64 bits", w, 0);
     v = sg_d_zext(g, x, 64);

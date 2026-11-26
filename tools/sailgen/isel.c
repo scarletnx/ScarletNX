@@ -437,7 +437,7 @@ static void forms_of(const Page* p) {
         for (k = 0; k < n; ++k)
             if (!operand_kind(ops[k], &f.op[k])) break;
         if (k < n) continue;
-        snprintf(f.feature, sizeof f.feature, "%s", row->c[5]);
+        snprintf(f.feature, sizeof f.feature, "%s", !strcmp(p->name, "POPCNT") ? "POPCNT" : row->c[5]);
         for (k = 0; k < n; ++k) f.xmm |= f.op[k].xmm;
         if (!parse_opcode(&f, row->c[0])) continue;
         for (k = 0; k < (int)p->nenc; ++k)
@@ -1022,6 +1022,8 @@ static Val call(Ctx* c, Env* e, const XCode* code, const char* f, unsigned args)
     if (!strcmp(f, "SInt") && n == 1) return vint(S(a[0]), S(a[0]));
     if (!strcmp(f, "IsZero") && n == 1 && a[0].kind == V_BITS)
         return vbits(t_eq(a[0].t, t_const(t_width(a[0].t), i128(0))));
+    if (!strcmp(f, "BitCount") && n == 1 && a[0].kind == V_BITS)
+        return vbits(t_popcnt(a[0].t));
     if (!strcmp(f, "MSB") && n == 1 && a[0].kind == V_BITS)
         return vbits(t_extract(a[0].t, t_width(a[0].t) - 1, t_width(a[0].t) - 1));
     if (!strcmp(f, "LSB") && n == 1 && a[0].kind == V_BITS) return vbits(t_extract(a[0].t, 0, 0));
@@ -1388,6 +1390,70 @@ static int summarize(Ctx* c, Env* e, const XCode* code, unsigned cond, unsigned 
     return 1;
 }
 
+/* a WHILE Bit(SRC, temp) = 0 DO temp := temp + 1 (or - 1) OD: a scan of SRC from one end for its first set bit,
+   whose index temp holds on exit. The loop runs past the operand when SRC is all zeroes; the page's SRC <> 0 guard
+   keeps the old DEST then, so the value past the end is only a sentinel. 1 when recognized, temp becoming the
+   index's term */
+static int scan_bits(Ctx* c, Env* e, const XCode* code, unsigned cond, unsigned body) {
+    const XNode* cn = &code->nodes[cond];
+    const XNode *bit, *arg, *v;
+    const char *src_name, *counter;
+    unsigned a = cn->a, b = cn->b, second, src, tree, k, w = (unsigned)c->opsize, steps = 0;
+    const XNode* st;
+    Val* cv;
+    Ref r;
+    long long start;
+    int up, stop;
+    if (cn->kind != X_BIN || (strcmp(cn->text, "=") && strcmp(cn->text, "!="))) return 0;
+    if (code->nodes[a].kind == X_CALL && !strcmp(code->nodes[a].text, "Bit") && code->nodes[b].kind == X_NUM &&
+        code->nodes[b].value == 0)
+        bit = &code->nodes[a];
+    else if (code->nodes[b].kind == X_CALL && !strcmp(code->nodes[b].text, "Bit") &&
+             code->nodes[a].kind == X_NUM && code->nodes[a].value == 0)
+        bit = &code->nodes[b];
+    else return 0;
+    stop = !strcmp(cn->text, "="); /* the bit that ends the scan: 1 for '= 0', 0 for '!= 0' */
+    arg = &code->nodes[bit->a];
+    second = arg->next;
+    if (arg->kind != X_NAME || !second || code->nodes[second].kind != X_NAME || code->nodes[second].next) return 0;
+    src_name = arg->text;
+    counter = code->nodes[second].text;
+    cv = local(e, counter);
+    if (!cv || !const_int(*cv, &start) || w < 1 || w > 128) return 0;
+    up = start == 0;
+    if (!up && start != (long long)w - 1) return 0;
+    for (second = body; second; second = code->nodes[second].next) {
+        st = &code->nodes[second];
+        if (st->kind != X_ASSIGN || code->nodes[st->a].kind != X_NAME || strcmp(code->nodes[st->a].text, counter))
+            return 0;
+        v = &code->nodes[st->b];
+        if (v->kind != X_BIN || (strcmp(v->text, "+") && strcmp(v->text, "-")) ||
+            code->nodes[v->a].kind != X_NAME || strcmp(code->nodes[v->a].text, counter) ||
+            code->nodes[v->b].kind != X_NUM || code->nodes[v->b].value != 1 || (v->text[0] == '+') != up)
+            return 0;
+        ++steps;
+    }
+    if (steps != 1 || !resolve(c, src_name, &r) || r.imm || !e->cell[r.cell] || r.hi < r.lo ||
+        r.hi - r.lo + 1 != w)
+        return 0;
+    src = read_ref(c, e, &r);
+    if (!src || c->unreadable || t_width(src) != w) return 0;
+    /* fold from the far end: the first step tested is the outermost choice, as in the primitives' FOR loops */
+    tree = t_const(w, i128((long long)w)); /* past the end, unreachable while SRC <> 0 */
+    if (up)
+        for (k = w; k-- > 0;) {
+            unsigned one = t_extract(src, k, k);
+            tree = t_ite(stop ? one : t_not(one), t_const(w, i128((long long)k)), tree);
+        }
+    else
+        for (k = 0; k < w; ++k) {
+            unsigned one = t_extract(src, k, k);
+            tree = t_ite(stop ? one : t_not(one), t_const(w, i128((long long)k)), tree);
+        }
+    set_local(e, counter, vbits(tree));
+    return 1;
+}
+
 /* a loop unrolled while its condition is decided, and as nested choices where it is not (LZCNT's, TZCNT's) */
 static void unroll(Ctx* c, Env* e, const XCode* code, unsigned cond, unsigned body, int depth) {
     unsigned cb;
@@ -1455,7 +1521,10 @@ static void exec(Ctx* c, Env* e, const XCode* code, unsigned s) {
     case X_WHILE:
         if (!summarize(c, e, code, x->a, x->b)) {
             c->unreadable = 0;
-            unroll(c, e, code, code->nodes[s].a, code->nodes[s].b, 0);
+            if (!scan_bits(c, e, code, x->a, x->b)) {
+                c->unreadable = 0;
+                unroll(c, e, code, code->nodes[s].a, code->nodes[s].b, 0);
+            }
         }
         return;
     case X_FOR: {
@@ -1666,6 +1735,14 @@ static char* g_page_parsed;
 
 static unsigned page_index(const Page* p) { return (unsigned)(p - g_sdm.pages); }
 
+/* POPCNT's Operation is the one C loop ('For (i=0; i < OperandSize; i++) { ... Count++; }'), which sdm_code.c
+   reads as a statement it can't place. The Description and the loop say the primitive's BitCount of the source's
+   low OperandSize bits. The page's exception for CPUID.01H:ECX.POPCNT gives the feature set in forms_of */
+static const char* operation_of(const Page* p) {
+    if (!strcmp(p->name, "POPCNT")) return "DEST := BitCount(TruncateToOperandSize(SRC));\n";
+    return p->operation;
+}
+
 static void evaluate_form(unsigned fi) {
     Form* f = &g_forms[fi];
     FEval* r = &g_evals[fi];
@@ -1685,7 +1762,7 @@ static void evaluate_form(unsigned fi) {
     c.opsize = f->opsize;
     c.mnem = f->mnem;
     if (!g_page_parsed[pi]) {
-        g_page_first[pi] = x_parse(&g_page_code[pi], f->page->operation);
+        g_page_first[pi] = x_parse(&g_page_code[pi], operation_of(f->page));
         g_page_parsed[pi] = 1;
     }
     for (k = 0; k < (unsigned)f->nops; ++k) {
@@ -2434,6 +2511,7 @@ static const char* feature_c(const char* f) {
     if (!strcmp(f, "BMI1")) return "SGX_F_BMI1";
     if (!strcmp(f, "BMI2")) return "SGX_F_BMI2";
     if (!strcmp(f, "LZCNT")) return "SGX_F_LZCNT";
+    if (!strcmp(f, "POPCNT")) return "SGX_F_POPCNT";
     return NULL;
 }
 

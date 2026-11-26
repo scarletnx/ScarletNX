@@ -9,6 +9,48 @@
    address from RDI into RBX, kept as RBX is the callee's), the runtime's UNDEF (cpu.h's RtAPI.undef(state, pc, word))
    and the return (the next pc in RAX) */
 
+/* PMUL, PMULL of bytes (x64_helpers.c): one call per instruction, q the encoding's Q bit in desc. The arguments
+   and result follow snx_x64_fp_vec's, so sgx_vcold can call them */
+void snx_x64_pmul_v(CPU* c, void* out, const void* x, const void* y, const void* z, u32 q);
+void snx_x64_pmull_p8(CPU* c, void* out, const void* x, const void* y, const void* z, u32 q);
+
+/* SQSHL, UQSHL, SRSHL, URSHL, SQRSHL and UQRSHL of byte and halfword lanes (x64_helpers.c): one call per
+   instruction, with the arguments and result as snx_x64_fp_vec's. desc is size (bits 0-1), q (bit 2), unsigned
+   (bit 3), rounding (bit 4) and saturating (bit 5); the helper sets FPSR.QC */
+#define SNX_X64_SHL_DESC(q, size, uns, round, sat)                                                                     \
+    ((u32)(size) | (u32)(q) << 2 | (u32)(uns) << 3 | (u32)(round) << 4 | (u32)(sat) << 5)
+void snx_x64_shl_v(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
+
+/* SQSHL, UQSHL, SQRSHL, UQRSHL of words (x64_helpers.c): one call per instruction, the arguments and result as
+   snx_x64_fp_vec's. desc is q (bit 0), unsigned (bit 1), round (bit 2) and saturating (bit 3); the helper sets
+   FPSR.QC */
+#define SNX_X64_SHL_W_DESC(q, uns, round, sat)                                                                         \
+    ((u32)(q) | (u32)(uns) << 1 | (u32)(round) << 2 | (u32)(sat) << 3)
+void snx_x64_shl_w(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
+
+/* SQRDMLAH, SQRDMLSH, SQDMLAL by element and SQDMLSL by element (x64_helpers.c): one call per instruction, with the
+   arguments and result as snx_x64_fp_vec's. desc is q (bit 0), size (bits 1-2) and Vm's lane (bits 8-11) */
+#define SNX_X64_QDM_DESC(q, size, idx) ((u32)(q) | (u32)(size) << 1 | (u32)(idx) << 8)
+void snx_x64_sqrdmlah_v(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
+void snx_x64_sqrdmlsh_v(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
+void snx_x64_sqdmlal_vi(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
+void snx_x64_sqdmlsl_vi(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
+
+/* across-lane integer reductions (x64_helpers.c): one call for ADDV, SADDLV, UADDLV, SMAXV, SMINV, UMAXV,
+   UMINV. desc is op (bits 0-2: 0 ADDV, 1 SADDLV, 2 UADDLV, 3 SMAXV, 4 SMINV, 5 UMAXV, 6 UMINV), size (bits
+   3-4) and Q (bit 5) */
+#define SNX_X64_RED_DESC(op, size, q) ((u32)(op) | (u32)(size) << 3 | (u32)(q) << 5)
+void snx_x64_reduce_v(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
+
+/* LD_mult and ST_mult's Q forms of 2 to 4 registers: one call for the whole access (x64_helpers.c). desc packs
+   Rt (bits 0-4), the register count less 2 (bits 5-6), the element size's log2 (bits 7-8) and a load in bit 9.
+   The helper reads and writes the SIMD&FP registers of the state, so the call's side flag keeps every pin stored
+   and reloaded around it */
+void snx_x64_struct_mult(CPU* c, u64 address, u32 desc);
+
+/* mach_codegen.inc's struct_ldst_fast deinterleaves 16-byte structures with PSHUFB on this back end */
+#define MG_X64_STRUCT_FAST 1
+
 /* ---- the hot paths ----
    Each operation is the SSE instruction's, and the exact helper's (snx_x64_fp_*) on a cold path where the result
    may not be the console's: the guards are the LLVM back end's (llvm.h's sg_fp_fast_*). FPCR rounds to nearest
@@ -486,14 +528,14 @@ static inline void sg_Hint_WFI(SgCtx* g) { (void)g; }
 static inline void sg_SendEvent(SgCtx* g) { sgx_call(g, NULL, (int)offsetof(RtAPI, sev), 0, NULL, 0, 0); }
 static inline void sg_SendEventLocal(SgCtx* g) { sg_SendEvent(g); }
 /* CRC32 and CRC32C: the reflected update (BitReverse(Poly32Mod2(...)) as README.md's builtins say): CRC32C SSE4.2's
-   CRC32 instruction, CRC32 a byte at a time through x64_helpers.c's table (SGX_M_CRC) */
+   CRC32 instruction, CRC32 one loop over the bytes of x64_helpers.c's table (SGX_M_CRC) */
 static inline SgD sg_crc32(SgCtx* g, SgD acc_bits, SgD value_bits, long long size, SgS poly) {
     static const signed char fix[2] = {SGX_RAX, SGX_RDX};
     SgD in[2];
     in[0] = sg_d_zext(g, acc_bits, 64);
     in[1] = sg_d_zext(g, value_bits, 64);
     return sg_d_slice(g, sgx_mach(g, SGX_M_CRC, in, fix, 2, size / 8 | (poly.v == 0x1EDC6F41u) << 4,
-                                  1u << SGX_RCX | 1u << SGX_RDX | 1u << SGX_R11, 1, 64), 31, 0);
+                                  1u << SGX_RCX | 1u << SGX_RDX | 1u << SGX_R8 | 1u << SGX_R11, 1, 64), 31, 0);
 }
 
 /* an x86 load is an acquire one (Vol. 3A, 10.2.2: loads are not reordered with other loads, nor stores with older
@@ -521,17 +563,13 @@ static inline void sgx_prologue(SgXAsm* a) {
     sgx_byte(b, 0x48); /* mov rbx, rdi, or rcx */
     sgx_byte(b, 0x89);
     sgx_byte(b, SGX_WIN64(a->x) ? 0xCB : 0xFB);
-    sgx_byte(b, 0x48); /* sub rsp, imm32: the frame, patched */
-    sgx_byte(b, 0x81);
-    sgx_byte(b, 0xEC);
+    sgx_frame(b, 0, 1); /* sub rsp, imm32: a block's frame, patched */
     if (a->nframe < 256) a->frame_at[a->nframe++] = b->n;
     sgx_imm(b, 0, 4);
 }
 static inline void sgx_epilogue(SgXAsm* a) {
     SgXBuf* b = a->b;
-    sgx_byte(b, 0x48); /* add rsp, imm32 */
-    sgx_byte(b, 0x81);
-    sgx_byte(b, 0xC4);
+    sgx_frame(b, 1, 1); /* add rsp, imm32 */
     if (a->nframe < 256) a->frame_at[a->nframe++] = b->n;
     else
         sg_fail("a function of more than 255 epilogues", 0, 0);
@@ -685,9 +723,21 @@ static inline void sgx_machine_inline(SgXAsm* a, SgXIns* i) {
             sgx_bytes(b, "49 BB"); /* mov r11, imm64 */
             sgx_imm(b, (long long)t, 8);
         }
-        for (k = 0; k < bytes; ++k)
-            /* mov ecx, eax; xor cl, dl; movzx ecx, cl; shr eax, 8; xor eax, [r11 + rcx*4]; shr rdx, 8 */
-            sgx_bytes(b, "89 C1 30 D1 0F B6 C9 C1 E8 08 41 33 04 8B 48 C1 EA 08");
+        /* movzx ecx, dl; xor cl, al; shr eax, 8; xor eax, [r11 + rcx*4]; shr rdx, 8 */
+        (void)k;
+        if (bytes == 1) {
+            /* the value's shift is dead: one lookup in EAX is the whole CRC32B update */
+            sgx_bytes(b, "0F B6 CA 30 C1 C1 E8 08 41 33 04 8B");
+            return;
+        }
+        /* one loop for every wider width, not a byte's code each time: mov r8d, bytes; the body; dec r8d; jnz */
+        sgx_bytes(b, "41 B8"); /* mov r8d, imm32 */
+        sgx_imm(b, bytes, 4);
+        {
+            size_t loop = b->n;
+            sgx_bytes(b, "0F B6 CA 30 C1 C1 E8 08 41 33 04 8B 48 C1 EA 08 41 FF C8 0F 85");
+            sgx_imm(b, (long long)loop - (long long)(b->n + 4), 4);
+        }
         return;
     }
     default: return;
@@ -755,7 +805,10 @@ static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r) {
         case SGX_M_CALL:
         case SGX_M_CALL_RT:
             sgx_call_room(a);
-            if (a->pin_cs) a->pin_cs(a->machine, 1); /* the caller-saved pins around the call */
+            /* a helper whose side flag is set wrote the state's SIMD&FP registers: every pin, not just the
+               caller-saved ones, goes to the state and comes back around the call */
+            if (i->side && a->pin_flush) a->pin_flush(a->machine);
+            else if (a->pin_cs) a->pin_cs(a->machine, 1); /* the caller-saved pins around the call */
             if (i->w) sgx_state_arg(a, b);
             if (i->op == SGX_M_CALL_RT) {
                 sgx_byte(b, 0x48); /* mov rax, [rbx + rt] */
@@ -778,7 +831,8 @@ static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r) {
                 sgx_byte(b, 0xFF);
                 sgx_byte(b, 0xD0);
             }
-            if (a->pin_cs) a->pin_cs(a->machine, 0);
+            if (i->side && a->pin_reload) a->pin_reload(a->machine);
+            else if (a->pin_cs) a->pin_cs(a->machine, 0);
             return;
         default: sgx_machine_op(a, at, r); return;
         }

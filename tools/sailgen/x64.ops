@@ -211,11 +211,28 @@ FOR i := 0 TO W - 1 DO
 ROF;
 end
 
-op ctz 32 64 (A)
+# HighestSetBit(x) = W - 1 - CountLeadingZeroBits(x), BSR's DEST under the SDM page's SRC <> 0 guard. A lowering of
+# guest CLZ takes W - 1 - this index
+op highest 16 32 64 (A)
+ASSUME NOT IsZero(A)
+RESULT := W;
+FOR i := 0 TO W - 1 DO
+    IF A[i] = 1 THEN RESULT := i; FI;
+ROF;
+end
+
+# CountTrailingZeros(x), BSF's DEST under the SDM page's SRC <> 0 guard (TZCNT's without it)
+op ctz 16 32 64 (A)
+ASSUME NOT IsZero(A)
 RESULT := W;
 FOR i := W - 1 DOWNTO 0 DO
     IF A[i] = 1 THEN RESULT := i; FI;
 ROF;
+end
+
+# BitCount(x): the number of set bits (POPCNT)
+op bitcount 32 64 (A)
+RESULT := BitCount(A);
 end
 
 # REV: the bytes in the other order
