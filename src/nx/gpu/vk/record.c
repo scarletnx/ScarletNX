@@ -184,7 +184,11 @@ u64 vk_rec_behind(void) {
 }
 
 /* a command for cb goes through the ring */
+static int list_names(VkCommandBuffer cb);
 static int rec_on(VkCommandBuffer cb) {
+    /* a list's: the command buffers its packets name (a split run's, which the renderer thread may have submitted
+       since: the splice names the ring's current ones) */
+    if (list_names(cb)) return 1;
     return g_rec > 0 && (cb == g_rec_cb || (cb && cb == vk_cmd_upload_recording()));
 }
 
@@ -244,8 +248,13 @@ struct VkRecList {
     u8* buf;
     u64 used, cap;
     int failed; /* out of memory: the batch is set up again on the renderer thread */
+    /* the frame's and the uploads' command buffers its packets name, and the submission they were recorded in
+       (vk_rec_list_names): a later submission put both in the queue, and the splice names the ring's current ones */
+    VkCommandBuffer named, named_up;
+    u64 named_submit;
 };
 static _Thread_local VkRecList* t_list;
+static int list_names(VkCommandBuffer cb) { return t_list && cb && (cb == t_list->named || cb == t_list->named_up); }
 static VkRecList* list_pause_at(const char* why);
 #define list_pause() list_pause_at(__func__)
 static void list_resume(VkRecList* l);
@@ -319,14 +328,22 @@ u64 vk_rec_list_bytes(const VkRecList* l) { return l->used; }
    empty. Only while the renderer thread waits for this one (a batch run in turn), as the ring has one producer */
 static _Thread_local int t_list_parallel; /* the ring's producer runs meanwhile (vk_rec_list_parallel) */
 void vk_rec_list_parallel(int on) { t_list_parallel = on; }
+/* a split run's worker that needs the ring or the frame's state itself: from here as a serial batch's, once the
+   renderer thread's half is in the ring (vk_split_go_serial) */
+void vk_rec_list_serial(void) {
+    if (!t_list_parallel) return;
+    vk_split_go_serial();
+    t_list_parallel = 0;
+    /* its list into the ring now, before the caller reads the frame's command buffers: the splice names the ring's
+       current ones (and may begin the uploads' command buffer) */
+    list_resume(list_pause());
+}
 static VkRecList* list_pause_at(const char* why) {
     VkRecList* l = t_list;
     if (!l) return NULL;
     barrier_flush(); /* the list's batch of barriers, into the list before it goes into the ring */
-    if (t_list_parallel)
-        fatal("vulkan: draw_batches=2: a worker's draw needed the recording ring itself (%s, from %p), which the "
-              "renderer thread records into at the same time\n",
-              why, __builtin_return_address(1));
+    (void)why;
+    vk_rec_list_serial();
     t_list = NULL;
     vk_rec_list_splice(l);
     l->used = 0;
@@ -356,8 +373,32 @@ void vk_rec_defer(VkDeferFn fn, const void* arg, u64 size) {
     if (size) memcpy((u8*)x + REC_AL(sizeof *x), arg, (size_t)size);
 }
 int vk_rec_listing(void) { return t_list != NULL; }
-void vk_rec_list_splice(const VkRecList* l) {
+void vk_rec_list_names(VkRecList* l, VkCommandBuffer cb, VkCommandBuffer up) {
+    l->named = cb;
+    l->named_up = up;
+    l->named_submit = vk_submit_number();
+}
+/* A packet's command buffer is the first member of its arguments, in each packet that names one (the argument
+   structs above). A list's packets name the command buffers of when they were recorded (named, named_up). Where
+   the ring submitted since (the renderer thread's half of a split run waited for the GPU), the splice puts in the
+   ring's current ones: the commands keep their order, across the submission. The packets with no command buffer
+   start with a function, a string or small counts, never a command buffer's handle */
+static void list_rename(VkRecList* l, u8* args, u64 n) {
+    if (n < sizeof(VkCommandBuffer)) return;
+    VkCommandBuffer cb;
+    memcpy(&cb, args, sizeof cb);
+    if (cb == l->named)
+        cb = vk_cmd();
+    else if (cb == l->named_up)
+        cb = vk_cmd_upload(1);
+    else
+        return;
+    memcpy(args, &cb, sizeof cb);
+}
+void vk_rec_list_splice(VkRecList* l) {
     barrier_flush(); /* this thread's batch of barriers comes before the list's commands */
+    const int rename = l->named && vk_submit_number() != l->named_submit;
+    if (rename) LOG("TEMPDBG rename %p/%p to %p/%p\n", (void*)l->named, (void*)l->named_up, (void*)vk_cmd(), (void*)vk_cmd_upload(1));
     for (u64 at = 0; at < l->used;) {
         const RecHdr* h = (const RecHdr*)(const void*)(l->buf + at);
         const u64 args = h->size - sizeof(RecHdr);
@@ -366,11 +407,15 @@ void vk_rec_list_splice(const VkRecList* l) {
             memcpy(&x, h + 1, sizeof x);
             barrier_flush();
             x.fn((const u8*)(h + 1) + REC_AL(sizeof x));
-        } else
-            memcpy(rec_push(h->fn, args), h + 1, (size_t)args);
+        } else {
+            u8* p = rec_push(h->fn, args);
+            memcpy(p, h + 1, (size_t)args);
+            if (rename) list_rename(l, p, args);
+        }
         at += h->size;
     }
     rec_commit();
+    l->named = l->named_up = VK_NULL_HANDLE; /* the rest is recorded after it, against the ring's own */
 }
 
 /* Runs of draws (vk_draw_runs=1): whether one Vulkan call could take a direct draw and the one before it, from what
@@ -563,6 +608,7 @@ static void begin_run(const void* p) {
     VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
     VK_OK(vkBeginCommandBuffer(*(const VkCommandBuffer*)p, &bi));
+    LOG_LIMIT(40000, "TEMPDBG begin %p\n", (void*)*(const VkCommandBuffer*)p);
 }
 static void vk_rec_begin_ring(VkCommandBuffer cb) {
     g_rec_cb = cb;
@@ -616,6 +662,7 @@ static void submit_run(const void* p) {
     VkCommandBufferSubmitInfo c[2] = {{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = x->up},
                                       {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = x->cb}};
     u64 t = plat_ns();
+    LOG_LIMIT(40000, "TEMPDBG submit up %p cb %p\n", (void*)x->up, (void*)x->cb);
     if (x->up) VK_OK(vkEndCommandBuffer(x->up));
     VK_OK(vkEndCommandBuffer(x->cb));
     g_submit_end_ns += plat_ns() - t;

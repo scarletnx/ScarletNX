@@ -476,7 +476,9 @@ VkImageLayout vk_surf_layout(const Surf* s) {
 }
 void vk_surf_view_reset(void) { t_sv.n = 0; }
 void vk_surf_before_reset(const Surf* s) {
-    if (!t_sv.n || sv_find(s) < 0) return;
+    /* a hosted target's uses are in its host's view (vk_surf_use), and its deferred uses name the target: freed or
+       made over, its own and its host's go first */
+    if (!t_sv.n || (sv_find(s) < 0 && (!s->host || sv_find(s->host) < 0))) return;
     vk_rec_list_flush(); /* the deferred uses of s run now, in their order */
     t_sv.n = 0;
 }
@@ -822,6 +824,8 @@ static u64 g_rt_hosted, g_rt_unhosted; /* targets made views of a texture, and g
 static int g_rt_owning;
 void vk_rt_host(Surf* s, Surf* t, u32 level, u32 layer) {
     if (s->host || t->is_rt || s->hosted) return;
+    vk_surf_before_reset(s); /* a worker's deferred uses of its own image first */
+    vk_surf_before_reset(t);
     /* its own image and its views go once the frames that use them are done */
     surf_views_go(s);
     vk_defer_image(s->img, s->mem, VK_NULL_HANDLE, VK_NULL_HANDLE);
@@ -849,6 +853,8 @@ void vk_rt_host(Surf* s, Surf* t, u32 level, u32 layer) {
 }
 void vk_tex_join(Surf* a, Surf* t, u32 level, u32 layer) {
     if (a->host || a->is_rt || t->is_rt || t->host || a == t) return;
+    vk_surf_before_reset(a); /* a worker's deferred uses of the two images, and of a's targets, first */
+    vk_surf_before_reset(t);
     /* a's pixels into its place in t, once: what a loaded and what its targets drew in it */
     vk_render_end();
     VkCommandBuffer cb = vk_cmd();
@@ -884,6 +890,7 @@ void vk_tex_join(Surf* a, Surf* t, u32 level, u32 layer) {
 int vk_rt_own_(Surf* s, const char* why) {
     Surf* t = s->host;
     if (!t) return 1;
+    vk_surf_before_reset(s); /* a worker's deferred uses of its host's image first */
     LOG_LIMIT(24, "vulkan: the %ux%u %s at %llx, a view of the %ux%ux%u texture at %llx, gets an image of its own again "
                   "for %s\n",
               s->w, s->h, s->is_rt ? "render target" : "storage surface", (unsigned long long)s->gva, t->w, t->h,
@@ -3600,6 +3607,7 @@ static void surf_free(Surf* s) {
     if (s->present) vk_defer_image(VK_NULL_HANDLE, 0, s->present, VK_NULL_HANDLE);
     vk_defer_image(s->img, s->mem, s->att, s->att_linear);
     SNX_MEM_FREE_D(s, s->is_rt ? "render targets" : "texture objects");
+    memset(s, 0xA5, sizeof *s); /* TEMPDBG */
     free(s);
 }
 /* a target holding a draw that memory doesn't have: it stays while its address is its own and memory wasn't written
