@@ -6,9 +6,12 @@ them for the nightlies of the nightly repository and a version's release, and th
 request's builds.
 
 The changes are the checkout's history from the commit the previous nightly was built from to the one built, left out
-without it or when it is not an ancestor. The notes link the built commit first, which is where the next nightly finds
-it. Each change links its pull request or commit in the repository: a bare #N in another repository's release would
-name that repository's own.
+without it or when it is not an ancestor: a line for each pull request those commits came in by, with how many they
+are and who opened it, and one for each commit no pull request merged, grouped by the [area] their titles open with.
+Which pull request merged a commit is GitHub's to say (scripts/publish-builds.py asks it); main merges by rebase, so
+its history holds no merge commit to read it from. The notes link the built commit first, which is where the next
+nightly finds it. Each line links its pull request or commit in the repository: a bare #N in another repository's
+release would name that repository's own.
 """
 
 import collections
@@ -40,14 +43,20 @@ RUNNING = {
     'macOS': "unzip it and open `ScarletNX.app`; signed ad hoc, so a download may need *Open* from the Finder's menu the first time.",
     'iOS': 'unsigned: AltStore, SideStore or a developer account signs it for the device.',
 }
-MERGE = re.compile(r'Merge pull request #(\d+) from \S+')
 # what text from a commit or a pull request could make of the markdown around it: a link, a tag, a table cell
 MARKDOWN = re.compile(r'([\\`*_\[\]<>|~])')
+# a title's area, the [vk] or [driver, fs] it opens with
+AREA = re.compile(r'\[([^\]]+)\]\s*(.*)')
+# a pull request's commits listed, at most, before "and N more"
 MOST_CHANGES = 30
+# the lines a nightly's changes list, at most, before "and N more": a day of main is about 40 pull requests
+MOST_LINES = 200
 
-# A change of main: its subject or its pull request's title, the pull request's number (None for a commit pushed to
-# main), and the commit
+# A commit of main: its subject, the number of the pull request that merged it (None for one no pull request merged),
+# and the commit
 Change = collections.namedtuple('Change', 'text pr sha')
+# A pull request as the changes name it: its number, title and author's login
+Pull = collections.namedtuple('Pull', 'number title author')
 
 
 def git(checkout, *args):
@@ -59,9 +68,9 @@ def escape(text):
     return MARKDOWN.sub(r'\\\1', text)
 
 
-def changes(checkout, previous, sha):
-    """What main got from PREVIOUS to SHA, newest first: a merged pull request by its title, any other commit by its
-    subject. None when PREVIOUS is missing or not an ancestor of SHA"""
+def changes(checkout, previous, sha, pulls=None):
+    """What main got from PREVIOUS to SHA, newest first: each commit of its first parents, with the number of the pull
+    request PULLS (commit to Pull) says merged it. None when PREVIOUS is missing or not an ancestor of SHA"""
     if not previous:
         return None
     ancestor = subprocess.run(
@@ -70,26 +79,84 @@ def changes(checkout, previous, sha):
     if ancestor.returncode:
         return None
     items = []
-    log = git(checkout, 'log', '--first-parent', '--format=%H%x1f%s%x1f%b%x1e', f'{previous}..{sha}')
+    log = git(checkout, 'log', '--first-parent', '--format=%H%x1f%s%x1e', f'{previous}..{sha}')
     for record in log.split('\x1e'):
         record = record.strip('\n')
         if not record:
             continue
-        commit, subject, body = record.split('\x1f', 2)
-        merge = MERGE.fullmatch(subject)
-        if merge:
-            title = next((line.strip() for line in body.splitlines() if line.strip()), subject)
-            items.append(Change(title, int(merge.group(1)), commit))
-        else:
-            items.append(Change(subject, None, commit))
+        commit, subject = record.split('\x1f', 1)
+        pull = (pulls or {}).get(commit)
+        items.append(Change(subject, pull.number if pull else None, commit))
     return items
 
 
 def change_line(change, url):
-    """a change as a line, its pull request or its commit linked in the repository at url"""
+    """a commit as a line, its pull request or its commit linked in the repository at url"""
     if change.pr:
         return f'{escape(change.text)} ([#{change.pr}]({url}/pull/{change.pr}))'
     return f'{escape(change.text)} ([`{change.sha[:7]}`]({url}/commit/{change.sha}))'
+
+
+def area(text):
+    """a title's area and the rest of it: ('vk', 'Keep ...') for '[vk] Keep ...', ('', text) without one"""
+    found = AREA.fullmatch(text.strip())
+    return (found.group(1).strip(), found.group(2)) if found else ('', text.strip())
+
+
+def entries(items, pulls, url):
+    """the changes' entries, newest first: a pull request once, at its newest commit, with how many of the commits it
+    merged, and each commit no pull request merged, linked in the repository at url. Each is (area, title, line), line
+    without its area"""
+    by_number = {pull.number: pull for pull in (pulls or {}).values()}
+    count = collections.Counter(item.pr for item in items if item.pr)
+    shown, out = set(), []
+    for item in items:
+        if item.pr in shown:
+            continue
+        if item.pr:
+            shown.add(item.pr)
+            pull = by_number[item.pr]
+            where, text = area(pull.title)
+            many = f'{count[item.pr]} commit{"" if count[item.pr] == 1 else "s"}'
+            link = f'[#{pull.number}]({url}/pull/{pull.number})'
+            out.append((where, pull.title, f'{escape(text)} ({link}, {many}, by {escape(pull.author)})'))
+        else:
+            where, text = area(item.text)
+            out.append((where, item.text, f'{escape(text)} ([`{item.sha[:7]}`]({url}/commit/{item.sha}))'))
+    return out
+
+
+def entry_lines(items, pulls, url):
+    """the entries as one list, newest first, each with its area: a message's lines"""
+    return [f'{escape(f"[{where}] ") if where else ""}{line}' for where, _, line in entries(items, pulls, url)]
+
+
+def grouped(items, pulls, url, more_url):
+    """the entries under a heading for each area, the areas in order and those of none last, newest first in each;
+    past MOST_LINES the rest counted and linked"""
+    listed = entries(items, pulls, url)
+    kept, rest = listed[:MOST_LINES], len(listed) - MOST_LINES
+    areas = sorted({where for where, _, _ in kept}, key=lambda where: (not where, where.lower()))
+    lines = []
+    for where in areas:
+        lines += ['', f'**{escape(where) if where else "Other"}**', '']
+        lines += [f'- {line}' for w, _, line in kept if w == where]
+    if rest > 0:
+        lines += ['', f'And [{rest} more]({more_url}).']
+    return lines
+
+
+def counted(items):
+    """what the changes are, in numbers: 5 pull requests and 1 commit no pull request merged, 49 commits in all"""
+    pulls = len({item.pr for item in items if item.pr})
+    alone = sum(1 for item in items if not item.pr)
+    parts = []
+    if pulls:
+        parts.append(f'{pulls} pull request{"" if pulls == 1 else "s"}')
+    if alone:
+        parts.append(f'{alone} commit{"" if alone == 1 else "s"} no pull request merged')
+    said = ' and '.join(parts)
+    return f'{said}, {len(items)} commit{"" if len(items) == 1 else "s"} in all' if pulls else said
 
 
 def title(checkout, sha):
@@ -182,23 +249,23 @@ def notes(
     updates='the newest nightly',
     missing=(),
     why='',
+    pulls=None,
 ):
     """download: where the release's files are; kept: what becomes of the release; since: what previous was; sizes:
     each file's bytes; lead: what the first line calls the build; updates: the release AppImageUpdate takes it to;
-    missing: the files the run did not build, a row each linking why"""
+    missing: the files the run did not build, a row each linking why; pulls: the pull request that merged each commit
+    (commit to Pull), which the changes need: an empty one says no commit came in by a pull request"""
     url = f'{SERVER}/{repo}'
     date = git(checkout, 'log', '-1', '--format=%cs', sha).strip()
     lines = [f'{lead} [`{sha[:7]}`]({url}/commit/{sha}), committed {date}.' + (f' {kept}' if kept else ''), '']
     lines += downloads(files, download, url, sha, sizes, missing, why, updates=updates)
-    items = changes(checkout, previous, sha)
+    if previous and pulls is None:
+        raise ValueError('the changes need the pull request of each commit: pass pulls')
+    items = changes(checkout, previous, sha, pulls)
     if items is not None:
         compare = f'{url}/compare/{previous}...{sha}'
-        counted = f'{len(items)} change{"" if len(items) == 1 else "s"}, the newest first' if items else 'no change'
-        lines += ['', f'## Changes since {since}', '', f'[`{previous[:7]}...{sha[:7]}`]({compare}): {counted}.', '']
-        lines += [f'- {change_line(item, url)}' for item in items[:MOST_CHANGES]] or [
-            'None: the same commit, built again.'
-        ]
-        if len(items) > MOST_CHANGES:
-            lines.append(f'- and [{len(items) - MOST_CHANGES} more]({compare})')
+        said = f'{counted(items)}, by area' if items else 'no change'
+        lines += ['', f'## Changes since {since}', '', f'[`{previous[:7]}...{sha[:7]}`]({compare}): {said}.']
+        lines += grouped(items, pulls, url, compare) if items else ['', 'None: the same commit, built again.']
     lines += ['', *source(f'{url}/tree/{sha}')]
     return '\n'.join(lines) + '\n'

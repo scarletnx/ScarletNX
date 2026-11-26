@@ -57,6 +57,8 @@ WIMSY = 'https://raw.githubusercontent.com/{repo}/main/dist/icons/hicolor/128x12
 DESCRIPTION, EMBED = 4096, 6000
 # a version's changes listed, at most, before "and N more"
 MOST_LINES = 10
+# the commits one GraphQL query asks the pull requests of
+PULLS_ASKED = 50
 TEAM = {'admin', 'maintain', 'write'}
 VERSION = re.compile(r'v\d[0-9A-Za-z.+-]*')
 ROLLING = 'nightly'
@@ -325,6 +327,34 @@ class Publisher(Hub):
             out.append({'name': system if ',' in arch else f'{system} {arch}', 'value': value, 'inline': True})
         return out
 
+    def pulls(self, previous, sha):
+        """the pull request that merged each commit of main from previous to sha, as GitHub says (commit to Pull): main
+        merges by rebase, so its history names none. A commit no merged pull request into main has is left out"""
+        if not previous or nightly_notes.changes(self.checkout, previous, sha, {}) is None:
+            return {}
+        commits = nightly_notes.git(self.checkout, 'log', '--first-parent', '--format=%H', f'{previous}..{sha}').split()
+        owner, name = self.repo.split('/', 1)
+        found = {}
+        for start in range(0, len(commits), PULLS_ASKED):
+            batch = commits[start : start + PULLS_ASKED]
+            asked = ' '.join(
+                f'c{n}: object(oid: "{commit}") {{ ... on Commit {{ associatedPullRequests(first: 5) {{ nodes {{ '
+                'number title merged baseRefName author { login } } } } }'
+                for n, commit in enumerate(batch)
+            )
+            data = self.graphql(f'query {{ repository(owner: "{owner}", name: "{name}") {{ {asked} }} }}')
+            repository = (data.get('data') or {}).get('repository')
+            if repository is None:
+                raise RuntimeError(f'GitHub gave no pull requests of the commits {batch[0][:7]}...: {json.dumps(data)}')
+            for n, commit in enumerate(batch):
+                nodes = ((repository.get(f'c{n}') or {}).get('associatedPullRequests') or {}).get('nodes') or []
+                merged = [p for p in nodes if p.get('merged') and p.get('baseRefName') == 'main']
+                if merged:
+                    pull = merged[0]
+                    author = (pull.get('author') or {}).get('login') or 'ghost'
+                    found[commit] = nightly_notes.Pull(pull['number'], pull['title'], author)
+        return found
+
     def older(self, sha, previous):
         """sha is an ancestor of previous, a newer commit already published"""
         if not previous or previous == sha:
@@ -353,8 +383,19 @@ class Publisher(Hub):
         )
         download = f'{SERVER}/{self.to}/releases/download/{tag}'
         sizes = {name: path.stat().st_size for name, path in files.items()}
+        pulls = self.pulls(previous, sha)
         body = nightly_notes.notes(
-            self.checkout, sha, previous, self.repo, list(files), download, kept, sizes=sizes, missing=missing, why=why
+            self.checkout,
+            sha,
+            previous,
+            self.repo,
+            list(files),
+            download,
+            kept,
+            sizes=sizes,
+            missing=missing,
+            why=why,
+            pulls=pulls,
         )
         title = nightly_notes.title(self.checkout, sha)
         made, new = self.put_release(self.to, tag, title, body, False, uploads)
@@ -379,6 +420,7 @@ class Publisher(Hub):
             lead=lead,
             missing=missing,
             why=why,
+            pulls=pulls,
         )
         self.point_rolling(title, rolling, sha)
 
@@ -413,6 +455,7 @@ class Publisher(Hub):
         previous = nightly_notes.git(self.checkout, 'rev-list', '-n', '1', since).strip() if since else ''
         download = f'{SERVER}/{self.repo}/releases/download/{tag}'
         sizes = {name: path.stat().st_size for name, path in files.items()}
+        pulls = self.pulls(previous, sha)
         body = nightly_notes.notes(
             self.checkout,
             sha,
@@ -427,6 +470,7 @@ class Publisher(Hub):
             'the newest version',
             missing,
             why,
+            pulls,
         )
         title = f'ScarletNX {tag}'
         made, new = self.put_release(self.repo, tag, title, body, '-' in tag, uploads, sha)
@@ -438,8 +482,8 @@ class Publisher(Hub):
             if since:
                 compare = f'{SERVER}/{self.repo}/compare/{since}...{tag}'
                 more.append({'name': 'Since', 'value': f'[{since}]({compare})', 'inline': True})
-            items = nightly_notes.changes(self.checkout, previous, sha) or []
-            lines = [nightly_notes.change_line(item, f'{SERVER}/{self.repo}') for item in items]
+            items = nightly_notes.changes(self.checkout, previous, sha, pulls) or []
+            lines = nightly_notes.entry_lines(items, pulls, f'{SERVER}/{self.repo}')
             said = '\n'.join([f'Built from [`{sha[:7]}`]({commit}).', *listed(lines, compare, MOST_LINES)])
             self.post('releases', self.embed(title, url, said, self.fields(files, sizes, download) + more))
 
