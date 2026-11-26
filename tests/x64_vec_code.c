@@ -13,6 +13,7 @@
 #include "common/cpu/aarch64/a64_decoder.h"
 #include "common/cpu/aarch64/cpu.h"
 #include "common/utilities/common.h"
+#include "common/utilities/endian.h"
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -76,43 +77,33 @@ static const Row k_rows[] = {
     {"sqdmlal v0.2d, v1.2s, v2.2s", 0, 0, 400, -1, NULL, "0EA29020"},
 };
 
-static const Row* g_row; /* the one being checked, for the messages */
-static int failures;
-static void fail(const char* what, unsigned long got, unsigned long most) {
-    fprintf(stderr, "FAIL: %s: %s %lu, not %lu\n", g_row->what, what, got, most);
-    ++failures;
+static struct {
+    const Row* row; /* the one being checked, for the messages */
+    int failures;
+} g_x64_vec_code;
+static void fail(const char* what, size_t got, size_t most) {
+    fprintf(stderr, "FAIL: %s: %s %zu, not %zu\n", g_x64_vec_code.row->what, what, got, most);
+    ++g_x64_vec_code.failures;
 }
 
 /* the function's code in an ELF64 object of one: its executable section, whose size the caller takes; NULL where
    there is none */
 static const unsigned char* text_of(const unsigned char* o, size_t size, size_t* length) {
-    uint64_t shoff, off, len;
-    unsigned n, i;
     if (size < 64 || memcmp(o, "\177ELF", 4)) return NULL;
-    memcpy(&shoff, o + 40, 8);
-    n = o[60] | (unsigned)o[61] << 8;
-    for (i = 0; i < n; ++i) {
+    uint64_t shoff = snx_ld_le64(o + 40);
+    for (unsigned i = 0, n = snx_ld_le16(o + 60); i < n; ++i) {
         const unsigned char* sh = o + shoff + (size_t)i * 64;
-        uint32_t type;
-        uint64_t flags;
-        memcpy(&type, sh + 4, 4);
-        memcpy(&flags, sh + 8, 8);
-        if (type != 1 || !(flags & 4)) continue; /* PROGBITS, executable */
-        memcpy(&off, sh + 24, 8);
-        memcpy(&len, sh + 32, 8);
-        *length = len;
-        return o + off;
+        if (snx_ld_le32(sh + 4) != 1 || !(snx_ld_le64(sh + 8) & 4)) continue; /* PROGBITS, executable */
+        *length = (size_t)snx_ld_le64(sh + 32);
+        return o + snx_ld_le64(sh + 24);
     }
     return NULL;
 }
 /* the stores of a 32-bit register in FPSR's field: mov [rbx + disp32], r32 (REX.R for the upper ones) */
 static int fpsr_writes(const unsigned char* t, size_t n) {
-    uint32_t at = (uint32_t)offsetof(CPU, fpsr);
-    unsigned char disp[4] = {(unsigned char)at, (unsigned char)(at >> 8), (unsigned char)(at >> 16),
-                             (unsigned char)(at >> 24)};
     int writes = 0;
     for (size_t i = 0; i + 6 <= n; ++i)
-        if (t[i] == 0x89 && (t[i + 1] & 0xC7) == 0x83 && !memcmp(t + i + 2, disp, 4)) ++writes;
+        if (t[i] == 0x89 && (t[i + 1] & 0xC7) == 0x83 && snx_ld_le32(t + i + 2) == offsetof(CPU, fpsr)) ++writes;
     return writes;
 }
 /* where t has one of has's byte strings */
@@ -146,11 +137,12 @@ static void check(const Row* row, int print) {
     size_t size = 0, length = 0;
     char error[256] = "", *at = (char*)row->words;
     SnxCodegen codegen;
-    unsigned i, b, count = 0;
-    g_row = row;
+    unsigned count = 0;
+    g_x64_vec_code.row = row;
     while (*at && count < MOST) words[count++] = (uint32_t)strtoul(at, &at, 16);
-    for (i = 0; i <= count; ++i)
-        for (b = 0; b < 4; ++b) image[4 * i + b] = (unsigned char)((i < count ? words[i] : 0xD65F03C0u) >> (8 * b));
+    for (unsigned i = 0; i <= count; ++i)
+        for (unsigned b = 0; b < 4; ++b)
+            image[4 * i + b] = (unsigned char)((i < count ? words[i] : 0xD65F03C0u) >> (8 * b));
     module.image_size = module.text_size = (count + 1) * 4;
     if (snx_codegen_analyze(&codegen, &module, 1, &hint, 1, 1, SNX_A64_TARGET_SWITCH) || codegen.function_count != 1) {
         fail("functions the analysis found in its words", 0, 1);
@@ -159,18 +151,18 @@ static void check(const Row* row, int print) {
     snx_x64_without(row->without);
     if (snx_x64_object(&codegen, 0, 1, &options, made, &object, &size, error, sizeof error) < 0 || !made[0]) {
         fprintf(stderr, "FAIL: %s: not made: %s\n", row->what, error);
-        ++failures;
+        ++g_x64_vec_code.failures;
     } else if (!(text = text_of(object, size, &length))) {
-        fail("bytes of its object, and no code in them", (unsigned long)size, 0);
+        fail("bytes of its object, and no code in them", size, 0);
     } else if (print)
         printf("%s: %zu bytes, %d writes of FPSR\n", row->what, length, fpsr_writes(text, length));
     else {
-        if (length > row->bytes) fail("bytes of code", (unsigned long)length, row->bytes);
+        if (length > row->bytes) fail("bytes of code", length, row->bytes);
         if (row->fpsr >= 0 && fpsr_writes(text, length) != row->fpsr)
-            fail("writes of FPSR", (unsigned long)fpsr_writes(text, length), (unsigned long)row->fpsr);
+            fail("writes of FPSR", (size_t)fpsr_writes(text, length), (size_t)row->fpsr);
         if (row->has && !has_bytes(text, length, row->has)) {
             fprintf(stderr, "FAIL: %s: no %s in its code\n", row->what, row->has);
-            ++failures;
+            ++g_x64_vec_code.failures;
         }
     }
     snx_x64_without(0);
@@ -194,6 +186,7 @@ int main(int argc, char** argv) {
         check(&k_rows[i], print);
         ++done;
     }
-    printf("x64 vec code: %u of %zu rows, %d failures\n", done, sizeof k_rows / sizeof *k_rows, failures);
-    return failures != 0;
+    printf("x64 vec code: %u of %zu rows, %d failures\n", done, sizeof k_rows / sizeof *k_rows,
+           g_x64_vec_code.failures);
+    return g_x64_vec_code.failures != 0;
 }
