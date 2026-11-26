@@ -7720,7 +7720,7 @@ static void cnt_fold(void) {
 /* after a draw of the renderer thread: the draws after it as a batch, where draw_batches is on */
 static void render_batch(void) {
     if (g_settings.draw_batches != 1 || g_draw_depth || !gpu_ds_running()) return;
-    const u32 n = gpu_ds_batch(g_batch.recs, BATCH_MAX);
+    const u32 n = gpu_ds_batch(g_batch.recs, NULL, BATCH_MAX);
     if (n < BATCH_MIN) return;
     if (!g_batch.list && !(g_batch.list = vk_rec_list_new())) return;
     g_batch.n = n;
@@ -7748,6 +7748,7 @@ static void render_batch(void) {
 #define SPLIT_MIN 16
 static struct {
     const void* recs[BATCH_MAX];
+    u8 defer[BATCH_MAX]; /* a record the worker leaves to the splice (gpu_ds_batch): a reset or a report */
     u32 apply, n;
     VkRecList* list;
     int ok, pending;
@@ -7818,6 +7819,13 @@ static void split_log(void) {
     g_split.splits = g_split.draws = g_split.submitted = g_split.serials = 0;
     g_split.t_peek = g_split.t_snap = g_split.t_cmd = g_split.t_kick = g_split.t_join = g_split.peeks = 0;
 }
+/* a record the worker left to the splice (a reset or a report of the samples-passed counter), run there by the
+   renderer thread after the commands before it */
+static void split_record_run(const void* arg) {
+    const void* rec;
+    memcpy(&rec, arg, sizeof rec);
+    gpu_ds_batch_run(rec);
+}
 static void render_split_run(void) {
     t_in_batch = 1;
     t_rc = 1;
@@ -7829,8 +7837,13 @@ static void render_split_run(void) {
     g_rp[t_rc] = (typeof(g_rp[0])){.rate_want = RATE_KEEP}; /* no pass: the first draw begins its own */
     vk_rec_list_begin(g_split.list);
     vk_rec_list_parallel(1);
-    for (u32 i = 0; i < g_split.apply; i++) gpu_ds_batch_apply(g_split.recs[i]);
+    for (u32 i = 0; i < g_split.apply; i++)
+        if (!g_split.defer[i]) gpu_ds_batch_apply(g_split.recs[i]);
     for (u32 i = g_split.apply; i < g_split.apply + g_split.n; i++) {
+        if (g_split.defer[i]) { /* run at the splice, in its place among the commands */
+            vk_rec_defer(split_record_run, &g_split.recs[i], sizeof g_split.recs[i]);
+            continue;
+        }
         const DsState* ds;
         DrawCall dc;
         DrawOwner* own;
@@ -7900,7 +7913,7 @@ static void render_split_join(void) {
 static void render_split(void) {
     if (g_settings.draw_batches != 2 || g_split.pending || g_draw_depth || !gpu_ds_running()) return;
     const u64 t0 = ph_now();
-    const u32 n = gpu_ds_batch(g_split.recs, BATCH_MAX);
+    const u32 n = gpu_ds_batch(g_split.recs, g_split.defer, BATCH_MAX);
     const u64 t1 = ph_now();
     g_split.t_peek += t1 - t0;
     g_split.peeks++;
@@ -7909,7 +7922,7 @@ static void render_split(void) {
     if (!g_split.list && !(g_split.list = vk_rec_list_new())) return;
     g_split.apply = half - 1;
     g_split.n = n - g_split.apply;
-    gpu_ds_batch_snapshot(g_split.recs, n);
+    gpu_ds_batch_snapshot(g_split.recs, g_split.defer, n);
     const u64 t2 = ph_now();
     vk_lock(); /* until the join */
     /* the command buffer both halves record into, begun now, and the uploads' command buffer, which a worker's draw

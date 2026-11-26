@@ -379,3 +379,7 @@ void vk_rec_defer(VkDeferFn fn, const void* arg, u64 size) {
 void vk_share_lock(void) {}
 void vk_share_unlock(void) {}
 u32 vk_render_slot(void) { return 0; }
+
+/* the split run's calls (draw_batches=2, render.c and device.c): this test runs no split */
+int gpu_spec(void) { return 0; }
+void gpu_spec_fail(const char* why) { (void)why; }

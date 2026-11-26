@@ -49,6 +49,9 @@ void* gq_call_begin(GqFn fn, u64 bytes);
 void gq_call_end(void);
 /* a call with arg's bytes as they are */
 void gq_call(GqFn fn, const void* arg, u64 bytes);
+/* the calls queued next (up to max) whose function is one of fns[0..nfns): each one's function, arguments and size,
+   up to the first record of another kind */
+u32 gq_peek_records(const GqFn* fns, u32 nfns, GqFn* fn, const void** args, u64* sizes, u32 max);
 /* a name for fn's records in the stats line of the records' time, and names for the first word of their payload */
 void gq_name(GqFn fn, const char* name, const char* const* subs, u32 nsubs);
 void gq_seq(u64* all, u64* cb); /* the records run so far, and the constant buffer writes of them */

@@ -97,6 +97,7 @@ typedef struct {
 static void report_run(const void* arg, u64 bytes) {
     ReportWrite w;
     (void)bytes;
+    if (gpu_ds_batch_skip(arg)) return; /* a worker's batch left it to its splice (gpu_ds_batch_carries) */
     memcpy(&w, arg, sizeof w);
     if (w.stamp) w.ticks = gpu_ticks();
     if (w.counted && g_renderer->samples_report &&
@@ -117,10 +118,20 @@ static void report_run(const void* arg, u64 bytes) {
 }
 static void report_queue(u64 a, u64 value, int one, int made, int counted, u32 owner) {
     ReportWrite w = {a, value, 0, (u32)one, (u32)made, (u32)counted, owner, 1};
+    static int carried;
+    if (!carried) { /* a split's worker leaves the reports to its splice, in their place (renderer.c) */
+        gpu_ds_batch_carries(report_run);
+        carried = 1;
+    }
     gq_call(report_run, &w, sizeof w);
 }
 void gpu_report_samples(u32 owner, u64 a, int counted, u64 value) {
     ReportWrite w = {a, value, 0, 0, 0, (u32)counted, owner, 1};
+    static int carried;
+    if (!carried) { /* a split's worker leaves the reports to its splice, in their place (renderer.c) */
+        gpu_ds_batch_carries(report_run);
+        carried = 1;
+    }
     gq_call(report_run, &w, sizeof w);
 }
 #define REPORT_BIT(r) (1u << (r))

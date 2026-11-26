@@ -301,17 +301,24 @@ int gpu_ds_ahead_same(const DsState* ds);
 const void* gpu_ds_running(void);
 /* batches of draws for a worker: the draw records after the running one (up to max, their count), each one's state
    in the worker's copy (0 where the render enable skips it), and the count of them the worker drew */
-u32 gpu_ds_batch(const void** recs, u32 max);
+u32 gpu_ds_batch(const void** recs, u8* defer, u32 max);
 int gpu_ds_batch_draw(const void* rec, const DsState** ds, DrawCall* dc, DrawOwner** own);
 void gpu_ds_batch_done(u32 draws);
 /* draw_batches=2: the worker's copies taken now (the renderer's side runs records meanwhile), a record applied to them
    but not drawn, the owners back to the renderer's side after the batch, and the call at the draw record where the
    worker's draws start (rec) */
-void gpu_ds_batch_snapshot(const void* const* recs, u32 n);
+void gpu_ds_batch_snapshot(const void* const* recs, const u8* defer, u32 n);
 void gpu_ds_batch_apply(const void* rec);
 void gpu_ds_batch_end(void);
 u32 gpu_ds_record_owner(const void* rec); /* a draw record's owner (DsState.owner) */
 void gpu_ds_join_at(const void* rec, void (*fn)(void));
+/* draw_batches=2 also carries records that aren't draws: with defer given, gpu_ds_batch sets defer[i] for each, which
+   the worker leaves to its splice, where gpu_ds_batch_run runs it. gpu_ds_batch_carries: a front end's record function
+   a batch may carry so (its own state the renderer's side alone keeps). gpu_ds_batch_skip: what such a record's
+   function asks first on the renderer's side, 1 when the batch took it */
+void gpu_ds_batch_carries(void (*fn)(const void* arg, u64 bytes));
+void gpu_ds_batch_run(const void* rec);
+int gpu_ds_batch_skip(const void* rec);
 /* A probe of a draw record's steps on the renderer's side: counter ticks at each mark of the draw being run (0 where it
    didn't come there), summed by ds_run for each draw that reached them all. gpu_draw_marks_take: the sums since the
    last take, and the draws */

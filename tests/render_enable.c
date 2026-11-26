@@ -317,3 +317,10 @@ int main(void) {
          "report semaphore acquire waits");
     return 0;
 }
+
+/* the split run's calls (draw_batches=2, render.c and device.c): this test runs no split */
+void gpu_ds_batch_carries(void (*fn)(const void* arg, u64 bytes)) { (void)fn; }
+int gpu_ds_batch_skip(const void* rec) {
+    (void)rec;
+    return 0;
+}

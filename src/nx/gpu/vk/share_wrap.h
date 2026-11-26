@@ -15,11 +15,8 @@ static inline void sh_vk_all_barrier_by(int site, VkCommandBuffer cb) {
     vk_share_unlock();
 }
 static inline u32 sh_vk_astc_bcn(VkFormat f) {
-    if (!vk_share_on()) return vk_astc_bcn(f);
-    vk_share_lock_at(1);
-    u32 const r = vk_astc_bcn(f);
-    vk_share_unlock();
-    return r;
+    /* no share lock: it reads only what its thread owns, or what doesn't change while a run is split */
+    return vk_astc_bcn(f);
 }
 static inline int sh_vk_buf_copy(u64 gva, u64 len, VkBuffer* buf, u64* off) {
     if (!vk_share_on()) return vk_buf_copy(gva, len, buf, off);
@@ -108,11 +105,8 @@ static inline void sh_vk_buf_mem_need(u64 gva, u64 len) {
     vk_share_unlock();
 }
 static inline u32 sh_vk_buf_own_got(u64* id) {
-    if (!vk_share_on()) return vk_buf_own_got(id);
-    vk_share_lock_at(14);
-    u32 const r = vk_buf_own_got(id);
-    vk_share_unlock();
-    return r;
+    /* no share lock: it reads only what its thread owns, or what doesn't change while a run is split */
+    return vk_buf_own_got(id);
 }
 static inline int sh_vk_buf_own_holds(u32 i, u64 id) {
     if (!vk_share_on()) return vk_buf_own_holds(i, id);
@@ -783,11 +777,8 @@ static inline VkSh* sh_vk_shader_mesh(const DsState* ds, u64 gva, int stage, con
     return r;
 }
 static inline u8* sh_vk_stage(u64 size, u64 align, VkBuffer* buf, u64* off) {
-    if (!vk_share_on()) return vk_stage(size, align, buf, off);
-    vk_share_lock_at(103);
-    u8* const r = vk_stage(size, align, buf, off);
-    vk_share_unlock();
-    return r;
+    /* no share lock: each thread hands out of its own ring, and the pool takes the lock itself (cmd.c stage_alloc) */
+    return vk_stage(size, align, buf, off);
 }
 static inline u8* sh_vk_stage_output(u64 size, u64 align, VkBuffer* buf, u64* off, DevMem* mem) {
     if (!vk_share_on()) return vk_stage_output(size, align, buf, off, mem);
@@ -836,18 +827,12 @@ static inline int sh_vk_surf_can_writeback(const Surf* s) {
     return r;
 }
 static inline u32 sh_vk_surf_epoch_at(u64 gva) {
-    if (!vk_share_on()) return vk_surf_epoch_at(gva);
-    vk_share_lock_at(110);
-    u32 const r = vk_surf_epoch_at(gva);
-    vk_share_unlock();
-    return r;
+    /* no share lock: it reads only what its thread owns, or what doesn't change while a run is split */
+    return vk_surf_epoch_at(gva);
 }
 static inline u64 sh_vk_surf_guest_size(const Surf* s) {
-    if (!vk_share_on()) return vk_surf_guest_size(s);
-    vk_share_lock_at(111);
-    u64 const r = vk_surf_guest_size(s);
-    vk_share_unlock();
-    return r;
+    /* no share lock: it reads only what its thread owns, or what doesn't change while a run is split */
+    return vk_surf_guest_size(s);
 }
 static inline int sh_vk_surf_keep_begin(Surf* s, VkImageKeep* k) {
     if (!vk_share_on()) return vk_surf_keep_begin(s, k);
@@ -875,11 +860,8 @@ static inline void sh_vk_surf_wrote(Surf* s) {
     vk_share_unlock();
 }
 static inline VkDescriptorSet sh_vk_table_set(void) {
-    if (!vk_share_on()) return vk_table_set();
-    vk_share_lock_at(115);
-    VkDescriptorSet const r = vk_table_set();
-    vk_share_unlock();
-    return r;
+    /* no share lock: it reads only what its thread owns, or what doesn't change while a run is split */
+    return vk_table_set();
 }
 static inline int sh_vk_table_words(const VkImageView* views, const VkImageLayout* layouts, const VkSampler* samplers, u32 n, u32* words) {
     if (!vk_share_on()) return vk_table_words(views, layouts, samplers, n, words);
