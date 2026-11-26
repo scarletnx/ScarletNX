@@ -936,8 +936,8 @@ static void run_error_lines(App* app) {
     /* one its game could not show: the box shows it over the run's screen, its stop's message from the log (its time
        stamps skipped), Open Settings in focus; no press counts in its first half second */
     {
-        static const char unshown[] =
-            "[   2.80] FATAL: the setting hooks is off\n[   2.81] error: setting shown=0 key=hooks\n";
+        static const char unshown[] = /* a Windows program's lines, CR LF */
+            "[   2.80] FATAL: the setting hooks is off\r\n[   2.81] error: setting shown=0 key=hooks\r\n";
         Uint64 clock_was = app->clock;
         assert(!snx_write_file(path, unshown, sizeof unshown - 1));
         app->clock = 20000;
@@ -5912,6 +5912,15 @@ static void recompile_queue(App* app) {
     assert(!strcmp(app->message, "queue game fails: Recompile failed (status 3). the game's code at 0x1000 is no "
                                  "instruction: test") &&
            tab_reads(app, "Compile FAILED"));
+    { /* a driver's log in a Windows program's lines, CR LF: the reason without the CR */
+        char *crlf = snx_path_join(app->games_dir, "crlf.log"), why[256];
+        static const char text[] = "$ x\r\nscarletnx: the game's code at 0x1000 is no instruction: test\r\n";
+        assert(crlf && !snx_write_file(crlf, text, sizeof text - 1));
+        log_stop(crlf, why, sizeof why);
+        assert(!strcmp(why, "the game's code at 0x1000 is no instruction: test"));
+        remove(crlf);
+        free(crlf);
+    }
     assert(SDL_GetWindowProgressState(app->window) == SDL_PROGRESS_STATE_ERROR);
     {
         GuiPlace p;
