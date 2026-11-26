@@ -29,21 +29,18 @@ static u64 altered(unsigned n) { (void)n; return 0; }
 #endif
 
 #if defined(__x86_64__) || defined(_M_X64)
-/* 1 where the native function f checks MXCSR at its entry (SNX_X64_MXCSR_ENTRY right before the entry's compare of its
-   pc: MOV EAX, pc; CMP RSI (RDX), RAX), 0 where it does not, -1 where that compare is not in its first bytes */
-static int entry_checks(GuestFn f, u64 pc) {
+/* 1 where the native function f checks MXCSR at its entry (SNX_X64_MXCSR_ENTRY in its first bytes, before its code:
+   right after the stale check, before the compare of its pc where it has one), 0 where it does not */
+static int entry_checks(GuestFn f) {
     static const unsigned char check[] = {0x0F, 0xAE, 0x1C, 0x24, 0x83, 0x24, 0x24, 0xC0, 0x81, 0x3C,
                                           0x24, 0x80, 0x1F, 0x00, 0x00, 0x74, 0x0B, 0xC7, 0x04, 0x24,
                                           0x80, 0x1F, 0x00, 0x00, 0x0F, 0xAE, 0x14, 0x24};
-    unsigned char mov[7] = {0xB8, 0, 0, 0, 0, 0x48, 0x39}; /* a pc below 4 GiB */
     uintptr_t at;
     memcpy(&at, &f, sizeof at);
     const unsigned char* code = (const unsigned char*)at;
-    for (unsigned k = 0; k < 4; ++k) mov[1 + k] = (unsigned char)(pc >> (8 * k));
     for (size_t i = 0; i < 160; ++i)
-        if (!memcmp(code + i, mov, sizeof mov))
-            return i >= sizeof check && !memcmp(code + i - sizeof check, check, sizeof check);
-    return -1;
+        if (!memcmp(code + i, check, sizeof check)) return 1;
+    return 0;
 }
 #endif
 
@@ -57,7 +54,7 @@ static int run(int jit, int benchmark) {
 #endif
     if (steps_load(&steps, error, sizeof error)) return snx_error("%s", error);
 #if defined(__x86_64__) || defined(_M_X64)
-    int fadd = entry_checks(steps_function(&steps, 0), 0x1000), add = entry_checks(steps_function(&steps, 1), 0x1000);
+    int fadd = entry_checks(steps_function(&steps, 0)), add = entry_checks(steps_function(&steps, 1));
     if (fadd != 1 || add != 0) {
         fprintf(stderr, "jit%d: the FADD's entry checks MXCSR: %d (expected 1), the ADD's: %d (expected 0)\n", jit,
                 fadd, add);
