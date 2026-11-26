@@ -240,10 +240,24 @@ static int room_wait(u64 more, u64 until) {
    (vk_rec_list_begin), its packets go there in the ring's format, not into the ring. The renderer thread later puts a
    finished list into the ring in its batch's order (vk_rec_list_splice). A packet's arguments hold no pointer into the
    ring, so a packet moves as bytes */
+#define BAR_BATCH_CAP 64
+typedef struct {
+    VkCommandBuffer cb;
+    VkDependencyFlags flags;
+    u32 nm, nb, ni;
+    VkMemoryBarrier2 mem[BAR_BATCH_CAP];
+    VkBufferMemoryBarrier2 buf[BAR_BATCH_CAP];
+    VkImageMemoryBarrier2 img[BAR_BATCH_CAP];
+    VkImage images[BAR_BATCH_CAP]; /* the image of img[i], to keep two barriers on one image apart */
+    VkPipelineStageFlags2 dst;     /* the stages of the batch's second scope, all its barriers' */
+} BarBatch;
 struct VkRecList {
     u8* buf;
     u64 used, cap;
     int failed; /* out of memory: the batch is set up again on the renderer thread */
+    /* the list's own batch of barriers (barrier_flush). Not thread-local: 14,880 bytes on each thread's stack put the
+       runtime's thread-local storage past the 32 KiB that tests/runtime_tls.py allows */
+    BarBatch bar;
 };
 static _Thread_local VkRecList* t_list;
 static VkRecList* list_pause(void);
@@ -2035,23 +2049,12 @@ static int barrier_chained(const VkDependencyInfo* d) {
    - a barrier whose first scope takes stages that the batch's second scope has (dst). In two calls the second
      barrier's dependency chains after the first one's: a copy, a barrier from the copy to compute, then a barrier
      from compute to the fragment stage orders the copy before the fragment stage too. One call loses that chain. */
-#define BAR_BATCH_CAP 64
-typedef struct {
-    VkCommandBuffer cb;
-    VkDependencyFlags flags;
-    u32 nm, nb, ni;
-    VkMemoryBarrier2 mem[BAR_BATCH_CAP];
-    VkBufferMemoryBarrier2 buf[BAR_BATCH_CAP];
-    VkImageMemoryBarrier2 img[BAR_BATCH_CAP];
-    VkImage images[BAR_BATCH_CAP]; /* the image of img[i], to keep two barriers on one image apart */
-    VkPipelineStageFlags2 dst;     /* the stages of the batch's second scope, all its barriers' */
-} BarBatch;
+/* BarBatch, BAR_BATCH_CAP: above struct VkRecList, which holds one */
 /* The ring's batch is one for all the threads that record into the ring (under vk_lock): the next packet of any of
    them ends it, before a submit or a new begin of its command buffer. A thread that records into its own list
    (VkRecList, a split run's worker) batches apart, into that list */
 static BarBatch g_ring_bar;
-static _Thread_local BarBatch t_list_bar;
-static BarBatch* bar_batch(void) { return t_list ? &t_list_bar : &g_ring_bar; }
+static BarBatch* bar_batch(void) { return t_list ? &t_list->bar : &g_ring_bar; }
 u64 g_barrier_merged; /* barriers that shared a call with an earlier one (vk_rec_command_report) */
 static void barrier_flush(void) {
     BarBatch* const bb = bar_batch();
