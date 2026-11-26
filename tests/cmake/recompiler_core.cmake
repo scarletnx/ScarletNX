@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# The recompiler's core (snx_recompiler_core, src/common/cpu/recompiler/CMakeLists.txt) without LLVM, whatever the build
-# has: tests/CMakeLists.txt includes it in every build of the tests, SNX_WITH_LLVM=OFF's too
+# The recompiler's core (snx_recompiler_core, src/common/cpu/recompiler/CMakeLists.txt): tests/CMakeLists.txt includes it
+# in every build of the tests
 
 # what the core's archive needs from outside it: the decoders and the host calls (snx_recompiler_base, snx_arm_decode)
 # and the system's libraries, no LLVM (tests/recompiler_symbols.cmake). Its program links every object of the archive
@@ -28,10 +28,6 @@ add_test(NAME recompiler_core_symbols COMMAND "${CMAKE_COMMAND}" "-DBUILD=${PROJ
 add_test(NAME native_code_hash COMMAND "${CMAKE_COMMAND}" "-DSCRIPT=${PROJECT_SOURCE_DIR}/cmake/native_code_hash.cmake"
          "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/native-code-hash"
          -P "${PROJECT_SOURCE_DIR}/tests/native_code_hash_test.cmake")
-
-# SNX_WITH_LLVM (cmake/with_llvm.cmake): which builds it stops
-add_test(NAME with_llvm_option COMMAND "${CMAKE_COMMAND}" "-DSCRIPT=${PROJECT_SOURCE_DIR}/cmake/with_llvm.cmake"
-         -P "${PROJECT_SOURCE_DIR}/tests/with_llvm_test.cmake")
 
 # the recompiler's library (library.c) with no LLVM: its sources, the JIT's and the AArch32 executor beside them
 # (cpu/arm/exec.c), and the program that recompiles and runs through it

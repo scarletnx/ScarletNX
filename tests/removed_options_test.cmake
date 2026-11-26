@@ -26,3 +26,9 @@ check("" "")
 check("-DSNX_A64_DISASM=OFF" "SNX_A64_DISASM=OFF is no longer an option: scarletnx --mcp lists A64 code through the A64 "
                              "decoder in every build")
 check("-DSNX_A64_DISASM:BOOL=ON" "SNX_A64_DISASM=ON is no longer an option")
+check("-DSNX_WITH_LLVM=ON" "SNX_WITH_LLVM=ON is no longer an option: the native back ends make all of the code, and the "
+                           "build has no LLVM")
+check("-DSNX_LLVM_CONFIG=/usr/bin/llvm-config" "SNX_LLVM_CONFIG=/usr/bin/llvm-config is no longer an option")
+check("-DSNX_TEST_LLVM_SWEEP=ON" "SNX_TEST_LLVM_SWEEP=ON is now SNX_TEST_QEMU_SWEEP: SNX_TEST_QEMU_SWEEP=ON holds")
+check("-DSNX_TEST_LLVM_SWEEP=ON;-DSNX_TEST_QEMU_SWEEP=OFF"
+      "SNX_TEST_LLVM_SWEEP=ON is now SNX_TEST_QEMU_SWEEP, which is given too: SNX_TEST_QEMU_SWEEP=OFF holds")

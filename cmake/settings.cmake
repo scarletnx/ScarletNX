@@ -58,58 +58,6 @@ if(ANDROID OR IOS)
 endif()
 set(snx_settings_args "")
 
-# LLVM's: the headers of the LLVM the backend links, and the pipelines its opt prints (llvm_opt.cmake). An opt of
-# another version, even in its last number, prints pipelines that are not this LLVM's: it is refused, said, and gives
-# no pass toggles (the passes are LLVM's own then), as none does (a cross build's target opt cannot run here)
-if(SNX_BUILD_NX)
-    include("${CMAKE_CURRENT_LIST_DIR}/llvm.cmake")
-    list(APPEND snx_settings_args --llvm-include "${SNX_LLVM_INCLUDE_DIR}")
-    string(REGEX MATCH "^[0-9]+" snx_llvm_major "${SNX_LLVM_VERSION}")
-    set(snx_opt_hints "")
-    if(SNX_LLVM_CONFIG)
-        execute_process(COMMAND "${SNX_LLVM_CONFIG}" --bindir OUTPUT_VARIABLE snx_llvm_bindir
-                        OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
-        list(APPEND snx_opt_hints "${snx_llvm_bindir}")
-    endif()
-    if(LLVM_TOOLS_BINARY_DIR)
-        list(APPEND snx_opt_hints "${LLVM_TOOLS_BINARY_DIR}")
-    endif()
-    find_program(SNX_LLVM_OPT NAMES opt opt-${snx_llvm_major} HINTS ${snx_opt_hints}
-                 DOC "opt of the LLVM the backend links, which prints its pipelines for the LLVM settings")
-    # the target the backend makes code for, LLVMGetDefaultTargetTriple of the LLVM it links (ir.c): the pipelines
-    # carry the passes a target adds (AArch64's loop-idiom-vectorize), which the host's opt would not print on its own
-    set(snx_llvm_triple "")
-    if(SNX_LLVM_CONFIG)
-        execute_process(COMMAND "${SNX_LLVM_CONFIG}" --host-target OUTPUT_VARIABLE snx_llvm_triple
-                        OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
-    elseif(LLVM_TARGET_TRIPLE)
-        set(snx_llvm_triple "${LLVM_TARGET_TRIPLE}")
-    elseif(LLVM_HOST_TRIPLE)
-        set(snx_llvm_triple "${LLVM_HOST_TRIPLE}")
-    endif()
-    set(snx_pipelines "${snx_settings_out}/pipelines.txt")
-    set(snx_pipelines_text "")
-    if(SNX_LLVM_OPT AND snx_llvm_triple STREQUAL "")
-        message(WARNING "LLVM settings: the LLVM's target triple is unknown (no llvm-config --host-target, no "
-                        "LLVM_TARGET_TRIPLE), so LLVM Internals has no pass toggles")
-    elseif(SNX_LLVM_OPT)
-        include("${CMAKE_CURRENT_LIST_DIR}/llvm_opt.cmake")
-        snx_llvm_pipelines("${SNX_LLVM_OPT}" "${SNX_LLVM_VERSION}" "${snx_llvm_triple}" "${snx_settings_out}"
-                           snx_pipelines_text snx_opt_why)
-        if(NOT snx_opt_why STREQUAL "")
-            message(WARNING "LLVM settings: ${snx_opt_why}")
-        endif()
-    endif()
-    if(snx_pipelines_text STREQUAL "")
-        message(STATUS "LLVM settings: no opt of LLVM ${SNX_LLVM_VERSION} runs here, so LLVM Internals has no pass "
-                       "toggles")
-    else()
-        message(STATUS "LLVM settings: the passes of ${SNX_LLVM_OPT}'s pipelines")
-    endif()
-    file(CONFIGURE OUTPUT "${snx_pipelines}" CONTENT "${snx_pipelines_text}")
-    list(APPEND snx_settings_args --pipelines "${snx_pipelines}")
-endif()
-
 # the Vulkan extensions' settings checked against the Khronos registry, which gives their help. A build without the
 # Vulkan-Headers (the tools alone) makes the same settings, unchecked and with less help
 set(snx_vk_registry "")

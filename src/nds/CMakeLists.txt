@@ -7,8 +7,7 @@
 #   snx_nds_program         the runner and the offline compiler, which scarletnx runs as scarletnx-nds (src/multicall)
 
 # The ARM and Thumb recompiler of src/common/cpu/arm, the same one the other system types use
-if(NOT TARGET snx_arm_llvm)
-    include("${PROJECT_SOURCE_DIR}/cmake/llvm.cmake")
+if(NOT TARGET snx_arm_decode)
     add_subdirectory("${PROJECT_SOURCE_DIR}/src/common/cpu/arm" nds-arm-backend)
 endif()
 
@@ -17,7 +16,7 @@ add_library(scarletnx-nds STATIC cartridge/rom.c cartridge/key1.c board/board.c 
                                  cpu/cpu.c cpu/recomp.c gpu/gpu3d.c gpu/present.c)
 set_target_properties(scarletnx-nds PROPERTIES OUTPUT_NAME scarletnx-nds-runtime C_STANDARD 23 C_STANDARD_REQUIRED ON)
 # the BIOS's CRC-32; the firmware's Wi-Fi connections
-target_link_libraries(scarletnx-nds PUBLIC scarletnx-common snx_arm_llvm snx_recompiler_jit
+target_link_libraries(scarletnx-nds PUBLIC scarletnx-common snx_arm_decode snx_arm_rt snx_recompiler_jit
                       PRIVATE snx_zip snx_online)
 target_compile_options(scarletnx-nds PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 

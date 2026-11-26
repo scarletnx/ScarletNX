@@ -12,20 +12,18 @@ add_library(scarletnx-gnuabi STATIC
     filesystem/hostfs/hostfs.c
     network/socket.c network/poll.c network/etc.c)
 set_target_properties(scarletnx-gnuabi PROPERTIES OUTPUT_NAME scarletnx-gnuabi-runtime C_STANDARD 23 C_STANDARD_REQUIRED ON)
-# AArch32 execution needs the ARM LLVM block backend. Build it here when the NX
-# runtime (which normally owns it) is not part of this configuration.
-if(NOT TARGET snx_arm_llvm AND NOT SNX_BUILD_NX)
-    include("${PROJECT_SOURCE_DIR}/cmake/llvm.cmake")
+# AArch32 execution needs the ARM decoder and runtime. Build them here when the NX runtime (which normally owns them)
+# is not part of this configuration.
+if(NOT TARGET snx_arm_decode AND NOT SNX_BUILD_NX)
     add_subdirectory("${PROJECT_SOURCE_DIR}/src/common/cpu/arm" gnuabi-arm-backend)
 endif()
 # The JIT compiles through the recompiler library (snx_recompiler.h), which the NX driver's tree configures. Without
 # the NX runtime, configure it here
 if(NOT TARGET scarletnx-recompiler)
-    include("${PROJECT_SOURCE_DIR}/cmake/llvm.cmake")
     add_subdirectory("${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler" gnuabi-recompiler)
 endif()
-target_link_libraries(scarletnx-gnuabi PUBLIC scarletnx-gnuabi-kernel scarletnx-common scarletnx-net snx_arm_llvm
-                      scarletnx-recompiler)
+target_link_libraries(scarletnx-gnuabi PUBLIC scarletnx-gnuabi-kernel scarletnx-common scarletnx-net snx_arm_decode
+                      snx_arm_rt scarletnx-recompiler)
 target_link_libraries(scarletnx-gnuabi PUBLIC OpenSSL::SSL)
 # the Linux group's tables (settings.txt's g_linux_ini and g_linux_debug_ini), which the command line takes by their keys
 target_link_libraries(scarletnx-gnuabi PUBLIC snx_settings_runtime)

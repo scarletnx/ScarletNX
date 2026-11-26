@@ -7,3 +7,23 @@ if(DEFINED SNX_A64_DISASM)
                    "A64 decoder in every build")
     unset(SNX_A64_DISASM CACHE)
 endif()
+# the QEMU differential's sweep, which was LLVM's and is the native back end's: its option is named for what it runs
+if(DEFINED SNX_TEST_LLVM_SWEEP)
+    if(DEFINED SNX_TEST_QEMU_SWEEP)
+        message(STATUS "SNX_TEST_LLVM_SWEEP=${SNX_TEST_LLVM_SWEEP} is now SNX_TEST_QEMU_SWEEP, which is given too: "
+                       "SNX_TEST_QEMU_SWEEP=${SNX_TEST_QEMU_SWEEP} holds")
+    else()
+        message(STATUS "SNX_TEST_LLVM_SWEEP=${SNX_TEST_LLVM_SWEEP} is now SNX_TEST_QEMU_SWEEP: "
+                       "SNX_TEST_QEMU_SWEEP=${SNX_TEST_LLVM_SWEEP} holds")
+        set(SNX_TEST_QEMU_SWEEP "${SNX_TEST_LLVM_SWEEP}" CACHE BOOL "Run the whole-encoding QEMU differential sweep (slow)")
+    endif()
+    unset(SNX_TEST_LLVM_SWEEP CACHE)
+endif()
+# the LLVM back end, and what found it: the native back ends make all of the code
+foreach(option SNX_WITH_LLVM SNX_LLVM_CONFIG)
+    if(DEFINED ${option})
+        message(STATUS "${option}=${${option}} is no longer an option: the native back ends make all of the code, and "
+                       "the build has no LLVM")
+        unset(${option} CACHE)
+    endif()
+endforeach()

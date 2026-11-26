@@ -9,8 +9,7 @@
 #                           scarletnx-agb (src/multicall)
 
 # The ARM and Thumb recompiler of src/common/cpu/arm, the same one the other system types use.
-if(NOT TARGET snx_arm_llvm)
-    include("${PROJECT_SOURCE_DIR}/cmake/llvm.cmake")
+if(NOT TARGET snx_arm_decode)
     add_subdirectory("${PROJECT_SOURCE_DIR}/src/common/cpu/arm" agb-arm-backend)
 endif()
 
@@ -21,7 +20,7 @@ set_target_properties(scarletnx-agb PROPERTIES OUTPUT_NAME scarletnx-agb-runtime
 # The recompiler (snx_recompiler_jit, which the Switch driver's tree, the GNU ABI runtime's or the top level
 # configures): the module's objects and their helpers (armlib.c) linked by its linker, and the blocks a run reaches
 # compiled in this process by its executor (exec.c), as the 3DS and the Vita do
-target_link_libraries(scarletnx-agb PUBLIC scarletnx-common snx_arm_llvm snx_recompiler_jit)
+target_link_libraries(scarletnx-agb PUBLIC scarletnx-common snx_arm_decode snx_arm_rt snx_recompiler_jit)
 target_compile_options(scarletnx-agb PRIVATE -Wall -Wextra -Werror)
 
 # the runner: the board in a window, with sound and the keypad (runtime/host.c), SDL here and never in the board. Its
