@@ -378,3 +378,4 @@ void vk_rec_defer(VkDeferFn fn, const void* arg, u64 size) {
 }
 void vk_share_lock(void) {}
 void vk_share_unlock(void) {}
+u32 vk_render_slot(void) { return 0; }

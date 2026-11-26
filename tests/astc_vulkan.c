@@ -2640,3 +2640,4 @@ void vk_share_lock(void) {}
 void vk_share_unlock(void) {}
 /* the draw slot of this thread (render.c): this test sets up no draws on a worker */
 u32 vk_render_slot(void) { return 0; }
+void vk_split_go_serial(void) {}

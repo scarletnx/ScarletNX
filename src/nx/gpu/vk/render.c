@@ -7753,7 +7753,11 @@ static struct {
     VkRecList* list;
     int ok, pending;
     u64 submit; /* the submission the worker's commands name their command buffer in */
-    u64 splits, draws;
+    /* waiting: the renderer thread set up its half, ended its pass and waits in the join, so the worker may record
+       into the ring itself (vk_split_go_serial). serial: the worker did, and may have submitted */
+    _Atomic int waiting;
+    int serial;
+    u64 splits, draws, serials, submitted; /* submitted: the splits the renderer thread's half submitted in */
     /* the ticks of render_split's steps and of the join, for the stats line: the batch's peek, the copies, the
        hold and the command buffers, the kick, the join */
     u64 t_peek, t_snap, t_cmd, t_kick, t_join, peeks;
@@ -7770,11 +7774,13 @@ static void split_log(void) {
     vk_prep_times(&lat, &work, &joined, &join_wait);
     if (g_split.splits && tick_ns) {
         const double per = 1e-6 * tick_ns / 600.0; /* ticks to ms a present */
-        LOG("vulkan: draw_batches=2 over the last 600 presents: %llu runs split, %llu draws on the worker; a present: "
+        LOG("vulkan: draw_batches=2 over the last 600 presents: %llu runs split, %llu draws on the worker, %llu splits "
+            "the renderer thread's half submitted in, %llu whose worker took the ring itself; a present: "
             "the worker's work %.3f ms, the joins' waits %.3f ms (%llu joins); the share lock, the renderer thread: "
             "%.0f takes, %.0f waited, %.3f ms waiting, %.3f ms held; the worker: %.0f takes, %.0f waited, %.3f ms "
             "waiting, %.3f ms held\n",
-            (unsigned long long)g_split.splits, (unsigned long long)g_split.draws, (double)work * per,
+            (unsigned long long)g_split.splits, (unsigned long long)g_split.draws,
+            (unsigned long long)g_split.submitted, (unsigned long long)g_split.serials, (double)work * per,
             (double)join_wait * per, (unsigned long long)joined, (double)takes[0] / 600.0, (double)waited[0] / 600.0,
             (double)wait[0] * per, (double)hold[0] * per, (double)takes[1] / 600.0, (double)waited[1] / 600.0,
             (double)wait[1] * per, (double)hold[1] * per);
@@ -7810,7 +7816,7 @@ static void split_log(void) {
         }
         LOG("vulkan: draw_batches=2: the share lock's takes a present by function (and their waits):%s\n", line);
     }
-    g_split.splits = g_split.draws = 0;
+    g_split.splits = g_split.draws = g_split.submitted = g_split.serials = 0;
     g_split.t_peek = g_split.t_snap = g_split.t_cmd = g_split.t_kick = g_split.t_join = g_split.peeks = 0;
 }
 static void render_split_run(void) {
@@ -7841,16 +7847,34 @@ static void render_split_run(void) {
     t_in_batch = 0;
 }
 /* the renderer thread, at the worker's first record */
+/* A worker's draw that needs the ring itself (a submission, a wait for the GPU, a flush of its list: record.c's
+   list_pause) waits until the renderer thread has set up its half and waits in the join. The ring then holds the
+   renderer thread's half, so the worker's list goes after it, in order, and every packet in it names the command
+   buffer still being recorded. From there the worker records as a serial batch does (draw_batches=1), and the join
+   takes its submissions */
+void vk_split_go_serial(void) {
+    /* the share lock let go meanwhile: the renderer thread's draws to the join take it, and they come before this
+       one in the order */
+    const u32 held = vk_share_release_all();
+    while (!atomic_load_explicit(&g_split.waiting, memory_order_acquire)) plat_spin_hint();
+    vk_share_retake(held);
+    vk_cmd_split(VK_NULL_HANDLE, VK_NULL_HANDLE); /* the ring's own from here */
+    LOG("TEMPDBG go serial\n");
+    g_split.serial = 1;
+    g_split.serials++;
+}
 static void render_split_join(void) {
     const u64 tj = ph_now();
+    vk_render_end(); /* the first half's pass, before the worker may take the ring: its commands begin their own */
+    atomic_store_explicit(&g_split.waiting, 1, memory_order_release);
     vk_prep_join_wait();
+    atomic_store_explicit(&g_split.waiting, 0, memory_order_relaxed);
+    vk_cmd_split(VK_NULL_HANDLE, VK_NULL_HANDLE);
     cnt_fold();
     vk_share_active(0);
     if (!g_split.ok) fatal("vulkan: draw_batches=2: a worker's command list ran out of memory\n");
-    if (vk_submit_number() != g_split.submit)
-        fatal("vulkan: draw_batches=2: a submit came while a worker recorded: its commands name an old command "
-              "buffer\n");
-    vk_render_end(); /* the first half's pass: the worker's commands begin their own */
+    if (vk_submit_number() != g_split.submit && !g_split.serial) g_split.submitted++; /* the splice renames */
+    g_split.serial = 0;
     vk_rec_list_splice(g_split.list);
     vk_vrs_forget(); /* the worker's binds are the command buffer's now */
     /* each stage's last set: the worker's, where it drew the stage, is the one the next draws are like */
@@ -7889,8 +7913,12 @@ static void render_split(void) {
     gpu_ds_batch_snapshot(g_split.recs, n);
     const u64 t2 = ph_now();
     vk_lock(); /* until the join */
-    (void)vk_cmd(); /* the command buffer both halves record into, begun now */
-    (void)vk_cmd_upload(1); /* and the uploads' command buffer, which a worker's draw can't begin (its ring) */
+    /* the command buffer both halves record into, begun now, and the uploads' command buffer, which a worker's draw
+       can't begin (its ring). The worker's packets name them even where the renderer thread submits meanwhile: the
+       join's splice names the ring's current ones */
+    const VkCommandBuffer cb = vk_cmd(), up = vk_cmd_upload(1);
+    vk_rec_list_names(g_split.list, cb, up);
+    vk_cmd_split(cb, up);
     g_split.submit = vk_submit_number();
     vk_share_active(1); /* before the worker's first call */
     const u64 t3 = ph_now();

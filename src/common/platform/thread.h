@@ -133,6 +133,14 @@ uint32_t plat_tid(void);
 void plat_thread_note_clear(void);
 /* the calling thread's note, "" without one */
 const char* plat_thread_note_get(void);
+/* the CPU told that this thread spins on a word another thread will change */
+static inline void plat_spin_hint(void) {
+#if defined(__x86_64__) || defined(__i386__)
+    __builtin_ia32_pause();
+#elif defined(__aarch64__)
+    __builtin_arm_yield();
+#endif
+}
 #if defined(_WIN32)
 /* asks Windows one time for a 1 ms scheduler tick (its default is 15.6 ms), before the first timed wait */
 void plat_timer_1ms(void);

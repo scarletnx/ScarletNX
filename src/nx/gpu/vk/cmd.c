@@ -625,9 +625,20 @@ static void cbs_add(VkCommandPool pool, VkCommandBuffer** cbs, u32* count, u32 n
 }
 u64 g_vk_cb_grows_waited;
 static VkCommandBuffer cmd_locked(void);
+/* A split run's worker (draw_batches=2) records against the command buffers begun at the split, whatever the
+   renderer thread submits meanwhile: its list's splice names the ring's current ones in their place
+   (vk_rec_list_names). Only the renderer thread changes the frame's command buffers until the join */
+static struct {
+    VkCommandBuffer cb, up;
+} g_split_cbs;
+void vk_cmd_split(VkCommandBuffer cb, VkCommandBuffer up) {
+    g_split_cbs.cb = cb;
+    g_split_cbs.up = up;
+}
+static int split_worker(void) { return g_split_cbs.cb && vk_render_slot() == 1; }
 VkCommandBuffer vk_cmd(void) {
-    /* a split run (draw_batches=2) records into the command buffer begun at the split, and nothing submits until
-       its join: both sides take it with no lock */
+    if (split_worker()) return g_split_cbs.cb;
+    /* the renderer thread of a split run: the only one that changes the frame's command buffers until the join */
     const Frame* f = &g_fr[g_cur];
     if (vk_share_on() && f->recording) return f->cbs[f->icb];
     vk_share_lock();
@@ -1202,6 +1213,7 @@ const char* const g_vk_sub_name[VK_SUB_N] = {"other", "present", "finish", "1 ms
    why (VK_SUB_*: the statistics) */
 static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo* xs, int land, int why) {
     SNX_ZONE(z_submit, "vk submit");
+    vk_rec_list_serial(); /* a split run's worker: before it reads the frame's command buffers */
     /* the ASTC uploads recorded for the compute queue first: this submission waits for them (below), as its draws
        sample their textures and its frame's staging and descriptor sets hold what they read */
     vk_astc_stream_submit();
@@ -1291,7 +1303,18 @@ static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo*
     SNX_ZONE_END(z_submit);
 }
 
+#include <execinfo.h> /* TEMPDBG */
 static void submit_why(VkSemaphore wait, VkPipelineStageFlags2 wait_stage, VkSemaphore signal, int why) {
+    if (vk_share_on()) { /* TEMPDBG */
+        static int told;
+        if (told++ < 3) {
+            void* bt[24];
+            int n = backtrace(bt, 24);
+            LOG("TEMPDBG a submit (why %d) during a split:\n", why);
+            char** sym = backtrace_symbols(bt, n);
+            for (int i = 0; sym && i < n; i++) LOG("TEMPDBG   %s\n", sym[i]);
+        }
+    }
     VkSemaphoreSubmitInfo w = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = wait,
                                .stageMask = wait_stage};
     VkSemaphoreSubmitInfo s = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = signal,
@@ -1306,6 +1329,7 @@ void vk_submit(VkSemaphore wait, VkPipelineStageFlags2 wait_stage, VkSemaphore s
    buffer to end. A pool is used by one thread at a time: its commands go through the recording thread's ring like the
    frame's, and it is made from the frame's pool with the ring drained, as vk_cmd makes its command buffers */
 VkCommandBuffer vk_cmd_upload(int gpu) {
+    if (split_worker()) return g_split_cbs.up; /* begun at the split, with its barrier */
     Frame* f = &g_fr[g_cur];
     vk_cmd(); /* the frame's command buffer recording too: every submit then takes this one with it */
     if (!f->up) {
@@ -1427,6 +1451,7 @@ static void wait_letting_go(u64 at, int kind, int let_go) {
 void vk_wait_submit_letting_go(u64 value) { wait_letting_go(value, VK_WAIT_SUBMIT, 1); }
 /* with let_go, what it lands is what it waited for: other threads submit meanwhile */
 static void finish(const char* file, int line, int let_go) {
+    vk_rec_list_serial(); /* a split run's worker: before it waits and lands what the GPU wrote */
     u64 t0 = plat_ns();
     SNX_ZONE(z_finish, "vk finish");
     submit_why(VK_NULL_HANDLE, 0, VK_NULL_HANDLE, VK_SUB_FINISH);
@@ -1605,8 +1630,12 @@ void vk_submit_progress_raw(u64* submitted, u64* done) {
     *done = 0;
     if (g_gsem) vkGetSemaphoreCounterValue(g_vk.dev, g_gsem, done);
 }
-void vk_wait_submit(u64 value) { timeline_wait(value, VK_WAIT_SUBMIT); }
+void vk_wait_submit(u64 value) {
+    vk_rec_list_serial(); /* a split run's worker: what the wait lands is the renderer thread's state too */
+    timeline_wait(value, VK_WAIT_SUBMIT);
+}
 void vk_land_through(u64 value) {
+    vk_rec_list_serial();
     land_through(value < atomic_load_explicit(&g_gval, memory_order_relaxed)
                      ? value
                      : atomic_load_explicit(&g_gval, memory_order_relaxed));
