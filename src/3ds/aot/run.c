@@ -18,6 +18,10 @@
 #include "3ds/input/input.h"
 #include "common/platform/file.h"
 #include "common/platform/thread.h"
+#include "3ds/runtime/state.h"
+#include "common/utilities/game_ini.h"
+#include "common/utilities/vpad_sdl.h"
+#include "common/utilities/vpad_consoles.h"
 #include "snx_settings.h"
 #include <inttypes.h>
 #include <stdio.h>
@@ -196,6 +200,24 @@ static void game_metadata(const char* directory, const SnxCtrSource* game, char*
     if (ini && named) (void)snx_ini_record(ini, "name", title);
     free(ini);
 }
+/* the 3DS's pair as the window's save states call it */
+static int state_save(void* game, const char* path, const uint8_t* thumb, char* why, size_t whysize) {
+    return snx_ctr_state_save((SnxCtrProcess*)game, path, thumb, why, whysize);
+}
+static int state_load(void* game, const char* path, char* why, size_t whysize) {
+    return snx_ctr_state_load((SnxCtrProcess*)game, path, why, whysize);
+}
+/* between two dispatches: a save states' key asked (F7, F8, F9) and the unattended saves and loads due at ms of the run's
+   clock, in states/ of the game's folder as a Switch game's; a state keeps no picture of the screens yet */
+static void states_step(SnxCtrProcess* process, const char* directory, double ms) {
+    int ask = snx_ctr_present_state_ask();
+    if (ask < 0 && !snx_vpad_window_states_waiting()) return;
+    char* prefix = snx_format("%s/", directory);
+    SnxVpadStates states = {prefix ? prefix : "./", snx_path_leaf(directory), process, state_save, state_load};
+    if (ask >= 0) snx_vpad_window_states(ask, &states, NULL);
+    snx_vpad_window_states_due((uint64_t)ms, &states, NULL);
+    free(prefix);
+}
 int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel model, uint64_t limit, double seconds,
                     uint64_t frames_limit, bool headless, const char* shot, unsigned flags, uint32_t ipc_stubs,
                     const char* runtime, const SnxCliRecompile* asked, char* error, size_t error_size) {
@@ -287,6 +309,14 @@ int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel
         }
     } else {
         snx_ctr_vk_pipeline_cache_open(directory); /* before the first draw */
+        { /* the runtime's keys in its window, and the on-screen controls' and keys' settings, from the game's .ini */
+            char* ini = snx_game_ini(directory, snx_path_leaf(directory));
+            vpad_console(&snx_vpad_3ds);
+            snx_vpad_sdl_settings();
+            vpad_settings(directory, snx_path_leaf(directory), 0, NULL);
+            snx_ctr_present_game(directory, ini);
+            free(ini);
+        }
         snx_ctr_present_title(process->title[0] ? process->title : id, "");
         /* the Switch's fullscreen=1, but for a timed, frame-limited or budgeted test run, as for a Switch game */
         if (g_settings.fullscreen && !(seconds > 0) && !limit && frames_limit == UINT64_MAX && !headless)
@@ -306,9 +336,11 @@ int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel
     /* a host fault in the flat space is the guest's data abort, reported with the block it happened in */
     ctr_host_faults(snx_ctr_space_base(process->space), &snx_ctr_process_cpu(process)->r[15], track_fault,
                     process->space);
+    double started = snx_seconds(); /* the run's clock, state_save's and state_load's times */
     for (; !ran_frames;) {
         uint64_t slice = frames_limit != UINT64_MAX ? SNX_CTR_FRAME_SLICE : SNX_CTR_RUN_SLICE, n = 0;
         if (limit && limit - executed < slice) slice = limit - executed;
+        states_step(process, directory, (snx_seconds() - started) * 1000.0);
         state = snx_ctr_dispatch(native.module, process, slice, &n);
         executed += n;
         /* a service, or a save state loaded only in part, may end the run between two dispatches */

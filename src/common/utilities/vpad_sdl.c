@@ -36,6 +36,7 @@ static struct {
     SnxUiRects rects;
     int made, warned, w, h; /* what the rectangles are made for: a first time, with the line or not, the picture */
     int over;               /* and with the showcase or the stats, which change every frame */
+    SDL_WindowID key_window; /* the window the last key was pressed in, 0 for none: a console's of two (the 3DS's) */
     u32 presents;           /* the frames presented, the showcase's frames a second */
     SnxUiQuad quads[QUADS];
 } g_vpad_sdl;
@@ -280,6 +281,7 @@ void snx_vpad_window_none(int action, const char* why) {
    does, and the others' for the console */
 static SnxVpadEvent key_event(const SDL_KeyboardEvent* k, int* action) {
     if (k->repeat) return SNX_VPAD_PASS;
+    g_vpad_sdl.key_window = k->windowID;
     bool back = k->key == SDLK_AC_BACK;
     int also, a = back ? HOTKEY_MENU : hotkey_find(k->key, hotkey_mods(k->mod), &also);
     if (vpad_editing() && k->key == SDLK_ESCAPE && !(k->mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI)))
@@ -322,8 +324,14 @@ static SnxVpadEvent key_event(const SDL_KeyboardEvent* k, int* action) {
         if (g_vpad_sdl.show) g_vpad_sdl.show(line);
         return SNX_VPAD_TAKEN;
     }
-    if (a == HOTKEY_FULLSCREEN || a == HOTKEY_FULLSCREEN_2) {
-        SDL_SetWindowFullscreen(g_vpad_sdl.window, !(SDL_GetWindowFlags(g_vpad_sdl.window) & SDL_WINDOW_FULLSCREEN));
+    if (a == HOTKEY_FULLSCREEN || a == HOTKEY_FULLSCREEN_2) { /* the window it was pressed in, of a console's two */
+        SDL_Window* w = k->windowID ? SDL_GetWindowFromID(k->windowID) : NULL;
+        if (!w) w = g_vpad_sdl.window;
+        if (!SDL_SetWindowFullscreen(w, !(SDL_GetWindowFlags(w) & SDL_WINDOW_FULLSCREEN))) {
+            char line[256];
+            snprintf(line, sizeof line, "the window cannot switch fullscreen: %s", SDL_GetError());
+            if (g_vpad_sdl.say) g_vpad_sdl.say(line);
+        }
         return SNX_VPAD_TAKEN;
     }
     if (a >= 0 && a != HOTKEY_MENU) {
@@ -342,8 +350,17 @@ static SnxVpadEvent key_event(const SDL_KeyboardEvent* k, int* action) {
     }
     return SNX_VPAD_TAKEN;
 }
+SDL_WindowID snx_vpad_window_key_window(void) { return g_vpad_sdl.key_window; }
+int snx_vpad_window_pace(void) { return g_vpad_sdl.pace; }
+void snx_vpad_window_set_pace(int pace) { g_vpad_sdl.pace = pace; }
 bool snx_vpad_window_point(const SDL_Event* e, float* x, float* y) {
     int w = 0, h = 0, ww = 0, wh = 0;
+    /* a console's other window (the 3DS's lower screen on its own) has no controls */
+    SDL_WindowID id = e->type == SDL_EVENT_MOUSE_MOTION ? e->motion.windowID
+                      : e->type == SDL_EVENT_MOUSE_BUTTON_DOWN || e->type == SDL_EVENT_MOUSE_BUTTON_UP
+                          ? e->button.windowID
+                          : e->tfinger.windowID;
+    if (id && id != SDL_GetWindowID(g_vpad_sdl.window)) return false;
     if (!SDL_GetWindowSizeInPixels(g_vpad_sdl.window, &w, &h) || !SDL_GetWindowSize(g_vpad_sdl.window, &ww, &wh) ||
         ww <= 0 || wh <= 0)
         return false;

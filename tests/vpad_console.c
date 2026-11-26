@@ -191,7 +191,7 @@ static int switch_tall(void) {
    taller than wide its own places, L and R over the D-pad and the buttons, the Vita's sticks where the Switch's are in
    the band under its picture (from 64% of the height down). In both, each button pressed alone */
 static int switch_places(void) {
-    static const SnxVpadConsole* const consoles[] = {&snx_vpad_gba, &snx_vpad_nds, &snx_vpad_vita};
+    static const SnxVpadConsole* const consoles[] = {&snx_vpad_gba, &snx_vpad_nds, &snx_vpad_vita, &snx_vpad_3ds};
     static SnxUiQuad q[512];
     static const int wide[4] = {0, 0, 2340, 1080}, tall[4] = {0, 0, 1080, 2340};
     for (size_t k = 0; k < sizeof consoles / sizeof *consoles; ++k) {
@@ -210,7 +210,7 @@ static int switch_places(void) {
                 int own = o->wide.x > 0;
                 float x = t ? o->tall.x : own ? o->wide.x : g_switch.at[o->control].x;
                 float y = t ? o->tall.y : own ? o->wide.y : g_switch.at[o->control].y;
-                if (t && (o->control == SNX_VPAD_STICK_L || o->control == SNX_VPAD_STICK_R))
+                if (t && c == &snx_vpad_vita && (o->control == SNX_VPAD_STICK_L || o->control == SNX_VPAD_STICK_R))
                     CHECK(fabsf(x - g_switch.at[o->control].x) < 0.001f &&
                           fabsf(y - (0.64f + 0.36f * g_switch.at[o->control].y)) < 0.001f);
                 CHECK(at[o->control].x == x && at[o->control].y == y);
