@@ -85,4 +85,10 @@ void snx_pad_map_console(SnxPadMap* map, unsigned (*button)(int bit), const char
    zone's edge is the stick at rest and the rim stays the rim, so a stick pushed along one axis keeps the small part of
    the other. 0 with x and y zeroed when it is inside the zone, else 1 */
 int snx_pad_dead_zone(double* x, double* y, double zone, double rim);
+/* the Switch's players' slots, one for each guest Npad player, and the gamepads' pages in the game's menu and the
+   launcher's Settings: theirs, the screen of what each button sends, and a player's own */
+#define SNX_GAMEPADS        8
+#define SNX_GAMEPAD_PAGE    "Controllers"
+#define SNX_GAMEPAD_MAP     "Button map"
+#define SNX_GAMEPAD_PLAYERS "Player"
 #endif

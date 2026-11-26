@@ -152,6 +152,8 @@ int ui_fades(SnxUiFade fades[SNX_UI_FADES]);
 #define SNX_UI_PICTURE   96
 #define SNX_UI_PICTURE_Y 256
 
+/* the mouse's id among the fingers' a pointer event gives the menu and the on-screen controls */
+#define SNX_TOUCH_MOUSE (~(u64)0)
 /* the picture apart from the atlas, the menu's save state thumbnail: its size */
 #define SNX_UI_IMAGE_W 320
 #define SNX_UI_IMAGE_H 180

@@ -3,6 +3,7 @@
 /* The game's menu (runtime/platform/overlay.c): where it goes, its pages, what a tap, a move or a step does, its look;
    and ui.c's atlas and text */
 #include "nx/runtime/platform/overlay.h"
+#include "nx/runtime/platform/overlay_host.h"
 #include <math.h>
 #include "nx/runtime/platform/hud.h"
 #include "common/utilities/stats.h"
@@ -1371,6 +1372,7 @@ int main(void) {
     const u32 ink = 0xFF3A4145u;
     int x, y, sc;
     vpad_set_store(store);
+    overlay_host_nx();            /* the Switch's runtime's parts, as its main gives them */
     snx_pad_map_unset(&pads.own); /* as gamepad.c starts it: every control the button in its place */
     snx_pad_map_unset(&players[0].own);
     prepare_screen();
