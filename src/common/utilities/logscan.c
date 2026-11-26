@@ -613,8 +613,9 @@ static void ipc_add(SnxLogScan* s, int kind, Span iface, unsigned cmd) {
     }
 }
 
-/* a frontend's error that ends its run, as the 3DS's, the Vita's and the GBA's runtimes write it on stderr:
-   "scarletnx-<frontend>: <what>". The 3DS's stop (3ds/aot/run.c) is cut after its pc ("unsupported guest operation or
+/* a frontend's line, as the 3DS's, the Vita's, the DS's and the GBA's runtimes write their errors and their warnings on
+   stderr: "scarletnx-<frontend>: <what>". The last one before the run's end is the stop it ended on, unless "Exit."
+   follows it (frontend_stop). The 3DS's stop (3ds/aot/run.c) is cut after its pc ("unsupported guest operation or
    missing static entry: pc=0x0013be3c"): the counts after it differ from run to run */
 static int frontend_error(SnxLogScan* s, Span line) {
     Span rest = line;
@@ -626,9 +627,14 @@ static int frontend_error(SnxLogScan* s, Span line) {
     long at = find(rest, ": pc=0x");
     if (at > 0 && rest.n >= (size_t)at + 15) rest.n = (size_t)at + 15;
     if (!rest.n) return 0;
-    s->outcome = SNX_LOG_FATAL;
-    s->fatal = add(s, rest);
+    s->frontend = add(s, rest);
     return 1;
+}
+/* the run's end: a frontend's line that no "Exit." followed is the stop, when nothing else was */
+static void frontend_stop(SnxLogScan* s) {
+    if (s->outcome || !s->frontend) return;
+    s->outcome = SNX_LOG_FATAL;
+    s->fatal = s->frontend;
 }
 
 static int ipc_line(SnxLogScan* s, Span line) {
@@ -1167,6 +1173,7 @@ static void start_over(SnxLogScan* s) {
     int nended = s->nended;
     char* pool = s->pool;
     size_t cap = s->cap;
+    frontend_stop(s);
     if (ran(s)) {
         char* fresh = malloc(4096);
         kept = fresh ? malloc(sizeof *kept) : NULL;
@@ -1210,6 +1217,7 @@ static void restart(SnxLogScan* s) {
     size_t cap = s->cap, mark = s->mark, used = s->used;
     unsigned long seen = s->seen;
     SnxLogScan* run = malloc(sizeof *run); /* the run's scan, NULL out of memory: the game log's alone, as before */
+    frontend_stop(s);
     if (run) *run = *s;
     memset(s, 0, sizeof *s);
     s->pool = pool;
@@ -1331,6 +1339,12 @@ void snx_logscan_line(SnxLogScan* s, const char* p, size_t n) {
             }
             if (!s->outcome && frontend_error(s, line)) return;
             break;
+        case 'E': /* every driver's last line of a run that ended well: what a frontend said before it was no stop */
+            if (trim(line).n == 5 && starts(line, "Exit.")) {
+                s->frontend = 0;
+                return;
+            }
+            break;
         case '3': /* the 3DS's service calls */
             if (take_lit(&rest, "3ds ipc: ") && ctr_ipc_line(s, rest)) return;
             break;
@@ -1408,6 +1422,7 @@ static int from_ring(SnxLogScan* s, char (*raw)[SNX_LOGSCAN_RAW], const unsigned
 
 void snx_logscan_end(SnxLogScan* s) {
     SnxLogScan* earlier = s->earlier;
+    frontend_stop(s);
     s->earlier = NULL;
     if (earlier && !ran(s)) { /* the last start only opened the launcher: the one before it stands */
         char ended[SNX_LOGSCAN_STARTS][SNX_LOGSCAN_LINE];
