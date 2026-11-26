@@ -175,7 +175,7 @@ static int last_run_load(const char* dir, char* state, size_t size) {
     GuiLastRun run;
     char *path = snx_path_join(dir, "last-run.ini"), why[1024];
     int rc = gui_last_run_take(path, &run, why, sizeof why);
-    if (rc < 0) config_say("%s", why);
+    if (rc < 0 || (rc > 0 && why[0])) config_say("%s", why); /* the launcher's log */
     snprintf(state, size, "%s started %lld", run.name ? run.name : "-", (long long)run.started);
     gui_last_run_free(&run);
     free(path);
