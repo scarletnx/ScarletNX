@@ -222,8 +222,25 @@ static void due(const char* list, uint32_t* done, int load, uint64_t ms, const S
         at = *end ? end + 1 : end;
     }
 }
+/* the bits of list's items, at most 32, that due() marks done */
+static uint32_t items(const char* list) {
+    int n = 0;
+    for (const char* at = list; *at && n < 32; ++n) at += strcspn(at, ","), at += *at == ',';
+    return n >= 32 ? 0xFFFFFFFFu : (1u << n) - 1;
+}
 bool snx_vpad_window_states_waiting(void) {
-    return (g_vpad_sdl.state_save[0] && ~g_vpad_sdl.saves_done) || (g_vpad_sdl.state_load[0] && ~g_vpad_sdl.loads_done);
+    uint32_t saves = items(g_vpad_sdl.state_save), loads = items(g_vpad_sdl.state_load);
+    return (g_vpad_sdl.saves_done & saves) != saves || (g_vpad_sdl.loads_done & loads) != loads;
+}
+bool snx_vpad_window_save_due(uint64_t ms) {
+    int i = 0;
+    for (const char* at = g_vpad_sdl.state_save; *at && i < 32; ++i) {
+        char* stop;
+        unsigned long long when = strtoull(at, &stop, 10);
+        if (!(g_vpad_sdl.saves_done >> i & 1) && *stop == ':' && when <= ms) return true;
+        at += strcspn(at, ","), at += *at == ',';
+    }
+    return false;
 }
 void snx_vpad_window_states_due(uint64_t ms, const SnxVpadStates* s, const uint8_t* thumb) {
     if (g_vpad_sdl.state_save[0]) due(g_vpad_sdl.state_save, &g_vpad_sdl.saves_done, 0, ms, s, thumb);

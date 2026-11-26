@@ -22,6 +22,7 @@
 #include "common/utilities/endian.h"
 #include "common/utilities/state_header.h"
 #include "common/utilities/hotkeys.h"
+#include "common/utilities/vpad_consoles.h"
 #include "common/utilities/vpad_sdl.h"
 #include "common/utilities/state_file.h"
 #include <stdio.h>
@@ -391,6 +392,7 @@ static int keys(Machine* m, const char* dir) {
     char *two = snx_format("%s/states/a game.2.snxstate", dir),
          *back = snx_format("%s/states/a game.auto.snxstate", dir);
     CHECK(prefix && two && back);
+    remove(two), remove(back); /* what a run that stopped before its end left */
     snx_vpad_window_open(NULL, NULL, said, NULL);
     snx_vpad_window_states(HOTKEY_NEXT_SLOT, &states, NULL);
     CHECK(!strcmp(g_said, "Slot 2: empty"));
@@ -405,6 +407,21 @@ static int keys(Machine* m, const char* dir) {
     CHECK(!strncmp(g_said, "Slot 2: 20", 10));
     snx_vpad_window_states(HOTKEY_LOAD_STATE, &states, NULL);
     CHECK(!strcmp(g_said, "Loaded slot 2") && snx_is_file(back));
+    { /* an unattended run's saves: each due once at its time, a save's picture asked for only then, none left after */
+        char* args[] = {"scarletnx-agb", "--state-save=100:1,200:auto", NULL};
+        char* one = snx_format("%s/states/a game.1.snxstate", dir);
+        vpad_console(&snx_vpad_gba); /* the runner's: its settings are a console's */
+        snx_vpad_sdl_settings();
+        vpad_settings(dir, "a game", 2, args);
+        CHECK(one && snx_vpad_window_states_waiting() && !snx_vpad_window_save_due(50) &&
+              snx_vpad_window_save_due(100));
+        snx_vpad_window_states_due(150, &states, NULL);
+        CHECK(snx_is_file(one) && !snx_vpad_window_save_due(150) && snx_vpad_window_states_waiting());
+        snx_vpad_window_states_due(250, &states, NULL);
+        CHECK(!strncmp(g_said, "Saved ", 6) && !snx_vpad_window_states_waiting() && !snx_vpad_window_save_due(1000));
+        remove(one);
+        free(one);
+    }
     snx_vpad_window_close();
     remove(two), remove(back);
     free(two), free(back), free(prefix);
