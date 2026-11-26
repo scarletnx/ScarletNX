@@ -57,8 +57,8 @@ Generated modules include runtime ABI code. Game assets, keys and firmware are e
 | HarfBuzz 15.0.0 (the Android driver's text shaping, `src/android/hwui/text.c`) | MIT ("Old MIT") |
 | SQLite 3.54.1 (the Android driver's `android.database.sqlite`, `src/android/db/sqlite_jni.c`) | Public domain |
 | OpenJDK (the JVM that the Android driver loads at run time from the installed JDK, not shipped) | GPL-2.0 with the Classpath Exception |
-| RNNoise 0.1.1 (the microphone's neural noise reduction, `src/nx/runtime/platform/audio_denoise.c`: its sources and model, 87503 weights of a byte, fetched by `cmake/dependencies.cmake` and built in) | BSD-3-Clause |
-| Speex DSP's preprocessor (the microphone's spectral noise reduction, `src/nx/runtime/platform/audio_denoise.c`, loaded at run time from the system's libspeexdsp, not shipped) | BSD-3-Clause |
+| RNNoise 0.1.1 (the microphone's neural noise reduction, `src/common/utilities/denoise.c`: its sources and model, 87503 weights of a byte, fetched by `cmake/dependencies.cmake` and built in) | BSD-3-Clause |
+| Speex DSP's preprocessor (the microphone's spectral noise reduction, `src/common/utilities/denoise.c`, loaded at run time from the system's libspeexdsp, not shipped) | BSD-3-Clause |
 | lunasvg / plutovg (the splash's SVGs and the user's picture) | MIT / MIT, with FreeType's rasterizer and stroker (FreeType License) and stb (MIT or public domain) |
 | GUI menu icons (`src/gui/icons.hex`), drawn after Lucide 1.61.0's (some derived from Feather) | GPL-3.0-or-later, after Lucide's ISC and Feather's MIT (in `src/gui/FONT-NOTICE.txt`) |
 | GUI VGA BIOS font (SeaBIOS `vgafont16`, originally Joseph Gil's font collection) | Public domain |

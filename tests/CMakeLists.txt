@@ -2599,13 +2599,13 @@ if(TARGET OpenSSL::Crypto AND NOT SNX_TOOLS_ONLY)
     snx_hookgen(snx-test-nn-audio-renderer SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/audio_renderer.hook" A32_MARKED)
     add_test(NAME nn_audio_renderer COMMAND snx-test-nn-audio-renderer)
     # the input streams of the Ounce's SDK (nn/audio_stream.c) over a synthetic microphone, never a real one, and
-    # the noise reduction (runtime/platform/audio_denoise.c): RNNoise built in, and the system's libspeexdsp when it is
-    # there
+    # the recording and its noise reduction every console's shares (common/utilities/mic.c and denoise.c): RNNoise
+    # built in, and the system's libspeexdsp when it is there
     add_executable(snx-test-audio-mic audio_mic.c)
     snx_test_target(snx-test-audio-mic gnu23)
     snx_service_swipc(snx-test-audio-mic)
     snx_hookgen(snx-test-audio-mic SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/hooks.hook")
-    target_link_libraries(snx-test-audio-mic PRIVATE scarletnx-common snx_rnnoise)
+    target_link_libraries(snx-test-audio-mic PRIVATE scarletnx-common snx_rnnoise snx_tracy_client)
     if(NOT WIN32)
         target_link_libraries(snx-test-audio-mic PRIVATE m)
     endif()

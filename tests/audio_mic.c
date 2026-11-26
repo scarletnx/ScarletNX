@@ -1,11 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The input streams of the Ounce's SDK (src/nx/nn/audio_stream.c) over a synthetic microphone: their handlers
-   called as the hooks call them, on a guest buffer, with a clock the test moves and a host recording device
-   (plat_mic_*) that plays a generated signal in bursts, never a real one. Checked: what an open leaves for the
-   format query, the device properties, the frames' count in guest time and their format on every channel, the
-   device opened by a start and closed by a stop, the microphone setting off, the hold before the first frames, a
-   device that runs short or ahead, the gain. Then the noise reduction (src/nx/runtime/platform/audio_denoise.c). Off,
+/* The input streams of the Ounce's SDK (src/nx/nn/audio_stream.c) over a synthetic microphone: their handlers called as
+   the hooks call them, on a guest buffer, with a clock the test moves and a host recording device
+   (common/platform/mic.h's snx_mic_device_*) that plays a generated signal in bursts, never a real one. Checked: what
+   an open leaves for the format query, the device properties, the frames' count in guest time and their format on every
+   channel, the device opened by a start and closed by a stop, the microphone setting off, the hold before the first
+   frames, a device that runs short or ahead, the gain. Then the noise reduction (src/common/utilities/denoise.c). Off,
    the game gets the signal sample for sample. On, speech-like syllables over a steady noise and over babble go through
    the neural method (RNNoise, built in) and the spectral one (the system's libspeexdsp, skipped and said without it),
    each measured: the noise lowered between the syllables, the syllables' signal-to-noise ratio, the speech kept, the
@@ -16,7 +16,8 @@
 #include <time.h>
 
 #include "nx/nn/audio_stream.c"
-#include "nx/runtime/platform/audio_denoise.c"
+#include "common/utilities/mic.c"
+#include "common/utilities/denoise.c"
 
 u8* g_mem;
 Settings g_settings;
@@ -111,16 +112,17 @@ static i16 signal_at(u64 n) {
 
 /* the device: it records at 48 kHz scaled by test_speed (in 1/1000ths), and hands its samples over every 20 ms of
    host time, as a device with a buffer of 960 frames does. test_stall stops it */
-struct PMic {
+struct SnxMicDevice {
     u32 rate;
     u64 recorded, read; /* samples the device has, and those taken */
 };
-static PMic* test_mic;
+static SnxMicDevice* test_mic;
 static unsigned test_opens, test_closes;
 static int test_no_mic, test_stall;
 static u32 test_speed = 1000;
 static char test_device[64];
-PMic* plat_mic_open(u32 rate, const char* device) {
+SnxMicDevice* snx_mic_device_open(uint32_t rate, const char* device, SnxMicSay say) {
+    (void)say;
     test_opens++;
     snprintf(test_device, sizeof test_device, "%s", device);
     if (test_no_mic) return NULL;
@@ -130,15 +132,16 @@ PMic* plat_mic_open(u32 rate, const char* device) {
     test_mic->rate = rate;
     return test_mic;
 }
-void plat_mic_close(PMic* m) {
+void snx_mic_device_close(SnxMicDevice* m) {
     if (!m) return;
     CHECK(m == test_mic);
     test_closes++;
     free(m);
     test_mic = NULL;
 }
-u32 plat_mic_available(PMic* m) { return (u32)(m->recorded - m->read); }
-u32 plat_mic_read(PMic* m, i16* samples, u32 frames) {
+uint32_t snx_mic_device_available(SnxMicDevice* m) { return (u32)(m->recorded - m->read); }
+uint32_t snx_mic_device_read(SnxMicDevice* m, int16_t* samples, uint32_t frames, SnxMicSay say) {
+    (void)say;
     u32 n = frames < m->recorded - m->read ? frames : (u32)(m->recorded - m->read);
     for (u32 i = 0; i < n; i++) samples[i] = signal_at(m->read + i);
     m->read += n;
@@ -262,7 +265,7 @@ static void test_short(void) {
     for (int t = 0; t < 2000; t++) { /* 10 s */
         tick();
         read_all(STREAM, NULL, &n, 0);
-        Mic* m = input_of(STREAM)->mic;
+        SnxMic* m = input_of(STREAM)->mic;
         CHECK(m->count <= m->hold + m->slack);
     }
     CHECK(input_of(STREAM)->mic->dropped > 0);
@@ -426,7 +429,7 @@ static void to_i16(i16* out, const float* a, const float* b, u32 n) {
 }
 /* each block of 480 samples of in through a new reducer of method, into out, lined up for its delay */
 static u32 run_method(int method, const i16* in, i16* out, u32 n) {
-    SnxDenoise* d = snx_denoise_new(48000, 480, method);
+    SnxDenoise* d = snx_denoise_new(48000, 480, method, mic_say);
     CHECK(d != NULL && snx_denoise_method(d) == method);
     u32 delay = snx_denoise_delay(d);
     static i16 block[480];
@@ -503,7 +506,7 @@ static void measure(const char* method_name, int method, const char* noise_name,
 
 /* the cost of a block of 10 ms at 48 kHz, in us */
 static double block_us(int method) {
-    SnxDenoise* d = snx_denoise_new(48000, 480, method);
+    SnxDenoise* d = snx_denoise_new(48000, 480, method, mic_say);
     static i16 block[480];
     struct timespec t0, t1;
     CHECK(d != NULL);
@@ -538,7 +541,7 @@ static void test_reduction(void) {
     /* it is the copy built in, whatever librnnoise the host has: each block what that copy's own call makes of it. A
        system librnnoise 0.4.1 gave other samples and another delay */
     {
-        SnxDenoise* neural = snx_denoise_new(48000, 480, SNX_DENOISE_NEURAL);
+        SnxDenoise* neural = snx_denoise_new(48000, 480, SNX_DENOISE_NEURAL, mic_say);
         DenoiseState* copy = rnnoise_create(NULL);
         static i16 block[480];
         static float in[480], out[480];
@@ -559,12 +562,13 @@ static void test_reduction(void) {
     printf(
         "audio_mic: neural: a block of 10 ms takes %.1f us (%.2f%% of one core), and the output lags by %u samples\n",
         block_us(SNX_DENOISE_NEURAL), block_us(SNX_DENOISE_NEURAL) / 100.0, 480u);
-    SnxDenoise* d = snx_denoise_new(16000, 160, SNX_DENOISE_NEURAL); /* not 48 kHz: the spectral one, or none */
+    /* not 48 kHz: the spectral one, or none */
+    SnxDenoise* d = snx_denoise_new(16000, 160, SNX_DENOISE_NEURAL, mic_say);
     CHECK(!d || snx_denoise_method(d) == SNX_DENOISE_SPECTRAL);
     snx_denoise_free(d);
-    CHECK(snx_denoise_new(48000, 480, SNX_DENOISE_OFF) == NULL);
+    CHECK(snx_denoise_new(48000, 480, SNX_DENOISE_OFF, mic_say) == NULL);
 
-    d = snx_denoise_new(48000, 480, SNX_DENOISE_SPECTRAL);
+    d = snx_denoise_new(48000, 480, SNX_DENOISE_SPECTRAL, mic_say);
     if (!d) {
         printf("audio_mic: %s is not there: the spectral checks are skipped\n", SNX_DENOISE_LIBRARY);
     } else {
