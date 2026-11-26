@@ -4997,6 +4997,11 @@ int vk_buf_move(VkCommandBuffer cb, u32 i, DevMem from, u64* bytes) {
     vk_defer_buffer(e->buf, e->mem); /* the frames in flight that read it are done first; its owner goes */
     e->buf = b;
     e->mem = m;
+    /* another buffer: the token of the old one ends (vk_buf_own_got), as at a drop. A memo that held the token bound
+       the old buffer after it was destroyed: a memo of draws kept past its epoch did, in each run of one game's town
+       with draw_batches=2 (vkCmdBindVertexBuffers2 with a destroyed buffer, then the device lost) */
+    e->own_id = ++g_buffer.own_made;
+    own_dropped();
     vk_devmem_owner(m, VK_MOVE_BUF(i));
     *bytes = e->len;
     return 1;
