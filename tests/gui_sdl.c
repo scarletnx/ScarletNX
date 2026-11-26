@@ -9324,6 +9324,26 @@ int main(int argc, char** argv) {
             app.work_dir = work;
             app_values(&app);
         }
+        { /* folders longer than the note's row, as a Windows profile's or a runner's temporary folder makes them: a row
+             each, cut around "...", and every row of App's still on the screen, its last ones too */
+            char *data = app.data_dir, *work = app.work_dir;
+            app.data_dir = snx_path_join(temporary, "a folder named as long as the ones a Windows runner's temporary "
+                                                    "folder and a deep profile make, and longer still");
+            app.work_dir = snx_path_join(app.data_dir, "extractions");
+            app_values(&app);
+            render(&app);
+            assert(strchr(app.places_shown, '\n') && strstr(app.places_shown, "...") &&
+                   !strncmp(app.places_shown, "Data: ", 6));
+            shows(&app, "- " ICON_PAINTBRUSH " Theme Editor", normal);
+            shows(&app, "- " ICON_ERASER " Clean Old Settings", rgb(app.theme.soft));
+            shows(&app, "- " ICON_FOLDER_INPUT " Move Old Files", rgb(app.theme.soft));
+            free(app.data_dir);
+            free(app.work_dir);
+            app.data_dir = data;
+            app.work_dir = work;
+            app_values(&app);
+            render(&app);
+        }
         /* nothing to clean here: greyed (#614) */
         shows(&app, "- " ICON_ERASER " Clean Old Settings", rgb(app.theme.soft));
         hides(&app, "- Layout", normal);

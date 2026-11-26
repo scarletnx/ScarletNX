@@ -925,6 +925,7 @@ typedef struct App {
     char place_about[GUI_PLACES][384];
     char place_line[GUI_PLACES][4200]; /* the folder in use, whole, under the rows */
     char places_note[3 * 4200];        /* the three, under App's rows */
+    char places_shown[2048];           /* places_note as App's box shows it, at its width (places_note_fit) */
     int place_row;                     /* the row the folder picker was opened for, -1 none */
     char* own_dir;      /* Android: the app's own storage; a folder outside it is asked about (GUI_ASK_OUTSIDE) */
     char* outside_path; /* the folder asked about, for the row outside_place */
@@ -9214,6 +9215,27 @@ static void app_values(App* app) {
     snprintf(app->places_note, sizeof app->places_note, "%s: %s  %s: %s  %s: %s", snx_tr(place_labels[0]),
              app->data_dir ? app->data_dir : "", snx_tr(place_labels[1]), games, snx_tr(place_labels[2]), work);
 }
+/* App's note as its box shows it, cols wide: the three folders in one row, whole, where they fit; else a row each, its
+   path cut around "..." (gui_path_fit), so long folders never push App's last rows off the screen. Folders shows each
+   whole, on its row in focus */
+static void places_note_fit(App* app, int cols) {
+    char games[4200], work[4200], cut[1024];
+    const char* paths[3] = {app->data_dir ? app->data_dir : "", games, work}; /* place_labels' first three */
+    size_t n = 0;
+    if (cols <= 0 || gui_text_cols(app->places_note) <= cols) {
+        snprintf(app->places_shown, sizeof app->places_shown, "%s", app->places_note);
+        return;
+    }
+    data_relative(app, app->games_dir, games, sizeof games);
+    data_relative(app, app->work_dir, work, sizeof work);
+    app->places_shown[0] = 0;
+    for (int i = 0; i < 3 && n < sizeof app->places_shown; ++i) {
+        const char* label = snx_tr(place_labels[i]);
+        gui_path_fit(paths[i], SDL_max(cols - gui_text_cols(label) - 2, 4), cut, sizeof cut);
+        n += (size_t)snprintf(app->places_shown + n, sizeof app->places_shown - n, "%s%s: %s", i ? "\n" : "", label,
+                              cut);
+    }
+}
 /* ---- the player's game folders: listed after recompiled/ and dumps/, kept a line each in folders_file ---- */
 /* what a folder holds, as Games lists it: 1 << GUI_LIBRARY_RECOMPILED for games ready to run, 1 << GUI_LIBRARY_DUMPS
    for dumps or CIAs (down its subfolders with deep); nothing, or no such folder, the dumps' */
@@ -14587,7 +14609,7 @@ static int folder_labels(const App* app) {
 }
 /* the line at the foot of a group's rows, about what they hold, NULL on the screens with none */
 static const char* form_note(const App* app) {
-    if (app->form == GUI_FORM_APP) return app->places_note;
+    if (app->form == GUI_FORM_APP) return app->places_shown[0] ? app->places_shown : app->places_note;
     if (app->form == GUI_FORM_FOLDERS) { /* the focused folder whole, its row cut to fit */
         int at, group, kind = folder_row(app, app->editor.row, &at, &group);
         return kind == GUI_ROW_PLACE ? app->place_line[at]
@@ -14686,6 +14708,10 @@ static void form_boxes(App* app, GuiFormBoxes* f) {
         !theme && !form_grouped(app) && f->place.list.w && f->place.list.h && f->place.side.w && f->place.side.h;
     { /* the note whole, a half step under the text's letters */
         int s = app->scale, w = inner(app, f->place.side).w, line, half = text_half(app);
+        if (app->form == GUI_FORM_APP) {
+            places_note_fit(app, w / cell_w(app));
+            note = form_note(app);
+        }
         rows = note ? wrap_rows(app, note, w / cell_w(app), 0) : 1;
         line = cell_h(app);
         app->half = half;
