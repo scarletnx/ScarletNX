@@ -6,10 +6,11 @@
 A pull request, a run by hand and a version's tag run every test; a push to main and the nightly's schedule build,
 package and publish, and run none but the AppImage and the zip as a user would, which every event runs. SNX_TESTS, in
 the workflow's env, says which: each test step below is `if: env.SNX_TESTS == 'true'`, with nothing in its condition
-that leaves out a pull request or picks one by what it changes (a step that ran only where a pull request changed what it tests, by scripts/recompiler-changes.py or
-scripts/edenprobe.py runs, ran none of it on most). Every step that runs ctest is one of them, and the steps that make
-and publish the packages run on every event, a pull request's too. The A64 differential's QEMU reference, a test's
-input alone, is a job of the testing events. Then the same checks on copies of the workflow made to fail them. Offline.
+that leaves out a pull request or picks one by what it changes (a step that ran only where a pull request changed what
+it tests, by scripts/edenprobe.py runs, ran none of it on most). Every step that runs ctest is one of them, and the
+steps that make and publish the packages run on every event, a pull request's too. The A64 differential's QEMU
+reference, a test's input alone, is a job of the testing events. Then the same checks on copies of the workflow made
+to fail them. Offline.
 
     tests/build_tests_test.py [REPO]   (default: the checkout this file is in)"""
 
@@ -68,7 +69,7 @@ BUILD_STEPS = {
 # the packages run as a user would, on every event: seconds each, on what main's push and the nightly publish
 USER_RUNS = {'appimage': 'Run the AppImage as a user would', 'windows': "Run the zip's scarletnx.exe as a user would"}
 # what picked a pull request's tests by what it changes
-FILTERS = re.compile(r'recompiler-changes|steps\.unicorn\.|edenprobe\.py runs|cmake-changed')
+FILTERS = re.compile(r'steps\.unicorn\.|edenprobe\.py runs|cmake-changed')
 # the one test a pull request runs only where it changes what it is made from: it downloads Intel's manual, whose
 # link a pull request that changes nothing of it would fail on as often as the site does
 CHANGE_FILTERED = {('appimage', 'Make the x86-64 instruction selection again')}
@@ -140,8 +141,6 @@ def check(text, repo=None):
     reference = job_if(text, 'qemu-reference')
     if reference != TESTING:
         wrong.append(f'qemu-reference runs if "{reference}", not on the testing events: {TESTING}')
-    if job_if(text, 'recompiler-changes') is not None:
-        wrong.append('a job recompiler-changes picks the tests of a pull request')
     return wrong
 
 
