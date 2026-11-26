@@ -3101,7 +3101,8 @@ static void text_from(App* app, GuiRect r, int x, int y, const char* value, int 
     value = gui_cols_skip(value, skip);
     SDL_SetTextureColorMod(app->font, color.r, color.g, color.b);
     while (*value) {
-        int c = gui_menu_glyph(gui_utf8_step(&value)), n = gui_glyph_cols(c);
+        uint32_t point = gui_utf8_step(&value);
+        int c = gui_menu_glyph(point == '\n' ? ' ' : point), n = gui_glyph_cols(c); /* a line break on one row */
         if (n > room) break;
         glyph(app, (float)x, (float)y, c);
         room -= n;
@@ -3149,14 +3150,15 @@ static GuiRect over_rect(const App* app, int cols, int h) {
     w = SDL_min((cols + 2) * cell_w(app), width - 2 * cell_w(app));
     return gui_rect((width - w) / 2, SDL_max(0, (height - h) / 2), w, h);
 }
-/* the bytes of s's first row at width columns: a path's up to a slash (gui_wrap), other text's up to a space or after a
-   wide letter, as Chinese breaks between any two */
+/* the bytes of s's first row at width columns: a path's up to a slash (gui_wrap), other text's up to a line break, a
+   space or after a wide letter, as Chinese breaks between any two */
 static size_t wrap_at(const char* s, int width, int path) {
     const char *p = s, *space = NULL;
     int n = 0;
     if (path) return gui_wrap(s, width);
     while (*p) {
         const char* next = p;
+        if (*p == '\n') return (size_t)(p - s);
         int cols = gui_glyph_cols(gui_menu_glyph(gui_utf8_step(&next)));
         if ((n += cols) > width) break;
         p = next;
@@ -3182,7 +3184,7 @@ static int wrap_in(App* app, GuiRect r, int x, int y, const char* s, int path, S
         return 1;
     }
     while (*s && y + (rows + 1) * cell_h(app) <= r.y + r.h) {
-        size_t n = wrap_at(s, width, path), next = n;
+        size_t n = wrap_at(s, width, path), next = n + (s[n] == '\n');
         while (s[next] == ' ') ++next;
         if (s[next] && y + (rows + 2) * cell_h(app) > r.y + r.h) { /* no row for the rest: cut, it would be lost */
             text_in(app, r, x, y + rows * cell_h(app), s, color);
@@ -3190,7 +3192,7 @@ static int wrap_in(App* app, GuiRect r, int x, int y, const char* s, int path, S
         }
         snprintf(row, sizeof row, "%.*s", (int)n, s);
         text_in(app, r, x, y + rows * cell_h(app), row, color);
-        for (s += n; *s == ' ';) ++s; /* a row starts at a word */
+        for (s += n + (s[n] == '\n'); *s == ' ';) ++s; /* a row starts at a word, or after a line break */
         ++rows;
     }
     return rows;
@@ -3199,8 +3201,10 @@ static int wrap_in(App* app, GuiRect r, int x, int y, const char* s, int path, S
 static int wrap_rows(const App* app, const char* s, int width, int path) {
     int rows = 0;
     if (width <= 0 || app->theme.text == GUI_TEXT_SLIDE) return 1;
-    for (; *s; ++rows)
-        for (s += wrap_at(s, width, path); *s == ' ';) ++s;
+    for (; *s; ++rows) {
+        s += wrap_at(s, width, path);
+        for (s += *s == '\n'; *s == ' ';) ++s;
+    }
     return SDL_max(rows, 1);
 }
 /* why the box of what Move Old Files did lists what it lists, over them */
@@ -3391,6 +3395,8 @@ static void choices_place(App* app, int of, GuiRect area, const char* question, 
         int margin = app->theme.cursor[0] ? gui_text_cols(app->theme.cursor) * cw : 0;
         int w = SDL_min(SDL_max(longest, 24) * cw + margin, area.w), top;
         rows = wrap_rows(app, question, (area.w - 4 * cw) / cw, 0);
+        rows = SDL_min(rows,
+                       SDL_max(1, (area.h - list_h - (tab_w ? cell_h(app) : 0) - cell_h(app) / 2) / cell_h(app) - 2));
         c->box = gui_rect(area.x, area.y + area.h - (rows + 2) * cell_h(app), area.w, (rows + 2) * cell_h(app));
         if (tab_w) c->tab = gui_rect(c->box.x + 2 * cw, c->box.y - cell_h(app), tab_w * cw, cell_h(app) + 4 * s);
         top = (tab_w ? c->tab.y : c->box.y) - cell_h(app) / 2 - list_h;
@@ -3403,6 +3409,7 @@ static void choices_place(App* app, int of, GuiRect area, const char* question, 
         int cols = SDL_max(gui_text_cols(question) + tab_w, longest), w, h;
         w = SDL_min((cols + 2) * cw, area.w - 2 * cw);
         rows = wrap_rows(app, question, (w - 2 * cw - tab_w * cw) / cw, 0);
+        rows = SDL_min(rows, SDL_max(1, (area.h - list_h - 12 * s) / cell_h(app))); /* the choices kept whole */
         list_h = SDL_min(list_h, SDL_max(0, area.h - rows * cell_h(app) - 12 * s)); /* the box kept in the area */
         h = rows * cell_h(app) + list_h + 12 * s;
         c->box = gui_rect(area.x + (area.w - w) / 2, area.y + SDL_max(0, (area.h - h) / 2), w, h);
@@ -3429,7 +3436,7 @@ static void choices_draw(App* app, const GuiChoices* c, const char* question, co
         pane(app, c->box, NULL);
         wrap_in(app,
                 gui_rect(c->box.x, c->box.y, c->box.w - (tab && tab[0] ? gui_text_cols(tab) + 2 : 0) * cell_w(app),
-                         c->box.h),
+                         c->at.y - c->box.y),
                 c->box.x + cell_w(app), c->box.y + 4 * s, question, 0, rgb(t->warning));
         if (tab && tab[0])
             text_in(app, c->box, c->box.x + c->box.w - (gui_text_cols(tab) + 1) * cell_w(app), c->box.y + 4 * s, tab,
@@ -11523,18 +11530,16 @@ static void nightly_answer(App* app, GuiNightlyJob* job) {
     else {
         at = snprintf(app->ask_line, sizeof app->ask_line, snx_tr("%s is out; this build is %s %s."),
                       n.name[0] ? n.name : n.tag, snx_build_branch(), snx_build_commit());
-        /* one paragraph, as a question's box wraps it: what changed, a change after a semicolon */
+        /* what changed, a change a line of its own, as a question's box breaks its rows */
+        if (n.count && at > 0 && (size_t)at < sizeof app->ask_line)
+            at += snprintf(app->ask_line + at, sizeof app->ask_line - (size_t)at, " %s", snx_tr("What changed:"));
         for (i = 0; i < n.count && at > 0 && (size_t)at < sizeof app->ask_line; ++i)
-            at += i ? snprintf(app->ask_line + at, sizeof app->ask_line - (size_t)at, "; %s", n.changes[i])
-                    : snprintf(app->ask_line + at, sizeof app->ask_line - (size_t)at, " %s %s", snx_tr("What changed:"),
-                               n.changes[i]);
+            at += snprintf(app->ask_line + at, sizeof app->ask_line - (size_t)at, "\n- %s", n.changes[i]);
         if (n.count && n.more && at > 0 && (size_t)at < sizeof app->ask_line) {
             char more[64];
             snprintf(more, sizeof more, snx_tr("and %d more"), n.more);
-            at += snprintf(app->ask_line + at, sizeof app->ask_line - (size_t)at, "; %s", more);
+            snprintf(app->ask_line + at, sizeof app->ask_line - (size_t)at, "\n%s", more);
         }
-        if (n.count && at > 0 && (size_t)at < sizeof app->ask_line)
-            snprintf(app->ask_line + at, sizeof app->ask_line - (size_t)at, ".");
         snprintf(app->nightly_url, sizeof app->nightly_url, "%s", n.url);
         gui_confirm_open(&app->confirm, GUI_ASK_NIGHTLY, false);
     }
