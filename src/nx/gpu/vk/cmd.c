@@ -1106,36 +1106,41 @@ u8* vk_stage_upload(u64 size, u64 align, VkBuffer* buf, u64* off)
 	return stage_alloc(size, align, buf, off, NULL, 0);
 }
 
-/* A draw thread's part of the frame's upload ring (vk_stage_upload_own): the share lock only for a new part. A part
+/* A draw thread's parts of the frame's upload ring (vk_stage_upload_own): the share lock only for a new part. A part
    lives while its frame does, as the ring's allocations do. Only on coherent memory: a part's bytes written after a
-   submit that flushed its chunk would not be flushed again */
+   submit that flushed its chunk would not be flushed again.
+   A constant bank's copies go into a part of their own, of a constant buffer window's 64 KiB: its window (render.c's
+   cb_window_place) then moves when the part is full. In one part for all banks, each bank's window moved after 64 KiB
+   of all the banks' copies, and with descriptor buffers or heaps each move is a new table of the stage (571k moves a
+   600 presents on one thread in one game's world) */
 #define UPLOAD_PART (64u << 10)
 static _Thread_local struct {
     VkBuffer buf;
     u8* p;
     u64 off, used, frame;
-} t_upload;
-u8* vk_stage_upload_own(u64 size, u64 align, VkBuffer* buf, u64* off) {
-    if (!vk_devmem_coherent() || size > UPLOAD_PART / 4) {
+} t_upload_part[VK_UPLOAD_PAGES];
+u8* vk_stage_upload_own(u64 size, u64 align, u32 page, VkBuffer* buf, u64* off) {
+    if (!vk_devmem_coherent() || size > UPLOAD_PART / 4 || page >= VK_UPLOAD_PAGES) {
         vk_share_lock();
         u8* p = vk_stage_upload(size, align, buf, off);
         vk_share_unlock();
         return p;
     }
+    typeof(t_upload_part[0])* const t = &t_upload_part[page];
     if (align < 16) align = 16;
-    u64 at = (t_upload.off + t_upload.used + align - 1) / align * align - t_upload.off;
-    if (!t_upload.p || t_upload.frame != g_frame_id + 1 || at + size > UPLOAD_PART) {
+    u64 at = (t->off + t->used + align - 1) / align * align - t->off;
+    if (!t->p || t->frame != g_frame_id + 1 || at + size > UPLOAD_PART) {
         vk_share_lock();
-        t_upload.p = stage_alloc(UPLOAD_PART, align, &t_upload.buf, &t_upload.off, NULL, 0);
-        t_upload.frame = g_frame_id + 1; /* after stage_alloc: a fresh slot moves on in it */
+        t->p = stage_alloc(UPLOAD_PART, align, &t->buf, &t->off, NULL, 0);
+        t->frame = g_frame_id + 1; /* after stage_alloc: a fresh slot moves on in it */
         vk_share_unlock();
-        if (!t_upload.p) return NULL;
+        if (!t->p) return NULL;
         at = 0;
     }
-    t_upload.used = at + size;
-    *buf = t_upload.buf;
-    *off = t_upload.off + at;
-    return t_upload.p + at;
+    t->used = at + size;
+    *buf = t->buf;
+    *off = t->off + at;
+    return t->p + at;
 }
 
 /* Guest input read once by a copy or conversion. Keep GPU-owned bytes near the GPU; CPU-only bytes go through
