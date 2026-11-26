@@ -173,6 +173,9 @@ VkPipelineCache vk_pipeline_cache(void) { return VK_NULL_HANDLE; }
 void vk_queue_lock(VkQueue q) { (void)q; }
 void vk_queue_unlock(VkQueue q) { (void)q; }
 int vk_rec_unsafe(void) { return 0; }
+/* draw_batches=2 (render.c): no run is split here, so no worker has the ring */
+_Atomic int g_vk_share_on;
+int vk_rec_ring_held(void) { return 0; }
 void vk_render_end_at(const char* file, int line) { (void)file, (void)line; }
 void vk_result_begin(void) {}
 void vk_result_end(void) {}

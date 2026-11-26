@@ -65,6 +65,15 @@ int gpu_mem_dirty_since(u64 since, u64 a, u64 sz) { stub_hit("gpu_mem_dirty_sinc
 u64 gpu_mem_generation(void) { stub_hit("gpu_mem_generation"); }
 void gpu_mem_written(u64 gva, u64 size) { stub_hit("gpu_mem_written"); }
 int gpu_texture_live(u64 gva) { stub_hit("gpu_texture_live"); }
+/* draw_batches=2 (render.c, record.c): no run is split here, so no use is listed for a splice */
+int gpu_spec(void) { return 0; }
+void gpu_spec_fail(const char* why) {}
+void vk_shared_note(u32 which) {}
+int vk_rec_listing(void) { return 0; }
+void vk_rec_defer(VkDeferFn fn, const void* arg, u64 size) { stub_hit("vk_rec_defer"); }
+void vk_rec_list_flush(void) {}
+void vk_share_lock(void) {}
+void vk_share_unlock(void) {}
 u64 gpu_textures_added(void) { stub_hit("gpu_textures_added"); }
 int own_covered(u64 addr, u64 size) { stub_hit("own_covered"); }
 int own_hash(u64 addr, u64 size, u64* h) {
