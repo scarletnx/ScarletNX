@@ -63,6 +63,8 @@ uint32_t vita_vk_memory_type(uint32_t bits, VkMemoryPropertyFlags properties);
    before the first one shows. False without a window */
 bool vita_vk_picture(int rect[4]);
 /* a line over the game for a few seconds, as a Switch game shows one: Esc's first press */
+/* the upscaler's (aa false) or the anti-aliasing's next value, for the run, its label: the keys' step */
+const char* vita_vk_effect_step(bool aa);
 void vita_vk_notice(const char* text);
 /* that line while it shows, "" when none does */
 const char* vita_vk_notice_text(void);

@@ -594,7 +594,12 @@ static void key_action(int action) {
         g_present.state_ask = action + 1;
     else if (action == HOTKEY_THREAD_DUMP)
         g_present.dump = true;
-    else if (action == HOTKEY_SCREENSHOT) {
+    else if (action == HOTKEY_UPSCALER || action == HOTKEY_ANTI_ALIASING) { /* both screens', for the run */
+        int* at = action == HOTKEY_ANTI_ALIASING ? &g_present.fx_config.aa : &g_present.fx_config.upscaler;
+        *at = action == HOTKEY_ANTI_ALIASING ? snx_fx_aa_next(*at) : snx_fx_upscale_next(*at);
+        snx_vpad_window_effect(action,
+                               action == HOTKEY_ANTI_ALIASING ? snx_fx_aa_label(*at) : snx_fx_upscale_label(*at));
+    } else if (action == HOTKEY_SCREENSHOT) {
         snx_capture_path(path, sizeof path - 4, g_present.game ? g_present.game : "./");
         strcat(path, ".ppm");
         char line[1100];

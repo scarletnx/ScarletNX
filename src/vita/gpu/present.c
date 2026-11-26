@@ -100,6 +100,8 @@ static bool vblank(VitaProcess* p, bool again) {
             g_present.state_ask = action;
         else if (took == SNX_VPAD_ACTION && action == HOTKEY_THREAD_DUMP)
             g_present.dump = true;
+        else if (took == SNX_VPAD_ACTION && (action == HOTKEY_UPSCALER || action == HOTKEY_ANTI_ALIASING))
+            snx_vpad_window_effect(action, vita_vk_effect_step(action == HOTKEY_ANTI_ALIASING));
         else if (took == SNX_VPAD_ACTION)
             snx_vpad_window_none(action, action == HOTKEY_MOUSE     ? "its mouse is the front panel's finger and the "
                                                                       "pointer of the on-screen controls"

@@ -247,6 +247,14 @@ static int controls(SDL_Window* window, const char* dir, const char* ini) {
         free(captures);
         free(mem);
     }
+    /* the upscaler's key: the next value for the run, said over the game, another at the next press */
+    {
+        char first[64];
+        CHECK(vpad_test_key_mod(window, SDLK_U, SDL_KMOD_LCTRL) && !vblank() &&
+              !strncmp(vita_vk_notice_text(), "Upscaler: ", 10));
+        snprintf(first, sizeof first, "%s", vita_vk_notice_text());
+        CHECK(vpad_test_key_mod(window, SDLK_U, SDL_KMOD_LCTRL) && !vblank() && strcmp(vita_vk_notice_text(), first));
+    }
     /* F5: the threads listed by the run between two slices, once */
     CHECK(!vita_present_dump_asked() && vpad_test_key(window, SDLK_F5) && !vblank());
     CHECK(vita_present_dump_asked() && !vita_present_dump_asked());

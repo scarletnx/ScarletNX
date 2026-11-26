@@ -52,6 +52,17 @@ int main(void) {
     /* F7: a save asked of the run, once */
     CHECK(snx_ctr_present_state_ask() < 0 && !press(SDLK_F7, SDL_KMOD_NONE, false));
     CHECK(snx_ctr_present_state_ask() == HOTKEY_SAVE_STATE && snx_ctr_present_state_ask() < 0);
+    /* the upscaler's and the anti-aliasing's keys: the next value for the run, said over the game */
+    CHECK(!press(SDLK_U, SDL_KMOD_LCTRL, false));
+    CHECK(!strncmp(snx_ctr_present_notice(), "Upscaler: ", 10));
+    {
+        char first[64];
+        snprintf(first, sizeof first, "%s", snx_ctr_present_notice());
+        CHECK(!press(SDLK_U, SDL_KMOD_LCTRL, false) && strcmp(snx_ctr_present_notice(), first) &&
+              !strncmp(snx_ctr_present_notice(), "Upscaler: ", 10));
+    }
+    CHECK(!press(SDLK_A, SDL_KMOD_LCTRL | SDL_KMOD_LSHIFT, false) &&
+          !strncmp(snx_ctr_present_notice(), "Anti-aliasing: ", 15));
     /* F5: the threads listed by the run, once */
     CHECK(!snx_ctr_present_dump_asked() && !press(SDLK_F5, SDL_KMOD_NONE, false));
     CHECK(snx_ctr_present_dump_asked() && !snx_ctr_present_dump_asked());

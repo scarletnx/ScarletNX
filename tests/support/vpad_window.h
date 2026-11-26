@@ -40,14 +40,17 @@ static inline bool vpad_test_mouse(SDL_Window* window, Uint32 type, float x, flo
     }
     return SDL_PushEvent(&e);
 }
-static inline bool vpad_test_key(SDL_Window* window, SDL_Keycode key) {
+/* key down in window, with mod held */
+static inline bool vpad_test_key_mod(SDL_Window* window, SDL_Keycode key, SDL_Keymod mod) {
     SDL_Event e = {0};
     e.type = SDL_EVENT_KEY_DOWN;
     e.key.windowID = SDL_GetWindowID(window);
     e.key.key = key;
+    e.key.mod = mod;
     e.key.down = true;
     return SDL_PushEvent(&e);
 }
+static inline bool vpad_test_key(SDL_Window* window, SDL_Keycode key) { return vpad_test_key_mod(window, key, 0); }
 /* a control's middle in the window's pixels */
 static inline void vpad_test_middle(int control, float* x, float* y) {
     int safe[4];
