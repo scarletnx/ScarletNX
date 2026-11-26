@@ -162,9 +162,13 @@ HostUcPair snx_x64_casp(CPU* c, u64 a, u64 e0, u64 e1, u64 d0, u64 d1);
 
 static int failures, verbose;
 [[maybe_unused]] static unsigned g_without; /* --without's, for arm64's */
-/* --without: the features of the host's back end, each back end's its own, which the other leaves alone */
+/* --without: the features of the back end under test, each back end's its own, which the other leaves alone. The
+   arm64 back end's tests take arm64's alone: this host's back end, which makes the library's module, keeps all of its
+   own, its floor among them, below which the library has no recompiler */
 static void go_without(unsigned features) {
+#ifndef SNX_TEST_ARM64
     snx_x64_without(features);
+#endif
     snx_arm64_without(features);
 }
 static uint64_t g_features = SNX_A64_TARGET_SWITCH; /* --target */
