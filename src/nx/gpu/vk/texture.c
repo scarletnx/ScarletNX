@@ -5069,6 +5069,11 @@ void vk_tex_take_log(void) {
             (unsigned long long)(hosted - was[0]), (unsigned long long)(unhosted - was[1]));
         was[0] = hosted, was[1] = unhosted;
     }
+    static u64 skipped_was;
+    const u64 skipped = vk_rt_reloads_skipped();
+    LOG("vulkan: render targets a clear writes whole, not loaded from memory over the last 600 presents: %llu\n",
+        (unsigned long long)(skipped - skipped_was));
+    skipped_was = skipped;
 }
 /* a texture whose layers, levels or 3D slices were drawn as render targets of their own is copied from those targets
    on the GPU: they are never written back to its memory. Only a target matching one subresource (or, layered, the

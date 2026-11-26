@@ -1458,7 +1458,52 @@ static void rt_reload(u64 gva) {
     s->draw_wseen = 0;
     vk_surf_relist(s);
 }
+static u64 g_rt_reloads_skipped; /* the reloads vk_rt_reloads_end left out, for the statistics */
+/* A clear's targets (render.c vk_render_clear): the reloads its lookup of them asks for (a target made, or one whose
+   memory changed) wait until the clear says which targets it covers whole. A covered one's old pixels are not wanted,
+   so memory is not loaded into it: its contents are undefined until the clear, as after a load that could not be
+   made. One game makes about 80 targets a frame at addresses it reuses, each first cleared, and loading them was a
+   sixth of the renderer thread's time */
+static struct {
+    int on;
+    u32 n;
+    u64 gva[16];
+} g_rt_defer;
+void vk_rt_reloads_defer(void) {
+    g_rt_defer.on = 1;
+    g_rt_defer.n = 0;
+}
+void vk_rt_reloads_end(Surf* const* covered, u32 ncovered) {
+    g_rt_defer.on = 0;
+    for (u32 i = 0; i < g_rt_defer.n; i++) {
+        const u64 gva = g_rt_defer.gva[i];
+        Surf* s = vk_rt_find(gva);
+        u32 k = 0;
+        while (s && k < ncovered && covered[k] != s) k++;
+        if (!s || k == ncovered) {
+            vk_rt_reload(gva);
+            continue;
+        }
+        g_rt_reloads_skipped++;
+        vk_render_end();
+        s->layout = VK_IMAGE_LAYOUT_UNDEFINED;
+        s->draw_wseen = 0;
+        s->gw = gpu_mem_generation();
+        vk_surf_relist(s);
+    }
+    g_rt_defer.n = 0;
+}
+u64 vk_rt_reloads_skipped(void) { return g_rt_reloads_skipped; }
 void vk_rt_reload(u64 gva) {
+    if (g_rt_defer.on) {
+        u32 i = 0;
+        while (i < g_rt_defer.n && g_rt_defer.gva[i] != gva) i++;
+        if (i < g_rt_defer.n) return;
+        if (g_rt_defer.n < sizeof g_rt_defer.gva / sizeof *g_rt_defer.gva) {
+            g_rt_defer.gva[g_rt_defer.n++] = gva;
+            return;
+        }
+    }
     VkResourceScope scope = vk_resource_begin();
     /* the console's GPU reads the target's memory as it is: the load is the runtime's work, which a game that times
        its frames must not count (stamp.c) */

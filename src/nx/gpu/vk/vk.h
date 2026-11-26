@@ -1716,6 +1716,12 @@ int vk_rt_drawn_in(u64 lo, u64 hi, Surf** out, int max); /* count drawn in [lo, 
 /* a count that moves whenever what vk_rt_drawn_in returns, or the pixels of a target it returned, can have changed */
 u64 vk_rt_take_gen(void);
 void vk_rt_reload(u64 gva);
+/* the reloads asked for between the two wait (a clear's lookup of its targets): at the end, those of the targets in
+   covered (the clear writes them whole) are left out, their contents undefined, and the others made. The count of
+   those left out */
+void vk_rt_reloads_defer(void);
+void vk_rt_reloads_end(Surf* const* covered, u32 ncovered);
+u64 vk_rt_reloads_skipped(void);
 /* textures share the surface table. g_vk_surf_epoch changes whenever a surface enters it, leaves it or moves (a
    target parked or taken back), so what was found there can be kept until it changes */
 extern _Atomic u32 g_vk_surf_epoch;

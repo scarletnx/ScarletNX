@@ -897,6 +897,39 @@ static int trace_target(const Surf* s) {
 }
 
 /* the clear c of the targets ds names, under the owner's render predicate */
+/* the rectangle of a render area ext that clear c writes: all of it, or viewport 0's scissor in it. 0 for none */
+static int clear_rect(const DsState* ds, const DrawClear* c, VkExtent2D ext, VkRect2D* r) {
+    *r = (VkRect2D){{0, 0}, ext};
+    if (!c->scissored) return ext.width && ext.height;
+    u32 xs = ds->vp.scissor_x[0], ys = ds->vp.scissor_y[0];
+    i32 x0 = (i32)vk_scf(xs & 0xFFFF), x1 = (i32)vk_scf(xs >> 16), y0 = (i32)vk_scf(ys & 0xFFFF),
+        y1 = (i32)vk_scf(ys >> 16);
+    if (ds->dyn.window_origin & DS_ORIGIN_LOWER_LEFT) {
+        i32 clip_height = (i32)vk_scf((float)ds->dyn.clip_height);
+        i32 old_y0 = y0;
+        y0 = clip_height - y1;
+        y1 = clip_height - old_y0;
+    }
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > (i32)ext.width) x1 = (i32)ext.width;
+    if (y1 > (i32)ext.height) y1 = (i32)ext.height;
+    if (x1 <= x0 || y1 <= y0) return 0;
+    *r = (VkRect2D){{x0, y0}, {(u32)(x1 - x0), (u32)(y1 - y0)}};
+    return 1;
+}
+/* whether clear c writes all of target s, in a render area ext: every component or aspect of it, its one layer, the
+   whole area, and that area is all of s */
+static int clear_covers(const DsState* ds, const DrawClear* c, const DrawOwner* o, const Surf* s, int depth,
+                        VkExtent2D ext) {
+    VkRect2D r;
+    if (!s || o->pred || c->layer || s->layers != 1 || vk_surf_view_w(s) != ext.width || vk_surf_view_h(s) != ext.height ||
+        !clear_rect(ds, c, ext, &r) || r.offset.x || r.offset.y || r.extent.width != ext.width ||
+        r.extent.height != ext.height)
+        return 0;
+    if (!depth) return c->color_mask == 15;
+    return (c->aspects & 1) && (!s->f.stencil || ((c->aspects & 2) && !(c->stencil_preserve & 0xff)));
+}
 static void clear_targets(const DsState* ds, const DrawClear* c, const DrawOwner* o, Surf** rt, Surf* zt,
                             u32 n, VkExtent2D area) {
     u32 slot = c->slot, mask = c->color_mask, layer = c->layer, v = c->aspects;
@@ -921,23 +954,7 @@ static void clear_targets(const DsState* ds, const DrawClear* c, const DrawOwner
     if (g_rp.zt && g_rp.zt->layers < layers) layers = g_rp.zt->layers;
     if (layer >= layers) return;
     VkClearRect rect = {{{0, 0}, g_rp.ext}, layer, 1};
-    if (c->scissored) {
-        u32 xs = ds->vp.scissor_x[0], ys = ds->vp.scissor_y[0];
-        i32 x0 = (i32)vk_scf(xs & 0xFFFF), x1 = (i32)vk_scf(xs >> 16), y0 = (i32)vk_scf(ys & 0xFFFF),
-            y1 = (i32)vk_scf(ys >> 16);
-        if (ds->dyn.window_origin & DS_ORIGIN_LOWER_LEFT) {
-            i32 clip_height = (i32)vk_scf((float)ds->dyn.clip_height);
-            i32 old_y0 = y0;
-            y0 = clip_height - y1;
-            y1 = clip_height - old_y0;
-        }
-        if (x0 < 0) x0 = 0;
-        if (y0 < 0) y0 = 0;
-        if (x1 > (i32)g_rp.ext.width) x1 = (i32)g_rp.ext.width;
-        if (y1 > (i32)g_rp.ext.height) y1 = (i32)g_rp.ext.height;
-        if (x1 <= x0 || y1 <= y0) return;
-        rect.rect = (VkRect2D){{x0, y0}, {(u32)(x1 - x0), (u32)(y1 - y0)}};
-    }
+    if (!clear_rect(ds, c, g_rp.ext, &rect.rect)) return;
     /* the color slot it writes, after the pass's draws that sampled it */
     u32 written = mask && slot < g_rp.n && g_rp.rt[slot] ? 1u << slot : 0;
     if (!feedback_order(0, written, 1)) return;
@@ -1031,8 +1048,15 @@ static void clear_targets(const DsState* ds, const DrawClear* c, const DrawOwner
 void vk_render_clear(const DsState* ds, const DrawClear* c, const DrawOwner* o) {
     Surf *rt[8], *zt;
     u32 n;
+    /* the targets' reloads from memory wait: one the clear writes whole doesn't load memory it overwrites */
+    vk_rt_reloads_defer();
     read_targets(ds, rt, &zt, &n);
     VkExtent2D area = target_extent(rt, zt, n);
+    Surf* covered[2];
+    u32 ncovered = 0;
+    if (c->slot < n && clear_covers(ds, c, o, rt[c->slot], 0, area)) covered[ncovered++] = rt[c->slot];
+    if (clear_covers(ds, c, o, zt, 1, area)) covered[ncovered++] = zt;
+    vk_rt_reloads_end(covered, ncovered);
     int mixed = 0;
     for (u32 i = 0; zt && i < n; i++)
         if (rt[i] && vk_surf_samples(rt[i]) != vk_surf_samples(zt)) mixed = 1;
