@@ -4,7 +4,7 @@
    draw recorded. A program released and another made in its place, its shader made where the first one's was freed,
    takes a pipeline of its own, not the first one's: the key names a shader by its program, not by its address. A
    fragment program that samples a texture takes a shader for each format of it, found again for a format it had,
-   and one whose texture it does not sample changes nothing. The GXP programs are the translator's smallest: a
+   and one whose texture it does not sample changes nothing; its bytes are read at its first draw alone, not at each. The GXP programs are the translator's smallest: a
    header, and one with a cube sampler (vita_usse_cube.c's). Skips (77) without a Vulkan device */
 #include "vita/gpu/gxm.h"
 #include "vita/gpu/gxp.h"
@@ -126,13 +126,16 @@ static void check_formats(VitaProcess* p, GxmContext* c, uint32_t code) {
     texture_format(c, 1, 0x0C);
     key[2] = vita_render_pipeline_key(p, c, 0);
     texture_format(c, 0, 0x00);
+    /* a byte of the program changed after its first draw: its shaders stay the ones its first draw made, read once */
+    ((unsigned char*)vita_ptr(p, code + 0x300))[212] ^= 0x5A;
     key[3] = vita_render_pipeline_key(p, c, 0);
     printf("formats: keys %016llx, %016llx, %016llx with texture 1's another, %016llx back\n",
            (unsigned long long)key[0], (unsigned long long)key[1], (unsigned long long)key[2],
            (unsigned long long)key[3]);
     CHECK(key[0] && key[1] && key[0] != key[1], "texture 0 of another format takes the first format's shader");
     CHECK(key[2] == key[1], "a texture the program does not sample changed its shader");
-    CHECK(key[3] == key[0], "texture 0's first format back took another shader");
+    CHECK(key[3] == key[0],
+          "texture 0's first format back took another shader, or the program's bytes were read again");
 }
 
 int main(void) {

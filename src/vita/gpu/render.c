@@ -111,7 +111,8 @@ typedef struct Shader {
     VkShaderModule module;
     UsseShader meta; /* without its words */
     bool failed;
-    uint64_t id; /* its program's bytes and the hints it was made for, which a pipeline's key names it by */
+    uint64_t code; /* its program's bytes, read at the program's first draw */
+    uint64_t id;   /* those and the hints it was made for, which a pipeline's key names it by */
     struct Shader* next;
 } Shader;
 typedef struct {
@@ -1207,26 +1208,28 @@ uint64_t vita_render_submitted(VitaProcess* p) {
 }
 
 /* ---- draws ---- */
-/* a shader's id: the program's bytes, as many as its header says it has, and the hints, zeroed before they are set,
-   with the formats of the textures sampled (the mask's) alone, the others telling the translator nothing */
-static uint64_t shader_id(VitaProcess* p, uint32_t program, const UsseHints* hints, uint32_t sampled) {
+/* a shader's id: its program's bytes (code: as many as its header says it has, hashed once a program, not at each
+   draw) and the hints, zeroed before they are set, with the formats of the textures sampled (the mask's) alone, the
+   others telling the translator nothing */
+static uint64_t shader_id(uint64_t code, const UsseHints* hints, uint32_t sampled) {
     UsseHints h = *hints;
     for (unsigned i = 0; i < USSE_TEXTURES; ++i)
         if (!(sampled & (1u << i))) h.texture_formats[i] = 0;
-    return snx_fnv1a(snx_fnv1a(SNX_FNV_BASIS, vita_ptr(p, program), snx_ld_le32(vita_ptr(p, program + 8))), &h,
-                     sizeof h);
+    return snx_fnv1a(code, &h, sizeof h);
 }
 /* The program's shader for hints: the slot's, a list each program keeps (its first shader), one made for the formats
    of the textures it samples, which the first one's translation says; a new one made and put after the others */
 static Shader* shader_for(struct VitaRender* r, VitaProcess* p, void** slot, uint32_t program, const UsseHints* hints) {
     Shader* first = *slot;
     if (first) {
-        const uint64_t id = shader_id(p, program, hints, first->meta.sampler_mask);
+        const uint64_t id = shader_id(first->code, hints, first->meta.sampler_mask);
         for (Shader* s = first; s; s = s->next)
             if (s->id == id) return s;
     }
     Shader* s = calloc(1, sizeof *s);
     if (!s) return NULL;
+    s->code =
+        first ? first->code : snx_fnv1a(SNX_FNV_BASIS, vita_ptr(p, program), snx_ld_le32(vita_ptr(p, program + 8)));
     if (first) {
         Shader* last = first;
         while (last->next) last = last->next;
@@ -1243,7 +1246,7 @@ static Shader* shader_for(struct VitaRender* r, VitaProcess* p, void** slot, uin
                         error, sizeof error)) {
         printf("gxm: the program at 0x%08" PRIx32 " is not drawn: %s\n", program, error);
         s->failed = true;
-        s->id = shader_id(p, program, hints, first ? first->meta.sampler_mask : 0);
+        s->id = shader_id(s->code, hints, first ? first->meta.sampler_mask : 0);
         return s;
     }
     VkShaderModuleCreateInfo mi = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
@@ -1256,7 +1259,7 @@ static Shader* shader_for(struct VitaRender* r, VitaProcess* p, void** slot, uin
     free(out.words);
     out.words = NULL;
     s->meta = out;
-    s->id = shader_id(p, program, hints, out.sampler_mask);
+    s->id = shader_id(s->code, hints, out.sampler_mask);
     return s;
 }
 /* SceGxmAttributeFormat and a component count as a vertex format */
