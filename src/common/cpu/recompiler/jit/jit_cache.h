@@ -32,7 +32,8 @@ typedef struct {
 } SnxJitCacheRecord;
 
 /* What the objects depend on beyond the code: the ABI, the IR object version,
-   the host target triple, LLVM, the runtime library, the host CPU and its
+   the host target triple, LLVM, the runtime library, the version of the code
+   the native back ends make (mach/native.h's snx_native_code), the host CPU and its
    features, the -O level, hooked direct calls, direct SVCs, SLP vectorization,
    FPSR flag exactness, volatile guest accesses, the guest's A64 features (0: the
    Switch's) and the decoder's tables; in a build without LLVM the native back

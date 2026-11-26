@@ -43,8 +43,9 @@ phone's launcher lists no `JIT optimization` row. Every cache a phone writes is 
 the two levels there, as a phone's AOT level could only be made to match by recompiling every game at 0. A pack built
 on a phone links the cached code as it is.
 
-The key also contains the ABI, IR object version, target triple, LLVM version, runtime library, host CPU and its
-features, the SVC/hook mode, and whether the SLP vectorizer, FPSR's flags and volatile guest accesses are on. A build
+The key also contains the ABI, IR object version, target triple, LLVM version, runtime library, the version of the code
+the native back ends make (a hash of their sources and of what sailgen generates for them), host CPU and its features,
+the SVC/hook mode, and whether the SLP vectorizer, FPSR's flags and volatile guest accesses are on. A build
 without LLVM (`SNX_WITH_LLVM=OFF`) keys its caches by its native back end and the host features it uses instead, so a
 cache of one never serves the other. Those must match too; the driver validates the full key when it opens the cache. A
 runtime rebuild can therefore invalidate an old cache even when the optimization level still matches. The build fails

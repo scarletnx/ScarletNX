@@ -20,8 +20,10 @@ char* snx_jit_cache_key(char opt, int hook, int svc, SnxU64 guest) {
     if (!key) return NULL;
     const SnxU64 rtlib = snx_fnv1a(SNX_FNV_BASIS, snx_rtlib_object, (size_t)snx_rtlib_object_size);
     /* opt= and hook= as jit_cache_key.c has them: the launcher reads them (gui/aot.c) */
-    snprintf(key, n, "abi=%d native=%s rtlib=%016llx dec=%016llx a64=%016llx opt=%c hook=%d svc=%d features=%08x",
-             SNX_ABI, native, (unsigned long long)rtlib, (unsigned long long)snx_a64_decoder_hash(),
-             (unsigned long long)snx_a64_features(guest), opt, hook, svc, snx_native_features());
+    snprintf(
+        key, n,
+        "abi=%d native=%s rtlib=%016llx native_code=%s dec=%016llx a64=%016llx opt=%c hook=%d svc=%d features=%08x",
+        SNX_ABI, native, (unsigned long long)rtlib, snx_native_code(), (unsigned long long)snx_a64_decoder_hash(),
+        (unsigned long long)snx_a64_features(guest), opt, hook, svc, snx_native_features());
     return key;
 }
