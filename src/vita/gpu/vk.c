@@ -283,6 +283,11 @@ bool vita_vk_picture(int rect[4]) {
     if (!rect[2] || !rect[3]) rect[0] = rect[1] = 0, rect[2] = w, rect[3] = h;
     return rect[2] > 0 && rect[3] > 0;
 }
+const char* vita_vk_effect_step(bool aa) {
+    int* at = aa ? &g.fx_config.aa : &g.fx_config.upscaler;
+    *at = aa ? snx_fx_aa_next(*at) : snx_fx_upscale_next(*at);
+    return aa ? snx_fx_aa_label(*at) : snx_fx_upscale_label(*at);
+}
 void vita_vk_notice(const char* text) { snx_notice_show(&g.notice, text, SDL_GetTicksNS()); }
 const char* vita_vk_notice_text(void) { return snx_notice_shown(&g.notice, SDL_GetTicksNS()) ? g.notice.text : ""; }
 uint64_t vita_vk_poll(void) { return g.up ? snx_vk_ring_poll(&g.vk.ring) : 0; }

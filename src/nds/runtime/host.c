@@ -263,7 +263,9 @@ static void key_action(NdsHost* host, int action) {
                                  : action == HOTKEY_MOUSE
                                      ? "its mouse is the pen and the pointer of the on-screen controls"
                                  : action == HOTKEY_TV_MODE ? "the TV mode is the Switch's console docked"
-                                                            : "its window has none of it yet");
+                                 : action == HOTKEY_UPSCALER || action == HOTKEY_ANTI_ALIASING
+                                     ? "its screens are drawn in sharp pixels, with no upscaler nor anti-aliasing"
+                                     : "its window has none of it yet");
 }
 bool nds_host_poll(NdsHost* host, NdsInput* input) {
     bool open = true;

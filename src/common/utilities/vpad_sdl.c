@@ -285,6 +285,13 @@ void snx_vpad_window_states(int action, const SnxVpadStates* s, const uint8_t* t
             states_say("Loaded %s", label);
     }
 }
+void snx_vpad_window_effect(int action, const char* label) {
+    char text[96], line[128];
+    snprintf(text, sizeof text, "%s: %s", action == HOTKEY_UPSCALER ? "Upscaler" : "Anti-aliasing", label);
+    snprintf(line, sizeof line, "%s, for this run", text);
+    if (g_vpad_sdl.say) g_vpad_sdl.say(line);
+    if (g_vpad_sdl.show) g_vpad_sdl.show(text);
+}
 void snx_vpad_window_none(int action, const char* why) {
     const IniOpt* o = hotkey_row(action);
     const char* name = o && o->name ? o->name : "";

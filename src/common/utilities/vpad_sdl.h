@@ -77,6 +77,9 @@ void snx_vpad_window_states_due(uint64_t ms, const SnxVpadStates* states, const 
 bool snx_vpad_window_states_waiting(void);
 /* whether a save of them is due by ms: the picture a save takes is worth making only then */
 bool snx_vpad_window_save_due(uint64_t ms);
+/* the upscaler's or the anti-aliasing's key (HOTKEY_UPSCALER, HOTKEY_ANTI_ALIASING) stepped to label, for the run (the
+   .ini keeps its own), said on say and show as a Switch game's: "Upscaler: FSR 1" */
+void snx_vpad_window_effect(int action, const char* label);
 /* the runtime's key action said on say and show to do nothing in this window, with why: "F3 (Screenshot) does nothing
    in a GBA game: why" */
 void snx_vpad_window_none(int action, const char* why);

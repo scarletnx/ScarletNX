@@ -126,7 +126,9 @@ static void key_action(AgbHost* host, int action) {
     snx_vpad_window_none(action, action == HOTKEY_THREAD_DUMP ? "it runs on one CPU, with no threads"
                                  : action == HOTKEY_MOUSE     ? "its mouse is the pointer of the on-screen controls"
                                  : action == HOTKEY_TV_MODE   ? "the TV mode is the Switch's console docked"
-                                                              : "its window has none of it yet");
+                                 : action == HOTKEY_UPSCALER || action == HOTKEY_ANTI_ALIASING
+                                     ? "its screen is drawn in sharp pixels, with no upscaler nor anti-aliasing"
+                                     : "its window has none of it yet");
 }
 
 AgbHost* agb_host_open(const char* title, const char* ini, bool fullscreen, char* error, size_t error_size) {

@@ -284,6 +284,11 @@ int main(void) {
         agb_host_close(host);
         return 1;
     }
+    /* the upscaler's key: none, said why */
+    CHECK(press(host, SDLK_U, SDL_KMOD_LCTRL, false) &&
+          notice_read(host, SDL_GetRenderer(window), window,
+                      "Ctrl+U (Upscaler) does nothing in a GBA game: its screen is drawn in sharp pixels, with no "
+                      "upscaler nor anti-aliasing") == 0);
     /* the screenshot key: the next frame, as it shows, in the game's folder's captures/, said over it */
     {
         static uint32_t frame[AGB_SCREEN_WIDTH * AGB_SCREEN_HEIGHT];
