@@ -26,7 +26,6 @@ endif()
 if(NOT SNX_TOOLS_ONLY)
     target_compile_definitions(snx_driver PRIVATE SNX_WITH_RUNTIME)
 endif()
-include("${PROJECT_SOURCE_DIR}/cmake/llvm.cmake")
 # the recompiler, and the library of it (snx_recompiler.h)
 add_subdirectory("${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler" recompiler)
 # the descriptor of a module of the native back end's code (loader/module_x64.c), and the A64 Sail's encoders: the
@@ -42,12 +41,7 @@ add_library(snx_nx_aot STATIC ../../loader/module_llvm.c ../../loader/module_arm
 set_target_properties(snx_nx_aot PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS ON)
 target_compile_options(snx_nx_aot PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 target_link_libraries(snx_nx_aot PUBLIC snx_nx_descriptor snx_recompiler_jit snx_nx_module snx_settings)
-# the driver's own LLVM: its settings; GNU C23 for the LLVM-C headers, the driver itself stays ISO C23
-add_library(snx_driver_llvm STATIC llvm_tuning.c "${SNX_SETTINGS_LLVM}")
-set_target_properties(snx_driver_llvm PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS ON)
-target_compile_options(snx_driver_llvm PRIVATE -Wall -Wextra -Werror=missing-prototypes)
-target_link_libraries(snx_driver_llvm PUBLIC snx_nx_aot snx_recompiler_jit snx_llvm snx_arm_llvm snx_nx_module snx_settings)
-target_link_libraries(snx_driver PUBLIC snx_driver_llvm)
+target_link_libraries(snx_driver PUBLIC snx_nx_aot)
 # a build of the host tools: the Switch driver scarletnx runs (src/multicall) is the driver alone, which plays nothing
 if(SNX_TOOLS_ONLY)
     add_library(snx_switch_program STATIC main.c)

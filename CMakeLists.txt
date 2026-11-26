@@ -95,7 +95,6 @@ if(NOT SNX_BUILD_ANDROID AND snx_android_jdk_why)
     message(STATUS "The Android app driver is off: ${snx_android_jdk_why}. Set SNX_BUILD_ANDROID=ON with a JDK 21 or "
                    "later to build it")
 endif()
-include(cmake/with_llvm.cmake)
 # Reject stale backend selections instead of silently changing an existing build's behavior.
 if(SNX_BUILD_NX AND DEFINED SNX_BACKEND AND NOT SNX_BACKEND STREQUAL "sdl3")
     message(FATAL_ERROR "SNX_BACKEND=${SNX_BACKEND}: SDL3 is now mandatory for the NX runtime. "
@@ -200,11 +199,8 @@ if(SNX_BUILD_NX)
     add_subdirectory(src/nx/runtime/driver host-tools)
 endif()
 # The recompiler (docs/dev/library.md) is configured by the NX driver's tree or the GNU ABI runtime's. Without either, as
-# a project that only wants the library builds ScarletNX, it is configured here, with LLVM alone
+# a project that only wants the library builds ScarletNX, it is configured here
 if(NOT SNX_BUILD_NX AND NOT SNX_BUILD_GNUABI)
-    if(SNX_WITH_LLVM)
-        include(cmake/llvm.cmake)
-    endif()
     add_subdirectory(src/common/cpu/recompiler recompiler)
 endif()
 include(cmake/build_info.cmake) # the window titles' line; the driver stamps games with its commit

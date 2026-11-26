@@ -49,14 +49,13 @@ foreach(shader swizzle picture yuv rgb24)
     snx_glsl_spirv(snx_vita_program SOURCE gpu/${shader}.comp NAME vita_${shader}_spv HEADER vita/gpu/${shader}_spv.h)
 endforeach()
 set_source_files_properties("${volk_SOURCE_DIR}/volk.c" PROPERTIES COMPILE_OPTIONS "${snx_third_party_flags}")
-include("${PROJECT_SOURCE_DIR}/cmake/llvm.cmake")
-if(NOT TARGET snx_arm_llvm)
+if(NOT TARGET snx_arm_decode)
     add_subdirectory("${PROJECT_SOURCE_DIR}/src/common/cpu/arm" vita-arm-backend)
 endif()
 # The recompiler (snx_recompiler_jit, which the Switch driver's tree, the GNU ABI runtime's or the top level
 # configures): the offline compiler's objects and their helpers (armlib.c) linked by its linker, and the blocks the
 # module lacks compiled at run time by its executor (exec.c)
-target_link_libraries(snx_vita_program PUBLIC snx_arm_llvm snx_recompiler_jit)
+target_link_libraries(snx_vita_program PUBLIC snx_arm_decode snx_arm_rt snx_recompiler_jit)
 target_compile_definitions(snx_vita_program PRIVATE _CRT_SECURE_NO_WARNINGS)
 # The backend checked against Unicorn as the game runs (runtime/lockstep.h), for debugging the AArch32 backend: Unicorn's
 # headers and library (its Python package's libunicorn.so.2 will do) where the build is told
@@ -75,7 +74,3 @@ endforeach()
 
 # the driver's command line (runtime/main.c's snx_vita_main), which scarletnx runs as scarletnx-vita (src/multicall)
 target_sources(snx_vita_program PRIVATE runtime/main.c)
-if(SNX_LLVM_SHARED)
-    snx_target_path(vita_llvm_rpath "${SNX_LLVM_LIBRARY_DIR}")
-    target_link_options(snx_vita_program INTERFACE "-Wl,-rpath,${vita_llvm_rpath}")
-endif()

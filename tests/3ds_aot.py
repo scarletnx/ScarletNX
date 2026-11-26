@@ -314,17 +314,6 @@ def main():
                 assert p.stdout.rstrip().endswith('\nExit.'), (cases, p.stdout)
             return output, text
 
-        def same_through_llvm(text):
-            """the game run() just played, its module compiled by LLVM alone (--keep-ir), ends as its run's text says"""
-            source, output = root / f'input {cases};literal.cia', root / f'out {cases} llvm'
-            for options, says in ((('-r', '--keep-ir', '-O0'), 'LLVM: '), ((), 'Guest ExitProcess')):
-                p = subprocess.run(
-                    [driver, *options, '--output', str(output), str(source)], text=True, capture_output=True, timeout=90
-                )
-                assert p.returncode == 0 and says in p.stdout, (cases, p.stdout + p.stderr)
-            ends = [re.findall(r'^Guest ExitProcess: .*$', t, re.M) for t in (text, p.stdout)]
-            assert ends[0] and ends[0] == ends[1], (cases, ends)
-
         extract = ('--extract-container',)
         basic, text = run(
             application([0xE3A0002A, 0xEF000003]), message='Guest ExitProcess: r0=42 blocks=2', extra=extract
@@ -403,12 +392,10 @@ def main():
             0x100041,
         ]
         workload, text = run(application(words), message='Guest ExitProcess: r0=43 blocks=17', extra=extract)
-        same_through_llvm(text)
         subprocess.run([probe, str(workload), 'workload'], check=True, capture_output=True)
         # Legacy BL halves execute as separate precompiled Thumb entries.
         legacy = struct.pack('<II6H', 0xE28F0001, 0xE12FFF10, 0xF000, 0xF802, 0xDF03, 0x46C0, 0x202C, 0x4770)
         _, text = run(application(raw=legacy), message='Guest ExitProcess: r0=44 blocks=7')
-        same_through_llvm(text)
         run(application([0xEAFFFFFE]), 3, 'block budget exhausted', extra=('--max-blocks', '3'))
         # a budget across the run's dispatch slices (a million blocks each) is still exact
         run(application([0xEAFFFFFE]), 3, 'blocks=2500001', extra=('--max-blocks', '2500001'))
@@ -451,7 +438,6 @@ def main():
         )
         for program in (fp_program(), fp_program(discover=True)):
             _, text = run(program, message='Guest ExitProcess: r0=42')
-            same_through_llvm(text)
         for program in (fs_program(), thread_program(), ipc_program()):
             run(program, message='Guest ExitProcess: r0=42')
         # a service the runtime does not know: a stand-in answering success, the default, else a wait forever as
@@ -479,7 +465,6 @@ def main():
         _, text = run(
             application(raw=sparse, ro=struct.pack('<I', 0x102001)), message='Guest ExitProcess: r0=47 blocks=3'
         )
-        same_through_llvm(text)
         # More than 512 block entries make several LLVM chunks, which the workers compile in parallel.
         chained = bytearray(0x5000)
         for i in range(600):

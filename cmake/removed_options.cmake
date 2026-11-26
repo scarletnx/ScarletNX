@@ -7,3 +7,11 @@ if(DEFINED SNX_A64_DISASM)
                    "A64 decoder in every build")
     unset(SNX_A64_DISASM CACHE)
 endif()
+# the LLVM back end, and what found it: the native back ends make all of the code
+foreach(option SNX_WITH_LLVM SNX_LLVM_CONFIG)
+    if(DEFINED ${option})
+        message(STATUS "${option}=${${option}} is no longer an option: the native back ends make all of the code, and "
+                       "the build has no LLVM")
+        unset(${option} CACHE)
+    endif()
+endforeach()
