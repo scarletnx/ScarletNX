@@ -869,7 +869,7 @@ static int run(int argc, char** argv) {
     const char* reference = NULL;
     u32* list;
     Made made_code;
-    RtAPI rt;
+    RtAPI rt = {.cas128 = snx_runtime_cas128};
 #if !defined(_WIN32)
     struct sigaction sa;
 #endif

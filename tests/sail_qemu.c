@@ -47,19 +47,18 @@ static void on_poll(CPU* c) { atomic_store_explicit(&c->poll, 0, memory_order_re
 static void on_miss(CPU* c, u64 pc) { c->pc = pc; }
 static void on_code_changed(CPU* c, u64 addr) { (void)c, (void)addr; }
 void sail_rt(RtAPI* rt) {
-    memset(rt, 0, sizeof *rt);
-    rt->svc = on_svc;
-    rt->undef = on_undef;
-    rt->note_hint = on_note_hint;
-    rt->ticks = on_ticks;
-    rt->brk = on_brk;
-    rt->fpcr_changed = on_fpcr_changed;
-    rt->sev = on_sev;
-    rt->wfe = on_wfe;
-    rt->poll = on_poll;
-    rt->miss = on_miss;
-    rt->code_changed = on_code_changed;
-    rt->cas128 = snx_runtime_cas128;
+    *rt = (RtAPI){.svc = on_svc,
+                  .undef = on_undef,
+                  .note_hint = on_note_hint,
+                  .ticks = on_ticks,
+                  .brk = on_brk,
+                  .fpcr_changed = on_fpcr_changed,
+                  .sev = on_sev,
+                  .wfe = on_wfe,
+                  .poll = on_poll,
+                  .miss = on_miss,
+                  .code_changed = on_code_changed,
+                  .cas128 = snx_runtime_cas128};
 }
 
 /* ---- the words and their states ---- */
@@ -554,7 +553,7 @@ static const char* name_of(u32 word) {
 
 size_t sail_hold(SailHold* h, const u32* words, size_t n, unsigned states, size_t* compared) {
     SnxQrefBatch batch = {0};
-    RtAPI api;
+    RtAPI api = {.cas128 = snx_runtime_cas128};
     CPU* starts = (CPU*)malloc(sizeof *starts * BATCH);
     u8* initial = (u8*)malloc(SAIL_WINDOW_SIZE);
     u32* recorded = h->record ? (u32*)malloc(sizeof(u32) * (n ? n : 1)) : NULL;

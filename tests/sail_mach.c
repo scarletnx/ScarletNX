@@ -165,7 +165,7 @@ static int unicorn_begin(unsigned char* code, size_t code_cap) {
     g_test.cpu = (CPU*)hostuc_alloc(g_test.uc, sizeof(CPU));
     if (!g_test.rt || !g_test.cpu) return -1;
     hostuc_swapper(g_test.uc, swap_state, NULL);
-    RtAPI calls;
+    RtAPI calls = {.cas128 = snx_runtime_cas128};
     sail_rt(&calls); /* g_sail_calls counts what they are given */
     memset(g_test.rt, 0, sizeof *g_test.rt);
     g_test.rt->undef = (void (*)(CPU*, u64, u32))(uintptr_t)hostuc_native(g_test.uc, "undef", (void*)calls.undef);
@@ -286,7 +286,7 @@ int main(int argc, char** argv) {
     size_t code_at = 0, code_cap = (size_t)1 << 26;
     SailHold hold = {0};
     Made made;
-    RtAPI rt;
+    RtAPI rt = {.cas128 = snx_runtime_cas128};
     struct sigaction sa;
 #if defined(SAIL_MACH_WIN64)
     snx_x64_set_win64(1);
