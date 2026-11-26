@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from build_caches_test import jobs
+from build_caches_test import command, jobs
 
 WORKFLOW = Path('.github/workflows/build.yml')
 TESTS = "env.SNX_TESTS == 'true'"
@@ -91,7 +91,7 @@ def job_if(text, job):
     return ' '.join(found[1].split()) if found else ''
 
 
-def check(text):
+def check(text, repo=None):
     """what is wrong with when the workflow's text tests, one line each; none when it is as the top says"""
     wrong = []
     env = re.search(r'\n  SNX_TESTS: >-\n((?:    .*\n)+)', text)
@@ -111,15 +111,15 @@ def check(text):
                 wrong.append(f'{job}: "{name}" runs if "{cond}", on main\'s pushes too: its if: needs {TESTS}')
             if 'event_name' in cond or FILTERS.search(cond):
                 wrong.append(f'{job}: "{name}" runs if "{cond}": a pull request is held to SNX_TESTS alone')
-            if (job, name) not in CHANGE_FILTERED and 'git diff' in step.get('run', ''):
+            if (job, name) not in CHANGE_FILTERED and 'git diff' in command(step, repo):
                 wrong.append(f'{job}: "{name}" looks at what a pull request changes: it runs on every one')
     for job, steps in found.items():
         for step in steps:
             name = step.get('name', step.get('uses', ''))
-            ctest = re.search(r'(^|\s)ctest\s', step.get('run', ''))
+            ctest = re.search(r'(^|\s)ctest\s', command(step, repo))
             if ctest and TESTS not in step.get('if', '') and (job, name) not in PACKAGE_CHECKS:
                 wrong.append(f'{job}: "{name}" runs ctest if "{step.get("if", "")}": its if: needs {TESTS}')
-            if FILTERS.search(step.get('if', '') + '\n' + step.get('run', '')):
+            if FILTERS.search(step.get('if', '') + '\n' + command(step, repo)):
                 wrong.append(f'{job}: "{name}" picks the tests by what a pull request changes')
     for job, names in BUILD_STEPS.items():
         steps = {step.get('name'): step for step in found.get(job, [])}
@@ -145,7 +145,7 @@ def check(text):
     return wrong
 
 
-def self_test(text):
+def self_test(text, repo):
     """the checks on copies of the workflow made wrong, each named: (the copies they missed, how many)"""
     unicorn = "      - name: Test the native back ends under Unicorn\n        if: env.SNX_TESTS == 'true'\n"
     cases = {
@@ -189,7 +189,7 @@ def self_test(text):
             text,
         ),
     }
-    missed = [name for name, copy in cases.items() if copy == text or not check(copy)]
+    missed = [name for name, copy in cases.items() if copy == text or not check(copy, repo)]
     return missed, len(cases)
 
 
@@ -198,10 +198,10 @@ def main():
         sys.exit('usage: tests/build_tests_test.py [REPO]')
     repo = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path(__file__).resolve().parent.parent
     text = (repo / WORKFLOW).read_text(encoding='utf-8')
-    wrong = check(text)
+    wrong = check(text, repo)
     if wrong:
         sys.exit(f'build_tests: {WORKFLOW}:\n  ' + '\n  '.join(wrong))
-    missed, cases = self_test(text)
+    missed, cases = self_test(text, repo)
     if missed:
         sys.exit('build_tests: the check misses a workflow made wrong:\n  ' + '\n  '.join(missed))
     count = sum(len(names) for names in TEST_STEPS.values())

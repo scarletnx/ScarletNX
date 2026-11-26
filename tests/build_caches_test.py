@@ -40,6 +40,7 @@ def jobs(text):
     lines = text.splitlines()
     out, job, step, key = {}, None, None, None
     in_jobs = False
+    anchors = {}  # a step anchored &NAME, which each *NAME stands for
     for line in lines:
         if not line.strip():
             continue
@@ -58,10 +59,15 @@ def jobs(text):
             continue
         if col == 6 and text_.startswith('- '):
             step, key = {}, None
-            out[job].append(step)
             text_ = text_[2:].strip()
             col = 8
-            if text_.startswith(('&', '*')) and ':' not in text_:  # an anchor's name alone, or its alias
+            if text_.startswith('*') and ':' not in text_:  # an alias: the anchored step again
+                out[job].append(anchors[text_[1:]])
+                step = None
+                continue
+            out[job].append(step)
+            if text_.startswith('&') and ':' not in text_:  # an anchor's name alone
+                anchors[text_[1:]] = step
                 continue
         if step is None or text_.startswith('#') and col <= 8:
             continue
@@ -79,10 +85,10 @@ def jobs(text):
     return out
 
 
-def check(text):
+def check(text, repo):
     """What is wrong with the caches of a workflow's text, one line each; none when they are as the top says"""
     found = jobs(text)
-    return check_llvm(found) + check_compiler(found)
+    return check_llvm(found, repo) + check_compiler(found)
 
 
 def check_compiler(found):
@@ -112,11 +118,26 @@ def check_compiler(found):
     return wrong
 
 
-def check_llvm(found):
+def command(step, repo):
+    """what a step runs: its run, or the function of a scripts/ci file it calls (`scripts/ci/FILE.sh STEP`)"""
+    run = step.get('run', '')
+    called = re.fullmatch(r'(?:bash )?(scripts/ci/[\w-]+\.sh)(?: (\w+))?', run.strip())
+    if not called or not repo:
+        return run
+    text = (repo / called[1]).read_text(encoding='utf-8')
+    if not called[2]:
+        return text
+    body = re.search(rf'^{called[2]}\(\) \{{\n(.*?)^\}}$', text, re.M | re.S)
+    if not body:
+        sys.exit(f'build_caches: {step.get("name")} runs {run.strip()}, and {called[1]} has no function {called[2]}')
+    return body[1]
+
+
+def check_llvm(found, repo):
     wrong, builds = [], 0
     for job, steps in found.items():
         for i, step in enumerate(steps):
-            if not SCRIPT.search(step.get('run', '')):
+            if not SCRIPT.search(command(step, repo)):
                 continue
             builds += 1
             what = f'{job}: "{step.get("name", step["run"].splitlines()[0])}"'
@@ -172,7 +193,7 @@ def replace_once(text, old, new):
     return text.replace(old, new)
 
 
-def self_test(text):
+def self_test(text, repo):
     """Copies of the workflow each made wrong in one way: the check names each"""
     android = "key: android-llvm-x86_64-${{ hashFiles('scripts/android-llvm.sh') }}-${{ env.ANDROID_NDK_ROOT }}"
     save = (
@@ -184,10 +205,9 @@ def self_test(text):
         "      - name: Build LLVM's libraries for x86_64\n        if: steps.llvm-x86_64.outputs.cache-hit != 'true'\n"
     )
     linux = (
-        f'      - if: {NOT_A_PULL_REQUEST}\n        uses: actions/cache/save@v5\n'
+        f'      - &ccache-save-arch\n        if: {NOT_A_PULL_REQUEST}\n        uses: actions/cache/save@v5\n'
         '        with:\n          path: .cache/ccache\n'
         '          key: ccache-${{ github.job }}-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}\n'
-        "      # Only the dependency builds this run's trees used stay"
     )
     reference = (
         '      - uses: actions/cache/restore@v5\n        with:\n          path: .cache/ccache\n'
@@ -257,7 +277,7 @@ def self_test(text):
         ),
         (
             "a compiler cache saved on a pull request's run too",
-            replace_once(text, linux, linux.replace(f'      - if: {NOT_A_PULL_REQUEST}\n        uses', '      - uses')),
+            replace_once(text, linux, linux.replace(f'\n        if: {NOT_A_PULL_REQUEST}\n', '\n')),
             'appimage: the save of .cache/ccache runs if ""',
         ),
         (
@@ -272,13 +292,13 @@ def self_test(text):
         ),
         (
             "a compiler cache's save taken out",
-            replace_once(text, linux, "      # Only the dependency builds this run's trees used stay"),
+            replace_once(text, '      - *ccache-trim\n      - *ccache-save\n', '      - *ccache-trim\n'),
             f'{COMPILER_CACHES - 1} steps save .cache/ccache, and the workflow had {COMPILER_CACHES}',
         ),
     ]
     failed = []
     for name, changed, want in cases:
-        wrong = check(changed)
+        wrong = check(changed, repo)
         if not any(want in line for line in wrong):
             failed.append(f'{name}: the check says {wrong or "nothing"}, not "{want}"')
     return failed, len(cases)
@@ -289,10 +309,10 @@ def main():
         sys.exit('usage: tests/build_caches_test.py [REPO]')
     repo = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path(__file__).resolve().parent.parent
     text = (repo / WORKFLOW).read_text(encoding='utf-8')
-    wrong = check(text)
+    wrong = check(text, repo)
     if wrong:
         sys.exit(f'build_caches: {WORKFLOW}:\n  ' + '\n  '.join(wrong))
-    failed, cases = self_test(text)
+    failed, cases = self_test(text, repo)
     if failed:
         sys.exit('build_caches: the check misses a workflow made wrong:\n  ' + '\n  '.join(failed))
     print(

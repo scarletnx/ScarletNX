@@ -3020,6 +3020,10 @@ if(Python3_Interpreter_FOUND)
         # the arguments scripts/appimage-sysroot.sh refuses
         add_test(NAME appimage_sysroot
                  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/appimage_sysroot_test.py")
+        # build.yml's step scripts (scripts/ci): each step's call names a function there, each function runs in some
+        # step, with the env its "# env:" line names; each file reads in bash and refuses a step it has not
+        add_test(NAME ci_scripts COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ci_scripts_test.py"
+                                     "${PROJECT_SOURCE_DIR}")
     endif()
 endif()
 
