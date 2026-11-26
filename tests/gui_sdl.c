@@ -4803,6 +4803,51 @@ static bool app_ini_has(const App* app, const char* line) {
     free(kept);
     return has;
 }
+/* the question shown whole as a computer's window and a phone's show it, in the middle and at the foot (YoRHa's
+   dialog): its rows in the box, the last that fits sliding what is left, and every choice under them; at a computer's
+   1280x720 (2x), a 1080x2340 phone's as the launcher turns it (2340x1080, landscape only) and held upright, each at the
+   scale a start gives it (Android's 2.75 density). The theme's own, each a picture NAME-WxH.bmp in SNX_GUI_SHOTS, a
+   folder, when it is set */
+static void ask_shown(App* app, const char* name) {
+    static const struct {
+        int w, h;
+        float density;
+        int rows;
+    } sizes[] = {{1280, 720, 1.0f, GUI_AUTO_ROWS},
+                 {2340, 1080, 2.75f, GUI_AUTO_ROWS_PHONE},
+                 {1080, 2340, 2.75f, GUI_AUTO_ROWS_PHONE}};
+    const char* dir = getenv("SNX_GUI_SHOTS");
+    int w, h, size = app->menu.text_size, dialog = app->theme.dialog;
+    assert(SDL_GetWindowSize(app->window, &w, &h) && dialog != GUI_DIALOG_YORHA);
+    for (size_t i = 0; i < SDL_arraysize(sizes); ++i) {
+        assert(SDL_SetWindowSize(app->window, sizes[i].w, sizes[i].h));
+        SDL_SyncWindow(app->window);
+        app->menu.text_size = pick_auto_scale(sizes[i].density, sizes[i].h, sizes[i].rows);
+        for (int yorha = 0; yorha < 2; ++yorha) {
+            GuiChoices c;
+            GuiRect rects[UI_CHOICES_ITEMS];
+            GuiRect over;
+            int count;
+            app->theme.dialog = yorha ? GUI_DIALOG_YORHA : dialog;
+            render(app);
+            if (dir && !yorha) {
+                char file[1024];
+                SDL_Surface* image = SDL_RenderReadPixels(app->renderer, NULL);
+                snprintf(file, sizeof file, "%s/%s-%dx%d.bmp", dir, name, sizes[i].w, sizes[i].h);
+                assert(image && SDL_SaveBMP(image, file));
+                SDL_DestroySurface(image);
+            }
+            over = choices_over(app);
+            count = ask_place(app, &c);
+            assert(count >= 2 && c.box.y >= over.y && c.box.y + c.box.h <= over.y + over.h && c.at.y >= over.y &&
+                   c.at.h == rows_h(ui_choices_layout, ui_choices_row, rects, UI_CHOICES_ROWS, app->scale, count));
+        }
+    }
+    app->theme.dialog = dialog;
+    app->menu.text_size = size;
+    assert(SDL_SetWindowSize(app->window, w, h));
+    SDL_SyncWindow(app->window);
+}
 /* a start's look, the menu free */
 static void start_look(App* app) {
     app->updates_due = true;
@@ -4814,6 +4859,7 @@ static void start_look(App* app) {
 static void check_updates(App* app) {
     GuiHttpsGet was = app->https_get;
     bool editing = app->editing;
+    int asked;
     char line[600];
     memset(&g_nightly_net, 0, sizeof g_nightly_net);
     app->https_get = nightly_get;
@@ -4844,7 +4890,7 @@ static void check_updates(App* app) {
            !strcmp(choice_text(app, GUI_CHOICES_ASK, 1, line, sizeof line), "No") &&
            !strcmp(choice_text(app, GUI_CHOICES_ASK, 2, line, sizeof line), "Don't Ask Again") &&
            !choice_text(app, GUI_CHOICES_ASK, 3, line, sizeof line));
-    render(app);
+    ask_shown(app, "check-updates");
     key(app, SDLK_ESCAPE);
     assert(!app->confirm.shown && app->updates == GUI_UPDATES_ASK && !g_nightly_net.asked);
     start_look(app);
@@ -4876,8 +4922,8 @@ static void check_updates(App* app) {
         assert(app->confirm.shown && app->confirm.ask == GUI_ASK_NIGHTLY);
         snprintf(
             line, sizeof line,
-            "Nightly 2099-01-01 (abc1234) is out; this build is %s %s. What changed: [gpu] A fix (#1, 1 commit, by "
-            "a); and 5 more.",
+            "Nightly 2099-01-01 (abc1234) is out; this build is %s %s. What changed:\n- [gpu] A fix (#1, 1 commit, "
+            "by a)\nand 5 more",
             snx_build_branch(), snx_build_commit());
         assert(!strcmp(app->ask_line, line));
         assert(
@@ -4887,14 +4933,73 @@ static void check_updates(App* app) {
         render(app);
         key(app, SDLK_ESCAPE); /* Close */
         assert(!app->confirm.shown);
+        /* the most a box says: GUI_NIGHTLY_CHANGES long titles and how many more, shown whole at every size */
+        {
+            static const char* const titles[GUI_NIGHTLY_CHANGES] = {
+                "Keep the pipeline cache between runs while the driver and its version stay the same",
+                "Draw a render target's first use from its clear colour instead of the old frame's pixels",
+                "Say which controller a player's slot took when two of the same kind connect at once",
+                "Read a save's files through the host's own folder so a crash never leaves half a file",
+                "Take the audio renderer's mix off the game's thread when its buffer is already full",
+                "Give the recompile queue's progress per game and its time left in the Compile tab",
+                "Stop a shader's translation from reading past its constant buffer's declared size",
+                "Pace a game that runs unlocked by the display's own refresh when the limit is off"};
+            static const char* const areas[GUI_NIGHTLY_CHANGES] = {"vk",    "gpu", "hid",    "fs",
+                                                                   "audio", "gui", "shader", "runtime"};
+            char* body = (char*)malloc(8192);
+            char expected[4400];
+            int at, said;
+            assert(body);
+            at = snprintf(
+                body, 8192,
+                "{\"tag_name\": \"nightly-2099-01-02-def5678\", \"name\": \"Nightly 2099-01-02 (def5678)\","
+                " \"html_url\": \"https://github.com/scarletnx/nightly/releases/tag/nightly-2099-01-02-def5678\","
+                " \"body\": \"x\\n## Changes since the previous nightly\\n");
+            said =
+                snprintf(expected, sizeof expected,
+                         "Nightly 2099-01-02 (def5678) is out; this build is %s %s. What changed:", snx_build_branch(),
+                         snx_build_commit());
+            for (int i = 0; i < GUI_NIGHTLY_CHANGES; ++i) {
+                at += snprintf(body + at, 8192 - (size_t)at,
+                               "\\n**%s**\\n\\n- %s ([#%d](https://github.com/o/r/pull/%d), %d commits, by "
+                               "someone)\\n",
+                               areas[i], titles[i], 3001 + i, 3001 + i, 2 + i);
+                said += snprintf(expected + said, sizeof expected - (size_t)said,
+                                 "\n- [%s] %s (#%d, %d commits, by someone)", areas[i], titles[i], 3001 + i, 2 + i);
+            }
+            snprintf(body + at, 8192 - (size_t)at, "\\nAnd [12 more](https://x).\\n\\n<details>\\n\"}");
+            snprintf(expected + said, sizeof expected - (size_t)said, "\nand 12 more");
+            g_nightly_net.body = body;
+            start_look(app);
+            pump_until(app, &app->nightly_asking);
+            assert(app->confirm.shown && app->confirm.ask == GUI_ASK_NIGHTLY && !strcmp(app->ask_line, expected));
+            ask_shown(app, "nightly-out");
+            /* a line break ends a row, two a blank row between; drawn on one row (a theme that slides its text, the
+               last row a box has room for) it is a space */
+            assert(app->theme.text != GUI_TEXT_SLIDE && wrap_at("ab\ncd", 10, 0) == 2 &&
+                   wrap_rows(app, "ab\ncd", 10, 0) == 2 && wrap_rows(app, "ab\n\ncd", 10, 0) == 3 &&
+                   wrap_rows(app, "ab cd\n", 10, 0) == 1);
+            {
+                SDL_Color mark = {0x12, 0x34, 0x56, 0xff};
+                int width, height;
+                render(app);
+                area(app, &width, &height);
+                text_from(app, gui_rect(0, 0, width, height), 0, height - 16 * app->scale, "Q\nZ", 0, mark);
+                shows(app, "Q Z", mark);
+            }
+            key(app, SDLK_ESCAPE);
+            g_nightly_net.body = NULL;
+            free(body);
+        }
     } else /* a tree git cannot read: no day to compare, said so */
         assert(strstr(app->message, "has no day to compare") && !app->confirm.shown);
     /* On: a nightly not newer than this build, nothing over the menu */
     g_nightly_net.body = "{\"tag_name\": \"nightly-2000-01-01-abc1234\", \"name\": \"Nightly 2000-01-01 (abc1234)\"}";
     app->message[0] = 0;
+    asked = g_nightly_net.asked;
     start_look(app);
     pump_until(app, &app->nightly_asking);
-    assert(g_nightly_net.asked == 2 && !app->confirm.shown && !app->message[0]);
+    assert(g_nightly_net.asked == asked + 1 && !app->confirm.shown && !app->message[0]);
     /* a look that fails: why, in the message line; GitHub's own refusal, with its status and its words */
     g_nightly_net.fails = true;
     start_look(app);
