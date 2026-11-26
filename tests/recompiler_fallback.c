@@ -6,6 +6,9 @@
      blocks chained and an import's stub, and their IR; an AOT module's index of tables, integers and structs, and its
      descriptor, with what lays them out otherwise than C; and a block of the executor's (exec.c, here, its loads
      counted and refused as the test asks) whose native object does not load, run;
+   - either: the JIT (jit_service.c, linked beside it) compiling a function and loading it again from its cache, whose
+     key is LLVM's or, without it, the native back end's (jit_cache_key.c, jit_cache_key_none.c); refused, with none,
+     on a host with no native back end;
    - none (fallback_none.c, a program that links no LLVM): each refused with an error that names the code or the global
      asked for, its address and first instruction, why the native back end left it and that the build has no LLVM, and
      nothing else said. An executor on a host with no native back end is refused with it too, the functions all made are
@@ -13,9 +16,12 @@
 #include "common/cpu/aarch64/cpu.h"
 #include "common/cpu/recompiler/codegen.h"
 #include "common/cpu/recompiler/fallback.h"
+#include "common/cpu/recompiler/jit/jit_cache.h"
+#include "common/cpu/recompiler/jit/jit_service.h"
 #include "common/cpu/recompiler/loader/code_loader.h"
 #include "common/cpu/recompiler/rtlib/rtlib_object.h"
 #include "common/runtime/interface.h"
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,6 +38,7 @@ static struct {
     int failures;
     uint64_t svc;                               /* the executor's SVC's number */
     unsigned char image[2 * EACH], mem[0x3000]; /* the A64 functions' code; the executor's guest memory */
+    _Atomic GuestFn dispatch[2 * EACH / 4];     /* the JIT's table of the functions' code */
 } g_seam;
 static int seam_load(SnxCodeLoader* loader, const SnxLinkInput* inputs, size_t count, const char* const* names,
                      size_t name_count, SnxU64* addresses, char* error, size_t error_size) {
@@ -618,6 +625,66 @@ static void started(void) {
           "the start: %s", error);
 }
 
+/* ---- the JIT (jit_service.c, beside) ---- */
+
+/* the functions' JIT: the first compiled, run, and loaded again by a second service from the cache it wrote, under the
+   key the build has */
+static void jit(void) {
+    static const char* const cache = "recompiler-fallback.jitcache";
+    char error[512] = "", *key = snx_jit_cache_key('0', 0, 0, 0), want[64];
+    snprintf(want, sizeof want, " native=%s ", snx_native_name());
+    if (snx_fallback_available())
+        CHECK(key && strstr(key, " llvm=") && strstr(key, " triple=") && !strstr(key, want), "LLVM's cache key: %s",
+              key ? key : "(none)");
+    else
+        CHECK(key && strstr(key, want) && strstr(key, " opt=0 hook=0 svc=0 ") && strstr(key, " features=") &&
+                  !strstr(key, "llvm="),
+              "the native back end's cache key: %s", key ? key : "(none)");
+    free(key);
+    SnxCodeImage image = {
+        .image = g_seam.image, .image_size = sizeof g_seam.image, .base = CODE, .text_size = sizeof g_seam.image};
+    SnxJitConfig config = {.images = &image,
+                           .image_count = 1,
+                           .dispatch = g_seam.dispatch,
+                           .code_lo = CODE,
+                           .code_hi = CODE + sizeof g_seam.image,
+                           .threads = 1,
+                           .cache_path = cache};
+    remove(cache);
+    for (int round = 0; round < 2; ++round) {
+        for (size_t i = 0; i < sizeof g_seam.dispatch / sizeof *g_seam.dispatch; ++i)
+            atomic_store_explicit(&g_seam.dispatch[i], NULL, memory_order_relaxed);
+        SnxJitService* s = snx_jit_service_new(&config, error, sizeof error);
+        if (!snx_native_available() && !snx_fallback_available()) {
+            CHECK(!s && strstr(error, "no native back end") && strstr(error, "SNX_WITH_LLVM=OFF"),
+                  "a JIT with no code generator: %s", error);
+            snx_jit_service_free(s);
+            break;
+        }
+        CHECK(s, "a JIT: %s", error);
+        if (!s) break;
+        GuestFn function = snx_jit_wait(s, CODE);
+        CHECK(function, "the JIT's code of 0x%x", CODE);
+        if (function) {
+            CPU c = {0};
+            c.rt = &g_rt;
+            c.x[0] = 41;
+            c.x[30] = STOP;
+            c.pc = CODE;
+            call(function, &c, CODE);
+            CHECK(c.x[0] == 42 && c.pc == STOP, "the JIT's function gives %llu at 0x%llx", (unsigned long long)c.x[0],
+                  (unsigned long long)c.pc);
+        }
+        snx_jit_drain(s);
+        SnxJitStats stats;
+        snx_jit_stats(s, &stats);
+        CHECK(round ? stats.cached >= 1 && !stats.compiled : stats.compiled >= 1 && !stats.cached,
+              "round %d: %lu units loaded from the cache, %lu pcs compiled", round, stats.cached, stats.compiled);
+        snx_jit_service_free(s);
+    }
+    remove(cache);
+}
+
 int main(void) {
     uint64_t hints[2];
     SnxCodegen cg;
@@ -640,6 +707,7 @@ int main(void) {
     }
     started();
     executor();
+    jit();
     snx_codegen_free(&cg);
     if (!g_seam.failures) printf("the fallback (%s): as it should be\n", snx_fallback_name());
     return g_seam.failures != 0;
