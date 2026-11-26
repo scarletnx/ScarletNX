@@ -119,6 +119,23 @@ void gui_log_fatal(const char* text) {
     gui_log("%s", text);
     log_to(SNX_ERROR_LOG, text);
 }
+int gui_log_console_end(const char* path, char* what, size_t size) {
+    char why[256];
+    size_t length = 0;
+    char* text = (char*)snx_read_file(path, &length);
+    if (!text) {
+        snprintf(what, size, "%s did not open: %s", path, snx_os_error(why, sizeof why));
+        return -1;
+    }
+    size_t end = length, start;
+    while (end && (text[end - 1] == '\n' || text[end - 1] == '\r' || text[end - 1] == ' ')) --end;
+    for (start = end; start && text[start - 1] != '\n'; --start) continue;
+    snprintf(what, size, "%.*s", (int)(end - start), text + start);
+    free(text);
+    if (!strcmp(what, "Exit.")) return 0;
+    if (!what[0]) snprintf(what, size, "%s", "the game's log is empty");
+    return 1;
+}
 int gui_log_game_end(const char* path, char* what, size_t size, char* lines, size_t lines_size) {
     SnxLogScan scan;
     char why[256];
