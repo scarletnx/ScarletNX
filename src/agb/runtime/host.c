@@ -154,8 +154,15 @@ AgbHost* agb_host_open(const char* title, const char* ini, bool fullscreen, char
     {
         char why[256];
         host->vk = agb_vk_open(title, AGB_SCREEN_WIDTH * START_SCALE, AGB_SCREEN_HEIGHT * START_SCALE, why, sizeof why);
-        if (!host->vk)
+        if (!host->vk) {
             fprintf(stderr, "scarletnx-agb: no Vulkan window (%s): the screen shows through SDL's renderer\n", why);
+            /* the upscaler and the anti-aliasing are the Vulkan window's draw (common/gpu/vk/present_fx.h) */
+            if (strcmp(g_settings.upscaler, "off") || strcmp(g_settings.anti_aliasing, "off"))
+                fprintf(stderr,
+                        "scarletnx-agb: upscaler=%s anti_aliasing=%s: SDL's renderer shows the screen in sharp pixels, "
+                        "with neither\n",
+                        g_settings.upscaler, g_settings.anti_aliasing);
+        }
     }
     if (host->vk)
         host->window = agb_vk_window(host->vk);

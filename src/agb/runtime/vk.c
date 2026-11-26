@@ -7,6 +7,7 @@
 #include "agb/ppu/ppu.h"
 #include "common/gpu/vk/device_settings.h"
 #include "common/gpu/vk/notice.h"
+#include "common/gpu/vk/present_fx.h"
 #include "common/gpu/vk/rects.h"
 #include "common/gpu/vk/ring.h"
 #include "common/gpu/vk/swapchain.h"
@@ -21,9 +22,10 @@
 
 #define AGB_VK_SLOTS 2 /* a frame on the GPU while the next is recorded */
 
-/* a slot's frame: the device image the copy reads, and the staging buffer the board's frame goes in */
+/* a slot's frame: the device image the window's draw samples, and the staging buffer the board's frame goes in */
 typedef struct {
     VkImage image;
+    VkImageView view;
     VkDeviceMemory memory;
     VkBuffer staging;
     VkDeviceMemory staging_memory;
@@ -42,6 +44,10 @@ struct AgbVk {
     AgbFrame frame[AGB_VK_SLOTS];
     SnxVkNotice* notice;
     SnxVkRects* controls;
+    /* the frame drawn into the window through the upscaler and the anti-aliasing the Switch's settings ask for, in
+       sharp pixels with both off as SDL's renderer scales it */
+    SnxFxConfig fx_config;
+    SnxFx* fx;
 };
 
 /* the GBA's device on a physical device and queue family (common/gpu/vk/device.h) */
@@ -80,7 +86,7 @@ static bool frame_make(AgbVk* v, AgbFrame* f) {
                             .arrayLayers = 1,
                             .samples = VK_SAMPLE_COUNT_1_BIT,
                             .tiling = VK_IMAGE_TILING_OPTIMAL,
-                            .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT};
+                            .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT};
     VkBufferCreateInfo bi = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = size, .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
     VkMemoryRequirements req;
@@ -94,8 +100,14 @@ static bool frame_make(AgbVk* v, AgbFrame* f) {
     VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = req.size};
     ai.memoryTypeIndex = snx_vk_memory_type(&mp, req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     if (ai.memoryTypeIndex == UINT32_MAX) ai.memoryTypeIndex = snx_vk_memory_type(&mp, req.memoryTypeBits, 0);
+    VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                .image = f->image,
+                                .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                .format = VK_FORMAT_R8G8B8A8_UNORM,
+                                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
     if (vkAllocateMemory(v->device, &ai, NULL, &f->memory) != VK_SUCCESS ||
-        vkBindImageMemory(v->device, f->image, f->memory, 0) != VK_SUCCESS)
+        vkBindImageMemory(v->device, f->image, f->memory, 0) != VK_SUCCESS ||
+        vkCreateImageView(v->device, &vi, NULL, &f->view) != VK_SUCCESS)
         return false;
     vkGetBufferMemoryRequirements(v->device, f->staging, &req);
     ai.allocationSize = req.size;
@@ -110,6 +122,7 @@ static bool frame_make(AgbVk* v, AgbFrame* f) {
 }
 
 static void frame_free(AgbVk* v, AgbFrame* f) {
+    if (f->view) vkDestroyImageView(v->device, f->view, NULL);
     if (f->image) vkDestroyImage(v->device, f->image, NULL);
     if (f->memory) vkFreeMemory(v->device, f->memory, NULL);
     if (f->staging) vkDestroyBuffer(v->device, f->staging, NULL);
@@ -196,9 +209,22 @@ AgbVk* agb_vk_open(const char* title, int width, int height, char* error, size_t
         agb_vk_close(v);
         return NULL;
     }
-    char said[160];
+    char said[512];
     snx_vk_present_said(v->swap.mode, g_settings.vsync, said, sizeof said);
     fprintf(stderr, "scarletnx-agb: %s\n", said);
+    /* the upscaler and the anti-aliasing the settings ask for, said once */
+    if (snx_fx_settings(&v->fx_config, g_settings.upscaler, g_settings.upscaler_sharpness, g_settings.anti_aliasing,
+                        said, sizeof said))
+        fprintf(stderr, "scarletnx-agb: settings: %s\n", said);
+    if (!(v->fx = snx_fx_create(v->phys, v->device, VK_NULL_HANDLE, AGB_VK_SLOTS, notice_log))) {
+        snprintf(error, error_size, "cannot make the window's draw of the screen on this device");
+        agb_vk_close(v);
+        return NULL;
+    }
+    snx_fx_set_sharpness(v->fx, v->fx_config.sharpness);
+    snx_fx_set_off_sharp(v->fx, 1);
+    fprintf(stderr, "scarletnx-agb: upscaler %s, anti-aliasing %s\n", snx_fx_upscale_label(v->fx_config.upscaler),
+            snx_fx_aa_label(v->fx_config.aa));
     return v;
 }
 
@@ -208,6 +234,7 @@ void agb_vk_close(AgbVk* v) {
     if (!v) return;
     if (v->device) {
         vkDeviceWaitIdle(v->device);
+        snx_fx_destroy(v->fx);
         snx_vk_notice_destroy(v->notice);
         snx_vk_rects_destroy(v->controls);
         snx_vk_swapchain_free(v->device, &v->swap);
@@ -266,37 +293,28 @@ bool agb_vk_frame(AgbVk* v, const uint32_t* framebuffer, const SnxNotice* notice
                               .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                               .imageExtent = {AGB_SCREEN_WIDTH, AGB_SCREEN_HEIGHT, 1}};
     vkCmdCopyBufferToImage(cb, f->staging, f->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
-    barrier(cb, f->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT,
-            VK_ACCESS_2_TRANSFER_READ_BIT);
+    barrier(cb, f->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
     uint32_t w = v->swap.extent.width, h = v->swap.extent.height;
     int32_t at[4];
     agb_vk_place(w, h, at);
-    VkImage target = v->swap.images[index];
-    barrier(cb, target, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_PIPELINE_STAGE_2_TRANSFER_BIT, 0, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    VkClearColorValue black = {{0, 0, 0, 1}};
-    VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    vkCmdClearColorImage(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &all);
-    /* the blit overwrites the clear's pixels: its writes wait for the clear's */
-    barrier(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-            VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    VkImageBlit blit = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                        .srcOffsets = {{0, 0, 0}, {AGB_SCREEN_WIDTH, AGB_SCREEN_HEIGHT, 1}},
-                        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                        .dstOffsets = {{at[0], at[1], 0}, {at[0] + at[2], at[1] + at[3], 1}}};
-    /* sharp pixels, as SDL's renderer scales the screen's texture (SDL_SCALEMODE_NEAREST) */
-    if (at[2] && at[3])
-        vkCmdBlitImage(cb, f->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                       1, &blit, VK_FILTER_NEAREST);
-    (void)snx_vk_notice_record(v->notice, cb, slot, target, v->swap.format.format, w, h,
-                               snx_display_percent(SDL_GetWindowDisplayScale(v->host.window)), notice, SDL_GetTicksNS(),
-                               notice_log);
-    (void)snx_vk_rects_record(v->controls, cb, slot, target, v->swap.views[index], v->swap.format.format, w, h,
-                              snx_vpad_window_rects((int)w, (int)h), notice_log);
-    barrier(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, 0);
+    VkRect2D to = {{at[0], at[1]}, {(uint32_t)at[2], (uint32_t)at[3]}};
+    /* the upscaler's and the anti-aliasing's passes but their last, which draws in the window's rendering: sharp
+       pixels with both off, as SDL's renderer scales the screen's texture (SDL_SCALEMODE_NEAREST) */
+    bool drawn = at[2] && at[3] &&
+                 snx_fx_prepare(v->fx, cb, slot, f->view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, AGB_SCREEN_WIDTH,
+                                AGB_SCREEN_HEIGHT, 0, 0, AGB_SCREEN_WIDTH, AGB_SCREEN_HEIGHT, 0, to,
+                                v->swap.format.format, v->fx_config.upscaler, v->fx_config.aa);
+    snx_vk_swapchain_begin(cb, &v->swap, index);
+    if (drawn) snx_fx_draw(v->fx, cb, slot);
+    (void)snx_vk_notice_draw(v->notice, cb, slot, v->swap.format.format, w, h,
+                             snx_display_percent(SDL_GetWindowDisplayScale(v->host.window)), notice, SDL_GetTicksNS(),
+                             notice_log);
+    (void)snx_vk_rects_draw(v->controls, cb, slot, v->swap.format.format, w, h, snx_vpad_window_rects((int)w, (int)h),
+                            notice_log);
+    snx_vk_swapchain_end(cb, &v->swap, index);
     (void)snx_vk_ring_submit(&v->ring, v->acquired[slot], v->rendered[index]);
     VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
                            .waitSemaphoreCount = 1,

@@ -1,9 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The window: the frame image, the upper screen above the lower one as on the console, scaled into the window's
-   swapchain image at the frame's shape, the on-screen controls over it, and each submission sent with it. */
+   swapchain image at the frame's shape through the upscaler and the anti-aliasing the Switch's settings ask for (sharp
+   pixels with both off), the on-screen controls over it, and each submission sent with it. */
 #include "nds/gpu/vk/vk.h"
 #include "nds/gpu/vk/vk_present.h"
+#include "common/gpu/vk/present_fx.h"
 #include "common/gpu/vk/rects.h"
 #include "common/gpu/vk/swapchain.h"
 #include "common/utilities/vpad_sdl.h"
@@ -20,6 +22,8 @@ static struct {
     SnxVkRects* controls;
     SnxNotice notice;
     SnxVkNotice* notice_vk;
+    SnxFxConfig fx_config;
+    SnxFx* fx;
     VkOffset2D rect[2]; /* where the frame is in the window */
     bool up;
 } g_present;
@@ -37,6 +41,8 @@ static bool swap_make(void) {
     return snx_vk_swapchain_make(v->phys, v->device, &info, &g_present.swap);
 }
 
+static void controls_log(const char* text) { fprintf(stderr, "nds gpu: %s\n", text); }
+
 bool nds_vk_present_init(char* error, size_t error_size) {
     NdsVk* v = nds_vk();
     if (!v->host.surface) return true;
@@ -53,9 +59,21 @@ bool nds_vk_present_init(char* error, size_t error_size) {
         snprintf(error, error_size, "cannot make the window's swapchain");
         return false;
     }
-    char said[160];
+    char said[512];
     snx_vk_present_said(g_present.swap.mode, g_settings.vsync, said, sizeof said);
     fprintf(stderr, "scarletnx-nds: %s\n", said);
+    /* the upscaler and the anti-aliasing the settings ask for, said once */
+    if (snx_fx_settings(&g_present.fx_config, g_settings.upscaler, g_settings.upscaler_sharpness,
+                        g_settings.anti_aliasing, said, sizeof said))
+        fprintf(stderr, "scarletnx-nds: settings: %s\n", said);
+    if (!(g_present.fx = snx_fx_create(v->phys, v->device, VK_NULL_HANDLE, NDS_VK_SLOTS, controls_log))) {
+        snprintf(error, error_size, "cannot make the window's draw of the screens on this device");
+        return false;
+    }
+    snx_fx_set_sharpness(g_present.fx, g_present.fx_config.sharpness);
+    snx_fx_set_off_sharp(g_present.fx, 1);
+    fprintf(stderr, "scarletnx-nds: upscaler %s, anti-aliasing %s\n",
+            snx_fx_upscale_label(g_present.fx_config.upscaler), snx_fx_aa_label(g_present.fx_config.aa));
     g_present.up = true;
     return true;
 }
@@ -71,6 +89,7 @@ void nds_vk_present_free(void) {
     if (g_present.swap.swapchain) snx_vk_swapchain_free(v->device, &g_present.swap);
     snx_vk_rects_destroy(g_present.controls);
     snx_vk_notice_destroy(g_present.notice_vk);
+    snx_fx_destroy(g_present.fx);
     memset(&g_present, 0, sizeof g_present);
 }
 
@@ -83,7 +102,6 @@ bool nds_vk_present_point(float x, float y, int* frame_x, int* frame_y) {
     return fx >= 0 && fy >= 0 && fx < (float)NDS_SCREEN_WIDTH && fy < (float)(NDS_SCREEN_HEIGHT * 2);
 }
 
-static void controls_log(const char* text) { fprintf(stderr, "nds gpu: %s\n", text); }
 void nds_vk_notice(const char* text) { snx_notice_show(&g_present.notice, text, SDL_GetTicksNS()); }
 const char* nds_vk_notice_text(void) {
     return snx_notice_shown(&g_present.notice, SDL_GetTicksNS()) ? g_present.notice.text : "";
@@ -125,38 +143,22 @@ void nds_vk_present(void) {
     int32_t x0 = (int32_t)(extent.width - w) / 2, y0 = (int32_t)(extent.height - h) / 2;
     g_present.rect[0] = (VkOffset2D){x0, y0};
     g_present.rect[1] = (VkOffset2D){x0 + (int32_t)w, y0 + (int32_t)h};
-    VkImage target = g_present.swap.images[index];
-    VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    VkImageMemoryBarrier barrier = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                                    .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-                                    .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                                    .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                                    .image = target,
-                                    .subresourceRange = range};
-    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1,
-                         &barrier);
-    VkClearColorValue black = {{0, 0, 0, 1}};
-    vkCmdClearColorImage(cb, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &range);
-    nds_vk_layout(cb, frame, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-    VkImageBlit blit = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                        .srcOffsets = {{0, 0, 0}, {NDS_SCREEN_WIDTH, NDS_SCREEN_HEIGHT * 2, 1}},
-                        .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                        .dstOffsets = {{x0, y0, 0}, {x0 + (int32_t)w, y0 + (int32_t)h, 1}}};
-    if (w && h)
-        vkCmdBlitImage(cb, frame->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, target,
-                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_NEAREST);
-    (void)snx_vk_notice_record(g_present.notice_vk, cb, slot, target, g_present.swap.format.format, extent.width,
-                               extent.height, snx_display_percent(SDL_GetWindowDisplayScale(v->host.window)),
-                               &g_present.notice, SDL_GetTicksNS(), controls_log);
-    (void)snx_vk_rects_record(g_present.controls, cb, slot, target, g_present.swap.views[index],
-                              g_present.swap.format.format, extent.width, extent.height,
-                              snx_vpad_window_rects((int)extent.width, (int)extent.height), controls_log);
-    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, barrier.dstAccessMask = 0;
-    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0, NULL, 1,
-                         &barrier);
+    /* the upscaler's and the anti-aliasing's passes but their last, which draws in the window's rendering */
+    nds_vk_layout(cb, frame, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    VkRect2D to = {{x0, y0}, {w, h}};
+    bool drawn =
+        w && h &&
+        snx_fx_prepare(g_present.fx, cb, slot, frame->view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, NDS_SCREEN_WIDTH,
+                       NDS_SCREEN_HEIGHT * 2, 0, 0, NDS_SCREEN_WIDTH, NDS_SCREEN_HEIGHT * 2, 0, to,
+                       g_present.swap.format.format, g_present.fx_config.upscaler, g_present.fx_config.aa);
+    snx_vk_swapchain_begin(cb, &g_present.swap, index);
+    if (drawn) snx_fx_draw(g_present.fx, cb, slot);
+    (void)snx_vk_notice_draw(g_present.notice_vk, cb, slot, g_present.swap.format.format, extent.width, extent.height,
+                             snx_display_percent(SDL_GetWindowDisplayScale(v->host.window)), &g_present.notice,
+                             SDL_GetTicksNS(), controls_log);
+    (void)snx_vk_rects_draw(g_present.controls, cb, slot, g_present.swap.format.format, extent.width, extent.height,
+                            snx_vpad_window_rects((int)extent.width, (int)extent.height), controls_log);
+    snx_vk_swapchain_end(cb, &g_present.swap, index);
     (void)snx_vk_ring_submit(&v->ring, g_present.acquire[slot], g_present.presented[slot]);
     VkPresentInfoKHR present = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
                                 .waitSemaphoreCount = 1,
