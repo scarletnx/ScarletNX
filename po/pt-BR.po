@@ -2103,8 +2103,28 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "Delete the old caches of %s? %s of a code cache LLVM made, %s. This version does not use it, and the game does not make it again; the caches it uses, its saves, settings and dump stay."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Delete the old caches of %s? %s of BC7 cache files (.vkbc7) an earlier version left in %s, and %s of a code cache LLVM made, %s. This version does not use them, and the game does not make them again; the caches it uses, its saves, settings and dump stay."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "Could not delete %s: %s"
 msgstr "Não foi possível excluir %s: %s"
+
+#: src/gui/main.c
+#, c-format
+msgid "Could not read %s: out of memory"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Could not delete %s"
+msgstr ""
 
 #: src/gui/main.c
 #, c-format

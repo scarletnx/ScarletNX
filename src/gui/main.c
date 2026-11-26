@@ -4,6 +4,7 @@
 #include "common/utilities/sdl_desktop.h"
 #include "common/utilities/ini_lines.h"
 #include "common/utilities/key_text.h"
+#include "common/utilities/old_llvm_caches.h"
 #ifndef SNX_GUI_NO_MAIN
 #include <SDL3/SDL_main.h>
 #endif
@@ -5799,26 +5800,52 @@ static uint64_t old_bc7_bytes(const char* shader_cache) {
     snx_free_strings(names, count);
     return total;
 }
+/* the bytes of the game's code cache (its .jitcache) when LLVM made it (old_llvm_caches.h: its key names llvm=), which
+   nothing reads now; 0 for one of this version's, or none */
+static uint64_t old_jit_bytes(const char* jitcache) {
+    SnxLlvmCaches found = {0};
+    uint64_t bytes = jitcache && snx_llvm_caches_jit(jitcache, &found) == 1 ? found.bytes : 0;
+    snx_llvm_caches_free(&found);
+    return bytes;
+}
 /* the box's game's old caches counted again (App.addons_old_caches): as its box opens, and after a deletion */
 static void old_caches_refresh(App* app) {
     char* caches[2];
     game_caches(app, caches);
-    app->addons_old_caches = old_bc7_bytes(caches[0]);
+    app->addons_old_caches = old_bc7_bytes(caches[0]) + old_jit_bytes(caches[1]);
     free(caches[0]);
     free(caches[1]);
 }
 /* Delete Old Caches pressed: asked first (GUI_ASK_CACHE with caches_old_only), with their size and where they are */
 static void old_caches_ask(App* app) {
-    char *caches[2], size[32];
+    char *caches[2], size[32], jit_size[32];
+    uint64_t jit;
     game_caches(app, caches);
     old_caches_refresh(app);
+    jit = old_jit_bytes(caches[1]);
     if (app->addons_old_caches) {
-        gui_size_text(size, sizeof size, app->addons_old_caches);
-        snprintf(app->ask_line, sizeof app->ask_line,
-                 snx_tr("Delete the old caches of %s? %s of BC7 cache files (.vkbc7) an earlier version left in %s. "
-                        "This version does not use them, and the game does not make them again; the caches it uses, "
-                        "its saves, settings and dump stay."),
-                 app->addons_title, size, caches[0]);
+        gui_size_text(size, sizeof size, app->addons_old_caches - jit);
+        gui_size_text(jit_size, sizeof jit_size, jit);
+        if (!jit)
+            snprintf(
+                app->ask_line, sizeof app->ask_line,
+                snx_tr("Delete the old caches of %s? %s of BC7 cache files (.vkbc7) an earlier version left in %s. "
+                       "This version does not use them, and the game does not make them again; the caches it "
+                       "uses, its saves, settings and dump stay."),
+                app->addons_title, size, caches[0]);
+        else if (jit == app->addons_old_caches)
+            snprintf(app->ask_line, sizeof app->ask_line,
+                     snx_tr("Delete the old caches of %s? %s of a code cache LLVM made, %s. This version does not use "
+                            "it, and the game does not make it again; the caches it uses, its saves, settings and dump "
+                            "stay."),
+                     app->addons_title, jit_size, caches[1]);
+        else
+            snprintf(
+                app->ask_line, sizeof app->ask_line,
+                snx_tr("Delete the old caches of %s? %s of BC7 cache files (.vkbc7) an earlier version left in %s, "
+                       "and %s of a code cache LLVM made, %s. This version does not use them, and the game does "
+                       "not make them again; the caches it uses, its saves, settings and dump stay."),
+                app->addons_title, size, caches[0], jit_size, caches[1]);
         app->caches_old_only = true;
         gui_confirm_open(&app->confirm, GUI_ASK_CACHE, false);
     }
@@ -5851,6 +5878,20 @@ static void old_caches_delete(App* app) {
             free(file);
         }
         snx_free_strings(names, count);
+    }
+    if (!app->message[0] && caches[1]) { /* the code cache LLVM made: only while it still is (snx_llvm_cache_is) */
+        SnxLlvmCaches found = {0};
+        char error[600];
+        uint64_t went = 0;
+        int is = snx_llvm_caches_jit(caches[1], &found);
+        if (is < 0)
+            snprintf(app->message, sizeof app->message, snx_tr("Could not read %s: out of memory"), caches[1]);
+        else if (is) {
+            (void)snx_llvm_caches_delete(&found, &went, error, sizeof error);
+            bytes += went;
+            if (error[0]) snprintf(app->message, sizeof app->message, snx_tr("Could not delete %s"), error);
+        }
+        snx_llvm_caches_free(&found);
     }
     if (!app->message[0]) {
         gui_size_text(size, sizeof size, bytes);
