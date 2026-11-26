@@ -3604,7 +3604,9 @@ static int cb_get_(const DsState* ds, int stage, int i, u32 sz, u64 align, VkBuf
     if (whole && !pending && (!vk_uma() || vk_uma_imports_dear()) && !vk_mirror_pending(a, sz) && !vk_mirror_holds(a, sz)) {
         u64 t_copy = g_stats.n.cb[VK_CB_COPIED] % CB_TIME_EVERY ? 0 : plat_ns();
         vk_share_unlock(); /* grouped: whole needs a */
-        u8* p = vk_stage_upload_own(sz, vk_stage_align(), buf, off);
+        /* the bank's own part: its window moves when that part is full (vk_stage_upload_own) */
+        const u32 page = (u32)stage < DS_GFX_STAGES && (u32)i < 18 ? 1 + (u32)stage * 18 + (u32)i : 0;
+        u8* p = vk_stage_upload_own(sz, vk_stage_align(), page, buf, off);
         if (!p) return 0;
         life = CB_FRAME;
         if (!own_any())
