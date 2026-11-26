@@ -107,6 +107,10 @@ NdsVkImage* nds_vk_render3d_image(void);
 /* ---- present.c ---- */
 bool nds_vk_present_init(char* error, size_t error_size);
 void nds_vk_present_free(void);
-/* the frame image to the window, both screens, and the submission sent */
+/* the frame image to the window, both screens, the notice and the on-screen controls over it, and the submission sent */
 void nds_vk_present(void);
+/* a line over the game for a few seconds, as a Switch game shows one (common/gpu/vk/notice.h); the one showing, "" for
+   none */
+void nds_vk_notice(const char* text);
+const char* nds_vk_notice_text(void);
 #endif

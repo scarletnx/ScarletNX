@@ -132,7 +132,9 @@ static int controls(NdsHost* host, SDL_Window* window, const char* dir, const ch
     CHECK(vpad_test_in_file(ini, "[On-screen controls]\ncontrols_x=0.500 0.500 100\n") == 1);
     CHECK(vpad_test_key(window, SDLK_F2) && !keys(host) && !vpad_editing());
     /* the pause key: the game held (main.c's loop shows the last frame again, nds_host_held), then let go */
+    CHECK(!strcmp(nds_vk_notice_text(), ""));
     CHECK(vpad_test_key(window, SDLK_PAUSE) && !keys(host) && snx_vpad_window_paused());
+    CHECK(!strcmp(nds_vk_notice_text(), "Pause: on")); /* over the game, as a Switch game's */
     /* the screenshot key, paused too: both screens in the game's folder's captures/, a PPM */
     {
         char *captures = snx_path_join(dir, "captures"), **names = NULL;
@@ -150,6 +152,7 @@ static int controls(NdsHost* host, SDL_Window* window, const char* dir, const ch
     }
     CHECK(nds_host_held(host));
     CHECK(vpad_test_key(window, SDLK_PAUSE) && !keys(host) && !snx_vpad_window_paused() && !nds_host_held(host));
+    CHECK(!strcmp(nds_vk_notice_text(), "Pause: off"));
     vpad_console(&snx_vpad_nds);
     vpad_settings(dir, "a game", 0, NULL);
     CHECK(vpad_config()->at[SNX_VPAD_X].x == 0.5f && vpad_config()->at[SNX_VPAD_X].y == 0.5f);

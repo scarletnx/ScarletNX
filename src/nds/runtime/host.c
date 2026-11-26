@@ -213,7 +213,7 @@ NdsHost* nds_host_open(NdsBoard* board, const char* title, const char* ini, cons
         snx_window_icon(v->host.window);
         if (fullscreen) SDL_SetWindowFullscreen(v->host.window, true);
         snx_pad_map_position(&host->pad);
-        snx_vpad_window_open(v->host.window, ini, nds_host_say, NULL);
+        snx_vpad_window_open(v->host.window, ini, nds_host_say, nds_vk_notice);
     }
     if (!headless) {
         SDL_AudioSpec spec = {SDL_AUDIO_S16, 2, (int)(NDS_SPU_RATE + 0.5)};
