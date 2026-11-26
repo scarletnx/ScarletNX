@@ -59,7 +59,7 @@ int main(void) {
     /* a recompile refused, the host below its back end's floor (nx/runtime/driver/recompile.c): what it lacks is the
        failed step's note, the longest of them (tests/native_floor.c) whole */
     {
-        static const char refused[] = "cpu: needs SSE3, SSE4.1 and POPCNT, this host has none";
+        static const char refused[] = "cpu: needs SSE3 and POPCNT, this host has none";
         GuiSteps below;
         char text[160];
         gui_steps_reset(&below);

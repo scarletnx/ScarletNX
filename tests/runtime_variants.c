@@ -112,7 +112,7 @@ SnxJitService* snx_jit_service_new(const SnxJitConfig* config, char* error, size
 /* native.h's: whether the host is below its back end's floor (--below), or lacks what its fallback does (--done),
    and its line */
 static int g_below, g_done;
-#define BELOW "cpu: needs POPCNT, this host has SSE3 and SSE4.1"
+#define BELOW "cpu: needs POPCNT, this host has SSE3"
 #define DONE  "cpu: this host has no PCLMULQDQ, done by the fallback"
 int snx_native_floor(char* why, size_t size) {
     snprintf(why, size, "%s", g_below ? BELOW : "");

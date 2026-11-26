@@ -172,14 +172,20 @@ static const signed char sgx_a32_strex_win64[3] = {9, 2, 10};
 #define SGX_VF_G2X64 (&sgx_v_movq_xr)
 /* the SSE forms of two XMM operands a host without their feature gets from x64_helpers.c's snx_x64_sse, the
    instruction's own semantics on the cold path (mach.h's sgx_vins): a form's number is its place here */
-static const SgXVForm* const sgx_vf_helped_forms[] = {&sgx_v_pclmulqdq, &sgx_v_pcmpgtq, &sgx_v_pshufb, &sgx_v_palignr,
-                                                      &sgx_v_pabsb,     &sgx_v_pabsw,   &sgx_v_pabsd,  &sgx_v_pmulhrsw};
+static const SgXVForm* const sgx_vf_helped_forms[] = {
+    &sgx_v_pclmulqdq, &sgx_v_pcmpgtq,  &sgx_v_pshufb,   &sgx_v_palignr,  &sgx_v_pabsb,    &sgx_v_pabsw,
+    &sgx_v_pabsd,     &sgx_v_pmulhrsw, &sgx_v_pmulld,   &sgx_v_pmuldq,   &sgx_v_pcmpeqq,  &sgx_v_pmaxsb,
+    &sgx_v_pmaxsd,    &sgx_v_pmaxuw,   &sgx_v_pmaxud,   &sgx_v_pminsb,   &sgx_v_pminsd,   &sgx_v_pminuw,
+    &sgx_v_pminud,    &sgx_v_pmovsxbw, &sgx_v_pmovsxwd, &sgx_v_pmovsxdq, &sgx_v_pmovzxbw, &sgx_v_pmovzxwd,
+    &sgx_v_pmovzxdq,  &sgx_v_roundps,  &sgx_v_roundpd};
 #define SGX_VF_HELPER "snx_x64_sse"
 static inline int sgx_vf_helped(const SgXVForm* f) {
     for (int k = 0; k < (int)(sizeof sgx_vf_helped_forms / sizeof *sgx_vf_helped_forms); ++k)
         if (sgx_vf_helped_forms[k] == f) return k;
     return -1;
 }
+/* and SSE4.1's lane moves of general-purpose registers, SSE2's in their place (x64_asm.h's sgx_vlower) */
+#define SGX_VF_LOWER sgx_vlower
 #define SGX_VF_XHI2G (&sgx_v_pextrq)
 #define SGX_VF_INS64 (&sgx_v_pinsrq)
 /* a SIMD&FP register's 8 or 4 bytes to or from memory, its rest zeroed by the load (MOVQ, MOVD) */
