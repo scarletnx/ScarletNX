@@ -158,6 +158,8 @@ def main():
     # the Graphics table's vsync, never another of its rows
     run(['--board-info', '--vsync=0', '--anisotropy=16'], 0, 'Old 3DS')
     run(['--board-info', '--shadows=0'], 2, "--shadows=0 does nothing in a 3DS game: it tunes the Switch's GPU")
+    # the GPU driver package, Freedreno's variables and the validation layer, as a Switch game's window takes them
+    run(['--board-info', '--gpu-driver=', '--freedreno-env=', '--vk-validation=1'], 0, 'Old 3DS')
     # and the Display table's fullscreen, never its others
     run(['--board-info', '--fullscreen=1'], 0, 'Old 3DS')
     run(['--board-info', '--docked=0'], 2, '--docked=0 does nothing in a 3DS game: it has no dock')

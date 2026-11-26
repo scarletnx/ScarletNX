@@ -5,6 +5,7 @@
 #include "common/platform/dl.h"
 #include "common/utilities/sdl_desktop.h"
 #include "common/utilities/common.h"
+#include "snx_settings.h"
 #include <SDL3/SDL_vulkan.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,9 +43,29 @@ static bool loader_init(void) {
 }
 #endif
 
+/* the Switch's settings a console's window takes for its Vulkan: the GPU driver package and Freedreno's variables
+   (gpu_driver, freedreno_env), which the loader opens in place of the system's, before anything of the loader */
+static void driver_use(void) {
+    SnxGpuDriverRun run = {.driver = g_settings.gpu_driver, .freedreno = g_settings.freedreno_variables};
+    snx_gpu_driver_use(&run); /* the Switch runtime's own, said first, stays: a later one is no change */
+}
+/* and its validation layer (vk_validation: 1 the layer, 2 GPU-assisted too), said when asked and not installed */
+static VkResult instance_make(SnxVkInstanceInfo* info, SnxVkWindow* out) {
+    info->validation = g_settings.vulkan_validation_layer != 0;
+    info->gpu_assisted = g_settings.vulkan_validation_layer == 2;
+    VkResult made = snx_vk_instance_create(info, &out->instance);
+    if (made == VK_SUCCESS && info->validation && !out->instance.validation)
+        fprintf(stderr,
+                "vulkan: vk_validation=%d asks for the validation layer, and VK_LAYER_KHRONOS_validation is "
+                "not installed: the run goes on without it\n",
+                g_settings.vulkan_validation_layer);
+    return made;
+}
+
 bool snx_vk_window_open(const char* app, const char* title, int width, int height, SnxVkWindow* out, char* error,
                         size_t error_size) {
     *out = (SnxVkWindow){0};
+    driver_use();
 #ifdef __APPLE__
     free(carried_driver());
 #endif
@@ -91,13 +112,13 @@ bool snx_vk_window_open(const char* app, const char* title, int width, int heigh
                                  it anyway, or the loader answers VK_ERROR_INCOMPATIBLE_DRIVER on macOS. It is
                                  enabled only when the loader has it. */
                               .portability = true};
-    VkResult made = snx_vk_instance_create(&info, &out->instance);
+    VkResult made = instance_make(&info, out);
     if (made != VK_SUCCESS) {
         if (out->window) SDL_DestroyWindow(out->window);
         out->window = NULL;
         info.extensions = NULL;
         info.extension_count = 0;
-        made = snx_vk_instance_create(&info, &out->instance);
+        made = instance_make(&info, out);
         if (made != VK_SUCCESS) {
             if (out->video) SDL_QuitSubSystem(SDL_INIT_VIDEO);
             out->video = false;
@@ -134,6 +155,7 @@ bool snx_vk_window_open(const char* app, const char* title, int width, int heigh
 
 bool snx_vk_headless_open(const char* app, SnxVkWindow* out, char* error, size_t error_size) {
     *out = (SnxVkWindow){0};
+    driver_use();
     /* No SDL at all: the loader and an instance, as a windowless run on a host with no display makes them. On Apple
        the carried MoltenVK is loaded by name, since SDL's video is not started to name it */
 #ifdef __APPLE__
@@ -161,7 +183,7 @@ bool snx_vk_headless_open(const char* app, SnxVkWindow* out, char* error, size_t
     }
 #endif
     SnxVkInstanceInfo info = {.app_name = app, .portability = true};
-    VkResult made = snx_vk_instance_create(&info, &out->instance);
+    VkResult made = instance_make(&info, out);
     if (made != VK_SUCCESS) {
         if (out->loader) plat_dl_close(out->loader);
         out->loader = NULL;

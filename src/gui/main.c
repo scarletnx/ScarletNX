@@ -17890,7 +17890,7 @@ static int item_console(int item) {
 }
 /* The game activity's arguments for item playing game, apart so tests/gui_sdl.c keeps each console's list: the driver's
    name first where the console's driver is not the default, --game= the game's folder where its driver plays a folder
-   (the Switch's its program), the console's settings only, and the Switch's and the Vita's GPU driver and Freedreno
+   (the Switch's its program), the console's settings only, and every console's GPU driver and Freedreno
    variables. own
    keeps the strings the caller frees with play_args_free */
 typedef struct {
@@ -17919,8 +17919,9 @@ typedef struct {
        whose drivers refuse a setting they do not have */
     n += item == GUI_SWITCH ? (size_t)gui_settings_options(s, 0, own->ini, argv + n)
                             : gui_settings_console_options(s, item_console(item), argv + n);
-    if ((item == GUI_SWITCH || item == GUI_VITA) && own->driver) argv[n++] = own->driver;
-    if ((item == GUI_SWITCH || item == GUI_VITA) && own->freedreno) argv[n++] = own->freedreno;
+    bool console = item == GUI_SWITCH || item_console(item) != SNX_SYSTEM_SWITCH; /* every console's, Linux's none */
+    if (console && own->driver) argv[n++] = own->driver;
+    if (console && own->freedreno) argv[n++] = own->freedreno;
     argv[n] = NULL;
     return n;
 }
@@ -21471,11 +21472,11 @@ static void launch(App* app, char* absolute, bool prepared) {
     if (app->menu.selected == GUI_ANDROID && !make) n += gui_settings_android_options(s, argv + n);
     /* another console's game's: its own and the Switch's its driver takes (console_settings.h); a compile none */
     if (!make) n += gui_settings_console_options(s, item_console(app->menu.selected), argv + n);
-    /* the launcher's GPU driver and Freedreno variables, where the game's .ini has none of its own */
-    if ((app->menu.selected == GUI_SWITCH || app->menu.selected == GUI_VITA) && !make) {
+    /* the launcher's GPU driver and Freedreno variables, where the game's .ini has none of its own: every console's */
+    if ((app->menu.selected == GUI_SWITCH || item_console(app->menu.selected) != SNX_SYSTEM_SWITCH) && !make) {
         free(app->run_driver);
         free(app->run_freedreno);
-        app->run_driver = gui_run_option("gpu_driver", game_ini, app->gpu_driver); /* a Vita game has no .ini of its own */
+        app->run_driver = gui_run_option("gpu_driver", game_ini, app->gpu_driver); /* another console's game: NULL */
         app->run_freedreno = gui_run_option("freedreno_env", game_ini, app->freedreno);
         if (app->run_driver) argv[n++] = app->run_driver;
         if (app->run_freedreno) argv[n++] = app->run_freedreno;

@@ -93,6 +93,9 @@ def main():
         # the on-screen controls' settings: taken as a Switch game's, a value they do not take stops the run with the value
         for option in ('--controls=1', '--controls-a-shown=0', '--touch=1', '--launcher-picks=1'):
             keys(args.runner, work, option)
+        # the Switch's settings a GBA game takes (common/utilities/console_settings.c): the window's and the pad's
+        for option in ('--vsync=0', '--volume=40', '--gamepad-swap-ab=1', '--gpu-driver=', '--vk-validation=1'):
+            keys(args.runner, work, option)
         for option, said in (
             ('--controls=3', 'scarletnx-agb: controls=3 '),
             ('--controls-scale=big', 'scarletnx-agb: controls_scale=big '),

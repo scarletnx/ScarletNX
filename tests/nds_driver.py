@@ -81,6 +81,11 @@ def main():
             if 'unexpected argument' in out:
                 failures.append(f'{given} refused:\n{out}')
         run(['-r', '--touch=3', *missing], 2, 'scarletnx-nds: touch=3 ')
+        # the Switch's settings a DS game takes (common/utilities/console_settings.c): taken, the run goes to the image
+        for given in (['--vsync=0', '--volume=40'], ['--gamepad-swap-ab=1', '--gpu-driver=', '--vk-validation=1']):
+            out = run(['-r', *given, *missing], 1, 'scarletnx-nds: ')
+            if 'unexpected argument' in out or 'does nothing' in out:
+                failures.append(f'{given} refused:\n{out}')
         run(['-r', '--controls-scale=big', *missing], 2, 'scarletnx-nds: controls_scale=big ')
         # one of the Switch's settings a DS game does not take: said with why (common/utilities/console_settings.c)
         run(['-r', '--docked=1', *missing], 2, 'scarletnx-nds: --docked=1 does nothing in a DS game: it has no dock')
