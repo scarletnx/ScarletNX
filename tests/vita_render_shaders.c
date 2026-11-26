@@ -22,6 +22,7 @@
 #include "common/platform/vm.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
+#include "support/vita_faults.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -269,6 +270,7 @@ static void check_prepared(void) {
 }
 
 int main(void) {
+    vita_test_take_faults();
     char why[512];
     if (!vita_vk_init(NULL, why, sizeof why)) {
         printf("SKIP no Vulkan device (%s)\n", why);

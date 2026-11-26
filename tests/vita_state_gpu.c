@@ -19,13 +19,10 @@
 #include "common/utilities/common.h"
 #include "nx/runtime/ini.h"
 #include "snx_settings.h"
+#include "support/vita_faults.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#ifndef _WIN32
-#include <signal.h>
-#include <unistd.h>
-#endif
 
 #define CHECK(expression)                                                                                              \
     do {                                                                                                               \
@@ -35,17 +32,6 @@
         }                                                                                                              \
     } while (0)
 #define BLOCK 0x40000u
-
-#ifndef _WIN32
-/* a write to a page the renderer copied: the watch's, which lets it through */
-static void on_fault(int signal, siginfo_t* info, void* context) {
-    (void)context;
-    if (vita_watch_fault((uintptr_t)info->si_addr)) return;
-    static const char said[] = "a fault the watch does not know\n";
-    if (write(2, said, sizeof said - 1) < 0) _exit(3);
-    _exit(signal);
-}
-#endif
 
 static uint32_t call(VitaProcess* p, VitaThread* t, const char* name, const uint32_t* args, unsigned count) {
     const VitaHle* h = vita_hle_table;
@@ -140,10 +126,8 @@ static int run(const char* root, const char* device) {
 }
 
 int main(void) {
+    vita_test_take_faults();
 #ifndef _WIN32
-    struct sigaction action = {.sa_sigaction = on_fault, .sa_flags = SA_SIGINFO | SA_NODEFER};
-    sigaction(SIGSEGV, &action, NULL);
-    sigaction(SIGBUS, &action, NULL);
     setenv("SDL_AUDIO_DRIVER", "dummy", 1);
 #endif
     char* root = snx_temp_dir(NULL);
