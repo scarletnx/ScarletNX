@@ -1,5 +1,22 @@
 # Parallel draw preparation (design, not built)
 
+## Index
+
+* [Why](#why)
+* [The design: two stages in a pipeline](#the-design-two-stages-in-a-pipeline)
+  * [Correctness: Stage 1 results are proposals](#correctness-stage-1-results-are-proposals)
+  * [What Stage 1 must not do](#what-stage-1-must-not-do)
+* [Shared state](#shared-state)
+* [The gain](#the-gain)
+* [The hand-off](#the-hand-off)
+* [Risks](#risks)
+* [Recommendation: a smaller step first](#recommendation-a-smaller-step-first)
+* [Measured since](#measured-since)
+* [Build steps](#build-steps)
+* [What was built](#what-was-built)
+* [Measured: the built form loses time](#measured-the-built-form-loses-time)
+* [Measured since: batches of draws for worker threads](#measured-since-batches-of-draws-for-worker-threads)
+
 Status: built behind the setting `draw_prep` (off by default), as the section "What was built" tells. The sections
 before it are the design as it was reviewed. "Shared state" comes from a map of the data that each stage reads and
 writes. The numbers come from one game's open world on Windows (RTX 4090, `gpu_split=2`, fps unlocked).

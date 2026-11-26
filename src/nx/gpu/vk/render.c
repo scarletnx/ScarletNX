@@ -1627,7 +1627,7 @@ static Surf* predraw_sample(int i, Surf* t) {
 /* The counts of what the draws' lookups found (VkDrawCounts), and the counts of the renderer at the last report
    (vk_render_stats_log), which tell how much of a draw's setup a later draw can keep: the kept draw states, the
    constant buffer and texture lookups, the descriptor sets, the submissions and the write tracking epochs. Each
-   thread's own (draw_batches=2): TEST */
+   thread's own (draw_batches=2) */
 static _Thread_local struct {
     VkDrawCounts n, was;
     u32 epoch; /* the last draw's write tracking epoch */
@@ -1635,11 +1635,13 @@ static _Thread_local struct {
     u64 restrided, restrides; /* the vertex streams restrided so far (restride), and at the last report */
     u32 ww_epoch;
     u64 heap_buffer_calls, heap_buffer_hits, heap_image_calls, heap_image_hits, heap_cb_addresses;
-    /* by TIC index, the present (tic_stamp) that a draw last named it in: VK_SLOT_TICS counts each index once a
-       present, with no walk */
-    u16 tic_seen[1u << 20];
 } g_stats;
-/* a present's stamp in g_stats.tic_seen: never 0, the stamp of an index that no draw named */
+/* by TIC index, the present (tic_stamp) that a draw last named it in: VK_SLOT_TICS counts each index once a present,
+   with no walk. One table for each thread that sets up draws (t_rc), not in g_stats: 2 MiB of thread-local storage
+   is more than the stack of a thread made with less, which glibc then refuses to start (EINVAL). An index both
+   threads of a split run name in a present counts once for each */
+static u16 g_tic_seen[RC_SLOTS][1u << 20];
+/* a present's stamp in g_tic_seen: never 0, the stamp of an index that no draw named */
 static u16 tic_stamp(void) { return (u16)(g_vk_present % 65535u + 1u); }
 /* the bytes of the constant buffers that cb_get copied from the CPU (VK_CB_COPIED) since the last statistics line */
 static u64 g_cb_copied_bytes;
@@ -4179,34 +4181,35 @@ u64 g_vk_dset_new, g_vk_dset_reused;
 static alignas(64) typeof(g_vk_dset_new) w_g_vk_dset_new;
 static alignas(64) typeof(g_vk_dset_reused) w_g_vk_dset_reused;
 typedef struct {
-    u64 h1, h2, frame;
-    VkDescriptorSet set;
-    u32 seq; /* odd while its thread writes it: the other thread of a split run reads it (dset_peer) */
+    _Atomic u64 h1, h2, frame;
+    _Atomic(VkDescriptorSet) set;
+    _Atomic u32 seq; /* odd while its thread writes it: the other thread of a split run reads it (dset_peer) */
 } DescSetEntry;
 /* An entry of this thread's slot, written so that the other thread of a split run (draw_batches=2) can read it with
    no lock: a sequence count around the writes, as a seqlock does */
 static void dset_put(DescSetEntry* e, u64 h1, u64 h2, u64 frame, VkDescriptorSet set) {
-    const u32 s = __atomic_load_n(&e->seq, __ATOMIC_RELAXED);
-    __atomic_store_n(&e->seq, s + 1, __ATOMIC_RELAXED);
-    __atomic_thread_fence(__ATOMIC_RELEASE);
-    __atomic_store_n(&e->h1, h1, __ATOMIC_RELAXED);
-    __atomic_store_n(&e->h2, h2, __ATOMIC_RELAXED);
-    __atomic_store_n(&e->frame, frame, __ATOMIC_RELAXED);
-    __atomic_store_n(&e->set, set, __ATOMIC_RELAXED);
-    __atomic_store_n(&e->seq, s + 2, __ATOMIC_RELEASE);
+    const u32 s = atomic_load_explicit(&e->seq, memory_order_relaxed);
+    atomic_store_explicit(&e->seq, s + 1, memory_order_relaxed);
+    atomic_thread_fence(memory_order_release);
+    atomic_store_explicit(&e->h1, h1, memory_order_relaxed);
+    atomic_store_explicit(&e->h2, h2, memory_order_relaxed);
+    atomic_store_explicit(&e->frame, frame, memory_order_relaxed);
+    atomic_store_explicit(&e->set, set, memory_order_relaxed);
+    atomic_store_explicit(&e->seq, s + 2, memory_order_release);
 }
 /* the set of the other slot's bucket with these writes in this frame, else none. A set made by either thread is good
    for the frame, as its pools keep it to the frame's end */
 static VkDescriptorSet dset_peer(const DescSetEntry* bucket, u64 h1, u64 h2, u64 frame) {
     for (u32 i = 0; i < 2; i++) {
         const DescSetEntry* e = &bucket[i];
-        const u32 s = __atomic_load_n(&e->seq, __ATOMIC_ACQUIRE);
+        const u32 s = atomic_load_explicit(&e->seq, memory_order_acquire);
         if (s & 1) continue;
-        const u64 a = __atomic_load_n(&e->h1, __ATOMIC_RELAXED), b = __atomic_load_n(&e->h2, __ATOMIC_RELAXED),
-                  f = __atomic_load_n(&e->frame, __ATOMIC_RELAXED);
-        const VkDescriptorSet set = __atomic_load_n(&e->set, __ATOMIC_RELAXED);
-        __atomic_thread_fence(__ATOMIC_ACQUIRE);
-        if (__atomic_load_n(&e->seq, __ATOMIC_RELAXED) != s) continue;
+        const u64 a = atomic_load_explicit(&e->h1, memory_order_relaxed),
+                  b = atomic_load_explicit(&e->h2, memory_order_relaxed),
+                  f = atomic_load_explicit(&e->frame, memory_order_relaxed);
+        const VkDescriptorSet set = atomic_load_explicit(&e->set, memory_order_relaxed);
+        atomic_thread_fence(memory_order_acquire);
+        if (atomic_load_explicit(&e->seq, memory_order_relaxed) != s) continue;
         if (f == frame && a == h1 && b == h2 && set) return set;
     }
     return VK_NULL_HANDLE;
@@ -4292,10 +4295,12 @@ static VkDescriptorSet desc_set_cached_(VkDescriptorSetLayout layout, DescWrites
     vk_hash128(key, words * sizeof *key, hash);
     VkDescriptorSet set = VK_NULL_HANDLE;
     DescSetEntry* bucket = cache[t_rc][hash[0] >> 50];
+    /* this thread's own entries, which only it writes */
+#define DSE(i, f) atomic_load_explicit(&bucket[i].f, memory_order_relaxed)
     for (u32 i = 0; i < 2 && !set; i++)
-        if (bucket[i].frame == frame && bucket[i].h1 == hash[0] && bucket[i].h2 == hash[1]) {
+        if (DSE(i, frame) == frame && DSE(i, h1) == hash[0] && DSE(i, h2) == hash[1]) {
             CNT(g_vk_dset_reused)++;
-            set = bucket[i].set;
+            set = DSE(i, set);
         }
     /* a split run's worker (draw_batches=2) takes a set the renderer thread made this frame. Not the other way: with
        the recording thread a new set is a stand-in until the ring runs the packet that makes it, and the worker's
@@ -4307,14 +4312,15 @@ static VkDescriptorSet desc_set_cached_(VkDescriptorSetLayout layout, DescWrites
     if (!set) {
         /* for the statistics (the GPU plan's M3c): a set an earlier frame made with these writes */
         for (u32 i = 0; i < 2; i++)
-            if (bucket[i].frame != frame && bucket[i].h1 == hash[0] && bucket[i].h2 == hash[1]) {
+            if (DSE(i, frame) != frame && DSE(i, h1) == hash[0] && DSE(i, h2) == hash[1]) {
                 CNT(g_dset_earlier)[(u32)stage >= DS_GFX_STAGES]++;
                 break;
             }
         CNT(g_dset_new_kind)[(u32)stage >= DS_GFX_STAGES]++;
-        DescSetEntry* e = bucket[0].frame != frame   ? &bucket[0]
-                          : bucket[1].frame != frame ? &bucket[1]
-                                                     : &bucket[hash[1] >> 63];
+        DescSetEntry* e = DSE(0, frame) != frame   ? &bucket[0]
+                          : DSE(1, frame) != frame ? &bucket[1]
+                                                   : &bucket[hash[1] >> 63];
+#undef DSE
         set = (g_vk.has_descriptor_buffers || g_vk.has_descriptor_heaps) ? vk_descriptors_write(layout, d->n, d->w, d->cb_addr)
                                                                          : vk_rec_new_set(layout, d->n, d->w);
         if (!set) return VK_NULL_HANDLE;
@@ -5033,8 +5039,8 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                      : res && res[i].have ? res[i].handle
                      : !res               ? handles[i]
                                           : tex_handle(ds, stage, tcb, &s->si, i);
-        if ((handle & 0xFFFFFu) <= ds->bind.tex_max && g_stats.tic_seen[handle & 0xFFFFFu] != tic_stamp()) {
-            g_stats.tic_seen[handle & 0xFFFFFu] = tic_stamp();
+        if ((handle & 0xFFFFFu) <= ds->bind.tex_max && g_tic_seen[t_rc][handle & 0xFFFFFu] != tic_stamp()) {
+            g_tic_seen[t_rc][handle & 0xFFFFFu] = tic_stamp();
             g_stats.n.slot[VK_SLOT_TICS]++;
         }
         /* what fs_key resolved, unless it is a render target or a copy of one: a crop of the same target at
