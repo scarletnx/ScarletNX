@@ -14,7 +14,9 @@ the run whose artifacts publish takes (kind, run, sha, short, pr, tag), when the
   NIGHTLY's release nightly-<date>-<commit>, the latest there, only the newest N nightlies staying, and REPO's
   prerelease "nightly" a link to it; a pull request's run becomes NIGHTLY's prerelease pr-<number>, its files and notes
   replaced at each push;
-- a pull request closed (pull_request_target): its prerelease and tag are deleted;
+- a pull request closed (pull_request_target) without a merge: its prerelease and tag are deleted; merged: they stay
+  until a nightly has its merge commit, so its change can be had in between, and each nightly published deletes the
+  ones it now has, with those of pull requests closed since, listed first (the sweep);
 - a fork's pull request is published only once someone of the team (write, maintain or admin) labels it LABEL after
   its last push, which a new push takes off (synchronize). The label put on a finished run publishes it at once.
 Nothing is built: the files come from the run's artifacts, which the workflow downloads into DIR between the two (one
@@ -423,6 +425,7 @@ class Publisher(Hub):
             pulls=pulls,
         )
         self.point_rolling(title, rolling, sha)
+        self.sweep()
 
     def point_rolling(self, title, body, sha):
         """REPO's rolling prerelease ROLLING: no files, the latest nightly's notes, its tag on that commit"""
@@ -529,7 +532,10 @@ class Publisher(Hub):
                 f'[`{sha[:7]}`]({facts["commit"]}), on main at {facts["base_said"]}.'
             ),
             '',
-            "A pull request's builds, not a release: each push to it replaces them, and they are deleted when it closes.",
+            (
+                "A pull request's builds, not a release: each push to it replaces them. They are deleted when it "
+                'closes without a merge, or once merged, when a nightly has its change.'
+            ),
             '',
             *nightly_notes.downloads(
                 list(files),
@@ -575,8 +581,66 @@ class Publisher(Hub):
         if not release:
             print(f'#{pr["number"]} closed: it had no builds in {self.to}')
             return
+        why = self.leaving(pr, self.built_main())
+        if not why:
+            print(f'#{pr["number"]} merged as {pr["merge_commit_sha"][:7]}: {tag} stays until a nightly has it')
+            return
         self.drop_release(self.to, release)
-        print(f'deleted {tag}: #{pr["number"]} closed')
+        print(f'deleted {tag}: {why}')
+
+    # ---- the pull requests' builds no longer needed
+    def built_main(self):
+        """the commit the newest nightly was built from, '' with none"""
+        newest = sorted(
+            (r for r in self.releases(self.to) if r['tag_name'].startswith('nightly-')), key=published, reverse=True
+        )
+        return next((m.group(0) for r in newest[:1] for m in [re.search(r'[0-9a-f]{40}', r['body'] or '')] if m), '')
+
+    def contains(self, commit, newer):
+        """newer, a commit of main, has commit"""
+        if not commit or not newer:
+            return False
+        run = subprocess.run(
+            ['git', '-C', self.checkout, 'merge-base', '--is-ancestor', commit, newer],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if run.returncode not in (0, 1):
+            raise RuntimeError(f'git merge-base --is-ancestor {commit[:7]} {newer[:7]}: {run.stderr.strip()}')
+        return run.returncode == 0
+
+    def leaving(self, pr, built):
+        """why pr's builds go now, or '' while they are still the ones to test: open, or merged into a commit the newest
+        nightly (built from built) does not have yet"""
+        number = pr['number']
+        if pr['state'] == 'open':
+            return ''
+        if not pr.get('merged'):
+            return f'#{number} closed without a merge'
+        merge = pr.get('merge_commit_sha') or ''
+        if self.contains(merge, built):
+            return f'#{number} merged as {merge[:7]}, which the nightly of {built[:7]} has'
+        return ''
+
+    def sweep(self):
+        """the pull requests' builds whose pull request closed without a merge, or merged into a nightly: listed, then
+        deleted, each with why. Their own close deletes them too; this catches the ones a close's run left behind"""
+        built = self.built_main()
+        gone = []
+        for release in self.releases(self.to):
+            number = re.fullmatch(r'pr-(\d+)', release['tag_name'])
+            if number:
+                why = self.leaving(self.read(f'repos/{self.repo}/pulls/{number.group(1)}'), built)
+                if why:
+                    gone.append((release, why))
+        if not gone:
+            print("no pull request's builds to delete")
+            return
+        print(f"to delete, {len(gone)} pull requests' builds: " + '; '.join(f'{r["tag_name"]} ({w})' for r, w in gone))
+        for release, why in gone:
+            self.drop_release(self.to, release)
+            print(f'deleted {release["tag_name"]}: {why}')
 
     # ---- who may publish a fork's pull request
     def fork(self, pr):

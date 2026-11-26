@@ -630,17 +630,112 @@ with tempfile.TemporaryDirectory() as temporary:
         'are not published' in done.stdout and head2[:7] in find('pr-7')['body'],
         done.stdout,
     )
-    # closed, merged: gone
-    closed = dict(pull(7, head2), state='closed', merged=True)
+    # merged into a commit no nightly has yet: its builds stay, the change's only download until a nightly has it
+    git('switch', '-q', '-c', 'after', sha)
+    git('commit', '-q', '--allow-empty', '-m', 'merged after the newest nightly')
+    later = git('rev-parse', 'HEAD')
+    git('switch', '-q', 'main')
+    early = dict(pull(7, head2), state='closed', merged=True, merge_commit_sha=later)
+    done, planned = run(
+        'plan',
+        '--checkout',
+        str(checkout),
+        name='pull_request_target',
+        event={'action': 'closed', 'pull_request': early},
+    )
+    check(
+        'merged into a commit no nightly has: its prerelease stays, said',
+        find('pr-7') and 'stays until a nightly has it' in done.stdout and not planned,
+        done.stdout + done.stderr,
+    )
+    # merged into a commit the newest nightly has: gone
+    closed = dict(pull(7, head2), state='closed', merged=True, merge_commit_sha=sha)
     before = len(posted('prs'))
-    done, planned = run('plan', name='pull_request_target', event={'action': 'closed', 'pull_request': closed})
+    done, planned = run(
+        'plan',
+        '--checkout',
+        str(checkout),
+        name='pull_request_target',
+        event={'action': 'closed', 'pull_request': closed},
+    )
     s = state()
     check(
-        'closed: its prerelease and tag gone',
-        'pr-7' not in s['tags'][TO] and not find('pr-7', s=s) and not planned,
+        "merged into the newest nightly's commit: its prerelease and tag gone, saying why",
+        'pr-7' not in s['tags'][TO]
+        and not find('pr-7', s=s)
+        and not planned
+        and f'#7 merged as {sha[:7]}, which the nightly of {sha[:7]} has' in done.stdout,
         done.stdout + done.stderr,
     )
     check('closing it posts nothing here', len(posted('prs')) == before, posted('prs')[before:])
+    # closed without a merge: gone at once
+    save_state(dict(state(), pulls=[pull(8, head1)]))
+    publish('pr', '--run', '53', '--sha', head1, '--pr', '8', '--artifacts', str(artifacts('pr8', head1)))
+    shut = dict(pull(8, head1), state='closed')
+    done, planned = run(
+        'plan',
+        '--checkout',
+        str(checkout),
+        name='pull_request_target',
+        event={'action': 'closed', 'pull_request': shut},
+    )
+    check(
+        'closed without a merge: its prerelease gone at once',
+        not find('pr-8') and '#8 closed without a merge' in done.stdout,
+        done.stdout + done.stderr,
+    )
+
+    # ---- the sweep, as a nightly publishes: the builds a close's run left behind
+    def pr_release(number):
+        return {
+            'id': 900 + number,
+            'tag_name': f'pr-{number}',
+            'name': f'PR #{number}',
+            'created_at': '2026-10-01T00:00:00Z',
+            'published_at': '2026-10-03',
+            'body': '',
+            'assets': [],
+            'prerelease': True,
+        }
+
+    left = {
+        20: dict(pull(20, head1)),
+        21: dict(pull(21, head1), state='closed'),
+        22: dict(pull(22, head1), state='closed', merged=True, merge_commit_sha=sha),
+        23: dict(pull(23, head1), state='closed', merged=True, merge_commit_sha=later),
+    }
+    s = state()
+    s['releases'][TO] += [pr_release(n) for n in left]
+    s['tags'][TO].update({f'pr-{n}': 'x' for n in left})
+    save_state(dict(s, pulls=list(left.values())))
+    done = publish('nightly', *everything(sha), '--checkout', str(checkout), '--keep', '5')
+    swept = done.stdout
+    check(
+        "the sweep lists the closed and the merged-and-built pull requests' builds, then deletes each, saying why",
+        done.returncode == 0
+        and "to delete, 2 pull requests' builds: pr-21 (#21 closed without a merge); pr-22 (#22 merged as" in swept
+        and swept.index('to delete') < swept.index('deleted pr-21')
+        and 'deleted pr-22: #22 merged as' in swept,
+        swept + done.stderr,
+    )
+    check(
+        'the open one and the one merged past the nightly stay, with their tags',
+        find('pr-20')
+        and find('pr-23')
+        and not find('pr-21')
+        and not find('pr-22')
+        and {'pr-20', 'pr-23'} <= set(state()['tags'][TO])
+        and 'pr-21' not in state()['tags'][TO],
+        [r['tag_name'] for r in releases()],
+    )
+    save_state(dict(state(), pull_errors={'20': 'gh: HTTP 502: Server Error'}))
+    done = publish('nightly', *everything(sha), '--checkout', str(checkout), '--keep', '5')
+    check(
+        'a pull request GitHub cannot answer for stops the sweep with its answer, deleting nothing',
+        done.returncode != 0 and 'HTTP 502' in done.stderr and find('pr-20') and find('pr-23'),
+        [r['tag_name'] for r in releases()] + [done.stdout + done.stderr],
+    )
+    save_state({k: v for k, v in state().items() if k != 'pull_errors'})
 
     # ---- a fork's pull request
     def labeled(login, at):
