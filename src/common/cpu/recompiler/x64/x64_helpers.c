@@ -68,10 +68,15 @@ u64 snx_x64_fp_minmax(CPU* c, u64 a, u64 b, u64 fpcr, u32 desc) {
     return snx_x64_fp_done(c, snx_fp_host_minmax(a, b, (int)(desc & 0xFF), (int)(desc >> 8 & 1), (int)(desc >> 9 & 1),
                                                  (u32)fpcr));
 }
-/* the NZCV nibble; desc: width, signal << 8 */
+/* the NZCV nibble, or (desc bit 9) the flags the native compare's cold path loads; desc: width, signal << 8 */
 u64 snx_x64_fp_compare(CPU* c, u64 a, u64 b, u64 fpcr, u32 desc) {
+    u64 nzcv;
     if (fpcr >> 32) return 0;
-    return snx_x64_fp_done(c, snx_fp_host_compare(a, b, (int)(desc & 0xFF), (int)(desc >> 8 & 1), (u32)fpcr));
+    nzcv = snx_x64_fp_done(c, snx_fp_host_compare(a, b, (int)(desc & 0xFF), (int)(desc >> 8 & 1), (u32)fpcr));
+    if (!(desc >> 9 & 1)) return nzcv;
+    /* RFLAGS as UCOMISx b, a leaves them for this NZCV (x64_a64.h's sg_FPCompare): CF where C and not Z (a > b, or
+       unordered), ZF where Z or V, PF where V; bits 1 and 9 (IF) set as they always are here */
+    return 0x202u | (nzcv >> 1 & ~nzcv >> 2 & 1) | (nzcv & 1) << 2 | ((nzcv >> 2 | nzcv) & 1) << 6;
 }
 /* desc: from, to << 8, rm + 1 << 16 */
 u64 snx_x64_fp_convert(CPU* c, u64 a, u64 fpcr, u32 desc) {

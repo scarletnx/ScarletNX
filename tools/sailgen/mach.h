@@ -131,6 +131,9 @@ typedef struct {
         unsigned char kind, of, limit, w;
     } test[SGX_TESTS];
     unsigned char jdead; /* SGX_K_MACHINE: a jump, kv[1] and kv[0] what is dead where it goes (sgx_dead_words') */
+    /* a compare whose flags are no fsel's (sgx_cold_cmp's): Arm's flag f (0 N ... 3 V) the AND of the bools (SgB)
+       fb[f][0] and fb[f][1] (0: none), condition codes on its flags until those change (then SETcc's registers) */
+    int fb[4][2];
 } SgXIns;
 
 typedef struct {
@@ -834,6 +837,7 @@ static inline SgD sg_d_sext(SgCtx* g, SgD a, long long w) {
     return a;
 }
 
+static inline SgD sgx_cmp_flag_bits(SgX* x, int ins, int f);
 static inline SgD sg_d_slice(SgCtx* g, SgD a, long long hi, long long lo) {
     SgX* x = sgx(g);
     unsigned w = (unsigned)(hi - lo + 1);
@@ -858,10 +862,19 @@ static inline SgD sg_d_slice(SgCtx* g, SgD a, long long hi, long long lo) {
         for (j = 0; j < sgx_ndw(w); ++j) out[j] = sgx_dw_at(g, in, sgx_ndw(a.w), lo + 64ll * j);
         return sgx_of_dws(g, w, out);
     }
-    if (a.nzcv) {
-        /* a flag of NZCV not made yet (bit 3 N, 2 Z, 1 C, 0 V): its condition code */
-        sg_fail("a slice of NZCV", hi, lo);
+    if (a.nzcv && !x->ins[a.nzcv - 1].fsel) {
+        /* a compare's flags (bit 3 N, 2 Z, 1 C, 0 V): those of the slice alone, the top one first */
+        SgD r = sgx_const(32, 0);
+        long long k;
+        for (k = hi; k >= lo; --k) {
+            SgD f = sgx_cmp_flag_bits(x, a.nzcv - 1, (int)(3 - k));
+            f.w = 32;
+            r = sgx_is_const(&r) ? f : SGX_OP(x, or, 32, SGX_OP(x, lsl_i, 32, r, sgx_const(5, 1)), f);
+        }
+        r.w = w;
+        return r;
     }
+    if (a.nzcv) sg_fail("a slice of NZCV", hi, lo);
     if (sgx_is_const(&a)) return sgx_const(w, a.k >> lo);
     if (lo == 0 && !a.inv) {
         a.w = w;
@@ -1377,6 +1390,34 @@ static inline SgD sgx_cold_fp(SgX* x, SgB c, SgD tied, const char* sym, SgD* arg
     return cls ? sgx_xval(tied.w, i->def) : sgx_val(tied.w, i->def);
 }
 
+/* a floating-point compare of the XMM values a and b (w bits) whose result is the host's flags, Arm's flag f the AND of
+   the condition codes fcc[f][0] and fcc[f][1] (-1: none) on them, kept as bools (SgXIns' fb): in the hot code the
+   tests' jumps, the machine's compare and, where it is unordered, a jump to the cold path, which for snan (FCMP: only a
+   signalling NaN raises IOC) tests a and b for one first and goes back without the call where neither is. The call
+   sym(state, a, b, FPCR, k) gives the flags as the machine's flags register would hold them after its compare
+   (x64_asm.h: an RFLAGS image, loaded before going back), so the flags after it are the compare's on every path. Its
+   instruction's index, for sgx_nzcv */
+static inline int sgx_cold_cmp(SgX* x, int a, int b, unsigned w, int snan, const char* sym, long long k, int fpcr,
+                               int fpsr, const signed char fcc[4][2], const SgXTest* tests, int ntests) {
+    SgD args[2] = {sgx_xval(w, a), sgx_xval(w, b)};
+    int at, f, j;
+    SgXIns* i;
+    if (!ntests) sg_fail("a compare's cold path with no test", w, 0);
+    /* sgx_cold_fp's instruction, with no condition (its tests and the compare's jump take it there) and no value */
+    sgx_cold_fp(x, 0, args[0], sym, args, 2, 2, 3, k, fpcr, fpsr, 0, 0, tests, ntests);
+    at = x->n - 1;
+    i = &x->ins[at];
+    if (i->def == x->nv - 1) --x->nv;
+    i->in[0] = 0;
+    i->def = 0;
+    i->vflags = 3;
+    i->vout = (signed char)!!snan;
+    x->flags_ins = at;
+    for (f = 0; f < 4; ++f)
+        for (j = 0; j < 2; ++j) x->ins[at].fb[f][j] = fcc[f][j] < 0 ? 0 : sgx_bool(x, SGX_B_CC, at, fcc[f][j]);
+    return at;
+}
+
 /* the vector form of sgx_cold: when c holds, sym(state, &out, &a, &b, &d, desc) on the cold path, the XMM values a,
    b, d (0: a's) passed by their addresses and the result read from out's 16 bytes; else tied's */
 static inline int sgx_vcold(SgX* x, SgB c, int tied, const char* sym, int a, int b, int d, SnxU32 desc) {
@@ -1497,9 +1538,20 @@ static inline SgB sg_b_select(SgCtx* g, SgB c, SgB a, SgB b) {
     return sgx_bool(x, SGX_B_REG, sgx_reg(x, &r), 0);
 }
 
+/* a compare's NZCV (sgx_cold_cmp's) == 0010, greater (FCMGT's and FACGT's whole NZCV): UCOMISx b, a's CF without ZF,
+   on its flags where they are still its; -1 for another k, or flags no longer its (NZCV made whole and compared) */
+static inline SgB sgx_cmp_greater(SgCtx* g, int ins, SnxU64 k) {
+    SgX* x = sgx(g);
+    if (k != 2 || x->flags_ins != ins) return -1;
+    return sg_b_and(g, sgx_bool(x, SGX_B_CC, ins, 2), sgx_bool(x, SGX_B_CC, ins, 5)); /* B, NE */
+}
 /* a == b of bits: CMP (or TEST of a value with itself against 0), and the condition code the selection gives Arm's EQ
    on its flags */
 static inline SgB sg_d_eq(SgCtx* g, SgD a, SgD b) {
+    if (a.nzcv && !sgx(g)->ins[a.nzcv - 1].fsel && sgx_is_const(&b)) {
+        SgB r = sgx_cmp_greater(g, a.nzcv - 1, b.k);
+        if (r >= 0) return r;
+    }
     sgx_flat(sgx(g), &a);
     sgx_flat(sgx(g), &b);
 
@@ -1922,6 +1974,16 @@ static inline int sgx_arm_flag_cc(const SgXSel* fsel, int f) {
     int j = fsel->flag_of[f];
     if (j < 0) return -1;
     return ((fsel->flag_neg >> f) & 1 ? sgx_flag_ncc[j] : sgx_flag_cc[j]) | SGX_CC_EXTRA(fsel);
+}
+/* Arm's flag f of a compare whose flags are bools of its own (sgx_cold_cmp's fb), 0 or 1 in a register (32 bits) */
+static inline SgD sgx_cmp_flag_bits(SgX* x, int ins, int f) {
+    SgD r = sgx_bool_bits(x, x->ins[ins].fb[f][0]);
+    if (x->ins[ins].fb[f][1]) {
+        SgD o = sgx_bool_bits(x, x->ins[ins].fb[f][1]);
+        r = SGX_OP(x, and, 32, sgx_val(32, r.v), sgx_val(32, o.v)); /* the flags it ends: the others' SETcc first */
+    }
+    r.w = 1;
+    return r;
 }
 
 /* the machine's part, before an instruction makes flags it keeps for later (AddWithCarry's): what it would emit
@@ -3090,6 +3152,17 @@ static inline SgD sgx_nzcv_bits(SgX* x, int ins) {
     const SgXSel* fs = x->ins[ins].fsel;
     SgD r = sgx_const(32, 0);
     int f;
+    if (!fs) {
+        /* a compare's (sgx_cold_cmp's): its flags' bools, each made 0 or 1 once */
+        for (f = 0; f < 4; ++f) {
+            SgD b = sgx_cmp_flag_bits(x, ins, f);
+            b.w = 32;
+            if (f < 3) b = SGX_OP(x, lsl_i, 32, b, sgx_const(5, (SnxU64)(3 - f)));
+            r = sgx_is_const(&r) ? b : SGX_OP(x, or, 32, r, b);
+        }
+        r.w = 4;
+        return r;
+    }
     if (x->flags_ins != ins) sg_fail("NZCV read as bits after the x86 flags that are them were overwritten", ins, 0);
     {
         /* every SETcc first, from the flags as they are, then the shifts and ORs */

@@ -328,6 +328,138 @@ static size_t check_fz_hot(void) {
     return failures;
 }
 
+/* FCMP and FCMPE's flags inline (x64_a64.h's sg_FPCompare): an ordered compare, and FCMP's of a quiet NaN, take no
+   helper call; a signalling NaN (FCMP), any NaN (FCMPE) or a denormal FZ flushes take the helper, which raises IOC or
+   IDC, and its flags come back by the cold path's POPFQ. NZCV and FPSR as the console gives them, from FPSR clear */
+static size_t check_fcmp_paths(void) {
+    static const struct {
+        u32 word;
+        const char* text;
+        u64 v1, v2;
+        u32 fpcr;
+        u32 nzcv, fpsr;
+        int cold;
+    } cases[] = {
+        {0x1E222020u, "FCMP s1, s2 of 1.5 and 2.25", 0x3FC00000u, 0x40100000u, 0, 0x8, 0, 0},
+        {0x1E222020u, "FCMP s1, s2 of equals", 0x40100000u, 0x40100000u, 0, 0x6, 0, 0},
+        {0x1E222020u, "FCMP s1, s2 of -0 and 0", 0x80000000u, 0, 0, 0x6, 0, 0},
+        {0x1E222020u, "FCMP s1, s2 of 2.25 and 1.5", 0x40100000u, 0x3FC00000u, 0, 0x2, 0, 0},
+        {0x1E222020u, "FCMP s1, s2 of -inf and inf", 0xFF800000u, 0x7F800000u, 0, 0x8, 0, 0},
+        {0x1E222020u, "FCMP s1, s2 of a quiet NaN", 0x7FC00000u, 0x3F800000u, 0, 0x3, 0, 0},
+        {0x1E222020u, "FCMP s1, s2 of 1 and a quiet NaN", 0x3F800000u, 0xFFC00001u, 0, 0x3, 0, 0},
+        {0x1E222020u, "FCMP s1, s2 of a signalling NaN", 0x7FA00000u, 0x3F800000u, 0, 0x3, 0x1, 1},
+        {0x1E222020u, "FCMP s1, s2 of 1 and a signalling NaN", 0x3F800000u, 0xFF800001u, 0, 0x3, 0x1, 1},
+        {0x1E222030u, "FCMPE s1, s2 of a quiet NaN", 0x7FC00000u, 0x3F800000u, 0, 0x3, 0x1, 1},
+        {0x1E222030u, "FCMPE s1, s2 of 1.5 and 2.25", 0x3FC00000u, 0x40100000u, 0, 0x8, 0, 0},
+        {0x1E222020u, "FCMP s1, s2 of a denormal and 0", 0x00000001u, 0, 0, 0x2, 0, 0},
+        {0x1E222020u, "FCMP s1, s2 of a denormal and 0 under FZ", 0x00000001u, 0, 1u << 24, 0x6, 0x80, 1},
+        {0x1E622020u, "FCMP d1, d2 of 1.5 and 2.25", 0x3FF8000000000000ull, 0x4002000000000000ull, 0, 0x8, 0, 0},
+        {0x1E622020u, "FCMP d1, d2 of a quiet NaN", 0x3FF8000000000000ull, 0x7FF8000000000000ull, 0, 0x3, 0, 0},
+        {0x1E622020u, "FCMP d1, d2 of a signalling NaN", 0x7FF4000000000000ull, 0x3FF8000000000000ull, 0, 0x3, 0x1, 1},
+        {0x1E622030u, "FCMPE d1, d2 of a quiet NaN", 0xFFF8000000000001ull, 0x3FF8000000000000ull, 0, 0x3, 0x1, 1},
+        {0x1E622020u, "FCMP d1, d2 of denormals under FZ", 0x8000000000000001ull, 1, 1u << 24, 0x6, 0x80, 1},
+        {0x1E622020u, "FCMP d1, d2 of 2.25 and 1.5 under FZ", 0x4002000000000000ull, 0x3FF8000000000000ull, 1u << 24,
+         0x2, 0, 0},
+    };
+    unsigned char* code = snx_test_pages(CODE_MAX);
+    size_t failures = 0, k;
+    if (code == NULL) {
+        fprintf(stderr, "FAIL: FCMP's paths: no memory for the code\n");
+        return 1;
+    }
+    for (k = 0; k < sizeof cases / sizeof *cases; ++k) {
+        CPU c;
+        unsigned long calls;
+        u32 nzcv;
+        int cold;
+        if (snx_test_pages_exec(code, CODE_MAX, 0) ||
+            !snx_x64_step(cases[k].word, 0x1000, TARGET, host_features(), code, CODE_MAX) ||
+            snx_test_pages_exec(code, CODE_MAX, 1)) {
+            fprintf(stderr, "FAIL: %s %08x: not made\n", cases[k].text, (unsigned)cases[k].word);
+            ++failures;
+            continue;
+        }
+        memset(&c, 0, sizeof c);
+        c.v[1].d[0] = cases[k].v1;
+        c.v[2].d[0] = cases[k].v2;
+        c.fpcr = cases[k].fpcr;
+        c.n = c.z = c.cf = c.vf = 1; /* each written */
+        c.pc = 0x1000;
+        calls = snx_x64_fp_calls();
+        run_step((Step)(void*)code, &c);
+        cold = snx_x64_fp_calls() != calls;
+        nzcv = (u32)(c.n << 3 | c.z << 2 | c.cf << 1 | c.vf);
+        if (nzcv != cases[k].nzcv || c.fpsr != cases[k].fpsr || cold != cases[k].cold) {
+            fprintf(stderr, "FAIL: %s: NZCV %x (want %x), FPSR %08x (want %08x), %s the helper (want %s)\n",
+                    cases[k].text, nzcv, cases[k].nzcv, c.fpsr, cases[k].fpsr, cold ? "through" : "without",
+                    cases[k].cold ? "through" : "without");
+            ++failures;
+        }
+    }
+    snx_test_pages_free(code, CODE_MAX);
+    printf("sail_x64: FCMP's paths, %zu cases\n", sizeof cases / sizeof *cases);
+    return failures;
+}
+
+/* the compare helper's flags for the native cold path (desc bit 9): the RFLAGS UCOMISx b, a leaves, of the operands
+   as FPCR.FZ flushes them (bits 1 and 9 set), for every pair of these floats, FCMP's and FCMPE's, FZ clear and set */
+u64 snx_x64_fp_compare(CPU* c, u64 a, u64 b, u64 fpcr, u32 desc);
+static size_t check_fcmp_image(void) {
+    size_t failures = 0;
+#if defined(__x86_64__)
+    static const u64 k[2][10] = {
+        {0, 0x80000000u, 0x3F800000u, 0xBFC00000u, 0x7F800000u, 0xFF800000u, 0x7FC00000u, 0x7FA00000u, 0x00000001u,
+         0x807FFFFFu},
+        {0, 0x8000000000000000ull, 0x3FF0000000000000ull, 0xBFF8000000000000ull, 0x7FF0000000000000ull,
+         0xFFF0000000000000ull, 0x7FF8000000000000ull, 0x7FF4000000000000ull, 1, 0x800FFFFFFFFFFFFFull},
+    };
+    for (int dbl = 0; dbl < 2; ++dbl)
+        for (int fz = 0; fz < 2; ++fz)
+            for (int signal = 0; signal < 2; ++signal)
+                for (int i = 0; i < 10; ++i)
+                    for (int j = 0; j < 10; ++j) {
+                        u64 a = k[dbl][i], b = k[dbl][j], fa = a, fb = b, sign = dbl ? 1ull << 63 : 1ull << 31;
+                        u64 exp = dbl ? 0x7FF0000000000000ull : 0x7F800000u;
+                        unsigned char cf, zf, pf;
+                        CPU c;
+                        if (fz && !(a & exp)) fa = a & sign; /* a denormal (or zero) as FZ flushes it */
+                        if (fz && !(b & exp)) fb = b & sign;
+                        if (dbl) {
+                            double x, y;
+                            memcpy(&x, &fa, 8);
+                            memcpy(&y, &fb, 8);
+                            __asm__("ucomisd %3, %4\n\tsetc %0\n\tsetz %1\n\tsetp %2"
+                                    : "=q"(cf), "=q"(zf), "=q"(pf)
+                                    : "x"(x), "x"(y)
+                                    : "cc");
+                        } else {
+                            u32 ua = (u32)fa, ub = (u32)fb;
+                            float x, y;
+                            memcpy(&x, &ua, 4);
+                            memcpy(&y, &ub, 4);
+                            __asm__("ucomiss %3, %4\n\tsetc %0\n\tsetz %1\n\tsetp %2"
+                                    : "=q"(cf), "=q"(zf), "=q"(pf)
+                                    : "x"(x), "x"(y)
+                                    : "cc");
+                        }
+                        memset(&c, 0, sizeof c);
+                        u64 want = 0x202u | cf | (u64)pf << 2 | (u64)zf << 6;
+                        u64 got = snx_x64_fp_compare(&c, a, b, fz ? 1u << 24 : 0,
+                                                     (dbl ? 64u : 32u) | (u32)signal << 8 | 1u << 9);
+                        if (got != want) {
+                            fprintf(stderr,
+                                    "FAIL: the compare's flags of %016llx and %016llx (%s, FZ %d, %s): %03llx, "
+                                    "UCOMIS's %03llx\n",
+                                    (unsigned long long)a, (unsigned long long)b, dbl ? "doubles" : "singles", fz,
+                                    signal ? "FCMPE" : "FCMP", (unsigned long long)got, (unsigned long long)want);
+                            ++failures;
+                        }
+                    }
+    printf("sail_x64: the compare's flags image, 800 pairs\n");
+#endif
+    return failures;
+}
+
 /* ---- the floating-point guards: which path an operation takes, for every pair (or triple) of the operands that tell
    them apart, FPCR's rounding and FZ, and FPSR's IXC ---- */
 
@@ -371,6 +503,8 @@ static u64 guard_bits(double v, unsigned w) {
 static int guard_nan(u64 v, unsigned w) {
     return w == 64 ? v << 1 > 0xFFE0000000000000ull : (u32)(v << 1) > 0xFF000000u;
 }
+/* a NaN whose quiet bit is clear */
+static int guard_snan(u64 v, unsigned w) { return guard_nan(v, w) && !(v >> (w == 64 ? 51 : 22) & 1); }
 static int guard_zero(u64 v, unsigned w) { return !(w == 64 ? v << 1 : (u32)(v << 1)); }
 static int guard_denormal(u64 v, unsigned w) {
     u64 m = w == 64 ? v & 0x7FFFFFFFFFFFFFFFull : v & 0x7FFFFFFFu;
@@ -405,9 +539,10 @@ static u64 guard_host(const GuardCase* g, const u64* v) {
 /* whether the operation may take the inline code alone (v in the operands' order: FMADD's n, m, a) */
 static int guard_hot(const GuardCase* g, const u64* v, u32 fpcr, u32 fpsr) {
     unsigned k, w = g->w;
-    int nan = 0, flushed = 0, rounds = (fpcr >> 22 & 3) == 0, ixc = fpsr >> 4 & 1;
+    int nan = 0, snan = 0, flushed = 0, rounds = (fpcr >> 22 & 3) == 0, ixc = fpsr >> 4 & 1;
     for (k = 0; k < g->nops; ++k) {
         nan |= guard_nan(v[k], w);
+        snan |= guard_snan(v[k], w);
         flushed |= (fpcr >> 24 & 1) && guard_denormal(v[k], w);
     }
     if (flushed) return 0;
@@ -415,8 +550,8 @@ static int guard_hot(const GuardCase* g, const u64* v, u32 fpcr, u32 fpsr) {
         case G_MAX:
         case G_MIN:
         case G_ROUND:
-        case G_CONVERT:
-        case G_COMPARE: return !nan;
+        case G_CONVERT: return !nan;
+        case G_COMPARE: return !snan; /* FCMP's: a quiet NaN's flags (unordered) are the inline code's too */
         case G_TO_INT: {
             double d = guard_value(v[0], w);
             return ixc && !nan && d > -2147483649.0 && d < 2147483648.0;
@@ -756,6 +891,8 @@ static int run(int argc, char** argv) {
         if (g_test.memory[k] == NULL) return 1;
     }
     failures += check_fz_hot();
+    failures += check_fcmp_paths();
+    failures += check_fcmp_image();
     failures += check_fp_guards();
     failures += check_fp_rows();
     failures += check_casp();

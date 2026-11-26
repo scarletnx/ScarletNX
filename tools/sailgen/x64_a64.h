@@ -298,15 +298,16 @@ static inline SgD sg_FPConvert__1(SgCtx* g, SgB path, SgD op, SgD fpcr, long lon
                   sg_b_not(g, sg_b_or(g, sgx_fp_roomy(g, sgx_fp_bits(g, r), 32), sgx_fp_zero(g, ob))));
     return sgx_fp_cold(g, bad, r, "snx_x64_fp_convert", &ob, 1, fpcr, 1, from | to << 8, NULL, 0);
 }
-/* the NZCV nibble (N bit 3 ... V bit 0): UCOMISx's flags, ordered (an unordered pair, which may raise IOC, and a
-   denormal FZ flushes go cold): N below, Z equal, C not below, V 0 */
+/* NZCV from the flags of UCOMISx b, a (CF a > b, ZF equal, PF unordered; each also set where unordered): N is A, Z
+   is E and NP, C is BE, V is P. The cold path (sgx_cold_cmp) only for what raises a flag: an operand FZ flushes (IDC),
+   an unordered FCMPE or a signalling NaN (IOC); the helper gives the flags then */
 static inline SgD sg_FPCompare(SgCtx* g, SgB path, SgD a, SgD b, int signal, SgD fpcr) {
+    static const signed char fcc[4][2] = {{7, -1}, {4, 11}, {6, -1}, {10, -1}};
     SgX* x = sgx(g);
     unsigned w = a.w;
-    SgD nib, ops[2];
-    SgB n, z, c, un;
+    SgD ops[2];
     SgXTest t[SGX_TESTS];
-    int ins, nt = 0;
+    int nt = 0;
     SnxU32 desc = w | (SnxU32)!!signal << 8;
     if ((w != 32 && w != 64) || path) {
         SgD o[2] = {a, b};
@@ -316,19 +317,8 @@ static inline SgD sg_FPCompare(SgCtx* g, SgB path, SgD a, SgD b, int signal, SgD
     nt = sgx_fp_test(g, t, nt, SGX_T_DENORMAL, 2, fpcr, w);
     ops[0] = sgx_fo(g, a);
     ops[1] = sgx_fo(g, b);
-    {
-        int in[4] = {ops[0].x, ops[1].x, 0, 0};
-        sgx_vins(x, w == 64 ? &sgx_v_ucomisd : &sgx_v_ucomiss, -1, 0, in, 0, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
-    }
-    ins = x->flags_ins;
-    n = sgx_bool(x, SGX_B_CC, ins, 2);   /* B */
-    z = sgx_bool(x, SGX_B_CC, ins, 4);   /* E */
-    c = sgx_bool(x, SGX_B_CC, ins, 3);   /* AE */
-    un = sgx_bool(x, SGX_B_CC, ins, 10); /* P */
-    nib = sg_d_concat(g, sg_d_concat(g, sgx_bool_bits(x, n), sgx_bool_bits(x, z)),
-                      sg_d_concat(g, sgx_bool_bits(x, c), sgx_const(1, 0)));
-    return sg_d_slice(g, sgx_fp_cold(g, un, sg_d_zext(g, nib, 32), "snx_x64_fp_compare", ops, 2, fpcr, 1, desc, t, nt),
-                      3, 0);
+    return sgx_nzcv(x, sgx_cold_cmp(x, ops[0].x, ops[1].x, w, !signal, "snx_x64_fp_compare", desc | 1u << 9,
+                                    (int)offsetof(CPU, fpcr), (int)offsetof(CPU, fpsr), fcc, t, nt));
 }
 /* SCVTF, UCVTF: CVTSI2Sx of 64 bits (an unsigned word zero extended; an unsigned doubleword of its top bit set
    halved, its low bit ORed in to round as the whole, and doubled after), times 2^-fbits (exact: no result is tiny).
