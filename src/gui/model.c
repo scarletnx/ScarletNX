@@ -109,6 +109,8 @@ void gui_confirm_open(GuiConfirm* confirm, GuiAsk ask, bool twice) {
     confirm->selected = GUI_CONFIRM_KEEP;
     confirm->twice = twice;
     confirm->armed = false;
+    confirm->count = ask == GUI_ASK_UPDATES ? 3 : 2;
+    confirm->taken = -1;
 }
 GuiChoiceDo gui_choice_key(GuiChoice* choice, GuiKey key) {
     switch (key) {
@@ -148,7 +150,7 @@ GuiAppearanceDo gui_appearance_key(int* row, GuiKey key, int* step) {
 bool gui_confirm_key(GuiConfirm* confirm, GuiKey key) {
     GuiChoice two;
     if (!confirm->shown) return false;
-    two.count = 2;
+    two.count = confirm->count > 0 ? confirm->count : 2;
     two.focus = confirm->selected;
     switch (gui_choice_key(&two, key)) {
         case GUI_CHOICE_STAY: gui_confirm_focus(confirm, two.focus); return false;
@@ -158,8 +160,12 @@ bool gui_confirm_key(GuiConfirm* confirm, GuiKey key) {
                 return false;
             }
             confirm->shown = false;
+            confirm->taken = confirm->selected;
             return confirm->selected == GUI_CONFIRM_ABORT;
-        default: confirm->shown = false; return false;
+        default:
+            confirm->shown = false;
+            confirm->taken = -1;
+            return false;
     }
 }
 void gui_confirm_focus(GuiConfirm* confirm, int choice) {

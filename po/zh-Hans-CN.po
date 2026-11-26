@@ -1485,6 +1485,10 @@ msgid "Off"
 msgstr "关"
 
 #: src/gui/main.c
+msgid "Ask"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Full"
 msgstr "全速"
 
@@ -1775,6 +1779,10 @@ msgid "Overwrite users.ini? It is kept as users.ini.old"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Check for new nightlies?"
+msgstr ""
+
+#: src/gui/main.c
 msgid "A compile goes: exiting ScarletNX stops it, its work lost."
 msgstr "编译正在进行：退出 ScarletNX 会停止它，其工作将丢失。"
 
@@ -1946,6 +1954,18 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "Forget"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Don't Ask Again"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Close"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Open Page"
 msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
@@ -2915,6 +2935,14 @@ msgid "The Compile tab's: R's, B's and a game's first. Auto: Gentle on battery, 
 msgstr "「编译」标签页的任务：R 的、B 的和游戏首次运行的编译。自动：用电池时轻柔，接通电源时全速。全速：线程数按重新编译的设置。轻柔：内存容得下的线程数，最多为其一半，低优先级。游戏运行时都会轻柔进行"
 
 #: src/gui/main.c
+msgid "Check for updates"
+msgstr ""
+
+#: src/gui/main.c
+msgid "At each start, whether a newer nightly is out, said with what changed and its page; nothing is downloaded. Ask: asks first. On: looks. Off: never looks"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Theme Editor"
 msgstr "主题编辑器"
 
@@ -3735,6 +3763,58 @@ msgstr "正在下载 %s：%s"
 #, c-format
 msgid "Not downloaded: %s"
 msgstr "未下载：%s"
+
+#: src/gui/main.c
+msgid "Check for updates: this build of the launcher has no HTTPS client"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Check for updates: no memory to ask"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Check for updates: no thread: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Check for updates: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Check for updates: HTTP %d: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Check for updates: HTTP %d for %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Check for updates: the newest nightly is tagged %s, not nightly-YYYY-MM-DD-<commit>"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Check for updates: the newest nightly is %s, and this build (%s %s, committed %s) has no day to compare"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is out; this build is %s %s."
+msgstr ""
+
+#: src/gui/main.c
+msgid "What changed:"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "and %d more"
+msgstr ""
 
 #: src/gui/main.c
 #, c-format
@@ -6105,6 +6185,11 @@ msgstr ""
 msgid "%s did not start: a game plays"
 msgstr ""
 
+#: src/gui/main.c
+#, c-format
+msgid "Open Page: %s did not open: %s"
+msgstr ""
+
 #. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
@@ -6623,6 +6708,20 @@ msgstr "应用存放各类文件的位置，以及游戏库：每个文件夹都
 
 #: src/gui/model.c
 msgid "Packs a folder of NCAs, or an extracted game's folder (exefs/, romfs/), into an NSP or an XCI whose NCAs are decrypted, which needs no keys to read"
+msgstr ""
+
+#: src/gui/nightly_check.c
+#, c-format
+msgid "GitHub's answer is no JSON object (%zu bytes)"
+msgstr ""
+
+#: src/gui/nightly_check.c
+#, c-format
+msgid "GitHub names no release: %s"
+msgstr ""
+
+#: src/gui/nightly_check.c
+msgid "its answer has no tag"
 msgstr ""
 
 #: src/gui/process_posix.c

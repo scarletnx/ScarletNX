@@ -1485,6 +1485,10 @@ msgid "Off"
 msgstr "Desligado"
 
 #: src/gui/main.c
+msgid "Ask"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Full"
 msgstr "Total"
 
@@ -1775,6 +1779,10 @@ msgid "Overwrite users.ini? It is kept as users.ini.old"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Check for new nightlies?"
+msgstr ""
+
+#: src/gui/main.c
 msgid "A compile goes: exiting ScarletNX stops it, its work lost."
 msgstr "Uma compilação está rodando: sair do ScarletNX a interrompe, e o trabalho dela se perde."
 
@@ -1946,6 +1954,18 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "Forget"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Don't Ask Again"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Close"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Open Page"
 msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
@@ -2915,6 +2935,14 @@ msgid "The Compile tab's: R's, B's and a game's first. Auto: Gentle on battery, 
 msgstr "As da aba Compilação: as do R, as do B e a primeira de um jogo. Auto: Leve na bateria, Total no carregador. Total: as threads que os ajustes da recompilação dão. Leve: quantas a memória comporta, até metade delas, em prioridade baixa. Cada uma fica leve enquanto um jogo roda"
 
 #: src/gui/main.c
+msgid "Check for updates"
+msgstr ""
+
+#: src/gui/main.c
+msgid "At each start, whether a newer nightly is out, said with what changed and its page; nothing is downloaded. Ask: asks first. On: looks. Off: never looks"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Theme Editor"
 msgstr "Editor de tema"
 
@@ -3735,6 +3763,58 @@ msgstr "Baixando %s: %s"
 #, c-format
 msgid "Not downloaded: %s"
 msgstr "Não baixado: %s"
+
+#: src/gui/main.c
+msgid "Check for updates: this build of the launcher has no HTTPS client"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Check for updates: no memory to ask"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Check for updates: no thread: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Check for updates: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Check for updates: HTTP %d: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Check for updates: HTTP %d for %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Check for updates: the newest nightly is tagged %s, not nightly-YYYY-MM-DD-<commit>"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Check for updates: the newest nightly is %s, and this build (%s %s, committed %s) has no day to compare"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is out; this build is %s %s."
+msgstr ""
+
+#: src/gui/main.c
+msgid "What changed:"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "and %d more"
+msgstr ""
 
 #: src/gui/main.c
 #, c-format
@@ -6105,6 +6185,11 @@ msgstr ""
 msgid "%s did not start: a game plays"
 msgstr ""
 
+#: src/gui/main.c
+#, c-format
+msgid "Open Page: %s did not open: %s"
+msgstr ""
+
 #. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
@@ -6623,6 +6708,20 @@ msgstr "Onde o app guarda cada tipo de arquivo dele, e as bibliotecas: cada past
 
 #: src/gui/model.c
 msgid "Packs a folder of NCAs, or an extracted game's folder (exefs/, romfs/), into an NSP or an XCI whose NCAs are decrypted, which needs no keys to read"
+msgstr ""
+
+#: src/gui/nightly_check.c
+#, c-format
+msgid "GitHub's answer is no JSON object (%zu bytes)"
+msgstr ""
+
+#: src/gui/nightly_check.c
+#, c-format
+msgid "GitHub names no release: %s"
+msgstr ""
+
+#: src/gui/nightly_check.c
+msgid "its answer has no tag"
 msgstr ""
 
 #: src/gui/process_posix.c

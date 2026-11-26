@@ -78,26 +78,28 @@ typedef enum {
     GUI_ASK_OUTSIDE, /* a folder picked in Folders outside the app's own storage, which Android slows */
     GUI_ASK_ROOM,    /* a run whose extraction may not fit (gui_room) */
     /* a change to the player's settings or folders, what it changes in the question (main.c's ask_line) */
-    GUI_ASK_CLEAN,  /* App's Clean Old Settings: the [Deprecated] sections and old keys taken out */
+    GUI_ASK_CLEAN,     /* App's Clean Old Settings: the [Deprecated] sections and old keys taken out */
     GUI_ASK_CLEAN_OWN, /* the same while games' own picks keep old keys: theirs too (in focus), or kept; Back none */
-    GUI_ASK_RESET,  /* Settings' Reset to Defaults: the settings not at their default */
-    GUI_ASK_PLACES, /* Folders' Reset to Defaults: the folders picked */
-    GUI_ASK_PLACE,  /* a folder picked in Folders, or the Library's recompiled/, back to its default */
-    GUI_ASK_FOLDER, /* a game folder taken off the Library */
-    GUI_ASK_MOVE,   /* App's Move Old Files: how many entries move, how many stay */
-    GUI_ASK_STATE,  /* a save state deleted (the box of a game's save states) */
-    GUI_ASK_CACHE,  /* a game's shader cache and code cache deleted (its box's Clean Cache) */
-    GUI_ASK_CLOSE,  /* the window closed while a run goes: it ends with the menu */
-    GUI_ASK_MADE,   /* a dump, package or ROM a game was made from already: play the game, or recompile it */
-    GUI_ASK_DRIVER, /* a GPU driver package removed (Settings > App > GPU Drivers) */
-    GUI_ASK_CRASH,  /* Amberlith's crash list cleared (GPU Drivers' Clear Crash List) */
-    GUI_ASK_ADDONS, /* a game's dump made with its updates' and DLCs' among the dumps, Yes first, or alone */
+    GUI_ASK_RESET,     /* Settings' Reset to Defaults: the settings not at their default */
+    GUI_ASK_PLACES,    /* Folders' Reset to Defaults: the folders picked */
+    GUI_ASK_PLACE,     /* a folder picked in Folders, or the Library's recompiled/, back to its default */
+    GUI_ASK_FOLDER,    /* a game folder taken off the Library */
+    GUI_ASK_MOVE,      /* App's Move Old Files: how many entries move, how many stay */
+    GUI_ASK_STATE,     /* a save state deleted (the box of a game's save states) */
+    GUI_ASK_CACHE,     /* a game's shader cache and code cache deleted (its box's Clean Cache) */
+    GUI_ASK_CLOSE,     /* the window closed while a run goes: it ends with the menu */
+    GUI_ASK_MADE,      /* a dump, package or ROM a game was made from already: play the game, or recompile it */
+    GUI_ASK_DRIVER,    /* a GPU driver package removed (Settings > App > GPU Drivers) */
+    GUI_ASK_CRASH,     /* Amberlith's crash list cleared (GPU Drivers' Clear Crash List) */
+    GUI_ASK_ADDONS,    /* a game's dump made with its updates' and DLCs' among the dumps, Yes first, or alone */
     /* the setup's Old Files: Delete All, how many go and how many stay, pressed twice */
     GUI_ASK_DELETE_OLD,
     GUI_ASK_OVERWRITE, /* the setup's user page: Overwrite users.ini, which is kept as users.ini.old */
     GUI_ASK_SAVES,     /* an import of saves over saves there, which go to the trash first (Import Saves) */
     GUI_ASK_PACK,      /* a folder of NCAs picked to pack: into an NSP or an XCI */
     GUI_ASK_FORGET,    /* a Joy-Con 2 forgotten (Controllers > Bluetooth): games no longer connect it */
+    GUI_ASK_UPDATES,   /* Check for updates on Ask: Yes (On), No (asked again at the next start) or Don't Ask Again */
+    GUI_ASK_NIGHTLY,   /* a newer nightly: its changes, Close or Open Page */
     GUI_ASK_ERROR      /* a failure of the system's, or Run Amberlith's counts, said whole: OK alone, which closes it */
 } GuiAsk;
 typedef struct {
@@ -106,6 +108,8 @@ typedef struct {
     int selected;
     bool twice; /* the second choice is pressed twice: the first press only arms it */
     bool armed; /* pressed once, its focus kept */
+    int count;  /* its choices: 2, GUI_ASK_UPDATES's 3 */
+    int taken;  /* the choice taken when it closed, -1 for Back */
 } GuiConfirm;
 /* A choice among count, the one in focus (0 first): Up and Down, Left and Right, move round them, Select takes it and
    Cancel goes back. A question's yes and no are two (gui_confirm_key); the setup's steps take as many as they offer */
@@ -142,7 +146,7 @@ GuiAppearanceDo gui_appearance_key(int* row, GuiKey key, int* step);
 void gui_confirm_open(GuiConfirm* confirm, GuiAsk ask, bool twice);
 /* A key on the question: the arrows move between its choices, Select takes the one in focus and Cancel keeps going,
    both closing it; a question asked twice takes its second choice at the second Select, a move between choices
-   undoing the first. True when the second choice is taken */
+   undoing the first. True when the second choice is taken; the one taken, any of the count, in taken (-1 for Cancel) */
 bool gui_confirm_key(GuiConfirm* confirm, GuiKey key);
 /* the pointer on a choice: it takes the focus, a press armed on the other undone */
 void gui_confirm_focus(GuiConfirm* confirm, int choice);
