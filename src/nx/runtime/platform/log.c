@@ -3,6 +3,7 @@
 /* The log (<game>.log in the state folder, the runs before in logs/ beside it, and stderr) and fatal errors */
 #include "nx/runtime/platform/log.h"
 #include "common/utilities/common.h"
+#include "common/utilities/run_log.h"
 #include "nx/runtime/loader.h"
 #include "nx/runtime/main.h"
 #include "nx/runtime/platform/backend.h"
@@ -25,8 +26,6 @@ _Thread_local PlatTls t_plat;
 
 #define LINE_MAX_ 2048
 #define EARLY_MAX 4096
-#define LOG_RUNS  5          /* the runs' logs kept: this one's in <game>.log, the ones before in logs/ */
-#define LOG_HEAD  (64 << 10) /* what a cut keeps of the run's start (log_cut_nl), to a line's end */
 
 /* Initialised statically: threads log from the first moments of the run, and a lazy init would race */
 static PMutex g_log_lock = PMUTEX_INIT;
@@ -42,8 +41,7 @@ static int g_early_full; /* a line did not fit: no more are kept, so the saved p
 static _Atomic u64 g_log_t0; /* plat_ns() of the first line, atomic */
 static char g_log_path[1400];
 static u64 g_log_size;       /* what the log holds, about (text mode's \r not counted): a cut when past log_max */
-static int g_log_cuts;       /* the cuts made; one that failed stops them */
-static long g_log_head = -1; /* the run's start a cut keeps, from the first: the line saying what went comes after it */
+static SnxRunLogCut g_log_cut = SNX_RUN_LOG_CUT_INIT; /* the cuts past log_max (run_log.h) */
 static _Atomic int g_log_full; /* log_max in MiB from the first cut until log_full_take, atomic */
 /* written by every line, apart from the flag every line reads */
 static _Alignas(64) _Atomic int g_mid_line; /* the last text written did not end its line, atomic */
@@ -55,60 +53,11 @@ void log_crash_mode(void) {
 }
 
 static size_t log_compose(char* out, size_t cap, const char* text);
-/* a name log_keep_run gives a run's log: YYYY-MM-DD_HH-MM-SS, -N when two share a second, .log */
-static int run_log_name(const char* name) {
-    static const char shape[] = "0000-00-00_00-00-00";
-    size_t i, n = strlen(name);
-    for (i = 0; i < sizeof shape - 1; ++i)
-        if (i >= n || (shape[i] == '0' ? name[i] < '0' || name[i] > '9' : name[i] != shape[i])) return 0;
-    return n >= i + 4 && !strcmp(name + n - 4, ".log");
-}
-/* run_log_name's names oldest first: by the second, then the plain one before its -2, -3...; any other by its bytes */
-static int by_name(const void* a, const void* b) {
-    const char *x = *(char* const*)a, *y = *(char* const*)b;
-    int c = strncmp(x, y, 19);
-    if (c || !run_log_name(x) || !run_log_name(y)) return c ? c : strcmp(x, y);
-    return (x[19] == '-' ? atoi(x + 20) : 1) - (y[19] == '-' ? atoi(y + 20) : 1);
-}
-/* The run before this one: its log (path) into logs/ beside it, named by when it was last written, and logs/ down to
-   the LOG_RUNS - 1 newest. What went wrong into why, a line for the new log, "" when nothing did */
+/* The run before this one: its log (path) into logs/ beside it (run_log.h). What went wrong into why, "" when nothing */
 static void log_keep_run(const char* path, char* why, size_t size) {
-    char dir[1400], dated[1500], stamp[32], **names = NULL;
-    SnxU64 when = snx_file_time(path);
-    time_t t = (time_t)when;
-    struct tm tm;
-    size_t count = 0, i, runs = 0;
-    int n;
-    why[0] = 0;
-    if (!when) return; /* the first run */
+    char dir[1400];
     snprintf(dir, sizeof dir, "%slogs", g_statedir);
-    if (snx_mkdirs(dir)) {
-        snprintf(why, size, "log: cannot make %s (%s): the last run's log is written over\n", dir, strerror(errno));
-        return;
-    }
-#if defined(_WIN32)
-    localtime_s(&tm, &t);
-#else
-    localtime_r(&t, &tm);
-#endif
-    strftime(stamp, sizeof stamp, "%Y-%m-%d_%H-%M-%S", &tm);
-    snprintf(dated, sizeof dated, "%s/%s.log", dir, stamp);
-    for (n = 2; snx_file_time(dated) && n < 100; ++n) snprintf(dated, sizeof dated, "%s/%s-%d.log", dir, stamp, n);
-    if (rename(path, dated)) {
-        snprintf(why, size, "log: cannot move the last run's log to %s (%s): it is written over\n", dated,
-                 strerror(errno));
-        return;
-    }
-    if (snx_list_dir(dir, &names, &count)) return;
-    qsort(names, count, sizeof *names, by_name);
-    for (i = count; i-- > 0;) {
-        if (!run_log_name(names[i]) || ++runs < LOG_RUNS) continue;
-        snprintf(dated, sizeof dated, "%s/%s", dir, names[i]);
-        if (remove(dated) && !why[0])
-            snprintf(why, size, "log: cannot delete %s (%s), past the %d runs' logs kept\n", dated, strerror(errno),
-                     LOG_RUNS);
-    }
-    snx_free_strings(names, count);
+    snx_run_log_keep(path, dir, why, size);
 }
 
 /* The log is made once the game's code module is loaded (g_mod), so a run that never gets that far (a mistyped
@@ -196,86 +145,24 @@ static void log_crash_write(const char* text) {
 #endif
 }
 
-/* The log past log_max (limit bytes): the run's start (its first LOG_HEAD bytes, to a line's end, the same at each
-   cut), a line saying what went, and the last lines, half the limit in all, so a long run's log ends where it does. Moved in place through
-   a second handle, in binary (Windows' text mode would move a "\r\n" by halves); the first cut for the frontend's
-   toast. A crash's line written while a cut runs may land in what the cut drops. Under g_log_lock */
+/* The log past log_max (limit bytes), cut in place (run_log.h); the first cut for the frontend's toast. A crash's
+   line written while a cut runs may land in what the cut drops. Under g_log_lock */
 static void log_cut_nl(long limit) {
     SNX_ZONE_T(z_cut, "plat log cut", "log_max reached");
-    static char buf[1 << 16];
-#if defined(_WIN32)
-    static const char eol[] = "\r\n";
-#else
-    static const char eol[] = "\n";
-#endif
     char mark[320];
-    long size, head = 0, from, to, n;
-    size_t got, i;
-    int moved;
-    u64 t0 = atomic_load_explicit(&g_log_t0, memory_order_relaxed);
-    FILE* f;
+    int before = g_log_cut.cuts;
     fflush(atomic_load_explicit(&g_log, memory_order_relaxed));
-    f = fopen(g_log_path, "r+b");
-    if (!f || fseek(f, 0, SEEK_END) || (size = ftell(f)) <= limit / 2) {
-        if (!f) {
-            g_log_cuts = -1;
-            snprintf(mark, sizeof mark, "log: cannot cut %s past log_max=%ld MiB (%s): it grows on\n", g_log_path,
-                     limit >> 20, strerror(errno));
-            fputs(mark, atomic_load_explicit(&g_log, memory_order_relaxed));
-            fputs(mark, stderr);
-        } else
-            fclose(f);
-        g_log_size = 0;
-        return;
+    g_log_size = (u64)snx_run_log_cut(g_log_path, limit, atomic_load_explicit(&g_log_t0, memory_order_relaxed),
+                                      &g_log_cut, mark, sizeof mark);
+    if (g_log_cut.last >= 0) {
+        fseek(atomic_load_explicit(&g_log, memory_order_relaxed), 0,
+              SEEK_END); /* the descriptor's offset too, which crash mode writes at */
+        SNX_PLOT("plat log cut bytes", (double)g_log_cut.last); /* the bytes saved; 0 when the cut failed */
     }
-    if (g_log_head < 0) {
-        rewind(f);
-        got = fread(buf, 1, (size_t)(size < LOG_HEAD ? size : LOG_HEAD), f);
-        for (i = got; i > 0; --i)
-            if (buf[i - 1] == '\n') break;
-        g_log_head = (long)i;
-    }
-    head = g_log_head;
-    from = size - (limit / 2 - head);
-    if (!fseek(f, from, SEEK_SET) && (got = fread(buf, 1, sizeof buf, f)) > 0) { /* to the next line's start */
-        for (i = 0; i < got && buf[i] != '\n'; ++i) continue;
-        from += (long)(i < got ? i + 1 : got);
-    }
-    n = snprintf(
-        mark, sizeof mark,
-        "[%7.2f] log: reached log_max=%ld MiB: %.1f MiB of lines between the run's start and here cut (Debug > "
-        "Log size limit raises it)%s",
-        (double)(plat_ns() - t0) / 1e9, limit >> 20, (double)(from - head) / (1 << 20), eol);
-    to = head + n;
-    moved = !fseek(f, head, SEEK_SET) && fwrite(mark, 1, (size_t)n, f) == (size_t)n;
-    while (moved && from < size) {
-        size_t want = (size_t)(size - from < (long)sizeof buf ? size - from : (long)sizeof buf);
-        moved = !fseek(f, from, SEEK_SET) && (got = fread(buf, 1, want, f)) > 0 && !fseek(f, to, SEEK_SET) &&
-                fwrite(buf, 1, got, f) == got;
-        from += (long)got;
-        to += (long)got;
-    }
-    moved = !fflush(f) && moved;
-#if defined(_WIN32)
-    moved = moved && !_chsize_s(_fileno(f), to);
-#else
-    moved = moved && !ftruncate(fileno(f), to);
-#endif
-    if (!moved) { /* a disk's failure halfway: the lines stay, some twice, and no more cuts are tried */
-        g_log_cuts = -1;
-        to = size;
-        snprintf(mark, sizeof mark, "log: cutting %s past log_max=%ld MiB failed (%s): it grows on\n", g_log_path,
-                 limit >> 20, strerror(errno));
-        fputs(mark, stderr);
-    }
-    fclose(f);
-    fseek(atomic_load_explicit(&g_log, memory_order_relaxed), 0,
-          SEEK_END); /* the descriptor's offset too, which crash mode writes at */
-    g_log_size = (u64)to;
-    SNX_PLOT("plat log cut bytes", (double)(size - to)); /* the bytes saved; 0 when the cut failed */
-    if (!moved)
+    if (mark[0]) {
         fputs(mark, atomic_load_explicit(&g_log, memory_order_relaxed));
-    else if (!g_log_cuts++)
+        fputs(mark, stderr);
+    } else if (!before && g_log_cut.cuts == 1)
         atomic_store_explicit(&g_log_full, (int)(limit >> 20), memory_order_release);
 }
 
@@ -309,7 +196,7 @@ void logf_(int lvl, const char* fmt, ...) {
         fputs(out, atomic_load_explicit(&g_log, memory_order_relaxed));
         fflush(atomic_load_explicit(&g_log, memory_order_relaxed));
         g_log_size += n;
-        if (g_log_cuts >= 0 && g_log_size > (u64)limit) log_cut_nl(limit);
+        if (g_log_cut.cuts >= 0 && g_log_size > (u64)limit) log_cut_nl(limit);
         if (lvl <= 1 || g_settings.log_level >= 2) {
             fputs(text, stderr); /* the console gets the line without its time stamp, which only the log file keeps */
             fflush(stderr);
