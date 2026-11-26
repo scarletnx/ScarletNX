@@ -5,8 +5,8 @@
 
    The function's ABI is GuestFn's: the state in X0, kept in X19 (SGX_BASE_BIAS past it), the entry in X1
    (SGX_FN_TARGET, as a call's target is); X29 and X30 saved, then X19 and X20, and X21 to X28 where the function
-   pins guest registers there (the callee's: no call changes them), SP 16-aligned below a frame of spill slots whose
-   size is patched in at the end.
+   pins guest registers there (the callee's: no call changes them), and the spill slots, whose size is patched in at
+   the end, above them (below them on Windows), SP 16-aligned at the frame's bottom.
    The guest's vector registers are pinned in V31 down to V24 (caller-saved: stored around a call); V8 to V15,
    whose low halves are the callee's, hold no value, nor does V7, a by-element form's Rm (arm64_vec.c). X16 and X17 are the glue's and the assembler's own.
 
@@ -101,6 +101,9 @@ static int windows(const Unit* u) { return (u->g->x.features & SNX_ARM64_F_WIN) 
 /* a fixup's word: B's imm26, B.cond's and CBZ's imm19, ADR's immhi:immlo; FIX_TAB + a table's label: a jump table's
    word, the label's distance from the table */
 enum { FIX_B, FIX_BCOND, FIX_CBZ, FIX_ADR, FIX_TAB };
+/* the frame: the ten registers the prologue saves, then the slots; off Windows, slots of up to FRAME_FOLDED bytes are
+   in STP X29, X30's pre-index and LDP's post-index (504 bytes at most), larger ones a SUB SP first */
+enum { FRAME_SAVED = 96, FRAME_FOLDED = 504 - FRAME_SAVED };
 
 static void w32(Unit* u, SnxU32 w) { sga_w(&u->b, w); }
 static void fixup(Unit* u, int label, int kind) {
@@ -170,10 +173,19 @@ static void frame_here(Unit* u, size_t at) {
     u->frame_at = (size_t*)grow(u->frame_at, &u->cap_frame, u->nframe + 1, sizeof *u->frame_at);
     u->frame_at[u->nframe++] = at;
 }
+/* the slots in STP X29, X30's pre-index: off Windows, but where mg_finish found them too large and made the function
+   again (Unit.again) */
+static int folded(const Unit* u) { return !windows(u) && !u->again; }
 /* STP X29, X30, [SP, #-96]!; MOV X29, SP; STP X19, X20, [SP, #16] (and X21-X28 where pinned); ADD X19, X0, #8
-   (sga_state_in); SUB SP, SP, #frame (patched), on Windows past the probe of one of a page or more; the pins loaded.
-   x64_elf.c's a64_prologue reads it back, and knows the epilogue by it */
+   (sga_state_in); the pins loaded. The slots: off Windows above the saved registers, folded into the STP's pre-index
+   (patched) or, larger, a SUB SP, SP, #frame (patched) before it; on Windows below them, a SUB SP after the ADD, past
+   the probe of a page or more, as x64_elf.c's a64_prologue reads it back (and knows the epilogue by it) */
 static void prologue(Unit* u) {
+    u->a.frame_off = windows(u) ? 0 : FRAME_SAVED;
+    if (!windows(u)) {
+        frame_here(u, u->b.n);
+        if (!folded(u)) w32(u, sge_a64_sub_addsub_imm(31, 31, 0, 0, 1));
+    }
     w32(u, sge_a64_stp_gen_pre_idx(29, 31, 30, (SnxU32)-12 & 0x7F, 2));
     w32(u, sge_a64_add_addsub_imm(29, 31, 0, 0, 1));
     w32(u, sge_a64_stp_gen_general_offset(19, 31, 20, 2, 2));
@@ -182,22 +194,32 @@ static void prologue(Unit* u) {
         for (k = 0; k < 4; ++k) w32(u, sge_a64_stp_gen_general_offset((SnxU32)(21 + 2 * k), 31, (SnxU32)(22 + 2 * k), (SnxU32)(4 + 2 * k), 2));
     }
     sga_state_in(&u->b);
-    if (windows(u) && u->again) frame_here(u, sga_stack_probe(&u->b));
-    frame_here(u, u->b.n);
-    w32(u, sge_a64_sub_addsub_imm(31, 31, 0, 0, 1));
+    if (windows(u)) {
+        if (u->again) frame_here(u, sga_stack_probe(&u->b));
+        frame_here(u, u->b.n);
+        w32(u, sge_a64_sub_addsub_imm(31, 31, 0, 0, 1));
+    }
     pins(u, 0);
 }
-/* ADD SP, SP, #frame (patched); the saved registers back; LDP X29, X30, [SP], #96. The return or the jump is next:
-   Windows' unwinder has an epilogue end at one */
+/* the prologue's undone: the saved registers back, LDP X29, X30, [SP], #96, the slots in its post-index (patched) or an
+   ADD SP, SP, #frame (patched) after it; on Windows that ADD first. The return or the jump is next: Windows' unwinder
+   has an epilogue end at one */
 static void epilogue(Unit* u) {
-    frame_here(u, u->b.n);
-    w32(u, sge_a64_add_addsub_imm(31, 31, 0, 0, 1));
+    if (windows(u)) {
+        frame_here(u, u->b.n);
+        w32(u, sge_a64_add_addsub_imm(31, 31, 0, 0, 1));
+    }
     if (u->pinned) {
         int k;
         for (k = 0; k < 4; ++k) w32(u, sge_a64_ldp_gen_general_offset((SnxU32)(21 + 2 * k), 31, (SnxU32)(22 + 2 * k), (SnxU32)(4 + 2 * k), 2));
     }
     w32(u, sge_a64_ldp_gen_general_offset(19, 31, 20, 2, 2));
+    if (folded(u)) frame_here(u, u->b.n);
     w32(u, sge_a64_ldp_gen_post_idx(29, 31, 30, 12, 2));
+    if (!windows(u) && !folded(u)) {
+        frame_here(u, u->b.n);
+        w32(u, sge_a64_add_addsub_imm(31, 31, 0, 0, 1));
+    }
 }
 static void leave(Unit* u) {
     pins(u, 1);
@@ -452,6 +474,16 @@ static void mg_pool_island(Unit* u) {
     sgx_pool_emit(&u->a);
     put_offset(u, at, (long long)(u->b.n - at) / 4, FIX_B);
 }
+/* STP X29, X30's pre-index or LDP's post-index at at: the saved registers' and size bytes of slots, in 8s */
+static void frame_pair(Unit* u, size_t at, unsigned size) {
+    SnxU32 w, imm7;
+    if (at + 4 > u->b.cap) return;
+    w = (SnxU32)u->b.p[at] | (SnxU32)u->b.p[at + 1] << 8 | (SnxU32)u->b.p[at + 2] << 16 | (SnxU32)u->b.p[at + 3] << 24;
+    imm7 = (w >> 22 & 1 ? (FRAME_SAVED + size) / 8 : 0u - (FRAME_SAVED + size) / 8) & 0x7Fu; /* LDP: L, up */
+    w = (w & ~(0x7Fu << 15)) | imm7 << 15;
+    u->b.p[at] = (unsigned char)w, u->b.p[at + 1] = (unsigned char)(w >> 8), u->b.p[at + 2] = (unsigned char)(w >> 16);
+    u->b.p[at + 3] = (unsigned char)(w >> 24);
+}
 static int mg_finish(Unit* u, size_t fix0) {
     size_t i;
     unsigned size = sga_frame_size(&u->a), sh = size > 4095, i12 = sh ? (size + 4095) >> 12 : size;
@@ -460,7 +492,16 @@ static int mg_finish(Unit* u, size_t fix0) {
         u->again = 1; /* a page or more, read page by page first (the guard page): made again with it */
         return 0;
     }
-    for (i = 0; i < u->nframe; ++i) sga_frame_imm(&u->b, u->frame_at[i], i12, sh);
+    if (folded(u) && size > FRAME_FOLDED) {
+        u->again = 1; /* past the pre-index's reach: made again with a SUB and ADD of SP */
+        return 0;
+    }
+    for (i = 0; i < u->nframe; ++i) {
+        if (folded(u))
+            frame_pair(u, u->frame_at[i], size);
+        else
+            sga_frame_imm(&u->b, u->frame_at[i], i12, sh);
+    }
     for (i = fix0; i < u->nfixups; ++i) {
         long long t = u->label_at[u->fixups[i].label];
         if (t < 0) return 0;

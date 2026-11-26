@@ -650,7 +650,10 @@ after it and a release store DMB ISH around it, and the ABI (AAPCS64: the state 
 X30, X19 and X20; X16 and X17 the assembler's). It builds on any host: the code it writes is arm64's.
 
 Windows on Arm's convention is AAPCS64 too, with X18 the system's (no value's here), so the code for it
-(`SNX_ARM64_F_WIN`) is the same words. What differs is around it: a COFF object (`x64_elf.c`), whose function table
+(`SNX_ARM64_F_WIN`) is the same words but for a guest function's frame (`arm64_codegen.c`): there its spill slots are
+below the saved registers, a SUB of SP after the prologue's last save, the form the unwinder reads; elsewhere above
+them, in STP X29, X30's pre-index and each LDP's post-index (past 408 bytes of them, a SUB of SP before the STP and an
+ADD after each LDP). What differs is around it: a COFF object (`x64_elf.c`), whose function table
 unwinds each frame by a record of 1 MiB of code at most (a longer function has several), its prologue's codes and its
 epilogues'; an epilogue's return or jump right after it, where the unwinder has it end; a frame of a page or more reading
 its pages first (`sga_stack_probe`, X16 and X17); an AArch32 block's code of no frame, the exit of a failed entry check,

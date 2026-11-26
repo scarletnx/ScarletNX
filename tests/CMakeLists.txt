@@ -4632,6 +4632,12 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
              --words 1ac14000 1ac24400 1ac34800 9ac44c00 1ac55000 1ac65400 1ac75800 9ac85c00 1ac14be9 9adf5c0a)
     set_tests_properties(recompiler_arm64_refused_plain recompiler_arm64_plain recompiler_arm64_plain_crc32
                          PROPERTIES TIMEOUT 600)
+    # a frame of more slots than STP X29, X30's pre-index takes (arm64_frame_code.c's last row): a SUB and ADD of SP
+    add_test(NAME recompiler_arm64_frame COMMAND snx-test-recompiler-arm64 --without 0x7ffff --made --states 40 --words
+             4e284820 4e284841 4e284862 4e284883 4e2848a4 4e2848c5 4e2848e6 4e284907)
+    add_test(NAME recompiler_arm64_frame_jit COMMAND snx-test-recompiler-arm64 --without 0x7ffff --made --states 40
+             --jit --words 4e284820 4e284841 4e284862 4e284883 4e2848a4 4e2848c5 4e2848e6 4e284907)
+    set_tests_properties(recompiler_arm64_frame recompiler_arm64_frame_jit PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
     # a function longer than a machine's short jumps reach: B's 128 KiB on MIPS64, JAL's 1 MiB on riscv64, B.cond's and
     # LDR (literal)'s 1 MiB on arm64 (words an optional feature would make short); in an AOT module and in a JIT unit
     foreach(long IN ITEMS "mips64;0;400;131072;4ee20c20;1e622820" "mips64be;0;400;131072;4ee20c20;1e622820"
@@ -5045,6 +5051,12 @@ if(NOT WIN32)
     target_link_libraries(snx-test-arm64-pins-code PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
     snx_decodetree_a64(snx-test-arm64-pins-code)
     add_test(NAME arm64_pins_code COMMAND snx-test-arm64-pins-code)
+    # its frame: the slots in the frame record's STP and LDP, larger ones a SUB and ADD of SP (arm64_frame_code.c)
+    add_executable(snx-test-arm64-frame-code arm64_frame_code.c)
+    snx_test_target(snx-test-arm64-frame-code gnu23)
+    target_link_libraries(snx-test-arm64-frame-code PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+    snx_decodetree_a64(snx-test-arm64-frame-code)
+    add_test(NAME arm64_frame_code COMMAND snx-test-arm64-frame-code)
 endif()
 
 # NCE's patcher (src/nx/runtime/nce/nce_patch.c) on a synthetic module: the words that Eden's patcher changes, found

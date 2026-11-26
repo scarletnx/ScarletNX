@@ -2396,6 +2396,7 @@ typedef struct SgXAsm {
     SgXBuf* b;
     int owner[SGX_NREG]; /* the virtual register a host one holds, 0 for none, -1 a copy made for one instruction */
     int slots, slots_max;
+    int frame_off; /* the slots' offset from SGX_FRAME: past what the prologue saved below them (arm64 but Windows) */
     int xowner[SGX_NXREG]; /* the value an XMM register holds: a vector's (cls 1), or a general-purpose one spilled
                              there; 0 for none, -1 a copy made for one instruction (PBLENDVB's XMM0) */
     int* next_call;       /* for each instruction, the next one at or after it that calls out (x->n: none) */
