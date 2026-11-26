@@ -1501,6 +1501,13 @@ add_executable(snx-test-sailgen-encoders sailgen_encoders.c)
 snx_test_target(snx-test-sailgen-encoders c23)
 snx_sailgen_a64_encoders(snx-test-sailgen-encoders)
 add_test(NAME sailgen_encoders COMMAND snx-test-sailgen-encoders)
+# and with --roots: the clauses of the decode functions it names alone (names are text: no two share an offset)
+add_test(NAME sailgen_encoders_roots
+         COMMAND "${CMAKE_COMMAND}" "-DSAILGEN=$<TARGET_FILE:snx-sailgen>"
+                 "-DDIR=${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/sail" "-DOUT=${CMAKE_CURRENT_BINARY_DIR}/sailgen/roots"
+                 -P "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/encoders_roots_check.cmake")
+set_tests_properties(sailgen_encoders_roots PROPERTIES PASS_REGULAR_EXPRESSION
+    "sailgen_encoders_roots: 2 encoders: sge_a64_add_advsimd sge_a64_eor_advsimd\n")
 add_test(NAME sailgen_refused
          COMMAND snx-sailgen --generate "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused.roots"
                  --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/bits.h" --backend "${PROJECT_SOURCE_DIR}/tools/sailgen/core.h"
