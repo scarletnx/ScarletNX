@@ -281,7 +281,7 @@ int main(void) {
             k_functions[f].feature = "FEAT_FP8";
             for (unsigned b = 0; b < 4; ++b) mem[CODE + at + b] = (uint8_t)(w >> (8 * b));
         }
-        struct snx_recompiler* r = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
+        struct snx_recompiler* r = snx_recompiler_new(SNX_RECOMPILER_FLAG_NATIVE);
         struct snx_code_range range = {CODE, mem + CODE, sizeof g_code};
         struct snx_recompiled* made = NULL;
         g_test.count = 0;

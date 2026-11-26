@@ -90,7 +90,7 @@ static void my_svc(CPU* cpu, uint32_t imm) { /* cpu->x[] holds the arguments */ 
 static void my_undef(CPU* cpu, uint64_t pc, uint32_t word) { cpu->pc = 0; }
 static void my_brk(CPU* cpu, uint64_t pc, uint32_t imm) { cpu->pc = 0; }
 
-struct snx_recompiler* r = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
+struct snx_recompiler* r = snx_recompiler_new(SNX_RECOMPILER_FLAG_NATIVE);
 struct snx_recompiled* m = snx_recompile(r, 0x8000000, text, text_size);
 if (!m) fprintf(stderr, "%s\n", snx_recompiler_error(r));
 
@@ -113,7 +113,8 @@ snx_recompiled_free(m);
 snx_recompiler_free(r);
 ```
 
-`snx_recompiler_new` takes the backend: `SNX_RECOMPILER_FLAG_LLVM`, the only one, which
+`snx_recompiler_new` takes the backend: `SNX_RECOMPILER_FLAG_NATIVE`, the only one
+(`SNX_RECOMPILER_FLAG_LLVM`, its name in earlier versions, is still taken for it and said once), which
 names the host's native back end (x86-64's, arm64's or another machine's,
 `src/common/cpu/recompiler/mach/native.h`): it makes all of the A64 code.
 `snx_recompiler_has` tells whether this host has one. The recompiler also takes the `-O`
@@ -122,9 +123,8 @@ the same at every one, and the caches keep it), how many code units compile at o
 (`snx_recompiler_set_jobs`, on threads),
 progress lines (`snx_recompiler_set_verbose`) and a callback with how far a recompile is,
 for a progress bar (`snx_recompiler_set_progress`). `snx_recompiler_set_keep_ir` asked for
-LLVM's IR, and is refused with the folder named. `snx_recompiler_set_backend(r, 0)` is LLVM
-alone, the reference the tests compare the native back end with while the build has LLVM;
-its modules are not kept in the cache folder. `snx_recompiler_set_hook_direct_calls`
+LLVM's IR, and is refused with the folder named. `snx_recompiler_set_backend(r, 0)`, LLVM
+alone in earlier versions, is refused at the recompile. `snx_recompiler_set_hook_direct_calls`
 routes calls between discovered functions through the CPU's dispatch table. Enable it
 when the runtime can invalidate guest code, so callers do not retain direct pointers to
 retired functions.

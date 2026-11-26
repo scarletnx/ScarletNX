@@ -113,7 +113,7 @@ static size_t files(const char* folder, const char* prefix) {
 }
 
 static void modules(uint8_t* mem, const char* cache) {
-    struct snx_recompiler* r = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
+    struct snx_recompiler* r = snx_recompiler_new(SNX_RECOMPILER_FLAG_NATIVE);
     CHECK(r != NULL, "snx_recompiler_new with the %s back end", snx_native_name());
     if (!r) return;
     snx_recompiler_set_jobs(r, 1);
@@ -186,7 +186,7 @@ static void modules(uint8_t* mem, const char* cache) {
           "keeping the IR: %s", snx_recompiler_error(r));
     snx_recompiler_set_backend(r, 0);
     m = snx_recompile(r, CODE, mem + CODE, sizeof k_words);
-    CHECK(!m && strstr(snx_recompiler_error(r), "LLVM alone") && strstr(snx_recompiler_error(r), "SNX_WITH_LLVM=OFF") &&
+    CHECK(!m && strstr(snx_recompiler_error(r), "LLVM alone") && strstr(snx_recompiler_error(r), "no LLVM") &&
               strstr(snx_recompiler_error(r), snx_native_name()),
           "LLVM alone: %s", snx_recompiler_error(r));
     if (m) snx_recompiled_free(m);
@@ -197,12 +197,12 @@ int main(void) {
     CHECK(!snx_fallback_available() && !strcmp(snx_fallback_name(), "none"), "the fallback is none's (%s)",
           snx_fallback_name());
     if (!snx_native_available()) {
-        CHECK(!snx_recompiler_has(SNX_RECOMPILER_FLAG_LLVM) && !snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM),
+        CHECK(!snx_recompiler_has(SNX_RECOMPILER_FLAG_NATIVE) && !snx_recompiler_new(SNX_RECOMPILER_FLAG_NATIVE),
               "a host without a native back end has no recompiler with no LLVM");
         if (!g_failures) printf("the library without LLVM: no native back end on this host, and so no recompiler\n");
         return g_failures != 0;
     }
-    CHECK(snx_recompiler_has(SNX_RECOMPILER_FLAG_LLVM), "the library makes code with the %s back end alone",
+    CHECK(snx_recompiler_has(SNX_RECOMPILER_FLAG_NATIVE), "the library makes code with the %s back end alone",
           snx_native_name());
     uint8_t* mem = (uint8_t*)calloc(1, MEMORY);
     char* cache = snx_temp_dir(NULL);
