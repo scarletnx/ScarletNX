@@ -90,11 +90,15 @@ typedef struct {
     _Atomic int go, stop, done;
 } Writer;
 static Writer* g_writer; /* the thread told to write at each swap of fd 2, if any */
-/* fd 2 becomes fd */
+/* fd 2 becomes fd, with stderr locked: every thread writes to it through the stream, so none is in a write while fd 2
+   changes. Where dup2 over an open descriptor is two steps (XNU closes it, lets the table go, then installs the new
+   file), a write between them finds no fd 2 */
 static void swap_fd2(int fd) {
+    flockfile(stderr);
     fflush(stderr);
     if (g_writer) atomic_store(&g_writer->go, 1);
     int r = dup2(fd, 2);
+    funlockfile(stderr);
     assert(r == 2);
 }
 /* stderr into a file of this process alone until capture_end; *saved keeps stderr's own. ctest runs this program's two
