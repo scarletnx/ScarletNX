@@ -3,7 +3,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include "nx/runtime/driver/setup.h"
 #include "common/utilities/common.h"
-#include "common/utilities/ini_lines.h"
+#include "common/utilities/config_file.h"
 #include "common/utilities/language_tag.h"
 #include "common/utilities/setup.h"
 #include "common/utilities/users.h"
@@ -94,20 +94,23 @@ static char* menu_file(const Ask* a, const char* name) {
     return path;
 }
 /* app.ini's value of key in section, owned; NULL for none */
+typedef struct {
+    const char *section, *key;
+    char* found;
+} AppValue;
+static void app_take(void* ctx, const char* section, const char* key, const char* value, int line) {
+    AppValue* v = (AppValue*)ctx;
+    (void)line;
+    if (strcmp(section, v->section) || strcmp(key, v->key) || !value[0]) return;
+    free(v->found); /* the last one, as the launcher reads it */
+    v->found = snx_strdup(value);
+}
 static char* app_value(const Ask* a, const char* section, const char* key) {
-    char *path = menu_file(a, "app.ini"), *text, *k, *v, *found = NULL;
-    size_t size;
-    SnxIni ini;
-    text = path && snx_is_file(path) ? (char*)snx_read_file(path, &size) : NULL;
-    if (text) snx_ini_start(&ini, text);
-    while (text && snx_ini_next(&ini, &k, &v))
-        if (!strcmp(ini.section, section) && !strcmp(k, key) && v[0]) {
-            free(found);
-            found = snx_strdup(v);
-        }
-    free(text);
+    char* path = menu_file(a, "app.ini");
+    AppValue v = {section, key, NULL};
+    if (path) snx_config_keys(path, app_take, &v); /* one it cannot read said, once */
     free(path);
-    return found;
+    return v.found;
 }
 
 /* the notices left: what an older version did that this one does otherwise, and OK */
