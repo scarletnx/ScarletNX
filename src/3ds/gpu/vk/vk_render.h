@@ -89,6 +89,8 @@ void snx_ctr_vk_render_begin(unsigned slot);
 void snx_ctr_vk_render_close(void);
 void snx_ctr_vk_render_retire(unsigned slot, uint64_t serial);
 void snx_ctr_vk_render_free(void);
+/* A save state loaded (runtime/state.c): the PICA the vertex program's hash was taken from is gone */
+void snx_ctr_vk_render_forget(void);
 /* The driver's pipelines kept between runs, in <directory>/shader_cache/vk_pipelines.<driver>.bin as the Switch's
    (common/gpu/vk/vk_common.h's driver tag): read here, before the first draw, and every pipeline made after it goes
    into it. vk_pipeline_cache=0 neither reads nor writes it. Without it the pipelines are made as before */

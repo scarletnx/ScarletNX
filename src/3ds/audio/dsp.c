@@ -6,9 +6,13 @@
    in place of FAAD2. The shared memory lives in DSP RAM, which the DSP reads and writes as a bus master
    (snx_ctr_phys_read/write), never through a host pointer. */
 #include "3ds/audio/internal.h"
+#include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
+#include "common/utilities/state_header.h"
+#include "common/utilities/state_io.h"
 #include <libavcodec/avcodec.h>
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -399,4 +403,134 @@ bool snx_ctr_dsp_tick(SnxCtrDsp* dsp, int16_t frame[SNX_CTR_DSP_SAMPLES][2]) {
     ram_write(dsp, write + DSP_FINAL_SAMPLES, dsp->mixers.frame, sizeof dsp->mixers.frame);
     dsp->interrupt(dsp->context, SNX_CTR_DSP_PIPE_AUDIO);
     return true;
+}
+
+/* ---- save states (runtime/state.c) ---- */
+
+#define STATE_PIPE_MOST   (1u << 20)              /* bytes a pipe holds, past which a state is damaged */
+#define STATE_QUEUE_MOST  4096u                   /* buffers a source queues */
+#define STATE_BUFFER_MOST (1u << 24)              /* a decoded buffer's frames */
+#define STATE_DELAY_MOST  (4u * SNX_CTR_DSP_RATE) /* mixers.c's MAX_DELAY_SAMPLES */
+uint64_t snx_ctr_dsp_state_schema(void) {
+    static const SnxCtrDsp dsp;
+    uint64_t h = SNX_FNV_BASIS ^ sizeof dsp;
+    __builtin_dump_struct(&dsp, snx_state_schema_out, &h);
+    __builtin_dump_struct(&dsp.pipes[0], snx_state_schema_out, &h);
+    __builtin_dump_struct(&dsp.sources[0], snx_state_schema_out, &h);
+    __builtin_dump_struct(&dsp.sources[0].state.filters, snx_state_schema_out, &h);
+    __builtin_dump_struct(&dsp.mixers, snx_state_schema_out, &h);
+    __builtin_dump_struct(&dsp.mixers.state.delay[0], snx_state_schema_out, &h);
+    static const DspQueued queued;
+    __builtin_dump_struct(&queued, snx_state_schema_out, &h);
+    return h;
+}
+/* a source's state's heap parts, after its bytes: the queue, then whether it has a current buffer and its frames */
+static int source_put(StateIo* io, const DspSourceState* s) {
+    return io_put(io, s->queue, s->queued * sizeof *s->queue) || io_put32(io, s->current != NULL) ||
+           io_put(io, s->current, s->current ? s->current_count * sizeof *s->current : 0);
+}
+static int source_get(StateIo* io, DspSourceState* s) {
+    uint32_t current = 0;
+    s->queue = NULL;
+    s->current = NULL;
+    if (s->queued > STATE_QUEUE_MOST || s->current_count > STATE_BUFFER_MOST) return -1;
+    s->queue_capacity = s->queued;
+    if (s->queued &&
+        (!(s->queue = malloc(s->queued * sizeof *s->queue)) || io_get(io, s->queue, s->queued * sizeof *s->queue)))
+        return -1;
+    if (io_get32(io, &current)) return -1;
+    if (current) {
+        s->current = malloc((s->current_count ? s->current_count : 1) * sizeof *s->current);
+        if (!s->current || io_get(io, s->current, s->current_count * sizeof *s->current)) return -1;
+    }
+    return 0;
+}
+static int delay_put(StateIo* io, const DspDelay* d) {
+    return io_put32(io, d->delay_output != NULL) ||
+           io_put(io, d->delay_output, d->delay_output ? (size_t)d->delay_samples * 4 * sizeof *d->delay_output : 0);
+}
+static int delay_get(StateIo* io, DspDelay* d) {
+    uint32_t has = 0;
+    d->delay_output = NULL;
+    if (io_get32(io, &has) || d->delay_samples > STATE_DELAY_MOST || (has && !d->delay_samples)) return -1;
+    if (!has) return 0;
+    size_t bytes = (size_t)d->delay_samples * 4 * sizeof *d->delay_output;
+    return (d->delay_output = malloc(bytes)) && !io_get(io, d->delay_output, bytes) ? 0 : -1;
+}
+int snx_ctr_dsp_state_save(const SnxCtrDsp* dsp, StateIo* io) {
+    SnxCtrDsp copy;
+    memcpy(&copy, dsp, sizeof copy); /* its padding too, which goes in the file */
+    copy.memory = NULL;
+    copy.interrupt = NULL;
+    copy.context = copy.aac = NULL;
+    copy.packet = NULL;
+    copy.decoded = NULL;
+    copy.backup = NULL;
+    /* the allocations' sizes are the running process's, not the DSP's: a load allocates what it reads */
+    for (unsigned i = 0; i < SNX_CTR_DSP_PIPES; ++i) copy.pipes[i].data = NULL, copy.pipes[i].capacity = 0;
+    for (unsigned i = 0; i < DSP_SOURCES; ++i) {
+        copy.sources[i].state.queue_capacity = copy.sources[i].backup.queue_capacity = 0;
+        copy.sources[i].state.queue = copy.sources[i].backup.queue = NULL;
+        copy.sources[i].state.current = copy.sources[i].backup.current = NULL;
+    }
+    for (unsigned i = 0; i < 2; ++i)
+        copy.mixers.state.delay[i].delay_output = copy.mixers.backup.delay[i].delay_output = NULL;
+    int failed = io_put(io, &copy, sizeof copy) || io_put32(io, dsp->aac != NULL) ||
+                 io_put32(io, dsp->backup != NULL) || io_put(io, dsp->backup, dsp->backup ? DSP_RAM_SIZE : 0);
+    for (unsigned i = 0; !failed && i < SNX_CTR_DSP_PIPES; ++i)
+        failed = io_put(io, dsp->pipes[i].data, dsp->pipes[i].size);
+    for (unsigned i = 0; !failed && i < DSP_SOURCES; ++i)
+        failed = source_put(io, &dsp->sources[i].state) || source_put(io, &dsp->sources[i].backup);
+    for (unsigned i = 0; !failed && i < 2; ++i)
+        failed = delay_put(io, &dsp->mixers.state.delay[i]) || delay_put(io, &dsp->mixers.backup.delay[i]);
+    return failed ? -1 : 0;
+}
+SnxCtrDsp* snx_ctr_dsp_state_parse(SnxCtrMemory* memory, SnxCtrDspInterrupt interrupt, void* context, StateIo* io,
+                                   char* why, size_t whysize) {
+    SnxCtrDsp* dsp = calloc(1, sizeof *dsp);
+    uint32_t aac = 0, backup = 0;
+    if (!dsp || io_get(io, dsp, sizeof *dsp)) {
+        free(dsp);
+        snprintf(why, whysize, "its DSP section is damaged or cut short");
+        return NULL;
+    }
+    /* every pointer the bytes held is the save's: none of them is freed */
+    dsp->memory = memory;
+    dsp->interrupt = interrupt;
+    dsp->context = context;
+    dsp->aac = NULL;
+    dsp->packet = NULL;
+    dsp->decoded = NULL;
+    dsp->backup = NULL;
+    for (unsigned i = 0; i < SNX_CTR_DSP_PIPES; ++i) dsp->pipes[i].data = NULL;
+    for (unsigned i = 0; i < DSP_SOURCES; ++i) {
+        dsp->sources[i].state.queue = dsp->sources[i].backup.queue = NULL;
+        dsp->sources[i].state.current = dsp->sources[i].backup.current = NULL;
+    }
+    for (unsigned i = 0; i < 2; ++i)
+        dsp->mixers.state.delay[i].delay_output = dsp->mixers.backup.delay[i].delay_output = NULL;
+    bool failed = io_get32(io, &aac) || io_get32(io, &backup);
+    if (!failed && backup) failed = !(dsp->backup = malloc(DSP_RAM_SIZE)) || io_get(io, dsp->backup, DSP_RAM_SIZE);
+    for (unsigned i = 0; !failed && i < SNX_CTR_DSP_PIPES; ++i) {
+        Pipe* pipe = &dsp->pipes[i];
+        pipe->capacity = pipe->size;
+        failed = pipe->size > STATE_PIPE_MOST ||
+                 (pipe->size && (!(pipe->data = malloc(pipe->size)) || io_get(io, pipe->data, pipe->size)));
+    }
+    for (unsigned i = 0; !failed && i < DSP_SOURCES; ++i)
+        failed = source_get(io, &dsp->sources[i].state) || source_get(io, &dsp->sources[i].backup);
+    for (unsigned i = 0; !failed && i < 2; ++i)
+        failed = delay_get(io, &dsp->mixers.state.delay[i]) || delay_get(io, &dsp->mixers.backup.delay[i]);
+    if (failed) {
+        snx_ctr_dsp_free(dsp);
+        snprintf(why, whysize, "its DSP section is damaged or cut short");
+        return NULL;
+    }
+    /* the AAC decoder opened again as it was opened: what it kept of the stream's last frames is gone */
+    if (aac && !aac_open(dsp)) {
+        snx_ctr_dsp_free(dsp);
+        snprintf(why, whysize, "the DSP's AAC decoder can't be opened again (FFmpeg has no AAC decoder)");
+        return NULL;
+    }
+    return dsp;
 }

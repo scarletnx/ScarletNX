@@ -816,6 +816,11 @@ void snx_ctr_soc_poll(SnxCtrProcess* p) {
     }
 }
 
+unsigned snx_ctr_soc_open(const SnxCtrProcess* p) {
+    unsigned n = 0;
+    for (unsigned i = 0; p->soc && i < SOC_SOCKETS; ++i) n += p->soc->sockets[i].socket != NULL;
+    return n;
+}
 bool snx_ctr_soc_waiting(const SnxCtrProcess* p) {
     if (!p->soc) return false;
     for (unsigned i = 0; i < SOC_WAITS; ++i)

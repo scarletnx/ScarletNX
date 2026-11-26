@@ -745,6 +745,12 @@ if(TARGET snx_ctr_board)
             snx_test_target(snx-test-3ds-fs gnu23)
             target_link_libraries(snx-test-3ds-fs PRIVATE snx_ctr_process)
             add_test(NAME 3ds_filesystem COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_fs.py" $<TARGET_FILE:snx-test-3ds-fs>)
+            # a 3DS game's save state: its process, memory, files, DSP and PICA, saved and loaded
+            add_executable(snx-test-3ds-state 3ds_state.c support/3ds_guest.c)
+            snx_test_target(snx-test-3ds-state gnu23)
+            target_link_libraries(snx-test-3ds-state PRIVATE snx_ctr_process snx_state_file)
+            add_test(NAME 3ds_state COMMAND snx-test-3ds-state)
+            set_tests_properties(3ds_state PROPERTIES TIMEOUT 120 ENVIRONMENT "SDL_AUDIO_DRIVER=dummy")
             add_test(NAME ctr_swipc_validation COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ctr_swipc.py"
                 $<TARGET_FILE:snx-swipc>)
             add_test(NAME 3ds_driver COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_driver.py"

@@ -38,4 +38,11 @@ size_t snx_ctr_dsp_pipe_read(SnxCtrDsp* dsp, unsigned pipe, uint8_t* out, size_t
 /* One audio frame. Returns whether the DSP was on and made one: then frame holds its stereo samples and the audio
    pipe's interrupt has been raised */
 bool snx_ctr_dsp_tick(SnxCtrDsp* dsp, int16_t frame[SNX_CTR_DSP_SAMPLES][2]);
+/* The DSP in a save state (runtime/state.c): its schema; its bytes and heap parts written, 0 or -1; and read back
+   into a new DSP of its own (memory left as it is, the AAC decoder opened again if it was open), or NULL with why */
+struct StateIo;
+uint64_t snx_ctr_dsp_state_schema(void);
+int snx_ctr_dsp_state_save(const SnxCtrDsp* dsp, struct StateIo* io);
+SnxCtrDsp* snx_ctr_dsp_state_parse(SnxCtrMemory* memory, SnxCtrDspInterrupt interrupt, void* context,
+                                   struct StateIo* io, char* why, size_t whysize);
 #endif

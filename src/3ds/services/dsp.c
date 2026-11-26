@@ -34,6 +34,9 @@ uint32_t snx_ctr_dsp_open(SnxCtrProcess* p) {
     p->dsp.next_frame_ns = snx_ctr_now_ns() + SNX_CTR_DSP_FRAME_NS;
     return 0;
 }
+SnxCtrDsp* snx_ctr_dsp_state_open(SnxCtrProcess* p, struct StateIo* io, char* why, size_t whysize) {
+    return snx_ctr_dsp_state_parse(p->memory, dsp_interrupt, p, io, why, whysize);
+}
 void snx_ctr_dsp_close(SnxCtrProcess* p) {
     snx_ctr_dsp_free(p->dsp.core);
     p->dsp.core = NULL;
