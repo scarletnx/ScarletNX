@@ -102,6 +102,32 @@ static int alone(const SnxVpadConsole* pad, const int window[4]) {
     }
     return 0;
 }
+/* the option buttons (minus and plus, Select and Start; Capture and Home) apart from every other control shown: a
+   fortieth of the window's shorter side between their edges at least, not touching */
+static int apart(const SnxVpadConsole* pad, const int window[4]) {
+    static const int options[] = {SNX_VPAD_MINUS, SNX_VPAD_PLUS, SNX_VPAD_CAPTURE, SNX_VPAD_HOME};
+    float gap = 0.025f * vpad_side(window);
+    for (size_t k = 0; k < sizeof options / sizeof *options; ++k)
+        for (int c = 0; c < SNX_VPAD_COUNT; ++c) {
+            int has = !pad, own = !pad;
+            for (int i = 0; pad && i < pad->count; ++i) {
+                has |= pad->pad[i].control == c;
+                own |= pad->pad[i].control == options[k];
+            }
+            if (!has || !own || c == options[k]) continue;
+            float a[4], b[4];
+            vpad_box(options[k], window, a);
+            vpad_box(c, window, b);
+            float dx = fmaxf(b[0] - (a[0] + a[2]), a[0] - (b[0] + b[2])),
+                  dy = fmaxf(b[1] - (a[1] + a[3]), a[1] - (b[1] + b[3]));
+            if (fmaxf(dx, dy) < gap) {
+                fprintf(stderr, "vpad_console: %s and %s %.0f pixels apart in a %dx%d window, under %.0f\n",
+                        vpad_name(options[k]), vpad_name(c), (double)fmaxf(dx, dy), window[2], window[3], (double)gap);
+                return 1;
+            }
+        }
+    return 0;
+}
 /* The Switch's own in a window taller than wide (a phone upright): the Vita's arrangement under the picture, ZL and ZR
    over L and R, minus and plus beside them, Capture and Home at the foot, each button pressed alone; turned back,
    the wide places as before; and a place the game's .ini gave stays in both, as the player put it */
@@ -118,11 +144,11 @@ static int switch_tall(void) {
     CHECK(at[SNX_VPAD_STICK_L].x == snx_vpad_vita.pad[5].tall.x &&
           at[SNX_VPAD_STICK_L].y == snx_vpad_vita.pad[5].tall.y);
     CHECK(at[SNX_VPAD_HOME].y > 0.9f && at[SNX_VPAD_CAPTURE].y > 0.9f);
-    if (alone(NULL, tall)) return 1;
+    if (alone(NULL, tall) || apart(NULL, tall)) return 1;
     l.n = 0;
     CHECK(vpad_draw(&l, wide, 2) == VPAD_DRAW_LAID);
     for (int c = 0; c < SNX_VPAD_COUNT; ++c) CHECK(at[c].x == g_switch.at[c].x && at[c].y == g_switch.at[c].y);
-    if (alone(NULL, wide)) return 1;
+    if (alone(NULL, wide) || apart(NULL, wide)) return 1;
     CHECK(vpad_ini("controls_a", "0.400 0.300 100"));
     l.n = 0;
     CHECK(vpad_draw(&l, tall, 2) == VPAD_DRAW_LAID && at[SNX_VPAD_A].x == 0.4f && at[SNX_VPAD_A].y == 0.3f);
@@ -160,7 +186,7 @@ static int switch_places(void) {
                           fabsf(y - (0.64f + 0.36f * g_switch.at[o->control].y)) < 0.001f);
                 CHECK(at[o->control].x == x && at[o->control].y == y);
             }
-            if (alone(c, window)) return 1;
+            if (alone(c, window) || apart(c, window)) return 1;
             int left = stick && !t ? SNX_VPAD_STICK_L : stick ? SNX_VPAD_STICK_L : SNX_VPAD_DPAD;
             CHECK(at[SNX_VPAD_L].y < at[left].y && fabsf(at[SNX_VPAD_L].x - at[left].x) < 0.07f);
             CHECK(at[SNX_VPAD_R].y < at[SNX_VPAD_A].y && fabsf(at[SNX_VPAD_R].x - at[SNX_VPAD_A].x) < 0.11f);

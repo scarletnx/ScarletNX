@@ -35,10 +35,10 @@ typedef struct {
     ROW(R, "R", LOOK(UI_SHAPE_ROUND, "R", WIDE), KIND_BUTTON, 7, 0.26f, 0.91f, 0.21f, 0.840f, 0.670f)                  \
     ROW(ZL, "ZL", LOOK(UI_SHAPE_ROUND, "ZL", WIDE), KIND_BUTTON, 8, 0.26f, 0.09f, 0.08f, 0.160f, 0.615f)               \
     ROW(ZR, "ZR", LOOK(UI_SHAPE_ROUND, "ZR", WIDE), KIND_BUTTON, 9, 0.26f, 0.91f, 0.08f, 0.840f, 0.615f)               \
-    ROW(MINUS, "-", LOOK(UI_SHAPE_CIRCLE, "-", 1), KIND_BUTTON, 11, 0.07f, 0.25f, 0.07f, 0.330f, 0.670f)               \
-    ROW(PLUS, "+", LOOK(UI_SHAPE_CIRCLE, "+", 1), KIND_BUTTON, 10, 0.07f, 0.75f, 0.07f, 0.670f, 0.670f)                \
-    ROW(CAPTURE, "Capture", LOOK(UI_SHAPE_ROUND, "\x07", 1), KIND_BUTTON, -1, 0.07f, 0.36f, 0.90f, 0.450f, 0.965f)     \
-    ROW(HOME, "Home", LOOK(UI_SHAPE_CIRCLE, "\x7f", 1), KIND_BUTTON, -1, 0.07f, 0.64f, 0.90f, 0.580f, 0.965f)          \
+    ROW(MINUS, "-", LOOK(UI_SHAPE_CIRCLE, "-", 1), KIND_BUTTON, 11, 0.07f, 0.25f, 0.07f, 0.360f, 0.670f)               \
+    ROW(PLUS, "+", LOOK(UI_SHAPE_CIRCLE, "+", 1), KIND_BUTTON, 10, 0.07f, 0.75f, 0.07f, 0.640f, 0.670f)                \
+    ROW(CAPTURE, "Capture", LOOK(UI_SHAPE_ROUND, "\x07", 1), KIND_BUTTON, -1, 0.07f, 0.36f, 0.90f, 0.460f, 0.965f)     \
+    ROW(HOME, "Home", LOOK(UI_SHAPE_CIRCLE, "\x7f", 1), KIND_BUTTON, -1, 0.07f, 0.64f, 0.90f, 0.558f, 0.965f)          \
     ROW(L3, "L3", LOOK(UI_SHAPE_CIRCLE, "L3", TALL), KIND_BUTTON, 4, 0.155f, 0.25f, 0.36f, 0.350f, 0.745f)             \
     ROW(R3, "R3", LOOK(UI_SHAPE_CIRCLE, "R3", TALL), KIND_BUTTON, 5, 0.155f, 0.64f, 0.62f, 0.520f, 0.870f)             \
     ROW(DPAD, "D-pad", LOOK(UI_SHAPE_CROSS, "", 1), KIND_DPAD, -1, 0.25f, 0.23f, 0.78f, 0.270f, 0.935f)                \
@@ -391,7 +391,7 @@ void vpad_settings(const char* folder, const char* name, int argc, char** argv) 
 
 /* a control's rectangle (x, y, w, h) on a clear part of safe: its look's shape, its longer side size */
 float vpad_side(const int safe[4]) { return (float)(safe[2] < safe[3] ? safe[2] : safe[3]); }
-static void box(int c, const int safe[4], float r[4]) {
+void vpad_box(int c, const int safe[4], float r[4]) {
     float shorter = vpad_side(safe), aspect = INFO[c].aspect;
     float scale = shorter * (float)(g_settings.controls_scale + 50) / 100 * (float)g_vpad.at[c].size / 100;
     float side = INFO[c].size * scale;
@@ -410,7 +410,7 @@ static int hit(float x, float y, const int safe[4]) {
     int c;
     float r[4];
     for (c = SNX_VPAD_COUNT - 1; c >= 0; --c) {
-        box(c, safe, r);
+        vpad_box(c, safe, r);
         if (has(c) && g_settings.control_shown[c] && inside(r, x, y)) return c;
     }
     return -1;
@@ -428,7 +428,7 @@ static void buzz(void) {
 static void dpad_at(int c, float x, float y, const int safe[4]) {
     float r[4], ax, ay;
     u32 was = g_dpad;
-    box(c, safe, r);
+    vpad_box(c, safe, r);
     ax = (x - r[0] - r[2] / 2) / (r[2] / 2);
     ay = (y - r[1] - r[3] / 2) / (r[3] / 2);
     g_dpad = (ax < -DEADZONE ? DPAD_LEFT : 0) | (ax > DEADZONE ? DPAD_RIGHT : 0) | (ay < -DEADZONE ? DPAD_UP : 0) |
@@ -438,7 +438,7 @@ static void dpad_at(int c, float x, float y, const int safe[4]) {
 static void stick_at(int c, float x, float y, const int safe[4]) {
     float r[4], ax, ay, len;
     int s = stick_of(c);
-    box(c, safe, r);
+    vpad_box(c, safe, r);
     ax = (x - (float)safe[0] - g_middle[s][0] * (float)safe[2]) / (r[2] / 2);
     ay = (y - (float)safe[1] - g_middle[s][1] * (float)safe[3]) / (r[3] / 2);
     len = sqrtf(ax * ax + ay * ay);
@@ -489,7 +489,7 @@ static int edit_down(Finger* f, float x, float y, const int safe[4]) {
     f->control = hit(x, y, safe);
     g_selected = f->control;
     if (f->control >= 0) {
-        box(f->control, safe, r);
+        vpad_box(f->control, safe, r);
         f->cx = r[0] + r[2] / 2 - x;
         f->cy = r[1] + r[3] / 2 - y;
     }
@@ -527,7 +527,7 @@ int vpad_down(u64 id, float x, float y, const int safe[4]) {
     } else if (INFO[c].kind == KIND_STICK) {
         int s = stick_of(c);
         float r[4], mx = g_vpad.at[c].x, my = g_vpad.at[c].y;
-        box(c, safe, r);
+        vpad_box(c, safe, r);
         if (g_console) { /* where it is drawn, whole in the window */
             mx = (r[0] + r[2] / 2 - (float)safe[0]) / (float)safe[2];
             my = (r[1] + r[3] / 2 - (float)safe[1]) / (float)safe[3];
@@ -684,7 +684,7 @@ static void edit_draw(SnxUiList* l, const int safe[4]) {
             ui_fill(l, (float)safe[0], v, (float)safe[2], 1, UI_WHITE);
     }
     if (g_selected >= 0) {
-        box(g_selected, safe, r);
+        vpad_box(g_selected, safe, r);
         outline(l, r, (float)(2 * s), UI_PICKED);
     }
     bar(safe, b);
@@ -751,7 +751,7 @@ static void controls_draw(SnxUiList* l, const int safe[4]) {
     if (g_edit) edit_draw(l, safe);
     for (c = 0; c < SNX_VPAD_COUNT; ++c) {
         if (!has(c) || !g_settings.control_shown[c]) continue;
-        box(c, safe, r);
+        vpad_box(c, safe, r);
         if (INFO[c].kind == KIND_DPAD)
             dpad_draw(l, r, g_dpad);
         else if (INFO[c].kind == KIND_STICK)
