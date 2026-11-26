@@ -490,7 +490,7 @@ typedef struct App {
         data_dir; /* recompiled/, dumps/, work/ and themes/: the driver's too, which gets it as --repo (snx_data_dir) */
     char* checkout;       /* a build tree's menu's checkout (snx_checkout), where an older version kept games/ */
     char* themes_dirs[2]; /* themes/ in the data folder, then beside the GUI */
-    char message[512];
+    char message[4 * 4200]; /* the line under the menu, whole: a few folders' paths in it, as long as theirs are */
     Uint64 keys_done; /* the keys screen's outcome shown since, 0 for none: then the menu by itself */
     bool keys_ok;
     int cols, rows, scale;
