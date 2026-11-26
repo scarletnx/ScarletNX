@@ -2799,14 +2799,7 @@ u64 vk_buf_pending_inspected(void);
    present under vk_lock, where RenderDoc writes each, the game stopped, a thread of its own saying how long). capture:
    whether a capture can be taken (RenderDoc is in the process), and with ask, the frame after the next present
    captured, said in the log and over the game; the renderer's capture. Any thread */
-/* RenderDoc's library, by the name its own program puts in a game it starts: the one load looks for and opens */
-#if defined(_WIN32)
-#define SNX_VK_RENDERDOC_LIBRARY "renderdoc.dll"
-#elif defined(__ANDROID__)
-#define SNX_VK_RENDERDOC_LIBRARY "libVkLayer_GLES_RenderDoc.so"
-#else
-#define SNX_VK_RENDERDOC_LIBRARY "librenderdoc.so"
-#endif
+#include "common/gpu/vk/renderdoc.h" /* SNX_VK_RENDERDOC_LIBRARY, and what the three below give the Switch's */
 void vk_renderdoc_load(void);
 int vk_renderdoc_capture(int ask);
 void vk_renderdoc_present(u64 present);

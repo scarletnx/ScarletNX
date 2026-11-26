@@ -273,4 +273,12 @@ if(TARGET Vulkan::Headers AND TARGET SDL3::SDL3)
         install(TARGETS snx_gpu_driver_hook LIBRARY DESTINATION lib/${ANDROID_ABI})
         install(FILES gpu/vk/ADRENOTOOLS-NOTICE.txt DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/scarletnx)
     endif()
+    # RenderDoc's captures of a console's frames (gpu/vk/renderdoc.c): RenderDoc's in-application API header, the stats'
+    # box's lines about it (snx_vpad's stats.c) and the settings that name its captures
+    add_library(snx_vk_renderdoc STATIC gpu/vk/renderdoc.c)
+    set_target_properties(snx_vk_renderdoc PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
+    target_compile_options(snx_vk_renderdoc PRIVATE -Wall -Wextra -Werror=missing-prototypes)
+    target_compile_definitions(snx_vk_renderdoc PRIVATE VK_NO_PROTOTYPES)
+    target_include_directories(snx_vk_renderdoc PRIVATE "${renderdoc_app_SOURCE_DIR}" "${PROJECT_BINARY_DIR}/generated")
+    target_link_libraries(snx_vk_renderdoc PUBLIC snx_vk_common snx_vpad snx_settings_runtime)
 endif()

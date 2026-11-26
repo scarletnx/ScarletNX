@@ -3644,7 +3644,8 @@ if(NOT SNX_TOOLS_ONLY)
     # renderdoc= without the library, RenderDoc's program that started the game, and renderdoc= loading it; the capture
     # key's capture and renderdoc_frames', what the stats box is told, the notices over the game and the write's
     # progress lines (a thread the test lets tick), and RenderDoc's own captures. A process each
-    add_executable(snx-test-vk-renderdoc vk_renderdoc.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/renderdoc.c")
+    add_executable(snx-test-vk-renderdoc vk_renderdoc.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/renderdoc.c"
+        "${PROJECT_SOURCE_DIR}/src/common/gpu/vk/renderdoc.c")
     snx_test_target(snx-test-vk-renderdoc gnu23)
     target_link_libraries(snx-test-vk-renderdoc PRIVATE snx_nx_flags)
     foreach(case none missing started setting write theirs)
