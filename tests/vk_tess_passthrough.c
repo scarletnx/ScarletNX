@@ -115,16 +115,24 @@ int main(int argc, char** argv) {
             if (snprintf(path, sizeof path, "%s/tess-passthrough-%u.spv", argv[1], c) >= (int)sizeof path) return 1;
             FILE* file = fopen(path, "wb");
             if (!file || fwrite(code, 4, words, file) != words || fclose(file)) return 1;
-            /* the validator, the second argument, takes the module (Vulkan 1.3, the renderer's) */
+            /* the validator, the second argument, takes the module (Vulkan 1.3, the renderer's). Windows' cmd
+               strips the first and the last quote of a command that starts with one: the whole of it quoted again */
+#if defined(_WIN32)
+            const char* form = "\"\"%s\" --target-env vulkan1.3 \"%s\"\"";
+#else
+            const char* form = "\"%s\" --target-env vulkan1.3 \"%s\"";
+#endif
             char cmd[8300];
-            if (argc == 3 &&
-                snprintf(cmd, sizeof cmd, "\"%s\" --target-env vulkan1.3 \"%s\"", argv[2], path) < (int)sizeof cmd &&
-                system(cmd) != 0) {
-                fprintf(stderr,
-                        "vk_tess_passthrough: case %u (%u vertices, attributes %#x, point size %u, clips %u) "
-                        "is not valid SPIR-V: %s\n",
-                        c, cases[c].vertices, cases[c].mask, cases[c].point_size, cases[c].clips, path);
-                return 1;
+            if (argc == 3 && snprintf(cmd, sizeof cmd, form, argv[2], path) < (int)sizeof cmd) {
+                int status = system(cmd);
+                if (status != 0) {
+                    fprintf(stderr,
+                            "vk_tess_passthrough: case %u (%u vertices, attributes %#x, point size %u, clips %u): %s "
+                            "did not pass %s (system() gave %d)\n",
+                            c, cases[c].vertices, cases[c].mask, cases[c].point_size, cases[c].clips, argv[2], path,
+                            status);
+                    return 1;
+                }
             }
         }
         free(code);
