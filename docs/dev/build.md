@@ -405,6 +405,9 @@ file in `hash`; CPMUtil's [documentation](https://git.crueter.xyz/CMake/CPMUtil/
 gives the other fields. The file is in CPMUtil's form, which `jq --indent 4 -S . cpmfile.json` or
 `python3 -m json.tool --indent 4 --sort-keys cpmfile.json` writes.
 
+The tests' reference values are the package test-references (scarletnx/test-references, fetched only with the tests);
+`-DCPM_test-references_SOURCE=<a clone>` reads a local copy instead, where the recording scripts write.
+
 To update a package:
 
 1. Change its `version`, and its `artifact` or `url` where they name it (`%VERSION%` in an artifact, or
