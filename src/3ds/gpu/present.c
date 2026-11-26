@@ -99,6 +99,7 @@ static struct {
         console_frames; /* the console's frames: the top screen's, or the bottom's until the first top screen frame */
     uint64_t unshown;      /* the shows that found every image of their window on the display */
     int state_ask;         /* a save states' key (HOTKEY_SAVE_STATE...) plus 1, done between two dispatches; 0 none */
+    bool dump;             /* the thread dump's key (F5): the threads listed between two dispatches */
     int pace;              /* the clock's pace as the keys last left it (common/utilities/vpad_sdl.h) */
     char* game;            /* the game's folder with its separator, whose captures/ a screenshot goes in */
     SDL_FingerID finger;   /* the finger holding the touch screen, while one does (by_finger) */
@@ -591,6 +592,8 @@ static void key_action(int action) {
     char path[1024];
     if (action == HOTKEY_SAVE_STATE || action == HOTKEY_LOAD_STATE || action == HOTKEY_NEXT_SLOT)
         g_present.state_ask = action + 1;
+    else if (action == HOTKEY_THREAD_DUMP)
+        g_present.dump = true;
     else if (action == HOTKEY_SCREENSHOT) {
         snx_capture_path(path, sizeof path - 4, g_present.game ? g_present.game : "./");
         strcat(path, ".ppm");
@@ -616,6 +619,11 @@ static void pump(void) {
     }
     int pace = snx_vpad_window_pace();
     if (g_present.keys && pace != g_present.pace) snx_ctr_clock_set_pace(g_present.pace = pace); /* F4 */
+}
+bool snx_ctr_present_dump_asked(void) {
+    bool asked = g_present.dump;
+    g_present.dump = false;
+    return asked;
 }
 int snx_ctr_present_state_ask(void) {
     int ask = g_present.state_ask - 1;

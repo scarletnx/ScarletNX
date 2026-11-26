@@ -79,6 +79,8 @@ bool snx_ctr_present_thumb(uint8_t* thumb);
 void snx_ctr_present_keys(struct SDL_Window* window, const char* ini);
 /* a save states' key pressed since the last call (HOTKEY_SAVE_STATE, _LOAD_STATE, _NEXT_SLOT), -1 for none */
 int snx_ctr_present_state_ask(void);
+/* whether the thread dump's key (F5) was pressed since the last call: the run lists its threads between dispatches */
+bool snx_ctr_present_dump_asked(void);
 /* A line for the run's summary on the standard output: each screen's frames decoded, and what the GPU's work took of
    the RAM (vk_render.h's snx_ctr_vk_traffic). Nothing before init */
 void snx_ctr_present_report(void);

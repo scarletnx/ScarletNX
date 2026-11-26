@@ -18,6 +18,8 @@ bool vita_present_vblank(VitaProcess* p);
    slot) and the unattended saves and loads due at ms of the run's clock (state_save, state_load), as a Switch game's,
    in states/ of the game's folder; the framebuffer shown their picture */
 void vita_present_states(VitaProcess* p, uint64_t ms);
+/* whether the thread dump's key (F5) was pressed since the last call: the run lists its threads between two slices */
+bool vita_present_dump_asked(void);
 /* the screenshot of the framebuffer shown last, at the end of the run */
 void vita_present_shot(VitaProcess* p);
 void vita_present_free(void);

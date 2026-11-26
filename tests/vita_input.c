@@ -247,6 +247,9 @@ static int controls(SDL_Window* window, const char* dir, const char* ini) {
         free(captures);
         free(mem);
     }
+    /* F5: the threads listed by the run between two slices, once */
+    CHECK(!vita_present_dump_asked() && vpad_test_key(window, SDLK_F5) && !vblank());
+    CHECK(vita_present_dump_asked() && !vita_present_dump_asked());
     /* F7 and F8: the game saved to slot 1 between two slices, in states/ of its folder, and loaded back: a word of its
        memory changed after the save is the saved one again */
     {

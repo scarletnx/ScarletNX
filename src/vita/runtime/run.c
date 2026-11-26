@@ -445,6 +445,10 @@ int vita_run(VitaProcess* p, double seconds) {
     bool vblank_late = false; /* this vblank waited for a frame: the next one is due a period after it */
     while (!p->exited) {
         vita_present_states(p, (plat_ns() - start) / 1000000u); /* between two slices: no thread runs */
+        if (vita_present_dump_asked()) {                        /* F5, as a Switch game's thread dump */
+            printf("Threads (the thread dump's key):\n");
+            report_threads(p);
+        }
         uint64_t now = plat_ns(), wake;
         if (now >= p->display.next_ns && vblank_waits(p, now)) vblank_late = true;
         else if (now >= p->display.next_ns) {
