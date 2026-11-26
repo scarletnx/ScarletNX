@@ -110,7 +110,7 @@ const SnxConsoleSetting g_console_settings[] = {
     {"astc_background", OTHERS(NA(SWITCH_GPU))},
     {"vk_<extension>"},
     /* Audio */
-    {"volume", {[V] = LATER(SOON), [G] = LATER(SOON), [D] = LATER(SOON)}},
+    {"volume"},
     /* Performance */
     {"fps_limit"},
     {"frame_rate", OTHERS(NA(SWITCH_OS))},

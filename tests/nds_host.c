@@ -183,7 +183,12 @@ int main(void) {
     if (opened && !failed) {
         SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "offscreen"); /* SDL_Quit, as a host closes, drops the hints */
         SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "dummy");
+        g_settings.volume = 40; /* the player's Volume on the game's sound, as a Switch game's */
         host = nds_host_open(NULL, "nds_host", ini, NULL, 0, 1, error, sizeof error);
+        if (!host || nds_host_volume(host) < 0.39f || nds_host_volume(host) > 0.41f) {
+            fprintf(stderr, "nds_host: volume=40 plays at a gain of %.2f, not 0.40\n", nds_host_volume(host));
+            failed = 1;
+        }
         SDL_Window* window = host && nds_vk() ? nds_vk()->host.window : NULL;
         if (!window || !SDL_SyncWindow(window) || !(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN)) {
             fprintf(stderr, "nds_host: the window opened with fullscreen is not fullscreen (%s)\n", host ? "" : error);

@@ -9,8 +9,10 @@
 #include "common/utilities/pad_sdl.h"
 #include "common/utilities/hotkeys.h"
 #include "common/utilities/vpad_sdl.h"
+#include "common/utilities/audio_volume.h"
 #include "common/utilities/window_fullscreen.h"
 #include "common/utilities/window_icon.h"
+#include "snx_settings.h"
 #include <SDL3/SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -194,9 +196,14 @@ AgbHost* agb_host_open(const char* title, const char* ini, bool fullscreen, char
         fprintf(stderr, "scarletnx-agb: no sound: %s\n", SDL_GetError());
         if (host->audio) SDL_DestroyAudioStream(host->audio);
         host->audio = NULL;
-    }
+    } else if (!snx_audio_volume_open(host->audio, g_settings.volume, why, sizeof why)) /* the player's Volume */
+        fprintf(stderr, "scarletnx-agb: %s\n", why);
     host->due = SDL_GetTicksNS() + FRAME_NS;
     return host;
+}
+
+float agb_host_volume(const AgbHost* host) {
+    return host && host->audio ? SDL_GetAudioDeviceGain(SDL_GetAudioStreamDevice(host->audio)) : -1;
 }
 
 void agb_host_close(AgbHost* host) {
