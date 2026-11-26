@@ -231,7 +231,7 @@ a take would copy. A texture with holes in its mapping (`piecewise`) hosts nothi
 
 An A/B/B/A of the race with all of the above, 2026-11-25:
 
-| `rt_hosting` | fps (median) | GPU busy a present | Copy gaps a present | Takes a present |
+| Hosting | fps (median) | GPU busy a present | Copy gaps a present | Takes a present |
 | --- | --- | --- | --- | --- |
 | 0 | 81.2, 70.9 | 7.61, 7.82 ms | 1.10, 1.16 ms | 101, 99 |
 | 1 | 83.0, 86.4 | 7.29, 7.00 ms | 0.76, 0.79 ms | 0.7, 0.5 |
@@ -249,6 +249,17 @@ An A/B/B/A of the race, 2026-11-24:
 
 With the padded targets hosted too, the drawn targets taken fell to about 11 a present, and the storage surfaces stay
 at 19.
+
+After the rebase on main of 2026-11-25, an A/B/B/A of the race (main's changes made the race slower with hosting off,
+see below):
+
+| Hosting | fps (median) | GPU busy a present | Copy gaps a present | Takes a present |
+| --- | --- | --- | --- | --- |
+| 0 | 52.4, 59.3 | 8.53, 8.47 ms | 2.99, 2.59 ms | 96, 98 |
+| 1 | 59.8, 64.5 | 7.87, 7.66 ms | 2.13, 2.07 ms | 5.5, 5.5 |
+
+A Switch game's world (a load into an outpost) took 31.7 targets a present with hosting off and 0.1 with it on, at 60
+to 66 fps off and 66 to 70 on, one run each.
 
 Sync validation found no new hazard, and the screenshots match. About half of the hosted targets stay hosted. The
 others go back when their texture's image is remade or freed, and the next take hosts them again. A Switch game
