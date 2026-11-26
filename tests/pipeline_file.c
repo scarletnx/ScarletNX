@@ -35,7 +35,7 @@ int plat_cpus(int* ids, int max) {
 /* the test's file and the temporary one a rewrite makes, for a failing check to leave neither */
 static void cleanup(void) {
     char tmp[64];
-    snprintf(tmp, sizeof tmp, "%s.%u.tmp", PATH, pf_pid());
+    snprintf(tmp, sizeof tmp, "%s.%u.tmp", PATH, snx_prep_pid());
     remove(PATH);
     remove(tmp);
 }
@@ -255,7 +255,7 @@ static void mapped(void) {
     {
         char name[64];
         FILE* tmp;
-        snprintf(name, sizeof name, "%s.%u.tmp", PATH, pf_pid());
+        snprintf(name, sizeof name, "%s.%u.tmp", PATH, snx_prep_pid());
         tmp = fopen(name, "rb");
         CHECK(!tmp); /* removed */
     }
@@ -780,7 +780,7 @@ static int unit_list(const u8* d, size_t n, size_t at, u64* unit, int* tail) {
 }
 /* the record at at given another check, for its payload as it now is */
 static void recheck(u8* d, size_t at) {
-    u64 h = pf_end(pf_mix(pf_start(pf_get32(d + at), pf_get32(d + at + 4)), d + at + PF_REC, pf_get32(d + at + 4)));
+    u64 h = snx_prep_check(pf_get32(d + at), d + at + PF_REC, pf_get32(d + at + 4));
     memcpy(d + at + 8, &h, 8);
 }
 /* a file of UNIT_N shaders, packed: its bytes, its header's size, its units and the shader and pipeline records each
@@ -1183,7 +1183,7 @@ static void zipped(void) {
         CHECK(each_got.n == 3 && !pf_payload(&pf, at[0], &len, &check, &owned) && !owned);
         if (way == 0) snprintf(want, sizeof want, "says %u bytes packed to %u,", raw + 8, packed);
         if (way == 1) snprintf(want, sizeof want, "says %u bytes packed to %u,", raw, packed - 8);
-        if (way == 2) snprintf(want, sizeof want, "unpacks to 0 bytes, not %u (", raw);
+        if (way == 2) snprintf(want, sizeof want, "does not unpack to its %u bytes: zstd: ", raw);
         CHECK(way == 3 ? !logged[0] : strstr(logged, want) != NULL);
         CHECK(pf_payload(&pf, at[2], &len, &check, &owned));
         plat_file_unmap(&pf.view);
@@ -1514,11 +1514,11 @@ static void driver_files(void) {
                          "file, bbbb now; driver 100 in the file, 200 now)"));
     close_file(&pf);
     /* a key's build has spaces, and the guest part and the rest both name sizes: each is compared with its own */
-    CHECK(pf_key_diff(why, sizeof why, key_a, strlen(key_a), key_a) == 0 && !why[0]);
-    CHECK(pf_key_diff(why, sizeof why, key_a, strlen(key_a),
-                      "guest=5 gpu=5143:44050001 features=aaaa caps=11; ScarletNX two driver=100 sizes=1") == 1 &&
+    CHECK(snx_prep_key_diff(why, sizeof why, key_a, strlen(key_a), key_a) == 0 && !why[0]);
+    CHECK(snx_prep_key_diff(why, sizeof why, key_a, strlen(key_a),
+                            "guest=5 gpu=5143:44050001 features=aaaa caps=11; ScarletNX two driver=100 sizes=1") == 1 &&
           !strcmp(why, "build ScarletNX one in the file, ScarletNX two now"));
-    CHECK(pf_key_diff(why, sizeof why, "a=1 b=2", 7, "a=1 c=3") == 2 &&
+    CHECK(snx_prep_key_diff(why, sizeof why, "a=1 b=2", 7, "a=1 c=3") == 2 &&
           !strcmp(why, "b 2 in the file, none now; c none in the file, 3 now"));
     /* the shared file of before, made by the system's driver: copied once to a driver's file, left as it was */
     open_path(&pf, legacy, key_a, loaded);

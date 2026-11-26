@@ -185,6 +185,13 @@ if(TARGET snx_zstd)
     add_library(snx_state_file STATIC "${PROJECT_SOURCE_DIR}/src/common/utilities/state_file.c")
     target_link_libraries(snx_state_file PUBLIC scarletnx-common PRIVATE snx_zstd)
     target_compile_options(snx_state_file PRIVATE -Wall -Wextra -Werror=missing-prototypes)
+    # A renderer's file of what it made, kept for the next run (gpu/vk/prepared.h): the Switch's shaders and pipelines,
+    # a console's prepared shaders
+    add_library(snx_prepared STATIC gpu/vk/prepared.c)
+    set_target_properties(snx_prepared PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+    target_compile_options(snx_prepared PRIVATE -pedantic-errors -Wall -Wextra -Werror=missing-prototypes
+                                                -Werror=missing-variable-declarations)
+    target_link_libraries(snx_prepared PUBLIC scarletnx-common PRIVATE snx_zstd)
 endif()
 include("${PROJECT_SOURCE_DIR}/cmake/console_settings.cmake") # which settings each console takes
 include("${PROJECT_SOURCE_DIR}/cmake/vpad.cmake") # the on-screen controls (snx_vpad)

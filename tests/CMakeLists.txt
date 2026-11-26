@@ -3586,7 +3586,7 @@ if(NOT SNX_TOOLS_ONLY)
     # read through its mapping
     add_executable(snx-test-pipeline-file pipeline_file.c tracy_stubs.c)
     snx_test_target(snx-test-pipeline-file gnu23)
-    target_link_libraries(snx-test-pipeline-file PRIVATE snx_nx_flags snx_zstd scarletnx-common snx_vk_common)
+    target_link_libraries(snx-test-pipeline-file PRIVATE snx_nx_flags snx_zstd scarletnx-common snx_vk_common snx_prepared)
     add_test(NAME pipeline_file COMMAND snx-test-pipeline-file)
     add_executable(snx-test-vk-pipeline-probe-flags vk_pipeline_probe_flags.c)
     snx_test_target(snx-test-vk-pipeline-probe-flags gnu23)

@@ -8,6 +8,7 @@
 #include <string.h>
 #include <zstd.h>
 #include <stdatomic.h>
+#include "common/gpu/vk/prepared.h"
 #include "common/platform/time.h"
 #include "common/utilities/common.h"
 #include "nx/runtime/platform/log.h"
@@ -16,7 +17,6 @@
 #include "nx/gpu/vk/pipeline_file.h"
 #if !defined(_WIN32)
 #include <pthread.h> /* pf_save's workers */
-#include <unistd.h>  /* getpid */
 #endif
 #if defined(__linux__) && !defined(__ANDROID__)
 #include <sys/mman.h> /* posix_madvise */
@@ -45,27 +45,8 @@ typedef struct {
 /* a PF_ZSHADER's frame starts at a multiple of 8, as the PfShader's fields are read in place */
 typedef char pf_check_shader_size[sizeof(PfShader) % 8 == 0 && sizeof(PfZip) == 8 ? 1 : -1];
 
-/* the check of a payload: words of it after its type and size (FNV-1a over 32-bit words, with a last mix) */
-static u64 pf_mix(u64 h, const void* p, size_t n) {
-    const u8* b = (const u8*)p;
-    size_t i;
-    for (i = 0; i + 4 <= n; i += 4) {
-        u32 w;
-        memcpy(&w, b + i, 4);
-        h = (h ^ w) * 0x100000001B3ull;
-    }
-    return h;
-}
-static u64 pf_start(u32 type, u32 size) {
-    u64 h = 0xCBF29CE484222325ull;
-    h = (h ^ type) * 0x100000001B3ull;
-    return (h ^ size) * 0x100000001B3ull;
-}
-static u64 pf_end(u64 h) {
-    h ^= h >> 31;
-    h *= 0x9E3779B97F4A7C15ull;
-    return h ^ (h >> 29);
-}
+/* the records' framing and checks are every prepared file's (common/gpu/vk/prepared.h) */
+static_assert(PF_REC == SNX_PREP_REC);
 static u32 pf_get32(const u8* p) {
     u32 v;
     memcpy(&v, p, 4);
@@ -94,7 +75,7 @@ static void* pf_check_worker(void* arg) {
         size_t at = c->at[job], end = c->at[job + 1];
         while (at < end) {
             u32 type = pf_get32(c->bytes + at), len = pf_get32(c->bytes + at + 4);
-            u64 h = pf_end(pf_mix(pf_start(type, len), c->bytes + at + PF_REC, len));
+            u64 h = snx_prep_check(type, c->bytes + at + PF_REC, len);
             if (h != pf_get64(c->bytes + at + 8)) break;
             at += PF_REC + len;
         }
@@ -166,18 +147,7 @@ static void pf_map_add(PFile* pf, u64 module, u32 rec, u64 check) {
 }
 
 /* the header for key, malloc'd, its size a multiple of 8 */
-static u8* pf_header(const char* key, size_t* size) {
-    size_t n = strlen(key), total = (16 + n + 7) & ~(size_t)7;
-    u8* h = (u8*)calloc(1, total);
-    u32 v = PF_VERSION, len = (u32)n;
-    if (!h) return NULL;
-    memcpy(h, PF_MAGIC, 8);
-    memcpy(h + 8, &v, 4);
-    memcpy(h + 12, &len, 4);
-    memcpy(h + 16, key, n);
-    *size = total;
-    return h;
-}
+static u8* pf_header(const char* key, size_t* size) { return snx_prep_header(PF_MAGIC, PF_VERSION, key, size); }
 
 /* one unit of the records being saved: n bytes of them at raw, and the record that packs them (total 0: they are
    written as they are, as records that don't come out smaller are); done once it is either, not when a stop came first */
@@ -234,7 +204,7 @@ static void pf_save_unit(PFile* pf, PfSaveUnit* k, ZSTD_CCtx* z) {
     k->u.packed = (u32)packed;
     memcpy(k->rec + PF_REC, &k->u, sizeof k->u);
     memset(k->rec + PF_REC + sizeof k->u + packed, 0, total - PF_REC - sizeof k->u - packed);
-    u64 h = pf_end(pf_mix(pf_start(type, len), k->rec + PF_REC, len));
+    u64 h = snx_prep_check(type, k->rec + PF_REC, len);
     memcpy(k->rec, &type, 4);
     memcpy(k->rec + 4, &len, 4);
     memcpy(k->rec + 8, &h, 8);
@@ -388,13 +358,8 @@ static int pf_append(PFile* pf, u32 type, const void* const* piece, const size_t
         pf->f = NULL;
         return -1;
     }
+    h = snx_prep_head(head, type, piece, len, pieces);
     size = (u32)(payload + pad);
-    h = pf_start(type, size);
-    for (i = 0; i < pieces; i++) h = pf_mix(h, piece[i], len[i]);
-    h = pf_end(pf_mix(h, zero, pad));
-    memcpy(head, &type, 4);
-    memcpy(head + 4, &size, 4);
-    memcpy(head + 8, &h, 8);
     if (pf->open) {
         u8* at;
         const u64 held_max = pf->held_max;
@@ -456,28 +421,21 @@ static int pf_append(PFile* pf, u32 type, const void* const* piece, const size_t
    NULL when it can't be, or wouldn't make the record smaller, and the record is written as it is. On the caller's
    thread, before the file's lock */
 static u8* pf_zip(const PfShader* s, const u32* cbr, const u32* spv, PfZip* z) {
-    size_t ncbr = (size_t)s->ncbr * 16, raw = ncbr + (size_t)s->nspv * 4, bound = ZSTD_compressBound(raw), packed;
-    u8 *in = (u8*)malloc(raw), *out = in ? (u8*)malloc(bound + 8) : NULL;
-    if (!out) {
-        LOG("vulkan: no memory to pack a shader of %zu bytes: it is written unpacked\n", raw);
-        free(in);
+    size_t ncbr = (size_t)s->ncbr * 16, raw = ncbr + (size_t)s->nspv * 4, packed = 0;
+    u8 *in = (u8*)malloc(raw), *out;
+    const char* why = "no memory";
+    if (!in) {
+        LOG("vulkan: cannot pack a shader of %zu bytes (%s): it is written unpacked\n", raw, why);
         return NULL;
     }
     memcpy(in, cbr, ncbr);
     memcpy(in + ncbr, spv, raw - ncbr);
-    packed = ZSTD_compress(out, bound, in, raw, PF_ZSHADER_LEVEL);
+    out = snx_prep_pack(in, raw, PF_ZSHADER_LEVEL, sizeof *z, &packed, &why);
     free(in);
-    if (ZSTD_isError(packed)) {
-        LOG("vulkan: zstd can't pack a shader of %zu bytes (%s): it is written unpacked\n", raw,
-            ZSTD_getErrorName(packed));
-        free(out);
+    if (!out) {
+        if (why) LOG("vulkan: cannot pack a shader of %zu bytes (%s): it is written unpacked\n", raw, why);
         return NULL;
     }
-    if (sizeof *z + ((packed + 7) & ~(size_t)7) >= raw) { /* a small one: the frame's own bytes outweigh it */
-        free(out);
-        return NULL;
-    }
-    memset(out + packed, 0, ((packed + 7) & ~(size_t)7) - packed);
     z->raw = (u32)raw;
     z->packed = (u32)packed;
     return out;
@@ -549,7 +507,8 @@ void pf_pipe(PFile* pf, const u64 modules[5], const void* key, u32 keylen) {
     pm_unlock(&pf->lock);
 }
 
-/* in one piece padded to 8: pf_mix takes whole words of each piece, and the key and the program are of any size */
+/* in one piece padded to 8: the check (snx_prep_mix) takes whole words of each piece, and the key and the program
+   are of any size */
 void pf_cspipe(PFile* pf, const PfCsPipe* c, const u32* cbr, const void* key, const u8* code) {
     size_t at = sizeof *c + (size_t)c->ncbr * 16, n = (at + (c->nkey + 7u) / 8 * 8 + c->ncode + 7u) & ~(size_t)7;
     u8* payload = calloc(1, n);
@@ -741,10 +700,10 @@ static int pf_retake(PfReader* r, u32 type, const u8* p, u32 len, u64 h, const P
 static void pf_unit_job(PfSlot* s, int checked) {
     u32 len = pf_get32(s->at + 4), records = 0, shaders = 0;
     const u8* p = s->at + PF_REC;
-    size_t got, at = 0;
+    size_t at = 0;
     PfUnit u;
     s->ok = 0;
-    if (!checked && pf_end(pf_mix(pf_start(PF_UNIT, len), p, len)) != pf_get64(s->at + 8)) return;
+    if (!checked && snx_prep_check(PF_UNIT, p, len) != pf_get64(s->at + 8)) return;
     if (len < sizeof u) return;
     memcpy(&u, p, sizeof u);
     if (u.packed > len - sizeof u || len - sizeof u - u.packed >= 8 || u.raw > PF_MAX) return;
@@ -754,12 +713,11 @@ static void pf_unit_job(PfSlot* s, int checked) {
         if (!(s->raw = (u8*)malloc(u.raw))) return;
         s->cap = u.raw;
     }
-    got = ZSTD_decompress(s->raw, u.raw, p + sizeof u, u.packed);
-    if (ZSTD_isError(got) || got != u.raw) return;
+    if (!snx_prep_unpack(s->raw, u.raw, p + sizeof u, u.packed, NULL, 0)) return;
     for (; u.raw - at >= PF_REC; records++) {
         u32 type = pf_get32(s->raw + at), n = pf_get32(s->raw + at + 4);
         if (n % 8 || n > u.raw - at - PF_REC || type == PF_UNIT ||
-            pf_end(pf_mix(pf_start(type, n), s->raw + at + PF_REC, n)) != pf_get64(s->raw + at + 8))
+            snx_prep_check(type, s->raw + at + PF_REC, n) != pf_get64(s->raw + at + 8))
             return;
         shaders += type == PF_SHADER || type == PF_SHIPREF;
         at += PF_REC + n;
@@ -826,7 +784,7 @@ static size_t pf_walk(PFile* pf, PfReader* r, const u8* buf, size_t at, size_t s
         if (type == PF_UNIT) { /* its check is pf_unit_job's */
             if (pf_unit(pf, r, buf, at, size, checked, load, loaded)) break;
             r->open = at + PF_REC + len;
-        } else if ((!checked && h != pf_end(pf_mix(pf_start(type, len), p, len))) ||
+        } else if ((!checked && h != snx_prep_check(type, p, len)) ||
                    (load->rebuild ? pf_retake(r, type, p, len, h, load, loaded)
                                   : pf_take(pf, r, type, p, len, h, load, loaded)))
             break;
@@ -935,7 +893,7 @@ void pf_open(PFile* pf, const char* path, const char* key, size_t guest, PfLoad*
         SNX_MSG("shader cache miss: another build or driver", sizeof("shader cache miss: another build or driver") - 1);
         SNX_PLOT("vk pipe shader cache miss", 1);
         SNX_PLOT("vk pipe shader cache read bytes", (double)size);
-        pf_key_diff(diff, sizeof diff, (const char*)buf + 16, pf_get32(buf + 12), key);
+        snx_prep_key_diff(diff, sizeof diff, (const char*)buf + 16, pf_get32(buf + 12), key);
         LOG("vulkan: %s is of another build or driver (%s): its shaders are translated again and its pipelines made "
             "again\n",
             path, diff);
@@ -946,7 +904,7 @@ void pf_open(PFile* pf, const char* path, const char* key, size_t guest, PfLoad*
         SNX_PLOT("vk pipe shader cache miss", 1);
         SNX_PLOT("vk pipe shader cache read bytes", (double)size);
         if (buf && size >= 16 && !memcmp(buf, PF_MAGIC, 8) && pf_get32(buf + 12) <= size - 16)
-            pf_key_diff(diff, sizeof diff, (const char*)buf + 16, pf_get32(buf + 12), key);
+            snx_prep_key_diff(diff, sizeof diff, (const char*)buf + 16, pf_get32(buf + 12), key);
         else
             snprintf(diff, sizeof diff, "%ld bytes without this format's header", length);
         LOG("vulkan: %s started over: its key differs from this GPU's, driver's and build's (%s)\n", path, diff);
@@ -1009,12 +967,23 @@ void pf_open(PFile* pf, const char* path, const char* key, size_t guest, PfLoad*
     free(owned);
 }
 
-int pf_adopt(const char* path, const char* legacy, u64* bytes, char* why, size_t n) {
-    FILE *in, *out, *there = fopen(path, "rb");
-    char* tmp;
+/* the legacy file copied into an adopted one, as snx_prep_replace writes it */
+typedef struct {
+    FILE* in;
+    u64* bytes;
+} PfCopy;
+static bool pf_copy(FILE* out, void* ctx) {
+    PfCopy* c = ctx;
     char block[1 << 16];
     size_t got;
-    int ok = 1;
+    while ((got = fread(block, 1, sizeof block, c->in)) > 0) {
+        if (fwrite(block, 1, got, out) != got) return false;
+        *c->bytes += got;
+    }
+    return !ferror(c->in);
+}
+int pf_adopt(const char* path, const char* legacy, u64* bytes, char* why, size_t n) {
+    FILE *in, *there = fopen(path, "rb");
     *bytes = 0;
     if (n) why[0] = 0;
     if (there) {
@@ -1023,83 +992,12 @@ int pf_adopt(const char* path, const char* legacy, u64* bytes, char* why, size_t
     }
     in = fopen(legacy, "rb");
     if (!in) return 0;
-    tmp = snx_format("%s.%u.tmp", path, pf_pid());
-    out = tmp ? fopen(tmp, "wb") : NULL;
-    if (!out) {
-        snx_os_error(why, n);
-        fclose(in);
-        free(tmp);
-        return -1;
-    }
-    while (ok && (got = fread(block, 1, sizeof block, in)) > 0) {
-        ok = fwrite(block, 1, got, out) == got;
-        *bytes += got;
-    }
-    if (ok && ferror(in)) ok = 0;
-    if (!ok) snx_os_error(why, n); /* the failure's reason, before the cleanup's calls */
+    PfCopy c = {in, bytes};
+    const int r = snx_prep_replace(path, pf_copy, NULL, &c, why, n);
     fclose(in);
-    if (fclose(out) && ok) {
-        snx_os_error(why, n);
-        ok = 0;
-    }
-    if (ok && plat_replace_file(tmp, path)) {
-        snx_os_error(why, n);
-        ok = 0;
-    }
-    if (!ok) remove(tmp);
-    free(tmp);
-    return ok ? 1 : -1;
+    return r ? -1 : 1;
 }
 
-/* a key's fields: name=value words, and the words with no = (the build's name) as one field, "build" */
-typedef struct {
-    char name[24], value[160];
-} PfField;
-static int pf_fields(const char* key, size_t len, PfField* f, int max) {
-    int count = 0, build = -1;
-    size_t at = 0;
-    while (at < len) {
-        size_t end = at, eq = 0;
-        while (end < len && key[end] != ' ') {
-            if (key[end] == '=' && !eq) eq = end;
-            end++;
-        }
-        size_t wlen = end - at;
-        if (wlen && key[end - 1] == ';') wlen--; /* the guest part's end */
-        if (wlen) {
-            if (eq && eq < at + wlen && count < max) {
-                size_t nl = eq - at, vl = at + wlen - eq - 1;
-                snprintf(f[count].name, sizeof f[count].name, "%.*s", (int)nl, key + at);
-                snprintf(f[count].value, sizeof f[count].value, "%.*s", (int)vl, key + eq + 1);
-                count++;
-            } else if (!eq) {
-                if (build < 0 && count < max) {
-                    build = count++;
-                    snprintf(f[build].name, sizeof f[build].name, "build");
-                    f[build].value[0] = 0;
-                }
-                if (build >= 0) {
-                    size_t have = strlen(f[build].value);
-                    snprintf(f[build].value + have, sizeof f[build].value - have, "%s%.*s", have ? " " : "", (int)wlen,
-                             key + at);
-                }
-            }
-        }
-        at = end + 1;
-    }
-    return count;
-}
-/* the field of f (count of them) that is the nth (from 0) of that name, NULL for none: a key names "sizes" twice */
-static const PfField* pf_field(const PfField* f, int count, const char* name, int nth) {
-    for (int k = 0; k < count; k++)
-        if (!strcmp(f[k].name, name) && nth-- == 0) return &f[k];
-    return NULL;
-}
-static int pf_nth(const PfField* f, int i) {
-    int nth = 0;
-    for (int k = 0; k < i; k++) nth += !strcmp(f[k].name, f[i].name);
-    return nth;
-}
 int pf_build_unnamed(const char* commit) {
     size_t len = strlen(commit);
     return !strcmp(commit, "unknown") || (len >= 6 && !strcmp(commit + len - 6, "-dirty"));
@@ -1111,40 +1009,17 @@ void pf_build_words(char* out, size_t n, const char* commit, const char* flags, 
         at = snprintf(out, n, " exe=%016llx", (unsigned long long)vk_hash(self->data, (size_t)self->size));
     if (flags[0] && at >= 0 && (size_t)at < n) snprintf(out + at, n - (size_t)at, " flags=%s", flags);
 }
-int pf_key_diff(char* out, size_t n, const char* key, size_t len, const char* want) {
-    PfField was[32], now[32];
-    int nw = pf_fields(key, len, was, 32), nn = pf_fields(want, strlen(want), now, 32), count = 0;
-    size_t at = 0;
-    if (n) out[0] = 0;
-    for (int i = 0; i < nw + nn; i++) {
-        const PfField* a = i < nw ? &was[i] : NULL;
-        const PfField* b = i < nw ? NULL : &now[i - nw];
-        const char* name = a ? a->name : b->name;
-        const char *in_file = a ? a->value : NULL, *in_now = b ? b->value : NULL;
-        if (a) {
-            const PfField* other = pf_field(now, nn, name, pf_nth(was, i));
-            in_now = other ? other->value : NULL;
-        }
-        if (b && pf_field(was, nw, name, pf_nth(now, i - nw))) continue; /* compared from the file's side */
-        if (in_file && in_now && !strcmp(in_file, in_now)) continue;
-        count++;
-        if (at + 1 < n) {
-            int w = snprintf(out + at, n - at, "%s%s %s in the file, %s now", at ? "; " : "", name,
-                             in_file ? in_file : "none", in_now ? in_now : "none");
-            at = w < 0 ? n : at + (size_t)w;
-            if (at >= n) at = n - 1;
-        }
-    }
-    return count;
+/* a mapped file's records kept, or its header alone, as snx_prep_replace writes them over it */
+typedef struct {
+    PFile* pf;
+    const u8* keep;
+    size_t n;
+} PfKeep;
+static bool pf_keep(FILE* f, void* ctx) {
+    const PfKeep* k = ctx;
+    return fwrite(k->keep, 1, k->n, f) == k->n;
 }
-
-unsigned pf_pid(void) {
-#if defined(_WIN32)
-    return (unsigned)GetCurrentProcessId();
-#else
-    return (unsigned)getpid();
-#endif
-}
+static void pf_unmap(void* ctx) { plat_file_unmap(&((PfKeep*)ctx)->pf->view); }
 void pf_open_mapped(PFile* pf, const char* path, const char* key, PfEach each, void* ctx) {
     size_t hsize = 0;
     u8* head = pf_header(key, &hsize);
@@ -1183,7 +1058,7 @@ void pf_open_mapped(PFile* pf, const char* path, const char* key, PfEach each, v
         char diff[768];
         const u8* d = pf->view.data;
         if (size >= 16 && !memcmp(d, PF_MAGIC, 8) && pf_get32(d + 12) <= size - 16)
-            pf_key_diff(diff, sizeof diff, (const char*)d + 16, pf_get32(d + 12), key);
+            snx_prep_key_diff(diff, sizeof diff, (const char*)d + 16, pf_get32(d + 12), key);
         else
             snprintf(diff, sizeof diff, "%llu bytes without this format's header", (unsigned long long)size);
         LOG("vulkan: %s started over: its key differs from this GPU's, driver's and build's (%s)\n", path, diff);
@@ -1191,23 +1066,8 @@ void pf_open_mapped(PFile* pf, const char* path, const char* key, PfEach each, v
     if (!at || at < size) {
         /* started over (its header alone), or rewritten without what a crash cut short: written beside it and moved
            over it, so another run that has it mapped keeps reading the old one */
-        char* tmp = snx_format("%s.%u.tmp", path, pf_pid());
-        FILE* t = tmp ? fopen(tmp, "wb") : NULL;
-        const u8* keep = at ? pf->view.data : head;
-        size_t n = at ? (size_t)at : hsize;
-        int ok = t && fwrite(keep, 1, n, t) == n;
-        if (!ok) snx_os_error(why, sizeof why); /* each failure's reason where it happened, before the cleanup's */
-        if (t && fclose(t) && ok) {
-            snx_os_error(why, sizeof why);
-            ok = 0;
-        }
-        plat_file_unmap(&pf->view);
-        if (ok && plat_replace_file(tmp, path)) {
-            snx_os_error(why, sizeof why);
-            ok = 0;
-        }
-        if (!ok && tmp) remove(tmp);
-        free(tmp);
+        PfKeep k = {pf, at ? pf->view.data : head, at ? (size_t)at : hsize};
+        const int ok = !snx_prep_replace(path, pf_keep, pf_unmap, &k, why, sizeof why);
         if (!at) at = hsize;
         if (!ok) { /* as it was: nothing is appended after what it holds */
             WARN("vulkan: cannot write %s (%s): what is made is not kept for the next run\n", path, why);
@@ -1225,7 +1085,7 @@ void pf_open_mapped(PFile* pf, const char* path, const char* key, PfEach each, v
 static u8* pf_unzip(const char* path, u64 at, const u8* p, u32 n, u32* len) {
     PfZip z;
     PfShader s;
-    size_t got;
+    char why[64];
     u8* out;
     if (n < sizeof s + sizeof z) return NULL;
     memcpy(&s, p, sizeof s);
@@ -1241,10 +1101,9 @@ static u8* pf_unzip(const char* path, u64 at, const u8* p, u32 n, u32* len) {
         return NULL;
     }
     memcpy(out, &s, sizeof s);
-    got = ZSTD_decompress(out + sizeof s, z.raw, p + sizeof s + sizeof z, z.packed);
-    if (ZSTD_isError(got) || got != z.raw) {
-        LOG("vulkan: %s: the packed shader at %llu unpacks to %zu bytes, not %u (%s)\n", path, (unsigned long long)at,
-            ZSTD_isError(got) ? (size_t)0 : got, z.raw, ZSTD_isError(got) ? ZSTD_getErrorName(got) : "short");
+    if (!snx_prep_unpack(out + sizeof s, z.raw, p + sizeof s + sizeof z, z.packed, why, sizeof why)) {
+        LOG("vulkan: %s: the packed shader at %llu does not unpack to its %u bytes: %s\n", path, (unsigned long long)at,
+            z.raw, why);
         free(out);
         return NULL;
     }
@@ -1258,8 +1117,7 @@ const u8* pf_payload(const PFile* pf, u64 at, u32* len, u64* check, u8** owned) 
     if (!d || at > pf->view.size || pf->view.size - at < PF_REC) return NULL;
     type = pf_get32(d + at);
     n = pf_get32(d + at + 4);
-    if (n > pf->view.size - at - PF_REC ||
-        pf_end(pf_mix(pf_start(type, n), d + at + PF_REC, n)) != pf_get64(d + at + 8))
+    if (n > pf->view.size - at - PF_REC || snx_prep_check(type, d + at + PF_REC, n) != pf_get64(d + at + 8))
         return NULL;
     *check = pf_get64(d + at + 8);
     if (type == PF_ZSHADER) return *owned = pf_unzip(pf->path, at, d + at + PF_REC, n, len);
