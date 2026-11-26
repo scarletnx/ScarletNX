@@ -1416,12 +1416,18 @@ static void sh_fold_plan(u64 h, int stage, const u32 mask[SH_KEY_WORDS], u32 len
                        .others = others,
                        .nothers = made < SH_CB_FOLD_VARIANTS ? made : SH_CB_FOLD_VARIANTS};
 }
+/* s's fold_idle again, after a change of the fields that it stands for */
+static void sh_fold_idle_set(VkSh* s) {
+    atomic_store_explicit(&s->fold_idle, !s->fold_job && (s->fold_asked || s->failed || s->stage != ST_FS),
+                          memory_order_relaxed);
+}
 /* s's draws are asked again whether a translation that folds more of their words is to be made (vk_shader_fold_draw):
    another translation of the program stopped holding, its words changed */
 static void sh_fold_ask(VkSh* s) {
     if (s->fold_job) return; /* one is being made from them */
     s->fold_asked = 0;
     s->fold_stable = (VkCbStable){0};
+    sh_fold_idle_set(s);
 }
 
 VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_mask, u64 sint_mask, u32 rt_int,
@@ -3253,6 +3259,7 @@ static void sh_fold_end(ShFold* f, int publish, int again) {
     g_pipeline.fold_jobs[from->fold_job - 1] = NULL;
     pm_unlock(&g_pipeline.pj_lock);
     from->fold_job = 0;
+    sh_fold_idle_set(from);
     free(f);
 }
 /* a draw of from, with key k, while its fold is made or warmed: the fold's module once made, then its pipeline with
@@ -3315,7 +3322,12 @@ static void sh_fold_warm(VkSh* from, const PipeKey* k) {
     } else if (!f->ntwins && submit - f->warm_submit >= SH_CB_FOLD_STABLE)
         sh_fold_end(f, 0, 1);
 }
+static void shader_fold_draw(const DsState* ds, VkSh* s, u64 gva, const PipeKey* k);
 void vk_shader_fold_draw(const DsState* ds, VkSh* s, u64 gva, const PipeKey* k) {
+    shader_fold_draw(ds, s, gva, k);
+    sh_fold_idle_set(s);
+}
+static void shader_fold_draw(const DsState* ds, VkSh* s, u64 gva, const PipeKey* k) {
     if (!s->fold_job && (s->fold_asked || s->failed || s->stage != ST_FS)) return;
     g_pipeline.sh_ds = ds;
     g_pipeline.sh_bind = sh_bind_stage(ST_FS);
