@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 
 SPEC = importlib.util.spec_from_file_location('check_nvn_contracts', Path(__file__).resolve().parents[1] /
@@ -19,7 +20,30 @@ MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
 
+def symlink(link, target, **kwargs):
+    """link made to point at target, or the case skipped, saying why, where the system refuses symbolic links: Windows
+    without the privilege of making them (WinError 1314); any other failure stays one"""
+    try:
+        link.symlink_to(target, **kwargs)
+    except OSError as error:
+        if getattr(error, 'winerror', None) == 1314:
+            raise unittest.SkipTest(f'the system refuses symbolic links here: {error}') from None
+        raise
+
+
 class ContractIndex(unittest.TestCase):
+    def test_a_refused_symlink_skips_the_case_saying_why(self):
+        refused = OSError(22, 'A required privilege is not held by the client')
+        refused.winerror = 1314
+        with mock.patch.object(Path, 'symlink_to', side_effect=refused):
+            with self.assertRaises(unittest.SkipTest) as skipped:
+                symlink(Path('link'), Path('target'))
+        self.assertIn('the system refuses symbolic links here', str(skipped.exception))
+        self.assertIn('A required privilege is not held by the client', str(skipped.exception))
+        with mock.patch.object(Path, 'symlink_to', side_effect=FileExistsError(17, 'File exists')):
+            with self.assertRaises(FileExistsError):
+                symlink(Path('link'), Path('target'))
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
@@ -196,7 +220,7 @@ class ContractIndex(unittest.TestCase):
     def test_inventory_excludes_symlinked_source_and_reference(self):
         outside = self.root / 'external.h'
         outside.write_text('NVNAPI void nvnOutsideContract(void);')
-        (self.reference / 'external.h').symlink_to(outside)
+        symlink(self.reference / 'external.h', outside)
         report = MODULE.api_inventory(self.reference, self.source)
         self.assertEqual(report['counts']['declared_api_names'], 0)
 
@@ -232,7 +256,7 @@ class ContractIndex(unittest.TestCase):
     def test_symlink_does_not_export_external_evidence(self):
         other = self.root / 'other.h'
         other.write_text('nvnOutsideContract\n')
-        (self.reference / 'outside.h').symlink_to(other)
+        symlink(self.reference / 'outside.h', other)
         files, names = MODULE.reference_counts(self.reference)
         self.assertEqual(files, 1)
         self.assertNotIn('nvnOutsideContract', names)
@@ -276,4 +300,4 @@ class ContractIndex(unittest.TestCase):
 
 
 if __name__ == '__main__':
-    unittest.main()
+    unittest.main(verbosity=2)  # each skip says why: a refused link names its error
