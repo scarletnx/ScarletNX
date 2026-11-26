@@ -799,6 +799,9 @@ u64 vk_stage_buffer_size(VkBuffer b); /* a ring chunk's size, 0 for another buff
 u64 vk_stage_chunk(void);
 /* Streamed buffer snapshots in host RAM, with the same frame lifetime as vk_stage. */
 u8* vk_stage_upload(u64 size, u64 align, VkBuffer* buf, u64* off);
+/* as vk_stage_upload without the share lock held: out of this thread's part of the ring, which takes the lock only for
+   a new part (draw_batches=2) */
+u8* vk_stage_upload_own(u64 size, u64 align, VkBuffer* buf, u64* off);
 /* the host's writes to staging made visible to the GPU before a submission to another queue reads them */
 void vk_stage_flush(void);
 /* the waits a graphics submission takes at most (cmd.c's submit, record.c's copy of them): vk_submit_after's or the

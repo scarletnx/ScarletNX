@@ -3564,7 +3564,11 @@ static int cb_get_(const DsState* ds, int stage, int i, u32 sz, u64 align, VkBuf
        below see: the buffer then comes from vk_buf_get_strict, which reads it on the GPU, and isn't cached. Neither is
        one under a result of another kind (the mirror's writes, a storage image, a queued release), which the buffer
        cache looks for: the entry would live past the submission that lands it */
-    /* the checks and the staging below under one take of the share lock (draw_batches=2), not one take each */
+    /* the checks below under one take of the share lock (draw_batches=2), not one take each. The GPU page table is
+       read before it (its entries are atomics), and a copy's staging after it, from this thread's part of the ring
+       (vk_stage_upload_own): under the lock they were 60 of a copy's 90 ns there, and each copy took the lock */
+    u64 cpu = 0;
+    const int whole = a && gmmu_run(a, sz, &cpu) == sz;
     const int grouped = a != 0;
     if (grouped) vk_share_lock();
     if (atomic_load_explicit(&g_cs_any, memory_order_relaxed) && a) vk_compute_mem_need(a, sz);
@@ -3595,13 +3599,12 @@ static int cb_get_(const DsState* ds, int stage, int i, u32 sz, u64 align, VkBuf
        is checked against is read before the bytes are. Unified memory whose buffer cache copies them
        (vk_uma_imports_dear) copies them here too: guest memory has their bytes once no write in place is
        pending over them (pending above), and the cache's checks and hash cost each constant buffer more than its copy */
-    u64 cpu = 0, adds = cb_adds(), gw = gpu_mem_generation();
+    u64 adds = cb_adds(), gw = gpu_mem_generation();
     u32 life = CB_OWN; /* the buffer cache's own buffer, or else what lives for the submission */
-    if (a && !pending && (!vk_uma() || vk_uma_imports_dear()) && !vk_mirror_pending(a, sz) && !vk_mirror_holds(a, sz) &&
-        gmmu_run(a, sz, &cpu) == sz) {
+    if (whole && !pending && (!vk_uma() || vk_uma_imports_dear()) && !vk_mirror_pending(a, sz) && !vk_mirror_holds(a, sz)) {
         u64 t_copy = g_stats.n.cb[VK_CB_COPIED] % CB_TIME_EVERY ? 0 : plat_ns();
-        u8* p = vk_stage_upload(sz, vk_stage_align(), buf, off);
-        vk_share_unlock(); /* grouped: a is set */
+        vk_share_unlock(); /* grouped: whole needs a */
+        u8* p = vk_stage_upload_own(sz, vk_stage_align(), buf, off);
         if (!p) return 0;
         life = CB_FRAME;
         if (!own_any())
