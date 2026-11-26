@@ -21,8 +21,8 @@ typedef struct {
     const char* patch;  /* its update's folder, NULL for none */
     const char* title;  /* its title ID */
     const char* folder; /* the game's folder, which app/, patch/ and ux0/addcont/ go into */
-    const char* keys;   /* the Vita keys' file */
-    const char* zrif;   /* the game's license as a zRIF, NULL for the dump's own */
+    const char* keys;   /* the Vita keys' folder, a file for each key (common/utilities/vita_keys.h) */
+    const char* zrif;   /* the game's license as a zRIF, for a dump without one; NULL for none */
     VitaDumpSay say;
     void* context;
 } VitaDumpImport;

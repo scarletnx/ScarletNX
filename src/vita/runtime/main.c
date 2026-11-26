@@ -11,7 +11,6 @@
 #include "vita/gpu/present.h"
 #include "vita/hle/hle.h"
 #include "vita/loader/dump.h"
-#include "vita/loader/keys.h"
 #include "vita/loader/vpk.h"
 #include "vita/platform/input.h"
 #include "vita/runtime/process.h"
@@ -21,6 +20,7 @@
 #include "common/platform/file.h"
 #include "common/utilities/game_ini.h"
 #include "common/utilities/ini_lines.h"
+#include "common/utilities/vita_keys.h"
 #include "snx_settings.h"
 #include <ctype.h>
 #include <stdio.h>
@@ -29,7 +29,7 @@
 #include <time.h>
 
 /* the common options scarletnx-vita takes (common/utilities/cli.h): a VPK is always extracted, the keys are an encrypted
-   dump's (vita_keys.txt), and the Vita runtime has no frame count, fullscreen setting or window-less run */
+   dump's (a folder of key files), and the Vita runtime has no frame count, fullscreen setting or window-less run */
 static const unsigned vita_cli = SNX_CLI_BIT(SNX_CLI_EXTRACT) | SNX_CLI_BIT(SNX_CLI_RECOMPILE) |
                                  SNX_CLI_BIT(SNX_CLI_KEYS) | SNX_CLI_BIT(SNX_CLI_GAME) | SNX_CLI_BIT(SNX_CLI_UPDATE) |
                                  SNX_CLI_BIT(SNX_CLI_DATA) | SNX_CLI_BIT(SNX_CLI_OUTDIR) | SNX_CLI_BIT(SNX_CLI_OUTPUT) |
@@ -68,10 +68,12 @@ static void usage(FILE* out) {
         "On the Vita, --update is the dumped game's update folder (default: patch/<title ID> beside its app/<title\n"
         "ID>), --shot saves PATH.ppm, and --script=ms:buttons,... is the setting vita_script.\n"
         "\n"
-        "A dumped game still encrypted (its sce_pfs/ folder) is decrypted into the game's folder instead of linked: its\n"
-        "license is its sce_sys/package/work.bin, its add-ons' licenses the dump's license/addcont/<title ID>/<add-on>/,\n"
-        "and --keys is the Vita keys' file, vita_keys.txt (default ~/.vita/vita_keys.txt, where Install Keys puts it;\n"
-        "docs/platforms/vita/README.md names the keys it holds). The dump is only read.\n",
+        "A dumped game still encrypted (its sce_pfs/ folder) is decrypted into the game's folder instead of linked, and\n"
+        "a game whose app/ still links one is decrypted before it plays: its license is its sce_sys/package/work.bin,\n"
+        "or the dump's license/app/<title ID>/, or --zrif=TEXT, a zRIF, when the dump has none; its add-ons' licenses\n"
+        "the dump's license/addcont/<title ID>/<add-on>/. --keys is the folder of the Vita keys, a file for each\n"
+        "(default ~/.vita, where Install Keys puts them; docs/platforms/vita/README.md names them). The dump is only\n"
+        "read.\n",
         out);
 }
 static bool vpk_path(const char* path) {
@@ -164,6 +166,31 @@ static void say_import(void* context, const char* line, bool error) {
         fprintf(stderr, "scarletnx-vita: %s\n", line);
     else
         printf("%s\n", line);
+}
+/* a dumped game's TITLE_ID, from its sce_sys/param.sfo; owned, NULL for none */
+static char* dump_title(const char* dump) {
+    char path[SNX_PATH_SIZE];
+    size_t size = 0;
+    unsigned char* sfo =
+        snx_path_format(path, sizeof path, "%s/sce_sys/param.sfo", dump) ? NULL : snx_read_file(path, &size);
+    char* title = sfo ? snx_sfo_string(sfo, size, "TITLE_ID") : NULL;
+    free(sfo);
+    if (title && !vita_title_id(title)) {
+        free(title);
+        title = NULL;
+    }
+    return title;
+}
+/* the encrypted dump app (its update too, when update is one) decrypted into folder, with the keys of the folder
+   keys names (default ~/.vita) and, for a dump without a license, the zRIF zrif (vita/loader/dump.h): false, said */
+static bool import_dump(const char* app, const char* update, const char* title, const char* folder, const char* keys,
+                        const char* zrif) {
+    char *dir = keys ? snx_strdup(keys) : snx_vita_keys_dir(), why[2048];
+    VitaDumpImport import = {app, update, title, folder, dir, zrif, say_import, NULL};
+    bool ok = vita_dump_import(&import, why, sizeof why);
+    if (!ok) fprintf(stderr, "scarletnx-vita: %s\n", why);
+    free(dir);
+    return ok;
 }
 /* a dumped game's update: patch/<title ID> beside its app/<title ID> */
 static char* dump_patch(const char* app, const char* title) {
@@ -343,6 +370,7 @@ int snx_vita_main(int argc, char** argv) {
         ini_read(ini_find(g_vita_debug_ini, "vita_lockstep_steps"), old_steps);
     int old_lockstep = g_settings.vita_lockstep, old_lockstep_steps = g_settings.vita_lockstep_steps;
     SnxCli cli;
+    const char* zrif = NULL;
     snx_cli_init(&cli, "scarletnx-vita", vita_cli);
     for (int i = 1; i < argc; ++i) {
         const char* a = argv[i];
@@ -362,6 +390,16 @@ int snx_vita_main(int argc, char** argv) {
         if (common == SNX_CLI_OPT) ini_read(ini_find(g_recompile_ini, "opt"), cli.value[SNX_CLI_OPT]);
         if (common == SNX_CLI_JOBS) g_settings.aot_threads = cli.jobs;
         if (common) continue;
+        /* a zRIF, the license of an encrypted dump that has none of its own */
+        if (!strcmp(a, "--zrif") || !strncmp(a, "--zrif=", 7)) {
+            zrif = a[6] ? a + 7 : i + 1 < argc ? argv[++i] : NULL;
+            if (!zrif || !zrif[0]) {
+                fputs("scarletnx-vita: --zrif takes a zRIF, the game's license as text\n", stderr);
+                snx_cli_free(&cli);
+                return 2;
+            }
+            continue;
+        }
         if (!strncmp(a, "--", 2) && strchr(a, '=')) {
             /* the Vita debug and run tables', --press-len= and --shot-every= being vita_press_len and vita_shot_every
                (a Switch game's are g_unattended_ini's), vulkan_video (which the Vita's AVC decoder doesn't take yet),
@@ -478,16 +516,13 @@ int snx_vita_main(int argc, char** argv) {
         folder = output ? snx_strdup(output) : game_folder(repo, outdir, argv[0], title);
         char* update = !dump ? NULL : patch ? snx_strdup(patch) : dump_patch(input, title);
         bool encrypted = dump && vita_dump_encrypted(input), ready = folder && !snx_mkdirs(folder);
-        if (ready && encrypted) {
-            char *keys = keys_given ? snx_strdup(keys_given) : vita_keys_default_path(), why[2048];
-            VitaDumpImport import = {input, update, title, folder, keys, NULL, say_import, NULL};
-            ready = vita_dump_import(&import, why, sizeof why);
-            if (!ready) fprintf(stderr, "scarletnx-vita: %s\n", why);
-            free(keys);
-        }
+        if (ready && encrypted) ready = import_dump(input, update, title, folder, keys_given, zrif);
         if (keys_given && !encrypted)
             printf("--keys %s is not read: %s is not encrypted, and only an encrypted dump's import takes keys\n",
                    keys_given, input);
+        if (zrif && !encrypted)
+            printf("--zrif is not read: %s is not encrypted, and only an encrypted dump's import takes a license\n",
+                   input);
         free(title);
         /* a plain update beside an encrypted game is linked, as a plain game's is */
         ready =
@@ -501,6 +536,30 @@ int snx_vita_main(int argc, char** argv) {
         if (extract_only) {
             status = 0;
             goto done;
+        }
+    }
+    /* a game whose app/ still holds an encrypted dump (linked, as an older import or Locate... made it): decrypted
+       into the folder first */
+    if (!input) {
+        char app[SNX_PATH_SIZE];
+        if (snx_path_format(app, sizeof app, "%s/app", folder) || !vita_dump_encrypted(app)) {
+            if (keys_given) printf("--keys %s is not read: %s/app is no encrypted dump\n", keys_given, folder);
+            if (zrif) printf("--zrif is not read: %s/app is no encrypted dump\n", folder);
+        } else {
+            char *source = snx_absolute(app), *title = source ? dump_title(source) : NULL;
+            char patch_dir[SNX_PATH_SIZE], *update = NULL;
+            if (!snx_path_format(patch_dir, sizeof patch_dir, "%s/patch", folder) && vita_dump_encrypted(patch_dir))
+                update = snx_absolute(patch_dir);
+            bool ready = source && title && import_dump(source, update, title, folder, keys_given, zrif);
+            if (source && !title) fprintf(stderr, "scarletnx-vita: %s has no title ID in its param.sfo\n", source);
+            free(update);
+            free(title);
+            free(source);
+            if (!ready) goto done;
+            if (extract_only) { /* -x: decrypted, and nothing played */
+                status = 0;
+                goto done;
+            }
         }
     }
     status = play(folder, recompile, seconds, shot, runtime, &asked);

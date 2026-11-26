@@ -165,23 +165,28 @@ bool vita_dump_import(const VitaDumpImport* d, char* error, size_t error_size) {
         snprintf(error, error_size, "%s is encrypted, and %s", d->app, why);
         ok = false;
     }
-    /* the game's license: the zRIF given, its work.bin, or the dump's license/app/<title ID>/ */
-    if (ok && d->zrif) {
-        ok = vita_license_zrif(d->zrif, &license, why, sizeof why);
-        snprintf(from, sizeof from, "the zRIF given");
-    } else if (ok && !snx_path_format(path, sizeof path, "%s/sce_sys/package/work.bin", d->app) && snx_is_file(path)) {
-        ok = vita_license_read(path, &license, why, sizeof why);
+    /* the game's license: its work.bin, the dump's license/app/<title ID>/, else the zRIF given */
+    int found = 0;
+    if (ok && !snx_path_format(path, sizeof path, "%s/sce_sys/package/work.bin", d->app) && snx_is_file(path)) {
+        found = vita_license_read(path, &license, why, sizeof why) ? 1 : -1;
         snprintf(from, sizeof from, "%s", path);
     } else if (ok) {
         char dir[SNX_PATH_SIZE];
-        int found = snx_path_format(dir, sizeof dir, "%s/license/app/%s", root, d->title)
-                        ? 0
-                        : license_in(dir, game_id, &license, from, sizeof from, why, sizeof why);
-        if (!found)
-            snprintf(why, sizeof why, "it has no license: no %s/sce_sys/package/work.bin, no %s/license/app/%s/*.rif",
-                     d->app, root, d->title);
-        ok = found > 0;
+        found = snx_path_format(dir, sizeof dir, "%s/license/app/%s", root, d->title)
+                    ? 0
+                    : license_in(dir, game_id, &license, from, sizeof from, why, sizeof why);
     }
+    if (ok && found > 0 && d->zrif)
+        say(d, false, "--zrif is not read: the dump has the game's license, %s (%s)", from, license.content_id);
+    if (ok && !found && d->zrif) {
+        found = vita_license_zrif(d->zrif, &license, why, sizeof why) ? 1 : -1;
+        snprintf(from, sizeof from, "the zRIF given");
+    }
+    if (ok && !found)
+        snprintf(why, sizeof why,
+                 "it has no license: no %s/sce_sys/package/work.bin, no %s/license/app/%s/*.rif and no --zrif", d->app,
+                 root, d->title);
+    if (ok) ok = found > 0;
     if (!ok && !error[0]) snprintf(error, error_size, "%s is encrypted, and %s", d->app, why);
     if (ok && game_id && strcmp(game_id, license.content_id))
         say(d, false, "%s's license is for %s, and its param.sfo says %s", d->app, license.content_id, game_id);

@@ -103,25 +103,24 @@ int vita_self_decrypt(const char* path, const char* shown, const unsigned char k
                  type);
         goto done;
     }
-    VitaKeyName name = revision == 0 && system <= SYSTEM_169   ? VITA_KEY_SELF0_169
-                       : revision == 0 && system >= SYSTEM_180 ? VITA_KEY_SELF0
-                       : revision >= 1 && revision <= 5        ? (VitaKeyName)(VITA_KEY_SELF1 + 2 * (revision - 1))
-                                                               : VITA_KEY_COUNT;
-    if (name == VITA_KEY_COUNT) {
+    SnxVitaKey name = revision == 0 && system <= SYSTEM_169   ? SNX_VITA_KEY_APP0_100
+                      : revision == 0 && system >= SYSTEM_180 ? SNX_VITA_KEY_APP0_180
+                      : revision >= 1 && revision <= 5        ? (SnxVitaKey)(SNX_VITA_KEY_APP1 + 2 * (revision - 1))
+                                                              : SNX_VITA_KEY_COUNT;
+    if (name == SNX_VITA_KEY_COUNT) {
         snprintf(why, sizeof why,
-                 "it is of key revision %u for system 0x%llx, which has no app SELF key (revision 0 "
-                 "up to 0x%llx and from 0x%llx, 1 to 5)",
+                 "it is of key revision %u for system 0x%llx, which has no app SELF key (revision 0 up to 0x%llx and "
+                 "from 0x%llx, 1 to 5)",
                  revision, (unsigned long long)system, SYSTEM_169, SYSTEM_180);
         goto done;
     }
     char purpose[SNX_PATH_SIZE + 64];
     snprintf(purpose, sizeof purpose, "%s (key revision %u)", shown, revision);
-    const unsigned char* np =
-        vita_key(keys, revision >= 2 ? VITA_KEY_NPDRM1 : VITA_KEY_NPDRM0, purpose, error, error_size);
-    const unsigned char* np_iv = np ? vita_key(keys, VITA_KEY_NPDRM_IV, purpose, error, error_size) : NULL;
+    SnxVitaKey np_name = revision >= 2 ? SNX_VITA_KEY_NPDRM1 : SNX_VITA_KEY_NPDRM0;
+    const unsigned char* np = vita_key(keys, np_name, purpose, error, error_size);
+    const unsigned char* np_iv = np ? vita_key(keys, (SnxVitaKey)(np_name + 1), purpose, error, error_size) : NULL;
     const unsigned char* self_key = np_iv ? vita_key(keys, name, purpose, error, error_size) : NULL;
-    const unsigned char* self_iv =
-        self_key ? vita_key(keys, (VitaKeyName)(name + 1), purpose, error, error_size) : NULL;
+    const unsigned char* self_iv = self_key ? vita_key(keys, (SnxVitaKey)(name + 1), purpose, error, error_size) : NULL;
     if (!self_iv) {
         free(f);
         return -1;
@@ -146,7 +145,7 @@ int vita_self_decrypt(const char* path, const char* shown, const unsigned char k
         snprintf(why, sizeof why,
                  "its metadata does not decrypt with the license's klicensee and %s: the license is "
                  "another content's, or the key is not the console's",
-                 vita_key_name(name));
+                 snx_vita_key_file(name));
         free(m);
         goto done;
     }

@@ -485,10 +485,11 @@ bool vita_pfs_decrypt(const char* source, const char* dest, const unsigned char 
     unsigned char* buffer = NULL;
     char path[SNX_PATH_SIZE];
     *count = (VitaPfsCount){0};
-    const unsigned char* contract = vita_key(keys, VITA_KEY_PFS_CONTRACT0, "the files' key", error, error_size);
-    p->hmac0 = contract ? vita_key(keys, VITA_KEY_PFS_HMAC0, "the files' sector masks", error, error_size) : NULL;
-    p->hmac1 = p->hmac0 ? vita_key(keys, VITA_KEY_PFS_HMAC1, "the files' integrity secret", error, error_size) : NULL;
-    p->iv0 = p->hmac1 ? vita_key(keys, VITA_KEY_PFS_IV0, "the files' integrity secret", error, error_size) : NULL;
+    const unsigned char* contract = vita_key(keys, SNX_VITA_KEY_PFS_CONTRACT0, "the files' key", error, error_size);
+    p->hmac0 = contract ? vita_key(keys, SNX_VITA_KEY_PFS_HMAC0, "the files' sector masks", error, error_size) : NULL;
+    p->hmac1 =
+        p->hmac0 ? vita_key(keys, SNX_VITA_KEY_PFS_HMAC1, "the files' integrity secret", error, error_size) : NULL;
+    p->iv0 = p->hmac1 ? vita_key(keys, SNX_VITA_KEY_PFS_IV0, "the files' integrity secret", error, error_size) : NULL;
     if (!p->iv0) return false;
     if (!vita_crypto_open(&p->crypto)) return fail(p, "OpenSSL has no AES or HMAC-SHA1");
     bool ok = vita_crypt(&p->crypto, EVP_aes_128_ecb(), false, contract, NULL, klicensee, p->key, 16) ||

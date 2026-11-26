@@ -69,22 +69,30 @@ loader reads them. An add-on without its license is said and left out; the game 
 whose `app/` already holds a decryption keeps it; one whose `app/` links the dump (an older import) gets the
 decryption in its place, the dump untouched.
 
-The keys are the console's, and ScarletNX carries none. The import reads them from `vita_keys.txt`, in
-`~/.vita/` (`%USERPROFILE%\.vita\` on Windows), where **Install Keys** puts it, or the file `--keys` names: a line
-`name = hex` for each, `#` for a comment. A key the game needs and the file lacks stops the import, naming the key.
+The keys are the console's, and ScarletNX carries none. The import reads them from a folder with a file of raw bytes
+for each key, as vitakeys and vitatool keep them: `~/.vita/` (`%USERPROFILE%\.vita\` on Windows), where **Install
+Keys** puts them, or the folder `--keys` names. Files of other keys there (vitakeys' `gpkg-key-*`, `index-*`, `psp-*`)
+are left alone. A key the game needs that the folder lacks stops the import, naming its file; a key file of another
+size than its key's stops it too, saying both sizes.
 
-| Name | Bytes | What it opens | Where it is published |
+| File | Bytes | What it opens | Where it is published |
 | --- | --- | --- | --- |
-| `pfs_hmac_key0` | 20 | each file's sector masks | psvpfsparser's `PfsKeys.cpp` (`hmac_key0`) |
-| `pfs_hmac_key1` | 20 | the files' integrity secret | psvpfsparser's `PfsKeys.cpp` (`hmac_key1`) |
-| `pfs_iv0` | 16 | the files' integrity secret | psvpfsparser's `PfsKeys.cpp` (`iv0`) |
-| `pfs_contract_key0` | 16 | the files' key, from the klicensee | psvpfsparser's `F00DNativeKeyEncryptor.cpp` (`contract_key0`) |
-| `npdrm_key0`, `npdrm_key1`, `npdrm_iv` | 16 each | an app SELF's key block, key revision 0 and 1, then 2 and up | Vita3K's `sce_utils.cpp`, `register_keys`, the `KeyType::NPDRM` keys and their IV |
-| `self_app_key0_169`, `self_app_iv0_169` | 32, 16 | an app SELF of key revision 0 made for system 1.692 or older | the same, `KeyType::METADATA` of `SelfType::APP`, revision 0 up to `0x16920000000` |
-| `self_app_key0` to `self_app_key5`, `self_app_iv0` to `self_app_iv5` | 32, 16 | an app SELF of that key revision | the same, revisions 0 (from `0x18000000000`) to 5 |
+| `pfs-hmac-key-0` | 20 | each file's sector masks | psvpfsparser's `PfsKeys.cpp` (`hmac_key0`) |
+| `pfs-hmac-key-1` | 20 | the files' integrity secret | psvpfsparser's `PfsKeys.cpp` (`hmac_key1`) |
+| `pfs-iv-0` | 16 | the files' integrity secret | psvpfsparser's `PfsKeys.cpp` (`iv0`) |
+| `pfs-contract-key-0` | 16 | the files' key, from the klicensee | psvpfsparser's `F00DNativeKeyEncryptor.cpp` (`contract_key0`) |
+| `npdrm-key-0`, `npdrm-iv-0` | 16, 16 | an app SELF's key block, key revision 0 and 1 | Vita3K's `sce_utils.cpp`, `register_keys`, `KeyType::NPDRM` revision 0 |
+| `npdrm-key-1`, `npdrm-iv-1` | 16, 16 | the same, key revision 2 and up | the same, revision 1 |
+| `app-key-0-100`, `app-iv-0-100` | 32, 16 | an app SELF of key revision 0 made for system 1.692 or older | the same, `KeyType::METADATA` of `SelfType::APP`, revision 0 up to `0x16920000000` |
+| `app-key-0-180`, `app-iv-0-180` | 32, 16 | an app SELF of key revision 0 for system 1.80 and up | the same, revision 0 from `0x18000000000` |
+| `app-key-1` to `app-key-5`, `app-iv-1` to `app-iv-5` | 32, 16 | an app SELF of that key revision | the same, revisions 1 to 5 |
 
 `register_keys` lists them twice; the import's are the second set's (`case 1`), the one Vita3K's own SELF decryption
-reads.
+reads. A dump without a license of its own takes one as a zRIF, `--zrif=TEXT`; with its own, `--zrif` is not read, and
+the import says so.
+
+A game whose `app/` still holds an encrypted dump, linked by an older import or by the launcher's Locate..., is
+decrypted into its folder the next time it plays, its link replaced.
 
 ## Layers
 
@@ -205,6 +213,8 @@ comparing after M groups). This is how the Thumb backend's bugs this driver ran 
 - The SELF's decryption (`src/vita/loader/selfcrypt.c`), the license's fields and an encrypted dump's install
   (`src/vita/loader/dump.c`): Vita3K (`packages/src/sce_utils.cpp`, `license.cpp`, `pkg.cpp`, `interface.cpp`).
 - The zRIF's dictionary (`src/vita/loader/license.c`): pkg2zip.
+- The keys' folder and their naming (`src/common/utilities/vita_keys.c`): vitakeys and vitatool, read for their layout
+  and the SELF and package formats they read; vitatool is GPL-2.0-only, so nothing of its code is in ScarletNX.
 
 The GXM semantics, the GXP layout and the USSE translator are ported from Vita3K (GPL-2.0-or-later). The NIDs and
 error codes come from vita-headers (MIT). vios was read as a quick reference. See [Credits](../../CREDITS.md).

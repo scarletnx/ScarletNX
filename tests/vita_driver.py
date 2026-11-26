@@ -4,8 +4,9 @@
 """The Vita driver's command line, without a game: the recompile's options every driver shares
 (common/utilities/cli.h) in its help, each value they do not take stopping the run with it, and none of them with -x,
 which compiles no code. Given the import's test (snx-test-vita-decrypt), an encrypted dump it makes: -x decrypts it
-into the game's folder with --keys, the add-on without a license said; without --keys the keys' file is
-~/.vita/vita_keys.txt, and with none there the import stops naming it."""
+into the game's folder with --keys (a folder of key files), the add-on without a license said; without --keys the keys
+are ~/.vita's, and with none there the import stops naming it; a game whose app/ links the dump is decrypted before it
+plays, the dump's license read before --zrif."""
 
 import os
 import pathlib
@@ -70,7 +71,7 @@ def main():
             subprocess.run([sys.argv[2]], env={**os.environ, 'VITA_DECRYPT_MAKE': tmp}, check=True, timeout=60)
             app = os.path.join(tmp, 'dump', 'app', 'SNXT00001')
             games = os.path.join(tmp, 'games')
-            keys = os.path.join(tmp, 'vita_keys.txt')
+            keys = os.path.join(tmp, 'keys')
             out = run(
                 ['-x', '--outdir', games, '--keys', keys, app],
                 0,
@@ -91,21 +92,37 @@ def main():
             addon = pathlib.Path(games, 'SNXT00001', 'ux0', 'addcont', 'SNXT00001', 'SCARLETNXADDON01', 'addon.dat')
             if addon.read_bytes() != pathlib.Path(tmp, 'plain', 'SCARLETNXADDON01', 'addon.dat').read_bytes():
                 failures.append("the add-on's addon.dat is not its plaintext")
+            # the home folder the driver reads ~/.vita from: HOME, or USERPROFILE first on Windows
             home = os.path.join(tmp, 'home')
             os.mkdir(home)
-            # the home folder the driver reads ~/.vita from: HOME, or USERPROFILE first on Windows
             env = {**os.environ, 'HOME': home, 'USERPROFILE': home}
             out = run(
                 ['-x', '--outdir', os.path.join(tmp, 'other'), app],
                 1,
-                'is encrypted, and there are no Vita keys to decrypt it with at ',
+                'is encrypted, and there are no Vita keys to decrypt it with in ',
                 env,
             )
-            if '.vita' not in out or 'vita_keys.txt (' not in out:
-                failures.append(f'without keys, the import does not name ~/.vita/vita_keys.txt:\n{out}')
+            if '.vita' not in out:
+                failures.append(f'without keys, the import does not name ~/.vita:\n{out}')
             os.mkdir(os.path.join(home, '.vita'))
-            os.link(keys, os.path.join(home, '.vita', 'vita_keys.txt'))
+            for name in os.listdir(keys):
+                os.link(os.path.join(keys, name), os.path.join(home, '.vita', name))
             run(['-x', '--outdir', os.path.join(tmp, 'other'), app], 0, 'files decrypted', env)
+            # a game folder whose app/ links the encrypted dump (Locate..., an older import): decrypted before it plays,
+            # -x stopping there; the dump's own license wins over --zrif, which is said
+            linked = os.path.join(tmp, 'linked', 'SNXT00001')
+            os.makedirs(linked)
+            try:  # Windows makes a symbolic link only for an administrator or in developer mode
+                os.symlink(app, os.path.join(linked, 'app'), target_is_directory=True)
+            except OSError:
+                linked = None
+            if linked:
+                out = run(['-x', '--game', linked, '--keys', keys, '--zrif', 'eA=='], 0, 'files decrypted')
+                if '--zrif is not read: the dump has the game' not in out or os.path.islink(
+                    os.path.join(linked, 'app')
+                ):
+                    failures.append(f'the linked game is not decrypted in its folder, or --zrif not said:\n{out}')
+            run(['--zrif'], 2, 'scarletnx-vita: --zrif takes a zRIF, the game')
     if failures:
         sys.exit('vita_driver:\n' + '\n'.join(failures))
     print('vita_driver: ok')
