@@ -462,13 +462,15 @@ static int fwarm(SgCtx* g, int r, int nr, unsigned sz, int n, int a, int b, int 
     return sgx_vcold_warm(X, hot, r, "snx_x64_fp_vec", a, b, d, desc, 0x80 | 0x20 | zacc, (int)offsetof(CPU, fpcr),
                           (int)offsetof(CPU, fpsr), 0);
 }
-/* the same for an exact operation of a and b, which neither the mode nor IXC changes: the hot code tests FZ (once a
-   region) and the lanes of bad (theirs for the call: a NaN); the cold path tests bad again, and the arguments FZ may
-   flush */
-static int fwarm_exact(SgCtx* g, int r, int bad, unsigned sz, int n, int a, int b, SnxU32 desc) {
-    SgB hot = sg_b_or(g, fstate(g, SGX_FPCR_FZ, 0), vany(g, bad, sz, n));
-    return sgx_vcold_warm(X, hot, r, "snx_x64_fp_vec", a, b, 0, desc, 0x80 | 0x40 | (b ? 2u : 1u) << 3,
-                          (int)offsetof(CPU, fpcr), (int)offsetof(CPU, fpsr), bad);
+/* the same where the lanes of bad (a NaN, an integer out of range) are the call's: the hot code tests FZ (and where
+   ixc, an operation that may be inexact, IXC; the mode with them, as the region has that test already) once a region
+   and bad's lanes; the cold path tests bad again, IXC, and the arguments (a, b where not 0) FZ may flush */
+static int fwarm_mask(SgCtx* g, int r, int bad, unsigned sz, int n, int a, int b, SnxU32 desc, int ixc) {
+    SgB hot =
+        sg_b_or(g, ixc ? fstate(g, SGX_FPCR_RMODE | SGX_FPCR_FZ, 1) : fstate(g, SGX_FPCR_FZ, 0), vany(g, bad, sz, n));
+    return sgx_vcold_warm(X, hot, r, "snx_x64_fp_vec", a, b, 0, desc,
+                          0x80 | 0x40 | (ixc ? 0x20u : 0) | (b ? 2u : 1u) << 3, (int)offsetof(CPU, fpcr),
+                          (int)offsetof(CPU, fpsr), bad);
 }
 
 /* FADD, FSUB, FMUL, FDIV by lanes; FABD the difference's magnitude */
@@ -502,14 +504,13 @@ static int fminmax(SgCtx* g, unsigned sz, int n, int a, int b, int minimum, int 
     int eq = sgx_v2(X, k_fcmp[sz], a, b, 0), t = minimum ? vor(g, a, b) : vand(g, a, b);
     int r = op2(g, minimum ? k_fmin[sz] : k_fmax[sz], a, b);
     r = vsel(g, eq, t, r);
-    return fwarm_exact(g, r, sgx_v2(X, k_fcmp[sz], a, b, 3), sz, n, a, b,
-                       FDESC(3, sz, n) | (SnxU32)minimum << 12 | (SnxU32)numeric << 16);
+    return fwarm_mask(g, r, sgx_v2(X, k_fcmp[sz], a, b, 3), sz, n, a, b,
+                      FDESC(3, sz, n) | (SnxU32)minimum << 12 | (SnxU32)numeric << 16, 0);
 }
 static int fsqrt(SgCtx* g, unsigned sz, int n, int a) {
-    int r = sgx_v1(X, k_fsqrt[sz], a, 0), bad = vandn(g, fzero(g, sz, a), fnot_roomy(g, sz, r));
-    return fcold(g,
-                 sg_b_or(g, sg_b_or(g, fstate(g, SGX_FPCR_RMODE, 1), fflushed(g, sz, n, a, 0, 0)), vany(g, bad, sz, n)),
-                 r, a, 0, 0, FDESC(2, sz, n) | SNX_FP_SQRT << 12);
+    int r = sgx_v1(X, k_fsqrt[sz], a, 0);
+    /* exact zeros where a is one; a FZ may flush */
+    return fwarm(g, r, fnot_roomy(g, sz, r), sz, n, a, 0, 0, FDESC(2, sz, n) | SNX_FP_SQRT << 12, 3 | 1u << 3);
 }
 /* FCMEQ (cmp 0), FCMGE (1), FCMGT (2) of a and b (abs: FACGE, FACGT): CMPPx's EQ, LE and LT the other way; an
    unordered lane goes cold (a signalling NaN, or any NaN for GE and GT, raises IOC) */
@@ -521,7 +522,7 @@ static int fcompare(SgCtx* g, unsigned sz, int n, int a, int b, int cmp, int abs
         b = vand(g, b, m);
     }
     r = cmp == 0 ? sgx_v2(X, k_fcmp[sz], a, b, 0) : sgx_v2(X, k_fcmp[sz], b, a, cmp == 1 ? 2 : 1);
-    return fwarm_exact(g, r, sgx_v2(X, k_fcmp[sz], a, b, 3), sz, n, a, b, FDESC(4, sz, n) | (SnxU32)cmp << 12);
+    return fwarm_mask(g, r, sgx_v2(X, k_fcmp[sz], a, b, 3), sz, n, a, b, FDESC(4, sz, n) | (SnxU32)cmp << 12, 0);
 }
 static int fround_to(SgCtx* g, unsigned sz, int a, int rm);
 /* FCVTZS, FCVTZU and the other modes' (rm as fround_to's, 3 toward zero), to integers of the lanes' width, of a scaled
@@ -553,8 +554,8 @@ static int fto_int(SgCtx* g, unsigned sz, int n, int a, int uns, int fbits, int 
         if (uns) bad = vor(g, bad, vor(g, sgx_v2(X, &sgx_v_cmppd, x, fsplat(g, 1, 0xBFF0000000000000ull), 2),
                                        vgt(g, 3, vzero(g), r, 0)));
     }
-    return fcold(g, sg_b_or(g, sg_b_or(g, fstate(g, 0, 1), fflushed(g, sz, n, a, 0, 0)), vany(g, bad, sz, n)), r, a, 0,
-                 0, FDESC(6, sz, n) | (SnxU32)uns << 12 | (SnxU32)fbits << 16 | (SnxU32)(rm + 1) << 24);
+    return fwarm_mask(g, r, bad, sz, n, a, 0,
+                      FDESC(6, sz, n) | (SnxU32)uns << 12 | (SnxU32)fbits << 16 | (SnxU32)(rm + 1) << 24, 1);
 }
 /* SCVTF, UCVTF (from integers of the lanes' width), scaled by 2^-fbits: exact where every integer fits the
    significand, else once IXC is set in round to nearest. Unsigned words as their halves (each exact, one rounding
@@ -650,8 +651,7 @@ static int fround_to(SgCtx* g, unsigned sz, int a, int rm) {
 /* FRINTN, FRINTP, FRINTM, FRINTZ, FRINTA (rm as fround_to's); a NaN and a value FZ flushes go cold */
 static int fround(SgCtx* g, unsigned sz, int n, int a, int rm) {
     int r = fround_to(g, sz, a, rm);
-    return fcold(g, sg_b_or(g, fflushed(g, sz, n, a, 0, 0), vany(g, fnan(g, sz, a), sz, n)), r, a, 0, 0,
-                 FDESC(8, sz, n) | (SnxU32)(rm + 1) << 12);
+    return fwarm_mask(g, r, fnan(g, sz, a), sz, n, a, 0, FDESC(8, sz, n) | (SnxU32)(rm + 1) << 12, 0);
 }
 
 /* the FP instructions by lanes; 0 for the rest */
