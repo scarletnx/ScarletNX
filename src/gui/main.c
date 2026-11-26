@@ -15085,7 +15085,7 @@ static void last_run_look(App* app) {
     GuiProbeReport r;
     int taken = path ? gui_last_run_take(path, &run, why, sizeof why) : 0;
     free(path);
-    if (taken < 0) gui_log("last run: %s", why);
+    if (taken < 0 || (taken > 0 && why[0])) gui_log("last run: %s", why); /* what it could not read, or names */
     if (taken < 0 && !run.started) {
         gui_last_run_free(&run);
         return;
