@@ -6162,7 +6162,9 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
     snx_test_target(snx-test-vk-tess-passthrough gnu23)
     target_include_directories(snx-test-vk-tess-passthrough PRIVATE "${volk_SOURCE_DIR}")
     target_link_libraries(snx-test-vk-tess-passthrough PRIVATE Vulkan::Headers)
-    add_test(NAME vk_tess_passthrough COMMAND snx-test-vk-tess-passthrough)
+    # each case's module written to the build folder and checked by spirv-val
+    add_test(NAME vk_tess_passthrough COMMAND snx-test-vk-tess-passthrough "${CMAKE_CURRENT_BINARY_DIR}"
+                                              $<TARGET_FILE:snx-spirv-val>)
     # the shader lookups' tables hold a frame's keys (src/nx/gpu/vk/lookup_ways.h)
     add_executable(snx-test-vk-lookup-ways vk_lookup_ways.c)
     snx_test_target(snx-test-vk-lookup-ways gnu23)
