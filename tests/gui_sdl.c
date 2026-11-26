@@ -8053,7 +8053,22 @@ int main(int argc, char** argv) {
         said = whole;
         assert(app.confirm.shown && app.confirm.ask == GUI_ASK_ERROR && !strcmp(app.error_line, said));
         render(&app);
-        shows(&app, said, rgb(app.theme.warning));
+        { /* row by row as the box breaks it at its width (wrap_in's wrap_at): one row or more, as long as the
+             temporary folder this host gives makes it */
+            GuiChoices c;
+            const char* s = said;
+            char row[1100];
+            int width;
+            ask_place(&app, &c);
+            width = (c.box.w - cell_w(&app)) / cell_w(&app);
+            assert(width > 0);
+            while (*s) {
+                size_t n = wrap_at(s, width, 0);
+                snprintf(row, sizeof row, "%.*s", (int)n, s);
+                shows(&app, row, rgb(app.theme.warning));
+                for (s += n + (s[n] == '\n'); *s == ' ';) ++s;
+            }
+        }
         free(app.data_dir), free(app.games_dir), free(app.themes_dirs[0]), free(app.work_dir), free(app.keys_path);
         free(app.home_dir);
         app.data_dir = data, app.games_dir = games, app.themes_dirs[0] = themes, app.work_dir = work;
@@ -10556,8 +10571,19 @@ int main(int argc, char** argv) {
             SDL_Color dim = rgb(app.theme.dim);
             assert(!app.theme.grid && !same_colour(dim, rgb(app.theme.page)));
             assert(same_colour(pixel(&app, (float)(r.x - 4 * app.scale), (float)(r.y + r.h / 2)), dim));
-            r = ui_form_side_row(f.right, app.scale, UI_FORM_SIDE_ROWS, 9 + GUI_FOLDER_GROUPS + 2);
-            assert(same_colour(pixel(&app, (float)(r.x - 4 * app.scale), (float)(r.y + r.h / 2)), dim));
+            { /* Reset to Defaults, the last row, in focus as a person brings it there: the rows scroll to it where the
+                 note of a long folder leaves room for fewer of them */
+                const int last = 9 + GUI_FOLDER_GROUPS + 2, was = app.editor.row;
+                app.editor.row = last;
+                render(&app);
+                form_boxes(&app, &f);
+                assert((size_t)last >= form_first(&f, true));
+                r = ui_form_side_row(f.right, app.scale, UI_FORM_SIDE_ROWS, (size_t)last - form_first(&f, true));
+                assert(same_colour(pixel(&app, (float)(r.x - 4 * app.scale), (float)(r.y + r.h / 2)), dim));
+                app.editor.row = was;
+                render(&app);
+                form_boxes(&app, &f);
+            }
         }
         { /* a title on a band of ink in a theme of filled boxes, its text in the page's colour; over a rule in dim in
              one of outlined boxes, in ink */
@@ -11097,12 +11123,27 @@ int main(int argc, char** argv) {
             snprintf(line, sizeof line, "%s%s", app.theme.marker, drawn.label);
             shows(&app, line, yellow);
         }
-        /* under the rows, the folder in use: its start, as a long one wraps (Windows' %APPDATA% does) */
-        snprintf(line, sizeof line, "%.24s", data);
-        shows_half(&app, line, rgb(app.theme.soft));
+        { /* under the rows, the folder in use: its start, as a long one wraps (Windows' %APPDATA% does): the first row
+             as the note breaks it at its width, which a long first folder ends early */
+            GuiFormBoxes note;
+            GuiRect text;
+            size_t n;
+            form_boxes(&app, &note);
+            text = inner(&app, note.info);
+            n = wrap_at(data, text.w / cell_w(&app), 0);
+            snprintf(line, sizeof line, "%.*s", (int)SDL_min(n, 24), data);
+            shows_half(&app, line, rgb(app.theme.soft));
+        }
         shows(&app, "- Extractions", normal);
-        /* every folder its default: greyed (#614) */
-        shows(&app, "- " ICON_ROTATE_CCW " Reset to Defaults", rgb(app.theme.soft));
+        { /* every folder its default: greyed (#614); in focus as a person brings it, the rows scrolling to it where the
+             note of a long folder leaves room for fewer of them, still greyed there */
+            const int was = app.editor.row;
+            app.editor.row = 9 + GUI_FOLDER_GROUPS + 2;
+            render(&app);
+            shows(&app, "- " ICON_ROTATE_CCW " Reset to Defaults", rgb(app.theme.soft));
+            app.editor.row = was;
+            render(&app);
+        }
         assert(!strcmp(app.place_line[GUI_PLACE_GAMES], app.games_dir) &&
                !strcmp(app.app_form.folder[FOLDER_ROW(GUI_ROW_PLACE, GUI_PLACE_GAMES)], "default"));
         assert(strstr(app.place_about[GUI_PLACE_GAMES], "The recompiled games, ") &&
