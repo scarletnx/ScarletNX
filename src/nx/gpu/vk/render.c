@@ -1525,6 +1525,7 @@ typedef struct {
     u32 tic[8], tsc[8];
     Surf* t;
     u32 memo;
+    u32 over; /* the memo keeps t over a render target: a draw into that target moves no stamp of the tables */
 } TexRes;
 /* A capture slice shares the original shader state but writes host-only scratch attachments. */
 static struct {
@@ -2566,6 +2567,7 @@ static void tex_resolve_(const DsState* ds, u32 handle, TexRes* x) {
     r->kind = TEX_RECENT_NONE;
     /* a way just kept is asked about the storage images pending over its texture at its next lookup only */
     const int memo = tex_resolve_memo(ds, handle, x);
+    x->over = memo >= 3;
     if (!memo || ((memo == 1 || memo == 3) && atomic_load_explicit(&g_gfx_img_any, memory_order_relaxed))) return;
     const TexOver over = memo >= 3 ? tex_over_of(x) : (TexOver){0};
     if (memo >= 3 && !over.rt) return;
@@ -4342,6 +4344,34 @@ typedef struct {
     VkViewport vp;
     u64 slots;
 } ScreenSlots;
+/* A stage set's textures part, kept for the stage's next set on the same thread (stage_set_). In one game's town 72%
+   of the parts had the same inputs as the stage's last one, at about 170 ns each, 0.7 ms a present on the renderer
+   thread, and the same inputs always gave the same output. The key holds what the part reads: the program, the
+   bindings, each slot's handle, the draw's targets, the frame and the submission, and the stamps of the GPU-side
+   writes, the surfaces and the CPU's write epochs that the texture lookups check (tex_resolve). A part is kept only
+   where each slot took the plain path (a view of the texture, not of a target of the draw, a copy or the null
+   view). The views and samplers live past the frame (vk_defer_image), so they hold while the frame does. A skip
+   writes the descriptors and the table's words again and does what the part did to its textures: their layout uses
+   (vk_surf_use), the scaled bits and the breakpoint notes */
+typedef struct {
+    u64 key; /* 0: none */
+    u32 nw, nuse, nbp, nt;
+    u64 scaled[2]; /* the bits the part added to scaled */
+    u32 wbind[SH_MAXTEX];
+    VkDescriptorImageInfo wii[SH_MAXTEX];
+    Surf* use[SH_MAXTEX];
+    VkImageLayout use_layout[SH_MAXTEX];
+    VkImage use_img[SH_MAXTEX]; /* each used texture's image and lowest level as the part saw them */
+    u32 use_lod[SH_MAXTEX];
+    u32 slot[SH_MAXTEX]; /* each used texture's slot */
+    u32 surf_epoch; /* g_vk_surf_epoch in the key */
+    Surf* bp[2 * SH_MAXTEX]; /* each slot's resolved texture and bound one */
+    u32 words[SH_MAXTEX];
+} TexPart;
+static TexPart g_tex_part[RC_SLOTS][DS_GFX_STAGES];
+/* the parts skipped, and made in full where one could be kept, by thread (0 the renderer thread, 1 the worker):
+   the renderer thread's log reads and clears the worker's */
+static _Atomic u64 g_tex_part_n[2][2];
 static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** rt, Surf* zt, u32 n, int* zt_ro,
                                   u32* fb, u64* scaled, TexRes* res, const VkDrawStorage* draw, DrawImages* images,
                                   const ScreenSlots* screen, const XfbBind* xfb);
@@ -5027,6 +5057,95 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
     VkImageLayout tlayouts[SH_MAXTEX];
     VkSampler tsamplers[SH_MAXTEX];
     if (!res && nt) tex_handles(ds, stage, tcb, &s->si, nt, handles);
+    /* each plain slot's handle, as the loop below takes it, and the key of the textures part (TexPart) */
+    u32 hs[SH_MAXTEX];
+    for (int i = 0; i < nt; i++)
+        hs[i] = s->si.tex[i].flags & SNX_TEX_INDEXED ? 0
+                : res && res[i].have                 ? res[i].handle
+                : !res                               ? handles[i]
+                                                     : tex_handle(ds, stage, tcb, &s->si, i);
+    TexPart* const tp = (u32)stage < DS_GFX_STAGES ? &g_tex_part[t_rc][stage] : NULL;
+    int part_keep = tp && nt && !g_predraw.phase && !g_predraw.probe && !g_capture_draw.images && !state_check() &&
+                    !gpu_spec() && g_settings.shadows && !g_settings.pool_map_shadow && !mapped;
+    u64 part_key = 0;
+    const u32 part_epoch = atomic_load_explicit(&g_vk_surf_epoch, memory_order_relaxed);
+    if (part_keep) {
+        const u64 in[] = {(u64)(uintptr_t)s, (u64)stage, (u64)(uintptr_t)gpu_ds_canonical(ds), ds->bind.tex_pool,
+                          ds->bind.smp_pool, (u64)ds->bind.tex_max << 32 | ds->bind.smp_max,
+                          (u64)ds->bind.tex_bank << 8 | ds->bind.smp_mode, gpu_mem_generation(),
+                          atomic_load_explicit(&g_pend_any.adds, memory_order_relaxed) + vk_uma_writes(),
+                          vk_gfx_image_adds(), part_epoch,
+                          vk_ww_epoch(), vk_rt_take_gen(), g_vk_present, vk_frame_id(), vk_submit_number(),
+                          (u64)(uintptr_t)zt,
+                          (u64)n << 8 | (u64)images->sampled_general << 2 | (u64)(fb != NULL) << 1 | (u64)(scaled != NULL),
+                          (u64)table << 1 | (u64)(table && recorded && !addressed && !fetch)};
+        part_key = SNX_FNV_BASIS;
+        for (u32 k = 0; k < sizeof in / sizeof in[0]; k++) part_key = snx_fnv_step(part_key, in[k]);
+        for (u32 j = 0; j < n; j++) part_key = snx_fnv_step(part_key, (u64)(uintptr_t)rt[j]);
+        for (int i = 0; i < nt; i++) part_key = snx_fnv_step(part_key, hs[i]);
+        part_key |= 1; /* never 0, which marks none */
+        /* the part holds while each of its textures needs no check of its own (tex_resolve's tex_quiet_now, a target's
+           layout) and keeps its image and lowest level (a shed of device memory, vk_tex_coarser, changes them and
+           moves no stamp of the key) */
+        int held = tp->key == part_key && tp->nt == (u32)nt;
+        if (held) {
+            vk_share_lock(); /* one take for the part's textures (draw_batches=2), not one for each */
+            /* the surface table as the key read it before the lock: no Surf of the part made or freed since */
+            held = atomic_load_explicit(&g_vk_surf_epoch, memory_order_relaxed) == tp->surf_epoch;
+            /* a target's read check, as its lookup makes it (tex_resolve), before the checks that it can change */
+            for (u32 k = 0; k < tp->nbp && held; k++)
+                if (tp->bp[k] && tp->bp[k]->is_rt) vk_rt_note_read(tp->bp[k]);
+            const u32 ww = vk_ww_epoch();
+            for (u32 k = 0; k < tp->nbp && held; k++) {
+                const Surf* b = tp->bp[k];
+                held = !b || (b->is_rt ? vk_surf_layout(b) != VK_IMAGE_LAYOUT_UNDEFINED : tex_quiet_now(b, ww));
+            }
+            for (u32 k = 0; k < tp->nuse && held; k++)
+                held = tp->use[k]->img == tp->use_img[k] && tp->use[k]->lod_floor == tp->use_lod[k];
+            /* the fragment stage's slots take what fs_key resolved for this draw: the same textures, and none kept
+               over a target */
+            for (u32 k = 0; res && k < tp->nuse && held; k++) {
+                const TexRes* r = &res[tp->slot[k]];
+                held = r->have && r->handle == hs[tp->slot[k]] && r->t == tp->bp[2 * k] && !(r->t && r->t->is_rt) &&
+                       !r->over;
+            }
+            for (u32 k = 0; k < tp->nuse && held; k++)
+                if (!g_spirv_translate.pool_map || !vk_surf_read_covered(tp->use[k]))
+                    vk_surf_use(vk_cmd(), tp->use[k], tp->use_layout[k], VK_SAMPLED_STAGES,
+                                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+            vk_share_unlock();
+        }
+        if (held) {
+            if (g_draw_depth == 1)
+                for (u32 k = 0; k < tp->nbp; k++) bp_sampled(tp->bp[k]);
+            if (scaled) {
+                scaled[0] |= tp->scaled[0];
+                scaled[1] |= tp->scaled[1];
+            }
+            for (u32 k = 0; k < tp->nw; k++) {
+                const u32 b = tp->wbind[k];
+                d.ii[b] = tp->wii[k];
+                d.w[d.n++] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                                    .dstSet = set,
+                                                    .dstBinding = b,
+                                                    .descriptorCount = 1,
+                                                    .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                                    .pImageInfo = &d.ii[b]};
+            }
+            if (table) {
+                memcpy(words, tp->words, (size_t)nt * sizeof *words);
+                if (recorded && !addressed && !fetch) memset(rec, 0, SH_RECORD_GBUF * sizeof *rec);
+                rec_n = tex_at + (u32)nt;
+            }
+            atomic_fetch_add_explicit(&g_tex_part_n[t_rc != 0][0], 1, memory_order_relaxed);
+            goto tex_part_done;
+        }
+        atomic_fetch_add_explicit(&g_tex_part_n[t_rc != 0][1], 1, memory_order_relaxed);
+        tp->key = 0; /* made again below: only the counts, as the arrays are written before they are read */
+        tp->nt = (u32)nt;
+        tp->nw = tp->nuse = tp->nbp = 0;
+        tp->scaled[0] = tp->scaled[1] = 0;
+    }
     for (int i = 0; i < nt; i++) {
         ShTex* st = &s->si.tex[i];
         if (st->flags & SNX_TEX_INDEXED) continue;
@@ -5042,9 +5161,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         u32 predraw_k = st->cbuf_off - SNX_PREDRAW_HANDLE;
         int predrawn = g_predraw.phase == 1 && stage == ST_FS && predraw_k < g_predraw.n;
         u32 handle = predrawn                ? g_predraw.tex[predraw_k].handle
-                     : res && res[i].have ? res[i].handle
-                     : !res               ? handles[i]
-                                          : tex_handle(ds, stage, tcb, &s->si, i);
+                                             : hs[i];
         if ((handle & 0xFFFFFu) <= ds->bind.tex_max && g_tic_seen[t_rc][handle & 0xFFFFFu] != tic_stamp()) {
             g_tic_seen[t_rc][handle & 0xFFFFFu] = tic_stamp();
             g_stats.n.slot[VK_SLOT_TICS]++;
@@ -5106,6 +5223,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
            texture reads see what was there before the draw. So a slot whose target the draw writes is read in place
            only through the pre-draw capture (ShaderInfo.predraw_slots), and the others read a copy */
         u32 slots = 0;
+        int plain_path = 0; /* the last path below: a part whose slots all take it is kept (TexPart) */
         if (t && fb && g_vk.has_feedback && vk_surf_layout(t) != VK_IMAGE_LAYOUT_UNDEFINED &&
             ((s->si.tex_own_pixel_mask >> i & 1) ||
              (screen && (screen->slots >> i & 1) && screen_covers(&screen->vp, t)))) {
@@ -5154,16 +5272,26 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         } else {
             view = tex_bind_view(x, t, want, num);
             own_view = t == x->t; /* the resolve's own texture, nothing put in its place */
+            plain_path = 1;
         }
+        if (!plain_path || !view || guest || (st->flags & 1) || depth_ro || x->over || !x->memo) part_keep = 0;
         const Surf* sampled = view ? t : NULL; /* the texture whose own view is bound, for the sampler */
         if (g_draw_depth == 1) {
             bp_sampled(x->t);
             bp_sampled(t);
         }
+        if (part_keep) {
+            tp->bp[tp->nbp++] = x->t;
+            tp->bp[tp->nbp++] = t;
+        }
         if (sampled && st->shadow && !g_settings.shadows) shadow_map_sampled(sampled);
         if (scaled && sampled && (sampled->sw != sampled->w || sampled->sh != sampled->h)) {
             scaled[0] |= 1ull << i;
-            if (own_size(sampled, rt, zt, n)) scaled[1] |= 1ull << i;
+            if (part_keep) tp->scaled[0] |= 1ull << i;
+            if (own_size(sampled, rt, zt, n)) {
+                scaled[1] |= 1ull << i;
+                if (part_keep) tp->scaled[1] |= 1ull << i;
+            }
         }
         if (view && depth_ro) {
             g_stats.n.slot[VK_SLOT_DEPTH_RO]++;
@@ -5176,6 +5304,13 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                (vk_surf_written_flush) */
             if (!g_spirv_translate.pool_map || !vk_surf_read_covered(t))
                 vk_surf_use(vk_cmd(), t, layout, VK_SAMPLED_STAGES, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+            if (part_keep) {
+                tp->use[tp->nuse] = t;
+                tp->slot[tp->nuse] = (u32)i;
+                tp->use_img[tp->nuse] = t->img;
+                tp->use_lod[tp->nuse] = t->lod_floor;
+                tp->use_layout[tp->nuse++] = layout;
+            }
         } else {
             const char* why = t ? vk_tex_view_refusal(t, want) : NULL;
             if (why)
@@ -5245,6 +5380,10 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         }
         u32 b = SNX_VKB_TEX + i;
         d.ii[b] = (VkDescriptorImageInfo){smp, view, layout};
+        if (part_keep) {
+            tp->wbind[tp->nw] = b;
+            tp->wii[tp->nw++] = d.ii[b];
+        }
         d.w[d.n++] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                             .dstSet = set,
                                             .dstBinding = b,
@@ -5264,7 +5403,14 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         }
         if (recorded && !addressed && !fetch) memset(rec, 0, SH_RECORD_GBUF * sizeof *rec);
         rec_n = tex_at + (u32)nt;
+        if (part_keep && learn) part_keep = 0;
+        if (part_keep) memcpy(tp->words, words, (size_t)nt * sizeof *words);
     }
+    if (part_keep) { /* each slot took the plain path: kept for the stage's next set */
+        tp->key = part_key;
+        tp->surf_epoch = part_epoch;
+    }
+tex_part_done:
     if (rec_n && !table_words(&d, set, shader_vk_set(s->stage), rec, rec_n)) return VK_NULL_HANDLE;
     SNX_ZONE_END(ztex);
     g_ph.ss_m[2] = ph_now();
@@ -7451,6 +7597,15 @@ static void vk_render_prep_log(void) {
                     (double)g_ph.resolve[c] * tick_ns / n, (double)g_ph.setup[c] * tick_ns / n,
                     (double)g_ph.binds[c] * tick_ns / n, (double)g_ph.join[c] * tick_ns / n);
             }
+        u64 part[2][2];
+        for (u32 w = 0; w < 2; w++)
+            for (u32 k = 0; k < 2; k++)
+                part[w][k] = atomic_exchange_explicit(&g_tex_part_n[w][k], 0, memory_order_relaxed);
+        if (part[0][0] + part[0][1] + part[1][0] + part[1][1])
+            LOG("vulkan: stage sets' textures parts over the last 600 presents: the renderer thread %llu kept of %llu, "
+                "the worker %llu kept of %llu\n",
+                (unsigned long long)part[0][0], (unsigned long long)(part[0][0] + part[0][1]),
+                (unsigned long long)part[1][0], (unsigned long long)(part[1][0] + part[1][1]));
         if (tick_ns && kicks)
             LOG("vulkan: draw_prep's thread: %.0f ns from a kick to its take, %.0f ns of work a draw given; %llu joins "
                 "waited for it, %.0f ns each\n",
