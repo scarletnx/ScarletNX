@@ -16,9 +16,10 @@
 #include <string.h>
 
 #define DESCRIPTOR_BYTES (64ull << 20)
-/* the arenas' memory: the CPU writes the tables into it, and cached memory keeps the reads of image encodings cheap */
-#define ARENA_MEMORY                                                                                                   \
-    (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT)
+/* the arenas' memory: the CPU writes the tables into it in order and never reads it (the encodings it copies from
+   are in images and buffers, in the CPU's memory). In the GPU's memory where the CPU can map it (DM_WINDOW): in
+   system memory, each descriptor the shaders read crossed the bus, 30% more GPU time in the passes of one game */
+#define ARENA_MEMORY (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
 #define IMAGE_ENCODINGS 4096
 #define BUFFER_ENCODING_BUCKETS 1024
 /* Handles cannot be recycled within a frame: image views are deferred until its fence, and the sampler cache
@@ -112,7 +113,7 @@ static void arena(u32 slot) {
     VkBufferCreateInfo info = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = capacity,
         .usage = VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT | VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT |
                  VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    DevMemWant allocation = {.at = DM_HOST, .mapped = 1, .need = ARENA_MEMORY};
+    DevMemWant allocation = {.at = DM_WINDOW, .mapped = 1, .need = ARENA_MEMORY};
     DevMemInfo details;
     if (!VK_OK(vk_devmem_buffer(&info, &allocation, &g_descriptors.frame[slot].buffer,
                                 &g_descriptors.frame[slot].memory, &details)))
@@ -137,8 +138,9 @@ static size_t descriptor_size(VkDescriptorType type) {
         default: fatal("vulkan: unsupported graphics descriptor type %u", (u32)type); return 0;
     }
 }
+/* count copies of the encoding, stride bytes apart: each from the encoding, never from destination */
 static void image_descriptor(const VkDescriptorGetInfoEXT* info, const VkDescriptorImageInfo* image,
-                              size_t size, void* destination) {
+                              size_t size, void* destination, size_t stride, u32 count) {
     if (!g_descriptors.images) {
         size_t biggest = g_vk.descriptor_props.combinedImageSamplerDescriptorSize;
         if (g_vk.descriptor_props.storageImageDescriptorSize > biggest)
@@ -162,7 +164,7 @@ static void image_descriptor(const VkDescriptorGetInfoEXT* info, const VkDescrip
         g_descriptors.stats.image_driver_calls++;
         *entry = (ImageEncoding){image->imageView, image->sampler, frame, image->imageLayout, info->type};
     } else g_descriptors.stats.image_hits++;
-    memcpy(destination, entry + 1, size); /* opaque descriptor bytes, in host-cached memory */
+    for (u32 i = 0; i < count; i++) memcpy((u8*)destination + i * stride, entry + 1, size); /* opaque bytes */
 }
 static void buffer_descriptor(const VkDescriptorGetInfoEXT* info, const VkDescriptorAddressInfoEXT* buffer,
                                 VkBuffer identity, u64 offset, size_t size, void* destination) {
@@ -311,8 +313,7 @@ VkDescriptorSet vk_descriptors_write(VkDescriptorSetLayout layout, u32 count, co
                         image->imageLayout != next->imageLayout) break;
                     run++;
                 }
-                image_descriptor(&info, image, stride, destination);
-                vk_descriptor_repeat(destination, stride, run);
+                image_descriptor(&info, image, stride, destination, stride, run);
                 g_descriptors.stats.image_replicas += run - 1;
             } else buffer_descriptor(&info, &buffer, identity, buffer_offset, stride, destination);
             j += run;

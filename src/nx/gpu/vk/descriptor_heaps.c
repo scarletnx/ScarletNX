@@ -213,7 +213,9 @@ static int heap_create(Heap* heap, const VkDescriptorHeapMemoryPlan* plan, const
         .size = plan->allocation_size,
         .usage = VK_BUFFER_USAGE_DESCRIPTOR_HEAP_BIT_EXT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | usage,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    DevMemWant allocation = {.at = DM_HOST,
+    /* the GPU's memory where the CPU can map it: the shaders read each draw's descriptors, and the CPU only writes
+       them, in order (descriptors.c's ARENA_MEMORY) */
+    DevMemWant allocation = {.at = DM_WINDOW,
                              .mapped = 1,
                              .need = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT};
     DevMemInfo details;
