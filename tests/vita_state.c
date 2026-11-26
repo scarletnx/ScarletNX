@@ -251,6 +251,19 @@ static int refused(VitaProcess* p, const char* dir, const char* path, const char
     free(before), free(after);
     return 0;
 }
+/* from renamed to, as no handle of the game's holds it open: Windows renames no file that is open, so a test that
+   moves a file the game has open would pass only where rename takes one. 0, or -1 having said which */
+static int rename_closed(const VitaProcess* p, const char* from, const char* to) {
+    for (unsigned i = 0; i < VITA_FILES; ++i) {
+        const char *a = p->files[i].path, *b = from;
+        if (!p->files[i].host || !a) continue;
+        while (*a && (*a == *b || ((*a == '/' || *a == '\\') && (*b == '/' || *b == '\\')))) ++a, ++b;
+        if (*a || *b) continue;
+        fprintf(stderr, "vita_state: %s is open in the game (its file %u): it can't be renamed on Windows\n", from, i);
+        return -1;
+    }
+    return rename(from, to);
+}
 /* the open files at their places: the next read of data.bin is from byte 100, the next write of out.bin at byte 10,
    the next entry of the folder its second */
 static int files_back(VitaProcess* p, const Made* m, uint32_t mem) {
@@ -385,10 +398,10 @@ int main(void) {
         CHECK(!copy_changed(saved, changed, (long long)table - 6, 0x40, 0));
         if (refused(p, root, changed, damaged)) return 1;
     }
-    /* a file the state names that is gone */
+    /* a file the state names that is gone: the game's handle closed first, which the state still holds open */
     {
         char* moved = snx_path_join(root, "data.moved");
-        CHECK(moved && !rename(data, moved));
+        CHECK(moved && CALL("sceIoClose", m.file) == 0 && !rename_closed(p, data, moved));
         const char* const gone[] = {"data.bin", "can't be opened again", NULL};
         if (refused(p, root, saved, gone)) return 1;
         CHECK(!rename(moved, data));
