@@ -2564,8 +2564,7 @@ static int rt_takes(const Surf* to, const Surf* from, int fresh) {
            !from->f.depth && !to->f.depth && from->f.raw && to->f.raw && from->f.bpp == to->f.bpp && from->w == to->w &&
            from->h == to->h && from->sw == to->sw && from->sh == to->sh && from->bl == to->bl && from->bh == to->bh &&
            from->bd == to->bd && from->pitch == to->pitch && from->layers == to->layers &&
-           (from->layers == 1 || from->layer_size == to->layer_size) && !from->volume && !to->volume &&
-           from->msaa == to->msaa;
+           from->layer_size == to->layer_size && !from->volume && !to->volume && from->msaa == to->msaa;
 }
 static int rt_take_pixels(Surf* to, Surf* from, int fresh) {
     if (!rt_takes(to, from, fresh)) return 0;
@@ -2595,65 +2594,23 @@ static int rt_take_pixels(Surf* to, Surf* from, int fresh) {
     to->draw_hash = from->draw_hash;
     return 1;
 }
-/* The target named again by a path that may know less of its layer's stride than the one that drew it (a 2D copy knows
-   none): the greater stays, which is the game's */
-static void rt_stride_keep(Surf* s, u64 layer_size) {
-    if (s->layer_size < layer_size) s->layer_size = layer_size;
-}
-/* Newer guest memory at this address takes precedence, as it does where a texture takes a target's draw
-   (vk_rt_drawn_fresh, tex_take_drawn): where memory was written since the target was drawn, the target takes those
-   bytes again from it. A block linear one takes the rows of blocks written since alone (load_bands): the rest of its
-   draw is in it, not in memory, when it was parked (its pages left the watch, and a parked target is not published) or
-   the GPU wrote there. It is drawn after that, as memory lacks the rest. Another loads all of it again, as a target
-   made over memory does. A depth target holds nothing a load takes, and one never drawn has no baseline to tell by */
-static void rt_stride_written(Surf* s) {
-    if (s->f.depth || !s->draw_wseen || s->layout == VK_IMAGE_LAYOUT_UNDEFINED || vk_rt_drawn_fresh(s)) return;
-    if (s->bl && s->f.raw && moves_scaled(s) && s->sw == s->w && s->sh == s->h && !s->msaa && !surf_volume(s) &&
-        flush_bytes(s)) {
-        vk_render_end();
-        vk_stamp_runtime_begin(); /* the runtime's work, as vk_rt_reload's */
-        const int ok = load_bands(s, (guest_w(s) * s->f.bpp + 15) & ~15u, 1);
-        vk_stamp_runtime_end();
-        if (ok) {
-            vk_surf_wrote(s);
-            s->draw_wseen = 0; /* a new baseline from now: memory's writes are in it */
-            vk_rt_drawn(s);
-            return;
-        }
-    }
-    vk_rt_reload(s->gva);
-}
-/* A target parked at gva of the shape of want, or NULL: first the one of want's layer size, else, for a single layer, the
-   same target whose layer only its padding differs in (*padding is 1 then). The copy that names a target knows its
-   pixels but not the stride the game laid its layer out in, so it asks for the least one: without the second it makes a
-   second target at the address, where its pixels arrive that no draw and no texture looks at, and the draw's target stays
-   parked with the pixels it had (a minimap's terrain, every frame). Of those parked, the one with the greatest stride, so
-   that naming it with a smaller one never lowers what the game laid out */
-static Surf* rt_find_parked(u64 gva, const Surf* want, u32 fkey, int* padding) {
-    Surf* found = NULL;
-    *padding = 0;
-    for (int by_padding = 0; by_padding < 2 && !found; by_padding++) {
-        if (by_padding && (want->layers != 1 || want->volume)) break;
-        for (Surf* s = vk_surf_first(gva); s; s = vk_surf_next(s)) {
-            if (s->gva != (gva | 1ull << 63) || !s->is_rt || s->w != want->w || s->h != want->h || s->fkey != fkey ||
-                s->bl != want->bl || s->bh != want->bh || s->pitch != want->pitch || s->layers != want->layers ||
-                s->bd != want->bd || s->volume != want->volume || s->msaa != want->msaa)
-                continue;
-            if (by_padding ? found && s->layer_size <= found->layer_size : s->layer_size != want->layer_size || found)
-                continue;
-            found = s;
-            *padding = by_padding;
-        }
-    }
-    return found;
+/* A target parked at gva of the shape of want, or NULL */
+static Surf* rt_find_parked(u64 gva, const Surf* want, u32 fkey) {
+    for (Surf* s = vk_surf_first(gva); s; s = vk_surf_next(s))
+        if (s->gva == (gva | 1ull << 63) && s->is_rt && s->w == want->w && s->h == want->h && s->fkey == fkey &&
+            s->bl == want->bl && s->bh == want->bh && s->pitch == want->pitch && s->layers == want->layers &&
+            s->layer_size == want->layer_size && s->bd == want->bd && s->volume == want->volume &&
+            s->msaa == want->msaa)
+            return s;
+    return NULL;
 }
 static void rt_publish_now(Surf* s, int why);
 /* A new target that takes its address from another loads that memory (rt_create_): the live one is published first,
    whatever of its pixels memory lacks, as the console's memory holds its draw there.
 
    Not when a parked target comes back (back): it loads nothing, it holds its own pixels, and the live one keeps its own
-   while parked. What reads the parked one's draw from memory takes it otherwise: the live one named again takes only
-   the rows written since (rt_stride_written), and one the caches let go is published then (rt_give_way). Published at
+   while parked. What reads the parked one's draw from memory takes it otherwise: one the caches let go is published then
+   (rt_give_way). Published at
    each park, the targets that games draw in turn at one address (a blur chain's levels over shared scratch memory, a
    2560x1440 target and a 640x360 one) were written back each frame: about 10 MB a present in an Ounce game's race,
    1.3 ms of the GPU's copies. Those write-backs were also newer than the draws over the memory they share, so a
@@ -2700,19 +2657,6 @@ static Surf* rt_create_(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, int depth, u32
             vk_rt_note_read(s);
             return s;
         }
-    /* The same target, named with only its padding different. One layer's stride is padding, and a 2D copy knows the
-       pixels but not the stride: it passes 0, which becomes the smallest that holds them, while the draws that bind
-       the target give the stride the game laid out. Two targets at one address would leave the copy in the one nothing
-       draws to or samples, and the copy's pixels are lost (a minimap's terrain, every frame) */
-    if (layers == 1 && !volume)
-        for (Surf* s = vk_surf_first(gva); s; s = vk_surf_next(s))
-            if (s->gva == gva && s->is_rt && s->w == w && s->h == h && s->fkey == fkey && s->bl == bl && s->bh == bh &&
-                s->pitch == pitch && s->layers == 1 && s->bd == bd && !s->volume && s->msaa == msaa) {
-                rt_stride_keep(s, layer_size);
-                vk_rt_note_read(s);
-                rt_stride_written(s);
-                return s;
-            }
     /* another size, format or layout at this address: park the current one, reuse a parked one that fits. Its freshness
        is asked while it holds the address (not when only the size changes, as dynamic resolution does every frame in
        some games) */
@@ -2731,15 +2675,14 @@ static Surf* rt_create_(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, int depth, u32
                        .layer_size = layer_size,
                        .volume = volume,
                        .msaa = msaa};
-    int padding; /* the parked one was found by its padding alone */
-    Surf* parked = rt_find_parked(gva, &want, fkey, &padding);
+    Surf* parked = rt_find_parked(gva, &want, fkey);
     if (!rt_takes(parked ? parked : &want, cur, cur_fresh)) {
         /* cur's own pixels, which no target takes, go to memory as it is parked. After its freshness is asked, as the
            publish's write to memory is newer than its draw to vk_rt_drawn_fresh, and before the parked targets are
            looked up for good, as it can let some go */
         rt_park_publish(gva, parked);
         if (cur && vk_rt_find(gva) != cur) cur = NULL, cur_fresh = 0;
-        parked = rt_find_parked(gva, &want, fkey, &padding);
+        parked = rt_find_parked(gva, &want, fkey);
     }
     for (Surf* s = vk_surf_first(gva); s; s = vk_surf_next(s))
         if (s->gva == gva && s->is_rt) {
@@ -2758,9 +2701,7 @@ static Surf* rt_create_(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, int depth, u32
         surf_changed(gva);
         rt_pages(parked, 1);
         vk_rt_note_read(parked);
-        /* named with more padding than it was parked with: it keeps the greater, as the one holding the address does */
-        rt_stride_keep(parked, layer_size);
-        if (!rt_take_pixels(parked, cur, cur_fresh) && padding) rt_stride_written(parked);
+        rt_take_pixels(parked, cur, cur_fresh);
         return parked;
     }
     VkFmt f = depth ? vk_zt_format(fmt) : vk_rt_format(fmt);
