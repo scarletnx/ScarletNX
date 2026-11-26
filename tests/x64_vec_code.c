@@ -87,6 +87,16 @@ static const Row k_rows[] = {
     {"sha1su1 v0.4s, v1.4s", 0, 0, 234, -1, NULL, "5E281820"},
     {"aese v0.16b, v1.16b; aesmc v0.16b, v0.16b", NEEDS_AES, 0, 224, -1, "!66 0F 38 DF", "4E284820 4E286800"},
     {"aesd v0.16b, v1.16b; aesimc v0.16b, v0.16b", NEEDS_AES, 0, 224, -1, "66 0F 38 DE", "4E285820 4E287800"},
+    {"zip1 v0.4s, v1.4s, v2.4s", 0, 0, 208, -1, NULL, "4E823820"},
+    {"zip2 v0.16b, v1.16b, v2.16b", 0, 0, 208, -1, NULL, "4E027820"},
+    {"uzp1 v0.4s, v1.4s, v2.4s", 0, 0, 208, -1, NULL, "4E821820"},
+    {"trn1 v0.8h, v1.8h, v2.8h", 0, 0, 208, -1, NULL, "4E422820"},
+    {"ext v0.16b, v1.16b, v2.16b, #5", 0, 0, 208, -1, NULL, "6E022820"},
+    {"ext v0.8b, v1.8b, v2.8b, #5", 0, 0, 208, -1, NULL, "2E022820"},
+    {"rev64 v0.4s, v1.4s", 0, 0, 192, -1, NULL, "4EA00820"},
+    {"addv s0, v1.4s", 0, 0, 224, -1, NULL, "4EB1B820"},
+    {"mul v0.4s, v1.4s, v2.s[1]", 0, 0, 208, -1, NULL, "4FA28020"},
+    {"smaxp v0.4s, v1.4s, v2.4s", 0, 0, 224, -1, NULL, "4EA2A420"},
 };
 
 static struct {
