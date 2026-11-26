@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The runtime JIT (jit_service.h). ISO C in style; the target's GNU C23 is for the LLVM-C headers */
+/* The runtime JIT (jit_service.h). ISO C in style. What the native back end does not make is the fallback's
+   (recompiler/fallback.h) */
 #if defined(__linux__) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE 1 /* sched_getaffinity: the CPUs this process may run on */
 #endif
@@ -15,7 +16,6 @@
 #include "common/utilities/endian.h"
 #include "common/cpu/recompiler/jit/jit_cache.h"
 #include "common/cpu/recompiler/loader/code_loader.h"
-#include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/recompiler/rtlib/rtlib_object.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -495,7 +495,7 @@ static uint64_t aot_toc(const SnxJitConfig* config) {
 static int emit_unit(SnxJitService* s, SnxCodegen* codegen, const char* table_name, unsigned char** object,
                      size_t* size, char* error, size_t error_size) {
     SnxNativeOptions options = {
-        .jit = 1, .table_name = table_name, .direct = direct, .direct_user = s, .llvm_at = snx_ir_dump_pc()};
+        .jit = 1, .table_name = table_name, .direct = direct, .direct_user = s, .llvm_at = snx_fallback_dump_pc()};
     codegen->hook_direct_calls = s->config.hook_direct_calls; /* every call through CPU.disp (call_target) */
     codegen->direct_svc = s->config.direct_svc;
     if (snx_native_available() && codegen->function_count) {
@@ -691,10 +691,9 @@ static int batch_current(const SnxCodegen* codegen, const SnxImageGeneration* ge
     return image_generations_match(generations, count) || snx_codegen_words_current(codegen);
 }
 
-/* What the objects depend on beyond the code: the ABI, the IR object version, the host target triple, LLVM, the
-   runtime library, the host CPU and its features (the code is compiled for them), the -O level, hooked direct calls,
-   direct SVCs, SLP vectorization, FPSR flag exactness, volatile guest accesses, the guest's A64 features and the
-   decoder */
+/* What the objects depend on beyond the code (jit_cache.h's snx_jit_cache_key): the ABI, the code generators (LLVM
+   with the IR object version, the target triple and the host CPU, or the native back end alone in a build without
+   LLVM) and the host's features (the code is compiled for them), the runtime library, the settings and the guest */
 static char* cache_key(const SnxJitService* s) {
     return snx_jit_cache_key(s->config.opt, s->config.hook_direct_calls, s->config.direct_svc, s->config.features);
 }
@@ -1068,7 +1067,7 @@ static void requeue(SnxJitService* s, Entry* e, SnxU64 pc, int queue) {
 
 /* Compiles the batch of pcs (count of them by address, each IN_FLIGHT, stamped by the take stamp from queue), publishes
    the code and ends their entries: DONE with the code that enters at each, or FAILED. A batch of several that fails to
-   emit or load is split, so one pc LLVM or the loader refuses fails alone */
+   emit or load is split, so one pc the fallback or the loader refuses fails alone */
 /* Under lock: the images a batch reads, the config's and every added one, which stay readable until images_release
    (snx_jit_remove_image waits for it). NULL when memory runs out */
 static SnxCodeImage* images_take(SnxJitService* s, size_t* count, unsigned char* taken) {
@@ -1854,8 +1853,8 @@ SnxJitService* snx_jit_service_new(const SnxJitConfig* config, char* error, size
             snprintf(error, error_size, "the AOT entries are not in ascending order");
             return NULL;
         }
-    /* LLVM starts at the first unit it has to make, where the host has a native back end (emit_unit) */
-    if (!snx_native_available() && snx_ir_init(error, error_size)) return NULL;
+    /* the fallback starts at the first unit it has to make, where the host has a native back end (emit_unit) */
+    if (!snx_native_available() && snx_fallback_start(error, error_size)) return NULL;
     SnxJitService* s = (SnxJitService*)calloc(1, sizeof(*s));
     if (!s) {
         snprintf(error, error_size, "out of memory");
