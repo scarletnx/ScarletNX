@@ -12,6 +12,7 @@
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/descriptor_heaps.h"
+#include "nx/gpu/shader/shader.h"
 #include "common/utilities/endian.h"
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/tracy.h"
@@ -131,6 +132,12 @@ typedef struct {
     LastingQueue queue;
     u64 memo_gen; /* the generation of the DescMemo entries that hold: a new one empties them all */
 } HeapState;
+/* the stage sets' address slots (vk_descriptor_heap_push_at): free bytes of the push block, 8-byte aligned. 18 banks
+   take the 16-bit offsets in the first 36 bytes of a stage's 48; the texture words take x and y of their uvec4 */
+static_assert(SH_PUSH_CB_WINDOW + 36 <= 168 && 168 + 8 <= SH_PUSH_CB_WINDOW_FS, "the vertex window offsets' free slot");
+static_assert(SH_PUSH_CB_WINDOW_FS + 36 <= 216 && 216 + 8 <= SH_PUSH_BYTES_WINDOWS, "the fragment window offsets' slot");
+static_assert(SH_PUSH_TEX_WORDS + 8 <= 232 && 232 + 8 <= SH_PUSH_BYTES_TABLE, "the texture words' free half");
+static_assert(SH_PUSH_BYTES_TABLE <= 240 && 256 <= VK_DESCRIPTOR_HEAP_PUSH_SIZE, "the bytes after the push block");
 static HeapState g_heaps;
 /* Every word of every stage's last table forgotten: at a new frame (the frame's offsets go with its arena), when an
    object is forgotten (its handle can come back for another object), when a slot of the lasting part goes, and when
@@ -1370,15 +1377,13 @@ void vk_descriptor_heaps_bind(VkCommandBuffer cb, u32 first, u32 count, const Vk
         st->begun = begun;
         st->bound_epoch = epoch;
     }
-    u32 addresses[10];
     for (u32 i = 0; i < count; i++) {
         u64 offset = (u64)(uintptr_t)sets[i];
         if (!offset || --offset >= g_heaps.resource.plan.reserved_offset) fatal("vulkan: invalid descriptor heap table");
         u64 address = g_heaps.resource.address + offset;
-        addresses[2 * i] = (u32)address;
-        addresses[2 * i + 1] = (u32)(address >> 32);
+        const u32 words[2] = {(u32)address, (u32)(address >> 32)};
+        rec_CmdPushDataEXT(cb, vk_descriptor_heap_push_at(first + i), sizeof words, words);
     }
-    rec_CmdPushDataEXT(cb, VK_DESCRIPTOR_HEAP_PUSH_OFFSET + 8 * first, count * 8, addresses);
 }
 void vk_descriptor_heaps_reset(u32 slot) {
     if (slot >= VK_FRAMES) return;

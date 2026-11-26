@@ -8,9 +8,15 @@
 #include <stddef.h>
 #include <string.h>
 
-/* Existing translated graphics shaders use push bytes0..127. One address per Vulkan set follows them. */
-#define VK_DESCRIPTOR_HEAP_PUSH_OFFSET 128u
-#define VK_DESCRIPTOR_HEAP_PUSH_SIZE (VK_DESCRIPTOR_HEAP_PUSH_OFFSET + 5u * 8u)
+/* The push data bytes of the five stage sets' table addresses: the 8-byte slots that the programs' push block leaves
+   free with the constant buffer windows on (shader.h, checked in descriptor_heaps.c). They are the bytes after bank 17's
+   offset in the vertex and the fragment stage's window offsets, z and w of the texture words, and the 16 bytes after
+   the block. In the window bytes from 128, which the sets' addresses took, the windows were off with heaps, and each
+   draw whose constants moved wrote its stage's whole table again */
+#define VK_DESCRIPTOR_HEAP_PUSH_SIZE 256u
+static inline uint32_t vk_descriptor_heap_push_at(uint32_t set) {
+    return set == 0 ? 168u : set == 1 ? 216u : set == 2 ? 232u : 240u + 8u * (set - 3u);
+}
 
 /* Formatted texel-buffer descriptors belong to the image class. The buffer class covers unformatted buffer
    addresses, so using its smaller alignment for a typed buffer can silently select the wrong descriptor. */
@@ -295,7 +301,7 @@ static inline int vk_descriptor_heap_address_mapping(VkDescriptorSetAndBindingMa
         .descriptorSet = set, .firstBinding = binding, .bindingCount = 1,
         .resourceMask = VK_SPIRV_RESOURCE_TYPE_UNIFORM_BUFFER_BIT_EXT,
         .source = VK_DESCRIPTOR_MAPPING_SOURCE_INDIRECT_ADDRESS_EXT,
-        .sourceData.indirectAddress = {.pushOffset = VK_DESCRIPTOR_HEAP_PUSH_OFFSET + 8 * set,
+        .sourceData.indirectAddress = {.pushOffset = vk_descriptor_heap_push_at(set),
                                        .addressOffset = 4 * word}};
     return 1;
 }
@@ -320,9 +326,9 @@ static inline int vk_descriptor_heap_binding_mapping(VkDescriptorSetAndBindingMa
         default: return 0;
     }
     VkDescriptorMappingSourceIndirectIndexArrayEXT source = {
-        .pushOffset = VK_DESCRIPTOR_HEAP_PUSH_OFFSET + 8 * set,
+        .pushOffset = vk_descriptor_heap_push_at(set),
         .addressOffset = 4 * word, .heapIndexStride = 1,
-        .samplerPushOffset = VK_DESCRIPTOR_HEAP_PUSH_OFFSET + 8 * set,
+        .samplerPushOffset = vk_descriptor_heap_push_at(set),
         .samplerAddressOffset = 4 * sampler_word, .samplerHeapIndexStride = 1};
     *mapping = (VkDescriptorSetAndBindingMappingEXT){
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_AND_BINDING_MAPPING_EXT,
