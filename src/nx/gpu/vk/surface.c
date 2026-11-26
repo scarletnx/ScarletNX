@@ -698,6 +698,12 @@ static void surf_views_go(Surf* s) {
 }
 static void rt_sys_left(Surf* s);
 static u64 g_rt_hosted, g_rt_unhosted; /* targets made views of a texture, and given images of their own again */
+/* set while a hosted surface gets an image of its own (vk_rt_own_): vk_cache_image_create makes no room for it then.
+   A trim, or the shed and trim after no memory, can evict the host whose image the surface copies from, and the
+   host's eviction gives each surface it hosts an image of its own (surf_free, vk_tex_unhost): this one again, whose
+   allocation trims again, with no end. A trim under a lowered budget recursed so through a cube texture that hosted
+   a face's target, until the stack overflowed */
+static int g_rt_owning;
 void vk_rt_host(Surf* s, Surf* t, u32 level, u32 layer) {
     if (s->host || t->is_rt || s->hosted) return;
     /* its own image and its views go once the frames that use them are done */
@@ -774,10 +780,12 @@ int vk_rt_own_(Surf* s, const char* why) {
     DevMem mem;
     u64 bytes;
     /* a target's image as surf_create makes it, a storage surface's as tex_create does (texture.c) */
-    if (s->is_rt ? !surf_image_info(s, &ii, &vf, &usage, &storage_format) ||
-                       !vk_cache_image_create(&ii, &img, &mem, VK_OWN_TARGET | VK_OWN_MOVES, &bytes)
-                 : !vk_tex_image_own(s, &img, &mem, &bytes))
-        return 0;
+    g_rt_owning++;
+    const int made = s->is_rt ? surf_image_info(s, &ii, &vf, &usage, &storage_format) &&
+                                    vk_cache_image_create(&ii, &img, &mem, VK_OWN_TARGET | VK_OWN_MOVES, &bytes)
+                              : vk_tex_image_own(s, &img, &mem, &bytes);
+    g_rt_owning--;
+    if (!made) return 0;
     /* its pixels out of the host's image, where it drew them */
     vk_render_end();
     VkCommandBuffer cb = vk_cmd();
@@ -4344,7 +4352,7 @@ int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, DevMem* mem
     u32* oom = target ? &g_oom_target : &g_oom;
     u64* oom_bytes = target ? &g_oom_target_bytes : &g_oom_bytes;
     if (*oom == g_vk_present + 1 && *bytes >= *oom_bytes) return 0;
-    vk_mem_trim(*bytes, 0);
+    if (!g_rt_owning) vk_mem_trim(*bytes, 0); /* none while a hosted surface gets its own image (g_rt_owning) */
     if (vk_image_create_r(ii, img, mem, owner, &res)) return 1;
     if (res == VK_ERROR_OUT_OF_DEVICE_MEMORY && target) { /* the memory held back for it (vk_devmem_reserve) */
         vk_devmem_reserve_use(1);
@@ -4355,8 +4363,10 @@ int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, DevMem* mem
     if (res == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
         if (*oom != g_vk_present + 1 || *bytes < *oom_bytes) *oom_bytes = *bytes;
         *oom = g_vk_present + 1;
-        vk_tex_shed(*bytes);
-        vk_mem_trim(*bytes, 1); /* room for it by the time it is asked for again, a present or two later */
+        if (!g_rt_owning) {
+            vk_tex_shed(*bytes);
+            vk_mem_trim(*bytes, 1); /* room for it by the time it is asked for again, a present or two later */
+        }
     }
     return 0;
 }
