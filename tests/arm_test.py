@@ -5,8 +5,7 @@
 
 python tests/arm_test.py --blocks build/.../snx-test-arm-blocks [--unicorn]
 The blocks are this host's back end's, or (run under Unicorn) another machine's: snx-test-arm-blocks-rv64 and its like.
-Each is made twice, its values in all the host registers and in three of them, so that they spill; or by LLVM
-(snx-test-arm-blocks-llvm), at each --opt level.
+Each is made twice, its values in all the host registers and in three of them, so that they spill.
 No game assets. Unicorn is optional and pinned to 2.1.4 for reproducibility.
 """
 

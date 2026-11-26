@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-"""Scalar VFPv2 blocks of a native back end, or LLVM's, vs Unicorn's explicit ARM11 MPCore, no tolerances."""
+"""Scalar VFPv2 blocks of a native back end vs Unicorn's explicit ARM11 MPCore, no tolerances."""
 
 import argparse
 import ctypes as C

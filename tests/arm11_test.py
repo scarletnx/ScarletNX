@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-"""Checked A32 integer blocks of a native back end, or LLVM's, vs Unicorn's ARM11 MPCore model.
+"""Checked A32 integer blocks of a native back end vs Unicorn's ARM11 MPCore model.
 
 An independent ISA oracle, unlike arm_checked_matrix.py. Includes serialized
 ARMv6K exclusive sequences. A separate C gate tests the real CTR bus against
