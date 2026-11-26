@@ -333,7 +333,7 @@ void snx_vpad_window_none(int action, const char* why) {
     say_shown(line);
 }
 /* the runtime's keys: the quit key's, the fullscreen keys', the menu's, which edits their layout as Android's Back
-   does, and the others' for the console */
+   does where no game's menu took it first (snx_vpad_window_event), and the others' for the console */
 static SnxVpadEvent key_event(const SDL_KeyboardEvent* k, int* action) {
     if (k->repeat) return SNX_VPAD_PASS;
     g_vpad_sdl.key_window = k->windowID;

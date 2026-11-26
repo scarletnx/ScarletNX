@@ -50,9 +50,11 @@ bool snx_vpad_window_point(const SDL_Event* e, float* x, float* y);
 /* an event of the window's: PASS for one that is not the controls' nor a runtime's key, TAKEN for one that is (the game
    gets none of it), QUIT for the quit key's second press within quit_key.h's time (hotkey_quit, Esc), whose first says
    so on say and show, ACTION for another runtime's key, its HOTKEY_ in *action, for the console to do or say it has
-   none of (snx_vpad_window_none). The two fullscreen keys switch the window; the menu's key (F2) edits the layout, and
-   so does Android's Back, a second one within that time quitting, which the first says over the picture; later, or
-   with Esc or the menu's key, it ends the editing */
+   none of (snx_vpad_window_none). The two fullscreen keys switch the window. With the game's menu
+   (snx_vpad_window_menu) the menu's key (F2), Android's Back and a pad's Home open it, as a Switch game's, and its
+   events are its own while it shows; without one, the menu's key edits the layout, and so does Back, a second one
+   within that time quitting, which the first says over the picture; later, or with Esc or the menu's key, it ends the
+   editing */
 typedef enum { SNX_VPAD_PASS, SNX_VPAD_TAKEN, SNX_VPAD_QUIT, SNX_VPAD_ACTION } SnxVpadEvent;
 SnxVpadEvent snx_vpad_window_event(const SDL_Event* e, int* action);
 /* the pause key's (hotkey_pause): the game held while it is on, which the window still shows and takes keys in. Each
