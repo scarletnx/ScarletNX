@@ -323,7 +323,7 @@ names and types of what it holds (`src/nds/runtime/state.c`):
 
 | Section | What it holds |
 | --- | --- |
-| BOARD | the `NdsBoard`: the registers, the lines' 2D registers, the main memory display, DMA, timers, the FIFO, the card's transfer, CP15 |
+| BOARD | the `NdsBoard`: the registers, the main memory display, DMA, timers, the FIFO, the card's transfer, CP15; not the lines' 2D registers, which each visible line records again before its frame is composed |
 | CPU | the `NdsCpu`: the ARM9's registers and their banks |
 | MEMORY | main memory, the shared work RAM, the ITCM, the DTCM, the palettes, the OAM and the nine VRAM banks |
 | GPU3D | the geometry engine, its vertex and polygon memory with their links as indices, and the commands queued after SWAP_BUFFERS (`gpu/gpu3d.c`) |
