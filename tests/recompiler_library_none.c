@@ -93,7 +93,7 @@ static Seen run(struct snx_recompiled* m, uint8_t* mem, uint64_t pc, CPU* cpu, R
 
 /* the entry's run: the loop, the call, the SVC, the store */
 static void program(struct snx_recompiled* m, uint8_t* mem, const char* what) {
-    RtAPI rt;
+    RtAPI rt = {.cas128 = snx_runtime_cas128};
     CPU cpu;
     Seen seen = run(m, mem, CODE, &cpu, &rt);
     CHECK(seen.svcs == 1 && seen.svc_x0 == 1055 && cpu.x[0] == 7 && mem[STORE] == 7 && !seen.brks && !seen.undefs,
@@ -130,7 +130,7 @@ static void modules(uint8_t* mem, const char* cache) {
               snx_native_name());
         program(m, mem, pass ? "from the cache" : "compiled");
         /* far, which no call reaches: the JIT's, and the native back end's there too */
-        RtAPI rt;
+        RtAPI rt = {.cas128 = snx_runtime_cas128};
         CPU cpu;
         Seen seen = run(m, mem, FAR, &cpu, &rt);
         CHECK(seen.brks == 1 && seen.brk_imm == 7 && cpu.x[0] == 99, "pass %d: far by the JIT (%u BRK #%u, x0 %llu)",
@@ -168,7 +168,7 @@ static void modules(uint8_t* mem, const char* cache) {
                          "undefined where it runs") != NULL,
           "the count of them, said: %s", g_line);
     if (m) {
-        RtAPI rt;
+        RtAPI rt = {.cas128 = snx_runtime_cas128};
         CPU cpu;
         Seen seen = run(m, mem, CODE, &cpu, &rt);
         CHECK(seen.undefs == 1 && seen.undef_pc == HELPER && seen.undef_word == ADD && !seen.svcs,
