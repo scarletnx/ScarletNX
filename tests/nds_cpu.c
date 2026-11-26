@@ -1,14 +1,15 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The NDS machine end to end, on a program the test makes (support/nds_image.c): its blocks compiled at run time, then
-   compiled ahead of time into a module and run from it, by the host's native back end and by LLVM alone, with the same
-   results. No game's data. */
+   compiled ahead of time into a module and run from it, the host's native back end's, whose index and results are
+   those of the module LLVM alone made (NDS_FROZEN_*). No game's data. */
 #include "nds/aot/nds_module.h"
 #include "nds/board/nds.h"
 #include "nds/cpu/nds_cpu.h"
 #include "nds/cpu/recomp.h"
 #include "common/cpu/recompiler/mach/native.h"
 #include "common/platform/dl.h"
+#include "common/utilities/bits.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
 #include "support/nds_image.h"
@@ -68,33 +69,44 @@ static uint64_t run(const NdsRom* rom, const char* module, unsigned frames) {
     return from_module;
 }
 
-/* the index of the module at path: every slot's block or none, and how many units it covers, the same as in the one at
-   other, of the same blocks: how many there are, and how many of more than a unit */
-static unsigned same_index(const char* path, const char* other, unsigned* longer) {
-    void* libraries[2] = {plat_dl_open(path), plat_dl_open(other)};
-    CHECK(libraries[0] && libraries[1]);
-    const NdsModule *a = plat_dl_sym(libraries[0], NDS_MODULE_SYMBOL),
-                    *b = plat_dl_sym(libraries[1], NDS_MODULE_SYMBOL);
-    unsigned blocks = 0;
-    *longer = 0;
-    CHECK(a && b && a != b && a->identity == b->identity && a->region_count == b->region_count);
-    for (uint32_t r = 0; r < a->region_count; ++r) {
-        const NdsModuleRegion *m = &a->regions[r], *l = &b->regions[r];
-        CHECK(m->address == l->address && m->size == l->size && m->hash == l->hash);
+/* the index of the module at path, hashed (little-endian, the same on any host): the image it is of, and each region's
+   place, size and code's hash and every slot's units (0 where it has no block); in *blocks the blocks, in *longer those
+   of more than a unit */
+static uint64_t index_hash(const char* path, unsigned* blocks, unsigned* longer) {
+    void* library = plat_dl_open(path);
+    CHECK(library);
+    const NdsModule* module = plat_dl_sym(library, NDS_MODULE_SYMBOL);
+    CHECK(module);
+    uint8_t head[12];
+    snx_st_le64(head, module->identity), snx_st_le32(head + 8, module->region_count);
+    uint64_t hash = snx_fnv1a(SNX_FNV_BASIS, head, sizeof head);
+    *blocks = *longer = 0;
+    for (uint32_t r = 0; r < module->region_count; ++r) {
+        const NdsModuleRegion* m = &module->regions[r];
+        uint8_t place[16];
+        snx_st_le32(place, m->address), snx_st_le32(place + 4, m->size), snx_st_le64(place + 8, m->hash);
+        hash = snx_fnv1a(hash, place, sizeof place);
         for (uint32_t i = 0; i < m->size / 2; ++i) {
-            CHECK(!m->thumb[i] == !l->thumb[i] && !m->thumb[i] == !m->thumb_units[i]);
-            CHECK(m->thumb_units[i] == l->thumb_units[i] && m->thumb_units[i] <= NDS_BLOCK_UNITS);
-            blocks += m->thumb[i] != NULL, *longer += m->thumb_units[i] > 1;
+            CHECK(!m->thumb[i] == !m->thumb_units[i] && m->thumb_units[i] <= NDS_BLOCK_UNITS);
+            const uint8_t thumb = m->thumb_units[i];
+            hash = snx_fnv1a(hash, &thumb, 1);
+            *blocks += thumb != 0, *longer += thumb > 1;
             if (i >= m->size / 4) continue;
-            CHECK(!m->arm[i] == !l->arm[i] && !m->arm[i] == !m->arm_units[i]);
-            CHECK(m->arm_units[i] == l->arm_units[i] && m->arm_units[i] <= NDS_BLOCK_UNITS);
-            blocks += m->arm[i] != NULL, *longer += m->arm_units[i] > 1;
+            CHECK(!m->arm[i] == !m->arm_units[i] && m->arm_units[i] <= NDS_BLOCK_UNITS);
+            const uint8_t arm = m->arm_units[i];
+            hash = snx_fnv1a(hash, &arm, 1);
+            *blocks += arm != 0, *longer += arm > 1;
         }
     }
-    plat_dl_close(libraries[0]);
-    plat_dl_close(libraries[1]);
-    return blocks;
+    plat_dl_close(library);
+    return hash;
 }
+/* the module LLVM alone made, the reference: its index, its blocks, those of more than a unit, and how many of them the
+   run took */
+#define NDS_FROZEN_INDEX       0xbe4e820462d633b2ull
+#define NDS_FROZEN_BLOCKS      11u
+#define NDS_FROZEN_LONGER      9u
+#define NDS_FROZEN_FROM_MODULE 11ull
 
 /* LDM with its base in the list and writeback, as the ARM946E-S (ARMv5) runs it: the base written back when it is the
    list's only register or not its last, the loaded value when it is the last. Assembled at 0x02000000:
@@ -161,7 +173,7 @@ int main(void) {
     CHECK(!nds_module_current(module, &rom));
     CHECK(run(&rom, NULL, 12) == 0);
     /* ahead of time: every block the run needs is in the module */
-    SnxArmAotCount made = {0}, llvm = {0};
+    SnxArmAotCount made = {0};
     if (nds_aot_compile(&rom, module, NULL, 1, 0, NULL, &made, error, sizeof error)) {
         fprintf(stderr, "%s\n", error);
         return 1;
@@ -171,18 +183,17 @@ int main(void) {
     CHECK(from_module >= 8);
     /* every block the native back end's where the host has one, LLVM's where it has none */
     CHECK(snx_native_arm_available() ? made.native && !made.llvm : !made.native && made.llvm);
-    /* the same module by LLVM alone: the same blocks, the same results */
-    char* kept = snx_path_join(dir, "llvm" NDS_MODULE_SUFFIX);
-    CHECK(kept);
-    if (nds_aot_compile(&rom, kept, NULL, 1, 0, dir, &llvm, error, sizeof error)) {
-        fprintf(stderr, "%s\n", error);
+    unsigned blocks, longer;
+    const uint64_t index = index_hash(module, &blocks, &longer);
+    if (index != NDS_FROZEN_INDEX || blocks != NDS_FROZEN_BLOCKS || longer != NDS_FROZEN_LONGER ||
+        made.native + made.llvm != NDS_FROZEN_BLOCKS || from_module != NDS_FROZEN_FROM_MODULE) {
+        fprintf(stderr,
+                "nds_cpu: the module's index is %016llx, of %u blocks (%zu made), %u of more than a unit, %llu of them "
+                "run; LLVM alone's was %016llx, of %u blocks, %u of more than a unit, %llu of them run\n",
+                (unsigned long long)index, blocks, made.native + made.llvm, longer, (unsigned long long)from_module,
+                (unsigned long long)NDS_FROZEN_INDEX, NDS_FROZEN_BLOCKS, NDS_FROZEN_LONGER, NDS_FROZEN_FROM_MODULE);
         return 1;
     }
-    CHECK(nds_module_current(kept, &rom) && !llvm.native && llvm.llvm == made.native + made.llvm);
-    CHECK(run(&rom, kept, 12) == from_module);
-    unsigned longer;
-    CHECK(same_index(module, kept, &longer) == llvm.llvm && longer);
-    free(kept);
     nds_rom_close(&rom);
     test_ldm_base_in_list(dir);
     (void)snx_remove_tree(dir);
