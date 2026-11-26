@@ -30,6 +30,7 @@
 #endif
 #define TEXT_OFF 0x1000u
 #define F1       (SNX_CODE_BASE + TEXT_OFF + 0x10u) /* the second function: ADD X0, X0, #1; B f2 */
+#define F2       (SNX_CODE_BASE + TEXT_OFF + 0x18u) /* the third, which only f1's B reaches: a hint makes it one */
 #define ADD_ONE  0x91000400u
 
 static struct {
@@ -107,6 +108,9 @@ static int build(const char* output, SnxLlvmBuild llvm, SnxCodegenOptions option
     options.abi = SNX_ABI;
     options.quiet = 1;
     options.chunk_instrs = 1;
+    static const SnxU64 hints[1] = {F2};
+    options.hints = hints;
+    options.hint_count = 1;
     llvm.output = output;
     llvm.opt = '2';
     llvm.jobs = 1;
