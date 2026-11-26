@@ -1176,9 +1176,16 @@ void vk_shader_read_code(u64 gva, u8* code, u32* len, VkCbReader read) {
         prefix *= 2;
     }
 }
-static int code_same(const ShA* ca, u64 gva, u32 len, u64 qh) {
+/* whether nothing wrote the len bytes of code at gva since wseen (vk_ww_now) and gw (gpu_mem_generation) */
+static int code_quiet(u64 gva, u32 len, u32 wseen, u64 gw) {
     gmem_need(gva, len); /* pending results over the code land first, as the write tracking then sees them */
-    if (!gpu_mem_dirty_since(ca->gw, gva, len) && vk_written_since(gmem_host(gva, len), len, ca->wseen) == 0) return 1;
+    return !gpu_mem_dirty_since(gw, gva, len) && vk_written_since(gmem_host(gva, len), len, wseen) == 0;
+}
+int vk_shader_code_quiet(const VkSh* s, u64 gva, u64 gva_a, u32 wseen, u64 gw) {
+    return code_quiet(gva, s->clen, wseen, gw) && (!gva_a || code_quiet(gva_a, s->clen_a, wseen, gw));
+}
+static int code_same(const ShA* ca, u64 gva, u32 len, u64 qh) {
+    if (code_quiet(gva, len, ca->wseen, ca->gw)) return 1;
     u64 hash;
     return code_hash(gva, len, &hash) && hash == qh;
 }

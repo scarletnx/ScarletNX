@@ -5893,7 +5893,15 @@ typedef struct {
     u64 gen[DS_GENS];      /* the state's generations at the last draw that made or took it */
     u32 epoch;             /* vk_ww_epoch */
     u32 used;              /* g_draw.use when last made or taken: of a set's ways, the one used longest ago makes room */
-    u64 shader_generation; /* instruction invalidations also expire kept draws */
+    /* g_vk.shader_generation when made or last found to hold, and the write tracking's marks before its shaders were
+       found. Its shaders are trusted within an epoch and a generation, as vk_shader_get trusts them. A new epoch (3 a
+       frame) or a game's shader cache invalidation (NVN_BARRIER_INVALIDATE_SHADER_BIT, about 22 a frame in one game's
+       town) keeps the entry while nothing wrote its programs' code since the marks (draw_code_quiet), as vk_shader_get
+       keeps the shader it found at an address. Without it, each made every kept draw again: 300 of a frame's 2,700
+       draws on the renderer thread, at 8 us each */
+    u64 shader_generation;
+    u64 code_gw;
+    u32 code_wseen;
     /* A program can have more than one translation, each with other constant buffer words folded (cb_fold.h), and
        vk_shader_get takes the one that folds the most words of those that hold. A kept shader still holds when
        another translation of its program starts to hold, because it doesn't read the words that the other folds. So
@@ -6053,16 +6061,31 @@ static int vertex_format_holds(const DsVertexFormat* f, const DrawKept* e) {
     }
     return 1;
 }
+/* the write tracking's marks at the start of this thread's draw, before its shaders are found (draw_find) */
+static _Thread_local struct {
+    u64 gw;
+    u32 wseen;
+} t_code_marks;
+/* whether nothing wrote the code of e's programs since e's marks: the vertex and fragment programs of ds, the ones
+   e's groups name. 0 for the other stages and paths, which take the draw's lookups again */
+static int draw_code_quiet(const DrawKept* e, const DsState* ds) {
+    const DrawShaders* s = &e->sh;
+    const DsPrograms* p = &ds->prog;
+    if (s->mesh || s->task_compute || s->tcs || s->tes || s->gs || vk_host_programs(p)) return 0;
+    const u64 a = (p->on & 1) ? p->code[0] : 0;
+    if (!vk_shader_code_quiet(s->vs, p->code[1], a, e->code_wseen, e->code_gw)) return 0;
+    if (s->fs0 && !vk_shader_code_quiet(s->fs0, p->code[5], 0, e->code_wseen, e->code_gw)) return 0;
+    return !e->fs || e->fs == s->fs0 || vk_shader_code_quiet(e->fs, p->code[5], 0, e->code_wseen, e->code_gw);
+}
 /* whether entry e, whose groups' bytes are this draw's, holds for this draw of ds, as far as what is checked before
    drawing tells */
 static int draw_holds(DrawKept* e, const DsState* ds, u32 topology, int mesh, u32 epoch) {
     const DrawShaders* s = &e->sh;
     /* a draw's path, as draw_shaders' mesh argument: 1 mesh, 2 the compute-task path (sm86.h) */
     if (!s->vs || (int)(s->mesh | (s->task_compute ? 2 : 0)) != mesh) return hold_no(HOLD_PATH);
-    if (e->shader_generation != g_vk.shader_generation) return hold_no(HOLD_SHADER_GEN);
     if (e->fold_gen != vk_shader_fold_gen()) return hold_no(HOLD_FOLD); /* a translation came that a lookup may take */
     if (e->k.heaps != (u32)g_vk.has_descriptor_heaps) return hold_no(HOLD_HEAPS);
-    if (e->key.owner != ds->owner || e->key.topology != topology || e->epoch != epoch) return hold_no(HOLD_KEY);
+    if (e->key.owner != ds->owner || e->key.topology != topology) return hold_no(HOLD_KEY);
     if (e->gen[DS_VFORMAT] != ds->gen[DS_VFORMAT]) { /* the vertex format changed: what the state read may not have */
         if (!vertex_format_holds(&ds->vfmt, e)) return hold_no(HOLD_VFORMAT);
         e->gen[DS_VFORMAT] = ds->gen[DS_VFORMAT];
@@ -6070,6 +6093,13 @@ static int draw_holds(DrawKept* e, const DsState* ds, u32 topology, int mesh, u3
     if (s->xfb_on != xfb_wanted(ds->prog.xfb_on)) return hold_no(HOLD_XFB); /* capture began or ended */
     if (s->window_xy != !ds->vp.transform_on) return hold_no(HOLD_WINDOW);  /* the viewports' group keys no shader */
     if (s->swizzle != vk_viewport_swizzle_key(&ds->vp)) return hold_no(HOLD_SWIZZLE);
+    if (e->epoch != epoch || e->shader_generation != g_vk.shader_generation) { /* last: it reads the write tracking */
+        if (!draw_code_quiet(e, ds)) return hold_no(e->epoch != epoch ? HOLD_KEY : HOLD_SHADER_GEN);
+        e->epoch = epoch;
+        e->shader_generation = g_vk.shader_generation;
+        e->code_gw = t_code_marks.gw;
+        e->code_wseen = t_code_marks.wseen;
+    }
     const VkSh* used[6];
     used_shaders(e, used);
     for (int i = 0; i < 6; i++) {
@@ -6087,6 +6117,8 @@ static int draw_holds(DrawKept* e, const DsState* ds, u32 topology, int mesh, u3
    key is compared with them */
 static u32 draw_find(const DsState* ds, u32 topology, int mesh, u32 epoch, int check, DrawKey* key, int* have) {
     u32 last = g_draw[t_rc].last;
+    t_code_marks.gw = gpu_mem_generation();
+    t_code_marks.wseen = vk_ww_now();
     *have = 0;
     g_stats.n.lookups++;
     if (last) {
@@ -6149,6 +6181,8 @@ static u32 draw_keep(const DsState* ds, const DrawKey* key, u32 found, u32 epoch
     e->epoch = epoch;
     e->used = ++g_draw[t_rc].use;
     e->shader_generation = g_vk.shader_generation;
+    e->code_gw = t_code_marks.gw;
+    e->code_wseen = t_code_marks.wseen;
     /* the translations as they are after this draw's lookups, which can have made some */
     e->fold_gen = vk_shader_fold_gen();
     e->sh = *sh;
