@@ -2601,7 +2601,7 @@ if(TARGET OpenSSL::Crypto AND NOT SNX_TOOLS_ONLY)
     # the input streams of the Ounce's SDK (nn/audio_stream.c) over a synthetic microphone, never a real one, and
     # the recording and its noise reduction every console's shares (common/utilities/mic.c and denoise.c): RNNoise
     # built in, and the system's libspeexdsp when it is there
-    add_executable(snx-test-audio-mic audio_mic.c)
+    add_executable(snx-test-audio-mic audio_mic.c support/mic_fake.c)
     snx_test_target(snx-test-audio-mic gnu23)
     snx_service_swipc(snx-test-audio-mic)
     snx_hookgen(snx-test-audio-mic SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/hooks.hook")

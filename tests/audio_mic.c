@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The input streams of the Ounce's SDK (src/nx/nn/audio_stream.c) over a synthetic microphone: their handlers called as
-   the hooks call them, on a guest buffer, with a clock the test moves and a host recording device
-   (common/platform/mic.h's snx_mic_device_*) that plays a generated signal in bursts, never a real one. Checked: what
-   an open leaves for the format query, the device properties, the frames' count in guest time and their format on every
+   the hooks call them, on a guest buffer, with a clock the test moves and a host recording device (support/mic_fake.c,
+   in common/platform/mic.h's place) that plays a generated signal in bursts, never a real one. Checked: what an open
+   leaves for the format query, the device properties, the frames' count in guest time and their format on every
    channel, the device opened by a start and closed by a stop, the microphone setting off, the hold before the first
    frames, a device that runs short or ahead, the gain. Then the noise reduction (src/common/utilities/denoise.c). Off,
    the game gets the signal sample for sample. On, speech-like syllables over a steady noise and over babble go through
@@ -18,6 +18,7 @@
 #include "nx/nn/audio_stream.c"
 #include "common/utilities/mic.c"
 #include "common/utilities/denoise.c"
+#include "support/mic_fake.h"
 
 u8* g_mem;
 Settings g_settings;
@@ -110,50 +111,17 @@ static i16 signal_at(u64 n) {
     return (i16)(s > 32767 ? 32767 : s < -32768 ? -32768 : s);
 }
 
-/* the device: it records at 48 kHz scaled by test_speed (in 1/1000ths), and hands its samples over every 20 ms of
-   host time, as a device with a buffer of 960 frames does. test_stall stops it */
-struct SnxMicDevice {
-    u32 rate;
-    u64 recorded, read; /* samples the device has, and those taken */
-};
-static SnxMicDevice* test_mic;
-static unsigned test_opens, test_closes;
-static int test_no_mic, test_stall;
+/* the device (support/mic_fake.c) records signal_at at 48 kHz scaled by test_speed (in 1/1000ths), and hands its
+   samples over every 20 ms of host time, as a device with a buffer of 960 frames does. test_stall stops it */
+static int test_stall;
 static u32 test_speed = 1000;
-static char test_device[64];
-SnxMicDevice* snx_mic_device_open(uint32_t rate, const char* device, SnxMicSay say) {
-    (void)say;
-    test_opens++;
-    snprintf(test_device, sizeof test_device, "%s", device);
-    if (test_no_mic) return NULL;
-    CHECK(test_mic == NULL);
-    test_mic = calloc(1, sizeof *test_mic);
-    CHECK(test_mic != NULL);
-    test_mic->rate = rate;
-    return test_mic;
-}
-void snx_mic_device_close(SnxMicDevice* m) {
-    if (!m) return;
-    CHECK(m == test_mic);
-    test_closes++;
-    free(m);
-    test_mic = NULL;
-}
-uint32_t snx_mic_device_available(SnxMicDevice* m) { return (u32)(m->recorded - m->read); }
-uint32_t snx_mic_device_read(SnxMicDevice* m, int16_t* samples, uint32_t frames, SnxMicSay say) {
-    (void)say;
-    u32 n = frames < m->recorded - m->read ? frames : (u32)(m->recorded - m->read);
-    for (u32 i = 0; i < n; i++) samples[i] = signal_at(m->read + i);
-    m->read += n;
-    return n;
-}
 static u64 test_host_ns; /* the device's own time, which bursts of 20 ms */
 static void device_run(u64 ns) {
     u64 before = test_host_ns / 20000000ull;
     test_host_ns += ns;
-    if (!test_mic || test_stall) return;
+    if (!g_mic_fake.dev || test_stall) return;
     for (u64 b = before; b < test_host_ns / 20000000ull; b++)
-        test_mic->recorded += (u64)test_mic->rate / 50 * test_speed / 1000;
+        g_mic_fake.dev->recorded += (u64)g_mic_fake.dev->rate / 50 * test_speed / 1000;
 }
 
 /* ------------------------------------------------------------ the game's side */
@@ -212,7 +180,7 @@ static void test_open(void) {
     CHECK(GP(STREAM + 8)[0] == 0xCC && GP(STREAM + 8 + 0x114 + 16)[0] == 0xCC); /* nothing else written */
     CHECK(audio_input_state(&cpu, STREAM) == STREAM_STOPPED && audio_input_capacity_frames(&cpu, STREAM) == 2400);
     CHECK(audio_input_gain(&cpu, STREAM) == 1.0f);
-    CHECK(test_opens == 0); /* no device before the start */
+    CHECK(g_mic_fake.opens == 0); /* no device before the start */
 }
 
 /* frames in guest time, with the device's hold before them: s16 stereo, the signal sample for sample with the
@@ -223,7 +191,8 @@ static u32 test_pace(void) {
     g_settings.microphone[0] = 0; /* the system's default device, whatever the settings' table starts it at */
     g_settings.microphone_noise_reduction = 0;
     test_signals = 0;
-    CHECK(audio_start_input(&cpu, STREAM) == 0 && test_opens == 1 && test_mic != NULL && test_device[0] == 0);
+    CHECK(audio_start_input(&cpu, STREAM) == 0 && g_mic_fake.opens == 1 && g_mic_fake.dev != NULL &&
+          g_mic_fake.device[0] == 0);
     CHECK(audio_input_state(&cpu, STREAM) == STREAM_STARTED);
     for (int t = 0; t < 400; t++) { /* 2 s */
         tick();
@@ -238,7 +207,8 @@ static u32 test_pace(void) {
             fprintf(stderr, "sample %u: %d, not %d\n", i, got[i], signal_at(i - lead));
             CHECK(!"the signal as recorded");
         }
-    CHECK(test_mic->read == test_mic->recorded); /* nothing held back past a block: the reducer's block is 10 ms */
+    /* nothing held back past a block: the reducer's block is 10 ms */
+    CHECK(g_mic_fake.dev->read == g_mic_fake.dev->recorded);
     return lead;
 }
 
@@ -286,7 +256,7 @@ static void test_gain_stop(void) {
     CHECK((i16)snx_ld_le16(GP(DATA)) == (i16)lrintf((float)x * 0.5f));
     audio_set_input_gain(&cpu, STREAM, 1.0f, 0);
     tick();
-    CHECK(audio_stop_input(&cpu, STREAM) == 0 && test_closes == 1 && test_mic == NULL);
+    CHECK(audio_stop_input(&cpu, STREAM) == 0 && g_mic_fake.closes == 1 && g_mic_fake.dev == NULL);
     i32 left = audio_input_filled_frames(&cpu, STREAM);
     CHECK(left > 0);
     tick();
@@ -302,20 +272,20 @@ static void test_off(void) {
     const IniOpt* setting = ini_find(g_game_ini, "microphone");
     CHECK(setting && setting->def && !strcmp(setting->def, "off"));
     snprintf(g_settings.microphone, sizeof g_settings.microphone, "%s", setting->def);
-    unsigned opens = test_opens;
-    CHECK(audio_start_input(&cpu, STREAM) == 0 && test_opens == opens && test_mic == NULL);
+    unsigned opens = g_mic_fake.opens;
+    CHECK(audio_start_input(&cpu, STREAM) == 0 && g_mic_fake.opens == opens && g_mic_fake.dev == NULL);
     for (int t = 0; t < 10; t++) tick();
     CHECK(read_all(STREAM, got, &n, 4800) == 2400);
     for (u32 i = 0; i < n; i++) CHECK(got[i] == 0);
     CHECK(audio_stop_input(&cpu, STREAM) == 0);
     g_settings.microphone[0] = 0;
-    test_no_mic = 1;
-    CHECK(audio_start_input(&cpu, STREAM) == 0 && test_opens == opens + 1 && test_mic == NULL);
+    g_mic_fake.none = 1;
+    CHECK(audio_start_input(&cpu, STREAM) == 0 && g_mic_fake.opens == opens + 1 && g_mic_fake.dev == NULL);
     for (int t = 0; t < 10; t++) tick();
     n = 0;
     CHECK(read_all(STREAM, got, &n, 4800) == 2400 && got[0] == 0 && got[n - 1] == 0);
     CHECK(audio_stop_input(&cpu, STREAM) == 0);
-    test_no_mic = 0;
+    g_mic_fake.none = 0;
 }
 
 /* another format: 32-bit float, mono, 16 kHz, and a device named by the setting */
@@ -323,7 +293,7 @@ static void test_float(void) {
     format(FORMAT, 5, 1, 16000);
     snprintf(g_settings.microphone, sizeof g_settings.microphone, "USB");
     CHECK(audio_open_input(&cpu, STREAM2, 0, 0, NAMES, FORMAT, 1600) == 0);
-    CHECK(audio_start_input(&cpu, STREAM2) == 0 && !strcmp(test_device, "USB") && test_mic->rate == 16000);
+    CHECK(audio_start_input(&cpu, STREAM2) == 0 && !strcmp(g_mic_fake.device, "USB") && g_mic_fake.dev->rate == 16000);
     for (int t = 0; t < 40; t++) {
         tick();
         CHECK(audio_input_free_frames(&cpu, STREAM2) == 1600 - audio_input_filled_frames(&cpu, STREAM2));
@@ -339,7 +309,7 @@ static void test_float(void) {
     memcpy(&f, &bits, 4);
     CHECK(f == (float)signal_at(0) / 32768.0f);
     audio_close_input(&cpu, STREAM2);
-    CHECK(test_mic == NULL && snx_ld_le64(GP(STREAM2)) == 0 && audio_input_state(&cpu, STREAM2) == 0);
+    CHECK(g_mic_fake.dev == NULL && snx_ld_le64(GP(STREAM2)) == 0 && audio_input_state(&cpu, STREAM2) == 0);
     g_settings.microphone[0] = 0;
     format(FORMAT, 2, 2, 48000);
 }
@@ -612,6 +582,7 @@ static void test_reduction(void) {
 }
 
 int main(void) {
+    g_mic_fake.signal = signal_at;
     g_mem = calloc(1, 0x40000);
     CHECK(g_mem != NULL);
     test_open();
@@ -624,7 +595,7 @@ int main(void) {
     (void)lead;
     test_reduction();
     audio_close_input(&cpu, STREAM);
-    CHECK(test_event.o.refs == 0 && test_mic == NULL);
+    CHECK(test_event.o.refs == 0 && g_mic_fake.dev == NULL);
     printf("audio_mic: %u checks passed\n", test_checks);
     free(g_mem);
     return 0;
