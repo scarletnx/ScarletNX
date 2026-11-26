@@ -307,6 +307,11 @@ static void shot(AgbHost* host, const uint32_t* framebuffer) {
     agb_host_say(line);
     show("Screenshot saved in captures");
 }
+bool agb_host_held(AgbHost* host, const uint32_t* framebuffer) {
+    if (!snx_vpad_window_paused()) return false;
+    agb_host_frame(host, framebuffer, NULL, 0);
+    return true;
+}
 void agb_host_frame(AgbHost* host, const uint32_t* framebuffer, const int16_t* samples, uint32_t count) {
     if (host->shot) shot(host, framebuffer);
     if (host->vk)

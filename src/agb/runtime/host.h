@@ -49,4 +49,7 @@ void agb_host_draw(AgbHost* host, const uint32_t* framebuffer);
 const char* agb_host_notice(const AgbHost* host);
 /* the frame drawn and shown, its count frames of stereo samples, then the wait to the next frame's time */
 void agb_host_frame(AgbHost* host, const uint32_t* framebuffer, const int16_t* samples, uint32_t count);
+/* a frame of the pause (snx_vpad_window_paused): true while it holds, framebuffer shown again at the frames' pace with
+   no sound; false, doing nothing, when the game runs */
+bool agb_host_held(AgbHost* host, const uint32_t* framebuffer);
 #endif

@@ -352,8 +352,10 @@ int main(void) {
         vpad_settings(dir, "a game", 2, back);
     }
     /* the pause key holds the game and says so, as a Switch game's */
+    static const uint32_t held[AGB_SCREEN_WIDTH * AGB_SCREEN_HEIGHT];
     for (int i = 0; i < 2; ++i)
         if (!press(host, SDLK_PAUSE, SDL_KMOD_NONE, false) || snx_vpad_window_paused() != !i ||
+            agb_host_held(host, held) != !i ||
             notice_read(host, SDL_GetRenderer(window), window, i ? "Pause: off" : "Pause: on") != 0) {
             fprintf(stderr, "agb_host: the pause key did not hold the game and say so (press %d)\n", i + 1);
             agb_host_close(host);

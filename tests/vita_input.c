@@ -223,6 +223,30 @@ static int controls(SDL_Window* window, const char* dir, const char* ini) {
         CHECK(vpad_test_key(window, SDLK_PAUSE) && SDL_AddTimer(200, pause_again, window));
         CHECK(!vblank() && !snx_vpad_window_paused() && SDL_GetTicks() - at >= 150);
     }
+    /* the screenshot key: the frame the game shows, as SceDisplay has it, in captures/ beside the game's .ini */
+    {
+        enum { W = 16, H = 8, BASE = 64 };
+        uint8_t* mem = calloc(1, BASE + W * H * 4);
+        char *captures = snx_path_join(dir, "captures"), **names = NULL, *path = NULL;
+        size_t count = 0, size = 0;
+        unsigned char* got = NULL;
+        CHECK(mem && captures);
+        for (int i = 0; i < W * H * 4; ++i) mem[BASE + i] = (uint8_t)i;
+        g_process.mem = mem;
+        g_process.display.base = BASE, g_process.display.pitch = W;
+        g_process.display.width = W, g_process.display.height = H;
+        CHECK(vpad_test_key(window, SDLK_F3) && !vblank());
+        CHECK(!snx_list_dir(captures, &names, &count) && count == 1 && !strncmp(names[0], "screenshot_", 11));
+        CHECK((path = snx_path_join(captures, names[0])) && (got = snx_read_file(path, &size)));
+        CHECK(size == 12 + W * H * 3 && !memcmp(got, "P6\n16 8\n255\n", 12) && got[12 + 3] == 4 && got[12 + 5] == 6);
+        g_process.display.base = 0;
+        g_process.mem = NULL;
+        free(got);
+        free(path);
+        snx_free_strings(names, count);
+        free(captures);
+        free(mem);
+    }
     vpad_console(&snx_vpad_vita);
     vpad_settings(dir, "a game", 0, NULL);
     CHECK(vpad_config()->at[SNX_VPAD_STICK_R].x == 0.5f && vpad_config()->at[SNX_VPAD_STICK_R].y == 0.5f);
