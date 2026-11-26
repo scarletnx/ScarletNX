@@ -9,6 +9,24 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+/* key_in_wait's: the press under way is one of the checks of the error box's wait itself */
+static bool g_key_in_wait;
+/* the error panel's box (box_panel_on) with its wait (SNX_ERROR_PANEL_WAIT_MS) over, as if that time had passed: every
+   test's key() calls it, as the person a key stands for waits before reading the box, so no check of what a box does
+   has to remember it; the checks of the wait itself press with key_in_wait */
+static inline void box_waited(App* app) {
+    Uint64 now, until;
+    if (g_key_in_wait || !app->confirm.shown || app->confirm.ask != GUI_ASK_ERROR || !app->box_panel_on) return;
+    now = now_ms(app);
+    until = app->box_panel.shown_ms + SNX_ERROR_PANEL_WAIT_MS;
+    if (now >= until) return;
+    if (app->clock) /* the test's own clock: it moves on by what is left of the wait */
+        app->clock = until;
+    else if (now > SNX_ERROR_PANEL_WAIT_MS) /* SDL's: the box shown as long ago as the wait */
+        app->box_panel.shown_ms = now - SNX_ERROR_PANEL_WAIT_MS;
+    else /* SDL's, younger than the wait (a fast host's first box): that much real time passes */
+        SDL_Delay((Uint32)(until - now));
+}
 /* the 16 rows of the menu font's glyph c (gui_menu_glyph's) */
 static inline const uint8_t* font_rows(int c) { return gui_glyph_rows(c); }
 /* the icons as a row's text holds them, UTF-8 to write beside a label ("- " ICON_SETTINGS " Settings"): icons_are
