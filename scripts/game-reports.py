@@ -253,11 +253,6 @@ def sources(issue, comments):
     return out
 
 
-def attachments(texts):
-    """The attachment URLs in the texts, in order, each once"""
-    return [url for _, _, url, _ in sources({'body': '\n'.join(t or '' for t in texts)}, []) if url]
-
-
 def attachment_name(url):
     return urllib.parse.unquote(url.rsplit('/', 1)[-1])
 
