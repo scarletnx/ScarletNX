@@ -211,7 +211,7 @@ static void threads(const char* root, const char* name, const char* term, const 
 }
 static void crash(const char* root, const char* name, const char* last) {
     char* dir = fresh(root, name);
-    char before[64], end[256];
+    char before[64], end[256] = ""; /* said when there is no log too */
     CHECK(dir && child(name, dir, "term.txt", "term.txt") != 0, "%s: the crash ended the run well", name);
     char *log = dir ? slurp(dir, "a game.log", NULL) : NULL, *term = dir ? slurp(dir, "term.txt", NULL) : NULL;
     int lines = 0;
@@ -246,7 +246,7 @@ static void quiet(const char* root, const char* name) {
 }
 static void cut(const char* root) {
     char* dir = fresh(root, "cut");
-    char end[256];
+    char end[256] = ""; /* said when there is no log too */
     size_t n = 0;
     CHECK(dir && child("cut", dir, "term.txt", "term.txt") == 0, "cut: the case failed");
     char *log = dir ? slurp(dir, "a game.log", &n) : NULL, *term = dir ? slurp(dir, "term.txt", NULL) : NULL;
