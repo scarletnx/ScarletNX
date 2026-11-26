@@ -647,20 +647,22 @@ void vk_own_res_unref(VkOwnRes* r) { res_release(r); }
    submission in between lets the next result take its buffer and write it before the read. Each thread its own: a
    texture load can let go of vk_lock part-way (vk_submit_upload_wait), and another thread's end of a hold would let
    go of this one's results */
-static _Thread_local struct {
-    VkOwnRes** r;
-    u32 n, cap;
-} t_held;
+static _Thread_local VkOwnHeld t_held;
+/* room in h for more results: 0 when there is none */
+static int held_room(VkOwnHeld* h, u32 more) {
+    if (h->n + more <= h->cap) return 1;
+    u32 cap = h->cap ? h->cap : 256;
+    while (cap < h->n + more) cap *= 2;
+    VkOwnRes** r = (VkOwnRes**)realloc(h->r, cap * sizeof *r);
+    if (!r) return 0;
+    h->r = r;
+    h->cap = cap;
+    return 1;
+}
 /* under vk_lock: r kept until this hold of vk_lock ends. 0 when there is no room to note it: the caller copies it
    now */
 static int res_hold(VkOwnRes* r) {
-    if (t_held.n == t_held.cap) {
-        u32 cap = t_held.cap ? t_held.cap * 2 : 256;
-        VkOwnRes** h = (VkOwnRes**)realloc(t_held.r, cap * sizeof *h);
-        if (!h) return 0;
-        t_held.r = h;
-        t_held.cap = cap;
-    }
+    if (!held_room(&t_held, 1)) return 0;
     res_retain(r);
     t_held.r[t_held.n++] = r;
     return 1;
@@ -668,6 +670,25 @@ static int res_hold(VkOwnRes* r) {
 int vk_own_held_any(void) { return t_held.n != 0; }
 void vk_own_release_held(void) {
     while (t_held.n) res_release(t_held.r[--t_held.n]);
+}
+/* A split run's worker (render.c, draw_batches=2) holds no vk_lock: the renderer thread holds it for the whole split,
+   so no end of a hold released the worker's results. Each read in place or indirect copy of a worker's draw kept its
+   result for good: 6528 results of render targets, 11.4 GB, in one game's race, and the device ran out of memory. The
+   worker hands its held results to the split at the end of its half, and the renderer thread takes them at the join,
+   after the worker's commands are in the ring. Its hold of vk_lock ends after that and releases them */
+void vk_own_held_hand(VkOwnHeld* to) {
+    if (!t_held.n) return;
+    if (!held_room(to, t_held.n)) fatal("vulkan: no memory for a split run's held results\n");
+    memcpy(to->r + to->n, t_held.r, t_held.n * sizeof *t_held.r);
+    to->n += t_held.n;
+    t_held.n = 0;
+}
+void vk_own_held_take(VkOwnHeld* from) {
+    if (!from->n) return;
+    if (!held_room(&t_held, from->n)) fatal("vulkan: no memory for a split run's held results\n");
+    memcpy(t_held.r + t_held.n, from->r, from->n * sizeof *from->r);
+    t_held.n += from->n;
+    from->n = 0;
 }
 
 /* every write the GPU did so far to the results' buffers visible to copies (before), the copies' writes to the host

@@ -7728,6 +7728,7 @@ static struct {
     _Atomic u64 handovers;
     u64 submit; /* the submission the worker's commands name their command buffer in */
     u64 inplace; /* vk_mirror_inplace_count at the split's start */
+    VkOwnHeld held; /* the worker's held results, which the renderer thread takes at the join (vk_own_held_hand) */
     u64 splits, draws;
     /* the ticks of render_split's steps and of the join, for the stats line: the batch's peek, the copies, the
        hold and the command buffers, the kick, the join */
@@ -7815,6 +7816,7 @@ static void render_split_run(void) {
     }
     vk_rec_list_parallel(0);
     g_split.ok = vk_rec_list_end();
+    vk_own_held_hand(&g_split.held);
     vk_surf_view_reset();
     t_rc = 0;
     t_in_batch = 0;
@@ -7848,6 +7850,7 @@ static void render_split_join(void) {
     vk_share_active(0);
     if (!g_split.ok) fatal("vulkan: draw_batches=2: a worker's command list ran out of memory\n");
     vk_rec_list_splice(g_split.list);
+    vk_own_held_take(&g_split.held); /* its reads are in the ring: released when the split's hold of vk_lock ends */
     vk_vrs_forget(); /* the worker's binds are the command buffer's now */
     /* each stage's last set: the worker's, where it drew the stage, is the one the next draws are like */
     for (u32 st = 0; st < 2 * DS_GFX_STAGES; st++) {

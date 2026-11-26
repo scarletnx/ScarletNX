@@ -2014,6 +2014,13 @@ void vk_own_release_later(void); /* under vk_lock */
    the end of its hold of vk_lock (not at vk_lock_pause), under it */
 int vk_own_held_any(void);
 void vk_own_release_held(void);
+/* held results moved between threads: a split run's worker hands its own to the renderer thread (render.c) */
+typedef struct {
+    VkOwnRes** r;
+    u32 n, cap;
+} VkOwnHeld;
+void vk_own_held_hand(VkOwnHeld* to);
+void vk_own_held_take(VkOwnHeld* from);
 /* what makes a kept result: a dispatch, a draw that writes guest memory, a copy engine, the video engines, a render
    target written back */
 enum { VK_OWN_BY_COMPUTE, VK_OWN_BY_DRAW, VK_OWN_BY_COPY, VK_OWN_BY_VIDEO, VK_OWN_BY_TARGET, VK_OWN_BY_N };
