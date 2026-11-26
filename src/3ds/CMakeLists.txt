@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# The board, loader and memory libraries need neither the NX runtime nor an Azahar build tree. The driver links LLVM
-# for its compiler, and its presenter and audio output use SDL3 and the Vulkan headers.
+# The board, loader and memory libraries need neither the NX runtime nor an Azahar build tree. The driver's presenter
+# and audio output use SDL3 and the Vulkan headers.
 add_library(snx_ctr_board STATIC board/board.c board/clock.c)
 target_link_libraries(snx_ctr_board PUBLIC scarletnx-common) # the clock's host time (snx_seconds)
 set_target_properties(snx_ctr_board PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
@@ -92,8 +92,7 @@ target_compile_definitions(snx_ctr_program PRIVATE SNX_SOURCE_DIR="${PROJECT_SOU
 # what the tests run
 set(SNX_CTR_PROGRAM "${PROJECT_BINARY_DIR}/scarletnx-3ds${CMAKE_EXECUTABLE_SUFFIX}" PARENT_SCOPE)
 include(GNUInstallDirs)
-include("${PROJECT_SOURCE_DIR}/cmake/llvm.cmake")
-if(NOT TARGET snx_arm_llvm)
+if(NOT TARGET snx_arm_decode)
     add_subdirectory("${PROJECT_SOURCE_DIR}/src/common/cpu/arm" ctr-arm-backend)
 endif()
 target_link_libraries(snx_ctr_cpu PUBLIC snx_arm_decode snx_arm_rt)
@@ -102,40 +101,7 @@ target_link_libraries(snx_ctr_cpu PUBLIC snx_arm_decode snx_arm_rt)
 # objects and their helpers (armlib.c) with its own linker, and compiles the blocks the static module lacks at run time
 # (exec.c)
 target_sources(snx_ctr_program PRIVATE aot/compiler.c aot/discover.c)
-target_link_libraries(snx_ctr_program PUBLIC snx_arm_llvm snx_recompiler_jit)
-# The compiler loads the LLVM toolchain's own libraries (including its z3)
-# at startup: resolve them without a caller-provided environment. A static
-# LLVM (SNX_LLVM_SHARED off, cmake/llvm.cmake) has none to load.
-if(SNX_LLVM_SHARED)
-    snx_target_path(ctr_llvm_rpath "${SNX_LLVM_LIBRARY_DIR}")
-    find_library(SNX_Z3_LIBRARY NAMES z3 libz3.so.4
-        HINTS "${SNX_LLVM_LIBRARY_DIR}" "${SNX_LLVM_LIBRARY_DIR}/../.."
-        PATH_SUFFIXES lib x86_64-linux-gnu)
-    if(SNX_Z3_LIBRARY)
-        get_filename_component(ctr_z3_dir "${SNX_Z3_LIBRARY}" DIRECTORY)
-        snx_target_path(ctr_z3_rpath "${ctr_z3_dir}")
-        string(APPEND ctr_llvm_rpath ":${ctr_z3_rpath}")
-        # Forced into the dependency table (--as-needed would drop unreferenced
-        # libraries): libLLVM's own z3/xml2 dependencies then resolve through
-        # the binary's search path instead of the caller's environment.
-        find_library(SNX_XML2_LIBRARY NAMES xml2 libxml2.so.2 HINTS "${ctr_z3_dir}" "${SNX_LLVM_LIBRARY_DIR}"
-                        PATH_SUFFIXES lib x86_64-linux-gnu)
-        if(APPLE) # ld64 keeps every library named, and has no --as-needed
-            target_link_libraries(snx_ctr_program INTERFACE "${SNX_Z3_LIBRARY}" ${SNX_XML2_LIBRARY})
-        else()
-            target_link_libraries(snx_ctr_program INTERFACE "-Wl,--no-as-needed" "${SNX_Z3_LIBRARY}"
-                                  ${SNX_XML2_LIBRARY} "-Wl,--as-needed")
-        endif()
-    endif()
-    if(APPLE) # ld64 takes one folder per -rpath
-        string(REPLACE ":" ";" ctr_llvm_rpaths "${ctr_llvm_rpath}")
-        foreach(path IN LISTS ctr_llvm_rpaths)
-            target_link_options(snx_ctr_program INTERFACE "-Wl,-rpath,${path}")
-        endforeach()
-    else()
-        target_link_options(snx_ctr_program INTERFACE "-Wl,-rpath,${ctr_llvm_rpath}")
-    endif()
-endif()
+target_link_libraries(snx_ctr_program PUBLIC snx_recompiler_jit)
 add_library(snx_ctr_native STATIC aot/load.c)
 target_link_libraries(snx_ctr_native PUBLIC snx_ctr_process ${CMAKE_DL_LIBS})
 set_target_properties(snx_ctr_native PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)

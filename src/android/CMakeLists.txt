@@ -7,16 +7,6 @@
 #   snx_android_dex         the DEX reader and its translator to class files (dex/)
 #   snx_android_program     the command line (runtime/main.c), the JVM host and the natives
 #   snx_android_framework   ScarletNX's android.* and the runtime's Java side (framework/), a jar beside the program
-# the JIT compiles an app's native code at run time with the LLVM the build links: LLVM 19's code generator crashes on
-# some of an engine's (a trap in its DAG combiner), so the Android driver is built with LLVM 22 (docs/platforms/android-apps/README.md)
-if(SNX_LLVM_VERSION)
-    string(REGEX MATCH "^[0-9]+" snx_android_llvm_major "${SNX_LLVM_VERSION}")
-    if(snx_android_llvm_major AND snx_android_llvm_major LESS 22)
-        message(WARNING "The Android driver is built with LLVM ${SNX_LLVM_VERSION}: build it with LLVM 22 "
-                        "(-DSNX_LLVM_CONFIG=), as LLVM ${snx_android_llvm_major}'s code generator crashes on some "
-                        "apps' native code (docs/platforms/android-apps/README.md)")
-    endif()
-endif()
 set(snx_android_c_options -pedantic-errors -Wall -Wextra -Werror -Werror=missing-prototypes
                           -Werror=missing-variable-declarations)
 add_library(snx_android_dex STATIC dex/dex.c dex/classfile.c dex/translate.c dex/annotations.c)
@@ -79,7 +69,6 @@ endif()
 # The native bridge (bridge/, docs/platforms/android-apps/native.md): the app's AArch64 libraries run through the recompiler library,
 # which another driver's tree may have configured already. cpu.h is written in the GNU dialect of C
 if(NOT TARGET scarletnx-recompiler)
-    include("${PROJECT_SOURCE_DIR}/cmake/llvm.cmake")
     add_subdirectory("${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler" android-recompiler)
 endif()
 add_library(snx_android_bridge STATIC bridge/bridge.c bridge/host.c bridge/linker.c bridge/hle.c bridge/hle_libc.c bridge/args.c

@@ -47,7 +47,7 @@ env:
   SNX_TESTS: >-
     ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' ||
     startsWith(github.ref, 'refs/tags/') }}
-  SNX_TEST_OPTIONS: -DSNX_TEST_VP9_VECTORS=ON -DSNX_TEST_ARM_AOT=ON -DSNX_TEST_ARM_DIFF=ON -DSNX_TEST_LLVM_SWEEP=ON
+  SNX_TEST_OPTIONS: -DSNX_TEST_VP9_VECTORS=ON -DSNX_TEST_ARM_AOT=ON -DSNX_TEST_ARM_DIFF=ON -DSNX_TEST_QEMU_SWEEP=ON
   SNX_HEADLESS_OPTIONS: -DSNX_BUILD_GUI=OFF -DSNX_DEPLOY=OFF -DSNX_TEST_VULKAN=ON -DSNX_TEST_AV1_VECTORS=ON
   # the jobs that may fail without failing the run (continue-on-error; tests/fail_fast_test.py)
   SNX_OPTIONAL_JOBS: '^(macOS and iOS \(arm64\)|Windows \(Clang \+ LLVM, aarch64\)|Linux AppImage \((ppc64le|ppc64|riscv64|loongarch64)\))$'

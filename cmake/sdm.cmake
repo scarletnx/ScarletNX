@@ -14,7 +14,12 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
 else()
     set(snx_sail_x64_default OFF)
 endif()
-option(SNX_SAIL_X64 "Build the x86-64 back end: without it LLVM makes every function" ${snx_sail_x64_default})
+option(SNX_SAIL_X64 "Build the x86-64 back end, an x86-64 host's code generator" ${snx_sail_x64_default})
+# an x86-64 host has no other: without it nothing would make the game's code
+if(snx_sail_x64_default AND NOT SNX_SAIL_X64)
+    message(FATAL_ERROR "SNX_SAIL_X64=${SNX_SAIL_X64} on ${CMAKE_SYSTEM_PROCESSOR}: the x86-64 back end is this host's "
+                        "only code generator, so it is built (SNX_SAIL_X64=ON)")
+endif()
 set(SNX_X64 "${SNX_SAIL_X64}" CACHE INTERNAL "the x86-64 back end is built (SNX_SAIL_X64)")
 # in the log: a tree keeps the SNX_SAIL_X64 it was first configured with
 if(SNX_X64)

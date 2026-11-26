@@ -30,16 +30,3 @@ snx_decodetree(snx_arm_decode OUTPUT decode-t32.inc DECODE "${snx_arm_decode_dir
                OPTIONS --static-decode=disas_t32)
 snx_decodetree(snx_arm_decode OUTPUT decode-t16.inc DECODE "${snx_arm_decode_dir}/t16.decode"
                OPTIONS -w 16 --static-decode=disas_t16)
-if(NOT SNX_WITH_LLVM)
-    return()
-endif()
-add_library(snx_arm_llvm STATIC llvm.c)
-set_target_properties(snx_arm_llvm PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
-target_include_directories(snx_arm_llvm SYSTEM PUBLIC "${SNX_LLVM_INCLUDE_DIR}")
-target_compile_options(snx_arm_llvm PRIVATE -Wall -Wextra -Werror=missing-prototypes)
-target_link_directories(snx_arm_llvm PUBLIC "${SNX_LLVM_LIBRARY_DIR}")
-target_link_libraries(snx_arm_llvm PUBLIC ${SNX_LLVM_LIBS} ${SNX_LLVM_SYSTEM_LIBS} Threads::Threads snx_arm_rt
-                      snx_arm_decode)
-# the T16 emitters sailgen generates from the Sail (sail/), which llvm_thumb.inc includes
-include("${PROJECT_SOURCE_DIR}/cmake/sailgen.cmake")
-snx_sailgen_a32(snx_arm_llvm)

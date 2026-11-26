@@ -7,7 +7,6 @@
 
 #include "nx/loader/module.h"
 
-struct SnxIrTuning; /* recompiler/llvm/ir.h's */
 typedef struct {
     const char* output; /* <Game>_code.so or .dll, replaced only by a complete module */
     /* The target triple of a module made for another machine than this one, which the JIT loader loads instead of
@@ -22,7 +21,6 @@ typedef struct {
     int jobs_open;
     int quiet;
     const char* keep_ir; /* when set, each unit's IR is saved there as .ll */
-    const struct SnxIrTuning* tuning; /* the game code's LLVM settings (snx_llvm_tuning), NULL for LLVM's own */
     /* when set, the snx_aot_ wrappers the descriptor got: one per entry when the profile cache's units link (they call
        them), else none */
     size_t* wrappers;
@@ -34,10 +32,6 @@ typedef struct {
     const SnxU64* layout;
     size_t layout_count;
 } SnxLlvmBuild;
-/* g_settings' LLVM Internals (settings.txt's llvm table) for -O<opt>: the pipeline with the passes turned off cut
-   out, the options set. Static, made again at each call. NULL with the reason in error when nothing at all is left
-   (a level's pipeline of passes only, every one of them off) */
-const struct SnxIrTuning* snx_llvm_tuning(char opt, char* error, size_t error_size);
 
 /* SNX_ABI as this build has it: the layout its modules are written with, which the runtime of the same build checks */
 unsigned snx_module_abi(void);

@@ -759,12 +759,7 @@ def check_weak_declarations(repo):
 # files that leave, never new code: the rest of the recompiler (snx_recompiler_core) builds without LLVM
 LLVM_HEADER = re.compile(r'llvm(?:-c)?/')
 LLVM_FOLDER = 'src/common/cpu/recompiler/llvm/'
-LLVM_USERS = {
-    'src/common/cpu/arm/llvm.c',
-    'src/common/cpu/arm/llvm.h',
-    'src/nx/runtime/driver/llvm_tuning.c',
-    'src/nx/runtime/settings_llvm.h',
-}
+LLVM_USERS = set()
 
 
 def check_llvm(repo):
