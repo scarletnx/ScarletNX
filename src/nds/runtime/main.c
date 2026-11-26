@@ -477,6 +477,16 @@ int snx_nds_main(int argc, char** argv) {
         goto done;
     }
     board->trace = trace;
+    /* the window's and the board's settings, the network's among them, read before the firmware's Wi-Fi */
+    vpad_set_say(nds_host_say);
+    vpad_settings(folder, name, argc, argv);
+    if (snx_cli_fullscreen_flag(argc, argv)) g_settings.fullscreen = 1; /* -f's over the settings' */
+    /* offline, as the Switch's network and airplane mode say (the 3DS's too): no Wi-Fi connection set */
+    if (wfc && !snx_console_online()) {
+        printf("WFC: nds_wfc=%s, and %s: the firmware's Wi-Fi connections are not set\n", g_settings.ds_wfc_service,
+               g_settings.airplane_mode ? "airplane_mode=1" : "network=0");
+        wfc = 0;
+    }
     if (wfc == SNX_ONLINE_WFC_AUTO) wfc = wfc_fastest(wfc_dns);
     if (wfc > 0 && !nds_pxi_wfc(board, wfc_dns, error, sizeof error)) {
         fprintf(stderr, "scarletnx-nds: the firmware's Wi-Fi connection: %s\n", error);
@@ -485,7 +495,7 @@ int snx_nds_main(int argc, char** argv) {
     if (wfc > 0)
         printf("WFC: nds_wfc=%s, the firmware's first Wi-Fi connection (%s) asks the DNS server %u.%u.%u.%u\n",
                g_settings.ds_wfc_service, NDS_WFC_NETWORK, wfc_dns[0], wfc_dns[1], wfc_dns[2], wfc_dns[3]);
-    else
+    else if (snx_console_online())
         printf("WFC: nds_wfc=%s, the firmware's Wi-Fi connections are not set\n", g_settings.ds_wfc_service);
     save_load(board, save, image);
     recomp = nds_recomp_new(&rom, module, error, sizeof error);
@@ -502,9 +512,6 @@ int snx_nds_main(int argc, char** argv) {
     printf("card: %s\n", rom.code);
     {
         char* title = snx_format("ScarletNX - %s (NDS)", rom.title[0] ? rom.title : name);
-        vpad_set_say(nds_host_say);
-        vpad_settings(folder, name, argc, argv);
-        if (snx_cli_fullscreen_flag(argc, argv)) g_settings.fullscreen = 1; /* -f's over the settings' */
         host = nds_host_open(board, title, ini, wav, headless || frames >= 0, g_settings.fullscreen && !(seconds > 0),
                              error, sizeof error);
         free(title);

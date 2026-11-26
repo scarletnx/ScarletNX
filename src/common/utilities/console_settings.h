@@ -27,6 +27,8 @@ typedef struct {
 } SnxConsoleSetting;
 extern const SnxConsoleSetting g_console_settings[]; /* the last line's key NULL */
 
+/* whether a console's game goes online: the Switch's network on (1) and its airplane mode off */
+static inline bool snx_console_online(void) { return g_settings.network && !g_settings.airplane_mode; }
 /* the console's name, as a message says it ("GBA", "DS") */
 const char* snx_console_name(SnxSystem console);
 /* the line of the row of key (gamepad_p1_map, controls_a_shown, vk_khr_present_wait): NULL for none, which a console's

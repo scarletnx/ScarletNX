@@ -37,6 +37,7 @@
 #define SOON_KEYS     "its keys are not set by the runtime's yet"
 #define SOON_STATES   "its save states are not made yet"
 #define SOON_OVERLAY  "its window shows no stats or showcase yet"
+#define OFFLINE       "its network is the console's own alone, as in flight mode"
 #define SOON_LOG      "it writes no game log yet"
 #define SOON_TRACY    "it has no Tracy zones yet"
 
@@ -182,8 +183,8 @@ const SnxConsoleSetting g_console_settings[] = {
     {"hotkey_upscaler", {[C] = LATER(SOON_KEYS)}},
     {"hotkey_anti_aliasing", {[C] = LATER(SOON_KEYS)}},
     /* Network */
-    {"network", {[V] = LATER(SOON), [G] = NA(NO_NETWORK), [D] = LATER(SOON)}},
-    {"airplane_mode", {[V] = LATER(SOON), [G] = NA(NO_NETWORK), [D] = LATER(SOON)}},
+    {"network", {[V] = LATER(OFFLINE), [G] = NA(NO_NETWORK)}},
+    {"airplane_mode", {[V] = LATER(OFFLINE), [G] = NA(NO_NETWORK)}},
     {"ldn", {[V] = LATER(SOON), [G] = NA(NO_NETWORK), [D] = LATER(SOON)}},
     {"room", {[V] = LATER(SOON), [G] = NA(NO_NETWORK), [D] = LATER(SOON)}},
     {"switch_online", OTHERS(NA(SWITCH_NET))},

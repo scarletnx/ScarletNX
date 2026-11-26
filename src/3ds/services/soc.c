@@ -17,6 +17,7 @@
 #include "common/utilities/endian.h"
 #include "common/online/ctr.h"
 #include "common/online/hosts.h"
+#include "common/utilities/console_settings.h"
 #include "snx_settings.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -153,7 +154,7 @@ static void answer(SnxCtrIpc* c, int32_t value) {
     c->out[2] = (uint32_t)value;
 }
 
-bool snx_ctr_online(void) { return g_settings.network && !g_settings.airplane_mode; }
+bool snx_ctr_online(void) { return snx_console_online(); }
 
 const char* snx_ctr_soc_host(const char* name) {
     if (!strcmp(g_settings.ctr_online_service, "pretendo")) name = snx_online_pretendo_host(name);
