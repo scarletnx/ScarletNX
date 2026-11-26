@@ -285,3 +285,5 @@ int main(void) {
     puts("vk_buffer_owned: ok");
     return 0;
 }
+/* the draw slot of this thread (render.c): this test sets up no draws on a worker */
+u32 vk_render_slot(void) { return 0; }

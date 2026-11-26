@@ -2042,8 +2042,10 @@ typedef struct {
    them ends it, before a submit or a new begin of its command buffer. A thread that records into its own list
    (VkRecList, a split run's worker) batches apart, into that list */
 static BarBatch g_ring_bar;
-static _Thread_local BarBatch t_list_bar;
-static BarBatch* bar_batch(void) { return t_list ? &t_list_bar : &g_ring_bar; }
+/* a list's batch, for each draw slot (vk_render_slot): not thread-local, as each thread's storage holds every
+   thread-local of the program, at most 16 KiB (the runtime_tls test) */
+static BarBatch g_list_bar[VK_RC_SLOTS];
+static BarBatch* bar_batch(void) { return t_list ? &g_list_bar[vk_render_slot()] : &g_ring_bar; }
 u64 g_barrier_merged; /* barriers that shared a call with an earlier one (vk_rec_command_report) */
 static void barrier_flush(void) {
     BarBatch* const bb = bar_batch();
