@@ -411,20 +411,24 @@ int main(void) {
             draw(&bar);
             assert(bar.n == n && bar_says(&bar, s, " Right stick 100% "));
         }
-        /* the bar in the menu's letters, whatever the picture's size: at 3 its row is 24 pixels down and its letters
-           24 by 48, and a press lands on it where it was last drawn */
+        /* the bar in the menu's letters, whatever the picture's size: at 3 its letters are 24 by 48, and minus and plus
+           are in its way at the top, so it goes under them, a fortieth of the picture's height apart; a press lands
+           on it where it was last drawn */
         {
             SnxUiList big = {quads, 0, 512};
-            float at = 0;
+            float at = 0, box[4], minus[4];
             vpad_draw(&big, safe, 3);
+            assert(vpad_edit_bar(safe, box));
+            vpad_box(SNX_VPAD_MINUS, safe, minus);
+            assert(box[1] >= minus[1] + minus[3] + 0.025f * (float)safe[3]);
             for (i = 0; i < big.n; ++i)
-                if (qv(&big.q[i]).ink == UI_GLYPH && qv(&big.q[i]).glyph == '+' && qv(&big.q[i]).y == 24) {
+                if (qv(&big.q[i]).ink == UI_GLYPH && qv(&big.q[i]).glyph == '+' && qv(&big.q[i]).y == box[1] + 12) {
                     assert(qv(&big.q[i]).w == 24 && qv(&big.q[i]).h == 48);
                     at = qv(&big.q[i]).x;
                 }
             assert(at > 0);
             stores = 0;
-            assert(vpad_down(17, at + 2, 24 + 40, safe) && vpad_up(17) && stores == 1);
+            assert(vpad_down(17, at + 2, box[1] + 12 + 16, safe) && vpad_up(17) && stores == 1);
             assert(vpad_config()->at[SNX_VPAD_STICK_R].size == 110);
             draw(&bar); /* at 2 again */
         }
