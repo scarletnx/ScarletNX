@@ -64,6 +64,7 @@ enum {
 typedef struct {
     int kind;
     int from_launcher;  /* the launcher started the run and waits for its end (--from-launcher) */
+    int notice;         /* no game stopped: the launcher's own failure, its message whole and OK alone */
     char key[64];       /* SETTING, SETTING_VALUE, NETWORK: the .ini key Open Settings goes to */
     char line[160];     /* the panel's line where the kind's own says too little ("Vulkan API is 9: no such choice.") */
     char hint[160];     /* and the second line, where the kind's own does */

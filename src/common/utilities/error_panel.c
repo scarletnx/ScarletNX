@@ -77,14 +77,15 @@ static int para(const Pen* pen, float y, const char* text, int first, int max, u
 }
 
 /* the foot's line: the keys of the input used last */
-static void keys_line(const SnxErrorPanel* p, const SnxError* e, char* out, size_t size) {
-    const char* close = p->details ? "back" : e->from_launcher ? "menu" : "close";
+static void keys_line(const SnxErrorPanel* p, const SnxError* e, int items, char* out, size_t size) {
+    const char* close = p->details ? "back" : e->notice ? "close" : e->from_launcher ? "menu" : "close";
+    const char* move = items > 1 ? p->input == SNX_ERROR_INPUT_PAD ? "D-pad: move   " : "Up/Down: move   " : "";
     if (p->input == SNX_ERROR_INPUT_PAD)
-        snprintf(out, size, "%s: do   D-pad: move   %s: %s", p->pad_do, p->pad_back, close);
+        snprintf(out, size, "%s: do   %s%s: %s", p->pad_do, move, p->pad_back, close);
     else if (p->input == SNX_ERROR_INPUT_TOUCH)
         snprintf(out, size, p->back_key ? "Tap: do   Back: %s" : "Tap: do", close);
     else
-        snprintf(out, size, "Enter: do   Up/Down: move   Esc: %s", close);
+        snprintf(out, size, "Enter: do   %sEsc: %s", move, close);
 }
 
 void snx_error_panel_draw(SnxErrorPanel* p, const SnxError* e, SnxUiList* l, int sw, int sh) {
@@ -92,6 +93,7 @@ void snx_error_panel_draw(SnxErrorPanel* p, const SnxError* e, SnxUiList* l, int
     int s = snx_menu_scale(sw, sh, p->percent), cols = snx_menu_cols(sw, s),
         finger = (FINGER_ROW * p->percent + 50) / 100;
     int ch = 16 * s, rh = p->fingers && finger > ch ? finger : ch, total = 0, msg_rows = 0, fixed;
+    int whole = p->details || e->notice, named = !e->notice; /* the message whole, scrolled; the game's name row */
     char name[256], keys[96], *message = NULL, *log = NULL, logline[1100];
     float w = (float)(cols * 8 * s), x, y;
     Pen pen = {NULL, 0, s, cols - 2};
@@ -99,14 +101,14 @@ void snx_error_panel_draw(SnxErrorPanel* p, const SnxError* e, SnxUiList* l, int
     snprintf(name, sizeof name, "%s", e->game[0] ? e->game : "SCARLETNX");
     for (char* c = name; *c; ++c)
         if (*c >= 'a' && *c <= 'z') *c = (char)(*c - 32);
-    keys_line(p, e, keys, sizeof keys);
+    keys_line(p, e, n, keys, sizeof keys);
     /* the rows besides the message: head, name, a blank, the lines, a blank, the items, a blank, the keys */
-    if (p->details) {
+    if (whole) {
         message = fatal_shown(e->message[0] ? e->message : snx_error_line(e));
-        log = e->log[0] ? fatal_shown(e->log) : NULL;
+        log = p->details && e->log[0] ? fatal_shown(e->log) : NULL;
         snprintf(logline, sizeof logline, "Log: %s", log ? log : e->log);
         (void)para(&pen, 0, message ? message : e->message, 0, MESSAGE_ROWS, 0, &msg_rows);
-        fixed = 1 + 1 + 1 + (log ? 1 + para(&pen, 0, logline, 0, LINE_ROWS, 0, NULL) : 0) + 1 + 1 + 1;
+        fixed = 1 + named + 1 + (log ? 1 + para(&pen, 0, logline, 0, LINE_ROWS, 0, NULL) : 0) + 1 + 1 + 1;
     } else
         fixed = 1 + 1 + 1 + para(&pen, 0, snx_error_line(e), 0, LINE_ROWS, 0, NULL) +
                 para(&pen, 0, snx_error_hint(e), 0, LINE_ROWS, 0, NULL) + 1 + 1 + 1;
@@ -114,7 +116,7 @@ void snx_error_panel_draw(SnxErrorPanel* p, const SnxError* e, SnxUiList* l, int
     /* Details' message takes the rows the picture has left, three at the least */
     p->rows = msg_rows;
     p->rows_shown = 0;
-    if (p->details) {
+    if (whole) {
         int room = (sh - n * rh) / ch - fixed;
         p->rows_shown = msg_rows < (room < 3 ? 3 : room) ? msg_rows : (room < 3 ? 3 : room);
         if (p->top > msg_rows - p->rows_shown) p->top = msg_rows - p->rows_shown;
@@ -129,11 +131,15 @@ void snx_error_panel_draw(SnxErrorPanel* p, const SnxError* e, SnxUiList* l, int
     pen.x = x + (float)(8 * s);
     ui_fill(l, x, y, w, p->box.h, UI_PAGE);
     ui_fill(l, x, y, w, (float)ch, UI_INK);
-    ui_text(l, x + (float)(8 * s), y, s, p->details ? "SCARLETNX  /  DETAILS" : "SCARLETNX  /  STOPPED", UI_PAGE);
+    ui_text(l, x + (float)(8 * s), y, s,
+            p->details  ? "SCARLETNX  /  DETAILS"
+            : e->notice ? "SCARLETNX  /  ERROR"
+                        : "SCARLETNX  /  STOPPED",
+            UI_PAGE);
     y += (float)ch;
-    text_at(l, pen.x, y, s, name, strlen(name), cols - 2, UI_INK);
-    y += (float)(2 * ch);
-    if (p->details) {
+    if (named) text_at(l, pen.x, y, s, name, strlen(name), cols - 2, UI_INK);
+    y += (float)((named + 1) * ch);
+    if (whole) {
         y += (float)(para(&pen, y, message ? message : e->message, p->top, p->rows_shown, UI_INK, &msg_rows) * ch);
         /* more above or under: the font's arrows at the box's right */
         if (p->top) ui_text(l, x + w - (float)(8 * s), y - (float)(p->rows_shown * ch), s, "\x18", UI_INK);

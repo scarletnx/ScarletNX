@@ -118,6 +118,7 @@ int snx_error_action_of(const char* name) {
     return -1;
 }
 const char* snx_error_action_label(int action, const SnxError* e) {
+    if (action == SNX_ACTION_CLOSE && e && e->notice) return "OK";
     if (action == SNX_ACTION_CLOSE && e && e->from_launcher) return "Back to Menu";
     return action >= 0 && action < SNX_ACTIONS ? g_action_labels[action] : "?";
 }
@@ -144,6 +145,10 @@ static int can(const SnxError* e, int action) {
 int snx_error_actions(const SnxError* e, int out[SNX_ERROR_ACTIONS_MAX]) {
     const Kind* k = kind_of(e);
     int n = 0;
+    if (e->notice) { /* nothing of a game's to fix */
+        out[0] = SNX_ACTION_CLOSE;
+        return 1;
+    }
     for (size_t i = 0; i < sizeof k->fix / sizeof k->fix[0]; ++i)
         if (can(e, k->fix[i])) out[n++] = k->fix[i];
     out[n++] = SNX_ACTION_DETAILS;

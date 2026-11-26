@@ -58,7 +58,8 @@ void snx_error_panel_start(SnxErrorPanel* p, u64 now_ms);
 /* its quads for a window of sw by sh pixels into l, e's text in them; where each item is kept in p for the hits */
 void snx_error_panel_draw(SnxErrorPanel* p, const SnxError* e, SnxUiList* l, int sw, int sh);
 /* key (SNX_ERROR_KEY_) from input (SNX_ERROR_INPUT_) at now_ms: the action to do (SNX_ACTION_), or NONE. The panel's
-   own (Details and Back, which change its page) are done here and give NONE; CLOSE from the main page is the caller's */
+   own (Details and Back, which change its page) are done here and give NONE; CLOSE from the main page is the caller's.
+   A notice (SnxError's notice) shows its message whole, scrolled as Details', and OK alone */
 int snx_error_panel_key(SnxErrorPanel* p, const SnxError* e, int key, int input, u64 now_ms);
 /* a finger or the mouse's left button down (down 1) or up at x, y in the window's pixels: the action of the item it
    went down and came up on, else NONE. touch: a finger's, whose keys the foot then names */
