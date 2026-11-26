@@ -4,7 +4,8 @@
    keys and a pad's buttons after the panel's wait take the action in focus or close it, any other key does nothing, a
    press before the wait does nothing, the window's close is Close; the panel's own process (--error-screen) exits with
    the action taken and refuses a record it cannot read; and a game's process starts it and gets that action back
-   (error_spawn.c). Its presses come from a thread, as a person's come after the panel showed.
+   (error_spawn.c). Its presses come from a thread, timed from when the panel showed (its line, or in its own process
+   its window), as a person's come: not from the thread's start, which a loaded machine leaves far behind.
 
     tests/error_sdl [--error-screen=RECORD]   (the second form is the panel's own process, which this test starts) */
 #include "common/utilities/common.h"
@@ -18,13 +19,26 @@
 #include <unistd.h>
 
 typedef struct {
-    Uint32 delay_ms;
+    Uint32 delay_ms; /* after the panel showed */
     SDL_Keycode keys[8];
     int n, quit; /* quit: then the window's close */
+    int own;     /* in the panel's own process: from its window, which shows before its panel starts */
 } Presses;
+static SDL_AtomicInt g_shown; /* the panel said it shows (said) */
+static void said(const char* line) {
+    fprintf(stderr, "%s\n", line);
+    if (strstr(line, "the panel shows")) SDL_SetAtomicInt(&g_shown, 1);
+}
+static const SnxErrorSdlHooks g_hooks = {.say = said};
 
 static int press(void* data) {
     const Presses* p = data;
+    int windows = 0;
+    if (p->own) { /* its window, then room for the renderer it makes before the panel starts */
+        for (SDL_Window** w; !windows; SDL_Delay(10)) SDL_free(w = SDL_GetWindows(&windows));
+        SDL_Delay(1000);
+    } else
+        while (!SDL_GetAtomicInt(&g_shown)) SDL_Delay(5);
     SDL_Delay(p->delay_ms);
     for (int i = 0; i < p->n; ++i) {
         SDL_Event e = {0};
@@ -40,8 +54,9 @@ static int press(void* data) {
 /* the panel in a window of its own, the presses given coming from a thread: the action it ended on */
 static int run(SnxError* e, const Presses* p) {
     char why[400];
+    SDL_SetAtomicInt(&g_shown, 0);
     SDL_Thread* t = SDL_CreateThread(press, "presses", (void*)p);
-    int action = snx_error_sdl_window(e, NULL, why, sizeof why);
+    int action = snx_error_sdl_window(e, &g_hooks, why, sizeof why);
     SDL_WaitThread(t, NULL);
     if (action < 0) fprintf(stderr, "error_sdl: %s\n", why);
     return action;
@@ -52,7 +67,7 @@ int main(int argc, char** argv) {
     char path[1100], why[1400];
     if (argc > 1 && !strncmp(argv[1], SNX_ERROR_SCREEN, sizeof SNX_ERROR_SCREEN - 1)) {
         /* the panel's own process: Down and Enter, its second action */
-        static Presses later = {.delay_ms = 700, .keys = {SDLK_DOWN, SDLK_RETURN}, .n = 2};
+        static Presses later = {.delay_ms = 700, .keys = {SDLK_DOWN, SDLK_RETURN}, .n = 2, .own = 1};
         SDL_Thread* t;
         SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS);
         t = SDL_CreateThread(press, "presses", &later);
@@ -73,12 +88,13 @@ int main(int argc, char** argv) {
     }
     /* an Enter in the wait (a press meant for the game) does nothing; the next, after it, does the first action */
     {
-        Presses p = {.delay_ms = 10, .keys = {SDLK_RETURN}, .n = 1},
+        Presses p = {.delay_ms = 0, .keys = {SDLK_RETURN}, .n = 1},
                 q = {.delay_ms = 800, .keys = {SDLK_RETURN}, .n = 1};
+        SDL_SetAtomicInt(&g_shown, 0);
         SDL_Thread* t = SDL_CreateThread(press, "early", &p);
         char why2[400];
         SDL_Thread* u = SDL_CreateThread(press, "later", &q);
-        int action = snx_error_sdl_window(&e, NULL, why2, sizeof why2);
+        int action = snx_error_sdl_window(&e, &g_hooks, why2, sizeof why2);
         SDL_WaitThread(t, NULL);
         SDL_WaitThread(u, NULL);
         assert(action == SNX_ACTION_TRY_AGAIN);
@@ -140,7 +156,7 @@ int main(int argc, char** argv) {
         char* cmd = snx_format("echo again > '%s'", mark);
         const char* args[] = {"x", "-c", cmd, NULL};
         assert(!snx_error_follow(&f, SNX_ACTION_TRY_AGAIN, "/bin/sh", args, why, sizeof why));
-        for (int k = 0; k < 100 && !snx_is_file(mark); ++k) SDL_Delay(20);
+        for (int k = 0; k < 1000 && !snx_is_file(mark); ++k) SDL_Delay(20); /* 20 s, for a loaded machine */
         assert(snx_is_file(mark));
         remove(mark);
         remove(out);
