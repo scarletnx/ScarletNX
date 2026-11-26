@@ -144,7 +144,7 @@ void snx_vpad_window_safe(int safe[4]) {
     }
 }
 /* line on say and show */
-static void tell(const char* line) {
+static void say_shown(const char* line) {
     if (g_vpad_sdl.say) g_vpad_sdl.say(line);
     if (g_vpad_sdl.show) g_vpad_sdl.show(line);
 }
@@ -156,7 +156,7 @@ void snx_vpad_window_none(int action, const char* why) {
     char line[256];
     snprintf(line, sizeof line, "%s (%.*s) does nothing in a %s game: %s", hotkey_text(action), (int)n, name,
              vpad_console_name(), why);
-    tell(line);
+    say_shown(line);
 }
 /* the runtime's keys: the quit key's, the fullscreen keys', the menu's, which edits their layout as Android's Back
    does, and the others' for the console */
@@ -170,7 +170,7 @@ static SnxVpadEvent key_event(const SDL_KeyboardEvent* k, int* action) {
         char line[64];
         if (hotkey_quit_press(SDL_GetTicksNS())) return SNX_VPAD_QUIT;
         snx_quit_warning(line, sizeof line, hotkey_text(HOTKEY_QUIT));
-        tell(line);
+        say_shown(line);
         return SNX_VPAD_TAKEN;
     }
     if (a == HOTKEY_FPS_LIMIT) { /* none, or back to the pace before it, as a Switch game's F4 */
