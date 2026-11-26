@@ -31,6 +31,9 @@
 #if defined(SNX_MULTICALL_GUI) && defined(_WIN32)
 #include "gui/gui.h"
 #endif
+#ifdef SNX_MULTICALL_ERROR_SCREEN
+#include "common/utilities/error_sdl.h"
+#endif
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
@@ -104,6 +107,11 @@ int main(int argc, char** argv) {
     const char* self = argc > 0 && argv[0] ? argv[0] : "";
 #if defined(SNX_MULTICALL_GUI) && defined(_WIN32)
     snx_menu_has_driver = has_driver;
+#endif
+#ifdef SNX_MULTICALL_ERROR_SCREEN
+    /* a game's error that its window could not show, in a process of its own: before any driver, whatever the name */
+    if (argc > 1 && !strncmp(argv[1], SNX_ERROR_SCREEN, sizeof SNX_ERROR_SCREEN - 1))
+        return snx_error_screen_main(argc, argv);
 #endif
     const Driver* driver = argc > 1 ? named(argv[1]) : NULL;
     if (driver) return driver->main(argc - 1, argv + 1); /* its name as its argv[0] */

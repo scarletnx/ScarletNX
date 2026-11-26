@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* What a fatal error's box says (common/utilities/fatal_screen.c): the hint for each known error, the text cut into
+/* What a fatal error's panel and box say (common/utilities/fatal_screen.c): the text cut into
    the box's rows at spaces, a long word cut, UTF-8 counted as characters, those in the font's bytes, and Share Log's
    file and the box's own text, their homes as ~ */
 #include "common/utilities/fatal_screen.h"
@@ -25,33 +25,6 @@ static char* lines(size_t size) {
 
 int main(void) {
     int n;
-    assert(strstr(fatal_hint("vulkan: the GPU device was lost (driver reset or crash)"), "driver reset it"));
-    assert(strstr(fatal_hint("Unsupported instruction 0x1ee0f800 at 0x80021c4"), "does not translate"));
-    /* the Vulkan version only where the start said the device lacks it; a swapchain the driver could not make,
-       another driver; a start the log alone explains, nothing */
-    assert(strstr(fatal_hint("Vulkan could not start: Mali-G610 has Vulkan 1.1.0, and ScarletNX needs Vulkan 1.3, or "
-                             "1.2 with the extensions 1.3 took in, and a graphics and presentation queue."),
-                  "Vulkan 1.3"));
-    assert(strstr(fatal_hint("Vulkan could not start: the swapchain could not be made on Mali-G720 MC7 (panvk): "
-                             "VK_ERROR_INVALID_EXTERNAL_HANDLE (-1000072003)."),
-                  "another driver"));
-    assert(!fatal_hint("Vulkan could not start (see the log)."));
-    assert(strstr(fatal_hint("kernel: out of memory mapping 0x10000000 bytes"), "ran out of memory"));
-    /* a 32-bit game of an SDK no declaration was read in (sm.c's stop): its way out is an update of the game */
-    assert(strstr(fatal_hint("sm: the program opened pctl, which the runtime answers only in the SDK's own functions, "
-                             "nn::pctl (nn/pctl.c). This 32-bit game's SDK is 4.4.0 (module sdk) and the runtime's "
-                             "declarations for a 32-bit game were read in SDK 0.12.16 alone, so 132 of its SDK "
-                             "functions run their own code (nn_fs 44), which needs services"),
-                  "64-bit update"));
-    /* the native functions turned off by a setting (sm.c's stop): which, and the way out */
-    assert(strstr(fatal_hint("sm: the program opened pctl, which the runtime answers only in the SDK's own functions, "
-                             "nn::pctl (nn/pctl.c). hooks=0 (its default is 1) runs every SDK function's own code"),
-                  "(hooks=0)"));
-    assert(strstr(fatal_hint("sm: the program opened pctl, which the runtime answers only in the SDK's own functions, "
-                             "nn::pctl (nn/pctl.c). hooks_off=nn_pctl (its default is \"\") names the nn_pctl family"),
-                  "Hook families off"));
-    assert(!fatal_hint("svc 0x7f is not implemented"));
-
     /* at spaces, never past the width */
     n = fatal_wrap("vulkan: the GPU device was lost (driver reset or crash)", 20, rows, 8);
     assert(n == 4);
@@ -76,10 +49,12 @@ int main(void) {
     /* the same rows as spans of the text, the panel's (common/utilities/error_panel.c): where each starts, its bytes */
     {
         int at[4], len[4];
-        n = fatal_wrap_spans("  one two   three", 7, at, len, 4);
+        n = fatal_wrap_spans("  one two   three", 7, 0, at, len, 4);
         assert(n == 2 && at[0] == 2 && len[0] == 7 && at[1] == 12 && len[1] == 5);
-        n = fatal_wrap_spans("one two three", 5, at, len, 1); /* past max: counted, not written */
+        n = fatal_wrap_spans("one two three", 5, 0, at, len, 1); /* past max: counted, not written */
         assert(n == 3 && at[0] == 0 && len[0] == 3);
+        n = fatal_wrap_spans("one two three", 5, 2, at, len, 4); /* from the third row */
+        assert(n == 3 && at[0] == 8 && len[0] == 5);
     }
     /* the count goes past max, the rows past it are not written */
     strcpy(rows[1], "kept");

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* What the screen of a fatal error says (backend/sdl3.c draws it in the game's window): what the error means, for the
-   errors a player can act on or report, and the text cut into the screen's rows */
+/* The text of an error's panel (error_panel.h) and of its last resort, SDL's box: cut into rows, in the font's bytes,
+   the homes as ~; Share Log's file and the log's file URI */
 #ifndef SNX_FATAL_SCREEN_H
 #define SNX_FATAL_SCREEN_H
 #include <stddef.h>
@@ -9,14 +9,12 @@
 #define FATAL_BOX_COLS 100  /* code points of a row of the box SDL shows */
 #define FATAL_ROW      1024 /* bytes of one row: cols code points of up to 4 bytes */
 
-/* what msg (the text fatal() logged) means, in a sentence; NULL for an error with no known cause */
-const char* fatal_hint(const char* msg);
 /* text in rows of cols code points at most, broken at a space when one is in the row, else cut: up to max rows into
    rows. Returns the rows the text takes, which may be more than max (those past it are not written) */
 int fatal_wrap(const char* text, int cols, char (*rows)[FATAL_ROW], int max);
-/* the same rows as spans of text: each row's first byte's offset and its bytes, up to max of them into at and len.
-   Returns the rows the text takes */
-int fatal_wrap_spans(const char* text, int cols, int* at, int* len, int max);
+/* the same rows as spans of text, from its row first: each row's first byte's offset and its bytes, up to max of them
+   into at and len. Returns the rows the text takes, all of them */
+int fatal_wrap_spans(const char* text, int cols, int first, int* at, int* len, int max);
 /* text with each of its lines cut into rows of cols code points as fatal_wrap cuts them, the rows apart by a newline and
    its empty lines kept: for a box as wide as its longest line (SDL's on Windows). malloc'd, NULL out of memory */
 char* fatal_lines(const char* text, int cols);

@@ -76,6 +76,10 @@ void backend_controller_hide(u32 ticket);
 /* fatal's error panel (common/utilities/error_kind.h's e), and the run's "error: " line that says whether it showed.
    Called on every platform and from any thread */
 void win_fatal_box(const SnxError* e);
+/* the same from the crash handler, which may take no lock and make nothing: the panel in its own process, prepared as
+   the window opened (common/utilities/error_spawn.h), and the run's "error: " lines. POSIX's alone: Windows' crash
+   report goes through win_fatal_box */
+void win_fatal_crash(const SnxError* e);
 
 /* Vulkan, unused when headless. The two handle types are declared here as vulkan_core.h declares them for 64-bit
    hosts (a repeated identical typedef is valid), so callers need no Vulkan header */

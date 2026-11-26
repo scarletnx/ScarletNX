@@ -77,26 +77,6 @@ int fatal_log_url(const char* path, char* out, size_t size) {
     return 1;
 }
 
-const char* fatal_hint(const char* msg) {
-    if (strstr(msg, "GPU device was lost"))
-        return "The GPU stopped answering and its driver reset it: something the game gave it, a shader or a draw, "
-               "ran too long or read memory it should not.";
-    if (strstr(msg, "Unsupported instruction")) return "The game ran an instruction ScarletNX does not translate yet.";
-    if (strstr(msg, "hooks=0 (its default is 1)"))
-        return "Native hooks is off (hooks=0), and games need it: turn it on in the Debug settings.";
-    if (strstr(msg, "hooks_off="))
-        return "Hook families off names a family this game needs: empty it in the Debug settings.";
-    if (strstr(msg, "This 32-bit game's SDK is"))
-        return "This is a 32-bit game of an SDK ScarletNX does not have yet: its 64-bit update, if it has one, plays.";
-    if (strstr(msg, "ScarletNX needs Vulkan 1.3"))
-        return "ScarletNX needs a GPU and driver with Vulkan 1.3, and this one has none.";
-    if (strstr(msg, "swapchain could not be made"))
-        return "The GPU driver could not make the images the window shows: another driver, or the system's, may.";
-    if (strstr(msg, "out of memory") || strstr(msg, "Out of memory"))
-        return "The device ran out of memory: close other apps and start the game again.";
-    return NULL;
-}
-
 /* the bytes of the code point starting at s: a lead byte's continuations, three at most; any other byte alone */
 static size_t step(const char* s) {
     size_t n = 1;
@@ -105,7 +85,7 @@ static size_t step(const char* s) {
     return n;
 }
 
-int fatal_wrap_spans(const char* text, int cols, int* at, int* len, int max) {
+int fatal_wrap_spans(const char* text, int cols, int first, int* at, int* len, int max) {
     const char* start = text;
     int count = 0;
     if (cols < 1) cols = 1;
@@ -124,9 +104,9 @@ int fatal_wrap_spans(const char* text, int cols, int* at, int* len, int max) {
         if (*end && *end != ' ' && space) end = space;
         n = (size_t)(end - text);
         while (n && text[n - 1] == ' ') --n;
-        if (count < max) {
-            at[count] = (int)(text - start);
-            len[count] = (int)n;
+        if (count >= first && count - first < max) {
+            at[count - first] = (int)(text - start);
+            len[count - first] = (int)n;
         }
         ++count;
         text = end;
@@ -135,12 +115,15 @@ int fatal_wrap_spans(const char* text, int cols, int* at, int* len, int max) {
 }
 
 int fatal_wrap(const char* text, int cols, char (*rows)[FATAL_ROW], int max) {
-    enum { SPANS = 64 };
-    int at[SPANS], len[SPANS], count = fatal_wrap_spans(text, cols, at, len, max < SPANS ? max : SPANS);
-    for (int i = 0; i < count && i < max && i < SPANS; ++i) {
-        size_t n = (size_t)len[i] < FATAL_ROW ? (size_t)len[i] : FATAL_ROW - 1;
-        memcpy(rows[i], text + at[i], n);
-        rows[i][n] = 0;
+    enum { SPANS = 64 }; /* rows a pass writes: a text of more takes a pass for each SPANS of them */
+    int at[SPANS], len[SPANS], count = 0;
+    for (int first = 0; first == 0 || first < (count < max ? count : max); first += SPANS) {
+        count = fatal_wrap_spans(text, cols, first, at, len, SPANS);
+        for (int i = 0; first + i < count && first + i < max && i < SPANS; ++i) {
+            size_t n = (size_t)len[i] < FATAL_ROW ? (size_t)len[i] : FATAL_ROW - 1;
+            memcpy(rows[first + i], text + at[i], n);
+            rows[first + i][n] = 0;
+        }
     }
     return count;
 }

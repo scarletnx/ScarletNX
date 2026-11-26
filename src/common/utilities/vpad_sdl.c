@@ -512,11 +512,14 @@ const SnxUiRects* snx_vpad_window_rects(int w, int h) {
     return g_vpad_sdl.rects.count ? &g_vpad_sdl.rects : NULL;
 }
 void snx_vpad_window_render(SDL_Renderer* renderer) {
-    enum { AT_ONCE = 256 };
-    SDL_FRect f[AT_ONCE];
     int w = 0, h = 0;
     const SnxUiRects* rects = SDL_GetCurrentRenderOutputSize(renderer, &w, &h) ? snx_vpad_window_rects(w, h) : NULL;
-    for (size_t i = 0; rects && i < rects->count;) { /* runs of one colour */
+    if (rects) snx_ui_rects_render(renderer, rects);
+}
+void snx_ui_rects_render(SDL_Renderer* renderer, const SnxUiRects* rects) {
+    enum { AT_ONCE = 256 };
+    SDL_FRect f[AT_ONCE];
+    for (size_t i = 0; i < rects->count;) { /* runs of one colour */
         u32 c = rects->rect[i].rgba;
         int n = 0;
         for (; n < AT_ONCE && i < rects->count && rects->rect[i].rgba == c; ++i, ++n)

@@ -2477,25 +2477,3 @@ void overlay_draw(SnxUiList* l, int sw, int sh, u64 now_ns) {
 int overlay_error_hit(const SnxOverlayRect* r, float x, float y) {
     return r && r->w > 0 && r->h > 0 && x >= r->x && x < r->x + r->w && y >= r->y && y < r->y + r->h;
 }
-void overlay_error_draw(SnxUiList* l, int sw, int sh, SnxOverlayError* e) {
-    static DialogRows rows_of; /* the thread that shows the panel's */
-    static const char* const labels[SNX_OVERLAY_ERROR_ITEMS] = {"Share Log", "Copy path", "Close"};
-    /* on a short picture the log's label gives up rows first, then the hint, the log and the error; never the game's
-       name or what Share Log or Copy path did. The log goes right under its label */
-    const DialogPara para[] = {
-        {e->name, UI_SOFT, 0, 0, 0, 0}, {e->msg, UI_FAILURE, 0, 0, 4, 0}, {fatal_hint(e->msg), UI_INK, 0, 0, 2, 0},
-        {e->how, UI_SOFT, 0, 0, 1, 0},  {e->log, UI_INK, 1, 1, 3, 0},     {e->said, UI_SOFT, 0, 0, 0, 0}};
-    Dialog d;
-    DialogDrawn at;
-    int i;
-    memset(&d, 0, sizeof d);
-    d.title = "SCARLETNX  /  STOPPED";
-    memcpy(d.para, para, sizeof para);
-    d.paras = (int)(sizeof para / sizeof *para);
-    d.items = d.shown = SNX_OVERLAY_ERROR_ITEMS;
-    d.focus = e->focus;
-    for (i = 0; i < SNX_OVERLAY_ERROR_ITEMS; ++i) d.label[i] = labels[i];
-    dialog_draw(l, sw, sh, &d, rows_of, &at);
-    e->link = at.link;
-    for (i = 0; i < SNX_OVERLAY_ERROR_ITEMS; ++i) e->items[i] = at.item[i];
-}

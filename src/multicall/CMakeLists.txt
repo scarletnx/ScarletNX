@@ -20,6 +20,12 @@ endif()
 set_target_properties(scarletnx PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON LINKER_LANGUAGE CXX
                       RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}" LIBRARY_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}")
 target_compile_options(scarletnx PRIVATE -Wall -Wextra -Werror=missing-prototypes)
+# the error's panel in a process of its own (scarletnx --error-screen=RECORD, src/common/utilities/error_spawn.h): a
+# game's runtime starts it as itself, when the game's window cannot show the panel
+if(TARGET snx_error_sdl AND NOT ANDROID)
+    target_compile_definitions(scarletnx PRIVATE SNX_MULTICALL_ERROR_SCREEN)
+    target_link_libraries(scarletnx PRIVATE snx_error_sdl)
+endif()
 
 # The drivers, each as its folder is configured (the top-level CMakeLists.txt): main.c's SNX_MULTICALL_<id>, the
 # library, the program's name for it, and the variable of cmake/deploy.cmake whose games get a copy of scarletnx

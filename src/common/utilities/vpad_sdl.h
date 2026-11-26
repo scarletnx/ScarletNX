@@ -102,4 +102,6 @@ void snx_vpad_window_showcase(u64 keys, unsigned (*key)(int bit), const i32 stic
 const SnxUiRects* snx_vpad_window_rects(int w, int h);
 /* those drawn by SDL's renderer, over what it drew */
 void snx_vpad_window_render(SDL_Renderer* renderer);
+/* any rectangles of the layer (ui_rects.h) drawn by SDL's renderer, over what it drew: a fill each run of one colour */
+void snx_ui_rects_render(SDL_Renderer* renderer, const SnxUiRects* rects);
 #endif
