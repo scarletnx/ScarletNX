@@ -244,7 +244,7 @@ EOF
 
 # env: ARCH
 appimage() {
-  docker exec -i -e GITHUB_REPOSITORY -e GITHUB_REF_TYPE -e VERSION="$(git describe --always --dirty)" \
+  docker exec -i -e GITHUB_REPOSITORY -e GITHUB_REF_TYPE -e GITHUB_REF -e VERSION="$(git describe --always --dirty)" \
     -e MAKE_APPIMAGE_ONLY=1 -e ARCH -e APPIMAGETOOL=/usr/local/bin/appimagetool \
     build sh -s <<'EOF'
 set -eu
