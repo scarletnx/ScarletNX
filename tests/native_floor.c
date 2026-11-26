@@ -288,7 +288,8 @@ static void refused(const char* of) {
     check(!snx_ir_started(), "LLVM never started", of);
 }
 
-/* the same host with LLVM: what it makes runs */
+/* the same host with LLVM: the A32 blocks are LLVM's and run; the JIT and the library, whose code is the native back
+   end's alone, refuse with the floor's line */
 static void beside_llvm(const char* of) {
     char line[256], error[512];
     const char* why = "";
@@ -299,10 +300,9 @@ static void beside_llvm(const char* of) {
     check_line(error, "as it was", "an error that is none");
     error[0] = 0;
     SnxJitService* jit = start_jit(error, sizeof error);
-    check(jit != NULL, error, "the JIT, LLVM's");
-    if (jit) check(run_jit(jit) == 42, "its function runs", of);
+    check(jit == NULL, "the JIT is refused", of);
+    check_line(error, line, "the JIT beside LLVM");
     snx_jit_service_free(jit);
-    check(snx_ir_started(), "LLVM made it", of);
     error[0] = 0;
     SnxArmExec* exec = snx_arm_exec_new(error, sizeof error);
     check(exec != NULL, error, "the A32 JIT, LLVM's");
@@ -318,6 +318,7 @@ static void beside_llvm(const char* of) {
         check_line(why, line, "why LLVM makes the A32 blocks");
     }
     snx_arm_exec_free(exec);
+    check(snx_ir_started(), "LLVM made them", of);
     /* the library's code is the native back end's alone: below its floor there is no recompiler, LLVM or not */
     check(!snx_recompiler_has(SNX_RECOMPILER_FLAG_LLVM) && !snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM),
           "the library has no recompiler", of);
