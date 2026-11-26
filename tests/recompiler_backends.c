@@ -363,6 +363,8 @@ static const char* const k_vec_ops[] = {
     "FMINP_v", "FMAXNMP_v", "FMINNMP_v", "FADDP_s", "FMAXP_s", "FMINP_s", "FMAXNMP_s", "FMINNMP_s", "FMAXV_s",
     "FMINV_s", "FMAXNMV_s", "FMINNMV_s", "FRECPE_v", "FRECPE_s", "FRSQRTE_v", "FRSQRTE_s", "FRECPS_v", "FRECPS_s",
     "FRSQRTS_v", "FRSQRTS_s", "FRINTN_v", "FRINTP_v", "FRINTM_v", "FRINTZ_v", "FRINTA_v", "AESE", "AESD", "AESMC",
+    "FCVTNS_vi", "FCVTNU_vi", "FCVTPS_vi", "FCVTPU_vi", "FCVTMS_vi", "FCVTMU_vi", "FCVTAS_vi",
+    "FCVTAU_vi",
     "AESIMC", "SHA1C", "SHA1P", "SHA1M", "SHA1SU0", "SHA1H", "SHA1SU1", "SHA256H", "SHA256H2", "SHA256SU0", "SHA256SU1",
     "SUQADD_v", "USQADD_v", "SUQADD_s", "USQADD_s", "SQABS_v", "SQNEG_v", "SQABS_s", "SQNEG_s", "RBIT_v", "SRSHL_v",
     "URSHL_v", "UQSHL_v", "SQRSHL_v", "UQRSHL_v", "SSHL_s", "USHL_s", "SRSHL_s", "URSHL_s", "SQSHL_s", "UQSHL_s",

@@ -26,6 +26,8 @@
 #define NEEDS_SHA     8192u
 #define NEEDS_AES     4096u
 #define NEEDS_AVX     1024u
+/* ROUNDPS and ROUNDPD (66 0F 3A 08 and 09) and their VEX.128 forms (C4, two bytes, 08 or 09) */
+#define ROUNDPS       "66 0F 3A 08|66 0F 3A 09|C4 ?? ?? 08|C4 ?? ?? 09"
 /* MOVDQU xmm, m128: a V register's load from the state, or a constant's from the pool */
 #define MOVDQU_LOAD   "F3 0F 6F"
 /* GF2P8AFFINEQB xmm, xmm/m128, imm8 (66 0F 3A CE) and its VEX.128 form (C4, two bytes, CE); SHA1RNDS4 (0F 3A CC),
@@ -102,6 +104,10 @@ static const Row k_rows[] = {
     {"smaxp v0.4s, v1.4s, v2.4s", 0, 0, 224, -1, NULL, "4EA2A420"},
     {"add v0.16b, v1.16b, v2.16b (one operand from the state)", NEEDS_AVX, 0, 208, -1, "=1 " MOVDQU_LOAD, "4E228420"},
     {"uzp2 v0.16b, v1.16b, v2.16b (the masks from the pool)", NEEDS_AVX, 0, 272, -1, "=2 " MOVDQU_LOAD, "4E025820"},
+    {"frinta v0.4s, v1.4s", 0, 0, 576, -1, ROUNDPS, "6E218820"},
+    {"frinta s0, s1", 0, 0, 448, -1, ROUNDPS, "1E264020"},
+    {"fcvtas v0.4s, v1.4s", 0, 0, 608, -1, ROUNDPS, "4E21C820"},
+    {"fcvtas s0, s1", 0, 0, 512, -1, ROUNDPS, "5E21C820"},
 };
 
 static struct {

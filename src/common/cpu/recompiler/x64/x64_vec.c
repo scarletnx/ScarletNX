@@ -512,10 +512,13 @@ static int fcompare(SgCtx* g, unsigned sz, int n, int a, int b, int cmp, int abs
     return fcold(g, sg_b_or(g, fflushed(g, sz, n, a, b, 0), vany(g, sgx_v2(X, k_fcmp[sz], a, b, 3), sz, n)), r, a, b, 0,
                  FDESC(4, sz, n) | (SnxU32)cmp << 12);
 }
-/* FCVTZS, FCVTZU (to integers of the lanes' width, toward zero) of a scaled by 2^fbits */
-static int fto_int(SgCtx* g, unsigned sz, int n, int a, int uns, int fbits) {
+static int fround_to(SgCtx* g, unsigned sz, int a, int rm);
+/* FCVTZS, FCVTZU and the other modes' (rm as fround_to's, 3 toward zero), to integers of the lanes' width, of a scaled
+   by 2^fbits: rounded to an integer in the mode, then CVTTPx's */
+static int fto_int(SgCtx* g, unsigned sz, int n, int a, int uns, int fbits, int rm) {
     int x = a, r, bad;
     if (fbits) x = op2(g, k_fmul[sz], x, fsplat(g, sz, sz ? (SnxU64)(1023 + fbits) << 52 : (SnxU64)(127 + fbits) << 23));
+    if (rm != 3) x = fround_to(g, sz, x, rm);
     if (!sz) {
         int lo = sgx_v1(X, &sgx_v_cvttps2dq, x, 0);
         if (!uns) {
@@ -540,7 +543,7 @@ static int fto_int(SgCtx* g, unsigned sz, int n, int a, int uns, int fbits) {
                                        vgt(g, 3, vzero(g), r, 0)));
     }
     return fcold(g, sg_b_or(g, sg_b_or(g, fstate(g, 0, 1), fflushed(g, sz, n, a, 0, 0)), vany(g, bad, sz, n)), r, a, 0,
-                 0, FDESC(6, sz, n) | (SnxU32)uns << 12 | (SnxU32)fbits << 16 | 4u << 24);
+                 0, FDESC(6, sz, n) | (SnxU32)uns << 12 | (SnxU32)fbits << 16 | (SnxU32)(rm + 1) << 24);
 }
 /* SCVTF, UCVTF (from integers of the lanes' width), scaled by 2^-fbits: exact where every integer fits the
    significand, else once IXC is set in round to nearest. Unsigned words as their halves (each exact, one rounding
@@ -627,13 +630,15 @@ static int festimate(SgCtx* g, unsigned sz, int n, int a, int sqrt) {
     return fcold(g, vany(g, bad, sz, n), r, a, 0, 0,
                  FDESC(2, sz, n) | (SnxU32)(sqrt ? SNX_FP_RSQRTE : SNX_FP_RECPE) << 12);
 }
-/* FRINTN, FRINTP, FRINTM, FRINTZ (rm 0-3: nearest even, plus, minus, zero), FRINTA (4, ties away): ROUNDPx's mode,
-   exact without the inexact flag; a NaN, a value FZ flushes and FRINTA's ties go cold */
-static int fround(SgCtx* g, unsigned sz, int n, int a, int rm) {
+/* a's lanes rounded to integers in mode rm: 0-3 ROUNDPx's (nearest even, plus, minus, zero), 4 ties away
+   (sgx_round_away); exact, without the inexact flag */
+static int fround_to(SgCtx* g, unsigned sz, int a, int rm) {
     static const unsigned char imm[4] = {8, 10, 9, 11}; /* no exceptions: nearest, up, down, zero */
-    int r;
-    if (rm == 4) return fcold(g, sg_bool(g, 1), vzero(g), a, 0, 0, FDESC(8, sz, n) | (SnxU32)(rm + 1) << 12);
-    r = sgx_v1(X, sz ? &sgx_v_roundpd : &sgx_v_roundps, a, imm[rm]);
+    return rm == 4 ? sgx_round_away(X, a, sz ? 64 : 32) : sgx_v1(X, sz ? &sgx_v_roundpd : &sgx_v_roundps, a, imm[rm]);
+}
+/* FRINTN, FRINTP, FRINTM, FRINTZ, FRINTA (rm as fround_to's); a NaN and a value FZ flushes go cold */
+static int fround(SgCtx* g, unsigned sz, int n, int a, int rm) {
+    int r = fround_to(g, sz, a, rm);
     return fcold(g, sg_b_or(g, fflushed(g, sz, n, a, 0, 0), vany(g, fnan(g, sz, a), sz, n)), r, a, 0, 0,
                  FDESC(8, sz, n) | (SnxU32)(rm + 1) << 12);
 }
@@ -662,7 +667,9 @@ static int vec_fp(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     case SNX_A64_OP_FSQRT_v: case SNX_A64_OP_FCMEQ_v: case SNX_A64_OP_FCMGE_v: case SNX_A64_OP_FCMGT_v:
     case SNX_A64_OP_FACGE_v: case SNX_A64_OP_FACGT_v: case SNX_A64_OP_FCMEQ0_v: case SNX_A64_OP_FCMGE0_v:
     case SNX_A64_OP_FCMGT0_v: case SNX_A64_OP_FCMLE0_v: case SNX_A64_OP_FCMLT0_v: case SNX_A64_OP_FCVTZS_vi:
-    case SNX_A64_OP_FCVTZU_vi: case SNX_A64_OP_SCVTF_vi: case SNX_A64_OP_UCVTF_vi:
+    case SNX_A64_OP_FCVTZU_vi: case SNX_A64_OP_SCVTF_vi: case SNX_A64_OP_UCVTF_vi: case SNX_A64_OP_FCVTNS_vi:
+    case SNX_A64_OP_FCVTNU_vi: case SNX_A64_OP_FCVTPS_vi: case SNX_A64_OP_FCVTPU_vi: case SNX_A64_OP_FCVTMS_vi:
+    case SNX_A64_OP_FCVTMU_vi: case SNX_A64_OP_FCVTAS_vi: case SNX_A64_OP_FCVTAU_vi:
         if (sz && !q) return -1; /* 1D: reserved */
         break;
     case SNX_A64_OP_FCMGT_s: case SNX_A64_OP_FCMGE_s: case SNX_A64_OP_FCMEQ_s: case SNX_A64_OP_FABD_s:
@@ -719,7 +726,15 @@ static int vec_fp(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     case SNX_A64_OP_FCMLE0_v: r = fcompare(g, sz, n, vzero(g), vread(g, rn), 1, 0); break;
     case SNX_A64_OP_FCMLT0_v: r = fcompare(g, sz, n, vzero(g), vread(g, rn), 2, 0); break;
     case SNX_A64_OP_FCVTZS_vi:
-    case SNX_A64_OP_FCVTZU_vi: r = fto_int(g, sz, n, vread(g, rn), insn->op == SNX_A64_OP_FCVTZU_vi, 0); break;
+    case SNX_A64_OP_FCVTZU_vi: r = fto_int(g, sz, n, vread(g, rn), insn->op == SNX_A64_OP_FCVTZU_vi, 0, 3); break;
+    case SNX_A64_OP_FCVTNS_vi:
+    case SNX_A64_OP_FCVTNU_vi: r = fto_int(g, sz, n, vread(g, rn), insn->op == SNX_A64_OP_FCVTNU_vi, 0, 0); break;
+    case SNX_A64_OP_FCVTPS_vi:
+    case SNX_A64_OP_FCVTPU_vi: r = fto_int(g, sz, n, vread(g, rn), insn->op == SNX_A64_OP_FCVTPU_vi, 0, 1); break;
+    case SNX_A64_OP_FCVTMS_vi:
+    case SNX_A64_OP_FCVTMU_vi: r = fto_int(g, sz, n, vread(g, rn), insn->op == SNX_A64_OP_FCVTMU_vi, 0, 2); break;
+    case SNX_A64_OP_FCVTAS_vi:
+    case SNX_A64_OP_FCVTAU_vi: r = fto_int(g, sz, n, vread(g, rn), insn->op == SNX_A64_OP_FCVTAU_vi, 0, 4); break;
     case SNX_A64_OP_SCVTF_vi:
     case SNX_A64_OP_UCVTF_vi: r = ffrom_int(g, sz, n, vread(g, rn), insn->op == SNX_A64_OP_UCVTF_vi, 0); break;
     case SNX_A64_OP_FCVTZS_vf:
@@ -738,7 +753,7 @@ static int vec_fp(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
         if (shift_imm(word, &size, &left, &right) < 0 || size < 2 || (size == 3 && !q && !scalar)) return -1;
         sz = size - 2;
         n = scalar ? 1 : sz ? 2 : q ? 4 : 2;
-        r = to ? fto_int(g, sz, n, vread(g, rn), un, (int)right) : ffrom_int(g, sz, n, vread(g, rn), un, (int)right);
+        r = to ? fto_int(g, sz, n, vread(g, rn), un, (int)right, 3) : ffrom_int(g, sz, n, vread(g, rn), un, (int)right);
         break;
     }
     case SNX_A64_OP_FCVTL_v: { /* singles to doubles (FCVTL2: the high pair); halves to singles by F16C */
