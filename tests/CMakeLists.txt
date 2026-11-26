@@ -2644,6 +2644,12 @@ snx_test_target(snx-test-ui-rects c23)
 target_link_libraries(snx-test-ui-rects PRIVATE snx_vpad scarletnx-common m)
 target_include_directories(snx-test-ui-rects PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 add_test(NAME ui_rects COMMAND snx-test-ui-rects)
+# the kinds of error, their lines and actions, the record's file and the run's "error: " lines
+# (common/utilities/error_kind.c)
+add_executable(snx-test-error-kind error_kind.c)
+snx_test_target(snx-test-error-kind c23)
+target_link_libraries(snx-test-error-kind PRIVATE snx_error scarletnx-common)
+add_test(NAME error_kind COMMAND snx-test-error-kind "${CMAKE_CURRENT_BINARY_DIR}")
 
 add_executable(snx-test-hud hud.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/hud.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/ui_ring.c")

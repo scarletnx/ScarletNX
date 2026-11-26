@@ -189,6 +189,7 @@ if(TARGET snx_zstd)
 endif()
 include("${PROJECT_SOURCE_DIR}/cmake/console_settings.cmake") # which settings each console takes
 include("${PROJECT_SOURCE_DIR}/cmake/vpad.cmake") # the on-screen controls (snx_vpad)
+include("${PROJECT_SOURCE_DIR}/cmake/error.cmake") # what stops a game, its kinds and actions (snx_error)
 # What the Vulkan frontends (src/nx/gpu/vk, src/3ds/gpu/vk, src/vita/gpu) share of a device: the instance, queries,
 # the one way a renderer makes its device (gpu/vk/device.c), the drivers known to break an extension or feature (gpu/vk/extension_bans.txt, compiled in),
 # the commands each extension requires (generated from the registry, cmake/vk_extension_commands.cmake), the submission
