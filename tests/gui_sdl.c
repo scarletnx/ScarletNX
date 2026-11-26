@@ -9010,7 +9010,7 @@ int main(int argc, char** argv) {
         { /* written again, the keys it does not read stay as they were, after its own; taken out by hand for what
              follows, which reads the file whole */
             size_t written_size = 0;
-            char* written;
+            char* written = NULL;
             assert(!app_save(&app) && (written = (char*)snx_read_file(app.app_file, &written_size)));
             assert(strstr(written, "\n[app]\nlayout = boxes\ncolour = red\n[other]\nlayout = panels\n") &&
                    !strstr(written, "theme = gone") && !strstr(written, "text_size"));
