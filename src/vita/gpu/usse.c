@@ -89,7 +89,7 @@ typedef struct {
     char* error;
     size_t error_size;
     bool failed;
-    uint32_t push; /* the push constant block (vertex) */
+    uint32_t push; /* the push constant block: the vertex stage's UssePush, the fragment stage's scale */
     uint32_t samplers[USSE_TEXTURES];
     uint8_t sampler_dimensions[USSE_TEXTURES];
     uint32_t buffer;    /* the uniform buffers' storage buffer, 0 for none */
@@ -958,7 +958,15 @@ static void fragment_inputs(T* t) {
             unsigned n = ((info >> 22) & 3) + 1;
             uint32_t vec;
             if (id == 0xd000) {
-                vec = SPV(&t->e, SPV_OP_LOAD, t->t_v4f, frag_coord(t));
+                /* the pixel's position as the console's surface has it: the scene's, drawn larger by the resolution
+                   setting, divided by its scale */
+                uint32_t pointer = spv_emit_type_pointer(&t->e, SPV_STORAGE_PUSH_CONSTANT, t->t_f32);
+                uint32_t scale =
+                    SPV(&t->e, SPV_OP_LOAD, t->t_f32, SPV(&t->e, SPV_OP_ACCESS_CHAIN, pointer, t->push, cu(t, 0)));
+                uint32_t at = SPV(&t->e, SPV_OP_LOAD, t->t_v4f, frag_coord(t)), c[4];
+                for (unsigned k = 0; k < 4; ++k) c[k] = SPV(&t->e, SPV_OP_COMPOSITE_EXTRACT, t->t_f32, at, k);
+                for (unsigned k = 0; k < 2; ++k) c[k] = op2(t, SPV_OP_F_DIV, t->t_f32, c[k], scale);
+                vec = SPV(&t->e, SPV_OP_COMPOSITE_CONSTRUCT, t->t_v4f, c[0], c[1], c[2], c[3]);
             } else {
                 /* one variable a location: a texture read may have made a texture coordinate's already */
                 uint32_t* input = id <= 0x9000 ? &coords[id / 0x1000] : &others[location];
@@ -1281,6 +1289,11 @@ bool usse_translate(const unsigned char* gxp, size_t size, const UsseHints* hint
     if (!t->fragment) {
         uint32_t members[5] = {t->t_f32, t->t_f32, t->t_f32, t->t_f32, t->t_f32}, offsets[5] = {0, 4, 8, 12, 16};
         uint32_t block = spv_emit_type_struct(e, members, offsets, 5);
+        spv_emit_decorate(e, block, SPV_DECORATION_BLOCK, NULL, 0);
+        t->push = var(t, SPV_STORAGE_PUSH_CONSTANT, block);
+    } else {
+        uint32_t member = t->t_f32, offset = USSE_FRAGMENT_PUSH;
+        uint32_t block = spv_emit_type_struct(e, &member, &offset, 1);
         spv_emit_decorate(e, block, SPV_DECORATION_BLOCK, NULL, 0);
         t->push = var(t, SPV_STORAGE_PUSH_CONSTANT, block);
     }
