@@ -75,6 +75,8 @@ void snx_vpad_window_states(int action, const SnxVpadStates* states, const uint8
 void snx_vpad_window_states_due(uint64_t ms, const SnxVpadStates* states, const uint8_t* thumb);
 /* whether one of them is yet to be done: the picture a save takes is then worth making */
 bool snx_vpad_window_states_waiting(void);
+/* whether a save of them is due by ms: the picture a save takes is worth making only then */
+bool snx_vpad_window_save_due(uint64_t ms);
 /* the runtime's key action said on say and show to do nothing in this window, with why: "F3 (Screenshot) does nothing
    in a GBA game: why" */
 void snx_vpad_window_none(int action, const char* why);
