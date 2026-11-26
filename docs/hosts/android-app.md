@@ -102,6 +102,9 @@ recompiles on the phone, then the game opens.
   [GUI](../user/gui.md)) and the newest game log, none when it is older than the game played last, as `summary.txt` of
   `scarletnx-logs-<date>.zip` in the data folder's `state/share/`, the logs themselves beside it, then opens that folder
   in the Files app, to share from there.
+- **A game that stops** shows the error's panel in its window ([When a game stops](../user/usage.md#when-a-game-stops)):
+  Share Log there sends the log through Android's chooser, and Back closes it. Back in the app, the action taken is
+  done (Settings at the setting's row, GPU Drivers, the game again); one the game could not show, the app shows.
 - **How the last start ended.** The menu's log, and a game's of the game's last run, say a start that did not end
   with an exit ([GUI](../user/gui.md)), with the reason Android 11 and later keep for that process (ApplicationExitInfo): `low
   memory`, `crash native`, `user requested`, `signaled` and the others, the process, its status, its importance and

@@ -888,6 +888,10 @@ status**. When the last thread ends with ExitThread the driver prints
 
 ### Current limits and trust
 
+A stop shows the error's panel ([When a game stops](../../user/usage.md#when-a-game-stops)), unless the run is a
+recompile, headless or has a budget: a window with no Vulkan device (`gpu-start`) and a GPU that stops answering
+(`gpu-lost`) are stops.
+
 Only application content is supported: a CIA (encrypted ones decrypted with the
 user's keys as above, without seed crypto), a cartridge image's game partition and
 update partition, a standalone update and a DLC beside their game, and a bare NCCH —

@@ -51,7 +51,9 @@ to the Switch, Linux and 3DS loaders.
 `--jit-cache`, `--jit-only`, `--keep-ir`, `-q`), each value as `--option VALUE` or `--option=VALUE`. A ROM's code is
 one module compiled on one thread as one unit, so `--jobs`, `--chunk` and `--aot-threads-most` change nothing, which
 the recompile says; `--jit-cache` names another game folder's `<name>_code.map`, and `--jit-only` plays with no
-module.
+module. A stop (a ROM it cannot read, code it cannot run) shows the error's panel
+([When a game stops](../../user/usage.md#when-a-game-stops)), unless the run is a recompile, headless or has a number
+of frames.
 
 A MultiBoot ROM (`.mb`) is a program the console receives through the link cable, as a GameCube game or another
 console sends one: `scarletnx-agb Program.mb` plays it with no cartridge, from EWRAM, where the BIOS puts it (256 KiB

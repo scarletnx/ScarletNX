@@ -170,6 +170,9 @@ comparing after M groups). This is how the Thumb backend's bugs this driver ran 
 
 ## Limits
 
+- A stop shows the error's panel ([When a game stops](../../user/usage.md#when-a-game-stops)), unless the run is a
+  recompile or timed: a window with no Vulkan device and a GPU that stops answering are stops.
+
 - Color surfaces are U8U8U8U8, U8U8U8, U16 and F16F16F16F16 (half floats), linear, or swizzled or tiled (laid out on
   the GPU both ways, `swizzle.comp`), and stencil is drawn (S8D24). Textures are U8U8U8U8, U8U8U8, U8,
   F16F16F16F16, BC1 to BC3 (UBC1 to UBC3) and linear YUV420 (a movie's
