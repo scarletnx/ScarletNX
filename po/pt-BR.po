@@ -2803,6 +2803,11 @@ msgid "%zu game(s)"
 msgstr "%zu jogo(s)"
 
 #: src/gui/main.c
+#, c-format
+msgid "%u of %d keys"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Installed"
 msgstr "Instalado"
 
@@ -4757,7 +4762,12 @@ msgstr "; aes_keys.txt em %s"
 
 #: src/gui/main.c
 #, c-format
-msgid "; vita_keys.txt to %s"
+msgid "; %d Vita key files to %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "; the Vita keys were not installed: %s"
 msgstr ""
 
 #: src/gui/main.c
@@ -5083,7 +5093,7 @@ msgid "only encrypted 3DS games need it"
 msgstr "só jogos de 3DS criptografados precisam dele"
 
 #: src/gui/main.c
-msgid "only encrypted Vita dumps need it"
+msgid "only encrypted Vita dumps need its key files"
 msgstr ""
 
 #: src/gui/main.c
@@ -6001,16 +6011,8 @@ msgid "Cannot install aes_keys.txt: neither USERPROFILE nor HOME is set"
 msgstr "Não foi possível instalar o aes_keys.txt: nem USERPROFILE nem HOME estão definidos"
 
 #: src/gui/main.c
-msgid "Cannot install vita_keys.txt: neither USERPROFILE nor HOME is set"
-msgstr ""
-
-#: src/gui/main.c
 msgid "Cannot install aes_keys.txt: HOME is not set"
 msgstr "Não foi possível instalar o aes_keys.txt: HOME não está definido"
-
-#: src/gui/main.c
-msgid "Cannot install vita_keys.txt: HOME is not set"
-msgstr ""
 
 #: src/gui/main.c
 msgid "bios7.bin installed: encrypted NDS games can be decrypted now."
@@ -6019,10 +6021,6 @@ msgstr "bios7.bin instalado: os jogos de NDS criptografados já podem ser descri
 #: src/gui/main.c
 msgid "aes_keys.txt installed: encrypted 3DS games can be decrypted now."
 msgstr "aes_keys.txt instalado: os jogos de 3DS criptografados já podem ser descriptografados."
-
-#: src/gui/main.c
-msgid "vita_keys.txt installed: encrypted Vita dumps can be decrypted now."
-msgstr ""
 
 #: src/gui/main.c
 msgid "prod.keys installed: games can be extracted now."
@@ -6049,13 +6047,37 @@ msgid "%s could not be read, or has over %d bytes: the DS's ARM7 BIOS has %u."
 msgstr "Não foi possível ler %s, ou ele tem mais de %d bytes: o BIOS ARM7 do DS tem %u."
 
 #: src/gui/main.c
+msgid "This file's folder cannot be named."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Cannot install the Vita keys: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s has no Vita key files (pfs-iv-0, npdrm-key-0, app-key-1 and the others docs/platforms/vita/README.md names)."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%d Vita keys installed in %s: encrypted Vita dumps can be decrypted now."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%d Vita keys installed in %s; %s and %u others are still missing, which some dumps need."
+msgstr ""
+
+#: src/gui/main.c
 #, c-format
 msgid "%s could not be read, or has over %d bytes."
 msgstr "Não foi possível ler %s, ou ele tem mais de %d bytes."
 
 #: src/gui/main.c
 #, c-format
-msgid "%s is not prod.keys, aes_keys.txt, vita_keys.txt or the DS's ARM7 BIOS."
+msgid "%s is not prod.keys, aes_keys.txt, a Vita key file or the DS's ARM7 BIOS."
 msgstr ""
 
 #: src/gui/main.c
@@ -6065,13 +6087,13 @@ msgstr "%s não é um arquivo."
 
 #: src/gui/main.c
 #, c-format
-msgid "This file could not be read. Pick prod.keys, aes_keys.txt or vita_keys.txt again, from the device's storage (%s)."
-msgstr ""
+msgid "This file could not be read. Pick prod.keys or aes_keys.txt again, from the device's storage (%s)."
+msgstr "Não foi possível ler este arquivo. Escolha prod.keys ou aes_keys.txt de novo, no armazenamento do aparelho (%s)."
 
 #: src/gui/main.c
 #, c-format
-msgid "This file is not prod.keys, aes_keys.txt or vita_keys.txt. Pick the keys file (%s)."
-msgstr ""
+msgid "This file is not prod.keys or aes_keys.txt. Pick the keys file (%s)."
+msgstr "Este arquivo não é prod.keys nem aes_keys.txt. Escolha o arquivo de chaves (%s)."
 
 #: src/gui/main.c
 #, c-format
@@ -6080,18 +6102,23 @@ msgstr "Não foi possível ler este arquivo pelo caminho. Confira nas configura�
 
 #: src/gui/main.c
 #, c-format
-msgid "The picked file could not be read as prod.keys, aes_keys.txt or vita_keys.txt (%s)."
-msgstr ""
+msgid "The picked file could not be read as prod.keys or aes_keys.txt (%s)."
+msgstr "Não foi possível ler o arquivo escolhido como prod.keys ou aes_keys.txt (%s)."
 
 #: src/gui/main.c
 #, c-format
-msgid "The picked file is not prod.keys, aes_keys.txt or vita_keys.txt (%s)."
-msgstr ""
+msgid "The picked file is not prod.keys or aes_keys.txt (%s)."
+msgstr "O arquivo escolhido não é prod.keys nem aes_keys.txt (%s)."
 
 #: src/gui/main.c
 #, c-format
 msgid "Pick the file from this computer's storage (%s)."
 msgstr "Escolha o arquivo no armazenamento deste computador (%s)."
+
+#: src/gui/main.c
+#, c-format
+msgid "The Vita's keys are a folder of files, each named for its key: pick one of them from the device's storage, and the folder's keys are installed (%s)."
+msgstr ""
 
 #: src/gui/main.c
 #, c-format
@@ -6626,6 +6653,11 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "Not kept: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s plays from %s now: it is encrypted, and its next run decrypts it into the game's folder."
 msgstr ""
 
 #: src/gui/main.c
@@ -8145,18 +8177,6 @@ msgstr ""
 
 #~ msgid "%s is not prod.keys, aes_keys.txt or the DS's ARM7 BIOS."
 #~ msgstr "%s não é prod.keys, aes_keys.txt nem o BIOS ARM7 do DS."
-
-#~ msgid "This file could not be read. Pick prod.keys or aes_keys.txt again, from the device's storage (%s)."
-#~ msgstr "Não foi possível ler este arquivo. Escolha prod.keys ou aes_keys.txt de novo, no armazenamento do aparelho (%s)."
-
-#~ msgid "This file is not prod.keys or aes_keys.txt. Pick the keys file (%s)."
-#~ msgstr "Este arquivo não é prod.keys nem aes_keys.txt. Escolha o arquivo de chaves (%s)."
-
-#~ msgid "The picked file could not be read as prod.keys or aes_keys.txt (%s)."
-#~ msgstr "Não foi possível ler o arquivo escolhido como prod.keys ou aes_keys.txt (%s)."
-
-#~ msgid "The picked file is not prod.keys or aes_keys.txt (%s)."
-#~ msgstr "O arquivo escolhido não é prod.keys nem aes_keys.txt (%s)."
 
 #~ msgid "[%s] %s = %s is not a key of a theme"
 #~ msgstr "[%s] %s = %s não é uma chave de tema"

@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "common/utilities/setup.h"
+#include "common/utilities/vita_keys.h"
 #include "common/utilities/common.h"
 #include "common/platform/file.h"
 #include "common/utilities/config_file.h"
@@ -453,40 +454,47 @@ int snx_ctr_keys_install(const char* folder, char* why, size_t why_size) {
     free(home);
     return rc;
 }
-/* ~/.vita (%USERPROFILE%\.vita on Windows), the Vita keys' folder as ~/.3ds is the 3DS's; NULL with no home. The Vita
-   driver names the same file (vita_keys_default_path, vita/loader/keys.c) */
-static char* vita_keys_home(void) {
-#ifdef _WIN32
-    const char* home = getenv("USERPROFILE");
-    if (!home || !home[0]) home = getenv("HOME");
-#else
-    const char* home = getenv("HOME");
-#endif
-    return home && home[0] ? snx_path_join(home, ".vita") : NULL;
-}
-char* snx_vita_keys_path(void) {
-    char *home = vita_keys_home(), *path = home ? snx_path_join(home, "vita_keys.txt") : NULL;
-    free(home);
-    return path;
+char* snx_vita_keys_path(void) { return snx_vita_keys_dir(); }
+unsigned snx_vita_keys_count(const char* dir) {
+    unsigned count = 0;
+    for (int key = 0; dir && key < SNX_VITA_KEY_COUNT; ++key) {
+        char* file = snx_path_join(dir, snx_vita_key_file(key));
+        count += file && snx_is_file(file) && snx_file_size(file) == snx_vita_key_size(key);
+        free(file);
+    }
+    return count;
 }
 char* snx_vita_keys_found(void) {
-    char *path = snx_vita_keys_path(), *found = NULL;
-    if (path && snx_is_file(path))
-        found = path;
-    else
-        free(path);
-    return found;
+    char* dir = snx_vita_keys_dir();
+    if (dir && snx_vita_keys_count(dir)) return dir;
+    free(dir);
+    return NULL;
 }
-int snx_vita_keys_install(const char* folder, char* why, size_t why_size) {
-    char* home = vita_keys_home();
-    int rc;
-    if (!home) {
+int snx_vita_keys_install(const char* folder, const char* dir, char* why, size_t why_size) {
+    int count = 0;
+    if (!dir) {
         snprintf(why, why_size, "%s", "HOME is not set");
         return -1;
     }
-    rc = keys_copy(folder, home, "vita_keys.txt", why, why_size);
-    free(home);
-    return rc;
+    for (int key = 0; key < SNX_VITA_KEY_COUNT && count >= 0; ++key) {
+        char *from = snx_path_join(folder, snx_vita_key_file(key)), *to = snx_path_join(dir, snx_vita_key_file(key));
+        char reason[256];
+        size_t size = 0;
+        unsigned char* data = from && snx_is_file(from) ? snx_read_file(from, &size) : NULL;
+        if (from && snx_is_file(from) && (!data || size != snx_vita_key_size(key))) {
+            snprintf(why, why_size, "%s is %zu bytes, and the key %s is %zu", from, data ? size : 0,
+                     snx_vita_key_file(key), snx_vita_key_size(key));
+            count = -1;
+        } else if (data && snx_keys_put(to, data, size, reason, sizeof reason)) {
+            snprintf(why, why_size, "%s could not be written: %s", to, reason);
+            count = -1;
+        } else if (data)
+            ++count;
+        free(data);
+        free(to);
+        free(from);
+    }
+    return count;
 }
 
 void snx_home_short(const char* path, char* out, size_t size) {

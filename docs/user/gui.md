@@ -128,7 +128,7 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   it the same way. R on it says that it runs as it is. See [Android apps](../platforms/android-apps/README.md).
 - **Install Keys**, immediately after the five load entries, blinks red (the theme's `failure` colour, at its
   `blink_ms`) while no keys are in use, the Switch's, the 3DS's or the Vita's. Its screen has a row for each console's file,
-  **Switch** `prod.keys`, **3DS** `aes_keys.txt`, **Vita** `vita_keys.txt` and **NDS** `bios7.bin`, each *Installed* or *Not installed*: Up and
+  **Switch** `prod.keys`, **3DS** `aes_keys.txt`, **Vita** its key files and **NDS** `bios7.bin`, each *Installed* or *Not installed* (the Vita's, how many of its keys): Up and
   Down (a pad's D-pad) go over them, a click on one picks its file, and under them the row in focus says where its
   file goes (*Installs to*). It prompts you to
   pick a keys file (a click on the blinking **[ Pick or drop a keys file ]** in the middle of
@@ -138,17 +138,19 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   `%USERPROFILE%\.switch\prod.keys` on Windows; on Linux, in the user's data folder, it is put there
   instead, `~/.local/share/scarletnx/prod.keys`, which the driver reads before
   `~/.switch`, and names the keys of `~/.switch` it would use until then), and an `aes_keys.txt` is the 3DS's, installed
-  to `~/.3ds/aes_keys.txt` (`%USERPROFILE%\.3ds` on Windows), where the 3DS driver reads it, and a `vita_keys.txt` is
-  the Vita's, installed to `~/.vita/vita_keys.txt` (`%USERPROFILE%\.vita` on Windows), where `scarletnx-vita` reads it to
-  decrypt an encrypted dump ([An encrypted dump](../platforms/vita/README.md#an-encrypted-dump) names the keys it holds
-  and where each is published; ScarletNX carries none). Any other file is the
+  to `~/.3ds/aes_keys.txt` (`%USERPROFILE%\.3ds` on Windows), where the 3DS driver reads it. The Vita's keys are a
+  folder with a file for each key, as vitakeys keeps them: a folder dropped, or one of its key files picked or dropped
+  (any file on the Vita row), installs every Vita key file of that folder in `~/.vita` (`%USERPROFILE%\.vita` on
+  Windows), where `scarletnx-vita` reads them to decrypt an encrypted dump; the row says how many of the 22 are there,
+  and the screen which one is still missing ([An encrypted dump](../platforms/vita/README.md#an-encrypted-dump) names
+  them and where each is published; ScarletNX carries none). Any other file is the
   DS's ARM7 BIOS when it is named `bios7.bin`, has 16384 bytes or the NDS row has the focus: it is installed as
   `bios7.bin` in the data folder (`~/.local/share/scarletnx/bios7.bin`, `%APPDATA%\scarletnx\bios7.bin` on Windows)
   when its CRC-32 is 0x1280F0D5, the console's, and refused otherwise, the screen saying its size or its CRC-32 and the
   BIOS's. `scarletnx-nds` decrypts with it a card image whose secure area is still encrypted
   ([The DS](../platforms/nds/README.md#the-secure-area)). Only **encrypted** 3DS files need the
   3DS keys: a decrypted or homebrew 3DS game runs without an `aes_keys.txt`, and only an encrypted Vita dump needs
-  `vita_keys.txt`. It creates the
+  its key files. It creates the
   folder if needed. Existing keys trigger the bright-red warning
   **Keys already setup. This will overwrite the previous ones**. The screen then says what the try
   did, *Installed* or *Not installed* and why, and goes back to the menu by itself after 3 seconds
@@ -598,9 +600,9 @@ moved away goes, and with none left the setup goes on. With nothing else due the
   (an Extra of Settings > App > Folders), each through the folder picker, the page listing what is there now: Recompiled, Dumps
   (the data folder's `dumps/`, with its subfolders), then the player's folders.
 - **Keys**: `prod.keys` and `title.keys` where the Switch driver reads them, `aes_keys.txt` in `~/.3ds`, for the
-  encrypted 3DS games, and `vita_keys.txt` in `~/.vita`, for the encrypted Vita dumps; Use these, Choose folder (a
-  folder with `prod.keys`, `title.keys` if it has one, and `aes_keys.txt` and `vita_keys.txt` if it has them, installed
-  where Install Keys installs them) or Later.
+  encrypted 3DS games, and the Vita's key files in `~/.vita`, for the encrypted Vita dumps; Use these, Choose folder (a
+  folder with `prod.keys`, `title.keys` if it has one, and `aes_keys.txt` and the Vita's key files if it has them,
+  installed where Install Keys installs them) or Later.
 - **User**: with `users/users.ini` there, its users with their pictures and uids, then Keep or Overwrite, which asks
   first (the file is kept as `users.ini.old`); without one, or to overwrite it, the nickname typed (`Player` to start with; Backspace takes a letter out) and Enter. A nickname
   the rooms' rule refuses is said, and the page stays.

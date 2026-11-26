@@ -88,12 +88,15 @@ char* snx_ctr_keys_path(void);
 char* snx_ctr_keys_found(void);
 /* the folder's aes_keys.txt installed at that path: 0, 1 when the folder has none, else -1 with why */
 int snx_ctr_keys_install(const char* folder, char* why, size_t why_size);
-/* the Vita keys' file, ~/.vita/vita_keys.txt (%USERPROFILE%\.vita on Windows) where the Vita driver reads it to decrypt
-   an encrypted dump (vita/loader/keys.h), as the 3DS's are in ~/.3ds; NULL with no home. found: it, if it is there */
+/* the Vita keys' folder, ~/.vita (%USERPROFILE%\.vita on Windows), a file for each key (common/utilities/vita_keys.h),
+   where the Vita driver reads them to decrypt a dump; NULL with no home. found: it, when it holds a key. count: the keys
+   dir holds, each file of its key's size */
 char* snx_vita_keys_path(void);
 char* snx_vita_keys_found(void);
-/* the folder's vita_keys.txt installed at that path: 0, 1 when the folder has none, else -1 with why */
-int snx_vita_keys_install(const char* folder, char* why, size_t why_size);
+unsigned snx_vita_keys_count(const char* dir);
+/* every Vita key file of folder (by its name) installed in dir (snx_vita_keys_path's; NULL with no home): how many, 0
+   when folder has none, else -1 with why (no dir, a file of another size than its key's, one not written) */
+int snx_vita_keys_install(const char* folder, const char* dir, char* why, size_t why_size);
 
 /* path as the setup shows it: ~/ for the home folder at its start (not on Windows) */
 void snx_home_short(const char* path, char* out, size_t size);

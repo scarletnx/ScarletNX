@@ -8499,34 +8499,63 @@ int main(int argc, char** argv) {
         app.menu.view = GUI_LOAD_KEYS;
         event(&app, &ctr_event);
         assert(!snx_is_file(app.keys3_path) &&
-               strstr(app.message, "is not prod.keys, aes_keys.txt, vita_keys.txt or the DS's ARM7 BIOS"));
+               strstr(app.message, "is not prod.keys, aes_keys.txt, a Vita key file or the DS's ARM7 BIOS"));
         keys_outcome(&app, false);
         app.menu.view = GUI_LOAD_NONE;
         free(wrong);
         free(source_3ds);
         free(ctr_dir);
     }
-    /* the Vita's keys: a vita_keys.txt, installed to ~/.vita where scarletnx-vita reads it to decrypt a dump, whatever
-       row has the focus */
+    /* the Vita's keys, a file each as vitakeys keeps them: a folder dropped, or one of its key files, installs every key
+       file of it in ~/.vita where scarletnx-vita reads them, whatever row has the focus; the screen says how many and
+       the first one still missing; a key file of another size installs nothing, naming it */
     {
-        char *vita_dir = snx_path_join(temporary, ".vita"), *vita_keys = snx_path_join(vita_dir, "vita_keys.txt");
-        char* source_vita = snx_path_join(temporary, "vita_keys.txt");
+        char *vita_dir = snx_path_join(temporary, ".vita"), *vita_from = snx_path_join(temporary, "vitakeys"), *file;
+        unsigned char bytes[32] = {0};
         free(app.keysv_path);
-        app.keysv_path = vita_keys;
-        assert(!snx_write_file(source_vita, "npdrm_iv = 00", 13));
+        app.keysv_path = vita_dir;
+        assert(!snx_mkdirs(vita_from));
+        for (int key = 0; key < SNX_VITA_KEY_COUNT; ++key) {
+            if (key == SNX_VITA_KEY_APP5_IV) continue; /* one left out */
+            file = snx_path_join(vita_from, snx_vita_key_file(key));
+            assert(!snx_write_file(file, bytes, snx_vita_key_size(key)));
+            free(file);
+        }
+        file = snx_path_join(vita_from, "gpkg-key-2"); /* another tool's key, beside them: not installed */
+        assert(!snx_write_file(file, bytes, 16));
+        free(file);
         app.menu.view = GUI_LOAD_KEYS;
         app.keys_of = GUI_KEYS_3DS;
-        drop(&app, source_vita, false);
-        keys_data = snx_read_file(app.keysv_path, &keys_size);
-        assert(app.keys_of == GUI_KEYS_VITA && keys_data && keys_size == 13 && !memcmp(keys_data, "npdrm_iv = 00", 13));
-        assert(!strcmp(app.message, "vita_keys.txt installed: encrypted Vita dumps can be decrypted now."));
-        assert(keys_place(&app, GUI_KEYS_VITA) == app.keysv_path && !strcmp(keys_file(GUI_KEYS_VITA), "vita_keys.txt"));
-        free(keys_data);
+        drop(&app, vita_from, false);
+        assert(app.keys_of == GUI_KEYS_VITA && snx_vita_keys_count(vita_dir) == SNX_VITA_KEY_COUNT - 1);
+        assert(strstr(app.message, "21 Vita keys installed in "));
+        assert(strstr(app.message, "; app-iv-5 and 0 others are still missing, which some dumps need."));
+        file = snx_path_join(vita_dir, "gpkg-key-2");
+        assert(!snx_path_exists(file));
+        free(file);
         keys_outcome(&app, true);
+        file = snx_path_join(vita_from, "app-iv-5"); /* the last one, dropped alone: its folder's keys again */
+        assert(!snx_write_file(file, bytes, 16));
+        app.menu.view = GUI_LOAD_KEYS;
+        app.keys_of = GUI_KEYS_SWITCH;
+        drop(&app, file, false);
+        free(file);
+        assert(snx_vita_keys_count(vita_dir) == SNX_VITA_KEY_COUNT &&
+               strstr(app.message, "22 Vita keys installed in ") &&
+               strstr(app.message, ": encrypted Vita dumps can be decrypted now."));
+        assert(keys_place(&app, GUI_KEYS_VITA) == app.keysv_path && !strcmp(keys_file(GUI_KEYS_VITA), "key files"));
+        keys_outcome(&app, true);
+        file = snx_path_join(vita_from, "pfs-iv-0"); /* of another size: refused, named */
+        assert(!snx_write_file(file, bytes, 15));
+        app.menu.view = GUI_LOAD_KEYS;
+        drop(&app, file, false);
+        assert(strstr(app.message, "Cannot install the Vita keys: ") &&
+               strstr(app.message, "pfs-iv-0 is 15 bytes, and the key pfs-iv-0 is 16"));
+        free(file);
+        keys_outcome(&app, false);
         app.menu.view = GUI_LOAD_NONE;
         app.keys_of = GUI_KEYS_SWITCH;
-        free(source_vita);
-        free(vita_dir);
+        free(vita_from);
     }
     /* the DS's ARM7 BIOS, the NDS row of the same screen: a file of the BIOS's size, or named bios7.bin, or any picked
        on that row, is checked by its size and CRC-32 and installed as bios7.bin where scarletnx-nds reads it; another is
@@ -8561,7 +8590,7 @@ int main(int argc, char** argv) {
         app.menu.view = GUI_LOAD_KEYS;
         app.keys_of = GUI_KEYS_SWITCH;
         drop(&app, game, false); /* neither, on another row: no console's */
-        said = snx_format("%s is not prod.keys, aes_keys.txt, vita_keys.txt or the DS's ARM7 BIOS.", game);
+        said = snx_format("%s is not prod.keys, aes_keys.txt, a Vita key file or the DS's ARM7 BIOS.", game);
         assert(app.keys_of == GUI_KEYS_SWITCH && !strcmp(app.message, said));
         free(said);
         keys_outcome(&app, false);
@@ -8599,7 +8628,7 @@ int main(int argc, char** argv) {
         render(&app);
         shows(&app, "Switch  prod.keys", yellow);
         shows(&app, "3DS     aes_keys.txt   Not installed", rgb(app.theme.ink));
-        shows(&app, "Vita    vita_keys.txt  Installed", rgb(app.theme.ink));
+        shows(&app, "Vita    key files      22 of 22 keys", rgb(app.theme.ink));
         shows(&app, "NDS     bios7.bin      Installed", rgb(app.theme.ink));
         shows(&app, "Installs to: ", rgb(app.theme.ink)); /* the path's own length wraps it or not */
         assert(keys_place(&app, app.keys_of) == app.keys_path);

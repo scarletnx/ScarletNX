@@ -69,6 +69,7 @@
 #include "common/utilities/mii_db.h"
 #include "common/utilities/mii_model.h"
 #include "common/utilities/setup.h"
+#include "common/utilities/vita_keys.h"
 #ifdef SDL_PLATFORM_ANDROID
 #include "gui/android.h"
 #endif
@@ -484,7 +485,7 @@ typedef struct App {
     uint64_t loads_key;
     Uint64 loads_at;
     char *cwd, *file, *games_dir, *keys_path, *keys3_path;
-    char* keysv_path; /* the Vita's keys, ~/.vita/vita_keys.txt: scarletnx-vita decrypts an encrypted dump with them */
+    char* keysv_path; /* the Vita's keys' folder, ~/.vita, a file each: scarletnx-vita decrypts a dump with them */
     char* bios7_path; /* the DS's ARM7 BIOS in the data folder: scarletnx-nds decrypts secure areas with it */
     int keys_of;      /* the keys screen's console in focus (GUI_KEYS_*): the one a file picked is for */
     char*
@@ -1595,7 +1596,7 @@ static const char* const keys_consoles[GUI_KEYS_CONSOLES] = {"Switch", "3DS", "V
 static const char* keys_file(int console) {
     return console == GUI_KEYS_SWITCH ? "prod.keys"
            : console == GUI_KEYS_3DS  ? "aes_keys.txt"
-           : console == GUI_KEYS_VITA ? "vita_keys.txt"
+           : console == GUI_KEYS_VITA ? "key files"
                                       : NDS_BIOS7_FILE;
 }
 /* where it is installed: NULL when no folder can be named (no home) */
@@ -1605,10 +1606,12 @@ static const char* keys_place(const App* app, int console) {
            : console == GUI_KEYS_VITA ? app->keysv_path
                                       : app->bios7_path;
 }
-/* the console's file its driver reads, installed or, the Switch's, found in ~/.switch; NULL when none */
+/* the console's file its driver reads, installed or, the Switch's, found in ~/.switch, the Vita's folder of key files
+   when it holds one; NULL when none */
 static char* keys_there(const App* app, int console) {
     const char* place = keys_place(app, console);
     if (console == GUI_KEYS_SWITCH) return switch_keys_in_use(app);
+    if (console == GUI_KEYS_VITA) return place && snx_vita_keys_count(place) ? snx_strdup(place) : NULL;
     return place && snx_is_file(place) ? snx_strdup(place) : NULL;
 }
 /* the footer from row: the usage, then the working folder, which recompiled/ and themes/ are found in. The theme's bar
@@ -8445,8 +8448,15 @@ bool ui_keys_rows_get_row_info(App* app, size_t row, int width, UiRowInfo* info)
     (void)width;
     if (row >= GUI_KEYS_CONSOLES) return false;
     place = keys_place(app, (int)row);
-    snprintf(app->row_text, sizeof app->row_text, "%-6s  %-13s  %s", keys_consoles[row], keys_file((int)row),
-             place && snx_is_file(place) ? snx_tr("Installed") : snx_tr("Not installed"));
+    if (row == GUI_KEYS_VITA) { /* a file for each key: how many of them are there */
+        char count[64];
+        snprintf(count, sizeof count, snx_tr("%u of %d keys"), place ? snx_vita_keys_count(place) : 0u,
+                 SNX_VITA_KEY_COUNT);
+        snprintf(app->row_text, sizeof app->row_text, "%-6s  %-13s  %s", keys_consoles[row],
+                 snx_tr(keys_file((int)row)), count);
+    } else
+        snprintf(app->row_text, sizeof app->row_text, "%-6s  %-13s  %s", keys_consoles[row], keys_file((int)row),
+                 place && snx_is_file(place) ? snx_tr("Installed") : snx_tr("Not installed"));
     info->label = app->row_text;
     return true;
 }
@@ -9634,7 +9644,7 @@ static void places_apply(App* app) {
     free(app->keys_path);
     app->keys_path = device_keys_path(app);
     if (!app->keys3_path) app->keys3_path = snx_ctr_keys_path();  /* the 3DS driver's, ~/.3ds/aes_keys.txt */
-    if (!app->keysv_path) app->keysv_path = snx_vita_keys_path(); /* the Vita driver's, ~/.vita/vita_keys.txt */
+    if (!app->keysv_path) app->keysv_path = snx_vita_keys_path(); /* the Vita driver's folder of keys, ~/.vita */
     free(app->bios7_path);
     app->bios7_path = snx_path_join(app->data_dir, NDS_BIOS7_FILE); /* where scarletnx-nds reads it (bios7_path) */
 }
@@ -16292,14 +16302,18 @@ static void setup_keys_from(App* app, const char* folder, const char* error) {
             }
             free(ctr);
         }
-        if (!snx_vita_keys_install(folder, why, sizeof why)) { /* and its Vita keys */
-            char* vita = snx_vita_keys_path();
+        char* vita = snx_vita_keys_path(); /* and its Vita key files, where there is a home for them */
+        int vita_count = vita ? snx_vita_keys_install(folder, vita, why, sizeof why) : 0;
+        if (vita_count > 0) {
             if (vita) {
                 snx_home_short(vita, shown, sizeof shown);
-                snprintf(note + strlen(note), sizeof note - strlen(note), snx_tr("; vita_keys.txt to %s"), shown);
+                snprintf(note + strlen(note), sizeof note - strlen(note), snx_tr("; %d Vita key files to %s"),
+                         vita_count, shown);
             }
-            free(vita);
-        }
+        } else if (vita_count < 0)
+            snprintf(note + strlen(note), sizeof note - strlen(note), snx_tr("; the Vita keys were not installed: %s"),
+                     why);
+        free(vita);
         ok = 1;
     }
     setup_enter(app); /* found now: Use these; else Choose folder again */
@@ -17323,9 +17337,8 @@ static void setup_panes(App* app, GuiRect r) {
                        ctr ? shown : snx_tr("only encrypted 3DS games need it"));
             vita = snx_vita_keys_found();
             snx_home_short(vita ? vita : "", shown, sizeof shown);
-            SETUP_LINE("%s%-13s%s%s", m, "vita_keys.txt",
-                       setup_pad(pad, sizeof pad, found[!vita], setup_cols(found, 2, 2)),
-                       vita ? shown : snx_tr("only encrypted Vita dumps need it"));
+            SETUP_LINE("%s%-13s%s%s", m, ".vita/", setup_pad(pad, sizeof pad, found[!vita], setup_cols(found, 2, 2)),
+                       vita ? shown : snx_tr("only encrypted Vita dumps need its key files"));
             setup_box(app, r, snx_tr("Keys"), lines, n);
             free(path);
             free(other);
@@ -22460,7 +22473,7 @@ static void keys_result(App* app, bool ok) {
 static void keys_write(App* app, const char* data, size_t size, int console) {
     char why[256];
     const char* path = keys_place(app, console);
-    bool ctr = console == GUI_KEYS_3DS, vita = console == GUI_KEYS_VITA;
+    bool ctr = console == GUI_KEYS_3DS;
     if (!path && console == GUI_KEYS_NDS) { /* places_apply's: no data folder, snx_user_data_dir's variable unset */
 #ifdef _WIN32
         snprintf(app->message, sizeof(app->message), "%s", snx_tr("Cannot install bios7.bin: APPDATA is not set"));
@@ -22473,14 +22486,12 @@ static void keys_write(App* app, const char* data, size_t size, int console) {
     if (!path) { /* snx_keys_dir's: the variables it reads are unset */
 #ifdef _WIN32
         snprintf(app->message, sizeof(app->message), "%s",
-                 ctr    ? snx_tr("Cannot install aes_keys.txt: neither USERPROFILE nor HOME is set")
-                 : vita ? snx_tr("Cannot install vita_keys.txt: neither USERPROFILE nor HOME is set")
-                        : snx_tr("Cannot install prod.keys: neither USERPROFILE nor HOME is set"));
+                 ctr ? snx_tr("Cannot install aes_keys.txt: neither USERPROFILE nor HOME is set")
+                     : snx_tr("Cannot install prod.keys: neither USERPROFILE nor HOME is set"));
 #else
         snprintf(app->message, sizeof(app->message), "%s",
-                 ctr    ? snx_tr("Cannot install aes_keys.txt: HOME is not set")
-                 : vita ? snx_tr("Cannot install vita_keys.txt: HOME is not set")
-                        : snx_tr("Cannot install prod.keys: HOME is not set"));
+                 ctr ? snx_tr("Cannot install aes_keys.txt: HOME is not set")
+                     : snx_tr("Cannot install prod.keys: HOME is not set"));
 #endif
         keys_result(app, false); /* the keys' screen says it whole in its box, Not installed over it */
         return;
@@ -22491,7 +22502,6 @@ static void keys_write(App* app, const char* data, size_t size, int console) {
         snprintf(app->message, sizeof(app->message), "%s",
                  console == GUI_KEYS_NDS ? snx_tr("bios7.bin installed: encrypted NDS games can be decrypted now.")
                  : ctr                   ? snx_tr("aes_keys.txt installed: encrypted 3DS games can be decrypted now.")
-                 : vita                  ? snx_tr("vita_keys.txt installed: encrypted Vita dumps can be decrypted now.")
                                          : snx_tr("prod.keys installed: games can be extracted now."));
     else
         snprintf(app->message, sizeof(app->message), snx_tr("Cannot install %s: %s"), path, why);
@@ -22522,19 +22532,61 @@ static void bios7_unread(App* app, const char* file) {
              NDS_BIOS7_SIZE);
     keys_result(app, false);
 }
+/* the Vita's keys: every key file of folder (vitakeys' way, a file for each: common/utilities/vita_keys.h) installed in
+   ~/.vita, where scarletnx-vita reads them, the screen saying how many and the first key a dump may need that is not
+   there */
+static void vita_keys_write(App* app, const char* folder) {
+    char why[1024], shown[SNX_PATH_SIZE];
+    int count = folder ? snx_vita_keys_install(folder, app->keysv_path, why, sizeof why) : -1;
+    app->keys_of = GUI_KEYS_VITA;
+    if (!folder)
+        snprintf(app->message, sizeof app->message, "%s", snx_tr("This file's folder cannot be named."));
+    else if (count < 0)
+        snprintf(app->message, sizeof app->message, snx_tr("Cannot install the Vita keys: %s"), why);
+    else if (!count)
+        snprintf(app->message, sizeof app->message,
+                 snx_tr("%s has no Vita key files (pfs-iv-0, npdrm-key-0, app-key-1 and the others "
+                        "docs/platforms/vita/README.md names)."),
+                 folder);
+    else {
+        int missing = -1;
+        for (int key = 0; key < SNX_VITA_KEY_COUNT && missing < 0; ++key) {
+            char* file = app->keysv_path ? snx_path_join(app->keysv_path, snx_vita_key_file(key)) : NULL;
+            if (!file || !snx_is_file(file)) missing = key;
+            free(file);
+        }
+        snx_home_short(app->keysv_path ? app->keysv_path : "", shown, sizeof shown);
+        if (missing < 0)
+            snprintf(app->message, sizeof app->message,
+                     snx_tr("%d Vita keys installed in %s: encrypted Vita dumps can be decrypted now."), count, shown);
+        else
+            snprintf(app->message, sizeof app->message,
+                     snx_tr("%d Vita keys installed in %s; %s and %u others are still missing, which some dumps need."),
+                     count, shown, snx_vita_key_file(missing),
+                     SNX_VITA_KEY_COUNT - 1u - (app->keysv_path ? snx_vita_keys_count(app->keysv_path) : 0u));
+    }
+    keys_result(app, count > 0);
+}
 static void install_keys(App* app, const char* source) {
     const char* name = source ? snx_path_leaf(source) : NULL;
     char* data = NULL;
     size_t size = 0;
     int console = -1;
-    /* the name says which console's keys: prod.keys the Switch's, aes_keys.txt the 3DS's, vita_keys.txt the Vita's,
-       each installed where its driver reads them. Another file is the DS's ARM7 BIOS when it is named so, has the
-       BIOS's size, or is picked on the NDS row: dumps name it bios7.bin, biosnds7.rom or otherwise */
+    /* the Vita's are a folder of files: the folder dropped, or one of its key files (any file on the Vita row) */
+    if (source && (snx_is_dir(source) || snx_vita_key_named(name) >= 0 ||
+                   (app->keys_of == GUI_KEYS_VITA && snx_is_file(source)))) {
+        char* folder = snx_is_dir(source) ? snx_strdup(source) : snx_dirname(source);
+        vita_keys_write(app, folder);
+        free(folder);
+        return;
+    }
+    /* the name says which console's keys: prod.keys the Switch's, aes_keys.txt the 3DS's, each installed where its
+       driver reads them. Another file is the DS's ARM7 BIOS when it is named so, has the BIOS's size, or is picked on
+       the NDS row: dumps name it bios7.bin, biosnds7.rom or otherwise */
     if (source && snx_is_file(source))
         console =
-            !strcmp(name, "prod.keys")       ? GUI_KEYS_SWITCH
-            : !strcmp(name, "aes_keys.txt")  ? GUI_KEYS_3DS
-            : !strcmp(name, "vita_keys.txt") ? GUI_KEYS_VITA
+            !strcmp(name, "prod.keys")      ? GUI_KEYS_SWITCH
+            : !strcmp(name, "aes_keys.txt") ? GUI_KEYS_3DS
             : !strcmp(name, NDS_BIOS7_FILE) || snx_file_size(source) == NDS_BIOS7_SIZE || app->keys_of == GUI_KEYS_NDS
                 ? GUI_KEYS_NDS
                 : -1;
@@ -22551,7 +22603,7 @@ static void install_keys(App* app, const char* source) {
         else
             snprintf(app->message, sizeof(app->message),
                      source && snx_is_file(source)
-                         ? snx_tr("%s is not prod.keys, aes_keys.txt, vita_keys.txt or the DS's ARM7 BIOS.")
+                         ? snx_tr("%s is not prod.keys, aes_keys.txt, a Vita key file or the DS's ARM7 BIOS.")
                          : snx_tr("%s is not a file."),
                      source ? source : "?");
         keys_result(app, false);
@@ -22564,24 +22616,28 @@ static void install_keys(App* app, const char* source) {
 /* what a picked file that cannot be used says, for the platform's picker: Android's documents, a desktop's files */
 #ifdef SDL_PLATFORM_ANDROID
 #define SAY_KEYS_UNREAD                                                                                                \
-    SNX_TR_NOOP("This file could not be read. Pick prod.keys, aes_keys.txt or vita_keys.txt again, from the device's " \
-                "storage (%s).")
-#define SAY_KEYS_NOT SNX_TR_NOOP("This file is not prod.keys, aes_keys.txt or vita_keys.txt. Pick the keys file (%s).")
+    SNX_TR_NOOP("This file could not be read. Pick prod.keys or aes_keys.txt again, from the device's storage (%s).")
+#define SAY_KEYS_NOT SNX_TR_NOOP("This file is not prod.keys or aes_keys.txt. Pick the keys file (%s).")
 #define SAY_PICK_UNREAD                                                                                                \
     SNX_TR_NOOP("Cannot read this file by its path. Check that ScarletNX may access the device's files in Android's "  \
                 "settings, then pick it from the device's storage (%s).")
 #else
-#define SAY_KEYS_UNREAD                                                                                                \
-    SNX_TR_NOOP("The picked file could not be read as prod.keys, aes_keys.txt or vita_keys.txt (%s).")
-#define SAY_KEYS_NOT    SNX_TR_NOOP("The picked file is not prod.keys, aes_keys.txt or vita_keys.txt (%s).")
+#define SAY_KEYS_UNREAD SNX_TR_NOOP("The picked file could not be read as prod.keys or aes_keys.txt (%s).")
+#define SAY_KEYS_NOT    SNX_TR_NOOP("The picked file is not prod.keys or aes_keys.txt (%s).")
 #define SAY_PICK_UNREAD SNX_TR_NOOP("Pick the file from this computer's storage (%s).")
 #endif
 /* keys the picker gave as a document of an app's (Android's), read through it: a path to it may be one this app cannot
    read, or there is none (Downloads by number, #280). With no name to go by, it is the file of the row in focus */
 static void install_keys_document(App* app, const char* uri) {
     size_t size = 0;
-    char* data = keys_read(uri, &size);
-    if (app->keys_of == GUI_KEYS_NDS && data)
+    char* data = app->keys_of == GUI_KEYS_VITA ? NULL : keys_read(uri, &size);
+    if (app->keys_of == GUI_KEYS_VITA) { /* a document has no name nor folder, which say the key and its others */
+        snprintf(app->message, sizeof app->message,
+                 snx_tr("The Vita's keys are a folder of files, each named for its key: pick one of them from the "
+                        "device's storage, and the folder's keys are installed (%s)."),
+                 uri);
+        keys_result(app, false);
+    } else if (app->keys_of == GUI_KEYS_NDS && data)
         bios7_write(app, uri, data, size);
     else if (app->keys_of == GUI_KEYS_NDS)
         bios7_unread(app, uri);
@@ -24643,7 +24699,14 @@ static void missing_check(App* app, char* program, char* path) {
         }
     }
     if (app->menu.view == GUI_LOAD_GAMES) games_relist(app);
-    snprintf(app->message, sizeof app->message, snx_tr("%s plays from %s now."), shown ? shown : name, path);
+    char pfs[SNX_PATH_SIZE];
+    if (kind == MISSING_VITA && !snx_path_format(pfs, sizeof pfs, "%s/sce_pfs/files.db", path) && snx_is_file(pfs))
+        /* an encrypted dump: scarletnx-vita decrypts it into the game's folder before the game plays */
+        snprintf(app->message, sizeof app->message,
+                 snx_tr("%s plays from %s now: it is encrypted, and its next run decrypts it into the game's folder."),
+                 shown ? shown : name, path);
+    else
+        snprintf(app->message, sizeof app->message, snx_tr("%s plays from %s now."), shown ? shown : name, path);
 done:
     free(ini);
     free(was);
