@@ -72,6 +72,8 @@ def main():
             '--frame-pacing=2',
             '--async-pipelines=1',
             '--pipeline-threads=2',
+            '--prepare-shaders=1',
+            '--compress-prepared-shaders=0',
             '--vk-gpu-profile=0',
             '--vk-checkpoints=0',
             '--help',
