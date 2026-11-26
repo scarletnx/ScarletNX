@@ -278,9 +278,14 @@ static const ConfigFile files[] = {
             [CONFIG_BAD_VALUE] = "each probe says a value it does not take with the one in use: 3ds_uds, the NDS "
                                  "driver's ini_read, Android's network"}},
 #ifdef SNX_CONFIG_SETUP
+#ifdef _WIN32
+#define CONFIG_PICKED_LOGS "C:/picked/logs" /* a full path there starts with its drive */
+#else
+#define CONFIG_PICKED_LOGS "/picked/logs"
+#endif
     {.id = "app.ini folders",
      .name = "config/app.ini",
-     .seed = "[app]\ntheme = yorha\n[folders]\nstate = /picked/logs\n",
+     .seed = "[app]\ntheme = yorha\n[folders]\nstate = " CONFIG_PICKED_LOGS "\n",
      .bad = "[app]\ntheme = yorha\n[folders]\nstate = relative/logs\n",
      .bad_given = "state = relative/logs",
      .bad_kept = "the logs go in",
