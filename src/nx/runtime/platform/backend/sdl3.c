@@ -744,8 +744,10 @@ void video_init(const char* title, const char* addons) {
     refresh_set();
     if (!g_renderer->start()) renderer_failed("Vulkan could not start");
     LOG("renderer: Vulkan\n");
-    /* not for an unattended run: nobody is at the screen, and it would cover the desktop of whoever is */
-    if (g_settings.fullscreen && !unattended_active()) set_fullscreen(1);
+    if (unattended_fullscreen(g_settings.fullscreen, g_cli_fullscreen))
+        set_fullscreen(1);
+    else if (g_settings.fullscreen)
+        LOG("video: windowed, as a timed run starts (-f or --fullscreen=1 makes it fullscreen)\n");
 #ifdef _WIN32
     /* keep the display and the system awake while playing (it was set with the crash handler, headless runs too) */
     SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED);
@@ -1958,10 +1960,12 @@ static void window_event(const SDL_Event* e) {
             overlay_set_display_scale(SDL_GetWindowDisplayScale(g_sdl3.win));
             break;
         case SDL_EVENT_WINDOW_ENTER_FULLSCREEN:
+            LOG("video: the window is fullscreen\n");
             g_sdl3.fullscreen = 1;
             wsafe_set();
             break;
         case SDL_EVENT_WINDOW_LEAVE_FULLSCREEN:
+            LOG("video: the window is no longer fullscreen\n");
             g_sdl3.fullscreen = 0;
             wsafe_set();
             break;

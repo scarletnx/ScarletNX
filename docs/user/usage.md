@@ -172,8 +172,8 @@ The argument boundary is retained when launching the deployed game, so game argu
 cannot trigger launcher actions or overwrite runtime settings. This does not add a
 homebrew-loader guest argv block.
 `-f` (or `--fullscreen`, `--fullscreen=1`) can also precede or follow the dump and is forwarded to the game,
-which then starts fullscreen (not in timed test runs). `--fullscreen=0` starts it windowed. Without either, the
-game's `.ini` decides (`fullscreen=1` starts fullscreen).
+which then starts fullscreen (a timed test run too: the `.ini`'s `fullscreen=1` alone leaves one windowed).
+`--fullscreen=0` starts it windowed. Without either, the game's `.ini` decides (`fullscreen=1` starts fullscreen).
 `--touch=0|1|2` is forwarded to the game too: its touch screen takes nothing, the fingers, or the fingers and the
 mouse's left button (the default). The game's menu sets it too; the game's `.ini` keeps its own `touch`.
 `--controls=0|1|2` likewise hides or shows the [on-screen controls](#on-screen-controls), or shows them on a touch

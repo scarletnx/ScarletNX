@@ -122,6 +122,7 @@ void unattended_start(void) {
 }
 u64 unattended_ms(void) { return (plat_ns() - g_unattended.t0) / 1000000ull; }
 int unattended_active(void) { return g_settings.seconds > 0 || g_settings.frames >= 0; }
+int unattended_fullscreen(int setting, int cli) { return setting && (!unattended_active() || cli == 1); }
 int unattended_scripted(void) { return g_unattended.script.press != NULL; }
 
 static int frames_now(void) { return atomic_load_explicit(&g_frames, memory_order_relaxed); }
