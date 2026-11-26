@@ -40,6 +40,10 @@ if(BUILD_TESTING)
     add_executable(snx-test-gui-gpu-driver-fetch "${PROJECT_SOURCE_DIR}/tests/gui_gpu_driver_fetch.c")
     target_link_libraries(snx-test-gui-gpu-driver-fetch PRIVATE snx_gui_support scarletnx-common)
     add_test(NAME gui_gpu_driver_fetch COMMAND snx-test-gui-gpu-driver-fetch)
+    # Check for updates: the newest nightly from GitHub's answer, its changes as a notice says them, newer or not
+    add_executable(snx-test-gui-nightly-check "${PROJECT_SOURCE_DIR}/tests/gui_nightly_check.c")
+    target_link_libraries(snx-test-gui-nightly-check PRIVATE snx_gui_support scarletnx-common)
+    add_test(NAME gui_nightly_check COMMAND snx-test-gui-nightly-check)
     # Settings > GBA > Covers: a ROM's CRC-32, its name in a No-Intro list, the link of its box in libretro-thumbnails
     add_executable(snx-test-gui-covers "${PROJECT_SOURCE_DIR}/tests/gui_covers.c")
     target_link_libraries(snx-test-gui-covers PRIVATE snx_gui_support)

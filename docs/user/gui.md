@@ -192,6 +192,12 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   picked; *Gentle*, `gentle`: as many as the memory holds, up to half of them (`--aot-threads=0 --aot-threads-most=N` to the game's driver, whichever console's; a GBA ROM
   compiles on one thread either way), at a low priority, ten steps of nice under the launcher's, on Windows the
   class under the launcher's, for using the computer meanwhile; [the Compile tab](#the-compile-tab)),
+  **Check for updates** (*Ask*, `check_updates = ask` in `app.ini`, the default: the first free moment of a start asks
+  *Check for new nightlies?* before anything goes to the network: *Yes* makes it *On* and looks now, *No* asks again at
+  the next start, *Don't Ask Again* makes it *Off*; *On*, `on`: each start asks GitHub for scarletnx/nightly's latest
+  release, the daily nightly, and a newer one than this build, by its day, or its commit's day for a build that is no
+  nightly, comes as a box with what changed and *Open Page*; nothing is downloaded, and a look that fails says why in
+  the message line; *Off*, `off`: it never looks),
 **Theme Editor**, which comes
   back to App, and **Folders**, every folder on one screen, the whole of it, a box a group:
   - **App Folders**: **Data** (`recompiled/`, `dumps/`, `themes/` and `prod.keys`), **Settings**, shown only
@@ -391,7 +397,9 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   said once), `background_recompile` (`auto`, the default, `full` or `gentle`; a word it does not know named
   with the one kept, `background_recompile = slow (it keeps auto)`; `recompile_background` before it, still read
   while it has none: its `full`, the default every `app.ini` wrote, is `auto`, its `gentle` `gentle`, written again
-  as `background_recompile`, said once), `dumps_subfolders` (`on`, the default: dumps/'s
+  as `background_recompile`, said once), `check_updates` (`ask`, the default, `on` or `off`, Check for updates'; a
+  word it does not know named with the one kept, `check_updates = yes (it keeps ask)`), `dumps_subfolders` (`on`, the
+  default: dumps/'s
   subfolders' dumps listed too; `off`: its own alone; Folders' row of it switches it), `dumps_main` (`on`, the default:
   dumps/ listed and made as ScarletNX starts; `off`: neither, Remove from Library's), `recompiled_main` (`on`, the
   default; `off`: recompiled/ not listed, new games going to an Extra), `gpu_driver` (GPU Drivers' pick, a folder of

@@ -14,4 +14,8 @@ const char* snx_build_log_line(void);
 void snx_run_log_line(char out[SNX_RUN_LOG_LINE], long long now);
 /* the commit in it: a short hash, "-dirty" after it when the tree had changes, "unknown" outside a git checkout */
 const char* snx_build_commit(void);
+/* the branch in it, or a nightly's name, nightly-YYYY-MM-DD (cmake/commit.cmake); "unknown" outside a git checkout */
+const char* snx_build_branch(void);
+/* the day its commit was made, YYYY-MM-DD (UTC), "unknown" outside a git checkout */
+const char* snx_build_committed(void);
 #endif

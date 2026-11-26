@@ -652,6 +652,22 @@ int main(void) {
     gui_confirm_open(&confirm, GUI_ASK_EXIT, false);
     assert(confirm.shown && confirm.ask == GUI_ASK_EXIT && confirm.selected == GUI_CONFIRM_KEEP && !confirm.armed);
     assert(!gui_confirm_key(&confirm, GUI_DOWN) && gui_confirm_key(&confirm, GUI_SELECT) && !confirm.shown);
+    /* Check for updates' question has three: the arrows go round them, the one taken said, Back none */
+    gui_confirm_open(&confirm, GUI_ASK_UPDATES, false);
+    assert(confirm.count == 3 && confirm.taken == -1 && confirm.selected == GUI_CONFIRM_KEEP);
+    assert(!gui_confirm_key(&confirm, GUI_SELECT) && !confirm.shown && confirm.taken == 0); /* Yes */
+    gui_confirm_open(&confirm, GUI_ASK_UPDATES, false);
+    assert(!gui_confirm_key(&confirm, GUI_DOWN) && gui_confirm_key(&confirm, GUI_SELECT) &&
+           confirm.taken == 1); /* No */
+    gui_confirm_open(&confirm, GUI_ASK_UPDATES, false);
+    assert(!gui_confirm_key(&confirm, GUI_DOWN) && !gui_confirm_key(&confirm, GUI_DOWN) && confirm.selected == 2);
+    assert(!gui_confirm_key(&confirm, GUI_SELECT) && !confirm.shown && confirm.taken == 2); /* Don't Ask Again */
+    gui_confirm_open(&confirm, GUI_ASK_UPDATES, false);
+    assert(!gui_confirm_key(&confirm, GUI_UP) && confirm.selected == 2); /* round to the last */
+    assert(!gui_confirm_key(&confirm, GUI_CANCEL) && !confirm.shown && confirm.taken == -1);
+    gui_confirm_open(&confirm, GUI_ASK_EXIT, false);
+    assert(confirm.count == 2 && !gui_confirm_key(&confirm, GUI_UP) && confirm.selected == GUI_CONFIRM_ABORT);
+    assert(gui_confirm_key(&confirm, GUI_SELECT) && confirm.taken == GUI_CONFIRM_ABORT);
     /* asked twice: the first Select on the second choice arms it, the second takes it */
     gui_confirm_open(&confirm, GUI_ASK_DEEP, true);
     assert(!gui_confirm_key(&confirm, GUI_SELECT) && !confirm.shown); /* the first choice at one press */

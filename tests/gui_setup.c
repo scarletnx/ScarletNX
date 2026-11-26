@@ -1243,6 +1243,8 @@ static void test_ask_tones(App* app) {
                 {GUI_ASK_SAVES, UI_ATTR_CAUTION},
                 {GUI_ASK_PACK, 0},
                 {GUI_ASK_FORGET, UI_ATTR_CAUTION},
+                {GUI_ASK_UPDATES, 0},
+                {GUI_ASK_NIGHTLY, 0},
                 {GUI_ASK_ERROR, 0}};
     GuiConfirm was = app->confirm;
     assert(SDL_arraysize(asks) == GUI_ASK_ERROR + 1);
@@ -1257,6 +1259,12 @@ static void test_ask_tones(App* app) {
         }
         assert(ui_choices_rows_get_row_info(app, 1, 0, &act) &&
                (act.attr & (UI_ATTR_DANGER | UI_ATTR_CAUTION)) == asks[i].tone);
+    }
+    { /* Check for updates' third, Don't Ask Again, which changes nothing kept but the row */
+        UiRowInfo off = {0}, none = {0};
+        app->confirm.ask = GUI_ASK_UPDATES;
+        assert(ui_choices_rows_get_row_info(app, 2, 0, &off) && !strcmp(off.label, "Don't Ask Again") &&
+               !(off.attr & (UI_ATTR_DANGER | UI_ATTR_CAUTION)) && !ui_choices_rows_get_row_info(app, 3, 0, &none));
     }
     app->confirm = was;
     puts("PASS each question's second choice in the colour of what it does");
