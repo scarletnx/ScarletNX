@@ -2100,7 +2100,27 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "Delete the old caches of %s? %s of a code cache LLVM made, %s. This version does not use it, and the game does not make it again; the caches it uses, its saves, settings and dump stay."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Delete the old caches of %s? %s of BC7 cache files (.vkbc7) an earlier version left in %s, and %s of a code cache LLVM made, %s. This version does not use them, and the game does not make them again; the caches it uses, its saves, settings and dump stay."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "Could not delete %s: %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Could not read %s: out of memory"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Could not delete %s"
 msgstr ""
 
 #: src/gui/main.c
@@ -2542,6 +2562,10 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "Last Run"
+msgstr ""
+
+#: src/gui/main.c
+msgid "LLVM's Caches"
 msgstr ""
 
 #: src/gui/main.c
@@ -4702,6 +4726,40 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
+msgid "%s%s: %d file, %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s%s: %d files, %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Delete LLVM's Caches? %s. Only these files go: this version neither reads nor makes them"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Deleted %d file, %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Deleted %d files, %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Deleted %d of %d files, %s; %d stay: %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "they changed since they were found, so they are not LLVM's now"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "%s: the setup asks again"
 msgstr ""
 
@@ -4810,11 +4868,19 @@ msgid "Skip"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Delete LLVM's Caches"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Changed since the last version"
 msgstr ""
 
 #: src/gui/main.c
 msgid "Changed in older versions"
+msgstr ""
+
+#: src/gui/main.c
+msgid "What only LLVM made: this version neither reads nor makes it"
 msgstr ""
 
 #: src/gui/main.c
@@ -4861,6 +4927,10 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "Tip: Settings > App > Move Old Files moves them later"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Tip: Settings > App > Move Old Files deletes them later"
 msgstr ""
 
 #: src/gui/main.c
@@ -4945,6 +5015,20 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "Continue goes on from its journal: %d cases so far"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "    %d file, %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "    %d files, %s"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Delete LLVM's Caches deletes these files alone, after asking; one that changed since stays"
 msgstr ""
 
 #: src/gui/main.c

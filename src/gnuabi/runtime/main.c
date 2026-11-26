@@ -5,6 +5,7 @@
 #include "gnuabi/runtime/main.h"
 #include "common/utilities/cli.h"
 #include "common/utilities/common.h"
+#include "common/utilities/old_llvm_caches.h"
 #include "common/cpu/recompiler/snx_recompiler.h"
 #include <openssl/crypto.h>
 #include <stdio.h>
@@ -372,6 +373,14 @@ int snx_gnuabi_main(int argc, char** argv) {
             cache = user ? snx_path_join(user, "linux-jit") : NULL;
             free(user);
         }
+    }
+    if (cache) { /* what LLVM left there: said with where it is deleted, never deleted here */
+        SnxLlvmCaches old = {0};
+        char said[1400];
+        if (!snx_llvm_caches_library(cache, &old) &&
+            snx_llvm_caches_said(&old, cache, SNX_LLVM_CACHES_WHERE, said, sizeof said))
+            fprintf(stderr, "scarletnx-gnuabi: %s\n", said);
+        snx_llvm_caches_free(&old);
     }
     process = calloc(1, sizeof *process);
     char error[1024] = {0};
