@@ -650,6 +650,9 @@ static int others_own(u64 cpu, u64 len) {
         if (((const VkOwnRes*)o[i].res)->buf != g_mir.buf) return 1;
     return 0;
 }
+/* the presents a CPU touch keeps a page's results landing with the submits after it, as compute.c's reads do. A draw
+   doesn't write a page in place for as long (vk_mirror_write_in_place) */
+#define MIR_HOT_PRESENTS 1200
 /* A writable binding of a draw over pages that the mirror's programs wrote and that haven't landed: the draw writes
    them in the mirror, where they are, and the mirror lands its writes as a program's (vk_mirror_harvest). The mask
    marks all of the range as written, in words of 32 bytes: the bytes that the draw doesn't write land as the mirror
@@ -657,10 +660,17 @@ static int others_own(u64 cpu, u64 len) {
    that keeps the CPU's (land_entry, vk_mirror_publish).
    Before, the binding needed those bytes on the CPU: the GPU's work was finished and landed, on the thread that
    records the draws, about once a present in one game. An earlier result of a draw on the range, or bytes that
-   another owner holds, keep the old path (0) */
+   another owner holds, keep the old path (0).
+   So does a range that the CPU made land lately: the CPU reads it back, and it can write it again before the draws.
+   A byte that differs from the shadow lands as the CPU's (land_entry), so where the CPU wrote, the draws' stores
+   were lost, and the draws added to the bytes from before that write. The old path compares with the bytes taken at
+   the binding, and lands each byte that the draw changed. In one game, two buffers that its draws write about 230
+   times a present and its CPU reads back each frame were written in place: 64-pixel squares of wrong lighting
+   covered its world */
 int vk_mirror_write_in_place(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
     u64 cpu = 0;
-    if (g_mir.on <= 0 || !len || gmmu_run(gva, len, &cpu) != len || (cpu & (align - 1)) || others_own(cpu, len))
+    if (g_mir.on <= 0 || !len || gmmu_run(gva, len, &cpu) != len || (cpu & (align - 1)) || others_own(cpu, len) ||
+        vk_own_cpu_read(cpu, len, MIR_HOT_PRESENTS))
         return 0;
     if (!vk_mirror_slice_at(gva, cpu, len, buf, off)) return 0;
     /* the work before it, which reads or writes these bytes, before the mask's fill and the draw's stores */
@@ -836,8 +846,6 @@ u32 vk_mirror_fold(VkCommandBuffer cb, VkBuffer log, u64 log_size, const VkMirFo
     return cleared;
 }
 
-/* the presents a CPU touch keeps a page's results landing with the submits after it, as compute.c's reads do */
-#define MIR_HOT_PRESENTS 1200
 /* records into cb the harvest of ranges r (n, joined and sorted, which it copies), with entries of entry words, as a
    batch of submit's */
 static void harvest_batch(VkCommandBuffer cb, u64 submit, const MirRange* r, u32 n, u32 entry) {
