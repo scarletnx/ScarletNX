@@ -165,7 +165,7 @@ change, where it goes, its effect on `SNX_ABI`, the proof it needs, a size (S, M
 change to the contract between generated code and the runtime raises `SNX_ABI` and recompiles every game
 (`docs/dev/architecture.md`, "Module ABI"). A change that only alters the recompiler's output for the same contract needs
 no bump, and old modules keep running until they are recompiled. A new recompile setting must join the JIT cache key,
-as `volatile_memory` does (`src/common/cpu/recompiler/jit/jit_cache.c`).
+as `volatile_memory` does (`src/common/cpu/recompiler/jit/jit_cache_key.c`).
 
 ### 1. Translation ahead of time, and its cache
 

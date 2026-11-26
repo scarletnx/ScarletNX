@@ -203,7 +203,7 @@ without AVX-512, and the choices table in `tests/llvm_lowering.c` checks the ins
 the class does not show it.
 
 **Settings.** A new setting goes in `src/nx/runtime/settings.txt`, from which `tools/settingsgen` generates the code
-that reads it. A setting that changes generated code must also join the JIT cache key in `jit_cache.c`, as
+that reads it. A setting that changes generated code must also join the JIT cache key in `jit_cache_key.c`, as
 `volatile_memory` does. A mode that changes results stays a setting whose default keeps the exact behavior.
 
 **Game data.** Keys, dumps, `work/`, `recompiled/`, game logs, and shader or texture dumps stay on your machine. Commit

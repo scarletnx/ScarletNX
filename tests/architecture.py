@@ -755,16 +755,16 @@ def check_weak_declarations(repo):
 
 
 # LLVM's headers, and what of src/ builds on them: the backend's folder, and the files named here, which include one or
-# a header of the project's that does. A file leaves the list when it stops, and none joins it: what wants the code the
-# native back ends leave asks for it through recompiler/fallback.h, and the rest of the recompiler (snx_recompiler_core)
-# builds without LLVM
+# a header of the project's that does. A file leaves the list when it stops, and one joins it only with the LLVM code of
+# files that leave, never new code: what wants the code the native back ends leave asks for it through
+# recompiler/fallback.h, and the rest of the recompiler (snx_recompiler_core) builds without LLVM
 LLVM_HEADER = re.compile(r'llvm(?:-c)?/')
 LLVM_FOLDER = 'src/common/cpu/recompiler/llvm/'
 LLVM_USERS = {
     'src/common/cpu/arm/llvm.c',
     'src/common/cpu/arm/llvm.h',
     'src/common/cpu/recompiler/fallback_llvm.c',
-    'src/common/cpu/recompiler/jit/jit_cache.c',
+    'src/common/cpu/recompiler/jit/jit_cache_key.c',
     'src/common/cpu/recompiler/jit/jit_service.c',
     'src/common/cpu/recompiler/library.c',
     'src/common/cpu/recompiler/workers.h',
