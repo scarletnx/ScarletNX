@@ -78,7 +78,8 @@ int snx_config_first(const char* file, const char* what) {
     locked(1);
     for (i = 0; i < g_config_file.count && first; ++i) first = strcmp(g_config_file.said[i], key) != 0;
     if (first) {
-        g_config_file.said = (char**)snx_realloc(g_config_file.said, (g_config_file.count + 1) * sizeof *g_config_file.said);
+        g_config_file.said =
+            (char**)snx_realloc(g_config_file.said, (g_config_file.count + 1) * sizeof *g_config_file.said);
         g_config_file.said[g_config_file.count++] = key;
         key = NULL;
     }

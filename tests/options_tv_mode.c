@@ -1000,9 +1000,10 @@ static int picks_reload(void) {
 /* the game's menu's Clean Old Settings: the deprecated keys of the .ini and of the picks counted, then at the next
    tick taken out of both files, said in the log with their values, and none counted after; another version's stays */
 static int picks_clean(void) {
-    char *ini, *picks, *dir = picks_game("[Display]\nstats=0\n[Performance]\nmemory_fit=1\n",
-                                         "[Audio]\nvolume=40\n[Other]\nvk_defrag=1\nnewer_key=5\n", &ini, &picks),
-                      *text;
+    char *ini, *picks,
+        *dir = picks_game("[Display]\nstats=0\n[Performance]\nmemory_fit=1\n",
+                          "[Audio]\nvolume=40\n[Other]\nvk_defrag=1\nnewer_key=5\n", &ini, &picks),
+        *text;
     g_test.write = 1;
     ini_open(ini);
     CHECK(ini_old_settings() == 2);
