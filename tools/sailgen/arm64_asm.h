@@ -26,7 +26,7 @@ static inline void sgx_mov_rr(SgXAsm* a, int dst, int src) {
         sga_w(a->b, sge_a64_orr_log_shift((SnxU32)dst, SGA_ZR, 0, (SnxU32)src, 0, 1));
 }
 static inline void sgx_mov_mem(SgXAsm* a, int load, int w, int reg, int base, int disp) {
-    sga_ldst(a->b, load, w / 8, reg, base, -1, disp);
+    sga_ldst(a->b, load, w / 8, reg, base, -1, base == SGX_FRAME ? disp + a->frame_off : disp);
 }
 /* FMOV Dx, Xg and FMOV Xg, Dx: a spill to a vector register */
 static inline void sgx_spill_x(SgXAsm* a, int to_x, int xr, int gr) {
@@ -48,7 +48,7 @@ static inline void sgx_xmov(SgXAsm* a, int d, int s) {
 }
 /* STR and LDR of Q or D: the frame's slots */
 static inline void sgx_xmem(SgXAsm* a, int store, int bytes, int xr, int base, int disp) {
-    sga_fp_ldst(a->b, !store, bytes, xr, base, -1, disp);
+    sga_fp_ldst(a->b, !store, bytes, xr, base, -1, base == SGX_FRAME ? disp + a->frame_off : disp);
 }
 static inline int sgx_xdown(SgX* x, int v, unsigned lo) { return sgx_v1(x, &sgx_v_down, v, lo); }
 static inline int sgx_xconcat(SgX* x, int lo, int hi) {
