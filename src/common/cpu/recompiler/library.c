@@ -747,7 +747,8 @@ static void run_queue(Queue* q, unsigned jobs) {
    entries' addresses and functions beside it, and with stale checks the functions' bytes (snx_stale). Its object
    (malloc'd): 0, or -1 with the reason in error */
 static int native_descriptor(const SnxCodegen* codegen, const uint64_t* address, const size_t* function, size_t count,
-                             int stale, unsigned char** object, size_t* size, char* error, size_t error_size) {
+                             int stale, int llvm, unsigned char** object, size_t* size, char* error,
+                             size_t error_size) {
     unsigned pointer = 0;
     char name[32];
     Descriptor d = {.abi = SNX_ABI, .count = count};
@@ -756,6 +757,13 @@ static int native_descriptor(const SnxCodegen* codegen, const uint64_t* address,
         snprintf(error, error_size, "out of memory");
         return -1;
     }
+    /* beside LLVM's units, the object format of this host's, as theirs is, even where the native back end is told to
+       make Windows' code (snx_x64_set_win64, a test's) */
+#ifdef _WIN32
+    if (llvm) snx_xelf_set_coff(o, 1);
+#else
+    if (llvm) snx_xelf_set_coff(o, 0);
+#endif
     const size_t addresses = snx_xelf_put(o, SNX_ELF_RODATA, address, (count ? count : 1) * sizeof *address, 8);
     snx_xelf_symbol(o, "snx_lib_addresses", SNX_ELF_RODATA, addresses, count * sizeof *address, SNX_ELF_LOCAL);
     const size_t functions = snx_xelf_put(o, SNX_ELF_RELRO, NULL, (count ? count : 1) * sizeof(GuestFn), 8);
@@ -991,7 +999,7 @@ static int recompile_native(struct snx_recompiler* r, struct snx_recompiled* m, 
         if (failed) snprintf(error, sizeof(error), "out of memory");
         for (i = 0; !failed && i < entry_count; ++i) addresses[i] = e[i].address, functions[i] = e[i].function;
         if (!failed)
-            failed = native_descriptor(codegen, addresses, functions, entry_count, codegen->hook_direct_calls,
+            failed = native_descriptor(codegen, addresses, functions, entry_count, codegen->hook_direct_calls, !r->x64,
                                        &descriptor_object, &descriptor_size, error, sizeof(error));
         free(e);
         free(addresses);
