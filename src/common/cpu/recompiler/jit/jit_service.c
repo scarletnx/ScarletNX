@@ -1867,8 +1867,10 @@ SnxJitService* snx_jit_service_new(const SnxJitConfig* config, char* error, size
             return NULL;
         }
     if (!snx_native_available()) {
-        snprintf(error, error_size, "this host has no native back end (%s), which the JIT makes its code with",
-                 snx_native_name());
+        /* below its back end's floor the line says what the host lacks (mach/native.h) */
+        if (!snx_native_floor(error, error_size))
+            snprintf(error, error_size, "this host has no native back end (%s), which the JIT makes its code with",
+                     snx_native_name());
         return NULL;
     }
     SnxJitService* s = (SnxJitService*)calloc(1, sizeof(*s));
