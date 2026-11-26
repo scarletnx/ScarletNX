@@ -2273,6 +2273,30 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
             vwrite_narrow(g, rd, r, q);
         return 1;
     }
+    case SNX_A64_OP_PMUL_v: { /* each byte's carryless product, its low byte: a << k where b's bit k is set, XORed */
+        int ak;
+        if (size) return -1;
+        a = ak = vread(g, rn), b = vread(g, rm), r = 0;
+        for (unsigned k = 0; k < 8; ++k) {
+            /* b's bit k at each byte's top (a word shift moves each byte's own bit there), spread over the byte */
+            int t = vand(g, op2(g, &sgx_v_pcmpgtb, vzero(g), k < 7 ? opi(g, &sgx_v_psllw_i, b, 7 - k) : b), ak);
+            r = k ? vxor(g, r, t) : t;
+            if (k < 7) ak = vadd(g, 0, ak, ak);
+        }
+        vwrite(g, rd, r, q);
+        return 1;
+    }
+    case SNX_A64_OP_PMULL_p8: { /* each byte's carryless product in a halfword, of the half q chooses: the words' product
+                                   with each of b's bits alone is a << k or 0, and those XORed carry nothing */
+        if (size) return 0;
+        a = vwiden(g, 0, vread(g, rn), (int)q, 0), b = vwiden(g, 0, vread(g, rm), (int)q, 0), r = 0;
+        for (unsigned k = 0; k < 8; ++k) {
+            int t = op2(g, &sgx_v_pmullw, a, vand(g, b, vsplat(g, 1, 1u << k)));
+            r = k ? vxor(g, r, t) : t;
+        }
+        vwrite(g, rd, r, 1);
+        return 1;
+    }
     case SNX_A64_OP_PMULL_p64: /* PMULL, PMULL2 of a doubleword (q: the upper ones): the 128-bit carryless product */
         vwrite(g, rd, sgx_v2(X, &sgx_v_pclmulqdq, vread(g, rn), vread(g, rm), q ? 0x11 : 0x00), 1);
         return 1;
