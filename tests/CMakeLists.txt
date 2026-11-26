@@ -2964,7 +2964,7 @@ if(Python3_Interpreter_FOUND)
     # what it shows of the native back end's counts of whole programs (recompile_census), scripts/recompile-census.py
     add_test(NAME recompile_census_script COMMAND "${Python3_EXECUTABLE}"
              "${CMAKE_CURRENT_SOURCE_DIR}/recompile_census_test.py")
-    # the runs a closed pull request left going, which pr-closed.yml cancels (scripts/cancel-pr-runs.py)
+    # the runs a closed pull request left going, which pr-checks.yml cancels (scripts/cancel-pr-runs.py)
     add_test(NAME cancel_pr_runs COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/cancel_pr_runs_test.py")
     # the check that keeps a pull request red while its title says donotmerge (scripts/pr-title.py, pr-checks.yml)
     add_test(NAME pr_title COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/pr_title_test.py")

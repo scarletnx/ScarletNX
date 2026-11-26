@@ -11,7 +11,7 @@ open again when this reads it, reopened seconds after its close, keeps every run
 build.yml's concurrency drops the one before it. Its runs started since the close that ended cancelled are named in a
 warning, as nothing here runs them again.
 
-.github/workflows/pr-closed.yml runs it when a pull request closes: cancel-pr-runs.py NUMBER HEAD_REPO HEAD_BRANCH
+.github/workflows/pr-checks.yml runs it when a pull request closes: cancel-pr-runs.py NUMBER HEAD_REPO HEAD_BRANCH
 --closed-at TIME, TIME the event's closed_at. It needs gh, with GH_REPO set and a token allowed actions: write;
 --dry-run only lists.
 """
