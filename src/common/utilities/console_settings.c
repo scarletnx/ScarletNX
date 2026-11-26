@@ -123,7 +123,7 @@ const SnxConsoleSetting g_console_settings[] = {
     {"map_limit_mb", OTHERS(NA(SWITCH_OS))},
     {"map_limit_files", OTHERS(NA(SWITCH_OS))},
     {"thread_stack_mb", OTHERS(NA(SWITCH_OS))},
-    {"gpu_pstate", OTHERS(LATER(SOON))},
+    {"gpu_pstate"},
     {"pipeline_threads", {[V] = LATER(SOON), [G] = NA(ONE_PIPELINE), [D] = LATER(SOON)}},
     {"async_pipelines", {[V] = LATER(SOON), [G] = NA(ONE_PIPELINE), [D] = LATER(SOON)}},
     {"pipeline_libraries", {[C] = LATER(SOON), [V] = LATER(SOON), [G] = NA(NO_SHADERS), [D] = NA(NO_SHADERS)}},

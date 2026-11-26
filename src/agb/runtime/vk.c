@@ -4,6 +4,7 @@
    host-visible staging buffer, and is copied to the window's image at the whole step of the screen it holds, as SDL's
    renderer shows it (host.c) */
 #include "agb/runtime/vk.h"
+#include "common/gpu/vk/gpu_pstate.h"
 #include "agb/ppu/ppu.h"
 #include "common/gpu/vk/device_settings.h"
 #include "common/gpu/vk/notice.h"
@@ -322,6 +323,7 @@ bool agb_vk_frame(AgbVk* v, const uint32_t* framebuffer, const SnxNotice* notice
                            .swapchainCount = 1,
                            .pSwapchains = &v->swap.swapchain,
                            .pImageIndices = &index};
+    snx_gpu_pstate_present(); /* a kgsl hold lasts while frames are presented */
     r = vkQueuePresentKHR(v->queue, &pi);
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) (void)swapchain_make(v);
     return r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR;

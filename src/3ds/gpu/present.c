@@ -13,6 +13,7 @@
    from its render target while the GPU keeps that newer than memory, or from the copy that a display transfer made
    of it. */
 #include "3ds/gpu/present.h"
+#include "common/gpu/vk/gpu_pstate.h"
 #include "3ds/board/clock.h"
 #include "3ds/input/input.h"
 #include "3ds/gpu/vk/vk.h"
@@ -849,6 +850,7 @@ bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigne
                                     .swapchainCount = 1,
                                     .pSwapchains = &g_present.swap[window_index].swapchain,
                                     .pImageIndices = &index};
+        snx_gpu_pstate_present(); /* a kgsl hold lasts while frames are presented */
         VkResult shown = vkQueuePresentKHR(v->queue, &present);
         if (shown == VK_ERROR_OUT_OF_DATE_KHR || shown == VK_SUBOPTIMAL_KHR) (void)swap_create(window_index);
     }

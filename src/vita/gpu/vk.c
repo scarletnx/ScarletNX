@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "vita/gpu/vk.h"
+#include "common/gpu/vk/gpu_pstate.h"
 #include "common/gpu/vk/device_settings.h"
 #include "common/gpu/vk/gpu_driver_load.h"
 #include "common/gpu/vk/notice.h"
@@ -424,6 +425,7 @@ bool vita_vk_present(VkBuffer buffer, VkDeviceSize offset, uint32_t pitch, uint3
                            .swapchainCount = 1,
                            .pSwapchains = &v->swap.swapchain,
                            .pImageIndices = &index};
+    snx_gpu_pstate_present(); /* a kgsl hold lasts while frames are presented */
     r = vkQueuePresentKHR(v->queue, &pi);
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) swapchain_make(v);
     return r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR;

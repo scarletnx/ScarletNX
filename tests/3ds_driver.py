@@ -155,8 +155,17 @@ def main():
     run(['--board-info', '--touch=1'], 0, 'Old 3DS')
     run(['--board-info', '--touch=5'], 0, 'settings: touch=5 is not a whole number from 0 to 2: it keeps 2')
     run(['--board-info', '--controls-haptics=0'], 2, '--controls-haptics=0 does nothing in a 3DS game: its on-screen')
-    # the Graphics table's vsync, never another of its rows
-    run(['--board-info', '--vsync=0', '--anisotropy=16'], 0, 'Old 3DS')
+    # the Switch's rows a 3DS game takes (common/utilities/console_settings.c), and the stats it shows none of yet
+    run(
+        [
+            '--board-info',
+            '--vsync=0',
+            '--anisotropy=16',
+            '--gpu-pstate=auto',
+        ],
+        0,
+        'Old 3DS',
+    )
     run(['--board-info', '--shadows=0'], 2, "--shadows=0 does nothing in a 3DS game: it tunes the Switch's GPU")
     # the GPU driver package, Freedreno's variables and the validation layer, as a Switch game's window takes them
     run(['--board-info', '--gpu-driver=', '--freedreno-env=', '--vk-validation=1'], 0, 'Old 3DS')
