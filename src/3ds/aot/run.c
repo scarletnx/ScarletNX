@@ -311,7 +311,8 @@ int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel
         if (limit && limit - executed < slice) slice = limit - executed;
         state = snx_ctr_dispatch(native.module, process, slice, &n);
         executed += n;
-        if (state != SNX_CTR_RUN_BUDGET || (limit && executed >= limit)) break;
+        /* a service, or a save state loaded only in part, may end the run between two dispatches */
+        if (state != SNX_CTR_RUN_BUDGET || process->stopped[0] || (limit && executed >= limit)) break;
         if ((closed = snx_ctr_present_closed())) break;
         if (frames_limit != UINT64_MAX && snx_ctr_present_frames() >= frames_limit) {
             ran_frames = true;

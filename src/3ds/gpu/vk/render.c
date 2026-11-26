@@ -3021,6 +3021,7 @@ void snx_ctr_vk_pipeline_cache_save(bool at_exit) {
         fprintf(stderr, "3ds gpu: the pipeline cache written (%zu KB)\n", saved >> 10);
 }
 
+void snx_ctr_vk_render_forget(void) { g.hashed = false; }
 void snx_ctr_vk_render_free(void) {
     if (!snx_ctr_vk()) {
         memset(&g, 0, sizeof g);

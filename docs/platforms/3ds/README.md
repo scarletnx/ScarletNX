@@ -10,6 +10,7 @@
   * [Initial CTR IPC/services (3a)](#initial-ctr-ipcservices-3a)
   * [Current limits and trust](#current-limits-and-trust)
   * [Build and test](#build-and-test)
+* [Save states](#save-states)
 * [Experimental local wireless over rooms](#experimental-local-wireless-over-rooms)
 * [Online: sockets and Pretendo Network](#online-sockets-and-pretendo-network)
 * [Source provenance and licensing](#source-provenance-and-licensing)
@@ -1012,6 +1013,41 @@ of blocks more one at a time and a few of the driver's polled slices.
 Separate native CIA and unit tests exercise actual worker wakeups, resources
 and rollback. Service policy is not independently hardware-validated.
 No sample binaries are downloaded or distributed.
+
+## Save states
+
+A state is the whole game at one moment, in the Switch's state file (`src/nx/runtime/state_file.h`): the header and
+the 320 by 180 thumbnail the launcher and the game's menu read, then a section for each part, each with a hash of the
+names and types of what it holds (`src/3ds/runtime/state.c`):
+
+| Section | What it holds |
+| --- | --- |
+| PROCESS | the kernel objects and handles, each thread with its registers, the memory blocks and aliases, the services' state (GSP, Y2R, HID, the cameras, CSND, APT...), the pages' owners |
+| TIME | the times kept by the host's clock (each thread's wake, each timer's signal, the vblank, the audio frames, the inputs' and cameras' sampling, the hourly time entry, the tick count's origin), counted from the save: a load counts them from its own, so the tick count goes on from the save's |
+| MAPS | the address space's mappings, in runs of pages with their physical addresses and permissions |
+| MEMORY | the board's RAM: FCRAM, VRAM and the DSP's |
+| FILES | each file, folder and archive open, by its path in the filesystem tree, and the DLC contents opened |
+| LDR | the CROs loaded, and the AOT blocks a CRO's relocation made stale |
+| PICA | the GPU's command processor (its registers, shader units, tables) with the command list it ran last |
+| DSP | the DSP: its pipes, its sources with their queues and decoded buffers, its mixers with their delay lines (`audio/dsp.c`) |
+
+A save reads the RAM through write tracking, so what the GPU keeps newer than memory (a render target, a transfer's
+output) lands there first; a load writes it the same way, so the renderer drops every texture and target it kept of
+the running game. The mappings that differ are made again, the blocks the run-time compiler made are dropped. A file
+open is opened again by its path, never truncated: the SD card, the save data and what the game wrote since stay, as
+a Switch game's files do. The DSP's AAC decoder is opened again: what FFmpeg's decoder keeps of the frames before
+starts empty, so the first AAC frame decoded after a load can differ, a click of one frame at most.
+
+The game is its title ID, its segments, its name, the model and its memory. A load reads and checks every section
+before it changes anything, and refuses another game's state (both named), another `SNX_CTR_STATE_VERSION` (both
+versions), a section of another layout (both hashes), a damaged file, a file or DLC content that can't be opened
+again (named), and a load while a friends login of the running game is on its way. A failure past that point (a
+mapping the space refuses) ends the game, saying why. A save is refused, saying what, while the game has sockets or
+local wireless (nwm::UDS) open or a friends login on its way, which a state can't keep, while an ldr:ro command is half
+done, and while the GPU holds immediate-mode vertices it hasn't drawn. The threads run by the host's clock, so
+`3ds_state` (`tests/3ds_state.c`) checks that what follows a save (the DSP's frames, a file's bytes, a folder's next
+entry, the objects' answers, the registers, the memory, the tick count) follows a load the same, word for word, in the
+process and in a fresh one, and that a save right after a load holds what the first held.
 
 ## Experimental local wireless over rooms
 
