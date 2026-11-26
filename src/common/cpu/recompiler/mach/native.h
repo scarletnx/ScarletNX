@@ -35,6 +35,9 @@ typedef struct {
     /* the AOT module's stale checks (ir_codegen.c's snx_ir_stale_checks): snx_stale[the function's index] read at the
        entry and after each call's return */
     int stale;
+    /* arm64: every SIMD&FP word by the A64 Sail's own code, none run as the host's own instruction (arm64_vec.c's
+       vec): what a test holds that one to */
+    int sail_alone;
 } SnxNativeOptions;
 
 /* what r's modules are made without (SnxNativeOptions.without), as a test of it asks: words is kept as it is */

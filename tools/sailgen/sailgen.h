@@ -147,10 +147,14 @@ int sg_sdm_extract(const char* text_path, const char* out_path, const char* cons
 /* --isel: the x86-64 back end's instruction selection, from the SDM's pages and the back end's primitives (isel.c) */
 int sg_isel(const char* pages_path, const char* ops_path, const char* source, const char* out_path,
             const char* report_path);
-/* --encoders: an encoder for each clause of the scattered decode function prefix (__DecodeA64) of the inputs, or of
-   those that call a root of roots_path (enc.c) */
-int sg_encoders(const char* prefix, const char* roots_path, const char* const* inputs, int input_count,
-                const char* out_path);
+/* --encoders: an encoder for each clause of the scattered decode function prefix (__DecodeA64) of the inputs (each an
+   overlay where overlays says), or of those that call a root of roots_path, with what each one's code reaches of
+   FPCR and FPSR under the profile's features (NULL: every feature unknown) (enc.c) */
+int sg_encoders(const char* prefix, const char* roots_path, const char* const* inputs, const int* overlays,
+                int input_count, const char* profile_path, const char* out_path);
+/* the FEAT_ words of a profile's feature lines (a64.profile: "feature v8.0 FEAT_CRC32 ..."), " A B ", in capitals:
+   malloc'd (gen.c) */
+char* sg_profile_features(const char* path);
 /* the output buffer, written only when it changes */
 void sg_out(const char* fmt, ...);
 int sg_flush(const char* path);
