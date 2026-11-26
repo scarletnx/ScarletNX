@@ -550,10 +550,10 @@ skipped: Unicorn 2.1.4 as it is released does not hold the MSR of a 64-bit Power
 
 The random A32 and Thumb blocks of the profiles and memories no Unicorn test draws (the Cortex-A9's, the ARM11's, the
 ARM946E-S's and the ARM7TDMI's, hosted and checked memory, the ARM7TDMI's trace), `arm_<machine>_<mode>`, are held to
-LLVM -O0's results as test-references' `arm/` keeps them: a hash a block over its states (`arm_x64.c`'s `--frozen`,
-the file's first blocks on the machines under Unicorn). `python3 tests/arm_frozen.py record
-build/tests/snx-test-arm-x64 --out <a clone>/arm` records them with a build that has LLVM and says what each file covers; a change to how `arm_x64.c` draws its blocks
-bumps its `FROZEN_GENERATOR`, and the files are recorded again.
+LLVM -O0's results as test-references' `arm/` keeps them, recorded while the build had LLVM: a hash a block over its
+states (`arm_x64.c`'s `--frozen`, the file's first blocks on the machines under Unicorn). `python3 tests/arm_frozen.py
+verify build/tests/snx-test-arm-x64 --out <test-references>/arm` runs every file and says what each covers; a change
+to how `arm_x64.c` draws its blocks bumps its `FROZEN_GENERATOR`, and the files need another reference.
 
 The tests labelled `census` (`ctest -L census -V`) recompile five whole programs that they make: a Switch game of a word of
 each A64 instruction, the same with a Switch 2's NPDM, an NRO of it, a 32-bit Switch game of each A32 and Thumb

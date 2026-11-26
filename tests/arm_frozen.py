@@ -1,22 +1,16 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 """The frozen references of arm_x64.c (test-references' arm/): LLVM -O0's results of the blocks of the profiles and
-memories the Unicorn tests have no random blocks of, a hash a block over its states, kept for when LLVM is gone.
+memories the Unicorn tests have no random blocks of, a hash a block over its states, recorded while the build had LLVM.
 
-  python3 tests/arm_frozen.py record PROGRAM --out DIR [--jobs N] [--only NAME...]
   python3 tests/arm_frozen.py verify PROGRAM --out DIR [--jobs N] [--only NAME...]
   python3 tests/arm_frozen.py selftest PROGRAM --out DIR
 
-DIR is the arm folder of a test-references clone (scarletnx/test-references): the files recorded there go up by a
-commit of that repository and its new pin in cpmfile.json.
-
-PROGRAM is snx-test-arm-x64, built with LLVM (SNX_TEST_LLVM) to record. record writes each file with --record, the
-back end's results held to LLVM's as it goes; verify runs each with --frozen, where LLVM's results are held to the
-file's as well as the back end's (the back end's alone without LLVM); selftest runs --frozen on copies of two files
-made wrong, each refused as it must be (ctest's arm_x64_frozen_refusals). Each says what it covered: the file, its
-profile, memory and trace, seed, A32 and Thumb blocks, states, the runs, the blocks whose results differ, the file's
-bytes. A change to how arm_x64.c draws its blocks bumps its FROZEN_GENERATOR, and the files are recorded again where
-a reference of those results is built."""
+DIR is the arm folder of test-references (scarletnx/test-references), PROGRAM snx-test-arm-x64. verify runs each file
+with --frozen, the back end's results held to the file's; selftest runs --frozen on copies of two files made wrong,
+each refused as it must be (ctest's arm_x64_frozen_refusals). Each says what it covered: the file, its profile, memory
+and trace, seed, A32 and Thumb blocks, states, the runs, the blocks whose results differ, the file's bytes. A change to
+how arm_x64.c draws its blocks bumps its FROZEN_GENERATOR, and the files need another reference of those results."""
 
 import argparse
 import concurrent.futures
@@ -87,15 +81,9 @@ CONFIGS['x64_mxcsr'] = '--blocks 1500 --thumb 500 --seed 7'.split()
 for profile in ('arm946e', 'arm7tdmi'):
     CONFIGS['call_abi_' + profile] = f'--profile {profile} --blocks 600 --states 8'.split()
 
-RECORDED = re.compile(
-    r'^recorded (\S+): (\d+) A32 and (\d+) Thumb blocks, (.*), LLVM\'s results; the .* back end\'s '
-    r'are not LLVM\'s on (\d+) of them$',
-    re.M,
-)
 FROZEN = re.compile(
     r'^frozen (\S+): (\d+) of its (\d+) A32 blocks and (\d+) of its (\d+) Thumb ones checked, (\d+) '
-    r'states each; blocks whose results are not the file\'s:(?: LLVM\'s (\d+),)? the .* back end\'s '
-    r'(\d+)$',
+    r'states each; blocks whose results are not the file\'s: the .* back end\'s (\d+)$',
     re.M,
 )
 RUNS = re.compile(r'compared from \d+ states each: (\d+) runs')
@@ -106,18 +94,14 @@ def field(args, name, default):
     return args[args.index(name) + 1] if name in args else default
 
 
-def run(program, out, name, verb):
+def run(program, out, name):
     path = out / f'{name}.txt'
-    command = (
-        [str(program), '--record', str(path)] + CONFIGS[name]
-        if verb == 'record'
-        else [str(program), '--frozen', str(path)]
-    )
+    command = [str(program), '--frozen', str(path)]
     start = time.monotonic()
     done = subprocess.run(command, capture_output=True, text=True, timeout=3600, check=False, env=ENV)
     seconds = time.monotonic() - start
     text = done.stdout + done.stderr
-    found = (RECORDED if verb == 'record' else FROZEN).search(done.stdout)
+    found = FROZEN.search(done.stdout)
     runs = RUNS.search(done.stdout)
     return name, done.returncode, seconds, text, found, int(runs.group(1)) if runs else 0, path
 
@@ -198,9 +182,9 @@ def selftest(program, out):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('verb', choices=('record', 'verify', 'selftest'))
+    parser.add_argument('verb', choices=('verify', 'selftest'))
     parser.add_argument('program', type=pathlib.Path)
-    parser.add_argument('--out', type=pathlib.Path, required=True, help='the arm folder of a test-references clone')
+    parser.add_argument('--out', type=pathlib.Path, required=True, help="test-references' arm folder")
     parser.add_argument('--jobs', type=int, default=os.cpu_count() or 1)
     parser.add_argument('--only', nargs='+', default=[], metavar='NAME')
     args = parser.parse_args()
@@ -211,8 +195,6 @@ def main():
         sys.exit(f'{args.program}: no such program')
     if args.verb == 'selftest':
         return selftest(args.program, args.out)
-    if args.verb == 'record' and not (args.out / os.pardir / '.git').exists():
-        sys.exit(f"--out {args.out}: no .git beside it, so not a test-references clone (CPM's copy is every tree's)")
     names = args.only or list(CONFIGS)
     bad = 0
     total = {'blocks': 0, 'runs': 0, 'bytes': 0, 'seconds': 0.0}
@@ -222,17 +204,10 @@ def main():
         f'{"runs":>7} {"differ":>6} {"bytes":>7} {"s":>6}'
     )
     with concurrent.futures.ThreadPoolExecutor(args.jobs) as pool:
-        for name, rc, seconds, text, found, runs, path in pool.map(
-            lambda n: run(args.program, args.out, n, args.verb), names
-        ):
+        for name, rc, seconds, text, found, runs, path in pool.map(lambda n: run(args.program, args.out, n), names):
             config = CONFIGS[name]
-            if args.verb == 'record':
-                a32, thumb, differ = (
-                    (int(found.group(2)), int(found.group(3)), found.group(5)) if found else (0, 0, '?')
-                )
-            else:
-                a32, thumb = (int(found.group(2)), int(found.group(4))) if found else (0, 0)
-                differ = f'{found.group(7) or "-"}/{found.group(8)}' if found else '?'
+            a32, thumb = (int(found.group(2)), int(found.group(4))) if found else (0, 0)
+            differ = found.group(7) if found else '?'
             size = path.stat().st_size if path.exists() else 0
             print(
                 f'{name:26} {field(config, "--profile", "a57"):9} {field(config, "--memory", "flat"):8} '
@@ -250,8 +225,7 @@ def main():
                 print(f'  {name}: exit {rc}{", no summary line" if not found else ""}\n{tail}', flush=True)
     print(
         f'{len(names)} files, {total["blocks"]} blocks, {total["runs"]} runs, {total["bytes"]} bytes, '
-        f'{total["seconds"]:.0f} s of runs; {bad} failed'
-        + ('' if args.verb == 'record' else " (differ: LLVM's blocks/the back end's whose results are not the file's)")
+        f"{total['seconds']:.0f} s of runs; {bad} failed (differ: the back end's blocks whose results are not the file's)"
     )
     return 1 if bad else 0
 
