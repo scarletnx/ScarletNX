@@ -457,10 +457,13 @@ static int fcold(SgCtx* g, SgB bad, int fast, int a, int b, int d, SnxU32 desc) 
 
 /* FADD, FSUB, FMUL, FDIV by lanes; FABD the difference's magnitude */
 static int fbinary(SgCtx* g, unsigned op, unsigned sz, int n, int a, int b) {
-    const SgXVForm* f = op == SNX_FP_ADD ? k_fadd[sz] : op == SNX_FP_MUL ? k_fmul[sz] : op == SNX_FP_DIV ? k_fdiv[sz] : k_fsub[sz];
+    const SgXVForm* f = op == SNX_FP_ADD                       ? k_fadd[sz]
+                        : op == SNX_FP_MUL || op == SNX_FP_MULX ? k_fmul[sz]
+                        : op == SNX_FP_DIV                      ? k_fdiv[sz]
+                                                                : k_fsub[sz];
     int r = op2(g, f, a, b), bad = fnot_roomy(g, sz, r), zok;
     if (op == SNX_FP_ADD || op == SNX_FP_SUB || op == SNX_FP_ABD) zok = fzero(g, sz, r);
-    else if (op == SNX_FP_MUL)
+    else if (op == SNX_FP_MUL || op == SNX_FP_MULX) /* FMULX's infinity by a zero: the host's NaN, cold */
         zok = vand(g, fzero(g, sz, r), vor(g, fzero(g, sz, a), fzero(g, sz, b)));
     else
         zok = vand(g, fzero(g, sz, r), fzero(g, sz, a));
@@ -669,7 +672,8 @@ static int vec_fp(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     case SNX_A64_OP_FCMGT0_v: case SNX_A64_OP_FCMLE0_v: case SNX_A64_OP_FCMLT0_v: case SNX_A64_OP_FCVTZS_vi:
     case SNX_A64_OP_FCVTZU_vi: case SNX_A64_OP_SCVTF_vi: case SNX_A64_OP_UCVTF_vi: case SNX_A64_OP_FCVTNS_vi:
     case SNX_A64_OP_FCVTNU_vi: case SNX_A64_OP_FCVTPS_vi: case SNX_A64_OP_FCVTPU_vi: case SNX_A64_OP_FCVTMS_vi:
-    case SNX_A64_OP_FCVTMU_vi: case SNX_A64_OP_FCVTAS_vi: case SNX_A64_OP_FCVTAU_vi:
+    case SNX_A64_OP_FCVTMU_vi: case SNX_A64_OP_FCVTAS_vi: case SNX_A64_OP_FCVTAU_vi: case SNX_A64_OP_FMULX_v:
+    case SNX_A64_OP_FMULX_vi:
         if (sz && !q) return -1; /* 1D: reserved */
         break;
     case SNX_A64_OP_FCMGT_s: case SNX_A64_OP_FCMGE_s: case SNX_A64_OP_FCMEQ_s: case SNX_A64_OP_FABD_s:
@@ -685,6 +689,7 @@ static int vec_fp(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     case SNX_A64_OP_FADD_v: r = fbinary(g, SNX_FP_ADD, sz, n, vread(g, rn), vread(g, rm)); break;
     case SNX_A64_OP_FSUB_v: r = fbinary(g, SNX_FP_SUB, sz, n, vread(g, rn), vread(g, rm)); break;
     case SNX_A64_OP_FMUL_v: r = fbinary(g, SNX_FP_MUL, sz, n, vread(g, rn), vread(g, rm)); break;
+    case SNX_A64_OP_FMULX_v: r = fbinary(g, SNX_FP_MULX, sz, n, vread(g, rn), vread(g, rm)); break;
     case SNX_A64_OP_FDIV_v: r = fbinary(g, SNX_FP_DIV, sz, n, vread(g, rn), vread(g, rm)); break;
     case SNX_A64_OP_FABD_v:
     case SNX_A64_OP_FABD_s: r = fbinary(g, SNX_FP_ABD, sz, n, vread(g, rn), vread(g, rm)); break;
@@ -697,6 +702,7 @@ static int vec_fp(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
         r = ffma(g, sz, n, vread(g, rd), vread(g, rn), vread(g, rm), insn->op == SNX_A64_OP_FMLS_v);
         break;
     case SNX_A64_OP_FMUL_vi:
+    case SNX_A64_OP_FMULX_vi:
     case SNX_A64_OP_FMLA_vi:
     case SNX_A64_OP_FMLS_vi: {
         unsigned h = word >> 11 & 1, l = word >> 21 & 1;
@@ -704,7 +710,8 @@ static int vec_fp(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
         if (sz && l) return -1;
         e = sz ? (int)h : (int)(h << 1 | l);
         m = sgx_v1(X, &sgx_v_pshufd, vread(g, rm), sz ? (e ? 0xEE : 0x44) : (unsigned)e * 0x55);
-        if (insn->op == SNX_A64_OP_FMUL_vi) r = fbinary(g, SNX_FP_MUL, sz, n, vread(g, rn), m);
+        if (insn->op == SNX_A64_OP_FMUL_vi || insn->op == SNX_A64_OP_FMULX_vi)
+            r = fbinary(g, insn->op == SNX_A64_OP_FMULX_vi ? SNX_FP_MULX : SNX_FP_MUL, sz, n, vread(g, rn), m);
         else
             r = ffma(g, sz, n, vread(g, rd), vread(g, rn), m, insn->op == SNX_A64_OP_FMLS_vi);
         break;
