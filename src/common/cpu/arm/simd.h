@@ -175,6 +175,9 @@ uint64_t snx_arm_fp(SnxArmCPU* cpu, uint64_t x, uint64_t y, uint64_t add, uint32
 /* The same, op in desc's bits 7:0, width 15:8 and param 63:32: the x86-64 back end's call (its cold calls take four
    arguments after the state) */
 uint64_t snx_arm_fp_x64(SnxArmCPU* cpu, uint64_t x, uint64_t y, uint64_t add, uint64_t desc);
+/* the host FP environment the blocks' VFP fast paths assume, put back where it drifted: each LLVM block calls it on
+   entry, as an A64 function does snx_fp_env (aarch64/helpers/fp_env.h) */
+void snx_arm_fp_env(void);
 /* Portable ARM AES/SHA primitives. Operands are byte offsets into D[]. */
 void snx_arm_crypto(SnxArmCPU* cpu, uint32_t d, uint32_t n, uint32_t m, uint32_t op);
 #endif

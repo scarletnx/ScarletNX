@@ -4013,7 +4013,12 @@ if(SNX_X64)
     add_test(NAME arm_x64 COMMAND snx-test-arm-x64)
     add_test(NAME arm_x64_spill COMMAND snx-test-arm-x64 --pool ${snx_x64_pool} --blocks 2000 --seed 2)
     add_test(NAME arm_x64_plain COMMAND snx-test-arm-x64 --features 0 --blocks 2000 --seed 3)
-    set_tests_properties(arm_x64 arm_x64_spill arm_x64_plain PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
+    # each side's blocks run where other code left the host's MXCSR rounding up and flushing to zero: both put back the
+    # default on entry
+    add_test(NAME arm_x64_mxcsr COMMAND snx-test-arm-x64 --csr-x64 DF80 --blocks 1500 --thumb 500 --seed 7)
+    add_test(NAME arm_x64_mxcsr_llvm COMMAND snx-test-arm-x64 --csr-llvm DF80 --blocks 1500 --thumb 500 --seed 8)
+    set_tests_properties(arm_x64 arm_x64_spill arm_x64_plain arm_x64_mxcsr arm_x64_mxcsr_llvm PROPERTIES TIMEOUT 600
+                         SKIP_RETURN_CODE 77)
     snx_arm_native_modes(x64)
     # and as a Windows host's, run by this host's processor (support/host_win64.c)
     if(snx_host_win64)

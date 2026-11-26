@@ -35,10 +35,31 @@ static void vset(ArmIR* a, unsigned offset, unsigned width, LLVMValueRef x) {
     }
     put(a, offsetof(SnxArmCPU, d) + (offset & ~7u), result);
 }
+/* the host FP environment the fast paths and snx_arm_fp's host arithmetic (fp_helpers.c's host_fp) assume, put back at
+   the block's entry where what ran before on the thread changed it (simd.h's snx_arm_fp_env, as an A64 function's entry
+   does): once, in the blocks that have a VFP or Advanced SIMD floating-point operation, every one of which calls
+   fp_helper */
+static void fp_env(ArmIR* a) {
+    if (a->fp_env) return;
+    a->fp_env = 1;
+    LLVMTypeRef type = LLVMFunctionType(LLVMVoidTypeInContext(a->ctx), NULL, 0, 0);
+    LLVMValueRef fn = LLVMGetNamedFunction(a->mod, "snx_arm_fp_env");
+    if (!fn) fn = LLVMAddFunction(a->mod, "snx_arm_fp_env", type);
+    LLVMBasicBlockRef entry = LLVMGetEntryBasicBlock(a->fn);
+    LLVMValueRef first = LLVMGetFirstInstruction(entry);
+    LLVMBuilderRef b = LLVMCreateBuilderInContext(a->ctx);
+    if (first)
+        LLVMPositionBuilderBefore(b, first);
+    else
+        LLVMPositionBuilderAtEnd(b, entry);
+    LLVMBuildCall2(b, type, fn, NULL, 0, "");
+    LLVMDisposeBuilder(b);
+}
 static LLVMValueRef fp_helper(ArmIR* a, SnxArmVectorOp op, unsigned width, unsigned param, LLVMValueRef x,
                               LLVMValueRef y, LLVMValueRef z) {
     LLVMValueRef fn = LLVMGetNamedFunction(a->mod, "snx_arm_fp");
     LLVMTypeRef params[] = {a->ptr, a->i64, a->i64, a->i64, a->i32, a->i32, a->i32};
+    fp_env(a);
     LLVMTypeRef type = LLVMFunctionType(a->i64, params, 7, 0);
     LLVMValueRef args[] = {a->cpu,     vcast(a, x, 64, 0), vcast(a, y, 64, 0), vcast(a, z, 64, 0),
                            c32(a, op), c32(a, width),      c32(a, param)};
