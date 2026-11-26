@@ -5,6 +5,7 @@
    helpers into each module as IR (ir_helpers.c); these are C, in the runtime library every module links (rtlib.c
    includes this), and in the x86-64 back end's test directly. Each takes the state first, as its code has it in RBX */
 #include "common/cpu/aarch64/cpu.h"
+#include "common/utilities/bits.h"
 #include <stdatomic.h>
 #include <string.h>
 
@@ -209,7 +210,7 @@ void snx_x64_crypto(CPU* c, void* out, const void* x, const void* y, const void*
 /* an SSE instruction where the host has none of it (tools/sailgen/x64.h's sgx_vf_helped_forms, whose places are the
    numbers below): out = the instruction of x (its first operand) and y (its second), desc its number and its
    immediate (bits 8 to 15) */
-enum { SSE_PCLMULQDQ, SSE_PCMPGTQ };
+enum { SSE_PCLMULQDQ, SSE_PCMPGTQ, SSE_PSHUFB, SSE_PALIGNR, SSE_PABSB, SSE_PABSW, SSE_PABSD, SSE_PMULHRSW };
 void snx_x64_sse(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc) {
     const unsigned imm = desc >> 8 & 0xFF;
     u64 a[2], b[2], r[2] = {0, 0};
@@ -228,6 +229,40 @@ void snx_x64_sse(CPU* c, void* out, const void* x, const void* y, const void* z,
         }
         case SSE_PCMPGTQ: /* each doubleword of x above y's, signed (both biased by the sign bit): all ones */
             for (unsigned k = 0; k < 2; ++k) r[k] = (a[k] ^ 1ull << 63) > (b[k] ^ 1ull << 63) ? ~0ull : 0;
+            break;
+        case SSE_PSHUFB: { /* each byte x's that y's byte names (its low 4 bits), 0 where its top bit is set */
+            unsigned char p[16], q[16], o[16];
+            memcpy(p, a, 16), memcpy(q, b, 16);
+            for (unsigned k = 0; k < 16; ++k) o[k] = q[k] & 0x80 ? 0 : p[q[k] & 15];
+            memcpy(r, o, 16);
+            break;
+        }
+        case SSE_PALIGNR: { /* x above y, 32 bytes, imm bytes right, the low 16 */
+            unsigned char t[32], o[16];
+            memcpy(t, b, 16), memcpy(t + 16, a, 16);
+            for (unsigned k = 0; k < 16; ++k) o[k] = k + imm < 32 ? t[k + imm] : 0;
+            memcpy(r, o, 16);
+            break;
+        }
+        case SSE_PABSB: /* each element of y made positive (the most negative stays itself, as unsigned) */
+        case SSE_PABSW:
+        case SSE_PABSD: {
+            const unsigned bits = 8u << ((desc & 0xFF) - SSE_PABSB), lanes = 128 / bits;
+            const u64 mask = bits == 64 ? ~0ull : (1ull << bits) - 1, sign = 1ull << (bits - 1);
+            for (unsigned k = 0; k < lanes; ++k) {
+                const unsigned at = k * bits % 64;
+                const u64 e = b[k * bits / 64] >> at & mask;
+                r[k * bits / 64] |= (e & sign ? (0 - e) & mask : e) << at;
+            }
+            break;
+        }
+        case SSE_PMULHRSW: /* each halfword pair's signed product, 2^-15 of it rounded: ((x * y >> 14) + 1) >> 1 */
+            for (unsigned k = 0; k < 8; ++k) {
+                const u32 x16 = (u32)(a[k / 4] >> (k % 4 * 16)) & 0xFFFF,
+                          y16 = (u32)(b[k / 4] >> (k % 4 * 16)) & 0xFFFF;
+                const u32 p = (u32)(((x16 ^ 0x8000u) - 0x8000u) * ((y16 ^ 0x8000u) - 0x8000u)); /* two's complement */
+                r[k / 4] |= (u64)((snx_asr32(p, 14) + 1) >> 1 & 0xFFFF) << (k % 4 * 16);
+            }
             break;
         default: break;
     }
