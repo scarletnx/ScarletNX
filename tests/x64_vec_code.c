@@ -25,6 +25,9 @@
 #define NEEDS_GFNI    65536u
 #define NEEDS_SHA     8192u
 #define NEEDS_AES     4096u
+#define NEEDS_AVX     1024u
+/* MOVDQU xmm, m128: a V register's load from the state, or a constant's from the pool */
+#define MOVDQU_LOAD   "F3 0F 6F"
 /* GF2P8AFFINEQB xmm, xmm/m128, imm8 (66 0F 3A CE) and its VEX.128 form (C4, two bytes, CE); SHA1RNDS4 (0F 3A CC),
    AESDECLAST (66 0F 38 DF) and AESDEC (66 0F 38 DE) below */
 #define GF2P8AFFINEQB "66 0F 3A CE|C4 ?? ?? CE"
@@ -34,8 +37,8 @@ typedef struct {
     unsigned needs, without; /* the host's features; those it goes without */
     unsigned bytes;          /* the most the function takes */
     int fpsr;                /* the writes of FPSR, -1 not counted */
-    const char* has;         /* bytes the code has (hex, ?? any), one form's encodings or another's (|), or after a !
-                                bytes it has not; NULL for none */
+    const char* has;         /* bytes the code has (hex, ?? any), one form's encodings or another's (|); after a !
+                                bytes it has not, after =N bytes it has N times; NULL for none */
     const char* words;       /* the function's words before its RET, in hex */
 } Row;
 
@@ -97,6 +100,8 @@ static const Row k_rows[] = {
     {"addv s0, v1.4s", 0, 0, 224, -1, NULL, "4EB1B820"},
     {"mul v0.4s, v1.4s, v2.s[1]", 0, 0, 208, -1, NULL, "4FA28020"},
     {"smaxp v0.4s, v1.4s, v2.4s", 0, 0, 224, -1, NULL, "4EA2A420"},
+    {"add v0.16b, v1.16b, v2.16b (one operand from the state)", NEEDS_AVX, 0, 208, -1, "=1 " MOVDQU_LOAD, "4E228420"},
+    {"uzp2 v0.16b, v1.16b, v2.16b (the masks from the pool)", NEEDS_AVX, 0, 272, -1, "=2 " MOVDQU_LOAD, "4E025820"},
 };
 
 static struct {
@@ -128,8 +133,9 @@ static int fpsr_writes(const unsigned char* t, size_t n) {
         if (t[i] == 0x89 && (t[i + 1] & 0xC7) == 0x83 && snx_ld_le32(t + i + 2) == offsetof(CPU, fpsr)) ++writes;
     return writes;
 }
-/* where t has one of has's byte strings */
+/* how many times t has one of has's byte strings */
 static int has_bytes(const unsigned char* t, size_t n, const char* has) {
+    int times = 0;
     while (*has) {
         int want[16], k = 0;
         for (; *has && *has != '|' && k < 16; ++k) {
@@ -141,11 +147,11 @@ static int has_bytes(const unsigned char* t, size_t n, const char* has) {
         for (size_t i = 0; i + (size_t)k <= n; ++i) {
             int j = 0;
             while (j < k && (want[j] < 0 || t[i + (size_t)j] == want[j])) ++j;
-            if (j == k) return 1;
+            times += j == k;
         }
         if (*has == '|') ++has;
     }
-    return 0;
+    return times;
 }
 
 static void check(const Row* row, int print) {
@@ -182,7 +188,16 @@ static void check(const Row* row, int print) {
         if (length > row->bytes) fail("bytes of code", length, row->bytes);
         if (row->fpsr >= 0 && fpsr_writes(text, length) != row->fpsr)
             fail("writes of FPSR", (size_t)fpsr_writes(text, length), (size_t)row->fpsr);
-        if (row->has && has_bytes(text, length, row->has + (row->has[0] == '!')) == (row->has[0] == '!')) {
+        if (row->has && row->has[0] == '=') {
+            char* rest;
+            int want = (int)strtol(row->has + 1, &rest, 10);
+            while (*rest == ' ') ++rest;
+            int got = has_bytes(text, length, rest);
+            if (got != want) {
+                fprintf(stderr, "FAIL: %s: %d times %s in its code, not %d\n", row->what, got, rest, want);
+                ++g_x64_vec_code.failures;
+            }
+        } else if (row->has && !has_bytes(text, length, row->has + (row->has[0] == '!')) != (row->has[0] == '!')) {
             fprintf(stderr, "FAIL: %s: %s %s in its code\n", row->what, row->has[0] == '!' ? "has" : "no", row->has);
             ++g_x64_vec_code.failures;
         }
