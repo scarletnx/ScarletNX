@@ -8,7 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define MESSAGE_ROWS 160 /* the most rows a message wraps into that Details scrolls over: 2047 bytes of 13 columns */
+#define MESSAGE_ROWS 160 /* the most rows of a paragraph drawn at once: a 4K picture's at the font's own size */
 #define LINE_ROWS    2   /* the error's line and what to do, each: the panel's narrowest holds either in one */
 #define SAID_ROWS    3
 #define FINGER_ROW   48 /* a finger's row in pixels at the display's scale (src/gui's GUI_FINGER_ROW) */
@@ -59,19 +59,19 @@ typedef struct {
 } Pen;
 static int para(const Pen* pen, float y, const char* text, int first, int max, u32 rgba, int* total) {
     int at[MESSAGE_ROWS], len[MESSAGE_ROWS];
-    int n = fatal_wrap_spans(text, pen->cols, at, len, MESSAGE_ROWS), shown = n - first < max ? n - first : max;
+    int n = fatal_wrap_spans(text, pen->cols, first, at, len, max < MESSAGE_ROWS ? max : MESSAGE_ROWS);
+    int shown = n - first < max ? n - first : max;
+    if (shown > MESSAGE_ROWS) shown = MESSAGE_ROWS;
     if (total) *total = n;
     for (int i = 0; i < shown && pen->l; ++i) {
-        int k = first + i;
-        if (k >= MESSAGE_ROWS) break;
-        if (i == shown - 1 && k < n - 1 && !total) { /* cut: the rest goes */
+        float row_y = y + (float)(i * 16 * pen->s);
+        if (i == shown - 1 && first + i < n - 1 && !total) { /* cut: the rest goes */
             char row[FATAL_ROW];
-            int keep = len[k] < (int)sizeof row - 4 ? len[k] : (int)sizeof row - 4;
-            snprintf(row, sizeof row, "%.*s...", keep, text + at[k]);
-            text_at(pen->l, pen->x, y + (float)(i * 16 * pen->s), pen->s, row, strlen(row), pen->cols + 3, rgba);
+            int keep = len[i] < (int)sizeof row - 4 ? len[i] : (int)sizeof row - 4;
+            snprintf(row, sizeof row, "%.*s...", keep, text + at[i]);
+            text_at(pen->l, pen->x, row_y, pen->s, row, strlen(row), pen->cols + 3, rgba);
         } else
-            text_at(pen->l, pen->x, y + (float)(i * 16 * pen->s), pen->s, text + at[k], (size_t)len[k], pen->cols,
-                    rgba);
+            text_at(pen->l, pen->x, row_y, pen->s, text + at[i], (size_t)len[i], pen->cols, rgba);
     }
     return shown < 0 ? 0 : shown;
 }

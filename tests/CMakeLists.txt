@@ -2665,6 +2665,15 @@ if(TARGET snx_error_panel)
     target_include_directories(snx-test-error-panel PRIVATE "${PROJECT_BINARY_DIR}/generated") # the YoRHa colours
     add_test(NAME error_panel COMMAND snx-test-error-panel)
 endif()
+# the panel in an SDL window, its keys and presses, and its own process (common/utilities/error_sdl.c, error_spawn.c), on
+# SDL's dummy video: this test starts itself as the panel's process
+if(TARGET snx_error_sdl AND NOT WIN32)
+    add_executable(snx-test-error-sdl error_sdl.c)
+    snx_test_target(snx-test-error-sdl c23)
+    target_link_libraries(snx-test-error-sdl PRIVATE snx_error_sdl scarletnx-common)
+    add_test(NAME error_sdl COMMAND snx-test-error-sdl)
+    set_tests_properties(error_sdl PROPERTIES ENVIRONMENT "SDL_VIDEO_DRIVER=dummy;SDL_RENDER_DRIVER=software" TIMEOUT 60)
+endif()
 
 add_executable(snx-test-hud hud.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/hud.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/ui_ring.c")

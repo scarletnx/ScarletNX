@@ -17,6 +17,7 @@ static char g_box[256];
 u64 plat_ns(void) { return g_clock += 10000000u; }
 void plat_exit_now(int code) { longjmp(g_exit_jump, code + 1); }
 static SnxError g_shown; /* the error the box was given */
+void win_fatal_crash(const SnxError* e) { (void)e; }
 void win_fatal_box(const SnxError* e) {
     snprintf(g_box, sizeof g_box, "%s", e->message);
     g_shown = *e;

@@ -564,18 +564,6 @@ static void keys_page(void) {
     assert(shows("SCARLETNX  /  MENU"));
     if (!was) overlay_toggle();
 }
-/* a stopped panel's texts, Close in focus */
-static SnxOverlayError panel_of(const char* name, const char* msg, const char* how, const char* log, const char* said) {
-    SnxOverlayError e;
-    memset(&e, 0, sizeof e);
-    e.name = name;
-    e.msg = msg;
-    e.how = how;
-    e.log = log;
-    e.said = said;
-    e.focus = SNX_OVERLAY_ERROR_CLOSE;
-    return e;
-}
 /* The screen before the game (prepare_screen.c): hidden until told; then the page over the window, the steps, bar
    and foot within its safe part, the scrolling lines last and only as many as leave the menu room; a line cut to the
    width by glyphs, not UTF-8 bytes; and nothing once hidden again */
@@ -2665,153 +2653,6 @@ int main(void) {
         ui_atlas_done();
         assert(!ui_atlas(&w, &h, &version) && version == 1);
     }
-    /* a fatal error's panel: the menu's, centred on its own rows; the head, the game's name, the error in the
-       failure's colour, its hint, then Share Log and Close at its foot, Close in focus. UTF-8 comes out in the font's
-       bytes, and on a short picture the last paragraphs give up rows so the panel stays on it, what Share Log did last */
-    {
-        float top, row_h;
-        int total, i, close_band = -1, share_band = -1;
-        unsigned plain, focused;
-        SnxOverlayError panel = panel_of("FIXTURE TITLES", "vulkan: the GPU device was lost (driver reset or crash)",
-                                         "Share Log sends the game's log, which has what ran last.", NULL, NULL);
-        list.n = 0;
-        overlay_error_draw(&list, SW, SH, &panel);
-        overlay_place(SW, SH, &px, &py, &s);
-        row_h = 16.0f * (float)s;
-        top = qv(&list.q[0]).y;
-        total = (int)(qv(&list.q[0]).h / row_h);
-        C = overlay_cols(SW, s);
-        assert(list.n > 4 && qv(&list.q[0]).x == (float)px && qv(&list.q[0]).w == (float)(C * 8 * s) &&
-               qv(&list.q[0]).rgba >> 24 == 0xFFu);
-        assert(top >= 0 && top + qv(&list.q[0]).h <= (float)SH && qv(&list.q[1]).y == top && qv(&list.q[1]).h == row_h);
-        py = (int)top;
-        assert(text_at(1, 0, "SCARLETNX  /  STOPPED") && text_at(1, 1, "FIXTURE TITLES"));
-        assert(
-            text_at(1, 3, "vulkan: the GPU device was lost (driver reset or crash)")); /* one row, as wide as it is */
-        i = glyph_at(1, 3, 'v');
-        assert(i >= 0 && qv(&list.q[i]).rgba == ui_rgba(0xFF3C47A5u));
-        assert(text_at(1, 5, "The GPU stopped answering and its"));
-        for (i = 0; i < list.n; ++i)
-            if (qv(&list.q[i]).y == top + row_h * (float)(total - 2) && qv(&list.q[i]).h == row_h &&
-                qv(&list.q[i]).w == qv(&list.q[0]).w)
-                close_band = i;
-        assert(close_band >= 0 && text_at(1, total - 2, "\xFE Close") && text_at(1, total - 3, "\xFE Copy path") &&
-               text_at(1, total - 4, "\xFE Share Log"));
-        i = glyph_at(3, total - 4, 'S');
-        assert(i >= 0);
-        plain = qv(&list.q[i]).rgba;
-        i = glyph_at(3, total - 2, 'C');
-        assert(i >= 0 && qv(&list.q[i]).rgba != ui_rgba(plain));
-        focused = qv(&list.q[i]).rgba;
-        for (i = 0; i < SNX_OVERLAY_ERROR_ITEMS; ++i)
-            assert(panel.items[i].y == top + row_h * (float)(total - 1 - SNX_OVERLAY_ERROR_ITEMS + i) &&
-                   panel.items[i].h == row_h && panel.items[i].x == qv(&list.q[0]).x &&
-                       panel.items[i].w == qv(&list.q[0]).w);
-        assert(overlay_error_hit(&panel.items[SNX_OVERLAY_ERROR_SHARE], panel.items[0].x + 1, panel.items[0].y + 1));
-        assert(!overlay_error_hit(&panel.items[SNX_OVERLAY_ERROR_SHARE], panel.items[1].x + 1, panel.items[1].y + 1));
-        /* the band follows the focus */
-        panel.focus = SNX_OVERLAY_ERROR_SHARE;
-        list.n = 0;
-        overlay_error_draw(&list, SW, SH, &panel);
-        for (i = 0; i < list.n; ++i)
-            if (qv(&list.q[i]).y == top + row_h * (float)(total - 4) && qv(&list.q[i]).h == row_h &&
-                qv(&list.q[i]).w == qv(&list.q[0]).w)
-                share_band = i;
-        assert(share_band >= 0);
-        i = glyph_at(3, total - 2, 'C');
-        assert(i >= 0 && qv(&list.q[i]).rgba == ui_rgba(plain));
-        i = glyph_at(3, total - 4, 'S');
-        assert(i >= 0 && qv(&list.q[i]).rgba == ui_rgba(focused));
-        /* what Share Log did, over the items, and kept when the picture is short */
-        panel.said = "Log saved to /home/player/.local/state/scarletnx/games/0100ABCD12345000/scarletnx.log.";
-        list.n = 0;
-        overlay_error_draw(&list, SW, 260, &panel);
-        overlay_place(SW, 260, &px, &py, &s);
-        py = (int)qv(&list.q[0]).y;
-        assert(qv(&list.q[0]).y >= 0 && qv(&list.q[0]).y + qv(&list.q[0]).h <= 260.0f);
-        total = (int)(qv(&list.q[0]).h / (16.0f * (float)s));
-        for (i = 1, share_band = 0; i < total - 5; ++i) share_band |= text_at(1, i, "Log saved to");
-        assert(share_band);
-        list.n = 0;
-        panel = panel_of("CAF\xC3\x89", "x", "y", NULL, NULL);
-        overlay_error_draw(&list, SW, SH, &panel);
-        overlay_place(SW, SH, &px, &py, &s);
-        py = (int)qv(&list.q[0]).y;
-        assert(text_at(1, 1, "CAF\x90"));
-        list.n = 0;
-        panel =
-            panel_of("N", "message",
-                     "a b c d e f g h i j k l m n o p q r s t u v w x y z a b c d e f g h i j k l m n o p q r s t u "
-                     "v w x y z a b c d e f g h i j k l m n o p q r s t u v w x y z",
-                     NULL, NULL);
-        overlay_error_draw(&list, SW, 200, &panel);
-        assert(qv(&list.q[0]).y >= 0 && qv(&list.q[0]).y + qv(&list.q[0]).h <= 200.0f);
-    }
-    /* Only visible log rows are a link. Wrapped paths remain one target, and a
-       short screen that hides the path leaves no invisible click target. */
-    {
-        int i, underlines = 0;
-        const char* path = "/home/player/.local/state/scarletnx/A game with a long name.log";
-        SnxOverlayError panel = panel_of("GAME", "message", "The game's log:", path, NULL);
-        SnxOverlayRect link;
-        list.n = 0;
-        overlay_error_draw(&list, SW, SH, &panel);
-        link = panel.link;
-        assert(link.w > 0 && link.h >= 16.0f * (float)s);
-        /* right under its label, no blank row between */
-        overlay_place(SW, SH, &px, &py, &s);
-        py = (int)qv(&list.q[0]).y;
-        assert(text_at(1, (int)((link.y - (float)py) / (16.0f * (float)s)) - 1, "The game's log:"));
-        assert(overlay_error_hit(&link, link.x, link.y));
-        assert(overlay_error_hit(&link, link.x + link.w - 1, link.y + link.h - 1));
-        assert(!overlay_error_hit(&link, link.x - 1, link.y));
-        assert(!overlay_error_hit(&link, link.x + link.w, link.y));
-        assert(!overlay_error_hit(&link, link.x, link.y + link.h));
-        for (i = 0; i < list.n; ++i)
-            if (qv(&list.q[i]).x == link.x && qv(&list.q[i]).h == (float)s && qv(&list.q[i]).w > 0 &&
-                qv(&list.q[i]).y >= link.y &&
-                qv(&list.q[i]).y < link.y + link.h)
-                ++underlines;
-        assert(underlines == (int)(link.h / (16.0f * (float)s)));
-        list.n = 0;
-        overlay_error_draw(&list, SW, 160, &panel);
-        assert(!overlay_error_hit(&panel.link, panel.link.x, panel.link.y) && !panel.link.h);
-        list.n = 0;
-        panel = panel_of("GAME", "message", "Share Log", NULL, NULL);
-        overlay_error_draw(&list, SW, SH, &panel);
-        assert(!panel.link.w && !panel.link.h && !overlay_error_hit(NULL, 0, 0));
-        /* Share Log's line takes room from the log's label and the hint first: on a picture the panel just fills with
-           both, the whole path is still there and still a link */
-        {
-            const char* said =
-                "Log saved to /home/player/.local/state/scarletnx/games/0100ABCD12345000/scarletnx.log (path copied).";
-            int whole;
-            panel = panel_of("GAME", "Unsupported instruction ce62c820 at 801b67c",
-                             "The game's log has what ran last:", path, NULL);
-            list.n = 0;
-            overlay_error_draw(&list, 1280, 720, &panel);
-            overlay_place(1280, 720, &px, &py, &s);
-            whole = (int)(panel.link.h / (16.0f * (float)s));
-            for (int height = 720, cut = 0; height >= 200; height -= 4) {
-                int label = 0, rows;
-                panel.said = NULL; /* the log whole at this size, its columns and scale */
-                list.n = 0;
-                overlay_error_draw(&list, 1280, height, &panel);
-                overlay_place(1280, height, &px, &py, &s);
-                whole = (int)(panel.link.h / (16.0f * (float)s));
-                panel.said = said;
-                list.n = 0;
-                overlay_error_draw(&list, 1280, height, &panel);
-                py = (int)qv(&list.q[0]).y;
-                assert(qv(&list.q[0]).y >= 0 && qv(&list.q[0]).y + qv(&list.q[0]).h <= (float)height);
-                rows = (int)(panel.link.h / (16.0f * (float)s));
-                for (int r = 0; r < 64; ++r) label |= text_at(1, r, "The game's log has");
-                assert(rows == whole || !label);
-                cut |= !label;
-                if (height == 200) assert(cut); /* the sweep got to where rows are cut */
-            }
-        }
-    }
     {
         char url[256];
         assert(fatal_log_url("/tmp/a b#c%?.log", url, sizeof url));
@@ -2832,14 +2673,13 @@ int main(void) {
     /* the user playing on the head's band: Player, without users.ini, as the YoRHa theme has it (square), in the
        atlas under the font: Wimsy (no picture= and no picture file), and its Mii's (Baguette's) with
        picture=mii; on the right of the band, its frame in the page colour
-       and the nickname before it; none on a stopped game's panel */
+       and the nickname before it */
     {
         char why[256];
         const u32* a;
         int w, h, i, pictures = 0, frames = 0, white = 0;
         u32 version;
         float right, band;
-        SnxOverlayError e = panel_of("Game", "It stopped", "Look at the log", NULL, NULL);
         assert(!snx_users_load("/nonexistent/users", 1, why, sizeof why));
         assert(g_user_count == 1 && !strcmp(snx_users_selected()->nickname, "Player"));
         assert(SNX_GUI_THEME_YORHA_PICTURE == 1); /* square: the frame is the fills' */
@@ -2914,10 +2754,6 @@ int main(void) {
             }
         }
         assert(pictures == 1 && frames == 4 && shows("Player"));
-        list.n = 0;
-        overlay_error_draw(&list, SW, SH, &e);
-        for (i = 0, pictures = 0; i < list.n; ++i) pictures += list.q[i].v == SNX_UI_PICTURE_Y;
-        assert(!pictures && !shows("Player"));
     }
     /* a picture that does not draw: Wimsy shows, and the warning names the user by number, never by nickname, which
        players attach to public reports with the log */

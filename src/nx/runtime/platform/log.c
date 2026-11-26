@@ -365,8 +365,12 @@ void log_error_line(const char* line) {
     logf_(0, "FATAL: %s\n", msg);
     snx_tracy_fatal(msg); /* the message pane says why the trace ends here */
 #if !defined(_WIN32)
-    /* from the crash handler: a box or a flush could wait on a lock the crashed code holds */
-    if (atomic_load_explicit(&g_crashing, memory_order_seq_cst)) _exit(status);
+    /* from the crash handler: a box or a flush could wait on a lock the crashed code holds. The panel's own process
+       takes no lock of this one's (win_fatal_crash) */
+    if (atomic_load_explicit(&g_crashing, memory_order_seq_cst)) {
+        win_fatal_crash(e);
+        _exit(status);
+    }
 #endif
     /* everywhere, since a player started from a desktop entry sees no console and no log. A remake's too: a game
        an app or a shortcut started has no driver to recompile it, and one the driver started recompiles once
