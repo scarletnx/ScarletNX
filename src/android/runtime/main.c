@@ -13,7 +13,6 @@
 #include "android/bridge/jni.h"
 #include "android/bridge/native.h"
 #include "android/bridge/hle_assets.h"
-#include "common/utilities/ini_lines.h"
 #include "snx_settings.h"
 #include "android/hwui/image.h"
 #include "android/hwui/render.h"
@@ -24,6 +23,7 @@
 #include "android/runtime/install.h"
 #include "android/runtime/jvm.h"
 #include "common/utilities/cli.h"
+#include "common/utilities/config_file.h"
 #include "common/utilities/common.h"
 #include "common/utilities/zip.h"
 #include <stdio.h>
@@ -250,6 +250,17 @@ static char* framework_jar(const char* argv0, const char* named) {
     return jar;
 }
 
+/* settings.ini's network=: 0 or 1 as it is, another value said with the one in use */
+static void network_take(void* ctx, const char* section, const char* key, const char* value, int line) {
+    int* online = (int*)ctx;
+    (void)section;
+    (void)line;
+    if (strcmp(key, "network")) return;
+    if (!strcmp(value, "0") || !strcmp(value, "1"))
+        *online = value[0] == '1';
+    else
+        snx_error("settings.ini: network=%s is not 0 or 1: network stays %d", value, *online);
+}
 /* ScarletNX's Network setting (settings.txt's network: 1 online, 0 offline with loopback only, the default), as the
    launcher keeps it for every run in settings.ini of its config folder */
 static bool network_online(void) {
@@ -258,19 +269,10 @@ static bool network_online(void) {
     char* path = config ? snx_path_join(config, "settings.ini") : NULL;
     free(data);
     free(config);
-    size_t size;
-    char* text = path ? (char*)snx_read_file(path, &size) : NULL;
+    int online = 0;                                         /* offline, the setting's default */
+    if (path) snx_config_keys(path, network_take, &online); /* one it cannot read said, once */
     free(path);
-    bool online = false;
-    if (text) {
-        SnxIni ini;
-        char *key, *value;
-        snx_ini_start(&ini, text);
-        while (snx_ini_next(&ini, &key, &value))
-            if (!strcmp(key, "network")) online = atoi(value) == 1;
-        free(text);
-    }
-    return online;
+    return online == 1;
 }
 
 static int run_apk(const char* argv0, const char* apk, const char* framework, char** options, size_t option_count) {

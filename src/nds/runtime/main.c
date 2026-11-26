@@ -15,9 +15,9 @@
 #include "common/platform/time.h"
 #include "common/utilities/build_info.h"
 #include "common/utilities/cli.h"
+#include "common/utilities/config_file.h"
 #include "common/utilities/common.h"
 #include "common/utilities/game_ini.h"
-#include "common/utilities/ini_lines.h"
 #include "common/utilities/script.h"
 #include "common/online/wfc.h"
 #include "snx_settings.h"
@@ -83,21 +83,17 @@ static void usage(FILE* out) {
 
 /* The WFC settings the launcher keeps in settings.ini's [Online] of the data folder data, each where the command
    line gave none (given: nds_wfc's bit 1, nds_wfc_dns's bit 2). The values are checked where the command line's are */
+/* a key of settings.ini's [Online] the command line gave none: read as the command line's is, its value said where it
+   is none of the setting's */
+static void network_take(void* ctx, const char* section, const char* key, const char* value, int line) {
+    unsigned given = *(const unsigned*)ctx;
+    const IniOpt* o = strcmp(section, "Online") ? NULL : ini_find(g_nds_network_ini, key);
+    (void)line;
+    if (o && !(given & (!strcmp(key, "nds_wfc") ? 1u : 2u))) ini_read(o, value);
+}
 static void network_settings(const char* data, unsigned given) {
     char *config = snx_menu_dir(data, SNX_USER_CONFIG), *path = config ? snx_path_join(config, "settings.ini") : NULL;
-    size_t size = 0;
-    char* text = path ? (char*)snx_read_file(path, &size) : NULL;
-    if (text) {
-        SnxIni ini;
-        char *key, *value;
-        snx_ini_start(&ini, text);
-        while (snx_ini_next(&ini, &key, &value)) {
-            if (strcmp(ini.section, "Online")) continue;
-            const IniOpt* o = ini_find(g_nds_network_ini, key);
-            if (o && !(given & (!strcmp(key, "nds_wfc") ? 1u : 2u))) ini_read(o, value);
-        }
-    }
-    free(text);
+    if (path) snx_config_keys(path, network_take, &given); /* one it cannot read said, once */
     free(path);
     free(config);
 }

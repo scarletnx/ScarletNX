@@ -15,7 +15,7 @@
 #include "common/utilities/ascii.h"
 #include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
-#include "common/utilities/ini_lines.h"
+#include "common/utilities/config_file.h"
 #include "common/platform/time.h"
 #include "common/platform/vm.h"
 #include <libdeflate.h>
@@ -1181,24 +1181,26 @@ char* snx_app_kind_default(const char* app, int kind) {
 }
 /* the folder of kind the app.ini in config names in [folders] (Settings > App > Folders' Logs and Caches): 1 with *dir
    a full path, -1 with *dir a value that is not one, 0 for none (no file, no key, an empty one) */
+typedef struct {
+    const char* wanted;
+    char* dir;
+    int found;
+} PickedKind;
+static void picked_take(void* ctx, const char* section, const char* key, const char* value, int line) {
+    PickedKind* p = (PickedKind*)ctx;
+    (void)line;
+    if (strcmp(section, "folders") || strcmp(key, p->wanted)) return;
+    free(p->dir); /* the last one, as the launcher reads it */
+    p->dir = *value ? snx_strdup(value) : NULL;
+    p->found = !*value ? 0 : snx_path_is_full(value) ? 1 : -1;
+}
 static int picked_kind(const char* config, int kind, char** dir) {
-    size_t size;
-    char *path = snx_path_join(config, "app.ini"), *text = path ? (char*)snx_read_file(path, &size) : NULL, *key,
-         *value;
-    const char* wanted = kind == SNX_USER_STATE ? "state" : "cache";
-    int found = 0;
-    SnxIni ini;
-    *dir = NULL;
-    if (text) snx_ini_start(&ini, text);
-    while (text && snx_ini_next(&ini, &key, &value))
-        if (!strcmp(ini.section, "folders") && !strcmp(key, wanted)) { /* the last one, as the launcher reads it */
-            free(*dir);
-            *dir = *value ? snx_strdup(value) : NULL;
-            found = !*value ? 0 : snx_path_is_full(value) ? 1 : -1;
-        }
-    free(text);
+    char* path = snx_path_join(config, "app.ini");
+    PickedKind p = {kind == SNX_USER_STATE ? "state" : "cache", NULL, 0};
+    if (path) snx_config_keys(path, picked_take, &p); /* one it cannot read said, once */
     free(path);
-    return found;
+    *dir = p.dir;
+    return p.found;
 }
 char* snx_app_kind_dir(const char* app, int kind) {
     char *dir = snx_app_kind_default(app, kind), *picked;

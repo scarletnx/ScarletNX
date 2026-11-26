@@ -794,33 +794,41 @@ typedef char run_progress_same[SNX_RUN_PROGRESS_AMOUNT == GUI_PROGRESS_AMOUNT &&
 static_assert(SNX_RUN_RING_NONE == GUI_RING_NONE && SNX_RUN_RING_LEFT == GUI_RING_LEFT &&
                   SNX_RUN_RING_RIGHT == GUI_RING_RIGHT && SNX_RUN_RING_NEAR_TEXT == GUI_RING_NEAR_TEXT,
               "the runtime reads GuiRing's numbers");
+/* what a run takes of app.ini, as the launcher reads it (src/gui/main.c app_read): its theme, its UI scale (ui_scale,
+   text_size as an older version named it: a number it takes, else 0, its Auto), and the data folder Folders picked, a
+   full path or none */
+typedef struct {
+    char id[64], picked[1024];
+    int text_size;
+} RunApp;
+static void run_app_take(void* ctx, const char* section, const char* key, const char* value, int line) {
+    RunApp* r = (RunApp*)ctx;
+    (void)line;
+    if (!strcmp(section, "app") && !strcmp(key, "theme") && *value)
+        snprintf(r->id, sizeof r->id, "%s", value);
+    else if (!strcmp(section, "app") && (!strcmp(key, "ui_scale") || !strcmp(key, "text_size"))) {
+        char* end;
+        long n = strtol(value, &end, 10);
+        r->text_size = *value && !*end && n >= 1 && n <= GUI_TEXT_MAX ? (int)n : 0;
+    } else if (!strcmp(section, "folders") && !strcmp(key, "data") && snx_path_is_full(value))
+        snprintf(r->picked, sizeof r->picked, "%s", value);
+}
 void gui_run_theme(const char* folder, SnxRunTheme* out) {
     char *config = snx_menu_dir(folder, SNX_USER_CONFIG), *data = snx_menu_dir(folder, SNX_USER_DATA);
     char* app = config ? snx_path_join(config, "app.ini") : NULL;
-    size_t bytes = 0, i;
-    char *text = app ? (char*)snx_read_file(app, &bytes) : NULL, *key, *value, id[64] = "yorha", picked[1024] = "";
+    size_t i;
+    RunApp read = {"yorha", "", 0};
+    char *id = read.id, *picked = read.picked;
     /* the running program's folder: the launcher's own when it started the run, as it runs itself with --game */
     char *self = snx_executable("scarletnx"), *program_dir = self ? snx_dirname(self) : NULL;
     char *beside = program_dir ? snx_path_join(program_dir, "themes") : NULL, *dirs[2] = {NULL, NULL};
     GuiTheme* t = malloc(sizeof *t);
     GuiThemes listed = {0};
-    SnxIni ini;
     *out = (SnxRunTheme){0};
-    /* as the launcher reads app.ini (src/gui/main.c app_read): its theme, its UI scale (ui_scale, text_size as an
-       older version named it: a number it takes, else 0, its Auto), and the data folder Folders picked, a full path
-       or none */
-    if (text) {
-        snx_ini_start(&ini, text);
-        while (snx_ini_next(&ini, &key, &value))
-            if (!strcmp(ini.section, "app") && !strcmp(key, "theme") && *value)
-                snprintf(id, sizeof id, "%s", value);
-            else if (!strcmp(ini.section, "app") && (!strcmp(key, "ui_scale") || !strcmp(key, "text_size"))) {
-                char* end;
-                long n = strtol(value, &end, 10);
-                out->text_size = *value && !*end && n >= 1 && n <= GUI_TEXT_MAX ? (int)n : 0;
-            } else if (!strcmp(ini.section, "folders") && !strcmp(key, "data") && snx_path_is_full(value))
-                snprintf(picked, sizeof picked, "%s", value);
-    }
+    if (app)
+        snx_config_keys(app, run_app_take, &read); /* the launcher names what it does not read; this, one it
+                                                          cannot read */
+    out->text_size = read.text_size;
     /* the launcher's two folders of themes (themes_dirs): its data folder's, then those shipped beside it (main.c
        shipped_themes), which an installed one keeps in ../share/scarletnx/themes. A game's copy of the runtime
        started on its own has none beside it, and finds the data folder's and the built-ins */
@@ -834,7 +842,7 @@ void gui_run_theme(const char* folder, SnxRunTheme* out) {
        the launcher's own until another is picked */
     gui_themes_scan(&listed, (const char* const*)dirs, 2);
     for (i = 0; i < listed.count && strcmp(listed.ids[i], id); ++i) {}
-    if (i == listed.count) snprintf(id, sizeof id, "%s", "yorha");
+    if (i == listed.count) snprintf(read.id, sizeof read.id, "%s", "yorha");
     if (t) {
         gui_theme_load(t, (const char* const*)dirs, 2, id, NULL, 0); /* its problems are the launcher's to say */
         out->page = rgb_word(t->run_colors.page);
