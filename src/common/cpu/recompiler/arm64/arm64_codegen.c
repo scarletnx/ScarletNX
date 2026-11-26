@@ -4,17 +4,20 @@
    the glue of AAPCS64 written here, every word an encoder's of the A64 Sail (a64_enc.inc).
 
    The function's ABI is GuestFn's: the state in X0, kept in X19 (SGX_BASE_BIAS past it), the entry in X1
-   (SGX_FN_TARGET, as a call's target is); X29 and X30 saved, then X19 and X20, and X21 to X28 where the function
-   pins guest registers there (the callee's: no call changes them), and the spill slots, whose size is patched in at
-   the end, above them (below them on Windows), SP 16-aligned at the frame's bottom.
+   (SGX_FN_TARGET, as a call's target is), compared with the start before the frame, so that a call of a function of
+   the unit at its start comes in past that check (with nothing in X1 where the callee was made before the call);
+   X29 and X30 saved, then X19 and X20, and X21 to X28 where the function pins guest registers there (the callee's: no
+   call changes them), and the spill slots, whose size is patched in at the end, above them (below them on Windows),
+   SP 16-aligned at the frame's bottom.
    The guest's vector registers are pinned in V31 down to V24 (caller-saved: stored around a call); V8 to V15,
    whose low halves are the callee's, hold no value, nor does V7, a by-element form's Rm (arm64_vec.c). X16 and X17 are the glue's and the assembler's own.
 
    The object is ELF AArch64: F_<address> global and hidden in the AOT module's units, so another back end's
    function calls one of these and the other way; in a JIT unit local, with the unit's table (ABS64). A call is a
    CALL26 relocation (a tail call JUMP26), resolved here where the callee is this object's own; snx_stale is read by
-   ADRP and LDRB (ADR_PREL_PG_HI21, LDST8_ABS_LO12_NC). For Windows (SNX_ARM64_F_WIN) the code is the same, AAPCS64's
-   registers Windows' too (X18, the system's, is never touched), in a COFF object whose function table unwinds it by the
+   ADRP and LDRB (ADR_PREL_PG_HI21, LDST8_ABS_LO12_NC). For Windows (SNX_ARM64_F_WIN) the code is the same but for the
+   entry's check, after the prologue there, which the unwinder reads at the function's first word; AAPCS64's registers
+   are Windows' too (X18, the system's, is never touched), in a COFF object whose function table unwinds it by the
    prologue and the epilogues (x64_elf.c), a frame of a page or more read page by page first (the guard page's) */
 #include "common/cpu/recompiler/arm64/arm64_codegen.h"
 #include "common/cpu/recompiler/object/link.h"
@@ -82,6 +85,7 @@ static const signed char mg_pin_hosts[9] = {20, 21, 22, 23, 24, 25, 26, 27, 28};
 #define MG_BOUND 1
 #define MG_FAR_JUMPS 1             /* past B.cond's 1 MiB: the opposite over a B */
 #define MG_POOL_REACH (512u << 10) /* LDR (literal)'s is 1 MiB */
+#define MG_DIRECT_ENTRY    (64u << 20)  /* half of BL's 128 MiB: the call's glue comes before it */
 #define MG_JTAB            1
 #define MG_JTAB_CLOBBER    0u /* X16 and X17 alone */
 #define MG_JTAB_LEADERS    24 /* fewer: the dispatch block (x86-64's measure; an arm64 device's is to come) */
@@ -331,7 +335,6 @@ static void poll_jz(Unit* u, int label) {
     w32(u, sge_a64_cbz(SGA_X16, 0, 0));
 }
 static void poll_slow(Unit* u, SnxU64 resume) {
-    char sym[40];
     pins(u, 1);
     set_pc(u, resume);
     mov_x0_state(u);
@@ -339,9 +342,7 @@ static void poll_slow(Unit* u, SnxU64 resume) {
     mov_x0_state(u);
     movi(u, 1, resume);
     epilogue(u);
-    fname(sym, sizeof sym, "F_", u->f->start);
-    reloc(u, u->b.n, sym, A64_JUMP26, 0);
-    w32(u, sge_a64_b_uncond(0));
+    jmp(u, u->start_label); /* the entry of any target: past the check is the start's */
 }
 static void poll_then(Unit* u, SnxU64 resume) {
     int run = new_label(u);
@@ -418,19 +419,30 @@ static void mg_brk(Unit* u, SnxU64 address, unsigned imm16) {
     movi(u, 2, imm16);
     call_rt(u, (int)offsetof(RtAPI, brk));
 }
-static void mg_entry(Unit* u, size_t index, SnxU64 start) {
-    if (u->options->stale) {
-        int live = new_label(u);
-        stale_test(u, index);
-        jcc(u, 0, live); /* B.EQ */
-        state_ldst(u, 0, 8, 1, offsetof(CPU, pc));
-        epilogue(u); /* no pin changed yet (and not every one loaded): none stored */
-        w32(u, sge_a64_ret(30));
-        bind(u, live);
-    }
+static int mg_direct(const Unit* u) { return !windows(u); }
+/* MOVZ/MOVK X16, start; CMP X1, X16; B.NE label */
+static void mg_check(Unit* u, SnxU64 start, int label) {
     movi(u, SGA_X16, start);
     w32(u, sge_a64_subs_addsub_shift(SGA_ZR, 1, 0, SGA_X16, 0, 1));
-    jcc(u, 1, u->mismatch_label);
+    jcc(u, 1, label);
+}
+static void mg_stale(Unit* u, size_t index, int given, SnxU64 start) {
+    int live;
+    if (!u->options->stale) return;
+    live = new_label(u);
+    stale_test(u, index);
+    jcc(u, 0, live); /* B.EQ */
+    if (given)
+        state_ldst(u, 0, 8, 1, offsetof(CPU, pc));
+    else
+        set_pc(u, start);
+    epilogue(u); /* no pin changed yet (and not every one loaded): none stored */
+    w32(u, sge_a64_ret(30));
+    bind(u, live);
+}
+static void mg_entry(Unit* u, size_t index, SnxU64 start) {
+    mg_stale(u, index, 1, start);
+    mg_check(u, start, u->mismatch_label);
 }
 static void mg_dispatch(Unit* u, int lab0) {
     const SnxFunction* f = u->f;

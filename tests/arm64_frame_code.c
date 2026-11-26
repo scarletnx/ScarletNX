@@ -5,7 +5,8 @@
    whole frame and each LDP X29, X30, [SP], #(96 + slots) undoes it. Larger ones (past the pre-index's reach) are a
    SUB SP, SP, #slots before that STP and an ADD SP after each LDP, the function made again so. Each row is a function
    of its words and a RET, made for a host of no optional feature (its AES and CRC32 helpers' calls keep values in
-   slots): its first word, and whether a SUB or ADD of SP is in it. recompiler_arm64_frame and _plain_crc32 hold such
+   slots): its first word past the entry's check (MOVZ X16, CMP X1, X16 and B.NE: off Windows the target is checked
+   before the frame), whether a SUB or ADD of SP is in it, and another target's entry's frame the same. recompiler_arm64_frame and _plain_crc32 hold such
    code to LLVM's; Windows' frame stays as x64_elf.c's unwinder reads it (recompiler_arm64win).
      snx-test-arm64-frame-code [--print]
    --print: each row's frame, and nothing held */
@@ -62,6 +63,15 @@ static const unsigned char* text_of(const unsigned char* o, size_t size, size_t*
 static int stp_frame(uint32_t w) { return (w & 0xFFC07FFFu) == 0xA9807BFDu; } /* STP X29, X30, [SP, #-n]! */
 static int ldp_frame(uint32_t w) { return (w & 0xFFC07FFFu) == 0xA8C07BFDu; } /* LDP X29, X30, [SP], #n */
 static int sp_imm(uint32_t w) { return (w & 0xBF8003FFu) == 0x910003FFu; }    /* ADD or SUB SP, SP, #n */
+/* the words of the entry's check at the code's start: MOVZ X16 and its MOVKs, CMP X1, X16, B.NE; 0 for none */
+static size_t entry_check(const unsigned char* t, size_t n) {
+    size_t k = 0;
+    if (n < 12 || (snx_ld_le32(t) & 0xFF80001Fu) != 0xD2800010u) return 0;
+    for (k = 4; k + 8 <= n && (snx_ld_le32(t + k) & 0xFF80001Fu) == 0xF2800010u; k += 4) {}
+    if (k + 8 > n || snx_ld_le32(t + k) != 0xEB10003Fu || (snx_ld_le32(t + k + 4) & 0xFF00001Fu) != 0x54000001u)
+        return 0;
+    return (k + 8) / 4;
+}
 /* the bytes an STP's pre-index or an LDP's post-index moves SP by */
 static int pair_bytes(uint32_t w) {
     int imm7 = (int)(w >> 15 & 0x7F);
@@ -79,7 +89,8 @@ static void check(const Row* row, int print) {
     size_t size = 0, n = 0;
     char error[256] = "", *at = (char*)row->words;
     SnxCodegen codegen;
-    unsigned count = 0, sps = 0, stps = 0, ldps = 0, bad = 0;
+    unsigned count = 0, sps = 0, stps = 0, ldps = 0, bad = 0, frames = 1;
+    size_t at0 = 0;
     int first = 0, sub = 0;
     while (*at && count < MOST) words[count++] = (uint32_t)strtoul(at, &at, 16);
     for (unsigned i = 0; i <= count; ++i) snx_st_le32(image + 4 * i, i < count ? words[i] : 0xD65F03C0u);
@@ -97,8 +108,9 @@ static void check(const Row* row, int print) {
         snx_codegen_free(&codegen);
         return;
     }
-    if (n >= 8) {
-        uint32_t w0 = snx_ld_le32(t), w1 = snx_ld_le32(t + 4);
+    if ((at0 = 4 * entry_check(t, n))) frames = 2; /* the other targets' entry makes a frame of its own */
+    if (n >= at0 + 8) {
+        uint32_t w0 = snx_ld_le32(t + at0), w1 = snx_ld_le32(t + at0 + 4);
         if (sp_imm(w0) && w0 >> 30 & 1 && stp_frame(w1)) /* SUB SP, SP, #slots; STP X29, X30, [SP, #-96]! */
             sub = (int)(w0 >> 10 & 0xFFF) << (w0 >> 22 & 1 ? 12 : 0), first = pair_bytes(w1);
         else if (stp_frame(w0))
@@ -108,6 +120,7 @@ static void check(const Row* row, int print) {
         uint32_t w = snx_ld_le32(t + k);
         sps += sp_imm(w);
         stps += stp_frame(w);
+        if (stp_frame(w) && pair_bytes(w) != first) ++bad; /* each entry's frame the first's */
         if (ldp_frame(w)) {
             uint32_t next = k + 8 <= n ? snx_ld_le32(t + k + 4) : 0;
             ++ldps;
@@ -116,14 +129,14 @@ static void check(const Row* row, int print) {
         }
     }
     if (print)
-        printf("%s: %zu bytes; STP X29, X30 by %d, SUB SP by %d; %u ADD or SUB of SP, %u LDPs of X29, X30 (%u not "
-               "undoing it)\n",
-               row->what, n, first, sub, sps, ldps, bad);
-    else if (!first || stps != 1 || bad)
+        printf("%s: %zu bytes, %zu of the entry's check; %u STPs of X29, X30 by %d, SUB SP by %d; %u ADD or SUB of SP, "
+               "%u LDPs of X29, X30 (%u not undoing it or not the first STP's)\n",
+               row->what, n, at0, stps, first, sub, sps, ldps, bad);
+    else if (!first || stps != frames || bad)
         fprintf(stderr,
-                "FAIL: %s: its frame is no STP X29, X30 at the start undone by each LDP (%u STPs, %u LDPs, %u "
-                "not undoing it)\n",
-                row->what, stps, ldps, bad),
+                "FAIL: %s: its frame is no STP X29, X30 at the start (past the entry's check) undone by each LDP (%u "
+                "STPs, %u expected; %u LDPs, %u not undoing it or not the first STP's)\n",
+                row->what, stps, frames, ldps, bad),
             ++g_arm64_frame_code.failures;
     else if (row->frame < 2 && (sub || sps || (row->frame ? first >= -96 : first != -96) || (-first - 96) % 16))
         fprintf(stderr,
@@ -131,7 +144,7 @@ static void check(const Row* row, int print) {
                 "of SP\n",
                 row->what, first, sub, sps),
             ++g_arm64_frame_code.failures;
-    else if (row->frame == 2 && (first != -96 || sub <= 504 - 96 || sps != 1 + ldps))
+    else if (row->frame == 2 && (first != -96 || sub <= 504 - 96 || sps != frames + ldps))
         fprintf(stderr,
                 "FAIL: %s: %d bytes of slots, not past the pre-index's reach in a SUB of SP and an ADD after each "
                 "LDP (STP by %d, %u ADD or SUB of SP, %u LDPs)\n",

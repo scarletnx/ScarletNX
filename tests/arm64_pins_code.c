@@ -1,14 +1,15 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* What the arm64 back end stores and loads of the guest registers it keeps in host ones (its pins), in functions of
-   a call: each row's words and a RET are a function, whose code has at most the row's stores of the pins to the state
-   and loads of them back, and of ADDs of X19 to reach a field (X19 holds the state's address SNX_ARM64_STATE_BIAS past
+   a call: each row's words and a RET are a function, whose code a call of its start runs (every branch both ways but
+   the entry's check, CMP X1, X16 then B.NE: the way of another target, which takes a frame of its own) has at most the
+   row's stores of the pins to the state and loads of them back, and of ADDs of X19 to reach a field (X19 holds the state's address SNX_ARM64_STATE_BIAS past
    it, so the V registers' 16 bytes take LDR's scaled offset). A call stores the pins written since the state was last in step with them, and reloads the
    ones live where it returns; the prologue loads those live at the entry (mach_codegen.inc's pin_dirt and live sets).
    Every pin stored and loaded at every call and exit is some times over. recompiler_arm64's br_pins, undef_pins and
    calls hold what such code computes to LLVM's.
      snx-test-arm64-pins-code [--print]
-   --print: each row's stores and loads of pins, and nothing held */
+   --print: each row's stores and loads of pins on that path and in the whole code, and nothing held */
 #include "common/cpu/recompiler/codegen.h"
 #include "common/cpu/recompiler/arm64/arm64_codegen.h"
 #include "common/cpu/aarch64/a64_decoder.h"
@@ -34,13 +35,11 @@ typedef struct {
 
 static const Row k_rows[] = {
     /* a loop (pins are a loop's) writing x1, x9 and x10 and reading x6, x7 and x8, then a call, then x0 from x9 and x1:
-       the stores are of the three written (at the call, the loop's poll, the dispatch block), none at the exits; every
-       pin at each of those is 42 stores and 24 loads */
-    {"X pins: a loop, then a call", 12, 18, 0, 0, 0, 0,
+       the stores are of the three written (at the call and the loop's poll), none at the exits */
+    {"X pins: a loop, then a call", 6, 11, 0, 0, 0, 0,
      "F94000C1 8B070021 8B080129 F100054A 54FFFF81 97FFFFFB 8B010120"},
-    /* the same of V: v2 and v3 written in the loop, v0 and v1 only read, then a call and v4 from v2 and v3; every pin
-       is 28 stores and 16 loads of V */
-    {"V pins: a loop, then a call", 4, 3, 8, 12, 0, 0,
+    /* the same of V: v2 and v3 written in the loop, v0 and v1 only read, then a call and v4 from v2 and v3 */
+    {"V pins: a loop, then a call", 2, 2, 4, 8, 0, 0,
      "4E20D442 6E21DC63 F100054A 54FFFFA1 97FFFFFC 4E23D444 3D800084"},
     /* a switch of 32 cases through a compressed byte table (recompiler_library.c's switch64): CMP W0, #31; B.HI the
        default; ADR, LDRB, ADD, BR; each case MOVZ X0 and RET; then the table's bytes. Its BR jumps through a table of
@@ -63,7 +62,7 @@ static const struct {
     /* a loop of eight ADD, EOR, EOR into V30 (the native timing bench's): V3 to V10 and V30 each save a load and a
        store a turn, so of the nine that tie V30, read and written eight times a turn, takes a pin (else its chain goes
        through memory at each turn) */
-    {{"a loop's accumulator V30 among nine V registers that tie", 5, 2, 40, 16, 0, 0,
+    {{"a loop's accumulator V30 among nine V registers that tie", 2, 0, 16, 8, 0, 0,
       "D2800C90 4EFF8463 6E221C70 6E301FDE 4EFF8484 6E221C91 6E311FDE 4EFF84A5 6E221CB2 6E321FDE 4EFF84C6 6E221CD3 "
       "6E331FDE 4EFF84E7 6E221CF4 6E341FDE 4EFF8508 6E221D15 6E351FDE 4EFF8529 6E221D36 6E361FDE 4EFF854A 6E221D57 "
       "6E371FDE F1000610 54FFFCE1"},
@@ -93,7 +92,39 @@ static const unsigned char* text_of(const unsigned char* o, size_t size, size_t*
     }
     return NULL;
 }
-/* the stores (load 0) or loads of pins in the code's words, by the state's field each reaches (X19 holds its address
+/* the words a call of the function's start runs, from its first: mark[i] 1 for word i. Every branch is followed both
+   ways (a BR's table not at all: the table's jumps are counted alone) but the entry's check's B.NE, right after CMP X1,
+   X16: X1 is the start there */
+static void call_path(const unsigned char* t, size_t n, unsigned char* mark) {
+    size_t words = n / 4, top = 0, *stack = (size_t*)malloc((words + 1) * sizeof *stack);
+    if (!stack) return;
+    stack[top++] = 0;
+    while (top) {
+        size_t i = stack[--top];
+        while (i < words && !mark[i]) {
+            uint32_t w = snx_ld_le32(t + 4 * i);
+            long long to = -1;
+            int on = 1;
+            mark[i] = 1;
+            if ((w & 0xFC000000u) == 0x14000000u) /* B */
+                to = (long long)i + ((long long)(w & 0x3FFFFFFu) ^ 0x2000000) - 0x2000000, on = 0;
+            else if ((w & 0xFF000010u) == 0x54000000u) { /* B.cond */
+                if ((w & 15) != 1 || !i || snx_ld_le32(t + 4 * (i - 1)) != 0xEB10003Fu)
+                    to = (long long)i + ((long long)(w >> 5 & 0x7FFFF) ^ 0x40000) - 0x40000;
+            } else if ((w & 0x7E000000u) == 0x34000000u) /* CBZ, CBNZ */
+                to = (long long)i + ((long long)(w >> 5 & 0x7FFFF) ^ 0x40000) - 0x40000;
+            else if ((w & 0x7E000000u) == 0x36000000u) /* TBZ, TBNZ */
+                to = (long long)i + ((long long)(w >> 5 & 0x3FFF) ^ 0x2000) - 0x2000;
+            else if ((w & 0xFFFFFC1Fu) == 0xD65F0000u || (w & 0xFFFFFC1Fu) == 0xD61F0000u) /* RET, BR */
+                on = 0;
+            if (to >= 0 && (size_t)to < words && !mark[to] && top < words) stack[top++] = (size_t)to;
+            if (!on) break;
+            ++i;
+        }
+    }
+    free(stack);
+}
+/* the stores (load 0) or loads of pins in the code's words (those mark has, all where it is NULL), by the state's field each reaches (X19 holds its address
    SNX_ARM64_STATE_BIAS past it): STR or LDR Xt of X20-X28, unsigned offset or unscaled (STUR, LDUR), at [X19] in the
    state's X; STR or LDR Qt (unsigned offset) of V24-V31 at [X19] in the state's V, or at [X16] an ADD X16, X19, #off
    just before makes. *adds: the ADDs of X16 = X19 + an immediate */
@@ -105,7 +136,8 @@ static unsigned table_jumps(const unsigned char* t, size_t n) {
                  snx_ld_le32(t + i + 8) == 0xD61F0200u;
     return jumps;
 }
-static void pin_moves(const unsigned char* t, size_t n, int load, unsigned* x, unsigned* v, unsigned* adds) {
+static void pin_moves(const unsigned char* t, size_t n, const unsigned char* mark, int load, unsigned* x, unsigned* v,
+                      unsigned* adds) {
     const uint32_t xop = load ? 0xF9400000u : 0xF9000000u, uop = load ? 0xF8400000u : 0xF8000000u,
                    qop = load ? 0x3DC00000u : 0x3D800000u;
     const long long bias = SNX_ARM64_STATE_BIAS, xs = offsetof(CPU, x), vs = offsetof(CPU, v);
@@ -114,6 +146,10 @@ static void pin_moves(const unsigned char* t, size_t n, int load, unsigned* x, u
     for (size_t i = 0; i + 4 <= n; i += 4) {
         uint32_t w = snx_ld_le32(t + i), rt = w & 31, rn = w >> 5 & 31;
         long long off = -1;
+        if (mark && !mark[i / 4]) {
+            prev = w;
+            continue;
+        }
         if ((w & 0xFFC003FFu) == (0x91000000u | 19u << 5 | 16u)) ++*adds;
         if ((w & 0xFFC00000u) == xop && rn == 19 && rt >= 20 && rt <= 28)
             off = (w >> 10 & 0xFFF) * 8 + bias;
@@ -134,15 +170,15 @@ static void pin_moves(const unsigned char* t, size_t n, int load, unsigned* x, u
     }
 }
 
-/* the LDR Q (unsigned offset) of a V pin (V24-V31) from V register r's field: at [X19], or at [X16] an ADD X16, X19,
-   #off just before makes */
-static unsigned field_pins(const unsigned char* t, size_t n, unsigned r) {
+/* the LDR Q (unsigned offset) of a V pin (V24-V31) from V register r's field in the words mark has: at [X19], or at
+   [X16] an ADD X16, X19, #off just before makes */
+static unsigned field_pins(const unsigned char* t, size_t n, const unsigned char* mark, unsigned r) {
     const long long bias = SNX_ARM64_STATE_BIAS, want = (long long)(offsetof(CPU, v) + 16 * (size_t)r);
     unsigned pins = 0;
     uint32_t prev = 0;
     for (size_t i = 0; i + 4 <= n; i += 4) {
         uint32_t w = snx_ld_le32(t + i), rt = w & 31, rn = w >> 5 & 31;
-        if ((w & 0xFFC00000u) == 0x3DC00000u && rt >= 24) {
+        if ((w & 0xFFC00000u) == 0x3DC00000u && rt >= 24 && mark[i / 4]) {
             long long off = -1;
             if (rn == 19)
                 off = (w >> 10 & 0xFFF) * 16 + bias;
@@ -166,7 +202,8 @@ static void check(const Row* row, unsigned vfield, unsigned vpins, int print) {
     size_t size = 0, length = 0;
     char error[256] = "", *at = (char*)row->words;
     SnxCodegen codegen;
-    unsigned count = 0, xs, vs, xl, vl, adds, tables, fpins = 0;
+    unsigned count = 0, xs, vs, xl, vl, adds, tables, fpins = 0, all[5];
+    unsigned char* mark = NULL;
     g_arm64_pins_code.row = row;
     while (*at && count < MOST) words[count++] = (uint32_t)strtoul(at, &at, 16);
     for (unsigned i = 0; i <= count; ++i)
@@ -187,16 +224,22 @@ static void check(const Row* row, unsigned vfield, unsigned vpins, int print) {
     } else if (!(text = text_of(object, size, &length))) {
         fprintf(stderr, "FAIL: %s: no code in its object of %zu bytes\n", row->what, size);
         ++g_arm64_pins_code.failures;
+    } else if (!(mark = (unsigned char*)calloc(length / 4 + 1, 1))) {
+        fprintf(stderr, "FAIL: %s: no memory for its %zu words' marks\n", row->what, length / 4);
+        ++g_arm64_pins_code.failures;
     } else {
-        pin_moves(text, length, 0, &xs, &vs, &adds);
-        pin_moves(text, length, 1, &xl, &vl, &adds);
+        call_path(text, length, mark);
+        pin_moves(text, length, NULL, 0, &all[0], &all[2], &all[4]);
+        pin_moves(text, length, NULL, 1, &all[1], &all[3], &all[4]);
+        pin_moves(text, length, mark, 0, &xs, &vs, &adds);
+        pin_moves(text, length, mark, 1, &xl, &vl, &adds);
         tables = table_jumps(text, length);
-        if (vfield) fpins = field_pins(text, length, vfield);
+        if (vfield) fpins = field_pins(text, length, mark, vfield);
         if (print && vfield) printf("%s: V%u's field into a pin %u times\n", row->what, vfield, fpins);
         if (print)
-            printf("%s: %zu bytes; X pins %u stored, %u loaded; V pins %u stored, %u loaded; %u ADDs of X19; %u table "
-                   "jumps\n",
-                   row->what, length, xs, xl, vs, vl, adds, tables);
+            printf("%s: %zu bytes; a call's path: X pins %u stored, %u loaded; V pins %u stored, %u loaded; %u ADDs of "
+                   "X19; the whole code: X %u, %u; V %u, %u; %u table jumps\n",
+                   row->what, length, xs, xl, vs, vl, adds, all[0], all[1], all[2], all[3], tables);
         else {
             if (tables < row->tables) {
                 fprintf(stderr, "FAIL: %s: %u jumps through a table, at least %u\n", row->what, tables, row->tables);
@@ -214,6 +257,7 @@ static void check(const Row* row, unsigned vfield, unsigned vpins, int print) {
             }
         }
     }
+    free(mark);
     free(object);
     snx_codegen_free(&codegen);
 }

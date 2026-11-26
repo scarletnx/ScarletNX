@@ -13,7 +13,9 @@
    last ones, MG_PIN_RESERVED(h) whether a pin's register is one values may be in), the vector pins' (MG_VPIN(k),
    the k-th, MG_NVPINS) and the vector registers no value may take (MG_XRESERVED: the callee's). MG_FAR_JUMPS where its
    jumps have a longer form (Unit.far), MG_POOL_REACH how far the code goes past the first LDR of a literal before the
-   literals are put in it (mg_pool_island).
+   literals are put in it (mg_pool_island), MG_DIRECT_ENTRY where a function's entry checks its target before the
+   frame, so that a call of its start comes in past the check (mg_direct): how far back a call reaches one so with no
+   relocation's help.
 
    Each basic block's instructions are sailgen's emitters', appended to one SSA region (registers read once, flags
    reused, constants folded) and assembled when the block ends. The guest's registers are in the CPU structure at
@@ -49,6 +51,7 @@ typedef struct {
 typedef struct {
     char* name;
     size_t at, size;
+    size_t entry; /* a call of the function's start comes in this far past at, its entry's check behind it */
 } Sym;
 
 typedef struct {
@@ -100,6 +103,11 @@ typedef struct {
     size_t nnone, cap_none;
     int again;    /* the machine's glue refused the function to make it again its way (mg_finish), once */
     int dispatch, d_label, mismatch_label;
+    int start_label; /* the function's first word, its entry for any target */
+#ifdef MG_DIRECT_ENTRY
+    size_t first;   /* the unit's first function in the codegen */
+    size_t* sym_of; /* each function of the unit's made already: its symbol's index + 1, 0 where none */
+#endif
     int nstubs, cap_stubs;
     /* the function's BRs through a recovered jump table (MG_JTAB): each one's table, its label, the guest address of its
        first slot and its slots (a word each), whose labels are jslots[first...] (the dispatch block's where no case) */
@@ -186,12 +194,23 @@ static void mg_brk(Unit* u, SnxU64 address, unsigned imm);
 /* the function's entry, after the prologue: its stale check (options->stale), then e != start going to
    u->mismatch_label */
 static void mg_entry(Unit* u, size_t index, SnxU64 start);
+#ifdef MG_DIRECT_ENTRY
+/* the unit's functions check their target before the frame (mg_check), and a call of one's start comes in past it,
+   with no target in SGX_FN_TARGET: 1, 0 where the entry is mg_entry's */
+static int mg_direct(const Unit* u);
+/* if (e != start) goto label, before the prologue */
+static void mg_check(Unit* u, SnxU64 start, int label);
+/* after the prologue: if (snx_stale[index]) { c->pc = given ? e : start; return; }, where options->stale */
+static void mg_stale(Unit* u, size_t index, int given, SnxU64 start);
+#endif
 /* at u->mismatch_label: c->pc = e and the dispatch block (several leaders), else CALLDYN(e) */
 static void mg_dispatch(Unit* u, int lab0);
 /* the frame's size in the prologue and every epilogue, and the labels' jumps since fixup fix0: 1, 0 where one isn't
    bound or out of reach */
 static int mg_finish(Unit* u, size_t fix0);
-/* a relocation of the unit's to one of its own functions (at target_at), resolved in place: 1, 0 where it stays one */
+/* a relocation of the unit's to one of its own functions, resolved in place: 1, 0 where it stays one. target_at is
+   the entry of a call of the function's start, past its check where it has one (Sym.entry): every call of one of the
+   codegen's functions is of its start (call_target), and a function's jump to its own entry a label's */
 static int mg_resolve_local(Unit* u, const Reloc* r, size_t target_at);
 #ifdef MG_POOL_REACH
 /* the literals so far, here, a jump over them */
@@ -251,15 +270,40 @@ static void fname(char* out, size_t size, const char* prefix, SnxU64 address) {
     snprintf(out, size, "%s%llX", prefix, (unsigned long long)address);
 }
 
+#ifdef MG_DIRECT_ENTRY
+/* a call of callee's start comes in past its check, no target given, where callee is this function or one the unit
+   made before it, within MG_DIRECT_ENTRY of here: the call is resolved in the unit then. One made later may be
+   another back end's yet, whose entry reads the target */
+static int past_check(const Unit* u, const SnxFunction* callee) {
+    size_t i = (size_t)(callee - u->codegen->functions);
+    const Sym* s;
+    if (!mg_direct(u)) return 0;
+    if (i == u->index)
+        s = &u->syms[u->nsyms - 1];
+    else if (i >= u->first && i < u->index && u->sym_of[i - u->first])
+        s = &u->syms[u->sym_of[i - u->first] - 1];
+    else
+        return 0;
+    return u->b.n - (s->at + s->entry) < MG_DIRECT_ENTRY;
+}
+#endif
 /* call(): F_target directly where the target is one of the codegen's functions (not routed through its slot),
    snx_aot_<target> where options->direct names it (the AOT module's function in a JIT unit, another module's an AOT
    module imports), CALLDYN otherwise; tail: then return */
 static void call_target(Unit* u, SnxU64 target, int tail) {
     const SnxCodegen* c = u->codegen;
     int through_slot = c->hook_direct_calls || snx_codegen_routed(c, target);
+    const SnxFunction* callee = through_slot ? NULL : snx_codegen_function(c, target);
     char sym[40];
+#ifdef MG_DIRECT_ENTRY
+    if (callee && past_check(u, callee)) {
+        fname(sym, sizeof sym, "F_", target);
+        call_sym(u, sym, tail);
+        return;
+    }
+#endif
     set_target(u, target);
-    if (!through_slot && snx_codegen_function(c, target))
+    if (callee)
         fname(sym, sizeof sym, "F_", target);
     else if (!through_slot && u->options->direct && u->options->direct(u->options->direct_user, target))
         snprintf(sym, sizeof sym, "snx_aot_%llx", (unsigned long long)target);
@@ -2303,6 +2347,11 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
     int lab0 = u->nlabels, ok = 1;
     SnxU64 pin_rest = 0;
     SnxU32 vpin_rest = 0;
+#ifdef MG_DIRECT_ENTRY
+    int other = -1;
+    SnxU64 pin_sel;
+    SnxU32 vpin_sel;
+#endif
     jmp_buf jb;
     jmp_buf* saved = g_fail;
     char sym[40];
@@ -2328,11 +2377,14 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
     u->dispatch = f->leader_count > 1;
     u->d_label = u->dispatch ? new_label(u) : -1;
     u->mismatch_label = new_label(u);
+    u->start_label = new_label(u);
     fname(sym, sizeof sym, "F_", f->start);
     u->syms = (Sym*)grow(u->syms, &u->cap_syms, u->nsyms + 1, sizeof *u->syms);
     u->syms[u->nsyms].name = strdup(sym);
     u->syms[u->nsyms].at = u->b.n;
+    u->syms[u->nsyms].entry = 0;
     u->nsyms++;
+    bind(u, u->start_label);
     flush(u); /* no block state of another function's */
     choose_pins(u, f);
     liveness(u, f);
@@ -2348,11 +2400,25 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
         u->vpin_sel = u->vlive ? u->vlive[0] : ~0u;
     }
     u->cur_dirty = ~(SnxU64)0, u->vcur_dirty = ~0u;
+#ifdef MG_DIRECT_ENTRY
+    /* if (e != start) goto other, the frame past it: a call of the start comes in there */
+    if (mg_direct(u)) {
+        other = new_label(u);
+        mg_check(u, f->start, other);
+        u->syms[sym0].entry = u->b.n - u->syms[sym0].at;
+    }
+    pin_sel = u->pin_sel, vpin_sel = u->vpin_sel;
+#endif
     prologue(u);
     pin_rest = ~u->pin_sel, vpin_rest = ~u->vpin_sel;
     u->pin_sel = ~(SnxU64)0, u->vpin_sel = ~0u; /* every other load of the pins: all of them */
     /* if (snx_stale[index]) { c->pc = e; return; } if (e != start) goto mismatch */
-    mg_entry(u, index, f->start);
+#ifdef MG_DIRECT_ENTRY
+    if (other >= 0)
+        mg_stale(u, index, 0, f->start);
+    else
+#endif
+        mg_entry(u, index, f->start);
     if (f->count && snx_function_address(f, 0) != f->start) jmp(u, (int)index_of(f, f->start));
     {
         volatile size_t vi = 0;
@@ -2379,6 +2445,17 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
     flush(u);
     u->at = f->count;
     leave(u); /* off the end */
+#ifdef MG_DIRECT_ENTRY
+    if (other >= 0) {
+        /* the entry of another target: the start's frame and pins, its stale check, then the mismatch's way */
+        bind(u, other);
+        u->cur_dirty = ~(SnxU64)0, u->vcur_dirty = ~0u;
+        u->pin_sel = pin_sel, u->vpin_sel = vpin_sel;
+        prologue(u);
+        u->pin_sel = ~(SnxU64)0, u->vpin_sel = ~0u;
+        mg_stale(u, index, 1, f->start);
+    }
+#endif
     /* mismatch: { c->pc = e; goto D; } or { CALLDYN(e); return; }; D: the poll, then switch (c->pc) over the
        leaders, else CALLDYN(c->pc) */
     bind(u, u->mismatch_label);
@@ -2553,7 +2630,7 @@ static int write_object(Unit* u, unsigned char** object, size_t* size) {
             size_t h0 = name_hash(u->relocs[i].sym) & (hcap - 1), h = h0;
             for (; hsym[h]; h = (h + 1) & (hcap - 1))
                 if (!strcmp(u->relocs[i].sym, u->syms[hsym[h] - 1].name)) break;
-            if (hsym[h] && mg_resolve_local(u, &u->relocs[i], u->syms[hsym[h] - 1].at)) {
+            if (hsym[h] && mg_resolve_local(u, &u->relocs[i], u->syms[hsym[h] - 1].at + u->syms[hsym[h] - 1].entry)) {
                 free(u->relocs[i].sym);
                 u->relocs[i].sym = NULL;
                 continue;
@@ -2720,6 +2797,16 @@ static int mach_object(SnxCodegen* codegen, size_t first, size_t last, const Snx
 #endif
     u.codegen = codegen;
     u.options = options;
+#ifdef MG_DIRECT_ENTRY
+    u.first = first;
+    u.sym_of = (size_t*)calloc(last - first + 1, sizeof *u.sym_of);
+    if (!u.sym_of) {
+        free(u.g);
+        free(u.b.p);
+        snprintf(error, error_size, "out of memory");
+        return -1;
+    }
+#endif
     u.a.b = &u.b;
     u.a.machine = &u;
     u.a.reloc = unit_reloc;
@@ -2780,6 +2867,9 @@ static int mach_object(SnxCodegen* codegen, size_t first, size_t last, const Snx
         }
         u.nnone = 0;
         count += made[i - first];
+#ifdef MG_DIRECT_ENTRY
+        if (made[i - first]) u.sym_of[i - first] = u.nsyms;
+#endif
         if (options->jit && !made[i - first]) break;
     }
     if (options->jit && count != last - first) count = 0;
@@ -2801,6 +2891,9 @@ static int mach_object(SnxCodegen* codegen, size_t first, size_t last, const Snx
     free(u.none);
     free(u.live_buf), free(u.exits_buf), free(u.vlive_buf), free(u.dsync), free(u.vdsync);
     free(u.jtabs), free(u.jslots);
+#ifdef MG_DIRECT_ENTRY
+    free(u.sym_of);
+#endif
     free(u.a.cold.p), free(u.a.pool), free(u.a.rips), free(u.a.cjumps), free(u.a.ccalls);
     free(u.g);
     if (options->jit && !count) memset(made, 0, last - first);
