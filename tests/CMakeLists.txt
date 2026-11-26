@@ -6140,3 +6140,12 @@ foreach(t arm-code-invalidate audio-clock audio-opus crash-runtime-thread fs-ser
         target_sources(snx-test-${t} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/support/fatal_kind.c")
     endif()
 endforeach()
+
+# a console's prepared shaders' file (common/gpu/vk/prepared.c): records back in their order, packed or not, another
+# key starting over, a record cut, changed or refused ending the reading there, the most size, a file replaced whole
+if(TARGET snx_prepared)
+    add_executable(snx-test-prepared-file prepared_file.c)
+    snx_test_target(snx-test-prepared-file gnu23)
+    target_link_libraries(snx-test-prepared-file PRIVATE snx_prepared scarletnx-common)
+    add_test(NAME prepared_file COMMAND snx-test-prepared-file)
+endif()
