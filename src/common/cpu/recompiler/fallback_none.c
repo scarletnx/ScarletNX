@@ -57,28 +57,6 @@ int snx_fallback_start(char* error, size_t error_size) {
     return -1;
 }
 
-void snx_fallback_key(int rtlib, void (*put)(void* user, const void* data, size_t size), void* user) {
-    const char* name = snx_native_name();
-    const unsigned features = snx_native_features();
-    unsigned char bytes[4] = {(unsigned char)features, (unsigned char)(features >> 8), (unsigned char)(features >> 16),
-                              (unsigned char)(features >> 24)};
-    (void)rtlib; /* the runtime library is the build's object, which no key needs */
-    put(user, name, strlen(name) + 1);
-    put(user, bytes, sizeof bytes);
-}
-
-int snx_fallback_library_descriptor(const SnxCodegen* codegen, const uint64_t* addresses, const size_t* functions,
-                                    size_t count, int stale, char opt, const char* keep_ir, unsigned char** object,
-                                    size_t* size, char* error, size_t error_size) {
-    (void)addresses, (void)functions, (void)count, (void)stale, (void)opt, (void)keep_ir;
-    *object = NULL;
-    *size = 0;
-    snprintf(error, error_size,
-             "the descriptor of a module of %zu functions, which the native back end (%s) did not make whole: " NO_LLVM,
-             codegen->function_count, snx_native_name());
-    return -1;
-}
-
 SnxFallbackArm* snx_fallback_arm_new(const char* name, char opt, int jit) {
     SnxFallbackArm* f = (SnxFallbackArm*)calloc(1, sizeof *f);
     (void)opt;

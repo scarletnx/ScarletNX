@@ -611,41 +611,11 @@ static void executor(void) {
     }
 }
 
-/* what the library takes of the fallback: its start, the key of what it makes, and a module's descriptor */
-static void key_count(void* user, const void* data, size_t size) {
-    size_t* n = (size_t*)user;
-    (void)data;
-    n[0] += 1, n[1] += size;
-}
-static void library_parts(SnxCodegen* cg) {
-    const int llvm = snx_fallback_available();
+/* the fallback's start: LLVM's, or none's where the host has a native back end, which then makes all of the code */
+static void started(void) {
     char error[512] = "";
-    size_t host[2] = {0, 0}, rtlib[2] = {0, 0};
-    CHECK(!snx_fallback_start(error, sizeof error) == (llvm || snx_native_available()), "the start: %s", error);
-    snx_fallback_key(0, key_count, host);
-    snx_fallback_key(1, key_count, rtlib);
-    if (llvm)
-        CHECK(host[0] == 2 && rtlib[0] == 3 && rtlib[1] > host[1] + 1000,
-              "LLVM's key: the CPU's name and features (%zu parts), and the bitcode before them (%zu)", host[0],
-              rtlib[0]);
-    else
-        CHECK(host[0] == 2 && host[1] == strlen(snx_native_name()) + 1 + 4 && rtlib[0] == 2,
-              "none's key: the native back end's name and features (%zu parts, %zu bytes)", host[0], host[1]);
-    const uint64_t addresses[2] = {CODE, CODE + EACH};
-    const size_t index[2] = {0, 1};
-    unsigned char* object = NULL;
-    size_t size = 0;
-    int rc =
-        snx_fallback_library_descriptor(cg, addresses, index, 2, 1, '0', NULL, &object, &size, error, sizeof error);
-    if (llvm)
-        CHECK(!rc && object && holds(object, size, "snx_lib_module") && holds(object, size, "F_10040") &&
-                  holds(object, size, "snx_stale"),
-              "LLVM's descriptor of the library's module: %s", error);
-    else
-        CHECK(rc && !object && strstr(error, "the descriptor of a module of 2 functions") &&
-                  strstr(error, "SNX_WITH_LLVM=OFF"),
-              "none's: %s", error);
-    free(object);
+    CHECK(!snx_fallback_start(error, sizeof error) == (snx_fallback_available() || snx_native_available()),
+          "the start: %s", error);
 }
 
 int main(void) {
@@ -668,7 +638,7 @@ int main(void) {
         refused_data();
         refused_aot();
     }
-    library_parts(&cg);
+    started();
     executor();
     snx_codegen_free(&cg);
     if (!g_seam.failures) printf("the fallback (%s): as it should be\n", snx_fallback_name());

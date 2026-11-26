@@ -313,7 +313,7 @@ bool bridge_init(const char* cache, char* error, size_t error_size) {
     snx_recompiler_set_a64_target(b.recompiler, SNX_RECOMPILER_A64_ANDROID);
     if (b.optimization) snx_recompiler_set_optimization(b.recompiler, b.optimization);
     if (b.keep_ir && snx_recompiler_set_keep_ir(b.recompiler, b.keep_ir))
-        fprintf(stderr, "scarletnx-android: cannot keep the JIT's IR in %s\n", b.keep_ir);
+        fprintf(stderr, "scarletnx-android: %s\n", snx_recompiler_error(b.recompiler));
     if (cache && snx_recompiler_set_cache(b.recompiler, cache))
         fprintf(stderr, "scarletnx-android: %s; compiling without a cache\n", snx_recompiler_error(b.recompiler));
     snx_runtime_defaults(&b.rt);
