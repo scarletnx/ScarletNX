@@ -237,6 +237,18 @@ int main(void) {
         assert(!strcmp(what, "GPU driver Turnip did not load: the system's driver took its place"));
         assert(!snx_write_file(log, done, sizeof done - 1));
         assert(gui_log_game_end(log, what, sizeof what, lines, sizeof lines) == SNX_LOG_NONE);
+        { /* a console's run, by its own log: Exit. last is an end that went well, any other last line its failure */
+            static const char ended[] = "The game's runtime is /a/pad/pad\ncartridge: APAD\nExit.\n";
+            static const char failed[] = "The game's runtime is /a/pad/pad\nscarletnx-agb: the ROM is 3 bytes: "
+                                         "a GBA ROM is 192 bytes at least\n";
+            assert(!snx_write_file(log, ended, sizeof ended - 1));
+            assert(gui_log_console_end(log, what, sizeof what) == 0 && !strcmp(what, "Exit."));
+            assert(!snx_write_file(log, failed, sizeof failed - 1));
+            assert(gui_log_console_end(log, what, sizeof what) == 1 &&
+                   !strcmp(what, "scarletnx-agb: the ROM is 3 bytes: a GBA ROM is 192 bytes at least"));
+            assert(!snx_write_file(log, "", 0));
+            assert(gui_log_console_end(log, what, sizeof what) == 1 && !strcmp(what, "the game's log is empty"));
+        }
         assert(!snx_remove_tree(log));
         assert(gui_log_game_end(log, what, sizeof what, lines, sizeof lines) == -1);
         assert(!strncmp(what, log, strlen(log)) && strstr(what, " did not open: ") && !lines[0]);

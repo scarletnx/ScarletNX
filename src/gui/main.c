@@ -17696,10 +17696,17 @@ static char* newest_log(const App* app);
    Android's kill of a game that did not end with an exit), stays on the run's screen, as a game that fails on a
    computer does, with Share Log blinking. The game's own error screen shows no crash */
 static void game_end(App* app, const RunEnd* ended) {
-    char *log = newest_log(app), what[1024], lines[4096];
+    char *log = NULL, what[1024], lines[4096];
     SDL_PathInfo info;
     int end = -1;
-    if (!log)
+    if (app->played_game && program_driver(app->played_game) != GUI_SWITCH) {
+        /* a console's: its driver's own words in the run's log, Exit. for an end that went well */
+        lines[0] = 0;
+        if (!SDL_GetPathInfo(app->run_log, &info) || info.modify_time < app->played_at)
+            snprintf(what, sizeof what, "%s", snx_tr("the game wrote no log"));
+        else if (gui_log_console_end(app->run_log, what, sizeof what) == 0)
+            return;
+    } else if (!(log = newest_log(app)))
         snprintf(what, sizeof what, "%s", snx_tr("the game wrote no log"));
     else if (!SDL_GetPathInfo(log, &info) || info.modify_time < app->played_at)
         snprintf(what, sizeof what, snx_tr("the game wrote no log since it started; the newest is %s"), log);
