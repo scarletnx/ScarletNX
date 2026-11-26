@@ -311,6 +311,7 @@ if(TARGET snx_ctr_board)
     target_link_libraries(snx-test-3ds-quit-key PRIVATE snx_ctr_gpu)
     target_include_directories(snx-test-3ds-quit-key PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}") # support/
     add_test(NAME 3ds_quit_key COMMAND snx-test-3ds-quit-key)
+    set_tests_properties(3ds_quit_key PROPERTIES SKIP_RETURN_CODE 77) # no window where SDL has no offscreen driver
     # ir:rst, the New 3DS's ZL, ZR and C-stick, from a virtual pad to its shared memory
     add_executable(snx-test-3ds-irrst 3ds_irrst.c support/3ds_guest.c)
     snx_test_target(snx-test-3ds-irrst gnu23)
