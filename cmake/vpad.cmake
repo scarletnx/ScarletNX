@@ -40,7 +40,8 @@ if(TARGET SDL3::SDL3)
     # parts through SnxMenuHost), and F1's text (help.c): its dialogs' text is the error's (snx_error's fatal_screen.c)
     include("${CMAKE_CURRENT_LIST_DIR}/error.cmake")
     add_library(snx_menu STATIC "${PROJECT_SOURCE_DIR}/src/common/utilities/overlay.c"
-                                "${PROJECT_SOURCE_DIR}/src/common/utilities/help.c")
+                                "${PROJECT_SOURCE_DIR}/src/common/utilities/help.c"
+                                "${PROJECT_SOURCE_DIR}/src/common/utilities/menu_sdl.c")
     target_include_directories(snx_menu PRIVATE "${PROJECT_BINARY_DIR}/generated")
     target_link_libraries(snx_menu PUBLIC snx_vpad_sdl snx_notice snx_error snx_settings_runtime)
     set_target_properties(snx_menu PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
