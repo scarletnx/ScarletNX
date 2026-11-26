@@ -10,6 +10,7 @@
 #include "agb/cpu/recomp.h"
 #include "agb/runtime/host.h"
 #include "agb/runtime/main.h"
+#include "common/cpu/recompiler/jit/jit_settings.h"
 #include "common/platform/time.h"
 #include "common/utilities/build_info.h"
 #include "common/utilities/cli.h"
@@ -398,6 +399,7 @@ int snx_agb_main(int argc, char** argv) {
             }
         }
         agb_cpu_init(&cpu, &board, map.base);
+        snx_jit_settings("scarletnx-agb", g_settings.perf_map, g_settings.gdb_jit_symbols);
         agb_recomp_init(&recomp, base);
         /* a recompile builds the module from every block the runs reached, the map's (another's that --jit-cache
            names); else the cache is loaded, and made when it is not there. --jit-only loads and makes none: the run

@@ -205,7 +205,7 @@ const SnxConsoleSetting g_console_settings[] = {
     {"native_etc2", OTHERS(NA(SWITCH_GPU))},
     {"bcn_astc", OTHERS(NA(SWITCH_GPU))},
     {"cpu_extensions", OTHERS(NA(SWITCH_CODE))},
-    {"gdb_jit", OTHERS(LATER(SOON))},
+    {"gdb_jit"},
     {"alias_pool", OTHERS(NA(SWITCH_OS))},
     {"guest_files", OTHERS(NA(SWITCH_OS))},
     {"write_tracking", OTHERS(NA(SWITCH_OS))},
@@ -283,7 +283,7 @@ const SnxConsoleSetting g_console_settings[] = {
     {"tracy_memory_callstack", OTHERS(LATER(SOON_TRACY))},
     {"tracy_lock_marks", OTHERS(LATER(SOON_TRACY))},
     {"tracy_gpu_zone_callstack", OTHERS(LATER(SOON_TRACY))},
-    {"perf_map", OTHERS(LATER(SOON))},
+    {"perf_map"},
     {NULL},
 };
 

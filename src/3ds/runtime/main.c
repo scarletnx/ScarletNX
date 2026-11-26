@@ -10,6 +10,7 @@
 #include "3ds/input/input.h"
 #include "3ds/board/clock.h"
 #include "3ds/services/uds.h"
+#include "common/cpu/recompiler/jit/jit_settings.h"
 #include "common/utilities/ascii.h"
 #include "common/utilities/cli.h"
 #include "common/utilities/common.h"
@@ -891,6 +892,7 @@ int snx_ctr_main(int argc, char** argv) {
         } else
             input = arg;
     }
+    snx_jit_settings("scarletnx-3ds", g_settings.perf_map, g_settings.gdb_jit_symbols);
     /* the console the Settings' ctr_model picks, under --model: auto leaves the choice to the game's own pick, its .ini
        and the rule */
     ConsoleFrom from = model_set ? CONSOLE_GIVEN : model_key && !launcher ? CONSOLE_AUTO : CONSOLE_UNSAID;

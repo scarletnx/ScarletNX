@@ -101,6 +101,8 @@ def main():
             '--gpu-driver=',
             '--vk-validation=1',
             '--gpu-pstate=auto',
+            '--perf-map=0',
+            '--gdb-jit=0',
         ):
             keys(args.runner, work, option)
         for option, said in (

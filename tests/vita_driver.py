@@ -66,6 +66,8 @@ def main():
             '--volume=40',
             '--gpu-pstate=auto',
             '--vk-pipeline-cache=1',
+            '--perf-map=0',
+            '--gdb-jit=0',
             '--help',
         ],
         0,

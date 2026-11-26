@@ -181,7 +181,7 @@ target_sources(snx_recompiler_core PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/native_c
 
 add_library(snx_recompiler_jit STATIC "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/exec.c" jit/jit_cache.c
                                       jit/jit_cache_key.c "${PROJECT_SOURCE_DIR}/src/common/cpu/arm/aot.c"
-                                      jit/jit_service.c)
+                                      jit/jit_service.c jit/jit_settings.c)
 set_target_properties(snx_recompiler_jit PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS ON)
 target_compile_options(snx_recompiler_jit PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 target_compile_definitions(snx_recompiler_jit PRIVATE _CRT_SECURE_NO_WARNINGS)
