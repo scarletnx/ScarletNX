@@ -1,11 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The on-screen controls (common/utilities/vpad.h) as the Switch's game has them, and the showcase drawn with their
-   looks */
-#ifndef SNX_NX_VPAD_H
-#define SNX_NX_VPAD_H
+/* The showcase, drawn with the on-screen controls' looks (common/utilities/vpad.h): the controller as the game gets it,
+   in every console's window */
+#ifndef SNX_VPAD_SHOWCASE_H
+#define SNX_VPAD_SHOWCASE_H
 #include "common/utilities/vpad.h"
-#include "nx/runtime/platform/ui.h"
+#include "common/utilities/ui_ring.h"
 
 /* counts the changes to showcase's place (its corner): what stats' box beside it lays out by */
 u32 vpad_showcase_place_version(void);
@@ -17,8 +17,9 @@ void vpad_showcase_input(u64 buttons, const i32 sticks[4]);
    more, at now_ns; -1 until the first half second is over */
 int vpad_showcase_fps(u32 presents, u64 now_ns);
 /* scale: the menu's letters' (overlay_place), the frames a second's too, a step smaller while they would not keep
-   above the box's row under them */
-void vpad_showcase_draw(SnxUiList* l, const int safe[4], int fps, int scale);
+   above the box's row under them. 2 when it is off (nothing drawn), 1 when laid out again, 0 for the kept quads. Only
+   the controls the window's console has (vpad_console) */
+int vpad_showcase_draw(SnxUiList* l, const int safe[4], int fps, int scale);
 /* the showcase's box on safe (x, y, w, h into box) and its corner, 0 top left, 1 top right, 2 bottom left, 3 bottom
    right; -1 while it is off */
 int vpad_showcase_box(const int safe[4], float box[4]);

@@ -26,7 +26,7 @@
 #include "common/gpu/vk/gpu_driver_load.h"
 #include "nx/runtime/platform/touch.h"
 #include "nx/runtime/platform/ui.h"
-#include "nx/runtime/platform/vpad.h"
+#include "common/utilities/vpad_showcase.h"
 #include "common/utilities/vpad_sdl.h"
 #include "nx/runtime/platform/gamepad.h"
 #include "nx/runtime/platform/joycon2.h"

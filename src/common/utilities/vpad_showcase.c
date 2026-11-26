@@ -1,10 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-#include "nx/runtime/platform/vpad.h"
-#include "nx/runtime/platform/tracy.h"
-#include "nx/runtime/platform/log.h"
-#include "nx/runtime/platform/stats.h"
-#include "nx/runtime/platform/ui.h"
+#include "common/utilities/vpad_showcase.h"
+#include "common/utilities/stats.h"
+#include "common/utilities/common.h"
 #include "gui/icons.h"
 #include "common/utilities/ui_colors.h"
 #include <math.h>
@@ -56,7 +54,7 @@ void vpad_showcase_corner_set(const IniOpt* o, const char* v) {
         return;
     }
     i = atomic_load_explicit(&g_corner, memory_order_relaxed);
-    LOG("settings: showcase_corner=%s is not tl, tr, bl or br: it keeps %s\n", v, CORNERS[i]);
+    snx_error("settings: showcase_corner=%s is not tl, tr, bl or br: it keeps %s", v, CORNERS[i]);
     snprintf((char*)o->var, o->size, "%s", CORNERS[i]);
 }
 void vpad_showcase_input(u64 buttons, const i32 sticks[4]) {
@@ -95,18 +93,15 @@ int vpad_showcase_box(const int safe[4], float box[4]) {
     box[3] = h;
     return corner;
 }
-void vpad_showcase_draw(SnxUiList* l, const int safe[4], int fps, int scale) {
+int vpad_showcase_draw(SnxUiList* l, const int safe[4], int fps, int scale) {
     float box[4];
-    SNX_ZONE(z_show, "plat vpad showcase draw");
-    if (vpad_showcase_box(safe, box) < 0) {
-        SNX_ZONE_VALUE(z_show, 2); /* hidden: the setting is off */
-        return;
-    }
+    int how = 0;
+    if (vpad_showcase_box(safe, box) < 0) return 2; /* hidden: the setting is off */
     if (atomic_load_explicit((_Atomic int*)&g_settings.stats, memory_order_relaxed))
         fps = -1; /* the stats panel says it already */
     if (!g_shown.laid || g_shown.drawn != g_show_version || g_shown.fps != fps || g_shown.scale != scale ||
         memcmp(g_shown.safe, safe, sizeof g_shown.safe)) {
-        SNX_ZONE_VALUE(z_show, 1); /* laid out again */
+        how = 1; /* laid out again */
         SnxUiList kept = {g_shown.q, 0, (int)(sizeof g_shown.q / sizeof g_shown.q[0])};
         showcase_draw(&kept, safe, fps, scale);
         g_shown.n = kept.n;
@@ -116,10 +111,9 @@ void vpad_showcase_draw(SnxUiList* l, const int safe[4], int fps, int scale) {
         g_shown.drawn = g_show_version;
         g_shown.laid = 1;
         ++g_shown.version;
-    } else
-        SNX_ZONE_VALUE(z_show, 0); /* kept quads */
+    }
     ui_append_kept(l, &(SnxUiList){g_shown.q, g_shown.n, g_shown.n}, g_shown.version, &g_shown, NULL);
-    SNX_PLOT("plat vpad showcase quads", (double)g_shown.n);
+    return how;
 }
 static void showcase_draw(SnxUiList* l, const int safe[4], int fps, int scale) {
     float box[4], x0, y0, w, h, r[4];
@@ -133,7 +127,7 @@ static void showcase_draw(SnxUiList* l, const int safe[4], int fps, int scale) {
     ui_fill(l, x0, y0, w, h, UI_INK); /* the layer's ground, as the stats' */
     for (c = 0; c < SNX_VPAD_COUNT; ++c) {
         float side = SHOWCASE[c][2] * h, aspect = vpad_aspect(c);
-        if (side <= 0) continue;
+        if (side <= 0 || !vpad_has(c)) continue;
         r[2] = aspect >= 1 ? side : side * aspect;
         r[3] = aspect >= 1 ? side / aspect : side;
         r[0] = x0 + SHOWCASE[c][0] * w - r[2] / 2;

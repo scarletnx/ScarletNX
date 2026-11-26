@@ -12,8 +12,8 @@
    game. On every system: a value it does not tell shows as ? */
 #ifndef SNX_STATS_H
 #define SNX_STATS_H
-#include "nx/runtime/platform/ui.h"
-#include "nx/runtime/ini.h"
+#include "common/utilities/ui_ring.h"
+#include "snx_settings.h"
 #include "gui/icons.h"
 
 #define STATS_FRAMES 120   /* the frames the graph shows */

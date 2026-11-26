@@ -83,6 +83,8 @@ static uint16_t key_of(int scancode) {
 }
 
 /* a gamepad's control, by the Switch's bit the map gives it: A, B, X, Y, the shoulders and triggers, +, -, the pad */
+static uint16_t button_of(int bit);
+static unsigned nds_key(int bit) { return button_of(bit); }
 static uint16_t button_of(int bit) {
     switch (bit) {
         case 0: return 0x001;
@@ -291,6 +293,7 @@ bool nds_host_poll(NdsHost* host, NdsInput* input) {
             if (pressed >> bit & 1) input->keys |= button_of(bit);
         pen_read(host, input);
         if (vpad_editing()) input->keys = 0, input->touching = 0;
+        snx_vpad_window_showcase(input->keys, nds_key, NULL);
     }
     return open;
 }

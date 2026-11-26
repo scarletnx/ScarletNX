@@ -25,7 +25,7 @@
 #include "nx/runtime/platform/overlay.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/unattended.h"
-#include "nx/runtime/platform/vpad.h"
+#include "common/utilities/vpad_showcase.h"
 #include "common/utilities/bits.h"
 #include <math.h>
 #include <stdio.h>

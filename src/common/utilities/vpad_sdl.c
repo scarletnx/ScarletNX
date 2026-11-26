@@ -4,16 +4,20 @@
 #include "common/utilities/game_ini.h"
 #include "common/utilities/hotkeys.h"
 #include "common/utilities/key_said.h"
+#include "common/utilities/pad_map.h"
 #include "common/utilities/pace.h"
 #include "common/utilities/state_header.h"
+#include "common/utilities/stats.h"
+#include "common/utilities/vpad_showcase.h"
 #include <stdarg.h>
+#include <stdatomic.h>
 #include "common/utilities/notice.h"
 #include "common/utilities/quit_key.h"
 #include "common/utilities/ui_colors.h"
 #include <stdlib.h>
 #include <string.h>
 
-#define QUADS 2304 /* the controls' (vpad.c) and a line of letters */
+#define QUADS 4096 /* the controls' (vpad.c), a line of letters, the showcase's and the stats' box */
 
 static struct {
     SDL_Window* window;
@@ -31,6 +35,8 @@ static struct {
     uint64_t quit_by; /* a second Back before this quits (quit_key.h), the first one's line shown until then */
     SnxUiRects rects;
     int made, warned, w, h; /* what the rectangles are made for: a first time, with the line or not, the picture */
+    int over;               /* and with the showcase or the stats, which change every frame */
+    u32 presents;           /* the frames presented, the showcase's frames a second */
     SnxUiQuad quads[QUADS];
 } g_vpad_sdl;
 
@@ -294,6 +300,19 @@ static SnxVpadEvent key_event(const SDL_KeyboardEvent* k, int* action) {
         if (g_vpad_sdl.show) g_vpad_sdl.show(line);
         return SNX_VPAD_TAKEN;
     }
+    if (a == HOTKEY_STATS || a == HOTKEY_SHOWCASE) { /* on or off for the run, as a Switch game's F12 and F6 */
+        bool stats = a == HOTKEY_STATS;
+        _Atomic int* setting = stats ? (_Atomic int*)&g_settings.stats : (_Atomic int*)&g_settings.showcase;
+        const char* what = stats ? "Stats" : "Showcase";
+        int on = !atomic_load_explicit(setting, memory_order_relaxed);
+        char line[96];
+        atomic_store_explicit(setting, on, memory_order_relaxed); /* the renderer's thread reads it */
+        snx_key_said(line, sizeof line, what, on ? "on" : "off", on ? "off" : "on");
+        if (g_vpad_sdl.say) g_vpad_sdl.say(line);
+        snx_key_now(line, sizeof line, what, on ? "on" : "off");
+        if (g_vpad_sdl.show) g_vpad_sdl.show(line);
+        return SNX_VPAD_TAKEN;
+    }
     if (a == HOTKEY_PAUSE) {
         char line[96];
         g_vpad_sdl.paused = !g_vpad_sdl.paused;
@@ -391,21 +410,40 @@ static void warning_draw(SnxUiList* l, const int safe[4], int scale) {
     ui_fill(l, x, y, w, h, UI_INK);
     ui_text(l, x + (float)(8 * scale), y + (float)(4 * scale), scale, line, UI_PAGE);
 }
+void snx_vpad_window_showcase(u64 keys, unsigned (*key)(int bit), const i32 sticks[4]) {
+    u64 buttons = 0;
+    for (int bit = 0; bit < SNX_PAD_BUTTONS; ++bit) {
+        unsigned k = key(bit);
+        if (k && (keys & k) == k) buttons |= 1ull << bit;
+    }
+    ui_lock();
+    vpad_showcase_input(buttons, sticks ? sticks : (const i32[4]){0});
+    ui_unlock();
+}
 const SnxUiRects* snx_vpad_window_rects(int w, int h) {
     int safe[4], percent;
     if (!g_vpad_sdl.window || w <= 0 || h <= 0) return NULL;
     SnxUiList l = {g_vpad_sdl.quads, 0, QUADS};
+    u64 now = SDL_GetTicksNS();
+    ++g_vpad_sdl.presents;
+    stats_frame(now, &(SnxStatsGpu){0}); /* the GPU's numbers are the Switch's renderer's alone: shown as ? */
     snx_vpad_window_safe(safe);
     percent = snx_display_percent(SDL_GetWindowDisplayScale(g_vpad_sdl.window));
     int scale = snx_menu_scale(w, h, percent), how = vpad_draw(&l, safe, scale);
-    if (how == VPAD_DRAW_HIDDEN) return NULL;
-    int warn = vpad_editing() && SDL_GetTicksNS() < g_vpad_sdl.quit_by;
-    if (how == VPAD_DRAW_LAID || !g_vpad_sdl.made || warn != g_vpad_sdl.warned || w != g_vpad_sdl.w ||
-        h != g_vpad_sdl.h) {
+    ui_lock();
+    int over = vpad_showcase_draw(&l, safe, vpad_showcase_fps(g_vpad_sdl.presents, now), scale) != 2;
+    int before = l.n;
+    stats_draw(&l, safe, scale, now);
+    ui_unlock();
+    over |= l.n > before;
+    if (how == VPAD_DRAW_HIDDEN && !over && !g_vpad_sdl.over) return NULL;
+    int warn = vpad_editing() && now < g_vpad_sdl.quit_by;
+    if (how == VPAD_DRAW_LAID || over || g_vpad_sdl.over || !g_vpad_sdl.made || warn != g_vpad_sdl.warned ||
+        w != g_vpad_sdl.w || h != g_vpad_sdl.h) {
         if (warn) warning_draw(&l, safe, scale);
         if (!snx_ui_rects(&g_vpad_sdl.rects, &l, w, h) && g_vpad_sdl.say)
             g_vpad_sdl.say("out of memory for the on-screen controls' picture: they are not drawn");
-        g_vpad_sdl.made = 1, g_vpad_sdl.warned = warn;
+        g_vpad_sdl.made = 1, g_vpad_sdl.warned = warn, g_vpad_sdl.over = over;
         g_vpad_sdl.w = w, g_vpad_sdl.h = h;
     }
     return g_vpad_sdl.rects.count ? &g_vpad_sdl.rects : NULL;

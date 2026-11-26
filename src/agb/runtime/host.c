@@ -63,6 +63,7 @@ uint16_t agb_host_key(int scancode) {
     }
 }
 
+static unsigned agb_key(int bit) { return agb_host_button(bit); }
 uint16_t agb_host_button(int bit) {
     switch (bit) {
         case 0: return AGB_KEY_A;
@@ -239,6 +240,7 @@ bool agb_host_poll(AgbHost* host, uint16_t* keys) {
     for (int bit = 0; bit < SNX_PAD_BUTTONS; ++bit)
         if (pressed >> bit & 1) *keys |= agb_host_button(bit);
     if (vpad_editing()) *keys = 0;
+    snx_vpad_window_showcase(*keys, agb_key, NULL);
     return open;
 }
 

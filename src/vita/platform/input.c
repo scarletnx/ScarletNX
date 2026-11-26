@@ -26,6 +26,7 @@
 #define UNSET4     SNX_PAD_UNSET, SNX_PAD_UNSET, SNX_PAD_UNSET, SNX_PAD_UNSET
 typedef char input_map_controls[SNX_PAD_CONTROLS == 16 ? 1 : -1]; /* the four UNSET4 of g_input.map */
 /* the Vita's bit for each of the Switch's buttons (pad_map.h's) by where it sits, 0 where the Vita has none */
+static unsigned vita_key(int bit);
 static const unsigned VITA_BITS[SNX_PAD_BUTTONS] = {
     VITA_CTRL_CIRCLE,   /* A, east */
     VITA_CTRL_CROSS,    /* B, south */
@@ -44,6 +45,7 @@ static const unsigned VITA_BITS[SNX_PAD_BUTTONS] = {
     VITA_CTRL_RIGHT,    /* Right */
     VITA_CTRL_DOWN,     /* Down */
 };
+static unsigned vita_key(int bit) { return VITA_BITS[bit]; }
 
 static struct {
     SDL_Gamepad* pads[INPUT_PADS];
@@ -193,6 +195,12 @@ void vita_input_read(VitaInput* input) {
     }
     input->lx = stick(sticks[0]), input->ly = stick(sticks[1]);
     input->rx = stick(sticks[2]), input->ry = stick(sticks[3]);
+    {
+        i32 shown[4]; /* the Switch's way, up positive */
+        for (unsigned s = 0; s < 4; ++s)
+            shown[s] = (i32)lrintf(fminf(fmaxf(sticks[s], -1), 1) * (s & 1 ? -32767 : 32767));
+        snx_vpad_window_showcase(input->buttons, vita_key, shown);
+    }
 }
 void vita_input_free(void) {
     snx_pads_close(g_input.pads, INPUT_PADS);

@@ -9,6 +9,7 @@
 #include "common/utilities/ascii.h"
 #include "common/utilities/game_ini.h"
 #include "common/utilities/vpad.h"
+#include "common/utilities/vpad_showcase.h"
 #include "common/utilities/vpad_consoles.h"
 #include <math.h>
 #include <stdio.h>
@@ -208,6 +209,19 @@ int main(void) {
     SnxUiList l = {quads, 0, 256};
     vpad_defaults(&g_switch);
     if (switch_tall()) return 1;
+    { /* the showcase draws the window's console's controls alone: the GBA's has no ZL, no sticks */
+        static SnxUiQuad sq[512];
+        static const int at[4] = {0, 0, 2340, 1080};
+        SnxUiList whole = {sq, 0, 512}, gba = {sq, 0, 512};
+        g_settings.showcase = 1;
+        CHECK(vpad_showcase_draw(&whole, at, -1, 2) == 1 && vpad_has(SNX_VPAD_ZL));
+        vpad_console(&snx_vpad_gba);
+        vpad_showcase_input(1, (const i32[4]){0}); /* a change, so it is laid out again */
+        CHECK(vpad_showcase_draw(&gba, at, -1, 2) == 1 && !vpad_has(SNX_VPAD_ZL) && vpad_has(SNX_VPAD_L));
+        CHECK(gba.n > 0 && gba.n < whole.n);
+        vpad_console(NULL);
+        g_settings.showcase = 0;
+    }
     vpad_set_say(say);
     vpad_set_store(store);
     vpad_console(&none);
