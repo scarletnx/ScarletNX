@@ -30,6 +30,9 @@ static inline int snx_display_percent(float scale) { return scale > 0.0f ? (int)
    scale times 100): its tallest page in half the picture, or twice the display's scale where that is more, within
    three quarters of the picture; 1 at least */
 int snx_menu_scale(int sw, int sh, int percent);
+/* the columns the Switch game's menu panel takes at scale on a picture sw wide: as many as three quarters of it holds,
+   within SNX_MENU_COLS and SNX_NOTICE_COLS. The error's panel takes as many */
+int snx_menu_cols(int sw, int scale);
 /* a notice's letters' scale there: one under the menu's, as the Switch's notice and stats box draw theirs */
 int snx_notice_scale(int sw, int sh, int percent);
 /* the band of n's text at scale on a picture sw by sh: its left, top, width and height into rect, cut by the picture's

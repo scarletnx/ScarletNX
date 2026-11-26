@@ -25,6 +25,11 @@ int snx_menu_scale(int sw, int sh, int percent) {
     return s < 1 ? 1 : s;
 }
 
+int snx_menu_cols(int sw, int scale) {
+    int cols = sw * 3 / 4 / (8 * (scale < 1 ? 1 : scale));
+    return cols < SNX_MENU_COLS ? SNX_MENU_COLS : cols > SNX_NOTICE_COLS ? SNX_NOTICE_COLS : cols;
+}
+
 int snx_notice_scale(int sw, int sh, int percent) {
     int s = snx_menu_scale(sw, sh, percent);
     return s > 1 ? s - 1 : 1;

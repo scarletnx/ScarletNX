@@ -22,7 +22,7 @@
 #include "nx/runtime/platform/ctrl_applet.h"
 #include "nx/runtime/platform/ctrl_scan.h"
 #include "nx/runtime/platform/connect.h"
-#include "nx/runtime/platform/fatal_screen.h"
+#include "common/utilities/fatal_screen.h"
 #include "common/gpu/vk/gpu_driver_load.h"
 #include "nx/runtime/platform/touch.h"
 #include "nx/runtime/platform/ui.h"

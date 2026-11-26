@@ -4,7 +4,7 @@
 #include "nx/runtime/platform/ctrl_applet.h"
 #include "nx/runtime/platform/tracy.h"
 #include "nx/runtime/platform/backend.h"
-#include "nx/runtime/platform/fatal_screen.h"
+#include "common/utilities/fatal_screen.h"
 #include "nx/runtime/platform/gamepad.h"
 #include "common/utilities/hotkeys.h"
 #include "nx/runtime/platform/hud.h"
@@ -1136,10 +1136,7 @@ void overlay_place(int sw, int sh, int* x, int* y, int* scale) {
     *x = (sw - overlay_cols(sw, *scale) * 8 * *scale) / 2;
     *y = (sh - rows() * 16 * *scale) / 2;
 }
-int overlay_cols(int sw, int scale) {
-    int cols = sw * 3 / 4 / (8 * (scale < 1 ? 1 : scale));
-    return cols < OVERLAY_COLS ? OVERLAY_COLS : cols > OVERLAY_COLS_MAX ? OVERLAY_COLS_MAX : cols;
-}
+int overlay_cols(int sw, int scale) { return snx_menu_cols(sw, scale); }
 /* ---- a dialog over the game: the menu's pages and a stopped game's panel, laid out and drawn as one ---- */
 enum { DIALOG_PARAS = 6, DIALOG_LINES = 12 };
 typedef struct {
