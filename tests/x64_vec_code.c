@@ -27,6 +27,8 @@
 #define NEEDS_AES     4096u
 #define NEEDS_AVX     1024u
 #define NEEDS_FMA     2048u
+/* no feature: the function is made with the stale check a game's have (SnxNativeOptions.stale) */
+#define WITH_STALE    0x80000000u
 /* ROUNDPS and ROUNDPD (66 0F 3A 08 and 09) and their VEX.128 forms (C4, two bytes, 08 or 09) */
 #define ROUNDPS       "66 0F 3A 08|66 0F 3A 09|C4 ?? ?? 08|C4 ?? ?? 09"
 /* MOV R9D, the descriptor of FMULX of four singles (x64_vec.c's FDESC): the vector helper's, on the cold path */
@@ -53,9 +55,15 @@
    AESDECLAST (66 0F 38 DF) and AESDEC (66 0F 38 DE) below */
 #define GF2P8AFFINEQB "66 0F 3A CE|C4 ?? ?? CE"
 
+/* PEXTRB, PEXTRW, PEXTRD/Q, PINSRB, PINSRD/Q (66 [REX] 0F 3A 14, 15, 16, 20, 22) and PINSRW, PEXTRW (66 [REX] 0F C4, C5) */
+#define ELEMENT       "0F 3A 14|0F 3A 15|0F 3A 16|0F 3A 20|0F 3A 22|66 0F C4|66 0F C5"
+/* CMP byte [rip + disp32], 0, the stale check; CMP RSI, imm32, the entry against the function's start */
+#define STALE_TEST    "80 3D ?? ?? ?? ?? 00"
+#define ENTRY_COMPARE "48 81 FE 00 00 01 00"
+
 typedef struct {
     const char* what;
-    unsigned needs, without; /* the host's features; those it goes without */
+    unsigned needs, without; /* the host's features (and WITH_STALE); those it goes without */
     unsigned bytes;          /* the most the function takes */
     int fpsr;                /* the writes of FPSR, -1 not counted */
     const char* has;         /* bytes the code has (hex, ?? any), one form's encodings or another's (|); after a !
@@ -153,6 +161,24 @@ static const Row k_rows[] = {
      "D2800C90 4EFF8463 6E221C70 6E301FDE 4EFF8484 6E221C91 6E311FDE 4EFF84A5 6E221CB2 6E321FDE 4EFF84C6 6E221CD3 "
      "6E331FDE 4EFF84E7 6E221CF4 6E341FDE 4EFF8508 6E221D15 6E351FDE 4EFF8529 6E221D36 6E361FDE 4EFF854A 6E221D57 "
      "6E371FDE F1000610 54FFFCE1"},
+    /* the bytes' carryless products on whole vectors, where a lane at a time was thousands of bytes */
+    {"pmul v0.16b, v1.16b, v2.16b", 0, 0, 304, -1, NULL, "6E229C20"},
+    {"pmull v0.8h, v1.8b, v2.8b", 0, 0, 368, -1, NULL, "0E22E020"},
+    /* whole structures in 16-byte chunks: no PEXTR or PINSR of an element (66 0F 3A 14 to 16, 20 and 22; 66 0F C4, C5) */
+    {"ld2 {v0.16b, v1.16b}, [x1]", 0, 0, 160, -1, "!" ELEMENT, "4C408020"},
+    {"ld3 {v0.8b, v1.8b, v2.8b}, [x1]", 0, 0, 272, -1, "!" ELEMENT, "0C404020"},
+    {"st2 {v0.8b, v1.8b}, [x1]", 0, 0, 80, -1, "!" ELEMENT, "0C008020"},
+    {"st4 {v0.16b, v1.16b, v2.16b, v3.16b}, [x1]", 0, 0, 144, -1, "!" ELEMENT, "4C000020"},
+    /* INS of an element: no general-purpose register between the two (MOVQ r64, xmm: 66 REX.W 0F 7E) */
+    {"ins v0.s[1], v1.s[0]", 0, 0, 80, -1, "!66 48 0F 7E|66 49 0F 7E|66 4C 0F 7E|66 4D 0F 7E", "6E0C0420"},
+    {"ins v0.b[3], w1", 0, 0, 64, -1, NULL, "4E071C20"},
+    /* a function nothing enters but at its start keeps its stale check (CMP byte [rip + snx_stale], 0), without the
+       compare of the entry with its start (CMP RSI, imm32); one of two leaders (a B.NE back to its second word) has both */
+    {"add x0, x1, x2 with a stale check: the check", WITH_STALE, 0, 80, -1, "=1 " STALE_TEST, "8B020020"},
+    {"add x0, x1, x2 with a stale check: no compare of the entry", WITH_STALE, 0, 80, -1, "!" ENTRY_COMPARE,
+     "8B020020"},
+    {"add, subs, b.ne back to the subs, with a stale check: the entry's compare", WITH_STALE, 0, 416, -1, ENTRY_COMPARE,
+     "8B020020 F1000610 54FFFFE1"},
 };
 
 static struct {
@@ -210,7 +236,7 @@ static void check(const Row* row, int print) {
     const unsigned char* text;
     const SnxU64 hint = BASE;
     SnxCodeImage module = {.image = image, .base = BASE};
-    SnxNativeOptions options = {0};
+    SnxNativeOptions options = {.stale = (row->needs & WITH_STALE) != 0};
     unsigned char made[4] = {0};
     uint32_t words[MOST];
     size_t size = 0, length = 0;
@@ -276,7 +302,7 @@ int main(int argc, char** argv) {
         return 77;
     }
     for (size_t i = 0; i < sizeof k_rows / sizeof *k_rows; ++i) {
-        if ((snx_x64_features() & k_rows[i].needs) != k_rows[i].needs) continue;
+        if ((snx_x64_features() & k_rows[i].needs & ~WITH_STALE) != (k_rows[i].needs & ~WITH_STALE)) continue;
         check(&k_rows[i], print);
         ++done;
     }

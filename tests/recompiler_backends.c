@@ -10,8 +10,8 @@
    make the functions (snx_recompiled_x64_functions).
      snx-test-recompiler-backends [--functions N] [--states N] [--seed N] [--without MASK] [--target NAME] [--verbose]
          [--hook] [--jit] [--words HEX...] [--made] [--ops OP...] [--refused] [--coverage] [--counts FILE]
-         [--counts-blocks N FILE] [--qemu QEMU RUNNER DIR] [--programs] [--calls] [--calls-back] [--long N BYTES]
-         [--cpu NAME] [--frozen FILE]
+         [--counts-blocks N FILE] [--stale] [--qemu QEMU RUNNER DIR] [--programs] [--calls] [--calls-back]
+         [--long N BYTES] [--cpu NAME] [--frozen FILE]
    --without MASK: the back end goes without these features of the host, as on a host that lacks them: x86-64's
    (sailgen's SGX_F_*: FMA 0x800, AVX 0x400, F16C 0x100, BMI1, BMI2 and LZCNT 7, AES-NI 0x1000, SHA-NI 0x2000), arm64's
    (SNX_ARM64_F_*: 0x7ffff all of them). Another machine's back end has none to go without: it is skipped
@@ -43,6 +43,7 @@
    --counts FILE: each target op's words with RETs, the native object's bytes: OP, name, size, then a line of hex
    --counts-blocks N FILE: the same records, but N guest words in each function before its RET, so the prologue and
    epilogue are shared; a word that ends its block (a branch out, a RET, a BRK or an UNDEF) ends the function there
+   --stale: --counts' and --counts-blocks' functions with the stale check a game's have (SnxNativeOptions.stale)
    On a host with no native back end it is skipped, saying so.
 
    Built with SNX_TEST_ARM64 or SNX_TEST_RV64 (snx-test-recompiler-arm64, -rv64), the same programs hold that native
@@ -765,6 +766,7 @@ static void function_words(const uint8_t* mem, uint64_t at, char* text, size_t s
         if (w == 0xD65F03C0u) break;
     }
 }
+static int g_stale; /* --stale */
 static void undef(CPU* c, uint64_t pc, uint32_t word) {
     /* what it was passed, in the state the sides are compared by; not QEMU's, which has no RET of a word's X30 */
     if (!g_qemu) c->x[17] ^= pc ^ (uint64_t)word << 32;
@@ -992,7 +994,7 @@ static int counts_write(const char* path, unsigned block) {
     for (i = 0; i < count && !bad; i = j) {
         SnxCodegen cg;
         SnxCodeImage view = {0};
-        SnxNativeOptions options = {0};
+        SnxNativeOptions options = {.stale = g_stale};
         unsigned char *made, *object = NULL;
         size_t object_size = 0;
         char error[256];
@@ -1419,6 +1421,8 @@ int main(int argc, char** argv) {
             must_make = 1;
         else if (!strcmp(argv[i], "--coverage"))
             refused = 2;
+        else if (!strcmp(argv[i], "--stale"))
+            g_stale = 1;
         else if (!strcmp(argv[i], "--counts") && i + 1 < (unsigned)argc)
             counts = argv[++i];
         else if (!strcmp(argv[i], "--counts-blocks") && i + 2 < (unsigned)argc) {
