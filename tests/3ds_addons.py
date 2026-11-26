@@ -47,8 +47,8 @@ def main():
         ini = folder / f'{TITLE:016X}.ini'
 
         def run(*args, status=0):
-            p = subprocess.run(
-                [str(driver), '--data', str(data), *args],
+            p = subprocess.run(  # headless: no one is at its window, which a host without Vulkan would stop on
+                [str(driver), '--data', str(data), '--headless', *args],
                 capture_output=True,
                 text=True,
                 cwd=root,
