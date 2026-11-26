@@ -110,9 +110,9 @@ static const Row k_rows[] = {
     {"smaxp v0.4s, v1.4s, v2.4s", 0, 0, 224, -1, NULL, "4EA2A420"},
     {"add v0.16b, v1.16b, v2.16b (one operand from the state)", NEEDS_AVX, 0, 208, -1, "=1 " MOVDQU_LOAD, "4E228420"},
     {"uzp2 v0.16b, v1.16b, v2.16b (the masks from the pool)", NEEDS_AVX, 0, 272, -1, "=2 " MOVDQU_LOAD, "4E025820"},
-    {"frinta v0.4s, v1.4s", 0, 0, 576, -1, ROUNDPS, "6E218820"},
+    {"frinta v0.4s, v1.4s", 0, 0, 672, -1, ROUNDPS, "6E218820"},
     {"frinta s0, s1", 0, 0, 448, -1, ROUNDPS, "1E264020"},
-    {"fcvtas v0.4s, v1.4s", 0, 0, 608, -1, ROUNDPS, "4E21C820"},
+    {"fcvtas v0.4s, v1.4s", 0, 0, 704, -1, ROUNDPS, "4E21C820"},
     {"fcvtas s0, s1", 0, 0, 512, -1, ROUNDPS, "5E21C820"},
     {"fmulx v0.4s, v1.4s, v2.4s", 0, 0, 880, -1, FMULX_4S, "4E22DC20"},
     {"fmulx v0.4s, v1.4s, v2.s[1]", 0, 0, 880, -1, FMULX_4S, "6FA29020"},
@@ -121,6 +121,9 @@ static const Row k_rows[] = {
     {"fmla v0.4s, v1.4s, v2.4s (the hot code's one lane mask)", NEEDS_FMA, 0, 928, -1, "=1 " MOVMSKPS, "4E22CC20"},
     {"fmax v0.4s, v1.4s, v2.4s (the hot code's one lane mask)", 0, 0, 656, -1, "=1 " MOVMSKPS, "4E22F420"},
     {"fcmeq v0.4s, v1.4s, v2.4s (the hot code's one lane mask)", 0, 0, 640, -1, "=1 " MOVMSKPS, "4E22E420"},
+    {"fsqrt v0.4s, v1.4s (the hot code's one lane mask)", 0, 0, 784, -1, "=1 " MOVMSKPS, "6EA1F820"},
+    {"frintm v0.4s, v1.4s (the hot code's one lane mask)", 0, 0, 576, -1, "=1 " MOVMSKPS, "4E219820"},
+    {"fcvtzs v0.4s, v1.4s (the hot code's one lane mask)", 0, 0, 608, -1, "=1 " MOVMSKPS, "4EA1B820"},
 };
 
 static struct {
