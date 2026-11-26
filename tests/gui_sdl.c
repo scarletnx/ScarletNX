@@ -6121,7 +6121,10 @@ static void recompile_queue(App* app) {
     job_step(app, 100);
     job_end(app);
     assert(app->queue.job[1].state == GUI_JOB_FAILED && app->queue.job[1].status == 3 && app->log_due);
-    assert(!strcmp(app->message, "queue game fails: Recompile failed (status 3).") && tab_reads(app, "Compile FAILED"));
+    /* the driver's reason in the line, which the row has no room for */
+    assert(!strcmp(app->message, "queue game fails: Recompile failed (status 3). the game's code at 0x1000 is no "
+                                 "instruction: test") &&
+           tab_reads(app, "Compile FAILED"));
     assert(SDL_GetWindowProgressState(app->window) == SDL_PROGRESS_STATE_ERROR);
     {
         GuiPlace p;
@@ -8000,6 +8003,7 @@ int main(int argc, char** argv) {
         for (int i = 3; i < argc; ++i) /* B's: what the cache gave, as the driver says it */
             if (!strcmp(argv[i], "--jit-cache")) puts("AOT pack: 3 functions from the cache");
         printf("Built %s\n", name);
+        if (strstr(argv[2], "fails")) puts("scarletnx: the game's code at 0x1000 is no instruction: test");
         free(at);
         free(pid);
         free(step);

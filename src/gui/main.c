@@ -22246,6 +22246,23 @@ static void job_play(App* app, int i) {
 }
 /* the recompile running ended with status: its line kept as it ended (its output with it, for its row), the end of
    its log; one aborted taken out. Games and the recent ones follow what it made */
+/* the last stop of the newest run in the log at path, after its "$ " line (a log of the queue holds each of its runs):
+   into out, "" for none */
+static void log_stop(const char* path, char* out, size_t size) {
+    size_t n = 0;
+    char* text = path ? (char*)snx_read_file(path, &n) : NULL;
+    out[0] = 0;
+    for (char *line = text, *next; line && *line; line = next) {
+        const char* why;
+        next = strchr(line, '\n');
+        if (next) *next++ = 0;
+        if (!strncmp(line, "$ ", 2))
+            out[0] = 0;
+        else if ((why = stop_of(line)))
+            snprintf(out, size, "%s", why);
+    }
+    free(text);
+}
 static void job_ended(App* app, int i, int status) {
     GuiJob* job = &app->queue.job[i];
     bool aborted = app->job_aborting, failed = aborted || status != 0;
@@ -22321,6 +22338,11 @@ static void job_ended(App* app, int i, int status) {
     app->ended_serial = job->serial;
     if (failed) app->log_due = true; /* Share Log blinks, its log holding this one's output */
     snprintf(app->message, sizeof app->message, "%s: %s", name, job->said);
+    if (failed) { /* and why, as the driver said it: the row has room for its status alone */
+        char why[sizeof app->message];
+        log_stop(app->job_log, why, sizeof why);
+        if (why[0]) snprintf(app->message, sizeof app->message, "%s: %s %s", name, job->said, why);
+    }
     if (!failed && job->console == GUI_GBA && job->kind != GUI_JOB_AOT) cover_made(app, i);
 #ifdef SDL_PLATFORM_ANDROID
     app->told_result = failed                         ? SNX_TR_NOOP("Failed")
