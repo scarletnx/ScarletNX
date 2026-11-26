@@ -87,6 +87,9 @@ enum { SNX_CTR_RECOMPILE = 1, SNX_CTR_COMPILE_ONLY = 2 };
    is off (snx_ctr_ipc_stub_mask). runtime: the program copied into the folder as the game's own once its module is
    ready (snx_ctr_game_file's name, .exe on Windows), NULL for none. asked: the recompile's options (ctr_compile.h),
    NULL for none */
+/* the run's command line, before snx_ctr_aot_run: the window's settings (the runtime's keys, the on-screen controls,
+   state_save and state_load) are read from it with the game's .ini and picks, in vpad_settings' order */
+void snx_ctr_aot_command_line(int argc, char** argv);
 int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel model, uint64_t limit, double seconds,
                     uint64_t frames, bool headless, const char* shot, unsigned flags, uint32_t ipc_stubs,
                     const char* runtime, const SnxCliRecompile* asked, char* error, size_t error_size);
