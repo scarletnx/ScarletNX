@@ -24,9 +24,10 @@
      sailgen --isel PAGES --ops OPS [--source TEXT] -o OUT [--report REPORT]
          writes OUT, the x86-64 back end's instruction selection out of PAGES (--sdm's) and the back end's primitives OPS
          (x64.ops), with TEXT, where PAGES are from, in its header; REPORT, what was selected and what could not be read
-     sailgen --encoders PREFIX [--roots ROOTS] -o OUT INPUT...
-         writes OUT, an encoder for each clause of the scattered decode function PREFIX (__DecodeA64) of INPUT, or of
-         those that call a root of ROOTS (enc.c): the instruction table of a back end that writes that architecture
+     sailgen --encoders PREFIX [--roots ROOTS] [--profile PROFILE] -o OUT INPUT... [--overlay FILE]...
+         writes OUT, an encoder for each clause of the scattered decode function PREFIX (__DecodeA64) of INPUT and the
+         overlays, or of those that call a root of ROOTS (enc.c): the instruction table of a back end that writes that
+         architecture, with what each clause's code reaches of FPCR and FPSR under PROFILE's features
 
    OUT is only rewritten when it changes. tools/sailgen/README.md describes the generated code */
 #include "sailgen.h"
@@ -155,7 +156,8 @@ static int usage(const char* why) {
             "       sailgen --gpu ROOTS --backend FILE [--backend FILE]... -o OUT INPUT... [--overlay FILE]...\n"
             "       sailgen --sdm TEXT -o PAGES [--overlay OVERRIDE]...\n"
             "       sailgen --isel PAGES --ops OPS [--source TEXT] -o OUT [--report REPORT]\n"
-            "       sailgen --encoders PREFIX [--roots ROOTS] -o OUT INPUT...\n",
+            "       sailgen --encoders PREFIX [--roots ROOTS] [--profile PROFILE] -o OUT INPUT...\n"
+            "               [--overlay FILE]...\n",
             why);
     return 2;
 }
@@ -220,8 +222,8 @@ int main(int argc, char** argv) {
     }
     if (!strcmp(mode, "--encoders")) {
         if (!out || !count) return usage("--encoders writes -o OUT from the Sail's files");
-        if (backend_count || profile) return usage("--encoders takes no back end and no profile");
-        return sg_encoders(roots, enc_roots, inputs, count, out);
+        if (backend_count) return usage("--encoders takes no back end");
+        return sg_encoders(roots, enc_roots, inputs, overlays, count, profile, out);
     }
     if (!strcmp(mode, "--sdm")) {
         /* the SDM's text, and the overrides: no Sail */

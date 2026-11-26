@@ -333,7 +333,7 @@ shader tests (`shader_sm86`, `shader_direct`, `shader_sm86_gpu`...) run the gene
 ## Encoders (`--encoders`)
 
 ```sh
-sailgen --encoders __DecodeA64 [--roots ROOTS] -o a64_enc.inc a64.sail
+sailgen --encoders __DecodeA64 [--roots ROOTS] --profile a64.profile -o a64_enc.inc a64.sail --overlay nx.sail
 ```
 
 A back end that writes an architecture's own code takes its encodings from that architecture's Sail, the same
@@ -353,6 +353,16 @@ alike get the shortest tail of the name that tells them apart: `ldr_imm_gen_post
 instructions the guest's emitters make by hand or not at all (B, MRS, SVC, the Advanced SIMD) have encoders too
 (`--extract`'s `encode NAME`: the clauses of a decode function, or of every scattered function NAME begins).
 `tests/sailgen_encoders.c` (`sailgen_encoders`) holds them to words the Arm ARM gives.
+
+Each clause's `fp` in the table says what its code reaches of the floating-point control and status registers, with
+the overlays and the profile as `--generate` takes them: 0 nothing, 1 FPCR read or FPSR written (a saturation's QC),
+2 FPCR given to a function the back end lowers, or one that reads it by itself (FPRecipStepFused), what its lowering
+reads being the back end's. The code is walked as the generator folds it: a field the pattern fixes whole known (SSHL's
+S, which leaves its saturation out), a feature the profile names in no feature line false (FEAT_AFP's FPCR.AH in
+FABS), an if or a match down its known side, FPCR_read's value followed to where something reads it; every guess is
+the one that reaches more. The arm64 back end runs an Advanced SIMD or floating-point word as the host's own
+instruction, under the guest's FPCR only where a clause with the word's bits has an `fp` (`arm64_vec.c`);
+`tests/arm64_fpenv_code.c` holds that to the Sail's own code of each clause the arm64 Sail makes.
 
 ## The x86-64 back end
 

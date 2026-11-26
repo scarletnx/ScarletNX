@@ -3639,8 +3639,7 @@ static long long root_since(const char* root) {
     return 0;
 }
 
-/* the FEAT_ words of the profile's feature lines (a64.profile: "feature v8.0 FEAT_CRC32 ..."), " A B ", in capitals */
-static char* profile_features(const char* path) {
+char* sg_profile_features(const char* path) {
     size_t size, i, at = 0;
     char* text = sg_read(path, &size);
     char* out = (char*)malloc(size + 2);
@@ -3694,7 +3693,7 @@ int sg_generate(const char* roots_path, const char* const* backend_paths, int ba
         g_gen.backend_name = base ? base + 1 : last;
     }
     g_gen.backend_code = backend_code(backend, backend_size);
-    g_gen.features = profile_path ? profile_features(profile_path) : NULL;
+    g_gen.features = profile_path ? sg_profile_features(profile_path) : NULL;
     if (profile_path) profile_since(profile_path);
     if (g_gen.since_count && !backend_defines_function("sg_ArchVersion"))
         sg_fail(0, "%s: since lines need the back end's sg_ArchVersion, which %s does not define", profile_path,
