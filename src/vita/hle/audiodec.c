@@ -305,3 +305,10 @@ uint32_t vita_audiodec_close_block(VitaProcess* p, VitaThread* t, uint32_t id) {
     memset(&p->audiodec->blocks[id - 1], 0, sizeof p->audiodec->blocks[id - 1]);
     return 0;
 }
+
+/* the decoders made, which a save state can't hold (FFmpeg's): a save is refused while there are */
+unsigned vita_audiodec_in_use(const VitaProcess* p) {
+    unsigned n = 0;
+    for (unsigned i = 0; p->audiodec && i < DECODERS; ++i) n += p->audiodec->decoders[i].used;
+    return n;
+}

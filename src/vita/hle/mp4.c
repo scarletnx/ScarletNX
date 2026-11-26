@@ -459,3 +459,10 @@ uint32_t vita_mp4_ok(VitaProcess* p, VitaThread* t) {
     (void)p, (void)t;
     return 0;
 }
+
+/* the files open, which a save state can't hold (FFmpeg's demuxer's): a save is refused while there are */
+unsigned vita_mp4_in_use(const VitaProcess* p) {
+    unsigned n = 0;
+    for (unsigned i = 0; p->mp4 && i < FILES; ++i) n += p->mp4->files[i].used;
+    return n;
+}

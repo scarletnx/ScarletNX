@@ -194,6 +194,9 @@ typedef struct {
 typedef struct VitaFile {
     void* host;   /* FILE*, or the directory's listing (VitaDirectory) */
     int directory;
+    /* a file's host path and sceIoOpen's flags, which a save state's load opens it again by; the file's own */
+    char* path;
+    uint32_t flags;
 } VitaFile;
 
 /* A SceFiber (vita/hle/fiber.c): its registers while it doesn't run */
@@ -316,6 +319,11 @@ uint64_t vita_deadline(VitaProcess* p, uint32_t timeout);
 /* the thread ends with status (its waiters are told by their wait) */
 void vita_thread_end(VitaProcess* p, VitaThread* t, int32_t status);
 bool vita_in_module_start(const VitaThread* t);
+/* for a save state's load: the thread at the module_start chain's entry index (VitaThread.call.context's), and guest
+   memory made the allocations given (each zero until written), the running ones' given back: false with why when the
+   host maps none (the game can't go on then) */
+void vita_module_start_resume(VitaThread* t, uintptr_t index);
+bool vita_memory_adopt(VitaProcess* p, const VitaAllocation* allocations, char* why, size_t whysize);
 
 /* Runs the game until it exits, its window closes or seconds pass (0: no limit): 0, or 1 after a fault (reported) */
 int vita_run(VitaProcess* p, double seconds);

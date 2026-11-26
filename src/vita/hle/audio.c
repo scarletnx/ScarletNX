@@ -6,6 +6,9 @@
    SceAudioIn: a microphone that hears silence, each grain taking its time as the console's does */
 #include "vita/hle/hle.h"
 #include "vita/hle/hle.hook.h"
+#include "common/utilities/bits.h"
+#include "common/utilities/state_header.h"
+#include "common/utilities/state_io.h"
 #include <SDL3/SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -212,4 +215,61 @@ uint32_t vita_audio_get_adopt(VitaProcess* p, VitaThread* t, uint32_t type) {
     (void)type;
     (void)p, (void)t;
     return 1;
+}
+
+/* ---- save states (vita/runtime/state.c): the ports as the game opened them, each one's stream opened again; the
+   time a port's queued sound plays until is the state's TIME section's (vita_audio_state_time) ---- */
+typedef struct {
+    uint8_t present;
+    Port ports[PORTS], input;
+} AudioStaged;
+
+uint64_t vita_audio_state_schema(void) {
+    static const AudioStaged s; /* only walked */
+    uint64_t h = SNX_FNV_BASIS ^ sizeof s;
+    __builtin_dump_struct(&s, snx_state_schema_out, &h);
+    __builtin_dump_struct(&s.ports[0], snx_state_schema_out, &h);
+    return h;
+}
+int vita_audio_state_save(VitaProcess* p, StateIo* io) {
+    AudioStaged s;
+    memset(&s, 0, sizeof s); /* its padding is the file's */
+    if (p->audio) {
+        s.present = 1;
+        memcpy(s.ports, p->audio->ports, sizeof s.ports);
+        s.input = p->audio->input;
+        for (unsigned i = 0; i < PORTS; ++i) s.ports[i].stream = NULL, s.ports[i].busy_until = 0;
+        s.input.stream = NULL, s.input.busy_until = 0;
+    }
+    return io_put(io, &s, sizeof s);
+}
+void* vita_audio_state_parse(StateIo* io, char* why, size_t whysize) {
+    AudioStaged* s = malloc(sizeof *s);
+    if (!s)
+        snprintf(why, whysize, "out of memory for the state's sound ports (%zu bytes)", sizeof *s);
+    else if (io_get(io, s, sizeof *s))
+        snprintf(why, whysize, "its sound ports' section is damaged or cut short");
+    else
+        return s;
+    free(s);
+    return NULL;
+}
+void vita_audio_state_install(VitaProcess* p, void* staged) {
+    AudioStaged* s = staged;
+    if (p->audio)
+        for (unsigned i = 0; i < PORTS; ++i) {
+            if (p->audio->ports[i].stream) SDL_DestroyAudioStream(p->audio->ports[i].stream);
+            p->audio->ports[i] = (Port){0};
+        }
+    struct VitaAudio* a = s->present ? audio(p) : p->audio;
+    if (a && s->present) {
+        memcpy(a->ports, s->ports, sizeof a->ports);
+        a->input = s->input;
+        for (unsigned i = 0; i < PORTS; ++i)
+            if (a->ports[i].open) stream_open(a, &a->ports[i]);
+    }
+    free(s);
+}
+uint64_t* vita_audio_state_time(VitaProcess* p, unsigned port) {
+    return p->audio && port < PORTS ? &p->audio->ports[port].busy_until : NULL;
 }

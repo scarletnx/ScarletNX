@@ -24,7 +24,7 @@ set_target_properties(snx-vita-usse PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${PROJE
 
 add_library(snx_vita_program STATIC
     aot/compiler.c aot/load.c
-    runtime/process.c runtime/run.c runtime/jit.c runtime/lockstep.c runtime/watch.c
+    runtime/process.c runtime/run.c runtime/jit.c runtime/lockstep.c runtime/watch.c runtime/state.c
     hle/hle.c hle/kernel.c hle/io.c hle/ctrl.c hle/display.c hle/audio.c hle/misc.c hle/gxm.c hle/heap.c hle/libc.c hle/fiber.c hle/ngs.c
     hle/mp4.c hle/videodec.c hle/audiodec.c hle/dialog.c hle/net.c hle/trophy.c hle/psarc.c
     gpu/present.c gpu/render.c gpu/vk.c "${volk_SOURCE_DIR}/volk.c"
@@ -35,6 +35,7 @@ target_link_libraries(snx_vita_program PUBLIC snx_vita_loader snx_vita_usse scar
                       snx_settings_runtime snx_build_info snx_window_icon snx_vk_common snx_pad_sdl snx_vpad_sdl
                       snx_vpad_consoles SDL3::SDL3
                       Vulkan::Headers ${CMAKE_DL_LIBS})
+target_link_libraries(snx_vita_program PUBLIC snx_state_file) # the save states (runtime/state.c), the Switch's file
 target_include_directories(snx_vita_program PUBLIC "${volk_SOURCE_DIR}")
 # the imports the runtime answers, by NID: hle/*.hook, read by hookgen --vita into vita/hle/hle.hook.{h,inc}
 # (cmake/hookgen.cmake)

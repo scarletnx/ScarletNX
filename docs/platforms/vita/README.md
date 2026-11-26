@@ -9,6 +9,7 @@
 * [The system's functions by NID](#the-systems-functions-by-nid)
 * [The shader corpus](#the-shader-corpus)
 * [Code compiled at run time](#code-compiled-at-run-time)
+* [Save states](#save-states)
 * [Checking the CPU backend](#checking-the-cpu-backend)
 * [Limits](#limits)
 * [Sources](#sources)
@@ -125,6 +126,33 @@ translator change kept them). The programs are the game's: the folder stays on t
 The run-time compiler's blocks are kept in the game's `.hints`, each once. When the game starts, the hints the module
 lacks make it compile the module again with them, so the next runs have them ahead of time; a hint discovery refuses
 (not code after all) is dropped then.
+
+## Save states
+
+A state is the whole game at one moment, in the Switch's state file (`src/nx/runtime/state_file.h`): the header and
+the 320 by 180 thumbnail the launcher and the game's menu read, then a section for each part, each with a hash of the
+names and types of what it holds (`src/vita/runtime/state.c`):
+
+| Section | What it holds |
+| --- | --- |
+| PROCESS | the threads with their registers, waits and fibers, the objects, the memory blocks, the display, the dialogs |
+| LINKS | the threads running and pacing the frames, and each thread's place in the module_start chain, as indices |
+| TIME | the times kept by the host's clock (the start, the next vblank, the threads' deadlines, the sound ports' play), counted from the save: a load counts them from its own |
+| MEMORY | the image's segments, the runtime's page with the threads' TLS, the imported variables' slots, every memory block |
+| IO | each file and folder open, as its host path, sceIoOpen's flags and its place, and the FIOS2 archives mounted (`hle/io.c`) |
+| GXM | sceGxm's contexts, programs, targets, mappings and display queue (`hle/gxm.c`) |
+| AUDIO, NGS, TROPHY | the sound ports, SceNgs's racks and voices, the trophy contexts (`hle/audio.c`, `ngs.c`, `trophy.c`) |
+
+A save waits for the GPU, so what it wrote is in guest memory and what sceGxm notes is written; a load makes the
+renderer again, which draws from the GXPs and surfaces in memory as at the game's start. A file open is opened again
+at its place, never truncated: the game's save data and what it wrote since stay, as a Switch game's files do. The
+game is its title ID and its image's segments. A load reads and checks every section before it changes anything, and
+refuses another game's state (both named), another `SNX_VITA_STATE_VERSION` (both versions), a section of another
+layout (both hashes), a damaged file and one naming a file that is gone. A save is refused, saying what, while a
+thread runs, while one is inside a call of the runtime's into the game (a sort's comparison, a callback), while a
+scene is being drawn, and while the game has mp4 files, video or audio decoders or sockets open, which a state can't
+keep. The threads run by the host's clock, so `vita_state` (`tests/vita_state.c`) checks what a load puts back of a
+process the test drives through the imports, and that a save right after it is the same, rather than frames.
 
 ## Checking the CPU backend
 

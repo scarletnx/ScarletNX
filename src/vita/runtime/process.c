@@ -299,6 +299,22 @@ static uint32_t vita_module_start_next(VitaProcess* p, VitaThread* t, void* cont
 /* whether t is running a module_start of the chain. A module_start may end with sceKernelExitThread, which then
    counts as its return */
 bool vita_in_module_start(const VitaThread* t) { return t->call.active && t->call.next == vita_module_start_next; }
+void vita_module_start_resume(VitaThread* t, uintptr_t index) {
+    t->call.next = vita_module_start_next;
+    t->call.context = (void*)index;
+}
+bool vita_memory_adopt(VitaProcess* p, const VitaAllocation* allocations, char* why, size_t whysize) {
+    for (unsigned i = 0; i < VITA_ALLOCATIONS; ++i)
+        if (p->allocations[i].size) decommit(p, p->allocations[i].address, p->allocations[i].size);
+    memcpy(p->allocations, allocations, sizeof p->allocations);
+    for (unsigned i = 0; i < VITA_ALLOCATIONS; ++i)
+        if (p->allocations[i].size && !commit(p, p->allocations[i].address, p->allocations[i].size)) {
+            snprintf(why, whysize, "the guest memory at 0x%08" PRIx32 ", %" PRIu32 " bytes, can't be mapped",
+                     p->allocations[i].address, p->allocations[i].size);
+            return false;
+        }
+    return true;
+}
 VitaProcess* vita_process_new(const VitaImage* image, const char* folder, char* error, size_t error_size) {
     VitaProcess* p = calloc(1, sizeof *p);
     if (!p) {
