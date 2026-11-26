@@ -1361,7 +1361,7 @@ def check_state_fns(repo):
 
 CONFIG_CALL = re.compile(
     r'(?<![A-Za-z0-9_])(snx_ini_start|snx_ini_next|snx_ini_put|snx_ini_record|snx_ini_drop|snx_ini_value|snx_ini_has|'
-    r'snx_lines_add|snx_config_read|snx_config_write)\s*\('
+    r'snx_lines_add|snx_config_read|snx_config_write|snx_config_keys|snx_config_kept|snx_folders_read)\s*\('
 )
 CONFIG_HEAD = re.compile(r'^(?:static |const |unsigned |struct |enum |inline )*[A-Za-z_]\w*[\s*]+\**([A-Za-z_]\w*)\(', re.M)
 CONFIG_NAME = re.compile(r'"([A-Za-z0-9_.-]*\.(?:ini|picks|folders|txt))"')
@@ -1378,7 +1378,7 @@ def config_functions(source):
 def check_config_files(repo):
     """every function in src/ that reads or writes a settings file (the ini reader's and config_file.h's calls, and the
     names of its files) is one of tests/config_files.json's, each such file has an adapter that runs it through
-    tests/config_files.h's situations or is listed pending without one, and every adapter's id is the registry's"""
+    tests/config_files.h's situations, and every adapter's id is the registry's"""
     errors = []
     registry = json.loads((repo / 'tests/config_files.json').read_text(encoding='utf-8'))
     listed, names, ids = {}, set(registry['not_config']) - {'doc'}, set()
@@ -1392,8 +1392,6 @@ def check_config_files(repo):
             names.add(name)
             for fn in record['functions']:
                 listed[fn] = name
-    pending = (repo / 'tests/config_files.pending').read_text(encoding='utf-8').splitlines()
-    pending = {line.strip() for line in pending if line.strip() and not line.lstrip().startswith('#')}
     seen = set()
     for path in sorted((repo / 'src').rglob('*.[ch]')):
         shown = path.relative_to(repo).as_posix()
@@ -1436,14 +1434,12 @@ def check_config_files(repo):
             adapters[match.group(1)] = path.relative_to(repo).as_posix()
     for entry in registry['files']:
         given, has = entry['adapter'], adapters.get(entry['id'])
-        if given is None and f'{entry["id"]} adapter' not in pending:
+        if given is None:
             errors.append(
-                f'tests/config_files.json: {entry["id"]} has no adapter, and tests/config_files.pending does not list '
-                f'"{entry["id"]} adapter"'
+                f'tests/config_files.json: {entry["id"]} has no adapter: every settings file runs through '
+                "tests/config_files.h's situations"
             )
-        elif given is not None and f'{entry["id"]} adapter' in pending:
-            errors.append(f'tests/config_files.pending: "{entry["id"]} adapter", and it has one: take the line out')
-        elif given is not None and given != has:
+        elif given != has:
             errors.append(
                 f'tests/config_files.json: {entry["id"]}\'s adapter is {given}, and '
                 + (f'its id is in {has}' if has else 'no tests/config_files_*.c gives that id')
@@ -1451,12 +1447,6 @@ def check_config_files(repo):
     for found, where in sorted(adapters.items()):
         if found not in ids:
             errors.append(f'{where}: {found} is no id of tests/config_files.json')
-    situations = {'unknown-key', 'unknown-section', 'no-equals', 'repeated', 'bad-value', 'absent', 'unreadable',
-                  'closed', 'secret-readable', 'write-fails', 'adapter'}
-    for line in sorted(pending):
-        file, _, situation = line.rpartition(' ')
-        if file not in ids or situation not in situations:
-            errors.append(f'tests/config_files.pending: "{line}" is no file of tests/config_files.json and situation')
     return errors
 
 

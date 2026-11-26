@@ -1,12 +1,13 @@
 {
- "doc": "Every settings file the project writes and reads (tests/config_files.h's rule): each with the functions in src/ that read or write it and the adapter in tests/ that runs it through the rule's situations. tests/architecture.py's check_config_files names any reader of a settings file in src/ that is not here, and an entry here that is no longer there. An adapter of null is listed in tests/config_files.pending as '<id> adapter' until it has one.",
+ "doc": "Every settings file the project writes and reads (tests/config_files.h's rule): each with the functions in src/ that read or write it and the adapter in tests/ that runs it through the rule's situations. tests/architecture.py's check_config_files names any reader of a settings file in src/ that is not here, and an entry here that is no longer there.",
  "files": [
   {
    "id": "game.ini",
    "adapter": "tests/config_files_options.c",
    "names": [],
    "functions": [
-    "src/nx/runtime/options.c:store_parse"
+    "src/nx/runtime/options.c:store_parse",
+    "src/nx/runtime/options.c:lines_kept"
    ]
   },
   {
@@ -40,31 +41,19 @@
     "src/gui/settings.c:gui_settings_save",
     "src/gui/settings.c:gui_settings_unread",
     "src/gui/main.c:settings_file_text",
-    "src/gui/main.c:saves_global"
+    "src/gui/main.c:saves_global",
+    "src/gui/settings.c:settings_write"
    ]
   },
   {
-   "id": "settings.ini 3DS",
-   "adapter": null,
+   "id": "settings.ini probes",
+   "adapter": "tests/config_files_common.c",
    "names": [],
    "functions": [
-    "src/3ds/services/uds.c:snx_ctr_uds_settings"
-   ]
-  },
-  {
-   "id": "settings.ini NDS",
-   "adapter": null,
-   "names": [],
-   "functions": [
-    "src/nds/runtime/main.c:network_settings"
-   ]
-  },
-  {
-   "id": "settings.ini Android",
-   "adapter": null,
-   "names": [],
-   "functions": [
-    "src/android/runtime/main.c:network_online"
+    "src/3ds/services/uds.c:snx_ctr_uds_settings",
+    "src/nds/runtime/main.c:network_settings",
+    "src/android/runtime/main.c:network_online",
+    "src/common/utilities/config_file.c:snx_config_keys"
    ]
   },
   {
@@ -75,12 +64,13 @@
    ],
    "functions": [
     "src/gui/main.c:app_read",
-    "src/gui/main.c:app_load"
+    "src/gui/main.c:app_load",
+    "src/gui/main.c:app_write"
    ]
   },
   {
    "id": "app.ini folders",
-   "adapter": null,
+   "adapter": "tests/config_files_common.c",
    "names": [],
    "functions": [
     "src/common/utilities/common.c:picked_kind",
@@ -97,7 +87,8 @@
     "users.ini"
    ],
    "functions": [
-    "src/common/utilities/users.c:snx_users_load"
+    "src/common/utilities/users.c:snx_users_load",
+    "src/common/utilities/users.c:users_set_key"
    ]
   },
   {
@@ -121,7 +112,8 @@
     "setup.ini"
    ],
    "functions": [
-    "src/common/utilities/setup.c:snx_setup_read"
+    "src/common/utilities/setup.c:snx_setup_read",
+    "src/common/utilities/setup.c:snx_setup_done"
    ]
   },
   {
@@ -132,7 +124,9 @@
    ],
    "functions": [
     "src/gui/theme.c:visit",
-    "src/gui/theme.c:gui_theme_file_read"
+    "src/gui/theme.c:gui_theme_file_read",
+    "src/gui/editor.c:gui_editor_save",
+    "src/gui/theme.c:theme_file"
    ]
   },
   {
@@ -143,7 +137,9 @@
    ],
    "functions": [
     "src/nx/runtime/driver/setup.c:folders",
-    "src/common/utilities/setup.c:snx_lines_add"
+    "src/common/utilities/setup.c:snx_lines_add",
+    "src/gui/main.c:folders_load",
+    "src/gui/main.c:folders_save"
    ]
   },
   {
@@ -152,7 +148,10 @@
    "names": [
     "removed.txt"
    ],
-   "functions": []
+   "functions": [
+    "src/gui/main.c:removed_save",
+    "src/gui/main.c:removed_open"
+   ]
   },
   {
    "id": "recent.txt",
@@ -160,7 +159,10 @@
    "names": [
     "recent.txt"
    ],
-   "functions": []
+   "functions": [
+    "src/gui/recent.c:gui_recent_load",
+    "src/gui/recent.c:gui_recent_save"
+   ]
   },
   {
    "id": "joycon2.txt",
@@ -168,22 +170,28 @@
    "names": [
     "joycon2.txt"
    ],
-   "functions": []
+   "functions": [
+    "src/gui/bluetooth.c:gui_bt_read"
+   ]
   },
   {
    "id": "last-run.ini",
    "adapter": "tests/config_files_gui.c",
    "names": [],
    "functions": [
-    "src/gui/last_run.c:gui_last_run_take"
+    "src/gui/last_run.c:gui_last_run_take",
+    "src/gui/last_run.c:gui_last_run_write"
    ]
   },
   {
    "id": "joycon2.txt runtime",
-   "adapter": null,
+   "adapter": "tests/config_files_common.c",
    "names": [],
    "functions": [
-    "src/nx/runtime/platform/joycon2.c:known_load"
+    "src/nx/runtime/platform/joycon2.c:known_load",
+    "src/nx/runtime/platform/joycon2.c:known_save",
+    "src/nx/runtime/platform/joycon2_known.c:joycon2_known_load",
+    "src/nx/runtime/platform/joycon2_known.c:joycon2_known_save"
    ]
   },
   {
@@ -230,26 +238,40 @@
     "src/gui/main.c:open_freedreno",
     "src/gui/main.c:played_file",
     "src/gui/main.c:switch_facts",
-    "src/gui/main.c:transition_on"
+    "src/gui/main.c:transition_on",
+    "src/common/utilities/game_ini.c:ini_read"
    ]
   },
   {
    "id": "3DS game.ini",
-   "adapter": null,
+   "adapter": "tests/config_files_common.c",
    "names": [],
    "functions": [
+    "src/3ds/runtime/game_record.c:snx_ctr_record_read",
+    "src/3ds/runtime/game_record.c:snx_ctr_record_write",
     "src/3ds/runtime/main.c:read_game_ini_model",
+    "src/3ds/runtime/main.c:write_game_ini"
+   ]
+  },
+  {
+   "id": "3DS game.picks",
+   "adapter": "tests/config_files_common.c",
+   "names": [],
+   "functions": [
+    "src/3ds/runtime/game_record.c:snx_ctr_picks_console",
     "src/3ds/runtime/main.c:own_console"
    ]
   },
   {
    "id": "game.folders",
-   "adapter": null,
+   "adapter": "tests/config_files_common.c",
    "names": [],
    "functions": [
+    "src/common/utilities/game_ini.c:snx_folders_read",
     "src/nx/runtime/main.c:game_dirs",
     "src/gui/main.c:game_state_of",
-    "src/gui/aot.c:gui_game_kind_dir"
+    "src/gui/aot.c:gui_game_kind_dir",
+    "src/nx/runtime/driver/game_name.c:snx_record_folders"
    ]
   }
  ],
