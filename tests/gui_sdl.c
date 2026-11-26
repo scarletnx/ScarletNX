@@ -7750,20 +7750,22 @@ static void check_play_args(App* app, const char* root) {
     assert(!strncmp(argv[0], "--game=", 7) && !strcmp(argv[0] + 7, prog));
     play_args_free(&own);
     /* a setting of the Switch's goes to the consoles whose drivers take it (common/utilities/console_settings.c):
-       anisotropy to the 3DS and not to the GBA, which draws its screen on the CPU */
-    if (gui_settings_set(settings_of(app), "anisotropy", "8")) {
+       anisotropy to the 3DS and not to the GBA, which draws its screen on the CPU; vsync to every one */
+    if (gui_settings_set(settings_of(app), "anisotropy", "8") && gui_settings_set(settings_of(app), "vsync", "0")) {
         static const int items[] = {GUI_3DS, GUI_VITA, GUI_GBA, GUI_NDS};
         for (size_t k = 0; k < sizeof items / sizeof *items; ++k) {
-            bool anisotropy = false;
+            bool anisotropy = false, vsync = false;
             app->menu.selected = items[k];
             (void)play_args(app, items[k], dir, argv, 512, &own);
             for (size_t i = 0; argv[i]; i++) {
                 anisotropy |= !strcmp(argv[i], "--anisotropy=8");
+                vsync |= !strcmp(argv[i], "--vsync=0");
             }
-            assert(anisotropy == (items[k] == GUI_3DS));
+            assert(anisotropy == (items[k] == GUI_3DS) && vsync);
             play_args_free(&own);
         }
         (void)gui_settings_set(settings_of(app), "anisotropy", "0");
+        (void)gui_settings_set(settings_of(app), "vsync", "1");
     }
     /* the on-screen controls' go to the consoles whose windows have them, the launcher's picks under the game's own */
     if (gui_settings_set(settings_of(app), "controls", "1")) {

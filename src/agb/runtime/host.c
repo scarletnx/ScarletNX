@@ -44,7 +44,8 @@ struct AgbHost {
     char* captures; /* the game's folder with its separator, whose captures/ a screenshot goes in */
     bool shot;      /* the screenshot key's: the next frame saved */
     int state_ask;  /* a save states' key (HOTKEY_SAVE_STATE...) for the loop between two frames, -1 none */
-    int vsync; /* SDL's renderer's: on at the console's pace, off at another, as a Switch game's follows its limit */
+    int vsync; /* SDL's renderer's: on at the console's pace with vsync, off at another, as a Switch game's follows its
+                  limit */
     SDL_Texture* notice_texture;
     int notice_w, notice_h, notice_failed;
 };
@@ -169,14 +170,12 @@ AgbHost* agb_host_open(const char* title, const char* ini, bool fullscreen, char
         agb_host_close(host);
         return NULL;
     }
-    /* each frame whole on screen, as the launcher presents its own (the Vulkan window's images go at the display's
-       refresh too) */
+    /* each frame whole on screen with vsync, as the Vulkan window's images go */
     if (!host->vk) {
-        host->vsync = 1;
-        if (!SDL_SetRenderVSync(host->renderer, 1))
-            fprintf(stderr,
-                    "scarletnx-agb: the display refused vsync 1 (%s): frames go on screen with vsync 0 and may tear\n",
-                    SDL_GetError());
+        host->vsync = g_settings.vsync != 0;
+        if (!SDL_SetRenderVSync(host->renderer, host->vsync))
+            fprintf(stderr, "scarletnx-agb: the display refused vsync %d (%s): frames go on screen with vsync %d%s\n",
+                    host->vsync, SDL_GetError(), !host->vsync, host->vsync ? " and may tear" : "");
         snx_window_icon(host->window);
     }
     char why[256];
@@ -341,7 +340,7 @@ void agb_host_frame(AgbHost* host, const uint32_t* framebuffer, const int16_t* s
     if (host->vk)
         (void)agb_vk_frame(host->vk, framebuffer, &host->notice); /* no image for it: the next frame goes */
     else {
-        int vsync = snx_vpad_window_frame_ns(FRAME_NS) == FRAME_NS;
+        int vsync = g_settings.vsync && snx_vpad_window_frame_ns(FRAME_NS) == FRAME_NS;
         if (vsync != host->vsync && SDL_SetRenderVSync(host->renderer, vsync)) host->vsync = vsync;
         agb_host_draw(host, framebuffer);
         SDL_RenderPresent(host->renderer);

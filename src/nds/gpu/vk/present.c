@@ -5,7 +5,9 @@
 #include "nds/gpu/vk/vk.h"
 #include "nds/gpu/vk/vk_present.h"
 #include "common/gpu/vk/rects.h"
+#include "common/gpu/vk/swapchain.h"
 #include "common/utilities/vpad_sdl.h"
+#include "snx_settings.h"
 #include <SDL3/SDL.h>
 #include "common/gpu/vk/notice.h"
 #include "common/utilities/notice.h"
@@ -31,7 +33,7 @@ static bool swap_make(void) {
                                .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
                                .window = snx_vk_window_extent(&v->host, (VkExtent2D){512, 768}),
                                .views = true,
-                               .unsynced = true}; /* the run paces itself by the console's frame (runtime/host.c) */
+                               .unsynced = !g_settings.vsync}; /* paced by the console's frame (runtime/host.c) too */
     return snx_vk_swapchain_make(v->phys, v->device, &info, &g_present.swap);
 }
 
@@ -51,6 +53,9 @@ bool nds_vk_present_init(char* error, size_t error_size) {
         snprintf(error, error_size, "cannot make the window's swapchain");
         return false;
     }
+    char said[160];
+    snx_vk_present_said(g_present.swap.mode, g_settings.vsync, said, sizeof said);
+    fprintf(stderr, "scarletnx-nds: %s\n", said);
     g_present.up = true;
     return true;
 }

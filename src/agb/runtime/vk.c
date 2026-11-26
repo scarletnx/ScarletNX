@@ -14,6 +14,7 @@
 #include "common/gpu/vk/window.h"
 #include "common/utilities/vpad_sdl.h"
 #include "common/utilities/window_icon.h"
+#include "snx_settings.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -56,7 +57,7 @@ static bool choose(SnxVkChoice* c, void* user) {
     return snx_vk_choice_create(c, &want, NULL, NULL, 0);
 }
 
-/* the window's swapchain, made anew for its size, its images at the display's refresh as SDL's renderer has them */
+/* the window's swapchain, made anew for its size, its images at the display's refresh or not as vsync says */
 static bool swapchain_make(AgbVk* v) {
     static const VkFormat formats[] = {VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM};
     SnxVkSwapchainInfo info = {.surface = v->host.surface,
@@ -64,7 +65,8 @@ static bool swapchain_make(AgbVk* v) {
                                .format_count = sizeof formats / sizeof *formats,
                                .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
                                .window = snx_vk_window_extent(&v->host, (VkExtent2D){960, 640}),
-                               .views = true};
+                               .views = true,
+                               .unsynced = !g_settings.vsync};
     return snx_vk_swapchain_make(v->phys, v->device, &info, &v->swap);
 }
 
@@ -194,6 +196,9 @@ AgbVk* agb_vk_open(const char* title, int width, int height, char* error, size_t
         agb_vk_close(v);
         return NULL;
     }
+    char said[160];
+    snx_vk_present_said(v->swap.mode, g_settings.vsync, said, sizeof said);
+    fprintf(stderr, "scarletnx-agb: %s\n", said);
     return v;
 }
 

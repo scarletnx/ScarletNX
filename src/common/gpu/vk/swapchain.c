@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "common/gpu/vk/swapchain.h"
+#include <stdio.h>
 #include <stdlib.h>
 
 bool snx_vk_surface_format(VkPhysicalDevice phys, VkSurfaceKHR surface, const VkFormat* wanted, uint32_t count,
@@ -125,6 +126,13 @@ VkPresentModeKHR snx_vk_present_mode(const VkPresentModeKHR* modes, uint32_t cou
     for (uint32_t i = 0; i < count && !vsync; ++i)
         if (modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR) mode = modes[i];
     return mode;
+}
+void snx_vk_present_said(VkPresentModeKHR mode, int vsync, char* out, size_t size) {
+    snprintf(out, size, "the window shows its images %s (vsync=%d)",
+             mode == VK_PRESENT_MODE_FIFO_KHR      ? "at the display's refresh, in order (fifo)"
+             : mode == VK_PRESENT_MODE_MAILBOX_KHR ? "the newest at the next refresh (mailbox)"
+                                                   : "at once, tearing (immediate)",
+             vsync);
 }
 /* the surface's present mode for unsynced (vsync off), FIFO with vsync */
 static VkPresentModeKHR present_mode(VkPhysicalDevice phys, VkSurfaceKHR surface, bool unsynced) {
