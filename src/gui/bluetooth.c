@@ -3,6 +3,7 @@
 #include "gui/bluetooth.h"
 #include "common/platform/file.h"
 #include "common/utilities/common.h"
+#include "common/utilities/config_file.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -47,11 +48,23 @@ static const char* next_line(const char* text, size_t size, size_t* at, size_t* 
 }
 int gui_bt_read(GuiBt* bt, const char* path) {
     size_t size = 0, at = 0, n;
-    char* text = path ? (char*)snx_read_file(path, &size) : NULL;
+    char* text = NULL;
     const char* line;
     GuiBt was = *bt;
-    int known = 0;
-    if (!text && path && snx_path_exists(path)) return -1;
+    SnxConfigOthers others = {0};
+    int known = 0, number = 0;
+    bt->said[0] = 0;
+    if (path && snx_config_read(path, &text, &size, bt->said, sizeof bt->said) < 0) return -1;
+    /* a line that names no controller, another version's or a hand's: kept by a write (sync, forget), named */
+    for (size_t k = 0; text && (line = next_line(text, size, &k, &n)) != NULL;) {
+        uint8_t address[6];
+        int right;
+        char serial[17];
+        ++number;
+        if (line[strspn(line, " \t\r\n")] && !entry(line, n, address, &right, serial))
+            snx_config_other_key(&others, "", "", number);
+    }
+    if (path) snx_config_others_said(&others, path, bt->said, sizeof bt->said);
     bt->count = 0;
     /* the known ones first, in the file's order, keeping what the scan heard of them */
     while (text && known < GUI_BT_KNOWN && (line = next_line(text, size, &at, &n))) {
