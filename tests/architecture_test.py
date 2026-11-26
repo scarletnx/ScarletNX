@@ -873,18 +873,17 @@ class ConfigFilesTests(unittest.TestCase):
     REGISTRY = {
         'files': [
             {'id': 'a.ini', 'adapter': 'tests/config_files_x.c', 'names': ['a.ini'], 'functions': ['src/x.c:read_a']},
-            {'id': 'b.ini', 'adapter': None, 'names': [], 'functions': []},
+            {'id': 'b.ini', 'adapter': 'tests/config_files_x.c', 'names': [], 'functions': []},
         ],
         'records': {'doc': ''},
         'not_config': {'doc': '', 'threads.txt': 'a dump'},
     }
 
-    def errors(self, sources, registry=None, pending='b.ini adapter\n', adapter='{.id = "a.ini"}'):
+    def errors(self, sources, registry=None, adapter='{.id = "a.ini"}, {.id = "b.ini"}'):
         with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
             root = Path(temporary)
             files = {
                 'tests/config_files.json': json.dumps(registry or self.REGISTRY),
-                'tests/config_files.pending': pending,
                 'tests/config_files_x.c': adapter,
                 **sources,
             }
@@ -913,21 +912,18 @@ class ConfigFilesTests(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertTrue(errors[0].startswith('src/y.h:1: "newer.ini" names a file'))
 
-    def test_adapters_and_pending_agree(self):
-        # no adapter and not pending; an adapter's id the registry lacks; a pending line of no file
-        errors = self.errors({'src/x.c': self.READ_A}, pending='a.ini unreadable\nc.ini closed\n',
-                             adapter='{.id = "a.ini"}, {.id = "z.ini"}')
-        self.assertIn('tests/config_files.json: b.ini has no adapter, and tests/config_files.pending does not list '
-                      '"b.ini adapter"', errors)
-        self.assertIn('tests/config_files_x.c: z.ini is no id of tests/config_files.json', errors)
-        self.assertIn('tests/config_files.pending: "c.ini closed" is no file of tests/config_files.json and situation',
-                      errors)
-        self.assertEqual(len(errors), 3)
-        # an adapter listed pending although it is there
+    def test_adapters_agree(self):
+        # no adapter; an adapter's id the registry lacks
         registry = json.loads(json.dumps(self.REGISTRY))
-        registry['files'][1]['adapter'] = 'tests/config_files_x.c'
-        errors = self.errors({'src/x.c': self.READ_A}, registry=registry, adapter='{.id = "a.ini"}, {.id = "b.ini"}')
-        self.assertEqual(errors, ['tests/config_files.pending: "b.ini adapter", and it has one: take the line out'])
+        registry['files'][1]['adapter'] = None
+        errors = self.errors({'src/x.c': self.READ_A}, registry=registry, adapter='{.id = "a.ini"}, {.id = "z.ini"}')
+        self.assertIn(
+            "tests/config_files.json: b.ini has no adapter: every settings file runs through tests/config_files.h's "
+            'situations',
+            errors,
+        )
+        self.assertIn('tests/config_files_x.c: z.ini is no id of tests/config_files.json', errors)
+        self.assertEqual(len(errors), 2)
 
 
 if __name__ == '__main__':

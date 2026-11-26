@@ -215,8 +215,6 @@ if(BUILD_TESTING)
                    "${PROJECT_SOURCE_DIR}/tests/support/ble_fake_system.c")
     target_link_libraries(snx-test-config-files-gui PRIVATE snx_gui_support snx_gui_ui scarletnx-common SDL3::SDL3
                           snx_window_icon snx_build_info snx_pad_sdl snx_gui_pad snx_splash snx_gui_languages_test snx_demangle)
-    target_compile_definitions(snx-test-config-files-gui PRIVATE
-                               SNX_CONFIG_PENDING="${PROJECT_SOURCE_DIR}/tests/config_files.pending")
     if(APPLE)
         target_sources(snx-test-config-files-gui PRIVATE apple.m)
         target_link_libraries(snx-test-config-files-gui PRIVATE snx_apple_frontend "-framework Foundation")

@@ -8,9 +8,8 @@
    that others can read is refused; a write that fails leaves the old file whole.
    Each tests/config_files_<group>.c gives its files (ConfigFile) and calls config_files_main. An adapter only reports
    what its reader did; the rule lives here alone. A situation a file does not have is said with why (na), one the rule
-   leaves to the file is said with why (exempt, red once the file passes), and what still differs is listed in
-   tests/config_files.pending (red once it passes: the fix takes its line out). tests/architecture.py's
-   check_config_files keeps tests/config_files.json, every reader and writer of a settings file in src/, in step */
+   leaves to the file is said with why (exempt, red once the file passes). tests/architecture.py's check_config_files
+   keeps tests/config_files.json, every reader and writer of a settings file in src/, in step */
 #ifndef SNX_TEST_CONFIG_FILES_H
 #define SNX_TEST_CONFIG_FILES_H
 #include "common/utilities/common.h"
@@ -316,22 +315,7 @@ static const char* config_na(const ConfigFile* f, int s, int* here) {
 #endif
     return NULL;
 }
-/* whether tests/config_files.pending lists f's situation: what still differs from the rule, which its fix takes out */
-static int config_pending(const ConfigFile* f, int s) {
-    size_t size;
-    char *text = (char*)snx_read_file(SNX_CONFIG_PENDING, &size), want[160];
-    int found = 0;
-    if (!text) {
-        fprintf(stderr, "config_files: %s cannot be read\n", SNX_CONFIG_PENDING);
-        exit(2);
-    }
-    snprintf(want, sizeof want, "%s %s", f->id, config_situation_names[s]);
-    found = config_lines(text, want) > 0;
-    free(text);
-    return found;
-}
-/* each situation of each file: 0 when every one holds, is not the file's, is its own rule, or still differs as
-   tests/config_files.pending lists it; else 1 */
+/* each situation of each file: 0 when every one holds, is not the file's or is its own rule; else 1 */
 [[maybe_unused]] static int config_files_run(const ConfigFile* files, size_t count) {
     char why[2048];
     int failed = 0;
@@ -341,26 +325,20 @@ static int config_pending(const ConfigFile* f, int s) {
     for (size_t i = 0; i < count; ++i)
         for (int s = 0; s < CONFIG_SITUATIONS; ++s) {
             const ConfigFile* f = &files[i];
-            int here, pending = config_pending(f, s);
+            int here;
             const char *na = config_na(f, s, &here), *name = config_situation_names[s];
-            if (na) { /* one this system cannot run stays pending where another runs it */
+            if (na) {
                 printf("%s %s: na, %s\n", f->id, name, na);
-                if (pending && !here)
-                    printf("FAIL %s %s: listed pending, and the situation is not the file's\n", f->id, name);
-                failed |= pending && !here;
                 continue;
             }
             config_check(f, s, why, sizeof why);
-            if (!why[0] && (f->exempt[s] || pending)) {
-                printf("FAIL %s %s: holds now: take its %s out\n", f->id, name,
-                       pending ? "line out of tests/config_files.pending" : "exemption");
+            if (!why[0] && f->exempt[s]) {
+                printf("FAIL %s %s: holds now: take its exemption out\n", f->id, name);
                 failed = 1;
             } else if (!why[0])
                 printf("%s %s: ok\n", f->id, name);
             else if (f->exempt[s])
                 printf("%s %s: exempt, %s (%s)\n", f->id, name, f->exempt[s], why);
-            else if (pending)
-                printf("%s %s: pending (%s)\n", f->id, name, why);
             else {
                 printf("FAIL %s %s: %s\n", f->id, name, why);
                 failed = 1;

@@ -1,9 +1,0 @@
-# What still differs from the rule of tests/config_files.h, "<file's id> <situation>" a line: the fix of each takes its
-# line out (config_files_* fail on a line whose situation holds), and the last of them takes this file's lines all out.
-settings.ini 3DS adapter
-settings.ini NDS adapter
-settings.ini Android adapter
-app.ini folders adapter
-joycon2.txt runtime adapter
-3DS game.ini adapter
-game.folders adapter

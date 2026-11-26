@@ -2799,8 +2799,6 @@ add_test(NAME ini_deprecated COMMAND snx-test-ini-deprecated)
 add_executable(snx-test-options-tv-mode options_tv_mode.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/options.c")
 snx_test_target(snx-test-options-tv-mode gnu23)
 target_link_libraries(snx-test-options-tv-mode PRIVATE scarletnx-common)
-target_compile_definitions(snx-test-options-tv-mode PRIVATE
-                           SNX_CONFIG_PENDING="${PROJECT_SOURCE_DIR}/tests/config_files.pending")
 add_test(NAME options_tv_mode COMMAND snx-test-options-tv-mode)
 # the game's .ini and picks through tests/config_files.h's situations (config_files_options.c), a process each
 add_test(NAME config_files_options COMMAND snx-test-options-tv-mode --config-files game.ini)
@@ -2888,11 +2886,11 @@ target_link_libraries(snx-test-config-file PRIVATE snx_test_common)
 add_test(NAME config_file COMMAND snx-test-config-file)
 # tests/config_files.h's situations: common/utilities' settings files (config_files_common.c), setup.ini where the
 # setup is built
-add_executable(snx-test-config-files-common config_files_common.c)
+add_executable(snx-test-config-files-common config_files_common.c
+    "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/joycon2_known.c" # the runtime's joycon2.txt
+    "${PROJECT_SOURCE_DIR}/src/3ds/runtime/game_record.c") # a 3DS game's record and picks
 snx_test_target(snx-test-config-files-common c23)
 target_link_libraries(snx-test-config-files-common PRIVATE scarletnx-common)
-target_compile_definitions(snx-test-config-files-common PRIVATE
-                           SNX_CONFIG_PENDING="${PROJECT_SOURCE_DIR}/tests/config_files.pending")
 if(TARGET snx_setup)
     target_link_libraries(snx-test-config-files-common PRIVATE snx_setup)
     target_compile_definitions(snx-test-config-files-common PRIVATE SNX_CONFIG_SETUP)
@@ -2902,8 +2900,6 @@ add_test(NAME config_files_common COMMAND snx-test-config-files-common)
 add_executable(snx-test-config-files-checker config_files_checker.c)
 snx_test_target(snx-test-config-files-checker c23)
 target_link_libraries(snx-test-config-files-checker PRIVATE scarletnx-common)
-target_compile_definitions(snx-test-config-files-checker PRIVATE
-                           SNX_CONFIG_PENDING="${PROJECT_SOURCE_DIR}/tests/config_files.pending")
 add_test(NAME config_files_checker COMMAND snx-test-config-files-checker)
 # the R_ result helpers (src/nx/hle/result.h), strict ISO C23 as the code that may use them
 add_executable(snx-test-result-macros result_macros.c)
