@@ -9,7 +9,8 @@
 #define SNX_OVERLAY_H
 #include "common/utilities/notice.h"
 #include "common/utilities/run_theme.h"
-#include "nx/runtime/platform/ui.h"
+#include "common/utilities/ui_ring.h"
+#include "common/utilities/pad_map.h"
 
 /* the 3DS's, the Vita's and the GBA's notices are drawn as this menu's (common/utilities/notice.h) */
 #define OVERLAY_COLS        SNX_MENU_COLS   /* the panel, in cells of the 8x16 font: the narrowest */
@@ -35,6 +36,69 @@ enum {
     OVERLAY_CONTROLLERS
 };
 
+/* What the runtime the menu shows over gives it: each NULL where that runtime has none, which the menu then leaves out or
+   says it lacks. The Switch's gives them all (runtime/platform/overlay_host.c); a console's window the few it has */
+enum { OVERLAY_ZONE_DRAW, OVERLAY_ZONE_TOAST_LAY, OVERLAY_ZONE_MENU_LAY }; /* the profiler's zones, by what they time */
+typedef struct {
+    /* the game's own settings (its picks): key set to value, applied and kept; whether the game set key itself, and the
+       key given back to the launcher's; the value a startup setting takes at the next start (1 with it in out); a
+       count of the picks' changes; the old settings the .ini still has (their count), and taken out */
+    void (*set)(const char* key, const char* value);
+    int (*picked)(const char* key);
+    void (*unpick)(const char* key);
+    int (*next_start)(const char* key, char* out, size_t n);
+    const _Atomic int* (*picks_changes)(void);
+    int (*old_settings)(void);
+    void (*clean_old)(void);
+    /* the renderer's frame capture (RenderDoc): with ask 0 whether one can be taken, with 1 the next frame asked */
+    int (*capture)(int ask);
+    /* the input recording and replay (TAS) of the save state slots: a slot's frames (why when none), whether one is
+       recorded or replayed now, a recording or a replay started from a slot, nonzero, or 0 with why */
+    int (*tas_frames)(int slot, char* why, size_t n);
+    int (*tas_recording)(void);
+    int (*tas_replaying)(void);
+    int (*tas_record)(int slot, char* why, size_t n);
+    int (*tas_replay)(int slot, char* why, size_t n);
+    /* the TV mode, the console docked: the choice now, and a step down (-1) or up (1), its text into text */
+    int (*tv_choice)(void);
+    int (*tv_step)(int step, char* text, size_t size);
+    /* the touch screen's setting (0 off, 1 the fingers, 2 the mouse too) set at once */
+    void (*touch_set)(int mode);
+    /* the open gamepads: player slot's i (-1 none); i's name (NULL past the last), face labels and side by side
+       sticks (1, 0 past the last), the controls it holds (-1 every one's); a count of the names' changes; one of
+       g_settings' gamepad settings stored and applied */
+    int (*pad_of_player)(int slot);
+    const char* (*pad_name)(int i);
+    int (*pad_layout)(int i, int labels[4], int* symmetric);
+    unsigned (*pad_held)(int i);
+    u32 (*pad_names_version)(void);
+    void (*pad_store)(const int* setting);
+    /* the button map: player's own (1 to SNX_GAMEPADS) into own, 1 where it has one, 0 where it has none, -1 where
+       there is no such player; or every player's (0); and set, stored in the .ini */
+    int (*pad_map)(int player, SnxPadMap* own);
+    void (*pad_map_set)(int player, const SnxPadMap* own);
+    /* whether the screen that prepares the game shows */
+    int (*preparing)(void);
+    /* the user's picture, side square at x, y, and the picture apart from the atlas (the state's thumbnail, w x h at
+       x, y; set, NULL none; its version): 1 when drawn */
+    int (*picture)(SnxUiList* l, float x, float y, float side);
+    int (*image)(SnxUiList* l, float x, float y, float w, float h);
+    void (*image_set)(const u8* rgba);
+    const u8* (*image_get)(u32* version);
+    /* the controller applet's dialog over the game: whether it shows, and drawn */
+    int (*dialog_shown)(void);
+    void (*dialog_draw)(SnxUiList* l, int sw, int sh, int scale);
+    /* the debug HUD's box (x, y, w, h), 1 while drawn */
+    int (*hud_box)(float box[4]);
+    /* the profiler's (Tracy): a zone of OVERLAY_ZONE_ begun, its token; its value and text; its end; a plot */
+    void* (*zone_begin)(int zone);
+    void (*zone_value)(void* zone, u64 value);
+    void (*zone_text)(void* zone, const char* text);
+    void (*zone_end)(void* zone);
+    void (*plot)(const char* name, double value);
+} SnxMenuHost;
+/* host's from now on (kept, not copied); NULL: none of them */
+void overlay_set_host(const SnxMenuHost* host);
 /* whether it is open, for the renderer's thread too */
 int overlay_shown(void);
 void overlay_toggle(void);

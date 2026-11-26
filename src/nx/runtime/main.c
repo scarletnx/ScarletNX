@@ -3,6 +3,7 @@
 /* The runtime's startup: which game to run, its recompiled code, its folders and settings, the console's parts in the
    order they depend on each other, the shaders made before the game draws (prepare_wait), the game's main thread;
    then the frontend's loop at the display's rate until the run ends, saving what outlives it */
+#include "nx/runtime/platform/overlay_host.h"
 #include "nx/runtime/main.h"
 #include "common/cpu/recompiler/llvm/gdb_jit.h"
 #include "common/cpu/recompiler/llvm/ir.h"
@@ -1507,6 +1508,7 @@ int snx_main(int argc, char** argv) {
     }
     /* the game's errors in its log, where a fatal's "the line before" is: a game's process on Android has no stderr */
     snx_error_sink(log_error_line);
+    overlay_host_nx(); /* the game's menu's parts that are the Switch's */
     state_profiler();
     /* the guest's address space before the game's code, which would take a share of a small one: a pack's arena with its
        write alias leaves an iOS app's 13 GiB or so no run of the 5 GiB the guest needs */

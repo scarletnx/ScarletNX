@@ -9,7 +9,6 @@
 #include "common/utilities/pad_map.h"
 #include "nx/hle/services/hid.h"
 
-#define SNX_GAMEPADS 8 /* one slot for each guest Npad player */
 /* a gamepad the system added or removed (its SDL joystick id): opened, closed */
 void gamepad_open(u32 id);
 void gamepad_close(u32 id);
@@ -73,8 +72,6 @@ int gamepad_of_player(int slot);
 /* their tables (settings.h): g_gamepad_ini, keys gamepad_*; g_gamepad_map_ini, gamepad_map, the player's map that
    SNX_GAMEPAD_MAP's screen sets; g_gamepad_players_ini, gamepad_p<N>_*, their page in the menus; g_joycon2_ini,
    joycon2*, the Joy-Con 2's (Bluetooth) */
-#define SNX_GAMEPAD_PAGE "Controllers"   /* their page in the game's menu and the launcher's Settings */
-#define SNX_GAMEPAD_MAP  "Button map"    /* and the screen of what each button sends */
 /* each player's own, as Eden has them, in the game's .ini as gamepad_p<N>_* (N from 1); one left at its default takes
    the setting every player shares. Their values are g_settings' arrays by player: player_controller ("" the next to
    connect, else its SDL GUID, "/2" for the second alike), player_connected (0: the game never sees this player; player
@@ -96,7 +93,6 @@ void gamepad_identify(int slot);
 /* the slot's controller is about to go because the dialog disconnects it: when it goes, its player is not kept for it
    (gamepad_assign=1), so no pause and no notice waits for it */
 void gamepad_drop_quietly(int slot);
-#define SNX_GAMEPAD_PLAYERS "Player"
 int gamepad_ini(const char* key, const char* value); /* a key of the game's .ini: applied, 1; not one of these, 0 */
 
 #endif
