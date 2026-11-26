@@ -203,7 +203,8 @@ int gnu_jit_init(GnuJit* jit, const char* cache, char* error, size_t error_size)
     jit->recompiler = snx_recompiler_new(SNX_RECOMPILER_FLAG_LLVM);
     if (!jit->recompiler) {
         if (!snx_native_refused(error, error_size))
-            snprintf(error, error_size, "the LLVM backend cannot target this host");
+            snprintf(error, error_size, "no recompiler for this host: its native back end (%s) makes none",
+                     snx_native_name());
         gnu_jit_destroy(jit);
         return -1;
     }

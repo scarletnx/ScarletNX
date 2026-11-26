@@ -54,7 +54,8 @@ extern "C" {
 
 struct snx_recompiler;
 
-/* NULL when the flags name no usable backend or the backend cannot target this host (snx_recompiler_has) */
+/* NULL when the flags name no usable backend or the backend cannot target this host (snx_recompiler_has): a host below
+   its native back end's floor, which mach/native.h's snx_native_floor says */
 SNX_RECOMPILER_API struct snx_recompiler* snx_recompiler_new(int flags);
 SNX_RECOMPILER_API void snx_recompiler_free(struct snx_recompiler* r);
 /* In the child of a fork(), before it compiles anything: the modules' code made the child's own where the parent
