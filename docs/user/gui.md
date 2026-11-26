@@ -280,9 +280,10 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   Nothing is moved, the folder before keeps what it has. The menu's own files stay where they are. **Clean Old Settings** asks first, with
   how many it would take out, then takes out the settings nothing reads any more: the `[Deprecated]` section the runtime
   gives a game's `.ini` for the keys it no longer uses (in the config folder's `recompiled/`, in `recompiled/`
-  and in the player's folders), the keys of `settings.ini` that no setting of the runtime's takes
-  (only while the runtime lists its settings) and those of `app.ini` the menu does not know. While a game's own
-  picks (`<id>.picks`, [Settings](settings.md)) keep keys no setting takes, the question says how many and its
+  and in the player's folders), and the keys of `settings.ini` an older version wrote that this one dropped
+  (only while the runtime lists its settings). Another version's keys stay in every file
+  ([Settings](settings.md#how-a-settings-file-is-read)). While a game's own
+  picks (`<id>.picks`, [Settings](settings.md)) keep keys an older version wrote, the question says how many and its
   choices are **Keep the Games' Own** and **With the Games' Own**, in focus, which writes each of those files again
   without them (removed with no pick left); Back takes out nothing. A box
   over the screen then lists each file and what was done to it, or why not, Up/Down and the wheel going over those
@@ -516,8 +517,8 @@ question and choices come as the theme's `[body] options-dialog` places a questi
 without darkening them; its tip, and what a choice did or why it did not, are in the foot. Up/Down (or the mouse)
 move between the choices, Enter takes one and ESC goes back a page, on the first page asking whether to exit. The
 notices come one a page, numbered (Changed 1/8), each read before the setup goes on: Next the next one, Back (from the
-second) the one before, and OK on the last. While a game's `.ini` keeps keys under `[Deprecated]` (or the menu's own
-files keys nothing reads), the last asks what Settings > App's Clean Old Settings would take out (`Clean Old Settings?
+second) the one before, and OK on the last. While a game's `.ini` keeps keys under `[Deprecated]` (or `settings.ini`
+keys an older version wrote), the last asks what Settings > App's Clean Old Settings would take out (`Clean Old Settings?
 [Deprecated] in 2 .ini`): **Clean Now**, in focus, takes them out there, the box then saying each file and what was
 done to it, and OK goes on; **Not Now** goes on, App's row still there. Clean Now comes under Back, Not Now and Skip, a
 row apart: the choices that act on the player's files in a group of their own, as on Old Files' last page, Up/Down

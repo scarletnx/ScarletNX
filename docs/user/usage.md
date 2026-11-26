@@ -735,8 +735,9 @@ nickname=Xuji
 ```
 
 `uid`, `nickname`, `user_data`, `mii` and `picture` are the keys: `user_data` is the profile's UserData a program stored
-(its icon, colour and Mii), 256 hex digits, empty or left out for zeros; any other key, a section out of order or twice,
-or a line that is no key stops the game and says why. `mii` is the user's Mii, one of the Mii database's by its name:
+(its icon, colour and Mii), 256 hex digits, empty or left out for zeros; a `[userN]` out of order or twice, or a uid or
+nickname the account service would not keep, stops the game and says why; another key, section or line stays and is
+named ([Settings](settings.md#how-a-settings-file-is-read)). `mii` is the user's Mii, one of the Mii database's by its name:
 `Baguette` (the default), `Leek Girl`, `Phone Girl`, `Alex`, `Sam`, `Kai`, `Robin`, `Jamie`, `Taylor`, `Morgan` or
 `Riley`, as written. A game that takes the database's first Mii as the player's takes it. `picture` is `mii`, the
 user's picture drawn from that Mii, or `file`, `users/<uid>.jpg`; without the key it is `file`, so a user with no
@@ -954,8 +955,8 @@ the launcher's Settings say it, kept in the game's own picks as Volume is. A row
 *(next start)* and shows the value it starts with next; a number with no words steps a quarter (a twentieth within a
 range of 2), a word round its words, and a text with no words (a folder, a name) is only shown here: the launcher's
 Settings type it. **Clean Old Settings** shows while the game's `.ini` keeps keys
-under `[Deprecated]` or its own picks keys no setting takes ([Deprecations](deprecations.md)): asked first, with how
-many, Cancel in focus, it takes them out of both files at once, the log naming each with its value.
+under `[Deprecated]` or its own picks keys an older version wrote ([Deprecations](deprecations.md)): asked first, with
+how many, Cancel in focus, it takes them out of both files at once, the log naming each with its value.
 
 A game that asks for text (a name, a password, a search) shows a box over the game, in the menu's look and the same
 on every platform: the game's own words for it, the line with the text the game started it with, and how many
