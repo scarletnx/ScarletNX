@@ -36,6 +36,9 @@
 #define MOVMSKPD      "66 0F 50"
 /* SETNE r/m8 (0F 95): a condition made a value */
 #define SETNE         "0F 95"
+/* JP rel32 (0F 8A); PUSH qword [rsp + disp32] (FF B4 24) and its POPFQ (9D) */
+#define JP_REL32       "0F 8A"
+#define PUSH_RSP_POPFQ "FF B4 24 ?? ?? ?? ?? 9D"
 /* PADDD (66 0F FE) and PADDQ (66 0F D4), or their VEX forms */
 #define PADDD         "66 0F FE|C5 ?? FE|C4 ?? ?? FE"
 #define PADDQ         "66 0F D4|C5 ?? D4|C4 ?? ?? D4"
@@ -128,6 +131,8 @@ static const Row k_rows[] = {
     {"fmul v0.2d, v1.2d, v2.2d (the hot code's one lane mask)", 0, 0, 864, -1, "=1 " MOVMSKPD, "6E62DC20"},
     {"fmla v0.4s, v1.4s, v2.4s (the hot code's one lane mask)", NEEDS_FMA, 0, 928, -1, "=1 " MOVMSKPS, "4E22CC20"},
     {"fmul v0.4s, v1.4s, v2.4s (the hot test with no SETNE)", 0, 0, 832, -1, "!" SETNE, "6E22DC20"},
+    {"fcmp s1, s2 (NZCV off UCOMISS's flags: JP out where unordered)", 0, 0, 416, -1, JP_REL32, "1E222020"},
+    {"fcmpe d1, d2 (its cold path's flags back by PUSH and POPFQ)", 0, 0, 368, -1, PUSH_RSP_POPFQ, "1E622030"},
     {"frecps v0.4s, v1.4s, v2.4s (the warm path: its hot test with no SETNE)", 0, 0, 768, -1, "!" SETNE, "4E22FC20"},
     {"frsqrts d0, d1, d2 (the warm path: its hot test with no SETNE)", 0, 0, 800, -1, "!" SETNE, "5EE2FC20"},
     {"ucvtf s0, x1 (from 2^63 up inline: the exponent's PADDD)", 0, 0, 352, -1, PADDD, "9E230020"},

@@ -573,7 +573,8 @@ static void start_state(CPU* c, unsigned s) {
 /* a state of --ops: in three of four, the SIMD&FP registers' elements (of one size a register) are values where the
    integers' arithmetic turns, small ones (a shift by a register's amounts), or a float's: zeros, infinities, NaNs,
    denormals, the normals' ends, halfway cases, ordinary numbers; QC set in some, FZ16 random with FPCR's other bits;
-   in half, the first 16 general-purpose registers integers at the conversions' steps: the ends, ties of a single's and
+   in some, the SIMD&FP registers' low single or double one of those floats (below); in half, the first 16
+   general-purpose registers integers at the conversions' steps: the ends, ties of a single's and
    a double's rounding (below 2^63 and above it, where UCVTF of an X converts a half) with a 1 past them or one short */
 static void ops_state(CPU* c, unsigned s) {
     static const uint64_t k32[] = {0, 0x80000000u, 0x3f800000u, 0xbf800000u, 0x40000000u, 0x7f800000u, 0xff800000u,
@@ -627,6 +628,20 @@ static void ops_state(CPU* c, unsigned s) {
             lane &= m;
             c->v[r].d[i * e / 64] = (c->v[r].d[i * e / 64] & ~(m << (i * e % 64))) | lane << (i * e % 64);
         }
+    }
+    /* in some, every register's low single (or double) one of the floats above, or in one of four a signalling NaN,
+       and FPSR's IOC and IDC clear: a scalar compare's operands, NaNs of both kinds and the denormals FZ flushes among
+       them, and the flags it raises seen */
+    if ((s >> 4 & 3) == 1 || (s >> 4 & 3) == 2) {
+        static const uint64_t snan[2][2] = {{0x7f800001u, 0xffbfffffu}, {0x7ff0000000000001ull, 0xfff7ffffffffffffull}};
+        int dbl = (s >> 4 & 3) == 2;
+        for (r = 0; r < 32; ++r) {
+            uint64_t f = !(rnd() % 4) ? snan[dbl][rnd() & 1]
+                         : dbl        ? k64[rnd() % (sizeof k64 / sizeof *k64)]
+                                      : k32[rnd() % (sizeof k32 / sizeof *k32)];
+            c->v[r].d[0] = dbl ? f : (c->v[r].d[0] & ~0xffffffffull) | f;
+        }
+        c->fpsr &= ~0x81u;
     }
 }
 

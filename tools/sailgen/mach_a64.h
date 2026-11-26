@@ -146,6 +146,36 @@ static inline void sg_PSTATE_write(SgCtx* g, long long first, long long count, S
     long long f;
     if (first < 0 || count < 1 || first + count > 4) sg_fail("fields of PSTATE this back end does not keep", first, count);
     if (v.w != (unsigned)count) sg_fail("flags written from a value of another width", count, v.w);
+    if (count == 4 && v.nzcv && !x->ins[v.nzcv - 1].fsel) {
+        /* a compare's (sgx_cold_cmp's): each flag one of its condition codes stored where the flags are still its,
+           first; one of two (Z) or made into a register before, by its bits */
+        int from = v.nzcv - 1, made[4] = {0, 0, 0, 0};
+        for (f = 0; f < 4; ++f) {
+            SgB c = x->ins[from].fb[f][0];
+            SgXIns* i;
+            if (x->ins[from].fb[f][1] || x->b[c].kind != SGX_B_CC || x->b[c].v != x->flags_ins) continue;
+            i = sgx_append(x, SGX_K_STORE_FLAG);
+            i->cc = (unsigned char)x->b[c].cc;
+            i->flags_from = from;
+            i->disp = sgx_flag_offset(f);
+            made[f] = 1;
+        }
+        for (f = 0; f < 4; ++f) {
+            SgD bit;
+            SgXIns* st;
+            int r;
+            if (made[f]) continue;
+            bit = sgx_cmp_flag_bits(x, from, (int)f);
+            bit.w = 32;
+            r = sgx_reg(x, &bit);
+            st = sgx_append(x, SGX_K_STORE);
+            st->w = 32;
+            st->in[0] = r;
+            st->disp = sgx_flag_offset(f);
+        }
+        g->origin = -1;
+        return;
+    }
     if (count == 4 && v.nzcv) {
         /* the four from the flags of the instruction that made them, each the condition code that is that flag */
         int from = v.nzcv - 1;

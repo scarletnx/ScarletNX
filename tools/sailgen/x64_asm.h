@@ -220,10 +220,10 @@ static inline void sgx_cold_jumps(SgXAsm* a, int at, int out, int cls) {
     SgXBuf* b = a->b;
     unsigned avoid = 0;
     int k, t = -1;
-    /* the result is in out: no value moved out of the way goes there */
-    if (cls)
+    /* the result is in out (-1: a compare's, whose result is the flags): no value moved out of the way goes there */
+    if (out >= 0 && cls)
         a->xowner[out] = -1;
-    else
+    else if (out >= 0)
         a->owner[out] = -1;
     for (k = 0; k < i->ntests; ++k) {
         int l = i->test[k].limit ? i->in[i->test[k].limit] : 0;
@@ -397,6 +397,46 @@ static inline void sgx_cold_vwarm(SgXAsm* a, const SgXIns* i, int out, size_t ba
     for (k = 0; k < 3; ++k) sgx_vmem(a, &sgx_v_movdqu_ld, s[k], SGX_RSP, 8 * (a->slots + 2 * k));
     for (k = 0; k < ncall; ++k) sgx_cold_land(c, to_call[k]);
 }
+/* an unordered FCMP's warm path (sgx_cold_cmp's snan), the compare's jump (cjump unordered) now to here: where neither
+   operand (in XMM ra and rb) is a signalling NaN, which raises IOC, RAX back, the compare again (the unordered flags)
+   and back to the hot code; else to the call, the cold path's start. A signalling NaN's doubled bits less twice the
+   infinity's and 2 are below the quiet bit's doubled less 3, unsigned, and no other's are */
+static inline void sgx_cold_snan(SgXAsm* a, const SgXIns* i, int unordered, int ra, int rb, size_t back) {
+    SgXBuf* c = a->b;
+    const int w32 = i->cw32 & 1;
+    size_t start = a->cjumps[unordered].to, to_call[2];
+    int j;
+    a->cjumps[unordered].to = c->n;
+    sgx_cold_rax(a, 1);
+    for (j = 0; j < 2; ++j) {
+        const SgXVForm* f = w32 ? &sgx_v_movd_rx : &sgx_v_movq_rx;
+        unsigned char r[4] = {0, 0, 0, 0};
+        r[(int)f->rm] = 0;
+        r[(int)f->reg] = (unsigned char)(j ? rb : ra);
+        f->enc(c, r, 0, 0);
+        if (w32) {
+            r[0] = r[1] = r[2] = 0;
+            sgx_enc_lea(c, r, 0x00FFFFFE, 0, 1); /* lea eax, [rax + rax - 0xFF000002] */
+            sgx_byte(c, 0x3D);                   /* cmp eax, imm32 */
+            sgx_imm(c, 0x7FFFFD, 4);
+        } else {
+            sgx_bytes(c, "48 01 C0"); /* add rax, rax */
+            sgx_op_pool(a, 0x2B, 0, 0xFFE0000000000002ull);
+            sgx_op_pool(a, 0x3B, 0, 0x000FFFFFFFFFFFFDull);
+        }
+        to_call[j] = sgx_cold_jcc(c, 0x82); /* jb */
+    }
+    sgx_cold_rax(a, 0);
+    sgx_vrr(a, w32 ? &sgx_v_ucomiss : &sgx_v_ucomisd, rb, ra);
+    sgx_byte(c, 0xE9); /* jmp back */
+    sgx_cjump(a, c->n, back, 1);
+    sgx_imm(c, 0, 4);
+    sgx_cold_land(c, to_call[0]);
+    sgx_cold_land(c, to_call[1]);
+    sgx_cold_rax(a, 0);
+    sgx_byte(c, 0xE9); /* jmp the call */
+    sgx_imm(c, (long long)start - (long long)(c->n + 4), 4);
+}
 static inline void sgx_assemble_cold(SgXAsm* a, int at) {
     SgX* x = a->x;
     SgXIns* i = &x->ins[at];
@@ -406,22 +446,45 @@ static inline void sgx_assemble_cold(SgXAsm* a, int at) {
     int tv = i->in[0], cls = x->v[tv].cls, from, outreg, k, n = 0, nargs = i->w;
     int gslot[16], xslot[16], argslot[5];
     unsigned char saved_g[16] = {0}, saved_x[16] = {0};
-    /* the result's register: the tied value's, which dies here, or a copy of it */
-    from = cls ? sgx_xin(a, tv, at, 0) : sgx_in_reg(a, tv, at, 0);
-    if (x->v[tv].last == at && !x->v[tv].pinned) {
-        outreg = from;
-        if (cls) a->xowner[from] = 0;
-        else
-            a->owner[from] = 0;
-        x->v[tv].reg = -1;
-    } else if (cls) {
-        outreg = sgx_xfree(a, at, 1u << from);
-        sgx_vrr(a, &sgx_v_movaps, outreg, from);
+    /* a compare's (sgx_cold_cmp): its operands' registers, the compare's form, its jump's entry, the image's slot */
+    const int cmp = i->vflags == 3, w32 = i->cw32 & 1;
+    const SgXVForm* ucomis = w32 ? &sgx_v_ucomiss : &sgx_v_ucomisd;
+    int ra = -1, rb = -1, unordered = -1, image = -1;
+    if (cmp) {
+        /* the operands in XMM registers, where the compare and the tests read them; no result but the flags */
+        ra = sgx_xin(a, i->in[1], at, 0);
+        rb = sgx_xin(a, i->in[2], at, 1u << ra);
+        outreg = -1;
+        cls = 0;
     } else {
-        outreg = sgx_free_reg(a, at, 1u << from);
-        sgx_mov_rr(a, outreg, from);
+        /* the result's register: the tied value's, which dies here, or a copy of it */
+        from = cls ? sgx_xin(a, tv, at, 0) : sgx_in_reg(a, tv, at, 0);
+        if (x->v[tv].last == at && !x->v[tv].pinned) {
+            outreg = from;
+            if (cls)
+                a->xowner[from] = 0;
+            else
+                a->owner[from] = 0;
+            x->v[tv].reg = -1;
+        } else if (cls) {
+            outreg = sgx_xfree(a, at, 1u << from);
+            sgx_vrr(a, &sgx_v_movaps, outreg, from);
+        } else {
+            outreg = sgx_free_reg(a, at, 1u << from);
+            sgx_mov_rr(a, outreg, from);
+        }
     }
     sgx_cold_jumps(a, at, outreg, cls);
+    if (cmp) {
+        /* UCOMISx b, a (CF where a > b, ZF equal, PF unordered: sg_FPCompare's map), and where unordered the cold
+           path's: the warm test of a signalling NaN first (FCMP's), or the call (FCMPE's) */
+        sgx_vrr(a, ucomis, rb, ra);
+        sgx_byte(b, 0x0F); /* jp rel32 */
+        sgx_byte(b, 0x8A);
+        unordered = a->ncjumps;
+        sgx_cjump(a, b->n, a->cold.n, 0);
+        sgx_imm(b, 0, 4);
+    }
     sgx_cold_room(a, 1024);
     {
         SgXBuf* hot = a->b;
@@ -495,6 +558,7 @@ static inline void sgx_assemble_cold(SgXAsm* a, int at) {
             saved_x[k] = 1;
             sgx_vmem(a, &sgx_v_movdqu_st, k, SGX_RSP, 8 * xslot[k]);
         }
+        if (cmp) image = a->slots + n++;
         if (a->slots + n > a->slots_max) a->slots_max = a->slots + n;
         sgx_call_room(a);
         if (i->vflags == 2) {
@@ -595,7 +659,9 @@ static inline void sgx_assemble_cold(SgXAsm* a, int at) {
         }
         /* the pins back before the result, whose register may be one of them (sgx_pin_target's) */
         if (a->pin_cs) a->pin_cs(a->machine, 0);
-        if (i->vflags == 2)
+        if (cmp)
+            sgx_mov_mem(a, 0, 64, 0, SGX_RSP, 8 * image); /* the flags' image, loaded last */
+        else if (i->vflags == 2)
             sgx_vmem(a, &sgx_v_movdqu_ld, outreg, SGX_RSP, 8 * argslot[0]);
         else if (cls) {
             unsigned char r[4] = {0, 0, 0, 0};
@@ -608,11 +674,18 @@ static inline void sgx_assemble_cold(SgXAsm* a, int at) {
             if (saved_g[k] && x->v[a->owner[k]].last > at) sgx_mov_mem(a, 1, 64, k, SGX_RSP, 8 * gslot[k]);
             if (saved_x[k]) sgx_vmem(a, &sgx_v_movdqu_ld, k, SGX_RSP, 8 * xslot[k]);
         }
+        if (cmp) {
+            sgx_bytes(c, "FF B4 24"); /* push qword [rsp + image]; popfq */
+            sgx_imm(c, 8 * image, 4);
+            sgx_byte(c, 0x9D);
+        }
         sgx_byte(c, 0xE9); /* jmp back */
         sgx_cjump(a, c->n, back, 1);
         sgx_imm(c, 0, 4);
+        if (cmp && i->vout) sgx_cold_snan(a, i, unordered, ra, rb, back);
         a->b = hot;
     }
+    if (cmp) return;
     if (cls) a->xowner[outreg] = i->def;
     else
         a->owner[outreg] = i->def;
