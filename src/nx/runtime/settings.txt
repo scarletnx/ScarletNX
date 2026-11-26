@@ -1100,7 +1100,7 @@ setting Joy-Con 2 mouse scale
     default 1
     help How far a Joy-Con 2's mouse sensor moves the game's mouse, against its own counts
 
-# the runtime's keys (platform/hotkeys.c, backend/sdl3.c): F1's help and the game's menu show them
+# the runtime's keys (common/utilities/hotkeys.c, backend/sdl3.c): F1's help and the game's menu show them
 table g_hotkeys_ini
 setting Help shortcut
     key hotkey_help

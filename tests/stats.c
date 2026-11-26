@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The stats box over the game (runtime/platform/stats.c): nothing while off; its letters a step below the menu's; each
+/* The stats box over the game (common/utilities/stats.c): nothing while off; its letters a step below the menu's; each
    line after its icon, the GPU's beside the processor's; its lines as the frames and the measures say them, the
    longest inside the box; ? for what is not known; the GPU's share and time a frame from its busy time over a second,
    ? where the renderer can't time it or wasn't at the second before; the graph's title with its quickest and slowest
