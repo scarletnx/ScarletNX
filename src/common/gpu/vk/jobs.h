@@ -52,4 +52,17 @@ void snx_vk_jobs_stop(SnxVkJobs* j, void (*drop)(void* owner, unsigned job));
 bool snx_vk_jobs_busy(SnxVkJobs* j);
 /* whether job is done, for the renderer's own collection as it stops */
 bool snx_vk_jobs_done(const SnxVkJobs* j, unsigned job);
+
+/* A list of the renderer's own to make on the workers, the pipelines of earlier runs (prepare_shaders): count items,
+   handed over in order as jobs free up, and the jobs that hold one (its index plus 1; 0 for a draw's job) */
+typedef struct {
+    size_t count, next;
+    unsigned making;
+    uint32_t item[SNX_VK_JOBS];
+} SnxVkFeed;
+/* The items the workers made taken (made, with the job and the item), then the next ones handed to them (fill puts
+   the item in the renderer's job): half the jobs at most, so that a draw's own still find one free; with all every
+   job, and again until each item is made */
+void snx_vk_jobs_feed(SnxVkJobs* j, SnxVkFeed* f, bool all, void (*fill)(void* owner, unsigned job, size_t item),
+                      void (*made)(void* owner, unsigned job, size_t item));
 #endif
