@@ -101,9 +101,8 @@ int snx_path_format(char* out, size_t size, const char* fmt, ...) {
     snx_path_native(out);
     return 0;
 }
-/* the kinds whose folder app.ini names wrongly, and the options given by an older name, said once */
+/* the options given by an older name, said once */
 static struct {
-    unsigned said_kinds;
     const char* renamed[16];
     size_t renamed_count;
     volatile int abort_requested; /* snx_abort_request's, from another thread than the one that asks */
@@ -1211,11 +1210,13 @@ char* snx_app_kind_dir(const char* app, int kind) {
         free(dir);
         dir = picked;
         picked = NULL;
-    } else if (found < 0 && !(g_common.said_kinds & 1u << kind)) {
-        g_common.said_kinds |= 1u << kind;
-        snx_error("%s/app.ini: [folders] %s = %s is not a full path: the %s go in %s", config,
-                  kind == SNX_USER_STATE ? "state" : "cache", picked, kind == SNX_USER_STATE ? "logs" : "caches",
-                  dir ? dir : "(none)");
+    } else if (found < 0) {
+        const char* name = kind == SNX_USER_STATE ? "state" : "cache";
+        char* what = snx_format("app.ini [folders] %s = %s", name, picked);
+        if (snx_config_first(config, what)) /* once a run for each app.ini and value, as every settings file */
+            snx_error("%s/app.ini: [folders] %s = %s is not a full path: the %s go in %s", config, name, picked,
+                      kind == SNX_USER_STATE ? "logs" : "caches", dir ? dir : "(none)");
+        free(what);
     }
     if (found) free(picked);
     free(config);
