@@ -13,6 +13,7 @@
 #include "nx/gpu/nvn/nvn_copy.h"
 #include "nx/gpu/nvn/nvn_draw.h"
 #include "nx/gpu/gpu.h"
+#include "nx/gpu/gpu_queue.h"
 #include "nx/gpu/nvn/nvn_object.h"
 #include "nx/gpu/nvn/nvn_state.h"
 #include "nx/gpu/nvn/nvn_tex.h"
@@ -817,6 +818,48 @@ static void copy_record_text(TracyCZoneCtx z, u32 op, u64 payload) {
 }
 #endif
 
+/* A copy record with what it reads of guest memory taken when the front end met it (the record, the textures'
+   snapshots, the strides), queued in its place among the draws and run on the renderer's side. Run on the front end,
+   each copy's call of the renderer waited for every record queued before it (gpu_renderer_now): one game's front end
+   waited 14.8 ms a present for its three or four copies, and the renderer thread's 16.8 ms of draws and the front
+   end's work went one after the other */
+typedef struct {
+    u32 op;
+    union {
+        NvnPCopyB2B b2b;
+        NvnPClearBuf clear;
+        struct {
+            NvnPCopyB2T r;
+            NvnTexture t;
+            i64 stride[2];
+        } b2t;
+        struct {
+            NvnPCopyT2T r;
+            NvnTexture s, d;
+        } t2t;
+    } u;
+} CopyCall;
+static void copy_call_run(const void* arg, u64 bytes) {
+    CopyCall c;
+    (void)bytes;
+    memcpy(&c, arg, sizeof c);
+    switch (c.op) {
+        case OP_COPY_B2B: copy_buffer_buffer(c.u.b2b.src, c.u.b2b.dst, c.u.b2b.size); break;
+        case OP_CLEAR_BUF: fill_buffer(c.u.clear.address, c.u.clear.size, c.u.clear.value); break;
+        case OP_COPY_B2T:
+        case OP_COPY_T2B:
+            copy_buffer_texture(&c.u.b2t.r, &c.u.b2t.t, c.op == OP_COPY_B2T, c.u.b2t.stride, NULL);
+            break;
+        case OP_COPY_T2T: copy_texture_texture(&c.u.t2t.r, &c.u.t2t.s, &c.u.t2t.d); break;
+    }
+}
+/* the copy in its place among the queued records, or now where nothing queues (the renderer's side, a test) */
+static void copy_call(const CopyCall* c) {
+    if (gq_queues())
+        gq_call(copy_call_run, c, sizeof *c);
+    else
+        copy_call_run(c, sizeof *c);
+}
 int nvn_copy_record(u32 op, u64 payload, u32 size, i64 stride[2]) {
     (void)size;
     /* the record's op stays the value: which kind of copy this is. A skip names why in the zone text instead */
@@ -831,13 +874,15 @@ int nvn_copy_record(u32 op, u64 payload, u32 size, i64 stride[2]) {
             return 1;
         }
         case OP_COPY_B2B: {
-            const NvnPCopyB2B* r = NVN_OBJ(const NvnPCopyB2B, payload);
-            copy_buffer_buffer(r->src, r->dst, r->size);
+            CopyCall c = {.op = op};
+            c.u.b2b = *NVN_OBJ(const NvnPCopyB2B, payload);
+            copy_call(&c);
             return 1;
         }
         case OP_CLEAR_BUF: {
-            const NvnPClearBuf* r = NVN_OBJ(const NvnPClearBuf, payload);
-            fill_buffer(r->address, r->size, r->value);
+            CopyCall c = {.op = op};
+            c.u.clear = *NVN_OBJ(const NvnPClearBuf, payload);
+            copy_call(&c);
             return 1;
         }
         case OP_COPY_B2T:
@@ -848,9 +893,12 @@ int nvn_copy_record(u32 op, u64 payload, u32 size, i64 stride[2]) {
                 SNX_ZONE_TEXT(z, "copy b2t/t2b: skipped: no texture");
                 return 1;
             }
-            NvnTexture t = {0}; /* past the snapshot's bytes */
-            memcpy(&t, GP(r.texture), NVN_TEX_SNAP);
-            copy_buffer_texture(&r, &t, op == OP_COPY_B2T, stride, NULL);
+            CopyCall c = {.op = op}; /* the texture past the snapshot's bytes zero */
+            c.u.b2t.r = r;
+            memcpy(&c.u.b2t.t, GP(r.texture), NVN_TEX_SNAP);
+            c.u.b2t.stride[0] = stride[0];
+            c.u.b2t.stride[1] = stride[1];
+            copy_call(&c);
             return 1;
         }
         case OP_COPY_T2T: {
@@ -860,10 +908,11 @@ int nvn_copy_record(u32 op, u64 payload, u32 size, i64 stride[2]) {
                 SNX_ZONE_TEXT(z, "copy t2t: skipped: no source or destination");
                 return 1;
             }
-            NvnTexture s = {0}, d = {0}; /* past the snapshots' bytes */
-            memcpy(&s, GP(r.src), NVN_TEX_SNAP);
-            memcpy(&d, GP(r.dst), NVN_TEX_SNAP);
-            copy_texture_texture(&r, &s, &d);
+            CopyCall c = {.op = op}; /* the textures past the snapshots' bytes zero */
+            c.u.t2t.r = r;
+            memcpy(&c.u.t2t.s, GP(r.src), NVN_TEX_SNAP);
+            memcpy(&c.u.t2t.d, GP(r.dst), NVN_TEX_SNAP);
+            copy_call(&c);
             return 1;
         }
         case OP_UPSCALE: {
