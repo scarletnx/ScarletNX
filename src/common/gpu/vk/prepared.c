@@ -214,3 +214,182 @@ int snx_prep_replace(const char* path, bool (*write)(FILE* f, void* ctx), void (
     return ok ? 0 : -1;
 }
 
+/* what a rewrite keeps of a file: its good records, or a header alone */
+typedef struct {
+    const uint8_t* bytes;
+    size_t n;
+} Kept;
+static bool keep_write(FILE* f, void* ctx) {
+    const Kept* k = ctx;
+    return fwrite(k->bytes, 1, k->n, f) == k->n;
+}
+static uint32_t get32(const uint8_t* p) {
+    uint32_t v;
+    memcpy(&v, p, 4);
+    return v;
+}
+static size_t pad8(size_t n) { return (n + 7) & ~(size_t)7; }
+/* a packed record's payload (len bytes at payload) unpacked into its head and body, malloc'd (*n bytes): NULL, with
+   why, where it does not hold what it says */
+static uint8_t* unpacked(const uint8_t* payload, uint32_t len, uint32_t* n, char* why, size_t why_n) {
+    SnxPrepPacked z;
+    if (len < sizeof z) {
+        snprintf(why, why_n, "a packed record of %u bytes holds no sizes", len);
+        return NULL;
+    }
+    memcpy(&z, payload, sizeof z);
+    const uint64_t frame_at = sizeof z + pad8(z.head);
+    if (frame_at > len || z.packed > len - frame_at || len - frame_at - z.packed >= 8 ||
+        (uint64_t)z.head + z.raw > SNX_PREP_MAX) {
+        snprintf(why, why_n, "a packed record of %u bytes says a head of %u and %u bytes packed to %u", len, z.head,
+                 z.raw, z.packed);
+        return NULL;
+    }
+    uint8_t* out = malloc((size_t)z.head + z.raw + 1);
+    if (!out) {
+        snprintf(why, why_n, "no memory for %u bytes", z.head + z.raw);
+        return NULL;
+    }
+    memcpy(out, payload + sizeof z, z.head);
+    if (!snx_prep_unpack(out + z.head, z.raw, payload + frame_at, z.packed, why, why_n)) {
+        free(out);
+        return NULL;
+    }
+    *n = z.head + z.raw;
+    return out;
+}
+
+uint32_t snx_prep_open(SnxPrepFile* p, const char* path, const char* magic, uint32_t version, const char* key,
+                       bool (*each)(void* ctx, uint32_t type, const uint8_t* payload, uint32_t len), void* ctx) {
+    size_t hsize = 0, size = 0, at = 0;
+    uint8_t* head = snx_prep_header(magic, version, key, &hsize);
+    char why[512] = "";
+    snprintf(p->path, sizeof p->path, "%s", path);
+    p->f = NULL;
+    p->size = 0;
+    p->records = 0;
+    if (!head) {
+        fprintf(stderr, "%s: no memory for the header of %s: nothing is prepared from it or kept in it\n", p->who,
+                path);
+        return 0;
+    }
+    uint8_t* file = snx_read_file(path, &size);
+    if (!file && snx_path_exists(path)) {
+        fprintf(stderr, "%s: cannot read %s (%s): nothing is prepared from it, and what is made is not kept in it\n",
+                p->who, path, snx_os_error(why, sizeof why));
+        free(head);
+        return 0;
+    }
+    bool rewrite = !file;
+    if (file && size >= hsize && !memcmp(file, head, hsize)) {
+        uint32_t type, len;
+        bool bad = false;
+        for (at = hsize; !bad && at < size && snx_prep_record(file, at, size, &type, &len);) {
+            const uint8_t* payload = file + at + SNX_PREP_REC;
+            uint8_t* raw = NULL;
+            uint32_t n = len;
+            if (type & SNX_PREP_PACKED) {
+                raw = unpacked(payload, len, &n, why, sizeof why);
+                if (!raw) {
+                    fprintf(stderr, "%s: %s: the record at byte %zu does not unpack: %s\n", p->who, path, at, why);
+                    break;
+                }
+            }
+            bad = !each(ctx, type & ~SNX_PREP_PACKED, raw ? raw : payload, n);
+            free(raw);
+            if (!bad) {
+                at += SNX_PREP_REC + len;
+                ++p->records;
+            }
+        }
+        if (at < size) {
+            fprintf(stderr, "%s: %s: the record at byte %zu of %zu %s: the %u before it are kept\n", p->who, path, at,
+                    size, bad ? "is not this build's" : "is cut short or changed", p->records);
+            rewrite = true;
+        }
+    } else if (file) {
+        char diff[768];
+        if (size >= 16 && !memcmp(file, magic, 8) && get32(file + 12) <= size - 16)
+            snx_prep_key_diff(diff, sizeof diff, (const char*)file + 16, get32(file + 12), key);
+        else
+            snprintf(diff, sizeof diff, "%zu bytes without this format's header", size);
+        fprintf(stderr, "%s: %s started over: its key differs (%s)\n", p->who, path, diff);
+        rewrite = true;
+    }
+    Kept k = {at ? file : head, at ? at : hsize};
+    if (rewrite && snx_prep_replace(path, keep_write, NULL, &k, why, sizeof why))
+        fprintf(stderr, "%s: cannot write %s (%s): what is made is not kept for the next run\n", p->who, path, why);
+    else if (!(p->f = fopen(path, "ab")))
+        fprintf(stderr, "%s: cannot open %s to add to it (%s): what is made is not kept for the next run\n", p->who,
+                path, snx_os_error(why, sizeof why));
+    p->size = k.n;
+    free(file);
+    free(head);
+    return p->records;
+}
+
+/* the file closed, its reason said: it takes no more */
+static int stop(SnxPrepFile* p, const char* why) {
+    fprintf(stderr, "%s: %s %s: what is made from now on is not kept for the next run\n", p->who, p->path, why);
+    fclose(p->f);
+    p->f = NULL;
+    return -1;
+}
+int snx_prep_add(SnxPrepFile* p, uint32_t type, const void* head, size_t head_n, const void* body, size_t body_n) {
+    if (!p->f) return -1;
+    SnxPrepPacked z = {0};
+    size_t packed = 0;
+    const char* why = NULL;
+    /* packed where the sizes and the head's padding beside the frame still make the record smaller */
+    uint8_t* frame = p->pack && body_n
+                         ? snx_prep_pack(body, body_n, SNX_PREP_LEVEL, sizeof z + pad8(head_n) - head_n, &packed, &why)
+                         : NULL;
+    if (why && !p->pack_said) {
+        p->pack_said = true;
+        fprintf(stderr, "%s: cannot pack a shader of %zu bytes (%s): it is kept unpacked (said for the first)\n",
+                p->who, body_n, why);
+    }
+    /* the payload in one piece, its check taken whole: the pieces' sizes need be no whole words */
+    const size_t payload = frame ? sizeof z + pad8(head_n) + packed : head_n + body_n, total = pad8(payload);
+    if (p->size + SNX_PREP_REC + total > SNX_PREP_MAX) {
+        free(frame);
+        char line[64];
+        snprintf(line, sizeof line, "reached %u MiB, its most", SNX_PREP_MAX >> 20);
+        return stop(p, line);
+    }
+    uint8_t* rec = calloc(1, SNX_PREP_REC + total);
+    if (!rec) {
+        free(frame);
+        return stop(p, "has no memory for a record");
+    }
+    uint8_t* at = rec + SNX_PREP_REC;
+    if (frame) {
+        z = (SnxPrepPacked){(uint32_t)head_n, (uint32_t)body_n, (uint32_t)packed, 0};
+        memcpy(at, &z, sizeof z);
+        memcpy(at + sizeof z, head, head_n);
+        memcpy(at + sizeof z + pad8(head_n), frame, packed);
+        type |= SNX_PREP_PACKED;
+    } else {
+        memcpy(at, head, head_n);
+        if (body_n) memcpy(at + head_n, body, body_n);
+    }
+    free(frame);
+    const void* piece[1] = {at};
+    const size_t len[1] = {total};
+    snx_prep_head(rec, type, piece, len, 1);
+    bool ok = fwrite(rec, 1, SNX_PREP_REC + total, p->f) == SNX_PREP_REC + total && !fflush(p->f);
+    free(rec);
+    if (!ok) { /* a record cut short ends what the next run reads */
+        char reason[256], line[300];
+        snprintf(line, sizeof line, "cannot be written (%s)", snx_os_error(reason, sizeof reason));
+        return stop(p, line);
+    }
+    p->size += SNX_PREP_REC + total;
+    ++p->records;
+    return 0;
+}
+
+void snx_prep_close(SnxPrepFile* p) {
+    if (p->f) fclose(p->f);
+    p->f = NULL;
+}

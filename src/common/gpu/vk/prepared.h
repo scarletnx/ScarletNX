@@ -50,4 +50,31 @@ unsigned snx_prep_pid(void);
 int snx_prep_replace(const char* path, bool (*write)(FILE* f, void* ctx), void (*before)(void* ctx), void* ctx,
                      char* why, size_t why_n);
 
+/* ---- a console's prepared shaders (prepare_shaders): its file read whole as the game starts, then appended to as its
+   renderer makes a shader or a pipeline, each record flushed as it is added ---- */
+#define SNX_PREP_PACKED 0x100u /* a record type's bit: an SnxPrepPacked, the head, then one zstd frame of the body */
+#define SNX_PREP_MAX    (64u << 20) /* past this size the file takes no more */
+#define SNX_PREP_LEVEL  1           /* zstd's level for a body packed alone, as the Switch packs its shaders */
+typedef struct {
+    uint32_t head, raw, packed, pad; /* the head's bytes, kept as they are; the body's, and its frame's */
+} SnxPrepPacked;
+typedef struct {
+    FILE* f;         /* appended to; NULL once it takes no more, or where it could not be written */
+    const char* who; /* before each line: "3ds gpu" */
+    bool pack;       /* compress_prepared_shaders: each record's body packed on its own where that makes it smaller */
+    bool pack_said;  /* a body that could not be packed was said */
+    uint64_t size;
+    uint32_t records; /* read and added */
+    char path[1200];
+} SnxPrepFile;
+/* path read: with the header of magic, version and key, each record handed to each in order (a packed one unpacked,
+   its type without SNX_PREP_PACKED), until each refuses one (false, which each says) or one is cut short or changed;
+   the file is then cut there. One of another key starts over, said with what differs. Then open to append to. The
+   records read */
+uint32_t snx_prep_open(SnxPrepFile* p, const char* path, const char* magic, uint32_t version, const char* key,
+                       bool (*each)(void* ctx, uint32_t type, const uint8_t* payload, uint32_t len), void* ctx);
+/* a record of type added: its head as it is, then its body, packed alone where p->pack makes it smaller. 0, or -1 when
+   the file takes no more (the first time said with why) */
+int snx_prep_add(SnxPrepFile* p, uint32_t type, const void* head, size_t head_n, const void* body, size_t body_n);
+void snx_prep_close(SnxPrepFile* p);
 #endif
