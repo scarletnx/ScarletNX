@@ -3020,6 +3020,7 @@ static VkComponentMapping tex_map(const Surf* t, const u32* tic) {
             m[k] = m[k] == VK_COMPONENT_SWIZZLE_R   ? VK_COMPONENT_SWIZZLE_B
                    : m[k] == VK_COMPONENT_SWIZZLE_B ? VK_COMPONENT_SWIZZLE_R
                                                     : m[k];
+    const u32 bcn = t->f.conv == VKC_ASTC ? vk_astc_bcn(t->f.vk) : 0; /* 4 BC4, 5 BC5: held for luminance */
     if (t->f.depth && t->f.stencil && vk_tic_reads_stencil(tic)) { /* the stencil view's R where the header names
                                                                         the stencil, its constants, nought for depth */
         u32 sc = vk_tic_stencil_component(tic[0] & 0x7F);
@@ -3030,12 +3031,12 @@ static VkComponentMapping tex_map(const Surf* t, const u32* tic) {
     } else if (t->f.depth) { /* depth in r, g and b, alpha 1 */
         m[0] = m[1] = m[2] = VK_COMPONENT_SWIZZLE_R;
         m[3] = VK_COMPONENT_SWIZZLE_ONE;
-    } else if (t->f.conv == VKC_ASTC && (vk_astc_bcn(t->f.vk) == 4 || vk_astc_bcn(t->f.vk) == 5)) {
+    } else if (t->f.conv == VKC_ASTC && bcn >= 4) {
         /* ASTC held as BC4 (luminance) or BC5 (luminance and alpha, texture.c): the texels R, G and B the game's
            blocks decode to are the image's R, and alpha its G, or 1 */
         for (int k = 0; k < 4; k++)
             m[k] = m[k] == VK_COMPONENT_SWIZZLE_A
-                       ? (vk_astc_bcn(t->f.vk) == 5 ? VK_COMPONENT_SWIZZLE_G : VK_COMPONENT_SWIZZLE_ONE)
+                       ? (bcn == 5 ? VK_COMPONENT_SWIZZLE_G : VK_COMPONENT_SWIZZLE_ONE)
                    : m[k] == VK_COMPONENT_SWIZZLE_G || m[k] == VK_COMPONENT_SWIZZLE_B ? VK_COMPONENT_SWIZZLE_R
                                                                                       : m[k];
     }
