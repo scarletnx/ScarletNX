@@ -302,10 +302,11 @@ static inline void sgx_cold_varg(SgXAsm* a, int s, int v) {
 }
 /* the vector cold path's tests before its call (sgx_vcold_warm, x64_vec.c's guards: the LLVM back end's warm path),
    in SSE on three XMM registers no value of them is in, kept in the frame around them (zacc bit 7 says there are such
-   tests). Back to the hot code, its result out as it is, where FPCR's mode is nearest, FPSR's IXC is set (bit 5), no
-   argument FZ flushes (the first ones, bits 3-4 their count) and in each of the lanes desc names (x64_vec.c's FDESC)
-   out is a normal number or a zero that is exact (bits 0-1: 0 none is, 1 every zero, 2 one where argument 1 or 2 (bit
-   2: 2 or 3) is a zero, 3 where argument 1 is); else on to the call */
+   tests). Back to the hot code, its result out as it is, where FPSR's IXC is set (bit 5), no argument FZ flushes (the
+   first ones, bits 3-4 their count) and in each of the lanes desc names (x64_vec.c's FDESC) either (bit 6) the hot
+   code's mask in[6] is clear, or FPCR's mode is nearest and out is a normal number or a zero that is exact (bits 0-1:
+   0 none is, 1 every zero, 2 one where argument 1 or 2 (bit 2: 2 or 3) is a zero, 3 where argument 1 is); else on to
+   the call */
 static inline void sgx_cold_vwarm(SgXAsm* a, const SgXIns* i, int out, size_t back) {
     SgXBuf* c = a->b;
     const unsigned z = i->zacc, bytes = (unsigned)(i->imm >> 4 & 15), lanes = (unsigned)(i->imm >> 8 & 15);
@@ -324,20 +325,25 @@ static inline void sgx_cold_vwarm(SgXAsm* a, const SgXIns* i, int out, size_t ba
     unsigned avoid = 1u << out;
 #define SPLAT(v) ((v) & wide) | (dbl ? 0 : ((v) & wide) << 32), ((v) & wide) | (dbl ? 0 : ((v) & wide) << 32)
     if (nb == 0 || nb > 16 || (bytes != 4 && bytes != 8)) sg_fail("a warm path of these lanes", bytes, lanes);
-    for (k = 1; k <= 3; ++k)
-        if (a->x->v[i->in[k]].reg >= 0) avoid |= 1u << a->x->v[i->in[k]].reg;
+    for (k = 1; k <= 6; ++k)
+        if ((k <= 3 || (k == 6 && i->in[6])) && a->x->v[i->in[k]].reg >= 0) avoid |= 1u << a->x->v[i->in[k]].reg;
     for (k = 0; k < SGX_NXREG && ns < 3; ++k)
         if (!(avoid >> k & 1)) s[ns++] = k;
     if (ns < 3) sg_fail("a warm path without three free XMM registers", ns, (long long)avoid);
     if (a->slots + 6 > a->slots_max) a->slots_max = a->slots + 6;
-    sgx_cold_test_state(c, i->disp, 3u << 22); /* FPCR's mode */
-    to_call[ncall++] = sgx_cold_jcc(c, 0x85);
+    if (!(z & 0x40)) {
+        sgx_cold_test_state(c, i->disp, 3u << 22); /* FPCR's mode */
+        to_call[ncall++] = sgx_cold_jcc(c, 0x85);
+    }
     if (z & 0x20) {
         sgx_cold_test_state(c, i->mdisp, 1u << 4); /* FPSR.IXC */
         to_call[ncall++] = sgx_cold_jcc(c, 0x84);
     }
     for (k = 0; k < 3; ++k) sgx_vmem(a, &sgx_v_movdqu_st, s[k], SGX_RSP, 8 * (a->slots + 2 * k));
-    if (kind) { /* s[1]: the lanes whose zero out is exact */
+    if (z & 0x40) { /* the hot code's lanes for the call */
+        sgx_cold_varg(a, s[0], i->in[6]);
+        sgx_vpool(a, &sgx_v_ptest, s[0], mlo, mhi);
+    } else if (kind) { /* s[1]: the lanes whose zero out is exact */
         sgx_vrr(a, &sgx_v_movaps, s[2], out);
         sgx_vrr(a, add, s[2], s[2]);
         sgx_vpool(a, eq, s[2], 0, 0);
@@ -356,14 +362,16 @@ static inline void sgx_cold_vwarm(SgXAsm* a, const SgXIns* i, int out, size_t ba
             sgx_vrr(a, &sgx_v_pand, s[1], s[2]);
         }
     }
-    /* s[0]: the lanes of out that are not normal numbers above the smallest (x64_vec.c's fnot_roomy) */
-    sgx_vrr(a, &sgx_v_movaps, s[0], out);
-    sgx_vrr(a, add, s[0], s[0]);
-    sgx_vpool(a, sub, s[0], SPLAT((normal + 1) << 1));
-    sgx_vpool(a, &sgx_v_pxor, s[0], SPLAT(flip));
-    sgx_vpool(a, gt, s[0], SPLAT((((inf - normal - 1) << 1) - 1) ^ flip));
-    if (kind) sgx_vrr(a, &sgx_v_pandn, s[1], s[0]); /* not normal, and not an exact zero */
-    sgx_vpool(a, &sgx_v_ptest, s[kind ? 1 : 0], mlo, mhi);
+    if (!(z & 0x40)) {
+        /* s[0]: the lanes of out that are not normal numbers above the smallest (x64_vec.c's fnot_roomy) */
+        sgx_vrr(a, &sgx_v_movaps, s[0], out);
+        sgx_vrr(a, add, s[0], s[0]);
+        sgx_vpool(a, sub, s[0], SPLAT((normal + 1) << 1));
+        sgx_vpool(a, &sgx_v_pxor, s[0], SPLAT(flip));
+        sgx_vpool(a, gt, s[0], SPLAT((((inf - normal - 1) << 1) - 1) ^ flip));
+        if (kind) sgx_vrr(a, &sgx_v_pandn, s[1], s[0]); /* not normal, and not an exact zero */
+        sgx_vpool(a, &sgx_v_ptest, s[kind ? 1 : 0], mlo, mhi);
+    }
     to_restore[nrestore++] = sgx_cold_jcc(c, 0x85);
     if (nfz) { /* under FZ an argument's denormal lane (x64_vec.c's fdenormal) is flushed: the call's */
         sgx_cold_test_state(c, i->disp, 1u << 24);

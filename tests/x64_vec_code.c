@@ -119,6 +119,8 @@ static const Row k_rows[] = {
     {"fadd v0.4s, v1.4s, v2.4s (the hot code's one lane mask)", 0, 0, 816, -1, "=1 " MOVMSKPS, "4E22D420"},
     {"fmul v0.2d, v1.2d, v2.2d (the hot code's one lane mask)", 0, 0, 864, -1, "=1 " MOVMSKPD, "6E62DC20"},
     {"fmla v0.4s, v1.4s, v2.4s (the hot code's one lane mask)", NEEDS_FMA, 0, 928, -1, "=1 " MOVMSKPS, "4E22CC20"},
+    {"fmax v0.4s, v1.4s, v2.4s (the hot code's one lane mask)", 0, 0, 656, -1, "=1 " MOVMSKPS, "4E22F420"},
+    {"fcmeq v0.4s, v1.4s, v2.4s (the hot code's one lane mask)", 0, 0, 640, -1, "=1 " MOVMSKPS, "4E22E420"},
 };
 
 static struct {
