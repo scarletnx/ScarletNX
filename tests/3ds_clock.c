@@ -27,7 +27,7 @@ static bool near(double a, double b) { return fabs(a - b) < 0.001; }
 static void parse(const char* text, int start, bool read, int want, const char* line) {
     int pace = start;
     char said[192];
-    bool ok = snx_ctr_clock_parse(text, &pace, said, sizeof said);
+    bool ok = snx_pace_parse(text, &pace, said, sizeof said);
     if (ok != read || pace != want || strcmp(said, line)) {
         fprintf(stderr, "fps_limit=%s: %s, pace %d, \"%s\"; expected %s, %d, \"%s\"\n", text, ok ? "read" : "not read",
                 pace, said, read ? "read" : "not read", want, line);
@@ -92,7 +92,7 @@ int main(void) {
           "fps_limit=30fps is not game, 0 or a whole number of frames a second from 10 to 1000: it takes 30");
     parse("fast", 120, false, 120, "fps_limit=fast is not game or a number of frames a second: it keeps 120");
     char text[16];
-    snx_ctr_clock_text(SNX_CTR_PACE_NONE, text, sizeof text);
+    snx_pace_text(SNX_CTR_PACE_NONE, text, sizeof text);
     CHECK(!strcmp(text, "0"));
     printf("3ds clock: %d checks\n", checks);
     return 0;

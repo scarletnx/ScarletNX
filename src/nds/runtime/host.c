@@ -303,13 +303,15 @@ void nds_host_frame(NdsHost* host) {
     }
     if (host->shot) shot(host);
     if (!host->paced) return;
-    /* the frame's time by the host's clock: a late frame does not hurry the ones after it past a frame's worth */
-    uint64_t now = SDL_GetTicksNS();
+    /* the frame's time by the host's clock, at fps_limit's pace (F4 switches it): a late frame does not hurry the ones
+       after it past a frame's worth */
+    uint64_t now = SDL_GetTicksNS(), step = snx_vpad_window_frame_ns(FRAME_NS);
+    if (!step) return;
     if (now < host->due)
         SDL_DelayPrecise(host->due - now);
-    else if (now - host->due > FRAME_NS * 4)
+    else if (now - host->due > step * 4)
         host->due = now;
-    host->due += FRAME_NS;
+    host->due += step;
 }
 
 /* both screens as they show, as the Switch's screenshot is: a PPM in the game's captures/, said where */

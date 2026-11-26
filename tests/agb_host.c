@@ -35,6 +35,9 @@ static bool press(AgbHost* host, SDL_Keycode key, SDL_Keymod mod, bool repeat) {
     e.key.repeat = repeat;
     return SDL_PushEvent(&e) && agb_host_poll(host, &keys);
 }
+/* the last line snx_error said */
+static char g_said[256];
+static void said(const char* line) { snprintf(g_said, sizeof g_said, "%s", line); }
 /* the quit key, Esc by default: the runtime's hotkey_quit */
 static bool esc(AgbHost* host, SDL_Keymod mod, bool repeat) { return press(host, SDLK_ESCAPE, mod, repeat); }
 
@@ -251,6 +254,7 @@ int main(void) {
     SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "dummy");
     sdl_real_pads_hide();
     vpad_console(&snx_vpad_gba);
+    snx_vpad_sdl_settings(); /* the runtime's keys and fps_limit read with the controls', as main.c reads them */
     char *root = snx_temp_root(), *dir = root ? snx_temp_dir(root) : NULL;
     char* ini = dir ? snx_path_join(dir, "a game.ini") : NULL;
     if (!ini || snx_write_file(ini, "[Game]\nsystem=gba\n", strlen("[Game]\nsystem=gba\n"))) {
@@ -307,6 +311,46 @@ int main(void) {
         snx_free_strings(names, count);
         free(captures);
     }
+    /* F4: no limit, SDL's renderer then without vsync, and back to the game's pace, said as a Switch game's; fps_limit
+       from the command line, a value not taken as given held to what is */
+    {
+        static const uint32_t frame[AGB_SCREEN_WIDTH * AGB_SCREEN_HEIGHT];
+        char* limits[] = {"scarletnx-agb", "--fps-limit=30", "--fps-limit=5", NULL};
+        int vsync = -1;
+        static const struct {
+            const char* said;
+            uint64_t frame_ns;
+            int vsync;
+        } steps[2] = {{"FPS limit: off", 0, 0}, {"FPS limit: the game's pace", 16743000, 1}};
+        for (int i = 0; i < 2; ++i) {
+            if (!press(host, SDLK_F4, SDL_KMOD_NONE, false)) return 1;
+            agb_host_frame(host, frame, NULL, 0);
+            if (snx_vpad_window_frame_ns(16743000) != steps[i].frame_ns ||
+                !SDL_GetRenderVSync(SDL_GetRenderer(window), &vsync) || vsync != steps[i].vsync ||
+                notice_read(host, SDL_GetRenderer(window), window, steps[i].said) != 0) {
+                fprintf(stderr, "agb_host: F4's press %d did not give %s, vsync %d\n", i + 1, steps[i].said,
+                        steps[i].vsync);
+                agb_host_close(host);
+                return 1;
+            }
+        }
+        vpad_settings(dir, "a game", 2, limits);
+        if (snx_vpad_window_frame_ns(16743000) != 1000000000ull / 30) {
+            fprintf(stderr, "agb_host: --fps-limit=30 is not 30 frames a second\n");
+            return 1;
+        }
+        snx_error_sink(said);
+        vpad_settings(dir, "a game", 3, limits);
+        snx_error_sink(NULL);
+        if (snx_vpad_window_frame_ns(16743000) != 1000000000ull / 10 ||
+            strcmp(g_said, "settings: fps_limit=5 is not game, 0 or a whole number of frames a second from 10 to 1000: "
+                           "it takes 10")) {
+            fprintf(stderr, "agb_host: --fps-limit=5 was not held to 10 frames a second, saying so (%s)\n", g_said);
+            return 1;
+        }
+        char* back[] = {"scarletnx-agb", "--fps-limit=game", NULL};
+        vpad_settings(dir, "a game", 2, back);
+    }
     /* the pause key holds the game and says so, as a Switch game's */
     for (int i = 0; i < 2; ++i)
         if (!press(host, SDLK_PAUSE, SDL_KMOD_NONE, false) || snx_vpad_window_paused() != !i ||
@@ -330,7 +374,6 @@ int main(void) {
         char why[256] = {0}, *quit_q[] = {"scarletnx-agb", "--hotkey-quit=Q", NULL},
              *quit_esc[] = {"scarletnx-agb", "--hotkey-quit=Escape", NULL},
              *quit_nope[] = {"scarletnx-agb", "--hotkey-quit=Nope", NULL};
-        snx_vpad_sdl_settings();
         if (vpad_arg(quit_nope[1], why, sizeof why) != 1 || vpad_arg(quit_q[1], why, sizeof why) != 1) {
             fprintf(stderr, "agb_host: --hotkey-quit= was not taken as the runtime takes it (%s)\n", why);
             agb_host_close(host);

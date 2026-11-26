@@ -2,10 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "3ds/board/clock.h"
 #include "common/utilities/common.h"
-#include "common/utilities/key_said.h"
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include "common/utilities/pace.h"
 
 /* the clock's last change of pace: the host's seconds then (host) and the clock's (at); and the pace before none, for
    F4 (previous). All zero at start: the host's clock at the console's pace */
@@ -25,15 +22,9 @@ void snx_ctr_clock_set_pace(int pace) {
     g_clock.pace = pace;
 }
 int snx_ctr_clock_toggle(char* line, size_t size) {
-    char now[16], was[16];
-    snx_ctr_clock_text(g_clock.pace, was, sizeof was);
-    if (g_clock.pace != SNX_CTR_PACE_NONE) {
-        g_clock.previous = g_clock.pace;
-        snx_ctr_clock_set_pace(SNX_CTR_PACE_NONE);
-    } else
-        snx_ctr_clock_set_pace(g_clock.previous);
-    snx_ctr_clock_text(g_clock.pace, now, sizeof now);
-    if (size) snx_fps_limit_said(line, size, now, was);
+    int pace = g_clock.pace;
+    snx_pace_toggle(&pace, &g_clock.previous, line, size);
+    snx_ctr_clock_set_pace(pace);
     return g_clock.pace;
 }
 double snx_ctr_clock_wait(double deadline) {
@@ -47,43 +38,4 @@ double snx_ctr_clock_wait(double deadline) {
         return 0;
     }
     return (deadline - now) / rate_of(g_clock.pace);
-}
-void snx_ctr_clock_text(int pace, char* out, size_t size) {
-    if (pace == SNX_CTR_PACE_CONSOLE)
-        snprintf(out, size, "game");
-    else
-        snprintf(out, size, "%d", pace == SNX_CTR_PACE_NONE ? 0 : pace);
-}
-bool snx_ctr_clock_parse(const char* text, int* pace, char* line, size_t line_size) {
-    const char* v = text;
-    char* end;
-    char taken[16];
-    if (line_size) line[0] = 0;
-    while (*v == ' ' || *v == '\t') v++;
-    if ((v[0] | 0x20) == 'g' && (v[1] | 0x20) == 'a' && (v[2] | 0x20) == 'm' && (v[3] | 0x20) == 'e' &&
-        !v[4 + strspn(v + 4, " \t")]) {
-        *pace = SNX_CTR_PACE_CONSOLE;
-        return true;
-    }
-    double d = strtod(v, &end);
-    if (end == v || d != d) {
-        snx_ctr_clock_text(*pace, taken, sizeof taken);
-        snprintf(line, line_size, "fps_limit=%s is not game or a number of frames a second: it keeps %s", text, taken);
-        return false;
-    }
-    int value = d < 0 || (d >= 1 && d < 2) ? SNX_CTR_PACE_CONSOLE
-                : d < 1                    ? SNX_CTR_PACE_NONE
-                : d < 10                   ? 10
-                : d > 1000                 ? 1000
-                                           : (int)d;
-    *pace = value;
-    /* given as it is taken: "0", or a whole number from 10 to 1000 with nothing after it */
-    bool exact = !end[strspn(end, " \t")] && (value == SNX_CTR_PACE_NONE ? d == 0 : value > 0 && d == value);
-    if (!exact) {
-        snx_ctr_clock_text(value, taken, sizeof taken);
-        snprintf(line, line_size,
-                 "fps_limit=%s is not game, 0 or a whole number of frames a second from 10 to 1000: it takes %s", text,
-                 taken);
-    }
-    return true;
 }

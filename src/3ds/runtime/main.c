@@ -974,7 +974,7 @@ int snx_ctr_main(int argc, char** argv) {
     /* the Switch's fps_limit, its text as the Switch reads it, the game's clock's pace (board/clock.h) */
     char said[192];
     int pace = snx_ctr_clock_pace();
-    (void)snx_ctr_clock_parse(g_settings.fps_limit, &pace, said, sizeof said);
+    (void)snx_pace_parse(g_settings.fps_limit, &pace, said, sizeof said);
     if (said[0]) fprintf(stderr, "settings: %s\n", said);
     snx_ctr_clock_set_pace(pace);
     if (old_trace)
