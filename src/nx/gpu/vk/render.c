@@ -7716,8 +7716,9 @@ static void render_batch(void) {
    passes over those draws. Each draw on either thread holds the share lock: the structures both use are not yet safe
    for two threads, so the two take turns. A step to batches in parallel (docs/dev/parallel-draw-batches.md) */
 #define SPLIT_MIN 16
+#define SPLIT_MAX 64 /* records a split run takes at most */
 static struct {
-    const void* recs[BATCH_MAX];
+    const void* recs[SPLIT_MAX];
     u32 apply, n;
     VkRecList* list;
     int ok, pending;
@@ -7869,7 +7870,7 @@ static void render_split_join(void) {
 static void render_split(void) {
     if (g_settings.draw_batches != 2 || g_split.pending || g_draw_depth || !gpu_ds_running()) return;
     const u64 t0 = ph_now();
-    const u32 n = gpu_ds_batch(g_split.recs, BATCH_MAX);
+    const u32 n = gpu_ds_batch(g_split.recs, SPLIT_MAX);
     const u64 t1 = ph_now();
     g_split.t_peek += t1 - t0;
     g_split.peeks++;
