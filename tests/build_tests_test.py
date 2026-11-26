@@ -7,9 +7,11 @@ A pull request, a run by hand and a version's tag run every test; a push to main
 package and publish, and run none but the AppImage and the zip as a user would, which every event runs. SNX_TESTS, in
 the workflow's env, says which: each test step below is `if: env.SNX_TESTS == 'true'`, with nothing in its condition
 that leaves out a pull request or picks one by what it changes. Every step that runs ctest is one of them, and the
-steps that make and publish the packages run on every event, a pull request's too. The A64 differential's QEMU
-reference, a test's input alone, is a job of the testing events. Then the same checks on copies of the workflow made
-to fail them. Offline.
+steps that make and publish the packages run on every event, a pull request's too. The one test a pull request runs
+by what it changes is the A64 differential against QEMU: its reference, a job of the testing events, records on a pull
+request only where the recompiler-changes job (scripts/recompiler-changes.py) says the pull request changes what it
+tests, and the cross jobs' run of it follows the reference. No other job or step reads that job's answer. Then the
+same checks on copies of the workflow made to fail them. Offline.
 
     tests/build_tests_test.py [REPO]   (default: the checkout this file is in)"""
 
@@ -68,10 +70,17 @@ BUILD_STEPS = {
 # the packages run as a user would, on every event: seconds each, on what main's push and the nightly publish
 USER_RUNS = {'appimage': 'Run the AppImage as a user would', 'windows': "Run the zip's scarletnx.exe as a user would"}
 # what picked a pull request's tests by what it changes
-FILTERS = re.compile(r'steps\.unicorn\.|cmake-changed')
+FILTERS = re.compile(r'recompiler-changes|steps\.unicorn\.|cmake-changed')
 # the one test a pull request runs only where it changes what it is made from: it downloads Intel's manual, whose
 # link a pull request that changes nothing of it would fail on as often as the site does
 CHANGE_FILTERED = {('appimage', 'Make the x86-64 instruction selection again')}
+# when the A64 differential's QEMU reference records: on a pull request that changes what it tests, a run by hand and a
+# tag; and the job that decides, a pull request's alone
+REFERENCE = (
+    "!cancelled() && (github.event_name == 'pull_request' && needs.recompiler-changes.outputs.differential == 'true' "
+    "|| github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/'))"
+)
+DECIDES = "github.event_name == 'pull_request'"
 # the checks of what is published that run a test of ctest on every event: the zip's build line, which a nightly
 # carries
 PACKAGE_CHECKS = {('windows', 'Check the build line names the checkout as it is')}
@@ -114,6 +123,8 @@ def check(text, repo=None):
             if (job, name) not in CHANGE_FILTERED and 'git diff' in command(step, repo):
                 wrong.append(f'{job}: "{name}" looks at what a pull request changes: it runs on every one')
     for job, steps in found.items():
+        if job == 'recompiler-changes':
+            continue
         for step in steps:
             name = step.get('name', step.get('uses', ''))
             ctest = re.search(r'(^|\s)ctest\s', command(step, repo))
@@ -138,8 +149,11 @@ def check(text, repo=None):
                 f'{job}: "{name}" runs if "{step["if"]}": every event runs it, main\'s push and the nightly too'
             )
     reference = job_if(text, 'qemu-reference')
-    if reference != TESTING:
-        wrong.append(f'qemu-reference runs if "{reference}", not on the testing events: {TESTING}')
+    if reference != REFERENCE:
+        wrong.append(f'qemu-reference runs if "{reference}", not as the testing events and the filter say: {REFERENCE}')
+    decides = job_if(text, 'recompiler-changes')
+    if decides != DECIDES:
+        wrong.append(f'recompiler-changes runs if "{decides}", not on a pull request alone: {DECIDES}')
     return wrong
 
 
@@ -182,9 +196,22 @@ def self_test(text, repo):
             "        if: ${{ !cancelled() && github.event_name != 'pull_request' && steps.ios-llvm-build.outcome != 'failure' }}\n",
         ),
         'the QEMU reference on every event': re.sub(
-            r'(\n  qemu-reference:\n(?:    #.*\n|    name: .*\n)*)    if: >-\n(?:      .*\n)+',
+            r'(\n  qemu-reference:\n(?:      .*\n|    (?!if:).*\n)*?)    if: >-\n(?:      .*\n)+',
             lambda found: found[1] + '    if: ${{ !cancelled() }}\n',
             text,
+        ),
+        'the QEMU reference on every pull request, whatever it changes': text.replace(
+            "github.event_name == 'pull_request' && needs.recompiler-changes.outputs.differential == 'true' ||",
+            "github.event_name == 'pull_request' ||",
+        ),
+        'the filter deciding on a push too': text.replace(
+            "    name: Recompiler changes\n    if: github.event_name == 'pull_request'\n",
+            '    name: Recompiler changes\n',
+        ),
+        "the tests under Unicorn by the differential's filter": text.replace(
+            unicorn,
+            '      - name: Test the native back ends under Unicorn\n'
+            "        if: env.SNX_TESTS == 'true' && needs.recompiler-changes.outputs.differential == 'true'\n",
         ),
     }
     missed = [name for name, copy in cases.items() if copy == text or not check(copy, repo)]

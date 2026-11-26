@@ -2981,6 +2981,8 @@ if(Python3_Interpreter_FOUND)
     # build.yml's tests, on a pull request, a run by hand and a version's tag, and on no push to main or nightly
     add_test(NAME build_tests COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/build_tests_test.py"
                                       "${PROJECT_SOURCE_DIR}")
+    # whether a pull request changes what the A64 differential tests (scripts/recompiler-changes.py)
+    add_test(NAME recompiler_changes COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/recompiler_changes_test.py")
     # what each machine's tests under Unicorn did, in ctest's JUnit file (scripts/unicorn-tests.py)
     add_test(NAME unicorn_tests COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/unicorn_tests_test.py")
     # what it shows of the native back end's counts of whole programs (recompile_census), scripts/recompile-census.py
