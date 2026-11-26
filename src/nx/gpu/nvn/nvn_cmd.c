@@ -393,6 +393,7 @@ static void small_give(NvnCmdState* st, u32 k, u64 at) {
     c->given[c->first + c->n++] = (NvnSmallFree){at, nvn_replay_submitted()};
 }
 /* piece slot, out of its chain by canchor (control) or by anchor, comes back */
+static void piece_release(NvnCmdState* st, u32 slot);
 static void piece_free(NvnCmdState* st, u32 slot, int control) {
     NvnSpillPiece* q = &st->p[slot];
     u32* at = control ? &st->bucket[NVN_SPILL_BUCKET(q->anchor)]
@@ -401,6 +402,12 @@ static void piece_free(NvnCmdState* st, u32 slot, int control) {
         while (*at && *at != slot) at = control ? &st->p[*at].next : &st->p[*at].cnext;
         if (*at) *at = control ? q->next : q->cnext;
     }
+    piece_release(st, slot);
+}
+/* piece slot, out of both chains, back to the free list and its segment or block */
+static void piece_release(NvnCmdState* st, u32 slot) {
+    NvnSpillPiece* q = &st->p[slot];
+    q->flags = 0;
     q->next = st->free;
     st->free = slot;
     q->anchor = q->canchor = 0; /* free: nvn_cmd_describe lists the others */
@@ -801,14 +808,30 @@ static void spill_sweep(NvnCmdState* st) {
             seen[dead++] = seen[j];
     }
     pm_lock(&st->lock);
+    /* Given back in bulk: each one marked, both chains walked once to take the marked out, then each freed. One at a
+       time, each walked its chains to come out of them: 22,000 took 335 ms of an Ounce game's recording thread */
     for (u32 j = 0; j < dead; j++) {
-        const NvnSpillPiece* q = &st->p[seen[j].slot];
+        NvnSpillPiece* q = &st->p[seen[j].slot];
         if (q->anchor && q->serial == seen[j].serial && q->mark == seen[j].mark &&
             (q->mark || (q->flags & NVN_PIECE_NO_COMMAND))) {
-            piece_drop(st, seen[j].slot);
+            q->flags |= NVN_PIECE_DYING;
             gone++;
         }
     }
+    for (u32 b = 0; gone && b < NVN_SPILL_BUCKETS; b++) {
+        for (u32* at = &st->bucket[b]; *at;)
+            if (st->p[*at].flags & NVN_PIECE_DYING)
+                *at = st->p[*at].next;
+            else
+                at = &st->p[*at].next;
+        for (u32* at = &st->cbucket[b]; *at;)
+            if (st->p[*at].flags & NVN_PIECE_DYING)
+                *at = st->p[*at].cnext;
+            else
+                at = &st->p[*at].cnext;
+    }
+    for (u32 j = 0; j < dead; j++)
+        if (st->p[seen[j].slot].flags & NVN_PIECE_DYING) piece_release(st, seen[j].slot);
     st->sweep = atomic_load_explicit(&st->np, memory_order_relaxed) +
                 (atomic_load_explicit(&st->np, memory_order_relaxed) > 4096
                      ? atomic_load_explicit(&st->np, memory_order_relaxed)
