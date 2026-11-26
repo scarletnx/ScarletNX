@@ -3,6 +3,8 @@
 /* tests/config_files.h's situations for the settings files of common/utilities: the console's users (users.ini), the
    room's password (online.ini), the setup's (setup.ini) and the game's .ini as the driver and the launcher record a
    key in it (game_ini.c) */
+#include "common/utilities/vpad.h"
+#include "common/utilities/vpad_consoles.h"
 #include "config_files.h"
 #include "common/utilities/game_ini.h"
 #include "common/utilities/users.h"
@@ -148,6 +150,22 @@ static int joycon_runtime_save(const char* dir) {
 }
 
 /* ---- a 3DS game's record and its own picks ---- */
+/* a console's game's .ini as its window reads the on-screen controls' rows from it (vpad_settings_file): what it says
+   is the controls' say and the settings' errors */
+static void console_said(const char* line) { config_say("%s", line); }
+static int console_controls_load(const char* dir, char* state, size_t size) {
+    char* path = snx_path_join(dir, "a game.ini");
+    vpad_console(&snx_vpad_gba);
+    vpad_set_say(console_said); /* snx_error's lines the runner takes itself */
+    ini_set_say(console_said);  /* a value a row does not take */
+    g_settings.controls_scale = 100;
+    vpad_settings_file(path);
+    ini_set_say(NULL);
+    vpad_set_say(NULL);
+    snprintf(state, size, "controls_scale %d", g_settings.controls_scale);
+    free(path);
+    return 0;
+}
 static int ctr_record_load(const char* dir, char* state, size_t size) {
     char *path = snx_path_join(dir, "0004000000000001.ini"), *source = NULL, said[1024];
     SnxCtrModel model = SNX_CTR_OLD;
@@ -310,6 +328,21 @@ static const ConfigFile files[] = {
             [CONFIG_NO_EQUALS] = "a file of lines: no =",
             [CONFIG_REPEATED] = "a file of lines: no keys",
             [CONFIG_BAD_VALUE] = "a line is a controller's address and side"}},
+    {.id = "console game.ini controls",
+     .name = "a game.ini",
+     .seed = "[On-screen controls]\ncontrols_scale=50\n",
+     .bad = "[On-screen controls]\ncontrols_scale=300\n",
+     .bad_given = "controls_scale=300",
+     .bad_kept = "it keeps 100",
+     .newer = "[On-screen controls]\ncontrols_scale=50\nsnx_newer_key=" CONFIG_SECRET "\n",
+     .newer_line = "snx_newer_key=" CONFIG_SECRET,
+     .newer_key = "snx_newer_key",
+     .load = console_controls_load,
+     .exempt = {[CONFIG_UNKNOWN_KEY] = "a probe of the controls' rows and of what reads with them: the file's other "
+                                       "keys are its game's other settings, which their reader names"},
+     .na = {[CONFIG_UNKNOWN_SECTION] = "the same: a row is read in whatever section it is",
+            [CONFIG_NO_EQUALS] = "the same",
+            [CONFIG_REPEATED] = "the same: the last line's"}},
     {.id = "3DS game.ini",
      .name = "0004000000000001.ini",
      .seed = "source=/a game.cia\nmodel=old\nsystem=3ds\n",

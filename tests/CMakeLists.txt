@@ -2919,7 +2919,7 @@ add_executable(snx-test-config-files-common config_files_common.c
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/joycon2_known.c" # the runtime's joycon2.txt
     "${PROJECT_SOURCE_DIR}/src/3ds/runtime/game_record.c") # a 3DS game's record and picks
 snx_test_target(snx-test-config-files-common c23)
-target_link_libraries(snx-test-config-files-common PRIVATE scarletnx-common)
+target_link_libraries(snx-test-config-files-common PRIVATE scarletnx-common snx_vpad snx_vpad_consoles)
 if(TARGET snx_setup)
     target_link_libraries(snx-test-config-files-common PRIVATE snx_setup)
     target_compile_definitions(snx-test-config-files-common PRIVATE SNX_CONFIG_SETUP)

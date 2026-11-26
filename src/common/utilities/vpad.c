@@ -324,14 +324,13 @@ static void setting_read(const IniOpt* o, const char* value) {
     else if (!n)
         ini_read(o, value);
 }
-/* a file's of them, the last line of a key counting */
-static void settings_file(const char* path) {
+void vpad_settings_file(const char* path) {
     size_t size;
     char *text = (char*)snx_read_file(path, &size), *key, *value, why[256];
     SnxIni ini;
     if (!text) {
         if (snx_path_exists(path))
-            snx_error("%s could not be read (%s): the on-screen controls' settings it holds are not in effect", path,
+            snx_error("%s cannot be read (%s): the on-screen controls' settings it holds are not in effect", path,
                       snx_os_error(why, sizeof why));
         return;
     }
@@ -381,9 +380,9 @@ void vpad_settings(const char* folder, const char* name, int argc, char** argv) 
     for (i = 1; i < argc; ++i)
         if (launcher_picks(argv[i]) >= 0) launcher = launcher_picks(argv[i]);
     if (!g_console->touch) g_settings.touch_screen = 0;
-    settings_file(ini);
+    vpad_settings_file(ini);
     if (launcher) settings_args(argc, argv);
-    settings_file(picks);
+    vpad_settings_file(picks);
     if (!launcher) settings_args(argc, argv);
     free(picks);
     free(settings);
