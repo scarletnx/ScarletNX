@@ -467,8 +467,7 @@ int snx_agb_main(int argc, char** argv) {
             uint32_t written = 0;
             uint16_t keys = 0;
             if (host && !agb_host_poll(host, &keys)) break;
-            if (host && snx_vpad_window_paused()) { /* the last frame again, paced, with no sound */
-                agb_host_frame(host, board.ppu.framebuffer, audio, 0);
+            if (host && agb_host_held(host, board.ppu.framebuffer)) { /* paused: the board stopped */
                 --frame;
                 continue;
             }

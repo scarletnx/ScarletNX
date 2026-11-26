@@ -483,8 +483,7 @@ int snx_nds_main(int argc, char** argv) {
     for (; limit < 0 || frame < limit; ++frame) {
         NdsInput input = {0};
         if (!nds_host_poll(host, &input)) break;
-        if (snx_vpad_window_paused()) {
-            nds_host_hold(host);
+        if (nds_host_held(host)) { /* paused: the board stopped */
             --frame;
             continue;
         }

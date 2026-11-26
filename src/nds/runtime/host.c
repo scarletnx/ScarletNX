@@ -324,12 +324,14 @@ static void shot(NdsHost* host) {
              nds_host_shot(host, path) ? "the screenshot could not be written to %s" : "screenshot: %s", path);
     nds_host_say(line);
 }
-void nds_host_hold(NdsHost* host) {
+bool nds_host_held(NdsHost* host) {
+    if (!snx_vpad_window_paused()) return false;
     if (nds_vk()) nds_vk_present();
     if (host->shot) shot(host);
     uint64_t now = SDL_GetTicksNS();
     if (now < host->due) SDL_DelayPrecise(host->due - now);
     host->due = SDL_GetTicksNS() + FRAME_NS;
+    return true;
 }
 int nds_host_shot(NdsHost* host, const char* path) {
     if (!host->gpu) return -1;

@@ -131,7 +131,7 @@ static int controls(NdsHost* host, SDL_Window* window, const char* dir, const ch
     CHECK(vpad_test_finger(window, SDL_EVENT_FINGER_UP, 77, 31, (float)w / 2, (float)h / 2) && !keys(host));
     CHECK(vpad_test_in_file(ini, "[On-screen controls]\ncontrols_x=0.500 0.500 100\n") == 1);
     CHECK(vpad_test_key(window, SDLK_F2) && !keys(host) && !vpad_editing());
-    /* the pause key: the game held (main.c's loop shows the last frame again, nds_host_hold), then let go */
+    /* the pause key: the game held (main.c's loop shows the last frame again, nds_host_held), then let go */
     CHECK(vpad_test_key(window, SDLK_PAUSE) && !keys(host) && snx_vpad_window_paused());
     /* the screenshot key, paused too: both screens in the game's folder's captures/, a PPM */
     {
@@ -139,7 +139,7 @@ static int controls(NdsHost* host, SDL_Window* window, const char* dir, const ch
         size_t count = 0, size = 0;
         unsigned char* got = NULL;
         CHECK(vpad_test_key(window, SDLK_F3) && !keys(host));
-        nds_host_hold(host);
+        CHECK(nds_host_held(host));
         CHECK(!snx_list_dir(captures, &names, &count) && count == 1 && !strncmp(names[0], "screenshot_", 11));
         char* path = snx_path_join(captures, names[0]);
         CHECK((got = snx_read_file(path, &size)) && !memcmp(got, "P6\n256 384\n255\n", 15));
@@ -148,8 +148,8 @@ static int controls(NdsHost* host, SDL_Window* window, const char* dir, const ch
         snx_free_strings(names, count);
         free(captures);
     }
-    nds_host_hold(host);
-    CHECK(vpad_test_key(window, SDLK_PAUSE) && !keys(host) && !snx_vpad_window_paused());
+    CHECK(nds_host_held(host));
+    CHECK(vpad_test_key(window, SDLK_PAUSE) && !keys(host) && !snx_vpad_window_paused() && !nds_host_held(host));
     vpad_console(&snx_vpad_nds);
     vpad_settings(dir, "a game", 0, NULL);
     CHECK(vpad_config()->at[SNX_VPAD_X].x == 0.5f && vpad_config()->at[SNX_VPAD_X].y == 0.5f);
