@@ -7,12 +7,15 @@
    (error_spawn.c). Its presses come from a thread, as a person's come after the panel showed.
 
     tests/error_sdl [--error-screen=RECORD]   (the second form is the panel's own process, which this test starts) */
+#include "common/utilities/common.h"
+#include "common/utilities/error_console.h"
 #include "common/utilities/error_sdl.h"
 #include "common/utilities/error_spawn.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 typedef struct {
     Uint32 delay_ms;
@@ -112,6 +115,39 @@ int main(int argc, char** argv) {
         assert(!snx_error_spawn_prepare("/nonexistent/scarletnx", path, why, sizeof why));
         assert(snx_error_spawn(&e, why, sizeof why) == -1 && strstr(why, "showed nothing: its status 127"));
         remove(path);
+    }
+    /* what follows an action: for the launcher, the run's line on stdout; with none, Try Again starts the program again
+       with the arguments the run had, after its first */
+    {
+        SnxError f = {.kind = SNX_ERROR_CRASH, .from_launcher = 1};
+        char out[1200], said[200] = "", *mark;
+        FILE* o;
+        snprintf(out, sizeof out, "%s.follow", argv[0]);
+        int kept = dup(1);
+        fflush(stdout);
+        o = freopen(out, "w", stdout);
+        assert(o && !snx_error_follow(&f, SNX_ACTION_TRY_AGAIN, "/nonexistent", NULL, why, sizeof why));
+        fflush(stdout);
+        dup2(kept, 1); /* stdout as it was */
+        close(kept);
+        FILE* r = fopen(out, "r");
+        assert(r && fgets(said, sizeof said, r));
+        fclose(r);
+        assert(!strcmp(said, "error: action try-again\n"));
+        f.from_launcher = 0;
+        mark = snx_format("%s.again", argv[0]);
+        remove(mark);
+        char* cmd = snx_format("echo again > '%s'", mark);
+        const char* args[] = {"x", "-c", cmd, NULL};
+        assert(!snx_error_follow(&f, SNX_ACTION_TRY_AGAIN, "/bin/sh", args, why, sizeof why));
+        for (int k = 0; k < 100 && !snx_is_file(mark); ++k) SDL_Delay(20);
+        assert(snx_is_file(mark));
+        remove(mark);
+        remove(out);
+        free(cmd);
+        free(mark);
+        assert(snx_error_follow(&f, SNX_ACTION_SHARE_LOG, "/bin/sh", args, why, sizeof why) &&
+               strstr(why, "share-log is no page of the launcher"));
     }
     puts("error_sdl: ok");
     return 0;

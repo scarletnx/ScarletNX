@@ -18,6 +18,7 @@
 #include "common/utilities/cli.h"
 #include "common/utilities/config_file.h"
 #include "common/utilities/common.h"
+#include "common/utilities/error_kind.h"
 #include "common/utilities/game_ini.h"
 #include "common/utilities/script.h"
 #include "common/utilities/vpad_consoles.h"
@@ -40,11 +41,12 @@
 /* a save the game writes goes on disk this many frames (a second) after its last write, and at the end */
 #define SAVE_QUIET_FRAMES 60
 
-static const unsigned nds_cli =
-    SNX_CLI_BIT(SNX_CLI_RECOMPILE) | SNX_CLI_BIT(SNX_CLI_GAME) | SNX_CLI_BIT(SNX_CLI_DATA) |
-    SNX_CLI_BIT(SNX_CLI_OUTDIR) | SNX_CLI_BIT(SNX_CLI_OUTPUT) | SNX_CLI_BIT(SNX_CLI_FRAMES) |
-    SNX_CLI_BIT(SNX_CLI_SECONDS) | SNX_CLI_BIT(SNX_CLI_SHOT) | SNX_CLI_BIT(SNX_CLI_SCRIPT) |
-    SNX_CLI_BIT(SNX_CLI_FULLSCREEN) | SNX_CLI_BIT(SNX_CLI_HEADLESS) | SNX_CLI_BIT(SNX_CLI_HELP);
+static const unsigned nds_cli = SNX_CLI_BIT(SNX_CLI_RECOMPILE) | SNX_CLI_BIT(SNX_CLI_GAME) | SNX_CLI_BIT(SNX_CLI_DATA) |
+                                SNX_CLI_BIT(SNX_CLI_OUTDIR) | SNX_CLI_BIT(SNX_CLI_OUTPUT) |
+                                SNX_CLI_BIT(SNX_CLI_FRAMES) | SNX_CLI_BIT(SNX_CLI_SECONDS) | SNX_CLI_BIT(SNX_CLI_SHOT) |
+                                SNX_CLI_BIT(SNX_CLI_SCRIPT) | SNX_CLI_BIT(SNX_CLI_FULLSCREEN) |
+                                SNX_CLI_BIT(SNX_CLI_HEADLESS) | SNX_CLI_BIT(SNX_CLI_HELP) |
+                                SNX_CLI_BIT(SNX_CLI_FROM_LAUNCHER);
 
 static void usage(FILE* out) {
     fputs("Usage: scarletnx-nds [OPTIONS] GAME.nds\n"
@@ -381,6 +383,10 @@ int snx_nds_main(int argc, char** argv) {
     double seconds = cli.seconds;
     int recompile = !!(cli.flags & SNX_CLI_BIT(SNX_CLI_RECOMPILE));
     int headless = !!(cli.flags & SNX_CLI_BIT(SNX_CLI_HEADLESS));
+    /* a stop shows its panel where someone is at the window: not a recompile, whose launcher says it, nor a run with
+       none or with a set of frames */
+    snx_error_note_quiet(recompile || headless || frames >= 0);
+    snx_error_launched(cli.value[SNX_CLI_FROM_LAUNCHER] != NULL);
     /* slot 2, the GBA cartridge's: empty, or a Rumble Pak (nds_slot2) */
     int slot2 = nds_slot2_device(g_settings.ds_slot_2_device);
     if (slot2 < 0) {
@@ -420,6 +426,7 @@ int snx_nds_main(int argc, char** argv) {
     int status = 1;
     if (path) {
         name = game_name(path);
+        if (name) snx_error_note_game(name); /* until the card says its title */
         folder = !output ? snx_game_folder(data, outdir, argv[0], name, 1) : snx_mkdirs(output) ? NULL : snx_absolute(output);
         if (!folder) {
             char why[256];
@@ -434,11 +441,11 @@ int snx_nds_main(int argc, char** argv) {
     }
     ini = folder && name ? snx_format("%s/%s.ini", folder, name) : NULL;
     if (!image && ini && !(image = snx_ini_value(ini, "source")))
-        fprintf(stderr, "scarletnx-nds: %s names no image: source= in %s\n", folder, ini);
+        snx_error_note(SNX_ERROR_DUMP_MISSING, "scarletnx-nds", "%s names no image: source= in %s", folder, ini);
     if (!image || !folder || !name) goto done;
     bios7 = bios7_path(argv[0], data, folder, path != NULL);
     if (!nds_rom_open(&rom, image, bios7, error, sizeof error)) {
-        fprintf(stderr, "scarletnx-nds: %s\n", error);
+        snx_error_note(SNX_ERROR_BAD_FILE, "scarletnx-nds", "%s", error);
         goto done;
     }
     /* the header's count of the bytes the game uses: an image that ends before it is a copy that stopped early, and
@@ -454,7 +461,7 @@ int snx_nds_main(int argc, char** argv) {
     if (recompile || (aot && !nds_module_current(module, &rom))) {
         printf("Recompiling %s (offline static AOT)\n", rom.title[0] ? rom.title : name);
         if (nds_aot_compile(&rom, module, hints, threads, most, NULL, NULL, error, sizeof error)) {
-            fprintf(stderr, "scarletnx-nds: %s\n", error);
+            snx_error_note(SNX_ERROR_RECOMPILE, "scarletnx-nds", "%s", error);
             goto done;
         }
     }
@@ -483,7 +490,7 @@ int snx_nds_main(int argc, char** argv) {
     cpu = calloc(1, sizeof *cpu);
     if (!board || !cpu) goto done;
     if (!nds_board_init(board, &rom, error, sizeof error)) {
-        fprintf(stderr, "scarletnx-nds: %s\n", error);
+        snx_error_note(SNX_ERROR_BAD_FILE, "scarletnx-nds", "%s", error);
         goto done;
     }
     board->trace = trace;
@@ -525,6 +532,7 @@ int snx_nds_main(int argc, char** argv) {
     error[0] = 0;
     nds_cpu_init(cpu, board, recomp);
     printf("ScarletNX - %s (NDS)\nbuild: %s\n", rom.title[0] ? rom.title : name, snx_build_log_line());
+    snx_error_note_game(rom.title[0] ? rom.title : name);
     {
         char run[SNX_RUN_LOG_LINE];
         snx_run_log_line(run, (long long)time(NULL));
@@ -537,7 +545,7 @@ int snx_nds_main(int argc, char** argv) {
                              error, sizeof error);
         free(title);
         if (!host) {
-            fprintf(stderr, "scarletnx-nds: %s\n", error);
+            snx_error_note(SNX_ERROR_GPU_START, "scarletnx-nds", "%s", error);
             goto done;
         }
     }
@@ -568,7 +576,7 @@ int snx_nds_main(int argc, char** argv) {
         board->touching = input.touching;
         board->touch_x = input.touch_x, board->touch_y = input.touch_y;
         if (nds_cpu_run_frame(cpu, error, sizeof error)) {
-            fprintf(stderr, "scarletnx-nds: %s\n", error);
+            snx_error_note(SNX_ERROR_NOT_YET, "scarletnx-nds", "%s", error);
             fprintf(stderr, "  the blocks before it:");
             for (unsigned i = 0; i < 32; ++i) fprintf(stderr, " %08X", cpu->trail[(cpu->blocks + i) & 31]);
             fputc('\n', stderr);

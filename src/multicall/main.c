@@ -32,6 +32,7 @@
 #include "gui/gui.h"
 #endif
 #ifdef SNX_MULTICALL_ERROR_SCREEN
+#include "common/utilities/error_console.h"
 #include "common/utilities/error_sdl.h"
 #endif
 #include <stdbool.h>
@@ -112,12 +113,17 @@ int main(int argc, char** argv) {
     /* a game's error that its window could not show, in a process of its own: before any driver, whatever the name */
     if (argc > 1 && !strncmp(argv[1], SNX_ERROR_SCREEN, sizeof SNX_ERROR_SCREEN - 1))
         return snx_error_screen_main(argc, argv);
+    /* what Try Again starts again, and a console's stop shown once its driver returned (error_console.h) */
+    snx_error_args(argc, (const char* const*)argv);
+#define DRIVER_END(status) snx_error_console_end(status, NULL)
+#else
+#define DRIVER_END(status) (status)
 #endif
     const Driver* driver = argc > 1 ? named(argv[1]) : NULL;
-    if (driver) return driver->main(argc - 1, argv + 1); /* its name as its argv[0] */
-    if ((driver = named(self))) return driver->main(argc, argv);
+    if (driver) return DRIVER_END(driver->main(argc - 1, argv + 1)); /* its name as its argv[0] */
+    if ((driver = named(self))) return DRIVER_END(driver->main(argc, argv));
     for (size_t i = 0; i < DRIVERS; ++i)
-        if (drivers[i].copy && drivers[i].copy(self)) return drivers[i].main(argc, argv);
+        if (drivers[i].copy && drivers[i].copy(self)) return DRIVER_END(drivers[i].main(argc, argv));
 #ifdef SNX_MULTICALL_SWITCH
     return snx_switch_main(argc, argv);
 #else

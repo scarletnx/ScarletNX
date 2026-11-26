@@ -22,6 +22,7 @@
 #include "nx/runtime/platform/ctrl_applet.h"
 #include "nx/runtime/platform/ctrl_scan.h"
 #include "nx/runtime/platform/connect.h"
+#include "common/utilities/error_console.h"
 #include "common/utilities/error_sdl.h"
 #include "common/utilities/error_spawn.h"
 #include "common/utilities/fatal_screen.h"
@@ -895,6 +896,7 @@ static void fatal_say(const char* line) { LOG("%s\n", line); }
 /* what log.c does not know of the game's error: the game's name, its log, its program (what Try Again and the
    launcher's pages take) and its folder */
 static void fatal_fill(SnxError* e) {
+    e->from_launcher = snx_error_from_launcher();
     char log_path[1200], *full;
     if (!e->game[0]) snprintf(e->game, sizeof e->game, "%s", g_sdl3.title[0] ? g_sdl3.title : g_exename);
     /* the log log.c writes, in the state folder. Beside the game that is argv[0]'s folder, which may be relative (./
@@ -953,12 +955,18 @@ static void fatal_box(const char* msg) {
     SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "ScarletNX", lines ? lines : msg, g_sdl3.win);
     free(lines);
 }
-/* the action taken on the error's panel: said in the run's lines for the launcher, unless it is Close */
+/* the action taken on the error's panel done: for the launcher that waits, the run's line it reads; with none, Try
+   Again starts the game again and a page of the launcher's starts the launcher there (error_console.h) */
 static void fatal_done(const SnxError* e, int action) {
-    char line[160];
+    char line[160], why[1400], *self;
     if (action == SNX_ACTION_CLOSE) return;
     snx_error_action_said(e, action, line, sizeof line);
     LOG("%s\n", line);
+    if (e->from_launcher) return; /* the launcher reads it in the run's output, where LOG put it */
+    self = snx_executable(NULL);
+    if (!self || snx_error_follow(e, action, self, NULL, why, sizeof why))
+        LOG("error: %s\n", self ? why : "the program's path is unknown: the action is not done");
+    free(self);
 }
 /* the panel in its own process (error_spawn.h): the action taken there, or -1 where it could not show, said */
 static int fatal_spawn(const SnxError* e) {
@@ -993,9 +1001,11 @@ void win_fatal_crash(const SnxError* e) {
     memcpy(known->line, e->line, sizeof known->line);
     memcpy(known->hint, e->hint, sizeof known->hint);
     memcpy(known->message, e->message, sizeof known->message);
+    /* no process is started from a crash's handler: Try Again only where the launcher waits, which starts it */
+    if (!known->from_launcher) known->program[0] = 0;
     action = fatal_spawn(known);
     fatal_said(known, action >= 0);
-    if (action >= 0) fatal_done(known, action);
+    if (action >= 0 && known->from_launcher) fatal_done(known, action);
 }
 /* the panel's own process made ready as the window opens, with what a crash's error carries: this program, which takes
    --error-screen whatever it is named, and the record beside the game's log */

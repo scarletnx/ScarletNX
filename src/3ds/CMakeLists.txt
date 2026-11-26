@@ -141,3 +141,5 @@ set_target_properties(snx_ctr_native PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRE
 target_compile_options(snx_ctr_native PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 target_sources(snx_ctr_program PRIVATE aot/run.c aot/jit.c)
 target_link_libraries(snx_ctr_program PUBLIC snx_ctr_native)
+# a stop noted for the error's panel, which the program shows once this driver returned (error_kind.h)
+target_link_libraries(snx_ctr_program PUBLIC snx_error)

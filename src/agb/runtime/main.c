@@ -15,6 +15,7 @@
 #include "common/utilities/build_info.h"
 #include "common/utilities/cli.h"
 #include "common/utilities/common.h"
+#include "common/utilities/error_kind.h"
 #include "common/utilities/game_ini.h"
 #include "common/utilities/script.h"
 #include "common/utilities/vpad_consoles.h"
@@ -41,7 +42,8 @@
 static const unsigned agb_cli = SNX_CLI_BIT(SNX_CLI_RECOMPILE) | SNX_CLI_BIT(SNX_CLI_GAME) | SNX_CLI_BIT(SNX_CLI_DATA) |
                                 SNX_CLI_BIT(SNX_CLI_OUTDIR) | SNX_CLI_BIT(SNX_CLI_OUTPUT) |
                                 SNX_CLI_BIT(SNX_CLI_FRAMES) | SNX_CLI_BIT(SNX_CLI_SHOT) | SNX_CLI_BIT(SNX_CLI_SCRIPT) |
-                                SNX_CLI_BIT(SNX_CLI_FULLSCREEN) | SNX_CLI_BIT(SNX_CLI_HELP) | SNX_CLI_RECOMPILE_OPTIONS;
+                                SNX_CLI_BIT(SNX_CLI_FULLSCREEN) | SNX_CLI_BIT(SNX_CLI_HELP) |
+                                SNX_CLI_BIT(SNX_CLI_FROM_LAUNCHER) | SNX_CLI_RECOMPILE_OPTIONS;
 static void usage(FILE* out) {
     fputs("Usage: scarletnx-agb [OPTIONS] ROM.gba|ROM.mb\n"
           "       scarletnx-agb [OPTIONS] --game=recompiled/<name>\n"
@@ -295,6 +297,10 @@ int snx_agb_main(int argc, char** argv) {
     const char *output = cli.value[SNX_CLI_OUTPUT], *game = cli.value[SNX_CLI_GAME], *script = cli.value[SNX_CLI_SCRIPT];
     long frames = cli.frames;
     int recompile = !!(cli.flags & SNX_CLI_BIT(SNX_CLI_RECOMPILE));
+    /* a stop shows its panel where someone is at the window: not a recompile, whose launcher says it, nor a run of a
+       set of frames */
+    snx_error_note_quiet(recompile || frames >= 0);
+    snx_error_launched(cli.value[SNX_CLI_FROM_LAUNCHER] != NULL);
     SnxCliRecompile asked = snx_cli_recompile(&cli);
     int jobs = cli.jobs;
     snx_cli_free(&cli);
@@ -322,6 +328,7 @@ int snx_agb_main(int argc, char** argv) {
         /* a ROM's game is made in its folder; a game's folder (--game=, or the copy's own) names its ROM */
         if (path) {
             name = game_name(path);
+            if (name) snx_error_note_game(name); /* until the cartridge says its title */
             folder = !output                ? snx_game_folder(data, outdir, argv[0], name, 1)
                      : snx_mkdirs(output) ? NULL
                                           : snx_absolute(output);
@@ -339,10 +346,12 @@ int snx_agb_main(int argc, char** argv) {
         /* the folder's own, as a 3DS or Vita game's: source= and system=, which the launcher and the deploy read */
         ini = folder && name ? snx_format("%s/%s.ini", folder, name) : NULL;
         if (!rom && ini && !(rom = snx_ini_value(ini, "source")))
-            fprintf(stderr, "scarletnx-agb: %s names no ROM: source= in %s\n", folder, ini);
+            snx_error_note(SNX_ERROR_DUMP_MISSING, "scarletnx-agb", "%s names no ROM: source= in %s", folder, ini);
         if (!rom || !(image = snx_read_file(rom, &length))) {
             char why[256];
-            if (rom) fprintf(stderr, "scarletnx-agb: cannot read %s: %s\n", rom, snx_os_error(why, sizeof why));
+            if (rom)
+                snx_error_note(SNX_ERROR_DUMP_MISSING, "scarletnx-agb", "cannot read %s: %s", rom,
+                               snx_os_error(why, sizeof why));
             free(ini);
             free(rom);
             free(folder);
@@ -353,7 +362,7 @@ int snx_agb_main(int argc, char** argv) {
         agb_board_init(&board);
         agb_ppu_lcd(&board, lcd);
         if (!multiboot_rom(path) && agb_board_insert(&board, image, length, error, sizeof error)) {
-            fprintf(stderr, "scarletnx-agb: %s: %s\n", path, error);
+            snx_error_note(SNX_ERROR_BAD_FILE, "scarletnx-agb", "%s: %s", path, error);
             free(image);
             agb_board_destroy(&board);
             free(ini);
@@ -362,6 +371,7 @@ int snx_agb_main(int argc, char** argv) {
             free(name);
             return 1;
         }
+        snx_error_note_game(board.cartridge.title[0] ? board.cartridge.title : name);
         if (board.has_cartridge && board.cartridge.checksum != board.cartridge.checksum_title)
             printf("The ROM header's checksum is 0x%02X and its title block sums to 0x%02X: it runs, as mGBA runs it, "
                    "where the console's BIOS stops\n",
@@ -369,13 +379,13 @@ int snx_agb_main(int argc, char** argv) {
         base = snx_format("%s/%s_code", folder, name);
         save = snx_format("%s/%s.sav", folder, name);
         if (agb_map_init(&map, &board, error, sizeof error)) {
-            fprintf(stderr, "scarletnx-agb: %s\n", error);
+            snx_error_note(SNX_ERROR_INTERNAL, "scarletnx-agb", "%s", error);
             free(image);
             goto board;
         }
         /* a MultiBoot ROM goes where the BIOS receives one, in EWRAM, which is the map's now */
         if (multiboot_rom(path) && agb_board_multiboot(&board, image, length, error, sizeof error)) {
-            fprintf(stderr, "scarletnx-agb: %s: %s\n", path, error);
+            snx_error_note(SNX_ERROR_BAD_FILE, "scarletnx-agb", "%s: %s", path, error);
             free(image);
             goto map;
         }
@@ -490,7 +500,7 @@ int snx_agb_main(int argc, char** argv) {
             host = agb_host_open(title, ini, g_settings.fullscreen, error, sizeof error);
             free(title);
             if (!host) {
-                fprintf(stderr, "scarletnx-agb: %s\n", error);
+                snx_error_note(SNX_ERROR_GPU_START, "scarletnx-agb", "%s", error);
                 goto done;
             }
         }
@@ -522,7 +532,7 @@ int snx_agb_main(int argc, char** argv) {
             board.gpio.clock = plat_unix_time() + plat_tz_offset() - AGB_RTC_EPOCH;
             if (agb_cpu_run(&board, &cpu, &recomp, AGB_SCANLINE_CYCLES * AGB_FRAME_LINES, audio, AGB_APU_RATE, &written,
                             error, sizeof error)) {
-                fprintf(stderr, "scarletnx-agb: %s\n", error);
+                snx_error_note(SNX_ERROR_NOT_YET, "scarletnx-agb", "%s", error);
                 goto done;
             }
             if (cpu.unknown_swi_count && (!told_swi || cpu.unknown_swi != told_swi_number)) {

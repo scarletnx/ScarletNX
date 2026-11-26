@@ -14,6 +14,7 @@
 #include "common/utilities/ascii.h"
 #include "common/utilities/cli.h"
 #include "common/utilities/common.h"
+#include "common/utilities/error_kind.h"
 #include "common/platform/file.h"
 #include "common/utilities/console_settings.h"
 #include "common/utilities/vpad.h"
@@ -38,13 +39,13 @@
 
 /* the common options scarletnx-3ds takes (common/utilities/cli.h): every one, with --frames a count of the frames
    decoded, --shot the last frame of both screens and -H a run with no window */
-static const unsigned ctr_cli = SNX_CLI_BIT(SNX_CLI_EXTRACT) | SNX_CLI_BIT(SNX_CLI_EXTRACT_CONTAINER) |
-                                SNX_CLI_BIT(SNX_CLI_RECOMPILE) | SNX_CLI_BIT(SNX_CLI_GAME) |
-                                SNX_CLI_BIT(SNX_CLI_UPDATE) | SNX_CLI_BIT(SNX_CLI_DATA) | SNX_CLI_BIT(SNX_CLI_OUTDIR) |
-                                SNX_CLI_BIT(SNX_CLI_OUTPUT) | SNX_CLI_BIT(SNX_CLI_KEYS) | SNX_CLI_BIT(SNX_CLI_SECONDS) |
-                                SNX_CLI_BIT(SNX_CLI_FRAMES) | SNX_CLI_BIT(SNX_CLI_SHOT) | SNX_CLI_BIT(SNX_CLI_SCRIPT) |
-                                SNX_CLI_BIT(SNX_CLI_FULLSCREEN) | SNX_CLI_BIT(SNX_CLI_HEADLESS) |
-                                SNX_CLI_BIT(SNX_CLI_HELP) | SNX_CLI_RECOMPILE_OPTIONS;
+static const unsigned ctr_cli =
+    SNX_CLI_BIT(SNX_CLI_EXTRACT) | SNX_CLI_BIT(SNX_CLI_EXTRACT_CONTAINER) | SNX_CLI_BIT(SNX_CLI_RECOMPILE) |
+    SNX_CLI_BIT(SNX_CLI_GAME) | SNX_CLI_BIT(SNX_CLI_UPDATE) | SNX_CLI_BIT(SNX_CLI_DATA) | SNX_CLI_BIT(SNX_CLI_OUTDIR) |
+    SNX_CLI_BIT(SNX_CLI_OUTPUT) | SNX_CLI_BIT(SNX_CLI_KEYS) | SNX_CLI_BIT(SNX_CLI_SECONDS) |
+    SNX_CLI_BIT(SNX_CLI_FRAMES) | SNX_CLI_BIT(SNX_CLI_SHOT) | SNX_CLI_BIT(SNX_CLI_SCRIPT) |
+    SNX_CLI_BIT(SNX_CLI_FULLSCREEN) | SNX_CLI_BIT(SNX_CLI_HEADLESS) | SNX_CLI_BIT(SNX_CLI_HELP) |
+    SNX_CLI_BIT(SNX_CLI_FROM_LAUNCHER) | SNX_CLI_RECOMPILE_OPTIONS;
 static void usage(FILE* out) {
     fputs(
         "Usage: scarletnx-3ds [OPTIONS] game\n"
@@ -360,7 +361,7 @@ static int play_game(const SnxCtrSource* game, const char* folder, SnxCtrModel m
     }
     status = snx_ctr_aot_run(state, game, model, max_blocks, seconds, frames, headless, shot, flags, ipc_stubs, runtime,
                              asked, error, error_size);
-    if (status) fprintf(stderr, "scarletnx-3ds: %s\n", error);
+    if (status) snx_error_note(status == 3 ? SNX_ERROR_NOT_YET : SNX_ERROR_INTERNAL, "scarletnx-3ds", "%s", error);
 done:
     free(state);
     return status;
@@ -453,7 +454,7 @@ static int play(const char* input, SnxCtrSource* source, char* extracted, SnxCtr
     int status = snx_ctr_aot_run(extracted, NULL, model, max_blocks, seconds, frames, headless, shot, flags, ipc_stubs,
                                  runtime, asked, error, sizeof error);
     free(extracted);
-    if (status) fprintf(stderr, "scarletnx-3ds: %s\n", error);
+    if (status) snx_error_note(status == 3 ? SNX_ERROR_NOT_YET : SNX_ERROR_INTERNAL, "scarletnx-3ds", "%s", error);
     return status;
 }
 /* The last part of path, a separator at its end dropped, and ".exe" with it on Windows; the caller's to free */
@@ -926,6 +927,10 @@ int snx_ctr_main(int argc, char** argv) {
     uint64_t frames = cli.frames >= 0 ? (uint64_t)cli.frames : UINT64_MAX; /* UINT64_MAX: no frame limit */
     bool headless = cli.flags & SNX_CLI_BIT(SNX_CLI_HEADLESS);
     const char* shot = cli.value[SNX_CLI_SHOT]; /* the last frame's PPM, NULL for none */
+    /* a stop shows its panel where someone is at the window: not a recompile, whose launcher says it, nor a run with
+       none or with a budget */
+    snx_error_note_quiet(recompile || headless || seconds > 0 || cli.frames >= 0);
+    snx_error_launched(cli.value[SNX_CLI_FROM_LAUNCHER] != NULL);
     const char* updates[MAX_UPDATES]; /* --update's files, an update's or a DLC's each */
     unsigned update_count = 0;
     if (seconds || cli.frames >= 0) budget_set = true;

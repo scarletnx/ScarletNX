@@ -25,7 +25,8 @@ endif()
 # with no GPU of the game's (error_sdl.c): the game's window once its renderer let go, or one of the panel's own
 if(TARGET snx_error_panel AND TARGET snx_vpad_sdl)
     add_library(snx_error_sdl STATIC "${PROJECT_SOURCE_DIR}/src/common/utilities/error_sdl.c"
-                                     "${PROJECT_SOURCE_DIR}/src/common/utilities/error_spawn.c")
+                                     "${PROJECT_SOURCE_DIR}/src/common/utilities/error_spawn.c"
+                                     "${PROJECT_SOURCE_DIR}/src/common/utilities/error_console.c")
     target_link_libraries(snx_error_sdl PUBLIC snx_error_panel snx_vpad_sdl SDL3::SDL3 PRIVATE snx_build_info)
     set_target_properties(snx_error_sdl PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
     target_compile_options(snx_error_sdl PRIVATE -pedantic-errors -Wall -Wextra -Werror=missing-prototypes

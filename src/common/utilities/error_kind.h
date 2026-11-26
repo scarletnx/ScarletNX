@@ -119,6 +119,18 @@ typedef struct {
 } SnxErrorHeard;
 int snx_error_heard(const char* line, SnxErrorHeard* heard);
 
+/* A console runtime's stop (the GBA's, the DS's, the 3DS's, the Vita's), noted where it is said and shown once its
+   driver returned (multicall's main, error_console.h): the line "<program>: <what>" on stderr, which the log's summary
+   reads, and the error of that kind kept, the last one noted. A run with nobody at the window (headless, a frame or time
+   limit) notes it quiet, and nothing is shown. snx_error_noted gives it, NULL for none or a quiet one */
+[[gnu::format(printf, 3, 4)]] void snx_error_note(int kind, const char* program, const char* fmt, ...);
+void snx_error_note_game(const char* game); /* the game's name, as its window's title says it */
+void snx_error_note_quiet(int quiet);
+const SnxError* snx_error_noted(void);
+/* the run's --from-launcher=1 (game_ini.h): every error of it, the noted one too, carries from_launcher */
+void snx_error_launched(int from_launcher);
+int snx_error_from_launcher(void);
+
 /* the launcher's --open=VALUE for action on e, for a run that no launcher waits for: "settings:hooks", "drivers",
    "keys", "addons:<program>", "recompile:<program>", "locate:<program>"; "" for an action the launcher does not open */
 void snx_error_open_value(const SnxError* e, int action, char* out, size_t size);
