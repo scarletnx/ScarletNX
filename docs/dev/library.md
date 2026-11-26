@@ -196,7 +196,7 @@ address and runs it, as the Linux runtime (`src/gnuabi/runtime/jit.c`) does. A c
 keeps `snx_runtime_defaults`' miss can instead name that handler with
 `snx_recompiled_set_fallback`, which the module's misses then run instead of its own JIT. `snx_recompiler_set_cache` names a
 folder that keeps linked modules by a hash of everything they are made from (the native
-back end and the host's features it uses among them): a module found there is loaded instead of compiled. The
+back end, the host's features it uses and its code's version among them): a module found there is loaded instead of compiled. The
 units its lazy JIT compiles on a miss are kept in `library-jit.cache` in the same folder,
 and a later miss loads a unit instead of compiling it when its code is the same, byte for
 byte, and the file was made with the same settings, LLVM and host CPU. The modules of one
