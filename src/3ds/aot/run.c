@@ -209,6 +209,12 @@ static int state_save(void* game, const char* path, const uint8_t* thumb, char* 
 static int state_load(void* game, const char* path, char* why, size_t whysize) {
     return snx_ctr_state_load((SnxCtrProcess*)game, path, why, whysize);
 }
+static struct {
+    int argc;
+    char** argv;
+} g_run; /* the command line snx_ctr_aot_command_line gave */
+void snx_ctr_aot_command_line(int argc, char** argv) { g_run.argc = argc, g_run.argv = argv; }
+
 /* between two dispatches: a save states' key asked (F7, F8, F9) and the unattended saves and loads due at ms of the run's
    clock, in states/ of the game's folder as a Switch game's, the screens' last frames their picture */
 static void states_step(SnxCtrProcess* process, const char* directory, double ms) {
@@ -308,6 +314,11 @@ int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel
            snx_build_log_line(), id);
     snx_run_log_line(run, (long long)time(NULL));
     printf("%s\n", run);
+    /* the window's settings, and a run's with none (state_save, state_load), as a GBA or DS run reads them: the game's
+       .ini, the command line, its picks */
+    vpad_console(&snx_vpad_3ds);
+    snx_vpad_sdl_settings(SNX_SYSTEM_3DS);
+    vpad_settings(directory, snx_path_leaf(directory), g_run.argc, g_run.argv);
     if (!snx_ctr_present_init(process->memory, frame_dir, headless)) {
         printf("The presenter did not start: no frames will be drawn, shown or saved\n");
         if (frames_limit != UINT64_MAX && frames_limit > 0) {
@@ -317,11 +328,8 @@ int snx_ctr_aot_run(const char* directory, const SnxCtrSource* game, SnxCtrModel
         }
     } else {
         snx_ctr_vk_pipeline_cache_open(directory); /* before the first draw */
-        { /* the runtime's keys in its window, and the on-screen controls' and keys' settings, from the game's .ini */
+        {                                          /* the runtime's keys and the on-screen controls in its window */
             char* ini = snx_game_ini(directory, snx_path_leaf(directory));
-            vpad_console(&snx_vpad_3ds);
-            snx_vpad_sdl_settings(SNX_SYSTEM_3DS);
-            vpad_settings(directory, snx_path_leaf(directory), 0, NULL);
             snx_ctr_present_game(directory, ini);
             free(ini);
         }

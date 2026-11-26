@@ -16,6 +16,9 @@
 #include "common/utilities/common.h"
 #include "common/platform/file.h"
 #include "common/utilities/console_settings.h"
+#include "common/utilities/vpad.h"
+#include "common/utilities/vpad_consoles.h"
+#include "common/utilities/vpad_sdl.h"
 #include "common/utilities/game_ini.h"
 #include "3ds/runtime/game_record.h"
 #include "common/utilities/ini_lines.h"
@@ -782,6 +785,11 @@ int snx_ctr_main(int argc, char** argv) {
     if (old_trace && !strcmp(old_trace, "1")) g_settings.ctr_uds_trace = 1;
     SnxCli cli;
     snx_cli_init(&cli, "scarletnx-3ds", ctr_cli);
+    /* the window's own settings (the runtime's keys, the on-screen controls, state_save, state_load), which the run
+       reads from this command line (snx_ctr_aot_command_line) */
+    vpad_console(&snx_vpad_3ds);
+    snx_vpad_sdl_settings(SNX_SYSTEM_3DS);
+    snx_ctr_aot_command_line(argc, argv);
     for (int i = 1; i < argc; ++i) {
         const char* arg = argv[i];
         char error[256];
@@ -873,6 +881,7 @@ int snx_ctr_main(int argc, char** argv) {
                 model_key = model_key || !strcmp(key, "ctr_model");
             }
             int shared = map || o ? 0 : snx_console_arg(SNX_SYSTEM_3DS, arg, error, sizeof error);
+            if (!map && !o && !shared) shared = vpad_arg(arg, error, sizeof error); /* checked here, read by the run */
             if (map)
                 snx_ctr_input_map(value);
             else if (!o && shared <= 0) {

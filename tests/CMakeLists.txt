@@ -808,6 +808,10 @@ if(TARGET snx_ctr_board)
             add_test(NAME 3ds_addons COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_addons.py"
                 "${SNX_CTR_PROGRAM}")
             set_tests_properties(3ds_addons PROPERTIES TIMEOUT 300)
+            # a run's unattended save states from its command line: one saves a slot, the next loads it
+            add_test(NAME 3ds_states COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_states.py"
+                "${SNX_CTR_PROGRAM}")
+            set_tests_properties(3ds_states PROPERTIES TIMEOUT 600)
             # a game's console: the command line's, its own Settings', the launcher's, the one its .ini records
             add_test(NAME 3ds_console COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_console.py"
                 "${SNX_CTR_PROGRAM}")
