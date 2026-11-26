@@ -83,11 +83,15 @@ if(Python3_Interpreter_FOUND)
             snx_arm_blocks_test(llvm arm11_vfp arm11_vfp.py --opt 0 --opt 2)
         endif()
     endif()
+    # the LLVM emitter of the checked cases is there with SNX_TEST_ARM_AOT alone; without it, no argument at all
+    set(snx_arm_llvm_aot --aot OFF)
+    if(SNX_TEST_ARM_AOT)
+        set(snx_arm_llvm_aot --aot ON --checked $<TARGET_FILE:snx-test-arm-checked-llvm>)
+    endif()
     add_test(NAME arm_llvm_checks COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/arm_llvm_checks.py"
              --ctest "${CMAKE_CTEST_COMMAND}" --tree "${CMAKE_BINARY_DIR}"
              --blocks $<TARGET_FILE:snx-test-arm-blocks-llvm>
-             --diff $<IF:$<BOOL:${SNX_TEST_ARM_DIFF}>,ON,OFF> --aot $<IF:$<BOOL:${SNX_TEST_ARM_AOT}>,ON,OFF>
-             "$<$<BOOL:${SNX_TEST_ARM_AOT}>:--checked=$<TARGET_FILE:snx-test-arm-checked-llvm>>"
+             --diff $<IF:$<BOOL:${SNX_TEST_ARM_DIFF}>,ON,OFF> ${snx_arm_llvm_aot}
              --mc "${snx_llvm_mc}" --objdump "${snx_llvm_objdump}")
     set_tests_properties(arm_llvm_checks PROPERTIES TIMEOUT 600)
 endif()
