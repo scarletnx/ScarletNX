@@ -497,7 +497,7 @@ int main(int argc, char** argv) {
         void* bytes = snx_read_file(saved, &size);
         CHECK(bytes);
         free(bytes);
-        printf("a GBA state: %zu bytes with its %ux%u thumbnail, saved in %.1f ms, loaded in %.1f ms\n", size,
+        printf("a GBA state: %zu bytes with its %dx%d thumbnail, saved in %.1f ms, loaded in %.1f ms\n", size,
                SNX_STATE_THUMB_W, SNX_STATE_THUMB_H, (double)(t1 - t0) / 1e6, (double)(t3 - t2) / 1e6);
     }
     /* refused: another game's, another version's, a section of another layout, a damaged one, one cut short */

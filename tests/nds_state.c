@@ -417,7 +417,7 @@ int main(int argc, char** argv) {
         void* bytes = snx_read_file(saved, &size);
         CHECK(bytes);
         free(bytes);
-        printf("a DS state: %zu bytes with its %ux%u thumbnail, saved in %.1f ms, loaded in %.1f ms\n", size,
+        printf("a DS state: %zu bytes with its %dx%d thumbnail, saved in %.1f ms, loaded in %.1f ms\n", size,
                SNX_STATE_THUMB_W, SNX_STATE_THUMB_H, (double)(t1 - t0) / 1e6, (double)(t3 - t2) / 1e6);
     }
     {
