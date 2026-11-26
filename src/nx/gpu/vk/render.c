@@ -3527,6 +3527,7 @@ static int root_get(const DsState* ds, u32 sz, VkBuffer* buf, u64* off) {
    (cb_window_place), vk_stage_align() for one bound alone. A kept entry at another offset is not taken by a bank that
    binds alone */
 static int cb_epoch_refuses(VkBuffer b, u64 o);
+static int cb_window_refuses(int stage, int bank, VkBuffer b, u64 o, u32 sz, u64 align);
 static int cb_get_(const DsState* ds, int stage, int i, u32 sz, u64 align, VkBuffer* buf, u64* off) {
     int check = g_settings.draw_state_check != 0;
     DsCbBlock in = ds_cb_inline(ds, stage, (u32)i);
@@ -3584,9 +3585,10 @@ static int cb_get_(const DsState* ds, int stage, int i, u32 sz, u64 align, VkBuf
     int pending = a && ((atomic_load_explicit(&g_gfx_any, memory_order_relaxed) && vk_buf_pending(a, sz)) ||
                         vk_uma_pending(a, sz) || /* written in place too */
                         pend_hit(&g_pend_any, a, sz));
-    if (!pending && ((cb_kept(e, a, sz, 0, epoch) && !(e->off % align) && !cb_epoch_refuses(e->buf, e->off)) ||
+    if (!pending && ((cb_kept(e, a, sz, 0, epoch) && !(e->off % align) && !cb_epoch_refuses(e->buf, e->off) &&
+                      !cb_window_refuses(stage, i, e->buf, e->off, sz, align)) ||
                      (cb_kept(x, a, sz, 0, epoch) && !(x->off % align) && !cb_epoch_refuses(x->buf, x->off) &&
-                      (*e = *x, 1)))) {
+                      !cb_window_refuses(stage, i, x->buf, x->off, sz, align) && (*e = *x, 1)))) {
         /* no result of any kind is over the bytes it holds: the next draw takes it at the first check, while no
            result is added */
         if (e->sz == sz) {
@@ -4594,6 +4596,17 @@ static u32 cb_dyn_offsets(u32* dyn, int fs) {
    once. A kept copy below the base (cb_get, cb_epoch_refuses) is copied again, at the head, so no bank pulls a window
    back. The GPU mirror's banks keep a window of their own */
 static CbWindow g_cb_epoch;
+/* whether a kept copy of a windowed bank (align 16) is out of the bank's window of this frame, where a fresh copy
+   lands in it: binding the kept copy moved the window back, and the next fresh copy moved it on again, and with
+   descriptor buffers or heaps each move is a new table (in one game's world a kept copy below the window was 294k of
+   the 690k moves a 600 presents). A copy costs less than the table */
+static int cb_window_refuses(int stage, int bank, VkBuffer b, u64 o, u32 sz, u64 align) {
+    if (align != 16 || (!g_vk.has_descriptor_buffers && !g_vk.has_descriptor_heaps) || (u32)bank >= 18) return 0;
+    const int vs_fs = stage == 0 ? 0 : stage == 4 ? 1 : -1; /* the DS stages of the vertex and fragment sets */
+    if (vs_fs < 0) return 0;
+    const CbWindow* w = &g_cb_windows[t_rc][vs_fs][bank];
+    return w->b && w->frame == vk_frame_id() + 1 && (w->b != b || o < w->base || o + sz > w->base + w->range);
+}
 static int cb_epoch_refuses(VkBuffer b, u64 o) {
     /* a ring chunk's (vk_stage_buffer_size), as the epoch's are: another chunk, or below the base */
     return g_settings.constant_buffer_window_epochs && g_cb_epoch.b && g_cb_epoch.frame == vk_frame_id() + 1 &&
