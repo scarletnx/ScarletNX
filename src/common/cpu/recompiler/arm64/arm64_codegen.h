@@ -27,6 +27,9 @@ enum {
 int snx_arm64_available(void);
 /* this host's features (0 where it isn't arm64) */
 unsigned snx_arm64_features(void);
+/* the features (SNX_ARM64_F_*) the back end goes without from here on though the host has them, for a test of a host
+   without them (0 none); SNX_ARM64_F_WIN, no processor's, stays */
+void snx_arm64_without(unsigned features);
 /* 1 where the code is made for Windows: on Windows, or where a test asked for it (snx_arm64_set_windows) */
 int snx_arm64_windows(void);
 /* the AArch32 blocks (arm64_arm.h) and the module's descriptor made from here on as a Windows host's (1), or as this

@@ -8,7 +8,7 @@ beside it, which hold the one use with no ISO form or the reference a test compa
 - __thread: C11's _Thread_local;
 - __int128: common/utilities/bits.h's 128-bit products and quotients, which take it only where the compiler has it;
   the 16-byte compare-and-swaps (helpers/integer.c, runtime/cas128.c), which have no ISO form; the compiler's own
-  128-bit division the game modules carry (recompiler/llvm/libc.inc);
+  128-bit division the game modules carry (recompiler/rtlib/libc.inc);
 - __builtin_bswap, clz, ctz, popcount and memcpy: bits.h's helpers, and memcpy;
 - __attribute__((...)): C23's [[...]], gnu:: or clang:: where the attribute is the compiler's own, and alignas;
 - _Noreturn: [[noreturn]];
@@ -36,7 +36,7 @@ RULES = [
             'src/common/utilities/bits.h',
             'src/common/cpu/aarch64/helpers/integer.c',
             'src/common/runtime/cas128.c',
-            'src/common/cpu/recompiler/llvm/libc.inc',
+            'src/common/cpu/recompiler/rtlib/libc.inc',
             'tests/bits.c',
         },
     ),

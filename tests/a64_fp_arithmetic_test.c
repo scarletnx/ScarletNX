@@ -210,8 +210,9 @@ static void vector_and_state(void) {
     check(snx_fp_binary_c(&c, 0x3F800000, 0x3F800000, 32, SNX_FP_ADD), 0x40000000, "exact sum");
     check(c.fpsr, 0xF800009F, "exact operation preserves every existing exception");
 }
-/* FEAT_FP16's halves (FPCR.FZ16 flushes them without IDC, FPCR.AHP only reaches conversions), FEAT_FRINTTS's
-   FPRoundIntN, FEAT_JSCVT's FPToFixedJS (Z in bit 32) and FEAT_BF16's FPConvertBF */
+/* FEAT_FP16's halves (FPCR.FZ16 flushes them without IDC, FPCR.AHP only reaches conversions; under FZ16 FRECPE of 2^14
+   and more underflows), FEAT_FRINTTS's FPRoundIntN, FEAT_JSCVT's FPToFixedJS (Z in bit 32) and FEAT_BF16's
+   FPConvertBF */
 static void later_features(void) {
     static const struct {
         int kind, w, op;
@@ -224,6 +225,11 @@ static void later_features(void) {
         {0, 16, SNX_FP_MUL, 1u << 19, 0x0400, 0x3800, 0x0000, 8},
         {0, 16, SNX_FP_MUL, 0, 0x0400, 0x3800, 0x0200, 0},
         {0, 16, SNX_FP_ADD, 1u << 26, 0x7C00, 0x3C00, 0x7C00, 0},
+        {5, 16, SNX_FP_RECPE, 0, 0x7800, 0, 0x01FF, 0},
+        {5, 16, SNX_FP_RECPE, 1u << 24, 0x7800, 0, 0x01FF, 0},
+        {5, 16, SNX_FP_RECPE, 1u << 19, 0x73FF, 0, 0x0400, 0},
+        {5, 16, SNX_FP_RECPE, 1u << 19, 0x7400, 0, 0, 8},
+        {5, 16, SNX_FP_RECPE, 1u << 19, 0xFBFF, 0, 0x8000, 8},
         {1, 16, 32, 1u << 19, 0x0001, 0, 0x33800000, 0},
         {1, 16, 32, 1u << 26, 0x7C00, 0, 0x47800000, 0},
         {2, 32, 32, 0, 0x4F000000, 3, 0xCF000000, 1},
@@ -256,6 +262,7 @@ static void later_features(void) {
             case 1: got = snx_fp_convert_c(&c, t[i].a, t[i].w, t[i].op, 0); break;
             case 2: got = snx_fp_round_int_c(&c, t[i].a, t[i].w, (int)t[i].b, t[i].op); break;
             case 3: got = snx_fp_jcvt_c(&c, t[i].a); break;
+            case 5: got = snx_fp_unary_c(&c, t[i].a, t[i].w, t[i].op); break;
             default: got = snx_fp_bfcvt_c(&c, t[i].a); break;
         }
         result(&c, got, t[i].out, t[i].flags, t[i].control, "later feature");

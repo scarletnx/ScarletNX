@@ -136,7 +136,7 @@ def main():
             finally:
                 ini.chmod(0o644)
             text = log.read_text(errors='replace') if log.is_file() else ''
-            said = f'settings: cannot read {ini} ({os.strerror(errno.EACCES)}): every setting takes its default'
+            said = f'settings: {ini} cannot be read ({os.strerror(errno.EACCES)}): every setting takes its default'
             check(said in text, f'the game did not say "{said}"', text)
             check(ini.read_bytes() == before, 'the game wrote over the .ini it could not read', out)
         check((folder / 'threads.txt').read_text() == 'older threads\n', 'the older threads.txt was touched', out)

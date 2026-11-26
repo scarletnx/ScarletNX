@@ -36,9 +36,11 @@ typedef struct {
 } SnxSetup;
 /* setup.ini of the data folder data: in its config folder (snx_menu_dir); NULL with no home to name it by */
 char* snx_setup_file(const char* data);
-/* setup.ini at path into setup, zeros without the file: 0, else -1 with why, setup holding what could be read */
+/* setup.ini at path into setup, zeros without the file: 0, else -1 with why, setup holding what could be read. With 0,
+   why names once a run what it does not read, another version's or program's, which stays (config_file.h), "" for none */
 int snx_setup_read(const char* path, SnxSetup* setup, char* why, size_t why_size);
-/* setup.ini at path once this version's steps and notices are done, a newer file's version kept: 0, else -1 with why */
+/* setup.ini at path once this version's steps and notices are done, a newer file's version kept, and the lines it does
+   not read as they were: 0, else -1 with why */
 int snx_setup_done(const char* path, const SnxSetup* setup, char* why, size_t why_size);
 int snx_setup_asks(const SnxSetup* setup, int step); /* 1 for a step newer than setup.ini */
 int snx_setup_here(int step); /* 1 for a step this system has: an app (Android, iOS) has no install to pick */

@@ -4,11 +4,13 @@
 #include "3ds/runtime/main.h"
 #include "common/utilities/bits.h"
 #include "common/utilities/common.h"
+#include "common/utilities/config_file.h"
 #include "common/utilities/game_ini.h"
 #include "common/platform/file.h"
 #include "common/utilities/ini_lines.h"
 #include "gui/i18n.h"
 #include "snx_settings.h"
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -101,8 +103,8 @@ static int has_mark(const char* column, const char* mark) {
 static int read_list(GuiSettings* s, const char* runtime, int game) {
     /* the launcher's own rows and the recompiler's (settings.txt's launcher sections), listed as the runtime lists the
        game's, then the runtime's; a game's the runtime's alone */
-    size_t own = game ? 0 : ini_list_text(g_launch_sections, g_launch_sections_count, NULL, 0), size, n = 3, bars = 0,
-           pool;
+    size_t own = game ? 0 : ini_list_text(g_launch_sections, g_launch_sections_count, NULL, 0), size,
+           n = 3 + GUI_SETTING_LINKS, bars = 0, pool;
     const char* c;
     const char** free_words;
     char *line, *next, *text, *page = NULL, *list, *own_end;
@@ -229,6 +231,25 @@ int gui_settings_read_game(GuiSettings* s, const char* runtime) { return read_li
 int gui_settings_read_console(GuiSettings* s, const char* runtime, int console) {
     return read_list(s, runtime, console);
 }
+int gui_settings_link(GuiSettings* s, int i, const char* name, const char* about, const char* value) {
+    GuiThemeKey* k;
+    GuiSetting* v;
+    if (!s->keys || i < 0 || i >= GUI_SETTING_LINKS) return -1;
+    k = &s->keys[s->count + i];
+    v = &s->values[s->count + i];
+    memset(k, 0, sizeof *k);
+    memset(v, 0, sizeof *v);
+    k->section = "";
+    k->key = name;
+    k->about = about;
+    k->type = GUI_KEY_ACTION;
+    k->at = (size_t)((char*)v->text - (char*)s->values);
+    k->size = sizeof v->text;
+    v->key = name;
+    v->kind = GUI_SETTING_LINK;
+    snprintf(v->text, sizeof v->text, "%s", value ? value : "");
+    return s->count + i;
+}
 void gui_settings_free(GuiSettings* s) {
     for (int i = 0; i < s->count; ++i) free(s->values[i].grown);
     free(s->keys);
@@ -279,14 +300,6 @@ static int set_custom(GuiSettings* s, int i, const char* value) {
     v->custom = v->word = slot;
     return 1;
 }
-/* row i's slot after its words emptied where the row keeps no value there (a try put back) */
-static void custom_drop(GuiSettings* s, int i) {
-    const char** words = (const char**)s->keys[i].words;
-    int k;
-    if (s->keys[i].type != GUI_KEY_WORD || !s->values[i].values || s->values[i].custom) return;
-    for (k = 0; words[k]; ++k)
-        if (words[k] == s->values[i].text) words[k] = ((const char**)s->values[i].values)[k] = NULL;
-}
 /* row i set to value, a value of its words or a text: 1 when it did */
 static int set(GuiSettings* s, int i, const char* value) {
     GuiSetting* v = &s->values[i];
@@ -334,16 +347,41 @@ static int file_gives(const char* path, const char* key) {
     free(text);
     return found;
 }
+static void settings_left(void* ctx, int line, const char* text, const char* does) {
+    (void)text;
+    (void)does;
+    snx_config_other_line((SnxConfigOthers*)ctx, line);
+}
+/* one more of what a load says, "; " after the one before */
+static void said_more(char* old, size_t size, size_t* n, int* count, const char* fmt, ...) {
+    va_list ap;
+    if (*n < size) *n += (size_t)snprintf(old + *n, size - *n, "%s", *count ? "; " : "");
+    va_start(ap, fmt);
+    if (*n < size) *n += (size_t)vsnprintf(old + *n, size - *n, fmt, ap);
+    va_end(ap);
+    ++*count;
+}
 int gui_settings_load(GuiSettings* s, const char* path, char* old, size_t size) {
     size_t bytes, n = 0;
-    char *text = path ? (char*)snx_read_file(path, &bytes) : NULL, *key, *value;
-    int count = 0, i;
+    char *text = NULL, *key, *value, why[1024], said[2048];
+    int count = 0, i, *line_of;
+    const char** value_of;
     SnxIni ini;
+    SnxConfigOthers others = {0};
     if (size) old[0] = 0;
+    if (!path) return 0;
+    if (snx_config_read(path, &text, &bytes, why, sizeof why) < 0) { /* said, and never written over (save) */
+        if (size) snprintf(old, size, "%s", why);
+        return 1;
+    }
     if (!text) return 0;
+    line_of = (int*)calloc((size_t)s->count + 1, sizeof *line_of);
+    value_of = (const char**)calloc((size_t)s->count + 1, sizeof *value_of);
     snx_ini_start(&ini, text); /* a key names one row whatever its section, as in the game's .ini */
+    ini.left = settings_left;
+    ini.ctx = &others;
     while (snx_ini_next(&ini, &key, &value)) {
-        int gone, given, moved = 0, taken = 0;
+        int gone, given, moved = 0, taken = 0, fits, setok = 0;
         const char* to = NULL;
         i = find(s, key);
         if (i == s->count && (to = ini_renamed(key)) != NULL) { /* a renamed key's pick: its new row's while the file
@@ -352,76 +390,98 @@ int gui_settings_load(GuiSettings* s, const char* path, char* old, size_t size) 
             moved = row < s->count && !file_gives(path, to);
             if (moved) i = row;
             taken = moved && set(s, i, value);
+        } else if (i == s->count && !ini_deprecated(key)) /* another version's or program's: kept, named */
+            snx_config_other_key(&others, "", key, ini.line);
+        if (!moved && i < s->count && line_of && value_of) { /* the last line's, said with both */
+            if (line_of[i]) snx_config_twice(&others, "", key, value_of[i], line_of[i], value, ini.line);
+            line_of[i] = ini.line;
+            value_of[i] = value;
         }
         gone = !moved && i < s->count && s->values[i].plain && !strcmp(value, ".ini"); /* passed nothing: not a value */
         if (gone) set(s, i, s->values[i].start);
+        if (!moved && !gone && i < s->count) setok = gui_settings_set(s, key, value);
+        /* a row this build does nothing with takes no value, and is no value it refuses */
+        fits = setok || moved || gone || i == s->count || s->values[i].needs_build;
         /* the default picked, which runs were given over the game's .ini: no pick now */
-        given = !moved && !gone && gui_settings_set(s, key, value) && s->values[i].plain && !picked(s, i);
-        if ((gone || given || moved) && n < size) n += (size_t)snprintf(old + n, size - n, "%s", count ? "; " : "");
-        if (gone && n < size)
-            n += (size_t)snprintf(old + n, size - n, snx_tr("%s=.ini is no longer a value of %s: %s=%s now"), key,
-                                  snx_tr(s->keys[i].key), key, s->values[i].start);
-        else if (given && n < size)
-            n += (size_t)snprintf(old + n, size - n,
-                                  snx_tr("%s=%s is the default of %s: no run is given it over the game's .ini"), key,
-                                  value, snx_tr(s->keys[i].key));
-        else if (taken && n < size)
-            n += (size_t)snprintf(old + n, size - n, snx_tr("%s=%s is deprecated: %s is %s=%s now"), key, value,
-                                  snx_tr(s->keys[i].key), to, kept(s, i));
-        else if (moved && n < size)
-            n += (size_t)snprintf(old + n, size - n, snx_tr("%s=%s is deprecated and no value of %s: %s=%s now"), key,
-                                  value, snx_tr(s->keys[i].key), to, kept(s, i));
-        count += gone || given || moved;
+        given = !moved && !gone && setok && s->values[i].plain && !picked(s, i);
+        if (gone)
+            said_more(old, size, &n, &count, snx_tr("%s=.ini is no longer a value of %s: %s=%s now"), key,
+                      snx_tr(s->keys[i].key), key, s->values[i].start);
+        else if (given)
+            said_more(old, size, &n, &count,
+                      snx_tr("%s=%s is the default of %s: no run is given it over the game's .ini"), key, value,
+                      snx_tr(s->keys[i].key));
+        else if (taken)
+            said_more(old, size, &n, &count, snx_tr("%s=%s is deprecated: %s is %s=%s now"), key, value,
+                      snx_tr(s->keys[i].key), to, kept(s, i));
+        else if (moved)
+            said_more(old, size, &n, &count, snx_tr("%s=%s is deprecated and no value of %s: %s=%s now"), key, value,
+                      snx_tr(s->keys[i].key), to, kept(s, i));
+        else if (!fits) /* the row keeps what it had */
+            said_more(old, size, &n, &count, snx_tr("%s=%s is not a value of %s: %s=%s now"), key, value,
+                      snx_tr(s->keys[i].key), key, kept(s, i));
     }
+    if (snx_config_others_said(&others, path, said, sizeof said)) /* without the file's name, which the caller says */
+        said_more(old, size, &n, &count, "%s", said + strlen(path) + 2);
+    free(line_of);
+    free((void*)value_of);
     free(text);
     gui_settings_sync(s);
     return count;
 }
-int gui_settings_save(const GuiSettings* s, const char* path) {
-    size_t room = 256 + (size_t)s->count * 200, at = 0, size = 0, lines = 1; /* a row's section, key, value: < 200 */
-    /* the launcher's rows alone (the runtime listed none): the file's other keys are no row's to leave out */
-    char *old = s->count > s->own ? NULL : (char*)snx_read_file(path, &size), *c, *key, *value;
-    char *text, *folder, *staged;
+/* the key of a row of s, which a write of its file makes; with clean, an older version's too, which it takes out */
+typedef struct {
+    const GuiSettings* s;
+    int clean;
+} RowOwns;
+static int row_owns(void* ctx, const char* section, const char* key) {
+    const RowOwns* o = (const RowOwns*)ctx;
+    (void)section;
+    /* a renamed key's value goes to its new row (gui_settings_load), which a write makes instead */
+    return find(o->s, key) < o->s->count || ini_renamed(key) || (o->clean && ini_deprecated(key));
+}
+/* the rows that are not at their start, by section, then the lines of the keys no row has, as they were (an older
+   version's ones too, but with clean) */
+static int settings_write(const GuiSettings* s, const char* path, int clean) {
+    size_t room = 256 + (size_t)s->count * 200, at = 0, size = 0; /* a row's section, key, value: < 200 */
+    char *old = NULL, *top = NULL, *rest = NULL, *text, why[1024];
     const char* section = "";
-    int i, failed;
-    SnxIni ini;
-    char now[sizeof ini.section]; /* the section the text is in */
-    /* one it cannot read: written over, they would be lost */
-    if (!old && s->count <= s->own && snx_is_file(path)) return 1;
-    for (c = old; c && *c; ++c) lines += *c == '\n';
-    room += old ? size + lines * (sizeof ini.section + 4) : 0; /* each line a key's, under a section of its own */
+    RowOwns owns = {s, clean};
+    int i, failed, rows = 0;
+    if (snx_config_read(path, &old, &size, why, sizeof why) < 0) return 1; /* what it holds is not known */
+    if (old) {
+        top = snx_config_kept(old, size, 1, row_owns, &owns);
+        rest = snx_config_kept(old, size, 0, row_owns, &owns);
+    }
+    room += size + (top ? strlen(top) : 0) + (rest ? strlen(rest) : 0);
     text = (char*)malloc(room);
-    folder = snx_dirname(path);
-    staged = snx_format("%s.new", path);
     if (text) /* a game's own picks file starts as the runtime writes it */
-        at = (size_t)snprintf(text, room, "%s",
+        at = (size_t)snprintf(text, room, "%s%s",
                               s->game ? SNX_GAME_PICKS_HEAD
                                       : "; what the launcher's Settings changed, for every game it runs: over each "
-                                        "game's .ini\n");
+                                        "game's .ini\n",
+                              top ? top : "");
     for (i = 0; text && i < s->count; ++i) {
         const char* value = kept(s, i);
         if (!strcmp(value, s->values[i].start)) continue;
         if (strcmp(section, s->keys[i].section))
             at += (size_t)snprintf(text + at, room - at, "[%s]\n", section = s->keys[i].section);
         at += (size_t)snprintf(text + at, room - at, "%s=%s\n", s->values[i].key, value);
+        ++rows;
     }
-    snprintf(now, sizeof now, "%s", section);
-    if (old) snx_ini_start(&ini, old);
-    while (text && old && snx_ini_next(&ini, &key, &value)) { /* a key names one row whatever its section */
-        if (find(s, key) < s->count) continue;
-        if (ini.section[0] && strcmp(now, ini.section))
-            at += (size_t)snprintf(text + at, room - at, "[%s]\n", strcpy(now, ini.section));
-        at += (size_t)snprintf(text + at, room - at, "%s=%s\n", key, value);
-    }
+    if (text && rest) at += (size_t)snprintf(text + at, room - at, "%s", rest);
+    if (s->game && !rows && (!top || !*top) && (!rest || !*rest)) /* a game's with no pick left: none */
+        failed = snx_path_exists(path) && remove(path) != 0;
+    else
+        failed = !text || snx_config_write(path, ".new", text, at, why, sizeof why);
+    free(rest);
+    free(top);
     free(old);
-    /* staged beside it, then put in place: a crash mid-write leaves the old picks */
-    failed = !text || snx_mkdirs(folder) || snx_write_file(staged, text, at) || plat_replace_file(staged, path);
-    if (failed) remove(staged);
-    free(staged);
-    free(folder);
     free(text);
     return failed;
 }
+int gui_settings_save(const GuiSettings* s, const char* path) { return settings_write(s, path, 0); }
+int gui_settings_clean(const GuiSettings* s, const char* path) { return settings_write(s, path, 1); }
 void gui_settings_reset(GuiSettings* s, int row) {
     int i, first = row < 0 ? 0 : row, end = row < 0 ? s->count : row + 1;
     if (row >= 0 && row < s->count && s->values[row].kind) { /* a page's or an All's: their rows */
@@ -455,21 +515,14 @@ int gui_settings_set(GuiSettings* s, const char* key, const char* value) {
 int gui_settings_unread(GuiSettings* s, const char* path, char* out, size_t size) {
     size_t n = 0, bytes;
     char *text = path ? (char*)snx_read_file(path, &bytes) : NULL, *key, *value;
-    int count = 0, i;
+    int count = 0;
     SnxIni ini;
     if (size) out[0] = 0;
     if (!text) return 0;
     snx_ini_start(&ini, text);
     while (snx_ini_next(&ini, &key, &value)) {
-        GuiSetting was;
-        int taken;
-        if ((i = find(s, key)) < s->count) { /* tried on the row, which is then put back as it was */
-            was = s->values[i];
-            taken = set(s, i, value);
-            s->values[i] = was;
-            custom_drop(s, i);
-            if (taken) continue;
-        }
+        /* an older version's key no row has: another version's or program's is kept (gui_settings_load) */
+        if (find(s, key) < s->count || (!ini_deprecated(key) && !ini_renamed(key))) continue;
         if (n < size) n += (size_t)snprintf(out + n, size - n, "%s%s=%s", count ? ", " : "", key, value);
         ++count;
     }

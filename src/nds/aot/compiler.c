@@ -1,21 +1,19 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The offline compiler, part of the driver, after the 3DS's (3ds/aot/compiler.c): the blocks discovery found in the
-   image's regions, compiled in chunks on a worker per thread by the host's native back end, and LLVM for what that does
-   not make (cpu/arm/aot.h), an index of them for each region, and the helpers they call, linked by the backend's own
-   linker into the module the run loads. */
+   image's regions, compiled in chunks on a worker per thread by the host's native back end, and the fallback for what
+   that does not make (cpu/arm/aot.h, recompiler/fallback.h), an index of them for each region, and the helpers they
+   call, linked by the backend's own linker into the module the run loads. */
 #include "nds/aot/nds_module.h"
 #include "common/cpu/arm/aot.h"
-#include "common/cpu/recompiler/llvm/ir.h"
-#include "common/cpu/recompiler/llvm/rtlib_object.h"
-#include "common/cpu/recompiler/llvm/link.h"
+#include "common/cpu/recompiler/fallback.h"
+#include "common/cpu/recompiler/rtlib/rtlib_object.h"
+#include "common/cpu/recompiler/object/link.h"
 #include "common/cpu/recompiler/mach/native.h"
-#include "common/cpu/recompiler/workers.h"
+#include "common/cpu/recompiler/worker_threads.h"
 #include "common/cpu/recompiler/x64/x64_elf.h"
 #include "common/platform/file.h"
 #include "common/utilities/common.h"
-#include <llvm-c/Core.h>
-#include <llvm-c/Target.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,9 +28,10 @@ static void name(char out[48], const Entry* e) {
     snprintf(out, 48, "nds_%u_%c_%u", e->region, e->mode ? 't' : 'a', e->index);
 }
 
-/* The entries' blocks into objects (two at most: cpu/arm/aot.h), LLVM's IR kept as id.ll where it is kept. A block the
-   backend ends sooner than discovery planned goes on as a block of its own at the instruction after. *made gets every
-   block that was made, with the length the backend gave it (*made_count of them, the caller's to free), for the index */
+/* The entries' blocks into objects (two at most: cpu/arm/aot.h), the fallback's IR kept as id.ll where it is kept. A
+   block the backend ends sooner than discovery planned goes on as a block of its own at the instruction after. *made
+   gets every block that was made, with the length the backend gave it (*made_count of them, the caller's to free), for
+   the index */
 static bool chunk(SnxArmAot* aot, const NdsRom* rom, const Entry* entries, unsigned count, SnxLinkInput output[2],
                   const char* id, Entry** made, unsigned* made_count, char* error, size_t size) {
     unsigned capacity = 0;
@@ -147,98 +146,90 @@ done:
     return rc;
 }
 
-/* ---- the index through LLVM, where the host has no native back end ---- */
-static LLVMValueRef constant_array(LLVMModuleRef mod, const char* id, LLVMTypeRef element, LLVMValueRef* values,
-                                   unsigned count) {
-    LLVMValueRef g = LLVMAddGlobal(mod, LLVMArrayType(element, count), id);
-    LLVMSetInitializer(g, LLVMConstArray(element, values, count));
-    LLVMSetGlobalConstant(g, 1);
-    LLVMSetLinkage(g, LLVMInternalLinkage);
-    return g;
+/* ---- the index by the fallback, where the host has no native back end or its IR is kept ---- */
+/* the slots of a region's table of a state, i by i: each is the block of the first of the entries there, which are
+   that table's sorted by place, from cursor on */
+typedef struct {
+    const Entry* entries;
+    unsigned count, cursor;
+} Slots;
+static int slot_name(void* user, size_t i, char* out, size_t size) {
+    Slots* s = user;
+    while (s->cursor < s->count && s->entries[s->cursor].index < i) ++s->cursor;
+    if (s->cursor == s->count || s->entries[s->cursor].index != i) return 0;
+    char id[48];
+    name(id, &s->entries[s->cursor]);
+    snprintf(out, size, "%s", id);
+    return 1;
 }
-
-static bool llvm_index(const NdsRom* rom, const Entry* entries, unsigned count, SnxLinkInput* output, char* error,
-                       size_t size) {
-    SnxIr* ir = snx_ir_init(error, size) ? NULL : snx_ir_new("nds-static-aot", '1', error, size);
-    if (!ir) return false;
-    LLVMContextRef c = ir->ctx;
-    LLVMModuleRef mod = LLVMModuleCreateWithNameInContext("nds-static-aot-v1", c);
-    LLVMSetTarget(mod, LLVMGetTarget(ir->mod));
-    LLVMSetDataLayout(mod, LLVMGetDataLayoutStr(ir->mod));
-    LLVMTargetDataRef layout = LLVMGetModuleDataLayout(mod);
-    LLVMTypeRef ptr = LLVMPointerTypeInContext(c, 0), i8 = LLVMInt8TypeInContext(c), i32 = LLVMInt32TypeInContext(c);
-    LLVMTypeRef i64 = LLVMInt64TypeInContext(c), ft = LLVMFunctionType(LLVMVoidTypeInContext(c), &ptr, 1, 0);
-    LLVMTypeRef region_fields[] = {i32, i32, i64, ptr, ptr, ptr, ptr};
-    LLVMTypeRef region_type = LLVMStructTypeInContext(c, region_fields, 7, 0);
-    LLVMValueRef* regions = calloc(rom->region_count ? rom->region_count : 1, sizeof *regions);
+/* each region's tables, of blocks and of their lengths, as global names */
+typedef char Tables[4][32];
+static bool fallback_index(const NdsRom* rom, const Entry* entries, unsigned count, SnxLinkInput* output,
+                           const char* keep_ir, char* error, size_t size) {
+    enum { FIELDS = 7 };
+    const unsigned regions = rom->region_count;
+    SnxFallbackData* d = snx_fallback_data_new("nds-static-aot", "nds-static-aot-v1", '1',
+                                               keep_ir ? snx_arm_aot_kept : snx_arm_aot_none);
+    Tables* tables = calloc(regions ? regions : 1, sizeof *tables);
+    SnxFallbackField* fields = calloc((size_t)(regions ? regions : 1) * FIELDS, sizeof *fields);
     unsigned cursor = 0;
-    bool ok = false;
-    if (!regions || LLVMABISizeOfType(layout, region_type) != sizeof(NdsModuleRegion)) {
-        snprintf(error, size, "incompatible native descriptor layout");
-        goto done;
-    }
-    for (unsigned r = 0; r < rom->region_count; ++r) {
+    bool ok = d && tables && fields;
+    if (!ok) snprintf(error, size, "out of memory for the module's index");
+    for (unsigned r = 0; ok && r < regions; ++r) {
         const NdsRegion* region = &rom->regions[r];
-        LLVMValueRef tables[2], lengths[2];
-        for (unsigned mode = 0; mode < 2; ++mode) {
-            unsigned n = region->size / (mode ? 2 : 4);
-            LLVMValueRef* functions = malloc((size_t)(n ? n : 1) * sizeof *functions);
-            LLVMValueRef* units = malloc((size_t)(n ? n : 1) * sizeof *units);
-            if (!functions || !units) {
-                free(functions);
-                free(units);
+        for (unsigned mode = 0; ok && mode < 2; ++mode) {
+            const size_t n = region->size / (mode ? 2 : 4);
+            const unsigned first = cursor;
+            uint8_t* units = calloc(n ? n : 1, 1);
+            if (!units) {
                 snprintf(error, size, "out of memory for the module's index");
-                goto done;
+                ok = false;
+                break;
             }
-            LLVMValueRef none = LLVMConstNull(ptr), zero = LLVMConstInt(i8, 0, 0);
-            for (unsigned i = 0; i < n; ++i) functions[i] = none, units[i] = zero;
-            while (cursor < count && entries[cursor].region == r && entries[cursor].mode == mode) {
-                const Entry* e = &entries[cursor++];
-                char id[48];
-                name(id, e);
-                if (e->index >= n || LLVMGetNamedFunction(mod, id)) continue;
-                functions[e->index] = LLVMAddFunction(mod, id, ft);
-                LLVMSetVisibility(functions[e->index], LLVMHiddenVisibility);
-                units[e->index] = LLVMConstInt(i8, e->length, 0);
-            }
-            char id[48];
-            snprintf(id, sizeof id, "nds_%u_%s", r, mode ? "thumb" : "arm");
-            tables[mode] = constant_array(mod, id, ptr, functions, n);
-            snprintf(id, sizeof id, "nds_%u_%s_units", r, mode ? "thumb" : "arm");
-            lengths[mode] = constant_array(mod, id, i8, units, n);
-            free(functions);
+            for (; cursor < count && entries[cursor].region == r && entries[cursor].mode == mode; ++cursor)
+                if (entries[cursor].index < n && !units[entries[cursor].index])
+                    units[entries[cursor].index] = entries[cursor].length;
+            Slots slots = {entries + first, cursor - first, 0};
+            snprintf(tables[r][mode], sizeof tables[r][mode], "nds_%u_%s", r, mode ? "thumb" : "arm");
+            snprintf(tables[r][2 + mode], sizeof tables[r][2 + mode], "nds_%u_%s_units", r, mode ? "thumb" : "arm");
+            ok = !snx_fallback_data_blocks(d, tables[r][mode], n, slot_name, &slots, error, size) &&
+                 !snx_fallback_data_integers(d, tables[r][2 + mode], 8, n, units, error, size);
             free(units);
         }
-        LLVMValueRef values[] = {LLVMConstInt(i32, region->address, 0), LLVMConstInt(i32, region->size, 0),
-                                 LLVMConstInt(i64, region->hash, 0),    tables[0], tables[1], lengths[0], lengths[1]};
-        regions[r] = LLVMConstNamedStruct(region_type, values, 7);
+        SnxFallbackField* f = &fields[r * FIELDS];
+        f[0] = (SnxFallbackField){.bits = 32, .value = region->address, .offset = offsetof(NdsModuleRegion, address)};
+        f[1] = (SnxFallbackField){.bits = 32, .value = region->size, .offset = offsetof(NdsModuleRegion, size)};
+        f[2] = (SnxFallbackField){.bits = 64, .value = region->hash, .offset = offsetof(NdsModuleRegion, hash)};
+        f[3] = (SnxFallbackField){.global = tables[r][0], .offset = offsetof(NdsModuleRegion, arm)};
+        f[4] = (SnxFallbackField){.global = tables[r][1], .offset = offsetof(NdsModuleRegion, thumb)};
+        f[5] = (SnxFallbackField){.global = tables[r][2], .offset = offsetof(NdsModuleRegion, arm_units)};
+        f[6] = (SnxFallbackField){.global = tables[r][3], .offset = offsetof(NdsModuleRegion, thumb_units)};
     }
-    {
-        const NdsModule m = describe(rom);
-        LLVMValueRef list = constant_array(mod, "nds_regions", region_type, regions, rom->region_count);
-        LLVMTypeRef fields[] = {i64, i32, i32, i32, i32, i32, i32, i64, ptr};
-        LLVMTypeRef type = LLVMStructTypeInContext(c, fields, 9, 0);
-        LLVMValueRef values[] = {
-            LLVMConstInt(i64, m.magic, 0),        LLVMConstInt(i32, m.abi, 0),          LLVMConstInt(i32, m.arm_abi, 0),
-            LLVMConstInt(i32, m.cpu_size, 0),     LLVMConstInt(i32, m.pointer_size, 0), LLVMConstInt(i32, m.profile, 0),
-            LLVMConstInt(i32, m.region_count, 0), LLVMConstInt(i64, m.identity, 0),     list};
-        if (LLVMABISizeOfType(layout, type) != sizeof(NdsModule) ||
-            LLVMOffsetOfElement(layout, type, 8) != offsetof(NdsModule, regions) ||
-            LLVMOffsetOfElement(layout, type, 7) != offsetof(NdsModule, identity)) {
-            snprintf(error, size, "incompatible native descriptor layout");
-            goto done;
-        }
-        LLVMValueRef global = LLVMAddGlobal(mod, type, NDS_MODULE_SYMBOL);
-        LLVMSetInitializer(global, LLVMConstNamedStruct(type, values, 9));
-        LLVMSetGlobalConstant(global, 1);
-    }
+    if (ok && !regions) /* the fields' kinds alone */
+        for (unsigned k = 0; k < FIELDS; ++k) fields[k].bits = k < 2 ? 32 : k == 2 ? 64 : 0;
+    ok = ok &&
+         !snx_fallback_data_structs(d, "nds_regions", regions, fields, FIELDS, sizeof(NdsModuleRegion), error, size);
+    const NdsModule m = describe(rom);
+#define FIELD(field, width)                                                                                            \
+    { .bits = width, .value = m.field, .offset = offsetof(NdsModule, field) }
+    const SnxFallbackField descriptor[] = {FIELD(magic, 64),
+                                           FIELD(abi, 32),
+                                           FIELD(arm_abi, 32),
+                                           FIELD(cpu_size, 32),
+                                           FIELD(pointer_size, 32),
+                                           FIELD(profile, 32),
+                                           FIELD(region_count, 32),
+                                           FIELD(identity, 64),
+                                           {.global = "nds_regions", .offset = offsetof(NdsModule, regions)}};
+#undef FIELD
+    ok = ok && !snx_fallback_data_descriptor(d, NDS_MODULE_SYMBOL, descriptor, sizeof descriptor / sizeof *descriptor,
+                                             sizeof(NdsModule), error, size);
     unsigned char* object = NULL;
-    ok = !snx_ir_module_object(ir, mod, '0', &object, &output->size, error, size);
+    ok = ok && !snx_fallback_data_object(d, &object, &output->size, error, size);
     output->data = object;
-done:
-    free(regions);
-    LLVMDisposeModule(mod);
-    snx_ir_free(ir);
+    free(fields);
+    free(tables);
+    snx_fallback_data_free(d);
     return ok;
 }
 
@@ -409,7 +400,8 @@ int nds_aot_compile(const NdsRom* rom, const char* path, const char* hints_path,
     qsort(work.made, work.made_count, sizeof *work.made, by_place);
     {
         const int indexed = keep_ir ? 0 : native_index(rom, work.made, work.made_count, &objects[1], error, error_size);
-        if (indexed < 0 || (!indexed && !llvm_index(rom, work.made, work.made_count, &objects[1], error, error_size)))
+        if (indexed < 0 ||
+            (!indexed && !fallback_index(rom, work.made, work.made_count, &objects[1], keep_ir, error, error_size)))
             goto done;
     }
     objects[0].data = (unsigned char*)snx_armlib_object, objects[0].size = (size_t)snx_armlib_object_size;

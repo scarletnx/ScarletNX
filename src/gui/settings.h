@@ -15,8 +15,9 @@
 #include "gui/theme.h"
 
 /* a row that is no setting: a page's, which opens the section/page rows listed after it, and its All, first on that
-   page, which steps them together */
-enum { GUI_SETTING_PAGE = 1, GUI_SETTING_ALL, GUI_SETTING_SECRET };
+   page, which steps them together; a link, a row of another screen past every setting (gui_settings_link) */
+enum { GUI_SETTING_PAGE = 1, GUI_SETTING_ALL, GUI_SETTING_SECRET, GUI_SETTING_LINK };
+#define GUI_SETTING_LINKS 24  /* the links past count a list of settings has room for */
 #define GUI_SETTING_TEXT 512 /* a typed value's room: the longest of settings.txt's texts the launcher keeps */
 typedef struct {
     int word;                           /* a word row's: the word, 0 the .ini's (a plain row's: its first) */
@@ -28,8 +29,9 @@ typedef struct {
     const char* fallback; /* the runtime's default for the .ini, as the row words it: what it shows while not picked */
     const char* def;      /* that default as the .ini writes it */
     const char* only;     /* where it does something, when not on this system ("macOS only", ini.h's ini_only) */
-    int kind;             /* 0, GUI_SETTING_PAGE, GUI_SETTING_ALL, or GUI_SETTING_SECRET: the Eden room's password,
-                             which is neither the picks' nor a run's option (users/online.ini holds it) */
+    int kind;             /* 0, GUI_SETTING_PAGE, GUI_SETTING_ALL, GUI_SETTING_SECRET: the Eden room's password,
+                             which is neither the picks' nor a run's option (users/online.ini holds it), or
+                             GUI_SETTING_LINK */
     int plain;            /* a word row whose words are its values alone, no .ini's: its default's is no pick */
     int always;           /* plain, and passed to every run, its start too (gui_settings_always) */
     int type_text;        /* the .ini's value is a text, often a folder: gui_settings_debug says its key alone */
@@ -76,6 +78,10 @@ int gui_settings_read_game(GuiSettings* settings, const char* runtime);
    snx_ctr_game_setting, its console), a word row's words Global and those its default is not, which Global gives */
 int gui_settings_read_console(GuiSettings* settings, const char* runtime, int console);
 void gui_settings_free(GuiSettings* settings);
+/* row count + i (i under GUI_SETTING_LINKS), past the settings and out of their count, made a link: a row of another
+   screen that Settings' search lists, its name, help and value shown, which nothing of the settings reads or writes.
+   Its row, or -1 for an i past them or no list read */
+int gui_settings_link(GuiSettings* settings, int i, const char* name, const char* about, const char* value);
 /* the row of key set to value, a word or a text as the row takes: 1 when it did */
 int gui_settings_set(GuiSettings* settings, const char* key, const char* value);
 /* the rows as they are, the launcher's own choices among them, as the values to start from */
@@ -84,20 +90,24 @@ void gui_settings_mark(GuiSettings* settings);
    .ini's, which it no longer has. Its [default] marks the value it starts with (gui_settings_mark), which Del and a
    reset put back. 1 when it did, 0 for no such row or a value not of its words */
 int gui_settings_always(GuiSettings* settings, const char* key, const char* value);
-/* the picks of a file of them, global or a game's: each key's row set, the others left as they are. What older
-   versions wrote that a plain row reads otherwise is said in old ("; " between, cut where it ends): its .ini, read as
+/* the picks of a file of them, global or a game's: each key's row set, the others left as they are. What it does not
+   take is said in old ("; " between, cut where it ends): a key another version's or program's, a line with no = and a
+   key given twice, named once a run (config_file.h), a value its row has not, with the row's value now, and a file that
+   cannot be read, with the system's reason. What older versions wrote that a plain row reads otherwise too: its .ini, read as
    the value it starts with ("fullscreen=.ini is no longer a value of Fullscreen: fullscreen=0 now"), and its default
    picked, which a run was given over the game's .ini and is now no pick ("docked=1 is the default of TV mode: no run
    is given it over the game's .ini"), and the pick of a key renamed (ini.h's ini_renamed) on its new row while the
    file gives that one none ("vk_descriptors=1 is deprecated: Descriptor buffers is vk_descriptors_mode=1 now"). How
    many, 0 for none */
 int gui_settings_load(GuiSettings* settings, const char* path, char* old, size_t size);
-/* the rows that are not at their start in path, by section; with the launcher's rows alone (the runtime listed none),
-   the keys path holds that no row has after them, as they were, and nonzero for a path it cannot read. 0, else
-   nonzero */
+/* the rows that are not at their start in path, by section, and the lines of the keys path holds that no row has, as
+   they were (config_file.h): another version's or program's, an older version's but a renamed one, whose value its new
+   row has. Nonzero for a path it cannot read, which is never written over, and one it cannot write. 0, else nonzero */
 int gui_settings_save(const GuiSettings* settings, const char* path);
-/* what the file of picks at path holds that no row takes, which the next save leaves out while the runtime's rows are
-   there: a key no row has, or a value its row does not take, as key=value, ", " between. How many */
+/* the same, without an older version's keys (ini.h's ini_deprecated and ini_renamed): Clean Old Settings */
+int gui_settings_clean(const GuiSettings* settings, const char* path);
+/* the keys of an older version the file of picks at path holds, which no row has and gui_settings_clean takes out, as
+   key=value, ", " between. How many */
 int gui_settings_unread(GuiSettings* settings, const char* path, char* out, size_t size);
 /* row back to its start (a page's or an All's: their rows), every row for -1 */
 void gui_settings_reset(GuiSettings* settings, int row);

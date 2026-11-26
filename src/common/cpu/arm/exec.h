@@ -6,8 +6,8 @@
 #include <stddef.h>
 
 /* A runnable AArch32 (A32/Thumb) block image, shared by the GNU ABI and NX
-   runtimes. Blocks compile on demand through this host's own back end (recompiler/mach/native.h), or LLVM where it has
-   none or refuses a block. */
+   runtimes. Blocks compile on demand through this host's own back end (recompiler/mach/native.h), or the fallback
+   (recompiler/fallback.h) where it has none or refuses a block. */
 typedef struct SnxArmExecRange {
     uint64_t address;
     const unsigned char* data;
@@ -21,14 +21,14 @@ typedef int (*SnxArmSyscallFn)(void* context, uint32_t imm, uint64_t number, con
 
 typedef struct SnxArmExec SnxArmExec;
 
-/* Returns NULL with a bounded error on failure. LLVM starts at the first block it has to make, or here on a host without
-   a native back end. Why a block is LLVM's, or nobody's, is said once for each reason (stderr) */
+/* Returns NULL with a bounded error on failure. The fallback starts at the first block it has to make, or here on a host
+   without a native back end. Why a block is its, or nobody's, is said once for each reason (stderr) */
 SnxArmExec* snx_arm_exec_new(char* error, size_t error_size);
 /* The profile the blocks snx_arm_exec_block compiles from now on are for (A57 until set): the Vita's A9 */
 void snx_arm_exec_set_profile(SnxArmExec* exec, SnxArmProfile profile);
 void snx_arm_exec_free(SnxArmExec* exec);
-/* how many blocks LLVM was asked for, the native back end having refused them, or the loader their objects (or none on
-   this host): why, the last of them, in *why where not NULL */
+/* how many blocks the fallback was asked for, the native back end having refused them, or the loader their objects (or
+   none on this host): why, the last of them, in *why where not NULL */
 size_t snx_arm_exec_refused(const SnxArmExec* exec, const char** why);
 /* The block at pc (Thumb when thumb is set), compiled now unless it was before, from base + pc (the guest's
    memory; ranges bound how far it may read). NULL when pc is outside the ranges or the compiler fails. Not thread-safe:

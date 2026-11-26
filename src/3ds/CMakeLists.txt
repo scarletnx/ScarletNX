@@ -80,7 +80,7 @@ endforeach()
 # The driver: the offline compiler and the runner, and its command line (runtime/main.c's snx_ctr_main), which
 # scarletnx runs as scarletnx-3ds (src/multicall). SNX_SOURCE_DIR: its checkout, where an older version kept work/
 # (snx_checkout)
-add_library(snx_ctr_program STATIC runtime/main.c)
+add_library(snx_ctr_program STATIC runtime/main.c runtime/game_record.c)
 target_link_libraries(snx_ctr_program PUBLIC snx_ctr_board snx_ctr_loader)
 set_target_properties(snx_ctr_program PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
 target_compile_options(snx_ctr_program PRIVATE -Wall -Wextra -Werror=missing-prototypes)
@@ -94,11 +94,12 @@ if(NOT TARGET snx_arm_llvm)
     add_subdirectory("${PROJECT_SOURCE_DIR}/src/common/cpu/arm" ctr-arm-backend)
 endif()
 target_link_libraries(snx_ctr_cpu PUBLIC snx_arm_decode snx_arm_rt)
-# The offline compiler is part of the driver, as the Switch driver's recompiler is part of scarletnx. The LLVM backend
-# (snx_llvm, which the Switch driver's tree, the GNU ABI runtime's or the top level configures) links its objects and
-# their helpers (armlib.c) with its own linker, and compiles the blocks the static module lacks at run time (exec.c)
+# The offline compiler is part of the driver, as the Switch driver's recompiler is part of scarletnx. The recompiler
+# (snx_recompiler_jit, which the Switch driver's tree, the GNU ABI runtime's or the top level configures) links its
+# objects and their helpers (armlib.c) with its own linker, and compiles the blocks the static module lacks at run time
+# (exec.c)
 target_sources(snx_ctr_program PRIVATE aot/compiler.c aot/discover.c)
-target_link_libraries(snx_ctr_program PUBLIC snx_arm_llvm snx_llvm)
+target_link_libraries(snx_ctr_program PUBLIC snx_arm_llvm snx_recompiler_jit)
 # The compiler loads the LLVM toolchain's own libraries (including its z3)
 # at startup: resolve them without a caller-provided environment. A static
 # LLVM (SNX_LLVM_SHARED off, cmake/llvm.cmake) has none to load.

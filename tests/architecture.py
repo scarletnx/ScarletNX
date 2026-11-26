@@ -754,6 +754,65 @@ def check_weak_declarations(repo):
     return errors
 
 
+# LLVM's headers, and what of src/ builds on them: the backend's folder, and the files named here, which include one or
+# a header of the project's that does. A file leaves the list when it stops, and one joins it only with the LLVM code of
+# files that leave, never new code: what wants the code the native back ends leave asks for it through
+# recompiler/fallback.h (a game module's own through nx/loader/module_fallback.h), and the rest of the recompiler
+# (snx_recompiler_core) builds without LLVM
+LLVM_HEADER = re.compile(r'llvm(?:-c)?/')
+LLVM_FOLDER = 'src/common/cpu/recompiler/llvm/'
+LLVM_USERS = {
+    'src/common/cpu/arm/llvm.c',
+    'src/common/cpu/arm/llvm.h',
+    'src/common/cpu/recompiler/fallback_llvm.c',
+    'src/common/cpu/recompiler/jit/jit_cache_key.c',
+    'src/common/cpu/recompiler/jit/jit_service.c',
+    'src/common/cpu/recompiler/library.c',
+    'src/common/cpu/recompiler/workers.h',
+    'src/nx/loader/module_fallback_llvm.c',
+    'src/nx/loader/module_variants.c',
+    'src/nx/loader/module_variants.h',
+    'src/nx/runtime/driver/disasm.c',
+    'src/nx/runtime/driver/llvm_tuning.c',
+    'src/nx/runtime/settings_llvm.h',
+}
+
+
+def check_llvm(repo):
+    """only the LLVM backend and the files of LLVM_USERS include LLVM's headers, themselves or through a header of the
+    project's: a build without LLVM has no file of the rest to stop at"""
+    src = (repo / 'src').resolve()
+    includes, by = {}, {}
+    for path in sorted(src.rglob('*')):
+        if path.suffix not in {'.c', '.h', '.cpp', '.hpp', '.inc', '.m', '.mm'}:
+            continue
+        shown = 'src/' + path.relative_to(src).as_posix()
+        includes[shown] = {}
+        for match in INCLUDE.finditer(path.read_text(encoding='utf-8', errors='replace')):
+            name = match.group(2)
+            if LLVM_HEADER.match(name):
+                by.setdefault(shown, f'<{name}>')
+            for candidate in (path.parent / name, src / name):
+                if candidate.is_file() and candidate.resolve().is_relative_to(src):
+                    includes[shown]['src/' + candidate.resolve().relative_to(src).as_posix()] = name
+    pending = list(by)
+    while pending:
+        reached = pending.pop()
+        for shown, names in includes.items():
+            if reached in names and shown not in by:
+                by[shown] = f'"{names[reached]}"'
+                pending.append(shown)
+    errors = [
+        f'{shown}: includes {by[shown]}, which takes LLVM: the recompiler builds without it but for the files of '
+        'LLVM_USERS (tests/architecture.py), which none joins: ask recompiler/fallback.h'
+        for shown in sorted(by)
+        if not shown.startswith(LLVM_FOLDER) and shown not in LLVM_USERS
+    ]
+    for shown in sorted(LLVM_USERS - set(by)):
+        errors.append(f'tests/architecture.py: LLVM_USERS names {shown}, which takes no LLVM header: take it out')
+    return errors
+
+
 # A driver, a vendor or a device compared in the code: the VkDriverId's names, a comparison or a switch on an identity
 # field, a device's or driver's name matched as text, and a GPU vendor's PCI ID compared
 DRIVER_ID_NAME = re.compile(r'\bVK_DRIVER_ID_[A-Z0-9_]+\b')
@@ -943,6 +1002,8 @@ def check_graph(graph):
         ('snx_ctr_cpu', ('scarletnx-nx', 'scarletnx-gnuabi', 'snx_driver', 'snx_nx_module', 'snx_arm_llvm')),
         ('snx_ctr_process', ('scarletnx-nx', 'scarletnx-gnuabi', 'snx_driver', 'snx_nx_module', 'snx_arm_llvm')),
         ('snx_ctr_native', ('scarletnx-nx', 'scarletnx-gnuabi', 'snx_driver', 'snx_nx_module', 'snx_arm_llvm')),
+        ('snx_recompiler_core', ('snx_llvm', 'snx_arm_llvm', 'snx_recompiler_jit', 'scarletnx-common')),
+        ('snx_nx_fallback_none', ('snx_llvm', 'snx_arm_llvm', 'snx_recompiler_jit', 'snx_nx_fallback_llvm')),
     ):
         if owner not in by_name:
             if owner == 'scarletnx-common':
@@ -952,6 +1013,10 @@ def check_graph(graph):
         for target in forbidden:
             if target in dependencies:
                 errors.append(f'{owner} transitively links forbidden target {target}')
+        if owner in ('snx_recompiler_core', 'snx_nx_fallback_none'):
+            for target in dependencies:
+                if re.search(r'(?:^|[/\\]|-l|lib)LLVM', target):
+                    errors.append(f'{owner} transitively links LLVM: {target}')
         if owner in ('scarletnx-common', 'scarletnx-gnuabi', 'scarletnx-agb'):
             for target in dependencies:
                 if re.search(
@@ -1359,6 +1424,97 @@ def check_state_fns(repo):
     return errors
 
 
+CONFIG_CALL = re.compile(
+    r'(?<![A-Za-z0-9_])(snx_ini_start|snx_ini_next|snx_ini_put|snx_ini_record|snx_ini_drop|snx_ini_value|snx_ini_has|'
+    r'snx_lines_add|snx_config_read|snx_config_write|snx_config_keys|snx_config_kept|snx_folders_read)\s*\('
+)
+CONFIG_HEAD = re.compile(r'^(?:static |const |unsigned |struct |enum |inline )*[A-Za-z_]\w*[\s*]+\**([A-Za-z_]\w*)\(', re.M)
+CONFIG_NAME = re.compile(r'"([A-Za-z0-9_.-]*\.(?:ini|picks|folders|txt))"')
+CONFIG_TEXT = re.compile(r'/\*.*?\*/|//[^\n]*', re.S)
+CONFIG_ID = re.compile(r'\.id\s*=\s*"([^"]+)"')
+CONFIG_OWN = {'src/common/utilities/ini_lines.c', 'src/common/utilities/config_file.c'}
+
+
+def config_functions(source):
+    """each function a C source defines, with where it starts"""
+    return [(m.start(), m.group(1)) for m in CONFIG_HEAD.finditer(source)]
+
+
+def check_config_files(repo):
+    """every function in src/ that reads or writes a settings file (the ini reader's and config_file.h's calls, and the
+    names of its files) is one of tests/config_files.json's, each such file has an adapter that runs it through
+    tests/config_files.h's situations, and every adapter's id is the registry's"""
+    errors = []
+    registry = json.loads((repo / 'tests/config_files.json').read_text(encoding='utf-8'))
+    listed, names, ids = {}, set(registry['not_config']) - {'doc'}, set()
+    for entry in registry['files']:
+        ids.add(entry['id'])
+        names.update(entry['names'])
+        for fn in entry['functions']:
+            listed[fn] = entry['id']
+    for name, record in registry['records'].items():
+        if name != 'doc':
+            names.add(name)
+            for fn in record['functions']:
+                listed[fn] = name
+    seen = set()
+    for path in sorted((repo / 'src').rglob('*.[ch]')):
+        shown = path.relative_to(repo).as_posix()
+        text = path.read_text(encoding='utf-8', errors='replace')
+        for match in CONFIG_NAME.finditer(text):
+            if match.group(1) not in names:
+                line = text.count('\n', 0, match.start()) + 1
+                errors.append(
+                    f'{shown}:{line}: "{match.group(1)}" names a file that is neither a settings file of '
+                    "tests/config_files.json nor one of its not_config: a settings file follows the rule of "
+                    'tests/config_files.h; list it there with its readers, or say why it is none'
+                )
+        if path.suffix != '.c':
+            continue
+        source = CONFIG_TEXT.sub(lambda m: re.sub(r'[^\n]', ' ', m.group(0)), text)
+        heads = config_functions(source)
+        for _, fn in heads:
+            seen.add(f'{shown}:{fn}')
+        if shown in CONFIG_OWN:
+            continue
+        for match in CONFIG_CALL.finditer(source):
+            before = [fn for at, fn in heads if at < match.start()]
+            where = f'{shown}:{before[-1] if before else "?"}'
+            if where not in listed:
+                line = source.count('\n', 0, match.start()) + 1
+                errors.append(
+                    f'{shown}:{line}: {match.group(1)} in {where.split(":")[1]}, which reads or writes a settings file '
+                    'tests/config_files.json does not list: add the function to its file there, so '
+                    "tests/config_files.h's situations run what it does"
+                )
+                listed[where] = None  # once
+    for fn, owner in sorted(listed.items(), key=lambda item: item[0]):
+        if owner is not None and fn not in seen:
+            errors.append(f'tests/config_files.json: {fn} ({owner}) is no function in src/ any more: take it out')
+    adapters = {}
+    for path in sorted((repo / 'tests').glob('config_files_*.c')):
+        if path.name == 'config_files_checker.c':  # the runner's own test, of a reader made up
+            continue
+        for match in CONFIG_ID.finditer(path.read_text(encoding='utf-8', errors='replace')):
+            adapters[match.group(1)] = path.relative_to(repo).as_posix()
+    for entry in registry['files']:
+        given, has = entry['adapter'], adapters.get(entry['id'])
+        if given is None:
+            errors.append(
+                f'tests/config_files.json: {entry["id"]} has no adapter: every settings file runs through '
+                "tests/config_files.h's situations"
+            )
+        elif given != has:
+            errors.append(
+                f'tests/config_files.json: {entry["id"]}\'s adapter is {given}, and '
+                + (f'its id is in {has}' if has else 'no tests/config_files_*.c gives that id')
+            )
+    for found, where in sorted(adapters.items()):
+        if found not in ids:
+            errors.append(f'{where}: {found} is no id of tests/config_files.json')
+    return errors
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--repo', type=Path, default=Path(__file__).resolve().parents[1])
@@ -1389,6 +1545,8 @@ def main():
         + check_cmake_versions(args.repo.resolve())
         + check_device_makers(args.repo.resolve())
         + check_weak_declarations(args.repo.resolve())
+        + check_config_files(args.repo.resolve())
+        + check_llvm(args.repo.resolve())
     )
     if args.build:
         graph = args.build.resolve() / 'architecture-targets.dot'

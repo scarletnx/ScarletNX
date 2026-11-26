@@ -303,7 +303,8 @@ int main(void) {
         assert(strstr(said, "[head] style = none is not plain or bar: it keeps plain"));
         snprintf(want, sizeof want, "[head] rule = maybe is not true or false: it keeps %s",
                  yorha->head_rule ? "true" : "false");
-        assert(strstr(said, want) && strstr(said, "[nowhere] ink = #FFFFFF is not a key of a theme"));
+        assert(strstr(said, want) && strstr(said, "this version does not read [nowhere] ink, which stays as it is"));
+        assert(strstr(said, "line 24 has no = and sets nothing") && !strstr(said, "#FFFFFF"));
         assert(!strstr(said, "stray") && !strstr(said, "page") && !strstr(said, "marker"));
     }
     assert(rgb_is(theme.page, 0x0A, 0x0B, 0x0C));
@@ -334,7 +335,12 @@ int main(void) {
     assert(same(theme.page, yorha->page) && theme.format == 2 && !strcmp(theme.author, "rEden"));
     assert(theme.texture && theme.ring == GUI_RING_NEAR_TEXT && theme.typing_sync);
     assert(rgb_is(theme.warning, 0xD9, 0xB2, 0x4A) && !strcmp(theme.title[GUI_SCREEN_LOADING], "WAKING"));
-    assert(!said[0]); /* ErET's own keys, [loading] header to [sizes], no mistakes of the file */
+    /* ErET's own keys, [loading] header to [sizes], no mistakes of the file: named as what this GUI does not read,
+       which stays, never by their values */
+    assert(strstr(said, "this version does not read ") &&
+           strstr(said, "[plain] stage_build, [sizes] title_scale, which "
+                        "stay as they are") &&
+           !strstr(said, "SYSTEM") && !strstr(said, "0.75") && !strstr(said, "%1"));
     /* ErET's loading layout is YoRHa's runs: its [colors] are the run's, the menus keep YoRHa's */
     parse(&theme, "[theme]\nlayout = loading\n[colors]\npage = #101010\nink = #F0F0F0\ntexture = false\n");
     assert(rgb_is(theme.run_colors.page, 16, 16, 16) && rgb_is(theme.run_colors.ink, 240, 240, 240));

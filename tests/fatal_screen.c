@@ -77,6 +77,30 @@ int main(void) {
     strcpy(rows[1], "kept");
     n = fatal_wrap("aa bb cc", 2, rows, 1);
     assert(n == 3 && !strcmp(rows[0], "aa") && !strcmp(rows[1], "kept"));
+    /* a box's text: each line of it in rows of the width, its newlines and empty lines kept; a long word is cut */
+    {
+        static const struct {
+            const char *text, *lines;
+            int cols;
+        } cases[] = {
+            {"vulkan: the GPU device was lost (driver reset or crash)",
+             "vulkan: the GPU\ndevice was lost\n(driver reset or\ncrash)", 20},
+            {"a b\n\nc", "a b\n\nc", 20},
+            {"one two\nthree\n", "one two\nthree\n", 20},
+            {"abcdefghijklmnopqrstuvwxy z", "abcdefghij\nklmnopqrst\nuvwxy z", 10},
+            {"\xE2\x96\xA0\xE2\x96\xA0\xE2\x96\xA0 ab", "\xE2\x96\xA0\xE2\x96\xA0\xE2\x96\xA0\nab", 4},
+            {"", "", 10},
+            {"\n", "\n", 10},
+        };
+        for (size_t i = 0; i < sizeof cases / sizeof *cases; ++i) {
+            char* lines = fatal_lines(cases[i].text, cases[i].cols);
+            if (!lines || strcmp(lines, cases[i].lines))
+                fprintf(stderr, "fatal_lines case %zu: \"%s\", not \"%s\"\n", i, lines ? lines : "NULL",
+                        cases[i].lines);
+            assert(lines && !strcmp(lines, cases[i].lines));
+            free(lines);
+        }
+    }
     /* the font's bytes: CP437 for what it has, '?' for the rest and for bytes that are no UTF-8 */
     {
         char out[32];

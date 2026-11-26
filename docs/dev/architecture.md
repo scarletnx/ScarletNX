@@ -114,14 +114,25 @@ the game's image read from that image.
   `src/nx/loader/codegen_view.c` adapts NX images; `module.c` holds what the backends share (the dispatch entry
   table, chunk labels, progress lines); chunks batch whole functions up to `CHUNK_INSTRUCTIONS` (`library.c`), 90000 (20000 on Android).
 - `toolchain.c`: the runtime build for deployment.
+- The native back ends (`src/common/cpu/recompiler/mach/` and a folder a machine) make the guest's code where the host
+  has one. What they leave is the fallback's (`recompiler/fallback.h`): LLVM's (`fallback_llvm.c`), or, in a build
+  without it, none (`fallback_none.c`), which refuses it and names what was asked. The JIT, the AArch32 executor and the
+  Switch's AOT modules (`src/nx/loader/module_llvm.c`, `module_arm.c`) ask it there, and a game module's own part of it
+  through `src/nx/loader/module_fallback.h` (the descriptor of a module whose code LLVM made some of, a 32-bit program's
+  blocks chained, the profile cache's key: `module_fallback_llvm.c`, or `module_fallback_none.c`). Without LLVM the
+  native back end makes a function with an instruction it has no code for, the instruction undefined where it runs
+  (`SnxNativeOptions.alone`). The other AOT compilers and the library still call LLVM themselves.
+  `tests/architecture.py` lists the files that take LLVM's headers (`LLVM_USERS`), which only LLVM code moved out of
+  another joins.
 - The code generator, LLVM (`src/common/cpu/recompiler/llvm/`, a required dependency), builds LLVM IR with the
   LLVM-C API: `ir_int.c`, `ir_ldst.c` and `ir_vec*.c`, ported from QEMU's `translate-a64.c`, and
   `ir_sail.c`, the integer data-processing ops, the hints, the barriers, the branch operands, the general-purpose
   registers' loads and stores, the scalar floating point and the SIMD integer ops of one element per lane, the
   pairwise ones and those across lanes `tools/sailgen` generates from the Arm architecture's Sail
   (`src/common/cpu/aarch64/sail/`), emit each op of the generated decoder, `ir_codegen.c` the functions of `codegen.c`,
-  and `src/nx/loader/module_llvm.c` the chunks and `SnxModule` of `module.c`. It links the objects itself (`link_elf.c`,
-  `link_coff.c`, `link_macho.c`) with `rtlib.c`, the helpers compiled when the recompiler is built, into a module
+  and `src/nx/loader/module_fallback_llvm.c` the `SnxModule` of `module.c`. It links the objects itself (`link_elf.c`,
+  `link_coff.c`, `link_macho.c` in `src/common/cpu/recompiler/object/`) with `rtlib/rtlib.c`, the helpers compiled when
+  the recompiler is built, into a module
   with no imports, for the host it runs on: x86-64 (ELF or COFF), AArch64 (ELF, COFF on Windows, or on macOS and iOS a Mach-O dylib
   with an ad hoc signature, each with a veneer for a branch past 128 MiB), PowerPC64 (ELF, ELFv1 or ELFv2, with a stub for a branch past 32 MiB: [PowerPC64](../hosts/ppc64.md)), RISC-V and LoongArch (ELF: [RISC-V and LoongArch](../hosts/riscv-loongarch.md)), MIPS64 (ELF with the ABI's GOT: [MIPS64](../hosts/mips64.md)) or s390x (ELF: [s390x](../hosts/s390x.md)). `tests/llvm_qemu_differential.c` runs its step functions against
   `qemu-aarch64 -cpu max` (`tests/qemu_ref/`) on random states, for words of every row of the generated decoder, with
@@ -132,7 +143,7 @@ the game's image read from that image.
   assembly kernels.
 - `-r --layout FILE` orders the module's code by a profile. `tools/layout.py record` samples a scene's taken branches
   (`perf record -j any,u`), and `tools/layout.py order` clusters each function after its most frequent caller (C3,
-  as lld's `CallGraphSort.cpp`) and writes their guest addresses. `module_llvm.c` gives each listed function a code
+  as lld's `CallGraphSort.cpp`) and writes their guest addresses. LLVM gives each listed function a code
   section of its own (`SNX_LINK_HOT_TEXT` and its rank), and `link_elf.c` puts those sections first, in rank order.
   No instruction changes. ELF modules for this host only, and only when no object needs veneers.
 - The generated code polls `CPU.poll` on backward branches inside a function and at the `D_` dispatch, as `codegen.c`'s C
@@ -199,6 +210,10 @@ the game's image read from that image.
   x86 paths follow the target triple: AES-NI, PCLMULQDQ (PMULL, CRC32 by Barrett
   reduction), SSE4.2 CRC32C, VPTERNLOG (BSL/BIT/BIF, signed saturation), PAVGB/PAVGW (rounding halving adds, signed
   ones biased by 0x80), GF2P8AFFINEQB (8-bit shifts, bit reversal); the tricks are wunkolo's (wunkolo.github.io).
+  The x86-64 back end (`x64/x64_vec.c`) makes the same with SSE4.2's and AVX's forms: GF2P8AFFINEQB, PAVGB/PAVGW, AVX2's
+  shifts by a lane's own amount (bytes and halfwords by products with the amount's power of two), and FPSR.QC tested
+  once for all the saturating instructions of a block; CRC32 by PCLMULQDQ, SHA-1 by SHA1RNDS4, and VSM4RNDS4 and VSM4KEY4
+  where CPUID says SM4.
 - `src/common/utilities/common.c` and `process.c`: host files/processes; argv-based subprocesses.
 - `src/common/platform/` / `scarletnx-platform`: the host layer every driver shares, without SDL: threads and locks,
   clocks and sleep, files, address space and shared libraries. The NX runtime's `runtime/platform/` builds on it.
@@ -212,7 +227,7 @@ Shared CPU ABI (`src/common/cpu/aarch64/`): guest functions take `CPU*`; `snx_lo
 through `CPU.disp` (relaxed loads: slots go from NULL to a function while threads run), and a pc without a function
 goes to `RtAPI.miss`. `CPU.rt` supplies `RtAPI` callbacks: SVC (and NX's table of SVCs by number), UNDEF, BRK, hints, CNTVCT, FPCR, SEV/WFE, poll,
 miss, and the 16-byte compare-and-swap of STXP on RISC-V, LoongArch and MIPS64 hosts; no named runtime imports. NX's miss (`src/nx/runtime/rtapi.c`) runs the runtime JIT's code
-(`src/nx/runtime/guest_jit.c` over `src/common/cpu/recompiler/llvm/jit_service.c`), and under NCE the game's native code
+(`src/nx/runtime/guest_jit.c` over `src/common/cpu/recompiler/jit/jit_service.c`), and under NCE the game's native code
 (`nce_slot`). There is no interpreter: a pc
 without code yet is queued in the live misses' queue and its thread waits for the compile off its guest core, and a pc
 the JIT can't compile (or a host where it can't start: Windows before 10 1803) ends the game with the reason. Compile

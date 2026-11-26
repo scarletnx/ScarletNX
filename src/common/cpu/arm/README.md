@@ -10,8 +10,9 @@ The NX runtime runs 32-bit programs with it. The recompiler compiles a 32-bit pr
 - `codegen.h`: what a block is made for (`SnxArmCodegenOptions`: the profile, the memory mode, the ARM7TDMI's trace),
   whichever compiler makes it, and how a chained hosted one goes on (`SnxArmChainedOptions`, the native back ends').
 - `aot.h`, `aot.c`: the blocks of a module made ahead of time (the 3DS's, the DS's, the GBA's): the host's native back
-  end's, LLVM's where it has none or refuses one, counted with its reason and said, and every one LLVM's where its IR is
-  kept. The Vita's compiler counts and says its blocks the same way.
+  end's, the fallback's (`recompiler/fallback.h`: LLVM, or none, which refuses them by name) where it has none or
+  refuses one, counted with its reason and said, and every one the fallback's where its IR is kept. The Vita's compiler
+  counts and says its blocks the same way, and the fallback chains its blocks as the native back ends chain theirs.
 - `rt_helpers.c`: the runtime library's calls into the backend (`snx_arm_undefined`, `snx_arm_coproc`), with the defaults
   for no backend, and the native back ends' accesses through the bus hook (`snx_arm_io_read`, `snx_arm_io_write`) and
   checked memory's callback (`snx_arm_checked_access`).
@@ -23,8 +24,13 @@ The NX runtime runs 32-bit programs with it. The recompiler compiles a 32-bit pr
   they form the `snx_arm_decode` target. `snx_arm_llvm` links it, and the 3DS CPU backend links it alone.
   `tests/arm_decode_tree.c` checks them against the hand-written decoders they replaced (`tests/support/`).
 - `llvm.h`, `llvm.c`, `llvm_vector.inc`, `llvm_thumb.inc`: `snx_arm_llvm_block(module, name, words, count, pc, &consumed)` and `snx_thumb_llvm_block(module, name, halfwords, count, pc, &consumed)` emit `void name(SnxArmCPU*)` into a **host-target** LLVM module.
-- `tests/arm_emit.c`, `tests/thumb_emit.c`: object generators demonstrating module creation, verification, optimization and native object emission.
-- `tests/arm_test.py`, `tests/arm_vector_test.py`, `tests/thumb_test.py`: native execution witnesses and optional independent Unicorn comparisons.
+- `tests/arm_blocks.c`, `tests/arm_blocks.py`: the native back ends' blocks, made and run for the Python tests, by this host
+  or, under Unicorn, as another machine's.
+- `tests/arm_test.py`, `tests/arm_vector_test.py`, `tests/thumb_test.py`: execution witnesses of those blocks and optional
+  independent Unicorn comparisons, their words written in the tests.
+- `tests/support/arm_llvm_back.h`: LLVM's blocks for the same tests (`snx-test-arm-blocks-llvm`), their module verified
+  before and after the passes; `tests/arm_mc_words.py`: llvm-mc's verdict on the tests' words; `tests/arm_llvm_checks.py`:
+  fails where one of LLVM's checks has gone.
 - `tests/arm_fuzz.py`: random encodings of each class, A32 and Thumb, against Unicorn from random FP and flag state (`--only ISA:HEX` replays one).
 
 Input words are host integers decoded from little-endian guest code (A32 words, or Thumb halfwords). A block consumes at most `count` instructions (or halfwords for Thumb) and stops at a control transfer, including a conditional transfer. `consumed` reports the compiled length. Bad input returns NULL before changing the module.
@@ -50,7 +56,7 @@ Generated code doesn't decide two things itself. It calls the runtime library, w
 - An instruction the block compiler doesn't implement, or can't with the block's memory model, calls `snx_arm_undefined(cpu, word, reason)`. The backend runs it and returns with `exit` clear, and the block goes on after it, or it sets `exit` and the block stops at it. Without a backend, `exit` is `reason` (`SNX_ARM_UNDEFINED`, `SNX_ARM_BACKEND_UNSUPPORTED`) and `syndrome` the word, as before.
 - MRC, MCR, MRRC and MCRR to coprocessors 14 and 15 call `snx_arm_coproc(cpu, word)`: which system registers user mode reaches, and what they hold, is the system's. The NX runtime gives the generic timer's CNTPCT, CNTVCT and CNTFRQ (the SDK's system tick) and the CP15 barriers. Without a backend, `snx_arm_coproc_user` gives TPIDRURW and TPIDRURO from the CPU's fields, and anything else is `SNX_ARM_UNDEFINED`.
 
-Programs linking blocks link `snx_arm_rt`. The executor (`exec.h`, built into `snx_llvm`) compiles each block to an object and loads it with the runtime JIT's loader (`recompiler/llvm/code_loader.c`), which it gives those functions by name. On PowerPC64 the runtime's copies have a TOC of their own, so the executor loads the 32-bit modules' library (`armlib.c`) into its arena first and blocks call that one, with the arena's TOC, as a 32-bit game module links it.
+Programs linking blocks link `snx_arm_rt`. The executor (`exec.h`, built into `snx_recompiler_jit`) compiles each block to an object and loads it with the runtime JIT's loader (`recompiler/loader/code_loader.c`), which it gives those functions by name. On PowerPC64 the runtime's copies have a TOC of their own, so the executor loads the 32-bit modules' library (`armlib.c`) into its arena first and blocks call that one, with the arena's TOC, as a 32-bit game module links it.
 
 ## Thumb32 instructions with A32 twins
 
@@ -76,7 +82,7 @@ snx_arm_llvm_block_ex(module, name, words, count, pc, &consumed, &options);
 ISA and memory mode are independent. NULL options preserve the original API. The native back ends
 (`recompiler/mach/mach_arm.inc`, `tools/sailgen/README.md`) take the same options through their `_arm_options`
 (`snx_native_arm_options` the host's), and make what these blocks are without LLVM; `exec.c` compiles a program's
-blocks with the host's as it runs and asks LLVM for those it refuses alone.
+blocks with the host's as it runs and asks the fallback (`recompiler/fallback.h`) for those it refuses alone.
 
 `SNX_ARM_MEMORY_HOSTED` is flat memory for a runtime that owns the whole process (the 3DS and the Vita). Its blocks
 have no range check (the window is 2^32 addresses with guard pages after it), a `noalias` cpu, and no entry checks:
@@ -164,12 +170,14 @@ cmake --build build/arm11
 ctest --test-dir build/arm11 --output-on-failure
 ```
 
-The build-time generator emits verified native `.o` files at O0/O2; the witness
+The build-time generator makes the native back end's `.o` files, with the blocks' values
+in all the host registers and in few of them, and LLVM's, verified before and after the passes at O0 and O2
+(`arm_checked_static_O0`, `_O2`, whose hosted blocks have a `noalias` cpu); the witness
 executables link only the CTR CPU/memory adapters, **not LLVM or MCJIT**. The bus
-matrix compares checked and flat AOT across 1,059 integer encodings and 13 states
-for both profiles at both optimization levels (55,068 comparisons). With
-`SNX_TEST_ARM_DIFF=ON` and Python `unicorn==2.1.4`, the isolated build also runs
-independent ARM11 MPCore integer comparisons and the existing A57 integer,
+matrix compares checked and flat blocks across 1,265 integer encodings and 13 states
+for both profiles, with all the host registers and with three (65,780 comparisons). With
+`SNX_TEST_ARM_DIFF=ON` and Python `unicorn==2.1.4`, the build also runs
+independent ARM11 MPCore integer comparisons and the A57 integer,
 VFP/NEON and Thumb regression suites. ARM11 Thumb BL halves have C golden tests,
 not a claimed independent differential oracle. The CTR pipeline, built with
 `SNX_BUILD_3DS`, supplies process setup, offline conservative CFG discovery/chunking
@@ -280,7 +288,7 @@ With Clang and LLVM development files installed:
 
 ```sh
 cmake -S . -B build/a32 -DSNX_TOOLS_ONLY=ON -DSNX_BUILD_GNUABI=OFF
-cmake --build build/a32 --target snx-test-arm-decode snx-test-arm-emit
+cmake --build build/a32 --target snx-test-arm-decode snx-test-arm-blocks-native
 ctest --test-dir build/a32 -R '^arm_' --output-on-failure
 ```
 
@@ -291,19 +299,31 @@ python3 -m venv .venv
 .venv/bin/pip install unicorn==2.1.4
 cmake -S . -B build/a32 -DSNX_TOOLS_ONLY=ON -DSNX_BUILD_GNUABI=OFF \
   -DSNX_TEST_ARM_DIFF=ON -DPython3_EXECUTABLE="$PWD/.venv/bin/python"
-ctest --test-dir build/a32 -R 'arm_|thumb_' --output-on-failure
+ctest --test-dir build/a32 -R '^arm_(native|llvm)_' --output-on-failure
 ```
 
-The suite verifies IR before and after optimization and executes generated objects at O0 and O2. The integer
-suite covers 39 witness programs, including an inter-block BL/BX loop, bounds failures, address wrapping,
-writeback, PC loads, failed predicates, monitor invalidation, TLS and deferred-backend exits, with 1,081
+`snx-test-arm-blocks` (`tests/arm_blocks.c`) makes each block with the native back end and runs it from the states the
+Python tests hold (`tests/arm_blocks.py`). `arm_native_<test>` are the host's back end's. With Unicorn's C library too
+(`SNX_UNICORN_INCLUDE_DIR`, `SNX_UNICORN_LIBRARY`) `arm_<machine>_<test>` are those of every other machine the native
+back ends make code for, run under Unicorn (LoongArch, which it has none of, under the test's own interpreter): the same
+tests, the differentials on a share of their states. Each block is made twice, its values in all the host registers and in three of
+them, so that they spill. No assembler: the words are written in the tests, beside their text.
+
+While LLVM still makes the blocks a native back end leaves, `arm_llvm_<test>` run the same tests on LLVM's blocks at -O0
+and -O2 (`snx-test-arm-blocks-llvm`), the module verified before the passes and after them; `arm_llvm_mc_words` holds the
+tests' words to llvm-mc's, and `arm_llvm_fuzz` runs only the words llvm-objdump has for the Cortex-A57 and counts no
+difference llvm-mc warns of (SoftFail). Those two say so and are skipped where the LLVM this is built with has no llvm-mc.
+`arm_llvm_checks` fails where one of these checks is no longer registered or no longer refuses what it is there for.
+
+The integer suite covers 49 witness programs, including an inter-block BL/BX loop, bounds failures, address wrapping,
+writeback, PC loads, failed predicates, monitor invalidation, TLS and deferred-backend exits, with 1,287
 instruction/block encodings over 64 initial states each. The VFP/NEON suite compares all GPRs, D registers,
-CPSR, FPSCR and guest memory for 1,490 encodings over 80 initial states each at O0 and O2 (119,200 exact
-comparisons per level), including FP edge cases (NaNs, denormals, infinities, rounding-mode and FPSCR
+CPSR, FPSCR and guest memory for 1,494 encodings over 80 initial states each (239,040 exact comparisons), including FP
+edge cases (NaNs, denormals, infinities, rounding-mode and FPSCR
 combinations) and SIMD saturation/shift boundaries. The Thumb suite compares all GPRs, CPSR and guest memory
-for 141 instruction/IT sequences at O0 and O2, covering Thumb16 and Thumb32 data processing, loads/stores,
+for 280 instruction/IT sequences, covering Thumb16 and Thumb32 data processing, loads/stores,
 branches, bitfield and IT blocks, and witnesses blocks that end or begin around an IT block. `arm_fuzz.py` draws
-encodings at random from each class, keeps those llvm-objdump decodes for the Cortex-A57, and fails on any
+encodings at random from each class and fails on any block the back end refuses, and any
 difference in state; what it reports besides (missing, extra, faults) is mostly UNPREDICTABLE encodings, and
 QEMU 5's missing alignment checks. Decode tests check both accepted and rejected encodings
 against llvm-objdump on cortex-a57. Unicorn's ARMv8-capable AArch32 model is the reference, not Cortex-A57

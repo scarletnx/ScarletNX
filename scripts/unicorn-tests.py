@@ -8,8 +8,8 @@
 
 The tests of a native back end that no job runs on (tests/CMakeLists.txt: label unicorn, and the machine's) are run by
 Unicorn, and a build that did not find Unicorn, or a machine that its Unicorn does not have, has none of them: ctest
-passes all the same. So this fails where a machine has no test that passed of a family (sail, recompiler, arm), and for a
-test that did not run or was skipped. The one skip it takes is PowerPC64's, for the reason the test prints: the pip wheel's
+passes all the same. So this fails where a machine has no test that passed of a family (sail, recompiler, arm), or not
+each of its A32 and Thumb blocks' against Unicorn's own ARM core, and for a test that did not run or was skipped. The one skip it takes is PowerPC64's, for the reason the test prints: the pip wheel's
 Unicorn 2.1.4 does not hold the MSR of a 64-bit PowerPC. The table it prints goes to GITHUB_STEP_SUMMARY too, where it is
 set. tests/unicorn_tests_test.py runs it.
 """
@@ -32,6 +32,9 @@ MACHINES = {
     'la64': ALL,
     's390x': ALL,
 }
+# each machine's blocks against Unicorn's ARM core (tests/arm_blocks.cmake: arm_<machine>_<test>), which a build without
+# SNX_TEST_ARM_DIFF has none of
+BLOCKS = ('differential', 'vector', 'thumb', 'fuzz')
 # who may skip, and what the test says when it does
 MAY_SKIP = ('ppc64', 'ppc64be')
 SAYS = "doesn't hold (an unpatched Unicorn 2.1.4)"
@@ -42,6 +45,7 @@ class Machine:
         self.passed = self.skipped = self.failed = 0
         self.seconds = 0.0
         self.families = {}
+        self.names = set()
 
 
 def read(path):
@@ -65,6 +69,7 @@ def read(path):
         if status == 'run':
             machine.passed += 1
             machine.families[family] = machine.families.get(family, 0) + 1
+            machine.names.add(name)
         elif status == 'fail':
             machine.failed += 1
         elif why == 'SKIP_RETURN_CODE=77' and mine[0] in MAY_SKIP and SAYS in output:
@@ -81,6 +86,9 @@ def read(path):
             for family in families:
                 if not machine.families.get(family) and not machine.failed:
                     wrong.append(f'{name}: no {family}_ test of it passed')
+            for test in BLOCKS:
+                if 'arm' in families and f'arm_{name}_{test}' not in machine.names and not machine.failed:
+                    wrong.append(f'{name}: arm_{name}_{test} of it did not pass')
     return machines, wrong
 
 

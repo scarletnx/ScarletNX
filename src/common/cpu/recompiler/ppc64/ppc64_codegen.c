@@ -8,8 +8,8 @@
    and snx_stale's literal in the code is a distance (R_PPC64_REL64), the callee entered through CTR with its address
    in r12 */
 #include "common/cpu/recompiler/ppc64/ppc64_codegen.h"
-#include "common/cpu/recompiler/llvm/link.h"
-#include "common/cpu/recompiler/llvm/elf_object.h"
+#include "common/cpu/recompiler/object/link.h"
+#include "common/cpu/recompiler/object/elf_object.h"
 #include "common/cpu/aarch64/a64_decoder.h"
 #include "common/cpu/aarch64/cpu.h"
 #include "common/runtime/interface.h"

@@ -335,7 +335,7 @@ msgstr ""
 msgid "A whole number from %.0f to %.0f; empty, the default %s"
 msgstr ""
 
-#: src/gui/editor.c
+#: src/gui/editor.c src/gui/main.c
 #, c-format
 msgid "A whole number from %.0f to %.0f"
 msgstr ""
@@ -350,7 +350,7 @@ msgstr ""
 msgid "A number from %g to %g, two decimals at most"
 msgstr ""
 
-#: src/gui/editor.c
+#: src/gui/editor.c src/gui/main.c
 #, c-format
 msgid "Text, up to %u bytes"
 msgstr ""
@@ -363,6 +363,11 @@ msgstr ""
 
 #: src/gui/editor.c src/gui/main.c
 msgid "Save"
+msgstr ""
+
+#: src/gui/editor.c src/gui/main.c
+#, c-format
+msgid "Not saved: %s"
 msgstr ""
 
 #: src/gui/editor.c src/gui/main.c
@@ -753,6 +758,18 @@ msgstr ""
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
+msgid "Hold: list."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Its group."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
 msgid "Tap: open. Back."
 msgstr ""
 
@@ -1025,6 +1042,24 @@ msgstr ""
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
 #: src/gui/main.c
 #, snx-keys
+msgid "Ctrl+F: search."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Alt+Down/right click: list."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "G: its group."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
 msgid "Del: Global."
 msgstr ""
 
@@ -1250,6 +1285,24 @@ msgstr ""
 #: src/gui/main.c
 #, snx-keys
 msgid "X: Global."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Y: search."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "Hold A: list."
+msgstr ""
+
+#. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
+#: src/gui/main.c
+#, snx-keys
+msgid "L3: its group."
 msgstr ""
 
 #. Keys: "Key: what it does." sentences. Keep each key, or its translation in this file, and each ~
@@ -1494,6 +1547,11 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid " (it keeps %s)"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid " (it keeps %d)"
 msgstr ""
 
 #: src/gui/main.c
@@ -2387,6 +2445,10 @@ msgid "SCARLETNX  /  SETTINGS  /  FREEDRENO SETTINGS  /  %s"
 msgstr ""
 
 #: src/gui/main.c
+msgid "SCARLETNX  /  SETTINGS  /  SEARCH"
+msgstr ""
+
+#: src/gui/main.c
 #, c-format
 msgid "SCARLETNX  /  SETTINGS  /  %s"
 msgstr ""
@@ -2946,6 +3008,11 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "Nothing left"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s%s: no folder of it is listed"
 msgstr ""
 
 #: src/gui/main.c
@@ -3952,13 +4019,31 @@ msgid "%s has no room for another item"
 msgstr ""
 
 #: src/gui/main.c
-#, c-format
-msgid "%s is no recompiled Switch or 3DS game: only they have settings of their own"
+msgid "Player"
+msgstr ""
+
+#: src/gui/main.c
+msgid "A setting's name, key, group or words: each one typed is looked for"
 msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "%s holds what no setting takes, which the next change leaves out: %s"
+msgid "No setting matches \"%s\". ESC: the groups"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%d of %d settings: type more to see the rest"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%d of %d settings"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is no recompiled Switch or 3DS game: only they have settings of their own"
 msgstr ""
 
 #: src/gui/main.c
@@ -4083,11 +4168,6 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "No config folder: controllers cannot be synced here"
-msgstr ""
-
-#: src/gui/main.c
-#, c-format
-msgid "%s does not read"
 msgstr ""
 
 #: src/gui/main.c
@@ -4296,6 +4376,10 @@ msgid "Data, Logs, Caches, Extractions and the recompiled library's Main"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Enter: look for a setting by the words of its name, key, group or help"
+msgstr ""
+
+#: src/gui/main.c
 msgid "The runtime listed no settings"
 msgstr ""
 
@@ -4340,6 +4424,15 @@ msgid "A nickname, 1 to 32 bytes, no control character, no space at either end"
 msgstr ""
 
 #: src/gui/main.c
+#, c-format
+msgid "A number from %g to %g"
+msgstr ""
+
+#: src/gui/main.c
+msgid "Words of a setting's name, key, group, help or values"
+msgstr ""
+
+#: src/gui/main.c
 msgid "The room's password, 1 to 255 bytes, no control character, no space at either end"
 msgstr ""
 
@@ -4362,6 +4455,11 @@ msgstr ""
 
 #: src/gui/main.c
 msgid "(no themes folder)"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Search: %s"
 msgstr ""
 
 #: src/gui/main.c
@@ -5234,6 +5332,20 @@ msgid "Remove from Games"
 msgstr ""
 
 #: src/gui/main.c
+msgid "Other..."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s has no list: Enter changes it"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s is no value of %s: it keeps %s"
+msgstr ""
+
+#: src/gui/main.c
 msgid "Every key of this screen is in its foot"
 msgstr ""
 
@@ -5246,6 +5358,11 @@ msgstr ""
 #: src/gui/main.c
 #, c-format
 msgid "The saves of %s, the user playing: every console's in one zip, or a console's as its emulators keep them (the Switch's as Eden's zip). An import moves a save there to the trash first."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: %s. Enter picks one, ESC leaves it"
 msgstr ""
 
 #: src/gui/main.c
@@ -5306,7 +5423,17 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "Removed games not kept: %s could not be written (%s)."
+msgid "Removed games not kept: %s."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "Removed games not kept: %s could not be removed (%s)."
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "%s%s: no game is taken off Games by it"
 msgstr ""
 
 #: src/gui/main.c
@@ -6218,6 +6345,48 @@ msgstr ""
 #. A key of the foot's sentences, which a click finds by this word
 #: src/gui/main.c
 #, snx-key
+msgid "Ctrl+F"
+msgstr ""
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "G"
+msgstr ""
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "Its group"
+msgstr ""
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "Hold A"
+msgstr ""
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "Alt+Down"
+msgstr ""
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "right click"
+msgstr ""
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
+msgid "Hold"
+msgstr ""
+
+#. A key of the foot's sentences, which a click finds by this word
+#: src/gui/main.c
+#, snx-key
 msgid "F5"
 msgstr ""
 
@@ -6871,6 +7040,11 @@ msgstr ""
 
 #: src/gui/settings.c
 #, c-format
+msgid "%s=%s is not a value of %s: %s=%s now"
+msgstr ""
+
+#: src/gui/settings.c
+#, c-format
 msgid "%d on, %d other"
 msgstr ""
 
@@ -7218,11 +7392,6 @@ msgstr ""
 
 #: src/gui/theme.c
 #, c-format
-msgid "[%s] %s = %s is not a key of a theme"
-msgstr ""
-
-#: src/gui/theme.c
-#, c-format
 msgid "[body] %s = %s does nothing: ui.txt lays out the lists now (delete it)"
 msgstr ""
 
@@ -7234,6 +7403,11 @@ msgstr ""
 #: src/gui/theme.c
 #, c-format
 msgid "%s could not be read (out of memory): it shows %s"
+msgstr ""
+
+#: src/gui/theme.c
+#, c-format
+msgid "%s: it shows %s"
 msgstr ""
 
 #: src/gui/theme.c

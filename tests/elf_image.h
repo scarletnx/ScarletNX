@@ -6,8 +6,8 @@
    first byte loads at ELF_IMAGE_VADDR, so no address in it is its offset */
 #ifndef SNX_TESTS_ELF_IMAGE_H
 #define SNX_TESTS_ELF_IMAGE_H
-#include "common/cpu/recompiler/llvm/elf_defs.h"
-#include "common/cpu/recompiler/llvm/elf_hash.h"
+#include "common/cpu/recompiler/object/elf_defs.h"
+#include "common/cpu/recompiler/object/elf_hash.h"
 #include <assert.h>
 #include <stdint.h>
 #include <string.h>

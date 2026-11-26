@@ -6,13 +6,15 @@
    a [user1] without one) the uid ScarletNX always gave it (SNX_USERS_FIRST_UID0 and 1), so the saves made before there
    were others stay its own. Without users.ini it is the only user, "Player". A nickname is what the console's account
    service keeps (SwitchBrew's ProfileBase): 1 to 32 bytes of UTF-8, with no control character, and no space at
-   either end, which users.ini would not keep. Anything users.ini says that is not a user is refused, but for a user's
-   Mii and picture, which never stop anything: mii= names the user's Mii in the Mii database (mii_db.h), its first
+   either end, which users.ini would not keep. A user's key it cannot read is refused, but for a user's Mii and
+   picture, which never stop anything; a key, a section or a line it does not know is another version's or program's,
+   kept and named (config_file.h), and a key given twice takes its last line's value: mii= names the user's Mii in the Mii database (mii_db.h), its first
    (Baguette) without one or for a name the database does not hold; picture= mii draws the user's picture from that
    Mii, file takes users/<uid>.jpg, and without one (or for another word) it is file when the user has that file, else
    mii. What was read where it was not taken is in snx_users_notes */
 #ifndef SNX_COMMON_USERS_H
 #define SNX_COMMON_USERS_H
+#include "common/utilities/config_file.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -37,9 +39,11 @@ extern int g_user_count;
 
 /* the room password of online.ini in dir ("" without the file): 0, or -1 with why. The file holds a secret, so one
    other users of this machine may read is refused; a section, another key that starts with room_ or a value longer than
-   size - 1 bytes is too. A key of another version or program is none of this one's: why names them then with 0, for the
-   log, never their values ("" without one) */
-int snx_users_room_password(const char* dir, char* password, size_t size, char* why, size_t why_size);
+   size - 1 bytes is too. A key of another version or program, a line with no = and room_password given twice go in
+   others (NULL for none), which a caller that names them says with SNX_USERS_ONLINE (config_file.h), never a value */
+#define SNX_USERS_ONLINE "users/online.ini"
+int snx_users_room_password(const char* dir, char* password, size_t size, SnxConfigOthers* others, char* why,
+                            size_t why_size);
 /* the room password of online.ini in dir set to password, or taken off with "", the file made readable by its owner
    alone and its other lines byte for byte as they were (with none of them left, "" takes the file away): 0, or -1 with
    why and the file as it was. Text it would not read back is refused, and a file the reading refuses, or that is no

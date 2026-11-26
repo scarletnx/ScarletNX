@@ -493,8 +493,12 @@ cmake --preset default -B build -DSNX_FFMPEG_ASM=OFF && cmake --build build
 - `-DSNX_TOOLS_ONLY=ON`: build the extraction/recompilation driver without the runtime, see below (default OFF).
 - `-DSNX_RECOMPILER_SHARED=ON`, `-DSNX_RECOMPILER_INSTALL=ON`: also build the recompiler as a shared library, and
   install the library, see [Library](library.md) (defaults OFF and the value of `SNX_TOOLS_ONLY`).
-- `-DSNX_SAIL_X64=OFF`: build without the x86-64 back end, and LLVM makes every function. The default is ON on x86-64
-  (not Android). Its instruction selection is in the tree (`tools/sailgen/sdm/x64_isel.inc`,
+- `-DSNX_WITH_LLVM=OFF`: build the recompiler's core alone, without LLVM: its own back ends, and what links and loads
+  their objects (`snx_recompiler_core`), with the tests of it. Every driver needs LLVM, so the configure stops and names
+  the ones that are on (default ON).
+- `-DSNX_SAIL_X64=OFF`: build without the x86-64 back end, and LLVM makes every function. The default is ON on x86-64,
+  Android's included; a tree keeps the value it was first configured with, which the configure's log says. Its
+  instruction selection is in the tree (`tools/sailgen/sdm/x64_isel.inc`,
   [sailgen](../../tools/sailgen/README.md#the-x86-64-back-end)).
 - `-DBUILD_TESTING=ON`: build the tests, which the `default` and `tracy` presets leave out.
 - `-DSNX_BUILD_TESTING=OFF`: leave the tests out whatever `BUILD_TESTING` says. ON by default when ScarletNX is the
@@ -526,12 +530,14 @@ it:
   CPU elsewhere; configure downloads the 8 files into `CPM_SOURCE_CACHE` once. CI's headless Vulkan step runs it.
 - `-DSNX_TEST_A64_FP_DIFF=ON`: add the AArch64 FP differential test, which needs Python unicorn 2.1.4 and a native
   Linux host.
-- `-DSNX_TEST_ARM_AOT=ON`, `-DSNX_TEST_ARM_DIFF=ON`: the 3DS ARM11 witnesses and the A32 unicorn comparison, see
-  [3DS](../platforms/3ds/README.md).
+- `-DSNX_TEST_ARM_AOT=ON`, `-DSNX_TEST_ARM_DIFF=ON`: the 3DS ARM11 and checked memory witnesses, and the comparisons of
+  the native back ends' and LLVM's A32 and Thumb blocks with Python's Unicorn, see [3DS](../platforms/3ds/README.md).
 
 With Unicorn (its header and library, found or given with `-DSNX_UNICORN_INCLUDE_DIR` and `-DSNX_UNICORN_LIBRARY`; Python's
 wheel of unicorn 2.1.4 has both, in its `include` and `lib/libunicorn.so.2`), the tests labelled `unicorn` run the code
-that the native back ends make for the other machines against LLVM's (`ctest -L unicorn`, `ctest -L rv64` for one machine).
+that the native back ends make for the other machines against LLVM's, and their A32 and Thumb blocks (`arm_<machine>_vector`
+and its like, with `SNX_TEST_ARM_DIFF`) against Unicorn's own ARM core (`ctest -L unicorn`, `ctest -L rv64` for one
+machine).
 CI's Linux x86-64 job runs them in every push, nightly and run by hand, and in a pull request that changes what they test
 (`scripts/recompiler-changes.py`), and fails where a machine ran none (`scripts/unicorn-tests.py`). PowerPC64's are
 skipped: Unicorn 2.1.4 as it is released does not hold the MSR of a 64-bit PowerPC.
@@ -588,8 +594,8 @@ ctest --test-dir build/tools --output-on-failure
 
 The recompiler generates game code with LLVM, its only backend. LLVM's
 development files are required: `llvm-config` finds them (`-DSNX_LLVM_CONFIG=/path/to/llvm-config` picks one), and
-the configure stops without them on every platform, including Windows and cross-builds. There is no recompiler
-build without LLVM. Modules are built for the machine that builds them, with its instruction set
+the configure stops without them on every platform, including Windows and cross-builds. No driver builds without LLVM:
+`-DSNX_WITH_LLVM=OFF` builds the recompiler's core alone. Modules are built for the machine that builds them, with its instruction set
 extensions (build == host == target); nothing is detected at run time. Whole functions are batched into units of 90000
 instructions (20000 on Android; `--chunk`), with a progress line per compiled unit.
 

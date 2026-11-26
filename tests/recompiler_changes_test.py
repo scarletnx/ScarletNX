@@ -46,6 +46,9 @@ for paths, differential, unicorn, why in (
     (('tests/sail_mach.c',), False, True, 'a test of theirs'),
     (('tests/support/host_unicorn.c',), False, True, 'their host'),
     (('tests/arm_native_modes.cmake',), False, True, 'their modes'),
+    (('tests/arm_vector_test.py',), False, True, "their blocks' oracle"),
+    (('tests/thumb_test.py',), False, True, 'and its Thumb ones'),
+    (('tests/arm_vfp_cases.s',), False, True, 'the words it runs'),
     (('scripts/unicorn-tests.py',), False, True, 'what counts them'),
     (
         ('src/nx/loader/module_llvm.c', 'tests/support/host_win64.c'),

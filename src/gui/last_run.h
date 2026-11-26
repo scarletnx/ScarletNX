@@ -19,11 +19,12 @@ typedef struct {
 
 /* the record beside run_log (last-run.log's last-run.ini), owned; NULL for none */
 char* gui_last_run_path(const char* run_log);
-/* run written to path, whole or not at all (a .new file named over it): 0, or -1 with why saying the path and the
-   system's reason */
+/* run written to path, whole or not at all (a .new file named over it), never over one that cannot be read: 0, or -1
+   with why saying the path and the system's reason */
 int gui_last_run_write(const char* path, const GuiLastRun* run, char* why, size_t size);
-/* the record at path read into run, then deleted: 1; 0 when there is none; -1 with why when it cannot be read, holds
-   no started= or cannot be deleted (run filled all the same when it was read: the next start says it again) */
+/* the record at path read into run, then deleted: 1, why naming once a run what it does not read (config_file.h), ""
+   for nothing; 0 when there is none; -1 with why when it cannot be read, holds no started= (or one that is no time, by
+   its value) or cannot be deleted (run filled all the same when it was read: the next start says it again) */
 int gui_last_run_take(const char* path, GuiLastRun* run, char* why, size_t size);
 void gui_last_run_free(GuiLastRun* run);
 

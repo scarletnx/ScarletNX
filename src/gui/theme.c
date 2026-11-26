@@ -5,6 +5,7 @@
 #include "gui/model.h" /* GUI_TEXT_MAX */
 #include "gui/steps.h" /* GuiProgress */
 #include "common/utilities/common.h"
+#include "common/utilities/config_file.h"
 #include "common/utilities/ini_lines.h"
 #include "gui_themes.h"
 #include <stdarg.h>
@@ -308,8 +309,8 @@ void gui_theme_get(const void* object, const GuiThemeKey* key, char* out, size_t
 typedef struct {
     char* said;
     size_t size;
-    const char* from; /* the built-in the file starts from */
-    int foreign;      /* an ErET file: its keys the GUI has no place for are its own, not mistakes */
+    const char* from;       /* the built-in the file starts from */
+    SnxConfigOthers others; /* what it does not read, a line with no = and a key given twice: named once a run */
 } Said;
 static void say(Said* to, const char* format, ...) {
     va_list ap;
@@ -361,7 +362,8 @@ static void set(GuiTheme* t, const GuiThemeKey* k, const char* section, const ch
 }
 static const GuiTheme* layout_base(const char* layout);
 /* run_colors: an ErET loading theme's [colors] are its loading screen's, here the run's */
-static void apply(GuiTheme* t, const char* section, const char* key, const char* value, int run_colors, Said* to) {
+static void apply(GuiTheme* t, const char* section, const char* key, const char* value, int run_colors, Said* to,
+                  int line) {
     const GuiThemeKey* k;
     uint32_t number;
     if (!strcmp(section, "theme") && !strcmp(key, "format")) {
@@ -394,8 +396,8 @@ static void apply(GuiTheme* t, const char* section, const char* key, const char*
         k = gui_theme_key("run", key);
         if (k && (k->type == GUI_KEY_COLOUR || !strcmp(key, "texture")))
             set(t, k, section, key, value, to);
-        else if (!to->foreign)
-            say(to, snx_tr("[%s] %s = %s is not a key of a theme"), section, key, value);
+        else /* ErET's or another version's: kept by a write, named once a run, never by its value */
+            snx_config_other_key(&to->others, section, key, line);
         return;
     }
     if (!strcmp(section, "header") && !strcmp(key, "ring_side")) {
@@ -418,8 +420,8 @@ static void apply(GuiTheme* t, const char* section, const char* key, const char*
     k = gui_theme_key(section, key);
     if (k)
         set(t, k, section, key, value, to);
-    else if (!to->foreign)
-        say(to, snx_tr("[%s] %s = %s is not a key of a theme"), section, key, value);
+    else /* ErET's or another version's: kept by a write, named once a run, never by its value */
+        snx_config_other_key(&to->others, section, key, line);
 }
 /* each key = value of text, with its section, to visit; false when out of memory */
 /* ErET's layout as the built-in to start from, when no base names one */
@@ -430,19 +432,47 @@ static const GuiTheme* layout_base(const char* layout) {
         return gui_theme_builtin("default");
     return NULL;
 }
+/* a line the reading leaves, for what a theme's reading names */
+static void theme_left(void* ctx, int line, const char* text, const char* does) {
+    (void)text;
+    (void)does;
+    snx_config_other_line((SnxConfigOthers*)ctx, line);
+}
 static int visit(const char* text, size_t size, GuiTheme* theme, const GuiTheme** bases, int base_only, int run_colors,
                  Said* to) {
     SnxIni ini;
     char* key;
     char* value;
     char* copy_of = malloc(size + 1);
+    struct {
+        char section[32], key[40];
+        const char* value;
+        int line;
+    } seen[64];
+    int seen_count = 0, k;
     if (!copy_of) return 0;
     memcpy(copy_of, text, size);
     copy_of[size] = 0;
     snx_ini_start(&ini, copy_of);
+    if (!base_only) {
+        ini.left = theme_left;
+        ini.ctx = &to->others;
+    }
     while (snx_ini_next(&ini, &key, &value)) {
         const char* section = ini.section;
         value = unquote(value);
+        for (k = 0; !base_only && k < seen_count && (strcmp(seen[k].section, section) || strcmp(seen[k].key, key));
+             ++k) {}
+        if (!base_only && k < seen_count) /* the last line's, said with both */
+            snx_config_twice(&to->others, section, key, seen[k].value, seen[k].line, value, ini.line);
+        else if (!base_only && seen_count < (int)(sizeof seen / sizeof *seen))
+            ++seen_count;
+        if (!base_only && k < (int)(sizeof seen / sizeof *seen)) {
+            copy(seen[k].section, sizeof seen[k].section, section);
+            copy(seen[k].key, sizeof seen[k].key, key);
+            seen[k].value = value;
+            seen[k].line = ini.line;
+        }
         if (base_only) {
             if (!strcmp(section, "theme") && !strcmp(key, "base") && gui_theme_builtin(value))
                 bases[0] = gui_theme_builtin(value);
@@ -451,7 +481,7 @@ static int visit(const char* text, size_t size, GuiTheme* theme, const GuiTheme*
                 bases[2] = !strcmp(value, "loading") ? bases[1] : NULL;
             }
         } else
-            apply(theme, section, key, value, run_colors, to);
+            apply(theme, section, key, value, run_colors, to, ini.line);
     }
     free(copy_of);
     return 1;
@@ -464,7 +494,7 @@ static const GuiTheme* builtins_read(void) {
         GuiTheme* t = &builtins[i];
         memset(t, 0, sizeof *t);
         copy(t->id, sizeof t->id, snx_gui_theme_ids[i]);
-        Said none = {NULL, 0, "", 0};
+        Said none = {NULL, 0, "", {0}};
         if (!visit(snx_gui_theme_texts[i], strlen(snx_gui_theme_texts[i]), t, NULL, 0, 0, &none)) t->id[0] = 0;
     }
     return builtins;
@@ -482,41 +512,50 @@ const GuiTheme* gui_theme_builtin(const char* id) {
 
 int gui_theme_parse(GuiTheme* theme, const char* id, const char* text, size_t size, char* said, size_t said_size) {
     const GuiTheme* bases[3] = {NULL, NULL, NULL}; /* the base, ErET's layout, set when that is loading */
-    char from[sizeof theme->id] = "";
-    Said to = {said, said_size, from, 0};
+    char from[sizeof theme->id] = "", label[sizeof theme->id + 24], others[2048];
+    Said to = {said, said_size, from, {0}};
+    int read;
     if (said && said_size) said[0] = 0;
     if (!visit(text, size, theme, bases, 1, 0, &to)) return 0;
     *theme = bases[0] ? *bases[0] : bases[1] ? *bases[1] : builtins_read()[0];
     copy(from, sizeof from, theme->id);
-    to.foreign = bases[1] != NULL;
     copy(theme->id, sizeof theme->id, id);
     copy(theme->name, sizeof theme->name, id);
-    return visit(text, size, theme, bases, 0, !bases[0] && bases[2], &to);
+    read = visit(text, size, theme, bases, 0, !bases[0] && bases[2], &to);
+    /* by the theme's folder, which names it once a run whichever folder of themes holds it */
+    snprintf(label, sizeof label, "themes/%s/theme.ini", id);
+    if (read && said && said_size && snx_config_others_said(&to.others, label, others, sizeof others))
+        say(&to, "%s", others + strlen(label) + 2);
+    return read;
 }
-/* the first dirs[i]/id/theme.ini that can be read, its path in *path (owned) */
-static char* theme_file(const char* const* dirs, size_t count, const char* id, size_t* size, char** path) {
+/* the first dirs[i]/id/theme.ini that is there, its path in *path (owned): its text, or NULL with why for one that
+   cannot be read (why "" for none there) */
+static char* theme_file(const char* const* dirs, size_t count, const char* id, size_t* size, char** path, char* why,
+                        size_t why_size) {
     size_t i;
     char* text = NULL;
+    int read = 0;
     *path = NULL;
-    for (i = 0; i < count && !text; ++i) {
+    if (why_size) why[0] = 0;
+    for (i = 0; i < count && !read; ++i) {
         char* folder = dirs[i] ? snx_path_join(dirs[i], id) : NULL;
         free(*path);
         *path = folder ? snx_path_join(folder, "theme.ini") : NULL;
-        text = *path ? (char*)snx_read_file(*path, size) : NULL;
+        read = *path ? snx_config_read(*path, &text, size, why, why_size) : 0;
         free(folder);
     }
     return text;
 }
 char* gui_theme_text(const char* const* dirs, size_t count, const char* id, size_t* size) {
     char* path;
-    char* text = theme_file(dirs, count, id, size, &path);
+    char why[512], *text = theme_file(dirs, count, id, size, &path, why, sizeof why);
     free(path);
     return text;
 }
 void gui_theme_load(GuiTheme* theme, const char* const* dirs, size_t count, const char* id, char* said,
                     size_t said_size) {
     size_t size = 0;
-    char *path, *text = theme_file(dirs, count, id, &size, &path), problems[1024];
+    char why[512], *path, *text = theme_file(dirs, count, id, &size, &path, why, sizeof why), problems[1024];
     const GuiTheme* builtin = gui_theme_builtin(id);
     const GuiTheme* shown = builtin ? builtin : builtins_read();
     if (said && said_size) said[0] = 0;
@@ -526,6 +565,8 @@ void gui_theme_load(GuiTheme* theme, const char* const* dirs, size_t count, cons
         *theme = *shown;
         if (said && text) /* read, but no memory to parse it */
             snprintf(said, said_size, snx_tr("%s could not be read (out of memory): it shows %s"), path, shown->id);
+        else if (said && why[0]) /* there, and not read */
+            snprintf(said, said_size, snx_tr("%s: it shows %s"), why, shown->id);
         else if (said && !builtin)
             snprintf(said, said_size, snx_tr("No themes/%s/theme.ini could be read: it shows %s"), id, shown->id);
     }
@@ -623,10 +664,18 @@ static int is_word(const char* const* words, const char* w) {
     return 0;
 }
 
+/* a key a theme's writer writes, from the theme or the file's own extras */
+static int theme_writes(void* ctx, const char* section, const char* key) {
+    (void)ctx;
+    return gui_theme_key(section, key) ||
+           (!strcmp(section, "theme") && (!strcmp(key, "format") || !strcmp(key, "base") || !strcmp(key, "layout"))) ||
+           (!strcmp(section, "header") && !strcmp(key, "ring_side")) ||
+           (!strcmp(section, "loading") && !strcmp(key, "title")) ||
+           (!strcmp(section, "colors") && !strcmp(key, "texture"));
+}
 int gui_theme_file_read(GuiThemeFile* file, const char* text, size_t size) {
-    Out others = {NULL, 0, 0, 0};
     SnxIni ini;
-    char *key, *value, last[sizeof ini.section] = "";
+    char *key, *value;
     char* copy_of = malloc(size + 1);
     memset(file, 0, sizeof *file);
     if (!copy_of) return 0;
@@ -645,19 +694,17 @@ int gui_theme_file_read(GuiThemeFile* file, const char* text, size_t size) {
             file->loading_title = 1;
         else if (!strcmp(ini.section, "colors") && !strcmp(key, "texture"))
             file->colors_texture = 1;
-        else if (ini.section[0] && key[0] && !gui_theme_key(ini.section, key) &&
-                 (strcmp(ini.section, "theme") || strcmp(key, "format"))) {
-            if (strcmp(last, ini.section)) put(&others, "[%s]\n", strcpy(last, ini.section));
-            put_key(&others, key, value);
-        }
     }
     free(copy_of);
-    file->others = others.p;
-    return !others.failed;
+    /* the lines of the keys it does not write, as they were: another program's (ErET's) or version's */
+    file->top = snx_config_kept(text, size, 1, theme_writes, NULL);
+    file->others = snx_config_kept(text, size, 0, theme_writes, NULL);
+    return file->top && file->others;
 }
 void gui_theme_file_free(GuiThemeFile* file) {
     free(file->others);
-    file->others = NULL;
+    free(file->top);
+    file->others = file->top = NULL;
 }
 /* the [theme] layout a built-in's file names: ErET's drawing for a theme that starts from it */
 static const char* builtin_layout(const char* id) {
@@ -684,6 +731,7 @@ char* gui_theme_write(const GuiTheme* theme, const GuiThemeFile* file) {
         "; keys this GUI does not know are left for others (rEden's ErET reads the same file). A comment takes a\n"
         "; line of its own. docs/user/gui.md describes every key. Made with the theme editor in ScarletNX's menu.\n",
         GUI_THEME_FORMAT);
+    if (file && file->top && file->top[0]) put(&o, "%s", file->top); /* another's keys of no section, as they were */
     for (s = 0; s < sizeof sections / sizeof *sections; ++s) {
         const char* name = sections[s][0];
         int run_colors = loading && !strcmp(name, "colors");
@@ -729,7 +777,7 @@ char* gui_theme_write(const GuiTheme* theme, const GuiThemeFile* file) {
             put_key(&o, "texture", theme->texture ? "true" : "false");
         }
     }
-    if (file && file->others)
+    if (file && file->others && file->others[0])
         put(&o, "\n; keys this GUI does not read, kept for the programs that do\n%s", file->others);
     if (o.failed) {
         free(o.p);
@@ -746,33 +794,41 @@ typedef char run_progress_same[SNX_RUN_PROGRESS_AMOUNT == GUI_PROGRESS_AMOUNT &&
 static_assert(SNX_RUN_RING_NONE == GUI_RING_NONE && SNX_RUN_RING_LEFT == GUI_RING_LEFT &&
                   SNX_RUN_RING_RIGHT == GUI_RING_RIGHT && SNX_RUN_RING_NEAR_TEXT == GUI_RING_NEAR_TEXT,
               "the runtime reads GuiRing's numbers");
+/* what a run takes of app.ini, as the launcher reads it (src/gui/main.c app_read): its theme, its UI scale (ui_scale,
+   text_size as an older version named it: a number it takes, else 0, its Auto), and the data folder Folders picked, a
+   full path or none */
+typedef struct {
+    char id[64], picked[1024];
+    int text_size;
+} RunApp;
+static void run_app_take(void* ctx, const char* section, const char* key, const char* value, int line) {
+    RunApp* r = (RunApp*)ctx;
+    (void)line;
+    if (!strcmp(section, "app") && !strcmp(key, "theme") && *value)
+        snprintf(r->id, sizeof r->id, "%s", value);
+    else if (!strcmp(section, "app") && (!strcmp(key, "ui_scale") || !strcmp(key, "text_size"))) {
+        char* end;
+        long n = strtol(value, &end, 10);
+        r->text_size = *value && !*end && n >= 1 && n <= GUI_TEXT_MAX ? (int)n : 0;
+    } else if (!strcmp(section, "folders") && !strcmp(key, "data") && snx_path_is_full(value))
+        snprintf(r->picked, sizeof r->picked, "%s", value);
+}
 void gui_run_theme(const char* folder, SnxRunTheme* out) {
     char *config = snx_menu_dir(folder, SNX_USER_CONFIG), *data = snx_menu_dir(folder, SNX_USER_DATA);
     char* app = config ? snx_path_join(config, "app.ini") : NULL;
-    size_t bytes = 0, i;
-    char *text = app ? (char*)snx_read_file(app, &bytes) : NULL, *key, *value, id[64] = "yorha", picked[1024] = "";
+    size_t i;
+    RunApp read = {"yorha", "", 0};
+    char *id = read.id, *picked = read.picked;
     /* the running program's folder: the launcher's own when it started the run, as it runs itself with --game */
     char *self = snx_executable("scarletnx"), *program_dir = self ? snx_dirname(self) : NULL;
     char *beside = program_dir ? snx_path_join(program_dir, "themes") : NULL, *dirs[2] = {NULL, NULL};
     GuiTheme* t = malloc(sizeof *t);
     GuiThemes listed = {0};
-    SnxIni ini;
     *out = (SnxRunTheme){0};
-    /* as the launcher reads app.ini (src/gui/main.c app_read): its theme, its UI scale (ui_scale, text_size as an
-       older version named it: a number it takes, else 0, its Auto), and the data folder Folders picked, a full path
-       or none */
-    if (text) {
-        snx_ini_start(&ini, text);
-        while (snx_ini_next(&ini, &key, &value))
-            if (!strcmp(ini.section, "app") && !strcmp(key, "theme") && *value)
-                snprintf(id, sizeof id, "%s", value);
-            else if (!strcmp(ini.section, "app") && (!strcmp(key, "ui_scale") || !strcmp(key, "text_size"))) {
-                char* end;
-                long n = strtol(value, &end, 10);
-                out->text_size = *value && !*end && n >= 1 && n <= GUI_TEXT_MAX ? (int)n : 0;
-            } else if (!strcmp(ini.section, "folders") && !strcmp(key, "data") && snx_path_is_full(value))
-                snprintf(picked, sizeof picked, "%s", value);
-    }
+    if (app)
+        snx_config_keys(app, run_app_take, &read); /* the launcher names what it does not read; this, one it
+                                                          cannot read */
+    out->text_size = read.text_size;
     /* the launcher's two folders of themes (themes_dirs): its data folder's, then those shipped beside it (main.c
        shipped_themes), which an installed one keeps in ../share/scarletnx/themes. A game's copy of the runtime
        started on its own has none beside it, and finds the data folder's and the built-ins */
@@ -786,7 +842,7 @@ void gui_run_theme(const char* folder, SnxRunTheme* out) {
        the launcher's own until another is picked */
     gui_themes_scan(&listed, (const char* const*)dirs, 2);
     for (i = 0; i < listed.count && strcmp(listed.ids[i], id); ++i) {}
-    if (i == listed.count) snprintf(id, sizeof id, "%s", "yorha");
+    if (i == listed.count) snprintf(read.id, sizeof read.id, "%s", "yorha");
     if (t) {
         gui_theme_load(t, (const char* const*)dirs, 2, id, NULL, 0); /* its problems are the launcher's to say */
         out->page = rgb_word(t->run_colors.page);
@@ -804,7 +860,6 @@ void gui_run_theme(const char* folder, SnxRunTheme* out) {
     }
     gui_themes_free(&listed);
     free(t);
-    free(text);
     free(dirs[0]);
     free(dirs[1]);
     free(program_dir);

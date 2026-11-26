@@ -260,7 +260,7 @@ static u64 fp_recpe(SnxFpEnv* c, u64 bits, int width) {
         c->fpsr |= FPSR_OFC | FPSR_IXC;
         return to_inf ? fp_inf(sign, width) : fp_max_normal(sign, width);
     }
-    if ((c->fpcr & FPCR_FZ) && width != 16 && e >= 2 * bias - 1) { /* the reciprocal underflows */
+    if ((c->fpcr & (width == 16 ? FPCR_FZ16 : FPCR_FZ)) && e >= 2 * bias - 1) { /* the reciprocal underflows */
         c->fpsr |= FPSR_UFC;
         return fp_zero(sign, width);
     }

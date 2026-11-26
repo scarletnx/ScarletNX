@@ -7,64 +7,47 @@ if(NOT SNX_BUILD_NX AND NOT SNX_BUILD_GNUABI)
     include("${PROJECT_SOURCE_DIR}/cmake/llvm.cmake")
     add_subdirectory("${PROJECT_SOURCE_DIR}/src/common/cpu/arm" arm-aot-backend)
 endif()
+# snx_arm_checked(<name> <emitter> <argument>): arm_checked.c linked with the blocks' object the emitter makes, given
+# the argument, as snx-test-arm-checked-<name> and its test arm_checked_static_<name>
+function(snx_arm_checked name emitter argument)
+    set(generated "${CMAKE_CURRENT_BINARY_DIR}/arm-checked-${name}")
+    set(object "${generated}/blocks${CMAKE_C_OUTPUT_EXTENSION}")
+    file(MAKE_DIRECTORY "${generated}")
+    add_custom_command(OUTPUT "${object}" "${generated}/arm-checked-counts.inc"
+        COMMAND ${emitter} "${object}" "${generated}/arm-checked-counts.inc" ${argument}
+        DEPENDS ${emitter} arm_checked_cases.h VERBATIM)
+    set_source_files_properties("${object}" PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
+    add_executable(snx-test-arm-checked-${name} arm_checked.c "${object}" "${generated}/arm-checked-counts.inc")
+    snx_test_target(snx-test-arm-checked-${name} gnu23)
+    target_compile_options(snx-test-arm-checked-${name} PRIVATE -UNDEBUG)
+    target_include_directories(snx-test-arm-checked-${name} PRIVATE "${generated}")
+    target_link_libraries(snx-test-arm-checked-${name} PRIVATE snx_ctr_cpu snx_arm_rt)
+    add_test(NAME arm_checked_static_${name} COMMAND snx-test-arm-checked-${name})
+endfunction()
+# the host's native back end's blocks, with all the host registers and with few of them, so that values spill (three,
+# four of x86-64's on Windows)
 add_executable(snx-test-arm-checked-emit arm_checked_emit.c)
 snx_test_target(snx-test-arm-checked-emit gnu23)
-target_link_libraries(snx-test-arm-checked-emit PRIVATE snx_arm_llvm)
-foreach(opt 0 2)
-    set(object "${CMAKE_CURRENT_BINARY_DIR}/arm-checked-O${opt}${CMAKE_C_OUTPUT_EXTENSION}")
-    add_custom_command(OUTPUT "${object}"
-        COMMAND $<TARGET_FILE:snx-test-arm-checked-emit> "${object}" "${opt}"
-        DEPENDS snx-test-arm-checked-emit arm_checked_cases.h VERBATIM)
-    set_source_files_properties("${object}" PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
-    add_executable(snx-test-arm-checked-O${opt} arm_checked.c "${object}")
-    snx_test_target(snx-test-arm-checked-O${opt} gnu23)
-    target_compile_options(snx-test-arm-checked-O${opt} PRIVATE -UNDEBUG)
-    target_link_libraries(snx-test-arm-checked-O${opt} PRIVATE snx_ctr_cpu snx_arm_rt)
-    add_test(NAME arm_checked_static_O${opt} COMMAND snx-test-arm-checked-O${opt})
-endforeach()
+target_include_directories(snx-test-arm-checked-emit PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(snx-test-arm-checked-emit PRIVATE snx_llvm)
+snx_arm_checked(all snx-test-arm-checked-emit 0)
+if(WIN32)
+    snx_arm_checked(spill snx-test-arm-checked-emit 4)
+else()
+    snx_arm_checked(spill snx-test-arm-checked-emit 3)
+endif()
+# LLVM's blocks of the same cases, at -O0 and -O2, until LLVM leaves: its verifier before and after the passes, the
+# options it refuses, and a hosted block's noalias cpu (arm_checked_llvm.c)
+add_executable(snx-test-arm-checked-llvm arm_checked_llvm.c)
+snx_test_target(snx-test-arm-checked-llvm gnu23)
+target_link_libraries(snx-test-arm-checked-llvm PRIVATE snx_arm_llvm)
+snx_arm_checked(O0 snx-test-arm-checked-llvm 0)
+snx_arm_checked(O2 snx-test-arm-checked-llvm 2)
 # Exercise the unchanged A57 entry points without configuring the NX runtime.
 if(NOT SNX_BUILD_NX AND NOT SNX_BUILD_GNUABI)
-    add_executable(snx-test-arm-emit arm_emit.c)
-    snx_test_target(snx-test-arm-emit gnu23)
-    target_link_libraries(snx-test-arm-emit PRIVATE snx_arm_llvm)
-    add_executable(snx-test-thumb-emit thumb_emit.c)
-    snx_test_target(snx-test-thumb-emit gnu23)
-    target_link_libraries(snx-test-thumb-emit PRIVATE snx_arm_llvm)
     add_executable(snx-test-arm-decode arm_decode.c)
     snx_test_target(snx-test-arm-decode gnu23)
     target_link_libraries(snx-test-arm-decode PRIVATE snx_arm_llvm)
     add_test(NAME arm_decode COMMAND snx-test-arm-decode)
-    if(Python3_Interpreter_FOUND AND UNIX)
-        add_test(NAME arm_llvm_witnesses COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/arm_test.py"
-            --emitter $<TARGET_FILE:snx-test-arm-emit> --runtime $<TARGET_FILE:snx_arm_rt> --cc "${CMAKE_C_COMPILER}")
-        add_test(NAME arm7tdmi_witnesses COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/arm7tdmi_test.py"
-            --arm-emitter $<TARGET_FILE:snx-test-arm-emit> --thumb-emitter $<TARGET_FILE:snx-test-thumb-emit>
-            --runtime $<TARGET_FILE:snx_arm_rt> --cc "${CMAKE_C_COMPILER}")
-        add_test(NAME arm_checked_matrix COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/arm_checked_matrix.py"
-            --emitter $<TARGET_FILE:snx-test-arm-emit> --runtime $<TARGET_FILE:snx_arm_rt> --cc "${CMAKE_C_COMPILER}")
-        set_tests_properties(arm_checked_matrix PROPERTIES TIMEOUT 300)
-        option(SNX_TEST_ARM_DIFF "Compare A32 LLVM execution with Python unicorn 2.1.4" OFF)
-        if(SNX_TEST_ARM_DIFF)
-            add_test(NAME arm_llvm_differential COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/arm_test.py"
-                --emitter $<TARGET_FILE:snx-test-arm-emit> --runtime $<TARGET_FILE:snx_arm_rt> --cc "${CMAKE_C_COMPILER}" --unicorn)
-            add_test(NAME arm11_llvm_differential COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/arm11_test.py"
-                --emitter $<TARGET_FILE:snx-test-arm-emit> --runtime $<TARGET_FILE:snx_arm_rt> --cc "${CMAKE_C_COMPILER}")
-            set_tests_properties(arm_llvm_differential arm11_llvm_differential PROPERTIES TIMEOUT 900)
-            get_filename_component(snx_llvm_config_real "${SNX_LLVM_CONFIG}" REALPATH)
-            get_filename_component(snx_llvm_bin "${snx_llvm_config_real}" DIRECTORY)
-            find_program(SNX_LLVM_MC llvm-mc HINTS "${snx_llvm_bin}" NO_DEFAULT_PATH)
-            if(SNX_LLVM_MC)
-                add_test(NAME arm11_vfp_differential COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/arm11_vfp.py"
-                    --emitter $<TARGET_FILE:snx-test-arm-emit> --runtime $<TARGET_FILE:snx_arm_rt>
-                    --mc "${SNX_LLVM_MC}" --cc "${CMAKE_C_COMPILER}")
-                set_tests_properties(arm11_vfp_differential PROPERTIES TIMEOUT 900)
-                add_test(NAME arm_llvm_vector COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/arm_vector_test.py"
-                    --emitter $<TARGET_FILE:snx-test-arm-emit> --runtime $<TARGET_FILE:snx_arm_rt>
-                    --mc "${SNX_LLVM_MC}" --cc "${CMAKE_C_COMPILER}")
-                add_test(NAME thumb_llvm COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/thumb_test.py"
-                    --emitter $<TARGET_FILE:snx-test-thumb-emit> --runtime $<TARGET_FILE:snx_arm_rt> --mc "${SNX_LLVM_MC}" --cc "${CMAKE_C_COMPILER}")
-                set_tests_properties(arm_llvm_vector thumb_llvm PROPERTIES TIMEOUT 1800)
-            endif()
-        endif()
-    endif()
+    include(arm_blocks.cmake)
 endif()

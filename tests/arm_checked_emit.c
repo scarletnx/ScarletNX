@@ -1,118 +1,89 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* Build-time static object generation only. No execution engine or MCJIT. */
-#include "common/cpu/arm/llvm.h"
+/* The object of arm_checked.c's blocks, made at build time by the host's native back end for its linker: no execution
+   engine.
+     snx-test-arm-checked-emit OBJECT COUNTS POOL
+   COUNTS gets the words or halfwords each covers, an initializer. POOL is the host registers their values are in (0:
+   all of them), so that they spill */
+#include "common/cpu/arm/codegen.h"
 #include "arm_checked_cases.h"
-#include <llvm-c/Analysis.h>
-#include <llvm-c/Error.h>
-#include <llvm-c/Target.h>
-#include <llvm-c/TargetMachine.h>
-#include <llvm-c/Transforms/PassBuilder.h>
+#include "support/arm_back.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
-int main(int argc, char** argv) {
-    char *triple, *error = NULL;
-    LLVMTargetRef target;
-    if (argc != 3 || LLVMInitializeNativeTarget() || LLVMInitializeNativeAsmPrinter()) return 2;
-    LLVMContextRef ctx = LLVMContextCreate();
-    LLVMModuleRef mod = LLVMModuleCreateWithNameInContext("arm-checked-aot", ctx);
-    triple = LLVMGetDefaultTargetTriple();
-    if (LLVMGetTargetFromTriple(triple, &target, &error)) goto fail;
-    LLVMTargetMachineRef tm = LLVMCreateTargetMachine(target, triple, "generic", "", LLVMCodeGenLevelDefault,
-                                                      LLVMRelocPIC, LLVMCodeModelDefault);
-    LLVMTargetDataRef layout = LLVMCreateTargetDataLayout(tm);
-    LLVMSetTarget(mod, triple);
-    LLVMSetModuleDataLayout(mod, layout);
-    LLVMValueRef functions[F_count], counts[F_count];
-    for (unsigned i = 0; i < F_count; ++i) {
-        const ArmFixture* f = &arm_fixtures[i];
-        SnxArmCodegenOptions o = {SNX_ARM_CODEGEN_OPTIONS_ABI, (SnxArmProfile)f->profile,
-                                  f->checked ? SNX_ARM_MEMORY_CHECKED : SNX_ARM_MEMORY_FLAT, 0, 0};
-        char name[80];
-        snprintf(name, sizeof name, "snx_fixture_%s", f->name);
-        size_t consumed = 0;
-        if (f->thumb) {
-            uint16_t code[8];
-            for (size_t n = 0; n < f->count; ++n) code[n] = (uint16_t)f->code[n];
-            functions[i] = snx_thumb_llvm_block_ex(mod, name, code, f->count, f->pc, &consumed, &o);
-        } else if (!f->checked && !f->profile) {
-            functions[i] = snx_arm_llvm_block(mod, name, f->code, f->count, f->pc, &consumed);
-        } else
-            functions[i] = snx_arm_llvm_block_ex(mod, name, f->code, f->count, f->pc, &consumed, &o);
-        if (!functions[i] || !consumed) {
-            fprintf(stderr, "emit failed: %s\n", f->name);
-            return 1;
-        }
-        counts[i] = LLVMConstInt(LLVMInt32TypeInContext(ctx), consumed, 0);
+/* the object's block of code, guest memory's bytes: its units, 0 where it was not made (said) */
+static size_t emit(Back* back, const char* name, int thumb, const uint32_t* units, size_t n, uint32_t pc,
+                   const SnxArmCodegenOptions* options) {
+    unsigned char code[4 * 8];
+    unsigned width = thumb ? 2 : 4;
+    size_t consumed = 0;
+    for (size_t k = 0; k < n; ++k)
+        for (unsigned byte = 0; byte < width; ++byte) code[k * width + byte] = (unsigned char)(units[k] >> 8 * byte);
+    if (back_(options)(back, options) ||
+        !(thumb ? back_(thumb_block)(back, name, code, n, pc, &consumed, NULL, NULL)
+                : back_(block)(back, name, code, n, pc, &consumed, NULL, NULL)) ||
+        !consumed) {
+        fprintf(stderr, "emit failed: %s: %s\n", name, back_(why)(back));
+        return 0;
     }
-    LLVMTypeRef pointers = LLVMArrayType(LLVMPointerTypeInContext(ctx, 0), F_count);
-    LLVMValueRef table = LLVMAddGlobal(mod, pointers, "snx_test_blocks");
-    LLVMSetInitializer(table, LLVMConstArray(LLVMPointerTypeInContext(ctx, 0), functions, F_count));
-    LLVMSetGlobalConstant(table, 1);
-    table = LLVMAddGlobal(mod, LLVMArrayType(LLVMInt32TypeInContext(ctx), F_count), "snx_test_consumed");
-    LLVMSetInitializer(table, LLVMConstArray(LLVMInt32TypeInContext(ctx), counts, F_count));
-    LLVMSetGlobalConstant(table, 1);
-    /* Rejected options must not leave a partially emitted function behind: a bad ABI, profile or memory mode, and bus
-       cycles counted by a profile other than the ARM7TDMI, into one place only, or into the table itself */
+    return consumed;
+}
+
+int main(int argc, char** argv) {
+    size_t counts[F_count], size = 0, blocks = 0;
+    unsigned char* object = NULL;
+    FILE* f;
+    if (argc != 4) return 2;
+    back_begin();
+    Back* back = back_(new)();
+    if (!back) {
+        fprintf(stderr, "no " BACK_NAME " back end\n");
+        return 1;
+    }
+    back_(limit)(back, (int)strtol(argv[3], NULL, 10), ~0u);
+    for (unsigned i = 0; i < F_count; ++i) {
+        const ArmFixture* fixture = &arm_fixtures[i];
+        SnxArmCodegenOptions o = {SNX_ARM_CODEGEN_OPTIONS_ABI, (SnxArmProfile)fixture->profile,
+                                  fixture->checked ? SNX_ARM_MEMORY_CHECKED : SNX_ARM_MEMORY_FLAT, 0, 0};
+        char name[80];
+        snprintf(name, sizeof name, "snx_fx_%s", fixture->name);
+        counts[i] = emit(back, name, fixture->thumb, fixture->code, fixture->count, fixture->pc,
+                         fixture->checked || fixture->profile ? &o : NULL);
+        if (!counts[i]) return 1;
+    }
+    /* Rejected options: a bad ABI, profile or memory mode, and bus cycles counted by a profile other than the ARM7TDMI,
+       into one place only, or into the table itself; and the AGB's ARM7TDMI hosted. None of them leaves a block, and
+       the compiler's own options are as they were */
     SnxArmCodegenOptions bad[] = {{99, 0, 0, 0, 0},
                                   {1, 99, 0, 0, 0},
                                   {1, 0, 99, 0, 0},
                                   {1, SNX_ARM_PROFILE_A57, SNX_ARM_MEMORY_FLAT, 1024, 1032},
                                   {1, SNX_ARM_PROFILE_ARM7TDMI, SNX_ARM_MEMORY_FLAT, 1024, 0},
-                                  {1, SNX_ARM_PROFILE_ARM7TDMI, SNX_ARM_MEMORY_FLAT, 1024, 1024}};
-    for (size_t i = 0; i < sizeof bad / sizeof *bad; ++i) {
-        size_t n = 123;
-        uint32_t arm = 0xe1a00000;
-        uint16_t thumb = 0x46c0;
-        if (snx_arm_llvm_block_ex(mod, "bad_arm", &arm, 1, 0, &n, &bad[i]) || n || LLVMGetNamedFunction(mod, "bad_arm"))
+                                  {1, SNX_ARM_PROFILE_ARM7TDMI, SNX_ARM_MEMORY_FLAT, 1024, 1024},
+                                  {1, SNX_ARM_PROFILE_ARM7TDMI, SNX_ARM_MEMORY_HOSTED, 0, 0}};
+    for (size_t i = 0; i < sizeof bad / sizeof *bad; ++i)
+        if (!back_(options)(back, &bad[i])) {
+            fprintf(stderr, "options %zu of the bad ones taken\n", i);
             return 1;
-        n = 123;
-        if (snx_thumb_llvm_block_ex(mod, "bad_thumb", &thumb, 1, 0, &n, &bad[i]) || n ||
-            LLVMGetNamedFunction(mod, "bad_thumb"))
-            return 1;
-    }
-    /* A hosted block has a noalias cpu and no entry checks, and SETEND BE stops it. The AGB's ARM7TDMI is not hosted. */
-    {
-        SnxArmCodegenOptions hosted = {SNX_ARM_CODEGEN_OPTIONS_ABI, SNX_ARM_PROFILE_A9, SNX_ARM_MEMORY_HOSTED, 0, 0};
-        SnxArmCodegenOptions agb = {SNX_ARM_CODEGEN_OPTIONS_ABI, SNX_ARM_PROFILE_ARM7TDMI, SNX_ARM_MEMORY_HOSTED, 0, 0};
-        uint32_t arm[2] = {0xe1a00000, 0xf1010200};
-        uint16_t thumb[2] = {0x46c0, 0x46c0};
-        size_t n = 0;
-        LLVMValueRef a = snx_arm_llvm_block_ex(mod, "hosted_arm", arm, 2, 0x1000, &n, &hosted);
-        LLVMValueRef t = snx_thumb_llvm_block_ex(mod, "hosted_thumb", thumb, 2, 0x2000, &n, &hosted);
-        unsigned noalias = LLVMGetEnumAttributeKindForName("noalias", 7);
-        if (!a || !t || !LLVMGetEnumAttributeAtIndex(a, 1 /* first parameter */, noalias) ||
-            !LLVMGetEnumAttributeAtIndex(t, 1 /* first parameter */, noalias))
-            return 1;
-        n = 123;
-        if (snx_arm_llvm_block_ex(mod, "hosted_agb", arm, 1, 0, &n, &agb) || n || LLVMGetNamedFunction(mod, "hosted_agb"))
-            return 1;
-    }
-    if (LLVMVerifyModule(mod, LLVMReturnStatusAction, &error)) goto fail;
-    LLVMDisposeMessage(error);
-    error = NULL;
-    LLVMPassBuilderOptionsRef options = LLVMCreatePassBuilderOptions();
-    LLVMErrorRef err = LLVMRunPasses(mod, !strcmp(argv[2], "0") ? "default<O0>" : "default<O2>", tm, options);
-    LLVMDisposePassBuilderOptions(options);
-    if (err) {
-        char* message = LLVMGetErrorMessage(err);
-        fprintf(stderr, "%s\n", message);
-        LLVMDisposeErrorMessage(message);
+        }
+    /* a hosted block has no entry checks, and SETEND BE stops it (arm_checked.c runs them) */
+    SnxArmCodegenOptions hosted = {SNX_ARM_CODEGEN_OPTIONS_ABI, SNX_ARM_PROFILE_A9, SNX_ARM_MEMORY_HOSTED, 0, 0};
+    uint32_t arm[2] = {0xe1a00000, 0xf1010200}, thumb[2] = {0x46c0, 0x46c0};
+    if (!emit(back, "snx_hosted_arm", 0, arm, 2, 0x1000, &hosted) ||
+        !emit(back, "snx_hosted_thumb", 1, thumb, 2, 0x2000, &hosted))
+        return 1;
+    if (back_(object)(back, &object, &size, &blocks) || blocks != F_count + 2) {
+        fprintf(stderr, "the object has %zu blocks, not the %u made\n", blocks, F_count + 2);
         return 1;
     }
-    if (LLVMVerifyModule(mod, LLVMReturnStatusAction, &error)) goto fail;
-    LLVMDisposeMessage(error);
-    error = NULL;
-    if (LLVMTargetMachineEmitToFile(tm, mod, argv[1], LLVMObjectFile, &error)) goto fail;
-    LLVMDisposeTargetData(layout);
-    LLVMDisposeTargetMachine(tm);
-    LLVMDisposeMessage(triple);
-    LLVMDisposeModule(mod);
-    LLVMContextDispose(ctx);
+    f = fopen(argv[1], "wb");
+    if (!f || fwrite(object, 1, size, f) != size || fclose(f)) return 1;
+    f = fopen(argv[2], "w");
+    if (!f) return 1;
+    for (unsigned i = 0; i < F_count; ++i) fprintf(f, "%zu,\n", counts[i]);
+    if (fclose(f)) return 1;
+    free(object);
+    back_(free)(back);
     return 0;
-fail:
-    fprintf(stderr, "%s\n", error ? error : "LLVM error");
-    LLVMDisposeMessage(error);
-    return 1;
 }

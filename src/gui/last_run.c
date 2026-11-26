@@ -2,6 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 #include "gui/last_run.h"
 #include "common/utilities/common.h"
+#include "common/utilities/config_file.h"
 #include "common/utilities/ini_lines.h"
 #include "common/platform/file.h"
 #include <errno.h>
@@ -17,7 +18,7 @@ char* gui_last_run_path(const char* run_log) {
 /* a value as the record keeps it: a line, with no line break of its own */
 static int one_line(const char* value) { return !value || !strpbrk(value, "\r\n"); }
 int gui_last_run_write(const char* path, const GuiLastRun* run, char* why, size_t size) {
-    char reason[256], *fresh, *text;
+    char* text;
     int failed;
     if (!one_line(run->program) || !one_line(run->name) || !one_line(run->probe)) {
         snprintf(why, size, "%s is not written: a path or a name of the run holds a line break", path);
@@ -33,59 +34,77 @@ int gui_last_run_write(const char* path, const GuiLastRun* run, char* why, size_
         free(text);
         text = more;
     }
-    fresh = snx_format("%s.new", path);
-    failed = snx_write_file(fresh, text, strlen(text));
-    if (failed)
-        snprintf(why, size, "%s cannot be written (%s)", fresh, snx_os_error(reason, sizeof reason));
-    else if (plat_replace_file(fresh, path)) {
-        failed = 1;
-        snprintf(why, size, "%s cannot be named %s (%s)", fresh, path, snx_os_error(reason, sizeof reason));
-        remove(fresh);
-    }
-    free(fresh);
+    failed = snx_config_write(path, ".new", text, strlen(text), why, size); /* beside it; never over one not read */
     free(text);
     return failed ? -1 : 0;
 }
+static void record_left(void* ctx, int line, const char* text, const char* does) {
+    (void)text;
+    (void)does;
+    snx_config_other_line((SnxConfigOthers*)ctx, line);
+}
 int gui_last_run_take(const char* path, GuiLastRun* run, char* why, size_t size) {
-    char reason[256], *text, *key, *value;
+    static const char* const keys[] = {"started", "name", "program", "probe", "cases", "launch"};
+    char reason[256], *text, *key, *value, *given = NULL;
+    const char* was[6] = {0};
+    int line[6] = {0}, k;
     size_t bytes = 0;
     int started = 0;
     SnxIni ini;
+    SnxConfigOthers others = {0};
     memset(run, 0, sizeof *run);
     run->cases = -1;
+    if (size) why[0] = 0;
     if (!snx_path_exists(path)) return 0;
-    text = (char*)snx_read_file(path, &bytes);
-    if (!text) {
-        snprintf(why, size, "%s cannot be read (%s)", path, snx_os_error(reason, sizeof reason));
-        return -1;
-    }
+    if (snx_config_read(path, &text, &bytes, why, size) < 0) return -1;
     snx_ini_start(&ini, text);
+    ini.left = record_left;
+    ini.ctx = &others;
     while (snx_ini_next(&ini, &key, &value)) {
-        if (!strcmp(key, "started")) {
+        for (k = 0; k < 6 && strcmp(key, keys[k]); ++k) {}
+        if (k == 6) { /* another version's: named, never by its value */
+            snx_config_other_key(&others, ini.section, key, ini.line);
+            continue;
+        }
+        if (line[k]) snx_config_twice(&others, "", key, was[k], line[k], value, ini.line); /* the last is taken */
+        line[k] = ini.line;
+        was[k] = value;
+        if (k == 0) {
             char* end = NULL;
+            given = value;
             run->started = strtoll(value, &end, 10);
             started = end && end != value && !*end && run->started > 0;
-        } else if (!strcmp(key, "name"))
+        } else if (k == 1) {
+            free(run->name);
             run->name = snx_strdup(value);
-        else if (!strcmp(key, "program"))
+        } else if (k == 2) {
+            free(run->program);
             run->program = snx_strdup(value);
-        else if (!strcmp(key, "probe"))
+        } else if (k == 3) {
+            free(run->probe);
             run->probe = snx_strdup(value);
-        else if (!strcmp(key, "cases"))
+        } else if (k == 4)
             run->cases = atoi(value);
-        else if (!strcmp(key, "launch"))
+        else
             run->launch = atoi(value);
     }
-    free(text);
     if (remove(path)) {
         snprintf(why, size, "%s cannot be deleted (%s): the next start says this run again", path,
                  snx_os_error(reason, sizeof reason));
+        free(text);
         return -1;
     }
     if (!started) {
-        snprintf(why, size, "%s holds no started = with the run's start in seconds since 1970", path);
+        if (given)
+            snprintf(why, size, "%s: started = %s is not the run's start in seconds since 1970: no run is said", path,
+                     given);
+        else
+            snprintf(why, size, "%s holds no started = with the run's start in seconds since 1970", path);
+        free(text);
         return -1;
     }
+    snx_config_others_said(&others, path, why, size); /* what it does not read, once a run: the caller logs it */
+    free(text);
     return 1;
 }
 void gui_last_run_free(GuiLastRun* run) {

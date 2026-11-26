@@ -18,8 +18,8 @@ typedef SnxNativeOptions SnxX64Options;
 /* 1 where this host runs the x86-64 back end's code and its objects load (x86-64) */
 int snx_x64_available(void);
 /* the host's processor features the back end's forms may need (sailgen's SGX_F_*: CPUID's BMI1, BMI2, LZCNT, the SSE
-   levels, PCLMULQDQ, POPCNT, and AVX, FMA and F16C where the system keeps the YMM state), and SGX_F_WIN64 where the code
-   is Windows'; 0 where unavailable */
+   levels, PCLMULQDQ, POPCNT, AES-NI, SHA-NI, GFNI, and AVX, AVX2, FMA and F16C where the system keeps the YMM
+   state), and SGX_F_WIN64 where the code is Windows'; 0 where unavailable */
 unsigned snx_x64_features(void);
 /* 1 where the code is made for Windows: its calling convention, in COFF objects */
 int snx_x64_win64(void);

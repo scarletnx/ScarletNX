@@ -101,7 +101,7 @@ itself.
   jump is safe, and `ppc_tail_calls` in `src/common/cpu/recompiler/llvm/ir.c` sends those calls to a naked stub of the
   same module that branches on. A pointer's stub that misses calls `RtAPI.miss` from a frame of its own and keeps r2
   in that frame: r1 may still be the runtime's frame that called into the module, whose saved TOC it reloads.
-- **The linker** (`src/common/cpu/recompiler/llvm/link_elf.c`, with the relocations in `elf_object.c`) handles the
+- **The linker** (`src/common/cpu/recompiler/object/link_elf.c`, with the relocations in `elf_object.c`) handles the
   TOC relocations, ELFv2's local entry points, ELFv1's `.opd` descriptors, and 16-byte stubs for a call past `bl`'s
   32 MiB.
 - **One TOC for the Linux runtime's code.** Its just-in-time steps are loaded into one code arena

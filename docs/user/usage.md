@@ -735,8 +735,9 @@ nickname=Xuji
 ```
 
 `uid`, `nickname`, `user_data`, `mii` and `picture` are the keys: `user_data` is the profile's UserData a program stored
-(its icon, colour and Mii), 256 hex digits, empty or left out for zeros; any other key, a section out of order or twice,
-or a line that is no key stops the game and says why. `mii` is the user's Mii, one of the Mii database's by its name:
+(its icon, colour and Mii), 256 hex digits, empty or left out for zeros; a `[userN]` out of order or twice, or a uid or
+nickname the account service would not keep, stops the game and says why; another key, section or line stays and is
+named ([Settings](settings.md#how-a-settings-file-is-read)). `mii` is the user's Mii, one of the Mii database's by its name:
 `Baguette` (the default), `Leek Girl`, `Phone Girl`, `Alex`, `Sam`, `Kai`, `Robin`, `Jamie`, `Taylor`, `Morgan` or
 `Riley`, as written. A game that takes the database's first Mii as the player's takes it. `picture` is `mii`, the
 user's picture drawn from that Mii, or `file`, `users/<uid>.jpg`; without the key it is `file`, so a user with no
@@ -819,7 +820,8 @@ written, so a data folder with no users.ini plays as `Player`, uid `0123456789ab
 
 ## Playing
 
-Every setting of the game's `.ini`, with its default and what it does: [Settings](settings.md).
+Every setting of the game's `.ini`, with its default and what it does: [Settings](settings.md). The launcher's Settings
+find one by its words: Ctrl+F, a pad's Y, or the Search row over its groups ([GUI](gui.md)).
 
 A gamepad's motion sensors, a Joy-Con's among them, go to the game when SDL exposes them. No setting turns them off.
 
@@ -902,8 +904,10 @@ pad.
 | Q / E / 1 / 3 | L / R / ZL / ZR |
 | Enter / Backspace | Plus / Minus |
 
-F1 a page of the game's menu with these keys and the buttons above, a row each (Up/Down go over it, any other key goes
-back to the game); F2 the game's menu; F3 screenshot; F4 FPS limit off and on; F5 thread dump; F6 showcase on and off;
+F1 a page of the game's menu with these keys and the buttons above, a row each in focus as the menu's rows are, where
+the focus is among them under them (`2 / 27`): Enter on a key of the runtime's waits for its new key on the
+**Shortcuts** page, on its row; the game's buttons, in the soft colour, take nothing; ESC, F1 again, or a key or a
+button of no use there goes back to the game; F2 the game's menu; F3 screenshot; F4 FPS limit off and on; F5 thread dump; F6 showcase on and off;
 F7 save state; F8 load state; F9 next save state slot; F10 Tracy capture for `tracy_capture_seconds` (60 s by
 default, SNX_TRACY builds); F11/Alt+Enter fullscreen; F12 stats on and off; Ctrl+Shift+F12 a RenderDoc capture of the
 next frame, with RenderDoc in the game (`renderdoc`, or a game RenderDoc's program started), as the game's menu's
@@ -926,7 +930,9 @@ the selected slot and F8 loads it, and F9 selects the next slot and says what it
 page lists the slots with the date, the play time and a picture of each, and saves, loads and deletes them. A load,
 a delete and a save over a state ask first (F7 does not: it saves at once, saying `Saved over slot 2` when the
 slot held one); Delete and that Save are in the failure colour, Load in the warning colour, and the menu's Exit,
-which ends the game, in the failure colour and asked first. The game waits while the page is open. Before a load the game is saved to the auto slot,
+which ends the game, in the failure colour and asked first. The game waits while the page is open. Its last rows,
+**Record input** and **Play input**, record player 1's buttons into a slot and play them back: Left and Right choose
+the slot, shown as a list's value (`< Slot 3 >`), and Enter takes it, a recording over another asked first. Before a load the game is saved to the auto slot,
 listed first, so a load can be undone (`state_auto_backup`). The game's own save files are never part of a state,
 and loading one leaves them as they are. A state loads only into the game, update and mods it was saved with. A newer
 ScarletNX loads it too, unless it changed the recompiled code (`SNX_ABI`) or the layout of what a state holds, and
@@ -939,7 +945,9 @@ can't load is shown in the failure colour, and Enter on it says why. `--state-lo
 state FILE the same way.
 
 In the game's menu the arrows, Enter and Escape move, select and go back; a gamepad's D-pad or left stick, A and B
-do the same, and a direction held goes on after a moment. The on-screen controls hide while the menu is open, so the
+do the same, and a direction held goes on after a moment. The mouse over a row puts it in focus. Each page's keys are
+in its foot, a band under its rows (*Enter select  Esc back*, a pad's A and B by their names, a finger's Tap and
+Back), each a tap that does what its key does. The on-screen controls hide while the menu is open, so the
 two never lie over each other: a finger taps its rows, and the controls come back as it closes. **TV mode** steps On, Off and
 Auto, Left and Right either way, once a press: each step docks or undocks the console under the game. **Volume** is the
 game's sound on a slider ([`volume`](settings.md#audio)), 100% at first: Left and Right step it 5% either way, held
@@ -954,8 +962,8 @@ the launcher's Settings say it, kept in the game's own picks as Volume is. A row
 *(next start)* and shows the value it starts with next; a number with no words steps a quarter (a twentieth within a
 range of 2), a word round its words, and a text with no words (a folder, a name) is only shown here: the launcher's
 Settings type it. **Clean Old Settings** shows while the game's `.ini` keeps keys
-under `[Deprecated]` or its own picks keys no setting takes ([Deprecations](deprecations.md)): asked first, with how
-many, Cancel in focus, it takes them out of both files at once, the log naming each with its value.
+under `[Deprecated]` or its own picks keys an older version wrote ([Deprecations](deprecations.md)): asked first, with
+how many, Cancel in focus, it takes them out of both files at once, the log naming each with its value.
 
 A game that asks for text (a name, a password, a search) shows a box over the game, in the menu's look and the same
 on every platform: the game's own words for it, the line with the text the game started it with, and how many

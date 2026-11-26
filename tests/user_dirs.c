@@ -270,6 +270,13 @@ int main(void) {
                               dir[SNX_USER_CACHE]);
         assert(g_test.says == 1 && !strcmp(g_test.said, expected));
         free(expected);
+        /* once a run for each file and value: another value in the same file is said too */
+        write_text(ini, "[folders]\ncache = other/caches\n");
+        expect_menu(NULL, SNX_USER_CACHE, dir[SNX_USER_CACHE]);
+        expected = snx_format("%s: [folders] cache = other/caches is not a full path: the caches go in %s", ini,
+                              dir[SNX_USER_CACHE]);
+        assert(g_test.says == 2 && !strcmp(g_test.said, expected));
+        free(expected);
         snx_error_sink(NULL);
         /* the last one, as the launcher reads it */
         text = snx_format("[folders]\nstate = /an older pick\nstate = %s\n", logs);
@@ -295,6 +302,21 @@ int main(void) {
             free(expected);
             free(path);
             expect_menu(NULL, SNX_USER_CACHE, dir[SNX_USER_CACHE]); /* the user's own: none picked */
+            /* the copy's wrong value, which the user's app.ini already gave: said, once for each file */
+            snx_error_sink(error_line);
+            g_test.says = 0;
+            write_text(own_ini, "[folders]\ncache = relative/caches\n");
+            path = join(copy, "games/Game");
+            fallback = snx_app_kind_default(copy, SNX_USER_CACHE);
+            expect_menu(path, SNX_USER_CACHE, fallback);
+            expected = snx_format("%s: [folders] cache = relative/caches is not a full path: the caches go in %s",
+                                  own_ini, fallback);
+            if (strcmp(g_test.said, expected)) fprintf(stderr, "said: %s\nnot:  %s\n", g_test.said, expected);
+            assert(g_test.says == 1 && !strcmp(g_test.said, expected));
+            free(expected);
+            free(fallback);
+            free(path);
+            snx_error_sink(NULL);
             assert(!remove(own_ini));
             free(own_ini);
             free(own);

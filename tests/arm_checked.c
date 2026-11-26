@@ -6,8 +6,16 @@
 #include <stdio.h>
 #include <string.h>
 
-extern SnxArmBlock const snx_test_blocks[F_count];
-extern uint32_t const snx_test_consumed[F_count];
+/* the blocks arm_checked_emit made, the object linked with this */
+#define FIXTURE_FUNCTION(id, t, p, m, pc, ...) void snx_fx_##id(SnxArmCPU* cpu);
+#define FIXTURE_ADDRESS(id, t, p, m, pc, ...)  snx_fx_##id,
+ARM_CHECKED_CASES(FIXTURE_FUNCTION)
+static SnxArmBlock const snx_test_blocks[F_count] = {ARM_CHECKED_CASES(FIXTURE_ADDRESS)};
+void snx_hosted_arm(SnxArmCPU* cpu);
+void snx_hosted_thumb(SnxArmCPU* cpu);
+static uint32_t const snx_test_consumed[F_count] = {
+#include "arm-checked-counts.inc"
+};
 static SnxCtrMemory* memory;
 static SnxCtrAddressSpace* space;
 static SnxCtrCpu ctr;
@@ -70,8 +78,11 @@ static SnxArmCPU* start(unsigned id) {
     io_reads = io_writes = 0;
     return c;
 }
+/* a block is generated code, with no type signature before its entry, which the function sanitizer's check of an
+   indirect call reads: the call is unchecked, as exec.c's run_block */
+[[clang::no_sanitize("function")]] static void call(SnxArmBlock block, SnxArmCPU* cpu) { block(cpu); }
 static void run(unsigned id, SnxArmExit exit) {
-    snx_test_blocks[id](&ctr.state.cpu);
+    call(snx_test_blocks[id], &ctr.state.cpu);
     if (ctr.state.cpu.exit != (uint32_t)exit) {
         fprintf(stderr, "%s: exit %u expected %u, pc=%08x syndrome=%08x\n", arm_fixtures[id].name, ctr.state.cpu.exit,
                 exit, ctr.state.cpu.r[15], ctr.state.cpu.syndrome);
@@ -246,7 +257,7 @@ int main(void) {
     assert(snx_ctr_cpu_init(&peer, space, 0x1000, 0x6000, false));
     peer.state.cpu.r[0] = 0x4000;
     peer.state.cpu.r[1] = 99;
-    snx_test_blocks[F_exclusive_pair](&peer.state.cpu);
+    call(snx_test_blocks[F_exclusive_pair], &peer.state.cpu);
     assert(peer.state.cpu.exit == SNX_ARM_OK && !peer.state.cpu.r[3] && get32(0x4000) == 99);
     run(F_exclusive_store, SNX_ARM_OK);
     assert(c->r[3] == 1 && get32(0x4000) == 99);
@@ -262,8 +273,8 @@ int main(void) {
     c = start(F_exclusive_clear);
     run(F_exclusive_clear, SNX_ARM_OK);
     assert(c->r[3] == 1 && !get32(0x4000));
-    c = start(F_exclusive_local_store);
-    run(F_exclusive_local_store, SNX_ARM_OK);
+    c = start(F_exclusive_local);
+    run(F_exclusive_local, SNX_ARM_OK);
     assert(c->r[3] == 1 && get32(0x4000) == 0x12345678);
     c = start(F_exclusive_byte);
     put32(0x4000, 0x11223344);
@@ -452,6 +463,19 @@ int main(void) {
     put32(0x4000, 23);
     run(F_thumb_load, SNX_ARM_OK);
     assert(c->r[2] == 23);
+    /* hosted blocks, for a runtime that owns the process: no entry checks, and SETEND BE stops one */
+    for (unsigned elsewhere = 0; elsewhere < 2; ++elsewhere) {
+        SnxArmCPU hosted = {0};
+        hosted.r[15] = elsewhere ? 0x7000 : 0x1000;
+        hosted.cpsr = 0x10 | (elsewhere ? SNX_ARM_T | SNX_ARM_E : 0);
+        call(snx_hosted_arm, &hosted);
+        assert(hosted.exit == SNX_ARM_ENDIAN_UNSUPPORTED && hosted.r[15] == 0x1004);
+        hosted = (SnxArmCPU){0};
+        hosted.r[15] = elsewhere ? 0x7000 : 0x2000;
+        hosted.cpsr = 0x10 | (elsewhere ? 0 : SNX_ARM_T);
+        call(snx_hosted_thumb, &hosted);
+        assert(hosted.exit == SNX_ARM_OK && hosted.r[15] == 0x2004);
+    }
     assert(!snx_ctr_cpu_init(NULL, space, 0x1000, 0x6000, false));
     assert(!snx_ctr_cpu_init(&ctr, NULL, 0x1000, 0x6000, false));
     assert(!snx_ctr_cpu_init(&ctr, space, 0x1002, 0x6000, false));

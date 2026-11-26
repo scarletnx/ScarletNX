@@ -2,20 +2,21 @@
    Copyright 2026 the ScarletNX contributors */
 /* AArch32 blocks compiled while a program runs: each block is an object of this host's own block compiler
    (recompiler/mach/native.h), of any profile and memory mode, loaded into a code arena by the runtime JIT's loader
-   (code_loader.c), as the A64 JIT's units are. LLVM, made when first needed, makes what that compiler refuses, and
-   everything on a host without one: the block is emitted into a module of the executor's LLVM context and compiled to
-   an object with its target machine (snx_ir_module_object). The objects call the runtime library's helpers, which the
-   loader is given by name: no MCJIT, and no symbols the program must export. Where the loader has no stub for a call
-   out of reach of its arena, the helpers are the 32-bit modules' own (armlib.c), loaded into the arena first, as
-   library.c's arena_load loads rtlib.c with the A64 code: on PowerPC64 the arena has one TOC, which a direct call into
-   the runtime's copies (another TOC) would leave behind; RISC-V, LoongArch, MIPS64 and s390x call within their own
-   displacement's reach. An object the loader does not take is as one the compiler refuses: LLVM makes the block */
+   (code_loader.c), as the A64 JIT's units are. What that compiler refuses, and everything on a host without one, goes
+   to the fallback (recompiler/fallback.h): LLVM, started when first needed, or none, which refuses it. The objects
+   call the runtime library's helpers, which the loader is given by name: no MCJIT, and no symbols the program must
+   export. Where the loader has no stub for a call out of reach of its arena, the helpers are the 32-bit modules' own
+   (armlib.c), loaded into the arena first, as library.c's arena_load loads rtlib.c with the A64 code: on PowerPC64 the
+   arena has one TOC, which a direct call into the runtime's copies (another TOC) would leave behind; RISC-V, LoongArch,
+   MIPS64 and s390x call within their own displacement's reach. An object the loader does not take is as one the
+   compiler refuses: the fallback's to make */
 #include "common/cpu/arm/exec.h"
-#include "common/cpu/arm/llvm.h"
+#include "common/cpu/arm/checked.h"
+#include "common/cpu/arm/codegen.h"
 #include "common/cpu/arm/simd.h"
-#include "common/cpu/recompiler/llvm/code_loader.h"
-#include "common/cpu/recompiler/llvm/ir.h"
-#include "common/cpu/recompiler/llvm/rtlib_object.h"
+#include "common/cpu/recompiler/fallback.h"
+#include "common/cpu/recompiler/loader/code_loader.h"
+#include "common/cpu/recompiler/rtlib/rtlib_object.h"
 #include "common/cpu/recompiler/mach/native.h"
 #include "common/utilities/endian.h"
 #include <stdio.h>
@@ -30,7 +31,7 @@
 #else
 #define ARENA_ARMLIB 0
 #endif
-/* how many reasons a block was left to LLVM for are said, each once */
+/* how many reasons a block was left to the fallback for are said, each once */
 #define REASONS 32
 
 typedef struct {
@@ -39,7 +40,7 @@ typedef struct {
 } CachedBlock;
 struct SnxArmExec {
     SnxNativeArm* native; /* the host's own block compiler, NULL where it has none */
-    SnxIr* ir; /* the context and target machine every LLVM block's module is made with, made for the first of them */
+    SnxFallbackArm* fallback; /* makes the blocks that compiler leaves */
     SnxCodeLoader* loader;
     CachedBlock* blocks; /* open addressing, a power of two slots, at most half full */
     size_t count, capacity, compiles;
@@ -153,7 +154,7 @@ static int native_object(SnxArmExec* e, const char* name, const void* code, size
     }
     return 1;
 }
-/* a reason a block is not the native compiler's (what says LLVM makes it, or nothing does), said once each */
+/* a reason a block is not the native compiler's (what says the fallback makes it, or nothing does), said once each */
 static void say(SnxArmExec* e, const char* what, const char* reason) {
     for (size_t i = 0; i < e->said_count; ++i)
         if (!strncmp(e->said[i], reason, sizeof e->said[i] - 1)) return;
@@ -162,25 +163,15 @@ static void say(SnxArmExec* e, const char* what, const char* reason) {
     fprintf(stderr, "A32 JIT, back end %s: %s: %s%s\n", snx_native_name(), what, reason,
             e->said_count == REASONS ? " (any further reason is not said)" : "");
 }
-/* LLVM's context and target machine, made once: 0, -1 with why in error */
-static int start_llvm(SnxArmExec* e, char* error, size_t error_size) {
-    if (!e->ir && !snx_ir_init(error, error_size)) e->ir = snx_ir_new_jit("a32exec", BLOCK_OPT, error, error_size);
-    return e->ir ? 0 : -1;
-}
-/* the block's object as name, LLVM's: 0, -1 with why in error */
-static int llvm_object(SnxArmExec* e, const char* name, const void* code, size_t count, uint32_t pc, int thumb,
-                       const SnxArmCodegenOptions* options, size_t* consumed, unsigned char** object, size_t* size,
-                       char* error, size_t error_size) {
-    if (start_llvm(e, error, error_size)) return -1;
-    LLVMModuleRef module = LLVMModuleCreateWithNameInContext(name, e->ir->ctx);
-    LLVMSetTarget(module, LLVMGetTarget(e->ir->mod));
-    LLVMSetDataLayout(module, LLVMGetDataLayoutStr(e->ir->mod));
-    LLVMValueRef fn = thumb ? snx_thumb_llvm_block_ex(module, name, (const uint16_t*)code, count, pc, consumed, options)
-                            : snx_arm_llvm_block_ex(module, name, (const uint32_t*)code, count, pc, consumed, options);
-    if (!fn) snprintf(error, error_size, "LLVM takes no such block");
-    int rc = fn ? snx_ir_module_object(e->ir, module, BLOCK_OPT, object, size, error, error_size) : -1;
-    LLVMDisposeModule(module);
-    return rc;
+/* the block's object as name, the fallback's: 0, -1 with why in error */
+static int fallback_object(SnxArmExec* e, const char* name, const void* code, size_t count, uint32_t pc, int thumb,
+                           const SnxArmCodegenOptions* options, size_t* consumed, unsigned char** object, size_t* size,
+                           char* error, size_t error_size) {
+    return snx_fallback_arm_block(e->fallback, name, code, count, pc, thumb, options, e->why, consumed, error,
+                                  error_size) ||
+                   snx_fallback_arm_object(e->fallback, object, size, error, error_size)
+               ? -1
+               : 0;
 }
 /* the block the object defines as name, loaded and the object freed: NULL with why in error */
 static SnxArmBlock load_object(SnxArmExec* e, unsigned char* object, size_t size, const char* name, char* error,
@@ -208,8 +199,8 @@ SnxArmBlock snx_arm_exec_compile_ex(SnxArmExec* e, const void* code, size_t coun
         object = NULL, size = 0, *consumed = 0;
     }
     ++e->refused;
-    if (e->native) say(e, "LLVM makes a block it leaves", e->why);
-    if (llvm_object(e, name, code, count, pc, thumb, options, consumed, &object, &size, error, sizeof error) ||
+    if (e->native && snx_fallback_available()) say(e, "LLVM makes a block it leaves", e->why);
+    if (fallback_object(e, name, code, count, pc, thumb, options, consumed, &object, &size, error, sizeof error) ||
         !(block = load_object(e, object, size, name, error, sizeof error)))
         say(e, "nothing makes a block", error);
     return block;
@@ -290,8 +281,15 @@ SnxArmExec* snx_arm_exec_new(char* error, size_t error_size) {
         return NULL;
     }
     snprintf(e->why, sizeof e->why, "no native back end on this host");
-    /* without one LLVM makes every block: a host it has no code generator for is said here, not at each of them */
-    if (e->native || !start_llvm(e, error, error_size)) e->loader = snx_code_loader_new(0, error, error_size);
+    if (!(e->fallback = snx_fallback_arm_new("a32exec", BLOCK_OPT, 1))) {
+        snprintf(error, error_size, "out of memory");
+        snx_arm_exec_free(e);
+        return NULL;
+    }
+    /* without one the fallback makes every block: a host it has no code generator for is said here, not at each of
+       them */
+    if (e->native || !snx_fallback_arm_start(e->fallback, error, error_size))
+        e->loader = snx_code_loader_new(0, error, error_size);
     if (!e->loader || (ARENA_ARMLIB ? load_armlib(e, error, error_size) : define_helpers(e))) {
         if (!error[0]) snprintf(error, error_size, "cannot name the runtime library's functions");
         snx_arm_exec_free(e);
@@ -309,7 +307,7 @@ void snx_arm_exec_free(SnxArmExec* e) {
     if (!e) return;
     snx_code_loader_free(e->loader);
     snx_native_arm_free(e->native);
-    if (e->ir) snx_ir_free(e->ir);
+    snx_fallback_arm_free(e->fallback);
     free(e->blocks);
     free(e);
 }

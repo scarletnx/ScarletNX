@@ -4,8 +4,8 @@
    order they depend on each other, the shaders made before the game draws (prepare_wait), the game's main thread;
    then the frontend's loop at the display's rate until the run ends, saving what outlives it */
 #include "nx/runtime/main.h"
-#include "common/cpu/recompiler/llvm/gdb_jit.h"
-#include "common/cpu/recompiler/llvm/ir.h"
+#include "common/cpu/recompiler/loader/gdb_jit.h"
+#include "common/cpu/recompiler/llvm/ir_settings.h"
 #include "common/cpu/recompiler/x64/x64_cache.h"
 #include "common/utilities/build_info.h"
 #include "common/utilities/program_start.h"
@@ -76,11 +76,11 @@
    that the JIT loader places in memory a debugger made executable (load_pack) */
 #if defined(__APPLE__) && TARGET_OS_IOS
 #define MODULE_PACK 1
-#include "common/cpu/recompiler/llvm/code_loader.h"
-#include "common/cpu/recompiler/llvm/objects_pack.h"
+#include "common/cpu/recompiler/loader/code_loader.h"
+#include "common/cpu/recompiler/object/objects_pack.h"
 /* src/gui/apple.m's (gui/apple.h pulls in SDL's headers, which this part of the runtime is not built with) */
 void gui_apple_stats(char* out, size_t size);
-#include "common/cpu/recompiler/llvm/rtlib_object.h"
+#include "common/cpu/recompiler/rtlib/rtlib_object.h"
 #endif
 
 #if defined(_WIN32)
@@ -420,35 +420,22 @@ static void kind_dir(char* out, size_t cap, int kind, const char* what, const ch
    the environment the game runs in may not name (an AppImage's copy, without its portable home or config), else its
    environment's */
 static void game_dirs(void) {
-    static const char* const keys[] = {"config", "state", "cache"};
-    char path[sizeof g_exedir + sizeof g_exename + 16], why[256], *text, *key, *value, *full;
-    char* recorded[SNX_USER_CACHE + 1] = {NULL}; /* in text */
+    char path[sizeof g_exedir + sizeof g_exename + 16], said[1024], *full, *recorded[3];
     const char* record;
-    SnxIni ini;
-    size_t size;
-    int kind;
+    int read;
     snprintf(path, sizeof path, "%s%s.folders", g_exedir, g_exename);
     full = snx_absolute(path);
     record = full ? full : path;
-    text = (char*)snx_read_file(path, &size);
-    if (!text) snx_os_error(why, sizeof why);
-    if (text) snx_ini_start(&ini, text);
-    while (text && snx_ini_next(&ini, &key, &value)) {
-        for (kind = SNX_USER_CONFIG; kind <= SNX_USER_CACHE && strcmp(key, keys[kind - SNX_USER_CONFIG]); ++kind)
-            continue;
-        if (kind <= SNX_USER_CACHE)
-            recorded[kind] = value;
-        else
-            WARN("%s: %s=%s is none of config=, state= and cache=, the folders the game reads from it\n", record, key,
-                 value);
-    }
-    kind_dir(g_confdir, sizeof g_confdir, SNX_USER_CONFIG, "settings", recorded[SNX_USER_CONFIG], record);
-    kind_dir(g_statedir, sizeof g_statedir, SNX_USER_STATE, "log and threads.txt", recorded[SNX_USER_STATE], record);
-    kind_dir(g_cachedir, sizeof g_cachedir, SNX_USER_CACHE, "caches", recorded[SNX_USER_CACHE], record);
-    if (!text && snx_path_exists(path))
-        WARN("cannot read %s (%s): the game's settings are in %s, its log in %s, its caches in %s\n", record, why,
-             g_confdir, g_statedir, g_cachedir);
-    free(text);
+    read = snx_folders_read(record, recorded, said, sizeof said);
+    kind_dir(g_confdir, sizeof g_confdir, SNX_USER_CONFIG, "settings", recorded[0], record);
+    kind_dir(g_statedir, sizeof g_statedir, SNX_USER_STATE, "log and threads.txt", recorded[1], record);
+    kind_dir(g_cachedir, sizeof g_cachedir, SNX_USER_CACHE, "caches", recorded[2], record);
+    if (read < 0)
+        WARN("%s: the game's settings are in %s, its log in %s, its caches in %s\n", said, g_confdir, g_statedir,
+             g_cachedir);
+    else if (said[0]) /* what another version's record names besides */
+        WARN("%s\n", said);
+    for (int i = 0; i < 3; ++i) free(recorded[i]);
     free(full);
 }
 

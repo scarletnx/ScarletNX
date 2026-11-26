@@ -15,7 +15,7 @@
 #include "common/utilities/ascii.h"
 #include "common/utilities/bits.h"
 #include "common/utilities/endian.h"
-#include "common/utilities/ini_lines.h"
+#include "common/utilities/config_file.h"
 #include "common/platform/time.h"
 #include "common/platform/vm.h"
 #include <libdeflate.h>
@@ -101,9 +101,8 @@ int snx_path_format(char* out, size_t size, const char* fmt, ...) {
     snx_path_native(out);
     return 0;
 }
-/* the kinds whose folder app.ini names wrongly, and the options given by an older name, said once */
+/* the options given by an older name, said once */
 static struct {
-    unsigned said_kinds;
     const char* renamed[16];
     size_t renamed_count;
     volatile int abort_requested; /* snx_abort_request's, from another thread than the one that asks */
@@ -1181,24 +1180,26 @@ char* snx_app_kind_default(const char* app, int kind) {
 }
 /* the folder of kind the app.ini in config names in [folders] (Settings > App > Folders' Logs and Caches): 1 with *dir
    a full path, -1 with *dir a value that is not one, 0 for none (no file, no key, an empty one) */
+typedef struct {
+    const char* wanted;
+    char* dir;
+    int found;
+} PickedKind;
+static void picked_take(void* ctx, const char* section, const char* key, const char* value, int line) {
+    PickedKind* p = (PickedKind*)ctx;
+    (void)line;
+    if (strcmp(section, "folders") || strcmp(key, p->wanted)) return;
+    free(p->dir); /* the last one, as the launcher reads it */
+    p->dir = *value ? snx_strdup(value) : NULL;
+    p->found = !*value ? 0 : snx_path_is_full(value) ? 1 : -1;
+}
 static int picked_kind(const char* config, int kind, char** dir) {
-    size_t size;
-    char *path = snx_path_join(config, "app.ini"), *text = path ? (char*)snx_read_file(path, &size) : NULL, *key,
-         *value;
-    const char* wanted = kind == SNX_USER_STATE ? "state" : "cache";
-    int found = 0;
-    SnxIni ini;
-    *dir = NULL;
-    if (text) snx_ini_start(&ini, text);
-    while (text && snx_ini_next(&ini, &key, &value))
-        if (!strcmp(ini.section, "folders") && !strcmp(key, wanted)) { /* the last one, as the launcher reads it */
-            free(*dir);
-            *dir = *value ? snx_strdup(value) : NULL;
-            found = !*value ? 0 : snx_path_is_full(value) ? 1 : -1;
-        }
-    free(text);
+    char* path = snx_path_join(config, "app.ini");
+    PickedKind p = {kind == SNX_USER_STATE ? "state" : "cache", NULL, 0};
+    if (path) snx_config_keys(path, picked_take, &p); /* one it cannot read said, once */
     free(path);
-    return found;
+    *dir = p.dir;
+    return p.found;
 }
 char* snx_app_kind_dir(const char* app, int kind) {
     char *dir = snx_app_kind_default(app, kind), *picked;
@@ -1209,11 +1210,13 @@ char* snx_app_kind_dir(const char* app, int kind) {
         free(dir);
         dir = picked;
         picked = NULL;
-    } else if (found < 0 && !(g_common.said_kinds & 1u << kind)) {
-        g_common.said_kinds |= 1u << kind;
-        snx_error("%s/app.ini: [folders] %s = %s is not a full path: the %s go in %s", config,
-                  kind == SNX_USER_STATE ? "state" : "cache", picked, kind == SNX_USER_STATE ? "logs" : "caches",
-                  dir ? dir : "(none)");
+    } else if (found < 0) {
+        const char* name = kind == SNX_USER_STATE ? "state" : "cache";
+        char* what = snx_format("app.ini [folders] %s = %s", name, picked);
+        if (snx_config_first(config, what)) /* once a run for each app.ini and value, as every settings file */
+            snx_error("%s/app.ini: [folders] %s = %s is not a full path: the %s go in %s", config, name, picked,
+                      kind == SNX_USER_STATE ? "logs" : "caches", dir ? dir : "(none)");
+        free(what);
     }
     if (found) free(picked);
     free(config);

@@ -246,8 +246,8 @@
         "docs/platforms/nx/nro.md",
         "docs/platforms/nx/nro.md",
         "docs/user/aot-packs.md",
-        "src/common/cpu/recompiler/llvm/rtlib.c",
-        "src/common/cpu/recompiler/llvm/jit_cache.h",
+        "src/common/cpu/recompiler/rtlib/rtlib.c",
+        "src/common/cpu/recompiler/jit/jit_cache.h",
         "src/common/cpu/recompiler/llvm/ir_profile.c",
         "src/common/cpu/recompiler/llvm/ir_ldst.c"
       ],

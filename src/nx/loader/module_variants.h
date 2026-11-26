@@ -6,8 +6,8 @@
 #ifndef SNX_NX_MODULE_VARIANTS_H
 #define SNX_NX_MODULE_VARIANTS_H
 
-#include "common/cpu/recompiler/llvm/jit_cache.h"
-#include "nx/loader/module_ir.h"
+#include "common/cpu/recompiler/jit/jit_cache.h"
+#include "common/cpu/recompiler/llvm/ir.h"
 
 /* Adds the variant table and snx_variants() to the descriptor IR. *count is
    the number of functions (0 when the cache has none). 0, or -1 with the

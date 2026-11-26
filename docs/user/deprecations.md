@@ -115,5 +115,6 @@ menu's files, and a checkout's `work/`, keys and `linux/`, move as they are, eac
 Android the menu's files are out of reach: the line says how they go). A checkout's
 `games/` does too, then each game's `<id>.ini` to where the table says (the game's run names it).
 
-A `.ini` key the runtime does not know at all (a newer version's, or a typo) is not deprecated: it stays under
-`[Other]`, as it was, since a newer version may read it.
+A key a settings file's reader does not know at all (a newer version's, or a typo) is not deprecated: it stays in the
+file as it was, since a newer version may read it, and Clean Old Settings leaves it there
+([Settings](settings.md#how-a-settings-file-is-read)).

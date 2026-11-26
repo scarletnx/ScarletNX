@@ -686,6 +686,15 @@ static void record_folders(const char* root) {
         fprintf(stderr, "%s has:\n%s\nnot:\n%s", record, text ? text : "(no such file)\n", expected);
     CHECK(text && !strcmp(text, expected));
     free(text);
+    { /* another version's key in the record: recorded again, it stays as it was, after this version's */
+        char* newer = snx_format("%snewer = 1\n", expected);
+        CHECK(!snx_write_file(record, newer, strlen(newer)) && !snx_record_folders(folder, "G"));
+        text = (char*)snx_read_file(record, &size);
+        CHECK(text && !strcmp(text, newer));
+        free(text);
+        CHECK(!snx_write_file(record, expected, strlen(expected)));
+        free(newer);
+    }
     { /* Logs and Caches picked, outside the user's folders: named too, so a game started elsewhere finds them */
         char *config = snx_user_dir(SNX_USER_CONFIG), *ini = snx_path_join(config, "app.ini"), *picked[2], *game[2],
              *at;

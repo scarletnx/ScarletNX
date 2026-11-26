@@ -21,7 +21,7 @@
    module's units (library.c), so an LLVM unit's function calls one of these and the other way; in a JIT unit local,
    with the unit's table. A call is a PLT32 relocation, resolved here where the callee is this object's own */
 #include "common/cpu/recompiler/x64/x64_codegen.h"
-#include "common/cpu/recompiler/llvm/link.h"
+#include "common/cpu/recompiler/object/link.h"
 #include "common/cpu/aarch64/a64_decoder.h"
 #include "common/cpu/aarch64/cpu.h"
 #include "common/runtime/interface.h"
@@ -32,7 +32,7 @@
 #include "common/cpu/recompiler/x64/x64_elf.h"
 #if defined(__x86_64__) && defined(SNX_HAVE_X64)
 #if defined(__APPLE__) || defined(_WIN32)
-#include "common/cpu/recompiler/llvm/elf_defs.h"
+#include "common/cpu/recompiler/object/elf_defs.h"
 #else
 #include <elf.h>
 #endif
@@ -71,7 +71,7 @@ static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r);
    x86-64's ELF; a call's target and a function's entry in RSI (Windows' RDX); the pins in RBP, R12-R15 (pushed: the
    callee's) and R11, R10 (caller-saved, values' otherwise: reserved, and an exclusive's, an atomic's or CRC32's fixed
    registers), on Windows RDI and RSI (the callee's: no value's and no sequence's); the vector pins in XMM15 down to
-   XMM8 */
+   XMM8; FPSR.QC owed by a region's saturating instructions (mg_qc); RBIT by GFNI (mg_rbit) */
 #define MG_EM EM_X86_64
 #define MG_R_ABS64 R_X86_64_64
 #define MG_WIN64(u) SGX_WIN64(&(u)->g->x)
@@ -85,6 +85,10 @@ static const signed char g_pin_hosts[2][7] = {{5, 12, 13, 14, 15, 11, 10}, {5, 1
 #define MG_NVPINS 8
 #define MG_XRESERVED 0u
 #define MG_BOUND 1
+#define MG_QC 1
+#define MG_RBIT mg_rbit
+/* CRC32 of a word or a doubleword is PCLMULQDQ's (sg_crc32), in no fixed register */
+#define MG_CRC_FIXED(u, w) ((w) >> 12 & 1 || ((w) >> 10 & 3) < 2 || !((u)->g->x.features & SGX_F_PCLMUL))
 #define MG_COFF win64
 #define MG_POLL_INLINE 1
 #define MG_JTAB 1
@@ -676,9 +680,9 @@ void snx_x64_without(unsigned features) {
 }
 void snx_x64_set_win64(int on) { atomic_store_explicit(&g_x64_codegen.win64, on, memory_order_relaxed); }
 
-/* CPUID's BMI1, BMI2, SHA and LZCNT (ABM), and Windows' ABI */
+/* CPUID's BMI1, BMI2, SHA, GFNI, SM4 and LZCNT (ABM), and Windows' ABI */
 static unsigned host_features(void) {
-    unsigned a, b, c, d, f = 0;
+    unsigned a, b, c, d, f = 0, leaf7b, leaf7a = 0;
 #if defined(_WIN32)
     f |= SGX_F_WIN64;
 #else
@@ -688,10 +692,13 @@ static unsigned host_features(void) {
     if (b & (1u << 3)) f |= SGX_F_BMI1;
     if (b & (1u << 8)) f |= SGX_F_BMI2;
     if (b & (1u << 29)) f |= SGX_F_SHA;
+    if (c & (1u << 8)) f |= SGX_F_GFNI;
+    leaf7b = b;
+    if (a >= 1) __asm__("cpuid" : "=a"(leaf7a), "=b"(b), "=c"(c), "=d"(d) : "a"(7), "c"(1));
     __asm__("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(0x80000001u), "c"(0));
     if (c & (1u << 5)) f |= SGX_F_LZCNT;
-    /* leaf 1's: SSE3, PCLMULQDQ, SSSE3, SSE4.1, SSE4.2, POPCNT, AES; the VEX forms' (AVX, FMA, F16C) where the system
-       keeps the YMM state (OSXSAVE, and XCR0's SSE and AVX bits) */
+    /* leaf 1's: SSE3, PCLMULQDQ, SSSE3, SSE4.1, SSE4.2, POPCNT, AES; the VEX forms' (AVX, FMA, F16C, leaf 7's AVX2 and
+       its subleaf 1's SM4) where the system keeps the YMM state (OSXSAVE, and XCR0's SSE and AVX bits) */
     __asm__("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(1), "c"(0));
     if (c & 1u) f |= SGX_F_SSE3;
     if (c & (1u << 1)) f |= SGX_F_PCLMUL;
@@ -707,6 +714,8 @@ static unsigned host_features(void) {
             f |= SGX_F_AVX;
             if (c & (1u << 12)) f |= SGX_F_FMA;
             if (c & (1u << 29)) f |= SGX_F_F16C;
+            if (leaf7b & (1u << 5)) f |= SGX_F_AVX2;
+            if (leaf7a & (1u << 2)) f |= SGX_F_SM4;
         }
     }
     return f & ~atomic_load_explicit(&g_x64_codegen.without, memory_order_relaxed);

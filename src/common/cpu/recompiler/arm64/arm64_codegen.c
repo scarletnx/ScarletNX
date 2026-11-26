@@ -16,7 +16,7 @@
    registers Windows' too (X18, the system's, is never touched), in a COFF object whose function table unwinds it by the
    prologue and the epilogues (x64_elf.c), a frame of a page or more read page by page first (the guard page's) */
 #include "common/cpu/recompiler/arm64/arm64_codegen.h"
-#include "common/cpu/recompiler/llvm/link.h"
+#include "common/cpu/recompiler/object/link.h"
 #include "common/cpu/recompiler/x64/x64_elf.h"
 #include "common/cpu/aarch64/a64_decoder.h"
 #include "common/cpu/aarch64/cpu.h"
@@ -31,7 +31,7 @@
 /* not on Windows on another machine, whose tests run none of its code */
 #if !defined(_WIN32) || defined(__aarch64__)
 #if defined(__APPLE__) || defined(_WIN32)
-#include "common/cpu/recompiler/llvm/elf_defs.h"
+#include "common/cpu/recompiler/object/elf_defs.h"
 #else
 #include <elf.h>
 #endif
@@ -82,6 +82,7 @@ static const signed char mg_pin_hosts[9] = {20, 21, 22, 23, 24, 25, 26, 27, 28};
 #define MG_VPIN(k) (31 - (k))
 #define MG_NVPINS 8
 #define MG_XRESERVED 0xFF80u /* V8-V15 (the callee's low halves), V7 (arm64_vec.c's scratch) */
+#define MG_RBIT mg_rbit
 static void unit_reloc(void* machine, size_t at, const char* sym, long long addend);
 
 #include "common/cpu/recompiler/mach/mach_codegen.inc"
@@ -510,10 +511,14 @@ static unsigned windows_features(void) {
     return f;
 }
 #endif
-/* what a test asked the AArch32 blocks and the descriptor to be made for */
+/* what a test asked for: the AArch32 blocks and the descriptor's system, and the features to go without */
 static struct {
     _Atomic int windows;
+    _Atomic unsigned without;
 } g_arm64_codegen;
+void snx_arm64_without(unsigned features) {
+    atomic_store_explicit(&g_arm64_codegen.without, features & ~(unsigned)SNX_ARM64_F_WIN, memory_order_relaxed);
+}
 void snx_arm64_set_windows(int on) { atomic_store_explicit(&g_arm64_codegen.windows, on, memory_order_relaxed); }
 int snx_arm64_windows(void) {
 #if defined(_WIN32)
@@ -522,7 +527,8 @@ int snx_arm64_windows(void) {
     return atomic_load_explicit(&g_arm64_codegen.windows, memory_order_relaxed);
 #endif
 }
-unsigned snx_arm64_features(void) {
+/* what the system says this processor has */
+static unsigned host_features(void) {
 #if defined(__aarch64__) && defined(_WIN32)
     return windows_features() | SNX_ARM64_F_WIN;
 #elif defined(__aarch64__) && defined(__APPLE__)
@@ -553,6 +559,9 @@ unsigned snx_arm64_features(void) {
     return 0;
 #endif
 }
+unsigned snx_arm64_features(void) {
+    return host_features() & ~atomic_load_explicit(&g_arm64_codegen.without, memory_order_relaxed);
+}
 int snx_arm64_available(void) {
 #if defined(__aarch64__) && (defined(__ELF__) || defined(_WIN32) || defined(__APPLE__))
     return 1;
@@ -570,6 +579,7 @@ int snx_arm64_object(SnxCodegen* codegen, size_t first, size_t last, const SnxNa
 #else
 int snx_arm64_available(void) { return 0; }
 unsigned snx_arm64_features(void) { return 0; }
+void snx_arm64_without(unsigned features) { (void)features; }
 int snx_arm64_windows(void) { return 0; }
 void snx_arm64_set_windows(int on) { (void)on; }
 int snx_arm64_object(SnxCodegen* codegen, size_t first, size_t last, const SnxNativeOptions* options, unsigned host,

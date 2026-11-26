@@ -1,44 +1,21 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-"""Execute A32 LLVM objects at O0/O2. Optional independent Unicorn differential.
+"""A32 blocks of a native back end, run from known states. Optional independent Unicorn differential.
 
-python tests/arm_test.py --emitter build/.../snx-test-arm-emit --cc clang [--unicorn]
+python tests/arm_test.py --blocks build/.../snx-test-arm-blocks [--unicorn]
+The blocks are this host's back end's, or (run under Unicorn) another machine's: snx-test-arm-blocks-rv64 and its like.
+Each is made twice, its values in all the host registers and in three of them, so that they spill; or by LLVM
+(snx-test-arm-blocks-llvm), at each --opt level.
 No game assets. Unicorn is optional and pinned to 2.1.4 for reproducibility.
 """
 
 import argparse
 import ctypes as C
-import pathlib
 import platform
 import random
-import subprocess
-import tempfile
 
-
-class CPU(C.Structure):
-    _fields_ = [
-        ('r', C.c_uint32 * 16),
-        ('cpsr', C.c_uint32),
-        ('exit', C.c_uint32),
-        ('syndrome', C.c_uint32),
-        ('mem', C.POINTER(C.c_uint8)),
-        ('mem_size', C.c_uint64),
-        ('io', C.c_void_p),  # the ARM7TDMI profile's bus hook: no other profile reads it
-        ('exclusive_value', C.c_uint64),
-        ('exclusive_address', C.c_uint32),
-        ('exclusive_size', C.c_uint32),
-        ('exclusive_valid', C.c_uint32),
-        ('tpidrurw', C.c_uint32),
-        ('tpidruro', C.c_uint32),
-        ('fpscr', C.c_uint32),
-        ('d', C.c_uint64 * 32),
-        ('rt', C.c_void_p),  # the backend's SnxArmRt: none, the runtime library's defaults
-    ]
-
-
-PC = 0x1000
-SIZE = 0x10000
+from arm_blocks import CPU, PC, SIZE, Blocks, add_variants, variants
 
 # On an AArch64 host Unicorn 2.1.4 dies of SIGILL emulating VQADD, VQSUB and VSHL (register) with 64-bit lanes in D
 # registers: its TCG emits for them the vector SQADD, UQADD, SQSUB, UQSUB, SSHL and USHL with 64-bit lanes and Q 0,
@@ -296,21 +273,9 @@ def state(words, seed=1, group='data'):
     return cpu, memory
 
 
-def compile_library(emitter, cc, directory, opt, runtime):
-    words = directory / 'words.txt'
-    words.write_text(''.join(f'{pc:x} ' + ' '.join(f'{w:08x}' for w in p) + '\n' for pc, p in zip(PCS, PROGRAMS)))
-    obj = directory / f'arm{opt}.o'
-    lib = directory / f'arm{opt}.so'
-    subprocess.run([emitter, str(words), str(obj), str(opt)], check=True)
-    subprocess.run([cc, '-shared', str(obj), runtime, '-o', str(lib)], check=True)
-    handle = C.CDLL(str(lib))
-    functions = []
-    for i in range(len(PROGRAMS)):
-        fn = getattr(handle, f'block_{i}')
-        fn.argtypes = [C.POINTER(CPU)]
-        fn.restype = None
-        functions.append(fn)
-    return functions
+def make(runner, variant):
+    """the back end's blocks of PROGRAMS, every one of which it makes"""
+    return Blocks(runner, [('arm', pc, words) for pc, words in zip(PCS, PROGRAMS)], **variant).refuse()
 
 
 def witnesses():
@@ -376,7 +341,7 @@ def run_witnesses(functions, tests):
         cpu, mem = state(PROGRAMS[idx], group='memory')
         if setup:
             setup(cpu, mem)
-        functions[idx](C.byref(cpu))
+        functions[idx](cpu)
         return cpu, mem
 
     def word(mem, addr, value):
@@ -412,7 +377,7 @@ def run_witnesses(functions, tests):
         cpu, _ = run(name, lambda c, m: (c.r.__setitem__(0, 7), c.r.__setitem__(2, 0x200)))
         assert cpu.exit == 0 and cpu.r[15] == PC + 4 and cpu.r[0] == 7 and cpu.cpsr & 0x200, name
         cpu.r[15] = PC  # the next block, entered with E set
-        functions[tests[name]](C.byref(cpu))
+        functions[tests[name]](cpu)
         assert cpu.exit == 9, name  # big-endian data: ENDIAN_UNSUPPORTED
     cpu, _ = run('msr_c', lambda c, m: c.r.__setitem__(2, 0xFFFFFFFF))
     assert cpu.exit == 0 and cpu.cpsr & 0x1FF == 0x10  # mode, A, I, F, T: none of it EL0's to write
@@ -434,7 +399,7 @@ def run_witnesses(functions, tests):
     for name in ('thumb16', 'thumb32'):
         cpu, _ = run(name, lambda c, m: setattr(c, 'cpsr', c.cpsr | 32))
         # An A32 block rejects Thumb state as a bad entry; Thumb is supported
-        # via snx_thumb_llvm_block, so this is a wrong-block dispatch.
+        # in a Thumb block, so this is a wrong-block dispatch.
         assert cpu.exit == 8 and cpu.r[15] == PC
     cpu, mem = run('monitor', lambda c, m: word(m, 0x8000, 99))
     assert cpu.exit == 0 and cpu.r[1] == 0 and not cpu.exclusive_valid
@@ -486,14 +451,14 @@ def run_witnesses(functions, tests):
     dispatch = {PCS[i]: functions[i] for name, i in tests.items() if name.startswith('loop_')}
     cpu, mem = state(())
     for _ in range(64):
-        dispatch[cpu.r[15]](C.byref(cpu))
+        dispatch[cpu.r[15]](cpu)
         if cpu.exit:
             break
     assert cpu.exit == 4 and cpu.syndrome == 1 and cpu.r[0] == 55 and cpu.r[1] == 0
     print(f'  {len(tests)} witness programs passed')
 
 
-def differential(functions):
+def differential(libraries, states, every):
     import unicorn as U
     from unicorn import arm_const as A
 
@@ -504,7 +469,7 @@ def differential(functions):
     total = 0
     for index, group in CASES:
         words = PROGRAMS[index]
-        for seed in range(64):
+        for seed in range(index % every, states, every):
             cpu, memory = state(words, seed, group)
             emu.mem_write(0, bytes(memory))
             emu.ctl_remove_cache(PC, PC + 4 * len(words))
@@ -515,36 +480,43 @@ def differential(functions):
                 emu.emu_start(PC, SIZE, count=len(words))
             except U.UcError as exc:
                 raise AssertionError(f'Unicorn rejected {words[0]:08x} ({group}): {exc}') from exc
-            functions[index](C.byref(cpu))
-            actual = list(cpu.r) + [cpu.cpsr]
             expected = [emu.reg_read(reg) for reg in regs] + [emu.reg_read(A.UC_ARM_REG_CPSR)]
-            assert cpu.exit == 0, f'{words[0]:08x} ({group}) exit={cpu.exit} syndrome={cpu.syndrome:x} seed={seed}'
-            assert actual == expected, f'{words[0]:08x} ({group}) seed={seed}: ' + ', '.join(
-                f'r{i}: {x:08x} != {y:08x}' for i, (x, y) in enumerate(zip(actual, expected)) if x != y
-            )
-            assert bytes(memory) == bytes(emu.mem_read(0, SIZE)), f'{words[0]:08x}: memory mismatch'
-            total += 1
+            expected_memory = bytes(emu.mem_read(0, SIZE))
+            start, guest = bytes(cpu), bytes(memory)
+            for blocks in libraries:
+                C.memmove(C.byref(cpu), start, len(start))
+                C.memmove(memory, guest, SIZE)
+                blocks.functions[index](cpu)
+                actual = list(cpu.r) + [cpu.cpsr]
+                label = f'{blocks.name}: {words[0]:08x} ({group})'
+                assert cpu.exit == 0, f'{label} exit={cpu.exit} syndrome={cpu.syndrome:x} seed={seed}'
+                assert actual == expected, f'{label} seed={seed}: ' + ', '.join(
+                    f'r{i}: {x:08x} != {y:08x}' for i, (x, y) in enumerate(zip(actual, expected)) if x != y
+                )
+                assert bytes(memory) == expected_memory, f'{label}: memory mismatch'
+                total += 1
     print(f'  {total} Unicorn differential executions passed ({len(CASES)} encodings)')
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--emitter', required=True)
-    parser.add_argument('--cc', default='clang')
-    parser.add_argument('--runtime', required=True, help='libsnx_arm_rt.a')
+    parser.add_argument('--blocks', required=True, help='snx-test-arm-blocks, for this host or another machine')
     parser.add_argument('--unicorn', action='store_true')
-    parser.add_argument('--opt', choices=('0', '2'), action='append')
+    parser.add_argument('--states', type=int, default=64, help='of each encoding, under --unicorn')
+    parser.add_argument('--every', type=int, default=1, help='of the states, one in so many, from the encoding on')
+    add_variants(parser)
     args = parser.parse_args()
     if args.unicorn:
         catalogue()
     tests = witnesses()
-    with tempfile.TemporaryDirectory(prefix='snx-a32-') as directory:
-        for opt in args.opt or ('0', '2'):
-            print(f'A32 LLVM O{opt}', flush=True)
-            functions = compile_library(args.emitter, args.cc, pathlib.Path(directory), opt, args.runtime)
-            run_witnesses(functions, tests)
-            if args.unicorn:
-                differential(functions)
+    libraries = [make(args.blocks, variant) for variant in variants(parser, args)]
+    for blocks in libraries:
+        print(f'A32: {blocks.name}', flush=True)
+        run_witnesses(blocks.functions, tests)
+    if args.unicorn:
+        differential(libraries, args.states, args.every)
+    for blocks in libraries:
+        blocks.close()
 
 
 if __name__ == '__main__':

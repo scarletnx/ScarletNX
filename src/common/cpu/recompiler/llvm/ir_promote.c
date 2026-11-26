@@ -310,7 +310,7 @@ static Set live_through(const Block* block, const Event* events, Site* sites, in
 
 /* ---- the summaries of guest functions ----
    What a direct call of a guest function of this module can see and change of the registers in the CPU structure, once
-   the callee is promoted (it is emitted first: module_llvm.c orders a unit's functions callees first): the registers it
+   the callee is promoted (it is emitted first: an AOT unit's callees go first, fallback.h): the registers it
    or anything it calls reads before writing them, and the ones it can write. The call stores both kinds and reloads the
    second: a way through the callee that does not write a register, or a stale callee that runs nothing, leaves the CPU
    structure's value for the reload to take. A callee where some site can see every register (an SVC, a call through a

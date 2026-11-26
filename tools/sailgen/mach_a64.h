@@ -38,12 +38,16 @@ struct SgCtx {
     int fp_bound[2]; /* sgx_fp_bound's register for 32 and 64 bits, once a region with fp_state (0: none yet) */
     int fp_dbound[2]; /* sgx_fp_flushed's register for 32 and 64 bits, once a region (0: none yet) */
     SgB fp_fz;        /* sgx_fp_bad's check of FPCR.FZ alone, once a region */
+    SgB fp_any;       /* and of FPCR's mode or FZ, or FPSR's IXC clear: the vector guards' hot test */
+    int fp_any_bits;  /* the same as sgx_fp_bad_bits' value, its register (0: none yet) */
     int origin;      /* the instruction whose flags NZCV was last written from, -1 for none */
     int mem;         /* the virtual register of CPU.mem (guest memory's host address), 0 until read */
     int base_seen[4]; /* a few recent values of sgx_base's, each checked against what made it */
     unsigned base_next;
     int exclusive[2], exclusive_count, exclusive_next, status; /* a load-exclusive's values, a store's status */
     SgB qc; /* when the instruction so far sets FPSR.QC (sg_FPSR_field_write), 0 for not: stored with its V register */
+    int qc_owed; /* a machine's value, any bit of which says FPSR.QC is to be set (mach_codegen.inc's qc_pay), 0 for
+                    none */
     SnxU64 (*resolve)(const char* sym); /* a helper's address, where the code calls it absolutely (a test's) */
     int start;       /* the instructions before this word's */
 };
@@ -142,6 +146,36 @@ static inline void sg_PSTATE_write(SgCtx* g, long long first, long long count, S
     long long f;
     if (first < 0 || count < 1 || first + count > 4) sg_fail("fields of PSTATE this back end does not keep", first, count);
     if (v.w != (unsigned)count) sg_fail("flags written from a value of another width", count, v.w);
+    if (count == 4 && v.nzcv && !x->ins[v.nzcv - 1].fsel) {
+        /* a compare's (sgx_cold_cmp's): each flag one of its condition codes stored where the flags are still its,
+           first; one of two (Z) or made into a register before, by its bits */
+        int from = v.nzcv - 1, made[4] = {0, 0, 0, 0};
+        for (f = 0; f < 4; ++f) {
+            SgB c = x->ins[from].fb[f][0];
+            SgXIns* i;
+            if (x->ins[from].fb[f][1] || x->b[c].kind != SGX_B_CC || x->b[c].v != x->flags_ins) continue;
+            i = sgx_append(x, SGX_K_STORE_FLAG);
+            i->cc = (unsigned char)x->b[c].cc;
+            i->flags_from = from;
+            i->disp = sgx_flag_offset(f);
+            made[f] = 1;
+        }
+        for (f = 0; f < 4; ++f) {
+            SgD bit;
+            SgXIns* st;
+            int r;
+            if (made[f]) continue;
+            bit = sgx_cmp_flag_bits(x, from, (int)f);
+            bit.w = 32;
+            r = sgx_reg(x, &bit);
+            st = sgx_append(x, SGX_K_STORE);
+            st->w = 32;
+            st->in[0] = r;
+            st->disp = sgx_flag_offset(f);
+        }
+        g->origin = -1;
+        return;
+    }
     if (count == 4 && v.nzcv) {
         /* the four from the flags of the instruction that made them, each the condition code that is that flag */
         int from = v.nzcv - 1;
@@ -242,7 +276,7 @@ static inline SgD sgx_call(SgCtx* g, const char* sym, int rt_offset, int state, 
     g->fp_state[0] = g->fp_state[1] = 0;
     g->fp_bound[0] = g->fp_bound[1] = 0;
     g->fp_dbound[0] = g->fp_dbound[1] = 0;
-    g->fp_fz = 0;
+    g->fp_fz = g->fp_any = 0, g->fp_any_bits = 0;
     i = sgx_append(x, SGX_K_MACHINE);
     i->op = sym ? SGX_M_CALL : SGX_M_CALL_RT;
     i->sym = sym;

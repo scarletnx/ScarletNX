@@ -144,7 +144,7 @@ and at the plan.
 | Helpers, `snx_lookup`, calls into the runtime | `ir_helpers.c`, `ir_emit.c` |
 | The pass pipeline and the target CPU | `ir.c` |
 | The branch profile | `ir_profile.c` |
-| Units, the units held in memory, the module descriptor | `src/nx/loader/module_llvm.c`, `src/common/cpu/recompiler/x64/x64_cache.c`, `src/nx/loader/module_abi.h` |
+| Units, the units held in memory, the module descriptor | `src/nx/loader/module_llvm.c`, `module_x64.c`, `module_fallback_llvm.c`, `src/common/cpu/recompiler/x64/x64_cache.c`, `src/nx/loader/module_abi.h` |
 | Linkers and the code loader | `link_elf.c`, `link_coff.c`, `link_macho.c`, `code_loader.c`, `elf_object.c` |
 | The runtime JIT and its cache | `jit_service.c`, `jit_cache.c`, `src/nx/runtime/guest_jit.c`, `src/nx/runtime/rtapi.c` |
 | The contract with generated code | `src/common/cpu/aarch64/cpu.h` (`SNX_ABI`, `CPU`, `snx_lookup`), `cpu_helpers.c`, `helpers/`, `rtlib.c` |
@@ -203,7 +203,7 @@ without AVX-512, and the choices table in `tests/llvm_lowering.c` checks the ins
 the class does not show it.
 
 **Settings.** A new setting goes in `src/nx/runtime/settings.txt`, from which `tools/settingsgen` generates the code
-that reads it. A setting that changes generated code must also join the JIT cache key in `jit_cache.c`, as
+that reads it. A setting that changes generated code must also join the JIT cache key in `jit_cache_key.c`, as
 `volatile_memory` does. A mode that changes results stays a setting whose default keeps the exact behavior.
 
 **Game data.** Keys, dumps, `work/`, `recompiled/`, game logs, and shader or texture dumps stay on your machine. Commit

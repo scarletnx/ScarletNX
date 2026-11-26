@@ -3,23 +3,18 @@
 # Copyright 2026 the ScarletNX contributors
 """The ARM7TDMI profile (the AGB board's CPU) and A57, on the same words.
 
-Each witness runs under both profiles, at O0 and O2: the ARM7TDMI's rules (misaligned loads rotate and stores
-align, PC + 12 stores, STM's written back base, an unaligned LDM base, Thumb's POP {pc} without interworking and
-the bus hook, BL's halves apart) must hold there, and none of them may reach A57's blocks.
+Each witness runs under both profiles, its values in all the host registers and in three, so that they spill (or
+LLVM's blocks at each --opt level): the ARM7TDMI's rules (misaligned loads rotate and stores align, PC + 12 stores,
+STM's written back base, an unaligned LDM base, Thumb's POP {pc} without interworking and the bus hook, BL's halves
+apart) must hold there, and none of them may reach A57's blocks.
 """
 
 import argparse
 import ctypes as C
-import mmap
-import pathlib
-import subprocess
-import tempfile
 
-import arm_test as A
+from arm_blocks import CPU, PC, Blocks, Hook, add_variants, arm, thumb, variants
 
-PC = 0x1000
 SIZE = 0x04010000  # up to the AGB board's I/O window at 0x04000000, so the hook's addresses are mapped
-Hook = C.CFUNCTYPE(C.c_uint32, C.c_void_p, C.c_uint32, C.c_uint32, C.c_uint32)
 
 ARM = {
     'str_ldr': (0xE3A0002A, 0xE5840001, 0xE5941001),  # MOV r0, #42; STR r0, [r4, #1]; LDR r1, [r4, #1]
@@ -43,19 +38,11 @@ THUMB = {
 }
 
 
-def build(args, root, programs, emitter, profile, opt):
-    words = root / f'{emitter}-words.txt'
-    words.write_text(''.join(f'{PC:x} ' + ' '.join(f'{w:x}' for w in program) + '\n' for program in programs.values()))
-    stem = root / f'{emitter}-{profile}-O{opt}'
-    subprocess.run([getattr(args, emitter), str(words), f'{stem}.o', opt, profile], check=True)
-    subprocess.run([args.cc, '-shared', f'{stem}.o', args.runtime, '-o', f'{stem}.so'], check=True)
-    handle = C.CDLL(f'{stem}.so')
-    blocks = {}
-    for i, name in enumerate(programs):
-        fn = getattr(handle, f'block_{i}')
-        fn.argtypes, fn.restype = [C.POINTER(A.CPU)], None
-        blocks[name] = fn
-    return blocks
+def build(runner, profile, variant):
+    """each witness's block under profile, ARM's and THUMB's: (the blocks, its function)"""
+    blocks = Blocks(runner, arm(ARM.values()) + thumb(THUMB.values()), size=SIZE, profile=profile, **variant).refuse()
+    made = [(blocks, function) for function in blocks.functions]
+    return dict(zip(ARM, made)), dict(zip(THUMB, made[len(ARM) :])), blocks
 
 
 def word(memory, address):
@@ -70,11 +57,12 @@ class Run:
     """one block on a fresh CPU and zeroed memory; the hook records what reaches it"""
 
     def __init__(self, block, thumb=False, written=0, **registers):
-        self.backing = mmap.mmap(-1, SIZE)
-        self.memory = (C.c_uint8 * SIZE).from_buffer(self.backing)
+        self.blocks, self.block = block
+        self.blocks.clear()
+        self.memory = self.blocks.memory
         self.calls = []
         self.hook = Hook(lambda cpu, address, size_write, value: self.access(address, size_write, value))
-        self.cpu = A.CPU()
+        self.cpu = CPU()
         self.cpu.r[15] = PC
         self.cpu.cpsr = 0x10 | (32 if thumb else 0)
         for name, value in registers.items():
@@ -82,7 +70,6 @@ class Run:
         self.cpu.mem = self.memory
         self.cpu.mem_size = SIZE
         self.cpu.io = C.cast(self.hook, C.c_void_p)
-        self.block = block
         self.written = written
 
     def access(self, address, size_write, value):
@@ -90,7 +77,7 @@ class Run:
         return self.written if size_write & 0x100 else 0xCAFE
 
     def __call__(self):
-        self.block(C.byref(self.cpu))
+        self.block(self.cpu)
         return self.cpu
 
 
@@ -192,21 +179,15 @@ def check(arm, thumb, profile):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--arm-emitter', dest='arm', required=True)
-    parser.add_argument('--thumb-emitter', dest='thumb', required=True)
-    parser.add_argument('--cc', required=True)
-    parser.add_argument('--runtime', required=True, help='libsnx_arm_rt.a')
+    parser.add_argument('--blocks', required=True, help='snx-test-arm-blocks, for this host or another machine')
+    add_variants(parser)
     args = parser.parse_args()
-    with tempfile.TemporaryDirectory(prefix='snx-arm7tdmi-') as directory:
-        root = pathlib.Path(directory)
-        for opt in ('0', '2'):
-            for profile in ('arm7tdmi', 'a57'):
-                check(
-                    build(args, root, ARM, 'arm', profile, opt),
-                    build(args, root, THUMB, 'thumb', profile, opt),
-                    profile,
-                )
-                print(f'  {profile} O{opt}: {len(ARM) + len(THUMB)} witnesses passed', flush=True)
+    for variant in variants(parser, args):
+        for profile in ('arm7tdmi', 'a57'):
+            arm_blocks, thumb_blocks, blocks = build(args.blocks, profile, variant)
+            check(arm_blocks, thumb_blocks, profile)
+            print(f'  {blocks.name}, {profile}: {len(ARM) + len(THUMB)} witnesses passed', flush=True)
+            blocks.close()
 
 
 if __name__ == '__main__':

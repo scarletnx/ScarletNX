@@ -51,10 +51,10 @@ include("${PROJECT_SOURCE_DIR}/cmake/llvm.cmake")
 if(NOT TARGET snx_arm_llvm)
     add_subdirectory("${PROJECT_SOURCE_DIR}/src/common/cpu/arm" vita-arm-backend)
 endif()
-# The LLVM backend (snx_llvm, which the Switch driver's tree, the GNU ABI runtime's or the top level configures): the
-# offline compiler's objects and their helpers (armlib.c) linked by its linker, and the blocks the module lacks
-# compiled at run time by its executor (exec.c)
-target_link_libraries(snx_vita_program PUBLIC snx_arm_llvm snx_llvm)
+# The recompiler (snx_recompiler_jit, which the Switch driver's tree, the GNU ABI runtime's or the top level
+# configures): the offline compiler's objects and their helpers (armlib.c) linked by its linker, and the blocks the
+# module lacks compiled at run time by its executor (exec.c)
+target_link_libraries(snx_vita_program PUBLIC snx_arm_llvm snx_recompiler_jit)
 target_compile_definitions(snx_vita_program PRIVATE _CRT_SECURE_NO_WARNINGS)
 # The backend checked against Unicorn as the game runs (runtime/lockstep.h), for debugging the AArch32 backend: Unicorn's
 # headers and library (its Python package's libunicorn.so.2 will do) where the build is told

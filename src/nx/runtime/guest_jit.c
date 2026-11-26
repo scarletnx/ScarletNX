@@ -20,8 +20,8 @@
 #include "nx/runtime/platform/tracy.h"
 #include "common/cpu/recompiler/image.h"
 #include "common/cpu/recompiler/variants.h"
-#include "common/cpu/recompiler/llvm/gdb_jit.h"
-#include "common/cpu/recompiler/llvm/jit_service.h"
+#include "common/cpu/recompiler/loader/gdb_jit.h"
+#include "common/cpu/recompiler/jit/jit_service.h"
 #include "common/platform/dl.h"
 #include "common/utilities/common.h"
 #include <assert.h>

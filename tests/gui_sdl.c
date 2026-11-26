@@ -1096,6 +1096,297 @@ static void microphone_words(App* app) {
     leave_form(app);
     settings_forget(app);
 }
+/* the group a row of the Settings' groups' list opens: its row past Search's, the first */
+static GuiRect group_row_box(App* app, int g) { return row_box(app, g + 1, false); }
+/* Settings' search: its row over the groups (Up from the first, a hover, a click), Ctrl+F and a pad's Y open it; what is
+   typed is looked for as it is typed, whatever its case and accents, the best rows first with where each is; Enter goes
+   to them, which change where they are; G opens a row's group on it; a page, App's rows and a link's screen go back to
+   it; no row, nothing to act on; ESC, the groups; past GUI_VIEW_ROWS, how many more */
+static void settings_search(App* app) {
+    char list[4096] =
+        "Display\tfullscreen\t0\tint\t0\t1\tFullscreen\tFullscreen\t0=Off|1=On\n"
+        "Graphics\tfps_limit\t60\tint\t0\t240\tThe most frames a second\tFPS limit\t0=Unlimited|30=30|60=60\n"
+        "Graphics/Vulkan Extensions\tvk_x\t1\tint\t0\t1\tAn extension\tAn extension\t0=Off|1=On\n";
+    int graphics, n = (int)strlen(list);
+    SDL_Event pad = {0};
+    for (int i = 0; i < 30; ++i) /* more rows that match than the search shows */
+        n += snprintf(list + n, sizeof list - (size_t)n,
+                      "Debug\tzlimit_%02d\t0\tint\t0\t1\tA test's\tZlimit %02d\t0=Off|1=On\n", i, i);
+    settings_forget(app);
+    assert(!gui_settings_read(&app->settings, list));
+    gui_settings_mark(&app->settings);
+    open_settings(app);
+    for (graphics = 0; graphics < app->groups && strcmp(app->group_name[graphics], "Graphics"); ++graphics) {}
+    assert(graphics < app->groups && app->form == GUI_FORM_SETTINGS && !app->editor.row && !app->search_row);
+    /* its row first in the list, Up from App goes to it and Down back; Enter there opens the search's dialog */
+    render(app);
+    shows(app, "- " ICON_EYE " Search", normal);
+    key(app, SDLK_UP);
+    assert(app->search_row && !app->editor.row);
+    render(app);
+    shows(app, "- " ICON_EYE " Search", yellow);
+    assert(!strcmp(form_note(app), "Enter: look for a setting by the words of its name, key, group or help"));
+    key(app, SDLK_DOWN);
+    assert(!app->search_row && !app->editor.row && app->form == GUI_FORM_SETTINGS);
+    key(app, SDLK_UP);
+    key(app, SDLK_RETURN);
+    assert(search_typing(app) && !app->view_count);
+    /* as it is typed, whatever the case and the accents: the row and where it is; Enter goes to the rows */
+    typed(app, "J\xC3\x81VA");
+    assert(search_typing(app) && app->view_count == 1 && setting_of(app, 0) == setting_row(app, "java_home"));
+    assert(!strcmp(app->search_text, "J\xC3\x81VA"));
+    key(app, SDLK_RETURN);
+    assert(search_shown(app) && !app->editor.typing && !app->editor.row);
+    render(app);
+    shows(app, "SCARLETNX  /  SETTINGS  /  SEARCH", normal);
+    shows(app, "Search: J\xC3\x81VA", normal);
+    shows(app, "Launch", yellow); /* where it is, at its row's end in the focus's ink */
+    assert(!strcmp(form_note(app), "1 of 1 settings"));
+    key(app, SDLK_ESCAPE); /* the groups, on Search */
+    assert(app->form == GUI_FORM_SETTINGS && app->search_row && !app->searching);
+    /* Ctrl+F from a group; a word row changes where it is, Del puts it back; G opens its group on it */
+    key(app, SDLK_DOWN);
+    app->editor.row = graphics;
+    key(app, SDLK_RETURN);
+    assert(app->form == GUI_FORM_GROUP && app->group == graphics);
+    key_with(app, SDLK_F, SDL_KMOD_LCTRL);
+    assert(search_typing(app));
+    typed(app, "fps");
+    key(app, SDLK_RETURN);
+    assert(app->view_count == 1 && setting_of(app, 0) == setting_row(app, "fps_limit"));
+    key(app, SDLK_RIGHT);
+    assert(search_shown(app) && setting_is(app, "fps_limit", "0"));
+    key(app, SDLK_DELETE);
+    assert(search_shown(app) && setting_is(app, "fps_limit", NULL));
+    render(app);
+    shows(app, "Graphics", yellow);
+    key(app, SDLK_G);
+    assert(app->form == GUI_FORM_GROUP && !app->searching && app->group == graphics &&
+           setting_of(app, app->editor.row) == setting_row(app, "fps_limit"));
+    key(app, SDLK_ESCAPE); /* from there, the groups */
+    assert(app->form == GUI_FORM_SETTINGS && app->editor.row == graphics && !app->search_row);
+    /* the page's row before the page's row of its words; the page opened from it goes back to it, as it was */
+    key_with(app, SDLK_F, SDL_KMOD_LCTRL);
+    typed(app, "vulkan ext");
+    key(app, SDLK_RETURN);
+    assert(app->view_count == 2 && screen_settings(app)->values[setting_of(app, 0)].kind == GUI_SETTING_PAGE &&
+           setting_of(app, 1) == setting_row(app, "vk_x"));
+    key(app, SDLK_DOWN);
+    render(app);
+    shows(app, "Graphics > Vulkan Extensions", yellow);
+    key(app, SDLK_UP);
+    key(app, SDLK_RETURN);
+    assert(app->form == GUI_FORM_GROUP && app->page >= 0 && !app->searching && app->search_back);
+    key(app, SDLK_ESCAPE);
+    assert(search_shown(app) && app->view_count == 2 && !app->editor.row && !strcmp(app->search_text, "vulkan ext"));
+    /* the dialog again, with what it had: what is typed then and taken back with ESC leaves the search as it was */
+    key_with(app, SDLK_F, SDL_KMOD_LCTRL);
+    assert(search_typing(app) && !strcmp(app->editor.text, "vulkan ext"));
+    typed(app, "zzz");
+    assert(!app->view_count);
+    key(app, SDLK_ESCAPE);
+    assert(search_shown(app) && !app->editor.typing && app->view_count == 2 && !strcmp(app->search_text, "vulkan ext"));
+    /* App's rows: Enter opens App on the row, ESC comes back */
+    key_with(app, SDLK_F, SDL_KMOD_LCTRL);
+    for (int i = 0; i < 10; ++i) key(app, SDLK_BACKSPACE);
+    typed(app, "theme editor");
+    key(app, SDLK_RETURN);
+    assert(app->view_count == 1 && setting_of(app, 0) >= screen_settings(app)->count);
+    render(app);
+    shows(app, "App", yellow);
+    key(app, SDLK_RIGHT); /* nothing on a link but Enter */
+    assert(search_shown(app));
+    key(app, SDLK_RETURN);
+    assert(app->form == GUI_FORM_APP && app->editor.row == GUI_APP_EDITOR);
+    key(app, SDLK_ESCAPE);
+    assert(search_shown(app) && app->view_count == 1);
+    /* nothing matches: said, and no key acts on a row */
+    key_with(app, SDLK_F, SDL_KMOD_LCTRL);
+    typed(app, "qqqq");
+    key(app, SDLK_RETURN);
+    assert(search_shown(app) && !app->view_count &&
+           !strcmp(form_note(app), "No setting matches \"theme editorqqqq\". ESC: the groups"));
+    key(app, SDLK_RIGHT);
+    key(app, SDLK_RETURN);
+    key(app, SDLK_DELETE);
+    assert(search_shown(app) && !gui_settings_changed(&app->settings));
+    key(app, SDLK_ESCAPE);
+    assert(app->form == GUI_FORM_SETTINGS && app->search_row);
+    /* more than it shows: the best GUI_VIEW_ROWS, how many there are said */
+    key(app, SDLK_RETURN);
+    typed(app, "zlimit");
+    assert(app->view_count == GUI_VIEW_ROWS && app->search_total == 30 &&
+           !strcmp(form_note(app), "24 of 30 settings: type more to see the rest"));
+    key(app, SDLK_ESCAPE); /* nothing before it: the groups */
+    assert(app->form == GUI_FORM_SETTINGS && app->search_row && !app->searching);
+    /* a pad's Y opens it; the pointer over its row focuses it, a click there opens it, from a group too */
+    pad.type = SDL_EVENT_KEY_DOWN;
+    pad.key.key = SDLK_R;
+    pad.key.which = GUI_PAD_KEYBOARD;
+    key(app, SDLK_DOWN);
+    event(app, &pad);
+    assert(search_typing(app));
+    key(app, SDLK_ESCAPE);
+    key(app, SDLK_DOWN);
+    point(app, row_box(app, 0, false), false);
+    assert(app->search_row);
+    point(app, group_row_box(app, graphics), false);
+    assert(!app->search_row && app->editor.row == graphics);
+    point(app, row_box(app, 0, false), false);
+    point(app, row_box(app, 0, false), true);
+    assert(search_typing(app));
+    key(app, SDLK_ESCAPE);
+    key(app, SDLK_DOWN);
+    app->editor.row = graphics;
+    key(app, SDLK_RETURN);
+    point(app, row_box(app, 0, false), true);
+    assert(search_typing(app));
+    key(app, SDLK_ESCAPE);
+    leave_editor(app);
+    settings_forget(app);
+}
+/* a setting's list: on a row of three words or more Alt+Down, a right click, a finger or a pad's A held GUI_HOLD_MS open
+   its words in a box, its word in focus, the foot saying how; Enter takes one, ESC leaves the row as it was; Other...,
+   on a row that takes a value of its own, types it, one it does not take said; a row of two words has none, said; a
+   pad's A let go before, and a finger lifted, step the row as before */
+static void setting_lists(App* app) {
+    static const char list[] =
+        "Display\tfullscreen\t0\tint\t0\t1\tFullscreen\tFullscreen\t0=Off|1=On\n"
+        "Graphics\tfps_limit\t60\tint\t0\t240\tThe most frames a second\tFPS limit\t0=Unlimited|30=30|60=60|120=120\t\t\topen\n"
+        "Graphics\tupscaler\toff\ttext\t0\t0\tThe upscaler\tUpscaler\toff=Off|fsr=AMD FSR 1|nis=NVIDIA NIS\n";
+    char said[1024];
+    int g;
+    settings_forget(app);
+    assert(!gui_settings_read(&app->settings, list));
+    gui_settings_mark(&app->settings);
+    open_settings(app);
+    for (g = 0; g < app->groups && strcmp(app->group_name[g], "Graphics"); ++g) {}
+    app->editor.row = g;
+    key(app, SDLK_RETURN);
+    app->editor.row = row_of(app, setting_row(app, "fps_limit"));
+    assert(app->form == GUI_FORM_GROUP && words_row(app) == setting_row(app, "fps_limit"));
+    assert(strstr(shown_keys(app, said, sizeof said), "Alt+Down/right click: list."));
+    key_with(app, SDLK_DOWN, SDL_KMOD_LALT);
+    assert(app->picks_shown && app->picks_of == GUI_PICKS_WORDS && app->picks.count == 5 && app->picks.focus == 2);
+    render(app);
+    shows(app, "- 60", yellow);
+    shows(app, "- Other...", normal);
+    key(app, SDLK_DOWN);
+    key(app, SDLK_RETURN);
+    assert(!app->picks_shown && setting_is(app, "fps_limit", "120") && app->form == GUI_FORM_GROUP);
+    key_with(app, SDLK_DOWN, SDL_KMOD_LALT);
+    key(app, SDLK_UP);
+    key(app, SDLK_ESCAPE); /* as it was */
+    assert(!app->picks_shown && setting_is(app, "fps_limit", "120"));
+    /* Other...: a value of its own, typed; one the row does not take said with the value it keeps */
+    key_with(app, SDLK_DOWN, SDL_KMOD_LALT);
+    app->picks.focus = 4;
+    key(app, SDLK_RETURN);
+    assert(app->editor.typing && app->word_typing);
+    typed(app, "300");
+    key(app, SDLK_RETURN);
+    assert(app->editor.typing && !strcmp(app->editor.note, "300 is no value of FPS limit: it keeps 120"));
+    for (int i = 0; i < 3; ++i) key(app, SDLK_BACKSPACE);
+    typed(app, "75");
+    key(app, SDLK_RETURN);
+    assert(!app->editor.typing && !app->word_typing && setting_is(app, "fps_limit", "75"));
+    key(app, SDLK_DELETE);
+    { /* a pad's A held on it: its list, and the lift takes nothing; let go before, a press as ever */
+        SDL_VirtualJoystickDesc d;
+        SDL_JoystickID id;
+        SDL_Joystick* j;
+        Uint64 clock = app->clock;
+        bool started = app->pads.started;
+        if (!started) pads_follow(app);
+        assert(app->pads.started);
+        SDL_INIT_INTERFACE(&d);
+        d.type = SDL_JOYSTICK_TYPE_GAMEPAD;
+        d.naxes = SDL_GAMEPAD_AXIS_COUNT;
+        d.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
+        d.vendor_id = 0x045e;
+        d.product_id = 0x02ea;
+        d.name = "Hold Pad";
+        id = SDL_AttachVirtualJoystick(&d);
+        j = SDL_OpenJoystick(id);
+        assert(id && j);
+        pads(app);
+        app->clock = 20000;
+        SDL_SetJoystickVirtualButton(j, SDL_GAMEPAD_BUTTON_SOUTH, true);
+        pads(app);
+        assert(app->pad_hold_ms && !app->picks_shown && setting_is(app, "fps_limit", NULL));
+        app->clock += GUI_HOLD_MS + 10;
+        pad_hold_tick(app);
+        assert(app->picks_shown && app->picks_of == GUI_PICKS_WORDS);
+        SDL_SetJoystickVirtualButton(j, SDL_GAMEPAD_BUTTON_SOUTH, false);
+        pads(app);
+        assert(app->picks_shown && !app->pad_hold_ms && setting_is(app, "fps_limit", NULL));
+        key(app, SDLK_ESCAPE);
+        SDL_SetJoystickVirtualButton(j, SDL_GAMEPAD_BUTTON_SOUTH, true);
+        pads(app);
+        SDL_SetJoystickVirtualButton(j, SDL_GAMEPAD_BUTTON_SOUTH, false);
+        pads(app);
+        assert(!app->picks_shown && setting_is(app, "fps_limit", "120")); /* the next word */
+        key(app, SDLK_DELETE);
+        SDL_CloseJoystick(j);
+        assert(SDL_DetachVirtualJoystick(id));
+        pads(app);
+        if (!started) gui_pads_stop(&app->pads);
+        pad_drive(app, false);
+        app->clock = clock;
+    }
+    /* a right click on another row: its list, on its word */
+    {
+        GuiRect b = row_box(app, row_of(app, setting_row(app, "upscaler")), true);
+        right_click_px(app, b.x + 4, b.y + 4);
+        assert(app->picks_shown && app->picks_of == GUI_PICKS_WORDS && app->picks.count == 3 && !app->picks.focus &&
+               setting_of(app, app->editor.row) == setting_row(app, "upscaler"));
+        key(app, SDLK_DOWN);
+        key(app, SDLK_RETURN);
+        assert(setting_is(app, "upscaler", "fsr"));
+        key(app, SDLK_DELETE);
+        /* a finger held on it: its list, and the lift taps nothing */
+        Uint64 clock = app->clock;
+        app->clock = 10000;
+        finger_px(app, SDL_EVENT_FINGER_DOWN, b.x + 4, b.y + 4);
+        app->clock += GUI_HOLD_MS + 10;
+        hold_tick(app);
+        assert(app->picks_shown && app->picks_of == GUI_PICKS_WORDS);
+        finger_px(app, SDL_EVENT_FINGER_UP, b.x + 4, b.y + 4);
+        assert(app->picks_shown && setting_is(app, "upscaler", NULL));
+        key(app, SDLK_ESCAPE);
+        app->clock = clock;
+    }
+    /* App's Side panel, Background recompile and Language: their lists too, kept in app.ini as their steps are */
+    {
+        int was = (int)app->side_box;
+        open_app(app, GUI_APP_SIDE);
+        assert(words_app_row(app) == GUI_APP_SIDE && strstr(shown_keys(app, said, sizeof said), "list."));
+        key_with(app, SDLK_DOWN, SDL_KMOD_LALT);
+        assert(app->picks_shown && app->picks.count == 3 && app->picks.focus == was);
+        key(app, SDLK_DOWN);
+        key(app, SDLK_RETURN);
+        assert(!app->picks_shown && (int)app->side_box == (was + 1) % 3 && app->form == GUI_FORM_APP);
+        key_with(app, SDLK_DOWN, SDL_KMOD_LALT);
+        app->picks.focus = was;
+        key(app, SDLK_RETURN);
+        assert((int)app->side_box == was);
+        app->editor.row = GUI_APP_ANIMATIONS; /* two words: none */
+        key_with(app, SDLK_DOWN, SDL_KMOD_LALT);
+        assert(!app->picks_shown && !strcmp(app->editor.note, "Animations has no list: Enter changes it"));
+        leave_editor(app);
+        open_settings(app);
+    }
+    /* a row of two words: none, said */
+    for (g = 0; g < app->groups && strcmp(app->group_name[g], "Display"); ++g) {}
+    app->editor.row = g;
+    key(app, SDLK_RETURN);
+    app->editor.row = row_of(app, setting_row(app, "fullscreen"));
+    assert(words_row(app) < 0 && !strstr(shown_keys(app, said, sizeof said), "list."));
+    key_with(app, SDLK_DOWN, SDL_KMOD_LALT);
+    assert(!app->picks_shown && !strcmp(app->editor.note, "Fullscreen has no list: Enter changes it"));
+    leave_editor(app);
+    settings_forget(app);
+}
 /* the Room password: its row in Network says whether there is one, and the dialog that takes one starts empty, draws
    stars alone and keeps none of the letters; written 0600 in users/online.ini, never in settings.ini nor a run's
    options; Del takes it off; refused text is said and can be mended; a file others can read is said; another version's
@@ -1150,7 +1441,7 @@ static void room_password_row(App* app, const char* temporary) {
     typed(app, "s3cret pass");
     key(app, SDLK_RETURN);
     assert(!app->editor.typing && !app->editor.text[0] && !strcmp(app->editor.note, "Room password: set"));
-    assert(!snx_users_room_password(users, password, sizeof password, why, sizeof why) &&
+    assert(!snx_users_room_password(users, password, sizeof password, NULL, why, sizeof why) &&
            !strcmp(password, "s3cret pass"));
 #ifndef _WIN32
     {
@@ -1189,7 +1480,8 @@ static void room_password_row(App* app, const char* temporary) {
     key(app, SDLK_RETURN); /* a new one puts it right: its file is the owner's alone */
     typed(app, "fresh");
     key(app, SDLK_RETURN);
-    assert(!snx_users_room_password(users, password, sizeof password, why, sizeof why) && !strcmp(password, "fresh"));
+    assert(!snx_users_room_password(users, password, sizeof password, NULL, why, sizeof why) &&
+           !strcmp(password, "fresh"));
     key(app, SDLK_DELETE);
 #endif
     { /* another version's key there (a sign-in's, whose value is a secret): the password is set and taken off with it
@@ -1231,7 +1523,7 @@ static void room_password_row(App* app, const char* temporary) {
         log = (char*)snx_read_file(console, &size);
         for (char* at = log; at && (at = strstr(at, "sign_in")); ++at) ++named;
         assert(named == 1 &&
-               strstr(log, "users/online.ini: this version reads room_password (none) and no other key: sign_in") &&
+               strstr(log, "users/online.ini: this version does not read sign_in, which stays as it is") &&
                !strstr(log, "FAKE"));
         free(log);
         assert(!snx_remove_tree(logs));
@@ -2236,7 +2528,7 @@ static bool games_lists(const App* app, const char* shown) {
 }
 /* Games' View box (V): Recent Games and Dumps, on by default, and Sort, by title; each changed by Enter, Left, Right
    or a click, kept in app.ini at once and Games listed again by it; an app.ini without them (an older version's) has
-   the defaults, iOS's off; a word it does not know named with the one it keeps */
+   the defaults, iOS's off; a word it does not read named with the one it keeps */
 /* the presses of a player who goes on while Games is read: Tab, then a pad's R1 (RB, Tab's button) and their
    releases, pushed on SDL's queue from SDL's timer thread, after which the listing is done */
 static const Uint32 pressed_during[] = {SDL_EVENT_KEY_DOWN, SDL_EVENT_KEY_UP, SDL_EVENT_GAMEPAD_BUTTON_DOWN,
@@ -2494,21 +2786,28 @@ static void view_box(App* app, const char* temporary) {
                  "Not used from %s: recent_games = maybe (it keeps on), games_dumps = none (it keeps off), "
                  "games_sort = newest (it keeps title)",
                  app->app_file);
-        assert(recent_on(app) && !dumps_on(app) && !by_last_opened(app) && !strcmp(app->message, expected));
+        /* and a key given twice, by both lines, as every settings file says it */
+        assert(recent_on(app) && !dumps_on(app) && !by_last_opened(app) &&
+               !strncmp(app->message, expected, strlen(expected)) &&
+               strstr(app->message,
+                      "[app] games_dumps is given twice, games_dumps=off on line 3 and games_dumps=none on "
+                      "line 4: the last line's is taken"));
         broken = "[app]\nrecent_games = maybe\nrecent_games = off\n"; /* the file's own after it, in use after it */
         assert(!snx_write_file(app->app_file, broken, strlen(broken)));
         games_defaults(app);
         app->message[0] = 0;
         app_load(app);
         snprintf(expected, sizeof expected, "Not used from %s: recent_games = maybe (it keeps off)", app->app_file);
-        assert(!recent_on(app) && dumps_on(app) && !strcmp(app->message, expected));
+        assert(!recent_on(app) && dumps_on(app) && !strncmp(app->message, expected, strlen(expected)) &&
+               strstr(app->message, "[app] recent_games is given twice"));
         broken = "[app]\ngames_icons = large\ngames_icons = huge\n"; /* Icon size's three words */
         assert(!snx_write_file(app->app_file, broken, strlen(broken)));
         games_defaults(app);
         app->message[0] = 0;
         app_load(app);
         snprintf(expected, sizeof expected, "Not used from %s: games_icons = huge (it keeps large)", app->app_file);
-        assert(app->options[GUI_OPTION_ICONS] == 2 && !strcmp(app->message, expected));
+        assert(app->options[GUI_OPTION_ICONS] == 2 && !strncmp(app->message, expected, strlen(expected)) &&
+               strstr(app->message, "[app] games_icons is given twice"));
         games_defaults(app);
         app->message[0] = 0;
     }
@@ -4525,7 +4824,8 @@ static void run_amberlith(App* app, const char* temporary) {
         app->message[0] = 0;
         app_load(app);
         ini = snx_format("Not used from %s: probe_mode = slow (it keeps full)", app->app_file);
-        assert(app->probe_full && !strcmp(app->message, ini));
+        assert(app->probe_full && !strncmp(app->message, ini, strlen(ini)) &&
+               strstr(app->message, "[app] probe_mode is given twice"));
         free(ini);
         free(broken);
     }
@@ -6839,17 +7139,17 @@ static void ctr_own_console(App* app, const char* dir) {
         recent_changed(app);
         assert(!remove(picks));
     }
-    /* Clean Old Settings, the games' own with them: a 3DS game's picks keep its console and lose the rest; a Switch
-       game's, a console's key in them too, are as they were */
+    /* Clean Old Settings, the games' own with them: a 3DS game's picks keep its console and another console's key,
+       and lose an older version's; a Switch game's, a console's key in them too, are as they were */
     {
         GuiCleaned done = {0};
         char* other = snx_path_join(app->games_dir, "a switch game.picks");
         int keys_taken = 0;
-        fixture_text(picks, "[3DS]\nctr_model=old\n[Display]\nfullscreen=1\n");
+        fixture_text(picks, "[3DS]\nctr_model=old\n[Display]\nfullscreen=1\nvk_defrag=1\n");
         fixture_text(other, "[Display]\nfullscreen=1\n[3DS]\nctr_model=old\n");
         assert(clean_picks(app, &done, &keys_taken) == 1 && keys_taken == 1 && done.count == 1);
         assert((text = (char*)snx_read_file(picks, &size)) && strstr(text, "ctr_model=old\n") &&
-               !strstr(text, "fullscreen"));
+               strstr(text, "\nfullscreen=1\n") && !strstr(text, "vk_defrag"));
         free(text);
         assert((text = (char*)snx_read_file(other, &size)) &&
                !strcmp(text, "[Display]\nfullscreen=1\n[3DS]\nctr_model=old\n"));
@@ -8183,13 +8483,14 @@ int main(int argc, char** argv) {
     shows(&app, "Reset to Defaults", rgb(app.theme.soft));
     hides(&app, "\x1e", rgb(app.theme.soft)); /* every row shows: no arrows */
     hides(&app, "\x1f", rgb(app.theme.soft));
-    { /* F1's box here: every key every screen has, the groups' none of their own, so no title over them */
+    { /* F1's box here: the groups' own key first, the search's, then under its title every key every screen has */
         GuiHelpKeys k;
         key(&app, SDLK_F1);
         render(&app);
         help_keys(&app, &k);
-        assert(app.help_shown && k.own == 0 && k.n >= 5 && help_rows(&k) == k.n);
-        hides(&app, "Every screen", normal);
+        assert(app.help_shown && k.own == 1 && k.n >= 6 && help_rows(&k) == k.n + 1 &&
+               !strncmp(k.said, "Ctrl+F: search.", 15));
+        shows(&app, "Every screen", normal);
         key(&app, SDLK_ESCAPE);
         assert(!app.help_shown && app.form == GUI_FORM_SETTINGS);
     }
@@ -8583,30 +8884,29 @@ int main(int argc, char** argv) {
         hides(&app, "- Layout", normal);
         { /* a row with nothing to do greyed, still there (#614): Move Old Files with nothing left, Clean Old Settings
              with nothing to clean; something to do, F5 looking again, in ink; Enter on a greyed one says why */
-            size_t size = 0;
-            char *was = (char*)snx_read_file(app.app_file, &size), *old;
-            int row = app.editor.row;
+            /* an older version's keys: a game's .ini with them under [Deprecated] */
+            char* old = snx_path_join(app.games_dir, "Old game.ini");
+            int row = app.editor.row, had_games = snx_is_dir(app.games_dir);
             assert(!app.lefts);
             shows(&app, "- " ICON_FOLDER_INPUT " Move Old Files", rgb(app.theme.soft));
             app.editor.row = GUI_APP_CLEAN;
             key(&app, SDLK_RETURN);
             assert(!app.confirm.shown && strstr(app.editor.note, "Nothing to clean"));
             app.lefts = 1;
-            old = snx_format("%s[app]\nan_old_key = 1\n", was ? was : "");
-            assert(!snx_write_file(app.app_file, old, strlen(old)));
+            assert(!snx_mkdirs(app.games_dir) && !snx_write_file(old, "[Deprecated]\nrenderer=gl\n", 25));
             app.editor.row = row; /* off them: the warning colour they want, unfocused */
             key(&app, SDLK_F5);
             render(&app);
             shows(&app, "- " ICON_FOLDER_INPUT " Move Old Files", rgb(app.theme.warning));
             shows(&app, "- " ICON_ERASER " Clean Old Settings", rgb(app.theme.warning));
-            assert(!snx_write_file(app.app_file, was ? was : "", was ? size : 0));
+            assert(!remove(old));
+            if (!had_games) snx_remove_empty_dir(app.games_dir);
             app.lefts = 0;
             app.clean_found = -1;
             app.editor.row = row;
             app.editor.note[0] = 0;
             render(&app);
             free(old);
-            free(was);
         }
         key(&app, SDLK_RIGHT);
         assert(strcmp(app.theme.name, first) && !strcmp(app.app_form.theme, app.theme.name));
@@ -8985,16 +9285,30 @@ int main(int argc, char** argv) {
             app_load(&app);
             assert(app.menu.text_size == 2 && !app.message[0]);
         }
-        /* a file a hand broke: what it does not know is left, named, and the menu keeps what it has */
+        /* a file a hand broke: a value it does not take said with the one it keeps; another version's keys named,
+           never by their values, and left; a key given twice said with both lines; the menu keeps what it has */
         assert(!snx_write_file(app.app_file, broken, strlen(broken)));
         app_load(&app);
         assert(!strcmp(app.theme.id, first_id) && app.menu.text_size == start);
         snprintf(expected, sizeof expected,
-                 "Not used from %s: theme = gone, text_size = 9, layout = boxes, colour = red, text_size = 2x, "
-                 "[other] layout = panels",
-                 app.app_file);
-        assert(!strcmp(app.message, expected));
+                 "Not used from %s: theme = gone (it keeps %s), text_size = 9 (it keeps %d), text_size = 2x (it keeps "
+                 "%d) %s: this version does not read [app] layout, [app] colour, [other] layout, which stay as they "
+                 "are; [app] text_size is given twice, text_size=9 on line 3 and text_size=2x on line 6: the last "
+                 "line's is taken",
+                 app.app_file, first_id, start, start, app.app_file);
+        if (strcmp(app.message, expected)) fprintf(stderr, "said: %s\nnot:  %s\n", app.message, expected);
+        assert(!strcmp(app.message, expected) && !strstr(app.message, "boxes") && !strstr(app.message, "panels"));
         app.message[0] = 0;
+        { /* written again, the keys it does not read stay as they were, after its own; taken out by hand for what
+             follows, which reads the file whole */
+            size_t written_size = 0;
+            char* written = NULL;
+            assert(!app_save(&app) && (written = (char*)snx_read_file(app.app_file, &written_size)));
+            assert(strstr(written, "\n[app]\nlayout = boxes\ncolour = red\n[other]\nlayout = panels\n") &&
+                   !strstr(written, "theme = gone") && !strstr(written, "text_size"));
+            free(written);
+            assert(!remove(app.app_file));
+        }
         /* a file that cannot be written: the pick holds for the session, and the note says it is not kept */
         assert(!snx_write_file(blocker, "file", 4));
         app.app_file = snx_path_join(blocker, "app.ini");
@@ -9101,7 +9415,9 @@ int main(int argc, char** argv) {
         assert(!snx_write_file(app.app_file, unknown, strlen(unknown)));
         app_load(&app);
         assert(app.language == 2 && snx_tr_language() == 1);
-        snprintf(expected, sizeof expected, "Fora de uso em %s: language = tlh", app.app_file); /* in xx: its words */
+        /* in xx: its words, and the language it keeps in English, which xx has no words for */
+        snprintf(expected, sizeof expected, "Fora de uso em %s: language = tlh (it keeps xx)", app.app_file);
+        if (strcmp(app.message, expected)) fprintf(stderr, "said: %s\nnot:  %s\n", app.message, expected);
         assert(!strcmp(app.message, expected));
         app.message[0] = 0;
         /* zh_TW, as a build before the tags wrote zh-Hant-TW: that language, its tag written in place of it, the file's
@@ -9286,9 +9602,10 @@ int main(int argc, char** argv) {
         shows_half(&app, "this version no longer reads. Asks first", normal);
         key(&app, SDLK_RETURN); /* a box says what it would take out, Back in focus */
         assert(app.confirm.shown && app.confirm.ask == GUI_ASK_CLEAN && !app.cleaned_shown && snx_is_file(old_ini));
-        assert(!strcmp(app.ask_line, "Clean Old Settings? [Deprecated] in 1 .ini, 2 old keys"));
+        /* app.ini's theme = gone is a value it does not take, said as it opens, no older version's key */
+        assert(!strcmp(app.ask_line, "Clean Old Settings? [Deprecated] in 1 .ini, 1 old key"));
         render(&app);
-        shows(&app, "Clean Old Settings? [Deprecated] in 1 .ini, 2 old keys", rgb(app.theme.warning));
+        shows(&app, "Clean Old Settings? [Deprecated] in 1 .ini, 1 old key", rgb(app.theme.warning));
         shows(&app, "- Cancel", yellow);
         shows(&app, "- Clean", rgb(app.theme.warning));
         key(&app, SDLK_ESCAPE); /* Back: nothing taken out */
@@ -9299,37 +9616,36 @@ int main(int argc, char** argv) {
         key(&app, SDLK_RETURN);
         key(&app, SDLK_DOWN);
         key(&app, SDLK_RETURN);
-        assert(!app.confirm.shown && app.cleaned_shown && app.cleaned.count == 3 && app.cleaned.done == 3);
-        assert(!strcmp(app.editor.note, "Cleaned: 3 done, 0 not"));
+        assert(!app.confirm.shown && app.cleaned_shown && app.cleaned.count == 2 && app.cleaned.done == 2);
+        assert(!strcmp(app.editor.note, "Cleaned: 2 done, 0 not"));
         kept = (char*)snx_read_file(old_ini, &size);
         assert(kept && !strcmp(kept, "[Other]\nlanguage=en\n"));
         free(kept);
         assert(!settings_unread(&app, unread, sizeof unread) && setting_is(&app, "fullscreen", "1"));
-        snprintf(expected, sizeof expected,
-                 "+\t%s\t[Deprecated] removed\n+\t%s\tRemoved renderer=opengl\n+\t%s\tRemoved theme = gone\n", old_ini,
-                 app.settings_file, app.app_file);
+        snprintf(expected, sizeof expected, "+\t%s\t[Deprecated] removed\n+\t%s\tRemoved renderer=opengl\n", old_ini,
+                 app.settings_file);
         assert(!strcmp(app.cleaned.text, expected));
-        kept = (char*)snx_read_file(app.app_file, &size); /* the picks as the menu has them */
-        snprintf(expected, sizeof expected, "\ntheme = %s\n", app.theme.id);
-        assert(kept && strstr(kept, expected) && !strstr(kept, "gone"));
+        kept = (char*)snx_read_file(app.app_file, &size); /* app.ini as it was: Clean takes no value out */
+        assert(kept && !strcmp(kept, gone));
         free(kept);
         render(&app);
-        shows(&app, "Clean Old Settings: 3 done", title);
+        shows(&app, "Clean Old Settings: 2 done", title);
         shows(&app, "[Deprecated] removed", rgb(app.theme.soft));
         shows(&app, "- OK", yellow);
-        key(&app, SDLK_DOWN); /* the three show: nothing to go to */
+        key(&app, SDLK_DOWN); /* the two show: nothing to go to */
         assert(app.cleaned_shown && !app.files_top && app.editor.row == GUI_APP_CLEAN);
         key(&app, SDLK_LEFT); /* closes it, and does nothing else */
         assert(!app.cleaned_shown && app.editing && app.form == GUI_FORM_APP && app.editor.row == GUI_APP_CLEAN);
         render(&app);
-        hides(&app, "Clean Old Settings: 3 done", title);
+        hides(&app, "Clean Old Settings: 2 done", title);
         key(&app, SDLK_RETURN);
         assert(!app.confirm.shown && !strncmp(app.editor.note, "Nothing to clean", 16));
-        /* a game's own picks keeping a key no setting takes: asked with them, the games' own in focus; Back and Keep
-           the Games' Own leave the file, With the Games' Own writes it without the key, an entry of the report */
+        /* a game's own picks keeping an older version's key: asked with them, the games' own in focus; Back and Keep
+           the Games' Own leave the file, With the Games' Own writes it without the key, an entry of the report. A key
+           of another version, which no older one had, stays */
         {
             char* picks = snx_path_join(app.games_dir, "Old game.picks");
-            const char* own = "[Display]\nfullscreen=1\n[Other]\nnewer_key=5\n";
+            const char* own = "[Display]\nfullscreen=1\n[Other]\nvk_defrag=5\nnewer_key=5\n";
             assert(!snx_write_file(picks, own, strlen(own)));
             key(&app, SDLK_RETURN);
             assert(app.confirm.shown && app.confirm.ask == GUI_ASK_CLEAN_OWN && app.confirm.selected == 1 &&
@@ -9351,9 +9667,9 @@ int main(int argc, char** argv) {
             key(&app, SDLK_RETURN);
             key(&app, SDLK_RETURN); /* With the Games' Own, in focus */
             assert(!app.confirm.shown && app.cleaned_shown && app.cleaned.count == 1 && app.cleaned.done == 1 &&
-                   strstr(app.cleaned.text, "\tRemoved newer_key=5\n"));
+                   strstr(app.cleaned.text, "\tRemoved vk_defrag=5\n"));
             assert((kept = (char*)snx_read_file(picks, &size)) && strstr(kept, "\n[Display]\nfullscreen=1\n") &&
-                   !strstr(kept, "newer_key"));
+                   !strstr(kept, "vk_defrag") && strstr(kept, "\nnewer_key=5\n"));
             free(kept);
             key(&app, SDLK_LEFT); /* the report closed */
             assert(!app.cleaned_shown);
@@ -9722,7 +10038,7 @@ int main(int argc, char** argv) {
     key(&app, SDLK_LEFT);
     key(&app, SDLK_LEFT);
     assert(app.side_box == GUI_SIDE_AUTO && !strcmp(app.app_form.side, "Auto"));
-    /* app.ini's side_box read back: on taken; a word it does not know named, the side box as the line before left it */
+    /* app.ini's side_box read back: on taken; a word it does not read named, the side box as the line before left it */
     {
         size_t size;
         char *kept = (char*)snx_read_file(app.app_file, &size), *text, said[512];
@@ -9770,7 +10086,7 @@ int main(int argc, char** argv) {
     key(&app, SDLK_RETURN);
     assert(app.background_mode == GUI_BACKGROUND_AUTO);
     app.power_test = 0;
-    /* read back: gentle taken; a word it does not know named, with the one the file leaves in use; an older version's
+    /* read back: gentle taken; a word it does not read named, with the one the file leaves in use; an older version's
        recompile_background read while background_recompile has none, its full (the default it wrote) as auto and its
        gentle as gentle, written again so, said once; an app.ini without either, Auto as the menu opens, the key
        written with the next save */
@@ -10715,12 +11031,18 @@ int main(int argc, char** argv) {
         {
             char* dumps = snx_path_join(app.data_dir, "dumps");
             char* unmade = snx_is_dir(dumps) ? snx_strdup("") : snx_format("Could not make %s ", dumps);
-            snprintf(line, sizeof line, "%sNot used from %s: [folders] work = relative/work, [folders] shaders = /x",
-                     unmade, app.app_file);
+            snprintf(
+                line, sizeof line,
+                "%sNot used from %s: [folders] work = relative/work (it keeps none) %s: this version does not read "
+                "[folders] shaders, which stays as it is; [folders] work is given twice, work= on line 21 and "
+                "work=relative/work on line 25: the last line's is taken",
+                unmade, app.app_file, app.app_file);
             free(unmade);
             free(dumps);
         }
-        assert(!strcmp(app.message, line) && app.place[GUI_PLACE_GAMES] && !strcmp(app.games_dir, app.place[1]));
+        if (strcmp(app.message, line)) fprintf(stderr, "said: %s\nnot:  %s\n", app.message, line);
+        assert(!strcmp(app.message, line) && !strstr(app.message, "/x") && app.place[GUI_PLACE_GAMES] &&
+               !strcmp(app.games_dir, app.place[1]));
         assert(!app.place[GUI_PLACE_WORK] && !strcmp(app.work_dir, work));
         app.message[0] = 0;
         /* app.ini as an older version wrote it, [folders] games =: read as recompiled =, written again so, said once */
@@ -14823,7 +15145,7 @@ int main(int argc, char** argv) {
                 render(&app);
                 form_boxes(&app, &f);
                 side = form_row_box(&app, &f, true, 0);
-                groups = form_row_box(&app, &f, false, group);
+                groups = form_row_box(&app, &f, false, group + 1); /* past Search's */
                 assert(side.h && groups.h && app.form == GUI_FORM_SETTINGS);
                 finger_px(&app, SDL_EVENT_FINGER_DOWN, side.x + 20, side.y + 2);
                 finger_px(&app, SDL_EVENT_FINGER_MOTION, side.x + 20, side.y + 2 + 2 * side.h);
@@ -14908,8 +15230,9 @@ int main(int argc, char** argv) {
                 GuiFormBoxes f;
                 GuiRect b;
                 form_boxes(&app, &f);
-                assert(f.place.side.w && form_shown(&app, &f, false) >= (size_t)app.groups && !form_first(&f, false));
-                b = form_row_box(&app, &f, false, app.groups - 1);
+                assert(f.place.side.w && form_shown(&app, &f, false) >= (size_t)app.groups + 1 &&
+                       !form_first(&f, false));
+                b = form_row_box(&app, &f, false, app.groups); /* the last group's, past Search's */
                 assert(b.h && same_colour(pixel(&app, (float)b.x, (float)(b.y + b.h / 2)), rgb(app.theme.focus)));
             }
             key(&app, SDLK_ESCAPE);
@@ -15993,20 +16316,22 @@ int main(int argc, char** argv) {
             render(&app);
             form_boxes(&app, &f);
             assert(f.place.side.x > f.place.list.x + f.place.list.w);
-            /* every group shown, ui.txt's 2 pixels apart in a column that would spread them further; nothing past the
-               last group */
-            assert(form_shown(&app, &f, false) >= (size_t)app.groups && !form_first(&f, false) &&
-                   app.groups * (item_h(&app) + 14 * s) <= f.left[UI_FORM_LIST_ROWS].h);
+            /* Search's row and every group shown, ui.txt's 2 pixels apart in a column that would spread them further;
+               nothing past the last group */
+            assert(form_shown(&app, &f, false) >= (size_t)app.groups + 1 && !form_first(&f, false) &&
+                   (app.groups + 1) * (item_h(&app) + 14 * s) <= f.left[UI_FORM_LIST_ROWS].h);
             {
                 UiRowInfo info = {0};
-                assert(!ui_form_list_rows_get_row_info(&app, (size_t)app.groups, 100, &info));
+                assert(!ui_form_list_rows_get_row_info(&app, (size_t)app.groups + 1, 100, &info));
             }
             form_boxes(&app, &f);
             b = form_row_box(&app, &f, false, 1);
             assert(b.y - form_row_box(&app, &f, false, 0).y == item_h(&app) + 2 * s && b.h == item_h(&app));
             b = form_row_box(&app, &f, false, 0);
+            text_px_is(&app, b.x + cw / 2, item_text_y(&app, b), "- " ICON_EYE " Search", normal, black);
+            b = form_row_box(&app, &f, false, 1);
             text_px_is(&app, b.x + cw / 2, item_text_y(&app, b), "- " ICON_APP_WINDOW " App", yellow, black);
-            b = form_row_box(&app, &f, false, app.groups - 1); /* the last group, whole */
+            b = form_row_box(&app, &f, false, app.groups); /* the last group, whole */
             snprintf(last, sizeof last, "- %s %s",
                      gui_icon_utf8(gui_group_icon(app.group_keys[app.groups - 1].key), glyph),
                      app.group_keys[app.groups - 1].key);
@@ -16051,7 +16376,7 @@ int main(int argc, char** argv) {
             for (launch = 0; launch < app.groups && strcmp(app.group_keys[launch].key, "Launch"); ++launch) {}
             assert(launch < app.groups);
             /* the pointer over a group focuses it, its rows beside it; over those rows it waits for a click */
-            b = form_row_box(&app, &f, false, 2);
+            b = form_row_box(&app, &f, false, 2 + 1);
             mouse_px(&app, b.x + 4, b.y + 4, false);
             assert(app.form == GUI_FORM_SETTINGS && app.editor.row == 2);
             mouse_px(&app, b.x + 4, b.y + 4, true); /* and a click on the focused group opens it */
@@ -16077,7 +16402,7 @@ int main(int argc, char** argv) {
             assert(app.form == GUI_FORM_GROUP && app.group == launch && !app.editor.row);
             render(&app);
             form_boxes(&app, &f);
-            b = form_row_box(&app, &f, false, launch);
+            b = form_row_box(&app, &f, false, launch + 1);
             text_px_is(&app, b.x + cw / 2, item_text_y(&app, b), "- " ICON_ROCKET " Launch", yellow,
                        black); /* the group open */
             b = form_row_box(&app, &f, true, 0);
@@ -16107,17 +16432,17 @@ int main(int argc, char** argv) {
             mouse_px(&app, b.x + 4, b.y + 4, true);
             assert(setting_is(&app, "tmpfs", "on"));
             key(&app, SDLK_LEFT);
-            b = form_row_box(&app, &f, false, 0);
+            b = form_row_box(&app, &f, false, 1);
             mouse_px(&app, b.x + 4, b.y + 4, false);
             assert(app.form == GUI_FORM_GROUP && app.editor.row == 1);
             /* a click on App in the list opens it, from a group's rows; one on another group, that one */
-            b = form_row_box(&app, &f, false, 0);
+            b = form_row_box(&app, &f, false, 1);
             mouse_px(&app, b.x + 4, b.y + 4, true);
             assert(app.editing && app.form == GUI_FORM_APP && app.editor.row == GUI_APP_THEME);
-            b = form_row_box(&app, &f, false, launch);
+            b = form_row_box(&app, &f, false, launch + 1);
             mouse_px(&app, b.x + 4, b.y + 4, true);
             assert(app.form == GUI_FORM_GROUP && app.group == launch && !app.editor.row);
-            b = form_row_box(&app, &f, false, 0);
+            b = form_row_box(&app, &f, false, 1);
             mouse_px(&app, b.x + 4, b.y + 4, true);
             assert(app.form == GUI_FORM_APP && app.editor.row == GUI_APP_THEME);
             /* the theme editor: its keys on the left, the theme's menu in the preview on the right, which a click, or
@@ -18365,6 +18690,8 @@ int main(int argc, char** argv) {
     shortcuts_capture(&app);
     microphone_words(&app);
     room_password_row(&app, temporary);
+    settings_search(&app);
+    setting_lists(&app);
     boxes_form(&app);
     volume_view(&app);
     bluetooth_settings(&app, temporary); /* its rows of the runtime's settings */
@@ -18449,7 +18776,7 @@ int main(int argc, char** argv) {
         app.editor.row = app.groups - 1; /* the last group */
         render(&app);
         form_boxes(&app, &f);
-        b = form_row_box(&app, &f, false, app.groups - 1);
+        b = form_row_box(&app, &f, false, app.groups); /* past Search's */
         {
             char last[80], glyph[4];
             snprintf(last, sizeof last, "\xfe %s %s",
@@ -18475,7 +18802,7 @@ int main(int argc, char** argv) {
                cursor: the keys are not there */
             assert(!strcmp(app.theme.cursor, "\xe2\x96\xba ") && app.theme.focus_bar);
             text_px_is(&app, b.x - 2 * cw, item_text_y(&app, b), "\x10 ", rgb(app.theme.focus), rgb(app.theme.page));
-            b = form_row_box(&app, &f, false, row);
+            b = form_row_box(&app, &f, false, row + 1);
             text_px_is(&app, b.x + cw / 2, item_text_y(&app, b), "\xfe " ICON_MONITOR " Display", rgb(app.theme.page),
                        rgb(app.theme.focus));
             text_px_is(&app, b.x - 2 * cw, item_text_y(&app, b), "  ", rgb(app.theme.focus), rgb(app.theme.page));

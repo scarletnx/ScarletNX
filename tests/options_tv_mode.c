@@ -963,7 +963,8 @@ static int picks_hand(void) {
     return 0;
 }
 /* the picks file changed while the game runs (the launcher's Settings of the game): read once it settles, applied and
-   said. A key no pick takes is said with its value, does nothing, and is kept when the menu's change writes the file.
+   said. A key no pick takes is named, never with its value, does nothing, and is kept when the menu's change writes the
+   file.
    --launcher-picks=2 is said with the 0 it is taken as */
 static int picks_reload(void) {
     char *ini, *picks, *dir = picks_game("[Audio]\nvolume=100\n", "[Audio]\nvolume=40\n", &ini, &picks), *text;
@@ -982,8 +983,8 @@ static int picks_reload(void) {
     ini_poll(0);
     CHECK(g_settings.volume == 20);
     CHECK(strstr(g_test.said, "game.picks reloaded\n"));
-    CHECK(strstr(g_test.said, "settings: newer_key=5 in ") &&
-          strstr(g_test.said, "game.picks is no setting a game's picks take: it is kept there and does nothing\n"));
+    CHECK(strstr(g_test.said, "game.picks: this version does not read newer_key, which stays as it is\n") &&
+          !strstr(g_test.said, "newer_key=5"));
     ini_set("fps_limit", "45");
     ini_poll(0);
     CHECK((text = file_text(picks)) && strstr(text, "\n[Audio]\nvolume=20\n") &&
@@ -996,12 +997,13 @@ static int picks_reload(void) {
     free(dir);
     return 0;
 }
-/* the game's menu's Clean Old Settings: the .ini's deprecated keys and the picks' keys no pick takes counted, then
-   at the next tick taken out of both files, said in the log with their values, and none counted after */
+/* the game's menu's Clean Old Settings: the deprecated keys of the .ini and of the picks counted, then at the next
+   tick taken out of both files, said in the log with their values, and none counted after; another version's stays */
 static int picks_clean(void) {
-    char *ini, *picks, *dir = picks_game("[Display]\nstats=0\n[Performance]\nmemory_fit=1\n",
-                                         "[Audio]\nvolume=40\n[Other]\nnewer_key=5\n", &ini, &picks),
-                      *text;
+    char *ini, *picks,
+        *dir = picks_game("[Display]\nstats=0\n[Performance]\nmemory_fit=1\n",
+                          "[Audio]\nvolume=40\n[Other]\nvk_defrag=1\nnewer_key=5\n", &ini, &picks),
+        *text;
     g_test.write = 1;
     ini_open(ini);
     CHECK(ini_old_settings() == 2);
@@ -1012,12 +1014,13 @@ static int picks_clean(void) {
     CHECK(ini_poll_due() && !ini_poll_due());
     ini_poll(0);
     CHECK(ini_old_settings() == 0);
-    CHECK(strstr(g_test.said, "settings: Clean Old Settings took out memory_fit=1, newer_key=5 (") &&
-          strstr(g_test.said, "game.picks)\n"));
+    CHECK(strstr(g_test.said, "settings: Clean Old Settings took out memory_fit=1, vk_defrag=1 (") &&
+          strstr(g_test.said, "game.picks)\n") && !strstr(g_test.said, "newer_key"));
     CHECK((text = file_text(ini)) && !strstr(text, "[Deprecated]") && !strstr(text, "memory_fit=") &&
           strstr(text, "\nstats=0\n"));
     free(text);
-    CHECK((text = file_text(picks)) && strstr(text, "\n[Audio]\nvolume=40\n") && !strstr(text, "newer_key"));
+    CHECK((text = file_text(picks)) && strstr(text, "\n[Audio]\nvolume=40\n") && !strstr(text, "vk_defrag") &&
+          strstr(text, "\nnewer_key=5\n")); /* another version's stays */
     free(text);
     CHECK(g_settings.volume == 40);
     CHECK(!snx_remove_tree(dir));
@@ -1201,7 +1204,7 @@ static int picks_kind_oldpick(void) {
     CHECK(strstr(g_test.said, "settings: emulated_cores=1 in ") &&
           strstr(g_test.said, "game.picks, deprecated, is emulated_cores_mode=1 (On) there now "
                               "(docs/user/deprecations.md)\n"));
-    CHECK(!strstr(g_test.said, "is no setting a game's picks take"));
+    CHECK(!strstr(g_test.said, "does not read emulated_cores")); /* carried over, not kept */
     CHECK(g_settings.emulated_cores_mode == 1 &&
           options_kind_value("emulated_cores_mode", "0", "an Ounce program") == 0);
     CHECK(strstr(g_test.said, "settings: emulated_cores_mode=1 (On), the game's own pick, over the 0 (Off) its Auto "
@@ -1220,8 +1223,8 @@ static int picks_kind_oldpick(void) {
                      &picks);
     g_test.said[0] = 0;
     ini_open(ini);
-    CHECK(strstr(g_test.said, "settings: emulated_cores=1 in ") &&
-          strstr(g_test.said, "game.picks is no setting a game's picks take: it is kept there and does nothing\n"));
+    CHECK(strstr(g_test.said, "game.picks: this version does not read emulated_cores, which stays as it is\n") &&
+          !strstr(g_test.said, "emulated_cores=1"));
     CHECK(!snx_remove_tree(dir));
     free(ini);
     free(picks);
@@ -1332,7 +1335,10 @@ static void test_key_steps(void) {
     free(dir);
 }
 
+#include "config_files_options.c"
+
 int main(int argc, char** argv) {
+    if (argc > 2 && !strcmp(argv[1], "--config-files")) return config_files_options(argv[2]);
     if (argc > 1 && !strncmp(argv[1], "--picks-", 8)) return options_picks(argv[1]);
     if (argc > 1) return options_vk_descriptors_first(argv[1]);
     test_fixed();

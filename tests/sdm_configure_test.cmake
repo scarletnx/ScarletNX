@@ -5,8 +5,9 @@
 # stop at a command it doesn't know. SNX_TEST_SDM, which does ask (with cmake/packages.cmake and a cpmfile.json of the
 # test's), stops where it lacks pdftotext, and where Intel's link doesn't give the pinned revision or doesn't answer
 # says what was expected, what came and what to do; a file already there that is another stops it too, and so does a pin
-# of cpmfile.json that isn't the revision's. CPMUtil's 5 s between tries is left out. Run by ctest as sdm_configure,
-# with -DSRC and -DWORK
+# of cpmfile.json that isn't the revision's. CPMUtil's 5 s between tries is left out. Where nothing sets SNX_SAIL_X64
+# the back end is built on every x86-64 system, Android's included, and on no other machine. Run by ctest as
+# sdm_configure, with -DSRC and -DWORK
 cmake_minimum_required(VERSION 3.28)
 if(NOT DEFINED SRC OR NOT DEFINED WORK)
     message(FATAL_ERROR "sdm_configure_test.cmake needs -DSRC=... -DWORK=...")
@@ -35,7 +36,9 @@ endif()
 file(WRITE "${WORK}/src/tools/sailgen/sdm/isel.py" "${isel}")
 string(REGEX MATCH "\nREVISION = '([^']+)'" revision "${isel}")
 set(expected "revision ${CMAKE_MATCH_1} of the Intel SDM, Volume 2, whose PDF's SHA-256 is ${sha}")
+# MACHINE and ON_ANDROID: what a toolchain file (the NDK's) says of the system the build is for
 file(WRITE "${WORK}/src/CMakeLists.txt" "cmake_minimum_required(VERSION 3.28)\nproject(sdm LANGUAGES NONE)\n"
+     "if(MACHINE)\nset(CMAKE_SYSTEM_PROCESSOR \"\${MACHINE}\")\nset(ANDROID \"\${ON_ANDROID}\")\nendif()\n"
      "include(cmake/sdm.cmake)\nmessage(STATUS \"SNX_X64 is \${SNX_X64}\")\n"
      "if(ASK)\ninclude(\"${SRC}/cmake/packages.cmake\")\nmacro(sleep time)\nendmacro()\n"
      "snx_sdm_pdf(pdf pdftotext)\nmessage(STATUS \"pdf is \${pdf}, pdftotext is [\${pdftotext}]\")\nendif()\n")
@@ -48,10 +51,14 @@ function(pin url hash)
 ")
 endfunction()
 # configure(<name> <stops|goes> <texts the output has to have, a list> <cmake args>...): the build folder is
-# <WORK>/<name>, the package cache <WORK>/<name>-cache
+# <WORK>/<name>, the package cache <WORK>/<name>-cache. With by_default set, SNX_SAIL_X64 isn't given
 function(configure name want says)
+    set(sail -DSNX_SAIL_X64=ON)
+    if(by_default)
+        set(sail "")
+    endif()
     execute_process(COMMAND "${CMAKE_COMMAND}" -E env --unset=CPM_SOURCE_CACHE "${CMAKE_COMMAND}" -S "${WORK}/src"
-                            -B "${WORK}/${name}" -DSNX_SAIL_X64=ON "-DCPM_SOURCE_CACHE=${WORK}/${name}-cache" ${ARGN}
+                            -B "${WORK}/${name}" ${sail} "-DCPM_SOURCE_CACHE=${WORK}/${name}-cache" ${ARGN}
                     RESULT_VARIABLE failed OUTPUT_VARIABLE out ERROR_VARIABLE out)
     string(REGEX REPLACE "[ \n]+" " " out "${out}")
     if(failed AND want STREQUAL "goes")
@@ -72,6 +79,26 @@ set(none -DSNX_PDFTOTEXT=OFF)
 set(with "-DSNX_PDFTOTEXT=${CMAKE_COMMAND}")
 configure(on goes "SNX_X64 is ON" ${none})
 configure(off goes "SNX_X64 is OFF" -DSNX_SAIL_X64=OFF ${none})
+# whether the back end is built where nothing says, and the line of the log that tells: <name> <processor> <Android>
+# <built|not built>
+function(default name processor android built)
+    set(by_default ON)
+    set(x64 ON)
+    if(built STREQUAL "not built")
+        set(x64 OFF)
+    endif()
+    configure(default_${name} goes
+              "SNX_X64 is ${x64};x86-64 back end: ${built} for ${processor} (SNX_SAIL_X64=${x64})" ${none}
+              -DMACHINE=${processor} -DON_ANDROID=${android})
+endfunction()
+default(linux x86_64 OFF built)
+default(windows AMD64 OFF built)
+default(bsd amd64 OFF built)
+default(android x86_64 ON built) # the NDK's name of the ABI of that name
+default(android_x86 i686 ON "not built")
+default(android_arm64 aarch64 ON "not built")
+default(arm64 arm64 OFF "not built")
+default(riscv64 riscv64 OFF "not built")
 pin("${served}/manual.pdf" "${manual_pin}")
 configure(asks goes "pdf is ${WORK}/asks-cache/intelsdm/1/manual.pdf, pdftotext is []" -DASK=ON ${none})
 if(EXISTS "${WORK}/asks-cache/intelsdm/1/manual.pdf")

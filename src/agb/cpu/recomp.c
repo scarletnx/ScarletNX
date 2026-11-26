@@ -9,8 +9,8 @@
 #include "common/utilities/endian.h"
 #include "common/cpu/arm/aot.h"
 #include "common/cpu/arm/exec.h"
-#include "common/cpu/recompiler/llvm/rtlib_object.h"
-#include "common/cpu/recompiler/llvm/link.h"
+#include "common/cpu/recompiler/rtlib/rtlib_object.h"
+#include "common/cpu/recompiler/object/link.h"
 #include "common/platform/dl.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -277,7 +277,7 @@ static void discover(AgbRecomp* recomp, AgbBoard* board, uint32_t pc, int thumb)
 /* ---- linking ---- */
 
 
-/* Emits every block into <base>.so: by the host's native back end, and LLVM for what that does not make
+/* Emits every block into <base>.so: by the host's native back end, and the fallback for what that does not make
    (cpu/arm/aot.h), with the helpers they call (armlib.c), and linked by the backend's own linker, which exports each
    block's function by its name */
 static int emit_module(AgbRecomp* recomp, AgbBoard* board, char* error, size_t error_size) {

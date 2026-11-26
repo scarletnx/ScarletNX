@@ -4,7 +4,7 @@
    guest bytes, a hit fills the dispatch slot, a changed word is refused, and
    invalidation clears the slot. A miss falls through to the JIT: the fake service
    here proves the runtime asks it only when no variant matches. */
-#include "common/cpu/recompiler/llvm/jit_service.h"
+#include "common/cpu/recompiler/jit/jit_service.h"
 #include "common/cpu/recompiler/variants.h"
 #include "nx/loader/module_abi.h"
 #include "nx/memory/mem.h"

@@ -149,7 +149,7 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   **Keys already setup. This will overwrite the previous ones**. The screen then says what the try
   did, *Installed* or *Not installed* and why, and goes back to the menu by itself after 3 seconds
   (10 after a failure, while another file can still be picked); ESC cancels without changing them.
-- **Settings** opens on its groups, Enter opening one and ESC coming back: **App**, then
+- **Settings** opens on its groups, Enter opening one and ESC coming back: **Search** first (below), **App**, then
   **Launch** (the launcher's own and the recompiler's, from `src/nx/runtime/settings.txt`), then a group per section of the game's `.ini` (Display,
   Graphics, Audio, Performance, Overlay, Controllers, Network, Debug; Overlay is the runtime's On-screen controls, the
   name its page in the game and `settings.ini` keep), as `scarletnx --settings`
@@ -280,9 +280,10 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   Nothing is moved, the folder before keeps what it has. The menu's own files stay where they are. **Clean Old Settings** asks first, with
   how many it would take out, then takes out the settings nothing reads any more: the `[Deprecated]` section the runtime
   gives a game's `.ini` for the keys it no longer uses (in the config folder's `recompiled/`, in `recompiled/`
-  and in the player's folders), the keys of `settings.ini` that no setting of the runtime's takes
-  (only while the runtime lists its settings) and those of `app.ini` the menu does not know. While a game's own
-  picks (`<id>.picks`, [Settings](settings.md)) keep keys no setting takes, the question says how many and its
+  and in the player's folders), and the keys of `settings.ini` an older version wrote that this one dropped
+  (only while the runtime lists its settings). Another version's keys stay in every file
+  ([Settings](settings.md#how-a-settings-file-is-read)). While a game's own
+  picks (`<id>.picks`, [Settings](settings.md)) keep keys an older version wrote, the question says how many and its
   choices are **Keep the Games' Own** and **With the Games' Own**, in focus, which writes each of those files again
   without them (removed with no pick left); Back takes out nothing. A box
   over the screen then lists each file and what was done to it, or why not, Up/Down and the wheel going over those
@@ -310,7 +311,13 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   (`20 is not a number from 0.25 to 16, two decimals at most`, `Ab is not a nickname: ...`). A setting that is a path
   (a shader corpus's folder, a branch profile's file, a stats file to write) is picked: Enter opens the system's
   folder, file or save dialog over the path it has, Ctrl+V and a drop give it a path too, Del takes it off; on iOS, and
-  after a dialog that could not open (said), Enter types it. A setting's words are
+  after a dialog that could not open (said), Enter types it. A row of three words or more is a list: Alt+Down, a right
+  click, a finger held half a second or a pad's A held as long opens its words in a box, the one it has in focus, and
+  the foot says how while the focus is on one (*Alt+Down/right click: list.*); Enter, a click or a tap takes one, ESC
+  or a click off the box leaves the row as it was. A row that takes a value of its own has **Other...** last, which
+  types it in the dialog of a typed value, one the row does not take said with the value it keeps (`300 is no value of
+  FPS limit: it keeps 120`). A row of two words goes on stepping, a slider sliding, a row of boxes opening its form;
+  Alt+Down there says it has no list. A setting's words are
   its values alone, the runtime's default marked `[default]` (*Off [default]*, *On*); one typed shows its default and
   `[default]` while it is empty (*1 [default]*). At its default the run takes the game's `.ini`'s, which starts as
   that. Where a row's default is none of its words (a control not yet shown or hidden, LLVM's own options),
@@ -353,6 +360,18 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   are passed as `--key=value` when the game is recompiled: by **R**, or by a run that has to (a dump played the first
   time, an NRO each time). A game made already keeps its code until then. The first two settings and these reach
   neither the Linux nor the 3DS driver.
+- Settings' **Search**, the row over the groups (Up from App, a click or a tap on it), Ctrl+F on the groups, a group,
+  App or User, or a pad's Y: a dialog where what is typed is looked for as it is typed, every word of it, whatever its
+  case and accents, in each row's name, `.ini` key, group, page and words, and its help, in the menu's language and in
+  English. The rows found show beside the groups, the best first (a name that starts with a word, a name with it, the
+  key, the group or page, a word, the help), each with where it is at its end (`Graphics > Vulkan Extensions`,
+  `Controllers > Player 3`), 24 at most (`24 of 61 settings: type more to see the rest`), App's rows and User's Current
+  user among them. Enter takes the dialog away and goes to the rows, which change where they are as in their group:
+  Left/Right, Enter, Del; a page's row, a row of boxes, a player's button map, an App row or Current user open their
+  screen, and ESC there comes back to the search as it was. **G** (a pad's L3, a finger's *Its group*) opens the row's
+  group, page or player on it instead, ESC from there going to the groups. Ctrl+F again types more, ESC in the dialog
+  putting back what it had; with nothing that matches the rows say so and keys do nothing on them; ESC on the rows goes
+  back to the groups, on Search.
 - The Status box, after the RAM and the CPU, says what ScarletNX's folders take (recompiled/,
   work/ and themes/ of the data folder, and on Linux its config, state and cache folders, else
   the menu's own) and what is left on that disk, counted as the menu opens and after each run. While a recompile of
@@ -516,8 +535,8 @@ question and choices come as the theme's `[body] options-dialog` places a questi
 without darkening them; its tip, and what a choice did or why it did not, are in the foot. Up/Down (or the mouse)
 move between the choices, Enter takes one and ESC goes back a page, on the first page asking whether to exit. The
 notices come one a page, numbered (Changed 1/8), each read before the setup goes on: Next the next one, Back (from the
-second) the one before, and OK on the last. While a game's `.ini` keeps keys under `[Deprecated]` (or the menu's own
-files keys nothing reads), the last asks what Settings > App's Clean Old Settings would take out (`Clean Old Settings?
+second) the one before, and OK on the last. While a game's `.ini` keeps keys under `[Deprecated]` (or `settings.ini`
+keys an older version wrote), the last asks what Settings > App's Clean Old Settings would take out (`Clean Old Settings?
 [Deprecated] in 2 .ini`): **Clean Now**, in focus, takes them out there, the box then saying each file and what was
 done to it, and OK goes on; **Not Now** goes on, App's row still there. Clean Now comes under Back, Not Now and Skip, a
 row apart: the choices that act on the player's files in a group of their own, as on Old Files' last page, Up/Down

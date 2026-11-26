@@ -4,6 +4,7 @@
    selection derived from the Intel SDM, x64_isel.inc), in a translation unit of their own: sail_x64.c holds them to
    the LLVM back end's */
 #include "sail_x64_emit.h"
+#include "common/utilities/endian.h"
 
 #if defined(__clang__)
 #pragma clang diagnostic ignored "-Wunused-variable"
@@ -119,3 +120,38 @@ static SnxU64 resolve(const char* sym) {
     return 0;
 }
 [[gnu::constructor]] static void set_resolver(void) { g_ctx.resolve = resolve; }
+
+const char* snx_x64_cold_pool(void) {
+    unsigned char code[512];
+    const SnxU64 lo = 0x0123456789ABCDEFull, hi = 0x0FEDCBA987654321ull;
+    SgXBuf hot = {.p = code, .cap = sizeof code, .index = -1};
+    SgXAsm a = {.b = &hot};
+    const char* why = NULL;
+    sgx_vpool(&a, &sgx_v_movdqu_ld, 1, 1, 2); /* the hot code's own, first in the pool */
+    sgx_cold_room(&a, 64);
+    a.cold.index = -1;
+    a.b = &a.cold;
+    sgx_byte(&a.cold, 0x90); /* the cold code not at its buffer's start */
+    sgx_vpool(&a, &sgx_v_movdqu_ld, 2, lo, hi);
+    size_t at = a.rips[1].at, end = a.rips[1].end, base = hot.n;
+    a.b = &hot;
+    sgx_cold_emit(&a);
+    sgx_pool_emit(&a);
+    if (hot.n > hot.cap)
+        why = "the code past its buffer";
+    else {
+        SnxU64 got[2];
+        uint32_t d = snx_ld_le32(code + base + at);
+        long long to = (long long)(base + end) + (d >> 31 ? (long long)d - 0x100000000ll : (long long)d);
+        if (to < 0 || (size_t)to + 16 > hot.n)
+            why = "a displacement out of the code";
+        else {
+            memcpy(got, code + to, 16);
+            if (got[0] != lo || got[1] != hi) why = "a displacement to other bytes than its constant's";
+        }
+    }
+    free(a.cold.p);
+    free(a.rips);
+    free(a.pool);
+    return why;
+}

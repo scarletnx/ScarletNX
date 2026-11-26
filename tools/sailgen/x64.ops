@@ -529,3 +529,14 @@ enc minps MINPS xmm1, xmm2/m128
 enc minpd MINPD xmm1, xmm2/m128
 enc vfmadd231ps VFMADD231PS xmm1, xmm2, xmm3/m128
 enc vfmadd231pd VFMADD231PD xmm1, xmm2, xmm3/m128
+enc gf2p8affineqb GF2P8AFFINEQB xmm1, xmm2/m128, imm8
+enc vgf2p8affineqb VGF2P8AFFINEQB xmm1, xmm2, xmm3/m128, imm8
+enc vpsllvd VPSLLVD xmm1, xmm2, xmm3/m128
+enc vpsllvq VPSLLVQ xmm1, xmm2, xmm3/m128
+enc vpsrlvd VPSRLVD xmm1, xmm2, xmm3/m128
+enc vpsrlvq VPSRLVQ xmm1, xmm2, xmm3/m128
+enc vpsravd VPSRAVD xmm1, xmm2, xmm3/m128
+enc aesdec AESDEC xmm1, xmm2/m128
+enc sha1rnds4 SHA1RNDS4 xmm1, xmm2/m128, imm8
+enc vsm4rnds4 VSM4RNDS4 xmm1, xmm2, xmm3/m128
+enc vsm4key4 VSM4KEY4 xmm1, xmm2, xmm3/m128

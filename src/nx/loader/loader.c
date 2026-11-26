@@ -11,7 +11,7 @@
 #include "nx/loader/hook_routes.h"
 #include "nx/loader/match.h"
 #include "nx/loader/ounce.h"
-#include "common/cpu/recompiler/llvm/elf_defs.h"
+#include "common/cpu/recompiler/object/elf_defs.h"
 #include "common/utilities/endian.h"
 #include "common/utilities/zbic.h"
 #include "common/platform/file.h"

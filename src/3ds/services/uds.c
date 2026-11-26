@@ -10,7 +10,6 @@
 #include "common/network/net_room.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
-#include "common/utilities/ini_lines.h"
 #include "common/utilities/users.h"
 #include "snx_settings.h"
 #include <openssl/evp.h>
@@ -33,53 +32,68 @@ static struct {
     char password[256], nickname[21];
     unsigned said; /* the old variables room_open said, a bit each */
 } g_uds;
+/* [User]'s user_uid, and the deprecated user's number it replaces, as settings.ini gives them */
+typedef struct {
+    char uid[64], old[16];
+    const char* path;
+} UdsRead;
+/* a key of the launcher's settings.ini: the user, and [Network]'s; a value no setting takes said with the one in use */
+static void uds_take(void* ctx, const char* section, const char* key, const char* value, int line) {
+    UdsRead* r = (UdsRead*)ctx;
+    int word;
+    (void)line;
+    if (!strcmp(section, "User") && (!strcmp(key, "user_uid") || !strcmp(key, "user"))) {
+        if (key[4])
+            snprintf(r->uid, sizeof r->uid, "%s", value);
+        else
+            snprintf(r->old, sizeof r->old, "%s", value);
+        return;
+    }
+    if (strcmp(section, "Network")) return;
+    word = !strcmp(value, "0") || !strcmp(value, "1");
+    if (!strcmp(key, "room") && strlen(value) < sizeof g_settings.eden_room)
+        snprintf(g_settings.eden_room, sizeof g_settings.eden_room, "%s", value);
+    else if (!strcmp(key, "room"))
+        snx_error("3ds uds: %s: room=%.40s... is longer than %u bytes: room stays %s", r->path, value,
+                  (unsigned)sizeof g_settings.eden_room - 1, g_settings.eden_room[0] ? g_settings.eden_room : "empty");
+    else if (!strcmp(key, "ldn") && (!strcmp(value, "lan") || !strcmp(value, "room") || !strcmp(value, "off")))
+        snprintf(g_settings.local_wireless, sizeof g_settings.local_wireless, "%s", value);
+    else if (!strcmp(key, "ldn"))
+        snx_error("3ds uds: %s: ldn=%s is not lan, room or off: ldn stays %s", r->path, value,
+                  g_settings.local_wireless);
+    else if (!strcmp(key, "airplane_mode") && word)
+        g_settings.airplane_mode = value[0] == '1';
+    else if (!strcmp(key, "airplane_mode"))
+        snx_error("3ds uds: %s: airplane_mode=%s is not 0 or 1: airplane_mode stays %d", r->path, value,
+                  g_settings.airplane_mode);
+    else if (!strcmp(key, "network") && word)
+        g_settings.network = value[0] == '1';
+    else if (!strcmp(key, "network"))
+        snx_error("3ds uds: %s: network=%s is not 0 or 1: network stays %d", r->path, value, g_settings.network);
+}
 void snx_ctr_uds_settings(const char* data) {
     g_uds.password[0] = g_uds.nickname[0] = 0;
     char* config = snx_menu_dir(data, SNX_USER_CONFIG);
     char* settings = config ? snx_path_join(config, "settings.ini") : NULL;
-    size_t size = 0;
-    char* text = settings ? (char*)snx_read_file(settings, &size) : NULL;
-    char uid[64] = "", old[16] = ""; /* [User]'s user_uid, and the deprecated user's number it replaces */
+    UdsRead read = {"", "", settings};
+    char *uid = read.uid, *old = read.old;
     int was;
-    if (text) {
-        SnxIni ini;
-        char *key, *value;
-        snx_ini_start(&ini, text);
-        while (snx_ini_next(&ini, &key, &value)) {
-            if (!strcmp(ini.section, "User") && (!strcmp(key, "user_uid") || !strcmp(key, "user"))) {
-                if (key[4])
-                    snprintf(uid, sizeof uid, "%s", value);
-                else
-                    snprintf(old, sizeof old, "%s", value);
-                continue;
-            }
-            if (strcmp(ini.section, "Network")) continue;
-            if (strcmp(key, "room") && strcmp(key, "ldn") && strcmp(key, "airplane_mode") && strcmp(key, "network"))
-                continue;
-            if (!strcmp(key, "room") && strlen(value) < sizeof g_settings.eden_room)
-                snprintf(g_settings.eden_room, sizeof g_settings.eden_room, "%s", value);
-            else if (!strcmp(key, "ldn") && (!strcmp(value, "lan") || !strcmp(value, "room") || !strcmp(value, "off")))
-                snprintf(g_settings.local_wireless, sizeof g_settings.local_wireless, "%s", value);
-            else if (!strcmp(key, "airplane_mode") && (!strcmp(value, "0") || !strcmp(value, "1")))
-                g_settings.airplane_mode = value[0] == '1';
-            else if (!strcmp(key, "network") && (!strcmp(value, "0") || !strcmp(value, "1")))
-                g_settings.network = value[0] == '1';
-        }
-    }
-    free(text);
+    if (settings) snx_config_keys(settings, uds_take, &read);
     free(settings);
     free(config);
     char* users = snx_users_dir(data);
-    char why[512];
+    char why[512], said[1024];
+    SnxConfigOthers others;
     if (users && !snx_users_choose(users, uid, uid[0] ? NULL : old, &was, why, sizeof why)) {
         const SnxUser* user = snx_users_selected();
         if (user) snprintf(g_uds.nickname, sizeof g_uds.nickname, "%.20s", user->nickname);
     }
-    if (users && snx_users_room_password(users, g_uds.password, sizeof g_uds.password, why, sizeof why)) {
+    if (users && snx_users_room_password(users, g_uds.password, sizeof g_uds.password, &others, why, sizeof why)) {
         snx_error("3ds uds: the Eden room's password: %s: this run joins with none", why);
         g_uds.password[0] = 0;
-    } else if (users && why[0] && !strcmp(g_settings.local_wireless, "room"))
-        snx_error("3ds uds: %s", why);
+    } else if (users && !strcmp(g_settings.local_wireless, "room") &&
+               snx_config_others_said(&others, SNX_USERS_ONLINE, said, sizeof said))
+        snx_error("3ds uds: %s", said);
     free(users);
 }
 enum { MSG_BEACON = 1, MSG_JOIN, MSG_SYNC, MSG_DATA, MSG_LEAVE, MSG_CLOSE, MSG_PING, MSG_PONG };

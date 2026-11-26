@@ -15,6 +15,8 @@ typedef struct {
 typedef struct {
     GuiRecentGame game[GUI_RECENT_MAX];
     int count;
+    char other[2048]; /* the lines of the file that name no game, another version's: kept, after the games */
+    char said[512];   /* what the last load says: them, by line, once a run, or a file it cannot read; "" for nothing */
 } GuiRecent;
 
 /* Puts a game first, named after its file, moving it up when it is there already and dropping the oldest past the
@@ -28,7 +30,8 @@ int gui_recent_rename(GuiRecent* recent, const char* path, const char* name);
    that would not fit one line of the file is left out, as gui_recent_add does. 1 when the list changed */
 int gui_recent_made(GuiRecent* recent, int index, const char* path);
 /* The file: a line per game, "<switch|linux|3ds|vita|gba|android> <file|games> <path> <name>" separated by tabs.
-   Loading keeps the games whose file is still there and skips a line it cannot read; a missing list is an empty one */
+   Loading keeps the games whose file is still there; a line it cannot read is another version's, kept after the games
+   and named in said; a missing list is an empty one, and one that cannot be read is said and never written over */
 void gui_recent_load(GuiRecent* recent, const char* file);
 int gui_recent_save(const GuiRecent* recent, const char* file);
 #endif

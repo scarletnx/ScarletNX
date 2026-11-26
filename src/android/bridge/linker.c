@@ -6,8 +6,8 @@
 #include "android/bridge/bridge.h"
 #include "android/bridge/hle.h"
 #include "android/bridge/host.h"
-#include "common/cpu/recompiler/llvm/elf_defs.h" /* the ELF names on every host, whose own may have none */
-#include "common/cpu/recompiler/llvm/elf_hash.h"
+#include "common/cpu/recompiler/object/elf_defs.h" /* the ELF names on every host, whose own may have none */
+#include "common/cpu/recompiler/object/elf_hash.h"
 #include "common/utilities/common.h"
 #include "common/platform/file.h"
 #include <fcntl.h>

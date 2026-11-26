@@ -10,6 +10,7 @@
 #define SNX_RECOMPILER_LLVM_IR_H
 
 #include "common/cpu/recompiler/codegen.h"
+#include "common/cpu/recompiler/llvm/ir_settings.h"
 #include <llvm-c/Core.h>
 #include <llvm-c/Target.h>
 #include <llvm-c/TargetMachine.h>
@@ -258,34 +259,6 @@ int snx_ir_host_drop(const char* prefix, char* error, size_t error_size);
 /* The host's CPU features as the target machines get them, LLVMGetHostCPUFeatures's less snx_ir_host_drop's, which
    the caches' keys hold. LLVMDisposeMessage frees it */
 char* snx_ir_host_features(void);
-/* LLVM's SLP vectorizer on or off for every module this process makes (the setting slp_vectorizer): an option of
-   LLVM's command line, so once per process, from one thread, before any module is made */
-void snx_ir_slp_vectorizer(int on);
-/* whether it runs: LLVM's own, on, until snx_ir_slp_vectorizer. The caches' keys carry it */
-int snx_ir_slp(void);
-/* Whether the generated code keeps FPSR's cumulative flags (IOC, DZC, OFC, UFC, IXC and QC) as the console raises
-   them (the setting fpsr_flags, on by default): off, the FP fast paths give the console's results and nothing else,
-   the host's IEEE arithmetic wherever the result is not a NaN, the flags only where the helpers run, and saturating
-   instructions leave QC alone. Once per process, before
-   any module is made; the caches' keys carry it */
-void snx_ir_fpsr_flags(int exact);
-int snx_ir_fpsr_exact(void);
-/* the settings ir_stats (each code unit's static IR counts in a recompile's log) and ir_dump_pc (hex: the function
-   there printed, its IR before and after the promotion), for the SnxIr made after */
-void snx_ir_diagnostics(int stats, const char* dump_pc);
-int snx_ir_stats_on(void); /* the setting ir_stats is on: the recompile reports each unit's IR (LLVM's alone) */
-/* the function ir_dump_pc names, 0 for none: LLVM makes it, whose IR is printed, and the x86-64 back end not */
-SnxU64 snx_ir_dump_pc(void);
-/* Whether the guest's loads and stores are volatile (the setting volatile_memory, off by default): on, LLVM keeps
-   each where the guest has it (ir_state.c's ir_rd). Once per process, before any module is made; the caches' keys
-   carry it */
-void snx_ir_volatile_memory(int on);
-int snx_ir_volatile(void);
-/* Whether guest calls follow AAPCS64 at BL and BLR sites (the setting abi_contract, off by default): on, promotion
-   keeps the callee-saved registers in their host locations across a call and does not store the caller-saved ones
-   that are dead after it. Once per process, before any module is made; the caches' keys carry it */
-void snx_ir_abi_contract(int on);
-int snx_ir_abi_contract_on(void);
 /* opt is the -O letter: 0,1,2,3,s,z */
 SnxIr* snx_ir_new(const char* name, char opt, char* error, size_t error_size);
 /* the same for code the JIT loader loads into this process (code_loader.h): the host's target, CPU and calling
@@ -305,7 +278,7 @@ void snx_ir_stale_checks(SnxIr* ir);
 int snx_ir_object(SnxIr* ir, char opt, unsigned char** data, size_t* size, char* error, size_t error_size);
 /* What makes an object of a module besides its IR, LLVM, the target machine's triple, CPU and features, the -O letter
    and the tuning: new_ir's other target machine settings and what snx_ir_module_object does around LLVM's passes. The
-   JIT cache's key holds it (jit_cache.c), so a change there that changes the object of the same IR bumps it */
+   JIT cache's key holds it (jit_cache_key.c), so a change there that changes the object of the same IR bumps it */
 #define SNX_IR_OBJECT_VERSION 5
 /* The same for another module of the SnxIr's context, made with its target and data layout (the A32 executor's
    blocks, common/cpu/arm/exec.c): verified, optimized and compiled with its target machine. The module stays the
@@ -429,9 +402,6 @@ void ir_yield(SnxIr* ir);                         /* YIELD() */
 /* Optional offline branch profile: entries are keyed by guest PC and exact word.
    No profile means the existing LLVM branch prediction stays unchanged. */
 void ir_profile_branch(SnxIr* ir, LLVMValueRef branch, SnxU64 pc, SnxU32 word);
-/* the setting ir_branch_profile: the file ir_profile_branch reads, once, at the first branch of a module made after
-   (NULL or "": none). Before any module is made */
-void snx_ir_branch_profile(const char* path);
 void ir_unlikely(SnxIr* ir, LLVMValueRef branch);
 void ir_likely(SnxIr* ir, LLVMValueRef branch);
 /* a call to an LLVM intrinsic, overloaded on type (NULL: not overloaded) */

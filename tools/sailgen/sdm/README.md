@@ -35,4 +35,6 @@ erratum is not just a missing selection: CDQ's read as written was taken for a z
 | S-8 | CVTDQ2PS, ROUNDPS | (pdftotext) CVTDQ2PS's table of one mode column read as opcodes alone; ROUNDPS's `/r ib` in the instruction cell | the legacy form's row | `CVTDQ2PS.sdm`, `ROUNDPS.sdm` |
 | S-9 | PAVGB | the opcode `66 0F E0, /r`, a comma among the bytes | `66 0F E0 /r` | `isel.c` reads a comma in an opcode as a space |
 | S-10 | PMOVSX, PMOVZX | the opcodes in lower case, `66 0f 38 20 /r` | `66 0F 38 20 /r` | `isel.c` reads `0f` as `0F` |
+| S-11 | GF2P8AFFINEQB | the opcode `66 0F3A CE /r /ib`, its escape bytes run together and a slash before `ib` | `66 0F 3A CE /r ib` | `GF2P8AFFINEQB.sdm` |
+| S-12 | GF2P8AFFINEQB, VSM4KEY4, VSM4RNDS4 | (pdftotext) a CPUID cell of two lines, `AVX` over `GFNI` or `SM4`, read as its first | both | `GF2P8AFFINEQB.sdm` (legacy and VEX.128 forms), `VSM4KEY4.sdm`, `VSM4RNDS4.sdm` (VEX.128) |
 | S-5 | SAL/SAR/SHL/SHR, SARX/SHLX/SHRX | the division's signedness in a comment ('Signed divide, rounding toward negative infinity') | a signed division | `sdm_code.c` reads the comment |

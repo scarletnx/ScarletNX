@@ -1,12 +1,13 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The AArch32 blocks of a module made ahead of time (the 3DS's, the Vita's and the DS's aot/compiler.c, the GBA's
-   agb/cpu/recomp.c): each is this host's own block compiler's (recompiler/mach/native.h), and LLVM's where that has none
-   on this host or refuses the block, which is counted with its reason and said (snx_arm_aot_report) */
+   agb/cpu/recomp.c): each is this host's own block compiler's (recompiler/mach/native.h), and the fallback's
+   (recompiler/fallback.h: LLVM, or none to refuse it) where that has none on this host or refuses the block, which is
+   counted with its reason and said (snx_arm_aot_report) */
 #ifndef SNX_ARM_AOT_H
 #define SNX_ARM_AOT_H
 #include "common/cpu/arm/codegen.h"
-#include "common/cpu/recompiler/llvm/link.h"
+#include "common/cpu/recompiler/object/link.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -34,9 +35,9 @@ void snx_arm_aot_report(const SnxArmAotCount* count, const char* program, int qu
 /* the reasons of the blocks LLVM makes though no block was refused: no native back end on this host, or the IR kept */
 extern const char snx_arm_aot_none[], snx_arm_aot_kept[];
 
-/* one thread's maker of blocks, which LLVM's are made at the -O letter opt for; keep_ir is the folder each module of
-   them is saved in (--keep-ir), NULL for nowhere: every block is LLVM's then, as their IR is what is asked. NULL out of
-   memory */
+/* one thread's maker of blocks, which the fallback's are made at the -O letter opt for; keep_ir is the folder each
+   module of them is saved in (--keep-ir), NULL for nowhere: every block is the fallback's then, as their IR is what is
+   asked. NULL out of memory */
 typedef struct SnxArmAot SnxArmAot;
 SnxArmAot* snx_arm_aot_new(char opt, const char* keep_ir);
 void snx_arm_aot_free(SnxArmAot* a);
@@ -45,8 +46,8 @@ void snx_arm_aot_free(SnxArmAot* a);
    with the reason in error */
 int snx_arm_aot_block(SnxArmAot* a, const char* name, const unsigned char* code, size_t count, uint32_t pc, int thumb,
                       const SnxArmCodegenOptions* options, size_t* consumed, char* error, size_t error_size);
-/* the objects of the blocks made since the last call, the native back end's and LLVM's, into out (malloc'd data), and how
-   many (0 to 2); -1 with the reason in error. id names LLVM's module, and its file in keep_ir (id.ll) */
+/* the objects of the blocks made since the last call, the native back end's and the fallback's, into out (malloc'd
+   data), and how many (0 to 2); -1 with the reason in error. id names the fallback's file in keep_ir (id.ll) */
 int snx_arm_aot_objects(SnxArmAot* a, const char* id, SnxLinkInput out[2], char* error, size_t error_size);
 const SnxArmAotCount* snx_arm_aot_count(const SnxArmAot* a);
 #endif

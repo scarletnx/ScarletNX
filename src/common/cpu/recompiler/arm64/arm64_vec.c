@@ -19,6 +19,12 @@ static void vwrite(SgCtx* g, unsigned d, int r, int q) {
     sg__V_write(g, d, sgx_xval(128, r));
 }
 static int vzero(SgCtx* g) { return sgx_xconst(X, 0, 0); }
+/* RBIT of a W or an X */
+static SgD mg_rbit(Unit* u, SgD v) {
+    SgCtx* g = u->g;
+    sgx_flat(X, &v);
+    return SGX_OP(X, rbit, v.w, v);
+}
 
 /* an element's imm5: its size (0 B ... 3 D) and index */
 static SnxU32 v_imm5(unsigned size, int i) { return (SnxU32)i << (size + 1) | 1u << size; }
@@ -98,6 +104,9 @@ SGA_VE(pass) {
     sga_w(b, w);
 }
 static const SgXVForm sga_v_pass_f = {sga_v_pass, 0, 4, 0, 1, 2, 15, 0, NULL};
+/* the word with Rd a general-purpose register and Rn a V one (a conversion to a W or X), or the other way round */
+static const SgXVForm sga_v_pass_gv_f = {sga_v_pass, 0, 2, 0, 1, 2, 2, 0, NULL};
+static const SgXVForm sga_v_pass_vg_f = {sga_v_pass, 0, 2, 0, 1, 2, 1, 0, NULL};
 /* FCMP, FCMPE, FCCMP and FCCMPE: the word with Rn and Rm the registers r[0] and r[1] (but FCMP's with zero, imm's bit
    36 and the word's 3); it writes the flags alone */
 SGA_VE(pcmp) {
@@ -153,7 +162,7 @@ static void fp_enter(SgCtx* g) {
 
 static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     SgCtx* g = u->g;
-    int k = vclause(word), in[4] = {0, 0, 0, 0}, r;
+    int k = vclause(word), in[4] = {0, 0, 0, 0}, r, flags = -1;
     unsigned f, rd = word & 31, rn = word >> 5 & 31, rm = word >> 16 & 31, ra = word >> 10 & 31;
     long long imm = word;
     const char* name;
@@ -188,21 +197,53 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
         /* the host's NZCV the guest's: PSTATE written from them, and a B.cond after it reads them (origin); FCCMP's
            condition is on the guest's flags, in the host's first */
         int ins, cin[4] = {vread(g, rn), vread(g, rm), 0, 0};
-        if (name[2] == 'c') flags_into_host(g);
-        else
+        if (name[2] == 'c') {
+            flags_into_host(g);
+            flags = X->flags_ins;
+        } else
             imm |= 1ll << 36; /* FCMP's bit 3: the compare with zero (FCCMP's is nzcv's) */
         fp_enter(g);
         sgx_vins(X, &sga_v_pcmp_f, -1, 0, cin, imm, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
         ins = X->flags_ins;
         X->ins[ins].side = 1;
+        X->ins[ins].flags_from = flags;        /* FCCMP reads the flags it is on: what made them stays */
         X->ins[ins].fsel = &sgx_sel_cmp_64[0]; /* the identity of Arm's flags as the host's */
         sgx_simple(g, SGX_M_FPLEAVE);
         sg_PSTATE_write(g, SG_PSTATE_N, 4, sgx_nzcv(X, ins));
         return 1;
     }
-    if (strstr(name, "_gen") || strstr(name, "float_int") || strstr(name, "float_fix") || !strncmp(name, "fcmp", 4) ||
-        !strncmp(name, "fccmp", 5) || !strncmp(name, "umov", 4) ||
-        !strncmp(name, "smov", 4) || !strncmp(name, "fjcvtzs", 7))
+    {
+        /* a float's conversion to a W or X register (FCVTNS... of each rounding, FCVTZS of a fixed point) or a W's or
+           an X's to a float (SCVTF, UCVTF): the word of the host's own, its general-purpose register a value of the
+           region's (Rn 31 the zero register; Rd 31 none, the FPSR flags kept). FMOV and FJCVTZS stay the emitters' */
+        int sf = 0, to_gpr, from_gpr;
+        for (f = 0; f < sge_a64_table[k].nfields; ++f) sf |= !strcmp(sge_a64_table[k].fields[f].name, "sf");
+        to_gpr = sf && !strncmp(name, "fcvt", 4);
+        from_gpr = sf && (!strncmp(name, "scvtf", 5) || !strncmp(name, "ucvtf", 5));
+        if (to_gpr || from_gpr) {
+            int cin[4] = {0, 0, 0, 0}, wide = (int)(word >> 31);
+            if (to_gpr)
+                cin[1] = vread(g, rn);
+            else {
+                SgD n = rn == 31 ? sgx_const(64, 0) : sg_GPR_read(g, rn);
+                cin[1] = sgx_reg(X, &n);
+            }
+            fp_enter(g);
+            r = sgx_vins(X, to_gpr ? &sga_v_pass_gv_f : &sga_v_pass_vg_f, 0, 0, cin, imm | 1ll << 32, 0, SGX_VM_NONE, 0,
+                         0, 0, 0, 0);
+            X->ins[X->v[r].def].side = 1; /* its FPSR flags */
+            sgx_simple(g, SGX_M_FPLEAVE);
+            if (from_gpr)
+                sg__V_write(g, rd, sgx_xval(128, r));
+            else if (rd != 31) {
+                if (!wide) X->v[r].zab = 32; /* a W's: the X's upper half zero */
+                sg_GPR_write(g, rd, wide ? sgx_val(64, r) : sg_d_zext(g, sgx_val(32, r), 64));
+            }
+            return 1;
+        }
+    }
+    if (strstr(name, "_gen") || !strncmp(name, "fcmp", 4) || !strncmp(name, "fccmp", 5) || !strncmp(name, "umov", 4) ||
+        !strncmp(name, "smov", 4))
         return 0;
     {
         /* a by-element form's Rm of 4 bits is M:Rm, 5 bits, for elements of 32 and 64 bits ("size" 2 or 3, or "sz"
@@ -217,7 +258,9 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
             if (!strcmp(fn, "M")) has_m = 1;
             if (!strcmp(fn, "sz") || (!strcmp(fn, "size") && (word >> lo & 3) >= 2)) wide = 1;
             if (strcmp(fn, "Rd") && strcmp(fn, "Rn") && strcmp(fn, "Rm") && strcmp(fn, "Ra")) {
-                if (!strncmp(fn, "Rt", 2) || !strcmp(fn, "Rs")) return 0; /* a general-purpose register's */
+                /* a general-purpose register's, or its width: sf, every conversion to or from one's (FCVTNS,
+                   FCVTZS, SCVTF, FMOV, FJCVTZS), whose Rd or Rn is that register */
+                if (!strncmp(fn, "Rt", 2) || !strcmp(fn, "Rs") || !strcmp(fn, "sf")) return 0;
                 continue;
             }
             if (width == 4 && !strcmp(fn, "Rm")) rm4 = 1;
@@ -240,11 +283,15 @@ static int vec(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
     if (imm >> 32 & 1) in[1] = vread(g, rn);
     if (imm >> 33 & 1) in[2] = vread(g, rm);
     if (imm >> 34 & 1) in[3] = vread(g, ra);
-    if (!strcmp(name, "fcsel_float")) flags_into_host(g); /* its condition the guest's flags' */
+    if (!strcmp(name, "fcsel_float")) {
+        flags_into_host(g); /* its condition the guest's flags' */
+        flags = X->flags_ins;
+    }
     fp_enter(g);
     r = sgx_vins(X, &sga_v_pass_f, 0, 1, in, imm, 0, SGX_VM_NONE, 0, 0, 0, 0, 0);
     i = &X->ins[X->v[r].def];
-    i->side = 1; /* its FPSR flags, though nothing reads its value */
+    i->side = 1;           /* its FPSR flags, though nothing reads its value */
+    i->flags_from = flags; /* FCSEL reads the host's flags: what made them stays though later ones are the guest's */
     sgx_simple(g, SGX_M_FPLEAVE);
     sg__V_write(g, rd, sgx_xval(128, r));
     return 1;

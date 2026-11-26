@@ -610,6 +610,69 @@ class ArchitectureTests(unittest.TestCase):
                 architecture.check_graph(graph), ['snx_ctr_cpu transitively links forbidden target snx_arm_llvm']
             )
 
+    def test_the_recompilers_core_links_no_llvm(self):
+        with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
+            graph = Path(temporary) / 'targets.dot'
+            text = (
+                'digraph {\n"a" [label = "scarletnx-common"];\n'
+                '"b" [label = "snx_recompiler_core"];\n"c" [label = "adapter"];\n'
+                '"d" [label = "snx_llvm"];\n"e" [label = "-lLLVM-22"];\n"f" [label = "snx_recompiler_base"];\n'
+                '"b" -> "f";\n"c" -> "d";\n"c" -> "e";\n'
+            )
+            graph.write_text(text + '}\n', encoding='ascii')
+            self.assertEqual(architecture.check_graph(graph), [])
+            graph.write_text(text + '"b" -> "c";\n}\n', encoding='ascii')
+            self.assertEqual(
+                sorted(architecture.check_graph(graph)),
+                [
+                    'snx_recompiler_core transitively links LLVM: -lLLVM-22',
+                    'snx_recompiler_core transitively links forbidden target snx_llvm',
+                ],
+            )
+
+    def llvm_errors(self, files, users=()):
+        with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
+            root = Path(temporary)
+            for name, text in files.items():
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text(text, encoding='ascii')
+            with mock.patch.object(architecture, 'LLVM_USERS', set(users)):
+                return architecture.check_llvm(root)
+
+    def test_an_llvm_header_outside_the_backend_is_rejected(self):
+        folder = 'src/common/cpu/recompiler/'
+        backend = {
+            folder + 'llvm/ir.h': '#include <llvm-c/Core.h>\n',
+            folder + 'llvm/ir.c': '#include "common/cpu/recompiler/llvm/ir.h"\n',
+            folder + 'mach/native.c': '#include "common/cpu/recompiler/mach/native.h"\n',
+            folder + 'mach/native.h': "/* #include <llvm-c/Core.h> is LLVM's */ int native(void);\n",
+        }
+        self.assertEqual(self.llvm_errors(backend), [])
+        # LLVM's header itself, and one of ours that takes it two includes away
+        errors = self.llvm_errors(
+            {
+                **backend,
+                folder + 'object/link.c': '#include <llvm/Config/llvm-config.h>\n',
+                folder + 'workers.h': '#include "common/cpu/recompiler/llvm/ir.h"\n',
+                'src/nx/runtime/main.c': '#include "common/cpu/recompiler/workers.h"\n',
+            }
+        )
+        self.assertEqual(len(errors), 3)
+        for name, header in (
+            (folder + 'object/link.c', '<llvm/Config/llvm-config.h>'),
+            (folder + 'workers.h', '"common/cpu/recompiler/llvm/ir.h"'),
+            ('src/nx/runtime/main.c', '"common/cpu/recompiler/workers.h"'),
+        ):
+            self.assertTrue(any(error.startswith(f'{name}: includes {header}, ') for error in errors), (name, errors))
+
+    def test_the_files_left_on_llvm_are_the_ones_listed(self):
+        user = 'src/common/cpu/recompiler/library.c'
+        self.assertEqual(self.llvm_errors({user: '#include <llvm-c/Support.h>\n'}, {user}), [])
+        errors = self.llvm_errors({user: '#include <stdio.h>\n'}, {user})
+        self.assertEqual(
+            errors, [f'tests/architecture.py: LLVM_USERS names {user}, which takes no LLVM header: take it out']
+        )
+
     def test_transitive_graphics_link_is_rejected(self):
         with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
             graph = Path(temporary) / 'targets.dot'
@@ -865,6 +928,65 @@ class ArchitectureTests(unittest.TestCase):
             architecture.sanitizers_of(['-fsanitize=address', '-fno-sanitize=all', '-fsanitize=undefined']),
             ({'undefined'}, {'address', 'undefined'}),
         )
+
+
+class ConfigFilesTests(unittest.TestCase):
+    """check_config_files: every reader of a settings file in src/ is in tests/config_files.json"""
+
+    REGISTRY = {
+        'files': [
+            {'id': 'a.ini', 'adapter': 'tests/config_files_x.c', 'names': ['a.ini'], 'functions': ['src/x.c:read_a']},
+            {'id': 'b.ini', 'adapter': 'tests/config_files_x.c', 'names': [], 'functions': []},
+        ],
+        'records': {'doc': ''},
+        'not_config': {'doc': '', 'threads.txt': 'a dump'},
+    }
+
+    def errors(self, sources, registry=None, adapter='{.id = "a.ini"}, {.id = "b.ini"}'):
+        with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
+            root = Path(temporary)
+            files = {
+                'tests/config_files.json': json.dumps(registry or self.REGISTRY),
+                'tests/config_files_x.c': adapter,
+                **sources,
+            }
+            for name, text in files.items():
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text(text, encoding='ascii')
+            return architecture.check_config_files(root)
+
+    READ_A = 'static int read_a(void) {\n    snx_ini_start(&ini, text);\n    return snx_ini_next(&ini, &k, &v);\n}\n'
+
+    def test_the_listed_reader_passes(self):
+        self.assertEqual(self.errors({'src/x.c': self.READ_A}), [])
+
+    def test_a_new_reader_is_named(self):
+        errors = self.errors({'src/x.c': self.READ_A + 'int read_b(void) {\n    return snx_ini_value(p, "k") != 0;\n}\n'})
+        self.assertEqual(len(errors), 1)
+        self.assertIn('src/x.c:6: snx_ini_value in read_b', errors[0])
+        self.assertIn('tests/config_files.json does not list', errors[0])
+
+    def test_a_reader_gone_is_named(self):
+        errors = self.errors({'src/x.c': 'int other(void) { return 0; }\n'})
+        self.assertEqual(errors, ['tests/config_files.json: src/x.c:read_a (a.ini) is no function in src/ any more: take it out'])
+
+    def test_a_new_file_name_is_named(self):
+        errors = self.errors({'src/x.c': self.READ_A, 'src/y.h': '#define F "newer.ini"\n#define T "threads.txt"\n'})
+        self.assertEqual(len(errors), 1)
+        self.assertTrue(errors[0].startswith('src/y.h:1: "newer.ini" names a file'))
+
+    def test_adapters_agree(self):
+        # no adapter; an adapter's id the registry lacks
+        registry = json.loads(json.dumps(self.REGISTRY))
+        registry['files'][1]['adapter'] = None
+        errors = self.errors({'src/x.c': self.READ_A}, registry=registry, adapter='{.id = "a.ini"}, {.id = "z.ini"}')
+        self.assertIn(
+            "tests/config_files.json: b.ini has no adapter: every settings file runs through tests/config_files.h's "
+            'situations',
+            errors,
+        )
+        self.assertIn('tests/config_files_x.c: z.ini is no id of tests/config_files.json', errors)
+        self.assertEqual(len(errors), 2)
 
 
 if __name__ == '__main__':

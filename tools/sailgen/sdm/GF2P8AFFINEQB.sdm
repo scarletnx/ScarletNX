@@ -1,0 +1,6 @@
+# GF2P8AFFINEQB—Galois Field Affine Transformation -- override
+# S-11: the opcode '66 0F3A CE /r /ib', its escape bytes run together and a slash before ib. S-12: pdftotext keeps the
+# first line of a CPUID cell of two ('AVX' over 'GFNI'). The legacy and VEX.128 forms' rows.
+@opcodes
+66 0F 3A CE /r ib | GF2P8AFFINEQB xmm1, xmm2/m128, imm8 | A | Valid | Valid | GFNI | Computes affine transformation in the finite field GF(2^8).
+VEX.128.66.0F3A.W1 CE /r ib | VGF2P8AFFINEQB xmm1, xmm2, xmm3/m128, imm8 | B | Valid | Valid | AVX GFNI | Computes affine transformation in the finite field GF(2^8).

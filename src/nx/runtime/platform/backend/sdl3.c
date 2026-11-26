@@ -1188,6 +1188,12 @@ static int fatal_screen(const char* msg) {
     free(shown_log);
     return 1;
 }
+/* SDL's box of an error: on Windows it is as wide as its longest line, so the text goes in broken into lines */
+static void fatal_box(const char* msg) {
+    char* lines = fatal_lines(msg, FATAL_BOX_COLS);
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "ScarletNX", lines ? lines : msg, g_sdl3.win);
+    free(lines);
+}
 /* log.c's fatal error: the screen above on the main thread, which owns the window; SDL's box when it can't be drawn.
    From another thread, the main thread's loop (video_poll) shows it, and this thread waits for the exit; when the main
    thread doesn't come (held up elsewhere), Windows' own box (it takes any thread) and none on Linux: the error is in
@@ -1225,8 +1231,7 @@ void win_fatal_box(const char* msg) {
         /* an error another thread left first: this one followed from it */
         char* left = atomic_load_explicit(&g_sdl3.fatal_left, memory_order_acquire);
         atomic_store_explicit(&g_sdl3.fatal_taken, 1, memory_order_release);
-        if (!fatal_screen(left ? left : msg))
-            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "ScarletNX", left ? left : msg, g_sdl3.win);
+        if (!fatal_screen(left ? left : msg)) fatal_box(left ? left : msg);
         return;
     }
     if (g_sdl3.win) {
@@ -1929,7 +1934,7 @@ static void fatal_left_show(void) {
     char* left = atomic_load_explicit(&g_sdl3.fatal_left, memory_order_acquire);
     if (!left) return;
     atomic_store_explicit(&g_sdl3.fatal_taken, 1, memory_order_release);
-    if (!fatal_screen(left)) SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "ScarletNX", left, g_sdl3.win);
+    if (!fatal_screen(left)) fatal_box(left);
     plat_exit_now(1);
 }
 /* what the window's own events say of it (its size, its safe part, whether it is seen, its display): taken as they

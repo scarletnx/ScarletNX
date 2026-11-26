@@ -3,6 +3,7 @@
 #include "gui/recent.h"
 #include "common/utilities/common.h"
 #include "common/platform/file.h"
+#include "common/utilities/config_file.h"
 #include "gui/model.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -70,17 +71,20 @@ int gui_recent_made(GuiRecent* recent, int index, const char* path) {
     return 1;
 }
 void gui_recent_load(GuiRecent* recent, const char* file) {
-    unsigned char* data;
-    char *line, *next, *field[4];
-    size_t size;
-    int i, n;
+    char *data, *line, *next, *field[4];
+    size_t size, at = 0;
+    int i, n, number = 0;
     GuiRecentGame* game;
+    SnxConfigOthers others = {0};
     recent->count = 0;
-    data = snx_read_file(file, &size);
-    if (!data) return;
-    for (line = (char*)data; line && recent->count < GUI_RECENT_MAX; line = next) {
+    recent->other[0] = recent->said[0] = 0;
+    if (snx_config_read(file, &data, &size, recent->said, sizeof recent->said) <= 0) return; /* said, or none */
+    for (line = data; line && *line; line = next) {
+        size_t length;
         next = strchr(line, '\n');
         if (next) *next++ = 0;
+        ++number;
+        length = strlen(line);
         if (*line && line[strlen(line) - 1] == '\r') line[strlen(line) - 1] = 0;
         field[0] = line;
         for (n = 1; n < 4 && (field[n] = strchr(field[n - 1], '\t')) != NULL; ++n) *field[n]++ = 0;
@@ -88,8 +92,16 @@ void gui_recent_load(GuiRecent* recent, const char* file) {
             (strcmp(field[0], "switch") && strcmp(field[0], "linux") && strcmp(field[0], "3ds") &&
              strcmp(field[0], "vita") && strcmp(field[0], "gba") && strcmp(field[0], "nds") &&
              strcmp(field[0], "android")) ||
-            (strcmp(field[1], "file") && strcmp(field[1], "games")))
+            (strcmp(field[1], "file") && strcmp(field[1], "games"))) {
+            /* a line of another version's: kept as it was, tabs put back, and named by its line */
+            for (i = 1; i < n; ++i) field[i][-1] = '\t';
+            if (*line && at + length + 2 < sizeof recent->other) {
+                at += (size_t)snprintf(recent->other + at, sizeof recent->other - at, "%s\n", line);
+                snx_config_other_key(&others, "", "", number);
+            }
             continue;
+        }
+        if (recent->count == GUI_RECENT_MAX) continue;
         game = &recent->game[recent->count];
         if (!fits(field[2], sizeof game->path) || !fits(field[3], sizeof game->name) || !snx_is_file(field[2]))
             continue;
@@ -111,13 +123,14 @@ void gui_recent_load(GuiRecent* recent, const char* file) {
         game->prepared = field[1][0] == 'g';
         recent->count++;
     }
+    snx_config_others_said(&others, file, recent->said, sizeof recent->said);
     free(data);
 }
 int gui_recent_save(const GuiRecent* recent, const char* file) {
-    char *directory, *staged, *text;
+    char *text, why[1024];
     size_t size, at;
     int i, failed;
-    size = 1;
+    size = 1 + strlen(recent->other);
     for (i = 0; i < recent->count; ++i) size += strlen(recent->game[i].path) + strlen(recent->game[i].name) + 16;
     text = (char*)snx_alloc(size);
     at = 0;
@@ -131,13 +144,9 @@ int gui_recent_save(const GuiRecent* recent, const char* file) {
                               : recent->game[i].driver == GUI_ANDROID ? "android"
                                                                    : "linux",
                               recent->game[i].prepared ? "games" : "file", recent->game[i].path, recent->game[i].name);
-    /* staged beside it, then put in place: a crash mid-write leaves the old list */
-    directory = snx_dirname(file);
-    staged = snx_format("%s.new", file);
-    failed = !directory || snx_mkdirs(directory) || snx_write_file(staged, text, at) || plat_replace_file(staged, file);
-    if (failed) remove(staged);
-    free(directory);
-    free(staged);
+    at += (size_t)sprintf(text + at, "%s", recent->other); /* another version's lines, as they were */
+    /* staged beside it, then put in place: a crash mid-write leaves the old list; one that cannot be read stays */
+    failed = snx_config_write(file, ".new", text, at, why, sizeof why);
     free(text);
     return failed;
 }

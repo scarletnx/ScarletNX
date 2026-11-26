@@ -1,0 +1,304 @@
+{
+ "doc": "Every settings file the project writes and reads (tests/config_files.h's rule): each with the functions in src/ that read or write it and the adapter in tests/ that runs it through the rule's situations. tests/architecture.py's check_config_files names any reader of a settings file in src/ that is not here, and an entry here that is no longer there.",
+ "files": [
+  {
+   "id": "game.ini",
+   "adapter": "tests/config_files_options.c",
+   "names": [],
+   "functions": [
+    "src/nx/runtime/options.c:store_parse",
+    "src/nx/runtime/options.c:lines_kept"
+   ]
+  },
+  {
+   "id": "game.picks",
+   "adapter": "tests/config_files_options.c",
+   "names": [],
+   "functions": [
+    "src/nx/runtime/options.c:picks_load"
+   ]
+  },
+  {
+   "id": "game.picks launcher",
+   "adapter": "tests/config_files_gui.c",
+   "names": [
+    ".picks"
+   ],
+   "functions": [
+    "src/gui/settings.c:file_gives",
+    "src/gui/settings.c:file_by_row",
+    "src/gui/settings.c:gui_settings_game_own"
+   ]
+  },
+  {
+   "id": "settings.ini",
+   "adapter": "tests/config_files_gui.c",
+   "names": [
+    "settings.ini"
+   ],
+   "functions": [
+    "src/gui/settings.c:gui_settings_load",
+    "src/gui/settings.c:gui_settings_save",
+    "src/gui/settings.c:gui_settings_unread",
+    "src/gui/main.c:settings_file_text",
+    "src/gui/main.c:saves_global",
+    "src/gui/settings.c:settings_write"
+   ]
+  },
+  {
+   "id": "settings.ini probes",
+   "adapter": "tests/config_files_common.c",
+   "names": [],
+   "functions": [
+    "src/3ds/services/uds.c:snx_ctr_uds_settings",
+    "src/nds/runtime/main.c:network_settings",
+    "src/android/runtime/main.c:network_online",
+    "src/common/utilities/config_file.c:snx_config_keys"
+   ]
+  },
+  {
+   "id": "app.ini",
+   "adapter": "tests/config_files_gui.c",
+   "names": [
+    "app.ini"
+   ],
+   "functions": [
+    "src/gui/main.c:app_read",
+    "src/gui/main.c:app_load",
+    "src/gui/main.c:app_write"
+   ]
+  },
+  {
+   "id": "app.ini folders",
+   "adapter": "tests/config_files_common.c",
+   "names": [],
+   "functions": [
+    "src/common/utilities/common.c:picked_kind",
+    "src/gui/theme.c:gui_run_theme",
+    "src/nx/runtime/driver/setup.c:app_value",
+    "src/nx/runtime/driver/setup.c:snx_setup_terminal",
+    "src/common/utilities/setup.c:snx_ini_put"
+   ]
+  },
+  {
+   "id": "users.ini",
+   "adapter": "tests/config_files_common.c",
+   "names": [
+    "users.ini"
+   ],
+   "functions": [
+    "src/common/utilities/users.c:snx_users_load",
+    "src/common/utilities/users.c:users_set_key"
+   ]
+  },
+  {
+   "id": "online.ini",
+   "adapter": "tests/config_files_common.c",
+   "names": [
+    "online.ini"
+   ],
+   "functions": [
+    "src/common/utilities/users.c:snx_users_room_password",
+    "src/common/utilities/users.c:online_settable",
+    "src/common/utilities/users.c:online_password_line",
+    "src/common/utilities/users.c:online_text",
+    "src/common/utilities/users.c:snx_users_room_password_set"
+   ]
+  },
+  {
+   "id": "setup.ini",
+   "adapter": "tests/config_files_common.c",
+   "names": [
+    "setup.ini"
+   ],
+   "functions": [
+    "src/common/utilities/setup.c:snx_setup_read",
+    "src/common/utilities/setup.c:snx_setup_done"
+   ]
+  },
+  {
+   "id": "theme.ini",
+   "adapter": "tests/config_files_gui.c",
+   "names": [
+    "theme.ini"
+   ],
+   "functions": [
+    "src/gui/theme.c:visit",
+    "src/gui/theme.c:gui_theme_file_read",
+    "src/gui/editor.c:gui_editor_save",
+    "src/gui/theme.c:theme_file"
+   ]
+  },
+  {
+   "id": "folders.txt",
+   "adapter": "tests/config_files_gui.c",
+   "names": [
+    "folders.txt"
+   ],
+   "functions": [
+    "src/nx/runtime/driver/setup.c:folders",
+    "src/common/utilities/setup.c:snx_lines_add",
+    "src/gui/main.c:folders_load",
+    "src/gui/main.c:folders_save"
+   ]
+  },
+  {
+   "id": "removed.txt",
+   "adapter": "tests/config_files_gui.c",
+   "names": [
+    "removed.txt"
+   ],
+   "functions": [
+    "src/gui/main.c:removed_save",
+    "src/gui/main.c:removed_open"
+   ]
+  },
+  {
+   "id": "recent.txt",
+   "adapter": "tests/config_files_gui.c",
+   "names": [
+    "recent.txt"
+   ],
+   "functions": [
+    "src/gui/recent.c:gui_recent_load",
+    "src/gui/recent.c:gui_recent_save"
+   ]
+  },
+  {
+   "id": "joycon2.txt",
+   "adapter": "tests/config_files_gui.c",
+   "names": [
+    "joycon2.txt"
+   ],
+   "functions": [
+    "src/gui/bluetooth.c:gui_bt_read"
+   ]
+  },
+  {
+   "id": "last-run.ini",
+   "adapter": "tests/config_files_gui.c",
+   "names": [],
+   "functions": [
+    "src/gui/last_run.c:gui_last_run_take",
+    "src/gui/last_run.c:gui_last_run_write"
+   ]
+  },
+  {
+   "id": "joycon2.txt runtime",
+   "adapter": "tests/config_files_common.c",
+   "names": [],
+   "functions": [
+    "src/nx/runtime/platform/joycon2.c:known_load",
+    "src/nx/runtime/platform/joycon2.c:known_save",
+    "src/nx/runtime/platform/joycon2_known.c:joycon2_known_load",
+    "src/nx/runtime/platform/joycon2_known.c:joycon2_known_save"
+   ]
+  },
+  {
+   "id": "game.ini record",
+   "adapter": "tests/config_files_common.c",
+   "names": [
+    ".ini"
+   ],
+   "functions": [
+    "src/common/utilities/game_ini.c:text_value",
+    "src/common/utilities/game_ini.c:snx_ini_value",
+    "src/common/utilities/game_ini.c:snx_ini_has",
+    "src/common/utilities/game_ini.c:snx_ini_record",
+    "src/common/utilities/game_ini.c:snx_ini_drop",
+    "src/common/utilities/game_ini.c:snx_addon_check",
+    "src/common/utilities/game_ini.c:snx_game_source",
+    "src/common/utilities/game_ini.c:snx_game_system",
+    "src/common/utilities/game_ini.c:snx_game_update",
+    "src/common/utilities/game_ini.c:snx_record_source",
+    "src/common/utilities/game_ini.c:snx_record_system",
+    "src/common/utilities/mods.c:snx_game_mods",
+    "src/3ds/aot/run.c:game_metadata",
+    "src/3ds/runtime/main.c:addons_unplayed",
+    "src/3ds/runtime/main.c:apply_addons",
+    "src/agb/runtime/main.c:snx_agb_main",
+    "src/nds/runtime/main.c:snx_nds_main",
+    "src/vita/runtime/main.c:deploy_runtime",
+    "src/nx/hle/filesystem/fs.c:dlcs_open",
+    "src/nx/hle/filesystem/fs.c:dump_open",
+    "src/nx/runtime/driver/driver.c:checked_addons",
+    "src/gui/browser.c:ctr_missing",
+    "src/gui/browser.c:gba_missing",
+    "src/gui/browser.c:shown_name",
+    "src/gui/gpu_driver.c:gui_run_option",
+    "src/gui/settings.c:given",
+    "src/gui/main.c:addons_checked_read",
+    "src/gui/main.c:addons_open",
+    "src/gui/main.c:addons_save",
+    "src/gui/main.c:driver_use",
+    "src/gui/main.c:drivers_fill",
+    "src/gui/main.c:freedreno_action",
+    "src/gui/main.c:missing_check",
+    "src/gui/main.c:missing_title",
+    "src/gui/main.c:open_freedreno",
+    "src/gui/main.c:played_file",
+    "src/gui/main.c:switch_facts",
+    "src/gui/main.c:transition_on",
+    "src/common/utilities/game_ini.c:ini_read"
+   ]
+  },
+  {
+   "id": "3DS game.ini",
+   "adapter": "tests/config_files_common.c",
+   "names": [],
+   "functions": [
+    "src/3ds/runtime/game_record.c:snx_ctr_record_read",
+    "src/3ds/runtime/game_record.c:snx_ctr_record_write",
+    "src/3ds/runtime/main.c:read_game_ini_model",
+    "src/3ds/runtime/main.c:write_game_ini"
+   ]
+  },
+  {
+   "id": "3DS game.picks",
+   "adapter": "tests/config_files_common.c",
+   "names": [],
+   "functions": [
+    "src/3ds/runtime/game_record.c:snx_ctr_picks_console",
+    "src/3ds/runtime/main.c:own_console"
+   ]
+  },
+  {
+   "id": "game.folders",
+   "adapter": "tests/config_files_common.c",
+   "names": [],
+   "functions": [
+    "src/common/utilities/game_ini.c:snx_folders_read",
+    "src/nx/runtime/main.c:game_dirs",
+    "src/gui/main.c:game_state_of",
+    "src/gui/aot.c:gui_game_kind_dir",
+    "src/nx/runtime/driver/game_name.c:snx_record_folders"
+   ]
+  }
+ ],
+ "records": {
+  "doc": "Files of the program's own that are no settings: written whole by one version and read back by it, never edited",
+  "title.ini": {
+   "why": "what a dump is, which the driver writes again when its version asks",
+   "functions": [
+    "src/gui/browser.c:gui_dump_title"
+   ]
+  },
+  ".version": {
+   "why": "the version that last wrote a save, which the runtime writes at each commit",
+   "functions": [
+    "src/nx/hle/filesystem/fs.c:save_note_read"
+   ]
+  }
+ },
+ "not_config": {
+  "doc": "Names of files in src/ that end like a settings file and are none",
+  ".txt": "an extension, of cheats, shipped shaders and a GPU bench's record",
+  "CMakeLists.txt": "a checkout's, which a build from it is told by",
+  "aes_keys.txt": "the player's 3DS keys, read in place, never written",
+  "gamecontrollerdb.txt": "SDL's mappings, which SDL reads",
+  "manifest.ini": "a 3DS extraction's output",
+  "modules.txt": "a recompile's output",
+  "summary.txt": "the Share Log's report",
+  "threads.txt": "a run's thread dump"
+ }
+}

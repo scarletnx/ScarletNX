@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* What the JIT loader says when the system refuses its memory (code_loader.h's snx_code_jit_refused): the size it
    asked, the system's reason and what macOS wants of the app, by value; it has a place to end */
-#include "common/cpu/recompiler/llvm/code_loader.h"
+#include "common/cpu/recompiler/loader/code_loader.h"
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>

@@ -4,6 +4,7 @@
 
 ## Index
 
+* [How a settings file is read](#how-a-settings-file-is-read)
 * [Game](#game)
 * [Display](#display)
 * [Graphics](#graphics)
@@ -43,7 +44,8 @@ game's picks, then from the launcher's Settings, which every game gets (the laun
 with `--launcher-picks=1`, which puts the game's picks over them), then from the `.ini`, else its default. The `.ini`
 keeps its own values meanwhile. The log's `settings: this game's own, from <path>:` line lists the picks, and says the
 value a run's own `--key=value` plays over one. A change to the file is read while the game runs, as the `.ini`'s is; a
-key no pick takes is said with its value, kept in the file and does nothing; with no pick left the file is removed.
+key no pick takes is kept in the file and does nothing ([below](#how-a-settings-file-is-read)); with no pick left the
+file is removed.
 In the game's menu a value the picks hold has `*` after it, and Delete or a controller's Y takes it out: the value
 goes back to the launcher's, else the `.ini`'s, at once. Its **Settings** page sets the rest of these sections for the
 game alone ([Usage](usage.md#playing)).
@@ -74,6 +76,29 @@ the `[Debug]` settings other than `log`, `auto_stub_ipc`, `diag` and `tracy_capt
 `scarletnx --settings` prints each setting the launcher's Settings offer, one a line: its section, key, default,
 type, range and help, tab-separated. Every setting, the recompiler's too, is described once in
 `src/nx/runtime/settings.txt`, which the build generates the tables and `g_settings` from.
+
+## How a settings file is read
+
+Every file of settings ScarletNX writes and reads follows one rule: a game's `.ini` and picks, the launcher's
+`settings.ini`, `app.ini`, `folders.txt`, `recent.txt`, `removed.txt` and `joycon2.txt`, `users/users.ini` and
+`users/online.ini`, `setup.ini`, a theme's `theme.ini`, a game's `.folders`, a 3DS game's `.ini` and picks, and the
+launcher's record of its last run.
+
+- A key, a section or a line it does not know (another version's, another program's, a typo) changes nothing it
+  reads, stays in the file as it was when the file is written again, and is named once a run in the log or the
+  launcher's message by its key alone, never by its value, which can be a secret. A line with no `=` is named by its
+  number.
+- A key given twice takes its last line's value, and both lines are said, with their values but in a file of secrets.
+- A value a setting does not take is said with the value it gives and the one in effect.
+- A file that is not there says nothing: each setting takes its default. One that is there and cannot be read is said
+  with the system's reason, and nothing is written over it.
+- A file is written beside itself first, then put in its place, so a stop in the middle leaves the one before whole.
+- What a file's own rule refuses stays refused: `users.ini`'s users out of order, a uid or a nickname the account
+  service would not keep; `online.ini`, which holds a secret, when others can read it, when it has a section, or a key
+  that starts with `room_` and is not `room_password`.
+
+Clean Old Settings takes out the keys an older version wrote that this one dropped ([Deprecations](deprecations.md)),
+never another version's.
 
 ## Game
 

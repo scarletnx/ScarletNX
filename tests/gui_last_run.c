@@ -60,13 +60,24 @@ static void record(const char* root) {
     CHECK(gui_last_run_take(path, &back, why, sizeof why) < 0 && strstr(why, "holds no started =") &&
           !snx_path_exists(path));
     gui_last_run_free(&back);
-    /* a folder that is not there: the write says where */
+    /* a folder that cannot be made (one under a file, which root cannot make either): the write says where */
     {
-        char* missing = snx_path_join(root, "not there/last-run.ini");
+        char *plain = snx_path_join(root, "a file"), *missing = snx_path_join(plain, "last-run.ini");
         run.name = "x";
-        CHECK(gui_last_run_write(missing, &run, why, sizeof why) < 0 && strstr(why, "cannot be written"));
+        CHECK(!snx_write_file(plain, "", 0));
+        CHECK(gui_last_run_write(missing, &run, why, sizeof why) < 0 && strstr(why, "could not be written") &&
+              strstr(why, missing));
         free(missing);
+        free(plain);
     }
+    /* a start that is no time: said with it; a key of another version, named, never by its value */
+    CHECK(!snx_write_file(path, "started = soon\nname = x\n", 24));
+    CHECK(gui_last_run_take(path, &back, why, sizeof why) < 0 && strstr(why, "started = soon is not the run's start"));
+    gui_last_run_free(&back);
+    CHECK(!snx_write_file(path, "started = 5\nnewer = SECRET\n", 27));
+    CHECK(gui_last_run_take(path, &back, why, sizeof why) == 1 && strstr(why, "this version does not read newer") &&
+          !strstr(why, "SECRET"));
+    gui_last_run_free(&back);
     free(path);
     free(log);
 }

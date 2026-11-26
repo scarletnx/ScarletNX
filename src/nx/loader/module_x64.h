@@ -7,7 +7,7 @@
 #include "nx/loader/module.h"
 #include "common/cpu/recompiler/codegen.h"
 #include "common/cpu/recompiler/mach/native.h"
-#include "common/cpu/recompiler/llvm/jit_cache.h"
+#include "common/cpu/recompiler/jit/jit_cache.h"
 #include <stddef.h>
 
 /* the descriptor's ELF object (malloc'd), its entries' count and its variants' (the profile run's units it links:

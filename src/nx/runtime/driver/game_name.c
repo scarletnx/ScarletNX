@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "nx/runtime/driver/game_name.h"
+#include "common/utilities/config_file.h"
 #include "common/utilities/common.h"
 #include <ctype.h>
 #include <stdio.h>
@@ -56,6 +57,12 @@ char* snx_game_name(const char* name, const SnxNpdm* npdm, const char* input) {
     if (name || !snx_title_text(npdm->title_id, id)) return snx_game_title(name, npdm, input);
     return snx_strdup(id);
 }
+/* a key of the record this driver writes */
+static int folders_owns(void* ctx, const char* section, const char* key) {
+    (void)ctx;
+    (void)section;
+    return !strcmp(key, "config") || !strcmp(key, "state") || !strcmp(key, "cache");
+}
 int snx_record_folders(const char* folder, const char* name) {
     static const char* const keys[] = {"config", "state", "cache"};
     char *base = snx_path_join(folder, name), *record = snx_format("%s.folders", base), *text = snx_strdup("");
@@ -79,10 +86,23 @@ int snx_record_folders(const char* folder, const char* name) {
         free(moved);
         free(user);
     }
-    if (!rc && *text && snx_write_changed(record, text, strlen(text)))
-        rc = snx_error("cannot write %s", record);
-    else if (!rc && !*text && snx_path_exists(record) && snx_remove_tree(record))
-        rc = snx_error("cannot remove %s, which names folders this game no longer keeps its files in", record);
+    if (!rc) { /* another version's keys stay, as they were; one that cannot be read is never written over */
+        char *was = NULL, *kept = NULL, *whole = NULL, why[1024];
+        size_t size = 0;
+        rc = snx_config_read(record, &was, &size, why, sizeof why) < 0 ? snx_error("%s", why) : 0;
+        if (!rc) kept = snx_config_kept(was ? was : "", size, -1, folders_owns, NULL);
+        if (!rc && kept) whole = snx_format("%s%s", text, kept);
+        if (!rc && (!kept || !whole))
+            rc = snx_error("out of memory recording %s", record);
+        else if (!rc && *whole && (!was || strcmp(was, whole)) &&
+                 snx_config_write(record, ".new", whole, strlen(whole), why, sizeof why))
+            rc = snx_error("%s", why);
+        else if (!rc && !*whole && was && remove(record))
+            rc = snx_error("cannot remove %s, which names folders this game no longer keeps its files in", record);
+        free(whole);
+        free(kept);
+        free(was);
+    }
     free(base);
     free(record);
     free(text);

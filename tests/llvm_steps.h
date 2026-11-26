@@ -10,7 +10,7 @@
 
 #include "common/cpu/aarch64/cpu.h"
 #include "common/cpu/recompiler/llvm/ir.h"
-#include "common/cpu/recompiler/llvm/code_loader.h"
+#include "common/cpu/recompiler/loader/code_loader.h"
 
 typedef u64 (*LlvmStep)(CPU* c);
 

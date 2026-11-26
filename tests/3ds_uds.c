@@ -35,6 +35,16 @@
    covered by that: less than it */
 #define JOIN_US (10 * 1000000)
 #define GONE_US (8 * 1000000)
+/* a call that waits on the guest's clock, never on the host's: under 100 ms of it since before_us. The bound is the
+   host's clock, which also goes on while this process waits for a CPU: what it took is said */
+static void prompt(const char* what, int64_t before_us) {
+    int64_t took = snx_net_now_us() - before_us;
+    if (took >= 100000)
+        fprintf(stderr,
+                "%s took %.1f ms of the host's clock, not under 100: it waited on the host, or the host made it wait\n",
+                what, (double)took / 1000.0);
+    assert(took < 100000);
+}
 /* a request's answer: no transport error, and a result code of 0 */
 static void replied(SnxCtrProcess* p, const uint32_t* words, uint32_t result) {
     assert(!result);
@@ -47,7 +57,7 @@ static void request(SnxCtrProcess* p, uint32_t handle, const uint32_t* words, un
     int64_t before = snx_net_now_us();
     SnxCtrSvcResult state = snx_ctr_ipc_send(p, handle, &result);
     if (state == SNX_CTR_SVC_BLOCKED) {
-        assert(snx_net_now_us() - before < 100000);
+        prompt("a join's request", before);
         assert((words[0] >> 16) == 0x1e);
         uint32_t caller = p->current_thread;
         assert(snx_ctr_thread(p)->wake_ns > snx_ctr_now_ns());
@@ -86,23 +96,44 @@ static void env(const char* key, const char* value) {
 #endif
 }
 #ifndef _WIN32
+typedef struct {
+    _Atomic int go, stop, done;
+} Writer;
+static Writer* g_writer; /* the thread told to write at each swap of fd 2, if any */
+/* fd 2 becomes fd, with stderr locked: every thread writes to it through the stream, so none is in a write while fd 2
+   changes. Where dup2 over an open descriptor is two steps (XNU closes it, lets the table go, then installs the new
+   file), a write between them finds no fd 2 */
+static void swap_fd2(int fd) {
+    flockfile(stderr);
+    fflush(stderr);
+    if (g_writer) atomic_store(&g_writer->go, 1);
+    int r = dup2(fd, 2);
+    funlockfile(stderr);
+    assert(r == 2);
+}
 /* stderr into a file of this process alone until capture_end; *saved keeps stderr's own. ctest runs this program's two
    modes at once in one folder, where a file found by its name is the other's to truncate and remove: tmpfile's has none */
 static FILE* capture_begin(int* saved) {
     FILE* f = tmpfile();
-    fflush(stderr);
-    assert(f && (*saved = dup(2)) >= 0 && dup2(fileno(f), 2) == 2);
+    assert(f && (*saved = dup(2)) >= 0);
+    swap_fd2(fileno(f));
     return f;
 }
 /* what reached stderr since capture_begin, cut to size - 1 bytes, and their count; stderr back where it was. fd 2 must
-   be the capture's file to its end: what closed or replaced it inside took the lines written after */
+   be the capture's file to its end: what closed or replaced it inside took the lines written after. And no write to
+   stderr may have failed: its line is in neither place, and the stream keeps the failure (Apple's fprintf then drops
+   every later line to an unbuffered stream, which is how a capture after it came back without the line it waits for) */
 static size_t capture_end(FILE* f, int saved, char* said, size_t size) {
     struct stat now, mine;
-    fflush(stderr);
     int open2 = !fstat(2, &now),
         same = open2 && !fstat(fileno(f), &mine) && now.st_dev == mine.st_dev && now.st_ino == mine.st_ino;
-    assert(dup2(saved, 2) == 2);
+    swap_fd2(saved);
     close(saved);
+    int failed = ferror(stderr);
+    if (failed) /* fputs: it writes whatever the flag */
+        fputs("3ds_uds.c: a write to stderr failed before the capture's end (the stream's error flag is set): its line "
+              "is lost, and where fprintf stops at that flag, every later one\n",
+              stderr);
     if (!open2)
         fputs("3ds_uds.c: fd 2 is closed at the capture's end: something inside it closed the capture's file\n",
               stderr);
@@ -114,7 +145,7 @@ static size_t capture_end(FILE* f, int saved, char* said, size_t size) {
                 : S_ISREG(now.st_mode) ? "another file"
                                        : "neither file nor pipe",
                 (unsigned)now.st_mode, (unsigned long long)now.st_ino, (unsigned long long)mine.st_ino);
-    assert(same);
+    assert(same && !failed);
     rewind(f);
     size_t n = fread(said, 1, size - 1, f);
     fclose(f);
@@ -168,6 +199,59 @@ static void capture_lost_fd(void) {
     if (!strstr(said, "3ds_uds.c: fd 2 is a pipe of mode ")) fputs(said, stderr); /* what it said instead */
     assert(WIFEXITED(status) && WEXITSTATUS(status) == SIGABRT && strstr(said, "3ds_uds.c: fd 2 is a pipe of mode "));
     puts("UDS: a capture whose fd 2 was replaced says so");
+}
+/* one line to stderr each time it is told to, at once */
+static void writer(void* context) {
+    Writer* w = context;
+    while (!atomic_load(&w->stop))
+        if (atomic_exchange(&w->go, 0)) fputs("the thread's line\n", stderr);
+    atomic_store(&w->done, 1);
+}
+/* captures beside a thread that writes to stderr at each swap of fd 2, as a room's thread does with what it logs: no
+   write of it fails, and each capture has the line said inside it. In a child, whose stderr is a file: the thread's
+   lines stay out of the test's output, and what the child says when it stops is the file's end */
+static void captures_beside_writer(void) {
+    enum { CAPTURES = 2000 };
+    FILE* all = tmpfile();
+    assert(all);
+    fflush(stdout);
+    pid_t child = fork();
+    assert(child >= 0);
+    if (!child) {
+        static Writer w;
+        char said[1024], want[64];
+        signal(SIGABRT, exit_on_abort);
+        if (dup2(fileno(all), 2) != 2 || snx_net_thread(writer, &w)) _exit(1);
+        g_writer = &w;
+        for (unsigned i = 0; i < CAPTURES; ++i) {
+            int saved;
+            FILE* f = capture_begin(&saved);
+            fprintf(stderr, "capture %u\n", i);
+            capture_end(f, saved, said, sizeof said);
+            snprintf(want, sizeof want, "capture %u\n", i);
+            if (strstr(said, want)) continue;
+            snprintf(want, sizeof want, "3ds_uds.c: capture %u has not its own line\n", i);
+            fputs(want, stderr);
+            _exit(2);
+        }
+        _exit(0);
+    }
+    int status = 0;
+    assert(waitpid(child, &status, 0) == child);
+    if (!(WIFEXITED(status) && !WEXITSTATUS(status))) { /* what the child said last */
+        char tail[1024];
+        long size = !fseek(all, 0, SEEK_END) ? ftell(all) : 0;
+        size_t n = !fseek(all, size > (long)sizeof tail - 1 ? size - ((long)sizeof tail - 1) : 0, SEEK_SET)
+                       ? fread(tail, 1, sizeof tail - 1, all)
+                       : 0;
+        tail[n] = 0;
+        fputs(tail, stderr);
+        fprintf(stderr, "3ds_uds.c: the captures beside a writing thread ended with status %d\n",
+                WIFEXITED(status) ? WEXITSTATUS(status) : -WTERMSIG(status));
+    }
+    assert(WIFEXITED(status) && !WEXITSTATUS(status));
+    fclose(all);
+    puts("UDS: a thread that writes to stderr at each swap of fd 2 loses no line, and no capture its own");
 }
 #endif
 /* the init request, which joins the relay: the 3DS runtime says so on stderr, its log, which players attach to public
@@ -344,7 +428,7 @@ static void join_failures(void) {
         uint32_t refs = p->objects[caller].refs;
         int64_t start = snx_net_now_us();
         assert(snx_ctr_ipc_send(p, handle, &result) == SNX_CTR_SVC_BLOCKED);
-        assert(snx_net_now_us() - start < 100000);
+        prompt("a join's request", start);
         assert(p->objects[caller].refs == refs + 1);
         uint32_t worker;
         const uint32_t registers[5] = {0x31, 0x100000, 0, SNX_CTR_STACK_TOP - 0x1000, 0xfffffffe};
@@ -355,12 +439,16 @@ static void join_failures(void) {
         ++p->objects[p->gsp.shared_object].refs;
         p->dsp.core = snx_ctr_dsp_new(p->memory, NULL, NULL);
         assert(p->dsp.core);
-        p->gsp.next_vblank_ns = p->dsp.next_frame_ns = snx_ctr_now_ns();
+        uint64_t due = snx_ctr_now_ns();
+        p->gsp.next_vblank_ns = p->dsp.next_frame_ns = due;
         assert(snx_ctr_schedule(p) == SNX_CTR_SCHED_RUN);
         assert(p->current_thread == snx_ctr_handle_object(p, worker));
         uint32_t worker_tls = p->cpu.state.cpu.tpidruro + 0x80;
         ctr_put(p, worker_tls, 0xfeedface);
-        assert(p->gsp.vblank_count && p->dsp.next_frame_ns > snx_ctr_now_ns());
+        /* the display's frame and the DSP's ran under the blocked join, and the DSP's next is a frame after the one
+           that was due or later: by its own times, not the host's clock, which goes on while this process waits
+           for a CPU */
+        assert(p->gsp.vblank_count && p->dsp.next_frame_ns >= due + SNX_CTR_DSP_FRAME_NS);
         if (scenario == 1) { /* CLOSE before SYNC: own node ID is still zero. */
             uint8_t incoming[2048];
             SnxSockAddr source;
@@ -468,8 +556,8 @@ static void password_other_key(void) {
         snprintf(g_settings.local_wireless, sizeof g_settings.local_wireless, "%s", room ? "room" : "lan");
         g_said[0] = 0;
         snx_ctr_uds_settings(app);
-        assert(!strcmp(g_said, room ? "3ds uds: users/online.ini: this version reads room_password (set) and no other "
-                                      "key: sign_in\n"
+        assert(!strcmp(g_said, room ? "3ds uds: users/online.ini: this version does not read sign_in, which stays as "
+                                      "it is\n"
                                     : ""));
     }
     snx_error_sink(NULL);
@@ -529,6 +617,7 @@ int main(int argc, char** argv) {
 #ifndef _WIN32
     captures_apart(); /* before any thread: these fork */
     capture_lost_fd();
+    captures_beside_writer();
 #endif
     snprintf(g_settings.local_wireless, sizeof g_settings.local_wireless, "room");
     int delayed = argc == 2 && !strcmp(argv[1], "--delay");
@@ -612,7 +701,7 @@ int main(int argc, char** argv) {
     for (int64_t end = snx_net_now_us() + WAIT_US;;) {
         int64_t before = snx_net_now_us();
         request(client, client_h, scanning, 21);
-        assert(snx_net_now_us() - before < 100000); /* never host-sleep for 300 ms */
+        prompt("a scan's request", before); /* never host-sleep for 300 ms */
         assert(snx_ctr_thread(client)->wake_ns > snx_ctr_now_ns());
         ++scans;
         if (ctr_word(client, BUFFER + 8) || snx_net_now_us() >= end) break;
@@ -778,7 +867,7 @@ int main(int argc, char** argv) {
     assert(snx_ctr_schedule(client) == SNX_CTR_SCHED_RUN);
     assert(client->current_thread != scanning_thread);
     assert(client->current_thread == snx_ctr_handle_object(client, worker));
-    assert(snx_net_now_us() - schedule_start < 100000);
+    prompt("the scheduler's pass to a thread that can run", schedule_start);
     snx_ctr_process_free(client);
     snx_ctr_process_free(host);
     if (room) {

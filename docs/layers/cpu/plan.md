@@ -64,7 +64,7 @@ guest for free, and each part below notes where that matters.
 
 The object formats, page sizes and JIT support come from `docs/dev/architecture.md`, `docs/hosts/apple.md`, `docs/hosts/ppc64.md`,
 `docs/hosts/riscv-loongarch.md`, `docs/hosts/mips64.md`, `docs/hosts/s390x.md` and `HOST_MACHINE` in
-`src/common/cpu/recompiler/llvm/code_loader.c`. `docs/user/install.md` says the PowerPC64, RISC-V and LoongArch builds are
+`src/common/cpu/recompiler/loader/code_loader.c`. `docs/user/install.md` says the PowerPC64, RISC-V and LoongArch builds are
 cross-built, that big-endian PowerPC64 has not run on a big-endian machine, and that no game runs on macOS yet.
 `docs/hosts/riscv-loongarch.md` says no real RISC-V or LoongArch machine has run them, `docs/hosts/mips64.md` no MIPS machine and
 `docs/hosts/s390x.md` no IBM Z.
@@ -165,7 +165,7 @@ change, where it goes, its effect on `SNX_ABI`, the proof it needs, a size (S, M
 change to the contract between generated code and the runtime raises `SNX_ABI` and recompiles every game
 (`docs/dev/architecture.md`, "Module ABI"). A change that only alters the recompiler's output for the same contract needs
 no bump, and old modules keep running until they are recompiled. A new recompile setting must join the JIT cache key,
-as `volatile_memory` does (`src/common/cpu/recompiler/llvm/jit_cache.c`).
+as `volatile_memory` does (`src/common/cpu/recompiler/jit/jit_cache_key.c`).
 
 ### 1. Translation ahead of time, and its cache
 
@@ -181,7 +181,7 @@ the driver recompiles a game whose `<id>.abi` stamp is stale when it is played. 
 in memory while the process runs, under the SHA-256 of what each is made from (`src/common/cpu/recompiler/x64/x64_cache.c`),
 close to Rosetta's content key; nothing is kept on the disk. The module
 records each executable's build ID and segment layout, and the runtime refuses an executable that changed
-(`snx_module_mods` in `src/nx/loader/module_llvm.c`, `src/nx/runtime/loader.c`). Discovery
+(`snx_module_mods` in `src/nx/loader/module_fallback_llvm.c`, `src/nx/runtime/loader.c`). Discovery
 (`src/common/cpu/recompiler/codegen.c`, `src/nx/loader/loader.c`) starts from the dynamic symbols, the addends of
 relative relocations, the `.eh_frame` ranges (swept word by word), hints from earlier runs and `ADR` or `ADRP`+`ADD`
 address loads, then follows branches. Jump table cases are not followed. Units group sorted functions up to the

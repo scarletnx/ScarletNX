@@ -75,7 +75,7 @@ ELF hosts other than Linux and Fuchsia the counters must be relocatable at run t
 ### Configure and build
 
 A build folder of its own, with the instrumentation in `CMAKE_C_FLAGS`/`CMAKE_CXX_FLAGS`. The game modules'
-runtime library (`rtlib.c`) is compiled with its own flag list (`src/common/cpu/recompiler/llvm/CMakeLists.txt`),
+runtime library (`rtlib.c`) is compiled with its own flag list (`src/common/cpu/recompiler/CMakeLists.txt`),
 so it is not instrumented and the modules still link with no imports.
 
 ```sh

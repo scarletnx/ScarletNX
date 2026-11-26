@@ -3,7 +3,7 @@
    Ported in part from QEMU (target/arm/tcg/translate-a64.c), LGPL-2.1-or-later:
    Copyright (c) 2013 Alexander Graf <agraf@suse.de> */
 /* The out-of-line helpers of the generated-code ABI (cpu.h), compiled into every game module's runtime library
-   (llvm/rtlib.c) and into the tests, after cpu.h. LLVM IR calls snx_fp_*, snx_vec_*, the crypto rounds, snx_cas128
+   (rtlib/rtlib.c) and into the tests, after cpu.h. LLVM IR calls snx_fp_*, snx_vec_*, the crypto rounds, snx_cas128
    and snx_mrs/snx_msr by name. They are plain portable C: the library is built for no particular host CPU. */
 #include "cpu.h"
 

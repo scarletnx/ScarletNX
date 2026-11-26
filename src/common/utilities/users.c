@@ -3,8 +3,10 @@
 #include "common/utilities/users.h"
 #include "common/utilities/common.h"
 #include "common/platform/file.h"
+#include "common/utilities/config_file.h"
 #include "common/utilities/ini_lines.h"
 #include "common/utilities/mii_db.h"
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,7 +23,6 @@
 #define ONLINE_FILE      "online.ini"
 #define ONLINE_PASSWORD  255 /* a room password's bytes, at most */
 #define ONLINE_COMMENT   "; the password of the Eden room ldn=room joins (docs/user/settings.md)"
-#define ONLINE_NAMED     8 /* the keys online_said names, at most */
 
 SnxUser g_users[SNX_USERS_MAX];
 int g_user_count;
@@ -133,8 +134,9 @@ static int users_section(const char* section, size_t n) {
     if (n != 5 || strncmp(section, "user", 4) || section[4] < '1' || section[4] > '0' + SNX_USERS_MAX) return 0;
     return section[4] - '0';
 }
-/* why the users.ini text is no list of users, or NULL with their count: each line a comment, a key=value, or a [userN],
-   these [user1] to [userN] in that order, each once */
+/* why the users.ini text is no list of users, or NULL with their count: its users are its [user1] to [userN], in that
+   order, each once. Another section is another version's or program's, whose keys are kept and named as any key a
+   user does not take, and so are the keys before [user1] */
 static const char* users_lines(const char* text, int* count) {
     const char* line = text;
     *count = 0;
@@ -144,14 +146,10 @@ static const char* users_lines(const char* text, int* count) {
         while (n && (*line == ' ' || *line == '\t')) line++, n--;
         while (n && (line[n - 1] == '\r' || line[n - 1] == ' ' || line[n - 1] == '\t')) n--;
         if (n && *line == '[') {
+            int user = n >= 2 && line[n - 1] == ']' ? users_section(line + 1, n - 2) : 0;
             if (n < 2 || line[n - 1] != ']') return "a section line has no ]";
-            if (!users_section(line + 1, n - 2)) return "a section is not [user1] to [user8]";
-            if (users_section(line + 1, n - 2) != *count + 1)
-                return "the users are [user1], [user2]... in order, once each";
-            ++*count;
-        } else if (n && *line != ';' && *line != '#') {
-            if (!memchr(line, '=', n)) return "a line is neither a [userN], a key=value nor a comment";
-            if (!*count) return "a key comes before [user1]";
+            if (user && user != *count + 1) return "the users are [user1], [user2]... in order, once each";
+            *count += user != 0;
         }
         if (!end) break;
         line = end + 1;
@@ -259,7 +257,7 @@ static int users_set_key(const char* dir, int number, const char* key, const cha
         snprintf(why, why_size, "there is no user %d: %d user%s", number, g_user_count, g_user_count > 1 ? "s" : "");
         goto done;
     }
-    if (!snx_is_file(path)) {
+    if (!snx_path_exists(path)) {
         if (number == 1 && !snx_users_start(dir, g_users[0].uid, g_users[0].nickname, why, why_size))
             rc = strcmp(key, "nickname") || strcmp(value, g_users[0].nickname)
                      ? users_set_key(dir, number, key, value, why, why_size)
@@ -267,9 +265,9 @@ static int users_set_key(const char* dir, int number, const char* key, const cha
         if (number != 1) snprintf(why, why_size, "%s is not there: only user 1 is", path);
         goto done;
     }
-    text = (char*)snx_read_file(path, &size);
-    if (!text) {
-        snprintf(why, why_size, "%s could not be read", path);
+    if (snx_config_read(path, &text, &size, why, why_size) <= 0) {
+        if (!text && snx_path_exists(path)) goto done; /* said */
+        snprintf(why, why_size, "%s is not there", path);
         goto done;
     }
     /* [userN]'s key= line, else where one goes: after the section's last line that is not empty */
@@ -698,35 +696,60 @@ static void users_reset(void) {
     g_user_count = 1;
     g_user_selected = 0;
 }
+/* a line of users.ini the reading leaves (it has no =), for what the load names */
+static void users_left(void* ctx, int line, const char* text, const char* does) {
+    (void)text;
+    (void)does;
+    snx_config_other_line((SnxConfigOthers*)ctx, line);
+}
+/* what a reading of users.ini at path said of its keys, into g_user_notes after what is there */
+static void users_note(const char* fmt, ...) {
+    size_t at = strlen(g_user_notes);
+    va_list ap;
+    va_start(ap, fmt);
+    if (at < sizeof g_user_notes) vsnprintf(g_user_notes + at, sizeof g_user_notes - at, fmt, ap);
+    va_end(ap);
+}
 int snx_users_load(const char* dir, int selected, char* why, size_t why_size) {
-    char *path = snx_path_join(dir, USERS_FILE), *text, *key, *value;
+    char *path = snx_path_join(dir, USERS_FILE), *text = NULL, *key, *value, said[1024];
     const char* bad;
     size_t size;
     SnxIni ini;
-    int count = 1, i, j, n, rc = -1;
-    /* each user's mii= and picture= as read: NULL for none (pointers into text) */
+    SnxConfigOthers others = {0};
+    int count = 1, i, j, n, rc = -1, k;
+    /* each user's mii= and picture= as read: NULL for none (pointers into text); and each key's line, 0 for none */
     const char *mii_read[SNX_USERS_MAX] = {0}, *picture_read[SNX_USERS_MAX] = {0};
+    static const char* const keys[] = {"uid", "nickname", "user_data", "mii", "picture"};
+    int seen[SNX_USERS_MAX][5] = {{0}};
+    const char* was[SNX_USERS_MAX][5] = {{0}}; /* the value of each key's line, in text */
     g_user_notes[0] = 0;
     free(g_user_pictures);
     g_user_pictures = NULL;
     memset(g_users, 0, sizeof g_users);
     g_user_count = 1;
-    text = snx_is_file(path) ? (char*)snx_read_file(path, &size) : NULL;
-    if (snx_is_file(path) && !text) {
-        snprintf(why, why_size, "%s could not be read", path);
-        goto done;
-    }
+    if (snx_config_read(path, &text, &size, why, why_size) < 0) goto done;
     if (text && (bad = users_lines(text, &count)) != NULL) {
         snprintf(why, why_size, "%s: %s", path, bad);
         goto done;
     }
     if (text) {
         snx_ini_start(&ini, text);
+        ini.left = users_left;
+        ini.ctx = &others;
         while (snx_ini_next(&ini, &key, &value)) {
             SnxUser* u;
             n = users_section(ini.section, strlen(ini.section));
-            u = &g_users[n - 1]; /* users_lines saw every key under a [userN] */
-            if (!strcmp(key, "uid")) {
+            for (k = 0; k < 5 && strcmp(key, keys[k]); ++k) {}
+            if (!n || k == 5) { /* another version's or program's: kept, and named */
+                snx_config_other_key(&others, ini.section, key, ini.line);
+                continue;
+            }
+            if (seen[n - 1][k]) /* the last line's, as every settings file takes a key given twice */
+                snx_config_twice(&others, ini.section, key, was[n - 1][k], seen[n - 1][k], value, ini.line);
+            seen[n - 1][k] = ini.line;
+            was[n - 1][k] = value;
+            u = &g_users[n - 1];
+            if (k == 0) {
                 uint64_t uid[2];
                 if (users_uid_parse(value, uid) || (!uid[0] && !uid[1])) {
                     snprintf(why, why_size, "%s: [user%d] uid=%s is not 32 hex digits, nor zero", path, n, value);
@@ -734,29 +757,26 @@ int snx_users_load(const char* dir, int selected, char* why, size_t why_size) {
                 }
                 u->uid[0] = uid[0];
                 u->uid[1] = uid[1];
-            } else if (!strcmp(key, "nickname")) {
+            } else if (k == 1) {
                 if (!snx_users_nickname_valid(value)) {
                     snprintf(why, why_size, "%s: [user%d] nickname= ", path, n);
                     nickname_refused(why, why_size, value);
                     goto done;
                 }
                 memcpy(u->nickname, value, strlen(value) + 1);
-            } else if (!strcmp(key, "user_data")) {
+            } else if (k == 2) {
                 if (users_data_parse(value, u->user_data)) {
                     snprintf(why, why_size, "%s: [user%d] user_data=%.40s is not %d hex digits, nor empty", path, n,
                              value, 2 * SNX_USERS_DATA);
                     goto done;
                 }
-            } else if (!strcmp(key, "mii")) {
+            } else if (k == 3) {
                 mii_read[n - 1] = value;
-            } else if (!strcmp(key, "picture")) {
-                picture_read[n - 1] = value;
             } else {
-                snprintf(why, why_size, "%s: [user%d] %s is not a setting: uid, nickname, user_data, mii, picture", path,
-                         n, key);
-                goto done;
+                picture_read[n - 1] = value;
             }
         }
+        if (snx_config_others_said(&others, path, said, sizeof said)) users_note("users: %s\n", said);
     }
     /* user 1 has the uid users.ini gives it, else the one it always had; "Player" unless it names it */
     if (!g_users[0].uid[0] && !g_users[0].uid[1]) {
@@ -852,62 +872,41 @@ static int write_private(const char* path, const char* text) {
     return (close(fd) != 0) | failed;
 #endif
 }
-/* online.ini's keys that are neither room_password nor a mistake of it (a key that starts with room_): another
-   version's, or another program's, which this one keeps and reads nothing of. Their values can be secrets */
-typedef struct {
-    char names[ONLINE_NAMED * 36];
-    int count;
-} OnlineOthers;
+/* a key that starts with room_ is a mistake of room_password, never another version's */
 static int online_mistake(const char* key) { return !strncmp(key, "room_", 5); }
-/* key, read on the file's line, among o's: by its name, or by the line where the text before its = is no key's name
-   (small letters, digits and _, 32 at most), which could be a secret's */
-static void online_other(OnlineOthers* o, const char* key, int line) {
-    size_t n = strspn(key, "abcdefghijklmnopqrstuvwxyz0123456789_"), at = strlen(o->names);
-    if (o->count++ >= ONLINE_NAMED) return;
-    if (n && n <= 32 && !key[n])
-        snprintf(o->names + at, sizeof o->names - at, "%s%s", at ? ", " : "", key);
-    else
-        snprintf(o->names + at, sizeof o->names - at, "%sline %d", at ? ", " : "", line);
-}
-/* what a reading of online.ini says of them, "" for none */
-static void online_said(const OnlineOthers* o, int password, char* why, size_t why_size) {
-    char more[32] = "";
-    if (o->count > ONLINE_NAMED) snprintf(more, sizeof more, " and %d more", o->count - ONLINE_NAMED);
-    why[0] = 0;
-    if (o->count)
-        snprintf(why, why_size, "users/" ONLINE_FILE ": this version reads room_password (%s) and no other key: %s%s",
-                 password ? "set" : "none", o->names, more);
-}
-int snx_users_room_password(const char* dir, char* password, size_t size, char* why, size_t why_size) {
+int snx_users_room_password(const char* dir, char* password, size_t size, SnxConfigOthers* others, char* why,
+                            size_t why_size) {
     char *path = snx_path_join(dir, ONLINE_FILE), *text = NULL, *key, *value;
-    OnlineOthers others = {0};
+    SnxConfigOthers none = {0};
     size_t length;
     SnxIni ini;
-    int rc = -1;
+    int rc = -1, line = 0;
     password[0] = why[0] = 0;
+    if (!others) others = &none;
+    memset(others, 0, sizeof *others);
+    others->secret = 1;
     if (!path) {
         snprintf(why, why_size, "out of memory");
-        goto done;
-    }
-    if (!snx_is_file(path)) {
-        rc = 0;
         goto done;
     }
 #ifndef _WIN32
     {
         struct stat st;
-        if (stat(path, &st) || (st.st_mode & 077)) {
+        if (snx_is_file(path) && (stat(path, &st) || (st.st_mode & 077))) {
             snprintf(why, why_size, "%s can be read by other users of this machine: chmod 600 it", path);
             goto done;
         }
     }
 #endif
-    text = (char*)snx_read_file(path, &length);
-    if (!text) {
-        snprintf(why, why_size, "%s could not be read", path);
+    rc = snx_config_read(path, &text, &length, why, why_size);
+    if (rc <= 0) { /* none there: 0; one that cannot be read, said: -1 */
+        rc = -(rc < 0);
         goto done;
     }
+    rc = -1;
     snx_ini_start(&ini, text);
+    ini.left = users_left;
+    ini.ctx = others;
     while (snx_ini_next(&ini, &key, &value)) {
         if (ini.section[0]) {
             snprintf(why, why_size, "%s: [%s] is not a section: the file has none", path, ini.section);
@@ -918,16 +917,17 @@ int snx_users_room_password(const char* dir, char* password, size_t size, char* 
                 snprintf(why, why_size, "%s: %s is not a setting: room_password", path, key);
                 goto done;
             }
-            online_other(&others, key, ini.line);
+            snx_config_other_key(others, "", key, ini.line);
             continue;
         }
         if (strlen(value) >= size) {
             snprintf(why, why_size, "%s: room_password is longer than %u bytes", path, (unsigned)size - 1);
             goto done;
         }
+        if (line) snx_config_twice(others, "", key, NULL, line, NULL, ini.line); /* the last is taken */
+        line = ini.line;
         strcpy(password, value);
     }
-    online_said(&others, password[0] != 0, why, why_size);
     rc = 0;
 done:
     free(text);

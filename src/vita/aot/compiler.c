@@ -4,23 +4,21 @@
    (3ds/aot/compiler.c). The blocks are found by following the code from what is known to be code: module_start, the
    code pointers the relocations wrote, and the hints of earlier runs. The host's native back end makes each block as it
    is found, which says where it ends and so where the next ones are (cpu/arm/successors.h); a block it refuses, or every
-   block with no native back end on the host or with its IR kept, LLVM compiles into a scratch module to learn the same,
-   and again in chunks, in parallel */
+   block with no native back end on the host or with its IR kept, the fallback (recompiler/fallback.h) learns the same
+   of, and makes in chunks, in parallel */
 #include "vita/aot/module.h"
 #include "common/cpu/arm/aot.h"
-#include "common/cpu/arm/llvm.h"
 #include "common/cpu/arm/successors.h"
-#include "common/cpu/recompiler/llvm/ir.h"
-#include "common/cpu/recompiler/llvm/rtlib_object.h"
-#include "common/cpu/recompiler/llvm/link.h"
+#include "common/cpu/recompiler/fallback.h"
+#include "common/cpu/recompiler/rtlib/rtlib_object.h"
+#include "common/cpu/recompiler/object/link.h"
 #include "common/cpu/recompiler/mach/native.h"
-#include "common/cpu/recompiler/workers.h"
+#include "common/cpu/recompiler/worker_threads.h"
 #include "common/cpu/recompiler/x64/x64_elf.h"
 #include "common/utilities/common.h"
 #include "common/platform/file.h"
 #include "common/utilities/endian.h"
 #include "snx_settings.h"
-#include <llvm-c/Core.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -33,7 +31,7 @@ typedef struct {
     uint32_t key, units;
     uint32_t next[SUCCESSORS]; /* the keys it may go on to */
     uint32_t next_count;
-    bool native; /* the native back end made it, else LLVM makes it in a chunk */
+    bool native; /* the native back end made it, else the fallback makes it in a chunk */
 } Block;
 /* an import's stub, whose svc block calls the import directly (stub_block, the native back end's) */
 typedef struct Stub {
@@ -120,21 +118,26 @@ static void* units_of(const unsigned char* code, size_t count, int thumb) {
     for (size_t i = 0; w && i < count; ++i) w[i] = snx_ld_le32(code + i * 4);
     return w;
 }
-static LLVMValueRef emit(LLVMModuleRef module, const VitaImage* image, uint32_t key, size_t count, const char* name,
-                         size_t* consumed) {
+/* The block at key of count units, by the fallback, which why left it to: into its object as name, or with no name its
+   length alone. 0 with *consumed; -1 with the fallback's reason in error, -2 for code the image lacks or no memory */
+static int emit(SnxFallbackArm* f, const VitaImage* image, uint32_t key, size_t count, const char* name,
+                const char* why, size_t* consumed, char* error, size_t error_size) {
     size_t available;
     int thumb = (int)(key & 1);
     const unsigned char* code = code_at(image, key & ~1u, thumb, &available);
-    if (!code || count > available) return NULL;
+    *consumed = 0;
+    if (!code || count > available) return -2;
     void* input = units_of(code, count, thumb);
-    if (!input) return NULL;
-    /* hosted (llvm.h): the run loop is the only caller, and the guest's 4 GiB window is followed by pages that fault
+    if (!input) return -2;
+    /* hosted (codegen.h): the run loop is the only caller, and the guest's 4 GiB window is followed by pages that fault
        (VITA_SPACE) */
     const SnxArmCodegenOptions options = {SNX_ARM_CODEGEN_OPTIONS_ABI, SNX_ARM_PROFILE_A9, SNX_ARM_MEMORY_HOSTED, 0, 0};
-    LLVMValueRef fn = thumb ? snx_thumb_llvm_block_ex(module, name, input, count, key & ~1u, consumed, &options)
-                            : snx_arm_llvm_block_ex(module, name, input, count, key & ~1u, consumed, &options);
+    const int rc =
+        name ? snx_fallback_arm_block(f, name, input, count, key & ~1u, thumb, &options, why, consumed, error,
+                                      error_size)
+             : snx_fallback_arm_length(f, input, count, key & ~1u, thumb, &options, why, consumed, error, error_size);
     free(input);
-    return fn;
+    return rc;
 }
 static int stub_order(const void* a, const void* b) {
     uint32_t x = ((const Stub*)a)->key, y = ((const Stub*)b)->key;
@@ -204,12 +207,11 @@ static void found(void* context, uint32_t address, int thumb) {
     queue(q->d, address, thumb);
     next_found(q->next, address, thumb);
 }
-/* one thread of discovery's: its native back end, whose blocks go in the module's object, and the scratch module LLVM's
-   blocks are compiled into for their length, made for the first */
+/* one thread of discovery's: its native back end, whose blocks go in the module's object, and the fallback that learns
+   the length of the blocks that leaves, made for the first */
 typedef struct {
     SnxNativeArm* native;
-    LLVMContextRef context;
-    LLVMModuleRef scratch;
+    SnxFallbackArm* fallback;
     SnxArmAotCount count;
 } Finder;
 /* a key of a round: the units its block covers of the count it was given, and who made it */
@@ -221,7 +223,7 @@ typedef struct {
 /* a round: the keys queued before it, shared out to the threads */
 typedef struct {
     const Discovery* d;
-    const char* every; /* why LLVM makes every block, NULL where the native back end makes them */
+    const char* every; /* why the fallback makes every block, NULL where the native back end makes them */
     Found* found;
     size_t count, next;
     Finder* finders;
@@ -256,26 +258,26 @@ static const char* native_block(Finder* f, const Discovery* d, Found* k) {
                                              (void*)d->image);
     return k->native ? NULL : snx_native_arm_why(f->native);
 }
-/* the block at k->key, by the native back end, or compiled into the scratch module to learn where the block compiler
-   ends it: false with the reason in error where neither takes it */
+/* the block at k->key, by the native back end, or by the fallback for where the block compiler ends it: false with the
+   reason in error where neither takes it */
 static bool find(Finder* f, const Round* r, Found* k, char* error, size_t error_size) {
     const char* why = f->native ? native_block(f, r->d, k) : r->every;
     if (k->native) {
         ++f->count.native;
         return true;
     }
-    if (!f->scratch) {
-        f->context = LLVMContextCreate();
-        f->scratch = LLVMModuleCreateWithNameInContext("vita-discovery", f->context);
+    if (!f->fallback && !(f->fallback = snx_fallback_arm_new("vita-aot", '0', 0))) {
+        snprintf(error, error_size, "out of memory for the block at 0x%08x", (unsigned)k->key);
+        return false;
     }
     (void)code_at(r->d->image, k->key & ~1u, (int)(k->key & 1), &k->count);
-    LLVMValueRef fn = emit(f->scratch, r->d->image, k->key, k->count, "block", &k->units);
-    if (!fn || !k->units) {
+    const int rc = emit(f->fallback, r->d->image, k->key, k->count, NULL, why, &k->units, error, error_size);
+    if (rc == -1 && !snx_fallback_available()) return false; /* none's, which says why */
+    if (rc || !k->units) {
         snprintf(error, error_size, "the block compiler refused the block at 0x%08x, of %zu units at most (%s)",
                  (unsigned)k->key, k->count, why);
         return false;
     }
-    LLVMDeleteFunction(fn);
     snx_arm_aot_refused(&f->count, why, k->key);
     return true;
 }
@@ -366,8 +368,7 @@ static bool discover(Discovery* d, const char* hints_path, unsigned threads, con
     for (unsigned i = 0; r.finders && i < threads; ++i) {
         Finder* f = &r.finders[i];
         snx_arm_aot_add(count, &f->count);
-        if (f->scratch) LLVMDisposeModule(f->scratch);
-        if (f->context) LLVMContextDispose(f->context);
+        snx_fallback_arm_free(f->fallback);
         if (!i) {
             *native = f->native; /* the caller's */
             continue;
@@ -391,36 +392,26 @@ static int by_key(const void* a, const void* b) {
 }
 
 /* the module's IR as the backend made it, before its passes, as dir/id.ll (--keep-ir) */
-static bool save_ir(LLVMModuleRef mod, const char* dir, const char* id, char* error, size_t size) {
-    char *text = LLVMPrintModuleToString(mod), *file = snx_format("%s.ll", id);
-    char* path = file ? snx_path_join(dir, file) : NULL;
+static bool save_ir(const char* text, const char* dir, const char* id, char* error, size_t size) {
+    char *file = snx_format("%s.ll", id), *path = file ? snx_path_join(dir, file) : NULL;
     bool ok = path && !snx_write_file(path, text, strlen(text));
     if (!ok) {
         char why[256];
         snprintf(error, size, "cannot save the IR of %s in %s: %s", id, dir, snx_os_error(why, sizeof why));
     }
-    LLVMDisposeMessage(text);
     free(file);
     free(path);
     return ok;
 }
-/* a module made for this machine as the backend makes the Switch's (ir.c): the target, CPU and ABI the helpers
-   (armlib.c) are compiled for, which the module is linked with */
-static LLVMModuleRef new_module(SnxIr* ir) {
-    LLVMModuleRef m = LLVMModuleCreateWithNameInContext("vita-aot", ir->ctx);
-    LLVMSetTarget(m, LLVMGetTarget(ir->mod));
-    LLVMSetDataLayout(m, LLVMGetDataLayoutStr(ir->mod));
-    return m;
-}
 
-/* ---- the chunks of LLVM's blocks ---- */
+/* ---- the chunks of the fallback's blocks ---- */
 
-/* shared out to a worker per host core, each with an SnxIr of its own */
+/* shared out to a worker per host core, each with a fallback of its own */
 typedef struct {
     const VitaImage* image;
-    const Block* blocks;  /* LLVM's, by key */
+    const Block* blocks;  /* the fallback's, by key */
     const size_t* starts; /* chunk i is blocks starts[i] to starts[i + 1] */
-    const Block* all;     /* the module's, what a block may go on to: LLVM's and the native back end's, by key */
+    const Block* all; /* the module's, what a block may go on to, the fallback's and the native back end's, by key */
     size_t all_count;
     char opt;             /* the -O letter */
     const char* keep_ir;  /* where each chunk's IR goes, NULL for nowhere */
@@ -434,12 +425,9 @@ typedef struct {
     char error[512];
     SnxWorkLock lock;
 } Work;
-/* Block chaining. A block that ends where another block of the module starts goes on to it by a tail call, instead
-   of returning to the runtime's loop to look it up. Each return of the block becomes a return when it set an exit
-   (an SVC, a fault), else for each successor a musttail call when r15 and the Thumb state are its own, else a return.
-   A successor at or before the block's start (every loop has one) first counts down the thread's poll, and the block
-   returns when it runs out, so the loop gets to run the vblank and the other threads. A branch to no successor goes
-   through the runtime's block table (chain_lookup) */
+/* Block chaining (recompiler/fallback.h's snx_fallback_arm_chain): a block that ends where another block of the module
+   starts goes on to it by a tail call, instead of returning to the runtime's loop to look it up, counting down the
+   thread's poll for one at or before its start; a branch to no successor goes through the runtime's block table */
 static bool has_block(const Block* blocks, size_t count, uint32_t key) {
     size_t lo = 0, hi = count;
     while (lo < hi) {
@@ -452,224 +440,61 @@ static bool has_block(const Block* blocks, size_t count, uint32_t key) {
     }
     return false;
 }
-/* the function of the block at key, declared when this module lacks it, for a musttail call. It keeps the caller's
-   parameter attributes, and a hosted block's cpu is noalias */
-static LLVMValueRef block_target(SnxIr* ir, LLVMModuleRef mod, uint32_t key) {
-    char name[24];
-    block_name(name, key);
-    LLVMValueRef target = LLVMGetNamedFunction(mod, name);
-    if (!target) {
-        LLVMTypeRef block_type = LLVMFunctionType(ir->t_void, &ir->t_ptr, 1, 0);
-        target = LLVMAddFunction(mod, name, block_type);
-        LLVMSetVisibility(target, LLVMHiddenVisibility);
-        LLVMAddAttributeAtIndex(target, 1 /* first parameter */,
-                                LLVMCreateEnumAttribute(ir->ctx, LLVMGetEnumAttributeKindForName("noalias", 7), 0));
-    }
-    return target;
-}
-static LLVMValueRef cpu_field(SnxIr* ir, LLVMValueRef cpu, size_t offset) {
-    return LLVMBuildGEP2(ir->b, ir->t_i8, cpu, (LLVMValueRef[]){ir_i64(ir, offset)}, 1, "");
-}
-/* The end of a block's tail when no successor matched, an indirect branch. The target is looked up in the runtime's
-   block table (VitaLookup), which the run loop fills as it dispatches, and the block goes on to it by a musttail call
-   when it is there and no IT block is under way. Else, or with no table, it returns to the run loop. A target at or
-   before the block's own start counts down the poll as a backward successor does. Every cycle of blocks has one
-   such edge, so a loop made of indirect branches still ends the slice */
-static void chain_lookup(SnxIr* ir, LLVMValueRef fn, LLVMValueRef cpu, uint32_t key, LLVMValueRef pc,
-                         LLVMValueRef cpsr, LLVMValueRef thumb, LLVMBasicBlockRef out) {
-    LLVMTypeRef block_type = LLVMFunctionType(ir->t_void, &ir->t_ptr, 1, 0);
-    LLVMBasicBlockRef probe = LLVMAppendBasicBlockInContext(ir->ctx, fn, "probe"),
-                      hit = LLVMAppendBasicBlockInContext(ir->ctx, fn, "hit"),
-                      run = LLVMAppendBasicBlockInContext(ir->ctx, fn, "run");
-    LLVMValueRef table = LLVMBuildLoad2(ir->b, ir->t_ptr, cpu_field(ir, cpu, VITA_LOOKUP_OFFSET), "");
-    LLVMBuildCondBr(ir->b, LLVMBuildICmp(ir->b, LLVMIntNE, table, LLVMConstNull(ir->t_ptr), ""), probe, out);
-    LLVMPositionBuilderAtEnd(ir->b, probe);
-    LLVMValueRef target = LLVMBuildOr(
-        ir->b, pc, LLVMBuildSelect(ir->b, LLVMBuildICmp(ir->b, LLVMIntNE, thumb, ir_i32(ir, 0), ""), ir_i32(ir, 1),
-                                   ir_i32(ir, 0), ""), "");
-    LLVMValueRef slot = LLVMBuildZExt(
-        ir->b, LLVMBuildAnd(ir->b, LLVMBuildLShr(ir->b, target, ir_i32(ir, 1), ""), ir_i32(ir, VITA_LOOKUP_SLOTS - 1), ""),
-        ir->t_i64, "");
-    LLVMValueRef entry = LLVMBuildGEP2(ir->b, ir->t_i8, table,
-                                       (LLVMValueRef[]){LLVMBuildMul(ir->b, slot, ir_i64(ir, sizeof(VitaLookup)), "")},
-                                       1, "");
-    LLVMValueRef seen = LLVMBuildLoad2(ir->b, ir->t_i32, entry, "");
-    LLVMValueRef block = LLVMBuildLoad2(ir->b, ir->t_ptr, cpu_field(ir, entry, offsetof(VitaLookup, block)), "");
-    /* ITSTATE sits in CPSR bits 26 and 25 and bits 15 to 10, and a hosted block is entered with it clear (llvm.h) */
-    LLVMValueRef plain = LLVMBuildICmp(ir->b, LLVMIntEQ, LLVMBuildAnd(ir->b, cpsr, ir_i32(ir, 0x0600fc00u), ""),
-                                       ir_i32(ir, 0), "");
-    LLVMValueRef found = LLVMBuildAnd(ir->b, LLVMBuildICmp(ir->b, LLVMIntEQ, seen, target, ""),
-                                      LLVMBuildICmp(ir->b, LLVMIntNE, block, LLVMConstNull(ir->t_ptr), ""), "");
-    LLVMBuildCondBr(ir->b, LLVMBuildAnd(ir->b, found, plain, ""), hit, out);
-    LLVMPositionBuilderAtEnd(ir->b, hit);
-    LLVMValueRef at = cpu_field(ir, cpu, VITA_POLL_OFFSET);
-    LLVMValueRef back = LLVMBuildICmp(ir->b, LLVMIntULE, pc, ir_i32(ir, key & ~1u), "");
-    LLVMValueRef left = LLVMBuildSub(ir->b, LLVMBuildLoad2(ir->b, ir->t_i32, at, ""),
-                                     LLVMBuildZExt(ir->b, back, ir->t_i32, ""), "");
-    LLVMBuildStore(ir->b, left, at);
-    LLVMBuildCondBr(ir->b, LLVMBuildICmp(ir->b, LLVMIntSGT, left, ir_i32(ir, 0), ""), run, out);
-    LLVMPositionBuilderAtEnd(ir->b, run);
-    LLVMValueRef site = LLVMBuildCall2(ir->b, block_type, block, &cpu, 1, "");
-    LLVMSetTailCallKind(site, LLVMTailCallKindMustTail);
-    LLVMAddCallSiteAttribute(site, 1 /* first parameter */,
-                             LLVMCreateEnumAttribute(ir->ctx, LLVMGetEnumAttributeKindForName("noalias", 7), 0));
-    LLVMBuildRetVoid(ir->b);
-}
-static void chain_block(SnxIr* ir, LLVMModuleRef mod, LLVMValueRef fn, uint32_t key, const uint32_t* next,
-                        size_t count) {
-    LLVMTypeRef block_type = LLVMFunctionType(ir->t_void, &ir->t_ptr, 1, 0);
-    LLVMValueRef cpu = LLVMGetParam(fn, 0);
-    LLVMValueRef* rets = malloc((LLVMCountBasicBlocks(fn) + 1) * sizeof *rets);
-    size_t nrets = 0;
-    if (!rets) return;
-    for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(fn); bb; bb = LLVMGetNextBasicBlock(bb)) {
-        LLVMValueRef t = LLVMGetBasicBlockTerminator(bb);
-        if (t && LLVMGetInstructionOpcode(t) == LLVMRet) rets[nrets++] = t;
-    }
-    /* one tail for all of them, which takes a block's exits back out */
-    LLVMBasicBlockRef tail = LLVMAppendBasicBlockInContext(ir->ctx, fn, "chain"),
-                      go = LLVMAppendBasicBlockInContext(ir->ctx, fn, "next"),
-                      out = LLVMAppendBasicBlockInContext(ir->ctx, fn, "out");
-    for (size_t i = 0; i < nrets; ++i) {
-        LLVMPositionBuilderBefore(ir->b, rets[i]);
-        LLVMBuildBr(ir->b, tail);
-        LLVMInstructionEraseFromParent(rets[i]);
-    }
-    free(rets);
-    LLVMPositionBuilderAtEnd(ir->b, out);
-    LLVMBuildRetVoid(ir->b);
-    LLVMPositionBuilderAtEnd(ir->b, tail);
-    LLVMValueRef c = LLVMBuildLoad2(ir->b, ir->t_i32, cpu_field(ir, cpu, offsetof(SnxArmCPU, exit)), "");
-    c = LLVMBuildICmp(ir->b, LLVMIntEQ, c, ir_i32(ir, SNX_ARM_OK), "");
-    LLVMBuildCondBr(ir->b, c, go, out);
-    LLVMPositionBuilderAtEnd(ir->b, go);
-    LLVMValueRef pc = LLVMBuildLoad2(ir->b, ir->t_i32, cpu_field(ir, cpu, offsetof(SnxArmCPU, r) + 15 * 4), "");
-    LLVMValueRef cpsr = LLVMBuildLoad2(ir->b, ir->t_i32, cpu_field(ir, cpu, offsetof(SnxArmCPU, cpsr)), "");
-    LLVMValueRef t = LLVMBuildAnd(ir->b, cpsr, ir_i32(ir, SNX_ARM_T), "");
-    for (size_t k = 0; k < count; ++k) {
-        LLVMBasicBlockRef call = LLVMAppendBasicBlockInContext(ir->ctx, fn, "call"),
-                          miss = LLVMAppendBasicBlockInContext(ir->ctx, fn, "other");
-        c = LLVMBuildAnd(ir->b, LLVMBuildICmp(ir->b, LLVMIntEQ, pc, ir_i32(ir, next[k] & ~1u), ""),
-                         LLVMBuildICmp(ir->b, LLVMIntEQ, t, ir_i32(ir, next[k] & 1 ? SNX_ARM_T : 0), ""), "");
-        LLVMBuildCondBr(ir->b, c, call, miss);
-        LLVMPositionBuilderAtEnd(ir->b, call);
-        if ((next[k] & ~1u) <= (key & ~1u)) {
-            LLVMBasicBlockRef run = LLVMAppendBasicBlockInContext(ir->ctx, fn, "run");
-            LLVMValueRef at = cpu_field(ir, cpu, VITA_POLL_OFFSET);
-            LLVMValueRef left = LLVMBuildSub(ir->b, LLVMBuildLoad2(ir->b, ir->t_i32, at, ""), ir_i32(ir, 1), "");
-            LLVMBuildStore(ir->b, left, at);
-            LLVMBuildCondBr(ir->b, LLVMBuildICmp(ir->b, LLVMIntSGT, left, ir_i32(ir, 0), ""), run, out);
-            LLVMPositionBuilderAtEnd(ir->b, run);
-        }
-        LLVMValueRef site = LLVMBuildCall2(ir->b, block_type, block_target(ir, mod, next[k]), &cpu, 1, "");
-        LLVMSetTailCallKind(site, LLVMTailCallKindMustTail);
-        LLVMBuildRetVoid(ir->b);
-        LLVMPositionBuilderAtEnd(ir->b, miss);
-    }
-    chain_lookup(ir, fn, cpu, key, pc, cpsr, t, out);
-}
-/* The block of an import's stub, which is the stub's svc instruction. Where the run loop would take the SVC and then
-   run the stub's bx lr, this calls the import through the thread's direct function and goes on to the bx lr block
-   (next, 0 when the module lacks it) when the call needs nothing from the loop. Without the function it is the SVC
-   block as the block compiler makes it, with the immediate (the import's index) in the syndrome */
-static void stub_block(SnxIr* ir, LLVMModuleRef mod, LLVMValueRef fn, uint32_t import, uint32_t after,
-                       uint32_t next) {
-    LLVMTypeRef block_type = LLVMFunctionType(ir->t_void, &ir->t_ptr, 1, 0);
-    LLVMTypeRef params[2] = {ir->t_ptr, ir->t_i32};
-    LLVMTypeRef call_type = LLVMFunctionType(ir->t_i32, params, 2, 0);
-    /* the function stays, as blocks of the chunk may already call it. Its body goes, last instruction first */
-    for (LLVMBasicBlockRef bb = LLVMGetLastBasicBlock(fn); bb; bb = LLVMGetPreviousBasicBlock(bb))
-        for (LLVMValueRef in = LLVMGetLastInstruction(bb); in;) {
-            LLVMValueRef before = LLVMGetPreviousInstruction(in);
-            if (LLVMGetTypeKind(LLVMTypeOf(in)) != LLVMVoidTypeKind) LLVMReplaceAllUsesWith(in, LLVMGetUndef(LLVMTypeOf(in)));
-            LLVMInstructionEraseFromParent(in);
-            in = before;
-        }
-    while (LLVMGetFirstBasicBlock(fn)) LLVMDeleteBasicBlock(LLVMGetFirstBasicBlock(fn));
-    LLVMValueRef cpu = LLVMGetParam(fn, 0);
-    LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(ir->ctx, fn, "entry"),
-                      plain = LLVMAppendBasicBlockInContext(ir->ctx, fn, "svc"),
-                      fast = LLVMAppendBasicBlockInContext(ir->ctx, fn, "call"),
-                      go = LLVMAppendBasicBlockInContext(ir->ctx, fn, "next"),
-                      out = LLVMAppendBasicBlockInContext(ir->ctx, fn, "out");
-    LLVMPositionBuilderAtEnd(ir->b, entry);
-    LLVMValueRef hook = LLVMBuildLoad2(ir->b, ir->t_ptr, cpu_field(ir, cpu, VITA_DIRECT_OFFSET), "");
-    LLVMBuildCondBr(ir->b, LLVMBuildICmp(ir->b, LLVMIntEQ, hook, LLVMConstNull(ir->t_ptr), ""), plain, fast);
-    LLVMPositionBuilderAtEnd(ir->b, plain);
-    LLVMBuildStore(ir->b, ir_i32(ir, import), cpu_field(ir, cpu, offsetof(SnxArmCPU, syndrome)));
-    LLVMBuildStore(ir->b, ir_i32(ir, SNX_ARM_SVC), cpu_field(ir, cpu, offsetof(SnxArmCPU, exit)));
-    LLVMBuildStore(ir->b, ir_i32(ir, after), cpu_field(ir, cpu, offsetof(SnxArmCPU, r) + 15 * 4));
-    LLVMBuildRetVoid(ir->b);
-    LLVMPositionBuilderAtEnd(ir->b, fast);
-    /* r15 is past the svc while the import runs, as it is when the loop takes the SVC */
-    LLVMBuildStore(ir->b, ir_i32(ir, after), cpu_field(ir, cpu, offsetof(SnxArmCPU, r) + 15 * 4));
-    LLVMValueRef args[2] = {cpu, ir_i32(ir, import)};
-    LLVMValueRef done = LLVMBuildCall2(ir->b, call_type, hook, args, 2, "");
-    LLVMBuildCondBr(ir->b, LLVMBuildICmp(ir->b, LLVMIntNE, done, ir_i32(ir, 0), ""), next ? go : out, out);
-    LLVMPositionBuilderAtEnd(ir->b, go);
-    if (next) {
-        LLVMValueRef site = LLVMBuildCall2(ir->b, block_type, block_target(ir, mod, next), &cpu, 1, "");
-        LLVMSetTailCallKind(site, LLVMTailCallKindMustTail);
-    }
-    LLVMBuildRetVoid(ir->b);
-    LLVMPositionBuilderAtEnd(ir->b, out);
-    LLVMBuildRetVoid(ir->b);
-}
-static bool chunk(SnxIr* ir, Work* w, unsigned index, char* error, size_t size) {
-    LLVMModuleRef mod = new_module(ir);
-    size_t begin = w->starts[index], end = w->starts[index + 1];
-    bool ok = true;
-    LLVMValueRef* fns = calloc(end - begin + 1, sizeof *fns);
-    if (!fns) {
-        snprintf(error, size, "out of memory");
-        ok = false;
-    }
-    for (size_t i = begin; ok && i < end; ++i) {
+static bool chunk(SnxFallbackArm* f, Work* w, unsigned index, char* error, size_t size) {
+    const size_t begin = w->starts[index], end = w->starts[index + 1];
+    for (size_t i = begin; i < end; ++i) {
         char name[24];
         size_t consumed = 0;
-        uint32_t key = w->blocks[i].key;
+        const uint32_t key = w->blocks[i].key;
         block_name(name, key);
-        LLVMValueRef fn = emit(mod, w->image, key, w->blocks[i].units, name, &consumed);
-        if (!fn || consumed != w->blocks[i].units) {
+        const int rc = emit(f, w->image, key, w->blocks[i].units, name, "discovery left it to the fallback", &consumed,
+                            error, size);
+        if (rc == -1 && !snx_fallback_available()) return false; /* none's, which says why */
+        if (rc || consumed != w->blocks[i].units) {
             snprintf(error, size, "the block at 0x%08x compiled differently from its discovery", (unsigned)key);
-            ok = false;
-            break;
+            return false;
         }
-        LLVMSetVisibility(fn, LLVMHiddenVisibility);
-        fns[i - begin] = fn;
     }
     /* every block of the chunk exists now, so a successor in it is found by name, and one in another chunk is a
        declaration the linker resolves */
-    for (size_t i = begin; ok && i < end; ++i) {
+    const SnxArmChainedOptions chained = {
+        .options = {SNX_ARM_CHAINED_OPTIONS_ABI, SNX_ARM_PROFILE_A9, SNX_ARM_MEMORY_HOSTED, 0, 0},
+        .poll = VITA_POLL_OFFSET,
+        .lookup = VITA_LOOKUP_OFFSET};
+    for (size_t i = begin; i < end; ++i) {
         uint32_t next[SUCCESSORS], key = w->blocks[i].key;
+        char name[24], names[SUCCESSORS][24];
+        const char* named[SUCCESSORS];
         size_t n = 0;
+        SnxArmChainedOptions options = chained;
         uint32_t import = w->blocks[i].units == 1 ? stub_import(w->stubs, w->stub_count, key) : UINT32_MAX;
         if (import != UINT32_MAX) {
             /* an import's stub, which the block compiler made the svc block of, is replaced by the direct call */
-            uint32_t after = (key & ~1u) + (key & 1 ? 2u : 4u), after_key = after | (key & 1);
-            stub_block(ir, mod, fns[i - begin], import, after,
-                       has_block(w->all, w->all_count, after_key) ? after_key : 0);
-            continue;
-        }
-        for (uint32_t k = 0; k < w->blocks[i].next_count; ++k)
-            if (has_block(w->all, w->all_count, w->blocks[i].next[k])) next[n++] = w->blocks[i].next[k];
-        chain_block(ir, mod, fns[i - begin], key, next, n);
+            const uint32_t after_key = ((key & ~1u) + (key & 1 ? 2u : 4u)) | (key & 1);
+            options.direct = VITA_DIRECT_OFFSET, options.import = import;
+            if (has_block(w->all, w->all_count, after_key)) next[n++] = after_key;
+        } else
+            for (uint32_t k = 0; k < w->blocks[i].next_count; ++k)
+                if (has_block(w->all, w->all_count, w->blocks[i].next[k])) next[n++] = w->blocks[i].next[k];
+        for (size_t k = 0; k < n; ++k) block_name(names[k], next[k]), named[k] = names[k];
+        block_name(name, key);
+        if (snx_fallback_arm_chain(f, name, key, &options, next, named, n, error, size)) return false;
     }
-    free(fns);
-    unsigned char* object = NULL;
-    char id[24];
+    char id[24], *text = NULL;
     snprintf(id, sizeof id, "blocks_%03u", index);
-    ok = ok && (!w->keep_ir || save_ir(mod, w->keep_ir, id, error, size)) &&
-         !snx_ir_module_object(ir, mod, w->opt, &object, &w->objects[index].size, error, size);
+    bool ok =
+        !w->keep_ir || (!snx_fallback_arm_ir(f, &text, error, size) && save_ir(text, w->keep_ir, id, error, size));
+    unsigned char* object = NULL;
+    ok = ok && !snx_fallback_arm_object(f, &object, &w->objects[index].size, error, size);
     w->objects[index].data = object;
-    LLVMDisposeModule(mod);
+    free(text);
     return ok;
 }
 static void worker(void* arg) {
     Work* w = arg;
-    char error[512] = "";
-    SnxIr* ir = snx_ir_new("vita-aot", w->opt, error, sizeof error);
-    bool ok = ir != NULL;
+    char error[512] = "out of memory for a maker of blocks";
+    SnxFallbackArm* f = snx_fallback_arm_new("vita-aot", w->opt, 0);
+    bool ok = f && !snx_fallback_arm_start(f, error, sizeof error);
     for (;;) {
         snx_work_lock(&w->lock);
         if (!ok && !w->failed) {
@@ -679,16 +504,15 @@ static void worker(void* arg) {
         unsigned i = w->failed ? w->chunks : w->next++;
         snx_work_unlock(&w->lock);
         if (i >= w->chunks) break;
-        ok = chunk(ir, w, i, error, sizeof error);
+        ok = chunk(f, w, i, error, sizeof error);
         snx_work_lock(&w->lock);
         if (ok) ++w->finished;
         if (ok && !w->quiet) printf("Compiled %u/%u chunks of blocks\n", w->finished, w->steps);
         snx_work_unlock(&w->lock);
     }
-    snx_ir_free(ir);
+    snx_fallback_arm_free(f);
 }
 static bool compile_chunks(Work* w, unsigned jobs) {
-    if (snx_ir_init(w->error, sizeof w->error)) return false;
     if (jobs > w->chunks) jobs = w->chunks;
     if (!w->quiet) printf("Compiling %u chunks of blocks on %u threads\n", w->chunks, jobs);
     snx_work_lock_init(&w->lock);
@@ -745,79 +569,63 @@ static int native_index(const VitaImage* image, const Block* blocks, size_t coun
     if (rc) snprintf(error, size, "out of memory for the module's index");
     return rc ? -1 : 1;
 }
-/* the same through LLVM, where the host has no native back end or its IR is kept */
-static bool llvm_index(const VitaImage* image, const Block* blocks, size_t count, SnxLinkInput* output, char opt,
-                       const char* keep_ir, char* error, size_t size) {
-    SnxIr* ir = snx_ir_init(error, size) ? NULL : snx_ir_new("vita-aot", opt, error, size);
-    if (!ir) return false;
+/* the same by the fallback, where the host has no native back end or its IR is kept */
+typedef struct {
+    const Block* blocks;
+    size_t count;
+} Listed;
+static int listed_name(void* user, size_t i, char* out, size_t size) {
+    const Listed* l = user;
+    if (i >= l->count) return 0;
+    char id[24];
+    block_name(id, l->blocks[i].key);
+    snprintf(out, size, "%s", id);
+    return 1;
+}
+static bool fallback_index(const VitaImage* image, const Block* blocks, size_t count, SnxLinkInput* output, char opt,
+                           const char* keep_ir, char* error, size_t size) {
+    SnxFallbackData* d =
+        snx_fallback_data_new("vita-aot", "vita-aot", opt, keep_ir ? snx_arm_aot_kept : snx_arm_aot_none);
+    const size_t n = count ? count : 1; /* a module of none has an empty slot */
+    uint32_t* keys = calloc(n, sizeof *keys);
+    bool ok = d && keys;
+    if (!ok) snprintf(error, size, "out of memory for the module's index");
+    for (size_t i = 0; ok && i < count; ++i) keys[i] = blocks[i].key;
+    Listed listed = {blocks, count};
+    ok = ok && !snx_fallback_data_integers(d, "vita_keys", 32, n, keys, error, size) &&
+         !snx_fallback_data_blocks(d, "vita_blocks", n, listed_name, &listed, error, size);
     const VitaModule m = describe(image, count);
-    LLVMContextRef c = ir->ctx;
-    LLVMModuleRef mod = new_module(ir);
-    LLVMTargetDataRef layout = LLVMGetModuleDataLayout(mod);
-    LLVMTypeRef i8 = LLVMInt8TypeInContext(c), i32 = LLVMInt32TypeInContext(c), i64 = LLVMInt64TypeInContext(c);
-    LLVMTypeRef ptr = LLVMPointerTypeInContext(c, 0), ft = LLVMFunctionType(LLVMVoidTypeInContext(c), &ptr, 1, 0);
-    size_t n = count ? count : 1;
-    LLVMValueRef *keys = malloc(n * sizeof *keys), *functions = malloc(n * sizeof *functions);
-    bool ok = keys && functions;
-    for (size_t i = 0; ok && i < n; ++i) {
-        char name[24];
-        keys[i] = LLVMConstInt(i32, i < count ? blocks[i].key : 0, 0);
-        if (i < count) {
-            block_name(name, blocks[i].key);
-            functions[i] = LLVMAddFunction(mod, name, ft);
-            LLVMSetVisibility(functions[i], LLVMHiddenVisibility);
-        } else
-            functions[i] = LLVMConstNull(ptr);
-    }
-    if (ok) {
-        LLVMValueRef tables[2];
-        LLVMTypeRef types[2] = {LLVMArrayType(i32, (unsigned)n), LLVMArrayType(ptr, (unsigned)n)};
-        LLVMValueRef values[2] = {LLVMConstArray(i32, keys, (unsigned)n), LLVMConstArray(ptr, functions, (unsigned)n)};
-        for (unsigned t = 0; t < 2; ++t) {
-            tables[t] = LLVMAddGlobal(mod, types[t], t ? "vita_blocks" : "vita_keys");
-            LLVMSetInitializer(tables[t], values[t]);
-            LLVMSetGlobalConstant(tables[t], 1);
-            LLVMSetLinkage(tables[t], LLVMInternalLinkage);
-        }
-        LLVMValueRef hash[32], fields[10];
-        LLVMTypeRef field_types[10] = {i64, i32, i32, i32, i32, i32, i32, LLVMArrayType(i8, 32), ptr, ptr};
-        for (unsigned i = 0; i < 32; ++i) hash[i] = LLVMConstInt(i8, m.identity[i], 0);
-        const uint32_t integers[6] = {m.abi, m.descriptor_size, m.cpu_size, m.arm_abi, m.pointer_size, m.count};
-        fields[0] = LLVMConstInt(i64, m.magic, 0);
-        for (unsigned i = 0; i < 6; ++i) fields[i + 1] = LLVMConstInt(i32, integers[i], 0);
-        fields[7] = LLVMConstArray(i8, hash, 32);
-        fields[8] = tables[0], fields[9] = tables[1];
-        LLVMTypeRef structure = LLVMStructTypeInContext(c, field_types, 10, 0);
-        static const size_t offsets[10] = {offsetof(VitaModule, magic),       offsetof(VitaModule, abi),
-                                           offsetof(VitaModule, descriptor_size), offsetof(VitaModule, cpu_size),
-                                           offsetof(VitaModule, arm_abi),     offsetof(VitaModule, pointer_size),
-                                           offsetof(VitaModule, count),       offsetof(VitaModule, identity),
-                                           offsetof(VitaModule, keys),        offsetof(VitaModule, blocks)};
-        ok = LLVMABISizeOfType(layout, structure) == sizeof(VitaModule);
-        for (unsigned i = 0; ok && i < 10; ++i) ok = LLVMOffsetOfElement(layout, structure, i) == offsets[i];
-        if (!ok)
-            snprintf(error, size, "the module descriptor's layout differs between the compiler and the LLVM target");
-        else {
-            LLVMValueRef global = LLVMAddGlobal(mod, structure, "snx_vita_module_v1");
-            LLVMSetInitializer(global, LLVMConstNamedStruct(structure, fields, 10));
-            LLVMSetGlobalConstant(global, 1);
-            unsigned char* object = NULL;
-            ok = (!keep_ir || save_ir(mod, keep_ir, "index", error, size)) &&
-                 !snx_ir_module_object(ir, mod, '0', &object, &output->size, error, size);
-            output->data = object;
-        }
-    } else
-        snprintf(error, size, "out of memory for the module's index");
+#define FIELD(field)                                                                                                   \
+    { .bits = 32, .value = m.field, .offset = offsetof(VitaModule, field) }
+    const SnxFallbackField fields[] = {
+        {.bits = 64, .value = m.magic, .offset = offsetof(VitaModule, magic)},
+        FIELD(abi),
+        FIELD(descriptor_size),
+        FIELD(cpu_size),
+        FIELD(arm_abi),
+        FIELD(pointer_size),
+        FIELD(count),
+        {.bytes = m.identity, .count = sizeof m.identity, .offset = offsetof(VitaModule, identity)},
+        {.global = "vita_keys", .offset = offsetof(VitaModule, keys)},
+        {.global = "vita_blocks", .offset = offsetof(VitaModule, blocks)}};
+#undef FIELD
+    ok = ok && !snx_fallback_data_descriptor(d, "snx_vita_module_v1", fields, sizeof fields / sizeof *fields,
+                                             sizeof(VitaModule), error, size);
+    char* text = NULL;
+    ok = ok &&
+         (!keep_ir || (!snx_fallback_data_ir(d, &text, error, size) && save_ir(text, keep_ir, "index", error, size)));
+    unsigned char* object = NULL;
+    ok = ok && !snx_fallback_data_object(d, &object, &output->size, error, size);
+    output->data = object;
+    free(text);
     free(keys);
-    free(functions);
-    LLVMDisposeModule(mod);
-    snx_ir_free(ir);
+    snx_fallback_data_free(d);
     return ok;
 }
 static bool index_object(const VitaImage* image, const Block* blocks, size_t count, SnxLinkInput* output, char opt,
                          const char* keep_ir, char* error, size_t size) {
     const int made = keep_ir ? 0 : native_index(image, blocks, count, output, error, size);
-    return made > 0 || (!made && llvm_index(image, blocks, count, output, opt, keep_ir, error, size));
+    return made > 0 || (!made && fallback_index(image, blocks, count, output, opt, keep_ir, error, size));
 }
 /* where each chunk starts in blocks, + count after the last, into starts (count + 1 of them at most): chunk
    instructions to a chunk, whole blocks, or CHUNK_BLOCKS blocks for 0. The chunks' count */
@@ -836,9 +644,9 @@ static unsigned cut_chunks(const Block* blocks, size_t count, int chunk, size_t*
     starts[chunks] = count;
     return chunks;
 }
-/* The module: the native back end's blocks and the chunks of LLVM's, the index and the helpers they call (armlib.c),
-   linked by the backend's own linker into the shared library the runtime loads (load.c), which exports the descriptor
-   alone */
+/* The module: the native back end's blocks and the chunks of the fallback's, the index and the helpers they call
+   (armlib.c), linked by the backend's own linker into the shared library the runtime loads (load.c), which exports the
+   descriptor alone */
 int vita_aot_compile(const char* folder, const VitaImage* image, const SnxCliRecompile* asked, char* error,
                      size_t error_size) {
     Discovery d = {.image = image};
@@ -910,7 +718,7 @@ int vita_aot_compile(const char* folder, const VitaImage* image, const SnxCliRec
             llvm[llvm_count++] = d.blocks[i];
         }
     const unsigned chunks = cut_chunks(llvm, llvm_count, asked ? asked->chunk : 0, starts);
-    files = chunks + 3; /* the helpers, the index, the native blocks, LLVM's chunks */
+    files = chunks + 3; /* the helpers, the index, the native blocks, the fallback's chunks */
     objects = calloc(files, sizeof *objects);
     if (!objects) {
         snprintf(error, error_size, "out of memory");

@@ -35,7 +35,8 @@ static int room_address(const char* text, char* host, size_t host_size, u16* por
 }
 
 void network_room_init(void) {
-    char host[256], password[256], why[512], *dir;
+    char host[256], password[256], why[512], said[1024], *dir;
+    SnxConfigOthers others;
     const SnxUser* user = snx_users_selected();
     SnxRoom* room;
     u16 port;
@@ -49,10 +50,10 @@ void network_room_init(void) {
     if (room_address(g_settings.eden_room, host, sizeof host, &port, why, sizeof why)) fatal("%s", why);
     dir = snx_users_dir(g_exedir[0] ? g_exedir : ".");
     if (!dir) fatal("Out of memory finding the users folder");
-    r = snx_users_room_password(dir, password, sizeof password, why, sizeof why);
+    r = snx_users_room_password(dir, password, sizeof password, &others, why, sizeof why);
     free(dir);
     if (r) fatal("The Eden room's password: %s", why);
-    if (why[0]) LOG("room: %s\n", why);
+    if (snx_config_others_said(&others, SNX_USERS_ONLINE, said, sizeof said)) LOG("room: %s\n", said);
     u64 t0 = snx_tracy_attached() ? plat_ns() : 0;
     r = snx_room_join(&room, host, port, snx_users_room_nickname(user), password, g_exename, g_hle.kernel.title_id, "",
                       &refused);

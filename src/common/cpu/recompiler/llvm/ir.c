@@ -2,9 +2,9 @@
    Copyright 2026 the ScarletNX contributors */
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/aarch64/cpu.h"
-#include "common/cpu/recompiler/llvm/link.h"
+#include "common/cpu/recompiler/object/link.h"
 #if !defined(_WIN32) && !defined(__APPLE__)
-#include "common/cpu/recompiler/llvm/elf_object.h"
+#include "common/cpu/recompiler/object/elf_object.h"
 #endif
 #include <llvm-c/Analysis.h>
 #include <llvm-c/BitReader.h>
@@ -547,7 +547,7 @@ static void ppc_tail_calls(SnxIr* ir) {
                 LLVMTypeRef type = LLVMGetCalledFunctionType(inst);
                 if (LLVMIsAFunction(callee) && !LLVMIsDeclaration(callee)) continue; /* LLVM jumps there itself */
                 /* the musttail calls: a guest call (c, pc), to a declaration or a pointer, and an AArch32 block's
-                   going on to the next (c, module_arm.c's chain_block), to a declaration. A pointer's stub is
+                   going on to the next (c, module_fallback_llvm.c's chain_block), to a declaration. A pointer's stub is
                    snx_lookup's, for (c, pc) alone */
                 nargs = LLVMGetNumArgOperands(inst);
                 if (nargs > 2 || (!LLVMIsAFunction(callee) && nargs != 2)) continue;
@@ -573,7 +573,7 @@ static void ppc_tail_calls(SnxIr* ir) {
    LLVM's MIPS backend makes a musttail call a jump (snx_ir_init's -mips-tail-calls) to a pointer, or to a function it
    may take for the module's own: local, or hidden or protected where it is declared, dso_local where it is defined.
    Guest functions are hidden (snx_ir_guest_function); a callee of default visibility, such as an AArch32 block's
-   successor (module_arm.c), becomes hidden too, as every function a module calls is linked into it (link_elf.c) */
+   successor (module_fallback_llvm.c), becomes hidden too: every function a module calls is linked in (link_elf.c) */
 static void mips_tail_callees(LLVMModuleRef module) {
     for (LLVMValueRef function = LLVMGetFirstFunction(module); function; function = LLVMGetNextFunction(function))
         for (LLVMBasicBlockRef block = LLVMGetFirstBasicBlock(function); block; block = LLVMGetNextBasicBlock(block))

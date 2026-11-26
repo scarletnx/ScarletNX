@@ -220,6 +220,18 @@ static SgD lane_get(SgCtx* g, unsigned size, int a, int i);
 static int lane_put(SgCtx* g, unsigned size, int a, int i, SgD v);
 static int vdup(SgCtx* g, unsigned size, int a, int e);
 
+/* whether CRC32 word w takes the machine's fixed registers (the last pins'); every one does where the machine says
+   nothing (MG_CRC_FIXED) */
+#ifndef MG_CRC_FIXED
+#define MG_CRC_FIXED(u, w) 1
+#endif
+/* the bits of v (a W's or an X's) in the other order: the machine's, where it has better (MG_RBIT) */
+#ifdef MG_RBIT
+static SgD MG_RBIT(Unit* u, SgD v);
+#else
+#define MG_RBIT(u, v) sg_d_bitreverse((u)->g, (v))
+#endif
+
 static void pins(Unit* u, int store) { pins_of(u, &u->b, store, 0); }
 /* the region's own stores of the pins (UNDEF's flush, the spill and reload around a helper's call) are assembled
    with the region, or with the cold paths at the function's end, not where cur_dirty is theirs: every pin written */
@@ -292,10 +304,31 @@ static int branch_label(Unit* u, SnxU64 address, SnxU64 target) {
     return add_stub(u, 0, target, address);
 }
 
+static void regs_of(SnxU32 w, SnxU64* use, SnxU64* def);
+static int writes_nzcv(SnxU32 word) {
+    SnxU64 use, def;
+    regs_of(word, &use, &def);
+    return (def >> 32 & 15) != 0;
+}
+
+/* FPSR.QC as the region's saturating instructions leave it, put in the state: a machine whose vec() keeps a region's
+   in one value (g->qc_owed, MG_QC) writes the state once, where the region ends or something may read FPSR */
+#ifdef MG_QC
+static void mg_qc(Unit* u);
+#endif
+static void qc_pay(Unit* u) {
+    if (!u->g->qc_owed) return;
+#ifdef MG_QC
+    mg_qc(u);
+#endif
+    u->g->qc_owed = 0;
+}
+
 /* the region so far assembled, and the block's state forgotten: the next instruction starts a new one */
 static void flush(Unit* u) {
     SgCtx* g = u->g;
     int k;
+    qc_pay(u);
     if (g->x.n) sgx_assemble_region(&u->a, &g->x);
 #ifdef MG_POOL_REACH
     if (u->a.nrips && u->b.n - u->a.rips[0].at > MG_POOL_REACH) mg_pool_island(u);
@@ -304,7 +337,7 @@ static void flush(Unit* u) {
     g->x.end_vdead = 0;
     for (k = 0; k < 32; ++k) g->gpr[k] = g->vd[k][0] = g->vd[k][1] = g->vx[k] = g->gk_known[k] = 0;
     g->fp_state[0] = g->fp_state[1] = 0, g->fp_bound[0] = g->fp_bound[1] = 0;
-    g->fp_dbound[0] = g->fp_dbound[1] = 0, g->fp_fz = 0;
+    g->fp_dbound[0] = g->fp_dbound[1] = 0, g->fp_fz = g->fp_any = 0, g->fp_any_bits = 0;
     g->mem = 0;
     g->origin = -1;
     g->x.flags_ins = -1;
@@ -724,7 +757,7 @@ static int sys(Unit* u, SnxU32 word) {
         case SYSREG(3, 4, 4, 1): /* FPSR: the bits the A57 keeps (integer.c's A57_FPSR_MASK) */
             sgx_state_store(g, (int)offsetof(CPU, fpsr), 32, sg_d_and(g, sg_d_slice(g, xzr_or(g, rt), 31, 0), sgx_const(32, 0xF800009Fu)));
             g->fp_state[0] = g->fp_state[1] = 0, g->fp_bound[0] = g->fp_bound[1] = 0;
-            g->fp_dbound[0] = g->fp_dbound[1] = 0, g->fp_fz = 0;
+            g->fp_dbound[0] = g->fp_dbound[1] = 0, g->fp_fz = g->fp_any = 0, g->fp_any_bits = 0;
             return 1;
         case SYSREG(3, 4, 4, 0): { /* FPCR: the runtime's hook too (snx_msr), a call */
             SgD args[2];
@@ -905,6 +938,28 @@ static int bitfield(Unit* u, SnxU32 word) {
         else if (imms >= immr && !immr) r = sg_d_sext(g, sg_d_slice(g, v, imms, 0), d); /* SXTB, SXTH, SXTW */
         else if (imms >= immr) r = sg_d_asr(g, sg_d_lsl(g, v, d - 1 - imms), d - 1 - imms + immr); /* SBFX */
         else r = sg_d_lsl(g, sg_d_sext(g, sg_d_slice(g, v, imms, 0), d), d - immr); /* SBFIZ */
+    }
+    if (rd != 31) sg_GPR_write(g, rd, sf ? r : sg_d_zext(g, r, 64));
+    return 1;
+}
+
+/* RBIT, REV16, REV32 and REV: the machine's byte reversal and what of it is left to move, not the Sail's loops of bits
+   and of bytes. X registers' REV of W's size is reserved, the Sail's */
+static int reverse(Unit* u, SnxU32 word) {
+    SgCtx* g = u->g;
+    unsigned sf = word >> 31, opc = word >> 10 & 3, rn = word >> 5 & 31, rd = word & 31, w = sf ? 64 : 32;
+    if ((word & 0x7FFFF000u) != 0x5AC00000u || (opc == 3 && !sf)) return 0;
+    SgD v = xzr_or(g, rn), r;
+    if (!sf) v = sg_d_slice(g, v, 31, 0);
+    if (!opc)
+        r = MG_RBIT(u, v);
+    else if (opc == 1 && sf) { /* REV16's halves of X: each byte with its neighbour */
+        SgD m = sgx_const(64, 0x00FF00FF00FF00FFull);
+        r = sg_d_or(g, sg_d_and(g, sg_d_lsr(g, v, 8), m), sg_d_lsl(g, sg_d_and(g, v, m), 8));
+    } else {
+        sgx_flat(sgx(g), &v);
+        r = SGX_OP(sgx(g), rev, w, v);
+        if (opc != 2 + sf) r = sg_d_or(g, sg_d_lsl(g, r, w / 2), sg_d_lsr(g, r, w / 2)); /* the halves back in order */
     }
     if (rd != 31) sg_GPR_write(g, rd, sf ? r : sg_d_zext(g, r, 64));
     return 1;
@@ -1401,6 +1456,8 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
     /* a long block is several regions: the guest's registers are in the state at each one's end */
     if (x->n > SGX_MAXI - SGX_MAXI / 4 || x->nv > SGX_MAXV - SGX_MAXV / 4 || x->nb > SGX_MAXB - SGX_MAXB / 4)
         flush_to(u, address);
+    /* the branches leave the region, and MRS and MSR are FPSR's; before a compare, its flags kept for the branch */
+    if (g->qc_owed && (insn.flow != SNX_A64_FLOW_PLAIN || insn.op == SNX_A64_OP_SYS || writes_nzcv(word))) qc_pay(u);
     g->word = word;
     g->pc = address;
     g->start = x->n;
@@ -1428,7 +1485,9 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
             if (!k) return 0;
             break;
         }
-        if (bitfield(u, word) || fp_ldst(u, word, address) || simd_imm(u, word) || simd_scalar_cvt(u, word) || simd_copy(u, word)) break;
+        if (bitfield(u, word) || reverse(u, word) || fp_ldst(u, word, address) || simd_imm(u, word) ||
+            simd_scalar_cvt(u, word) || simd_copy(u, word))
+            break;
         {
             int v = struct_ldst(u, word);
             if (v < 0) goto undef;
@@ -1458,6 +1517,11 @@ static int instruction(Unit* u, size_t index, SnxU64 address, SnxU32 word) {
         if (!sg_decode(g) || x->unmade) return 0;
         if (g->undefined) {
             /* the Sail's UNDEF (SGX_K_UNDEF set the pc and called the runtime): the function returns */
+            if (g->qc_owed) { /* FPSR before that call, the instruction's last */
+                --x->n;
+                qc_pay(u);
+                sg_undefined(g);
+            }
             flush(u);
             after_call(u);
             leave(u);
@@ -2169,7 +2233,7 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
             wt = 1ull << (3 * loop[i]);
             if ((w >> 25 & 5) == 4 && !memseen) weight[32] += wt, memseen = 1; /* the block's first access */
             if ((w >> 24 & 0x3F) == 0x08 || ((w >> 24 & 0x3F) == 0x38 && (w >> 21 & 1) && !(w >> 10 & 3)) ||
-                (w & 0x7FE0E000) == 0x1AC04000)
+                ((w & 0x7FE0E000) == 0x1AC04000 && MG_CRC_FIXED(u, w)))
                 fixed = 1;
             /* the V registers: SIMD and FP data processing reads Rn, Rm (Ra of the 3-source group) and Rd (an
                accumulation's), and writes Rd; a SIMD&FP load writes Rt (and a pair's Rt2), a store reads them */
@@ -2361,6 +2425,7 @@ out:
         u->g->x.nv = 1;
         u->g->x.nb = 1;
         u->g->x.unmade = 0;
+        u->g->qc_owed = 0;
     }
     u->nfixups = ok ? u->nfixups : fix0;
     u->nlabels = lab0; /* a function's labels are its own */
