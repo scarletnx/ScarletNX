@@ -1611,11 +1611,12 @@ static _Thread_local struct {
     u64 restrided, restrides; /* the vertex streams restrided so far (restride), and at the last report */
     u32 ww_epoch;
     u64 heap_buffer_calls, heap_buffer_hits, heap_image_calls, heap_image_hits, heap_cb_addresses;
-    /* by TIC index, the present (tic_stamp) that a draw last named it in: VK_SLOT_TICS counts each index once a
-       present, with no walk */
-    u16 tic_seen[1u << 20];
 } g_stats;
-/* a present's stamp in g_stats.tic_seen: never 0, the stamp of an index that no draw named */
+/* by TIC index, the present (tic_stamp) that a draw of the slot's thread last named it in: VK_SLOT_TICS counts each
+   index once a present, with no walk. Not in g_stats: 2 MiB of thread-local storage is more than a thread's 1 MiB
+   stack, where glibc puts it, and each plat_thread failed with EINVAL */
+static u16 g_tic_seen[RC_SLOTS][1u << 20];
+/* a present's stamp in g_tic_seen: never 0, the stamp of an index that no draw named */
 static u16 tic_stamp(void) { return (u16)(g_vk_present % 65535u + 1u); }
 /* the bytes of the constant buffers that cb_get copied from the CPU (VK_CB_COPIED) since the last statistics line */
 static u64 g_cb_copied_bytes;
@@ -5010,8 +5011,8 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                      : res && res[i].have ? res[i].handle
                      : !res               ? handles[i]
                                           : tex_handle(ds, stage, tcb, &s->si, i);
-        if ((handle & 0xFFFFFu) <= ds->bind.tex_max && g_stats.tic_seen[handle & 0xFFFFFu] != tic_stamp()) {
-            g_stats.tic_seen[handle & 0xFFFFFu] = tic_stamp();
+        if ((handle & 0xFFFFFu) <= ds->bind.tex_max && g_tic_seen[t_rc][handle & 0xFFFFFu] != tic_stamp()) {
+            g_tic_seen[t_rc][handle & 0xFFFFFu] = tic_stamp();
             g_stats.n.slot[VK_SLOT_TICS]++;
         }
         /* what fs_key resolved, unless it is a render target or a copy of one: a crop of the same target at
