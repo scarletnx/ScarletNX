@@ -251,7 +251,8 @@ static void copy(void* arg) {
     GameLogStream* s = arg;
     char buf[CHUNK];
 #if !defined(_WIN32)
-    sigset_t gone; /* a terminal that went (a closed pipe) is this write's error, not the process's end */
+    sigset_t gone; /* a terminal that went (a closed pipe) is this write's error, not the process's end: Linux and
+                      FreeBSD send its SIGPIPE to this thread, macOS's descriptor sends none (snx_game_log_start) */
     sigemptyset(&gone);
     sigaddset(&gone, SIGPIPE);
     pthread_sigmask(SIG_BLOCK, &gone, NULL);
@@ -525,6 +526,11 @@ int snx_game_log_start(const char* folder, const char* name, const int* limit_mi
         s->terminal = _dup(i ? 2 : 1);
 #else
         s->terminal = fcntl(i ? 2 : 1, F_DUPFD_CLOEXEC, 3);
+#if defined(F_SETNOSIGPIPE)
+        /* macOS sends a refused write's SIGPIPE to the process, which no thread's mask keeps out (copy): the
+           terminal's descriptor says none */
+        if (s->terminal >= 0) (void)fcntl(s->terminal, F_SETNOSIGPIPE, 1);
+#endif
 #endif
         atomic_store_explicit(&s->to, s->terminal, memory_order_relaxed);
         if (plat_thread(copy, s, 256 << 10)) {
