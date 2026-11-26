@@ -141,7 +141,7 @@ u64 snx_x64_half(u64 a, u64 fpcr);
 u64 snx_x64_bfdot(u64 sum, u64 a, u64 b);
 u64 snx_x64_sm4_box(u64 a);
 u64 snx_x64_stxp(CPU* c, u64 a, u64 v1, u64 v2);
-extern const u32 snx_x64_crc32_table[256];
+extern const u32 snx_x64_crc32_table[256], snx_x64_crc32c_table[256];
 HostUcPair snx_x64_casp(CPU* c, u64 a, u64 e0, u64 e1, u64 d0, u64 d1);
 
 #define TRAP_FN(name) {#name, (void*)name}
@@ -160,6 +160,7 @@ static u64 resolve(const char* sym) {
     if (!strcmp(sym, "snx_x64_casp")) return hostuc_native_wide(g_test.uc, sym, (void*)snx_x64_casp);
 #if defined(SAIL_MACH_WIN64)
     if (!strcmp(sym, "snx_x64_crc32_table")) return (u64)(uintptr_t)snx_x64_crc32_table;
+    if (!strcmp(sym, "snx_x64_crc32c_table")) return (u64)(uintptr_t)snx_x64_crc32c_table;
 #endif
     for (i = 0; i < sizeof table / sizeof *table; ++i)
         if (!strcmp(sym, table[i].name)) return hostuc_native(g_test.uc, table[i].name, table[i].f);

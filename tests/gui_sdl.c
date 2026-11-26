@@ -6302,10 +6302,10 @@ static void compile_first(App* app, const char* dir) {
     queue_drop(app, 0);
     assert(!snx_remove_tree(made));
     free(made);
-    { /* refused, the host below its back end's floor: a Penryn, without SSE4.2 and POPCNT
+    { /* refused, the host below its back end's floor: a Conroe, without SSE4.1 and POPCNT
          (recompiler/x64/x64_codegen.c). What the host lacks follows how the recompile ended, and the panel shows the
          driver's line: YoRHa's as the failed step's, the classic theme's in its output */
-        static const char lacks[] = "cpu: needs SSE4.2 and POPCNT, this host has SSE3, SSSE3 and SSE4.1";
+        static const char lacks[] = "cpu: needs SSE4.1 and POPCNT, this host has SSE3 and SSSE3";
         char *say = snx_format("Recompiling first compile (1 modules)\nscarletnx: %s", lacks),
              *said = snx_format("Compile failed (status 1). %s", lacks), *line = snx_format("first compile: %s", said);
         GuiTheme theme = app->theme;
@@ -6331,8 +6331,8 @@ static void compile_first(App* app, const char* dir) {
                 assert(SDL_SetWindowSize(app->window, looks[k].w, looks[k].h));
                 const SDL_Color color =
                     rgb(app->theme.run == GUI_RUN_STEPS ? app->theme.run_colors.failure : app->theme.ink);
-                slid_half(app, "cpu: needs SSE4.2", color);
-                slid_half(app, "SSSE3 and SSE4.1", color);
+                slid_half(app, "cpu: needs SSE4.1", color);
+                slid_half(app, "and SSSE3", color);
             }
             app->clock = 0;
             assert(SDL_SetWindowSize(app->window, w, h));
@@ -7018,7 +7018,7 @@ static void missing_file(App* app, const char* dir) {
     { /* a run refused, the host below its back end's floor: what it lacks follows how it ended */
         char* go = snx_format("%s.go", got);
         bool due = app->log_due;
-        driver_will(got, 1, "scarletnx: cpu: needs SSE4.2, this host has SSE3");
+        driver_will(got, 1, "scarletnx: cpu: needs SSE4.1, this host has SSE3");
         go_tab(app, GUI_TAB_GAMES);
         focus_game(app, "extracted game");
         key(app, SDLK_RETURN);
@@ -7026,7 +7026,7 @@ static void missing_file(App* app, const char* dir) {
         for (Uint64 until = SDL_GetTicks() + 10000; app->menu.running && SDL_GetTicks() < until; SDL_Delay(5))
             pump(app);
         assert(!app->menu.running && app->finished && app->abnormal_exit);
-        assert(!strcmp(app->message, "Program ended abnormally (status 1). cpu: needs SSE4.2, this host has SSE3"));
+        assert(!strcmp(app->message, "Program ended abnormally (status 1). cpu: needs SSE4.1, this host has SSE3"));
         key(app, SDLK_ESCAPE);
         assert(!app->finished && !app->message[0]);
         app->log_due = due;

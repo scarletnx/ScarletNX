@@ -61,14 +61,14 @@ static void check_line(const char* got, const char* want, const char* of) {
 
 /* ---- x86-64's features, in the order its line names them ---- */
 
-static const SnxNativeFeature k_x64[] = {{"SSE3", SNX_X64_SSE3},
-                                         {"SSSE3", SNX_X64_SSSE3},
-                                         {"SSE4.1", SNX_X64_SSE41},
-                                         {"SSE4.2", SNX_X64_SSE42},
-                                         {"POPCNT", SNX_X64_POPCNT}};
+static const SnxNativeFeature k_x64[] = {
+    {"SSE3", SNX_X64_SSE3}, {"SSSE3", SNX_X64_SSSE3}, {"SSE4.1", SNX_X64_SSE41}, {"POPCNT", SNX_X64_POPCNT}};
 /* and what it does without, through its helpers */
-static const SnxNativeFeature k_x64_done[] = {{"PCLMULQDQ", SNX_X64_PCLMUL}};
-enum { X64_FEATURES = sizeof k_x64 / sizeof *k_x64, X64_ALL = SNX_X64_BASELINE & ~SNX_X64_ABI & ~SNX_X64_PCLMUL };
+static const SnxNativeFeature k_x64_done[] = {{"SSE4.2", SNX_X64_SSE42}, {"PCLMULQDQ", SNX_X64_PCLMUL}};
+enum {
+    X64_FEATURES = sizeof k_x64 / sizeof *k_x64,
+    X64_ALL = SNX_X64_BASELINE & ~SNX_X64_ABI & ~SNX_X64_PCLMUL & ~SNX_X64_SSE42
+};
 
 /* "A, B and C" of k_x64's in bits, "none" for no one */
 static void names_of(unsigned bits, char* out, size_t size) {
@@ -96,10 +96,10 @@ static void x64_lines(void) {
         unsigned has;
         const char* line;
     } hosts[] = {
-        {"a K8", 0, "cpu: needs SSE3, SSSE3, SSE4.1, SSE4.2 and POPCNT, this host has none"},
-        {"a K10", SNX_X64_SSE3 | SNX_X64_POPCNT, "cpu: needs SSSE3, SSE4.1 and SSE4.2, this host has SSE3 and POPCNT"},
+        {"a K8", 0, "cpu: needs SSE3, SSSE3, SSE4.1 and POPCNT, this host has none"},
+        {"a K10", SNX_X64_SSE3 | SNX_X64_POPCNT, "cpu: needs SSSE3 and SSE4.1, this host has SSE3 and POPCNT"},
         {"a Penryn", SNX_X64_SSE3 | SNX_X64_SSSE3 | SNX_X64_SSE41,
-         "cpu: needs SSE4.2 and POPCNT, this host has SSE3, SSSE3 and SSE4.1"},
+         "cpu: needs POPCNT, this host has SSE3, SSSE3 and SSE4.1"},
     };
     char line[256], want[256], cut[24];
     for (size_t k = 0; k < sizeof hosts / sizeof *hosts; ++k) {
@@ -125,11 +125,13 @@ static void x64_lines(void) {
     check_line(cut, "cpu: needs SSE3, SSSE3,", "a line cut to its room");
     /* what it does without: an Android x86_64 device with what its ABI promises alone (developer.android.com/ndk/
        guides/abis: SSE3 to SSE4.2 and POPCNT, no PCLMULQDQ), a Nehalem */
-    check(snx_native_done(k_x64_done, 1, X64_ALL, line, sizeof line), "has no PCLMULQDQ", "a Nehalem");
+    check(snx_native_done(k_x64_done, 2, X64_ALL | SNX_X64_SSE42, line, sizeof line), "has no PCLMULQDQ", "a Nehalem");
     check_line(line, "cpu: this host has no PCLMULQDQ, done by the fallback", "a Nehalem");
-    check(!snx_native_lacks(k_x64, X64_FEATURES, X64_ALL, line, sizeof line), "is above the floor", "a Nehalem");
-    check(!snx_native_done(k_x64_done, 1, X64_ALL | SNX_X64_PCLMUL, line, sizeof line) && !line[0], "has it all",
-          "a Westmere");
+    check(snx_native_done(k_x64_done, 2, X64_ALL, line, sizeof line), "has neither", "a Penryn");
+    check_line(line, "cpu: this host has no SSE4.2 and PCLMULQDQ, done by the fallback", "a Penryn");
+    check(!snx_native_lacks(k_x64, X64_FEATURES, X64_ALL, line, sizeof line), "is above the floor", "a Penryn");
+    check(!snx_native_done(k_x64_done, 2, X64_ALL | SNX_X64_SSE42 | SNX_X64_PCLMUL, line, sizeof line) && !line[0],
+          "has it all", "a Westmere");
 }
 
 /* ---- big-endian PowerPC64 ---- */
@@ -171,7 +173,7 @@ static void ppc64_lines(void) {} /* the ppc64 back ends are not built there */
 static const SnxNativeFeature* const k_names = k_x64;
 enum { NAMES = X64_FEATURES };
 static void take_out(unsigned bits) { snx_x64_without(bits); }
-static const char* const k_none = "cpu: needs SSE3, SSSE3, SSE4.1, SSE4.2 and POPCNT, this host has none";
+static const char* const k_none = "cpu: needs SSE3, SSSE3, SSE4.1 and POPCNT, this host has none";
 #else
 static const SnxNativeFeature* const k_names = NULL;
 enum { NAMES = 0 };

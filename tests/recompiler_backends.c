@@ -87,7 +87,7 @@
     snx_x64_object(cg, 0, (cg)->function_count, options, made, object, size, error, sizeof error)
 void snx_x64_fp_vec(CPU* c, void* out, const void* x, const void* y, const void* z, u32 desc);
 void snx_x64_crypto(CPU* c, void* out, const void* x, const void* y, const void* z, u32 op);
-extern const u32 snx_x64_crc32_table[256];
+extern const u32 snx_x64_crc32_table[256], snx_x64_crc32c_table[256];
 #elif defined(SNX_TEST_LA64)
 #include "common/cpu/recompiler/la64/la64_codegen.h"
 #define NATIVE_UC HOSTUC_LA64
@@ -1458,6 +1458,9 @@ int main(int argc, char** argv) {
         void* crc32_table = hostuc_alloc(uc, sizeof snx_x64_crc32_table);
         if (crc32_table) memcpy(crc32_table, snx_x64_crc32_table, sizeof snx_x64_crc32_table);
         hostuc_define(uc, "snx_x64_crc32_table", (uint64_t)(uintptr_t)crc32_table);
+        void* crc32c_table = hostuc_alloc(uc, sizeof snx_x64_crc32c_table);
+        if (crc32c_table) memcpy(crc32c_table, snx_x64_crc32c_table, sizeof snx_x64_crc32c_table);
+        hostuc_define(uc, "snx_x64_crc32c_table", (uint64_t)(uintptr_t)crc32c_table);
 #else
         hostuc_native_wide(uc, "snx_x64_casp", (void*)casp_between);
 #endif
