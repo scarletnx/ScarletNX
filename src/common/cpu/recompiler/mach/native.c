@@ -85,7 +85,19 @@ int snx_native_lacks(const SnxNativeFeature* need, size_t count, unsigned has, c
         append(why, size, &at, "none");
     return 1;
 }
+int snx_native_done(const SnxNativeFeature* done, size_t count, unsigned has, char* why, size_t size) {
+    unsigned all = 0;
+    size_t at = 0, k;
+    if (size) why[0] = 0;
+    for (k = 0; k < count; ++k) all |= done[k].bit;
+    if (!(all & ~has)) return 0;
+    append(why, size, &at, "cpu: this host has no ");
+    append_features(done, count, all & ~has, why, size, &at);
+    append(why, size, &at, ", done by the fallback");
+    return 1;
+}
 int snx_native_floor(char* why, size_t size) { return snx_x64_floor(why, size) || snx_ppc64be_floor(why, size); }
+int snx_native_fallback(char* why, size_t size) { return snx_x64_fallback(why, size); }
 int snx_native_refused(char* error, size_t size) {
 #if !defined(SNX_NATIVE_ALONE)
     if (!atomic_load_explicit(&g_native.alone, memory_order_relaxed)) return 0;

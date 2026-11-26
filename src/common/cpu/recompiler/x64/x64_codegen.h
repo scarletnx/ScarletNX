@@ -20,6 +20,9 @@ int snx_x64_available(void);
 /* 1 on an x86-64 host without what the back end's code needs (SSE4.2, PCLMULQDQ, POPCNT...), with the line of it in
    why (snx_native_floor); 0 and "" elsewhere */
 int snx_x64_floor(char* why, size_t size);
+/* 1 on an x86-64 host without features the back end does without, through its helpers (PCLMULQDQ...), with the
+   line of it in why (snx_native_fallback); 0 and "" elsewhere */
+int snx_x64_fallback(char* why, size_t size);
 /* the host's processor features the back end's forms may need (sailgen's SGX_F_*: CPUID's BMI1, BMI2, LZCNT, the SSE
    levels, PCLMULQDQ, POPCNT, AES-NI, SHA-NI, GFNI, and AVX, AVX2, FMA and F16C where the system keeps the YMM
    state), and SGX_F_WIN64 where the code is Windows'; 0 where unavailable */

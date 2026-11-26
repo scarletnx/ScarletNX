@@ -170,6 +170,15 @@ static const signed char sgx_a32_strex_win64[3] = {9, 2, 10};
 #define SGX_VF_X2G64 (&sgx_v_movq_rx)
 #define SGX_VF_G2X32 (&sgx_v_movd_xr)
 #define SGX_VF_G2X64 (&sgx_v_movq_xr)
+/* the SSE forms of two XMM operands a host without their feature gets from x64_helpers.c's snx_x64_sse, the
+   instruction's own semantics on the cold path (mach.h's sgx_vins): a form's number is its place here */
+static const SgXVForm* const sgx_vf_helped_forms[] = {&sgx_v_pclmulqdq};
+#define SGX_VF_HELPER "snx_x64_sse"
+static inline int sgx_vf_helped(const SgXVForm* f) {
+    for (int k = 0; k < (int)(sizeof sgx_vf_helped_forms / sizeof *sgx_vf_helped_forms); ++k)
+        if (sgx_vf_helped_forms[k] == f) return k;
+    return -1;
+}
 #define SGX_VF_XHI2G (&sgx_v_pextrq)
 #define SGX_VF_INS64 (&sgx_v_pinsrq)
 /* a SIMD&FP register's 8 or 4 bytes to or from memory, its rest zeroed by the load (MOVQ, MOVD) */

@@ -363,6 +363,9 @@ static inline int sgx_vcse_find(SgX* x, const SgXVForm* f, int out, int tied, co
     }
     return 0;
 }
+static inline int sgx_vcold(SgX* x, SgB c, int tied, const char* sym, int a, int b, int d, SnxU32 desc);
+static inline SgB sgx_bool(SgX* x, int kind, int v, int cc);
+static inline int sgx_xconst(SgX* x, SnxU64 lo, SnxU64 hi);
 static inline int sgx_vins(SgX* x, const SgXVForm* f, int out, int tied, const int* in, long long imm, int memk,
                            int mode, int base, int index, int disp, SnxU64 lo, SnxU64 hi) {
     SgXIns* i;
@@ -379,8 +382,18 @@ static inline int sgx_vins(SgX* x, const SgXVForm* f, int out, int tied, const i
         int v = sgx_vcse_find(x, f, out, tied, in, imm);
         if (v) return v;
     }
-    if (f->feature & ~x->features & ~(unsigned)SGX_F_GPR)
+    if (f->feature & ~x->features & ~(unsigned)SGX_F_GPR) {
+#ifdef SGX_VF_HELPER
+        /* of two XMM registers (and an immediate): the machine's helper of the instruction (x64.h's sgx_vf_helped),
+           the operands its first (the tied one, else the source) and second, the form's number and immediate its
+           desc */
+        k = sgx_vf_helped(f);
+        if (k >= 0 && mode == SGX_VM_NONE && out == 0 && in && (f->xmask & 3) == 3 && f->nops - !!f->imm_bytes == 2)
+            return sgx_vcold(x, sgx_bool(x, SGX_B_CONST, 1, 0), sgx_xconst(x, 0, 0), SGX_VF_HELPER,
+                             tied > 0 ? in[0] : in[1], in[1], 0, (SnxU32)k | (SnxU32)(imm & 0xFF) << 8);
+#endif
         sg_fail("an SSE form this host's processor lacks", (long long)f->feature, (long long)x->features);
+    }
     if (out < 0) sgx_flags_clobbered(x); /* a compare's flags end the ones before: their conditions kept first */
     i = sgx_append(x, SGX_K_VEC);
     i->vf = f;

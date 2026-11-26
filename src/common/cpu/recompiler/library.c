@@ -1083,6 +1083,8 @@ static int recompile_llvm(struct snx_recompiler* r, struct snx_recompiled* m, Sn
     if (r->progress) r->progress(r->progress_user, 0, q.weight_total, 0, q.functions_total);
     char why[256];
     if (snx_native_floor(why, sizeof why)) report(r, "%s: LLVM makes the code\n", why);
+    else if (snx_native_fallback(why, sizeof why))
+        report(r, "%s\n", why);
     report(r, "LLVM: %lu code unit%s and the descriptor\n", (unsigned long)count, count == 1 ? "" : "s");
     if (count) run_queue(&q, r->jobs);
     if (q.failed) {
