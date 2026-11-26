@@ -7,6 +7,7 @@
 #include "common/utilities/common.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define NO_LLVM "this build has no LLVM to make it (SNX_WITH_LLVM=OFF)"
 
@@ -79,4 +80,68 @@ int snx_fallback_arm_object(SnxFallbackArm* f, unsigned char** object, size_t* s
     *size = 0;
     snprintf(error, error_size, "%s: no block was made, and " NO_LLVM, f->name);
     return -1;
+}
+
+struct SnxFallbackData {
+    size_t module, why; /* where the module's name and the reason it is asked start in names */
+    char names[];       /* the unit's, the module's, the reason */
+};
+
+SnxFallbackData* snx_fallback_data_new(const char* unit, const char* module, char opt, const char* why) {
+    const size_t n = strlen(unit) + 1, m = strlen(module) + 1, w = strlen(why) + 1;
+    SnxFallbackData* d = (SnxFallbackData*)calloc(1, sizeof *d + n + m + w);
+    (void)opt;
+    if (!d) return NULL;
+    memcpy(d->names, unit, n);
+    memcpy(d->names + n, module, m);
+    memcpy(d->names + n + m, why, w);
+    d->module = n;
+    d->why = n + m;
+    return d;
+}
+void snx_fallback_data_free(SnxFallbackData* d) { free(d); }
+/* the global asked for, refused */
+static int refuse_global(const SnxFallbackData* d, const char* name, char* error, size_t error_size) {
+    snprintf(error, error_size, "%s: %s of the index %s: %s, and " NO_LLVM, d->names, name, d->names + d->module,
+             d->names + d->why);
+    return -1;
+}
+int snx_fallback_data_blocks(SnxFallbackData* d, const char* name, size_t count,
+                             int (*name_of)(void* user, size_t i, char* out, size_t size), void* user, char* error,
+                             size_t error_size) {
+    (void)count;
+    (void)name_of;
+    (void)user;
+    return refuse_global(d, name, error, error_size);
+}
+int snx_fallback_data_integers(SnxFallbackData* d, const char* name, unsigned bits, size_t count, const void* values,
+                               char* error, size_t error_size) {
+    (void)bits;
+    (void)count;
+    (void)values;
+    return refuse_global(d, name, error, error_size);
+}
+int snx_fallback_data_structs(SnxFallbackData* d, const char* name, size_t count, const SnxFallbackField* fields,
+                              size_t nfields, size_t size, char* error, size_t error_size) {
+    (void)count;
+    (void)fields;
+    (void)nfields;
+    (void)size;
+    return refuse_global(d, name, error, error_size);
+}
+int snx_fallback_data_descriptor(SnxFallbackData* d, const char* name, const SnxFallbackField* fields, size_t nfields,
+                                 size_t size, char* error, size_t error_size) {
+    (void)fields;
+    (void)nfields;
+    (void)size;
+    return refuse_global(d, name, error, error_size);
+}
+int snx_fallback_data_ir(SnxFallbackData* d, char** text, char* error, size_t error_size) {
+    *text = NULL;
+    return refuse_global(d, "the IR", error, error_size);
+}
+int snx_fallback_data_object(SnxFallbackData* d, unsigned char** object, size_t* size, char* error, size_t error_size) {
+    *object = NULL;
+    *size = 0;
+    return refuse_global(d, "the object", error, error_size);
 }

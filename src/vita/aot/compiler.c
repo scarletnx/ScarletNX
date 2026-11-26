@@ -10,11 +10,12 @@
 #include "common/cpu/arm/aot.h"
 #include "common/cpu/arm/llvm.h"
 #include "common/cpu/arm/successors.h"
+#include "common/cpu/recompiler/fallback.h"
 #include "common/cpu/recompiler/llvm/ir.h"
 #include "common/cpu/recompiler/rtlib/rtlib_object.h"
 #include "common/cpu/recompiler/object/link.h"
 #include "common/cpu/recompiler/mach/native.h"
-#include "common/cpu/recompiler/workers.h"
+#include "common/cpu/recompiler/worker_threads.h"
 #include "common/cpu/recompiler/x64/x64_elf.h"
 #include "common/utilities/common.h"
 #include "common/platform/file.h"
@@ -391,15 +392,13 @@ static int by_key(const void* a, const void* b) {
 }
 
 /* the module's IR as the backend made it, before its passes, as dir/id.ll (--keep-ir) */
-static bool save_ir(LLVMModuleRef mod, const char* dir, const char* id, char* error, size_t size) {
-    char *text = LLVMPrintModuleToString(mod), *file = snx_format("%s.ll", id);
-    char* path = file ? snx_path_join(dir, file) : NULL;
+static bool save_ir(const char* text, const char* dir, const char* id, char* error, size_t size) {
+    char *file = snx_format("%s.ll", id), *path = file ? snx_path_join(dir, file) : NULL;
     bool ok = path && !snx_write_file(path, text, strlen(text));
     if (!ok) {
         char why[256];
         snprintf(error, size, "cannot save the IR of %s in %s: %s", id, dir, snx_os_error(why, sizeof why));
     }
-    LLVMDisposeMessage(text);
     free(file);
     free(path);
     return ok;
@@ -659,8 +658,10 @@ static bool chunk(SnxIr* ir, Work* w, unsigned index, char* error, size_t size) 
     unsigned char* object = NULL;
     char id[24];
     snprintf(id, sizeof id, "blocks_%03u", index);
-    ok = ok && (!w->keep_ir || save_ir(mod, w->keep_ir, id, error, size)) &&
+    char* text = ok && w->keep_ir ? LLVMPrintModuleToString(mod) : NULL;
+    ok = ok && (!w->keep_ir || save_ir(text, w->keep_ir, id, error, size)) &&
          !snx_ir_module_object(ir, mod, w->opt, &object, &w->objects[index].size, error, size);
+    if (text) LLVMDisposeMessage(text);
     w->objects[index].data = object;
     LLVMDisposeModule(mod);
     return ok;
@@ -745,79 +746,63 @@ static int native_index(const VitaImage* image, const Block* blocks, size_t coun
     if (rc) snprintf(error, size, "out of memory for the module's index");
     return rc ? -1 : 1;
 }
-/* the same through LLVM, where the host has no native back end or its IR is kept */
-static bool llvm_index(const VitaImage* image, const Block* blocks, size_t count, SnxLinkInput* output, char opt,
-                       const char* keep_ir, char* error, size_t size) {
-    SnxIr* ir = snx_ir_init(error, size) ? NULL : snx_ir_new("vita-aot", opt, error, size);
-    if (!ir) return false;
+/* the same by the fallback, where the host has no native back end or its IR is kept */
+typedef struct {
+    const Block* blocks;
+    size_t count;
+} Listed;
+static int listed_name(void* user, size_t i, char* out, size_t size) {
+    const Listed* l = user;
+    if (i >= l->count) return 0;
+    char id[24];
+    block_name(id, l->blocks[i].key);
+    snprintf(out, size, "%s", id);
+    return 1;
+}
+static bool fallback_index(const VitaImage* image, const Block* blocks, size_t count, SnxLinkInput* output, char opt,
+                           const char* keep_ir, char* error, size_t size) {
+    SnxFallbackData* d =
+        snx_fallback_data_new("vita-aot", "vita-aot", opt, keep_ir ? snx_arm_aot_kept : snx_arm_aot_none);
+    const size_t n = count ? count : 1; /* a module of none has an empty slot */
+    uint32_t* keys = calloc(n, sizeof *keys);
+    bool ok = d && keys;
+    if (!ok) snprintf(error, size, "out of memory for the module's index");
+    for (size_t i = 0; ok && i < count; ++i) keys[i] = blocks[i].key;
+    Listed listed = {blocks, count};
+    ok = ok && !snx_fallback_data_integers(d, "vita_keys", 32, n, keys, error, size) &&
+         !snx_fallback_data_blocks(d, "vita_blocks", n, listed_name, &listed, error, size);
     const VitaModule m = describe(image, count);
-    LLVMContextRef c = ir->ctx;
-    LLVMModuleRef mod = new_module(ir);
-    LLVMTargetDataRef layout = LLVMGetModuleDataLayout(mod);
-    LLVMTypeRef i8 = LLVMInt8TypeInContext(c), i32 = LLVMInt32TypeInContext(c), i64 = LLVMInt64TypeInContext(c);
-    LLVMTypeRef ptr = LLVMPointerTypeInContext(c, 0), ft = LLVMFunctionType(LLVMVoidTypeInContext(c), &ptr, 1, 0);
-    size_t n = count ? count : 1;
-    LLVMValueRef *keys = malloc(n * sizeof *keys), *functions = malloc(n * sizeof *functions);
-    bool ok = keys && functions;
-    for (size_t i = 0; ok && i < n; ++i) {
-        char name[24];
-        keys[i] = LLVMConstInt(i32, i < count ? blocks[i].key : 0, 0);
-        if (i < count) {
-            block_name(name, blocks[i].key);
-            functions[i] = LLVMAddFunction(mod, name, ft);
-            LLVMSetVisibility(functions[i], LLVMHiddenVisibility);
-        } else
-            functions[i] = LLVMConstNull(ptr);
-    }
-    if (ok) {
-        LLVMValueRef tables[2];
-        LLVMTypeRef types[2] = {LLVMArrayType(i32, (unsigned)n), LLVMArrayType(ptr, (unsigned)n)};
-        LLVMValueRef values[2] = {LLVMConstArray(i32, keys, (unsigned)n), LLVMConstArray(ptr, functions, (unsigned)n)};
-        for (unsigned t = 0; t < 2; ++t) {
-            tables[t] = LLVMAddGlobal(mod, types[t], t ? "vita_blocks" : "vita_keys");
-            LLVMSetInitializer(tables[t], values[t]);
-            LLVMSetGlobalConstant(tables[t], 1);
-            LLVMSetLinkage(tables[t], LLVMInternalLinkage);
-        }
-        LLVMValueRef hash[32], fields[10];
-        LLVMTypeRef field_types[10] = {i64, i32, i32, i32, i32, i32, i32, LLVMArrayType(i8, 32), ptr, ptr};
-        for (unsigned i = 0; i < 32; ++i) hash[i] = LLVMConstInt(i8, m.identity[i], 0);
-        const uint32_t integers[6] = {m.abi, m.descriptor_size, m.cpu_size, m.arm_abi, m.pointer_size, m.count};
-        fields[0] = LLVMConstInt(i64, m.magic, 0);
-        for (unsigned i = 0; i < 6; ++i) fields[i + 1] = LLVMConstInt(i32, integers[i], 0);
-        fields[7] = LLVMConstArray(i8, hash, 32);
-        fields[8] = tables[0], fields[9] = tables[1];
-        LLVMTypeRef structure = LLVMStructTypeInContext(c, field_types, 10, 0);
-        static const size_t offsets[10] = {offsetof(VitaModule, magic),       offsetof(VitaModule, abi),
-                                           offsetof(VitaModule, descriptor_size), offsetof(VitaModule, cpu_size),
-                                           offsetof(VitaModule, arm_abi),     offsetof(VitaModule, pointer_size),
-                                           offsetof(VitaModule, count),       offsetof(VitaModule, identity),
-                                           offsetof(VitaModule, keys),        offsetof(VitaModule, blocks)};
-        ok = LLVMABISizeOfType(layout, structure) == sizeof(VitaModule);
-        for (unsigned i = 0; ok && i < 10; ++i) ok = LLVMOffsetOfElement(layout, structure, i) == offsets[i];
-        if (!ok)
-            snprintf(error, size, "the module descriptor's layout differs between the compiler and the LLVM target");
-        else {
-            LLVMValueRef global = LLVMAddGlobal(mod, structure, "snx_vita_module_v1");
-            LLVMSetInitializer(global, LLVMConstNamedStruct(structure, fields, 10));
-            LLVMSetGlobalConstant(global, 1);
-            unsigned char* object = NULL;
-            ok = (!keep_ir || save_ir(mod, keep_ir, "index", error, size)) &&
-                 !snx_ir_module_object(ir, mod, '0', &object, &output->size, error, size);
-            output->data = object;
-        }
-    } else
-        snprintf(error, size, "out of memory for the module's index");
+#define FIELD(field)                                                                                                   \
+    { .bits = 32, .value = m.field, .offset = offsetof(VitaModule, field) }
+    const SnxFallbackField fields[] = {
+        {.bits = 64, .value = m.magic, .offset = offsetof(VitaModule, magic)},
+        FIELD(abi),
+        FIELD(descriptor_size),
+        FIELD(cpu_size),
+        FIELD(arm_abi),
+        FIELD(pointer_size),
+        FIELD(count),
+        {.bytes = m.identity, .count = sizeof m.identity, .offset = offsetof(VitaModule, identity)},
+        {.global = "vita_keys", .offset = offsetof(VitaModule, keys)},
+        {.global = "vita_blocks", .offset = offsetof(VitaModule, blocks)}};
+#undef FIELD
+    ok = ok && !snx_fallback_data_descriptor(d, "snx_vita_module_v1", fields, sizeof fields / sizeof *fields,
+                                             sizeof(VitaModule), error, size);
+    char* text = NULL;
+    ok = ok &&
+         (!keep_ir || (!snx_fallback_data_ir(d, &text, error, size) && save_ir(text, keep_ir, "index", error, size)));
+    unsigned char* object = NULL;
+    ok = ok && !snx_fallback_data_object(d, &object, &output->size, error, size);
+    output->data = object;
+    free(text);
     free(keys);
-    free(functions);
-    LLVMDisposeModule(mod);
-    snx_ir_free(ir);
+    snx_fallback_data_free(d);
     return ok;
 }
 static bool index_object(const VitaImage* image, const Block* blocks, size_t count, SnxLinkInput* output, char opt,
                          const char* keep_ir, char* error, size_t size) {
     const int made = keep_ir ? 0 : native_index(image, blocks, count, output, error, size);
-    return made > 0 || (!made && llvm_index(image, blocks, count, output, opt, keep_ir, error, size));
+    return made > 0 || (!made && fallback_index(image, blocks, count, output, opt, keep_ir, error, size));
 }
 /* where each chunk starts in blocks, + count after the last, into starts (count + 1 of them at most): chunk
    instructions to a chunk, whole blocks, or CHUNK_BLOCKS blocks for 0. The chunks' count */

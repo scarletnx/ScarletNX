@@ -761,7 +761,6 @@ def check_weak_declarations(repo):
 LLVM_HEADER = re.compile(r'llvm(?:-c)?/')
 LLVM_FOLDER = 'src/common/cpu/recompiler/llvm/'
 LLVM_USERS = {
-    'src/3ds/aot/compiler.c',
     'src/common/cpu/arm/llvm.c',
     'src/common/cpu/arm/llvm.h',
     'src/common/cpu/recompiler/fallback_llvm.c',
@@ -769,7 +768,6 @@ LLVM_USERS = {
     'src/common/cpu/recompiler/jit/jit_service.c',
     'src/common/cpu/recompiler/library.c',
     'src/common/cpu/recompiler/workers.h',
-    'src/nds/aot/compiler.c',
     'src/nx/loader/module_arm.c',
     'src/nx/loader/module_ir.h',
     'src/nx/loader/module_llvm.c',

@@ -1,10 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The guest code this host's native back end leaves (mach/native.h): a function or a block it does not make whole, and
-   all of them on a host that has none. fallback_llvm.c makes it with LLVM where the build has the backend
-   (SNX_WITH_LLVM=ON); fallback_none.c refuses it where not, each error naming the code asked for and why the native
-   back end left it. A program links the one its build has, and what compiles guest code calls it here and takes no
-   header of LLVM's */
+/* The guest code this host's native back end leaves (mach/native.h): a function or a block it does not make whole, all
+   of them on a host that has none, and there an AOT module's index. fallback_llvm.c makes it with LLVM where the build
+   has the backend (SNX_WITH_LLVM=ON); fallback_none.c refuses it where not, each error naming what was asked for and
+   why the native back end left it. A program links the one its build has, and what compiles guest code calls it here
+   and takes no header of LLVM's */
 #ifndef SNX_RECOMPILER_FALLBACK_H
 #define SNX_RECOMPILER_FALLBACK_H
 #include "common/cpu/arm/codegen.h"
@@ -47,4 +47,40 @@ int snx_fallback_arm_ir(SnxFallbackArm* f, char** text, char* error, size_t erro
    starts another */
 int snx_fallback_arm_object(SnxFallbackArm* f, unsigned char** object, size_t* size, char* error, size_t error_size);
 
+/* An object of constants for this host, an AOT module's index, where the native back end makes none (mach/native.h's
+   snx_native_data) or its IR is asked for, which why says: module, made as unit's modules at opt's -O level, of the
+   globals asked for in their order, each constant and internal to the object but its descriptor. NULL out of memory */
+typedef struct SnxFallbackData SnxFallbackData;
+SnxFallbackData* snx_fallback_data_new(const char* unit, const char* module, char opt, const char* why);
+void snx_fallback_data_free(SnxFallbackData* d);
+/* count pointers, each to the function of the block name_of names for it (writing the name into out, of size bytes,
+   and returning 1), or null (returning 0). The functions are hidden, of one pointer, each declared at its first. 0, or
+   -1 with the reason in error */
+int snx_fallback_data_blocks(SnxFallbackData* d, const char* name, size_t count,
+                             int (*name_of)(void* user, size_t i, char* out, size_t size), void* user, char* error,
+                             size_t error_size);
+/* count integers of bits bits (8, 32 or 64), values an array of uint8_t, uint32_t or uint64_t: 0, or -1 */
+int snx_fallback_data_integers(SnxFallbackData* d, const char* name, unsigned bits, size_t count, const void* values,
+                               char* error, size_t error_size);
+/* A field of a struct, at offset in the C struct read as it: an integer of bits bits (8, 32 or 64), value; with no bits
+   count bytes, or a pointer to the global named, made before (NULL for null) */
+typedef struct {
+    unsigned bits;
+    uint64_t value;
+    const unsigned char* bytes;
+    size_t count;
+    const char* global;
+    size_t offset;
+} SnxFallbackField;
+/* count structs of nfields fields each, as a C struct of size bytes lays them out: fields holds count * nfields of
+   them, or where count is 0 nfields that give their kinds alone. 0, or -1 with the reason in error, a layout C does not
+   have among them */
+int snx_fallback_data_structs(SnxFallbackData* d, const char* name, size_t count, const SnxFallbackField* fields,
+                              size_t nfields, size_t size, char* error, size_t error_size);
+/* the struct the object exports, its descriptor, as one of snx_fallback_data_structs' */
+int snx_fallback_data_descriptor(SnxFallbackData* d, const char* name, const SnxFallbackField* fields, size_t nfields,
+                                 size_t size, char* error, size_t error_size);
+/* its text before the passes (--keep-ir), as snx_fallback_arm_ir's; and its object (malloc'd). 0, or -1 */
+int snx_fallback_data_ir(SnxFallbackData* d, char** text, char* error, size_t error_size);
+int snx_fallback_data_object(SnxFallbackData* d, unsigned char** object, size_t* size, char* error, size_t error_size);
 #endif
