@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-#include "nx/runtime/platform/fatal_screen.h"
+#include "common/utilities/fatal_screen.h"
 #include "common/utilities/common.h"
 #include "common/utilities/font.h"
 #include "common/utilities/logscan.h"
@@ -105,7 +105,8 @@ static size_t step(const char* s) {
     return n;
 }
 
-int fatal_wrap(const char* text, int cols, char (*rows)[FATAL_ROW], int max) {
+int fatal_wrap_spans(const char* text, int cols, int* at, int* len, int max) {
+    const char* start = text;
     int count = 0;
     if (cols < 1) cols = 1;
     while (*text) {
@@ -122,14 +123,24 @@ int fatal_wrap(const char* text, int cols, char (*rows)[FATAL_ROW], int max) {
         /* the row ends at its last space when the next character would not fit, and a word fills it otherwise */
         if (*end && *end != ' ' && space) end = space;
         n = (size_t)(end - text);
+        while (n && text[n - 1] == ' ') --n;
         if (count < max) {
-            if (n >= FATAL_ROW) n = FATAL_ROW - 1;
-            memcpy(rows[count], text, n);
-            rows[count][n] = 0;
-            while (n && rows[count][n - 1] == ' ') rows[count][--n] = 0;
+            at[count] = (int)(text - start);
+            len[count] = (int)n;
         }
         ++count;
         text = end;
+    }
+    return count;
+}
+
+int fatal_wrap(const char* text, int cols, char (*rows)[FATAL_ROW], int max) {
+    enum { SPANS = 64 };
+    int at[SPANS], len[SPANS], count = fatal_wrap_spans(text, cols, at, len, max < SPANS ? max : SPANS);
+    for (int i = 0; i < count && i < max && i < SPANS; ++i) {
+        size_t n = (size_t)len[i] < FATAL_ROW ? (size_t)len[i] : FATAL_ROW - 1;
+        memcpy(rows[i], text + at[i], n);
+        rows[i][n] = 0;
     }
     return count;
 }

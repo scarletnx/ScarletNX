@@ -2583,7 +2583,7 @@ if(TARGET SDL3::SDL3) # F1's and the Shortcuts pages name the runtime's keys as 
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/overlay.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ctrl_applet.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ctrl_request.c"
-        "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/fatal_screen.c"
+        "${PROJECT_SOURCE_DIR}/src/common/utilities/fatal_screen.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/prepare_screen.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/wait_screen.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c"
@@ -2605,7 +2605,7 @@ if(TARGET SDL3::SDL3) # F1's and the Shortcuts pages name the runtime's keys as 
     add_test(NAME overlay COMMAND snx-test-overlay)
     # the controller applet's dialog: its request, cards and gestures, and its pictures drawn on the CPU
     add_executable(snx-test-ctrl-applet ctrl_applet.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ctrl_applet.c"
-        "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/fatal_screen.c"
+        "${PROJECT_SOURCE_DIR}/src/common/utilities/fatal_screen.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ctrl_scan.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ctrl_request.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/ui_ring.c" support/ui_raster.c support/ui_shape_ref.c)
@@ -2656,6 +2656,15 @@ add_executable(snx-test-error-kind error_kind.c)
 snx_test_target(snx-test-error-kind c23)
 target_link_libraries(snx-test-error-kind PRIVATE snx_error scarletnx-common)
 add_test(NAME error_kind COMMAND snx-test-error-kind "${CMAKE_CURRENT_BINARY_DIR}")
+# the error's panel: its layout from a GBA's window to a phone's, its colours, its keys and presses, Details
+# (common/utilities/error_panel.c)
+if(TARGET snx_error_panel)
+    add_executable(snx-test-error-panel error_panel.c)
+    snx_test_target(snx-test-error-panel c23)
+    target_link_libraries(snx-test-error-panel PRIVATE snx_error_panel snx_vpad scarletnx-common m)
+    target_include_directories(snx-test-error-panel PRIVATE "${PROJECT_BINARY_DIR}/generated") # the YoRHa colours
+    add_test(NAME error_panel COMMAND snx-test-error-panel)
+endif()
 
 add_executable(snx-test-hud hud.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/hud.c"
     "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ui.c" "${PROJECT_SOURCE_DIR}/src/common/utilities/ui_ring.c")
@@ -2800,7 +2809,7 @@ target_link_libraries(snx-test-joycon2-sdl PRIVATE scarletnx-common snx_pad_sdl 
 target_include_directories(snx-test-joycon2-sdl PRIVATE "${PROJECT_BINARY_DIR}/generated")
 add_test(NAME joycon2_sdl COMMAND snx-test-joycon2-sdl)
 
-add_executable(snx-test-fatal-screen fatal_screen.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/fatal_screen.c")
+add_executable(snx-test-fatal-screen fatal_screen.c "${PROJECT_SOURCE_DIR}/src/common/utilities/fatal_screen.c")
 snx_test_target(snx-test-fatal-screen gnu23)
 target_link_libraries(snx-test-fatal-screen PRIVATE scarletnx-common)
 add_test(NAME fatal_screen COMMAND snx-test-fatal-screen)

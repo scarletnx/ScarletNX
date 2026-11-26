@@ -14,6 +14,9 @@ const char* fatal_hint(const char* msg);
 /* text in rows of cols code points at most, broken at a space when one is in the row, else cut: up to max rows into
    rows. Returns the rows the text takes, which may be more than max (those past it are not written) */
 int fatal_wrap(const char* text, int cols, char (*rows)[FATAL_ROW], int max);
+/* the same rows as spans of text: each row's first byte's offset and its bytes, up to max of them into at and len.
+   Returns the rows the text takes */
+int fatal_wrap_spans(const char* text, int cols, int* at, int* len, int max);
 /* text with each of its lines cut into rows of cols code points as fatal_wrap cuts them, the rows apart by a newline and
    its empty lines kept: for a box as wide as its longest line (SDL's on Windows). malloc'd, NULL out of memory */
 char* fatal_lines(const char* text, int cols);

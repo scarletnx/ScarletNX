@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* What a fatal error's box says (runtime/platform/fatal_screen.c): the hint for each known error, the text cut into
+/* What a fatal error's box says (common/utilities/fatal_screen.c): the hint for each known error, the text cut into
    the box's rows at spaces, a long word cut, UTF-8 counted as characters, those in the font's bytes, and Share Log's
    file and the box's own text, their homes as ~ */
-#include "nx/runtime/platform/fatal_screen.h"
+#include "common/utilities/fatal_screen.h"
 #include "common/utilities/common.h"
 #include <assert.h>
 #include <stdio.h>
@@ -73,6 +73,14 @@ int main(void) {
     n = fatal_wrap("   one     two   ", 3, rows, 8);
     assert(n == 2 && !strcmp(rows[0], "one") && !strcmp(rows[1], "two"));
     assert(fatal_wrap("", 10, rows, 8) == 0 && fatal_wrap("     ", 10, rows, 8) == 0);
+    /* the same rows as spans of the text, the panel's (common/utilities/error_panel.c): where each starts, its bytes */
+    {
+        int at[4], len[4];
+        n = fatal_wrap_spans("  one two   three", 7, at, len, 4);
+        assert(n == 2 && at[0] == 2 && len[0] == 7 && at[1] == 12 && len[1] == 5);
+        n = fatal_wrap_spans("one two three", 5, at, len, 1); /* past max: counted, not written */
+        assert(n == 3 && at[0] == 0 && len[0] == 3);
+    }
     /* the count goes past max, the rows past it are not written */
     strcpy(rows[1], "kept");
     n = fatal_wrap("aa bb cc", 2, rows, 1);
