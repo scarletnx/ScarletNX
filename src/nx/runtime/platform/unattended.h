@@ -18,6 +18,11 @@ void unattended_start(void);
 u64 unattended_ms(void); /* milliseconds since then */
 /* 1 when seconds or frames limits the run */
 int unattended_active(void);
+/* whether the window starts fullscreen, from the setting fullscreen and the command line's -f or --fullscreen=0|1
+   (cli: 1, 0, or -1 for neither): the setting, except in a run seconds or frames limits, where nobody need be at the
+   screen and the window would cover the desktop of whoever is; a run whose command line asks for it goes fullscreen
+   too */
+int unattended_fullscreen(int setting, int cli);
 /* a script of presses plays (script): nobody answers a dialog, a run with no limit too */
 int unattended_scripted(void);
 /* The buttons the options press now, as HidNpadButton bits, plus bits 40 to 47 for stick directions (see

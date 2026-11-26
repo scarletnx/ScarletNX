@@ -222,8 +222,8 @@ setting Fullscreen
     default 0
     startup
     words Off|On
-    help 1 = starts fullscreen, except in timed test runs. -f or --fullscreen=0 sets it for one run, and F11 or
-    help Alt+Enter switches while the game runs without changing it
+    help 1 = starts fullscreen, except in timed test runs unless their command line has -f or --fullscreen=1. -f or
+    help --fullscreen=0 sets it for one run, and F11 or Alt+Enter switches while the game runs without changing it
 setting Transition screen
     key transition_screen
     int 0 1

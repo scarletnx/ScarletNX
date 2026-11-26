@@ -380,7 +380,14 @@ int main(int argc, char** argv) {
 
     /* the limits, and numbered shots by bucket even when frames go by two */
     CHECK(!unattended_active(), "active without seconds or frames");
+    CHECK(unattended_fullscreen(1, -1) && unattended_fullscreen(1, 1) && !unattended_fullscreen(0, 0) &&
+              !unattended_fullscreen(0, -1),
+          "an untimed run doesn't start as the setting fullscreen says");
     unattended_ini("frames", "700");
+    /* a timed run stays windowed unless its own command line asks */
+    CHECK(!unattended_fullscreen(1, -1), "a timed run went fullscreen from the .ini alone");
+    CHECK(unattended_fullscreen(1, 1), "a timed run with --fullscreen=1 stayed windowed");
+    CHECK(!unattended_fullscreen(0, 0), "a timed run with --fullscreen=0 went fullscreen");
     unattended_ini("shot", "out/run");
     unattended_ini("shot_every", "10");
     CHECK(unattended_active() && !unattended_done(), "frames=700 not active, or done too early");
