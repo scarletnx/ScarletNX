@@ -121,9 +121,10 @@ level (`snx_recompiler_set_optimization`, `2` by default: the native back end's 
 the same at every one, and the caches keep it), how many code units compile at once
 (`snx_recompiler_set_jobs`, on threads),
 progress lines (`snx_recompiler_set_verbose`) and a callback with how far a recompile is,
-for a progress bar (`snx_recompiler_set_progress`). `snx_recompiler_set_keep_ir` and
-`snx_recompiler_set_backend(r, 0)` asked for LLVM's IR and LLVM alone: the first is
-refused with the folder named, the second at the recompile. `snx_recompiler_set_hook_direct_calls`
+for a progress bar (`snx_recompiler_set_progress`). `snx_recompiler_set_keep_ir` asked for
+LLVM's IR, and is refused with the folder named. `snx_recompiler_set_backend(r, 0)` is LLVM
+alone, the reference the tests compare the native back end with while the build has LLVM;
+its modules are not kept in the cache folder. `snx_recompiler_set_hook_direct_calls`
 routes calls between discovered functions through the CPU's dispatch table. Enable it
 when the runtime can invalidate guest code, so callers do not retain direct pointers to
 retired functions.
