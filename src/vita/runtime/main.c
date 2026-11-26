@@ -12,6 +12,7 @@
 #include "vita/loader/vpk.h"
 #include "vita/platform/input.h"
 #include "vita/runtime/process.h"
+#include "common/cpu/recompiler/llvm/jit_settings.h"
 #include "common/utilities/build_info.h"
 #include "common/utilities/cli.h"
 #include "common/utilities/common.h"
@@ -497,6 +498,7 @@ int snx_vita_main(int argc, char** argv) {
     if (snx_cli_fullscreen_flag(argc, argv)) g_settings.fullscreen = 1;  /* -f's over the settings' */
     if (g_settings.button_map[0]) vita_input_map(g_settings.button_map); /* the input's to read, as the 3DS's */
     free(name);
+    snx_jit_settings("scarletnx-vita", g_settings.slp_vectorizer, g_settings.perf_map, g_settings.gdb_jit_symbols);
     status = play(folder, ini, recompile, seconds, shot, runtime, &asked);
     free(ini);
 done:

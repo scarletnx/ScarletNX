@@ -162,6 +162,8 @@ def main():
             '--vsync=0',
             '--anisotropy=16',
             '--gpu-pstate=auto',
+            '--slp-vectorizer=0',
+            '--perf-map=0',
         ],
         0,
         'Old 3DS',

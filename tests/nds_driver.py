@@ -87,6 +87,7 @@ def main():
             ['--gamepad-swap-ab=1', '--gpu-driver=', '--vk-validation=1'],
             ['--vk-pipeline-cache=1'],
             ['--gpu-pstate=auto'],
+            ['--slp-vectorizer=0', '--perf-map=0', '--gdb-jit=0'],
         ):
             out = run(['-r', *given, *missing], 1, 'scarletnx-nds: ')
             if 'unexpected argument' in out or 'does nothing' in out:

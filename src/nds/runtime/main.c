@@ -5,6 +5,7 @@
    by the runtime (hle/, bios/) and whose picture is drawn on the GPU (gpu/). A game is its image, read where it lies:
    there is nothing to extract and no update to add, so its folder is made as a GBA game's is. */
 #include "nds/runtime/main.h"
+#include "common/cpu/recompiler/llvm/jit_settings.h"
 #include "common/utilities/endian.h"
 #include "nds/aot/nds_module.h"
 #include "nds/cartridge/key1.h"
@@ -438,6 +439,7 @@ int snx_nds_main(int argc, char** argv) {
     if (rom.size >= 0x84 && snx_ld_le32(rom.data + 0x80) > rom.size)
         fprintf(stderr, "scarletnx-nds: %s is incomplete: it has %zu bytes of the %u its header counts. The game can stop "
                         "where it reads the rest\n", image, rom.size, (unsigned)snx_ld_le32(rom.data + 0x80));
+    snx_jit_settings("scarletnx-nds", g_settings.slp_vectorizer, g_settings.perf_map, g_settings.gdb_jit_symbols);
     module = snx_format("%s/%s" NDS_MODULE_SUFFIX, folder, name);
     hints = snx_format("%s/%s" NDS_HINTS_SUFFIX, folder, name);
     save = snx_format("%s/%s.sav", folder, name);
