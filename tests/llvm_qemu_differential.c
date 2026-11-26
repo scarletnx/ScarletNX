@@ -52,22 +52,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#ifdef SNX_TEST_NATIVE_STEPS
 #include "common/cpu/aarch64/a64_decoder.h"
 /* this side of the comparison: in the causes, the reports' names and the expected-failure list, and in prose */
 #define SIDE      "native"
 #define SIDE_NAME "native"
 #define PROGRAM   "snx-test-llvm-qemu-differential-native"
-#else
-#include "common/cpu/recompiler/llvm/ir.h"
-#include "common/cpu/recompiler/llvm/ir_ldst.h"
-#include "common/cpu/recompiler/llvm/ir_fpu.h"
-#include "common/cpu/recompiler/llvm/ir_int.h"
-#include "common/cpu/recompiler/llvm/ir_vec.h"
-#define SIDE      "llvm"
-#define SIDE_NAME "LLVM"
-#define PROGRAM   "snx-test-llvm-qemu-differential"
-#endif
 
 #define WINDOW      0x0ull /* the window starts at guest address 0 on both sides */
 #define WINDOW_SIZE SNX_QREF_WINDOW_SIZE
@@ -525,39 +514,17 @@ static SnxU64 word_features(u32 word, int* skip) {
     SnxA64Insn max, sw;
     const int beyond = snx_a64_decode_word(word, SNX_A64_TARGET_MAX, &max) != SNX_A64_OP_UNDEF &&
                        (max.feature & ~(SnxU64)SNX_A64_TARGET_SWITCH) && !(max.feature & SNX_A64_FEAT_PAUTH);
-#ifdef SNX_TEST_NATIVE_STEPS
     /* every feature that the back end has code for (mach_codegen.inc's past_guests): a word it has none for is not made,
        and the loads say which */
     if (beyond) return SNX_A64_TARGET_MAX;
-#else
-    /* the load/store emitters (ir_ldst.c) implement the LSE and RCpc atomics too, the scalar FP ones (ir_fpu.c)
-       FEAT_FP16, FEAT_JSCVT, FEAT_FRINTTS and BFCVT, the AdvSIMD ones (ir_vec.c) the vector extensions: a word the Switch
-       lacks that they emit runs with max's features. The integer ones (ir_int.c) implement the ounce target's FlagM and
-       ESB, which run with its features */
-    SnxA64Insn ounce;
-    if (beyond && (snx_ir_ldst_handles(max.op) || snx_ir_fpu_handles(max.op) || snx_ir_vec_handles(max.op)))
-        return SNX_A64_TARGET_MAX;
-    if (snx_a64_decode_word(word, SNX_A64_TARGET_OUNCE, &ounce) != SNX_A64_OP_UNDEF && snx_ir_int_handles(ounce.op) &&
-        (ounce.feature & ~(SnxU64)SNX_A64_TARGET_SWITCH) && !(ounce.feature & SNX_A64_FEAT_PAUTH))
-        return SNX_A64_TARGET_OUNCE;
-#endif
     if (snx_a64_decode_word(word, 0, &sw) == SNX_A64_OP_UNDEF) *skip = 1;
     return 0;
 }
 
 /* a word's step, 1 when the back end's emitter has code for it (the native ones are known once they are loaded) */
 static int add_step(Steps* built, u32 word, u64 pc, SnxU64 features) {
-#ifdef SNX_TEST_NATIVE_STEPS
     steps_add(built, word, pc, features);
     return 1;
-#else
-    SnxIr* ir = built->ir;
-    const unsigned long before = ir->fallbacks;
-    steps_add(built, word, pc, features);
-    if (ir->fallbacks == before) return 1;
-    ir->fallbacks = before; /* noted here: the module is still wanted for the rest */
-    return 0;
-#endif
 }
 
 /* an op that reads or writes guest memory, by its name, as the ops of the loads and stores are named */
@@ -863,18 +830,12 @@ static int write_expected(const char* path, Expected* e, size_t n) {
     if (!f) return -1;
     qsort(e, n, sizeof(*e), order_expected);
     fputs("# " SIDE "_qemu_differential's expected mismatches"
-#ifndef SNX_TEST_NATIVE_STEPS
-          " until the emitters are rewritten from QEMU's translate-a64.c"
-#endif
           ":\n# the max target's name for the word, the cause (the state parts that differ, or " SIDE "-X/qemu-Y for\n"
           "# different outcomes, or qemu-alignment-fault for an alignment fault the " SIDE_NAME
           " side doesn't run), and the\n"
           "# words differing in the default run and in --sweep. A group missing here fails the test, and so does a\n"
           "# listed one that no longer differs in a run whose count isn't 0.\n"
           "# --update rewrites the counts of the run it is given with."
-#ifndef SNX_TEST_NATIVE_STEPS
-          " qemu-diff-triage.md has the judgement on each."
-#endif
           "\n",
           f);
     for (i = 0; i < n; ++i)
@@ -1147,9 +1108,6 @@ int main(int argc, char** argv) {
                                                     no_emitter = 0, nexpected;
     int sweep = 0, update = 0, jit = 0, portable = STEPS_HOST, a, failed = 0, reference = 0, required = 0,
         no_avx512 = 0;
-#ifndef SNX_TEST_NATIVE_STEPS
-    int abi = 0;
-#endif
     static const char* const forms[] = {"host", "portable", "generic"}; /* the code's, by STEPS_ value */
     u32* words = NULL;
     Item* items;
@@ -1185,11 +1143,7 @@ int main(int argc, char** argv) {
         expected_path = argv[4];
         a = 5;
     } else {
-#ifdef SNX_TEST_NATIVE_STEPS
 #define FORMS "[--portable]"
-#else
-#define FORMS "[--abi-contract] [--portable | --generic] [--without-avx512]"
-#endif
         fputs("usage: " PROGRAM " QEMU RUNNER DIR EXPECTED [--sweep] [--states N] [--seed N] "
               "[--quiet] [--update] [--jit] " FORMS " [--record FILE]\n"
               "       " PROGRAM " DIR EXPECTED --reference FILE [--quiet] [--update] [--jit] " FORMS "\n"
@@ -1209,21 +1163,8 @@ int main(int argc, char** argv) {
             update = 1;
         else if (!strcmp(argv[a], "--jit"))
             jit = 1;
-#ifdef SNX_TEST_NATIVE_STEPS
         else if (!strcmp(argv[a], "--portable"))
             portable = STEPS_PORTABLE;
-#else
-        else if (!strcmp(argv[a], "--without-avx512"))
-            no_avx512 = 1;
-        else if (!strcmp(argv[a], "--abi-contract"))
-            abi = 1;
-        else if (!strcmp(argv[a], "--portable") || !strcmp(argv[a], "--generic")) {
-            int form = !strcmp(argv[a], "--portable") ? STEPS_PORTABLE : STEPS_GENERIC;
-            if (portable && portable != form)
-                return snx_error("%s after --%s: the emitters take one form a run", argv[a], forms[portable]);
-            portable = form;
-        }
-#endif
         else if (a + 1 < argc && !strcmp(argv[a], "--states"))
             states = strtoul(argv[++a], NULL, 10);
         else if (a + 1 < argc && !strcmp(argv[a], "--seed"))
@@ -1234,23 +1175,6 @@ int main(int argc, char** argv) {
             return snx_error("unknown argument %s", argv[a]);
     }
     initial_seed = g_test.rng;
-#ifndef SNX_TEST_NATIVE_STEPS
-    if (no_avx512) {
-        char *host, *dropped;
-        int same;
-        if (snx_ir_host_drop("avx512", error, sizeof error)) return snx_error("%s", error);
-        host = LLVMGetHostCPUFeatures();
-        dropped = snx_ir_host_features();
-        same = !strcmp(host, dropped);
-        LLVMDisposeMessage(host);
-        LLVMDisposeMessage(dropped);
-        if (same) {
-            printf(SIDE "_qemu_differential skipped: --without-avx512 on a host without AVX-512 runs its own path\n");
-            return 77;
-        }
-    }
-    if (abi) snx_ir_abi_contract(1);
-#endif
     if (reference) {
         size_t size = 0;
         u64 window, window_size, pc, seed, pad;
@@ -1366,15 +1290,11 @@ int main(int argc, char** argv) {
     if (!q.quiet) printf("%zu cases of %zu words; compiling %zu %s steps\n", nitems, nwords, nsteps, steps_name());
     snprintf(g_test.running, sizeof(g_test.running), "the compile of %zu %s steps (%s form)", nsteps, steps_name(),
              forms[portable]);
-#ifdef SNX_TEST_NATIVE_STEPS
     built.partial = 1; /* the words it has no code for */
-#endif
     if (steps_load(&built, error, sizeof(error))) return snx_error("%s", error);
-#ifdef SNX_TEST_NATIVE_STEPS
     for (i = 0; i < nitems; ++i)
         for (k = 0; k < items[i].nwords; ++k)
             if (!native_steps_made(&built, items[i].step + k)) items[i].skip = 1;
-#endif
     rt.svc = cb_svc;
     rt.undef = cb_undef;
     rt.note_hint = cb_note;

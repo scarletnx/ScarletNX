@@ -1,14 +1,13 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* Synthetic decoder, CFG and code tests: the generated decoder's UNDEF set, flow and branch targets; function
-   discovery; architectural results of the LLVM backend's steps (llvm_steps.c) against expected values; and a
+   discovery; architectural results of the native back end's steps (native_steps.c) against expected values; and a
    compiled loop's poll at its backward branch. */
-#include "llvm_steps.h"
+#include "steps.h"
 #include "common/cpu/aarch64/a64_decoder.h"
 #include "common/cpu/recompiler/codegen.h"
 #include "nx/loader/codegen_view.h"
 #include <fenv.h>
-#include <llvm/Config/llvm-config.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdatomic.h>
@@ -689,7 +688,7 @@ static void copy_setup(_Atomic SnxU32* copy, _Atomic SnxU64* generation, SnxCode
 
 /* The codegen answers each address of such a copy with the word it read there first: the emitter reads the words
    again after discovery, and a cbnz it read where discovery had read the nop branched to a block discovery never
-   made (LLVMBuildBr with no block) */
+   made */
 static void copy_word_test(void) {
     _Atomic SnxU32 copy[COPY_WORDS];
     _Atomic SnxU64 generation;
@@ -751,7 +750,7 @@ static void large_range_test(void) {
     free(image);
 }
 
-/* the semantic cases: words with their starting state and expected end, as LLVM steps at pc 0x1000 */
+/* the semantic cases: words with their starting state and expected end, as native steps at pc 0x1000 */
 static const SnxU32 g_words[] = {
     0x31000420UL, /* ADDS W0,W1,#1: zero-extension and NZCV. */
     0xBA1F03E0UL, /* ADCS X0,XZR,XZR: integer carry input. */
@@ -1177,24 +1176,24 @@ static void undefined(CPU* c, u64 pc, u32 w) {
     ++g_traps;
 }
 
-/* each word's LLVM step from its starting state under each host rounding mode (the generated code must not depend
+/* each word's native step from its starting state under each host rounding mode (the generated code must not depend
    on it), against the expected end: registers, flags, FPSR, memory, where it went and the UNDEF of case 17 */
 static void semantics_test(void) {
     static const int modes[] = {FE_TONEAREST, FE_UPWARD, FE_DOWNWARD, FE_TOWARDZERO};
     const int original = fegetround();
-    LlvmSteps steps;
+    Steps steps;
     char error[1024];
     unsigned i, m;
-    if (llvm_steps_begin(&steps, 1, 0, error, sizeof(error))) {
+    if (steps_begin(&steps, 1, 0, error, sizeof(error))) {
         fprintf(stderr, "%s\n", error);
-        check(0, "start the LLVM steps");
+        check(0, "start the native steps");
         return;
     }
-    for (i = 0; i < WORDS; ++i) llvm_steps_add(&steps, g_words[i], 0x1000, 0);
-    if (llvm_steps_load(&steps, error, sizeof(error))) {
+    for (i = 0; i < WORDS; ++i) steps_add(&steps, g_words[i], 0x1000, 0);
+    if (steps_load(&steps, error, sizeof(error))) {
         fprintf(stderr, "%s\n", error);
-        check(0, "compile and load the LLVM steps");
-        llvm_steps_end(&steps);
+        check(0, "compile and load the native steps");
+        steps_end(&steps);
         return;
     }
     for (m = 0; m < sizeof(modes) / sizeof(modes[0]); ++m) {
@@ -1212,16 +1211,16 @@ static void semantics_test(void) {
             c.rt = &rt;
             g_traps = 0;
             setup(i, &c, memory);
-            pc = steps.steps[i](&c);
+            pc = step_run(steps_at(&steps, i), &c);
             ok = verify(i, &c, memory) && pc == (i == 16 ? 0xFFC : i == 17 ? 0x1000 : 0x1004) &&
                  g_traps == (i == 17);
             if (!ok) fprintf(stderr, "semantic case %u (%08lx) under host rounding mode %u failed\n", i,
                              (unsigned long)g_words[i], m);
-            check(ok, "an LLVM step's architectural result");
+            check(ok, "a native step's architectural result");
         }
     }
     fesetround(original);
-    llvm_steps_end(&steps);
+    steps_end(&steps);
 }
 
 /* A loop of generated code runs with CPU.poll set: its backward branch calls rt->poll, the runtime's chance to take
@@ -1258,7 +1257,7 @@ static void poll_test(void) {
     SnxCodegen codegen;
     SnxFde range;
     const SnxFunction* function;
-    LlvmSteps steps;
+    Steps steps;
     char error[1024];
     size_t i, index;
     int a, b;
@@ -1271,10 +1270,10 @@ static void poll_test(void) {
     check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1, 0), "analyze the poll loop");
     function = snx_codegen_function(&codegen, SNX_CODE_BASE);
     check(function != NULL, "the poll loop is one function");
-    if (function && !llvm_steps_begin(&steps, 1, 0, error, sizeof(error))) {
-        index = llvm_steps_add_function(&steps, &codegen, function);
-        if (!llvm_steps_load(&steps, error, sizeof(error))) {
-            GuestFn f = (GuestFn)(void (*)(void))steps.steps[index];
+    if (function && !steps_begin(&steps, 1, 0, error, sizeof(error))) {
+        index = steps_add_function(&steps, &codegen, function);
+        if (!steps_load(&steps, error, sizeof(error))) {
+            GuestFn f = steps_function(&steps, index);
             a = run_loop(f, 3, 1);
             b = run_loop(f, 5, 0);
             if (a != 1 || b != 0) fprintf(stderr, "poll loop: %d polls with the flag, %d without\n", a, b);
@@ -1283,7 +1282,7 @@ static void poll_test(void) {
             fprintf(stderr, "%s\n", error);
             check(0, "compile and load the poll loop");
         }
-        llvm_steps_end(&steps);
+        steps_end(&steps);
     } else if (function) {
         fprintf(stderr, "%s\n", error);
         check(0, "start the poll loop's module");
@@ -1301,24 +1300,24 @@ static void cpu_extensions_test(void) {
         0xdac10083u, 0xdac11083u                            /* PACIA/AUTIA x3, x4 */
     };
     for (int jit = 0; jit <= 1; ++jit) {
-        LlvmSteps steps;
+        Steps steps;
         char error[1024];
-        if (llvm_steps_begin(&steps, jit, 0, error, sizeof error)) {
+        if (steps_begin(&steps, jit, 0, error, sizeof error)) {
             fprintf(stderr, "%s\n", error);
             check(0, "start PAuth steps");
             return;
         }
         for (size_t i = 0; i < sizeof words / sizeof words[0]; ++i)
-            llvm_steps_add(&steps, words[i], 0x1000, SNX_A64_TARGET_SWITCH_EXTENDED);
-        size_t xpaci = llvm_steps_add(&steps, 0xdac143e3u, 0x1000, SNX_A64_TARGET_SWITCH_EXTENDED);
-        size_t xpacd = llvm_steps_add(&steps, 0xdac147e3u, 0x1000, SNX_A64_TARGET_SWITCH_EXTENDED);
-        size_t xpaclri = llvm_steps_add(&steps, 0xd50320ffu, 0x1000, SNX_A64_TARGET_SWITCH_EXTENDED);
-        size_t casal = llvm_steps_add(&steps, 0x88e1fc62u, 0x1000, SNX_A64_TARGET_SWITCH_EXTENDED);
-        size_t ldaprb = llvm_steps_add(&steps, 0x38bfc061u, 0x1000, SNX_A64_TARGET_SWITCH_EXTENDED);
-        if (llvm_steps_load(&steps, error, sizeof error)) {
+            steps_add(&steps, words[i], 0x1000, SNX_A64_TARGET_SWITCH_EXTENDED);
+        size_t xpaci = steps_add(&steps, 0xdac143e3u, 0x1000, SNX_A64_TARGET_SWITCH_EXTENDED);
+        size_t xpacd = steps_add(&steps, 0xdac147e3u, 0x1000, SNX_A64_TARGET_SWITCH_EXTENDED);
+        size_t xpaclri = steps_add(&steps, 0xd50320ffu, 0x1000, SNX_A64_TARGET_SWITCH_EXTENDED);
+        size_t casal = steps_add(&steps, 0x88e1fc62u, 0x1000, SNX_A64_TARGET_SWITCH_EXTENDED);
+        size_t ldaprb = steps_add(&steps, 0x38bfc061u, 0x1000, SNX_A64_TARGET_SWITCH_EXTENDED);
+        if (steps_load(&steps, error, sizeof error)) {
             fprintf(stderr, "%s\n", error);
             check(0, "load PAuth steps");
-            llvm_steps_end(&steps);
+            steps_end(&steps);
             return;
         }
         for (size_t i = 0; i < sizeof words / sizeof words[0]; ++i) {
@@ -1331,7 +1330,7 @@ static void cpu_extensions_test(void) {
             c.x[30] = 0x1230;
             c.x[31] = 0x8000;
             g_traps = 0;
-            u64 pc = steps.steps[i](&c);
+            u64 pc = step_run(steps_at(&steps, i), &c);
             check(pc == (i < 2 || (i >= 6 && i < 10) ? 0x1230
                          : i < 6                     ? 0x4560
                                                      : 0x1004),
@@ -1350,11 +1349,13 @@ static void cpu_extensions_test(void) {
             c.rt = &rt;
             g_traps = 0;
             c.x[3] = pointer;
-            check(steps.steps[xpaci](&c) == 0x1004 && c.x[3] == expected, "XPACI strips PAC for 39-bit VA");
+            check(step_run(steps_at(&steps, xpaci), &c) == 0x1004 && c.x[3] == expected,
+                  "XPACI strips PAC for 39-bit VA");
             c.x[3] = pointer;
-            check(steps.steps[xpacd](&c) == 0x1004 && c.x[3] == expected, "XPACD strips PAC for 39-bit VA");
+            check(step_run(steps_at(&steps, xpacd), &c) == 0x1004 && c.x[3] == expected,
+                  "XPACD strips PAC for 39-bit VA");
             c.x[30] = pointer;
-            check(steps.steps[xpaclri](&c) == 0x1004 && c.x[30] == expected && !g_traps,
+            check(step_run(steps_at(&steps, xpaclri), &c) == 0x1004 && c.x[30] == expected && !g_traps,
                   "XPACLRI strips PAC from LR without a branch");
         }
         for (int match = 0; match <= 1; ++match) {
@@ -1368,17 +1369,17 @@ static void cpu_extensions_test(void) {
             c.x[1] = 41;
             c.x[2] = 42;
             g_traps = 0;
-            check(steps.steps[casal](&c) == 0x1004 && !g_traps, "LSE CASAL runs with extended profile");
+            check(step_run(steps_at(&steps, casal), &c) == 0x1004 && !g_traps, "LSE CASAL runs with extended profile");
             unsigned char expected[4];
             put32(expected, 0, match ? 42 : 43);
             check(!memcmp(&memory, expected, 4) && c.x[1] == (match ? 41u : 43u),
                   "LSE CASAL updates memory only when comparison succeeds");
             put32((unsigned char*)&memory, 0, 0x12ab);
             c.x[1] = ~0ull;
-            check(steps.steps[ldaprb](&c) == 0x1004 && c.x[1] == 0xab && !g_traps,
+            check(step_run(steps_at(&steps, ldaprb), &c) == 0x1004 && c.x[1] == 0xab && !g_traps,
                   "RCpc LDAPRB zero-extends the acquired byte");
         }
-        llvm_steps_end(&steps);
+        steps_end(&steps);
     }
     unsigned char image[12] = {0};
     SnxProgram program;
@@ -1391,18 +1392,18 @@ static void cpu_extensions_test(void) {
           "discover PAuth function");
     const SnxFunction* function = snx_codegen_function(&codegen, SNX_CODE_BASE);
     check(function && function->count == 2, "PAuth return terminates discovery");
-    LlvmSteps steps;
+    Steps steps;
     char error[1024];
-    if (function && !llvm_steps_begin(&steps, 1, 0, error, sizeof error)) {
-        size_t index = llvm_steps_add_function(&steps, &codegen, function);
-        if (!llvm_steps_load(&steps, error, sizeof error)) {
-            GuestFn f = (GuestFn)(void (*)(void))steps.steps[index];
+    if (function && !steps_begin(&steps, 1, 0, error, sizeof error)) {
+        size_t index = steps_add_function(&steps, &codegen, function);
+        if (!steps_load(&steps, error, sizeof error)) {
+            GuestFn f = steps_function(&steps, index);
             check(run_loop(f, 0, 0) == 0, "compiled PAuth function returns through x30");
         } else {
             fprintf(stderr, "%s\n", error);
             check(0, "load PAuth function");
         }
-        llvm_steps_end(&steps);
+        steps_end(&steps);
     } else {
         check(0, "compile PAuth function");
     }
@@ -1426,18 +1427,18 @@ static void ounce_cpu_test(void) {
     };
     enum { O_UDOT, O_CFINV, O_RMIF, O_SETF8, O_SETF16, O_ESB, O_WORDS };
     for (int jit = 0; jit <= 1; ++jit) {
-        LlvmSteps steps;
+        Steps steps;
         char error[1024];
-        if (llvm_steps_begin(&steps, jit, 0, error, sizeof error)) {
+        if (steps_begin(&steps, jit, 0, error, sizeof error)) {
             fprintf(stderr, "%s\n", error);
             check(0, "start Ounce steps");
             return;
         }
-        for (size_t i = 0; i < O_WORDS; ++i) llvm_steps_add(&steps, words[i], 0x1000, SNX_A64_TARGET_OUNCE);
-        if (llvm_steps_load(&steps, error, sizeof error)) {
+        for (size_t i = 0; i < O_WORDS; ++i) steps_add(&steps, words[i], 0x1000, SNX_A64_TARGET_OUNCE);
+        if (steps_load(&steps, error, sizeof error)) {
             fprintf(stderr, "%s\n", error);
             check(0, "load Ounce steps");
-            llvm_steps_end(&steps);
+            steps_end(&steps);
             return;
         }
         RtAPI rt = {.cas128 = snx_runtime_cas128};
@@ -1450,33 +1451,34 @@ static void ounce_cpu_test(void) {
             c.v[4].b[i] = 0xff;
         }
         for (unsigned i = 0; i < 4; ++i) c.v[7].s[i] = 10 * (i + 1);
-        check(steps.steps[O_UDOT](&c) == 0x1004 && !g_traps, "UDOT runs on the ounce target");
+        check(step_run(steps_at(&steps, O_UDOT), &c) == 0x1004 && !g_traps, "UDOT runs on the ounce target");
         check(c.v[7].s[0] == 2560 && c.v[7].s[1] == 6650 && c.v[7].s[2] == 10740 && c.v[7].s[3] == 14830,
               "UDOT adds each group of four unsigned byte products to its lane");
 
         c.n = 1, c.z = 0, c.cf = 0, c.vf = 1;
-        check(steps.steps[O_CFINV](&c) == 0x1004 && c.n == 1 && c.z == 0 && c.cf == 1 && c.vf == 1,
+        check(step_run(steps_at(&steps, O_CFINV), &c) == 0x1004 && c.n == 1 && c.z == 0 && c.cf == 1 && c.vf == 1,
               "CFINV inverts C alone");
 
         c.n = 0, c.z = 1, c.cf = 0, c.vf = 0;
         c.x[3] = 0xa5; /* rotated right by 4: 1010 in bits 3:0, where the unrotated value has 0101 */
-        check(steps.steps[O_RMIF](&c) == 0x1004 && c.n == 1 && c.z == 1 && c.cf == 1 && c.vf == 0,
+        check(step_run(steps_at(&steps, O_RMIF), &c) == 0x1004 && c.n == 1 && c.z == 1 && c.cf == 1 && c.vf == 0,
               "RMIF sets the masked flags from the rotated bits and keeps the others");
 
         c.n = 0, c.z = 1, c.cf = 1, c.vf = 1;
         c.x[3] = 0x180; /* bit 7 set, bit 8 set */
-        check(steps.steps[O_SETF8](&c) == 0x1004 && c.n == 1 && c.z == 0 && c.cf == 1 && c.vf == 0,
+        check(step_run(steps_at(&steps, O_SETF8), &c) == 0x1004 && c.n == 1 && c.z == 0 && c.cf == 1 && c.vf == 0,
               "SETF8 sets N, Z and V from bits 8:0 and keeps C");
         c.x[3] = 0x80;
-        check(steps.steps[O_SETF8](&c) == 0x1004 && c.n == 1 && c.vf == 1, "SETF8 overflow is bit 8 XOR bit 7");
+        check(step_run(steps_at(&steps, O_SETF8), &c) == 0x1004 && c.n == 1 && c.vf == 1,
+              "SETF8 overflow is bit 8 XOR bit 7");
 
         c.n = 1, c.z = 0, c.cf = 0, c.vf = 0;
         c.x[3] = 0x10000;
-        check(steps.steps[O_SETF16](&c) == 0x1004 && c.n == 0 && c.z == 1 && c.cf == 0 && c.vf == 1,
+        check(step_run(steps_at(&steps, O_SETF16), &c) == 0x1004 && c.n == 0 && c.z == 1 && c.cf == 0 && c.vf == 1,
               "SETF16 sets N, Z and V from bits 16:0 and keeps C");
 
-        check(steps.steps[O_ESB](&c) == 0x1004 && !g_traps, "ESB runs as a no-op at EL0");
-        llvm_steps_end(&steps);
+        check(step_run(steps_at(&steps, O_ESB), &c) == 0x1004 && !g_traps, "ESB runs as a no-op at EL0");
+        steps_end(&steps);
     }
     for (size_t i = 0; i < O_WORDS; ++i)
         check(snx_a64_flow(words[i], SNX_A64_TARGET_SWITCH_EXTENDED) == SNX_A64_FLOW_UNDEF || i == O_ESB,
@@ -1495,105 +1497,6 @@ static void ounce_cpu_test(void) {
     for (size_t i = 0; i < sizeof refused / sizeof refused[0]; ++i)
         check(snx_a64_flow(refused[i], SNX_A64_TARGET_OUNCE) == SNX_A64_FLOW_UNDEF,
               "the ounce target rejects what the Cortex-A78C lacks");
-}
-
-/* the allocas left in fn (the registers' slots, until ir_clean_function makes them SSA values), or with named the blocks
-   and instructions that keep a name (whose order in the bitcode SROA's names leave different from run to run) */
-static int left_over(LLVMValueRef fn, int named) {
-    int count = 0;
-    for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(fn); bb; bb = LLVMGetNextBasicBlock(bb)) {
-        size_t length = 0;
-        (void)LLVMGetValueName2(LLVMBasicBlockAsValue(bb), &length);
-        count += named && length;
-        for (LLVMValueRef inst = LLVMGetFirstInstruction(bb); inst; inst = LLVMGetNextInstruction(inst)) {
-            length = 0;
-            (void)LLVMGetValueName2(inst, &length);
-            if (named ? length != 0 : LLVMIsAAllocaInst(inst) != NULL) ++count;
-        }
-    }
-    return count;
-}
-
-/* A function comes out of snx_ir_emit at O2 cleaned: its registers' slots SSA values, and no local name in it. The loop's
-   head is not its start, so it has a dispatch block and a poll */
-static void clean_test(void) {
-    static const SnxU32 words[] = {0xD2800062UL,  /* MOV X2,#3 */
-                                   0x91000421UL,  /* ADD X1,X1,#1, the loop's head */
-                                   0xF1000400UL,  /* SUBS X0,X0,#1 */
-                                   0x54FFFFC1UL,  /* B.NE back to the ADD */
-                                   0x8B020021UL,  /* ADD X1,X1,X2 */
-                                   0xD65F03C0UL}; /* RET */
-    unsigned char image[sizeof(words)];
-    SnxProgram program;
-    SnxModuleImage module;
-    SnxCodegen codegen;
-    SnxFde range;
-    const SnxFunction* function;
-    LlvmSteps steps;
-    char error[1024];
-    size_t i, index;
-    int left;
-    for (i = 0; i < sizeof(words) / sizeof(words[0]); ++i) put32(image, i * 4, words[i]);
-    setup_program(&program, &module, image, sizeof(image));
-    range.start = 0;
-    range.size = sizeof(image);
-    module.fde = &range;
-    module.fde_count = 1;
-    check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1, 0), "analyze the counting loop");
-    function = snx_codegen_function(&codegen, SNX_CODE_BASE);
-    check(function != NULL && function->leader_count > 1, "the counting loop is one function, entered by dispatch");
-    if (function && !llvm_steps_begin(&steps, 1, 0, error, sizeof(error))) {
-        index = llvm_steps_add_function(&steps, &codegen, function);
-        left = left_over(steps.fns[index], 0);
-#if LLVM_VERSION_MAJOR >= 20
-        if (left) fprintf(stderr, "clean: %d allocas left in the emitted function\n", left);
-        check(left == 0, "the function is emitted with its registers' slots made SSA values");
-#else /* no LLVMRunPassesOnFunction: the slots are the unit pipeline's to make SSA values */
-        printf("clean: LLVM %s, %d allocas left in the emitted function for its unit's pipeline\n", LLVM_VERSION_STRING,
-               left);
-        check(left > 0, "before LLVM 20 the function is emitted as it was promoted");
-#endif
-        left = left_over(steps.fns[index], 1);
-        if (left) fprintf(stderr, "clean: %d named blocks and instructions in the emitted function\n", left);
-        check(left == 0, "the emitted function keeps no local name, its bitcode the same in every run");
-        llvm_steps_end(&steps);
-    } else if (function) {
-        fprintf(stderr, "%s\n", error);
-        check(0, "start the counting loop's module");
-    }
-    snx_codegen_free(&codegen);
-}
-
-/* the loads and stores of a promoted register (X, SP, NZCV, V, FPCR, FPSR) of the CPU structure in the blocks of fn
-   that call callee: the copies ir_promote_registers puts around a site */
-static int copies_around(LLVMValueRef fn, const char* callee) {
-    LLVMValueRef c = LLVMGetParam(fn, 0);
-    size_t want = strlen(callee);
-    int count = 0;
-    for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(fn); bb; bb = LLVMGetNextBasicBlock(bb)) {
-        int calls = 0, copies = 0;
-        for (LLVMValueRef inst = LLVMGetFirstInstruction(bb); inst; inst = LLVMGetNextInstruction(inst)) {
-            if (LLVMIsACallInst(inst)) {
-                LLVMValueRef f = LLVMGetCalledValue(inst);
-                size_t n = 0;
-                const char* name = f && LLVMIsAFunction(f) ? LLVMGetValueName2(f, &n) : "";
-                calls += n == want && !memcmp(name, callee, n);
-            } else if (LLVMIsALoadInst(inst) || LLVMIsAStoreInst(inst)) {
-                LLVMValueRef p = LLVMGetOperand(inst, LLVMIsAStoreInst(inst) ? 1 : 0);
-                size_t at;
-                if (p == c)
-                    at = 0;
-                else if (LLVMIsAGetElementPtrInst(p) && LLVMGetOperand(p, 0) == c && LLVMGetNumOperands(p) == 2 &&
-                         LLVMIsAConstantInt(LLVMGetOperand(p, 1)))
-                    at = (size_t)LLVMConstIntGetZExtValue(LLVMGetOperand(p, 1));
-                else
-                    continue;
-                copies += at < offsetof(CPU, tpidr) && (at < offsetof(CPU, pc) || at >= offsetof(CPU, n));
-            }
-        }
-        if (calls) count += copies;
-    }
-    return count;
 }
 
 /* DC ZVA's helper touches no register (it takes M and the address), so a memset loop of DC ZVA keeps its registers
@@ -1616,10 +1519,9 @@ static void zva_test(void) {
     SnxCodegen codegen;
     SnxFde range;
     const SnxFunction* function;
-    LlvmSteps steps;
+    Steps steps;
     char error[1024];
     size_t i, index;
-    int copies;
     for (i = 0; i < sizeof(words) / sizeof(words[0]); ++i) put32(image, i * 4, words[i]);
     setup_program(&program, &module, image, sizeof(image));
     range.start = 0;
@@ -1629,13 +1531,10 @@ static void zva_test(void) {
     check(!snx_nx_codegen_analyze(&codegen, &program, NULL, 0, 1, 0), "analyze the DC ZVA loop");
     function = snx_codegen_function(&codegen, SNX_CODE_BASE);
     check(function != NULL, "the DC ZVA loop is one function");
-    if (function && !llvm_steps_begin(&steps, 1, 0, error, sizeof(error))) {
-        index = llvm_steps_add_function(&steps, &codegen, function);
-        copies = copies_around(steps.fns[index], "dc_zva");
-        if (copies) fprintf(stderr, "dc zva: %d register copies in the blocks that call its helper\n", copies);
-        check(copies == 0, "a DC ZVA loop keeps its registers out of the CPU structure around the helper");
-        if (!llvm_steps_load(&steps, error, sizeof(error))) {
-            GuestFn f = (GuestFn)(void (*)(void))steps.steps[index];
+    if (function && !steps_begin(&steps, 1, 0, error, sizeof(error))) {
+        index = steps_add_function(&steps, &codegen, function);
+        if (!steps_load(&steps, error, sizeof(error))) {
+            GuestFn f = steps_function(&steps, index);
             CPU c = {0};
             RtAPI rt = {.cas128 = snx_runtime_cas128};
             u64 x1 = 0x1000, x5 = 3, x6 = 7, n;
@@ -1668,7 +1567,7 @@ static void zva_test(void) {
             fprintf(stderr, "%s\n", error);
             check(0, "compile and load the DC ZVA loop");
         }
-        llvm_steps_end(&steps);
+        steps_end(&steps);
     } else if (function) {
         fprintf(stderr, "%s\n", error);
         check(0, "start the DC ZVA loop's module");
@@ -1981,12 +1880,14 @@ int main(void) {
     large_range_test();
     copy_word_test();
     copy_current_test();
-    semantics_test();
-    poll_test();
-    cpu_extensions_test();
-    ounce_cpu_test();
-    clean_test();
-    zva_test();
+    if (native_steps_available()) {
+        semantics_test();
+        poll_test();
+        cpu_extensions_test();
+        ounce_cpu_test();
+        zva_test();
+    } else
+        puts("SKIP: the steps' tests: this host has no native back end");
     printf("Native codegen: %s\n", failures ? "FAILED" : "passed");
     return failures != 0;
 }

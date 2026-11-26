@@ -51,13 +51,6 @@ static int run(int jit,int portable,char opt,unsigned long long* checks,int reve
     Steps steps;
     char error[1024];
     if (steps_begin_opt(&steps, jit, portable, opt, error, sizeof error)) return snx_error("%s", error);
-#ifndef SNX_TEST_NATIVE_STEPS
-    if (reversed && steps.ir->big_endian) {
-        steps_end(&steps);
-        return 0;
-    }
-    if(reversed)steps.ir->big_endian=1;
-#endif
     for(unsigned i=0;i<sizeof instructions/sizeof instructions[0];++i)
         for (unsigned alias = 0; alias < 2; ++alias) steps_add(&steps, instructions[i].word | alias, 0x1000, 0);
     if (steps_load(&steps, error, sizeof error)) return snx_error("%s", error);
@@ -137,8 +130,5 @@ int main(int argc,char**argv) {
         for (int portable = 0; portable < STEPS_FORMS(2); ++portable)
             for (unsigned opt = 0; opt < STEPS_LEVELS(2); ++opt)
                 if (run(jit, portable, opt ? '2' : '0', &checks, 0)) return 1;
-#ifndef SNX_TEST_NATIVE_STEPS /* the portable form's lowering for a big-endian host: the IR's own */
-    if(run(1,1,'0',&checks,1)||run(1,1,'2',&checks,1))return 1;
-#endif
     printf("Half conversions: %llu exact cases\n",checks);return 0;
 }

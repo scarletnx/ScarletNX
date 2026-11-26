@@ -366,9 +366,6 @@ int main(int argc, char** argv) {
         if (!strcmp(argv[i], "--jit")) jit = 1;
         else if (!strcmp(argv[i], "--portable")) portable = 1;
         else if (!strcmp(argv[i], "--hook")) hook = 1;
-#ifndef SNX_TEST_NATIVE_STEPS /* what the LLVM back end alone has */
-        else if (!strcmp(argv[i], "--volatile")) snx_ir_volatile_memory(1);
-#endif
         else if (!strcmp(argv[i], "--self-test")) { mutant = 1; count = 1; }
         else if (!strcmp(argv[i], "--self-test-exclusive")) { mutant = 2; count = 1; }
         else if (!strncmp(argv[i], "--opt=", 6) && strlen(argv[i]) == 7 && (argv[i][6] == '0' || argv[i][6] == '2'))

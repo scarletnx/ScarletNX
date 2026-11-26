@@ -63,15 +63,6 @@ static int run(int jit, int portable, char opt, unsigned long long* checked) {
     if (steps_begin_opt(&steps, jit, portable, opt, error, sizeof error)) return snx_error("%s", error);
     for (unsigned i = 0; i < sizeof instructions / sizeof instructions[0]; ++i) {
         steps_add(&steps, instructions[i].word, 0x1000, 0);
-#ifndef SNX_TEST_NATIVE_STEPS
-        if (instructions[i].width != 32 || instructions[i].op == SNX_FP_ADD ||
-            instructions[i].op == SNX_FP_SUB) continue;
-        for (LLVMBasicBlockRef block = LLVMGetFirstBasicBlock(steps.fns[i]); block;
-             block = LLVMGetNextBasicBlock(block))
-            for (LLVMValueRef inst = LLVMGetFirstInstruction(block); inst; inst = LLVMGetNextInstruction(inst))
-                if (LLVMGetInstructionOpcode(inst) == LLVMFPExt && strcmp(LLVMGetBasicBlockName(block), "vfp_ixc"))
-                    return snx_error("a residual's widening escaped the IXC-clear block");
-#endif
     }
     if (steps_load(&steps, error, sizeof error)) return snx_error("%s", error);
     u64 rng = 0x9e3779b97f4a7c15ull;

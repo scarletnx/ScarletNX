@@ -120,7 +120,7 @@ static void on_poll(CPU* c) {
     c->poll = 0;
 }
 
-/* the image's words as LLVM steps at their pcs (llvm_steps.c), built at the first miss that needs them: what runs
+/* the image's words as native steps at their pcs (native_steps.c), built at the first miss that needs them: what runs
    code no function of the module covers, as the runtime JIT would compile it (the BR's target, which no analysis
    finds) */
 static struct {
