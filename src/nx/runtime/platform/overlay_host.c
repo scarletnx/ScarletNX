@@ -61,11 +61,7 @@ static const struct ___tracy_source_location_data ZONES[] = {
     [OVERLAY_ZONE_DRAW] = {"plat overlay draw", "overlay_draw", "overlay.c", 0, 0},
     [OVERLAY_ZONE_TOAST_LAY] = {"plat overlay toast lay", "toast_draw", "overlay.c", 0, 0},
     [OVERLAY_ZONE_MENU_LAY] = {"plat overlay menu lay", "menu_lay", "overlay.c", 0, 0}};
-static TracyCZoneCtx g_zones[sizeof ZONES / sizeof *ZONES]; /* each open one's: the renderer's thread draws the menu */
-static void* zone_begin(int zone) {
-    g_zones[zone] = snx_tracy_zone_begin(&ZONES[zone]);
-    return &g_zones[zone];
-}
+static void* zone_begin(int zone);
 static void zone_value(void* zone, u64 value) { SNX_TRACY_EMIT(TracyCZoneValue(*(TracyCZoneCtx*)zone, value)); }
 static void zone_text(void* zone, const char* text) {
     SNX_TRACY_EMIT(TracyCZoneText(*(TracyCZoneCtx*)zone, text, strlen(text)));
@@ -74,7 +70,7 @@ static void zone_end(void* zone) { snx_tracy_zone_end(*(TracyCZoneCtx*)zone); }
 static void plot(const char* name, double value) { SNX_PLOT(name, value); }
 #endif
 
-static const SnxMenuHost g_overlay_host = {
+static const SnxMenuHost HOST = {
     .row = row,
     .sections = g_ini_sections,
     .set = ini_set_apply,
@@ -117,9 +113,20 @@ static const SnxMenuHost g_overlay_host = {
     .plot = plot,
 #endif
 };
+static struct {
+    SnxMenuHost host; /* HOST with the sections' count, which is no constant expression */
+#if defined(SNX_TRACY)
+    TracyCZoneCtx zones[sizeof ZONES / sizeof *ZONES]; /* each open one's: the renderer's thread draws the menu */
+#endif
+} g_overlay_host;
+#if defined(SNX_TRACY)
+static void* zone_begin(int zone) {
+    g_overlay_host.zones[zone] = snx_tracy_zone_begin(&ZONES[zone]);
+    return &g_overlay_host.zones[zone];
+}
+#endif
 void overlay_host_nx(void) {
-    static SnxMenuHost host; /* the table above with the sections' count, which is no constant expression */
-    host = g_overlay_host;
-    host.sections_count = g_ini_sections_count;
-    overlay_set_host(&host);
+    g_overlay_host.host = HOST;
+    g_overlay_host.host.sections_count = g_ini_sections_count;
+    overlay_set_host(&g_overlay_host.host);
 }
