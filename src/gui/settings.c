@@ -968,7 +968,7 @@ size_t gui_settings_recompile(GuiSettings* s, int make, const char* game_ini, co
     return n;
 }
 size_t gui_settings_recompile_shared(GuiSettings* s, const char** argv) {
-    static const char* const shared[] = {"opt", "aot_threads", "aot_threads_most"};
+    static const char* const shared[] = {"aot_threads", "aot_threads_most"};
     size_t n = 0;
     for (size_t k = 0; k < sizeof shared / sizeof *shared; ++k) {
         int i = find(s, shared[k]);

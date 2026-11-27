@@ -6056,8 +6056,8 @@ msgstr "O cache JIT está ilegível. Jogue uma vez para refazê-lo."
 
 #: src/gui/main.c
 #, c-format
-msgid "The JIT cache's level (JIT optimization O%c) and the game's AOT optimization O%c differ. An AOT pack needs them equal: set Optimization level to O%c before building, or set JIT optimization to O%c and play once to make a matching cache."
-msgstr "O nível do cache JIT (JIT optimization O%c) e a otimização AOT do jogo, O%c, são diferentes. Um pacote AOT precisa deles iguais: ponha o Nível de otimização em O%c antes de gerar, ou ponha JIT optimization em O%c e jogue uma vez para fazer um cache que combine."
+msgid "The JIT cache's level, O%c, is an older version's, and a recompile makes the game at O%c. An AOT pack needs them equal: play the game once to make a cache at O%c."
+msgstr ""
 
 #: src/gui/main.c
 msgid "M opens the mods and cheats of a recompiled Switch game in focus."
@@ -7999,22 +7999,6 @@ msgid "The JDK, 21 or later, that Android apps run on: the folder that holds its
 msgstr "O JDK, 21 ou mais novo, em que os apps Android rodam: a pasta que contém o lib/server dele (bin/server no Windows). Vazio = o que o build achou. Definido, o launcher o passa ao scarletnx-android como --java-home"
 
 #: src/nx/runtime/settings.txt
-msgid "Optimization level"
-msgstr "Nível de otimização"
-
-#: src/nx/runtime/settings.txt
-msgid "LLVM's optimization of the game's code when it is recompiled: 0 none, 3 the most, z the smallest. A game made already keeps its code until it is recompiled. Only an AOT pack built from the game's JIT cache needs it to match JIT optimization"
-msgstr "A otimização do LLVM sobre o código do jogo quando ele é recompilado: 0 nenhuma, 3 a maior, z o menor código. Um jogo já feito mantém seu código até ser recompilado. Só um pacote AOT gerado do cache JIT do jogo precisa que ela bata com JIT optimization"
-
-#: src/nx/runtime/settings.txt
-msgid "LLVM batch"
-msgstr "Lote do LLVM"
-
-#: src/nx/runtime/settings.txt
-msgid "What LLVM runs over each code unit once its functions are cleaned, when the game is recompiled: full, the passes of the optimization level; ipo, only inlining and a cleanup after it, which recompiles in about two thirds of the time for slightly bigger code, up to a third faster or slower than full's depending on the code (a 64-bit game's). Not at -O0. A game made already keeps its code until it is recompiled"
-msgstr "O que o LLVM roda sobre cada unidade de código depois que suas funções são limpas, quando o jogo é recompilado: full, os passes do nível de otimização; ipo, só o inlining e uma limpeza depois dele, que recompila em cerca de dois terços do tempo com um código um pouco maior, até um terço mais rápido ou mais lento que o do full conforme o código (o de um jogo de 64 bits). Não em -O0. Um jogo já feito mantém seu código até ser recompilado"
-
-#: src/nx/runtime/settings.txt
 msgid "AOT threads"
 msgstr "Threads AOT"
 
@@ -8051,132 +8035,8 @@ msgid "The most memory, in MB, the x86-64 back end's code units are held in whil
 msgstr "A memória máxima, em MB, em que as unidades de código do backend x86-64 ficam guardadas enquanto o ScarletNX roda, para que uma unidade feita de novo (um NRO que o jogo carrega de novo, a próxima recompilação do launcher) seja copiada em vez de feita. Elas ocupam no máximo um centésimo da memória da máquina, e este teto acima disso; as usadas há mais tempo saem primeiro. 0 = nenhuma guardada. Nada fica no disco"
 
 #: src/nx/runtime/settings.txt
-msgid "Instruction combining"
-msgstr "Combinação de instruções"
-
-#: src/nx/runtime/settings.txt
-msgid "Combines instructions into fewer, simpler ones (instcombine)"
-msgstr "Junta instruções em menos instruções, mais simples (instcombine)"
-
-#: src/nx/runtime/settings.txt
-msgid "Inlining"
-msgstr "Inlining"
-
-#: src/nx/runtime/settings.txt
-msgid "Inlines calls into their callers (inline)"
-msgstr "Expande as chamadas dentro de quem chama (inline)"
-
-#: src/nx/runtime/settings.txt
-msgid "Scalar replacement of aggregates"
-msgstr "Substituição escalar de agregados"
-
-#: src/nx/runtime/settings.txt
-msgid "Splits stack objects into values kept in registers (sroa)"
-msgstr "Divide objetos da pilha em valores mantidos em registradores (sroa)"
-
-#: src/nx/runtime/settings.txt
-msgid "Global value numbering"
-msgstr "Numeração global de valores"
-
-#: src/nx/runtime/settings.txt
-msgid "Removes redundant computations and loads (gvn)"
-msgstr "Remove cálculos e leituras redundantes (gvn)"
-
-#: src/nx/runtime/settings.txt
-msgid "Control flow simplification"
-msgstr "Simplificação do fluxo de controle"
-
-#: src/nx/runtime/settings.txt
-msgid "Merges, removes and simplifies basic blocks (simplifycfg)"
-msgstr "Junta, remove e simplifica blocos básicos (simplifycfg)"
-
-#: src/nx/runtime/settings.txt
-msgid "Loop unrolling pass"
-msgstr "Desenrolar laços (passo)"
-
-#: src/nx/runtime/settings.txt
-msgid "Unrolls loops with known trip counts (loop-unroll)"
-msgstr "Desenrola laços com número de voltas conhecido (loop-unroll)"
-
-#: src/nx/runtime/settings.txt
-msgid "Loop vectorization pass"
-msgstr "Vetorizar laços (passo)"
-
-#: src/nx/runtime/settings.txt
-msgid "Vectorizes loops with SIMD instructions (loop-vectorize)"
-msgstr "Vetoriza laços com instruções SIMD (loop-vectorize)"
-
-#: src/nx/runtime/settings.txt
-msgid "SLP vectorization pass"
-msgstr "Vetorização SLP (passo)"
-
-#: src/nx/runtime/settings.txt
-msgid "Packs independent scalar instructions into SIMD ones (slp-vectorizer)"
-msgstr "Agrupa instruções escalares independentes em instruções SIMD (slp-vectorizer)"
-
-#: src/nx/runtime/settings.txt
-msgid "Loop invariant code motion"
-msgstr "Mover invariantes de laço"
-
-#: src/nx/runtime/settings.txt
-msgid "Hoists computations that do not change across a loop out of it (licm)"
-msgstr "Tira de um laço os cálculos que não mudam nele (licm)"
-
-#: src/nx/runtime/settings.txt
-msgid "Loop vectorization"
-msgstr "Vetorização de laços"
-
-#: src/nx/runtime/settings.txt
-msgid "Whether the pipeline vectorizes loops (LLVMPassBuilderOptionsSetLoopVectorization)"
-msgstr "Se o pipeline vetoriza laços (LLVMPassBuilderOptionsSetLoopVectorization)"
-
-#: src/nx/runtime/settings.txt
-msgid "SLP vectorization"
-msgstr "Vetorização SLP"
-
-#: src/nx/runtime/settings.txt
-msgid "Whether the pipeline packs scalar instructions into SIMD ones (LLVMPassBuilderOptionsSetSLPVectorization)"
-msgstr "Se o pipeline agrupa instruções escalares em instruções SIMD (LLVMPassBuilderOptionsSetSLPVectorization)"
-
-#: src/nx/runtime/settings.txt
-msgid "Loop unrolling"
-msgstr "Desenrolar laços"
-
-#: src/nx/runtime/settings.txt
-msgid "Whether the pipeline unrolls loops (LLVMPassBuilderOptionsSetLoopUnrolling)"
-msgstr "Se o pipeline desenrola laços (LLVMPassBuilderOptionsSetLoopUnrolling)"
-
-#: src/nx/runtime/settings.txt
-msgid "Fast instruction selection"
-msgstr "Seleção rápida de instruções"
-
-#: src/nx/runtime/settings.txt
-msgid "Whether code generation selects instructions with FastISel, quicker and worse (LLVMSetTargetMachineFastISel)"
-msgstr "Se a geração de código seleciona instruções com FastISel, mais rápida e pior (LLVMSetTargetMachineFastISel)"
-
-#: src/nx/runtime/settings.txt
-msgid "Global instruction selection"
-msgstr "Seleção global de instruções"
-
-#: src/nx/runtime/settings.txt
-msgid "Whether code generation selects instructions with GlobalISel (LLVMSetTargetMachineGlobalISel)"
-msgstr "Se a geração de código seleciona instruções com GlobalISel (LLVMSetTargetMachineGlobalISel)"
-
-#: src/nx/runtime/settings.txt
-msgid "Inliner threshold"
-msgstr "Limite do inliner"
-
-#: src/nx/runtime/settings.txt
-msgid "How large a function the inliner inlines; LLVM picks one for the level until it is set (LLVMPassBuilderOptionsSetInlinerThreshold)"
-msgstr "Até que tamanho de função o inliner expande; o LLVM escolhe um para o nível até ele ser definido (LLVMPassBuilderOptionsSetInlinerThreshold)"
-
-#: src/nx/runtime/settings.txt
 msgid "Launch"
 msgstr "Inicialização"
-
-#: src/nx/runtime/settings.txt
-msgid "LLVM Internals"
-msgstr "Internos do LLVM"
 
 #: src/nx/runtime/settings.txt
 msgid "GBA covers"
@@ -8205,6 +8065,114 @@ msgstr ""
 #: src/nx/runtime/settings.txt
 msgid "GBA"
 msgstr ""
+
+#~ msgid "The JIT cache's level (JIT optimization O%c) and the game's AOT optimization O%c differ. An AOT pack needs them equal: set Optimization level to O%c before building, or set JIT optimization to O%c and play once to make a matching cache."
+#~ msgstr "O nível do cache JIT (JIT optimization O%c) e a otimização AOT do jogo, O%c, são diferentes. Um pacote AOT precisa deles iguais: ponha o Nível de otimização em O%c antes de gerar, ou ponha JIT optimization em O%c e jogue uma vez para fazer um cache que combine."
+
+#~ msgid "Optimization level"
+#~ msgstr "Nível de otimização"
+
+#~ msgid "LLVM's optimization of the game's code when it is recompiled: 0 none, 3 the most, z the smallest. A game made already keeps its code until it is recompiled. Only an AOT pack built from the game's JIT cache needs it to match JIT optimization"
+#~ msgstr "A otimização do LLVM sobre o código do jogo quando ele é recompilado: 0 nenhuma, 3 a maior, z o menor código. Um jogo já feito mantém seu código até ser recompilado. Só um pacote AOT gerado do cache JIT do jogo precisa que ela bata com JIT optimization"
+
+#~ msgid "LLVM batch"
+#~ msgstr "Lote do LLVM"
+
+#~ msgid "What LLVM runs over each code unit once its functions are cleaned, when the game is recompiled: full, the passes of the optimization level; ipo, only inlining and a cleanup after it, which recompiles in about two thirds of the time for slightly bigger code, up to a third faster or slower than full's depending on the code (a 64-bit game's). Not at -O0. A game made already keeps its code until it is recompiled"
+#~ msgstr "O que o LLVM roda sobre cada unidade de código depois que suas funções são limpas, quando o jogo é recompilado: full, os passes do nível de otimização; ipo, só o inlining e uma limpeza depois dele, que recompila em cerca de dois terços do tempo com um código um pouco maior, até um terço mais rápido ou mais lento que o do full conforme o código (o de um jogo de 64 bits). Não em -O0. Um jogo já feito mantém seu código até ser recompilado"
+
+#~ msgid "Instruction combining"
+#~ msgstr "Combinação de instruções"
+
+#~ msgid "Combines instructions into fewer, simpler ones (instcombine)"
+#~ msgstr "Junta instruções em menos instruções, mais simples (instcombine)"
+
+#~ msgid "Inlining"
+#~ msgstr "Inlining"
+
+#~ msgid "Inlines calls into their callers (inline)"
+#~ msgstr "Expande as chamadas dentro de quem chama (inline)"
+
+#~ msgid "Scalar replacement of aggregates"
+#~ msgstr "Substituição escalar de agregados"
+
+#~ msgid "Splits stack objects into values kept in registers (sroa)"
+#~ msgstr "Divide objetos da pilha em valores mantidos em registradores (sroa)"
+
+#~ msgid "Global value numbering"
+#~ msgstr "Numeração global de valores"
+
+#~ msgid "Removes redundant computations and loads (gvn)"
+#~ msgstr "Remove cálculos e leituras redundantes (gvn)"
+
+#~ msgid "Control flow simplification"
+#~ msgstr "Simplificação do fluxo de controle"
+
+#~ msgid "Merges, removes and simplifies basic blocks (simplifycfg)"
+#~ msgstr "Junta, remove e simplifica blocos básicos (simplifycfg)"
+
+#~ msgid "Loop unrolling pass"
+#~ msgstr "Desenrolar laços (passo)"
+
+#~ msgid "Unrolls loops with known trip counts (loop-unroll)"
+#~ msgstr "Desenrola laços com número de voltas conhecido (loop-unroll)"
+
+#~ msgid "Loop vectorization pass"
+#~ msgstr "Vetorizar laços (passo)"
+
+#~ msgid "Vectorizes loops with SIMD instructions (loop-vectorize)"
+#~ msgstr "Vetoriza laços com instruções SIMD (loop-vectorize)"
+
+#~ msgid "SLP vectorization pass"
+#~ msgstr "Vetorização SLP (passo)"
+
+#~ msgid "Packs independent scalar instructions into SIMD ones (slp-vectorizer)"
+#~ msgstr "Agrupa instruções escalares independentes em instruções SIMD (slp-vectorizer)"
+
+#~ msgid "Loop invariant code motion"
+#~ msgstr "Mover invariantes de laço"
+
+#~ msgid "Hoists computations that do not change across a loop out of it (licm)"
+#~ msgstr "Tira de um laço os cálculos que não mudam nele (licm)"
+
+#~ msgid "Loop vectorization"
+#~ msgstr "Vetorização de laços"
+
+#~ msgid "Whether the pipeline vectorizes loops (LLVMPassBuilderOptionsSetLoopVectorization)"
+#~ msgstr "Se o pipeline vetoriza laços (LLVMPassBuilderOptionsSetLoopVectorization)"
+
+#~ msgid "SLP vectorization"
+#~ msgstr "Vetorização SLP"
+
+#~ msgid "Whether the pipeline packs scalar instructions into SIMD ones (LLVMPassBuilderOptionsSetSLPVectorization)"
+#~ msgstr "Se o pipeline agrupa instruções escalares em instruções SIMD (LLVMPassBuilderOptionsSetSLPVectorization)"
+
+#~ msgid "Loop unrolling"
+#~ msgstr "Desenrolar laços"
+
+#~ msgid "Whether the pipeline unrolls loops (LLVMPassBuilderOptionsSetLoopUnrolling)"
+#~ msgstr "Se o pipeline desenrola laços (LLVMPassBuilderOptionsSetLoopUnrolling)"
+
+#~ msgid "Fast instruction selection"
+#~ msgstr "Seleção rápida de instruções"
+
+#~ msgid "Whether code generation selects instructions with FastISel, quicker and worse (LLVMSetTargetMachineFastISel)"
+#~ msgstr "Se a geração de código seleciona instruções com FastISel, mais rápida e pior (LLVMSetTargetMachineFastISel)"
+
+#~ msgid "Global instruction selection"
+#~ msgstr "Seleção global de instruções"
+
+#~ msgid "Whether code generation selects instructions with GlobalISel (LLVMSetTargetMachineGlobalISel)"
+#~ msgstr "Se a geração de código seleciona instruções com GlobalISel (LLVMSetTargetMachineGlobalISel)"
+
+#~ msgid "Inliner threshold"
+#~ msgstr "Limite do inliner"
+
+#~ msgid "How large a function the inliner inlines; LLVM picks one for the level until it is set (LLVMPassBuilderOptionsSetInlinerThreshold)"
+#~ msgstr "Até que tamanho de função o inliner expande; o LLVM escolhe um para o nível até ele ser definido (LLVMPassBuilderOptionsSetInlinerThreshold)"
+
+#~ msgid "LLVM Internals"
+#~ msgstr "Internos do LLVM"
 
 #~ msgid "S lists the save states of a recompiled Switch game in focus."
 #~ msgstr "S lista os save states de um jogo de Switch recompilado em foco."

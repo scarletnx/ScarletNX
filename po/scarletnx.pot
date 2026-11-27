@@ -6053,7 +6053,7 @@ msgstr ""
 
 #: src/gui/main.c
 #, c-format
-msgid "The JIT cache's level (JIT optimization O%c) and the game's AOT optimization O%c differ. An AOT pack needs them equal: set Optimization level to O%c before building, or set JIT optimization to O%c and play once to make a matching cache."
+msgid "The JIT cache's level, O%c, is an older version's, and a recompile makes the game at O%c. An AOT pack needs them equal: play the game once to make a cache at O%c."
 msgstr ""
 
 #: src/gui/main.c
@@ -7996,22 +7996,6 @@ msgid "The JDK, 21 or later, that Android apps run on: the folder that holds its
 msgstr ""
 
 #: src/nx/runtime/settings.txt
-msgid "Optimization level"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "LLVM's optimization of the game's code when it is recompiled: 0 none, 3 the most, z the smallest. A game made already keeps its code until it is recompiled. Only an AOT pack built from the game's JIT cache needs it to match JIT optimization"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "LLVM batch"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "What LLVM runs over each code unit once its functions are cleaned, when the game is recompiled: full, the passes of the optimization level; ipo, only inlining and a cleanup after it, which recompiles in about two thirds of the time for slightly bigger code, up to a third faster or slower than full's depending on the code (a 64-bit game's). Not at -O0. A game made already keeps its code until it is recompiled"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
 msgid "AOT threads"
 msgstr ""
 
@@ -8048,131 +8032,7 @@ msgid "The most memory, in MB, the x86-64 back end's code units are held in whil
 msgstr ""
 
 #: src/nx/runtime/settings.txt
-msgid "Instruction combining"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Combines instructions into fewer, simpler ones (instcombine)"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Inlining"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Inlines calls into their callers (inline)"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Scalar replacement of aggregates"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Splits stack objects into values kept in registers (sroa)"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Global value numbering"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Removes redundant computations and loads (gvn)"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Control flow simplification"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Merges, removes and simplifies basic blocks (simplifycfg)"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Loop unrolling pass"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Unrolls loops with known trip counts (loop-unroll)"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Loop vectorization pass"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Vectorizes loops with SIMD instructions (loop-vectorize)"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "SLP vectorization pass"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Packs independent scalar instructions into SIMD ones (slp-vectorizer)"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Loop invariant code motion"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Hoists computations that do not change across a loop out of it (licm)"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Loop vectorization"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Whether the pipeline vectorizes loops (LLVMPassBuilderOptionsSetLoopVectorization)"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "SLP vectorization"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Whether the pipeline packs scalar instructions into SIMD ones (LLVMPassBuilderOptionsSetSLPVectorization)"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Loop unrolling"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Whether the pipeline unrolls loops (LLVMPassBuilderOptionsSetLoopUnrolling)"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Fast instruction selection"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Whether code generation selects instructions with FastISel, quicker and worse (LLVMSetTargetMachineFastISel)"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Global instruction selection"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Whether code generation selects instructions with GlobalISel (LLVMSetTargetMachineGlobalISel)"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "Inliner threshold"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "How large a function the inliner inlines; LLVM picks one for the level until it is set (LLVMPassBuilderOptionsSetInlinerThreshold)"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
 msgid "Launch"
-msgstr ""
-
-#: src/nx/runtime/settings.txt
-msgid "LLVM Internals"
 msgstr ""
 
 #: src/nx/runtime/settings.txt

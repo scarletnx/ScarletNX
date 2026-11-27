@@ -6056,8 +6056,8 @@ msgstr "JIT 缓存无法读取。运行一次即可重建。"
 
 #: src/gui/main.c
 #, c-format
-msgid "The JIT cache's level (JIT optimization O%c) and the game's AOT optimization O%c differ. An AOT pack needs them equal: set Optimization level to O%c before building, or set JIT optimization to O%c and play once to make a matching cache."
-msgstr "JIT 缓存的级别（JIT optimization O%c）与游戏的 AOT 优化 O%c 不同。AOT 包需要两者一致：构建前将「优化级别」设为 O%c，或将 JIT optimization 设为 O%c 并运行一次以生成匹配的缓存。"
+msgid "The JIT cache's level, O%c, is an older version's, and a recompile makes the game at O%c. An AOT pack needs them equal: play the game once to make a cache at O%c."
+msgstr ""
 
 #: src/gui/main.c
 msgid "M opens the mods and cheats of a recompiled Switch game in focus."
@@ -7999,22 +7999,6 @@ msgid "The JDK, 21 or later, that Android apps run on: the folder that holds its
 msgstr "Android 应用运行所用的 JDK（21 或更高）：包含其 lib/server（Windows 上为 bin/server）的文件夹。留空 = 构建时找到的那个。设置后，启动器会以 --java-home 传给 scarletnx-android"
 
 #: src/nx/runtime/settings.txt
-msgid "Optimization level"
-msgstr "优化级别"
-
-#: src/nx/runtime/settings.txt
-msgid "LLVM's optimization of the game's code when it is recompiled: 0 none, 3 the most, z the smallest. A game made already keeps its code until it is recompiled. Only an AOT pack built from the game's JIT cache needs it to match JIT optimization"
-msgstr "LLVM 在重新编译时对游戏代码的优化：0 不优化，3 最高，z 体积最小。已编译的游戏在重新编译前保持原代码。只有用游戏的 JIT 缓存构建 AOT 包时，它才需要与 JIT optimization 一致"
-
-#: src/nx/runtime/settings.txt
-msgid "LLVM batch"
-msgstr "LLVM 单元处理"
-
-#: src/nx/runtime/settings.txt
-msgid "What LLVM runs over each code unit once its functions are cleaned, when the game is recompiled: full, the passes of the optimization level; ipo, only inlining and a cleanup after it, which recompiles in about two thirds of the time for slightly bigger code, up to a third faster or slower than full's depending on the code (a 64-bit game's). Not at -O0. A game made already keeps its code until it is recompiled"
-msgstr "重新编译游戏时，每个代码单元的函数清理完后 LLVM 再运行的内容：full，优化级别的全部过程；ipo，只运行内联及其后的清理，重新编译约需 2/3 的时间，代码更大一些，视代码而定最多快或慢 1/3（以 64 位游戏为准）。-O0 时不适用。已编译的游戏在重新编译前保持其代码"
-
-#: src/nx/runtime/settings.txt
 msgid "AOT threads"
 msgstr "AOT 线程数"
 
@@ -8051,132 +8035,8 @@ msgid "The most memory, in MB, the x86-64 back end's code units are held in whil
 msgstr ""
 
 #: src/nx/runtime/settings.txt
-msgid "Instruction combining"
-msgstr "指令合并"
-
-#: src/nx/runtime/settings.txt
-msgid "Combines instructions into fewer, simpler ones (instcombine)"
-msgstr "把指令合并为更少、更简单的指令（instcombine）"
-
-#: src/nx/runtime/settings.txt
-msgid "Inlining"
-msgstr "内联"
-
-#: src/nx/runtime/settings.txt
-msgid "Inlines calls into their callers (inline)"
-msgstr "把调用内联到调用者中（inline）"
-
-#: src/nx/runtime/settings.txt
-msgid "Scalar replacement of aggregates"
-msgstr "聚合体标量替换"
-
-#: src/nx/runtime/settings.txt
-msgid "Splits stack objects into values kept in registers (sroa)"
-msgstr "把栈上的对象拆分为保存在寄存器中的值（sroa）"
-
-#: src/nx/runtime/settings.txt
-msgid "Global value numbering"
-msgstr "全局值编号"
-
-#: src/nx/runtime/settings.txt
-msgid "Removes redundant computations and loads (gvn)"
-msgstr "删除冗余的计算和加载（gvn）"
-
-#: src/nx/runtime/settings.txt
-msgid "Control flow simplification"
-msgstr "控制流简化"
-
-#: src/nx/runtime/settings.txt
-msgid "Merges, removes and simplifies basic blocks (simplifycfg)"
-msgstr "合并、删除并简化基本块（simplifycfg）"
-
-#: src/nx/runtime/settings.txt
-msgid "Loop unrolling pass"
-msgstr "循环展开 pass"
-
-#: src/nx/runtime/settings.txt
-msgid "Unrolls loops with known trip counts (loop-unroll)"
-msgstr "展开迭代次数已知的循环（loop-unroll）"
-
-#: src/nx/runtime/settings.txt
-msgid "Loop vectorization pass"
-msgstr "循环向量化 pass"
-
-#: src/nx/runtime/settings.txt
-msgid "Vectorizes loops with SIMD instructions (loop-vectorize)"
-msgstr "用 SIMD 指令向量化循环（loop-vectorize）"
-
-#: src/nx/runtime/settings.txt
-msgid "SLP vectorization pass"
-msgstr "SLP 向量化 pass"
-
-#: src/nx/runtime/settings.txt
-msgid "Packs independent scalar instructions into SIMD ones (slp-vectorizer)"
-msgstr "把独立的标量指令打包为 SIMD 指令（slp-vectorizer）"
-
-#: src/nx/runtime/settings.txt
-msgid "Loop invariant code motion"
-msgstr "循环不变量外提"
-
-#: src/nx/runtime/settings.txt
-msgid "Hoists computations that do not change across a loop out of it (licm)"
-msgstr "把在循环中不变的计算移到循环外（licm）"
-
-#: src/nx/runtime/settings.txt
-msgid "Loop vectorization"
-msgstr "循环向量化"
-
-#: src/nx/runtime/settings.txt
-msgid "Whether the pipeline vectorizes loops (LLVMPassBuilderOptionsSetLoopVectorization)"
-msgstr "优化管线是否向量化循环（LLVMPassBuilderOptionsSetLoopVectorization）"
-
-#: src/nx/runtime/settings.txt
-msgid "SLP vectorization"
-msgstr "SLP 向量化"
-
-#: src/nx/runtime/settings.txt
-msgid "Whether the pipeline packs scalar instructions into SIMD ones (LLVMPassBuilderOptionsSetSLPVectorization)"
-msgstr "优化管线是否把标量指令打包为 SIMD 指令（LLVMPassBuilderOptionsSetSLPVectorization）"
-
-#: src/nx/runtime/settings.txt
-msgid "Loop unrolling"
-msgstr "循环展开"
-
-#: src/nx/runtime/settings.txt
-msgid "Whether the pipeline unrolls loops (LLVMPassBuilderOptionsSetLoopUnrolling)"
-msgstr "优化管线是否展开循环（LLVMPassBuilderOptionsSetLoopUnrolling）"
-
-#: src/nx/runtime/settings.txt
-msgid "Fast instruction selection"
-msgstr "快速指令选择"
-
-#: src/nx/runtime/settings.txt
-msgid "Whether code generation selects instructions with FastISel, quicker and worse (LLVMSetTargetMachineFastISel)"
-msgstr "代码生成是否用 FastISel 选择指令，更快但更差（LLVMSetTargetMachineFastISel）"
-
-#: src/nx/runtime/settings.txt
-msgid "Global instruction selection"
-msgstr "全局指令选择"
-
-#: src/nx/runtime/settings.txt
-msgid "Whether code generation selects instructions with GlobalISel (LLVMSetTargetMachineGlobalISel)"
-msgstr "代码生成是否用 GlobalISel 选择指令（LLVMSetTargetMachineGlobalISel）"
-
-#: src/nx/runtime/settings.txt
-msgid "Inliner threshold"
-msgstr "内联阈值"
-
-#: src/nx/runtime/settings.txt
-msgid "How large a function the inliner inlines; LLVM picks one for the level until it is set (LLVMPassBuilderOptionsSetInlinerThreshold)"
-msgstr "内联器内联的函数大小上限；未设置时由 LLVM 按优化级别选择（LLVMPassBuilderOptionsSetInlinerThreshold）"
-
-#: src/nx/runtime/settings.txt
 msgid "Launch"
 msgstr "启动"
-
-#: src/nx/runtime/settings.txt
-msgid "LLVM Internals"
-msgstr "LLVM 内部选项"
 
 #: src/nx/runtime/settings.txt
 msgid "GBA covers"
@@ -8205,6 +8065,114 @@ msgstr ""
 #: src/nx/runtime/settings.txt
 msgid "GBA"
 msgstr ""
+
+#~ msgid "The JIT cache's level (JIT optimization O%c) and the game's AOT optimization O%c differ. An AOT pack needs them equal: set Optimization level to O%c before building, or set JIT optimization to O%c and play once to make a matching cache."
+#~ msgstr "JIT 缓存的级别（JIT optimization O%c）与游戏的 AOT 优化 O%c 不同。AOT 包需要两者一致：构建前将「优化级别」设为 O%c，或将 JIT optimization 设为 O%c 并运行一次以生成匹配的缓存。"
+
+#~ msgid "Optimization level"
+#~ msgstr "优化级别"
+
+#~ msgid "LLVM's optimization of the game's code when it is recompiled: 0 none, 3 the most, z the smallest. A game made already keeps its code until it is recompiled. Only an AOT pack built from the game's JIT cache needs it to match JIT optimization"
+#~ msgstr "LLVM 在重新编译时对游戏代码的优化：0 不优化，3 最高，z 体积最小。已编译的游戏在重新编译前保持原代码。只有用游戏的 JIT 缓存构建 AOT 包时，它才需要与 JIT optimization 一致"
+
+#~ msgid "LLVM batch"
+#~ msgstr "LLVM 单元处理"
+
+#~ msgid "What LLVM runs over each code unit once its functions are cleaned, when the game is recompiled: full, the passes of the optimization level; ipo, only inlining and a cleanup after it, which recompiles in about two thirds of the time for slightly bigger code, up to a third faster or slower than full's depending on the code (a 64-bit game's). Not at -O0. A game made already keeps its code until it is recompiled"
+#~ msgstr "重新编译游戏时，每个代码单元的函数清理完后 LLVM 再运行的内容：full，优化级别的全部过程；ipo，只运行内联及其后的清理，重新编译约需 2/3 的时间，代码更大一些，视代码而定最多快或慢 1/3（以 64 位游戏为准）。-O0 时不适用。已编译的游戏在重新编译前保持其代码"
+
+#~ msgid "Instruction combining"
+#~ msgstr "指令合并"
+
+#~ msgid "Combines instructions into fewer, simpler ones (instcombine)"
+#~ msgstr "把指令合并为更少、更简单的指令（instcombine）"
+
+#~ msgid "Inlining"
+#~ msgstr "内联"
+
+#~ msgid "Inlines calls into their callers (inline)"
+#~ msgstr "把调用内联到调用者中（inline）"
+
+#~ msgid "Scalar replacement of aggregates"
+#~ msgstr "聚合体标量替换"
+
+#~ msgid "Splits stack objects into values kept in registers (sroa)"
+#~ msgstr "把栈上的对象拆分为保存在寄存器中的值（sroa）"
+
+#~ msgid "Global value numbering"
+#~ msgstr "全局值编号"
+
+#~ msgid "Removes redundant computations and loads (gvn)"
+#~ msgstr "删除冗余的计算和加载（gvn）"
+
+#~ msgid "Control flow simplification"
+#~ msgstr "控制流简化"
+
+#~ msgid "Merges, removes and simplifies basic blocks (simplifycfg)"
+#~ msgstr "合并、删除并简化基本块（simplifycfg）"
+
+#~ msgid "Loop unrolling pass"
+#~ msgstr "循环展开 pass"
+
+#~ msgid "Unrolls loops with known trip counts (loop-unroll)"
+#~ msgstr "展开迭代次数已知的循环（loop-unroll）"
+
+#~ msgid "Loop vectorization pass"
+#~ msgstr "循环向量化 pass"
+
+#~ msgid "Vectorizes loops with SIMD instructions (loop-vectorize)"
+#~ msgstr "用 SIMD 指令向量化循环（loop-vectorize）"
+
+#~ msgid "SLP vectorization pass"
+#~ msgstr "SLP 向量化 pass"
+
+#~ msgid "Packs independent scalar instructions into SIMD ones (slp-vectorizer)"
+#~ msgstr "把独立的标量指令打包为 SIMD 指令（slp-vectorizer）"
+
+#~ msgid "Loop invariant code motion"
+#~ msgstr "循环不变量外提"
+
+#~ msgid "Hoists computations that do not change across a loop out of it (licm)"
+#~ msgstr "把在循环中不变的计算移到循环外（licm）"
+
+#~ msgid "Loop vectorization"
+#~ msgstr "循环向量化"
+
+#~ msgid "Whether the pipeline vectorizes loops (LLVMPassBuilderOptionsSetLoopVectorization)"
+#~ msgstr "优化管线是否向量化循环（LLVMPassBuilderOptionsSetLoopVectorization）"
+
+#~ msgid "SLP vectorization"
+#~ msgstr "SLP 向量化"
+
+#~ msgid "Whether the pipeline packs scalar instructions into SIMD ones (LLVMPassBuilderOptionsSetSLPVectorization)"
+#~ msgstr "优化管线是否把标量指令打包为 SIMD 指令（LLVMPassBuilderOptionsSetSLPVectorization）"
+
+#~ msgid "Loop unrolling"
+#~ msgstr "循环展开"
+
+#~ msgid "Whether the pipeline unrolls loops (LLVMPassBuilderOptionsSetLoopUnrolling)"
+#~ msgstr "优化管线是否展开循环（LLVMPassBuilderOptionsSetLoopUnrolling）"
+
+#~ msgid "Fast instruction selection"
+#~ msgstr "快速指令选择"
+
+#~ msgid "Whether code generation selects instructions with FastISel, quicker and worse (LLVMSetTargetMachineFastISel)"
+#~ msgstr "代码生成是否用 FastISel 选择指令，更快但更差（LLVMSetTargetMachineFastISel）"
+
+#~ msgid "Global instruction selection"
+#~ msgstr "全局指令选择"
+
+#~ msgid "Whether code generation selects instructions with GlobalISel (LLVMSetTargetMachineGlobalISel)"
+#~ msgstr "代码生成是否用 GlobalISel 选择指令（LLVMSetTargetMachineGlobalISel）"
+
+#~ msgid "Inliner threshold"
+#~ msgstr "内联阈值"
+
+#~ msgid "How large a function the inliner inlines; LLVM picks one for the level until it is set (LLVMPassBuilderOptionsSetInlinerThreshold)"
+#~ msgstr "内联器内联的函数大小上限；未设置时由 LLVM 按优化级别选择（LLVMPassBuilderOptionsSetInlinerThreshold）"
+
+#~ msgid "LLVM Internals"
+#~ msgstr "LLVM 内部选项"
 
 #~ msgid "S lists the save states of a recompiled Switch game in focus."
 #~ msgstr "S 列出选中的已重编译 Switch 游戏的即时存档。"

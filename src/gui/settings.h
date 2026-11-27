@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The menu's Settings: the launcher's own rows and the recompiler's (settings.txt's launcher sections: gdbstub, Extract
-   to tmpfs, Extract dump, the optimization level, the AOT threads and the LLVM Internals page), then every setting of
+   to tmpfs, Extract dump and the AOT threads), then every setting of
    the game's .ini as the runtime lists them (scarletnx --settings, its tables), each a row of the form (editor.h),
    named and its values worded as the game's menu shows them. A setting is the .ini's, passed to no run, while it is at
    its default: a word row's value is one of its words, the default's marked [default]; one whose default has no word

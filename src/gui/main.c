@@ -511,7 +511,7 @@ typedef struct App {
     int aot_state;       /* GUI_AOT_* */
     GuiAotInfo aot_info; /* the cache's header */
     char* aot_focus;     /* the focused game's path the state is for, owned */
-    char aot_build_opt;  /* the launcher's opt setting, one char */
+    char aot_build_opt;  /* the level a recompile makes the game at, one char: 2 */
     int aot_match;         /* the cache's level is the build's */
     Uint64 aot_checked;    /* when aot_focus was looked at */
     SnxGameMade made;      /* how the focused game's code was made, its stamp's made line (unknown: opt 0) */
@@ -22513,17 +22513,9 @@ static int aot_focus_game(App* app, AotFocus* f) {
     f->path = path;
     return 1;
 }
-/* the launcher's AOT optimization: the row's pick, else its .ini default, 2 */
+/* the level a recompile makes the game at: 2, every one's since LLVM left, as the native back ends have no levels */
 static const char* aot_build_opt(App* app) {
-    GuiSettings* s = settings_of(app);
-    const char* value;
-    int i;
-    if (!s) return "2";
-    value = gui_settings_value(s, "opt");
-    if (value && value[0]) return value;
-    for (i = 0; i < s->count; ++i)
-        if (!s->values[i].kind && s->values[i].key && !strcmp(s->values[i].key, "opt"))
-            return s->values[i].def && s->values[i].def[0] ? s->values[i].def : "2";
+    (void)app;
     return "2";
 }
 static void aot_clear_focus(App* app) {
@@ -22607,10 +22599,9 @@ static void aot_focus(App* app) {
     build = opt && opt[0] ? opt[0] : '2';
     if (!gui_aot_levels_match(opt, info.opt)) {
         snprintf(app->message, sizeof app->message,
-                 snx_tr("The JIT cache's level (JIT optimization O%c) and the game's AOT optimization O%c differ. An "
-                        "AOT pack needs them equal: set Optimization level to O%c before building, or set JIT "
-                        "optimization to O%c and play once to make a matching cache."),
-                 info.opt, build, info.opt, build);
+                 snx_tr("The JIT cache's level, O%c, is an older version's, and a recompile makes the game at O%c. "
+                        "An AOT pack needs them equal: play the game once to make a cache at O%c."),
+                 info.opt, build, build);
         goto done;
     }
     app->aot_pack = true;
