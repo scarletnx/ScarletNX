@@ -294,6 +294,8 @@ builds for FreeBSD, macOS and Windows x64, where they differ:
 - **errno**: on Linux the guest's errno is the host's. Elsewhere it is the guest's own, and each HLE call sets it
   from the host's in Linux's numbers (`gnu_host_errno`, `gnuabi/kernel/errno.c`). `strerror`, `strerror_r`, `perror`
   and `%m` give bionic's texts (`hle_error_text`): the host C library's are other words, in the user's language.
+  libm's functions (`hle_libm.c`) leave it as it was, as bionic's do (its `math_errhandling` is `MATH_ERREXCEPT`),
+  where the host's may set it (glibc's `log(0)` sets `ERANGE`).
 - **The locale**: bionic's C library has the C locale alone, its multibyte characters UTF-8 whatever the name.
   `setlocale`, `newlocale` and `uselocale` are bionic's (`hle_libc.c`): a name only sets `MB_CUR_MAX`, 4 or 1, a
   `locale_t` is bionic's struct of it, and the host's locale is never set. The host's is the user's, which the JVM
