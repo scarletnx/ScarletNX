@@ -62,6 +62,10 @@ int main(void) {
         snx_phases_line(line, sizeof line, &p);
         assert(!strcmp(line, "code: discovery 1.2 s, compile 3.1 s (12.4 s of units on 1 thread), descriptor "
                              "0.2 s, pack 1.5 s; the system does not say the peak"));
+        p.pack = 0, p.streamed = 1;
+        snx_phases_line(line, sizeof line, &p);
+        assert(!strcmp(line, "code: discovery 1.2 s, compile 3.1 s (12.4 s of units on 1 thread), descriptor "
+                             "0.2 s, link and write 2.1 s; the system does not say the peak"));
         snx_recompile_line(line, sizeof line, 2.94, 4.91, 0.26);
         assert(!strcmp(line, "recompile: 8.1 s in all: 2.9 s before the code, 4.9 s the code, 0.3 s after it"));
     }

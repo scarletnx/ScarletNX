@@ -31,6 +31,38 @@ int snx_link(const SnxLinkInput* inputs, size_t count, const char* const* export
     return -1;
 }
 
+int snx_link_to_file(const SnxLinkInput* inputs, size_t count, const char* const* exports, size_t export_count,
+                     const char* soname, const char* path, const unsigned char* owned,
+                     void (*release)(void* arg, size_t index), void* arg, size_t* size, char* error,
+                     size_t error_size) {
+    SnxLinkOutput linked = {0};
+    FILE* file;
+    int rc;
+    *size = 0;
+#if !defined(_WIN32) && !defined(__APPLE__)
+    /* where the modules are ELF, their linker writes the file itself (link_elf.c) */
+    if (count && inputs[0].size >= 4 && !memcmp(inputs[0].data, "\177ELF", 4))
+        return snx_link_elf_to_file(inputs, count, exports, export_count, soname, path, owned, release, arg, size,
+                                    error, error_size);
+#endif
+    rc = snx_link(inputs, count, exports, export_count, soname, &linked, error, error_size);
+    for (size_t i = 0; owned && release && i < count; ++i)
+        if (owned[i]) release(arg, i);
+    if (rc) return rc;
+    file = fopen(path, "wb");
+    if (!file || fwrite(linked.data, 1, linked.size, file) != linked.size) {
+        snprintf(error, error_size, "cannot write the %zu bytes of %s", linked.size, path);
+        rc = -1;
+    }
+    if (file && fclose(file) && !rc) {
+        snprintf(error, error_size, "cannot close %s", path);
+        rc = -1;
+    }
+    *size = linked.size;
+    free(linked.data);
+    return rc;
+}
+
 void snx_link_reserve(SnxLinkBuffer* buffer, size_t size) {
     if (size > buffer->capacity) {
         size_t capacity = buffer->capacity ? buffer->capacity : 4096;

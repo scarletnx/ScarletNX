@@ -805,8 +805,87 @@ static void need_too_large(void) {
     snx_code_loader_free(loader);
 }
 
+#ifndef __APPLE__
+/* an input snx_link_to_file gave back: counted, and its bytes overwritten, so a link that read it again would make
+   another module */
+typedef struct {
+    SnxLinkInput given[3];
+    unsigned back[3];
+} FarInputs;
+static void far_back(void* arg, size_t index) {
+    FarInputs* f = (FarInputs*)arg;
+    ++f->back[index];
+    memset((unsigned char*)(size_t)f->given[index].data, 0xFF, f->given[index].size);
+}
+
+/* AOT: a module of more code than B and BL reach (128 MiB), whose first object calls a definition in its third through
+   the veneer in its own island. Linked into a file from inputs that are the linker's to write into, it is the module
+   linked in memory, byte for byte, each input given back once */
+static int far_module(void) {
+    static const char* const names[3] = {"caller", "filler", "definitions"};
+    const char* exports[1] = {"caller"};
+    const unsigned char owned[3] = {1, 1, 1};
+    unsigned char *data[3] = {NULL, NULL, NULL}, *file = NULL;
+    size_t size[3] = {0, 0, 0}, i, file_size = 0, written = 0;
+    SnxLinkInput inputs[3];
+    SnxLinkOutput linked = {0};
+    FarInputs far = {0};
+    char error[1024], *folder = snx_temp_dir(NULL), *path = folder ? snx_path_join(folder, "far.so") : NULL;
+    int rc = 1;
+    if (!path) {
+        snx_error("far module: no temporary folder");
+        goto done;
+    }
+    if (object("ext_fn", "ext_data", "caller", &data[0], &size[0]) || definitions(EM_AARCH64, &data[2], &size[2]))
+        goto done;
+    if (nobj_filler(EM_AARCH64, 0, (size_t)140 << 20, &data[1], &size[1], error, sizeof error)) {
+        snx_error("%s", error);
+        goto done;
+    }
+    for (i = 0; i < 3; ++i) {
+        unsigned char* copy = (unsigned char*)malloc(size[i]);
+        inputs[i].data = data[i];
+        inputs[i].size = size[i];
+        inputs[i].name = names[i];
+        far.given[i] = inputs[i];
+        far.given[i].data = copy;
+        if (!copy) {
+            snx_error("far module: out of memory");
+            goto done;
+        }
+        memcpy(copy, data[i], size[i]);
+    }
+    if (snx_link(inputs, 3, exports, 1, "far.so", &linked, error, sizeof(error))) {
+        snx_error("far module: %s", error);
+        goto done;
+    }
+    if (snx_link_to_file(far.given, 3, exports, 1, "far.so", path, owned, far_back, &far, &written, error,
+                         sizeof(error))) {
+        snx_error("far module into a file: %s", error);
+        goto done;
+    }
+    file = snx_read_file(path, &file_size);
+    check(file && written == linked.size && file_size == linked.size && !memcmp(file, linked.data, linked.size),
+          "a module larger than B's reach linked into a file is the module linked in memory");
+    check(far.back[0] == 1 && far.back[1] == 1 && far.back[2] == 1, "each of its inputs given back once");
+    rc = 0;
+done:
+    free(file);
+    free(linked.data);
+    for (i = 0; i < 3; ++i) {
+        free(data[i]);
+        free((unsigned char*)(size_t)far.given[i].data);
+    }
+    if (folder) snx_remove_tree(folder);
+    free(path);
+    free(folder);
+    return rc;
+}
+#endif
+
 static int native_objects(void) {
 #ifndef __APPLE__ /* where the AOT linker writes no ELF module (link_elf.c) */
+    if (far_module()) return 1;
     {
         char error[1024];
         unsigned char *caller_data, *defs_data;
