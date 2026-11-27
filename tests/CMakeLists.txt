@@ -91,6 +91,8 @@ if(SNX_TEST_SANITIZERS)
         snx_vpad snx_vpad_consoles snx_vpad_sdl snx_console_settings
         # the save states' file, every console's
         snx_state_file
+        # a renderer's file of what it made, kept for the next run
+        snx_prepared
         # the shader corpus translator, which shaderc_sm86 runs
         snx-shaderc
         # GLSL ES into SPIR-V
@@ -464,6 +466,13 @@ if(TARGET snx_ctr_board)
         add_test(NAME 3ds_vk_hidden_commands COMMAND snx-test-3ds-vk-hidden-commands)
         set_tests_properties(3ds_vk_hidden_commands PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
     endif()
+    # a renderer's background compiles (common/gpu/vk/jobs.c): the workers, each job made and taken once, the hold, the stop
+    add_executable(snx-test-vk-jobs vk_jobs.c "${volk_SOURCE_DIR}/volk.c")
+    set_source_files_properties("${volk_SOURCE_DIR}/volk.c" PROPERTIES COMPILE_OPTIONS "${snx_third_party_flags}")
+    snx_test_target(snx-test-vk-jobs gnu23)
+    target_link_libraries(snx-test-vk-jobs PRIVATE snx_vk_common)
+    add_test(NAME vk_jobs COMMAND snx-test-vk-jobs)
+    set_tests_properties(vk_jobs PROPERTIES TIMEOUT 60)
     # vk_gpu_profile and vk_checkpoints in a console's renderer (common/gpu/vk/marks.c), on fakes of the driver's calls
     add_executable(snx-test-vk-marks vk_marks.c "${volk_SOURCE_DIR}/volk.c")
     set_source_files_properties("${volk_SOURCE_DIR}/volk.c" PROPERTIES COMPILE_OPTIONS "${snx_third_party_flags}")
@@ -515,7 +524,7 @@ if(TARGET snx_ctr_board)
     # the GPU's draws against the software renderer, the CPU reference they replaced, scene by scene
     add_executable(snx-test-3ds-vk-draw 3ds_vk_draw.c)
     snx_test_target(snx-test-3ds-vk-draw gnu23)
-    target_link_libraries(snx-test-3ds-vk-draw PRIVATE snx_ctr_gpu_reference)
+    target_link_libraries(snx-test-3ds-vk-draw PRIVATE snx_ctr_gpu_reference snx_prepared)
     add_test(NAME 3ds_vk_draw COMMAND snx-test-3ds-vk-draw)
     # async_pipelines: the draw skipped while its pipeline is made on a worker, then drawn
     add_test(NAME 3ds_vk_draw_async COMMAND snx-test-3ds-vk-draw --async)
@@ -525,6 +534,13 @@ if(TARGET snx_ctr_board)
     # the pipeline cache kept between runs: the file named for the driver, and a failed write made again by the next.
     # Through pipelines, as a device with shader objects makes none (3ds_vk_shader_object checks their binaries)
     add_test(NAME 3ds_vk_draw_pipeline_cache COMMAND snx-test-3ds-vk-draw --pipeline-cache --vk_ext_shader_object=off)
+    # prepare_shaders: a draw's shaders and pipeline kept, then made by a second run before its first draw or on the
+    # workers, packed or not, and a record changed on disk ending the file there
+    add_test(NAME 3ds_vk_draw_prepared COMMAND snx-test-3ds-vk-draw --prepared --vk_ext_shader_object=off)
+    # pipeline_libraries: the pipelines linked from parts, a second one taking the first's parts but one, then their
+    # optimized ones in the links' place; and every scene with each pipeline made whole
+    add_test(NAME 3ds_vk_draw_libraries COMMAND snx-test-3ds-vk-draw --libraries --vk_ext_shader_object=off)
+    add_test(NAME 3ds_vk_draw_whole COMMAND snx-test-3ds-vk-draw --pipeline-libraries=0 --vk_ext_shader_object=off)
     # the stand-in shaders (shaders/standin.vert and standin.frag) given every draw they draw, against the CPU
     # reference
     add_test(NAME 3ds_vk_draw_stand_in COMMAND snx-test-3ds-vk-draw --ctr_stand_in=2)
@@ -582,6 +598,11 @@ if(TARGET snx_ctr_board)
     set_tests_properties(3ds_vk_draw_scaled_layout_effects PROPERTIES SKIP_RETURN_CODE 77
                          ENVIRONMENT "SDL_VIDEO_DRIVER=offscreen")
     if(NOT WIN32 AND Python3_Interpreter_FOUND)
+        # the parts, their links and the optimized pipelines, under Khronos validation
+        add_test(NAME 3ds_vk_draw_libraries_validation
+                 COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_vk_validation.py"
+                     $<TARGET_FILE:snx-test-3ds-vk-draw> --libraries --vk_ext_shader_object=off)
+        set_tests_properties(3ds_vk_draw_libraries_validation PROPERTIES SKIP_RETURN_CODE 77)
         # the copies' blits, lookups and compare, under Khronos validation
         add_test(NAME 3ds_vk_draw_scaled_transfer_validation
                  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/3ds_vk_validation.py"
@@ -644,7 +665,9 @@ if(TARGET snx_ctr_board)
         set_tests_properties(${snx_tests} PROPERTIES SKIP_RETURN_CODE 77)
     endforeach()
     set_tests_properties(3ds_vk_draw 3ds_vk_draw_async 3ds_vk_draw_pipelines 3ds_vk_draw_async_pipelines
-                         3ds_vk_draw_pipeline_cache 3ds_vk_draw_stand_in 3ds_vk_draw_present 3ds_vk_draw_scaled_present
+                         3ds_vk_draw_pipeline_cache 3ds_vk_draw_prepared 3ds_vk_draw_libraries 3ds_vk_draw_whole
+                         3ds_vk_draw_stand_in 3ds_vk_draw_present
+                         3ds_vk_draw_scaled_present
                          PROPERTIES SKIP_RETURN_CODE 77)
     # the GPU's copy of the RAM, page by page: what is copied in and back, and when, and every byte where it belongs
     add_executable(snx-test-3ds-vk-copies 3ds_vk_copies.c)
@@ -3484,7 +3507,7 @@ if(NOT SNX_TOOLS_ONLY)
     # read through its mapping
     add_executable(snx-test-pipeline-file pipeline_file.c tracy_stubs.c)
     snx_test_target(snx-test-pipeline-file gnu23)
-    target_link_libraries(snx-test-pipeline-file PRIVATE snx_nx_flags snx_zstd scarletnx-common snx_vk_common)
+    target_link_libraries(snx-test-pipeline-file PRIVATE snx_nx_flags snx_zstd scarletnx-common snx_vk_common snx_prepared)
     add_test(NAME pipeline_file COMMAND snx-test-pipeline-file)
     add_executable(snx-test-vk-pipeline-probe-flags vk_pipeline_probe_flags.c)
     snx_test_target(snx-test-vk-pipeline-probe-flags gnu23)
@@ -3588,9 +3611,10 @@ if(NOT SNX_TOOLS_ONLY)
     # condition that turns them off named, and the dynamic pre-rasterization state each device member gives where the
     # table of bans holds none for it
     add_executable(snx-test-vk-pipeline-parts vk_pipeline_parts.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/pipeline_parts.c"
-                   ${snx_vk_extension_bans_sources})
+                   ${snx_vk_extension_bans_sources} "${volk_SOURCE_DIR}/volk.c")
     snx_test_target(snx-test-vk-pipeline-parts gnu23)
-    target_link_libraries(snx-test-vk-pipeline-parts PRIVATE snx_nx_flags)
+    target_link_libraries(snx-test-vk-pipeline-parts PRIVATE snx_nx_flags snx_vk_common) # the off reasons, every renderer's
+    set_source_files_properties("${volk_SOURCE_DIR}/volk.c" PROPERTIES COMPILE_OPTIONS "${snx_third_party_flags}")
     add_test(NAME vk_pipeline_parts COMMAND snx-test-vk-pipeline-parts)
     # an Ounce's shading rate image (gpu/vk/shading_rate_table.c, shading_rate.glsl): the extension each stand-in
     # device takes, each palette entry's value, the NVN palette, and the conversion's body run on the CPU
@@ -5325,6 +5349,16 @@ if(TARGET snx_vita_program)
     target_link_libraries(snx-test-vita-render-memory PRIVATE snx_vita_program)
     add_test(NAME vita_render_memory COMMAND snx-test-vita-render-memory)
     set_tests_properties(vita_render_memory PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+    # the same at resolution 2: the memory as at 1x, byte for byte
+    add_test(NAME vita_render_memory_x2 COMMAND snx-test-vita-render-memory --resolution=2)
+    set_tests_properties(vita_render_memory_x2 PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+    # the pipeline a draw takes: a program released and another made in its place, its shader where the first
+    # one's was freed, takes its own; a fragment program's shader for each format of the textures it samples
+    add_executable(snx-test-vita-render-shaders vita_render_shaders.c)
+    snx_test_target(snx-test-vita-render-shaders gnu23)
+    target_link_libraries(snx-test-vita-render-shaders PRIVATE snx_vita_program)
+    add_test(NAME vita_render_shaders COMMAND snx-test-vita-render-shaders)
+    set_tests_properties(vita_render_shaders PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
     # the save states with the GPU's work in them: waited for by a save, the renderer made again by a load, on an
     # importing device and on a copying one (vita_state_gpu.c)
     add_executable(snx-test-vita-state-gpu vita_state_gpu.c)
@@ -6294,3 +6328,12 @@ foreach(t arm-code-invalidate audio-clock audio-opus crash-runtime-thread fs-ser
         target_sources(snx-test-${t} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/support/fatal_kind.c")
     endif()
 endforeach()
+
+# a console's prepared shaders' file (common/gpu/vk/prepared.c): records back in their order, packed or not, another
+# key starting over, a record cut, changed or refused ending the reading there, the most size, a file replaced whole
+if(TARGET snx_prepared)
+    add_executable(snx-test-prepared-file prepared_file.c)
+    snx_test_target(snx-test-prepared-file gnu23)
+    target_link_libraries(snx-test-prepared-file PRIVATE snx_prepared scarletnx-common)
+    add_test(NAME prepared_file COMMAND snx-test-prepared-file)
+endif()

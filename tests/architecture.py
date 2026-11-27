@@ -304,6 +304,29 @@ def check_test_threads(repo):
     return errors
 
 
+WATCH_INIT = re.compile(r'(?<![A-Za-z0-9_])vita_watch_init\s*\(')
+WATCH_FAULTS = re.compile(r'(?<![A-Za-z0-9_])(vita_test_take_faults|vita_watch_fault)\s*\(')
+
+
+def check_watch_faults(repo):
+    """a test that starts the Vita's watch takes its faults: the watch write-protects the guest pages the renderer read,
+    and a CPU device's threads (lavapipe's, the CI's) then write them as they draw into imported memory, a SIGSEGV
+    with no handler where a GPU's writes fault nothing; the runtime installs its handler (vita/runtime/run.c)"""
+    errors = []
+    for path in sorted((repo / 'tests').rglob('*.c')):
+        source = without_comments(path.read_text(encoding='utf-8', errors='replace'), literals=False)
+        start = WATCH_INIT.search(source)
+        if not start or WATCH_FAULTS.search(source):
+            continue
+        line = source.count('\n', 0, start.start()) + 1
+        errors.append(
+            f'{path.relative_to(repo).as_posix()}:{line}: vita_watch_init and no handler of its faults: a CPU '
+            "device's threads write the pages it protects, a SIGSEGV; call vita_test_take_faults "
+            "(tests/support/vita_faults.h) first, as vita/runtime/run.c installs the runtime's"
+        )
+    return errors
+
+
 WINDOW_OPEN = re.compile(r'(?<![A-Za-z0-9_])(SDL_CreateWindow|SDL_CreateWindowAndRenderer)\s*\(')
 
 
@@ -1512,6 +1535,7 @@ def main():
         + check_environment(args.repo.resolve())
         + check_driver_settings(args.repo.resolve())
         + check_test_threads(args.repo.resolve())
+        + check_watch_faults(args.repo.resolve())
         + check_window_pixels(args.repo.resolve())
         + check_detached_threads(args.repo.resolve())
         + check_state_fns(args.repo.resolve())

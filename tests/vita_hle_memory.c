@@ -588,9 +588,31 @@ static void fios_archive_unmount(VitaProcess* p, VitaThread* t) {
            t->cpu.r[1] == UINT32_MAX);
 }
 
+/* a module whose data passes 16 MB (a large .bss, as a program with big static buffers has): the user memory starts
+   past it, on the next MB, and the memory blocks never land on it */
+static void large_image(const char* folder) {
+    char error[256] = {0};
+    VitaImage image = {0};
+    image.segment_count = 1;
+    image.segment[0] = (VitaSegment){.address = 0x811e0000u, .size = 0x10bf4a0u, .flags = 6};
+    image.segment[0].bytes = calloc(1, image.segment[0].size);
+    assert(image.segment[0].bytes);
+    image.segment[0].bytes[image.segment[0].size - 1] = 0x5a;
+    VitaProcess* p = vita_process_new(&image, folder, error, sizeof error);
+    if (!p) fprintf(stderr, "vita_process_new: %s\n", error);
+    assert(p);
+    if (p->user.base != 0x82300000u) fprintf(stderr, "user memory at 0x%08x\n", (unsigned)p->user.base);
+    assert(p->user.base == 0x82300000u && p->user.next >= p->user.base);
+    assert(*(unsigned char*)vita_ptr(p, 0x811e0000u + 0x10bf4a0u - 1) == 0x5a);
+    uint32_t block = vita_alloc(p, &p->user, 0x10000, 0x1000);
+    assert(block >= 0x82300000u);
+    vita_process_free(p);
+    free(image.segment[0].bytes);
+}
 int main(void) {
     char *root = snx_temp_dir(NULL), *folder = root ? snx_path_join(root, "game") : NULL, error[256] = {0};
     assert(folder && !snx_mkdirs(folder));
+    large_image(folder);
     VitaImage image = {0};
     VitaProcess* p = vita_process_new(&image, folder, error, sizeof error);
     if (!p) fprintf(stderr, "vita_process_new: %s\n", error);

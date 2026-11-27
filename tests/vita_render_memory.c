@@ -4,8 +4,9 @@
    (VK_EXT_external_memory_host) and on the same device without the extension (vk_ext_external_memory_host=off), where
    the GPU works on copies: each check holds on both, the import being what a copy stands for. No game and no shader
    program is needed: the GPU's work is sceGxm's transfers, scenes that load a color surface and store it, and decoded
-   pictures. A name runs that check alone, and "import" or "copy" before it that device alone. Skips (77) without a
-   Vulkan device */
+   pictures. A name runs that check alone, and "import" or "copy" before it that device alone. --resolution=N first
+   draws the scenes N times larger (the resolution setting), where the memory must hold what it holds at 1x, byte
+   for byte: each pixel made a square of N's side and the square averaged back. Skips (77) without a Vulkan device */
 #include "vita/gpu/gxm.h"
 #include "vita/gpu/render.h"
 #include "vita/gpu/vk.h"
@@ -15,6 +16,7 @@
 #include "common/utilities/common.h"
 #include "nx/runtime/ini.h"
 #include "snx_settings.h"
+#include "support/vita_faults.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -42,13 +44,6 @@ static struct {
     } while (0)
 
 #ifndef _WIN32
-static void on_fault(int signal, siginfo_t* info, void* context) {
-    (void)context;
-    if (vita_watch_fault((uintptr_t)info->si_addr)) return;
-    static const char said[] = "a fault the watch does not know\n";
-    if (write(2, said, sizeof said - 1) < 0) _exit(3);
-    _exit(signal);
-}
 static void on_alarm(int signal) {
     (void)signal;
     static const char said[] = "a check hangs\n";
@@ -433,6 +428,32 @@ static void check_depth(VitaProcess* p) {
     CHECK(!padding, "%u bytes of the depth's padding are not what the CPU wrote", (unsigned)padding);
     CHECK(!wrong(p, b, 0x800, 1), "the bytes before the depth surface are wrong");
 }
+/* a depth surface the scene loads and stores (force load and store): its memory as it was, sample for sample, the
+   scene drawn larger or not */
+static void check_depth_load(VitaProcess* p) {
+    if (!vita_vk()->depth16_blit) return;
+    uint32_t a = block_make(p, BLOCK, true), b = block_make(p, BLOCK, true);
+    GxmContext* c = &p->gxm->context;
+    c->has_depth = true;
+    c->depth = (GxmDepthSurface){.control = GXM_DEPTH_D16 | GXM_DEPTH_FORCE_LOAD | GXM_DEPTH_FORCE_STORE |
+                                            48u << GXM_DEPTH_STRIDE_SHIFT,
+                                 .depth = b};
+    for (uint32_t i = 0; i < 48 * 24; ++i) vita_write16(p, b + i * 2, (uint16_t)(i * 37u + 11u));
+    scene(p, a, 48, 24, 48, GXM_COLOR_SURFACE_LINEAR);
+    finish(p);
+    uint32_t changed = 0;
+    for (uint32_t i = 0; i < 48 * 24; ++i) changed += vita_read16(p, b + i * 2) != (uint16_t)(i * 37u + 11u);
+    CHECK(!changed, "%u samples of the depth surface changed through the scene", (unsigned)changed);
+}
+/* a scene's color surface drawn at the resolution asked: 1x by default, the whole step asked past it */
+static void check_scaled(VitaProcess* p) {
+    uint32_t a = block_make(p, BLOCK, true);
+    scene(p, a, 48, 24, 48, GXM_COLOR_SURFACE_LINEAR);
+    finish(p);
+    uint32_t want = g_settings.resolution_scale >= 2.0f ? (uint32_t)g_settings.resolution_scale : 1;
+    CHECK(vita_render_drawn_scale(p) == want, "the scene is drawn at %ux, not %ux",
+          (unsigned)vita_render_drawn_scale(p), (unsigned)want);
+}
 /* a decoded picture, whole and in its place */
 static void check_picture(VitaProcess* p) {
     uint32_t b = block_make(p, BLOCK, false), size = 32 * 16 * 3 / 2;
@@ -497,17 +518,22 @@ static const struct {
     {"surface", check_surface, false},
     {"tiled", check_tiled, true},
     {"depth", check_depth, false},
+    {"depth_load", check_depth_load, false},
+    {"scaled", check_scaled, false},
     {"picture", check_picture, false},
     {"freed", check_freed, true},
 };
 
 int main(int argc, char** argv) {
+    vita_test_take_faults();
 #ifndef _WIN32
-    struct sigaction action = {.sa_sigaction = on_fault, .sa_flags = SA_SIGINFO | SA_NODEFER};
-    sigaction(SIGSEGV, &action, NULL);
-    sigaction(SIGBUS, &action, NULL); /* macOS's, for a page whose protection refuses the write */
     signal(SIGALRM, on_alarm);
 #endif
+    if (argc > 1 && !strncmp(argv[1], "--resolution=", 13)) {
+        ini_read(ini_find(g_graphics_ini, "resolution"), argv[1] + 13);
+        printf("scenes drawn at resolution=%g\n", (double)g_settings.resolution_scale);
+        --argc, ++argv;
+    }
     const char* devices[2] = {"import", "copy"};
     const char* only_device =
         argc > 1 && (!strcmp(argv[1], devices[0]) || !strcmp(argv[1], devices[1])) ? argv[1] : NULL;

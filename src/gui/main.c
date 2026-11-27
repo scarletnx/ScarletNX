@@ -21695,8 +21695,9 @@ static void launch(App* app, char* absolute, bool prepared) {
     if (make && app->menu.selected == GUI_SWITCH && gui_settings_tmpfs(s)) argv[n++] = gui_settings_tmpfs(s);
     char* game_ini = app->menu.selected == GUI_SWITCH ? game_ini_of(absolute) : NULL; /* its own picks beside it */
     if (!direct && app->menu.selected == GUI_SWITCH) n += gui_settings_recompile(s, make, game_ini, argv + n);
-    /* the level and the threads the other recompiles take too, for when the game is made */
-    if (!direct && (app->menu.selected == GUI_3DS || app->menu.selected == GUI_VITA || app->menu.selected == GUI_GBA))
+    /* the threads the other recompiles take too, for when the game is made */
+    if (!direct && (app->menu.selected == GUI_3DS || app->menu.selected == GUI_VITA || app->menu.selected == GUI_GBA ||
+                    app->menu.selected == GUI_NDS))
         n += gui_settings_recompile_shared(s, argv + n);
     /* B's pack: the cache the profile run left, and the level and hook its key was made with. -O after the
        settings' --opt= so the matched level is the one the build uses */

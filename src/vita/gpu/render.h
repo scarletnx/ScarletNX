@@ -45,6 +45,35 @@ bool vita_render_show(VitaProcess* p, uint32_t address, uint32_t pitch, uint32_t
    recorded (a scene being recorded goes on after it). False when it can't be */
 bool vita_render_picture(VitaProcess* p, uint32_t address, uint32_t pitch, uint32_t pixel_type, uint32_t width,
                          uint32_t height, const uint8_t* const planes[3], const int linesize[3]);
-/* a program's shader, made for its first draw, freed with it */
+/* a program's shaders, made for the draws of it (a fragment program's for the formats of the textures it samples),
+   freed with it */
 void vita_render_shader_free(VitaProcess* p, void* shader);
+/* for a test: the key of the pipeline a draw of primitive (SceGxmPrimitiveType) with c's programs and state takes in
+   the scene being recorded, its shaders made as the draw makes them; 0 with no scene or a program not translated */
+uint64_t vita_render_pipeline_key(VitaProcess* p, GxmContext* c, uint32_t primitive);
+/* for a test: whether that draw has its pipeline, made now as the draw makes it */
+bool vita_render_pipeline_made(VitaProcess* p, GxmContext* c, uint32_t primitive);
+/* for a test: the scale the last scene was drawn at (the resolution setting's, or 1 for a surface the device can't
+   scale), 0 before any */
+uint32_t vita_render_drawn_scale(VitaProcess* p);
+/* prepare_shaders: the shaders and pipelines the game made, in <folder>/shader_cache/vk_prepared.<driver>.bin, read as
+   the renderer starts: each shader made again from its program's bytes, taken by the first program of them drawn, and
+   each pipeline made before the first draw (2) or on the pipeline workers while the game runs (1), a draw that needs
+   one meanwhile making its own. Every shader and pipeline made after it goes into it, packed with
+   compress_prepared_shaders. prepare_shaders=0 neither reads nor writes it. Its key is the build's. What a run read
+   and made of it */
+typedef struct {
+    unsigned shaders, pipelines; /* read */
+    unsigned made;               /* of the pipelines read, made and kept */
+    unsigned drawn;              /* pipelines a draw made itself */
+} VitaPrepared;
+VitaPrepared vita_render_prepared(VitaProcess* p);
+/* pipeline_libraries: the pipelines linked from parts so far, fast (a draw's, until its optimized one replaces it)
+   and optimized (a worker's), the parts made and reused, and the fast links replaced */
+typedef struct {
+    unsigned linked, optimized, parts, reused, replaced;
+} VitaLibraries;
+VitaLibraries vita_render_libraries(VitaProcess* p);
+/* for a test: until the workers made every pipeline handed to them, collected at the next scene */
+void vita_render_pipelines_wait(VitaProcess* p);
 #endif

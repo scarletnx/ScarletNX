@@ -845,7 +845,7 @@ uint32_t vita_kernel_find_mem_block_by_addr(VitaProcess* p, VitaThread* t, uint3
 uint32_t vita_kernel_get_free_memory_size(VitaProcess* p, VitaThread* t, uint32_t info) {
     (void)t;
     /* SceKernelFreeMemorySizeInfo: size, then the user, CDRAM and physically continuous memory free */
-    uint32_t user = VITA_USER_END - VITA_USER_BASE, cdram = VITA_CDRAM_END - VITA_CDRAM_BASE;
+    uint32_t user = p->user.end - p->user.base, cdram = VITA_CDRAM_END - VITA_CDRAM_BASE;
     for (unsigned i = 0; i < VITA_ALLOCATIONS; ++i) {
         const VitaAllocation* a = &p->allocations[i];
         if (!a->size) continue;

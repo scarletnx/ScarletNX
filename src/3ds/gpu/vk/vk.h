@@ -3,6 +3,7 @@
 #ifndef SNX_CTR_VK_H
 #define SNX_CTR_VK_H
 #include "3ds/memory/ctr_memory.h"
+#include "common/gpu/vk/gpl.h"
 #include "common/gpu/vk/pacing.h"
 #include "common/gpu/vk/ring.h"
 #include "common/gpu/vk/vk_common.h"
@@ -78,6 +79,7 @@ typedef struct {
        sets, free again once its fence passed and its serial is completed */
     SnxVkRing ring;
     SnxVkPacing pacing; /* frame_pacing's (common/gpu/vk/pacing.h) */
+    SnxVkGpl gpl;       /* pipeline_libraries's (common/gpu/vk/gpl.h): the pipelines linked from parts */
     bool checkpoints;   /* the device is made with vk_checkpoints' extension (common/gpu/vk/marks.h) */
 } SnxCtrVk;
 /* the device, once snx_ctr_vk_init made it; NULL before */
