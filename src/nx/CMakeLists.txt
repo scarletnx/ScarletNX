@@ -356,6 +356,7 @@ snx_glsl_spirv(snx_vk SOURCE gpu/vk/shading_rate.comp NAME shading_rate_spv HEAD
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/mirror_harvest.comp NAME mirror_harvest_spv HEADER nx/gpu/vk/mirror_harvest_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/mirror_fold.comp NAME mirror_fold_spv HEADER nx/gpu/vk/mirror_fold_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/wlog_merge.comp NAME wlog_merge_spv HEADER nx/gpu/vk/wlog_merge_spv.h)
+snx_glsl_spirv(snx_vk SOURCE gpu/vk/result_merge.comp NAME result_merge_spv HEADER nx/gpu/vk/result_merge_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/query_compare.comp NAME query_compare_spv
                HEADER nx/gpu/vk/query_compare_spv.h)
 snx_glsl_spirv(snx_vk SOURCE gpu/vk/ftz_probe.comp NAME ftz_probe_spv HEADER nx/gpu/vk/ftz_probe_spv.h)

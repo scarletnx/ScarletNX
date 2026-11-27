@@ -2801,6 +2801,13 @@ u32 vk_wlog_runs(VkWriteLog* l, u32 part, u32 size, VkRunFn fn, void* user);
    (wlog_merge.comp), every other byte of dst kept. from, to, src_off and dst_off are multiples of 4; the caller orders
    it after that work and before what uses dst. 0 when it can't be (no descriptor set left), with nothing recorded */
 int vk_wlog_merge(VkWriteLog* l, u32 part, u32 from, u32 to, VkBuffer src, u64 src_off, VkBuffer dst, u64 dst_off);
+/* len bytes of a pending result over guest memory as the CPU's landing would leave them, in the command buffer being
+   recorded (result_merge.comp): the result's bytes from res_off in res, the original bytes from in_off in in, guest
+   memory's bytes after them from in_off + gap, into out from out_off, which can be res_off in res itself when that is
+   a multiple of 4. The bytes around the range in out keep theirs. in_off is a multiple of the storage offset
+   alignment, gap and out_off of 4. The caller orders it after the result's writer and before what reads out. 0 when
+   it can't be (no descriptor set left), with nothing recorded */
+int vk_result_merge(VkBuffer res, u64 res_off, VkBuffer in, u64 in_off, u64 gap, VkBuffer out, u64 out_off, u64 len);
 void vk_wlog_stats(u64* logs, u64* bytes, u64* in_use, u64* windows);
 /* the host logs cleared at their last unref so far, the window flags those clears read, and the windows cleared */
 void vk_wlog_clear_stats(u64* unrefs, u64* scanned, u64* cleared);
@@ -3949,6 +3956,7 @@ enum {
     VK_PROF_MIRROR_FOLD,     /* a dispatch's write log into the GPU mirror's mask (mirror_fold.comp) */
     VK_PROF_MIRROR_HARVEST,  /* the mirror's pages written in a submit, out for landing (mirror_harvest.comp) */
     VK_PROF_WLOG_MERGE,      /* a logged result written back on the GPU (wlog_merge.comp) */
+    VK_PROF_RESULT_MERGE,    /* a pending result over the CPU's later writes, for a read (result_merge.comp) */
     VK_PROF_BL_MOVE,         /* a block linear move (blocklinear.c) */
     VK_PROF_DEPTH_PACK,      /* a depth target packed into guest layout (depth_pack.comp) */
     VK_PROF_TEXCONV,         /* a texture format converted (texconv.comp) */
