@@ -3046,6 +3046,10 @@ void vk_rt_note_read(Surf* s) {
         return;
     }
     if (s->aside) rt_aside_check(s);
+    /* a storage image kept over the target's memory (image_out.c), stored into since: a store kept over an owner
+       already there moves nothing asked below, and the target kept its old pixels. Published first, it does, as
+       texture.c's tex_check does for a texture */
+    if (vk_gfx_image_pending_besides(s->gva, rt_bytes(s), s)) vk_gfx_image_mem_need(s->gva, rt_bytes(s));
     /* writes the 3D engine's draws don't see: I2M uploads, constant updates and compute results landing there go
        to memory, which DMA and 2D copies would load (vk_rt_reload) but these don't */
     if (s->gw == gpu_mem_generation()) return;
