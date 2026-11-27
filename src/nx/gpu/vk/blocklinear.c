@@ -37,7 +37,8 @@ static struct {
     VkBuffer scratch;
     DevMem mem;
     u64 cap, asked;
-    u64 recent; /* the most asked since vk_bl_scratch_trim last looked */
+    u64 recent;  /* the most asked since vk_bl_scratch_trim last looked */
+    u64 refused; /* the size of the last scratch the device's memory refused, said once: 0 after one is made */
 } g_blocklinear;
 
 static const BlPipe* bl_init(int runs) {
@@ -85,11 +86,10 @@ VkBuffer vk_bl_scratch(u64 size, u64* cap_out) {
     if (size > g_blocklinear.recent) g_blocklinear.recent = size;
     *cap_out = g_blocklinear.cap;
     if (size <= g_blocklinear.cap) return g_blocklinear.scratch;
-    if (size > g_vk.alloc_cap) return VK_NULL_HANDLE;
-    /* the old one stays alive until the frame's work that may use it is done */
-    if (g_blocklinear.scratch) vk_defer_buffer(g_blocklinear.scratch, g_blocklinear.mem);
-    g_blocklinear.scratch = VK_NULL_HANDLE;
-    g_blocklinear.cap = 0;
+    if (size > g_vk.alloc_cap) {
+        *cap_out = 0; /* no buffer, no room: a caller keeps the two together */
+        return VK_NULL_HANDLE;
+    }
     u64 cap = 4ull << 20;
     while (cap < size) cap *= 2;
     if (cap > g_vk.alloc_cap) cap = g_vk.alloc_cap;
@@ -99,11 +99,26 @@ VkBuffer vk_bl_scratch(u64 size, u64* cap_out) {
                                       VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     DevMemWant ai = {.at = DM_DEVICE};
-    if (!VK_OK(vk_buffer_create(&bi, &ai, &g_blocklinear.scratch, &g_blocklinear.mem, NULL))) {
-        g_blocklinear.scratch = VK_NULL_HANDLE;
+    VkBuffer made;
+    DevMem mem;
+    VkResult r = vk_buffer_create(&bi, &ai, &made, &mem, NULL);
+    if (r != VK_SUCCESS) {
+        /* the scratch there was stays for the moves it holds; a conversion past it fails, as it asks for one again,
+           and its caller says so: this says the device's refusal once a size, not once a conversion */
+        if (cap != g_blocklinear.refused)
+            WARN("vulkan: the device's memory refused a block linear scratch buffer of %llu MB (%llu bytes asked): "
+                 "%s; the one of %llu MB stays, and a conversion past it fails until memory is found\n",
+                 (unsigned long long)(cap >> 20), (unsigned long long)size, snx_vk_result_str(r),
+                 (unsigned long long)(g_blocklinear.cap >> 20));
+        g_blocklinear.refused = cap;
         *cap_out = 0;
         return VK_NULL_HANDLE;
     }
+    /* the old one stays alive until the frame's work that may use it is done */
+    if (g_blocklinear.scratch) vk_defer_buffer(g_blocklinear.scratch, g_blocklinear.mem);
+    g_blocklinear.scratch = made;
+    g_blocklinear.mem = mem;
+    g_blocklinear.refused = 0;
     vk_mem_track(g_blocklinear.mem, VK_OWN_CONVERT);
     *cap_out = g_blocklinear.cap = cap;
     static const char k_grown[] = "vk mem BL scratch grew";
