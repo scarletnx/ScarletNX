@@ -4373,8 +4373,13 @@ static VkDescriptorSet desc_set_cached_(VkDescriptorSetLayout layout, DescWrites
         DescSetEntry* e = dset_frame(&bucket[0]) != frame   ? &bucket[0]
                           : dset_frame(&bucket[1]) != frame ? &bucket[1]
                                                             : &bucket[hash[1] >> 63];
-        set = (g_vk.has_descriptor_buffers || g_vk.has_descriptor_heaps) ? vk_descriptors_write(layout, d->n, d->w, d->cb_addr)
-                                                                         : vk_rec_new_set(layout, d->n, d->w);
+        /* the renderer thread's tables can last from frame to frame (vk_descriptors_write_lasting): the worker's
+           stream writes into the frame's part only */
+        set = g_vk.has_descriptor_buffers && !g_vk.has_descriptor_heaps && t_rc == 0
+                  ? vk_descriptors_write_lasting(layout, d->n, d->w, d->cb_addr, hash)
+              : (g_vk.has_descriptor_buffers || g_vk.has_descriptor_heaps)
+                  ? vk_descriptors_write(layout, d->n, d->w, d->cb_addr)
+                  : vk_rec_new_set(layout, d->n, d->w);
         if (!set) return VK_NULL_HANDLE;
         CNT(g_vk_dset_new)++;
         dset_put(e, hash[0], hash[1], frame, set);

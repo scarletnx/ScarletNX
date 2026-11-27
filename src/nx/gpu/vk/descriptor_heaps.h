@@ -417,6 +417,10 @@ void vk_descriptor_heaps_forget_view(VkImageView view);
 /* the forgets so far, in any descriptor mode: a descriptor set kept by the handles its writes name holds while it
    stays the same, as a destroy in the middle of a frame lets a new object of the same handle come */
 uint64_t vk_descriptor_heaps_forgets(void);
+/* an object's generation counter (by a hash of its handle, a buffer's or a view's), and the counter's value: it
+   moves on at each forget of an object with that counter (vk_descriptor_heaps_forget_buffer, _view) */
+uint32_t vk_descriptor_object_index(uint64_t object);
+uint32_t vk_descriptor_object_gen(uint32_t index);
 
 /* Any legacy descriptor or push command invalidates heap state across both bind points. */
 void vk_descriptor_heaps_invalidate(void);
