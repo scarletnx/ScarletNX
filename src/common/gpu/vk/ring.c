@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "common/gpu/vk/ring.h"
+#include "common/gpu/vk/marks.h"
+#include "common/platform/time.h"
 
 bool snx_vk_ring_init(SnxVkRing* ring, VkDevice device, VkQueue queue, uint32_t family, unsigned count,
                       const VkDescriptorPoolCreateInfo* descriptors, bool timeline) {
@@ -48,6 +50,7 @@ static void retire(SnxVkRing* ring, unsigned i) {
     vkResetCommandBuffer(s->uploads, 0);
     vkResetDescriptorPool(ring->device, s->descriptors, 0);
     if (s->serial > ring->completed) ring->completed = s->serial;
+    if (ring->marks) snx_vk_marks_retire(ring->marks, ring->device, i, plat_ns());
     if (ring->retire) ring->retire(i, s->serial);
     s->serial = 0;
 }
@@ -100,6 +103,7 @@ VkCommandBuffer snx_vk_ring_commands(SnxVkRing* ring) {
                                        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
         vkBeginCommandBuffer(ring->slots[ring->slot].cb, &bi);
         ring->recording = true;
+        if (ring->marks) snx_vk_marks_begin(ring->marks, ring->slots[ring->slot].cb, ring->slot);
         if (ring->begin) ring->begin(ring->slot);
     }
     return ring->slots[ring->slot].cb;
@@ -157,11 +161,14 @@ uint64_t snx_vk_ring_submit(SnxVkRing* ring, VkSemaphore wait, VkSemaphore signa
                        .signalSemaphoreCount = ns,
                        .pSignalSemaphores = signals};
     ring->recording = ring->uploading = false;
+    if (ring->marks) snx_vk_marks_end(ring->marks, cb, ring->slot);
     VkResult r = vkEndCommandBuffer(cb);
     if (r == VK_SUCCESS) r = ended;
     if (r == VK_SUCCESS) r = vkQueueSubmit(ring->queue, 1, &si, s->fence);
     if (r != VK_SUCCESS) {
         /* a lost device: nothing more runs, and the slot is free as if it had */
+        if (ring->lost == VK_SUCCESS && ring->marks && r == VK_ERROR_DEVICE_LOST)
+            snx_vk_marks_lost(ring->marks, ring->queue);
         if (ring->lost == VK_SUCCESS) ring->lost = r;
         vkResetCommandBuffer(cb, 0);
         vkResetCommandBuffer(s->uploads, 0);
@@ -170,6 +177,9 @@ uint64_t snx_vk_ring_submit(SnxVkRing* ring, VkSemaphore wait, VkSemaphore signa
     s->serial = ring->submitted = serial;
     ring->slot = (ring->slot + 1) % ring->count;
     return ring->submitted;
+}
+void snx_vk_ring_pass(SnxVkRing* ring, const char* name) {
+    if (ring->marks) snx_vk_marks_pass(ring->marks, snx_vk_ring_commands(ring), ring->slot, name);
 }
 VkDescriptorSet snx_vk_ring_set(SnxVkRing* ring, VkDescriptorSetLayout layout) {
     snx_vk_ring_commands(ring); /* the open recording's slot, free */

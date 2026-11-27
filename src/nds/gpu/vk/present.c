@@ -19,6 +19,7 @@
 
 static struct {
     SnxVkSwapchain swap;
+    SnxVkPaced paced; /* its presents' ids, for frame_pacing */
     VkSemaphore acquire[NDS_VK_SLOTS], presented[NDS_VK_SLOTS];
     SnxVkRects* controls;
     SnxNotice notice;
@@ -62,6 +63,8 @@ bool nds_vk_present_init(char* error, size_t error_size) {
     }
     char said[512];
     snx_vk_present_said(g_present.swap.mode, g_settings.vsync, said, sizeof said);
+    fprintf(stderr, "scarletnx-nds: %s\n", said);
+    snx_vk_pacing_said(&v->pacing, g_settings.frame_pacing, said, sizeof said);
     fprintf(stderr, "scarletnx-nds: %s\n", said);
     /* the upscaler and the anti-aliasing the settings ask for, said once */
     if (snx_fx_settings(&g_present.fx_config, g_settings.upscaler, g_settings.upscaler_sharpness,
@@ -147,11 +150,11 @@ void nds_vk_present(void) {
     /* the upscaler's and the anti-aliasing's passes but their last, which draws in the window's rendering */
     nds_vk_layout(cb, frame, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     VkRect2D to = {{x0, y0}, {w, h}};
-    bool drawn =
-        w && h &&
-        snx_fx_prepare(g_present.fx, cb, slot, frame->view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, NDS_SCREEN_WIDTH,
-                       NDS_SCREEN_HEIGHT * 2, 0, 0, NDS_SCREEN_WIDTH, NDS_SCREEN_HEIGHT * 2, 0, to,
-                       g_present.swap.format.format, g_present.fx_config.upscaler, g_present.fx_config.aa);
+    bool drawn = w && h &&
+                 snx_fx_prepare(g_present.fx, cb, slot, frame->view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                NDS_SCREEN_WIDTH * v->scale, NDS_SCREEN_HEIGHT * 2 * v->scale, 0, 0,
+                                NDS_SCREEN_WIDTH * v->scale, NDS_SCREEN_HEIGHT * 2 * v->scale, 0, to,
+                                g_present.swap.format.format, g_present.fx_config.upscaler, g_present.fx_config.aa);
     snx_vk_swapchain_begin(cb, &g_present.swap, index);
     if (drawn) snx_fx_draw(g_present.fx, cb, slot);
     (void)snx_vk_notice_draw(g_present.notice_vk, cb, slot, g_present.swap.format.format, extent.width, extent.height,
@@ -168,6 +171,8 @@ void nds_vk_present(void) {
                                 .pSwapchains = &g_present.swap.swapchain,
                                 .pImageIndices = &index};
     snx_gpu_pstate_present(); /* a kgsl hold lasts while frames are presented */
+    snx_vk_pacing_present(&v->pacing, &g_present.paced, v->device, g_present.swap.swapchain,
+                          g_settings.vsync && snx_vpad_window_frame_ns(1) == 1, &present, "scarletnx-nds");
     VkResult shown = vkQueuePresentKHR(v->queue, &present);
     (void)snx_vk_ring_poll(&v->ring);
     if (shown == VK_ERROR_OUT_OF_DATE_KHR || shown == VK_SUBOPTIMAL_KHR || got == VK_SUBOPTIMAL_KHR) {

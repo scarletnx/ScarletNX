@@ -38,6 +38,8 @@ typedef struct {
     void (*begin)(unsigned slot);
     void (*close)(void);
     void (*retire)(unsigned slot, uint64_t serial);
+    /* the frontend's vk_gpu_profile and vk_checkpoints (marks.h), NULL for neither: each recording's parts marked */
+    struct SnxVkMarks* marks;
 } SnxVkRing;
 /* count slots (at most SNX_VK_RING_SLOTS) on queue of family, each with a descriptor pool of descriptors. timeline:
    the device has timelineSemaphore turned on, and the ring signals a timeline semaphore in place of the slots'
@@ -61,6 +63,9 @@ uint64_t snx_vk_ring_poll(SnxVkRing* ring);
 /* until serial is done (submitting the recording first when serial is its), or timeout_ns passed (UINT64_MAX: no
    bound). True when it is done */
 bool snx_vk_ring_wait(SnxVkRing* ring, uint64_t serial, uint64_t timeout_ns);
+/* a part of the open recording named name begins (vk_gpu_profile's sums, vk_checkpoints' markers): name a string
+   that lives as long as the ring. Nothing without marks */
+void snx_vk_ring_pass(SnxVkRing* ring, const char* name);
 /* a descriptor set of the layout for the open recording, free again when its submission is done */
 VkDescriptorSet snx_vk_ring_set(SnxVkRing* ring, VkDescriptorSetLayout layout);
 #endif

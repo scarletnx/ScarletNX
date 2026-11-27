@@ -8,6 +8,9 @@
 // GPL-3.0-or-later): the layers' order, the objects' priority, the blends of 3D pixels and of translucent objects.
 #version 450
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+// the frame's pixels a screen pixel has across (the resolution setting): the 3D picture is drawn that large, and each
+// of a screen pixel's frame pixels shows the 2D engines' pixel over the 3D picture's own
+layout(constant_id = 0) const uint SCALE = 1u;
 layout(std430, set = 0, binding = 0) readonly buffer Vram { uint V[]; };
 layout(std430, set = 0, binding = 1) readonly buffer Lines { uint L[]; };
 layout(set = 0, binding = 2, rgba8) uniform readonly image2D layer3d;
@@ -24,6 +27,7 @@ const uint OBJ_EXTPAL[2] = uint[2](0x110000u, 0x112000u);
 const uint PALETTE = 0x114000u, OAM = 0x114800u, LCDC = 0x120000u, MAIN_DISPLAY = 0x1A0000u;
 
 uint engine, px, py; // the pixel
+uint sx, sy;         // which of its frame pixels, each 0 to SCALE - 1
 uint R[23];          // its line's registers
 
 // MOSAIC's four sizes, each less one: the backgrounds' width and height, the objects'
@@ -324,7 +328,7 @@ ivec3 graphics() {
                 // the 3D engine's picture, moved by BG0's horizontal scroll
                 int x = int(px) + (int((R[3] & 0x1FFu) << 23) >> 23);
                 if (x >= 0 && x < 256) {
-                    vec4 c = imageLoad(layer3d, ivec2(x, int(py)));
+                    vec4 c = imageLoad(layer3d, ivec2(x * int(SCALE) + int(sx), int(py * SCALE + sy)));
                     uint alpha = uint(c.a * 31.0 + 0.5);
                     if (alpha != 0u) put(ivec3(c.rgb * 63.0 + 0.5), 1u, 3u, alpha);
                 }
@@ -367,11 +371,11 @@ ivec3 graphics() {
 void captured(ivec3 shown) {
     uint cap = R[20], size = (cap >> 20) & 3u;
     uint width = size == 0u ? 128u : 256u, height = size == 0u ? 128u : size == 1u ? 64u : size == 2u ? 128u : 192u;
-    if (px >= width || py >= height) return;
+    if (px >= width || py >= height || sx != 0u || sy != 0u) return; // the capture is the screens' own size
     ivec3 a = shown >> 1;
     int a_alpha = 1;
     if ((cap & 0x01000000u) != 0u) {
-        vec4 c = imageLoad(layer3d, ivec2(int(px), int(py)));
+        vec4 c = imageLoad(layer3d, ivec2(int(px * SCALE), int(py * SCALE)));
         a = ivec3(c.rgb * 31.0 + 0.5);
         a_alpha = c.a * 31.0 >= 0.5 ? 1 : 0;
     }
@@ -415,8 +419,10 @@ ivec3 engine_pixel() {
 }
 
 void main() {
-    px = gl_GlobalInvocationID.x, py = gl_GlobalInvocationID.y, engine = gl_GlobalInvocationID.z;
-    if (px >= 256u || py >= 192u) return;
+    uint x = gl_GlobalInvocationID.x, y = gl_GlobalInvocationID.y;
+    engine = gl_GlobalInvocationID.z;
+    if (x >= 256u * SCALE || y >= 192u * SCALE) return;
+    px = x / SCALE, py = y / SCALE, sx = x % SCALE, sy = y % SCALE;
     uint line = (engine * 192u + py) * 32u;
     for (uint i = 0u; i < 23u; ++i) R[i] = L[line + i];
     ivec3 rgb = engine_pixel();
@@ -429,5 +435,5 @@ void main() {
     // POWCNT's bit 15 puts engine A on the upper screen
     bool upper = (engine == 0u) == (((R[19] >> 18) & 1u) != 0u);
     vec3 color = vec3((rgb << 2) | (rgb >> 4)) / 255.0;
-    imageStore(frame, ivec2(int(px), int(py) + (upper ? 0 : 192)), vec4(color, 1.0));
+    imageStore(frame, ivec2(int(x), int(y) + (upper ? 0 : 192 * int(SCALE))), vec4(color, 1.0));
 }

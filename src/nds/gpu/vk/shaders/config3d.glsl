@@ -13,6 +13,7 @@ layout(std140, set = 0, binding = 0) uniform Config {
     // the clear plane, as the passes over the picture use it: every pixel would work the same values out of the
     // registers, so the frame does it once (render3d.c's fill_config)
     ivec2 clear_offset; // the clear bitmap's
+    int scale;          // the picture's pixels to a screen pixel across (the resolution setting)
     vec4 clear_color;   // in 31sts
     float clear_depth;  // of 24 bits, in 1
     float clear_id_unorm; // the plane's polygon ID in 63rds, as the attributes carry it

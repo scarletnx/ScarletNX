@@ -105,6 +105,9 @@ def main():
             '--gdb-jit=0',
             '--stats-corner=br',
             '--gamepad-rumble=50',
+            '--frame-pacing=2',
+            '--vk-gpu-profile=0',
+            '--vk-checkpoints=0',
         ):
             keys(args.runner, work, option)
         for option, said in (
