@@ -11,7 +11,7 @@
 #define SNX_QREF_GUEST_BASE   "0x100000000000"
 /* the runner's own image (runner.c), far from every window a case maps */
 #define SNX_QREF_RUNNER_IMAGE 0x40000000000ull
-/* the layout of a single-word case, the same as the LLVM side's: a window, the word at its middle page */
+/* the layout of a single-word case, the same as the native side's: a window, the word at its middle page */
 #define SNX_QREF_WINDOW       0x10000000ull
 #define SNX_QREF_WINDOW_SIZE  0x220000ull
 #define SNX_QREF_WORD_PC      (SNX_QREF_WINDOW + 0x100000ull)

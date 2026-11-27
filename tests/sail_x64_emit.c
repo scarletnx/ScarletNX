@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* The A64 emitters sailgen generates with its x86-64 back end (a64_x64.inc: x64.h and x64_a64.h over the instruction
    selection derived from the Intel SDM, x64_isel.inc), in a translation unit of their own: sail_x64.c holds them to
-   the LLVM back end's */
+   QEMU and the recorded ends */
 #include "sail_x64_emit.h"
 #include "common/utilities/endian.h"
 

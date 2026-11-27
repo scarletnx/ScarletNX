@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 # recompiler_symbols (tests/CMakeLists.txt): the recompiler's archive (ARCHIVE, docs/dev/library.md) needs nothing from
-# outside it but LLVM and the system's libraries (the C library, threads, dl, m; advapi32 on Windows). NM lists the
+# outside it but the system's libraries (the C library, threads, dl, m; advapi32 on Windows). NM lists the
 # symbols its objects call that none of them defines, each with the objects that call it. TARGET, a program of BUILD
 # that links every object of the archive with those libraries alone, is then built: its link fails on any symbol they
 # lack, and the test names those symbols and their objects. For another archive (recompiler_core_symbols,
@@ -15,7 +15,7 @@ foreach(name BUILD TARGET ARCHIVE NM)
 endforeach()
 
 if(NOT LIBRARIES)
-    set(LIBRARIES "LLVM's or the system's")
+    set(LIBRARIES "the system's")
     set(RULE "The recompiler's library holds the core alone (docs/dev/library.md)")
 endif()
 

@@ -41,8 +41,7 @@ WHAT = {'switch': 'functions', 'ounce': 'functions', 'nro': 'functions', 'switch
 
 
 def line(program, made=20349, of=20349):
-    rest = '' if made == of else ', LLVM the rest'
-    return f'program: 7 words\ncensus: {program}: arm64 back end: {made} of {of} {WHAT[program]}{rest}\n'
+    return f'program: 7 words\ncensus: {program}: arm64 back end: {made} of {of} {WHAT[program]}\n'
 
 
 def whole():

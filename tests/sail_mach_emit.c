@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The A64 emitters sailgen generates with a native back end other than the host's (SAIL_MACH_INC: a64_arm64.inc,
-   a64_rv64.inc...), in a translation unit of their own: sail_mach.c runs what they write under Unicorn beside the
-   LLVM back end's. They build on any host: the code is the machine's */
+   a64_rv64.inc...), in a translation unit of their own: sail_mach.c runs what they write under Unicorn against
+   QEMU and the recorded ends. They build on any host: the code is the machine's */
 #include "sail_mach_emit.h"
 
 #if defined(__clang__)

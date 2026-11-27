@@ -554,8 +554,9 @@ static void check_count(Kind kind, const Program* p, const char* text, uint32_t 
     }
     printf("census: %s: %s\n", name, line);
     if (made != of) {
-        fail("%s: %lu of %lu %s left to LLVM, where this host has the %s back end:", name, of - made, of, what,
-             snx_native_name());
+        fail(
+            "%s: %lu of %lu %s not made whole by the %s back end (each raises an undefined instruction where it runs):",
+            name, of - made, of, what, snx_native_name());
         say_left(p, text, base);
     }
     if (of < p->count) fail("%s: the recompile found %lu %s of the program's %zu", name, of, what, p->count);
