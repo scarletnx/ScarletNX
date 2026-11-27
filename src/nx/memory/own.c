@@ -1039,21 +1039,29 @@ static int ext_stage(u64 a, u64 end, u8* dst) {
     }
     return 1;
 }
-/* the CPU's bytes of [a, b) into dst at a - addr: a page an owner is on through the mirror (its CPU bytes are in the
-   pool), page by page, and each run of pages no entry is on as it is, with one look under the lock. A page landed
-   meanwhile reads the same through either. A look for each page, in a range of 16 MiB with two small owners that one
-   game's draws bound whole, was most of the renderer thread's locks (17 million in a minute) */
+/* the CPU's bytes of [a, b) into dst at a - addr: each run of pages entries are on through the mirror (their CPU bytes
+   are in the pool), a block's pool memory at a time, and each run of pages no entry is on as it is, with one look under
+   the lock for each run. A page landed meanwhile reads the same through either. A look for each page, in a range of 16
+   MiB with two small owners that one game's draws bound whole, was most of the renderer thread's locks (17 million in
+   a minute); a watch over a whole render target staged page by page was, with a look at the pool for each page, the
+   largest part of another game's renderer thread */
 static void stage_cpu(u64 addr, u64 a, u64 b, u8* dst, const u8* mirror) {
     while (a < b) {
         u64 page = a & ~(g_own.page - 1), end = page + g_own.page, off;
         int owned;
         pm_lock(&g_own.lk);
         atomic_fetch_add_explicit(&g_own.stage_looks, 1, memory_order_relaxed);
+        const u32 n = atomic_load_explicit(&g_own.nown, memory_order_relaxed);
         u32 i = first_after_nl(page);
-        owned = i < atomic_load_explicit(&g_own.nown, memory_order_relaxed) && g_own.ent[i].lo < end;
+        owned = i < n && g_own.ent[i].lo < end;
         /* none: no entry before the page of the next one, which starts past this page */
-        if (!owned)
-            end = i < atomic_load_explicit(&g_own.nown, memory_order_relaxed) ? g_own.ent[i].lo & ~(g_own.page - 1) : b;
+        if (!owned) end = i < n ? g_own.ent[i].lo & ~(g_own.page - 1) : b;
+        /* through the mirror: every page of the entries that each start before the pages of the ones before end */
+        else if (mirror)
+            for (; i < n && g_own.ent[i].lo < end && end < b; i++) {
+                const u64 e = (g_own.ent[i].hi + g_own.page - 1) & ~(g_own.page - 1);
+                if (e > end) end = e;
+            }
         pm_unlock(&g_own.lk);
         if (end > b) end = b;
         if (owned && !mirror) { /* in place: the page's shadow (own_stage landed a page with none first) */
@@ -1078,11 +1086,19 @@ static void stage_cpu(u64 addr, u64 a, u64 b, u8* dst, const u8* mirror) {
                          (unsigned long long)page);
             }
         } else if (owned) {
-            atomic_fetch_add_explicit(&g_own.stage_pool_looks, 1, memory_order_relaxed);
-            if (!mem_pool_offset(a, &off))
-                memcpy(dst + (a - addr), mirror + off, (size_t)(end - a));
-            else if (!ext_stage(a, end, dst + (a - addr)))
-                memcpy(dst + (a - addr), GP(a), (size_t)(end - a));
+            /* a block's pool memory at a time; a page out of the pool through a buffer's view, or as it is */
+            for (u64 at = a; at < end;) {
+                u64 run = mem_pool_run(at, end - at, &off);
+                atomic_fetch_add_explicit(&g_own.stage_pool_looks, 1, memory_order_relaxed);
+                if (run) {
+                    memcpy(dst + (at - addr), mirror + off, (size_t)run);
+                    at += run;
+                    continue;
+                }
+                run = ((at & ~(g_own.page - 1)) + g_own.page < end ? (at & ~(g_own.page - 1)) + g_own.page : end) - at;
+                if (!ext_stage(at, at + run, dst + (at - addr))) memcpy(dst + (at - addr), GP(at), (size_t)run);
+                at += run;
+            }
         } else
             memcpy(dst + (a - addr), GP(a), (size_t)(end - a));
         a = end;
