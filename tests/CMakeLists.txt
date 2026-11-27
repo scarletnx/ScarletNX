@@ -1484,10 +1484,10 @@ add_test(NAME sailgen_refused_action
                  "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_action.sail")
 set_tests_properties(sailgen_refused_action PROPERTIES PASS_REGULAR_EXPRESSION
     "refused_action.sail:8: error: Peek gives an integer: the back end's functions give nothing, bits, a bool, an enum or a tuple of bits")
-# a function that calls itself on each half of its bits is read as the sum of the bits' elements, and only so: one
-# that joins the halves' results by other than +, gives other than their sum, or that sum under a condition alone,
-# halves other than each half, gives other than the element for one element or writes a register where it joins them
-# is refused, naming it and why
+# a function that calls itself on each half of its bits is read as the sum of the bits' elements, or as the elements
+# joined pair by pair (sailgen_halves, below): one that gives other than their sum, or that sum under a condition
+# alone, halves other than each half, gives other than the element for one element or writes a register where it joins
+# them is refused, naming it and why
 foreach(case IN ITEMS more some sides base state)
     add_test(NAME sailgen_refused_halves_${case}
              COMMAND snx-sailgen --generate "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_halves_${case}.roots"
@@ -1505,6 +1505,14 @@ set_tests_properties(sailgen_refused_halves_base PROPERTIES PASS_REGULAR_EXPRESS
     "halves.sail:109: error: Base calls itself: sailgen reads a function that gives its bits where they are one element wide")
 set_tests_properties(sailgen_refused_halves_state PROPERTIES PASS_REGULAR_EXPRESSION
     "halves.sail:62: error: the register GPR written where a function that calls itself joins what it gives for each half")
+# such a function the x86-64 back end makes: the elements' sum where + joins the halves' results, and the elements
+# joined pair by pair in a loop where another operation does
+list(JOIN snx_sailgen_x64_a64_files "|" snx_sailgen_halves_files)
+add_test(NAME sailgen_halves
+         COMMAND "${CMAKE_COMMAND}" "-DSAILGEN=$<TARGET_FILE:snx-sailgen>" "-DFILES=${snx_sailgen_halves_files}"
+                 "-DDIR=${CMAKE_CURRENT_SOURCE_DIR}/sailgen" "-DOUT=${CMAKE_CURRENT_BINARY_DIR}/sailgen/halves.inc"
+                 -P "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/halves_check.cmake")
+set_tests_properties(sailgen_halves PROPERTIES PASS_REGULAR_EXPRESSION "sailgen_halves: sum=reduce op=joined\n")
 # a function the back end lowers: --extract copies its val and the types it names, not its Sail; called under a
 # run-time condition by a back end function that takes none, it is refused with its line
 add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/sailgen/lower.sail"
