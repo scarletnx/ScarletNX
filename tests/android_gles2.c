@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* GLES 2 and 3 over Vulkan (src/android/bridge/gles2*.c), drawn on the host's Vulkan (lavapipe) into a pbuffer and
-   framebuffer objects, and read back with glReadPixels: a triangle, textures (RGBA, RGB, luminance), blending,
+   framebuffer objects, and read back with glReadPixels: a triangle, textures (RGBA, RGB, luminance), clears through
+   the color and stencil masks, blending,
    the depth test, a framebuffer object sampled as a texture, instanced draws with gl_InstanceID and a divisor, a
    uniform block, client arrays and indices, a line loop, glBlitFramebuffer and glCopyTexSubImage2D, gl_FragCoord
    and gl_PointCoord, GLES 3.1's compute shaders, images, indirect draws, vertex bindings and program pipelines,
@@ -181,6 +182,45 @@ static const char* const textured_vs =
 static const char* const textured_fs = "precision mediump float;\nvarying vec2 uv;\nuniform sampler2D tex;\n"
                                        "void main() { gl_FragColor = texture2D(tex, uv); }\n";
 static const float quad[] = {-1, -1, 1, -1, -1, 1, 1, 1};
+/* glClear writes only the channels of the color mask (Amberlith's case: blue cleared to yellow through red and alpha
+   alone is magenta), inside the scissor, and only the stencil bits of its write mask: a clear of 0xff through 0x0f
+   over 0 leaves 0x0f, which a stencil test of 0x0f lets a draw through */
+static void masked_clears(void) {
+    g_t.test = "masked clears";
+    clear(0, 0, 1, 1);
+    GL("glColorMask", 1, 0, 0, 1);
+    GLF0("glClearColor", 1, 1, 0, 1);
+    GL("glClear", GL_COLOR_BUFFER_BIT);
+    GL("glColorMask", 1, 1, 1, 1);
+    no_error("a clear through red and alpha");
+    expect(8, 8, 255, 0, 255, 255, "red and alpha written, green and blue kept");
+    GL("glEnable", 0x0c11); /* GL_SCISSOR_TEST */
+    GL("glScissor", 0, 0, 8, 8);
+    GL("glColorMask", 0, 1, 0, 0);
+    GLF0("glClearColor", 0, 1, 0, 0);
+    GL("glClear", GL_COLOR_BUFFER_BIT);
+    GL("glColorMask", 1, 1, 1, 1);
+    GL("glDisable", 0x0c11);
+    expect(2, 2, 255, 255, 255, 255, "green written inside the scissor");
+    expect(20, 2, 255, 0, 255, 255, "and nothing outside it");
+    GL("glClearStencil", 0);
+    GL("glClear", 0x400); /* GL_STENCIL_BUFFER_BIT, through every bit */
+    GL("glStencilMask", 0x0f);
+    GL("glClearStencil", 0xff);
+    GL("glClear", 0x400);
+    GL("glStencilMask", 0xff);
+    unsigned p = program(plain_vs, uniform_fs);
+    buffer(GL_ARRAY_BUFFER, quad, sizeof quad);
+    GL("glVertexAttribPointer", 0, 2, GL_FLOAT, 0, 0, 0);
+    GL("glEnableVertexAttribArray", 0);
+    GLF("glUniform4f", GL("glGetUniformLocation", p, P("color")), 1, 0, 0, 1);
+    GL("glEnable", 0x0b90);                  /* GL_STENCIL_TEST */
+    GL("glStencilFunc", 0x0202, 0x0f, 0xff); /* GL_EQUAL */
+    GL("glDrawArrays", GL_TRIANGLE_STRIP, 0, 4);
+    GL("glDisable", 0x0b90);
+    no_error("a draw where the stencil is 0x0f");
+    expect(W / 2, H / 2, 255, 0, 0, 255, "the stencil's low bits written, its high ones kept");
+}
 
 /* a 2x2 texture over the window: its row 0 at the bottom, as GL has it; then RGB and luminance texels */
 static void textures(void) {
@@ -715,6 +755,7 @@ int main(void) {
     GL("glViewport", 0, 0, W, H);
     triangle();
     textures();
+    masked_clears();
     blend();
     depth();
     fbo();
@@ -735,9 +776,9 @@ int main(void) {
         fprintf(stderr, "android_gles2: %d checks failed\n", g_t.failures);
         return 1;
     }
-    printf("android_gles2: a triangle, textures, blending, depth, a framebuffer object, instanced draws, a uniform "
-           "block, client arrays, a line loop, the window's coordinates, compute, vertex bindings, a program pipeline "
-           "and GLES 3.2's base vertex and image copy drawn on %s\n",
+    printf("android_gles2: a triangle, textures, masked clears, blending, depth, a framebuffer object, instanced "
+           "draws, a uniform block, client arrays, a line loop, the window's coordinates, compute, vertex bindings, a "
+           "program pipeline and GLES 3.2's base vertex and image copy drawn on %s\n",
            g_gles_vk.props.deviceName);
     return 0;
 }

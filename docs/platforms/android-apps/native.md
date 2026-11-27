@@ -250,9 +250,12 @@ alpha test, mipmaps, the second texture unit, and `glReadPixels`, which reads ze
 
 What GLES 2 and 3 do not do yet: transform feedback, GLES 3.1's atomic counters and its buffer variables in the
 interface queries, `glFramebufferParameteri`, GLES 3.2's geometry and tessellation, its indexed blending and color masks, texture buffers, sample shading and
-border colors, a divisor past 1, `glClear` with a partial color mask (it clears every
+border colors, a divisor past 1, `glClear` of an integer color buffer with a partial color mask (it clears every
 channel), client depth and stencil texels for a 24-bit depth texture, ETC2 and ASTC on a device that has neither
 (the decode on the GPU), `glReadPixels` of a format other than RGBA or BGRA bytes, program binaries, and a pbuffer bound as a texture.
+`glClear` with a partial color mask, or a stencil write mask of part of the bits, draws what Vulkan's clears cannot
+(they write every channel and bit): a triangle over the target with the clear color and the masks in its pipeline
+(`gles2_clear.vert`, `gles2_clear.frag`), no test and no blend, in the scissor's rectangle.
 
 `libz.so` is the build's own zlib (`hle_zlib.c`): z_stream has the guest's layout on an LP64 host, and a stream's
 allocator, when the guest gives one, is called through the bridge. Windows' `uLong` is 32 bits, so Windows has no

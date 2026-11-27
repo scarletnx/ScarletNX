@@ -117,6 +117,11 @@ snx_glsl_spirv(snx_android_bridge SOURCE bridge/gles_rgb.comp NAME android_gles_
 # glslc (src/glslc) when they link
 snx_glsl_spirv(snx_android_bridge SOURCE bridge/gles_expand.comp NAME android_gles_expand_comp_spv
                HEADER android/bridge/gles_expand_comp_spv.h)
+# a clear that the color mask or the stencil's write mask limits, drawn
+snx_glsl_spirv(snx_android_bridge SOURCE bridge/gles2_clear.vert NAME android_gles2_clear_vert_spv
+               HEADER android/bridge/gles2_clear_vert_spv.h)
+snx_glsl_spirv(snx_android_bridge SOURCE bridge/gles2_clear.frag NAME android_gles2_clear_frag_spv
+               HEADER android/bridge/gles2_clear_frag_spv.h)
 target_include_directories(snx_android_bridge SYSTEM PUBLIC "${SNX_JAVA_HOME}/include"
                            "${SNX_JAVA_HOME}/include/${snx_jni_system}")
 set_target_properties(snx_android_bridge PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON C_EXTENSIONS ON)

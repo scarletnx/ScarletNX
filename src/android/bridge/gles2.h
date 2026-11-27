@@ -185,7 +185,9 @@ typedef struct {
     uint32_t formats[G2_ATTRIBS]; /* the vertex attributes' formats by location, 0 for none */
     uint16_t rates;               /* bit i: location i's binding steps by instance */
     uint8_t samples, topology, alpha_to_coverage, clip_control;
-    uint8_t blend, write_mask, pad[2];
+    uint8_t blend, write_mask;
+    uint8_t off; /* bit i: color attachment i written by none (a masked clear of the others) */
+    uint8_t pad;
     uint8_t factors[4], ops[2], pad2[2];
     uint32_t sample_mask;
 } G2PipelineKey;
@@ -220,7 +222,10 @@ typedef struct {
     VkDescriptorSetLayout expand_set;
     VkPipelineLayout expand_layout;
     VkPipeline expand;
-    bool said[26];         /* the warnings said once */
+    /* a clear that a mask limits, drawn (gles2_clear.vert and .frag), its color in a push constant: made at its
+       first use, its pipelines in pipelines by a key of program 0 */
+    G2ProgramVk clear;
+    bool said[27];         /* the warnings said once */
     char extensions[1024]; /* GL_EXTENSIONS, joined at its first query */
     G2Format formats[SNX_GL_FORMATS]; /* each format's entry, made at its first use (gles2_format) */
 } Gles2;
