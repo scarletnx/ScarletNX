@@ -45,6 +45,11 @@ const char* snx_native_name(void) {
            : snx_s390x_available()    ? "s390x"
                                    : "none";
 }
+SnxU64 snx_native_reach(const char* triple) {
+    if (triple || snx_arm64_available()) return (SnxU64)128 << 20; /* B and BL: a target's back end is arm64's */
+    if (snx_ppc64_available() || snx_ppc64be_available()) return (SnxU64)32 << 20; /* b and bl */
+    return (SnxU64)2 << 30;
+}
 unsigned snx_native_features(void) {
     return snx_x64_available() ? snx_x64_features() : snx_arm64_available() ? snx_arm64_features() : 0;
 }

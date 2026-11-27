@@ -20,6 +20,9 @@ typedef struct {
        units themselves (the setting aot_threads left at 0, Auto; common.h's SnxAotGovernor) */
     int jobs_open;
     int quiet;
+    /* the most bytes a unit's object may be, 0 for half of what the back end's calls reach (snx_native_reach): a
+       test's smaller one */
+    SnxU64 unit_bytes;
     /* when set, the snx_aot_ wrappers the descriptor got: one per entry when the profile cache's units link (they call
        them), else none */
     size_t* wrappers;

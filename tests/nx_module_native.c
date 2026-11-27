@@ -36,6 +36,7 @@ static struct {
     SnxU32 without;  /* a word the native back end is to have no code for, 0 for none */
     int leave;       /* F1 left by the native back end, as one it can't make whole is */
     int no_native;   /* the host is to have no native back end */
+    size_t chunk;    /* the instructions a unit takes, 0 for each function a unit */
     char said[8192]; /* the errors the builder said since the last build, a line each */
     unsigned char memory[TEXT_OFF + 0x1000];
 } g_nx_module_native;
@@ -107,7 +108,7 @@ static int build(const char* output, SnxModuleBuild job, SnxCodegenOptions optio
     options.title = "test";
     options.abi = SNX_ABI;
     options.quiet = 1;
-    options.chunk_instrs = 1;
+    options.chunk_instrs = g_nx_module_native.chunk ? g_nx_module_native.chunk : 1;
     static const SnxU64 hints[1] = {F2};
     options.hints = hints;
     options.hint_count = 1;
@@ -185,6 +186,66 @@ static void a64(const char* folder) {
     free(module);
 }
 
+/* A unit holds no more than its ceiling: instructions over what the ceiling takes are said, with the count in effect;
+   a unit whose object still comes out over it is made again as two, the module the same at each build; a function
+   that alone is over it refuses the module, named with both sizes */
+static void units(const char* folder) {
+    SnxModuleBuild asked = {0};
+    SnxCodegenOptions options = {0};
+    char *module = at(folder, "units" SUFFIX), *again = at(folder, "units-again" SUFFIX), wanted[256];
+    unsigned char *first = NULL, *second = NULL;
+    size_t first_size = 0, second_size = 0;
+    SnxU64 ceiling;
+    int rc = 0, split = 0;
+    g_nx_module_native.chunk = 2000000000u;
+    snprintf(wanted, sizeof wanted,
+             "unit_instructions=2000000000 would make units of more than the %.1f MiB one holds "
+             "on this machine: %llu in effect\n",
+             (double)(snx_native_reach(NULL) / 2) / 1048576.0,
+             (unsigned long long)(snx_native_reach(NULL) / 2 / UNIT_BYTES_AN_INSTRUCTION));
+    CHECK(!build(module, asked, options) && snx_is_file(module) && !strcmp(g_nx_module_native.said, wanted),
+          "more instructions than a unit's ceiling takes, said with the count in effect (%s): %s", wanted,
+          g_nx_module_native.said);
+    /* the three functions one unit of 8 instructions, which every ceiling tried takes: the largest one its object is
+       over splits it, and both halves fit there */
+    g_nx_module_native.chunk = 8;
+    for (ceiling = 16384; ceiling >= 1024 && !rc && !split; ceiling -= 8) {
+        asked.unit_bytes = ceiling;
+        rc = build(module, asked, options);
+        split = strstr(g_nx_module_native.said, "made again as two") != NULL;
+    }
+    snprintf(wanted, sizeof wanted,
+             "a code unit of 8 instructions came to 0.0 MiB, more than the 0.0 MiB a unit holds "
+             "on this machine: made again as two, of 1 and 2 functions\n");
+    CHECK(!rc && split && snx_is_file(module) && !strcmp(g_nx_module_native.said, wanted),
+          "a unit over its ceiling (%llu bytes) made again as two (%s): %s", (unsigned long long)asked.unit_bytes,
+          wanted, g_nx_module_native.said);
+    CHECK(!build(again, asked, options), "the same module made again: %s", g_nx_module_native.said);
+    first = snx_read_file(module, &first_size);
+    second = snx_read_file(again, &second_size);
+    CHECK(first && second && first_size == second_size && !memcmp(first, second, first_size),
+          "a module whose unit was split is the same bytes at each build (%zu and %zu)", first_size, second_size);
+    free(first);
+    free(second);
+    /* a ceiling no function's object is under: the first function refused, named */
+    asked.unit_bytes = 200;
+    g_nx_module_native.chunk = 1000;
+    free(again);
+    again = at(folder, "units-none" SUFFIX);
+    rc = build(again, asked, options);
+    snprintf(wanted, sizeof wanted,
+             "the function at 0x%llx alone makes an object of 0.0 MiB, more than the 0.0 MiB a "
+             "unit holds",
+             (unsigned long long)(SNX_CODE_BASE + TEXT_OFF));
+    CHECK(rc && !snx_is_file(again) && strstr(g_nx_module_native.said, wanted) &&
+              strstr(g_nx_module_native.said, "unit_instructions=1000 would make units of more than the 0.0 MiB one "
+                                              "holds on this machine: 2 in effect\n"),
+          "a function over the ceiling alone refuses the module (%s): %s", wanted, g_nx_module_native.said);
+    g_nx_module_native.chunk = 0;
+    free(again);
+    free(module);
+}
+
 int main(int argc, char** argv) {
     if (argc != 2) {
         printf("usage: %s FOLDER\n", argv[0]);
@@ -202,6 +263,7 @@ int main(int argc, char** argv) {
     snx_error_sink(sink);
     program();
     a64(argv[1]);
+    units(argv[1]);
     g_nx_module_native.failures += snx_test_arm_native(argv[1]);
     if (!g_nx_module_native.failures) printf("a game module of the native back end's code: as it should be\n");
     return g_nx_module_native.failures != 0;
