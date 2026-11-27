@@ -879,16 +879,14 @@ int snx_link_elf_to_file(const SnxLinkInput* inputs, size_t count, const char* c
                          const char* soname, const char* path, const unsigned char* owned,
                          void (*release)(void* arg, size_t index), void* arg, size_t* size, char* error,
                          size_t error_size) {
-    Sink sink = {-1, owned, release, arg};
+    Sink sink = {open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644), owned, release, arg};
     SnxLinkOutput written = {0};
-    int rc;
     *size = 0;
-    sink.fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (sink.fd < 0) {
         snprintf(error, error_size, "cannot create %s: %s", path, strerror(errno));
         return -1;
     }
-    rc = link_elf(inputs, count, exports, export_count, soname, &written, &sink, error, error_size);
+    int rc = link_elf(inputs, count, exports, export_count, soname, &written, &sink, error, error_size);
     if (close(sink.fd) && !rc) {
         snprintf(error, error_size, "cannot close %s: %s", path, strerror(errno));
         rc = -1;
