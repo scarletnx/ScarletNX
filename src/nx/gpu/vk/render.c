@@ -7930,6 +7930,9 @@ static void render_split(void) {
     g_split.inplace = vk_mirror_inplace_count();
     atomic_store_explicit(&g_split.granted, 0, memory_order_relaxed); /* the ring is the renderer thread's */
     vk_share_active(1); /* before the worker's first call */
+    /* the last draw's probe off before the worker reads it: no draw of the split run probes (render_draw_main) */
+    g_predraw.probe = 0;
+    g_predraw.n = g_predraw.in_place = 0;
     const u64 t3 = ph_now();
     g_split.t_snap += t2 - t1;
     g_split.t_cmd += t3 - t2;
@@ -8890,9 +8893,13 @@ resolved:
         return;
     }
     ScreenSlots screen = screen_slots(ds, fs, vs, !tcs && !tes && !sh.gs && !sh.swizzle);
-    g_predraw.probe = !predraw_refused && !g_predraw.phase && !capture && !texture && !mesh && !programmable_blend && !late_depth &&
-                      !xfb_on && predraw_enabled();
-    if (!g_predraw.phase) g_predraw.n = g_predraw.in_place = 0; /* the two draws keep what the probe found */
+    /* the renderer thread's alone, out of a split run: predraw_run and the feedback draws' state are not a worker's, and
+       nobody writes them while one runs (render_split cleared the probe before it kicked the worker) */
+    if (!t_rc && !g_split.pending) {
+        g_predraw.probe = !predraw_refused && !g_predraw.phase && !capture && !texture && !mesh &&
+                          !programmable_blend && !late_depth && !xfb_on && predraw_enabled();
+        if (!g_predraw.phase) g_predraw.n = g_predraw.in_place = 0; /* the two draws keep what the probe found */
+    }
     /* The compute-task path's buffers for this draw: the payloads of its task workgroups, their counts and the draw's
        record (sm86.h), and the vec4 of the first workgroup and the groups the buffer holds, which both stages take
        from SNX_VKB_RS. Its task program's dispatch then writes them, before the pass opens */
