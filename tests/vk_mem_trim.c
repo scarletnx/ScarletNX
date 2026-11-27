@@ -236,6 +236,8 @@ int vk_bc1_tight(const char* why) { return 0; }
 void vk_tex_later_forget(Surf* s) {}
 /* no draw recorded and not submitted holds an image */
 int vk_gfx_image_holds(const Surf* s) { return 0; }
+int vk_gfx_image_pending_besides(u64 gva, u64 size, const Surf* self) { return 0; }
+void vk_gfx_image_mem_need(u64 gva, u64 size) { stub_hit("vk_gfx_image_mem_need"); }
 /* a target's image and views go when the frames are done, and the pages its pixels cover with it */
 void vk_defer_image(VkImage img, DevMem a, VkImageView v1, VkImageView v2) {}
 void pend_add_va(PendPages* t, u64 gva, u64 size, int delta) {}
