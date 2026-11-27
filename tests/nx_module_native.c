@@ -192,7 +192,9 @@ static void a64(const char* folder) {
 static void units(const char* folder) {
     SnxModuleBuild asked = {0};
     SnxCodegenOptions options = {0};
-    char *module = at(folder, "units" SUFFIX), *again = at(folder, "units-again" SUFFIX), wanted[256];
+    /* the second build under the first one's file name, in a folder of its own: a PE or Mach-O module holds its name */
+    char *module = at(folder, "units" SUFFIX), *apart = at(folder, "units-again"), *again = at(apart, "units" SUFFIX);
+    char wanted[256];
     unsigned char *first = NULL, *second = NULL;
     size_t first_size = 0, second_size = 0;
     SnxU64 ceiling;
@@ -220,7 +222,8 @@ static void units(const char* folder) {
     CHECK(!rc && split && snx_is_file(module) && !strcmp(g_nx_module_native.said, wanted),
           "a unit over its ceiling (%llu bytes) made again as two (%s): %s", (unsigned long long)asked.unit_bytes,
           wanted, g_nx_module_native.said);
-    CHECK(!build(again, asked, options), "the same module made again: %s", g_nx_module_native.said);
+    CHECK(!snx_mkdirs(apart) && !build(again, asked, options), "the same module made again in %s: %s", apart,
+          g_nx_module_native.said);
     first = snx_read_file(module, &first_size);
     second = snx_read_file(again, &second_size);
     CHECK(first && second && first_size == second_size && !memcmp(first, second, first_size),
@@ -243,6 +246,7 @@ static void units(const char* folder) {
           "a function over the ceiling alone refuses the module (%s): %s", wanted, g_nx_module_native.said);
     g_nx_module_native.chunk = 0;
     free(again);
+    free(apart);
     free(module);
 }
 
