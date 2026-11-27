@@ -143,6 +143,11 @@ static struct {
     /* requests that found no memory since the last report: all of them, those no larger than the free space inside
        the capped heap's blocks then (no one run held them), and the largest */
     u64 failed, failed_room, failed_max;
+    /* requests that found no free run that large in the capped heap's blocks while those have more free than they ask,
+       given memory of their own past the budget since the last report, and their bytes (alloc). past_budget: set
+       while such a request asks, so block_new lets it past the heap's cap */
+    u64 past, past_bytes;
+    int past_budget;
     u64 priorities; /* calls that gave a block a new priority since the last report (block_prio) */
     /* The block being emptied (vk_devmem_moving), as DXVK defragments its chunks: no request takes its runs, and the
        owners of its allocations move them to the runs of other blocks on the GPU. Once it has none it is an empty
@@ -426,8 +431,9 @@ static u32 block_add(u32 type, u64 size, int image, int low, u32 units, VkDevice
 static u32 block_new(u32 type, u64 size, int image, int low, u32 units, VkBuffer buf, VkImage img, VkResult* res) {
     SNX_ZONE_T(z, "vk mem block new", "%s %u MB, type %u", units ? "block" : "own", (unsigned)(size >> 20), type);
     u32 heap_of = g_devmem.mp.memoryTypes[type].heapIndex;
-    /* the capped heap takes no more past its budget: full for this request, as if the driver had said so */
-    if (heap_capped(heap_of) && heap_usage(heap_of) + size > heap_budget(heap_of)) {
+    /* the capped heap takes no more past its budget: full for this request, as if the driver had said so. But for a
+       request whose bytes the blocks' free space holds, in pieces (alloc) */
+    if (heap_capped(heap_of) && !g_devmem.past_budget && heap_usage(heap_of) + size > heap_budget(heap_of)) {
         *res = VK_ERROR_OUT_OF_DEVICE_MEMORY;
         return 0;
     }
@@ -1001,14 +1007,41 @@ static VkResult alloc(const VkMemoryRequirements* req, const DevMemWant* want, i
         for (int type; !*mem && (type = type_pick(bits, want)) >= 0; bits &= ~(1u << type))
             *mem = alloc_in((u32)type, req, want, 0, buf, img, &res);
     }
-    if (!*mem) {
-        u64 room = 0, piece = 0;
+    u64 room = 0, piece = 0;
+    if (!*mem)
         for (u32 i = 0; i < g_devmem.nblock; i++) {
             const Block* k = &g_devmem.block[i];
             if (!k->mem || k->own || (int)g_devmem.mp.memoryTypes[k->type].heapIndex != g_devmem.main_heap) continue;
             room += (u64)(k->free.units - k->free.used) * DM_UNIT;
             if ((u64)k->free.largest * DM_UNIT > piece) piece = (u64)k->free.largest * DM_UNIT;
         }
+    /* The blocks' free space holds the request, but no free run of one does: the heap is in pieces, not full, and
+       what the resources in it hold, with the request, stays within the budget. Memory of its own then, past the
+       heap's cap by what its pieces leave unused, as long as the driver gives it. In a racing game's race, requests
+       of 9 to 16 MB for its targets found none with 1.1 GB free in the blocks and the largest piece 9 MB, and the
+       draws that needed a depth target went without it */
+    const int main_heap = g_devmem.main_heap >= 0 && (u32)g_devmem.main_heap < VK_MAX_MEMORY_HEAPS;
+    if (!*mem && main_heap && room >= req->size && !want->existing &&
+        heap_usage((u32)g_devmem.main_heap) - room + req->size <= heap_budget((u32)g_devmem.main_heap)) {
+        g_devmem.past_budget = 1;
+        bits = req->memoryTypeBits;
+        for (int type; !*mem && (type = type_pick(bits, want)) >= 0; bits &= ~(1u << type))
+            if ((int)g_devmem.mp.memoryTypes[type].heapIndex == g_devmem.main_heap)
+                *mem = alloc_in((u32)type, req, want, DM_OWN_MUST, buf, img, &res);
+        g_devmem.past_budget = 0;
+        if (*mem) {
+            g_devmem.past++;
+            g_devmem.past_bytes += req->size;
+            LOG_LIMIT(16,
+                      "vulkan: a request for %.1f MB of device memory found no free run that large in the GPU heap's "
+                      "blocks, which have %.1f MB free (the largest piece %.1f MB): memory of its own, past the "
+                      "budget, %.1f of %.1f MB in use\n",
+                      (double)req->size / 1048576.0, (double)room / 1048576.0, (double)piece / 1048576.0,
+                      (double)heap_usage((u32)g_devmem.main_heap) / 1048576.0,
+                      (double)heap_budget((u32)g_devmem.main_heap) / 1048576.0);
+        }
+    }
+    if (!*mem) {
         g_devmem.failed++;
         g_devmem.failed_room += req->size <= room;
         if (req->size > g_devmem.failed_max) g_devmem.failed_max = req->size;
@@ -1415,6 +1448,8 @@ void vk_devmem_log(void) {
     }
     u64 failed = g_devmem.failed, failed_room = g_devmem.failed_room, failed_max = g_devmem.failed_max;
     g_devmem.failed = g_devmem.failed_room = g_devmem.failed_max = 0;
+    const u64 past = g_devmem.past, past_bytes = g_devmem.past_bytes;
+    g_devmem.past = g_devmem.past_bytes = 0;
     u64 emptied = g_devmem.drain.emptied, kept = g_devmem.drain.kept, gave_up = g_devmem.drain.gave_up,
         moved = g_devmem.drain.moved, moved_bytes = g_devmem.drain.moved_bytes;
     g_devmem.drain.emptied = g_devmem.drain.kept = g_devmem.drain.gave_up = 0;
@@ -1449,6 +1484,10 @@ void vk_devmem_log(void) {
         LOG("vulkan: %llu requests for device memory found none since the last report, %llu of them no larger than "
             "the free space inside the GPU heap's blocks; the largest was %.1f MB\n",
             (unsigned long long)failed, (unsigned long long)failed_room, (double)failed_max / 1048576.0);
+    if (past)
+        LOG("vulkan: %llu requests the GPU heap's blocks had room for only in pieces got memory of their own past the "
+            "budget since the last report, %.1f MB\n",
+            (unsigned long long)past, (double)past_bytes / 1048576.0);
     if (emptied || kept || gave_up || moved || repaired)
         LOG("vulkan: device memory blocks emptied since the last report: %llu given back, %llu kept as their kind's "
             "empty block, %llu left as they were; %llu repaired to one priority class; %llu allocations moved, "
