@@ -1045,7 +1045,7 @@ static int ext_stage(u64 a, u64 end, u8* dst) {
    game's draws bound whole, was most of the renderer thread's locks (17 million in a minute) */
 static void stage_cpu(u64 addr, u64 a, u64 b, u8* dst, const u8* mirror) {
     while (a < b) {
-        u64 page = a & ~(g_own.page - 1), end = page + g_own.page, off;
+        u64 page = a & ~(g_own.page - 1), end = page + g_own.page, off, own_end = end;
         int owned;
         pm_lock(&g_own.lk);
         u32 i = first_after_nl(page);
@@ -1053,8 +1053,19 @@ static void stage_cpu(u64 addr, u64 a, u64 b, u8* dst, const u8* mirror) {
         /* none: no entry before the page of the next one, which starts past this page */
         if (!owned)
             end = i < atomic_load_explicit(&g_own.nown, memory_order_relaxed) ? g_own.ent[i].lo & ~(g_own.page - 1) : b;
+        else /* the entry's pages: each the owner's, or landed since, which reads the same through the mirror */
+            own_end = (g_own.ent[i].hi + g_own.page - 1) & ~(g_own.page - 1);
         pm_unlock(&g_own.lk);
         if (end > b) end = b;
+        if (own_end > b) own_end = b;
+        /* through the mirror, the entry's pages that follow on in the pool with one look: a look for each page was
+           the most of the renderer thread's lock calls in one game's town, about 3% of its time */
+        u64 run;
+        if (owned && mirror && own_end > end && (run = mem_pool_run(a, own_end - a, &off)) > 0) {
+            memcpy(dst + (a - addr), mirror + off, (size_t)run);
+            a += run;
+            continue;
+        }
         if (owned && !mirror) { /* in place: the page's shadow (own_stage landed a page with none first) */
             const u8* sh = NULL;
             /* through a buffer of this thread's: dst is written with no lock of ours held, as a write to it that
