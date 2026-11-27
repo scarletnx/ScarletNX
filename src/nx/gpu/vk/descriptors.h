@@ -8,6 +8,11 @@ void vk_descriptors_layout(VkDescriptorSetLayout layout, const VkDescriptorSetLa
 /* cb_addr: the constant buffer slots that heaps take by address (vk_cb_addr_mask); descriptor buffers write them all */
 VkDescriptorSet vk_descriptors_write(VkDescriptorSetLayout layout, u32 count, const VkWriteDescriptorSet* writes,
                                      u32 cb_addr);
+/* the same, for a table that can last from frame to frame: hash names its layout and writes (render.c's set key). A
+   table that an earlier frame wrote with them is bound again, while no object it names was forgotten since. Only the
+   renderer thread's stream takes it (render.c) */
+VkDescriptorSet vk_descriptors_write_lasting(VkDescriptorSetLayout layout, u32 count,
+                                             const VkWriteDescriptorSet* writes, u32 cb_addr, const u64 hash[2]);
 /* ndyn dynamic offsets dyn of the sets' dynamic constant buffers (cb_dynamic.h), in the order of set and binding: only
    with descriptor sets, 0 otherwise */
 void vk_descriptors_bind(VkCommandBuffer cb, VkPipelineLayout layout, u32 first, u32 count, const VkDescriptorSet* sets,
@@ -28,6 +33,9 @@ typedef struct {
     u64 buffer_requests, buffer_driver_calls, buffer_hits, buffer_evictions;
     u64 image_requests, image_driver_calls, image_hits, image_evictions, image_replicas;
     u64 address_queries, frame_advances, peak_used_bytes, arena_allocated_bytes, cache_allocated_bytes;
+    /* the tables that last (vk_descriptors_write_lasting): bound again, written, found with a forgotten object, and
+       written in the frame's part as no slot was free */
+    u64 lasting_hits, lasting_made, lasting_stale, lasting_full;
 } VkDescriptorStats;
 /* Monotonic counters; allocated bytes and peak use are gauges. Log reporting does not reset these counters. */
 void vk_descriptors_get_stats(VkDescriptorStats* stats);

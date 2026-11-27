@@ -16,6 +16,23 @@
 #include <string.h>
 
 #define DESCRIPTOR_BYTES (64ull << 20)
+/* The tables that last from frame to frame: slots of the largest layout's size in one part of the arena's buffer, past
+   the frames' parts, so that a frame binds them at its own address. A slot names the frame that used it last, and is
+   written again only when that frame's slot was reset (vk_descriptors_reset: its fence and holds are done). It keeps
+   the generations of the objects it names (vk_descriptor_object_gen): a forget of one ends it. In one game's world,
+   177k of the 314k tables a 600 presents were the same as a table that an earlier frame wrote */
+#define LASTING_BYTES (64ull << 20)
+#define LASTING_OBJECTS 8
+/* the least that each part of the one buffer takes: below it, each frame keeps a buffer of its own and no table
+   lasts */
+#define ARENA_LEAST (16ull << 20)
+typedef struct {
+    u64 h0, h1;
+    u64 used_frame; /* the frame (vk_frame_id) that used it last, 0 for none */
+    u32 used_slot;  /* and that frame's slot */
+    u32 n;          /* the objects it names, 0 for an empty slot */
+    u32 obj[LASTING_OBJECTS], gen[LASTING_OBJECTS];
+} LastingTable;
 /* the arenas' memory: the CPU writes the tables into it in order and never reads it (the encodings it copies from
    are in images and buffers, in the CPU's memory). In the GPU's memory where the CPU can map it (DM_WINDOW): in
    system memory, each descriptor the shaders read crossed the bus, 30% more GPU time in the passes of one game */
@@ -47,7 +64,15 @@ static struct {
         u8* mapped;
         VkDeviceAddress address;
         VkDeviceSize used, capacity;
+        VkDeviceSize start; /* its part's offset in the buffer that all frames share, 0 with a buffer of its own */
+        u64 frame;          /* the frame (vk_frame_id) that wrote into it last */
     } frame[VK_FRAMES];
+    u64 done[VK_FRAMES]; /* each slot's frame at its last reset: that frame's work is done */
+    /* the tables that last: lasting_n slots of lasting_stride bytes at lasting_at in the shared buffer */
+    LastingTable* lasting;
+    u32 lasting_n;
+    VkDeviceSize lasting_at, lasting_stride;
+    u8* lasting_mapped;
     /* each recording stream's (g_vk_slot) command buffer that bound them, and vk_rec_set_binds then. A worker's list
        plays after the renderer thread's commands, both recorded at the same time (vk_descriptors_stream_reset) */
     u32 bound_cb[VK_RC_SLOTS];
@@ -102,7 +127,10 @@ void vk_descriptors_layout(VkDescriptorSetLayout layout, const VkDescriptorSetLa
 }
 void vk_descriptors_reset(u32 slot) {
     if (g_vk.has_descriptor_heap_support) vk_descriptor_heaps_reset(slot);
-    if (slot < VK_FRAMES) g_descriptors.frame[slot].used = 0;
+    if (slot < VK_FRAMES) {
+        g_descriptors.frame[slot].used = 0;
+        g_descriptors.done[slot] = g_descriptors.frame[slot].frame;
+    }
 }
 int vk_descriptors_room(u32 slot) {
     if (g_vk.has_descriptor_heaps) return vk_descriptor_heaps_room(slot);
@@ -110,8 +138,72 @@ int vk_descriptors_room(u32 slot) {
     /* a draw writes one table for each of its five stages at most */
     return g_descriptors.frame[slot].capacity - g_descriptors.frame[slot].used >= 5 * g_descriptors.largest;
 }
+static VkDeviceSize least(VkDeviceSize a, VkDeviceSize b) { return a < b ? a : b; }
+/* One buffer for every frame's part and the lasting tables', where the device's limits let one binding reach all of
+   it: the smallest of the largest allocation, the binding ranges of resources and samplers, and their address spaces
+   (the tables hold combined image samplers). The reported limits go from 128 KiB to 1 TiB, so the parts take their
+   size from them: 64 MiB each where it fits, else an equal share. 0: a buffer for each frame, as before */
+static int arena_shared(void) {
+    const VkPhysicalDeviceDescriptorBufferPropertiesEXT* p = &g_vk.descriptor_props;
+    VkDeviceSize limit = least(least(g_vk.alloc_cap, p->maxResourceDescriptorBufferRange),
+                               least(p->maxSamplerDescriptorBufferRange,
+                                     least(p->resourceDescriptorBufferAddressSpaceSize,
+                                           p->samplerDescriptorBufferAddressSpaceSize)));
+    const VkDeviceSize align = p->descriptorBufferOffsetAlignment ? p->descriptorBufferOffsetAlignment : 1;
+    VkDeviceSize part = DESCRIPTOR_BYTES, lasting = LASTING_BYTES;
+    if (part * VK_FRAMES + lasting > limit) part = lasting = limit / (VK_FRAMES + 1) / align * align;
+    const VkDeviceSize stride = snx_align_up(g_descriptors.largest, align);
+    if (part < ARENA_LEAST || !stride || lasting / stride < 64) {
+        LOG("vulkan: descriptor buffers: a buffer for each frame and no tables that last: the device's limit is %llu "
+            "bytes (allocations %llu, binding ranges %llu and %llu, address spaces %llu and %llu)\n",
+            (unsigned long long)limit, (unsigned long long)g_vk.alloc_cap,
+            (unsigned long long)p->maxResourceDescriptorBufferRange,
+            (unsigned long long)p->maxSamplerDescriptorBufferRange,
+            (unsigned long long)p->resourceDescriptorBufferAddressSpaceSize,
+            (unsigned long long)p->samplerDescriptorBufferAddressSpaceSize);
+        return 0;
+    }
+    const u32 n = (u32)least(lasting / stride, UINT32_MAX - 1) & ~1u; /* two ways for each hash */
+    LastingTable* t = calloc(n, sizeof *t);
+    if (!t) return 0;
+    VkBufferCreateInfo info = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = part * VK_FRAMES + lasting,
+        .usage = VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT | VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT |
+                 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    DevMemWant allocation = {.at = DM_WINDOW, .mapped = 1, .need = ARENA_MEMORY};
+    DevMemInfo details;
+    VkBuffer buffer;
+    DevMem memory;
+    if (!VK_OK(vk_devmem_buffer(&info, &allocation, &buffer, &memory, &details))) {
+        free(t);
+        return 0;
+    }
+    vk_mem_track(memory, VK_OWN_DESCRIPTORS);
+    const VkDeviceAddress at = address(buffer);
+    for (u32 s = 0; s < VK_FRAMES; s++) {
+        g_descriptors.frame[s].buffer = buffer;
+        g_descriptors.frame[s].memory = memory;
+        g_descriptors.frame[s].mapped = (u8*)details.ptr + s * part;
+        g_descriptors.frame[s].address = at;
+        g_descriptors.frame[s].start = s * part;
+        g_descriptors.frame[s].capacity = part;
+    }
+    g_descriptors.lasting = t;
+    g_descriptors.lasting_n = n;
+    g_descriptors.lasting_at = part * VK_FRAMES;
+    g_descriptors.lasting_stride = stride;
+    g_descriptors.lasting_mapped = (u8*)details.ptr + part * VK_FRAMES;
+    LOG("vulkan: descriptor buffers: one buffer of %u frame parts of %llu bytes and %u tables that last, of %llu bytes "
+        "each, under the device's limit of %llu bytes\n", (unsigned)VK_FRAMES, (unsigned long long)part, (unsigned)n,
+        (unsigned long long)stride, (unsigned long long)limit);
+    return 1;
+}
 static void arena(u32 slot) {
     if (g_descriptors.frame[slot].buffer) return;
+    static int tried;
+    if (!tried) {
+        tried = 1;
+        if (arena_shared()) return;
+    }
     VkDeviceSize capacity = DESCRIPTOR_BYTES < g_vk.alloc_cap ? DESCRIPTOR_BYTES : g_vk.alloc_cap;
     VkBufferCreateInfo info = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = capacity,
         .usage = VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT | VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT |
@@ -206,8 +298,63 @@ static void buffer_descriptor(const VkDescriptorGetInfoEXT* info, const VkDescri
     }
     memcpy(destination, encoding, size);
 }
+/* the objects that the writes name, as generation counters (vk_descriptor_object_index): 0 where they are more than a
+   lasting table keeps. Samplers last the run (the sampler cache keeps them) */
+static u32 lasting_objects(u32 count, const VkWriteDescriptorSet* writes, u32* obj) {
+    u32 n = 0;
+    for (u32 i = 0; i < count; i++) {
+        const VkWriteDescriptorSet* w = &writes[i];
+        const VkBufferViewCreateInfo* view = w->pNext;
+        for (u32 j = 0; j < w->descriptorCount; j++) {
+            u64 key = 0;
+            if (w->descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER) {
+                if (j) break;
+#if VK_USE_64_BIT_PTR_DEFINES
+                key = (u64)(uintptr_t)view->buffer;
+#else
+                key = (u64)view->buffer;
+#endif
+            } else if (w->pBufferInfo) {
+#if VK_USE_64_BIT_PTR_DEFINES
+                key = (u64)(uintptr_t)w->pBufferInfo[j].buffer;
+#else
+                key = (u64)w->pBufferInfo[j].buffer;
+#endif
+            } else if (w->pImageInfo) {
+#if VK_USE_64_BIT_PTR_DEFINES
+                key = (u64)(uintptr_t)w->pImageInfo[j].imageView;
+#else
+                key = (u64)w->pImageInfo[j].imageView;
+#endif
+            }
+            if (!key) continue;
+            const u32 o = vk_descriptor_object_index(key);
+            u32 k = 0;
+            while (k < n && obj[k] != o) k++;
+            if (k < n) continue;
+            if (n == LASTING_OBJECTS) return 0;
+            obj[n++] = o;
+        }
+    }
+    return n ? n : LASTING_OBJECTS + 1; /* none named: a table of null descriptors lasts too */
+}
+/* whether a lasting slot's last frame is done, so that the slot can take another table */
+static int lasting_free(const LastingTable* e) {
+    return !e->used_frame ||
+           (g_descriptors.done[e->used_slot] >= e->used_frame && e->used_frame + VK_FRAMES <= vk_frame_id());
+}
+static VkDescriptorSet descriptors_write(VkDescriptorSetLayout layout, u32 count, const VkWriteDescriptorSet* writes,
+                                         u32 cb_addr, const u64* hash);
 VkDescriptorSet vk_descriptors_write(VkDescriptorSetLayout layout, u32 count, const VkWriteDescriptorSet* writes,
                                      u32 cb_addr) {
+    return descriptors_write(layout, count, writes, cb_addr, NULL);
+}
+VkDescriptorSet vk_descriptors_write_lasting(VkDescriptorSetLayout layout, u32 count,
+                                             const VkWriteDescriptorSet* writes, u32 cb_addr, const u64 hash[2]) {
+    return descriptors_write(layout, count, writes, cb_addr, hash);
+}
+static VkDescriptorSet descriptors_write(VkDescriptorSetLayout layout, u32 count, const VkWriteDescriptorSet* writes,
+                                         u32 cb_addr, const u64* hash) {
     if (g_vk.has_descriptor_heaps) return vk_descriptor_heaps_write(layout, count, writes, cb_addr);
     SNX_ZONE_V(z, "vk descriptor buffer write", count);
     u32 index = 0;
@@ -250,11 +397,57 @@ VkDescriptorSet vk_descriptors_write(VkDescriptorSetLayout layout, u32 count, co
         slot = vk_frame_slot();
         arena(slot);
     }
-    VkDeviceSize base = g_descriptors.frame[slot].used;
+    g_descriptors.frame[slot].frame = vk_frame_id();
     VkDeviceSize used = snx_align_up(active, align);
-    /* Every binding remains in bounds at base+size. Only inactive tails overlap later tables; descriptors the
-       shader can access are all in the written prefix, which never changes before this frame retires. */
-    g_descriptors.frame[slot].used += used;
+    /* a table that lasts: bound again where an earlier frame wrote it and no object it names was forgotten since,
+       else written into a free slot of the two for its hash, else into the frame's part */
+    LastingTable* keep = NULL;
+    u32 obj[LASTING_OBJECTS], nobj = 0;
+    if (hash && g_descriptors.lasting && size <= g_descriptors.lasting_stride &&
+        (nobj = lasting_objects(count, writes, obj))) {
+        const u32 way = (u32)(hash[0] >> 20) % (g_descriptors.lasting_n / 2) * 2;
+        for (u32 k = 0; k < 2 && !keep; k++) {
+            LastingTable* e = &g_descriptors.lasting[way + k];
+            if (!e->n || e->h0 != hash[0] || e->h1 != hash[1]) continue;
+            const u32 m = e->n > LASTING_OBJECTS ? 0 : e->n; /* LASTING_OBJECTS + 1: it names none */
+            u32 j = 0;
+            while (j < m && vk_descriptor_object_gen(e->obj[j]) == e->gen[j]) j++;
+            if (j < m) {
+                e->n = 0; /* an object it names was forgotten: the slot is free once its last frame is done */
+                g_descriptors.stats.lasting_stale++;
+                continue;
+            }
+            e->used_frame = vk_frame_id();
+            e->used_slot = slot;
+            g_descriptors.stats.lasting_hits++;
+            return (VkDescriptorSet)(uintptr_t)(g_descriptors.lasting_at + (way + k) * g_descriptors.lasting_stride + 1);
+        }
+        LastingTable* a = &g_descriptors.lasting[way];
+        LastingTable* b = a + 1;
+        keep = lasting_free(a) && (!lasting_free(b) || a->used_frame <= b->used_frame) ? a
+               : lasting_free(b)                                                         ? b
+                                                                                         : NULL;
+        if (!keep) g_descriptors.stats.lasting_full++;
+    }
+    VkDeviceSize base;
+    u8* dest;
+    if (keep) {
+        const u32 k = (u32)(keep - g_descriptors.lasting);
+        *keep = (LastingTable){.h0 = hash[0], .h1 = hash[1], .used_frame = vk_frame_id(), .used_slot = slot, .n = nobj};
+        for (u32 j = 0; j < nobj && j < LASTING_OBJECTS; j++) {
+            keep->obj[j] = obj[j];
+            keep->gen[j] = vk_descriptor_object_gen(obj[j]);
+        }
+        base = g_descriptors.lasting_at + k * g_descriptors.lasting_stride;
+        dest = g_descriptors.lasting_mapped + k * g_descriptors.lasting_stride;
+        g_descriptors.stats.lasting_made++;
+    } else {
+        base = g_descriptors.frame[slot].start + g_descriptors.frame[slot].used;
+        dest = g_descriptors.frame[slot].mapped + g_descriptors.frame[slot].used;
+        /* Every binding remains in bounds at base+size. Only inactive tails overlap later tables; descriptors the
+           shader can access are all in the written prefix, which never changes before this frame retires. */
+        g_descriptors.frame[slot].used += used;
+    }
     g_descriptors.stats.tables++;
     g_descriptors.stats.full_layout_bytes += size;
     g_descriptors.stats.arena_bytes += used;
@@ -306,7 +499,7 @@ VkDescriptorSet vk_descriptors_write(VkDescriptorSetLayout layout, u32 count, co
             } else if (w->descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                 info.data.pCombinedImageSampler = &w->pImageInfo[j];
             else info.data.pStorageImage = &w->pImageInfo[j];
-            void* destination = g_descriptors.frame[slot].mapped + base + offset + j * stride;
+            void* destination = dest + offset + j * stride;
             u32 run = 1;
             if (w->pImageInfo) {
                 const VkDescriptorImageInfo* image = &w->pImageInfo[j];
@@ -387,14 +580,18 @@ void vk_descriptors_stats(void) {
     const VkDescriptorStats* s = &g_descriptors.stats;
     const VkDescriptorStats* p = &g_descriptors.reported;
     LOG("vulkan: %llu graphics descriptor tables, %llu MB arena cursor (%llu MB full layouts), %llu buffer encodings "
-        "made, %llu reused, %llu image encodings made, %llu reused, %llu repeated image elements\n",
+        "made, %llu reused, %llu image encodings made, %llu reused, %llu repeated image elements; tables that last: "
+        "%llu bound again, %llu written, %llu with a forgotten object, %llu with no free slot\n",
         (unsigned long long)(s->tables - p->tables), (unsigned long long)((s->arena_bytes - p->arena_bytes) >> 20),
         (unsigned long long)((s->full_layout_bytes - p->full_layout_bytes) >> 20),
         (unsigned long long)(s->buffer_driver_calls - p->buffer_driver_calls),
         (unsigned long long)(s->buffer_hits - p->buffer_hits),
         (unsigned long long)(s->image_driver_calls - p->image_driver_calls),
         (unsigned long long)(s->image_hits - p->image_hits),
-        (unsigned long long)(s->image_replicas - p->image_replicas));
+        (unsigned long long)(s->image_replicas - p->image_replicas),
+        (unsigned long long)(s->lasting_hits - p->lasting_hits), (unsigned long long)(s->lasting_made - p->lasting_made),
+        (unsigned long long)(s->lasting_stale - p->lasting_stale),
+        (unsigned long long)(s->lasting_full - p->lasting_full));
     g_descriptors.reported = *s;
 }
 void vk_descriptors_get_stats(VkDescriptorStats* stats) {
@@ -416,6 +613,7 @@ void vk_descriptors_get_stats(VkDescriptorStats* stats) {
     *stats = g_descriptors.stats;
     stats->arena_allocated_bytes = 0;
     for (u32 slot = 0; slot < VK_FRAMES; slot++) stats->arena_allocated_bytes += g_descriptors.frame[slot].capacity;
+    stats->arena_allocated_bytes += (u64)g_descriptors.lasting_n * g_descriptors.lasting_stride;
     stats->cache_allocated_bytes = IMAGE_ENCODINGS * g_descriptors.image_stride +
                                   2 * BUFFER_ENCODING_BUCKETS * g_descriptors.buffer_stride;
 }

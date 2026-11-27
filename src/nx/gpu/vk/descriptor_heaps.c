@@ -607,17 +607,32 @@ u32 vk_descriptor_heaps_table_mapping(VkDescriptorSetAndBindingMappingEXT* maps,
                                       .samplerHeapArrayStride = g_heaps.table_sampler_stride}};
     return 2;
 }
+/* each object's generation, by a hash of its handle: a forget moves it on, before a new object can get the handle. A
+   table that lasts from frame to frame (descriptors.c) keeps the generations of the objects it names. Two objects with
+   one counter only make a table go sooner */
+#define OBJECT_GENS (1u << 16)
+static _Atomic u32 g_object_gens[OBJECT_GENS];
+u32 vk_descriptor_object_index(u64 object) { return (u32)((object * 0x9E3779B97F4A7C15ull) >> 48); }
+u32 vk_descriptor_object_gen(u32 index) {
+    return atomic_load_explicit(&g_object_gens[index & (OBJECT_GENS - 1)], memory_order_acquire);
+}
+static void object_forget(u64 object) {
+    atomic_fetch_add_explicit(&g_object_gens[vk_descriptor_object_index(object)], 1, memory_order_release);
+}
 void vk_descriptor_heaps_forget_buffer(VkBuffer buffer) {
+    object_forget(handle_key(buffer));
     atomic_fetch_add_explicit(&g_forgets, 1, memory_order_release);
     lasting_forget(handle_key(buffer));
 }
 void vk_descriptor_heaps_forget_view(VkImageView view) {
-    atomic_fetch_add_explicit(&g_forgets, 1, memory_order_release);
 #if VK_USE_64_BIT_PTR_DEFINES
-    lasting_forget((u64)(uintptr_t)view);
+    const u64 key = (u64)(uintptr_t)view;
 #else
-    lasting_forget((u64)view);
+    const u64 key = (u64)view;
 #endif
+    object_forget(key);
+    atomic_fetch_add_explicit(&g_forgets, 1, memory_order_release);
+    lasting_forget(key);
 }
 /* without vk_lock the buffer is not named: its descriptors are then made in each frame */
 void vk_descriptor_heaps_lasting(VkBuffer buffer) {
