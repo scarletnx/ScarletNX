@@ -1575,13 +1575,36 @@ void vk_surf_batch_end(void);
 #define VK_SAMPLED_STAGES (VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)
 VkImageView vk_rt_attachment(Surf* s, int srgb_write);
 void vk_rt_flush(u64 gva);
-/* A draw's storage image kept on the GPU (vk_surf_keep_begin): held, the owner of its span from the bind on, with a
-   reference, its bytes from before the draw from off on; made: the bind made it, the CPU staging the span */
+/* A draw's or a dispatch's storage image kept on the GPU (vk_surf_keep_begin): held, the owner of its span from the
+   bind on, with a reference, its bytes from before the draw from off on; made: the bind made it, the CPU staging the
+   span. why: what the bind did with it (VkImageKeepWhy), a refusal's reason where held is NULL. compute: a dispatch's,
+   whose publishes when read are counted apart */
 typedef struct {
     struct VkOwnRes* held;
     u64 off;
-    int made;
+    int made, why, compute;
 } VkImageKeep;
+/* what a bind did with a storage image (vk_gfx_image_report counts a dispatch's): kept, or joined to the write-back of
+   its image that waits; else published at the dispatch, as before, because it is a render target, over another image
+   of the same dispatch, under another's write-back, over 4 GB, or what vk_surf_keep_begin refused: no traps of guest
+   memory, a parked or unpublishable surface, a span of part pages or of more than one run, a span the CPU read lately,
+   no owner to be had (or memory landed over it) */
+enum {
+    VK_IMG_KEEP_KEPT,
+    VK_IMG_KEEP_JOINED,
+    VK_IMG_KEEP_TARGET,
+    VK_IMG_KEEP_OVERLAP,
+    VK_IMG_KEEP_PENDING,
+    VK_IMG_KEEP_BIG,
+    VK_IMG_KEEP_NO_TRAPS,
+    VK_IMG_KEEP_UNPUBLISHABLE,
+    VK_IMG_KEEP_UNALIGNED,
+    VK_IMG_KEEP_RUNS,
+    VK_IMG_KEEP_CPU_READ,
+    VK_IMG_KEEP_NO_OWNER,
+    VK_IMG_KEEP_N
+};
+void vk_gfx_image_keep_note(int why); /* a dispatch's storage image's bind, counted for vk_gfx_image_report */
 /* a draw's writes to s's storage image, size bytes, to write back over original, s's bytes from before the draw
    (the queue frees it), or over the bytes the write-back after leaves; or kept (keep, its held reference the
    queue's), published at the release */
