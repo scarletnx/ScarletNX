@@ -2,8 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* What the sail tests hold the words QEMU can't stand for to (sail_qemu.h's frozen parts): LLVM's steps
    (llvm_steps.c) of each, from the states the tests run them in, their ends' hashes folded a word, as
-   tests/data/sail_frozen.txt keeps them. Without --record it checks that LLVM's steps still give the file, which a
-   change to the words, their states or LLVM's code of them breaks.
+   test-references' sail/frozen.txt keeps them. Without --record it checks that LLVM's steps still give the file,
+   which a change to the words, their states or LLVM's code of them breaks.
      snx-test-sail-frozen FILE
      snx-test-sail-frozen --record FILE [--recorded TEXT] */
 #include "sail_qemu.h"
