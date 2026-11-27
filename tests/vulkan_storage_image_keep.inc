@@ -356,6 +356,252 @@ static int check_storage_image_keep(void) {
     return 0;
 }
 
+/* A compute program's store into the same kind of image. A dispatch with a storage image runs on the graphics queue
+   (compute.c's vk_dispatch), and its image is kept as a draw's is: nothing is published at the dispatch nor at the
+   release, and its next dispatch joins it. A read publishes it then: the CPU's own, a buffer's over it, and a
+   texture's through a header of another format, whose fetch has the stores. An image of less than a page is
+   published at its dispatch, as each one was before. Before, every dispatch published its image over its span (one
+   game: 74 a frame, nearly all of them never read) */
+#define CSKEEP_GVA  0x4f3000000ull
+#define CSKEEP_CPU  (HEAP_BASE + 0x5700000) /* between vulkan_trim.inc's 64 KiB and vulkan_pass_breaks.inc's */
+#define CSKEEP_SPAN 0x60000u
+
+/* MOV Rd, c[2][off] */
+static u64 cskeep_mov(u32 rd, u32 off) { return 0x4c98078800070000ull | (u64)(off >> 2) << 20 | rd; }
+/* header index of the pool: an R32 image (word0) at image, w x h texels in blocks of block_height GOBs (a power of 2) */
+static int cskeep_header(u64 pool, u32 index, u32 word0, u64 image, u32 w, u32 h, u32 block_height) {
+    u32 log2 = 0;
+    while (1u << log2 < block_height) log2++;
+    const u32 tic[8] = {word0, (u32)image, (u32)(image >> 32) | 3u << 21, log2 << 3, (w - 1) | 1u << 23, h - 1, 0, 0};
+    CHECK(!storage_write_words(pool + 32ull * index, tic, 8));
+    return 0;
+}
+/* the pattern over a w x h R32 image of size bytes at image, as the CPU writes it */
+static int cskeep_fill(u64 image, u64 size) {
+    u8* bytes = malloc(size);
+    CHECK(bytes);
+    for (u64 i = 0; i < size; i += 4) snx_st_le32(bytes + i, imgkeep_pattern(i));
+    CHECK(!gmem_write(image, bytes, size));
+    free(bytes);
+    return 0;
+}
+/* a block of one thread whose program stores c[2][0x12c] at texel (c[2][0x124], c[2][0x128]) of the image whose
+   handle is c[2][0x120]; with fetch, the texel there of the texture whose handle is c[2][0x130] instead (TLD.B) */
+static int cskeep_dispatch(GpuChannel* channel, u32 handle, u32 x, u32 y, u32 value, int fetch, u32 texture) {
+    const u64 code_at = CSKEEP_GVA + (fetch ? 0x400 : 0), cbuf = CSKEEP_GVA + 0x1000;
+    const u64 sust = (0xeb203a0200f77614ull & ~(0xffull | 0xffull << 8 | 0xfull << 16 | 0xffull << 39 | 7ull << 33)) |
+                     8ull | 7ull << 16 | 6ull << 39 | 3ull << 33; /* SUST.P [R0, R1], R8, handle R6 */
+    u64 ops[8];
+    u32 n = 0, at = 0;
+    u8 code[128] = {0};
+    u32 qmd[64] = {0};
+    u64 dispatches = g_vk_dispatches;
+    DispatchState d;
+    ops[n++] = cskeep_mov(0, 0x124);
+    ops[n++] = cskeep_mov(1, 0x128);
+    ops[n++] = cskeep_mov(8, 0x12c);
+    if (fetch) {
+        ops[n++] = cskeep_mov(4, 0x130);
+        ops[n++] = 0xdd38000080070008ull | 2ull << 28 | 4ull << 20; /* TLD.B R8, [R0, R1], R4 */
+    }
+    ops[n++] = cskeep_mov(6, 0x120);
+    ops[n++] = sust;
+    ops[n++] = 0xe30000000007000full; /* EXIT */
+    for (u32 i = 0; i < n; i++) {
+        if (!(i % 3)) snx_st_le64(code + 8 * at++, 0x001f8000fc0007e0ull);
+        snx_st_le64(code + 8 * at++, ops[i]);
+    }
+    CHECK(!gmem_write(code_at, code, sizeof code));
+    CHECK(!storage_write_words(cbuf + 0x120, (const u32[5]){handle, x, y, value, texture}, 5));
+    qmd[QMD_GRID_DIM_X] = 1;
+    qmd[QMD_GRID_DIM_YZ] = 1 | 1u << 16;
+    qmd[QMD_BLOCK_DIM_X] = 1u << 16;
+    qmd[QMD_BLOCK_DIM_YZ] = 1 | 1u << 16;
+    qmd[QMD_CONST_BUFFER_ENABLE] = 1u << 2;
+    qmd[QMD_CONST_BUFFER_CONFIG + 4] = (u32)cbuf;
+    qmd[QMD_CONST_BUFFER_CONFIG + 5] = (u32)(cbuf >> 32) | 0x200u << 15;
+    vk_lock();
+    mx_dispatch_state(qmd, channel->rcomp, code_at, &d);
+    vk_dispatch(&d);
+    vk_unlock();
+    if (g_vk_dispatches != dispatches + 1) fprintf(stderr, "compute storage image: the dispatch was skipped\n");
+    CHECK(g_vk_dispatches == dispatches + 1);
+    return 0;
+}
+/* the images published since was over their spans (VK_PUB_OTHER: a dispatch's, or a kept one's when read) */
+static u64 cskeep_published(u64 was) { return g_vk_rt_watch.by[VK_PUB_OTHER] - was; }
+/* the w x h R32 image at image as the CPU reads it: the pattern, but for n texels {x, y, value} */
+static int cskeep_expect(const char* when, u64 image, u32 w, u32 h, u32 block_height, const u32 (*texel)[3], u32 n) {
+    const u64 size = (u64)w * 4 * h;
+    u8* got = malloc(size);
+    u32 log2 = 0;
+    while (1u << log2 < block_height) log2++;
+    CHECK(got);
+    CHECK(!gmem_read(image, got, size));
+    for (u64 i = 0; i < size; i += 4) {
+        u32 want = imgkeep_pattern(i);
+        for (u32 k = 0; k < n; k++)
+            if (bl_offset(texel[k][0] * 4, texel[k][1], 0, w * 4, h, log2, 0) == i) want = texel[k][2];
+        if (snx_ld_le32(got + i) != want) {
+            fprintf(stderr, "compute storage image %s: the word at %#llx is %08x, expected %08x\n", when,
+                    (unsigned long long)i, snx_ld_le32(got + i), want);
+            free(got);
+            return 1;
+        }
+    }
+    free(got);
+    return 0;
+}
+
+static int check_compute_storage_image_keep(void) {
+    const u64 pool = CSKEEP_GVA + 0x2000;
+    const u64 first = CSKEEP_GVA + 0x10000, second = CSKEEP_GVA + 0x20000, third = CSKEEP_GVA + 0x30000,
+              copy = CSKEEP_GVA + 0x40000, small = CSKEEP_GVA + 0x50000;
+    const u32 r32f = 0x0f | 7u << 7 | 7u << 10 | 7u << 13 | 7u << 16, rgba = 2u << 19 | 3u << 22 | 4u << 25 | 5u << 28;
+    GpuChannel* channel = calloc(1, sizeof *channel);
+    CHECK(channel);
+    if (!g_vk.feat.shaderStorageImageWriteWithoutFormat) {
+        puts("compute storage images: unformatted writes unavailable, skipped");
+        free(channel);
+        return 0;
+    }
+    CHECK(mem_map(CSKEEP_CPU, CSKEEP_SPAN, MS_NORMAL, PERM_RW) == 0); /* past the heap */
+    gmmu_map(CSKEEP_GVA, CSKEEP_CPU, CSKEEP_SPAN);
+    channel->id = 127;
+    channel->rcomp[KEPLER_COMPUTE_TIC] = (u32)(pool >> 32);
+    channel->rcomp[KEPLER_COMPUTE_TIC + 1] = (u32)pool;
+    channel->rcomp[KEPLER_COMPUTE_TEX_CB_INDEX] = 2;
+    /* 0..2: the three images, 3: the third as an R32_FLOAT texture, 4: the copy, 5: the image of less than a page */
+    CHECK(!cskeep_header(pool, 0, imgkeep_word0(), first, 64, 64, 8));
+    CHECK(!cskeep_header(pool, 1, imgkeep_word0(), second, 64, 64, 8));
+    CHECK(!cskeep_header(pool, 2, imgkeep_word0(), third, 64, 64, 8));
+    CHECK(!cskeep_header(pool, 3, r32f | rgba, third, 64, 64, 8));
+    CHECK(!cskeep_header(pool, 4, imgkeep_word0(), copy, 64, 64, 8));
+    CHECK(!cskeep_header(pool, 5, imgkeep_word0(), small, 8, 8, 1));
+    CHECK(!cskeep_fill(first, IMGKEEP_SIZE) && !cskeep_fill(second, IMGKEEP_SIZE) && !cskeep_fill(third, IMGKEEP_SIZE));
+    CHECK(!cskeep_fill(copy, IMGKEEP_SIZE) && !cskeep_fill(small, 0x200));
+    vk_lock();
+    vk_finish();
+    u32 validation = g_vk_validation_messages;
+    vk_unlock();
+    const int traps = own_traps(), expect_kept = traps && !vk_uma();
+
+    /* two stores, a release after each: kept, where the host traps memory, with nothing published or copied back,
+       and the second dispatch joins the first's image with nothing copied before it */
+    u64 pub = g_vk_rt_watch.by[VK_PUB_OTHER];
+    ImgCount was = imgkeep_since((ImgCount){0}), d;
+    CHECK(!cskeep_dispatch(channel, 0, 2, 3, 0x5eed0101, 0, 0));
+    imgkeep_release();
+    d = imgkeep_since(was);
+    const int kept = !cskeep_published(pub) && !d.back && !d.published;
+    if (expect_kept && !kept)
+        fprintf(stderr,
+                "compute storage image: the host traps memory, but the dispatch and its release published %llu images, "
+                "copied %llu bytes back and published %llu kept ones, where the image stays on the GPU: 0, 0 and 0\n",
+                (unsigned long long)cskeep_published(pub), (unsigned long long)d.back, (unsigned long long)d.published);
+    CHECK(!expect_kept || kept);
+    pub = g_vk_rt_watch.by[VK_PUB_OTHER];
+    was = imgkeep_since((ImgCount){0});
+    CHECK(!cskeep_dispatch(channel, 0, 7, 9, 0x5eed0111, 0, 0));
+    imgkeep_release();
+    d = imgkeep_since(was);
+    if (kept && (cskeep_published(pub) || d.copied || d.back || d.published))
+        fprintf(stderr,
+                "compute storage image kept: its next dispatch and release published %llu images, copied %llu bytes "
+                "before it and %llu back, and published %llu kept ones: 0, 0, 0 and 0 expected\n",
+                (unsigned long long)cskeep_published(pub), (unsigned long long)d.copied, (unsigned long long)d.back,
+                (unsigned long long)d.published);
+    CHECK(!kept || (!cskeep_published(pub) && !d.copied && !d.back && !d.published));
+    if (kept) CHECK(own_lookup(CSKEEP_CPU + 0x10000, IMGKEEP_SIZE, NULL, 0) == 1);
+    if (kept) { /* the CPU's own read of the span, past the runtime's hooks: its landing publishes the image first */
+        u32 word = snx_ld_le32(GP(CSKEEP_CPU + 0x10000 + imgkeep_at(7, 9, 64, 64)));
+        d = imgkeep_since(was);
+        if (word != 0x5eed0111 || d.published != 1)
+            fprintf(stderr,
+                    "compute storage image kept past its releases: the CPU read %08x and %llu images were published, "
+                    "5eed0111 and 1 expected\n",
+                    word, (unsigned long long)d.published);
+        CHECK(word == 0x5eed0111 && d.published == 1);
+    }
+    CHECK(!cskeep_expect("after two releases", first, 64, 64, 8,
+                         (const u32[][3]){{2, 3, 0x5eed0101}, {7, 9, 0x5eed0111}}, 2));
+
+    /* a draw's buffer read of a kept image's span after its release: published first, so the read has the store */
+    was = imgkeep_since((ImgCount){0});
+    CHECK(!cskeep_dispatch(channel, 1, 11, 13, 0x5eed0121, 0, 0));
+    imgkeep_release();
+    if (kept) {
+        VkBuffer buf, rb;
+        u64 at;
+        const u8* got;
+        vk_lock();
+        CHECK(vk_buf_get(second, IMGKEEP_SIZE, &buf, &at) && (got = vk_readback_buffer(IMGKEEP_SIZE, &rb)));
+        VkBufferCopy c = {at, 0, IMGKEEP_SIZE};
+        vk_render_end();
+        rec_CmdCopyBuffer(vk_cmd(), buf, rb, 1, &c);
+        vk_finish();
+        vk_readback_ready();
+        u32 word = snx_ld_le32(got + imgkeep_at(11, 13, 64, 64));
+        vk_unlock();
+        d = imgkeep_since(was);
+        if (word != 0x5eed0121 || d.published != 1)
+            fprintf(stderr,
+                    "compute storage image kept past its release, read as a buffer: the read has %08x and %llu images "
+                    "were published, 5eed0121 and 1 expected\n",
+                    word, (unsigned long long)d.published);
+        CHECK(word == 0x5eed0121 && d.published == 1);
+    }
+    CHECK(!cskeep_expect("read as a buffer after its release", second, 64, 64, 8,
+                         (const u32[][3]){{11, 13, 0x5eed0121}}, 1));
+
+    /* a later dispatch's fetch of the kept image through an R32_FLOAT header over it (the bits of a float that is no
+       subnormal), stored into a fourth image: it has the store. Then a second store, kept again over the owner the
+       fetch's read published (nothing the texture's check asks moves), and a fetch of it through the same texture */
+    CHECK(!cskeep_dispatch(channel, 2, 4, 5, 0x5eed0131, 0, 0));
+    imgkeep_release();
+    CHECK(!cskeep_dispatch(channel, 4, 4, 5, 0, 1, 3));
+    imgkeep_release();
+    CHECK(!cskeep_dispatch(channel, 2, 6, 7, 0x5eed0132, 0, 0));
+    imgkeep_release();
+    CHECK(!cskeep_dispatch(channel, 4, 6, 7, 0, 1, 3));
+    imgkeep_release();
+    CHECK(!cskeep_expect("fetched through another format", copy, 64, 64, 8,
+                         (const u32[][3]){{4, 5, 0x5eed0131}, {6, 7, 0x5eed0132}}, 2));
+    CHECK(!cskeep_expect("after the fetches through another format", third, 64, 64, 8,
+                         (const u32[][3]){{4, 5, 0x5eed0131}, {6, 7, 0x5eed0132}}, 2));
+
+    /* a render target of another format over a kept image's memory, read after each store: it has the store */
+    const u64 target = CSKEEP_GVA + 0x58000;
+    rt_clear_format(channel, target, 64, 64, 3, 0, 0xD5);
+    CHECK(!cskeep_header(pool, 6, imgkeep_word0(), target, 64, 64, 8));
+    CHECK(!cskeep_dispatch(channel, 6, 2, 3, 0x5eed0151, 0, 0));
+    imgkeep_release();
+    CHECK(!imgkeep_target_texel(target, 2, 3, 0x5eed0151, "after a dispatch's store"));
+    CHECK(!cskeep_dispatch(channel, 6, 7, 9, 0x5eed0152, 0, 0));
+    imgkeep_release();
+    CHECK(!imgkeep_target_texel(target, 7, 9, 0x5eed0152, "again after the next dispatch's store"));
+
+    /* an image of less than a page: published at its dispatch, as before */
+    pub = g_vk_rt_watch.by[VK_PUB_OTHER];
+    CHECK(!cskeep_dispatch(channel, 5, 1, 2, 0x5eed0141, 0, 0));
+    if (kept && cskeep_published(pub) != 1)
+        fprintf(stderr,
+                "compute storage image of less than a page: %llu images published at its dispatch, 1 expected\n",
+                (unsigned long long)cskeep_published(pub));
+    CHECK(!kept || cskeep_published(pub) == 1);
+    imgkeep_release();
+    CHECK(!cskeep_expect("of less than a page", small, 8, 8, 1, (const u32[][3]){{1, 2, 0x5eed0141}}, 1));
+    vk_lock();
+    vk_finish();
+    CHECK(g_vk_validation_messages == validation);
+    vk_unlock();
+    free(channel);
+    printf("compute storage images: %s; a read of one publishes it, and has its stores\n",
+           kept ? "kept on the GPU, nothing published at a dispatch or a release"
+                : "published at each dispatch (no traps here)");
+    return 0;
+}
+
 /* --bench-storage-image: a draw into a 1024x1024 R32_UINT image (4 MB) and a release, rounds times, each store landed
    by a CPU read at the end. Times the draws and releases with the GPU done between rounds, as at a frame's fence,
    and counts the bytes copied on the CPU before the draws and back from the GPU after them */
