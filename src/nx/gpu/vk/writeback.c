@@ -55,7 +55,16 @@ typedef struct {
     const u8* res;
     u8* dst; /* guest memory in place, or NULL to write through gmem_write */
     u32 ws, we;
+    u64 sa, sb; /* the run of pages written and not stamped yet, [sa, sb) */
 } Landing;
+/* other GPU virtual addresses can alias these guest pages: the pages written are stamped, a run of them at a time, as
+   vk_write_runs stamps its runs. The whole range, up to 16 MiB for a 4-byte change, moved the generation of every
+   texture over it: with guest memory copied (vk_memory=1), one game's textures took about 1,000 full checks a frame
+   for a GPU write on their granules, and 94 with it imported */
+static void land_stamp(Landing* l) {
+    if (l->sb > l->sa) gpu_mem_written_shader(l->sa, l->sb - l->sa);
+    l->sa = l->sb = 0;
+}
 static void land_flush(Landing* l) {
     if (l->we == l->ws) return;
     g_wb_chg_bytes += l->we - l->ws;
@@ -63,6 +72,14 @@ static void land_flush(Landing* l) {
         memcpy(l->dst + l->ws, l->res + l->ws, l->we - l->ws);
     else
         gmem_write(l->addr + l->ws, l->res + l->ws, l->we - l->ws);
+    /* the pages written, for the stamp: a run on the stamp's last page or the next one goes on with it */
+    const u64 a = l->addr + l->ws, b = l->addr + l->we;
+    if (l->sb > l->sa && (a >> 12) <= ((l->sb - 1) >> 12) + 1)
+        l->sb = b;
+    else {
+        land_stamp(l);
+        l->sa = a, l->sb = b;
+    }
 }
 static void land_add(Landing* l, u32 from, u32 to) {
     if (l->we != from) { /* not where the pending run ends: it is written, and a new one starts */
@@ -80,7 +97,7 @@ void vk_write_changed_runs(u64 addr, const u8* res, const u8* org, u32 size, VkC
     u8* tmp = NULL;
     const u8* cur = NULL;
     u32 run_from = 0, run_to = 0; /* the run of changed granules */
-    Landing l = {addr, res, NULL, 0, 0};
+    Landing l = {addr, res, NULL, 0, 0, 0, 0};
     int begun = 0, changed = 0;
     if (!size) return;
     /* A shader result lands only where its bytes differ from the snapshot taken when it was bound. The zone's time is
@@ -153,10 +170,9 @@ void vk_write_changed_runs(u64 addr, const u8* res, const u8* org, u32 size, VkC
     }
     if (run && run_to) run(user, run_from, run_to);
     land_flush(&l);
+    land_stamp(&l);
     free(tmp);
-    if (changed) gpu_mem_written_shader(addr, size); /* other GPU virtual addresses can alias these guest pages */
-    else
-        SNX_MSG("vk pres: a writeback changed no bytes", sizeof("vk pres: a writeback changed no bytes") - 1);
+    if (!changed) SNX_MSG("vk pres: a writeback changed no bytes", sizeof("vk pres: a writeback changed no bytes") - 1);
     SNX_ZONE_TEXT(z_wb, "%s, %u bytes compared", changed ? "shader changed bytes since its snapshot" : "shader changed no bytes", size);
     if (begun) vk_result_end();
 }
