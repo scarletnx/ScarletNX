@@ -736,6 +736,49 @@ static void oom_killed(App* app, const char* temporary) {
 /* what launch() started, run to its end with status: the menu's run to its end screen, or the queue's job to its end,
    its line taken out and the Menu shown. The argv the fake driver got, a string a line (driver_will), which the
    caller frees */
+/* The real driver (SNX_TEST_SCARLETNX: the multicall program; unset or empty, on Windows, nothing checked) given what
+   the launcher gave the fake one, argv (a string a line, the program first): it takes every argument, said by a --help
+   after them all, which each driver reaches only once it has read those before it. A refusal of one fails the test,
+   naming it: the launcher passes nothing its driver does not take, whichever console's */
+static void driver_takes(const char* argv) {
+    const char* real = getenv("SNX_TEST_SCARLETNX");
+    char *copy, *links, *link, *said, *line;
+    const char* args[160];
+    size_t n = 0, size = 0;
+    int status = -1;
+    if (!real || !*real) return;
+    copy = snx_strdup(argv);
+    links = snx_format("%s.real", getenv("SNX_TEST_ARGV"));
+    assert(copy && links && (snx_is_dir(links) || !snx_mkdirs(links)));
+    for (line = strtok(copy, "\n"); line && n < SDL_arraysize(args) - 2; line = strtok(NULL, "\n")) args[n++] = line;
+    assert(n >= 1);
+    link = snx_path_join(links, snx_path_leaf(args[0])); /* the driver's name, which the multicall runs it by */
+    assert(link && (snx_path_exists(link) || !snx_symlink(real, link)));
+    args[0] = link;
+    args[n++] = "--help";
+    args[n] = NULL;
+    {
+        SDL_PropertiesID props = SDL_CreateProperties();
+        SDL_Process* process;
+        SDL_SetPointerProperty(props, SDL_PROP_PROCESS_CREATE_ARGS_POINTER, (void*)args);
+        SDL_SetNumberProperty(props, SDL_PROP_PROCESS_CREATE_STDOUT_NUMBER, SDL_PROCESS_STDIO_APP);
+        SDL_SetBooleanProperty(props, SDL_PROP_PROCESS_CREATE_STDERR_TO_STDOUT_BOOLEAN, true);
+        process = SDL_CreateProcessWithProperties(props);
+        SDL_DestroyProperties(props);
+        assert(process);
+        said = (char*)SDL_ReadProcess(process, &size, &status);
+        SDL_DestroyProcess(process);
+    }
+    if (!said || strstr(said, "does not take") || strstr(said, "unknown option")) {
+        fprintf(stderr, "gui_sdl.c: %s refuses what the launcher gives it (status %d):\n%s\n", snx_path_leaf(link),
+                status, said ? said : "(no output read)");
+        assert(!"the launcher passes its driver only what the driver takes");
+    }
+    SDL_free(said);
+    free(link);
+    free(links);
+    free(copy);
+}
 static char* ran(App* app, int status) {
     size_t size;
     char* argv;
@@ -745,6 +788,7 @@ static char* ran(App* app, int status) {
         job_done(app, status);
     argv = (char*)snx_read_file(getenv("SNX_TEST_ARGV"), &size);
     assert(argv && !remove(getenv("SNX_TEST_ARGV")));
+    driver_takes(argv);
     return argv;
 }
 /* whether argv (a string a line, as ran gives it) holds arg, and the string after it in after (NULL: not asked) */

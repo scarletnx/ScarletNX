@@ -165,6 +165,11 @@ if(BUILD_TESTING)
         # sanitizers in CI, where 30 stopped it (#1638), and more on a busy runner; the timeout is a hang guard, not a
         # pace
         set_tests_properties(gui_sdl_events PROPERTIES TIMEOUT 120 ENVIRONMENT "${gui_screen_env}")
+        # each run's arguments given to the real driver too, which takes every one (gui_sdl.c's driver_takes): it is
+        # run by a link of its driver's name, which Windows' CI does not make
+        if(TARGET scarletnx AND NOT WIN32)
+            set_property(TEST gui_sdl_events APPEND PROPERTY ENVIRONMENT "SNX_TEST_SCARLETNX=$<TARGET_FILE:scarletnx>")
+        endif()
     endif()
     # Saves (gui_saves_screen.c): its boxes and the picker's answers as gui_sdl's, with no picker of the desktop's
     add_executable(snx-test-gui-saves-screen "${PROJECT_SOURCE_DIR}/tests/gui_saves_screen.c"
