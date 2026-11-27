@@ -1193,13 +1193,13 @@ int main(int argc, char** argv) {
         run(exe, repo, dump, log, 0, "G", NULL);
         set_env("SNX_WORKFLOW_FLAGS", "--fullscreen=1");
         run(exe, repo, dump, log, 0, "G", NULL);
-        /* LLVM is the only backend: --backend=llvm, which older scripts give, changes nothing */
+        /* the native back end is the only one: --backend=llvm, which older scripts give, is said and changes nothing */
         set_env("SNX_WORKFLOW_FLAGS", "--backend=gcc");
-        run(exe, repo, dump, log, 1, "", "--backend gcc: LLVM is the only backend");
+        run(exe, repo, dump, log, 1, "", "--backend gcc: the host's native back end is the only one");
         set_env("SNX_WORKFLOW_FLAGS", "--backend=llvm");
-        run(exe, repo, dump, log, 0, "G", NULL);
+        run(exe, repo, dump, log, 0, "G", "--backend llvm went with LLVM: the host's native back end makes the code");
         set_env("SNX_WORKFLOW_FLAGS", "--backend=invalid");
-        run(exe, repo, dump, log, 1, "", "--backend invalid: LLVM is the only backend");
+        run(exe, repo, dump, log, 1, "", "--backend invalid: the host's native back end is the only one");
         set_env("SNX_WORKFLOW_FLAGS", "");
     }
     set_env("SNX_WORKFLOW_ARGS", "1");
@@ -1518,7 +1518,7 @@ int main(int argc, char** argv) {
         run(exe, repo, game, log, 1, "", "-rx takes an XCI, NSP, XCZ, NSZ, DXCI or DNSP dump");
 #endif
         set_env("SNX_WORKFLOW_FLAGS", "--backend=gcc");
-        run(exe, repo, game, log, 1, "", "LLVM is the only backend");
+        run(exe, repo, game, log, 1, "", "the host's native back end is the only one");
         set_env("SNX_WORKFLOW_FLAGS", "");
         set_env("SNX_WORKFLOW_OUTDIR", repo);
         run(exe, repo, game, log, 1, "", "is a game");

@@ -1760,12 +1760,14 @@ int snx_driver(int argc, char** argv) {
 #endif
         if (parsed) continue;
         if (!strcmp(argv[i], "--backend") || !strncmp(argv[i], "--backend=", 10)) {
-            /* LLVM is the only code generator: older scripts name it */
+            /* the host's native back end is the only code generator; LLVM, which older scripts name, went */
             const char* backend = argv[i][9] ? argv[i] + 10 : i + 1 < argc ? argv[++i] : "";
             if (strcmp(backend, "llvm")) {
-                result = snx_error("--backend %s: LLVM is the only backend", backend);
+                result = snx_error("--backend %s: the host's native back end is the only one", backend);
                 goto done;
             }
+            snx_error("--backend llvm went with LLVM: the host's native back end makes the code "
+                      "(docs/user/deprecations.md)");
             continue;
         }
         if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) help = 1;
