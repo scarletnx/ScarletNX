@@ -3523,6 +3523,11 @@ static int root_get(const DsState* ds, u32 sz, VkBuffer* buf, u64* off) {
    binds alone */
 static int cb_epoch_refuses(VkBuffer b, u64 o);
 static int cb_window_refuses(int stage, int bank, VkBuffer b, u64 o, u32 sz, u64 align);
+/* the part of the draw thread's upload ring that bank i of a stage copies into (vk_stage_upload_own): its window moves
+   only when that part is full */
+static u32 cb_page(int stage, int i) {
+    return (u32)stage < DS_GFX_STAGES && (u32)i < 18 ? 1 + (u32)stage * 18 + (u32)i : 0;
+}
 static int cb_get_(const DsState* ds, int stage, int i, u32 sz, u64 align, VkBuffer* buf, u64* off) {
     int check = g_settings.draw_state_check != 0;
     DsCbBlock in = ds_cb_inline(ds, stage, (u32)i);
@@ -3530,7 +3535,8 @@ static int cb_get_(const DsState* ds, int stage, int i, u32 sz, u64 align, VkBuf
         /* staged again only when this block changed (DsState.inl_gen), not when another inline block did */
         const u64 gen = ds_cb_inline_gen(ds, stage, (u32)i);
         CbEntry* e = &g_cb[t_rc].slot[stage][i];
-        if (e->in == in.bytes && e->gen == gen && e->sz >= sz && cb_lives(e) && !cb_epoch_refuses(e->buf, e->off)) {
+        if (e->in == in.bytes && e->gen == gen && e->sz >= sz && cb_lives(e) && !(e->off % align) &&
+            !cb_epoch_refuses(e->buf, e->off) && !cb_window_refuses(stage, i, e->buf, e->off, sz, align)) {
             *buf = e->buf;
             *off = e->off;
             g_stats.n.cb[VK_CB_INLINE_KEPT]++;
@@ -3538,7 +3544,9 @@ static int cb_get_(const DsState* ds, int stage, int i, u32 sz, u64 align, VkBuf
             if (check) cb_check(e, 0, in.bytes, e->sz < in.size ? e->sz : in.size);
             return 1;
         }
-        u8* p = vk_stage(sz, vk_stage_align(), buf, off);
+        /* in the bank's part of the ring, as its copies from guest memory are: in the device ring, its window moved to
+           another buffer at each change between the two, and shared 64 KiB with every other block there */
+        u8* p = vk_stage_upload_own(sz, align, cb_page(stage, i), buf, off);
         if (!p) return 0;
         u32 n = sz < in.size ? sz : in.size;
         memcpy(p, in.bytes, n);
@@ -3610,9 +3618,7 @@ static int cb_get_(const DsState* ds, int stage, int i, u32 sz, u64 align, VkBuf
     if (whole && !pending && (!vk_uma() || vk_uma_imports_dear()) && !vk_mirror_pending(a, sz) && !vk_mirror_holds(a, sz)) {
         u64 t_copy = g_stats.n.cb[VK_CB_COPIED] % CB_TIME_EVERY ? 0 : plat_ns();
         vk_share_unlock(); /* grouped: whole needs a */
-        /* the bank's own part: its window moves when that part is full (vk_stage_upload_own) */
-        const u32 page = (u32)stage < DS_GFX_STAGES && (u32)i < 18 ? 1 + (u32)stage * 18 + (u32)i : 0;
-        u8* p = vk_stage_upload_own(sz, vk_stage_align(), page, buf, off);
+        u8* p = vk_stage_upload_own(sz, vk_stage_align(), cb_page(stage, i), buf, off);
         if (!p) return 0;
         life = CB_FRAME;
         if (!own_any())
