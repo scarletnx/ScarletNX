@@ -373,7 +373,7 @@ static unsigned long fingerprint(const unsigned char* data, size_t size) {
     return h;
 }
 
-/* the report the latest launch wrote (sdmc:/edenprobe/last-run names its folder), or NULL; its path through *where */
+/* the report the latest launch wrote (the card's last-run names its folder), or NULL; its path through *where */
 static char* report_text(const char* sdmc, char** where) {
     char *last = snx_path_join(sdmc, "last-run"), *name = slurp(last), *folder, *path, *text;
     size_t n;
@@ -448,10 +448,9 @@ char* mcp_edenprobe_run(const char* self, const char* cache, const char* nro, co
 #endif
     char *work = snx_path_join(cache, "edenprobe-run"), *games = snx_path_join(work, "games"),
          *folder = snx_path_join(games, "edenprobe"), *game = snx_path_join(folder, exe),
-         *stamp_path = snx_path_join(work, "nro.stamp"), *data = snx_path_join(folder, "edenprobe_data"),
-         *sdmc = snx_path_join(data, "sdmc/edenprobe"), *mode_path = snx_path_join(sdmc, "mode"),
-         *last = snx_path_join(sdmc, "last-run"), *old_stamp = slurp(stamp_path), *stamp = NULL, *output = NULL,
-         *report = NULL, *report_path = NULL;
+         *stamp_path = snx_path_join(work, "nro.stamp"), *data = snx_path_join(folder, "edenprobe_data"), *sdmc = NULL,
+         *mode_path = NULL, *last = NULL, *old_stamp = slurp(stamp_path), *stamp = NULL, *output = NULL, *report = NULL,
+         *report_path = NULL;
     unsigned char* bytes;
     size_t size = 0;
     Text out = {0};
@@ -462,7 +461,18 @@ char* mcp_edenprobe_run(const char* self, const char* cache, const char* nro, co
         goto done;
     }
     stamp = snx_format("%lu %lx\n", (unsigned long)size, fingerprint(bytes, size));
+    { /* the card this NRO reads its mode from and writes its runs to */
+        char* card = snx_format("sdmc/%s", mcp_probe_card(bytes, size));
+        sdmc = card ? snx_path_join(data, card) : NULL;
+        free(card);
+    }
     free(bytes);
+    mode_path = sdmc ? snx_path_join(sdmc, "mode") : NULL;
+    last = sdmc ? snx_path_join(sdmc, "last-run") : NULL;
+    if (!last) {
+        mcp_put(err, "no memory for the card's paths");
+        goto done;
+    }
     if (!old_stamp || strcmp(old_stamp, stamp) || !snx_is_file(game)) {
         const char* argv[8];
         int rc;
