@@ -1159,6 +1159,17 @@ static void set_v(unsigned n, double value) {
     memcpy(&bridge_cpu()->v[n].df[0], &value, sizeof value);
 }
 
+/* an import the HLE lacks returns 0 in v0 too: a float function's first argument stayed there as its result, so an
+   app's ldexpf(1.5, 3) gave 1.5. After test_guest_locale, which starts the bridge */
+static void test_missing_import(void) {
+    set_v(0, 1.5);
+    const uint64_t f = hle_missing("snx_test_no_such_function");
+    bridge_call(f, (uint64_t[]){3}, 1);
+    double got;
+    memcpy(&got, &bridge_cpu()->v[0].df[0], sizeof got);
+    expect_int("an import with no HLE gives 0.0", got == 0.0 && !signbit(got), 1);
+}
+
 /* the host C library's functions that a guest's call reaches take bionic's C locale, whatever the process's (the
    user's, which the JVM sets): its numbers, its days' and months' names and UTF-8 characters. The thread's own locale
    is back once the call returns */
@@ -1364,6 +1375,7 @@ int main(void) {
     test_offline_names();
     test_localhost();
     test_guest_locale();
+    test_missing_import();
     test_getpriority();
     test_multibyte_strings();
     test_icu();
