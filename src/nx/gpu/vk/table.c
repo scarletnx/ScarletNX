@@ -57,6 +57,7 @@ static struct {
     VkBuffer dbuf;
     DevMem dmem;
     u8* dmap;
+    VkDeviceSize dbytes; /* its size, which the descriptor arena's address space leaves room for */
     VkDeviceSize at[2], size[2];
     VkBuffer scratch; /* gbuf_address's scratch words */
     DevMem scratch_mem;
@@ -158,6 +159,7 @@ static int table_init_buffer(char* why, size_t size, u32 images, u32 samplers) {
     }
     vk_mem_track(g_table.dmem, VK_OWN_DESCRIPTORS);
     g_table.dmap = details.ptr;
+    g_table.dbytes = bytes;
     vk_descriptors_table(vk_buffer_address(g_table.dbuf));
     g_table.set = (VkDescriptorSet)(uintptr_t)1;
     why[0] = 0;
@@ -194,6 +196,7 @@ static int table_write(u32 binding, u32 slot, const VkDescriptorImageInfo* ii) {
     vkUpdateDescriptorSets(g_vk.dev, 1, &w, 0, NULL);
     return 1;
 }
+VkDeviceSize vk_table_descriptor_bytes(void) { return g_table.dbuf ? g_table.dbytes : 0; }
 int vk_table_init(char* why, size_t size) {
     VkPhysicalDeviceVulkan12Properties p12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES};
     VkPhysicalDeviceProperties2 pp2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &p12};

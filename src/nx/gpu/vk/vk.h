@@ -2590,6 +2590,9 @@ void vk_null_headers_forget(void);
 /* The texture table (table.c): the set of ShCaps.tex_table, with a slot for each sampled view in a layout and for each
    sampler. vk_table_init says if the device can hold it (and why not, in why), and makes it */
 int vk_table_init(char* why, size_t size);
+/* the bytes of the table's own descriptor buffer, 0 without one: they count in the device's descriptor buffer address
+   spaces with the arena's (descriptors.c's arena_shared, after vk_table_init) */
+VkDeviceSize vk_table_descriptor_bytes(void);
 /* the push constant bytes of a draw's pipeline layouts (pipeline.c) */
 u32 vk_push_bytes(void);
 /* With ShCaps.gbuf_address (table.c): the scratch words that an access past a global buffer's length goes to, made
