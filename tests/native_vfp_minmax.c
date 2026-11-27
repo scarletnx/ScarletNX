@@ -48,10 +48,10 @@ static int check(Step step, const Insn* insn, unsigned rd, const CPU* input) {
             actual.fpsr,expected.fpsr,(unsigned long long)actual.v[rd].d[0],(unsigned long long)expected.v[rd].d[0]);
     return 1;
 }
-static int run(int jit, int portable, char opt, unsigned long long* count) {
+static int run(int jit, int portable, unsigned long long* count) {
     Steps steps;
     char error[1024];
-    if (steps_begin_opt(&steps, jit, portable, opt, error, sizeof error)) return snx_error("%s", error);
+    if (steps_begin(&steps, jit, portable, error, sizeof error)) return snx_error("%s", error);
     for (unsigned i = 0; i < 20; i++)
         for (unsigned rd = 0; rd < 3; rd++) steps_add(&steps, instruction(i).word | rd, 0x1000, SNX_A64_TARGET_MAX);
     if (steps_load(&steps, error, sizeof error)) return snx_error("%s", error);
@@ -88,12 +88,12 @@ static int run(int jit, int portable, char opt, unsigned long long* count) {
     steps_end(&steps);
     return failed;
 }
-static int bench(unsigned index, unsigned pattern, char opt, int portable, const char* dump) {
+static int bench(unsigned index, unsigned pattern, int portable, const char* dump) {
     if(index>=20||pattern>2)return 2;
     Insn insn = instruction(index);
     Steps steps;
     char error[1024];
-    if (steps_begin_opt(&steps, 1, portable, opt, error, sizeof error)) return snx_error("%s", error);
+    if (steps_begin(&steps, 1, portable, error, sizeof error)) return snx_error("%s", error);
     steps_add(&steps, insn.word, 0x1000, SNX_A64_TARGET_MAX);
     if(dump) {
         int failed = steps_dump(&steps, dump, error, sizeof error);
@@ -118,11 +118,17 @@ static int bench(unsigned index, unsigned pattern, char opt, int portable, const
 }
 int main(int argc,char**argv) {
     STEPS_REQUIRE();
-    if(argc>3&&!strcmp(argv[1],"--bench"))return bench((unsigned)strtoul(argv[2],NULL,10),(unsigned)strtoul(argv[3],NULL,10),argc>4?argv[4][0]:'2',argc>5?atoi(argv[5]):0,argc>6?argv[6]:NULL);
+    if (argc > 3 && !strcmp(argv[1], "--bench")) {
+        const char* usage = "native_vfp_minmax --bench INDEX PATTERN [0|1, portable] [DUMP]";
+        if (steps_bench_args(argc, argv, 6, 0, usage)) return 2;
+        if (argc > 4 && strcmp(argv[4], "0") && strcmp(argv[4], "1"))
+            return fprintf(stderr, "--bench: portable is 0 or 1, given %s; usage: %s\n", argv[4], usage), 2;
+        return bench((unsigned)strtoul(argv[2], NULL, 10), (unsigned)strtoul(argv[3], NULL, 10),
+                     argc > 4 ? atoi(argv[4]) : 0, argc > 5 ? argv[5] : NULL);
+    }
     unsigned long long count=0;
     for (int jit = 0; jit < 2; jit++)
         for (int portable = 0; portable < STEPS_FORMS(2); portable++)
-            for (unsigned level = 0; level < STEPS_LEVELS(2); level++)
-                if (run(jit, portable, level ? '2' : '0', &count)) return 1;
+            if (run(jit, portable, &count)) return 1;
     printf("Vector min/max: %llu exact cases\n",count);return 0;
 }

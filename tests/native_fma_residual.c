@@ -56,10 +56,10 @@ static int check(Step step, const Insn* insn, const CPU* input) {
             (unsigned long long)expected.v[0].d[0], (unsigned long long)expected.v[0].d[1], expected.fpsr);
     return 1;
 }
-static int run(int jit, int portable, char opt, unsigned long long* checked) {
+static int run(int jit, int portable, unsigned long long* checked) {
     Steps steps;
     char error[1024];
-    if (steps_begin_opt(&steps, jit, portable, opt, error, sizeof error)) return snx_error("%s", error);
+    if (steps_begin(&steps, jit, portable, error, sizeof error)) return snx_error("%s", error);
     for (unsigned i = 0; i < sizeof instructions / sizeof instructions[0]; ++i) {
         steps_add(&steps, instructions[i].word, 0x1000, 0);
     }
@@ -146,12 +146,12 @@ static int run(int jit, int portable, char opt, unsigned long long* checked) {
     return failed;
 }
 
-static int bench(const char* workload,char opt,const char* dump) {
+static int bench(const char* workload, const char* dump) {
     unsigned index = strstr(workload,"vector") ? (strstr(workload,"64")?12:8) : (strstr(workload,"64")?4:0);
     const Insn* insn=&instructions[index];
     Steps steps;
     char error[1024];
-    if (steps_begin_opt(&steps, 1, 0, opt, error, sizeof error)) return snx_error("%s", error);
+    if (steps_begin(&steps, 1, 0, error, sizeof error)) return snx_error("%s", error);
     steps_add(&steps, insn->word, 0x1000, 0);
     if (dump) {
         int rc = steps_dump(&steps, dump, error, sizeof error);
@@ -178,12 +178,13 @@ static int bench(const char* workload,char opt,const char* dump) {
 int main(int argc, char** argv) {
     STEPS_REQUIRE();
     if (argc >= 3 && !strcmp(argv[1], "--bench"))
-        return bench(argv[2], argc > 3 ? argv[3][0] : '0', argc > 4 ? argv[4] : NULL);
+        return steps_bench_args(argc, argv, 4, 3, "native_fma_residual --bench WORKLOAD [DUMP]")
+                   ? 2
+                   : bench(argv[2], argc > 3 ? argv[3] : NULL);
     unsigned long long checked = 0;
     for (int jit = 0; jit < 2; ++jit)
         for (int portable = 0; portable < STEPS_FORMS(2); ++portable)
-            for (unsigned level = 0; level < STEPS_LEVELS(2); ++level)
-                if (run(jit, portable, level ? '2' : '0', &checked)) return 1;
+            if (run(jit, portable, &checked)) return 1;
     printf("FMA residuals: %llu exact cases\n", checked);
     return 0;
 }

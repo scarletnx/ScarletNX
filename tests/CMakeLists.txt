@@ -955,7 +955,7 @@ if(SNX_TEST_ARM_AOT)
 endif()
 include(arm_native_modes.cmake)
 
-# Board/GUI-only builds do not configure either AOT runtime or LLVM. Do not
+# Board/GUI-only builds do not configure either AOT runtime. Do not
 # create CPU execution tests that link the absent backend targets in that case.
 include("${PROJECT_SOURCE_DIR}/cmake/swipc.cmake")
 # Exercise NX's real FS tree and service adapters even in the independent CTR
@@ -1053,7 +1053,7 @@ add_executable(snx-test-host-page-threads host_page_threads.c)
 snx_test_target(snx-test-host-page-threads gnu23)
 target_link_libraries(snx-test-host-page-threads PRIVATE scarletnx-common Threads::Threads)
 add_test(NAME host_page_threads COMMAND snx-test-host-page-threads)
-# a compile thread's stack (compile_thread.h) takes the recursion LLVM's passes make over a game's biggest function
+# a compile thread's stack (compile_thread.h): the 8 MiB it is given on every host
 add_executable(snx-test-compile-thread compile_thread.c)
 snx_test_target(snx-test-compile-thread c23)
 add_test(NAME compile_thread COMMAND snx-test-compile-thread)
@@ -1198,7 +1198,7 @@ add_executable(snx-test-arm-exec arm_exec_test.c)
 snx_test_target(snx-test-arm-exec gnu23)
 target_link_libraries(snx-test-arm-exec PRIVATE snx_recompiler_jit)
 add_test(NAME arm_exec_dry_svc COMMAND snx-test-arm-exec)
-# the AOT compilers' blocks: the native back end's, LLVM's where it refuses one or the IR is kept, and who made them said
+# the AOT compilers' blocks: the native back end's, how many it made said, and why it refused one
 add_executable(snx-test-arm-aot arm_aot.c)
 snx_test_target(snx-test-arm-aot gnu23)
 target_link_libraries(snx-test-arm-aot PRIVATE snx_recompiler_jit scarletnx-common ${CMAKE_DL_LIBS})
@@ -3591,7 +3591,7 @@ add_executable(snx_recompiler_test recompiler_native.c)
 snx_test_target(snx_recompiler_test gnu23)
 target_link_libraries(snx_recompiler_test PRIVATE snx_driver ${CMAKE_DL_LIBS})
 
-# LLVM is always available to the recompiler.
+# a synthetic NRO recompiled by the CLI and run, its options and its messages
 add_test(NAME native_recompiler COMMAND snx_recompiler_test
     $<TARGET_FILE:scarletnx> "${PROJECT_SOURCE_DIR}" "${SNX_TARGET_C_COMPILER}")
 # the whole-encoding sweep (native_qemu_differential_sweep): opt in, it costs minutes
@@ -3650,10 +3650,10 @@ set(snx_sail_frozen "${test-references_SOURCE_DIR}/sail/frozen.txt")
 if(NOT WIN32)
     # sailgen's x86-64 back end (its instruction selection derived from the Intel SDM, cmake/sdm.cmake) against QEMU:
     # the same registers, flags, vector registers, memory, next pc and UNDEF from the same states, word by word, on the
-    # host's BMI1, BMI2 and LZCNT and without them
-    # sailgen's other native back ends against the LLVM back end (sail_mach.c, one executable each: arm64's encoders the
-    # A64 Sail's, riscv64's LLVM's TableGen records'), their code run under Unicorn on any host (the test's memory
-    # mapped into it at the same addresses), where Unicorn is installed
+    # host's BMI1, BMI2 and LZCNT and without them sailgen's other native back ends against QEMU and the recorded ends
+    # (sail_mach.c, one executable each: arm64's encoders the A64 Sail's, riscv64's LLVM's TableGen records'), their
+    # code run under Unicorn on any host (the test's memory mapped into it at the same addresses), where Unicorn is
+    # installed
     find_path(SNX_UNICORN_INCLUDE_DIR unicorn/unicorn.h)
     find_library(SNX_UNICORN_LIBRARY unicorn)
     # a sail_mach.c test held to QEMU here (SNX_QEMU_REF), or skipped saying why: these run on Linux alone
@@ -3717,7 +3717,7 @@ if(NOT WIN32)
         endforeach()
     endif()
 endif()
-# the x86-64 back end's, on Windows too: its emitters and its AArch32 blocks against LLVM's
+# the x86-64 back end's, on Windows too: its emitters and its AArch32 blocks against QEMU and the recorded ends
 include("${PROJECT_SOURCE_DIR}/cmake/sdm.cmake")
 # a host that runs its code for Windows: support/host_win64.c, whose signals are Linux's
 if(SNX_X64 AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -3764,7 +3764,7 @@ if(SNX_X64)
     snx_sail_x64_test(sail_x64_spill --pool ${snx_x64_pool} --states 32)
     snx_sail_x64_test(sail_x64_spill_xmm --pool ${snx_x64_pool} --xmm ${snx_x64_xmm} --states 16)
     # its code for Windows (the calling convention), run by this host's processor as Windows' C would call it
-    # (support/host_win64.c): the same words against LLVM, as the other machines' under Unicorn
+    # (support/host_win64.c): the same words against the recorded ends, as the other machines' under Unicorn
     if(snx_host_win64)
         add_executable(snx-test-sail-win64 sail_mach.c sail_mach_emit.c sail_qemu.c native_qemu_words.c
                        qemu_ref/qemu_ref.c support/frozen.c support/host_win64.c
@@ -3786,7 +3786,7 @@ if(SNX_X64)
         snx_sail_mach_test(sail_win64_spill_xmm win64 --pool 4 --xmm 4 --states 16)
         snx_sail_mach_test(sail_win64_plain win64 --without 0x3d07 --states 16)
     endif()
-    # its A32 blocks (x64_arm.c) against the AArch32 block compiler's LLVM ones: the same words consumed and the
+    # its A32 blocks (x64_arm.c) against the recorded results (test-references' arm/): the same words consumed and the
     # same results from random states, the A32 instructions it makes alone and in rows; again with three host
     # registers (the values spill) and without BMI1, BMI2 and LZCNT
     add_executable(snx-test-arm-x64 arm_x64.c)
@@ -3799,7 +3799,7 @@ if(SNX_X64)
     add_test(NAME arm_x64_plain COMMAND snx-test-arm-x64 --features 0
              --frozen ${test-references_SOURCE_DIR}/arm/seed3_2000.txt)
     # the blocks run where other code left the host's MXCSR rounding up and flushing to zero: they put back the default on
-    # entry, and end as LLVM's did under the default
+    # entry, and end as under the default
     add_test(NAME arm_x64_mxcsr COMMAND snx-test-arm-x64 --csr-x64 DF80
              --frozen ${test-references_SOURCE_DIR}/arm/x64_mxcsr.txt)
     set_tests_properties(arm_x64 arm_x64_spill arm_x64_plain arm_x64_mxcsr PROPERTIES TIMEOUT 600
@@ -3909,7 +3909,7 @@ snx_test_target(snx-test-arm-module-chain gnu23)
 target_link_libraries(snx-test-arm-module-chain PRIVATE snx_nx_aot ${CMAKE_DL_LIBS})
 add_test(NAME arm_module_chain COMMAND snx-test-arm-module-chain)
 set_tests_properties(arm_module_chain PROPERTIES TIMEOUT 120)
-# what its recompile says of the blocks the native back end leaves to LLVM
+# what its recompile says of the blocks the native back end refuses
 add_executable(snx-test-arm-module-refused arm_module_refused.c)
 snx_test_target(snx-test-arm-module-refused gnu23)
 target_link_libraries(snx-test-arm-module-refused PRIVATE snx_nx_aot ${CMAKE_DL_LIBS})
@@ -4205,8 +4205,9 @@ target_compile_options(snx-test-recompiler-library-cpp PRIVATE -Wall -Wextra -We
 target_link_libraries(snx-test-recompiler-library-cpp PRIVATE scarletnx-recompiler Threads::Threads)
 snx_test_sanitize(snx-test-recompiler-library-cpp) # this target is not made through snx_test_target
 add_test(NAME recompiler_library_cpp COMMAND snx-test-recompiler-library-cpp)
-# the host's native back end (x86-64's, arm64's...) against LLVM, function by function (recompiler_backends.c). The
-# features of the host it goes without in plain runs (--without): x86-64's BMI, AVX, FMA, F16C, AES and SHA, arm64's all
+# the host's native back end (x86-64's, arm64's...) against the recorded ends, function by function
+# (recompiler_backends.c). The features of the host it goes without in plain runs (--without): x86-64's BMI, AVX, FMA,
+# F16C, AES and SHA, arm64's all
 set(snx_plain_features 0xd07)
 set(snx_plain_ops_features 0x3d07)
 set(snx_plain_fma_features 0x800)
@@ -4225,12 +4226,9 @@ target_include_directories(snx-test-recompiler-backends PRIVATE "${CMAKE_CURRENT
 target_link_libraries(snx-test-recompiler-backends PRIVATE scarletnx-recompiler scarletnx-common)
 snx_decodetree_a64(snx-test-recompiler-backends)
 add_test(NAME recompiler_backends COMMAND snx-test-recompiler-backends --frozen ${snx_backends_frozen}/default.txt)
-# the same as a build with no LLVM runs it: the native back end held to the file alone
-add_test(NAME recompiler_backends_without_llvm COMMAND snx-test-recompiler-backends --without-llvm
-         --frozen ${snx_backends_frozen}/default.txt)
-# the back ends' Advanced SIMD (x64_vec.c, arm64_vec.c), a family at a time: each word of these ops (the decoder's samples
-# of them) made by the host's back end, a function of its own, and its results LLVM's from states of the lanes' edge
-# values
+# the back ends' Advanced SIMD (x64_vec.c, arm64_vec.c), a family at a time: each word of these ops (the decoder's
+# samples of them) made by the host's back end, a function of its own, and its results the recorded ones from states of
+# the lanes' edge values
 foreach(family IN ITEMS
         "pairs;FADDP_v;FADDP_s;FMAXP_v;FMINP_v;FMAXNMP_v;FMINNMP_v;FMAXP_s;FMINP_s;FMAXNMP_s;FMINNMP_s;FMAXV_s;FMINV_s;FMAXNMV_s;FMINNMV_s"
         "elements;FMUL_si;FMLA_si;FMLS_si"
@@ -4342,8 +4340,7 @@ if(NOT WIN32)
     add_test(NAME native_refused COMMAND snx-test-native-refused)
     set_tests_properties(native_refused PROPERTIES TIMEOUT 300)
 endif()
-# a host below its native back end's floor (native.h's snx_native_floor): the line of what it lacks, what refuses it
-# without LLVM, and LLVM's code with it
+# a host below its native back end's floor (native.h's snx_native_floor): the line of what it lacks, and what refuses it
 add_executable(snx-test-native-floor native_floor.c)
 snx_test_target(snx-test-native-floor gnu23)
 target_link_libraries(snx-test-native-floor PRIVATE scarletnx-recompiler)
@@ -4358,7 +4355,8 @@ add_test(NAME native_floor_recompile COMMAND snx-test-native-floor-recompile "${
 set_tests_properties(native_floor_recompile PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77 ENVIRONMENT
     "HOME=${snx_floor_folder}-home;XDG_DATA_HOME=${snx_floor_folder}-home/data;XDG_CONFIG_HOME=${snx_floor_folder}-home/config;XDG_STATE_HOME=${snx_floor_folder}-home/state;XDG_CACHE_HOME=${snx_floor_folder}-home/cache")
 # the x86-64 back end's helpers of the SSE instructions a host lacks (x64_helpers.c's snx_x64_sse) against the
-# instructions, and its code without them against LLVM's, word by word (Nehalem's features: no PCLMULQDQ, no AVX)
+# instructions, and its code without them against the recorded ends, word by word (Nehalem's features: no PCLMULQDQ, no
+# AVX)
 if(SNX_X64)
     add_executable(snx-test-x64-sse-helped x64_sse_helped.c
                    "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
@@ -4398,7 +4396,8 @@ if(SNX_X64)
              --functions 400 --states 8 --frozen ${snx_backends_frozen}/functions_400.txt)
     add_test(NAME recompiler_backends_refused_no_sse41 COMMAND snx-test-recompiler-backends --refused --target max
              --without 0x3D20)
-    # and with SSE2 alone, which is all the back end needs: every word made, the functions LLVM's word by word
+    # and with SSE2 alone, which is all the back end needs: every word made, the functions the recorded ones word by
+    # word
     add_test(NAME recompiler_backends_sse2 COMMAND snx-test-recompiler-backends --without 0x3FFF --target max
              --functions 400 --states 8 --frozen ${snx_backends_frozen}/max_functions_400.txt)
     add_test(NAME recompiler_backends_refused_sse2 COMMAND snx-test-recompiler-backends --refused --target max
@@ -4429,14 +4428,14 @@ endif()
 # the exclusives whatever the fields they leave unused hold
 add_test(NAME recompiler_backends_exclusives COMMAND snx-test-recompiler-backends --refused --ops LDXR LDXP STXR)
 # each of the Switch's ops, of an Android phone's (half precision, the dot products, the rounding doubling
-# multiplications), of the Ounce's and of all the decoder knows is the native back end's: none of their words is left to
-# LLVM
+# multiplications), of the Ounce's and of all the decoder knows is the native back end's: none of their words is
+# refused
 foreach(target switch android ounce max)
     add_test(NAME recompiler_backends_refused_${target} COMMAND snx-test-recompiler-backends --refused --target ${target})
     set_tests_properties(recompiler_backends_refused_${target} PROPERTIES TIMEOUT 600)
 endforeach()
-# the native back ends other than the host's against LLVM, function by function, their code under Unicorn on any
-# host (where installed)
+# the native back ends other than the host's against the recorded ends, function by function, their code under Unicorn
+# on any host (where installed)
 if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
     foreach(m arm64 rv64 ppc64 mips64 la64 ppc64be mips64be s390x)
         string(TOUPPER "${m}" upper)
@@ -4524,8 +4523,8 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
         set_tests_properties(recompiler_${m}_long recompiler_${m}_long_jit PROPERTIES TIMEOUT 600)
     endforeach()
     # the x86-64 back end's own code on older processors (QEMU's models under Unicorn), made for what each one's CPUID
-    # gives: an instruction it lacks stops the code, and the results are held to LLVM's. A Nehalem has no PCLMULQDQ,
-    # a Penryn no SSE4.2 either
+    # gives: an instruction it lacks stops the code, and the results are held to the recorded ones. A Nehalem has no
+    # PCLMULQDQ, a Penryn no SSE4.2 either
     if(SNX_X64 AND NOT WIN32)
         add_executable(snx-test-recompiler-x64cpu recompiler_backends.c native_qemu_words.c qemu_ref/qemu_ref.c
                        support/host_unicorn.c support/la64_interp.c support/frozen.c
@@ -4548,8 +4547,7 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
         add_test(NAME recompiler_x64cpu_penryn_ops COMMAND snx-test-recompiler-x64cpu --cpu Penryn --states 16 --ops
                  PMULL_p64 CMGT_v CMHI_v CMGE_v CMHS_v CMGT_s CMLT0_v CMLE0_v FCMGT_v FACGT_v
                  --frozen ${snx_backends_frozen}/x64cpu_penryn_ops.txt)
-        # CRC32C of each size, in one function: --ops' words that write X30 return to the CRC under Unicorn, where
-        # LLVM's run stops at the miss
+        # CRC32C of each size, in one function: --ops' words that write X30 return to the CRC under Unicorn
         add_test(NAME recompiler_x64cpu_penryn_crc32c COMMAND snx-test-recompiler-x64cpu --cpu Penryn --made --states 40
                  --words 1ac35000 1ac45421 1ac55842 9ac65c63 1ac15be9 9adf5c0a
                  --frozen ${snx_backends_frozen}/x64cpu_penryn_crc32c.txt)
@@ -4606,8 +4604,8 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
     set_tests_properties(recompiler_arm64win recompiler_arm64win_step recompiler_arm64win_jit recompiler_arm64win_hook
                          recompiler_arm64win_plain recompiler_arm64win_long recompiler_arm64win_calls_back PROPERTIES
                          TIMEOUT 600 SKIP_RETURN_CODE 77)
-    # their A32 blocks (arm64_arm.c, rv64_arm.c) against LLVM's, as arm_x64's, under Unicorn; again with three host
-    # registers
+    # their A32 blocks (arm64_arm.c, rv64_arm.c) against the recorded results, as arm_x64's, under Unicorn; again with
+    # three host registers
     foreach(m arm64 rv64 ppc64 mips64 la64 ppc64be mips64be s390x)
         string(TOUPPER "${m}" upper)
         add_executable(snx-test-arm-${m} arm_x64.c support/host_unicorn.c support/la64_interp.c)
@@ -4658,7 +4656,7 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
     snx_arm_call_abi(arm64 aarch64-unknown-elf -ffixed-x18)
 endif()
 # the x86-64 back end's functions as a Windows host's (the calling convention, COFF objects), run by this host's processor
-# as Windows' C would call them (support/host_win64.c): against LLVM, as the other machines' under Unicorn
+# as Windows' C would call them (support/host_win64.c): against the recorded ends, as the other machines' under Unicorn
 if(snx_host_win64)
     add_executable(snx-test-recompiler-win64 recompiler_backends.c native_qemu_words.c qemu_ref/qemu_ref.c
                    support/host_win64.c support/frozen.c
@@ -4731,7 +4729,7 @@ if(NOT WIN32)
     add_test(NAME native_link COMMAND snx-test-native-link)
 endif()
 # the words past the guests' CPUs (a64.profile's max): the back end makes each op's, and from random states they give what
-# qemu-aarch64 -cpu max gives (tests/qemu_ref), where this host has it: LLVM's back end has no code for half of them
+# qemu-aarch64 -cpu max gives (tests/qemu_ref), where this host has it
 foreach(family IN ITEMS
         "ints;CNT;CTZ;ABS;SMAX;SMIN;UMAX;UMIN;SMAX_i;SMIN_i;UMAX_i;UMIN_i;AXFLAG;XAFLAG;SUBP;SUBPS;ADDG_i;SUBG_i;GMI;IRG"
         "sha;BCAX;EOR3;RAX1;XAR;SHA512H;SHA512H2;SHA512SU0;SHA512SU1"
@@ -4762,7 +4760,7 @@ foreach(family IN ITEMS
         endif()
     endforeach()
 endforeach()
-# the tags' loads and stores, which LLVM's back end has
+# the tags' loads and stores
 foreach(m IN LISTS backends)
     add_test(NAME recompiler_${m}_past_tags COMMAND snx-test-recompiler-${m} --target max --states 16 --ops STG STZG ST2G
              STZ2G STGP LDG --frozen ${snx_backends_frozen}/past_tags.txt)
@@ -4832,7 +4830,7 @@ add_test(NAME recompiler_backends_cold_pin COMMAND snx-test-recompiler-backends 
 # the architecture's baseline on arm64
 add_test(NAME recompiler_backends_plain COMMAND snx-test-recompiler-backends --without ${snx_plain_features} --seed 209458
          --functions 1200 --frozen ${snx_backends_frozen}/plain.txt)
-# what the library's archive needs from outside it: LLVM and the system's libraries alone
+# what the library's archive needs from outside it: the system's libraries alone
 # (tests/recompiler_symbols.cmake). Its program links every object of the archive with those, named here rather than
 # taken from the archive's own link line, which a new library would join. Built by the test, so a library more fails
 # the test and not the build
@@ -4861,7 +4859,7 @@ if(TARGET OpenSSL::Crypto)
         RESULT_VARIABLE snx_macho_result OUTPUT_QUIET ERROR_QUIET)
     if(snx_macho_result EQUAL 0)
         foreach(part 1 2 3 4)
-            # LLVM's modules have no common symbols, which the linker refuses: a tentative definition is not one
+            # the modules have no common symbols, which the linker refuses: a tentative definition is not one
             # whatever the compiler's default
             add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/link_macho_${part}.o"
                 COMMAND "${CMAKE_C_COMPILER}" --target=arm64-apple-macos13 -std=gnu23 -ffreestanding -O2 -fPIC -fno-common
@@ -5202,7 +5200,7 @@ if(TARGET snx_vita_program)
     snx_vita_hookgen(snx-test-vita-hle-adapters SPEC "${CMAKE_CURRENT_SOURCE_DIR}/hook/vita.hook" PREFIX vita_test
                      NAME vita/hle/test.hook)
     add_test(NAME vita_hle_adapters COMMAND snx-test-vita-hle-adapters)
-    # an image compiled by the native back end and by LLVM, both modules run as the run loop runs one
+    # an image compiled by the native back end, its module run as the run loop runs one
     add_executable(snx-test-vita-aot vita_aot.c)
     snx_test_target(snx-test-vita-aot gnu23)
     target_link_libraries(snx-test-vita-aot PRIVATE snx_vita_program)
@@ -5892,8 +5890,7 @@ if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
                  "-DSPEC=${PROJECT_SOURCE_DIR}/src/nx/hle/svc/hos.svc"
                  "-DEXPECTED=${CMAKE_CURRENT_SOURCE_DIR}/svcgen_layout.txt"
                  -P "${CMAKE_CURRENT_SOURCE_DIR}/svcgen_layout.cmake")
-        # tools/settingsgen on headers of its own: LLVM's setters however their declarations are broken over lines,
-        # the passes of a pipeline, and an @ID this LLVM lacks
+        # tools/settingsgen on a spec of its own: every key with an _ listed with a - for each
         add_test(NAME settingsgen COMMAND "${CMAKE_COMMAND}" "-DSETTINGSGEN=$<TARGET_FILE:snx-settingsgen>"
                  "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/settingsgen-test"
                  -P "${CMAKE_CURRENT_SOURCE_DIR}/settingsgen.cmake")
@@ -6171,7 +6168,7 @@ foreach(snx_test native_recompiler nro_modules plt_calls nx_runtime_homebrew nx_
         set_property(TEST ${snx_test} APPEND PROPERTY ENVIRONMENT "XDG_CACHE_HOME=${CMAKE_CURRENT_BINARY_DIR}/xdg-cache")
     endif()
 endforeach()
-# recompiler_backends on a host that has no native back end, or for words that it leaves to LLVM: nothing to compare
+# recompiler_backends on a host that has no native back end: nothing to compare
 get_property(snx_tests DIRECTORY PROPERTY TESTS)
 foreach(snx_test IN LISTS snx_tests)
     if(snx_test MATCHES "^recompiler_backends(_|$)")

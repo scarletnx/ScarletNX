@@ -47,10 +47,10 @@ static int entry_checks(GuestFn f, u64 pc) {
 }
 #endif
 
-static int run(int jit, char opt, int benchmark) {
+static int run(int jit, int benchmark) {
     Steps steps;
     char error[1024];
-    if (steps_begin_opt(&steps, jit, 0, opt, error, sizeof error)) return snx_error("%s", error);
+    if (steps_begin(&steps, jit, 0, error, sizeof error)) return snx_error("%s", error);
     steps_add(&steps, 0x4e22d420u, 0x1000, 0); /* FADD V0.4S,V1.4S,V2.4S requires the host environment. */
 #if defined(__x86_64__) || defined(_M_X64)
     steps_add(&steps, 0x8b020020u, 0x1000, 0); /* ADD X0,X1,X2 does not */
@@ -82,7 +82,7 @@ static int run(int jit, char opt, int benchmark) {
         for (unsigned lane = 0; lane < 4; lane++) values &= cpu.v[0].s[lane] == 0x3f800000;
         host_set(saved);
         if (next != 0x1004 || (control & control_mask()) != default_control() || !values) {
-            fprintf(stderr, "entry control O%c jit%d mode%u: %llx\n", opt, jit, n, (unsigned long long)control);
+            fprintf(stderr, "entry control jit%d mode%u: %llx\n", jit, n, (unsigned long long)control);
             failed = 1;
             break;
         }
@@ -101,9 +101,9 @@ static int run(int jit, char opt, int benchmark) {
 }
 int main(int argc, char** argv) {
     STEPS_REQUIRE();
-    if (argc > 1 && !strcmp(argv[1], "--bench")) return run(1, argc > 2 ? argv[2][0] : '2', 1);
+    if (argc > 1 && !strcmp(argv[1], "--bench"))
+        return steps_bench_args(argc, argv, 2, 0, "native_fp_env --bench") ? 2 : run(1, 1);
     for (int jit = 0; jit < 2; jit++)
-        for (unsigned level = 0; level < STEPS_LEVELS(3); level++)
-            if (run(jit, (char)('0' + level), 0)) return 1;
+        if (run(jit, 0)) return 1;
     return 0;
 }

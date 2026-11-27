@@ -23,10 +23,10 @@ static int check(Step step, unsigned width, u64 input, u32 fpcr, u32 fpsr) {
     return 1;
 }
 
-static int run(int jit, char opt, unsigned long long* count) {
+static int run(int jit, unsigned long long* count) {
     Steps steps;
     char error[1024];
-    if (steps_begin_opt(&steps, jit, 0, opt, error, sizeof error)) return snx_error("%s", error);
+    if (steps_begin(&steps, jit, 0, error, sizeof error)) return snx_error("%s", error);
     steps_add(&steps, 0x5EA1F820u, 0x1000, 0);
     steps_add(&steps, 0x5EE1F820u, 0x1000, 0);
     if (steps_load(&steps, error, sizeof error)) return snx_error("%s", error);
@@ -52,8 +52,7 @@ int main(void) {
     STEPS_REQUIRE();
     unsigned long long count = 0;
     for (int jit = 0; jit < 2; ++jit)
-        for (unsigned level = 0; level < STEPS_LEVELS(2); ++level)
-            if (run(jit, level ? '2' : '0', &count)) return 1;
+        if (run(jit, &count)) return 1;
     printf("FRECPX: %llu exact cases\n", count);
     return 0;
 }

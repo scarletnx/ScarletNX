@@ -86,10 +86,10 @@ static int check(Step step, const Insn* insn, const CPU* input, unsigned rd) {
             (unsigned long long)expected.v[rd].d[0], actual.fpsr, expected.fpsr);
     return 1;
 }
-static int run(int jit, int portable, char opt, unsigned long long* checks) {
+static int run(int jit, int portable, unsigned long long* checks) {
     Steps steps;
     char error[1024];
-    if (steps_begin_opt(&steps, jit, portable, opt, error, sizeof error)) return snx_error("%s", error);
+    if (steps_begin(&steps, jit, portable, error, sizeof error)) return snx_error("%s", error);
     for (unsigned i = 0; i < sizeof instructions / sizeof instructions[0]; ++i)
         for (unsigned rd = 0; rd < 2; rd++) steps_add(&steps, instructions[i].word | rd, 0x1000, SNX_A64_TARGET_MAX);
     if (steps_load(&steps, error, sizeof error)) return snx_error("%s", error);
@@ -129,11 +129,11 @@ static int run(int jit, int portable, char opt, unsigned long long* checks) {
     steps_end(&steps);
     return failed;
 }
-static int bench(unsigned index,char opt,int reference, const char* dump, unsigned pattern) {
+static int bench(unsigned index, int reference, const char* dump, unsigned pattern) {
     if (index >= sizeof instructions / sizeof instructions[0] || pattern > 2) return 2;
     Steps steps;
     char error[1024];
-    if (steps_begin_opt(&steps, 1, reference, opt, error, sizeof error)) return snx_error("%s", error);
+    if (steps_begin(&steps, 1, reference, error, sizeof error)) return snx_error("%s", error);
     steps_add(&steps, instructions[index].word, 0x1000, SNX_A64_TARGET_MAX);
     if (dump && strcmp(dump,"-")) {
         int failed = steps_dump(&steps, dump, error, sizeof error);
@@ -170,11 +170,13 @@ static int bench(unsigned index,char opt,int reference, const char* dump, unsign
 int main(int argc,char**argv) {
     STEPS_REQUIRE();
     if (argc >= 3 && !strcmp(argv[1],"--bench"))
-        return bench((unsigned)strtoul(argv[2],NULL,10),argc>3?argv[3][0]:'0',argc>4&&!strcmp(argv[4],"--reference"),argc>5?argv[5]:NULL,argc>6?(unsigned)strtoul(argv[6],NULL,10):0);
+        return steps_bench_args(argc, argv, 6, 3, "native_round --bench INDEX [--reference] [DUMP] [PATTERN]")
+                   ? 2
+                   : bench((unsigned)strtoul(argv[2], NULL, 10), argc > 3 && !strcmp(argv[3], "--reference"),
+                           argc > 4 ? argv[4] : NULL, argc > 5 ? (unsigned)strtoul(argv[5], NULL, 10) : 0);
     unsigned long long checks = 0;
     for (int jit = 0; jit < 2; ++jit)
         for (int portable = 0; portable < STEPS_FORMS(2); ++portable)
-            for (unsigned opt = 0; opt < STEPS_LEVELS(2); ++opt)
-                if (run(jit, portable, opt ? '2' : '0', &checks)) return 1;
+            if (run(jit, portable, &checks)) return 1;
     printf("FRINT: %llu exact cases\n",checks);return 0;
 }

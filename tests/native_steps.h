@@ -59,7 +59,6 @@ int native_steps_forms(void);
 
 /* starts a set of steps: 0, or -1 with the reason in error. The optimization level says nothing to a native back end */
 int native_steps_begin(NativeSteps* s, int jit, int form, char* error, size_t error_size);
-int native_steps_begin_opt(NativeSteps* s, int jit, int form, char opt, char* error, size_t error_size);
 /* word's step at pc for a guest with these A64 features (0: the Switch's); its index */
 size_t native_steps_add(NativeSteps* s, u32 word, u64 pc, u64 features);
 /* a function of codegen, at its index in the table as its entry F_<address>: a GuestFn, not a step. Consecutive

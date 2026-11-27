@@ -8,7 +8,7 @@
    the build had LLVM): the same words consumed, and the same results from the same random states.
      snx-test-arm-x64 [--profile a57|a9|arm11|arm946e|arm7tdmi] [--memory flat|hosted|checked] [--trace] [--blocks N]
          [--thumb N] [--states N] [--pool N] [--features MASK] [--seed N] [--word HEX]... [--halves HEX[,HEX]...]
-         [--dump] [--step]
+         [--step]
    --step (Windows' blocks): the stack unwound by the objects' function table at every instruction of the blocks. Each
    block is words drawn from the A32 instructions the back end makes (data processing, branches, the loads and
    stores of every kind, the multiplies and divides, the bit operations, MRS and MSR, the exclusives and acquire and
@@ -24,7 +24,7 @@
    syndrome, the monitor, the TLS registers, the VFP registers and FPSCR, and guest memory, hashed, must be the file's. --pool N keeps
    the x86 values in N host registers, so they spill; --features takes the host's BMI1 (1), BMI2 (2) and LZCNT (4) out
    where not in MASK; --word runs the words given (HEX, or HEX,HEX... in a row), one block each, and says what each
-   state did; --dump prints a failing state's start.
+   state did.
    --profile and --memory are the options' (cpu/arm/codegen.h); the words are drawn from
    what the profile decodes, UNDEFINED ones now and then. Hosted memory and the ARM7TDMI's and the ARM946E's bus run on
    a window of all 4 GiB and a guard, 256 KiB of memory mirrored through it; their hook (SnxArmCPU.io) and checked
@@ -100,10 +100,8 @@ static struct {
     char why[200];
     size_t kinds[64], refusals[64];
     size_t shapes[32], t16; /* the Thumb instructions drawn, by the decoder's shape; the 16-bit ones apart */
-    size_t exits[16];   /* the runs' exits, LLVM's: how many ran through and how many stopped, and at what */
+    size_t exits[16];       /* the runs' exits: how many ran through and how many stopped, and at what */
     const char* object; /* --object FILE: the first chunk's x86-64 object written there (objdump -d reads it) */
-    const char* ll;     /* --ll FILE: the first chunk's LLVM module, before its passes, written there */
-    int dump;           /* --dump: a failing state's start printed */
 #if defined(SNX_TEST_UNWINDS)
     int step; /* --step: hostuc_step */
 #endif
@@ -111,25 +109,22 @@ static struct {
     size_t fp_calls[256], fp_hot_calls;
     SnxArmCodegenOptions options; /* --profile, --memory and --trace */
     int windowed;                 /* the runs' memory is the windows' */
-    unsigned char *window[2], *view[2],
-        *pristine;                      /* each side's window and the memory it mirrors; what both start from */
-    size_t hooked, transfers;           /* the hook's calls and checked memory's, LLVM's side's */
+    unsigned char *window, *view, *pristine; /* the runs' window, the memory it mirrors, and what they start from */
+    size_t hooked, transfers;           /* the hook's calls and checked memory's */
     uint32_t chain_returns, chain_sets; /* what chain_io gives a write, and sets R2 to (0: leaves it) */
     unsigned char* callee; /* --callee's object, callee_size bytes */
     size_t callee_size;
-    SnxArmRt rt[2]; /* with it, each side's runtime */
+    SnxArmRt rt;    /* with it, the runs' runtime */
     unsigned csr;   /* --csr-x64: the host's MXCSR the blocks start under, 0 for the default */
-    uint32_t (*io[2])(SnxArmCPU* cpu, uint32_t address, uint32_t size_write, uint32_t value); /* and hook */
+    uint32_t (*io)(SnxArmCPU* cpu, uint32_t address, uint32_t size_write, uint32_t value); /* and hook */
     u64 base;                       /* --seed: each block's own stream is drawn from it */
     SnxFrozen frozen;               /* --frozen FILE's, its hashes set */
-    size_t frozen_bad[2];           /* blocks whose results are not the file's (the back end's, [1]) */
+    size_t frozen_bad;              /* blocks whose results are not the file's */
     int drawn;                      /* the command line asks for blocks (--blocks, --thumb, --word, --halves) */
     size_t unrunnable;              /* blocks this machine does not run (no_exclusives) */
     u64 inputs;                     /* the digest of every block and state drawn */
     unsigned char before[MEM_SIZE]; /* flat memory as the states start */
 } g_test;
-/* the side whose results are the reference: LLVM's, else the back end's own, held to --frozen's */
-#define FIRST_SIDE 1
 static int legacy(void) {
     return g_test.options.profile == SNX_ARM_PROFILE_ARM7TDMI || g_test.options.profile == SNX_ARM_PROFILE_ARM946E;
 }
@@ -394,20 +389,20 @@ static int windows_new(void) {
     return -1;
 #else
     g_test.pristine = (unsigned char*)malloc(VIEW);
-    for (int side = 0; g_test.pristine && side < 2; ++side) {
-        FILE* f = tmpfile();
-        unsigned char* w = (unsigned char*)mmap(NULL, WINDOW, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-        if (!f || ftruncate(fileno(f), VIEW) || w == MAP_FAILED) break;
+    FILE* f = g_test.pristine ? tmpfile() : NULL;
+    unsigned char* w =
+        f ? (unsigned char*)mmap(NULL, WINDOW, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) : MAP_FAILED;
+    if (f && !ftruncate(fileno(f), VIEW) && w != MAP_FAILED) {
         for (u64 at = 0; at < WINDOW; at += VIEW)
             if (mmap(w + at, VIEW, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fileno(f), 0) == MAP_FAILED) {
                 fprintf(stderr, "FAIL: no view of the guest window at %llx\n", (unsigned long long)at);
                 return -1;
             }
-        g_test.window[side] = w;
-        g_test.view[side] = w;
-        fclose(f);
+        g_test.window = w;
+        g_test.view = w;
     }
-    if (!g_test.window[1]) {
+    if (f) fclose(f);
+    if (!g_test.window) {
         fprintf(stderr, "FAIL: no window of guest memory of %llu bytes\n", (unsigned long long)WINDOW);
         return -1;
     }
@@ -417,7 +412,8 @@ static int windows_new(void) {
 #endif
 }
 
-/* a random state of the kth kind */
+/* the blocks run on the host: a native machine's run under Unicorn (hostuc_call) */
+#if !defined(SNX_TEST_NATIVE)
 /* A block is generated code, with no type signature before its entry, which the function sanitizer's check of an
    indirect call reads: the 8 bytes before the callee, below the code loader's arena for its first one. So the call is
    unchecked, as exec.c's run_block */
@@ -426,18 +422,16 @@ static int windows_new(void) {
 }
 #if HOST_CSR
 /* a block run under the MXCSR --csr-x64 gave it, as other code on the thread may leave it; the default after */
-static void run_block_under(int side, SnxU64 addr, SnxArmCPU* cpu) {
-    (void)side;
+static void run_block_under(SnxU64 addr, SnxArmCPU* cpu) {
     if (g_test.csr) _mm_setcsr(g_test.csr);
     run_block(addr, cpu);
     _mm_setcsr(0x1F80);
 }
 #else
-static void run_block_under(int side, SnxU64 addr, SnxArmCPU* cpu) {
-    (void)side;
-    run_block(addr, cpu);
-}
+static void run_block_under(SnxU64 addr, SnxArmCPU* cpu) { run_block(addr, cpu); }
 #endif
+#endif
+/* a random state of the kth kind */
 static void start(RunState* s, unsigned k, uint32_t pc) {
     SnxArmCPU* cpu = &s->cpu;
     s->checked = (SnxArmCheckedCPU){0};
@@ -550,8 +544,8 @@ static u64 changed_pages(u64 h, const unsigned char* now, const unsigned char* w
     return snx_frozen_mix(h, size);
 }
 /* a run's results as a frozen file keeps them: what differs() compares, each value at its width, and guest memory by
-   what changed from the state's start (both sides start from the same) */
-static u64 results(const RunState* s, int side) {
+   what changed from the state's start */
+static u64 results(const RunState* s) {
     const SnxArmCPU* c = &s->cpu;
     u64 h = 0x726573756c7473ull;
     for (unsigned r = 0; r < 16; ++r) h = snx_frozen_mix(h, c->r[r]);
@@ -573,7 +567,7 @@ static u64 results(const RunState* s, int side) {
     for (unsigned i = 0; i < 32; ++i) h = snx_frozen_mix(h, c->d[i]);
     for (unsigned i = 0; i < TRACE; ++i) h = snx_frozen_mix(h, s->trace[i]);
     h = snx_frozen_mix(snx_frozen_mix(h, s->skipped[0]), s->skipped[1]);
-    return g_test.windowed ? changed_pages(h, g_test.view[side], g_test.pristine, VIEW)
+    return g_test.windowed ? changed_pages(h, g_test.view, g_test.pristine, VIEW)
                            : changed_pages(h, s->mem, g_test.before, MEM_SIZE);
 }
 /* a state as it starts, into the inputs' digest: its values, never its pointers, and where rnd is past it */
@@ -800,12 +794,11 @@ static int load_uc(HostUc* uc, unsigned char* object, size_t size, const Block* 
             fprintf(stderr, "FAIL: --callee's object: %s\n", error);
             return 1;
         }
-        g_test.rt[1].undefined =
+        g_test.rt.undefined =
             (void (*)(SnxArmCPU*, uint32_t, uint32_t))(uintptr_t)hostuc_symbol(uc, "snx_test_undefined");
-        g_test.rt[1].coproc = (void (*)(SnxArmCPU*, uint32_t))(uintptr_t)hostuc_symbol(uc, "snx_test_coproc");
-        g_test.io[1] =
-            (uint32_t (*)(SnxArmCPU*, uint32_t, uint32_t, uint32_t))(uintptr_t)hostuc_symbol(uc, "snx_test_io");
-        if (!g_test.rt[1].undefined || !g_test.rt[1].coproc || !g_test.io[1]) {
+        g_test.rt.coproc = (void (*)(SnxArmCPU*, uint32_t))(uintptr_t)hostuc_symbol(uc, "snx_test_coproc");
+        g_test.io = (uint32_t (*)(SnxArmCPU*, uint32_t, uint32_t, uint32_t))(uintptr_t)hostuc_symbol(uc, "snx_test_io");
+        if (!g_test.rt.undefined || !g_test.rt.coproc || !g_test.io) {
             fprintf(stderr, "FAIL: --callee's object has no callbacks\n");
             return 1;
         }
@@ -854,47 +847,46 @@ static void block_text(const Block* b, char* out, size_t size) {
                                b->thumb ? b->half[i] : b->words[i]);
 }
 
-/* a block's results against --frozen's file: h[side], each side's over its states */
-static void frozen_block(const Block* b, const u64 h[2]) {
+/* a block's results against --frozen's file: h, over its states */
+static void frozen_block(const Block* b, u64 h) {
     SnxFrozen* f = &g_test.frozen;
     char text[100];
     const u64 want = snx_frozen_hash(f, (size_t)b->thumb, b->index);
-    for (int side = FIRST_SIDE; side < 2; ++side) {
-        if ((side && !b->made) || h[side] == want) continue; /* a block refused is a failure of its own */
+    if (b->made && h != want) { /* a block refused is a failure of its own */
         block_text(b, text, sizeof text);
         fprintf(stderr, "FAIL: %s:%zu, %s block %zu [%s]: %s's results hash %016llx, the file's %016llx\n", f->path,
-                snx_frozen_line(f, (size_t)b->thumb, b->index), b->thumb ? "Thumb" : "A32", b->index, text,
-                side ? BACK_NAME : "LLVM", (unsigned long long)h[side], (unsigned long long)want);
-        ++g_test.frozen_bad[side];
+                snx_frozen_line(f, (size_t)b->thumb, b->index), b->thumb ? "Thumb" : "A32", b->index, text, BACK_NAME,
+                (unsigned long long)h, (unsigned long long)want);
+        ++g_test.frozen_bad;
         ++g_test.failures;
     }
 }
 
-/* the chunk's blocks made by both (the back end alone without LLVM), loaded and run */
+/* the chunk's blocks made by the back end, loaded and run */
 static int run_chunk(Back* x64, Block* blocks, size_t count) {
     SnxCodeLoader* xloader = NULL;
     unsigned char* xobj = NULL;
     size_t xsize = 0, made = 0;
-    SnxU64 *laddr = calloc(count + 1, sizeof *laddr), *xaddr = calloc(count + 1, sizeof *xaddr);
-    [[maybe_unused]] char error[512] = ""; /* a code loader's: none under Unicorn without LLVM */
+    SnxU64* xaddr = calloc(count + 1, sizeof *xaddr);
+    [[maybe_unused]] char error[512] = ""; /* a code loader's: none under Unicorn */
     char text[100];
     const int hashing = g_test.frozen.hashes != NULL;
 #if defined(SNX_TEST_NATIVE)
     /* the native code's world: the states in memory Unicorn maps at their own addresses */
     HostUc* uc = hostuc_new(BACK_UC, 16u << 20);
-    RunState* s = uc ? (RunState*)hostuc_alloc(uc, 2 * sizeof *s) : NULL;
+    RunState* s = uc ? (RunState*)hostuc_alloc(uc, sizeof *s) : NULL;
 #if defined(SNX_TEST_UNWINDS)
     if (uc && g_test.step) hostuc_step(uc, 1);
 #endif
-    if (s) hostuc_swapper(uc, swap_arm, &s[1]); /* a big-endian machine's state turned over around its runs */
-    if (s && g_test.windowed && hostuc_map(uc, g_test.window[1], WINDOW)) s = NULL;
+    if (s) hostuc_swapper(uc, swap_arm, s); /* a big-endian machine's state turned over around its runs */
+    if (s && g_test.windowed && hostuc_map(uc, g_test.window, WINDOW)) s = NULL;
 #else
-    RunState* s = (RunState*)malloc(2 * sizeof *s);
+    RunState* s = (RunState*)malloc(sizeof *s);
 #endif
     int rc = 0;
-    if (!laddr || !xaddr || !s) {
+    if (!xaddr || !s) {
         fprintf(stderr, "FAIL: out of memory for a chunk of %zu blocks\n", count);
-        free(laddr), free(xaddr);
+        free(xaddr);
 #if defined(SNX_TEST_NATIVE)
         if (uc) hostuc_free(uc);
 #else
@@ -928,13 +920,6 @@ static int run_chunk(Back* x64, Block* blocks, size_t count) {
             continue;
         }
         ++made;
-        if (xc != lc) {
-            block_text(b, text, sizeof text);
-            fprintf(stderr, "FAIL: [%s]: LLVM's block takes %zu words, the " BACK_NAME " back end's %zu\n", text, lc,
-                    xc);
-            ++g_test.failures;
-            b->made = 0;
-        }
         if (!b->thumb) {
             g_test.words += b->n;
             g_test.consumed_words += lc;
@@ -965,8 +950,7 @@ static int run_chunk(Back* x64, Block* blocks, size_t count) {
     }
     for (size_t i = 0; !rc && i < count; ++i) {
         Block* b = &blocks[i];
-        u64 h[2] = {snx_frozen_mix(0x626c6f636b, b->consumed), snx_frozen_mix(0x626c6f636b, b->consumed)};
-        int failed = 0;
+        u64 h = snx_frozen_mix(0x626c6f636b, b->consumed);
         if (hashing) {
             g_test.inputs = snx_frozen_mix(snx_frozen_mix(snx_frozen_mix(g_test.inputs, (u64)b->thumb), b->index),
                                            b->pc ^ (u64)b->n << 32);
@@ -977,67 +961,40 @@ static int run_chunk(Back* x64, Block* blocks, size_t count) {
         /* a block not run has its states drawn all the same, for the digest */
         if (!b->made) {
             for (unsigned k = 0; hashing && k < g_test.states; ++k) {
-                start(&s[FIRST_SIDE], k, b->pc);
-                if (b->thumb) s[FIRST_SIDE].cpu.cpsr |= SNX_ARM_T;
-                digest_start(&s[FIRST_SIDE]);
+                start(s, k, b->pc);
+                if (b->thumb) s->cpu.cpsr |= SNX_ARM_T;
+                digest_start(s);
             }
             continue;
         }
-        if (b->made) ++g_test.compared;
+        ++g_test.compared;
         for (unsigned k = 0; k < g_test.states; ++k) {
-            u64 seed = g_test.seed;
-            const char* why = "";
-            for (int side = FIRST_SIDE; side < 2; ++side) {
-                if (side && !b->made) break;
-                g_test.seed = seed;
-                start(&s[side], k, b->pc);
-                if (b->thumb) s[side].cpu.cpsr |= SNX_ARM_T;
-                if (hashing && side == FIRST_SIDE) {
-                    digest_start(&s[side]);
-                    if (!g_test.windowed) memcpy(g_test.before, s[side].mem, MEM_SIZE);
-                }
-                if (g_test.callee) s[side].rt = g_test.rt[side], s[side].cpu.rt = &s[side].rt;
-                if (g_test.callee && s[side].cpu.io) s[side].cpu.io = g_test.io[side];
-                s[side].code = code_of(b), s[side].code_size = b->n * (b->thumb ? 2 : 4), s[side].code_pc = b->pc;
-                if (g_test.windowed) {
-                    memcpy(g_test.view[side], g_test.pristine, VIEW);
-                    s[side].cpu.mem = g_test.window[side];
-                }
-#if defined(SNX_TEST_NATIVE)
-                if (side) {
-                    if (hostuc_call(uc, xaddr[i], (u64)(uintptr_t)&s[1].cpu, 0, NULL)) s[1].cpu.exit = 0xdead;
-                    continue;
-                }
-#endif
-                run_block_under(side, side ? xaddr[i] : laddr[i], &s[side].cpu);
+            start(s, k, b->pc);
+            if (b->thumb) s->cpu.cpsr |= SNX_ARM_T;
+            if (hashing) {
+                digest_start(s);
+                if (!g_test.windowed) memcpy(g_test.before, s->mem, MEM_SIZE);
             }
+            if (g_test.callee) s->rt = g_test.rt, s->cpu.rt = &s->rt;
+            if (g_test.callee && s->cpu.io) s->cpu.io = g_test.io;
+            s->code = code_of(b), s->code_size = b->n * (b->thumb ? 2 : 4), s->code_pc = b->pc;
+            if (g_test.windowed) {
+                memcpy(g_test.view, g_test.pristine, VIEW);
+                s->cpu.mem = g_test.window;
+            }
+#if defined(SNX_TEST_NATIVE)
+            if (hostuc_call(uc, xaddr[i], (u64)(uintptr_t)&s->cpu, 0, NULL)) s->cpu.exit = 0xdead;
+#else
+            run_block_under(xaddr[i], &s->cpu);
+#endif
             ++g_test.ran;
-            *(legacy() ? &g_test.hooked : &g_test.transfers) += s[FIRST_SIDE].calls;
-            ++g_test.exits[s[FIRST_SIDE].cpu.exit & 15];
-            for (int side = FIRST_SIDE; hashing && side < 2; ++side)
-                if (!side || b->made) h[side] = snx_frozen_mix(h[side], results(&s[side], side));
+            *(legacy() ? &g_test.hooked : &g_test.transfers) += s->calls;
+            ++g_test.exits[s->cpu.exit & 15];
+            if (hashing) h = snx_frozen_mix(h, results(s));
             if (g_test.nonly) {
                 block_text(b, text, sizeof text);
-                printf("[%s] state %u: " BACK_NAME " exit %u r15 %08x cpsr %08x\n", text, k, s[1].cpu.exit,
-                       s[1].cpu.r[15], s[1].cpu.cpsr);
-            }
-            if (*why && !failed) {
-                block_text(b, text, sizeof text);
-                fprintf(stderr, "FAIL: [%s] state %u: %s\n", text, k, why);
-                if (g_test.dump) { /* --dump: the state the runs started from, to rebuild the case by hand */
-                    g_test.seed = seed;
-                    start(&s[0], k, b->pc);
-                    if (b->thumb) s[0].cpu.cpsr |= SNX_ARM_T;
-                    fprintf(stderr, "  start: fpscr %08x cpsr %08x\n", s[0].cpu.fpscr, s[0].cpu.cpsr);
-                    for (unsigned r = 0; r < 16; ++r)
-                        fprintf(stderr, "  r%u %08x%s", r, s[0].cpu.r[r], r % 8 == 7 ? "\n" : "");
-                    for (unsigned d = 0; d < 32; ++d)
-                        fprintf(stderr, "  d%u %016llx%s", d, (unsigned long long)s[0].cpu.d[d],
-                                d % 4 == 3 ? "\n" : "");
-                }
-                ++g_test.failures;
-                failed = 1;
-                if (!hashing) break; /* a frozen hash is of every state */
+                printf("[%s] state %u: " BACK_NAME " exit %u r15 %08x cpsr %08x\n", text, k, s->cpu.exit, s->cpu.r[15],
+                       s->cpu.cpsr);
             }
         }
         if (hashing) frozen_block(b, h);
@@ -1048,7 +1005,6 @@ static int run_chunk(Back* x64, Block* blocks, size_t count) {
     free(s);
 #endif
     free(xobj);
-    free(laddr);
     free(xaddr);
     if (xloader) snx_code_loader_free(xloader);
     return rc;
@@ -1056,7 +1012,7 @@ static int run_chunk(Back* x64, Block* blocks, size_t count) {
 
 #if !defined(SNX_TEST_NATIVE)
 /* ---- the VFP's hot paths, witnessed: each word with its operands and FPSCR, and how many times its x86-64 block calls
-   snx_arm_fp_x64 (0: the hot path made the result), its results LLVM's ---- */
+   snx_arm_fp_x64 (0: the hot path made the result) ---- */
 
 typedef struct {
     const char* what;
@@ -1130,19 +1086,19 @@ static const Witness witnesses[] = {
     {"VTRN.8 D0, D1", 0xf3b20081u, 0x10u, 0x0706050403020100ull, 0x1716151413121110ull, 0, 0, 0},
 };
 
-/* without LLVM, the counts of the helper's calls and the entry's exits alone */
+/* the counts of the helper's calls and the entry's exits */
 static int run_witnesses(Back* x64) {
     size_t count = sizeof witnesses / sizeof *witnesses, failures = 0;
     Block* blocks = (Block*)calloc(count, sizeof *blocks);
     SnxCodeLoader* xloader = NULL;
     unsigned char* xobj = NULL;
     size_t xsize = 0;
-    SnxU64 *laddr = calloc(count, sizeof *laddr), *xaddr = calloc(count, sizeof *xaddr);
-    RunState* s = (RunState*)malloc(2 * sizeof *s);
+    SnxU64* xaddr = calloc(count, sizeof *xaddr);
+    RunState* s = (RunState*)malloc(sizeof *s);
     char error[512] = "";
-    if (!blocks || !laddr || !xaddr || !s) {
+    if (!blocks || !xaddr || !s) {
         fprintf(stderr, "FAIL: out of memory for the %zu witnesses\n", count);
-        free(blocks), free(laddr), free(xaddr), free(s);
+        free(blocks), free(xaddr), free(s);
         return 1;
     }
     for (size_t i = 0; i < count; ++i) {
@@ -1168,48 +1124,33 @@ static int run_witnesses(Back* x64) {
     for (size_t i = 0; i < count; ++i) {
         const Witness* w = &witnesses[i];
         size_t before = 0, after = 0;
-        const char* why = "";
-        u64 seed = g_test.seed;
-        for (int side = FIRST_SIDE; side < 2; ++side) {
-            g_test.seed = seed;
-            start(&s[side], 1, PC);
-            s[side].cpu.cpsr = 0x10u;
-            s[side].cpu.fpscr = w->fpscr;
-            s[side].cpu.d[0] = w->d0;
-            s[side].cpu.d[1] = w->d1;
-            s[side].cpu.d[2] = w->d2;
-            if (w->r1) s[side].cpu.r[1] = w->r1;
-            for (unsigned k = 0; k < 256; ++k) before += side ? g_test.fp_calls[k] : 0;
-            run_block(side ? xaddr[i] : laddr[i], &s[side].cpu);
-            for (unsigned k = 0; k < 256; ++k) after += side ? g_test.fp_calls[k] : 0;
-        }
-        if (*why) {
-            fprintf(stderr, "FAIL: the witness %s (%08x): %s\n", w->what, w->word, why);
-            ++failures;
-        }
+        start(s, 1, PC);
+        s->cpu.cpsr = 0x10u;
+        s->cpu.fpscr = w->fpscr;
+        s->cpu.d[0] = w->d0;
+        s->cpu.d[1] = w->d1;
+        s->cpu.d[2] = w->d2;
+        if (w->r1) s->cpu.r[1] = w->r1;
+        for (unsigned k = 0; k < 256; ++k) before += g_test.fp_calls[k];
+        run_block(xaddr[i], &s->cpu);
+        for (unsigned k = 0; k < 256; ++k) after += g_test.fp_calls[k];
         if ((int)(after - before) != w->cold) {
             fprintf(stderr, "FAIL: the witness %s (%08x): %zu calls of the helper, %d wanted\n", w->what, w->word,
                     after - before, w->cold);
             ++failures;
         }
     }
-    /* the entry's checks (block_begin's): R15 not the block's address, CPSR.T, CPSR.E, both; R15 and the rest as LLVM's
-       leave them */
+    /* the entry's checks (block_begin's): R15 not the block's address, CPSR.T, CPSR.E, both; R15 and the rest left as
+       they are */
     for (unsigned e = 0; e < 4; ++e) {
         static const char* const what[4] = {"R15 elsewhere", "CPSR.T set", "CPSR.E set", "CPSR.T and E set"};
-        u64 seed = g_test.seed;
-        const char* why = "";
-        for (int side = FIRST_SIDE; side < 2; ++side) {
-            g_test.seed = seed;
-            start(&s[side], 1, PC);
-            if (e == 0) s[side].cpu.r[15] = PC + 4;
-            if (e & 1 && e) s[side].cpu.cpsr |= SNX_ARM_T;
-            if (e >= 2) s[side].cpu.cpsr |= SNX_ARM_E;
-            run_block(side ? xaddr[0] : laddr[0], &s[side].cpu);
-        }
-        if (*why || s[FIRST_SIDE].cpu.exit == SNX_ARM_OK) {
-            fprintf(stderr, "FAIL: the entry with %s: %s (%s's exit %u)\n", what[e], *why ? why : "no exit",
-                    FIRST_SIDE ? BACK_NAME : "LLVM", s[FIRST_SIDE].cpu.exit);
+        start(s, 1, PC);
+        if (e == 0) s->cpu.r[15] = PC + 4;
+        if (e & 1 && e) s->cpu.cpsr |= SNX_ARM_T;
+        if (e >= 2) s->cpu.cpsr |= SNX_ARM_E;
+        run_block(xaddr[0], &s->cpu);
+        if (s->cpu.exit == SNX_ARM_OK) {
+            fprintf(stderr, "FAIL: the entry with %s: no exit (%s's exit %u)\n", what[e], BACK_NAME, s->cpu.exit);
             ++failures;
         }
     }
@@ -1217,13 +1158,13 @@ static int run_witnesses(Back* x64) {
            count, failures);
     g_test.failures += failures;
     for (unsigned k = 0; k < 256; ++k) g_test.fp_calls[k] = 0;
-    free(s), free(xobj), free(laddr), free(xaddr), free(blocks);
+    free(s), free(xobj), free(xaddr), free(blocks);
     snx_code_loader_free(xloader);
     return 0;
 }
 
-/* ---- an MSR that may set CPSR.E: its block ends there, and the next is entered through its checks (llvm.c's
-   block_begin), which stop on E with that block's first word; the entry past them (X) would run it as little-endian */
+/* ---- an MSR that may set CPSR.E: its block ends there, and the next is entered through its checks (block_begin's),
+   which stop on E with that block's first word; the entry past them (X) would run it as little-endian */
 static size_t endian_next(void* user, uint32_t key, size_t units, size_t count, uint32_t keys[2]) {
     (void)user, (void)units, (void)count;
     if (key != PC) return 0;
@@ -1397,7 +1338,7 @@ static int run_chains(Back* x64) {
             !snx_code_load_private(loader, &input, 1, names, 1, &addr, error, sizeof error)) {
             g_test.chain_returns = k->returns;
             g_test.chain_sets = k->sets;
-            s->cpu.mem = g_test.window[1];
+            s->cpu.mem = g_test.window;
             s->cpu.mem_size = 1ull << 32;
             s->cpu.io = chain_io;
             s->cpu.r[1] = 0x04000100;
@@ -1434,9 +1375,8 @@ static uint8_t rshl8(int8_t x, int8_t s) {
     if (n > 9) n = 9;
     return (uint8_t)snx_asr64((uint64_t)((long long)x + (1ll << (n - 1))), n);
 }
-/* VRSHL.S8 Q6, Q14, Q3 against rshl8, not LLVM: each lane's shift 0, +-1, -8 and -9, 7 and 8, -128 and 127, and a lane
-   that shifts by 0 beside one that shifts by -128 in one doubleword, which LLVM 22 at -O2 gives the other's (its lane
-   shifted right by 1) */
+/* VRSHL.S8 Q6, Q14, Q3 against rshl8: each lane's shift 0, +-1, -8 and -9, 7 and 8, -128 and 127, and a lane that
+   shifts by 0 beside one that shifts by -128 in one doubleword */
 static int run_vrshl_witness(Back* x64) {
     static const uint32_t word[1] = {0xf206c56cu};
     static const int8_t shift[16] = {0, -1, 1, -8, -9, 7, 8, 127, -128, 3, -2, 0, -7, 0, 0, -128};
@@ -1546,25 +1486,25 @@ static const ThumbCase thumb_cases[] = {
     /* an UNDEFINED word under an IT condition that always holds (the AL block's 1111): the block goes on past it */
     {"IT AL of an UNDEFINED word, then a POP", {0xBFED, 0x49E9, 0xEB92, 0x2741, 0xBD1B}, 5, 0, 0, 0, 0, 0, ANY},
 };
-/* without LLVM, the exits they want alone */
+/* the exits they want */
 static int run_thumb_witnesses(Back* x64) {
     size_t count = sizeof thumb_cases / sizeof *thumb_cases, failures = 0;
     Block* blocks = (Block*)calloc(count, sizeof *blocks);
     SnxCodeLoader* xloader = NULL;
     unsigned char* xobj = NULL;
     size_t xsize = 0;
-    SnxU64 *laddr = calloc(count, sizeof *laddr), *xaddr = calloc(count, sizeof *xaddr);
+    SnxU64* xaddr = calloc(count, sizeof *xaddr);
 #if defined(SNX_TEST_NATIVE)
     HostUc* uc = hostuc_new(BACK_UC, 16u << 20);
-    RunState* s = uc ? (RunState*)hostuc_alloc(uc, 2 * sizeof *s) : NULL;
-    if (s) hostuc_swapper(uc, swap_arm, &s[1].cpu);
+    RunState* s = uc ? (RunState*)hostuc_alloc(uc, sizeof *s) : NULL;
+    if (s) hostuc_swapper(uc, swap_arm, &s->cpu);
 #else
-    RunState* s = (RunState*)malloc(2 * sizeof *s);
+    RunState* s = (RunState*)malloc(sizeof *s);
 #endif
     char error[512] = "";
-    if (!blocks || !laddr || !xaddr || !s) {
+    if (!blocks || !xaddr || !s) {
         fprintf(stderr, "FAIL: out of memory for the %zu Thumb witnesses\n", count);
-        free(blocks), free(laddr), free(xaddr);
+        free(blocks), free(xaddr);
 #if defined(SNX_TEST_NATIVE)
         if (uc) hostuc_free(uc);
 #else
@@ -1574,7 +1514,7 @@ static int run_thumb_witnesses(Back* x64) {
     }
     for (size_t i = 0; i < count; ++i) {
         Block* b = &blocks[i];
-        size_t consumed = 0, xconsumed = 0;
+        size_t xconsumed = 0;
         char name[16];
         b->thumb = 1;
         b->n = thumb_cases[i].n;
@@ -1585,12 +1525,6 @@ static int run_thumb_witnesses(Back* x64) {
             fprintf(stderr, "FAIL: the Thumb witness %s: a back end refused it: %s\n", thumb_cases[i].what,
                     back_(why)(x64));
             return 1;
-        }
-        if (FIRST_SIDE == 0 && consumed != xconsumed) {
-            fprintf(stderr,
-                    "FAIL: the Thumb witness %s: LLVM's block takes %zu halfwords, the " BACK_NAME " back end's %zu\n",
-                    thumb_cases[i].what, consumed, xconsumed);
-            ++failures;
         }
     }
     if (
@@ -1606,25 +1540,18 @@ static int run_thumb_witnesses(Back* x64) {
     for (size_t i = 0; i < count; ++i) {
         const ThumbCase* w = &thumb_cases[i];
         for (unsigned k = 0; k < (w->exit == ANY ? 16u : 1u); ++k) {
-            u64 seed = g_test.seed;
-            for (int side = FIRST_SIDE; side < 2; ++side) {
-                g_test.seed = seed;
-                start(&s[side], w->exit == ANY ? k : 1, PC);
-                s[side].cpu.cpsr = w->set & CPSR_SET ? w->cpsr : s[side].cpu.cpsr | SNX_ARM_T;
-                if (w->set & R15_SET) s[side].cpu.r[15] = w->r15;
-                if (w->set & REGS_SET) s[side].cpu.r[0] = w->r0, s[side].cpu.r[1] = w->r1;
+            start(s, w->exit == ANY ? k : 1, PC);
+            s->cpu.cpsr = w->set & CPSR_SET ? w->cpsr : s->cpu.cpsr | SNX_ARM_T;
+            if (w->set & R15_SET) s->cpu.r[15] = w->r15;
+            if (w->set & REGS_SET) s->cpu.r[0] = w->r0, s->cpu.r[1] = w->r1;
 #if defined(SNX_TEST_NATIVE)
-                if (side) {
-                    if (hostuc_call(uc, xaddr[i], (u64)(uintptr_t)&s[1].cpu, 0, NULL)) s[1].cpu.exit = 0xdead;
-                    continue;
-                }
+            if (hostuc_call(uc, xaddr[i], (u64)(uintptr_t)&s->cpu, 0, NULL)) s->cpu.exit = 0xdead;
+#else
+            run_block(xaddr[i], &s->cpu);
 #endif
-                run_block(side ? xaddr[i] : laddr[i], &s[side].cpu);
-            }
-            const char* why = "";
-            if (*why || (w->exit != ANY && s[FIRST_SIDE].cpu.exit != (uint32_t)w->exit)) {
-                fprintf(stderr, "FAIL: the Thumb witness %s, state %u: %s (%s's exit %u, wanted %d)\n", w->what, k, why,
-                        FIRST_SIDE ? BACK_NAME : "LLVM", s[FIRST_SIDE].cpu.exit, w->exit);
+            if (w->exit != ANY && s->cpu.exit != (uint32_t)w->exit) {
+                fprintf(stderr, "FAIL: the Thumb witness %s, state %u: %s's exit %u, wanted %d\n", w->what, k,
+                        BACK_NAME, s->cpu.exit, w->exit);
                 ++failures;
                 break;
             }
@@ -1639,7 +1566,7 @@ static int run_thumb_witnesses(Back* x64) {
 #else
     free(s);
 #endif
-    free(xobj), free(laddr), free(xaddr), free(blocks);
+    free(xobj), free(xaddr), free(blocks);
     snx_code_loader_free(xloader);
     return 0;
 }
@@ -1745,7 +1672,7 @@ done:
 }
 
 #if defined(SNX_TEST_UNWINDS)
-/* the entry's checks of an A32 and a Thumb block (llvm.c's block_begin and thumb_block, in their order), each failed one
+/* the entry's checks of an A32 and a Thumb block (block_begin's and thumb_block's, in their order), each failed one
    with its exit and syndrome, R15 left as it is; run an instruction at a time, its exit's code having no frame */
 static int run_entries(Back* x64) {
     enum { WORD = 0xE3A00001u /* MOV R0, #1 */, HALF = 0x2001u /* MOVS R0, #1 */ };
@@ -2243,14 +2170,9 @@ static int parse(int argc, char** argv, int from_file) {
             if (end == argv[i] || *end) return fprintf(stderr, "--seed %s is not a whole number\n", argv[i]), 2;
         } else if (!strcmp(o, "--object") && has)
             g_test.object = argv[++i];
-        else if (!strcmp(o, "--ll") && has) {
-            g_test.ll = argv[++i];
-            return fprintf(stderr, "--ll %s: this build has no LLVM\n", argv[i]), 2;
-        } else if (!strcmp(o, "--callee") && has) {
+        else if (!strcmp(o, "--callee") && has) {
             g_test.callee = snx_read_file(argv[++i], &g_test.callee_size);
             if (!g_test.callee) return fprintf(stderr, "FAIL: cannot read %s\n", argv[i]), 1;
-            g_test.rt[0] = (SnxArmRt){snx_test_undefined, snx_test_coproc};
-            g_test.io[0] = snx_test_io;
 #if !defined(SNX_TEST_NATIVE)
             return fprintf(stderr, "--callee %s: the x86-64 blocks run here, with the host's functions\n", argv[i]), 2;
 #endif
@@ -2266,8 +2188,7 @@ static int parse(int argc, char** argv, int from_file) {
             (void)end, (void)csr;
             return fprintf(stderr, "%s %s: only the x86-64 host's own runs have an MXCSR to set\n", o, argv[i + 1]), 2;
 #endif
-        } else if (!strcmp(o, "--dump"))
-            g_test.dump = 1;
+        }
 #if defined(SNX_TEST_UNWINDS)
         else if (!strcmp(o, "--step"))
             g_test.step = 1;
@@ -2349,7 +2270,7 @@ static int frozen_close(size_t a, size_t t) {
     if (!f->hashes) return 0;
     printf("frozen %s: %zu of its %zu A32 blocks and %zu of its %zu Thumb ones checked, %u states each; blocks whose "
            "results are not the file's: the " BACK_NAME " back end's %zu\n",
-           f->path, a, f->items[0], t, f->items[1], g_test.states, g_test.frozen_bad[1]);
+           f->path, a, f->items[0], t, f->items[1], g_test.states, g_test.frozen_bad);
     if (a != f->items[0] || t != f->items[1]) {
         printf("its inputs' digest is checked by a run of all its blocks\n");
         return 0;
@@ -2378,11 +2299,11 @@ int main(int argc, char** argv) {
     /* a random block's results have no reference here but a frozen file's */
     if (!g_test.frozen.hashes) {
         if (g_test.drawn)
-            return fprintf(stderr, "blocks to run (--blocks, --thumb, --word, --halves) in a build without LLVM: their "
-                                   "results have no reference but --frozen FILE's\n"),
+            return fprintf(stderr, "blocks to run (--blocks, --thumb, --word, --halves) without --frozen FILE: their "
+                                   "results have no other reference\n"),
                    2;
         g_test.blocks = g_test.thumb = 0;
-        printf("no random blocks: this build has no LLVM, and they are checked against --frozen FILE alone\n");
+        printf("no random blocks: they are checked against --frozen FILE alone\n");
     }
 #if defined(SNX_TEST_NATIVE)
     {

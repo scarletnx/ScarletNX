@@ -630,48 +630,39 @@ class ArchitectureTests(unittest.TestCase):
                 ],
             )
 
-    def llvm_errors(self, files, users=()):
+    def llvm_errors(self, files):
         with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:
             root = Path(temporary)
             for name, text in files.items():
                 (root / name).parent.mkdir(parents=True, exist_ok=True)
                 (root / name).write_text(text, encoding='ascii')
-            with mock.patch.object(architecture, 'LLVM_USERS', set(users)):
-                return architecture.check_llvm(root)
+            return architecture.check_llvm(root)
 
-    def test_an_llvm_header_outside_the_backend_is_rejected(self):
+    def test_an_llvm_header_anywhere_in_src_is_rejected(self):
         folder = 'src/common/cpu/recompiler/'
-        backend = {
-            folder + 'llvm/ir.h': '#include <llvm-c/Core.h>\n',
-            folder + 'llvm/ir.c': '#include "common/cpu/recompiler/llvm/ir.h"\n',
+        native = {
             folder + 'mach/native.c': '#include "common/cpu/recompiler/mach/native.h"\n',
             folder + 'mach/native.h': "/* #include <llvm-c/Core.h> is LLVM's */ int native(void);\n",
         }
-        self.assertEqual(self.llvm_errors(backend), [])
-        # LLVM's header itself, and one of ours that takes it two includes away
+        self.assertEqual(self.llvm_errors(native), [])
+        # LLVM's header itself, in the folder its back end had too, and one of ours that takes it two includes away
         errors = self.llvm_errors(
             {
-                **backend,
+                **native,
+                folder + 'llvm/ir.h': '#include <llvm-c/Core.h>\n',
                 folder + 'object/link.c': '#include <llvm/Config/llvm-config.h>\n',
                 folder + 'workers.h': '#include "common/cpu/recompiler/llvm/ir.h"\n',
                 'src/nx/runtime/main.c': '#include "common/cpu/recompiler/workers.h"\n',
             }
         )
-        self.assertEqual(len(errors), 3)
+        self.assertEqual(len(errors), 4, errors)
         for name, header in (
+            (folder + 'llvm/ir.h', '<llvm-c/Core.h>'),
             (folder + 'object/link.c', '<llvm/Config/llvm-config.h>'),
             (folder + 'workers.h', '"common/cpu/recompiler/llvm/ir.h"'),
             ('src/nx/runtime/main.c', '"common/cpu/recompiler/workers.h"'),
         ):
             self.assertTrue(any(error.startswith(f'{name}: includes {header}, ') for error in errors), (name, errors))
-
-    def test_the_files_left_on_llvm_are_the_ones_listed(self):
-        user = 'src/common/cpu/recompiler/library.c'
-        self.assertEqual(self.llvm_errors({user: '#include <llvm-c/Support.h>\n'}, {user}), [])
-        errors = self.llvm_errors({user: '#include <stdio.h>\n'}, {user})
-        self.assertEqual(
-            errors, [f'tests/architecture.py: LLVM_USERS names {user}, which takes no LLVM header: take it out']
-        )
 
     def test_transitive_graphics_link_is_rejected(self):
         with tempfile.TemporaryDirectory(prefix='snx-arch-test-') as temporary:

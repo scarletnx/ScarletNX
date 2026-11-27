@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* compile_thread.h: a thread made for LLVM's passes takes 4 MiB of recursion, more than the 1 MiB a thread gets by
-   default on Android and Windows. With glibc the test sets that default first (its own is 8 MiB), so without the
-   helper's stack the test dies of a stack overflow everywhere */
+/* compile_thread.h: a compile thread takes 4 MiB of recursion here, more than the 1 MiB a thread gets by default on
+   Android and Windows. With glibc the test sets that default first (its own is 8 MiB), so without the helper's stack
+   the test dies of a stack overflow everywhere */
 #ifndef _WIN32
 #define _GNU_SOURCE /* pthread_setattr_default_np */
 #endif

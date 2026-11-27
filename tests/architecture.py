@@ -754,17 +754,13 @@ def check_weak_declarations(repo):
     return errors
 
 
-# LLVM's headers, and what of src/ builds on them: the backend's folder, and the files named here, which include one or
-# a header of the project's that does. A file leaves the list when it stops, and one joins it only with the LLVM code of
-# files that leave, never new code: the rest of the recompiler (snx_recompiler_core) builds without LLVM
+# LLVM's headers: no file of src/ includes one, itself or through a header of the project's, as the build has no LLVM
 LLVM_HEADER = re.compile(r'llvm(?:-c)?/')
-LLVM_FOLDER = 'src/common/cpu/recompiler/llvm/'
-LLVM_USERS = set()
 
 
 def check_llvm(repo):
-    """only the LLVM backend and the files of LLVM_USERS include LLVM's headers, themselves or through a header of the
-    project's: a build without LLVM has no file of the rest to stop at"""
+    """no file of src/ includes LLVM's headers, itself or through a header of the project's: the native back ends make
+    the code, and the build has no LLVM to find"""
     src = (repo / 'src').resolve()
     includes, by = {}, {}
     for path in sorted(src.rglob('*')):
@@ -786,15 +782,10 @@ def check_llvm(repo):
             if reached in names and shown not in by:
                 by[shown] = f'"{names[reached]}"'
                 pending.append(shown)
-    errors = [
-        f'{shown}: includes {by[shown]}, which takes LLVM: the recompiler builds without it but for the files of '
-        'LLVM_USERS (tests/architecture.py), which none joins'
+    return [
+        f'{shown}: includes {by[shown]}, which takes LLVM: the build has none, the native back ends make the code'
         for shown in sorted(by)
-        if not shown.startswith(LLVM_FOLDER) and shown not in LLVM_USERS
     ]
-    for shown in sorted(LLVM_USERS - set(by)):
-        errors.append(f'tests/architecture.py: LLVM_USERS names {shown}, which takes no LLVM header: take it out')
-    return errors
 
 
 # A driver, a vendor or a device compared in the code: the VkDriverId's names, a comparison or a switch on an identity

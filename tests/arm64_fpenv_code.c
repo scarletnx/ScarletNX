@@ -53,13 +53,16 @@ static const unsigned char* text_of(const unsigned char* o, size_t size, size_t*
     return NULL;
 }
 
-/* the function of word and a RET, made for a host of every optional feature: malloc'd code, NULL where not made */
+/* the function of word and a RET, made whole for a host of every optional feature: malloc'd code, NULL where not made
+   or where word has no code there (the back end makes it raising an undefined instruction, which is none of the Sail's
+   code to hold the switch to) */
 static unsigned char* make(SnxU32 word, int sail_alone, size_t* length) {
     unsigned char image[8], *object = NULL, *code = NULL, made[4] = {0};
     const unsigned char* text;
     const SnxU64 hint = BASE;
     SnxCodeImage module = {.image = image, .base = BASE, .image_size = 8, .text_size = 8};
-    SnxNativeOptions options = {.stale = 1, .sail_alone = sail_alone};
+    size_t refused = 0;
+    SnxNativeOptions options = {.stale = 1, .sail_alone = sail_alone, .refused = &refused};
     SnxCodegen codegen;
     size_t size = 0;
     char error[256] = "";
@@ -68,7 +71,7 @@ static unsigned char* make(SnxU32 word, int sail_alone, size_t* length) {
     if (snx_codegen_analyze(&codegen, &module, 1, &hint, 1, 1, SNX_A64_TARGET_MAX) || codegen.function_count != 1)
         return NULL;
     if (snx_arm64_object(&codegen, 0, 1, &options, SNX_ARM64_F_ALL, made, &object, &size, error, sizeof error) >= 0 &&
-        made[0] && (text = text_of(object, size, length)) && (code = (unsigned char*)malloc(*length)))
+        made[0] && !refused && (text = text_of(object, size, length)) && (code = (unsigned char*)malloc(*length)))
         memcpy(code, text, *length);
     free(object);
     snx_codegen_free(&codegen);

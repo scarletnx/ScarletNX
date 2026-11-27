@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* Scalar FP stores preserve exactly their lane's bytes, regardless of NaNs, alignment or other register contents.
-   Run every width and source register at O0 and O2. The O0 benchmark emits a run of stores as one guest function. */
+   Run every width and source register. The benchmark emits a run of stores as one guest function. */
 #include "steps.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,9 +9,9 @@
 
 static const u32 stores[5] = {0x3D000000, 0x7D000000, 0xBD000000, 0xFD000000, 0x3D800000};
 
-static int mixed(char opt) {
+static int mixed(void) {
     /* STR S1; FMOV S1,W2; STR S1; MOV V1,V2; STR S1; LDR Q1; STR S1; RET. Every vector-writing path must drop
-       the previous scalar snapshot. Each instruction writes and reads the same guest-visible state at O0 and O2. */
+       the previous scalar snapshot. Each instruction writes and reads the same guest-visible state. */
     const u32 words[] = {0xBD000001, 0x1E270041, 0xBD000401, 0x4EA21C41,
                          0xBD000801, 0x3DC00401, 0xBD000C01, 0xD65F03C0};
     unsigned char image[sizeof words], leaders[8] = {1}, memory[64], expected[64];
@@ -35,7 +35,7 @@ static int mixed(char opt) {
     codegen.function_count = 1;
     Steps steps;
     char error[1024];
-    if (steps_begin_opt(&steps, 1, 0, opt, error, sizeof error)) return snx_error("%s", error);
+    if (steps_begin(&steps, 1, 0, error, sizeof error)) return snx_error("%s", error);
     steps_add_function(&steps, &codegen, &function);
     if (steps_load(&steps, error, sizeof error)) return snx_error("%s", error);
     for (unsigned sample = 0; sample < 256; sample++) {
@@ -56,20 +56,20 @@ static int mixed(char opt) {
         fn(&cpu, module.base);
         if (memcmp(memory, expected, sizeof memory) || memcmp(&cpu.v[1], memory + 19, 16) ||
             cpu.x[0] != 3 || cpu.x[2] != 0xAABBCCDD || cpu.fpsr != 0x800009Fu) {
-            fprintf(stderr, "mixed scalar/vector stores differ at O%c sample %u\n", opt, sample);
+            fprintf(stderr, "mixed scalar/vector stores differ at sample %u\n", sample);
             steps_end(&steps);
             return 1;
         }
     }
     steps_end(&steps);
-    printf("Mixed scalar/vector updates at O%c: 256 exact cases passed\n", opt);
+    printf("Mixed scalar/vector updates: 256 exact cases passed\n");
     return 0;
 }
 
-static int correctness(char opt) {
+static int correctness(void) {
     char error[1024];
     Steps steps;
-    if (steps_begin_opt(&steps, 1, 0, opt, error, sizeof error)) return snx_error("%s", error);
+    if (steps_begin(&steps, 1, 0, error, sizeof error)) return snx_error("%s", error);
     for (unsigned size = 0; size < 5; size++)
         for (unsigned reg = 0; reg < 32; reg++) steps_add(&steps, stores[size] | reg, 0x1000, 0);
     if (steps_load(&steps, error, sizeof error)) return snx_error("%s", error);
@@ -96,15 +96,15 @@ static int correctness(char opt) {
                     if (next != 0x1004 || memcmp(memory, expected, sizeof memory) ||
                         memcmp(cpu.x, before.x, sizeof cpu.x) || memcmp(cpu.v, before.v, sizeof cpu.v) ||
                         cpu.fpcr != before.fpcr || cpu.fpsr != before.fpsr) {
-                        fprintf(stderr, "FP store differs at O%c size %u reg %u align %u pattern %u\n",
-                                opt, size, reg, alignment, pattern);
+                        fprintf(stderr, "FP store differs at size %u reg %u align %u pattern %u\n", size, reg,
+                                alignment, pattern);
                         steps_end(&steps);
                         return 1;
                     }
                     checks++;
                 }
     steps_end(&steps);
-    printf("FP stores at O%c: %u exact byte/register cases passed\n", opt, checks);
+    printf("FP stores: %u exact byte/register cases passed\n", checks);
     return 0;
 }
 
@@ -134,7 +134,7 @@ static int benchmark(unsigned size) {
     codegen.function_count = 1;
     char error[1024];
     Steps steps;
-    if (steps_begin_opt(&steps, 1, 0, '0', error, sizeof error)) return snx_error("%s", error);
+    if (steps_begin(&steps, 1, 0, error, sizeof error)) return snx_error("%s", error);
     steps_add_function(&steps, &codegen, &function);
     if (steps_load(&steps, error, sizeof error)) return snx_error("%s", error);
     CPU cpu = {0};
@@ -156,5 +156,5 @@ static int benchmark(unsigned size) {
 int main(int argc, char** argv) {
     STEPS_REQUIRE();
     if (argc == 3 && !strcmp(argv[1], "--bench")) return benchmark((unsigned)strtoul(argv[2], NULL, 10));
-    return correctness('0') || correctness('2') || mixed('0') || mixed('2');
+    return correctness() || mixed();
 }

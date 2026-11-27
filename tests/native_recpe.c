@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* Real emitted FRECPE steps against the exact helper: every normal exponent and table-bin boundary, mixed
    exceptional lanes, FPCR modes and sticky FPSR. QEMU differential tests independently check the helper's semantics.
-   Both optimization levels and loaders run, with host features and with the portable fallback. */
+   Both loaders run, with host features and with the portable fallback. */
 #include "steps.h"
 #include <stdio.h>
 #include <string.h>
@@ -42,10 +42,10 @@ static void check(Step step, unsigned lanes, const u32 input[4], u32 fpcr, u32 f
     }
 }
 
-static int run(int jit, int portable, char opt) {
+static int run(int jit, int portable) {
     char error[1024];
     Steps s;
-    if (steps_begin_opt(&s, jit, portable, opt, error, sizeof error)) {
+    if (steps_begin(&s, jit, portable, error, sizeof error)) {
         fprintf(stderr, "%s\n", error);
         return 1;
     }
@@ -111,10 +111,10 @@ static int run(int jit, int portable, char opt) {
     return 0;
 }
 
-static int bench(const char* workload, char opt, const char* dump, int reference, int rsqrt) {
+static int bench(const char* workload, const char* dump, int reference, int rsqrt) {
     char error[1024];
     Steps s;
-    if (steps_begin_opt(&s, 1, reference, opt, error, sizeof error)) return snx_error("%s", error);
+    if (steps_begin(&s, 1, reference, error, sizeof error)) return snx_error("%s", error);
     steps_add(&s, rsqrt ? 0x6EA1D820u : 0x4EA1D820u, 0x1000, 0);
     if (dump) {
         int failed = steps_dump(&s, dump, error, sizeof error);
@@ -152,17 +152,18 @@ int main(int argc, char** argv) {
     if (argc >= 3 && !strcmp(argv[1], "--bench")) {
         int reference = 0, rsqrt = 0;
         const char* dump = NULL;
-        for (int i = 4; i < argc; i++) {
+        if (steps_bench_args(argc, argv, 6, 3, "native_recpe --bench WORKLOAD [--reference] [--rsqrt] [DUMP]"))
+            return 2;
+        for (int i = 3; i < argc; i++) {
             if (!strcmp(argv[i], "--reference")) reference = 1;
             else if (!strcmp(argv[i], "--rsqrt")) rsqrt = 1;
             else dump = argv[i];
         }
-        return bench(argv[2], argc > 3 ? argv[3][0] : '0', dump, reference, rsqrt);
+        return bench(argv[2], dump, reference, rsqrt);
     }
     for (int jit = 0; jit < 2; jit++)
         for (int portable = 0; portable < STEPS_FORMS(2); portable++)
-            for (unsigned level = 0; level < STEPS_LEVELS(2); level++)
-                if (run(jit, portable, level ? '2' : '0')) return 1;
+            if (run(jit, portable)) return 1;
     printf("FRECPE: %llu cases, %u failures\n", checked, failures);
     return failures != 0;
 }
