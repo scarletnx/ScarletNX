@@ -7,11 +7,14 @@
    word's own seed (sail_qemu.h) beside qemu-aarch64 -cpu max (tests/qemu_ref), and every register, the flags, FPCR,
    FPSR, the vector registers, the memory it changed and how it ended (the next pc, UNDEF) must be QEMU's. A host where
    QEMU can't run beside the test (Windows) holds them to a reference of QEMU's ends that the qemu-reference job records
-   (--record): the hash of each word's every state. Then sequences of two to four of those words (--sequences N) become
+   (--record): the hash of each word's every state. The words QEMU can't stand for, and a store-exclusive whose monitor
+   is armed where the memory changed, are held to what LLVM's steps made of them, frozen (--frozen FILE, sail_qemu.h).
+   Then sequences of two to four of those words (--sequences N) become
    one block each, one SSA (a register read once, a compare's flags read by the next word's condition, the stores a
    later one overwrites dropped), run beside the code of each word alone at its pc, one after another.
      snx-test-sail-x64 (--qemu QEMU RUNNER DIR [--record FILE] | --reference[-if-there] FILE | --skip REASON)
-                       [--states N] [--samples N] [--sequences N] [--pool N] [--xmm N] [--verbose] [--dump WORD...]
+                       [--frozen FILE] [--states N] [--samples N] [--sequences N] [--pool N] [--xmm N] [--verbose]
+                       [--dump WORD...]
    --pool N gives the back end N host registers of its nine, so it spills (ctest runs it with 3 too), --xmm N of its
    sixteen vector ones (ctest: 6 with 3). --record also writes QEMU's ends of every word a host of any feature makes;
    --reference-if-there skips (77) where the file is not there
@@ -791,7 +794,8 @@ static size_t check_fp_rows(void) {
 
 #define USAGE                                                                                                           \
     "usage: snx-test-sail-x64 (--qemu QEMU RUNNER DIR [--record FILE] | --reference[-if-there] FILE | --skip REASON)\n" \
-    "                         [--states N] [--samples N] [--sequences N] [--pool N] [--xmm N] [--verbose]\n"
+    "                         [--frozen FILE] [--states N] [--samples N] [--sequences N] [--pool N] [--xmm N]\n"        \
+    "                         [--verbose]\n"
 /* whether path is there to read */
 static int there(const char* path) {
     FILE* f = fopen(path, "rb");
@@ -840,10 +844,12 @@ static void run_native(void* user, size_t i, unsigned form, unsigned s, const CP
     const unsigned char* code = ((const Made*)user)->code;
     CPU c = *start;
     u64 next, pc = SAIL_PC;
-    sail_window_start(work, initial, w->word, s);
+    const int pair = start->pc == SAIL_PAIR_PC;
+    (void)s;
+    sail_window_start(work, initial, w->word, pair);
     c.mem = work - SAIL_WINDOW;
     memset(&g_sail_calls, 0, sizeof g_sail_calls);
-    if (sail_pair(w->word, s)) {
+    if (pair) {
         (void)run_step((Step)(void*)(code + w->pair[form][0]), &c);
         pc = SAIL_PAIR_PC + 4;
         next = g_sail_calls.undef ? pc : run_step((Step)(void*)(code + w->pair[form][1]), &c);
@@ -866,7 +872,7 @@ static int run(int argc, char** argv) {
     SailRef ref = {0};
     int reference_kind = 0; /* 1: --reference, 2: --reference-if-there */
     char error[1024];
-    const char* reference = NULL;
+    const char *reference = NULL, *frozen = NULL;
     u32* list;
     Made made_code;
     RtAPI rt = {.cas128 = snx_runtime_cas128};
@@ -893,6 +899,8 @@ static int run(int argc, char** argv) {
             reference = argv[++i];
         } else if (!strcmp(argv[i], "--record") && i + 1 < (unsigned)argc)
             hold.record = argv[++i];
+        else if (!strcmp(argv[i], "--frozen") && i + 1 < (unsigned)argc)
+            frozen = argv[++i];
         else if (!strcmp(argv[i], "--skip") && i + 1 < (unsigned)argc) {
             printf("sail_x64 skipped: %s\n", argv[i + 1]);
             return 77;
@@ -973,23 +981,17 @@ static int run(int argc, char** argv) {
         return 1;
     }
     /* the words: each row's samples, and each with Rd, Rn and Rm 31 */
-    count = lqd_row_words(samples, rnd, &g_test.rows);
+    count = sail_candidates(samples, &g_test.rows);
     rows = g_test.rows;
-    words = g_test.words = (Word*)malloc(sizeof *words * (count * 8 + 1));
+    words = g_test.words = (Word*)malloc(sizeof *words * (count + 1));
     if (!words) return 1;
     for (i = 0; i < count; ++i) {
-        static const u32 fields[3] = {0x1fu, 0x1fu << 5, 0x1fu << 16};
-        const char* name = op_name(rows[i]);
-        unsigned f;
-        if (!name) continue;
-        for (f = 0; f < 8; ++f) {
-            u32 w = rows[i];
+        {
+            const u32 w = rows[i];
+            const char* name = op_name(w);
             Word* x = &words[n];
             int failed = 0, form;
             size_t every = NONE;
-            for (k = 0; k < 3; ++k)
-                if (f & (1u << k)) w |= fields[k];
-            if (f && (w == rows[i] || !op_name(w) || strcmp(op_name(w), name))) continue;
             /* x86-64 code for both hosts; a word neither makes is not the x86-64 back end's */
             x->word = w;
             for (form = 0; form < 2 && !failed; ++form) {
@@ -1043,6 +1045,7 @@ static int run(int argc, char** argv) {
     hold.has = has_code;
     hold.run = run_native;
     failures += sail_hold(&hold, list, n, states, &compared);
+    if (frozen) failures += sail_frozen(&hold, frozen, list, n, &compared);
     sail_ref_free(&ref);
     free(list), free(hold.work);
     /* sequences: words in a row as one block, against the code of each word alone at its pc, one after another */
