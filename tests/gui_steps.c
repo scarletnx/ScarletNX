@@ -25,7 +25,7 @@ int main(void) {
     assert(gui_steps_percent(&s) == 0);
     feed(&s, "  compiled block 1/4: code_000 (1.0 s)\n", 30);
     assert(at(&s, 3)->value == 1 && at(&s, 3)->total == 4 && gui_steps_percent(&s) == 25);
-    feed(&s, "  compiled block 3/4: code_002 (1.0 s)\nLLVM module: 1.1 MB\nBuilt /games/Game\n", 40);
+    feed(&s, "  compiled block 3/4: code_002 (1.0 s)\nx86-64 module: 1.1 MB\nBuilt /games/Game\n", 40);
     assert(s.count == 5 && at(&s, 3)->state == GUI_STEP_DONE && !strcmp(at(&s, 4)->label, "BUILD"));
     assert(at(&s, 4)->state == GUI_STEP_DONE && gui_steps_percent(&s) == 100);
     {
@@ -47,7 +47,7 @@ int main(void) {
     n = gui_step_notes(&s, at(&s, 3), notes, 8);
     assert(n == 4 && !strcmp(notes[0]->text, "Functions: 9  instructions: 99"));
     assert(!strcmp(notes[1]->text, "compiled block 1/4: code_000 (1.0 s)") &&
-           !strcmp(notes[3]->text, "LLVM module: 1.1 MB"));
+           !strcmp(notes[3]->text, "x86-64 module: 1.1 MB"));
     assert(notes[0]->shown_ms == 20 && notes[1]->shown_ms == 30);
     n = gui_step_notes(&s, at(&s, 3), notes, 2);
     assert(n == 2 && !strcmp(notes[0]->text, "compiled block 3/4: code_002 (1.0 s)"));

@@ -3,7 +3,7 @@
 /* rEden's A64 cases (a64_ported_cases.h) through the native back end's step functions (native_steps.h, loaded with the
    JIT's loader, or as a module file with --module): every case's expected values, on any host. Given qemu-aarch64
    and the runner (tests/qemu_ref), each run of a case also runs under QEMU (-cpu cortex-a57) from the state and
-   memory the LLVM side started it from, and the two must end alike: every register, NZCV, FPCR, FPSR, where it went
+   memory the native side started it from, and the two must end alike: every register, NZCV, FPCR, FPSR, where it went
    and the memory window. The code is at CODE on both sides, so they run the same pcs, and in guest memory on both
    (a literal load reads it).
      snx-test-a64-ported [--module] [QEMU RUNNER DIR] */
@@ -18,7 +18,7 @@
 #define FZ     0x01000000u
 #define DN     0x02000000u
 
-/* a run compared with QEMU: where it started (the window as it was) and how the LLVM side ended it */
+/* a run compared with QEMU: where it started (the window as it was) and how the native side ended it */
 typedef struct {
     const char* name;
     const u32* words;
@@ -377,7 +377,7 @@ static int fixed(void) {
     return (int)rows;
 }
 
-/* every recorded run under QEMU, against how the LLVM side ended it */
+/* every recorded run under QEMU, against how the native side ended it */
 static int against_qemu(const char* qemu, const char* runner, const char* dir) {
     SnxQrefBatch b = {0};
     char error[512], what[160];
@@ -502,7 +502,7 @@ int main(int argc, char** argv) {
     minmaxes = minmax();
     conversions = fixed();
     if (g.compare && against_qemu(qemu, runner, dir)) ++g.failures;
-    printf("A64 cases ported from rEden's tests through the LLVM steps (%s): %d cases, %d min/max runs, "
+    printf("A64 cases ported from rEden's tests through the native steps (%s): %d cases, %d min/max runs, "
            "%d conversions, %s, %d checks, %d failed\n",
            jit ? "the JIT's loader" : "a module", cases, minmaxes, conversions,
            g.compare ? "each run against QEMU too" : "without QEMU", g.checks, g.failures);

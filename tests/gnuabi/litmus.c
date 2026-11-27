@@ -5,16 +5,16 @@
  *
  * The threads are persistent: spawning a guest thread costs a clone per iteration, so instead every thread runs the
  * same loop and the loop's two barriers of its own (sync_point) separate one attempt from the next. Between them a
- * thread runs the test's accesses, the plain loads and stores the translator lowers to ordinary LLVM loads and stores
+ * thread runs the test's accesses, the plain loads and stores the translator lowers to ordinary host loads and stores
  * and the barrier, acquire and release it lowers to fences and to LDAR and STLR. The barriers and the counter use
  * sequentially consistent atomics, so the harness itself can never be the reason an outcome is missing.
  *
  * The parent counts the values its reads saw. Every outcome it reports must be one the model allows: a fence, an
- * acquire or a release the translator drops, or a plain access LLVM moves across one, shows up as an outcome no Arm
- * core produces. The model is the AArch64 application level memory model of the Arm ARM, whose authoritative form is
- * aarch64.cat in the herd7 tool suite (Jade Alglave and Luc Maranget), and the expected sets are the ones herd7 gives
- * for the same tests written in its format. tests/litmus/ holds those files, so that the expectations can be checked
- * with herd7, or with Arm's copy of it at developer.arm.com/herd7, rather than taken on trust.
+ * acquire or a release the translator drops, or a plain access the back end moves across one, shows up as an outcome
+ * no Arm core produces. The model is the AArch64 application level memory model of the Arm ARM, whose authoritative
+ * form is aarch64.cat in the herd7 tool suite (Jade Alglave and Luc Maranget), and the expected sets are the ones
+ * herd7 gives for the same tests written in its format. tests/litmus/ holds those files, so that the expectations can
+ * be checked with herd7, or with Arm's copy of it at developer.arm.com/herd7, rather than taken on trust.
  *
  * The images are freestanding (no libc, no libgcc) for aarch64-linux-gnu, as tests/gnuabi/threads.c is. */
 #include "threading.h"

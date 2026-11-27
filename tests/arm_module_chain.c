@@ -5,7 +5,7 @@
    loop of ten million turns to the return that leaves it, A32 and Thumb, through an interworking call, without the
    host's stack growing; a poll set stops it at its backward branch, and not at a forward one; a block that sets an
    exit (an SVC) returns at once, and so does one whose branch reaches the next block's address in the other state. Each block its own unit (the next block a declaration, linked from another object),
-   and all in one. A host's native back end makes all of them: LLVM never starts */
+   and all in one. A host's native back end makes all of them */
 #include "common/cpu/recompiler/mach/native.h"
 #include "common/utilities/common.h"
 #include "nx/loader/loader.h"

@@ -6,7 +6,7 @@
 tests/gnuabi/litmus.c is built once for each test, freestanding for aarch64-linux-gnu with Clang and a linker, mold or
 LLD, and run on the GNU ABI runtime. Each thread repeats its accesses behind barriers of its own, and the fixture prints the values
 its reads saw. Every outcome printed must be one the model allows: an outcome in a test's forbidden set is a fence,
-an acquire or a release the translator did not keep, or a plain access LLVM moved across one.
+an acquire or a release the translator did not keep, or a plain access the back end moved across one.
 
 The forbidden sets are the guest's, so they are the same on every host. What differs is which host can show one: the
 same lowered code runs on Linux x86-64, Linux AArch64, Windows x86-64, Windows AArch64 and macOS, and the split

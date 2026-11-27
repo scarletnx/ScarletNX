@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* ARMv8-A pseudocode witnesses for the FP helpers (helpers/fp.c), which the LLVM backend's code calls:
+/* ARMv8-A pseudocode witnesses for the FP helpers (helpers/fp.c), which the native back ends' code calls:
    FPRoundInt, FPProcessNaNs, FPMax/Min[Num], FPCompare and FPUnpack. The vector and reserved-encoding witnesses
-   are native_codegen's (codegen_test.c), through the LLVM steps.
+   are native_codegen's (codegen_test.c), through the native steps.
    All operands/results are IEEE encodings, never host NaN literals. */
 #include "common/cpu/aarch64/cpu.h"
 #include <fenv.h>
