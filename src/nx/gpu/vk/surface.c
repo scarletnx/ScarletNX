@@ -1328,6 +1328,7 @@ void vk_surf_wrote(Surf* s) {
     if (g_settings.texture_events_shadow && !(s->gva >> 63)) addr_gens_bump(ADDR_GENS_WRITE, s->gva, rt_bytes(s));
     vk_shared_note(3);
     take_changed(s);
+    s->wgen_prev = s->wgen;
     s->wgen = vk_surf_gen();
     s->wseq = ++g_wseq;
 }

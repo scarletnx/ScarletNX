@@ -2884,22 +2884,18 @@ void vk_rt_copy_log(void) {
 static u64 copy_bytes(const Surf* c) { return (u64)c->sw * c->sh * c->layers * c->f.bpp * (u64)vk_surf_samples(c); }
 /* A copy of a target at draw_batches=2. The target's wgen counts the writes of both draw threads as they record them,
    but the GPU runs the worker's list after all of the renderer thread's half of the split (the splice at the join). So
-   a copy that one thread made is not the target as the other thread's draws see it on the GPU, whatever wgen says: the
-   renderer thread's is from before the worker's writes and maybe before more of its own half, and the worker's runs
-   after the renderer thread's half. In a split, the worker reuses only the copies it made in that split, and the
-   renderer thread none of those. After the split the GPU holds the copy last in the GPU's order: the worker's, where
-   it made one in that split. So one the renderer thread made last in a split where the worker made one too is made
-   again: its crop_gen is not what the GPU holds */
+   each draw thread has its own copies (rt_copy's crop_thread): one copy that both threads made in turn was not the
+   target as the other thread's draws saw it on the GPU (flicker), and a copy each thread made again over the other's
+   in each split was about 1900 copies a present in one game where its draws sample a corner of their target. The
+   worker's copy holds all the writes that wgen counted when it was made, as the renderer thread's half runs before it
+   on the GPU. The renderer thread's copy made in a split holds none of the worker's writes in that split, also those
+   that wgen counted before it, so it is made again after that split */
 static int copy_reusable(const Surf* c) {
-    const u32 split = vk_share_on() ? vk_share_serial() : 0;
-    if (split && vk_render_slot()) return c->crop_split == split && c->crop_slot;
-    if (split && c->crop_split == split) return !c->crop_slot;
-    return c->crop_slot || !c->crop_split || c->crop_split != c->crop_worker;
+    return !c->crop_split || (vk_share_on() && c->crop_split == vk_share_serial());
 }
 static void copy_made(Surf* c) {
-    c->crop_split = vk_share_on() ? vk_share_serial() : 0;
-    c->crop_slot = c->crop_split && vk_render_slot();
-    if (c->crop_slot) c->crop_worker = c->crop_split;
+    c->crop_made = vk_share_on() ? vk_share_serial() : 0;
+    c->crop_split = vk_render_slot() ? 0 : c->crop_made;
 }
 /* the target's top-left w x h copied out, in the target's format, or in as: another color format of the same texel
    size, the target's bytes read as that format (a bit copy, which vkCmdCopyImage makes between such formats). The
@@ -2916,9 +2912,11 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int why, int pixel
     /* the same region of the scaled target */
     u32 sw = vk_sc(w) < rt->sw ? vk_sc(w) : rt->sw, sh = vk_sc(h) < rt->sh ? vk_sc(h) : rt->sh;
     u32 cw = guest ? w : sw, ch = guest ? h : sh;
+    const u8 thread = (u8)vk_render_slot();
     for (Surf** pp = &rt->crop; *pp;) {
         Surf* x = *pp;
-        if (!x->predraw && x->w == w && x->h == h && x->sw == cw && x->sh == ch && x->f.vk == f.vk)
+        if (!x->predraw && x->crop_thread == thread && x->w == w && x->h == h && x->sw == cw && x->sh == ch &&
+            x->f.vk == f.vk)
             c = x;
         else if ((i32)(g_vk_present - (u32)x->last_used) > 60) {
             *pp = x->next;
@@ -2948,6 +2946,7 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int why, int pixel
         c->fkey = rt->fkey;
         c->type = rt->type;
         c->is_rt = 1;       /* sampled like one; not in the table, so never found as one */
+        c->crop_thread = thread;
         c->msaa = rt->msaa; /* a multisampled target's copy has its samples, which a copy takes as they are */
         c->layout = VK_IMAGE_LAYOUT_UNDEFINED;
         if (c->msaa &&
@@ -3085,8 +3084,8 @@ _Thread_local u64 g_vk_drawing; /* each thread's draw (draw_batches=2) */
 /* the copy c of rt that the draw being recorded samples (copy_read) */
 static Surf* copy_read(Surf* rt, Surf* c) {
     if (c && c != rt && g_vk_drawing) {
-        rt->fb_snap = c;
-        rt->fb_draw = g_vk_drawing;
+        rt->fb_snap[vk_render_slot()] = c;
+        rt->fb_draw[vk_render_slot()] = g_vk_drawing;
     }
     return c;
 }
@@ -3095,9 +3094,20 @@ Surf* vk_rt_snapshot(Surf* rt, int pixels) {
     return copy_read(rt, rt_copy(rt, rt->w, rt->h, NULL, VK_RT_COPY_FEEDBACK, pixels, 1));
 }
 /* every write of the draw that sampled it (a color attachment, then its programmable blend): a write outside any draw
-   (a clear: g_vk_drawing 0), or another draw's, is not */
+   (a clear: g_vk_drawing 0), or another draw's, is not. In a split (draw_batches=2), a draw's write is also not a
+   change for the other draw thread's copies that it made in that split and that were up to date: on the GPU the
+   renderer thread's half runs before all of the worker's list, so the renderer thread's draws never see the worker's
+   writes of the split, and the worker's copy already holds the renderer thread's writes. Without this, each thread's
+   draws over a target made the other thread's copy of it again at its next draw */
 void vk_rt_copy_drawn(Surf* rt) {
-    if (rt->fb_snap && rt->fb_draw && rt->fb_draw == g_vk_drawing) rt->fb_snap->fb_gen = rt->wgen;
+    const u32 slot = vk_render_slot();
+    Surf* const snap = rt->fb_snap[slot];
+    if (snap && rt->fb_draw[slot] && rt->fb_draw[slot] == g_vk_drawing) snap->fb_gen = rt->wgen;
+    if (!g_vk_drawing || !vk_share_on()) return;
+    const u32 split = vk_share_serial();
+    for (Surf* x = rt->crop; x; x = x->next)
+        if (!x->predraw && x->crop_thread != slot && x->crop_made == split && x->fb_gen == rt->wgen_prev)
+            x->fb_gen = rt->wgen;
 }
 
 /* The save attachment of a feedback draw that the renderer draws two times (render.c predraw_run): an image of the

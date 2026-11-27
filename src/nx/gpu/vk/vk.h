@@ -1428,13 +1428,16 @@ typedef struct Surf {
     /* a copy's (a crop or a snapshot): its target's wgen when it was copied, or after the last draw that sampled the
        copy and wrote the target (vk_rt_copy_drawn) */
     u32 fb_gen;
-    /* a copy's: the split (vk_share_serial) of its last copy, 0 outside a split, and 1 where the worker made it
-       (crop_slot). crop_worker: the last split the worker made it in (texture.c copy_reusable) */
-    u32 crop_split, crop_worker;
-    u8 crop_slot;
-    /* render targets: the copy the draw g_vk_drawing samples of it, while that draw is recorded */
-    struct Surf* fb_snap;
-    u64 fb_draw;
+    /* a copy's: the split (vk_share_serial) where the renderer thread last copied it, 0 when it copied it outside a
+       split or the copy is the worker's. crop_made: the split of its last copy by either thread, 0 outside a split.
+       crop_thread: the draw thread whose copy it is (vk_render_slot, texture.c rt_copy) */
+    u32 crop_split, crop_made;
+    u8 crop_thread;
+    /* render targets: for each draw thread (vk_render_slot), the copy the draw g_vk_drawing samples of it, while that
+       draw is recorded */
+    struct Surf* fb_snap[VK_RC_SLOTS];
+    u64 fb_draw[VK_RC_SLOTS];
+    u32 wgen_prev; /* wgen before the last write (vk_surf_wrote) */
     u8 predraw;     /* a copy in crop that is a feedback draw's save attachment of set predraw - 1 (vk_rt_save) */
     struct Surf* next; /* copies: the next copy of the same render target */
     /* its row in surface.c's table, 0 when it is in none (copies, the CPU frame). The row holds its hash chain, its
