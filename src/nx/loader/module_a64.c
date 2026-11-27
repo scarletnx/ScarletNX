@@ -310,7 +310,7 @@ int snx_build_module_a64(SnxProgram* loaded, const SnxCodegenOptions* options, c
     SnxLinkOutput linked;
     unsigned char* module_object = NULL;
     size_t module_size = 0, first, last, count, limit, i, entry_count = 0, n = 0;
-    size_t cache_count = 0, variant_count = 0, export_count = 1;
+    size_t cache_count = 0, variant_count = 0, export_count = 1, units_at = 0, units_end = 0;
     const char* exports[5];
     char error[1024], *tmp = NULL;
     double start;
@@ -467,12 +467,14 @@ int snx_build_module_a64(SnxProgram* loaded, const SnxCodegenOptions* options, c
     inputs[n].data = module_object;
     inputs[n].size = module_size;
     inputs[n++].name = "module";
+    units_at = n;
     for (i = 0; i < q.count; ++i)
         if (q.units[i].x64) {
             inputs[n].data = q.units[i].x64;
             inputs[n].size = q.units[i].x64_size;
             inputs[n++].name = "code chunk";
         }
+    units_end = n;
     for (i = 0; i < cache_count; ++i) {
         const SnxJitCacheRecord* record = snx_jit_cache_record(cache, i);
         inputs[n].data = record->object;
@@ -509,17 +511,33 @@ int snx_build_module_a64(SnxProgram* loaded, const SnxCodegenOptions* options, c
         }
         phases.link = snx_seconds() - start;
     } else {
+        /* the module to its file as it is linked, each unit's object given back once its code is there: a game's
+           code is in memory once, not as the units' objects and as the module too. The code generator's tables go
+           first, as for a pack */
+        PackUnits pack;
+        unsigned char* owned = (unsigned char*)snx_alloc(n ? n : 1);
+        int failed;
+        memset(owned, 0, n ? n : 1);
+        for (i = units_at; i < units_end; ++i) owned[i] = 1;
+        pack.units = q.units;
+        pack.inputs = inputs;
+        pack.count = q.count;
+        snx_codegen_free(&codegen);
+        phases.streamed = 1;
         start = snx_seconds();
-        if (snx_link(inputs, n, exports, export_count, base_name(build->output), &linked, error, sizeof(error))) {
+        failed = snx_link_to_file(inputs, n, exports, export_count, base_name(build->output), tmp, owned, written_unit,
+                                  &pack, &linked.size, error, sizeof(error));
+        free(owned);
+        if (failed) {
             snx_error("linking failed: %s", error);
+            if (snx_is_file(tmp)) snx_remove_tree(tmp);
             goto done;
         }
         phases.link = snx_seconds() - start;
         start = snx_seconds();
         /* a module Android can map: its text is loaded executable, which its file must allow there */
-        if (snx_write_file(tmp, linked.data, linked.size) || snx_make_executable(tmp) ||
-            plat_replace_file(tmp, build->output)) {
-            snx_error("linking failed: cannot write %s or make it executable", build->output);
+        if (snx_make_executable(tmp) || plat_replace_file(tmp, build->output)) {
+            snx_error("linking failed: cannot make %s executable or put it at %s", tmp, build->output);
             if (snx_is_file(tmp)) snx_remove_tree(tmp);
             goto done;
         }

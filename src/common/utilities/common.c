@@ -1658,6 +1658,8 @@ void snx_phases_line(char* out, size_t size, const SnxRecompilePhases* p) {
         snprintf(peak, sizeof peak, "the system does not say the peak");
     if (p->pack)
         snprintf(end, sizeof end, "pack %.1f s", p->link);
+    else if (p->streamed)
+        snprintf(end, sizeof end, "link and write %.1f s", p->link + p->write);
     else
         snprintf(end, sizeof end, "link %.1f s, write %.1f s", p->link, p->write);
     snprintf(out, size,

@@ -31,6 +31,8 @@
 #include "common/cpu/recompiler/x64/x64_arm.h"
 #include "common/cpu/recompiler/x64/x64_codegen.h"
 #include "common/utilities/endian.h"
+#include "common/utilities/common.h"
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -83,14 +85,63 @@ static int relocations(const char* name, const char* what, const unsigned char* 
 
 /* a machine's module linked, or a failure said, or said to be no link of this host's with the linker's reason
    (link_elf.c's for a host whose modules are not ELF) */
+/* an input given back: counted, and its bytes overwritten, so a link that read it again would make another module */
+typedef struct {
+    SnxLinkInput copies[2];
+    unsigned released[2];
+} GivenBack;
+static void give_back(void* arg, size_t index) {
+    GivenBack* g = (GivenBack*)arg;
+    ++g->released[index];
+    memset((unsigned char*)(uintptr_t)g->copies[index].data, 0xFF, g->copies[index].size);
+}
+/* the module again by snx_link_to_file, from copies of the inputs that are the linker's to write into: the file is the
+   module snx_link made, byte for byte, and each input came back once */
+static void link_module_file(const char* name, const char* what, const SnxLinkInput* inputs, const char* const* exports,
+                             const char* soname, const SnxLinkOutput* linked) {
+    const unsigned char owned[2] = {1, 1};
+    GivenBack g = {0};
+    char error[256] = "", *folder = snx_temp_dir(NULL), *path = folder ? snx_path_join(folder, soname) : NULL;
+    unsigned char* file = NULL;
+    size_t size = 0, file_size = 0;
+    int k, ok = path != NULL;
+    for (k = 0; k < 2; ++k) {
+        unsigned char* copy = (unsigned char*)malloc(inputs[k].size ? inputs[k].size : 1);
+        g.copies[k] = inputs[k];
+        g.copies[k].data = copy;
+        if (copy) memcpy(copy, inputs[k].data, inputs[k].size);
+        ok = ok && copy;
+    }
+    if (!ok)
+        FAIL("%s: no temporary folder or memory to link %s into a file", name, what);
+    else if (snx_link_to_file(g.copies, 2, exports, 1, soname, path, owned, give_back, &g, &size, error, sizeof error))
+        FAIL("%s: linking %s into a file: %s", name, what, error);
+    else {
+        file = snx_read_file(path, &file_size);
+        if (!file || size != linked->size || file_size != linked->size || memcmp(file, linked->data, linked->size))
+            FAIL("%s: %s linked into a file is %zu bytes there and %zu by the link, not the same %zu bytes as linked "
+                 "in memory",
+                 name, what, file_size, size, linked->size);
+        if (g.released[0] != 1 || g.released[1] != 1)
+            FAIL("%s: %s linked into a file gave its inputs back %u and %u times, not once each", name, what,
+                 g.released[0], g.released[1]);
+    }
+    free(file);
+    for (k = 0; k < 2; ++k) free((unsigned char*)(uintptr_t)g.copies[k].data);
+    if (folder) snx_remove_tree(folder);
+    free(path);
+    free(folder);
+}
+
 static void link_module(const char* name, const char* what, const SnxLinkInput* inputs, const char* export,
                         const char* soname) {
     const char* const exports[1] = {export};
     SnxLinkOutput linked = {0};
     char error[256] = "";
-    if (!snx_link(inputs, 2, exports, 1, soname, &linked, error, sizeof error))
+    if (!snx_link(inputs, 2, exports, 1, soname, &linked, error, sizeof error)) {
         ++g_test.linked;
-    else if (strstr(error, "is not supported on this host")) {
+        link_module_file(name, what, inputs, exports, soname, &linked);
+    } else if (strstr(error, "is not supported on this host")) {
         printf("native_link %s: %s not linked on this host: %s\n", name, what, error);
         ++g_test.unlinked;
     } else
