@@ -1802,6 +1802,9 @@ void vk_rt_reload(u64 gva);
    target parked or taken back), so what was found there can be kept until it changes */
 extern _Atomic u32 g_vk_surf_epoch;
 u32 vk_surf_epoch_at(u64 gva); /* the same, for the surfaces of gva's bucket of the table only */
+/* a change of the table at gva that no surface of the table made: a copy of a target freed (texture.c rt_copy), which
+   a texture memo can hold */
+void vk_surf_changed(u64 gva);
 /* the surfaces of gva's bucket of the table: vk_surf_first, then vk_surf_next until NULL */
 Surf* vk_surf_first(u64 gva);
 Surf* vk_surf_next(const Surf* s);

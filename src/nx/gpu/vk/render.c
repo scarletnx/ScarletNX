@@ -2267,7 +2267,10 @@ static int tex_resolve_memo(const DsState* ds, u32 handle, TexRes* x) {
         memcpy(x->tic, m->tic, sizeof x->tic);
         memcpy(x->tsc, m->tsc, sizeof x->tsc);
         x->memo = set_at * TEX_MEMO_WAYS + (u32)(m - set) + 1;
-        if (m->copy) vk_rt_note_read(m->over); /* as tex_from_tic notes a read of the target */
+        if (m->copy) {
+            vk_rt_note_read(m->over); /* as tex_from_tic notes a read of the target */
+            m->t->last_used = g_vk_present; /* in use: rt_copy frees the copies unused for 60 presents */
+        }
         x->t = m->copy ? m->t : tex_recheck_judged(m);
         if (state_check()) { /* resolved again in full, and that one taken */
             u32 tic[8];

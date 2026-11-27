@@ -2918,8 +2918,11 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int why, int pixel
         if (!x->predraw && x->crop_thread == thread && x->w == w && x->h == h && x->sw == cw && x->sh == ch &&
             x->f.vk == f.vk)
             c = x;
-        else if ((i32)(g_vk_present - (u32)x->last_used) > 60) {
+        else if ((i32)(g_vk_present - (u32)x->last_used) > 60 && (!vk_share_on() || x->crop_thread == thread)) {
+            /* not another draw thread's in a split: its texture memo can hold the copy, and reads it with no lock.
+               The table's epoch at the copy's address moves, so that no memo keeps it after this */
             *pp = x->next;
+            vk_surf_changed(x->gva);
             for (int i = 0; i < x->nsv; i++) vk_defer_image(VK_NULL_HANDLE, 0, x->sv[i].v, VK_NULL_HANDLE);
             if (x->att) vk_defer_image(VK_NULL_HANDLE, 0, x->att, VK_NULL_HANDLE);
             if (x->att_linear) vk_defer_image(VK_NULL_HANDLE, 0, x->att_linear, VK_NULL_HANDLE);
