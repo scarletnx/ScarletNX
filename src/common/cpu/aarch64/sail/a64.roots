@@ -328,7 +328,7 @@ stop BranchTo
 stop BranchNotTaken
 stop EndOfInstruction
 
-# the machine's actions the back end lowers (llvm.h, sg_NAME): the hints, the barriers, the exclusive monitor
+# the machine's actions the back end lowers (its sg_NAME): the hints, the barriers, the exclusive monitor
 stop Hint_Yield
 stop Hint_WFE
 stop Hint_WFI

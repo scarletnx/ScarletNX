@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* sailgen's generator: one C function per decode function the roots name, which emits that instruction's IR through
-   the LLVM back end (llvm.h, copied at the top of the output), and the dispatcher that picks one by the decode
+   the back end (its files, copied at the top of the output), and the dispatcher that picks one by the decode
    clauses' fixed bits.
 
    Each decode function is walked with everything it calls inlined, and each value is given the time it is known at:
@@ -619,7 +619,7 @@ static int same_name(unsigned a, unsigned b) { return a == b || !strcmp(sg_str(a
 /* ---- accumulators: an element loop from 1 that folds each element into a local ----
    foreach (e from 1 to elements - 1) { acc = op(acc, x) } with acc declared before it as x is for e 0 (SMAXV's maxmin,
    SADDLV's sum) is acc folded over every lane from 0: llvm.vector.reduce of x's lanes, by + (an integer's exact sum,
-   bits' modular one), Min or Max, one value as a vector of one lane (llvm.h's sg_l_reduce_*). Walked as lanes, the body
+   bits' modular one), Min or Max, one value as a vector of one lane (a back end's sg_l_reduce_*). Walked as lanes, the body
    reads acc as ACC_READ, which only such a fold may take, and the fold (ACC_FOLD) may only be acc's new value, set
    once at the body's top; anything else refuses the loop (emit's check) */
 
@@ -1034,7 +1034,7 @@ static Val inline_call(unsigned n, unsigned def, Val* args, unsigned count) {
 /* ---- halves: a function that calls itself on each half of its bits ----
    f(x, size, ...) that gives x where x is size bits wide, and elsewhere the + of what it gives for x's upper half and
    for its lower half (Reduce__1 of ReduceOp_ADD, ADDV's), gives the sum of x's elements of size bits: + of bits is
-   associative and commutative, so the tree of halves adds what one llvm.vector.reduce.add of the lanes does (llvm.h's
+   associative and commutative, so the tree of halves adds what one reduction of the lanes does (a back end's
    sg_l_reduce_add, as the element loops' accumulators), and one element is its own sum. The base, the half and the two
    calls are read on the Sail's tree (halves_shape). What joins the two results is walked as any Sail, once, but for a
    match on a value known here, which keeps the case it picks (Reduce's op: match_expr): each result is a value only
@@ -1318,7 +1318,7 @@ static void need_args(unsigned n, unsigned count) {
 }
 
 /* BitReverse(Poly32Mod2(EOR(BitReverse(acc) @ Zeros(size), BitReverse(val) @ Zeros(32)), poly)): the reflected CRC
-   update, lowered whole (llvm.h's sg_crc32); 0 when x is not that */
+   update, lowered whole (a back end's sg_crc32); 0 when x is not that */
 static int crc_rule(unsigned x, Val* r) {
     unsigned mod = through_let(x), eor, left, right, acc, val;
     Val a, v, size, poly;
@@ -2278,7 +2278,7 @@ static void fields_write(unsigned t, Val v) {
     emit("%s(g, %s, %u, %s);\n", fn, field, count, v.c);
 }
 
-/* [r[i]] @ IsZeroBit(r) @ 0b00, i r's top bit: a logical result's NZCV, lowered whole (llvm.h's sg_d_logic_flags),
+/* [r[i]] @ IsZeroBit(r) @ 0b00, i r's top bit: a logical result's NZCV, lowered whole (a back end's sg_d_logic_flags),
    so a write of the four flags keeps r as what a condition on them compares; 0 when n is not that */
 static int logic_flags_rule(unsigned n, Val* out) {
     unsigned rhs[8], bit, index, zero;
@@ -2360,7 +2360,7 @@ static void shorten(Val* a, Val* b) {
     *b = keep(*b);
 }
 
-/* a op b, one of them a lane's: the operation on every lane (llvm.h's sg_l_*), else the loop is refused */
+/* a op b, one of them a lane's: the operation on every lane (a back end's sg_l_*), else the loop is refused */
 enum { L_EQ, L_NE, L_LT, L_LE, L_GT, L_GE };
 static Val lane_binop(unsigned n, const char* op, Val a, Val b) {
     static const char* const cmps[] = {"==", "!=", "<", "<=", ">", ">="};

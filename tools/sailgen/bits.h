@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* What every CPU back end of sailgen shares and LLVM has no part in: the values the generated emitters know while they
    recompile (SgS, bits of 128 at most; integers as long long) and the arithmetic of them, copied at the top of the file
-   sailgen writes before the back end's own (core.h for LLVM's, x64.h for the x86-64 one's) */
+   sailgen writes before the back end's own (x64.h for the x86-64 one's) */
 
 #include "common/utilities/common.h" /* SnxU32, SnxU64 */
 #include <stddef.h>
