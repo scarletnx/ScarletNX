@@ -292,7 +292,7 @@ def main():
     check(reports.triage(gh, {'issue': gh.issue(5)}, SCAN, fetch) == 'not an issue', 'a pull request is skipped')
     found = reports.sources({'body': 'see https://example.com/files/1/a.log and ' + url(7, 'b.txt')}, [])
     check([link for _, _, link, _ in found] == [url(7, 'b.txt')], 'only GitHub attachment URLs are fetched')
-    # a maintainer's confirmed label: one comment, ready for an edenprobe case, with the report's signature
+    # a maintainer's confirmed label: one comment, ready for an Amberlith case, with the report's signature
     calls = len(gh.calls)
     check(
         reports.triage(
@@ -303,12 +303,12 @@ def main():
         'another label does nothing',
     )
     labeled = {'action': 'labeled', 'label': {'name': reports.CONFIRMED}, 'issue': {'number': 2}}
-    check('ready for an edenprobe case' in reports.triage(gh, labeled, SCAN, fetch), 'the confirmed label')
+    check('ready for an Amberlith case' in reports.triage(gh, labeled, SCAN, fetch), 'the confirmed label')
     (confirmed,) = [c for c in bot_comments(gh, 2) if reports.CONFIRMED_MARK in c['body']]
     check(
         'svcBreak in _ZN2nn3hid18GetNpadJoyHoldTypeEv' in confirmed['body'], "the comment names the report's signature"
     )
-    check('`edenprobe_scaffold`' in confirmed['body'] and 'with `issue` 2' in confirmed['body'], 'the MCP steps')
+    check('`amberlith_scaffold`' in confirmed['body'] and 'with `issue` 2' in confirmed['body'], 'the MCP steps')
     check('posted already' in reports.triage(gh, labeled, SCAN, fetch), 'labeled again, no second comment')
     check(len([c for c in bot_comments(gh, 2) if reports.CONFIRMED_MARK in c['body']]) == 1, 'one confirmed comment')
     check(reports.CONFIRMED in gh.labels, 'the confirmed label is made for maintainers')

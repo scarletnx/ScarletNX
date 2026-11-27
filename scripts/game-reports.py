@@ -14,7 +14,7 @@ block the summary finds a log's header or failure marker in). Otherwise it scans
 a comment of its own, edited rather than repeated as logs are added. The issue gets the `game report` label and a
 `log: <how it ended>` label for each log's outcome, and the comment names the other game reports with the same
 signature. An attachment that isn't a ScarletNX log is named as such. A maintainer's `status: confirmed` label on a
-report gets a comment of its own, once: ready for an edenprobe case, and the MCP tools that write one.
+report gets a comment of its own, once: ready for an Amberlith case, and the MCP tools that write one.
 
 PROGRAM is snx-logscan, or scarletnx with --scan-log after it (SNX_LOGSCAN, else snx-logscan on PATH): the workflow
 builds it from its sources alone. --issue N triages that issue as an event for it would, and fails on a number that
@@ -47,7 +47,7 @@ OUTCOME_PREFIX = 'log: '
 LABEL_COLOR = 'c5def5'
 OUTCOME_COLOR = 'ededed'
 MARK = '<!-- game-reports:summary -->'
-# a maintainer's mark that a report's failure is understood, and the comment it gets once: ready for an edenprobe
+# a maintainer's mark that a report's failure is understood, and the comment it gets once: ready for an Amberlith
 # case
 CONFIRMED = 'status: confirmed'
 CONFIRMED_COLOR = '0e8a16'
@@ -351,11 +351,11 @@ def confirmed_body(issue, summary):
     signatures = sorted({log['signature'] for log in (summary or {}).get('logs', []) if log.get('signature')})
     out = [
         CONFIRMED_MARK,
-        '## Confirmed: ready for an edenprobe case',
+        '## Confirmed: ready for an Amberlith case',
         '',
         (
             'A maintainer confirmed this report. The next step is a case in '
-            '[edenprobe](https://github.com/scarletnx/edenprobe) that asks the console the one question this failure '
+            '[Amberlith](https://github.com/scarletnx/amberlith) that asks the console the one question this failure '
             'comes down to, so that every ScarletNX build is checked against it.'
         ),
     ]
@@ -365,16 +365,16 @@ def confirmed_body(issue, summary):
         '',
         "With an agent and ScarletNX's MCP server (`scarletnx --mcp`, `.mcp.json` in a checkout):",
         '',
-        f'1. `edenprobe_scaffold` writes the case into a local edenprobe checkout, with `issue` {issue}.',
+        f'1. `amberlith_scaffold` writes the case into a local Amberlith checkout, with `issue` {issue}.',
         (
             "2. The agent writes the service call, the judge and where the expected answer comes from (Eden's source, "
             'or a console).'
         ),
         (
-            '3. `edenprobe_check` runs the judges on the host. `edenprobe_run` runs the built NRO on ScarletNX, where '
+            '3. `amberlith_check` runs the judges on the host. `amberlith_run` runs the built NRO on ScarletNX, where '
             'the case should fail.'
         ),
-        "4. `edenprobe_finding` writes the edenprobe pull request's text.",
+        "4. `amberlith_finding` writes the Amberlith pull request's text.",
         '',
         'Nothing of the game goes into the case: no code, disassembly, assets or values only that game uses.',
     ]
@@ -389,7 +389,7 @@ def confirm(github, number):
         return f'#{number}: confirmed, its comment posted already'
     summary = next((summary_data(c['body']) for c in bots if MARK in (c.get('body') or '')), None)
     github.comment(number, confirmed_body(number, summary))
-    return f'#{number}: confirmed, ready for an edenprobe case'
+    return f'#{number}: confirmed, ready for an Amberlith case'
 
 
 def triage(github, event, logscan, fetch=download):
@@ -437,7 +437,7 @@ def triage(github, event, logscan, fetch=download):
         return f'#{number}: no ScarletNX log in {len(entries)} attachment(s)'
     want = {LABEL} | outcomes
     github.label(LABEL, LABEL_COLOR, 'An issue with a ScarletNX log attached (scripts/game-reports.py)')
-    github.label(CONFIRMED, CONFIRMED_COLOR, 'A maintainer understands the failure: ready for an edenprobe case')
+    github.label(CONFIRMED, CONFIRMED_COLOR, 'A maintainer understands the failure: ready for an Amberlith case')
     for name in outcomes - have:
         github.label(name, OUTCOME_COLOR, 'How the attached log says the run ended')
     stale = {name for name in have if name.startswith(OUTCOME_PREFIX)} - outcomes

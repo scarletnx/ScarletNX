@@ -6,7 +6,7 @@ name: Game reports
 # log summary, src/common/utilities/logscan.c, built here as snx-logscan from its sources alone): how the run ended,
 # where, the service commands the runtime doesn't implement, the shaders, macros, SVCs and guest code it missed, and the
 # other game reports that failed the same way. One comment, edited as logs are added, and the labels `game report` and
-# `log: <how it ended>`. A maintainer's `status: confirmed` label gets a comment once: ready for an edenprobe case.
+# `log: <how it ended>`. A maintainer's `status: confirmed` label gets a comment once: ready for an Amberlith case.
 # A maintainer's run by hand (gh workflow run game-reports.yml -f issue=N) summarizes that issue as an event for it
 # would, and fails on a pull request or an issue without a log. Nothing of the issue reaches the shell: the script
 # reads the event's file, or the number a run by hand names. The checkout is main's, so an issue never runs code of a
