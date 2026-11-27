@@ -1863,6 +1863,24 @@ int mem_pool_any(u64 a, u64 size) {
     mem_unlock();
     return r;
 }
+u64 mem_pool_run(u64 a, u64 max, u64* off) {
+    u64 n = 0;
+    if (a >= AS_END || !max) return 0;
+    if (max > AS_END - a) max = AS_END - a;
+    mem_lock();
+    u32 i = blk_index_nl(a);
+    if (g_blk[i].pool) {
+        *off = g_blk[i].pool - 1 + (a - g_blk[i].addr);
+        for (; i < g_nblk && g_blk[i].addr < a + max && g_blk[i].pool; i++) {
+            /* a block after a's: its pool pages must follow on from a's */
+            if (g_blk[i].addr > a && g_blk[i].pool - 1 != *off + (g_blk[i].addr - a)) break;
+            n = blk_end(&g_blk[i]) - a;
+        }
+        if (n > max) n = max;
+    }
+    mem_unlock();
+    return n;
+}
 int mem_pool_offset(u64 a, u64* off) {
     int r = -1;
     u32 i;
