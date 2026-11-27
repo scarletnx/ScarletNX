@@ -1647,13 +1647,21 @@ static int migratable_nl(u64 a, u64 size) {
 /* what mem_migrate moves, with holes: the guest's data as migratable_nl takes it, between blocks that are free. A
    region is whole windows of 2 MiB (uma.c), and a window with a hole of unmapped pages in it was never moved: the
    storage buffers and windows in it were copied each time the GPU read them, about 1,200 lookups a present in one
-   game's town. The free pages stay as they are, inaccessible, and the buffer's pages behind them unused. Its data runs
-   in *runs, 0 when there is none or a block of another kind; *holes when a free block is among them */
-static int migratable_holes_nl(u64 a, u64 size, u32* runs, int* holes) {
+   game's town. The free pages stay as they are, inaccessible, and the buffer's pages behind them unused.
+   pool: a block of pool pages that another address maps too (a view's, its source's) stays where it is, a part of
+   the region that the GPU's buffer takes from the pool's memfd (mem_region_parts); without it such a block refuses
+   the range. In the same town, all of the windows the GPU read and could not have were refused for such pages alone.
+   Its runs of data to move in *runs, *holes when a free block is among them. 0 when there is nothing to have, or a
+   block of another kind */
+static int aliased_block_nl(const MemBlock* b, u64 a, u64 end) {
+    u64 lo = b->addr > a ? b->addr : a, hi = blk_end(b) < end ? blk_end(b) : end;
+    return b->pool && aliased_nl(lo, hi);
+}
+static int migratable_holes_nl(u64 a, u64 size, int pool, u32* runs, int* holes) {
     u64 end = a + size;
     u32 n = 0;
-    int in = 0, free_seen = 0;
-    if (!g_nblk || placed_nl(a, size) || (any_pool_nl(a, size) && aliased_nl(a, end))) return 0;
+    int in = 0, free_seen = 0, kept = 0;
+    if (!g_nblk || placed_nl(a, size) || (!pool && any_pool_nl(a, size) && aliased_nl(a, end))) return 0;
     for (u32 i = blk_index_nl(a); i < g_nblk && g_blk[i].addr < end; i++) {
         const MemBlock* b = &g_blk[i];
         if (b->state == MS_FREE) {
@@ -1665,19 +1673,54 @@ static int migratable_holes_nl(u64 a, u64 size, u32* runs, int* holes) {
         if (b->pool) {
             u64 lo = b->addr > a ? b->addr : a, hi = blk_end(b) < end ? blk_end(b) : end;
             if (b->state == MS_SHARED || host_view_nl(b->pool - 1 + (lo - b->addr), hi - lo)) return 0;
+            if (pool && aliased_block_nl(b, a, end)) {
+                in = 0;
+                kept = 1;
+                continue;
+            }
         }
         if (!in) n++;
         in = 1;
     }
     if (runs) *runs = n;
     if (holes) *holes = free_seen;
-    return n != 0;
+    return n != 0 || kept;
 }
-int mem_movable_holes(u64 a, u64 size, int* holes) {
+int mem_movable_holes(u64 a, u64 size, int pool, int* holes) {
     int r;
     if (!size || (a | size) & (g_host_page - 1) || a < AS_BASE || a + size > AS_END || a + size < a) return 0;
     mem_lock();
-    r = migratable_holes_nl(a, size, NULL, holes);
+    r = migratable_holes_nl(a, size, pool, NULL, holes);
+    mem_unlock();
+    return r;
+}
+/* the parts of [a, a + size) side by side, as migratable_holes_nl with pool takes them: the pool's pages that stay
+   (their offset plus 1), and the rest (0). -1 past max, with *n the count */
+static int region_parts_nl(u64 a, u64 size, MemRegionPart* parts, u32 max, u32* n) {
+    u64 end = a + size;
+    *n = 0;
+    for (u32 i = blk_index_nl(a); i < g_nblk && g_blk[i].addr < end; i++) {
+        const MemBlock* b = &g_blk[i];
+        u64 lo = b->addr > a ? b->addr : a, hi = blk_end(b) < end ? blk_end(b) : end;
+        const u64 pool = aliased_block_nl(b, a, end) ? b->pool + (lo - b->addr) : 0;
+        if (*n && *n <= max) {
+            MemRegionPart* l = &parts[*n - 1];
+            if (pool ? l->pool && l->pool + l->size == pool : !l->pool) {
+                l->size += hi - lo;
+                continue;
+            }
+        }
+        if (*n < max) parts[*n] = (MemRegionPart){hi - lo, pool};
+        ++*n;
+    }
+    return *n > max ? -1 : 0;
+}
+int mem_region_parts(u64 a, u64 size, MemRegionPart* parts, u32 max, u32* n) {
+    int r = MEM_BADSTATE;
+    *n = 0;
+    if (!size || (a | size) & (g_host_page - 1) || a < AS_BASE || a + size > AS_END || a + size < a) return r;
+    mem_lock();
+    if (migratable_holes_nl(a, size, 1, NULL, NULL)) r = region_parts_nl(a, size, parts, max, n) ? MEM_NOMEM : 0;
     mem_unlock();
     return r;
 }
@@ -1704,19 +1747,33 @@ static void pool_give_back_nl(u64 a, u64 size) {
     if (any) pool_set_nl(a, size, 0);
 }
 /* [a, a + size) moves into fd's pages, each data run of it at its offset in the buffer (a hole of free pages stays as
-   it is: migratable_holes_nl). A run that can't move puts the ones before it back */
-int mem_migrate(u64 a, u64 size, int fd, u8* view) {
+   it is: migratable_holes_nl). With parts, the pool's pages there that another address maps stay too, and they must
+   still be what mem_region_parts said. A run that can't move puts the ones before it back */
+int mem_migrate(u64 a, u64 size, int fd, u8* view, const MemRegionPart* parts, u32 nparts) {
     u64 end = a + size;
     int r = 0, s;
     u32 nruns = 0, done = 0;
     u64(*runs)[2] = NULL;
+    MemRegionPart* now = NULL;
     if (!size || (a | size) & (g_host_page - 1) || a < AS_BASE || end > AS_END || end < a) return MEM_BADSTATE;
     mem_lock();
-    if (!migratable_holes_nl(a, size, &nruns, NULL)) {
+    if (!migratable_holes_nl(a, size, parts != NULL, &nruns, NULL)) {
         r = MEM_BADSTATE;
         goto out;
     }
-    runs = malloc(sizeof *runs * nruns);
+    if (parts) { /* the GPU's buffer has the pool's pages it was made with: they are the ones mapped here still */
+        u32 n = 0;
+        now = malloc(sizeof *now * nparts);
+        if (!now) {
+            r = MEM_NOMEM;
+            goto out;
+        }
+        if (region_parts_nl(a, size, now, nparts, &n) || n != nparts || memcmp(now, parts, sizeof *now * nparts)) {
+            r = MEM_BADSTATE;
+            goto out;
+        }
+    }
+    runs = malloc(sizeof *runs * (nruns ? nruns : 1));
     if (!runs || ext_room_nl(nruns + 1)) { /* a run cut in two, and these */
         r = MEM_NOMEM;
         goto out;
@@ -1724,7 +1781,7 @@ int mem_migrate(u64 a, u64 size, int fd, u8* view) {
     /* the runs first: giving their pool pages back changes the block list */
     u32 n = 0;
     for (u32 i = blk_index_nl(a); i < g_nblk && g_blk[i].addr < end; i++) {
-        if (g_blk[i].state == MS_FREE) continue;
+        if (g_blk[i].state == MS_FREE || (parts && aliased_block_nl(&g_blk[i], a, end))) continue;
         u64 lo = g_blk[i].addr > a ? g_blk[i].addr : a, hi = blk_end(&g_blk[i]) < end ? blk_end(&g_blk[i]) : end;
         if (n && runs[n - 1][1] == lo)
             runs[n - 1][1] = hi;
@@ -1763,6 +1820,7 @@ int mem_migrate(u64 a, u64 size, int fd, u8* view) {
 out:
     mem_unlock();
     free(runs);
+    free(now);
     return r;
 }
 int mem_unmigrate(u64 a, u64 size, u64* moved) {

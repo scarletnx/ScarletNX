@@ -632,7 +632,7 @@ static void test_watch_in_place(void) {
     u8 buf[0x4000];
     u8* view = (u8*)handle;
     for (u32 i = 0; i < 0x10000; i++) GP(a)[i] = IN_PLACE_BYTE(i);
-    CHECK(mem_migrate(a, 0x10000, fd, view) == 0 && view[0x1234] == IN_PLACE_BYTE(0x1234));
+    CHECK(mem_migrate(a, 0x10000, fd, view, NULL, 0) == 0 && view[0x1234] == IN_PLACE_BYTE(0x1234));
     int resolves = g_resolves, lands = g_lands, opens = g_opens;
     CHECK(own_watch_in_place(other, 0x1000) == -1 && !own_trapped(other, 0x4000));
     CHECK(own_watch_in_place(a + 0x1100, 0x2000) == 0);
