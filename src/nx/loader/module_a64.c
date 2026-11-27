@@ -32,8 +32,14 @@
 #include <pthread.h>
 #endif
 
+/* The object bytes a guest instruction comes to at most, averaged over a unit (the back ends make 36 to 49 of code):
+   what bounds the instructions a unit takes before any is made. A unit whose object is still over the ceiling is made
+   again as two (split_units) */
+#define UNIT_BYTES_AN_INSTRUCTION 96u
+
 typedef struct {
     size_t first, last; /* functions */
+    int made;           /* compiled already: a unit split after the others were made is not */
     /* the native back end's object of the unit (x64_codegen.h) */
     unsigned char* x64;
     size_t x64_size, x64_made;
@@ -184,6 +190,7 @@ static void worker(Queue* q) {
             snprintf(q->error, sizeof(q->error), "aborted by the player, %zu of %zu code units compiled", q->done,
                      q->count);
         }
+        while (!q->failed && q->next < q->count && q->units[q->next].made) ++q->next;
         if (q->failed || q->next == q->count) {
             unlock(q);
             return;
@@ -199,6 +206,7 @@ static void worker(Queue* q) {
         lock(q);
         ++q->done;
         --q->active;
+        q->units[i].made = 1;
         q->unit_seconds += seconds;
         if (q->units[i].x64) q->held += q->units[i].x64_size;
         if (rc && !q->failed) {
@@ -294,6 +302,59 @@ static void run(Queue* q, unsigned jobs, int open) {
     free(threads);
 }
 
+/* A unit's object is at most half of what the machine's calls reach: all of its code then reaches the island its
+   veneers are in, and a call of an earlier function of the unit that function's entry (the back ends'
+   MG_DIRECT_ENTRY) */
+static SnxU64 unit_ceiling(const SnxModuleBuild* build) {
+    return build->unit_bytes ? build->unit_bytes : snx_native_reach(build->triple) / 2;
+}
+
+/* The units whose object came out over ceiling, each put back as two of about half its instructions, to be made by
+   the next run of the queue; the others keep their objects and their place. 1 when any was, 0 for none, or -1 with
+   the reason in q->error: a function that alone makes more than a unit holds */
+static int split_units(Queue* q, SnxU64 ceiling) {
+    size_t over = 0, i, n = 0;
+    Unit* units;
+    for (i = 0; i < q->count; ++i) over += q->units[i].x64_size > ceiling;
+    if (!over) return 0;
+    units = (Unit*)snx_alloc((q->count + over) * sizeof(*units));
+    for (i = 0; i < q->count; ++i) {
+        Unit* u = &q->units[i];
+        size_t half = 0, count = 0, mid, k;
+        if (u->x64_size <= ceiling) {
+            units[n++] = *u;
+            continue;
+        }
+        if (u->last - u->first < 2) {
+            snprintf(q->error, sizeof(q->error),
+                     "the function at 0x%llx alone makes an object of %.1f MiB, more than the %.1f MiB a unit holds",
+                     (unsigned long long)q->codegen->functions[u->first].start, (double)u->x64_size / 1048576.0,
+                     (double)ceiling / 1048576.0);
+            free(units);
+            return -1;
+        }
+        for (k = u->first; k < u->last; ++k) count += q->codegen->functions[k].count;
+        for (mid = u->first; mid + 1 < u->last && 2 * half < count; ++mid) half += q->codegen->functions[mid].count;
+        if (mid == u->first) mid = u->first + 1;
+        snx_error("a code unit of %zu instructions came to %.1f MiB, more than the %.1f MiB a unit holds on this "
+                  "machine: made again as two, of %zu and %zu functions",
+                  count, (double)u->x64_size / 1048576.0, (double)ceiling / 1048576.0, mid - u->first, u->last - mid);
+        q->held -= u->x64_size;
+        --q->done;
+        free(u->x64);
+        memset(&units[n], 0, 2 * sizeof(*units));
+        units[n].first = u->first;
+        units[n++].last = mid;
+        units[n].first = mid;
+        units[n++].last = u->last;
+    }
+    free(q->units);
+    q->units = units;
+    q->count = n;
+    q->next = 0;
+    return 1;
+}
+
 unsigned snx_module_abi(void) { return SNX_ABI; }
 static const char* base_name(const char* path) {
     const char *name = path, *p;
@@ -355,6 +416,17 @@ int snx_build_module_a64(SnxProgram* loaded, const SnxCodegenOptions* options, c
     codegen.hook_direct_calls = options->hook_direct_calls;
     /* chunks of whole functions, as module.c splits the C */
     limit = options->chunk_instrs ? options->chunk_instrs : (size_t)g_settings.unit_size;
+    {
+        /* no more instructions to a unit than its ceiling takes */
+        const SnxU64 ceiling = unit_ceiling(build);
+        const SnxU64 most = ceiling / UNIT_BYTES_AN_INSTRUCTION ? ceiling / UNIT_BYTES_AN_INSTRUCTION : 1;
+        if (limit > most) {
+            snx_error("unit_instructions=%zu would make units of more than the %.1f MiB one holds on this machine: "
+                      "%llu in effect",
+                      limit, (double)ceiling / 1048576.0, (unsigned long long)most);
+            limit = (size_t)most;
+        }
+    }
     q.units = (Unit*)snx_alloc((codegen.function_count + 1) * sizeof(*q.units));
     memset(q.units, 0, (codegen.function_count + 1) * sizeof(*q.units));
     for (first = 0; first < codegen.function_count; first = last) {
@@ -405,7 +477,14 @@ int snx_build_module_a64(SnxProgram* loaded, const SnxCodegenOptions* options, c
         printf("aot_threads=0 (Auto): %u thread%s at once, the x86-64 back end's units\n", n, n == 1 ? "" : "s");
     }
     start = snx_seconds();
-    if (q.count) run(&q, build->jobs, 0);
+    for (;;) {
+        int split;
+        if (q.count) run(&q, build->jobs, 0);
+        if (q.failed) break;
+        split = split_units(&q, unit_ceiling(build));
+        if (split < 0) q.failed = 1;
+        if (split <= 0) break;
+    }
     phases.compile = snx_seconds() - start;
     phases.units = q.unit_seconds;
     phases.threads = build->jobs < 1 ? 1 : build->jobs;

@@ -43,6 +43,11 @@ void snx_native_without(struct snx_recompiler* r, const SnxU32* words, size_t co
 int snx_native_available(void);
 /* its name, for the recompiler's lines ("x86-64", "arm64"; "none") */
 const char* snx_native_name(void);
+/* How far a call of the back end's code reaches, in bytes: what an object's code and the island of its veneers must
+   lie within (the linkers give each object its own island), so what bounds a unit. triple NULL: this host's back end
+   (arm64's 128 MiB, PowerPC64's 32 MiB, the others' 2 GiB, the most a module spans); else that of a triple
+   snx_native_target takes */
+SnxU64 snx_native_reach(const char* triple);
 /* the version of the code the native back ends make, 16 hex digits: a hash of what decides it (native_code.c, which
    cmake/native_code_hash.cmake generates), for what a cache of that code is keyed by */
 const char* snx_native_code(void);
