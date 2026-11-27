@@ -232,6 +232,7 @@ static bool gles1_up(void) {
                                                    .pName = "main"},
                                          .layout = g.expand_layout};
     if (comp) V.vk.vkCreateComputePipelines(V.device, VK_NULL_HANDLE, 1, &cinfo, NULL, &g.expand);
+    if (comp) V.vk.vkDestroyShaderModule(V.device, comp, NULL);
     g.up = g.set_layout && g.layout && g.vert && g.frag;
     return g.up;
 }
