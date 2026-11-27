@@ -68,6 +68,11 @@ int main(void) {
                              "0.2 s, link and write 2.1 s; the system does not say the peak"));
         snx_recompile_line(line, sizeof line, 2.94, 4.91, 0.26);
         assert(!strcmp(line, "recompile: 8.1 s in all: 2.9 s before the code, 4.9 s the code, 0.3 s after it"));
+        /* the SSA's: its instructions, how many a guest instruction, and both sizes in MiB */
+        const SnxSsaCount ssa = {5850000, (SnxU64)3 << 30, (SnxU64)700 << 20};
+        snx_ssa_line(line, sizeof line, &ssa, 1000000);
+        assert(!strcmp(line, "ssa: 5850000 instructions for 1000000 guest instructions (5.85 each), 3072.0 MiB as "
+                             "the back end holds it, 700.0 MiB packed"));
     }
     /* 20 ms of the processor's time, spent in a loop: a loaded machine takes longer, ten seconds at most. Windows counts
        it in the clock's ticks (15.6 ms): a process that has spent less than one reads 0, so the loop starts from the

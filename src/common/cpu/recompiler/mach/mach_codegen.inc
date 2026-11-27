@@ -2579,6 +2579,7 @@ static void choose_pins(Unit* u, const SnxFunction* f) {
 static int function(Unit* u, const SnxFunction* f, size_t index) {
     size_t i, at0 = u->b.n, fix0 = u->nfixups, rel0 = u->nrelocs, sym0 = u->nsyms;
     int lab0 = u->nlabels, ok = 1, single_entry = 0;
+    const SnxU64 seen0 = u->g->x.seen, packed0 = u->g->x.seen_packed;
     SnxU64 pin_rest = 0;
     SnxU32 vpin_rest = 0;
 #ifdef MG_DIRECT_ENTRY
@@ -2775,6 +2776,8 @@ out:
         u->g->x.nv = 1;
         u->g->x.nb = 1;
         u->g->x.unmade = 0;
+        u->g->x.seen = seen0;
+        u->g->x.seen_packed = packed0;
         u->g->qc_owed = 0;
     }
     u->nfixups = ok ? u->nfixups : fix0;
@@ -3084,8 +3087,10 @@ static int mach_object(SnxCodegen* codegen, size_t first, size_t last, const Snx
     u.g->x.base = SGX_BASE;
     u.g->x.nv = 1;
     u.g->x.nb = 1;
+    u.g->x.count = options->ssa != NULL;
     for (i = first; i < last; ++i) {
         size_t before = u.b.n, relocs = u.nrelocs, syms = u.nsyms;
+        const SnxU64 seen = u.g->x.seen, packed = u.g->x.seen_packed;
         if (u.b.cap - u.b.n < codegen->functions[i].count * 400 + 4096) {
             u.b.cap = u.b.cap * 2 + codegen->functions[i].count * 400 + 4096;
             u.b.p = (unsigned char*)realloc(u.b.p, u.b.cap);
@@ -3099,6 +3104,8 @@ static int mach_object(SnxCodegen* codegen, size_t first, size_t last, const Snx
             for (; u.nrelocs > relocs; --u.nrelocs) free(u.relocs[u.nrelocs - 1].sym);
             for (; u.nsyms > syms; --u.nsyms) free(u.syms[u.nsyms - 1].name);
             u.b.n = before;
+            u.g->x.seen = seen;
+            u.g->x.seen_packed = packed;
             u.b.cap *= 4;
             u.b.p = (unsigned char*)realloc(u.b.p, u.b.cap);
             --i;
@@ -3159,6 +3166,11 @@ static int mach_object(SnxCodegen* codegen, size_t first, size_t last, const Snx
     free(u.sym_of);
 #endif
     free(u.a.cold.p), free(u.a.pool), free(u.a.rips), free(u.a.cjumps), free(u.a.ccalls);
+    if (options->ssa) {
+        options->ssa->instructions += u.g->x.seen;
+        options->ssa->bytes += u.g->x.seen * sizeof(SgXIns);
+        options->ssa->packed += u.g->x.seen_packed;
+    }
     free(u.g);
     if (options->jit && !count) memset(made, 0, last - first);
     return 0;

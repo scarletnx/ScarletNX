@@ -1,7 +1,19 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "nx/loader/codegen_view.h"
+#include <stdio.h>
 #include <stdlib.h>
+void snx_nx_module_share(const SnxCodegen* codegen, const SnxModuleImage* module, size_t* functions,
+                         SnxU64* instructions) {
+    *functions = 0;
+    *instructions = 0;
+    for (size_t i = 0; i < codegen->function_count; ++i) {
+        const SnxFunction* f = &codegen->functions[i];
+        if (f->start < module->base || f->start - module->base >= module->size) continue;
+        ++*functions;
+        *instructions += f->count;
+    }
+}
 int snx_nx_codegen_analyze(SnxCodegen* codegen, const SnxProgram* program, const SnxU64* hints, size_t hint_count,
                            int quiet, SnxU64 features) {
     SnxCodeImage* views;
@@ -27,5 +39,13 @@ int snx_nx_codegen_analyze(SnxCodegen* codegen, const SnxProgram* program, const
     }
     result = snx_codegen_analyze(codegen, views, program->module_count, hints, hint_count, quiet, features);
     free(views);
+    /* each module's share of the code, where there are several: what a thread a module would be given */
+    for (i = 0; !result && !quiet && program->module_count > 1 && i < program->module_count; ++i) {
+        size_t functions;
+        SnxU64 instructions;
+        snx_nx_module_share(codegen, &program->modules[i], &functions, &instructions);
+        printf("  %s: %zu functions, %llu instructions\n", program->modules[i].name ? program->modules[i].name : "?",
+               functions, (unsigned long long)instructions);
+    }
     return result;
 }

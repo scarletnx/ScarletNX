@@ -28,6 +28,8 @@ typedef struct {
     size_t* wrappers;
     /* when set, the instructions the analysis found and the module makes ahead of time (0 with --jit-only) */
     size_t* found;
+    /* when set, the SSA of the units the native back end made for the module, as it counted it */
+    SnxSsaCount* ssa;
     /* --layout: the guest addresses of functions in the order their code takes at the start of the module, each in a
        code section of its own (link.h's SNX_LINK_HOT_TEXT). A profile's hot functions, the others after them in
        address order. Addresses that start no function are skipped. An ELF module for this host only */

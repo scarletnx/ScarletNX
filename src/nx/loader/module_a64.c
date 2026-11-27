@@ -45,6 +45,7 @@ typedef struct {
     size_t x64_size, x64_made;
     size_t x64_refused; /* of the others, those with an instruction it has no code for */
     int reused; /* the x86-64 back end's object came from memory (x64_cache.h) */
+    SnxSsaCount ssa; /* its SSA, as the back end that made the object counted it (none of a reused one) */
 } Unit;
 
 typedef struct {
@@ -145,6 +146,8 @@ static int compile_unit(Queue* q, size_t index, char* error, size_t error_size) 
     SnxNativeOptions options = {0};
     options.stale = 1;
     options.refused = &u->x64_refused;
+    u->ssa = (SnxSsaCount){0};
+    options.ssa = &u->ssa;
     if (q->bound_count) {
         options.bound = bound_at;
         options.bound_user = q;
@@ -410,6 +413,7 @@ int snx_build_module_a64(SnxProgram* loaded, const SnxCodegenOptions* options, c
         snx_nx_codegen_analyze(&codegen, loaded, options->hints, options->hint_count, options->quiet, features))
         goto done;
     phases.discovery = snx_seconds() - start;
+    const SnxU64 guest = codegen.instruction_count;
     if (build->found) *build->found = codegen.instruction_count;
     codegen.features = features;
     codegen.direct_svc = 1; /* the runtime's RtAPI.svcs (svc.c's g_svc64) */
@@ -618,12 +622,27 @@ int snx_build_module_a64(SnxProgram* loaded, const SnxCodegenOptions* options, c
         }
         phases.write = snx_seconds() - start;
     }
+    SnxSsaCount ssa = {0};
+    size_t uncounted = 0; /* the units whose object came from memory: no back end ran to count their SSA */
+    for (i = 0; i < q.count; ++i) {
+        uncounted += q.units[i].reused != 0;
+        ssa.instructions += q.units[i].ssa.instructions;
+        ssa.bytes += q.units[i].ssa.bytes;
+        ssa.packed += q.units[i].ssa.packed;
+    }
+    if (build->ssa) *build->ssa = ssa;
     if (!options->quiet) {
         char line[512];
         printf("%s module: %.1f MB, %lu entries\n", native, (double)linked.size / 1000000.0, (unsigned long)entry_count);
         phases.peak = snx_footprint_peak();
         snx_phases_line(line, sizeof line, &phases);
         puts(line);
+        if (ssa.instructions) {
+            snx_ssa_line(line, sizeof line, &ssa, guest);
+            puts(line);
+            if (uncounted)
+                printf("ssa: %zu of the %zu units came from memory, their SSA not in it\n", uncounted, q.count);
+        }
     }
     rc = 0;
 done:

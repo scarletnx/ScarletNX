@@ -224,7 +224,10 @@ static void units(const char* folder) {
     g_nx_module_native.chunk = 8;
     g_nx_module_native.heavy = 3;
     asked.unit_bytes = 1u << 20;
+    SnxSsaCount split = {0}, split_again = {0}, cut = {0};
+    asked.ssa = &split;
     int rc = build(module, asked, options);
+    asked.ssa = &split_again;
     snprintf(wanted, sizeof wanted,
              "a code unit of 8 instructions came to 1.5 MiB, more than the 1.0 MiB a unit holds "
              "on this machine: made again as two, of 1 and 2 functions\n");
@@ -238,6 +241,25 @@ static void units(const char* folder) {
           "a module whose unit was split is the same bytes at each build (%zu and %zu)", first_size, second_size);
     free(first);
     free(second);
+    /* the SSA the back end counted (the x86-64 and arm64 ones do): the same at each build, and of the unit split the
+       same as of its two halves made units from the start, the split unit's own count dropped with its object */
+    char* halves = at(folder, "units-halves" SUFFIX);
+    g_nx_module_native.chunk = 4;
+    g_nx_module_native.heavy = 0;
+    asked.unit_bytes = 0;
+    asked.ssa = &cut;
+    CHECK(!build(halves, asked, options) && !g_nx_module_native.said[0], "the two halves as units of their own: %s",
+          g_nx_module_native.said);
+    asked.ssa = NULL;
+    const int counted = !strcmp(snx_native_name(), "x86-64") || !strcmp(snx_native_name(), "arm64");
+    CHECK(!memcmp(&split, &split_again, sizeof split) && !memcmp(&split, &cut, sizeof split) &&
+              (!counted || (split.instructions >= 8 && split.packed >= 3 * split.instructions &&
+                            split.packed < split.bytes && split.bytes % split.instructions == 0)),
+          "the module's SSA counted the same at each build and with the unit split: %llu, %llu and %llu instructions, "
+          "%llu bytes as held, %llu packed",
+          (unsigned long long)split.instructions, (unsigned long long)split_again.instructions,
+          (unsigned long long)cut.instructions, (unsigned long long)split.bytes, (unsigned long long)split.packed);
+    free(halves);
     /* a ceiling the functions' objects, each one's 1.5 MiB, are over: the first function refused, named */
     asked.unit_bytes = 200;
     g_nx_module_native.chunk = 1000;

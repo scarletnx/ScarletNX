@@ -138,6 +138,23 @@ static void analysis_test(void) {
         check(has_leader(function, SNX_CODE_BASE + 36), "conditional target leader");
     }
     check(snx_codegen_function(&codegen, SNX_CODE_BASE + 48) != NULL, "recursive BL target exists");
+    {
+        /* a module's share of the code: the functions that start in its mapping, and their instructions */
+        const SnxFunction* second = snx_codegen_function(&codegen, SNX_CODE_BASE + 48);
+        SnxModuleImage other = module;
+        size_t functions = 9;
+        SnxU64 instructions = 9;
+        snx_nx_module_share(&codegen, &module, &functions, &instructions);
+        check(function && second && functions == 2 && instructions == function->count + second->count,
+              "the module holds both functions and their instructions");
+        other.base = SNX_CODE_BASE + 48;
+        snx_nx_module_share(&codegen, &other, &functions, &instructions);
+        check(second && functions == 1 && instructions == second->count,
+              "a module that starts at the second holds it alone");
+        other.base = module.base + module.size;
+        snx_nx_module_share(&codegen, &other, &functions, &instructions);
+        check(functions == 0 && instructions == 0, "a module mapped past both holds none");
+    }
     snx_codegen_free(&codegen);
     interior = SNX_CODE_BASE + 20;
     check(!snx_nx_codegen_analyze(&codegen, &program, &interior, 1, 1, 0), "analyze explicit interior hint");
