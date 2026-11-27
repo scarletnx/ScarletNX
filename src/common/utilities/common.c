@@ -1666,6 +1666,14 @@ void snx_phases_line(char* out, size_t size, const SnxRecompilePhases* p) {
              "code: discovery %.1f s, compile %.1f s (%.1f s of units on %u thread%s), descriptor %.1f s, %s; %s",
              p->discovery, p->compile, p->units, p->threads, p->threads == 1u ? "" : "s", p->descriptor, end, peak);
 }
+void snx_ssa_line(char* out, size_t size, const SnxSsaCount* ssa, SnxU64 guest) {
+    snprintf(out, size,
+             "ssa: %llu instructions for %llu guest instructions (%.2f each), %.1f MiB as the back end holds it, "
+             "%.1f MiB packed",
+             (unsigned long long)ssa->instructions, (unsigned long long)guest,
+             guest ? (double)ssa->instructions / (double)guest : 0.0, (double)ssa->bytes / 1048576.0,
+             (double)ssa->packed / 1048576.0);
+}
 void snx_recompile_line(char* out, size_t size, double before, double code, double after) {
     snprintf(out, size, "recompile: %.1f s in all: %.1f s before the code, %.1f s the code, %.1f s after it",
              before + code + after, before, code, after);

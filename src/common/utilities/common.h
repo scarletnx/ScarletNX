@@ -359,6 +359,15 @@ typedef struct {
    of units on 4 threads), descriptor 0.2 s, link 1.5 s, write 0.6 s; peak 2230 MiB"; a link that wrote the file as it
    went, "link and write 2.1 s" */
 void snx_phases_line(char* out, size_t size, const SnxRecompilePhases* p);
+/* A module's SSA as its back end holds it before the bytes: the instructions each region of code kept once its
+   optimizing pass had run, the bytes those take in the back end's own structure, and the bytes they would take
+   stored packed (a count, nothing is written: tools/sailgen/mach.h's sgx_packed) */
+typedef struct {
+    SnxU64 instructions, bytes, packed;
+} SnxSsaCount;
+/* The line that says it, after snx_phases_line's, for guest's instructions: "ssa: 5850000 instructions for 1000000
+   guest instructions (5.85 each), 3072.0 MiB as the back end holds it, 700.0 MiB packed" */
+void snx_ssa_line(char* out, size_t size, const SnxSsaCount* ssa, SnxU64 guest);
 /* The line a program's recompile ends with, before its "Built": the seconds it took, those before its code (the
    program read, its calls bound), its code's (every module's, snx_phases_line's each) and those after (the runtime's
    copy, the stamp): "recompile: 8.1 s in all: 2.9 s before the code, 4.9 s the code, 0.3 s after it" */

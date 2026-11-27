@@ -244,6 +244,10 @@ typedef struct {
     unsigned char vlive[SGX_MAXV + 1], flive[SGX_MAXI + 1];
     unsigned stamp[SGX_STATE_WORDS], now;
     int next_call[SGX_MAXI + 1]; /* sgx_assemble_region's (SgXAsm's) */
+    /* with count set, what sgx_assemble_region saw of each region once sgx_optimize had run: the instructions it kept,
+       and the bytes those would take stored packed (sgx_packed's count: nothing is written) */
+    int count;
+    SnxU64 seen, seen_packed;
 } SgX;
 
 typedef int SgB;
@@ -3009,6 +3013,38 @@ static inline void sgx_assemble_vec(SgXAsm* a, int at) {
     }
 }
 
+/* the bytes a field of value v takes stored packed: none for 0, else the shortest of 1, 2, 4 and 8 that hold it */
+static inline unsigned sgx_packed_int(long long v) {
+    if (!v) return 0;
+    if (v >= -128 && v < 128) return 1;
+    if (v >= -32768 && v < 32768) return 2;
+    return v >= -2147483647 - 1 && v <= 2147483647 ? 4 : 8;
+}
+/* the bytes instruction s would take stored packed, a count alone: its kind, width and condition and which fields
+   it has (3), each form it names as an index (2), each input as its distance back from the result (1, or 2 where
+   that is 128 or more, or it has no result), and only the fields it uses: its constants and displacements by their
+   length, a helper's name as an index (2), the host registers a machine's instruction fixes or changes (1 and 4), a
+   vector form's operands (1), each doubleword of a vector constant (8), a cold path's state (2) and tests (4 each),
+   and each flag it reads or carries (2) */
+static inline unsigned sgx_packed(const SgXIns* s) {
+    unsigned n = 3, k;
+    n += 2u * ((s->sel != NULL) + (s->vf != NULL) + (s->fsel && s->fsel != s->sel) + (s->alt != NULL));
+    for (k = 0; k < SGX_INS_IN; ++k)
+        if (s->in[k]) n += s->def > s->in[k] && s->def - s->in[k] < 128 ? 1u : 2u;
+    n += sgx_packed_int(s->imm) + sgx_packed_int(s->disp) + sgx_packed_int(s->mdisp);
+    n += s->cadd ? sgx_packed_int(s->cadd_k) : 0;
+    n += s->sym ? 2u : 0;
+    for (k = 0; k < SGX_MACHINE_IN; ++k) n += s->fixed[k] >= 0;
+    n += s->mclobber ? 4u : 0;
+    n += s->kind == SGX_K_VEC;
+    n += 8u * ((s->kv[0] != 0) + (s->kv[1] != 0));
+    n += s->kind == SGX_K_COLD ? 2u : 0;
+    n += 4u * s->ntests;
+    n += s->flags_from >= 0 ? 2u : 0;
+    for (k = 0; k < 8; ++k) n += s->fb[k / 2][k % 2] ? 2u : 0;
+    return n;
+}
+
 /* one region of code (the instructions in x since the last region): dropped what nothing reads, its values given
    registers, its bytes written after what a's buffer holds. No value lives from one region into the next */
 static inline void sgx_assemble_region(SgXAsm* a, SgX* x) {
@@ -3027,6 +3063,8 @@ static inline void sgx_assemble_region(SgXAsm* a, SgX* x) {
         x->v[i].pinned = 0;
     }
     sgx_optimize(x);
+    for (i = 0; x->count && i < x->n; ++i)
+        if (!x->ins[i].dead) ++x->seen, x->seen_packed += sgx_packed(&x->ins[i]);
     a->next_call = x->next_call;
     a->next_call[x->n] = x->n;
     for (i = x->n - 1; i >= 0; --i)

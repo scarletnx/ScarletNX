@@ -6,6 +6,7 @@
 #define SNX_RECOMPILER_NATIVE_H
 #include "common/cpu/arm/codegen.h"
 #include "common/cpu/recompiler/codegen.h"
+#include "common/utilities/common.h"
 #include <stddef.h>
 #include <stdint.h>
 typedef struct {
@@ -32,6 +33,8 @@ typedef struct {
     /* arm64: every SIMD&FP word by the A64 Sail's own code, none run as the host's own instruction (arm64_vec.c's
        vec): what a test holds that one to */
     int sail_alone;
+    /* where not NULL, the unit's SSA as the back end counted it, added to it (mach_codegen.inc's machines) */
+    SnxSsaCount* ssa;
 } SnxNativeOptions;
 
 /* what r's modules are made without (SnxNativeOptions.without), as a test of it asks: words is kept as it is */
