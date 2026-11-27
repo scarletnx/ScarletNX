@@ -382,6 +382,8 @@ static int copies_go(int how) {
         rt->crop = c;
         if (i >= 3) kept[i - 3] = c;
     }
+    VkRtKinds was, now;
+    vk_rt_kinds(&was);
     g_deferred = 0;
     if (how == 0) CHECK(vk_rt_copies_reclaim(vk_present_before(0, VK_RT_COPY_PRESENTS), ~0ull) == 6 << 20);
     if (how == 1) {
@@ -396,11 +398,15 @@ static int copies_go(int how) {
     }
     u32 left = 0;
     for (const Surf* x = rt->crop; x; x = x->next) left++;
-    const int went =
-        left == 2 && rt->crop == kept[1] && kept[1]->next == kept[0] && g_deferred == 6 << 20 && targets_held() == 1;
+    vk_rt_kinds(&now); /* the report's counts: the copies held, and those let go */
+    const int went = left == 2 && rt->crop == kept[1] && kept[1]->next == kept[0] && g_deferred == 6 << 20 &&
+                     targets_held() == 1 && now.copies == 2 && now.copy_bytes == 9 << 20 &&
+                     now.copies_gone - was.copies_gone == 3 && now.copies_gone_bytes - was.copies_gone_bytes == 6 << 20;
     if (!went)
-        fprintf(stderr, "copies_go(%d): %u copies left, %llu bytes deferred, %u targets\n", how, left,
-                (unsigned long long)g_deferred, targets_held());
+        fprintf(stderr,
+                "copies_go(%d): %u copies left, %llu bytes deferred, %u targets; the report: %u held, %llu let go\n",
+                how, left, (unsigned long long)g_deferred, targets_held(), now.copies,
+                (unsigned long long)(now.copies_gone - was.copies_gone));
     surf_evict(rt);
     CHECK(targets_held() == 0);
     return went;
