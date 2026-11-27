@@ -2918,15 +2918,9 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int why, int pixel
         if (!x->predraw && x->crop_thread == thread && x->w == w && x->h == h && x->sw == cw && x->sh == ch &&
             x->f.vk == f.vk)
             c = x;
-        else if ((i32)(g_vk_present - (u32)x->last_used) > 60) {
+        else if ((i32)(g_vk_present - (u32)x->last_used) > (i32)VK_RT_COPY_PRESENTS) {
             *pp = x->next;
-            for (int i = 0; i < x->nsv; i++) vk_defer_image(VK_NULL_HANDLE, 0, x->sv[i].v, VK_NULL_HANDLE);
-            if (x->att) vk_defer_image(VK_NULL_HANDLE, 0, x->att, VK_NULL_HANDLE);
-            if (x->att_linear) vk_defer_image(VK_NULL_HANDLE, 0, x->att_linear, VK_NULL_HANDLE);
-            vk_defer_image(x->img, x->mem, VK_NULL_HANDLE, VK_NULL_HANDLE);
-            vk_defer_bytes(x->bytes);
-            SNX_MEM_FREE_D(x, "render targets"); /* crop: rt_copy allocated it with this kind; surf_free reports it too */
-            free(x);
+            vk_rt_copy_free(x);
             continue;
         }
         pp = &x->next;
@@ -4860,7 +4854,8 @@ void vk_tex_frame(void) {
        presents: it passes over the targets it keeps, and asking whether one holds such a draw can hash its memory.
        Render targets later ones drew all over hold nothing, nor do textures that took targets' pixels where later
        targets drew all over: every 30 presents those unused for a second and eight presents go (a game at a dynamic
-       resolution makes its scene's targets again each frame, at moving offsets of its pool) */
+       resolution makes its scene's targets again each frame, at moving offsets of its pool), and so do the copies of
+       targets that no bind asked for in VK_RT_COPY_PRESENTS presents (vk_rt_copies_reclaim) */
     u32 before = vk_present_before(20000000000ull, 120);
     rt_copy_present();
     vk_surf_ended_frame(); /* those the game ended go sooner */
@@ -4871,6 +4866,7 @@ void vk_tex_frame(void) {
     vk_surf_reclaim(VK_LRU_RT, before, ~0ull, VK_RECLAIM_LOSSLESS);
     if (g_vk_present % 30 == 0) {
         vk_rt_reclaim_superseded(vk_present_before(1000000000ull, 8), ~0ull);
+        vk_rt_copies_reclaim(vk_present_before(0, VK_RT_COPY_PRESENTS), ~0ull);
         vk_tex_reclaim_superseded(vk_present_before(1000000000ull, 8), ~0ull);
     }
     if (g_vk_present % 600 == 0) {
