@@ -8,7 +8,6 @@
 #include "common/utilities/ascii.h"
 #include "common/utilities/bits.h"
 #include <errno.h>
-#include <fenv.h>
 #include <limits.h>
 #include <math.h>
 #include <stdint.h>
@@ -421,11 +420,102 @@ static void fmin_f(CPU* c, void* fn) {
     hle_set_f(c, (float)max_min(c, x, y, signaling_f(x), signaling_f(y), false));
 }
 
+/* ---- fenv.h: the guest's FPCR and FPSR, as bionic's reads and writes the registers ----
+   Its exceptions are FPSR's cumulative flags (FE_INVALID 0x01 to FE_INEXACT 0x10, FE_DENORMAL 0x80), its rounding
+   modes FPCR.RMode's values (FE_TONEAREST 0 to FE_TOWARDZERO 3), and its fenv_t the two registers. The host's numbers
+   are other ones, and its registers not the guest's */
+enum { FE_ALL = 0x9f, RMODE_SHIFT = 22 };
+static const uint32_t fe_dfl_env[2] = {0, 0}; /* __fe_dfl_env: FPCR 0, FPSR 0 */
+
+static void fegetenv_(CPU* c, void* fn) {
+    (void)fn;
+    const uint32_t env[2] = {c->fpcr, c->fpsr};
+    memcpy(PTR(0), env, sizeof env);
+    X(0) = 0;
+}
+static void set_env(CPU* c, const void* guest) {
+    uint32_t env[2];
+    memcpy(env, guest, sizeof env);
+    c->fpcr = env[0];
+    c->fpsr = env[1];
+}
+static void fesetenv_(CPU* c, void* fn) {
+    (void)fn;
+    set_env(c, PTR(0));
+    X(0) = 0;
+}
+/* feholdexcept: the environment saved, the flags cleared */
+static void feholdexcept_(CPU* c, void* fn) {
+    fegetenv_(c, fn);
+    c->fpsr &= ~(uint32_t)FE_ALL;
+}
+/* feupdateenv: the environment set, with the flags raised so far kept */
+static void feupdateenv_(CPU* c, void* fn) {
+    (void)fn;
+    const uint32_t raised = c->fpsr & FE_ALL;
+    set_env(c, PTR(0));
+    c->fpsr |= raised;
+    X(0) = 0;
+}
+static void feclearexcept_(CPU* c, void* fn) {
+    (void)fn;
+    c->fpsr &= ~((uint32_t)X(0) & FE_ALL);
+    X(0) = 0;
+}
+static void feraiseexcept_(CPU* c, void* fn) {
+    (void)fn;
+    c->fpsr |= (uint32_t)X(0) & FE_ALL;
+    X(0) = 0;
+}
+static void fetestexcept_(CPU* c, void* fn) {
+    (void)fn;
+    X(0) = c->fpsr & (uint32_t)X(0) & FE_ALL;
+}
+/* fegetexceptflag(flags, excepts) and fesetexceptflag: a fexcept_t is FPSR's bits */
+static void fegetexceptflag_(CPU* c, void* fn) {
+    (void)fn;
+    const uint32_t flags = c->fpsr & (uint32_t)X(1) & FE_ALL;
+    memcpy(PTR(0), &flags, sizeof flags);
+    X(0) = 0;
+}
+static void fesetexceptflag_(CPU* c, void* fn) {
+    (void)fn;
+    const uint32_t excepts = (uint32_t)X(1) & FE_ALL;
+    uint32_t flags;
+    memcpy(&flags, PTR(0), sizeof flags);
+    c->fpsr = (c->fpsr & ~excepts) | (flags & excepts);
+    X(0) = 0;
+}
+static void fegetround_(CPU* c, void* fn) {
+    (void)fn;
+    X(0) = c->fpcr >> RMODE_SHIFT & 3u;
+}
+/* fesetround: -1 for a mode bionic has not */
+static void fesetround_(CPU* c, void* fn) {
+    (void)fn;
+    const int mode = arg_int(c, 0);
+    if (mode < 0 || mode > 3) {
+        X(0) = UINT32_MAX;
+        return;
+    }
+    c->fpcr = (c->fpcr & ~(3u << RMODE_SHIFT)) | (uint32_t)mode << RMODE_SHIFT;
+    X(0) = 0;
+}
+/* AArch64's floating-point traps are optional and Android's kernel enables none: bionic's feenableexcept refuses
+   each, fedisableexcept has none to disable and fegetexcept says none is on */
+static void feenableexcept_(CPU* c, void* fn) {
+    (void)fn;
+    X(0) = UINT32_MAX;
+}
+static void fe_none(CPU* c, void* fn) {
+    (void)fn;
+    X(0) = 0;
+}
+
 /* a host function through an adapter (TH: the host's of another name), a handler of its own, an object, and the
    table's end */
 #define T(name, adapter)      {#name, adapter, (void*)name}
 #define TH(name, adapter, fn) {#name, adapter, (void*)fn}
-#define P(name)               {#name, hle_pass, (void*)name}
 #define H(name, handler)      {#name, handler, NULL}
 #define D(name, object)       {#name, NULL, object}
 #define END                   {"", NULL, NULL}
@@ -584,7 +674,20 @@ const HleSymbol hle_libm[] = {
     H(llrint, lrint_d),
     H(lrintf, lrint_f),
     H(llrintf, lrint_f),
-    P(feclearexcept),
-    P(fetestexcept),
+    H(fegetenv, fegetenv_),
+    H(fesetenv, fesetenv_),
+    H(feholdexcept, feholdexcept_),
+    H(feupdateenv, feupdateenv_),
+    H(feclearexcept, feclearexcept_),
+    H(feraiseexcept, feraiseexcept_),
+    H(fetestexcept, fetestexcept_),
+    H(fegetexceptflag, fegetexceptflag_),
+    H(fesetexceptflag, fesetexceptflag_),
+    H(fegetround, fegetround_),
+    H(fesetround, fesetround_),
+    H(feenableexcept, feenableexcept_),
+    H(fedisableexcept, fe_none),
+    H(fegetexcept, fe_none),
+    D(__fe_dfl_env, (void*)fe_dfl_env),
     END,
 };

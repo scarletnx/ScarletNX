@@ -733,6 +733,62 @@ static void test_libm_aarch64(void) {
     expect_int("a NaN given goes through", (int64_t)libm_d("sqrt", given, 0, 0), (int64_t)0xfff8000000000123ull);
 }
 
+/* fenv.h is the guest's FPCR and FPSR in bionic's numbers (FE_INEXACT 0x10, FE_UPWARD 1), where the HLE gave the
+   guest's numbers to the host's functions, which test and clear the host's own flags in other bits */
+static void test_libm_fenv(void) {
+    CPU cpu = {0};
+    cpu.x[0] = 1;
+    run_libm("fesetround", &cpu);
+    expect_int("fesetround(FE_UPWARD)", (int64_t)cpu.x[0], 0);
+    expect_int("sets FPCR.RMode", cpu.fpcr, 1u << 22);
+    run_libm("fegetround", &cpu);
+    expect_int("fegetround", (int64_t)cpu.x[0], 1);
+    cpu.x[0] = 4;
+    run_libm("fesetround", &cpu);
+    expect_int("fesetround(4) is refused", (int32_t)(uint32_t)cpu.x[0], -1);
+    expect_int("and FPCR stays", cpu.fpcr, 1u << 22);
+    memcpy(&cpu.v[0].df[0], &(double){2.1}, 8);
+    run_libm("rint", &cpu);
+    expect_int("rint(2.1) rounds upward", (int64_t)v0_d(&cpu), (int64_t)bits_d(3.0));
+
+    cpu.fpsr = 0;
+    cpu.x[0] = 0x10 | 0x01;
+    run_libm("feraiseexcept", &cpu);
+    expect_int("feraiseexcept(FE_INEXACT | FE_INVALID)", cpu.fpsr, 0x11);
+    cpu.x[0] = 0x10;
+    run_libm("fetestexcept", &cpu);
+    expect_int("fetestexcept(FE_INEXACT)", (int64_t)cpu.x[0], 0x10);
+    uint32_t env[2] = {0};
+    cpu.x[0] = P(env);
+    run_libm("feholdexcept", &cpu);
+    expect_int("feholdexcept saves FPCR", env[0], 1u << 22);
+    expect_int("and FPSR", env[1], 0x11);
+    expect_int("and clears the flags", cpu.fpsr, 0);
+    cpu.fpsr = 0x04;
+    cpu.x[0] = P(env);
+    run_libm("feupdateenv", &cpu);
+    expect_int("feupdateenv keeps the flags raised since", cpu.fpsr, 0x15);
+    cpu.x[0] = 0x01;
+    run_libm("feclearexcept", &cpu);
+    expect_int("feclearexcept(FE_INVALID)", cpu.fpsr, 0x14);
+    uint32_t flags = 0;
+    cpu.x[0] = P(&flags);
+    cpu.x[1] = 0x9f;
+    run_libm("fegetexceptflag", &cpu);
+    expect_int("fegetexceptflag", flags, 0x14);
+    flags = 0x02;
+    cpu.x[0] = P(&flags);
+    cpu.x[1] = 0x03;
+    run_libm("fesetexceptflag", &cpu);
+    expect_int("fesetexceptflag sets only its excepts", cpu.fpsr, 0x16);
+    cpu.x[0] = P(find("__fe_dfl_env")->data);
+    run_libm("fesetenv", &cpu);
+    expect_int("fesetenv(FE_DFL_ENV)", cpu.fpcr | cpu.fpsr, 0);
+    cpu.x[0] = 0x10;
+    run_libm("feenableexcept", &cpu);
+    expect_int("feenableexcept is refused", (int32_t)(uint32_t)cpu.x[0], -1);
+}
+
 /* a descriptor from name through the HLE, which opens it as the guest does */
 enum {
     G_O_RDWR = 2,
@@ -1299,6 +1355,7 @@ int main(void) {
     test_fma_and_lround();
     test_libm_bionic();
     test_libm_aarch64();
+    test_libm_fenv();
     test_files_second_batch();
     test_pipe2_umask_session();
     test_strncat_chk();
