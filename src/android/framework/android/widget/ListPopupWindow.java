@@ -10,13 +10,14 @@ import android.graphics.drawable.Drawable;
 import android.util.AttributeSet;
 import android.view.View;
 
-/** A list of the items of an adapter in a popup window next to an anchor view. The popup is not drawn (see PopupWindow). */
+/** A list of the items of an adapter in a popup window next to an anchor view. */
 public class ListPopupWindow {
     public static final int POSITION_PROMPT_ABOVE = 0, POSITION_PROMPT_BELOW = 1;
     public static final int MATCH_PARENT = -1, WRAP_CONTENT = -2;
     public static final int INPUT_METHOD_FROM_FOCUSABLE = PopupWindow.INPUT_METHOD_FROM_FOCUSABLE,
         INPUT_METHOD_NEEDED = PopupWindow.INPUT_METHOD_NEEDED, INPUT_METHOD_NOT_NEEDED = PopupWindow.INPUT_METHOD_NOT_NEEDED;
     private final PopupWindow popup;
+    private final ListView list;
     private ListAdapter adapter;
     private View anchor, promptView;
     private int width = WRAP_CONTENT, height = WRAP_CONTENT, horizontalOffset, verticalOffset, promptPosition = POSITION_PROMPT_ABOVE, gravity, selection = -1;
@@ -29,10 +30,14 @@ public class ListPopupWindow {
     public ListPopupWindow(Context context, AttributeSet attrs, int defStyleAttr) { this(context, attrs, defStyleAttr, 0); }
     public ListPopupWindow(Context context, AttributeSet attrs, int defStyleAttr, int defStyleRes) {
         popup = new PopupWindow(context, attrs, defStyleAttr, defStyleRes);
-        popup.setContentView(new View(context));
+        list = new ListView(context);
+        list.setOnItemClickListener((parent, view, position, id) -> {
+            if (itemClickListener != null) itemClickListener.onItemClick(parent, view, position, id);
+        });
+        popup.setContentView(list);
     }
 
-    public void setAdapter(ListAdapter adapter) { this.adapter = adapter; }
+    public void setAdapter(ListAdapter adapter) { this.adapter = adapter; list.setAdapter(adapter); }
     public void setPromptPosition(int position) { promptPosition = position; }
     public int getPromptPosition() { return promptPosition; }
     public void setPromptView(View prompt) { promptView = prompt; }
@@ -68,26 +73,49 @@ public class ListPopupWindow {
     }
     public void setOnItemClickListener(AdapterView.OnItemClickListener l) { itemClickListener = l; }
     public void setOnItemSelectedListener(AdapterView.OnItemSelectedListener l) { itemSelectedListener = l; }
-    public void show() { if (anchor != null) popup.showAsDropDown(anchor, horizontalOffset, verticalOffset, gravity); }
+    /**
+     * The list below its anchor, as AOSP's sizes it: as wide as the anchor for WRAP_CONTENT, and as high as its items
+     * for WRAP_CONTENT, no higher than the space beside the anchor
+     */
+    public void show() {
+        if (anchor == null) return;
+        int w = width == WRAP_CONTENT ? anchor.getWidth() : width;
+        int h = height;
+        if (height == WRAP_CONTENT) {
+            int most = popup.getMaxAvailableHeight(anchor, verticalOffset);
+            int across = w > 0 ? View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY)
+                               : View.MeasureSpec.makeMeasureSpec(snx.android.Device.metrics().widthPixels, View.MeasureSpec.AT_MOST);
+            list.measure(across, View.MeasureSpec.makeMeasureSpec(Math.max(most, 0), View.MeasureSpec.AT_MOST));
+            h = list.getMeasuredHeight();
+        }
+        if (popup.isShowing()) {
+            popup.update(anchor, horizontalOffset, verticalOffset, w, h);
+            return;
+        }
+        popup.setWidth(w);
+        popup.setHeight(h);
+        popup.showAsDropDown(anchor, horizontalOffset, verticalOffset, gravity);
+        if (selection >= 0) list.setSelection(selection);
+    }
     public void dismiss() { popup.dismiss(); }
     public void setOnDismissListener(PopupWindow.OnDismissListener listener) { popup.setOnDismissListener(listener); }
     public void setInputMethodMode(int mode) { popup.setInputMethodMode(mode); }
     public int getInputMethodMode() { return popup.getInputMethodMode(); }
-    public void setSelection(int position) { selection = position; }
+    public void setSelection(int position) { selection = position; if (popup.isShowing()) list.setSelection(position); }
     public void clearListSelection() { selection = -1; }
     public boolean isShowing() { return popup.isShowing(); }
     public boolean isInputMethodNotNeeded() { return popup.getInputMethodMode() == INPUT_METHOD_NOT_NEEDED; }
     /** A click on an item does what a tap on it in the list would do. */
     public boolean performItemClick(int position) {
         if (!isShowing() || itemClickListener == null || adapter == null) return false;
-        itemClickListener.onItemClick(null, null, position, adapter.getItemId(position));
+        itemClickListener.onItemClick(list, null, position, adapter.getItemId(position));
         return true;
     }
     public Object getSelectedItem() { return isShowing() && adapter != null && selection >= 0 ? adapter.getItem(selection) : null; }
     public int getSelectedItemPosition() { return isShowing() ? selection : -1; }
     public long getSelectedItemId() { return isShowing() && adapter != null && selection >= 0 ? adapter.getItemId(selection) : Long.MIN_VALUE; }
     public View getSelectedView() { return null; }
-    public ListView getListView() { return null; }
+    public ListView getListView() { return popup.isShowing() ? list : null; }
     /** A drag from the source view does not open the list: the listener takes no touch. */
     public View.OnTouchListener createDragToOpenListener(View src) { return (v, event) -> false; }
 }
