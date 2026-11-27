@@ -8,7 +8,7 @@
    the loader cannot run what it loads */
 #include "common/cpu/recompiler/loader/code_loader.h"
 #include "common/cpu/recompiler/loader/gdb_jit.h"
-#include "common/cpu/recompiler/llvm/ir.h"
+#include "common/cpu/recompiler/mach/native.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -65,21 +65,14 @@ static int failures;
 
 static const char* const names[2] = {"snx_test_fn", "snx_test_value"};
 
-/* i64 snx_test_fn(i64 x) { return x + snx_test_value; }, snx_test_value an i64 global of 41: code, data and a
-   relocation between them */
-static int object(SnxIr* ir, unsigned char** data, size_t* size, char* error, size_t error_size) {
-    LLVMTypeRef params[1], type;
-    LLVMValueRef value, fn;
-    value = LLVMAddGlobal(ir->mod, ir->t_i64, names[1]);
-    LLVMSetInitializer(value, LLVMConstInt(ir->t_i64, 41, 0));
-    params[0] = ir->t_i64;
-    type = LLVMFunctionType(ir->t_i64, params, 1, 0);
-    fn = LLVMAddFunction(ir->mod, names[0], type);
-    LLVMPositionBuilderAtEnd(ir->b, LLVMAppendBasicBlockInContext(ir->ctx, fn, "entry"));
-    LLVMBuildRet(ir->b, LLVMBuildAdd(ir->b, LLVMGetParam(fn, 0), LLVMBuildLoad2(ir->b, ir->t_i64, value, ""), ""));
-    return snx_ir_object(ir, '2', data, size, error, error_size);
+/* snx_test_fn and snx_test_value, code and data with a relocation between them, in an object of the host's native back
+   end (machine 0) or of machine's (gdb_jit_object.c: its ELF builder's names clash with elf_object.h's) */
+int gdb_jit_object(const char* const names[2], unsigned machine, unsigned pointer, unsigned char** data, size_t* size,
+                   char* error, size_t error_size);
+static int object(unsigned machine, unsigned pointer, unsigned char** data, size_t* size, char* error,
+                  size_t error_size) {
+    return gdb_jit_object(names, machine, pointer, data, size, error, error_size);
 }
-
 static int load(SnxCodeLoader* loader, const unsigned char* data, size_t size, SnxU64* addresses) {
     char error[1024];
     SnxLinkInput input;
@@ -147,32 +140,26 @@ static void check_entry(const struct jit_code_entry* entry, const unsigned char*
 /* another machine's object in its own loader: nothing registered */
 static void check_other_machine(void) {
 #if defined(__x86_64__)
-    const char* triple = "aarch64-unknown-linux-gnu";
-    unsigned machine = 183;
+    unsigned machine = 183, pointer = 257; /* AArch64's, R_AARCH64_ABS64 */
 #elif defined(__aarch64__)
-    const char* triple = "x86_64-unknown-linux-gnu";
-    unsigned machine = 62;
+    unsigned machine = 62, pointer = 1; /* x86-64's, R_X86_64_64 */
 #else
-    const char* triple = NULL;
-    unsigned machine = 0;
+    unsigned machine = 0, pointer = 0;
 #endif
     char error[1024];
     unsigned char* data;
     size_t size;
     SnxU64 addresses[2];
     SnxCodeLoader* loader;
-    SnxIr* ir = triple ? snx_ir_new_target("gdb_jit_other", '2', triple, error, sizeof(error)) : NULL;
-    if (!ir) {
-        printf("gdb jit: no other machine's code generator here, its loader unchecked\n");
+    if (!machine) {
+        printf("gdb jit: no other machine named for this host, its loader unchecked\n");
         return;
     }
-    if (object(ir, &data, &size, error, sizeof(error))) {
+    if (object(machine, pointer, &data, &size, error, sizeof(error))) {
         fprintf(stderr, "%s\n", error);
         ++failures;
-        snx_ir_free(ir);
         return;
     }
-    snx_ir_free(ir);
     loader = snx_code_loader_new_machine((size_t)1 << 24, machine, error, sizeof(error));
     CHECK(loader != NULL, "loader for machine %u: %s", machine, error);
     if (loader) {
@@ -193,24 +180,17 @@ int main(void) {
     unsigned char* data;
     size_t size;
     SnxU64 a_at[2], b_at[2], off_at[2];
-    SnxIr* ir;
     SnxCodeLoader *off, *a, *b;
     struct jit_code_entry *ea, *eb, foreign;
     uintptr_t ea_id, eb_id;
-    if (snx_ir_init(error, sizeof(error))) {
+    if (!snx_native_available()) {
+        printf("gdb jit: skipped (this host has no native back end, %s, to make the object)\n", snx_native_name());
+        return 77;
+    }
+    if (object(0, 0, &data, &size, error, sizeof(error))) {
         fprintf(stderr, "%s\n", error);
         return 1;
     }
-    ir = snx_ir_new_jit("gdb_jit", '2', error, sizeof(error));
-    if (!ir) {
-        fprintf(stderr, "%s\n", error);
-        return 1;
-    }
-    if (object(ir, &data, &size, error, sizeof(error))) {
-        fprintf(stderr, "%s\n", error);
-        return 1;
-    }
-    snx_ir_free(ir);
     CHECK(__jit_debug_descriptor.version == 1, "descriptor version %u", __jit_debug_descriptor.version);
 
     /* off: a load and a free register and notify nothing */

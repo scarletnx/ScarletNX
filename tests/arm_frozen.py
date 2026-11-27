@@ -82,6 +82,8 @@ CONFIGS['half_words'] = (
 ).split()
 CONFIGS['odd_words'] = '--word eef82bef --word eef82b6f'.split()
 CONFIGS['call_abi'] = '--blocks 600 --states 8'.split()
+# arm_x64_mxcsr's blocks, whose x86-64 side runs under a host MXCSR rounding up and flushing to zero (--csr-x64)
+CONFIGS['x64_mxcsr'] = '--blocks 1500 --thumb 500 --seed 7'.split()
 for profile in ('arm946e', 'arm7tdmi'):
     CONFIGS['call_abi_' + profile] = f'--profile {profile} --blocks 600 --states 8'.split()
 

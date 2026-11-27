@@ -118,9 +118,9 @@ size_t sail_hold(SailHold* h, const u32* words, size_t n, unsigned states, size_
 /* ---- what QEMU can't stand for: LLVM's ends, frozen (support/frozen.h) ----
    A word sail_unheld names, and a store-exclusive (STXR, STXP of doublewords) with its monitor armed at its address and
    a value the memory doesn't hold, which no QEMU case starts from: what LLVM's steps (llvm_steps.c) made of their
-   states, while the LLVM back end was there, kept in tests/data/sail_frozen.txt (snx-test-sail-frozen --record). A
-   file's item is a word, its hash its SAIL_STATES_MAX states' ends (sail_end_hash), folded. Its words are those of
-   sail_candidates in the parts, in their order */
+   states, while the LLVM back end was there, kept in test-references' sail/frozen.txt (snx-test-sail-frozen
+   --record). A file's item is a word, its hash its SAIL_STATES_MAX states' ends (sail_end_hash), folded. Its words are
+   those of sail_candidates in the parts, in their order */
 #define SAIL_FROZEN_GENERATOR 1u
 enum { SAIL_FROZEN_UNHELD, SAIL_FROZEN_EXCLUSIVE, SAIL_FROZEN_PARTS };
 /* word's part of a frozen file (-1: none) */

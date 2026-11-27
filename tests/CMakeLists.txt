@@ -3887,6 +3887,9 @@ if(SNX_QEMU_REF)
         set_tests_properties(native_qemu_differential_sweep PROPERTIES TIMEOUT 3600 COST 100 SKIP_RETURN_CODE 77)
     endif()
 endif()
+# the sail tests' LLVM ends of the words QEMU can't stand for (test-references' sail/, which snx-test-sail-frozen
+# records): every sail test holds those words to them (--frozen)
+set(snx_sail_frozen "${test-references_SOURCE_DIR}/sail/frozen.txt")
 if(NOT WIN32)
     # The lowering census (llvm_lowering.c): each A64 SIMD, FP and crypto op's class on nine emitter paths against
     # llvm_lowering_expected.txt, which a change that moves an op updates in the same commit (--update)
@@ -3926,7 +3929,7 @@ if(NOT WIN32)
     function(snx_sail_mach_test name m)
         if(SNX_QEMU_REF)
             add_test(NAME ${name} COMMAND snx-test-sail-${m} --qemu "${SNX_QEMU_AARCH64}" "${SNX_QEMU_REF_RUNNER}"
-                     "${CMAKE_CURRENT_BINARY_DIR}/${name}" ${ARGN})
+                     "${CMAKE_CURRENT_BINARY_DIR}/${name}" --frozen "${snx_sail_frozen}" ${ARGN})
         else()
             add_test(NAME ${name} COMMAND snx-test-sail-${m} --skip "${SNX_QEMU_REF_MISSING}")
         endif()
@@ -4009,9 +4012,10 @@ if(SNX_X64)
     function(snx_sail_x64_test name)
         if(SNX_QEMU_REF)
             add_test(NAME ${name} COMMAND snx-test-sail-x64 --qemu "${SNX_QEMU_AARCH64}" "${SNX_QEMU_REF_RUNNER}"
-                     "${CMAKE_CURRENT_BINARY_DIR}/${name}" ${ARGN})
+                     "${CMAKE_CURRENT_BINARY_DIR}/${name}" --frozen "${snx_sail_frozen}" ${ARGN})
         elseif(SNX_SAIL_QEMU_REFERENCE)
-            add_test(NAME ${name} COMMAND snx-test-sail-x64 --reference-if-there "${SNX_SAIL_QEMU_REFERENCE}" ${ARGN})
+            add_test(NAME ${name} COMMAND snx-test-sail-x64 --reference-if-there "${SNX_SAIL_QEMU_REFERENCE}"
+                     --frozen "${snx_sail_frozen}" ${ARGN})
         else()
             add_test(NAME ${name} COMMAND snx-test-sail-x64 --skip
                      "${SNX_QEMU_REF_MISSING}, and SNX_SAIL_QEMU_REFERENCE names no recorded one")
@@ -4037,6 +4041,8 @@ if(SNX_X64)
     target_include_directories(snx-test-sail-frozen PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(snx-test-sail-frozen PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
     snx_decodetree_a64(snx-test-sail-frozen)
+    add_test(NAME sail_frozen_llvm COMMAND snx-test-sail-frozen "${snx_sail_frozen}")
+    set_tests_properties(sail_frozen_llvm PROPERTIES TIMEOUT 600)
     # its code for Windows (the calling convention), run by this host's processor as Windows' C would call it
     # (support/host_win64.c): the same words against LLVM, as the other machines' under Unicorn
     if(snx_host_win64)
@@ -4074,7 +4080,8 @@ if(SNX_X64)
              --frozen ${test-references_SOURCE_DIR}/arm/seed3_2000.txt)
     # each side's blocks run where other code left the host's MXCSR rounding up and flushing to zero: both put back the
     # default on entry
-    add_test(NAME arm_x64_mxcsr COMMAND snx-test-arm-x64 --csr-x64 DF80 --blocks 1500 --thumb 500 --seed 7)
+    add_test(NAME arm_x64_mxcsr COMMAND snx-test-arm-x64 --csr-x64 DF80
+             --frozen ${test-references_SOURCE_DIR}/arm/x64_mxcsr.txt)
     add_test(NAME arm_x64_mxcsr_llvm COMMAND snx-test-arm-x64 --csr-llvm DF80 --blocks 1500 --thumb 500 --seed 8)
     set_tests_properties(arm_x64 arm_x64_spill arm_x64_plain arm_x64_mxcsr arm_x64_mxcsr_llvm PROPERTIES TIMEOUT 600
                          SKIP_RETURN_CODE 77)
@@ -4454,11 +4461,11 @@ target_link_libraries(snx-bench-jit-latency PRIVATE snx_recompiler_jit Threads::
 # what the loader says where the system refuses its memory, on any host
 add_executable(snx-test-code-loader-refused code_loader_refused.c)
 snx_test_target(snx-test-code-loader-refused gnu23)
-target_link_libraries(snx-test-code-loader-refused PRIVATE snx_llvm)
+target_link_libraries(snx-test-code-loader-refused PRIVATE snx_recompiler_core)
 add_test(NAME code_loader_refused COMMAND snx-test-code-loader-refused)
 add_executable(snx-test-code-loader-unwind code_loader_unwind.c)
 snx_test_target(snx-test-code-loader-unwind gnu23)
-target_link_libraries(snx-test-code-loader-unwind PRIVATE snx_llvm)
+target_link_libraries(snx-test-code-loader-unwind PRIVATE snx_recompiler_core)
 add_test(NAME code_loader_unwind COMMAND snx-test-code-loader-unwind)
 # a generated function's frame of a page or more probes the stack on Windows x86-64 (rtlib.c's snx_stack_probe)
 add_executable(snx-test-stack-probe stack_probe.c)
@@ -4467,25 +4474,25 @@ target_link_libraries(snx-test-stack-probe PRIVATE snx_llvm ${SNX_LLVM_ALL_TARGE
 add_test(NAME stack_probe COMMAND snx-test-stack-probe)
 set_tests_properties(stack_probe PROPERTIES SKIP_RETURN_CODE 77)
 # the loader's objects as GDB's JIT interface lists them (gdb_jit.c); skipped on Windows, which registers none
-add_executable(snx-test-gdb-jit gdb_jit.c)
+add_executable(snx-test-gdb-jit gdb_jit.c gdb_jit_object.c)
 snx_test_target(snx-test-gdb-jit gnu23)
-target_link_libraries(snx-test-gdb-jit PRIVATE snx_llvm)
+target_link_libraries(snx-test-gdb-jit PRIVATE snx_recompiler_core)
 add_test(NAME gdb_jit COMMAND snx-test-gdb-jit)
 set_tests_properties(gdb_jit PROPERTIES SKIP_RETURN_CODE 77)
 if(NOT WIN32)
     # the relocations both ELF paths share (elf_object.c), AArch64's included, checked on any ELF host and on macOS,
     # whose JIT loads ELF objects
-    add_executable(snx-test-elf-relocate elf_relocate.c)
+    add_executable(snx-test-elf-relocate elf_relocate.c native_objects.c)
     snx_test_target(snx-test-elf-relocate gnu23)
-    target_link_libraries(snx-test-elf-relocate PRIVATE snx_llvm ${SNX_LLVM_ALL_TARGETS_LIBS})
+    target_link_libraries(snx-test-elf-relocate PRIVATE snx_recompiler_core)
     add_test(NAME elf_relocate COMMAND snx-test-elf-relocate)
     set_tests_properties(elf_relocate PROPERTIES TIMEOUT 120)
 endif()
 # Windows on Arm's COFF objects (code_loader_coff.c, link_coff.c): relocations, veneers, a module and a JIT load, read
 # back on any host
-add_executable(snx-test-coff-arm64 coff_arm64.c)
+add_executable(snx-test-coff-arm64 coff_arm64.c native_objects.c)
 snx_test_target(snx-test-coff-arm64 gnu23)
-target_link_libraries(snx-test-coff-arm64 PRIVATE snx_llvm ${SNX_LLVM_ALL_TARGETS_LIBS})
+target_link_libraries(snx-test-coff-arm64 PRIVATE snx_recompiler_core)
 add_test(NAME coff_arm64 COMMAND snx-test-coff-arm64)
 set_tests_properties(coff_arm64 PROPERTIES TIMEOUT 120)
 # not a test: timings of the generated code (llvm_bench SCARLETNX REPO CLANG)
