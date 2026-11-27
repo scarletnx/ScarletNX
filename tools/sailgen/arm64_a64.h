@@ -210,6 +210,20 @@ static inline void sga_status(SgXBuf* b, const size_t* fail, size_t differ) {
     }
     sga_state(b, 0, 4, SGA_ZR, offsetof(CPU, excl_on));
 }
+/* the general-purpose registers each inline sequence below writes, its results' included, X16 and X17 (the
+   veneers' scratch, which no value or pin is in) aside: what its sg_ function declares, sgx_machine_declares checks */
+static inline unsigned sgx_machine_writes(const SgXIns* i) {
+    const unsigned op = (unsigned)(i->imm >> 2);
+    switch (i->op) {
+        case SGX_M_STX: return 1u << 0 | 1u << 1 | 1u << 6;
+        case SGX_M_STXP: return 1u << 0 | 1u << 1 | 1u << 6 | 1u << 7 | 1u << 8;
+        case SGX_M_CAS: return 1u << 0 | 1u << 6;
+        case SGX_M_CASP: return 1u << 0 | 1u << 1 | 1u << 8;
+        case SGX_M_RMW: return 1u << 0 | 1u << 6 | 1u << 7 | (op >= 4 && op <= 7 ? 1u << 8 : 0u);
+        case SGX_M_CRC: return 1u << 0;
+        default: return 0;
+    }
+}
 static inline void sgx_machine_inline(SgXAsm* a, SgXIns* i) {
     SgXBuf* b = a->b;
     int sz = (int)(i->imm & 3);
@@ -374,7 +388,10 @@ static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r) {
         case SGX_M_CAS:
         case SGX_M_CASP:
         case SGX_M_RMW:
-        case SGX_M_CRC: sgx_machine_inline(a, i); return;
+        case SGX_M_CRC:
+            sgx_machine_declares(a, at, sgx_machine_writes(i));
+            sgx_machine_inline(a, i);
+            return;
         case SGX_M_CALL:
         case SGX_M_CALL_RT:
             if (a->pin_cs) a->pin_cs(a->machine, 1);

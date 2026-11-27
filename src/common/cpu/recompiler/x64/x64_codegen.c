@@ -79,6 +79,10 @@ static inline void sgx_machine_op(SgXAsm* a, int at, const unsigned char* r);
 static const signed char g_pin_hosts[2][7] = {{5, 12, 13, 14, 15, 11, 10}, {5, 12, 13, 14, 15, 7, 6}};
 #define mg_pin_hosts (g_pin_hosts[MG_WIN64(u)])
 #define MG_NPINS 7
+static const char* const g_gpr_names[16] = {"RAX", "RCX", "RDX", "RBX", "RSP", "RBP", "RSI", "RDI",
+                                            "R8",  "R9",  "R10", "R11", "R12", "R13", "R14", "R15"};
+#define MG_GPR_NAME(r, buf) ((void)(buf), g_gpr_names[(r) & 15])
+#define MG_VREG_PREFIX      "XMM"
 #define MG_NPINS_FIXED (MG_WIN64(u) ? 7 : 5)
 #define MG_PIN_RESERVED(h) ((h) == 10 || (h) == 11)
 #define MG_VPIN(k) (15 - (k))

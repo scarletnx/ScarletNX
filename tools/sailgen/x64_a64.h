@@ -638,6 +638,23 @@ static inline void sgx_m_status(SgXBuf* b, const size_t* fail) {
     sgx_patch32(b, done);
     sgx_bytes(b, "C7 83"), sgx_d32(b, offsetof(CPU, excl_on)), sgx_imm(b, 0, 4); /* mov dword [rbx + excl_on], 0 */
 }
+/* the general-purpose registers each inline sequence below writes, its result's included (RBX, pushed or exchanged,
+   is put back): what its sg_ function declares, sgx_machine_declares checks */
+static inline unsigned sgx_machine_writes(const SgXIns* i) {
+    const unsigned rax = 1u << SGX_RAX, rcx = 1u << SGX_RCX, rdx = 1u << SGX_RDX, r11 = 1u << SGX_R11;
+    unsigned bytes = (unsigned)(i->imm & 15), op = (unsigned)(i->imm >> 2);
+    switch (i->op) {
+        case SGX_M_STX: return rax | rcx;
+        case SGX_M_STXP: return rax | rcx | rdx | ((i->imm & 3) == 2 ? 0u : r11);
+        case SGX_M_CAS: return rax;
+        case SGX_M_CASP: return rax | rcx | rdx | r11;
+        case SGX_M_RMW: return op == 0 || op == 8 ? rax : rax | rcx | (op >= 4 ? r11 : 0u);
+        case SGX_M_CRC:
+            if (i->imm & 16) return rax; /* SSE4.2's CRC32 */
+            return rax | rcx | rdx | r11 | ((i->imm & 64) && bytes == 8 ? 1u << SGX_R8 : 0u);
+        default: return 0;
+    }
+}
 static inline void sgx_machine_inline(SgXAsm* a, SgXIns* i) {
     SgXBuf* b = a->b;
     unsigned sz = (unsigned)(i->imm & 3);
@@ -810,7 +827,10 @@ static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r) {
         case SGX_M_CAS:
         case SGX_M_CASP:
         case SGX_M_RMW:
-        case SGX_M_CRC: sgx_machine_inline(a, i); return;
+        case SGX_M_CRC:
+            sgx_machine_declares(a, at, sgx_machine_writes(i));
+            sgx_machine_inline(a, i);
+            return;
         case SGX_M_CALL:
         case SGX_M_CALL_RT:
             sgx_call_room(a);
