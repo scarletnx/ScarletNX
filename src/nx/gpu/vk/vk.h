@@ -802,8 +802,13 @@ u8* vk_stage_upload(u64 size, u64 align, VkBuffer* buf, u64* off);
 /* as vk_stage_upload without the share lock held: out of this thread's part of the ring, which takes the lock only for
    a new part (draw_batches=2). page picks the part: 0 the thread's shared one, 1 to VK_UPLOAD_PAGES - 1 one of their
    own, which the copies of one constant bank take (render.c's cb_get_) */
-#define VK_UPLOAD_PAGES (1 + 7 * 18)
+#define VK_UPLOAD_PAGES (1 + 7 * 18 + 2)
+/* the parts of the texture words of the vertex and fragment stages (render.c's table_words) */
+#define VK_UPLOAD_WORDS (1 + 7 * 18)
 u8* vk_stage_upload_own(u64 size, u64 align, u32 page, VkBuffer* buf, u64* off);
+/* whether off in buf is in this thread's part page of this frame (vk_stage_upload_own): 1 and the part's start in
+   *start. A window that starts there holds every copy of the part, as a part is a window's 64 KiB */
+int vk_stage_upload_part(u32 page, VkBuffer buf, u64 off, u64* start);
 /* the host's writes to staging made visible to the GPU before a submission to another queue reads them */
 void vk_stage_flush(void);
 /* the waits a graphics submission takes at most (cmd.c's submit, record.c's copy of them): vk_submit_after's or the
