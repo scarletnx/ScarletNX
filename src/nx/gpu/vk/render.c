@@ -4618,6 +4618,11 @@ static int cb_epoch_refuses(VkBuffer b, u64 o) {
     return g_settings.constant_buffer_window_epochs && g_cb_epoch.b && g_cb_epoch.frame == vk_frame_id() + 1 &&
            b != vk_mirror_buffer() && vk_stage_buffer_size(b) && (g_cb_epoch.b != b || o < g_cb_epoch.base);
 }
+/* the part of the draw thread's upload ring that bank's copies of the vertex (vs_fs 0) or fragment (1) set go into:
+   cb_page's, and the texture words' own (CB_WINDOW_WORDS) */
+static u32 window_page(int vs_fs, int bank) {
+    return bank == CB_WINDOW_WORDS ? VK_UPLOAD_WORDS + (u32)(vs_fs & 1) : cb_page(vs_fs ? 4 : 0, bank);
+}
 static int cb_window_place(int vs_fs, int bank, VkBuffer b, u64 o, u32 sz, u64* base, u64* range) {
     CbWindow* w = &g_cb_windows[t_rc][vs_fs][bank];
     const u64 frame = vk_frame_id() + 1;
@@ -4626,7 +4631,14 @@ static int cb_window_place(int vs_fs, int bank, VkBuffer b, u64 o, u32 sz, u64* 
         /* the ring's chunks, and the GPU mirror, which is as big as guest memory (cb_get binds banks in it) */
         const u64 size = b == vk_mirror_buffer() ? (u64)AS_SIZE : vk_stage_buffer_size(b),
                   align = g_vk.props.limits.minUniformBufferOffsetAlignment;
-        const u64 at = align ? o / align * align : o;
+        u64 at = align ? o / align * align : o;
+        /* a copy in the bank's part of the ring: the window starts at the part's start, and holds the whole part. At
+           the copy, the part's copies before it were below the window (51k of 512k moves a 600 presents in one game's
+           world), as were the copies that the draws kept from earlier in it */
+        u64 start;
+        if (w != &g_cb_epoch && vk_stage_upload_part(window_page(vs_fs, bank), b, o, &start) &&
+            !(align && start % align) && o + sz <= start + 65536)
+            at = start;
         if (!size || at >= size || (o - at) & 15) return 0;
         const u64 reach = size - at < 65536 ? size - at : 65536;
         if (o + sz > at + reach) return 0;
@@ -4656,7 +4668,9 @@ static int table_words(DescWrites* d, VkDescriptorSet set, int vs_fs, const u32*
         b = g_table_words[t_rc][vs_fs].b;
         o = g_table_words[t_rc][vs_fs].o;
     } else {
-        u8* data = vk_stage(bytes, 16, &b, &o);
+        /* in the stage's own part of the ring, where its window stays until the part is full: in the device ring the
+           window moved after the 64 KiB of every other copy there (58k moves a 600 presents in one game's world) */
+        u8* data = vk_stage_upload_own(bytes, 16, VK_UPLOAD_WORDS + (u32)vs_fs, &b, &o);
         if (!data) return 0;
         memset(data, 0, bytes);
         memcpy(data, words, n * 4);

@@ -1131,7 +1131,9 @@ u8* vk_stage_upload_own(u64 size, u64 align, u32 page, VkBuffer* buf, u64* off) 
     u64 at = (t->off + t->used + align - 1) / align * align - t->off;
     if (!t->p || t->frame != g_frame_id + 1 || at + size > UPLOAD_PART) {
         vk_share_lock();
-        t->p = stage_alloc(UPLOAD_PART, align, &t->buf, &t->off, NULL, 0);
+        /* at a uniform buffer offset's alignment: a window can start at the part's start (vk_stage_upload_part) */
+        const u64 window_align = g_vk.props.limits.minUniformBufferOffsetAlignment;
+        t->p = stage_alloc(UPLOAD_PART, window_align > align ? window_align : align, &t->buf, &t->off, NULL, 0);
         t->frame = g_frame_id + 1; /* after stage_alloc: a fresh slot moves on in it */
         vk_share_unlock();
         if (!t->p) return NULL;
@@ -1141,6 +1143,14 @@ u8* vk_stage_upload_own(u64 size, u64 align, u32 page, VkBuffer* buf, u64* off) 
     *buf = t->buf;
     *off = t->off + at;
     return t->p + at;
+}
+
+int vk_stage_upload_part(u32 page, VkBuffer buf, u64 off, u64* start) {
+    if (!page || page >= VK_UPLOAD_PAGES) return 0;
+    const typeof(t_upload_part[0])* const t = &t_upload_part[page];
+    if (!t->p || t->frame != g_frame_id + 1 || t->buf != buf || off < t->off || off - t->off >= UPLOAD_PART) return 0;
+    *start = t->off;
+    return 1;
 }
 
 /* Guest input read once by a copy or conversion. Keep GPU-owned bytes near the GPU; CPU-only bytes go through
