@@ -733,6 +733,36 @@ static void test_libm_aarch64(void) {
     expect_int("a NaN given goes through", (int64_t)libm_d("sqrt", given, 0, 0), (int64_t)0xfff8000000000123ull);
 }
 
+/* the complex functions: a complex is two floating registers, its real part first, in and out (AAPCS64's homogeneous
+   pairs); they were imports with no HLE */
+static void test_libm_complex(void) {
+    CPU cpu = {0};
+    double parts[4] = {-4, 0, 0, 0};
+    for (int i = 0; i < 4; ++i) memcpy(&cpu.v[i].df[0], &parts[i], 8);
+    run_libm("csqrt", &cpu);
+    double re, im;
+    memcpy(&re, &cpu.v[0].df[0], 8);
+    memcpy(&im, &cpu.v[1].df[0], 8);
+    expect_int("csqrt(-4) is 2i", re == 0 && im == 2, 1);
+    cpu = (CPU){0};
+    parts[0] = 2, parts[1] = 0, parts[2] = 3, parts[3] = 0;
+    for (int i = 0; i < 4; ++i) memcpy(&cpu.v[i].df[0], &parts[i], 8);
+    run_libm("cpow", &cpu);
+    memcpy(&re, &cpu.v[0].df[0], 8);
+    memcpy(&im, &cpu.v[1].df[0], 8);
+    expect_int("cpow(2, 3) is 8", fabs(re - 8) < 1e-12 && fabs(im) < 1e-12, 1);
+    expect_int("cabs(3 + 4i)", (int64_t)libm_d("cabs", 3.0, 4.0, 0), (int64_t)bits_d(5.0));
+    expect_int("carg(-1 + 0i) is pi", (int64_t)libm_d("carg", -1.0, 0.0, 0), (int64_t)0x400921fb54442d18ull);
+    expect_int("cimag(1 + 2i)", (int64_t)libm_d("cimag", 1.0, 2.0, 0), (int64_t)bits_d(2.0));
+    cpu = with_f(1.0f, 2.0f, 0);
+    run_libm("conjf", &cpu);
+    expect_int("conjf(1 + 2i)'s real part", v0_f(&cpu), bits_f(1.0f));
+    uint32_t imaginary;
+    memcpy(&imaginary, &cpu.v[1].f[0], 4);
+    expect_int("and its imaginary one", imaginary, bits_f(-2.0f));
+    expect_int("cabsf(3 + 4i)", libm_f("cabsf", 3.0f, 4.0f, 0), bits_f(5.0f));
+}
+
 /* fenv.h is the guest's FPCR and FPSR in bionic's numbers (FE_INEXACT 0x10, FE_UPWARD 1), where the HLE gave the
    guest's numbers to the host's functions, which test and clear the host's own flags in other bits */
 static void test_libm_fenv(void) {
@@ -1367,6 +1397,7 @@ int main(void) {
     test_libm_bionic();
     test_libm_aarch64();
     test_libm_fenv();
+    test_libm_complex();
     test_files_second_batch();
     test_pipe2_umask_session();
     test_strncat_chk();

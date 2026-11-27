@@ -296,10 +296,11 @@ builds for FreeBSD, macOS and Windows x64, where they differ:
   and `%m` give bionic's texts (`hle_error_text`): the host C library's are other words, in the user's language.
   libm's functions (`hle_libm.c`) leave it as it was, as bionic's do (its `math_errhandling` is `MATH_ERREXCEPT`),
   where the host's may set it (glibc's `log(0)` sets `ERANGE`).
-- **libm** (`hle_libm.c`) has every function of double and float that bionic's has: the host's, and bionic's own where
-  they differ or the host lacks one. `ilogb` gives bionic's `FP_ILOGB0` and `FP_ILOGBNAN` (-INT_MAX and INT_MAX,
-  where glibc's on x86 are INT_MIN), `remquo` 31 bits of the quotient (glibc's 3), `nan` the tag's digits as msun reads
-  them, `lgamma` its sign in bionic's `signgam`; `rint`, `nearbyint`, `lrint` and `llrint` round as the guest's FPCR
+- **libm** (`hle_libm.c`) has every function of double and float, and of their complex numbers, that bionic's has:
+  the host's, and bionic's own where they differ or the host lacks one. `ilogb` gives bionic's `FP_ILOGB0` and
+  `FP_ILOGBNAN` (-INT_MAX and INT_MAX, where glibc's on x86 are INT_MIN), `remquo` 31 bits of the quotient (glibc's
+  3), `nan` the tag's digits as msun reads them, `lgamma` its sign in bionic's `signgam`; `rint`, `nearbyint`,
+  `lrint` and `llrint` round as the guest's FPCR
   says, and a conversion out of range saturates as `FCVTZS` does, with FPSR's flags. `lround`, `fmax` and `fmin` are
   AArch64's `FCVTAS`, `FMAXNM` and `FMINNM` (+0 above -0), and a NaN made from numbers (`sqrt(-1)`) is AArch64's
   default NaN, whose sign is clear where x86's is set. `fenv.h`'s functions read and write the guest's FPCR and FPSR
