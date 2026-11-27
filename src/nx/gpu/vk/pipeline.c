@@ -1395,7 +1395,8 @@ static VkSh* sh_holder(u64 h, int stage, const u32 mask[SH_KEY_WORDS], u32 len, 
     return best;
 }
 static int sh_fold_top(const VkSh* s) {
-    for (const VkSh* q = g_pipeline.shh[s->hash & 1023]; q; q = q->next)
+    /* with no share lock (vk_shader_fold_top): the head with acquire order, then fields set before the shader went in */
+    for (const VkSh* q = __atomic_load_n(&g_pipeline.shh[s->hash & 1023], __ATOMIC_ACQUIRE); q; q = q->next)
         if (q->nfold > s->nfold && sh_same_program(q, s->hash, s->stage, s->mask, s->clen, s->qh, s->clen_a, s->qh_a))
             return 0;
     return 1;
@@ -1420,7 +1421,7 @@ static void sh_fold_plan(u64 h, int stage, const u32 mask[SH_KEY_WORDS], u32 len
    another translation of the program stopped holding, its words changed */
 static void sh_fold_ask(VkSh* s) {
     if (s->fold_job) return; /* one is being made from them */
-    s->fold_asked = 0;
+    __atomic_store_n(&s->fold_asked, (u8)(0), __ATOMIC_RELAXED);
     s->fold_stable = (VkCbStable){0};
 }
 
@@ -3071,7 +3072,7 @@ static void sh_fold_make(ShFold* f) {
     t_pipeline.fold = NULL;
     f->ns = plat_ns() - t0;
     if (spv && !f->missed && s->nfold) {
-        s->fold_asked = 1; /* it folds what the draws' words allow */
+        __atomic_store_n(&s->fold_asked, (u8)(1), __ATOMIC_RELAXED); /* it folds what the draws' words allow */
         f->made = s;
         f->spv = spv;
         f->nw = nw;
@@ -3164,7 +3165,7 @@ static void sh_fold_queue(VkSh* s, u64 gva, const VkCbFold* fold) {
     /* the code at gva is no longer s's program: its draws are as they are */
     if (h != s->hash || len != s->clen || qh != s->qh || s->clen_a) {
         free(f);
-        s->fold_asked = 1;
+        __atomic_store_n(&s->fold_asked, (u8)(1), __ATOMIC_RELAXED);
         return;
     }
     VkCbRead* r = fold_rec(f, 0);
@@ -3191,8 +3192,8 @@ static void sh_fold_queue(VkSh* s, u64 gva, const VkCbFold* fold) {
     f->mlen = mlen;
     f->seen_submit = vk_submit_number();
     memcpy(f->mask, s->mask, sizeof f->mask);
-    s->fold_asked = 1;
-    s->fold_job = (u8)(slot + 1);
+    __atomic_store_n(&s->fold_asked, (u8)(1), __ATOMIC_RELAXED);
+    __atomic_store_n(&s->fold_job, (u8)((u8)(slot + 1)), __ATOMIC_RELAXED);
     pm_lock(&g_pipeline.pj_lock);
     int workers = pipe_workers();
     g_pipeline.fold_jobs[slot] = f;
@@ -3250,14 +3251,14 @@ static void sh_fold_end(ShFold* f, int publish, int again) {
         if (s) free(s->cbr.r);
         free(s);
         g_pipeline.fold_dropped++;
-        from->fold_asked = !again;
+        __atomic_store_n(&from->fold_asked, (u8)(!again), __ATOMIC_RELAXED);
         from->fold_stable = (VkCbStable){0};
     }
     free(f->spv);
     pm_lock(&g_pipeline.pj_lock);
     g_pipeline.fold_jobs[from->fold_job - 1] = NULL;
     pm_unlock(&g_pipeline.pj_lock);
-    from->fold_job = 0;
+    __atomic_store_n(&from->fold_job, (u8)(0), __ATOMIC_RELAXED);
     free(f);
 }
 /* a draw of from, with key k, while its fold is made or warmed: the fold's module once made, then its pipeline with
@@ -3336,7 +3337,7 @@ void vk_shader_fold_draw(const DsState* ds, VkSh* s, u64 gva, const PipeKey* k) 
     const VkCbReads* others[SH_CB_FOLD_VARIANTS];
     sh_fold_plan(s->hash, s->stage, s->mask, s->clen, s->qh, s->clen_a, s->qh_a, &fold, others);
     switch (vk_cb_stable_note(&s->fold_stable, submit, vk_cb_fold_words(&s->cbr, &fold))) {
-        case VK_CB_STABLE_NONE: s->fold_asked = 1; break; /* none would fold more: as it is, until its words change */
+        case VK_CB_STABLE_NONE: __atomic_store_n(&s->fold_asked, (u8)(1), __ATOMIC_RELAXED); break; /* none would fold more: as it is, until its words change */
         case VK_CB_STABLE_NOW:
             s->fold_stable = (VkCbStable){0};
             sh_fold_queue(s, gva, &fold);

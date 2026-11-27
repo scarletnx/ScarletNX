@@ -40,11 +40,8 @@ static inline int sh_vk_buf_copy_writable_word(u64 gva, u32 len, VkBuffer* buf, 
     return r;
 }
 static inline int sh_vk_buf_draw_has_alias(const VkDrawStorage* draw) {
-    if (!vk_share_on()) return vk_buf_draw_has_alias(draw);
-    vk_share_lock_at(5);
-    int const r = vk_buf_draw_has_alias(draw);
-    vk_share_unlock();
-    return r;
+    /* no share lock: it reads the draw's own bindings and the GMMU's tables, which take their own locks */
+    return vk_buf_draw_has_alias(draw);
 }
 static inline int sh_vk_buf_draw_prepare(VkDrawStorage* draw) {
     if (!vk_share_on()) return vk_buf_draw_prepare(draw);
@@ -751,11 +748,9 @@ static inline int sh_vk_shader_chosen(const DsState* ds, const VkSh* s) {
     return r;
 }
 static inline int sh_vk_shader_fold_top(const VkSh* s) {
-    if (!vk_share_on()) return vk_shader_fold_top(s);
-    vk_share_lock_at(99);
-    int const r = vk_shader_fold_top(s);
-    vk_share_unlock();
-    return r;
+    /* no share lock: the walk reads each chain's head with acquire order and fields that don't change once a shader is
+       in it (pipeline.c sh_fold_top) */
+    return vk_shader_fold_top(s);
 }
 static inline VkSh* sh_vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_mask, u64 sint_mask, u32 rt_int, u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, u64 rect, const ShXfb* xfb, const u8* query_hint, u64 advanced_blend, u32 advanced_mask, u32 img_int, u32 img_sint) {
     if (!vk_share_on()) return vk_shader_get(ds, gva, gva_a, stage, int_mask, sint_mask, rt_int, rt_sint, clip, dc_color, dc_funcs, unfed, rect, xfb, query_hint, advanced_blend, advanced_mask, img_int, img_sint);
@@ -1038,6 +1033,11 @@ static inline Surf* sh_vk_zt_array(u64 gva, u32 w, u32 h, u32 fmt, u32 tile, u32
     return r;
 }
 static inline void sh_vk_shader_fold_draw(const DsState* ds, VkSh* s, u64 gva, const PipeKey* k) {
+    /* the shader's early return, asked before the take: fold_job and fold_asked are stored atomically, and failed and
+       stage don't change once it is in its chain. A late answer counts one draw less, or warms one later */
+    if (!__atomic_load_n(&s->fold_job, __ATOMIC_RELAXED) &&
+        (__atomic_load_n(&s->fold_asked, __ATOMIC_RELAXED) || s->failed || s->stage != ST_FS))
+        return;
     if (!vk_share_on()) {
         vk_shader_fold_draw(ds, s, gva, k);
         return;
