@@ -8,6 +8,8 @@
 #include "vita/hle/hle.hook.h"
 #include "common/utilities/audio_volume.h"
 #include "common/utilities/bits.h"
+#include "common/utilities/endian.h"
+#include "common/utilities/mic.h"
 #include "common/utilities/state_header.h"
 #include "common/utilities/state_io.h"
 #include "snx_settings.h"
@@ -39,6 +41,7 @@ typedef struct {
 struct VitaAudio {
     Port ports[PORTS];
     Port input; /* type, grain (len) and freq; never a stream */
+    SnxMic* mic; /* the input port's recording while it is open; a state keeps the port, never this */
     bool sdl;
 };
 
@@ -171,12 +174,19 @@ void vita_audio_free(VitaProcess* p) {
     if (!p->audio) return;
     for (unsigned i = 0; i < PORTS; ++i)
         if (p->audio->ports[i].stream) SDL_DestroyAudioStream(p->audio->ports[i].stream);
+    snx_mic_free(p->audio->mic);
     if (p->audio->sdl) SDL_QuitSubSystem(SDL_INIT_AUDIO);
     free(p->audio);
     p->audio = NULL;
 }
 
-/* sceAudioInOpenPort(type, grain, freq, param): one port, mono */
+/* the microphone's lines, on the terminal */
+static void mic_say(bool warn, const char* line) {
+    (void)warn;
+    fprintf(stderr, "scarletnx-vita: %s", line);
+}
+/* sceAudioInOpenPort(type, grain, freq, param): one port, mono, recording the host's microphone (the microphone and
+   mic_noise_reduction settings; off, or no device, gives silence) */
 uint32_t vita_audio_in_open_port(VitaProcess* p, VitaThread* t, uint32_t type, uint32_t grain, uint32_t freq,
                                  uint32_t param) {
     (void)t, (void)param;
@@ -185,6 +195,7 @@ uint32_t vita_audio_in_open_port(VitaProcess* p, VitaThread* t, uint32_t type, u
     if (a->input.open) return SCE_AUDIO_IN_ERROR_PORT_FULL;
     if (!grain || grain > 4096 || (freq != 16000 && freq != 48000)) return SCE_AUDIO_IN_ERROR_INVALID_PORT_PARAM;
     a->input = (Port){.open = true, .type = type, .len = grain, .freq = freq};
+    a->mic = snx_mic_open(freq, g_settings.microphone, &g_settings.microphone_noise_reduction, mic_say);
     return AUDIO_IN_PORT;
 }
 static Port* in_port(VitaProcess* p, uint32_t id) {
@@ -195,15 +206,20 @@ uint32_t vita_audio_in_release_port(VitaProcess* p, VitaThread* t, uint32_t port
     Port* port = in_port(p, port_id);
     if (!port) return SCE_AUDIO_IN_ERROR_NOT_OPENED;
     *port = (Port){0};
+    snx_mic_free(p->audio->mic);
+    p->audio->mic = NULL;
     return 0;
 }
-/* sceAudioInInput(port, dest): a grain of silence, once a grain's time after the last */
+/* sceAudioInInput(port, dest): a grain of the recording, once a grain's time after the last */
 uint32_t vita_audio_in_input(VitaProcess* p, VitaThread* t, uint32_t port_id, uint32_t dest) {
     (void)t;
     Port* port = in_port(p, port_id);
     if (!port) return SCE_AUDIO_IN_ERROR_NOT_OPENED;
     if (!dest || !vita_mapped(p, dest, port->len * 2)) return SCE_AUDIO_IN_ERROR_INVALID_PORT_PARAM;
-    memset(vita_ptr(p, dest), 0, port->len * 2);
+    int16_t grain[4096];
+    snx_mic_take(p->audio->mic, grain, port->len);
+    uint8_t* out = vita_ptr(p, dest);
+    for (uint32_t i = 0; i < port->len; ++i) snx_st_le16(out + i * 2, (uint16_t)grain[i]);
     uint64_t now = plat_ns(), start = port->busy_until > now ? port->busy_until : now;
     port->busy_until = start + (uint64_t)port->len * 1000000000u / port->freq;
     vita_wait(p, (VitaWait){.kind = VITA_WAIT_AUDIO, .deadline = port->busy_until});
@@ -272,6 +288,11 @@ void vita_audio_state_install(VitaProcess* p, void* staged) {
         a->input = s->input;
         for (unsigned i = 0; i < PORTS; ++i)
             if (a->ports[i].open) stream_open(a, &a->ports[i]);
+        /* the state's input port records again, from now */
+        snx_mic_free(a->mic);
+        a->mic = a->input.open ? snx_mic_open(a->input.freq, g_settings.microphone,
+                                              &g_settings.microphone_noise_reduction, mic_say)
+                               : NULL;
     }
     free(s);
 }

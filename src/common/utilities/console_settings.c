@@ -30,13 +30,14 @@
 #define NO_LANGUAGE   "it has no system language"
 #define NO_UPDATES    "a cartridge has no updates or DLCs"
 #define SWITCH_NET    "it is the Switch's online service: the console's own is in its section"
+#define NOT_OFFERED   "it is not offered, and its game plays offline as in flight mode"
 #define ONE_USER      "its games play as one user"
 #define OWN_ROW       "it has a row of its own in its section"
 #define VULKAN_13     "its renderer runs on Vulkan 1.3 only"
 #define OWN_FILE      "its driver reads it from the game's folder itself"
 /* what is not made yet */
 #define SOON          "not made yet"
-#define OFFLINE       "its network is the console's own alone, as in flight mode"
+#define NO_MIC_SAMPLES "its microphone requests are answered with no samples yet"
 #define SOON_LOG      "its game log has no levels yet"
 #define TRACY_PICTURES "it sends no frame's picture to Tracy yet"
 #define TRACY_MEMORY   "its allocations are not in Tracy yet"
@@ -64,8 +65,8 @@ const SnxConsoleSetting g_console_settings[] = {
     {.key = "state_slots"},
     {.key = "state_auto_backup"},
     {"save_layout", OTHERS(NA(SWITCH_OS))},
-    {"microphone", {[C] = LATER(SOON), [V] = LATER(SOON), [G] = NA(NO_MIC), [D] = LATER(SOON)}},
-    {"mic_noise_reduction", {[C] = LATER(SOON), [V] = LATER(SOON), [G] = NA(NO_MIC), [D] = LATER(SOON)}},
+    {"microphone", {[G] = NA(NO_MIC), [D] = LATER(NO_MIC_SAMPLES)}},
+    {"mic_noise_reduction", {[G] = NA(NO_MIC), [D] = LATER(NO_MIC_SAMPLES)}},
     /* Display */
     {"docked", OTHERS(NA(DOCK))},
     {"tv_refresh_rate", OTHERS(NA(DOCK))},
@@ -113,7 +114,7 @@ const SnxConsoleSetting g_console_settings[] = {
     {"astc_compute_queue", OTHERS(NA(SWITCH_GPU))},
     {"astc_quick_mtexels", OTHERS(NA(SWITCH_GPU))},
     {"astc_background", OTHERS(NA(SWITCH_GPU))},
-    {"vk_<extension>"},
+    {.key = "vk_<extension>"},
     /* Audio */
     {.key = "volume"},
     /* Performance */
@@ -142,8 +143,8 @@ const SnxConsoleSetting g_console_settings[] = {
     {.key = "controls_rel_center"},
     {.key = "controls_dpad_slide"},
     {.key = "controls_haptics"},
-    {"controls_<ID>_shown"},
-    {"controls_<ID>"},
+    {.key = "controls_<ID>_shown"},
+    {.key = "controls_<ID>"},
     {.key = "touch"},
     /* Controllers */
     {.key = "gamepad_swap_ab"},
@@ -185,10 +186,10 @@ const SnxConsoleSetting g_console_settings[] = {
     {.key = "hotkey_upscaler"},
     {.key = "hotkey_anti_aliasing"},
     /* Network */
-    {"network", {[V] = LATER(OFFLINE), [G] = NA(NO_NETWORK)}},
-    {"airplane_mode", {[V] = LATER(OFFLINE), [G] = NA(NO_NETWORK)}},
-    {"ldn", {[V] = LATER(SOON), [G] = NA(NO_NETWORK), [D] = LATER(SOON)}},
-    {"room", {[V] = LATER(SOON), [G] = NA(NO_NETWORK), [D] = LATER(SOON)}},
+    {"network", {[V] = NA(NOT_OFFERED), [G] = NA(NO_NETWORK)}},
+    {"airplane_mode", {[V] = NA(NOT_OFFERED), [G] = NA(NO_NETWORK)}},
+    {"ldn", {[V] = NA(NOT_OFFERED), [G] = NA(NO_NETWORK), [D] = LATER(SOON)}},
+    {"room", {[V] = NA(NOT_OFFERED), [G] = NA(NO_NETWORK), [D] = LATER(SOON)}},
     {"switch_online", OTHERS(NA(SWITCH_NET))},
     {"user_uid", OTHERS(NA(ONE_USER))},
     /* Debug */

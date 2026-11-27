@@ -597,3 +597,17 @@ SnxCtrMemResult snx_ctr_phys_read(SnxCtrMemory* m, uint32_t pa, void* output, si
 SnxCtrMemResult snx_ctr_phys_write(SnxCtrMemory* m, uint32_t pa, const void* input, size_t size) {
     return device(m, pa, (void*)input, size, true);
 }
+SnxCtrMemResult snx_ctr_write_behind(const SnxCtrAddressSpace* s, SnxCtrMemory* m, uint32_t va, const void* input,
+                                     size_t size) {
+    const uint8_t* bytes = input;
+    for (size_t done = 0; done < size;) {
+        uint32_t at = va + (uint32_t)done, pa = 0;
+        size_t run = SNX_CTR_PAGE_SIZE - at % SNX_CTR_PAGE_SIZE;
+        if (run > size - done) run = size - done;
+        SnxCtrMemResult r = snx_ctr_query(s, at, &pa, NULL);
+        if (r == SNX_CTR_MEM_OK) r = snx_ctr_phys_write(m, pa, bytes + done, run);
+        if (r != SNX_CTR_MEM_OK) return r;
+        done += run;
+    }
+    return SNX_CTR_MEM_OK;
+}

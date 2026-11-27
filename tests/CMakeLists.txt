@@ -95,6 +95,8 @@ if(SNX_TEST_SANITIZERS)
         snx_prepared
         # every console's game menu and F1's text, Tracy's client and F10's captures, RenderDoc's captures
         snx_menu snx_tracy_client snx_vk_renderdoc
+        # the microphone every console's game hears, from the host's recording device, its noise reduced
+        snx_mic
         # the shader corpus translator, which shaderc_sm86 runs
         snx-shaderc
         # GLSL ES into SPIR-V
@@ -375,7 +377,7 @@ if(TARGET snx_ctr_board)
         add_test(NAME 3ds_ir_${case} COMMAND snx-test-3ds-ir ${case})
     endforeach()
     # mic:u with no input device, as Azahar's
-    add_executable(snx-test-3ds-mic 3ds_mic.c support/3ds_guest.c)
+    add_executable(snx-test-3ds-mic 3ds_mic.c support/3ds_guest.c support/mic_fake.c)
     snx_test_target(snx-test-3ds-mic gnu23)
     target_link_libraries(snx-test-3ds-mic PRIVATE snx_ctr_process)
     add_test(NAME 3ds_mic COMMAND snx-test-3ds-mic)
@@ -2495,13 +2497,13 @@ if(TARGET OpenSSL::Crypto AND NOT SNX_TOOLS_ONLY)
     snx_hookgen(snx-test-nn-audio-renderer SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/audio_renderer.hook" A32_MARKED)
     add_test(NAME nn_audio_renderer COMMAND snx-test-nn-audio-renderer)
     # the input streams of the Ounce's SDK (nn/audio_stream.c) over a synthetic microphone, never a real one, and
-    # the noise reduction (runtime/platform/audio_denoise.c): RNNoise built in, and the system's libspeexdsp when it is
-    # there
-    add_executable(snx-test-audio-mic audio_mic.c)
+    # the recording and its noise reduction every console's shares (common/utilities/mic.c and denoise.c): RNNoise
+    # built in, and the system's libspeexdsp when it is there
+    add_executable(snx-test-audio-mic audio_mic.c support/mic_fake.c)
     snx_test_target(snx-test-audio-mic gnu23)
     snx_service_swipc(snx-test-audio-mic)
     snx_hookgen(snx-test-audio-mic SPEC "${PROJECT_SOURCE_DIR}/src/nx/nn/hooks.hook")
-    target_link_libraries(snx-test-audio-mic PRIVATE scarletnx-common snx_rnnoise)
+    target_link_libraries(snx-test-audio-mic PRIVATE scarletnx-common snx_rnnoise snx_tracy_client)
     if(NOT WIN32)
         target_link_libraries(snx-test-audio-mic PRIVATE m)
     endif()
@@ -5319,6 +5321,11 @@ if(TARGET snx_vita_program)
     snx_test_target(snx-test-vita-hle-memory gnu23)
     target_link_libraries(snx-test-vita-hle-memory PRIVATE snx_vita_program)
     add_test(NAME vita_hle_memory COMMAND snx-test-vita-hle-memory)
+    # sceAudioIn over a fake recording device (vita_audio_in.c, support/mic_fake.c)
+    add_executable(snx-test-vita-audio-in vita_audio_in.c support/mic_fake.c)
+    snx_test_target(snx-test-vita-audio-in gnu23)
+    target_link_libraries(snx-test-vita-audio-in PRIVATE snx_vita_program)
+    add_test(NAME vita_audio_in COMMAND snx-test-vita-audio-in)
     # the save states: what a load puts back of a process the test drives through the imports (vita_state.c)
     add_executable(snx-test-vita-state vita_state.c)
     snx_test_target(snx-test-vita-state gnu23)

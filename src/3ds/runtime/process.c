@@ -10,6 +10,7 @@
 #include "3ds/services/dsp.h"
 #include "3ds/services/ptm.h"
 #include "3ds/services/file.h"
+#include "3ds/services/mic.h"
 #include "3ds/services/uds.h"
 #include "3ds/services/soc.h"
 #include "3ds/services/ac.h"
@@ -107,6 +108,7 @@ void snx_ctr_process_free(SnxCtrProcess* p) {
     snx_ctr_soc_close(p);
     snx_ctr_frd_close(p);
     snx_ctr_ac_close(p);
+    snx_ctr_mic_close(p);
     if (p->gsp.pica) snx_ctr_pica_free(p->gsp.pica);
     free(p->gsp.pica);
     snx_ctr_dsp_close(p);
@@ -373,6 +375,13 @@ uint32_t snx_ctr_shared_pages(SnxCtrProcess* p, uint32_t size) {
     uint32_t at = p->physical_shared;
     p->physical_shared += size;
     return at;
+}
+uint32_t snx_ctr_shared_va(const SnxCtrProcess* p, uint32_t object) {
+    uint32_t address = p->objects[object].data.shared.address;
+    if (address) return address;
+    for (unsigned i = 0; i < sizeof p->shared_maps / sizeof *p->shared_maps; ++i)
+        if (p->shared_maps[i].object == object && p->shared_maps[i].va) return p->shared_maps[i].va;
+    return 0;
 }
 SnxArmCPU* snx_ctr_process_cpu(SnxCtrProcess* p) { return p ? &p->cpu.state.cpu : NULL; }
 SnxCtrAddressSpace* snx_ctr_process_space(SnxCtrProcess* p) { return p ? p->space : NULL; }

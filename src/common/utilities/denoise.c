@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The microphone's noise reduction (audio_denoise.h).
+/* The microphone's noise reduction (denoise.h).
    The neural method is RNNoise. It takes frames of 480 samples at 48 kHz as floats on the 16-bit scale, and gives each
    frame back a frame later, as it overlaps one frame's analysis with the next (so does the spectral method). It is the
    copy built in, never a system librnnoise: another version's network gives other gains and another delay.
@@ -9,15 +9,15 @@
    traffic) is learnt and lowered while a voice, which comes and goes, passes. Only its noise suppression is switched
    on. Its gain control, voice detection and dereverberation are off in a new state, and are left so (asked to set its
    voice detection, even off, the library prints a warning) */
-#include "nx/runtime/platform/audio_denoise.h"
-#include "nx/runtime/platform/plat.h"
-#include "nx/runtime/platform/tracy.h"
+#include "common/utilities/denoise.h"
 #include "common/platform/dl.h"
-#include "nx/runtime/platform/log.h"
+#include "common/platform/time.h"
+#include "common/utilities/tracy.h"
 #include <math.h>
 #include <rnnoise.h>
-#include <stdlib.h>
 #include <stdatomic.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 #define RNNOISE_FRAME (SNX_DENOISE_NEURAL_RATE / 100)
 
@@ -49,10 +49,13 @@ struct SnxDenoise {
 };
 
 /* 1 when the library loaded */
-static int speex_load(void) {
+static int speex_load(SnxMicSay say) {
+    char line[512];
     void* lib = plat_dl_open(SNX_DENOISE_LIBRARY);
     if (!lib) {
-        LOG("audio: %s did not load (%s): no spectral noise reduction\n", SNX_DENOISE_LIBRARY, plat_dl_error());
+        snprintf(line, sizeof line, "audio: %s did not load (%s): no spectral noise reduction\n", SNX_DENOISE_LIBRARY,
+                 plat_dl_error());
+        say(false, line);
         return 0;
     }
     g_speex.init = (SpeexInit)plat_dl_sym(lib, "speex_preprocess_state_init");
@@ -60,23 +63,25 @@ static int speex_load(void) {
     g_speex.run = (SpeexRun)plat_dl_sym(lib, "speex_preprocess_run");
     g_speex.destroy = (SpeexDestroy)plat_dl_sym(lib, "speex_preprocess_state_destroy");
     if (!g_speex.init || !g_speex.ctl || !g_speex.run || !g_speex.destroy) {
-        WARN("audio: %s has no preprocessor: no spectral noise reduction\n", SNX_DENOISE_LIBRARY);
+        snprintf(line, sizeof line, "audio: %s has no preprocessor: no spectral noise reduction\n",
+                 SNX_DENOISE_LIBRARY);
+        say(true, line);
         plat_dl_close(lib);
         return 0;
     }
     return 1;
 }
 /* 1 when a library is loaded: the first caller loads it, any other waits for that */
-static int ready(_Atomic int* state, int (*load)(void)) {
+static int ready(_Atomic int* state, int (*load)(SnxMicSay), SnxMicSay say) {
     int now = atomic_load_explicit(state, memory_order_acquire), expected = 0;
     if (now == 0 &&
         atomic_compare_exchange_strong_explicit(state, &expected, 1, memory_order_acq_rel, memory_order_acquire))
-        atomic_store_explicit(state, load() ? 2 : 3, memory_order_release);
+        atomic_store_explicit(state, load(say) ? 2 : 3, memory_order_release);
     while ((now = atomic_load_explicit(state, memory_order_acquire)) < 2) {}
     return now == 2;
 }
 
-SnxDenoise* snx_denoise_new(uint32_t rate, uint32_t block, int method) {
+SnxDenoise* snx_denoise_new(uint32_t rate, uint32_t block, int method, SnxMicSay say) {
     if (method == SNX_DENOISE_OFF || !rate || !block || block > rate) return NULL;
     SnxDenoise* d = calloc(1, sizeof *d);
     if (!d) return NULL;
@@ -88,7 +93,7 @@ SnxDenoise* snx_denoise_new(uint32_t rate, uint32_t block, int method) {
         SNX_MEM_ALLOC_D(d->state, 0, "audio dsp");
         return d;
     }
-    if (ready(&g_speex.state, speex_load) && (d->state = g_speex.init((int)block, (int)rate)) != NULL) {
+    if (ready(&g_speex.state, speex_load, say) && (d->state = g_speex.init((int)block, (int)rate)) != NULL) {
         int on = 1, suppress = SNX_DENOISE_SUPPRESS_DB;
         g_speex.ctl(d->state, SPEEX_SET_DENOISE, &on);
         g_speex.ctl(d->state, SPEEX_SET_NOISE_SUPPRESS, &suppress);
