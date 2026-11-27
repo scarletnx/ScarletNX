@@ -24,10 +24,10 @@ bool hle_is_system_library(const char* name) {
     return false;
 }
 
-static const HleSymbol* const tables[] = {hle_libc,   hle_posix,  hle_thread,       hle_sync,          hle_dl,
-                                          hle_sles,   hle_media,  hle_android,      hle_egl,           hle_gles,
-                                          hle_gles2,  hle_gles2_object, hle_gles2_program, hle_gles2_draw, hle_zlib,
-                                          hle_signal};
+static const HleSymbol* const tables[] = {hle_libc, hle_libm,  hle_posix,        hle_thread,        hle_sync,
+                                          hle_dl,   hle_sles,  hle_media,        hle_android,       hle_egl,
+                                          hle_gles, hle_gles2, hle_gles2_object, hle_gles2_program, hle_gles2_draw,
+                                          hle_zlib, hle_signal};
 
 /* a name that GLES 1.1 (hle_gles) and GLES 2 (gles2*.c) both have: one export, which calls the current context's */
 typedef struct {

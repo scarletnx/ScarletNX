@@ -30,6 +30,7 @@ uint64_t hle_missing(const char* name);
 
 /* the tables of each HLE library, an empty name ending each (hle_libc.c and the others) */
 extern const HleSymbol hle_libc[];
+extern const HleSymbol hle_libm[];
 extern const HleSymbol hle_posix[];
 extern const HleSymbol hle_thread[];
 extern const HleSymbol hle_sync[]; /* hle_sync.c: bionic's mutexes, conds, rwlocks, barriers, semaphores */
