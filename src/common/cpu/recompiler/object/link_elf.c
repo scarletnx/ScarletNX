@@ -322,6 +322,12 @@ static int sink_put(const Sink* sink, const void* data, uint64_t size, uint64_t 
     return 0;
 }
 
+/* The module's byte at offset, from the GOT on: in the module, or for a file in the part of it that is kept apart
+   (mid, which starts at got_off) */
+static unsigned char* got_at(const SnxLinkBuffer* out, const SnxLinkBuffer* mid, uint64_t got_off, uint64_t offset) {
+    return mid->data ? mid->data + (offset - got_off) : out->data + offset;
+}
+
 /* object i's named functions and objects into the module's .symtab, as local symbols */
 static void object_symbols(Link* l, size_t i, SnxLinkBuffer* symtab, SnxLinkBuffer* strtab) {
     const SnxElfObject* o = &l->objs[i];
@@ -354,7 +360,9 @@ static void object_symbols(Link* l, size_t i, SnxLinkBuffer* symtab, SnxLinkBuff
 static int link_elf(const SnxLinkInput* inputs, size_t count, const char* const* exports, size_t export_count,
                     const char* soname, SnxLinkOutput* output, const Sink* sink, char* error, size_t error_size) {
     Link l = {0};
-    SnxLinkBuffer trail = {0};
+    /* a file's parts that are made in memory: out its head, up to the read-only data; mid the GOT and .dynamic; trail
+       what follows the data. The objects' sections, between them, are never here */
+    SnxLinkBuffer mid = {0}, trail = {0};
     /* the object being relocated: where each of its sections' bytes are, which of them are copies made here, and
        its island's */
     unsigned char **base = NULL, *island = NULL;
@@ -420,15 +428,13 @@ static int link_elf(const SnxLinkInput* inputs, size_t count, const char* const*
             if (l.objs[i].kind[j] >= 0)
                 l.objs[i].address[j] = l.kind_address[l.objs[i].kind[j]] + l.objs[i].position[j];
     if (sink) {
-        /* the head and the GOT's part alone are touched: the sections between them go to the file from where they
-           are, and pages never written cost no memory */
-        out.data = (unsigned char*)calloc(1, end_data ? end_data : 1);
-        kept = (Elf64_Sym**)calloc(count, sizeof *kept);
-        if (!out.data || !kept) {
+        kept = (Elf64_Sym**)calloc(count ? count : 1, sizeof *kept);
+        if (!kept) {
             snprintf(error, error_size, "out of memory");
             goto done;
         }
-        out.size = out.capacity = end_data;
+        snx_link_reserve(&out, rodata_off);
+        snx_link_reserve(&mid, end_data - got_off);
     } else
         snx_link_reserve(&out, end_data);
     /* section contents */
@@ -449,10 +455,10 @@ static int link_elf(const SnxLinkInput* inputs, size_t count, const char* const*
             sscanf(l.got.keys[i], "%lu:%lu", &object, &index);
             uint64_t value = symbol_address(&l, object, index, &absolute);
             if (l.machine == EM_MIPS) {
-                memcpy(out.data + slot, &value, 8);
+                memcpy(got_at(&out, &mid, got_off, slot), &value, 8);
                 continue;
             }
-            snx_st_le64(out.data + slot, value);
+            snx_st_le64(got_at(&out, &mid, got_off, slot), value);
             r.r_offset = slot;
             r.r_info = ELF64_R_INFO((Elf64_Xword)0, l.relative);
             r.r_addend = (int64_t)value;
@@ -460,7 +466,7 @@ static int link_elf(const SnxLinkInput* inputs, size_t count, const char* const*
         }
     if (l.machine == EM_MIPS) {
         uint64_t gnu = SNX_MIPS_GNU_GOT1;
-        memcpy(out.data + got_off + 8, &gnu, 8);
+        memcpy(got_at(&out, &mid, got_off, got_off + 8), &gnu, 8);
     }
     /* relocations, through elf_object.c as the JIT loader writes them; the module's own parts are the RELATIVE
        entries for absolute addresses, the veneers of branches out of reach and PowerPC64's TOC */
@@ -546,7 +552,7 @@ static int link_elf(const SnxLinkInput* inputs, size_t count, const char* const*
                     if (!snx_link_find(&l.pages, key, &found)) {
                         found = SNX_MIPS_GOT_RESERVED + l.page_count++;
                         snx_link_insert(&l.pages, key, found);
-                        memcpy(out.data + got_off + 8 * (uint64_t)found, &page, 8);
+                        memcpy(got_at(&out, &mid, got_off, got_off + 8 * (uint64_t)found), &page, 8);
                     }
                     slot = got_off + 8 * (uint64_t)found;
                 }
@@ -693,7 +699,7 @@ static int link_elf(const SnxLinkInput* inputs, size_t count, const char* const*
     }
     while (ndyn < sizeof(dyn) / sizeof(dyn[0])) DYN(DT_NULL, 0);
 #undef DYN
-    memcpy(out.data + dynamic_off, dyn, sizeof(dyn));
+    memcpy(got_at(&out, &mid, got_off, dynamic_off), dyn, sizeof(dyn));
     /* program headers */
     memset(ph, 0, sizeof(ph));
     ph[0].p_type = PT_LOAD;
@@ -809,7 +815,7 @@ static int link_elf(const SnxLinkInput* inputs, size_t count, const char* const*
     if (sink) {
         /* what the objects' sections lie between: the head up to the read-only data, the GOT and .dynamic, the tail */
         if (sink_put(sink, out.data, rodata_off, 0, error, error_size) ||
-            sink_put(sink, out.data + got_off, end_data - got_off, got_off, error, error_size) ||
+            sink_put(sink, mid.data, end_data - got_off, got_off, error, error_size) ||
             sink_put(sink, trail.data, trail.size, tail_at, error, error_size))
             goto done;
         output->size = tail_at + trail.size;
@@ -828,6 +834,7 @@ done:
     free(base), free(copied), free(island);
     for (size_t i = 0; kept && i < count; ++i) free(kept[i]);
     free(kept);
+    free(mid.data);
     free(trail.data);
     for (size_t i = 0; l.objs && i < count; ++i) snx_elf_free(&l.objs[i]);
     free(l.objs);
