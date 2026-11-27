@@ -84,6 +84,8 @@ if(SNX_TEST_SANITIZERS)
         snx_window_icon snx-test-window-icon snx-test-window-fullscreen snx_pad_sdl snx_gui_pad
         # the notice of the 3DS's, the Vita's and the GBA's windows
         snx_notice
+        # what stops a game, the same for every console: its kinds and text, its panel, the panel's SDL window
+        snx_error snx_error_sdl snx_error_panel
         # the on-screen controls, their consoles' tables and their side of an SDL window, and the settings each
         # console takes
         snx_vpad snx_vpad_consoles snx_vpad_sdl snx_console_settings
