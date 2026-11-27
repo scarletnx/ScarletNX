@@ -4,7 +4,7 @@
    host's native back end (recompiler/mach/native.h), and the descriptor of module_abi.h (module_x64.c), linked with the
    runtime library by recompiler/object/link.c. An instruction the back end has no code for is undefined where it runs,
    its function made */
-#include "nx/loader/module_llvm.h"
+#include "nx/loader/module_a64.h"
 #include "common/cpu/recompiler/jit/jit_cache.h"
 #include "common/cpu/aarch64/a64_decoder.h"
 #include "common/cpu/recompiler/codegen.h"
@@ -43,7 +43,7 @@ typedef struct {
 
 typedef struct {
     SnxCodegen* codegen;
-    const SnxLlvmBuild* build;
+    const SnxModuleBuild* build;
     /* the module's bound branches (SnxCodegenOptions.bound) by address, and the functions of other modules among
        their targets, each once, ascending: its imports (snx_imports) */
     const SnxBoundBranch* bound;
@@ -300,7 +300,7 @@ static const char* base_name(const char* path) {
     return name;
 }
 
-int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, const SnxLlvmBuild* build) {
+int snx_build_module_a64(SnxProgram* loaded, const SnxCodegenOptions* options, const SnxModuleBuild* build) {
     SnxCodegen codegen;
     Queue q;
     SnxJitCache* cache = NULL;

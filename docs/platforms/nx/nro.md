@@ -234,7 +234,7 @@ the table from an image inside it.
 It covers PID placeholders, initialization/handle validation, malformed ranges/headers/hash lists, hash snapshots,
 unauthorized/duplicate images, commit failure rollback, permissions, preserved bytes/BSS, no premature
 relocations, unload-by-base, copy-back, reloading, session cleanup, simultaneous loads, and both capacity limits.
-Running code the module lacks (an NRO's, through `RtAPI.miss`) is `llvm_module`'s.
+Running code the module lacks (an NRO's, through `RtAPI.miss`) is `native_module`'s.
 SHA-256 has independent standard test vectors. Platform backing and IPC transport are test doubles.
 
 Validation in the coding container: these three CTest targets passed using Clang 22. Service/memory tests passed

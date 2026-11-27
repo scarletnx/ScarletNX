@@ -13,9 +13,9 @@
    flags, which they do only in round to nearest, with no flush to zero and no denormals-are-zero, and with every
    exception masked (a trap would leave the generated function where it cannot continue). A new host thread starts
    in that state, but generated code shares its thread with whatever the runtime calls into, so every generated
-   function calls this on entry, and this writes the control word only when it has drifted. The fast paths exist
-   on x86-64, AArch64, PowerPC64, RISC-V and LoongArch (ir_fp.h's gates); MIPS64 and s390x keep the helpers, so they
-   have nothing to normalize. */
+   function calls this on entry, and this writes the control word only when it has drifted. It does so on x86-64,
+   AArch64, PowerPC64, RISC-V and LoongArch (fp_env.h); MIPS64 and s390x keep the helpers, so they have nothing to
+   normalize. */
 #include "helpers/fp_env.h"
 void snx_fp_env(void) { snx_host_fp_env(); }
 

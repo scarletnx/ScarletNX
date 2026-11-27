@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The descriptor a game module hands the runtime: the modules it was recompiled from, where its code is and how
-   its main thread starts. The recompiler writes it (module_llvm.c, module_arm.c) and the runtime
+   its main thread starts. The recompiler writes it (module_a64.c, module_arm.c) and the runtime
    reads it (runtime/main.c, runtime/loader.c, runtime/arm.c), so its layout is part of the ABI: a change to it needs
    a new SNX_ABI (cpu.h), or SNX_ARM_MODULE_ABI for the 32-bit one */
 #ifndef SNX_NX_MODULE_ABI_H

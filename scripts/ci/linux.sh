@@ -248,16 +248,16 @@ unicorn_tests() {
 qemu_reference_build() {
   cmake --preset default -DBUILD_TESTING=ON -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
   cmake --build --preset default --parallel "$(getconf _NPROCESSORS_ONLN)" \
-    --target snx-test-llvm-qemu-differential-native snx-test-sail-x64 snx_qemu_ref_runner
+    --target snx-test-native-qemu-differential snx-test-sail-x64 snx_qemu_ref_runner
   ccache --show-stats
 }
 
 # the differential's QEMU side, and QEMU's ends of every state of sail_x64's words (with no sequences: what Windows
 # holds its words to)
 qemu_reference_record() {
-  build/default/tests/snx-test-llvm-qemu-differential-native qemu-aarch64 build/default/qemu_ref_runner \
-    build/llvm_qemu_reference_dir tests/native_qemu_expected.txt --quiet \
-    --record build/llvm_qemu_reference.bin
+  build/default/tests/snx-test-native-qemu-differential qemu-aarch64 build/default/qemu_ref_runner \
+    build/native_qemu_reference_dir tests/native_qemu_expected.txt --quiet \
+    --record build/native_qemu_reference.bin
   build/default/tests/snx-test-sail-x64 --qemu qemu-aarch64 build/default/qemu_ref_runner build/sail_qemu_reference_dir \
     --record build/sail_qemu_reference.bin --sequences 0
 }

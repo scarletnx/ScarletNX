@@ -510,8 +510,8 @@ int vita_run(VitaProcess* p, double seconds) {
                 result = 1;
                 goto done;
             }
-            /* a hosted block leaves its entry state to this loop (llvm.h): r15 and CPSR.T chose it, exit is clear
-               after an SVC, and no IT block may be under way, which an SVC inside one leaves */
+            /* a hosted block leaves its entry state to this loop (arm/codegen.h): r15 and CPSR.T chose it, exit is
+               clear after an SVC, and no IT block may be under way, which an SVC inside one leaves */
             uint32_t itstate = thumb ? snx_arm_itstate(t->cpu.cpsr) : 0;
             if (itstate) {
                 t->cpu.exit = SNX_ARM_IT_ENTRY;

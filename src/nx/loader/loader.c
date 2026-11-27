@@ -1270,7 +1270,7 @@ static int slot_order(const void* a, const void* b) {
     return memcmp(((const SnxNroSlot*)a)->hash, ((const SnxNroSlot*)b)->hash, 32);
 }
 int snx_nro_slots_place(SnxNroSlot* slots, size_t* count, SnxU64 after, SnxU64* end, char* error, size_t error_size) {
-    /* a module's entries are 32-bit offsets from SNX_CODE_BASE (module_llvm.c's ENT_OFF) */
+    /* a module's entries are 32-bit offsets from SNX_CODE_BASE (module_a64.c's ENT_OFF) */
     const SnxU64 limit = SNX_CODE_BASE + 0x100000000ull;
     SnxU64 cursor = page_up(after);
     size_t i, kept = 0;

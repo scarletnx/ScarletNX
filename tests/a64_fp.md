@@ -53,8 +53,8 @@ are RES0; later optional alternate-FP behavior is not part of this target.
 ## Against QEMU
 
 The Unicorn harness that compared these families with the C templates is retired with them. The native back end's
-code runs against `qemu-aarch64` instead (`native_qemu_differential`, `tests/llvm_qemu_differential.c`): every row of the
-generated decoder, FP edge values, FPCR's RMode, FZ and DN varied, all 128 destination bits, FPSR and NZCV.
+code runs against `qemu-aarch64` instead (`native_qemu_differential`, `tests/native_qemu_differential.c`): every row of
+the generated decoder, FP edge values, FPCR's RMode, FZ and DN varied, all 128 destination bits, FPSR and NZCV.
 
 These tests are regressions, not architectural certification, hardware
 measurements, full-runtime validation or gameplay/performance benchmarks.

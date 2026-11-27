@@ -8,7 +8,7 @@
 #include "common/utilities/endian.h"
 #include "nx/loader/module.h"
 #include "nx/loader/module_abi.h"
-#include "nx/loader/module_llvm.h"
+#include "nx/loader/module_a64.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -73,7 +73,7 @@ static int build(const char* output) {
     SnxModuleImage image = {0};
     SnxProgram loaded = {0};
     SnxCodegenOptions options = {0};
-    SnxLlvmBuild llvm = {0};
+    SnxModuleBuild job = {0};
     for (unsigned i = 0; i < BLOCKS; ++i) {
         snx_st_le32(text + 8 * i, 0xE2800001u);     /* add r0, r0, #1 */
         snx_st_le32(text + 8 * i + 4, 0xE12FFF1Eu); /* bx lr */
@@ -100,13 +100,13 @@ static int build(const char* output) {
     options.chunk_instrs = 1;
     options.hints = g_nx_module_native_arm.hints;
     options.hint_count = BLOCKS + 1;
-    llvm.output = output;
-    llvm.opt = '2';
-    llvm.jobs = 1;
-    llvm.quiet = 1;
+    job.output = output;
+    job.opt = '2';
+    job.jobs = 1;
+    job.quiet = 1;
     g_nx_module_native_arm.said[0] = 0;
     snx_error_sink(sink);
-    return snx_build_module_arm(&loaded, &options, &llvm);
+    return snx_build_module_arm(&loaded, &options, &job);
 }
 
 int snx_test_arm_native(const char* folder) {

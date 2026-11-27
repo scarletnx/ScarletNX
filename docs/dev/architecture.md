@@ -119,21 +119,21 @@ the game's image read from that image.
   architecture's Sail (`src/common/cpu/aarch64/sail/`, `src/common/cpu/arm/sail/`). An instruction a back end has no
   code for raises an undefined instruction where it runs, and its function is made all the same; a function it still
   cannot make (one longer than its branches reach) is said. The JIT, the AArch32 executor, the recompiler's library
-  (`library.c`) and the Switch's AOT modules (`src/nx/loader/module_llvm.c`, `module_arm.c`) all take their code from
+  (`library.c`) and the Switch's AOT modules (`src/nx/loader/module_a64.c`, `module_arm.c`) all take their code from
   it. The objects are linked by the recompiler itself (`link_elf.c`, `link_coff.c`, `link_macho.c` in
   `src/common/cpu/recompiler/object/`) with the runtime library, the helpers compiled when the recompiler is built
   (`rtlib_object.h`), into a module with no imports, for the host it runs on: x86-64 (ELF or COFF), AArch64 (ELF, COFF
   on Windows, or on macOS and iOS a Mach-O dylib with an ad hoc signature, each with a veneer for a branch past
   128 MiB), PowerPC64 (ELF, ELFv2, with a stub for a branch past 32 MiB: [PowerPC64](../hosts/ppc64.md)), RISC-V and
   LoongArch (ELF: [RISC-V and LoongArch](../hosts/riscv-loongarch.md)), MIPS64 (ELF with the ABI's GOT:
-  [MIPS64](../hosts/mips64.md)) or s390x (ELF: [s390x](../hosts/s390x.md)). `tests/llvm_qemu_differential.c` runs the
+  [MIPS64](../hosts/mips64.md)) or s390x (ELF: [s390x](../hosts/s390x.md)). `tests/native_qemu_differential.c` runs the
   host's native back end on words of every row of the generated decoder (`tests/native_steps.c`), against
   `qemu-aarch64 -cpu max` (`tests/qemu_ref/`) on random states, with the groups known to differ in
   `tests/native_qemu_expected.txt` (a new group, or a listed one that no longer differs, fails it; `--sweep` runs more
   of each); the hosts with no QEMU beside the test take a reference that another host recorded
   ([the implementer guide](../layers/cpu/guide.md#rules-that-apply-to-this-work)). `tests/a64_ported.c` runs rEden's
-  cases through the steps against their expected values and QEMU, `tests/llvm_module.c` a whole program against the
-  end state QEMU gives it, `tests/llvm_bench.c` times it on assembly kernels.
+  cases through the steps against their expected values and QEMU, `tests/native_module.c` a whole program against the
+  end state QEMU gives it, `tests/native_bench.c` times it on assembly kernels.
 - The generated code polls `CPU.poll` on backward branches inside a function and at the `D_` dispatch, as `codegen.c`'s C
   does, so a loop without SVCs gives its core to a waiting thread of higher priority. A backward branch's poll then
   leaves the function: it calls the function itself at the branch's target, which its entry and `D_` send to the

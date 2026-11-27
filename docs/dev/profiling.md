@@ -462,7 +462,7 @@ A profile in which `[unknown]` is large is usually JIT code: check its share bef
 
 A change to a hot path is easier to measure outside the game, then confirmed in it:
 
-- `tests/llvm_bench.c` times the recompiler's code on assembly kernels.
+- `tests/native_bench.c` times the recompiler's code on assembly kernels.
 - `tools/cpu_plan.py` and `tools/tune_cpu_sequences.py` compare candidate instruction sequences for an emitter after
   exactness checks, with quiet serial timings ([CPU guide](../layers/cpu/guide.md); `llvm-mca` for a static estimate).
 - `tools/bench_gpu_hotpaths.py` times the renderer's CPU-side preparation on synthetic workloads, and

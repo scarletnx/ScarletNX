@@ -1261,13 +1261,13 @@ target_link_libraries(snx-test-nvn-dlss-sizes PRIVATE m)
 add_test(NAME nvn_dlss_sizes COMMAND snx-test-nvn-dlss-sizes)
 # the vector FP instructions with fast paths through the native steps against the soft-float helpers, lane by lane,
 # with lanes the host's arithmetic can and can't take in one vector
-snx_native_steps(llvm_vfp_lanes native_vfp_lanes)
-snx_native_steps(llvm_vfp_batch native_vfp_batch)
+snx_native_steps(native_vfp_lanes native_vfp_lanes)
+snx_native_steps(native_vfp_batch native_vfp_batch)
 # exact vector comparisons, including NaN and flushed-denormal lanes
-snx_native_steps(llvm_vfp_compare native_vfp_compare)
+snx_native_steps(native_vfp_compare native_vfp_compare)
 
 # Exact vector reciprocal-square-root estimates, through real O0/O2 AOT and JIT steps.
-snx_native_steps(llvm_rsqrte native_rsqrte)
+snx_native_steps(native_rsqrte native_rsqrte)
 
 # the helpers' host fast paths (helpers/fp_host.c) against the soft-float they front, bits and FPSR
 add_executable(snx-test-fp-host fp_host_test.c "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
@@ -1277,27 +1277,27 @@ if(NOT WIN32)
     target_link_libraries(snx-test-fp-host PRIVATE m)
 endif()
 add_test(NAME fp_host_witnesses COMMAND snx-test-fp-host)
-snx_native_steps(llvm_recpe native_recpe)
+snx_native_steps(native_recpe native_recpe)
 
-snx_native_steps(llvm_recpx native_recpx)
+snx_native_steps(native_recpx native_recpx)
 
-snx_native_steps(llvm_simd_shift native_simd_shift)
+snx_native_steps(native_simd_shift native_simd_shift)
 
-snx_native_steps(llvm_vfp_minmax native_vfp_minmax)
+snx_native_steps(native_vfp_minmax native_vfp_minmax)
 
-snx_native_steps(llvm_round native_round)
+snx_native_steps(native_round native_round)
 
-snx_native_steps(llvm_estimates native_estimates)
+snx_native_steps(native_estimates native_estimates)
 
-snx_native_steps(llvm_unsigned_estimates native_unsigned_estimates)
+snx_native_steps(native_unsigned_estimates native_unsigned_estimates)
 
-snx_native_steps(llvm_half native_half)
+snx_native_steps(native_half native_half)
 
-snx_native_steps(llvm_fma_residual native_fma_residual)
+snx_native_steps(native_fma_residual native_fma_residual)
 
-snx_native_steps(llvm_vfp_residual native_vfp_residual)
+snx_native_steps(native_vfp_residual native_vfp_residual)
 
-snx_native_steps(llvm_fp_env native_fp_env)
+snx_native_steps(native_fp_env native_fp_env)
 
 add_executable(snx-test-a64-fp-arithmetic a64_fp_arithmetic_test.c
     "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
@@ -3266,7 +3266,7 @@ target_link_libraries(snx-test-runtime-nro PRIVATE snx_lz4 scarletnx-common)
 add_test(NAME runtime_nro COMMAND snx-test-runtime-nro)
 
 if(NOT WIN32)
-    # a guest's call into a loaded NRO's code that the module lacks, through RtAPI.miss, is llvm_module's
+    # a guest's call into a loaded NRO's code that the module lacks, through RtAPI.miss, is native_module's
     add_executable(snx-test-ldr-service ldr_service.c
         "${PROJECT_SOURCE_DIR}/src/nx/hle/services/ldr.c" "${PROJECT_SOURCE_DIR}/src/nx/memory/mem.c"
         "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
@@ -3601,13 +3601,13 @@ option(SNX_TEST_QEMU_SWEEP "Run the whole-encoding QEMU differential sweep (slow
 # The groups known to differ are in native_qemu_expected.txt. Its forms are the host's (linked as a module), the JIT's
 # loader's and the host's without its optional features, which no RISC machine has
 set(SNX_QEMU_REFERENCE "" CACHE FILEPATH "A QEMU reference another host recorded, for a host without qemu-aarch64")
-add_executable(snx-test-llvm-qemu-differential-native llvm_qemu_differential.c llvm_qemu_words.c native_steps.c
+add_executable(snx-test-native-qemu-differential native_qemu_differential.c native_qemu_words.c native_steps.c
     qemu_ref/qemu_ref.c)
-snx_test_target(snx-test-llvm-qemu-differential-native gnu23)
-target_compile_definitions(snx-test-llvm-qemu-differential-native PRIVATE SNX_TEST_NATIVE_STEPS)
-target_include_directories(snx-test-llvm-qemu-differential-native PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(snx-test-llvm-qemu-differential-native PRIVATE snx_driver ${CMAKE_DL_LIBS})
-snx_decodetree_a64(snx-test-llvm-qemu-differential-native)
+snx_test_target(snx-test-native-qemu-differential gnu23)
+target_compile_definitions(snx-test-native-qemu-differential PRIVATE SNX_TEST_NATIVE_STEPS)
+target_include_directories(snx-test-native-qemu-differential PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(snx-test-native-qemu-differential PRIVATE snx_driver ${CMAKE_DL_LIBS})
+snx_decodetree_a64(snx-test-native-qemu-differential)
 set(snx_nqd_expected "${CMAKE_CURRENT_SOURCE_DIR}/native_qemu_expected.txt")
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64|aarch64|arm64|ARM64)$")
     set(snx_nqd_modes _jit _portable)
@@ -3624,21 +3624,21 @@ foreach(mode IN ITEMS "" ${snx_nqd_modes})
     set(name native_qemu_differential${mode})
     set(folder "${CMAKE_CURRENT_BINARY_DIR}/native_qemu${mode}")
     if(SNX_QEMU_REF)
-        add_test(NAME ${name} COMMAND snx-test-llvm-qemu-differential-native "${SNX_QEMU_AARCH64}"
+        add_test(NAME ${name} COMMAND snx-test-native-qemu-differential "${SNX_QEMU_AARCH64}"
                  "${SNX_QEMU_REF_RUNNER}" "${folder}" "${snx_nqd_expected}" --quiet ${args})
     elseif(SNX_QEMU_REFERENCE)
-        add_test(NAME ${name} COMMAND snx-test-llvm-qemu-differential-native "${folder}" "${snx_nqd_expected}"
+        add_test(NAME ${name} COMMAND snx-test-native-qemu-differential "${folder}" "${snx_nqd_expected}"
                  --reference-if-there "${SNX_QEMU_REFERENCE}" --quiet ${args})
     else()
-        add_test(NAME ${name} COMMAND snx-test-llvm-qemu-differential-native --skip
+        add_test(NAME ${name} COMMAND snx-test-native-qemu-differential --skip
                  "${SNX_QEMU_REF_MISSING}, and SNX_QEMU_REFERENCE names no recorded one")
     endif()
     set_tests_properties(${name} PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 600)
 endforeach()
 if(SNX_QEMU_REF)
-    add_dependencies(snx-test-llvm-qemu-differential-native snx_qemu_ref_runner)
+    add_dependencies(snx-test-native-qemu-differential snx_qemu_ref_runner)
     if(SNX_TEST_QEMU_SWEEP)
-        add_test(NAME native_qemu_differential_sweep COMMAND snx-test-llvm-qemu-differential-native "${SNX_QEMU_AARCH64}"
+        add_test(NAME native_qemu_differential_sweep COMMAND snx-test-native-qemu-differential "${SNX_QEMU_AARCH64}"
                  "${SNX_QEMU_REF_RUNNER}" "${CMAKE_CURRENT_BINARY_DIR}/native_qemu_sweep" "${snx_nqd_expected}"
                  --quiet --sweep)
         set_tests_properties(native_qemu_differential_sweep PROPERTIES TIMEOUT 3600 COST 100 SKIP_RETURN_CODE 77)
@@ -3676,7 +3676,7 @@ if(NOT WIN32)
             list(GET parts 1 uc)
             list(GET parts 2 features)
             string(REGEX REPLACE "be$" "" gen "${m}")
-            add_executable(snx-test-sail-${m} sail_mach.c sail_mach_emit.c sail_qemu.c llvm_qemu_words.c
+            add_executable(snx-test-sail-${m} sail_mach.c sail_mach_emit.c sail_qemu.c native_qemu_words.c
                            qemu_ref/qemu_ref.c support/frozen.c support/host_unicorn.c support/la64_interp.c
                            "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
                            "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
@@ -3724,7 +3724,7 @@ if(SNX_X64 AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(snx_host_win64 ON)
 endif()
 if(SNX_X64)
-    add_executable(snx-test-sail-x64 sail_x64.c sail_x64_emit.c sail_qemu.c llvm_qemu_words.c qemu_ref/qemu_ref.c
+    add_executable(snx-test-sail-x64 sail_x64.c sail_x64_emit.c sail_qemu.c native_qemu_words.c qemu_ref/qemu_ref.c
                    support/frozen.c
                    "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
                    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
@@ -3766,7 +3766,7 @@ if(SNX_X64)
     # its code for Windows (the calling convention), run by this host's processor as Windows' C would call it
     # (support/host_win64.c): the same words against LLVM, as the other machines' under Unicorn
     if(snx_host_win64)
-        add_executable(snx-test-sail-win64 sail_mach.c sail_mach_emit.c sail_qemu.c llvm_qemu_words.c
+        add_executable(snx-test-sail-win64 sail_mach.c sail_mach_emit.c sail_qemu.c native_qemu_words.c
                        qemu_ref/qemu_ref.c support/frozen.c support/host_win64.c
                        "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
                        "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
@@ -3838,7 +3838,7 @@ if(SNX_X64)
     endif()
 endif()
 if(NOT WIN32)
-    snx_native_steps(llvm_block_fuzz NONE)
+    snx_native_steps(native_block_fuzz NONE)
     if(SNX_QEMU_REF)
         foreach(mode default jit portable mutant exclusive_mutant)
             set(args)
@@ -3851,12 +3851,14 @@ if(NOT WIN32)
             elseif(mode STREQUAL exclusive_mutant)
                 list(APPEND args --self-test-exclusive)
             endif()
-            add_test(NAME native_block_fuzz_${mode} COMMAND snx-test-native-steps llvm_block_fuzz "${SNX_QEMU_AARCH64}"
-                "${SNX_QEMU_REF_RUNNER}" "${CMAKE_CURRENT_BINARY_DIR}/native_block_fuzz_${mode}" ${args})
+            add_test(NAME native_block_fuzz_${mode} COMMAND snx-test-native-steps native_block_fuzz
+                "${SNX_QEMU_AARCH64}" "${SNX_QEMU_REF_RUNNER}" "${CMAKE_CURRENT_BINARY_DIR}/native_block_fuzz_${mode}"
+                ${args})
             set_tests_properties(native_block_fuzz_${mode} PROPERTIES TIMEOUT 180 SKIP_RETURN_CODE 77)
         endforeach()
     else()
-        add_test(NAME native_block_fuzz COMMAND snx-test-native-steps llvm_block_fuzz --skip "${SNX_QEMU_REF_MISSING}")
+        add_test(NAME native_block_fuzz COMMAND snx-test-native-steps native_block_fuzz
+                 --skip "${SNX_QEMU_REF_MISSING}")
         set_tests_properties(native_block_fuzz PROPERTIES SKIP_RETURN_CODE 77)
     endif()
 endif()
@@ -3913,7 +3915,7 @@ snx_test_target(snx-test-arm-module-refused gnu23)
 target_link_libraries(snx-test-arm-module-refused PRIVATE snx_nx_aot ${CMAKE_DL_LIBS})
 add_test(NAME arm_module_refused COMMAND snx-test-arm-module-refused)
 set_tests_properties(arm_module_refused PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
-# a game module of the native back end's code (nx/loader/module_llvm.c, module_arm.c): the builders in the program, and
+# a game module of the native back end's code (nx/loader/module_a64.c, module_arm.c): the builders in the program, and
 # what each refuses
 add_executable(snx-test-nx-module-native nx_module_native.c nx_module_native_arm.c
                "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/jit/jit_cache.c")
@@ -4120,13 +4122,13 @@ snx_test_target(snx-test-coff-arm64 gnu23)
 target_link_libraries(snx-test-coff-arm64 PRIVATE snx_recompiler_core)
 add_test(NAME coff_arm64 COMMAND snx-test-coff-arm64)
 set_tests_properties(coff_arm64 PROPERTIES TIMEOUT 120)
-# not a test: timings of the generated code (llvm_bench SCARLETNX REPO CLANG)
-add_executable(snx-llvm-bench llvm_bench.c)
-snx_test_target(snx-llvm-bench gnu23)
-target_link_libraries(snx-llvm-bench PRIVATE snx_driver ${CMAKE_DL_LIBS})
+# not a test: timings of the generated code (native_bench SCARLETNX REPO CLANG)
+add_executable(snx-native-bench native_bench.c)
+snx_test_target(snx-native-bench gnu23)
+target_link_libraries(snx-native-bench PRIVATE snx_driver ${CMAKE_DL_LIBS})
 include(arm_blocks.cmake)
 
-snx_native_steps(llvm_fp_store native_fp_store)
+snx_native_steps(native_fp_store native_fp_store)
 # the NROs of a game's RomFS made ahead of time: the game module's table of where they go, and each one's own module
 add_executable(snx-test-nro-modules nro_modules.c)
 snx_test_target(snx-test-nro-modules gnu23)
@@ -4139,11 +4141,11 @@ snx_test_target(snx-test-plt-calls gnu23)
 target_link_libraries(snx-test-plt-calls PRIVATE snx_driver ${CMAKE_DL_LIBS})
 add_test(NAME plt_calls COMMAND snx-test-plt-calls $<TARGET_FILE:scarletnx> "${CMAKE_CURRENT_BINARY_DIR}/plt-calls-data")
 # the same module, the words outside its functions run by the native steps
-snx_native_steps(llvm_module native_module ARGS $<TARGET_FILE:scarletnx> "${PROJECT_SOURCE_DIR}")
+snx_native_steps(native_module native_module ARGS $<TARGET_FILE:scarletnx> "${PROJECT_SOURCE_DIR}")
 # what the host's native back end makes of whole programs (recompile_census.c): a fixed one of each kind the drivers
 # recompile, every function or block of which must be the back end's. Each prints its count, which the CI's jobs show
 # (scripts/recompile-census.py), by the label
-add_executable(snx-test-recompile-census recompile_census.c llvm_qemu_words.c)
+add_executable(snx-test-recompile-census recompile_census.c native_qemu_words.c)
 snx_test_target(snx-test-recompile-census c23)
 target_link_libraries(snx-test-recompile-census PRIVATE scarletnx-recompiler snx_arm_decode scarletnx-common
                       OpenSSL::Crypto)
@@ -4216,7 +4218,7 @@ endif()
 # LLVM alone's ends, recorded while the build had LLVM (test-references' recompiler_backends/): each test whose
 # reference they are reads its programs' file, a hash a function (recompiler_backends.c's --frozen)
 set(snx_backends_frozen "${test-references_SOURCE_DIR}/recompiler_backends")
-add_executable(snx-test-recompiler-backends recompiler_backends.c llvm_qemu_words.c qemu_ref/qemu_ref.c
+add_executable(snx-test-recompiler-backends recompiler_backends.c native_qemu_words.c qemu_ref/qemu_ref.c
                support/frozen.c)
 snx_test_target(snx-test-recompiler-backends gnu23)
 target_include_directories(snx-test-recompiler-backends PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -4438,7 +4440,7 @@ endforeach()
 if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
     foreach(m arm64 rv64 ppc64 mips64 la64 ppc64be mips64be s390x)
         string(TOUPPER "${m}" upper)
-        add_executable(snx-test-recompiler-${m} recompiler_backends.c llvm_qemu_words.c qemu_ref/qemu_ref.c
+        add_executable(snx-test-recompiler-${m} recompiler_backends.c native_qemu_words.c qemu_ref/qemu_ref.c
                        support/host_unicorn.c support/la64_interp.c support/frozen.c
                        "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
                        "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
@@ -4525,7 +4527,7 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
     # gives: an instruction it lacks stops the code, and the results are held to LLVM's. A Nehalem has no PCLMULQDQ,
     # a Penryn no SSE4.2 either
     if(SNX_X64 AND NOT WIN32)
-        add_executable(snx-test-recompiler-x64cpu recompiler_backends.c llvm_qemu_words.c qemu_ref/qemu_ref.c
+        add_executable(snx-test-recompiler-x64cpu recompiler_backends.c native_qemu_words.c qemu_ref/qemu_ref.c
                        support/host_unicorn.c support/la64_interp.c support/frozen.c
                        "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
                        "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
@@ -4577,7 +4579,7 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
     endif()
     # arm64's functions as a Windows host's: COFF objects, loaded by the JIT's own loader, their frames unwound by the
     # function table where they call out, with --step at every instruction; one of more than a record's 1 MiB
-    add_executable(snx-test-recompiler-arm64win recompiler_backends.c llvm_qemu_words.c qemu_ref/qemu_ref.c
+    add_executable(snx-test-recompiler-arm64win recompiler_backends.c native_qemu_words.c qemu_ref/qemu_ref.c
                    support/host_unicorn.c support/la64_interp.c support/frozen.c
                    "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
                    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
@@ -4658,7 +4660,7 @@ endif()
 # the x86-64 back end's functions as a Windows host's (the calling convention, COFF objects), run by this host's processor
 # as Windows' C would call them (support/host_win64.c): against LLVM, as the other machines' under Unicorn
 if(snx_host_win64)
-    add_executable(snx-test-recompiler-win64 recompiler_backends.c llvm_qemu_words.c qemu_ref/qemu_ref.c
+    add_executable(snx-test-recompiler-win64 recompiler_backends.c native_qemu_words.c qemu_ref/qemu_ref.c
                    support/host_win64.c support/frozen.c
                    "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
                    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
@@ -5051,7 +5053,7 @@ set_tests_properties(native_a64_ported_cases PROPERTIES SKIP_RETURN_CODE 77)
 # the programs of snx_native_steps, with what they take from each other's
 get_property(programs GLOBAL PROPERTY snx_native_programs)
 list(TRANSFORM programs REPLACE "(.+)" "$<TARGET_OBJECTS:snx-test-native-\\1>")
-add_executable(snx-test-native-steps native_steps_main.c native_steps.c qemu_ref/qemu_ref.c llvm_qemu_words.c
+add_executable(snx-test-native-steps native_steps_main.c native_steps.c qemu_ref/qemu_ref.c native_qemu_words.c
     "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c" ${programs})
 snx_test_target(snx-test-native-steps gnu23)
 snx_cpu_helpers_flags(snx-test-native-steps)

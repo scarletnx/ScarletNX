@@ -16,7 +16,7 @@
    stale while it runs (from func's call through the hooked slot, as a mod patches its caller from inside a call), the
    next call that returns into main must leave its AOT code too, for the dispatch loop the runtime's threads run, and
    end the same.
-     llvm_module SCARLETNX REPO */
+     native_module SCARLETNX REPO */
 #include "steps.h"
 #include "common/utilities/common.h"
 #include "common/cpu/aarch64/cpu.h"

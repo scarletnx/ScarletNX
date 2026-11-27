@@ -331,7 +331,7 @@ void jit_init(void) {
 #else
     opt = '2';
 #endif
-    /* the game's CPU (loader/ounce.h), as the recompiler's module_llvm.c gives it from the same NPDM */
+    /* the game's CPU (loader/ounce.h), as the recompiler's module_a64.c gives it from the same NPDM */
     config.features = snx_guest_features(g_ounce, g_settings.cpu_extensions);
     config.opt = opt;
     config.images = g_jit_images;

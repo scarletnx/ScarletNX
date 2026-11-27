@@ -428,8 +428,8 @@ SnxFpReply snx_fp8_widen(u64 byte, int bfloat);
 SnxFpReply snx_fp8_narrow(u64 bits, int width);
 u64 snx_fp8_dot(u64 add, u64 a, u64 b, int n, int width);
 
-/* The same helpers against a CPU structure's FPCR and FPSR: the two steps the generated code emits itself
-   (ir_fp.h's ir_fp_call), for the witnesses and oracles that drive the helpers directly. */
+/* The same helpers against a CPU structure's FPCR and FPSR: the two steps the generated code makes itself, for the
+   witnesses and oracles that drive the helpers directly. */
 static inline u64 snx_fp_binary_c(CPU* c, u64 a, u64 b, int width, int op) {
     SnxFpReply r = snx_fp_binary(a, b, width, op, c->fpcr);
     c->fpsr |= r.flags;

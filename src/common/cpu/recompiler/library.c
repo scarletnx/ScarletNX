@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* The recompiler as a library (snx_recompiler.h, issue #171). The pieces are the ones the scarletnx command uses
    for a game: function discovery (codegen.c), the host's native back end (mach/native.h), and the runtime library every
-   module carries (rtlib/rtlib.c, prebuilt). What differs from the game workflow (nx/loader/module_llvm.c): the input is a buffer at a guest address instead of NSO files, the module
+   module carries (rtlib/rtlib.c, prebuilt). What differs from the game workflow (nx/loader/module_a64.c): the input is a buffer at a guest address instead of NSO files, the module
    descriptor is the small one below instead of the Switch loader's SnxModule, and the result is loaded into this
    process straight from memory (or a temporary file the OS requires) instead of being written beside the game. */
 #if defined(__linux__) && !defined(_GNU_SOURCE)

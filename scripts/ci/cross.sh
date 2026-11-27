@@ -132,12 +132,12 @@ cmake --preset ${PRESET} -DBUILD_TESTING=ON \
   -DSNX_OPT_FLAGS="-O2 -g0" -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
   -DSNX_SYSTEM_SDL3=ON
 cmake --build --preset ${PRESET} --parallel "$(getconf _NPROCESSORS_ONLN)" \
-  --target snx-test-llvm-qemu-differential-native
+  --target snx-test-native-qemu-differential
 # a failing run's examples go to the log: the container's /tmp goes with the job. A run takes minutes; at 20 its SIGBUS
 # makes the test name the case it was in, where a hang would hold the job 3 hours
 status=0
-timeout -s BUS -k 30 1200 qemu-${QEMU} -L /src/sysroot build/${PRESET}/tests/snx-test-llvm-qemu-differential-native \
-  /tmp/native_qemu_reference /src/tests/native_qemu_expected.txt --reference /src/reference/llvm_qemu_reference.bin \
+timeout -s BUS -k 30 1200 qemu-${QEMU} -L /src/sysroot build/${PRESET}/tests/snx-test-native-qemu-differential \
+  /tmp/native_qemu_reference /src/tests/native_qemu_expected.txt --reference /src/reference/native_qemu_reference.bin \
   --quiet || status=$?
 [ "$status" = 0 ] || cat /tmp/native_qemu_reference/*_qemu_mismatches.txt || true
 exit $status

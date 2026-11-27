@@ -101,7 +101,7 @@ static void selection_and_comparison(void) {
     }
 }
 
-/* The fast paths (ir_fpu.c, ir_vec_fp.c) compute in the host's arithmetic, so they need the IEEE default control
+/* The generated code's fast paths compute in the host's arithmetic, so they need the IEEE default control
    word: snx_fp_env puts a drifted one back, and generated functions call it on entry. */
 static void host_environment(void) {
 #if defined(_M_X64) || defined(__x86_64__)

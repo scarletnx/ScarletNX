@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* llvm_qemu_differential's words from the generated decoder (tools/decodetree): a translation unit of its own, which
+/* native_qemu_differential's words from the generated decoder (tools/decodetree): a translation unit of its own, which
    includes the decoder's table (a64_decode.inc) for its rows and fields */
-#ifndef SNX_LLVM_QEMU_WORDS_H
-#define SNX_LLVM_QEMU_WORDS_H
+#ifndef SNX_NATIVE_QEMU_WORDS_H
+#define SNX_NATIVE_QEMU_WORDS_H
 
 #include <stddef.h>
 #include <stdint.h>

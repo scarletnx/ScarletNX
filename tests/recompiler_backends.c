@@ -20,9 +20,9 @@
    back, and left by a B back over them: more than BYTES of a native back end's code, which is what its short jumps reach
    --target NAME: the guest's features, switch (the default), android, max or, with --refused, ounce
    --made: the back end must make --words' function (else, where LLVM makes it, there is nothing to compare)
-   --ops OP...: every word of these ops of the decoder (llvm_qemu_words.c's samples, and each value of its small fields)
-   is a function of its own with a RET, and the back end must make them all; they run from as many states as the rest,
-   half of them with lanes of the values where an integer's or a float's arithmetic turns
+   --ops OP...: every word of these ops of the decoder (native_qemu_words.c's samples, and each value of its small
+   fields) is a function of its own with a RET, and the back end must make them all; they run from as many states as the
+   rest, half of them with lanes of the values where an integer's or a float's arithmetic turns
    --refused: each of the target's ops that has words the back end leaves to LLVM, how many of its words, and stops
    there, failing where there is one
    --qemu: with --ops, their words' results held to qemu-aarch64 -cpu max's (tests/qemu_ref: its path, the runner's, a
@@ -60,7 +60,7 @@
 #include "common/cpu/recompiler/arm64/arm64_codegen.h"
 #include "common/cpu/recompiler/mach/native.h"
 #include "common/cpu/recompiler/x64/x64_codegen.h"
-#include "llvm_qemu_words.h"
+#include "native_qemu_words.h"
 #include "qemu_ref/qemu_ref.h"
 #include "common/cpu/aarch64/a64_decoder.h"
 #include "common/cpu/recompiler/codegen.h"
@@ -360,7 +360,7 @@ static uint32_t simd_copy(void) {
     }
 }
 
-/* the AdvSIMD data processing x64_vec.c makes: words of the decoder's rows of these (llvm_qemu_words.c), registers
+/* the AdvSIMD data processing x64_vec.c makes: words of the decoder's rows of these (native_qemu_words.c), registers
    and all as the rows' samples have them (no memory: any register will do) */
 static const char* const k_vec_ops[] = {
     "AND_v", "BIC_v", "ORR_v", "ORN_v", "EOR_v", "BSL_v", "BIT_v", "BIF_v", "ADD_v", "SUB_v", "NEG_v", "ABS_v",

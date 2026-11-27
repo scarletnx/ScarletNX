@@ -38,13 +38,13 @@ for paths, differential, why in (
     (('src/gui/main.c', 'docs/user/gui.md', 'tests/gui_steps.c'), False, 'the menu'),
     (('src/common/cpu/recompiler/mach/mach_codegen.inc',), True, 'a back end'),
     (('src/common/cpu/aarch64/cpu_helpers.c',), True, 'the helpers the code calls'),
-    (('tests/llvm_qemu_words.c',), True, 'the words both run'),
+    (('tests/native_qemu_words.c',), True, 'the words both run'),
     (('tests/native_steps.c',), True, 'the native steps the differential runs'),
     (('tests/sail_x64.c',), True, "sail_x64's words, whose QEMU ends the recording holds"),
     (('tools/sailgen/mach_a32.h',), True, 'what generates them'),
     (('scripts/ci/linux.sh',), True, 'the steps that build and record it'),
     (('.github/workflows/build.yml',), True, 'the workflow'),
-    (('src/nx/loader/module_llvm.c', 'tests/support/host_win64.c'), False, "another module's and another host's"),
+    (('src/nx/loader/module_a64.c', 'tests/support/host_win64.c'), False, "another module's and another host's"),
     (('src/gui/main.c', 'src/common/cpu/arm/aot.c'), True, 'one of two'),
 ):
     status, said, _ = answers(*paths)

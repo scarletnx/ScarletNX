@@ -8,7 +8,7 @@
 #ifndef SNX_DRIVER_NROS_H
 #define SNX_DRIVER_NROS_H
 #include "nx/loader/module.h"
-#include "nx/loader/module_llvm.h"
+#include "nx/loader/module_a64.h"
 #include "nx/runtime/driver/container.h"
 
 /* an NRO as found: its RomFS file's name, and its image (the file up to the size its header gives) */
@@ -36,7 +36,7 @@ int snx_nros_place(SnxNroSet* set, const SnxProgram* program, int quiet);
 /* each placed NRO's module, <folder>/<hash>.so (.dll for Windows), made as the game module was (gen, build: its level,
    jobs and unit cache), and every other module of an earlier recompile in folder removed. 0, or nonzero, said why */
 int snx_nros_build(const SnxNroSet* set, const SnxProgram* program, const SnxCodegenOptions* gen,
-                   const SnxLlvmBuild* build, const char* folder, int windows);
+                   const SnxModuleBuild* build, const char* folder, int windows);
 void snx_nros_free(SnxNroSet* set);
 
 #endif

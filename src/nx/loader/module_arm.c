@@ -8,7 +8,7 @@
    file because it had to compile them while the game ran (nx/runtime/arm.c). From each block, the blocks its last
    instruction leads to: a direct branch's target, and the next instruction after a call or a conditional transfer.
    An indirect branch's targets are known only when the game runs, unless something above names them */
-#include "nx/loader/module_llvm.h"
+#include "nx/loader/module_a64.h"
 #include "common/cpu/recompiler/compile_thread.h"
 #include "nx/loader/module_abi.h"
 #include "common/cpu/arm/arm.h"
@@ -480,7 +480,7 @@ static const char* base_name(const char* path) {
     return name;
 }
 
-int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* options, const SnxLlvmBuild* build) {
+int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* options, const SnxModuleBuild* build) {
     Discovery d;
     SnxLinkInput inputs[3];
     SnxLinkOutput linked;

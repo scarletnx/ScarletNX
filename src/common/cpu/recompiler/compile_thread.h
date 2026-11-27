@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* A thread that compiles a unit (library.c, nx/loader/module_llvm.c and module_arm.c, vita/aot, the JIT service),
+/* A thread that compiles a unit (library.c, nx/loader/module_a64.c and module_arm.c, vita/aot, the JIT service),
    with 8 MiB of stack, glibc's default, on every host (a thread gets 1 MiB by default on Android and Windows). The
    stack is a reservation: a thread uses the pages it touches */
 #ifndef SNX_RECOMPILER_COMPILE_THREAD_H

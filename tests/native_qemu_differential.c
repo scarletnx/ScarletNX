@@ -1,20 +1,15 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The recompiler's back ends against QEMU, instruction by instruction: each word runs as the back end's step function
-   (steps.h: LLVM's snx_ir_static_step, compiled and linked by it, or in a build with SNX_TEST_NATIVE_STEPS the host's
-   native back end's) and under qemu-aarch64 -cpu max (tests/qemu_ref), from the same state and the same seeded window
-   of guest memory, and the registers, flags, FPCR, FPSR, vector registers, the memory it changed and how it ended (the
-   next pc, UNDEF, BRK or SVC) must match. A store-exclusive also runs after a load-exclusive of its address, so that
-   it can succeed.
-     snx-test-llvm-qemu-differential QEMU RUNNER DIR EXPECTED [--sweep] [--states N] [--seed N] [--quiet] [--update]
-                                     [--jit] [--portable | --generic] [--without-avx512] [--abi-contract]
-                                     [--record FILE]
-     snx-test-llvm-qemu-differential DIR EXPECTED --reference FILE [--quiet] [--update] [--jit]
-                                     [--portable | --generic] [--without-avx512]
-     snx-test-llvm-qemu-differential DIR EXPECTED --reference-if-there FILE ...
-     snx-test-llvm-qemu-differential --skip REASON
-   snx-test-llvm-qemu-differential-native takes the same, with neither --generic, --without-avx512 nor --abi-contract,
-   which are the LLVM back end's: its --portable is the host without its optional features.
+/* The host's native back end against QEMU, instruction by instruction: each word runs as the back end's step function
+   (steps.h, native_steps.c) and under qemu-aarch64 -cpu max (tests/qemu_ref), from the same state and the same seeded
+   window of guest memory, and the registers, flags, FPCR, FPSR, vector registers, the memory it changed and how it
+   ended (the next pc, UNDEF, BRK or SVC) must match. A store-exclusive also runs after a load-exclusive of its address,
+   so that it can succeed.
+     snx-test-native-qemu-differential QEMU RUNNER DIR EXPECTED [--sweep] [--states N] [--seed N] [--quiet] [--update]
+                                       [--jit] [--portable] [--record FILE]
+     snx-test-native-qemu-differential DIR EXPECTED --reference FILE [--quiet] [--update] [--jit] [--portable]
+     snx-test-native-qemu-differential DIR EXPECTED --reference-if-there FILE ...
+     snx-test-native-qemu-differential --skip REASON
    --record writes the QEMU side of the run (the words, each case's start state, its end state, how it ended and the
    memory it changed) to FILE. --reference runs the steps alone against such a file, so that a host where qemu-aarch64
    can't run beside the test (the cross-built PowerPC64, RISC-V and LoongArch, Windows and macOS) compares against the
@@ -25,13 +20,9 @@
    fewer, directed() and scalar_words() words, and the words the other instruction tests hand-check (kept[]). The
    default run takes 2 samples of each row, 20 directed rounds and 3 states of each word; --sweep takes 4 samples,
    300 rounds and 6 states. The steps are linked into a module for dlopen, as the AOT path loads a game's; --jit
-   loads them with the JIT's loader (code_loader.c) instead, and --portable builds them without the host's extensions
-   (x86's PSHUFB, PCLMULQDQ, AES-NI, SSE4.2's CRC32C, AArch64's CRC32 and crypto...), so the emitters' portable forms
-   are compared. --generic builds them without the host's architecture too: the path of the hosts SnxIrFeatures has
-   no bit for (PowerPC64, RISC-V, LoongArch, MIPS64), a byte loop for TBL and helpers for FMA, square roots and
-   rounding. --without-avx512 runs an AVX-512 host as an x86-64 without it (snx_ir_host_drop): the emitters' choices
-   and the target machine both, as a host with AVX2 alone compiles them; on a host without AVX-512 it is skipped
-   (77).
+   loads them with the JIT's loader (code_loader.c) instead, and --portable makes them without the host's optional
+   features (x86's PSHUFB, PCLMULQDQ, AES-NI, SSE4.2's CRC32C, AArch64's CRC32 and crypto...), so the back end's forms
+   without them are compared.
    A word the back end leaves UNDEF (the generated decoder for the Switch target), or decodes without code for it, while
    QEMU runs it, has none yet: it is listed in DIR/<side>_qemu_coverage.txt, not failed. So is a word that
    differs where the Switch target decodes it as another name (a hint's NOP) or, as the backend does, as UNDEF: what
@@ -44,7 +35,7 @@
 #include "common/utilities/endian.h"
 #include "common/cpu/aarch64/cpu.h"
 #include "common/runtime/interface.h"
-#include "llvm_qemu_words.h"
+#include "native_qemu_words.h"
 #include "steps.h"
 #include "qemu_ref/qemu_ref.h"
 #include <fenv.h>
@@ -56,7 +47,7 @@
 /* this side of the comparison: in the causes, the reports' names and the expected-failure list, and in prose */
 #define SIDE      "native"
 #define SIDE_NAME "native"
-#define PROGRAM   "snx-test-llvm-qemu-differential-native"
+#define PROGRAM   "snx-test-native-qemu-differential"
 
 #define WINDOW      0x0ull /* the window starts at guest address 0 on both sides */
 #define WINDOW_SIZE SNX_QREF_WINDOW_SIZE
@@ -71,7 +62,7 @@
 #define EXAMPLES    3    /* kept per group */
 #define SIGBUS_A64  7u   /* QEMU's alignment fault: SIGBUS, as Linux on AArch64 numbers it */
 
-/* the runtime's callbacks' record of a step (llvm_qemu_differential's outcome) */
+/* the runtime's callbacks' record of a step (native_qemu_differential's outcome) */
 typedef struct {
     int undef, brk, svc;
     u64 imm;
@@ -242,7 +233,7 @@ static u64 narrow_edge(unsigned doubles) {
 }
 
 /* a V register's two doublewords, numbers, as the CPU holds them: the guest's little-endian bytes, which a big-endian
-   host's generated code reads that way (ir.h's big_endian) */
+   host's generated code reads that way */
 static void v_from_numbers(V128* v, u64 low, u64 high) {
     snx_st_le64(v->b, low);
     snx_st_le64(v->b + 8, high);
@@ -451,11 +442,11 @@ static size_t scalar_words(size_t rounds, u32* out) {
     return rounds * SCALAR;
 }
 
-/* the words the other instruction tests hand-check against expected values (llvm_module's program, native_codegen's
+/* the words the other instruction tests hand-check against expected values (native_module's program, native_codegen's
    semantic cases and the FP witnesses' vector and reserved encodings), so that QEMU checks them from random states
    too */
 static const u32 kept[] = {
-    /* llvm_module.c: its program[] and tail[] */
+    /* native_module.c: its program[] and tail[] */
     0xD2800000, 0xD2800181, 0x1E6F1001, 0x6F00E402, 0x94000016, 0x9E620003, 0x1E632800, 0x1E610800, 0x4EA28442,
     0x4E040C24, 0x4EA48442, 0xF1000421, 0x54FFFF01, 0x10000062, 0xD61F0040, 0xD4200020, 0xF81F0FE0, 0xA8C113E3,
     0xB4000043, 0x910FA000, 0x885FFFE7, 0x8808FFE0, 0x37180040, 0xD2401C00, 0xAA1F03FE, 0x14000047, 0x8B010000,
@@ -471,7 +462,8 @@ static const u32 kept[] = {
     0x6E849427, 0xD500401F, 0xBA02046A, 0x3A00086D, 0x3A00486D, 0xD503221F,
     /* the FP witnesses' reserved encodings */
     0x5E218820, 0x0E618820, 0x5E217820, 0x5EA1C820, 0x7EA1C820, 0x7EA1F820,
-    /* llvm_estimates.c's halves: FRECPE, FRSQRTE and FRECPX, V and scalar (an FZ16 state flushes what they underflow) */
+    /* native_estimates.c's halves: FRECPE, FRSQRTE and FRECPX, V and scalar (an FZ16 state flushes what they
+       underflow) */
     0x4EF9D820, 0x0EF9D820, 0x5EF9D820, 0x6EF9D820, 0x2EF9D820, 0x7EF9D820, 0x5EF9F820};
 #define KEPT (sizeof(kept) / sizeof(kept[0]))
 

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* llvm_qemu_differential's words from the generated decoder (llvm_qemu_words.h) */
-#include "llvm_qemu_words.h"
+/* native_qemu_differential's words from the generated decoder (native_qemu_words.h) */
+#include "native_qemu_words.h"
 
 #define SNX_A64_DECODE_FIELDS
 #include "a64_decode.h"
