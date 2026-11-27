@@ -9149,6 +9149,7 @@ static int run_headless(int argc, char** argv) {
         if (!strcmp(name, "writes") && ++ran) CHECK(!check_uma_writes());
         if (!strcmp(name, "atlas_pending") && ++ran) CHECK(!check_uma_atlas_pending());
         if (!strcmp(name, "feedback") && ++ran) CHECK(!check_uma_feedback());
+        if (!strcmp(name, "prefetch") && ++ran) CHECK(!check_uma_prefetch());
         if (!strcmp(name, "publish") && ++ran) CHECK(!check_uma_publish());
         if (!strcmp(name, "nvdec") && ++ran) CHECK(!check_uma_nvdec());
         if (!strcmp(name, "dispatch") && ++ran) CHECK(!check_uma_dispatch());
@@ -9191,7 +9192,7 @@ static int run_headless(int argc, char** argv) {
                     "SNX_TEST_UMA_ONLY=%s names no check: 1, runtime_write, constants, constants_copied, migrate, way, "
                     "region_writes, region_merge, region_trap, writes, atlas_pending, feedback, publish, dispatch, "
                     "dispatch_open, "
-                    "nvdec, texture_pending, dispatch_constants, "
+                    "nvdec, prefetch, texture_pending, dispatch_constants, "
                     "dispatch_table, header_words, placed, placed_view, logged_back, trapped_window, copies, "
                     "pages_producers, pages_counts, pages_partial, texture_region, dma_region, region_dmabuf_trap, "
                     "region_watch, region_letgo, region_dead_bind, region_watch_frames, region_watch_writes, "
@@ -9217,6 +9218,7 @@ static int run_headless(int argc, char** argv) {
         CHECK(!check_uma_writes());
         CHECK(!check_uma_atlas_pending());
         CHECK(!check_uma_feedback());
+        CHECK(!check_uma_prefetch());
         CHECK(!check_uma_publish());
         CHECK(!check_uma_nvdec());
         CHECK(!check_uma_dispatch());
@@ -9505,6 +9507,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_uma_writes());
     CHECK(!check_uma_atlas_pending());
     CHECK(!check_uma_feedback());
+    CHECK(!check_uma_prefetch());
     CHECK(!check_uma_publish());
     CHECK(!check_uma_nvdec());
     CHECK(!check_uma_dispatch());
