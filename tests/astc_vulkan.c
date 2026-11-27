@@ -48,6 +48,7 @@ static unsigned errors;
 /* uma.c isn't here: no guest memory read in place for cmd.c's draws to settle */
 void vk_uma_settle(u64 ended) { (void)ended; }
 void vk_table_forget_view(VkImageView view) { (void)view; } /* no texture table here (table.c) */
+VkDeviceSize vk_table_descriptor_bytes(void) { return 0; } /* and no buffer of its own */
 void vk_pool_map_view_gone(VkImageView view) { (void)view; } /* no pool map here (pool_map.c) */
 int vk_own_make_room(void) { return 0; } /* no kept results here: the device ring finds no room in their pool */
 /* Synthetic upload sources have no guest GPU mappings, ownership or pending in-place writes. */
