@@ -27,9 +27,9 @@ PendPages g_pend_blk = {.also = &g_pend_any};
    under pend_lock: a table's total, its leaf pointers, and a leaf's pages and group bits. A leaf is published whole
    (release, zeroed by calloc), and the other fields are single words (relaxed). A change's own reads under the lock
    need neither */
-#define PEND_LOAD(x)     __atomic_load_n(&(x), __ATOMIC_RELAXED)
-#define PEND_STORE(x, v) __atomic_store_n(&(x), (v), __ATOMIC_RELAXED)
-#define PEND_LEAF(x)     __atomic_load_n(&(x), __ATOMIC_ACQUIRE)
+#define PEND_LOAD(x)     atomic_load_explicit(&(x), memory_order_relaxed)
+#define PEND_STORE(x, v) atomic_store_explicit(&(x), (v), memory_order_relaxed)
+#define PEND_LEAF(x)     atomic_load_explicit(&(x), memory_order_acquire)
 #define LEAF_PAGES  4096u
 #define TABLE_PAGES ((u64)LEAF_PAGES << 16) /* the pages a table's leaves cover: 2^40 bytes, all of the GPU's */
 /* A result that covers a whole group of 64 pages is counted once for the group (whole), not at each of its pages. A
@@ -37,10 +37,10 @@ PendPages g_pend_blk = {.also = &g_pend_any};
    present, each added to four tables and taken away again. Counted page by page that was a quarter of its GPU thread */
 struct PendLeaf {
     u32 count[LEAF_PAGES];      /* the results covering each page, less those its group counts whole */
-    u64 group[LEAF_PAGES / 64]; /* one bit for each page with a count, its own or its group's */
+    _Atomic u64 group[LEAF_PAGES / 64]; /* one bit for each page with a count, its own or its group's */
     u64 own[LEAF_PAGES / 64];   /* one bit for each page with a count of its own */
     u32 whole[LEAF_PAGES / 64]; /* the results covering all 64 pages of each group */
-    u32 pages;                  /* the leaf's pages with a count */
+    _Atomic u32 pages;          /* the leaf's pages with a count */
 };
 /* a group's whole count handed down to each of its pages, so that one of them can change alone */
 static void group_down(PendLeaf* l, u32 g) {
@@ -61,18 +61,18 @@ static struct {
 } g_pending_pages = {{0}, 0, -1, NULL};
 
 /* page p's count, 0 when no leaf holds it */
-static u32 leaf_count(PendLeaf* const* leaf, u64 p) {
-    const PendLeaf* l = leaf[p / LEAF_PAGES];
+static u32 leaf_count(_Atomic(PendLeaf*) const* leaf, u64 p) {
+    const PendLeaf* l = PEND_LOAD(leaf[p / LEAF_PAGES]);
     return l ? l->count[p % LEAF_PAGES] + l->whole[p % LEAF_PAGES / 64] : 0;
 }
 /* page p's count becomes v, and the leaf's counts of pages with one follow */
-static void leaf_set(PendLeaf** leaf, u64 p, u32 v) {
-    PendLeaf* l = leaf[p / LEAF_PAGES];
+static void leaf_set(_Atomic(PendLeaf*)* leaf, u64 p, u32 v) {
+    PendLeaf* l = PEND_LOAD(leaf[p / LEAF_PAGES]);
     u32 i = (u32)(p % LEAF_PAGES), before;
     if (!l) {
         if (!v) return;
         if (!(l = calloc(1, sizeof *l))) fatal("vulkan: out of memory for pending result pages");
-        __atomic_store_n(&leaf[p / LEAF_PAGES], l, __ATOMIC_RELEASE);
+        atomic_store_explicit(&leaf[p / LEAF_PAGES], l, memory_order_release);
         static const char k_grown[] = "vk mem pending pages leaf made";
         SNX_MSG(k_grown, sizeof k_grown - 1);
     }
@@ -86,21 +86,21 @@ static void leaf_set(PendLeaf** leaf, u64 p, u32 v) {
         else
             l->own[i / 64] &= ~bit;
         PEND_STORE(l->group[i / 64], l->own[i / 64]);
-        PEND_STORE(l->pages, (u32)((i64)l->pages + (v ? 1 : -1)));
+        PEND_STORE(l->pages, (u32)((i64)PEND_LOAD(l->pages) + (v ? 1 : -1)));
     }
 }
 /* pages [first, last], below TABLE_PAGES, gain delta each: a leaf at a time. A whole group of 64 pages changes its
    whole count alone, and its bits follow from that count and the pages' own. A group that loses more than its whole
    count holds (a result added page by page, or through a mapping since changed) takes the rest from its pages. The
    pages at the range's ends change one by one */
-static void leaves_add(PendLeaf** leaf, u64 first, u64 last, int delta) {
+static void leaves_add(_Atomic(PendLeaf*)* leaf, u64 first, u64 last, int delta) {
     if (!delta) return;
     for (u64 p = first; p <= last;) {
         const u64 li = p / LEAF_PAGES, end = li * LEAF_PAGES + LEAF_PAGES - 1, stop = last < end ? last : end;
-        PendLeaf* l = leaf[li];
+        PendLeaf* l = PEND_LOAD(leaf[li]);
         if (!l) {
             if (!(l = calloc(1, sizeof *l))) fatal("vulkan: out of memory for pending result pages");
-            __atomic_store_n(&leaf[li], l, __ATOMIC_RELEASE);
+            atomic_store_explicit(&leaf[li], l, memory_order_release);
             static const char k_grown[] = "vk mem pending pages leaf made";
             SNX_MSG(k_grown, sizeof k_grown - 1);
         }
@@ -108,7 +108,7 @@ static void leaves_add(PendLeaf** leaf, u64 first, u64 last, int delta) {
         for (u32 i = (u32)(p % LEAF_PAGES), e = (u32)(stop % LEAF_PAGES); i <= e;) {
             const u32 g = i / 64;
             if (!(i & 63u) && i + 63u <= e) {
-                const u64 was = l->group[g];
+                const u64 was = PEND_LOAD(l->group[g]);
                 u64 now = ~0ull;
                 int d = 0; /* what the pages themselves lose */
                 if (delta > 0)
@@ -140,19 +140,19 @@ static void leaves_add(PendLeaf** leaf, u64 first, u64 last, int delta) {
             l->count[i] = v;
             if (!before != !v) l->own[g] ^= 1ull << (i & 63u);
             if (!(before + w) != !(v + w)) {
-                PEND_STORE(l->group[g], l->group[g] ^ (1ull << (i & 63u)));
+                PEND_STORE(l->group[g], PEND_LOAD(l->group[g]) ^ (1ull << (i & 63u)));
                 pages += v + w ? 1 : -1;
             }
             i++;
         }
-        PEND_STORE(l->pages, (u32)((i64)l->pages + pages));
+        PEND_STORE(l->pages, (u32)((i64)PEND_LOAD(l->pages) + pages));
         p = stop + 1;
     }
 }
 /* Whether a page of [first, last], below TABLE_PAGES, has a count. The bitmap answers each group with one load,
    including partial groups: a sparse group used to scan up to 64 individual counters merely to find no overlap.
    Counts still retain every reference; only transitions between zero and nonzero change a bit. */
-static int leaves_hit(PendLeaf* const* leaf, u64 first, u64 last) {
+static int leaves_hit(_Atomic(PendLeaf*) const* leaf, u64 first, u64 last) {
     for (u64 p = first; p <= last;) {
         u64 li = p / LEAF_PAGES, leaf_end = (li + 1) * LEAF_PAGES - 1, stop = last < leaf_end ? last : leaf_end;
         const PendLeaf* l = PEND_LEAF(leaf[li]);
@@ -170,7 +170,7 @@ static int leaves_hit(PendLeaf* const* leaf, u64 first, u64 last) {
 }
 /* pages [first, last] of one table gain delta each: those past TABLE_PAGES in its overflow */
 static void count_pages(PendPages* t, u64 first, u64 last, int delta) {
-    PEND_STORE(t->total, t->total + (last - first + 1) * (u64)(i64)delta);
+    PEND_STORE(t->total, PEND_LOAD(t->total) + (last - first + 1) * (u64)(i64)delta);
     if (last >= TABLE_PAGES) {
         atomic_store_explicit(&t->overflow,
                               atomic_load_explicit(&t->overflow, memory_order_relaxed) +
@@ -337,12 +337,12 @@ void pend_remap(u64 gva, u64 size) {
     pend_lock();
     for (u32 k = 0; k < g_pending_pages.n; k++) {
         PendPages* t = g_pending_pages.table[k];
-        if (!t->total) continue; /* no guest page counted, so no GPU page either */
+        if (!PEND_LOAD(t->total)) continue; /* no guest page counted, so no GPU page either */
         for (i = 0; i < n; i++) {
             u64 first = r[2 * i], last = r[2 * i + 1];
             for (u64 p = first; p <= last; p++) { /* what the pages showed before is gone */
-                const PendLeaf* l = t->gpu[p / LEAF_PAGES];
-                if (!l || !l->pages)
+                const PendLeaf* l = PEND_LOAD(t->gpu[p / LEAF_PAGES]);
+                if (!l || !PEND_LOAD(l->pages))
                     p |= LEAF_PAGES - 1;
                 else
                     leaf_set(t->gpu, p, 0);
