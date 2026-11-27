@@ -52,6 +52,7 @@
 
 #if defined(__APPLE__) || defined(__FreeBSD__)
 #include <sys/param.h>
+#include <sys/resource.h> /* the resident set's peak (snx_footprint_peak) */
 #endif
 #ifdef __FreeBSD__
 #include <sys/types.h>
@@ -1632,6 +1633,40 @@ SnxU64 snx_footprint(void) {
 #else
     return 0;
 #endif
+}
+SnxU64 snx_footprint_peak(void) {
+#if defined(_WIN32)
+    PROCESS_MEMORY_COUNTERS info;
+    return GetProcessMemoryInfo(GetCurrentProcess(), &info, sizeof info) ? (SnxU64)info.PeakWorkingSetSize : 0;
+#elif defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__)
+    struct rusage usage;
+    if (getrusage(RUSAGE_SELF, &usage) || usage.ru_maxrss <= 0) return 0;
+#ifdef __APPLE__
+    return (SnxU64)usage.ru_maxrss; /* bytes there, KiB on the others */
+#else
+    return (SnxU64)usage.ru_maxrss << 10;
+#endif
+#else
+    return 0;
+#endif
+}
+void snx_phases_line(char* out, size_t size, const SnxRecompilePhases* p) {
+    char peak[64], end[96];
+    if (p->peak)
+        snprintf(peak, sizeof peak, "peak %llu MiB", (unsigned long long)(p->peak >> 20));
+    else
+        snprintf(peak, sizeof peak, "the system does not say the peak");
+    if (p->pack)
+        snprintf(end, sizeof end, "pack %.1f s", p->link);
+    else
+        snprintf(end, sizeof end, "link %.1f s, write %.1f s", p->link, p->write);
+    snprintf(out, size,
+             "code: discovery %.1f s, compile %.1f s (%.1f s of units on %u thread%s), descriptor %.1f s, %s; %s",
+             p->discovery, p->compile, p->units, p->threads, p->threads == 1u ? "" : "s", p->descriptor, end, peak);
+}
+void snx_recompile_line(char* out, size_t size, double before, double code, double after) {
+    snprintf(out, size, "recompile: %.1f s in all: %.1f s before the code, %.1f s the code, %.1f s after it",
+             before + code + after, before, code, after);
 }
 void snx_unit_line(char* out, size_t size, size_t done, size_t count, const char* name, const char* label, int cached,
                    double seconds, SnxU64 used) {
