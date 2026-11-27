@@ -757,6 +757,8 @@ static int desc_pool_init(u64 dp, u64 pool, i64 offset, i32 count, const char* k
         (unsigned long long)(nvn_pool_gpu(pool) + (u64)offset));
     return 1;
 }
+/* descriptor id's offset in its pool's memory (id checked, not negative), as a guest or a GPU address takes it */
+static u64 desc_offset(const NvnDescPool* p, i32 id) { return p->offset + (u64)id * NVN_DESCRIPTOR_SIZE; }
 /* the guest address of descriptor id, 0 when it is outside the pool or the pool has no storage */
 static u64 desc_slot(u64 dp, i32 id, const char* kind) {
     const NvnDescPool* p = NVN_OBJ(NvnDescPool, dp);
@@ -766,7 +768,7 @@ static u64 desc_slot(u64 dp, i32 id, const char* kind) {
                   p->count);
         return 0;
     }
-    return memory + p->offset + (u64)id * NVN_DESCRIPTOR_SIZE;
+    return memory + desc_offset(p, id);
 }
 void nvn_TexturePoolFinalize(CPU* c, u64 tp) {
     (void)c;
@@ -852,7 +854,7 @@ static void descriptor_write(u64 dp, i32 id, u64 slot, const u32 desc[8]) {
     /* the slot's GPU address, which the queued copies' ranges use (a pool's GPU range is not its guest memory) */
     const NvnDescPool* p = NVN_OBJ(NvnDescPool, dp);
     const u64 pool_gpu = nvn_pool_gpu(p->pool);
-    const u64 gpu = pool_gpu ? pool_gpu + p->offset + (u64)id * NVN_DESCRIPTOR_SIZE : 0;
+    const u64 gpu = pool_gpu ? pool_gpu + desc_offset(p, id) : 0;
     /* a queued copy over the slot that has not run lands its bytes after this write: the write still counts */
     const int copy_over = gpu && nvn_copy_queued_over(gpu, NVN_DESCRIPTOR_SIZE);
     if (!nvn_replay_writes_pending() && !copy_over && !memcmp(GP(slot), desc, NVN_DESCRIPTOR_SIZE)) return;

@@ -551,8 +551,8 @@ static void writes_land(void) {
         }
         const int whole = !st->wq_count || st->wq[st->wq_head].group != g;
         pm_unlock(&st->lock);
-        /* a copy that this thread queued before the writes (nvn_copy.c's launch) and that reads or writes the same bytes
-           runs first, as the console's GPU ran it before the CPU's write landed */
+        /* a copy that this thread queued before the writes (nvn_copy.c's launch) and that reads or writes the same
+           bytes runs first, as the console's GPU ran it before the CPU's write landed */
         for (u32 k = 0; k < n; k++) {
             if (gpu[k]) gq_read_wait(gpu[k], len[k]);
             write_land(at[k], data[k], len[k]);
