@@ -183,6 +183,7 @@ static struct {
     u64 bytes;
     u64 copy_src_read; /* vk_buf_copy_src_read */
     u64 ahead; /* fills recorded ahead of the submission's rendering passes (vk_cmd_upload) */
+    u64 prefetched; /* entries vk_buf_prefetch fetched ahead (step 1) */
     /* Pending buffer writes, and the work covered by the last consumer barrier. Read-only draws do not
        advance writes. A writable reuse still needs ordering against intervening readers. */
     struct {
@@ -4053,6 +4054,7 @@ typedef struct {
     u64 patches, bytes, cpu_pages, gpu_pages, region_bytes, none[VK_UMA_NONE_N];
     u64 staged, staged_dear, staged_region;
     u64 patch_lk[LK_N], patch_nf[NF_N]; /* the patches' bytes by lookup and by why the fast path did not bind it */
+    u64 prefetched_from; /* g_buffer.prefetched at the last line */
 } GCopy;
 static GCopy g_gcopy;
 /* a draw's read-only storage lookups (sized and bare): bound in place, a pending result bound or composed, and copied
@@ -4084,9 +4086,9 @@ static void gcopy_log(void) {
         (unsigned long long)g_gcopy.patches, (double)g_gcopy.bytes / 1048576.0, (unsigned long long)g_gcopy.cpu_pages,
         (unsigned long long)g_gcopy.gpu_pages, (double)g_gcopy.region_bytes / 1048576.0, at ? line : " none");
     LOG("vulkan: buffer cache staging over the last 600 presents: %.1f MB, %.1f MB of it vertices, indices, windows and "
-        "constant buffers, %.1f MB in a region\n",
+        "constant buffers, %.1f MB in a region; %llu entries fetched ahead of a draw's lookups\n",
         (double)g_gcopy.staged / 1048576.0, (double)g_gcopy.staged_dear / 1048576.0,
-        (double)g_gcopy.staged_region / 1048576.0);
+        (double)g_gcopy.staged_region / 1048576.0, (unsigned long long)(g_buffer.prefetched - g_gcopy.prefetched_from));
     static const char* const lk[LK_N] = {"other",
                                          "draws' read-only storage",
                                          "its windows",
@@ -4114,7 +4116,7 @@ static void gcopy_log(void) {
         (unsigned long long)sc[2], nf[0], (double)sb[2] / 1048576.0, (unsigned long long)sc[3], nf[1],
         (double)sb[3] / 1048576.0, (unsigned long long)sc[4], nf[2], (double)sb[4] / 1048576.0,
         (unsigned long long)sc[5], nf[3], (double)sb[5] / 1048576.0);
-    g_gcopy = (GCopy){0};
+    g_gcopy = (GCopy){.prefetched_from = g_buffer.prefetched};
     for (u32 i = 0; i < VK_RC_SLOTS; i++) g_storage_slot[i] = (typeof(g_storage_slot[0])){0};
 }
 /* len bytes at gva staged for a draw: counted (g_gcopy) */
@@ -5062,20 +5064,25 @@ int vk_buf_get_window_input(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off
 }
 /* A draw looks its buffers up one after another, and each lookup waited on two cache misses in a row, its index slot
    and then the entry the slot names: 88% of buf_get's own time in one game. A caller that knows its ranges first
-   fetches every slot (step 0), then every entry they name (step 1), so the misses overlap */
+   fetches every slot (step 0), then every entry they name (step 1), so the misses overlap.
+   Where vertices, indices and constant buffers are read in place (vk_uma, its imports not dear), the fast path binds
+   nearly all of them before the cache is looked at (buf_get_'s vk_uma_read): there step 1's read of the slot was a
+   cache miss of its own, for an entry no lookup then read */
 void vk_buf_prefetch(u64 gva, u64 len, int step) {
     vk_shared_note(7);
     u32 sl;
     /* a hint: none while a run is split (draw_batches=2), where the index may grow under another thread */
-    if (vk_share_on() || !g_vbi || !len || len > 0xFFFFFFFFull) return;
+    if (vk_share_on() || !g_vbi || !len || len > 0xFFFFFFFFull || (vk_uma() && !vk_uma_imports_dear())) return;
     sl = vb_home(gva, (u32)len);
     if (!step) {
         __builtin_prefetch(&g_vbi[sl]);
         return;
     }
+    g_buffer.prefetched++;
     if (g_vbi[sl].idx && g_vbi[sl].start == gva && g_vbi[sl].len == (u32)len)
         for (size_t o = 0; o < sizeof(Vb); o += 64) __builtin_prefetch((const char*)&g_vb[g_vbi[sl].idx] + o);
 }
+u64 vk_buf_prefetched(void) { return g_buffer.prefetched; }
 /* A dispatch's read-only storage buffer (compute.c), checked with no delay as a constant buffer is: a changed word
    changes the program's result. With unified memory it is read where guest memory holds it, as vertices and constant
    buffers are: the import that holds the range, bound at its offset with no copy (vk_uma_get). An Ounce program binds
