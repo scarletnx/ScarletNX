@@ -142,14 +142,16 @@ int vk_descriptors_room(u32 slot) {
 static VkDeviceSize least(VkDeviceSize a, VkDeviceSize b) { return a < b ? a : b; }
 /* One buffer for every frame's part and the lasting tables', where the device's limits let one binding reach all of
    it: the smallest of the largest allocation, the binding ranges of resources and samplers, and their address spaces
-   (the tables hold combined image samplers). The reported limits go from 128 KiB to 1 TiB, so the parts take their
+   (the tables hold combined image samplers), less the texture table's buffer, which vk_table_init made before the
+   first draw and which is in both address spaces too. The reported limits go from 128 KiB to 1 TiB, so the parts take their
    size from them: 64 MiB each where it fits, else an equal share. 0: a buffer for each frame, as before */
 static int arena_shared(void) {
     const VkPhysicalDeviceDescriptorBufferPropertiesEXT* p = &g_vk.descriptor_props;
+    const VkDeviceSize table = vk_table_descriptor_bytes(),
+                       spaces = least(p->resourceDescriptorBufferAddressSpaceSize,
+                                      p->samplerDescriptorBufferAddressSpaceSize);
     VkDeviceSize limit = least(least(g_vk.alloc_cap, p->maxResourceDescriptorBufferRange),
-                               least(p->maxSamplerDescriptorBufferRange,
-                                     least(p->resourceDescriptorBufferAddressSpaceSize,
-                                           p->samplerDescriptorBufferAddressSpaceSize)));
+                               least(p->maxSamplerDescriptorBufferRange, spaces > table ? spaces - table : 0));
     const VkDeviceSize align = p->descriptorBufferOffsetAlignment ? p->descriptorBufferOffsetAlignment : 1;
     VkDeviceSize part = DESCRIPTOR_BYTES, lasting = LASTING_BYTES;
     if (part * VK_FRAMES + lasting > limit) part = lasting = limit / (VK_FRAMES + 1) / align * align;

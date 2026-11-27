@@ -62,6 +62,7 @@ void rec_CmdBindDescriptorSets(VkCommandBuffer, VkPipelineBindPoint, VkPipelineL
 /* vk.h's and devmem.h's: no fallback from the heaps here, and the tables in the mapped window (no small BAR) */
 static inline int vk_heaps(void) { return g_vk.has_descriptor_heaps; }
 static inline int vk_devmem_tables_at(void) { return DM_WINDOW; }
+static inline VkDeviceSize vk_table_descriptor_bytes(void) { return 0; } /* no texture table */
 #include "nx/gpu/vk/descriptors.c"
 
 #define HANDLE(type, value) ((type)(uintptr_t)(value))
