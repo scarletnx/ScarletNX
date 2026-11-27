@@ -369,6 +369,12 @@ typedef struct GfxOut {
     /* GPU-owned input snapshotted before shader writes, read only at the frame fence. */
     u8* initial;
     DevMem initial_mem;
+    /* where the GPU copied the baseline (writable_owned), for a merge that reads it there before the fence: NULL
+       when the baseline is only on the host (an atlas page) */
+    VkBuffer initial_buf;
+    u64 initial_off;
+    u32 initial_split; /* vk_share_serial() of the split that recorded the copy, 0 outside one */
+    u8 initial_slot;   /* vk_render_slot() of the thread that recorded it */
     u64* pages; /* sorted guest CPU pages behind this GPU virtual range */
     u64* vmap;  /* the same pages in the range's order, ~0 for an unmapped one */
     u64 cpu;    /* the guest CPU address of addr when vmap is one run of guest memory, ~0 otherwise */
@@ -1763,13 +1769,24 @@ static GfxOut* out_absorb(GfxOut* h) {
    above, the device's limits, no staging, o not taken), and where no descriptor set is left, after the pass's end
    and a barrier, with o taken into this submission */
 static int range_owned(u64 gva, u64 len);
+/* The baseline of a result made over owned bytes (writable_owned) is still on its way to host memory, and the GPU
+   copy that makes it was recorded before this point in GPU order: the merge can read it on the GPU. Not while the
+   range is owned, since guest memory then does not hold the owner's bytes that the CPU's writes go over. In a split,
+   the worker's list runs after the renderer thread's half, so a copy that the worker recorded in this split is not
+   before the renderer thread's merge */
+static int baseline_on_gpu(const GfxOut* o) {
+    if (!o->initial_buf) return 0;
+    if (vk_share_on() && o->initial_split == vk_share_serial() && o->initial_slot > vk_render_slot()) return 0;
+    return !range_owned(o->addr, o->size);
+}
 static int gfx_rebase(GfxOut* o) {
     /* a split's worker (draw_batches=2): its merge goes into its list, which the GPU runs after the renderer thread's
        half, but o's original bytes and wseen change at once, and the renderer thread's draws would bind o in place
        before its merge. A batch of draw_batches=1 records in slot 1 too, while the renderer thread waits: it lands o
        as before, which costs a submit but never the order */
     if (vk_render_slot()) return 0;
-    if (o->cpu == ~0ull || !o->org || o->initial || o->keep || o->no_input || (o->off & 3) ||
+    const int gpu_base = o->initial && baseline_on_gpu(o);
+    if (o->cpu == ~0ull || !o->org || (o->initial && !gpu_base) || o->keep || o->no_input || (o->off & 3) ||
         !gmem_host(o->addr, o->size) || vk_uma_pending(o->addr, o->size) || vk_release_pending(o->addr, o->size) ||
         range_owned(o->addr, o->size)) /* GPU-owned bytes: guest memory does not hold them yet */
         return 0;
@@ -1782,8 +1799,14 @@ static int gfx_rebase(GfxOut* o) {
     u64 in_off;
     u8* p = vk_stage(gap + words * 4, a, &in, &in_off);
     if (!p || (o->frame != vk_submit_number() && !out_take_into_submit(o))) return 0;
-    memcpy(p, o->org, o->size);
+    if (!gpu_base) memcpy(p, o->org, o->size);
     vk_render_end();
+    if (gpu_base) { /* the original bytes from the baseline's copy, with no wait for the fence */
+        copy_barrier(VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
+                     VK_ACCESS_2_TRANSFER_READ_BIT);
+        VkBufferCopy copy = {o->initial_off, in_off, o->size};
+        rec_CmdCopyBuffer(vk_cmd(), o->initial_buf, in, 1, &copy);
+    }
     copy_barrier(out_stages(), out_access(), VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                  VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
     /* the merge reads its input at the submission, so the guest bytes come after it is recorded: a merge that fails
@@ -1797,6 +1820,8 @@ static int gfx_rebase(GfxOut* o) {
     o->wseen = vk_ww_now(); /* before guest memory is read: a write in between only makes out_copyable compare */
     read_untracked(o->addr, o->org, o->size);
     memcpy(p + gap, o->org, o->size);
+    o->initial = NULL; /* org is the new baseline: guest memory as the merge read it */
+    o->initial_buf = VK_NULL_HANDLE;
     g_buffer.wstat.copied += o->size;
     if (copy_stats_on()) {
         g_merges++;
@@ -2936,6 +2961,10 @@ static int writable_owned(GfxOut* o, u64 gva, u32 len, VkBuffer buf, u64 off) {
     }
     o->initial = vk_stage_back(len, &back, &at, &o->initial_mem);
     if (!o->initial) return 0;
+    o->initial_buf = back;
+    o->initial_off = at;
+    o->initial_split = vk_share_on() ? vk_share_serial() : 0;
+    o->initial_slot = (u8)vk_render_slot();
     vk_render_end();
     vk_guest_read(gva, len, o->ptr, buf, off);
     g_buffer.wstat.copied += len;
