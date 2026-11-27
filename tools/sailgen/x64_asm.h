@@ -300,7 +300,7 @@ static inline void sgx_cold_varg(SgXAsm* a, int s, int v) {
     else
         sgx_vmem(a, &sgx_v_movdqu_ld, s, SGX_RSP, 8 * vv->slot);
 }
-/* the vector cold path's tests before its call (sgx_vcold_warm, x64_vec.c's guards: the LLVM back end's warm path),
+/* the vector cold path's tests before its call (sgx_vcold_warm, x64_vec.c's guards: the warm path),
    in SSE on three XMM registers no value of them is in, kept in the frame around them (zacc bit 7 says there are such
    tests). Back to the hot code, its result out as it is, where FPSR's IXC is set (bit 5), no argument FZ flushes (the
    first ones, bits 3-4 their count) and in each of the lanes desc names (x64_vec.c's FDESC) either (bit 6) the hot

@@ -141,7 +141,7 @@ static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r) {
         case SGX_A32_FENCE: sgx_bytes(b, "0F AE F0"); return; /* mfence */
         case SGX_A32_CALL: sgx_a32_call_out(a, b, i->sym); return;
         case SGX_A32_STREX: {
-            /* llvm.c's exclusive(): the reservation's address and size checked and the monitor cleared, then a
+            /* the store-exclusive: the reservation's address and size checked and the monitor cleared, then a
            compare-and-swap of the value the load-exclusive read: status 0 where it took, 1 otherwise */
             unsigned bytes = (unsigned)i->imm;
             const int ad = SGX_A32_STREX_REGS(a->x)[0];

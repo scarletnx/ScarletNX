@@ -136,7 +136,7 @@ static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r) {
         case SGX_A32_FENCE: sga_w(b, sge_a64_dmb(11)); return; /* DMB ISH */
         case SGX_A32_CALL: sgx_a32_call_out(a, b, i->sym); return;
         case SGX_A32_STREX: {
-            /* llvm.c's exclusive(): the monitor disarmed, its address and size checked, then a compare-and-swap of the
+            /* the store-exclusive: the monitor disarmed, its address and size checked, then a compare-and-swap of the
                value the load-exclusive read at the access's size: W0 0 where it took, 1 otherwise. The address in
                X1, the value in X2, the memory's base in X3 (sgx_a32_strex); X4 and X5 its own */
             unsigned bytes = (unsigned)i->imm;

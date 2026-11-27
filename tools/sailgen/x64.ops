@@ -323,7 +323,7 @@ cond LE NOT (Z = 0 AND N = V)
 # 'enc NAME FORM' asks for FORM's encoder and operands (x64.h's SgXVForm sgx_v_NAME), from its row's opcode column:
 # what the instruction does isn't derived here (the legacy SSE pages give their lanes in comments, 'Repeat operation
 # for 2nd through 15th byte'). x64_a64.h and x64_codegen.c use them as the Arm ARM's vector operations, which
-# recompiler_backends and sail_x64 hold against the LLVM back end. A form the manual lacks stops the build.
+# recompiler_backends and sail_x64 hold against QEMU and the recorded ends. A form the manual lacks stops the build.
 enc movdqu_ld MOVDQU xmm1, xmm2/m128
 enc movdqu_st MOVDQU xmm2/m128, xmm1
 enc movaps MOVAPS xmm1, xmm2/m128

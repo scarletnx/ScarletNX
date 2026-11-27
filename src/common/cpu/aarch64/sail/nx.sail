@@ -168,7 +168,7 @@ function Mem_set__1 (address, size, accdesc, ispair, value_name) = Mem_set(addre
 val BigEndian : AccessType -> bool
 function BigEndian acctype = false
 
-// A guest access is the host's (llvm.h's GuestMemRead), at any address: ScarletNX raises no alignment fault, of the
+// A guest access is the host's (the back end's GuestMemRead), at any address: ScarletNX raises no alignment fault, of the
 // stack pointer's or an exclusive pair's, and no data abort, so no syndrome is recorded
 val CheckSPAlignment : unit -> unit
 function CheckSPAlignment () = ()
@@ -205,7 +205,7 @@ val __IMPDEF_boolean : string -> bool
 function __IMPDEF_boolean s = false
 
 // Guest memory is ScarletNX's own: the host's bytes at CPU.mem plus the address, read and written as the host does
-// (llvm.h). An acquire load and a release store are sequentially consistent host atomics, which order both ways, so
+// (the back end's). An acquire load and a release store are sequentially consistent host atomics, which order both ways, so
 // RCpc's acquire is the stronger one and LOR's limited ordering the full one (cpu.h)
 val GuestMemRead : forall 'size. (bits(64), int('size), bool) -> bits('size * 8)
 val GuestMemWrite : forall 'size. (bits(64), int('size), bool, bits('size * 8)) -> unit

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* sailgen's x86-64 back end, A64's part of its own (after mach_a64.h, which keeps the guest's registers, its memory
-   and its branches): the floating point (the SSE instruction behind the LLVM back end's guards, the exact helper on
+   and its branches): the floating point (the SSE instruction behind guards, the exact helper on
    a cold path), the exclusives' stores, the LSE atomics and CRC32 inline with their inputs in fixed registers, the
    barriers as x86's ordering asks, and the ABI's bytes. The state's address is in RBX.
 
@@ -11,7 +11,7 @@
 
 /* ---- the hot paths ----
    Each operation is the SSE instruction's, and the exact helper's (snx_x64_fp_*) on a cold path where the result
-   may not be the console's: the guards are the LLVM back end's (llvm.h's sg_fp_fast_*). FPCR rounds to nearest
+   may not be the console's. The guards: FPCR rounds to nearest
    (DN matters to NaNs only, which go cold), under FZ no operand is a denormal (sgx_fp_flushed: many games run with FZ
    set, and a guard of FZ clear sent all of their arithmetic to the helpers), FPSR's IXC is set already where the
    operation may be inexact (the inline code doesn't raise it), and the result is a normal number above the smallest
@@ -79,7 +79,7 @@ static inline int sgx_fp_bound(SgCtx* g, SgD fpcr, unsigned w) {
     return g->fp_bound[w == 64] = b.v;
 }
 /* and of the test for a denormal operand (w 32 or 64) that FPCR.FZ flushes, raising IDC (SGX_T_DENORMAL): the helpers'
-   case (llvm.h's sg_fp_unflushed). The doubled smallest normal less 2 where FZ is set, 0 where it is clear (never), a
+   case. The doubled smallest normal less 2 where FZ is set, 0 where it is clear (never), a
    register made once a region, so the test costs a MOVD, LEA, CMP and Jcc */
 static inline int sgx_fp_dbound(SgCtx* g, SgD fpcr, unsigned w) {
     SnxU64 normal = w == 32 ? 0x00800000u : 0x0010000000000000ull;
@@ -107,7 +107,7 @@ static inline int sgx_fp_tests(SgCtx* g, SgXTest* t, SgD fpcr, unsigned w, int n
     return n;
 }
 /* the cold path of an operation sgx_fp_tests tests: the helper's call where a test holds, but a zero result the hot
-   path's where FPCR rounds to nearest, under FZ no operand is a denormal (llvm.h's sg_fp_unflushed: many games run with
+   path's where FPCR rounds to nearest, under FZ no operand is a denormal (many games run with
    FZ set and compute zeros), and (zargs, a mask of ops) one of those operands is a zero (none: any zero is exact, as a
    sum's is) */
 static inline SgD sgx_fp_cold_z(SgCtx* g, const SgXTest* t, int nt, SgD fast, const char* sym, SgD* ops, int nops,
@@ -528,7 +528,7 @@ static inline SgD sg_crc32(SgCtx* g, SgD acc_bits, SgD value_bits, long long siz
 }
 
 /* an x86 load is an acquire one (Vol. 3A, 10.2.2: loads are not reordered with other loads, nor stores with older
-   loads); a release store is MFENCE after it, as the sequentially consistent store the LLVM back end makes (Arm's
+   loads); a release store is MFENCE after it, a sequentially consistent store (Arm's
    store-release orders it with a later load-acquire, which x86's store buffer alone would not) */
 static inline void sgx_acquire(SgCtx* g) { (void)g; }
 static inline void sgx_release(SgCtx* g, int after) {

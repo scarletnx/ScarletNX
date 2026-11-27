@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* sailgen's parse of the Sail it reads (parse.c), which its two jobs share: --extract (extract.c) copies definitions
-   out of sail-arm's files, and the generator (gen.c, with the LLVM back end in llvm.c) writes C that emits each
-   instruction's IR. Nodes, definitions and names each live in one array, linked by index; index 0 is none */
+   out of sail-arm's files, and the generator (gen.c) writes C that emits each
+   instruction's code for the machine back ends. Nodes, definitions and names each live in one array, linked by index; index 0 is none */
 #ifndef SNX_TOOLS_SAILGEN_H
 #define SNX_TOOLS_SAILGEN_H
 

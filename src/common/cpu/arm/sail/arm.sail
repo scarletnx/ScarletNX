@@ -5,7 +5,7 @@
    ScarletNX's AArch32 CPU (arm.h's SnxArmCPU) keeps the registers. sailgen reads this file after a32.sail (--overlay),
    and a definition here takes the place of a32.sail's of the same name; a top-level let is a constant the generated
    code folds. a32.roots stops the extraction at the names defined here, so a32.sail holds only sail-arm's own text.
-   What differs from one architecture to the next asks ArchVersion(), the guest's (llvm_arm.h), as the ARMv7 ARM's ASL
+   What differs from one architecture to the next asks ArchVersion(), the guest's (mach_a32.h), as the ARMv7 ARM's ASL
    does; which encodings each one has is a32.profile's */
 
 // ---- the registers ----

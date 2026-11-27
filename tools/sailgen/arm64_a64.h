@@ -6,7 +6,7 @@
    The floating point is the exact helpers' (mach_a64.h's SGX_FP_HELPERS) for every operation: the host computes
    Arm's IEEE arithmetic itself, but only under the guest's FPCR, which the runtime's own C would then run under too,
    so that is left for the code that switches FPCR around the calls out. The exclusives and atomics are the host's own load-exclusive and
-   store-exclusive (or the LSE instruction), sequentially consistent as the LLVM back end's host atomics are: a
+   store-exclusive (or the LSE instruction), sequentially consistent: a
    store-exclusive is cpu.h's value-based monitor, a compare-and-swap from the value the load-exclusive read. The
    barriers are the guest's own DMB, DSB and ISB, and an acquire load and a release store a DMB beside them.
 
