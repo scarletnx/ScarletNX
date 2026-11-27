@@ -897,6 +897,9 @@ static void xfb_bind_done(DrawOwner* o, const XfbBind* x) {
    Orders a command of the open pass that samples the color slots in read and writes those in write: against every
    earlier command of the pass where strict, else against those before the guest's last fragment barrier. 0 when the
    pass could not be begun again */
+/* the color slots that the draw being recorded samples in place at other pixels (stage_set_): its order is strict,
+   and the next write of those slots waits for its reads */
+static _Thread_local u32 t_fb_elsewhere;
 static int feedback_order(u32 read, u32 write, int strict) {
     read &= g_rp[t_rc].fb;
     write &= g_rp[t_rc].fb;
@@ -5351,6 +5354,21 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                sample in place: the guest's draw reads the save attachment, which it doesn't write */
             if (written && !(s->si.predraw_slots >> i & 1) && g_vk.feedback_mode == VK_FEEDBACK_INTERLOCK) slots = 0;
         }
+        /* a color target the fragment program reads at other pixels, or that the slots above left to a copy: in
+           place too where the pass can take a barrier (dynamicRenderingLocalRead), ordered after the pass's earlier
+           writes and before its next ones (t_fb_elsewhere). Vulkan leaves undefined what a read gives at a pixel the
+           draw itself writes, as the console's texture cache leaves it to the game. A copy of the target ended the
+           pass each time it was made again: in one game's world, 25 times a present, 87 % of them after a draw that
+           sampled none of it wrote the target */
+        u32 elsewhere = 0;
+        if (!slots && t && fb && stage == ST_FS && g_vk.has_feedback && g_vk.has_local_read && !t->msaa &&
+            t->layers == 1 && vk_surf_layout(t) != VK_IMAGE_LAYOUT_UNDEFINED)
+            for (u32 j = 0; j < n; j++)
+                if (rt[j] == t) elsewhere |= 1u << j;
+        if (elsewhere) {
+            slots = elsewhere;
+            t_fb_elsewhere |= elsewhere;
+        }
         if (g_predraw.phase && stage == ST_FS && t && !slots) {
             if (t->predraw) g_predraw_stats.save_copied++;
             else if (predrawn) g_predraw_stats.target_copied++;
@@ -5368,7 +5386,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                loop */
             view = tex_bind_view(x, t, want, num);
             if (view) *fb |= slots;
-            if (view && stage == ST_FS) predraw_probe((u32)i, x, t);
+            if (view && stage == ST_FS && !elsewhere) predraw_probe((u32)i, x, t);
         } else if (t && is_target(t, rt, zt, n) && !depth_ro) {
             /* The guest reads the target's previous contents during a draw that writes it. Without a feedback loop
                Vulkan can't bind one image for both uses here, so copy it before the draw starts and sample that
@@ -8170,6 +8188,10 @@ static void render_split_run(void) {
         g_rp[t_rc] = g_split.pass;
         g_rp[t_rc].rate_want = RATE_KEEP;
         g_rp[t_rc].clears = 0;
+        /* its feedback slots: the renderer thread's draws after the split, which come before these, may have
+           written and sampled each, so the first of these that samples or writes one is ordered after them */
+        const u32 fb = g_rp[t_rc].fb;
+        g_rp[t_rc].fb_written = g_rp[t_rc].fb_read = g_rp[t_rc].due_written = g_rp[t_rc].due_read = fb;
     }
     vk_rec_list_begin(g_split.list);
     vk_rec_list_parallel(1);
@@ -8213,7 +8235,7 @@ static void split_pass_again(void) {
     g_rp[0].rate_want = RATE_KEEP; /* no pass open: no rate attachment, as the split's pass had */
     Surf* rt[8];
     memcpy(rt, p->rt, sizeof rt);
-    if (!render_begin(rt, p->zt, p->n, p->zt_ro, p->srgb_write, 0, p->ext))
+    if (!render_begin(rt, p->zt, p->n, p->zt_ro, p->srgb_write, p->fb, p->ext))
         fatal("vulkan: draw_batches=2: the pass the worker's commands go on in could not begin again\n");
     rp_record();
 }
@@ -8230,7 +8252,7 @@ static void render_split_join(void) {
     if (g_split.inherit) {
         const typeof(g_rp[0])* p = &g_split.pass;
         const int same = g_rp[0].open && g_rp[0].n == p->n && g_rp[0].zt == p->zt && g_rp[0].zt_ro == p->zt_ro &&
-                         g_rp[0].srgb_write == p->srgb_write && !g_rp[0].fb && !g_rp[0].rate &&
+                         g_rp[0].srgb_write == p->srgb_write && g_rp[0].fb == p->fb && !g_rp[0].rate &&
                          !memcmp(g_rp[0].rt, p->rt, sizeof p->rt);
         if (same) {
             rp_record(); /* begun, if a clear alone opened it */
@@ -8309,9 +8331,9 @@ static void render_split(void) {
     (void)vk_cmd_upload(1); /* and the uploads' command buffer, which a worker's draw can't begin (its ring) */
     g_split.submit = vk_submit_number();
     g_split.inplace = vk_mirror_inplace_count();
-    /* a begun pass with no feedback slots and no shading rate attachment: the worker's draws go on in it. Its
-       feedback state is the renderer thread's to change, and a rate attachment is a draw's to choose */
-    g_split.inherit = g_rp[0].open && g_rp[0].begun && !g_rp[0].fb && !g_rp[0].rate;
+    /* a begun pass with no shading rate attachment: the worker's draws go on in it, with its feedback slots. A rate
+       attachment is a draw's to choose */
+    g_split.inherit = g_rp[0].open && g_rp[0].begun && !g_rp[0].rate;
     if (g_split.inherit) g_split.pass = g_rp[0];
     g_split.took = 0;
     atomic_store_explicit(&g_split.granted, 0, memory_order_relaxed); /* the ring is the renderer thread's */
@@ -9264,6 +9286,7 @@ resolved:
     }
     int zt_ro = 0;
     u32 fb = 0;
+    t_fb_elsewhere = 0;
     u64 scaled[2] = {0};
     DrawImages images; /* read below its count alone (a pattern past it with draw_state_check=1, as the storage) */
     if (g_settings.draw_state_check) memset(&images, 0xA5, sizeof images);
@@ -9728,7 +9751,8 @@ resolved:
        before each draw gives too, the same every frame. Only with dynamicRenderingLocalRead: without it the order
        would begin the pass again at each such draw */
     int strict_feedback = g_predraw.phase == 1 || (!g_predraw.phase && fb && g_vk.feedback_mode == VK_FEEDBACK_PREDRAW &&
-                                                   g_vk.has_local_read);
+                                                   g_vk.has_local_read) ||
+                          (fb & t_fb_elsewhere);
     const u64 pass_t0 = g_draw_depth == 1 ? ph_now() : 0;
     g_rp[t_rc].rate_want = dc->shading_rate;
     int begun = programmable_blend ? programmable_pass
@@ -10306,6 +10330,9 @@ static void draw_commit(const DsState* ds, const DrawOwner* o, const DrawShaders
     vk_buf_writable_commit();
     draw_images_commit(images);
     feedback_done(fb, writes);
+    /* reads of other pixels: the next write of those slots waits for them, as for a guest barrier after them
+       (vk_render_fragment_barrier) */
+    g_rp[t_rc].due_read |= fb & t_fb_elsewhere & g_rp[t_rc].fb;
     if (fb && g_predraw.phase != 1) CNT(g_vk_fb_draws)++; /* the guest's draws: a save draw is the renderer's own */
     if (predraw) vk_predraw_drawn();
     for (u32 i = 0; i < n; i++)
