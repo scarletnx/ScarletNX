@@ -1,14 +1,14 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* A whole program through the LLVM backend: a synthetic NRO with a loop, BL/RET, an indirect branch inside its
+/* A whole program through the native back end: a synthetic NRO with a loop, BL/RET, an indirect branch inside its
    function (the D_ dispatch), a tail call into another function, SVC, exclusives, FP and SIMD, recompiled by the CLI
    in small chunks (calls cross units). The module's run must end in the state qemu-aarch64 -cpu cortex-a57 ends the
    same program in from the same start (tests/qemu_ref, a free run of the image, its final RET to x30 = 0 taken by
    hand): every register, the flags, FP state, the stack memory and the SVC call. A miss (RtAPI.miss) stands in for
    the runtime JIT compiling the code at its pc: the module's function there, made live again, or the image's words
-   as LLVM steps where no function is (the BR's target).
+   as native steps where no function is (the BR's target).
    CPU.poll is set when each run starts: the AOT code must call rt->poll at the loop's backward branch, and go on at
-   its head (a tail call of main itself, entered there). A second LLVM module built with --hook-direct-calls must run
+   its head (a tail call of main itself, entered there). A second module built with --hook-direct-calls must run
    the same, with main's BL to func reaching func through CPU.disp, where a wrapper counts it. With func's functions
    stale (SnxModule.stale, as the runtime marks them when the guest patches their code: SNX_ABI 14) and out of
    CPU.disp, main's direct BL must leave the AOT code at func's entry for rt->miss, and the run end the same. With main
@@ -267,16 +267,16 @@ static void differences(const Run* a, const Run* b, const char* what) {
     size_t i;
     for (i = 0; i < sizeof(a->cpu.x) / sizeof(a->cpu.x[0]); ++i)
         if (a->cpu.x[i] != b->cpu.x[i])
-            fprintf(stderr, "  %s x%lu=%llx, llvm %llx\n", what, (unsigned long)i, (unsigned long long)b->cpu.x[i],
+            fprintf(stderr, "  %s x%lu=%llx, plain %llx\n", what, (unsigned long)i, (unsigned long long)b->cpu.x[i],
                     (unsigned long long)a->cpu.x[i]);
     for (i = 0; i < sizeof(a->cpu.v) / sizeof(a->cpu.v[0]); ++i)
         if (memcmp(&a->cpu.v[i], &b->cpu.v[i], sizeof(a->cpu.v[i])))
-            fprintf(stderr, "  %s v%lu=%llx:%llx, llvm %llx:%llx\n", what, (unsigned long)i,
+            fprintf(stderr, "  %s v%lu=%llx:%llx, plain %llx:%llx\n", what, (unsigned long)i,
                     (unsigned long long)b->cpu.v[i].d[1], (unsigned long long)b->cpu.v[i].d[0],
                     (unsigned long long)a->cpu.v[i].d[1], (unsigned long long)a->cpu.v[i].d[0]);
     if (a->cpu.pc != b->cpu.pc || a->cpu.n != b->cpu.n || a->cpu.z != b->cpu.z || a->cpu.cf != b->cpu.cf ||
         a->cpu.vf != b->cpu.vf || a->cpu.fpsr != b->cpu.fpsr || a->cpu.excl_on != b->cpu.excl_on)
-        fprintf(stderr, "  %s pc=%llx nzcv=%u%u%u%u fpsr=%x excl=%u, llvm pc=%llx nzcv=%u%u%u%u fpsr=%x excl=%u\n",
+        fprintf(stderr, "  %s pc=%llx nzcv=%u%u%u%u fpsr=%x excl=%u, plain pc=%llx nzcv=%u%u%u%u fpsr=%x excl=%u\n",
                 what, (unsigned long long)b->cpu.pc, b->cpu.n, b->cpu.z, b->cpu.cf, b->cpu.vf, (unsigned)b->cpu.fpsr,
                 b->cpu.excl_on, (unsigned long long)a->cpu.pc, a->cpu.n, a->cpu.z, a->cpu.cf, a->cpu.vf,
                 (unsigned)a->cpu.fpsr, a->cpu.excl_on);
@@ -458,7 +458,7 @@ int main(int argc, char** argv) {
     self = snx_executable(argv[0]);
     check(!snx_write_file(input, image, sizeof(image)), "write NRO");
     for (b = 0; b < 2; ++b) { /* the second: with --hook-direct-calls */
-        out[b] = snx_path_join(root, b ? "llvm-hooked" : "llvm");
+        out[b] = snx_path_join(root, b ? "hooked" : "plain");
 #ifdef _WIN32
         module[b] = snx_path_join(out[b], "Program/Program_code.dll");
 #else
@@ -485,7 +485,7 @@ int main(int argc, char** argv) {
         args[k] = NULL;
         if (snx_run(args, root, NULL, &text)) {
             fprintf(stderr, "%s\n", text ? text : "");
-            fprintf(stderr, "%s build failed\n", b ? "hooked llvm" : "llvm");
+            fprintf(stderr, "%s build failed\n", b ? "the hooked" : "the plain");
             check(0, "build");
         }
         free(text);
@@ -521,7 +521,7 @@ int main(int argc, char** argv) {
           "the program returns to 0 after one SVC #7");
     expected(&want, image, runs[0].base);
     if (!same(&runs[0], &want)) differences(&runs[0], &want, "QEMU");
-    check(same(&runs[0], &want), "LLVM AOT ends as QEMU does");
+    check(same(&runs[0], &want), "the AOT module ends as QEMU does");
     /* the loop: b.ne back to main+0x10 */
     if (runs[0].polls != 1 || runs[0].poll_pc != runs[0].cpu.code_lo + 0x90)
         fprintf(stderr, "%d polls, the first at %llx\n", runs[0].polls, (unsigned long long)runs[0].poll_pc);
@@ -590,6 +590,6 @@ int main(int argc, char** argv) {
     free(input);
     free(self);
     free(root);
-    printf("LLVM module: %s\n", failures ? "FAILED" : "passed");
+    printf("native module: %s\n", failures ? "FAILED" : "passed");
     return failures != 0;
 }

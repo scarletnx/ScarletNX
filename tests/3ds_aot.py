@@ -465,7 +465,7 @@ def main():
         _, text = run(
             application(raw=sparse, ro=struct.pack('<I', 0x102001)), message='Guest ExitProcess: r0=47 blocks=3'
         )
-        # More than 512 block entries make several LLVM chunks, which the workers compile in parallel.
+        # More than 512 block entries make several chunks, which the workers compile in parallel.
         chained = bytearray(0x5000)
         for i in range(600):
             put(chained, i * 32, '<I', 0xEA000006)
