@@ -47,7 +47,7 @@ wrapper over it through JNI, not a copy of the library in Java.
 | minikin (text measure and shaping) | minikin and HarfBuzz | HarfBuzz behind `snx.android.hwui.Text` (`src/android/hwui/text.c`), which `Paint` and `Canvas` call | HLE | Shaping and metrics done |
 | Fonts (`/system/fonts`, `fonts.xml`) | System font files | Noto Sans JP (the subset the Switch runtime already uses), which the build and an install put beside the program in `android-fonts/` | Abstract | Done, one family for every typeface |
 | SurfaceFlinger, BufferQueue, gralloc, HWC | Composer process and buffer allocator | A window's surface is an SDL window's Vulkan swapchain, or an image of its own without a display | Abstract | Done |
-| Input (`InputDispatcher`, `InputChannel`) | `system_server` and a socket per window | SDL events made into `MotionEvent` and `KeyEvent` on the window's thread: the left mouse button as a finger, a US keyboard | Abstract | First version |
+| Input (`InputDispatcher`, `InputChannel`) | `system_server` and a socket per window | SDL events made into `MotionEvent` and `KeyEvent` on the window's thread: the left mouse button as a finger, a US keyboard. A touch goes to the top window whose frame holds it or that is touch-modal, a key to the top window that takes focus, as `InputDispatcher` picks them (`snx.android.ui.Host`) | Abstract | First version |
 | Native `Looper` (epoll) | libutils | The main `MessageQueue` waits in steps of 4 ms and reads SDL's event queue between them | HLE | Done |
 | `Choreographer` vsync | `DisplayEventReceiver` from SurfaceFlinger | A 60 Hz timer; the swapchain's FIFO present holds the main thread to the display | Abstract | Done |
 | SQLite (`android.database.sqlite`) | libsqlite and its JNI | Java classes over SQLite's amalgamation, a pinned package (`src/android/db/sqlite_jni.c`) | HLE | Done |
@@ -101,8 +101,9 @@ Each package's plan, by how apps use it.
 - **`android.webkit`.** Off: no web engine. A `WebView` keeps its settings and clients, and a page that it loads
   starts and finishes blank, so an app's flow goes on. The cookie manager keeps cookies in memory.
 - **`android.widget`.** Implemented: `LinearLayout`, `RelativeLayout`, `FrameLayout`, `ListView` with recycled
-  item views, `ScrollView`, `TextView` and `EditText`. Popups (`PopupWindow`, `Spinner`'s list, drop-downs) keep
-  their state but draw nothing, as the runtime has no window for them. `VideoView` reports an error at once.
+  item views, `ScrollView`, `TextView` and `EditText`. A `PopupWindow` is a window of its own over its anchor's, at
+  the place it was shown or below (or above) its anchor, and goes on the back key and on a touch outside it, as
+  Android's. `VideoView` reports an error at once.
 - **`android.animation`, `android.view.animation`.** Implemented: animators set their target's property on each
   frame, and a view animation puts its matrix and alpha on the view's render node. Transitions show the end
   state at once.

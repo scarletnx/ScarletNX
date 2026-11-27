@@ -49,8 +49,10 @@ public final class ViewRootImpl implements ViewParent {
             m.widthPixels = size.x;
             m.heightPixels = size.y;
         }
-        width = attrs != null && attrs.width > 0 ? attrs.width : m.widthPixels;
-        height = attrs != null && attrs.height > 0 ? attrs.height : m.heightPixels;
+        // the display's area, where the window's params place its frame (doTraversal), as a window of a fixed size
+        // goes where its gravity and its x and y put it
+        width = m.widthPixels;
+        height = m.heightPixels;
         view.mParent = this;
         if (!offscreen()) Host.attach(this);
         requestLayout();
@@ -75,8 +77,15 @@ public final class ViewRootImpl implements ViewParent {
     private int windowLeft, windowTop;
     int windowX() { return 0; }
     int windowY() { return 0; }
+    /** whether the window's frame holds a point of the display, where a touch there goes (Host.touchTarget) */
+    public boolean frameContains(float x, float y) {
+        return view != null && x >= windowLeft && y >= windowTop && x < windowLeft + view.getWidth()
+            && y < windowTop + view.getHeight();
+    }
+    /** the window's flags, WindowManager.LayoutParams.FLAG_*: none for a window without params */
+    public int windowFlags() { return attributes != null ? attributes.flags : 0; }
     private static int windowSpec(int param, int display) {
-        if (param > 0) return View.MeasureSpec.makeMeasureSpec(Math.min(param, display), View.MeasureSpec.EXACTLY);
+        if (param >= 0) return View.MeasureSpec.makeMeasureSpec(Math.min(param, display), View.MeasureSpec.EXACTLY);
         if (param == ViewGroup.LayoutParams.WRAP_CONTENT) return View.MeasureSpec.makeMeasureSpec(display, View.MeasureSpec.AT_MOST);
         return View.MeasureSpec.makeMeasureSpec(display, View.MeasureSpec.EXACTLY);
     }
@@ -189,6 +198,7 @@ public final class ViewRootImpl implements ViewParent {
         if (view instanceof Window.DecorView d && d.window().inputQueue() != null) return d.window().inputQueue().send(event);
         if (event instanceof MotionEvent m0) {
             MotionEvent m = m0;
+            if ((windowFlags() & WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) != 0) return false;
             if (windowLeft != 0 || windowTop != 0) {
                 m = MotionEvent.obtain(m0);
                 m.offsetLocation(-windowLeft, -windowTop);
