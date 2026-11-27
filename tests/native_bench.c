@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* Speed of the code the host's native back end makes. Each kernel is AArch64 assembly (assembled with CLANG's aarch64
    target), recompiled by the CLI, and run AOT with x19 iterations.
-     llvm_bench SCARLETNX REPO CLANG [--iterations N] [--kernel NAME] [--unit-instructions N]
+     native_bench SCARLETNX REPO CLANG [--iterations N] [--kernel NAME] [--unit-instructions N]
    Prints one line per kernel: seconds and ns per iteration. */
 #include "common/utilities/common.h"
 #include "common/cpu/aarch64/cpu.h"
@@ -146,7 +146,7 @@ static void put32(unsigned char* p, size_t off, unsigned long n) {
 /* RtAPI.miss: none is expected, the kernels are whole functions the recompiler finds */
 static void no_miss(CPU* c, u64 pc) {
     (void)c;
-    fprintf(stderr, "llvm_bench: unexpected miss at %llx\n", (unsigned long long)pc);
+    fprintf(stderr, "native_bench: unexpected miss at %llx\n", (unsigned long long)pc);
     exit(1);
 }
 
@@ -252,7 +252,7 @@ int main(int argc, char** argv) {
         put32(image, 0x34, 0x800);
         snx_write_file(input, image, sizeof(image));
         {
-            char *out = snx_path_join(root, "llvm"), *module;
+            char *out = snx_path_join(root, "native"), *module;
             CPU result;
             double seconds;
             int n = 0;

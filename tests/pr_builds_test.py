@@ -34,6 +34,8 @@ ARTIFACTS = {
          'expires_at': '2026-10-20T00:00:00Z'},
         {'id': 6, 'name': 'ScarletNX-llvm-qemu-reference-abc1234', 'size_in_bytes': 15 << 20, 'expired': False,
          'expires_at': '2026-10-25T00:00:00Z'},
+        {'id': 7, 'name': 'ScarletNX-native-qemu-reference-abc1234', 'size_in_bytes': 15 << 20, 'expired': False,
+         'expires_at': '2026-10-25T00:00:00Z'},
     ]
 }  # fmt: skip
 RUN = 'https://github.com/owner/repo/actions/runs/7'
@@ -146,7 +148,7 @@ with tempfile.TemporaryDirectory() as temporary:
     text = comment(built | {'amberlith': {'result': 'success', 'outputs': {'result': TITLE}}})
     check(
         "the builds linked, the halves of the APK, an older build.yml's install tree, the A64 differential's QEMU"
-        " reference, Amberlith's report and a failed job's mark left out",
+        " reference (an older build.yml's llvm- one too), Amberlith's report and a failed job's mark left out",
         f'- [ScarletNX-windows-x86_64-abc1234]({RUN}/artifacts/2), 3 MiB' in text
         and '-stage' not in text
         and '-install' not in text

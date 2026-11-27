@@ -135,7 +135,7 @@ and at the plan.
 | Finding functions | `src/common/cpu/recompiler/codegen.c`, `src/nx/loader/loader.c`, `src/nx/loader/codegen_view.c` |
 | The native back ends: what every machine shares, and each machine's | `src/common/cpu/recompiler/mach/` (`mach_codegen.inc`, `mach_arm.inc`, `native.c`), `x64/`, `arm64/`, `rv64/`, `ppc64/`, `mips64/`, `la64/`, `s390x/` |
 | The instruction emitters, generated from the Arm architecture's Sail | `tools/sailgen` and each machine's back end files in it ([sailgen](../../../tools/sailgen/README.md)), from `src/common/cpu/aarch64/sail/` |
-| Units, the units held in memory, the module descriptor | `src/nx/loader/module_llvm.c`, `module_x64.c`, `src/common/cpu/recompiler/x64/x64_cache.c`, `src/nx/loader/module_abi.h` |
+| Units, the units held in memory, the module descriptor | `src/nx/loader/module_a64.c`, `module_x64.c`, `src/common/cpu/recompiler/x64/x64_cache.c`, `src/nx/loader/module_abi.h` |
 | Linkers and the code loader | `link_elf.c`, `link_coff.c`, `link_macho.c`, `code_loader.c`, `elf_object.c` |
 | The runtime JIT and its cache | `jit_service.c`, `jit_cache.c`, `src/nx/runtime/guest_jit.c`, `src/nx/runtime/rtapi.c` |
 | The contract with generated code | `src/common/cpu/aarch64/cpu.h` (`SNX_ABI`, `CPU`, `snx_lookup`), `cpu_helpers.c`, `helpers/`, `rtlib/rtlib.c` |
@@ -144,7 +144,7 @@ and at the plan.
 | Guest memory | `src/nx/memory/mem.c`, `src/nx/memory/own.c` |
 | Guest threads | `src/nx/hle/kernel/thread.c` |
 | The GNU ABI runtime | `src/gnuabi/` |
-| Translator tests | `tests/llvm_qemu_differential.c`, `tests/native_qemu_expected.txt`, `tests/native_steps.c`, `tests/a64_ported.c`, `tests/llvm_module.c`, `tests/llvm_bench.c`, `tests/module_contract.c`, `tests/recompiler_backends.c`, `tests/qemu_ref/` |
+| Translator tests | `tests/native_qemu_differential.c`, `tests/native_qemu_expected.txt`, `tests/native_steps.c`, `tests/a64_ported.c`, `tests/native_module.c`, `tests/native_bench.c`, `tests/module_contract.c`, `tests/recompiler_backends.c`, `tests/qemu_ref/` |
 
 ## Rules that apply to this work
 
@@ -193,14 +193,14 @@ result with a value (`native_*`, `a64_ported_cases` and `crc32_helper`) run on t
 
 **The recorded QEMU reference.** The hosts with no `qemu-aarch64` beside the test run the differential against a file
 that a Linux host recorded: Windows, macOS, and the cross-built PowerPC64, RISC-V and LoongArch. CI's `qemu-reference` job records it for each run and hands it over as the artifact
-`ScarletNX-llvm-qemu-reference-<commit>`. No file is kept in the repository, because one is bound to the commit that
+`ScarletNX-native-qemu-reference-<commit>`. No file is kept in the repository, because one is bound to the commit that
 made it. Record another when one of these changes: the rows of the generated decoder, `directed()`, `scalar_words()`
-or `kept[]` in `tests/llvm_qemu_differential.c`, the random states, the runner in `tests/qemu_ref/`, or the QEMU
+or `kept[]` in `tests/native_qemu_differential.c`, the random states, the runner in `tests/qemu_ref/`, or the QEMU
 version. By hand, on a Linux host with the tools named above, the job's command takes about 20 seconds and 56 MB:
 
 ```sh
-cmake --build build --target snx-test-llvm-qemu-differential-native snx_qemu_ref_runner
-build/tests/snx-test-llvm-qemu-differential-native qemu-aarch64 build/qemu_ref_runner build/record \
+cmake --build build --target snx-test-native-qemu-differential snx_qemu_ref_runner
+build/tests/snx-test-native-qemu-differential qemu-aarch64 build/qemu_ref_runner build/record \
     tests/native_qemu_expected.txt --quiet --record qemu_reference.bin
 ```
 
@@ -230,7 +230,7 @@ them. List the processes with `pgrep -a NAME` and kill by number. Game logs grow
 * Each pull request states:
   * the mechanism before and after
   * the proof the plan asks for, with the commands you ran and their results
-  * for a speed item, the numbers before and after (T1 or `llvm_bench`), as a median with its spread over repeated
+  * for a speed item, the numbers before and after (T1 or `native_bench`), as a median with its spread over repeated
     runs, and the host CPU
   * for a runtime change, the scenes you ran and how many times, without naming the game
   * whether `SNX_ABI` changed
@@ -312,7 +312,7 @@ cache invalidation if the generated-code or helper contract changes.
 
 ### 3. Prove results and measure the same scene
 
-Add focused tests under `tests/` and a kernel in `tests/llvm_bench.c` where needed. Run the QEMU differential test,
+Add focused tests under `tests/` and a kernel in `tests/native_bench.c` where needed. Run the QEMU differential test,
 including `--sweep` with its required runner arguments, plus directed cases. Compare full result bits and relevant
 flags for ordinary lanes, each position of one exceptional lane, multiple exceptional lanes, relevant FPCR modes and
 initial sticky FPSR states. Include short consuming instruction sequences where needed to expose dependencies.

@@ -152,7 +152,7 @@ static uint32_t bus(SnxArmCPU* arm, uint32_t address, uint32_t size_write, uint3
     AgbBoard* board = cpu->board;
     unsigned bytes = size_write & 0xFF;
     if (cpu->in_block && (address >> 24) == 0x04) catch_up(cpu, address);
-    if (!(size_write & 0x100)) board->open_bus = value; /* a read's value: the open bus (llvm.c's open_bus) */
+    if (!(size_write & 0x100)) board->open_bus = value; /* a read's value: the open bus */
     if (cpu->in_block && !(size_write & 0x100) && agb_unmapped(address)) dma_on_bus(cpu, address);
     if (size_write & 0x200) {
         /* LDRSH: the ARM7TDMI quirk reads a sign extended byte at an odd address */
@@ -454,8 +454,8 @@ static void intr_wait(AgbBoard* board, AgbCpu* cpu) {
     cpu->arm.r[15] = cpu->arm.r[14] & ~(uint32_t)3;
 }
 
-/* The opcode the CPU fetched last while the instruction at pc runs, which a read with nothing to answer gets (llvm.c's
-   open_bus, mGBA's GBALoadBad): ARM [$+8]; Thumb [$+4] in both halves, but [$+4] above [$+2] from the BIOS and OAM, and
+/* The opcode the CPU fetched last while the instruction at pc runs, which a read with nothing to answer gets (mGBA's
+   GBALoadBad): ARM [$+8]; Thumb [$+4] in both halves, but [$+4] above [$+2] from the BIOS and OAM, and
    from IWRAM [$+4] above [$+2] or below it by $+4's place in its word */
 static uint32_t open_bus_at(AgbBoard* board, uint32_t pc, int thumb) {
     uint32_t region = (pc + 4) >> 24, h2, h4;

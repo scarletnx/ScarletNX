@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* A game module of the native back end's code (nx/loader/module_llvm.c, module_arm.c). The builders are this program's
-   own (module_llvm.c here, module_arm.c in nx_module_native_arm.c), so the test chooses what the native back end
+/* A game module of the native back end's code (nx/loader/module_a64.c, module_arm.c). The builders are this program's
+   own (module_a64.c here, module_arm.c in nx_module_native_arm.c), so the test chooses what the native back end
    leaves:
    - every function or block the native back end's: the module, nothing said;
    - a function with an instruction it has no code for: made, the instruction undefined where it runs, and said;
@@ -16,7 +16,7 @@
 #include "common/utilities/common.h"
 #include "nx/loader/module.h"
 #include "nx/loader/module_abi.h"
-#include "nx/loader/module_llvm.h"
+#include "nx/loader/module_a64.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -54,7 +54,7 @@ static int test_cached_object(SnxCodegen* codegen, size_t first, size_t last, co
 static int test_native_available(void) { return !g_nx_module_native.no_native && snx_native_available(); }
 #define snx_native_cached_object test_cached_object
 #define snx_native_available     test_native_available
-#include "nx/loader/module_llvm.c"
+#include "nx/loader/module_a64.c"
 #undef snx_native_cached_object
 #undef snx_native_available
 
@@ -85,9 +85,9 @@ static void program(void) {
             g_nx_module_native.memory[TEXT_OFF + 4 * i + j] = (unsigned char)(code[i] >> (8 * j));
 }
 
-/* the program's module as output, with what llvm and options add (their output, title and the like set here): 0, or
+/* the program's module as output, with what job and options add (their output, title and the like set here): 0, or
    the builder's failure, which it said (g_nx_module_native.said) */
-static int build(const char* output, SnxLlvmBuild llvm, SnxCodegenOptions options) {
+static int build(const char* output, SnxModuleBuild job, SnxCodegenOptions options) {
     SnxModuleImage image = {0};
     SnxProgram loaded = {0};
     image.name = "test";
@@ -111,19 +111,19 @@ static int build(const char* output, SnxLlvmBuild llvm, SnxCodegenOptions option
     static const SnxU64 hints[1] = {F2};
     options.hints = hints;
     options.hint_count = 1;
-    llvm.output = output;
-    llvm.opt = '2';
-    llvm.jobs = 1;
-    llvm.quiet = 1;
+    job.output = output;
+    job.opt = '2';
+    job.jobs = 1;
+    job.quiet = 1;
     g_nx_module_native.said[0] = 0;
-    return snx_build_module_llvm(&loaded, &options, &llvm);
+    return snx_build_module_a64(&loaded, &options, &job);
 }
 
 /* where a file of folder's is: malloc'd */
 static char* at(const char* folder, const char* name) { return snx_path_join(folder, name); }
 
 static void a64(const char* folder) {
-    SnxLlvmBuild asked = {0};
+    SnxModuleBuild asked = {0};
     SnxCodegenOptions options = {0};
     char *module = at(folder, "a64" SUFFIX), *left = at(folder, "left" SUFFIX), wanted[512];
     /* every function the native back end's: the module, nothing said */

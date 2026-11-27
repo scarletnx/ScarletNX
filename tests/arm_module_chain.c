@@ -11,7 +11,7 @@
 #include "nx/loader/loader.h"
 #include "nx/loader/module.h"
 #include "nx/loader/module_abi.h"
-#include "nx/loader/module_llvm.h"
+#include "nx/loader/module_a64.h"
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -96,7 +96,7 @@ static int build(const char* output, size_t units) {
     SnxModuleImage image = {0};
     SnxProgram loaded = {0};
     SnxCodegenOptions options = {0};
-    SnxLlvmBuild llvm = {0};
+    SnxModuleBuild job = {0};
     image.name = "test";
     image.base = BASE;
     image.size = sizeof g_arm_module_chain.memory;
@@ -115,11 +115,11 @@ static int build(const char* output, size_t units) {
     options.chunk_instrs = units;
     options.hints = hints;
     options.hint_count = sizeof hints / sizeof *hints;
-    llvm.output = output;
-    llvm.opt = '2';
-    llvm.jobs = 1;
-    llvm.quiet = 1;
-    return snx_build_module_arm(&loaded, &options, &llvm);
+    job.output = output;
+    job.opt = '2';
+    job.jobs = 1;
+    job.quiet = 1;
+    return snx_build_module_arm(&loaded, &options, &job);
 }
 
 static SnxArmBlock block(const SnxArmModule* m, SnxU32 key) {

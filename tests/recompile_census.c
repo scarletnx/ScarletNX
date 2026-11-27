@@ -12,7 +12,7 @@
                 among them, each word a block of its own with a BX LR
      3ds        a 3DS game, a bare NCCH, of the ARM11's A32 and Thumb code
 
-   A64's words are those of the generated decoder (llvm_qemu_words.c: every row, every value of its small fields) and
+   A64's words are those of the generated decoder (native_qemu_words.c: every row, every value of its small fields) and
    each system register and cache word EL0 has: no op of the Ounce may lack one. AArch32's are those of the rows of its
    decoders' .decode files (tools/decodetree --rows), drawn the same way, and of each form of vector instruction its
    decoder tells apart, found by going over the bits an encoding's class is in.
@@ -29,7 +29,7 @@
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
 #include "decode_rows.h"
-#include "llvm_qemu_words.h"
+#include "native_qemu_words.h"
 #include "nx/loader/loader.h"
 #include <openssl/evp.h>
 #include <stdarg.h>

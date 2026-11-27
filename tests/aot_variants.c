@@ -11,7 +11,7 @@
 #include "nx/loader/loader.h"
 #include "nx/loader/module.h"
 #include "nx/loader/module_abi.h"
-#include "nx/loader/module_llvm.h"
+#include "nx/loader/module_a64.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -169,7 +169,7 @@ int main(void) {
     SnxModuleImage module_image;
     SnxProgram program;
     SnxCodegenOptions options, wrong_options, truncated_options;
-    SnxLlvmBuild build, wrong_build, truncated_build;
+    SnxModuleBuild build, wrong_build, truncated_build;
     SnxJitService* service;
     char error[1024];
     char* absolute;
@@ -239,7 +239,7 @@ int main(void) {
     build.quiet = 1;
     build.wrappers = &wrappers;
     error[0] = 0;
-    built = snx_build_module_llvm(&program, &options, &build);
+    built = snx_build_module_a64(&program, &options, &build);
     CHECK(built == 0);
     CHECK(wrappers > 0); /* the profile cache's units call the module's functions through them */
     if (built) {
@@ -254,13 +254,13 @@ int main(void) {
     wrong_options.jit_cache = wrong_path;
     wrong_build = build;
     wrong_build.output = bad_output;
-    CHECK(snx_build_module_llvm(&program, &wrong_options, &wrong_build) != 0);
+    CHECK(snx_build_module_a64(&program, &wrong_options, &wrong_build) != 0);
     remove(bad_output);
     truncated_options = options;
     truncated_options.jit_cache = truncated_path;
     truncated_build = build;
     truncated_build.output = bad_output;
-    CHECK(snx_build_module_llvm(&program, &truncated_options, &truncated_build) != 0);
+    CHECK(snx_build_module_a64(&program, &truncated_options, &truncated_build) != 0);
     remove(bad_output);
 
     absolute = snx_absolute(output);

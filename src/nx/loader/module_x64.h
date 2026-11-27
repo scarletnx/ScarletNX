@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* An AOT module's descriptor without LLVM (module_x64.c), for module_llvm.c where the x86-64 back end made every
-   function: snx_module, snx_routes, snx_nros (with nros), snx_imports (with imports) and their data */
+/* An AOT module's descriptor (module_x64.c), for module_a64.c where a native back end made every function: snx_module,
+   snx_routes, snx_nros (with nros), snx_imports (with imports) and their data */
 #ifndef SNX_NX_LOADER_MODULE_X64_H
 #define SNX_NX_LOADER_MODULE_X64_H
 #include "nx/loader/module.h"

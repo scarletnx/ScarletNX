@@ -21,7 +21,7 @@
         __asm__ volatile("msr fpcr, %0" : : "r"(0ull));
 #elif defined(__powerpc64__) && (defined(__GNUC__) || defined(__clang__))
     /* FPSCR's low byte: the enables (VE, OE, UE, ZE, XE), NI and RN. The fast paths' vectors are VSX's, which
-       VSCR's NJ does not flush (ir_fp.h's host_fp_vec asks for VSX) */
+       VSCR's NJ does not flush */
     union {
         double d;
         uint64_t u;

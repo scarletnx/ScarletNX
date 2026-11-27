@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* A native back end of sailgen other than x86-64's (SAIL_MACH: arm64's, tools/sailgen/arm64.h over the A64 Sail's
    encoders; riscv64's, rv64.h and risc.h over LLVM's RISC-V records...) against QEMU, word by word, as sail_x64.c holds
-   the x86-64 one: every word of the decoder's rows (llvm_qemu_words.c, decoded for the ounce target, each again with
+   the x86-64 one: every word of the decoder's rows (native_qemu_words.c, decoded for the ounce target, each again with
    Rd, Rn and Rm 31) that the roots (a64_x64.roots) take becomes the machine's code for u64 step(CPU*), and runs from
    the states of the word's own seed beside qemu-aarch64 -cpu max (sail_qemu.h): every register, the flags, the SIMD&FP
    state, the guest memory it changed, the next pc and the runtime's UNDEF must be QEMU's. Then sequences of two to four
@@ -26,7 +26,7 @@
 #define SNX_TEST_SWAP_CPU 1
 #include "support/swap_state.h"
 #include "sail_qemu.h"
-#include "llvm_qemu_words.h"
+#include "native_qemu_words.h"
 #include "common/cpu/aarch64/a64_decoder.h"
 #include <setjmp.h>
 #include <signal.h>

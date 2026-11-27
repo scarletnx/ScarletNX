@@ -2,7 +2,7 @@
   "SPDX-License-Identifier": "GPL-3.0-or-later",
   "copyright": "2026 the ScarletNX contributors",
   "schema": 1,
-  "reviewed_base": "f14a1db8d6",
+  "reviewed_base": "18dcae3ebd",
   "items": {
     "A1": {
       "status": "implemented",
@@ -27,19 +27,19 @@
     "A3": {
       "status": "unverified",
       "evidence": [
-        "src/nx/loader/module_llvm.c",
+        "src/nx/loader/module_a64.c",
         "src/common/cpu/recompiler/x64/x64_cache.c"
       ],
-      "note": "Missing. Units are consecutive functions up to unit_instructions (module_llvm.c:353-361), so a new function moves later boundaries; the x86-64 unit cache is in memory only (x64_cache.c). The ThinLTO and IR-merge paths of this item went with LLVM. This item is one the redesign (#3024) changes; its state here is today's only."
+      "note": "Missing. Units are consecutive functions up to unit_instructions (module_a64.c:352-360), so a new function moves later boundaries; the x86-64 unit cache is in memory only (x64_cache.c). The ThinLTO and IR-merge paths of this item went with LLVM. This item is one the redesign (#3024) changes; its state here is today's only."
     },
     "A5": {
       "status": "unverified",
       "evidence": [
         "src/nx/runtime/ini.c",
-        "src/nx/loader/module_llvm.c",
+        "src/nx/loader/module_a64.c",
         "src/nx/runtime/driver/recompile.c"
       ],
-      "note": "Missing. ir_branch_profile went with LLVM (ini.c:511) and the native back ends read no profile; --layout is said and has no effect yet, the native back end ordering no functions (recompile.c:859, module_llvm.c:322-324), while the linker orders .text.snx_hot.N sections (link_elf.c) and tools/layout.py makes an order."
+      "note": "Missing. ir_branch_profile went with LLVM (ini.c:511) and the native back ends read no profile; --layout is said and has no effect yet, the native back end ordering no functions (recompile.c:859, module_a64.c:321-323), while the linker orders .text.snx_hot.N sections (link_elf.c) and tools/layout.py makes an order."
     },
     "L1": {
       "status": "retired",
@@ -85,11 +85,11 @@
     "J4": {
       "status": "unverified",
       "evidence": [
-        "src/nx/loader/module_llvm.c",
+        "src/nx/loader/module_a64.c",
         "src/common/cpu/recompiler/mach/mach_codegen.inc",
         "src/common/cpu/recompiler/x64/x64_codegen.c"
       ],
-      "note": "Missing. Every AOT unit is made with stale checks (module_llvm.c:139), at the entry and after each call (mach_codegen.inc:197-209; x64_codegen.c:425-439). This item is one the redesign (#3024) changes; its state here is today's only."
+      "note": "Missing. Every AOT unit is made with stale checks (module_a64.c:139), at the entry and after each call (mach_codegen.inc:197-209; x64_codegen.c:425-439). This item is one the redesign (#3024) changes; its state here is today's only."
     },
     "I1": {
       "status": "unverified",
@@ -259,9 +259,9 @@
     "T1": {
       "status": "unverified",
       "evidence": [
-        "tests/llvm_bench.c"
+        "tests/native_bench.c"
       ],
-      "note": "Missing. llvm_bench times the native back end's code (llvm_bench.c:3-5) and has no native baseline."
+      "note": "Missing. native_bench times the native back end's code (native_bench.c:3-5) and has no native baseline."
     },
     "T2": {
       "status": "in_progress",
@@ -290,20 +290,21 @@
     "T5": {
       "status": "implemented",
       "evidence": [
-        "tests/llvm_block_fuzz.c",
+        "tests/native_block_fuzz.c",
         "tests/CMakeLists.txt"
       ],
-      "note": "Done on the native back ends: native_block_fuzz and its modes (tests/CMakeLists.txt:3841-3859)."
+      "note": "Done on the native back ends: native_block_fuzz and its modes (tests/CMakeLists.txt:3841-3862)."
     },
     "T6": {
       "status": "in_progress",
       "evidence": [
         "src/common/cpu/aarch64/cpu.h",
-        "src/common/cpu/aarch64/cpu_helpers.c",
-        "src/common/cpu/aarch64/helpers/vector.c",
-        "src/common/cpu/aarch64/sail/a64.roots"
+        "tools/sailgen/mach_a32.h",
+        "tests/arm_x64.c",
+        "tests/recompiler_backends.c",
+        "tests/CMakeLists.txt"
       ],
-      "note": "Partial. The docs this item named, and those the LLVM removal touched, are fixed, and the comments of src/common/cpu/recompiler/ describe the native back ends; comments elsewhere still name LLVM's IR emitters as present: cpu.h:148, :160, :363, :385-386, :495, :571, cpu_helpers.c:6, :11, vector.c:10, a64.roots:6, :103, :129, :419, :547."
+      "note": "Partial. The docs, and the comments of the CPU, sailgen, the harnesses' messages and the tests' CMake, describe the native back ends. A grep still finds LLVM in 131 files of src/, tests/ and tools/sailgen beyond its recorded ends, TableGen records, llvm-mc and the deprecated keys, many of them the old caches' cleanup: not read one by one. arm_x64.c and recompiler_backends.c keep a side 0, LLVM's, that runs nothing."
     }
   }
 }

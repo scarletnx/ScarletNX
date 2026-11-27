@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The threads of a recompile whose count is left open (the setting aot_threads at 0, Auto): they open one at a time,
-   as common.h's SnxAotGovernor decides from what the units take while they compile. nx/loader/module_llvm.c and
+   as common.h's SnxAotGovernor decides from what the units take while they compile. nx/loader/module_a64.c and
    module_arm.c run their queue's worker through it; a test gives it readings of its own */
 #ifndef SNX_RECOMPILER_AUTO_WORKERS_H
 #define SNX_RECOMPILER_AUTO_WORKERS_H

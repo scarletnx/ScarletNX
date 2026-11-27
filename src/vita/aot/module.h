@@ -18,8 +18,8 @@
 /* raised when the compiled blocks change. 2 added Thumb literal loads, saturation, parallel arithmetic and DSP
    multiplies, 3 TBH, 4 no flags from 16-bit data processing in an IT block, 5 a 16-bit LDM loading its base, 6 the
    A9 profile (stores with writeback into the register they store), 7 blocks that go on to the next by a tail call
-   and count their backward edges at VITA_POLL_OFFSET from the cpu, 8 hosted blocks (llvm.h): the run loop sees to
-   their entry state and they keep the cpu in host registers between guest accesses, 9 blocks that take an indirect
+   and count their backward edges at VITA_POLL_OFFSET from the cpu, 8 hosted blocks (arm/codegen.h): the run loop sees
+   to their entry state and they keep the cpu in host registers between guest accesses, 9 blocks that take an indirect
    branch through the runtime's block table and import stubs that call the runtime directly */
 #define VITA_MODULE_ABI   9u
 /* where a chained block finds the thread's poll count, right after the cpu (VitaThread) */

@@ -87,7 +87,7 @@ int main(void) {
     SnxModuleImage image = {0};
     SnxProgram loaded = {0};
     SnxCodegenOptions options = {0};
-    SnxLlvmBuild build = {0};
+    SnxModuleBuild build = {0};
     program(&image);
     loaded.modules = &image;
     loaded.module_count = 1;

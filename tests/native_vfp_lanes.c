@@ -27,7 +27,7 @@ typedef struct {
     const char* name;
     u32 word;   /* the 4S form (S for a scalar); bit 22 makes it 2D (D) */
     int op;     /* SNX_FP_*, -1 for FMLA, or MINMAX, UNARY's */
-    int scalar; /* one lane, the rest of Vd cleared (ir_fpu.c's fast paths) */
+    int scalar; /* one lane, the rest of Vd cleared (the fast paths') */
 } Insn;
 static const Insn g_insns[] = {
     {"FADD", 0x4E22D420u, SNX_FP_ADD, 0},

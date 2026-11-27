@@ -23,6 +23,7 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths);
    program, its ExeFS read in place with the keys paths finds, written into outdir as an extracted game's are
    (loader.h's snx_dump_program). 0, or -1 with a line saying why */
 int snx_dump_modules_of_dump(const char* dump, const SnxPaths* paths, const char* outdir);
-/* a setting of the recompile (settings.txt's recompile and llvm tables), which --KEY=VALUE sets; NULL for another key */
+/* a setting of the recompile (settings.txt's recompile table, and the game settings marked recompile), which
+   --KEY=VALUE sets; NULL for another key */
 const IniOpt* snx_recompile_setting(const char* key);
 #endif

@@ -18,7 +18,7 @@ import sys
 # a path that starts as one of these
 DIFFERENTIAL = (
     'src/common/cpu/',
-    'tests/llvm_qemu_',
+    'tests/native_qemu_',
     'tests/native_steps',
     'tests/qemu_ref/',
     'tests/sail_x64',

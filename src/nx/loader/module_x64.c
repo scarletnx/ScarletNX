@@ -1,12 +1,12 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* An AOT module's descriptor without LLVM, for a module whose functions a native back end made (module_llvm.c):
-   the same symbols and data module_llvm.c's emit_module, emit_routes, emit_nros and emit_imports give, written by
-   x64_elf.h's builder, their few functions in the host's own code: x86-64's as bytes (of Windows' calling convention in
+/* An AOT module's descriptor, for a module whose functions a native back end made (module_a64.c): snx_module,
+   snx_routes, snx_nros and snx_imports and their data, written by x64_elf.h's builder, their few functions in the
+   host's own code: x86-64's as bytes (of Windows' calling convention in
    a COFF object where the back end's code is Windows': none keeps a frame, so the unwinder needs no table of them),
-   arm64's by the A64 Sail's encoders (a64_enc.inc; the same in a COFF object on Windows), a RISC machine's by its back end (mach/native.h's SnxNativeDesc,
-   mach/risc_desc.inc). The data's layout is module_abi.h's and nro_slots.h's C types, the host's own (this is the host's
-   module) */
+   arm64's by the A64 Sail's encoders (a64_enc.inc; the same in a COFF object on Windows), a RISC machine's by its back
+   end (mach/native.h's SnxNativeDesc, mach/risc_desc.inc). The data's layout is module_abi.h's and nro_slots.h's C
+   types, the host's own (this is the host's module) */
 #include "nx/loader/module_x64.h"
 #include "nx/loader/module.h"
 #include "nx/loader/module_abi.h"
@@ -165,7 +165,7 @@ static void fn_name(char* out, size_t size, SnxU64 address) {
     snprintf(out, size, "F_%llX", (unsigned long long)address);
 }
 
-/* snx_module(): ENT_ADDR[i] = BASE + ENT_OFF[i], ENT_PTR[i] = FNS[ENT_FN[i]] for each entry (as emit_module's loop:
+/* snx_module(): ENT_ADDR[i] = BASE + ENT_OFF[i], ENT_PTR[i] = FNS[ENT_FN[i]] for each entry (a loop:
    no relocation for each), then &MOD. ENT_FN is fn_at bytes past ENT_OFF and ENT_PTR ptr_at past ENT_ADDR, which a
    RISC machine's loop reads, and Windows' the first */
 static void module_fn(SnxXElf* o, size_t count, size_t fn_at, size_t ptr_at) {
@@ -342,7 +342,7 @@ static int variants(SnxXElf* o, const SnxJitCacheRecord* records, size_t record_
 }
 
 /* snx_import_dyn(c, e): the function dispatch has for e (CPU.disp, inside [code_lo, code_hi) and aligned), else the
-   runtime's miss, tail called with c and e: snx_lookup's, as emit_imports' CALLDYN */
+   runtime's miss, tail called with c and e: snx_lookup's */
 static void import_dyn(SnxXElf* o) {
     size_t miss, found, at;
     if (g_desc) {
@@ -560,7 +560,7 @@ int snx_x64_descriptor_for(const SnxNativeDesc* desc, const SnxCodegen* codegen,
         ptr(o, SNX_ELF_DATA, at + offsetof(SnxModule, stale), "snx_stale");
     }
     module_fn(o, count, fn_at, ptr_at);
-    /* snx_aot_<entry>: what the profile run's units' direct calls name (ir_codegen.c), a tail call of the entry's
+    /* snx_aot_<entry>: what the profile run's units' direct calls name, a tail call of the entry's
        function, where there are any */
     for (i = 0; record_count && i < count; ++i) {
         char target[48];

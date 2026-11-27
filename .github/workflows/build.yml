@@ -522,9 +522,9 @@ jobs:
         run: scripts/ci/linux.sh qemu_reference_record
       - uses: actions/upload-artifact@v7
         with:
-          name: ScarletNX-llvm-qemu-reference-${{ steps.commit.outputs.short }}
+          name: ScarletNX-native-qemu-reference-${{ steps.commit.outputs.short }}
           path: |
-            build/llvm_qemu_reference.bin
+            build/native_qemu_reference.bin
             build/sail_qemu_reference.bin
       - *fail-fast-file
       - *fail-fast-mark
@@ -564,7 +564,7 @@ jobs:
       - if: needs.qemu-reference.result == 'success'
         uses: actions/download-artifact@v8
         with:
-          name: ScarletNX-llvm-qemu-reference-${{ steps.commit.outputs.short }}
+          name: ScarletNX-native-qemu-reference-${{ steps.commit.outputs.short }}
           path: reference
       # one cache for the four, as they fetch the same sources
       - uses: actions/cache@v5
@@ -720,7 +720,7 @@ jobs:
       - if: needs.qemu-reference.result == 'success'
         uses: actions/download-artifact@v8
         with:
-          name: ScarletNX-llvm-qemu-reference-${{ steps.commit.outputs.short }}
+          name: ScarletNX-native-qemu-reference-${{ steps.commit.outputs.short }}
           path: reference
       - name: Cancel the run when another job fails
         shell: bash
@@ -935,7 +935,7 @@ jobs:
       - if: needs.qemu-reference.result == 'success'
         uses: actions/download-artifact@v8
         with:
-          name: ScarletNX-llvm-qemu-reference-${{ steps.commit.outputs.short }}
+          name: ScarletNX-native-qemu-reference-${{ steps.commit.outputs.short }}
           path: reference
       - uses: actions/cache@v5
         with:

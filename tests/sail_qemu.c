@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* sail_qemu.h's: the states, the window, the cases, the comparison with QEMU's end and the reference of it */
 #include "sail_qemu.h"
-#include "llvm_qemu_words.h"
+#include "native_qemu_words.h"
 #include "support/frozen.h"
 #include "common/cpu/aarch64/a64_decoder.h"
 #include "common/utilities/endian.h"

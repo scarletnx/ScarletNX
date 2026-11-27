@@ -1,10 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* sailgen's x86-64 back end (tools/sailgen/x64.h, its instruction selection derived from the Intel SDM) against QEMU,
-   word by word: every word of the decoder's rows (llvm_qemu_words.c, decoded for the ounce target, each again with Rd,
-   Rn and Rm 31) that the x86-64 back end's roots (a64_x64.roots) take becomes x86-64 code for u64 step(CPU*), once with
-   the host's BMI1, BMI2 and LZCNT and once with none (the candidates without them); both run from the states of the
-   word's own seed (sail_qemu.h) beside qemu-aarch64 -cpu max (tests/qemu_ref), and every register, the flags, FPCR,
+   word by word: every word of the decoder's rows (native_qemu_words.c, decoded for the ounce target, each again with
+   Rd, Rn and Rm 31) that the x86-64 back end's roots (a64_x64.roots) take becomes x86-64 code for u64 step(CPU*), once
+   with the host's BMI1, BMI2 and LZCNT and once with none (the candidates without them); both run from the states of
+   the word's own seed (sail_qemu.h) beside qemu-aarch64 -cpu max (tests/qemu_ref), and every register, the flags, FPCR,
    FPSR, the vector registers, the memory it changed and how it ended (the next pc, UNDEF) must be QEMU's. A host where
    QEMU can't run beside the test (Windows) holds them to a reference of QEMU's ends that the qemu-reference job records
    (--record): the hash of each word's every state. The words QEMU can't stand for, and a store-exclusive whose monitor
@@ -21,7 +21,7 @@
    A word the x86-64 back end takes but can't make (its sg_fail) is a failure too, named with why */
 #include "sail_x64_emit.h"
 #include "sail_qemu.h"
-#include "llvm_qemu_words.h"
+#include "native_qemu_words.h"
 #include "common/cpu/aarch64/a64_decoder.h"
 #include <math.h>
 #include <setjmp.h>

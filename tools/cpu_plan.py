@@ -24,14 +24,14 @@ DEPENDENCIES = {'I2': ['T5'], 'I3': ['I2', 'I4', 'T5'], 'I6': ['T5'],
 INACTIVE = {'implemented', 'retired', 'deferred'}
 # These are known tests, not commands extracted from a plan document. Additional proofs still need review.
 CHECKS = {
-    'I8': (['snx-test-native-steps', 'snx-test-llvm-qemu-differential-native'],
+    'I8': (['snx-test-native-steps', 'snx-test-native-qemu-differential'],
            ['native_recpe', 'native_recpx', 'native_rsqrte', 'native_estimates', 'native_unsigned_estimates',
             'native_qemu_differential.*']),
-    'I9': (['snx-test-native-steps', 'snx-test-llvm-qemu-differential-native'],
+    'I9': (['snx-test-native-steps', 'snx-test-native-qemu-differential'],
            ['native_simd_shift', 'native_qemu_differential.*']),
-    'I11': (['snx-test-native-steps', 'snx-test-llvm-qemu-differential-native'],
+    'I11': (['snx-test-native-steps', 'snx-test-native-qemu-differential'],
             ['native_round', 'native_half', 'native_fma_residual', 'native_qemu_differential.*']),
-    'I15': (['snx-test-fp-host', 'snx-test-native-steps', 'snx-test-llvm-qemu-differential-native'],
+    'I15': (['snx-test-fp-host', 'snx-test-native-steps', 'snx-test-native-qemu-differential'],
             ['fp_host_witnesses', 'native_vfp_minmax', 'native_vfp_batch', 'native_vfp_compare', 'native_vfp_lanes',
              'native_vfp_residual', 'native_recpe', 'native_estimates', 'native_unsigned_estimates', 'native_simd_shift',
              'native_round', 'native_half', 'native_fma_residual', 'native_qemu_differential.*']),

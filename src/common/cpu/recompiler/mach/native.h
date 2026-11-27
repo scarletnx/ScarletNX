@@ -81,7 +81,7 @@ int snx_native_cached_object(SnxCodegen* codegen, size_t first, size_t last, con
                              unsigned char* made, unsigned char** object, size_t* size, int* reused, char* error,
                              size_t error_size);
 
-/* 1 where this host's build makes the module of another machine's triple (module_llvm.h's: the pack of objects a JIT
+/* 1 where this host's build makes the module of another machine's triple (module_a64.h's: the pack of objects a JIT
    loader takes) with a native back end: arm64's, for arm64-apple-ios<version>-elf, whose objects are the ELF that
    loader reads, with Darwin's calling convention. 0 for another triple, on a Windows host, whose objects are COFF
    alone, and on a big-endian one, whose descriptors are its own numbers. Its code takes the features of the host it is

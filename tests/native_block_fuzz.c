@@ -4,7 +4,7 @@
    The self-tests plant a stale flag or a wrong exclusive-loop update only in the translated copy. */
 #include "steps.h"
 #include "qemu_ref/qemu_ref.h"
-#include "llvm_qemu_words.h"
+#include "native_qemu_words.h"
 #include "common/utilities/endian.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -356,7 +356,7 @@ static int run(const char* qemu, const char* runner, const char* dir, unsigned c
 int main(int argc, char** argv) {
     STEPS_REQUIRE();
     if (argc == 3 && !strcmp(argv[1], "--skip")) { printf("Skipped: %s\n", argv[2]); return 77; }
-    if (argc < 4) return snx_error("usage: llvm_block_fuzz QEMU RUNNER DIR [--jit] [--portable] [--opt=0|2] "
+    if (argc < 4) return snx_error("usage: native_block_fuzz QEMU RUNNER DIR [--jit] [--portable] [--opt=0|2] "
                                   "[--hook] [--volatile] [--self-test|--self-test-exclusive] [--seed=N] [--programs=N]");
     int jit = 0, portable = 0, hook = 0, mutant = 0;
     char opt = '2';

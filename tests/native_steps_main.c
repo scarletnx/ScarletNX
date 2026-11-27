@@ -10,25 +10,25 @@
 /* the programs whose main takes arguments, and those whose main takes none */
 #define WITH_ARGUMENTS(X)                                                                                              \
     X(a64_ported)                                                                                                      \
-    X(llvm_estimates)                                                                                                  \
-    X(llvm_fma_residual)                                                                                               \
-    X(llvm_fp_env)                                                                                                     \
-    X(llvm_fp_store)                                                                                                   \
-    X(llvm_half)                                                                                                       \
-    X(llvm_module)                                                                                                     \
-    X(llvm_recpe)                                                                                                      \
-    X(llvm_round)                                                                                                      \
-    X(llvm_simd_shift)                                                                                                 \
-    X(llvm_vfp_compare)                                                                                                \
-    X(llvm_vfp_minmax)                                                                                                 \
-    X(llvm_vfp_residual)
+    X(native_estimates)                                                                                                \
+    X(native_fma_residual)                                                                                             \
+    X(native_fp_env)                                                                                                   \
+    X(native_fp_store)                                                                                                 \
+    X(native_half)                                                                                                     \
+    X(native_module)                                                                                                   \
+    X(native_recpe)                                                                                                    \
+    X(native_round)                                                                                                    \
+    X(native_simd_shift)                                                                                               \
+    X(native_vfp_compare)                                                                                              \
+    X(native_vfp_minmax)                                                                                               \
+    X(native_vfp_residual)
 #define WITH_NONE(X)                                                                                                   \
     X(crc32_helper)                                                                                                    \
-    X(llvm_recpx)                                                                                                      \
-    X(llvm_rsqrte)                                                                                                     \
-    X(llvm_unsigned_estimates)                                                                                         \
-    X(llvm_vfp_batch)                                                                                                  \
-    X(llvm_vfp_lanes)
+    X(native_recpx)                                                                                                    \
+    X(native_rsqrte)                                                                                                   \
+    X(native_unsigned_estimates)                                                                                       \
+    X(native_vfp_batch)                                                                                                \
+    X(native_vfp_lanes)
 
 #define DECLARE(name) int native_main_##name(int argc, char** argv);
 WITH_ARGUMENTS(DECLARE)
@@ -42,7 +42,7 @@ WITH_ARGUMENTS(DECLARE)
 WITH_NONE(DECLARE)
 #undef DECLARE
 #ifndef _WIN32
-int native_main_llvm_block_fuzz(int argc, char** argv);
+int native_main_native_block_fuzz(int argc, char** argv);
 #endif
 
 typedef struct {
@@ -55,7 +55,7 @@ typedef struct {
 static const Program programs[] = {
     WITH_ARGUMENTS(ENTRY) WITH_NONE(PLAIN)
 #ifndef _WIN32
-        {"llvm_block_fuzz", native_main_llvm_block_fuzz},
+        {"native_block_fuzz", native_main_native_block_fuzz},
 #endif
 };
 

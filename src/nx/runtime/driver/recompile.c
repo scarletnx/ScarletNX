@@ -8,7 +8,7 @@
 #include "nx/runtime/driver/nros.h"
 #include "nx/loader/loader.h"
 #include "nx/loader/module.h"
-#include "nx/loader/module_llvm.h"
+#include "nx/loader/module_a64.h"
 #include "nx/loader/codegen_view.h"
 #include "nx/loader/hook_libs.h"
 #include "nx/loader/hook_routes.h"
@@ -506,7 +506,7 @@ static int nce_prepare(SnxProgram* p, const char* base, int quiet) {
         free(path);
         return snx_error("NCE: the program has no modules");
     }
-    /* the instructions the recompile decodes, the program's CPU (loader/ounce.h), as module_llvm.c's analysis does */
+    /* the instructions the recompile decodes, the program's CPU (loader/ounce.h), as module_a64.c's analysis does */
     SnxU64 features = snx_guest_features(p->npdm.ounce, g_settings.cpu_extensions);
     if (snx_nx_codegen_analyze(&cg, p, NULL, 0, quiet, features)) {
         free(path);
@@ -595,7 +595,7 @@ static int make_program(const MakeArgs* a, int index) {
     SnxCompileOptions compile = a->compile;
     SnxCodegenOptions gen = a->gen;
     int ios = a->ios, no_build = a->no_build, host_win = a->host_win, tmpfs = a->tmpfs, dump = a->dump;
-    SnxLlvmBuild llvm;
+    SnxModuleBuild job;
     SnxProgram program;
     SnxNroSet nros = {0};
     int want_nros;
@@ -608,7 +608,7 @@ static int make_program(const MakeArgs* a, int index) {
     unsigned made_by = 0;
     int i, rc = 1;
     memset(&program, 0, sizeof(program));
-    memset(&llvm, 0, sizeof(llvm));
+    memset(&job, 0, sizeof(job));
     /* the NROs of its RomFS, where code is made ahead of time for this host: an iOS pack and an NCE recompile have
        none */
     want_nros = !no_build && !ios && !gen.interp_only;
@@ -845,15 +845,15 @@ static int make_program(const MakeArgs* a, int index) {
     gen.nro_end = nros.end;
     code = ios ? snx_format("%s_code.snxobj", base) : snx_format("%s_code.%s", base, compile.target_win ? "dll" : "so");
     {
-        llvm.output = code;
-        llvm.triple = ios ? SNX_IOS_TRIPLE : NULL;
-        llvm.opt = compile.opt[0];
+        job.output = code;
+        job.triple = ios ? SNX_IOS_TRIPLE : NULL;
+        job.opt = compile.opt[0];
         snx_x64_cache_ceiling((SnxU64)g_settings.unit_cache_ceiling * 1000000ull);
         old_branch_profile();
-        llvm.jobs = compile.jobs;
-        llvm.jobs_open = compile.jobs_open;
-        llvm.quiet = compile.quiet;
-        llvm.found = &found;
+        job.jobs = compile.jobs;
+        job.jobs_open = compile.jobs_open;
+        job.quiet = compile.quiet;
+        job.found = &found;
         /* a function order, which the native back end does not take yet: said, and not done */
         if (layout)
             snx_error("--layout %s: the native back end does not order its functions yet, so the file has no effect",
@@ -872,12 +872,12 @@ static int make_program(const MakeArgs* a, int index) {
         }
         i = 0;
         if (!program.npdm.is64)
-            i = snx_build_module_arm(&program, &gen, &llvm);
+            i = snx_build_module_arm(&program, &gen, &job);
         else if (!i)
-            i = snx_build_module_llvm(&program, &gen, &llvm);
+            i = snx_build_module_a64(&program, &gen, &job);
         if (!i && !ios && program.npdm.is64) { /* each NRO's own module, and an earlier recompile's taken away */
             char* folder = snx_format("%s" SNX_NROS_FOLDER, base);
-            i = snx_nros_build(&nros, &program, &gen, &llvm, folder, compile.target_win);
+            i = snx_nros_build(&nros, &program, &gen, &job, folder, compile.target_win);
             free(folder);
         }
         if (i) goto done;

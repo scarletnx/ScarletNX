@@ -123,7 +123,7 @@ root decode_pacia_aarch64_instrs_integer_pac_pacia_hint
 root decode_pacib_aarch64_instrs_integer_pac_pacib_hint
 root decode_xpac_aarch64_instrs_integer_pac_strip_hint
 
-# A64 loads and stores of the general-purpose registers (ir_ldst.c's): every addressing mode of LDR and STR and
+# A64 loads and stores of the general-purpose registers: every addressing mode of LDR and STR and
 # their byte, halfword, signed and unprivileged forms, the literal loads, the pairs, load-acquire and store-release
 # (RCpc and LOR included), the exclusives, the LSE atomics and the prefetches (the decoder's NOP rows outside the hint
 # space); guest memory is nx.sail's

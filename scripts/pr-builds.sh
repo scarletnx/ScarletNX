@@ -39,13 +39,14 @@ if [ -z "$print" ] && [ "$(gh api "repos/$repo/pulls/$pr" --jq .head.sha)" != "$
     exit 0
 fi
 # every artifact but the APK's halves (-stage), which only the job that packs the APK takes, an older build.yml's
-# install trees (-install), which only the run's own jobs took, the A64 differential's QEMU reference, which only the
-# cross builds take, Amberlith's reports (edenprobe- in a run of an older build.yml), which its line below links through
-# the run, and a failed job's mark (scripts/fail-fast.py): the packages a person downloads, kept until the first of
-# them expires
+# install trees (-install), which only the run's own jobs took, the A64 differential's QEMU reference (named llvm- in a
+# run of an older build.yml), which only the cross builds take, Amberlith's reports (edenprobe- in a run of an older
+# build.yml), which its line below links through the run, and a failed job's mark (scripts/fail-fast.py): the packages
+# a person downloads, kept until the first of them expires
 artifacts=$(gh api "repos/$repo/actions/runs/$run/artifacts?per_page=100" | jq '.artifacts |= map(select((.expired | not)
-    and (.name | endswith("-stage") or endswith("-install") or startswith("ScarletNX-llvm-qemu-reference-")
-        or startswith("amberlith-") or startswith("edenprobe-") or startswith("fail-fast-") | not)))')
+    and (.name | endswith("-stage") or endswith("-install") or startswith("ScarletNX-native-qemu-reference-")
+        or startswith("ScarletNX-llvm-qemu-reference-") or startswith("amberlith-") or startswith("edenprobe-")
+        or startswith("fail-fast-") | not)))')
 links=$(jq -r --arg url "https://github.com/$repo/actions/runs/$run/artifacts" '
     .artifacts | sort_by(.name)[] |
     "- [\(.name)](\($url)/\(.id)), \(.size_in_bytes / 1048576 | floor) MiB"' <<<"$artifacts")
