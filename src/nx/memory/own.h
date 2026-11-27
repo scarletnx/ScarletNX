@@ -143,6 +143,8 @@ void own_landings_by(u64 by[OWN_BY_N]);
    copy and of the copy into the trapped pages (own.c's g_own.by_bytes and the rest) */
 /* own_begin's calls so far, the refusals of mem_own_prepare, their bytes, and those of more than 16 runs */
 void own_begin_stats(u64* begins, u64* refused, u64* refused_bytes, u64* many_runs);
+/* own_stage's looks so far at the entries (one under g_own.lk each) and at the pool (one under mem.c's lock each) */
+void own_stage_stats(u64* looks, u64* pool_looks);
 void own_land_times(u64 bytes[OWN_BY_N], u64 wait_ns[OWN_BY_N], u64 copy_ns[OWN_BY_N], u64 fill_ns[OWN_BY_N]);
 /* by what asked: the landings whose result the GPU had done when they began (g_own.ready) */
 void own_land_ready(u64 ready[OWN_BY_N]);
@@ -194,6 +196,8 @@ typedef struct {
     /* atomic: for the statistics, own_begin's calls, those that mem_own_prepare refused and their bytes, and the ones
        of more runs of pool pages than own_begin keeps room for (own_runs) */
     _Atomic u64 begins, refused, refused_bytes, many_runs;
+    /* atomic: for the statistics, own_stage's looks at the entries under lk and at the pool for a block's run */
+    _Atomic u64 stage_looks, stage_pool_looks;
     PMutex lk;  /* the entries' lock */
     /* arming pages and the check that lets them go, one at a time: a page let go just as an entry lands on it stays
        trapped (taken before lk) */
