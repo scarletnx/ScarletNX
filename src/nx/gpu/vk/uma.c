@@ -284,6 +284,7 @@ typedef struct {
     u64 refused[VK_UMA_REFUSED_N]; /* the writes in place refused, by why (vk_uma_refused) */
     u64 merges, merged;            /* regions made over others (imp_get), and the others they took over */
     u64 holed, holed_gone;         /* regions made with holes, and those a change of the mappings over them ended */
+    u64 pooled;                    /* regions made with the pool's pages of a view in them (region_make) */
     /* an aliasing draw's storage bound in place (vk_uma_cover, buffer.c's alias_in_place): imp_get makes no wait
        while no_wait is on, and counts in would_wait the imports it did not make or let go for that. regions moves at
        each import or chunk made or gone, never set back: the group's buffers are one region's while it holds */
@@ -1491,8 +1492,24 @@ static int imp_make_ahb(Imp* m, u64 cpu, u64 size, void* ahb) {
 /* a region's memfd fd as a dma-buf (udmabuf) imported as its buffer: 0 when it can't be. The memfd is never punched
    while the dma-buf lives (plat_gpu_buffer_free only closes and unmaps): its pinned pages would stay the GPU's while
    the CPU's became others */
-static int imp_make_dmabuf(Imp* m, u64 cpu, u64 size, int fd) {
-    int dmabuf = plat_gpu_buffer_dmabuf(fd, size);
+static int imp_make_dmabuf(Imp* m, u64 cpu, u64 size, int fd, const MemRegionPart* parts, u32 nparts) {
+    int dmabuf;
+    if (nparts) { /* the buffer's own pages and the pool's, side by side (region_make) */
+        PlatDmaPart* l = malloc(sizeof *l * nparts);
+        if (!l) {
+            g_uma.import_result = VK_ERROR_OUT_OF_HOST_MEMORY;
+            return 0;
+        }
+        u64 at = 0;
+        for (u32 i = 0; i < nparts; i++) {
+            l[i] = parts[i].pool ? (PlatDmaPart){plat_alias_fd(), parts[i].pool - 1, parts[i].size}
+                                 : (PlatDmaPart){fd, at, parts[i].size};
+            at += parts[i].size;
+        }
+        dmabuf = plat_gpu_buffer_dmabuf_parts(l, nparts);
+        free(l);
+    } else
+        dmabuf = plat_gpu_buffer_dmabuf(fd, size);
     if (dmabuf < 0) {
         g_uma.import_result = VK_ERROR_INVALID_EXTERNAL_HANDLE;
         return 0;
@@ -1528,19 +1545,45 @@ static int imp_make_dmabuf(Imp* m, u64 cpu, u64 size, int fd) {
 }
 /* guest memory [cpu, cpu + size) as a region (the migrate way): a buffer of its own, imported, that its pages then move
    into with their bytes, those of the regions it meets included. NULL, or why it can't be */
+/* dma-buf regions take the pool's pages that another address maps too where they are (region_make) */
+static int pool_parts(void) { return g_uma.dmabuf && plat_alias_fd() >= 0; }
+/* Its parts: in a dma-buf region the pool's pages that another address maps too (a view's, its source's) stay where
+   they are, and the dma-buf takes them from the pool's memfd, its own buffer's pages for the rest (mem_region_parts). A
+   write through the other address is found as at any address of the pages (mem_alias_peers), and the pool's pages
+   change only after their guest pages did, which ends the region. udmabuf takes at most list_limit parts, 1024 by
+   default */
+#define REGION_PARTS 1024
 static const char* region_make(Imp* m, u64 cpu, u64 size) {
     int fd, r;
     void* handle;
+    MemRegionPart* parts = NULL;
+    u32 nparts = 0;
+    if (pool_parts()) {
+        parts = malloc(sizeof *parts * REGION_PARTS);
+        if (!parts) return "no memory for its parts";
+        if ((r = mem_region_parts(cpu, size, parts, REGION_PARTS, &nparts)) != 0) {
+            free(parts);
+            snprintf(g_uma.why, sizeof g_uma.why, "its pages are not all movable or the pool's (error %d)", r);
+            return g_uma.why;
+        }
+        if (nparts == 1 && !parts[0].pool) { /* no pool's pages: the buffer's alone, as before */
+            free(parts);
+            parts = NULL;
+            nparts = 0;
+        }
+    }
     if (plat_gpu_buffer(size, &fd, &handle)) {
+        free(parts);
         snprintf(g_uma.why, sizeof g_uma.why, "no buffer of that size: %s", strerror(errno));
         return g_uma.why;
     }
 #if defined(__ANDROID__)
     r = imp_make_ahb(m, cpu, size, handle);
 #else
-    r = g_uma.dmabuf ? imp_make_dmabuf(m, cpu, size, fd) : imp_make(m, cpu, size, handle);
+    r = g_uma.dmabuf ? imp_make_dmabuf(m, cpu, size, fd, parts, nparts) : imp_make(m, cpu, size, handle);
 #endif
     if (!r) {
+        free(parts);
         plat_gpu_buffer_free(fd, handle, size);
         return snx_vk_result_str(g_uma.import_result);
     }
@@ -1551,7 +1594,10 @@ static const char* region_make(Imp* m, u64 cpu, u64 size) {
 #else
     u8* view = (u8*)handle;
 #endif
-    if ((r = mem_migrate(cpu, size, fd, view)) != 0) {
+    r = mem_migrate(cpu, size, fd, view, parts, nparts);
+    if (!r && nparts) g_uma.pooled++;
+    free(parts);
+    if (r != 0) {
         vkDestroyBuffer(g_vk.dev, m->buf, NULL);
         vkFreeMemory(g_vk.dev, m->mem, NULL);
         plat_gpu_buffer_free(fd, handle, size);
@@ -1585,12 +1631,13 @@ static void fail(u64 lo, u64 hi, const char* why) {
     pm_unlock(&g_uma.lk);
 }
 /* whether guest memory [lo, hi) can be imported: mapped, and in the migrate way the guest's data that can move (on
-   the reservation's own pages, or pool pages no other address maps: mem_movable). No page a trap holds (memory/own.c): a driver may read an import's pages on the CPU from
+   the reservation's own pages, or pool pages no other address maps: mem_movable_holes), with free pages between, and
+   with a view's pool pages in a dma-buf region (pool_parts). No page a trap holds (memory/own.c): a driver may read an import's pages on the CPU from
    this thread, which holds vk_lock and so can't have them landed (PanVK on a Mali phone read one up to its trapped
    page, #1875), and amdgpu fails a submission over one */
 static int imp_can(u64 lo, u64 hi) {
     if (own_trapped(lo, hi - lo)) return 0;
-    return g_uma.migrate ? mem_movable_holes(lo, hi - lo, NULL) : mem_mapped_run(lo, hi - lo) == hi - lo;
+    return g_uma.migrate ? mem_movable_holes(lo, hi - lo, pool_parts(), NULL) : mem_mapped_run(lo, hi - lo) == hi - lo;
 }
 /* the import that holds guest memory [cpu, cpu + len), made if there is none: its index, or ~0 for none (the range is
    copied) */
@@ -1672,7 +1719,7 @@ static u32 imp_get(u64 cpu, u64 len) {
     const int opened = !g_uma.migrate;
     if (opened) plat_ww_open(GP(lo), hi - lo);
     int holes = 0;
-    if (g_uma.migrate) (void)mem_movable_holes(lo, hi - lo, &holes);
+    if (g_uma.migrate) (void)mem_movable_holes(lo, hi - lo, pool_parts(), &holes);
     const char* why = g_uma.migrate                       ? region_make(&m, lo, hi - lo)
                       : imp_make(&m, lo, hi - lo, GP(lo)) ? NULL
                                                           : snx_vk_result_str(g_uma.import_result);
@@ -2390,13 +2437,13 @@ void vk_uma_frame(void) {
         (unsigned long long)atomic_load_explicit(&g_uma.wait_by[3], memory_order_relaxed));
     LOG("vulkan:   imports declined: %llu chunked, %llu unmade over imports, %llu unmapped, %llu over the cap, %llu "
         "refused before, %llu table full; %llu regions made with holes of free pages, %llu of them ended by a change of "
-        "the mappings over them\n",
+        "the mappings over them, %llu with a view's pool pages in them\n",
         (unsigned long long)g_uma.imp_why[0], (unsigned long long)g_uma.imp_why[1],
         (unsigned long long)g_uma.imp_why[2], (unsigned long long)g_uma.imp_why[3],
         (unsigned long long)g_uma.imp_why[4], (unsigned long long)g_uma.imp_why[5], (unsigned long long)g_uma.holed,
-        (unsigned long long)g_uma.holed_gone);
+        (unsigned long long)g_uma.holed_gone, (unsigned long long)g_uma.pooled);
     memset(g_uma.imp_why, 0, sizeof g_uma.imp_why);
-    g_uma.holed = g_uma.holed_gone = 0;
+    g_uma.holed = g_uma.holed_gone = g_uma.pooled = 0;
     LOG("vulkan: dispatches left for the stream's end over 600 presents: %llu; waits for writes in place still "
         "unsubmitted: %llu; programs whose dispatches go at once: %u\n",
         (unsigned long long)g_vk_cs_left, (unsigned long long)g_uma.open_waits, g_uma.nsoon);

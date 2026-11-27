@@ -98,6 +98,14 @@ void plat_gpu_buffer_free(int fd, void* handle, u64 size);
    ENOSYS elsewhere). plat_dmabuf_limit: the bytes one may hold (udmabuf's size_limit_mb), 0 when there are none */
 int plat_gpu_buffer_dmabuf(int fd, u64 size);
 u64 plat_dmabuf_limit(void);
+/* Linux: a dma-buf of n parts side by side, each size bytes of memfd fd from off, as plat_gpu_buffer_dmabuf's (a list
+   udmabuf, at most udmabuf's list_limit parts): a region's own buffer, with the alias pool's pages (plat_alias_fd)
+   where another address maps them too. Each memfd is sealed against shrinking. The descriptor, or -1 with errno */
+typedef struct {
+    int fd;
+    u64 off, size;
+} PlatDmaPart;
+int plat_gpu_buffer_dmabuf_parts(const PlatDmaPart* parts, u32 n);
 /* What of the process lies in its address space's [lo, hi) and is not the guest's: a mapping with a name (a file, a
    device, a named anonymous mapping such as ART's or the allocator's, a memfd other than the alias pool's) that own
    does not claim (own(a, b): 1 when [a, b) is the caller's; NULL claims none), and a run that nothing maps, which any
@@ -134,6 +142,10 @@ void plat_ww_cool(u8* p, u64 size, void (*cb)(u8* p, u64 size));
    pool with 4 KiB host pages: a view of other pages needs its address and its pool offset at the same place in a host
    page, and the game picks its addresses in 4 KiB steps */
 int plat_alias_init(u64 size); /* 0, or -1 when the host has no pool */
+/* the pool's memfd when a dma-buf may take its pages (sealed against shrinking: plat_gpu_buffer_dmabuf_parts), or -1.
+   A pinned page punched out (a freed range) stays the dma-buf's while the CPU gets a new one: mem.c frees the pool's
+   pages only after their guest pages changed (pages_replaced), which ends a region over them */
+int plat_alias_fd(void);
 /* the pool's [off, off + size) at p in the reservation, readable and writable, watched for writes: 0, or -1. Of a range
    its caller froze (plat_freeze), whose bytes those pool pages hold, it keeps what the written-page tracking says of
    each page, as plat_vm_share does, and the range takes writes again at plat_thaw; any other reads as written */

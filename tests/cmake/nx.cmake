@@ -553,6 +553,12 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
         add_test(NAME vulkan_uma_region_table COMMAND snx-test-vulkan -H --uma-copies=2)
         set_tests_properties(vulkan_uma_region_table PROPERTIES TIMEOUT 60 ENVIRONMENT "SNX_TEST_UMA_ONLY=region_table"
             FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
+        # a region over a view's source takes the pool's pages where they are (gpu/vk/uma.c region_make): a write
+        # through the view is found and read at the source, the GPU's write there is read through the view, and the
+        # view's end puts the source's pages back with it
+        add_test(NAME vulkan_uma_region_view COMMAND snx-test-vulkan -H --uma-copies=2)
+        set_tests_properties(vulkan_uma_region_view PROPERTIES TIMEOUT 60 ENVIRONMENT "SNX_TEST_UMA_ONLY=region_view"
+            FAIL_REGULAR_EXPRESSION "vulkan validation:;failed: VK_ERROR")
         # a region that the host has no room to move back stays with its pages (gpu/vk/uma.c imp_let_go)
         add_test(NAME vulkan_uma_region_stays COMMAND snx-test-vulkan -H --uma-copies=2)
         set_tests_properties(vulkan_uma_region_stays PROPERTIES TIMEOUT 60 ENVIRONMENT "SNX_TEST_UMA_ONLY=region_stays"

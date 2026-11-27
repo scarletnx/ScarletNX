@@ -510,6 +510,17 @@ mapping of them. A region is at most what one udmabuf holds: the module paramete
 (`/sys/module/udmabuf/parameters/size_limit_mb`, 64 on SteamOS, which only root sets), and a list udmabuf has the same
 total limit. A range larger than that is copied.
 
+A region holds whole windows, and a window is not all the guest's data that can move. Free pages in it stay as they
+are, inaccessible, with the buffer's pages behind them unused. A change of the mappings over a region with such holes
+ends it, as a mapping there would give the guest pages the buffer does not hold. Pool pages that a view maps at a
+second address can't move either: the buffer takes them where they are. The dma-buf is then a list udmabuf of parts
+(`plat_gpu_buffer_dmabuf_parts`), the pool's memfd for those pages and the region's own memfd for the rest
+(`mem_region_parts`), at most udmabuf's `list_limit` parts (1024). The pool's memfd is sealed against shrinking for
+this. A write through the view is found at the region's address (`mem_alias_peers`), and the pool frees those pages only
+after their guest pages changed, which ends the region. In one game's town every window that the GPU read and could
+not have was refused for a view's pages alone. With them, the reads copied over 600 presents went from about 1.25
+million to 260,000.
+
 udmabuf pins the memfd's pages when it is made. Nothing may punch the memfd while the dma-buf lives: the CPU would get
 new pages there and the GPU keep the old ones, with no error. `plat_gpu_buffer_free` only closes and unmaps. Pages of a
 region that the guest unmaps or decommits get other pages as in the Android way, and the region goes; its pinned pages
