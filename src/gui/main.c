@@ -22352,10 +22352,11 @@ static void job_ended(App* app, int i, int status) {
     app->ended_serial = job->serial;
     if (failed) app->log_due = true; /* Share Log blinks, its log holding this one's output */
     snprintf(app->message, sizeof app->message, "%s: %s", name, job->said);
-    if (failed) { /* and why, as the driver said it: the row has room for its status alone */
+    if (failed) { /* and why, as the driver said it, unless the host's refusal after how it ended said it already */
         char why[sizeof app->message];
         log_stop(app->job_log, why, sizeof why);
-        if (why[0]) snprintf(app->message, sizeof app->message, "%s: %s %s", name, job->said, why);
+        if (why[0] && !strstr(job->said, why))
+            snprintf(app->message, sizeof app->message, "%s: %s %s", name, job->said, why);
     }
     if (!failed && job->console == GUI_GBA && job->kind != GUI_JOB_AOT) cover_made(app, i);
 #ifdef SDL_PLATFORM_ANDROID
