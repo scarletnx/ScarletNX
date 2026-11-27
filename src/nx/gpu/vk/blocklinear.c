@@ -15,6 +15,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
+#include <stdio.h>
 
 /* blocklinear.comp's push constants, member for member */
 typedef struct {
@@ -37,8 +38,8 @@ static struct {
     VkBuffer scratch;
     DevMem mem;
     u64 cap, asked;
-    u64 recent;  /* the most asked since vk_bl_scratch_trim last looked */
-    u64 refused; /* the size of the last scratch the device's memory refused, said once: 0 after one is made */
+    u64 recent;  /* the most asked of the scratch there was since vk_bl_scratch_trim last looked */
+    u64 refused; /* the sizes the device's memory refused since the scratch last changed, each said once (refused_bit) */
 } g_blocklinear;
 
 static const BlPipe* bl_init(int runs) {
@@ -75,17 +76,28 @@ void vk_bl_scratch_trim(void) {
     vk_defer_buffer(g_blocklinear.scratch, g_blocklinear.mem); /* once the frame's work that may use it is done */
     g_blocklinear.scratch = VK_NULL_HANDLE;
     g_blocklinear.cap = 0;
+    g_blocklinear.refused = 0; /* a refusal now keeps none: said again */
 }
 u64 vk_bl_scratch_asked(void) {
     u64 asked = g_blocklinear.asked;
     g_blocklinear.asked = 0;
     return asked;
 }
+/* a scratch's size, 4 MiB times a power of two or g_vk.alloc_cap, as its bit in g_blocklinear.refused: the power's,
+   or bit 63 for the cap */
+static u64 refused_bit(u64 cap) {
+    unsigned k = 0;
+    while (k < 62 && (4ull << 20) << k < cap) k++;
+    return (4ull << 20) << k == cap ? 1ull << k : 1ull << 63;
+}
 VkBuffer vk_bl_scratch(u64 size, u64* cap_out) {
     if (size > g_blocklinear.asked) g_blocklinear.asked = size;
-    if (size > g_blocklinear.recent) g_blocklinear.recent = size;
     *cap_out = g_blocklinear.cap;
-    if (size <= g_blocklinear.cap) return g_blocklinear.scratch;
+    if (size <= g_blocklinear.cap) {
+        /* what the trim weighs the scratch by: what it served, not a refused ask, which it holds none of */
+        if (size > g_blocklinear.recent) g_blocklinear.recent = size;
+        return g_blocklinear.scratch;
+    }
     if (size > g_vk.alloc_cap) {
         *cap_out = 0; /* no buffer, no room: a caller keeps the two together */
         return VK_NULL_HANDLE;
@@ -99,18 +111,22 @@ VkBuffer vk_bl_scratch(u64 size, u64* cap_out) {
                                       VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     DevMemWant ai = {.at = DM_DEVICE};
-    VkBuffer made;
-    DevMem mem;
+    VkBuffer made = VK_NULL_HANDLE;
+    DevMem mem = 0;
     VkResult r = vk_buffer_create(&bi, &ai, &made, &mem, NULL);
     if (r != VK_SUCCESS) {
         /* the scratch there was stays for the moves it holds; a conversion past it fails, as it asks for one again,
            and its caller says so: this says the device's refusal once a size, not once a conversion */
-        if (cap != g_blocklinear.refused)
-            WARN("vulkan: the device's memory refused a block linear scratch buffer of %llu MB (%llu bytes asked): "
-                 "%s; the one of %llu MB stays, and a conversion past it fails until memory is found\n",
-                 (unsigned long long)(cap >> 20), (unsigned long long)size, snx_vk_result_str(r),
-                 (unsigned long long)(g_blocklinear.cap >> 20));
-        g_blocklinear.refused = cap;
+        const u64 bit = refused_bit(cap);
+        if (!(g_blocklinear.refused & bit)) {
+            char kept[48] = "none stays";
+            if (g_blocklinear.cap)
+                snprintf(kept, sizeof kept, "the one of %.1f MB stays", (double)g_blocklinear.cap / 1048576.0);
+            WARN("vulkan: the device refused a block linear scratch of %.1f MB (%llu bytes asked): %s; %s until memory "
+                 "is found\n",
+                 (double)cap / 1048576.0, (unsigned long long)size, snx_vk_result_str(r), kept);
+        }
+        g_blocklinear.refused |= bit;
         *cap_out = 0;
         return VK_NULL_HANDLE;
     }
@@ -119,6 +135,7 @@ VkBuffer vk_bl_scratch(u64 size, u64* cap_out) {
     g_blocklinear.scratch = made;
     g_blocklinear.mem = mem;
     g_blocklinear.refused = 0;
+    if (size > g_blocklinear.recent) g_blocklinear.recent = size;
     vk_mem_track(g_blocklinear.mem, VK_OWN_CONVERT);
     *cap_out = g_blocklinear.cap = cap;
     static const char k_grown[] = "vk mem BL scratch grew";
