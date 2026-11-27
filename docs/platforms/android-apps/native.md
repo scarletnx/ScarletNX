@@ -181,7 +181,8 @@ object that a frame may still use goes when its serial completed. A call that mu
 goes on in the same command buffer. Between passes an acquired image is in `PRESENT_SRC_KHR`, so GLES 1.1's render
 passes and GLES 2's dynamic rendering can share a frame.
 
-**GLES 1.1** (`hle_gles.c`) is the fixed function. A draw goes into a render pass on the swapchain image. A texture
+**GLES 1.1** (`hle_gles.c`) is the fixed function. A draw goes into a render pass on the swapchain image, or on a
+pbuffer's image, which rests in `COLOR_ATTACHMENT_OPTIMAL` between passes as GLES 2 keeps it. A texture
 upload ends the pass, copies from a staging buffer and starts the pass again (loading what it drew), so each draw
 reads the texture as it was at its call. The client arrays of a draw are converted into one vertex format (position,
 texture coordinate and color as floats) in a buffer of the frame, as triangle, line or point lists. GL's window
@@ -189,8 +190,9 @@ origin is the bottom left: the viewport has a negative height, so GL's viewport,
 coordinates are used as they are. A texture of 3-byte texels on a device that cannot sample that format is an RGBA8
 image, which a compute shader (`gles_rgb.comp`) writes from the packed rows. It does 2D textures (the base level) in
 GLES 1.1's formats, the texture environment of unit 0, the matrix stacks, `glDrawArrays`, `glDrawElements`,
-`glDrawTexOES`, blending, the scissor and `glClear`. It does not do yet: depth and stencil tests, lighting, fog, the
-alpha test, mipmaps, the second texture unit, and `glReadPixels`, which reads zeros.
+`glDrawTexOES`, blending, the scissor, `glClear` and `glReadPixels` of RGBA bytes (the frame's image copied into its
+staging buffer, the frame submitted and waited for). It does not do yet: depth and stencil tests, lighting, fog, the
+alpha test, mipmaps and the second texture unit.
 
 **GLES 2, 3.0 and 3.1** (`gles2.c`, `gles2_object.c`, `gles2_program.c`, `gles2_draw.c`) are done as Mesa's zink does them:
 

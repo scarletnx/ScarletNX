@@ -30,4 +30,7 @@ void gles_make_current(GlesContext* context, GlesSurface* draw);
 bool gles_swap(GlesSurface* surface);
 /* the surfaces' format changed: GLES 1.1's pipelines are made again (gles_vk.c calls it) */
 void gles1_format_changed(void);
+/* GLES 1.1's Vulkan objects gone, its textures with them, before the device (gles2_shutdown, under the lock): the next
+   device makes them again at the first draw or texture */
+void gles1_vk_free(void);
 #endif

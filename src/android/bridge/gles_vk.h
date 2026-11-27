@@ -245,6 +245,9 @@ typedef struct {
     /* the render passes of GLES 1.1 on the surfaces' format: one that clears the image first, one that keeps it */
     VkFormat format;
     VkRenderPass pass_clear, pass_load;
+    /* GLES 1.1's render pass on a pbuffer: RGBA8, kept between passes in COLOR_ATTACHMENT_OPTIMAL, as GLES 2 keeps a
+       pbuffer, made at its first pass */
+    VkRenderPass pass_pbuffer;
     /* the serials: of the last submission, and of the last one known to be complete */
     uint64_t submitted, completed;
     /* what an object no slot owns left: destroyed once its serial completed */
@@ -293,7 +296,8 @@ bool gles_frame_begin(GlesSurface* s);
 bool gles_acquire(GlesSurface* s);
 /* ends what is open in the frame's command buffer: GLES 1.1's render pass or GLES 2's rendering */
 void gles_pass_end(GlesSurface* s);
-/* GLES 1.1's render pass open on the frame's image: the image acquired at the first, and cleared by it */
+/* GLES 1.1's render pass open on the frame's image: a window's acquired at the first and cleared by it, a
+   pbuffer's kept */
 bool gles_pass_begin(GlesSurface* s);
 /* the commands recorded so far submitted, and waited for; the frame goes on in the same command buffer */
 bool gles_flush(GlesSurface* s);

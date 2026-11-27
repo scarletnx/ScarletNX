@@ -85,6 +85,7 @@ void gles2_shutdown(void) {
         gles2_programs_vk_free();
         gles2_draw_vk_free();
         gles2_objects_vk_free();
+        gles1_vk_free();
     }
     gles_vk_shutdown();
     pthread_mutex_unlock(&V.lock);
