@@ -373,7 +373,7 @@ int snx_build_module_a64(SnxProgram* loaded, const SnxCodegenOptions* options, c
     size_t module_size = 0, first, last, count, limit, i, entry_count = 0, n = 0;
     size_t cache_count = 0, variant_count = 0, export_count = 1, units_at = 0, units_end = 0;
     const char* exports[5];
-    char error[1024], *tmp = NULL;
+    char error[1024], unit_name[48] = "code unit", *tmp = NULL; /* unit_name: a unit's object in the linker's errors */
     double start;
     SnxRecompilePhases phases = {0};
     int rc = -1;
@@ -442,6 +442,7 @@ int snx_build_module_a64(SnxProgram* loaded, const SnxCodegenOptions* options, c
        objects (snx_native_target: iOS's). With every call through the table (hook_direct_calls) its calls go through
        CPU.disp too */
     const char* native = build->triple ? "arm64" : snx_native_name();
+    snprintf(unit_name, sizeof unit_name, "%s code unit", native);
     if (build->triple ? !snx_native_target(build->triple) : !snx_native_available()) {
         char floor[256];
         if (build->triple)
@@ -551,7 +552,7 @@ int snx_build_module_a64(SnxProgram* loaded, const SnxCodegenOptions* options, c
         if (q.units[i].x64) {
             inputs[n].data = q.units[i].x64;
             inputs[n].size = q.units[i].x64_size;
-            inputs[n++].name = "code chunk";
+            inputs[n++].name = unit_name;
         }
     units_end = n;
     for (i = 0; i < cache_count; ++i) {

@@ -900,9 +900,47 @@ done:
 }
 #endif
 
+#ifndef __APPLE__
+/* AOT: an object whose own code is more than a BL reaches, its call at its first word: no veneer of its island, after
+   that code, is in the call's reach. The link is refused, naming the object, the relocation, how far the call is from
+   its target (a filler more away than the object is large), what it reaches and the object's code */
+static int past_reach(void) {
+    static const char* const names[3] = {"reach", "filler", "definitions"};
+    const char* exports[1] = {"reach"};
+    unsigned char* data[3] = {NULL, NULL, NULL};
+    size_t size[3] = {0, 0, 0}, i;
+    SnxLinkInput inputs[3];
+    SnxLinkOutput linked = {0};
+    char error[1024] = "", what[1400];
+    int rc = 1, failed;
+    if (nobj_a64_reach("ext_fn", (size_t)140 << 20, &data[0], &size[0], error, sizeof error) ||
+        nobj_filler(EM_AARCH64, 0, (size_t)20 << 20, &data[1], &size[1], error, sizeof error)) {
+        snx_error("%s", error);
+        goto done;
+    }
+    if (definitions(EM_AARCH64, &data[2], &size[2])) goto done;
+    for (i = 0; i < 3; ++i) {
+        inputs[i].data = data[i];
+        inputs[i].size = size[i];
+        inputs[i].name = names[i];
+    }
+    failed = snx_link(inputs, 3, exports, 1, "reach.so", &linked, error, sizeof(error));
+    snprintf(what, sizeof what,
+             "a call out of its reach and of its object's island refuses the link, with the values: %s", error);
+    check(failed && !strcmp(error, "reach: relocation 283 (R_AARCH64_CALL26) out of range: the call is 160.0 MiB from "
+                                   "its target and reaches 128 MiB; the object's code is 140.0 MiB"),
+          what);
+    rc = 0;
+done:
+    free(linked.data);
+    for (i = 0; i < 3; ++i) free(data[i]);
+    return rc;
+}
+#endif
+
 static int native_objects(void) {
 #ifndef __APPLE__ /* where the AOT linker writes no ELF module (link_elf.c) */
-    if (far_module()) return 1;
+    if (far_module() || past_reach()) return 1;
     {
         char error[1024];
         unsigned char *caller_data, *defs_data;

@@ -19,6 +19,9 @@ int nobj_a64_caller(int coff, const char* callee, const char* data, const char* 
                     size_t* size, char* error, size_t error_size);
 /* machine's (EM_AARCH64 or EM_X86_64), ELF or COFF: ext_data = 41 and ext_fn(x) = 3x */
 int nobj_definitions(unsigned machine, int coff, unsigned char** out, size_t* size, char* error, size_t error_size);
+/* AArch64 ELF: reach() = callee(), a BL (CALL26) at its first word, then bytes of code, all zero: an object whose own
+   island of veneers, after its code, the call does not reach where bytes pass what a BL does */
+int nobj_a64_reach(const char* callee, size_t bytes, unsigned char** out, size_t* size, char* error, size_t error_size);
 /* bytes of code, all zero, which make a load or a module as large as they say */
 int nobj_filler(unsigned machine, int coff, size_t bytes, unsigned char** out, size_t* size, char* error,
                 size_t error_size);
