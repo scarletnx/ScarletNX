@@ -607,6 +607,10 @@ static int make_program(const MakeArgs* a, int index) {
     SnxU64* hints;
     unsigned made_by = 0;
     int i, rc = 1;
+    /* when the program's making began, and its code's began and ended (snx_recompile_line) */
+    const double begun = snx_seconds();
+    double code_begun = begun, code_ended = begun;
+    char took[160];
     memset(&program, 0, sizeof(program));
     memset(&job, 0, sizeof(job));
     /* the NROs of its RomFS, where code is made ahead of time for this host: an iOS pack and an NCE recompile have
@@ -871,6 +875,7 @@ static int make_program(const MakeArgs* a, int index) {
             free(folder);
         }
         i = 0;
+        code_begun = snx_seconds();
         if (!program.npdm.is64)
             i = snx_build_module_arm(&program, &gen, &job);
         else if (!i)
@@ -880,10 +885,12 @@ static int make_program(const MakeArgs* a, int index) {
             i = snx_nros_build(&nros, &program, &gen, &job, folder, compile.target_win);
             free(folder);
         }
+        code_ended = snx_seconds();
         if (i) goto done;
     }
     if (ios) { /* the iOS app is the runtime: only the code is made here */
-        if (!compile.quiet) printf("Built %s\n", code);
+        snx_recompile_line(took, sizeof took, code_begun - begun, code_ended - code_begun, snx_seconds() - code_ended);
+        if (!compile.quiet) printf("%s\nBuilt %s\n", took, code);
         rc = 0;
         goto done;
     }
@@ -924,7 +931,8 @@ static int make_program(const MakeArgs* a, int index) {
             goto done;
         }
     }
-    if (!compile.quiet) printf("Built %s\n", exe ? exe : code);
+    snx_recompile_line(took, sizeof took, code_begun - begun, code_ended - code_begun, snx_seconds() - code_ended);
+    if (!compile.quiet) printf("%s\nBuilt %s\n", took, exe ? exe : code);
     rc = 0;
 done:
     snx_free_program(&program);

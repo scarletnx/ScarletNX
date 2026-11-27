@@ -342,6 +342,25 @@ int snx_abort_requested(void);
 /* the memory this process is charged for now, in bytes: its footprint on macOS and iOS, its resident set on Linux,
    Android and FreeBSD, its working set on Windows; 0 where the system does not tell */
 SnxU64 snx_footprint(void);
+/* the most this process was charged for since it started, in bytes: its resident set's peak on Linux, Android, macOS,
+   iOS and FreeBSD, its working set's on Windows; 0 where the system does not tell */
+SnxU64 snx_footprint_peak(void);
+/* Where a recompile's time went, in seconds of wall time: finding the functions, compiling them (units: the seconds
+   its threads spent in them, summed), the module's descriptor, the link and the file's write. pack: link is the write
+   of a pack of objects, which takes the place of both */
+typedef struct {
+    double discovery, compile, units, descriptor, link, write;
+    unsigned threads; /* the threads that compiled */
+    int pack;
+    SnxU64 peak; /* snx_footprint_peak's */
+} SnxRecompilePhases;
+/* The line a module's making ends with, into out, without a newline: "code: discovery 1.2 s, compile 3.1 s (12.4 s
+   of units on 4 threads), descriptor 0.2 s, link 1.5 s, write 0.6 s; peak 2230 MiB" */
+void snx_phases_line(char* out, size_t size, const SnxRecompilePhases* p);
+/* The line a program's recompile ends with, before its "Built": the seconds it took, those before its code (the
+   program read, its calls bound), its code's (every module's, snx_phases_line's each) and those after (the runtime's
+   copy, the stamp): "recompile: 8.1 s in all: 2.9 s before the code, 4.9 s the code, 0.3 s after it" */
+void snx_recompile_line(char* out, size_t size, double before, double code, double after);
 /* A recompile's progress, a line for each unit, the form every driver prints and the launcher reads
    (gui/steps.c): unit `done` of `count` finished, "  compiled block 3/40: code_002, <label> (4.2 s)", or "(cached)" */
 void snx_report_unit(size_t done, size_t count, const char* name, const char* label, int cached, double seconds);
