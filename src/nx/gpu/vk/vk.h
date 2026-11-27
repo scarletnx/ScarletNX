@@ -88,6 +88,9 @@ typedef struct {
     int has_copy_indirect;
     int has_inplace_loads; /* block linear loads read GPU results by device address (vk_bl_move_src) */
     int has_descriptor_heaps;
+    /* a draw thread's draws that fell back from heaps (render.c's retry), by its recording slot (VK_RC_SLOTS): the
+       other thread's draws of a split keep them. vk_heaps() reads both */
+    u8 heaps_off[4];
     int cb_address; /* the vk_cb_address setting: with heaps, constant buffers by address (vk_cb_addr_mask) */
     int has_descriptor_heap_support; /* enabled device feature, retained during a draw's buffer fallback */
     VkPhysicalDeviceDescriptorBufferPropertiesEXT descriptor_props;
@@ -464,6 +467,9 @@ void vk_surf_before_reset(const struct Surf* s);
 #define VK_RC_SLOTS 4
 extern _Thread_local u32 g_vk_slot; /* render.c's t_rc */
 static inline u32 vk_render_slot(void) { return g_vk_slot; }
+static_assert(sizeof g_vk.heaps_off == VK_RC_SLOTS, "a heaps_off for each recording slot");
+/* whether this thread's draw records with descriptor heaps */
+static inline int vk_heaps(void) { return g_vk.has_descriptor_heaps && !g_vk.heaps_off[g_vk_slot]; }
 void vk_prep_times(u64* lat, u64* work, u64* joined, u64* join_wait); /* in counter ticks */
 /* Lets go of vk_lock for work that needs nothing it guards, when this thread holds it once (an outer hold can't be let
    go of here): 1 when it let go. vk_lock_resume(that) takes it again. What the hold saw before can have changed when
@@ -802,9 +808,9 @@ u8* vk_stage_upload(u64 size, u64 align, VkBuffer* buf, u64* off);
 /* as vk_stage_upload without the share lock held: out of this thread's part of the ring, which takes the lock only for
    a new part (draw_batches=2). page picks the part: 0 the thread's shared one, 1 to VK_UPLOAD_PAGES - 1 one of their
    own, which the copies of one constant bank take (render.c's cb_get_) */
-#define VK_UPLOAD_PAGES (1 + 7 * 18 + 2)
+#define VK_UPLOAD_PAGES (1 + DS_GFX_STAGES * DS_CBUFS + 2)
 /* the parts of the texture words of the vertex and fragment stages (render.c's table_words) */
-#define VK_UPLOAD_WORDS (1 + 7 * 18)
+#define VK_UPLOAD_WORDS (1 + DS_GFX_STAGES * DS_CBUFS)
 u8* vk_stage_upload_own(u64 size, u64 align, u32 page, VkBuffer* buf, u64* off);
 /* whether off in buf is in this thread's part page of this frame (vk_stage_upload_own): 1 and the part's start in
    *start. A window that starts there holds every copy of the part, as a part is a window's 64 KiB */
@@ -1025,7 +1031,7 @@ vk_cbuf_type(u32 slot); /* the descriptor type of a constant buffer slot (g_spir
    mappings (PipeKey.cb_addr) and the draw's table take the mask from the same ShaderInfo */
 static inline u32 vk_cb_addr_mask(const ShaderInfo* si) {
     u32 m = 0;
-    if (!g_vk.has_descriptor_heaps || !g_vk.cb_address) return 0;
+    if (!vk_heaps() || !g_vk.cb_address) return 0;
     for (u32 b = si->cbuf_mask & 0x3FFFFu; b; b &= b - 1) {
         u32 i = snx_ctz32(b);
         if (si->cbuf_max[i] && si->cbuf_max[i] < 0x10000 && vk_cbuf_type(i) == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
@@ -2618,7 +2624,7 @@ static inline int vk_tic_empty(const u32* tic) { return tic[0] == 0; }
    keeps vk_null_view's 1x1 image: a size query of an empty header reads 1x1 on the console, and 0 from a null
    descriptor. Not with descriptor heaps yet: their writes take a NULL resource for a null descriptor too, which
    descriptor_heaps.c does not write */
-static inline int vk_null_descriptors(void) { return g_vk.null_descriptor && !g_vk.has_descriptor_heaps; }
+static inline int vk_null_descriptors(void) { return g_vk.null_descriptor && !vk_heaps(); }
 /* the step robustBufferAccess2 checks uniform ranges in: 16, or the device's alignment where that is larger */
 static inline u32 vk_cb_step(void) {
     return g_vk.robust_buffer2 && g_vk.robust_ubo_align > 16 ? g_vk.robust_ubo_align : 16;

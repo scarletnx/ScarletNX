@@ -556,8 +556,8 @@ enum { SH_MAP_CLASS_2D, SH_MAP_CLASS_2D_ARRAY, SH_MAP_CLASS_3D, SH_MAP_CLASS_CUB
 #define SH_DRAW_MAP_WORDS_FS    (SH_DRAW_MAP + 6u)
 #define SH_DRAW_BYTES_MAP       ((SH_DRAW_MAP + 8u) * 4u)
 /* With cb_sizes: the per-draw block's words SH_DRAW_CB_SIZES on (after the map's), 9 words for the vertex stage and 9
-   for the fragment stage, two banks a word: bank b's guest size in 16-byte units (4096 for 64 KiB, and for a bank that
-   binds alone, whose descriptor's range ends it) in the 16 bits at (b & 1) * 16 of word b / 2. A read of an element at
+   for the fragment stage, two banks a word: bank b's guest size in 4-byte words (16384 for 64 KiB, and for a bank that
+   binds alone, whose descriptor's range ends it) in the 16 bits at (b & 1) * 16 of word b / 2. A read of a word at
    that size or past it is 0, as the console's past a bank's size */
 #define SH_DRAW_CB_SIZES        (SH_DRAW_MAP + 8u)
 #define SH_DRAW_CB_SIZES_FS     (SH_DRAW_CB_SIZES + 9u)
@@ -587,7 +587,8 @@ enum { SH_MAP_CLASS_2D, SH_MAP_CLASS_2D_ARRAY, SH_MAP_CLASS_3D, SH_MAP_CLASS_CUB
 #define SH_ATTR_TYPE_SHIFT      18     /* bits 18-20: 1 snorm, 2 unorm, 3 sint, 4 uint, 5 uscaled, 6 sscaled, 7 float */
 #define SH_ATTR_BGRA            (1u << 21) /* the first and third components swap */
 #define SH_ATTR_CONSTANT        (1u << 22) /* no data: 0, 0, 0, 1 */
-#define SH_ATTR_INSTANCED       (1u << 23) /* an element each divisor (its last record word) instances, not each vertex */
+/* an element each divisor (its last record word) instances, not each vertex */
+#define SH_ATTR_INSTANCED       (1u << 23)
 /* Device capabilities the renderer sets before translating, and the values offline translation takes. A 1-bit
    field holds 0 or 1: a mask goes in through a test (!= 0), or its bit is lost */
 typedef struct {

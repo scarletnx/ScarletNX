@@ -1288,7 +1288,7 @@ static void mem_need_reason(u64 gva, u64 len, int reason) {
 }
 void vk_buf_mem_need(u64 gva, u64 len) { mem_need_reason(gva, len, WB_READ); }
 int vk_buf_pending_any(void) { return atomic_load_explicit(&g_gfx_any, memory_order_relaxed); }
-u64 vk_buf_adds(void) { return atomic_load_explicit(&g_out_pages.adds, memory_order_relaxed); }
+u64 vk_buf_adds(void) { return atomic_load_explicit(&g_out_pages.adds, memory_order_acquire); }
 int vk_buf_pending_unsubmitted(void) {
     for (GfxOut* o = g_out; o; o = o->next)
         if (o->frame == vk_submit_number()) return 1;
@@ -1760,9 +1760,15 @@ static GfxOut* out_absorb(GfxOut* h) {
    run of guest memory whose original bytes are guest memory's (not a kept, logged, write-only or GPU-made one), taken
    into this submission, as its copy back for landing is recorded at the submission's end. 0 when it can't be, with
    nothing recorded */
+static int range_owned(u64 gva, u64 len);
 static int gfx_rebase(GfxOut* o) {
+    /* a split's worker (draw_batches=2): its merge goes into its list, which the GPU runs after the renderer thread's
+       half, but o's original bytes and wseen change at once, and the renderer thread's draws would bind o in place
+       before its merge */
+    if (vk_render_slot()) return 0;
     if (o->cpu == ~0ull || !o->org || o->initial || o->keep || o->no_input || (o->off & 3) ||
-        !gmem_host(o->addr, o->size) || vk_uma_pending(o->addr, o->size) || vk_release_pending(o->addr, o->size))
+        !gmem_host(o->addr, o->size) || vk_uma_pending(o->addr, o->size) || vk_release_pending(o->addr, o->size) ||
+        range_owned(o->addr, o->size)) /* GPU-owned bytes: guest memory does not hold them yet */
         return 0;
     u64 a = g_vk.props.limits.minStorageBufferOffsetAlignment;
     if (a < 4) a = 4;
@@ -1772,16 +1778,20 @@ static int gfx_rebase(GfxOut* o) {
     u8* p = vk_stage(gap + words * 4, a, &in, &in_off);
     if (!p || (o->frame != vk_submit_number() && !out_take_into_submit(o))) return 0;
     memcpy(p, o->org, o->size);
-    o->wseen = vk_ww_now(); /* before guest memory is read: a write in between only makes out_copyable compare */
-    read_untracked(o->addr, p + gap, o->size);
     vk_render_end();
     copy_barrier(out_stages(), out_access(), VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                  VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+    /* the merge reads its input at the submission, so the guest bytes come after it is recorded: a merge that fails
+       leaves o's original bytes as they were, which landing o still needs */
     if (!vk_result_merge(o->buf, o->off, in, in_off, gap, o->buf, o->off, o->size)) return 0;
     copy_barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                  out_stages() | VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT,
                  VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
-    memcpy(o->org, p + gap, o->size);
+    /* guest memory into o's original bytes, and from them into the merge's input: the staging ring can be memory
+       that the CPU writes only (a BAR heap), never one that it reads back */
+    o->wseen = vk_ww_now(); /* before guest memory is read: a write in between only makes out_copyable compare */
+    read_untracked(o->addr, o->org, o->size);
+    memcpy(p + gap, o->org, o->size);
     g_buffer.wstat.copied += o->size;
     if (copy_stats_on()) {
         g_merges++;
@@ -1794,7 +1804,8 @@ static int gfx_rebase(GfxOut* o) {
    at an offset that is a multiple of align: from this submit when the reader writes it (its copy back for landing was
    recorded at its submit's end) or taken into it (out_take_into_submit), from this frame otherwise. Returns 2 when
    pending results cover the range and can all be copied over guest memory on the GPU (gfx_overlay), 0 when none do,
-   or after landing them because one can't: the guest wrote its original bytes since. A result counts only with bytes
+   or after landing them because one can't: the guest wrote its original bytes since, and gfx_rebase could not merge
+   them on the GPU. A result counts only with bytes
    of the range (out_meets): two storage buffers sharing a page, one after the other, made each read of one compose
    with the other's results, which gave it nothing. A result of the frame before is read where it is too (transform
    feedback captures the same buffers every frame, over the last frame's capture), its frame's rings held until the
@@ -2904,7 +2915,6 @@ int vk_buf_copy(u64 gva, u64 len, VkBuffer* buf, u64* off) {
     return 1;
 }
 
-static int range_owned(u64 gva, u64 len);
 static int written_since_gva(u64 gva, u64 len, u32 since);
 /* Keep an owned input on the GPU. Only the baseline needed to merge later CPU edits
    is copied to host-cached staging, asynchronously with the draw. */
@@ -3540,8 +3550,9 @@ static int draw_output_page(const DrawPage* p, u8* ptr, VkBuffer buf, u64 off, D
    were recorded, after the shaders that wrote them: an aliased draw doesn't wait for earlier results to land in guest
    memory (one game drew about four a frame, each landing everything with a vk_finish). Its outputs keep guest memory as
    their original bytes until those results land (out_rebase). Compute results that haven't landed land for the
-   atlas's pages alone. A result whose original bytes the guest has written since can't be copied whole: it lands
-   first, as in gfx_gpu_src, which submits, and the draw starts its setup over. 1 when a result was copied in */
+   atlas's pages alone. A result whose original bytes the guest has written since can't be copied whole: gfx_rebase
+   merges the guest's bytes into it on the GPU, else it lands first, as in gfx_gpu_src, which submits, and the draw
+   starts its setup over. 1 when a result was copied in */
 /* into l, the pending results on the atlas's pages (p, sorted by key): on a run of its guest pages, or with an unmapped
    page at a GPU page the atlas has unmapped (draw_page_key) */
 static void out_near_atlas(OutList* l, const DrawPage* p, size_t unique) {

@@ -2,8 +2,8 @@
    Copyright 2026 the ScarletNX contributors */
 /* Where the constant buffers go through windows of the staging ring (gpu/vk/cb_windows.h), and the line that says
    why not: on with descriptor sets, buffers or heaps alike (heaps push their sets' addresses in the slots the windows
-   leave free), off where a line of the extension bans holds (lavapipe's), and where a limit falls short, each line with the device's value and what the windows need; vk_cb_windows's
-   Off and On, over a ban too */
+   leave free), off where a line of the extension bans holds (lavapipe's), and where a limit falls short, each line
+   with the device's value and what the windows need; vk_cb_windows's Off and On, over a ban too */
 #include "nx/gpu/vk/cb_windows.h"
 #include <stdio.h>
 #include <string.h>

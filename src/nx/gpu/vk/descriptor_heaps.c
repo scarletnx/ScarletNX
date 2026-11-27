@@ -12,6 +12,7 @@
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/descriptor_heaps.h"
+#include "nx/gpu/vk/cb_windows.h"
 #include "nx/gpu/shader/shader.h"
 #include "common/utilities/endian.h"
 #include "nx/runtime/platform/log.h"
@@ -141,7 +142,8 @@ typedef struct {
 /* the stage sets' address slots (vk_descriptor_heap_push_at): free bytes of the push block, 8-byte aligned. 18 banks
    take the 16-bit offsets in the first 36 bytes of a stage's 48; the texture words take x and y of their uvec4 */
 static_assert(SH_PUSH_CB_WINDOW + 36 <= 168 && 168 + 8 <= SH_PUSH_CB_WINDOW_FS, "the vertex window offsets' free slot");
-static_assert(SH_PUSH_CB_WINDOW_FS + 36 <= 216 && 216 + 8 <= SH_PUSH_BYTES_WINDOWS, "the fragment window offsets' slot");
+static_assert(SH_PUSH_CB_WINDOW_FS + 36 <= 216 && 216 + 8 <= SH_PUSH_BYTES_WINDOWS,
+              "the fragment window offsets' slot");
 static_assert(SH_PUSH_TEX_WORDS + 8 <= 232 && 232 + 8 <= SH_PUSH_BYTES_TABLE, "the texture words' free half");
 static_assert(SH_PUSH_BYTES_TABLE <= 240 && 256 <= VK_DESCRIPTOR_HEAP_PUSH_SIZE, "the bytes after the push block");
 static HeapState g_heaps;
@@ -226,9 +228,9 @@ static int heap_create(Heap* heap, const VkDescriptorHeapMemoryPlan* plan, const
         .size = plan->allocation_size,
         .usage = VK_BUFFER_USAGE_DESCRIPTOR_HEAP_BIT_EXT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | usage,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    /* the GPU's memory where the CPU can map it: the shaders read each draw's descriptors, and the CPU only writes
-       them, in order (descriptors.c's ARENA_MEMORY) */
-    DevMemWant allocation = {.at = DM_WINDOW,
+    /* the GPU's memory where the CPU can map it (vk_devmem_tables_at): the shaders read each draw's descriptors, and
+       the CPU only writes them, in order (descriptors.c's ARENA_MEMORY) */
+    DevMemWant allocation = {.at = vk_devmem_tables_at(),
                              .mapped = 1,
                              .need = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT};
     DevMemInfo details;
@@ -309,7 +311,12 @@ static void lasting_init(void) {
     }
     size_t slots = (size_t)VK_DESCRIPTOR_HEAP_LASTING_SLOTS + 1;
     size_t keys = sizeof(u32) * LASTING_KEY_BUCKETS, objects = sizeof(u32) * LASTING_OBJECT_BUCKETS;
-    size_t bytes = sizeof(Lasting) * slots + keys + objects + (size_t)plan->lasting_size;
+    /* the shadow of the lasting slots alone: the texture table's run after them (vk_descriptor_heaps_init) has none */
+    VkDeviceSize shadow = 0;
+    for (u32 k = 0; k < LASTING_KINDS; k++)
+        if (L->start[k] + L->stride[k] * L->count[k] > shadow) shadow = L->start[k] + L->stride[k] * L->count[k];
+    if (shadow > plan->lasting_size) shadow = plan->lasting_size;
+    size_t bytes = sizeof(Lasting) * slots + keys + objects + (size_t)shadow;
     u8* block = calloc(1, bytes); /* one allocation: the slots, the two bucket arrays, the shadow */
     if (!block) {
         LOG("vulkan: descriptor heaps: no memory for the lasting part: descriptors are made again in each frame\n");
@@ -775,18 +782,32 @@ int vk_descriptor_heaps_init(const VkPhysicalDeviceDescriptorHeapPropertiesEXT* 
         lasting += L->stride[k] * lasting_slots[k];
     }
     /* the texture table of SM86 programs past the lasting slots: one run of image slots, which lasts the run */
-    const int table = g_shader_sm86 && g_vk.has_table_features;
+    /* the table needs the windows (vk_pipeline_init, later): none where the setting turns them off */
+    int table = g_shader_sm86 && g_vk.has_table_features &&
+                g_settings.constant_buffer_windows != SNX_VK_CB_WINDOWS_OFF;
     VkDeviceSize table_image = 0;
     const VkDeviceSize image_stride = snx_align_up(g_heaps.sizes[HEAP_IMAGE], g_heaps.alignment[HEAP_IMAGE]),
                        sampler_stride = snx_align_up(g_heaps.sizes[HEAP_SAMPLER], g_heaps.alignment[HEAP_SAMPLER]);
+    const VkDeviceSize slots_only = snx_align_up(lasting, resource_alignment);
     if (table) {
         table_image = snx_align_up(lasting, g_heaps.alignment[HEAP_IMAGE]);
         lasting = table_image + image_stride * SNX_TABLE_IMAGES;
     }
     lasting = snx_align_up(lasting, resource_alignment);
-    if (!vk_descriptor_heap_memory_plan_lasting_fit(&resources, VK_DESCRIPTOR_HEAP_RESOURCE_FRAME, VK_FRAMES, lasting,
-                                            props->minResourceHeapReservedRange, resource_address_alignment,
-                                            resource_alignment, props->maxResourceHeapSize, g_vk.alloc_cap) &&
+    int fit = vk_descriptor_heap_memory_plan_lasting_fit(&resources, VK_DESCRIPTOR_HEAP_RESOURCE_FRAME, VK_FRAMES,
+                                                         lasting, props->minResourceHeapReservedRange,
+                                                         resource_address_alignment, resource_alignment,
+                                                         props->maxResourceHeapSize, g_vk.alloc_cap);
+    if (!fit && table) { /* the lasting slots without the table's run, as before the table */
+        table = 0;
+        table_image = 0;
+        lasting = slots_only;
+        fit = vk_descriptor_heap_memory_plan_lasting_fit(&resources, VK_DESCRIPTOR_HEAP_RESOURCE_FRAME, VK_FRAMES,
+                                                         lasting, props->minResourceHeapReservedRange,
+                                                         resource_address_alignment, resource_alignment,
+                                                         props->maxResourceHeapSize, g_vk.alloc_cap);
+    }
+    if (!fit &&
         !vk_descriptor_heap_memory_plan_fit(&resources, VK_DESCRIPTOR_HEAP_RESOURCE_FRAME, VK_FRAMES,
                                             props->minResourceHeapReservedRange, resource_address_alignment,
                                             resource_alignment, props->maxResourceHeapSize, g_vk.alloc_cap))
@@ -1561,6 +1582,7 @@ void vk_descriptor_heaps_stream_reset(u32 slot) {
     if (slot >= VK_RC_SLOTS) return;
     g_heaps.stream[slot].begun = g_heaps.stream[slot].buffer_begun = 0;
     atomic_fetch_add_explicit(&g_heaps.stream[slot].epoch, 1, memory_order_relaxed);
+    atomic_store_explicit(&g_heaps.stream[slot].active, 0, memory_order_relaxed); /* no pipeline bound in it yet */
 }
 void vk_descriptor_heaps_destroy(void) {
     lasting_destroy();
@@ -1570,9 +1592,11 @@ void vk_descriptor_heaps_destroy(void) {
     free(g_heaps.scratch);
     for (u32 i = 0; i < g_heaps.nlayouts; i++) free(g_heaps.layouts[i].memo);
     u64 epoch[VK_RC_SLOTS];
-    for (u32 i = 0; i < VK_RC_SLOTS; i++) epoch[i] = atomic_load_explicit(&g_heaps.stream[i].epoch, memory_order_relaxed);
+    for (u32 i = 0; i < VK_RC_SLOTS; i++)
+        epoch[i] = atomic_load_explicit(&g_heaps.stream[i].epoch, memory_order_relaxed);
     g_heaps = (HeapState){0};
-    for (u32 i = 0; i < VK_RC_SLOTS; i++) atomic_store_explicit(&g_heaps.stream[i].epoch, epoch[i] + 1, memory_order_relaxed);
+    for (u32 i = 0; i < VK_RC_SLOTS; i++)
+        atomic_store_explicit(&g_heaps.stream[i].epoch, epoch[i] + 1, memory_order_relaxed);
 }
 uint64_t vk_descriptor_heaps_epoch(void) {
     return atomic_load_explicit(&g_heaps.stream[g_vk_slot].epoch, memory_order_relaxed);

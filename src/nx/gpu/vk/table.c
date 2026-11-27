@@ -52,7 +52,8 @@ static struct {
     VkDescriptorSetLayout layout;
     VkDescriptorPool pool;
     VkDescriptorSet set; /* with descriptor buffers, 1: the table is there (dmap) */
-    /* with descriptor buffers: the table's own descriptor buffer, mapped, and each binding's offset and descriptor size */
+    /* with descriptor buffers: the table's own descriptor buffer, mapped, and each binding's offset and descriptor size
+       */
     VkBuffer dbuf;
     DevMem dmem;
     u8* dmap;
@@ -125,6 +126,13 @@ static int table_init_buffer(char* why, size_t size, u32 images, u32 samplers) {
     }
     VkDeviceSize bytes = 0;
     vkGetDescriptorSetLayoutSizeEXT(g_vk.dev, g_table.layout, &bytes);
+    /* one buffer holds both bindings: its bytes are within what a binding of either kind reaches */
+    if (bytes > p->maxResourceDescriptorBufferRange || bytes > p->maxSamplerDescriptorBufferRange) {
+        snprintf(why, size, "its %llu bytes are past the device's descriptor buffer range", (unsigned long long)bytes);
+        vkDestroyDescriptorSetLayout(g_vk.dev, g_table.layout, NULL);
+        g_table.layout = VK_NULL_HANDLE;
+        return 0;
+    }
     for (u32 i = 0; i < 2; i++) vkGetDescriptorSetLayoutBindingOffsetEXT(g_vk.dev, g_table.layout, i, &g_table.at[i]);
     g_table.size[0] = p->sampledImageDescriptorSize;
     g_table.size[1] = p->samplerDescriptorSize;
@@ -132,14 +140,20 @@ static int table_init_buffer(char* why, size_t size, u32 images, u32 samplers) {
     const VkBufferCreateInfo bi = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         .size = bytes,
-        .usage = VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT | VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT |
-                 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        .usage = VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT |
+                 VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    const DevMemWant want = {
-        .at = DM_WINDOW, .mapped = 1, .need = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT};
+    const DevMemWant want = {.at = vk_devmem_tables_at(),
+                             .mapped = 1,
+                             .need = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT};
     DevMemInfo details;
     if (!bytes || !VK_OK(vk_devmem_buffer(&bi, &want, &g_table.dbuf, &g_table.dmem, &details)) || !details.ptr) {
         snprintf(why, size, "no memory for its descriptor buffer");
+        if (g_table.dbuf) vk_devmem_buffer_destroy(g_table.dbuf, g_table.dmem); /* made, but not mapped */
+        g_table.dbuf = VK_NULL_HANDLE;
+        g_table.dmem = 0;
+        vkDestroyDescriptorSetLayout(g_vk.dev, g_table.layout, NULL); /* no table: no layout that names one */
+        g_table.layout = VK_NULL_HANDLE;
         return 0;
     }
     vk_mem_track(g_table.dmem, VK_OWN_DESCRIPTORS);
@@ -149,12 +163,17 @@ static int table_init_buffer(char* why, size_t size, u32 images, u32 samplers) {
     why[0] = 0;
     return 1;
 }
-/* slot of binding (0 the images, 1 the samplers) names ii's view in its layout, or its sampler */
-static void table_write(u32 binding, u32 slot, const VkDescriptorImageInfo* ii) {
+/* slot of binding (0 the images, 1 the samplers) names ii's view in its layout, or its sampler. 0 where the heaps'
+   run could not take it: a heap draw would read what the slot held before, so the slot is not given out */
+static int table_write(u32 binding, u32 slot, const VkDescriptorImageInfo* ii) {
     const VkDescriptorType type = binding ? VK_DESCRIPTOR_TYPE_SAMPLER : VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     /* with heaps, into their run too: a draw whose heaps ran out takes descriptor buffers (render.c) */
-    if (g_vk.has_descriptor_heap_support && !vk_descriptor_heaps_table_write(binding, slot, ii))
-        LOG_LIMIT(4, "vulkan: the texture table's slot %u of binding %u was not written into the heaps\n", slot, binding);
+    if (g_vk.has_descriptor_heap_support && vk_descriptor_heaps_table() &&
+        !vk_descriptor_heaps_table_write(binding, slot, ii)) {
+        LOG_LIMIT(4, "vulkan: the texture table's slot %u of binding %u was not written into the heaps\n", slot,
+                  binding);
+        return 0;
+    }
     if (g_table.dmap) {
         VkDescriptorGetInfoEXT get = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT, .type = type};
         if (binding)
@@ -163,7 +182,7 @@ static void table_write(u32 binding, u32 slot, const VkDescriptorImageInfo* ii) 
             get.data.pSampledImage = ii;
         vkGetDescriptorEXT(g_vk.dev, &get, g_table.size[binding],
                            g_table.dmap + g_table.at[binding] + (VkDeviceSize)slot * g_table.size[binding]);
-        return;
+        return 1;
     }
     const VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                                     .dstSet = g_table.set,
@@ -173,6 +192,7 @@ static void table_write(u32 binding, u32 slot, const VkDescriptorImageInfo* ii) 
                                     .descriptorType = type,
                                     .pImageInfo = ii};
     vkUpdateDescriptorSets(g_vk.dev, 1, &w, 0, NULL);
+    return 1;
 }
 int vk_table_init(char* why, size_t size) {
     VkPhysicalDeviceVulkan12Properties p12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES};
@@ -292,11 +312,21 @@ static void table_reclaim(void) {
     LOG_LIMIT(4, "vulkan: the texture table was full: %u slots no frame in flight used came back\n", taken);
 }
 /* the slot of view in layout, new where it has none: under the lock */
+/* the slot of view in layout, or of sampler, where its near entry holds it: ~0u where not */
+static u32 near_view(VkImageView view, VkImageLayout layout) {
+    const TableView* hit = &g_table.near_views[near_view_index(view, layout)];
+    return hit->view == view && hit->layout == layout ? hit->slot : ~0u;
+}
+static u32 near_sampler(VkSampler sampler) {
+    const TableSampler* hit = &g_table.near_samplers[near_sampler_index(sampler)];
+    return hit->sampler == sampler ? hit->slot : ~0u;
+}
 static u32 view_slot(VkImageView view, VkImageLayout layout) {
     TableView* hit = &g_table.near_views[near_view_index(view, layout)];
-    if (hit->view == view && hit->layout == layout) {
-        g_table.slot_frame[hit->slot] = vk_frame_id();
-        return hit->slot;
+    const u32 seen = near_view(view, layout);
+    if (seen != ~0u) {
+        g_table.slot_frame[seen] = vk_frame_id();
+        return seen;
     }
     u32 i = view_home(view);
     while (g_table.views[i].view && (g_table.views[i].view != view || g_table.views[i].layout != layout))
@@ -320,10 +350,13 @@ static u32 view_slot(VkImageView view, VkImageLayout layout) {
                       SNX_TABLE_IMAGES);
             return ~0u;
         }
+        const VkDescriptorImageInfo ii = {VK_NULL_HANDLE, view, layout};
+        if (!table_write(0, slot, &ii)) {
+            g_table.free[g_table.nfree++] = slot;
+            return ~0u;
+        }
         *e = (TableView){view, layout, slot};
         g_table.slot_view[slot] = *e;
-        const VkDescriptorImageInfo ii = {VK_NULL_HANDLE, view, layout};
-        table_write(0, slot, &ii);
     }
     *hit = *e;
     g_table.slot_frame[e->slot] = vk_frame_id();
@@ -331,7 +364,8 @@ static u32 view_slot(VkImageView view, VkImageLayout layout) {
 }
 static u32 sampler_slot(VkSampler sampler) {
     TableSampler* hit = &g_table.near_samplers[near_sampler_index(sampler)];
-    if (hit->sampler == sampler) return hit->slot;
+    const u32 seen = near_sampler(sampler);
+    if (seen != ~0u) return seen;
     u32 i = sampler_home(sampler);
     while (g_table.samplers[i].sampler && g_table.samplers[i].sampler != sampler) i = (i + 1) & (TABLE_SAMPLERS - 1);
     TableSampler* e = &g_table.samplers[i];
@@ -344,9 +378,9 @@ static u32 sampler_slot(VkSampler sampler) {
             LOG_LIMIT(1, "vulkan: the texture table is full (%u samplers)\n", most);
             return ~0u;
         }
-        *e = (TableSampler){sampler, g_table.next_sampler++};
         const VkDescriptorImageInfo ii = {sampler, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED};
-        table_write(1, e->slot, &ii);
+        if (!table_write(1, g_table.next_sampler, &ii)) return ~0u;
+        *e = (TableSampler){sampler, g_table.next_sampler++};
     }
     *hit = *e;
     return e->slot;
@@ -381,12 +415,11 @@ int vk_table_words_near(const VkImageView* views, const VkImageLayout* layouts, 
             words[i] = 0;
             continue;
         }
-        const TableView* v = &g_table.near_views[near_view_index(views[i], layouts[i])];
-        const TableSampler* s = &g_table.near_samplers[near_sampler_index(samplers[i])];
-        ok = v->view == views[i] && v->layout == layouts[i] && s->sampler == samplers[i];
+        const u32 v = near_view(views[i], layouts[i]), s = near_sampler(samplers[i]);
+        ok = v != ~0u && s != ~0u;
         if (ok) {
-            g_table.slot_frame[v->slot] = frame;
-            words[i] = v->slot | s->slot << SNX_TABLE_SAMPLER_SHIFT;
+            g_table.slot_frame[v] = frame;
+            words[i] = v | s << SNX_TABLE_SAMPLER_SHIFT;
         }
     }
     pm_unlock(&g_table.lock);

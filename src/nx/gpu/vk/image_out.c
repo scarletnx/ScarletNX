@@ -323,7 +323,7 @@ int vk_gfx_image_holds(const Surf* s) {
     return 0;
 }
 int vk_gfx_image_pending(u64 gva, u64 size) { return vk_gfx_image_pending_besides(gva, size, NULL); }
-u64 vk_gfx_image_adds(void) { return atomic_load_explicit(&g_img_pages.adds, memory_order_relaxed); }
+u64 vk_gfx_image_adds(void) { return atomic_load_explicit(&g_img_pages.adds, memory_order_acquire); }
 int vk_gfx_image_pending_besides(u64 gva, u64 size, const Surf* self) {
     int hit = 0;
     if (!atomic_load_explicit(&g_gfx_img_any, memory_order_relaxed) || !size) return 0;

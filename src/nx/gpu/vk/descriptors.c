@@ -28,14 +28,15 @@
 #define ARENA_LEAST (16ull << 20)
 typedef struct {
     u64 h0, h1;
-    u64 used_frame; /* the frame (vk_frame_id) that used it last, 0 for none */
+    u64 used_frame; /* the frame (vk_frame_id) that used it last plus 1, 0 for none: frame 0 is a frame */
     u32 used_slot;  /* and that frame's slot */
     u32 n;          /* the objects it names, 0 for an empty slot */
     u32 obj[LASTING_OBJECTS], gen[LASTING_OBJECTS];
 } LastingTable;
 /* the arenas' memory: the CPU writes the tables into it in order and never reads it (the encodings it copies from
-   are in images and buffers, in the CPU's memory). In the GPU's memory where the CPU can map it (DM_WINDOW): in
-   system memory, each descriptor the shaders read crossed the bus, 30% more GPU time in the passes of one game */
+   are in images and buffers, in the CPU's memory). In the GPU's memory where the CPU can map it (DM_WINDOW, where
+   that window is all of it: vk_devmem_tables_at): in system memory, each descriptor the shaders read crossed the
+   bus, 30% more GPU time in the passes of one game */
 #define ARENA_MEMORY (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
 #define IMAGE_ENCODINGS 4096
 #define BUFFER_ENCODING_BUCKETS 1024
@@ -133,7 +134,7 @@ void vk_descriptors_reset(u32 slot) {
     }
 }
 int vk_descriptors_room(u32 slot) {
-    if (g_vk.has_descriptor_heaps) return vk_descriptor_heaps_room(slot);
+    if (vk_heaps()) return vk_descriptor_heaps_room(slot);
     if (!g_vk.has_descriptor_buffers || slot >= VK_FRAMES || !g_descriptors.frame[slot].buffer) return 1;
     /* a draw writes one table for each of its five stages at most */
     return g_descriptors.frame[slot].capacity - g_descriptors.frame[slot].used >= 5 * g_descriptors.largest;
@@ -167,9 +168,10 @@ static int arena_shared(void) {
     LastingTable* t = calloc(n, sizeof *t);
     if (!t) return 0;
     VkBufferCreateInfo info = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = part * VK_FRAMES + lasting,
-        .usage = VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT | VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT |
+        .usage = VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT |
+                 VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT |
                  VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    DevMemWant allocation = {.at = DM_WINDOW, .mapped = 1, .need = ARENA_MEMORY};
+    DevMemWant allocation = {.at = vk_devmem_tables_at(), .mapped = 1, .need = ARENA_MEMORY};
     DevMemInfo details;
     VkBuffer buffer;
     DevMem memory;
@@ -206,9 +208,10 @@ static void arena(u32 slot) {
     }
     VkDeviceSize capacity = DESCRIPTOR_BYTES < g_vk.alloc_cap ? DESCRIPTOR_BYTES : g_vk.alloc_cap;
     VkBufferCreateInfo info = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = capacity,
-        .usage = VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT | VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT |
+        .usage = VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT |
+                 VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT |
                  VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
-    DevMemWant allocation = {.at = DM_WINDOW, .mapped = 1, .need = ARENA_MEMORY};
+    DevMemWant allocation = {.at = vk_devmem_tables_at(), .mapped = 1, .need = ARENA_MEMORY};
     DevMemInfo details;
     if (!VK_OK(vk_devmem_buffer(&info, &allocation, &g_descriptors.frame[slot].buffer,
                                 &g_descriptors.frame[slot].memory, &details)))
@@ -341,7 +344,7 @@ static u32 lasting_objects(u32 count, const VkWriteDescriptorSet* writes, u32* o
 /* whether a lasting slot's last frame is done, so that the slot can take another table */
 static int lasting_free(const LastingTable* e) {
     return !e->used_frame ||
-           (g_descriptors.done[e->used_slot] >= e->used_frame && e->used_frame + VK_FRAMES <= vk_frame_id());
+           (g_descriptors.done[e->used_slot] + 1 >= e->used_frame && e->used_frame - 1 + VK_FRAMES <= vk_frame_id());
 }
 static VkDescriptorSet descriptors_write(VkDescriptorSetLayout layout, u32 count, const VkWriteDescriptorSet* writes,
                                          u32 cb_addr, const u64* hash);
@@ -355,7 +358,7 @@ VkDescriptorSet vk_descriptors_write_lasting(VkDescriptorSetLayout layout, u32 c
 }
 static VkDescriptorSet descriptors_write(VkDescriptorSetLayout layout, u32 count, const VkWriteDescriptorSet* writes,
                                          u32 cb_addr, const u64* hash) {
-    if (g_vk.has_descriptor_heaps) return vk_descriptor_heaps_write(layout, count, writes, cb_addr);
+    if (vk_heaps()) return vk_descriptor_heaps_write(layout, count, writes, cb_addr);
     SNX_ZONE_V(z, "vk descriptor buffer write", count);
     u32 index = 0;
     while (index < g_descriptors.nlayouts && g_descriptors.layouts[index].layout != layout) index++;
@@ -402,7 +405,7 @@ static VkDescriptorSet descriptors_write(VkDescriptorSetLayout layout, u32 count
     /* a table that lasts: bound again where an earlier frame wrote it and no object it names was forgotten since,
        else written into a free slot of the two for its hash, else into the frame's part */
     LastingTable* keep = NULL;
-    u32 obj[LASTING_OBJECTS], nobj = 0;
+    u32 obj[LASTING_OBJECTS] = {0}, nobj = 0;
     if (hash && g_descriptors.lasting && size <= g_descriptors.lasting_stride &&
         (nobj = lasting_objects(count, writes, obj))) {
         const u32 way = (u32)(hash[0] >> 20) % (g_descriptors.lasting_n / 2) * 2;
@@ -417,10 +420,11 @@ static VkDescriptorSet descriptors_write(VkDescriptorSetLayout layout, u32 count
                 g_descriptors.stats.lasting_stale++;
                 continue;
             }
-            e->used_frame = vk_frame_id();
+            e->used_frame = vk_frame_id() + 1;
             e->used_slot = slot;
             g_descriptors.stats.lasting_hits++;
-            return (VkDescriptorSet)(uintptr_t)(g_descriptors.lasting_at + (way + k) * g_descriptors.lasting_stride + 1);
+            return (VkDescriptorSet)(uintptr_t)(g_descriptors.lasting_at +
+                                                (way + k) * g_descriptors.lasting_stride + 1);
         }
         LastingTable* a = &g_descriptors.lasting[way];
         LastingTable* b = a + 1;
@@ -433,7 +437,8 @@ static VkDescriptorSet descriptors_write(VkDescriptorSetLayout layout, u32 count
     u8* dest;
     if (keep) {
         const u32 k = (u32)(keep - g_descriptors.lasting);
-        *keep = (LastingTable){.h0 = hash[0], .h1 = hash[1], .used_frame = vk_frame_id(), .used_slot = slot, .n = nobj};
+        *keep = (LastingTable){
+            .h0 = hash[0], .h1 = hash[1], .used_frame = vk_frame_id() + 1, .used_slot = slot, .n = nobj};
         for (u32 j = 0; j < nobj && j < LASTING_OBJECTS; j++) {
             keep->obj[j] = obj[j];
             keep->gen[j] = vk_descriptor_object_gen(obj[j]);
@@ -543,7 +548,7 @@ void vk_descriptors_bind_table(VkCommandBuffer cb, VkPipelineLayout layout, u32 
 }
 void vk_descriptors_bind(VkCommandBuffer cb, VkPipelineLayout layout, u32 first, u32 count, const VkDescriptorSet* sets,
                          u32 ndyn, const u32* dyn) {
-    if (g_vk.has_descriptor_heaps) {
+    if (vk_heaps()) {
         vk_descriptors_invalidate();
         vk_descriptor_heaps_bind(cb, first, count, sets);
         return;
@@ -567,12 +572,14 @@ void vk_descriptors_bind_compute(VkCommandBuffer cb, VkPipelineLayout layout, u3
         rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, layout, first, 1, &set, 0, NULL);
         return;
     }
-    rec_CmdBindDescriptorBuffersEXT(cb, g_descriptors.frame[vk_frame_slot()].address, g_descriptors.table);
+    /* the buffers are the bind points' together: bound again only where they are not, as a bind of them disturbs
+       the graphics offsets, the texture table's too, which the draws set only when the table changes (render.c) */
+    buffers_bound(cb);
     VkDeviceSize offset = (u64)(uintptr_t)set - 1;
     rec_CmdSetDescriptorBufferOffsetsBP(cb, VK_PIPELINE_BIND_POINT_COMPUTE, layout, first, 1, &offset, 0);
 }
 void vk_descriptors_stats(void) {
-    if (g_vk.has_descriptor_heaps) {
+    if (vk_heaps()) {
         vk_descriptor_heaps_stats();
         return;
     }
@@ -589,13 +596,14 @@ void vk_descriptors_stats(void) {
         (unsigned long long)(s->image_driver_calls - p->image_driver_calls),
         (unsigned long long)(s->image_hits - p->image_hits),
         (unsigned long long)(s->image_replicas - p->image_replicas),
-        (unsigned long long)(s->lasting_hits - p->lasting_hits), (unsigned long long)(s->lasting_made - p->lasting_made),
+        (unsigned long long)(s->lasting_hits - p->lasting_hits),
+        (unsigned long long)(s->lasting_made - p->lasting_made),
         (unsigned long long)(s->lasting_stale - p->lasting_stale),
         (unsigned long long)(s->lasting_full - p->lasting_full));
     g_descriptors.reported = *s;
 }
 void vk_descriptors_get_stats(VkDescriptorStats* stats) {
-    if (g_vk.has_descriptor_heaps) {
+    if (vk_heaps()) {
         VkDescriptorHeapStats heap;
         vk_descriptor_heaps_get_stats(&heap);
         *stats = (VkDescriptorStats){

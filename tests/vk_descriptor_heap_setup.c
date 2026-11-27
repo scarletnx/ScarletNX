@@ -122,6 +122,7 @@ VkResult vk_devmem_buffer(const VkBufferCreateInfo* info, const DevMemWant* allo
 }
 void vk_mem_track(DevMem a, u32 owner) { (void)a, (void)owner; }
 void vk_mem_untrack(DevMem a) { (void)a; }
+int vk_devmem_tables_at(void) { return DM_WINDOW; } /* no small BAR here */
 void vk_devmem_buffer_destroy(VkBuffer buffer, DevMem memory) {
     (void)buffer;
     if (memory > 0x2000 && memory <= 0x2004) {

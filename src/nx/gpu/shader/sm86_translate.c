@@ -374,7 +374,7 @@ static u32 root_var(Ctx* c, u32 end) {
    past those of the tables before it, and an index stays in the tables */
 static u32 push_component(Ctx* c, u32 k);
 static u32 cbuf_window(Ctx* c, u32 bank, u32 element);
-static u32 cbuf_sized(Ctx* c, u32 bank, u32 element, u32 value);
+static u32 cbuf_inside(Ctx* c, u32 bank, u32 element, u32 component);
 static u32 builtin_u32(Ctx* c, u32* var, u32 builtin);
 static u32 cbuf_load(Ctx* c, u32 bank, u32 off, u32 index) {
     /* The draw's base instance, which the console's driver writes into bank 0 for a vertex program to add to its
@@ -408,9 +408,13 @@ static u32 cbuf_load(Ctx* c, u32 bank, u32 off, u32 index) {
         component = cu(c, (off >> 2) & 3);
     }
     if (root) return spv_emit_uniform_component(&c->e, c->cbuf_ptr, var, c->zero, element, component, c->t_u32);
-    const u32 in_window = cbuf_window(c, bank, element);
-    return cbuf_sized(c, bank, element,
-                      spv_emit_uniform_component(&c->e, c->cbuf_ptr, var, c->zero, in_window, component, c->t_u32));
+    /* with the bank's guest size (cbuf_inside), an element past it loads element 0 and reads 0: the load stays in the
+       bank's window, which ends at the bank's size where the program reads past it (render.c's windowed) */
+    const u32 inside = cbuf_inside(c, bank, element, component);
+    if (inside) element = spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, inside, element, c->zero);
+    const u32 value = spv_emit_uniform_component(&c->e, c->cbuf_ptr, var, c->zero, cbuf_window(c, bank, element),
+                                                 component, c->t_u32);
+    return inside ? spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, inside, value, c->zero) : value;
 }
 /* NAK's MemType U8 (0), I8 (1), U16 (2), I16 (3) at byte offset off of a bank, plus index when it isn't 0: a byte or
    a halfword of the word that holds it, zero or sign extended, as mem_load takes one from memory. LDC's, ULDC's and
@@ -723,17 +727,19 @@ static u32 cbuf_window(Ctx* c, u32 bank, u32 element) {
     return spv_emit_iadd_u32(&c->e, c->t_u32, element,
                              spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, packed, cu(c, 0xFFFF)));
 }
-/* value, the word read at element of a windowed bank, or 0 where element is at the bank's guest size or past it
-   (ShCaps.cb_sizes): the window reads on into the ring's next bytes, and the console reads 0 past a bank's size */
-static u32 cbuf_sized(Ctx* c, u32 bank, u32 element, u32 value) {
+/* whether word component of element of a windowed bank is below the bank's guest size in words (ShCaps.cb_sizes), as
+   a bool id, or 0 where the bank takes no size: the window reads on into the ring's next bytes, and the console reads 0
+   past a bank's size */
+static u32 cbuf_inside(Ctx* c, u32 bank, u32 element, u32 component) {
     if (!g_spirv_translate.cb_sizes || !cb_windowed(c) || bank >= 18 || bank >= g_spirv_translate.uniform_cbufs)
-        return value;
+        return 0;
     c->si->cb_sizes = 1;
     u32 packed = to_u(c, draw_component(c, (c->stage == ST_VS ? SH_DRAW_CB_SIZES : SH_DRAW_CB_SIZES_FS) + bank / 2));
     if (bank & 1) packed = spv_emit_binary(&c->e, SPV_OP_SHIFT_RIGHT_LOGICAL, c->t_u32, packed, cu(c, 16));
     const u32 size = spv_emit_binary(&c->e, SPV_OP_BITWISE_AND, c->t_u32, packed, cu(c, 0xFFFF));
-    const u32 inside = spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, element, size);
-    return spv_emit_ternary(&c->e, SPV_OP_SELECT, c->t_u32, inside, value, c->zero);
+    const u32 word = spv_emit_iadd_u32(
+        &c->e, c->t_u32, spv_emit_binary(&c->e, SPV_OP_SHIFT_LEFT_LOGICAL, c->t_u32, element, cu(c, 2)), component);
+    return spv_emit_binary(&c->e, SPV_OP_U_LESS_THAN, c->t_bool, word, size);
 }
 /* The depth fix of spirv_translate.c's vertex_depth_fix: with the push constant's y not 0, z becomes (z + w) / 2,
    from the console's clip space depth of -w to w to Vulkan's of 0 to w */
@@ -1226,9 +1232,10 @@ static u32 gbuf_pointer(Ctx* c, u32 buffer, u32 index, u32 type) {
 /* An SM86 vertex program of the record reads its generic attributes from the vertex streams by device address, where
    the draw bound vertex buffers and set a vertex input state before. The words of each attribute it reads, in the
    record (SH_RECORD_ATTR, in the order of the attributes' numbers), give the address of its first element, the bytes
-   from there to its stream's end, its format in the SH_ATTR_ fields (vk/render.c's fetch_plan) and its divisor. The element is the vertex's (VertexIndex holds the draw's
-   first vertex and vertex offset), or for an attribute stepped per instance firstInstance + (InstanceIndex -
-   firstInstance) / divisor, as Vulkan's fetch has it, BaseInstance being firstInstance */
+   from there to its stream's end, its format in the SH_ATTR_ fields (vk/render.c's fetch_plan) and its divisor. The
+   element is the vertex's (VertexIndex holds the draw's first vertex and vertex offset), or for an attribute stepped
+   per instance firstInstance + (InstanceIndex - firstInstance) / divisor, as Vulkan's fetch has it, BaseInstance being
+   firstInstance */
 static int vertex_fetches(const Ctx* c) {
     return g_spirv_translate.vertex_fetch && g_spirv_translate.draw_parameters && c->stage == ST_VS &&
            gbuf_by_address(c);

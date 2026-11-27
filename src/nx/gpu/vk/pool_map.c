@@ -54,7 +54,7 @@ static struct {
     PoolMapCounts n, was;
 } g_pool = {.lk = PMUTEX_INIT, .scale = 1.0f};
 
-static u64 adds_now(void) { return atomic_load_explicit(&g_pend_any.adds, memory_order_relaxed) + vk_uma_writes(); }
+static u64 adds_now(void) { return atomic_load_explicit(&g_pend_any.adds, memory_order_acquire) + vk_uma_writes(); }
 static PoolRec* rec_at(PoolMapOne* m, u32 index, int make) {
     const u32 pages = (m->sampler ? POOL_TSC_INDEX : POOL_TIC_INDEX) >> POOL_PAGE_SHIFT, p = index >> POOL_PAGE_SHIFT;
     if (p >= pages) return NULL;

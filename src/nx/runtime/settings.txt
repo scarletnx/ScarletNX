@@ -2061,9 +2061,10 @@ setting Constant buffer windows
     words Off|On|Automatic
     help How the vertex and fragment programs' constant buffers are bound. 2, Automatic: as 64 KiB windows of the
     help staging ring with their offsets in push constants, where the GPU takes 224 bytes of push constants and uniform
-    help ranges of 64 KiB and its descriptors are not in heaps, but not on lavapipe, whose linear rasterizer smashes its
-    help stack with them. 1 = windows on lavapipe too, which needs Mesa's LP_PERF=no_rast_linear (a test runs it so);
-    help a GPU that can't take them binds them one by one and says why. 0 = each constant buffer bound one by one
+    help ranges of 64 KiB, with descriptor sets, buffers or heaps alike, but not on lavapipe, whose linear rasterizer
+    help smashes its stack with them. 1 = windows on lavapipe too, which needs Mesa's LP_PERF=no_rast_linear (a test
+    help runs it so); a GPU that can't take them binds them one by one and says why. 0 = each constant buffer bound
+    help one by one
 setting Draw batches
     key draw_batches
     int 0 2

@@ -12,7 +12,9 @@
    with a count per page, a count for each group of 64 pages a result covers whole, a bitmap of each group's pages that
    have one, and its pages in all, so a lookup skips what no result covers and a wide range changes one count a group.
    Zeroed is empty. A change is made with vk_lock held, and takes pend_lock too; a lookup holds either one (the
-   renderer's threads vk_lock, a thread that must not wait for the renderer pend_lock).
+   renderer's threads vk_lock, a thread that must not wait for the renderer pend_lock), or none: a split's worker
+   (draw_batches=2) reads with atomic loads (pending_pages.c's PEND_LOAD), and adds after the counts tells it when to
+   look again.
    The same counts are kept again by GPU page, at every GPU page that shows a counted guest page: a page gains them when
    they are added, through the GMMU's index of mappings by guest address (gmmu_aliases), and when a mapping change
    points it at a counted guest page (pend_remap). Asking about a GPU range, hundreds of thousands of times a frame,
