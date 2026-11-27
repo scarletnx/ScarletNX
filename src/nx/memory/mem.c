@@ -1752,6 +1752,19 @@ int mem_pool_offset(u64 a, u64* off) {
     mem_unlock();
     return r;
 }
+u64 mem_pool_run(u64 a, u64 max, u64* off) {
+    u64 n = 0;
+    if (a >= AS_END || !max) return 0;
+    mem_lock();
+    const u32 i = blk_index_nl(a);
+    if (g_blk[i].pool) {
+        *off = g_blk[i].pool - 1 + (a - g_blk[i].addr);
+        n = blk_end(&g_blk[i]) - a;
+        if (n > max) n = max;
+    }
+    mem_unlock();
+    return n;
+}
 u8* mem_pool_host(u64 size, u64* off) {
     u8* p;
     int r;

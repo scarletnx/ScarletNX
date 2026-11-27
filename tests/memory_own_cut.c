@@ -50,6 +50,10 @@ int plat_vm_read(const void* p, void* dst, u64 size) {
     return -1;
 }
 int mem_pool_offset(u64 a, u64* off) { *off = a; return 0; }
+u64 mem_pool_run(u64 a, u64 max, u64* off) {
+    *off = a;
+    return max;
+}
 /* no GPU buffer's pages lie in this fixture's memory (mem_migrate's views): a watch in place finds none */
 int mem_ext_runs(u64 a, u64 size, MemPoolRun* runs, u32 max, u32* n) {
     (void)a, (void)size, (void)runs, (void)max;

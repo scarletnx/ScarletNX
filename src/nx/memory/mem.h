@@ -265,6 +265,9 @@ int mem_ext_is(u64 a, u64 size, const u8* view);
 int mem_lock_held(void);
 /* the pool offset of guest address a: 0, or -1 when a isn't pool memory */
 int mem_pool_offset(u64 a, u64* off);
+/* how many of the max bytes from guest address a lie in a's block, whose pool memory is one run (a's pool offset in
+   *off): 0 when a isn't pool memory */
+u64 mem_pool_run(u64 a, u64 max, u64* off);
 /* whether any page of [a, a + size) is pool memory, which can be written where the reservation's write tracking
    doesn't look: through the pool's file, or a service's mapping of it outside the reservation (mem_pool_host) */
 int mem_pool_any(u64 a, u64 size);
