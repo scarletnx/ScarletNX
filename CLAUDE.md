@@ -194,6 +194,8 @@ The skills in `.claude/skills/`:
   hooks run.
 - `game-tag`: the opaque tag that stands for a game in a commit message, an issue or a doc (`tools/game_tag.py`). It
   also checks a text for titles and title IDs.
+- `snx-labels`: the labels of an issue or a pull request. It tells which labels the workflows add from the title, and
+  how to choose the kind, the priority and the preview effort.
 
 The agents in `.claude/agents/` keep disassembly and logs out of the main context:
 
