@@ -1737,7 +1737,10 @@ static int udmabuf_dev(void) {
 u64 plat_dmabuf_limit(void) {
 #if SNX_UDMABUF
     if (udmabuf_dev() < 0) return 0;
-    /* the module's size_limit_mb, which root sets: 64 on SteamOS's kernel, larger upstream. Unread, the old default */
+    /* the module's size_limit_mb, which root sets: 64 on SteamOS's kernel, larger upstream, and INT_MAX (no limit) on
+       some. Unread, the old default. Any value whose bytes a u64 holds is taken: the INT_MAX of no limit was refused
+       as garbage, and one desktop's regions stayed at 64 MiB, so a 15 MiB storage buffer beside imports a 100 MiB
+       region would have held was copied on the CPU twice a frame (32 MiB, 1.7 ms of the renderer thread) */
     u64 mb = 64;
     int f = open("/sys/module/udmabuf/parameters/size_limit_mb", O_RDONLY | O_CLOEXEC);
     if (f >= 0) {
@@ -1748,7 +1751,7 @@ u64 plat_dmabuf_limit(void) {
             buf[n] = 0;
             char* end;
             unsigned long long v = strtoull(buf, &end, 10);
-            if (end != buf && v > 0 && v < (1ull << 30)) mb = v;
+            if (end != buf && v > 0 && v < (1ull << 43)) mb = v;
         }
     }
     return mb << 20;
