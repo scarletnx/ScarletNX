@@ -610,6 +610,7 @@ static int g_drawn_fresh;
 static u32 g_drawn_searches;
 static u64 g_take_gen_now = 1;
 u64 vk_rt_take_gen(void) { return g_take_gen_now; }
+u64 vk_rt_reloads_skipped(void) { return 0; } /* surface.c's count for vk_tex_take_log: no clears here */
 int vk_rt_drawn_fresh(Surf* s) {
     (void)s;
     return g_drawn_fresh;
