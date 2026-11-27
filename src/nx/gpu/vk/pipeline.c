@@ -852,7 +852,8 @@ void vk_pipeline_init(void) {
         const u32 table_set = g_spirv_translate.split_sets ? 10 : g_vk_stage_sets;
         char why[160] = "";
         const char* no = !g_spirv_translate.cb_windows ? "constant buffers are not bound as windows"
-                         : g_vk.has_descriptor_heap_support ? "descriptor heaps hold the sets"
+                         : g_vk.has_descriptor_heap_support && (!vk_descriptor_heaps_table() || !g_vk.has_descriptor_buffers)
+                             ? "descriptor heaps hold the sets, and they have no run for it or no descriptor buffers"
                          : g_vk.props.limits.maxPushConstantsSize < SH_PUSH_BYTES_TABLE
                              ? "the device pushes fewer than 240 bytes"
                          : g_vk.props.limits.maxBoundDescriptorSets <= table_set ? "the device binds fewer sets"
@@ -1735,7 +1736,7 @@ typedef struct {
     VkPipelineShaderStageRequiredSubgroupSizeCreateInfo warp; /* a mesh pipeline's mesh and task stages' */
     /* with descriptor heaps (k->heaps), each stage's mapping of its set's bindings */
     VkShaderDescriptorSetAndBindingMappingInfoEXT mappings[5];
-    VkDescriptorSetAndBindingMappingEXT binding_maps[5][SNX_VKB_END];
+    VkDescriptorSetAndBindingMappingEXT binding_maps[5][SNX_VKB_END + 2]; /* and the texture table's two */
     VkPipelineTessellationStateCreateInfo ts;
     VkVertexInputBindingDescription vb[33];
     VkVertexInputBindingDivisorDescriptionEXT dv[33];
@@ -1849,6 +1850,10 @@ static void pipe_info(const PipeKey* k, VkShaderModule fs, PipeInfo* o) {
                 .mappingCount = vk_descriptor_heaps_mapping(g_vk_dslayout[(k->arrays >> set) & 1][set], set,
                                                              o->binding_maps[o->nst], SNX_VKB_END, k->cb_addr[set]),
                 .pMappings = o->binding_maps[o->nst]};
+            /* the texture table's set, which the vertex and fragment programs read (table.c) */
+            if (g_spirv_translate.tex_table && (set == 0 || set == SHADER_VK_SET_FS) && o->mappings[o->nst].mappingCount)
+                o->mappings[o->nst].mappingCount += vk_descriptor_heaps_table_mapping(
+                    o->binding_maps[o->nst] + o->mappings[o->nst].mappingCount, g_spirv_translate.table_set);
             o->st[o->nst].pNext = &o->mappings[o->nst];
         }
         if (s == 4 && k->fs_spec) {

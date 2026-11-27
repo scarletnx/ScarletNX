@@ -9788,7 +9788,9 @@ resolved:
         const u32 at = g_spirv_translate.table_set;
         if (fresh || g_dyn[t_rc].sets[at] != table) {
             g_dyn[t_rc].sets[at] = table;
-            if (g_vk.has_descriptor_buffers && !g_vk.has_descriptor_heaps)
+            if (g_vk.has_descriptor_heaps) {
+                /* none: the heaps' mappings name the table's runs with constant offsets */
+            } else if (g_vk.has_descriptor_buffers)
                 vk_descriptors_bind_table(cb, layout, at); /* its own buffer (table.c) */
             else
                 vk_descriptors_bind(cb, layout, at, 1, &table, 0, NULL);

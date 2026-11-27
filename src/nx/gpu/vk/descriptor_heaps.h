@@ -367,6 +367,14 @@ uint32_t vk_descriptor_heaps_mapping(VkDescriptorSetLayout layout, uint32_t set,
 VkDescriptorSet vk_descriptor_heaps_write(VkDescriptorSetLayout layout, uint32_t count,
                                            const VkWriteDescriptorSet* writes, uint32_t cb_addr);
 void vk_descriptor_heaps_bind(VkCommandBuffer cb, uint32_t first, uint32_t count, const VkDescriptorSet* sets);
+/* The texture table of SM86 programs (table.c) in a run of each heap that lasts the run: whether the heaps have it,
+   the write of a slot of binding 0 (images) or 1 (samplers), and the 2 mappings of the table set's bindings, at set,
+   with constant offsets into those runs: the table needs no push data and no bind */
+int vk_descriptor_heaps_table(void);
+/* the sampler slots of the table's run, fewer than SNX_TABLE_SAMPLERS where the sampler heap is small */
+uint32_t vk_descriptor_heaps_table_samplers(void);
+int vk_descriptor_heaps_table_write(uint32_t binding, uint32_t slot, const VkDescriptorImageInfo* ii);
+uint32_t vk_descriptor_heaps_table_mapping(VkDescriptorSetAndBindingMappingEXT* maps, uint32_t set);
 /* Writes returnNULL on exhaustion. The renderer retries the whole draw with its legacy backend; no write submits.
    Reset only after the slot's GPU work completes and its command pool is reset. */
 void vk_descriptor_heaps_reset(uint32_t slot);
