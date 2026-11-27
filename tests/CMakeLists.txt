@@ -2887,6 +2887,15 @@ if(Python3_Interpreter_FOUND)
     # build.yml's compiler caches, which a pull request's run does not save
     add_test(NAME build_caches COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/build_caches_test.py"
                                        "${PROJECT_SOURCE_DIR}")
+    # scripts/android-apk.sh's older form, OUT LLVM ABI...: its LLVM prefix said with its value, the ABI still read
+    if(NOT WIN32)
+        add_test(NAME android_apk_old_form
+                 COMMAND "${CMAKE_COMMAND}" -E env ANDROID_NDK_ROOT=/nonexistent ANDROID_HOME=/nonexistent
+                         sh "${PROJECT_SOURCE_DIR}/scripts/android-apk.sh" "${CMAKE_CURRENT_BINARY_DIR}/apk-old-form"
+                         "${CMAKE_CURRENT_BINARY_DIR}" x86_64)
+        set_tests_properties(android_apk_old_form PROPERTIES PASS_REGULAR_EXPRESSION
+            "LLVM=[^\n]*, the older form's prefix \\(OUT LLVM ABI\\.\\.\\.\\): the build has no LLVM to take\nno NDK")
+    endif()
     # build.yml's tests, on a pull request, a run by hand and a version's tag, and on no push to main or nightly
     add_test(NAME build_tests COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/build_tests_test.py"
                                       "${PROJECT_SOURCE_DIR}")
