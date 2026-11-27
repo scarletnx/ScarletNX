@@ -244,6 +244,8 @@ static void mappings(void) {
         VK_SPIRV_RESOURCE_TYPE_COMBINED_SAMPLED_IMAGE_BIT_EXT,
         VK_SPIRV_RESOURCE_TYPE_READ_ONLY_IMAGE_BIT_EXT | VK_SPIRV_RESOURCE_TYPE_READ_WRITE_IMAGE_BIT_EXT,
         VK_SPIRV_RESOURCE_TYPE_READ_ONLY_IMAGE_BIT_EXT | VK_SPIRV_RESOURCE_TYPE_READ_WRITE_IMAGE_BIT_EXT};
+    /* each set's address slot in the free bytes of the push block (descriptor_heaps.c's static asserts) */
+    static const uint32_t push_at[] = {168, 216, 232, 240, 248};
     uint32_t resources[1024], samplers[1024];
     for (uint32_t i = 0; i < 1024; i++) { resources[i] = 0x100000 + i * 32; samplers[i] = 0x10000 + i * 16; }
     for (uint32_t set = 0; set < 5; set++)
@@ -255,7 +257,7 @@ static void mappings(void) {
                       mapping.resourceMask == masks[type], "mapping identifies the complete original SPIR-V resource class");
             const VkDescriptorMappingSourceIndirectIndexArrayEXT* s = &mapping.sourceData.indirectIndexArray;
             check(mapping.source == VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_INDIRECT_INDEX_ARRAY_EXT &&
-                      s->pushOffset == 128 + 8 * set && s->samplerPushOffset == s->pushOffset &&
+                      s->pushOffset == push_at[set] && s->samplerPushOffset == s->pushOffset &&
                       s->heapIndexStride == 1 && s->samplerHeapIndexStride == 1 && !s->useCombinedImageSamplerIndex &&
                       !s->pEmbeddedSampler && !s->heapOffset && !s->samplerHeapOffset,
                   "independent byte indices avoid packed-index limits and additional push data");
