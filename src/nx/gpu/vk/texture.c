@@ -3036,7 +3036,31 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int why, int pixel
 static Surf* copy_read(Surf* rt, Surf* c);
 static Surf* rt_crop(Surf* rt, u32 w, u32 h, const VkFmt* as) {
     const int why = !as ? VK_RT_COPY_CROP : w == rt->w && h == rt->h ? VK_RT_COPY_FORMAT : VK_RT_COPY_FORMAT_CROP;
-    return copy_read(rt, rt_copy(rt, w, h, as, why, 1, 1));
+    Surf* c = rt_copy(rt, w, h, as, why, 1, 1);
+    if (c && c != rt) c->corner = (u8)(why + 1);
+    return copy_read(rt, c);
+}
+/* A draw reads a corner of a target that a pass before it drew. Its copy (rt_crop) is made at the draw, in its pass,
+   which the copy ends: in one game's world, 8 times a present the same pass then began again. Made here, at the
+   start of the pass after the one that drew the target, the copy is the target's pixels as the draw would copy them
+   while no pass draws the target between, and the draw finds it made (crop_gen). A copy that a texture read in this
+   present or the one before is made: one that no draw reads costs the copy alone, which is a few KB */
+void vk_rt_corners_refresh(Surf* rt) {
+    if (!rt || rt->host || vk_surf_layout(rt) == VK_IMAGE_LAYOUT_UNDEFINED) return;
+    struct {
+        u32 w, h;
+        int why;
+        VkFmt f;
+    } want[4];
+    u32 n = 0;
+    for (const Surf* c = rt->crop; c && n < 4; c = c->next)
+        if (c->corner && c->crop_gen != rt->wgen && (i32)(g_vk_present - (u32)c->last_used) <= 1)
+            want[n++] = (typeof(want[0])){c->w, c->h, c->corner - 1, c->f};
+    /* rt_copy finds each copy again, and frees the ones unused too long: the list may change under a walk */
+    for (u32 i = 0; i < n; i++) {
+        const int as = want[i].why != VK_RT_COPY_CROP;
+        rt_copy(rt, want[i].w, want[i].h, as ? &want[i].f : NULL, want[i].why, 1, 1);
+    }
 }
 int vk_tex_is_copy_of(const Surf* t, const Surf* rt) {
     for (const Surf* x = rt->crop; x; x = x->next)

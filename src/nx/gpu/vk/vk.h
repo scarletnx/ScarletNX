@@ -1449,6 +1449,7 @@ typedef struct Surf {
     u64 fb_draw[VK_RC_SLOTS];
     u32 wgen_prev; /* wgen before the last write (vk_surf_wrote) */
     u8 predraw;     /* a copy in crop that is a feedback draw's save attachment of set predraw - 1 (vk_rt_save) */
+    u8 corner;      /* a copy in crop that a texture reads as a corner or in another format (rt_crop): its why + 1 */
     struct Surf* next; /* copies: the next copy of the same render target */
     /* its row in surface.c's table, 0 when it is in none (copies, the CPU frame). The row holds its hash chain, its
        recency list and its place in the list of ended textures */
@@ -1583,6 +1584,9 @@ int vk_rt_same_layout(const Surf* s, u32 w, u32 h, int bl, u32 bh, u32 pitch); /
 /* a copy of a target, for a draw that samples it while writing it. pixels: the target's pixels are brought into the
    copy; 0 for a program that only asks the texture's size or levels, which takes the copy as it is */
 Surf* vk_rt_snapshot(Surf* rt, int pixels);
+/* rt's copies that a texture read as a corner or in another format (rt_crop) in this present or the one before, made
+   again where rt was drawn since: called outside a pass, after one that drew rt ended (render.c's render_begin) */
+void vk_rt_corners_refresh(Surf* rt);
 /* a draw wrote rt: when it sampled a copy of rt (a crop or a snapshot), the copy stands for rt with that draw's writes
    as well */
 void vk_rt_copy_drawn(Surf* rt);
