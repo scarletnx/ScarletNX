@@ -28,8 +28,6 @@ DIFFERENTIAL = (
     'cmake/qemu_ref.cmake',
     'cmake/sailgen.cmake',
     'cmake/sdm.cmake',
-    'scripts/linux-llvm.sh',
-    'scripts/llvm-libraries/',
     'scripts/ci/linux.sh',
     'scripts/ci/cross.sh',
     'scripts/recompiler-changes.py',
