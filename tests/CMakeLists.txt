@@ -2888,10 +2888,18 @@ if(Python3_Interpreter_FOUND)
     set_tests_properties(deprecations_check PROPERTIES SKIP_RETURN_CODE 77)
     # which GitHub Actions caches the cleanup workflow deletes (scripts/trim-caches.py)
     add_test(NAME trim_caches COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/trim_caches_test.py")
-    # build.yml's LLVM builds, each saved by the step right after it: a later failure or a cancelled run keeps it;
-    # and its compiler caches, which a pull request's run does not save
+    # build.yml's compiler caches, which a pull request's run does not save
     add_test(NAME build_caches COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/build_caches_test.py"
                                        "${PROJECT_SOURCE_DIR}")
+    # scripts/android-apk.sh's older form, OUT LLVM ABI...: its LLVM prefix said with its value, the ABI still read
+    if(NOT WIN32)
+        add_test(NAME android_apk_old_form
+                 COMMAND "${CMAKE_COMMAND}" -E env ANDROID_NDK_ROOT=/nonexistent ANDROID_HOME=/nonexistent
+                         sh "${PROJECT_SOURCE_DIR}/scripts/android-apk.sh" "${CMAKE_CURRENT_BINARY_DIR}/apk-old-form"
+                         "${CMAKE_CURRENT_BINARY_DIR}" x86_64)
+        set_tests_properties(android_apk_old_form PROPERTIES PASS_REGULAR_EXPRESSION
+            "LLVM=[^\n]*, the older form's prefix \\(OUT LLVM ABI\\.\\.\\.\\): the build has no LLVM to take\nno NDK")
+    endif()
     # build.yml's tests, on a pull request, a run by hand and a version's tag, and on no push to main or nightly
     add_test(NAME build_tests COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/build_tests_test.py"
                                       "${PROJECT_SOURCE_DIR}")
@@ -4517,11 +4525,11 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
     # calls of functions the unit made before the caller, past their entry's check with no target given, and the stale
     # checks a game's module has (of no stale code); in an AOT module and in a JIT unit
     add_test(NAME recompiler_arm64_calls_stale COMMAND snx-test-recompiler-arm64 --calls --stale --functions 40
-             --states 4)
+             --states 4 --frozen ${snx_backends_frozen}/calls_40.txt)
     add_test(NAME recompiler_arm64_calls_back COMMAND snx-test-recompiler-arm64 --calls-back --stale --functions 40
-             --states 4)
+             --states 4 --frozen ${snx_backends_frozen}/calls_back.txt)
     add_test(NAME recompiler_arm64_calls_back_jit COMMAND snx-test-recompiler-arm64 --calls-back --stale --jit
-             --functions 40 --states 4)
+             --functions 40 --states 4 --frozen ${snx_backends_frozen}/calls_back.txt)
     set_tests_properties(recompiler_arm64_calls_stale recompiler_arm64_calls_back recompiler_arm64_calls_back_jit
                          PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
     # a function longer than a machine's short jumps reach: B's 128 KiB on MIPS64, JAL's 1 MiB on riscv64, B.cond's and

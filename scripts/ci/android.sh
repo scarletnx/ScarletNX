@@ -33,7 +33,7 @@ build() {
     # arm64-v8a's nightlies and releases link with ThinLTO (cmake/lto.cmake), x86_64's and a pull request's not
     lto=OFF
     [ "$GITHUB_EVENT_NAME" != pull_request ] && [ "$abi" = arm64-v8a ] && lto=ON
-    JAVA_HOME=$JAVA_HOME_21_X64 scripts/android-apk.sh "$PWD/build/android-$abi" "$PWD/android-llvm" "$abi" -- \
+    JAVA_HOME=$JAVA_HOME_21_X64 scripts/android-apk.sh "$PWD/build/android-$abi" "$abi" -- \
       -DSNX_LTO=$lto -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
     cp "build/android-$abi/stage/gradle/outputs/apk/debug/ScarletNX-debug.apk" \
       "ScarletNX-android-$abi-${SHORT}.apk"
