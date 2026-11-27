@@ -192,8 +192,8 @@ def self_test(text, repo):
             1,
         ),
         'the iOS app left to the nightlies': text.replace(
-            "        if: ${{ !cancelled() && steps.ios-llvm-build.outcome != 'failure' }}\n",
-            "        if: ${{ !cancelled() && github.event_name != 'pull_request' && steps.ios-llvm-build.outcome != 'failure' }}\n",
+            '        id: ios-build\n        if: ${{ !cancelled() }}\n',
+            "        id: ios-build\n        if: ${{ !cancelled() && github.event_name != 'pull_request' }}\n",
         ),
         'the QEMU reference on every event': re.sub(
             r'(\n  qemu-reference:\n(?:      .*\n|    (?!if:).*\n)*?)    if: >-\n(?:      .*\n)+',

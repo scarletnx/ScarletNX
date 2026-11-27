@@ -9,14 +9,14 @@ macos_build() {
   # the JDK the Android app driver (src/android) builds with: the runner's 21
   export JAVA_HOME="${JAVA_HOME_21_arm64:?the runner has no JDK 21}"
   # Keep the release's SDL3 static when the later shared-library check installs Homebrew's package.
-  cmake --preset macos -DLLVM_DIR="$PWD/apple-llvm/lib/cmake/llvm" -DSNX_TEST_VP9_VECTORS=ON \
+  cmake --preset macos -DSNX_TEST_VP9_VECTORS=ON \
     -DCMAKE_DISABLE_FIND_PACKAGE_SDL3=ON -DSNX_QEMU_REFERENCE="$PWD/reference/llvm_qemu_reference.bin" \
     -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
   cmake --build --preset macos --parallel "$(getconf _NPROCESSORS_ONLN)"
 }
 
 ios_build() {
-  cmake --preset ios -DLLVM_DIR="$PWD/ios-llvm/lib/cmake/llvm" \
+  cmake --preset ios \
     -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
   cmake --build --preset ios --parallel "$(getconf _NPROCESSORS_ONLN)"
 }
@@ -32,7 +32,6 @@ tests() {
 shared_sdl3() {
   brew install sdl3
   cmake --preset macos -B build/sdl3-shared -DSNX_SYSTEM_SDL3=ON -DSNX_DEPLOY=OFF \
-    -DLLVM_DIR="$PWD/apple-llvm/lib/cmake/llvm" \
     -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
   cmake --build build/sdl3-shared --parallel "$(getconf _NPROCESSORS_ONLN)" \
     --target snx-test-memory-own snx-test-platform-posix snx-test-memory-alias
