@@ -4676,7 +4676,7 @@ static int cb_window_place(int vs_fs, int bank, VkBuffer b, u64 o, u32 sz, u64* 
    SH_PUSH_TEX_WORDS. The same words as the stage's last draw in this frame take the same bytes: the set and the push
    stay */
 static struct {
-    u32 words[SH_RECORD_TEX_FETCH + SH_MAXTEX], n;
+    u32 words[SH_RECORD_FETCH_MAX + SH_MAXTEX], n;
     u64 frame;
     VkBuffer b;
     u64 o;
@@ -4962,21 +4962,25 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
     /* The stage's record in its words' window (table_words): with gbuf_address, each global buffer slot's device
        address and length and the scratch words' address (SH_RECORD_GBUF), then the texture words. A program of
        gbuf_address takes its slots' addresses there, at any offset, where a descriptor was bound. A vertex program
-       that fetches its own attributes has their words after the global buffers' (SH_RECORD_ATTR, fetch_records), and
-       its texture words after those */
+       that fetches its own attributes has the words of those it reads after the global buffers' (SH_RECORD_ATTR,
+       fetch_records), and its texture words after those */
     const int recorded = g_spirv_translate.gbuf_address && shader_vk_set(s->stage) < 2;
     const int addressed = recorded && s->si.gbuf_address;
     const int fetch = recorded && s->si.vertex_fetch && s->stage == ST_VS;
-    const u32 tex_at = fetch ? SH_RECORD_TEX_FETCH : recorded ? SH_RECORD_GBUF : 0;
-    u32 rec[SH_RECORD_TEX_FETCH + SH_MAXTEX], rec_n = 0;
+    const u32 tex_at = fetch      ? SH_RECORD_FETCH_TEX(__builtin_popcount(s->si.fetch_attrs))
+                       : recorded ? SH_RECORD_GBUF
+                                  : 0;
+    u32 rec[SH_RECORD_FETCH_MAX + SH_MAXTEX], rec_n = 0;
     if (addressed || fetch) {
         memset(rec, 0, SH_RECORD_GBUF * sizeof *rec);
         const u64 scratch = vk_table_scratch();
         rec[SH_RECORD_SCRATCH] = (u32)scratch;
         rec[SH_RECORD_SCRATCH + 1] = (u32)(scratch >> 32);
-        if (fetch) {
-            memcpy(rec + SH_RECORD_ATTR, draw->attr, sizeof draw->attr);
-            memcpy(rec + SH_RECORD_DIVISOR, draw->divisor, sizeof draw->divisor);
+        u32* at = rec + SH_RECORD_ATTR;
+        for (u32 m = fetch ? s->si.fetch_attrs : 0; m; m &= m - 1, at += SH_ATTR_WORDS) {
+            const u32 i = (u32)__builtin_ctz(m);
+            at[0] = draw->attr[i][0], at[1] = draw->attr[i][1], at[2] = draw->attr[i][2], at[3] = draw->attr[i][3];
+            at[4] = draw->divisor[i];
         }
         rec_n = tex_at;
     }
@@ -5921,7 +5925,7 @@ typedef struct {
     /* a vertex program that fetches its own attributes (fetch_plan): each attribute's format word (SH_ATTR_), and vi
        its bindings, one a stream, for the lookups. No vertex input state is made from vi then */
     u32 fetch[32];
-    u32 divisor[32]; /* each attribute's instance divisor, 0 for one a vertex (SH_RECORD_DIVISOR) */
+    u32 divisor[32]; /* each attribute's instance divisor, 0 for one a vertex (the last of its SH_ATTR_WORDS) */
 } VertexPlan;
 /* pl's vertex layout as dynamic state, when the one the command buffer has (g_dyn) is another or none. Every draw
    pipeline takes it dynamic then, so binding another keeps it; a draw before it is set reads a layout of the driver's */
@@ -6644,7 +6648,7 @@ static int fetch_plan(const DsVertexFormat* vf, u32 in_mask, VertexPlan* pl) {
         u32 b = 0;
         while (b < vi->nbind && pl->key[b] != sbuf) b++;
         if (b == vi->nbind) {
-            /* the divisor whole, in the record's word of its own (SH_RECORD_DIVISOR) */
+            /* the divisor whole, in the record's word of its own (the last of the attribute's SH_ATTR_WORDS) */
             const u32 div = (vf->instanced >> sbuf) & 1 ? (vf->divisor[sbuf] ? vf->divisor[sbuf] : 1) : 0;
             pl->key[b] = sbuf; /* from the stream's start: an attribute's offset is its own */
             pl->stride[b] = stride;

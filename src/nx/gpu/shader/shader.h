@@ -335,6 +335,7 @@ typedef struct {
        attribute's address, length and format are words of its record (SH_RECORD_ATTR), and the draw binds no vertex
        buffers and sets no vertex input */
     u32 vertex_fetch;
+    u32 fetch_attrs; /* with vertex_fetch: the generic attributes it fetches, as bits, in its record in that order */
 } ShaderInfo;
 /* A fragment module's specialization constants, by SpecId: state a draw has before its program runs, which the
    pipeline gives the module (vk/pipeline.c, PipeKey.fs_spec) so that the driver compiles the program for it. As a
@@ -571,20 +572,22 @@ enum { SH_MAP_CLASS_2D, SH_MAP_CLASS_2D_ARRAY, SH_MAP_CLASS_3D, SH_MAP_CLASS_CUB
    goes. The texture words follow */
 #define SH_RECORD_GBUF          68u
 #define SH_RECORD_SCRATCH       64u
-/* With vertex_fetch, a vertex program's record holds the 32 generic attributes after the global buffers, 4 words an
-   attribute: the address of its first element (low, high), the bytes from there to the end of its stream (0: no data),
-   and its format, packed with the SH_ATTR_ fields. Each attribute's instance divisor follows in a word of its own at
-   SH_RECORD_DIVISOR (the 3D engine's divisor has 32 bits), then the texture words at SH_RECORD_TEX_FETCH. A fragment
-   program's texture words stay at SH_RECORD_GBUF */
+/* With vertex_fetch, a vertex program's record holds the generic attributes it fetches (ShaderInfo.fetch_attrs)
+   after the global buffers, in the order of their numbers, SH_ATTR_WORDS words an attribute: the address of its first
+   element (low, high), the bytes from there to the end of its stream (0: no data), its format, packed with the
+   SH_ATTR_ fields, and its instance divisor (the 3D engine's divisor has 32 bits). The texture words follow them, at
+   SH_RECORD_FETCH_TEX of the count. A fragment program's texture words stay at SH_RECORD_GBUF. Only the attributes
+   the program reads take words: a draw writes the record whole, and 32 of them were 160 words a draw */
 #define SH_RECORD_ATTR          68u
-#define SH_RECORD_DIVISOR       (SH_RECORD_ATTR + 32u * 4u)
-#define SH_RECORD_TEX_FETCH     (SH_RECORD_DIVISOR + 32u)
+#define SH_ATTR_WORDS           5u
+#define SH_RECORD_FETCH_TEX(n)  (SH_RECORD_ATTR + SH_ATTR_WORDS * (u32)(n))
+#define SH_RECORD_FETCH_MAX     SH_RECORD_FETCH_TEX(32)
 #define SH_ATTR_STRIDE_MASK     0xFFFu /* bits 0-11: the stream's stride in bytes */
 #define SH_ATTR_SIZE_SHIFT      12     /* bits 12-17: the 3D engine's size code */
 #define SH_ATTR_TYPE_SHIFT      18     /* bits 18-20: 1 snorm, 2 unorm, 3 sint, 4 uint, 5 uscaled, 6 sscaled, 7 float */
 #define SH_ATTR_BGRA            (1u << 21) /* the first and third components swap */
 #define SH_ATTR_CONSTANT        (1u << 22) /* no data: 0, 0, 0, 1 */
-#define SH_ATTR_INSTANCED       (1u << 23) /* an element each divisor (SH_RECORD_DIVISOR) instances, not each vertex */
+#define SH_ATTR_INSTANCED       (1u << 23) /* an element each divisor (its last record word) instances, not each vertex */
 /* Device capabilities the renderer sets before translating, and the values offline translation takes. A 1-bit
    field holds 0 or 1: a mask goes in through a test (!= 0), or its bit is lost */
 typedef struct {

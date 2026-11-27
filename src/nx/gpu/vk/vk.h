@@ -2897,9 +2897,9 @@ typedef struct {
     int n[VK_DRAW_STAGES];
     VkBuffer map_buf[VK_DRAW_STAGES];
     u64 map_off[VK_DRAW_STAGES], map_size[VK_DRAW_STAGES];
-    /* a vertex program that fetches its own attributes (ShaderInfo.vertex_fetch): each attribute's 4 words of its
-       record (SH_RECORD_ATTR) and its instance divisor (SH_RECORD_DIVISOR), which render.c's fetch_records fills from
-       the draw's vertex streams */
+    /* a vertex program that fetches its own attributes (ShaderInfo.vertex_fetch): each attribute's address, length
+       and format and its instance divisor, which render.c's fetch_records fills from the draw's vertex streams. The
+       record takes those of the attributes the program reads (ShaderInfo.fetch_attrs, SH_RECORD_ATTR) */
     u32 attr[32][4];
     u32 divisor[32];
     /* last: a draw clears what is above and the n[stage] buffers each stage has (render.c's draw_storage_read), not
