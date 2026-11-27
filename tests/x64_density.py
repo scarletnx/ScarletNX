@@ -15,6 +15,8 @@ the generated code instead of every difference of a byte.
     x64_density.py --sail PROGRAM --mc LLVM_MC
 
 
+A run where a group is over its limit prints every group's count after the failures (op, guest words, host
+instructions, mean, limit), so a host whose code the limits do not hold gives in its log what to make them again of.
 --limits holds nothing: it prints FILE again with each group's limit a quarter above this build's count, rounded up,
 the words FILE's. That is how the limits are made again after a change of the back end. --also names the program
 of the other calling convention (snx-test-recompiler-win64 beside snx-test-recompiler-backends on Linux): a group's
@@ -243,6 +245,7 @@ def main():
         bad = 0
         total_insns = total_words = 0
         seen = set()
+        rows = []
         for op, n in groups:
             if op in seen:
                 print(f'FAIL: {op}: two records', file=sys.stderr)
@@ -255,6 +258,7 @@ def main():
             words, limit = allowed[op]
             total_insns += n
             total_words += words
+            rows.append(f'{op}\t{words}\t{n}\t{n / words:.2f}\t{limit:g}')
             if n > limit * words:
                 print(
                     f'FAIL: {op}: {n} host instructions for {words} guest words, mean {n / words:.2f}, limit {limit:g}',
@@ -264,6 +268,9 @@ def main():
         for op in sorted(set(allowed) - seen):
             print(f'FAIL: {op}: no object from --counts', file=sys.stderr)
             bad = 1
+        if bad:
+            print('every group: op, guest words, host instructions, mean, limit')
+            print('\n'.join(rows))
         mean = total_insns / total_words if total_words else 0
         print(
             f'x64 density: {total_insns} host instructions / {total_words} guest words, mean {mean:.2f}, '
