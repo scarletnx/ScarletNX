@@ -508,9 +508,6 @@ static void surf_use_splice(const void* arg) {
     const Surf* v = u.s->host ? u.s->host : u.s; /* a hosted target's state is its host's */
     const int wrote = surf_access_writes(v->access), writes = surf_access_writes(u.access);
     const int barrier = !(v->layout == u.layout && !writes && !wrote) || (u.stage & ~v->stage);
-    if (barrier != u.barrier) /* TEMPDBG */
-        LOG_LIMIT(60, "TEMPDBG mispredict: %ux%u %s at %llx host %d: layout now %d (wanted %d), predicted %d, needed %d\n", u.s->w, u.s->h,
-                  u.s->is_rt ? "rt" : "tex", (unsigned long long)u.s->gva, u.s->host != NULL, (int)v->layout, (int)u.layout, u.barrier, barrier);
     if (barrier != u.barrier && !g_surf_mispredicted++)
         WARN("vulkan: draw_batches: a deferred surface use needed %s barrier than the worker predicted\n",
              barrier ? "a" : "no");
@@ -3630,7 +3627,6 @@ static void surf_free(Surf* s) {
     if (s->present) vk_defer_image(VK_NULL_HANDLE, 0, s->present, VK_NULL_HANDLE);
     vk_defer_image(s->img, s->mem, s->att, s->att_linear);
     SNX_MEM_FREE_D(s, s->is_rt ? "render targets" : "texture objects");
-    memset(s, 0xA5, sizeof *s); /* TEMPDBG */
     free(s);
 }
 /* a target holding a draw that memory doesn't have: it stays while its address is its own and memory wasn't written
@@ -4470,7 +4466,7 @@ void vk_surf_bytes(Surf* s, u64 bytes) {
     s->bytes = bytes;
 }
 
-static int cache_image_create_tdbg(const VkImageCreateInfo* ii, VkImage* img, DevMem* mem, u32 owner, u64* bytes) {
+int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, DevMem* mem, u32 owner, u64* bytes) {
     VkDeviceImageMemoryRequirements q = {.sType = VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS,
                                          .pCreateInfo = ii};
     VkMemoryRequirements2 req = {.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2};
@@ -4521,13 +4517,6 @@ static int cache_image_create_tdbg(const VkImageCreateInfo* ii, VkImage* img, De
         }
     }
     return 0;
-}
-int vk_cache_image_create(const VkImageCreateInfo* ii, VkImage* img, DevMem* mem, u32 owner, u64* bytes) { /* TEMPDBG */
-    int r = cache_image_create_tdbg(ii, img, mem, owner, bytes);
-    if (r) LOG("TEMPDBG image %#llx %ux%ux%u fmt %d layers %u levels %u slot %u from %p\n", (unsigned long long)(uintptr_t)*img,
-               ii->extent.width, ii->extent.height, ii->extent.depth, (int)ii->format, ii->arrayLayers, ii->mipLevels,
-               vk_render_slot(), __builtin_return_address(0));
-    return r;
 }
 
 /* A nearest depth/stencil transform when the format has no image blit support. Copy each aspect into device rows,

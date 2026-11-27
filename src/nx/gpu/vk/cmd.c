@@ -1349,18 +1349,7 @@ static void submit(const VkSemaphoreSubmitInfo* xw, const VkSemaphoreSubmitInfo*
     SNX_ZONE_END(z_submit);
 }
 
-#include <execinfo.h> /* TEMPDBG */
 static void submit_why(VkSemaphore wait, VkPipelineStageFlags2 wait_stage, VkSemaphore signal, int why) {
-    if (vk_share_on()) { /* TEMPDBG */
-        static int told;
-        if (told++ < 3) {
-            void* bt[24];
-            int n = backtrace(bt, 24);
-            LOG("TEMPDBG a submit (why %d) during a split:\n", why);
-            char** sym = backtrace_symbols(bt, n);
-            for (int i = 0; sym && i < n; i++) LOG("TEMPDBG   %s\n", sym[i]);
-        }
-    }
     VkSemaphoreSubmitInfo w = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = wait,
                                .stageMask = wait_stage};
     VkSemaphoreSubmitInfo s = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = signal,
