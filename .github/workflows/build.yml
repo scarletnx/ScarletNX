@@ -91,7 +91,7 @@ jobs:
       matrix:
         arch: [x86_64, aarch64]
     container: ghcr.io/pkgforge-dev/archlinux:latest
-    # Amberlith's NRO and APK, pinned releases run against tests/edenprobe/{linux,android}-x86_64.txt
+    # Amberlith's NRO and APK, pinned releases run against test-references' edenprobe/{linux,android}-x86_64.txt
     # (docs/dev/edenprobe.md); another release or other words want those files written again
     env:
       EDENPROBE_VERSION: v1.0.4

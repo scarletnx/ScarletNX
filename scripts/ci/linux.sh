@@ -152,9 +152,14 @@ amberlith_fetch() {
 # NRO runs with no FPS limit (fps-limit=0): its vsync comes every millisecond, so no case waits on a display;
 # scarletnx-android has no such setting. Each summary's title is a line of the pull request's comment, a notice of
 # this job that scripts/pr-builds.sh reads back by this step's name once the run ends; on one line, % is all a notice
-# escapes
+# escapes. The baselines are the package test-references' (cpmfile.json), which build/default's configure fetched
 # env: MAIN
 amberlith_run() {
+  refs=$(sed -n 's/^CPM_PACKAGE_test-references_SOURCE_DIR:INTERNAL=//p' build/default/CMakeCache.txt)
+  if [ ! -d "$refs/edenprobe" ]; then
+    echo "no edenprobe/ in the test-references that build/default's CMakeCache.txt names (\"$refs\")" >&2
+    exit 1
+  fi
   # NAME ARGS...: one run, its output in NAME.log, its status in NAME.status
   probe() {
     local name=$1
@@ -168,11 +173,11 @@ amberlith_run() {
   began=$(date +%s)
   : > times.txt
   probe edenprobe --nro "$EDENPROBE_NRO" --mode "$EDENPROBE_MODE" --out edenprobe \
-    --baseline tests/edenprobe/linux-x86_64.txt --setting fps-limit=0
+    --baseline "$refs/edenprobe/linux-x86_64.txt" --setting fps-limit=0
   probe edenprobe-android --apk "$EDENPROBE_APK" --mode "$EDENPROBE_APK_MODE" \
-    --out edenprobe-android --baseline tests/edenprobe/android-x86_64.txt
+    --out edenprobe-android --baseline "$refs/edenprobe/android-x86_64.txt"
   [ "$MAIN" = true ] && probe edenprobe-main --nro edenprobe-main.nro --mode "$EDENPROBE_MODE" \
-    --out edenprobe-main --advisory-baseline tests/edenprobe/linux-x86_64.txt --setting fps-limit=0
+    --out edenprobe-main --advisory-baseline "$refs/edenprobe/linux-x86_64.txt" --setting fps-limit=0
   status=0
   for name in edenprobe edenprobe-android edenprobe-main; do
     [ -f "$name.status" ] || continue
