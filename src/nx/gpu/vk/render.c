@@ -481,6 +481,7 @@ static void async_tell(int may_skip) {
    draw samples, which the pass needs in ATTACHMENT_FEEDBACK_LOOP_OPTIMAL (feedback_order). area: the render area when no
    attachment has a surface (a draw's color targets all sampled and none written, render_draw), the targets' the guest
    bound */
+static int split_pending(void);
 static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u32 fb, VkExtent2D area) {
     SNX_ZONE_V(z, "vk render begin", 2); /* 2 a new pass, 1 the open pass reused, 0 none opened */
     srgb_write = !!srgb_write;
@@ -503,7 +504,21 @@ static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u
         return 1; /* the open pass serves: no new attachments or feedback slots */
     }
     if (same) CNT(g_vk_fb_restarts)++; /* only a target's layout changes */
+    /* the targets of the pass that ends here, which the new pass doesn't draw: their corners that draws read are
+       copied now, outside a pass, and not in the pass of the draw that reads one (vk_rt_corners_refresh). The
+       renderer thread's alone, with no split under way, whose worker would read the copies at the same time */
+    u32 ended_n = 0;
+    Surf* ended[9];
+    if (!t_rc && !split_pending() && g_rp[0].open) {
+        for (u32 i = 0; i <= g_rp[0].n; i++) {
+            Surf* e = i < g_rp[0].n ? g_rp[0].rt[i] : g_rp[0].zt;
+            int kept = !e || e == zt;
+            for (u32 j = 0; j < n && !kept; j++) kept = rt[j] == e;
+            if (!kept && e->crop) ended[ended_n++] = e;
+        }
+    }
     vk_render_end();
+    for (u32 i = 0; i < ended_n; i++) vk_rt_corners_refresh(ended[i]);
     VkCommandBuffer cb = vk_cmd();
     vk_surf_written_flush(cb, rt, n, zt); /* the barriers at the writer, outside the pass (writer_barriers) */
     for (u32 i = 0; i < n; i++)
@@ -8070,6 +8085,7 @@ static struct {
        hold and the command buffers, the kick, the join */
     u64 t_peek, t_snap, t_cmd, t_kick, t_join, peeks;
 } g_split;
+static int split_pending(void) { return g_split.pending; }
 static void split_log(void) {
     static u64 tsc0, ns0;
     const u64 tsc = __builtin_readcyclecounter(), ns = plat_ns();
