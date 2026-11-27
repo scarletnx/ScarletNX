@@ -17,13 +17,14 @@ enum {
     OLD_SET,    /* set at all, to anything: the setting is `to` */
     OLD_SIGNAL, /* "signal" alone: the setting is `to`; another value did nothing */
     OLD_SWITCH, /* empty or starting with 0: the setting is 0, else 1 */
+    OLD_GONE,   /* no setting took its place: said with its value and `to`, what holds */
 };
 typedef struct {
     const char* name;  /* the variable */
     const char* value; /* its value; NULL when it is not set */
     int how;
     const char* key; /* the setting that replaced it */
-    const char* to;  /* OLD_SET's and OLD_SIGNAL's value of the setting */
+    const char* to;  /* OLD_SET's and OLD_SIGNAL's value of the setting, OLD_GONE's what holds */
 } OldVariable;
 #define OLD_MAX 8
 static struct {
@@ -43,7 +44,8 @@ void options_old_environment(void) {
         {"SNX_HOST_PAGE", getenv("SNX_HOST_PAGE"), OLD_COPY, "host_page", NULL},
         {"SNX_ALIAS_CHECK", getenv("SNX_ALIAS_CHECK"), OLD_SWITCH, "gpu_page_check", NULL},
         {"SNX_DIRTY_CHECK", getenv("SNX_DIRTY_CHECK"), OLD_SWITCH, "draw_state_check", NULL},
-        {"SNX_LLVM_BRANCH_PROFILE", getenv("SNX_LLVM_BRANCH_PROFILE"), OLD_COPY, "ir_branch_profile", NULL},
+        {"SNX_LLVM_BRANCH_PROFILE", getenv("SNX_LLVM_BRANCH_PROFILE"), OLD_GONE, NULL,
+         "went with LLVM's branch odds: the native back ends read no profile"},
     };
     size_t i;
     int j, n = 0;
@@ -52,6 +54,12 @@ void options_old_environment(void) {
         const OldVariable* v = &table[i];
         const char *given = NULL, *first = NULL;
         if (!v->value) continue;
+        if (v->how == OLD_GONE) {
+            g_deprecated_env.set[n] = *v;
+            g_deprecated_env.given[n] = NULL;
+            g_deprecated_env.first[n++] = NULL;
+            continue;
+        }
         if (v->how == OLD_COPY)
             given = v->value;
         else if (v->how == OLD_SWITCH)
@@ -74,8 +82,12 @@ void options_old_environment_say(void) {
     int i;
     for (i = 0; i < g_deprecated_env.count; i++) {
         const OldVariable* v = &g_deprecated_env.set[i];
-        const IniOpt* o = ini_find(g_debug_ini, v->key);
+        const IniOpt* o = v->key ? ini_find(g_debug_ini, v->key) : NULL;
         char now[1100];
+        if (v->how == OLD_GONE) {
+            WARN("settings: %s=%s is deprecated, and %s (docs/user/deprecations.md)\n", v->name, v->value, v->to);
+            continue;
+        }
         if (!o) continue;
         ini_format(o, now, sizeof now);
         if (g_deprecated_env.first[i])

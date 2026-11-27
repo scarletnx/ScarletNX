@@ -798,8 +798,6 @@ int snx_ctr_main(int argc, char** argv) {
             ini_read(ini_find(g_ctr_run_ini, "ctr_script"), cli.value[SNX_CLI_SCRIPT]);
         else if (common == SNX_CLI_FULLSCREEN)
             ini_read(ini_find(g_display_ini, "fullscreen"), cli.fullscreen ? "1" : "0");
-        else if (common == SNX_CLI_OPT) /* the Switch's settings, as --aot-threads= is: the last given counts */
-            ini_read(ini_find(g_recompile_ini, "opt"), cli.value[SNX_CLI_OPT]);
         else if (common == SNX_CLI_JOBS)
             g_settings.aot_threads = cli.jobs;
         if (common) continue;

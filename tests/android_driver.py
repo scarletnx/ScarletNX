@@ -36,8 +36,9 @@ def main():
         ['--android_log_level=V'],
     ):
         run(given, usage, ('unknown option',))
-    run(['--android-jit-opt=9'], '--android-jit-opt takes 0, 1, 2, 3, s or z, not 9')
-    run(['--android-jit-opt=12'], '--android-jit-opt takes 0, 1, 2, 3, s or z, not 12')
+    # LLVM's level and kept IR, which went with it: said with the value given, and nothing done
+    run(['--android-jit-opt=9'], 'settings: android_jit_opt=9, deprecated, went with LLVM')
+    run(['--android-jit-keep-ir=/a'], 'settings: android_jit_keep_ir=/a, deprecated, went with LLVM')
     run(['--android-trace-frames=2'], 'android_trace_frames=2 is not a whole number from 0 to 1')
     run(['--android-sample=x'], 'android_sample=x is not a whole number from 0 to 1')
     run(['--android-log-level=VV'], '--android-log-level takes V, D, I, W, E or A, not VV')

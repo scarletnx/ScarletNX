@@ -39,17 +39,14 @@
 
 const IniOpt* snx_recompile_setting(const char* key) {
     const IniOpt* o = ini_find(g_recompile_ini, key);
-    if (!o) o = ini_find(g_llvm_ini, key);
     return o ? o : ini_find(g_recompile_game_ini, key);
 }
 /* the recompile's settings off their default that change the code it makes (settings.txt's perf), which the game
-   names over its picture as it starts: owned, "" for none. opt is the made line's own field */
+   names over its picture as it starts: owned, "" for none */
 static char* made_off(void) {
-    size_t made = ini_perf_keys(g_recompile_ini, "opt", NULL, 0), llvm = ini_perf_keys(g_llvm_ini, NULL, NULL, 0);
-    char* off = (char*)snx_alloc(made + llvm + 2);
-    ini_perf_keys(g_recompile_ini, "opt", off, made + 1);
-    if (made && llvm) off[made++] = ',';
-    ini_perf_keys(g_llvm_ini, NULL, off + made, llvm + 1);
+    size_t made = ini_perf_keys(g_recompile_ini, NULL, NULL, 0);
+    char* off = (char*)snx_alloc(made + 1);
+    ini_perf_keys(g_recompile_ini, NULL, off, made + 1);
     return off;
 }
 /* a line of the hook module libraries' (hook_libs.h) */
@@ -83,8 +80,7 @@ static void usage(void) {
          "  INPUT                  Game/ExeFS folder, .nro, or an XCI, NSP, XCZ or NSZ dump (read in place)\n"
          "  --name NAME            Output name (default: the title ID, else the NPDM's or input name)\n"
          "  --outdir DIR           Where the game's folder goes (default: recompiled/)\n"
-         "  --layout FILE          Put the code of these functions first, in this order (hex PCs, one per line):\n"
-         "                         a profile's hot functions, as tools/layout.py orders them\n"
+         "  --layout FILE          LLVM's function order, which went with it: said, and nothing done\n"
          "  --keys FILE            prod.keys for a dump (default: the data folder, then ~/.switch)\n"
          "  --title-keys FILE      title.keys for a dump, found the same way (optional)\n"
          "  --program N            Only program N of a dump's application of several (default: every one)");
@@ -110,25 +106,14 @@ static void usage(void) {
          "code and data folder, run on the game's runtime with its settings and saves.\n"
          "Hints: <outdir>/<NAME>/<NAME>.hints (hex PCs, one per line).");
 }
-/* SNX_LLVM_BRANCH_PROFILE, which an older version read (docs/user/deprecations.md): for this version still the value of
-   ir_branch_profile when the recompile is given none, and said either way. Removed with tests/architecture.py's
-   ENV_DEPRECATED row */
+/* SNX_LLVM_BRANCH_PROFILE, which an older version read (docs/user/deprecations.md): said with its value, and what
+   holds. Removed with tests/architecture.py's ENV_DEPRECATED row */
 static void old_branch_profile(void) {
     const char* old = getenv("SNX_LLVM_BRANCH_PROFILE");
-    if (!old) return;
-    if (g_settings.ir_branch_profile[0])
-        snx_error("SNX_LLVM_BRANCH_PROFILE=%s is deprecated, and the recompile gives ir_branch_profile first: "
-                  "ir_branch_profile=%s (docs/user/deprecations.md)",
-                  old, g_settings.ir_branch_profile);
-    else if (strlen(old) < sizeof g_settings.ir_branch_profile) {
-        memcpy(g_settings.ir_branch_profile, old, strlen(old) + 1);
-        snx_error("SNX_LLVM_BRANCH_PROFILE=%s is deprecated: this recompile reads it as --ir-branch-profile=%s "
-                  "(docs/user/deprecations.md)",
-                  old, old);
-    } else
-        snx_error("SNX_LLVM_BRANCH_PROFILE=%s is deprecated, and longer than ir_branch_profile's %u bytes: "
-                  "ir_branch_profile is empty, no branch weights (docs/user/deprecations.md)",
-                  old, (unsigned)sizeof g_settings.ir_branch_profile - 1);
+    if (old)
+        snx_error("SNX_LLVM_BRANCH_PROFILE=%s is deprecated, and went with LLVM's branch odds: the native back ends "
+                  "read no profile (docs/user/deprecations.md)",
+                  old);
 }
 /* This build's, not the checkout's cpu.h: the modules are laid out as this build's headers say, and an installed
    build has no checkout */
@@ -587,7 +572,7 @@ typedef struct {
     SnxU64 addon, owner, version;
     SnxCompileOptions compile;
     SnxCodegenOptions gen;
-    int ios, no_build, keep_c, host_win, tmpfs, dump;
+    int ios, no_build, host_win, tmpfs, dump;
     int programs, primary; /* the application's programs, and the one the profile's --jit-cache and --layout are of */
 } MakeArgs;
 /* the line a recompile starts with, which the launcher reads as its step (gui/steps.c) */
@@ -608,8 +593,7 @@ static int make_program(const MakeArgs* a, int index) {
     SnxU64 addon = a->addon, owner = a->owner, version = a->version;
     SnxCompileOptions compile = a->compile;
     SnxCodegenOptions gen = a->gen;
-    int ios = a->ios, no_build = a->no_build, keep_c = a->keep_c, host_win = a->host_win, tmpfs = a->tmpfs,
-        dump = a->dump;
+    int ios = a->ios, no_build = a->no_build, host_win = a->host_win, tmpfs = a->tmpfs, dump = a->dump;
     SnxLlvmBuild llvm;
     SnxProgram program;
     SnxNroSet nros = {0};
@@ -869,11 +853,10 @@ static int make_program(const MakeArgs* a, int index) {
         llvm.jobs_open = compile.jobs_open;
         llvm.quiet = compile.quiet;
         llvm.found = &found;
-        /* what LLVM's code alone had, said and not done: the IR kept, each function's own section in an order */
-        if (keep_c) snx_error("--keep-ir: the native back end keeps no IR: nothing goes in %s_build", base);
+        /* LLVM's function order, said and not done */
         if (layout)
-            snx_error("--layout %s: the native back end has no section of its own for each function: the code keeps "
-                      "its order",
+            snx_error("--layout %s went with LLVM: the native back ends keep the code in its order "
+                      "(docs/user/deprecations.md)",
                       layout);
         { /* units/ of the cache folder, where LLVM kept the code units: said with where it is deleted, never here */
             char* folder = snx_menu_dir(paths->repo, SNX_USER_CACHE);
@@ -980,8 +963,8 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
     const char* equal;
     size_t option_size;
     SnxCliArg given;
-    int i, rc, ios = 0, no_build = 0, keep_c = 0, host_win = 0, positional = 0, tmpfs = 0, dump = 0, asked = -1,
-               programs = 1, common;
+    int i, rc, ios = 0, no_build = 0, host_win = 0, positional = 0, tmpfs = 0, dump = 0, asked = -1, programs = 1,
+               common;
     memset(&compile, 0, sizeof(compile));
     memset(&gen, 0, sizeof(gen));
 #ifdef _WIN32
@@ -1014,9 +997,7 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
             fprintf(stderr, "%s\n", error);
             return 1;
         }
-        if (common == SNX_CLI_OPT)
-            strcpy(g_settings.optimization_level, given.value);
-        else if (common == SNX_CLI_JOBS)
+        if (common == SNX_CLI_JOBS)
             g_settings.aot_threads = (int)given.number;
         else if (common == SNX_CLI_CHUNK)
             g_settings.unit_size = (int)given.number;
@@ -1024,8 +1005,6 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
             jit_cache = given.value;
         else if (common == SNX_CLI_JIT_ONLY)
             gen.interp_only = 1;
-        else if (common == SNX_CLI_KEEP_IR)
-            keep_c = 1;
         else if (common == SNX_CLI_QUIET)
             compile.quiet = gen.quiet = 1;
         if (common > 0) continue;
@@ -1040,10 +1019,17 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
             if ((equal = strchr(arg, '=')) != NULL) {
                 /* a recompile setting, its key's _ a - or not */
                 char key[64];
-                const IniOpt* o = settings_arg(arg, key, sizeof key) ? snx_recompile_setting(key) : NULL;
+                const int named = settings_arg(arg, key, sizeof key) != NULL;
+                const IniOpt* o = named ? snx_recompile_setting(key) : NULL;
                 if (o) {
                     if (ini_check(o, equal + 1, error, sizeof error)) return snx_error("%s", error);
                     ini_read(o, equal + 1);
+                    continue;
+                }
+                /* an older version's key (LLVM's among them): said with its value and what became of it */
+                if (named && ini_deprecated(key)) {
+                    snx_error("settings: %s=%s, deprecated, %s (docs/user/deprecations.md)", key, equal + 1,
+                              ini_deprecated(key));
                     continue;
                 }
                 option_size = (size_t)(equal - arg);
@@ -1098,14 +1084,9 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
         usage();
         return 2;
     }
-    /* the settings, whichever way they came: -O and --jobs, or --opt= and --aot-threads= as the launcher passes them */
-    if (strlen(g_settings.optimization_level) != 1 || !strchr("0123sz", g_settings.optimization_level[0]))
-        return snx_error("opt = %s: not 0, 1, 2, 3, s or z", g_settings.optimization_level);
-    if (strcmp(g_settings.llvm_batch, "full") && strcmp(g_settings.llvm_batch, "ipo"))
-        return snx_error("llvm_batch = %s: not full or ipo", g_settings.llvm_batch);
-    if (!strcmp(g_settings.llvm_batch, "ipo") && g_settings.optimization_level[0] == '0')
-        return snx_error("llvm_batch = ipo takes the place of -O1 to -O3, s and z's passes: opt = 0 runs none");
-    compile.opt = g_settings.optimization_level;
+    /* the native back ends have no levels: the made line keeps the 2 every game was made with, so none is made again
+       for it (docs/user/deprecations.md) */
+    compile.opt = "2";
     gen.chunk_instrs = (size_t)g_settings.unit_size;
     {
         char note[160];
@@ -1175,7 +1156,6 @@ int snx_recompile_game(int argc, char** argv, const SnxPaths* paths) {
     make.gen = gen;
     make.ios = ios;
     make.no_build = no_build;
-    make.keep_c = keep_c;
     make.host_win = host_win;
     make.tmpfs = tmpfs;
     make.dump = dump;

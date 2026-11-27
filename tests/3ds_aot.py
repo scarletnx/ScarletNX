@@ -487,8 +487,8 @@ def main():
         assert chunks == [(f'blocks_{k:03}', min(512, found - k * 512)) for k in range(count)], text
         assert lines[count][2] == 'index' and int(lines[count][3]) >= found, text
         assert 'chunks of static blocks emitted' not in text, text
-        # the recompile's common options (common/utilities/cli.h): --chunk's instructions to a chunk, whole blocks, each
-        # chunk's IR and the index's kept by --keep-ir, -q's silence, -O's level (another module at -O0)
+        # the recompile's common options (common/utilities/cli.h): --chunk's instructions to a chunk, whole blocks, -q's
+        # silence; -O and --keep-ir, gone with LLVM, said and choosing nothing
         source = root / f'input {cases};literal.cia'
 
         def recompile(*options, status=0):
@@ -503,25 +503,21 @@ def main():
             assert p.returncode == status, (options, p.stdout + p.stderr)
             return folder, p.stdout + p.stderr
 
-        cut, text = recompile('--chunk', '100', '--keep-ir')
+        cut, text = recompile('--chunk', '100')
         count = (found + 99) // 100  # the chained blocks are one instruction each, the last two
         lines = re.findall(r'^  compiled block (\d+)/(\d+): (\w+), ', text, re.M)
         assert sorted(int(done) for done, *_ in lines) == list(range(1, count + 2)), text
         assert {int(of) for _, of, _ in lines} == {count + 1}, text
-        kept = sorted(f.name for f in (cut / f'{cut.name}_build').iterdir())
-        assert kept == sorted([f'blocks_{k:03}.ll' for k in range(count)] + ['index.ll']), kept
-        assert 'define ' in (cut / f'{cut.name}_build' / 'blocks_000.ll').read_text()
         quiet, text = recompile('-q', '-O0')
         assert 'compiled block' not in text and 'Recompiling' not in text and 'Discovered' not in text, text
         assert 'back end: ' not in text, text
-        # the level is the setting opt's, 2 unless -O or --opt says another: the same module as -O2's. It is LLVM's: of
-        # every block with --keep-ir, and of none where the native back end makes them all
+        # -O and --opt choose nothing: the same module as none's
         default, _ = recompile('-q')
         level, _ = recompile('--opt', '2', '-q')
         assert module_of(default).read_bytes() == module_of(level).read_bytes()
-        # the native back end's module, whatever the level and --keep-ir, which it says it keeps nothing of
+        # the native back end's module, whatever -O and --keep-ir, which are said once
         kept, text = recompile('--keep-ir')
-        assert '--keep-ir: the native back end keeps no IR' in text, text
+        assert "--keep-ir went with LLVM's IR: the native back ends keep none" in text, text
         unoptimized, _ = recompile('-q', '--keep-ir', '-O0')
         assert module_of(kept).read_bytes() == module_of(unoptimized).read_bytes()
         _, text = recompile('--chunk', '100')

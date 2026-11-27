@@ -466,7 +466,7 @@ Remaining examples: POSIX.
   `.listing` files that wget leaves in a mirror of an FTP folder are left out.
 - **Recompile:** AOT → module (LLVM) →
   final runtime deployment, for this machine's CPU. Shaders compile directly to SPIR-V at runtime.
-  `-O 0..3,s,z` (`--opt=`) sets the optimization level (2 by default), and `--jobs N` (`--aot-threads=N`) the threads
+  `-O`, LLVM's level, went with it: said once, and nothing done. `--jobs N` (`--aot-threads=N`) sets the threads
   compiling (0 or none: the machine's cores with a quarter left free, the physical cores where it says them,
   else the logical ones, at most 75%, so a recompile does not make the computer stutter). The quarter is
   deliberate: a large game's recompile runs for minutes, a pass that took every core would keep the machine

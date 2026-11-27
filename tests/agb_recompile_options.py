@@ -63,16 +63,16 @@ def main():
         )
         check("--jobs 4: a ROM's code is one module, compiled on 1 thread" in text, '--jobs not said', text)
         check("--chunk 100: a ROM's code is one module, compiled as one unit" in text, '--chunk not said', text)
-        check('--keep-ir: the native back end keeps no IR' in text, '--keep-ir not said', text)
-        check('-O0: the native back end has no optimization levels' in text, '-O0 not said', text)
+        check("--keep-ir went with LLVM's IR: the native back ends keep none" in text, '--keep-ir not said', text)
+        check("-O 0, LLVM's level, went with LLVM" in text, '-O0 not said', text)
         check(not (work / 'kept' / 'game' / 'game_build').exists(), '--keep-ir made a folder', text)
-        # -q: no progress; the default level is 2, the setting opt's: the module -O2 makes
+        # -q: no progress; -O, said and choosing nothing, makes the same module
         text = run('quiet', '-r', '-q')
         check(
             'Recompiling' not in text and 'Built' not in text and 'back end: ' not in text, '-q said its progress', text
         )
         run('two', '-r', '-q', '--opt=2')
-        check(module('quiet') is not None and module('quiet') == module('two'), 'the default level is not -O2', text)
+        check(module('quiet') is not None and module('quiet') == module('two'), '--opt=2 changed the module', text)
         # the native back end's module, whatever the level and --keep-ir
         run('kept2', '-r', '-q', '--keep-ir')
         check(module('kept2') is not None and module('kept2') == module('kept'), '--keep-ir changed the module', text)
@@ -91,8 +91,8 @@ def main():
         missing = work / 'none.map'
         text = run('none', '-r', '--jit-cache', str(missing), status=1)
         check(f'scarletnx-agb: --jit-cache {missing}: cannot read {missing}' in text, 'a missing map not said', text)
-        text = run('bad', '-r', '-O9', status=2)
-        check('scarletnx-agb: -O 9: not 0, 1, 2, 3, s or z' in text, '-O9 not refused', text)
+        text = run('bad', '-r', '-O9')
+        check("-O 9, LLVM's level, went with LLVM" in text and module('bad') == module('quiet'), '-O9 not said', text)
         # the launcher's Gentle queue gives every driver --aot-threads=0 and --aot-threads-most=N: both said
         text = run('gentle', '-r', '--aot-threads=0', '--aot-threads-most=4')
         check("aot_threads_most=4: a ROM's code is one module, compiled on 1 thread" in text, 'Gentle refused', text)

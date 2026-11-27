@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-# scarletnx -r --KEY=VALUE, a setting of the recompile (settings.txt's recompile and llvm tables), KEY with a - for each
-# _ too: a value the setting does not take is refused before anything runs, saying what it takes by its key; one it
-# takes reaches the input's check; a KEY with some _ left is no setting. Run by ctest as runtime_recompile_settings
+# scarletnx -r --KEY=VALUE, a setting of the recompile (settings.txt's recompile table), KEY with a - for each _ too: a
+# value the setting does not take is refused before anything runs, saying what it takes by its key; one it takes reaches
+# the input's check; an older version's key (LLVM's) is said with its value and what became of it, and the run goes on;
+# a KEY with some _ left is no setting. Run by ctest as runtime_recompile_settings
 set(dir "${CMAKE_CURRENT_BINARY_DIR}/recompile-settings")
 file(REMOVE_RECURSE "${dir}")
 file(MAKE_DIRECTORY "${dir}")
@@ -10,20 +11,19 @@ foreach(case "--aot_threads=abc|aot_threads=abc is not a whole number from 0 to 
              "--aot_threads=1.5|aot_threads=1.5 is not a whole number from 0 to 1024"
              "--aot_threads=2000|aot_threads=2000 is not a whole number from 0 to 1024"
              "--aot_threads=|aot_threads= is not a whole number from 0 to 1024"
-             "--llvm_inliner_threshold=50x|llvm_inliner_threshold=50x is not a whole number from -2147483647 to 2147483647"
-             "--opt=5|--opt 5: not 0, 1, 2, 3, s or z"
+             "--llvm_inliner_threshold=50x|llvm_inliner_threshold=50x, deprecated, went with LLVM's options"
+             "--opt=5|--opt 5, LLVM's level, went with LLVM"
              "--unit_cache_ceil_mb=-1|unit_cache_ceil_mb=-1 is not a whole number from 0 to 1048576"
              "--unit_cache_ceil_mb=2.5|unit_cache_ceil_mb=2.5 is not a whole number from 0 to 1048576"
              "--aot_threads=4|holds no exefs/main" "--llvm_inliner_threshold=50|holds no exefs/main"
              "--opt=z|holds no exefs/main" "--unit_cache_ceil_mb=0|holds no exefs/main"
-             "--llvm_batch=fast|llvm_batch = fast: not full or ipo"
-             "--opt=0 --llvm_batch=ipo|llvm_batch = ipo takes the place of -O1 to -O3, s and z's passes: opt = 0"
+             "--llvm_batch=fast|llvm_batch=fast, deprecated, went with LLVM's passes over a unit"
              "--llvm_batch=ipo|holds no exefs/main" "--llvm_batch=full|holds no exefs/main"
              "--aot-threads=abc|aot_threads=abc is not a whole number from 0 to 1024"
              "--unit-cache-ceil-mb=2.5|unit_cache_ceil_mb=2.5 is not a whole number from 0 to 1048576"
-             "--llvm-inliner-threshold=50x|llvm_inliner_threshold=50x is not a whole number from -2147483647 to 2147483647"
+             "--llvm-inliner-threshold=50x|llvm_inliner_threshold=50x, deprecated, went with LLVM's options"
              "--aot-threads=4|holds no exefs/main" "--aot-threads-most=2|holds no exefs/main"
-             "--llvm-batch=fast|llvm_batch = fast: not full or ipo"
+             "--llvm-batch=fast|llvm_batch=fast, deprecated, went with LLVM's passes over a unit"
              "--aot-threads_most=2|unknown option: --aot-threads_most (scarletnx -r -h lists them)")
     string(REPLACE "|" ";" case "${case}")
     list(GET case 0 option)

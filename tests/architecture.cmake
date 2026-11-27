@@ -12,14 +12,6 @@ if(Python3_Interpreter_FOUND) # tests/CMakeLists.txt looked it up
     set_tests_properties(runtime_architecture PROPERTIES TIMEOUT 180)
     add_test(NAME architecture_checker COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/architecture_test.py")
     add_test(NAME gnuabi_differential_harness COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/gnuabi_diff_test.py")
-    # a recompile that cannot save its module's IR (--keep-ir) names it and its folder, for a 64-bit program and a
-    # 32-bit one: the recompile alone, nothing is run
-    if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
-        add_test(NAME nx_keep_ir
-            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/nx_keep_ir.py"
-                --runtime $<TARGET_FILE:scarletnx> --cc "${CMAKE_C_COMPILER}" --repo "${PROJECT_SOURCE_DIR}")
-        set_tests_properties(nx_keep_ir PROPERTIES TIMEOUT 150)
-    endif()
     if(SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY AND SNX_TEST_VULKAN)
         add_test(NAME nx_runtime_homebrew
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/nx_runtime_smoke.py"

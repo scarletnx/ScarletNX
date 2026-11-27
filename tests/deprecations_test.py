@@ -114,6 +114,17 @@ class Dropped(unittest.TestCase):
             self.assertIn(f'3 states of {SETTINGS} read', run.stdout)
             self.assertIn('1 keys it dropped, 1 deprecated', run.stdout)
 
+    def test_a_prefix_both_name_passes(self):
+        # a key ending in * stands for every key it begins (ini.c's ini_deprecated): the row of ## Now names it so
+        with History() as h:
+            h.commit('Add a', {SETTINGS: settings('a'), INI_C: ini_c('old_*'), DOC: doc('`.ini` keys `old_*`')})
+            run = h.run()
+            self.assertEqual(run.returncode, 0, run.stderr)
+            h.commit('No row', {DOC: doc()})
+            run = h.run()
+            self.assertEqual(run.returncode, 1)
+            self.assertIn('old_*: INI_DEPRECATED', run.stderr)
+
     def test_a_dropped_key_neither_names(self):
         with History() as h:
             h.commit('Add a and b', {SETTINGS: settings('a', 'b'), INI_C: ini_c(), DOC: doc()})

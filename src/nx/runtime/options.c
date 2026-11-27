@@ -1525,17 +1525,12 @@ static int perf_changed(char* game, size_t game_n, char* global, size_t global_n
 int options_perf_notice(const char* base) {
     char game[1024] = "", global[1024] = "", *off = NULL;
     SnxGameMade made;
-    const IniOpt* opt = ini_find(g_recompile_ini, "opt");
     size_t at;
     int count = perf_changed(game, sizeof game, global, sizeof global);
     count += g_kind.n;
     if (snx_game_made_read(base, &made)) off = snx_game_made_off(base);
     at = strlen(global);
-    /* the code made ahead of time at another level than opt's default: what runs, whatever opt is now */
-    if (made.aot == 1 && opt && opt->def && made.opt != opt->def[0]) {
-        key_put(global, sizeof global, &at, "opt");
-        ++count;
-    }
+    /* the made line's level, LLVM's, names nothing: the native back end has one */
     for (char* k = off; k && *k;) {
         size_t len = strcspn(k, ",");
         char key[KEY_MAX];

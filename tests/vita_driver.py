@@ -37,11 +37,11 @@ def main():
     ):
         if line not in help_text:
             failures.append(f'the help lacks "{line.strip()}"')
-    run(['-O9', 'game.vpk'], 2, 'scarletnx-vita: -O 9: not 0, 1, 2, 3, s or z')
+    run(['-O9', 'game.vpk'], 2, "-O 9, LLVM's level, went with LLVM")
     run(['--jobs=1025', 'game.vpk'], 2, 'scarletnx-vita: --jobs 1025: not a whole number from 0 (Auto) to 1024')
     run(['--chunk', 'x', 'game.vpk'], 2, 'scarletnx-vita: --chunk x: not a whole number of instructions from 1')
-    run(['-x', '--keep-ir', 'game.vpk'], 2, "scarletnx-vita: --keep-ir is the recompile's, and -x compiles no code")
-    run(['-x', '--opt=1', 'game.vpk'], 2, "scarletnx-vita: -O is the recompile's, and -x compiles no code")
+    run(['-x', '--keep-ir', 'game.vpk'], 2, "--keep-ir went with LLVM's IR")
+    run(['-x', '--opt=1', 'game.vpk'], 2, "--opt 1, LLVM's level, went with LLVM")
     # a setting's key with a - for each _ is the same setting, said by its key, --press-len= the Vita's press length
     # as --press-len= is; some _ left is no setting
     run(['--aot-threads=many', 'game.vpk'], 2, 'scarletnx-vita: aot_threads=many is not a whole number from 0 to 1024')

@@ -1,15 +1,13 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 # settingsgen (tools/settingsgen/settingsgen.c) generates the settings from src/nx/runtime/settings.txt: snx_settings.h
-# (struct Settings, g_settings), their tables and LLVM's (its pipelines' passes, read from what the LLVM install's opt
-# prints for -O0 to -Oz, and the options its C API sets, read from its headers) and the Vulkan extensions' (checked
-# against the Khronos registry, vk.xml of the Vulkan-Headers the renderer builds with). It runs during the build, so a
+# (struct Settings, g_settings), their tables and the Vulkan extensions' (checked against the Khronos registry, vk.xml of
+# the Vulkan-Headers the renderer builds with). It runs during the build, so a
 # cross build also builds it for the machine doing the build (SNX_HOST_CC), as svcgen.cmake does for svcgen.
 #
 #   snx_settings          g_settings, the launcher's and the recompiler's tables, ini.c: the launcher, the driver;
 #                         and settings_args.c, the settings' names on a command line (settings_arg): every driver
 #   snx_settings_runtime  the game's .ini's tables, a file each, and its sections: the set functions are the runtime's
-#   SNX_SETTINGS_LLVM     settings_llvm.c, for the LLVM backend's side of the driver
 include_guard(GLOBAL)
 if(CMAKE_CROSSCOMPILING)
     include("${CMAKE_CURRENT_LIST_DIR}/host_cc.cmake")
@@ -93,12 +91,12 @@ foreach(line IN LISTS snx_settings_tables)
     endif()
 endforeach()
 list(TRANSFORM snx_settings_runtime_files PREPEND "${snx_settings_out}/")
-set(snx_settings_files snx_settings.h settings.c settings_launch.c settings_llvm.c settings_args.c)
+set(snx_settings_files snx_settings.h settings.c settings_launch.c settings_args.c)
 list(TRANSFORM snx_settings_files PREPEND "${snx_settings_out}/" OUTPUT_VARIABLE snx_settings_outputs)
 list(APPEND snx_settings_outputs ${snx_settings_runtime_files})
 add_custom_command(OUTPUT ${snx_settings_outputs}
     COMMAND snx-settingsgen --out "${snx_settings_out}" ${snx_settings_args} "${snx_settings_spec}"
-    DEPENDS snx-settingsgen "${snx_settings_spec}" $<$<BOOL:${SNX_BUILD_NX}>:${snx_pipelines}> ${snx_vk_registry}
+    DEPENDS snx-settingsgen "${snx_settings_spec}" ${snx_vk_registry}
             "${snx_settings_bans}" "${snx_settings_hooks}"
     COMMENT "Generating the settings" VERBATIM)
 add_custom_target(snx_settings_generated DEPENDS ${snx_settings_outputs})
@@ -129,4 +127,3 @@ if(SNX_VITA_LOCKSTEP)
     target_compile_definitions(snx_settings_runtime PRIVATE SNX_VITA_LOCKSTEP=1)
 endif()
 target_link_libraries(snx_settings_runtime PUBLIC snx_settings)
-set(SNX_SETTINGS_LLVM "${snx_settings_out}/settings_llvm.c")

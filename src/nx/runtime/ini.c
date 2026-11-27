@@ -56,9 +56,18 @@ const char* ini_arg(const char* arg, char* key, size_t size, const char* const* 
             if (*p == '-') *p = '_';
         return eq + 1;
     }
+    /* an older version's key with a - for each _ (--llvm-batch=ipo): that key, for the reader to say (ini_deprecated) */
+    if (strchr(key, '-')) {
+        char older[64];
+        if (length >= sizeof older) return eq + 1;
+        for (i = 0; key[i]; i++) older[i] = key[i] == '-' ? '_' : key[i];
+        older[i] = 0;
+        if (ini_deprecated(older)) memcpy(key, older, length + 1);
+        return eq + 1;
+    }
     /* the key itself, the older spelling of a name with - (no - in it, as a key has none): read, and said once a
        run with the name now */
-    if (strchr(key, '-') || length >= sizeof dashed) return eq + 1;
+    if (length >= sizeof dashed) return eq + 1;
     for (i = 0; key[i]; i++) dashed[i] = key[i] == '_' ? '-' : key[i];
     dashed[i] = 0;
     at = name_at(dashed, names, count);
@@ -417,7 +426,8 @@ size_t ini_list_text(const IniSection* sections, int count, char* out, size_t si
 }
 
 /* what became of each: the rewritten file keeps them under [Deprecated] with it, and a run names them, for the player
-   to delete (the launcher's Settings > App > Clean Old Settings does it) */
+   to delete (the launcher's Settings > App > Clean Old Settings does it). A key ending in * stands for every key it
+   begins, LLVM's passes and options, whose names came from the build's LLVM: the first that matches holds */
 static const struct {
     const char *key, *now;
 } INI_DEPRECATED[] = {{"audio_device", "playback follows the system's default"},
@@ -485,11 +495,30 @@ static const struct {
                                        "memory, up to an eighth of the machine's"},
                       {"dlss_render_size", "now internal_resolution, of the same values"},
                       {"dlss_upscaler", "now render_upscaler, whose 3 (None) is dlss_upscaler's 0 (a filtered copy)"},
+                      {"opt", "went with LLVM: the native back ends make the game's code, with no optimization level"},
+                      {"jit_opt", "went with LLVM: the JIT's native back end has no optimization level"},
+                      {"linux_jit_opt", "went with LLVM: the Linux JIT's native back end has no optimization level"},
+                      {"android_jit_opt", "went with LLVM: the Android JIT's native back end has no optimization level"},
+                      {"android_jit_keep_ir", "went with LLVM's IR: the native back end keeps none in the folder"},
+                      {"llvm_batch", "went with LLVM's passes over a unit: the native back end makes each function"},
+                      {"slp_vectorizer", "went with LLVM's SLP vectorizer: the native back ends have none"},
+                      {"fpsr_flags", "went with LLVM: the native back ends keep FPSR's flags as the console raises them"},
+                      {"abi_contract", "went with LLVM's code: the native back ends' calls have no such switch"},
+                      {"volatile_memory", "went with LLVM's merging of loads and stores: the native back ends have no "
+                                          "such switch"},
+                      {"ir_stats", "went with LLVM's IR: the native back ends make none to count"},
+                      {"ir_dump_pc", "went with LLVM's IR: the native back ends make none to print"},
+                      {"ir_branch_profile", "went with LLVM's branch odds: the native back ends read no profile"},
+                      {"llvm_pass_*", "went with LLVM's passes: the native back ends run none"},
+                      {"llvm_*", "went with LLVM's options: the native back ends have none"},
                       {NULL, NULL}};
 const char* ini_deprecated(const char* k) {
     int i;
-    for (i = 0; INI_DEPRECATED[i].key; i++)
-        if (!strcmp(k, INI_DEPRECATED[i].key)) return INI_DEPRECATED[i].now;
+    for (i = 0; INI_DEPRECATED[i].key; i++) {
+        const char* d = INI_DEPRECATED[i].key;
+        const size_t n = strlen(d);
+        if (d[n - 1] == '*' ? !strncmp(k, d, n - 1) && k[n - 1] : !strcmp(k, d)) return INI_DEPRECATED[i].now;
+    }
     return NULL;
 }
 static const struct {

@@ -11,21 +11,14 @@
 #                         is shown by (an _ in a label is a space)
 #   table NAME [SCOPE]    the settings below go in the IniOpt table NAME. SCOPE is runtime (the game's, the default),
 #                         launcher (the launcher handles them itself), recompile (the recompiler's, which the launcher
-#                         and the driver pass on as --key=value) or llvm (recompile, filled with LLVM's passes and the
-#                         options its C API sets, after what the table declares)
+#                         and the driver pass on as --key=value) or vulkan (the extensions its setting @NAME lines name)
 #   repeat N ... end      the settings between, once for each of N (1 to N in a key's <N>), interleaved: each setting's
 #                         member is an array of N
-#   setting NAME          a setting, named as the menus show it; its member is NAME in snake_case and must be unique.
-#                         In an llvm table, setting @ID gives LLVM's pass (instcombine) or option (LoopVectorization) of
-#                         that ID its name, key and help (name NAME, key KEY, help TEXT, label TEXT under it). An ID
-#                         LLVM doesn't have is left out, and said. LLVM's own fill the rest: a pass is "LLVM pass <its
-#                         name>", key llvm_pass_<name>, int 0 1 default 1; an option "LLVM <its words>", key
-#                         llvm_<option> (the ID in snake_case: key KEY where that reads wrong, FastISel's
-#                         llvm_fast_i_sel), LLVM's own value (SETTINGS_UNSET) until it is set
+#   setting NAME          a setting, named as the menus show it; its member is NAME in snake_case and must be unique
 #     key KEY             its key in the .ini (<N> in a repeat, <ID> in an each), letters, digits and _. A command line
 #                         gives it with a - for each _ (aot_threads: --aot-threads=4), the names settingsgen lists for
 #                         the drivers (settings_arg); --KEY=value, the older spelling, is still read and said once a
-#                         run. An LLVM setting's is LLVM's ID's
+#                         run
 #     int LO HI           an int, clamped to LO..HI (C expressions)
 #     float LO HI         a float, clamped
 #     text SIZE           text, up to SIZE - 1 bytes
@@ -60,7 +53,7 @@
 #     perf                off its default it changes how fast the game runs, and nothing on the screen shows it (ini.h's
 #                         INI_PERF): the game names it over its picture for 30 s as it starts, by where it came from. A
 #                         game's setting or the recompile's (which the game reads from how it was made); every row of a
-#                         vulkan or an llvm table is one
+#                         vulkan table is one
 #     label TEXT          the menus' name when it is not NAME (the game's menu shows a page's settings by it)
 #     startup             read when the game starts only
 #     in-game             the game's own (its menu's, or the driver's): the launcher's Settings leave it out
@@ -869,21 +862,6 @@ setting JIT live budget
     perf
     help The instructions beyond the missed code itself that a miss the game is waiting on discovers (callees).
     help The background queue keeps its larger budget. 0 = 64
-# The JIT's level is the recompile's Optimization level by default (g_recompile_ini's opt, 2), as an AOT pack built from
-# the cache needs the cache's level and the pack's to agree. A phone has no such setting: its JIT compiles at O0, as any
-# other level breaks it (guest_jit.c), and cmake/settings.cmake leaves the block out
-# SNX_PHONE_BEGIN
-setting JIT optimization
-    key jit_opt
-    text 2
-    default 2
-    startup
-    words 0=O0|1=O1|2=O2|3=O3|s=Os|z=Oz
-    perf
-    help LLVM's optimization of the code the runtime JIT compiles when the game reaches code the recompiler missed:
-    help 0 none, 3 the most, s or z the smallest. It is the recompile's Optimization level by default (2), which an AOT
-    help pack built from the cache needs to match. It applies to the next run, which compiles its JIT code again
-# SNX_PHONE_END
 
 # the on-screen controls' (common/utilities/vpad.c): their settings in the game's menu's order, then a control's place
 # in the order of SNX_VPAD_ (SNX_VPAD_IDS, which the list controls follows)
@@ -1501,77 +1479,6 @@ setting CPU extensions
     help Experimental: decode LSE atomics, RCpc loads and PAuth branches and signing instructions with authentication disabled by the
     help emulated system controls. No pointer authentication protection is provided. This is not a complete
     help newer-console CPU profile. Set the same value for recompilation and each run.
-setting SLP vectorizer
-    key slp_vectorizer
-    int 0 1
-    default 0
-    startup
-    words Off|On
-    recompile
-    help LLVM's SLP vectorizer, which packs scalar instructions into SIMD ones, in the recompile and the JIT. Off
-    help while LLVM 23 can break a module with it and stop the recompile (llvm-project issue 231525). It applies to
-    help the next recompile, and to the JIT's next run
-setting FPSR flags
-    key fpsr_flags
-    int 0 1
-    default 1
-    startup
-    words Off|On
-    recompile
-    help 1 = the game's code keeps FPSR's flags (floating point's inexact, underflow, overflow, division by zero and
-    help invalid, and the saturation flag QC) as the console raises them, which costs every such operation a test of
-    help its result. 0 = only the results are the console's: a game that never reads FPSR (few do) runs its floating
-    help point and saturating arithmetic faster. It applies to the next recompile, and to the JIT's next run
-setting ABI contract
-    key abi_contract
-    int 0 1
-    default 0
-    startup
-    words Off|On
-    recompile
-    help 1 = the game's calls follow the AArch64 procedure call standard, so the recompiler keeps the callee-saved
-    help registers in their host locations across a call and does not store the caller-saved ones that are dead
-    help after it. A checking mode in tests reports a function that does not preserve them. It applies to the next
-    help recompile, and to the JIT's next run
-setting Volatile load/stores
-    key volatile_memory
-    int 0 1
-    default 0
-    startup
-    words Off|On
-    recompile
-    help 1 = every load and store of the game's code happens exactly where the game has it. 0 = LLVM may merge two
-    help loads of one address, or a store and a load, between the game's barriers, as the console's memory model
-    help allows, which makes its code faster. 1 is for finding whether a bug is one of those. It applies to the
-    help next recompile, and to the JIT's next run
-setting IR stats
-    key ir_stats
-    int 0 1
-    default 0
-    startup
-    words Off|On
-    recompile
-    help 1 = a recompile's log (one not run with -q) counts each code unit's IR as the recompiler emits it: functions
-    help and the ones whose registers were promoted, calls by kind, register stores and reloads around calls, lookups,
-    help polls and code checks. They count the IR before LLVM's passes, not the work the code does when it runs
-setting IR dump PC
-    key ir_dump_pc
-    text 32
-    default ""
-    startup
-    recompile
-    help The address in hex (100000) of a function the recompiler found: it prints the function's leaders, where its
-    help flags come from, the registers it promoted and its IR before and after the promotion. Empty: none
-setting IR branch profile
-    key ir_branch_profile
-    text 1024
-    path file
-    default ""
-    startup
-    recompile
-    help A file of branch counts, a line each: the branch's address and instruction word in hex, then how many times
-    help it was taken and not taken. The recompiler gives LLVM those odds for each branch whose address and word
-    help match. Empty: none. It applies to the next recompile, and to the JIT's next run
 setting GDB JIT symbols
     key gdb_jit
     int 0 1
@@ -2674,13 +2581,6 @@ setting Linux kept code
     default 1
     words Off|On
     help Off = no compiled code is kept between runs (--no-jit-cache)
-setting Linux JIT level
-    label JIT optimization
-    key linux_jit_opt
-    text 4
-    default 2
-    words 0=O0|1=O1|2=O2|3=O3|s=Os|z=Oz
-    help LLVM's optimization of the code the JIT compiles (--jit-opt=, -O): O0 compiles several times faster
 setting Linux host page
     label Host page
     key linux_host_page
@@ -2718,14 +2618,6 @@ setting Linux JIT messages
 # ---- an Android app's run (scarletnx-android --key=value), the Android group: the launcher passes each one picked ----
 
 table g_android_ini
-setting Android JIT level
-    label JIT optimization
-    key android_jit_opt
-    text 4
-    default 2
-    words 0=O0|1=O1|2=O2|3=O3|s=Os|z=Oz
-    help LLVM's optimization of the native code the JIT compiles (--jit-opt=, -O): O0 compiles several times faster, to
-    help test the JIT itself
 setting Android Java options
     label Java options
     key android_java_options
@@ -2769,14 +2661,6 @@ setting Android JIT messages
     default 0
     words Off|On
     help On = each unit the JIT compiles, before and after, with its time (--jit-verbose)
-setting Android JIT IR
-    label JIT IR folder
-    key android_jit_keep_ir
-    text 1024
-    path folder
-    default ""
-    help A folder that keeps the LLVM IR of each unit the JIT compiles, so one LLVM fails on can be compiled again by
-    help itself (--jit-keep-ir=). Empty: none
 setting Android linker messages
     label Linker messages
     key android_linker_verbose
@@ -2977,25 +2861,6 @@ setting Java home
     help Empty = the one the build found. Set, the launcher gives it to scarletnx-android as --java-home
 
 table g_recompile_ini recompile
-setting Optimization level
-    key opt
-    text 2
-    default 2
-    words 0=O0|1=O1|2=O2|3=O3|s=Os|z=Oz
-    perf
-    help LLVM's optimization of the game's code when it is recompiled: 0 none, 3 the most, z the smallest. A game
-    help made already keeps its code until it is recompiled. Only an AOT pack built from the game's JIT cache needs it
-    help to match JIT optimization
-setting LLVM batch
-    key llvm_batch
-    text 8
-    default full
-    words full=Full|ipo=IPO only
-    perf
-    help What LLVM runs over each code unit once its functions are cleaned, when the game is recompiled: full, the
-    help passes of the optimization level; ipo, only inlining and a cleanup after it, which recompiles in about two
-    help thirds of the time for slightly bigger code, up to a third faster or slower than full's depending on the code
-    help (a 64-bit game's). Not at -O0. A game made already keeps its code until it is recompiled
 setting AOT threads
     key aot_threads
     int 0 1024
@@ -3039,60 +2904,7 @@ setting Unit cache ceiling
     help hundredth of the machine's memory at most, and this ceiling over that; the ones used longest ago go first. 0 =
     help none held. Nothing is kept on the disk
 
-# LLVM's own: every pass of its pipelines for -O0 to -Oz, on unless turned off, and each option LLVM's C API sets on the
-# pass builder and the target machine, LLVM's own value until it is set
-table g_llvm_ini llvm
-setting @instcombine
-    name Instruction combining
-    help Combines instructions into fewer, simpler ones (instcombine)
-setting @inline
-    name Inlining
-    help Inlines calls into their callers (inline)
-setting @sroa
-    name Scalar replacement of aggregates
-    help Splits stack objects into values kept in registers (sroa)
-setting @gvn
-    name Global value numbering
-    help Removes redundant computations and loads (gvn)
-setting @simplifycfg
-    name Control flow simplification
-    help Merges, removes and simplifies basic blocks (simplifycfg)
-setting @loop-unroll
-    name Loop unrolling pass
-    help Unrolls loops with known trip counts (loop-unroll)
-setting @loop-vectorize
-    name Loop vectorization pass
-    help Vectorizes loops with SIMD instructions (loop-vectorize)
-setting @slp-vectorizer
-    name SLP vectorization pass
-    help Packs independent scalar instructions into SIMD ones (slp-vectorizer)
-setting @licm
-    name Loop invariant code motion
-    help Hoists computations that do not change across a loop out of it (licm)
-setting @LoopVectorization
-    name Loop vectorization
-    help Whether the pipeline vectorizes loops (LLVMPassBuilderOptionsSetLoopVectorization)
-setting @SLPVectorization
-    name SLP vectorization
-    help Whether the pipeline packs scalar instructions into SIMD ones (LLVMPassBuilderOptionsSetSLPVectorization)
-setting @LoopUnrolling
-    name Loop unrolling
-    help Whether the pipeline unrolls loops (LLVMPassBuilderOptionsSetLoopUnrolling)
-setting @FastISel
-    name Fast instruction selection
-    key llvm_fast_isel
-    help Whether code generation selects instructions with FastISel, quicker and worse
-    help (LLVMSetTargetMachineFastISel)
-setting @GlobalISel
-    name Global instruction selection
-    key llvm_global_isel
-    help Whether code generation selects instructions with GlobalISel (LLVMSetTargetMachineGlobalISel)
-setting @InlinerThreshold
-    name Inliner threshold
-    help How large a function the inliner inlines; LLVM picks one for the level until it is set
-    help (LLVMPassBuilderOptionsSetInlinerThreshold)
-
-section Launch: g_launch_ini, g_recompile_ini, g_llvm_ini/LLVM Internals    launcher
+section Launch: g_launch_ini, g_recompile_ini    launcher
 
 # the launcher's own for a GBA game it makes
 table g_gba_ini launcher
