@@ -58,23 +58,11 @@ static struct {
     u64 into_tex, into_named;
 } g_dma = {PMUTEX_INIT, {{0}}, 0, 0, 0, 0, 0, {{0}}, 0, 0};
 
-/* the guest bytes that a side of o can touch, or more: a block linear surface from its start to the end of the slab of
-   slice z */
-static void side_bounds(const GpuDmaSide* s, u32 lines, u32 line, u64 b[2]) {
-    if (!s->bl) {
-        b[0] = s->addr + (u64)gpu_dma_low(s, lines);
-        b[1] = b[0] + gpu_dma_span(s, lines, line);
-        return;
-    }
-    u64 rows = ((u64)s->h + (8ull << s->bh) - 1) / (8ull << s->bh) * (8ull << s->bh);
-    b[0] = s->addr;
-    b[1] = s->addr + ((u64)s->wb + 63) / 64 * 64 * rows * ((((u64)s->z >> s->bd) + 1) << s->bd);
-}
 static int bounds_meet(const u64 a[2], const u64 b[2]) { return a[0] < b[1] && b[0] < a[1]; }
 static void note_apart(const GpuDmaOp* o) {
     u64 now[2][2] = {{0, 0}, {0, 0}};
-    if (!o->fill) side_bounds(&o->src, o->lines, o->line_in, now[0]);
-    side_bounds(&o->dst, o->lines, o->line_out, now[1]);
+    if (!o->fill) gpu_dma_side_bounds(&o->src, o->lines, o->line_in, now[0]);
+    gpu_dma_side_bounds(&o->dst, o->lines, o->line_out, now[1]);
     /* apart: this write meets nothing of the last, and the last's write meets nothing of this */
     if (g_dma.copies > 1 && !bounds_meet(now[1], g_dma.last[0]) && !bounds_meet(now[1], g_dma.last[1]) &&
         !bounds_meet(g_dma.last[1], now[0]))

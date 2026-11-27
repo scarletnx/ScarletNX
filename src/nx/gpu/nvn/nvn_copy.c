@@ -143,8 +143,9 @@ done:
     SNX_ZONE_TEXT(z, "copy dma bytes=%llu %s", (unsigned long long)o->line_out * o->lines, copy_skip(why));
 #endif
 }
-/* the ranges of the copies queued (launch, copy_call) that the renderer thread has not run yet: copies head - done, the last
-   COPY_RING of them kept. The renderer thread runs them in order. The game's thread asks too (nvn_copy_queued_over) */
+/* the ranges of the copies queued (launch, copy_call) that the renderer thread has not run yet: copies head - done, the
+   last COPY_RING of them kept. The renderer thread runs them in order. The game's thread asks too
+   (nvn_copy_queued_over) */
 #define COPY_RING 256u
 static struct {
     PMutex lock;
@@ -203,12 +204,11 @@ static void launch_run(const void* arg, u64 bytes) {
     launch_now(&o);
     ring_retire();
 }
-/* the bytes of guest memory a copy's side can touch, with line bytes a line: a pitch linear side's span, or a block
-   linear one's surface up to the depth block of its slice */
+/* the bytes of guest memory a copy's side can touch, with line bytes a line (gpu_dma_side_bounds), at least one */
 static GqRange side_range(const GpuDmaSide* d, u32 lines, u32 line) {
-    if (!d->bl) return (GqRange){d->addr + (u64)gpu_dma_low(d, lines), gpu_dma_span(d, lines, line)};
-    const u64 rows = snx_align_up(d->h ? d->h : 1, 8ull << d->bh), depth = ((u64)(d->z >> d->bd) + 1) << d->bd;
-    return (GqRange){d->addr, snx_align_up(d->wb ? d->wb : 1, 64) * rows * depth};
+    u64 b[2];
+    gpu_dma_side_bounds(d, lines, line, b);
+    return (GqRange){b[0], b[1] > b[0] ? b[1] - b[0] : 1};
 }
 /* The copy in its place in the renderer thread's queue, as maxwell/dma.c's launches (Eden's MaxwellDMA::Launch does
    it in the command stream, with no wait). The copy waited for every queued record (gpu_renderer_now): with
@@ -1122,9 +1122,16 @@ static int texel_copy(u64 t, u64 v, u64 region, i64 row, i64 image, TexelCopy* x
     u64 width = ((u64)r.width + (u64)p.bw - 1) / (u64)p.bw * p.bpb;
     u64 lines = ((u64)r.height + (u64)p.bhp - 1) / (u64)p.bhp;
     u64 depth = r.depth > 0 ? (u64)r.depth : 1;
+    /* strides from the game: a negative one, or a span past 2^64, is none that a buffer's bytes from its start hold */
+    if (row < 0 || image < 0) return 0;
     x->stride[0] = row ? row : (i64)width;
-    x->stride[1] = image ? image : x->stride[0] * (i64)lines;
-    *span = (u64)x->stride[1] * (depth - 1) + (u64)x->stride[0] * (lines - 1) + width;
+    u64 slice, rows, all;
+    if (__builtin_mul_overflow((u64)x->stride[0], lines, &slice) || slice > INT64_MAX) return 0;
+    x->stride[1] = image ? image : (i64)slice;
+    if (__builtin_mul_overflow((u64)x->stride[1], depth - 1, &all) ||
+        __builtin_mul_overflow((u64)x->stride[0], lines - 1, &rows) || __builtin_add_overflow(all, rows, &all) ||
+        __builtin_add_overflow(all, width, span))
+        return 0;
     return 1;
 }
 /* A texel write in flight to the GPU thread: one block, the copy and the source's bytes as they were when the game
