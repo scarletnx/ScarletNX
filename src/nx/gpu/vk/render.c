@@ -896,9 +896,6 @@ static void xfb_bind_done(DrawOwner* o, const XfbBind* x) {
    Orders a command of the open pass that samples the color slots in read and writes those in write: against every
    earlier command of the pass where strict, else against those before the guest's last fragment barrier. 0 when the
    pass could not be begun again */
-/* the color slots that the draw being recorded samples in place at other pixels (stage_set_): its order is strict,
-   and the next write of those slots waits for its reads */
-static _Thread_local u32 t_fb_elsewhere;
 static int feedback_order(u32 read, u32 write, int strict) {
     read &= g_rp[t_rc].fb;
     write &= g_rp[t_rc].fb;
@@ -5353,21 +5350,6 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                sample in place: the guest's draw reads the save attachment, which it doesn't write */
             if (written && !(s->si.predraw_slots >> i & 1) && g_vk.feedback_mode == VK_FEEDBACK_INTERLOCK) slots = 0;
         }
-        /* a color target the fragment program reads at other pixels, or that the slots above left to a copy: in
-           place too where the pass can take a barrier (dynamicRenderingLocalRead), ordered after the pass's earlier
-           writes and before its next ones (t_fb_elsewhere). Vulkan leaves undefined what a read gives at a pixel the
-           draw itself writes, as the console's texture cache leaves it to the game. A copy of the target ended the
-           pass each time it was made again: in one game's world, 25 times a present, 87 % of them after a draw that
-           sampled none of it wrote the target */
-        u32 elsewhere = 0;
-        if (!slots && t && fb && stage == ST_FS && g_vk.has_feedback && g_vk.has_local_read && !t->msaa &&
-            t->layers == 1 && vk_surf_layout(t) != VK_IMAGE_LAYOUT_UNDEFINED)
-            for (u32 j = 0; j < n; j++)
-                if (rt[j] == t) elsewhere |= 1u << j;
-        if (elsewhere) {
-            slots = elsewhere;
-            t_fb_elsewhere |= elsewhere;
-        }
         if (g_predraw.phase && stage == ST_FS && t && !slots) {
             if (t->predraw) g_predraw_stats.save_copied++;
             else if (predrawn) g_predraw_stats.target_copied++;
@@ -5385,7 +5367,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                loop */
             view = tex_bind_view(x, t, want, num);
             if (view) *fb |= slots;
-            if (view && stage == ST_FS && !elsewhere) predraw_probe((u32)i, x, t);
+            if (view && stage == ST_FS) predraw_probe((u32)i, x, t);
         } else if (t && is_target(t, rt, zt, n) && !depth_ro) {
             /* The guest reads the target's previous contents during a draw that writes it. Without a feedback loop
                Vulkan can't bind one image for both uses here, so copy it before the draw starts and sample that
@@ -9285,7 +9267,6 @@ resolved:
     }
     int zt_ro = 0;
     u32 fb = 0;
-    t_fb_elsewhere = 0;
     u64 scaled[2] = {0};
     DrawImages images; /* read below its count alone (a pattern past it with draw_state_check=1, as the storage) */
     if (g_settings.draw_state_check) memset(&images, 0xA5, sizeof images);
@@ -9750,8 +9731,7 @@ resolved:
        before each draw gives too, the same every frame. Only with dynamicRenderingLocalRead: without it the order
        would begin the pass again at each such draw */
     int strict_feedback = g_predraw.phase == 1 || (!g_predraw.phase && fb && g_vk.feedback_mode == VK_FEEDBACK_PREDRAW &&
-                                                   g_vk.has_local_read) ||
-                          (fb & t_fb_elsewhere);
+                                                   g_vk.has_local_read);
     const u64 pass_t0 = g_draw_depth == 1 ? ph_now() : 0;
     g_rp[t_rc].rate_want = dc->shading_rate;
     int begun = programmable_blend ? programmable_pass
@@ -10329,9 +10309,6 @@ static void draw_commit(const DsState* ds, const DrawOwner* o, const DrawShaders
     vk_buf_writable_commit();
     draw_images_commit(images);
     feedback_done(fb, writes);
-    /* reads of other pixels: the next write of those slots waits for them, as for a guest barrier after them
-       (vk_render_fragment_barrier) */
-    g_rp[t_rc].due_read |= fb & t_fb_elsewhere & g_rp[t_rc].fb;
     if (fb && g_predraw.phase != 1) CNT(g_vk_fb_draws)++; /* the guest's draws: a save draw is the renderer's own */
     if (predraw) vk_predraw_drawn();
     for (u32 i = 0; i < n; i++)

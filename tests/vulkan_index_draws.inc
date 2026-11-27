@@ -1751,11 +1751,10 @@ static int shadow_map_cases(GpuChannel* channel, u64 target, u64 address) {
    they draw to, in three full-target passes a frame, each of which copied the target first. Here a vertex program's
    TXQ of the 4x4 target is the quad's red, less 4: the quad is green when the query answers 4, and no copy is
    written, before a copy of the target exists and with one left by an earlier draw. Between the two a fragment
-   program fetches the target's texel (0, 0) for every pixel: that draw reads the clear's blue. It fetches it again
-   after the 3D engine's texture data cache invalidation, then after a fragment barrier: each of those makes the
-   earlier draws' writes visible to texture reads, so each draw has the target copied again (g_vk_texture_epoch).
-   Where the device has attachment feedback loops and dynamicRenderingLocalRead, a draw that reads other pixels of
-   its target samples it in place, after a barrier in the pass (render.c's stage_set_), so no copy is written */
+   program fetches the target's texel (0, 0) for every pixel: that draw has the pixels it found copied, the clear's
+   blue. It fetches it again after the 3D engine's texture data cache invalidation, then after a fragment barrier:
+   each of those makes the earlier draws' writes visible to texture reads, so each draw has the target copied again
+   (g_vk_texture_epoch) */
 static int query_target_case(GpuChannel* channel, u64 target, u64 address) {
     const u64 query = address + 0x5000, fetch = address + 0x5400, pool = address + 0x1F000, samplers = pool + 0x100,
               cbuf = pool + 0x200;
@@ -1802,7 +1801,6 @@ static int query_target_case(GpuChannel* channel, u64 target, u64 address) {
     r[0x982] = 2;
     DrawCall call = {.topology = 7, .first = 4, .count = 4, .instances = 1};
     int ok = 1;
-    const int in_place = g_vk.has_feedback && g_vk.has_local_read;
     static const char* const what[5] = {"a vertex program asks its width",
                                         "a fragment program fetches the target's texel",
                                         "a vertex program asks its width",
@@ -1822,7 +1820,7 @@ static int query_target_case(GpuChannel* channel, u64 target, u64 address) {
         channel->ds.bind.cb_size[stage][2] = 0;
         written = g_vk_rt_copy_writes - written;
         through = g_vk_rt_copies - through;
-        ok = ok && (fetches ? px.blue == 16 && !px.green && !px.red && written == !in_place && through == !in_place
+        ok = ok && (fetches ? px.blue == 16 && !px.green && !px.red && written == 1 && through == 1
                             : index_all_green(&px) && !written && !through);
         if (!ok)
             fprintf(stderr,
@@ -1853,9 +1851,7 @@ static int query_target_case(GpuChannel* channel, u64 target, u64 address) {
    through a header that swaps red and green, which the program swaps back: every pixel ends as its own, as a draw
    drawn two times (render.c predraw_run) has it only when its save draw copies the texels without the swizzle. Each
    round writes the target's texels anew and puts a texture barrier before its draw, as the console's texture reads
-   see those writes only after one. Where the device also has dynamicRenderingLocalRead, the rounds that read other
-   pixels sample in place too, after a barrier in the pass (render.c's stage_set_), and each pixel must still read
-   the texel that the round wrote before its draw */
+   see those writes only after one */
 #define OWN_FFMA(d, a, c, scale, negc)                                                                                 \
     (0x32a0000000070000ull | (u64)((scale) >> 12 & 0x7ffff) << 20 | (u64)((scale) >> 31) << 56 | (u64)(c) << 39 |      \
      (u64)(negc) << 49 | (u64)(a) << 8 | (u64)(d))
@@ -1942,8 +1938,7 @@ static int own_target_case(GpuChannel* channel, u64 target, u64 address, int cli
     int ok = 1;
     for (u32 round = 0; ok && round < (clip ? 5u : 6u); round++) {
         float transform[6];
-        int down = round == 2 || round == 4,
-            in_place = g_vk.has_feedback && (round == 0 || round == 4 || g_vk.has_local_read);
+        int down = round == 2 || round == 4, in_place = (round == 0 || round == 4) && g_vk.has_feedback;
         u64 program = programs + round * 0x200;
         if (round == 5) { /* the header swaps red and green, which the program swaps back: every pixel its own */
             u8 header[32];
@@ -2038,10 +2033,9 @@ static int own_target_case(GpuChannel* channel, u64 target, u64 address, int cli
     CHECK(ok);
     printf("own target: a draw that samples its target at a generic %s reads it %s\n",
            clip ? "written as its position, mapped from clip space," : "its position is written from",
-           !g_vk.has_feedback   ? "through a copy (no attachment feedback loops)"
-           : g_vk.has_local_read ? "in place, also under another viewport, sign or w (a barrier in the pass)"
-           : clip                ? "in place, and through a copy under another viewport, sign or generic"
-                                 : "in place, and through a copy under another viewport, sign or w");
+           !g_vk.has_feedback ? "through a copy (no attachment feedback loops)"
+           : clip             ? "in place, and through a copy under another viewport, sign or generic"
+                              : "in place, and through a copy under another viewport, sign or w");
     return 0;
 }
 
