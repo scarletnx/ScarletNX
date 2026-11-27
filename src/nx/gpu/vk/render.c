@@ -7932,6 +7932,12 @@ static void render_split(void) {
     vk_rec_list_names(g_split.list, cb, up);
     vk_cmd_split(cb, up);
     g_split.submit = vk_submit_number();
+    /* A pass still to begin (a clear held as its load ops, rp_record) begins now, on this thread: its barriers set its
+       targets' layouts before the worker reads them. The worker begins its own pass over the same targets, and one
+       that read a target's layout as undefined before this thread's barrier loaded it as DONT_CARE, from UNDEFINED:
+       spliced after this thread's draws, its transition threw them away. One game's shadow map lost its first half
+       of casters, and the town had no sunlight */
+    if (g_rp[0].open && !g_rp[0].begun) rp_record();
     vk_share_active(1); /* before the worker's first call */
     const u64 t3 = ph_now();
     g_split.t_snap += t2 - t1;
