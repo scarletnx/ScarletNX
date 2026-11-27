@@ -1674,6 +1674,14 @@ void vk_render_stats_log(void) {
         }
     if (at) LOG("vulkan: new sets' buffer offsets that moved, by stage set/binding:%s\n", line);
     memset(g_dset_moved, 0, sizeof g_dset_moved);
+    if (n->cb_window[VK_CBW_PLACED] + n->cb_window[VK_CBW_ALONE] !=
+        w->cb_window[VK_CBW_PLACED] + w->cb_window[VK_CBW_ALONE])
+        LOG("vulkan: constant buffer windows in the last %llu presents: %llu banks in one, %llu bound alone, %llu "
+            "searches of the rings' chunks for the buffer\n",
+            (unsigned long long)presents,
+            (unsigned long long)(n->cb_window[VK_CBW_PLACED] - w->cb_window[VK_CBW_PLACED]),
+            (unsigned long long)(n->cb_window[VK_CBW_ALONE] - w->cb_window[VK_CBW_ALONE]),
+            (unsigned long long)(n->cb_window[VK_CBW_SEARCHED] - w->cb_window[VK_CBW_SEARCHED]));
     LOG("vulkan: lookups in the last %llu presents: constant buffers %llu inline kept, %llu inline staged, %llu kept, "
         "%llu kept after the pending check, %llu copied from the CPU, %llu from the buffer cache, %llu pending, %llu of "
         "the kept ones past their submission; textures %llu kept, %llu resolved again, %llu past the pools, %llu views "
@@ -4021,10 +4029,16 @@ static VkDescriptorSet stage_set(const DsState* ds, int stage, VkSh* s, Surf** r
    descriptor and keeps its set, where each new copy's offset made a new set. RPCS3's constant ring windows, the idea
    only. A copy that is in no chunk, or past where a window from it can reach, binds alone with offset 0. A window
    stays within its frame (frame, vk_frame_id() + 1): a chunk the frame copies into lives through it, and one destroyed
-   later may give its handle to a smaller one */
+   later may give its handle to a smaller one.
+   A buffer in no chunk and not the mirror (a region of guest memory read in place, the buffer cache's own) is in none
+   until a chunk is made, which only then could take its handle: each bank keeps the last such buffer (none) and the
+   rings' count of chunks made when it was searched for (none_made), and binds it alone again with no search. Read in
+   place, every bank's buffer is such a one, and each bind searched the chunks for it */
 typedef struct {
     VkBuffer b;
     u64 base, range, frame;
+    VkBuffer none;
+    u64 none_made;
 } CbWindow;
 /* bank 18: the texture words of a program that reads the texture table (ShCaps.tex_table, table_words) */
 #define CB_WINDOW_WORDS 18
@@ -4065,16 +4079,33 @@ static int cb_window_place(int vs_fs, int bank, VkBuffer b, u64 o, u32 sz, u64* 
     const u64 frame = vk_frame_id() + 1;
     if (w->b != b || w->frame != frame || o < w->base || o + sz > w->base + w->range) {
         /* the ring's chunks, and the GPU mirror, which is as big as guest memory (cb_get binds banks in it) */
-        const u64 size = b == vk_mirror_buffer() ? (u64)AS_SIZE : vk_stage_buffer_size(b),
+        const VkBuffer mirror = vk_mirror_buffer();
+        if (b != mirror && b == w->none && w->none_made == vk_ring_made()) {
+            g_stats.n.cb_window[VK_CBW_ALONE]++;
+            return 0;
+        }
+        if (b != mirror) g_stats.n.cb_window[VK_CBW_SEARCHED]++;
+        const u64 size = b == mirror ? (u64)AS_SIZE : vk_stage_buffer_size(b),
                   align = g_vk.props.limits.minUniformBufferOffsetAlignment;
         const u64 at = align ? o / align * align : o;
-        if (!size || at >= size || (o - at) & 15) return 0;
+        if (!size) {
+            w->none = b;
+            w->none_made = vk_ring_made();
+        }
+        if (!size || at >= size || (o - at) & 15) {
+            g_stats.n.cb_window[VK_CBW_ALONE]++;
+            return 0;
+        }
         const u64 reach = size - at < 65536 ? size - at : 65536;
-        if (o + sz > at + reach) return 0;
-        *w = (CbWindow){b, at, reach, frame};
+        if (o + sz > at + reach) {
+            g_stats.n.cb_window[VK_CBW_ALONE]++;
+            return 0;
+        }
+        *w = (CbWindow){b, at, reach, frame, w->none, w->none_made};
     }
     *base = w->base;
     *range = w->range;
+    g_stats.n.cb_window[VK_CBW_PLACED]++;
     return 1;
 }
 /* A program of the texture table (ShaderInfo.tex_table): its words, one for each plain texture slot, in a window of
