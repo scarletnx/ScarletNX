@@ -11,9 +11,10 @@ static struct {
     GpuTexture* v; /* open addressed by gva, a power of two of slots: one with no refs is free */
     u32 n, cap;    /* the slots taken, and all of them */
     u64 added;
-    /* the addresses whose last object ended, until gpu_textures_ended takes them */
-    u64 ended[1024];
-    u32 nended;
+    /* the addresses whose last object ended, until gpu_textures_ended takes them: as many as end between two takes,
+       as an end not listed leaves its textures in the cache as if their objects lived */
+    u64* ended;
+    u32 nended, capended;
 } g_guest_textures = {.lock = PMUTEX_INIT};
 
 /* the slot the search for gva starts at, in a table of cap slots */
@@ -77,8 +78,14 @@ void gpu_texture_remove(u64 gva) {
         if (g_guest_textures.v[i].refs && !--g_guest_textures.v[i].refs) {
             slot_free(g_guest_textures.v, g_guest_textures.cap, i);
             g_guest_textures.n--;
-            if (g_guest_textures.nended < sizeof g_guest_textures.ended / sizeof *g_guest_textures.ended)
-                g_guest_textures.ended[g_guest_textures.nended++] = gva;
+            if (g_guest_textures.nended == g_guest_textures.capended) {
+                const u32 cap = g_guest_textures.capended ? g_guest_textures.capended * 2 : 1024;
+                u64* e = cap > g_guest_textures.capended ? realloc(g_guest_textures.ended, sizeof *e * cap) : NULL;
+                if (!e) fatal("Out of memory for the list of %u ended texture objects", cap);
+                g_guest_textures.ended = e;
+                g_guest_textures.capended = cap;
+            }
+            g_guest_textures.ended[g_guest_textures.nended++] = gva;
         }
     }
     pm_unlock(&g_guest_textures.lock);
