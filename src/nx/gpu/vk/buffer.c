@@ -1633,7 +1633,7 @@ static int out_still_copyable(const GfxOut* o, u64 gva, u64 len, RangeMap* rm) {
    result took its bytes as they were and lands before it, and it would land over those bytes as written since. A
    game binding a suffix of a storage buffer for each of its passes, about thirty submits a frame, made a new result
    for nearly every one: half a megabyte copied from guest memory and compared at landing each time */
-static int out_take_into_submit(GfxOut* m) {
+static int out_take_into_submit(GfxOut* m, int* later_out) {
     RangePages q;
     OutList l;
     RangeMap rm = {0};
@@ -1648,6 +1648,7 @@ static int out_take_into_submit(GfxOut* m) {
     out_list_free(&l);
     for (GfxOut* o = g_prep; o && !later; o = o->next) later = out_meets(o, m->addr, m->size, &q, &rm);
     range_map_free(&rm);
+    if (later_out) *later_out = later;
     if (later) return 0;
     m->frame = vk_submit_number();
     m->frame_id = vk_frame_id();
@@ -1732,7 +1733,7 @@ static GfxOut* out_absorb(GfxOut* h) {
     }
     g_out_tail = NULL;
     for (GfxOut* o = g_out; o; o = o->next) g_out_tail = o;
-    if (h->frame < vk_submit_number() && !out_take_into_submit(h))
+    if (h->frame < vk_submit_number() && !out_take_into_submit(h, NULL))
         fatal("vulkan: a storage result that took the later ones' bytes could not be written in this submission");
     /* After every earlier read or write of h's buffer (it is read in place, as a vertex or index buffer too), and
        after the later results' writes. In g_out's order: a newer result's bytes over an older one's */
@@ -1798,7 +1799,16 @@ static int gfx_rebase(GfxOut* o) {
     VkBuffer in;
     u64 in_off;
     u8* p = vk_stage(gap + words * 4, a, &in, &in_off);
-    if (!p || (o->frame != vk_submit_number() && !out_take_into_submit(o))) return 0;
+    if (!p) return 0;
+    /* A result that a later one meets cannot move to land at this submit's end: it would land over the later one's
+       bytes. Its landing stays as recorded at its own submit's end, and org with it: it lands the bytes its draw
+       changed over guest memory, as a landing here would have. The merge gives this frame's readers the CPU's bytes
+       in its buffer. In one run, 415 of the 475 landings for a draw came from this refusal */
+    int later = 0, landing_kept = 0;
+    if (o->frame != vk_submit_number() && !out_take_into_submit(o, &later)) {
+        if (!later) return 0;
+        landing_kept = 1;
+    }
     if (!gpu_base) memcpy(p, o->org, o->size);
     vk_render_end();
     if (gpu_base) { /* the original bytes from the baseline's copy, with no wait for the fence */
@@ -1816,12 +1826,17 @@ static int gfx_rebase(GfxOut* o) {
                  out_stages() | VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT,
                  VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
     /* guest memory into o's original bytes, and from them into the merge's input: the staging ring can be memory
-       that the CPU writes only (a BAR heap), never one that it reads back */
+       that the CPU writes only (a BAR heap), never one that it reads back. A kept landing keeps org: guest memory
+       goes into the input alone */
     o->wseen = vk_ww_now(); /* before guest memory is read: a write in between only makes out_copyable compare */
-    read_untracked(o->addr, o->org, o->size);
-    memcpy(p + gap, o->org, o->size);
-    o->initial = NULL; /* org is the new baseline: guest memory as the merge read it */
-    o->initial_buf = VK_NULL_HANDLE;
+    if (landing_kept)
+        read_untracked(o->addr, p + gap, o->size);
+    else {
+        read_untracked(o->addr, o->org, o->size);
+        memcpy(p + gap, o->org, o->size);
+        o->initial = NULL; /* org is the new baseline: guest memory as the merge read it */
+        o->initial_buf = VK_NULL_HANDLE;
+    }
     g_buffer.wstat.copied += o->size;
     if (copy_stats_on()) {
         g_merges++;
@@ -1923,7 +1938,7 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
            that doesn't composes a result of its own over it. One whose input was not copied (a write-only binding)
            has no guest memory in its staging either, so a reader of it composes too */
         (match->org || !match->no_input) && (!writable || match->org || g_bind_log) &&
-        (!writable || match->frame == vk_submit_number() || out_take_into_submit(match))) {
+        (!writable || match->frame == vk_submit_number() || out_take_into_submit(match, NULL))) {
         /* Draws may overlap, and the game supplies their storage dependencies through explicit barriers (render.c
            stage_set_): a writable view alone does not create a dependency, unless the setting asks for the
            conservative order (ordered). Read-only consumers and new submissions retain their automatic visibility
