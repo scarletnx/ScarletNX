@@ -10,7 +10,8 @@
 /* the families whose handlers run only where the runtime has what they run on: alloc the host allocator's arena in
    guest memory (alloc.c), where the game's malloc isn't an allocator object's of its own (alloc_kept), and it, sync, cond_var, os_sync, os_light and os_core 64-bit games' registers and pointers;
    cond_var, os_sync and os_light, whose waits a save state can't hold, only with native_cond_var=1 and
-   native_os_sync=1; and os_sync only where the game's SDK exports every function that writes the words it owns. The
+   native_os_sync=1 (cond_var keeps its words through os_sync's handlers); and os_sync and cond_var only where the
+   game's SDK exports every function that writes the words os_sync owns. The
    reason a family is off for, NULL when it may be installed */
 const char* hook_family_unready(const char* family) {
     int alloc = !strcmp(family, "alloc"), sync = !strcmp(family, "sync"), cond = !strcmp(family, "cond_var"),
@@ -22,7 +23,10 @@ const char* hook_family_unready(const char* family) {
     if ((os || light) && !g_settings.native_os_sync)
         return "native_os_sync is 0, so nn::os's sleeps, locks and condition variables run the game's own code, which "
                "save states hold";
-    if (os && !os_sync_ready())
+    if (cond && !g_settings.native_os_sync)
+        return "native_os_sync is 0, and the family keeps the game's mutexes and condition variables on nn::os's words "
+               "through the os_sync family's handlers, so they run the game's own code";
+    if ((os || cond) && !os_sync_ready())
         return "the game's SDK doesn't export every function that writes nn::os's lock and condition variable words "
                "(InternalCriticalSectionImplByHorizon's and InternalConditionVariableImplByHorizon's)";
     if (alloc && alloc_kept()) return alloc_kept();
