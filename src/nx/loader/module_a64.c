@@ -313,14 +313,12 @@ static SnxU64 unit_ceiling(const SnxModuleBuild* build) {
    the next run of the queue; the others keep their objects and their place. 1 when any was, 0 for none, or -1 with
    the reason in q->error: a function that alone makes more than a unit holds */
 static int split_units(Queue* q, SnxU64 ceiling) {
-    size_t over = 0, i, n = 0;
-    Unit* units;
-    for (i = 0; i < q->count; ++i) over += q->units[i].x64_size > ceiling;
+    size_t over = 0, n = 0;
+    for (size_t i = 0; i < q->count; ++i) over += q->units[i].x64_size > ceiling;
     if (!over) return 0;
-    units = (Unit*)snx_alloc((q->count + over) * sizeof(*units));
-    for (i = 0; i < q->count; ++i) {
+    Unit* units = (Unit*)snx_alloc((q->count + over) * sizeof(*units));
+    for (size_t i = 0; i < q->count; ++i) {
         Unit* u = &q->units[i];
-        size_t half = 0, count = 0, mid, k;
         if (u->x64_size <= ceiling) {
             units[n++] = *u;
             continue;
@@ -333,8 +331,9 @@ static int split_units(Queue* q, SnxU64 ceiling) {
             free(units);
             return -1;
         }
-        for (k = u->first; k < u->last; ++k) count += q->codegen->functions[k].count;
-        for (mid = u->first; mid + 1 < u->last && 2 * half < count; ++mid) half += q->codegen->functions[mid].count;
+        size_t count = 0, half = 0, mid = u->first;
+        for (size_t k = u->first; k < u->last; ++k) count += q->codegen->functions[k].count;
+        for (; mid + 1 < u->last && 2 * half < count; ++mid) half += q->codegen->functions[mid].count;
         if (mid == u->first) mid = u->first + 1;
         snx_error("a code unit of %zu instructions came to %.1f MiB, more than the %.1f MiB a unit holds on this "
                   "machine: made again as two, of %zu and %zu functions",
@@ -342,9 +341,10 @@ static int split_units(Queue* q, SnxU64 ceiling) {
         q->held -= u->x64_size;
         --q->done;
         free(u->x64);
-        memset(&units[n], 0, 2 * sizeof(*units));
+        units[n] = (Unit){0};
         units[n].first = u->first;
         units[n++].last = mid;
+        units[n] = (Unit){0};
         units[n].first = mid;
         units[n++].last = u->last;
     }
@@ -479,10 +479,9 @@ int snx_build_module_a64(SnxProgram* loaded, const SnxCodegenOptions* options, c
     }
     start = snx_seconds();
     for (;;) {
-        int split;
         if (q.count) run(&q, build->jobs, 0);
         if (q.failed) break;
-        split = split_units(&q, unit_ceiling(build));
+        const int split = split_units(&q, unit_ceiling(build));
         if (split < 0) q.failed = 1;
         if (split <= 0) break;
     }
@@ -594,19 +593,15 @@ int snx_build_module_a64(SnxProgram* loaded, const SnxCodegenOptions* options, c
         /* the module to its file as it is linked, each unit's object given back once its code is there: a game's
            code is in memory once, not as the units' objects and as the module too. The code generator's tables go
            first, as for a pack */
-        PackUnits pack;
+        PackUnits pack = {q.units, inputs, q.count};
         unsigned char* owned = (unsigned char*)snx_alloc(n ? n : 1);
-        int failed;
         memset(owned, 0, n ? n : 1);
         for (i = units_at; i < units_end; ++i) owned[i] = 1;
-        pack.units = q.units;
-        pack.inputs = inputs;
-        pack.count = q.count;
         snx_codegen_free(&codegen);
         phases.streamed = 1;
         start = snx_seconds();
-        failed = snx_link_to_file(inputs, n, exports, export_count, base_name(build->output), tmp, owned, written_unit,
-                                  &pack, &linked.size, error, sizeof(error));
+        const int failed = snx_link_to_file(inputs, n, exports, export_count, base_name(build->output), tmp, owned,
+                                            written_unit, &pack, &linked.size, error, sizeof(error));
         free(owned);
         if (failed) {
             snx_error("linking failed: %s", error);
