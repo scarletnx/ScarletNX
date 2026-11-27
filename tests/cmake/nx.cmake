@@ -666,6 +666,13 @@ if(BUILD_TESTING AND SNX_TEST_VULKAN)
                          "memory in pieces.*All ASTC Vulkan comparisons passed")
     set_tests_properties(astc_vulkan astc_vulkan_pieces astc_vulkan_upload_wait astc_vulkan_upload_retire
         PROPERTIES TIMEOUT 300)
+    # the block linear scratch buffer when the device refuses a larger one (vk_bl_scratch), over an allocator the test
+    # plays: blocklinear.c included whole, and the SPIR-V it names
+    add_executable(snx-test-vk-bl-scratch "${PROJECT_SOURCE_DIR}/tests/vk_bl_scratch.c"
+        "${PROJECT_BINARY_DIR}/generated/spirv/blocklinear_spv.c" "${PROJECT_BINARY_DIR}/generated/spirv/blocklinear_runs_spv.c")
+    target_link_libraries(snx-test-vk-bl-scratch PRIVATE snx_nx_flags snx_vk_common)
+    add_test(NAME vk_bl_scratch COMMAND snx-test-vk-bl-scratch)
+    set_tests_properties(vk_bl_scratch PROPERTIES TIMEOUT 30)
     # the BCn to ASTC transcoder alone with packed dot products, which a device runs where it says it has an instruction
     # for them (lavapipe says not, and has them): every vendor's builds of its later passes that take them
     add_test(NAME astc_vulkan_encode_dot COMMAND snx-test-astc-vulkan --astc-encode)
