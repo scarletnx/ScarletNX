@@ -4678,7 +4678,8 @@ add_test(NAME recompiler_backends_undef_pins COMMAND snx-test-recompiler-backend
 # the function keep its pins out of R11 anyway), whose tables' address goes in R11 (MG_CRC_FIXED)
 set(snx_crc_pins d2800069 91000421 91000442 91000463 91000484 910004a5 910004c6 910004e7 9ac24c00 1ac24800 f1000529
     54fffec1 d65f03c0)
-add_test(NAME recompiler_backends_crc_pins COMMAND snx-test-recompiler-backends --states 8 --words ${snx_crc_pins})
+add_test(NAME recompiler_backends_crc_pins COMMAND snx-test-recompiler-backends --states 8 --words ${snx_crc_pins}
+         --frozen ${snx_backends_frozen}/crc_pins.txt)
 # every conversion between a float and a W or X register (FCVTNS, FCVTPU... of each rounding, FCVTZS and UCVTF of a
 # fixed point, SCVTF, FMOV), whose Rd or Rn is a general-purpose register: none is an Advanced SIMD word of the host's
 set(snx_fp_int 1e200041 9e610083 1e6400c5 9e250207 9e680149 1e290008 1e30018b 9e7101cd 1e78004f 9e390093 1e220034
@@ -4986,7 +4987,7 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
     add_test(NAME recompiler_arm64win_long COMMAND snx-test-recompiler-arm64win --without 0x7ffff --states 8
              --long 1200 1048576 --words 4e056000 5e024020 --frozen ${snx_backends_frozen}/long_1200.txt)
     add_test(NAME recompiler_arm64win_calls_back COMMAND snx-test-recompiler-arm64win --calls-back --stale
-             --functions 40 --states 4)
+             --functions 40 --states 4 --frozen ${snx_backends_frozen}/calls_back.txt)
     set_tests_properties(recompiler_arm64win recompiler_arm64win_step recompiler_arm64win_jit recompiler_arm64win_hook
                          recompiler_arm64win_plain recompiler_arm64win_long recompiler_arm64win_calls_back PROPERTIES
                          TIMEOUT 600 SKIP_RETURN_CODE 77)

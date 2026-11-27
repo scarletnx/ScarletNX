@@ -746,7 +746,7 @@ static int generator_option(int argc, char** argv, int i) {
     static const char* const valued[] = {"--functions", "--states", "--seed", "--target"};
     for (size_t k = 0; k < sizeof valued / sizeof *valued; ++k)
         if (!strcmp(argv[i], valued[k])) return i + 1 < argc ? 2 : 1;
-    if (!strcmp(argv[i], "--programs") || !strcmp(argv[i], "--calls")) return 1;
+    if (!strcmp(argv[i], "--programs") || !strcmp(argv[i], "--calls") || !strcmp(argv[i], "--calls-back")) return 1;
     if (!strcmp(argv[i], "--long")) return i + 2 < argc ? 3 : argc - i;
     if (strcmp(argv[i], "--ops") && strcmp(argv[i], "--words")) return 0;
     int n = 1;
