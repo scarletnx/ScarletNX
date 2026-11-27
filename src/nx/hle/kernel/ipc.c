@@ -562,6 +562,16 @@ static void respond(IpcCtx* c) {
 }
 
 /* ============================================================ serving */
+/* The console's sm closes the client's session after a request it cannot decode: Atmosphère's SM leaves the object
+   out of its server manager (ProcessRequest failed, and "we shouldn't reply on failure"). The runtime answers the
+   result and keeps the session for every service, because its own declarations can be wrong where the console's are
+   not (docs/platforms/nx/ipc.md); sm sets SvcObj.strict for the ones it can decode exactly, so the console's
+   behavior is kept where it costs the client nothing a valid request would do */
+static int strict_close(IpcCtx* c) {
+    if (!c->sess || !c->sess->obj || !c->sess->obj->strict) return 0;
+    c->close_session = 1;
+    return 1;
+}
 /* the request goes to o's dispatcher, and its result into the reply */
 static void serve(IpcCtx* c, SvcObj* o, u32 seq) {
     u32 in[2];
@@ -579,6 +589,7 @@ static void serve(IpcCtx* c, SvcObj* o, u32 seq) {
        carries what it failed with */
     if (c->rc) SNX_ZONE_VALUE(z_ipc, c->rc);
     ring_set(seq, IPC_REC_SERVED, o->name, c->type, c->cmd, in, c->rc, NULL);
+    if (c->close_session) return; /* a closed session takes no reply */
     respond(c);
     if (timed) stat_add(o->name, c->cmd, plat_ns() - t0);
 }
@@ -640,6 +651,7 @@ static u32 control(IpcCtx* c, KSession* s) {
         default:
             if (ipc_warn_once("control", c->cmd))
                 WARN("ipc: %s: control request %u, UnknownCommandId\n", s->obj ? s->obj->name : "session", c->cmd);
+            if (strict_close(c)) R_THROW(SNX_RC_SVC_SESSION_CLOSED);
             R_THROW(SNX_RC_SF_UNKNOWN_METHOD_ID);
     }
 }
@@ -647,12 +659,12 @@ static u32 control(IpcCtx* c, KSession* s) {
 static void serve_domain(IpcCtx* c, Domain* d, u32 seq, const char* name) {
     SvcObj* o = domain_get(d, c->domain_obj);
     if (!o) {
-        answer(c, SNX_RC_SF_TARGET_OBJECT_NOT_FOUND, seq, name, "object");
+        if (!strict_close(c)) answer(c, SNX_RC_SF_TARGET_OBJECT_NOT_FOUND, seq, name, "object");
         return;
     }
     if (c->domain_rc) {
         svcobj_unref(o);
-        answer(c, c->domain_rc, seq, name, "object");
+        if (!strict_close(c)) answer(c, c->domain_rc, seq, name, "object");
         return;
     }
     if (!c->raw) { /* Close, the one domain message parse_cmif finds no CmifInHeader in */
@@ -723,16 +735,23 @@ u32 ipc_handle(u32 handle, u64 msg_addr, u64 msg_size) {
         d = atomic_load_explicit(&s->domain, memory_order_acquire);
         parse_cmif(&c, &h, d && !ctl);
         if (d && ctl) c.is_domain = IPC_DOMAIN_SESSION;
-        if (c.header_rc)
-            answer(&c, c.header_rc, seq, name, "request");
-        else if (ctl)
-            answer(&c, s->obj ? control(&c, s) : SNX_RC_SF_UNKNOWN_METHOD_ID, seq, name, "control");
-        else if (d)
+        if (c.header_rc) {
+            if (!strict_close(&c)) answer(&c, c.header_rc, seq, name, "request");
+        } else if (ctl) {
+            u32 cr = s->obj ? control(&c, s) : SNX_RC_SF_UNKNOWN_METHOD_ID;
+            if (!c.close_session) answer(&c, cr, seq, name, "control");
+        } else if (d)
             serve_domain(&c, d, seq, name);
         else if (s->obj)
             serve(&c, s->obj, seq);
         else
             answer(&c, SNX_RC_SF_UNKNOWN_METHOD_ID, seq, name, "command");
+    }
+    if (c.close_session) {
+        drop_outputs(&c); /* a handler that made outputs before the refusal leaves none open */
+        atomic_store_explicit(&s->closed, 1, memory_order_release);
+        ring_set(seq, IPC_REC_SESSION_CLOSED, name, c.type, c.cmd, NULL, SNX_RC_SVC_SESSION_CLOSED, NULL);
+        rc = SNX_RC_SVC_SESSION_CLOSED;
     }
     if (t) t->req_session = 0;
     kobj_unref(&s->o);
@@ -785,16 +804,19 @@ int quiet_ok(SvcObj* o, IpcCtx* c) {
 }
 int ipc_unknown(SvcObj* o, IpcCtx* c) {
     if (ipc_warn_once(o->name, c->cmd)) WARN("  [unknown] %s cmd %u -> UnknownCommandId\n", o->name, c->cmd);
+    if (strict_close(c)) R_THROW((int)SNX_RC_SVC_SESSION_CLOSED);
     R_THROW((int)SNX_RC_SF_UNKNOWN_METHOD_ID);
 }
 int ipc_bad_request(SvcObj* o, IpcCtx* c) {
     WARN("  [bad request] %s cmd %u: pid %d, A %d, B %d, X %d, W %d, copy handles %d, raw 0x%x bytes%s\n", o->name,
          c->cmd, c->has_pid, c->na, c->nb, c->nx, c->nw, c->ncopy, c->raw_size, c->tipc ? " (TIPC)" : "");
+    if (strict_close(c)) R_THROW((int)SNX_RC_SVC_SESSION_CLOSED);
     R_THROW((int)SNX_RC_SF_HIPC_INVALID_CMIF_REQUEST);
 }
 int ipc_bad_objects(SvcObj* o, IpcCtx* c) {
     WARN("  [bad request] %s cmd %u: %d objects%s\n", o->name, c->cmd, c->nin_objs,
          c->is_domain ? "" : " on a session that isn't a domain");
+    if (strict_close(c)) R_THROW((int)SNX_RC_SVC_SESSION_CLOSED);
     return (int)(c->is_domain ? SNX_RC_SF_INVALID_IN_OBJECT_COUNT : SNX_RC_SF_NOT_SUPPORTED);
 }
 SvcObj* ipc_in_obj(IpcCtx* c, int i) {
@@ -811,7 +833,7 @@ static int reg_find_nl(const char* name) {
         if (g_hle.ipc.reg[i].name && !strcmp(g_hle.ipc.reg[i].name, name)) return i;
     return -1;
 }
-void svc_register(const char* name, SvcCtor ctor) {
+static void register_service(const char* name, SvcCtor ctor, int strict) {
     SvcReg* r;
     int i;
     pm_lock(&g_host.ipc.lk);
@@ -823,16 +845,25 @@ void svc_register(const char* name, SvcCtor ctor) {
         r->name = name;
     }
     r->ctor = ctor;
+    r->strict = strict;
     pm_unlock(&g_host.ipc.lk);
 }
+void svc_register(const char* name, SvcCtor ctor) { register_service(name, ctor, 0); }
+void svc_register_strict(const char* name, SvcCtor ctor) { register_service(name, ctor, 1); }
 SvcObj* svc_open(const char* name) {
     SvcCtor ctor = NULL;
-    int i;
+    SvcObj* o;
+    int i, strict = 0;
     pm_lock(&g_host.ipc.lk);
     i = reg_find_nl(name);
-    if (i >= 0) ctor = g_hle.ipc.reg[i].ctor;
+    if (i >= 0) {
+        ctor = g_hle.ipc.reg[i].ctor;
+        strict = g_hle.ipc.reg[i].strict;
+    }
     pm_unlock(&g_host.ipc.lk);
-    return ctor ? ctor() : NULL;
+    o = ctor ? ctor() : NULL;
+    if (o && strict) o->strict = 1;
+    return o;
 }
 int svc_registered(const char* name) {
     int r;

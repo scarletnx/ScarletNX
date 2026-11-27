@@ -64,7 +64,8 @@ void svc_core_init(void) {
     network_init();
     network_room_init(); /* after the users: the room knows this console by the nickname of the one playing */
 
-    nn_sm_detail_IUserInterface_register(new_sm);
+    /* sm's requests have fixed shapes: one it cannot decode closes the client's session, as the console's does */
+    svc_register_strict("sm:", new_sm);
     nn_am_service_IApplicationProxyService_register(new_appletoe);
     nn_am_service_IAllSystemAppletProxiesService_register(new_appletae);
     nn_settings_ISettingsServer_register(new_set);
