@@ -26,6 +26,15 @@ typedef struct {
    a dylib's install name and code signature are it). 0, or -1 with the reason in error */
 int snx_link(const SnxLinkInput* inputs, size_t count, const char* const* exports, size_t export_count,
              const char* soname, SnxLinkOutput* output, char* error, size_t error_size);
+/* snx_link into the file at path, its size in *size, for a module that should not be in memory beside its objects.
+   owned (NULL for none) says, a byte an input, whose bytes the linker may write into: release(arg, i), where given, is
+   called once for each of those, when the link needs input i no more, which then goes back to the caller. The ELF
+   linker writes each object's sections as it relocates them and gives an x86-64 or AArch64 object back at once; the
+   other formats' make the module in memory, as snx_link, and give the inputs back before it is written. 0, or -1 with
+   the reason in error: the inputs not given back yet stay the caller's, and the file is left as far as it got */
+int snx_link_to_file(const SnxLinkInput* inputs, size_t count, const char* const* exports, size_t export_count,
+                     const char* soname, const char* path, const unsigned char* owned,
+                     void (*release)(void* arg, size_t index), void* arg, size_t* size, char* error, size_t error_size);
 /* An ELF code section named this prefix and a decimal rank (".text.snx_hot.0", ...) goes before all the other code,
    in the order of the ranks: a profile's hot functions, each in its own section, packed together (the recompiler's
    --layout). The ELF linker only, and only for a module without veneers: an AArch64 or PowerPC64 module large enough
@@ -33,6 +42,10 @@ int snx_link(const SnxLinkInput* inputs, size_t count, const char* const* export
 #define SNX_LINK_HOT_TEXT ".text.snx_hot."
 int snx_link_elf(const SnxLinkInput* inputs, size_t count, const char* const* exports, size_t export_count,
                  const char* soname, SnxLinkOutput* output, char* error, size_t error_size);
+int snx_link_elf_to_file(const SnxLinkInput* inputs, size_t count, const char* const* exports, size_t export_count,
+                         const char* soname, const char* path, const unsigned char* owned,
+                         void (*release)(void* arg, size_t index), void* arg, size_t* size, char* error,
+                         size_t error_size);
 int snx_link_coff(const SnxLinkInput* inputs, size_t count, const char* const* exports, size_t export_count,
                   const char* soname, SnxLinkOutput* output, char* error, size_t error_size);
 int snx_link_macho(const SnxLinkInput* inputs, size_t count, const char* const* exports, size_t export_count,

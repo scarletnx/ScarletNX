@@ -352,10 +352,12 @@ typedef struct {
     double discovery, compile, units, descriptor, link, write;
     unsigned threads; /* the threads that compiled */
     int pack;
+    int streamed; /* the link wrote the file as it went: link is both, write what was left (the file put in place) */
     SnxU64 peak; /* snx_footprint_peak's */
 } SnxRecompilePhases;
 /* The line a module's making ends with, into out, without a newline: "code: discovery 1.2 s, compile 3.1 s (12.4 s
-   of units on 4 threads), descriptor 0.2 s, link 1.5 s, write 0.6 s; peak 2230 MiB" */
+   of units on 4 threads), descriptor 0.2 s, link 1.5 s, write 0.6 s; peak 2230 MiB"; a link that wrote the file as it
+   went, "link and write 2.1 s" */
 void snx_phases_line(char* out, size_t size, const SnxRecompilePhases* p);
 /* The line a program's recompile ends with, before its "Built": the seconds it took, those before its code (the
    program read, its calls bound), its code's (every module's, snx_phases_line's each) and those after (the runtime's
