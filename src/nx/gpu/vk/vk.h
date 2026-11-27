@@ -2656,6 +2656,7 @@ int vk_buf_get_window_input(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off
 /* the cache lines vk_buf_get(gva, len) will read, fetched ahead: step 0 its index slot, step 1 (after step 0 for every
    range) its entry. For a caller with several ranges to look up, so their misses overlap */
 void vk_buf_prefetch(u64 gva, u64 len, int step);
+u64 vk_buf_prefetched(void);       /* the entries it fetched ahead (step 1) so far, for the tests */
 void vk_buf_mapping_changed(void); /* the GPU mappings or the guest memory under them changed: translations go */
 int vk_buf_get_uniform(u64 gva, u64 len, VkBuffer* buf, u64* off); /* a constant buffer: in place where it can be */
 /* vk_buf_get_uniform for a binding that takes any offset that is a multiple of align: a constant buffer bound through
