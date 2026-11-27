@@ -7725,6 +7725,9 @@ static void render_batch(void) {
     if (!g_batch.list && !(g_batch.list = vk_rec_list_new())) return;
     g_batch.n = n;
     g_batch.ok = 0;
+    /* the open pass goes on in the worker's draws, whose passes are not timed: its timer ends here, or its end query
+       would stay unwritten (vk_gpuprof_pass_end does nothing where no pass is timed) */
+    vk_gpuprof_pass_end(vk_cmd());
     if (!vk_prep_kick_work(render_batch_run)) return;
     vk_prep_join_wait();
     cnt_fold();
