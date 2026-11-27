@@ -1,8 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* bionic's libc and libm as HLE (hle.h). A guest pointer is a host pointer and the LP64 layouts agree, so most of
-   libc is the host's own function, called with the guest's registers by one adapter (PASS). The functions whose types
-   differ between bionic on AArch64 and the host's C library have their own adapters here or in hle_posix.c */
+/* bionic's libc as HLE (hle.h; its libm is hle_libm.c). A guest pointer is a host pointer and the LP64 layouts agree,
+   so most of libc is the host's own function, called with the guest's registers by one adapter (PASS). The functions
+   whose types differ between bionic on AArch64 and the host's C library have their own adapters here or in
+   hle_posix.c */
 #define _GNU_SOURCE
 #include "android/bridge/args.h"
 #include "android/bridge/bridge.h"
@@ -14,7 +15,6 @@
 #include "gnuabi/kernel/kernel.h"
 #include <ctype.h>
 #include <pthread.h>
-#include <fenv.h>
 #include <errno.h>
 #if defined(__linux__)
 #include <malloc.h> /* memalign, malloc_usable_size */
@@ -190,44 +190,10 @@ void hle_set_f(CPU* c, float value) {
     memcpy(&c->v[0].f[0], &value, sizeof value);
 }
 
-/* math by its type: d for double, f for float, i for int, p for a pointer */
-static void d_d(CPU* c, void* fn) { hle_set_d(c, ((double (*)(double))fn)(hle_d(c, 0))); }
-static void d_dd(CPU* c, void* fn) { hle_set_d(c, ((double (*)(double, double))fn)(hle_d(c, 0), hle_d(c, 1))); }
-static void f_f(CPU* c, void* fn) { hle_set_f(c, ((float (*)(float))fn)(hle_f(c, 0))); }
-static void f_ff(CPU* c, void* fn) { hle_set_f(c, ((float (*)(float, float))fn)(hle_f(c, 0), hle_f(c, 1))); }
-static void d_ddd(CPU* c, void* fn) {
-    hle_set_d(c, ((double (*)(double, double, double))fn)(hle_d(c, 0), hle_d(c, 1), hle_d(c, 2)));
-}
-static void f_fff(CPU* c, void* fn) {
-    hle_set_f(c, ((float (*)(float, float, float))fn)(hle_f(c, 0), hle_f(c, 1), hle_f(c, 2)));
-}
-/* lround and llround: bionic's long is 64 bits as long long is, which Windows' long is not */
-static void l_d(CPU* c, void* fn) {
-    (void)fn;
-    X(0) = (uint64_t)llround(hle_d(c, 0));
-}
-static void l_f(CPU* c, void* fn) {
-    (void)fn;
-    X(0) = (uint64_t)llroundf(hle_f(c, 0));
-}
-static void d_di(CPU* c, void* fn) { hle_set_d(c, ((double (*)(double, int))fn)(hle_d(c, 0), (int)X(0))); }
-static void d_dp(CPU* c, void* fn) { hle_set_d(c, ((double (*)(double, void*))fn)(hle_d(c, 0), PTR(0))); }
-static void f_fp(CPU* c, void* fn) { hle_set_f(c, ((float (*)(float, void*))fn)(hle_f(c, 0), PTR(0))); }
+/* strtod and atof: a double or a float of the guest's pointers */
 static void d_p(CPU* c, void* fn) { hle_set_d(c, ((double (*)(void*))fn)(PTR(0))); }
 static void d_pp(CPU* c, void* fn) { hle_set_d(c, ((double (*)(void*, void*))fn)(PTR(0), PTR(1))); }
 static void f_pp(CPU* c, void* fn) { hle_set_f(c, ((float (*)(void*, void*))fn)(PTR(0), PTR(1))); }
-static void sincos_d(CPU* c, void* fn) {
-    (void)fn;
-    double x = hle_d(c, 0), s = sin(x), co = cos(x);
-    memcpy(PTR(0), &s, sizeof s);
-    memcpy(PTR(1), &co, sizeof co);
-}
-static void sincos_f(CPU* c, void* fn) {
-    (void)fn;
-    float x = hle_f(c, 0), s = sinf(x), co = cosf(x);
-    memcpy(PTR(0), &s, sizeof s);
-    memcpy(PTR(1), &co, sizeof co);
-}
 /* time_t difftime(time_t, time_t): a double of two integers */
 static void difftime_(CPU* c, void* fn) {
     (void)fn;
@@ -1705,21 +1671,10 @@ const HleSymbol hle_libc[] = {
     /* locales: bionic's, the C locale alone */
     {"setlocale", g_setlocale, NULL}, {"newlocale", g_newlocale, NULL}, {"duplocale", g_duplocale, NULL},
     {"freelocale", g_freelocale, NULL}, {"uselocale", g_uselocale, NULL}, P(localeconv),
-    /* math */
-    T(acos, d_d), T(asin, d_d), T(atan, d_d), T(cos, d_d), T(cosh, d_d), T(exp, d_d), T(exp2, d_d), T(log, d_d),
-    T(log10, d_d), T(log2, d_d), T(sin, d_d), T(sinh, d_d), T(sqrt, d_d), T(tan, d_d), T(tanh, d_d),
-    T(cbrt, d_d), T(expm1, d_d), T(log1p, d_d), T(cbrtf, f_f), T(expm1f, f_f), T(log1pf, f_f),
-    T(atan2, d_dd), T(fmod, d_dd), T(hypot, d_dd), T(pow, d_dd), T(nextafter, d_dd), T(fmax, d_dd), T(fmin, d_dd),
-    T(fma, d_ddd), T(fmaf, f_fff), T(lround, l_d), T(llround, l_d), T(lroundf, l_f), T(llroundf, l_f),
-    T(acosf, f_f), T(asinf, f_f), T(atanf, f_f), T(cosf, f_f), T(expf, f_f), T(exp2f, f_f), T(logf, f_f),
-    T(log10f, f_f), T(log2f, f_f), T(sinf, f_f), T(sqrtf, f_f), T(tanf, f_f),
-    T(atan2f, f_ff), T(fmodf, f_ff), T(powf, f_ff), T(remainderf, f_ff), T(nextafterf, f_ff), T(fmaxf, f_ff),
-    T(fminf, f_ff),
-    T(ldexp, d_di), T(frexp, d_dp), T(modf, d_dp), T(frexpf, f_fp), T(modff, f_fp),
-    T(atof, d_p), T(strtod, d_pp), T(strtof, f_pp),
-    {"sincos", sincos_d, NULL}, {"sincosf", sincos_f, NULL}, {"difftime", difftime_, NULL},
+    /* numbers (libm is hle_libm.c) */
+    T(atof, d_p), T(strtod, d_pp), T(strtof, f_pp), {"difftime", difftime_, NULL},
     {"rand", g_random, NULL}, {"random", g_random, NULL}, {"srand", g_srandom, NULL}, {"srandom", g_srandom, NULL},
-    P(div), P(feclearexcept), P(fetestexcept),
+    P(div),
     {"", NULL, NULL},
 };
 

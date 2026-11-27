@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* bionic's C library as the native bridge gives it to an app's code (src/android/bridge/hle_libc.c, hle_posix.c,
-   hle_signal.c and args.c): each function through its HLE handler, with the arguments in a CPU state as a guest's
-   call has them, against what bionic gives on Android 16 */
+/* bionic's C library as the native bridge gives it to an app's code (src/android/bridge/hle_libc.c, hle_libm.c,
+   hle_posix.c, hle_signal.c and args.c): each function through its HLE handler, with the arguments in a CPU state as a
+   guest's call has them, against what bionic gives on Android 16 */
 #include "android/bridge/hle.h"
 #include "android/bridge/hle_impl.h"
 #include "android/bridge/host.h"
@@ -39,7 +39,7 @@ static struct {
 } g_t;
 
 static const HleSymbol* find(const char* name) {
-    const HleSymbol* const tables[] = {hle_libc, hle_posix, hle_signal};
+    const HleSymbol* const tables[] = {hle_libc, hle_libm, hle_posix, hle_signal};
     for (size_t t = 0; t < sizeof tables / sizeof *tables; ++t)
         for (const HleSymbol* s = tables[t]; s->name[0]; ++s)
             if (!strcmp(s->name, name)) return s;
