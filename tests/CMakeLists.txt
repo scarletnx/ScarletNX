@@ -6240,7 +6240,7 @@ snx_sanitizer_path()
 # the tests with a fatal of their own that build runtime code which stops with a kind of error (platform/log.h's
 # fatal_as, fatal_given): those through their fatal (support/fatal_kind.c)
 foreach(t arm-code-invalidate audio-clock audio-opus crash-runtime-thread fs-service gl-layer gvk-marshal misc-service
-          nn-fs nn-time options-tv-mode os-light-event room-service rtapi-miss runtime-linker sm-service)
+          nn-fs nn-time options-tv-mode os-light-event os-sync-handoff room-service rtapi-miss runtime-linker sm-service)
     if(TARGET snx-test-${t})
         target_sources(snx-test-${t} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/support/fatal_kind.c")
     endif()
