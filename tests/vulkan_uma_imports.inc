@@ -1653,6 +1653,95 @@ static int check_uma_region_writes(void) {
            "copied there, nothing GPU-owned\n");
     return 0;
 }
+/* A dma-buf region over a window with a view's source in it: the source's pages are the pool's, which the view maps
+   too, and the region's dma-buf takes them from the pool's memfd where they are (uma.c's region_make), its own buffer's
+   for the rest. A write through the view is one the GPU reads at the source and write tracking finds there; the GPU's
+   write in place is one the CPU reads through the view; and the view's end puts the source's pages back with what the
+   GPU wrote, the region with them */
+#define UMA_RV  (HEAP_BASE + 0xe000000)
+#define UMA_GRV 0x4fe000000ull
+static int check_uma_region_view(void) {
+    const u64 window = 0x200000, src = UMA_RV + 0x10000, dst = UMA_RV + 4 * window, n = 0x10000;
+    VkBuffer b, b2, rb, w;
+    u64 off, off2, wo;
+#if defined(__ANDROID__)
+    printf("skip: the migrate way runs here as the device chose it (vk_memory), not from this check\n");
+    return 0;
+#endif
+    if (!vk_uma()) {
+        printf("skip: guest memory is copied on this device (vk_memory)\n");
+        return 0;
+    }
+    if (!vk_uma_can_dmabuf() || plat_alias_fd() < 0) {
+        printf("skip: a region takes a view's pool pages only as a dma-buf of parts (udmabuf), with a sealed pool\n");
+        return 0;
+    }
+    CHECK(mem_map(UMA_RV, window, MS_NORMAL, PERM_RW) == 0);
+    gmmu_map(UMA_GRV, UMA_RV, window);
+    u8* g = GP(UMA_RV);
+    for (u64 i = 0; i < window; i++) g[i] = uma_fill(i);
+    /* a view of 64 KiB of it elsewhere: the source's pages move into the pool, which both addresses map */
+    CHECK(mem_alias_begin(src, n) == 0 && mem_alias_map(dst, src, n, MS_NORMAL, PERM_RW) == 0);
+    u8* v = GP(dst);
+    CHECK(v[0x100] == uma_fill(0x10100) && mem_pool_any(src, n));
+    vk_lock();
+    CHECK(vk_uma_migrate(2));
+    u8* result = vk_readback_buffer(512, &rb);
+    CHECK(result);
+    vk_unlock();
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    const int watched = vk_written_since(g, window, 0) >= 0;
+    const u32 quiet = vk_ww_now();
+    /* one region of the window: its own pages in its buffer, the source's the pool's where they were */
+    CHECK(vk_uma_get(UMA_GRV + 0x10100, 256, 1, &b, &off) && off == 0x10100);
+    CHECK(vk_uma_imports(UMA_RV, window) == 1 && vk_uma_region_held(UMA_RV, window));
+    CHECK(uma_in_buffer(g) == 1 && uma_in_buffer(g + 0x10000) == 0 && uma_in_buffer(g + 0x20000) == 1);
+    CHECK(mem_pool_any(src, n) && v[0x100] == uma_fill(0x10100) && g[0x30000] == uma_fill(0x30000));
+    /* a write through the view: write tracking finds it at the source, and the GPU reads it there */
+    vk_unlock();
+    v[0x100] = 0x5a;
+    g_renderer->mem_may_have_changed();
+    vk_lock();
+    if (watched)
+        CHECK(vk_written_since(g + 0x10000, 0x1000, quiet) == 1 && vk_written_since(g + 0x20000, 0x1000, quiet) == 0);
+    uma_read(b, off, rb, 0);
+    /* the GPU's write in place there: the CPU reads it through the view */
+    CHECK(vk_buf_copy_writable(UMA_GRV + 0x10200, 256, &w, &wo, 1));
+    CHECK(!owned_test_fill(w, wo, 256, 0x93));
+    vk_buf_writable_commit();
+    vk_finish();
+    vk_readback_ready();
+    for (u32 i = 0; i < 256; i++) CHECK(result[i] == (i ? uma_fill(0x10100 + i) : 0x5a));
+    vk_unlock();
+    CHECK(v[0x200] == 0x93 && v[0x2ff] == 0x93 && g[0x10200] == 0x93 && v[0x300] == uma_fill(0x10300));
+    /* a write in place pending there as the view goes: the source's pages go back to the reservation's own with it */
+    vk_lock();
+    CHECK(vk_buf_copy_writable(UMA_GRV + 0x10400, 256, &w, &wo, 1));
+    CHECK(!owned_test_fill(w, wo, 256, 0x94));
+    vk_buf_writable_commit();
+    vk_unlock();
+    CHECK(mem_alias_unmap(dst, n, 0) == 0);
+    mem_alias_end(src, n);
+    CHECK(!mem_pool_any(src, n));
+    CHECK(g[0x10400] == 0x94 && g[0x104ff] == 0x94 && g[0x10200] == 0x93 && g[0x10100] == 0x5a);
+    /* the region went with the source's pages: the next lookup makes one of the buffer's own pages alone */
+    vk_lock();
+    vk_uma_frame();
+    CHECK(vk_uma_get(UMA_GRV + 0x10100, 256, 1, &b2, &off2) && off2 == 0x10100 && uma_in_buffer(g + 0x10000) == 1);
+    CHECK(vk_uma_migrate(0));
+    uma_draw_submits(); /* what read them is submitted */
+    vk_finish();
+    vk_uma_frame(); /* and done: the regions go */
+    CHECK(vk_uma_imports(UMA_RV, window) == 0);
+    vk_unlock();
+    CHECK(g[0x10400] == 0x94 && g[0x10100] == 0x5a && g[0x20000] == uma_fill(0x20000) && uma_in_buffer(g) == 0);
+    CHECK(mem_unmap(UMA_RV, window) == 0);
+    printf("in place, the migrate way: a dma-buf region takes a view's pool pages where they are; a write through the "
+           "view is found and read at the source, the GPU's write there read through the view, and the view's end "
+           "puts the pages back with it\n");
+    return 0;
+}
 /* A range over the edge between two regions makes one region of their union, whose buffer takes the bytes the pages
    hold (mem_migrate): a write in place pending in one of them (its submit not done, the copy engine's result over a
    region, say) lands in that region's buffer first, or it would land in a buffer no page maps any more, and the guest

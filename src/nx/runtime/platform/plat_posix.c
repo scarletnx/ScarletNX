@@ -1780,6 +1780,34 @@ int plat_gpu_buffer_dmabuf(int fd, u64 size) {
     return -1;
 #endif
 }
+int plat_gpu_buffer_dmabuf_parts(const PlatDmaPart* parts, u32 n) {
+#if SNX_UDMABUF
+    int dev = udmabuf_dev();
+    if (dev < 0) {
+        errno = ENODEV;
+        return -1;
+    }
+    if (!n) {
+        errno = EINVAL;
+        return -1;
+    }
+    struct udmabuf_create_list* l = malloc(sizeof *l + sizeof l->list[0] * n);
+    if (!l) return -1;
+    l->flags = UDMABUF_FLAGS_CLOEXEC;
+    l->count = n;
+    for (u32 i = 0; i < n; i++)
+        l->list[i] = (struct udmabuf_create_item){.memfd = (__u32)parts[i].fd, .offset = parts[i].off, .size = parts[i].size};
+    const int r = ioctl(dev, UDMABUF_CREATE_LIST, l);
+    const int e = errno;
+    free(l);
+    errno = e;
+    return r;
+#else
+    (void)parts, (void)n;
+    errno = ENOSYS;
+    return -1;
+#endif
+}
 
 /* the alias pool's memfd, whose name its mappings carry in Linux's /proc/self/maps */
 #define ALIAS_NAME "snx-alias"
@@ -1891,17 +1919,22 @@ int plat_vm_foreign(u64 lo, u64 hi, int (*own)(u64 a, u64 b), char* out, size_t 
 #if defined(__FreeBSD__) && defined(SPACECTL_DEALLOC) && defined(MFD_CLOEXEC)
 #define SNX_ALIAS_FREEBSD 1
 #endif
-static int g_alias = -1;
+static int g_alias = -1, g_alias_sealed;
 static u64 g_alias_size;
+int plat_alias_fd(void) { return g_alias_sealed ? g_alias : -1; }
 
 int plat_alias_init(u64 size) {
 #if defined(__linux__) && defined(SYS_memfd_create) && defined(FALLOC_FL_PUNCH_HOLE)
-    long fd = syscall(SYS_memfd_create, ALIAS_NAME, 1u /* MFD_CLOEXEC */);
+    /* sealable, so a dma-buf may take its pages (udmabuf wants F_SEAL_SHRINK and no F_SEAL_WRITE); punching a hole
+       is still allowed */
+    long fd = syscall(SYS_memfd_create, ALIAS_NAME, 1u /* MFD_CLOEXEC */ | 2u /* MFD_ALLOW_SEALING */);
+    if (fd < 0) fd = syscall(SYS_memfd_create, ALIAS_NAME, 1u /* MFD_CLOEXEC */);
     if (fd < 0) return -1;
     if (ftruncate((int)fd, (off_t)size)) {
         close((int)fd);
         return -1;
     }
+    g_alias_sealed = !fcntl((int)fd, F_ADD_SEALS, F_SEAL_SHRINK);
     g_alias = (int)fd; /* mem_init, before any other thread */
     g_alias_size = size;
     return 0;

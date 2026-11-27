@@ -183,15 +183,27 @@ void mem_set_pages_replaced(void (*fn)(u64 a, u64 size));
    host can't share them. view is a mapping of fd's pages in the process (a memfd's), or NULL: own.c reads the CPU's
    bytes of a trapped page through it (mem_ext_read), which the buffer keeps mapped while a run of its pages is:
    a mem_unmigrate that answers MEM_NOMEM leaves some there. *moved (or NULL) is the bytes it moved all the same */
-int mem_migrate(u64 a, u64 size, int fd, u8* view);
+/* a part of a GPU buffer's pages for [a, a + size) (mem_region_parts): size bytes of the pool's memfd from pool - 1,
+   pages another address maps too that stay where they are, or (pool 0) fd's own at their offset from a. A buffer
+   made of them (a list udmabuf) has the guest's pages of [a, a + size) side by side, once mem_migrate with the same
+   parts moved the rest */
+typedef struct {
+    u64 size, pool;
+} MemRegionPart;
+int mem_migrate(u64 a, u64 size, int fd, u8* view, const MemRegionPart* parts, u32 nparts);
 int mem_unmigrate(u64 a, u64 size, u64* moved);
 /* whether [a, a + size) is all the guest's data, in whole host pages, on the reservation's own pages or on pool pages
    that no other address maps (not a view's or its source's, not shared memory's, not those a service maps outside
    the reservation), and not the renderer's placed windows below: what mem_migrate moves */
 int mem_movable(u64 a, u64 size);
 /* what mem_migrate moves: as mem_movable, with free pages allowed between the data, *holes (or NULL) set when there
-   are some. 0 where there is no data, or a block that is neither data nor free (code, I/O, TLS) */
-int mem_movable_holes(u64 a, u64 size, int* holes);
+   are some. pool: pool pages that another address maps too are allowed, kept where they are (mem_region_parts). 0
+   where there is nothing to have, or a block that is neither data nor free (code, I/O, TLS) */
+int mem_movable_holes(u64 a, u64 size, int pool, int* holes);
+/* the parts of [a, a + size) as mem_movable_holes with pool takes them, in order, up to max: 0, MEM_BADSTATE when it
+   doesn't, MEM_NOMEM past max (with *n the count). The pool's parts are good while no change of the guest's mappings
+   comes between: mem_migrate checks them again */
+int mem_region_parts(u64 a, u64 size, MemRegionPart* parts, u32 max, u32* n);
 /* The renderer's GPU memory under the heap and physical memory (gpu/vk/uma.c, VK_EXT_map_memory_placed), a window of
    MEM_PLACED bytes at a time, mapped at its guest address. Each call takes a range within one window, under mem.c's
    lock and the renderer's: commit makes it readable and writable and zero, 0, or -1 when the window isn't the

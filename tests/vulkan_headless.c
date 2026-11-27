@@ -9144,6 +9144,7 @@ static int run_headless(int argc, char** argv) {
         if (!strcmp(name, "migrate") && ++ran) CHECK(!check_uma_migrate());
         if (!strcmp(name, "way") && ++ran) CHECK(!check_uma_way());
         if (!strcmp(name, "region_writes") && ++ran) CHECK(!check_uma_region_writes());
+        if (!strcmp(name, "region_view") && ++ran) CHECK(!check_uma_region_view());
         if (!strcmp(name, "region_merge") && ++ran) CHECK(!check_uma_region_merge());
         if (!strcmp(name, "region_trap") && ++ran) CHECK(!check_uma_region_trap());
         if (!strcmp(name, "writes") && ++ran) CHECK(!check_uma_writes());
@@ -9234,6 +9235,7 @@ static int run_headless(int argc, char** argv) {
         CHECK(!check_uma_way());
         CHECK(!check_uma_migrate());
         CHECK(!check_uma_region_writes());
+        CHECK(!check_uma_region_view());
         CHECK(!check_uma_region_merge());
         CHECK(!check_uma_region_trap());
         CHECK(!check_uma_pages_counts());
@@ -9526,6 +9528,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_uma_way());
     CHECK(!check_uma_migrate());
     CHECK(!check_uma_region_writes());
+    CHECK(!check_uma_region_view());
     CHECK(!check_uma_region_merge());
     CHECK(!check_uma_region_trap());
     CHECK(!check_uma_pages_counts());

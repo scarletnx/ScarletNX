@@ -312,6 +312,12 @@ int plat_gpu_buffer_dmabuf(int fd, u64 size) {
     return -1;
 }
 u64 plat_dmabuf_limit(void) { return 0; }
+int plat_gpu_buffer_dmabuf_parts(const PlatDmaPart* parts, u32 n) {
+    (void)parts, (void)n;
+    errno = ENOSYS;
+    return -1;
+}
+int plat_alias_fd(void) { return -1; }
 
 /* No alias pool yet: views of the same pages need the reservation made of placeholders (VirtualAlloc2 and
    MapViewOfFile3, Windows 10 1803), and whether the write watch survives that is untested. mem.c copies instead */
