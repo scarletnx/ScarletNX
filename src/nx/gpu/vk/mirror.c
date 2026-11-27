@@ -676,10 +676,15 @@ static int others_own(u64 cpu, u64 len) {
    times a present and its CPU reads back each frame were written in place: 64-pixel squares of wrong lighting
    covered its world.
    Only in split runs (draw_batches=2), where the finish stopped both threads. The CPU reads are noted where a trap
-   lands them, so with no traps the old path stays */
+   lands them, so with no traps the old path stays.
+   Not from a draw that records into a list (the worker's): the range is noted as written (vk_mirror_wrote) and its
+   pages wait for a harvest as the draw records, but the fill and the draw's stores run at the splice, and the order
+   flags (t_mir_unordered, t_mir_inflight) are the recording thread's. The worker's draws that wrote in place gave
+   flickering geometry and shadows: 3 runs with them off were clean, a run with them on was not */
 int vk_mirror_write_in_place(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
     u64 cpu = 0;
-    if (g_settings.draw_batches != 2 || !own_traps() || g_mir.on <= 0 || !len || gmmu_run(gva, len, &cpu) != len || (cpu & (align - 1)) || others_own(cpu, len) ||
+    if (g_settings.draw_batches != 2 || vk_rec_listing() || !own_traps() || g_mir.on <= 0 || !len ||
+        gmmu_run(gva, len, &cpu) != len || (cpu & (align - 1)) || others_own(cpu, len) ||
         vk_own_cpu_read(cpu, len, MIR_HOT_PRESENTS))
         return 0;
     if (!vk_mirror_slice_at(gva, cpu, len, buf, off)) return 0;
