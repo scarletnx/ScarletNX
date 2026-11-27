@@ -15,6 +15,8 @@
    at each draw. Each draw writes a descriptor set of the program's layout: the default uniform blocks, the textures
    of the samplers' units (a black texture for an incomplete one), the uniform buffers of the blocks' binding points */
 #include "android/bridge/gles2.h"
+#include "android/bridge/gles2_clear_frag_spv.h"
+#include "android/bridge/gles2_clear_vert_spv.h"
 #include "android/bridge/hle_impl.h"
 #include "common/utilities/bits.h"
 #include <stdlib.h>
@@ -496,7 +498,7 @@ static VkPipeline pipeline(const G2ProgramVk* p, const G2PipelineKey* k) {
         if (colors[i]) color_count = (uint32_t)i + 1;
         bool integer = ((k->blend >> (4 + i)) & 1) != 0;
         blends[i] = (VkPipelineColorBlendAttachmentState){.blendEnable = (k->blend & 1) && !integer,
-                                                          .colorWriteMask = k->write_mask};
+                                                          .colorWriteMask = (k->off >> i) & 1 ? 0 : k->write_mask};
         static const unsigned codes[16] = {0, 1, 0x300, 0x301, 0x302, 0x303, 0x304, 0x305,
                                            0x306, 0x307, 0x308, 0x8001, 0x8002, 0x8003, 0x8004, 1};
         blends[i].srcColorBlendFactor = blend_factor(codes[k->factors[0] & 15]);
@@ -608,6 +610,11 @@ void gles2_draw_vk_free(void) {
         *m = (GlesImage){0};
     }
     g_gles2.missing_ready = false;
+    G2ProgramVk* clear = &g_gles2.clear;
+    if (clear->layout) gles_vk_retire((GlesGarbage){.layout = clear->layout});
+    for (int i = 0; i < 2; ++i)
+        if (clear->modules[i]) V.vk.vkDestroyShaderModule(V.device, clear->modules[i], NULL);
+    *clear = (G2ProgramVk){0};
 }
 
 /* ---- the vertex inputs ---- */
@@ -1329,41 +1336,120 @@ static void g_dispatch_compute_indirect(CPU* c, Gles2Context* gl) {
 
 /* ---- clears ---- */
 
-/* the target's attachments cleared in the scissor's rectangle: colors (drawbuffer -1: every one), depth, stencil */
+/* the masked clear's program, made at its first use; NULL when Vulkan makes none */
+static const G2ProgramVk* clear_program(void) {
+    G2ProgramVk* p = &g_gles2.clear;
+    if (p->layout && p->modules[0] && p->modules[1]) return p;
+    if (!p->layout) {
+        VkPushConstantRange push = {VK_SHADER_STAGE_FRAGMENT_BIT, 0, 16};
+        VkPipelineLayoutCreateInfo info = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                                           .pushConstantRangeCount = 1,
+                                           .pPushConstantRanges = &push};
+        if (V.vk.vkCreatePipelineLayout(V.device, &info, NULL, &p->layout) != VK_SUCCESS) p->layout = VK_NULL_HANDLE;
+    }
+    if (!p->modules[0])
+        p->modules[0] = gles_vk_shader(android_gles2_clear_vert_spv, (size_t)android_gles2_clear_vert_spv_size);
+    if (!p->modules[1])
+        p->modules[1] = gles_vk_shader(android_gles2_clear_frag_spv, (size_t)android_gles2_clear_frag_spv_size);
+    return p->layout && p->modules[0] && p->modules[1] ? p : NULL;
+}
+
+/* A clear that a mask limits, drawn: Vulkan's clears write every channel and every stencil bit. The color
+   attachments of drawn, with the color mask's channels, get color; the stencil, with the front write mask, gets
+   stencil_value when stencil. Neither tests nor blends, as glClear does neither */
+static void masked_clear(Gles2Context* gl, VkCommandBuffer cb, const Target* t, uint32_t drawn,
+                         const VkClearColorValue* color, bool stencil, int stencil_value, VkRect2D r) {
+    const G2ProgramVk* p = clear_program();
+    if (!p) {
+        gles2_warn(26, "Vulkan does not make the program of a masked clear: the clear is left out");
+        return;
+    }
+    const SnxGlFixed* fs = gles2_fixed(gl);
+    G2PipelineKey key;
+    memset(&key, 0, sizeof key); /* the key's bytes are hashed: its padding too */
+    for (int i = 0; i < G2_COLORS; ++i) {
+        key.colors[i] = (uint32_t)t->colors[i];
+        if (!((drawn >> i) & 1)) key.off |= (uint8_t)(1u << i);
+    }
+    key.depth = (uint32_t)t->depth;
+    key.samples = (uint8_t)t->samples;
+    key.topology = topology_class(GL_TRIANGLES_);
+    key.clip_control = V.depth_clip_control;
+    key.write_mask =
+        (uint8_t)(fs->color_mask[0] | fs->color_mask[1] << 1 | fs->color_mask[2] << 2 | fs->color_mask[3] << 3);
+    key.sample_mask = 0xffffffffu;
+    VkPipeline pl = pipeline(p, &key);
+    if (!pl) return;
+    V.vk.vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pl);
+    /* every state the pipeline takes dynamic, then the clear's own */
+    dynamic_state(gl, cb, t, GL_TRIANGLES_);
+    VkViewport viewport = {0, 0, (float)t->extent.width, (float)t->extent.height, 0, 1};
+    V.vk.vkCmdSetViewport(cb, 0, 1, &viewport);
+    V.vk.vkCmdSetScissor(cb, 0, 1, &r);
+    V.vk.vkCmdSetCullMode(cb, VK_CULL_MODE_NONE);
+    V.vk.vkCmdSetDepthTestEnable(cb, VK_FALSE);
+    V.vk.vkCmdSetDepthWriteEnable(cb, VK_FALSE);
+    V.vk.vkCmdSetDepthBiasEnable(cb, VK_FALSE);
+    V.vk.vkCmdSetPrimitiveRestartEnable(cb, VK_FALSE);
+    V.vk.vkCmdSetRasterizerDiscardEnable(cb, VK_FALSE);
+    V.vk.vkCmdSetStencilTestEnable(cb, stencil);
+    if (stencil) {
+        V.vk.vkCmdSetStencilOp(cb, VK_STENCIL_FACE_FRONT_AND_BACK, VK_STENCIL_OP_REPLACE, VK_STENCIL_OP_REPLACE,
+                               VK_STENCIL_OP_REPLACE, VK_COMPARE_OP_ALWAYS);
+        V.vk.vkCmdSetStencilWriteMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, fs->stencil[0].write);
+        V.vk.vkCmdSetStencilReference(cb, VK_STENCIL_FACE_FRONT_AND_BACK, (uint32_t)stencil_value);
+    }
+    float rgba[4] = {0};
+    if (color) memcpy(rgba, color->float32, sizeof rgba);
+    V.vk.vkCmdPushConstants(cb, p->layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof rgba, rgba);
+    V.vk.vkCmdDraw(cb, 3, 1, 0, 0);
+}
+
+/* the target's attachments cleared in the scissor's rectangle: colors (drawbuffer -1: every one), depth, stencil.
+   What the color mask or the stencil's write mask limits is drawn (masked_clear); an integer attachment, which the
+   draw's float color does not fit, is cleared whole */
 static void clear(Gles2Context* gl, int drawbuffer, const VkClearColorValue* color, bool depth, float depth_value,
                   bool stencil, int stencil_value) {
     if (!gles2_rendering_begin(gl)) return;
     const Target* t = &g_draw.open;
     GlesSurface* s = gl->draw;
+    const SnxGlFixed* fs = gles2_fixed(gl);
     VkClearAttachment at[G2_COLORS + 1];
-    uint32_t n = 0;
-    if (color) {
-        bool partial = !(gles2_fixed(gl)->color_mask[0] && gles2_fixed(gl)->color_mask[1] &&
-                         gles2_fixed(gl)->color_mask[2] && gles2_fixed(gl)->color_mask[3]);
-        if (partial && (gles2_fixed(gl)->color_mask[0] || gles2_fixed(gl)->color_mask[1] ||
-                        gles2_fixed(gl)->color_mask[2] || gles2_fixed(gl)->color_mask[3]))
-            gles2_warn(16, "glClear with a partial color mask clears every channel");
-        for (int i = 0; i < G2_COLORS && (gles2_fixed(gl)->color_mask[0] || gles2_fixed(gl)->color_mask[1] ||
-                                          gles2_fixed(gl)->color_mask[2] || gles2_fixed(gl)->color_mask[3]);
-             ++i) {
+    uint32_t n = 0, drawn = 0;
+    unsigned mask = fs->color_mask[0] | fs->color_mask[1] << 1 | fs->color_mask[2] << 2 | fs->color_mask[3] << 3;
+    if (color && mask) {
+        for (int i = 0; i < G2_COLORS; ++i) {
             if (!t->color_views[i] || (drawbuffer >= 0 && i != drawbuffer)) continue;
+            if (mask != 0xf && !t->integer[i]) {
+                drawn |= 1u << i;
+                continue;
+            }
+            if (mask != 0xf)
+                gles2_warn(16, "glClear of an integer color buffer with a partial color mask clears every channel");
             at[n++] = (VkClearAttachment){VK_IMAGE_ASPECT_COLOR_BIT, (uint32_t)i, {.color = *color}};
         }
     }
     VkImageAspectFlags aspect = 0;
-    if (depth && gles2_fixed(gl)->depth_mask && t->depth_view && (t->depth_aspect & VK_IMAGE_ASPECT_DEPTH_BIT))
+    if (depth && fs->depth_mask && t->depth_view && (t->depth_aspect & VK_IMAGE_ASPECT_DEPTH_BIT))
         aspect |= VK_IMAGE_ASPECT_DEPTH_BIT;
-    if (stencil && t->depth_view && (depth_aspect_of(t->depth) & VK_IMAGE_ASPECT_STENCIL_BIT) &&
-        gles2_fixed(gl)->stencil[0].write)
-        aspect |= VK_IMAGE_ASPECT_STENCIL_BIT;
+    /* the stencil's bits a write mask of all of them writes whole; a part of them, drawn */
+    bool stencil_drawn = false;
+    if (stencil && t->depth_view && (depth_aspect_of(t->depth) & VK_IMAGE_ASPECT_STENCIL_BIT) && fs->stencil[0].write) {
+        if ((fs->stencil[0].write & 0xffu) == 0xffu)
+            aspect |= VK_IMAGE_ASPECT_STENCIL_BIT;
+        else
+            stencil_drawn = true;
+    }
     if (aspect)
         at[n++] = (VkClearAttachment){aspect, 0, {.depthStencil = {depth_value, (uint32_t)stencil_value}}};
-    VkClearRect r = {gles2_fixed(gl)->scissor_test ? rect(t, gles2_fixed(gl)->scissor[0], gles2_fixed(gl)->scissor[1],
-                                                          gles2_fixed(gl)->scissor[2], gles2_fixed(gl)->scissor[3])
-                                                   : (VkRect2D){{0, 0}, t->extent},
+    VkClearRect r = {fs->scissor_test ? rect(t, fs->scissor[0], fs->scissor[1], fs->scissor[2], fs->scissor[3])
+                                      : (VkRect2D){{0, 0}, t->extent},
                      0, 1};
-    if (n && r.rect.extent.width && r.rect.extent.height)
-        V.vk.vkCmdClearAttachments(s->slots[s->slot].cb, n, at, 1, &r);
+    if (!r.rect.extent.width || !r.rect.extent.height) return;
+    VkCommandBuffer cb = s->slots[s->slot].cb;
+    if (n) V.vk.vkCmdClearAttachments(cb, n, at, 1, &r);
+    if (drawn || stencil_drawn)
+        masked_clear(gl, cb, t, drawn, drawn ? color : NULL, stencil_drawn, stencil_value, r.rect);
 }
 static void g_clear(CPU* c, Gles2Context* gl) {
     unsigned mask = (unsigned)X(0);
