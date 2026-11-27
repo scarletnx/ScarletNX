@@ -1430,6 +1430,11 @@ VkSh* vk_shader_get(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_ma
     return vk_shader_get_ex(ds, gva, gva_a, stage, int_mask, sint_mask, rt_int, rt_sint, clip, dc_color, dc_funcs,
                             unfed, rect, xfb, query_hint, advanced_blend, advanced_mask, img_int, img_sint, 0, 0, 0, 0);
 }
+/* a shader put in shh: render.c reads the count with no lock (vk_shader_fold_gen), and a new count makes the new
+   shader's place in its chain visible to it. Written under the share lock alone */
+static void fold_gen_bump(void) {
+    __atomic_store_n(&g_pipeline.fold_gen, g_pipeline.fold_gen + 1, __ATOMIC_RELEASE);
+}
 VkSh* vk_shader_get_ex(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int_mask, u64 sint_mask, u32 rt_int,
                        u32 rt_sint, u32 clip, u64 dc_color, u32 dc_funcs, u32 unfed, u64 rect, const ShXfb* xfb,
                        const u8* query_hint, u64 advanced_blend, u32 advanced_mask, u32 img_int, u32 img_sint,
@@ -1577,8 +1582,8 @@ VkSh* vk_shader_get_ex(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int
     if (s && s->shipped == 1) pf_ship_found(s);
     if (!s && (s = pf_ship_take(h, stage, mask, len, qh, len_a, qh_a)) != NULL) {
         s->next = g_pipeline.shh[h & 1023];
-        g_pipeline.shh[h & 1023] = s;
-        g_pipeline.fold_gen++;
+        __atomic_store_n(&g_pipeline.shh[h & 1023], s, __ATOMIC_RELEASE); /* next first: a walk with no lock reads it */
+        fold_gen_bump();
     }
     if (!s) {
         if (vk_corpus_dir()) { /* the key's words as sh_make takes them into si, which the corpus keeps */
@@ -1603,8 +1608,8 @@ VkSh* vk_shader_get_ex(const DsState* ds, u64 gva, u64 gva_a, int stage, u64 int
         g_pipeline.sh_new++;
         g_pipeline.sh_ns += plat_ns() - t0;
         s->next = g_pipeline.shh[h & 1023];
-        g_pipeline.shh[h & 1023] = s;
-        g_pipeline.fold_gen++;
+        __atomic_store_n(&g_pipeline.shh[h & 1023], s, __ATOMIC_RELEASE); /* next first: a walk with no lock reads it */
+        fold_gen_bump();
     }
     free(code);
     ca->gva = gva;
@@ -1633,7 +1638,7 @@ VkSh* vk_shader_mesh(const DsState* ds, u64 gva, int stage, const DsMeshKey* k, 
     return vk_shader_get(ds, gva, 0, stage, w0 | (u64)w1 << 32, w2 | (u64)w3 << 32, w4, 0, 0, 0, 0, 0, 0, NULL, NULL,
                          0, 0, 0, 0);
 }
-u32 vk_shader_fold_gen(void) { return g_pipeline.fold_gen; }
+u32 vk_shader_fold_gen(void) { return __atomic_load_n(&g_pipeline.fold_gen, __ATOMIC_ACQUIRE); }
 int vk_shader_fold_top(const VkSh* s) { return sh_fold_top(s); }
 int vk_shader_chosen(const DsState* ds, const VkSh* s) {
     g_pipeline.sh_ds = ds;
@@ -3239,8 +3244,8 @@ static void sh_fold_end(ShFold* f, int publish, int again) {
         pf_shader_record(s, f->spv, f->nw, fold_code(f), src_bytes(f->mlen), NULL);
         for (u32 i = 0; i < f->ntwins; i++) pf_pipe_record(&f->twins[i]->k);
         s->next = g_pipeline.shh[s->hash & 1023];
-        g_pipeline.shh[s->hash & 1023] = s;
-        g_pipeline.fold_gen++;
+        __atomic_store_n(&g_pipeline.shh[s->hash & 1023], s, __ATOMIC_RELEASE); /* next first: a walk with no lock reads it */
+        fold_gen_bump();
     } else {
         if (s) free(s->cbr.r);
         free(s);
@@ -3428,8 +3433,8 @@ VkSh* vk_shader_generated_find(u64 hash, int stage, const u32 mask[SH_KEY_WORDS]
 void vk_shader_generated_record(VkSh* s, const u32* spv, size_t words, const u8* source, u32 bytes) {
     pf_shader_record(s, spv, words, source, bytes, NULL);
     s->next = g_pipeline.shh[s->hash & 1023];
-    g_pipeline.shh[s->hash & 1023] = s;
-    g_pipeline.fold_gen++;
+    __atomic_store_n(&g_pipeline.shh[s->hash & 1023], s, __ATOMIC_RELEASE); /* next first: a walk with no lock reads it */
+    fold_gen_bump();
 }
 /* a draw's pipeline, made: kept for the next run, its modules by their shaders' records (any thread) */
 static void pf_pipe_record(const PipeKey* k) {
@@ -4346,8 +4351,8 @@ static void pf_merge(void) {
     while ((s = g_pipeline.pf.sh) != NULL) {
         g_pipeline.pf.sh = s->next;
         s->next = g_pipeline.shh[s->hash & 1023];
-        g_pipeline.shh[s->hash & 1023] = s;
-        g_pipeline.fold_gen++;
+        __atomic_store_n(&g_pipeline.shh[s->hash & 1023], s, __ATOMIC_RELEASE); /* next first: a walk with no lock reads it */
+        fold_gen_bump();
     }
     g_pipeline.pf.sh_tail = NULL;
     for (u32 b = 0; b < PIPEH; b++)
