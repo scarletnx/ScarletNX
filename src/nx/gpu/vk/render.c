@@ -5963,12 +5963,11 @@ typedef struct {
    its groups (g_draw_groups and the vertex format), the draw's topology, the shaders' code (trusted while nothing wrote
    it since the entry's marks, as vk_shader_get trusts it: draw_code_quiet) and the constant buffer words their
    translation read (checked each draw, as vk_shader_get checks them on a hit). What else goes into it is found each
-   draw and compared: the fragment
-   variant's key (its textures' formats), the targets' formats, which vertex streams are empty, and whether the draw
-   samples a target it renders to. Draws made all of it again, a 1 KiB key built and compared included, for each of
-   the ~3,400 draws a frame in one game, most of them with the state of the draw before. draw_state_check=1 makes it
-   again for each draw that keeps it, and warns of any difference: a register missing from a group, or an input that
-   isn't compared */
+   draw and compared: the fragment variant's key (its textures' formats), the targets' formats, which vertex streams
+   are empty, and whether the draw samples a target it renders to. Draws made all of it again, a 1 KiB key built and
+   compared included, for each of the ~3,400 draws a frame in one game, most of them with the state of the draw
+   before. draw_state_check=1 makes it again for each draw that keeps it, and warns of any difference: a register
+   missing from a group, or an input that isn't compared */
 typedef struct {
     DrawKey key;           /* owner, topology and the groups' hashes */
     u64 gen[DS_GENS];      /* the state's generations at the last draw that made or took it */
@@ -5977,8 +5976,8 @@ typedef struct {
     /* g_vk.shader_generation when made or last found to hold, and the write tracking's marks before its shaders were
        found. A new epoch (3 a frame) or a game's shader cache invalidation (NVN_BARRIER_INVALIDATE_SHADER_BIT, about
        22 a frame in one game's town) keeps the entry while nothing wrote its programs' code since the marks
-       (draw_code_quiet), as vk_shader_get keeps the shader it found at an address. Without it, each made every kept draw again: 300 of a frame's 2,700
-       draws on the renderer thread, at 8 us each */
+       (draw_code_quiet), as vk_shader_get keeps the shader it found at an address. Without it, each made every kept
+       draw again: 300 of a frame's 2,700 draws on the renderer thread, at 8 us each */
     u64 shader_generation;
     u64 code_gw;
     u32 code_wseen;
