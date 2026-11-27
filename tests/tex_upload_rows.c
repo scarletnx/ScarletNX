@@ -814,6 +814,9 @@ static struct {
 int gpu_spec(void) { return 0; }
 void gpu_spec_fail(const char* why) { (void)why; }
 void vk_shared_note(u32 which) { (void)which; }
+_Atomic int g_vk_share_on;
+_Thread_local u32 g_vk_slot; /* render.c's: every thread uses slot 0 here */
+u32 vk_share_serial(void) { return 0; }
 VkImageLayout vk_surf_layout(const Surf* s) { return s->layout; }
 void vk_surf_before_reset(const Surf* s) { (void)s; }
 int vk_compute_pending_held(u64 a, u64 n) { return (void)a, (void)n, 0; }
