@@ -438,7 +438,6 @@ void vk_rec_list_names(VkRecList* l, VkCommandBuffer cb, VkCommandBuffer up);
 /* whether this thread's list takes cb's commands (the command buffers its packets name): a command for another one (the
    compute queue's, made at once) is made at once */
 int vk_rec_list_names_cb(VkCommandBuffer cb);
-int vk_rec_ring_pass_open(void); /* TEMPDBG */
 int vk_rec_splicing(void); /* a list's deferred call runs now, in its place among the list's commands */
 u64 vk_rec_list_bytes(const VkRecList* l);
 /* A call that chooses by the order of all earlier work (barriers, passes): from a thread with a list, it goes into the

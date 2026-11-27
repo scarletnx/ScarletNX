@@ -7877,7 +7877,6 @@ void vk_split_go_serial(void) {
     while (!atomic_load_explicit(&g_split.waiting, memory_order_acquire)) plat_spin_hint();
     vk_share_retake(held);
     vk_cmd_split(VK_NULL_HANDLE, VK_NULL_HANDLE); /* the ring's own from here */
-    LOG("TEMPDBG go serial\n");
     g_split.serial = 1;
     g_split.serials++;
 }
