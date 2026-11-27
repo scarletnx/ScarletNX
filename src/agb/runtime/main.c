@@ -10,6 +10,7 @@
 #include "agb/cpu/recomp.h"
 #include "agb/runtime/host.h"
 #include "agb/runtime/main.h"
+#include "common/cpu/recompiler/jit/jit_settings.h"
 #include "common/platform/time.h"
 #include "common/utilities/build_info.h"
 #include "common/utilities/cli.h"
@@ -18,6 +19,7 @@
 #include "common/utilities/script.h"
 #include "common/utilities/vpad_consoles.h"
 #include "common/utilities/vpad_sdl.h"
+#include "common/utilities/console_settings.h"
 #include "common/utilities/state_header.h"
 #include "agb/runtime/state.h"
 #include "common/utilities/hotkeys.h"
@@ -217,7 +219,7 @@ int snx_agb_main(int argc, char** argv) {
     int lcd = 1; /* --gba-color: the original GBA's screen colours, raw the game's (settings.txt's gba_color) */
     SnxCli cli;
     vpad_console(&snx_vpad_gba);
-    snx_vpad_sdl_settings();
+    snx_vpad_sdl_settings(SNX_SYSTEM_GBA);
     snx_cli_init(&cli, "scarletnx-agb", agb_cli);
     for (int i = 1; i < argc; ++i) {
         char error[256];
@@ -239,6 +241,12 @@ int snx_agb_main(int argc, char** argv) {
             return 2;
         }
         if (controls) continue;
+        /* one of the Switch's settings a GBA game does not take, said with why */
+        if (snx_console_arg(SNX_SYSTEM_GBA, argv[i], error, sizeof error) < 0) {
+            fprintf(stderr, "scarletnx-agb: %s\n", error);
+            snx_cli_free(&cli);
+            return 2;
+        }
         /* the settings it takes, their keys' _ a - or not */
         char key[64];
         const char* value = settings_arg(argv[i], key, sizeof key);
@@ -282,7 +290,7 @@ int snx_agb_main(int argc, char** argv) {
     const char *shot = cli.value[SNX_CLI_SHOT], *data = cli.value[SNX_CLI_DATA], *outdir = cli.value[SNX_CLI_OUTDIR];
     const char *output = cli.value[SNX_CLI_OUTPUT], *game = cli.value[SNX_CLI_GAME], *script = cli.value[SNX_CLI_SCRIPT];
     long frames = cli.frames;
-    int recompile = !!(cli.flags & SNX_CLI_BIT(SNX_CLI_RECOMPILE)), fullscreen = cli.fullscreen == 1;
+    int recompile = !!(cli.flags & SNX_CLI_BIT(SNX_CLI_RECOMPILE));
     SnxCliRecompile asked = snx_cli_recompile(&cli);
     int jobs = cli.jobs;
     snx_cli_free(&cli);
@@ -391,6 +399,7 @@ int snx_agb_main(int argc, char** argv) {
             }
         }
         agb_cpu_init(&cpu, &board, map.base);
+        snx_jit_settings("scarletnx-agb", g_settings.perf_map, g_settings.gdb_jit_symbols);
         agb_recomp_init(&recomp, base);
         /* a recompile builds the module from every block the runs reached, the map's (another's that --jit-cache
            names); else the cache is loaded, and made when it is not there. --jit-only loads and makes none: the run
@@ -463,9 +472,10 @@ int snx_agb_main(int argc, char** argv) {
         /* the window's settings, and a run's with none (state_save, state_load) */
         vpad_set_say(agb_host_say);
         vpad_settings(folder, name, argc, argv);
+        if (snx_cli_fullscreen_flag(argc, argv)) g_settings.fullscreen = 1; /* -f's over the settings' */
         if (frames < 0) {
             char* title = snx_format("ScarletNX - %s (GBA)", board.cartridge.title[0] ? board.cartridge.title : name);
-            host = agb_host_open(title, ini, fullscreen, error, sizeof error);
+            host = agb_host_open(title, ini, g_settings.fullscreen, error, sizeof error);
             free(title);
             if (!host) {
                 fprintf(stderr, "scarletnx-agb: %s\n", error);
@@ -512,6 +522,8 @@ int snx_agb_main(int argc, char** argv) {
                 told_swi_number = cpu.unknown_swi;
             }
             if (host) agb_host_frame(host, board.ppu.framebuffer, audio, written);
+            if (host)
+                agb_host_rumble(host, (float)agb_gpio_motor_take(&board) / (AGB_SCANLINE_CYCLES * AGB_FRAME_LINES));
             states_step(host, &board, &cpu, folder, name, (double)frame * FRAME_MS);
             if (board.save.dirty && written_at < 0) written_at = frame;
             if (written_at >= 0 && frame - written_at >= SAVE_QUIET_FRAMES && board.save.dirty &&

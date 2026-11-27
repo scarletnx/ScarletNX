@@ -79,6 +79,7 @@ void vita_input_init(void) {
                                        VITA_CTRL_BUTTONS | SCRIPT_STICK_RIGHT | SCRIPT_STICK_LEFT | SCRIPT_STICK_UP |
                                            SCRIPT_STICK_DOWN,
                                        &g_input.script);
+    snx_pad_background(g_settings.background_input);
     g_input.gamepads = SDL_InitSubSystem(SDL_INIT_GAMEPAD);
 }
 /* a finger's event, or the left button's, on the front panel, as the touch setting lets it: 0 none, 1 the fingers, 2

@@ -1,14 +1,17 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "vita/gpu/vk.h"
+#include "common/gpu/vk/gpu_pstate.h"
 #include "common/gpu/vk/device_settings.h"
 #include "common/gpu/vk/gpu_driver_load.h"
 #include "common/gpu/vk/notice.h"
 #include "common/gpu/vk/present_fx.h"
 #include "common/gpu/vk/rects.h"
 #include "common/utilities/vpad_sdl.h"
+#include "common/utilities/window_fullscreen.h"
 #include "common/utilities/window_icon.h"
 #include "snx_settings.h"
+#include <SDL3/SDL.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -107,6 +110,7 @@ static bool choose(SnxVkChoice* c, void* user) {
     want.features.shaderClipDistance = features.features.shaderClipDistance;
     want.features.textureCompressionBC = features.features.textureCompressionBC;
     want.features.depthClamp = features.features.depthClamp;
+    want.features.samplerAnisotropy = features.features.samplerAnisotropy;
     void* const enable[] = {&want, &want12, &want13, v->raster_order ? &want_ro : NULL,
                             v->local_read ? &want_lr : NULL};
     snx_vk_chain(enable, sizeof enable / sizeof *enable);
@@ -121,6 +125,7 @@ static bool choose(SnxVkChoice* c, void* user) {
     v->preserve_infnan = p12.shaderSignedZeroInfNanPreserveFloat32;
     v->bc = features.features.textureCompressionBC;
     v->depth_clamp = features.features.depthClamp;
+    v->anisotropic = features.features.samplerAnisotropy;
     v->timeline = v12.timelineSemaphore;
     VkFormatProperties d16;
     vkGetPhysicalDeviceFormatProperties(phys, VK_FORMAT_D16_UNORM, &d16);
@@ -144,7 +149,8 @@ static bool swapchain_make(VitaVk* v) {
                                .format_count = sizeof formats / sizeof *formats,
                                .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
                                .window = snx_vk_window_extent(&v->host, (VkExtent2D){960, 544}),
-                               .views = true};
+                               .views = true,
+                               .unsynced = !g_settings.vsync};
     return snx_vk_swapchain_make(v->phys, v->device, &info, &v->swap);
 }
 static void fx_log(const char* text) { fprintf(stderr, "scarletnx-vita: %s\n", text); }
@@ -166,14 +172,13 @@ bool vita_vk_init(const char* title, char* error, size_t error_size) {
     VitaVk* v = &g.vk;
     if (g.up) return true;
     memset(v, 0, sizeof *v);
-    /* the GPU driver the run asked for (gpu_driver, --gpu-driver=), which the window's instance and surface are made
-       through, and Freedreno's variables: the loader the Switch runtime uses (common/gpu/vk/gpu_driver_load.h). A
-       package that does not load ends the run, saying why, as there */
-    SnxGpuDriverRun driver = {.driver = g_settings.gpu_driver, .freedreno = g_settings.freedreno_variables};
-    snx_gpu_driver_use(&driver);
     if (!snx_vk_window_open("scarletnx-vita", title ? title : "ScarletNX Vita", 960, 544, &v->host, error, error_size))
         return false;
     if (v->host.window) snx_window_icon(v->host.window);
+    /* the window on the whole screen, as the Switch's fullscreen=1 asks, which a phone's launcher always gives */
+    char why[256];
+    if (v->host.window && !snx_window_fullscreen(v->host.window, g_settings.fullscreen, why, sizeof why))
+        fprintf(stderr, "scarletnx-vita: %s\n", why);
     VkExtensionNeed need[2];
     VkExtensionSetting settings[VK_EXTENSION_SETTINGS];
     SnxVkDeviceRequest request = {.who = "scarletnx-vita",
@@ -209,6 +214,11 @@ bool vita_vk_init(const char* title, char* error, size_t error_size) {
     v->family = device.family;
     vkGetDeviceQueue(v->device, v->family, 0, &v->queue);
     vkGetPhysicalDeviceProperties(v->phys, &v->properties);
+    /* the Switch's anisotropy for the samplers render.c makes, as the 3DS's, said with the value in effect */
+    char aniso[256];
+    v->anisotropy = snx_vk_anisotropy(g_settings.anisotropic_filtering, v->anisotropic,
+                                      v->properties.limits.maxSamplerAnisotropy, aniso, sizeof aniso);
+    if (aniso[0]) fprintf(stderr, "scarletnx-vita: %s\n", aniso);
     if (g.copy_why)
         fprintf(stderr, "scarletnx-vita: %s %s: guest memory is copied\n", v->properties.deviceName, g.copy_why);
     vkGetPhysicalDeviceMemoryProperties(v->phys, &v->memory_properties);
@@ -239,6 +249,11 @@ bool vita_vk_init(const char* title, char* error, size_t error_size) {
     }
     g.up = true;
     if (v->host.surface && !swapchain_make(v)) fprintf(stderr, "scarletnx-vita: no swapchain for the window yet\n");
+    if (v->swap.swapchain) {
+        char said[160];
+        snx_vk_present_said(v->swap.mode, g_settings.vsync, said, sizeof said);
+        fprintf(stderr, "scarletnx-vita: %s\n", said);
+    }
     if (!fx_init(v)) {
         snprintf(error, error_size, "the frame's draw into the window could not be made on this device");
         vita_vk_free();
@@ -410,6 +425,7 @@ bool vita_vk_present(VkBuffer buffer, VkDeviceSize offset, uint32_t pitch, uint3
                            .swapchainCount = 1,
                            .pSwapchains = &v->swap.swapchain,
                            .pImageIndices = &index};
+    snx_gpu_pstate_present(); /* a kgsl hold lasts while frames are presented */
     r = vkQueuePresentKHR(v->queue, &pi);
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) swapchain_make(v);
     return r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR;

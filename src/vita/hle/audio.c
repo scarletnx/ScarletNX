@@ -6,9 +6,11 @@
    SceAudioIn: a microphone that hears silence, each grain taking its time as the console's does */
 #include "vita/hle/hle.h"
 #include "vita/hle/hle.hook.h"
+#include "common/utilities/audio_volume.h"
 #include "common/utilities/bits.h"
 #include "common/utilities/state_header.h"
 #include "common/utilities/state_io.h"
+#include "snx_settings.h"
 #include <SDL3/SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -54,6 +56,9 @@ static void stream_open(struct VitaAudio* a, Port* port) {
     SDL_AudioSpec spec = {SDL_AUDIO_S16LE, port->mode ? 2 : 1, (int)port->freq};
     port->stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, NULL, NULL);
     if (port->stream) SDL_ResumeAudioStreamDevice(port->stream);
+    char why[256];
+    if (port->stream && !snx_audio_volume_open(port->stream, g_settings.volume, why, sizeof why)) /* the player's */
+        printf("vita: %s\n", why);
 }
 static Port* port_of(VitaProcess* p, uint32_t id) {
     struct VitaAudio* a = p->audio;

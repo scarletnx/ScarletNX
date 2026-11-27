@@ -93,10 +93,26 @@ def main():
         # the on-screen controls' settings: taken as a Switch game's, a value they do not take stops the run with the value
         for option in ('--controls=1', '--controls-a-shown=0', '--touch=1', '--launcher-picks=1'):
             keys(args.runner, work, option)
+        # the Switch's settings a GBA game takes (common/utilities/console_settings.c): the window's and the pad's
+        for option in (
+            '--vsync=0',
+            '--volume=40',
+            '--gamepad-swap-ab=1',
+            '--gpu-driver=',
+            '--vk-validation=1',
+            '--gpu-pstate=auto',
+            '--perf-map=0',
+            '--gdb-jit=0',
+            '--stats-corner=br',
+            '--gamepad-rumble=50',
+        ):
+            keys(args.runner, work, option)
         for option, said in (
             ('--controls=3', 'scarletnx-agb: controls=3 '),
             ('--controls-scale=big', 'scarletnx-agb: controls_scale=big '),
             ('--launcher-picks=2', '--launcher-picks=2 is not 0 or 1'),
+            # one of the Switch's settings a GBA game does not take: said with why (common/utilities/console_settings.c)
+            ('--docked=1', 'scarletnx-agb: --docked=1 does nothing in a GBA game: it has no dock'),
         ):
             bad = subprocess.run(
                 [args.runner, option, str(work / 'keys.gba')], capture_output=True, text=True, timeout=60

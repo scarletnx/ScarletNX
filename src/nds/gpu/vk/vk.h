@@ -99,6 +99,9 @@ bool nds_vk_frame_read(unsigned char* rgba);
 /* ---- render3d.c: the 3D engine's picture ---- */
 bool nds_vk_render3d_init(char* error, size_t error_size);
 void nds_vk_render3d_free(void);
+/* the 3D pipelines kept between runs in folder's shader_cache/ (the Switch's vk_pipeline_cache), before the first draw:
+   loaded where an earlier run wrote them, written as the renderer ends */
+void nds_vk_pipeline_cache_open(const char* folder);
 /* the polygons the 3D engine swapped in, drawn into the 3D picture */
 void nds_vk_render3d(NdsBoard* board);
 /* the picture the 2D engines put on BG0 (256 by 192, its alpha a pixel's own) */

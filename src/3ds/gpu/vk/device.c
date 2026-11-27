@@ -468,22 +468,6 @@ static bool make_copies(SnxCtrVk* v, const SnxCtrProfile* profile, uint64_t* byt
     }
     return true;
 }
-float snx_ctr_vk_anisotropy(int asked, bool feature, float most, char* line, size_t line_size) {
-    if (line_size) line[0] = 0;
-    if (asked < 2) return 0;
-    if (!feature) {
-        snprintf(line, line_size,
-                 "anisotropy=%d asks for anisotropic filtering, which the device has none of: textures are filtered as "
-                 "the game asks",
-                 asked);
-        return 0;
-    }
-    float value = (float)asked < most ? (float)asked : most;
-    snprintf(line, line_size,
-             "anisotropy=%d: a mipmapped texture the game filters linearly is filtered anisotropically, at most %gx%s",
-             asked, (double)value, value < (float)asked ? ", the device's most" : "");
-    return value;
-}
 void snx_ctr_vk_path_line(int asked, SnxVkMemoryModel model, bool copied, const char* refused, uint64_t bytes,
                           uint32_t type, char* line, size_t line_size) {
     static const char* const models[] = {"is its own, a window of it mapped by the CPU",
@@ -664,8 +648,8 @@ static bool init(SnxCtrMemory* memory, bool headless, char* error, size_t error_
     vkGetPhysicalDeviceProperties(v->phys, &v->properties);
     vkGetPhysicalDeviceMemoryProperties(v->phys, &v->memory_properties);
     char said[256];
-    v->anisotropy = snx_ctr_vk_anisotropy(g_settings.anisotropic_filtering, v->anisotropic,
-                                          v->properties.limits.maxSamplerAnisotropy, said, sizeof said);
+    v->anisotropy = snx_vk_anisotropy(g_settings.anisotropic_filtering, v->anisotropic,
+                                      v->properties.limits.maxSamplerAnisotropy, said, sizeof said);
     if (said[0]) fprintf(stderr, "3ds gpu: %s\n", said);
     fprintf(stderr, v->shader_object
                         ? "3ds gpu: draws bind shader objects (VK_EXT_shader_object): no pipeline is made\n"

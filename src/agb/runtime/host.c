@@ -9,7 +9,10 @@
 #include "common/utilities/pad_sdl.h"
 #include "common/utilities/hotkeys.h"
 #include "common/utilities/vpad_sdl.h"
+#include "common/utilities/audio_volume.h"
+#include "common/utilities/window_fullscreen.h"
 #include "common/utilities/window_icon.h"
+#include "snx_settings.h"
 #include <SDL3/SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,9 +44,11 @@ struct AgbHost {
     char* captures; /* the game's folder with its separator, whose captures/ a screenshot goes in */
     bool shot;      /* the screenshot key's: the next frame saved */
     int state_ask;  /* a save states' key (HOTKEY_SAVE_STATE...) for the loop between two frames, -1 none */
-    int vsync; /* SDL's renderer's: on at the console's pace, off at another, as a Switch game's follows its limit */
+    int vsync; /* SDL's renderer's: on at the console's pace with vsync, off at another, as a Switch game's follows its
+                  limit */
     SDL_Texture* notice_texture;
     int notice_w, notice_h, notice_failed;
+    bool rumbling, rumble_said; /* the gamepads shake, as the cartridge's motor last asked; one that could not, said */
 };
 
 uint16_t agb_host_key(int scancode) {
@@ -63,8 +68,7 @@ uint16_t agb_host_key(int scancode) {
     }
 }
 
-static unsigned agb_key(int bit) { return agb_host_button(bit); }
-uint16_t agb_host_button(int bit) {
+unsigned agb_host_button(int bit) {
     switch (bit) {
         case 0: return AGB_KEY_A;
         case 1: return AGB_KEY_B;
@@ -140,6 +144,7 @@ AgbHost* agb_host_open(const char* title, const char* ini, bool fullscreen, char
     }
     snx_sdl_desktop_hints();
     snx_vpad_sdl_hints();
+    snx_pad_background(g_settings.background_input);
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         snprintf(error, error_size, "cannot start SDL's video: %s", SDL_GetError());
         free(host);
@@ -149,16 +154,21 @@ AgbHost* agb_host_open(const char* title, const char* ini, bool fullscreen, char
        renderer, said */
     {
         char why[256];
-        host->vk = agb_vk_open(title, AGB_SCREEN_WIDTH * START_SCALE, AGB_SCREEN_HEIGHT * START_SCALE, fullscreen, why,
-                               sizeof why);
-        if (!host->vk)
+        host->vk = agb_vk_open(title, AGB_SCREEN_WIDTH * START_SCALE, AGB_SCREEN_HEIGHT * START_SCALE, why, sizeof why);
+        if (!host->vk) {
             fprintf(stderr, "scarletnx-agb: no Vulkan window (%s): the screen shows through SDL's renderer\n", why);
+            /* the upscaler and the anti-aliasing are the Vulkan window's draw (common/gpu/vk/present_fx.h) */
+            if (strcmp(g_settings.upscaler, "off") || strcmp(g_settings.anti_aliasing, "off"))
+                fprintf(stderr,
+                        "scarletnx-agb: upscaler=%s anti_aliasing=%s: SDL's renderer shows the screen in sharp pixels, "
+                        "with neither\n",
+                        g_settings.upscaler, g_settings.anti_aliasing);
+        }
     }
     if (host->vk)
         host->window = agb_vk_window(host->vk);
     else if (!SDL_CreateWindowAndRenderer(title, AGB_SCREEN_WIDTH * START_SCALE, AGB_SCREEN_HEIGHT * START_SCALE,
-                                          SDL_WINDOW_RESIZABLE | (fullscreen ? SDL_WINDOW_FULLSCREEN : 0),
-                                          &host->window, &host->renderer) ||
+                                          SDL_WINDOW_RESIZABLE, &host->window, &host->renderer) ||
              !(host->texture = SDL_CreateTexture(host->renderer, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING,
                                                  AGB_SCREEN_WIDTH, AGB_SCREEN_HEIGHT)) ||
              !SDL_SetTextureScaleMode(host->texture, SDL_SCALEMODE_NEAREST) ||
@@ -168,17 +178,18 @@ AgbHost* agb_host_open(const char* title, const char* ini, bool fullscreen, char
         agb_host_close(host);
         return NULL;
     }
-    /* each frame whole on screen, as the launcher presents its own (the Vulkan window's images go at the display's
-       refresh too) */
+    /* each frame whole on screen with vsync, as the Vulkan window's images go */
     if (!host->vk) {
-        host->vsync = 1;
-        if (!SDL_SetRenderVSync(host->renderer, 1))
-            fprintf(stderr,
-                    "scarletnx-agb: the display refused vsync 1 (%s): frames go on screen with vsync 0 and may tear\n",
-                    SDL_GetError());
+        host->vsync = g_settings.vsync != 0;
+        if (!SDL_SetRenderVSync(host->renderer, host->vsync))
+            fprintf(stderr, "scarletnx-agb: the display refused vsync %d (%s): frames go on screen with vsync %d%s\n",
+                    host->vsync, SDL_GetError(), !host->vsync, host->vsync ? " and may tear" : "");
         snx_window_icon(host->window);
     }
-    snx_pad_map_position(&host->pad); /* A where the console has it, east */
+    char why[256];
+    if (!snx_window_fullscreen(host->window, fullscreen, why, sizeof why)) fprintf(stderr, "scarletnx-agb: %s\n", why);
+    /* A where the console has it, east, the player's map over it and A and B swapped as the Switch's settings say */
+    snx_pad_map_console(&host->pad, agb_host_button, "GBA", g_settings.button_map, g_settings.swap_a_b);
     g_host.open = host;
     host->state_ask = -1;
     {
@@ -193,9 +204,25 @@ AgbHost* agb_host_open(const char* title, const char* ini, bool fullscreen, char
         fprintf(stderr, "scarletnx-agb: no sound: %s\n", SDL_GetError());
         if (host->audio) SDL_DestroyAudioStream(host->audio);
         host->audio = NULL;
-    }
+    } else if (!snx_audio_volume_open(host->audio, g_settings.volume, why, sizeof why)) /* the player's Volume */
+        fprintf(stderr, "scarletnx-agb: %s\n", why);
     host->due = SDL_GetTicksNS() + FRAME_NS;
     return host;
+}
+
+void agb_host_rumble(AgbHost* host, float share) {
+    if (share <= 0 && !host->rumbling) return;
+    host->rumbling = share > 0;
+    char why[256];
+    /* two frames' worth, which the next frame's call renews: a motor the game keeps on shakes without a gap */
+    if (snx_pads_rumble(share, g_settings.vibration, 34, why, sizeof why) && !host->rumble_said) {
+        host->rumble_said = true;
+        fprintf(stderr, "scarletnx-agb: %s\n", why);
+    }
+}
+
+float agb_host_volume(const AgbHost* host) {
+    return host && host->audio ? SDL_GetAudioDeviceGain(SDL_GetAudioStreamDevice(host->audio)) : -1;
 }
 
 void agb_host_close(AgbHost* host) {
@@ -242,7 +269,7 @@ bool agb_host_poll(AgbHost* host, uint16_t* keys) {
     for (int bit = 0; bit < SNX_PAD_BUTTONS; ++bit)
         if (pressed >> bit & 1) *keys |= agb_host_button(bit);
     if (vpad_editing()) *keys = 0;
-    snx_vpad_window_showcase(*keys, agb_key, NULL);
+    snx_vpad_window_showcase(*keys, agb_host_button, NULL);
     return open;
 }
 
@@ -332,7 +359,7 @@ void agb_host_frame(AgbHost* host, const uint32_t* framebuffer, const int16_t* s
     if (host->vk)
         (void)agb_vk_frame(host->vk, framebuffer, &host->notice); /* no image for it: the next frame goes */
     else {
-        int vsync = snx_vpad_window_frame_ns(FRAME_NS) == FRAME_NS;
+        int vsync = g_settings.vsync && snx_vpad_window_frame_ns(FRAME_NS) == FRAME_NS;
         if (vsync != host->vsync && SDL_SetRenderVSync(host->renderer, vsync)) host->vsync = vsync;
         agb_host_draw(host, framebuffer);
         SDL_RenderPresent(host->renderer);

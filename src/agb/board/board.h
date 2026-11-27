@@ -76,6 +76,10 @@ typedef struct {
     uint8_t control; /* the clock's status register: bit 6 its 24 hour mode */
     uint8_t time[7]; /* what a command latched, BCD: year, month, day, weekday, hour, minute, second */
     int64_t clock;   /* the local time the clock reads, seconds from 2000-01-01 00:00: the runner keeps it */
+    /* the motor a rumble cartridge wires to pin 3: on while the console drives the pin high, since motor_since, and the
+       board's cycles it ran that agb_gpio_motor_take has not taken */
+    uint8_t motor;
+    uint64_t motor_since, motor_ran;
 } AgbGpio;
 
 typedef struct AgbBoard {
@@ -164,4 +168,7 @@ void agb_timer_step(AgbBoard* board, uint32_t cycles);
 int agb_gpio_detect(const uint8_t* image, size_t size);
 void agb_gpio_reset(AgbBoard* board, int rtc);
 int agb_gpio_write(AgbBoard* board, uint32_t address, uint16_t value);
+/* the board's cycles the cartridge's motor ran since the last call: a game pulses it for its strength, so the share
+   of a frame's cycles is how strongly it shakes */
+uint64_t agb_gpio_motor_take(AgbBoard* board);
 #endif

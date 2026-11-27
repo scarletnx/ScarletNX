@@ -73,6 +73,7 @@ typedef struct {
 typedef struct {
     unsigned char* base; /* the flat window the compiled blocks run on: guest address + base */
     SnxHostMemory main, wram, itcm, dtcm, palette, oam, scratch;
+    SnxHostMemory slot2; /* a Rumble Pak's reads, at every 64 KiB of slot 2 (nds_slot2_insert) */
     SnxHostMemory vram[NDS_VRAM_BANKS];
     uint32_t dtcm_base, dtcm_size; /* where the DTCM is in the window now, 0 bytes when it is nowhere */
     size_t page;
@@ -120,6 +121,8 @@ struct NdsBoard {
     NdsLine lines[2][NDS_SCREEN_HEIGHT];
     uint8_t vramcnt[NDS_VRAM_BANKS], wramcnt;
     uint16_t exmemcnt;
+    uint8_t slot2;   /* what sits in slot 2, the GBA cartridge's: NDS_SLOT2_* (nds_slot2_insert) */
+    uint16_t rumble; /* the value the Rumble Pak was written last, whose change moves its motor */
     NdsDma dma[4];
     uint32_t dma_fill[4];
     NdsTimer timer[4];
@@ -162,6 +165,8 @@ struct NdsBoard {
 /* The board with rom in its slot and the state the firmware leaves a game it started: the header and the program in
    main memory, the user's settings, the registers. False with the reason in error */
 bool nds_board_init(NdsBoard* board, NdsRom* rom, char* error, size_t error_size);
+/* the language the firmware's user settings give the game, the DS's code (0 Japanese to 6 Chinese) */
+void nds_board_language(NdsBoard* board, int language);
 void nds_board_free(NdsBoard* board);
 void nds_irq(NdsBoard* board, unsigned line);
 static inline bool nds_irq_pending(const NdsBoard* board) { return (board->ime & 1) && (board->ie & board->irf); }
@@ -172,6 +177,17 @@ void nds_run_events(NdsBoard* board);
 bool nds_once(NdsBoard* board, unsigned key);
 
 /* ---- memory.c ---- */
+/* what may sit in slot 2 (nds_slot2's words) */
+enum { NDS_SLOT2_NONE, NDS_SLOT2_RUMBLE };
+/* nds_slot2's word as NDS_SLOT2_*, -1 for one that is none of none and rumble */
+int nds_slot2_device(const char* word);
+/* device in slot 2 after nds_memory_init: a Rumble Pak's reads over it, each halfword 0xFFFD as melonDS's CartRumblePak
+   gives them (its A1 line held low), by which a game finds it; NDS_SLOT2_NONE leaves it empty. False with the reason in
+   error */
+bool nds_slot2_insert(NdsBoard* board, int device, char* error, size_t error_size);
+/* whether the Rumble Pak's motor moved since the last call: the game wrote it a value other than its last, as
+   melonDS's CartRumblePak takes a write. Its reads are given back to the slot */
+bool nds_slot2_rumble(NdsBoard* board);
 bool nds_memory_init(NdsBoard* board, char* error, size_t error_size);
 void nds_memory_free(NdsBoard* board);
 /* the banks at the addresses VRAMCNT_A to VRAMCNT_I give them, after a write to one */

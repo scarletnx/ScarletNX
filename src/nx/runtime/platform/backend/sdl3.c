@@ -45,6 +45,7 @@
 #include <time.h>
 #include <stdatomic.h>
 #include "common/utilities/common.h"
+#include "common/utilities/window_fullscreen.h"
 #include "common/utilities/window_icon.h"
 #ifdef SDL_PLATFORM_IOS
 #include "gui/apple.h" /* gui_apple_share: the share sheet of the app, which the iOS app links */
@@ -826,10 +827,11 @@ static u64 keymap(SDL_Scancode k) {
 
 /* g_sdl3.fullscreen follows the window: also set from the fullscreen events, for a change the window manager made */
 static void set_fullscreen(int on) {
-    if (SDL_SetWindowFullscreen(g_sdl3.win, on))
+    char why[256];
+    if (snx_window_fullscreen(g_sdl3.win, on, why, sizeof why))
         g_sdl3.fullscreen = on;
     else
-        LOG("video: fullscreen %s failed: %s\n", on ? "on" : "off", SDL_GetError());
+        LOG("video: %s\n", why);
 }
 /* ---- a fatal error's box (log.c's fatal): the game's menu panel (overlay.c) with the error, what it means and what
    to do, until the player closes it. The game's renderer lets go of the window first (its device may be what was

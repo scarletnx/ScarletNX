@@ -57,10 +57,9 @@ bool snx_ctr_audio_init(const char* wav_path, bool headless) {
             fprintf(stderr, "3ds audio: no audio device: %s\n", SDL_GetError());
             SDL_QuitSubSystem(SDL_INIT_AUDIO);
         } else { /* the player's Volume (--volume, the Switch's), the recording keeping the game's own */
-            int applied = -1;
-            if (!snx_audio_volume_follow(g_output.stream, g_settings.volume, &applied))
-                fprintf(stderr, "3ds audio: the device cannot play at volume %d%%: %s\n", g_settings.volume,
-                        SDL_GetError());
+            char why[256];
+            if (!snx_audio_volume_open(g_output.stream, g_settings.volume, why, sizeof why))
+                fprintf(stderr, "3ds audio: %s\n", why);
         }
     }
     if (wav_path) {

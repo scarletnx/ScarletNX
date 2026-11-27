@@ -15,6 +15,7 @@
 #include "common/utilities/vpad_consoles.h"
 #include "common/utilities/hotkeys.h"
 #include "common/utilities/quit_key.h"
+#include "common/utilities/stats.h"
 #include "common/utilities/vpad_sdl.h"
 #include "support/sdl_real_pads.h"
 #include "support/vpad_window.h"
@@ -245,6 +246,62 @@ static int controls(AgbHost* host, SDL_Window* window, const char* dir, const ch
     return 0;
 }
 
+/* the Switch's settings a GBA game's window takes as it opens: a gamepad's south button B where the console has it,
+   A with A and B swapped (gamepad_swap_ab), what gamepad_map names over that; its input while the window has no focus
+   as gamepad_background says; and vsync */
+static int gamepad_settings(const char* ini) {
+    char error[256] = {0};
+    static const struct {
+        int swap, background;
+        const char* map;
+        uint16_t south;
+    } cases[] = {{0, 0, "", AGB_KEY_B}, {1, 1, "", AGB_KEY_A}, {0, 0, "south:L", AGB_KEY_L}, {1, 0, "south:X", 0}};
+    for (size_t i = 0; i < sizeof cases / sizeof *cases; ++i) {
+        SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "dummy"); /* SDL_Quit, as a host closes, drops the hints */
+        SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "dummy");
+        g_settings.swap_a_b = cases[i].swap;
+        g_settings.background_input = cases[i].background;
+        snprintf(g_settings.button_map, sizeof g_settings.button_map, "%s", cases[i].map);
+        AgbHost* host = agb_host_open("agb_host", ini, false, error, sizeof error);
+        CHECK(host);
+        CHECK(SDL_GetHintBoolean(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, false) == (cases[i].background != 0));
+        SDL_JoystickID id = vpad_test_gamepad();
+        SDL_Joystick* joystick = id ? SDL_OpenJoystick(id) : NULL;
+        CHECK(joystick);
+        SDL_UpdateJoysticks();
+        (void)keys(host); /* the gamepad's added event: the window opens it */
+        CHECK(SDL_SetJoystickVirtualButton(joystick, SDL_GAMEPAD_BUTTON_SOUTH, true));
+        SDL_UpdateJoysticks();
+        uint16_t held = keys(host);
+        if (held != cases[i].south) {
+            fprintf(stderr, "agb_host: swap_ab=%d gamepad_map=\"%s\": south sends 0x%X, not 0x%X\n", cases[i].swap,
+                    cases[i].map, held, cases[i].south);
+            return 1;
+        }
+        SDL_CloseJoystick(joystick);
+        CHECK(SDL_DetachVirtualJoystick(id));
+        agb_host_close(host);
+    }
+    g_settings.swap_a_b = g_settings.background_input = 0;
+    g_settings.button_map[0] = 0;
+    /* vsync off: SDL's renderer shows each frame at once, as a Switch game's window */
+    SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "dummy");
+    SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "dummy");
+    g_settings.vsync = 0;
+    AgbHost* host = agb_host_open("agb_host", ini, false, error, sizeof error);
+    SDL_Window** windows = host ? SDL_GetWindows(NULL) : NULL;
+    int vsync = -1;
+    CHECK(windows && SDL_GetRenderVSync(SDL_GetRenderer(windows[0]), &vsync));
+    SDL_free(windows);
+    agb_host_close(host);
+    g_settings.vsync = 1;
+    if (vsync) {
+        fprintf(stderr, "agb_host: vsync=0 left the renderer's vsync %d\n", vsync);
+        return 1;
+    }
+    return 0;
+}
+
 int main(void) {
     char error[256] = {0};
     AgbHost* host;
@@ -254,7 +311,7 @@ int main(void) {
     SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "dummy");
     sdl_real_pads_hide();
     vpad_console(&snx_vpad_gba);
-    snx_vpad_sdl_settings(); /* the runtime's keys and fps_limit read with the controls', as main.c reads them */
+    snx_vpad_sdl_settings(SNX_SYSTEM_GBA); /* the runtime's keys and the Switch's settings, as main.c reads them */
     char *root = snx_temp_root(), *dir = root ? snx_temp_dir(root) : NULL;
     char* ini = dir ? snx_path_join(dir, "a game.ini") : NULL;
     if (!ini || snx_write_file(ini, "[Game]\nsystem=gba\n", strlen("[Game]\nsystem=gba\n"))) {
@@ -356,6 +413,28 @@ int main(void) {
         char* back[] = {"scarletnx-agb", "--fps-limit=game", NULL};
         vpad_settings(dir, "a game", 2, back);
     }
+    /* the stats from the Switch's rows: on, in the corner stats_corner names through its own set function, whose
+       message says a word that is no corner and the one it keeps */
+    {
+        char* on[] = {"scarletnx-agb", "--stats=1", "--stats-corner=br", NULL};
+        vpad_settings(dir, "a game", 3, on);
+        const int safe[4] = {0, 0, 1000, 1000};
+        float box[4];
+        stats_box(safe, 1, box);
+        CHECK(g_settings.stats == 1 && box[0] > 500 && box[1] > 500);
+        char* bad[] = {"scarletnx-agb", "--stats-corner=xx", NULL};
+        snx_error_sink(said);
+        vpad_settings(dir, "a game", 2, bad);
+        snx_error_sink(NULL);
+        if (strcmp(g_said, "settings: stats_corner=xx is not tl, tr, bl or br: it keeps br")) {
+            fprintf(stderr, "agb_host: --stats-corner=xx was not refused keeping br (%s)\n", g_said);
+            return 1;
+        }
+        char* off[] = {"scarletnx-agb", "--stats=0", "--stats-corner=tl", NULL};
+        vpad_settings(dir, "a game", 3, off);
+        stats_box(safe, 1, box);
+        CHECK(g_settings.stats == 0 && box[0] < 500 && box[1] < 500);
+    }
     /* F12 and F6: the stats and the showcase over the game, on and off for the run, said as a Switch game's; the
        showcase draws what the game gets, the keyboard's A (Space) here, and both leave nothing drawn once off */
     {
@@ -456,6 +535,30 @@ int main(void) {
         return 1;
     }
     agb_host_close(host);
+    /* --fullscreen's window starts fullscreen, as a Switch game's with fullscreen=1 (SDL_Quit dropped the hints) */
+    SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "dummy");
+    SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "dummy");
+    host = agb_host_open("agb_host", ini, true, error, sizeof error);
+    windows = host ? SDL_GetWindows(&count) : NULL;
+    if (!windows || count != 1 || !SDL_SyncWindow(windows[0]) ||
+        !(SDL_GetWindowFlags(windows[0]) & SDL_WINDOW_FULLSCREEN)) {
+        fprintf(stderr, "agb_host: the window opened with fullscreen is not fullscreen (%s)\n", host ? "" : error);
+        failed = 1;
+    }
+    SDL_free(windows);
+    agb_host_close(host);
+    /* the player's Volume on the game's sound, as a Switch game's */
+    SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "dummy");
+    SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "dummy");
+    g_settings.volume = 40;
+    host = agb_host_open("agb_host", ini, false, error, sizeof error);
+    if (!host || agb_host_volume(host) < 0.39f || agb_host_volume(host) > 0.41f) {
+        fprintf(stderr, "agb_host: volume=40 plays at a gain of %.2f, not 0.40 (%s)\n", agb_host_volume(host),
+                host ? "" : error);
+        failed = 1;
+    }
+    agb_host_close(host);
+    failed |= gamepad_settings(ini);
     if (snx_remove_tree(dir)) fprintf(stderr, "agb_host: %s could not be removed\n", dir);
     free(ini);
     free(dir);

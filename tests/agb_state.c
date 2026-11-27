@@ -411,7 +411,7 @@ static int keys(Machine* m, const char* dir) {
         char* args[] = {"scarletnx-agb", "--state-save=100:1,200:auto", NULL};
         char* one = snx_format("%s/states/a game.1.snxstate", dir);
         vpad_console(&snx_vpad_gba); /* the runner's: its settings are a console's */
-        snx_vpad_sdl_settings();
+        snx_vpad_sdl_settings(SNX_SYSTEM_GBA);
         vpad_settings(dir, "a game", 2, args);
         CHECK(one && snx_vpad_window_states_waiting() && !snx_vpad_window_save_due(50) &&
               snx_vpad_window_save_due(100));

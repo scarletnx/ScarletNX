@@ -60,6 +60,7 @@ void snx_ctr_input_init(bool headless) {
                                        SNX_CTR_PAD_BUTTONS | SNX_CTR_PAD_ZL | SNX_CTR_PAD_ZR, &g_input.script);
     if (headless) return; /* no gamepad: the script's presses alone */
     /* SDL sends an added event for each gamepad already connected */
+    snx_pad_background(g_settings.background_input);
     g_input.gamepads = SDL_InitSubSystem(SDL_INIT_GAMEPAD);
     if (!g_input.gamepads) fprintf(stderr, "scarletnx-3ds: no gamepads: %s\n", SDL_GetError());
 }

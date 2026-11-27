@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "common/utilities/vpad_sdl.h"
+#include "common/utilities/console_settings.h"
 #include "common/utilities/game_ini.h"
 #include "common/utilities/hotkeys.h"
 #include "common/utilities/key_said.h"
@@ -14,6 +15,7 @@
 #include "common/utilities/notice.h"
 #include "common/utilities/quit_key.h"
 #include "common/utilities/ui_colors.h"
+#include "common/utilities/window_fullscreen.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -31,6 +33,8 @@ static struct {
     char fps_limit[16];    /* its text as read */
     int slot;              /* the save states' slot F7 and F8 use, 1 to state_slots, F9's step */
     char state_save[256], state_load[1024]; /* an unattended run's (state_save, state_load) */
+    SnxSystem console;                      /* whose settings of the Switch's the rest are (console_settings.h) */
+    IniOpt with_set[2];                     /* rows of COMMON_SETS, the console table's with their set function */
     uint32_t saves_done, loads_done;        /* a bit for each of their items done */
     uint64_t quit_by; /* a second Back before this quits (quit_key.h), the first one's line shown until then */
     SnxUiRects rects;
@@ -125,14 +129,31 @@ static const IniOpt STATE_LOAD = {.key = "state_load",
                                   .type = INI_TEXT,
                                   .var = g_vpad_sdl.state_load,
                                   .size = sizeof g_vpad_sdl.state_load};
+/* the Switch's rows whose set functions are common code, which the console table leaves out with every other one's */
+static const struct {
+    const char* key;
+    void (*set)(const IniOpt* o, const char* v);
+} COMMON_SETS[] = {{"stats_corner", stats_corner_set}, {"showcase_corner", vpad_showcase_corner_set}};
+static_assert(sizeof COMMON_SETS / sizeof *COMMON_SETS == sizeof g_vpad_sdl.with_set / sizeof *g_vpad_sdl.with_set);
 static const IniOpt* setting(const char* key) {
     if (!strcmp(key, "fps_limit")) return &FPS_LIMIT;
     if (!strcmp(key, "state_save")) return &STATE_SAVE;
     if (!strcmp(key, "state_load")) return &STATE_LOAD;
-    if (!strcmp(key, "state_slots") || !strcmp(key, "state_auto_backup")) return ini_find(g_game_ini, key);
-    return hotkey_setting(key);
+    const IniOpt* o = hotkey_setting(key);
+    if (o) return o;
+    o = snx_console_opt(g_vpad_sdl.console, key);
+    for (size_t i = 0; o && i < sizeof COMMON_SETS / sizeof *COMMON_SETS; ++i)
+        if (!strcmp(key, COMMON_SETS[i].key)) {
+            g_vpad_sdl.with_set[i] = *o;
+            g_vpad_sdl.with_set[i].set = COMMON_SETS[i].set;
+            return &g_vpad_sdl.with_set[i];
+        }
+    return o;
 }
-void snx_vpad_sdl_settings(void) { vpad_settings_also(setting); }
+void snx_vpad_sdl_settings(SnxSystem console) {
+    g_vpad_sdl.console = console;
+    vpad_settings_also(setting);
+}
 uint64_t snx_vpad_window_frame_ns(uint64_t console_ns) {
     return g_vpad_sdl.pace == SNX_PACE_NONE      ? 0
            : g_vpad_sdl.pace == SNX_PACE_CONSOLE ? console_ns
@@ -351,11 +372,10 @@ static SnxVpadEvent key_event(const SDL_KeyboardEvent* k, int* action) {
     if (a == HOTKEY_FULLSCREEN || a == HOTKEY_FULLSCREEN_2) { /* the window it was pressed in, of a console's two */
         SDL_Window* w = k->windowID ? SDL_GetWindowFromID(k->windowID) : NULL;
         if (!w) w = g_vpad_sdl.window;
-        if (!SDL_SetWindowFullscreen(w, !(SDL_GetWindowFlags(w) & SDL_WINDOW_FULLSCREEN))) {
-            char line[256];
-            snprintf(line, sizeof line, "the window cannot switch fullscreen: %s", SDL_GetError());
-            if (g_vpad_sdl.say) g_vpad_sdl.say(line);
-        }
+        char why[256];
+        if (!snx_window_fullscreen(w, !(SDL_GetWindowFlags(w) & SDL_WINDOW_FULLSCREEN), why, sizeof why) &&
+            g_vpad_sdl.say)
+            g_vpad_sdl.say(why);
         return SNX_VPAD_TAKEN;
     }
     if (a >= 0 && a != HOTKEY_MENU) {

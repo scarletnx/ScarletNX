@@ -8,6 +8,8 @@
 #include <string.h>
 
 enum { A, B, X, Y, L3, R3, L, R, ZL, ZR, PLUS, MINUS, LEFT, UP, RIGHT, DOWN };
+/* a console with A, B and L alone, a bit each */
+static unsigned two_buttons(int bit) { return bit == A ? 1u : bit == B ? 2u : bit == L ? 4u : 0u; }
 
 int main(void) {
     static const int xbox[4] = {SNX_PAD_LABEL_A, SNX_PAD_LABEL_B, SNX_PAD_LABEL_X, SNX_PAD_LABEL_Y};
@@ -73,5 +75,18 @@ int main(void) {
     for (c = 0; c < SNX_PAD_CONTROLS; ++c) assert(snx_pad_control_key(c)[0]);
     assert(!snx_pad_control_key(SNX_PAD_CONTROLS)[0] && !snx_pad_control_name(-1, NULL)[0]);
     puts("pad_map passed");
+    /* a console's: each button in its place, the map's text over it, then A and B swapped; a button the console has
+       none of sends nothing there */
+    {
+        SnxPadMap console;
+        snx_pad_map_console(&console, two_buttons, "test console", "", 0);
+        assert(console.bit[SNX_PAD_SOUTH] == B && console.bit[SNX_PAD_EAST] == A);
+        snx_pad_map_console(&console, two_buttons, "test console", "", 1);
+        assert(console.bit[SNX_PAD_SOUTH] == A && console.bit[SNX_PAD_EAST] == B);
+        snx_pad_map_console(&console, two_buttons, "test console", "south:L east:B", 1);
+        assert(console.bit[SNX_PAD_SOUTH] == L && console.bit[SNX_PAD_EAST] == A);
+        snx_pad_map_console(&console, two_buttons, "test console", "south:Q", 0); /* not read: the place's, said */
+        assert(console.bit[SNX_PAD_SOUTH] == B);
+    }
     return 0;
 }

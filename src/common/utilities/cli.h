@@ -97,6 +97,11 @@ SnxCliRecompile snx_cli_recompile(const SnxCli* cli);
 int snx_cli_take(SnxCli* cli, int argc, char** argv, int* i, char* error, size_t size);
 void snx_cli_free(SnxCli* cli);
 
+/* -f or --fullscreen given with no value, the last of argv's fullscreen options: 1, else 0. --fullscreen=0|1 is the
+   setting fullscreen given as the others are (a console's vpad_settings reads it with the launcher's picks under the
+   game's own), and only the flag goes over them all */
+int snx_cli_fullscreen_flag(int argc, char** argv);
+
 /* the column a driver's own options' help starts at, so its lines line up with the common ones */
 #define SNX_CLI_HELP_COLUMN 25
 /* the help lines of the common options of the mask accepted, in the table's order, after a line that says the two

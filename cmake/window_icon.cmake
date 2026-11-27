@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 # snx_window_icon: the program's icon on the windows it opens, from the 128 PNG of dist/icons compiled in, which SDL
-# decodes and hands the window system. Windows takes the executable's own instead (runtime.rc), with every size
+# decodes and hands the window system (Windows takes the executable's own instead, runtime.rc, with every size); and
+# those windows to fullscreen and back (window_fullscreen.h)
 include_guard(GLOBAL)
 set(snx_window_icon_png "${PROJECT_SOURCE_DIR}/dist/icons/hicolor/128x128/apps/wimsy.png")
 # December's, the Christmas Wimsy (scripts/make-icons.py draws it from dist/splash/wimsy-xmas.svg)
@@ -32,7 +33,7 @@ file(CONFIGURE OUTPUT "${PROJECT_BINARY_DIR}/generated/window_icon_png.c" @ONLY 
 #include <stddef.h>
 @snx_window_icon_main@@snx_window_icon_xmas@")
 add_library(snx_window_icon STATIC "${PROJECT_SOURCE_DIR}/src/common/utilities/window_icon.c"
-    "${PROJECT_BINARY_DIR}/generated/window_icon_png.c")
+    "${PROJECT_SOURCE_DIR}/src/common/utilities/window_fullscreen.c" "${PROJECT_BINARY_DIR}/generated/window_icon_png.c")
 target_link_libraries(snx_window_icon PUBLIC SDL3::SDL3)
 target_compile_options(snx_window_icon PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 include("${PROJECT_SOURCE_DIR}/tests/cmake/window_icon.cmake") # its tests

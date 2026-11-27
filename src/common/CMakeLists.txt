@@ -187,6 +187,7 @@ if(TARGET snx_zstd)
     target_link_libraries(snx_state_file PUBLIC scarletnx-common PRIVATE snx_zstd)
     target_compile_options(snx_state_file PRIVATE -Wall -Wextra -Werror=missing-prototypes)
 endif()
+include("${PROJECT_SOURCE_DIR}/cmake/console_settings.cmake") # which settings each console takes
 include("${PROJECT_SOURCE_DIR}/cmake/vpad.cmake") # the on-screen controls (snx_vpad)
 # What the Vulkan frontends (src/nx/gpu/vk, src/3ds/gpu/vk, src/vita/gpu) share of a device: the instance, queries,
 # the one way a renderer makes its device (gpu/vk/device.c), the drivers known to break an extension or feature (gpu/vk/extension_bans.txt, compiled in),
@@ -216,6 +217,8 @@ if(TARGET Vulkan::Headers AND TARGET SDL3::SDL3)
     # snx_vulkan_driver)
     target_link_libraries(snx_vk_common PUBLIC Vulkan::Headers SDL3::SDL3 scarletnx-common)
     target_link_libraries(snx_vk_common PUBLIC snx_notice) # a window's notice copied over its picture (gpu/vk/notice.c)
+    # g_settings: the GPU driver and the validation layer a console's window takes (gpu/vk/window.c)
+    target_link_libraries(snx_vk_common PUBLIC snx_settings)
     # the spatial upscalers and the anti-aliasing (gpu/vk/present_fx.c, gpu/vk/fx/)
     include("${PROJECT_SOURCE_DIR}/cmake/glsl.cmake")
     foreach(pair IN ITEMS "fsr.vert=fx_fsr_vert" "copy.frag=fx_copy"

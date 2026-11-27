@@ -2681,6 +2681,16 @@ setting DS compile first
     words Off|On
     help Off = a game with no module is not compiled before it starts: every block compiles as the run reaches it (a
     help quick look at a game, --aot=0; a recompile does it later, from the hints)
+setting DS slot-2 device
+    label Slot-2 device
+    key nds_slot2
+    text 8
+    default none
+    startup
+    words none=None|rumble=Rumble Pak
+    help What sits in slot 2, the GBA cartridge's: none, or a Rumble Pak, which a game with rumble finds as it finds the
+    help console's and shakes the gamepads with, as strongly as gamepad_rumble says. Another word is said, and the slot
+    help stays empty
 
 table g_nds_debug_ini
 setting DS trace
