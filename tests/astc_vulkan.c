@@ -60,6 +60,8 @@ void vk_share_lock(void) {}
 void vk_share_unlock(void) {}
 void vk_shared_note(u32 which) { (void)which; }
 void vk_split_ring_wait(void) {}
+_Thread_local u32 g_vk_slot; /* render.c isn't here: every recording is the renderer thread's, slot 0 */
+int g_shader_sm86;            /* shader.c isn't here: no SM86 programs, so the texture table needs no table features */
 PendPages g_pend_any;
 u64 vk_uma_writes(void) { return 0; }
 u64 gmmu_run(u64 gva, u64 size, u64* cpu) { (void)gva; (void)size; *cpu = 0; return 0; }
