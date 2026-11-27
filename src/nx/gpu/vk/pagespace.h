@@ -40,6 +40,12 @@ void vk_pages_read(u64 gva, u64 len);
    for a dependency between the work so far and what follows (vk_buf_order_request) */
 void vk_pages_ordered(void);
 void vk_pages_order_request(void);
+/* draw_batches=2: a split begins (the renderer thread, before the worker's first draw). Its worker keeps the order of
+   its own uses in place. vk_pages_split_end runs on the renderer thread once the worker adds no more uses before the
+   ring: it orders the worker's first uses after the renderer thread's half, and gives 1 when it ended the pass for a
+   barrier */
+void vk_pages_split_begin(void);
+int vk_pages_split_end(void);
 /* guest memory was bound in place, to read or to write, in this submission since the last barrier from all work */
 int vk_pages_order_pending(void);
 /* once a present: the granules nothing read for a while give their memory back */

@@ -427,6 +427,7 @@ int vk_prep_kick(void);
    renderer thread */
 void vk_shared_note(u32 which);
 void vk_prep_join_wait(void); /* waits for the work of vk_prep_kick_work, however late the thread takes it */
+int vk_prep_done(void);       /* the work of vk_prep_kick_work is done: vk_prep_join_wait does not wait */
 int vk_prep_kick_work(void (*work)(void)); /* a batch of draws on the thread (render.c), vk_lock lent to it */
 int vk_prep_join(void);
 void vk_prep_counts(u64* kicks, u64* cancels);

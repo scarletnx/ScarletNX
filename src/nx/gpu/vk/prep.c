@@ -218,6 +218,7 @@ void vk_prep_times(u64* lat, u64* work, u64* joined, u64* join_wait) {
     *join_wait = g_prep.join_wait;
     g_prep.lat = g_prep.work = g_prep.joined = g_prep.join_wait = 0;
 }
+int vk_prep_done(void) { return atomic_load_explicit(&g_prep.state, memory_order_acquire) == PREP_DONE; }
 void vk_prep_join_wait(void) {
     const u64 t0 = __builtin_readcyclecounter();
     while (atomic_load_explicit(&g_prep.state, memory_order_acquire) != PREP_DONE) plat_spin_hint();

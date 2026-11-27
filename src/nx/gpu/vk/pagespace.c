@@ -558,9 +558,116 @@ static void order_note(PgUse* u, u32* n, int* all, u64 lo, u64 hi, u64 work) {
     }
     u[(*n)++] = (PgUse){lo, hi, work};
 }
+/* The uses of a split's worker (draw_batches=2), apart from g_pages.order: its draws go into the command buffer after
+   all of the renderer thread's half, which records at the same time. The worker orders its work against its own uses
+   alone, and the join orders its first uses against the renderer thread's half (vk_pages_split_end). wo: the writes
+   that wait for the uses of their bytes before them (ordered, or a dependency asked for), wu: the other writes */
+typedef struct {
+    PgUse rd[PG_ORDER], wo[PG_ORDER], wu[PG_ORDER];
+    u32 nrd, nwo, nwu;
+    int rd_all, wo_all, wu_all;
+} PgLog;
+static struct {
+    int active;      /* a split runs: the worker's uses go here */
+    int required;    /* a dependency was asked for when it began, and no barrier of the worker came since */
+    int barred;      /* the worker recorded a barrier: first holds its uses before it, which the join orders */
+    int first_owner; /* the worker's write was the first in place of all (vk_pages_write) */
+    int their_first; /* the renderer thread's was, while the worker noted no use: its reads before were not kept */
+    u64 barriers;
+    PgLog cur, first;
+} g_split_order;
+static void log_reset(PgLog* l) {
+    l->nrd = l->nwo = l->nwu = 0;
+    l->rd_all = l->wo_all = l->wu_all = 0;
+}
+static int log_any(const PgLog* l) {
+    return (l->nrd | l->nwo | l->nwu | (u32)l->rd_all | (u32)l->wo_all | (u32)l->wu_all) != 0;
+}
+/* the worker's use of [lo, hi): a barrier in its own commands where its uses before need one */
+static void split_use(u64 lo, u64 hi, int write, int ordered) {
+    typeof(g_split_order)* s = &g_split_order;
+    PgLog* c = &s->cur;
+    const u64 work = vk_work_id();
+    const int strict = ordered || s->required;
+    int wait = order_meets(c->wo, c->nwo, c->wo_all, lo, hi, work) ||
+               order_meets(c->wu, c->nwu, c->wu_all, lo, hi, work);
+    if (write) wait = strict && (wait || order_meets(c->rd, c->nrd, c->rd_all, lo, hi, work));
+    if (wait) {
+        vk_render_end();
+        vk_all_barrier_by(VK_BAR_PAGESPACE, vk_cmd());
+        if (!s->barred) s->first = *c; /* the uses that the renderer thread's half may still need a barrier before */
+        s->barred = 1;
+        s->required = 0;
+        log_reset(c);
+        s->barriers++;
+    }
+    if (!write)
+        order_note(c->rd, &c->nrd, &c->rd_all, lo, hi, work);
+    else if (strict)
+        order_note(c->wo, &c->nwo, &c->wo_all, lo, hi, work);
+    else
+        order_note(c->wu, &c->nwu, &c->wu_all, lo, hi, work);
+}
+/* whether a use in u (all of them when all is set) meets one in g */
+static int log_meets(const PgUse* u, u32 n, int all, const PgUse* g, u32 gn, int gall) {
+    if (!n && !all) return 0;
+    if (gall || (all && gn)) return 1;
+    for (u32 i = 0; i < n; i++)
+        if (order_meets(g, gn, 0, u[i].lo, u[i].hi, u[i].work)) return 1;
+    return 0;
+}
+static void log_merge(PgUse* u, u32* n, int* all, const PgUse* from, u32 fn, int fall) {
+    if (fall) *all = 1;
+    for (u32 i = 0; i < fn; i++) order_note(u, n, all, from[i].lo, from[i].hi, from[i].work);
+}
+void vk_pages_split_begin(void) {
+    if (g_pages.on <= 0) return;
+    typeof(g_split_order)* s = &g_split_order;
+    s->active = 1;
+    s->required = g_pages.order.sub == vk_submit_number() && g_pages.order.required;
+    s->barred = s->first_owner = s->their_first = 0;
+    log_reset(&s->cur);
+    log_reset(&s->first);
+}
+int vk_pages_split_end(void) {
+    typeof(g_split_order)* s = &g_split_order;
+    if (!s->active) return 0;
+    s->active = 0;
+    g_pages.stats.barriers += s->barriers;
+    s->barriers = 0;
+    const PgLog* f = s->barred ? &s->first : &s->cur;
+    if (!g_pages.owners || (!log_any(f) && !s->barred && !s->their_first)) return 0; /* nothing in place to order */
+    order_begin();
+    typeof(g_pages.order)* o = &g_pages.order;
+    if (s->first_owner) o->rd_all = 1; /* the renderer thread's reads before it were not kept */
+    const int wait = s->their_first || log_meets(f->rd, f->nrd, f->rd_all, o->wr, o->nwr, o->wr_all) ||
+                     log_meets(f->wo, f->nwo, f->wo_all, o->wr, o->nwr, o->wr_all) ||
+                     log_meets(f->wo, f->nwo, f->wo_all, o->rd, o->nrd, o->rd_all) ||
+                     (o->required && (log_meets(f->wu, f->nwu, f->wu_all, o->wr, o->nwr, o->wr_all) ||
+                                      log_meets(f->wu, f->nwu, f->wu_all, o->rd, o->nrd, o->rd_all)));
+    if (wait) {
+        vk_render_end();
+        vk_all_barrier_by(VK_BAR_PAGESPACE, vk_cmd());
+        g_pages.stats.barriers++;
+    }
+    /* what is still to be ordered after the worker's list: its uses since its last barrier, and the renderer
+       thread's where no barrier came after them */
+    if (wait || s->barred) order_reset();
+    const PgLog* c = &s->cur;
+    log_merge(o->rd, &o->nrd, &o->rd_all, c->rd, c->nrd, c->rd_all);
+    log_merge(o->wr, &o->nwr, &o->wr_all, c->wo, c->nwo, c->wo_all);
+    log_merge(o->wr, &o->nwr, &o->wr_all, c->wu, c->nwu, c->wu_all);
+    return wait;
+}
+/* the worker of a split, which keeps its own order (split_use) */
+static int split_worker(void) { return vk_render_slot() && g_split_order.active; }
 /* guest memory [lo, hi) is bound in its region's buffer, to read or to write in place: the barrier it needs first */
 static void order_use(u64 lo, u64 hi, int write, int ordered) {
     if (!g_pages.owners) return; /* no draw has written here: every binding reads, and the copies take their own */
+    if (split_worker()) {
+        split_use(lo, hi, write, ordered);
+        return;
+    }
     order_begin();
     u64 work = vk_work_id();
     int wait = order_meets(g_pages.order.wr, g_pages.order.nwr, g_pages.order.wr_all, lo, hi, work);
@@ -940,8 +1047,15 @@ int vk_pages_write(u64 gva, u64 len, u64 align, int ordered, VkBuffer* buf, u64*
         vk_devmem_owner(q->mem, NULL);
         /* the first of all: the reads recorded so far in this submission were not kept */
         if (!g_pages.owners++) {
-            order_begin();
-            g_pages.order.rd_all = 1;
+            if (split_worker()) {
+                g_split_order.first_owner = 1; /* the join gives it to the renderer thread's order */
+                g_split_order.cur.rd_all = 1;  /* and the worker's own reads before it were not kept */
+            } else {
+                order_begin();
+                g_pages.order.rd_all = 1;
+                /* a split's worker noted none of its reads, which its list puts after this write */
+                if (g_split_order.active) g_split_order.their_first = 1;
+            }
         }
     }
     u64 cpu = (a.rg << PG_REGION_SHIFT) + a.at;

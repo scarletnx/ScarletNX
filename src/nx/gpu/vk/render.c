@@ -8102,6 +8102,7 @@ static struct {
     /* the ring handed to the worker at the join, which a worker that needs it waits for (vk_split_ring_wait), and
        the worker's waits for it */
     _Atomic u32 granted;
+    _Atomic u32 asked; /* the worker waits for the ring: it adds no more uses before it (vk_pages_split_end) */
     _Atomic u64 handovers;
     u64 submit; /* the submission the worker's commands name their command buffer in */
     u64 inplace; /* vk_mirror_inplace_count at the split's start */
@@ -8230,6 +8231,7 @@ void vk_split_ring_wait(void) {
        the pass its list went on in ends there, and the join knows that none is open (render_split_join) */
     vk_render_end();
     g_split.took = 1;
+    atomic_store_explicit(&g_split.asked, 1, memory_order_release);
     const int paused = vk_share_pause();
     atomic_fetch_add_explicit(&g_split.handovers, 1, memory_order_relaxed);
     while (!atomic_load_explicit(&g_split.granted, memory_order_acquire))
@@ -8274,6 +8276,13 @@ static void render_split_join(void) {
         }
     } else
         vk_render_end();
+    /* The worker's uses of guest memory in place before the ring are all noted once it is done or waits for the
+       ring: its first ones get a barrier after this half's where they need one, before its list. That barrier ends
+       the pass, which the worker's commands go on in when they inherit it. The worker then orders its uses after the
+       ring with those of both halves */
+    while (!vk_prep_done() && !atomic_load_explicit(&g_split.asked, memory_order_acquire)) plat_spin_hint();
+    const int open = g_rp[0].open;
+    if (vk_pages_split_end() && g_split.inherit && open) split_pass_again();
     vk_rec_barrier_flush();
     atomic_store_explicit(&g_split.granted, 1, memory_order_release);
     plat_wake_word(&g_split.granted);
@@ -8348,6 +8357,8 @@ static void render_split(void) {
     if (g_split.inherit) g_split.pass = g_rp[0];
     g_split.took = 0;
     atomic_store_explicit(&g_split.granted, 0, memory_order_relaxed); /* the ring is the renderer thread's */
+    atomic_store_explicit(&g_split.asked, 0, memory_order_relaxed);
+    vk_pages_split_begin(); /* the worker's uses in place, apart from this half's */
     vk_share_active(1); /* before the worker's first call */
     /* the last draw's probe off before the worker reads it: no draw of the split run probes (render_draw_main) */
     g_predraw.probe = 0;
@@ -8356,6 +8367,7 @@ static void render_split(void) {
     g_split.t_snap += t2 - t1;
     g_split.t_cmd += t3 - t2;
     if (!vk_prep_kick_work(render_split_run)) {
+        vk_pages_split_end(); /* no use noted */
         vk_share_active(0);
         gpu_ds_batch_end(); /* the queue's hold */
         vk_unlock();
