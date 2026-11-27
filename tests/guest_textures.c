@@ -102,12 +102,15 @@ int main(void) {
     }
     assert(!gpu_textures(v, N));
     assert(gpu_textures_added() == 5 + N + left + (N + 2) / 3);
-    /* the ends, a few at a time: N addresses ended, as many as the list holds, each given once */
+    /* the ends, a few at a time, past the list's first room: the one in three that left, then all N, each given */
     {
+        const u32 ends = (N + 2) / 3 + N;
         u64 ended[100];
-        u32 got = 0;
-        for (u32 n; (n = gpu_textures_ended(ended, 100));) got += n;
-        assert(got == (N < 1024 ? N : 1024) && !gpu_textures_ended(ended, 100));
+        u32 got = 0, seen = 0;
+        for (u32 n; (n = gpu_textures_ended(ended, 100));)
+            for (u32 i = 0; i < n; i++, got++) seen += ended[i] >= at(0) && ended[i] <= at(N - 1);
+        if (got != ends) fprintf(stderr, "guest_textures: %u of the %u ends given\n", got, ends);
+        assert(got == ends && seen == ends && !gpu_textures_ended(ended, 100));
     }
 
     free(v);
