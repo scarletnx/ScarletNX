@@ -2882,6 +2882,25 @@ void vk_rt_copy_log(void) {
 }
 /* the bytes of c's texels, every sample and layer */
 static u64 copy_bytes(const Surf* c) { return (u64)c->sw * c->sh * c->layers * c->f.bpp * (u64)vk_surf_samples(c); }
+/* A copy of a target at draw_batches=2. The target's wgen counts the writes of both draw threads as they record them,
+   but the GPU runs the worker's list after all of the renderer thread's half of the split (the splice at the join). So
+   a copy that one thread made is not the target as the other thread's draws see it on the GPU, whatever wgen says: the
+   renderer thread's is from before the worker's writes and maybe before more of its own half, and the worker's runs
+   after the renderer thread's half. In a split, the worker reuses only the copies it made in that split, and the
+   renderer thread none of those. After the split the GPU holds the copy last in the GPU's order: the worker's, where
+   it made one in that split. So one the renderer thread made last in a split where the worker made one too is made
+   again: its crop_gen is not what the GPU holds */
+static int copy_reusable(const Surf* c) {
+    const u32 split = vk_share_on() ? vk_share_serial() : 0;
+    if (split && vk_render_slot()) return c->crop_split == split && c->crop_slot;
+    if (split && c->crop_split == split) return !c->crop_slot;
+    return c->crop_slot || !c->crop_split || c->crop_split != c->crop_worker;
+}
+static void copy_made(Surf* c) {
+    c->crop_split = vk_share_on() ? vk_share_serial() : 0;
+    c->crop_slot = c->crop_split && vk_render_slot();
+    if (c->crop_slot) c->crop_worker = c->crop_split;
+}
 /* the target's top-left w x h copied out, in the target's format, or in as: another color format of the same texel
    size, the target's bytes read as that format (a bit copy, which vkCmdCopyImage makes between such formats). The
    copy has the target's scale, or for why VK_RT_COPY_GUEST the guest's size (rt_copy_guest): then NULL when it can't
@@ -2965,16 +2984,18 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int why, int pixel
     }
     c->last_used = g_vk_present;
     if (!pixels) return c;
-    if (guest && c->crop_gen != rt->wgen) {
+    if (guest && (c->crop_gen != rt->wgen || !copy_reusable(c))) {
         const int open = vk_render_begun();
         if (!rt_copy_guest(rt, c, sw, sh)) return NULL; /* asked for again at its next use */
         c->crop_gen = rt->wgen;
+        copy_made(c);
         g_vk_rt_copy_writes++;
         vk_rt_copy_count(why, open && !vk_render_begun(), copy_bytes(c), rt->f.vk, f.vk);
     }
     u64 epoch = atomic_load_explicit(&g_vk_texture_epoch, memory_order_relaxed);
     /* a copy is reused while the target's writes since it are the ones of draws that sampled it (vk_rt_copy_drawn) */
-    if (c->crop_gen != rt->wgen && !(reuse && c->fb_gen == rt->wgen && c->crop_gen != ~0u && c->crop_epoch == epoch)) {
+    if (!copy_reusable(c) ||
+        (c->crop_gen != rt->wgen && !(reuse && c->fb_gen == rt->wgen && c->crop_gen != ~0u && c->crop_epoch == epoch))) {
         const int open = vk_render_begun();
         VkCommandBuffer cb = vk_cmd();
         VkImageCopy r[2];
@@ -3000,6 +3021,7 @@ static Surf* rt_copy(Surf* rt, u32 w, u32 h, const VkFmt* as, int why, int pixel
         c->crop_gen = rt->wgen;
         c->crop_epoch = epoch;
         c->fb_gen = rt->wgen;
+        copy_made(c);
         g_vk_rt_copy_writes++;
         vk_rt_copy_count(why, open && !vk_render_begun(), copy_bytes(c), rt->f.vk, f.vk);
     }

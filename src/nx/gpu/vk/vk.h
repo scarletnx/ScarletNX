@@ -395,6 +395,8 @@ int vk_lock_held(void);  /* this thread holds vk_lock */
 void vk_lock_lend(int on);
 /* the share lock of split runs (draw_batches=2, share_wrap.h): on while a run is split, and each call's take */
 void vk_share_active(int on);
+/* the split that turned the share lock on last, counted from 1 (draw_batches=2) */
+u32 vk_share_serial(void);
 /* the share lock let go of at any depth (1 when this thread held it), and taken again */
 int vk_share_pause(void);
 void vk_share_resume(int paused);
@@ -1426,6 +1428,10 @@ typedef struct Surf {
     /* a copy's (a crop or a snapshot): its target's wgen when it was copied, or after the last draw that sampled the
        copy and wrote the target (vk_rt_copy_drawn) */
     u32 fb_gen;
+    /* a copy's: the split (vk_share_serial) of its last copy, 0 outside a split, and 1 where the worker made it
+       (crop_slot). crop_worker: the last split the worker made it in (texture.c copy_reusable) */
+    u32 crop_split, crop_worker;
+    u8 crop_slot;
     /* render targets: the copy the draw g_vk_drawing samples of it, while that draw is recorded */
     struct Surf* fb_snap;
     u64 fb_draw;
