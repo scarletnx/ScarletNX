@@ -562,7 +562,7 @@ static void order_note(PgUse* u, u32* n, int* all, u64 lo, u64 hi, u64 work) {
 static void order_use(u64 lo, u64 hi, int write, int ordered) {
     if (!g_pages.owners) return; /* no draw has written here: every binding reads, and the copies take their own */
     order_begin();
-    u64 work = g_vk_drawn + g_vk_dispatches;
+    u64 work = vk_work_id();
     int wait = order_meets(g_pages.order.wr, g_pages.order.nwr, g_pages.order.wr_all, lo, hi, work);
     if (write) {
         wait = (ordered || g_pages.order.required) &&
@@ -806,9 +806,12 @@ static int bring(PgAsk* a) {
                 q->ck_epoch = a->epoch;
                 q->ck_mask = 0;
             }
-            q->used = g_vk_present;
-            q->given = a->sub;
-            q->ck_mask |= (u16)(((1u << (hi - lo + 1)) - 1) << (lo & (PG_PAGES - 1)));
+            /* each store only where it changes something: two threads that draw at once (draw_batches=2) bind the
+               same granules, and stores of the values they hold moved the granule's line between their cores */
+            if (q->used != g_vk_present) q->used = g_vk_present;
+            if (q->given != a->sub) q->given = a->sub;
+            const u16 m = (u16)(((1u << (hi - lo + 1)) - 1) << (lo & (PG_PAGES - 1)));
+            if ((q->ck_mask & m) != m) q->ck_mask |= m;
         }
         return 1;
     }
@@ -873,6 +876,11 @@ static int bring(PgAsk* a) {
     return 1;
 }
 
+/* the counts of vk_pages_get and vk_pages_read for each slot of the draws that bind (vk_render_slot), each on a line
+   of its own: two threads that draw at once (draw_batches=2) added to one count at each binding */
+static struct {
+    alignas(64) u64 again, served, served_bytes;
+} g_again_slot[VK_RC_SLOTS];
 int vk_pages_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
     PgAsk a;
     u64 t0 = len > PG_PATCH_MIN ? plat_ns() : 0;
@@ -885,8 +893,8 @@ int vk_pages_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
     if (got <= 0) return got;
     u64 lo = (a.rg << PG_REGION_SHIFT) + a.at;
     order_use(lo, lo + len, 0, 0);
-    g_pages.stats.served++;
-    g_pages.stats.served_bytes += len;
+    g_again_slot[vk_render_slot()].served++;
+    g_again_slot[vk_render_slot()].served_bytes += len;
     *buf = a.buf;
     *off = a.at - a.bias;
     return 1;
@@ -894,7 +902,7 @@ int vk_pages_get(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
 void vk_pages_read(u64 gva, u64 len) {
     vk_shared_note(17);
     u64 cpu = 0;
-    g_pages.stats.again++;
+    g_again_slot[vk_render_slot()].again++;
     if (g_pages.on > 0 && g_pages.owners && gmmu_run(gva, len, &cpu) == len) order_use(cpu, cpu + len, 0, 0);
 }
 
@@ -1064,6 +1072,12 @@ void vk_pages_forget_all(void) {
 
 void vk_pages_log(void) {
     if (g_pages.on <= 0) return;
+    for (u32 i = 0; i < VK_RC_SLOTS; i++) {
+        g_pages.stats.again += g_again_slot[i].again;
+        g_pages.stats.served += g_again_slot[i].served;
+        g_pages.stats.served_bytes += g_again_slot[i].served_bytes;
+        g_again_slot[i].again = g_again_slot[i].served = g_again_slot[i].served_bytes = 0;
+    }
     const u64* no = g_pages.stats.refused;
     LOG("vulkan: page cache over 600 presents: %llu ranges bound again where they were, %llu ranges of more than "
         "1 MiB looked at in %.1f ms\n",

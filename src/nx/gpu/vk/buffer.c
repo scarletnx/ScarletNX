@@ -1903,7 +1903,7 @@ static int gfx_gpu_src(u64 gva, u64 len, VkBuffer* buf, u64* off, int writable, 
            stage_set_): a writable view alone does not create a dependency, unless the setting asks for the
            conservative order (ordered). Read-only consumers and new submissions retain their automatic visibility
            checks. */
-        u64 work = g_vk_drawn + g_vk_dispatches;
+        u64 work = vk_work_id();
         int new_write = match->written > g_buffer.order.visible;
         /* A writable binding below stamps the next generation before its draw is recorded. Later bindings of
            this same draw need no second barrier. After commit, work advances and its consumers see the stamp.
@@ -3952,11 +3952,19 @@ typedef struct {
     u64 patches, bytes, cpu_pages, gpu_pages, region_bytes, none[VK_UMA_NONE_N];
     u64 staged, staged_dear, staged_region;
     u64 patch_lk[LK_N], patch_nf[NF_N]; /* the patches' bytes by lookup and by why the fast path did not bind it */
-    /* a draw's read-only storage lookups (sized and bare): bound in place, a pending result bound or composed, and
-       copied by why the fast path did not bind it (NF_*); with their bytes */
-    u64 storage[2][2 + NF_N];
 } GCopy;
 static GCopy g_gcopy;
+/* a draw's read-only storage lookups (sized and bare): bound in place, a pending result bound or composed, and copied
+   by why the fast path did not bind it (NF_*); with their bytes. For each slot of the draws that look (vk_render_slot),
+   each on lines of its own: two threads that draw at once (draw_batches=2) added to one count at each lookup */
+static struct {
+    alignas(64) u64 n[2][2 + NF_N];
+} g_storage_slot[VK_RC_SLOTS];
+static u64 storage_sum(int s, int k) {
+    u64 v = 0;
+    for (u32 i = 0; i < VK_RC_SLOTS; i++) v += g_storage_slot[i].n[s][k];
+    return v;
+}
 static void gcopy_log(void) {
     static const char* const why[VK_UMA_NONE_N] = {"no unified memory", "in a region",     "placed memory",
                                                    "a trapped page",    "unmovable",       "over the cap",
@@ -3994,8 +4002,11 @@ static void gcopy_log(void) {
         "%.1f, %s %.1f; by why the lookup was not bound in place: %s %.1f, %s %.1f, %s %.1f, %s %.1f\n",
         lk[0], mb[0], lk[1], mb[1], lk[2], mb[2], lk[3], mb[3], lk[4], mb[4], lk[5], mb[5], lk[6], mb[6], nf[0],
         mb[LK_N], nf[1], mb[LK_N + 1], nf[2], mb[LK_N + 2], nf[3], mb[LK_N + 3]);
-    const u64* sc = g_gcopy.storage[0];
-    const u64* sb = g_gcopy.storage[1];
+    u64 sc[2 + NF_N], sb[2 + NF_N];
+    for (int k = 0; k < 2 + NF_N; k++) {
+        sc[k] = storage_sum(0, k);
+        sb[k] = storage_sum(1, k);
+    }
     LOG("vulkan: draws' read-only storage lookups over 600 presents (MB): %llu in place (%.1f), %llu pending results "
         "(%.1f); copied: %llu %s (%.1f), %llu %s (%.1f), %llu %s (%.1f), %llu %s (%.1f)\n",
         (unsigned long long)sc[0], (double)sb[0] / 1048576.0, (unsigned long long)sc[1], (double)sb[1] / 1048576.0,
@@ -4003,6 +4014,7 @@ static void gcopy_log(void) {
         (double)sb[3] / 1048576.0, (unsigned long long)sc[4], nf[2], (double)sb[4] / 1048576.0,
         (unsigned long long)sc[5], nf[3], (double)sb[5] / 1048576.0);
     g_gcopy = (GCopy){0};
+    for (u32 i = 0; i < VK_RC_SLOTS; i++) g_storage_slot[i] = (typeof(g_storage_slot[0])){0};
 }
 /* len bytes at gva staged for a draw: counted (g_gcopy) */
 static void gcopy_staged(u64 gva, u64 len, int inplace);
@@ -4575,7 +4587,7 @@ static int buf_get_(u64 gva, u64 len, VkBuffer* buf, u64* off, int strict, u64 a
         if (e && e->pg_sub == sub && e->epoch == epoch && !(e->off % (align ? align : 1)) &&
             !gpu_mem_dirty_since(e->gw, gva, len)) {
             vk_pages_read(gva, len);
-            e->used = g_vk_present;
+            if (e->used != g_vk_present) e->used = g_vk_present; /* stored only when it changes: the line stays shared */
             *buf = e->buf;
             *off = e->off;
             g_buf_kind = 32;
@@ -4809,8 +4821,8 @@ int vk_buf_get_input(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
 static void storage_count(u64 len, int got) {
     const int k = !got ? -1 : g_buf_kind == 16 ? 0 : g_buf_kind == 4 || g_buf_kind == 8 ? 1 : 2 + t_lookup.nf;
     if (k < 0) return;
-    g_gcopy.storage[0][k]++;
-    g_gcopy.storage[1][k] += len;
+    g_storage_slot[vk_render_slot()].n[0][k]++;
+    g_storage_slot[vk_render_slot()].n[1][k] += len;
 }
 /* A draw's read-only storage buffer of its own size. Where imports are dear (vk_uma_imports_dear) it took the chain as
    vertices do, and so its own buffer, which each write in place on its pages made patch_dirty copy again on the CPU:
@@ -5022,7 +5034,7 @@ int vk_buf_get_copy_src(u64 gva, u64 len, VkBuffer* buf, u64* off) {
 }
 void vk_buf_storage_counts(u64 counts[2][VK_SREAD_N]) {
     for (int s = 0; s < 2; s++)
-        for (int k = 0; k < VK_SREAD_N; k++) counts[s][k] = g_gcopy.storage[s][k];
+        for (int k = 0; k < VK_SREAD_N; k++) counts[s][k] = storage_sum(s, k);
 }
 u64 vk_buf_copy_src_read(void) { return g_buffer.copy_src_read; }
 
@@ -5092,7 +5104,7 @@ void vk_buf_ordered(void) {
     vk_uma_ordered();
     g_buffer.order.owner_reads_ordered = g_buffer.order.owner_reads; /* the renderer's barrier is from all commands */
     g_buffer.order.submit = vk_submit_number();
-    g_buffer.order.work = g_vk_drawn + g_vk_dispatches;
+    g_buffer.order.work = vk_work_id();
     g_buffer.order.visible = g_buffer.order.writes;
     g_buffer.order.read_pending = 0;
     g_buffer.order.required = 0;

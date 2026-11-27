@@ -5749,6 +5749,16 @@ static void pr_dynamic(VkCommandBuffer cb, const PipeKey* k, int minus_one, int 
     if ((d & VK_DYN_PR_PATCH) && k->tes) DYN(patch, k->patch, rec_CmdSetPatchControlPointsEXT(cb, k->patch));
 }
 u64 g_vk_drawn, g_vk_skipped, g_vk_mesh_draws, g_vk_mesh_drawn, g_vk_mesh_task_compute;
+static alignas(64) typeof(g_vk_drawn) w_g_vk_drawn;
+/* The work each slot set up (t_rc): its draws, each on a line of its own. With g_vk_dispatches (the renderer thread's
+   alone), they number the work being set up for the checks that ask whether a use is the same work's (vk_work_id).
+   g_vk_drawn + g_vk_dispatches did that before, but in a split run (draw_batches=2) both threads added to g_vk_drawn
+   at each draw, and the two threads' draws could have one number */
+static struct {
+    alignas(64) u64 n;
+} g_work_n[RC_SLOTS];
+u64 vk_work_id(void) { return (g_vk_dispatches + g_work_n[t_rc].n) << 2 | t_rc; }
+static_assert(RC_SLOTS <= 4, "vk_work_id keeps the slot in two bits");
 static alignas(64) typeof(g_vk_skipped) w_g_vk_skipped;
 static alignas(64) typeof(g_vk_mesh_draws) w_g_vk_mesh_draws;
 static alignas(64) typeof(g_vk_mesh_drawn) w_g_vk_mesh_drawn;
@@ -7609,15 +7619,15 @@ static const char* predraw_run(const DsState* ds, const DrawCall* dc, DrawOwner*
     memset(pre.blend.en, 0, sizeof pre.blend.en);
     DrawCall call = *dc;
     call.state_flags &= ~DS_DRAW_DEPTH_BOUNDS;
-    u64 drawn = g_vk_drawn;
+    u64 drawn = CNT(g_vk_drawn);
     g_predraw.phase = 1;
     render_draw(&pre, &call, o, NULL, NULL);
-    int saved = g_vk_drawn != drawn;
+    int saved = CNT(g_vk_drawn) != drawn;
     if (saved) {
-        g_vk_drawn = drawn; /* the guest's draw is counted, not the save draw */
+        CNT(g_vk_drawn) = drawn; /* the guest's draw is counted, not the save draw */
         g_predraw.phase = 2;
         render_draw(ds, dc, o, NULL, NULL);
-        if (g_vk_drawn != drawn) CNT(g_vk_predraws)++;
+        if (CNT(g_vk_drawn) != drawn) CNT(g_vk_predraws)++;
     }
     g_predraw.phase = 0;
     g_predraw.n = g_predraw.in_place = 0;
@@ -8013,6 +8023,7 @@ static void cnt_fold(void) {
         ((u64*)&(x))[i_] += ((u64*)&w_##x)[i_];                                \
         ((u64*)&w_##x)[i_] = 0;                                                \
     }
+    FOLD(g_vk_drawn)
     FOLD(g_vk_skipped)
     FOLD(g_vk_dset_new)
     FOLD(g_vk_dset_reused)
@@ -10341,7 +10352,8 @@ static void draw_commit(const DsState* ds, const DrawOwner* o, const DrawShaders
         zt_written(zt, o->pred, zt_undefined))
         target_written(zt);
     vk_share_unlock();
-    g_vk_drawn++;
+    CNT(g_vk_drawn)++;
+    g_work_n[t_rc].n++;
     if (mesh) CNT(g_vk_mesh_drawn)++;
     if (sh->task_compute) CNT(g_vk_mesh_task_compute)++;
 }
@@ -10365,7 +10377,7 @@ static int capture_draw(const DsState* ds, const DrawCall* dc, DrawOwner* owner,
     u32 vertices = dc->topology == 0 ? 1 : dc->topology == 1 ? 2 : 3;
     slice.count = vertices;
     slice.instances = 1;
-    u64 before = g_vk_drawn;
+    u64 before = CNT(g_vk_drawn);
     g_capture_draw.images = images;
     g_capture_draw.snapshot = NULL;
     int complete = 1;
@@ -10378,9 +10390,9 @@ static int capture_draw(const DsState* ds, const DrawCall* dc, DrawOwner* owner,
             if (first > UINT32_MAX || !vk_capture_clear(images)) { complete = 0; break; }
             slice.first = (u32)first;
             g_capture_draw.primitive = primitive;
-            u64 drawn = g_vk_drawn;
+            u64 drawn = CNT(g_vk_drawn);
             render_draw(ds, &slice, owner, NULL, NULL);
-            if (g_vk_drawn != drawn + 1) { complete = 0; break; }
+            if (CNT(g_vk_drawn) != drawn + 1) { complete = 0; break; }
             u32 flags = images->flags | (ds->blend.mask[0] & 15);
             if (ds->tgt.srgb_write && target->f.vk != vk_srgb_as(target->f.vk, 0)) flags |= SH_BLEND_SRGB;
             int resolved = mixed ? vk_capture_mixed_resolve(images, mixed, ds, g_draw[t_rc].fs->si.sph[18])
@@ -10392,7 +10404,7 @@ static int capture_draw(const DsState* ds, const DrawCall* dc, DrawOwner* owner,
     g_capture_draw.snapshot = NULL;
     draw_forget();
     if (complete) {
-        g_vk_drawn = before + 1;
+        CNT(g_vk_drawn) = before + 1;
         g_vk_capture_draws++;
         g_vk_capture_primitives += (u64)dc->instances * (dc->count / vertices);
     }

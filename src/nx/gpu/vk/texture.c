@@ -2805,9 +2805,9 @@ static int rt_copy_guest(Surf* rt, Surf* c, u32 sw, u32 sh) {
 }
 
 u64 g_vk_rt_copy_writes;
-/* the copies of targets by why they were made, since the last stats line (vk_rt_copy_log); the draws and dispatches
-   recorded at the last copy, plus 1 (0 before any), which tells a copy made for the same draw as the one before; and
-   the copies and the passes they ended in the present being drawn */
+/* the copies of targets by why they were made, since the last stats line (vk_rt_copy_log); the work being set up at
+   the last copy (vk_work_id, one of its slot's numbers past it: 0 before any), which tells a copy made for the same
+   draw as the one before; and the copies and the passes they ended in the present being drawn */
 static struct {
     VkRtCopyCounts n;
     u64 work;
@@ -2815,7 +2815,7 @@ static struct {
 } g_copy_stats;
 void vk_rt_copy_count(int why, int ended, u64 bytes, VkFormat from, VkFormat to) {
     VkRtCopyCounts* n = &g_copy_stats.n;
-    const u64 work = g_vk_drawn + g_vk_dispatches + 1;
+    const u64 work = vk_work_id() + 4; /* one past: 0 is no copy's */
     n->written[why]++;
     n->ended[why] += ended != 0;
     n->bytes[why] += bytes;

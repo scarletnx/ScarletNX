@@ -233,7 +233,6 @@ typedef struct {
     u64 dmabuf_max;         /* what one udmabuf holds, whole windows */
     char why[96];           /* why the last region couldn't be made, for the log */
     u64 bound;              /* the submit that last read guest memory in place (vk_submit_number) */
-    Seen seen[256];         /* the ranges hz_mark marked, with their submit */
     WritePages live;        /* the submit that last read each page in place */
     WritePages front;       /* the pages the runtime wrote (gmem_write): never read in place again */
     u64 lag_lo, lag_hi;     /* live stamps from lag_lo on may have been read up to submit lag_hi (vk_uma_settle) */
@@ -259,7 +258,7 @@ typedef struct {
     u32 place_type; /* the memory type of the chunks: host-visible and coherent, cached where it can be */
     u64 chunks_made, chunks_gone;
     /* statistics */
-    u64 hits, hit_bytes, misses, imports, import_bytes, import_ns, failed, dropped, quiesces, waits;
+    u64 misses, imports, import_bytes, import_ns, failed, dropped, quiesces, waits;
     u64 written_bytes, barriers, out_waits, published;
     /* the writes in place (out_add), those of a range that a write of the same submission had (a direct-mapped
        table of the last ones, by range: a range it lost to another counts as new), and the pages they counted */
@@ -303,7 +302,7 @@ typedef struct {
     UmaMemo memo[VK_RC_SLOTS][UMA_MEMO_N]; /* by the slot of the draws that look (vk_render_slot) */
     UmaCheck* chk; /* draw_state_check=1 */
     /* statistics: the fast path's hits and misses by why (UMA_FAST_*), and the cross-checks' differences */
-    u64 fast_hits, fast_miss[UMA_FAST_N], check_diffs;
+    u64 check_diffs;
     _Atomic u32 win[UMA_WINS];
     char apart0[UMA_LINE];
     /* mem.c's hook writes these too */
@@ -319,6 +318,18 @@ static_assert(offsetof(Uma, lk) - offsetof(Uma, apart0) >= UMA_LINE &&
                   offsetof(Uma, hazards) - offsetof(Uma, apart1) >= UMA_LINE,
               "two groups of Uma share a cache line");
 static Uma g_uma = {.lk = PMUTEX_INIT, .align = 4096, .out_pages = {.also = &g_pend_any}};
+/* The counts and the memo of the reads bound in place, for each slot of the draws that look (vk_render_slot), each slot
+   on lines of its own. Two threads draw at once in a split run (draw_batches=2): a count in g_uma that both added to at
+   each read moved its line between their cores. vk_uma_frame adds them up at a present, when no worker draws */
+typedef struct {
+    alignas(UMA_LINE) u64 hits, hit_bytes, fast_hits, fast_miss[UMA_FAST_N];
+    Seen seen[256]; /* the ranges hz_mark marked, with their submit */
+} UmaSlot;
+static UmaSlot g_uma_slot[VK_RC_SLOTS];
+#define t_us (g_uma_slot[vk_render_slot()])
+/* a stamp that the hit path writes again at each read (a submit, a present): stored only when it changes, so the line
+   stays shared between the cores that read it */
+#define STAMP(x, v)                                                                                                        do {                                                                                                                       const typeof(x) stamp_v_ = (v);                                                                                        if ((x) != stamp_v_) (x) = stamp_v_;                                                                               } while (0)
 /* the count of what write tracking's scans leave alone (vk_uma_import_in): imports that are not dma-buf regions, dropped
    ones not yet destroyed, chunks of GPU memory and their views. Counted again at each change of those lists, on the
    thread that makes it; vk_uma_import_in reads it with no lock. Where it is 0, as with every import a dma-buf region,
@@ -417,11 +428,16 @@ static void rg_stamp(Rgn* r, int k, u64 cpu, u64 len, u64 v) {
     _Atomic u64 *s = rg_st(r, k), *g = rg_grp(r, k), *w = rg_whole(r, k);
     for (u64 p = p0; p <= p1;) {
         u64 gi = p >> 6, ge = (gi << 6) + 63;
+        /* each store only where the stamp differs: draws read the same pages again and again, and two threads that
+           draw at once (draw_batches=2) moved the table's lines between their cores with stores of the same value */
         if (!(p & 63) && ge <= p1) { /* the whole group */
-            atomic_store_explicit(&w[gi], v, memory_order_relaxed);
+            if (atomic_load_explicit(&w[gi], memory_order_relaxed) != v)
+                atomic_store_explicit(&w[gi], v, memory_order_relaxed);
             p = ge + 1;
         } else
-            for (u64 e = ge < p1 ? ge : p1; p <= e; p++) atomic_store_explicit(&s[p], v, memory_order_relaxed);
+            for (u64 e = ge < p1 ? ge : p1; p <= e; p++)
+                if (atomic_load_explicit(&s[p], memory_order_relaxed) != v)
+                    atomic_store_explicit(&s[p], v, memory_order_relaxed);
         if (atomic_load_explicit(&g[gi], memory_order_relaxed) < v)
             atomic_store_explicit(&g[gi], v, memory_order_relaxed);
     }
@@ -1752,12 +1768,12 @@ static int bind(u64 cpu, u64 len, u64 align, VkBuffer* buf, u64* off) {
             g_uma.misses++;
             return 0;
         }
-        c->sub = vk_submit_number();
+        STAMP(c->sub, vk_submit_number());
         *buf = c->buf;
         *off = cpu - c->cpu;
-        g_uma.bound = vk_submit_number();
-        g_uma.hits++;
-        g_uma.hit_bytes += len;
+        STAMP(g_uma.bound, vk_submit_number());
+        t_us.hits++;
+        t_us.hit_bytes += len;
         hz_mark(cpu, len);
         return 1;
     }
@@ -1766,13 +1782,13 @@ static int bind(u64 cpu, u64 len, u64 align, VkBuffer* buf, u64* off) {
         g_uma.misses++;
         return 0;
     }
-    g_uma.imp[i].used = g_vk_present;
-    g_uma.imp[i].sub = vk_submit_number();
+    STAMP(g_uma.imp[i].used, g_vk_present);
+    STAMP(g_uma.imp[i].sub, vk_submit_number());
     *buf = g_uma.imp[i].buf;
     *off = cpu - g_uma.imp[i].cpu;
-    g_uma.bound = vk_submit_number();
-    g_uma.hits++;
-    g_uma.hit_bytes += len;
+    STAMP(g_uma.bound, vk_submit_number());
+    t_us.hits++;
+    t_us.hit_bytes += len;
     hz_mark(cpu, len);
     return 1;
 }
@@ -1784,13 +1800,13 @@ static int rgn_bound(Rgn* r, u32 id) {
     if (r->chunk) {
         if (r->at >= g_uma.nchunk || g_uma.chunk[r->at].rid != id) r->at = chunk_find(r->cpu);
         if (r->at >= g_uma.nchunk || g_uma.chunk[r->at].rid != id) return 0;
-        g_uma.chunk[r->at].sub = vk_submit_number();
+        STAMP(g_uma.chunk[r->at].sub, vk_submit_number());
         return 1;
     }
     if (r->at >= g_uma.nimp || g_uma.imp[r->at].rid != id) r->at = imp_find(r->cpu);
     if (r->at >= g_uma.nimp || g_uma.imp[r->at].rid != id) return 0;
-    g_uma.imp[r->at].used = g_vk_present;
-    g_uma.imp[r->at].sub = vk_submit_number();
+    STAMP(g_uma.imp[r->at].used, g_vk_present);
+    STAMP(g_uma.imp[r->at].sub, vk_submit_number());
     return 1;
 }
 /* [cpu, cpu + len) of region r bound for a read: what bind, vk_uma_get and their stamps do. ordered 0 leaves out the
@@ -1798,9 +1814,9 @@ static int rgn_bound(Rgn* r, u32 id) {
 static void read_in(const Rgn* r, u64 cpu, u64 len, int ordered, VkBuffer* buf, u64* off) {
     *buf = r->buf;
     *off = cpu - r->cpu;
-    g_uma.bound = vk_submit_number();
-    g_uma.hits++;
-    g_uma.hit_bytes += len;
+    STAMP(g_uma.bound, vk_submit_number());
+    t_us.hits++;
+    t_us.hit_bytes += len;
     hz_mark(cpu, len);
     if (ordered) order(cpu, len, 0, 1);
     note_read(cpu, len);
@@ -1809,7 +1825,7 @@ int vk_uma_read(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
     if (!len) return 0;
     /* a region whose pages are other pages now goes first, in the old chain's bind (drop_dead) */
     if (atomic_load_explicit(&g_uma.any_dead, memory_order_acquire)) {
-        g_uma.fast_miss[UMA_FAST_DEAD]++;
+        t_us.fast_miss[UMA_FAST_DEAD]++;
         return 0;
     }
     UmaMemo* m = &g_uma.memo[vk_render_slot()][(u32)(((gva ^ (len << 40)) * 0x9E3779B97F4A7C15ull) >> 52)];
@@ -1829,7 +1845,7 @@ int vk_uma_read(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
         if (why < 0 && cpu + len > r->cpu + r->size) why = UMA_FAST_EDGE;
         if (why < 0 && rg_blk(r, cpu, len)) why = UMA_FAST_BLK;
         if (why >= 0) {
-            g_uma.fast_miss[why]++;
+            t_us.fast_miss[why]++;
             m->rid = 0;
             return 0;
         }
@@ -1837,14 +1853,14 @@ int vk_uma_read(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off) {
     }
     const u32 rid = (u32)(r - g_uma.rg);
     if ((cpu - r->cpu) % (align ? align : 1)) {
-        g_uma.fast_miss[UMA_FAST_ALIGN]++;
+        t_us.fast_miss[UMA_FAST_ALIGN]++;
         return 0;
     }
     if (!rgn_bound(r, rid)) { /* no Imp or Chunk holds it: going */
-        g_uma.fast_miss[UMA_FAST_DEAD]++;
+        t_us.fast_miss[UMA_FAST_DEAD]++;
         return 0;
     }
-    g_uma.fast_hits++;
+    t_us.fast_hits++;
     read_in(r, cpu, len, 1, buf, off);
     return 1;
 }
@@ -1859,8 +1875,11 @@ int vk_uma_read_cpu(u64 cpu, u64 len, u64 align, int ordered, VkBuffer* buf, u64
     return 1;
 }
 void vk_uma_fast_counts(u64* hits, u64* blk) {
-    *hits = g_uma.fast_hits;
-    *blk = g_uma.fast_miss[UMA_FAST_BLK];
+    *hits = *blk = 0;
+    for (u32 k = 0; k < VK_RC_SLOTS; k++) {
+        *hits += g_uma_slot[k].fast_hits;
+        *blk += g_uma_slot[k].fast_miss[UMA_FAST_BLK];
+    }
 }
 /* draw_state_check=1: what the old chain's own checks of uma.c say of a range the fast path bound at buf, off: the
    reason it would not be that, NULL when it would */
@@ -2256,10 +2275,9 @@ void vk_uma_gpu_wrote(u64 cpu, u64 len) {
    bind the same ranges again and again */
 static void hz_mark(u64 cpu, u64 len) {
     u32 h = (u32)(((cpu ^ (len << 32)) * 0x9E3779B97F4A7C15ull) >> 56);
-    if (g_uma.seen[h].cpu == cpu && g_uma.seen[h].len == len && g_uma.seen[h].sub == g_uma.bound) return;
-    g_uma.seen[h].cpu = cpu;
-    g_uma.seen[h].len = len;
-    g_uma.seen[h].sub = g_uma.bound;
+    Seen* const m = &t_us.seen[h];
+    if (m->cpu == cpu && m->len == len && m->sub == g_uma.bound) return;
+    *m = (Seen){cpu, len, g_uma.bound};
     st_stamp(UMA_LIVE, cpu, len, g_uma.bound);
     if (g_uma.chk) write_pages_stamp(&g_uma.chk->live, cpu, len, g_uma.bound);
 }
@@ -2368,6 +2386,14 @@ void vk_uma_frame(void) {
     if (g_vk_present % 600) return;
     u64 bytes = 0;
     for (u32 i = 0; i < g_uma.nimp; i++) bytes += g_uma.imp[i].size;
+    UmaSlot sum = {0}; /* the slots' counts, added up */
+    for (u32 k = 0; k < VK_RC_SLOTS; k++) {
+        const UmaSlot* const sl = &g_uma_slot[k];
+        sum.hits += sl->hits;
+        sum.hit_bytes += sl->hit_bytes;
+        sum.fast_hits += sl->fast_hits;
+        for (u32 w = 0; w < UMA_FAST_N; w++) sum.fast_miss[w] += sl->fast_miss[w];
+    }
     LOG("vulkan: in place over 600 presents: %llu ranges (%llu MB bound) read in guest memory, %llu copied; %llu "
         "imports made (%llu MB, %llu ms), %llu spans refused, %llu dropped; %u imports hold %llu MB; %llu hazards (a "
         "GPU-side write on a page that unfinished work reads in place); %llu waits for that work before a trap or a "
@@ -2375,7 +2401,7 @@ void vk_uma_frame(void) {
         "%llu barriers for it, %llu waits for it; %u chunks GPU memory where they are (%llu made, %llu given back); "
         "%llu writes, %llu the same range as one of the same submission, %llu pages counted\n"
         "vulkan:   those waits by who asked: %llu region, %llu mem-need, %llu mem-need-cpu, %llu front-write\n",
-        (unsigned long long)g_uma.hits, (unsigned long long)(g_uma.hit_bytes >> 20), (unsigned long long)g_uma.misses,
+        (unsigned long long)sum.hits, (unsigned long long)(sum.hit_bytes >> 20), (unsigned long long)g_uma.misses,
         (unsigned long long)g_uma.imports, (unsigned long long)(g_uma.import_bytes >> 20),
         (unsigned long long)(g_uma.import_ns / 1000000), (unsigned long long)g_uma.failed,
         (unsigned long long)g_uma.dropped, g_uma.nimp, (unsigned long long)(bytes >> 20),
@@ -2443,16 +2469,18 @@ void vk_uma_frame(void) {
         "old chain (%llu a region going, %llu not one run, %llu in no region, %llu across a region's edge, %llu "
         "blk, %llu off the alignment); %u regions with tables, %u that went kept, %llu KB of tables; %llu "
         "differences of the cross-check since the start\n",
-        (unsigned long long)g_uma.fast_hits,
-        (unsigned long long)(g_uma.fast_miss[UMA_FAST_DEAD] + g_uma.fast_miss[UMA_FAST_RUN] +
-                             g_uma.fast_miss[UMA_FAST_NONE] + g_uma.fast_miss[UMA_FAST_EDGE] +
-                             g_uma.fast_miss[UMA_FAST_BLK] + g_uma.fast_miss[UMA_FAST_ALIGN]),
-        (unsigned long long)g_uma.fast_miss[UMA_FAST_DEAD], (unsigned long long)g_uma.fast_miss[UMA_FAST_RUN],
-        (unsigned long long)g_uma.fast_miss[UMA_FAST_NONE], (unsigned long long)g_uma.fast_miss[UMA_FAST_EDGE],
-        (unsigned long long)g_uma.fast_miss[UMA_FAST_BLK], (unsigned long long)g_uma.fast_miss[UMA_FAST_ALIGN], live,
+        (unsigned long long)sum.fast_hits,
+        (unsigned long long)(sum.fast_miss[UMA_FAST_DEAD] + sum.fast_miss[UMA_FAST_RUN] +
+                             sum.fast_miss[UMA_FAST_NONE] + sum.fast_miss[UMA_FAST_EDGE] +
+                             sum.fast_miss[UMA_FAST_BLK] + sum.fast_miss[UMA_FAST_ALIGN]),
+        (unsigned long long)sum.fast_miss[UMA_FAST_DEAD], (unsigned long long)sum.fast_miss[UMA_FAST_RUN],
+        (unsigned long long)sum.fast_miss[UMA_FAST_NONE], (unsigned long long)sum.fast_miss[UMA_FAST_EDGE],
+        (unsigned long long)sum.fast_miss[UMA_FAST_BLK], (unsigned long long)sum.fast_miss[UMA_FAST_ALIGN], live,
         kept, (unsigned long long)(words * 8 >> 10), (unsigned long long)g_uma.check_diffs);
-    g_uma.fast_hits = 0;
-    memset(g_uma.fast_miss, 0, sizeof g_uma.fast_miss);
+    for (u32 k = 0; k < VK_RC_SLOTS; k++) {
+        g_uma_slot[k].fast_hits = 0;
+        memset(g_uma_slot[k].fast_miss, 0, sizeof g_uma_slot[k].fast_miss);
+    }
     memset(g_uma.order_n, 0, sizeof g_uma.order_n);
     memset(g_uma.order_pass, 0, sizeof g_uma.order_pass);
     g_uma.order_left = 0;
@@ -2461,7 +2489,8 @@ void vk_uma_frame(void) {
     memset(g_uma.wait_open, 0, sizeof g_uma.wait_open);
     g_uma.merges = g_uma.merged = 0;
     g_vk_cs_left = g_uma.open_waits = 0;
-    g_uma.hits = g_uma.hit_bytes = g_uma.misses = g_uma.imports = g_uma.import_bytes = g_uma.import_ns = g_uma.failed =
+    for (u32 k = 0; k < VK_RC_SLOTS; k++) g_uma_slot[k].hits = g_uma_slot[k].hit_bytes = 0;
+    g_uma.misses = g_uma.imports = g_uma.import_bytes = g_uma.import_ns = g_uma.failed =
         g_uma.dropped = g_uma.quiesces = g_uma.waits = g_uma.written_bytes = g_uma.barriers = g_uma.out_waits =
             g_uma.published = g_uma.chunks_made = g_uma.chunks_gone = g_uma.out_n = g_uma.out_same =
                 g_uma.out_npages = 0;
