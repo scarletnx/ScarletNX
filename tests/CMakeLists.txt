@@ -95,6 +95,8 @@ if(SNX_TEST_SANITIZERS)
         snx_prepared
         # every console's game menu and F1's text, Tracy's client and F10's captures, RenderDoc's captures
         snx_menu snx_tracy_client snx_vk_renderdoc
+        # the microphone every console's game hears, from the host's recording device, its noise reduced
+        snx_mic
         # the shader corpus translator, which shaderc_sm86 runs
         snx-shaderc
         # GLSL ES into SPIR-V
