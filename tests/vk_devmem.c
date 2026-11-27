@@ -930,6 +930,41 @@ static void check_cap(void) {
     check_counts(0);
 }
 
+/* The heap at its cap with room in its blocks, but in pieces: every other 4 MiB buffer let go leaves holes of 4 MiB
+   and no longer run. A request of 12 MiB, no larger than the room and larger than any piece, gets memory of its own
+   past the cap, the driver called once, and the report counts it; one larger than the room still finds none, and so
+   does one where the heap is full with no room in its blocks */
+static void check_fragmented(void) {
+    enum { CAP = 512 };
+    static Held held[CAP];
+    const u64 budget = GIB;
+    DevMemWant gpu = {.at = DM_DEVICE};
+    u32 n = 0;
+    device(0, 1024, 64, budget);
+    while (n < CAP && make(0, 4 * MIB, 4096, ~0u, 0, gpu, &held[n]) == VK_SUCCESS) n++;
+    CHECK(n < CAP);
+    Held none;
+    CHECK(make(0, 12 * MIB, 4096, ~0u, 0, gpu, &none) == VK_ERROR_OUT_OF_DEVICE_MEMORY); /* no room: none */
+    u64 room = 0;
+    for (u32 i = 0; i < n; i += 2)
+        if (drv_heap(held[i].info.type) == 0 && !alone_of(&held[i])) {
+            unmake(&held[i]);
+            room += 4 * MIB;
+        }
+    CHECK(room >= 64 * MIB);
+    const u64 past = g_devmem.past;
+    const u32 calls = g_drv.allocations;
+    Held big;
+    CHECK(make(0, 12 * MIB, 4096, ~0u, 0, gpu, &big) == VK_SUCCESS);
+    CHECK(alone_of(&big) && drv_heap(big.info.type) == 0 && g_drv.allocations == calls + 1);
+    CHECK(g_devmem.past == past + 1 && g_devmem.past_bytes >= 12 * MIB);
+    CHECK(make(0, room + 64 * MIB, 4096, ~0u, 0, gpu, &none) == VK_ERROR_OUT_OF_DEVICE_MEMORY);
+    unmake(&big);
+    for (u32 i = 0; i < n; i++)
+        if (held[i].mem) unmake(&held[i]);
+    check_counts(0);
+}
+
 /* An image whose size follows the game's (DevMemWant.sized: a render target at a dynamic resolution, a copy of one)
    takes a run of its size class: with the heap at its cap and no other room, one of 11 MiB takes the run one of 10.9
    MiB let go, both of the 11 MiB class. Without the class that run held 10.9 MiB, and the bigger request found none
@@ -1528,6 +1563,7 @@ int main(void) {
     check_kind_fallback();
     check_keep();
     check_cap();
+    check_fragmented();
     check_size_class();
     check_atoms(64);
     check_atoms(4096);
