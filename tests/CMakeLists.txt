@@ -4521,11 +4521,11 @@ if(SNX_UNICORN_INCLUDE_DIR AND SNX_UNICORN_LIBRARY)
     # calls of functions the unit made before the caller, past their entry's check with no target given, and the stale
     # checks a game's module has (of no stale code); in an AOT module and in a JIT unit
     add_test(NAME recompiler_arm64_calls_stale COMMAND snx-test-recompiler-arm64 --calls --stale --functions 40
-             --states 4)
+             --states 4 --frozen ${snx_backends_frozen}/calls_40.txt)
     add_test(NAME recompiler_arm64_calls_back COMMAND snx-test-recompiler-arm64 --calls-back --stale --functions 40
-             --states 4)
+             --states 4 --frozen ${snx_backends_frozen}/calls_back.txt)
     add_test(NAME recompiler_arm64_calls_back_jit COMMAND snx-test-recompiler-arm64 --calls-back --stale --jit
-             --functions 40 --states 4)
+             --functions 40 --states 4 --frozen ${snx_backends_frozen}/calls_back.txt)
     set_tests_properties(recompiler_arm64_calls_stale recompiler_arm64_calls_back recompiler_arm64_calls_back_jit
                          PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
     # a function longer than a machine's short jumps reach: B's 128 KiB on MIPS64, JAL's 1 MiB on riscv64, B.cond's and
