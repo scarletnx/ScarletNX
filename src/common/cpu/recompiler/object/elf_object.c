@@ -147,11 +147,15 @@ int snx_elf_parse(SnxElfObject* o, const SnxLinkInput* input, unsigned* machine,
     }
     if (o->eh->e_machine != *machine)
         return snx_link_fail(error, error_size, "%s: another machine's object%s", input->name, "");
-    if (object_abi != *abi)
-        return snx_link_fail(error, error_size, "%s: another ABI's object (%s)", input->name,
-                             *machine == EM_PPC64  ? "ELFv1 and ELFv2"
-                             : *machine == EM_MIPS ? "e_flags differ: the ISA, PIC or the NaN encoding"
-                                                   : "e_flags differ: the float ABI, or compressed code");
+    if (object_abi != *abi) {
+        char flags[128];
+        if (*machine == EM_PPC64)
+            snprintf(flags, sizeof flags, "ELFv%u, where the first object is ELFv%u", object_abi, *abi);
+        else
+            snprintf(flags, sizeof flags, "e_flags 0x%x, where the first object's are 0x%x: %s", object_abi, *abi,
+                     *machine == EM_MIPS ? "the ISA, PIC or the NaN encoding" : "the float ABI, or compressed code");
+        return snx_link_fail(error, error_size, "%s: another ABI's object (%s)", input->name, flags);
+    }
     o->sh = (const Elf64_Shdr*)(input->data + o->eh->e_shoff);
     /* one block, the 8-byte arrays first */
     o->address = (uint64_t*)calloc(o->eh->e_shnum, 2 * sizeof(uint64_t) + sizeof(int));

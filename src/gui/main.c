@@ -8985,7 +8985,7 @@ static const char preview_run[] = "Extracting A Game.nsp\n"
                                   "Extracted 3 NCAs, the program's 4 modules\n"
                                   "Recompiling A Game (4 modules)\n"
                                   "Functions: 48211  instructions: 2915002\n"
-                                  "LLVM: 5 code units and the module descriptor\n"
+                                  "x86-64 back end: 5 code units and the descriptor\n"
                                   "  compiled block 1/6: code_000, 9874 functions (8.1 s)\n"
                                   "  compiled block 2/6: code_001, 10022 functions (8.4 s)\n"
                                   "  compiled block 3/6: code_002, 9567 functions (7.9 s)\n";

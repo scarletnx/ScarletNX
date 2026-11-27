@@ -1147,8 +1147,42 @@ static void malformed_objects(void) {
     }
 }
 
+/* an object of another ABI than the first's: its e_flags and the first object's, as the link compares them (a MIPS
+   object's without NOREORDER), and PowerPC64's ELF version */
+static void other_abi(void) {
+    static const struct {
+        unsigned machine, first, flags;
+        const char* want;
+    } cases[] = {
+        {EM_RISCV, 0x5, 0x1,
+         "rv.o: another ABI's object (e_flags 0x1, where the first object's are 0x5: the float ABI"},
+        {EM_LOONGARCH, 0x43, 0x41, "rv.o: another ABI's object (e_flags 0x41, where the first object's are 0x43"},
+        {EM_MIPS, 0x80000007, 0x80000407,
+         "rv.o: another ABI's object (e_flags 0x80000406, where the first object's are 0x80000006: the ISA"},
+        {EM_PPC64, SNX_ELF_PPC_ELFV2, 1, "rv.o: another ABI's object (ELFv1, where the first object is ELFv2)"},
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof *cases; ++i) {
+        Elf64_Ehdr header = {0};
+        SnxLinkInput input = {(const unsigned char*)&header, sizeof header, "rv.o"};
+        SnxElfObject o;
+        char error[256] = "";
+        unsigned machine = cases[i].machine;
+        unsigned abi = cases[i].machine == EM_MIPS ? cases[i].first & ~SNX_EF_MIPS_NOREORDER : cases[i].first;
+        memcpy(header.e_ident, ELFMAG, SELFMAG);
+        header.e_ident[EI_CLASS] = ELFCLASS64, header.e_ident[EI_DATA] = snx_elf_host_data();
+        header.e_type = ET_REL, header.e_machine = (uint16_t)cases[i].machine, header.e_flags = cases[i].flags;
+        header.e_shentsize = sizeof(Elf64_Shdr);
+        if (snx_elf_parse(&o, &input, &machine, &abi, error, sizeof error) == 0 || !strstr(error, cases[i].want)) {
+            printf("FAIL: another ABI's object of machine %u: \"%s\", not \"%s\"\n", cases[i].machine, error,
+                   cases[i].want);
+            ++failures;
+        }
+    }
+}
+
 int main(void) {
     malformed_objects();
+    other_abi();
     data_relocations();
     instruction_relocations();
     veneers();
