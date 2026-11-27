@@ -3358,7 +3358,7 @@ static inline SgD sg_d_reduce_add(SgCtx* g, SgD x, unsigned size) {
     return sum;
 }
 
-/* ---- AArch32's builtins (core.h's, for LLVM) ---- */
+/* ---- AArch32's builtins (core.h's) ---- */
 
 /* IsZeroBit: '1' where x is zero */
 static inline SgD sg_d_is_zero_bit(SgCtx* g, SgD x) { return sgx_bool_bits(sgx(g), sg_d_is_zero(g, x)); }

@@ -105,7 +105,7 @@ static inline void sgx_machine_ins(SgXAsm* a, int at, const unsigned char* r) {
         case SGX_A32_FENCE: rk_fence(b); return;
         case SGX_A32_CALL: sgx_a32_call_out(a, b, i->sym); return;
         case SGX_A32_STREX: {
-            /* llvm.c's exclusive(): the monitor disarmed, its address and size checked, then a compare-and-swap of the
+            /* the store-exclusive: the monitor disarmed, its address and size checked, then a compare-and-swap of the
                value the load-exclusive read at the access's size: SGX_RET 0 where it took, 1 otherwise. The address,
                the value and the memory's base in sgx_a32_strex's registers; the clobbered two its own, and RK_S1, RK_S2,
                RK_SA and RK_FA (the flags are none across it) */

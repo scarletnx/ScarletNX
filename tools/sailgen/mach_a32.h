@@ -1,19 +1,19 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* sailgen's machine back ends, AArch32's part any machine's shares (after the machine's assembly and before its own
-   AArch32 part, x64_a32.h or arm64_a32.h), as llvm_arm.h is LLVM's: the registers and CPSR where SnxArmCPU keeps them
+   AArch32 part, x64_a32.h or arm64_a32.h): the registers and CPSR where SnxArmCPU keeps them
    (arm.h), its address in the machine's SGX_BASE register. A register read once is the region's value of it after (a
    load, or what was written: every write is stored at once, and the stores a later one overwrites are dropped as the
-   region ends). PSTATE's fields written are kept for one store of CPSR (sg_flags_flush), as llvm.c's nz wrote them, but
-   past the instruction's end: NZCV from AddWithCarry stays the flags of the instruction that made them, which the next
+   region ends). PSTATE's fields written are kept for one store of CPSR (sg_flags_flush) past
+   the instruction's end: NZCV from AddWithCarry stays the flags of the instruction that made them, which the next
    instruction's ConditionHolds reads as the condition code the selection derived (sg_condition_origin), until
    something needs CPSR in memory (a branch out of the region: a condition's skip, an exit, a call, the region's end).
 
    The guest's CPU and its memory are the block's options (codegen.h): the profile's ArchVersion for the Sail, and how
-   an access reaches guest memory, as llvm.c's transfer_begin, readmem, writemem and transfer_commit have it.
+   an access reaches guest memory.
    - Flat memory: an access whose bytes pass min(mem_size, 2^32) is a DATA_ABORT exit, R15 the instruction's, the
-     syndrome its address, as llvm.c's bounds() makes it; a store clears the exclusive monitor where it overlaps the
-     reservation (llvm.c's store_monitor), on a cold path.
+     syndrome its address; a store clears the exclusive monitor where it overlaps the
+     reservation, on a cold path.
    - Hosted memory: no range check (a guard faults on the host), the rest as flat memory.
    - Checked memory: each transfer is one call of the runtime library (rt_helpers.c's snx_arm_checked_access), its bytes
      in the state's words (checked.h): a load's read from there, a store's written there and then sent.
@@ -442,7 +442,7 @@ static inline void sg_branch_to(SgCtx* g, SgD target, SgB when) {
 }
 /* R15 = v */
 static inline void sgx_a32_pc(SgCtx* g, SgD v) { sgx_a32_put(g, offsetof(SnxArmCPU, r) + 60, 32, v); }
-/* UNDEFINED, or an instruction the block cannot run (reason): the backend's to run or stop at (llvm.c's trap):
+/* UNDEFINED, or an instruction the block cannot run (reason): the backend's to run or stop at:
    snx_arm_undefined(state, word, reason) with R15 the instruction's; its exit returns, else the block ends with R15 the
    next instruction's */
 static inline void sgx_a32_call(SgCtx* g, const char* sym, SgD* args, int nargs, int result);
@@ -455,7 +455,7 @@ static inline void sgx_a32_trap(SgCtx* g, unsigned reason) {
     g->undefined = 1;
 }
 static inline void sg_undefined(SgCtx* g) { sgx_a32_trap(g, SNX_ARM_UNDEFINED); }
-/* sgx_a32_trap where bad holds (llvm.c's require of an exit of the backend's), the block going on otherwise */
+/* sgx_a32_trap where bad holds, the block going on otherwise */
 static inline void sgx_a32_trap_on(SgCtx* g, SgB bad, unsigned reason) {
     SgX* x = sgx(g);
     if (x->b[bad].kind == SGX_B_CONST && !x->b[bad].v) return;
@@ -465,7 +465,7 @@ static inline void sgx_a32_trap_on(SgCtx* g, SgB bad, unsigned reason) {
     i->kv[1] = (SnxU32)g->pc | (SnxU64)g->next << 32;
 }
 /* the instruction's end: the block's where a write of it through the bus hook returned nonzero, R15 the next
-   instruction's (llvm.c's yield_check) */
+   instruction's */
 static inline void sgx_a32_yield_check(SgCtx* g) {
     if (!g->yields) return;
     g->yields = 0;
@@ -476,13 +476,13 @@ static inline void sgx_a32_yield_check(SgCtx* g) {
 /* a Thumb ITSTATE in CPSR: [1:0] in bits 26:25, [7:2] in 15:10 (SG_IT_BITS) */
 #define SG_IT_BITS 0x0600FC00u
 static inline SnxU32 sg_it_bits(unsigned itstate) { return (SnxU32)((itstate & 3u) << 25 | (itstate >> 2) << 10); }
-/* SVC and BKPT: R15 past the instruction and the exit, the immediate its syndrome (llvm_arm.h's sg_exception); in Thumb
+/* SVC and BKPT: R15 past the instruction and the exit, the immediate its syndrome; in Thumb
    an IT block's ITSTATE after it left in CPSR */
 static inline void sg_exception(SgCtx* g, unsigned code, SgD imm) {
     sgx_a32_commit(g);
     sg_flags_flush(g);
     sgx_a32_pc(g, sgx_const(32, g->next));
-    if (g->it_after) { /* Thumb: the ITSTATE after it in CPSR's IT bits (llvm_thumb.inc's it_leave) */
+    if (g->it_after) { /* Thumb: the ITSTATE after it in CPSR's IT bits */
         SgD c = sg_d_or(g, sgx_a32_cpsr(g), sgx_const(32, sg_it_bits(g->it_after)));
         g->cpsr = sgx_a32_put(g, offsetof(SnxArmCPU, cpsr), 32, c);
     }
@@ -491,8 +491,7 @@ static inline void sg_exception(SgCtx* g, unsigned code, SgD imm) {
     sgx_a32_machine(g, SGX_A32_JMP, 0)->disp = g->ret;
     g->undefined = 1; /* the instruction's way leaves the block */
 }
-/* the block's stop at the instruction (llvm.c's trap of a code the backend does not take): R15 pc, the
-   exit, its syndrome */
+/* the block's stop at the instruction: R15 pc, the exit, its syndrome */
 static inline void sgx_a32_stop(SgCtx* g, unsigned code, SgD syndrome, SnxU32 pc) {
     sgx_a32_commit(g);
     sg_flags_flush(g);
@@ -504,8 +503,7 @@ static inline void sgx_a32_stop(SgCtx* g, unsigned code, SgD syndrome, SnxU32 pc
 }
 static inline void sg_AArch32_CallSupervisor(SgCtx* g, SgD imm) { sg_exception(g, SNX_ARM_SVC, imm); }
 static inline void sg_AArch32_SoftwareBreakpoint(SgCtx* g, SgD imm) { sg_exception(g, SNX_ARM_BREAKPOINT, imm); }
-/* the ARM7TDMI's multiply carry, the runtime library's, from the operands before the result lands
-   (llvm.c's multiply) */
+/* the ARM7TDMI's multiply carry, the runtime library's, from the operands before the result lands */
 static inline void sg_MultiplyCarry(SgCtx* g) {
     SgD args[2] = {sgx_const(32, g->word), sgx_const(32, (SnxU64)g->thumb)};
     sgx_a32_commit(g);
@@ -544,7 +542,7 @@ static inline void sgx_a32_call(SgCtx* g, const char* sym, SgD* args, int nargs,
 
 /* ---- guest memory ---- */
 
-/* the region's min(mem_size, 2^32): an access whose last byte is past it aborts (llvm.c's bounds). The ARM7TDMI's and
+/* the region's min(mem_size, 2^32): an access whose last byte is past it aborts. The ARM7TDMI's and
    the ARM946E's window runs past 4 GiB by a guard (agb/cpu/memmap.c), where an access the console's bus wraps lands:
    its size as it is */
 static inline SgD sgx_a32_limit(SgCtx* g) {
@@ -573,7 +571,7 @@ static inline int sgx_a32_mem(SgCtx* g) {
 }
 /* an access of bytes at address (32 bits) checked: misaligned for alignment (a power of two, 1 for none) an
    ALIGNMENT exit, past the memory a DATA_ABORT one (not on hosted memory, whose guard faults on the host), both with
-   the address as the syndrome (llvm.c's bounds) */
+   the address as the syndrome */
 static inline void sgx_a32_bounds(SgCtx* g, SgD address, unsigned bytes, unsigned alignment) {
     SgX* x = sgx(g);
     SgD a = address;
@@ -660,13 +658,13 @@ static inline SgD sgx_a32_checked_call(SgCtx* g, const char* sym, SgD a, SgD b, 
     sgx_a32_call(g, sym, args, 3, 1);
     return sg_d_slice(g, sgx_val(64, x->ins[x->n - 1].def), 31, 0);
 }
-/* one transfer through the runtime's bus, a fault a DATA_ABORT exit with its address (llvm.c's bus_access) */
+/* one transfer through the runtime's bus, a fault a DATA_ABORT exit with its address */
 static inline void sgx_a32_checked_access(SgCtx* g, unsigned operation, SgD address, unsigned bytes) {
     sgx_reg(sgx(g), &address);
     SgD status = sgx_a32_checked_call(g, "snx_arm_checked_access", sgx_const(32, operation), address, bytes);
     sgx_a32_exit(g, sg_b_not(g, sg_d_is_zero(g, status)), SNX_ARM_DATA_ABORT, address, 0);
 }
-/* the instruction at g->pc fetched through the bus before it runs (llvm.c's instruction_fetch): word as the block has
+/* the instruction at g->pc fetched through the bus before it runs: word as the block has
    it, of bytes */
 static inline void sgx_a32_fetch(SgCtx* g, SnxU32 word, unsigned bytes) {
     if (!sgx_a32_checked(g)) return;
@@ -680,8 +678,7 @@ static inline void sgx_a32_fetch(SgCtx* g, SnxU32 word, unsigned bytes) {
 /* ---- the ARM7TDMI's and the ARM946E's bus: the hook's regions, and the access that leaves the hot code for it ---- */
 
 /* where the hook may take an access at address: the regions' top bytes, and everything past the console's 28 bits; on
-   the ARM946E its registers' window alone (llvm.c's io_route, but for the hook's own presence, the
-   runtime library's) */
+   the ARM946E its registers' window alone (the hook's own presence is the runtime library's) */
 static inline SgB sgx_a32_route(SgCtx* g, SgD address, int store) {
     sg_flags_flush(g); /* the condition made here stays the flags of the jump on it */
     SgD top = sg_d_lsr(g, address, 24);
@@ -743,7 +740,7 @@ static inline SgD sgx_a32_bus(SgCtx* g, SgB out, SgD hook, SgD address, int byte
     return r;
 }
 /* a single transfer's load of bytes (1, 2, 4) at address: the aligned unit, a misaligned one rotated through 32 bits,
-   an ARMv4T LDRSH at an odd address the byte there (llvm.c's readmem on the two) */
+   an ARMv4T LDRSH at an odd address the byte there */
 static inline SgD sgx_a32_bus_read(SgCtx* g, SgD address, int bytes, int sign) {
     SgX* x = sgx(g);
     int odd = sign && bytes == 2 && sgx_a32_arm7(g);
@@ -761,8 +758,7 @@ static inline SgD sgx_a32_bus_read(SgCtx* g, SgD address, int bytes, int sign) {
         v = sg_d_shift_dyn(g, v, sg_d_lsl(g, sg_d_and(g, address, sgx_const(32, (SnxU32)(bytes - 1))), 3), 3);
     return sign && bytes < 4 ? sg_d_sext(g, sg_d_slice(g, v, 8 * bytes - 1, 0), 32) : v;
 }
-/* a multiple transfer's word at address: below the save memory its word's, on the ARM946E everywhere (llvm.c's
-   list_address) */
+/* a multiple transfer's word at address: below the save memory its word's, on the ARM946E everywhere */
 static inline SgD sgx_a32_list_address(SgCtx* g, SgD address) {
     SgD word = sg_d_and(g, address, sgx_const(32, ~3u));
     if (sgx_a32_arm9(g)) return word;
@@ -775,7 +771,7 @@ static inline SgD sgx_a32_list_read(SgCtx* g, SgD address) {
     return sgx_a32_bus(g, out, at, at, 4, 4u | SNX_ARM_IO_LIST | (sgx_a32_arm9(g) ? SNX_ARM_IO_ARM9 : 0), NULL);
 }
 /* a store of bytes through the bus (list: a multiple transfer's word): what the hook returned joins the instruction's
-   yields (llvm.c's writemem, writemem_list) */
+   yields */
 static inline void sgx_a32_bus_write(SgCtx* g, SgD address, int bytes, SgD value, int list) {
     SgX* x = sgx(g);
     SgD at = list        ? sgx_a32_list_address(g, address)
@@ -799,7 +795,7 @@ static inline void sgx_a32_bus_write(SgCtx* g, SgD address, int bytes, SgD value
 /* ---- an instruction's transfer, of any profile and mode: begun (its range and alignment checked, a checked load's
    bytes read), moved, ended (a checked store's bytes sent) ---- */
 
-/* llvm.c's transfer_begin: bytes at address, of one instruction (multi: more than one register's).
+/* a transfer's start: bytes at address, of one instruction (multi: more than one register's).
    alignment 1 for none */
 static inline void sgx_a32_transfer(SgCtx* g, SgD address, unsigned bytes, unsigned alignment, int store, int multi) {
     SgX* x = sgx(g);
