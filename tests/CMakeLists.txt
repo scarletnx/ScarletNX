@@ -1523,6 +1523,14 @@ add_test(NAME sailgen_refused_path
                  "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/refused_path.sail")
 set_tests_properties(sailgen_refused_path PROPERTIES PASS_REGULAR_EXPRESSION
     "refused_path.sail:9: error: InstructionSynchronizationBarrier, the back end's action, under a condition known only at run time")
+# the back ends' A64 roots (a64_x64.roots, a64_risc.roots) are names of a64.roots, the whole of A64's: one that drifts
+# from it is named, as a fixture whose a64_x64.roots names what its a64.roots lacks shows
+add_test(NAME sailgen_roots_subset COMMAND "${CMAKE_COMMAND}" "-DDIR=${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/sail"
+                                           -P "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/roots_subset.cmake")
+add_test(NAME sailgen_roots_drift COMMAND "${CMAKE_COMMAND}" "-DDIR=${CMAKE_CURRENT_SOURCE_DIR}/sailgen/roots_drift"
+                                          -P "${CMAKE_CURRENT_SOURCE_DIR}/sailgen/roots_subset.cmake")
+set_tests_properties(sailgen_roots_drift PROPERTIES PASS_REGULAR_EXPRESSION
+                     "a64_x64.roots names decode_missing, which a64.roots lacks")
 # and the whole of A64's roots (a64.roots, which the back ends' subsets are of) generate with the x86-64 back end's
 # files and the NX's fixups
 add_test(NAME sailgen_a64
