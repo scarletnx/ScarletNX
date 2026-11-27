@@ -56,6 +56,7 @@ typedef struct {
        ones keep in memory */
     unsigned active;
     SnxU64 held;
+    double unit_seconds; /* what the threads spent in the units, summed */
     int failed;
     char error[1024];
 #ifdef _WIN32
@@ -198,6 +199,7 @@ static void worker(Queue* q) {
         lock(q);
         ++q->done;
         --q->active;
+        q->unit_seconds += seconds;
         if (q->units[i].x64) q->held += q->units[i].x64_size;
         if (rc && !q->failed) {
             q->failed = 1;
@@ -312,6 +314,7 @@ int snx_build_module_a64(SnxProgram* loaded, const SnxCodegenOptions* options, c
     const char* exports[5];
     char error[1024], *tmp = NULL;
     double start;
+    SnxRecompilePhases phases = {0};
     int rc = -1;
     memset(&codegen, 0, sizeof(codegen));
     memset(&q, 0, sizeof(q));
@@ -341,9 +344,11 @@ int snx_build_module_a64(SnxProgram* loaded, const SnxCodegenOptions* options, c
         }
         cache_count = snx_jit_cache_count(cache);
     }
+    start = snx_seconds();
     if (!options->interp_only &&
         snx_nx_codegen_analyze(&codegen, loaded, options->hints, options->hint_count, options->quiet, features))
         goto done;
+    phases.discovery = snx_seconds() - start;
     if (build->found) *build->found = codegen.instruction_count;
     codegen.features = features;
     codegen.direct_svc = 1; /* the runtime's RtAPI.svcs (svc.c's g_svc64) */
@@ -399,7 +404,12 @@ int snx_build_module_a64(SnxProgram* loaded, const SnxCodegenOptions* options, c
         if (n > q.count) n = (unsigned)q.count;
         printf("aot_threads=0 (Auto): %u thread%s at once, the x86-64 back end's units\n", n, n == 1 ? "" : "s");
     }
+    start = snx_seconds();
     if (q.count) run(&q, build->jobs, 0);
+    phases.compile = snx_seconds() - start;
+    phases.units = q.unit_seconds;
+    phases.threads = build->jobs < 1 ? 1 : build->jobs;
+    if (phases.threads > q.count) phases.threads = q.count ? (unsigned)q.count : 1;
     if (q.failed) {
         snx_error("%s back end: %s", native, q.error);
         goto done;
@@ -444,6 +454,7 @@ int snx_build_module_a64(SnxProgram* loaded, const SnxCodegenOptions* options, c
         snx_report_unit(q.count + 1, q.count + 1, "module", label, 0, snx_seconds() - start);
         free(label);
     }
+    phases.descriptor = snx_seconds() - start;
     /* link: runtime library (the one the recompiler's build compiled, rtlib_object.h, as the JIT links), descriptor,
        chunks, the profile cache's units. A module for another machine has no runtime library of its own (this host has
        none for that machine): the app that loads it brings its own */
@@ -483,6 +494,8 @@ int snx_build_module_a64(SnxProgram* loaded, const SnxCodegenOptions* options, c
         pack.inputs = inputs;
         pack.count = q.count;
         snx_codegen_free(&codegen);
+        phases.pack = 1;
+        start = snx_seconds();
         if (snx_objects_pack_write(inputs, n, tmp, &linked.size, NULL, written_unit, &pack, error, sizeof(error))) {
             snx_error("packing failed: %s", error);
             if (snx_is_file(tmp)) snx_remove_tree(tmp);
@@ -494,11 +507,15 @@ int snx_build_module_a64(SnxProgram* loaded, const SnxCodegenOptions* options, c
             snx_remove_tree(tmp);
             goto done;
         }
+        phases.link = snx_seconds() - start;
     } else {
+        start = snx_seconds();
         if (snx_link(inputs, n, exports, export_count, base_name(build->output), &linked, error, sizeof(error))) {
             snx_error("linking failed: %s", error);
             goto done;
         }
+        phases.link = snx_seconds() - start;
+        start = snx_seconds();
         /* a module Android can map: its text is loaded executable, which its file must allow there */
         if (snx_write_file(tmp, linked.data, linked.size) || snx_make_executable(tmp) ||
             plat_replace_file(tmp, build->output)) {
@@ -506,9 +523,14 @@ int snx_build_module_a64(SnxProgram* loaded, const SnxCodegenOptions* options, c
             if (snx_is_file(tmp)) snx_remove_tree(tmp);
             goto done;
         }
+        phases.write = snx_seconds() - start;
     }
     if (!options->quiet) {
+        char line[512];
         printf("%s module: %.1f MB, %lu entries\n", native, (double)linked.size / 1000000.0, (unsigned long)entry_count);
+        phases.peak = snx_footprint_peak();
+        snx_phases_line(line, sizeof line, &phases);
+        puts(line);
     }
     rc = 0;
 done:
