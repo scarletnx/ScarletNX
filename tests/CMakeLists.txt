@@ -4227,7 +4227,8 @@ target_link_libraries(snx-test-recompiler-backends PRIVATE scarletnx-recompiler 
 snx_decodetree_a64(snx-test-recompiler-backends)
 add_test(NAME recompiler_backends COMMAND snx-test-recompiler-backends --frozen ${snx_backends_frozen}/default.txt)
 # functions with no RET, cut by the next one's start: the return a function makes where it runs off its end
-add_test(NAME recompiler_backends_fall COMMAND snx-test-recompiler-backends --fall)
+add_test(NAME recompiler_backends_fall COMMAND snx-test-recompiler-backends --fall
+         --frozen ${snx_backends_frozen}/fall.txt)
 # the density of the same back end's code: --counts writes one native object per op, the script counts the host
 # instructions in them with llvm-objdump and compares each op's mean per guest word with the checked-in limits
 if(Python3_Interpreter_FOUND)
