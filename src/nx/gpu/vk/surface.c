@@ -2487,12 +2487,30 @@ static int surf_publish(Surf* s) {
 }
 /* surf_publish counted by why (VkRtWatchStats, vk_lock held): its bytes, and the CPU's time in the outermost one, as
    a publish publishes the older targets under it first (vk_rt_before_publish_cpu) */
+/* the publishes under way, outermost first (publish_why), and how deep a publish made for another's sake may go
+   before such a target is written back. One level wrote back, with a wait for the GPU, about one target a present in
+   one game's town: its targets drawn at one address in several sizes meet one another's, and a parked one's publish
+   went through two of them */
+#define RT_PUB_STACK 16
+#define RT_NEST_MAX  4
+static struct {
+    const Surf* s[RT_PUB_STACK];
+    int n;
+} g_rt_pub;
+static int rt_in_publish(const Surf* t) {
+    for (int i = 0; i < g_rt_pub.n; i++)
+        if (g_rt_pub.s[i] == t) return 1;
+    return 0;
+}
 static int publish_why(Surf* s, int why) {
     static int depth;
     const u64 size = s ? flush_bytes(s) : 0, a = depth ? 0 : plat_ns();
+    if (depth < RT_PUB_STACK) g_rt_pub.s[depth] = s; /* rt_in_publish: not published again inside its own */
     depth++;
+    g_rt_pub.n = depth < RT_PUB_STACK ? depth : RT_PUB_STACK;
     const int r = surf_publish(s);
     depth--;
+    g_rt_pub.n = depth < RT_PUB_STACK ? depth : RT_PUB_STACK;
     if (!r) return 0;
     g_vk_rt_watch.by[why]++;
     g_vk_rt_watch.bytes[why] += size;
@@ -2633,14 +2651,15 @@ static int rt_overlay(u64 gva, u64 size, VkBuffer buf, u64 at, const Surf* of, i
         /* reaching past the range, or its copy refused: published (a copy into an owner on the GPU, no wait), as a
            release does and as rt_before_cpu does before a producer's publish, or written back where it can't be, the
            copy keeping the bytes the caller read either way. What the caller publishes over the overlap goes over that
-           owner after it. Not nested: an overlay inside that publish writes such a target back. Written back always,
+           owner after it. Nested up to RT_NEST_MAX deep, and never one a publish under way is of: past that, such a
+           target is written back. Written back always,
            it was a readback, a wait for the GPU and a landing, once a frame in one game's compute pass. A target past
            the range is mostly one whose memory a smaller surface took over since, and the program's writes there are
            newer than its pixels */
-        if (!g_rt_nested) {
-            g_rt_nested = 1;
+        if (g_rt_nested < RT_NEST_MAX && !rt_in_publish(s)) {
+            g_rt_nested++;
             const int published = vk_surf_publish(s);
-            g_rt_nested = 0;
+            g_rt_nested--;
             if (published) continue;
         }
         g_vk_rt_readbacks++;
@@ -2667,10 +2686,10 @@ static void rt_publish_newer(const Surf* s, u64 size, int whole) {
         for (u32 k = 0; k < runs && !met; k++)
             met = t->gva < s->gva + run[k][1] && t->gva + rt_bytes(t) > s->gva + run[k][0];
         if (!met) continue;
-        if (!g_rt_nested) {
-            g_rt_nested = 1;
+        if (g_rt_nested < RT_NEST_MAX && !rt_in_publish(t)) {
+            g_rt_nested++;
             const int published = vk_surf_publish(t);
-            g_rt_nested = 0;
+            g_rt_nested--;
             if (published) continue;
         }
         g_vk_rt_readbacks++;
