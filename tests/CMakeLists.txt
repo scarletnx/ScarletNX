@@ -3931,7 +3931,7 @@ if(NOT WIN32)
             list(GET parts 2 features)
             string(REGEX REPLACE "be$" "" gen "${m}")
             add_executable(snx-test-sail-${m} sail_mach.c sail_mach_emit.c sail_qemu.c llvm_qemu_words.c
-                           qemu_ref/qemu_ref.c support/host_unicorn.c support/la64_interp.c
+                           qemu_ref/qemu_ref.c support/frozen.c support/host_unicorn.c support/la64_interp.c
                            "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
                            "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
             snx_cpu_helpers_flags(snx-test-sail-${m})
@@ -3979,6 +3979,7 @@ if(SNX_X64 AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
 endif()
 if(SNX_X64)
     add_executable(snx-test-sail-x64 sail_x64.c sail_x64_emit.c sail_qemu.c llvm_qemu_words.c qemu_ref/qemu_ref.c
+                   support/frozen.c
                    "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
                    "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
     snx_cpu_helpers_flags(snx-test-sail-x64)
@@ -4015,11 +4016,20 @@ if(SNX_X64)
     endif()
     snx_sail_x64_test(sail_x64_spill --pool ${snx_x64_pool} --states 32)
     snx_sail_x64_test(sail_x64_spill_xmm --pool ${snx_x64_pool} --xmm ${snx_x64_xmm} --states 16)
+    # what LLVM's steps give the sail tests' words QEMU can't stand for, while LLVM is there: snx-test-sail-frozen
+    # --record FILE writes the frozen file the tests' --frozen reads, and snx-test-sail-frozen FILE checks one
+    add_executable(snx-test-sail-frozen sail_frozen.c sail_qemu.c llvm_qemu_words.c llvm_steps.c qemu_ref/qemu_ref.c
+                   support/frozen.c "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
+    snx_cpu_helpers_flags(snx-test-sail-frozen)
+    snx_test_target(snx-test-sail-frozen gnu23)
+    target_include_directories(snx-test-sail-frozen PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(snx-test-sail-frozen PRIVATE snx_llvm snx_driver ${CMAKE_DL_LIBS})
+    snx_decodetree_a64(snx-test-sail-frozen)
     # its code for Windows (the calling convention), run by this host's processor as Windows' C would call it
     # (support/host_win64.c): the same words against LLVM, as the other machines' under Unicorn
     if(snx_host_win64)
         add_executable(snx-test-sail-win64 sail_mach.c sail_mach_emit.c sail_qemu.c llvm_qemu_words.c
-                       qemu_ref/qemu_ref.c support/host_win64.c
+                       qemu_ref/qemu_ref.c support/frozen.c support/host_win64.c
                        "${PROJECT_SOURCE_DIR}/src/common/cpu/recompiler/x64/x64_helpers.c"
                        "${PROJECT_SOURCE_DIR}/src/common/cpu/aarch64/cpu_helpers.c")
         snx_cpu_helpers_flags(snx-test-sail-win64)

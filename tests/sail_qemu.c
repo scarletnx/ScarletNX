@@ -3,6 +3,7 @@
 /* sail_qemu.h's: the states, the window, the cases, the comparison with QEMU's end and the reference of it */
 #include "sail_qemu.h"
 #include "llvm_qemu_words.h"
+#include "support/frozen.h"
 #include "common/cpu/aarch64/a64_decoder.h"
 #include "common/utilities/endian.h"
 #include <stdio.h>
@@ -176,12 +177,12 @@ void sail_window(u8* initial) {
     for (i = SAIL_PC - SAIL_WINDOW; i < SAIL_PC - SAIL_WINDOW + SAIL_CODE_SIZE; i += 4)
         snx_st_le32(initial + i, SNX_QREF_PAD);
 }
-void sail_window_start(u8* work, const u8* initial, u32 word, unsigned s) {
+void sail_window_start(u8* work, const u8* initial, u32 word, int pair) {
     if (g_sail.dirty) memcpy(work, initial, SAIL_TOUCHED);
     g_sail.dirty = 0;
     /* a pair's words are at SAIL_PAIR_PC, past the window: the code region in it holds pads, as QEMU's holds the seed
        there and neither side reads it */
-    snx_st_le32(work + (SAIL_PC - SAIL_WINDOW), sail_pair(word, s) ? SNX_QREF_PAD : word);
+    snx_st_le32(work + (SAIL_PC - SAIL_WINDOW), pair ? SNX_QREF_PAD : word);
 }
 
 void sail_state_of(const CPU* c, SnxQrefState* s) {
@@ -559,9 +560,13 @@ size_t sail_hold(SailHold* h, const u32* words, size_t n, unsigned states, size_
     u32* recorded = h->record ? (u32*)malloc(sizeof(u32) * (n ? n : 1)) : NULL;
     u64* hashes = h->record ? (u64*)malloc(sizeof(u64) * SAIL_STATES_MAX * (n ? n : 1)) : NULL;
     unsigned char* failed = (unsigned char*)calloc(n ? n : 1, 1);
-    size_t failures = 0, i, unheld = 0, missing = 0, nrecorded = 0, disagree = 0;
-    const char* why_example = NULL;
-    u32 unheld_word = 0, missing_word = 0;
+    size_t failures = 0, i, missing = 0, nrecorded = 0, disagree = 0, nwhy = 0, k;
+    struct {
+        const char* why;
+        size_t count;
+        u32 example;
+    } whys[8];
+    u32 missing_word = 0;
     char error[1024], cause[256], text[4096];
     if (!starts || !initial || !failed || (h->record && (!recorded || !hashes))) {
         fprintf(stderr, "FAIL: no memory for the comparison with QEMU\n");
@@ -573,7 +578,7 @@ size_t sail_hold(SailHold* h, const u32* words, size_t n, unsigned states, size_
     memcpy(h->work, initial, SAIL_WINDOW_SIZE);
     g_sail.dirty = 0;
     for (i = 0; i < n;) {
-        size_t first = i, end = i, k, cases = 0;
+        size_t first = i, end = i, cases = 0;
         while (end < n && (end - first + 1) * states <= BATCH) ++end;
         if (end == first) end = first + 1;
         snx_qref_clear(&batch);
@@ -581,7 +586,10 @@ size_t sail_hold(SailHold* h, const u32* words, size_t n, unsigned states, size_
             const char* why = sail_unheld(words[k]);
             unsigned s;
             if (why) {
-                if (!unheld++) why_example = why, unheld_word = words[k];
+                size_t j = 0;
+                while (j < nwhy && whys[j].why != why) ++j;
+                if (j == nwhy && nwhy < sizeof whys / sizeof *whys) whys[nwhy++] = (typeof(*whys)){why, 0, words[k]};
+                if (j < nwhy) ++whys[j].count;
                 continue;
             }
             for (s = 0; s < states; ++s, ++cases) {
@@ -659,9 +667,9 @@ size_t sail_hold(SailHold* h, const u32* words, size_t n, unsigned states, size_
         i = end;
     }
     failures += disagree;
-    if (unheld)
-        printf("%s: %zu words not held to QEMU, as %08x (%s): %s\n", h->name, unheld, (unsigned)unheld_word,
-               name_of(unheld_word), why_example);
+    for (k = 0; k < nwhy; ++k)
+        printf("%s: %zu words not held to QEMU, as %08x (%s): %s\n", h->name, whys[k].count, (unsigned)whys[k].example,
+               name_of(whys[k].example), whys[k].why);
     if (missing)
         printf("%s: %zu words the reference holds none of, as %08x (%s): not compared\n", h->name, missing,
                (unsigned)missing_word, name_of(missing_word));
@@ -676,5 +684,180 @@ size_t sail_hold(SailHold* h, const u32* words, size_t n, unsigned states, size_
 out:
     snx_qref_free(&batch);
     free(starts), free(initial), free(recorded), free(hashes), free(failed);
+    return failures;
+}
+
+/* ---- the words, and what LLVM gave of those QEMU can't stand for ---- */
+
+static u64 g_candidates_rng;
+static u64 candidates_rnd(void) {
+    g_candidates_rng ^= g_candidates_rng << 13;
+    g_candidates_rng ^= g_candidates_rng >> 7;
+    g_candidates_rng ^= g_candidates_rng << 17;
+    return g_candidates_rng;
+}
+size_t sail_candidates(unsigned samples, u32** out) {
+    static const u32 fields[3] = {0x1fu, 0x1fu << 5, 0x1fu << 16};
+    u32* rows = NULL;
+    size_t count, i, n = 0;
+    g_candidates_rng = 0x9e3779b97f4a7c15ull;
+    count = lqd_row_words(samples, candidates_rnd, &rows);
+    *out = (u32*)malloc(sizeof **out * (count * 8 + 1));
+    if (!*out) {
+        free(rows);
+        return 0;
+    }
+    for (i = 0; i < count; ++i) {
+        SnxA64Op op, other;
+        const char* name = op_name(rows[i], g_sail.target, &op);
+        unsigned f, k;
+        if (!name) continue;
+        for (f = 0; f < 8; ++f) {
+            u32 w = rows[i];
+            for (k = 0; k < 3; ++k)
+                if (f & (1u << k)) w |= fields[k];
+            if (f && (w == rows[i] || !op_name(w, g_sail.target, &other) || other != op)) continue;
+            (*out)[n++] = w;
+        }
+    }
+    free(rows);
+    return n;
+}
+
+int sail_frozen_part(u32 word) {
+    SnxA64Insn insn;
+    if (sail_unheld(word)) return SAIL_FROZEN_UNHELD;
+    snx_a64_decode_word(word, g_sail.target, &insn);
+    if (insn.op == SNX_A64_OP_STXR || (insn.op == SNX_A64_OP_STXP && insn.args.sz == 3)) return SAIL_FROZEN_EXCLUSIVE;
+    return -1;
+}
+
+void sail_frozen_start(CPU* c, u32 word, unsigned s, const RtAPI* rt, const u8* initial) {
+    sail_start(c, word, s, rt);
+    c->pc = SAIL_PC;
+    if (sail_frozen_part(word) == SAIL_FROZEN_EXCLUSIVE) {
+        SnxA64Insn insn;
+        u64 address;
+        snx_a64_decode_word(word, g_sail.target, &insn);
+        address = c->x[insn.args.rn];
+        c->excl_on = 1;
+        c->excl_addr = address;
+        c->excl_val = ~snx_ld_le64(initial + (address - SAIL_WINDOW));
+        c->excl_val2 = snx_ld_le64(initial + (address - SAIL_WINDOW) + 8);
+        c->excl_size = insn.op == SNX_A64_OP_STXP ? 0x13 : (u32)insn.args.sz;
+    }
+}
+
+u64 sail_frozen_inputs(const u32* candidates, size_t n) {
+    u64 h = snx_frozen_mix(SAIL_FROZEN_GENERATOR, sail_generator());
+    size_t i;
+    for (i = 0; i < n; ++i) {
+        const int part = sail_frozen_part(candidates[i]);
+        if (part >= 0) h = snx_frozen_mix(h, (u64)(unsigned)part << 32 | candidates[i]);
+    }
+    return h;
+}
+
+u64 sail_frozen_word(SailHold* h, size_t i, unsigned form, u32 word, const u8* initial) {
+    RtAPI api = {.cas128 = snx_runtime_cas128};
+    u64 fold = SAIL_FROZEN_GENERATOR;
+    unsigned s;
+    sail_rt(&api);
+    for (s = 0; s < SAIL_STATES_MAX; ++s) {
+        CPU start;
+        SailEnd e;
+        sail_frozen_start(&start, word, s, &api, initial);
+        h->run(h->user, i, form, s, &start, h->work, initial, &e);
+        fold = snx_frozen_mix(fold, sail_end_hash(word, &e, initial, h->work, NULL, NULL));
+    }
+    return fold;
+}
+
+size_t sail_frozen(SailHold* h, const char* path, const u32* words, size_t n, size_t* compared) {
+    SnxFrozen f;
+    u32* candidates = NULL;
+    u8* initial = (u8*)malloc(SAIL_WINDOW_SIZE);
+    size_t ncand, i, w, failures = 0, held[SAIL_FROZEN_PARTS] = {0}, index[SAIL_FROZEN_PARTS] = {0}, none = 0;
+    Order* order;
+    char error[1024];
+    u64 inputs;
+    if (!initial) return 1;
+    if (snx_frozen_read(&f, path, SAIL_FROZEN_GENERATOR, error, sizeof error)) {
+        fprintf(stderr, "FAIL: %s\n", error);
+        free(initial);
+        return 1;
+    }
+    ncand = sail_candidates(3, &candidates);
+    inputs = sail_frozen_inputs(candidates, ncand);
+    {
+        size_t counts[SAIL_FROZEN_PARTS] = {0};
+        for (i = 0; i < ncand; ++i) {
+            const int part = sail_frozen_part(candidates[i]);
+            if (part >= 0) ++counts[part];
+        }
+        if (f.parts != SAIL_FROZEN_PARTS || f.inputs != inputs || f.items[0] != counts[0] || f.items[1] != counts[1]) {
+            fprintf(stderr,
+                    "FAIL: %s holds %zu parts of %zu and %zu words, its inputs %016llx; this test draws 2 of %zu and "
+                    "%zu, inputs %016llx: record it again (snx-test-sail-frozen --record, where LLVM is built)\n",
+                    path, f.parts, f.items[0], f.parts > 1 ? f.items[1] : 0, (unsigned long long)f.inputs, counts[0],
+                    counts[1], (unsigned long long)inputs);
+            snx_frozen_free(&f);
+            free(candidates), free(initial);
+            return 1;
+        }
+    }
+    sail_window(initial);
+    memcpy(h->work, initial, SAIL_WINDOW_SIZE);
+    g_sail.dirty = 0;
+    /* each candidate of a part the test made: its index in words, by a sorted copy */
+    order = (Order*)malloc(sizeof *order * (n ? n : 1));
+    if (!order) {
+        snx_frozen_free(&f);
+        free(candidates), free(initial);
+        return 1;
+    }
+    for (i = 0; i < n; ++i) order[i].word = words[i], order[i].at = i;
+    qsort(order, n, sizeof *order, by_word);
+    for (i = 0; i < ncand; ++i) {
+        const int part = sail_frozen_part(candidates[i]);
+        size_t item, lo = 0, hi = n;
+        unsigned form;
+        if (part < 0) continue;
+        item = index[part]++;
+        while (lo < hi) {
+            const size_t mid = lo + (hi - lo) / 2;
+            if (order[mid].word < candidates[i])
+                lo = mid + 1;
+            else
+                hi = mid;
+        }
+        if (lo == n || order[lo].word != candidates[i]) continue; /* not made */
+        w = order[lo].at;
+        if (!snx_frozen_hash(&f, (size_t)part, item)) {
+            ++none;
+            continue;
+        }
+        ++held[part];
+        for (form = 0; form < h->nforms; ++form) {
+            u64 got;
+            if (!h->has(h->user, w, form)) continue;
+            got = sail_frozen_word(h, w, form, candidates[i], initial);
+            *compared += SAIL_STATES_MAX;
+            if (got == snx_frozen_hash(&f, (size_t)part, item)) continue;
+            ++failures;
+            fprintf(stderr,
+                    "FAIL: %s %08x (%s host): its %u frozen states' ends hash to %016llx, %s:%zu holds %016llx "
+                    "(LLVM's)\n",
+                    name_of(candidates[i]), (unsigned)candidates[i], h->forms[form], SAIL_STATES_MAX,
+                    (unsigned long long)got, path, snx_frozen_line(&f, (size_t)part, item),
+                    (unsigned long long)snx_frozen_hash(&f, (size_t)part, item));
+        }
+    }
+    printf("%s: %zu words held to LLVM's ends frozen in %s: %zu not held to QEMU, %zu store-exclusives with the "
+           "monitor armed and the memory changed\n",
+           h->name, held[0] + held[1], path, held[0], held[1]);
+    if (none) printf("%s: %zu words of the file had no LLVM step: not compared\n", h->name, none);
+    snx_frozen_free(&f);
+    free(candidates), free(initial), free(order);
     return failures;
 }

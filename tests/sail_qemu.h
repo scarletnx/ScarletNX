@@ -66,8 +66,8 @@ const char* sail_unheld(u32 word);
 /* the window both sides start from (SAIL_WINDOW_SIZE bytes): the seed, pads where the code is */
 void sail_window(u8* initial);
 /* the bytes a run starts from in work: initial's touched part where the last native end left it changed, and the
-   case's words at its pc */
-void sail_window_start(u8* work, const u8* initial, u32 word, unsigned s);
+   case's word at SAIL_PC (pads where the case is a pair, whose words are at SAIL_PAIR_PC) */
+void sail_window_start(u8* work, const u8* initial, u32 word, int pair);
 /* the end of a native run: its state, how it ended (from next and g_sail_calls), whether it changed the touched part
    of work */
 typedef struct {
@@ -105,7 +105,8 @@ typedef struct {
     void* user;
     /* whether word i has code of form f (a word with none runs under QEMU alone, for --record) */
     int (*has)(void* user, size_t i, unsigned form);
-    /* word i's native end of form f in state s from start, its guest memory work (sail_window_start first) */
+    /* word i's native end of form f in state s from start, its guest memory work (sail_window_start first): a pair
+       where start's pc is SAIL_PAIR_PC */
     void (*run)(void* user, size_t i, unsigned form, unsigned s, const CPU* start, u8* work, const u8* initial,
                 SailEnd* e);
 } SailHold;
@@ -113,6 +114,29 @@ typedef struct {
    runner or of the record), *compared counting the runs; the words not held and those the reference holds none of
    are said, with an example */
 size_t sail_hold(SailHold* h, const u32* words, size_t n, unsigned states, size_t* compared);
+
+/* ---- what QEMU can't stand for: LLVM's ends, frozen (support/frozen.h) ----
+   A word sail_unheld names, and a store-exclusive (STXR, STXP of doublewords) with its monitor armed at its address and
+   a value the memory doesn't hold, which no QEMU case starts from: what LLVM's steps (llvm_steps.c) made of their
+   states, while the LLVM back end was there, kept in tests/data/sail_frozen.txt (snx-test-sail-frozen --record). A
+   file's item is a word, its hash its SAIL_STATES_MAX states' ends (sail_end_hash), folded. Its words are those of
+   sail_candidates in the parts, in their order */
+#define SAIL_FROZEN_GENERATOR 1u
+enum { SAIL_FROZEN_UNHELD, SAIL_FROZEN_EXCLUSIVE, SAIL_FROZEN_PARTS };
+/* word's part of a frozen file (-1: none) */
+int sail_frozen_part(u32 word);
+/* state s of word as its frozen part has it: sail_start's at SAIL_PC, a store-exclusive's monitor armed */
+void sail_frozen_start(CPU* c, u32 word, unsigned s, const RtAPI* rt, const u8* initial);
+/* the words the tests draw from (*out allocated): each row of the decoder's samples, and each again with Rd, Rn and
+   Rm 31, that the guest decodes, in the same order for every test */
+size_t sail_candidates(unsigned samples, u32** out);
+/* the digest of the frozen parts' words, which a file's "inputs" must be */
+u64 sail_frozen_inputs(const u32* candidates, size_t n);
+/* word i's form f run in its SAIL_STATES_MAX frozen states, their ends' hashes folded */
+u64 sail_frozen_word(SailHold* h, size_t i, unsigned form, u32 word, const u8* initial);
+/* the words a test made (words[n], candidates' order) that a frozen part has, each form against path's hash: how
+   many differ, the file's being wrong a failure too; *compared counts the runs */
+size_t sail_frozen(SailHold* h, const char* path, const u32* words, size_t n, size_t* compared);
 
 /* a reference: for each word, sorted, the hashes of its states' ends */
 typedef struct SailRef {
