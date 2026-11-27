@@ -3543,7 +3543,7 @@ static int cb_epoch_refuses(VkBuffer b, u64 o);
 static int cb_window_refuses(int stage, int bank, VkBuffer b, u64 o, u32 sz, int windowed);
 /* the part of the draw thread's upload ring that bank i of a stage copies into (vk_stage_upload_own): its window moves
    only when that part is full. With vk_cb_window_epochs=1, every bank's copies go into the thread's one part (0), in
-   the ring's order, which the one window of all banks needs (g_cb_epoch) */
+   the ring's order, which the thread's one window of all banks needs (g_cb_epoch) */
 static u32 cb_page(int stage, int i) {
     if (g_settings.constant_buffer_window_epochs) return 0;
     return (u32)stage < DS_GFX_STAGES && (u32)i < DS_CBUFS ? 1 + (u32)stage * DS_CBUFS + (u32)i : 0;
@@ -4619,11 +4619,12 @@ static u32 cb_dyn_offsets(u32* dyn, int fs) {
         for (u32 m = g_cb_dynamic.mask[s]; m; m &= m - 1) dyn[n++] = g_cb_dyn[t_rc][s][snx_ctz32(m)];
     return n;
 }
-/* vk_cb_window_epochs=1: one window of the staging ring for every bank of both stages' sets, the epoch. Copies land
-   in the ring's order, in the thread's one upload part (cb_page 0), after the epoch's base: a new copy past its 64 KiB
-   starts the next epoch there, for every bank at once. A kept copy below the base (cb_get, cb_epoch_refuses) is copied
-   again, at the head, so no bank pulls a window back. The GPU mirror's banks keep a window of their own */
-static CbWindow g_cb_epoch;
+/* vk_cb_window_epochs=1: one window of the staging ring for every bank of both stages' sets, the epoch, for each
+   recording slot. Copies land in the ring's order, in the thread's one upload part (cb_page 0), after the epoch's
+   base: a new copy past its 64 KiB starts the next epoch there, for every bank at once. A kept copy below the base
+   (cb_get, cb_epoch_refuses) is copied again, at the head, so no bank pulls a window back. The GPU mirror's banks and
+   the texture words, which have a part of their own (table_words), keep a window of their own */
+static CbWindow g_cb_epoch[RC_SLOTS];
 /* whether a kept copy of a windowed bank is out of the bank's window of this frame, where a fresh copy
    lands in it: binding the kept copy moved the window back, and the next fresh copy moved it on again, and with
    descriptor buffers or heaps each move is a new table (in one game's world a kept copy below the window was 294k of
@@ -4637,15 +4638,17 @@ static int cb_window_refuses(int stage, int bank, VkBuffer b, u64 o, u32 sz, int
 }
 static int cb_epoch_refuses(VkBuffer b, u64 o) {
     /* a ring chunk's (vk_stage_buffer_size), as the epoch's are: another chunk, or below the base */
-    return g_settings.constant_buffer_window_epochs && g_cb_epoch.b && g_cb_epoch.frame == vk_frame_id() + 1 &&
-           b != vk_mirror_buffer() && vk_stage_buffer_size(b) && (g_cb_epoch.b != b || o < g_cb_epoch.base);
+    const CbWindow* e = &g_cb_epoch[t_rc];
+    return g_settings.constant_buffer_window_epochs && e->b && e->frame == vk_frame_id() + 1 &&
+           b != vk_mirror_buffer() && vk_stage_buffer_size(b) && (e->b != b || o < e->base);
 }
 /* page: the part of the draw thread's upload ring that the copy went into, cb_page(stage, bank) of its DS stage (a
    mesh program's too, whose set is the vertex one), or the texture words' own (VK_UPLOAD_WORDS + vs_fs) */
 static int cb_window_place(int vs_fs, int bank, u32 page, VkBuffer b, u64 o, u32 sz, u64* base, u64* range) {
     CbWindow* w = &g_cb_windows[t_rc][vs_fs][bank];
     const u64 frame = vk_frame_id() + 1;
-    if (g_settings.constant_buffer_window_epochs && b != vk_mirror_buffer()) w = &g_cb_epoch;
+    const int epoch = g_settings.constant_buffer_window_epochs && b != vk_mirror_buffer() && bank != CB_WINDOW_WORDS;
+    if (epoch) w = &g_cb_epoch[t_rc];
     if (w->b != b || w->frame != frame || o < w->base || o + sz > w->base + w->range) {
         /* the ring's chunks, and the GPU mirror, which is as big as guest memory (cb_get binds banks in it) */
         const u64 size = b == vk_mirror_buffer() ? (u64)AS_SIZE : vk_stage_buffer_size(b),
@@ -4655,7 +4658,7 @@ static int cb_window_place(int vs_fs, int bank, u32 page, VkBuffer b, u64 o, u32
            the copy, the part's copies before it were below the window (51k of 512k moves a 600 presents in one game's
            world), as were the copies that the draws kept from earlier in it */
         u64 start;
-        if (w != &g_cb_epoch && vk_stage_upload_part(page, b, o, &start) &&
+        if (!epoch && vk_stage_upload_part(page, b, o, &start) &&
             !(align && start % align) && o + sz <= start + 65536)
             at = start;
         if (!size || at >= size || (o - at) & 15) return 0;
@@ -5958,8 +5961,9 @@ typedef struct {
 } DrawKey;
 /* What a draw made from its state, kept for later draws while nothing it was made from changed: the state's owner and
    its groups (g_draw_groups and the vertex format), the draw's topology, the shaders' code (trusted while nothing wrote
-   it since the entry's marks, as vk_shader_get trusts it: draw_code_quiet) and the constant buffer words their translation read (checked each
-   draw, as vk_shader_get checks them on a hit). What else goes into it is found each draw and compared: the fragment
+   it since the entry's marks, as vk_shader_get trusts it: draw_code_quiet) and the constant buffer words their
+   translation read (checked each draw, as vk_shader_get checks them on a hit). What else goes into it is found each
+   draw and compared: the fragment
    variant's key (its textures' formats), the targets' formats, which vertex streams are empty, and whether the draw
    samples a target it renders to. Draws made all of it again, a 1 KiB key built and compared included, for each of
    the ~3,400 draws a frame in one game, most of them with the state of the draw before. draw_state_check=1 makes it
@@ -5971,10 +5975,9 @@ typedef struct {
     u32 epoch;             /* vk_ww_epoch */
     u32 used;              /* g_draw.use when last made or taken: of a set's ways, the one used longest ago makes room */
     /* g_vk.shader_generation when made or last found to hold, and the write tracking's marks before its shaders were
-       found. A new epoch (3 a
-       frame) or a game's shader cache invalidation (NVN_BARRIER_INVALIDATE_SHADER_BIT, about 22 a frame in one game's
-       town) keeps the entry while nothing wrote its programs' code since the marks (draw_code_quiet), as vk_shader_get
-       keeps the shader it found at an address. Without it, each made every kept draw again: 300 of a frame's 2,700
+       found. A new epoch (3 a frame) or a game's shader cache invalidation (NVN_BARRIER_INVALIDATE_SHADER_BIT, about
+       22 a frame in one game's town) keeps the entry while nothing wrote its programs' code since the marks
+       (draw_code_quiet), as vk_shader_get keeps the shader it found at an address. Without it, each made every kept draw again: 300 of a frame's 2,700
        draws on the renderer thread, at 8 us each */
     u64 shader_generation;
     u64 code_gw;

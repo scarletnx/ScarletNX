@@ -2814,6 +2814,8 @@ int vk_wlog_merge(VkWriteLog* l, u32 part, u32 from, u32 to, VkBuffer src, u64 s
    alignment, gap and out_off of 4. The caller orders it after the result's writer and before what reads out. 0 when
    it can't be (no descriptor set left), with nothing recorded */
 int vk_result_merge(VkBuffer res, u64 res_off, VkBuffer in, u64 in_off, u64 gap, VkBuffer out, u64 out_off, u64 len);
+/* whether vk_result_merge's alignments and the device's limits take that merge, with nothing recorded */
+int vk_result_merge_fits(u64 res_off, u64 in_off, u64 gap, u64 out_off, u64 len);
 void vk_wlog_stats(u64* logs, u64* bytes, u64* in_use, u64* windows);
 /* the host logs cleared at their last unref so far, the window flags those clears read, and the windows cleared */
 void vk_wlog_clear_stats(u64* unrefs, u64* scanned, u64* cleared);

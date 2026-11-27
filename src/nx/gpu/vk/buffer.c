@@ -1764,7 +1764,8 @@ static int range_owned(u64 gva, u64 len);
 static int gfx_rebase(GfxOut* o) {
     /* a split's worker (draw_batches=2): its merge goes into its list, which the GPU runs after the renderer thread's
        half, but o's original bytes and wseen change at once, and the renderer thread's draws would bind o in place
-       before its merge */
+       before its merge. A batch of draw_batches=1 records in slot 1 too, while the renderer thread waits: it lands o
+       as before, which costs a submit but never the order */
     if (vk_render_slot()) return 0;
     if (o->cpu == ~0ull || !o->org || o->initial || o->keep || o->no_input || (o->off & 3) ||
         !gmem_host(o->addr, o->size) || vk_uma_pending(o->addr, o->size) || vk_release_pending(o->addr, o->size) ||
@@ -1773,6 +1774,8 @@ static int gfx_rebase(GfxOut* o) {
     u64 a = g_vk.props.limits.minStorageBufferOffsetAlignment;
     if (a < 4) a = 4;
     const u64 words = ((u64)o->size + 3) / 4, gap = (words * 4 + a - 1) & ~(a - 1);
+    /* the ring's offset is aligned to a, so the input's alignment holds whatever offset vk_stage gives */
+    if (!vk_result_merge_fits(o->off, 0, gap, o->off, o->size)) return 0;
     VkBuffer in;
     u64 in_off;
     u8* p = vk_stage(gap + words * 4, a, &in, &in_off);

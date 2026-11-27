@@ -352,9 +352,20 @@ typedef struct {
 static VkDescriptorSetLayout g_rm_ds;
 static VkPipelineLayout g_rm_layout;
 static VkPipeline g_rm_pipe;
-int vk_result_merge(VkBuffer res, u64 res_off, VkBuffer in, u64 in_off, u64 gap, VkBuffer out, u64 out_off, u64 len) {
+int vk_result_merge_fits(u64 res_off, u64 in_off, u64 gap, u64 out_off, u64 len) {
     if (!len) return 1;
     if (len > 0xFFFFFFF0ull || ((in_off | gap | out_off) & 3)) return 0;
+    u64 a = g_vk.props.limits.minStorageBufferOffsetAlignment;
+    if (a < 4) a = 4;
+    /* the device's limits: one group a 128 words, and each of the three storage ranges (vk_result_merge's) */
+    const u64 words = (len + 3) / 4, rb = res_off & ~(a - 1), rend = (res_off + len + 3) & ~3ull,
+              ob = out_off & ~(a - 1), range = g_vk.props.limits.maxStorageBufferRange;
+    return (words + 127) / 128 <= g_vk.props.limits.maxComputeWorkGroupCount[0] && rend - rb <= range &&
+           gap + words * 4 <= range && out_off - ob + words * 4 <= range;
+}
+int vk_result_merge(VkBuffer res, u64 res_off, VkBuffer in, u64 in_off, u64 gap, VkBuffer out, u64 out_off, u64 len) {
+    if (!len) return 1;
+    if (!vk_result_merge_fits(res_off, in_off, gap, out_off, len)) return 0;
     if (!g_rm_pipe) {
         if (!VK_OK(snx_vk_compute_layouts(g_vk.dev, 3, 0, sizeof(ResultMergeParams), &g_rm_ds, &g_rm_layout)))
             fatal("vulkan: cannot create the result merge's descriptor and pipeline layouts");
@@ -368,11 +379,6 @@ int vk_result_merge(VkBuffer res, u64 res_off, VkBuffer in, u64 in_off, u64 gap,
        ends at the word that holds the range's last byte */
     const u64 words = (len + 3) / 4, rb = res_off & ~(a - 1), rend = (res_off + len + 3) & ~3ull,
               ob = out_off & ~(a - 1);
-    /* the device's limits: one group a 128 words, and each of the three storage ranges */
-    const u64 range = g_vk.props.limits.maxStorageBufferRange;
-    if ((words + 127) / 128 > g_vk.props.limits.maxComputeWorkGroupCount[0] || rend - rb > range ||
-        gap + words * 4 > range || out_off - ob + words * 4 > range)
-        return 0;
     VkDescriptorSet set = vk_desc_alloc(g_rm_ds);
     if (!set) return 0;
     VkDescriptorBufferInfo info[3] = {{res, rb, rend - rb},
