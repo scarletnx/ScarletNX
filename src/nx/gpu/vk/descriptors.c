@@ -143,27 +143,35 @@ static VkDeviceSize least(VkDeviceSize a, VkDeviceSize b) { return a < b ? a : b
 /* One buffer for every frame's part and the lasting tables', where the device's limits let one binding reach all of
    it: the smallest of the largest allocation, the binding ranges of resources and samplers, and their address spaces
    (the tables hold combined image samplers), less the texture table's buffer, which vk_table_init made before the
-   first draw and which is in both address spaces too. The reported limits go from 128 KiB to 1 TiB, so the parts take their
-   size from them: 64 MiB each where it fits, else an equal share. 0: a buffer for each frame, as before */
-static int arena_shared(void) {
+   first draw and which is in both address spaces too (arena_spaces). The reported limits go from 128 KiB to 1 TiB,
+   so the parts take their size from them: 64 MiB each where it fits, else an equal share. 0: a buffer for each
+   frame, as before */
+static VkDeviceSize arena_spaces(void) {
     const VkPhysicalDeviceDescriptorBufferPropertiesEXT* p = &g_vk.descriptor_props;
     const VkDeviceSize table = vk_table_descriptor_bytes(),
-                       spaces = least(p->resourceDescriptorBufferAddressSpaceSize,
-                                      p->samplerDescriptorBufferAddressSpaceSize);
+                       spaces = p->resourceDescriptorBufferAddressSpaceSize < p->samplerDescriptorBufferAddressSpaceSize
+                                    ? p->resourceDescriptorBufferAddressSpaceSize
+                                    : p->samplerDescriptorBufferAddressSpaceSize;
+    return spaces > table ? spaces - table : 0;
+}
+static int arena_shared(void) {
+    const VkPhysicalDeviceDescriptorBufferPropertiesEXT* p = &g_vk.descriptor_props;
     VkDeviceSize limit = least(least(g_vk.alloc_cap, p->maxResourceDescriptorBufferRange),
-                               least(p->maxSamplerDescriptorBufferRange, spaces > table ? spaces - table : 0));
+                               least(p->maxSamplerDescriptorBufferRange, arena_spaces()));
     const VkDeviceSize align = p->descriptorBufferOffsetAlignment ? p->descriptorBufferOffsetAlignment : 1;
     VkDeviceSize part = DESCRIPTOR_BYTES, lasting = LASTING_BYTES;
     if (part * VK_FRAMES + lasting > limit) part = lasting = limit / (VK_FRAMES + 1) / align * align;
     const VkDeviceSize stride = snx_align_up(g_descriptors.largest, align);
     if (part < ARENA_LEAST || !stride || lasting / stride < 64) {
         LOG("vulkan: descriptor buffers: a buffer for each frame and no tables that last: the device's limit is %llu "
-            "bytes (allocations %llu, binding ranges %llu and %llu, address spaces %llu and %llu)\n",
+            "bytes (allocations %llu, binding ranges %llu and %llu, address spaces %llu and %llu, less the texture "
+            "table's %llu)\n",
             (unsigned long long)limit, (unsigned long long)g_vk.alloc_cap,
             (unsigned long long)p->maxResourceDescriptorBufferRange,
             (unsigned long long)p->maxSamplerDescriptorBufferRange,
             (unsigned long long)p->resourceDescriptorBufferAddressSpaceSize,
-            (unsigned long long)p->samplerDescriptorBufferAddressSpaceSize);
+            (unsigned long long)p->samplerDescriptorBufferAddressSpaceSize,
+            (unsigned long long)vk_table_descriptor_bytes());
         return 0;
     }
     const u32 n = (u32)least(lasting / stride, UINT32_MAX - 1) & ~1u; /* two ways for each hash */
@@ -208,7 +216,11 @@ static void arena(u32 slot) {
         tried = 1;
         if (arena_shared()) return;
     }
-    VkDeviceSize capacity = DESCRIPTOR_BYTES < g_vk.alloc_cap ? DESCRIPTOR_BYTES : g_vk.alloc_cap;
+    /* the frames' buffers together within the address spaces, as the shared arena's (a share of 0 bytes holds no
+       descriptor: those buffers then take their size as before) */
+    const VkDeviceSize share = arena_spaces() / VK_FRAMES;
+    VkDeviceSize capacity = least(DESCRIPTOR_BYTES, g_vk.alloc_cap);
+    if (share && share < capacity) capacity = share;
     VkBufferCreateInfo info = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = capacity,
         .usage = VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT |
                  VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT |
