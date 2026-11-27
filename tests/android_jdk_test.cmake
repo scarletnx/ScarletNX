@@ -10,6 +10,9 @@ if(NOT DEFINED SRC OR NOT DEFINED WORK)
     message(FATAL_ERROR "android_jdk_test.cmake needs -DSRC=... -DWORK=...")
 endif()
 include("${SRC}/cmake/android_jdk.cmake")
+# the folder as snx_android_jdk names a JDK it finds, through its javac's real path: a build folder that is a link
+# (one moved to another disk) names it so too
+get_filename_component(WORK "${WORK}" REALPATH)
 
 file(REMOVE_RECURSE "${WORK}")
 file(WRITE "${WORK}/full/bin/javac" "")
