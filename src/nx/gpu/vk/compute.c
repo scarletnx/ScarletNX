@@ -768,9 +768,18 @@ static void table_windows(u32 bank, u32 cells, u32 windows, u64* base, u32* len)
                   "that its %u windows can't hold: the pointers in the others read 0\n",
                   bank, runs, windows);
 }
+/* the storage images a dispatch that won't run kept at its bind: their owners' references given back */
+static void cs_abandon_keeps(VkImageKeep keep[8]) {
+    for (int i = 0; i < 8; i++)
+        if (keep[i].held) {
+            vk_own_res_unref(keep[i].held);
+            keep[i] = (VkImageKeep){0};
+        }
+}
 /* A descriptor can fail after its inputs were copied into the arena. No command references those inputs yet. */
-static void cs_abandon_binding(u8* originals[8]) {
+static void cs_abandon_binding(u8* originals[8], VkImageKeep keep[8]) {
     vk_buf_writable_abort(); /* a deferred dispatch's outputs, not recorded */
+    cs_abandon_keeps(keep);
     for (int i = 0; i < 8; i++) free(originals[i]);
     if (g_recording || g_inflight) return;
     g_ar_used = 0;
@@ -1428,6 +1437,26 @@ static void mirror_need_others(u64 gva, u64 len) {
     vk_release_need(gva, len);
 }
 
+/* A dispatch's storage image t of bytes at slot i: kept on the GPU as a draw's is (render.c's draw_images_commit,
+   image_out.c), what it did with it returned (VK_IMG_KEEP_*). One whose image's write-back waits joins it, as a draw's
+   stores do. Kept, its span is GPU-owned from the bind on and nothing is published at the dispatch: a read of its
+   memory publishes it then (a texture's check, a buffer's or the CPU's, image_out.c). Published at each dispatch,
+   one game's 74 images a frame were copied over their spans, and nearly none was read. Published at the dispatch as
+   before: a render target (the targets' own publishes, rt_watch's and rt_overlay's, can put another owner over its
+   span, which ends a keep with a read back), one over another image this dispatch keeps (two keeps of one owner),
+   and one under another's write-back */
+static int cs_image_keep(Surf* const images[8], VkImageKeep keep[8], const u32 size[8], int i, Surf* t, u64 bytes) {
+    if (vk_gfx_image_unrecorded(t)) return VK_IMG_KEEP_JOINED;
+    if (t->is_rt) return VK_IMG_KEEP_TARGET;
+    if (bytes > UINT32_MAX) return VK_IMG_KEEP_BIG;
+    for (int k = 0; k < i; k++)
+        if (keep[k].held && images[k]->gva < t->gva + bytes && t->gva < images[k]->gva + size[k])
+            return VK_IMG_KEEP_OVERLAP;
+    if (vk_gfx_image_pending(t->gva, bytes)) return VK_IMG_KEEP_PENDING;
+    if (!vk_surf_keep_begin(t, &keep[i])) return keep[i].why;
+    keep[i].compute = 1;
+    return VK_IMG_KEEP_KEPT;
+}
 void vk_dispatch(const DispatchState* d) {
     u32 gx = d->grid[0], gy = d->grid[1], gz = d->grid[2], lx = d->block[0], ly = d->block[1], lz = d->block[2],
         shm = d->shared;
@@ -1851,6 +1880,9 @@ rebind:
     VkDescriptorImageInfo ii[SH_MAXTEX + 8];
     Surf* images[8] = {0};
     u8* originals[8] = {0};
+    VkImageKeep image_keep[8] = {0}; /* kept on the GPU where held is, as a draw's (cs_image_keep) */
+    u32 image_size[8] = {0};
+    u8 image_why[8] = {0}; /* what the bind did with it (VK_IMG_KEEP_*), counted once the dispatch runs */
     VkBufferView bufimg_view[8] = {0};
     VkBuffer bufimg_buf[8] = {0};
     u64 bufimg_off[8] = {0};
@@ -2053,7 +2085,7 @@ rebind:
         if (!dst) {
             res_unref_all(made, ng);
             g_cs_skips[CS_SKIP_RESOURCES]++;
-            cs_abandon_binding(originals);
+            cs_abandon_binding(originals, image_keep);
             return;
         }
         memcpy(dst, mb, sizeof mb);
@@ -2125,7 +2157,7 @@ rebind:
                           "color texels stored as they are: the dispatch is skipped\n",
                           tic[0], tic[2], tic[4]);
                 g_cs_skips[CS_SKIP_TEXTURE]++;
-                cs_abandon_binding(originals);
+                cs_abandon_binding(originals, image_keep);
                 return;
             }
             int num = st->flags & 1                      ? 1
@@ -2151,7 +2183,7 @@ rebind:
                 vk_tex_bind_sampler(tsc, tic, st, num, sampled, want, (int)(p->si.tex_minmax_mask >> i & 1));
             if (!v || !smp) { /* before any output is recorded: nothing of this dispatch lands */
                 g_cs_skips[CS_SKIP_TEXTURE]++;
-                cs_abandon_binding(originals);
+                cs_abandon_binding(originals, image_keep);
                 return;
             }
             if (none && !sampled && vk_null_header_first(tic_at))
@@ -2182,7 +2214,7 @@ rebind:
             u32 h = 0, tic[8];
             if (!cs_cb_read(p->si.img[i].bindless ? (p->si.img[i].bl_cbuf & 7) : tcb, off * 4, &h)) {
                 g_cs_skips[CS_SKIP_STORAGE_IMAGE]++;
-                cs_abandon_binding(originals);
+                cs_abandon_binding(originals, image_keep);
                 return;
             }
             vk_gmem_words(tic_base + (h & 0xFFFFF) * 32ull, tic, 8);
@@ -2216,7 +2248,7 @@ rebind:
                 LOG_LIMIT(4, "vulkan: unsupported compute storage image (header word 0 %08x, kind %d, skipped)\n",
                           tic[0], p->si.img[i].kind);
                 g_cs_skips[CS_SKIP_STORAGE_IMAGE]++;
-                cs_abandon_binding(originals);
+                cs_abandon_binding(originals, image_keep);
                 return;
             }
             int seen = 0;
@@ -2225,11 +2257,15 @@ rebind:
                     seen = 1;
                     break;
                 }
+            if (!seen && deferred) {
+                image_why[i] = (u8)cs_image_keep(images, image_keep, image_size, i, t, image_bytes);
+                if (image_why[i] == VK_IMG_KEEP_KEPT) image_size[i] = (u32)image_bytes;
+            }
             if (!seen && !deferred) { /* a published image keeps no merge: its owner takes the span whole */
                 originals[i] = malloc(image_bytes);
                 if (!originals[i]) {
                     g_cs_skips[CS_SKIP_RESOURCES]++;
-                    cs_abandon_binding(originals);
+                    cs_abandon_binding(originals, image_keep);
                     return;
                 }
                 gmem_read(t->gva, originals[i], image_bytes);
@@ -2272,7 +2308,7 @@ rebind:
                     for (k = 0; k < i; k++)
                         if (bufimg_view[k]) vk_defer_buffer_view(bufimg_view[k]);
                     g_cs_skips[CS_SKIP_BUFFER_IMAGE]++;
-                    cs_abandon_binding(originals);
+                    cs_abandon_binding(originals, image_keep);
                     return;
                 }
                 memset(zeros, 0, bimg[i].bytes);
@@ -2281,7 +2317,7 @@ rebind:
                     for (k = 0; k < i; k++)
                         if (bufimg_view[k]) vk_defer_buffer_view(bufimg_view[k]);
                     g_cs_skips[CS_SKIP_BUFFER_IMAGE]++;
-                    cs_abandon_binding(originals);
+                    cs_abandon_binding(originals, image_keep);
                     return;
                 }
             } else {
@@ -2299,7 +2335,7 @@ rebind:
                 for (k = 0; k < i; k++)
                     if (bufimg_view[k]) vk_defer_buffer_view(bufimg_view[k]); /* a draw may still use the set */
                 g_cs_skips[CS_SKIP_BUFFER_IMAGE]++;
-                cs_abandon_binding(originals);
+                cs_abandon_binding(originals, image_keep);
                 return;
             }
             memset(&w[nw], 0, sizeof w[nw]);
@@ -2327,7 +2363,7 @@ rebind:
                     for (i = 0; i < p->si.nimg && i < 8; i++)
                         if (bufimg_view[i]) vk_defer_buffer_view(bufimg_view[i]);
                     g_cs_skips[CS_SKIP_RESOURCES]++;
-                    cs_abandon_binding(originals);
+                    cs_abandon_binding(originals, image_keep);
                     return;
                 }
             } else {
@@ -2351,6 +2387,7 @@ rebind:
     if (d->indirect && ((d->indirect & 3) || !vk_buf_get_at(d->indirect, 12, 4, &grid_buf, &grid_off))) {
         LOG_LIMIT(4, "vulkan: an indirect dispatch's grid at %llx can't be read\n", (unsigned long long)d->indirect);
         vk_buf_writable_abort();
+        cs_abandon_keeps(image_keep);
         res_unref_all(made, ng);
         g_cs_skips[CS_SKIP_INPUTS_MOVED]++;
         return;
@@ -2363,6 +2400,7 @@ rebind:
                 bufimg_view[i] = VK_NULL_HANDLE;
             }
         vk_buf_writable_abort();
+        cs_abandon_keeps(image_keep); /* the next bind finds the owner the first published, with no submit */
         res_unref_all(made, ng);
         if (++retries < 4) goto rebind;
         g_cs_skips[CS_SKIP_INPUTS_MOVED]++;
@@ -2535,7 +2573,13 @@ rebind:
             for (int k = 0; k < i && !seen; k++) seen = images[k] == images[i];
             if (!images[i] || seen) continue;
             vk_surf_wrote(images[i]);
-            if (!vk_surf_publish(images[i]))
+            vk_gfx_image_keep_note(image_why[i]);
+            if (image_keep[i].held) {
+                vk_gfx_image_record(images[i], NULL, image_size[i], 0, &image_keep[i]);
+                image_keep[i].held = NULL; /* the entry holds its reference */
+            } else if (image_why[i] == VK_IMG_KEEP_JOINED)
+                continue;
+            else if (!vk_surf_publish(images[i]))
                 vk_surf_flush(images[i], NULL);
             else
                 vk_surf_stored(images[i]); /* a texture over its memory takes its texels on the GPU */

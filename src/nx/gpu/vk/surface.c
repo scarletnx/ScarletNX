@@ -2609,17 +2609,20 @@ int vk_surf_keep_begin(Surf* s, VkImageKeep* k) {
     u64 size = rt_bytes(s), cpu = 0;
     VkOwnRes* r;
     *k = (VkImageKeep){0};
-    if (!own_traps() || !size || (s->gva >> 63) || ((s->gva | size) & 0xFFF) || !surf_publishable(s) ||
-        gmmu_run(s->gva, size, &cpu) != size || vk_own_cpu_read(cpu, size, KEEP_CPU_PRESENTS))
-        return 0;
+    if (!own_traps()) return k->why = VK_IMG_KEEP_NO_TRAPS, 0;
+    if (!size || (s->gva >> 63)) return k->why = VK_IMG_KEEP_UNPUBLISHABLE, 0;
+    if ((s->gva | size) & 0xFFF) return k->why = VK_IMG_KEEP_UNALIGNED, 0;
+    if (!surf_publishable(s)) return k->why = VK_IMG_KEEP_UNPUBLISHABLE, 0;
+    if (gmmu_run(s->gva, size, &cpu) != size) return k->why = VK_IMG_KEEP_RUNS, 0;
+    if (vk_own_cpu_read(cpu, size, KEEP_CPU_PRESENTS)) return k->why = VK_IMG_KEEP_CPU_READ, 0;
     if ((r = span_owner(cpu, size, &k->off)))
         vk_own_res_ref(r);
     else { /* memory's bytes, with the targets pending over them, as a release's publish stages them */
         u32 mem_wgen = s->mem_wgen;
-        if (!(r = vk_own_res_new(size, VK_OWN_BY_TARGET))) return 0;
+        if (!(r = vk_own_res_new(size, VK_OWN_BY_TARGET))) return k->why = VK_IMG_KEEP_NO_OWNER, 0;
         if (!vk_guest_read_device(s->gva, size, r->buf, 0)) {
             vk_own_res_unref(r);
-            return 0;
+            return k->why = VK_IMG_KEEP_NO_OWNER, 0;
         }
         s->mem_wgen = s->wgen; /* a target goes over nothing of its own */
         if (vk_rt_overlay(s->gva, size, r->buf, 0)) vk_all_barrier_by(VK_BAR_SURFACE, vk_cmd());
@@ -2628,7 +2631,7 @@ int vk_surf_keep_begin(Surf* s, VkImageKeep* k) {
         vk_own_publish(cpu, size, r, 0);
         if (span_owner(cpu, size, &k->off) != r) { /* landed instead (unified memory over it) */
             vk_own_res_unref(r);
-            return 0;
+            return k->why = VK_IMG_KEEP_NO_OWNER, 0;
         }
         k->made = 1;
         if (!s->is_rt) vk_tex_note_writeback(s); /* its image is memory's bytes, by their owner */
