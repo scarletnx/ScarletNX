@@ -4455,6 +4455,11 @@ add_test(NAME recompiler_backends_br_pins COMMAND snx-test-recompiler-backends -
 # state: the exit past it stores none
 set(snx_undef_pins d2800050 91000631 f1000610 54ffffc1 00000000)
 add_test(NAME recompiler_backends_undef_pins COMMAND snx-test-recompiler-backends --words ${snx_undef_pins})
+# a loop that keeps seven guest registers in host ones around a CRC32X and a CRC32W (a byte or a halfword would make
+# the function keep its pins out of R11 anyway), whose tables' address goes in R11 (MG_CRC_FIXED)
+set(snx_crc_pins d2800069 91000421 91000442 91000463 91000484 910004a5 910004c6 910004e7 9ac24c00 1ac24800 f1000529
+    54fffec1 d65f03c0)
+add_test(NAME recompiler_backends_crc_pins COMMAND snx-test-recompiler-backends --states 8 --words ${snx_crc_pins})
 # every conversion between a float and a W or X register (FCVTNS, FCVTPU... of each rounding, FCVTZS and UCVTF of a
 # fixed point, SCVTF, FMOV), whose Rd or Rn is a general-purpose register: none is an Advanced SIMD word of the host's
 set(snx_fp_int 1e200041 9e610083 1e6400c5 9e250207 9e680149 1e290008 1e30018b 9e7101cd 1e78004f 9e390093 1e220034
