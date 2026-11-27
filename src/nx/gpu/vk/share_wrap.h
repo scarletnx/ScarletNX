@@ -128,13 +128,10 @@ static inline int sh_vk_buf_pending(u64 gva, u64 len) {
     vk_share_unlock();
     return r;
 }
-static inline u64 sh_vk_buffer_address(VkBuffer b) {
-    if (!vk_share_on()) return vk_buffer_address(b);
-    vk_share_lock_at(18);
-    u64 const r = vk_buffer_address(b);
-    vk_share_unlock();
-    return r;
-}
+/* no lock: vkGetBufferDeviceAddress needs no host synchronization, and a buffer that a draw binds is freed only once
+   its frame is done (vk_defer_buffer). It was the share lock's most taken call, 16,100 takes a present, and the call
+   takes about 8 ns on either thread with the lock or without it */
+static inline u64 sh_vk_buffer_address(VkBuffer b) { return vk_buffer_address(b); }
 static inline VkResult sh_vk_buffer_create(const VkBufferCreateInfo* info, const DevMemWant* allocation, VkBuffer* buffer, DevMem* memory, DevMemInfo* details) {
     if (!vk_share_on()) return vk_buffer_create(info, allocation, buffer, memory, details);
     vk_share_lock_at(19);
