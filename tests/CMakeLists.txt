@@ -4271,7 +4271,7 @@ foreach(family IN ITEMS
 endforeach()
 # the families with no frozen file (LLVM alone's ends, recorded where the build had LLVM): held to QEMU where the build has
 # its reference, else made alone
-foreach(family IN ITEMS "structures;LD_mult;ST_mult" "copies;INS_general;INS_element" "polynomials;PMUL_v;PMULL_p8")
+foreach(family IN ITEMS "copies;INS_general;INS_element" "polynomials;PMUL_v;PMULL_p8")
     list(POP_FRONT family name)
     add_test(NAME recompiler_backends_${name}_made COMMAND snx-test-recompiler-backends --refused --ops ${family})
     if(SNX_QEMU_REF)
@@ -4283,6 +4283,9 @@ foreach(family IN ITEMS "structures;LD_mult;ST_mult" "copies;INS_general;INS_ele
         add_test(NAME recompiler_backends_${name} COMMAND snx-test-recompiler-backends --skip "${SNX_QEMU_REF_MISSING}")
     endif()
 endforeach()
+# the structure loads and stores made alone: QEMU's cases here carry no memory, and the default draw's struct_ldst words
+# hold their results to default.txt
+add_test(NAME recompiler_backends_structures_made COMMAND snx-test-recompiler-backends --refused --ops LD_mult ST_mult)
 # half precision (an Android phone's): the ops whose words x64_vec.c makes of singles and doubles
 add_test(NAME recompiler_backends_half COMMAND snx-test-recompiler-backends --target android --states 48 --ops FADD_v FSUB_v
          FMUL_v FDIV_v FABD_v FABD_s FMAX_v FMIN_v FMAXNM_v FMINNM_v FMLA_v FMLS_v FMUL_vi FMLA_vi FMLS_vi FNEG_v FABS_v
