@@ -33,7 +33,7 @@ release() {
   git config --global --add safe.directory '*'
   ccache --zero-stats
   cmake --preset default -DSNX_DEPLOY=OFF -DCMAKE_INSTALL_PREFIX=/usr \
-    -DLLVM_DIR="$PWD/.cache/llvm/${ARCH}/lib/cmake/llvm" -DBUILD_TESTING=OFF \
+    -DBUILD_TESTING=OFF \
     -DSNX_LTO=${LTO} \
     -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
   cmake --build --preset default --parallel "$(getconf _NPROCESSORS_ONLN)"
@@ -72,7 +72,7 @@ EOF
 }
 
 # The test options on the AppImage's tree, its tests on, and the headless tree, whose options change what every
-# target builds, in a folder of its own with this job's LLVM. x86-64's has the other machines' back ends under
+# target builds, in a folder of its own. x86-64's has the other machines' back ends under
 # Unicorn too, whose tests linux-unicorn runs. Built on every event, tested where SNX_TESTS
 # env: ARCH UNICORN
 test_trees() {
@@ -88,7 +88,6 @@ test_trees() {
   ccache --show-stats
   ccache --zero-stats
   cmake --preset default -B build/headless ${SNX_HEADLESS_OPTIONS} -DBUILD_TESTING=ON \
-    -DLLVM_DIR="$PWD/.cache/llvm/${ARCH}/lib/cmake/llvm" \
     -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
   cmake --build build/headless --parallel "$(getconf _NPROCESSORS_ONLN)"
   ccache --show-stats

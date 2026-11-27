@@ -84,7 +84,6 @@ jobs:
   appimage:
     name: Linux AppImage (${{ matrix.arch }})
     runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-26.04' }}
-    # LLVM's build (scripts/linux-llvm.sh) adds half an hour where its cache misses
     timeout-minutes: 120
     strategy:
       fail-fast: false
@@ -200,25 +199,6 @@ jobs:
         with:
           path: /var/cache/pacman/pkg
           key: ${{ steps.pacman.outputs.cache-primary-key }}
-      - name: Name the LLVM version
-        id: llvm
-        run: echo "version=$(llvm-config --version)" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache/restore@v5
-        id: llvm-cache
-        with:
-          path: .cache/llvm/${{ matrix.arch }}
-          key: linux-llvm-${{ matrix.arch }}-${{ hashFiles('scripts/linux-llvm.sh', 'scripts/llvm-libraries/CMakeLists.txt', 'cmake/llvm_components.cmake') }}-${{ steps.llvm.outputs.version }}
-      - name: Build LLVM
-        if: steps.llvm-cache.outputs.cache-hit != 'true'
-        env:
-          LLVM_VERSION: ${{ steps.llvm.outputs.version }}
-        run: scripts/linux-llvm.sh ${{ matrix.arch }} "$PWD/.cache/llvm/${{ matrix.arch }}"
-      - &llvm-save
-        if: steps.llvm-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v5
-        with:
-          path: .cache/llvm/${{ matrix.arch }}
-          key: ${{ steps.llvm-cache.outputs.cache-primary-key }}
       - name: Build and install into /usr
         env:
           LTO: ${{ github.event_name != 'pull_request' && matrix.arch == 'x86_64' && 'ON' || 'OFF' }}
@@ -277,7 +257,7 @@ jobs:
           ccache --zero-stats
           du -sh "$CCACHE_DIR"
           df -h .
-      # not a pull request's: no one else reads it, and the repository's 10 GB would lose main's LLVM builds
+      # not a pull request's: no one else reads it, and the repository's 10 GB would lose main's caches
       - &ccache-save-arch
         if: github.event_name != 'pull_request'
         uses: actions/cache/save@v5
@@ -434,7 +414,7 @@ jobs:
       - *fail-fast-file
       - *fail-fast-mark
 
-  # The other machines' native back ends under Unicorn (ctest -L unicorn), beside the appimage job; Arch's LLVM, as
+  # The other machines' native back ends under Unicorn (ctest -L unicorn), beside the appimage job; Arch's toolchain, as
   # linux-sanitizers. A push builds it, for the cache, and tests nothing
   linux-unicorn:
     name: Linux (x86_64, other machines under Unicorn)
@@ -559,7 +539,6 @@ jobs:
     if: >-
       ${{ !cancelled() && (needs.qemu-reference.result == 'success' || needs.qemu-reference.result == 'skipped') }}
     runs-on: ubuntu-26.04
-    # LLVM's cross build (scripts/linux-llvm.sh) adds half an hour where its cache misses
     timeout-minutes: 180
     continue-on-error: true
     env:
@@ -651,21 +630,6 @@ jobs:
         with:
           path: sysroot
           key: ${{ steps.sysroot.outputs.cache-primary-key }}
-      - name: Name the LLVM version
-        id: llvm
-        run: echo "version=$(docker exec build llvm-config --version)" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache/restore@v5
-        id: llvm-cache
-        with:
-          path: .cache/llvm/${{ matrix.arch }}
-          key: linux-llvm-cross-${{ matrix.arch }}-${{ hashFiles('scripts/linux-llvm.sh', 'scripts/llvm-libraries/CMakeLists.txt', 'cmake/llvm_components.cmake') }}-${{ steps.llvm.outputs.version }}
-      - name: Cross-build LLVM
-        if: steps.llvm-cache.outputs.cache-hit != 'true'
-        env:
-          LLVM_VERSION: ${{ steps.llvm.outputs.version }}
-          ARCH: ${{ matrix.arch }}
-        run: scripts/ci/cross.sh llvm
-      - *llvm-save
       - name: Name the compiles' start
         id: compiles
         run: echo "start=$(date +%s)" >> "$GITHUB_OUTPUT"
@@ -775,7 +739,7 @@ jobs:
       - *ccache-restore-arch
       - *deps-restore
       - *caches-env
-      - name: Install Clang, LLVM development files and FFmpeg build tools
+      - name: Install Clang, its tools and FFmpeg build tools
         uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
         with:
           msystem: ${{ matrix.arch == 'aarch64' && 'CLANGARM64' || 'CLANG64' }}
@@ -836,8 +800,7 @@ jobs:
       - *fail-fast-file
       - *fail-fast-mark
 
-  # The Android app (docs/hosts/android-app.md): each ABI's APK, then one of both. LLVM's libraries for an ABI take
-  # most of an hour, kept until the script that builds them changes
+  # The Android app (docs/hosts/android-app.md): each ABI's APK, then one of both
   android:
     name: Android APK
     runs-on: ubuntu-26.04
@@ -854,34 +817,8 @@ jobs:
           path: .cache/cpm
           key: cpmutil-android-${{ hashFiles('cpmfile.json', '.patch/**') }}
           restore-keys: cpmutil-android-
-      - uses: actions/cache/restore@v5
-        id: llvm-x86_64
-        with:
-          path: android-llvm/x86_64
-          key: android-llvm-x86_64-${{ hashFiles('scripts/android-llvm.sh') }}-${{ env.ANDROID_NDK_ROOT }}
-      - uses: actions/cache/restore@v5
-        id: llvm-arm64
-        with:
-          path: android-llvm/arm64-v8a
-          key: android-llvm-arm64-v8a-${{ hashFiles('scripts/android-llvm.sh') }}-${{ env.ANDROID_NDK_ROOT }}
       - name: Install the NDK, NASM and meson
         run: scripts/ci/android.sh tools
-      - name: Build LLVM's libraries for x86_64
-        if: steps.llvm-x86_64.outputs.cache-hit != 'true'
-        run: scripts/android-llvm.sh x86_64 "$PWD/android-llvm/x86_64"
-      - if: steps.llvm-x86_64.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v5
-        with:
-          path: android-llvm/x86_64
-          key: ${{ steps.llvm-x86_64.outputs.cache-primary-key }}
-      - name: Build LLVM's libraries for arm64-v8a
-        if: steps.llvm-arm64.outputs.cache-hit != 'true'
-        run: scripts/android-llvm.sh arm64-v8a "$PWD/android-llvm/arm64-v8a"
-      - if: steps.llvm-arm64.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v5
-        with:
-          path: android-llvm/arm64-v8a
-          key: ${{ steps.llvm-arm64.outputs.cache-primary-key }}
       - uses: actions/cache/restore@v5
         with:
           path: .cache/ccache
@@ -1005,40 +942,8 @@ jobs:
           path: .cache/cpm
           key: cpmutil-apple-${{ hashFiles('cpmfile.json', '.patch/**') }}
           restore-keys: cpmutil-apple-
-      # LLVM's libraries for each (scripts/apple-llvm.sh), saved as soon as built: a later failure keeps them
-      - name: Name the Xcode
-        id: xcode
-        run: echo "version=$(xcodebuild -version | tr '\n' ' ' | tr -s ' ' '-')" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache/restore@v5
-        id: macos-llvm
-        with:
-          path: apple-llvm
-          key: macos-llvm-${{ hashFiles('scripts/apple-llvm.sh') }}-${{ steps.xcode.outputs.version }}
-      - uses: actions/cache/restore@v5
-        id: ios-llvm
-        with:
-          path: ios-llvm
-          key: ios-llvm-${{ hashFiles('scripts/apple-llvm.sh') }}-${{ steps.xcode.outputs.version }}
       - name: Install tools
         run: brew install ninja meson ccache
-      - name: Build LLVM's libraries for macOS
-        id: macos-llvm-build
-        if: steps.macos-llvm.outputs.cache-hit != 'true'
-        run: scripts/apple-llvm.sh macos "$PWD/apple-llvm"
-      - if: steps.macos-llvm.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v5
-        with:
-          path: apple-llvm
-          key: ${{ steps.macos-llvm.outputs.cache-primary-key }}
-      - name: Build LLVM's libraries for iOS
-        id: ios-llvm-build
-        if: ${{ !cancelled() && steps.ios-llvm.outputs.cache-hit != 'true' }}
-        run: scripts/apple-llvm.sh ios "$PWD/ios-llvm"
-      - if: ${{ !cancelled() && steps.ios-llvm.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v5
-        with:
-          path: ios-llvm
-          key: ${{ steps.ios-llvm.outputs.cache-primary-key }}
       - uses: actions/cache/restore@v5
         if: ${{ !cancelled() }}
         with:
@@ -1064,11 +969,11 @@ jobs:
           } >> "$GITHUB_ENV"
       - name: Build the runtime for macOS
         id: macos-build
-        if: ${{ !cancelled() && steps.macos-llvm-build.outcome != 'failure' }}
+        if: ${{ !cancelled() }}
         run: scripts/ci/apple.sh macos_build
       - name: Build the app for iOS
         id: ios-build
-        if: ${{ !cancelled() && steps.ios-llvm-build.outcome != 'failure' }}
+        if: ${{ !cancelled() }}
         run: scripts/ci/apple.sh ios_build
       - name: Trim the compiler cache
         if: ${{ !cancelled() }}
@@ -1101,7 +1006,7 @@ jobs:
         if: ${{ !cancelled() && steps.macos-build.outcome == 'success' && env.SNX_TESTS == 'true' }}
         run: scripts/ci/apple.sh tests
       - name: Build the platform tests against a shared SDL3
-        if: ${{ !cancelled() && steps.macos-llvm-build.outcome != 'failure' }}
+        if: ${{ !cancelled() }}
         run: scripts/ci/apple.sh shared_sdl3
       - name: Make the macOS app
         if: ${{ !cancelled() && steps.macos-build.outcome == 'success' }}

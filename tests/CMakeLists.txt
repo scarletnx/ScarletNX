@@ -2884,8 +2884,7 @@ if(Python3_Interpreter_FOUND)
     set_tests_properties(deprecations_check PROPERTIES SKIP_RETURN_CODE 77)
     # which GitHub Actions caches the cleanup workflow deletes (scripts/trim-caches.py)
     add_test(NAME trim_caches COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/trim_caches_test.py")
-    # build.yml's LLVM builds, each saved by the step right after it: a later failure or a cancelled run keeps it;
-    # and its compiler caches, which a pull request's run does not save
+    # build.yml's compiler caches, which a pull request's run does not save
     add_test(NAME build_caches COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/build_caches_test.py"
                                        "${PROJECT_SOURCE_DIR}")
     # build.yml's tests, on a pull request, a run by hand and a version's tag, and on no push to main or nightly
