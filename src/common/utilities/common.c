@@ -1503,7 +1503,7 @@ static unsigned snx_physical_cores(void) {
 /* The threads an AOT pass (a game's recompile) is given when its count is left open, the recompile setting's Auto: a
    core each, the physical cores where the system says them, else the processors, capped so a part of the machine
    stays free for the rest of it. A pass that took every core would make the computer it shares stutter for the
-   minutes a large game's recompile runs and heat a phone, and an LLVM pass gains little from a hyperthread anyway:
+   minutes a large game's recompile runs and heat a phone, and a compile gains little from a hyperthread anyway:
    two threads on one physical core only split its throughput. The cap is a reserve of one whole core, or a quarter
    of the machine where that is more, which is at most 75% rounded down: a machine of 4 keeps a thread off, 6 and 8
    keep two, 16 keep four, 32 keep eight. Never 0, and never more than the online processors */

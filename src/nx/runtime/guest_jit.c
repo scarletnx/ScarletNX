@@ -181,7 +181,7 @@ static GuestFn variant_resolve(SnxU64 pc) {
 
 /* What a batch took and what the queues hold, on the timeline. A batch runs on a compile thread, whose name the
    profiler is given with its first batch, and the sums since that thread's last batch give the cache loads and the
-   batches compiled. A batch's seconds are the LLVM pipeline's and the loader's, so a hitch in a run that compiles
+   batches compiled. A batch's seconds are the native back end's and the loader's, so a hitch in a run that compiles
    shows which of the two it was. */
 static _Thread_local struct {
     int named;
@@ -375,7 +375,8 @@ void jit_init(void) {
         LOG("jit: %u compile threads and the miss thread, %lu pcs of earlier runs queued\n", stats.threads,
             (unsigned long)warm);
         char why[256];
-        if (snx_native_floor(why, sizeof why)) WARN("jit: %s: LLVM makes the code\n", why);
+        if (snx_native_floor(why, sizeof why))
+            WARN("jit: %s\n", why);
         else if (snx_native_fallback(why, sizeof why))
             LOG("jit: %s\n", why);
     }

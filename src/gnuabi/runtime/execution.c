@@ -13,7 +13,7 @@
 #include <signal.h>
 #endif
 #include "gnuabi/runtime/arm_exec.h"
-/* the process whose memory a fault on another host thread (an LLVM worker) is tested against, and the host's
+/* the process whose memory a fault on another host thread (a compile worker) is tested against, and the host's
    handlers before the runtime's */
 static struct {
     GnuProcess* process;

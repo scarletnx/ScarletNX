@@ -39,12 +39,11 @@ static void note(GuiSteps* steps, const char* s, uint64_t now) {
     n->step = steps->step[steps->count - 1].serial;
 }
 static int prefix(const char* line, const char* text) { return !strncmp(line, text, strlen(text)); }
-/* a driver's refusal (recompiler/mach/native.h's snx_native_floor), "scarletnx: cpu: needs ..." or "abi: needs ...",
-   where LLVM does not make the code beside it */
+/* a driver's refusal (recompiler/mach/native.h's snx_native_floor), "scarletnx: cpu: needs ..." or "abi: needs ..." */
 static void refusal(GuiSteps* steps, const char* s) {
     const char* said = prefix(s, "scarletnx") ? strstr(s, "cpu: needs ") : NULL;
     if (!said && prefix(s, "scarletnx")) said = strstr(s, "abi: needs ");
-    if (said && !strstr(said, ": LLVM makes the code")) snprintf(steps->refused, sizeof steps->refused, "%s", said);
+    if (said) snprintf(steps->refused, sizeof steps->refused, "%s", said);
 }
 static void line(GuiSteps* steps, const char* s, uint64_t now) {
     GuiStep* last = current(steps);

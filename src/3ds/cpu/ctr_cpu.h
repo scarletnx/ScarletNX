@@ -5,7 +5,7 @@
 #include "common/cpu/arm/checked.h"
 #include "3ds/memory/ctr_memory.h"
 
-/* Opt-in checked A32 state, no NX/A64 CPU casts and no LLVM/JIT dependency.
+/* Opt-in checked A32 state, no NX/A64 CPU casts and no JIT dependency.
    This adapter does NOT discover/load native blocks or implement an OS. */
 typedef struct {
     SnxArmCheckedCPU state;

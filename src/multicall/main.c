@@ -6,7 +6,7 @@
    scarletnx-3ds ..., how the launcher runs them on Windows, which has no links). A game's copy runs its driver too:
    a GBA game's, whose .ini says system=gba, and a 3DS or Vita game's, named after its title ID. Any other name is
    the Switch driver, which takes a game's copy's name for the game it runs, or in a build without it the one driver
-   there is. One program carries LLVM, SDL and the code they share once */
+   there is. One program carries SDL and the code the drivers share once */
 #ifdef SNX_MULTICALL_SWITCH
 #include "nx/runtime/entry.h"
 #endif

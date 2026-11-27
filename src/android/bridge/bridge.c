@@ -127,7 +127,7 @@ static bool compile(uint64_t pc) {
         range.size = r->address + r->size - start < most ? (size_t)(r->address + r->size - start) : most;
     }
     double started = snx_seconds();
-    /* before the compile too: a unit that crashes LLVM is the last one said */
+    /* before the compile too: a unit that crashes the compile is the last one said */
     if (b.verbose) fprintf(stderr, "scarletnx-android: JIT 0x%llx: compiling\n", (unsigned long long)pc);
     Block block = {pc & ~(JIT_BLOCK - 1), (pc & ~(JIT_BLOCK - 1)) + JIT_BLOCK};
     struct snx_recompiled* m = snx_recompile_from(b.recompiler, &range, 1, &pc, 1, JIT_STEP, outside_block, &block);

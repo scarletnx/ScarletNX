@@ -390,7 +390,7 @@ if(ANDROID)
     set_target_properties(scarletnx-run PROPERTIES OUTPUT_NAME libscarletnx-run.so RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}")
     target_link_libraries(scarletnx-run PRIVATE ${CMAKE_DL_LIBS})
     if(SNX_JEMALLOC)
-        # jemalloc's malloc for the driver's whole process, its recompiles' LLVM threads among it
+        # jemalloc's malloc for the driver's whole process, its recompiles' compile threads among it
         # (cmake/jemalloc.cmake): the C library's own calls to malloc and free and libscarletnx.so's bind to the ones
         # the program exports
         target_link_libraries(scarletnx-run PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,snx_jemalloc>")

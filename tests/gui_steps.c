@@ -78,11 +78,10 @@ int main(void) {
         assert(!strcmp(below.refused, "abi: needs ELFv2, this build has ELFv1"));
         gui_steps_reset(&below);
         feed(&below,
-             "scarletnx: cpu: needs POPCNT, this host has SSE3: LLVM makes the code\n"
              "jit: cannot start (cpu: needs POPCNT, this host has SSE3), so only the AOT pack can run\n"
              "scarletnx: cannot create /games\n",
              10);
-        assert(!below.refused[0]);
+        assert(!below.refused[0]); /* the JIT's line is no driver's refusal */
         gui_steps_failure(&below, "Recompile failed (status 1).", text, sizeof text);
         assert(!strcmp(text, "Recompile failed (status 1)."));
     }

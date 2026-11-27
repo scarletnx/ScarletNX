@@ -15,7 +15,7 @@ if(ANDROID)
 else()
     add_executable(scarletnx main.c)
 endif()
-# linked as C++: LLVM and the demangler need the C++ runtime. It goes in the build folder itself, where the
+# linked as C++: the demangler needs the C++ runtime. It goes in the build folder itself, where the
 # driver and CI look for it
 set_target_properties(scarletnx PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON LINKER_LANGUAGE CXX
                       RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}" LIBRARY_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}")
@@ -67,9 +67,8 @@ endif()
 set(SNX_PROGRAM_DRIVERS "${snx_names}" PARENT_SCOPE)
 
 if(WIN32)
-    # Prefer static toolchain/SDL libraries. LLVM may still use a DLL import library, resolved by cmake/llvm.cmake and
-    # bundled by CI. user32 provides message boxes and advapi32 the registry (the log's system line); winmm is loaded at
-    # run time, and the static SDL3 brings the libraries it needs
+    # Prefer static toolchain/SDL libraries. user32 provides message boxes and advapi32 the registry (the log's system
+    # line); winmm is loaded at run time, and the static SDL3 brings the libraries it needs
     target_link_libraries(scarletnx PRIVATE user32 advapi32)
     # The application manifest (src/common/platform/windows/runtime.manifest): UTF-8 as the process's code page, long
     # paths, and the icon
@@ -91,7 +90,7 @@ else()
     # global would let a library loaded later (a GPU driver) bind its own symbols to ours by name
     target_link_libraries(scarletnx PRIVATE Threads::Threads ${CMAKE_DL_LIBS} m)
     # but GDB's two JIT names (gdb_jit.c), which it finds by name: kept where a strip (quick-sharun's, the AppImage's)
-    # leaves no .symtab. A shared libLLVM's references to them bind to these already
+    # leaves no .symtab
     if(NOT APPLE)
         target_link_options(scarletnx PRIVATE "LINKER:--export-dynamic-symbol=__jit_debug_descriptor"
                             "LINKER:--export-dynamic-symbol=__jit_debug_register_code")
