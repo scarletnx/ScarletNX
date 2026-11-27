@@ -4069,6 +4069,10 @@ static Surf* tex_check(Surf* t, u64 gva) {
     SNX_ZONE(z, "vk mem texture check");
     [[maybe_unused]] char fname[64];
     g_tex_checks.checks++;
+    /* a storage image kept over t's memory (image_out.c), stored into since t's check: a store kept over an owner
+       already there moves nothing the check asks (memory's GPU write generation, the CPU's writes), and t kept its
+       old texels. Published first, it does */
+    if (vk_gfx_image_pending_besides(gva, t->size, t)) vk_gfx_image_mem_need(gva, t->size);
     int why = 0;
     /* what can change t outside a check (a failed load, a level given up, Auto's read again) */
     if (t->quiet && gva == t->gva && t->upload_valid && !t->bc7_reread) {
