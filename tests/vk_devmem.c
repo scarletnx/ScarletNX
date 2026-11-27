@@ -932,8 +932,9 @@ static void check_cap(void) {
 
 /* The heap at its cap with room in its blocks, but in pieces: every other 4 MiB buffer let go leaves holes of 4 MiB
    and no longer run. A request of 12 MiB, no larger than the room and larger than any piece, gets memory of its own
-   past the cap, the driver called once, and the report counts it; one larger than the room still finds none, and so
-   does one where the heap is full with no room in its blocks */
+   past the cap, the driver called once, and the report counts it, up to DM_OVER_MAX at once: the request that would
+   take more finds none until one of them goes. One larger than the room still finds none, and so does one where the
+   heap is full with no room in its blocks */
 static void check_fragmented(void) {
     enum { CAP = 512 };
     static Held held[CAP];
@@ -954,12 +955,22 @@ static void check_fragmented(void) {
     CHECK(room >= 64 * MIB);
     const u64 past = g_devmem.past;
     const u32 calls = g_drv.allocations;
-    Held big;
-    CHECK(make(0, 12 * MIB, 4096, ~0u, 0, gpu, &big) == VK_SUCCESS);
-    CHECK(alone_of(&big) && drv_heap(big.info.type) == 0 && g_drv.allocations == calls + 1);
-    CHECK(g_devmem.past == past + 1 && g_devmem.past_bytes >= 12 * MIB);
+    enum { FIT = DM_OVER_MAX / (12 * MIB) };
+    static Held big[FIT + 1];
+    CHECK(make(0, 12 * MIB, 4096, ~0u, 0, gpu, &big[0]) == VK_SUCCESS);
+    CHECK(alone_of(&big[0]) && drv_heap(big[0].info.type) == 0 && g_drv.allocations == calls + 1);
+    CHECK(g_devmem.past == past + 1 && g_devmem.past_bytes >= 12 * MIB && g_devmem.over_bytes == 12 * MIB);
+    for (u32 i = 1; i < FIT; i++) CHECK(make(0, 12 * MIB, 4096, ~0u, 0, gpu, &big[i]) == VK_SUCCESS);
+    CHECK(g_devmem.over_bytes == FIT * 12 * MIB);
+    /* past DM_OVER_MAX: none, counted; one of them gone, the next gets its own */
+    CHECK(make(0, 12 * MIB, 4096, ~0u, 0, gpu, &big[FIT]) == VK_ERROR_OUT_OF_DEVICE_MEMORY &&
+          g_devmem.over_refused == 1);
+    unmake(&big[0]);
+    CHECK(g_devmem.over_bytes == (FIT - 1) * 12 * MIB);
+    CHECK(make(0, 12 * MIB, 4096, ~0u, 0, gpu, &big[0]) == VK_SUCCESS && g_devmem.over_bytes == FIT * 12 * MIB);
     CHECK(make(0, room + 64 * MIB, 4096, ~0u, 0, gpu, &none) == VK_ERROR_OUT_OF_DEVICE_MEMORY);
-    unmake(&big);
+    for (u32 i = 0; i < FIT; i++) unmake(&big[i]);
+    CHECK(!g_devmem.over_bytes);
     for (u32 i = 0; i < n; i++)
         if (held[i].mem) unmake(&held[i]);
     check_counts(0);
