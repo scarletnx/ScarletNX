@@ -121,7 +121,8 @@ static void rp_record(void) {
         .shadingRateAttachmentTexelSize = g_vk.vrs_texel};
     if (g_rp[t_rc].rate) ri.pNext = &rate;
     vk_predraw_pass_begin(cb);
-    vk_gpuprof_pass_begin(cb, g_rp[t_rc].n ? g_rp[t_rc].rt[0] : NULL, g_rp[t_rc].zt);
+    /* the renderer thread's passes alone are timed: gpuprof holds one open pass (g_in_pass) */
+    if (!t_rc) vk_gpuprof_pass_begin(cb, g_rp[t_rc].n ? g_rp[t_rc].rt[0] : NULL, g_rp[t_rc].zt);
     rec_CmdBeginRendering(cb, &ri);
     g_rp[t_rc].begun = 1;
     g_vk_passes++;
@@ -182,11 +183,11 @@ void vk_render_end_at(const char* file, int line) {
         return;
     }
     g_rp[t_rc].begun = 0;
-    pass_end_count(file, line);
+    if (!t_rc) pass_end_count(file, line); /* the table of sites is one: the renderer thread's passes */
     VkCommandBuffer cb = vk_cmd();
     vk_query_pass_end(cb); /* a query begun in the pass ends in it */
     rec_CmdEndRendering(cb);
-    vk_gpuprof_pass_end(cb);
+    if (!t_rc) vk_gpuprof_pass_end(cb);
 }
 /* the load op of an attachment s: its contents don't matter when they are undefined (never drawn, or new memory
    over it: surface.c vk_rt_reload) or discarded with nothing written since. undefined: s's layout before the pass */
@@ -583,7 +584,7 @@ static int render_begin_empty_area(VkExtent2D ext, u32 layers) {
     async_tell(0); /* no attachment: what its draws keep is only what they store, which no target tells */
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, ext}, .layerCount = layers};
     vk_predraw_pass_begin(vk_cmd());
-    vk_gpuprof_pass_begin(vk_cmd(), NULL, NULL);
+    if (!t_rc) vk_gpuprof_pass_begin(vk_cmd(), NULL, NULL); /* the renderer thread's alone, as above */
     rec_CmdBeginRendering(vk_cmd(), &ri);
     g_rp[t_rc].begun = 1;
     g_rp[t_rc].clears = 0;
