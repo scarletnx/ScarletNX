@@ -1366,7 +1366,7 @@ static void vertex_fetch_prologue(Ctx* c) {
     u32 since = op2(c, SPV_OP_I_SUB, c->t_u32, builtin_u32(c, &c->instance_index, SPV_BUILT_IN_INSTANCE_INDEX), first);
     for (u32 i = 0; i < 32; i++) {
         if (!(mask >> i & 1)) continue;
-        const u32 rec = SH_RECORD_FETCH_TEX(__builtin_popcount(mask & ((1u << i) - 1)));
+        const u32 rec = SH_RECORD_FETCH_TEX(snx_popcount64(mask & ((1u << i) - 1)));
         u32 addr = pair64(c, record_word(c, rec), record_word(c, rec + 1));
         u32 lim = op2(c, SPV_OP_I_ADD, t64, addr, to64(c, record_word(c, rec + 2)));
         u32 info = record_word(c, rec + 3);
@@ -3171,7 +3171,7 @@ static void table_element(Ctx* c, int slot) {
     /* after the attributes in a vertex program that fetches them, else after the global buffers, as render.c's
        stage_set_ writes them: by the stage too, as a ShaderInfo that a vertex program's translation set vertex_fetch on
        keeps it */
-    const u32 at = c->stage == ST_VS && c->si->vertex_fetch ? SH_RECORD_FETCH_TEX(__builtin_popcount(c->si->fetch_attrs))
+    const u32 at = c->stage == ST_VS && c->si->vertex_fetch ? SH_RECORD_FETCH_TEX(snx_popcount64(c->si->fetch_attrs))
                    : g_spirv_translate.gbuf_address         ? SH_RECORD_GBUF
                                                             : 0;
     u32 word = record_word(c, at + (u32)slot);

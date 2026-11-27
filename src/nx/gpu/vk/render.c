@@ -4967,7 +4967,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
     const int recorded = g_spirv_translate.gbuf_address && shader_vk_set(s->stage) < 2;
     const int addressed = recorded && s->si.gbuf_address;
     const int fetch = recorded && s->si.vertex_fetch && s->stage == ST_VS;
-    const u32 tex_at = fetch      ? SH_RECORD_FETCH_TEX(__builtin_popcount(s->si.fetch_attrs))
+    const u32 tex_at = fetch      ? SH_RECORD_FETCH_TEX(snx_popcount64(s->si.fetch_attrs))
                        : recorded ? SH_RECORD_GBUF
                                   : 0;
     u32 rec[SH_RECORD_FETCH_MAX + SH_MAXTEX], rec_n = 0;
@@ -4978,7 +4978,7 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         rec[SH_RECORD_SCRATCH + 1] = (u32)(scratch >> 32);
         u32* at = rec + SH_RECORD_ATTR;
         for (u32 m = fetch ? s->si.fetch_attrs : 0; m; m &= m - 1, at += SH_ATTR_WORDS) {
-            const u32 i = (u32)__builtin_ctz(m);
+            const u32 i = snx_ctz32(m);
             at[0] = draw->attr[i][0], at[1] = draw->attr[i][1], at[2] = draw->attr[i][2], at[3] = draw->attr[i][3];
             at[4] = draw->divisor[i];
         }
