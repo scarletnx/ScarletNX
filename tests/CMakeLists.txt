@@ -939,6 +939,11 @@ add_executable(snx-test-game-stamp game_stamp.c)
 snx_test_target(snx-test-game-stamp c23)
 target_link_libraries(snx-test-game-stamp PRIVATE scarletnx-common)
 add_test(NAME game_stamp COMMAND snx-test-game-stamp)
+# the frozen references' files (support/frozen.c): one written and read back the same, and each kind of file that is
+# not one refused with its line
+add_executable(snx-test-frozen-file frozen_file.c support/frozen.c)
+snx_test_target(snx-test-frozen-file c23)
+add_test(NAME frozen_file COMMAND snx-test-frozen-file)
 if(SNX_TEST_ARM_AOT)
     include(arm_checked.cmake)
 endif()
