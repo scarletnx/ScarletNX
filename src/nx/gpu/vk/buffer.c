@@ -1780,12 +1780,52 @@ static int baseline_on_gpu(const GfxOut* o) {
     if (vk_share_on() && o->initial_split == vk_share_serial() && o->initial_slot > vk_render_slot()) return 0;
     return !range_owned(o->addr, o->size);
 }
+/* gfx_rebase for a logged result, which has no original bytes: guest memory as the CPU left it, with the words that
+   its writers' logs mark copied over it from its buffer on the GPU (vk_wlog_merge), into its buffer again. That is
+   what its landing gives guest memory, which writes only those words, from its copy back: the merge changes the
+   other words of its buffer only, so its landing stays as recorded and needs no take */
+static int gfx_rebase_logged(GfxOut* o) {
+    if (o->cpu == ~0ull || o->keep || o->no_input || (o->off & 3) || (o->size & 3) || !o->nlogs ||
+        !gmem_host(o->addr, o->size) || vk_uma_pending(o->addr, o->size) || vk_release_pending(o->addr, o->size) ||
+        range_owned(o->addr, o->size)) /* GPU-owned bytes: guest memory does not hold them yet */
+        return 0;
+    for (u32 k = 0; k < o->nlogs; k++)
+        if ((o->logs[k].at | o->logs[k].len) & 3) return 0;
+    VkBuffer in;
+    u64 in_off;
+    u8* p = vk_stage(o->size, 4, &in, &in_off);
+    if (!p) return 0;
+    o->wseen = vk_ww_now(); /* before guest memory is read: a write in between only makes out_copyable compare */
+    read_untracked(o->addr, p, o->size);
+    vk_render_end();
+    copy_barrier(out_stages(), out_access(), VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                 VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+    for (u32 k = 0; k < o->nlogs; k++) {
+        const struct OutLog* w = &o->logs[k];
+        if (!vk_wlog_merge(w->log, w->part, 0, w->len, o->buf, o->off + w->at, in, in_off + w->at))
+            return 0; /* out of descriptors: nothing in its buffer changed yet */
+    }
+    copy_barrier(VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                 VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    VkBufferCopy copy = {in_off, o->off, o->size};
+    rec_CmdCopyBuffer(vk_cmd(), in, o->buf, 1, &copy);
+    copy_barrier(VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                 out_stages() | VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT,
+                 VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
+    g_buffer.wstat.copied += o->size;
+    if (copy_stats_on()) {
+        g_merges++;
+        g_merge_bytes += o->size;
+    }
+    return 1;
+}
 static int gfx_rebase(GfxOut* o) {
     /* a split's worker (draw_batches=2): its merge goes into its list, which the GPU runs after the renderer thread's
        half, but o's original bytes and wseen change at once, and the renderer thread's draws would bind o in place
        before its merge. A batch of draw_batches=1 records in slot 1 too, while the renderer thread waits: it lands o
        as before, which costs a submit but never the order */
     if (vk_render_slot()) return 0;
+    if (!o->org) return gfx_rebase_logged(o);
     const int gpu_base = o->initial && baseline_on_gpu(o);
     if (o->cpu == ~0ull || !o->org || (o->initial && !gpu_base) || o->keep || o->no_input || (o->off & 3) ||
         !gmem_host(o->addr, o->size) || vk_uma_pending(o->addr, o->size) || vk_release_pending(o->addr, o->size) ||
