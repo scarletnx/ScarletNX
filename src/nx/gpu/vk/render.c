@@ -8064,6 +8064,12 @@ static struct {
     u64 submit; /* the submission the worker's commands name their command buffer in */
     u64 inplace; /* vk_mirror_inplace_count at the split's start */
     VkOwnHeld held; /* the worker's held results, which the renderer thread takes at the join (vk_own_held_hand) */
+    /* the pass the worker's commands begin in: the renderer thread's open pass at the split, which goes on across
+       the join (render_split_join). inherit 0: none, and the worker's first draw begins its own */
+    typeof(g_rp[0]) pass;
+    int inherit;
+    int took; /* the worker took the ring (vk_split_ring_wait), and ended the pass in its commands before that */
+    u64 kept, begun_again; /* the joins that kept the pass open, and those that began the worker's again */
     u64 splits, draws;
     /* the ticks of render_split's steps and of the join, for the stats line: the batch's peek, the copies, the
        hold and the command buffers, the kick, the join */
@@ -8121,6 +8127,10 @@ static void split_log(void) {
         }
         LOG("vulkan: draw_batches=2: the share lock's takes a present by function (and their waits):%s\n", line);
     }
+    if (g_split.kept || g_split.begun_again)
+        LOG("vulkan: draw_batches=2: %llu joins kept the pass open over the last 600 presents, %llu began the "
+            "worker's pass again\n", (unsigned long long)g_split.kept, (unsigned long long)g_split.begun_again);
+    g_split.kept = g_split.begun_again = 0;
     const u64 handed = atomic_exchange_explicit(&g_split.handovers, 0, memory_order_relaxed);
     if (handed)
         LOG("vulkan: draw_batches=2: the worker waited for the ring at %llu joins over the last 600 presents\n",
@@ -8140,6 +8150,11 @@ static void render_split_run(void) {
     vk_descriptors_stream_reset(t_rc);
     vk_surf_view_reset();
     g_rp[t_rc] = (typeof(g_rp[0])){.rate_want = RATE_KEEP}; /* no pass: the first draw begins its own */
+    if (g_split.inherit) { /* the renderer thread's pass, open at the join (render_split_join) */
+        g_rp[t_rc] = g_split.pass;
+        g_rp[t_rc].rate_want = RATE_KEEP;
+        g_rp[t_rc].clears = 0;
+    }
     vk_rec_list_begin(g_split.list);
     vk_rec_list_parallel(1);
     for (u32 i = 0; i < g_split.apply; i++) gpu_ds_batch_apply(g_split.recs[i]);
@@ -8164,11 +8179,27 @@ static void render_split_run(void) {
    renderer thread to reach the join, which hands it the ring once the first half's commands are in it. The share lock
    is let go of meanwhile, as the renderer thread's draws take it */
 void vk_split_ring_wait(void) {
+    /* the ring's commands next are the worker's own, a submit or a command buffer's begin, which no pass may span:
+       the pass its list went on in ends there, and the join knows that none is open (render_split_join) */
+    vk_render_end();
+    g_split.took = 1;
     const int paused = vk_share_pause();
     atomic_fetch_add_explicit(&g_split.handovers, 1, memory_order_relaxed);
     while (!atomic_load_explicit(&g_split.granted, memory_order_acquire))
         plat_wait_word(&g_split.granted, 0, 1000000);
     vk_share_resume(paused);
+}
+/* the split's pass (g_split.pass) begun again for the worker's commands, which go on in it: the open pass ends, and
+   the targets take the barriers they need */
+static void split_pass_again(void) {
+    const typeof(g_rp[0])* p = &g_split.pass;
+    vk_render_end();
+    g_rp[0].rate_want = RATE_KEEP; /* no pass open: no rate attachment, as the split's pass had */
+    Surf* rt[8];
+    memcpy(rt, p->rt, sizeof rt);
+    if (!render_begin(rt, p->zt, p->n, p->zt_ro, p->srgb_write, 0, p->ext))
+        fatal("vulkan: draw_batches=2: the pass the worker's commands go on in could not begin again\n");
+    rp_record();
 }
 static void render_split_join(void) {
     const u64 tj = ph_now();
@@ -8176,14 +8207,38 @@ static void render_split_join(void) {
         fatal("vulkan: draw_batches=2: the renderer thread submitted while a worker recorded: the worker's commands "
               "name an old command buffer\n");
     /* the first half's pass ends and its barriers go into the ring: the worker's commands begin their own pass, and
-       from here the ring is the worker's if it needs it (vk_split_ring_wait) */
-    vk_render_end();
+       from here the ring is the worker's if it needs it (vk_split_ring_wait). Where the worker's commands go on in
+       the pass of the split (inherit), the pass stays open when it is still that one: the same targets in the same
+       layouts need no barrier, and draws of one pass are ordered. Otherwise that pass begins again for them, with
+       the barriers its targets need. Its query ends either way, as the worker's draws begin their own */
+    if (g_split.inherit) {
+        const typeof(g_rp[0])* p = &g_split.pass;
+        const int same = g_rp[0].open && g_rp[0].n == p->n && g_rp[0].zt == p->zt && g_rp[0].zt_ro == p->zt_ro &&
+                         g_rp[0].srgb_write == p->srgb_write && !g_rp[0].fb && !g_rp[0].rate &&
+                         !memcmp(g_rp[0].rt, p->rt, sizeof p->rt);
+        if (same) {
+            rp_record(); /* begun, if a clear alone opened it */
+            vk_query_pass_end(vk_cmd());
+            g_split.kept++;
+        } else {
+            split_pass_again();
+            g_split.begun_again++;
+        }
+    } else
+        vk_render_end();
     vk_rec_barrier_flush();
     atomic_store_explicit(&g_split.granted, 1, memory_order_release);
     plat_wake_word(&g_split.granted);
     vk_prep_join_wait();
-    /* a draw of either half that wrote the mirror in place: its writes before the other half's commands after them */
-    if (vk_mirror_inplace_count() != g_split.inplace) vk_mirror_order_join();
+    /* the worker took the ring: its commands in it ended the pass, and the rest of them begin their own */
+    if (g_split.took) g_rp[0].open = g_rp[0].begun = g_rp[0].clears = 0;
+    /* a draw of either half that wrote the mirror in place: its writes before the other half's commands after them.
+       The barrier ends the pass, which the worker's commands still go on in unless the worker took the ring */
+    if (vk_mirror_inplace_count() != g_split.inplace) {
+        const int open = g_rp[0].open;
+        vk_mirror_order_join();
+        if (g_split.inherit && open && !g_split.took) split_pass_again();
+    }
     cnt_fold();
     vk_share_active(0);
     if (!g_split.ok) fatal("vulkan: draw_batches=2: a worker's command list ran out of memory\n");
@@ -8238,6 +8293,11 @@ static void render_split(void) {
     (void)vk_cmd_upload(1); /* and the uploads' command buffer, which a worker's draw can't begin (its ring) */
     g_split.submit = vk_submit_number();
     g_split.inplace = vk_mirror_inplace_count();
+    /* a begun pass with no feedback slots and no shading rate attachment: the worker's draws go on in it. Its
+       feedback state is the renderer thread's to change, and a rate attachment is a draw's to choose */
+    g_split.inherit = g_rp[0].open && g_rp[0].begun && !g_rp[0].fb && !g_rp[0].rate;
+    if (g_split.inherit) g_split.pass = g_rp[0];
+    g_split.took = 0;
     atomic_store_explicit(&g_split.granted, 0, memory_order_relaxed); /* the ring is the renderer thread's */
     vk_share_active(1); /* before the worker's first call */
     /* the last draw's probe off before the worker reads it: no draw of the split run probes (render_draw_main) */
