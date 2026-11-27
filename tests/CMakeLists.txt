@@ -3116,8 +3116,8 @@ if(Python3_Interpreter_FOUND)
                  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/publish_builds_test.py")
         # build.yml's Nightly due: a scheduled run on a day, or of a commit, that has its nightly cancels itself
         add_test(NAME nightly_due COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/nightly_due_test.py")
-        # edenprobe's runs held against a baseline (scripts/edenprobe.py), with a fake runtime and game
-        add_test(NAME edenprobe_script COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/edenprobe_test.py")
+        # Amberlith's runs held against a baseline (scripts/amberlith.py), with a fake runtime and game
+        add_test(NAME amberlith_script COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/amberlith_test.py")
         # a Build run cancelled once a job of it failed, by the jobs still running (scripts/fail-fast.py), against a
         # fake GitHub, and build.yml's jobs held to it
         add_test(NAME fail_fast COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/fail_fast_test.py")
@@ -4341,33 +4341,33 @@ if(NOT SNX_TEST_SANITIZERS)
 endif()
 add_test(NAME runtime_module_abi COMMAND snx-test-runtime-module-abi $<TARGET_FILE:scarletnx>
     $<TARGET_FILE:snx-test-module-abi> $<TARGET_FILE:snx-test-module-abi-arm>)
-# Amberlith (edenprobe before 1.0.0; docs/dev/edenprobe.md) as CI runs it, with no FPS limit, against its baseline,
+# Amberlith (edenprobe before 1.0.0; docs/dev/amberlith.md) as CI runs it, with no FPS limit, against its baseline,
 # once with guest buffers copied and once read in place (vk_memory=2: the path a GPU that shares memory takes,
 # lavapipe's in CI).
-# -DSNX_TEST_EDENPROBE=/path/to/the.nro, of the release that .github/workflows/build.yml pins
-if(SNX_TEST_EDENPROBE AND Python3_Interpreter_FOUND AND NOT CMAKE_CROSSCOMPILING AND CMAKE_SYSTEM_NAME STREQUAL "Linux"
+# -DSNX_TEST_AMBERLITH=/path/to/the.nro, of the release that .github/workflows/build.yml pins
+if(SNX_TEST_AMBERLITH AND Python3_Interpreter_FOUND AND NOT CMAKE_CROSSCOMPILING AND CMAKE_SYSTEM_NAME STREQUAL "Linux"
    AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
-    get_filename_component(snx_edenprobe_nro "${SNX_TEST_EDENPROBE}" ABSOLUTE)
+    get_filename_component(snx_amberlith_nro "${SNX_TEST_AMBERLITH}" ABSOLUTE)
     foreach(snx_memory 1 2)
-        add_test(NAME edenprobe_vk_memory_${snx_memory}
-            COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/edenprobe.py" run
-                --runtime $<TARGET_FILE:scarletnx> --nro "${snx_edenprobe_nro}"
+        add_test(NAME amberlith_vk_memory_${snx_memory}
+            COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/amberlith.py" run
+                --runtime $<TARGET_FILE:scarletnx> --nro "${snx_amberlith_nro}"
                 --mode "quick notime cpu fs video display kernel audio hooks"
-                --out "${CMAKE_CURRENT_BINARY_DIR}/edenprobe-vk_memory-${snx_memory}"
+                --out "${CMAKE_CURRENT_BINARY_DIR}/amberlith-vk_memory-${snx_memory}"
                 --baseline "${test-references_SOURCE_DIR}/amberlith/linux-x86_64.txt" --timeout 120
                 --setting fps-limit=0 --setting vk_memory=${snx_memory})
-        set_tests_properties(edenprobe_vk_memory_${snx_memory} PROPERTIES TIMEOUT 1800 RUN_SERIAL TRUE LABELS external)
+        set_tests_properties(amberlith_vk_memory_${snx_memory} PROPERTIES TIMEOUT 1800 RUN_SERIAL TRUE LABELS external)
     endforeach()
     # #2442's case, the wimsy suite's heavy level after the reference suite, which it needs: each compute texture read
     # back after a judged frame holds that frame's texels, where a write scan between the texture's move into the alias
     # pool and its trap leaves the frame before's in some of its pages
-    add_test(NAME edenprobe_compute_readback
-        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/edenprobe.py" run
-            --runtime $<TARGET_FILE:scarletnx> --nro "${snx_edenprobe_nro}" --mode "quick hooks game level=3 frames=8"
-            --out "${CMAKE_CURRENT_BINARY_DIR}/edenprobe-compute-readback"
+    add_test(NAME amberlith_compute_readback
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/amberlith.py" run
+            --runtime $<TARGET_FILE:scarletnx> --nro "${snx_amberlith_nro}" --mode "quick hooks game level=3 frames=8"
+            --out "${CMAKE_CURRENT_BINARY_DIR}/amberlith-compute-readback"
             --baseline "${test-references_SOURCE_DIR}/amberlith/compute-readback.txt" --timeout 600
             --setting fps-limit=0)
-    set_tests_properties(edenprobe_compute_readback PROPERTIES TIMEOUT 1800 RUN_SERIAL TRUE LABELS external)
+    set_tests_properties(amberlith_compute_readback PROPERTIES TIMEOUT 1800 RUN_SERIAL TRUE LABELS external)
 endif()
 # the program's malloc is the pinned jemalloc's (SNX_JEMALLOC). On macOS its prefix, je_, names the options' variable
 if(SNX_JEMALLOC AND NOT CMAKE_CROSSCOMPILING)
@@ -5673,7 +5673,7 @@ snx_test_target(snx-test-texconv-glsl gnu23)
 target_include_directories(snx-test-texconv-glsl PRIVATE glsl)
 add_test(NAME texconv_glsl COMMAND snx-test-texconv-glsl)
 
-# single blocks from rEden's ASTC decoder tests, against edenprobe's and astcenc's texels (astc_blocks.c)
+# single blocks from rEden's ASTC decoder tests, against Amberlith's and astcenc's texels (astc_blocks.c)
 add_executable(snx-test-astc-blocks astc_blocks.c support/astc.c)
 snx_test_target(snx-test-astc-blocks gnu23)
 add_test(NAME astc_blocks COMMAND snx-test-astc-blocks)
@@ -5954,7 +5954,7 @@ target_include_directories(snx-test-resources PRIVATE "${PROJECT_SOURCE_DIR}/src
 target_link_libraries(snx-test-resources PRIVATE scarletnx-common)
 add_test(NAME resources COMMAND snx-test-resources)
 
-# EAC worked examples and edenprobe's blocks from rEden's decode_eac test (eac_blocks.c)
+# EAC worked examples and Amberlith's blocks from rEden's decode_eac test (eac_blocks.c)
 add_executable(snx-test-eac-blocks eac_blocks.c support/etc2.c)
 snx_test_target(snx-test-eac-blocks gnu23)
 add_test(NAME eac_blocks COMMAND snx-test-eac-blocks)

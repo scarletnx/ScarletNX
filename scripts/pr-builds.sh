@@ -8,9 +8,9 @@
 #   scripts/pr-builds.sh REPO PR RUN SHA [--print]
 #
 # PR may be empty: then it is the open pull request whose head is SHA, and with none there is nothing to link. A job of
-# the run that did not succeed gets a line, by its id in build.yml, but Amberlith's runs (edenprobe), which build
+# the run that did not succeed gets a line, by its id in build.yml, but Amberlith's runs, which build
 # nothing: their line is their results, the notices they leave (the NRO's and the APK's), linked to the run's summary
-# (docs/dev/edenprobe.md). They are the step "Run Amberlith" of the job that builds Linux x86-64, which fails with them
+# (docs/dev/amberlith.md). They are the step "Run Amberlith" of the job that builds Linux x86-64, which fails with them
 # alone and still built its package, so it gets no line then; a run of an older build.yml had them in a job of their
 # own. The A64 differential's QEMU reference, the job that says whether a pull request needs it and the scheduled run's
 # Nightly due make no package, so they get none, and neither do an older build.yml's sanitizers' build, its checks of a
@@ -40,19 +40,20 @@ if [ -z "$print" ] && [ "$(gh api "repos/$repo/pulls/$pr" --jq .head.sha)" != "$
 fi
 # every artifact but the APK's halves (-stage), which only the job that packs the APK takes, an older build.yml's
 # install trees (-install), which only the run's own jobs took, the A64 differential's QEMU reference, which only the
-# cross builds take, edenprobe's reports, which its line below links through the run, and a failed job's mark
-# (scripts/fail-fast.py): the packages a person downloads, kept until the first of them expires
+# cross builds take, Amberlith's reports (edenprobe- in a run of an older build.yml), which its line below links through
+# the run, and a failed job's mark (scripts/fail-fast.py): the packages a person downloads, kept until the first of
+# them expires
 artifacts=$(gh api "repos/$repo/actions/runs/$run/artifacts?per_page=100" | jq '.artifacts |= map(select((.expired | not)
     and (.name | endswith("-stage") or endswith("-install") or startswith("ScarletNX-llvm-qemu-reference-")
-        or startswith("edenprobe-") or startswith("fail-fast-") | not)))')
+        or startswith("amberlith-") or startswith("edenprobe-") or startswith("fail-fast-") | not)))')
 links=$(jq -r --arg url "https://github.com/$repo/actions/runs/$run/artifacts" '
     .artifacts | sort_by(.name)[] |
     "- [\(.name)](\($url)/\(.id)), \(.size_in_bytes / 1048576 | floor) MiB"' <<<"$artifacts")
 until=$(jq -r '[.artifacts[].expires_at] | min // empty | .[:10]' <<<"$artifacts")
 
 # The run's jobs as toJSON(needs) would have them: a job's legs under its id, with the worst of their conclusions, and
-# Amberlith's runs under edenprobe, its step's conclusion. A matrix job skipped whole has one job, under its name before
-# the matrix filled it in. A job this does not know keeps its own name, so its failure still shows
+# Amberlith's runs under the key amberlith, its step's conclusion. A matrix job skipped whole has one job, under its
+# name before the matrix filled it in. A job this does not know keeps its own name, so its failure still shows
 if [ -z "${NEEDS:-}" ]; then
     jobs=$(gh api "repos/$repo/actions/runs/$run/jobs?per_page=100")
     needs=$(jq '
@@ -60,7 +61,7 @@ if [ -z "${NEEDS:-}" ]; then
             if . == "macOS and iOS (arm64)" then "apple"
             elif . == "Android APK" then "android"
             elif startswith("Windows (") then "windows"
-            elif startswith("Amberlith") or startswith("edenprobe") then "edenprobe"
+            elif startswith("Amberlith") or startswith("edenprobe") then "amberlith"
             elif endswith(", as installed") then empty
             elif . == "Recompiler changes" or startswith("A64 differential") or . == "Nightly due" then empty
             elif . == "Linux (${{ matrix.arch }})" then empty
@@ -74,13 +75,13 @@ if [ -z "${NEEDS:-}" ]; then
             if .name == "Linux AppImage (x86_64)" then [(.steps // [])[] | select(.name == "Run Amberlith")][0]
             else null end;
         # the order of the needs build.yml gave the comment, then any other
-        ["linux", "appimage", "appimage-cross", "windows", "android", "apple", "edenprobe"] as $needs |
+        ["linux", "appimage", "appimage-cross", "windows", "android", "apple", "amberlith"] as $needs |
         ["failure", "timed_out", "cancelled", "action_required", "skipped"] as $worst |
         [.jobs[] | amberlith as $probe | [(.steps // [])[] | select(.conclusion == "failure") | .name] as $failed |
             {key: (.name | build_id), job: .id,
                 conclusion: (if $probe != null and $failed == ["Run Amberlith"] then "success"
                     else .conclusion // .status end)},
-            (if $probe != null then {key: "edenprobe", job: .id, conclusion: ($probe.conclusion // $probe.status)}
+            (if $probe != null then {key: "amberlith", job: .id, conclusion: ($probe.conclusion // $probe.status)}
                 else empty end)] | group_by(.key) |
         map((map(.conclusion) | unique) as $c | {key: .[0].key, value: {
             job: .[0].job,
@@ -90,20 +91,21 @@ if [ -z "${NEEDS:-}" ]; then
         sort_by(.key as $k | $needs | index($k) // length) |
         from_entries' <<<"$jobs")
     # a step skipped too: a pull request whose files call for no run says so in a notice before the runs
-    probe_job=$(jq -r '.edenprobe.job // empty' <<<"$needs")
+    probe_job=$(jq -r '.amberlith.job // empty' <<<"$needs")
     if [ -n "$probe_job" ]; then
         # a notice for each of its runs, the NRO's first: the API does not list them in the order the job left them
         notice=$(gh api "repos/$repo/check-runs/$probe_job/annotations" |
-            jq -r '[.[] | select(.title == "edenprobe") | .message] | sort_by(test("s APK: ")) | join("; ")')
-        needs=$(jq --arg notice "$notice" 'if $notice != "" then .edenprobe.outputs.result = $notice else . end' <<<"$needs")
+            jq -r '[.[] | select(.title == "amberlith" or .title == "edenprobe") | .message] |
+                sort_by(test("s APK: ")) | join("; ")')
+        needs=$(jq --arg notice "$notice" 'if $notice != "" then .amberlith.outputs.result = $notice else . end' <<<"$needs")
     fi
 else
     needs=$NEEDS
 fi
-failed=$(jq -r 'to_entries[] | select(.key != "edenprobe" and .value.result != "success") |
+failed=$(jq -r 'to_entries[] | select(.key != "amberlith" and .value.result != "success") |
     "\(.key) (\(.value.result))"' <<<"$needs" | paste -sd, - | sed 's/,/, /g')
 # a pull request that changes nothing either run loads ends the job at once, passed, its notice saying so
-probe=$(jq -r --arg url "https://github.com/$repo/actions/runs/$run" '.edenprobe // empty |
+probe=$(jq -r --arg url "https://github.com/$repo/actions/runs/$run" '.amberlith // empty |
     if (.outputs.result // "") | startswith("Amberlith: not run, ") then
         "[Amberlith](\($url)): " + (.outputs.result | ltrimstr("Amberlith: "))
     else

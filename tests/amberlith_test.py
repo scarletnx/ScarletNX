@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
-"""scripts/edenprobe.py against a fake runtime that recompiles into a fake game, whose launches write report lines as
+"""scripts/amberlith.py against a fake runtime that recompiles into a fake game, whose launches write report lines as
 each test asks: a clean run, a regression, a case not run, a new pass, a crash and a hang each followed by another
 launch, a baseline line that expects a crash, a case the ban list skips, launches that add nothing, no report, an exit
 after the summary, words the probe ignored, a baseline of another build or mode or none, broken lines; the APK, run by
@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SCRIPT = ROOT / 'scripts' / 'edenprobe.py'
+SCRIPT = ROOT / 'scripts' / 'amberlith.py'
 MODE = 'quick notime cpu'
 failures = []
 
@@ -53,24 +53,24 @@ if sys.argv[1] == '-r':
 if sys.argv[1] == 'scarletnx-android':
     name = 'amberlith' if b'amberlith' in Path(sys.argv[-1]).read_bytes() else 'edenprobe'
     files = ('scarletnx', 'android', 'data', f'org.scarletnx.{name}', 'external', 'files')
-    edenprobe = Path(os.environ['XDG_DATA_HOME'], *files, name)
+    card = Path(os.environ['XDG_DATA_HOME'], *files, name)
 else:
     sdmc = Path(os.getcwd()) / f'{Path(sys.argv[0]).name}_data' / 'sdmc'
-    edenprobe = sdmc / ('amberlith' if (sdmc / 'amberlith' / 'mode').exists() else 'edenprobe')
-count = edenprobe / 'launches'
+    card = sdmc / ('amberlith' if (sdmc / 'amberlith' / 'mode').exists() else 'edenprobe')
+count = card / 'launches'
 number = int(count.read_text()) if count.exists() else 0
 count.write_text(str(number + 1))
-(scenario.parent / 'mode.seen').write_text((edenprobe / 'mode').read_text())
+(scenario.parent / 'mode.seen').write_text((card / 'mode').read_text())
 if number >= len(plan['launches']):
     sys.exit(3)
 step = plan['launches'][number]
 if step.get('last_run_only'):
-    (edenprobe / 'last-run').write_text('runs/abc1234\\n')
+    (card / 'last-run').write_text('runs/abc1234\\n')
 if step.get('lines') is not None:
-    run = edenprobe / 'runs' / plan.get('folder', 'abc1234')
+    run = card / 'runs' / plan.get('folder', 'abc1234')
     (run / 'images').mkdir(parents=True, exist_ok=True)
     (run / 'images' / 'failure.png').write_bytes(b'png')
-    (edenprobe / 'last-run').write_text(f'runs/{plan.get("folder", "abc1234")}\\n')
+    (card / 'last-run').write_text(f'runs/{plan.get("folder", "abc1234")}\\n')
     with open(run / 'report.jsonl', 'a') as report:
         for line in step['lines']:
             report.write(line + '\\n')
@@ -672,5 +672,16 @@ with tempfile.TemporaryDirectory() as temporary, tempfile.TemporaryDirectory(dir
 
 for failure in failures:
     print('FAIL:', failure)
-print('edenprobe:', 'FAILED' if failures else 'ok')
+# the old name, scripts/edenprobe.py, says the new one and runs it with the same arguments
+old = subprocess.run(
+    [sys.executable, str(ROOT / 'scripts' / 'edenprobe.py'), '--help'], capture_output=True, text=True, timeout=60
+)
+check(
+    'scripts/edenprobe.py says its new name and runs scripts/amberlith.py',
+    old.returncode == 0
+    and 'scripts/edenprobe.py is the old name of scripts/amberlith.py' in old.stderr
+    and old.stdout.startswith('usage: amberlith.py'),
+    (old.returncode, old.stdout[:80], old.stderr),
+)
+print('amberlith:', 'FAILED' if failures else 'ok')
 sys.exit(1 if failures else 0)
