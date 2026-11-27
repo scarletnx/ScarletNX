@@ -1644,6 +1644,43 @@ static int migratable_nl(u64 a, u64 size) {
     }
     return 1;
 }
+/* what mem_migrate moves, with holes: the guest's data as migratable_nl takes it, between blocks that are free. A
+   region is whole windows of 2 MiB (uma.c), and a window with a hole of unmapped pages in it was never moved: the
+   storage buffers and windows in it were copied each time the GPU read them, about 1,200 lookups a present in one
+   game's town. The free pages stay as they are, inaccessible, and the buffer's pages behind them unused. Its data runs
+   in *runs, 0 when there is none or a block of another kind; *holes when a free block is among them */
+static int migratable_holes_nl(u64 a, u64 size, u32* runs, int* holes) {
+    u64 end = a + size;
+    u32 n = 0;
+    int in = 0, free_seen = 0;
+    if (!g_nblk || placed_nl(a, size) || (any_pool_nl(a, size) && aliased_nl(a, end))) return 0;
+    for (u32 i = blk_index_nl(a); i < g_nblk && g_blk[i].addr < end; i++) {
+        const MemBlock* b = &g_blk[i];
+        if (b->state == MS_FREE) {
+            in = 0;
+            free_seen = 1;
+            continue;
+        }
+        if (!data_state(b->state)) return 0;
+        if (b->pool) {
+            u64 lo = b->addr > a ? b->addr : a, hi = blk_end(b) < end ? blk_end(b) : end;
+            if (b->state == MS_SHARED || host_view_nl(b->pool - 1 + (lo - b->addr), hi - lo)) return 0;
+        }
+        if (!in) n++;
+        in = 1;
+    }
+    if (runs) *runs = n;
+    if (holes) *holes = free_seen;
+    return n != 0;
+}
+int mem_movable_holes(u64 a, u64 size, int* holes) {
+    int r;
+    if (!size || (a | size) & (g_host_page - 1) || a < AS_BASE || a + size > AS_END || a + size < a) return 0;
+    mem_lock();
+    r = migratable_holes_nl(a, size, NULL, holes);
+    mem_unlock();
+    return r;
+}
 int mem_movable(u64 a, u64 size) {
     int r;
     if (!size || (a | size) & (g_host_page - 1) || a < AS_BASE || a + size > AS_END || a + size < a) return 0;
@@ -1666,37 +1703,66 @@ static void pool_give_back_nl(u64 a, u64 size) {
     }
     if (any) pool_set_nl(a, size, 0);
 }
+/* [a, a + size) moves into fd's pages, each data run of it at its offset in the buffer (a hole of free pages stays as
+   it is: migratable_holes_nl). A run that can't move puts the ones before it back */
 int mem_migrate(u64 a, u64 size, int fd, u8* view) {
     u64 end = a + size;
-    u32 at;
     int r = 0, s;
+    u32 nruns = 0, done = 0;
+    u64(*runs)[2] = NULL;
     if (!size || (a | size) & (g_host_page - 1) || a < AS_BASE || end > AS_END || end < a) return MEM_BADSTATE;
     mem_lock();
-    if (!migratable_nl(a, size)) {
+    if (!migratable_holes_nl(a, size, &nruns, NULL)) {
         r = MEM_BADSTATE;
         goto out;
     }
-    if (ext_room_nl(2)) { /* a run cut in two, and this one */
+    runs = malloc(sizeof *runs * nruns);
+    if (!runs || ext_room_nl(nruns + 1)) { /* a run cut in two, and these */
         r = MEM_NOMEM;
         goto out;
     }
-    plat_freeze(GP(a), size);
-    s = plat_vm_share(GP(a), fd, size);
-    plat_thaw();
-    if (s == -2) fatal("Could not move %llu KiB of guest memory to a GPU's buffer", (unsigned long long)(size >> 10));
-    if (s == -3) pool_give_back_nl(a, size); /* not moved, but on fresh pages of its own now */
-    if (s) {
-        r = MEM_NOMEM;
-        goto out;
+    /* the runs first: giving their pool pages back changes the block list */
+    u32 n = 0;
+    for (u32 i = blk_index_nl(a); i < g_nblk && g_blk[i].addr < end; i++) {
+        if (g_blk[i].state == MS_FREE) continue;
+        u64 lo = g_blk[i].addr > a ? g_blk[i].addr : a, hi = blk_end(&g_blk[i]) < end ? blk_end(&g_blk[i]) : end;
+        if (n && runs[n - 1][1] == lo)
+            runs[n - 1][1] = hi;
+        else
+            runs[n][0] = lo, runs[n++][1] = hi;
     }
-    pool_give_back_nl(a, size);
-    ext_cut_nl(a, end); /* pages another buffer had are this one's now */
-    for (at = 0; at < g_ext.n && g_ext.run[at].a < a; at++) {}
-    memmove(&g_ext.run[at + 1], &g_ext.run[at], sizeof *g_ext.run * (size_t)(g_ext.n - at));
-    g_ext.run[at] = (ExtRun){a, end, view};
-    g_ext.n++;
+    for (; done < n; done++) {
+        const u64 lo = runs[done][0], hi = runs[done][1];
+        plat_freeze(GP(lo), hi - lo);
+        s = plat_vm_share(GP(lo), fd, lo - a, hi - lo);
+        plat_thaw();
+        if (s == -2)
+            fatal("Could not move %llu KiB of guest memory to a GPU's buffer", (unsigned long long)((hi - lo) >> 10));
+        if (s == -3) pool_give_back_nl(lo, hi - lo); /* not moved, but on fresh pages of its own now */
+        if (s) {
+            r = MEM_NOMEM;
+            break;
+        }
+        pool_give_back_nl(lo, hi - lo);
+        ext_cut_nl(lo, hi); /* pages another buffer had are this one's now */
+        u32 at;
+        for (at = 0; at < g_ext.n && g_ext.run[at].a < lo; at++) {}
+        memmove(&g_ext.run[at + 1], &g_ext.run[at], sizeof *g_ext.run * (size_t)(g_ext.n - at));
+        g_ext.run[at] = (ExtRun){lo, hi, view ? view + (lo - a) : NULL};
+        g_ext.n++;
+    }
+    for (u32 k = 0; r && k < done; k++) { /* the runs moved before the one that couldn't: back on pages of their own */
+        const u64 lo = runs[k][0], hi = runs[k][1];
+        plat_freeze(GP(lo), hi - lo);
+        const int u = plat_vm_unshare(GP(lo), hi - lo);
+        plat_thaw();
+        if (u == -2)
+            fatal("Could not move %llu KiB of guest memory back from a GPU's buffer", (unsigned long long)((hi - lo) >> 10));
+        if (!u) ext_cut_nl(lo, hi);
+    }
 out:
     mem_unlock();
+    free(runs);
     return r;
 }
 int mem_unmigrate(u64 a, u64 size, u64* moved) {

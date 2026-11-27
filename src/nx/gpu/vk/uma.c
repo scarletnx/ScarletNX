@@ -135,6 +135,10 @@ typedef struct {
     int stuck;   /* its pages did not all move back (imp_let_go): tried again at a present alone */
     int tracked; /* a dma-buf region (imp_make_dmabuf): the driver leaves the CPU's page table alone, and scans watch it */
     u32 rid;     /* its table of pages (Rgn) while it is in the table, 0 for none */
+    /* a region with holes: free pages of guest memory among its windows, which stayed where they were (mem_migrate).
+       A mapping there would give the guest pages the buffer does not hold: any change of the mappings over it ends it
+       (vk_uma_mapping_begin), and the lookup after makes it again over what is there then */
+    int holes;
 } Imp;
 /* Spans the driver refused to import (pages it can't pin, or amdgpu's refusal of the alias pool's), whose ranges are copied
    until UMA_IDLE presents pass or their pages change. Without them every range in such a window asked the driver
@@ -279,6 +283,7 @@ typedef struct {
     int order_asked;
     u64 refused[VK_UMA_REFUSED_N]; /* the writes in place refused, by why (vk_uma_refused) */
     u64 merges, merged;            /* regions made over others (imp_get), and the others they took over */
+    u64 holed, holed_gone;         /* regions made with holes, and those a change of the mappings over them ended */
     /* an aliasing draw's storage bound in place (vk_uma_cover, buffer.c's alias_in_place): imp_get makes no wait
        while no_wait is on, and counts in would_wait the imports it did not make or let go for that. regions moves at
        each import or chunk made or gone, never set back: the group's buffers are one region's while it holds */
@@ -1585,7 +1590,7 @@ static void fail(u64 lo, u64 hi, const char* why) {
    page, #1875), and amdgpu fails a submission over one */
 static int imp_can(u64 lo, u64 hi) {
     if (own_trapped(lo, hi - lo)) return 0;
-    return g_uma.migrate ? mem_movable(lo, hi - lo) : mem_mapped_run(lo, hi - lo) == hi - lo;
+    return g_uma.migrate ? mem_movable_holes(lo, hi - lo, NULL) : mem_mapped_run(lo, hi - lo) == hi - lo;
 }
 /* the import that holds guest memory [cpu, cpu + len), made if there is none: its index, or ~0 for none (the range is
    copied) */
@@ -1666,6 +1671,8 @@ static u32 imp_get(u64 cpu, u64 len) {
        whose pages the scans leave alone from then on (vk_uma_import_in) */
     const int opened = !g_uma.migrate;
     if (opened) plat_ww_open(GP(lo), hi - lo);
+    int holes = 0;
+    if (g_uma.migrate) (void)mem_movable_holes(lo, hi - lo, &holes);
     const char* why = g_uma.migrate                       ? region_make(&m, lo, hi - lo)
                       : imp_make(&m, lo, hi - lo, GP(lo)) ? NULL
                                                           : snx_vk_result_str(g_uma.import_result);
@@ -1675,6 +1682,8 @@ static u32 imp_get(u64 cpu, u64 len) {
         return ~0u; /* the imports there stay */
     }
     vk_descriptor_heaps_lasting(m.buf); /* it lives past the frame: its descriptors are kept (imp_destroy forgets) */
+    m.holes = holes;
+    g_uma.holed += holes;
     g_uma.imports++;
     g_uma.import_bytes += hi - lo;
     g_uma.import_ns += plat_ns() - t0;
@@ -2380,11 +2389,14 @@ void vk_uma_frame(void) {
         (unsigned long long)atomic_load_explicit(&g_uma.wait_by[2], memory_order_relaxed),
         (unsigned long long)atomic_load_explicit(&g_uma.wait_by[3], memory_order_relaxed));
     LOG("vulkan:   imports declined: %llu chunked, %llu unmade over imports, %llu unmapped, %llu over the cap, %llu "
-        "refused before, %llu table full\n",
+        "refused before, %llu table full; %llu regions made with holes of free pages, %llu of them ended by a change of "
+        "the mappings over them\n",
         (unsigned long long)g_uma.imp_why[0], (unsigned long long)g_uma.imp_why[1],
         (unsigned long long)g_uma.imp_why[2], (unsigned long long)g_uma.imp_why[3],
-        (unsigned long long)g_uma.imp_why[4], (unsigned long long)g_uma.imp_why[5]);
+        (unsigned long long)g_uma.imp_why[4], (unsigned long long)g_uma.imp_why[5], (unsigned long long)g_uma.holed,
+        (unsigned long long)g_uma.holed_gone);
     memset(g_uma.imp_why, 0, sizeof g_uma.imp_why);
+    g_uma.holed = g_uma.holed_gone = 0;
     LOG("vulkan: dispatches left for the stream's end over 600 presents: %llu; waits for writes in place still "
         "unsubmitted: %llu; programs whose dispatches go at once: %u\n",
         (unsigned long long)g_vk_cs_left, (unsigned long long)g_uma.open_waits, g_uma.nsoon);
@@ -2502,6 +2514,24 @@ void vk_uma_owning(u64 cpu, u64 size) {
 void vk_uma_mapping_begin(u64 cpu, u64 size) {
     u64 end = size == ~0ull || cpu + size < cpu ? ~0ull : cpu + size;
     if (!vk_uma()) return;
+    /* a region with holes: a change over it may map a hole, whose new pages it doesn't hold. It goes, as one whose
+       pages changed (pages_replaced). Its own pages are still its buffer's, and a dead one moves them back with no
+       landing first (imp_let_go): the writes in place pending in all of it land now, before it is marked */
+    for (u32 i = 0; i < g_uma.nimp; i++)
+        if (g_uma.imp[i].holes && !g_uma.imp[i].dead && g_uma.imp[i].cpu < end &&
+            cpu < g_uma.imp[i].cpu + g_uma.imp[i].size) {
+            const u64 lo = g_uma.imp[i].cpu, hi = lo + g_uma.imp[i].size, n = g_uma.nimp;
+            region_writes_land(lo, hi);
+            if (g_uma.nimp != n) { /* the landing moved the table: from the start */
+                i = (u32)-1;
+                continue;
+            }
+            pm_lock(&g_uma.lk);
+            g_uma.imp[i].dead = 1;
+            atomic_store_explicit(&g_uma.any_dead, 1, memory_order_release);
+            pm_unlock(&g_uma.lk);
+            g_uma.holed_gone++;
+        }
     gone_kill(cpu, end);
     region_writes_land(cpu, end);
     if (quiesce(cpu, size)) vk_rec_sync();

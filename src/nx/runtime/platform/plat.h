@@ -78,13 +78,13 @@ int plat_address_space(u64* mapped, u64* largest_free);
 u8* plat_vm_reserve_at(u64 addr, u64 size);
 int plat_vm_commit(u8* p, u64 size);       /* readable and writable; 0, or -1 */
 void plat_vm_decommit(u8* p, u64 size);    /* inaccessible again, and zero when committed next */
-/* committed [p, p + size) becomes the pages of fd (a buffer a GPU shares, that large), shared, readable and writable,
-   holding what it held; and back to fresh private pages holding what it held. 0; -1 with p as it was (ENOSYS but on
+/* committed [p, p + size) becomes the pages of fd from off (a buffer a GPU shares, at least off + size large), shared,
+   readable and writable, holding what it held; and back to fresh private pages holding what it held. 0; -1 with p as it was (ENOSYS but on
    Linux and Android); -3 with p on fresh private pages holding what it held, not fd's; -2 when p couldn't be put back
    either. The caller keeps writers out meanwhile (plat_freeze): of the range it froze, the move keeps what the
    written-page tracking says of each page (a move is no write), and the range takes writes again at plat_thaw; of
    any other, the range reads as written after it */
-int plat_vm_share(u8* p, int fd, u64 size);
+int plat_vm_share(u8* p, int fd, u64 off, u64 size);
 int plat_vm_unshare(u8* p, u64 size);
 /* A buffer of size bytes a GPU takes in place, which guest memory moves into where the driver can't import host
    memory (gpu/vk/uma.c): the descriptor its pages are mapped from, and what the driver imports. On Android an

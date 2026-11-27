@@ -225,8 +225,8 @@ u32 own_lookup(u64 addr, u64 size, OwnRange* out, u32 max) { /* nothing is the G
 }
 /* guest memory moved into a GPU's buffer and back (mem_migrate): refused, but for test_moved's, which maps nothing */
 static int share_ok;
-int plat_vm_share(u8* p, int fd, u64 size) {
-    (void)p, (void)fd, (void)size;
+int plat_vm_share(u8* p, int fd, u64 off, u64 size) {
+    (void)p, (void)fd, (void)off, (void)size;
     return share_ok ? 0 : -1;
 }
 int plat_vm_unshare(u8* p, u64 size) {
