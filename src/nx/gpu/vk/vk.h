@@ -596,6 +596,9 @@ int vk_uma_read(u64 gva, u64 len, u64 align, VkBuffer* buf, u64* off);
    place is pending over the range: no barrier then */
 int vk_uma_read_cpu(u64 cpu, u64 len, u64 align, int ordered, VkBuffer* buf, u64* off);
 void vk_uma_fast_counts(u64* hits, u64* blk); /* the fast path's reads bound, and those a blk page sent to the chain */
+/* the questions about the pages read or written in place (order's, the hazard count's, front_write's) that walked the
+   tables of the pages in no region, since the last statistics: for the tests */
+u64 vk_uma_old_walks(void);
 /* draw_state_check=1, for a read the fast path bound at buf, off: uma.c's own reason the old chain would not have,
    NULL for none; a difference found (counted, and said in the log), and their count */
 const char* vk_uma_read_differs(u64 gva, u64 len, VkBuffer buf, u64 off);
