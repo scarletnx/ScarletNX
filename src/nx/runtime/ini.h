@@ -106,8 +106,9 @@ const IniOpt* ini_find(const IniOpt* table, const char* key); /* key's entry in 
    order strcmp sorts them, are the settings' names on a command line, each key that has an _ with a - for each
    (settings_arg's, snx_settings.h): one of them gives its key (--aot-threads=4 is aot_threads). The key itself, the
    older spelling, gives it too, and is said once a run through ini_set_say's (--aot_threads: "settings: --aot_threads
-   is the old spelling of --aot-threads: it is read as that; write --aot-threads"). Any other NAME is the key as given,
-   for the reader to take or refuse by it. NULL for another argument, or for a NAME that does not fit */
+   is the old spelling of --aot-threads: it is read as that; write --aot-threads"). An older version's key with a - for
+   each _ gives that key (--llvm-batch=ipo is llvm_batch, ini_deprecated's), for the reader to say. Any other NAME is
+   the key as given, for the reader to take or refuse by it. NULL for another argument, or for a NAME that does not fit */
 const char* ini_arg(const char* arg, char* key, size_t size, const char* const* names, int count);
 /* the command-line option that sets key to value, as the settings are given there: --KEY=value with a - for each _ of
    KEY (aot_threads, 4: --aot-threads=4). Into out, cut to size and NUL-terminated; the length it needs, without the

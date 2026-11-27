@@ -2,7 +2,7 @@
 
 ## Index
 
-* [The optimization rule](#the-optimization-rule)
+* [The level](#the-level)
 * [Before building](#before-building)
 * [Build from the launcher](#build-from-the-launcher)
 * [Build from the command line](#build-from-the-command-line)
@@ -18,22 +18,14 @@ pack** is a normal game build that links the cached functions into the game modu
 table. It is still the same hybrid runtime: cached functions run AOT, anything missed still runs JIT. An AOT pack
 is a faster starting point, not a different runtime and not a pure-AOT build.
 
-## The optimization rule
+## The level
 
-The profile cache and the AOT pack must be built with the same optimization level. The launcher enforces this
-before it starts a pack build:
-
-- **Game AOT level**: the launcher's `Optimization level` (`opt`) in Settings. This is the `-O` used when the
-  game is recompiled.
-- **Cache level**: the runtime's `jit_opt` setting that was active when the cache was written. The cache key
-  records it as `opt=`.
-
-`Game O2 / cache O2` is accepted. `Game O2 / cache O0` is refused, and the same is true in reverse. The pack
-build would otherwise contain AOT code generated at one level and cached code generated at another; the two must
-agree for the pack to be coherent. The level the cache records is the JIT's, and the level the build was made with is
-the AOT's. The launcher names both: its side panel says `AOT build: O3, its JIT cache O2: a pack needs one level` in
-the failure colour, and the build itself says the same, with the two ways to align them. That refusal is the whole of
-it. The two levels are independent everywhere else: the JIT cache is keyed by its own level, the ABI, the native code,
+The native back ends have no optimization levels, and LLVM's went with it. The JIT cache still records the level it
+was made at, and a game's build the level it was recompiled at: 2 for both since LLVM left, so a cache and a build of
+this version always agree. A cache or a build an older version made at another level does not: the launcher's side
+panel says `AOT build: O3, its JIT cache O2: a pack needs one level` in the failure colour, and the build itself says
+the same. Recompiling the game, or playing it again to write a new cache, makes the two agree. That refusal is the
+whole of it. The two levels are independent everywhere else: the JIT cache is keyed by its own level, the ABI, the native code,
 the runtime library, the CPU and the hooks, so another AOT level neither drops it nor makes it stale, and the shaders and
 their cache are keyed by the GPU, its driver and the build, so no level touches them. A game plays the same at any
 pair of levels until a pack is built.
@@ -98,17 +90,16 @@ of a pack build.
 The launcher action is the same build the driver already supports:
 
 ```sh
-scarletnx -r path/to/game --jit-cache path/to/game.jitcache -O 2
+scarletnx -r path/to/game --jit-cache path/to/game.jitcache
 ```
 
 Add `--hook-direct-calls` when the cache was written from a module recompiled with it:
 
 ```sh
-scarletnx -r path/to/game --jit-cache path/to/game.jitcache -O 2 --hook-direct-calls
+scarletnx -r path/to/game --jit-cache path/to/game.jitcache --hook-direct-calls
 ```
 
-`-O` and `--opt=2` set the same recompiler level; the launcher passes `-O` after the settings so the matched
-level is authoritative. The driver writes the game module in place; the cache is only read.
+The driver writes the game module in place; the cache is only read.
 
 The GUI locates the cache the same way the runtime does:
 

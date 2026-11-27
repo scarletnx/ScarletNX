@@ -530,6 +530,47 @@ static void test_dropped_keys_old(void) {
     g_test.write = 0;
 }
 
+/* LLVM's keys, gone with it: a .ini an older version wrote keeps each under [Deprecated] after what became of it, its
+   passes and options (llvm_pass_*, llvm_*) by their prefixes, none under [Other], and the run's line names every one */
+static void test_llvm_keys_old(void) {
+    static const char* const old[] = {"opt=3",
+                                      "jit_opt=z",
+                                      "llvm_batch=ipo",
+                                      "slp_vectorizer=1",
+                                      "fpsr_flags=0",
+                                      "abi_contract=1",
+                                      "volatile_memory=1",
+                                      "ir_stats=1",
+                                      "ir_dump_pc=1000",
+                                      "ir_branch_profile=b.txt",
+                                      "linux_jit_opt=0",
+                                      "android_jit_opt=1",
+                                      "android_jit_keep_ir=ir",
+                                      "llvm_pass_gvn=0",
+                                      "llvm_fast_isel=1"};
+    char *text, file[1024] = "[Debug]\n", key[64], line[256];
+    size_t i;
+    for (i = 0; i < sizeof old / sizeof old[0]; ++i)
+        snprintf(file + strlen(file), sizeof file - strlen(file), "%s\n", old[i]);
+    g_test.write = 1;
+    text = open_ini(file);
+    CHECK(text && strstr(text, "\n[Deprecated]\n") && !strstr(text, "\n[Other]\n"));
+    for (i = 0; i < sizeof old / sizeof old[0]; ++i) { /* "; key: what became of it", then the line as it was */
+        snprintf(key, sizeof key, "%.*s", (int)strcspn(old[i], "="), old[i]);
+        CHECK(ini_deprecated(key));
+        snprintf(line, sizeof line, "\n; %s: %s\n%s\n", key, ini_deprecated(key), old[i]);
+        CHECK(strstr(text, line) && strstr(text, "\n[Deprecated]\n") < strstr(text, line));
+    }
+    CHECK(!strcmp(ini_deprecated("llvm_pass_gvn"), "went with LLVM's passes: the native back ends run none") &&
+          !strcmp(ini_deprecated("llvm_fast_isel"), "went with LLVM's options: the native back ends have none"));
+    CHECK(strstr(g_test.said, "keeps 15 keys this version does not use (opt, jit_opt, llvm_batch, slp_vectorizer, "
+                              "fpsr_flags, abi_contract, volatile_memory, ir_stats, ir_dump_pc, ir_branch_profile, "
+                              "linux_jit_opt, android_jit_opt, android_jit_keep_ir, llvm_pass_gvn, llvm_fast_isel), "
+                              "under [Deprecated]"));
+    free(text);
+    g_test.write = 0;
+}
+
 /* the Debug settings over the picture (options_debug) say the descriptors' setting: its key=value, NULL for none */
 static const char* debug_descriptors(void) {
     static char list[1024];
@@ -1053,23 +1094,22 @@ static int picks_perf(void) {
     g_settings.async_pipelines = 1; /* the runtime's own pick, as for an Ounce program: nobody gave it */
     base = snx_path_join(dir, "game");
     CHECK(base);
-    /* no .abi: nothing of how it was made */
-    CHECK(options_perf_notice(base) == 5 && g_test.notices == 1);
-    CHECK(!strcmp(g_test.game, "memory_gb, jit_opt"));
+    /* no .abi: nothing of how it was made; jit_opt, LLVM's and deprecated, is none of the game's settings */
+    CHECK(options_perf_notice(base) == 4 && g_test.notices == 1);
+    CHECK(!strcmp(g_test.game, "memory_gb"));
     CHECK(!strcmp(g_test.global, "resolution, vsync, fps_limit"));
-    /* made at -O0 ahead of time, by a recompile with its batch and unit size off their defaults */
+    /* made by a recompile with its batch and unit size off their defaults: the made line's keys as it names them */
     abi(dir, "14\nmade opt=0 aot=1 found=1 code=2 off=llvm_batch,unit_instructions\n");
-    CHECK(options_perf_notice(base) == 8 && g_test.notices == 2);
-    CHECK(!strcmp(g_test.game, "memory_gb, jit_opt"));
-    CHECK(!strcmp(g_test.global, "resolution, vsync, fps_limit, opt, llvm_batch, unit_instructions"));
-    /* an older version's made line: its opt alone */
+    CHECK(options_perf_notice(base) == 6 && g_test.notices == 2);
+    CHECK(!strcmp(g_test.game, "memory_gb"));
+    CHECK(!strcmp(g_test.global, "resolution, vsync, fps_limit, llvm_batch, unit_instructions"));
+    /* the made line's level, LLVM's, names nothing, ahead of time or not, at 0 or at 2 */
     abi(dir, "14\nmade opt=0 aot=1 found=1 code=2\n");
-    CHECK(options_perf_notice(base) == 6 && !strcmp(g_test.global, "resolution, vsync, fps_limit, opt"));
-    /* --jit-only's, no code made ahead of time: its opt made nothing that runs; and opt's default */
+    CHECK(options_perf_notice(base) == 4 && !strcmp(g_test.global, "resolution, vsync, fps_limit"));
     abi(dir, "14\nmade opt=0 aot=0 found=0 code=2\n");
-    CHECK(options_perf_notice(base) == 5 && !strcmp(g_test.global, "resolution, vsync, fps_limit"));
+    CHECK(options_perf_notice(base) == 4 && !strcmp(g_test.global, "resolution, vsync, fps_limit"));
     abi(dir, "14\nmade opt=2 aot=1 found=1 code=2\n");
-    CHECK(options_perf_notice(base) == 5 && !strcmp(g_test.global, "resolution, vsync, fps_limit"));
+    CHECK(options_perf_notice(base) == 4 && !strcmp(g_test.global, "resolution, vsync, fps_limit"));
     CHECK(!snx_remove_tree(dir));
     free(base);
     free(ini);
@@ -1354,6 +1394,7 @@ int main(int argc, char** argv) {
     test_compress_shader_cache_old();
     test_controls_opacity_old();
     test_dropped_keys_old();
+    test_llvm_keys_old();
     test_vk_descriptors_old_default();
     test_vk_descriptors_old();
     test_write_tracking_hot_old();

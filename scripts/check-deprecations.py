@@ -36,7 +36,8 @@ DOCUMENTS = ('README.md', 'CONTRIBUTING.md', 'ROADMAP.md', 'docs')
 SETTING = re.compile(r'`-{0,2}([a-z_][a-z0-9_]*)=')
 SKIP = 77
 
-KEY = re.compile(r'^[a-z_][a-z0-9_]*$')
+# a key, or a prefix every key it begins stands under (llvm_pass_*, as INI_DEPRECATED has it)
+KEY = re.compile(r'^[a-z_][a-z0-9_]*\*?$')
 DEPRECATED_TABLE = re.compile(r'\bINI_DEPRECATED\[\]\s*=\s*\{(.*?)\{NULL,\s*NULL\}\};', re.DOTALL)
 DEPRECATED_ROW = re.compile(r'\{"([^"]*)",')
 CODE = re.compile(r'`([^`]*)`')

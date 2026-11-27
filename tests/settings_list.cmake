@@ -137,7 +137,6 @@ foreach(row "\nLinux\tlinux_isolated\t0\tint\t0\t1\t" "\tIsolated\t0=Off|1=On\t\
             "\nLinux\tlinux_jit_cache\t1\tint\t0\t1\t"
             "\nLinux/Debug\tlinux_strace\t0\tint\t0\t1\t"
             "\nAndroid\tandroid_java_options\t\ttext\t0\t0\t" "\tJava options\t\t\n"
-            "\nAndroid/Debug\tandroid_jit_keep_ir\t\ttext\t0\t0\t" "\tJIT IR folder\t\t\t\tfolder\n"
             "\nDS\tnds_aot\t1\tint\t0\t1\t" "\nDS/Debug\tnds_wav\t\ttext\t0\t0\t" "\tSound file\t\t\t\tsave\n")
     string(FIND "${list}" "${row}" at)
     if(at LESS 0)

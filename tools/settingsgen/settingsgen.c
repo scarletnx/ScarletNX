@@ -1,26 +1,20 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* settingsgen: generates the settings from src/nx/runtime/settings.txt (its head describes the format): snx_settings.h,
-   the struct Settings with a member for every setting (its name in snake_case) and g_settings, the tables of
-   nx/runtime/ini.h that read and write them, and the code that hands LLVM's settings to LLVM. An llvm table is
-   filled with what the LLVM being built against has: every pass of the pipelines its opt prints for -O0 to -Oz (a
-   file of "<level> <pipeline>" lines, --pipelines), on unless turned off, and each option its C API sets on the pass
-   builder (LLVMPassBuilderOptionsSet*) and the target machine (LLVMSetTargetMachine*) taking a bool or an integer,
-   read from its headers (--llvm-include), LLVM's own value until it is set. A vulkan table's settings are the
+   the struct Settings with a member for every setting (its name in snake_case) and g_settings, and the tables of
+   nx/runtime/ini.h that read and write them. A vulkan table's settings are the
    Vulkan extensions its setting @NAME lines name, each auto, on or off, auto by default: checked against the Khronos
    registry (vk.xml, --vk-registry), which gives each its help, and listed for the renderer
    (g_vk_extension_settings). Every setting's key is also its name on a command line, as --key=value, and so is the
    key with - for each _ (--aot-threads=4): those names are listed for the drivers (g_setting_args). It is strict ISO C23
    and depends on nothing, so a cross build can build it for the machine it runs on.
 
-   Usage: settingsgen --out DIR [--pipelines FILE] [--llvm-include DIR] [--vk-registry FILE] [--bans FILE]
-          [--hooks FILE] SETTINGS
+   Usage: settingsgen --out DIR [--vk-registry FILE] [--bans FILE] [--hooks FILE] SETTINGS
    It writes DIR/snx_settings.h, settings.c (g_settings), a settings_<table>.c for each runtime-scope table (whose set
    functions the runtime defines) and settings_runtime.c (the .ini's sections), settings_launch.c (the launcher's and the recompiler's tables
-   and sections), settings_llvm.c (LLVM's pipelines, which pass each toggle turns off, and the options set) and
-   settings_args.c (the names a command line gives the settings by, and settings_arg, which reads them), each
-   only rewritten when it changes. Without --pipelines or --llvm-include, the llvm table has no passes or no options
-   of LLVM's; without --vk-registry, a vulkan table's names go unchecked and its help says nothing of the registry. */
+   and sections) and settings_args.c (the names a command line gives the settings by, and settings_arg, which reads
+   them), each only rewritten when it changes. Without --vk-registry, a vulkan table's names go unchecked and its help
+   says nothing of the registry. */
 #include <ctype.h>
 #include <limits.h>
 #include <stdarg.h>
@@ -35,12 +29,9 @@
 #define MAX_SECTIONS 32
 #define MAX_INCLUDES 16
 #define DEF_IFS      4 /* a setting's default-if lines */
-#define LEVELS       "0123sz"
 
 enum { T_INT, T_FLOAT, T_TEXT };
-enum { S_RUNTIME, S_LAUNCHER, S_RECOMPILE, S_LLVM, S_VULKAN };
-/* where an LLVM setting goes: none, a pass of the pipelines, an option of the pass builder or of the target machine */
-enum { L_NONE, L_PASS, L_BUILDER, L_MACHINE };
+enum { S_RUNTIME, S_LAUNCHER, S_RECOMPILE, S_VULKAN };
 
 typedef struct {
     char *name, *member, *key, *label, *help, *words, *set, *lo, *hi, *def;
@@ -55,10 +46,6 @@ typedef struct {
     char* path;  /* a text that is a path (ini.h's INI_PATH): folder, file or save, the picker it takes */
     int perf;    /* changes how fast the game runs where the player can't see it (ini.h's INI_PERF) */
     char* needs; /* the feature its needs block names, NULL: no build gate on it */
-    /* LLVM's: its kind, its ID (a pass's name, a setter's suffix), the pipelines' levels a pass is in (bit per LEVELS
-       character), the setter's argument type (LLVMBool, int or unsigned) */
-    int llvm, levels;
-    char *llvm_id, *llvm_type;
     /* a vulkan table's: its extension's name, and the Vulkan version it was promoted to (13 for 1.3), 0 for none */
     char* vk_id;
     int vk_core;
@@ -82,16 +69,9 @@ typedef struct {
     int ntables, backend, launcher;
 } Section;
 
-/* an @ID override of an llvm table: its name, key and help for the setting LLVM's ID makes */
-typedef struct {
-    char *id, *name, *key, *help, *label;
-    int table, line;
-} Override;
 
 static Setting settings[MAX_SETTINGS];
 static int nsettings;
-static Override overrides[MAX_SETTINGS];
-static int noverrides;
 static Table tables[MAX_TABLES];
 static int ntables;
 static List lists[MAX_LISTS];
@@ -100,7 +80,6 @@ static Section sections[MAX_SECTIONS];
 static int nsections;
 static char* includes[MAX_INCLUDES];
 static int nincludes;
-static char* pipelines[6]; /* by LEVELS */
 static const char* spec_path;
 
 static char* obuf;
@@ -359,26 +338,6 @@ static char* snake(const char* name) {
     }
     return s;
 }
-/* a camel-case ID in words, lowercased but its acronyms (LoopVectorization: loop vectorization, SLPVectorization: SLP
-   vectorization) */
-static char* words_of(const char* id) {
-    size_t n = strlen(id), i, o = 0, start;
-    char* s = (char*)alloc(2 * n + 1);
-    for (i = 0; i < n;) {
-        int acronym;
-        start = i;
-        i++;
-        while (i < n && !(isupper((unsigned char)id[i]) &&
-                          (islower((unsigned char)id[i - 1]) ||
-                           (isupper((unsigned char)id[i - 1]) && i + 1 < n && islower((unsigned char)id[i + 1])))))
-            i++;
-        acronym = i - start > 1 && isupper((unsigned char)id[start + 1]);
-        if (o) s[o++] = ' ';
-        for (; start < i; start++) s[o++] = acronym ? id[start] : (char)tolower((unsigned char)id[start]);
-    }
-    s[o] = 0;
-    return s;
-}
 
 /* ============================================================ settings.txt */
 
@@ -481,7 +440,6 @@ static int scope_of(const char* word, int line) {
     if (!*word || !strcmp(word, "runtime")) return S_RUNTIME;
     if (!strcmp(word, "launcher")) return S_LAUNCHER;
     if (!strcmp(word, "recompile")) return S_RECOMPILE;
-    if (!strcmp(word, "llvm")) return S_LLVM;
     if (!strcmp(word, "vulkan")) return S_VULKAN;
     fail(line, "unknown table scope %s", word);
     return 0;
@@ -516,7 +474,6 @@ static void read_spec(const char* path) {
     int number = 0, table = -1, repeat = 0, in_repeat = 0, blocks = 0, i;
     char* needs = NULL; /* the feature the needs block around these settings names */
     Setting* s = NULL;
-    Override* o = NULL;
     for (line = text; line && *line; line = next) {
         next = strchr(line, '\n');
         if (next) *next++ = 0;
@@ -528,11 +485,9 @@ static void read_spec(const char* path) {
             if (nincludes == MAX_INCLUDES) fail(number, "too many includes");
             includes[nincludes++] = dup(rest);
             s = NULL;
-            o = NULL;
         } else if (!strcmp(word, "list")) {
             parse_list(rest, number);
             s = NULL;
-            o = NULL;
         } else if (!strcmp(word, "table")) {
             char* name = split(rest, &rest);
             if (ntables == MAX_TABLES) fail(number, "too many tables");
@@ -541,14 +496,12 @@ static void read_spec(const char* path) {
             tables[ntables].scope = scope_of(rest, number);
             table = ntables++;
             s = NULL;
-            o = NULL;
         } else if (!strcmp(word, "needs")) {
             if (in_repeat) fail(number, "a needs block inside a repeat");
             if (needs) fail(number, "a needs block inside a needs block");
             if (!*rest || strchr(rest, ' ') || strchr(rest, '\t')) fail(number, "needs FEATURE");
             needs = dup(rest);
             s = NULL;
-            o = NULL;
         } else if (!strcmp(word, "end")) {
             if (in_repeat) {
                 in_repeat = 0;
@@ -560,7 +513,6 @@ static void read_spec(const char* path) {
             else
                 fail(number, "end without a repeat or a needs block");
             s = NULL;
-            o = NULL;
         } else if (!strcmp(word, "repeat")) {
             if (in_repeat) fail(number, "a repeat inside a repeat");
             repeat = atoi(rest);
@@ -568,11 +520,9 @@ static void read_spec(const char* path) {
             in_repeat = 1;
             blocks++;
             s = NULL;
-            o = NULL;
         } else if (!strcmp(word, "section")) {
             parse_section(rest, number);
             s = NULL;
-            o = NULL;
         } else if (!strcmp(word, "setting")) {
             if (table < 0) fail(number, "a setting before its table");
             if (rest[0] == '@' && tables[table].scope == S_VULKAN) {
@@ -593,20 +543,10 @@ static void read_spec(const char* path) {
                 if (repeat) fail(number, "a vulkan table's setting inside a repeat");
                 if (strncmp(s->vk_id, "VK_", 3))
                     fail(number, "setting @%s: a Vulkan extension's name starts VK_", s->vk_id);
-                o = NULL;
                 continue;
             }
             if (tables[table].scope == S_VULKAN) fail(number, "a vulkan table's settings are setting @NAME lines");
-            if (rest[0] == '@') {
-                if (tables[table].scope != S_LLVM) fail(number, "setting @ID is an llvm or vulkan table's");
-                if (noverrides == MAX_SETTINGS) fail(number, "too many @ID settings");
-                o = &overrides[noverrides++];
-                o->id = dup(rest + 1);
-                o->table = table;
-                o->line = number;
-                s = NULL;
-                continue;
-            }
+            if (rest[0] == '@') fail(number, "setting @NAME is a vulkan table's");
             if (nsettings == MAX_SETTINGS) fail(number, "too many settings");
             s = &settings[nsettings++];
             s->name = dup(rest);
@@ -618,18 +558,6 @@ static void read_spec(const char* path) {
             s->list = -1;
             s->type = -1;
             s->line = number;
-            o = NULL;
-        } else if (o) {
-            if (!strcmp(word, "name"))
-                o->name = dup(rest);
-            else if (!strcmp(word, "key"))
-                o->key = dup(rest);
-            else if (!strcmp(word, "help"))
-                add_help(&o->help, rest);
-            else if (!strcmp(word, "label"))
-                o->label = dup(rest);
-            else
-                fail(number, "an @ID setting takes name, key, label and help");
         } else if (!s) {
             fail(number, "unknown line %s", word);
         } else if (s->vk_id && strcmp(word, "help") && strcmp(word, "label")) {
@@ -738,243 +666,6 @@ static void read_spec(const char* path) {
         if (s->perf && s->once && (s->type != T_TEXT || *s->def))
             fail(s->line, "%s: perf takes a once setting only as a text whose default is empty", s->name);
     }
-}
-
-/* ============================================================ what LLVM has */
-
-static int level_index(char c) {
-    const char* p = strchr(LEVELS, c);
-    return c && p ? (int)(p - LEVELS) : -1;
-}
-
-/* the passes of a pipeline: each name with no pipeline of its own in parentheses, but require<> and invalidate<> */
-static void pipeline_passes(const char* text, int level, char*** names, int** levels, int* n) {
-    const char* p = text;
-    while (*p) {
-        const char* start;
-        const char* end;
-        int depth;
-        while (*p == ',' || *p == '(' || *p == ')' || *p == ' ') p++;
-        if (!*p) break;
-        start = p;
-        while (*p && *p != ',' && *p != '(' && *p != ')' && *p != '<') p++;
-        end = p;
-        if (*p == '<') { /* its parameters, which may nest */
-            depth = 0;
-            for (; *p; p++) {
-                if (*p == '<') depth++;
-                if (*p == '>' && !--depth) {
-                    p++;
-                    break;
-                }
-            }
-        }
-        if (*p != '(' && end > start && !(end - start == 7 && !strncmp(start, "require", 7)) &&
-            !(end - start == 10 && !strncmp(start, "invalidate", 10))) {
-            int i;
-            for (i = 0; i < *n; i++)
-                if (strlen((*names)[i]) == (size_t)(end - start) && !strncmp((*names)[i], start, (size_t)(end - start)))
-                    break;
-            if (i == *n) {
-                *names = (char**)realloc(*names, (size_t)(*n + 1) * sizeof **names);
-                *levels = (int*)realloc(*levels, (size_t)(*n + 1) * sizeof **levels);
-                if (!*names || !*levels) fail(0, "out of memory");
-                (*names)[i] = dup_n(start, (size_t)(end - start));
-                (*levels)[i] = 0;
-                (*n)++;
-            }
-            (*levels)[i] |= 1 << level;
-        }
-    }
-}
-
-static const Override* override_of(int table, const char* id) {
-    int i;
-    for (i = 0; i < noverrides; i++)
-        if (overrides[i].table == table && !strcmp(overrides[i].id, id)) return &overrides[i];
-    return NULL;
-}
-
-static Setting* new_llvm(int table, int kind, const char* id, const char* auto_name, const char* key) {
-    Setting* s;
-    const Override* o = override_of(table, id);
-    if (nsettings == MAX_SETTINGS) fail(0, "too many settings with LLVM's");
-    s = &settings[nsettings++];
-    s->name = dup(o && o->name ? o->name : auto_name);
-    s->member = snake(s->name);
-    s->label = o && o->label ? dup(o->label) : NULL;
-    s->help = o && o->help ? dup(o->help) : NULL;
-    s->key = dup(o && o->key ? o->key : key);
-    s->table = table;
-    s->list = -1;
-    s->line = o ? o->line : 0;
-    s->llvm = kind;
-    s->llvm_id = dup(id);
-    return s;
-}
-
-static void fill_passes(int table) {
-    char** names = NULL;
-    int *levels = NULL, n = 0, i, l;
-    for (l = 0; l < 6; l++)
-        if (pipelines[l]) pipeline_passes(pipelines[l], l, &names, &levels, &n);
-    for (i = 0; i < n; i++) {
-        char* auto_name = cat3("LLVM pass ", names[i], "");
-        char* member = snake(names[i]);
-        char* key = cat3("llvm_pass_", member, "");
-        Setting* s = new_llvm(table, L_PASS, names[i], auto_name, key);
-        s->type = T_INT;
-        s->lo = dup("0");
-        s->hi = dup("1");
-        s->def = dup("1");
-        s->words = dup("Off|On");
-        s->levels = levels[i];
-        if (!s->help) {
-            char at[64]; /* " -O0, -O1, -O2, -O3, -Os, -Oz" at most */
-            char* head;
-            int first = 1;
-            at[0] = 0;
-            for (l = 0; l < 6; l++)
-                if (levels[i] & 1 << l) {
-                    sprintf(at + strlen(at), "%s -O%c", first ? "" : ",", LEVELS[l]);
-                    first = 0;
-                }
-            head = cat3("LLVM's ", names[i], " pass, in the pipelines of");
-            s->help = cat3(head, at, "");
-            free(head);
-        }
-        free(auto_name);
-        free(member);
-        free(key);
-        free(names[i]);
-    }
-    free(names);
-    free(levels);
-}
-
-/* each "void <prefix><Name>(<ref> <arg>, <type> <arg>);" of header that takes a bool or an integer. The void and the
-   name are on one line or two: clang-format breaks a long declaration after its return type (LLVM 20's headers, with
-   LLVM_C_ABI before it) */
-static void fill_options(int table, const char* header, const char* prefix, const char* ref, int kind,
-                         const char* setter) {
-    char* text = read_file(header, 0);
-    const char* p;
-    size_t np = strlen(prefix);
-    if (!text) return;
-    for (p = text; (p = strstr(p, prefix)) != NULL; p += np) {
-        const char *q = p + np, *name, *type, *r = p;
-        size_t nname, ntype;
-        char *id, *auto_name, *key, *spaced, *sn;
-        Setting* s;
-        while (r > text && isspace((unsigned char)r[-1])) r--;
-        if (r == p || r < text + 4 || strncmp(r - 4, "void", 4) ||
-            (r - 4 > text && (isalnum((unsigned char)r[-5]) || r[-5] == '_')))
-            continue;
-        name = q;
-        while (isalnum((unsigned char)*q)) q++;
-        nname = (size_t)(q - name);
-        if (!nname || *q != '(') continue;
-        q++;
-        while (isspace((unsigned char)*q)) q++;
-        if (strncmp(q, ref, strlen(ref))) continue;
-        q = strchr(q, ',');
-        if (!q) continue;
-        q++;
-        while (isspace((unsigned char)*q)) q++;
-        type = q;
-        while (isalnum((unsigned char)*q) || *q == '_') q++;
-        ntype = (size_t)(q - type);
-        if (!((ntype == 8 && !strncmp(type, "LLVMBool", 8)) || (ntype == 3 && !strncmp(type, "int", 3)) ||
-              (ntype == 8 && !strncmp(type, "unsigned", 8))))
-            continue;
-        while (isspace((unsigned char)*q)) q++;
-        while (isalnum((unsigned char)*q) || *q == '_') q++; /* the argument's name */
-        while (isspace((unsigned char)*q)) q++;
-        if (*q != ')') continue; /* more arguments */
-        id = dup_n(name, nname);
-        spaced = words_of(id);
-        auto_name = cat3("LLVM ", spaced, "");
-        sn = snake(id);
-        key = cat3("llvm_", sn, "");
-        s = new_llvm(table, kind, id, auto_name, key);
-        s->type = T_INT;
-        s->llvm_type = dup_n(type, ntype);
-        if (type[0] == 'L') {
-            s->lo = dup("0");
-            s->hi = dup("1");
-            s->words = dup("Off|On");
-        } else if (type[0] == 'i') {
-            s->lo = dup("INT_MIN + 1");
-            s->hi = dup("INT_MAX");
-        } else {
-            s->lo = dup("0");
-            s->hi = dup("INT_MAX");
-        }
-        s->def = NULL; /* LLVM's own until it is set */
-        if (!s->help) s->help = cat3(setter, id, ", LLVM's own value until it is set");
-        free(id);
-        free(auto_name);
-        free(key);
-        free(spaced);
-        free(sn);
-    }
-    release(text);
-}
-
-static void read_pipelines(const char* path) {
-    char* text = read_file(path, 1);
-    char *line, *next;
-    for (line = text; line && *line; line = next) {
-        int l;
-        next = strchr(line, '\n');
-        if (next) *next++ = 0;
-        line = trim(line);
-        if (!*line) continue;
-        l = level_index(line[0]);
-        if (l < 0 || (line[1] != ' ' && line[1] != '\t')) fail(0, "%s: a line is \"<level> <pipeline>\"", path);
-        pipelines[l] = dup(trim(line + 2));
-        if (!*pipelines[l]) pipelines[l] = NULL;
-    }
-    release(text);
-}
-
-/* the llvm tables filled, after what they declare; then every member and key checked unique */
-static void fill_llvm(const char* include_dir) {
-    int t, i, j;
-    for (t = 0; t < ntables; t++) {
-        if (tables[t].scope != S_LLVM) continue;
-        fill_passes(t);
-        if (include_dir) {
-            char* builder = cat3(include_dir, "/llvm-c/Transforms/PassBuilder.h", "");
-            char* machine = cat3(include_dir, "/llvm-c/TargetMachine.h", "");
-            fill_options(t, builder, "LLVMPassBuilderOptionsSet", "LLVMPassBuilderOptionsRef", L_BUILDER,
-                         "LLVMPassBuilderOptionsSet");
-            fill_options(t, machine, "LLVMSetTargetMachine", "LLVMTargetMachineRef", L_MACHINE,
-                         "LLVMSetTargetMachine");
-            free(builder);
-            free(machine);
-        }
-    }
-    /* an @ID that is no pass of the pipelines and no option of these headers names no setting: said, since another
-       LLVM may have it, and a typo would otherwise go unseen */
-    for (i = 0; i < noverrides; i++) {
-        for (j = 0; j < nsettings; j++)
-            if (settings[j].table == overrides[i].table && settings[j].llvm_id &&
-                !strcmp(settings[j].llvm_id, overrides[i].id))
-                break;
-        if (j == nsettings)
-            fprintf(stderr, "%s:%d: @%s is no pass of the pipelines nor an option of this LLVM's headers: left out\n",
-                    spec_path, overrides[i].line, overrides[i].id);
-    }
-    for (i = 0; i < nsettings; i++)
-        for (j = i + 1; j < nsettings; j++) {
-            if (!strcmp(settings[i].member, settings[j].member))
-                fail(settings[j].line, "\"%s\" and \"%s\" are both the member %s: give one another name",
-                     settings[i].name, settings[j].name, settings[j].member);
-            if (!strcmp(settings[i].key, settings[j].key))
-                fail(settings[j].line, "%s and %s have the same key %s", settings[i].name, settings[j].name,
-                     settings[j].key);
-        }
 }
 
 /* ============================================================ the Vulkan extensions */
@@ -1135,7 +826,7 @@ static void write_h(const char* dir) {
        the other platforms' defaults */
     outs("#ifndef SNX_SETTINGS_H\n#define SNX_SETTINGS_H\n#include \"common/utilities/common.h\"\n"
          "#include \"nx/runtime/ini.h\"\n#include <limits.h>\n\n");
-    outs("/* an LLVM option's value while LLVM's own is kept */\n#define SETTINGS_UNSET INT_MIN\n\n");
+    outs("/* a setting's value where no default gave one */\n#define SETTINGS_UNSET INT_MIN\n\n");
     for (i = 0, t = 0; i < nsettings; i++) t += settings[i].repeat ? settings[i].repeat : 1;
     out("/* the keys of every table, a repeated setting's once for each repeat: what a settings file the runtime "
         "writes holds at most */\n#define SETTINGS_KEYS %d\n",
@@ -1184,7 +875,7 @@ static void write_h(const char* dir) {
     flush(dir, "snx_settings.h");
 }
 
-/* a setting's default as C: the text quoted, a number as it is, LLVM's own SETTINGS_UNSET */
+/* a setting's default as C: the text quoted, a number as it is, SETTINGS_UNSET where none is given */
 static void out_value(const Setting* s, const char* v) {
     if (!v)
         outs("SETTINGS_UNSET");
@@ -1274,7 +965,7 @@ static void out_row(const Setting* s, int index, const char* key, const char* la
                            !strcmp(s->path, "folder") ? "FOLDER"
                            : !strcmp(s->path, "file") ? "FILE"
                                                       : "SAVE");
-        if (s->perf || scope_of_setting(s) == S_VULKAN || scope_of_setting(s) == S_LLVM)
+        if (s->perf || scope_of_setting(s) == S_VULKAN)
             at += snprintf(flags + at, sizeof flags - (size_t)at, "%sINI_PERF", at ? " | " : "");
         if (s->only) at += snprintf(flags + at, sizeof flags - (size_t)at, "%s%s", at ? " | " : "", s->only);
         if (s->needs) {
@@ -1514,52 +1205,6 @@ static void write_tables(const char* dir, int runtime) {
     flush(dir, "settings_launch.c");
 }
 
-static void write_llvm(const char* dir) {
-    int i, l, n = 0;
-    header();
-    outs("/* LLVM's settings: its pipelines for -O0 to -Oz as its opt printed them, the pass each toggle turns off, and "
-         "the\n   options set on the pass builder and the target machine (nx/runtime/settings_llvm.h) */\n");
-    outs("#include \"snx_settings.h\"\n#include \"nx/runtime/settings_llvm.h\"\n#include <llvm-c/TargetMachine.h>\n"
-         "#include <llvm-c/Transforms/PassBuilder.h>\n#include <stddef.h>\n#include <string.h>\n\n");
-    outs("static const char* const pipelines[6] = {\n");
-    for (l = 0; l < 6; l++) {
-        outs("    ");
-        out_string(pipelines[l]);
-        outs(l < 5 ? ",\n" : "\n");
-    }
-    outs("};\n");
-    out("const char* settings_llvm_pipeline(char level) {\n    const char* p = strchr(\"%s\", level);\n"
-        "    return level && p ? pipelines[p - \"%s\"] : NULL;\n}\n",
-        LEVELS, LEVELS);
-    outs("typedef struct {\n    const char* name;\n    size_t at;\n} Pass;\nstatic const Pass passes[] = {\n");
-    for (i = 0; i < nsettings; i++)
-        if (settings[i].llvm == L_PASS) {
-            outs("    {");
-            out_string(settings[i].llvm_id);
-            out(", offsetof(Settings, %s)},\n", settings[i].member);
-            n++;
-        }
-    if (!n) outs("    {NULL, 0}\n");
-    outs("};\n");
-    out("int settings_llvm_pass(const Settings* s, const char* name, size_t length) {\n    size_t i;\n"
-        "    for (i = 0; i < %d; i++)\n"
-        "        if (strlen(passes[i].name) == length && !memcmp(passes[i].name, name, length))\n"
-        "            return *(const int*)((const char*)s + passes[i].at) != 0;\n    return -1;\n}\n",
-        n);
-    outs("void settings_llvm_builder(const Settings* s, LLVMPassBuilderOptionsRef options) {\n");
-    for (i = 0; i < nsettings; i++)
-        if (settings[i].llvm == L_BUILDER)
-            out("    if (s->%s != SETTINGS_UNSET) LLVMPassBuilderOptionsSet%s(options, (%s)s->%s);\n", settings[i].member,
-                settings[i].llvm_id, settings[i].llvm_type, settings[i].member);
-    outs("    (void)s;\n    (void)options;\n}\n");
-    outs("void settings_llvm_machine(const Settings* s, LLVMTargetMachineRef machine) {\n");
-    for (i = 0; i < nsettings; i++)
-        if (settings[i].llvm == L_MACHINE)
-            out("    if (s->%s != SETTINGS_UNSET) LLVMSetTargetMachine%s(machine, (%s)s->%s);\n", settings[i].member,
-                settings[i].llvm_id, settings[i].llvm_type, settings[i].member);
-    outs("    (void)s;\n    (void)machine;\n}\n");
-    flush(dir, "settings_llvm.c");
-}
 
 /* ============================================================ a row of boxes' items */
 
@@ -1779,17 +1424,12 @@ static void fill_boxes(const char* bans, const char* hooks, const char* registry
 }
 
 int main(int argc, char** argv) {
-    const char *dir = NULL, *pipes = NULL, *include_dir = NULL, *registry = NULL, *bans = NULL, *hooks = NULL;
-    const char* usage = "usage: settingsgen --out DIR [--pipelines FILE] [--llvm-include DIR] [--vk-registry FILE] "
-                        "[--bans FILE] [--hooks FILE] SETTINGS";
+    const char *dir = NULL, *registry = NULL, *bans = NULL, *hooks = NULL;
+    const char* usage = "usage: settingsgen --out DIR [--vk-registry FILE] [--bans FILE] [--hooks FILE] SETTINGS";
     int i;
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--out") && i + 1 < argc)
             dir = argv[++i];
-        else if (!strcmp(argv[i], "--pipelines") && i + 1 < argc)
-            pipes = argv[++i];
-        else if (!strcmp(argv[i], "--llvm-include") && i + 1 < argc)
-            include_dir = argv[++i];
         else if (!strcmp(argv[i], "--vk-registry") && i + 1 < argc)
             registry = argv[++i];
         else if (!strcmp(argv[i], "--bans") && i + 1 < argc)
@@ -1803,16 +1443,13 @@ int main(int argc, char** argv) {
     }
     if (!dir || !spec_path) fail(0, "%s", usage);
     read_spec(spec_path);
-    if (pipes) read_pipelines(pipes);
     fill_vulkan(registry);
     fill_boxes(bans, hooks, registry);
-    fill_llvm(include_dir);
     check_keys();
     write_h(dir);
     write_c(dir);
     write_tables(dir, 1);
     write_tables(dir, 0);
-    write_llvm(dir);
     write_args(dir);
     return 0;
 }

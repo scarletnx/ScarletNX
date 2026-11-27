@@ -52,6 +52,14 @@ int main(void) {
     assert(ini_deprecated("mesh_draws") && strstr(ini_deprecated("mesh_draws"), "vk_ext_mesh_shader=off") &&
            !ini_deprecated("vk_ext_mesh_shader"));
     assert(!ini_deprecated("resolution") && !ini_deprecated("controls") && !ini_deprecated(""));
+    /* LLVM's: its keys by name, its passes and options by their prefixes, where a prefix alone is no key */
+    assert(!strcmp(ini_deprecated("opt"),
+                   "went with LLVM: the native back ends make the game's code, with no optimization level") &&
+           ini_deprecated("jit_opt") && ini_deprecated("ir_branch_profile") && !ini_deprecated("aot_threads"));
+    assert(
+        !strcmp(ini_deprecated("llvm_pass_instcombine"), "went with LLVM's passes: the native back ends run none") &&
+        !strcmp(ini_deprecated("llvm_inliner_threshold"), "went with LLVM's options: the native back ends have none") &&
+        !ini_deprecated("llvm_") && !ini_deprecated("llvm"));
     /* the section, word for word */
     f = tmpfile();
     assert(f);

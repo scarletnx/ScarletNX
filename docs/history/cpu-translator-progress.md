@@ -404,7 +404,7 @@ the timing instead of assuming the IR gather guarantees one hardware gather on e
 
 ## Compiler diagnostics
 
-The setting `ir_stats` (`--ir_stats=1` on `-r`, or the game's settings for the JIT) enables per-unit static counts in a non-quiet AOT recompile log. These count IR before LLVM's
+The setting `ir_stats` (on `-r`, or the game's settings for the JIT; gone with LLVM, docs/user/deprecations.md) enabled per-unit static counts in a non-quiet AOT recompile log. These count IR before LLVM's
 optimization pipeline, not dynamic execution. Synchronization stores include returns, with the call-site subset
 reported separately. Reloads count copies after calls, excluding entry loads. O0 skips promotion, so zero promoted
 copies does not mean zero CPU structure accesses. Diagnostic output does not change generated code or its ABI.

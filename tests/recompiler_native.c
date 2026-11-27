@@ -234,9 +234,11 @@ int main(int argc, char** argv) {
             free(data_file);
         }
         check_empty(temp);
-        /* --keep-ir keeps nothing: the native back end has no IR, which the recompile says */
+        /* --keep-ir keeps nothing: LLVM's IR went with it, which the recompile says */
         check(!snx_is_dir(build), "no build directory, --keep-ir's or another");
-        if (pass == 5) check(text && strstr(text, "--keep-ir: the native back end keeps no IR"), "--keep-ir is said");
+        if (pass == 5)
+            check(text && strstr(text, "--keep-ir went with LLVM's IR: the native back ends keep none"),
+                  "--keep-ir is said");
         free(text);
         text = NULL;
 #ifdef _WIN32
@@ -295,13 +297,13 @@ int main(int argc, char** argv) {
         free(text);
         text = NULL;
     }
-    { /* the help names the level a recompile takes without -O, the common table's line (its lines end in \r\n on
-         Windows) */
+    { /* the help says -O went with LLVM, the common table's line (its lines end in \r\n on Windows) */
         const char* help[] = {argv[1], "--repo", argv[2], "-r", "--help", NULL};
-        check(!snx_run(help, root, NULL, &text) &&
-                  strstr(text, "-O, --opt LEVEL        LLVM's optimization of the code it compiles: 0, 1, 2, 3, s or z") &&
-                  strstr(text, "setting opt, 2)"),
-              "-O's default in the help");
+        check(
+            !snx_run(help, root, NULL, &text) &&
+                strstr(text,
+                       "-O, --opt LEVEL        LLVM's optimization level, which went with it: said, and nothing done"),
+            "-O in the help");
         free(text);
         text = NULL;
     }

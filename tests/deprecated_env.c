@@ -62,8 +62,8 @@ static void set_env(const char* name, const char* value) {
         unsetenv(name);
 #endif
 }
-static const char* const g_names[] = {"SNX_NO_WW",     "SNX_WW",          "SNX_NO_TRAPS",   "SNX_TRAPS",
-                                      "SNX_HOST_PAGE", "SNX_ALIAS_CHECK", "SNX_DIRTY_CHECK"};
+static const char* const g_names[] = {"SNX_NO_WW",     "SNX_WW",          "SNX_NO_TRAPS",    "SNX_TRAPS",
+                                      "SNX_HOST_PAGE", "SNX_ALIAS_CHECK", "SNX_DIRTY_CHECK", "SNX_LLVM_BRANCH_PROFILE"};
 /* nothing set, every setting at its default, no override */
 static void start(void) {
     for (size_t i = 0; i < sizeof g_names / sizeof *g_names; i++) set_env(g_names[i], NULL);
@@ -101,6 +101,16 @@ int main(void) {
     CHECK(g_settings.host_page_size == 65536, "SNX_HOST_PAGE=65536 is not host_page=65536");
     CHECK(strstr(g_test.log, "settings: SNX_HOST_PAGE=65536 is deprecated: this run reads it as host_page=65536,"),
           "SNX_HOST_PAGE=65536 is not said with host_page=65536");
+
+    /* one no setting replaced: said with its value and what holds, nothing given */
+    start();
+    set_env("SNX_LLVM_BRANCH_PROFILE", "branches.txt");
+    run();
+    CHECK(!g_test.nover, "SNX_LLVM_BRANCH_PROFILE gave a setting");
+    CHECK(strstr(g_test.log,
+                 "settings: SNX_LLVM_BRANCH_PROFILE=branches.txt is deprecated, and went with LLVM's branch "
+                 "odds: the native back ends read no profile (docs/user/deprecations.md)\n"),
+          "SNX_LLVM_BRANCH_PROFILE=branches.txt is not said with what holds");
 
     /* the checks: on for anything but empty or 0 */
     start();

@@ -357,7 +357,6 @@ int snx_vita_main(int argc, char** argv) {
         }
         if (common == SNX_CLI_SCRIPT) ini_read(ini_find(g_vita_run_ini, "vita_script"), cli.value[SNX_CLI_SCRIPT]);
         /* the Switch's settings, as --aot-threads= is: the last given counts */
-        if (common == SNX_CLI_OPT) ini_read(ini_find(g_recompile_ini, "opt"), cli.value[SNX_CLI_OPT]);
         if (common == SNX_CLI_JOBS) g_settings.aot_threads = cli.jobs;
         if (common) continue;
         /* the on-screen controls' and the front panel's settings, read with the game's own once its folder is known */

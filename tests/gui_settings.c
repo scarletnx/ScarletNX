@@ -36,10 +36,10 @@ static const char list[] =
     "Controllers\tgamepad_rumble\t100\tint\t0\t100\tHow strongly\tVibration\t0=Off|50=50%|100=100%\n"
     "Debug\ttracy_capture\t0\tint\t0\t1\tA capture of the run\tTracy capture\t0=Off|1=On\n"
     "Debug\ttracy_port\t\ttext\t0\t0\tThe client's port\tTracy port\t\t\tneeds-build\n"
-    "Debug\tslp_vectorizer\t0\tint\t0\t1\tLLVM's SLP vectorizer\tSLP vectorizer\t0=Off|1=On\n"
+    "Debug\tcpu_extensions\t0\tint\t0\t1\tNewer CPU extensions\tCPU extensions\t0=Off|1=On\n"
     "Debug\tlog\t1\tint\t0\t2\tLog detail\t\t0=0|1=1|2=2";
 
-/* a row by its key or name: the runtime's first, then the launcher's (both have an All, the LLVM Internals page's) */
+/* a row by its key or name: the runtime's first, then the launcher's */
 /* the row of a kind, -1 for none */
 static int find_kind(const GuiSettings* s, int kind) {
     int i;
@@ -92,7 +92,7 @@ int main(int argc, char** argv) {
     /* the launcher's own and the recompiler's (settings.txt's launcher sections), then a row a setting in the list's
        order, the other line left out; a page's row and its All before its settings */
     int tracy = at(&s, "tracy_capture") >= 0; /* the row a runtime without SNX_TRACY does not list */
-    int opt = 4;                              /* the optimization level's row, after the launcher's own four */
+    int aot = 4;                              /* the AOT threads' row, after the launcher's own four */
     assert(s.own > 5 && s.count == s.own + 18 && !strcmp(s.keys[0].key, "GDB stub"));
     assert(!strcmp(s.keys[0].section, "Launch") && !strcmp(s.keys[0].about, "Enables gdbstub on port 1234") &&
            words(&s.keys[0]) == 2 && !strcmp(s.values[0].key, "gdbstub"));
@@ -110,58 +110,42 @@ int main(int argc, char** argv) {
            gui_settings_set(&s, "java_home", "") && !gui_settings_java_home(&s, options));
     assert(!tracy || !strcmp(s.keys[at(&s, "tracy_capture")].section, "Debug")); /* with the profiler's other rows */
     assert(!gui_settings_extract(&s)); /* off: a dump read in place */
-    /* the recompiler's: none passed at its default, then --key=value; the optimization level takes 0 to 3 and z, the
-       LLVM batch full or ipo, the AOT threads a number (0 Auto) and the most Auto opens (0 the cores'), the unit size a
-       number of instructions, the unit cache limit a number of GB (0 none), and LLVM Internals is a page of its own */
-    assert(!strcmp(s.keys[opt].section, "Launch") && !strcmp(s.keys[opt].key, "Optimization level") &&
-           !strcmp(s.values[opt].key, "opt") && words(&s.keys[opt]) == 6 &&
+    /* the recompiler's: none passed at its default, then --key=value; the AOT threads a number (0 Auto) and the most
+       Auto opens (0 the cores'), the unit size a number of instructions, the unit cache limit a number of MB (0 none) */
+    assert(!strcmp(s.keys[aot].section, "Launch") && !strcmp(s.keys[aot].key, "AOT threads") &&
+           !strcmp(s.values[aot].key, "aot_threads") && !strcmp(s.values[aot].def, "0") &&
            !gui_settings_recompile(&s, 0, NULL, options));
-    assert(gui_settings_set(&s, "opt", "2") &&
-           !gui_settings_recompile(&s, 0, NULL, options)); /* the default: no pick */
-    assert(gui_settings_set(&s, "opt", "z") && gui_settings_recompile(&s, 0, NULL, options) == 1 &&
-           !strcmp(options[0], "--opt=z"));
-    assert(!gui_settings_set(&s, "opt", "q") && gui_settings_set(&s, "opt", "s") &&
-           gui_settings_set(&s, "aot_threads", "4"));
-    assert(gui_settings_recompile(&s, 0, NULL, options) == 2 && !strcmp(options[0], "--opt=s") &&
-           !strcmp(options[1], "--aot-threads=4"));
-    /* the 3DS, Vita and GBA drivers' recompiles take the level and the threads, never LLVM Internals' */
-    assert(gui_settings_set(&s, "llvm_batch", "ipo") && gui_settings_recompile_shared(&s, options) == 2 &&
-           !strcmp(options[0], "--opt=s") && !strcmp(options[1], "--aot-threads=4") &&
-           gui_settings_set(&s, "llvm_batch", "full"));
-    assert(!strcmp(s.keys[opt + 1].section, "Launch") && !strcmp(s.keys[opt + 1].key, "LLVM batch") &&
-           !strcmp(s.values[opt + 1].key, "llvm_batch") && !strcmp(s.values[opt + 1].def, "full") &&
-           words(&s.keys[opt + 1]) == 2); /* full, the default, which is not passed, and ipo */
-    assert(!gui_settings_set(&s, "llvm_batch", "fast") && gui_settings_set(&s, "llvm_batch", "ipo") &&
-           gui_settings_recompile(&s, 0, NULL, options) == 3 && !strcmp(options[1], "--llvm-batch=ipo") &&
-           !strcmp(options[2], "--aot-threads=4") && !gui_settings_set(&s, "llvm_batch", ".ini") &&
-           gui_settings_set(&s, "llvm_batch", "full") && gui_settings_recompile(&s, 0, NULL, options) == 2);
-    assert(!strcmp(s.keys[opt + 3].section, "Launch") && !strcmp(s.keys[opt + 3].key, "AOT threads at most") &&
-           !strcmp(s.values[opt + 3].key, "aot_threads_most") &&
-           !strcmp(s.values[opt + 3].def, "0")); /* Auto, the default, which is not passed */
-    assert(gui_settings_set(&s, "aot_threads_most", "3") && gui_settings_recompile(&s, 0, NULL, options) == 3 &&
-           !strcmp(options[2], "--aot-threads-most=3") && gui_settings_set(&s, "aot_threads_most", "0") &&
+    assert(!gui_settings_set(&s, "aot_threads", "q") && gui_settings_set(&s, "aot_threads", "4") &&
+           gui_settings_recompile(&s, 0, NULL, options) == 1 && !strcmp(options[0], "--aot-threads=4"));
+    /* the 3DS, Vita and GBA drivers' recompiles take the threads */
+    assert(gui_settings_recompile_shared(&s, options) == 1 && !strcmp(options[0], "--aot-threads=4"));
+    assert(!strcmp(s.keys[aot + 1].section, "Launch") && !strcmp(s.keys[aot + 1].key, "AOT threads at most") &&
+           !strcmp(s.values[aot + 1].key, "aot_threads_most") &&
+           !strcmp(s.values[aot + 1].def, "0")); /* Auto, the default, which is not passed */
+    assert(gui_settings_set(&s, "aot_threads_most", "3") && gui_settings_recompile(&s, 0, NULL, options) == 2 &&
+           !strcmp(options[1], "--aot-threads-most=3") && gui_settings_recompile_shared(&s, options) == 2 &&
+           gui_settings_set(&s, "aot_threads_most", "0") &&
            !gui_settings_value(&s, "aot_threads_most")); /* back to Auto, a step of its list */
-    assert(!strcmp(s.keys[opt + 4].section, "Launch") && !strcmp(s.keys[opt + 4].key, "Unit size") &&
-           !strcmp(s.values[opt + 4].key, "unit_instructions") && !strcmp(s.values[opt + 4].def, "90000"));
-    assert(gui_settings_set(&s, "unit_instructions", "20000") && gui_settings_recompile(&s, 0, NULL, options) == 3 &&
-           !strcmp(options[2], "--unit-instructions=20000") && gui_settings_set(&s, "unit_instructions", "90000") &&
+    assert(!strcmp(s.keys[aot + 2].section, "Launch") && !strcmp(s.keys[aot + 2].key, "Unit size") &&
+           !strcmp(s.values[aot + 2].key, "unit_instructions") && !strcmp(s.values[aot + 2].def, "90000"));
+    assert(gui_settings_set(&s, "unit_instructions", "20000") && gui_settings_recompile(&s, 0, NULL, options) == 2 &&
+           !strcmp(options[1], "--unit-instructions=20000") && gui_settings_set(&s, "unit_instructions", "90000") &&
            !gui_settings_value(&s, "unit_instructions"));
-    assert(!strcmp(s.keys[opt + 5].section, "Launch") && !strcmp(s.keys[opt + 5].key, "Unit cache ceiling") &&
-           !strcmp(s.values[opt + 5].key, "unit_cache_ceil_mb") && strstr(s.keys[opt + 5].about, "0 = none held"));
-    assert(!strcmp(s.values[opt + 5].def, "512") &&
-           strstr(s.keys[opt + 5].about, "a hundredth of the machine's memory at most")); /* 512 MB */
-    assert(gui_settings_set(&s, "unit_cache_ceil_mb", "64") && gui_settings_recompile(&s, 0, NULL, options) == 3 &&
-           !strcmp(options[2], "--unit-cache-ceil-mb=64") && gui_settings_set(&s, "unit_cache_ceil_mb", "512") &&
+    assert(!strcmp(s.keys[aot + 3].section, "Launch") && !strcmp(s.keys[aot + 3].key, "Unit cache ceiling") &&
+           !strcmp(s.values[aot + 3].key, "unit_cache_ceil_mb") && strstr(s.keys[aot + 3].about, "0 = none held"));
+    assert(!strcmp(s.values[aot + 3].def, "512") &&
+           strstr(s.keys[aot + 3].about, "a hundredth of the machine's memory at most")); /* 512 MB */
+    assert(gui_settings_set(&s, "unit_cache_ceil_mb", "64") && gui_settings_recompile(&s, 0, NULL, options) == 2 &&
+           !strcmp(options[1], "--unit-cache-ceil-mb=64") && gui_settings_set(&s, "unit_cache_ceil_mb", "512") &&
            !gui_settings_value(&s, "unit_cache_ceil_mb"));
-    assert(!strcmp(s.keys[opt + 6].section, "Launch") && s.values[opt + 6].kind == GUI_SETTING_PAGE &&
-           !strcmp(s.keys[opt + 6].key, "LLVM Internals"));
-    assert(gui_settings_set(&s, "opt", "2") && gui_settings_set(&s, "aot_threads", "0") &&
-           !gui_settings_recompile(&s, 0, NULL, options));
+    /* the level and LLVM's own rows went with LLVM: Launch ends at the unit cache */
+    assert(at(&s, "opt") < 0 && at(&s, "llvm_batch") < 0 && strcmp(s.keys[aot + 4].section, "Launch"));
+    assert(gui_settings_set(&s, "aot_threads", "0") && !gui_settings_recompile(&s, 0, NULL, options));
     /* Settings > GBA's Covers, the launcher's own after Launch's: None by default, Box art (libretro-thumbnails) when
        picked, an unknown value refused, and never a recompile's option nor a run's */
     {
         int covers = at(&s, "gba_covers");
-        assert(covers > opt + 6 && covers < s.own && !strcmp(s.keys[covers].section, "GBA") &&
+        assert(covers > aot + 3 && covers < s.own && !strcmp(s.keys[covers].section, "GBA") &&
                !strcmp(s.keys[covers].key, "Covers") && words(&s.keys[covers]) == 2 &&
                strstr(s.keys[covers].about, "libretro-thumbnails") &&
                !strcmp(on_screen(&s, "gba_covers"), "None [default]") && !gui_settings_value(&s, "gba_covers"));
@@ -185,19 +169,19 @@ int main(int argc, char** argv) {
         assert(gui_settings_set(&s, "gba_color", "gba") && !gui_settings_gba(&s, options));
     }
     /* a game's setting alone, as a GBA run takes fullscreen: once picked, and never a launcher's own */
-    assert(!gui_settings_one(&s, "slp_vectorizer", options) && gui_settings_set(&s, "slp_vectorizer", "1"));
-    assert(gui_settings_one(&s, "slp_vectorizer", options) == 1 && !strcmp(options[0], "--slp-vectorizer=1"));
-    assert(gui_settings_set(&s, "opt", "z") && !gui_settings_one(&s, "opt", options) &&
-           gui_settings_set(&s, "opt", "2"));
-    /* a run that makes the game (-r) takes the game's settings the recompile takes too, after the recompiler's: Debug's
-       SLP vectorizer, not a setting of the game alone (docked); a run gets them with the game's options, never twice */
-    assert(gui_settings_set(&s, "opt", "z") && gui_settings_set(&s, "docked", "0"));
-    assert(gui_settings_recompile(&s, 1, NULL, options) == 2 && !strcmp(options[0], "--opt=z") &&
-           !strcmp(options[1], "--slp-vectorizer=1"));
-    assert(gui_settings_recompile(&s, 0, NULL, options) == 1 && !strcmp(options[0], "--opt=z"));
-    assert(gui_settings_set(&s, "opt", "2") && gui_settings_set(&s, "docked", "1") &&
-           gui_settings_recompile(&s, 1, NULL, options) == 1 && !strcmp(options[0], "--slp-vectorizer=1"));
-    assert(gui_settings_set(&s, "slp_vectorizer", "0") && !gui_settings_one(&s, "slp_vectorizer", options) &&
+    assert(!gui_settings_one(&s, "cpu_extensions", options) && gui_settings_set(&s, "cpu_extensions", "1"));
+    assert(gui_settings_one(&s, "cpu_extensions", options) == 1 && !strcmp(options[0], "--cpu-extensions=1"));
+    assert(gui_settings_set(&s, "aot_threads", "4") && !gui_settings_one(&s, "aot_threads", options) &&
+           gui_settings_set(&s, "aot_threads", "0"));
+    /* a run that makes the game (-r) takes the game's settings the recompile takes too, after the recompiler's: CPU
+       extensions, not a setting of the game alone (docked); a run gets them with the game's options, never twice */
+    assert(gui_settings_set(&s, "aot_threads", "4") && gui_settings_set(&s, "docked", "0"));
+    assert(gui_settings_recompile(&s, 1, NULL, options) == 2 && !strcmp(options[0], "--aot-threads=4") &&
+           !strcmp(options[1], "--cpu-extensions=1"));
+    assert(gui_settings_recompile(&s, 0, NULL, options) == 1 && !strcmp(options[0], "--aot-threads=4"));
+    assert(gui_settings_set(&s, "aot_threads", "0") && gui_settings_set(&s, "docked", "1") &&
+           gui_settings_recompile(&s, 1, NULL, options) == 1 && !strcmp(options[0], "--cpu-extensions=1"));
+    assert(gui_settings_set(&s, "cpu_extensions", "0") && !gui_settings_one(&s, "cpu_extensions", options) &&
            !gui_settings_recompile(&s, 1, NULL, options));
     assert(!strcmp(s.keys[s.own].section, "Display") && !strcmp(s.keys[s.own].key, "docked"));
     assert(!strcmp(s.keys[s.own].about, "1 = TV mode") && !strcmp(key(&s, "fullscreen")->about, "1 = start in fullscreen"));

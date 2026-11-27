@@ -27,12 +27,12 @@ typedef enum {
     SNX_CLI_FULLSCREEN,        /* -f, --fullscreen[=0|1] */
     SNX_CLI_HEADLESS,          /* -H, --headless */
     /* the recompile's, each driver's that compiles a game's code */
-    SNX_CLI_OPT,       /* -O LEVEL, -OLEVEL, --opt LEVEL: LLVM's level, the setting opt */
+    SNX_CLI_OPT,       /* -O LEVEL, -OLEVEL, --opt LEVEL: LLVM's level, gone with it: said once, nothing done */
     SNX_CLI_JOBS,      /* --jobs N: the setting aot_threads */
     SNX_CLI_CHUNK,     /* --chunk N: the instructions of a unit */
     SNX_CLI_JIT_CACHE, /* --jit-cache PATH: the run-time compiler's record of the game's code */
     SNX_CLI_JIT_ONLY,  /* --jit-only (--interp-only) */
-    SNX_CLI_KEEP_IR,   /* --keep-ir (--keep-c) */
+    SNX_CLI_KEEP_IR,   /* --keep-ir (--keep-c): LLVM's IR, gone with it: said once, nothing done */
     SNX_CLI_QUIET,     /* -q, --quiet */
     SNX_CLI_HELP,      /* -h, --help */
     SNX_CLI_COUNT
