@@ -74,6 +74,46 @@ static int imgkeep_expect(const char* when, u64 image, const u32 (*texel)[3], u3
     }
     return 0;
 }
+/* the texel (x, y) of the texture header tic looks up, as its image holds it (its first texel where it is scaled): want,
+   or a message saying when. Not the image's own surface, or the check would read the store where it is */
+static int imgkeep_view_texel(const u32* tic, const Surf* image, u32 x, u32 y, u32 want, const char* when) {
+    vk_lock();
+    Surf* t = vk_tex_from_tic(tic);
+    CHECK(t && t != image);
+    u32* pixels = malloc((size_t)t->sw * t->sh * 4);
+    CHECK(pixels);
+    CHECK(!sc_pixels(t, pixels));
+    u32 got = pixels[(size_t)(y * t->sh / t->h) * t->sw + x * t->sw / t->w];
+    free(pixels);
+    vk_unlock();
+    if (got != want)
+        fprintf(stderr,
+                "storage image read through a texture of another format %s: texel %u,%u is %08x, expected %08x\n", when,
+                x, y, got, want);
+    CHECK(got == want);
+    return 0;
+}
+/* pixel (x, y) of the render target at gva, as its image holds it after the read check a texture's lookup of it makes
+   (vk_rt_note_read): want, or a message saying when */
+static int imgkeep_target_texel(u64 gva, u32 x, u32 y, u32 want, const char* when) {
+    vk_lock();
+    Surf* rt = vk_rt_find(gva);
+    CHECK(rt);
+    vk_rt_note_read(rt);
+    u32* pixels = malloc((size_t)rt->sw * rt->sh * 4);
+    CHECK(pixels);
+    CHECK(!sc_pixels(rt, pixels));
+    u32 got = pixels[(size_t)(y * rt->sh / rt->h) * rt->sw + x * rt->sw / rt->w];
+    free(pixels);
+    vk_unlock();
+    if (got != want)
+        fprintf(stderr,
+                "storage image over a render target's memory, the target read %s: pixel %u,%u is %08x, "
+                "expected %08x\n",
+                when, x, y, got, want);
+    CHECK(got == want);
+    return 0;
+}
 /* the channel that draws: a triangle over a 4x4 viewport with four color targets of format 0 and no depth, the
    fragment program storing c[0][0x12c] at texel (c[0][0x124], c[0][0x128]) of the image whose handle is c[0][0x120] */
 static GpuChannel* imgkeep_channel(u64 address, u64 pool) {
@@ -261,6 +301,50 @@ static int check_storage_image_keep(void) {
                                            {5, 7, 0x5eed0003},
                                            {6, 7, cpu_words[3]}},
                           5));
+    /* a texture of another format over a kept image, looked up after a store: its next store, kept again over the
+       owner that the read published, moves nothing that the texture's check asks (memory's GPU write generation, the
+       CPU's writes), and shows in the texture when it is looked up again */
+    const u64 fourth = address + 0x34000;
+    const u32 r32f = 0x0f | 7u << 7 | 7u << 10 | 7u << 13 | 7u << 16, rgba = 2u << 19 | 3u << 22 | 4u << 25 | 5u << 28;
+    const u32 view_tic[8] = {
+        r32f | rgba, (u32)fourth, (u32)(fourth >> 32) | 3u << 21, 3u << 3, 63 | 1u << 23, 63, 0, 0};
+    const u32 image_tic[8] = {
+        imgkeep_word0(), (u32)fourth, (u32)(fourth >> 32) | 3u << 21, 3u << 3, 63 | 1u << 23, 63, 0, 0};
+    CHECK(!imgkeep_image(pool, fourth, 64, 64));
+    CHECK(!imgkeep_draw(channel, cbuf, 2, 3, 0x5eed0031));
+    imgkeep_release();
+    vk_lock();
+    Surf* fourth_image = vk_tex_from_tic_storage(image_tic);
+    vk_unlock();
+    CHECK(fourth_image);
+    CHECK(!imgkeep_view_texel(view_tic, fourth_image, 2, 3, 0x5eed0031, "after a store"));
+    vk_lock();
+    CHECK(vk_tex_from_tic(view_tic)); /* checked again, with no submission after it: the CPU's writes stay asked */
+    vk_unlock();
+    CHECK(!imgkeep_draw(channel, cbuf, 7, 9, 0x5eed0032));
+    imgkeep_release();
+    CHECK(!imgkeep_view_texel(view_tic, fourth_image, 7, 9, 0x5eed0032, "looked up again after the next store"));
+    CHECK(!imgkeep_expect("read through a texture of another format", fourth,
+                          (const u32[][3]){{2, 3, 0x5eed0031}, {7, 9, 0x5eed0032}}, 2));
+
+    /* the same for a render target of another format over the image's memory, read after each store: an R32 image
+       there is a surface of its own, kept as the others */
+    const u64 fifth = address + 0x38000;
+    GpuChannel* targets = calloc(1, sizeof *targets);
+    CHECK(targets);
+    targets->id = 125;
+    rt_clear_format(targets, fifth, 64, 64, 3, 0, 0xD5);
+    CHECK(!storage_write_words(
+        pool,
+        (const u32[8]){imgkeep_word0(), (u32)fifth, (u32)(fifth >> 32) | 3u << 21, 3u << 3, 63 | 1u << 23, 63, 0, 0},
+        8));
+    CHECK(!imgkeep_draw(channel, cbuf, 2, 3, 0x5eed0041));
+    imgkeep_release();
+    CHECK(!imgkeep_target_texel(fifth, 2, 3, 0x5eed0041, "after a store"));
+    CHECK(!imgkeep_draw(channel, cbuf, 7, 9, 0x5eed0042));
+    imgkeep_release();
+    CHECK(!imgkeep_target_texel(fifth, 7, 9, 0x5eed0042, "again after the next store"));
+    free(targets);
     vk_lock();
     vk_finish();
     CHECK(g_vk_validation_messages == validation);

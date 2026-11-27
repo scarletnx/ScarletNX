@@ -297,6 +297,15 @@ int vk_release_pending(u64 gva, u64 len) {
     (void)gva, (void)len;
     abort();
 }
+/* no storage image is kept in the model: a texture's check has none to publish */
+int vk_gfx_image_pending_besides(u64 gva, u64 size, const Surf* self) {
+    (void)gva, (void)size, (void)self;
+    return 0;
+}
+void vk_gfx_image_mem_need(u64 gva, u64 size) {
+    (void)gva, (void)size;
+    abort();
+}
 const Renderer* g_renderer; /* read by the stream's check alone */
 /* the blocks a texture held as BC7 keeps for its BC7 image (astc.c): a buffer in name only, which no case here reads */
 int vk_astc_keep(Surf* t) {
