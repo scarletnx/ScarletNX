@@ -44,7 +44,7 @@ def module(version, functions):
     stub = [0xB0000010, 0xF9400611, 0x91002210, 0xD61F0220]  # adrp x16, GOT's page; ldr x17, [x16, #8]; add; br x17
     for i, w in enumerate(stub):
         struct.pack_into('<I', image, STUB + 4 * i, w)
-    name = b'SDK MW+Nintendo+NintendoSdk_nnSdk-' + version.encode()
+    name = b'SDK MW+Vendor+VendorSdk_nnSdk-' + version.encode()
     image[0x600 : 0x600 + len(name)] = name
     for i, w in enumerate([LDR_X8_X0, BLR_X8, RET]):  # the function with no symbol that Deep calls
         struct.pack_into('<I', image, UNNAMED + 4 * i, w)
