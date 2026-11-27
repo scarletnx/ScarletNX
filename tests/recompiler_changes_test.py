@@ -39,7 +39,7 @@ for paths, differential, why in (
     (('src/common/cpu/recompiler/mach/mach_codegen.inc',), True, 'a back end'),
     (('src/common/cpu/aarch64/cpu_helpers.c',), True, 'the helpers the code calls'),
     (('tests/llvm_qemu_words.c',), True, 'the words both run'),
-    (('cmake/llvm.cmake',), True, 'the LLVM both compare with'),
+    (('tests/native_steps.c',), True, 'the native steps the differential runs'),
     (('tests/sail_x64.c',), True, "sail_x64's words, whose QEMU ends the recording holds"),
     (('tools/sailgen/mach_a32.h',), True, 'what generates them'),
     (('scripts/ci/linux.sh',), True, 'the steps that build and record it'),
