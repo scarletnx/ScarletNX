@@ -3252,8 +3252,9 @@ static int tex_superseded(const Surf* s) {
     return !s->is_rt && s->took_drawn && s->size && span_drawn_over(s, s->gva, s->size, s->took_wseq);
 }
 void vk_tex_took(Surf* t) { t->took_wseq = g_wseq; }
+static u64 g_copies_gone, g_copies_gone_bytes; /* rt_copies_reclaim's, so far: for the statistics */
 void vk_rt_kinds(VkRtKinds* k) {
-    *k = (VkRtKinds){0};
+    *k = (VkRtKinds){.copies_gone = g_copies_gone, .copies_gone_bytes = g_copies_gone_bytes};
     for (int lru = VK_LRU_RT; lru <= VK_LRU_RT + LRU_AGED; lru += LRU_AGED)
         for (u32 r = g_rows.lists[lru].head; r; r = g_rows.lru[r].next) {
             const Surf* s = g_rows.surf[r];
@@ -3665,6 +3666,8 @@ static u64 rt_copies_reclaim(u32 before, u64 want) {
                 }
                 *pp = x->next;
                 freed += x->bytes;
+                g_copies_gone++;
+                g_copies_gone_bytes += x->bytes;
                 vk_rt_copy_free(x);
             }
     return freed;
