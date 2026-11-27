@@ -14,6 +14,9 @@ char* snx_game_ini(const char* folder, const char* name);
    A run given SNX_LAUNCHER_PICKS=1 (--launcher-picks=1) has the launcher's for every game as its settings on the command
    line, which the game's picks go over. Owned */
 #define SNX_LAUNCHER_PICKS "launcher-picks"
+/* --from-launcher=1: the launcher started this run and reads its output, so an error's action goes to it as the run's
+   "error: action" line (error_kind.h) rather than to a launcher started for it */
+#define SNX_FROM_LAUNCHER  "from-launcher"
 char* snx_game_picks(const char* ini);
 /* the comment a game's picks file starts with, whichever writes it, the runtime or the launcher */
 #define SNX_GAME_PICKS_HEAD                                                                                            \

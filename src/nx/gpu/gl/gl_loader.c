@@ -59,11 +59,12 @@ static void unimplemented(CPU* RESTRICT c, u64 entry) {
     for (u32 k = 0; k < g_gl_loader.count; k++)
         if (g_gl_loader.exports[k].addr == entry) {
             const char* name = name_of(&g_gl_loader.exports[k]);
-            fatal("gl layer: the game called %s, which the GL layer doesn't implement yet",
-                  name[0] == '_' ? name + 1 : name);
+            fatal_as(SNX_ERROR_NOT_YET, "gl layer: the game called %s, which the GL layer doesn't implement yet",
+                     name[0] == '_' ? name + 1 : name);
         }
-    fatal("gl layer: the game called the GL driver's function at %llx, which the GL layer doesn't implement yet",
-          (unsigned long long)entry);
+    fatal_as(SNX_ERROR_NOT_YET,
+             "gl layer: the game called the GL driver's function at %llx, which the GL layer doesn't implement yet",
+             (unsigned long long)entry);
 }
 
 /* the export at addr takes fn in its slot */

@@ -291,6 +291,13 @@
     "src/gui/browser.c:gui_dump_title"
    ]
   },
+  "scarletnx.error.txt": {
+   "why": "an error's record (and <game>.error.txt), which a game writes for its panel's own process (--error-screen) of the same build to read back and show",
+   "functions": [
+    "src/common/utilities/error_kind.c:snx_error_write",
+    "src/common/utilities/error_kind.c:snx_error_read"
+   ]
+  },
   ".version": {
    "why": "the version that last wrote a save, which the runtime writes at each commit",
    "functions": [

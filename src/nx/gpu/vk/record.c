@@ -494,7 +494,7 @@ static void submit_run(const void* p) {
         atomic_store_explicit(&g_gfx_queued, x->value, memory_order_release);
     if (r == VK_ERROR_DEVICE_LOST) {
         vk_ck_report();
-        fatal("vulkan: the GPU device was lost (driver reset or crash)");
+        fatal_as(SNX_ERROR_GPU_LOST, "vulkan: the GPU device was lost (driver reset or crash)");
     }
     VK_OK(r);
     /* a timeline of FFmpeg's never reaching its value would hang its decoder for good */

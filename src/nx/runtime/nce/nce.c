@@ -231,10 +231,12 @@ static void preempted(CPU* c) {
 static void trapped(CPU* c, int sig) {
     u32 w = gr32(c->pc);
     if (sig == SIGSYS)
-        fatal("NCE: the game's code at %llx ran SVC #%u (%08x), a word that its recompile did not find as code, so no "
-              "stub serves it, and it was not let through as a system call of the host. Recompile the game with nce=0, "
-              "which makes all of its code ahead of time",
-              (unsigned long long)c->pc, (unsigned)((w >> 5) & 0xFFFFu), (unsigned)w);
+        fatal_as(
+            SNX_ERROR_CODE_OLD,
+            "NCE: the game's code at %llx ran SVC #%u (%08x), a word that its recompile did not find as code, so no "
+            "stub serves it, and it was not let through as a system call of the host. Recompile the game with nce=0, "
+            "which makes all of its code ahead of time",
+            (unsigned long long)c->pc, (unsigned)((w >> 5) & 0xFFFFu), (unsigned)w);
     set_guest(c, 0);
     if (sig == SIGTRAP && (w & 0xFFE0001Fu) == 0xD4200000u)
         c->rt->brk(c, c->pc, (w >> 5) & 0xFFFFu);
@@ -360,8 +362,9 @@ static void patch_sites(const NceSites* s) {
         const NceSite* site = &s->site[i];
         u32 word;
         if (gr32(site->addr) != site->word)
-            fatal("NCE: the game's code at %llx is %08x, where its recompile found %08x. Recompile the game",
-                  (unsigned long long)site->addr, gr32(site->addr), site->word);
+            fatal_as(SNX_ERROR_CODE_OLD,
+                     "NCE: the game's code at %llx is %08x, where its recompile found %08x. Recompile the game",
+                     (unsigned long long)site->addr, gr32(site->addr), site->word);
         if (nce_emit(g_nce.pool, g_nce.pools, &g_nce.env, site, &word))
             fatal("NCE: no pool of stubs is in the reach of the game's code at %llx", (unsigned long long)site->addr);
         code_write(site->addr, word);
@@ -394,7 +397,7 @@ void nce_init(void) {
     }
     file_path(path, sizeof path);
     if (!g_mod->nmods || nce_file_read(path, g_mod->mods[0].base, &ranges, &count, &sites))
-        fatal("NCE: %s is of another version or damaged. Recompile the game", path);
+        fatal_as(SNX_ERROR_CODE_OLD, "NCE: %s is of another version or damaged. Recompile the game", path);
     if (nce_host_init(&config, &g_nce.env.tls, &g_nce.env.indirect, &g_nce.env.outcall, why, sizeof why)) {
         WARN("nce: %s, so the JIT compiles all of the game's code\n", why);
         free(ranges);

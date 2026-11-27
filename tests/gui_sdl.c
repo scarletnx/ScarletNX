@@ -3,6 +3,8 @@
 /* Exercise the actual renderer and SDL event handlers without production test flags. */
 #define SNX_GUI_NO_MAIN
 #include "gui/main.c"
+#include "common/utilities/fatal_screen.h"
+#include "common/utilities/ui_colors.h"
 #define SNX_SCREEN_TEST "gui_sdl.c"
 #include "gui_screen.h"
 /* whether More's box (screen_more, the foot's own past its first three) holds the sentence label, its key key */
@@ -98,11 +100,18 @@ static void ask_boxes(App* app, GuiRect* r, GuiChoices* choices) {
     *r = choices->box;
 }
 static void key(App* app, SDL_Keycode code) {
+    box_waited(app); /* an error box's wait passed, as a person waits (gui_screen.h) */
     SDL_Event e = {0};
     e.type = SDL_EVENT_KEY_DOWN;
     e.key.key = code;
     assert(SDL_PushEvent(&e));
     while (SDL_PollEvent(&e)) event(app, &e);
+}
+/* a key typed in the half second of an error box's wait: a check of the wait itself, which key() lets pass */
+static void key_in_wait(App* app, SDL_Keycode code) {
+    g_key_in_wait = true;
+    key(app, code);
+    g_key_in_wait = false;
 }
 /* Share Log pressed on the menu, and choice i of its box taken: 0 the zip, 1 the log, 2 the logs' folder. The box
    says what the zip and the log each take before either goes: the zip holds every game played in GUI_LOG_DAYS days */
@@ -598,6 +607,8 @@ static void finish(App* app, int status) {
     char expected[80];
     snprintf(expected, sizeof(expected),
              status ? "Program ended abnormally (status %d)." : "The run ended with status %d.", status);
+    if (strcmp(app->message, expected))
+        fprintf(stderr, "finish: the message is \"%s\", not \"%s\"\n", app->message, expected);
     assert(!strcmp(app->message, expected) && app->abnormal_exit == (status != 0) && app->has_output);
     assert(app->log_due == (status != 0)); /* Share Log blinks after a crash, and stops after a run that ends well */
     shows_foot(app, "Press [ESC] to return to menu", red);   /* where the keys go, in their letters */
@@ -725,6 +736,49 @@ static void oom_killed(App* app, const char* temporary) {
 /* what launch() started, run to its end with status: the menu's run to its end screen, or the queue's job to its end,
    its line taken out and the Menu shown. The argv the fake driver got, a string a line (driver_will), which the
    caller frees */
+/* The real driver (SNX_TEST_SCARLETNX: the multicall program; unset or empty, on Windows, nothing checked) given what
+   the launcher gave the fake one, argv (a string a line, the program first): it takes every argument, said by a --help
+   after them all, which each driver reaches only once it has read those before it. A refusal of one fails the test,
+   naming it: the launcher passes nothing its driver does not take, whichever console's */
+static void driver_takes(const char* argv) {
+    const char* real = getenv("SNX_TEST_SCARLETNX");
+    char *copy, *links, *link, *said, *line;
+    const char* args[160];
+    size_t n = 0, size = 0;
+    int status = -1;
+    if (!real || !*real) return;
+    copy = snx_strdup(argv);
+    links = snx_format("%s.real", getenv("SNX_TEST_ARGV"));
+    assert(copy && links && (snx_is_dir(links) || !snx_mkdirs(links)));
+    for (line = strtok(copy, "\n"); line && n < SDL_arraysize(args) - 2; line = strtok(NULL, "\n")) args[n++] = line;
+    assert(n >= 1);
+    link = snx_path_join(links, snx_path_leaf(args[0])); /* the driver's name, which the multicall runs it by */
+    assert(link && (snx_path_exists(link) || !snx_symlink(real, link)));
+    args[0] = link;
+    args[n++] = "--help";
+    args[n] = NULL;
+    {
+        SDL_PropertiesID props = SDL_CreateProperties();
+        SDL_Process* process;
+        SDL_SetPointerProperty(props, SDL_PROP_PROCESS_CREATE_ARGS_POINTER, (void*)args);
+        SDL_SetNumberProperty(props, SDL_PROP_PROCESS_CREATE_STDOUT_NUMBER, SDL_PROCESS_STDIO_APP);
+        SDL_SetBooleanProperty(props, SDL_PROP_PROCESS_CREATE_STDERR_TO_STDOUT_BOOLEAN, true);
+        process = SDL_CreateProcessWithProperties(props);
+        SDL_DestroyProperties(props);
+        assert(process);
+        said = (char*)SDL_ReadProcess(process, &size, &status);
+        SDL_DestroyProcess(process);
+    }
+    if (!said || strstr(said, "does not take") || strstr(said, "unknown option")) {
+        fprintf(stderr, "gui_sdl.c: %s refuses what the launcher gives it (status %d):\n%s\n", snx_path_leaf(link),
+                status, said ? said : "(no output read)");
+        assert(!"the launcher passes its driver only what the driver takes");
+    }
+    SDL_free(said);
+    free(link);
+    free(links);
+    free(copy);
+}
 static char* ran(App* app, int status) {
     size_t size;
     char* argv;
@@ -734,6 +788,7 @@ static char* ran(App* app, int status) {
         job_done(app, status);
     argv = (char*)snx_read_file(getenv("SNX_TEST_ARGV"), &size);
     assert(argv && !remove(getenv("SNX_TEST_ARGV")));
+    driver_takes(argv);
     return argv;
 }
 /* whether argv (a string a line, as ran gives it) holds arg, and the string after it in after (NULL: not asked) */
@@ -902,6 +957,103 @@ static int slider_step_x(App* app, GuiRect bar, int k) {
    never round, the foot saying the end, each step kept at once; a click on the slider takes the step under it and the
    knob follows the mouse held down, past either end staying there, until the button lifts; a finger the same, its lift
    no tap; Del back to its default; the group in focus among the groups shows it in its own colour */
+/* A run that stopped on an error its own panel showed (error_kind.h's "error: " lines in the run's output): the run's
+   screen does not say it again, and the action taken on the panel is done here, Settings at the setting's row. One
+   its panel did not show keeps the run's screen */
+static void run_error_lines(App* app) {
+    static const char list[] = "Debug\thooks\t1\tint\t0\t1\tGames need it on\tNative hooks\t0=Off|1=On\t\t\t\n";
+    static const char shown[] = "log: written to /x.log\nerror: setting shown=1 key=hooks\n"
+                                "error: action open-settings key=hooks\n";
+    char *was = app->run_log, *path = snx_strdup("run-error-lines.log");
+    int at;
+    settings_forget(app);
+    assert(!gui_settings_read(&app->settings, list));
+    gui_settings_mark(&app->settings);
+    app->run_log = path;
+    assert(!snx_write_file(path, shown, sizeof shown - 1));
+    app->finished = app->abnormal_exit = true;
+    assert(run_error_after(app, path) && !app->finished);
+    at = app->group_first[app->group] + app->editor.row;
+    assert(app->form == GUI_FORM_GROUP && !strcmp(screen_settings(app)->values[at].key, "hooks"));
+    leave_editor(app);
+    /* one its game could not show: the box shows it over the run's screen, its stop's message from the log (its time
+       stamps skipped), Open Settings in focus; no press counts in its first half second */
+    {
+        static const char unshown[] = /* a Windows program's lines, CR LF */
+            "[   2.80] FATAL: the setting hooks is off\r\n[   2.81] error: setting shown=0 key=hooks\r\n";
+        Uint64 clock_was = app->clock;
+        assert(!snx_write_file(path, unshown, sizeof unshown - 1));
+        app->clock = 20000;
+        app->finished = true;
+        assert(!run_error_after(app, path) && app->finished && app->confirm.shown && app->box_panel_on);
+        assert(app->box_error.kind == SNX_ERROR_SETTING && !strcmp(app->box_error.key, "hooks") &&
+               !strcmp(app->box_error.message, "the setting hooks is off") && app->box_error.from_launcher);
+        render(app);
+        assert(app->box_panel.items >= 3 && app->box_panel.action[0] == SNX_ACTION_OPEN_SETTINGS &&
+               app->box_panel.action[app->box_panel.items - 1] == SNX_ACTION_CLOSE);
+        key_in_wait(app, SDLK_RETURN);
+        assert(app->confirm.shown && app->finished);
+        app->clock += SNX_ERROR_PANEL_WAIT_MS;
+        key(app, SDLK_X); /* no key of the panel's */
+        assert(app->confirm.shown);
+        key(app, SDLK_RETURN);
+        assert(!app->confirm.shown && !app->finished && app->form == GUI_FORM_GROUP);
+        at = app->group_first[app->group] + app->editor.row;
+        assert(!strcmp(screen_settings(app)->values[at].key, "hooks"));
+        leave_editor(app);
+        app->clock = clock_was;
+    }
+    /* a line of no error: the run's screen as it was */
+    assert(!snx_write_file(path, "the fake driver ran\n", 20));
+    app->finished = true;
+    assert(!run_error_after(app, path) && app->finished && !app->confirm.shown);
+    leave_run(app);
+    /* the launcher's own failure on the same panel: its line whole, OK alone, after the wait every panel has (an Enter
+       in its first half second, held from the row that failed, does nothing); Run Amberlith's counts keep the theme's
+       box */
+    {
+        Uint64 clock_was = app->clock;
+        app->clock = 30000;
+        say_failure(app, "The folder /x cannot be read: Permission denied");
+        assert(app->confirm.shown && app->confirm.ask == GUI_ASK_ERROR && app->box_panel_on && app->box_error.notice);
+        render(app);
+        assert(app->box_panel.items == 1 && app->box_panel.action[0] == SNX_ACTION_CLOSE);
+        key_in_wait(app, SDLK_RETURN);
+        assert(app->confirm.shown);
+        app->clock += SNX_ERROR_PANEL_WAIT_MS;
+        key(app, SDLK_DOWN);
+        assert(app->confirm.shown);
+        key(app, SDLK_RETURN);
+        assert(!app->confirm.shown && !app->box_panel_on);
+        app->clock = clock_was;
+    }
+    remove(path);
+    free(path);
+    app->run_log = was;
+    settings_forget(app);
+}
+/* scarletnx --open=VALUE, what an error's panel offers a game that ran with no launcher: the menu at the setting's row;
+   a value of no page said with the value given; asked once */
+static void open_pages(App* app) {
+    static const char list[] = "Debug\thooks\t1\tint\t0\t1\tGames need it on\tNative hooks\t0=Off|1=On\t\t\t\n";
+    int at;
+    settings_forget(app);
+    assert(!gui_settings_read(&app->settings, list));
+    gui_settings_mark(&app->settings);
+    snx_gui_open("settings:hooks");
+    open_asked(app);
+    at = app->group_first[app->group] + app->editor.row;
+    assert(app->form == GUI_FORM_GROUP && !strcmp(screen_settings(app)->values[at].key, "hooks"));
+    leave_editor(app);
+    open_asked(app); /* nothing asked again */
+    assert(!app->editing);
+    snx_gui_open("bogus:x");
+    open_asked(app);
+    assert(app->confirm.shown && strstr(app->error_line, "--open=bogus:x is not settings:KEY"));
+    key(app, SDLK_RETURN);
+    assert(!app->confirm.shown);
+    settings_forget(app);
+}
 static void volume_view(App* app) {
     static const char list[] =
         "Audio\tvolume\t100\tint\t0\t100\tHow loud the game plays\tVolume\t0=Mute|5=5%|10=10%|15=15%|20=20%|25=25%|"
@@ -6041,7 +6193,19 @@ static void recompile_queue(App* app) {
     job_step(app, 100);
     job_end(app);
     assert(app->queue.job[1].state == GUI_JOB_FAILED && app->queue.job[1].status == 3 && app->log_due);
-    assert(!strcmp(app->message, "queue game fails: Recompile failed (status 3).") && tab_reads(app, "Compile FAILED"));
+    /* the driver's reason in the line, which the row has no room for */
+    assert(!strcmp(app->message, "queue game fails: Recompile failed (status 3). the game's code at 0x1000 is no "
+                                 "instruction: test") &&
+           tab_reads(app, "Compile FAILED"));
+    { /* a driver's log in a Windows program's lines, CR LF: the reason without the CR */
+        char *crlf = snx_path_join(app->games_dir, "crlf.log"), why[256];
+        static const char text[] = "$ x\r\nscarletnx: the game's code at 0x1000 is no instruction: test\r\n";
+        assert(crlf && !snx_write_file(crlf, text, sizeof text - 1));
+        log_stop(crlf, why, sizeof why);
+        assert(!strcmp(why, "the game's code at 0x1000 is no instruction: test"));
+        remove(crlf);
+        free(crlf);
+    }
     assert(SDL_GetWindowProgressState(app->window) == SDL_PROGRESS_STATE_ERROR);
     {
         GuiPlace p;
@@ -7474,7 +7638,7 @@ static void ctr_own_console(App* app, const char* dir) {
                 launch(app, snx_strdup(played), true);
                 argv_got = ran(app, 0);
                 assert(has_arg(argv_got, way ? "--controls=1" : "--controls=2", NULL) &&
-                       has_arg(argv_got, "--launcher-picks=1", NULL));
+                       has_arg(argv_got, "--launcher-picks=1", NULL) && has_arg(argv_got, "--from-launcher=1", NULL));
                 assert(has_arg(argv_got, "--touch=1", NULL) == way);
                 free(argv_got);
                 leave_run(app);
@@ -7920,6 +8084,7 @@ int main(int argc, char** argv) {
         for (int i = 3; i < argc; ++i) /* B's: what the cache gave, as the driver says it */
             if (!strcmp(argv[i], "--jit-cache")) puts("AOT pack: 3 functions from the cache");
         printf("Built %s\n", name);
+        if (strstr(argv[2], "fails")) puts("scarletnx: the game's code at 0x1000 is no instruction: test");
         free(at);
         free(pid);
         free(step);
@@ -7996,12 +8161,17 @@ int main(int argc, char** argv) {
         SDL_WaitThread(thread, NULL); /* Never returns. ESC must kill, not request a graceful exit. */
         return 1;
     }
+    /* the launcher's run says so last (--from-launcher=1): taken off, so a check of the arguments sees them as before,
+       and kept for the argv file */
+    int from_launcher = argc > 1 && !strcmp(argv[argc - 1], "--from-launcher=1");
+    if (from_launcher) argv[--argc] = NULL;
     if (argc > 1 && getenv("SNX_TEST_ARGV")) {
         /* a driver doing what the test asked (driver_will): its argv kept, a string a line, for the test to check */
         FILE* kept = fopen(getenv("SNX_TEST_ARGV"), "wb"); /* "\n" alone, as has_arg reads, on Windows too */
         int compiling = 0, status;
         for (int i = 1; i < argc; ++i) compiling |= !strcmp(argv[i], "-r");
         for (int i = 0; kept && i < argc; ++i) fprintf(kept, "%s\n", argv[i]);
+        if (kept && from_launcher) fprintf(kept, "--from-launcher=1\n");
         assert(kept && !fclose(kept));
         puts(getenv("SNX_TEST_SAY") ? getenv("SNX_TEST_SAY") : "the fake driver ran");
         status = getenv("SNX_TEST_STATUS") ? atoi(getenv("SNX_TEST_STATUS")) : 0;
@@ -8244,21 +8414,22 @@ int main(int argc, char** argv) {
         said = whole;
         assert(app.confirm.shown && app.confirm.ask == GUI_ASK_ERROR && !strcmp(app.error_line, said));
         render(&app);
-        { /* row by row as the box breaks it at its width (wrap_in's wrap_at): one row or more, as long as the
-             temporary folder this host gives makes it */
-            GuiChoices c;
-            const char* s = said;
-            char row[1100];
-            int width;
-            ask_place(&app, &c);
-            width = (c.box.w - cell_w(&app)) / cell_w(&app);
-            assert(width > 0);
-            while (*s) {
-                size_t n = wrap_at(s, width, 0);
-                snprintf(row, sizeof row, "%.*s", (int)n, s);
-                shows(&app, row, rgb(app.theme.warning));
-                for (s += n + (s[n] == '\n'); *s == ' ';) ++s;
+        { /* on the error's panel: in its ink as its quads keep it (ui_rgba), at its scale (an item's row is 16 of its
+             pixels), row by row as the panel breaks it (fatal_wrap_spans at its width less a column each side), the
+             homes as ~ (fatal_shown): one row or more, as long as the temporary folder this host gives makes it */
+            int s = (int)app.box_panel.item[0].h / 16, cols = s ? (int)app.box_panel.box.w / (8 * s) - 2 : 0;
+            int at[8], len[8], rows;
+            u32 kept = ui_rgba(UI_INK);
+            SDL_Color ink = {(Uint8)kept, (Uint8)(kept >> 8), (Uint8)(kept >> 16), 255};
+            char *shown = fatal_shown(said), row[256];
+            assert(s > 0 && s % app.scale == 0 && cols > 0 && shown);
+            rows = fatal_wrap_spans(shown, cols, 0, at, len, 8);
+            assert(rows >= 1 && rows <= 8);
+            for (int i = 0; i < rows; ++i) {
+                snprintf(row, sizeof row, "%.*s", len[i], shown + at[i]);
+                shows_big(&app, row, ink, s / app.scale);
             }
+            free(shown);
         }
         free(app.data_dir), free(app.games_dir), free(app.themes_dirs[0]), free(app.work_dir), free(app.keys_path);
         free(app.home_dir);
@@ -8268,11 +8439,9 @@ int main(int argc, char** argv) {
         free(blocker);
         free(said);
     }
-    shows(&app, "- OK", yellow);
-    {
-        GuiChoices c;
-        assert(ask_place(&app, &c) == 1 && c.count == 1); /* OK alone */
-    }
+    /* OK alone, the panel's one item */
+    assert(app.box_panel.items == 1 && app.box_panel.action[0] == SNX_ACTION_CLOSE &&
+           !strcmp(snx_error_action_label(app.box_panel.action[0], &app.box_error), "OK"));
     key(&app, SDLK_DOWN); /* its one choice: nothing to move to, nothing closes */
     assert(app.confirm.shown && !app.confirm.selected);
     key(&app, SDLK_RETURN);
@@ -11957,7 +12126,8 @@ int main(int argc, char** argv) {
         size_t size;
         char* kept = (char*)snx_read_file(app.run_log, &size);
         char* line = snx_format(
-            "game with spaces;literal.nro --fullscreen=1 --controls=2 --launcher-picks=1 --data %s\n", app.data_dir);
+            "game with spaces;literal.nro --fullscreen=1 --controls=2 --launcher-picks=1 --data %s --from-launcher=1\n",
+            app.data_dir);
         assert(kept && line && !app.run_out && !strncmp(kept, "$ ", 2) && strstr(kept, line));
         free(line);
         assert(strstr(kept, "driver stdout") && strstr(kept, "driver stderr") && strstr(kept, "\n[ended, status 0]\n"));
@@ -12199,7 +12369,7 @@ int main(int argc, char** argv) {
         launch(&app, snx_strdup(dump), false);
         assert(!app.dests_shown && !launched(&app) &&
                strstr(app.message, "Main is off and no Extra of it can take a game: Add to Library on its Main"));
-        while (app.confirm.shown) key(&app, SDLK_RETURN);
+        while (app.confirm.shown) { key(&app, SDLK_RETURN); }
         app.message[0] = 0;
         folder_keep(&app, extra, GUI_LIBRARY_RECOMPILED, false);
         launch(&app, snx_strdup(dump), false);
@@ -19257,6 +19427,8 @@ int main(int argc, char** argv) {
     setting_lists(&app);
     boxes_form(&app);
     volume_view(&app);
+    run_error_lines(&app);
+    open_pages(&app);
     bluetooth_settings(&app, temporary); /* its rows of the runtime's settings */
 #if !defined(_WIN32) && !defined(__APPLE__) && !defined(SDL_PLATFORM_ANDROID) /* where the config folder is XDG's */
     bluetooth_page(&app, temporary); /* Controllers > Bluetooth on the fake scan, then back to its row */

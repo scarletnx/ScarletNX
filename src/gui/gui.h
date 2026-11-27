@@ -17,6 +17,10 @@ extern int (*snx_menu_has_driver)(const char* name);
    it would go; --migrate=yes moves it there (Settings > App > Move Old Files). Any other --migrate= is refused, 2.
    0, or 1 when an entry could not be moved */
 int snx_gui_migrate(const char* self, const char* option);
+/* scarletnx --open=VALUE (an error's panel's action, error_kind.h's snx_error_open_value): the page the menu opens on,
+   VALUE kept for snx_gui_main. settings:KEY, drivers, keys, addons:PROGRAM, recompile:PROGRAM or locate:PROGRAM; any
+   other is said on the menu with the value given */
+void snx_gui_open(const char* value);
 /* the menu's languages, for the driver's setup in a terminal: the i-th's code and its name, NULL past the last */
 const char* snx_menu_language(int i, const char** name);
 #endif

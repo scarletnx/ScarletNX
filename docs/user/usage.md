@@ -19,6 +19,7 @@
 * [Users](#users)
 * [Setup](#setup)
 * [Playing](#playing)
+  * [When a game stops](#when-a-game-stops)
   * [On-screen controls](#on-screen-controls)
 
 Setup: [Build](../dev/build.md). Checkout CWD; own dumps/keys.
@@ -964,12 +965,43 @@ key that cancels it. Short of the game's least, Enter says how many more it need
 box, and `swkbd_text` answers in its place. With no window to show it in (`-H`), the game's text is the answer, or
 the nickname of the user playing when the game gives none, and the log says which.
 
-A game that stops on an error shows a panel with **Share Log**, **Copy path** and **Close**. Share Log saves
-`scarletnx.log` (the build, the error and the game's log) beside the game's log, as the menu's does, and on Android
-sends it to the app you pick; Copy path copies that file's path once it is saved, else the game's log's. The panel says
-what each did. Up and Down move between the items, Enter or A does the one in focus, and any other key or button
-closes it. On a desktop the game's log path is
-underlined once the log exists: a click opens it in the system's viewer, the panel staying open.
+### When a game stops
+
+A game that stops on an error shows one panel, the same for every console (Switch, 3DS, Vita, GBA, DS): the game's
+name, a line that says what stopped it, a line that says what to do, and the actions that fix it, the first one in
+focus. Each kind of error has its own (`src/common/utilities/error_kind.c`):
+
+| what stopped it | its first action |
+|---|---|
+| a setting games need is off (`hooks=0`, `hooks_off`), or a setting's value it cannot take | **Open Settings**, at that setting's row |
+| the GPU has no Vulkan 1.3, or its driver did not start | **GPU Drivers** |
+| the GPU stopped answering, not enough memory, the system stopped the game | **Try Again** |
+| a 32-bit game of an SDK not read yet | **Updates and DLCs** |
+| recompiled code of another version or copy, or none | **Recompile** |
+| the game's dump is not there | **Locate...** |
+| keys for the game are missing | **Install Keys** |
+| the disk is full, a save that cannot be read | **Open Folder** |
+| what ScarletNX does not do yet, the game's own stop, a crash, an error of its own | **Share Log** |
+
+Then **Details**, with the error as the log says it (scrolled with PgUp and PgDn, the wheel or a finger), **Open
+Log** on a desktop and **Copy Text** (the error, the build and the log's place), and **Close**, which reads **Back to
+Menu** when the launcher started the game. **Share Log** saves `scarletnx.log` (the build, the error and the game's
+log) beside the game's log and on Android and iOS sends it to the app you pick; the panel says what each did. Up and
+Down move, Enter or a pad's A does the one in focus, a tap on an item does it; Esc, a pad's B and Android's Back close
+it (on Details, back to the first page). No other key does anything, and nothing counts in the first half second, so a
+press meant for the game takes no action. Its foot names the keys of the input used last.
+
+The panel needs no GPU: it is drawn on the system's own pixels where it has them (X11, Windows) and by SDL's
+renderer elsewhere. Where the game's window cannot take it (the error came before the window, the game's renderer
+holds the window, a crash), the game shows it in a window of its own, `scarletnx --error-screen`, and waits. SDL's
+message box, its lines broken, is what is left where neither can show.
+
+A game the launcher started tells it the action taken (`--from-launcher=1`, which the launcher adds): the launcher
+opens the page or starts the game again, and does not say the error again. Where the game could not show it (a crash
+its own process could not show, a game of the phone's), the launcher shows the same panel over the run's screen, with
+the stop's message from the game's log. The DS, 3DS and Vita stop the same way when a window they play in has no
+Vulkan device or the GPU stops answering. A game started on its own (a shortcut,
+Steam, a terminal) starts the launcher at that page, `scarletnx --open=settings:hooks`.
 
 ### On-screen controls
 

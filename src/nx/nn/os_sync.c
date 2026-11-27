@@ -74,7 +74,7 @@ static u32 me(void) {
     return t && t->own_handle ? t->own_handle : t ? 0x3FFF0000u | kt_ix(t) : 0x3FFFFFFFu;
 }
 /* the game's NN_ABORT for a lock used wrong, which its own code would stop on */
-static void misuse(const char* what) { fatal("nn::os: %s (the SDK aborts here)", what); }
+static void misuse(const char* what) { fatal_as(SNX_ERROR_GAME_STOPPED, "nn::os: %s (the SDK aborts here)", what); }
 
 /* ---- sleeps and yields: svcSleepThread's, with no SVC */
 static void yield(void) {
@@ -410,7 +410,9 @@ void os_sdk_cv_wait_recursive(CPU* c, u64 cv, u64 m) {
 #define LW_SIGNALED 2u
 #define RC_DESC(rc) ((rc) & 0x3FFFFFu)
 static void lw_check(u32 rc, const char* what) {
-    if (rc) fatal("nn::os: %s: the address arbiter returned %#x (the SDK aborts here)", what, rc);
+    if (rc)
+        fatal_as(SNX_ERROR_GAME_STOPPED, "nn::os: %s: the address arbiter returned %#x (the SDK aborts here)", what,
+                 rc);
 }
 static int lw_retry(u32 rc) { return RC_DESC(rc) == RC_DESC(SNX_RC_SVC_INVALID_STATE); }
 /* the word set to signaled: every waiter woken (all) or one, by SignalAndIncrementIfEqual or

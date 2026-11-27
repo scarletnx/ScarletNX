@@ -358,18 +358,19 @@ void log_error_line(const char* line) {
     WARN("%s\n", line);
 }
 
-void fatal_code(int status, const char* fmt, ...) {
-    char msg[LINE_MAX_];
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(msg, sizeof msg, fmt, ap);
-    va_end(ap);
+/* the fatal error e, its message in it: logged, its panel, and the process's end with status */
+[[noreturn]] static void fatal_error(int status, SnxError* e) {
+    const char* msg = e->message;
     t_plat.log_redirect = NULL; /* a failure while writing threads.txt belongs in the log */
     logf_(0, "FATAL: %s\n", msg);
     snx_tracy_fatal(msg); /* the message pane says why the trace ends here */
 #if !defined(_WIN32)
-    /* from the crash handler: a box or a flush could wait on a lock the crashed code holds */
-    if (atomic_load_explicit(&g_crashing, memory_order_seq_cst)) _exit(status);
+    /* from the crash handler: a box or a flush could wait on a lock the crashed code holds. The panel's own process
+       takes no lock of this one's (win_fatal_crash) */
+    if (atomic_load_explicit(&g_crashing, memory_order_seq_cst)) {
+        win_fatal_crash(e);
+        _exit(status);
+    }
 #endif
     /* everywhere, since a player started from a desktop entry sees no console and no log. A remake's too: a game
        an app or a shortcut started has no driver to recompile it, and one the driver started recompiles once
@@ -377,15 +378,22 @@ void fatal_code(int status, const char* fmt, ...) {
     /* Close the client so a connected capture writes the trace up to this point. From the crash handler there is
        neither time nor safety for it: _exit above leaves the socket, and the capture writes what it has. */
     if (!atomic_load_explicit(&g_crashing, memory_order_seq_cst)) snx_tracy_shutdown();
-    win_fatal_box(msg);
+    win_fatal_box(e);
     plat_exit_now(status);
 }
+/* An error of the kind given has, its message fmt's: on the stack, as a crash's (whose thread may have no heap left) */
+#define FATAL_ERROR(status, given, fmt)                                                                                \
+    do {                                                                                                               \
+        SnxError e_ = *(given);                                                                                        \
+        va_list ap_;                                                                                                   \
+        va_start(ap_, fmt);                                                                                            \
+        vsnprintf(e_.message, sizeof e_.message, fmt, ap_);                                                            \
+        va_end(ap_);                                                                                                   \
+        if (e_.kind == SNX_ERROR_INTERNAL) e_.kind = snx_error_kind_of_message(e_.message);                            \
+        fatal_error(status, &e_);                                                                                      \
+    } while (0)
 
-void fatal(const char* fmt, ...) {
-    char msg[LINE_MAX_];
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(msg, sizeof msg, fmt, ap);
-    va_end(ap);
-    fatal_code(1, "%s", msg);
-}
+void fatal_code(int status, const char* fmt, ...) { FATAL_ERROR(status, &(SnxError){0}, fmt); }
+void fatal(const char* fmt, ...) { FATAL_ERROR(1, &(SnxError){0}, fmt); }
+void fatal_as(int kind, const char* fmt, ...) { FATAL_ERROR(1, &(SnxError){.kind = kind}, fmt); }
+void fatal_given(int status, const SnxError* given, const char* fmt, ...) { FATAL_ERROR(status, given, fmt); }

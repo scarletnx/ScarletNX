@@ -540,8 +540,11 @@ static int nn_psm_IPsmSession_BindStateChangeEvent(SvcObj* self, u32* event) {
 /* ============================================================ fatal:u */
 /* the result as the console's error screen shows it: 2000 plus the module, and the description */
 static void throw_fatal(u32 result, u32 policy, const char* how) {
-    fatal("The game stopped with error %04u-%04u (result 0x%x, policy %u%s)", 2000 + (result & 0x1ff),
-          (result >> 9) & 0x1fff, result, policy, how);
+    SnxError e = {.kind = SNX_ERROR_GAME_STOPPED};
+    snprintf(e.line, sizeof e.line, "The game stopped with error %04u-%04u.", 2000 + (result & 0x1ff),
+             (result >> 9) & 0x1fff);
+    fatal_given(1, &e, "The game stopped with error %04u-%04u (result 0x%x, policy %u%s)", 2000 + (result & 0x1ff),
+                (result >> 9) & 0x1fff, result, policy, how);
 }
 static int nn_fatalsrv_IService_ThrowFatal(SvcObj* self, u32 result, u64 pid) {
     (void)self, (void)pid;

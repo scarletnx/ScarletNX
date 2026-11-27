@@ -235,5 +235,5 @@ void crash_report(void* host_pc, void* fault, int sig) {
         if (mem_foreign(foreign, sizeof foreign) > 0)
             WARN("  the guest's addresses hold what is not the game's: %s\n", foreign);
     }
-    fatal("The game crashed (%s). See the .log for details.", kind);
+    fatal_as(SNX_ERROR_CRASH, "The game crashed (%s). See the .log for details.", kind);
 }

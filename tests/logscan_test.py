@@ -520,6 +520,17 @@ def main():
     vstop = scan(VITA + 'scarletnx-vita: cannot resolve the game\'s folder for X\n')
     check(vstop['outcome'] == 'fatal' and vstop['failure']['fatal'] == "cannot resolve the game's folder for X", 'the Vita')
     check(scan(HEADER + 'scarletnx: Game failed (exit status 1).\n')['outcome'] == 'no failure logged', "not a frontend's")
+    # a frontend's warning is said as its errors are: a run that says "Exit." after it ended well, and the stop is the
+    # last line before the end, not the first
+    warned = scan(GBA + 'scarletnx-agb: no sound: No default audio device available\nExit.\n')
+    check(warned['outcome'] == 'no failure logged', f'a GBA run that warned and ended well: {warned["outcome"]}')
+    later = scan(GBA + 'scarletnx-agb: no sound: none\nscarletnx-agb: cannot save the recompiled ROM: disk full\n')
+    check(
+        later['outcome'] == 'fatal' and later['failure']['fatal'] == 'cannot save the recompiled ROM: disk full',
+        f"a GBA run's stop after a warning: {later['outcome']} {later['failure'] and later['failure']['fatal']}",
+    )
+    again = scan(GBA + 'Exit.\n' + 'scarletnx-agb: cannot write the save /x: No space\n')
+    check(again['outcome'] == 'fatal', f'a line after Exit. is a stop: {again["outcome"]}')
     vi = scan(VITA)
     check(
         (vi['title'], vi['title_id'], vi['console'], vi['commit']) == ('Some Vita Game', None, 'Vita', '1234abc'),

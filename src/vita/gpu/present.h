@@ -10,6 +10,10 @@
    the on-screen controls' layout (NULL: none kept), whose settings are read by then (vpad_settings); shot: where the
    run's last frame goes (a PPM), NULL for none */
 void vita_present_init(const char* title, const char* ini, const char* shot);
+/* why its device did not start ("" it did) */
+const char* vita_present_why(void);
+/* the GPU stopped answering (its ring's loss, common/gpu/vk/ring.h): true with why; the vblanks end on it */
+bool vita_present_lost(char* why, size_t why_size);
 /* what the on-screen controls say, on stdout, as the run's other lines */
 void vita_present_say(const char* line);
 /* a vblank: the framebuffer shown, the window's events read. False once the player closed the window */

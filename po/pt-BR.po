@@ -5207,6 +5207,11 @@ msgstr "Atalhos"
 
 #: src/gui/main.c
 #, c-format
+msgid "Open Settings: no row is the setting %s"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
 msgid "The game starts its program %d, %s, which is not made: Recompile the game to make its programs"
 msgstr "O jogo inicia o seu programa %d, %s, que não foi compilado: Recompilar o jogo compila os programas dele"
 
@@ -6754,6 +6759,16 @@ msgstr "Nenhum usuário mostrado: sem memória"
 #, c-format
 msgid "%d to move, %d staying: --migrate=yes moves them"
 msgstr "%d a mover, %d ficando: --migrate=yes os move"
+
+#: src/gui/main.c
+#, c-format
+msgid "%s: on Games, in its box"
+msgstr ""
+
+#: src/gui/main.c
+#, c-format
+msgid "--open=%s is not settings:KEY, drivers, keys, addons:, recompile: or locate: with a game"
+msgstr ""
 
 #: src/gui/model.c
 #, c-format
