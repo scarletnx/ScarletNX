@@ -63,7 +63,6 @@ keeps code in between runs) and `--jit-only`, what it does anyway.
 | `--isolated` | No host files: `/tmp` in memory and the program alone as `/program`, the namespace the unit tests use |
 | `--jit` (default) | Compile the guest's code in process as it runs, the only mode |
 | `--jit-cache DIR`, `--no-jit-cache` | Where compiled code is kept between runs (default `linux-jit` in the user's cache folder) |
-| `--jit-opt=LEVEL`, `-O LEVEL` | The JIT's LLVM optimization level (default 2) |
 | `--verbose-jit` | A line for each piece of code compiled, and how long it took |
 | `--strace` | Every system call, its arguments and its result on stderr, prefixed with the process id |
 | `--sample-pc` | The guest's program counter on stderr once a second, for a loop that makes no system call (not on Windows) |
@@ -107,10 +106,10 @@ The guest compiler's `--sysroot=/` points it at the guest's root, which is `linu
 ## How code runs
 
 One dispatch table covers the whole 4 GiB guest address space. A guest address the table has no host function for
-sends the generated code to the runtime, which compiles the code there with the LLVM backend (the recompiler
-library's `snx_recompile_from`) and runs it. One step is the function execution reached and the functions it calls,
-breadth first, up to 64Ki instructions, split into pieces of at most 4096 instructions (LLVM's time grows faster than
-a function's size) and compiled on every core. Each step is a module: its pieces, the descriptor that fills the
+sends the generated code to the runtime, which compiles the code there with the host's native back end (the
+recompiler library's `snx_recompile_from`) and runs it. One step is the function execution reached and the functions
+it calls, breadth first, up to 64Ki instructions, split into pieces of at most 4096 instructions and compiled on every
+core. Each step is a module: its pieces, the descriptor that fills the
 table, and the runtime library, linked into a shared object and loaded with `dlopen`. On PowerPC64 the steps share
 one code arena and its TOC instead, the runtime library loaded into it once ([PowerPC64](../../hosts/ppc64.md)).
 

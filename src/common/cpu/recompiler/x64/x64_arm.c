@@ -1,18 +1,17 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The x86-64 back end's AArch32 blocks: what cpu/arm/llvm.c's arm_block makes of an A32 block (the Cortex-A57, flat
-   memory), without LLVM. Each word is sailgen's emitter of the AArch32 Sail where its clauses take it (a32_x64.inc:
-   the data processing and branches), else one written here over the same SSA region, as llvm.c's emitters are
-   written over LLVM's builder (the loads and stores, the multiplies, the exclusives...). The region is assembled where
-   a condition's skip ends it, where it grows long, and at the block's end; the guest's registers are in the state at
-   each region's end, as each write stores them.
+/* The x86-64 back end's AArch32 blocks: an A32 or Thumb block of any profile and memory mode. Each word is sailgen's
+   emitter of the AArch32 Sail where its clauses take it (a32_x64.inc: the data processing and branches), else one
+   written here over the same SSA region (the loads and stores, the multiplies, the exclusives...). The region is
+   assembled where a condition's skip ends it, where it grows long, and at the block's end; the guest's registers are in
+   the state at each region's end, as each write stores them.
 
    The function is a block's: void name(SnxArmCPU*), System V x86-64, the state in RDI kept in RBX (pushed), RSP
    16-aligned after the prologue (the push and a frame of spill slots, its size patched in at the end). Windows' (the
    features' SGX_F_WIN64) has the state in RCX and no other register of the callee's: a block's values are in the
-   registers a call may change (x64.h's pool), so it saves RBX alone there too. Its entry
-   checks are llvm.c's block_begin's (exit and syndrome cleared, R15 the block's address, CPSR.T and E clear), and it
-   ends where arm_block ends: after an instruction that branches, one that leaves for the backend, or the last word.
+   registers a call may change (x64.h's pool), so it saves RBX alone there too. Its entry checks clear the exit and its
+   syndrome and check R15 the block's address and CPSR.T and E clear, and it ends after an instruction that branches,
+   one that leaves for the backend, or the last word.
    Where the block goes on to a known address in A32 or Thumb state and the caller names that block a successor, the
    code jumps to it as chain_block's tail call does (reading the thread's poll first where it is at or before the
    block's start); anywhere else it returns, with R15 the next instruction's */
@@ -285,7 +284,7 @@ static void mg_return(MG_ARM* c) {
     sgx_byte(&c->b, 0xC3); /* ret */
 }
 /* snx_x64_arm_entry_exit(state RDI, the block's address ESI, its first word EDX; Windows' RCX, EDX, R8D), each object's
-   own, where a block's entry check failed (llvm.c's block_begin, in its order): R15 not the address, BAD_ENTRY with the
+   own, where a block's entry check failed, in this order: R15 not the address, BAD_ENTRY with the
    address; else CPSR.T set, BAD_ENTRY, else (E) ENDIAN_UNSUPPORTED, with the word; R15 left as it is */
 static_assert(offsetof(SnxArmCPU, r) + 60 == 0x3C && offsetof(SnxArmCPU, cpsr) == 0x40 &&
                   offsetof(SnxArmCPU, exit) == 0x44 && offsetof(SnxArmCPU, syndrome) == 0x48,

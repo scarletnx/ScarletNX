@@ -39,9 +39,8 @@ up to the computer's cores with a quarter left free. Each also takes `--aot-thre
 (`scarletnx`'s open one at a time, as the memory holds them: [Extract → AOT → run](#extract--aot--run)), which the
 launcher's Gentle queue gives every driver. A GBA ROM's code is one
 module and compiles on one thread whatever N, which its recompile says. A value that is not a whole number from 0
-to 1024 stops the run. `--jobs N` is the same setting for the Switch, 3DS, Vita and GBA drivers, and `-O` the
-setting [`opt`](settings.md), 2 unless the launcher's Optimization level says another, which
-the launcher gives every one of them. The recompile's options take effect when the game is made: a game made already
+to 1024 stops the run. `--jobs N` is the same setting for the Switch, 3DS, Vita and GBA drivers, which the launcher
+gives every one of them. The recompile's options take effect when the game is made: a game made already
 keeps its code until `-r`.
 
 The recompile's options mean on each system:
@@ -51,10 +50,9 @@ The recompile's options mean on each system:
 | `--chunk N` | the instructions of a code unit, whole functions (default: the setting `unit_instructions`) | the instructions of a chunk, whole blocks (default: 512 blocks a chunk) | the same as the 3DS's | one module compiled whole, said |
 | `--jit-cache PATH` | a profile run's `.jitcache`, linked into the module ([AOT packs](aot-packs.md)) | the list of the blocks a run compiled at run time that discovery starts from, another game folder's `<title ID>.hints` (default: the game's own) | the same as the 3DS's | the map of the blocks runs reached, another game folder's `<name>_code.map` (default: the game's own) |
 | `--jit-only` | a module with no code: the JIT compiles all of it | a module of no blocks: the run-time compiler compiles every one | the same as the 3DS's | no module: every block compiled as the run reaches it |
-| `--keep-ir` | each unit's IR in `<name>/<name>_build` | each chunk's IR and the index's in `<title ID>_build` of the game's folder | the same as the 3DS's | the module's IR in `<name>_build` of the game's folder |
 
-On GNU ABI and Android the code compiles as it runs: `-O` is their JIT's level (their `--jit-opt`), GNU ABI's
-`--jit-cache DIR` the folder its JIT keeps code in between runs, and `--jit-only` what both do anyway.
+On GNU ABI and Android the code compiles as it runs: GNU ABI's `--jit-cache DIR` is the folder its JIT keeps code in
+between runs, and `--jit-only` what both do anyway.
 
 | Option | Meaning | Switch | 3DS | Vita | AGB | NDS | Android | GNU ABI |
 |---|---|---|---|---|---|---|---|---|
@@ -73,12 +71,10 @@ On GNU ABI and Android the code compiles as it runs: `-O` is their JIT's level (
 | `--script SPEC` | Press buttons at times of the run, `MS:BUTTONS,...` (each platform's page names the buttons) | yes | yes | yes | yes | yes | | |
 | `-f`, `--fullscreen[=0\|1]` | Start fullscreen for this run, or windowed with `=0` | yes | yes | | yes | yes | | |
 | `-H`, `--headless` | Run without a window | yes | yes | | | yes | yes | |
-| `-O LEVEL`, `--opt LEVEL` | LLVM's optimization of the code it compiles: 0, 1, 2, 3, s or z (default: the setting `opt`, 2); `-O2` too | yes | yes | yes | yes | | yes | yes |
 | `--jobs N` | The threads compiling the game's code, the setting `aot_threads`: 1 to 1024, or 0 (the default), Auto | yes | yes | yes | yes | | | |
 | `--chunk N` | The instructions of a unit of code compiled at once (below) | yes | yes | yes | yes | | | |
 | `--jit-cache PATH` | The run-time compiler's record of the game's code, which the recompile starts from (below) | yes | yes | yes | yes | | | yes |
 | `--jit-only` (`--interp-only`) | Compile no code ahead of time: the run-time compiler compiles all of it | yes | yes | yes | yes | | yes | yes |
-| `--keep-ir` (`--keep-c`) | Save the code the recompile generates, LLVM IR (below) | yes | yes | yes | yes | | | |
 | `-q`, `--quiet` | Say no progress of the recompile | yes | yes | yes | yes | | | |
 | `-h`, `--help` | Show the help | yes | yes | yes | yes | yes | yes | yes |
 
@@ -184,8 +180,8 @@ screen while no gamepad is connected (`2`, the default); the game's `.ini` keeps
 still read and said once a run, and goes on to the game and the recompile with `-`. A name with some `_` left
 (`--aot-threads_most=2`) is no setting.
 The game's own executable also takes `-v`, the same as `--log=2`.
-LLVM is the only backend. `--backend=llvm`, which older scripts give, is accepted and changes nothing, and any
-other `--backend` stops with an error.
+The host's native back end makes the code. `--backend=llvm`, which older scripts give, is said and changes nothing,
+and any other `--backend` stops with an error ([Deprecations](deprecations.md)).
 Use the separate commands for other compiler options.
 
 DXCI and DNSP with decrypted content need no keys. Containers are identified by their headers,
@@ -378,12 +374,12 @@ Run the same command again to retry after a failure or interruption:
   and its `recompiled/<id>/<id>` is replaced by this build's runtime when the two differ, so a newer build's fixes reach
   it. Failed builds never publish a valid ABI checkpoint. A change to the recompiler that keeps `SNX_ABI` isn't
   seen: there `-r` recompiles. The stamp's last line says how the code was made, which no check reads: `made opt=2
-  aot=1 found=812345 code=1003210`, the `-O`, `aot=0` for `--jit-only` (the JIT compiles it all), and of the
+  aot=1 found=812345 code=1003210`, the level every code is made at now (2, a phone's 0), `aot=0` for `--jit-only` (the JIT compiles it all), and of the
   instructions in the modules' code (`code`) those the analysis found and compiled ahead of time (`found`; both 0 for a
   32-bit game). The launcher's side panel shows them. A version from before it reads a stamp with it as another
-  build's, and recompiles the game once. After them, ` off=llvm_batch,unit_instructions` names the recompile's
-  settings that change the code it makes and were off their default (`perf` in `settings.txt`: `llvm_batch`,
-  `unit_instructions` and LLVM Internals), which the game names over its picture as it starts
+  build's, and recompiles the game once. After them, ` off=unit_instructions` names the recompile's settings that
+  change the code it makes and were off their default (`perf` in `settings.txt`), which the game names over its
+  picture as it starts
   ([Settings](settings.md)); a line without it, an older version's too, names none.
 - Changing directory and running the game happen on every launch. A game failure never invalidates the build.
 
@@ -464,13 +460,13 @@ Remaining examples: POSIX.
   header. Each file is read once: the hashes before the data are written as zeros, and written over once the data
   behind them is read. `--plan` says what it would make, reading only `main.npdm` and the files' sizes. The
   `.listing` files that wget leaves in a mirror of an FTP folder are left out.
-- **Recompile:** AOT → module (LLVM) →
+- **Recompile:** AOT → module (the host's native back end) →
   final runtime deployment, for this machine's CPU. Shaders compile directly to SPIR-V at runtime.
-  `-O`, LLVM's level, went with it: said once, and nothing done. `--jobs N` (`--aot-threads=N`) sets the threads
+  `-O`, LLVM's level, went with it: said once, and nothing done ([Deprecations](deprecations.md)). `--jobs N` (`--aot-threads=N`) sets the threads
   compiling (0 or none: the machine's cores with a quarter left free, the physical cores where it says them,
   else the logical ones, at most 75%, so a recompile does not make the computer stutter). The quarter is
   deliberate: a large game's recompile runs for minutes, a pass that took every core would keep the machine
-  unusable that long and heat a phone, while an LLVM pass gains little from a hyperthread. At most 75%, rounded
+  unusable that long and heat a phone, while a compile thread gains little from a hyperthread. At most 75%, rounded
   down, leaves one whole core free on a machine of 4, and a quarter of the largest ones. Left at 0 (Auto) that count
   is the most, and the memory decides how many of them compile: every thread compiles a code unit at once, and what
   a unit takes follows the game, so the recompile starts on 1 thread, measures what its own units take while they
@@ -482,21 +478,15 @@ Remaining examples: POSIX.
   memory pressure level; Android lets an app read none, so the measure alone decides there, and where the system
   says neither what the process takes nor what it can still give, the cores alone do. A unit under way is never
   ended: the recompile only stops opening. Its log says each thread it opens and each reason it opens none, with
-  the numbers. Threads given (`--jobs N`) are all open from the start, whatever the memory. Every pass of LLVM's
-  pipelines can be turned off for the game's code,
-  `--llvm-pass-<pass>=0` (`--llvm-pass-instcombine=0`), and each option LLVM's C API sets on the pass builder and the
-  target machine set, `--llvm-<option>=N` (`--llvm-inliner-threshold=50`). `scarletnx --settings=recompile` lists
-  them, as the launcher's LLVM Internals page shows them: the passes are those of the pipelines the build's LLVM prints
-  for each level, and a build without an `opt` of that LLVM has none. A dump played with these is recompiled with them
-  when it has to be, and a game made already keeps its code until `-r` recompiles it. A value a setting does not take
+  the numbers. Threads given (`--jobs N`) are all open from the start, whatever the memory. `scarletnx
+  --settings=recompile` lists the recompile's settings. A dump played with them is recompiled with them when it has to
+  be, and a game made already keeps its code until `-r` recompiles it. A value a setting does not take
   (`--aot-threads=abc`) stops the recompile.
-  The code the runtime compiles while the game runs keeps LLVM's own, but for the SLP vectorizer, which
-  `slp_vectorizer` turns on or off for both.
   `--target auto|linux|win64` takes only this host's own system: modules are built for the machine that builds
   them. `--target ios` writes `<id>_code.snxobj` instead, a pack of the code's objects for the iOS app to load into JIT
   memory (64-bit games only, [macOS and iOS](../hosts/apple.md)); it makes no runtime copy. `--runtime FILE` deploys that runtime instead of the running one, or of the one a tools-only build builds in
   its checkout's `build/native-recomp` (`build/win64-recomp` on Windows). `-q` (`--quiet`) prints no progress.
-  `--keep-c` is the older name of `--keep-ir`. These and the other recompile options are the
+  These and the other recompile options are the
   [common options](#common-options), which the 3DS, Vita and GBA drivers take too.
 - **Codegen:** `--no-build` stages data/INI only; `--jit-only` omits AOT functions.
   `--chunk N` (`--unit-instructions=N`) sets the instructions per code unit: 90000 by default, 20000 on Android and
@@ -506,7 +496,6 @@ Remaining examples: POSIX.
   `--unit-cache-ceil-mb=N` (512 by default, 0 for none), the units used longest ago going first. A unit line ends in
   `(cached)` for one taken from memory. Nothing is kept on the disk: `units/` of the cache folder, where an older
   version kept them, is said with its size at each recompile while it is there, and deleting it frees that room.
-  `--keep-ir` saves the generated code (LLVM IR) in `<outdir>/<NAME>/<NAME>_build/`.
   `--hook-direct-calls` sends calls and branches between guest functions through the dispatch table too, so the
   runtime's NVN handlers also take calls made by direct branch.
 - **Data updates:** ExeFS refreshes; `<id>_data/romfs` is reused.
@@ -519,7 +508,6 @@ With `--out work/Game` and `--outdir games` as above (without them, see [Folders
 | `work/Game/{exefs,romfs}` | Extracted input |
 | `recompiled/<id>/<id>[.exe]`, `<id>_code.so/.dll` | Runtime + AOT module |
 | `recompiled/<id>/<id>_data/`, `<id>.ini` | Data/saves (and `control.nacp`) + settings |
-| `recompiled/<id>/<id>_build/` | Generated code, only with `--keep-ir` |
 | `recompiled/<id>/shader_cache/vk_pipelines.<driver>.bin` | Vulkan pipeline cache, one per driver (`<driver>`: `d<driver ID>-<GPU vendor>-<GPU device>`, and `-<package>` for a `gpu_driver` package's), so going back to a driver finds its own |
 | `recompiled/<id>/shader_cache/<id>.<driver>.vkshaders` | One per driver: translated shaders and the pipelines made, made again at the next start, compute pipelines too (before the game starts, from their programs, so a new build or driver compiles them there); held in memory while the game runs and written when it closes, packed with zstd at its highest level: a run that crashes keeps none of what it made |
 | `recompiled/<id>/shader_cache/<id>.<driver>.vkshipped` | One per driver: the shaders found in the game's own files and executables, prepared ahead of time (`prepare_shaders`), each read when the game first draws with it, each packed with zstd on its own (`compress_prepared_shaders`). Unpacked it can be large: one game's 2,700 shaders took 245 MB, another's 18,500 took 2 GB; packed, about a quarter of that |

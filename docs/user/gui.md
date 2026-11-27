@@ -326,7 +326,7 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   Alt+Down there says it has no list. A setting's words are
   its values alone, the runtime's default marked `[default]` (*Off [default]*, *On*); one typed shows its default and
   `[default]` while it is empty (*1 [default]*). At its default the run takes the game's `.ini`'s, which starts as
-  that. Where a row's default is none of its words (a control not yet shown or hidden, LLVM's own options),
+  that. Where a row's default is none of its words (a control not yet shown or hidden),
   `[default]` is a value of its own, the same way. Another value, and a number typed even as its default (Current
   user 1 over a game's `.ini` that has another), goes to every Switch run as `--key=value`, over the `.ini`
   ([Usage](usage.md)), and is kept for every game:
@@ -357,14 +357,12 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   game reads its ExeFS and RomFS out of the dump on the fly, decrypting them as it reads ([Usage](usage.md)). A CIA
   is read the same way. On, a dump is extracted as before, into the game's folder or with *Extract to tmpfs* into
   tmpfs, which implies it; an extracted game's folder is read in place all the same, and copied only into tmpfs. Turning it off again takes a game's extraction away on its next run.
-  **Optimization level** (0, 1, 2, 3 or z, 2 by default) is LLVM's level for the game's code, **AOT threads** the
-  threads compiling it (0, the default Auto: the machine's cores with a quarter left free, the physical cores
-  where it says them, at most 75%, so a recompile does not make the computer stutter), **Unit cache limit** the GB
-  the compiled code units kept
-  for the next recompile may hold (20 by default, 0 for no limit; [Usage](usage.md)), and the **LLVM Internals** page
-  turns each pass of LLVM's pipelines off and sets the options LLVM's C API takes, its **All** stepping every row. They
-  are passed as `--key=value` when the game is recompiled: by **R**, or by a run that has to (a dump played the first
-  time, an NRO each time). A game made already keeps its code until then. The first two settings and these reach
+  **AOT threads** are the threads compiling the game's code (0, the default Auto: the machine's cores with a quarter
+  left free, the physical cores where it says them, at most 75%, so a recompile does not make the computer stutter),
+  **AOT threads at most** the most Auto opens, **Unit size** the instructions of a code unit, and **Unit cache
+  ceiling** the MB the units held in memory may take (512 by default, 0 for none; [Usage](usage.md)). They are passed
+  as `--key=value` when the game is recompiled: by **R**, or by a run that has to (a dump played the first time, an
+  NRO each time). A game made already keeps its code until then. The first two settings and these reach
   neither the Linux nor the 3DS driver.
 - Settings' **Search**, the row over the groups (Up from App, a click or a tap on it), Ctrl+F on the groups, a group,
   App or User, or a pad's Y: a dialog where what is typed is looked for as it is typed, every word of it, whatever its

@@ -4,16 +4,15 @@
    no function in CPU.disp and calls RtAPI.miss; the runtime's miss asks snx_jit_wait for the code at pc. When the
    service has compiled it, that code is the answer at once. Otherwise the pc goes to the front of the queue and the
    thread waits for the batch that compiles it (the runtime takes it off its guest core meanwhile). There is no
-   interpreter behind it: what can't be compiled (a pc outside the images, a compile LLVM or the loader refuses) gets
-   NULL, which the runtime treats as the end of the game.
+   interpreter behind it: what can't be compiled (a pc outside the images, a compile the back end or the loader refuses)
+   gets NULL, which the runtime treats as the end of the game.
 
    Compile threads of the service take the queued pcs in batches. A batch finds the functions at all of its pcs and
-   those they call (snx_codegen_discover, one budget for the batch, each branch graph bounded separately), emits them
-   into one LLVM module (snx_ir_emit, as
-   the AOT build does), loads its object into the code arena (code_loader.c, packed after the code already there) and
-   publishes every leader of every function into the dispatch table, where later lookups find it without a miss. The
-   compile threads are host threads: none is a guest thread or holds a guest core, so a compile never delays another
-   guest thread's turn on its core.
+   those they call (snx_codegen_discover, one budget for the batch, each branch graph bounded separately), makes them
+   into one object with the host's native back end (as the AOT build does), loads it into the code arena (code_loader.c,
+   packed after the code already there) and publishes every leader of every function into the dispatch table, where
+   later lookups find it without a miss. The compile threads are host threads: none is a guest thread or holds a guest
+   core, so a compile never delays another guest thread's turn on its core.
 
    The compile threads run below the guest threads, so that a compile takes a CPU the game leaves idle. A guest thread
    that waits in snx_jit_wait is not served by them while the miss thread is free: that one thread more keeps the
@@ -47,13 +46,13 @@
 
 /* instructions a batch discovers beyond the regions at its pcs (snx_codegen_discover's budget) */
 #define SNX_JIT_BUDGET  20000
-/* A live miss must not pull a huge branch graph into one LLVM function before it can resume. */
+/* A live miss must not pull a huge branch graph into one compile before it can resume. */
 #define SNX_JIT_REGION_INSTRUCTIONS 4096
 #define SNX_JIT_OVERFLOW_INSTRUCTIONS 64
 #define SNX_JIT_LIVE_BUDGET 64
-/* pcs a batch takes from the misses' queue; a warm batch takes an eighth of it. LLVM's fixed cost per module
-   (context, pass pipeline, code generator, load) is shared by the batch, and a start-up burst of misses goes through
-   in a few batches instead of thousands of compiles */
+/* pcs a batch takes from the misses' queue; a warm batch takes an eighth of it. A unit's fixed cost (its object, its
+   load) is shared by the batch, and a start-up burst of misses goes through in a few batches instead of thousands of
+   compiles */
 #define SNX_JIT_BATCH   256
 /* compile threads at most (the setting jit_threads' top), and at most when the host's CPUs decide them */
 #define SNX_JIT_THREADS               16

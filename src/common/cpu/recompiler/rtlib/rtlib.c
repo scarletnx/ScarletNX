@@ -1,17 +1,17 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The part of every game module the backends don't generate per game: the helpers (cpu_helpers.c) and the C library
-   functions LLVM lowers memory intrinsics to. The build embeds its LLVM bitcode. ir.c removes the bitcode's CPU
-   attributes and compiles it for the module's target CPU, then link_elf.c, link_coff.c or link_macho.c links that
-   object into the module. The modules import nothing, so they need no dynamic symbol resolution.
-   It has no writable globals (a miss goes to RtAPI.miss), so the runtime JIT loads a copy of its own into the code
-   arena (jit_service.c) without anything being kept twice */
+/* The part of every game module the back ends don't generate per game: the helpers (cpu_helpers.c) and the C library
+   functions Clang lowers memory intrinsics to. The build compiles it once into an object for the host (rtlib_object.h),
+   which link_elf.c, link_coff.c or link_macho.c links into each module. The modules import nothing, so they need no
+   dynamic symbol resolution. It has no writable globals (a miss goes to RtAPI.miss), so the runtime JIT loads a copy of
+   its own into the code arena (jit_service.c) without anything being kept twice */
 #include "common/cpu/aarch64/cpu.h"
 #include "common/cpu/aarch64/cpu_helpers.c"
 /* what the x86-64 back end's code calls (its exclusives, atomics, CRC32): every module links it, whichever made it */
 #include "common/cpu/recompiler/x64/x64_helpers.c"
 
-/* No interpreter here: what a module lacks is compiled by the runtime JIT, and every decoded op has an IR emitter */
+/* No interpreter here: what a module lacks is compiled by the runtime JIT, and a decoded op the back end has no code
+   for is undefined where it runs */
 
 #include "common/cpu/recompiler/rtlib/libc.inc"
 
@@ -63,7 +63,7 @@ int DllMainCRTStartup(void* module, unsigned long reason, void* reserved) {
 }
 #endif
 #if defined(_WIN32) && defined(__x86_64__)
-/* The stack probe of generated functions (SNX_IR_STACK_PROBE, ir_codegen.c). Windows commits a thread's stack as it
+/* The stack probe of generated functions. Windows commits a thread's stack as it
    grows, through the guard page below the part in use: a frame of more than a page that nothing touches on the way
    down skips that page, and its first store lands in reserved memory. The system then cannot even write the
    exception's record (the stack pointer is in that memory) and ends the process with no handler run. A prologue whose
@@ -97,7 +97,7 @@ int DllMainCRTStartup(void* module, unsigned long reason, void* reserved) {
 }
 #endif
 #if defined(_WIN32) && defined(__aarch64__)
-/* The same probe on Windows on Arm, where LLVM's AArch64 backend calls __chkstk and no other name: a prologue whose
+/* The same probe on Windows on Arm, where Clang's AArch64 code calls __chkstk and no other name: a prologue whose
    frame is a page or more calls it with the frame's size in 16-byte units in x15, and subtracts x15 << 4 from sp after
    it, so the probe may change only x16, x17 (the procedure call standard's scratch registers) and the flags. It reads
    one word in each page from the caller's stack pointer down past the new one, nearest first, as the compiler

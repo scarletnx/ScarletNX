@@ -1,11 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The arm64 back end's AArch32 blocks (arm64_arm.c): what the block compiler cpu/arm/llvm.h makes of an A32 block on
-   any of its profiles and memory modes (snx_arm_llvm_block_ex, the options' below), made without LLVM in the arm64
-   host's own code: mach/mach_arm.inc over sailgen's arm64 emitters of the AArch32 Sail (a32_arm64.inc), each block a
-   function void name(SnxArmCPU*) of an ELF AArch64 object (a COFF one on Windows), global and hidden as LLVM's blocks
-   are. It builds on any host (its code is arm64's: a test runs it under Unicorn). A block with an instruction it doesn't
-   make is refused: LLVM makes it */
+/* The arm64 back end's AArch32 blocks (arm64_arm.c): an A32 or Thumb block on any of its profiles and memory modes (the
+   options below), in the arm64 host's own code: mach/mach_arm.inc over sailgen's arm64 emitters of the AArch32 Sail
+   (a32_arm64.inc), each block a function void name(SnxArmCPU*) of an ELF AArch64 object (a COFF one on Windows), global
+   and hidden. It builds on any host (its code is arm64's: a test runs it under Unicorn). A block with an instruction it
+   doesn't make is refused, saying why */
 #ifndef SNX_RECOMPILER_ARM64_ARM_H
 #define SNX_RECOMPILER_ARM64_ARM_H
 

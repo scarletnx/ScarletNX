@@ -35,4 +35,4 @@ holds the lines the fixture printed, one `litmus <test> <outcome> <count>` per o
 the bad reads together must equal the attempts, or the record is one the fixture could not have printed.
 
 The spin loop of `T_SPIN` in the C fixture has no file here: it has no forbidden outcome. What it checks is that a
-plain load in a loop is still a load of memory after the translator and LLVM are done with it, so the loop ends.
+plain load in a loop is still a load of memory after the translator is done with it, so the loop ends.

@@ -63,7 +63,7 @@ parsing is unchanged. Restaging an NRO without embedded RomFS removes the genera
   staging paths, BSS clearing, asset exclusion, permissions, short files, overflowing
   sizes and descriptor mismatches. Exact-sized allocations allow ASan to detect reads
   beyond a truncated file.
-- `native_recompiler`: synthetic NRO through LLVM IR to native module execution,
+- `native_recompiler`: synthetic NRO through the native back end to native module execution,
   plus removal of stale embedded RomFS when an asset-free NRO is staged.
 
 These tests do not establish compatibility with a particular homebrew application or game.

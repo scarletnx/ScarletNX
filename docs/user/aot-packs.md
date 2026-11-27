@@ -20,9 +20,8 @@ is a faster starting point, not a different runtime and not a pure-AOT build.
 
 ## The level
 
-The native back ends have no optimization levels, and LLVM's went with it. The JIT cache still records the level it
-was made at, and a game's build the level it was recompiled at: 2 for both since LLVM left, so a cache and a build of
-this version always agree. A cache or a build an older version made at another level does not: the launcher's side
+The native back ends have no optimization levels. The JIT cache still records the level it was made at, and a game's
+build the level it was recompiled at: 2 for both (a phone's 0), so a cache and a build of this version always agree. A cache or a build an older version made at another level does not: the launcher's side
 panel says `AOT build: O3, its JIT cache O2: a pack needs one level` in the failure colour, and the build itself says
 the same. Recompiling the game, or playing it again to write a new cache, makes the two agree. That refusal is the
 whole of it. The two levels are independent everywhere else: the JIT cache is keyed by its own level, the ABI, the native code,

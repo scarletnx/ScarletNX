@@ -1,21 +1,20 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The native back ends' guest functions, what any machine's shares: what ir_codegen.c's snx_ir_emit makes of a
-   function, without LLVM. Included by a machine's code generator (x64/x64_codegen.c, arm64/arm64_codegen.c) after
-   sailgen's emitters of that machine (a64_<machine>.inc), and followed by the machine's glue, which it declares
-   below: the bytes of the ABI and the flow (the prologue, the jumps and their fixups, the calls, the entry's checks,
-   the dispatch block, SVC, BRK and UNDEF, the pins' loads and stores) and the relocations of its objects. The
-   machine also gives its AdvSIMD instructions (vec() and the vector helpers the structures' loads and stores take:
-   vread, vwrite, vzero, lane_get, lane_put, vdup), and these constants: MG_EM (its ELF machine; MG_ELF_FLAGS, its
-   objects' e_flags, LLVM's for the host's ABI, 0 by default), MG_R_ABS64 (an
-   absolute doubleword's relocation), SGX_FN_TARGET (the register a call's target and a function's entry are in),
-   the pins' host registers (mg_pin_hosts, MG_NPINS, MG_NPINS_FIXED where an exclusive, an atomic or CRC32 takes the
-   last ones, MG_PIN_RESERVED(h) whether a pin's register is one values may be in), the vector pins' (MG_VPIN(k),
-   the k-th, MG_NVPINS) and the vector registers no value may take (MG_XRESERVED: the callee's). MG_FAR_JUMPS where its
-   jumps have a longer form (Unit.far), MG_POOL_REACH how far the code goes past the first LDR of a literal before the
-   literals are put in it (mg_pool_island), MG_DIRECT_ENTRY where a function's entry checks its target before the
-   frame, so that a call of its start comes in past the check (mg_direct): how far back a call reaches one so with no
-   relocation's help.
+/* The native back ends' guest functions, what any machine's shares: a guest function's code. Included by a machine's
+   code generator (x64/x64_codegen.c, arm64/arm64_codegen.c) after sailgen's emitters of that machine
+   (a64_<machine>.inc), and followed by the machine's glue, which it declares below: the bytes of the ABI and the flow
+   (the prologue, the jumps and their fixups, the calls, the entry's checks, the dispatch block, SVC, BRK and UNDEF, the
+   pins' loads and stores) and the relocations of its objects. The machine also gives its AdvSIMD instructions (vec()
+   and the vector helpers the structures' loads and stores take: vread, vwrite, vzero, lane_get, lane_put, vdup), and
+   these constants: MG_EM (its ELF machine; MG_ELF_FLAGS, its objects' e_flags, the host ABI's, 0 by default),
+   MG_R_ABS64 (an absolute doubleword's relocation), SGX_FN_TARGET (the register a call's target and a function's entry
+   are in), the pins' host registers (mg_pin_hosts, MG_NPINS, MG_NPINS_FIXED where an exclusive, an atomic or CRC32
+   takes the last ones, MG_PIN_RESERVED(h) whether a pin's register is one values may be in), the vector pins'
+   (MG_VPIN(k), the k-th, MG_NVPINS) and the vector registers no value may take (MG_XRESERVED: the callee's).
+   MG_FAR_JUMPS where its jumps have a longer form (Unit.far), MG_POOL_REACH how far the code goes past the first LDR of
+   a literal before the literals are put in it (mg_pool_island), MG_DIRECT_ENTRY where a function's entry checks its
+   target before the frame, so that a call of its start comes in past the check (mg_direct): how far back a call reaches
+   one so with no relocation's help.
 
    Each basic block's instructions are sailgen's emitters', appended to one SSA region (registers read once, flags
    reused, constants folded) and assembled when the block ends. The guest's registers are in the CPU structure at
@@ -509,7 +508,7 @@ static void jump_if_back(Unit* u, SgB taken, int header, int slow, SnxU64 target
 }
 #endif
 
-/* ---- what the Sail roots don't have: ir_ldst.c's, ir_vec.c's and ir_int.c's, on the region's SSA ---- */
+/* ---- what the Sail roots don't have: loads and stores, vectors and system instructions, on the region's SSA ---- */
 
 /* Xn as an address: SP for 31 */
 static SgD base_of(SgCtx* g, unsigned rn) { return sg_GPR_read(g, rn); }
@@ -786,8 +785,8 @@ static int simd_copy(Unit* u, SnxU32 word) {
     return 0;
 }
 
-/* SYS, MRS and MSR as ir_int.c's sys(): what EL0 reads and writes on the Switch, the cache maintenance it does; 0
-   for the rest (UNDEF there, LLVM's) */
+/* SYS, MRS and MSR: what EL0 reads and writes on the Switch, the cache maintenance it does; 0 for the rest, which no
+   code is made for (undefined where it runs) */
 #define SYSREG(op1, crn, crm, op2) ((1u << 14) | ((op1) << 11) | ((crn) << 7) | ((crm) << 3) | (op2))
 static int sys(Unit* u, SnxU32 word) {
     SgCtx* g = u->g;
@@ -823,7 +822,7 @@ static int sys(Unit* u, SnxU32 word) {
                                              sg_d_concat(g, sg_PSTATE_read(g, SG_PSTATE_C), sg_PSTATE_read(g, SG_PSTATE_V))), 64);
                 v = sg_d_lsl(g, v, 28);
                 break;
-            /* the constants ir_int.c's read_sysreg gives: CTR_EL0 (SCTLR_EL1.UCT), DCZID_EL0, CNTFRQ_EL0 */
+            /* the constants EL0 reads: CTR_EL0 (SCTLR_EL1.UCT), DCZID_EL0, CNTFRQ_EL0 */
             case SYSREG(3, 0, 0, 1): v = sgx_const(64, 0x8444C004u); break;
             case SYSREG(3, 0, 0, 7): v = sgx_const(64, 4); break;
             case SYSREG(3, 14, 0, 0): v = sgx_const(64, 19200000u); break;
@@ -834,7 +833,7 @@ static int sys(Unit* u, SnxU32 word) {
                 v = sgx_call(g, "snx_mrs", 0, 1, &k, 1, 64);
                 break;
             }
-            default: return -1; /* UNDEF at EL0 on the Switch, as ir_int.c's read_sysreg leaves it */
+            default: return -1; /* UNDEF at EL0 on the Switch */
             }
             if (rt != 31) sg_GPR_write(g, rt, v);
             return 1;
@@ -868,7 +867,7 @@ static int sys(Unit* u, SnxU32 word) {
             sg_PSTATE_write(g, SG_PSTATE_N, 4, sg_d_slice(g, xzr_or(g, rt), 31, 28));
             g->origin = -1;
             return 1;
-        default: return -1; /* read-only at EL0, or EL1's: UNDEF, as ir_int.c's write_sysreg leaves it */
+        default: return -1; /* read-only at EL0, or EL1's: UNDEF */
         }
     }
     if (op0 == 1 && !l && op1 == 3 && crn == 7 && op2 == 1) {
@@ -893,7 +892,7 @@ static int sys(Unit* u, SnxU32 word) {
         default: return -1;
         }
     }
-    return -1; /* the rest of SYS and SYSL: UNDEF, as ir_int.c's sys() */
+    return -1; /* the rest of SYS and SYSL: UNDEF */
 }
 #undef SYSREG
 
@@ -1012,7 +1011,7 @@ static int struct_ldst(Unit* u, SnxU32 word) {
     return 1;
 }
 
-/* the instruction at address, word; 0 where the function goes to LLVM */
+/* the instruction at address, word; 0 where the back end has no code for it (undefined where it runs) */
 /* SBFM and UBFM (LSL, LSR, ASR, SBFX, UBFX, SBFIZ, UBFIZ, SXTB to SXTW, UXTB, UXTH): one or two shifts, a MOVSX or
    a mask, not the Sail's rotation, masks and Replicate of the sign. BFM, and reserved fields (the Sail's UNDEF), are
    the Sail's */
@@ -1061,7 +1060,7 @@ static int reverse(Unit* u, SnxU32 word) {
     return 1;
 }
 
-/* ---- PLT stubs the program's linker binds (SnxBoundBranch), as ir_codegen.c lowers them ----
+/* ---- PLT stubs the program's linker binds (SnxBoundBranch) ----
    On a machine without MG_BOUND every call of a stub runs the stub */
 
 #ifdef MG_BOUND
@@ -1098,7 +1097,7 @@ static SnxU64 stub_function(Unit* u, SnxU64 target, SnxU32* w, int* guard) {
    F_bound. With guard, the stub's ADRP, LDR and ADD as at their own addresses, then if (x17 == bound) F_bound, else
    F_stub, whose own code takes whatever else the slot holds. A stub whose code the guest changed is stale: none of
    its instructions run here, and its function's entry leaves for the code there now. tail: each way returns.
-   0 where the back end can't make the stub's load (the function is LLVM's then) */
+   0 where the back end can't make the stub's load (no code for it then: undefined where it runs) */
 static int call_stub(Unit* u, SnxU64 stub, const SnxU32* w, SnxU64 bound, int guard, int tail) {
     SgCtx* g = u->g;
     const SnxCodegen* c = u->codegen;
@@ -1410,7 +1409,7 @@ static int memory_op(Unit* u, const SnxA64Insn* insn, SnxU32 word) {
 
 /* instructions past the guests' CPUs that are others', or nothing, where EL0 runs: 1 made, -1 UNDEF, 0 the Sail's (of
    g->word). No allocation tag is kept (FEAT_MTE): STG and ST2G only move their base, the zeroing forms clear their
-   16-byte granules too, LDG gives a tag of 0 and STGP stores its pair, as ir_ldst.c's; the forms of many tags are
+   16-byte granules too, LDG gives a tag of 0 and STGP stores its pair; the forms of many tags are
    EL1's */
 static int past_guests(Unit* u, const SnxA64Insn* insn, SnxU32 word, SnxU64 address_of) {
     SgCtx* g = u->g;
@@ -2764,7 +2763,7 @@ static int write_object(Unit* u, unsigned char** object, size_t* size) {
             sym.st_name = str_add(&strtab, undef[i]);
             sym.st_info = ELF64_ST_INFO(STB_GLOBAL, STT_NOTYPE);
             sym.st_shndx = SHN_UNDEF;
-            if (!strcmp(undef[i], "snx_stale")) sym.st_other = STV_HIDDEN; /* the module's own, as LLVM declares it */
+            if (!strcmp(undef[i], "snx_stale")) sym.st_other = STV_HIDDEN; /* the module's own */
             put(&symtab, &sym, sizeof sym);
         }
         for (i = 0; i < u->nrelocs; ++i) {

@@ -38,7 +38,7 @@ static unsigned arm64_arm_features(void) {
 #define MG_ARM_FEATURES()  arm64_arm_features()
 #define MG_ARM_EM          A64_EM
 #define MG_ARM_CALL_RELOC  A64_CALL26
-#define MG_ARM_LOAD_FENCE  1 /* an LDR is no acquire: a DMB after it, as LLVM's LDA lowering's order */
+#define MG_ARM_LOAD_FENCE   1 /* an LDR is no acquire: a DMB after it orders it as an acquire */
 #define MG_ARM_FP_HOT      0
 #define MG_ARM_ABI          SNX_ARM64_F_WIN
 /* the code of a frame one range, the one exit that has none past it */
@@ -186,7 +186,7 @@ static void mg_tail(MG_ARM* c, int reg) {
 }
 
 /* snx_a64_a32_entry_exit(state X0, the block's address W1, its first word W2), each object's own, where a block's
-   entry check failed (llvm.c's block_begin, in its order): R15 not the address, BAD_ENTRY with the address; else
+   entry check failed, in this order: R15 not the address, BAD_ENTRY with the address; else
    CPSR.T set, BAD_ENTRY, else (E) ENDIAN_UNSUPPORTED, with the word; R15 left as it is */
 static void entry_exit_fn(SnxXElf* o) {
     SgXBuf b = {0};
@@ -212,7 +212,7 @@ static void entry_exit_fn(SnxXElf* o) {
     snx_xelf_symbol(o, "snx_a64_a32_entry_exit", SNX_ELF_TEXT, at, b.n, SNX_ELF_LOCAL | SNX_ELF_FUNC);
 }
 /* snx_a64_thumb_entry(state X0, the block's address W1, its first halfword W2), where a Thumb block's entry check failed
-   (llvm_thumb.inc's, in its order): R15 not the address, BAD_ENTRY with the address; CPSR.T clear, BAD_ENTRY with the
+   in this order: R15 not the address, BAD_ENTRY with the address; CPSR.T clear, BAD_ENTRY with the
    halfword; ITSTATE in CPSR, IT_ENTRY with it; else (E) ENDIAN_UNSUPPORTED with the halfword */
 static void thumb_entry_exit_fn(SnxXElf* o) {
     SgXBuf b = {0};

@@ -34,8 +34,8 @@ typedef struct {
 void snx_x64_cache_stats(SnxX64CacheStats* stats);
 /* every unit let go and the counts started again: a test's */
 void snx_x64_cache_clear(void);
-/* the SHA-256 (FIPS 180-4) the keys are, of size bytes: here, as the recompiler's library links LLVM and the system's
-   libraries alone (tests/recompiler_symbols.cmake) */
+/* the SHA-256 (FIPS 180-4) the keys are, of size bytes: here, as the recompiler's library links the system's libraries
+   alone (tests/recompiler_symbols.cmake) */
 void snx_x64_cache_sha256(const void* data, size_t size, unsigned char out[32]);
 
 #endif

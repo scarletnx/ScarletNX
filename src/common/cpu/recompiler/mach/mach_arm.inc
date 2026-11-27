@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The native back ends' AArch32 blocks, what any machine's shares: what cpu/arm/llvm.c's arm_block makes of an A32
-   block, for any profile and memory mode of its options (cpu/arm/codegen.h), without LLVM. Included by a machine's
+/* The native back ends' AArch32 blocks, what any machine's shares: an A32 or Thumb block, for any profile and memory
+   mode of its options (cpu/arm/codegen.h). Included by a machine's
    block compiler (x64/x64_arm.c,
    arm64/arm64_arm.c), and followed by the machine's glue, which it declares: the block's frame, prologue and entry
    checks, its return and its chaining to the next block, the entry checks' exit function, an entry stub for another
@@ -13,11 +13,11 @@
    prologue and entry exit check what SgCtx.thumb says: an A32 block's state, or a Thumb one's.
 
    Each word is sailgen's emitter of the AArch32 Sail where its clauses take it (the data processing and branches),
-   else one written here over the same SSA region, as llvm.c's emitters are written over LLVM's builder (the loads
+   else one written here over the same SSA region (the loads
    and stores, the multiplies, the exclusives...). The region is assembled where a condition's skip ends it, where it
    grows long, and at the block's end; the guest's registers are in the state at each region's end, as each write
-   stores them. Its entry checks are llvm.c's block_begin's (exit and syndrome cleared, R15 the block's address,
-   CPSR.T and E clear; a hosted block has none), and it ends where arm_block ends: after an instruction that branches,
+   stores them. Its entry checks clear the exit and its syndrome, and check R15 the block's address and CPSR.T and E
+   clear (a hosted block has none), and it ends after an instruction that branches,
    one that leaves for the
    backend, or the last word. Where the block goes on to a known address in A32 or Thumb state and the caller names
    that block a successor, the code jumps to it as chain_block's tail call does (reading the thread's poll first where
@@ -33,8 +33,7 @@
 #define MG_ARM_ABI 0u /* the features that are no processor's, which a test's limit leaves (x86-64's SGX_F_WIN64) */
 #endif
 
-/* the thread's: where a word the emitters can't make (bits.h's sg_fail) refuses the block, which LLVM makes, and why,
-   for the caller */
+/* the thread's: where a word the emitters can't make (bits.h's sg_fail) refuses the block, and why, for the caller */
 static _Thread_local struct {
     jmp_buf* fail;
     const char* why;
@@ -222,7 +221,7 @@ static void cold_ways(MG_ARM* c) {
     for (int k = 0; k < g->nouts; ++k) {
         const SgA32Out* o = &g->outs[k];
         sgx_a32_bind(g, b, o->label);
-        if (o->undefined) { /* llvm.c's trap: the backend's to run or stop at */
+        if (o->undefined) { /* a trap: the backend's to run or stop at */
             sgx_a32_state_imm(b, offsetof(SnxArmCPU, r) + 60, o->pc);
             sgx_a32_movi(b, SGX_A32_ARG(&g->x, 0), o->word);
             sgx_a32_movi(b, SGX_A32_ARG(&g->x, 1), o->reason);
@@ -277,7 +276,7 @@ static void flush(MG_ARM* c) {
     g->x.flags_ins = -1;
 }
 
-/* ---- the instructions the Sail has no clause for: llvm.c's, on the region's SSA ---- */
+/* ---- the instructions the Sail has no clause for, on the region's SSA ---- */
 
 /* R[r] as an operand: the PC reads as the instruction's address plus 8; in a Thumb block, where a T32 instruction that
    is an A32 one in another encoding runs its emitter, Align(PC, 4) of it plus 4 */
@@ -285,13 +284,13 @@ static SgD reg(SgCtx* g, unsigned r) {
     if (r != 15) return sg_GPR_read(g, r);
     return sgx_const(32, g->thumb ? ((SnxU32)g->pc + 4) & ~3u : (SnxU32)g->pc + 8);
 }
-/* a branch to value with the state from its bit 0 (llvm.c's branch_exchange): CPSR.T from it, R15 the rest */
+/* a branch to value with the state from its bit 0: CPSR.T from it, R15 the rest */
 static void branch_exchange(SgCtx* g, SgD value) {
     sg_PSTATE_write(g, SG_PSTATE_T, 1, sg_d_slice(g, value, 0, 0));
     g->branched = 1;
     g->target = sg_d_and(g, value, sgx_const(32, ~1u));
 }
-/* a load written to the PC (llvm.c's arm_write_pc). The ARM7TDMI (ARMv4T) does not interwork there: bits 1 and 0 are
+/* a load written to the PC. The ARM7TDMI (ARMv4T) does not interwork there: bits 1 and 0 are
    dropped and the state stays ARM; only BX changes the state. Later cores branch with the state from bit 0 */
 static void write_pc(SgCtx* g, SgD value) {
     if (!sgx_a32_arm7(g)) {
@@ -301,7 +300,7 @@ static void write_pc(SgCtx* g, SgD value) {
     g->branched = 1;
     g->target = sg_d_and(g, value, sgx_const(32, ~3u));
 }
-/* a shift by an immediate (llvm.c's shift with immediate set), its carry not taken */
+/* a shift by an immediate, its carry not taken */
 static SgD shift_imm(SgCtx* g, SgD v, unsigned type, unsigned imm) {
     if (!imm && type == 0) return v;
     if (!imm && type == 3) /* RRX */
@@ -320,7 +319,7 @@ static void condition(SgCtx* g) {
     sgx_a32_commit(g);
 }
 
-/* LDR, STR, LDRB, STRB and their T forms, LDRH, STRH, LDRSB, LDRSH, LDRD, STRD (llvm.c's memory) */
+/* LDR, STR, LDRB, STRB and their T forms, LDRH, STRH, LDRSB, LDRSH, LDRD, STRD */
 static int memory(SgCtx* g, SnxA32Kind kind) {
     SnxU32 w = g->word;
     unsigned n = (w >> 16) & 15, d = (w >> 12) & 15, op = (w >> 5) & 3, bytes = 4;
@@ -342,7 +341,7 @@ static int memory(SgCtx* g, SnxA32Kind kind) {
         }
     }
     SgD adjusted = up ? sg_d_add(g, base, offset) : sg_d_sub(g, base, offset), addr = pre ? adjusted : base;
-    /* LDRD and STRD, and a load of the PC, word aligned (llvm.c's: unaligned support on, as ARMv6's SCTLR.U), but on
+    /* LDRD and STRD, and a load of the PC, word aligned (unaligned support on, as ARMv6's SCTLR.U), but on
        the ARM7TDMI, which rotates a misaligned PC, and the ARM946E-S, neither of which faults on a
        misaligned doubleword */
     sgx_reg(sgx(g), &addr);
@@ -368,7 +367,7 @@ static int memory(SgCtx* g, SnxA32Kind kind) {
     return d == 15 && load;
 }
 
-/* LDM, STM and their stack forms (llvm.c's multiple) */
+/* LDM, STM and their stack forms */
 static int multiple(SgCtx* g) {
     SnxU32 w = g->word, list = w & 0xFFFF;
     unsigned n = (w >> 16) & 15, count = 0, index = 0;
@@ -411,13 +410,13 @@ static int multiple(SgCtx* g) {
     return load && (list >> 15 & 1);
 }
 
-/* N and Z of a result (llvm.c's nz without a carry or an overflow), w its width */
+/* N and Z of a result, without a carry or an overflow, w its width */
 static void nz(SgCtx* g, SgD r, unsigned w) {
     sg_PSTATE_write(g, SG_PSTATE_N, 1, sg_d_slice(g, r, w - 1, w - 1));
     sg_PSTATE_write(g, SG_PSTATE_Z, 1, sg_d_is_zero_bit(g, r));
 }
 
-/* MUL, MLA, MLS, UMULL, UMLAL, SMULL, SMLAL, UMAAL (llvm.c's multiply) */
+/* MUL, MLA, MLS, UMULL, UMLAL, SMULL, SMLAL, UMAAL */
 static void multiply(SgCtx* g, SnxA32Kind kind) {
     SgX* x = sgx(g);
     SnxU32 w = g->word;
@@ -450,7 +449,7 @@ static void multiply(SgCtx* g, SnxA32Kind kind) {
     sg_GPR_write(g, n, r);
 }
 
-/* SDIV, UDIV: Rd 19:16, Rm 11:8, Rn 3:0; by 0 they give 0 (llvm.c's miscellaneous) */
+/* SDIV, UDIV: Rd 19:16, Rm 11:8, Rn 3:0; by 0 they give 0 */
 static void divide(SgCtx* g) {
     SgX* x = sgx(g);
     SnxU32 w = g->word;
@@ -476,7 +475,7 @@ static void divide(SgCtx* g) {
 #endif
 }
 
-/* CLZ, REV, REV16, REVSH, RBIT, the extends, the bitfields, MRS and MSR (llvm.c's miscellaneous) */
+/* CLZ, REV, REV16, REVSH, RBIT, the extends, the bitfields, MRS and MSR */
 static int miscellaneous(SgCtx* g, SnxA32Kind kind) {
     SgX* x = sgx(g);
     SnxU32 w = g->word;
@@ -567,7 +566,7 @@ static int miscellaneous(SgCtx* g, SnxA32Kind kind) {
     return 0;
 }
 
-/* LDREX, STREX and their byte, halfword and doubleword forms, with acquire or not (llvm.c's exclusive): the CPU's
+/* LDREX, STREX and their byte, halfword and doubleword forms, with acquire or not: the CPU's
    value-based monitor, the store a compare-and-swap of the value the load read. A Thumb-2 one adds g->offset to its base
    and takes the second register of a doubleword pair from g->pair (its number + 1) */
 static void exclusive(SgCtx* g) {
@@ -609,7 +608,7 @@ static void exclusive(SgCtx* g) {
     }
 }
 
-/* llvm.c's checked_exclusive (the ARM11's on checked memory): the bus owns the reservation (checked.h), the CPU-local
+/* the exclusives of the ARM11 on checked memory: the bus owns the reservation (checked.h), the CPU-local
    address, size and valid are additional guards */
 static void checked_exclusive(SgCtx* g) {
     SgX* x = sgx(g);
@@ -643,8 +642,8 @@ static void checked_exclusive(SgCtx* g) {
     sg_GPR_write(g, d, status);
 }
 
-/* LDA, STL and their byte and halfword forms: a sequentially consistent access (a store then a full barrier, as the
-   store-release the LLVM back end makes; a load then one where the machine's loads are no acquires) */
+/* LDA, STL and their byte and halfword forms: a sequentially consistent access (a store then a full barrier; a load
+   then one where the machine's loads are no acquires) */
 static void acquire_release(SgCtx* g) {
     SgX* x = sgx(g);
     SnxU32 w = g->word;
@@ -665,7 +664,7 @@ static void acquire_release(SgCtx* g) {
     }
 }
 
-/* ---- ARMv6's and ARMv7's DSP and media instructions: llvm.c's parallel and media, in 64-bit lanes ---- */
+/* ---- ARMv6's and ARMv7's DSP and media instructions, the parallel and media ones in 64-bit lanes ---- */
 
 /* the bits lo..lo+bits-1 of x, sign- or zero-extended to 64 bits */
 static SgD lane(SgCtx* g, SgD x, unsigned lo, unsigned bits, int sign) {
@@ -881,7 +880,7 @@ static int setend(SgCtx* g) {
     return 1;
 }
 
-/* ---- VFP: llvm_vector.inc's scalar part (vector_memory, vector_transfer, vector_fp), its hot paths fp_call's ---- */
+/* ---- VFP: the scalar part (the transfers, the moves, the arithmetic), its hot paths the glue's fp_call ---- */
 
 /* the D bank's byte offset off (S2n at Dn's, S2n+1 4 past it) as a state field of width bits: Dn is a number, so a
    big-endian host (RK_BIG_ENDIAN) has S2n's word 4 past its start and S2n+1's at it */
@@ -896,7 +895,7 @@ static int voff_w(unsigned off, unsigned width) {
 }
 /* FPSCR, as a field the D bank's offsets reach */
 #define FPSCR_OFF ((unsigned)(offsetof(SnxArmCPU, fpscr) - offsetof(SnxArmCPU, d)))
-/* FPSCR bits that an ARM11 VMSR may set (llvm_vector.inc's): NZCV, DN, FZ, RMode (23-22), STRIDE (21-20), LEN (18-16),
+/* FPSCR bits that an ARM11 VMSR may set: NZCV, DN, FZ, RMode (23-22), STRIDE (21-20), LEN (18-16),
    IDC (7) and the cumulative flags. Any other bit stops the block: the trap enables (15-8), which the block does not
    model, and bits 27 and 26, which the ARM11 does not define; and what it stores, those two with them */
 #define FPSCR_ARM11_WRITABLE 0xf3f7009fu
@@ -1011,7 +1010,7 @@ static void vfp_memory(SgCtx* g, const SnxArmVector* v) {
     if (!(v->flags & AV_LOAD)) sgx_a32_written(g, addr, v->bytes);
     if (v->flags & AV_WB) sg_GPR_write(g, v->n, end);
 }
-/* ---- lanes: llvm_vector.inc's vget and vset, a D register's 64 bits read once and written once an instruction ---- */
+/* ---- lanes: a D register's 64 bits read once and written once an instruction ---- */
 
 /* the D bank's words an instruction reads, each loaded once: an instruction reads all its lanes before it writes one */
 typedef struct {
@@ -1080,7 +1079,7 @@ static void vfp_transfer(SgCtx* g, const SnxArmVector* v) {
                 sg_GPR_write(g, v->n, f);
         } else {
             SgD f = reg(g, v->n);
-            if (g->profile == SNX_ARM_PROFILE_ARM11) /* a bit its block does not model stops it (llvm_vector.inc's) */
+            if (g->profile == SNX_ARM_PROFILE_ARM11) /* a bit its block does not model stops it */
                 sgx_a32_trap_on(g, sg_b_not(g, sg_d_is_zero(g, sg_d_and(g, f, sgx_const(32, ~FPSCR_ARM11_WRITABLE)))),
                                 SNX_ARM_BACKEND_UNSUPPORTED);
             vset(g, FPSCR_OFF, 32,
@@ -1181,7 +1180,7 @@ static void vfp_data(SgCtx* g, const SnxArmVector* v) {
     } else
         vset(g, v->d, outwidth, r);
 }
-/* ---- Advanced SIMD: llvm_vector.inc's vector_fp, vector_integer, vector_permute and vector_struct, lane by lane, its
+/* ---- Advanced SIMD: the FP, integer, permute and structure instructions, lane by lane, its
    lanes' 128-bit arithmetic in 64 bits: exact for lanes of 32 bits or less, the 64-bit lanes' saturations, rounded
    shifts and polynomial product made without bits past 64 ---- */
 
@@ -1306,7 +1305,7 @@ static SgD vshift(SgCtx* g, SgD x, SgD k, unsigned bits, int uns, int round, int
     count = sg_d_select(g, less(g, count, sgx_const(64, 1)), sgx_const(64, 1), count);
     count = sg_d_select(g, greater(g, count, sgx_const(64, bits + 1)), sgx_const(64, bits + 1), count);
     SgD wide = widen(g, x, uns), r;
-    if (bits < 64) { /* llvm_vector.inc's arithmetic: the lane's integer below 2^33, its shifts within 64 bits */
+    if (bits < 64) { /* the lane's integer below 2^33, its shifts within 64 bits */
         SgD right = wide;
         if (round)
             right = sg_d_add(g, right, sg_d_shift_dyn(g, sgx_const(64, 1), sg_d_sub(g, count, sgx_const(64, 1)), 0));
@@ -1388,7 +1387,7 @@ static void neon_permute(SgCtx* g, const SnxArmVector* v) {
         vflush(g, &out);
         return;
     }
-    /* the two-destination forms with D = M are UNKNOWN: llvm_vector.inc's zeros, not another emulator's choice */
+    /* the two-destination forms with D = M are UNKNOWN: zeros, not another emulator's choice */
     if (v->op != AV_REV && v->d == v->m) {
         for (unsigned i = 0; i < bytes; i += 8) vset(g, v->d + i, 64, sgx_const(64, 0));
         return;
@@ -1693,8 +1692,8 @@ static void neon_integer(SgCtx* g, const SnxArmVector* v) {
     vflush(g, &o);
     neon_qc(g, qc);
 }
-/* vector_struct: VLD1-4 and VST1-4, whole registers, one lane, or one element to every lane; one check of the bytes and
-   their alignment first, as llvm.c's bounds */
+/* VLD1-4 and VST1-4, whole registers, one lane, or one element to every lane; one check of the bytes and their
+   alignment first */
 static void neon_struct(SgCtx* g, const SnxArmVector* v) {
     unsigned eb = v->width / 8, lanes = 8 / eb, address = 0;
     SgD base = reg(g, v->n);
@@ -1739,14 +1738,14 @@ static void neon_imm(SgCtx* g, const SnxArmVector* v) {
     }
     vflush(g, &o);
 }
-/* AESE, AESD, AESMC, AESIMC, the SHA-1 and SHA-256 rounds: snx_arm_crypto on the D bank, as llvm_vector.inc's */
+/* AESE, AESD, AESMC, AESIMC, the SHA-1 and SHA-256 rounds: snx_arm_crypto on the D bank */
 static void neon_crypto(SgCtx* g, const SnxArmVector* v) {
     SgD args[4] = {sgx_const(32, v->d), sgx_const(32, v->n), sgx_const(32, v->m), sgx_const(32, v->aux)};
     sgx_a32_commit(g);
     sgx_a32_call(g, "snx_arm_crypto", args, 4, 0);
 }
 
-/* FPSCR's bits the ARM11's VFP data processing stops at, for the backend (llvm_vector.inc's vector_instruction): an
+/* FPSCR's bits the ARM11's VFP data processing stops at, for the backend: an
    enabled exception, and a short vector (LEN, STRIDE) but for a compare or a conversion, which are scalar */
 static void arm11_stops(SgCtx* g, const SnxArmVector* v) {
     int scalar = v->op == AV_FCMP || v->op == AV_FCMPE || v->op == AV_FCVT || v->op == AV_FTOI || v->op == AV_ITOF;
@@ -1755,7 +1754,7 @@ static void arm11_stops(SgCtx* g, const SnxArmVector* v) {
     sgx_a32_trap_on(g, sg_b_not(g, sg_d_is_zero(g, sg_d_and(g, vbits(g, FPSCR_OFF, 32), sgx_const(32, stop)))),
                     SNX_ARM_BACKEND_UNSUPPORTED);
 }
-/* a VFP or Advanced SIMD word (llvm_vector.inc's vector_instruction) */
+/* a VFP or Advanced SIMD word */
 static void vfp(SgCtx* g) {
     SnxArmVector v = {0};
     condition(g);
@@ -1791,7 +1790,7 @@ static void vfp(SgCtx* g) {
         neon_integer(g, &v);
 }
 
-/* llvm.c's instruction() for the kinds the Sail's clauses don't take: 1 where the block ends after it, 0 where it
+/* an instruction of the kinds the Sail's clauses don't take: 1 where the block ends after it, 0 where it
    goes on; a kind this back end doesn't make refuses the block */
 static int instruction(SgCtx* g, SnxA32Kind kind) {
     SnxU32 w = g->word;
@@ -1950,7 +1949,7 @@ static size_t arm_code(MG_ARM* c, const unsigned char* code, size_t count, SnxU3
 }
 #include "common/cpu/recompiler/mach/mach_thumb.inc"
 
-/* checked memory's entry (llvm.c's memory_entry): the state the bus's, of this ABI */
+/* checked memory's entry: the state the bus's, of this ABI */
 static void checked_entry(SgCtx* g) {
     SgX* x = sgx(g);
     static const struct {
@@ -2334,7 +2333,7 @@ int MG_ARM_API(object)(MG_ARM* c, unsigned char** object, size_t* size, size_t* 
     for (size_t i = 0; i < c->nmade; ++i) {
         const Made* m = &c->made[i];
         size_t at = snx_xelf_put(o, SNX_ELF_TEXT, c->text + m->at, m->size, 16);
-        /* a block's name the descriptor and LLVM's blocks call (global); an entry the object's own (X_, local) */
+        /* a block's name the descriptor and other blocks call (global); an entry the object's own (X_, local) */
         snx_xelf_symbol(o, m->name, SNX_ELF_TEXT, at, m->size,
                         m->own == (size_t)-1 && m->name[0] == 'X' ? SNX_ELF_LOCAL | SNX_ELF_FUNC
                                                                   : SNX_ELF_GLOBAL | SNX_ELF_HIDDEN | SNX_ELF_FUNC);

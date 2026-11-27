@@ -1,10 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The s390x back end's guest functions (s390x_codegen.c): the recompiler's code without LLVM on an s390x host, from
-   the A64 emitters sailgen generates with its s390x back end (tools/sailgen/s390x.h and risc.h, its instructions
-   LLVM's SystemZ TableGen records'), written as an ELF s390x object the linker and the JIT's loader take as they take
-   LLVM's. It builds on any host (the code is s390x's: a test runs it under Unicorn); a function it can't make is left
-   to another back end */
+/* The s390x back end's guest functions (s390x_codegen.c): the recompiler's code on an s390x host, from the A64 emitters
+   sailgen generates with its s390x back end (tools/sailgen/s390x.h and risc.h, its instructions LLVM's SystemZ TableGen
+   records'), written as an ELF s390x object which the linker and the JIT's loader take. It builds on any host (the code
+   is s390x's: a test runs it under Unicorn); a function it can't make whole is said */
 #ifndef SNX_RECOMPILER_S390X_CODEGEN_H
 #define SNX_RECOMPILER_S390X_CODEGEN_H
 #include "common/cpu/recompiler/codegen.h"

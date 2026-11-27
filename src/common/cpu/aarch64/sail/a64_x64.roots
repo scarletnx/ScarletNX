@@ -256,7 +256,7 @@ root decode_swp_aarch64_instrs_memory_atomicops_swp
 root decode_swpb_aarch64_instrs_memory_atomicops_swp
 root decode_swph_aarch64_instrs_memory_atomicops_swp
 
-# A64 scalar floating point (ir_fpu.c's): the arithmetic the Sail lowers calls cpu.h's helpers (x64_a64.h)
+# A64 scalar floating point: the arithmetic the Sail lowers calls cpu.h's helpers (x64_a64.h)
 root decode_fabs_float_aarch64_instrs_float_arithmetic_unary
 root decode_fadd_float_aarch64_instrs_float_arithmetic_add_sub
 root decode_fccmp_float_aarch64_instrs_float_compare_cond

@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* What the x86-64 back end's code calls (tools/sailgen/x64_a64.h) rather than writes inline: the exclusive monitor
-   (cpu.h's ldx, stx, ldxp, stxp), the LSE atomics, CRC32 and CRC32C, DC ZVA. The LLVM back end builds its own
-   helpers into each module as IR (ir_helpers.c); these are C, in the runtime library every module links (rtlib.c
-   includes this), and in the x86-64 back end's test directly. Each takes the state first, as its code has it in RBX */
+   (cpu.h's ldx, stx, ldxp, stxp), the LSE atomics, CRC32 and CRC32C, DC ZVA: C, in the runtime library every module
+   links (rtlib.c includes this), and in the x86-64 back end's test directly. Each takes the state first, as its code
+   has it in RBX */
 #include "common/cpu/aarch64/cpu.h"
 #include "common/utilities/bits.h"
 #include <stdatomic.h>
@@ -39,7 +39,7 @@ void snx_x64_copy(CPU* c, u64 to, u64 from, u64 size);
 extern const u32 snx_x64_crc32_table[8 * 256];
 extern const u32 snx_x64_crc32c_table[256];
 
-/* ---- floating point: cpu.h's helpers, which LLVM's slow paths call, with the state ----
+/* ---- floating point: cpu.h's helpers, the code's slow paths, with the state ----
    Each takes the guest's FPCR as the code read it (fpcr, bits 0-31), ORs the FPSR flags the operation raised into
    CPU.fpsr and gives the value. Bit 32 of fpcr says the instruction's Sail doesn't run the operation here (gen.c's
    run-time path: FCCMP's compare where the condition fails): then nothing happens, and the value is 0. The rest of
@@ -122,7 +122,7 @@ u64 snx_x64_fp_bfcvt(CPU* c, u64 a, u64 fpcr) {
 }
 
 /* a vector's lanes, the cold path of x64_vec.c's: desc's kind (bits 0-3) 0 to 3 are snx_fp_host_lanes' (its desc as it
-   takes it); the others lane by lane through the helpers LLVM's lanes call (ir_vec_fp.c's map), of bytes (bits 4-7)
+   takes it); the others lane by lane through cpu.h's lane helpers, of bytes (bits 4-7)
    and lanes (8-11): 4 a compare, cmp (12-13: 0 EQ, 1 GE, 2 GT) of the magnitudes where abs (16), all ones where it
    holds; 5 a conversion to the width of bytes (12-15); 6 to integers of the lanes' width, uns (12), fbits (16-22),
    rm + 1 (24-26, 0 FPCR's); 7 from integers, uns (12), fbits (16-22); 8 FRINT, rm + 1 (12-14), exact (16) */

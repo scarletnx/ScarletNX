@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The x86-64 back end's guest functions: what ir_codegen.c's snx_ir_emit makes of a function, without LLVM. Each
+/* The x86-64 back end's guest functions. Each
    basic block's instructions are sailgen's x86-64 emitters' (a64_x64.inc), appended to one SSA region (registers read
    once, flags reused, constants folded) and assembled when the block ends; what joins the blocks is written here: the
    entry's check, the branches (a backward one polling first), the direct and dynamic calls (the dispatch table read
@@ -17,9 +17,9 @@
    values. A C call keeps every pin there, so none is stored around it. Control flow is bytes written here (jumps,
    calls, the frame): the instruction selection derives what computes values.
 
-   The object is ELF x86-64, or COFF of Windows' ABI (x64_elf.h), as LLVM's are: F_<address> global and hidden in the AOT
-   module's units (library.c), so an LLVM unit's function calls one of these and the other way; in a JIT unit local,
-   with the unit's table. A call is a PLT32 relocation, resolved here where the callee is this object's own */
+   The object is ELF x86-64, or COFF of Windows' ABI (x64_elf.h): F_<address> global and hidden in the AOT module's
+   units (library.c), so a unit's function calls another unit's; in a JIT unit local, with the unit's table. A call is a
+   PLT32 relocation, resolved here where the callee is this object's own */
 #include "common/cpu/recompiler/x64/x64_codegen.h"
 #include "common/cpu/recompiler/object/link.h"
 #include "common/cpu/aarch64/a64_decoder.h"
@@ -55,7 +55,7 @@ int snx_elf_byteswap(unsigned char* object, size_t size, int to_foreign);
 #pragma GCC diagnostic ignored "-Wunused-function"
 #endif
 
-/* a word the emitters can't make (bits.h's sg_fail) takes the function back to LLVM */
+/* a word the emitters can't make (bits.h's sg_fail): the function made again, that word undefined where it runs */
 static _Thread_local jmp_buf* g_fail;
 static _Thread_local const char* g_why; /* what it was */
 #define SG_FAIL_JUMP g_fail

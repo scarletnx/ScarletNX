@@ -59,9 +59,8 @@ the block goes through the table), and fills the table. Compiled code is kept in
 addresses and the entry, so the next run loads it. A unit depends on its entry alone, never on what the process
 compiled before, which depends on which thread reached what first: with that, the same entry missed the cache in
 every run. The A64 target is `SNX_RECOMPILER_A64_ANDROID` (Armv8.2 with LSE, RDM, FP16, DotProd and LRCPC, without
-pointer authentication). `--jit-verbose` prints each unit and its time, and `--jit-opt=0` compiles at -O0, several times faster, to test the JIT itself (2 is the default; the cache keeps each level apart). A large engine reaches code its
-earlier runs did not for several runs, each spent mostly in LLVM: one run of a Unity game compiled about 1100 new units
-in 440 s while it loaded.
+pointer authentication). `--jit-verbose` prints each unit and its time. A large engine reaches code its earlier runs
+did not for several runs.
 
 ## Calls between the guest and the host
 

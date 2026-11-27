@@ -149,7 +149,7 @@ void snx_arm_multiply_carry(SnxArmCPU* cpu, uint64_t instruction, uint64_t thumb
     cpu->cpsr = (cpu->cpsr & ~0x20000000u) | (carry ? 0x20000000u : 0); /* C, bit 29 */
 }
 
-/* ---- the native back ends' bus accesses (arm.h), as llvm.c's readmem and writemem make them ---- */
+/* ---- the native back ends' bus accesses (arm.h) ---- */
 
 static int io_takes(uint32_t address, uint32_t regions, uint64_t size) {
     if (size & SNX_ARM_IO_ARM9) return address >> 24 == 0x04; /* the NDS's registers alone */
@@ -193,7 +193,7 @@ uint64_t snx_arm_io_write(SnxArmCPU* cpu, uint64_t address, uint64_t size, uint6
     return 0;
 }
 
-/* ---- checked memory for the native back ends' blocks (arm.h), as llvm.c's bus_access makes it ---- */
+/* ---- checked memory for the native back ends' blocks (arm.h) ---- */
 
 /* a transfer's bytes are guest order for the callback, the state's words numbers: a transfer narrower than a word is
    its low bytes */

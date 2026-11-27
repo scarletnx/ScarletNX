@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The JIT's loader: the LLVM backend's relocatable objects (snx_ir_object's, the runtime library's) placed in this
+/* The JIT's loader: the native back ends' relocatable objects (and the runtime library's) placed in this
    process's memory and linked there, where the AOT path links them into a module file for dlopen (link_elf.c,
    link_coff.c). ELF objects are read and relocated by elf_object.c, as link_elf.c reads and relocates them, and
    Windows' COFF objects by code_loader_coff.c.
@@ -46,8 +46,8 @@
    the arena is placed within 32-bit reach of the module's TOC, which every load keeps in r2 instead, so a guest's
    jump between the module and a load, either way, leaves r2 as the code it reaches wants it.
 
-   macOS on Apple silicon loads ELF objects too, which the arm64 back end and the IR backend (snx_ir_new_jit) write
-   there with Darwin's calling convention. Memory becomes executable there only as MAP_JIT memory, which can't be
+   macOS on Apple silicon loads ELF objects too, which the arm64 back end writes there with Darwin's calling
+   convention. Memory becomes executable there only as MAP_JIT memory, which can't be
    shared or placed: the code and read-only data are one MAP_JIT mapping, which each thread sees either writable or
    executable
    (pthread_jit_write_protect_np). The loading thread sees it writable while it writes a load, every other thread

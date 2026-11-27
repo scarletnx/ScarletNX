@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* Build-time helper for the LLVM backend's runtime library (rtlib.c):
+/* Build-time helper for the runtime library (rtlib.c):
      snx-rtlib-gen embed IN OUT SYM the compiled rtlib object as a C array the recompiler links into each module */
 #include <stdio.h>
 #include <string.h>

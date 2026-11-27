@@ -248,7 +248,7 @@ GuiProcess* gui_process_create(void) {
     return process;
 }
 #ifdef GUI_DRIVER_THREAD
-/* LLVM's passes recurse deeply: a thread's default stack on iOS (512 KiB) is not enough */
+/* the driver's thread: a thread's default stack on iOS (512 KiB) is far below the 8 MiB the driver has elsewhere */
 #define GUI_DRIVER_STACK ((size_t)64 << 20)
 static void* driver_thread(void* data) {
     GuiProcess* process = data;

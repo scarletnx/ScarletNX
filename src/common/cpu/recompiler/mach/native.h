@@ -27,8 +27,7 @@ typedef struct {
     /* words taken as ones there is no code for, how many: what a test of that asks for */
     const SnxU32* without;
     size_t without_count;
-    /* the AOT module's stale checks (ir_codegen.c's snx_ir_stale_checks): snx_stale[the function's index] read at the
-       entry and after each call's return */
+    /* the AOT module's stale checks: snx_stale[the function's index] read at the entry and after each call's return */
     int stale;
     /* arm64: every SIMD&FP word by the A64 Sail's own code, none run as the host's own instruction (arm64_vec.c's
        vec): what a test holds that one to */
@@ -52,10 +51,10 @@ const char* snx_native_code(void);
 unsigned snx_native_features(void);
 
 /* What this host lacks of what its architecture's back end takes of every host past the program's own baseline: on
-   x86-64 SSE3, SSSE3, SSE4.1, SSE4.2, PCLMULQDQ and POPCNT, on a big-endian PowerPC64 ISA 2.06's LDBRX and STDBRX and
-   the ELFv2 ABI. 1 with the line of it in why, what is needed and what the host has ("cpu: needs SSE4.2, this host has
-   SSE3, SSSE3, SSE4.1, PCLMULQDQ and POPCNT"); 0 and "" where there is a back end, or none of the architecture is
-   built */
+   x86-64 SSE2 (every x86-64 has it: a test's snx_x64_without alone takes it away), on a big-endian PowerPC64 the ELFv2
+   ABI (its LDBRX and STDBRX are taken where the host has them, two word accesses elsewhere). 1 with the line of it in
+   why, what is needed and what the host has ("abi: needs ELFv2, this build has ELFv1"); 0 and "" where there is a back
+   end, or none of the architecture is built */
 int snx_native_floor(char* why, size_t size);
 /* 1 where nothing makes this host's code, snx_native_floor's line in error: a host below the floor. 0, error as it was,
    elsewhere */

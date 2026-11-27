@@ -441,7 +441,7 @@ static SnxU64 direct(void* user, SnxU64 target) {
     return (SnxU64)(size_t)function;
 }
 
-/* the loader's resolver: snx_aot_<target>, the AOT module's function for target (ir_codegen.c's call) */
+/* the loader's resolver: snx_aot_<target>, the AOT module's function for target */
 static SnxU64 resolve_aot(void* user, const char* name) {
     SnxU64 target = 0;
     if (strncmp(name, "snx_aot_", 8) || !name[8]) return 0;

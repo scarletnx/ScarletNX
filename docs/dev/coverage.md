@@ -43,7 +43,7 @@ gitignored `work/`.
 ## What coverage measures here
 
 Coverage counts the runtime's own C and C++ code: the HLE kernel and services, the SVCs, the NVN and Maxwell front
-ends, the Vulkan renderer, the shader translators, the loaders, the recompiler's driver and LLVM backend. It does not
+ends, the Vulkan renderer, the shader translators, the loaders, the recompiler's driver and native back ends. It does not
 count a game's code. The recompiled module (`<id>_code.so`) and the code the JIT compiles are made by the
 recompiler, not by the compiler that instruments the build. What a game's code reaches is a different question,
 answered by [the static censuses](#the-static-censuses) and the log.
@@ -52,7 +52,7 @@ Two processes contribute to a game's run:
 
 | Process | What it covers |
 |---|---|
-| The driver (`scarletnx -r`, or the first step of `scripts/amberlith.py`) | `nx/loader`, `common/cpu` (decoder, function discovery, LLVM IR emission, the linker), `nx/runtime/driver` |
+| The driver (`scarletnx -r`, or the first step of `scripts/amberlith.py`) | `nx/loader`, `common/cpu` (decoder, function discovery, the native back end, the linker), `nx/runtime/driver` |
 | The game's runtime (`recompiled/<id>/<id>`, a copy of the same `scarletnx`) | everything the game asks for at run time |
 
 Both are the same binary, so one `llvm-cov` call reads both profiles against `build/cov/scarletnx`.
@@ -91,9 +91,7 @@ cmake --build build/cov --target scarletnx          # the runtime and driver; ad
 ```
 
 - Use the same LLVM for `clang`, `llvm-profdata` and `llvm-cov`: the raw profile format changes between versions.
-  On FreeBSD, give the compilers and the `SNX_LLVM_*` paths of one LLVM, as [Build](build.md) says, for example
-  `clang23`/`clang++23` and `-DSNX_LLVM_CONFIG=/usr/local/llvm23/bin/llvm-config` (with `SNX_LLVM_OBJDUMP`,
-  `SNX_LLVM_OPT`, `SNX_LLVM_AS` from the same folder).
+  On FreeBSD, take the two tools from the folder of the Clang that built it (`/usr/local/llvm23/bin` for `clang23`).
 - `SNX_DEPLOY=OFF` keeps the instrumented runtime from being copied over every game in your data folder, as the
   Tracy preset does. A run through `build/cov/scarletnx` still puts it beside the game it runs.
 - Clang warns that `-runtime-counter-relocation` is unused at link time. The warning is harmless.

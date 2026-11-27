@@ -165,18 +165,18 @@ typedef struct {
 } SnxArmVector;
 
 /* Strictly decode Cortex-A57 A32 VFP/Advanced SIMD, excluding later FP16
-   arithmetic, dot-product and RDM extensions. Does not depend on LLVM. */
+   arithmetic, dot-product and RDM extensions. */
 int snx_arm_vector_decode(uint32_t word, SnxArmVector* out);
 
-/* Exact raw-bit FP primitive used by generated LLVM. param: destination width
+/* Exact raw-bit FP primitive the generated code calls. param: destination width
    [7:0], integer width [15:8], fractional bits [23:16], rounding [27:24]
    (8=current FPSCR), unsigned [28], StandardFPSCR [30]. No host FP or fenv. */
 uint64_t snx_arm_fp(SnxArmCPU* cpu, uint64_t x, uint64_t y, uint64_t add, uint32_t op, uint32_t width, uint32_t param);
 /* The same, op in desc's bits 7:0, width 15:8 and param 63:32: the x86-64 back end's call (its cold calls take four
    arguments after the state) */
 uint64_t snx_arm_fp_x64(SnxArmCPU* cpu, uint64_t x, uint64_t y, uint64_t add, uint64_t desc);
-/* the host FP environment the blocks' VFP fast paths assume, put back where it drifted: each LLVM block calls it on
-   entry, as an A64 function does snx_fp_env (aarch64/helpers/fp_env.h) */
+/* the host FP environment the blocks' VFP fast paths assume, put back where it drifted: a block whose VFP takes the
+   host's arithmetic calls it on entry, as an A64 function does snx_fp_env (aarch64/helpers/fp_env.h) */
 void snx_arm_fp_env(void);
 /* Portable ARM AES/SHA primitives. Operands are byte offsets into D[]. */
 void snx_arm_crypto(SnxArmCPU* cpu, uint32_t d, uint32_t n, uint32_t m, uint32_t op);
