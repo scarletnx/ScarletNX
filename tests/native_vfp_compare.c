@@ -151,10 +151,10 @@ static int check(Step step, const Insn* insn, unsigned rd, const CPU* input, int
             (unsigned long long)SNX_VD(expected.v[rd], 0), (unsigned long long)SNX_VD(expected.v[rd], 1), expected.fpsr);
     return 1;
 }
-static int run(int jit, int portable, char opt, unsigned long long* checked, int reversed) {
+static int run(int jit, int portable, unsigned long long* checked, int reversed) {
     Steps steps;
     char error[1024];
-    if (steps_begin_opt(&steps, jit, portable, opt, error, sizeof error)) return snx_error("%s", error);
+    if (steps_begin(&steps, jit, portable, error, sizeof error)) return snx_error("%s", error);
     for (unsigned i = 0; i < COUNT; ++i)
         for (unsigned rd = 0; rd < 3; ++rd) steps_add(&steps, instructions[i].word | rd, 0x1000, SNX_A64_TARGET_MAX);
     if (steps_load(&steps, error, sizeof error)) return snx_error("%s", error);
@@ -215,14 +215,14 @@ static int run(int jit, int portable, char opt, unsigned long long* checked, int
     steps_end(&steps);
     return failed;
 }
-static int bench(const char* workload, char opt, const char* dump, int portable) {
+static int bench(const char* workload, const char* dump, int portable) {
     /* FCMEQ and FCMGE: ordinary, a NaN lane, or flushed denormals. */
     unsigned index = strstr(workload, "16") ? 0 : strstr(workload, "64") ? 60 : 30;
     if (strncmp(workload, "eq", 2)) ++index;
     const Insn* insn = &instructions[index];
     Steps steps;
     char error[1024];
-    if (steps_begin_opt(&steps, 1, portable, opt, error, sizeof error)) return snx_error("%s", error);
+    if (steps_begin(&steps, 1, portable, error, sizeof error)) return snx_error("%s", error);
     steps_add(&steps, insn->word, 0x1000, SNX_A64_TARGET_MAX);
     if (dump) {
         int result = steps_dump(&steps, dump, error, sizeof error);
@@ -252,13 +252,13 @@ static int bench(const char* workload, char opt, const char* dump, int portable)
 int main(int argc, char** argv) {
     STEPS_REQUIRE();
     if (argc >= 3 && !strcmp(argv[1], "--bench"))
-        return bench(argv[2], argc > 3 ? argv[3][0] : '2',
-                     argc > 4 && strcmp(argv[4], "-") ? argv[4] : NULL, argc > 5 ? atoi(argv[5]) : 0);
+        return steps_bench_args(argc, argv, 5, 3, "native_vfp_compare --bench WORKLOAD [DUMP|-] [PORTABLE]")
+                   ? 2
+                   : bench(argv[2], argc > 3 && strcmp(argv[3], "-") ? argv[3] : NULL, argc > 4 ? atoi(argv[4]) : 0);
     unsigned long long checked = 0;
     for (int jit = 0; jit < 2; ++jit)
         for (int portable = 0; portable < STEPS_FORMS(2); ++portable)
-            for (unsigned level = 0; level < STEPS_LEVELS(2); ++level)
-                if (run(jit, portable, level ? '2' : '0', &checked, 0)) return 1;
+            if (run(jit, portable, &checked, 0)) return 1;
     printf("Vector comparisons: %llu exact cases\n", checked);
     return 0;
 }

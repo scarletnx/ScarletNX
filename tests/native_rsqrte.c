@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* Real emitted FRSQRTE steps against the exact helper: every normal exponent and table-bin boundary, mixed
    exceptional lanes, FPCR modes and sticky FPSR. QEMU differential tests independently check the helper's semantics.
-   Both optimization levels and loaders run, with host features and with the portable fallback. */
+   Both loaders run, with host features and with the portable fallback. */
 #include "steps.h"
 #include <stdio.h>
 #include <string.h>
@@ -34,10 +34,10 @@ static void check(Step step, unsigned lanes, const u32 input[4], u32 fpcr, u32 f
     }
 }
 
-static int run(int jit, int portable, char opt) {
+static int run(int jit, int portable) {
     char error[1024];
     Steps s;
-    if (steps_begin_opt(&s, jit, portable, opt, error, sizeof error)) {
+    if (steps_begin(&s, jit, portable, error, sizeof error)) {
         fprintf(stderr, "%s\n", error);
         return 1;
     }
@@ -92,8 +92,7 @@ int main(void) {
     STEPS_REQUIRE();
     for (int jit = 0; jit < 2; jit++)
         for (int portable = 0; portable < STEPS_FORMS(2); portable++)
-            for (unsigned level = 0; level < STEPS_LEVELS(2); level++)
-                if (run(jit, portable, level ? '2' : '0')) return 1;
+            if (run(jit, portable)) return 1;
     printf("FRSQRTE: %llu cases, %u failures\n", checked, failures);
     return failures != 0;
 }

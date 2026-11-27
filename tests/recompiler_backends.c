@@ -1,17 +1,17 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The host's native back end (mach/native.h: x86-64's on an x86-64 host, arm64's on an arm64 one...) against LLVM, a
-   function at a time, through the recompiler's own interface (snx_recompiler.h): random functions of a few words and
-   a RET, made from encodings of what the back ends build themselves (the SIMD&FP loads and stores in every addressing
-   mode, MOVI, MVNI, ORR, BIC and FMOV of an immediate, MRS, MSR and the cache maintenance) among the scalar floating
-   point and integer words sailgen's emitters make. The program is recompiled by the native back end and each function
-   run from random states; every register, the flags, FPCR, FPSR, TPIDR_EL0 and the data memory are hashed and held to
-   the hashes LLVM alone's ends had, recorded while the build had LLVM (--frozen). The native back end must make the
-   functions (snx_recompiled_x64_functions).
+/* The host's native back end (mach/native.h: x86-64's on an x86-64 host, arm64's on an arm64 one...) against the
+   recorded ends, a function at a time, through the recompiler's own interface (snx_recompiler.h): random functions of a
+   few words and a RET, made from encodings of what the back ends build themselves (the SIMD&FP loads and stores in
+   every addressing mode, MOVI, MVNI, ORR, BIC and FMOV of an immediate, MRS, MSR and the cache maintenance) among the
+   scalar floating point and integer words sailgen's emitters make. The program is recompiled by the native back end and
+   each function run from random states; every register, the flags, FPCR, FPSR, TPIDR_EL0 and the data memory are hashed
+   and held to the hashes LLVM alone's ends had, recorded while the build had LLVM (--frozen). The native back end must
+   make the functions (snx_recompiled_x64_functions).
      snx-test-recompiler-backends [--functions N] [--states N] [--seed N] [--without MASK] [--target NAME] [--verbose]
          [--hook] [--jit] [--words HEX...] [--made] [--ops OP...] [--refused] [--coverage]
          [--qemu QEMU RUNNER DIR] [--programs] [--calls] [--calls-back] [--long N BYTES] [--cpu NAME]
-         [--frozen FILE] [--without-llvm]
+         [--frozen FILE]
    --without MASK: the back end goes without these features of the host, as on a host that lacks them: x86-64's
    (sailgen's SGX_F_*: FMA 0x800, AVX 0x400, F16C 0x100, BMI1, BMI2 and LZCNT 7, AES-NI 0x1000, SHA-NI 0x2000), arm64's
    (SNX_ARM64_F_*: 0x7ffff all of them). Another machine's back end has none to go without: it is skipped
@@ -19,16 +19,16 @@
    --long N BYTES: --words' words N times over in one function, entered past them by a CBZ, gone over twice by a B.NE
    back, and left by a B back over them: more than BYTES of a native back end's code, which is what its short jumps reach
    --target NAME: the guest's features, switch (the default), android, max or, with --refused, ounce
-   --made: the back end must make --words' function (else, where LLVM makes it, there is nothing to compare)
+   --made: the back end must make --words' function (else, where it does not, there is nothing to compare)
    --ops OP...: every word of these ops of the decoder (native_qemu_words.c's samples, and each value of its small
    fields) is a function of its own with a RET, and the back end must make them all; they run from as many states as the
    rest, half of them with lanes of the values where an integer's or a float's arithmetic turns
-   --refused: each of the target's ops that has words the back end leaves to LLVM, how many of its words, and stops
+   --refused: each of the target's ops that has words the back end does not make, how many of its words, and stops
    there, failing where there is one
    --qemu: with --ops, their words' results held to qemu-aarch64 -cpu max's (tests/qemu_ref: its path, the runner's, a
-   folder for its files) rather than to LLVM's, which lacks what no guest's CPU has; not loads nor stores
+   folder for its files) rather than to the recorded ends, which lack what no guest's CPU has; not loads nor stores
    --skip REASON, alone: nothing to compare with, what a host without QEMU registers for its --qemu tests
-   --programs: what LLVM's back end and QEMU's one word don't show, as C says it: FEAT_CMPBR's compare and branch,
+   --programs: what the recorded ends and QEMU's one word don't show, as C says it: FEAT_CMPBR's compare and branch,
    FEAT_MOPS's SET and CPY, FEAT_LSE128's atomics
    --calls: functions that call each other, in four layers: BL, BLR and tail B, loops (some with a call in them), SVCs
    that change registers, switches through a table, a pending poll in every other state
@@ -39,12 +39,11 @@
    --frozen FILE: the native back end held to FILE's hashes (support/frozen.h), its programs drawn with the generator's
    options of FILE's args line, which those given beside it must be. A run of none of --frozen, --qemu, --programs,
    --refused and --coverage has nothing to compare with, and fails saying so
-   --without-llvm: what every run is now, taken as before
-   --qemu and --programs run nothing of LLVM: their reference is QEMU's, and C's
+   --qemu and --programs take no recorded ends: their reference is QEMU's, and C's
    On a host with no native back end it is skipped, saying so.
 
    Built with SNX_TEST_ARM64 or SNX_TEST_RV64 (snx-test-recompiler-arm64, -rv64), the same programs hold that native
-   back end (src/common/cpu/recompiler/arm64, rv64) to LLVM on any host: its object, made for the program's
+   back end (src/common/cpu/recompiler/arm64, rv64) to the recorded ends on any host: its object, made for the program's
    functions, runs under Unicorn (support/host_unicorn.c), the native side's memory and state mapped into it, the
    helpers and the runtime's functions it calls trapped to this process's, with --stale its functions' stale checks
    in it (options.stale, as a game's module has them), of an snx_stale of zeros. --hook makes it with every call through
@@ -688,20 +687,20 @@ static int differs(const CPU* a, const CPU* b) {
            a->pc != b->pc;
 }
 
-/* the end states that differ: a LLVM's (or QEMU's), b the native back end's */
+/* the end states that differ: a the reference's (QEMU's or C's), b the native back end's */
 static void report(const CPU* a, const CPU* b) {
     const char* native = native_back_end();
     unsigned r;
     for (r = 0; r < 32; ++r)
         if (a->x[r] != b->x[r])
-            fprintf(stderr, "  x%u: llvm %016llx %s %016llx\n", r, (unsigned long long)a->x[r], native,
+            fprintf(stderr, "  x%u: want %016llx %s %016llx\n", r, (unsigned long long)a->x[r], native,
                     (unsigned long long)b->x[r]);
     for (r = 0; r < 32; ++r)
         if (memcmp(&a->v[r], &b->v[r], sizeof a->v[r]))
-            fprintf(stderr, "  v%u: llvm %016llx:%016llx %s %016llx:%016llx\n", r, (unsigned long long)a->v[r].d[1],
+            fprintf(stderr, "  v%u: want %016llx:%016llx %s %016llx:%016llx\n", r, (unsigned long long)a->v[r].d[1],
                     (unsigned long long)a->v[r].d[0], native, (unsigned long long)b->v[r].d[1],
                     (unsigned long long)b->v[r].d[0]);
-    fprintf(stderr, "  nzcv llvm %u%u%u%u %s %u%u%u%u; fpcr %08x %08x; fpsr %08x %08x; tpidr %llx %llx; pc %llx %llx\n",
+    fprintf(stderr, "  nzcv want %u%u%u%u %s %u%u%u%u; fpcr %08x %08x; fpsr %08x %08x; tpidr %llx %llx; pc %llx %llx\n",
             a->n, a->z, a->cf, a->vf, native, b->n, b->z, b->cf, b->vf, a->fpcr, b->fpcr, a->fpsr, b->fpsr,
             (unsigned long long)a->tpidr, (unsigned long long)b->tpidr, (unsigned long long)a->pc,
             (unsigned long long)b->pc);
@@ -898,7 +897,7 @@ static long made_count(uint8_t* code, size_t size, uint64_t* hints, size_t count
     snx_codegen_free(&cg);
     return total;
 }
-/* --refused: each op's words made by the back end alone, and how many it left to LLVM; with ops, those ops' */
+/* --refused: each op's words made by the back end, and how many it does not make; with ops, those ops' */
 static int list_refused(char** names, unsigned nnames) {
     size_t count, i, j, ops = 0, left = 0, left_words = 0;
     OpWord* list = op_words(names, nnames, 0, &count);
@@ -937,7 +936,7 @@ static int list_refused(char** names, unsigned nnames) {
             left_words += n - (size_t)made;
         }
     }
-    printf("recompiler backends: %lu of %lu ops have words the back end leaves to LLVM, %lu of %lu words\n",
+    printf("recompiler backends: %lu of %lu ops have words the back end does not make, %lu of %lu words\n",
            (unsigned long)left, (unsigned long)ops, (unsigned long)left_words, (unsigned long)count);
     free(list), free(code), free(at);
     return bad || left;
@@ -1323,8 +1322,6 @@ int main(int argc, char** argv) {
             go_without(g_without = (unsigned)strtoul(argv[++i], NULL, 0));
         else if (!strcmp(argv[i], "--verbose"))
             verbose = 1;
-        else if (!strcmp(argv[i], "--without-llvm")) {
-        } /* every run's now: the frozen file is the reference */
         else if (!strcmp(argv[i], "--hook"))
             hook = 1;
 #ifdef SNX_TEST_NATIVE
@@ -1388,10 +1385,10 @@ int main(int argc, char** argv) {
         }
     }
     (void)hook;
-    /* LLVM alone's ends are the reference, as recorded in --frozen's file, or QEMU's or C's */
+    /* LLVM alone's ends, as recorded in --frozen's file, are the reference, or QEMU's or C's */
     const int other = qemu || branches || refused;
     if (frozen && other) {
-        fprintf(stderr, "--%s: with %s the reference is %s, not LLVM's: nothing to freeze\n", "frozen",
+        fprintf(stderr, "--%s: with %s the reference is %s, not the recorded ends: nothing to freeze\n", "frozen",
                 qemu           ? "--qemu"
                 : branches     ? "--programs"
                 : refused == 2 ? "--coverage"
@@ -1696,11 +1693,11 @@ int main(int argc, char** argv) {
     printf("recompiler backends: %lu functions, the %s back end made %lu\n",
            (unsigned long)snx_recompiled_functions(mx), snx_native_name(),
            (unsigned long)snx_recompiled_x64_functions(mx));
-    /* a word the back end doesn't make is LLVM's on both sides: with --ops, and the random programs, it fails below */
+    /* a word the back end doesn't make has nothing to compare: with --ops, and the random programs, it fails below */
     if (!snx_native_available() || (nwords && !must_make && !snx_recompiled_x64_functions(mx))) {
 #endif
         printf("SKIP: %s: nothing to compare\n",
-               snx_native_available() ? "the back end leaves the function to LLVM" : "no native back end on this host");
+               snx_native_available() ? "the back end does not make the function" : "no native back end on this host");
         result = 77;
         goto out;
     }
@@ -1770,7 +1767,7 @@ int main(int argc, char** argv) {
 #endif
     }
     for (i = 0; i < functions; ++i) {
-        uint64_t hashed[2] = {0, 0}; /* LLVM alone's ends and the native back end's, hashed state after state */
+        uint64_t hashed = 0; /* the native back end's ends, hashed state after state */
         int unmade = 0;
         for (s = 0; s < states; ++s) {
             CPU c[2], start;
@@ -1871,7 +1868,7 @@ int main(int argc, char** argv) {
             }
             c[0].mem = c[1].mem = NULL;
             c[0].disp = c[1].disp = NULL;
-            hashed[1] = snx_frozen_bytes(state_mix(hashed[1], &c[1]), mem[1] + DATA, data_len);
+            hashed = snx_frozen_bytes(state_mix(hashed, &c[1]), mem[1] + DATA, data_len);
             if (other && (differs(&c[0], &c[1]) || memcmp(mem[0] + DATA, mem[1] + DATA, data_len))) {
                 unsigned n;
                 ++failures;
@@ -1898,12 +1895,12 @@ int main(int argc, char** argv) {
             const uint64_t want = snx_frozen_hash(&file, 0, i);
             char text[SLOT * 9 + 1];
             function_words(mem[0], hints[i], text, sizeof text);
-            if (hashed[1] != want)
+            if (hashed != want)
                 ++failures, fprintf(stderr,
                                     "FAIL: %s:%zu, the function at %llx (%s): the %s back end's ends hash to %016llx, "
-                                    "LLVM alone's to %016llx\n",
+                                    "the recorded ones to %016llx\n",
                                     file.path, snx_frozen_line(&file, 0, i), (unsigned long long)hints[i], text,
-                                    native_back_end(), (unsigned long long)hashed[1], (unsigned long long)want);
+                                    native_back_end(), (unsigned long long)hashed, (unsigned long long)want);
             if (failures > 40) goto done;
         }
     }

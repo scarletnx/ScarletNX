@@ -4,10 +4,10 @@
 #include "steps.h"
 #include <stdio.h>
 #include <string.h>
-static int run(int jit,int portable,char opt,unsigned long long* count) {
+static int run(int jit, int portable, unsigned long long* count) {
     Steps steps;
     char error[1024];
-    if (steps_begin_opt(&steps, jit, portable, opt, error, sizeof error)) return snx_error("%s", error);
+    if (steps_begin(&steps, jit, portable, error, sizeof error)) return snx_error("%s", error);
     for(unsigned op=0;op<2;++op)for(unsigned short_form=0;short_form<2;++short_form)for(unsigned alias=0;alias<2;++alias) {
         u32 word=(op?0x6EA1C820u:0x4EA1C820u)|alias;
         if(short_form)word&=~0x40000000u;
@@ -26,7 +26,8 @@ static int run(int jit,int portable,char opt,unsigned long long* count) {
                 for(unsigned lane=0;lane<(short_form?2u:4u);++lane)
                     expected.v[alias].s[lane]=op?ursqrte32(actual.v[1].s[lane]):urecpe32(actual.v[1].s[lane]);
                 if (step_run(steps_at(&steps, index), &actual) != 0x1004 || memcmp(&actual, &expected, sizeof actual)) {
-                    fprintf(stderr,"Unsigned estimate op%u short%u alias%u bin%u sample%u O%c\n",op,short_form,alias,bin,sample,opt);
+                    fprintf(stderr, "Unsigned estimate op%u short%u alias%u bin%u sample%u\n", op, short_form, alias,
+                            bin, sample);
                     failed=1;
                 }
                 ++*count;
@@ -39,7 +40,6 @@ int main(void) {
     unsigned long long count=0;
     for (int jit = 0; jit < 2; ++jit)
         for (int portable = 0; portable < STEPS_FORMS(2); ++portable)
-            for (unsigned opt = 0; opt < STEPS_LEVELS(2); ++opt)
-                if (run(jit, portable, opt ? '2' : '0', &count)) return 1;
+            if (run(jit, portable, &count)) return 1;
     printf("Unsigned estimates: %llu exact cases\n",count);return 0;
 }

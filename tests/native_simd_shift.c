@@ -10,10 +10,10 @@ static const u32 words[] = {0x4E225420u, 0x6E225420u, 0x4E224C20u, 0x6E224C20u, 
 static const unsigned flags[] = {2, 3, 4, 5, 6, 7};
 static u64 random_next(u64* rng) { *rng ^= *rng << 13; *rng ^= *rng >> 7; *rng ^= *rng << 17; return *rng; }
 
-static int run(int jit, int portable, char opt, unsigned long long* checked) {
+static int run(int jit, int portable, unsigned long long* checked) {
     Steps steps;
     char error[1024];
-    if (steps_begin_opt(&steps, jit, portable, opt, error, sizeof error)) return snx_error("%s", error);
+    if (steps_begin(&steps, jit, portable, error, sizeof error)) return snx_error("%s", error);
     for (unsigned op = 0; op < 6; ++op)
         for (unsigned esz = 0; esz < 4; ++esz)
             for (unsigned form = 0; form < 2; ++form)
@@ -55,8 +55,9 @@ static int run(int jit, int portable, char opt, unsigned long long* checked) {
                             snx_vec_shl(&expected, alias, 1, 2, esz | lanes << 2 | flags[op] << 8);
                             if (step_run(steps_at(&steps, index), &actual) != 0x1004 ||
                                 memcmp(&actual, &expected, sizeof actual)) {
-                                fprintf(stderr, "SIMD shift op%u bits%u form%u alias%u count%u pattern%u O%c jit%d portable%d\n",
-                                        op, bits, form, alias, shift, pattern, opt, jit, portable);
+                                fprintf(stderr,
+                                        "SIMD shift op%u bits%u form%u alias%u count%u pattern%u jit%d portable%d\n",
+                                        op, bits, form, alias, shift, pattern, jit, portable);
                                 failed = 1;
                             }
                             ++*checked;
@@ -66,11 +67,11 @@ static int run(int jit, int portable, char opt, unsigned long long* checked) {
     return failed;
 }
 
-static int bench(unsigned esz, char opt, int reference, const char* dump) {
+static int bench(unsigned esz, int reference, const char* dump) {
     if (esz > 3) return 2;
     Steps steps;
     char error[1024];
-    if (steps_begin_opt(&steps, 1, reference, opt, error, sizeof error)) return snx_error("%s", error);
+    if (steps_begin(&steps, 1, reference, error, sizeof error)) return snx_error("%s", error);
     steps_add(&steps, words[5] | esz << 22, 0x1000, 0);
     if (dump) {
         int failed = steps_dump(&steps, dump, error, sizeof error);
@@ -97,13 +98,14 @@ static int bench(unsigned esz, char opt, int reference, const char* dump) {
 int main(int argc, char** argv) {
     STEPS_REQUIRE();
     if (argc >= 3 && !strcmp(argv[1], "--bench"))
-        return bench((unsigned)strtoul(argv[2], NULL, 10), argc > 3 ? argv[3][0] : '0',
-                     argc > 4 && !strcmp(argv[4], "--reference"), argc > 5 ? argv[5] : NULL);
+        return steps_bench_args(argc, argv, 5, 3, "native_simd_shift --bench ESIZE [--reference] [DUMP]")
+                   ? 2
+                   : bench((unsigned)strtoul(argv[2], NULL, 10), argc > 3 && !strcmp(argv[3], "--reference"),
+                           argc > 4 ? argv[4] : NULL);
     unsigned long long checked = 0;
     for (int jit = 0; jit < 2; ++jit)
         for (int portable = 0; portable < STEPS_FORMS(2); ++portable)
-            for (unsigned level = 0; level < STEPS_LEVELS(2); ++level)
-                if (run(jit, portable, level ? '2' : '0', &checked)) return 1;
+            if (run(jit, portable, &checked)) return 1;
     printf("SIMD shifts: %llu exact cases\n", checked);
     return 0;
 }

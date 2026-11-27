@@ -30,10 +30,10 @@ static int check(Step step, const Insn* insn, const CPU* input) {
             (unsigned long long)expected.v[0].d[0],actual.fpsr,expected.fpsr,input->fpcr);
     return 1;
 }
-static int run(int jit,int portable,char opt,unsigned long long*count) {
+static int run(int jit, int portable, unsigned long long* count) {
     Steps steps;
     char error[1024];
-    if (steps_begin_opt(&steps, jit, portable, opt, error, sizeof error)) return snx_error("%s", error);
+    if (steps_begin(&steps, jit, portable, error, sizeof error)) return snx_error("%s", error);
     for (unsigned i = 0; i < sizeof instructions / sizeof instructions[0]; ++i)
         steps_add(&steps, instructions[i].word, 0x1000, SNX_A64_TARGET_MAX);
     if (steps_load(&steps, error, sizeof error)) return snx_error("%s", error);
@@ -84,12 +84,12 @@ static int run(int jit,int portable,char opt,unsigned long long*count) {
     steps_end(&steps);
     return failed;
 }
-static int bench(unsigned index, unsigned pattern, char opt, int portable) {
+static int bench(unsigned index, unsigned pattern, int portable) {
     if (index >= sizeof instructions / sizeof instructions[0] || pattern > 2) return 2;
     const Insn* insn = &instructions[index];
     Steps steps;
     char error[1024];
-    if (steps_begin_opt(&steps, 1, portable, opt, error, sizeof error)) return snx_error("%s", error);
+    if (steps_begin(&steps, 1, portable, error, sizeof error)) return snx_error("%s", error);
     steps_add(&steps, insn->word, 0x1000, SNX_A64_TARGET_MAX);
     if (steps_load(&steps, error, sizeof error)) return snx_error("%s", error);
     CPU cpu = {0};
@@ -110,14 +110,18 @@ static int bench(unsigned index, unsigned pattern, char opt, int portable) {
 }
 int main(int argc, char** argv) {
     STEPS_REQUIRE();
-    if (argc >= 4 && !strcmp(argv[1], "--bench"))
+    if (argc >= 4 && !strcmp(argv[1], "--bench")) {
+        const char* usage = "native_estimates --bench INDEX PATTERN [0|1, portable]";
+        if (steps_bench_args(argc, argv, 5, 0, usage)) return 2;
+        if (argc == 5 && strcmp(argv[4], "0") && strcmp(argv[4], "1"))
+            return fprintf(stderr, "--bench: portable is 0 or 1, given %s; usage: %s\n", argv[4], usage), 2;
         return bench((unsigned)strtoul(argv[2], NULL, 10), (unsigned)strtoul(argv[3], NULL, 10),
-                     argc > 4 ? argv[4][0] : '2', argc > 5 ? atoi(argv[5]) : 0);
+                     argc > 4 ? atoi(argv[4]) : 0);
+    }
     unsigned long long count = 0;
     for (int jit = 0; jit < 2; ++jit)
         for (int portable = 0; portable < STEPS_FORMS(2); ++portable)
-            for (unsigned level = 0; level < STEPS_LEVELS(2); ++level)
-                if (run(jit, portable, level ? '2' : '0', &count)) return 1;
+            if (run(jit, portable, &count)) return 1;
     printf("FP estimates: %llu exact cases\n", count);
     return 0;
 }

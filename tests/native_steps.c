@@ -61,11 +61,6 @@ int native_steps_begin(NativeSteps* s, int jit, int form, char* error, size_t er
     return 0;
 }
 
-int native_steps_begin_opt(NativeSteps* s, int jit, int form, char opt, char* error, size_t error_size) {
-    (void)opt; /* a native back end has one level */
-    return native_steps_begin(s, jit, form, error, error_size);
-}
-
 static NativeUnit* unit_new(NativeSteps* s) {
     if (s->nunits == s->cap_units) {
         s->cap_units = s->cap_units ? s->cap_units * 2 : 256;

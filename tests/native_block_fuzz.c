@@ -250,15 +250,15 @@ static void generate(Program* p, unsigned index, u64* rng, int mutant, int hook)
     }
 }
 
-static int run(const char* qemu, const char* runner, const char* dir, unsigned count, u64 seed,
-               int jit, int portable, char opt, int hook, int mutant) {
+static int run(const char* qemu, const char* runner, const char* dir, unsigned count, u64 seed, int jit, int portable,
+               int hook, int mutant) {
     if (corpus_begin(seed)) return 1;
     Program* programs = calloc(count, sizeof *programs);
     if (!programs) { free(g_corpus.words); return snx_error("cannot allocate the block corpus"); }
     SnxQrefBatch batch = {0};
     Steps steps;
     char error[1024];
-    if (steps_begin_opt(&steps, jit, portable, opt, error, sizeof error)) {
+    if (steps_begin(&steps, jit, portable, error, sizeof error)) {
         free(programs);
         free(g_corpus.words);
         return snx_error("%s", error);
@@ -325,12 +325,12 @@ static int run(const char* qemu, const char* runner, const char* dir, unsigned c
             if (!match) {
                 ++mismatches;
                 if (mismatches <= 3)
-                    fprintf(stderr, "block seed %llx program %u state %u O%c jit%d portable%d hook%d: "
-                                    "pc %llx/%llx x6 %llx/%llx outcome %u FPSR %x/%x\n",
-                            (unsigned long long)seed, i, n, opt, jit, portable, hook,
-                            (unsigned long long)c.pc, (unsigned long long)ref->pc,
-                            (unsigned long long)c.x[6], (unsigned long long)ref->state.x[6], ref->outcome,
-                            c.fpsr, ref->state.fpsr);
+                    fprintf(stderr,
+                            "block seed %llx program %u state %u jit%d portable%d hook%d: "
+                            "pc %llx/%llx x6 %llx/%llx outcome %u FPSR %x/%x\n",
+                            (unsigned long long)seed, i, n, jit, portable, hook, (unsigned long long)c.pc,
+                            (unsigned long long)ref->pc, (unsigned long long)c.x[6],
+                            (unsigned long long)ref->state.x[6], ref->outcome, c.fpsr, ref->state.fpsr);
             }
         }
     }
@@ -348,18 +348,18 @@ static int run(const char* qemu, const char* runner, const char* dir, unsigned c
         printf("Block fuzzer self-test detected the planted %s defect\n", mutant == 2 ? "exclusive-loop" : "stale-flag");
         return 0;
     }
-    printf("Block fuzzer: %u programs, %u comparisons, seed %llx, O%c jit%d portable%d hook%d: %u mismatches\n",
-           count, count * STATES, (unsigned long long)seed, opt, jit, portable, hook, mismatches);
+    printf("Block fuzzer: %u programs, %u comparisons, seed %llx, jit%d portable%d hook%d: %u mismatches\n", count,
+           count * STATES, (unsigned long long)seed, jit, portable, hook, mismatches);
     return mismatches != 0;
 }
 
 int main(int argc, char** argv) {
     STEPS_REQUIRE();
     if (argc == 3 && !strcmp(argv[1], "--skip")) { printf("Skipped: %s\n", argv[2]); return 77; }
-    if (argc < 4) return snx_error("usage: native_block_fuzz QEMU RUNNER DIR [--jit] [--portable] [--opt=0|2] "
-                                  "[--hook] [--volatile] [--self-test|--self-test-exclusive] [--seed=N] [--programs=N]");
+    if (argc < 4)
+        return snx_error("usage: native_block_fuzz QEMU RUNNER DIR [--jit] [--portable] [--hook] "
+                         "[--self-test|--self-test-exclusive] [--seed=N] [--programs=N]");
     int jit = 0, portable = 0, hook = 0, mutant = 0;
-    char opt = '2';
     unsigned count = 64;
     u64 seed = 0x5eed;
     for (int i = 4; i < argc; ++i) {
@@ -368,8 +368,6 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--hook")) hook = 1;
         else if (!strcmp(argv[i], "--self-test")) { mutant = 1; count = 1; }
         else if (!strcmp(argv[i], "--self-test-exclusive")) { mutant = 2; count = 1; }
-        else if (!strncmp(argv[i], "--opt=", 6) && strlen(argv[i]) == 7 && (argv[i][6] == '0' || argv[i][6] == '2'))
-            opt = argv[i][6];
         else if (!strncmp(argv[i], "--seed=", 7)) {
             char* end;
             seed = strtoull(argv[i] + 7, &end, 0);
@@ -381,5 +379,5 @@ int main(int argc, char** argv) {
             count = (unsigned)value;
         } else return snx_error("unknown option %s", argv[i]);
     }
-    return run(argv[1], argv[2], argv[3], count, seed, jit, portable, opt, hook, mutant);
+    return run(argv[1], argv[2], argv[3], count, seed, jit, portable, hook, mutant);
 }

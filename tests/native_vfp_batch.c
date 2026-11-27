@@ -32,10 +32,10 @@ static void reference(CPU* c, unsigned index, int broadcast) {
     }
     c->pc = c->x[30];
 }
-static int run(int jit, char opt) {
+static int run(int jit) {
     Steps steps;
     char error[1024];
-    if (steps_begin_opt(&steps, jit, STEPS_PORTABLE, opt, error, sizeof error)) return snx_error("%s", error);
+    if (steps_begin(&steps, jit, STEPS_PORTABLE, error, sizeof error)) return snx_error("%s", error);
     u8 bytes[12][12], leaders[12][3] = {{0}};
     SnxCodeImage images[12] = {{0}};
     SnxFunction functions[12] = {{0}};
@@ -70,7 +70,7 @@ static int run(int jit, char opt) {
                 reference(&expected, i % 4, (int)(i / 4));
                 function(&actual, functions[i].start);
                 if (memcmp(&actual, &expected, sizeof actual))
-                    return snx_error("conversion sequence %u pattern %u mode %u O%c jit%d", i, pattern, mode, opt, jit);
+                    return snx_error("conversion sequence %u pattern %u mode %u jit%d", i, pattern, mode, jit);
             }
     }
     steps_end(&steps);
@@ -79,7 +79,6 @@ static int run(int jit, char opt) {
 int main(void) {
     STEPS_REQUIRE();
     for (int jit = 0; jit < 2; jit++)
-        for (unsigned opt = 0; opt < STEPS_LEVELS(3); opt++)
-            if (run(jit, (char)('0' + opt))) return 1;
+        if (run(jit)) return 1;
     return 0;
 }
