@@ -4369,7 +4369,7 @@ if(SNX_TEST_EDENPROBE AND Python3_Interpreter_FOUND AND NOT CMAKE_CROSSCOMPILING
                 --runtime $<TARGET_FILE:scarletnx> --nro "${snx_edenprobe_nro}"
                 --mode "quick notime cpu fs video display kernel audio hooks"
                 --out "${CMAKE_CURRENT_BINARY_DIR}/edenprobe-vk_memory-${snx_memory}"
-                --baseline "${PROJECT_SOURCE_DIR}/tests/edenprobe/linux-x86_64.txt" --timeout 120
+                --baseline "${test-references_SOURCE_DIR}/edenprobe/linux-x86_64.txt" --timeout 120
                 --setting fps-limit=0 --setting vk_memory=${snx_memory})
         set_tests_properties(edenprobe_vk_memory_${snx_memory} PROPERTIES TIMEOUT 1800 RUN_SERIAL TRUE LABELS external)
     endforeach()
@@ -4380,7 +4380,7 @@ if(SNX_TEST_EDENPROBE AND Python3_Interpreter_FOUND AND NOT CMAKE_CROSSCOMPILING
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/edenprobe.py" run
             --runtime $<TARGET_FILE:scarletnx> --nro "${snx_edenprobe_nro}" --mode "quick hooks game level=3 frames=8"
             --out "${CMAKE_CURRENT_BINARY_DIR}/edenprobe-compute-readback"
-            --baseline "${PROJECT_SOURCE_DIR}/tests/edenprobe/compute-readback.txt" --timeout 600
+            --baseline "${test-references_SOURCE_DIR}/edenprobe/compute-readback.txt" --timeout 600
             --setting fps-limit=0)
     set_tests_properties(edenprobe_compute_readback PROPERTIES TIMEOUT 1800 RUN_SERIAL TRUE LABELS external)
 endif()

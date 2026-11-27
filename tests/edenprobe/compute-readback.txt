@@ -1,5 +1,0 @@
-# Amberlith cases, one a line: "suite: name" passes, "[RESULT] suite: name" ends as RESULT (docs/dev/edenprobe.md)
-# build: v1.0.0
-# mode: frames=8 game hooks level=3 quick
-wimsy: level 3: 8 frames are drawn and presented
-wimsy: level 3: the processor reads what a compute program stored, on each of 8 frames
