@@ -80,12 +80,13 @@ static void usage(void) {
          "  INPUT                  Game/ExeFS folder, .nro, or an XCI, NSP, XCZ or NSZ dump (read in place)\n"
          "  --name NAME            Output name (default: the title ID, else the NPDM's or input name)\n"
          "  --outdir DIR           Where the game's folder goes (default: recompiled/)\n"
-         "  --layout FILE          LLVM's function order, which went with it: said, and nothing done\n"
+         "  --layout FILE          A function order (tools/layout.py): the native back end does not order its\n"
+         "                         functions yet, so it is said and has no effect\n"
          "  --keys FILE            prod.keys for a dump (default: the data folder, then ~/.switch)\n"
          "  --title-keys FILE      title.keys for a dump, found the same way (optional)\n"
          "  --program N            Only program N of a dump's application of several (default: every one)");
-    puts("  --KEY=VALUE            A recompile setting, KEY its key with a - for each _: --opt, --llvm-batch,\n"
-         "                         --aot-threads, --unit-cache-ceil-mb, --llvm-pass-<pass>=0 (scarletnx\n"
+    puts("  --KEY=VALUE            A recompile setting, KEY its key with a - for each _: --aot-threads,\n"
+         "                         --aot-threads-most, --unit-instructions, --unit-cache-ceil-mb (scarletnx\n"
          "                         --settings=recompile lists the keys). The key as written, the older\n"
          "                         spelling, is still read, and said once");
     puts("  --target auto|linux|win64  The host only: modules are built for the machine that builds them\n"
@@ -853,10 +854,9 @@ static int make_program(const MakeArgs* a, int index) {
         llvm.jobs_open = compile.jobs_open;
         llvm.quiet = compile.quiet;
         llvm.found = &found;
-        /* LLVM's function order, said and not done */
+        /* a function order, which the native back end does not take yet: said, and not done */
         if (layout)
-            snx_error("--layout %s went with LLVM: the native back ends keep the code in its order "
-                      "(docs/user/deprecations.md)",
+            snx_error("--layout %s: the native back end does not order its functions yet, so the file has no effect",
                       layout);
         { /* units/ of the cache folder, where LLVM kept the code units: said with where it is deleted, never here */
             char* folder = snx_menu_dir(paths->repo, SNX_USER_CACHE);

@@ -494,7 +494,6 @@ int snx_build_module_arm(SnxProgram* loaded, const SnxCodegenOptions* options, c
     memset(&d, 0, sizeof(d));
     memset(&linked, 0, sizeof(linked));
     if (!loaded->module_count) return snx_error("no modules to generate");
-    if (build->keep_ir) return snx_error("--keep-ir %s: the native back end keeps no IR to put there", build->keep_ir);
     if (build->triple)
         return snx_error("--target %s: the native back end makes AArch32 blocks for this host alone", build->triple);
     if (!snx_native_arm_available()) {

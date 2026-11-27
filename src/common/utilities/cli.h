@@ -89,7 +89,7 @@ void snx_cli_init(SnxCli* cli, const char* program, unsigned accepted);
 typedef struct {
     int chunk;             /* --chunk's instructions, 0 for the driver's own unit */
     const char* jit_cache; /* --jit-cache, NULL for the game's own record */
-    int jit_only, keep_ir, quiet;
+    int jit_only, quiet;
     const char* given; /* the name of the first of them the run was given, -O and --jobs too; NULL for none */
 } SnxCliRecompile;
 SnxCliRecompile snx_cli_recompile(const SnxCli* cli);

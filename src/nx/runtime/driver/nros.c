@@ -203,7 +203,6 @@ int snx_nros_build(const SnxNroSet* set, const SnxProgram* program, const SnxCod
         found = 0;
         llvm.output = output;
         llvm.quiet = 1;
-        llvm.keep_ir = NULL;
         llvm.wrappers = NULL;
         llvm.found = &found;
         llvm.layout = NULL;

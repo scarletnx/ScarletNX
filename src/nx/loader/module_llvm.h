@@ -20,7 +20,6 @@ typedef struct {
        units themselves (the setting aot_threads left at 0, Auto; common.h's SnxAotGovernor) */
     int jobs_open;
     int quiet;
-    const char* keep_ir; /* when set, each unit's IR is saved there as .ll */
     /* when set, the snx_aot_ wrappers the descriptor got: one per entry when the profile cache's units link (they call
        them), else none */
     size_t* wrappers;

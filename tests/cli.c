@@ -224,7 +224,7 @@ int main(void) {
               "-O3 --jobs 0 --chunk=7");
         /* as a driver's compiler reads them, the first of them given named: -O, gone with LLVM, is none of them */
         SnxCliRecompile asked = snx_cli_recompile(&cli);
-        CHECK(asked.chunk == 7 && asked.quiet && !asked.jit_only && !asked.keep_ir && !asked.jit_cache && asked.given &&
+        CHECK(asked.chunk == 7 && asked.quiet && !asked.jit_only && !asked.jit_cache && asked.given &&
                   !strcmp(asked.given, "--jobs"),
               "the run's recompile options: %s", asked.given ? asked.given : "none given");
         CHECK(cli.fullscreen == 0 && cli.seconds == 3 && cli.frames == -1 && own == 1, "values");

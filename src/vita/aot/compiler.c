@@ -411,9 +411,6 @@ int vita_aot_compile(const char* folder, const VitaImage* image, const SnxCliRec
     /* on the threads the settings aot_threads and aot_threads_most give, as the Switch's recompile (snx_aot_threads) */
     const unsigned jobs = snx_aot_threads(g_settings.aot_threads, g_settings.aot_threads_most, note, sizeof note);
     if (note[0]) fprintf(stderr, "scarletnx-vita: %s\n", note);
-    /* the native back end makes the blocks: no IR to keep */
-    if (asked && asked->keep_ir)
-        fputs("scarletnx-vita: --keep-ir: the native back end keeps no IR: the module is made without one\n", stderr);
     stubs = stubs_make(image, &d.stub_count);
     if (!stubs && image->import_count) {
         snprintf(error, error_size, "out of memory for %u imports' stubs", (unsigned)image->import_count);

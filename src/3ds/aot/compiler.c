@@ -295,9 +295,6 @@ int snx_ctr_aot_compile(const char* extracted, const SnxCtrSource* game, const S
         snprintf(error, error_size, "out of memory");
         goto done;
     }
-    /* the native back end makes the blocks: no IR to keep */
-    if (asked && asked->keep_ir)
-        fputs("scarletnx-3ds: --keep-ir: the native back end keeps no IR: the module is made without one\n", stderr);
     bool exhaustive = image.segment[0].bytes <= SNX_CTR_AOT_EXHAUSTIVE_LIMIT;
     unsigned capacity = image.segment[0].bytes / 4 + image.segment[0].bytes / 2;
     if (asked && asked->jit_only) { /* a module of no blocks: the run-time compiler compiles every one it reaches */

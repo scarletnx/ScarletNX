@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* nx_module_native.c's 32-bit program: module_arm.c, here, its native back end refusing the block the test asks or
-   none at all. Every block the native back end's: the module; a block it leaves, its IR kept, a host with no native
-   back end for AArch32: refused, naming the block or the option */
+   none at all. Every block the native back end's: the module; a block it leaves, a host with no native back end for
+   AArch32: refused, naming the block */
 #include "common/cpu/recompiler/mach/native.h"
 #include "common/utilities/common.h"
 #include "common/utilities/endian.h"
@@ -67,8 +67,8 @@ static void sink(const char* line) {
     snprintf(g_nx_module_native_arm.said + n, sizeof g_nx_module_native_arm.said - n, "%s\n", line);
 }
 
-/* the program's module as output, its IR kept in keep_ir where that is set: 0, or the builder's failure, said */
-static int build(const char* output, const char* keep_ir) {
+/* the program's module as output: 0, or the builder's failure, said */
+static int build(const char* output) {
     unsigned char* text = g_nx_module_native_arm.memory + TEXT_OFF;
     SnxModuleImage image = {0};
     SnxProgram loaded = {0};
@@ -104,7 +104,6 @@ static int build(const char* output, const char* keep_ir) {
     llvm.opt = '2';
     llvm.jobs = 1;
     llvm.quiet = 1;
-    llvm.keep_ir = keep_ir;
     g_nx_module_native_arm.said[0] = 0;
     snx_error_sink(sink);
     return snx_build_module_arm(&loaded, &options, &llvm);
@@ -112,38 +111,31 @@ static int build(const char* output, const char* keep_ir) {
 
 int snx_test_arm_native(const char* folder) {
     char *module = snx_path_join(folder, "a32" SUFFIX), *output = snx_path_join(folder, "a32-left" SUFFIX);
-    char *kept = snx_path_join(folder, "a32-kept"), wanted[512];
+    char wanted[512];
     if (!snx_native_arm_available()) {
         printf("no native back end for AArch32 blocks on this host: no module of them\n");
         return 0;
     }
     /* every block the native back end's */
-    CHECK(!build(module, NULL) && snx_is_file(module) && !g_nx_module_native_arm.said[0],
+    CHECK(!build(module) && snx_is_file(module) && !g_nx_module_native_arm.said[0],
           "the module of the native back end's blocks: %s", g_nx_module_native_arm.said);
     /* one it leaves: the second A32 block */
     g_nx_module_native_arm.refuse = START + 8;
-    int rc = build(output, NULL);
+    int rc = build(output);
     g_nx_module_native_arm.refuse = 0;
     snprintf(wanted, sizeof wanted, "AArch32: the %s back end made no ARM block at 0x%08x: %s\n", snx_native_name(),
              START + 8, refused);
     CHECK(rc && !strcmp(g_nx_module_native_arm.said, wanted) && !snx_is_file(output),
           "a block the native back end leaves refuses the module, naming it: %s", g_nx_module_native_arm.said);
-    /* its IR kept */
-    free(output);
-    output = snx_path_join(folder, "a32-kept" SUFFIX);
-    rc = build(output, kept);
-    snprintf(wanted, sizeof wanted, "--keep-ir %s: the native back end keeps no IR to put there\n", kept);
-    CHECK(rc && !strcmp(g_nx_module_native_arm.said, wanted), "--keep-ir: %s", g_nx_module_native_arm.said);
     /* a host with no native back end for AArch32 */
     g_nx_module_native_arm.no_native = 1;
     free(output);
     output = snx_path_join(folder, "a32-alone" SUFFIX);
-    rc = build(output, NULL);
+    rc = build(output);
     g_nx_module_native_arm.no_native = 0;
     snprintf(wanted, sizeof wanted, "this host's native back end (%s) makes no AArch32 blocks\n", snx_native_name());
     CHECK(rc && !strcmp(g_nx_module_native_arm.said, wanted) && !snx_is_file(output),
           "a host with no native back end for AArch32: %s", g_nx_module_native_arm.said);
-    free(kept);
     free(output);
     free(module);
     return g_nx_module_native_arm.failures;

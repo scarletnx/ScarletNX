@@ -7,8 +7,9 @@
    - a function with an instruction it has no code for: made, the instruction undefined where it runs, and said;
    - one it leaves (as one longer than its branches reach is), or a block it leaves: the module refused, naming the
      code, its address, its first instruction and why;
-   - what LLVM alone had (the IR kept, a --layout) and a host with no native back end: refused, naming the option and
-     its value; a profile cache's key made, and its missing file said
+   - a --layout the native back end does not order its functions by yet, and a host with no native back end: refused,
+     naming the option and its value; a profile cache's key made, and its missing
+     file said
      nx_module_native FOLDER   (where its modules go) */
 #include "common/cpu/recompiler/mach/native.h"
 #include "common/cpu/recompiler/x64/x64_cache.h"
@@ -149,26 +150,16 @@ static void a64(const char* folder) {
     CHECK(rc && !snx_is_file(left) && strstr(g_nx_module_native.said, wanted) && strstr(g_nx_module_native.said, made),
           "a function the native back end left refuses the module, naming it (%s): %s", wanted,
           g_nx_module_native.said);
-    /* each unit's IR kept */
-    char* kept = at(folder, "kept");
-    char* output = at(folder, "kept" SUFFIX);
-    asked.keep_ir = kept;
-    rc = build(output, asked, options);
-    asked.keep_ir = NULL;
-    snprintf(wanted, sizeof wanted, "--keep-ir %s: the native back end keeps no IR to put there\n", kept);
-    CHECK(rc && !strcmp(g_nx_module_native.said, wanted) && !snx_is_file(output), "--keep-ir: %s",
-          g_nx_module_native.said);
     /* a --layout */
     const SnxU64 order[1] = {F1};
     asked.layout = order;
     asked.layout_count = 1;
-    free(output);
-    output = at(folder, "layout" SUFFIX);
+    char* output = at(folder, "layout" SUFFIX);
     rc = build(output, asked, options);
     asked.layout = NULL;
     asked.layout_count = 0;
-    CHECK(rc && !strcmp(g_nx_module_native.said, "--layout: the native back end has no section of its own for each "
-                                                 "function to put in the order of its 1 addresses\n"),
+    CHECK(rc && !strcmp(g_nx_module_native.said,
+                        "--layout of 1 addresses: the native back end does not order its functions yet\n"),
           "--layout: %s", g_nx_module_native.said);
     /* a profile cache, which there is none of: its key is made, and the file not opened */
     char* cache = at(folder, "no.jitcache");
@@ -190,7 +181,6 @@ static void a64(const char* folder) {
           "a host with no native back end: %s", g_nx_module_native.said);
     free(cache);
     free(output);
-    free(kept);
     free(left);
     free(module);
 }
