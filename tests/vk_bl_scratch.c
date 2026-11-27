@@ -1,10 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* The block linear scratch buffer (gpu/vk/blocklinear.c's vk_bl_scratch) when the device's memory refuses a larger one.
-   The test plays the buffer's allocator, which it can make refuse, and the log. The scratch already made stays in use
-   for what fits it, a refused size is said once with the size asked, the one that stays and the driver's result,
-   whatever the number of conversions that ask for it again, a size refused next is said once more, and a refused
-   call gives no buffer and no room. No Vulkan loader, device or GPU is used. */
+   The test plays the buffer's allocator, which it can make refuse, the heap's use the trim reads, and the log. A refused
+   call gives no buffer and no room; the scratch already made stays in use for what fits it; each refused size is said
+   once, with the size asked, the one that stays (or none) and the driver's result, whatever the number of conversions
+   that ask for it, sizes asked in turn included, until the scratch changes (made, or let go by the trim); a refused
+   ask weighs nothing in the trim's choice. No Vulkan loader, device or GPU is used. */
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,7 +27,7 @@ PFN_vkDestroyShaderModule vkDestroyShaderModule;
 
 /* the allocator: buffers numbered from 1, and the bytes it refuses from (0: none) */
 static struct {
-    u64 refuse_from;
+    u64 refuse_from, usage;
     unsigned made, deferred, tracked;
     VkBuffer last_deferred;
     unsigned warnings;
@@ -54,7 +55,7 @@ void vk_mem_track(DevMem a, u32 owner) {
     (void)a, (void)owner;
     ++g_t.tracked;
 }
-void vk_mem_use(u64* usage, u64* budget) { *usage = 0, *budget = 1ull << 40; }
+void vk_mem_use(u64* usage, u64* budget) { *usage = g_t.usage, *budget = 1000; }
 void logf_(int lvl, const char* fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
@@ -105,9 +106,16 @@ int main(void) {
     u64 cap = 0;
     g_vk.alloc_cap = 1ull << 30;
 
-    /* a first scratch of 8 MiB */
+    /* the first scratch refused: none stays, said so */
+    g_t.refuse_from = 1;
+    CHECK(vk_bl_scratch(5 * MIB, &cap) == VK_NULL_HANDLE && cap == 0);
+    CHECK(vk_bl_scratch(5 * MIB, &cap) == VK_NULL_HANDLE);
+    CHECK(g_t.warnings == 1 && strstr(g_t.last, "8.0 MB (5242880 bytes asked)") && strstr(g_t.last, "none stays"));
+
+    /* memory found: a scratch of 8 MiB, which says nothing */
+    g_t.refuse_from = 0;
     VkBuffer first = vk_bl_scratch(5 * MIB, &cap);
-    CHECK(first != VK_NULL_HANDLE && cap == 8 * MIB && g_t.made == 1);
+    CHECK(first != VK_NULL_HANDLE && cap == 8 * MIB && g_t.made == 1 && g_t.tracked == 1 && g_t.warnings == 1);
 
     /* the device refuses anything from 16 MiB: 100 conversions of 20 MiB each ask, and none gets a buffer or room */
     g_t.refuse_from = 16 * MIB;
@@ -117,37 +125,58 @@ int main(void) {
         CHECK(cap == 0);
     }
     /* said once, with the size asked, the one that stays and the driver's result */
-    CHECK(g_t.warnings == 1);
-    CHECK(strstr(g_t.last, "32 MB (20971520 bytes asked)") != NULL);
+    CHECK(g_t.warnings == 2);
+    CHECK(strstr(g_t.last, "32.0 MB (20971520 bytes asked)") != NULL);
     CHECK(strstr(g_t.last, "VK_ERROR_OUT_OF_DEVICE_MEMORY") != NULL);
-    CHECK(strstr(g_t.last, "the one of 8 MB stays") != NULL);
-    /* the scratch made before was never let go, and serves what fits it */
-    CHECK(g_t.deferred == 0);
+    CHECK(strstr(g_t.last, "the one of 8.0 MB stays") != NULL);
+    /* the scratch made before was never let go, nothing refused was entered in the ledger, and it serves what fits */
+    CHECK(g_t.deferred == 0 && g_t.tracked == 1);
     CHECK(vk_bl_scratch(6 * MIB, &cap) == first && cap == 8 * MIB);
 
-    /* another size refused is said once more */
-    CHECK(vk_bl_scratch(40 * MIB, &cap) == VK_NULL_HANDLE && cap == 0);
-    CHECK(vk_bl_scratch(40 * MIB, &cap) == VK_NULL_HANDLE);
-    CHECK(g_t.warnings == 2);
-    CHECK(strstr(g_t.last, "64 MB (41943040 bytes asked)") != NULL);
+    /* two sizes asked in turn: the new one said once, the one said before never again */
+    for (int i = 0; i < 50; i++) {
+        CHECK(vk_bl_scratch(40 * MIB, &cap) == VK_NULL_HANDLE && cap == 0);
+        CHECK(vk_bl_scratch(20 * MIB, &cap) == VK_NULL_HANDLE && cap == 0);
+    }
+    CHECK(g_t.warnings == 3);
+    CHECK(strstr(g_t.last, "64.0 MB (41943040 bytes asked)") != NULL);
 
     /* memory found again: the larger one is made, the old one deferred to its frame's end */
     g_t.refuse_from = 0;
     VkBuffer second = vk_bl_scratch(20 * MIB, &cap);
-    CHECK(second != VK_NULL_HANDLE && second != first && cap == 32 * MIB);
+    CHECK(second != VK_NULL_HANDLE && second != first && cap == 32 * MIB && g_t.tracked == 2);
     CHECK(g_t.deferred == 1 && g_t.last_deferred == first);
 
-    /* and refused again later, the same size is said again: it was made in between */
+    /* refused again later, a size said before is said again: the scratch changed in between */
     g_t.refuse_from = 16 * MIB;
     CHECK(vk_bl_scratch(60 * MIB, &cap) == VK_NULL_HANDLE);
-    CHECK(vk_bl_scratch(20 * MIB, &cap) == second);
-    CHECK(g_t.warnings == 3);
+    CHECK(g_t.warnings == 4 && strstr(g_t.last, "the one of 32.0 MB stays"));
 
-    /* past the allocation cap: no buffer and no room, and nothing let go */
+    /* the trim, with the heap past four fifths: refused asks of 64 MiB weigh nothing, the 32 MiB scratch served 6 MiB
+       at most since it last looked, so it goes; a refusal after it keeps none, and says so again */
+    vk_bl_scratch_trim(); /* what the scratch served so far counts from here */
+    CHECK(vk_bl_scratch(6 * MIB, &cap) == second && cap == 32 * MIB);
+    CHECK(vk_bl_scratch(60 * MIB, &cap) == VK_NULL_HANDLE);
+    g_t.usage = 900;
+    vk_bl_scratch_trim();
+    CHECK(g_t.deferred == 2 && g_t.last_deferred == second);
+    CHECK(vk_bl_scratch(20 * MIB, &cap) == VK_NULL_HANDLE && cap == 0);
+    CHECK(g_t.warnings == 5 && strstr(g_t.last, "32.0 MB (20971520 bytes asked)") && strstr(g_t.last, "none stays"));
+
+    /* past the allocation cap, and past the scratch: no buffer and no room, nothing made or let go, nothing said */
+    g_t.refuse_from = 0;
+    CHECK(vk_bl_scratch(10 * MIB, &cap) != VK_NULL_HANDLE && cap == 16 * MIB);
     g_vk.alloc_cap = 16 * MIB;
     cap = 123;
+    const unsigned made = g_t.made, deferred = g_t.deferred, warnings = g_t.warnings;
     CHECK(vk_bl_scratch(17 * MIB, &cap) == VK_NULL_HANDLE && cap == 0);
-    CHECK(g_t.deferred == 1);
+    CHECK(g_t.made == made && g_t.deferred == deferred && g_t.warnings == warnings);
+    /* a scratch clamped to the cap (not a power of two), refused: said once, as its own size */
+    g_vk.alloc_cap = 24 * MIB;
+    g_t.refuse_from = 16 * MIB;
+    CHECK(vk_bl_scratch(20 * MIB, &cap) == VK_NULL_HANDLE);
+    CHECK(vk_bl_scratch(20 * MIB, &cap) == VK_NULL_HANDLE);
+    CHECK(g_t.warnings == warnings + 1 && strstr(g_t.last, "24.0 MB (20971520 bytes asked)"));
     puts("vk_bl_scratch: the scratch kept, each refused size said once");
     return 0;
 }
