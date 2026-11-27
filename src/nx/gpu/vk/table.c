@@ -17,13 +17,18 @@
    With descriptor buffers the set is a descriptor buffer of its own, which lasts the run, where each frame's arena
    holds the stages' sets only for the frame (descriptors.c). A new slot's descriptor goes into its bytes at once
    (vkGetDescriptorEXT), under the same rules: no pending command buffer reads a slot that is written. Each frame's
-   arena binds with it, at buffer index 1 (vk_descriptors_table). */
+   arena binds with it, at buffer index 1 (vk_descriptors_table).
+
+   With descriptor heaps the table is also a run of each heap that lasts the run (vk_descriptor_heaps_table), which the
+   table set's bindings map to with constant offsets: each slot is written into both, as a draw whose heaps ran out
+   takes descriptor buffers. */
 #include <string.h>
 #include "common/platform/thread.h"
 #include "common/utilities/bits.h"
 #include "nx/gpu/shader/shader.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptors.h"
+#include "nx/gpu/vk/descriptor_heaps.h"
 #include "nx/gpu/vk/devmem.h"
 #include "nx/gpu/vk/ledger.h"
 #include "nx/gpu/vk/pool_map.h"
@@ -147,6 +152,9 @@ static int table_init_buffer(char* why, size_t size, u32 images, u32 samplers) {
 /* slot of binding (0 the images, 1 the samplers) names ii's view in its layout, or its sampler */
 static void table_write(u32 binding, u32 slot, const VkDescriptorImageInfo* ii) {
     const VkDescriptorType type = binding ? VK_DESCRIPTOR_TYPE_SAMPLER : VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    /* with heaps, into their run too: a draw whose heaps ran out takes descriptor buffers (render.c) */
+    if (g_vk.has_descriptor_heap_support && !vk_descriptor_heaps_table_write(binding, slot, ii))
+        LOG_LIMIT(4, "vulkan: the texture table's slot %u of binding %u was not written into the heaps\n", slot, binding);
     if (g_table.dmap) {
         VkDescriptorGetInfoEXT get = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT, .type = type};
         if (binding)
@@ -328,8 +336,12 @@ static u32 sampler_slot(VkSampler sampler) {
     while (g_table.samplers[i].sampler && g_table.samplers[i].sampler != sampler) i = (i + 1) & (TABLE_SAMPLERS - 1);
     TableSampler* e = &g_table.samplers[i];
     if (!e->sampler) {
-        if (g_table.next_sampler == SNX_TABLE_SAMPLERS) {
-            LOG_LIMIT(1, "vulkan: the texture table is full (%u samplers)\n", SNX_TABLE_SAMPLERS);
+        /* with heaps, the slots of their run (vk_descriptor_heaps_table_samplers) */
+        const u32 most = g_vk.has_descriptor_heap_support && vk_descriptor_heaps_table()
+                             ? vk_descriptor_heaps_table_samplers()
+                             : SNX_TABLE_SAMPLERS;
+        if (g_table.next_sampler == most) {
+            LOG_LIMIT(1, "vulkan: the texture table is full (%u samplers)\n", most);
             return ~0u;
         }
         *e = (TableSampler){sampler, g_table.next_sampler++};

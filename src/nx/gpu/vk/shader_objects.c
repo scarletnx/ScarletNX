@@ -220,7 +220,7 @@ static VkShaderEXT stage_create(const SoStage* st, const u32* words, size_t coun
     info.flags |= st->flags;
     /* descriptor heaps: the stage's mapping of its set's bindings, as pipe_info gives a pipeline's stage, in place of
        the layouts; push constants are the heaps' push data then (rec_CmdPushConstants) */
-    VkDescriptorSetAndBindingMappingEXT maps[SNX_VKB_END];
+    VkDescriptorSetAndBindingMappingEXT maps[SNX_VKB_END + 2]; /* and the texture table's two */
     VkShaderDescriptorSetAndBindingMappingInfoEXT mapping;
     if (st->heaps) {
         const u32 set = (u32)shader_vk_set(index);
@@ -230,6 +230,10 @@ static VkShaderEXT stage_create(const SoStage* st, const u32* words, size_t coun
             .mappingCount = vk_descriptor_heaps_mapping(g_vk_dslayout[(st->arrays >> set) & 1][set], set, maps,
                                                         SNX_VKB_END, st->cb_addr),
             .pMappings = maps};
+        /* the texture table's set, which the vertex and fragment programs read (table.c) */
+        if (g_spirv_translate.tex_table && (set == 0 || set == SHADER_VK_SET_FS) && mapping.mappingCount)
+            mapping.mappingCount +=
+                vk_descriptor_heaps_table_mapping(maps + mapping.mappingCount, g_spirv_translate.table_set);
         info.pNext = &mapping;
         info.flags |= VK_SHADER_CREATE_DESCRIPTOR_HEAP_BIT_EXT;
         info.setLayoutCount = info.pushConstantRangeCount = 0;

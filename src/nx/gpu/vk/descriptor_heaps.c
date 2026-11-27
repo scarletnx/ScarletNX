@@ -131,6 +131,12 @@ typedef struct {
     _Atomic int lasting_ready; /* read by the forgets of every thread */
     LastingQueue queue;
     u64 memo_gen; /* the generation of the DescMemo entries that hold: a new one empties them all */
+    /* the texture table's runs (table.c), past the lasting part of each heap: SNX_TABLE_IMAGES sampled images in the
+       resource heap and SNX_TABLE_SAMPLERS samplers in the sampler heap, at byte offsets in each heap, which the
+       table set's bindings map to with constant offsets (vk_descriptor_heaps_table_mapping). table 0: none */
+    int table;
+    u32 table_image, table_sampler, table_image_stride, table_sampler_stride;
+    u32 table_samplers; /* the sampler slots of its run: the sampler heap is small (128 KiB on one driver) */
 } HeapState;
 /* the stage sets' address slots (vk_descriptor_heap_push_at): free bytes of the push block, 8-byte aligned. 18 banks
    take the 16-bit offsets in the first 36 bytes of a stage's 48; the texture words take x and y of their uvec4 */
@@ -551,6 +557,56 @@ static void lasting_forget(u64 object) {
 /* the forgets so far, of any mode's objects: render.c's descriptor sets of the frame name the objects by handle too */
 static _Atomic u64 g_forgets;
 u64 vk_descriptor_heaps_forgets(void) { return atomic_load_explicit(&g_forgets, memory_order_acquire); }
+/* ---------------------------------------------------------------- the texture table's runs */
+int vk_descriptor_heaps_table(void) { return g_heaps.table; }
+u32 vk_descriptor_heaps_table_samplers(void) { return g_heaps.table ? g_heaps.table_samplers : 0; }
+int vk_descriptor_heaps_table_write(u32 binding, u32 slot, const VkDescriptorImageInfo* ii) {
+    if (!g_heaps.table) return 0;
+    u64 chain[HEAP_CHAIN_BYTES / 8];
+    if (binding) {
+        if (slot >= g_heaps.table_samplers) return 0;
+        VkSamplerCreateInfo create;
+        if (!vk_descriptor_sampler_info(ii->sampler, &create, chain, sizeof chain)) return 0;
+        const VkHostAddressRangeEXT at = {
+            g_heaps.sampler.mapped + g_heaps.table_sampler + (size_t)slot * g_heaps.table_sampler_stride,
+            (size_t)g_heaps.sizes[HEAP_SAMPLER]};
+        return VK_OK(vkWriteSamplerDescriptorsEXT(g_vk.dev, 1, &create, &at));
+    }
+    if (slot >= SNX_TABLE_IMAGES) return 0;
+    VkImageViewCreateInfo view;
+    if (!vk_descriptor_view_info(ii->imageView, &view, chain, sizeof chain)) return 0;
+    const VkImageDescriptorInfoEXT image = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_DESCRIPTOR_INFO_EXT, .pView = &view, .layout = ii->imageLayout};
+    const VkResourceDescriptorInfoEXT info = {.sType = VK_STRUCTURE_TYPE_RESOURCE_DESCRIPTOR_INFO_EXT,
+                                              .type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                                              .data.pImage = &image};
+    const VkHostAddressRangeEXT at = {
+        g_heaps.resource.mapped + g_heaps.table_image + (size_t)slot * g_heaps.table_image_stride,
+        (size_t)g_heaps.sizes[HEAP_IMAGE]};
+    return VK_OK(vkWriteResourceDescriptorsEXT(g_vk.dev, 1, &info, &at));
+}
+u32 vk_descriptor_heaps_table_mapping(VkDescriptorSetAndBindingMappingEXT* maps, u32 set) {
+    if (!g_heaps.table || !maps) return 0;
+    maps[0] = (VkDescriptorSetAndBindingMappingEXT){
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_AND_BINDING_MAPPING_EXT,
+        .descriptorSet = set, .firstBinding = 0, .bindingCount = 1,
+        .resourceMask = VK_SPIRV_RESOURCE_TYPE_SAMPLED_IMAGE_BIT_EXT,
+        .source = VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_CONSTANT_OFFSET_EXT,
+        .sourceData.constantOffset = {.heapOffset = g_heaps.table_image,
+                                      .heapArrayStride = g_heaps.table_image_stride}};
+    maps[1] = (VkDescriptorSetAndBindingMappingEXT){
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_AND_BINDING_MAPPING_EXT,
+        .descriptorSet = set, .firstBinding = 1, .bindingCount = 1,
+        .resourceMask = VK_SPIRV_RESOURCE_TYPE_SAMPLER_BIT_EXT,
+        .source = VK_DESCRIPTOR_MAPPING_SOURCE_HEAP_WITH_CONSTANT_OFFSET_EXT,
+        /* a binding of samplers alone reads the sampler heap at heapOffset; the samplerHeap pair is for the sampler
+           half of combined image samplers. Both pairs name the run, as a driver can read either */
+        .sourceData.constantOffset = {.heapOffset = g_heaps.table_sampler,
+                                      .heapArrayStride = g_heaps.table_sampler_stride,
+                                      .samplerHeapOffset = g_heaps.table_sampler,
+                                      .samplerHeapArrayStride = g_heaps.table_sampler_stride}};
+    return 2;
+}
 void vk_descriptor_heaps_forget_buffer(VkBuffer buffer) {
     atomic_fetch_add_explicit(&g_forgets, 1, memory_order_release);
     lasting_forget(handle_key(buffer));
@@ -703,6 +759,15 @@ int vk_descriptor_heaps_init(const VkPhysicalDeviceDescriptorHeapPropertiesEXT* 
         first += lasting_slots[k];
         lasting += L->stride[k] * lasting_slots[k];
     }
+    /* the texture table of SM86 programs past the lasting slots: one run of image slots, which lasts the run */
+    const int table = g_shader_sm86 && g_vk.has_table_features;
+    VkDeviceSize table_image = 0;
+    const VkDeviceSize image_stride = snx_align_up(g_heaps.sizes[HEAP_IMAGE], g_heaps.alignment[HEAP_IMAGE]),
+                       sampler_stride = snx_align_up(g_heaps.sizes[HEAP_SAMPLER], g_heaps.alignment[HEAP_SAMPLER]);
+    if (table) {
+        table_image = snx_align_up(lasting, g_heaps.alignment[HEAP_IMAGE]);
+        lasting = table_image + image_stride * SNX_TABLE_IMAGES;
+    }
     lasting = snx_align_up(lasting, resource_alignment);
     if (!vk_descriptor_heap_memory_plan_lasting_fit(&resources, VK_DESCRIPTOR_HEAP_RESOURCE_FRAME, VK_FRAMES, lasting,
                                             props->minResourceHeapReservedRange, resource_address_alignment,
@@ -714,7 +779,20 @@ int vk_descriptor_heaps_init(const VkPhysicalDeviceDescriptorHeapPropertiesEXT* 
                        "allocations of %llu bytes at most",
                        (unsigned)VK_FRAMES, (unsigned long long)props->minResourceHeapReservedRange,
                        (unsigned long long)props->maxResourceHeapSize, (unsigned long long)g_vk.alloc_cap);
-    if (!vk_descriptor_heap_memory_plan_fit(&samplers, sampler_frame, VK_FRAMES, props->minSamplerHeapReservedRange,
+    /* and the table's samplers past the sampler heap's reserved range, where no frame slot reaches: as many as fit
+       with a quarter of the heap at most, as the frames' samplers need the rest */
+    u32 table_samplers = 0;
+    for (u32 n = SNX_TABLE_SAMPLERS; table && n >= 256 && !table_samplers; n /= 2) {
+        const VkDeviceSize bytes = snx_align_up(sampler_stride * n, props->samplerDescriptorAlignment);
+        if (bytes * 4 <= props->maxSamplerHeapSize &&
+            vk_descriptor_heap_memory_plan_lasting_fit(&samplers, sampler_frame, VK_FRAMES, bytes,
+                                                       props->minSamplerHeapReservedRange, sampler_address_alignment,
+                                                       props->samplerDescriptorAlignment, props->maxSamplerHeapSize,
+                                                       g_vk.alloc_cap))
+            table_samplers = n;
+    }
+    if (!table_samplers &&
+        !vk_descriptor_heap_memory_plan_fit(&samplers, sampler_frame, VK_FRAMES, props->minSamplerHeapReservedRange,
                                             sampler_address_alignment, props->samplerDescriptorAlignment,
                                             props->maxSamplerHeapSize, g_vk.alloc_cap))
         return refused("no sampler heap of %u frames fits: %llu bytes reserved, maxSamplerHeapSize %llu, "
@@ -752,6 +830,18 @@ int vk_descriptor_heaps_init(const VkPhysicalDeviceDescriptorHeapPropertiesEXT* 
     g_heaps.ready = 1;
     g_heaps.memo_gen = 1;
     lasting_init();
+    if (table && table_samplers && resources.lasting_size && samplers.lasting_size && image_stride <= UINT32_MAX &&
+        sampler_stride <= UINT32_MAX && resources.lasting_offset + table_image <= UINT32_MAX) {
+        g_heaps.table = 1;
+        g_heaps.table_image = (u32)(resources.lasting_offset + table_image);
+        g_heaps.table_sampler = (u32)samplers.lasting_offset;
+        g_heaps.table_image_stride = (u32)image_stride;
+        g_heaps.table_sampler_stride = (u32)sampler_stride;
+        g_heaps.table_samplers = table_samplers;
+        LOG("vulkan: descriptor heaps: the texture table's runs, %u images at %u and %u samplers at %u\n",
+            (unsigned)SNX_TABLE_IMAGES, (unsigned)g_heaps.table_image, (unsigned)table_samplers,
+            (unsigned)g_heaps.table_sampler);
+    }
     LOG("vulkan: descriptor heaps: %llu resource bytes + %llu reserved + %llu lasting, %llu sampler bytes + %llu "
         "reserved\n",
         (unsigned long long)resources.reserved_offset, (unsigned long long)resources.reserved_size,
