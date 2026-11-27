@@ -93,14 +93,14 @@ jobs:
     # Amberlith's NRO and APK, pinned releases run against test-references' amberlith/{linux,android}-x86_64.txt
     # (docs/dev/amberlith.md); another release or other words want those files written again
     env:
-      AMBERLITH_VERSION: v1.1.0
-      AMBERLITH_NRO: amberlith-1.1.0.nro
-      AMBERLITH_SHA256: e754916b6eef0c80d2831beb94c457501d062fb2d9be10a406432df4fe7ee69b
+      AMBERLITH_VERSION: v1.2.0
+      AMBERLITH_NRO: amberlith-1.2.0.nro
+      AMBERLITH_SHA256: 4f922871f1af986533c12f81d112507386ca07722cc73e981ac1cd4d696b406e
       # every family that needs no person or network, but graphics (docs/dev/amberlith.md)
       AMBERLITH_MODE: quick notime cpu fs video display kernel audio hooks
-      AMBERLITH_APK_VERSION: v1.1.0
-      AMBERLITH_APK: amberlith-1.1.0.apk
-      AMBERLITH_APK_SHA256: 7d1df0c960feb2175ad859357ef8c29c489519aa83840901c421ebeedecea612
+      AMBERLITH_APK_VERSION: v1.2.0
+      AMBERLITH_APK: amberlith-1.2.0.apk
+      AMBERLITH_APK_SHA256: 1f81c83590d4432d8db030df72298cf1b91fbde9f0a4a792467dd3566032bf59
       AMBERLITH_APK_MODE: quick
     steps:
       # the commit the artifacts are named after: a pull request's head, else the one pushed
