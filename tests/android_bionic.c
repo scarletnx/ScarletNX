@@ -693,6 +693,46 @@ static void test_libm_bionic(void) {
     expect_int("atanhf(0)", libm_f("atanhf", 0.0f, 0, 0), 0);
 }
 
+/* what libm's functions give as AArch64's instructions do, where the host's differ: lround's FCVTAS saturates (x86's
+   conversion gives INT64_MIN for a NaN and for anything out of range), fmax's FMAXNM puts +0 above -0, and a NaN made
+   from numbers is the default NaN, whose sign AArch64 clears and x86 sets */
+static void test_libm_aarch64(void) {
+    CPU cpu = with_d(NAN, 0, 0);
+    run_libm("lround", &cpu);
+    expect_int("lround(NaN)", (int64_t)cpu.x[0], 0);
+    expect_int("and Invalid Operation", cpu.fpsr, 0x01);
+    cpu = with_d(1e300, 0, 0);
+    run_libm("llround", &cpu);
+    expect_int("llround(1e300)", (int64_t)cpu.x[0], INT64_MAX);
+    cpu = with_f(-1e30f, 0, 0);
+    run_libm("lroundf", &cpu);
+    expect_int("lroundf(-1e30)", (int64_t)cpu.x[0], INT64_MIN);
+    cpu = with_d(2.5, 0, 0);
+    run_libm("lround", &cpu);
+    expect_int("lround(2.5)", (int64_t)cpu.x[0], 3);
+    expect_int("and Inexact", cpu.fpsr, 0x10);
+
+    expect_int("fmax(-0, +0)", (int64_t)libm_d("fmax", -0.0, 0.0, 0), 0);
+    expect_int("fmax(+0, -0)", (int64_t)libm_d("fmax", 0.0, -0.0, 0), 0);
+    expect_int("fmin(+0, -0)", (int64_t)libm_d("fmin", 0.0, -0.0, 0), (int64_t)bits_d(-0.0));
+    expect_int("fminf(-0, +0)", libm_f("fminf", -0.0f, 0.0f, 0), bits_f(-0.0f));
+    expect_int("fmaxf(NaN, 1)", libm_f("fmaxf", NAN, 1.0f, 0), bits_f(1.0f));
+    double snan;
+    memcpy(&snan, &(uint64_t){0x7ff0000000000005ull}, 8);
+    cpu = with_d(1.0, snan, 0);
+    run_libm("fmin", &cpu);
+    expect_int("fmin(1, a signaling NaN) is it, quiet", (int64_t)v0_d(&cpu), (int64_t)0x7ff8000000000005ull);
+    expect_int("with Invalid Operation", cpu.fpsr, 0x01);
+
+    expect_int("sqrt(-1) is the default NaN", (int64_t)libm_d("sqrt", -1.0, 0, 0), (int64_t)0x7ff8000000000000ull);
+    expect_int("log(-1)", (int64_t)libm_d("log", -1.0, 0, 0), (int64_t)0x7ff8000000000000ull);
+    expect_int("pow(-1, 0.5)", (int64_t)libm_d("pow", -1.0, 0.5, 0), (int64_t)0x7ff8000000000000ull);
+    expect_int("sqrtf(-1)", libm_f("sqrtf", -1.0f, 0, 0), 0x7fc00000);
+    double given;
+    memcpy(&given, &(uint64_t){0xfff8000000000123ull}, 8);
+    expect_int("a NaN given goes through", (int64_t)libm_d("sqrt", given, 0, 0), (int64_t)0xfff8000000000123ull);
+}
+
 /* a descriptor from name through the HLE, which opens it as the guest does */
 enum {
     G_O_RDWR = 2,
@@ -1258,6 +1298,7 @@ int main(void) {
     test_imports_once_missing();
     test_fma_and_lround();
     test_libm_bionic();
+    test_libm_aarch64();
     test_files_second_batch();
     test_pipe2_umask_session();
     test_strncat_chk();
