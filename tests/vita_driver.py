@@ -31,7 +31,8 @@ def main():
         '\n  --jit-only',
         '\n  --keep-ir',
         '\n  -q, --quiet',
-        'On the Vita, -O is the level',
+        'On the Vita, --chunk N puts N instructions',
+        "-O and --keep-ir, LLVM's, went",
         'KEY is the key with a - for each _; the key as written, the older spelling, is still\n'
         '                         read, and said once',
     ):
