@@ -265,6 +265,50 @@ static void pins_flush(void* machine) { pins_all((Unit*)machine, ((Unit*)machine
 /* the region assembler's: into the buffer it writes (the cold one on a cold path) */
 static void pins_cs(void* machine, int store) { pins_all((Unit*)machine, ((Unit*)machine)->a.b, store, 1); }
 
+/* the names of the machine's registers, for fixed_fault's line */
+#ifndef MG_GPR_NAME
+#define MG_GPR_NAME(r, buf) (snprintf((buf), sizeof(buf), "r%d", (r)), (buf))
+#endif
+#ifndef MG_VREG_PREFIX
+#define MG_VREG_PREFIX "v"
+#endif
+/* SgXAsm's fixed_fault: instruction at of the region (the guest word it was made for, SgXIns' src) writes host register
+   reg for itself, where a pin keeps a guest register for the whole function, or its machine sequence writes reg
+   without declaring it (undeclared). The function's code would lose that register, or a value the allocator left in
+   reg: a defect of the back end, which stops the recompile rather than make wrong code */
+static void fixed_fault(void* machine, int at, int reg, int xmm, int undeclared) {
+    Unit* u = (Unit*)machine;
+    const SnxFunction* f = u->f;
+    int src = at >= 0 && at < u->g->x.n ? u->g->x.ins[at].src : -1, r;
+    char name[16], gpr[16], held[48] = "no guest register", where[96];
+    if (xmm)
+        snprintf(name, sizeof name, "%s%d", MG_VREG_PREFIX, reg);
+    else
+        snprintf(name, sizeof name, "%s", MG_GPR_NAME(reg, gpr));
+    for (r = 0; r < 32 && !undeclared; ++r)
+        if (xmm ? u->vpin[r] == reg : u->pin[r] == reg)
+            snprintf(held, sizeof held, "the guest's %s%d", xmm ? "V" : "X", r);
+    if (!xmm && !undeclared && u->mempin == reg) snprintf(held, sizeof held, "the guest memory's base");
+    if (src >= 0 && (size_t)src < f->count) {
+        SnxU64 pc = snx_function_address(f, (size_t)src);
+        SnxU32 word = 0;
+        (void)snx_codegen_word((SnxCodegen*)u->codegen, pc, &word);
+        snprintf(where, sizeof where, "the word %08x at %llx", (unsigned)word, (unsigned long long)pc);
+    } else
+        snprintf(where, sizeof where, "its entry, its dispatch or a stub (no word of its own)");
+    if (undeclared)
+        fprintf(stderr,
+                "native back end: function %llx, %s: its machine sequence writes %s, which its instruction does not "
+                "declare (a value may be left there): nothing of it is made\n",
+                (unsigned long long)f->start, where, name);
+    else
+        fprintf(stderr,
+                "native back end: function %llx, %s: writes %s for itself, which keeps %s for the whole function (its "
+                "pin): nothing of it is made\n",
+                (unsigned long long)f->start, where, name, held);
+    abort();
+}
+
 /* a function's symbol */
 static void fname(char* out, size_t size, const char* prefix, SnxU64 address) {
     snprintf(out, size, "%s%llX", prefix, (unsigned long long)address);
@@ -2393,6 +2437,14 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
     memcpy(u->g->vpin, u->vpin, sizeof u->vpin);
     u->g->mempin = u->mempin;
     u->a.pin_cs = pins_cs;
+    u->a.fixed_fault = fixed_fault;
+    u->a.pinned = u->a.xpinned = 0;
+    for (i = 0; i < 32; ++i) {
+        if (u->pin[i] >= 0) u->a.pinned |= 1u << u->pin[i];
+        if (u->vpin[i] >= 0) u->a.xpinned |= 1u << u->vpin[i];
+    }
+    if (u->mempin >= 0) u->a.pinned |= 1u << u->mempin;
+    u->g->x.src = -1;
     u->a.pin_flush = pins_flush;
     /* the prologue loads the pins live where the function starts; the mismatch's path (another entry) the others */
     if (u->pinned && u->live && f->count && snx_function_address(f, 0) == f->start) {
@@ -2435,6 +2487,7 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
             }
             (void)snx_codegen_word((SnxCodegen*)u->codegen, address, &word);
             u->at = vi;
+            u->g->x.src = (int)vi;
             if (u->pinned) u->cur_dirty = u->dsync[vi], u->vcur_dirty = u->vdsync[vi];
             if (!instruction(u, vi, address, word)) {
                 ok = 0;
@@ -2442,6 +2495,7 @@ static int function(Unit* u, const SnxFunction* f, size_t index) {
             }
         }
     }
+    u->g->x.src = -1; /* what follows is no word's */
     flush(u);
     u->at = f->count;
     leave(u); /* off the end */

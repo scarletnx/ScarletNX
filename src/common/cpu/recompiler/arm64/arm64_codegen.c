@@ -80,6 +80,8 @@ static_assert(SNX_ARM64_STATE_BIAS == SGX_BASE_BIAS, "arm64_codegen.h's bias of 
 #define SGX_FN_TARGET 1
 static const signed char mg_pin_hosts[9] = {20, 21, 22, 23, 24, 25, 26, 27, 28};
 #define MG_NPINS 9
+#define MG_GPR_NAME(r, buf) (snprintf((buf), sizeof(buf), "X%d", (r)), (buf))
+#define MG_VREG_PREFIX      "V"
 #define MG_NPINS_FIXED 9
 #define MG_PIN_RESERVED(h) 0
 #define MG_BOUND 1

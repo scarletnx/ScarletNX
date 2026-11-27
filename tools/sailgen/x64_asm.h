@@ -638,6 +638,7 @@ static inline void sgx_assemble_cold(SgXAsm* a, int at) {
             SgXV* vv = &x->v[v];
             argslot[k] = -1;
             if (dst >= SGX_NREG) stack = dst - SGX_NREG, dst = 0; /* through RAX, whose value was saved, to its slot */
+            sgx_fixed_writes(a, at, 1u << dst, 0);
             if (k + 1 == i->cfpcr) {
                 /* mov dst32, [rbx + disp] */
                 if (dst >= 8) sgx_byte(c, 0x44);
