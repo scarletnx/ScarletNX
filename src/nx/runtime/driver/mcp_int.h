@@ -6,6 +6,17 @@
 #define SNX_MCP_INT_H
 #include "common/utilities/common.h" /* SnxU64 */
 #include <stddef.h>
+#include <string.h>
+
+/* the folder of the card the probe's NRO reads its mode from: "amberlith" (sdmc:/amberlith) for Amberlith, from 1.0.0,
+   whose NRO names it, else "edenprobe" (sdmc:/edenprobe), the one card a build from before 1.0.0 knows. As
+   scripts/amberlith.py picks it */
+static inline const char* mcp_probe_card(const unsigned char* nro, size_t size) {
+    static const char amberlith[] = "sdmc:/amberlith";
+    for (size_t i = 0; size >= sizeof amberlith - 1 && i <= size - (sizeof amberlith - 1); i++)
+        if (!memcmp(nro + i, amberlith, sizeof amberlith - 1)) return "amberlith";
+    return "edenprobe";
+}
 
 /* text grown as it is written, p NULL until then; lines counts what a tool chose to count */
 typedef struct {
