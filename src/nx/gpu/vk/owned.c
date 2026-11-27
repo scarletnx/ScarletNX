@@ -246,6 +246,13 @@ static void land_log(const char* const* by) {
             (unsigned long long)(refused - refused_was), (unsigned long long)(begins - begins_was),
             (double)(refused_bytes - refused_bytes_was) / 1048576.0, (unsigned long long)(many_runs - many_runs_was));
     begins_was = begins, refused_was = refused, refused_bytes_was = refused_bytes, many_runs_was = many_runs;
+    static u64 looks_was, pool_looks_was;
+    u64 looks, pool_looks;
+    own_stage_stats(&looks, &pool_looks);
+    if (looks != looks_was)
+        LOG("vulkan: staging the CPU's bytes of owned memory looked at the owners %llu times and at the pool %llu times\n",
+            (unsigned long long)(looks - looks_was), (unsigned long long)(pool_looks - pool_looks_was));
+    looks_was = looks, pool_looks_was = pool_looks;
     vk_lock();
     for (u32 k = 0; k < VK_OWN_BY_N; k++) {
         u64 un = atomic_exchange_explicit(&g_owned.unread[k], 0, memory_order_relaxed),

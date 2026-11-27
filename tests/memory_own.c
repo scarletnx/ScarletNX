@@ -1139,6 +1139,31 @@ static void test_move_scan(void) {
    producer once (resolve), and lands what it published there. own_drop and own_unwatch open its pages with no resolve,
    and a thread that holds the producer's lock drops it with no resolve, goes on and leaves its bytes owed
    (own_owed_take). A watch never cuts an owner */
+/* a watch over a whole 16 MiB target, as a render target's that the renderer reads back through own_stage: through
+   the mirror its CPU bytes come in one run, with a look at the entries for the run and one for the page after it, and
+   a look at the pool for each block, where a look of each for every page was 4097 and 4096 */
+static void test_stage_watch_run(void) {
+    const u64 size = 0x1000000, span = size + 0x2000;
+    u64 a, looks0, pool0, looks1, pool1, wrong = 0;
+    OwnRange o[4];
+    u8* buf;
+    if (!plat_alias_mirror()) return; /* in place a page's bytes come from its shadow, a page at a time */
+    a = region(R0 + 0x3000000, span);
+    buf = (u8*)malloc((size_t)span);
+    CHECK(buf && own_watch(a + 0x800, size) == 0);
+    own_stage_stats(&looks0, &pool0);
+    CHECK(own_stage(a, span, buf, o, 4) == 0);
+    own_stage_stats(&looks1, &pool1);
+    for (u64 i = 0; i < span; i++) wrong += buf[i] != (u8)(0x11 + i);
+    fprintf(stderr, "stage of a 16 MiB watch: %llu looks at the entries, %llu at the pool, %llu bytes wrong\n",
+            (unsigned long long)(looks1 - looks0), (unsigned long long)(pool1 - pool0), (unsigned long long)wrong);
+    CHECK(wrong == 0);
+    CHECK(looks1 - looks0 == 2);
+    CHECK(pool1 - pool0 >= 1 && pool1 - pool0 <= 2);
+    CHECK(mem_unmap(a, span) == 0);
+    free(buf);
+    puts("memory_own: a watch over 16 MiB stages through the mirror in one run");
+}
 /* An owner whose producer holds newer bytes for its span (a render target drawn again since its publish): the CPU's
    access asks the producer once before the owner lands, the producer publishes over it, and the access lands that.
    With nothing newer the owner lands as it is. A thread that holds the producer's lock is not asked */
@@ -1526,6 +1551,7 @@ int main(int argc, char** argv) {
     test_move_scan();
     test_refresh();
     test_watch();
+    test_stage_watch_run();
     test_watch_bound();
     test_watch_many();
     test_rearm();

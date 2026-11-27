@@ -1048,6 +1048,7 @@ static void stage_cpu(u64 addr, u64 a, u64 b, u8* dst, const u8* mirror) {
         u64 page = a & ~(g_own.page - 1), end = page + g_own.page, off;
         int owned;
         pm_lock(&g_own.lk);
+        atomic_fetch_add_explicit(&g_own.stage_looks, 1, memory_order_relaxed);
         u32 i = first_after_nl(page);
         owned = i < atomic_load_explicit(&g_own.nown, memory_order_relaxed) && g_own.ent[i].lo < end;
         /* none: no entry before the page of the next one, which starts past this page */
@@ -1076,9 +1077,13 @@ static void stage_cpu(u64 addr, u64 a, u64 b, u8* dst, const u8* mirror) {
                     WARN("memory: the CPU's bytes of trapped page %llx have no copy: read as zero\n",
                          (unsigned long long)page);
             }
-        } else if (owned && !mem_pool_offset(a, &off))
-            memcpy(dst + (a - addr), mirror + off, (size_t)(end - a));
-        else if (!owned || !ext_stage(a, end, dst + (a - addr)))
+        } else if (owned) {
+            atomic_fetch_add_explicit(&g_own.stage_pool_looks, 1, memory_order_relaxed);
+            if (!mem_pool_offset(a, &off))
+                memcpy(dst + (a - addr), mirror + off, (size_t)(end - a));
+            else if (!ext_stage(a, end, dst + (a - addr)))
+                memcpy(dst + (a - addr), GP(a), (size_t)(end - a));
+        } else
             memcpy(dst + (a - addr), GP(a), (size_t)(end - a));
         a = end;
     }
@@ -1369,6 +1374,10 @@ void own_begin_stats(u64* begins, u64* refused, u64* refused_bytes, u64* many_ru
     *refused = atomic_load_explicit(&g_own.refused, memory_order_relaxed);
     *refused_bytes = atomic_load_explicit(&g_own.refused_bytes, memory_order_relaxed);
     *many_runs = atomic_load_explicit(&g_own.many_runs, memory_order_relaxed);
+}
+void own_stage_stats(u64* looks, u64* pool_looks) {
+    *looks = atomic_load_explicit(&g_own.stage_looks, memory_order_relaxed);
+    *pool_looks = atomic_load_explicit(&g_own.stage_pool_looks, memory_order_relaxed);
 }
 void own_land_times(u64 bytes[OWN_BY_N], u64 wait_ns[OWN_BY_N], u64 copy_ns[OWN_BY_N], u64 fill_ns[OWN_BY_N]) {
     for (int i = 0; i < OWN_BY_N; i++) {
