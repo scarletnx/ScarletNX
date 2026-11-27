@@ -5,6 +5,7 @@
    and the ones the kernel refuses before the server sees them, what a failed command returns, the crash report's
    ring, and log=2's counters with their line. The kernel under ipc.c (handles, objects, locks, guest memory, logging)
    is stood in for here */
+#include <pthread.h>
 #include <stdarg.h>
 #include <stddef.h>
 
@@ -44,12 +45,13 @@ void pm_unlock(PMutex* m) {
 /* the clock: a request takes test_takes of it in its handler, so the counters' times are exact */
 static u64 test_now = 1000, test_takes;
 u64 plat_ns(void) { return test_now; }
-static char test_line[2048]; /* the last "ipc:" line of the verbose log, the counters' */
+static char test_line[2048];  /* the last "ipc:" line of the verbose log, the counters' timed one */
+static char test_count[2048]; /* the last "ipc: in those" line, the counters' every window */
 void logf_(int level, const char* format, ...) {
     va_list args;
-    if (level == 2 && !strncmp(format, "ipc:", 4)) {
+    if (!strncmp(format, "ipc:", 4) && (level == 2 || !strncmp(format, "ipc: in those", 13))) {
         va_start(args, format);
-        vsnprintf(test_line, sizeof test_line, format, args);
+        vsnprintf(level == 2 ? test_line : test_count, sizeof test_line, format, args);
         va_end(args);
     }
     if (!test_log) return;
@@ -948,8 +950,10 @@ static void reply_sizes(void) {
     CHECK(h_close(h) == 0);
 }
 
-/* log=2's counters: each served request counts on its (service, command) pair with the time it took, and
-   ipc_stats_log gives a window's sum and the 8 pairs that took the most; nothing counts on another log level */
+/* the counters: each served request counts on its (service, command) pair, and ipc_stats_log gives a window's requests,
+   a second and a present, with the 8 pairs made most and those sf answered itself; on log=2 the time each took too, a
+   second line with the 8 pairs that took the most. Threads that count at once lose no add and take a pair's slot once;
+   the pairs and the names past their tables count as the rest */
 static void counted(u32 h, u32 cmd, int times, u64 takes) {
     test_takes = takes;
     for (int i = 0; i < times; i++) {
@@ -959,50 +963,105 @@ static void counted(u32 h, u32 cmd, int times, u64 takes) {
     }
     test_takes = 0;
 }
+#define RACE_ADDS 40000
+static const char* const g_race_name[2] = {"race:a", "race:b"};
+/* RACE_ADDS requests over 2 services' commands 0 to 7, which every racing thread counts in the same order */
+static void* race(void* arg) {
+    (void)arg;
+    for (u32 i = 0; i < RACE_ADDS; i++) stat_add(g_race_name[i % 2], (i / 2) % 8, 1);
+    return NULL;
+}
 static void counters(u32 h) {
-    u32 used;
+    u32 used, keys = 0, before, names_before;
+    static char names[IPC_STAT_NAMES + 4][16]; /* names that live as long as the run, as the services' */
     g_settings.log_level = 1;
     counted(h, 9, 4, 250000);
-    ipc_stats_log(5000000000u);
-    CHECK(!g_host.ipc.nstat && !g_host.ipc.stat_since && !test_line[0]);
+    ipc_stats_log(5000000000u, 100); /* the first call only starts the window */
+    CHECK(!test_count[0] && !test_line[0] && !g_host.ipc.timed_since);
+    counted(h, 9, 3, 250000);
+    counted(h, 10, 1, 0);
+    clear();
+    cmif_make_control_request(msg(), 3, 0); /* QueryPointerBufferSize, which sf answers itself */
+    CHECK(send(h) == 0);
+    ipc_stats_log(6000000000u, 105);
+    CHECK(!strcmp(test_count, "ipc: in those 1.00 s, 5 requests (5 a second, 1.0 a present): 4 served by 2 commands, "
+                              "the most made: test:p cmd 9 3 (0.60 a present), test:p cmd 10 1 (0.20 a present); 1 "
+                              "not served (control requests, refusals, closed sessions)\n"));
+    CHECK(!test_line[0]); /* no timed line on log level 1 */
+    /* a window with no present in it */
+    counted(h, 1, 2, 0);
+    ipc_stats_log(7000000000u, 105);
+    CHECK(!strcmp(test_count, "ipc: in those 1.00 s, 2 requests (2 a second, ? a present): 2 served by 1 commands, "
+                              "the most made: test:p cmd 1 2; 0 not served (control requests, refusals, closed "
+                              "sessions)\n"));
     g_settings.log_level = 2;
-    ipc_stats_log(6000000000u); /* the first call only starts the window */
+    ipc_stats_log(9000000000u, 165); /* the first call on log=2 only starts the timed window */
     CHECK(!test_line[0]);
+    CHECK(strstr(test_count, "ipc: in those 2.00 s, 0 requests (0 a second, 0.0 a present): 0 served by 0 commands, "
+                             "the most made: none; 0 not served"));
     counted(h, 9, 5, 250000);
     counted(h, 10, 3, 1000);
     counted(h, 1, 2, 0);
-    ipc_stats_log(8000000000u);
+    ipc_stats_log(11000000000u, 225);
     CHECK(!strcmp(test_line, "ipc: 10 requests served in 2.00 s (5 a second) took 1.253 ms, to 3 commands; the most "
                              "time: test:p cmd 9 5 in 1.250 ms, test:p cmd 10 3 in 0.003 ms, test:p cmd 1 2 in 0.000 "
                              "ms\n"));
+    CHECK(strstr(test_count, "10 requests (5 a second, 0.2 a present): 10 served by 3 commands, the most made: test:p "
+                             "cmd 9 5 (0.08 a present), test:p cmd 10 3 (0.05 a present), test:p cmd 1 2 (0.03 a "
+                             "present); 0 not served"));
     /* the next window starts empty, with the pairs known */
-    ipc_stats_log(9000000000u);
+    ipc_stats_log(12000000000u, 225);
     CHECK(!strcmp(test_line, "ipc: 0 requests served in 1.00 s (0 a second) took 0.000 ms, to 0 commands; the most "
                              "time: none\n"));
-    CHECK(g_host.ipc.nstat == 3);
-    /* 9 pairs: the line names the 8 that took the most, and sums them all */
-    for (u32 i = 0; i < 9; i++) counted(h, 20 + i, 1, 1000 * (i + 1));
-    ipc_stats_log(10000000000u);
-    CHECK(strstr(test_line, "ipc: 9 requests served in 1.00 s (9 a second) took 0.045 ms, to 9 commands; the most "
-                            "time: test:p cmd 28 1 in 0.009 ms, test:p cmd 27 1 in 0.008 ms,"));
+    /* 9 pairs: the lines name the 8 that took the most and the 8 made most, and sum them all */
+    for (u32 i = 0; i < 9; i++) counted(h, 20 + i, i == 4 ? 3 : 1, 1000 * (i + 1));
+    ipc_stats_log(13000000000u, 285);
+    CHECK(strstr(test_line, "ipc: 11 requests served in 1.00 s (11 a second) took 0.055 ms, to 9 commands; the most "
+                            "time: test:p cmd 24 3 in 0.015 ms, test:p cmd 28 1 in 0.009 ms, test:p cmd 27 1 in 0.008 "
+                            "ms,"));
     CHECK(strstr(test_line, "test:p cmd 21 1 in 0.002 ms\n") && !strstr(test_line, "cmd 20 "));
-    /* what is served on log level 1 is not counted, and the level's return starts a new window */
+    CHECK(strstr(test_count, "the most made: test:p cmd 24 3 (0.05 a present), test:p cmd 28 1 (0.02 a present), "
+                             "test:p cmd 27 1 (0.02 a present),"));
+    CHECK(strstr(test_count, "test:p cmd 21 1 (0.02 a present); 0 not served") && !strstr(test_count, "cmd 20 "));
+    /* what is served on log level 1 counts but is not timed, and the level's return starts a new timed window */
     g_settings.log_level = 1;
     test_line[0] = 0;
     counted(h, 9, 1, 250000);
-    ipc_stats_log(11000000000u);
-    CHECK(!test_line[0] && !g_host.ipc.stat_since);
+    ipc_stats_log(14000000000u, 345);
+    CHECK(!test_line[0] && !g_host.ipc.timed_since);
+    CHECK(strstr(test_count, "1 served by 1 commands, the most made: test:p cmd 9 1 (0.02 a present);"));
     g_settings.log_level = 2;
-    counted(h, 9, 1, 250000); /* before the window: dropped as it starts */
-    ipc_stats_log(12000000000u);
+    counted(h, 9, 1, 250000); /* before the timed window: dropped as it starts */
+    ipc_stats_log(15000000000u, 405);
     CHECK(!test_line[0]);
+    /* threads that count at once: every add, and one slot for each pair */
+    {
+        pthread_t racer[4];
+        IpcStat* pair[2][8];
+        before = atomic_load(&g_host.ipc.nstat);
+        names_before = atomic_load(&g_host.ipc.nnames);
+        for (int i = 0; i < 4; i++) CHECK(!pthread_create(&racer[i], NULL, race, NULL));
+        for (int i = 0; i < 4; i++) pthread_join(racer[i], NULL);
+        for (u32 i = 0; i < IPC_STAT_SLOTS; i++) keys += atomic_load(&g_host.ipc.stat[i].key) != 0;
+        CHECK(keys == before + 16 && keys == atomic_load(&g_host.ipc.nstat) &&
+              atomic_load(&g_host.ipc.nnames) == names_before + 2);
+        for (u32 n = 0; n < 2; n++)
+            for (u32 cmd = 0; cmd < 8; cmd++) {
+                pair[n][cmd] = stat_pair((u64)(stat_name(g_race_name[n]) + 1) << 32 | cmd);
+                CHECK(pair[n][cmd] && atomic_load(&pair[n][cmd]->n) == 4 * RACE_ADDS / 16);
+            }
+        ipc_stats_log(16000000000u, 465);
+        CHECK(strstr(test_line,
+                     "ipc: 160000 requests served in 1.00 s (160000 a second) took 0.160 ms, to 16 commands;"));
+    }
     /* a full table: the pairs past it count in one sum, and those in it go on apart */
-    used = g_host.ipc.nstat;
+    used = atomic_load(&g_host.ipc.nstat);
     for (u32 cmd = 0; cmd < IPC_STAT_PAIRS + 100; cmd++) stat_add("stat:fill", cmd, 1000);
-    CHECK(g_host.ipc.nstat == IPC_STAT_PAIRS && g_host.ipc.stat_rest.n == 100 + used);
+    CHECK(atomic_load(&g_host.ipc.nstat) == IPC_STAT_PAIRS &&
+          atomic_load(&g_host.ipc.rest_n) - g_host.ipc.rest_n0 == 100 + used);
     stat_add("stat:new", 1, 5000);
     counted(h, 9, 2, 250000);
-    ipc_stats_log(13000000000u);
+    ipc_stats_log(17000000000u, 525);
     {
         char want[256];
         snprintf(want, sizeof want,
@@ -1014,10 +1073,24 @@ static void counters(u32 h) {
         snprintf(want, sizeof want, "; %u more in %.3f ms to commands past the first %d\n", 101 + used,
                  (double)(100 + used) / 1e3 + 0.005, IPC_STAT_PAIRS);
         CHECK(strstr(test_line, want));
+        snprintf(want, sizeof want,
+                 "; %u more to commands past the first %d, or of services past the first %d; 0 not served", 101 + used,
+                 IPC_STAT_PAIRS, IPC_STAT_NAMES);
+        CHECK(strstr(test_count, want));
     }
+    /* the names past their table: their requests count as the rest */
+    for (u32 i = 0; i < IPC_STAT_NAMES + 4; i++) {
+        snprintf(names[i], sizeof names[i], "name:%u", i);
+        stat_add(names[i], 1, 0);
+    }
+    CHECK(atomic_load(&g_host.ipc.nnames) == IPC_STAT_NAMES);
+    CHECK(stat_name(names[IPC_STAT_NAMES + 3]) == 2 * IPC_STAT_NAMES && stat_name("stat:new") < 2 * IPC_STAT_NAMES);
+    ipc_stats_log(18000000000u, 585);
+    CHECK(strstr(test_count, "ipc: in those 1.00 s, 260 requests (260 a second, 4.3 a present): 260 served by 0 "
+                             "commands, the most made: none; 260 more to commands past the first"));
     g_settings.log_level = 1;
-    ipc_stats_log(14000000000u);
-    CHECK(!g_host.ipc.stat_rest.n);
+    ipc_stats_log(19000000000u, 645);
+    CHECK(atomic_load(&g_host.ipc.rest_n) == g_host.ipc.rest_n0);
 }
 
 /* the crash report's ring: one entry a request, served or not, and a request whose service runs long leaves alone the

@@ -321,9 +321,13 @@ void guest_stats_log(u64 now_ns, u64 presents) {
                                name ? name : "", (unsigned long long)w.svc[top[i]]);
     }
     if (!n) snprintf(list, sizeof list, " none");
-    LOG("cpu: in those %.2f s, %llu SVCs (%.0f a second):%s; %llu calls the dispatch table had no code for "
-        "(RtAPI.miss)\n",
-        seconds(w.ns), (unsigned long long)w.svcs, (double)w.svcs * 1e9 / (double)w.ns, list,
+    if (w.presents)
+        snprintf(per, sizeof per, "%.1f", (double)w.svcs / (double)w.presents);
+    else
+        snprintf(per, sizeof per, "?");
+    LOG("cpu: in those %.2f s, %llu SVCs (%.0f a second, %s a present):%s; %llu calls the dispatch table had no code "
+        "for (RtAPI.miss)\n",
+        seconds(w.ns), (unsigned long long)w.svcs, (double)w.svcs * 1e9 / (double)w.ns, per, list,
         (unsigned long long)w.count[GSTAT_MISS]);
     if (!nce_on()) return;
     at = 0;

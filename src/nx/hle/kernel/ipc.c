@@ -73,30 +73,69 @@ static void ring_set(u32 seq, u32 kind, const char* name, u32 type, u32 cmd, con
     r->rc = rc;
 }
 
-/* ============================================================ log=2's counters */
-/* a served request of the service object name's command cmd took ns: its pair's count and time, under the pools'
-   lock. A verbose log or an attached profiler comes here */
+/* ============================================================ the requests counted */
+/* name's slot in g_host.ipc.names, which it takes if it has none while the table is below its half; past that
+   2 * IPC_STAT_NAMES. A slot once taken keeps its name, so a lookup ends at its name or at a free slot */
+static u32 stat_name(const char* name) {
+    u32 i = snx_fnv1a32(SNX_FNV32_BASIS, (const void*)&name, sizeof name) % (2 * IPC_STAT_NAMES);
+    for (u32 tries = 0; tries < 2 * IPC_STAT_NAMES; tries++, i = (i + 1) % (2 * IPC_STAT_NAMES)) {
+        const char* at = atomic_load_explicit(&g_host.ipc.names[i], memory_order_acquire);
+        if (at == name) return i;
+        if (at) continue;
+        if (atomic_load_explicit(&g_host.ipc.nnames, memory_order_relaxed) >= IPC_STAT_NAMES) break;
+        if (atomic_compare_exchange_strong_explicit(&g_host.ipc.names[i], &at, name, memory_order_acq_rel,
+                                                    memory_order_acquire)) {
+            atomic_fetch_add_explicit(&g_host.ipc.nnames, 1, memory_order_relaxed);
+            return i;
+        }
+        if (at == name) return i; /* another thread took the slot for it */
+    }
+    return 2 * IPC_STAT_NAMES;
+}
+/* the counters of pair key (stat_name's slot plus 1, shifted 32, and the command), taken as stat_name takes a name's
+   slot; NULL past the table's half */
+static IpcStat* stat_pair(u64 key) {
+    u32 i = snx_fnv1a32(SNX_FNV32_BASIS, (const void*)&key, sizeof key) % IPC_STAT_SLOTS;
+    for (u32 tries = 0; tries < IPC_STAT_SLOTS; tries++, i = (i + 1) % IPC_STAT_SLOTS) {
+        IpcStat* s = &g_host.ipc.stat[i];
+        u64 at = atomic_load_explicit(&s->key, memory_order_acquire);
+        if (at == key) return s;
+        if (at) continue;
+        if (atomic_load_explicit(&g_host.ipc.nstat, memory_order_relaxed) >= IPC_STAT_PAIRS) break;
+        if (atomic_compare_exchange_strong_explicit(&s->key, &at, key, memory_order_acq_rel, memory_order_acquire)) {
+            atomic_fetch_add_explicit(&g_host.ipc.nstat, 1, memory_order_relaxed);
+            return s;
+        }
+        if (at == key) return s;
+    }
+    return NULL;
+}
+/* a served request of the service object name's command cmd: one more on its pair, and the ns it took while timed.
+   Every request counts, with no lock: its slots are found by their hashes and the counts are adds */
 static void stat_add(const char* name, u32 cmd, u64 ns) {
-    IpcStat* s;
-    u32 i;
     if (!name || !*name) name = "?";
-    i = snx_fnv32_step(snx_fnv1a32(SNX_FNV32_BASIS, name, strlen(name)), cmd) % IPC_STAT_SLOTS;
-    pm_lock(&g_host.ipc.lk);
-    for (;; i = (i + 1) % IPC_STAT_SLOTS) {
-        s = &g_host.ipc.stat[i];
-        if (!s->name || (s->cmd == cmd && (s->name == name || !strcmp(s->name, name)))) break;
+    u32 ix = stat_name(name);
+    IpcStat* s = ix < 2 * IPC_STAT_NAMES ? stat_pair((u64)(ix + 1) << 32 | cmd) : NULL;
+    atomic_fetch_add_explicit(s ? &s->n : &g_host.ipc.rest_n, 1, memory_order_relaxed);
+    if (ns) atomic_fetch_add_explicit(s ? &s->ns : &g_host.ipc.rest_ns, ns, memory_order_relaxed);
+}
+/* a pair's requests in a window, for a line */
+typedef struct {
+    const char* name;
+    u32 cmd;
+    u64 n, ns;
+} IpcRank;
+/* r into top, which holds *k of the most made (by_time 0) or of the longest (1), the first first; ties by the other */
+static void rank(IpcRank* top, unsigned* k, const IpcRank* r, int by_time) {
+    unsigned j = *k < IPC_STAT_TOP ? (*k)++ : IPC_STAT_TOP;
+    for (; j > 0; j--) {
+        const IpcRank* t = &top[j - 1];
+        u64 a = by_time ? t->ns : t->n, b = by_time ? r->ns : r->n, a2 = by_time ? t->n : t->ns,
+            b2 = by_time ? r->n : r->ns;
+        if (a > b || (a == b && a2 >= b2)) break;
+        if (j < IPC_STAT_TOP) top[j] = *t;
     }
-    if (!s->name) {
-        if (g_host.ipc.nstat < IPC_STAT_PAIRS) {
-            g_host.ipc.nstat++;
-            s->name = name;
-            s->cmd = cmd;
-        } else
-            s = &g_host.ipc.stat_rest;
-    }
-    s->n++;
-    s->ns += ns;
-    pm_unlock(&g_host.ipc.lk);
+    if (j < IPC_STAT_TOP) top[j] = *r;
 }
 #if defined(SNX_TRACY)
 /* One plot for each rank of the window's most costly commands. The command's own name goes to the message pane, so
@@ -105,58 +144,89 @@ static const char* const g_ipc_top_plot[IPC_STAT_TOP] = {"ipc top 0 ms", "ipc to
                                                          "ipc top 3 ms", "ipc top 4 ms", "ipc top 5 ms",
                                                          "ipc top 6 ms", "ipc top 7 ms"};
 #endif
-void ipc_stats_log(u64 now_ns) {
-    IpcStat top[IPC_STAT_TOP], rest;
-    char list[IPC_STAT_TOP * 96], more[128] = "";
-    u64 since, n = 0, ns = 0;
-    unsigned k = 0, pairs = 0;
-    size_t at = 0;
-    int on = g_settings.log_level >= 2 || snx_tracy_attached();
-    double s;
-    pm_lock(&g_host.ipc.lk);
-    since = g_host.ipc.stat_since;
-    g_host.ipc.stat_since = on ? now_ns : 0;
-    if (on || since) /* the window's counts, taken and zeroed: the largest by time, then by requests */
-        for (u32 i = 0; i < IPC_STAT_SLOTS; i++) {
-            IpcStat* p = &g_host.ipc.stat[i];
-            unsigned j;
-            if (!p->n) continue;
-            pairs++, n += p->n, ns += p->ns;
-            j = k < IPC_STAT_TOP ? k++ : IPC_STAT_TOP;
-            for (; j > 0 && (top[j - 1].ns < p->ns || (top[j - 1].ns == p->ns && top[j - 1].n < p->n)); j--)
-                if (j < IPC_STAT_TOP) top[j] = top[j - 1];
-            if (j < IPC_STAT_TOP) top[j] = *p;
-            p->n = p->ns = 0;
-        }
-    rest = g_host.ipc.stat_rest;
-    g_host.ipc.stat_rest.n = g_host.ipc.stat_rest.ns = 0;
+/* the counter's growth since *at, which moves to it */
+static u64 grown(_Atomic u64* counter, u64* at) {
+    u64 n = atomic_load_explicit(counter, memory_order_relaxed) - *at;
+    *at += n;
+    return n;
+}
+void ipc_stats_log(u64 now_ns, u64 presents) {
+    IpcRank most[IPC_STAT_TOP], longest[IPC_STAT_TOP];
+    u64 n = 0, ns = 0;
+    unsigned k = 0, kt = 0, pairs = 0;
+    int timed = g_settings.log_level >= 2 || snx_tracy_attached();
+    pm_lock(&g_host.ipc.lk); /* the window's start and the counts there: one logger at a time */
+    u64 since = g_host.ipc.since, since_presents = g_host.ipc.since_presents, timed_since = g_host.ipc.timed_since;
+    g_host.ipc.since = now_ns;
+    g_host.ipc.since_presents = presents;
+    g_host.ipc.timed_since = timed ? now_ns : 0;
+    for (u32 i = 0; i < IPC_STAT_SLOTS; i++) {
+        IpcStat* p = &g_host.ipc.stat[i];
+        u64 key = atomic_load_explicit(&p->key, memory_order_acquire);
+        if (!key) continue;
+        IpcRank r = {.n = grown(&p->n, &p->n0), .ns = grown(&p->ns, &p->ns0)};
+        if (!r.n) continue;
+        r.name = atomic_load_explicit(&g_host.ipc.names[(key >> 32) - 1], memory_order_relaxed);
+        r.cmd = (u32)key;
+        pairs++, n += r.n, ns += r.ns;
+        rank(most, &k, &r, 0);
+        rank(longest, &kt, &r, 1);
+    }
+    u64 rest_n = grown(&g_host.ipc.rest_n, &g_host.ipc.rest_n0),
+        rest_ns = grown(&g_host.ipc.rest_ns, &g_host.ipc.rest_ns0),
+        answered = grown(&g_host.ipc.answered, &g_host.ipc.answered0);
     pm_unlock(&g_host.ipc.lk);
-    if (!on || !since || now_ns <= since) return;
-    s = (double)(now_ns - since) / 1e9;
-    SNX_PLOT("ipc req/s", (double)(n + rest.n) / s);
-    SNX_PLOT("ipc handler ms", (double)(ns + rest.ns) / 1e6);
+    if (!since || now_ns <= since) return; /* the first call only starts the window */
+    double s = (double)(now_ns - since) / 1e9, frames = (double)(presents - since_presents);
+    char list[IPC_STAT_TOP * 112], more[160] = "", per[32];
+    size_t at = 0;
+    if (presents > since_presents)
+        snprintf(per, sizeof per, "%.1f", (double)(n + rest_n + answered) / frames);
+    else
+        snprintf(per, sizeof per, "?");
+    for (unsigned i = 0; i < k && at < sizeof list; i++) {
+        char each[24] = "";
+        if (presents > since_presents) snprintf(each, sizeof each, " (%.2f a present)", (double)most[i].n / frames);
+        at += (size_t)snprintf(list + at, sizeof list - at, "%s %s cmd %u %llu%s", i ? "," : "", most[i].name,
+                               most[i].cmd, (unsigned long long)most[i].n, each);
+    }
+    if (!k) snprintf(list, sizeof list, " none");
+    if (rest_n)
+        snprintf(more, sizeof more, "; %llu more to commands past the first %d, or of services past the first %d",
+                 (unsigned long long)rest_n, IPC_STAT_PAIRS, IPC_STAT_NAMES);
+    LOG("ipc: in those %.2f s, %llu requests (%.0f a second, %s a present): %llu served by %u commands, the most "
+        "made:%s%s; %llu not served (control requests, refusals, closed sessions)\n",
+        s, (unsigned long long)(n + rest_n + answered), (double)(n + rest_n + answered) / s, per,
+        (unsigned long long)(n + rest_n), pairs, list, more, (unsigned long long)answered);
+    if (!timed || !timed_since || now_ns <= timed_since) return; /* the timed window began with the last call */
+    s = (double)(now_ns - timed_since) / 1e9;
+    SNX_PLOT("ipc req/s", (double)(n + rest_n) / s);
+    SNX_PLOT("ipc handler ms", (double)(ns + rest_ns) / 1e6);
     SNX_PLOT("ipc commands", (double)pairs);
-    SNX_PLOT("ipc other req/s", (double)rest.n / s);
+    SNX_PLOT("ipc other req/s", (double)rest_n / s);
 #if defined(SNX_TRACY)
     {
         char name[128];
-        for (unsigned i = 0; i < k; i++) {
-            SNX_PLOT(g_ipc_top_plot[i], (double)top[i].ns / 1e6);
-            int len = snprintf(name, sizeof name, "%s cmd %u", top[i].name, top[i].cmd);
+        for (unsigned i = 0; i < kt; i++) {
+            SNX_PLOT(g_ipc_top_plot[i], (double)longest[i].ns / 1e6);
+            int len = snprintf(name, sizeof name, "%s cmd %u", longest[i].name, longest[i].cmd);
             if (len > 0) SNX_MSG(name, (size_t)(len < (int)sizeof name ? len : (int)sizeof name - 1));
         }
     }
 #endif
     if (g_settings.log_level < 2) return; /* the rest is only the verbose log's text */
-    for (unsigned i = 0; i < k && at < sizeof list; i++)
-        at += (size_t)snprintf(list + at, sizeof list - at, "%s %s cmd %u %llu in %.3f ms", i ? "," : "", top[i].name,
-                               top[i].cmd, (unsigned long long)top[i].n, (double)top[i].ns / 1e6);
-    if (!k) snprintf(list, sizeof list, " none");
-    if (rest.n)
-        snprintf(more, sizeof more, "; %llu more in %.3f ms to commands past the first %d", (unsigned long long)rest.n,
-                 (double)rest.ns / 1e6, IPC_STAT_PAIRS);
+    at = 0;
+    more[0] = 0;
+    for (unsigned i = 0; i < kt && at < sizeof list; i++)
+        at +=
+            (size_t)snprintf(list + at, sizeof list - at, "%s %s cmd %u %llu in %.3f ms", i ? "," : "", longest[i].name,
+                             longest[i].cmd, (unsigned long long)longest[i].n, (double)longest[i].ns / 1e6);
+    if (!kt) snprintf(list, sizeof list, " none");
+    if (rest_n)
+        snprintf(more, sizeof more, "; %llu more in %.3f ms to commands past the first %d", (unsigned long long)rest_n,
+                 (double)rest_ns / 1e6, IPC_STAT_PAIRS);
     LOGV("ipc: %llu requests served in %.2f s (%.0f a second) took %.3f ms, to %u commands; the most time:%s%s\n",
-         (unsigned long long)(n + rest.n), s, (double)(n + rest.n) / s, (double)(ns + rest.ns) / 1e6, pairs, list,
+         (unsigned long long)(n + rest_n), s, (double)(n + rest_n) / s, (double)(ns + rest_ns) / 1e6, pairs, list,
          more);
 }
 
@@ -565,7 +635,7 @@ static void respond(IpcCtx* c) {
 /* the request goes to o's dispatcher, and its result into the reply */
 static void serve(IpcCtx* c, SvcObj* o, u32 seq) {
     u32 in[2];
-    /* A trace attached wants the same per-command counters as a verbose log. Without either, nothing pays for them. */
+    /* A trace attached wants the commands' times as a verbose log does. Without either, nothing pays for the clock */
     int timed = g_settings.log_level >= 2 || snx_tracy_attached();
     u64 t0 = timed ? plat_ns() : 0;
     SNX_ZONE_TV(z_ipc, "hle: ipc", c->cmd, "%s cmd %u", o->name, c->cmd);
@@ -580,7 +650,8 @@ static void serve(IpcCtx* c, SvcObj* o, u32 seq) {
     if (c->rc) SNX_ZONE_VALUE(z_ipc, c->rc);
     ring_set(seq, IPC_REC_SERVED, o->name, c->type, c->cmd, in, c->rc, NULL);
     respond(c);
-    if (timed) stat_add(o->name, c->cmd, plat_ns() - t0);
+    c->served = 1;
+    stat_add(o->name, c->cmd, timed ? plat_ns() - t0 : 0);
 }
 /* a request sf answers without the service: a refusal, or a control request */
 static void answer(IpcCtx* c, u32 rc, u32 seq, const char* name, const char* what) {
@@ -684,6 +755,7 @@ u32 ipc_handle(u32 handle, u64 msg_addr, u64 msg_size) {
         SNX_MSG("kern ipc: the handle is not a session", sizeof("kern ipc: the handle is not a session") - 1);
         ring_set(seq, IPC_REC_NOT_SESSION, NULL, 0, handle, NULL, SNX_RC_SVC_INVALID_HANDLE, NULL);
         WARN_LIMIT(8, "ipc: a request on handle %x, which isn't a session: InvalidHandle\n", handle);
+        atomic_fetch_add_explicit(&g_host.ipc.answered, 1, memory_order_relaxed);
         return SNX_RC_SVC_INVALID_HANDLE;
     }
     name = s->obj ? s->obj->name : "session";
@@ -691,6 +763,7 @@ u32 ipc_handle(u32 handle, u64 msg_addr, u64 msg_size) {
         SNX_MSG("kern ipc: the session is closed", sizeof("kern ipc: the session is closed") - 1);
         ring_set(seq, IPC_REC_SESSION_CLOSED, name, 0, 0, NULL, SNX_RC_SVC_SESSION_CLOSED, NULL);
         kobj_unref(&s->o);
+        atomic_fetch_add_explicit(&g_host.ipc.answered, 1, memory_order_relaxed);
         return SNX_RC_SVC_SESSION_CLOSED;
     }
     memset(&c, 0, sizeof c);
@@ -734,6 +807,7 @@ u32 ipc_handle(u32 handle, u64 msg_addr, u64 msg_size) {
         else
             answer(&c, SNX_RC_SF_UNKNOWN_METHOD_ID, seq, name, "command");
     }
+    if (!c.served) atomic_fetch_add_explicit(&g_host.ipc.answered, 1, memory_order_relaxed);
     if (t) t->req_session = 0;
     kobj_unref(&s->o);
     return rc;
