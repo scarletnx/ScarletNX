@@ -2219,8 +2219,11 @@ static int tex_upload_(Surf* t) {
     t->bc7.keyed = 0; /* the BC7 cache's keys of the bytes loaded now, below */
     /* a sparse texture: the levels guest memory maps get memory first, and only they are copied */
     int bound = !t->sparse || tex_bind(t) >= 0;
-    /* a new ASTC texture whose bytes are the CPU's: decoded and encoded on the compute queue (vk.h's ASTC stream) */
-    const int stream = !kept_before && vk_astc_stream_fits(t) && astc_stream_guest(t);
+    /* a new ASTC texture whose bytes are the CPU's: decoded and encoded on the compute queue (vk.h's ASTC stream). Not
+       on a thread that records into a list (draw_batches=2's worker): its uses of the texture and its layout changes
+       go into the list, which runs at the splice, after the stream's batch can be submitted. Its draws sampled the
+       texture with no decode and in the wrong layout (the validation layer's UNDEFINED against GENERAL) */
+    const int stream = !kept_before && vk_astc_stream_fits(t) && astc_stream_guest(t) && !vk_rec_listing();
     VkCommandBuffer cb = vk_cmd();
     vk_surf_use(stream ? vk_astc_stream_cmd() : cb, t, VK_LAYOUT(TRANSFER_DST_OPTIMAL),
                 VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
