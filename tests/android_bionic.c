@@ -511,6 +511,188 @@ static void test_fma_and_lround(void) {
     expect_int("llroundf(2.4)", (int64_t)call_f("llroundf", 2.4f), 2);
 }
 
+/* ---- libm as bionic's ---- */
+
+/* a libm handler on a CPU state of the guest's: the integers in x, the floating values in v */
+static void run_libm(const char* name, CPU* cpu) {
+    const HleSymbol* s = find(name);
+    s->handler(cpu, s->data);
+}
+static CPU with_d(double a, double b, uint64_t x0) {
+    CPU cpu = {0};
+    memcpy(&cpu.v[0].df[0], &a, 8);
+    memcpy(&cpu.v[1].df[0], &b, 8);
+    cpu.x[0] = x0;
+    return cpu;
+}
+static CPU with_f(float a, float b, uint64_t x0) {
+    CPU cpu = {0};
+    memcpy(&cpu.v[0].f[0], &a, 4);
+    memcpy(&cpu.v[1].f[0], &b, 4);
+    cpu.x[0] = x0;
+    return cpu;
+}
+static uint64_t v0_d(const CPU* cpu) {
+    uint64_t bits;
+    memcpy(&bits, &cpu->v[0].df[0], 8);
+    return bits;
+}
+static uint32_t v0_f(const CPU* cpu) {
+    uint32_t bits;
+    memcpy(&bits, &cpu->v[0].f[0], 4);
+    return bits;
+}
+static uint64_t bits_d(double v) {
+    uint64_t bits;
+    memcpy(&bits, &v, 8);
+    return bits;
+}
+static uint32_t bits_f(float v) {
+    uint32_t bits;
+    memcpy(&bits, &v, 4);
+    return bits;
+}
+/* name of (a, b) in doubles or floats, with an int or a pointer in x0: v0's bits */
+static uint64_t libm_d(const char* name, double a, double b, uint64_t x0) {
+    CPU cpu = with_d(a, b, x0);
+    run_libm(name, &cpu);
+    return v0_d(&cpu);
+}
+static uint32_t libm_f(const char* name, float a, float b, uint64_t x0) {
+    CPU cpu = with_f(a, b, x0);
+    run_libm(name, &cpu);
+    return v0_f(&cpu);
+}
+/* the same, x0's int */
+static int32_t libm_int_d(const char* name, double a) {
+    CPU cpu = with_d(a, 0, 0);
+    run_libm(name, &cpu);
+    return (int32_t)(uint32_t)cpu.x[0];
+}
+
+/* the functions of double and float that bionic's libm has, which the HLE lacked: an app's call of one returned what
+   its first argument's register held (ldexpf(1, -1) was 1, so a half-float decode clamped every value to 1) */
+static void test_libm_bionic(void) {
+    /* an int argument is w0: the upper half of x0 is not the guest's */
+    expect_int("ldexpf(1, -1)", libm_f("ldexpf", 1.0f, 0, 0xdeadbeefffffffffull), bits_f(0.5f));
+    expect_int("ldexpf(1.5, 3)", libm_f("ldexpf", 1.5f, 0, 3), bits_f(12.0f));
+    expect_int("scalbnf(1, -126)", libm_f("scalbnf", 1.0f, 0, (uint32_t)-126), bits_f(0x1p-126f));
+    expect_int("scalbn(1, -1074), the least subnormal", (int64_t)libm_d("scalbn", 1.0, 0, (uint32_t)-1074), 1);
+    /* scalbln's long is 64 bits */
+    expect_int("scalbln(1, -5000000000)", (int64_t)libm_d("scalbln", 1.0, 0, (uint64_t)-5000000000ll), 0);
+    expect_int("scalbln(1, 5000000000)", (int64_t)libm_d("scalbln", 1.0, 0, 5000000000ull), (int64_t)bits_d(INFINITY));
+    expect_int("scalblnf(3, 2)", libm_f("scalblnf", 3.0f, 0, 2), bits_f(12.0f));
+
+    /* bionic's FP_ILOGB0 and FP_ILOGBNAN */
+    expect_int("ilogb(0) is -INT_MAX", libm_int_d("ilogb", 0.0), -2147483647);
+    expect_int("ilogb(NaN) is INT_MAX", libm_int_d("ilogb", NAN), 2147483647);
+    expect_int("ilogb(-infinity) is INT_MAX", libm_int_d("ilogb", -INFINITY), 2147483647);
+    expect_int("ilogb(-8)", libm_int_d("ilogb", -8.0), 3);
+    CPU cpu = with_f(0x1p-149f, 0, 0);
+    run_libm("ilogbf", &cpu);
+    expect_int("ilogbf of the least subnormal", (int32_t)(uint32_t)cpu.x[0], -149);
+    expect_int("finite(infinity)", libm_int_d("finite", INFINITY), 0);
+    expect_int("__signbit(-0)", libm_int_d("__signbit", -0.0), 1);
+
+    /* msun's nan: the tag's hexadecimal digits under the quiet NaN's bits */
+    expect_int("nan(\"\")", (int64_t)libm_d("nan", 0, 0, P("")), (int64_t)0x7ff8000000000000ull);
+    expect_int("nan(\"0x12\")", (int64_t)libm_d("nan", 0, 0, P("0x12")), (int64_t)0x7ff8000000000012ull);
+    expect_int("nan(\"12z\")", (int64_t)libm_d("nan", 0, 0, P("12z")), (int64_t)0x7ff8000000000012ull);
+    expect_int("nan of 17 digits keeps the last 16", (int64_t)libm_d("nan", 0, 0, P("1fffffffffffffff0")),
+               (int64_t)0xfffffffffffffff0ull);
+    expect_int("nanf(\"\")", libm_f("nanf", 0, 0, P("")), 0x7fc00000);
+    expect_int("nanf(\"0x3\")", libm_f("nanf", 0, 0, P("0x3")), 0x7fc00003);
+
+    /* remquo's quotient: its low 31 bits, where glibc keeps 3 */
+    int32_t quo = 77;
+    expect_int("remquo(29, 3)", (int64_t)libm_d("remquo", 29.0, 3.0, P(&quo)), (int64_t)bits_d(-1.0));
+    expect_int("and its quotient 10", quo, 10);
+    libm_d("remquo", -29.0, 3.0, P(&quo));
+    expect_int("remquo(-29, 3)'s quotient", quo, -10);
+    expect_int("remquo(2^100, 3)", (int64_t)libm_d("remquo", 0x1p100, 3.0, P(&quo)), (int64_t)bits_d(1.0));
+    expect_int("and the low 31 bits of its quotient", quo, 0x55555555);
+    quo = 77;
+    libm_d("remquo", 1.0, 0.0, P(&quo));
+    expect_int("remquo(1, 0) writes no quotient", quo, 77);
+    expect_int("remquof(-7, -2)", libm_f("remquof", -7.0f, -2.0f, P(&quo)), bits_f(1.0f));
+    expect_int("and its quotient 4", quo, 4);
+
+    /* lgamma's sign into signgam, lgamma_r's into its int */
+    const int* guest_signgam = find("signgam")->data;
+    double got;
+    uint64_t bits = libm_d("lgamma", -0.5, 0, 0);
+    memcpy(&got, &bits, 8);
+    expect_int("lgamma(-0.5) is ln(2 sqrt(pi))", fabs(got - 1.2655121234846454) < 1e-12, 1);
+    expect_int("and signgam -1", *guest_signgam, -1);
+    libm_d("gamma", -1.5, 0, 0);
+    expect_int("gamma(-1.5)'s signgam", *guest_signgam, 1);
+    int32_t sign = 0;
+    expect_int("lgamma_r(-0)", (int64_t)libm_d("lgamma_r", -0.0, 0, P(&sign)), (int64_t)bits_d(INFINITY));
+    expect_int("and its sign", sign, -1);
+    libm_f("lgammaf_r", -2.0f, 0, P(&sign));
+    expect_int("lgammaf_r(-2)'s sign, a pole", sign, 1);
+
+    /* scalb's double exponent, significand */
+    expect_int("scalb(3, 2)", (int64_t)libm_d("scalb", 3.0, 2.0, 0), (int64_t)bits_d(12.0));
+    expect_int("scalb(1, 0.5) is invalid", (int64_t)libm_d("scalb", 1.0, 0.5, 0), (int64_t)0x7ff8000000000000ull);
+    expect_int("scalb(1, -infinity)", (int64_t)libm_d("scalb", 1.0, -INFINITY, 0), 0);
+    expect_int("significand(12)", (int64_t)libm_d("significand", 12.0, 0, 0), (int64_t)bits_d(1.5));
+    expect_int("significand(0)", (int64_t)libm_d("significand", 0.0, 0, 0), 0);
+    expect_int("significandf(-3)", libm_f("significandf", -3.0f, 0, 0), bits_f(-1.5f));
+
+    /* rint and its kin round as FPCR.RMode says, FRINTX's Inexact into FPSR */
+    static const struct {
+        uint32_t mode;
+        double x, want;
+    } rints[] = {{0, 2.5, 2.0}, {0, 3.5, 4.0}, {1, 2.1, 3.0}, {2, -2.1, -3.0}, {3, -2.9, -2.0}};
+    for (size_t i = 0; i < sizeof rints / sizeof *rints; ++i) {
+        cpu = with_d(rints[i].x, 0, 0);
+        cpu.fpcr = rints[i].mode << 22;
+        run_libm("rint", &cpu);
+        expect_int("rint by FPCR's mode", (int64_t)v0_d(&cpu), (int64_t)bits_d(rints[i].want));
+        expect_int("and Inexact", cpu.fpsr, 0x10);
+    }
+    cpu = with_d(3.0, 0, 0);
+    run_libm("rint", &cpu);
+    expect_int("rint(3) is exact", cpu.fpsr, 0);
+    cpu = with_d(2.5, 0, 0);
+    run_libm("nearbyint", &cpu);
+    expect_int("nearbyint(2.5)", (int64_t)v0_d(&cpu), (int64_t)bits_d(2.0));
+    expect_int("raises nothing", cpu.fpsr, 0);
+    cpu = with_f(-2.5f, 0, 0);
+    cpu.fpcr = 1u << 22;
+    run_libm("lrintf", &cpu);
+    expect_int("lrintf(-2.5) upward", (int64_t)cpu.x[0], -2);
+    /* FCVTZS's ends: a NaN is 0 and a value out of range the nearest end, with Invalid Operation */
+    cpu = with_d(1e300, 0, 0);
+    run_libm("lrint", &cpu);
+    expect_int("lrint(1e300)", (int64_t)cpu.x[0], INT64_MAX);
+    expect_int("and Invalid Operation", cpu.fpsr, 0x01);
+    cpu = with_d(NAN, 0, 0);
+    run_libm("llrint", &cpu);
+    expect_int("llrint(NaN)", (int64_t)cpu.x[0], 0);
+    cpu = with_f(-1e30f, 0, 0);
+    run_libm("llrintf", &cpu);
+    expect_int("llrintf(-1e30)", (int64_t)cpu.x[0], INT64_MIN);
+
+    /* the host's own, now there */
+    expect_int("tgamma(5)", (int64_t)libm_d("tgamma", 5.0, 0, 0), (int64_t)bits_d(24.0));
+    expect_int("j0(0)", (int64_t)libm_d("j0", 0.0, 0, 0), (int64_t)bits_d(1.0));
+    expect_int("j0f(0)", libm_f("j0f", 0.0f, 0, 0), bits_f(1.0f));
+    expect_int("jn(2, 0)", (int64_t)libm_d("jn", 0.0, 0, 2), 0);
+    expect_int("drem(5, 3)", (int64_t)libm_d("drem", 5.0, 3.0, 0), (int64_t)bits_d(-1.0));
+    expect_int("copysign(1, -0)", (int64_t)libm_d("copysign", 1.0, -0.0, 0), (int64_t)bits_d(-1.0));
+    expect_int("fdim(5, 3)", (int64_t)libm_d("fdim", 5.0, 3.0, 0), (int64_t)bits_d(2.0));
+    expect_int("ceil(2.5)", (int64_t)libm_d("ceil", 2.5, 0, 0), (int64_t)bits_d(3.0));
+    expect_int("floor(-2.5)", (int64_t)libm_d("floor", -2.5, 0, 0), (int64_t)bits_d(-3.0));
+    expect_int("truncf(-2.5)", libm_f("truncf", -2.5f, 0, 0), bits_f(-2.0f));
+    expect_int("roundf(2.5)", libm_f("roundf", 2.5f, 0, 0), bits_f(3.0f));
+    expect_int("fabsf(-2)", libm_f("fabsf", -2.0f, 0, 0), bits_f(2.0f));
+    expect_int("hypotf(3, 4)", libm_f("hypotf", 3.0f, 4.0f, 0), bits_f(5.0f));
+    expect_int("logb(8)", (int64_t)libm_d("logb", 8.0, 0, 0), (int64_t)bits_d(3.0));
+    expect_int("atanhf(0)", libm_f("atanhf", 0.0f, 0, 0), 0);
+}
+
 /* a descriptor from name through the HLE, which opens it as the guest does */
 enum {
     G_O_RDWR = 2,
@@ -1075,6 +1257,7 @@ int main(void) {
     test_getline();
     test_imports_once_missing();
     test_fma_and_lround();
+    test_libm_bionic();
     test_files_second_batch();
     test_pipe2_umask_session();
     test_strncat_chk();
