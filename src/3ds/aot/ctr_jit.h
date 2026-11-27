@@ -6,7 +6,7 @@
 #include <stddef.h>
 #include <stdint.h>
 /* The process's blocks the static module lacks, compiled when the dispatch first reaches them (process->compile) until
-   snx_ctr_jit_free. NULL with the reason in error when the host's LLVM can't compile */
+   snx_ctr_jit_free. NULL with the reason in error when this host's native back end makes no AArch32 blocks */
 typedef struct SnxCtrJit SnxCtrJit;
 SnxCtrJit* snx_ctr_jit_new(SnxCtrProcess* process, char* error, size_t error_size);
 /* The blocks it compiled added to the title's hints (directory/SNX_CTR_HINTS), the ones the file has left out: how

@@ -26,7 +26,7 @@ enum {
    press or a drag on it to the step under it (settings.txt's slider): the launcher lists every step as a word */
 #define INI_SLIDER      8
 /* off its default it changes how fast the game runs, and nothing on the screen shows it (settings.txt's perf; every
-   Vulkan extension's and LLVM's row): the game names it over its picture as it starts (options_perf_changed) */
+   Vulkan extension's row): the game names it over its picture as it starts (options_perf_changed) */
 #define INI_PERF        16
 /* a text with words whose words are its common values, not every one (settings.txt's open): the launcher keeps a value
    none of them is, shown as itself, as it does on a row with steps, which are open too */
@@ -131,8 +131,8 @@ void ini_format(const IniOpt* o, char* out, size_t n);
 #define INI_CHANGED_NO_TEXT 2
 int ini_changed(const IniOpt* table, int flags, char* out, size_t n);
 /* o's variable at its default. A row with none in its table (NULL) is at its default as an empty text (a once text's,
-   the one kind settingsgen lets be perf) or an INI_INT of INT_MIN (an LLVM option's settings.h SETTINGS_UNSET: LLVM's
-   own value) */
+   the one kind settingsgen lets be perf) or an INI_INT of INT_MIN (settings.h's SETTINGS_UNSET: a row no default
+   gave a value) */
 int ini_at_default(const IniOpt* o);
 /* the keys of table's INI_PERF rows off their default but skip (NULL: none), a comma between two, into out as snprintf
    writes (cut where it ends, NUL-terminated): the length the whole list takes, without its NUL */

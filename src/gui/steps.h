@@ -40,7 +40,7 @@ typedef struct {
     int program, previous;
     char next[64];
     /* why nothing made the host's code, "" for no line of it: a driver's of what the host lacks for its native back end
-       ("cpu: needs ..., this host has ..."), past the driver's name; one that says LLVM makes the code is none */
+       ("cpu: needs ..., this host has ..."), past the driver's name */
     char refused[112];
 } GuiSteps;
 void gui_steps_reset(GuiSteps* steps);

@@ -437,8 +437,8 @@ int snx_place_runtime(const char* runtime, const char* copy, char* error, size_t
         }
     }
 #ifdef _WIN32
-    /* Windows finds a program's DLLs next to it: the copy gets those next to the runtime (the package's LLVM), or it
-       does not start. All of them when the runtime was placed, else the ones the folder lacks or holds at another
+    /* Windows finds a program's DLLs next to it: the copy gets those next to the runtime (the package's libraries), or
+       it does not start. All of them when the runtime was placed, else the ones the folder lacks or holds at another
        size */
     if (rc >= 0 && strcmp(own, mine)) {
         char* folder = snx_dirname(mine);

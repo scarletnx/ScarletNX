@@ -527,9 +527,9 @@ int main(int argc, char** argv) {
     jit_init();
     CHECK(g_jit_started == 1);
     check_jit_opt();
-    /* the host below its back end's floor: LLVM makes the JIT's code, said with what the host lacks; none otherwise */
-    CHECK(!g_below == !strstr(g_warned, "jit: " BELOW ": LLVM makes the code\n"));
-    CHECK(g_below || !strstr(g_warned, "LLVM makes the code"));
+    /* the host below its back end's floor: what it lacks, warned; nothing otherwise, and no other code generator */
+    CHECK(!g_below == !strstr(g_warned, "jit: " BELOW "\n"));
+    CHECK(!strstr(g_warned, "LLVM"));
     /* one that lacks what the back end does by its fallback: logged, not warned, and nothing of it otherwise */
     CHECK(!g_done == !strstr(g_logs, "jit: " DONE "\n") && !strstr(g_warned, "fallback"));
     if (argc == 2 && !strcmp(argv[1], "--bench-no-pack")) {

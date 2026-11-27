@@ -5,7 +5,7 @@
 #include "vita/runtime/process.h"
 
 typedef struct VitaJit VitaJit;
-/* NULL with the reason in error when the build or the host's LLVM can't compile */
+/* NULL with the reason in error when this host's native back end makes no AArch32 blocks */
 VitaJit* vita_jit_new(VitaProcess* process, char* error, size_t error_size);
 /* the block at pc, compiled from the guest's memory now unless it was before; NULL when it can't be */
 SnxArmBlock vita_jit_block(VitaJit* jit, uint32_t pc, bool thumb);

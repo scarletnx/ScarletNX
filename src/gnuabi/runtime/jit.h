@@ -5,9 +5,9 @@
 #include "common/cpu/aarch64/cpu.h"
 #include "gnuabi/kernel/sync.h"
 #include <stddef.h>
-/* Guest A64 code becomes host code through the LLVM backend only. One dispatch table covers the whole guest address
-   space (cpu->disp with code_lo 0): an empty slot sends the generated code to gnu_jit_miss (gnu_rtapi's RtAPI.miss),
-   which compiles the code there in this process and runs it. */
+/* Guest A64 code becomes host code through the host's native back end alone. One dispatch table covers the whole guest
+   address space (cpu->disp with code_lo 0): an empty slot sends the generated code to gnu_jit_miss (gnu_rtapi's
+   RtAPI.miss), which compiles the code there in this process and runs it. */
 struct snx_recompiler;
 struct snx_recompiled;
 typedef struct GnuJit {
