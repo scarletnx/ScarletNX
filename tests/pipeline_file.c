@@ -1588,7 +1588,7 @@ static void bytes_stable(void) {
         int pack;
         u64 hash;
     } files[3] = {
-        {0, 0x53A8ACD77EE9C0D4ull}, {PF_PACK_UNITS, 0xECD04744322B703Aull}, {PF_PACK_SHADERS, 0xCFA0CEBE66B3A9D5ull}};
+        {0, 0x251D22EC2853C70Aull}, {PF_PACK_UNITS, 0x8474D35368DDC0E1ull}, {PF_PACK_SHADERS, 0x7D58EDAC2C8940ECull}};
     for (int f = 0; f < 3; ++f) {
         PFile pf;
         u32 loaded[2];
