@@ -126,7 +126,8 @@ uint64_t hle_symbol(const char* name) {
     return address;
 }
 
-/* an import without an HLE: said once, then 0 (or NULL) for every call, as a stub of the NDK that is not there */
+/* an import without an HLE: said once, then 0 (or NULL, or 0.0) for every call, as a stub of the NDK that is not
+   there. The floating result's register too: a float function's first argument stayed there as its result */
 static void missing(CPU* c, void* data) {
     const char* name = data;
     static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
@@ -143,6 +144,7 @@ static void missing(CPU* c, void* data) {
     }
     pthread_mutex_unlock(&lock);
     c->x[0] = 0;
+    c->v[0] = (V128){0};
 }
 
 uint64_t hle_missing(const char* name) {

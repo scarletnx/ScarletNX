@@ -433,7 +433,7 @@ a level.
 
 All 24 libraries of the Unity game load and run their constructors. From Java, `System.loadLibrary` loads them and
 runs their `JNI_OnLoad`: the game's crash reporter initializes its native side. An import without an HLE yet is an export that
-says so once when called and returns 0.
+says so once when called and returns 0, in `x0` and in `v0`.
 
 The recompiler's `android` target (`a64.profile`) is a phone's Armv8.2 CPU without pointer authentication, and
 `getauxval(AT_HWCAP)` reports the same features.
