@@ -3813,6 +3813,9 @@ enum { VK_GENS_HEADERS_KEPT, VK_GENS_HEADERS_CHECKED, VK_GENS_RESULTS_KEPT, VK_G
 /* An indexed draw's highest index (render.c's draw_last_vertex): kept from an earlier draw of the range, found by
    scanning its indices again, or not known */
 enum { VK_TOP_KEPT, VK_TOP_SCANNED, VK_TOP_UNKNOWN, VK_TOP_N };
+/* A windowed constant buffer bank's binding (render.c's cb_window_place): in a window, or bound alone; and the searches
+   of the rings' chunks for the buffer a window would be in */
+enum { VK_CBW_PLACED, VK_CBW_ALONE, VK_CBW_SEARCHED, VK_CBW_N };
 typedef struct {
     u64 lookups; /* draws that looked for a kept state */
     u64 last;    /* of them, those that took the last draw's */
@@ -3827,6 +3830,7 @@ typedef struct {
     u64 cb[VK_CB_N], tex[VK_TEX_N], fs[VK_FS_N];
     u64 slot[VK_SLOT_N], pool[VK_POOL_N], gens[VK_GENS_N];
     u64 top[VK_TOP_N], top_indices; /* the index ranges' lookups, and the indices of those scanned again */
+    u64 cb_window[VK_CBW_N];
     u64 inl[4][2]; /* the inline blocks' lookups (render.c's cb_get, root_get), each kept or staged again: bank 0 copies
                       that reach its base vertex and base instance words (SH_CB0_BASE_VERTEX), bank 0 copies that end
                       before them, bank 2, the root tables */

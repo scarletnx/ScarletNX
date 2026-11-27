@@ -9141,6 +9141,7 @@ static int run_headless(int argc, char** argv) {
         if (!strcmp(name, "runtime_write") && ++ran) CHECK(!check_uma_runtime_write());
         if (!strcmp(name, "constants") && ++ran) CHECK(!check_uma_constants());
         if (!strcmp(name, "constants_copied") && ++ran) CHECK(!check_uma_constants_copied());
+        if (!strcmp(name, "constants_windows") && ++ran) CHECK(!check_uma_constants_windows());
         if (!strcmp(name, "migrate") && ++ran) CHECK(!check_uma_migrate());
         if (!strcmp(name, "way") && ++ran) CHECK(!check_uma_way());
         if (!strcmp(name, "region_writes") && ++ran) CHECK(!check_uma_region_writes());
@@ -9189,7 +9190,8 @@ static int run_headless(int argc, char** argv) {
         if (!strcmp(name, "alias_order") && ++ran) CHECK(!check_uma_alias_order());
         if (!ran) {
             fprintf(stderr,
-                    "SNX_TEST_UMA_ONLY=%s names no check: 1, runtime_write, constants, constants_copied, migrate, way, "
+                    "SNX_TEST_UMA_ONLY=%s names no check: 1, runtime_write, constants, constants_copied, "
+                    "constants_windows, migrate, way, "
                     "region_writes, region_merge, region_trap, writes, atlas_pending, feedback, publish, dispatch, "
                     "dispatch_open, "
                     "nvdec, texture_pending, dispatch_constants, "
@@ -9216,6 +9218,7 @@ static int run_headless(int argc, char** argv) {
         CHECK(!check_uma_runtime_write());
         CHECK(!check_uma_constants());
         CHECK(!check_uma_constants_copied());
+        CHECK(!check_uma_constants_windows());
         CHECK(!check_uma_writes());
         CHECK(!check_uma_atlas_pending());
         CHECK(!check_uma_feedback());
@@ -9506,6 +9509,7 @@ static int run_headless(int argc, char** argv) {
     CHECK(!check_uma_runtime_write());
     CHECK(!check_uma_constants());
     CHECK(!check_uma_constants_copied());
+    CHECK(!check_uma_constants_windows());
     CHECK(!check_uma_writes());
     CHECK(!check_uma_atlas_pending());
     CHECK(!check_uma_feedback());
