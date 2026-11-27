@@ -2462,7 +2462,7 @@ void vk_uma_frame(void) {
    memory/own.c) or to get other pages (mem.c): the commands that read an import over it in place run first, submitted
    if they are still recorded (vk_lock held, mem.c's lock not). A device whose GPU is the CPU (lavapipe) reads an import
    through the CPU's own mapping, and faulted on the trapped page in a command that ran later: landing the page waited
-   for a readback queued behind that command, and edenprobe's dispatch and draw pairs over one buffer hung there.
+   for a readback queued behind that command, and Amberlith's dispatch and draw pairs over one buffer hung there.
    amdgpu looks up an import's pages again at every submit and refuses them once they are in the alias pool, whose
    pages are a file's (the trap moves them there): a command recorded before the publish and submitted after it would
    be refused. The pages the command reads are the ones they were when it was recorded, as the console's GPU reads them.

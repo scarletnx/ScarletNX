@@ -58,9 +58,9 @@ int main(void) {
             return 1;
         }
     }
-    /* edenprobe's astc cases "error" (an illegal block) and "hdrfirst" (two partitions, the first with an HDR
+    /* Amberlith's astc cases "error" (an illegal block) and "hdrfirst" (two partitions, the first with an HDR
        endpoint mode, which is the error color on its own texels in the LDR profile). The texels are those of
-       edenprobe's reference decoder (source/astcref.c), as R, G, B, A */
+       Amberlith's reference decoder (source/astcref.c), as R, G, B, A */
     {
         static const u8 illegal[16] = {0x5f, 0x0f, 0x35, 0xcb, 0xe9, 0x15, 0x32, 0xa7,
                                        0x3f, 0xdc, 0x63, 0xdb, 0x94, 0x74, 0x55, 0xe2};

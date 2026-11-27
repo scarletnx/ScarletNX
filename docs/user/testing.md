@@ -2,7 +2,7 @@
 <!-- Copyright 2026 the ScarletNX contributors -->
 # Testing and reporting
 
-[Usage](usage.md) · [development](../dev/development.md) · [contributing](../../CONTRIBUTING.md) · [edenprobe](../dev/edenprobe.md).
+[Usage](usage.md) · [development](../dev/development.md) · [contributing](../../CONTRIBUTING.md) · [Amberlith](../dev/amberlith.md).
 What to say in a test report so it can be compared with the last one. Nothing of a game goes into a report: no keys,
 dumps, game files or shader and texture dumps ([CONTRIBUTING](../../CONTRIBUTING.md#game-data-stays-out)).
 
@@ -99,4 +99,4 @@ the same way. It labels the issue `game report` and `log: <how it ended>`. `buil
 same summary locally ([Run / diagnose](../dev/development.md#run--diagnose)).
 
 A maintainer who reproduces the failure labels it `status: confirmed`, which posts that it is ready to become an
-[edenprobe](../dev/edenprobe.md) case. A fix refers to the report.
+[Amberlith](../dev/amberlith.md) case. A fix refers to the report.

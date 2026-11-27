@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* EAC R11 and RG11 blocks from rEden's decode_eac.cpp: the KDFS 1.3 examples and edenprobe's */
+/* EAC R11 and RG11 blocks from rEden's decode_eac.cpp: the KDFS 1.3 examples and Amberlith's */
 #include "support/etc2.h"
 #include "common/utilities/endian.h"
 #include <stdio.h>
@@ -51,7 +51,7 @@ static void worked_examples(void) {
     expect(decode_one(EAC_R_SNORM, 127, 15, 0, 7, 0), 32767, "R11 signed, clamped above");
 }
 
-/* edenprobe's RG11 block: red table 0 multiplier 11, green table 13 multiplier 0 */
+/* Amberlith's RG11 block: red table 0 multiplier 11, green table 13 multiplier 0 */
 static void every_index(void) {
     u32 i;
     u32 t;

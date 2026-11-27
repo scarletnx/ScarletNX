@@ -1692,7 +1692,7 @@ static VkShaderModule null_fs(void) {
    too, at the head of the workers' queue. Skipping a draw whose pipeline was still being made, as Eden's asynchronous
    shaders do, left
    one game's menus over a black backdrop and its loading screen without its map whenever their one draw was
-   skipped, and failed 190 of edenprobe's cases: a draw is never skipped for its pipeline. What a worker needs that is
+   skipped, and failed 190 of Amberlith's cases: a draw is never skipped for its pipeline. What a worker needs that is
    made lazily, the layout and the empty fragment shader, is made on the GPU thread first */
 
 static void pf_pipe_record(const PipeKey* k);

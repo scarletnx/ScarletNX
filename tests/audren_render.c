@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The audio renderer's DSP offline: updates written field by field as edenprobe's audio family writes them
+/* The audio renderer's DSP offline: updates written field by field as Amberlith's audio family writes them
    (revision 4, 48 kHz, 240 samples a frame), frames rendered, and what the aux, the circular buffer sinks and the
    voices' counters show. Levels are one bin of a Fourier transform over a frame of whole periods */
 #include "common/utilities/bits.h"
@@ -63,7 +63,7 @@ enum {
     SNX_ART_SPLIT_BYTES = 0x20 + SNX_ART_SPLITTERS * (0x1C + 3 * 4) + SNX_ART_DESTS * 0x70
 };
 
-/* the update, laid out as edenprobe's source/audio.c lays it out */
+/* the update, laid out as Amberlith's source/audio.c lays it out */
 static u8 in[0x40 + 0x10 + 0x20 * SNX_ART_POOLS + 0x70 * SNX_ART_VOICES + 0x188 * SNX_ART_VOICES +
              0xC0 * SNX_ART_EFFECTS + SNX_ART_SPLIT_BYTES + 0x20 + 0x930 * SNX_ART_MIXES + 0x140 * SNX_ART_SINKS +
              0x10];

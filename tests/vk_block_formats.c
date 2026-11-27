@@ -295,7 +295,7 @@ int main(void) {
     takes(0x17, 0, 0, VK_FORMAT_R8G8B8A8_UNORM, VKC_BC7, "none BC7");
     takes(0x0A, 0, 0, VK_FORMAT_R8G8B8A8_UNORM, VKC_ETC2_PTA, "none ETC2 RGB8A1");
 
-    /* a depth texture's stencil view (vk_tic_reads_stencil): the headers edenprobe's zeta suite samples through NVN,
+    /* a depth texture's stencil view (vk_tic_reads_stencil): the headers Amberlith's zeta suite samples through NVN,
        the stencil of a Z24S8 (R, all four components) and of a ZF32_X24S8 (G), beside their depth views, and the
        game driver's R8G24 one. The first two were taken for depth, and their stencil read as depth bits */
     static const struct {
