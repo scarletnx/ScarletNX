@@ -9,10 +9,10 @@
 #include <string.h>
 
 /* The push data bytes of the five stage sets' table addresses: the 8-byte slots that the programs' push block leaves
-   free with the constant buffer windows on (shader.h, checked in descriptor_heaps.c). They are the bytes after bank 17's
-   offset in the vertex and the fragment stage's window offsets, z and w of the texture words, and the 16 bytes after
-   the block. In the window bytes from 128, which the sets' addresses took, the windows were off with heaps, and each
-   draw whose constants moved wrote its stage's whole table again */
+   free with the constant buffer windows on (shader.h, checked in descriptor_heaps.c). They are the bytes after bank
+   17's offset in the vertex and the fragment stage's window offsets, z and w of the texture words, and the 16 bytes
+   after the block. In the window bytes from 128, which the sets' addresses took, the windows were off with heaps, and
+   each draw whose constants moved wrote its stage's whole table again */
 #define VK_DESCRIPTOR_HEAP_PUSH_SIZE 256u
 static inline uint32_t vk_descriptor_heap_push_at(uint32_t set) {
     return set == 0 ? 168u : set == 1 ? 216u : set == 2 ? 232u : 240u + 8u * (set - 3u);

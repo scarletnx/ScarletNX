@@ -1545,7 +1545,7 @@ static void descriptor_buffer_run(const void* p) {
         {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT, .address = x->table, .usage = usage}};
     vkCmdBindDescriptorBuffersEXT(x->cb, x->table ? 2 : 1, info);
 }
-/* the frame's arena at buffer index 0, and the texture table's own buffer at index 1 where it has one (table, else 0) */
+/* the frame's arena at buffer index 0, and the texture table's own buffer at index 1 where it has one (table, or 0) */
 void rec_CmdBindDescriptorBuffersEXT(VkCommandBuffer cb, VkDeviceAddress address, VkDeviceAddress table) {
     vk_descriptor_heaps_invalidate();
     DescriptorBufferArgs args = {cb, address, table};

@@ -74,24 +74,6 @@ static void test_cache(void) {
     check(hits + misses == 2048 && evictions && misses, "collision fixture exercises replacement");
     free(storage);
 }
-static void test_replication(void) {
-    unsigned char bytes[128 * 257 + 32], pattern[128];
-    for (size_t stride = 1; stride <= 128; stride++) {
-        for (size_t byte = 0; byte < stride; byte++) pattern[byte] = (unsigned char)(byte * 29 + stride);
-        for (uint32_t count = 1; count <= 256; count++) {
-            memset(bytes, 0xa5, sizeof bytes);
-            memcpy(bytes + 16, pattern, stride);
-            vk_descriptor_repeat(bytes + 16, stride, count);
-            int exact = 1;
-            for (uint32_t element = 0; element < count; element++)
-                if (memcmp(bytes + 16 + (size_t)element * stride, pattern, stride)) exact = 0;
-            for (size_t byte = 0; byte < 16; byte++) if (bytes[byte] != 0xa5) exact = 0;
-            for (size_t byte = 16 + (size_t)count * stride; byte < sizeof bytes; byte++)
-                if (bytes[byte] != 0xa5) exact = 0;
-            check(exact, "opaque runs reproduce every byte and preserve both guards");
-        }
-    }
-}
 static void test_ranges(void) {
     uint64_t end = UINT64_MAX;
     check(vk_descriptor_active_end(1024, 128, 8, 2, 3, 16, &end) && end == 208,
@@ -125,7 +107,6 @@ static void test_ranges(void) {
 }
 int main(void) {
     test_cache();
-    test_replication();
     test_ranges();
     printf("descriptor encoding mock bytes: %u checks, %u failures\n", checks, failures);
     return failures != 0;

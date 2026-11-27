@@ -59,6 +59,9 @@ void logf_(int, const char*, ...);
 void rec_CmdBindDescriptorSets(VkCommandBuffer, VkPipelineBindPoint, VkPipelineLayout, u32, u32, const VkDescriptorSet*,
                                u32, const u32*);
 #define LOG(...) logf_(1, __VA_ARGS__)
+/* vk.h's and devmem.h's: no fallback from the heaps here, and the tables in the mapped window (no small BAR) */
+static inline int vk_heaps(void) { return g_vk.has_descriptor_heaps; }
+static inline int vk_devmem_tables_at(void) { return DM_WINDOW; }
 #include "nx/gpu/vk/descriptors.c"
 
 #define HANDLE(type, value) ((type)(uintptr_t)(value))

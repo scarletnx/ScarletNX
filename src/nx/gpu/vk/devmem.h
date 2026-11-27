@@ -126,6 +126,8 @@ void vk_devmem_moving_stop(void);
    priority class, which takes requests) */
 int vk_devmem_emptying(void);
 void vk_devmem_moved(u64 bytes);
+/* where the descriptor tables go (DM_HOST or DM_WINDOW): the window only where the CPU maps all of the GPU's memory */
+int vk_devmem_tables_at(void);
 /* a buffer or an image with its memory bound, and both gone again (either may be none) */
 VkResult vk_devmem_buffer(const VkBufferCreateInfo* bci, const DevMemWant* want, VkBuffer* buf, DevMem* mem,
                           DevMemInfo* info);

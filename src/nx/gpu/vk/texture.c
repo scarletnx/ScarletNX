@@ -3051,16 +3051,27 @@ void vk_rt_corners_refresh(Surf* rt) {
         u32 w, h;
         int why;
         VkFmt f;
+        u64 used;
     } want[4];
     u32 n = 0;
     for (const Surf* c = rt->crop; c && n < 4; c = c->next)
         if (c->corner && c->crop_gen != rt->wgen && (i32)(g_vk_present - (u32)c->last_used) <= 1)
-            want[n++] = (typeof(want[0])){c->w, c->h, c->corner - 1, c->f};
+            want[n++] = (typeof(want[0])){c->w, c->h, c->corner - 1, c->f, c->last_used};
+    if (!n) return;
+    /* the draw that begins the pass can have written a descriptor of rt in the layout it is in now (sampled), and the
+       copies move it to a transfer layout: rt goes back to it, as the descriptor names it */
+    const VkImageLayout was = vk_surf_layout(rt);
+    const VkPipelineStageFlags2 stage = rt->stage;
+    const VkAccessFlags2 access = rt->access;
     /* rt_copy finds each copy again, and frees the ones unused too long: the list may change under a walk */
     for (u32 i = 0; i < n; i++) {
         const int as = want[i].why != VK_RT_COPY_CROP;
-        rt_copy(rt, want[i].w, want[i].h, as ? &want[i].f : NULL, want[i].why, 1, 1);
+        Surf* c = rt_copy(rt, want[i].w, want[i].h, as ? &want[i].f : NULL, want[i].why, 1, 1);
+        /* a refresh is no read: a copy that no draw reads ages out as before (rt_copy's 60 presents) */
+        if (c && c != rt) c->last_used = want[i].used;
     }
+    if (vk_surf_layout(rt) != was && (was == VK_LAYOUT(SHADER_READ_ONLY_OPTIMAL) || was == VK_IMAGE_LAYOUT_GENERAL))
+        vk_surf_use(vk_cmd(), rt, was, stage, access);
 }
 int vk_tex_is_copy_of(const Surf* t, const Surf* rt) {
     for (const Surf* x = rt->crop; x; x = x->next)
@@ -4713,9 +4724,9 @@ static struct {
     _Atomic(VkSampler) s;
 } g_sampler_tab[SAMPLER_TAB];
 static u32 sampler_slot(const u32* tsc, int raise, int integer) {
-    u32 hk = 2166136261u; /* 32-bit FNV-1a */
-    for (int i = 0; i < 8; i++) hk = (hk ^ tsc[i]) * 16777619u;
-    hk = (hk ^ (u32)(raise << 1 | integer)) * 16777619u;
+    u32 hk = SNX_FNV32_BASIS;
+    for (int i = 0; i < 8; i++) hk = snx_fnv32_step(hk, tsc[i]);
+    hk = snx_fnv32_step(hk, (u32)(raise << 1 | integer));
     return hk & (SAMPLER_TAB - 1);
 }
 VkSampler vk_sampler_find(const u32* tsc, int raise, int integer) {
