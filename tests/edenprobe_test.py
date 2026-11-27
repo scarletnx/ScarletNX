@@ -614,7 +614,9 @@ with tempfile.TemporaryDirectory() as temporary, tempfile.TemporaryDirectory(dir
     first.write_text('# build: abc1234\n# mode: quick cpu\ncpu: adds\ncpu: flaky\ncpu: multiplies\n')
     second.write_text('# build: abc1234\n# mode: cpu quick\ncpu: multiplies\ncpu: adds\n')
     other.write_text('# build: fed4321\n# mode: quick cpu\ncpu: adds\n')
-    written = root / 'written.txt'
+    (root / '.git').mkdir()  # a test-references clone, whose edenprobe folder baseline writes to
+    (root / 'edenprobe').mkdir()
+    written = root / 'edenprobe' / 'written.txt'
 
     def baseline(*files):
         command = [sys.executable, str(SCRIPT), 'baseline', *map(str, files), '-o', str(written)]
@@ -649,6 +651,23 @@ with tempfile.TemporaryDirectory() as temporary, tempfile.TemporaryDirectory(dir
         and 'left out: cpu: reads (skip (crashed), pass)' in text
         and written.read_text().endswith('# mode: cpu quick\ncpu: adds\n'),
         text,
+    )
+    written.unlink()
+    copied = root / 'cpm' / 'edenprobe'
+    copied.mkdir(parents=True)
+    done = subprocess.run(
+        [sys.executable, str(SCRIPT), 'baseline', str(first), '-o', str(copied / 'written.txt')],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    check(
+        'a folder outside a clone refused, named',
+        done.returncode == 1
+        and f'-o {copied / "written.txt"}: not in a test-references clone' in done.stderr
+        and not (copied / 'written.txt').exists(),
+        done.stdout + done.stderr,
     )
 
 for failure in failures:

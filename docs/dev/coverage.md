@@ -111,14 +111,15 @@ files of their own, and `%c` for continuous mode. Use an absolute path, since th
 
 [edenprobe](edenprobe.md) is the broadest single workload: hundreds of cases over the CPU, the kernel's scheduler,
 the filesystem, video, display, audio and the SDK hooks, each judged against the console. `scripts/edenprobe.py`
-passes its environment to the recompile and to each launch, so the variable is all it takes:
+passes its environment to the recompile and to each launch, so the variable is all it takes (`REFS`, the baselines'
+package, as [edenprobe.md](edenprobe.md) finds it):
 
 ```sh
 mkdir -p work/cov/prof
 LLVM_PROFILE_FILE="$PWD/work/cov/prof/%c%p.profraw" \
 python3 scripts/edenprobe.py run --runtime build/cov/scarletnx --nro work/cov/edenprobe.nro --out work/cov/ep \
     --mode "quick notime cpu fs video display kernel audio hooks" \
-    --baseline tests/edenprobe/linux-x86_64.txt --timeout 1200
+    --baseline "$REFS/edenprobe/linux-x86_64.txt" --timeout 1200
 ```
 
 Use the release CI pins (`EDENPROBE_VERSION` and `EDENPROBE_SHA256` in `.github/workflows/build.yml`), so the

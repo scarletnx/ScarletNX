@@ -33,7 +33,8 @@ of its report: its cases are the ones the release ends as it says on this machin
 the release's run before it.
 
 baseline writes the cases that end the same way in every BASELINE given (baseline.txt of runs of one build and one
-mode): a case that passes only now and then stays out.
+mode): a case that passes only now and then stays out. FILE is in the edenprobe folder of a test-references clone, where
+the tests' baselines are: another folder is refused, CPM's copy among them.
 """
 
 import argparse
@@ -485,6 +486,9 @@ def run(args):
 
 
 def baseline(args):
+    # CPM's copy of test-references is every build tree's, and has no .git
+    if not (args.output.resolve().parent.parent / '.git').exists():
+        sys.exit(f'-o {args.output}: not in a test-references clone (no .git beside its folder)')
     files = [Baseline(path) for path in args.baselines]
     first = files[0]
     for other in files[1:]:
