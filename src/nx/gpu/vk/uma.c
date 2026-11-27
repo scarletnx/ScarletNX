@@ -300,7 +300,9 @@ typedef struct {
     _Atomic u32 ndrg;
     u32 capdrg;
     u64 clock;    /* the generations' source */
-    _Atomic int old_any[UMA_ST_N]; /* the old tables hold a stamp of that kind (a page in no region) */
+    /* the newest stamp of each kind on a page in no region (the tables of before), 0 for none: a question after it is
+       answered with no walk of those tables, as Rgn.newest answers it for a region */
+    _Atomic u64 old_max[UMA_ST_N];
     UmaMemo memo[UMA_MEMO_N];
     UmaCheck* chk; /* draw_state_check=1 */
     /* statistics: the fast path's hits and misses by why (UMA_FAST_*), and the cross-checks' differences */
@@ -314,6 +316,7 @@ typedef struct {
     char apart1[UMA_LINE];
     _Atomic u64 hazards; /* any thread's, atomic */
     _Atomic u64 hz_done; /* a submit known done when the hazard count last asked (gpu_wrote), any thread's, atomic */
+    _Atomic u64 old_walks; /* the questions the tables of before were walked for (st_since), any thread's, atomic */
     char apart2[UMA_LINE];
 } Uma;
 static_assert(offsetof(Uma, lk) - offsetof(Uma, apart0) >= UMA_LINE &&
@@ -654,8 +657,9 @@ static int st_since(int k, u64 cpu, u64 len, u64 x) {
     if (st_pieces(cpu, len, since_piece, &q)) return 1;
     for (u32 i = 0; i < atomic_load_explicit(&g_uma.ndrg, memory_order_relaxed); i++)
         if (rg_since(&g_uma.rg[g_uma.drg[i]], k, cpu, len, x)) return 1;
-    return atomic_load_explicit(&g_uma.old_any[k], memory_order_relaxed) &&
-           old_since(&g_uma.written, &g_uma.read, &g_uma.live, k, cpu, len, x);
+    if (atomic_load_explicit(&g_uma.old_max[k], memory_order_relaxed) <= x) return 0;
+    atomic_fetch_add_explicit(&g_uma.old_walks, 1, memory_order_relaxed);
+    return old_since(&g_uma.written, &g_uma.read, &g_uma.live, k, cpu, len, x);
 }
 typedef struct {
     int k;
@@ -666,7 +670,8 @@ static int stamp_piece(void* ctx, u32 rid, u64 at, u64 n) {
     if (rid)
         rg_stamp(&g_uma.rg[rid], q->k, at, n, q->v);
     else {
-        atomic_store_explicit(&g_uma.old_any[q->k], 1, memory_order_relaxed);
+        if (atomic_load_explicit(&g_uma.old_max[q->k], memory_order_relaxed) < q->v)
+            atomic_store_explicit(&g_uma.old_max[q->k], q->v, memory_order_relaxed);
         old_stamp(q->k, at, n, q->v);
     }
     return 0;
@@ -1852,6 +1857,7 @@ void vk_uma_fast_counts(u64* hits, u64* blk) {
     *hits = g_uma.fast_hits;
     *blk = g_uma.fast_miss[UMA_FAST_BLK];
 }
+u64 vk_uma_old_walks(void) { return atomic_load_explicit(&g_uma.old_walks, memory_order_relaxed); }
 /* draw_state_check=1: what the old chain's own checks of uma.c say of a range the fast path bound at buf, off: the
    reason it would not be that, NULL when it would */
 const char* vk_uma_read_differs(u64 gva, u64 len, VkBuffer buf, u64 off) {
@@ -2277,7 +2283,7 @@ static void gpu_wrote(u64 cpu, u64 n) {
         if (hit) atomic_fetch_add_explicit(&g_uma.hazards, 1, memory_order_relaxed);
         return;
     }
-    if (!atomic_load_explicit(&g_uma.old_any[UMA_LIVE], memory_order_relaxed) ||
+    if (atomic_load_explicit(&g_uma.old_max[UMA_LIVE], memory_order_relaxed) <= done ||
         !write_pages_since(&g_uma.live, done, cpu, n))
         return;
     vk_submit_progress(&dummy, &done);
@@ -2432,7 +2438,7 @@ void vk_uma_frame(void) {
     LOG("vulkan:   page model over 600 presents: %llu reads bound in place with no other check, %llu took the "
         "old chain (%llu a region going, %llu not one run, %llu in no region, %llu across a region's edge, %llu "
         "blk, %llu off the alignment); %u regions with tables, %u that went kept, %llu KB of tables; %llu "
-        "differences of the cross-check since the start\n",
+        "questions walked the tables of the pages in no region; %llu differences of the cross-check since the start\n",
         (unsigned long long)g_uma.fast_hits,
         (unsigned long long)(g_uma.fast_miss[UMA_FAST_DEAD] + g_uma.fast_miss[UMA_FAST_RUN] +
                              g_uma.fast_miss[UMA_FAST_NONE] + g_uma.fast_miss[UMA_FAST_EDGE] +
@@ -2440,7 +2446,9 @@ void vk_uma_frame(void) {
         (unsigned long long)g_uma.fast_miss[UMA_FAST_DEAD], (unsigned long long)g_uma.fast_miss[UMA_FAST_RUN],
         (unsigned long long)g_uma.fast_miss[UMA_FAST_NONE], (unsigned long long)g_uma.fast_miss[UMA_FAST_EDGE],
         (unsigned long long)g_uma.fast_miss[UMA_FAST_BLK], (unsigned long long)g_uma.fast_miss[UMA_FAST_ALIGN], live,
-        kept, (unsigned long long)(words * 8 >> 10), (unsigned long long)g_uma.check_diffs);
+        kept, (unsigned long long)(words * 8 >> 10),
+        (unsigned long long)atomic_exchange_explicit(&g_uma.old_walks, 0, memory_order_relaxed),
+        (unsigned long long)g_uma.check_diffs);
     g_uma.fast_hits = 0;
     memset(g_uma.fast_miss, 0, sizeof g_uma.fast_miss);
     memset(g_uma.order_n, 0, sizeof g_uma.order_n);
