@@ -1748,6 +1748,16 @@ setting Pipeline stats
     help spills and the others that the driver reports, by the program hashes of the log's lines (a shader corpus file
     help of the program starts with the same first 8 hex digits). Draws that bind shader objects get no rows. On some
     help drivers, pipelines made with it are not the ones in the pipeline cache of runs without it. Empty: none
+setting Pipeline records
+    key pipeline_records
+    text 1024
+    path folder
+    default ""
+    startup
+    help A folder that gets each graphics pipeline written down whole before the driver makes it: its shaders' SPIR-V
+    help and every state it is made with (gpu/vk/pipeline_record.h). A record stays where the driver fails its pipeline
+    help or the game stops inside the driver, and the log or the crash report says where; snx-vk-replay makes it again
+    help away from the game. Pipelines take longer to make with it. Empty: none
 setting GL call census
     key gl_call_census
     text 1024

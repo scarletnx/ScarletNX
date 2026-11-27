@@ -13,6 +13,7 @@
 #include "nx/gpu/gpu_queue.h"
 #include "nx/gpu/gvk/gvk.h"
 #include "nx/gpu/vk/vk.h"
+#include "nx/gpu/vk/pipeline_record.h"
 #include "nx/gpu/vk/shading_rate.h"
 #include "nx/runtime/main.h"
 #include "nx/gpu/vk/ledger.h"
@@ -2692,6 +2693,7 @@ static void gpu_pstate_hold(int mode, int has_drm, const char* boost_lacks) {
    first one's driver lacked a command of (common/gpu/vk/device.h), and what the renderer sets up on it. 0 with the
    reason in g_vk.start_failure */
 static int create_device(void) {
+    if (g_settings.pipeline_records[0]) vk_pipeline_record_start(); /* before the device: device.txt */
     /* the GPU's clocks held (gpu_pstate_hold): read here, as an NVIDIA device is made with what holds them */
     int pstate = snx_gpu_pstate_mode(g_settings.gpu_pstate);
     if (pstate < 0) fatal("settings: gpu_pstate=%s is not auto, on or off", g_settings.gpu_pstate);
@@ -2727,6 +2729,7 @@ static int create_device(void) {
         return 0;
     }
     g_vk.dev = made.device;
+    vk_pipeline_record_device();
     memcpy(g_vk.dev_ext, made.extensions, made.extension_count * sizeof *made.extensions);
     g_vk.dev_ext_n = made.extension_count;
     const int core13 = d.core13, second = d.second, sparse_queue = d.sparse_queue;

@@ -825,6 +825,10 @@ DRIVER_CHOICES = {
             "gpu_pstate's boost on NVIDIA needs VK_NV_low_latency2 enabled: the vendor's own interface"
         ),
     },
+    'src/nx/gpu/vk/pipeline_replay.c': {
+        'if (p.vendorID == vendor && p.deviceID == device) phys = list[i], found = 1;': "a pipeline record's GPU "
+        "found among the system's: the identity of a file, which chooses no way",
+    },
     'src/nx/gpu/vk/upscaler/dlss.cpp': {
         'if (props.vendorID != 0x10DE) {': "DLSS is NVIDIA's own interface (Streamline): it runs on its GPUs alone",
     },
