@@ -30,6 +30,7 @@
 #define F1       (SNX_CODE_BASE + TEXT_OFF + 0x10u) /* the second function: ADD X0, X0, #1; B f2 */
 #define F2       (SNX_CODE_BASE + TEXT_OFF + 0x18u) /* the third, which only f1's B reaches: a hint makes it one */
 #define ADD_ONE  0x91000400u
+#define HEAVY    0x180000u /* the 1.5 MiB a unit's object is grown to (g_nx_module_native.heavy) */
 
 static struct {
     int failures;
@@ -37,6 +38,7 @@ static struct {
     int leave;       /* F1 left by the native back end, as one it can't make whole is */
     int no_native;   /* the host is to have no native back end */
     size_t chunk;    /* the instructions a unit takes, 0 for each function a unit */
+    size_t heavy;    /* a unit of this many functions comes out as an object of HEAVY bytes, 0 for none */
     char said[8192]; /* the errors the builder said since the last build, a line each */
     unsigned char memory[TEXT_OFF + 0x1000];
 } g_nx_module_native;
@@ -50,6 +52,16 @@ static int test_cached_object(SnxCodegen* codegen, size_t first, size_t last, co
     int rc = snx_native_cached_object(codegen, first, last, &asked, made, object, size, reused, error, error_size);
     for (size_t k = first; !rc && g_nx_module_native.leave && k < last; ++k)
         if (codegen->functions[k].start == F1) made[k - first] = 0;
+    /* an object over a ceiling by the test's own size, zeros after what the back end made: how many bytes a back
+       end takes for an instruction changes with every one of its commits, and with the module's format */
+    if (!rc && g_nx_module_native.heavy && last - first == g_nx_module_native.heavy && *object && *size < HEAVY) {
+        unsigned char* grown = (unsigned char*)snx_alloc(HEAVY);
+        memcpy(grown, *object, *size);
+        memset(grown + *size, 0, HEAVY - *size);
+        free(*object);
+        *object = grown;
+        *size = HEAVY;
+    }
     return rc;
 }
 static int test_native_available(void) { return !g_nx_module_native.no_native && snx_native_available(); }
@@ -188,7 +200,8 @@ static void a64(const char* folder) {
 
 /* A unit holds no more than its ceiling: instructions over what the ceiling takes are said, with the count in effect;
    a unit whose object still comes out over it is made again as two, the module the same at each build; a function
-   that alone is over it refuses the module, named with both sizes */
+   that alone is over it refuses the module, named with both sizes. The objects over a ceiling are HEAVY bytes, by
+   test_cached_object */
 static void units(const char* folder) {
     SnxModuleBuild asked = {0};
     SnxCodegenOptions options = {0};
@@ -197,8 +210,6 @@ static void units(const char* folder) {
     char wanted[256];
     unsigned char *first = NULL, *second = NULL;
     size_t first_size = 0, second_size = 0;
-    SnxU64 ceiling;
-    int rc = 0, split = 0;
     g_nx_module_native.chunk = 2000000000u;
     snprintf(wanted, sizeof wanted,
              "unit_instructions=2000000000 would make units of more than the %.1f MiB one holds "
@@ -208,20 +219,17 @@ static void units(const char* folder) {
     CHECK(!build(module, asked, options) && snx_is_file(module) && !strcmp(g_nx_module_native.said, wanted),
           "more instructions than a unit's ceiling takes, said with the count in effect (%s): %s", wanted,
           g_nx_module_native.said);
-    /* the three functions one unit of 8 instructions, which every ceiling tried takes: the largest one its object is
-       over splits it, and both halves fit there */
+    /* the three functions one unit of 8 instructions, which a ceiling of 1 MiB takes, and its object 1.5 MiB: it is
+       split, and both halves, of the back end's own size, fit */
     g_nx_module_native.chunk = 8;
-    for (ceiling = 16384; ceiling >= 1024 && !rc && !split; ceiling -= 8) {
-        asked.unit_bytes = ceiling;
-        rc = build(module, asked, options);
-        split = strstr(g_nx_module_native.said, "made again as two") != NULL;
-    }
+    g_nx_module_native.heavy = 3;
+    asked.unit_bytes = 1u << 20;
+    int rc = build(module, asked, options);
     snprintf(wanted, sizeof wanted,
-             "a code unit of 8 instructions came to 0.0 MiB, more than the 0.0 MiB a unit holds "
+             "a code unit of 8 instructions came to 1.5 MiB, more than the 1.0 MiB a unit holds "
              "on this machine: made again as two, of 1 and 2 functions\n");
-    CHECK(!rc && split && snx_is_file(module) && !strcmp(g_nx_module_native.said, wanted),
-          "a unit over its ceiling (%llu bytes) made again as two (%s): %s", (unsigned long long)asked.unit_bytes,
-          wanted, g_nx_module_native.said);
+    CHECK(!rc && snx_is_file(module) && !strcmp(g_nx_module_native.said, wanted),
+          "a unit over its ceiling made again as two (%s): %s", wanted, g_nx_module_native.said);
     CHECK(!snx_mkdirs(apart) && !build(again, asked, options), "the same module made again in %s: %s", apart,
           g_nx_module_native.said);
     first = snx_read_file(module, &first_size);
@@ -230,14 +238,15 @@ static void units(const char* folder) {
           "a module whose unit was split is the same bytes at each build (%zu and %zu)", first_size, second_size);
     free(first);
     free(second);
-    /* a ceiling no function's object is under: the first function refused, named */
+    /* a ceiling the functions' objects, each one's 1.5 MiB, are over: the first function refused, named */
     asked.unit_bytes = 200;
     g_nx_module_native.chunk = 1000;
+    g_nx_module_native.heavy = 1;
     free(again);
     again = at(folder, "units-none" SUFFIX);
     rc = build(again, asked, options);
     snprintf(wanted, sizeof wanted,
-             "the function at 0x%llx alone makes an object of 0.0 MiB, more than the 0.0 MiB a "
+             "the function at 0x%llx alone makes an object of 1.5 MiB, more than the 0.0 MiB a "
              "unit holds",
              (unsigned long long)(SNX_CODE_BASE + TEXT_OFF));
     CHECK(rc && !snx_is_file(again) && strstr(g_nx_module_native.said, wanted) &&
@@ -245,6 +254,7 @@ static void units(const char* folder) {
                                               "holds on this machine: 2 in effect\n"),
           "a function over the ceiling alone refuses the module (%s): %s", wanted, g_nx_module_native.said);
     g_nx_module_native.chunk = 0;
+    g_nx_module_native.heavy = 0;
     free(again);
     free(apart);
     free(module);
