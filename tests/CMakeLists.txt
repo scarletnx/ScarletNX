@@ -3929,14 +3929,17 @@ target_link_libraries(snx-test-nx-module-native PRIVATE snx_nx_descriptor snx_nx
 add_test(NAME nx_module_native COMMAND snx-test-nx-module-native "${CMAKE_CURRENT_BINARY_DIR}/nx-module-native")
 set_tests_properties(nx_module_native PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
 # the AArch32 dispatch loop's lookup keeps no frame and no stack canary: compile(), its slow path, stays out of line
-# (arm_dispatch_frame.py reads arm.c's object with the build's llvm-objdump). With ThinLTO the object is bitcode and the
-# link makes the machine code, so it reads the program, which the line table ties to arm.c (cmake/lto.cmake)
+# (arm_dispatch_frame.py reads arm.c's object with the compiler's llvm-objdump). With ThinLTO the object is bitcode and
+# the link makes the machine code, so it reads the program, which the line table ties to arm.c (cmake/lto.cmake)
 # snx_core and scarletnx come from src/nx and src/multicall, which the root CMakeLists adds after tests/
-if(Python3_Interpreter_FOUND AND SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY AND SNX_LLVM_CONFIG)
-    get_filename_component(snx_llvm_bin "${SNX_LLVM_CONFIG}" DIRECTORY)
-    find_program(SNX_LLVM_OBJDUMP llvm-objdump HINTS "${snx_llvm_bin}" NO_DEFAULT_PATH)
-    find_program(SNX_LLVM_NM llvm-nm HINTS "${snx_llvm_bin}" NO_DEFAULT_PATH)
-    find_program(SNX_LLVM_SYMBOLIZER llvm-symbolizer HINTS "${snx_llvm_bin}" NO_DEFAULT_PATH)
+if(Python3_Interpreter_FOUND AND SNX_BUILD_NX AND NOT SNX_TOOLS_ONLY)
+    # the tools of the Clang that builds it (a link to it, as /usr/bin/clang, leads to its own folder)
+    get_filename_component(snx_cc_real "${CMAKE_C_COMPILER}" REALPATH)
+    get_filename_component(snx_cc_real "${snx_cc_real}" DIRECTORY)
+    get_filename_component(snx_cc_bin "${CMAKE_C_COMPILER}" DIRECTORY)
+    find_program(SNX_LLVM_OBJDUMP llvm-objdump HINTS "${snx_cc_real}" "${snx_cc_bin}")
+    find_program(SNX_LLVM_NM llvm-nm HINTS "${snx_cc_real}" "${snx_cc_bin}")
+    find_program(SNX_LLVM_SYMBOLIZER llvm-symbolizer HINTS "${snx_cc_real}" "${snx_cc_bin}")
     if(SNX_LLVM_OBJDUMP AND (NOT SNX_LTO_GENEX OR (SNX_LLVM_NM AND SNX_LLVM_SYMBOLIZER)))
         add_test(NAME arm_dispatch_frame COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/arm_dispatch_frame.py"
             --objdump "${SNX_LLVM_OBJDUMP}"
