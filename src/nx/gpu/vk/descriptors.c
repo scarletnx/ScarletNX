@@ -140,12 +140,7 @@ int vk_descriptors_room(u32 slot) {
     return g_descriptors.frame[slot].capacity - g_descriptors.frame[slot].used >= 5 * g_descriptors.largest;
 }
 static VkDeviceSize least(VkDeviceSize a, VkDeviceSize b) { return a < b ? a : b; }
-/* One buffer for every frame's part and the lasting tables', where the device's limits let one binding reach all of
-   it: the smallest of the largest allocation, the binding ranges of resources and samplers, and their address spaces
-   (the tables hold combined image samplers), less the texture table's buffer, which vk_table_init made before the
-   first draw and which is in both address spaces too (arena_spaces). The reported limits go from 128 KiB to 1 TiB,
-   so the parts take their size from them: 64 MiB each where it fits, else an equal share. 0: a buffer for each
-   frame, as before */
+/* the bytes of both descriptor buffer address spaces less the texture table's buffer: 0 where the table fills them */
 static VkDeviceSize arena_spaces(void) {
     const VkPhysicalDeviceDescriptorBufferPropertiesEXT* p = &g_vk.descriptor_props;
     const VkDeviceSize table = vk_table_descriptor_bytes(),
@@ -153,6 +148,12 @@ static VkDeviceSize arena_spaces(void) {
                                       p->samplerDescriptorBufferAddressSpaceSize);
     return spaces > table ? spaces - table : 0;
 }
+/* One buffer for every frame's part and the lasting tables', where the device's limits let one binding reach all of
+   it: the smallest of the largest allocation, the binding ranges of resources and samplers, and their address spaces
+   (the tables hold combined image samplers), less the texture table's buffer, which vk_table_init made before the
+   first draw and which is in both address spaces too (arena_spaces). The reported limits go from 128 KiB to 1 TiB,
+   so the parts take their size from them: 64 MiB each where it fits, else an equal share. 0: a buffer for each
+   frame, as before */
 static int arena_shared(void) {
     const VkPhysicalDeviceDescriptorBufferPropertiesEXT* p = &g_vk.descriptor_props;
     VkDeviceSize limit = least(least(g_vk.alloc_cap, p->maxResourceDescriptorBufferRange),
@@ -215,14 +216,7 @@ static void arena(u32 slot) {
         tried = 1;
         if (arena_shared()) return;
     }
-    /* the frames' buffers together within the address spaces, as the shared arena's (a share of 0 bytes holds no
-       descriptor: those buffers then take their size as before) */
-    const VkPhysicalDeviceDescriptorBufferPropertiesEXT* p = &g_vk.descriptor_props;
-    const VkDeviceSize share = arena_spaces() / VK_FRAMES,
-                       ranges = least(p->maxResourceDescriptorBufferRange, p->maxSamplerDescriptorBufferRange);
-    VkDeviceSize capacity = least(DESCRIPTOR_BYTES, g_vk.alloc_cap);
-    if (share && share < capacity) capacity = share;
-    if (ranges && ranges < capacity) capacity = ranges; /* a binding reaches the whole buffer, as the arena's */
+    VkDeviceSize capacity = DESCRIPTOR_BYTES < g_vk.alloc_cap ? DESCRIPTOR_BYTES : g_vk.alloc_cap;
     VkBufferCreateInfo info = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = capacity,
         .usage = VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT |
                  VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT |

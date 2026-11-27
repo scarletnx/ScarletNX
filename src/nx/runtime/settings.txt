@@ -2093,9 +2093,10 @@ setting Constant buffer window epochs
     default 0
     startup
     words Off|On
-    help 1 = the constant buffer windows in the staging ring share one base, which moves for all of them at once
-    help when a new copy is past its 64 KiB: a kept copy below the base is copied again. Each bank moved its own window
-    help at its own time, and the draws' dynamic offsets changed about every third draw. 0 = a window for each bank
+    help 1 = each draw thread's constant buffer windows in the staging ring share one base, which moves for all of them
+    help at once when a new copy is past its 64 KiB: a kept copy below the base is copied again. Each bank moved its
+    help own window at its own time, and the draws' dynamic offsets changed about every third draw. The texture words
+    help keep a window of their own. 0 = a window for each bank
 setting Dynamic constant buffers
     key vk_dynamic_cbufs
     int 0 1

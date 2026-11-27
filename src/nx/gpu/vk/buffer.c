@@ -1759,7 +1759,9 @@ static GfxOut* out_absorb(GfxOut* h) {
    wrote into and a draw then bound, about 500 times in 600 presents, 8 ms of the GPU thread each. Only a result of one
    run of guest memory whose original bytes are guest memory's (not a kept, logged, write-only or GPU-made one), taken
    into this submission, as its copy back for landing is recorded at the submission's end. 0 when it can't be, with
-   nothing recorded */
+   no merge recorded: with nothing recorded where it is refused before the merge (a split's worker, the conditions
+   above, the device's limits, no staging, o not taken), and where no descriptor set is left, after the pass's end
+   and a barrier, with o taken into this submission */
 static int range_owned(u64 gva, u64 len);
 static int gfx_rebase(GfxOut* o) {
     /* a split's worker (draw_batches=2): its merge goes into its list, which the GPU runs after the renderer thread's
