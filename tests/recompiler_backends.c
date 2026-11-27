@@ -38,7 +38,7 @@
    alone, with an exact helper's call, and leaves, and the first of those, and stops there
    --frozen FILE: the native back end held to FILE's hashes (support/frozen.h), its programs drawn with the generator's
    options of FILE's args line, which those given beside it must be. A run of none of --frozen, --qemu, --programs,
-   --refused and --coverage has nothing to compare with, and fails saying so
+   --refused, --coverage and --counts has nothing to compare with, and fails saying so
    --qemu and --programs take no recorded ends: their reference is QEMU's, and C's
    --counts FILE: each target op's words with RETs, the native object's bytes: OP, name, size, then a line of hex
    --counts-blocks N FILE: the same records, but N guest words in each function before its RET, so the prologue and
@@ -746,7 +746,9 @@ static int generator_option(int argc, char** argv, int i) {
     static const char* const valued[] = {"--functions", "--states", "--seed", "--target"};
     for (size_t k = 0; k < sizeof valued / sizeof *valued; ++k)
         if (!strcmp(argv[i], valued[k])) return i + 1 < argc ? 2 : 1;
-    if (!strcmp(argv[i], "--programs") || !strcmp(argv[i], "--calls") || !strcmp(argv[i], "--calls-back")) return 1;
+    if (!strcmp(argv[i], "--programs") || !strcmp(argv[i], "--calls") || !strcmp(argv[i], "--calls-back") ||
+        !strcmp(argv[i], "--fall"))
+        return 1;
     if (!strcmp(argv[i], "--long")) return i + 2 < argc ? 3 : argc - i;
     if (strcmp(argv[i], "--ops") && strcmp(argv[i], "--words")) return 0;
     int n = 1;
@@ -1492,7 +1494,7 @@ int main(int argc, char** argv) {
                            : "no run's");
         return 2;
     }
-    if (!frozen && !other) {
+    if (!frozen && !other && !counts) { /* --counts writes the code made, and compares nothing */
         fprintf(stderr, "FAIL: no --frozen FILE: nothing to compare with\n");
         return 1;
     }
