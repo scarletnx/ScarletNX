@@ -3,6 +3,7 @@
 #include "common/utilities/ui_ring.h"
 #include "common/utilities/ui_colors.h"
 #include "gui/icons.h"
+#include <math.h>
 #include <string.h>
 
 u32 ui_ground(void) { return ui_rgba(UI_INK); }
@@ -66,4 +67,17 @@ float ui_icon(SnxUiList* l, float x, float y, int scale, unsigned icon, u32 rgba
     ui_quad_add(l, x, y, 16.0f * (float)scale, 16.0f * (float)scale, SNX_UI_ICONS_X + 16 * (int)(icon - GUI_ICON_FIRST),
                 SNX_UI_PICTURE_Y, 16, 16, rgba, 0, UI_SHARP, UI_ICON, (int)(icon - GUI_ICON_FIRST));
     return 16.0f * (float)scale;
+}
+void ui_loading_ring(SnxUiList* l, float cx, float cy, int scale, u64 now_ms, int still, u32 dim, u32 soft, u32 ink) {
+    /* the launcher's strokes are a line a pixel in from each whole pixel of their width: 1.5 at 1x takes two */
+    const float s = (float)scale, r = 7.0f * s, inner = r * 0.62f, thick = ceilf(s * 1.5f);
+    const float mid = inner - thick / 2, from = still ? 0.0f : (float)(now_ms / 4 % 360);
+    const int edge = (int)ceilf(s * 0.5f);
+    ui_shape(l, cx - r, cy - r, 2 * r, 2 * r, UI_SHAPE_CIRCLE, NULL, 0, edge, dim);
+    ui_shape(l, cx - inner, cy - inner, 2 * inner, 2 * inner, UI_SHAPE_CIRCLE, NULL, 0, (int)thick, soft);
+    for (int i = 0; i < UI_RING_BAR_DOTS; ++i) { /* dots a stroke wide, overlapping along the bar */
+        const float a = (from + 70.0f * (float)i / (UI_RING_BAR_DOTS - 1)) * 3.14159265f / 180.0f;
+        ui_shape(l, cx + mid * cosf(a) - thick / 2, cy + mid * sinf(a) - thick / 2, thick, thick, UI_SHAPE_CIRCLE, NULL,
+                 UI_SHAPE_FILLED, 1, ink);
+    }
 }

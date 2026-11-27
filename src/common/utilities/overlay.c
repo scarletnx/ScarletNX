@@ -1,27 +1,51 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-#include "nx/runtime/platform/overlay.h"
-#include "nx/runtime/platform/ctrl_applet.h"
-#include "nx/runtime/platform/tracy.h"
-#include "nx/runtime/platform/backend.h"
+#include "common/utilities/overlay.h"
 #include "common/utilities/fatal_screen.h"
-#include "nx/runtime/platform/gamepad.h"
 #include "common/utilities/hotkeys.h"
-#include "nx/runtime/platform/hud.h"
-#include "nx/runtime/platform/plat.h" /* the notices' lock */
-#include "nx/runtime/platform/prepare_screen.h"
+#include "common/platform/thread.h" /* the notices' lock */
 #include "common/utilities/stats.h"
-#include "nx/runtime/platform/touch.h"
-#include "nx/runtime/platform/unattended.h"
 #include "common/utilities/vpad_showcase.h"
-#include "nx/runtime/options.h"
-#include "nx/gpu/renderer.h"
 #include "common/utilities/ui_colors.h"
 #include "gui/icons.h"
 #include "common/utilities/pad_screen.h"
 #include "common/utilities/users.h"
 #include "common/utilities/common.h"
 #include "common/utilities/bits.h"
+
+/* the runtime's (overlay_set_host), none of it until one is given */
+static const SnxMenuHost g_no_host;
+static const SnxMenuHost* g_host = &g_no_host;
+void overlay_set_host(const SnxMenuHost* host) { g_host = host ? host : &g_no_host; }
+static int host_capture(void) { return g_host->capture ? g_host->capture(0) : 0; }
+static int host_tas_recording(void) { return g_host->tas_recording ? g_host->tas_recording() : 0; }
+static int host_tas_replaying(void) { return g_host->tas_replaying ? g_host->tas_replaying() : 0; }
+static int host_tv_choice(void) { return g_host->tv_choice ? g_host->tv_choice() : 0; }
+static int host_preparing(void) { return g_host->preparing ? g_host->preparing() : 0; }
+static const char* host_pad_name(int i) { return g_host->pad_name ? g_host->pad_name(i) : NULL; }
+static int host_picked(const char* key) { return g_host->picked ? g_host->picked(key) : 0; }
+static int host_next_start(const char* key, char* out, size_t n) {
+    return g_host->next_start ? g_host->next_start(key, out, n) : 0;
+}
+static int host_old_settings(void) { return g_host->old_settings ? g_host->old_settings() : 0; }
+static int host_reads(const char* key) { return !g_host->setting_shown || g_host->setting_shown(key); }
+static const IniOpt* host_row(const char* key) { return g_host->row ? g_host->row(key) : NULL; }
+static const _Atomic int g_no_changes; /* the picks' count of a runtime that keeps none */
+static void host_pad_store(const int* setting) {
+    if (g_host->pad_store) g_host->pad_store(setting);
+}
+/* the profiler's zones, ended where their variable goes out of scope, and its plot: nothing without one */
+static void* host_zone_begin(int zone) { return g_host->zone_begin ? g_host->zone_begin(zone) : NULL; }
+static void host_zone_end(void** zone) {
+    if (*zone && g_host->zone_end) g_host->zone_end(*zone);
+}
+static void host_zone_value(void* zone, u64 value) {
+    if (zone && g_host->zone_value) g_host->zone_value(zone, value);
+}
+static void host_plot(const char* name, double value) {
+    if (g_host->plot) g_host->plot(name, value);
+}
+#define MENU_ZONE(var, zone) [[gnu::cleanup(host_zone_end)]] void* var = host_zone_begin(zone)
 #include <SDL3/SDL_keycode.h>
 #include <ctype.h>
 #include <stdio.h>
@@ -67,7 +91,7 @@ static const unsigned MAIN_ICONS[M_COUNT] = {
     GUI_ICON_IMAGE,   GUI_ICON_ERASER,    GUI_ICON_LOG_OUT};
 /* the Settings page's entries: the sections of the game's .ini (settings.txt's) the launcher's Settings group, those
    the menu has a page of its own for left out, in the launcher's order with Debug last, a section's own page (Vulkan
-   Extensions) after it. Each a table of g_ini_sections, the game's own rows (INI_IN_GAME) left out of its page */
+   Extensions) after it. Each a table of the host's sections, the game's own rows (INI_IN_GAME) left out of its page */
 static const char* const SETTINGS_SECTIONS[] = {"Display", "Graphics", "Audio", "Performance", "Network", "Debug"};
 enum { ENTRIES_MAX = 3 * (int)(sizeof SETTINGS_SECTIONS / sizeof *SETTINGS_SECTIONS) };
 static struct {
@@ -80,10 +104,12 @@ static void settings_entries(void) {
     const IniOpt* o;
     nentries = 0;
     for (k = 0; k < sizeof SETTINGS_SECTIONS / sizeof *SETTINGS_SECTIONS; ++k)
-        for (s = 0; s < g_ini_sections_count; ++s)
-            for (t = 0; !strcmp(g_ini_sections[s].name, SETTINGS_SECTIONS[k]) && t < 3 && g_ini_sections[s].table[t];
+        for (s = 0; s < g_host->sections_count; ++s)
+            for (t = 0;
+                 !strcmp(g_host->sections[s].name, SETTINGS_SECTIONS[k]) && t < 3 && g_host->sections[s].table[t];
                  ++t) {
-                for (o = g_ini_sections[s].table[t]; o->key && (o->flags & INI_IN_GAME); ++o) continue;
+                for (o = g_host->sections[s].table[t]; o->key && ((o->flags & INI_IN_GAME) || !host_reads(o->key)); ++o)
+                    continue;
                 if (o->key && nentries < ENTRIES_MAX) {
                     entries[nentries].section = s;
                     entries[nentries++].table = t;
@@ -91,14 +117,14 @@ static void settings_entries(void) {
             }
 }
 static const char* entry_name(int e) {
-    const IniSection* sec = &g_ini_sections[entries[e].section];
+    const IniSection* sec = &g_host->sections[entries[e].section];
     return sec->page[entries[e].table] ? sec->page[entries[e].table] : sec->name;
 }
 /* entry e's row i, NULL past its last */
 static const IniOpt* entry_row(int e, int i) {
     const IniOpt* o;
-    for (o = g_ini_sections[entries[e].section].table[entries[e].table]; o->key; ++o)
-        if (!(o->flags & INI_IN_GAME) && !i--) return o;
+    for (o = g_host->sections[entries[e].section].table[entries[e].table]; o->key; ++o)
+        if (!(o->flags & INI_IN_GAME) && host_reads(o->key) && !i--) return o;
     return NULL;
 }
 static int entry_rows(int e) {
@@ -265,7 +291,14 @@ static char refused[2 * OVERLAY_COLS_MAX];
 static int slot_item(int i) { return slot_at ? i : i + 1; }
 /* the first page's item m shown now */
 static int main_shows(int m) {
-    return m == M_CAPTURE ? g_renderer->capture(0) != 0 : m == M_CLEAN ? ini_old_settings() > 0 : 1;
+    return m == M_CAPTURE    ? host_capture() != 0
+           : m == M_CLEAN    ? host_old_settings() > 0
+           : m == M_PADS     ? g_host->pad_name != NULL /* a runtime with its own gamepads' page */
+           : m == M_TV_MODE  ? g_host->tv_step != NULL
+           : m == M_VOLUME   ? host_reads("volume") && host_row("volume")
+           : m == M_STATS    ? host_row("stats") != NULL
+           : m == M_SETTINGS ? g_host->sections != NULL
+                             : 1;
 }
 /* the first page's item shown at i, those that do not show now skipped */
 static int main_item(int i) {
@@ -316,9 +349,10 @@ static int tas_row(int i) { return page == PAGE_STATES && i >= nslots ? i - nslo
 /* the slots of the recordings read and the rows' choices back to what runs now */
 static void tas_read(void) {
     char why[200];
-    for (int s = 1; s <= TAS_SLOTS; ++s) tas_frames[s] = unattended_slot_frames(s, why, sizeof why);
-    tas_pick[T_RECORD] = unattended_recording();
-    tas_pick[T_REPLAY] = unattended_replaying();
+    for (int s = 1; s <= TAS_SLOTS; ++s)
+        tas_frames[s] = g_host->tas_frames ? g_host->tas_frames(s, why, sizeof why) : 0;
+    tas_pick[T_RECORD] = host_tas_recording();
+    tas_pick[T_REPLAY] = host_tas_replaying();
 }
 static void tas_shown(int row, char* out, size_t n);
 static int items(void) {
@@ -326,7 +360,7 @@ static int items(void) {
            : page == PAGE_SHORTCUTS ? shortcuts() + 1
            : page == PAGE_CONTROLS  ? C_COUNT
            : page == PAGE_PADS      ? P_COUNT
-           : page == PAGE_STATES    ? nslots + T_COUNT
+           : page == PAGE_STATES    ? nslots + (g_host->tas_record ? T_COUNT : 0) /* a runtime's own recordings */
            : page == PAGE_SLOT      ? S_COUNT - !slot_at
            : page == PAGE_ASK       ? 2
            : page == PAGE_KEYS      ? keys_rows()
@@ -390,17 +424,15 @@ static int all_shown(void) {
 static const IniOpt* setting(int i) {
     if (page == PAGE_SECTION) return entry_row(entry_at, i);
     if (page == PAGE_MAIN)
-        return main_item(i) == M_STATS    ? ini_find(g_display_ini, "stats")
-               : main_item(i) == M_VOLUME ? ini_find(g_audio_ini, "volume")
-                                          : NULL;
-    if (page == PAGE_CONTROLS) return ini_find(i == C_TOUCH ? g_backend_ini : g_vpad_ini, CONTROLS[i]);
+        return main_item(i) == M_STATS ? host_row("stats") : main_item(i) == M_VOLUME ? host_row("volume") : NULL;
+    if (page == PAGE_CONTROLS) return i == C_TOUCH ? host_row(CONTROLS[i]) : ini_find(g_vpad_ini, CONTROLS[i]);
     if (page == PAGE_PADS && i == P_PLAYER) return NULL;
     if (page == PAGE_PADS && pad_player && (i == P_SWAP || i == P_RUMBLE)) { /* the player's own */
         char key[32];
         snprintf(key, sizeof key, "gamepad_p%d_%s", pad_player, i == P_SWAP ? "swap_ab" : "rumble");
-        return ini_find(g_gamepad_players_ini, key);
+        return host_row(key);
     }
-    if (page == PAGE_PADS) return ini_find(g_gamepad_ini, PADS[i]);
+    if (page == PAGE_PADS) return host_row(PADS[i]);
     return page == PAGE_BUTTONS && i > 0 && i <= SNX_VPAD_COUNT ? &g_vpad_shown_ini[i - 1] : NULL;
 }
 /* the key of item i that the game's picks can hold: a setting's, and TV mode's (docked); NULL for an action */
@@ -412,7 +444,7 @@ static const char* pick_key(int i) {
 /* item i set for this game alone, in its picks: its value marked *, Y or Delete back to Global */
 static int picked(int i) {
     const char* k = pick_key(i);
-    return k && ini_picked(k);
+    return k && host_picked(k);
 }
 /* a page with an item the game's picks hold, which its second line of help says how to read */
 static int page_picked(void) {
@@ -494,7 +526,7 @@ enum { PICK_TEXT = 256 }; /* a value the Settings page reads or steps */
 /* a section row's value: the next start's where it is read at the start and that differs (ini_next_start), else the
    value in effect, as text */
 static void row_now(const IniOpt* o, char* out, size_t n) {
-    if ((o->flags & INI_STARTUP) && ini_next_start(o->key, out, n)) return;
+    if ((o->flags & INI_STARTUP) && host_next_start(o->key, out, n)) return;
     if (o->type == INI_INT)
         snprintf(out, n, "%d", atomic_load_explicit((_Atomic const int*)o->var, memory_order_relaxed));
     else if (o->type == INI_FLOAT)
@@ -515,7 +547,7 @@ static int section_step(const IniOpt* o, int step) {
         snprintf(to, sizeof to, "%g", ini_float_step(strtod(now, NULL), o->lo, o->hi, step));
     else if (!text_step(o, now, step, to, sizeof to))
         return OVERLAY_NONE;
-    ini_set_apply(o->key, to);
+    if (g_host->set) g_host->set(o->key, to);
     return OVERLAY_NONE;
 }
 /* an item's text, and its value at the right, * after a value the game's picks hold */
@@ -559,7 +591,7 @@ static void label(int i, char* text, size_t size, char* value, size_t vsize) {
         char word[OVERLAY_COLS];
         snprintf(text, size, "%s", main_items[main_item(i)]);
         if (main_item(i) == M_TV_MODE) { /* the choice in effect, in docked's words */
-            ini_word(ini_find(g_display_ini, "docked"), options_tv_mode_choice(), word, sizeof word);
+            ini_word(host_row("docked"), host_tv_choice(), word, sizeof word);
             snprintf(value, vsize, "%s%s", word, own);
         } else if (main_item(i) < M_CAPTURE)
             snprintf(value, vsize, ">");
@@ -633,37 +665,30 @@ static int map_swallow;           /* the press the page took: no menu key */
 /* the pad the page is for: the player's, or with every player's the first one; its name, its labels and what it
    holds (with every player's, what any holds) */
 static void map_pad(void) {
-    int i = pad_player ? gamepad_of_player(pad_player - 1) : 0;
-    const char* name = i >= 0 ? gamepad_name(i) : NULL;
+    int i = !pad_player ? 0 : g_host->pad_of_player ? g_host->pad_of_player(pad_player - 1) : -1;
+    const char* name = i >= 0 ? host_pad_name(i) : NULL;
     snprintf(map.pad, sizeof map.pad, "%s", name ? name : "");
-    if (i < 0 || !gamepad_layout(i, map.labels, &map.symmetric)) {
+    if (i < 0 || !g_host->pad_layout || !g_host->pad_layout(i, map.labels, &map.symmetric)) {
         memset(map.labels, 0, sizeof map.labels);
         map.symmetric = 0;
     }
-    map.held = i < 0 ? 0 : gamepad_held(pad_player ? i : -1);
+    map.held = i < 0 || !g_host->pad_held ? 0 : g_host->pad_held(pad_player ? i : -1);
 }
 static void map_open(void) {
-    SnxGamepadConfig* g = gamepad_config();
-    const SnxPlayerConfig* p = pad_player ? gamepad_player(pad_player - 1) : NULL;
     snx_pad_screen_start(&map);
-    map.own = p && p->has_map ? p->own : g->own;
-    map.swap_ab = p && g_settings.player_swap_a_b[pad_player - 1] >= 0 ? g_settings.player_swap_a_b[pad_player - 1]
-                                                                       : g_settings.swap_a_b;
+    int own = pad_player && g_host->pad_map ? g_host->pad_map(pad_player, &map.own) : -1; /* -1: no such player */
+    if (own != 1 && g_host->pad_map) g_host->pad_map(0, &map.own);
+    map.swap_ab = own >= 0 && g_settings.player_swap_a_b[pad_player - 1] >= 0
+                      ? g_settings.player_swap_a_b[pad_player - 1]
+                      : g_settings.swap_a_b;
     map_pad();
     page = PAGE_MAP;
     focus = top = 0;
 }
 /* what the page did, kept in the game's .ini as the menu's other settings */
 static int map_did(int did) {
-    SnxGamepadConfig* g = gamepad_config();
-    if (did == SNX_PAD_DID_MAP && pad_player) { /* the player's own map from now on */
-        SnxPlayerConfig* p = gamepad_player(pad_player - 1);
-        p->own = map.own;
-        p->has_map = 1;
-        gamepad_store_player_map(pad_player - 1);
-    } else if (did == SNX_PAD_DID_MAP) {
-        g->own = map.own;
-        gamepad_store_map();
+    if (did == SNX_PAD_DID_MAP) { /* the player's own map from now on, or every player's */
+        if (g_host->pad_map_set) g_host->pad_map_set(pad_player, &map.own);
     } else if (did == SNX_PAD_DID_LEAVE) {
         page = PAGE_PADS;
         focus = P_MAP;
@@ -697,9 +722,9 @@ void overlay_shortcut_key(unsigned key, unsigned mods) {
 int overlay_delete(void) {
     const char* k = page == PAGE_KEYS || page == PAGE_MAP ? NULL : pick_key(focus);
     if (page == PAGE_SHORTCUTS) return overlay_backspace();
-    if (!k || !ini_picked(k)) return OVERLAY_NONE;
+    if (!k || !host_picked(k)) return OVERLAY_NONE;
     changed();
-    ini_unpick(k);
+    if (g_host->unpick) g_host->unpick(k);
     return OVERLAY_NONE;
 }
 int overlay_backspace(void) {
@@ -762,7 +787,7 @@ static void map_draw(SnxUiList* l, int sw, int sh) {
 }
 /* what a T_ row says: what runs, and what its choice would do */
 static void tas_shown(int row, char* out, size_t n) {
-    int now = row == T_RECORD ? unattended_recording() : unattended_replaying(), pick = tas_pick[row];
+    int now = row == T_RECORD ? host_tas_recording() : host_tas_replaying(), pick = tas_pick[row];
     if (!now && !pick)
         snprintf(out, n, "Off");
     else if (pick == now)
@@ -783,8 +808,9 @@ static void tas_step(int row, int step) {
 /* a T_ row's slot set (0 ends it), what came of it said */
 static void tas_apply(int row, int slot) {
     char why[200] = "", said[OVERLAY_COLS_MAX + 1];
-    int ok = row == T_RECORD ? unattended_record_from_menu(slot, why, sizeof why)
-                             : unattended_replay_from_menu(slot, why, sizeof why);
+    int (*start)(int, char*, size_t) = row == T_RECORD ? g_host->tas_record : g_host->tas_replay;
+    int ok = start ? start(slot, why, sizeof why) : 0;
+    if (!start) snprintf(why, sizeof why, "the game's window records and replays no input");
     if (!ok)
         snprintf(said, sizeof said, "%s", why);
     else if (slot)
@@ -797,7 +823,7 @@ static void tas_apply(int row, int slot) {
 }
 /* Enter on a T_ row: the slot it shows taken, or what runs ended. A recording over another is asked first */
 static void tas_take(int row) {
-    int now = row == T_RECORD ? unattended_recording() : unattended_replaying();
+    int now = row == T_RECORD ? host_tas_recording() : host_tas_replaying();
     int to = tas_pick[row] == now ? 0 : tas_pick[row];
     if (!to && !now) return;
     if (row == T_RECORD && to && tas_frames[to] != 0) {
@@ -833,7 +859,7 @@ static int act(int i, int step) {
     if (page == PAGE_KEYS) return keys_act(i, step);
     if (page == PAGE_MAIN && main_item(i) == M_TV_MODE) {
         /* a select or a tap steps on, as the key does; Left and Right either way */
-        options_tv_mode_step(step < 0 ? -1 : 1, NULL, 0);
+        if (g_host->tv_step) g_host->tv_step(step < 0 ? -1 : 1, NULL, 0);
         return OVERLAY_NONE;
     }
     if (o && page == PAGE_SECTION) return section_step(o, step ? step : 1);
@@ -841,7 +867,7 @@ static int act(int i, int step) {
         int* v = (int*)o->var;
         int to = ini_step(o, *v, step ? step : 1);
         if (page == PAGE_CONTROLS && i == C_TOUCH)
-            backend_touch_set(to);
+            g_host->touch_set ? g_host->touch_set(to) : (void)(*v = to);
         else if (page == PAGE_BUTTONS) {
             *v = to;
             vpad_store_shown(i - 1);
@@ -851,7 +877,7 @@ static int act(int i, int step) {
         } else {
             *v = to;
             if (page == PAGE_PADS)
-                gamepad_store(v);
+                host_pad_store(v);
             else
                 vpad_store(v);
         }
@@ -882,9 +908,10 @@ static int act(int i, int step) {
             top = 0;
             return OVERLAY_NONE;
         }
-        page_open(i == M_PADS        ? PAGE_PADS
-                  : i == M_STATES    ? PAGE_STATES
-                  : i == M_SHORTCUTS ? PAGE_SHORTCUTS
+        int m = main_item(i); /* the item, those that do not show now skipped */
+        page_open(m == M_PADS        ? PAGE_PADS
+                  : m == M_STATES    ? PAGE_STATES
+                  : m == M_SHORTCUTS ? PAGE_SHORTCUTS
                                      : PAGE_CONTROLS);
         return OVERLAY_NONE;
     }
@@ -928,8 +955,8 @@ static int act(int i, int step) {
     }
     if (page == PAGE_ASK && i == 0 && ask == ASK_CLEAN) { /* at the next tick; the menu's first page again */
         char said[64];
-        snprintf(said, sizeof said, "Clean Old Settings: %d taken out", ini_old_settings());
-        ini_clean_old();
+        snprintf(said, sizeof said, "Clean Old Settings: %d taken out", host_old_settings());
+        if (g_host->clean_old) g_host->clean_old();
         overlay_notice(MAIN_ICONS[M_CLEAN], said);
         page_open(PAGE_MAIN);
         return OVERLAY_NONE;
@@ -959,7 +986,7 @@ static int act(int i, int step) {
         }
     } else if (page == PAGE_CONTROLS && i == C_EDIT) {
         /* not over the loading screen, which hides the controls: they would be moved unseen */
-        if (!prepare_screen_shown()) return OVERLAY_EDIT;
+        if (!host_preparing()) return OVERLAY_EDIT;
     } else if (page == PAGE_CONTROLS && i == C_BUTTONS)
         page_open(PAGE_BUTTONS);
     else if (page == PAGE_CONTROLS && i == C_RESET) { /* asked first: the controls' places go */
@@ -1056,12 +1083,12 @@ void overlay_toast(unsigned icon, const char* text, u64 now_ns) {
 int overlay_toasting(u64 now_ns) { return now_ns < atomic_load_explicit(&toasts_until, memory_order_relaxed); }
 unsigned overlay_setting_icon(const char* key) {
     int s, t;
-    for (s = 0; s < g_ini_sections_count; ++s)
-        for (t = 0; t < 3 && g_ini_sections[s].table[t]; ++t)
-            if (ini_find(g_ini_sections[s].table[t], key)) {
-                const char* in = g_ini_sections[s].page[t];
+    for (s = 0; s < g_host->sections_count; ++s)
+        for (t = 0; t < 3 && g_host->sections[s].table[t]; ++t)
+            if (ini_find(g_host->sections[s].table[t], key)) {
+                const char* in = g_host->sections[s].page[t];
                 unsigned icon = in ? gui_page_icon(in) : GUI_ICON_NONE;
-                return icon != GUI_ICON_NONE ? icon : gui_group_icon(gui_group_name(g_ini_sections[s].name));
+                return icon != GUI_ICON_NONE ? icon : gui_group_icon(gui_group_name(g_host->sections[s].name));
             }
     return GUI_ICON_NONE;
 }
@@ -1194,7 +1221,7 @@ static void user_draw(SnxUiList* l, float left, float right, float y, int s) {
         name = "";
     }
     if (x < left) return;
-    ui_picture(l, right - 2 * edge - side, y + 2 * edge, side);
+    if (g_host->picture) g_host->picture(l, right - 2 * edge - side, y + 2 * edge, side);
     if (*name) ui_text(l, x + cw, y, s, name, UI_PAGE);
     ui_fill(l, x, y, box, edge, UI_PAGE);
     ui_fill(l, x, y + ch - edge, box, edge, UI_PAGE);
@@ -2002,7 +2029,7 @@ static void menu_dialog(Dialog* d, char (*text)[OVERLAY_COLS_MAX + 1], char (*va
                  page == PAGE_SETTINGS ? "This game's own, over the launcher's Settings for every game."
                                        : "(next start): read when the game starts, taken at its next start.");
     } else if (page == PAGE_ASK && ask == ASK_CLEAN) {
-        int n = ini_old_settings();
+        int n = host_old_settings();
         snprintf(title, size / 2, "SCARLETNX  /  CLEAN OLD SETTINGS?");
         snprintf(pads, size / 2, "%d key%s this version does not use go from the game's .ini and its own picks.", n,
                  n == 1 ? "" : "s");
@@ -2147,7 +2174,7 @@ static int slider_under(float x, float y, SnxOverlayRect* bar, int* scale) {
 void overlay_pointer_down(u64 id, float x, float y, const int safe[4]) {
     /* on the panel a finger is the menu's, whatever control lies under it; off it a control's, but under the loading
        screen, where they aren't drawn (vk/ui.c) */
-    if (!on_panel(x, y) && !prepare_screen_shown() && vpad_down(id, x, y, safe)) return;
+    if (!on_panel(x, y) && !host_preparing() && vpad_down(id, x, y, safe)) return;
     tap_id = id;
     tap_down = 1;
     tap_at[0] = x;
@@ -2228,12 +2255,12 @@ void overlay_pointers_reset(void) {
 /* the gamepads' page's second row: the first one connected by name, and how many more */
 static const char* pads_hint(char* out, size_t size) {
     int more = 0;
-    if (!gamepad_name(0)) return "None connected.";
-    while (gamepad_name(more + 1)) ++more;
+    if (!host_pad_name(0)) return "None connected.";
+    while (host_pad_name(more + 1)) ++more;
     if (more)
-        snprintf(out, size, "%.27s and %d more", gamepad_name(0), more);
+        snprintf(out, size, "%.27s and %d more", host_pad_name(0), more);
     else
-        snprintf(out, size, "%s", gamepad_name(0));
+        snprintf(out, size, "%s", host_pad_name(0));
     return out;
 }
 /* the notifications: a band of one row each from the picture's top left corner down, the oldest first, which is its
@@ -2252,7 +2279,8 @@ static void toast_draw(SnxUiList* l, int sw, int sh, const float* stats, const f
                        int span[OVERLAY_TOASTS + 1]) {
     int px, py, s, i, right = 0;
     float cw, ch, x, y, w = 0, h;
-    SNX_ZONE_V(z_toast, "plat overlay toast lay", (u64)ntoasts);
+    MENU_ZONE(z_toast, OVERLAY_ZONE_TOAST_LAY);
+    host_zone_value(z_toast, (u64)ntoasts);
     overlay_place(sw, sh, &px, &py, &s);
     s = stats_scale(s);
     cw = 8.0f * (float)s;
@@ -2296,15 +2324,16 @@ static void aside_draw(SnxUiList* l, const SnxOverlayRect* r) {
     int slot = page == PAGE_STATES ? (focus < nslots ? focus : -1) : slot_at;
     float e = r->w / (float)(SNX_UI_IMAGE_W / 2); /* the scale: a pixel of it */
     u32 version;
-    ui_image_get(&version);
+    version = 0;
+    if (g_host->image_get) g_host->image_get(&version);
     if (slot != at || gen != slots_gen || version != given) {
-        ui_image_set(slot >= 0 ? slots[slot].thumb : NULL);
-        ui_image_get(&given);
+        if (g_host->image_set) g_host->image_set(slot >= 0 ? slots[slot].thumb : NULL);
+        if (g_host->image_get) g_host->image_get(&given);
         at = slot;
         gen = slots_gen;
     }
     ui_fill(l, r->x - e, r->y - e, r->w + 2 * e, r->h + 2 * e, UI_INK);
-    if (!ui_image(l, r->x, r->y, r->w, r->h)) {
+    if (!g_host->image || !g_host->image(l, r->x, r->y, r->w, r->h)) {
         ui_fill(l, r->x, r->y, r->w, r->h, UI_PAGE);
         ui_text(l, r->x + (r->w - 8.0f * 8 * e) / 2, r->y + (r->h - 16 * e) / 2, (int)e,
                 slot >= 0 && slots[slot].when[0] ? "No image" : "Empty", UI_SOFT);
@@ -2351,7 +2380,13 @@ static int watched_same(void) {
 }
 static void menu_lay(int sw, int sh, const MenuKey* key) {
     static DialogRows rows_of; /* the renderer's */
-    SNX_ZONE_TV(z_menu, "plat overlay menu lay", (u64)key->what, "dialog %d", (int)key->what);
+    MENU_ZONE(z_menu, OVERLAY_ZONE_MENU_LAY);
+    host_zone_value(z_menu, (u64)key->what);
+    if (z_menu && g_host->zone_text) {
+        char said[32];
+        snprintf(said, sizeof said, "dialog %d", (int)key->what);
+        g_host->zone_text(z_menu, said);
+    }
     char text[VISIBLE][OVERLAY_COLS_MAX + 1], value[VISIBLE][OVERLAY_COLS_MAX + 1], pads[2 * OVERLAY_COLS_MAX + 64];
     SnxUiList l = {g_menu.q, 0, MENU_QUADS};
     Dialog d;
@@ -2374,7 +2409,7 @@ static void menu_lay(int sw, int sh, const MenuKey* key) {
         if (page == PAGE_BUTTONS)
             for (r = 0; r < SNX_VPAD_COUNT; ++r) watch(&g_settings.control_shown[r]); /* All's */
         if (page == PAGE_ASK) watch(&g_settings.save_state_backup);
-        watch(ini_picks_changes()); /* a pick the launcher set or took out meanwhile: its * */
+        watch(g_host->picks_changes ? g_host->picks_changes() : &g_no_changes); /* the launcher's meanwhile: its * */
     }
     g_menu.n = l.n;
     g_menu.key = *key;
@@ -2407,7 +2442,7 @@ static void loading_draw(SnxUiList* l, int sw, int sh, u64 now_ns) {
 void overlay_draw(SnxUiList* l, int sw, int sh, u64 now_ns) {
     MenuKey key;
     int before = l->n; /* the list's quads before this overlay's, so the plot counts only the overlay's own */
-    SNX_ZONE(z_draw, "plat overlay draw");
+    MENU_ZONE(z_draw, OVERLAY_ZONE_DRAW);
     if (atomic_load_explicit(&notice_given, memory_order_acquire)) {
         pm_lock(&notice_lock);
         if (notice[0]) overlay_toast(notice_icon, notice, now_ns);
@@ -2419,8 +2454,8 @@ void overlay_draw(SnxUiList* l, int sw, int sh, u64 now_ns) {
         page == PAGE_MAP) { /* the button map's page shows what the pads hold as they hold it */
         map_draw(l, sw, sh);
         g_menu.laid = 0;
-        SNX_ZONE_VALUE(z_draw, 3); /* button map */
-        SNX_PLOT("plat overlay quads", (double)(l->n - before));
+        host_zone_value(z_draw, 3); /* button map */
+        host_plot("plat overlay quads", (double)(l->n - before));
         return;
     }
     memset(&key, 0, sizeof key);
@@ -2429,29 +2464,29 @@ void overlay_draw(SnxUiList* l, int sw, int sh, u64 now_ns) {
     key.what = atomic_load_explicit(&shown, memory_order_relaxed)                ? MENU_PAGE
                : atomic_load_explicit(&g_overlay.kb_shown, memory_order_relaxed) ? MENU_KB
                                                                                  : MENU_NONE;
-    SNX_ZONE_VALUE(z_draw, key.what); /* 0: toasts only, 1: menu, 2: keyboard, 3: map */
+    host_zone_value(z_draw, key.what); /* 0: toasts only, 1: menu, 2: keyboard, 3: map */
     key.changes = atomic_load_explicit(&g_changes, memory_order_acquire);
     if (key.what != MENU_NONE) {
         key.hotkeys = hotkeys_version();
-        key.pads = gamepad_names_version();
-        key.tv = options_tv_mode_choice();
-        key.capture = g_renderer->capture(0);
+        key.pads = g_host->pad_names_version ? g_host->pad_names_version() : 0;
+        key.tv = host_tv_choice();
+        key.capture = host_capture();
         key.users = g_user_count;
         if (!g_menu.laid || memcmp(&key, &g_menu.key, sizeof key) || !watched_same()) menu_lay(sw, sh, &key);
         ui_append_kept(l, &(SnxUiList){g_menu.q, g_menu.n, g_menu.n}, g_menu.version, &g_menu, NULL);
     }
     if (overlay_loading_shown()) loading_draw(l, sw, sh, now_ns);
-    if (!atomic_load_explicit(&shown, memory_order_relaxed) &&
-        ctrl_dialog_shown()) { /* the controller applet's, under the menu */
+    if (!atomic_load_explicit(&shown, memory_order_relaxed) && g_host->dialog_shown &&
+        g_host->dialog_shown()) { /* the controller applet's, under the menu */
         int px, py, scale;
         overlay_place(sw, sh, &px, &py, &scale);
-        ctrl_dialog_draw(l, sw, sh, scale);
+        g_host->dialog_draw(l, sw, sh, scale);
     }
     toasts_drop(now_ns);
     if (ntoasts) {
         int percent = overlay_display_percent(), first = l->n, i;
         float stats[4] = {0}, debug[4] = {0};
-        int boxed = stats_box_drawn(stats), listed = hud_box_drawn(debug); /* both kept clear of */
+        int boxed = stats_box_drawn(stats), listed = g_host->hud_box ? g_host->hud_box(debug) : 0; /* both kept clear */
         if (g_toast.given != toast_version || g_toast.sw != sw || g_toast.sh != sh || g_toast.percent != percent ||
             g_toast.boxed != boxed || g_toast.listed != listed || memcmp(g_toast.stats, stats, sizeof stats) ||
             memcmp(g_toast.debug, debug, sizeof debug) || !g_toast.version) {
@@ -2472,7 +2507,7 @@ void overlay_draw(SnxUiList* l, int sw, int sh, u64 now_ns) {
         for (i = 0; i < ntoasts; ++i) /* as one fades: its quads the same, their alpha moving; whole, no span */
             ui_fade_set(first + g_toast.span[i], first + g_toast.span[i + 1], (unsigned)overlay_toast_alpha(i, now_ns));
     }
-    SNX_PLOT("plat overlay quads", (double)(l->n - before));
+    host_plot("plat overlay quads", (double)(l->n - before));
 }
 int overlay_error_hit(const SnxOverlayRect* r, float x, float y) {
     return r && r->w > 0 && r->h > 0 && x >= r->x && x < r->x + r->w && y >= r->y && y < r->y + r->h;

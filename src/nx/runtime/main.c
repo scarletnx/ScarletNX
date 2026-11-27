@@ -3,6 +3,7 @@
 /* The runtime's startup: which game to run, its recompiled code, its folders and settings, the console's parts in the
    order they depend on each other, the shaders made before the game draws (prepare_wait), the game's main thread;
    then the frontend's loop at the display's rate until the run ends, saving what outlives it */
+#include "nx/runtime/platform/overlay_host.h"
 #include "nx/runtime/main.h"
 #include "common/cpu/recompiler/loader/gdb_jit.h"
 #include "common/cpu/recompiler/x64/x64_cache.h"
@@ -53,7 +54,7 @@
 #include "nx/runtime/platform/log.h"
 #include "nx/gpu/shader/shader.h"
 #include "nx/gpu/texture/blocklinear.h"
-#include "nx/runtime/platform/overlay.h"
+#include "common/utilities/overlay.h"
 #include "nx/runtime/platform/prepare_screen.h"
 #include "nx/runtime/platform/resources.h"
 #include "nx/runtime/platform/plat.h"
@@ -562,6 +563,8 @@ static void mark_said(void* data, const SnxRunMark* mark) {
 }
 /* the game's start's mark (run_mark.h) in its log's folder, after each start of it that left its own there unended is
    said. On iOS the game runs under the launcher's, in the launcher's process */
+/* the profiler's lines (common/utilities/tracy.c) in the log: a failure's as a warning */
+static void tracy_said(int warn, const char* line) { logf_(warn ? 0 : 1, "%s", line); }
 static void mark_start(void) {
     char why[1024];
     int any = 0, made = snx_run_mark_start(g_statedir[0] ? g_statedir : ".", mark_said, &any, why, sizeof why);
@@ -1506,6 +1509,7 @@ int snx_main(int argc, char** argv) {
     }
     /* the game's errors in its log, where a fatal's "the line before" is: a game's process on Android has no stderr */
     snx_error_sink(log_error_line);
+    overlay_host_nx(); /* the game's menu's parts that are the Switch's */
     state_profiler();
     /* the guest's address space before the game's code, which would take a share of a small one: a pack's arena with its
        write alias leaves an iOS app's 13 GiB or so no run of the 5 GiB the guest needs */
@@ -1573,7 +1577,9 @@ int snx_main(int argc, char** argv) {
     }
     /* after the header, so the client's own lines do not come before it and a capture that cannot start still leaves
        a log: it is asked for by a setting, and a run without it is better than no run */
-    if (snx_tracy_init(title)) WARN("tracy: no capture this run; it goes on without one\n");
+    if (snx_tracy_init(title, &(SnxTracyHost){g_exedir, g_exename, g_opt_tracy_capture, g_opt_tracy_client,
+                                              g_opt_headless, tracy_said}))
+        WARN("tracy: no capture this run; it goes on without one\n");
     say_old_layout();
     mark_start();
     /* before the JIT's first load (jit_init, arm.c's blocks, the GPU's macros), and only when asked: GDB stops the

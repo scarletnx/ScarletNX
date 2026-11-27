@@ -8,22 +8,13 @@
 #include "common/utilities/ui_quads.h"
 #include "common/utilities/ui_ring.h"
 
-/* The launcher's ring that turns while a screen waits (src/gui/main.c's ring), centred at cx, cy for letters at scale
-   (s): a thin outer circle 7 s pixels in radius in dim, its edge 0.5 s, one 0.62 of it in soft whose edge is 1.5 s,
-   each rounded up to whole pixels, and on it a bar of 70 degrees in ink going round a turn every 1.44 s of now_ms,
-   from 3 o'clock clockwise; at 0 degrees when still (the wait over). Shapes (UI_SHAPE_CIRCLE), the bar's a row of
-   filled ones */
-#define UI_RING_BAR_DOTS 8
-void ui_loading_ring(SnxUiList* l, float cx, float cy, int scale, u64 now_ms, int still, u32 dim, u32 soft, u32 ink);
 
 /* the picture of the user playing (common/utilities/users.h), side pixels square at x, y: drawn SNX_UI_PICTURE texels
    square in the YoRHa theme's [head] picture shape, square or round (the rest transparent); 0 when the theme shows
    none, which draws nothing */
 int ui_picture(SnxUiList* l, float x, float y, float side);
-/* One picture apart from the atlas, SNX_UI_IMAGE_W x SNX_UI_IMAGE_H: the menu's save state thumbnail. ui_image draws it
-   at x, y, w x h: 0 while there is none, which draws nothing */
-#define SNX_UI_IMAGE_W 320
-#define SNX_UI_IMAGE_H 180
+/* ui_image draws the picture apart from the atlas (ui_quads.h's SNX_UI_IMAGE_W x SNX_UI_IMAGE_H, the menu's save state
+   thumbnail) at x, y, w x h: 0 while there is none, which draws nothing */
 int ui_image(SnxUiList* l, float x, float y, float w, float h);
 /* the same, of the picture's texels u, v, uw x vh alone */
 int ui_image_part(SnxUiList* l, float x, float y, float w, float h, int u, int v, int uw, int vh);

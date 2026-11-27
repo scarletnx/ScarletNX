@@ -88,19 +88,6 @@ static void user_picture(u32* a, int w) {
             at[(size_t)y * (size_t)w + (size_t)i] = (p & 0xFF00FF00u) | (p >> 16 & 0xFFu) | (p & 0xFFu) << 16;
         }
 }
-void ui_loading_ring(SnxUiList* l, float cx, float cy, int scale, u64 now_ms, int still, u32 dim, u32 soft, u32 ink) {
-    /* the launcher's strokes are a line a pixel in from each whole pixel of their width: 1.5 at 1x takes two */
-    const float s = (float)scale, r = 7.0f * s, inner = r * 0.62f, thick = ceilf(s * 1.5f);
-    const float mid = inner - thick / 2, from = still ? 0.0f : (float)(now_ms / 4 % 360);
-    const int edge = (int)ceilf(s * 0.5f);
-    ui_shape(l, cx - r, cy - r, 2 * r, 2 * r, UI_SHAPE_CIRCLE, NULL, 0, edge, dim);
-    ui_shape(l, cx - inner, cy - inner, 2 * inner, 2 * inner, UI_SHAPE_CIRCLE, NULL, 0, (int)thick, soft);
-    for (int i = 0; i < UI_RING_BAR_DOTS; ++i) { /* dots a stroke wide, overlapping along the bar */
-        const float a = (from + 70.0f * (float)i / (UI_RING_BAR_DOTS - 1)) * 3.14159265f / 180.0f;
-        ui_shape(l, cx + mid * cosf(a) - thick / 2, cy + mid * sinf(a) - thick / 2, thick, thick, UI_SHAPE_CIRCLE, NULL,
-                 UI_SHAPE_FILLED, 1, ink);
-    }
-}
 int ui_image(SnxUiList* l, float x, float y, float w, float h) {
     return ui_image_part(l, x, y, w, h, 0, 0, SNX_UI_IMAGE_W, SNX_UI_IMAGE_H);
 }

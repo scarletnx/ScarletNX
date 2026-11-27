@@ -6,6 +6,9 @@
    folder (a console's ux0:app/<title ID>, its update in ux0:patch/<title ID>) is linked there instead: app/ and patch/
    name the dump's folders, whose files stay where they are */
 #include "vita/runtime/main.h"
+#include "common/utilities/game_log.h"
+#include "common/utilities/tracy.h"
+#include "common/utilities/menu_window.h"
 #include "vita/aot/module.h"
 #include "vita/gpu/present.h"
 #include "vita/hle/hle.h"
@@ -330,8 +333,10 @@ static int play(const char* folder, const char* ini, bool recompile, double seco
     vita_present_shot(process);
     vita_gxm_free(process); /* the renderer, before the device it draws on */
     vita_present_free();
+    snx_tracy_shutdown();       /* a capture's lines before the last */
     if (!status) puts("Exit."); /* a run that ended well says so last, as every driver's */
 done:
+    snx_tracy_shutdown(); /* a stop before the end: the capture keeps what came */
     vita_process_free(process);
     vita_native_close(&native);
     vita_image_free(&image);
@@ -506,9 +511,15 @@ int snx_vita_main(int argc, char** argv) {
             goto done;
         }
     }
-    char *ini = vita_game_file(folder, ".ini"), *name = last_part(folder);
+    char *ini = vita_game_file(folder, ".ini"), *name = last_part(folder), logged[1600];
+    /* the game's log, before any thread of the run's: every line from here in <name>.log too */
+    if (name && snx_game_log_start(folder, name, &g_settings.log_size_limit, logged, sizeof logged))
+        fprintf(stderr, "scarletnx-vita: %s: the run's lines are on the terminal alone\n", logged);
     vpad_set_say(vita_present_say);
     if (name) vpad_settings(folder, name, argc, argv);
+    if (name) snx_menu_window_open(SNX_SYSTEM_VITA, folder, name);       /* the game's menu: Back, F2 or a pad's Home */
+    if (name && snx_tracy_console(folder, name, seconds > 0))
+        fputs("scarletnx-vita: tracy: no capture this run; it goes on without one\n", stderr);
     if (snx_cli_fullscreen_flag(argc, argv)) g_settings.fullscreen = 1;  /* -f's over the settings' */
     if (g_settings.button_map[0]) vita_input_map(g_settings.button_map); /* the input's to read, as the 3DS's */
     free(name);

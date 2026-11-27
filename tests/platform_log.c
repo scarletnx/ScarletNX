@@ -178,7 +178,7 @@ int main(int argc, char** argv) {
         CHECK(!log_full_take(), "the toast was told before any cut");
         /* a long line across the start's 64 KiB: the start ends before it, with room after it in those 64 KiB where a
            start taken again at the next cut would hold the first cut's line too */
-        while (snx_file_size(log) < LOG_HEAD - 1200) LOG("short\n");
+        while (snx_file_size(log) < SNX_RUN_LOG_HEAD - 1200) LOG("short\n");
         memset(line, 'y', 1900);
         line[1900] = 0;
         LOG("%s\n", line);

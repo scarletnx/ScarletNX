@@ -5,6 +5,9 @@
    native module, then runs on the emulated board, the way the NX and GNU ABI system types prepare their
    code before playing. */
 #include "agb/board/board.h"
+#include "common/utilities/game_log.h"
+#include "common/utilities/tracy.h"
+#include "common/utilities/menu_window.h"
 #include "agb/cpu/agb_cpu.h"
 #include "agb/cpu/memmap.h"
 #include "agb/cpu/recomp.h"
@@ -339,6 +342,10 @@ int snx_agb_main(int argc, char** argv) {
             own = NULL;
             name = folder ? program_name(folder) : NULL;
         }
+        /* the game's log, before any thread of the run's: every line from here in <name>.log too */
+        char logged[1600];
+        if (folder && name && snx_game_log_start(folder, name, &g_settings.log_size_limit, logged, sizeof logged))
+            fprintf(stderr, "scarletnx-agb: %s: the run's lines are on the terminal alone\n", logged);
         /* the folder's own, as a 3DS or Vita game's: source= and system=, which the launcher and the deploy read */
         ini = folder && name ? snx_format("%s/%s.ini", folder, name) : NULL;
         if (!rom && ini && !(rom = snx_ini_value(ini, "source")))
@@ -482,6 +489,9 @@ int snx_agb_main(int argc, char** argv) {
         /* the window's settings, and a run's with none (state_save, state_load) */
         vpad_set_say(agb_host_say);
         vpad_settings(folder, name, argc, argv);
+        snx_menu_window_open(SNX_SYSTEM_GBA, folder, name); /* the game's menu: Back, F2 or a pad's Home */
+        if (snx_tracy_console(folder, name, frames >= 0))
+            fputs("scarletnx-agb: tracy: no capture this run; it goes on without one\n", stderr);
         if (snx_cli_fullscreen_flag(argc, argv)) g_settings.fullscreen = 1; /* -f's over the settings' */
         if (frames < 0) {
             char* title = snx_format("ScarletNX - %s (GBA)", board.cartridge.title[0] ? board.cartridge.title : name);
@@ -558,6 +568,7 @@ int snx_agb_main(int argc, char** argv) {
                    recomp.compiled);
         if (agb_recomp_save(&recomp, &board, error, sizeof error))
             fprintf(stderr, "scarletnx-agb: cannot save the recompiled ROM: %s\n", error);
+        snx_tracy_shutdown();                 /* a capture's lines before the last */
         if (played && !status) puts("Exit."); /* a run that ended well says so last, as every driver's */
         free(audio);
         free(presses);

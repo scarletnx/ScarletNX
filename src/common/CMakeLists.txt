@@ -31,8 +31,8 @@ add_library(scarletnx-common STATIC
     utilities/common.c utilities/process.c utilities/font.c utilities/ui_quads.c utilities/ini_lines.c utilities/config_file.c utilities/game_ini.c utilities/program_start.c utilities/pad_map.c
     utilities/pad_screen.c utilities/users.c utilities/mii_model.c utilities/mii_gltf.c utilities/mii_db.c utilities/logscan.c utilities/language_tag.c utilities/mods.c utilities/patches.c utilities/cheat_list.c utilities/state_header.c
     utilities/gpu_driver.c utilities/gpu_driver_stage.c utilities/elf_dynamic.c utilities/run_mark.c utilities/cli.c
-    utilities/old_llvm_caches.c utilities/spirv_emit.c utilities/spirv_opt.c utilities/script.c utilities/pace.c
-    memory/host.c memory/jemalloc.c
+    utilities/run_log.c utilities/game_log.c utilities/old_llvm_caches.c utilities/spirv_emit.c utilities/spirv_opt.c
+    utilities/script.c utilities/pace.c memory/host.c memory/jemalloc.c
     cpu/recompiler/variants.c runtime/linux_signal.c)
 target_compile_definitions(scarletnx-common PRIVATE _CRT_SECURE_NO_WARNINGS
     SNX_HOST_COMPILER="${CMAKE_C_COMPILER}"
@@ -195,6 +195,7 @@ if(TARGET snx_zstd)
     target_link_libraries(snx_prepared PUBLIC scarletnx-common PRIVATE snx_zstd)
 endif()
 include("${PROJECT_SOURCE_DIR}/cmake/console_settings.cmake") # which settings each console takes
+include("${PROJECT_SOURCE_DIR}/cmake/tracy.cmake") # the profiler (snx_tracy, snx_tracy_client)
 include("${PROJECT_SOURCE_DIR}/cmake/vpad.cmake") # the on-screen controls (snx_vpad)
 include("${PROJECT_SOURCE_DIR}/cmake/error.cmake") # what stops a game, its kinds and actions (snx_error)
 # What the Vulkan frontends (src/nx/gpu/vk, src/3ds/gpu/vk, src/vita/gpu) share of a device: the instance, queries,
@@ -281,4 +282,12 @@ if(TARGET Vulkan::Headers AND TARGET SDL3::SDL3)
         install(TARGETS snx_gpu_driver_hook LIBRARY DESTINATION lib/${ANDROID_ABI})
         install(FILES gpu/vk/ADRENOTOOLS-NOTICE.txt DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/scarletnx)
     endif()
+    # RenderDoc's captures of a console's frames (gpu/vk/renderdoc.c): RenderDoc's in-application API header, the stats'
+    # box's lines about it (snx_vpad's stats.c) and the settings that name its captures
+    add_library(snx_vk_renderdoc STATIC gpu/vk/renderdoc.c gpu/vk/renderdoc_window.c)
+    set_target_properties(snx_vk_renderdoc PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON)
+    target_compile_options(snx_vk_renderdoc PRIVATE -Wall -Wextra -Werror=missing-prototypes)
+    target_compile_definitions(snx_vk_renderdoc PRIVATE VK_NO_PROTOTYPES)
+    target_include_directories(snx_vk_renderdoc PRIVATE "${renderdoc_app_SOURCE_DIR}" "${PROJECT_BINARY_DIR}/generated")
+    target_link_libraries(snx_vk_renderdoc PUBLIC snx_vk_common snx_vpad snx_vpad_sdl snx_settings_runtime)
 endif()

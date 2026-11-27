@@ -1,8 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The game's menu (runtime/platform/overlay.c): where it goes, its pages, what a tap, a move or a step does, its look;
+/* The game's menu (common/utilities/overlay.c): where it goes, its pages, what a tap, a move or a step does, its look;
    and ui.c's atlas and text */
-#include "nx/runtime/platform/overlay.h"
+#include "common/utilities/overlay.h"
+#include "nx/runtime/platform/overlay_host.h"
 #include <math.h>
 #include "nx/runtime/platform/hud.h"
 #include "common/utilities/stats.h"
@@ -47,6 +48,24 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* SNX_OVERLAY_DUMP=FILE: every list the menu draws appended to FILE, its quads' bytes as they are, so two builds of
+   the menu can be compared byte for byte over the same states */
+static void dump_draw(SnxUiList* l, int sw, int sh, u64 now_ns) {
+    static FILE* out;
+    static int opened;
+    (overlay_draw)(l, sw, sh, now_ns);
+    if (!opened) {
+        const char* path = getenv("SNX_OVERLAY_DUMP");
+        opened = 1;
+        out = path && *path ? fopen(path, "wb") : NULL;
+    }
+    if (!out) return;
+    fprintf(out, "draw %dx%d %llu: %d\n", sw, sh, (unsigned long long)now_ns, l->n);
+    fwrite(l->q, sizeof *l->q, (size_t)l->n, out);
+    fflush(out);
+}
+#define overlay_draw dump_draw
 
 /* a quad as it holds it (ui.h's ui_view): its place in pixels, its colour widened back to 8 bits */
 static SnxUiQuadView qv(const SnxUiQuad* q) { return ui_view(q); }
@@ -1353,6 +1372,7 @@ int main(void) {
     const u32 ink = 0xFF3A4145u;
     int x, y, sc;
     vpad_set_store(store);
+    overlay_host_nx();            /* the Switch's runtime's parts, as its main gives them */
     snx_pad_map_unset(&pads.own); /* as gamepad.c starts it: every control the button in its place */
     snx_pad_map_unset(&players[0].own);
     prepare_screen();

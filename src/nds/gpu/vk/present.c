@@ -4,6 +4,8 @@
    swapchain image at the frame's shape through the upscaler and the anti-aliasing the Switch's settings ask for (sharp
    pixels with both off), the on-screen controls over it, and each submission sent with it. */
 #include "nds/gpu/vk/vk.h"
+#include "common/utilities/tracy.h"
+#include "common/gpu/vk/renderdoc.h"
 #include "common/gpu/vk/gpu_pstate.h"
 #include "nds/gpu/vk/vk_present.h"
 #include "common/gpu/vk/present_fx.h"
@@ -112,6 +114,7 @@ const char* nds_vk_notice_text(void) {
 }
 
 void nds_vk_present(void) {
+    SNX_ZONE(z_present, "nds present"); /* the frame's drawing and present, in a Tracy capture (F10) */
     NdsVk* v = nds_vk();
     if (!v) return;
     if (!g_present.up || !g_present.swap.swapchain) {
@@ -170,10 +173,12 @@ void nds_vk_present(void) {
                                 .swapchainCount = 1,
                                 .pSwapchains = &g_present.swap.swapchain,
                                 .pImageIndices = &index};
+    snx_renderdoc_present(v->host.instance.instance, ++v->presents);
     snx_gpu_pstate_present(); /* a kgsl hold lasts while frames are presented */
     snx_vk_pacing_present(&v->pacing, &g_present.paced, v->device, g_present.swap.swapchain,
                           g_settings.vsync && snx_vpad_window_frame_ns(1) == 1, &present, "scarletnx-nds");
     VkResult shown = vkQueuePresentKHR(v->queue, &present);
+    SNX_FRAME_MARK(); /* a frame of the capture's timeline */
     (void)snx_vk_ring_poll(&v->ring);
     if (shown == VK_ERROR_OUT_OF_DATE_KHR || shown == VK_SUBOPTIMAL_KHR || got == VK_SUBOPTIMAL_KHR) {
         vkDeviceWaitIdle(v->device);

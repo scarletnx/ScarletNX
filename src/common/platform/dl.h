@@ -17,4 +17,7 @@ void* plat_dl_loaded(const char* name);
 /* What plat_dl_open tries when the system refuses path, NULL for nothing: Android's shared storage is mounted noexec,
    and its driver loads a copy in the app's cache folder. Set once, before the first plat_dl_open */
 void plat_dl_fallback(void* (*open)(const char* path));
+/* name=value in the environment of this process and of what it loads (a Vulkan layer the loader enables by one): 0 on
+   success */
+int plat_setenv(const char* name, const char* value);
 #endif

@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 #include "vita/gpu/vk.h"
+#include "common/utilities/tracy.h"
+#include "common/gpu/vk/renderdoc.h"
 #include "common/gpu/vk/marks.h"
 #include "common/gpu/vk/gpu_pstate.h"
 #include "common/gpu/vk/device_settings.h"
@@ -178,6 +180,7 @@ bool vita_vk_init(const char* title, char* error, size_t error_size) {
     VitaVk* v = &g.vk;
     if (g.up) return true;
     memset(v, 0, sizeof *v);
+    snx_renderdoc_load_window(); /* before the instance: RenderDoc's capture layer is an implicit one */
     if (!snx_vk_window_open("scarletnx-vita", title ? title : "ScarletNX Vita", 960, 544, &v->host, error, error_size))
         return false;
     if (v->host.window) snx_window_icon(v->host.window);
@@ -385,6 +388,7 @@ static bool frame_image(VitaVk* v, uint32_t width, uint32_t height) {
 }
 bool vita_vk_present(VkBuffer buffer, VkDeviceSize offset, uint32_t pitch, VkImage image, uint32_t width,
                      uint32_t height) {
+    SNX_ZONE(z_present, "vita present"); /* the frame's drawing and present, in a Tracy capture (F10) */
     VitaVk* v = &g.vk;
     if (!g.up || !v->host.surface) return false;
     if (!v->swap.swapchain && !swapchain_make(v)) return false;
@@ -447,10 +451,12 @@ bool vita_vk_present(VkBuffer buffer, VkDeviceSize offset, uint32_t pitch, VkIma
                            .swapchainCount = 1,
                            .pSwapchains = &v->swap.swapchain,
                            .pImageIndices = &index};
+    snx_renderdoc_present(v->host.instance.instance, ++v->presents);
     snx_gpu_pstate_present(); /* a kgsl hold lasts while frames are presented */
     snx_vk_pacing_present(&v->pacing, &v->paced, v->device, v->swap.swapchain,
                           g_settings.vsync && snx_vpad_window_frame_ns(1) == 1, &pi, "scarletnx-vita");
     r = vkQueuePresentKHR(v->queue, &pi);
+    SNX_FRAME_MARK(); /* a frame of the capture's timeline */
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) swapchain_make(v);
     return r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR;
 }

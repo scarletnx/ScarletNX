@@ -13,6 +13,7 @@
    from its render target while the GPU keeps that newer than memory, or from the copy that a display transfer made
    of it. */
 #include "3ds/gpu/present.h"
+#include "common/utilities/tracy.h"
 #include "common/gpu/vk/gpu_pstate.h"
 #include "3ds/board/clock.h"
 #include "3ds/input/input.h"
@@ -24,6 +25,7 @@
 #include "common/utilities/bits.h"
 #include "common/gpu/vk/notice.h"
 #include "common/gpu/vk/rects.h"
+#include "common/gpu/vk/renderdoc.h"
 #include "common/gpu/vk/present_fx.h"
 #include "common/gpu/vk/swapchain.h"
 #include "common/utilities/build_info.h"
@@ -108,6 +110,7 @@ static struct {
     char* game;            /* the game's folder with its separator, whose captures/ a screenshot goes in */
     SDL_FingerID finger;   /* the finger holding the touch screen, while one does (by_finger) */
     unsigned up : 1, closed : 1, separate : 1, by_finger : 1, keys : 1;
+    uint64_t presents; /* the frames shown in the first window, RenderDoc's captures counting by them */
 } g_present;
 
 static void image_barrier(VkCommandBuffer cb, VkImage image, VkImageLayout old, VkImageLayout next);
@@ -605,6 +608,8 @@ static void key_action(int action) {
         g_present.state_ask = action + 1;
     else if (action == HOTKEY_THREAD_DUMP)
         g_present.dump = true;
+    else if (action == HOTKEY_CAPTURE)
+        (void)snx_renderdoc_capture(1); /* the frame after the next present, said in the log and over the game */
     else if (action == HOTKEY_UPSCALER || action == HOTKEY_ANTI_ALIASING) { /* both screens', for the run */
         int* at = action == HOTKEY_ANTI_ALIASING ? &g_present.fx_config.aa : &g_present.fx_config.upscaler;
         *at = action == HOTKEY_ANTI_ALIASING ? snx_fx_aa_next(*at) : snx_fx_upscale_next(*at);
@@ -723,6 +728,7 @@ static void show_screens(VkCommandBuffer cb, unsigned window, uint32_t index, un
 }
 bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigned height, unsigned format,
                            unsigned pitch, uint64_t* hash) {
+    SNX_ZONE(z_present, "3ds present"); /* a screen's drawing and present, in a Tracy capture (F10) */
     if (!g_present.up || screen > 1 || !width || !height || width > MAX_SIDE || height > MAX_SIDE || format > 4)
         return false;
     if (!screen) snx_ctr_vk_pipeline_cache_save(false); /* once the game made no pipeline for a while */
@@ -863,11 +869,13 @@ bool snx_ctr_present_frame(unsigned screen, uint32_t pa, unsigned width, unsigne
                                     .swapchainCount = 1,
                                     .pSwapchains = &g_present.swap[window_index].swapchain,
                                     .pImageIndices = &index};
+        if (!window_index) snx_renderdoc_present(v->host.instance.instance, ++g_present.presents);
         snx_gpu_pstate_present(); /* a kgsl hold lasts while frames are presented */
         snx_vk_pacing_present(&v->pacing, &g_present.paced[window_index], v->device,
                               g_present.swap[window_index].swapchain,
                               g_settings.vsync && g_present.pace == SNX_PACE_CONSOLE, &present, "3ds gpu");
         VkResult shown = vkQueuePresentKHR(v->queue, &present);
+        if (!window_index) SNX_FRAME_MARK(); /* a frame of the capture's timeline, at the top screen's */
         if (shown == VK_ERROR_OUT_OF_DATE_KHR || shown == VK_SUBOPTIMAL_KHR) (void)swap_create(window_index);
     }
     pump();

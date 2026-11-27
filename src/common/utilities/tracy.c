@@ -1,15 +1,14 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* Tracy client lifetime and emission gate; the client is manual-lifetime. */
-#include "nx/runtime/platform/tracy.h"
+#include "common/utilities/tracy.h"
+#include "common/platform/dl.h"
 #include "common/platform/thread.h"
+#include "common/platform/time.h"
 #include "common/utilities/build_info.h"
 #include "common/utilities/common.h"
-#include "nx/runtime/main.h"
-#include "nx/runtime/startup.h"
-#include "nx/runtime/platform/log.h"
-#include "nx/runtime/platform/plat.h"
 #include "snx_settings.h"
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -50,8 +49,12 @@ typedef struct {
         int n;
     } frame_names;
     SDL_Process* capture;
-    char capture_path[sizeof g_exedir + sizeof g_exename + 64];
+    char capture_path[SNX_PATH_SIZE + 64];
     char title[256];
+    /* the runtime's (SnxTracyHost): its folder and name, kept, its flags and its log */
+    char dir[SNX_PATH_SIZE], name[256];
+    int capture_asked, client_asked, headless;
+    void (*log)(int warn, const char* line);
     char port[16];
     PMutex capture_lock;
     PMutex wait_lock;
@@ -80,6 +83,20 @@ typedef struct {
     } lock_marks;
 } SnxTracyState;
 static SnxTracyState g_tracy;
+/* a line of the runtime's log, its end with it, through the host's log (snx_tracy_init) or stderr */
+[[gnu::format(printf, 2, 3)]] static void tracy_say(int warn, const char* fmt, ...) {
+    char line[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(line, sizeof line, fmt, ap);
+    va_end(ap);
+    if (g_tracy.log)
+        g_tracy.log(warn, line);
+    else
+        fputs(line, stderr);
+}
+#define LOG(...)        tracy_say(0, __VA_ARGS__)
+#define WARN(...)       tracy_say(1, __VA_ARGS__)
 #define g_tracy_state  (g_tracy.state)
 #define g_tracy_pending (g_tracy.pending)
 #define g_tracy_dropped (g_tracy.dropped)
@@ -137,7 +154,7 @@ static void tracy_capture_unlock(void) { pm_unlock(&g_tracy_capture_lock); }
    so those are waited for here with a timeout, and every emission that finds no more in flight wakes shutdown. */
 #define g_tracy_wait_lock (g_tracy.wait_lock)
 #define g_tracy_wait_cond (g_tracy.wait_cond)
-static void tracy_wait_ns(i64 ns) {
+static void tracy_wait_ns(int64_t ns) {
     pm_lock(&g_tracy_wait_lock);
     pc_wait(&g_tracy_wait_cond, &g_tracy_wait_lock, ns);
     pm_unlock(&g_tracy_wait_lock);
@@ -166,7 +183,7 @@ static void tracy_sampling_stop(void) {
 
 /* A tool of Tracy's: beside the runtime first (the build it was made with), then PATH. */
 static char* tracy_tool(const char* name) {
-    char* beside = snx_path_join(g_exedir[0] ? g_exedir : ".", name);
+    char* beside = snx_path_join(g_tracy.dir[0] ? g_tracy.dir : ".", name);
     char* tool = beside ? snx_find_tool(beside) : NULL;
     free(beside);
     return tool ? tool : snx_find_tool(name);
@@ -203,14 +220,14 @@ static void tracy_port_setup(int capture) {
 }
 
 static int tracy_capture_start(int seconds, int launch) {
-    char dir[sizeof g_exedir + 16], seconds_text[16], *tool;
+    char dir[SNX_PATH_SIZE + 16], seconds_text[16], *tool;
     const char* named = g_settings.tracy_capture_tool;
     const char* argv[9];
     const char* suffix = launch ? "; the run was not started" : "";
     int n = 0;
     struct tm t;
     time_t now;
-    snprintf(dir, sizeof dir, "%scaptures", g_exedir);
+    snprintf(dir, sizeof dir, "%scaptures", g_tracy.dir);
     tool = named[0] ? snx_find_tool(named) : tracy_tool("tracy-capture");
     if (!tool) {
         WARN("tracy: %s needs tracy-capture " SNX_TRACY_VERSION " beside the runtime or on PATH%s\n",
@@ -230,7 +247,7 @@ static int tracy_capture_start(int seconds, int launch) {
     if (!localtime_r(&now, &t)) t.tm_year = 70;
 #endif
     snprintf(g_tracy_capture_path, sizeof g_tracy_capture_path, "%s/tracy_%s_%04d%02d%02d_%02d%02d%02d.tracy", dir,
-             g_exename, t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec);
+             g_tracy.name, t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec);
     snx_path_native(g_tracy_capture_path);
     argv[n++] = tool;
     argv[n++] = "-o";
@@ -260,7 +277,7 @@ static void tracy_open_trace(const char* path) {
     char* tool;
     const char* argv[3];
     if (!path || !*path || !g_settings.tracy_open_trace) return;
-    if (g_opt_headless) return; /* no screen to open it on */
+    if (g_tracy.headless) return; /* no screen to open it on */
     tool = tracy_tool("tracy-profiler");
     if (!tool) return;
     argv[0] = tool;
@@ -278,7 +295,7 @@ static void tracy_open_trace(const char* path) {
 static void tracy_capture_finish_locked(int clean) {
     int status = 0;
     bool done;
-    u64 until = plat_ns() + 5000000000ull;
+    uint64_t until = plat_ns() + 5000000000ull;
     if (!g_tracy_capture) return;
     /* A clean exit waits for the trace to be written; a killed one only looks once. */
     while (!(done = SDL_WaitProcess(g_tracy_capture, false, &status)) && clean && plat_ns() < until)
@@ -352,7 +369,7 @@ static void tracy_start_client(void) {
     if (n > 0) TracyCAppInfo(info, (size_t)(n < (int)sizeof info ? n : (int)sizeof info - 1));
     snx_tracy_leave(); /* the thread-name count: broadcasting at zero wakes a waiting shutdown */
     snx_tracy_leave(); /* the startup count, after all registrations */
-    if (g_opt_tracy_capture)
+    if (g_tracy.capture_asked)
         LOG("tracy: profiling this run to its capture\n");
     else
         LOG("tracy: profiling this run. Connect the GUI with: tracy-profiler -a 127.0.0.1 -p %s\n",
@@ -1030,7 +1047,7 @@ uint16_t snx_tracy_gpu_zone_begin(const char* name, uint32_t color, int ctx, uin
     if (!gpu_ctx_ok(ctx) || !name || !*name || !snx_tracy_enter()) return 0;
     if (TracyCIsConnected && g_gpu_sent[ctx]) {
         /* the client copies the name at the allocation, so one srcloc a zone is all it needs */
-        u64 srcloc = ___tracy_alloc_srcloc_name(0, __FILE__, sizeof __FILE__ - 1, __func__, sizeof __func__ - 1, name,
+        uint64_t srcloc = ___tracy_alloc_srcloc_name(0, __FILE__, sizeof __FILE__ - 1, __func__, sizeof __func__ - 1, name,
                                                 strlen(name), color);
         if (srcloc) {
             uint16_t id = (uint16_t)(g_gpu_query[ctx] + 1);
@@ -1180,7 +1197,13 @@ void snx_tracy_lock_mark(SnxTracyLock* l, const char* file, uint32_t line) {
     });
 }
 
-int snx_tracy_init(const char* title) {
+int snx_tracy_init(const char* title, const SnxTracyHost* host) {
+    if (host) {
+        snprintf(g_tracy.dir, sizeof g_tracy.dir, "%s", host->dir ? host->dir : "");
+        snprintf(g_tracy.name, sizeof g_tracy.name, "%s", host->name && host->name[0] ? host->name : "game");
+        g_tracy.capture_asked = host->capture, g_tracy.client_asked = host->client, g_tracy.headless = host->headless;
+        g_tracy.log = host->log;
+    }
     atomic_store_explicit(&snx_tracy_frame_images_live, g_settings.tracy_frame_images, memory_order_relaxed);
     atomic_store_explicit(&snx_tracy_memory_detail, g_settings.tracy_memory_detail != 0, memory_order_relaxed);
     if (g_settings.tracy_memory_detail)
@@ -1197,13 +1220,20 @@ int snx_tracy_init(const char* title) {
     pm_init(&g_tracy.frame_names.lock);
     pm_init(&g_tracy.lock_marks.lock);
     snprintf(g_tracy_title, sizeof g_tracy_title, "%s", title && title[0] ? title : "ScarletNX");
-    if (!g_opt_tracy_capture && !g_opt_tracy_client) return 0;
+    if (!g_tracy.capture_asked && !g_tracy.client_asked) return 0;
     /* The client before the capture: the capture connects once, so it has to find the client listening. The client
        reads its port as it starts, so it is set before that. */
-    tracy_port_setup(g_opt_tracy_capture);
+    tracy_port_setup(g_tracy.capture_asked);
     tracy_start_client(); /* it registers the locks, so F10's client reports them too */
-    if (g_opt_tracy_capture && !tracy_capture_wait()) return 1;
+    if (g_tracy.capture_asked && !tracy_capture_wait()) return 1;
     return 0;
+}
+
+int snx_tracy_console(const char* folder, const char* name, int headless) {
+    char dir[SNX_PATH_SIZE];
+    snprintf(dir, sizeof dir, "%s/", folder && folder[0] ? folder : ".");
+    return snx_tracy_init(
+        name, &(SnxTracyHost){dir, name, g_settings.tracy_capture, g_settings.tracy_profiler, headless, NULL});
 }
 
 void snx_tracy_log(int lvl, const char* text) {
@@ -1235,7 +1265,7 @@ void snx_tracy_fatal(const char* text) {
 }
 
 void snx_tracy_shutdown(void) {
-    u64 until;
+    uint64_t until;
     int on;
     snx_tracy_fiber_leave_all(); /* this thread's fibers, while the client can still hear their end */
     /* Close the last continuous frame at the shutdown mark, while the gate is open and the client can still send;
@@ -1267,7 +1297,7 @@ void snx_tracy_shutdown(void) {
        zone, leave the client for _exit to close. */
     until = plat_ns() + 2000000000ull;
     for (;;) {
-        i64 left;
+        int64_t left;
         if (!atomic_load_explicit(&g_tracy_pending, memory_order_acquire)) {
             ___tracy_shutdown_profiler();
             tracy_capture_finish(1);
@@ -1277,7 +1307,7 @@ void snx_tracy_shutdown(void) {
         pm_lock(&g_tracy_wait_lock);
         /* the bound is computed under the lock, right before the wait: a wait cannot be given a stale one and
            run past the deadline */
-        left = (i64)(until - plat_ns());
+        left = (int64_t)(until - plat_ns());
         if (left > 0 && atomic_load_explicit(&g_tracy_pending, memory_order_acquire))
             pc_wait(&g_tracy_wait_cond, &g_tracy_wait_lock, left);
         pm_unlock(&g_tracy_wait_lock);

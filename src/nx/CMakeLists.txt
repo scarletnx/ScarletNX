@@ -9,15 +9,9 @@
 #   shader    Maxwell shaders to SPIR-V
 #   vk        the renderer                                            platform  the OS layer and a window backend
 
-add_library(snx_tracy INTERFACE)
-if(SNX_TRACY)
-    target_compile_definitions(snx_tracy INTERFACE SNX_TRACY=1)
-    target_link_libraries(snx_tracy INTERFACE Tracy::TracyClient)
-endif()
-
 add_library(snx_nx_flags INTERFACE)
 target_link_libraries(snx_nx_flags INTERFACE scarletnx-common scarletnx-net scarletnx-ldn scarletnx-filesystem
-                                           snx_settings snx_tracy)
+                                           snx_settings snx_tracy snx_tracy_client) # cmake/tracy.cmake
 # Every function and global used across files is declared once, in the header of the file that defines it, and
 # everything else is static: a declaration that disagrees with the definition is then a compile error instead of a
 # miscompile. Third-party sources keep their own warnings off.
@@ -108,12 +102,12 @@ snx_ship_walk(gpu/shipped_pass.c)
 include("${PROJECT_SOURCE_DIR}/cmake/gui_themes.cmake")
 set(platform runtime/platform/log.c runtime/platform/plat_sdl.c runtime/platform/unattended.c
              runtime/platform/backend/sdl3.c runtime/platform/audio_downmix.c
-             runtime/platform/backend/gamepad.c runtime/platform/connect.c runtime/platform/tracy.c
+             runtime/platform/backend/gamepad.c runtime/platform/connect.c
              runtime/platform/ctrl_applet.c runtime/platform/ctrl_request.c runtime/platform/ctrl_scan.c
              runtime/platform/joycon2.c runtime/platform/joycon2_sdl.c runtime/platform/joycon2_session.c
              runtime/platform/joycon2_proto.c runtime/platform/joycon2_att.c runtime/platform/joycon2_link.c
              runtime/platform/joycon2_known.c
-             runtime/platform/help.c runtime/platform/hud.c runtime/platform/overlay.c
+             runtime/platform/hud.c runtime/platform/overlay_host.c
              runtime/platform/touch.c
              runtime/platform/audio_denoise.c
              runtime/platform/ui.c
@@ -130,21 +124,15 @@ if(APPLE)
     # under ARC, as gui/apple.m is: the global that holds the activity's token keeps it
     set_source_files_properties(runtime/platform/plat_apple.m PROPERTIES COMPILE_OPTIONS -fobjc-arc)
 endif()
-if(SNX_TRACY)
-    # the C++ client's connection id, which the C layer's GPU track keys its epochs on
-    list(APPEND platform runtime/platform/tracy_conn.cpp)
-endif()
 snx_component(platform ${platform})
 # the microphone's neural noise reduction (runtime/platform/audio_denoise.c), from cmake/dependencies.cmake
 target_link_libraries(snx_platform PRIVATE snx_rnnoise)
 # the GPU driver a run asks for (src/common/gpu/vk/gpu_driver_load.h), which the other renderers share
 target_link_libraries(snx_platform PRIVATE snx_vk_common)
 # the on-screen controls, which the other consoles' windows share (src/common/utilities/vpad.h, vpad_sdl.h)
-target_link_libraries(snx_platform PUBLIC snx_vpad snx_vpad_sdl)
+target_link_libraries(snx_platform PUBLIC snx_vpad snx_vpad_sdl snx_menu)
 # what stops a game, its kinds and actions (src/common/utilities/error_kind.h)
 target_link_libraries(snx_platform PUBLIC snx_error snx_error_sdl)
-# the tracy-capture a capture needs (tracy.c), the client's release (cmake/dependencies.cmake)
-target_compile_definitions(snx_platform PRIVATE SNX_TRACY_VERSION="${SNX_TRACY_VERSION}")
 
 snx_component(shader gpu/shader/shader.c gpu/shader/decode.c gpu/shader/corpus.c gpu/shader/shipped.c
                      gpu/shader/spirv_translate.c gpu/shader/spirv_compute.c gpu/shader/structure.c
@@ -182,7 +170,8 @@ snx_component(vk gpu/vk/renderer.c gpu/vk/device.c gpu/vk/descriptors.c gpu/vk/d
 include("${PROJECT_SOURCE_DIR}/cmake/glsl.cmake")
 # vk_hash (gpu/vk/cmd.c); the device setup the 3DS and the Vita share (src/common/gpu/vk); the shader file's units
 # and its records' framing, checks and packing, every prepared file's (gpu/vk/pipeline_file.c)
-target_link_libraries(snx_vk PUBLIC snx_xxhash snx_vk_common snx_fsr2 snx_upscaler PRIVATE snx_zstd snx_prepared)
+target_link_libraries(snx_vk PUBLIC snx_xxhash snx_vk_common snx_vk_renderdoc snx_fsr2 snx_upscaler
+                      PRIVATE snx_zstd snx_prepared)
 # the vk_ext_* table (g_vk_extension_settings) its device takes (gpu/vk/device.c, common/gpu/vk/device_settings.h)
 target_link_libraries(snx_vk PUBLIC snx_settings_runtime)
 # AMD FidelityFX Super Resolution 2.2.1 (cmake/dependencies.cmake): AMD's library and Vulkan backend as they are

@@ -93,6 +93,8 @@ if(SNX_TEST_SANITIZERS)
         snx_state_file
         # a renderer's file of what it made, kept for the next run
         snx_prepared
+        # every console's game menu and F1's text, Tracy's client and F10's captures, RenderDoc's captures
+        snx_menu snx_tracy_client snx_vk_renderdoc
         # the shader corpus translator, which shaderc_sm86 runs
         snx-shaderc
         # GLSL ES into SPIR-V
@@ -2617,7 +2619,8 @@ if(SNX_BUILD_NX)
 include("${PROJECT_SOURCE_DIR}/cmake/gui_themes.cmake")
 if(TARGET SDL3::SDL3) # F1's and the Shortcuts pages name the runtime's keys as SDL names them
     add_executable(snx-test-overlay overlay.c tracy_stubs.c
-        "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/overlay.c"
+        "${PROJECT_SOURCE_DIR}/src/common/utilities/overlay.c"
+        "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/overlay_host.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ctrl_applet.c"
         "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/ctrl_request.c"
         "${PROJECT_SOURCE_DIR}/src/common/utilities/fatal_screen.c"
@@ -2740,9 +2743,9 @@ if(TARGET SDL3::SDL3) # the keys' names are SDL's
     target_link_libraries(snx-test-sdl-desktop-hints PRIVATE SDL3::SDL3)
     add_test(NAME sdl_desktop_hints COMMAND snx-test-sdl-desktop-hints)
 endif()
-# F1's text (runtime/platform/help.c): Ctrl+Shift+F12 while RenderDoc can capture, the debugger while one traces the
+# F1's text (common/utilities/help.c): Ctrl+Shift+F12 while RenderDoc can capture, the debugger while one traces the
 # game
-add_executable(snx-test-help help.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/platform/help.c")
+add_executable(snx-test-help help.c "${PROJECT_SOURCE_DIR}/src/common/utilities/help.c")
 snx_test_target(snx-test-help c23)
 target_include_directories(snx-test-help PRIVATE "${PROJECT_SOURCE_DIR}/src")
 add_test(NAME help COMMAND snx-test-help)
@@ -3147,7 +3150,7 @@ if(SNX_TRACY)
 endif()
 add_test(NAME startup_options COMMAND snx-test-startup)
 if(SNX_TRACY)
-    # the Tracy client's lifetime (runtime/platform/tracy.c) over a stand-in client, Tracy's headers without its
+    # the Tracy client's lifetime (common/utilities/tracy.c) over a stand-in client, Tracy's headers without its
     # library: the gate shut before the start and for good after the stop, the client started and stopped once
     add_executable(snx-test-tracy-state tracy_state.c)
     snx_test_target(snx-test-tracy-state gnu23)
@@ -3161,7 +3164,7 @@ if(SNX_TRACY)
     add_test(NAME tracy_state COMMAND snx-test-tracy-state)
 endif()
 
-# the profiler's macros without its client (runtime/platform/tracy.h): none evaluates an argument, so a clock read or a
+# the profiler's macros without its client (common/utilities/tracy.h): none evaluates an argument, so a clock read or a
 # lookup written into one costs nothing in a build without Tracy; and nvn_queue.h's context setter likewise
 add_executable(snx-test-tracy-off tracy_off.c)
 snx_test_target(snx-test-tracy-off c23)
@@ -3565,12 +3568,25 @@ if(NOT SNX_TOOLS_ONLY)
     # renderdoc= without the library, RenderDoc's program that started the game, and renderdoc= loading it; the capture
     # key's capture and renderdoc_frames', what the stats box is told, the notices over the game and the write's
     # progress lines (a thread the test lets tick), and RenderDoc's own captures. A process each
-    add_executable(snx-test-vk-renderdoc vk_renderdoc.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/renderdoc.c")
+    add_executable(snx-test-vk-renderdoc vk_renderdoc.c "${PROJECT_SOURCE_DIR}/src/nx/gpu/vk/renderdoc.c"
+        "${PROJECT_SOURCE_DIR}/src/common/gpu/vk/renderdoc.c")
     snx_test_target(snx-test-vk-renderdoc gnu23)
     target_link_libraries(snx-test-vk-renderdoc PRIVATE snx_nx_flags)
     foreach(case none missing started setting write theirs)
         add_test(NAME vk_renderdoc_${case} COMMAND snx-test-vk-renderdoc ${case})
     endforeach()
+    # the game's menu in a console's window (common/utilities/menu_window.c), under SDL's offscreen driver
+    add_executable(snx-test-menu-window menu_window.c)
+    snx_test_target(snx-test-menu-window gnu23)
+    target_link_libraries(snx-test-menu-window PRIVATE snx_menu snx_vpad_consoles)
+    target_include_directories(snx-test-menu-window PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}") # support/
+    add_test(NAME menu_window COMMAND snx-test-menu-window)
+    set_tests_properties(menu_window PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+    # RenderDoc's lines in a console's window (common/gpu/vk/renderdoc_window.c): its say and notice take them
+    add_executable(snx-test-vk-renderdoc-window vk_renderdoc_window.c)
+    snx_test_target(snx-test-vk-renderdoc-window gnu23)
+    target_link_libraries(snx-test-vk-renderdoc-window PRIVATE snx_vk_renderdoc)
+    add_test(NAME vk_renderdoc_window COMMAND snx-test-vk-renderdoc-window)
     # vertex_input_dynamic_state (gpu/vk/vertex_input.c): its values, read from a .ini without it and with it, the
     # ban the table holds for stand-in devices and the log line of each case
     include("${PROJECT_SOURCE_DIR}/cmake/vk_extension_bans.cmake")
@@ -5865,6 +5881,13 @@ add_test(NAME unattended_script COMMAND snx-test-unattended-script "${CMAKE_CURR
 add_executable(snx-test-deprecated-env deprecated_env.c "${PROJECT_SOURCE_DIR}/src/nx/runtime/deprecated_env.c")
 snx_test_target(snx-test-deprecated-env gnu23)
 add_test(NAME deprecated_env COMMAND snx-test-deprecated-env)
+# a console's game log: its lines from threads, a crash's, no terminal, the cut past log_max, the runs before
+# (common/utilities/game_log.c), each case a process of the test's own
+add_executable(snx-test-game-log game_log.c)
+snx_test_target(snx-test-game-log gnu23)
+target_link_libraries(snx-test-game-log PRIVATE scarletnx-common)
+add_test(NAME game_log COMMAND snx-test-game-log)
+set_tests_properties(game_log PROPERTIES TIMEOUT 120)
 # the log's file, early lines, stamps, redirect, limits, fatal and crash mode (platform/log.c)
 add_executable(snx-test-platform-log platform_log.c "${PROJECT_SOURCE_DIR}/src/common/platform/file.c"
         "${PROJECT_SOURCE_DIR}/src/common/platform/file_map.c" "${PROJECT_SOURCE_DIR}/src/common/platform/file_share.c"

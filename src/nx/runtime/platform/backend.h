@@ -7,7 +7,7 @@
 #include "common/cpu/aarch64/cpu.h"
 #include "common/utilities/error_kind.h"
 #include "nx/runtime/ini.h"
-#include "nx/runtime/platform/overlay.h"
+#include "common/utilities/overlay.h"
 #include "nx/runtime/platform/ctrl_applet.h"
 
 /* the window, titled after the game and, when addons is not "", the updates and DLCs it plays with ("Update 1.2.0,

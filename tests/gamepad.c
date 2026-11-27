@@ -7,7 +7,7 @@
 #include "nx/runtime/platform/backend.h"
 #include "nx/runtime/options.h"
 #include "nx/runtime/platform/plat.h"
-#include "nx/runtime/platform/overlay.h"
+#include "common/utilities/overlay.h"
 #include "nx/runtime/pause.h"
 #include "common/utilities/common.h"
 #include "common/utilities/pad_sdl.h" /* snx_pad_slot */

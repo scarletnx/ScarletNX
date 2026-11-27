@@ -58,6 +58,7 @@ static volatile sig_atomic_t fault_armed;
 static unsigned char* fault_base;
 static volatile uintptr_t fault_address;
 static pthread_t fault_thread; /* the guest's: another thread's fault is never the guest's data abort */
+static struct sigaction fault_before[2]; /* SIGSEGV's and SIGBUS's handlers before: the game log's crash line */
 static void on_fault(int signal, siginfo_t* info, void* context) {
     (void)context;
     uintptr_t at = (uintptr_t)info->si_addr;
@@ -68,11 +69,9 @@ static void on_fault(int signal, siginfo_t* info, void* context) {
         fault_armed = 0;
         siglongjmp(fault_jump, 1);
     }
-    /* the runtime's own: the default action */
-    struct sigaction def;
-    memset(&def, 0, sizeof def);
-    def.sa_handler = SIG_DFL;
-    sigaction(signal, &def, NULL);
+    /* the runtime's own: the handler before, which the fault meets again on the return (the default, or the game
+       log's, which says the crash and goes on to the default) */
+    sigaction(signal, &fault_before[signal == SIGBUS], NULL);
 }
 static void faults_install(unsigned char* base) {
     static unsigned char alternate[1 << 16];
@@ -82,8 +81,12 @@ static void faults_install(unsigned char* base) {
     memset(&sa, 0, sizeof sa);
     sa.sa_sigaction = on_fault;
     sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
-    sigaction(SIGSEGV, &sa, NULL);
-    sigaction(SIGBUS, &sa, NULL);
+    for (int i = 0; i < 2; ++i) {
+        struct sigaction before;
+        sigaction(i ? SIGBUS : SIGSEGV, &sa, &before);
+        if (!(before.sa_flags & SA_SIGINFO) || before.sa_sigaction != on_fault)
+            fault_before[i] = before; /* a second install keeps the first's */
+    }
     fault_base = base;
     fault_thread = pthread_self();
 }

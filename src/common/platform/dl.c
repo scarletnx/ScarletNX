@@ -86,3 +86,10 @@ void* plat_dl_loaded(const char* name) {
 void plat_dl_fallback(void* (*open)(const char* path)) {
     atomic_store_explicit(&g_dl.fallback, open, memory_order_release);
 }
+int plat_setenv(const char* name, const char* value) {
+#if defined(_WIN32)
+    return _putenv_s(name, value) ? -1 : 0;
+#else
+    return setenv(name, value, 1);
+#endif
+}

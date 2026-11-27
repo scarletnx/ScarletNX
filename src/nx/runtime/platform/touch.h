@@ -6,7 +6,7 @@
 #define SNX_TOUCH_H
 #include "nx/hle/services/hid_touch.h"
 
-#define SNX_TOUCH_MOUSE (~(u64)0) /* the mouse's id among the fingers' */
+#include "common/utilities/ui_quads.h" /* SNX_TOUCH_MOUSE */
 
 /* where the game's 16:9 picture lies in a window's clear part (x, y, w, h), as the renderer letterboxes it */
 void touch_picture(int cx, int cy, int cw, int ch, int picture[4]);
