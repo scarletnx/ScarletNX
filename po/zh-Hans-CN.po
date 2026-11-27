@@ -7815,8 +7815,8 @@ msgid "LLVM's, on in the recompile and the JIT"
 msgstr "LLVM 的，在重新编译和 JIT 中均启用"
 
 #: src/common/utilities/setup.c
-msgid "off, as LLVM 23 can break a module with it: Settings > Debug turns it on"
-msgstr "关闭，因为 LLVM 23 可能因此破坏模块：「设置 > Debug」可开启"
+msgid "nothing: it went with LLVM, and a key of it is said"
+msgstr ""
 
 #: src/common/utilities/setup.c
 msgid "The launcher's UI scale"
@@ -8065,6 +8065,9 @@ msgstr ""
 #: src/nx/runtime/settings.txt
 msgid "GBA"
 msgstr ""
+
+#~ msgid "off, as LLVM 23 can break a module with it: Settings > Debug turns it on"
+#~ msgstr "关闭，因为 LLVM 23 可能因此破坏模块：「设置 > Debug」可开启"
 
 #~ msgid "The JIT cache's level (JIT optimization O%c) and the game's AOT optimization O%c differ. An AOT pack needs them equal: set Optimization level to O%c before building, or set JIT optimization to O%c and play once to make a matching cache."
 #~ msgstr "JIT 缓存的级别（JIT optimization O%c）与游戏的 AOT 优化 O%c 不同。AOT 包需要两者一致：构建前将「优化级别」设为 O%c，或将 JIT optimization 设为 O%c 并运行一次以生成匹配的缓存。"

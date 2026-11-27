@@ -7815,8 +7815,8 @@ msgid "LLVM's, on in the recompile and the JIT"
 msgstr "o do LLVM, ligado na recompilação e no JIT"
 
 #: src/common/utilities/setup.c
-msgid "off, as LLVM 23 can break a module with it: Settings > Debug turns it on"
-msgstr "desligado, já que o LLVM 23 pode quebrar um módulo com ele: Configurações > Debug o liga"
+msgid "nothing: it went with LLVM, and a key of it is said"
+msgstr ""
 
 #: src/common/utilities/setup.c
 msgid "The launcher's UI scale"
@@ -8065,6 +8065,9 @@ msgstr ""
 #: src/nx/runtime/settings.txt
 msgid "GBA"
 msgstr ""
+
+#~ msgid "off, as LLVM 23 can break a module with it: Settings > Debug turns it on"
+#~ msgstr "desligado, já que o LLVM 23 pode quebrar um módulo com ele: Configurações > Debug o liga"
 
 #~ msgid "The JIT cache's level (JIT optimization O%c) and the game's AOT optimization O%c differ. An AOT pack needs them equal: set Optimization level to O%c before building, or set JIT optimization to O%c and play once to make a matching cache."
 #~ msgstr "O nível do cache JIT (JIT optimization O%c) e a otimização AOT do jogo, O%c, são diferentes. Um pacote AOT precisa deles iguais: ponha o Nível de otimização em O%c antes de gerar, ou ponha JIT optimization em O%c e jogue uma vez para fazer um cache que combine."
