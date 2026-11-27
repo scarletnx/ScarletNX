@@ -7812,7 +7812,7 @@ msgid "LLVM's, on in the recompile and the JIT"
 msgstr ""
 
 #: src/common/utilities/setup.c
-msgid "off, as LLVM 23 can break a module with it: Settings > Debug turns it on"
+msgid "nothing: it went with LLVM, and a key of it is said"
 msgstr ""
 
 #: src/common/utilities/setup.c
