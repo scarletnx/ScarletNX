@@ -4594,20 +4594,24 @@ static int storage_recent_same(const StorageRecent* a, const StorageRecent* b) {
 }
 /* with split sets (ShCaps.split_sets): the texture set stage_set_ made last for each stage's buffer set number (0 to 4) */
 static VkDescriptorSet g_stage_tex_set[RC_SLOTS][5];
-/* an indirect mesh draw's first group, which mesh_indirect copied for the draw: the uniform buffer stage_set binds */
-static VkBuffer g_mesh_first;
-static u64 g_mesh_first_off;
+/* an indirect mesh draw's first group, which mesh_indirect copied for the draw: the uniform buffer stage_set binds.
+   Each slot's own (t_rc), as a worker's draws set and read them beside the renderer thread's */
+static VkBuffer g_mesh_first[RC_SLOTS];
+static u64 g_mesh_first_off[RC_SLOTS];
 static void index_barrier(VkCommandBuffer cb, VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
                           VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access);
 /* The compute-task path's buffer for the draws of a frame (sm86.h): the record, the counts and the task programs'
    payloads, one buffer for each frame in flight and one for all of its draws, as the buffer's slots are cut to what a
-   draw needs. g_mesh_payload is the frame's */
+   draw needs. g_mesh_payload is the frame's, and with the sizes below each slot's own (t_rc): a worker's draw sets them
+   between its renderer thread's mesh_payload and that draw's task dispatch */
 static VkBuffer g_mesh_payload_slot[VK_FRAMES];
-static VkBuffer g_mesh_payload;
-static u64 g_mesh_payload_bytes, g_mesh_groups, g_mesh_cap;
+static VkBuffer g_mesh_payload[RC_SLOTS];
+static u64 g_mesh_payload_bytes[RC_SLOTS], g_mesh_groups[RC_SLOTS], g_mesh_cap[RC_SLOTS];
 /* make the frame's buffer, once (it holds the most slots any task program's payload takes) */
 static VkBuffer mesh_payload(void) {
     const u32 slot = vk_frame_slot();
+    VkBuffer b;
+    vk_share_lock(); /* a worker's draw and the renderer thread's may both find it not made yet */
     if (!g_mesh_payload_slot[slot]) {
         VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                                  .size = SNX_MESH_PAYLOAD_BYTES,
@@ -4616,10 +4620,12 @@ static VkBuffer mesh_payload(void) {
                                  .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
         DevMemWant ai = {.at = DM_DEVICE};
         DevMem mem;
-        if (!VK_OK(vk_buffer_create(&bi, &ai, &g_mesh_payload_slot[slot], &mem, NULL))) return VK_NULL_HANDLE;
-        vk_mem_track(mem, VK_OWN_ENCODER);
+        if (VK_OK(vk_buffer_create(&bi, &ai, &g_mesh_payload_slot[slot], &mem, NULL)))
+            vk_mem_track(mem, VK_OWN_ENCODER);
     }
-    return g_mesh_payload_slot[slot];
+    b = g_mesh_payload_slot[slot];
+    vk_share_unlock();
+    return b;
 }
 /* the compute pipelines of the path's task programs: a program's compute module, in the layout a draw's sets bind
    (vk_playout of its arrays), which a pipeline keeps the sample of while a program is drawn */
@@ -4630,7 +4636,15 @@ typedef struct {
 } MeshTaskPipe;
 static MeshTaskPipe g_mesh_task_pipes[64];
 static u32 g_mesh_task_pipe_n;
+static VkPipeline mesh_task_pipe_made(const VkSh* sh, u32 arrays);
+/* under the share lock: a worker's draw and the renderer thread's may make or look the list up at once */
 static VkPipeline mesh_task_pipe(const VkSh* sh, u32 arrays) {
+    vk_share_lock();
+    VkPipeline p = mesh_task_pipe_made(sh, arrays);
+    vk_share_unlock();
+    return p;
+}
+static VkPipeline mesh_task_pipe_made(const VkSh* sh, u32 arrays) {
     for (u32 i = 0; i < g_mesh_task_pipe_n; i++)
         if (g_mesh_task_pipes[i].sh == sh && g_mesh_task_pipes[i].arrays == arrays) return g_mesh_task_pipes[i].pipe;
     if (!sh || !sh->spv || g_mesh_task_pipe_n == sizeof g_mesh_task_pipes / sizeof g_mesh_task_pipes[0]) {
@@ -4673,7 +4687,7 @@ static int mesh_task_dispatch(const VkSh* task, u32 arrays, VkDescriptorSet set,
                   VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
                       VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT,
                   VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    rec_CmdFillBuffer(cb, g_mesh_payload, 0, 16, 0);
+    rec_CmdFillBuffer(cb, g_mesh_payload[t_rc], 0, 16, 0);
     /* the fill, and an indirect draw's record that mesh_indirect copied (its own barrier is the draw's), reach the
        dispatch: its indirect count from the copy, the record and the buffer from the fill */
     index_barrier(cb, VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
@@ -4684,7 +4698,7 @@ static int mesh_task_dispatch(const VkSh* task, u32 arrays, VkDescriptorSet set,
     vk_descriptors_bind_compute(cb, vk_playout_compute(arrays), (u32)shader_vk_set(ST_TS), set);
     /* the vec4 at 0: the flag that makes the first workgroup the uniform buffer's (sm86.h's workgroup_index), and the
        slots the buffer holds above it */
-    u32 pc[4] = {0, 0, SH_PUSH_GPU_MESH_FIRST | (u32)g_mesh_cap << 8, 0};
+    u32 pc[4] = {0, 0, SH_PUSH_GPU_MESH_FIRST | (u32)g_mesh_cap[t_rc] << 8, 0};
     rec_CmdPushConstants(cb, vk_playout_compute(arrays), VK_PUSH_STAGES, 0, sizeof pc, pc);
     if (indirect)
         rec_CmdDispatchIndirect(cb, abuf, aoff);
@@ -4913,12 +4927,13 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
     if (stage == 4 && frame_consts(&cb, &co))
         dw_buffer(&d, set, SNX_VKB_RS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, cb, co, 16);
     /* a task or mesh program's first group of an indirect draw (mesh_indirect), any 16 bytes for a direct one */
-    if ((stage == DS_TASK || stage == DS_MESH) && (g_mesh_first || frame_consts(&cb, &co)))
-        dw_buffer(&d, set, SNX_VKB_RS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, g_mesh_first ? g_mesh_first : cb,
-                  g_mesh_first ? g_mesh_first_off : co, 16);
+    if ((stage == DS_TASK || stage == DS_MESH) && (g_mesh_first[t_rc] || frame_consts(&cb, &co)))
+        dw_buffer(&d, set, SNX_VKB_RS, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, g_mesh_first[t_rc] ? g_mesh_first[t_rc] : cb,
+                  g_mesh_first[t_rc] ? g_mesh_first_off[t_rc] : co, 16);
     /* the compute-task path's buffer, which the task program writes and the mesh program reads (sm86.h) */
-    if (g_mesh_payload && s->si.mesh.payload_buf)
-        dw_buffer(&d, set, SNX_VKB_MESHBUF, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, g_mesh_payload, 0, g_mesh_payload_bytes);
+    if (g_mesh_payload[t_rc] && s->si.mesh.payload_buf)
+        dw_buffer(&d, set, SNX_VKB_MESHBUF, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, g_mesh_payload[t_rc], 0,
+                  g_mesh_payload_bytes[t_rc]);
     if (stage == ST_FS && (s->si.advanced_blend_mask & SH_CAPTURE_TILED)) {
         if (!g_capture_draw.images || !g_capture_draw.images->tile_buffer) return VK_NULL_HANDLE;
         dw_buffer(&d, set, SNX_VKB_CAPTURE, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -6945,7 +6960,7 @@ static int index_convert(const DrawCall* dc, int inline_indices, u64 ia, u32 isz
    (vk_buf_get), often a compute program's result. Vulkan's record is {x, y, z} and has no first group, so the words are
    copied on the GPU into one of this frame's staging, {count, 1, 1} at *off of *buf and first a uniform buffer's
    alignment after it, which the task program or the mesh program without one adds to its workgroup ID
-   (SH_PUSH_GPU_MESH_FIRST, g_mesh_first that stage_set binds at SNX_VKB_RS). The copy ends the rendering pass, as an
+   (SH_PUSH_GPU_MESH_FIRST, g_mesh_first[t_rc] that stage_set binds at SNX_VKB_RS). The copy ends the rendering pass, as an
    index conversion does. 0 when the record can't be had */
 static int mesh_indirect(const DrawCall* dc, VkBuffer* buf, u64* off) {
     VkBuffer src;
@@ -6972,8 +6987,8 @@ static int mesh_indirect(const DrawCall* dc, VkBuffer* buf, u64* off) {
                   VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT |
                       (g_vk.has_task ? VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT : 0),
                   VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_UNIFORM_READ_BIT);
-    g_mesh_first = *buf;
-    g_mesh_first_off = *off + align;
+    g_mesh_first[t_rc] = *buf;
+    g_mesh_first_off[t_rc] = *off + align;
     return 1;
 }
 /* An indirect draw's arguments, and its count: guest memory as buffers the GPU reads (vk_buf_get), which hold a
@@ -7987,8 +8002,8 @@ static void render_draw_main(const DsState* ds, const DrawCall* dc, DrawOwner* o
     if (!ahead) {
         /* a frame's checks and its periodic submits are the renderer thread's: a worker's draw records into its list */
         if (!vk_rec_listing() && !g_split.pending) vk_frame_check(); /* none while a worker's list is open */
-        g_mesh_first = VK_NULL_HANDLE; /* an indirect mesh draw's first group is this draw's (mesh_indirect) */
-        g_mesh_payload = VK_NULL_HANDLE; /* and so is the compute-task path's buffer (sm86.h) */
+        g_mesh_first[t_rc] = VK_NULL_HANDLE;   /* an indirect mesh draw's first group is this draw's (mesh_indirect) */
+        g_mesh_payload[t_rc] = VK_NULL_HANDLE; /* and so is the compute-task path's buffer (sm86.h) */
     }
     g_memh_draw[t_rc]++; /* and so are the handles from memory (memh_handle), the draw's ahead too */
     /* an Ounce's mesh draw: the mesh program reads the vertex stage's set and push constants and has bindings of its
@@ -8886,26 +8901,26 @@ resolved:
         u64 uo = 0;
         /* an indirect draw's first workgroup is its record's, which mesh_indirect copied and bound at SNX_VKB_RS */
         u8* host = dc->indirect ? NULL : vk_stage(16, vk_stage_align(), &ub, &uo);
-        g_mesh_cap = sm86_mesh_task_cap(sh.payload_stride);
-        g_mesh_payload = mesh_payload();
-        if ((!dc->indirect && !host) || !g_mesh_payload || !g_mesh_cap) {
+        g_mesh_cap[t_rc] = sm86_mesh_task_cap(sh.payload_stride);
+        g_mesh_payload[t_rc] = mesh_payload();
+        if ((!dc->indirect && !host) || !g_mesh_payload[t_rc] || !g_mesh_cap[t_rc]) {
             draw_images_discard(&images);
             if (late_depth) vk_depth_shadow_cancel();
             CNT(g_vk_skipped)++;
             return;
         }
-        g_mesh_payload_bytes = SNX_MESH_PAYLOAD_BYTES;
-        g_mesh_groups = task_groups > g_mesh_cap ? g_mesh_cap : task_groups;
-        if (task_groups > g_mesh_cap)
+        g_mesh_payload_bytes[t_rc] = SNX_MESH_PAYLOAD_BYTES;
+        g_mesh_groups[t_rc] = task_groups > g_mesh_cap[t_rc] ? g_mesh_cap[t_rc] : task_groups;
+        if (task_groups > g_mesh_cap[t_rc])
             LOG_LIMIT(4,
                       "vulkan: a mesh draw of %u task workgroups keeps the first %u, the most the compute-task path's "
                       "buffer holds for its payload\n",
-                      task_groups, g_mesh_cap);
+                      task_groups, g_mesh_cap[t_rc]);
         if (host) {
             u32 words[4] = {first, 0, 0, 0};
             memcpy(host, words, sizeof words);
             snx_le32_array(host, 4); /* read by the device little-endian */
-            g_mesh_first = ub, g_mesh_first_off = uo;
+            g_mesh_first[t_rc] = ub, g_mesh_first_off[t_rc] = uo;
         }
     }
     /* an Ounce program's per-draw block: its place, which the sets bind (draw_block_take). Not a texture draw: its
@@ -8953,7 +8968,7 @@ resolved:
     /* a draw that samples, at its own pixel, a target that it writes: drawn two times, the first saving what the second
        reads (predraw_run) */
     if (mesh && sh.task_compute &&
-        !mesh_task_dispatch(tcs, k->arrays, bset[0], dc->indirect != 0, abuf, aoff, g_mesh_groups)) {
+        !mesh_task_dispatch(tcs, k->arrays, bset[0], dc->indirect != 0, abuf, aoff, g_mesh_groups[t_rc])) {
         draw_images_discard(&images);
         if (late_depth) vk_depth_shadow_cancel();
         LOG_LIMIT(1, "vulkan: a mesh draw's task program has no compute pipeline (skipped)\n");
@@ -9705,10 +9720,10 @@ resolved:
     memcpy(&pc[0], &pc0, sizeof(u32));
     /* an indirect draw's draw parameters that the vertex program takes from its record (DrawCall.params), and an
        indirect mesh draw's first group, which the task or mesh program takes from SNX_VKB_RS */
-    u32 params = mesh && sh.task_compute            ? SH_PUSH_GPU_MESH_FIRST | g_mesh_cap << 8
-                 : mesh && dc->indirect            ? SH_PUSH_GPU_MESH_FIRST
-                 : dc->indirect                     ? dc->params
-                                                    : 0;
+    u32 params = mesh && sh.task_compute ? SH_PUSH_GPU_MESH_FIRST | g_mesh_cap[t_rc] << 8
+                 : mesh && dc->indirect  ? SH_PUSH_GPU_MESH_FIRST
+                 : dc->indirect          ? dc->params
+                                         : 0;
     memcpy(&pc[2], &params, sizeof(u32));
     memcpy(&pc[6], &ds->dyn.alpha_ref, 4); /* the test's function is the pipeline's (vk_pipe_fs_spec) */
     u32 scaled_words[2] = {(u32)scaled[0], (u32)(scaled[0] >> 32)};
@@ -9838,7 +9853,7 @@ resolved:
 #endif
     pred_begin(cb, o->pred);
     if (mesh && sh.task_compute)
-        rec_CmdDrawMeshTasksIndirect(cb, g_mesh_payload, 0); /* the task dispatch's record */
+        rec_CmdDrawMeshTasksIndirect(cb, g_mesh_payload[t_rc], 0); /* the task dispatch's record */
     else if (mesh && dc->indirect)
         rec_CmdDrawMeshTasksIndirect(cb, abuf, aoff);
     else if (mesh)
