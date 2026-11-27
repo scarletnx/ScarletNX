@@ -787,13 +787,17 @@ static void gles1_pbuffer(void) {
     GL1("glDrawArrays", GL_TRIANGLES, 0, 3);
     expect1(2, 2, 0xff0000ffu, "inside the triangle, at the bottom left");
     expect1(13, 13, 0x00ff00ffu, "outside it, at the top right");
-    unsigned char rows[2 * 16 * 4] = {0};
-    GL1("glReadPixels", 0, 14, 16, 2, GL_RGBA, GL_UNSIGNED_BYTE, P(rows));
-    if (rows[0] != 0 || rows[1] != 255 || rows[16 * 4] != 0 || rows[16 * 4 + 1] != 255) {
+    /* the whole surface: its row 0 is GL's bottom one. Pixel (1, 0) is inside the triangle and (1, 15) outside;
+       rows read upside down would swap them */
+    unsigned char rows[16 * 16 * 4] = {0};
+    GL1("glReadPixels", 0, 0, 16, 16, GL_RGBA, GL_UNSIGNED_BYTE, P(rows));
+    const unsigned char* bottom = rows + 1 * 4;
+    const unsigned char* top = rows + (15 * 16 + 1) * 4;
+    if (bottom[0] != 255 || bottom[1] != 0 || top[0] != 0 || top[1] != 255) {
         fprintf(stderr,
-                "android_gles2: %s: the top two rows' first pixels are %u %u, %u %u in red and green, want "
-                "0 255 and 0 255\n",
-                g_t.test, rows[0], rows[1], rows[16 * 4], rows[16 * 4 + 1]);
+                "android_gles2: %s: pixel (1, 0) is %u %u and (1, 15) %u %u in red and green, want 255 0 and 0 "
+                "255\n",
+                g_t.test, bottom[0], bottom[1], top[0], top[1]);
         g_t.failures++;
     }
     unsigned char rgb[3];
