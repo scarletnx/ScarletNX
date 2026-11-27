@@ -166,7 +166,8 @@ static struct {
     VkPipeline expand;
     VkDeviceSize storage_align;
     VkSampler samplers[SAMPLER_KEYS];
-    VkPipeline pipelines[PIPELINE_KEYS]; /* made for g_gles_vk.pass_clear */
+    VkPipeline pipelines[PIPELINE_KEYS];         /* made for g_gles_vk.pass_clear */
+    VkPipeline pbuffer_pipelines[PIPELINE_KEYS]; /* for g_gles_vk.pass_pbuffer */
     Texture* textures;
     size_t texture_count;
     unsigned white; /* a 1x1 white texture, for a draw without one */
@@ -242,6 +243,28 @@ void gles1_format_changed(void) {
     memset(g.pipelines, 0, sizeof g.pipelines);
 }
 
+void gles1_vk_free(void) {
+    V.vk.vkDeviceWaitIdle(V.device); /* what the frames still run uses them */
+    gles1_format_changed();
+    for (size_t i = 0; i < PIPELINE_KEYS; ++i)
+        if (g.pbuffer_pipelines[i]) V.vk.vkDestroyPipeline(V.device, g.pbuffer_pipelines[i], NULL);
+    for (size_t i = 0; i < SAMPLER_KEYS; ++i)
+        if (g.samplers[i]) V.vk.vkDestroySampler(V.device, g.samplers[i], NULL);
+    for (size_t i = 0; i < g.texture_count; ++i) {
+        Texture* t = &g.textures[i];
+        gles_vk_destroy((GlesGarbage){.image = t->image, .view = t->view, .memory = t->memory});
+    }
+    free(g.textures);
+    if (g.expand) V.vk.vkDestroyPipeline(V.device, g.expand, NULL);
+    if (g.expand_layout) V.vk.vkDestroyPipelineLayout(V.device, g.expand_layout, NULL);
+    if (g.expand_set) V.vk.vkDestroyDescriptorSetLayout(V.device, g.expand_set, NULL);
+    if (g.layout) V.vk.vkDestroyPipelineLayout(V.device, g.layout, NULL);
+    if (g.set_layout) V.vk.vkDestroyDescriptorSetLayout(V.device, g.set_layout, NULL);
+    if (g.vert) V.vk.vkDestroyShaderModule(V.device, g.vert, NULL);
+    if (g.frag) V.vk.vkDestroyShaderModule(V.device, g.frag, NULL);
+    memset(&g, 0, sizeof g); /* over a kilobyte: no compound literal */
+}
+
 /* GL's blend factors as Vulkan's, by their order: ZERO, ONE, then SRC_COLOR (0x300) to SRC_ALPHA_SATURATE (0x308) */
 static int factor_index(unsigned f) {
     if (f <= 1) return (int)f;
@@ -257,12 +280,14 @@ static VkBlendFactor factor(int index) {
     return table[index];
 }
 
-/* the pipeline of a primitive kind (0 triangles, 1 lines, 2 points) and a blend (off, or its two factors) */
-static VkPipeline pipeline(int kind, bool blend, int src, int dst) {
+/* the pipeline of a primitive kind (0 triangles, 1 lines, 2 points) and a blend (off, or its two factors), for a
+   window's render pass or a pbuffer's */
+static VkPipeline pipeline(int kind, bool blend, int src, int dst, bool pbuffer) {
     unsigned key = blend ? (unsigned)(1 + src * 11 + dst) : 0;
     key = key * 3 + (unsigned)kind;
     if (key >= PIPELINE_KEYS) return VK_NULL_HANDLE;
-    if (g.pipelines[key]) return g.pipelines[key];
+    VkPipeline* made = pbuffer ? &g.pbuffer_pipelines[key] : &g.pipelines[key];
+    if (*made) return *made;
     VkPipelineShaderStageCreateInfo stages[2] = {
         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
          .stage = VK_SHADER_STAGE_VERTEX_BIT,
@@ -323,9 +348,10 @@ static VkPipeline pipeline(int kind, bool blend, int src, int dst) {
                                          .pColorBlendState = &blending,
                                          .pDynamicState = &dyn,
                                          .layout = g.layout,
-                                         .renderPass = V.pass_clear};
-    V.vk.vkCreateGraphicsPipelines(V.device, VK_NULL_HANDLE, 1, &info, NULL, &g.pipelines[key]);
-    return g.pipelines[key];
+                                         .renderPass = pbuffer ? V.pass_pbuffer : V.pass_clear};
+    if (V.vk.vkCreateGraphicsPipelines(V.device, VK_NULL_HANDLE, 1, &info, NULL, made) != VK_SUCCESS)
+        *made = VK_NULL_HANDLE;
+    return *made;
 }
 
 /* the sampler of a texture's filters and wraps (mipmapped filters as their base level's) */
@@ -800,7 +826,7 @@ static void record_draw(GlesContext* gl, VkDeviceSize offset, uint32_t n, int ki
     VkCommandBuffer cb = slot->cb;
     int src = factor_index(gl->src), dst = factor_index(gl->dst);
     bool blend = gl->blend && src >= 0 && dst >= 0 && !(src == 1 && dst == 0);
-    VkPipeline p = pipeline(kind, blend, blend ? src : 1, blend ? dst : 0);
+    VkPipeline p = pipeline(kind, blend, blend ? src : 1, blend ? dst : 0, s->pbuffer);
     Texture* t = draw_texture(gl);
     if (!t && !g.white) return;
     Texture* bound = t ? t : &g.textures[g.white];
@@ -1414,18 +1440,98 @@ static void g_get_integerv(CPU* c, void* data) {
     }
     memcpy(PTR(1), v, (size_t)n * sizeof *v);
 }
-/* glReadPixels: what the window shows is the GPU's, read back only for a CPU that must see it. Not yet: zeros */
+/* the surface's pixels of GL's rectangle (x, y from the bottom left) as RGBA bytes into out, rows from GL's bottom
+   one up: the frame's image copied into its staging buffer, the commands so far submitted and waited for. What lies
+   outside the surface stays as the guest had it; a surface nothing drew into reads zeros */
+static void read_back(GlesSurface* s, int x, int y, int width, int height, unsigned char* out) {
+    bool drawn = s->pbuffer ? s->own_ready : s->acquired && s->touched;
+    if (!drawn || !gles_frame_begin(s)) {
+        if (!g.warned_read) {
+            fprintf(stderr, "scarletnx-android: GLES: glReadPixels before anything was drawn: zeros\n");
+            g.warned_read = true;
+        }
+        memset(out, 0, (size_t)width * (size_t)height * 4);
+        return;
+    }
+    gles_pass_end(s);
+    int surface_w = (int)s->extent.width, surface_h = (int)s->extent.height;
+    int x0 = x > 0 ? x : 0, y0 = y > 0 ? y : 0;
+    int x1 = x + width < surface_w ? x + width : surface_w, y1 = y + height < surface_h ? y + height : surface_h;
+    if (x1 <= x0 || y1 <= y0) return;
+    uint32_t w = (uint32_t)(x1 - x0), h = (uint32_t)(y1 - y0);
+    GlesSlot* slot = &s->slots[s->slot];
+    VkDeviceSize size = (VkDeviceSize)w * h * 4;
+    VkDeviceSize at = gles_vk_arena_take(slot, &slot->staging, size, 16, 8u << 20, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    if (at == VK_WHOLE_SIZE) {
+        set_error(t_gl, GL_OUT_OF_MEMORY_);
+        return;
+    }
+    VkImage image = s->images[s->pbuffer ? 0 : s->image];
+    VkImageLayout rest = s->pbuffer ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    VkCommandBuffer cb = slot->cb;
+    gles_image_barrier(cb, image, VK_IMAGE_ASPECT_COLOR_BIT, rest, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                       VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                       VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    /* GL's rows from the bottom are the image's from the top: the viewport's height is negative */
+    VkBufferImageCopy copy = {.bufferOffset = at,
+                              .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                              .imageOffset = {x0, surface_h - y1, 0},
+                              .imageExtent = {w, h, 1}};
+    V.vk.vkCmdCopyImageToBuffer(cb, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, slot->staging.buffer, 1, &copy);
+    gles_image_barrier(cb, image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, rest,
+                       VK_ACCESS_TRANSFER_READ_BIT,
+                       VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                       VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+    VkMemoryBarrier host = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                            .dstAccessMask = VK_ACCESS_HOST_READ_BIT};
+    V.vk.vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &host, 0, NULL, 0,
+                              NULL);
+    if (!gles_flush(s)) {
+        fprintf(stderr, "scarletnx-android: GLES: glReadPixels: Vulkan's submission of the frame failed: the "
+                        "pixels are not read\n");
+        return;
+    }
+    const unsigned char* rows = slot->staging.map + at;
+    bool bgra = s->format == VK_FORMAT_B8G8R8A8_UNORM || s->format == VK_FORMAT_B8G8R8A8_SRGB;
+    for (uint32_t r = 0; r < h; ++r) {
+        const unsigned char* from = rows + (size_t)(h - 1 - r) * w * 4;
+        unsigned char* to = out + ((size_t)(y0 + (int)r - y) * (size_t)width + (size_t)(x0 - x)) * 4;
+        for (uint32_t i = 0; i < w; ++i) {
+            to[i * 4 + 0] = from[i * 4 + (bgra ? 2 : 0)];
+            to[i * 4 + 1] = from[i * 4 + 1];
+            to[i * 4 + 2] = from[i * 4 + (bgra ? 0 : 2)];
+            to[i * 4 + 3] = from[i * 4 + 3];
+        }
+    }
+}
+/* glReadPixels(x, y, width, height, format, type, pixels): GL_RGBA bytes, the one format GLES 1.1 reads besides the
+   implementation's (GL_IMPLEMENTATION_COLOR_READ_FORMAT_OES says the same). Each row is 4-byte aligned already, as
+   GL_PACK_ALIGNMENT's 4 has them */
 static void g_read_pixels(CPU* c, void* data) {
     (void)data;
     GL_OR_RETURN();
     int width = (int)X(2), height = (int)X(3);
-    if (width <= 0 || height <= 0 || !X(6)) return;
-    if (!g.warned_read) {
-        fprintf(stderr, "scarletnx-android: GLES: glReadPixels reads zeros (no readback of the window yet)\n");
-        g.warned_read = true;
+    unsigned format = (unsigned)X(4), type = (unsigned)X(5);
+    bool known_format = format == GL_ALPHA_ || format == GL_RGB_ || format == GL_RGBA_;
+    bool known_type = type == GL_UNSIGNED_BYTE_ || type == GL_UNSIGNED_SHORT_5_6_5_ ||
+                      type == GL_UNSIGNED_SHORT_4_4_4_4_ || type == GL_UNSIGNED_SHORT_5_5_5_1_;
+    if (!known_format || !known_type) {
+        set_error(gl, GL_INVALID_ENUM_);
+        return;
     }
-    size_t bpp = (unsigned)X(5) == GL_UNSIGNED_BYTE_ ? ((unsigned)X(4) == GL_RGB_ ? 3 : 4) : 2;
-    memset(PTR(6), 0, (size_t)width * (size_t)height * bpp);
+    if (width < 0 || height < 0) {
+        set_error(gl, GL_INVALID_VALUE_);
+        return;
+    }
+    if (format != GL_RGBA_ || type != GL_UNSIGNED_BYTE_) {
+        set_error(gl, GL_INVALID_OPERATION_);
+        return;
+    }
+    if (!width || !height || !X(6) || !gl->draw) return;
+    pthread_mutex_lock(&V.lock);
+    read_back(gl->draw, (int)X(0), (int)X(1), width, height, PTR(6));
+    pthread_mutex_unlock(&V.lock);
 }
 static void g_nothing(CPU* c, void* data) {
     (void)c, (void)data;

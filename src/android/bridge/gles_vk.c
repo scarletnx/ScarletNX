@@ -288,6 +288,7 @@ void gles_vk_shutdown(void) {
     if (g.commands) g.vk.vkDestroyCommandPool(g.device, g.commands, NULL);
     if (g.pass_clear) g.vk.vkDestroyRenderPass(g.device, g.pass_clear, NULL);
     if (g.pass_load) g.vk.vkDestroyRenderPass(g.device, g.pass_load, NULL);
+    if (g.pass_pbuffer) g.vk.vkDestroyRenderPass(g.device, g.pass_pbuffer, NULL);
     hle_vulkan_destroy_device(g.device);
     hle_vulkan_destroy_instance(g.instance);
     free(g.retired);
@@ -396,6 +397,39 @@ void gles_image_barrier(VkCommandBuffer cb, VkImage image, VkImageAspectFlags as
 
 /* ---- the surfaces ---- */
 
+/* a render pass of GLES 1.1 on an image of format, from the layout it rests in (or UNDEFINED) to rest */
+static bool render_pass(VkFormat format, VkAttachmentLoadOp load, VkImageLayout from, VkImageLayout rest,
+                        VkRenderPass* out) {
+    VkAttachmentDescription color = {.format = format,
+                                     .samples = VK_SAMPLE_COUNT_1_BIT,
+                                     .loadOp = load,
+                                     .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                     .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                                     .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                                     .initialLayout = from,
+                                     .finalLayout = rest};
+    VkAttachmentReference ref = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    VkSubpassDescription sub = {
+        .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = 1, .pColorAttachments = &ref};
+    /* after the acquire's wait, and after the texture copies before the pass */
+    VkSubpassDependency dep = {
+        .srcSubpass = VK_SUBPASS_EXTERNAL,
+        .dstSubpass = 0,
+        .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+        .dstAccessMask =
+            VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT};
+    VkRenderPassCreateInfo info = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+                                   .attachmentCount = 1,
+                                   .pAttachments = &color,
+                                   .subpassCount = 1,
+                                   .pSubpasses = &sub,
+                                   .dependencyCount = 1,
+                                   .pDependencies = &dep};
+    return g.vk.vkCreateRenderPass(g.device, &info, NULL, out) == VK_SUCCESS;
+}
+
 /* the render passes of GLES 1.1 on a format: one that clears the image first, and one that keeps what the frame
    drew. Its pipelines are made for pass_clear (hle_gles.c), and are made again when the format changes */
 static bool passes(VkFormat format) {
@@ -407,40 +441,31 @@ static bool passes(VkFormat format) {
         gles1_format_changed();
     }
     g.format = format;
-    for (int load = 0; load < 2; ++load) {
-        VkAttachmentDescription color = {.format = format,
-                                         .samples = VK_SAMPLE_COUNT_1_BIT,
-                                         .loadOp = load ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR,
-                                         .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-                                         .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-                                         .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-                                         .initialLayout = load ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR : VK_IMAGE_LAYOUT_UNDEFINED,
-                                         .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR};
-        VkAttachmentReference ref = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-        VkSubpassDescription sub = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    .colorAttachmentCount = 1,
-                                    .pColorAttachments = &ref};
-        /* after the acquire's wait, and after the texture copies before the pass */
-        VkSubpassDependency dep = {.srcSubpass = VK_SUBPASS_EXTERNAL,
-                                   .dstSubpass = 0,
-                                   .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                                                   VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                   .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                                                   VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                                   .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
-                                   .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
-                                                    VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT};
-        VkRenderPassCreateInfo info = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-                                       .attachmentCount = 1,
-                                       .pAttachments = &color,
-                                       .subpassCount = 1,
-                                       .pSubpasses = &sub,
-                                       .dependencyCount = 1,
-                                       .pDependencies = &dep};
-        if (g.vk.vkCreateRenderPass(g.device, &info, NULL, load ? &g.pass_load : &g.pass_clear) != VK_SUCCESS)
-            return false;
+    return render_pass(format, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                       &g.pass_clear) &&
+           render_pass(format, VK_ATTACHMENT_LOAD_OP_LOAD, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                       VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, &g.pass_load);
+}
+
+/* a pbuffer's framebuffer of GLES 1.1's pass, and the pass, at the first: false when Vulkan makes none */
+static bool pbuffer_framebuffer(GlesSurface* s) {
+    if (s->framebuffers[0]) return true;
+    if (!g.pass_pbuffer &&
+        !render_pass(VK_FORMAT_R8G8B8A8_UNORM, VK_ATTACHMENT_LOAD_OP_LOAD, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, &g.pass_pbuffer)) {
+        g.pass_pbuffer = VK_NULL_HANDLE;
+        return false;
     }
-    return true;
+    VkFramebufferCreateInfo fb = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+                                  .renderPass = g.pass_pbuffer,
+                                  .attachmentCount = 1,
+                                  .pAttachments = &s->views[0],
+                                  .width = s->extent.width,
+                                  .height = s->extent.height,
+                                  .layers = 1};
+    if (g.vk.vkCreateFramebuffer(g.device, &fb, NULL, &s->framebuffers[0]) == VK_SUCCESS) return true;
+    s->framebuffers[0] = VK_NULL_HANDLE;
+    return false;
 }
 
 static void depth_free(GlesSurface* s) {
@@ -756,20 +781,29 @@ bool gles_acquire(GlesSurface* s) {
 }
 
 bool gles_pass_begin(GlesSurface* s) {
-    if (s->pbuffer || !gles_acquire(s)) return false;
+    if (s->pbuffer ? !gles_frame_begin(s) : !gles_acquire(s)) return false;
     if (s->open == GLES_OPEN_PASS) return true;
     gles_pass_end(s);
+    if (s->pbuffer && !pbuffer_framebuffer(s)) return false;
     GlesSlot* slot = &s->slots[s->slot];
+    /* a pbuffer's image, which nothing drew into yet, to the pass's layout: its contents are undefined, as EGL's */
+    if (s->pbuffer && !s->own_ready)
+        gles_image_barrier(slot->cb, s->images[0], VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                           VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                           VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
     VkClearValue clear = {{{0, 0, 0, 1}}};
     VkRenderPassBeginInfo info = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-                                  .renderPass = s->touched ? g.pass_load : g.pass_clear,
-                                  .framebuffer = s->framebuffers[s->image],
+                                  .renderPass = s->pbuffer   ? g.pass_pbuffer
+                                                : s->touched ? g.pass_load
+                                                             : g.pass_clear,
+                                  .framebuffer = s->framebuffers[s->pbuffer ? 0 : s->image],
                                   .renderArea = {{0, 0}, s->extent},
                                   .clearValueCount = 1,
                                   .pClearValues = &clear};
     g.vk.vkCmdBeginRenderPass(slot->cb, &info, VK_SUBPASS_CONTENTS_INLINE);
     s->open = GLES_OPEN_PASS;
     s->touched = true;
+    if (s->pbuffer) s->own_ready = true;
     return true;
 }
 

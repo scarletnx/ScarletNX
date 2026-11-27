@@ -6,11 +6,12 @@
    the depth test, a framebuffer object sampled as a texture, instanced draws with gl_InstanceID and a divisor, a
    uniform block, client arrays and indices, a line loop, glBlitFramebuffer and glCopyTexSubImage2D, gl_FragCoord
    and gl_PointCoord, GLES 3.1's compute shaders, images, indirect draws, vertex bindings and program pipelines,
-   and GLES 3.2's base vertex draws and glCopyImageSubData. The calls go
-   through the HLE's handlers with the arguments in a CPU state, as a guest's do. Exits 77 without a Vulkan 1.3
-   device */
+   and GLES 3.2's base vertex draws and glCopyImageSubData; and GLES 1.1 (hle_gles.c) on a pbuffer of its own, cleared,
+   drawn and read back. The calls go through the HLE's handlers with the arguments in a CPU state, as a guest's do.
+   Exits 77 without a Vulkan 1.3 device */
 #include "android/bridge/gles2.h"
 #include "android/bridge/hle.h"
+#include "android/bridge/hle_gles.h"
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -743,6 +744,69 @@ static void queries(void) {
     no_error("queries");
 }
 
+/* a GLES 1.1 call: hle_gles's handler, integers x and floats f */
+static uint64_t gl1(const char* name, const uint64_t* x, size_t nx, const float* f, size_t nf) {
+    const HleSymbol* s = hle_gles;
+    while (s->name[0] && strcmp(s->name, name)) ++s;
+    if (!s->name[0]) {
+        fprintf(stderr, "android_gles2: GLES 1.1 has no function %s\n", name);
+        exit(1);
+    }
+    g_t.cpu = (CPU){0};
+    for (size_t i = 0; i < nx; ++i) g_t.cpu.x[i] = x[i];
+    for (size_t i = 0; i < nf; ++i) memcpy(&g_t.cpu.v[i].f[0], &f[i], 4);
+    s->handler(&g_t.cpu, s->data);
+    return g_t.cpu.x[0];
+}
+#define GL1(name, ...)  gl1(name, (uint64_t[]){__VA_ARGS__}, sizeof((uint64_t[]){__VA_ARGS__}) / 8, NULL, 0)
+#define GL1F(name, ...) gl1(name, NULL, 0, (float[]){__VA_ARGS__}, sizeof((float[]){__VA_ARGS__}) / 4)
+static void expect1(int x, int y, unsigned want, const char* what) {
+    unsigned char p[4] = {0};
+    GL1("glReadPixels", (uint64_t)x, (uint64_t)y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, P(p));
+    unsigned got = (unsigned)p[0] << 24 | (unsigned)p[1] << 16 | (unsigned)p[2] << 8 | p[3];
+    if (got != want) {
+        fprintf(stderr, "android_gles2: %s: %s: pixel %d,%d is %08x, want %08x\n", g_t.test, what, x, y, got, want);
+        g_t.failures++;
+    }
+}
+/* GLES 1.1 on a pbuffer of its own (Amberlith's case: its clear read back zeros, as GLES 1.1 drew nothing on a
+   pbuffer and glReadPixels read none): a clear, a triangle over the bottom left half, GL's rows from the bottom, and
+   a format GLES 1.1 does not read refused */
+static void gles1_pbuffer(void) {
+    g_t.test = "GLES 1.1 on a pbuffer";
+    GlesSurface* s = gles_pbuffer_surface(16, 16);
+    GlesContext* c = gles_context_new();
+    gles_make_current(c, s);
+    GL1F("glClearColor", 0, 1, 0, 1);
+    GL1("glClear", GL_COLOR_BUFFER_BIT);
+    expect1(8, 8, 0x00ff00ffu, "the clear");
+    static const float tri[] = {-1, -1, 1, -1, -1, 1};
+    GL1("glEnableClientState", 0x8074); /* GL_VERTEX_ARRAY */
+    GL1("glVertexPointer", 2, GL_FLOAT, 0, P(tri));
+    GL1F("glColor4f", 1, 0, 0, 1);
+    GL1("glDrawArrays", GL_TRIANGLES, 0, 3);
+    expect1(2, 2, 0xff0000ffu, "inside the triangle, at the bottom left");
+    expect1(13, 13, 0x00ff00ffu, "outside it, at the top right");
+    unsigned char rows[2 * 16 * 4] = {0};
+    GL1("glReadPixels", 0, 14, 16, 2, GL_RGBA, GL_UNSIGNED_BYTE, P(rows));
+    if (rows[0] != 0 || rows[1] != 255 || rows[16 * 4] != 0 || rows[16 * 4 + 1] != 255) {
+        fprintf(stderr,
+                "android_gles2: %s: the top two rows' first pixels are %u %u, %u %u in red and green, want "
+                "0 255 and 0 255\n",
+                g_t.test, rows[0], rows[1], rows[16 * 4], rows[16 * 4 + 1]);
+        g_t.failures++;
+    }
+    unsigned char rgb[3];
+    GL1("glReadPixels", 0, 0, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, P(rgb));
+    if (GL1("glGetError", 0) != 0x0502) { /* GL_INVALID_OPERATION */
+        fprintf(stderr, "android_gles2: %s: glReadPixels of GL_RGB bytes is not GL_INVALID_OPERATION\n", g_t.test);
+        g_t.failures++;
+    }
+    gles_make_current(NULL, NULL);
+    gles_context_free(c);
+    gles_surface_free(s);
+}
+
 int main(void) {
     Gles2Context* gl = gles2_context_new(3);
     GlesSurface* s = gles_pbuffer_surface(W, H);
@@ -769,6 +833,7 @@ int main(void) {
     gles32();
     queries();
     gles2_make_current(NULL, NULL, NULL);
+    gles1_pbuffer();
     gles2_context_free(gl);
     gles_surface_free(s);
     gles2_shutdown(); /* every Vulkan object gone before the device, which the validation layer checks */
@@ -778,7 +843,7 @@ int main(void) {
     }
     printf("android_gles2: a triangle, textures, masked clears, blending, depth, a framebuffer object, instanced "
            "draws, a uniform block, client arrays, a line loop, the window's coordinates, compute, vertex bindings, a "
-           "program pipeline and GLES 3.2's base vertex and image copy drawn on %s\n",
+           "program pipeline and GLES 3.2's base vertex and image copy, and GLES 1.1 on a pbuffer drawn on %s\n",
            g_gles_vk.props.deviceName);
     return 0;
 }
