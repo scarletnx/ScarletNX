@@ -189,7 +189,7 @@ static void draw(Surf* s, u32 size, u32 at, u8 value) {
 /* a draw whose image vk_surf_keep_begin kept on the GPU: no bytes from before it, its span's owner held */
 static void keep_draw(Surf* s, u32 at, u8 value) {
     static VkOwnRes owner;
-    VkImageKeep k = {&owner, 0, 0};
+    VkImageKeep k = {.held = &owner};
     if (!vk_gfx_image_unrecorded(s)) {
         memcpy(g.before, g.guest, SIZE);
         g.refs++;

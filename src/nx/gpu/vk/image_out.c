@@ -53,6 +53,9 @@ static struct {
     /* guest bytes copied on the CPU before draws, bytes copied back from the GPU, images published; and as of the
        last report */
     u64 copied, read_back, published, reported[3];
+    /* dispatches' storage images since the last report: their binds by what each did (VK_IMG_KEEP_*), and the kept
+       ones published when something read them */
+    u64 keep_why[VK_IMG_KEEP_N], compute_published;
 } g_image_out;
 static _Thread_local int g_img_landing;
 _Atomic int g_gfx_img_any;
@@ -248,6 +251,7 @@ static int image_keep_end(u64 id) {
     o->keep.held = NULL; /* vk_surf_keep_end takes the reference */
     if (vk_surf_keep_end(o->surf, &k, &original)) {
         g_image_out.published++;
+        g_image_out.compute_published += k.compute != 0;
         if ((index = image_find(id)) < g_image_out.count) image_remove(index);
         return 1;
     }
@@ -442,8 +446,30 @@ void vk_gfx_image_stats(u64* copied, u64* read_back, u64* published) {
     *read_back = g_image_out.read_back;
     *published = g_image_out.published;
 }
+void vk_gfx_image_keep_note(int why) {
+    if (why >= 0 && why < VK_IMG_KEEP_N) g_image_out.keep_why[why]++;
+}
 void vk_gfx_image_report(void) {
     u64* was = g_image_out.reported;
+    const u64* n = g_image_out.keep_why;
+    u64 published = 0;
+    for (int i = VK_IMG_KEEP_TARGET; i < VK_IMG_KEEP_N; i++) published += n[i];
+    if (published || n[VK_IMG_KEEP_KEPT] || n[VK_IMG_KEEP_JOINED])
+        LOG("vulkan: dispatches' storage images over 600 presents: %llu kept on the GPU, %llu joined to their image's "
+            "waiting write-back, %llu published at the dispatch (%llu render targets, %llu over another image of the "
+            "dispatch, %llu under another write-back, %llu over 4 GB, %llu without traps, %llu unpublishable, %llu "
+            "not whole pages, %llu not one run, %llu read by the CPU lately, %llu no owner); %llu kept ones published "
+            "when read, %.2f a present\n",
+            (unsigned long long)n[VK_IMG_KEEP_KEPT], (unsigned long long)n[VK_IMG_KEEP_JOINED],
+            (unsigned long long)published, (unsigned long long)n[VK_IMG_KEEP_TARGET],
+            (unsigned long long)n[VK_IMG_KEEP_OVERLAP], (unsigned long long)n[VK_IMG_KEEP_PENDING],
+            (unsigned long long)n[VK_IMG_KEEP_BIG], (unsigned long long)n[VK_IMG_KEEP_NO_TRAPS],
+            (unsigned long long)n[VK_IMG_KEEP_UNPUBLISHABLE], (unsigned long long)n[VK_IMG_KEEP_UNALIGNED],
+            (unsigned long long)n[VK_IMG_KEEP_RUNS], (unsigned long long)n[VK_IMG_KEEP_CPU_READ],
+            (unsigned long long)n[VK_IMG_KEEP_NO_OWNER], (unsigned long long)g_image_out.compute_published,
+            (double)g_image_out.compute_published / 600.0);
+    memset(g_image_out.keep_why, 0, sizeof g_image_out.keep_why);
+    g_image_out.compute_published = 0;
     LOG("vulkan: draws' storage images since the last report: %llu bytes copied before their draws, %llu copied back, "
         "%llu images published\n",
         (unsigned long long)(g_image_out.copied - was[0]), (unsigned long long)(g_image_out.read_back - was[1]),
