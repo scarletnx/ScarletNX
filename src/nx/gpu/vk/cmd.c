@@ -1062,36 +1062,44 @@ static u32 ring_chunks(const Frame* f, u32 ring) {
 }
 /* size bytes out of the chunk this draw slot's ring holds, with nothing shared touched: NULL when it has none or no
    room (ring_alloc, under the lock where a run is split) */
-static u8* ring_fast(Frame* f, u32 ring, u64 size, u64 align, VkBuffer* buf, u64* off, DevMem* mem) {
+/* 1 with *ptr where the CPU maps the bytes (NULL in device memory the CPU doesn't map: the device ring's), 0 when the
+   ring's chunk can't hold them. Not the pointer alone: a device ring's first bytes of a chunk are at NULL + 0, and read
+   as a failure each took a new chunk and failed the request (rings of 10 GB, and draws without their buffers) */
+static int ring_fast(Frame* f, u32 ring, u64 size, u64 align, VkBuffer* buf, u64* off, DevMem* mem, u8** ptr) {
     const u32 slot = vk_render_slot();
     Ring* r = &f->ring[slot][ring];
     if (align < 16) align = 16;
     const u64 at = (r->used + align - 1) & ~(align - 1);
-    if (!r->cur || size > r->size || at + size > r->size) return NULL;
+    if (!r->cur || size > r->size || at + size > r->size) return 0;
     r->used = at + size;
     g_xfer[slot][ring][r->in] += size;
     *buf = r->buf;
     *off = at;
     if (mem) *mem = r->mem;
-    return r->ptr + at;
+    *ptr = r->ptr ? r->ptr + at : NULL;
+    return 1;
 }
 /* size bytes of the frame's ring at *off of *buf, the chunk's memory in *mem: the pointer, NULL when none could be
    had. A request no bigger than a chunk is handed out of the ring's chunk, or of the next one when that is full (a big
    buffer chunk_take lent it, counted as a big one); a bigger one gets a big buffer of its own. Each draw slot has its
    ring (vk_render_slot) */
+/* ring_take, with the pointer: for the rings the CPU maps */
+static int ring_take(Frame* f, u32 ring, u64 size, u64 align, VkBuffer* buf, u64* off, DevMem* mem, u8** ptr);
 static u8* ring_alloc(Frame* f, u32 ring, u64 size, u64 align, VkBuffer* buf, u64* off, DevMem* mem) {
-    if (size <= chunk_size()) {
-        u8* p = ring_fast(f, ring, size, align, buf, off, mem);
-        if (p) return p;
-    }
+    u8* p = NULL;
+    return ring_take(f, ring, size, align, buf, off, mem, &p) ? p : NULL;
+}
+/* size bytes of the frame's ring: 1 with *ptr (NULL where the CPU doesn't map the ring), 0 when none could be had */
+static int ring_take(Frame* f, u32 ring, u64 size, u64 align, VkBuffer* buf, u64* off, DevMem* mem, u8** ptr) {
+    if (size <= chunk_size() && ring_fast(f, ring, size, align, buf, off, mem, ptr)) return 1;
     const u32 slot = (u32)(f - g_fr) + 1, rs = vk_render_slot();
     Ring* r = &f->ring[rs][ring];
     Chunk* c;
     if (align < 16) align = 16;
-    if (size > g_vk.alloc_cap) return NULL; /* no allocation is bigger (memory.c) */
+    if (size > g_vk.alloc_cap) return 0; /* no allocation is bigger (memory.c) */
     if (size > chunk_size()) {              /* in host memory, past the window's share (BAR_RING_MAX) */
         u32 big = chunk_take(ring, big_size(size), 1, 0, slot);
-        if (!big) return NULL;
+        if (!big) return 0;
         g_cmd.took[g_cmd.itook][ring][1]++;
         c = &g_cmd.chunk[big - 1];
         chunk_written(c);
@@ -1101,7 +1109,8 @@ static u8* ring_alloc(Frame* f, u32 ring, u64 size, u64 align, VkBuffer* buf, u6
         *buf = c->buf;
         *off = 0;
         if (mem) *mem = c->mem;
-        return c->ptr;
+        *ptr = c->ptr;
+        return 1;
     }
     if (r->cur) { /* full: what was written to it is flushed with the next submit */
         Chunk* old = &g_cmd.chunk[r->cur - 1];
@@ -1112,7 +1121,7 @@ static u8* ring_alloc(Frame* f, u32 ring, u64 size, u64 align, VkBuffer* buf, u6
     r->used = 0;
     r->cur = chunk_take(ring, chunk_size(), 0, ring == XRING_OUTPUT && (ring_chunks(f, ring) + 1) * chunk_size() <= BAR_RING_MAX,
                         slot);
-    if (!r->cur) return NULL;
+    if (!r->cur) return 0;
     r->n++;
     c = &g_cmd.chunk[r->cur - 1];
     g_cmd.took[g_cmd.itook][ring][c->big]++; /* a big buffer lent counts as one */
@@ -1121,7 +1130,7 @@ static u8* ring_alloc(Frame* f, u32 ring, u64 size, u64 align, VkBuffer* buf, u6
     r->ptr = c->ptr;
     r->size = c->size;
     r->in = c->in;
-    return ring_fast(f, ring, size, align, buf, off, mem);
+    return ring_fast(f, ring, size, align, buf, off, mem, ptr);
 }
 
 static u8* stage_alloc(u64 size, u64 align, VkBuffer* buf, u64* off, DevMem* mem, int output)
@@ -1132,12 +1141,10 @@ static u8* stage_alloc(u64 size, u64 align, VkBuffer* buf, u64* off, DevMem* mem
 	f = &g_fr[g_cur];
 	const u32 ring = output ? XRING_OUTPUT : XRING_STAGE;
 	/* a split run's thread: its own ring's chunk with no lock, the pool's under the share lock */
-	if (size <= chunk_size()) {
-		u8* p = ring_fast(f, ring, size, align, buf, off, mem);
-		if (p) return p;
-	}
+	u8* p = NULL;
+	if (size <= chunk_size() && ring_fast(f, ring, size, align, buf, off, mem, &p)) return p;
 	vk_share_lock();
-	u8* p = ring_alloc(f, ring, size, align, buf, off, mem);
+	p = ring_alloc(f, ring, size, align, buf, off, mem);
 	vk_share_unlock();
 	return p;
 }
@@ -1205,7 +1212,8 @@ int vk_stage_device_at(const char* file, int line, u64 size, u64 align, VkBuffer
             break;
         }
     }
-    return ring_alloc(&g_fr[g_cur], XRING_DEVICE, size, align, buf, off, NULL) != NULL;
+    u8* ptr = NULL; /* device memory the CPU doesn't map: the take's success, not its pointer */
+    return ring_take(&g_fr[g_cur], XRING_DEVICE, size, align, buf, off, NULL, &ptr);
 }
 
 /* the host writes to the chunks the staging and output rings hand out of, and to those they filled and the frame's
