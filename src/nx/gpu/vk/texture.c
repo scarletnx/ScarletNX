@@ -4641,22 +4641,41 @@ static VkSamplerAddressMode wrap(u32 m) {
 /* tsc[0] bit 9 compare, bits 10-12 the compare function; tsc[1] filters (gpu/vk/render.c forces nearest for integer
    textures and the compare mode the shader declares) */
 int g_vk_anisotropy;
+/* samplers by state, open addressed: a slot once filled never changes, its sampler stored last with release order,
+   so vk_sampler_kept finds one with no lock (draw_batches=2's worker and renderer thread at once) */
+#define SAMPLER_TAB 4096
+typedef struct {
+    u32 tsc[8];
+    int raise, integer;
+    VkSampler s;
+} SamplerSlot;
+static SamplerSlot g_sampler_tab[SAMPLER_TAB];
+static u32 sampler_home(const u32* tsc, int raise, int integer) {
+    u32 hk = 2166136261u;
+    for (int i = 0; i < 8; i++) hk = (hk ^ tsc[i]) * 16777619u;
+    hk = (hk ^ (u32)(raise << 1 | integer)) * 16777619u;
+    return hk & (SAMPLER_TAB - 1);
+}
+VkSampler vk_sampler_kept(const u32* tsc, int raise, int integer) {
+    u32 j = sampler_home(tsc, raise, integer);
+    for (u32 probe = 0; probe < SAMPLER_TAB; probe++, j = (j + 1) & (SAMPLER_TAB - 1)) {
+        const VkSampler s = __atomic_load_n(&g_sampler_tab[j].s, __ATOMIC_ACQUIRE);
+        if (!s) return VK_NULL_HANDLE;
+        if (!memcmp(g_sampler_tab[j].tsc, tsc, 32) && g_sampler_tab[j].raise == raise &&
+            g_sampler_tab[j].integer == integer)
+            return s;
+    }
+    return VK_NULL_HANDLE;
+}
 VkSampler vk_sampler(const u32* tsc, int raise, int integer) {
     vk_shared_note(15);
     /* samplers are kept for good, and a device allows at least 4000 (maxSamplerAllocationCount): past 3072, a quarter
        of the table left free for probing, new sampler states get the first sampler made */
-    enum { TAB = 4096, MAX = 3072 };
-    static struct {
-        u32 tsc[8];
-        int raise, integer;
-        VkSampler s;
-    } tab[TAB];
+    enum { TAB = SAMPLER_TAB, MAX = 3072 };
+    SamplerSlot* const tab = g_sampler_tab;
     static u32 n, ncustom;
     static VkSampler first;
-    u32 hk = 2166136261u;
-    for (int i = 0; i < 8; i++) hk = (hk ^ tsc[i]) * 16777619u;
-    hk = (hk ^ (u32)(raise << 1 | integer)) * 16777619u;
-    u32 j = hk & (TAB - 1);
+    u32 j = sampler_home(tsc, raise, integer);
     for (u32 probe = 0; probe < TAB && tab[j].s; probe++, j = (j + 1) & (TAB - 1))
         if (!memcmp(tab[j].tsc, tsc, 32) && tab[j].raise == raise && tab[j].integer == integer) return tab[j].s;
     if (n >= MAX || tab[j].s) {
@@ -4752,7 +4771,7 @@ VkSampler vk_sampler(const u32* tsc, int raise, int integer) {
     memcpy(tab[j].tsc, tsc, 32);
     tab[j].raise = raise;
     tab[j].integer = integer;
-    tab[j].s = s;
+    __atomic_store_n(&tab[j].s, s, __ATOMIC_RELEASE); /* last: vk_sampler_kept reads the key after it */
     ncustom += custom;
     if (!n++) first = s;
     return s;
