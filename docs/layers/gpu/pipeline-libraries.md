@@ -591,7 +591,7 @@ menus of an Ounce game under `--vk-validation=1` against the same run on feat/ou
 - **`VK_KHR_pipeline_binary` for the parts**. The device has it. But `g_pipeline.pcache` and the driver's disk cache already
   keep the compiled parts. A binary format of our own would be a second cache to keep in step, with no gain shown.
   It can come back if the cache hit of a part costs too much (see the open questions).
-- **Skip a draw while its pipeline compiles**. It broke one game's menus and 190 edenprobe cases. A draw still never
+- **Skip a draw while its pipeline compiles**. It broke one game's menus and 190 Amberlith cases. A draw still never
   skips. Only `async_pipelines=1` skips, as now.
 
 ## What comes from vkd3d-proton
@@ -646,7 +646,7 @@ licenses that the project can port (CLAUDE.md).
 ## Risks
 
 - A driver can draw a linked pipeline wrong where the whole pipeline is right. The setting `pipeline_libraries=0` is
-  the way out, and edenprobe on lavapipe (which has GPL) checks the path in CI.
+  the way out, and Amberlith on lavapipe (which has GPL) checks the path in CI.
 - The layouts change for all graphics pipelines when GPL is on. A missed bind with a layout of the other family is a
   validation error, not a wrong draw on most drivers, so the layer finds it.
 - The swap adds a pipeline bind in each command buffer after an optimized pipeline is ready. That is one bind for

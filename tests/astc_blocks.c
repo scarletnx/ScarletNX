@@ -45,7 +45,7 @@ static const SnxAstcbBlock snx_astcb_illegal_at_each_exit[] = {
 
 /* blocks with an HDR endpoint mode in one partition: the error colour there only */
 static const SnxAstcbExpected snx_astcb_hdr_partitions[] = {
-    /* edenprobe's hdrfirst: mode 7 then mode 9, dual plane */
+    /* Amberlith's hdrfirst: mode 7 then mode 9, dual plane */
     {{4, 4, {0x2e, 0x4f, 0x2d, 0xfd, 0x10, 0xda, 0x68, 0xca, 0xb6, 0x76, 0x8c, 0x2b, 0xcc, 0xf2, 0x51, 0xeb}},
      {SNX_ASTCB_MAGENTA, 0xffe5db74, SNX_ASTCB_MAGENTA, SNX_ASTCB_MAGENTA, SNX_ASTCB_MAGENTA, 0xffe0db73,
       SNX_ASTCB_MAGENTA, SNX_ASTCB_MAGENTA, 0xffdfdb73, 0xffe3db74, SNX_ASTCB_MAGENTA, SNX_ASTCB_MAGENTA, 0xffebdc76,
@@ -84,7 +84,7 @@ static const SnxAstcbCutShort snx_astcb_cut_short[] = {
 
 /* illegal by their colour values alone */
 static const SnxAstcbBlock snx_astcb_illegal_colour[] = {
-    /* edenprobe's error: 10 values in 15 colour bits, where six levels need 26 */
+    /* Amberlith's error: 10 values in 15 colour bits, where six levels need 26 */
     {4, 4, {0x5f, 0x0f, 0x35, 0xcb, 0xe9, 0x15, 0x32, 0xa7, 0x3f, 0xdc, 0x63, 0xdb, 0x94, 0x74, 0x55, 0xe2}},
     /* 10 values in 25 colour bits, one short */
     {4, 4, {0x5e, 0xef, 0x7a, 0xf3, 0x2a, 0x3c, 0x46, 0x89, 0x67, 0xd8, 0xf8, 0x37, 0x9e, 0x70, 0x87, 0x56}},

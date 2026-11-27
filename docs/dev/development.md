@@ -47,8 +47,8 @@ FS tests use production tree/HLE + synthetic temp data; `--only tree|service` se
 CI (`.github/workflows/build.yml`) has one job for each platform and architecture, which builds its package, then
 tests it with the same tree and compiler cache and runs it as installed: each Linux AppImage (x86-64 and AArch64) with
 the ABI helpers' syntax, native tool and FS regressions, headless Vulkan on lavapipe and the optional Python
-diagnostics, x86-64's with [Amberlith](edenprobe.md)'s probes on lavapipe against the cases that passed before
-(`scripts/edenprobe.py`); the cross-built AppImages through qemu; the Windows zips (x86-64 and AArch64), the Android
+diagnostics, x86-64's with [Amberlith](amberlith.md)'s probes on lavapipe against the cases that passed before
+(`scripts/amberlith.py`); the cross-built AppImages through qemu; the Windows zips (x86-64 and AArch64), the Android
 APK and the macOS and iOS apps. x86-64 under ASan and UBSan and the other machines' back ends under Unicorn have a job
 each. A pull request, a run by hand and a version's tag run every test (`SNX_TESTS`); a push to `main` and the
 nightly's schedule build every package, run the x86-64 and AArch64 AppImages and the Windows zips as a user would, the
@@ -110,7 +110,7 @@ build/scarletnx --scan-log ~/.local/state/scarletnx/recompiled/<id>/<id>.log [--
   and stamp that saved each, and why this build can't load one), `symbolize` and `disassemble` (as `tools/symbols.py` and `tools/disasm.py`, each A64
   instruction as the A64 decoder's op and arguments: `ADD_i rd=1 rn=2 imm=291 sf=1`, a64.decode's name and each
   argument in decimal). The last game loaded stays loaded for the next call. Its
-  edenprobe tools turn a confirmed report into an edenprobe case ([edenprobe](edenprobe.md)). Its GDB tools
+  Amberlith tools turn a confirmed report into an Amberlith case ([Amberlith](amberlith.md)). Its GDB tools
   (`mcp_gdb.c`, [Usage](../user/usage.md#gdb-through-the-mcp-server)) run one GDB over its machine interface (MI 3,
   resumes as `-exec-*` commands in the background). They find a guest thread's `KThread` through its host thread's
   `t_hle.thread.cur`, by the runtime's debug information, and guest memory at `g_mem`. The game reports
@@ -122,7 +122,7 @@ build/scarletnx --scan-log ~/.local/state/scarletnx/recompiled/<id>/<id>.log [--
   what it would post, and `gh workflow run game-reports.yml -f issue=N` runs the workflow for that issue (one whose run
   failed), failing on a pull request or an issue without a log. `scripts/game-reports.py index [--title-id ID]
   [--signature TEXT]` lists the reports and their logs as JSON lines. A maintainer's `status: confirmed` label on a
-  report gets one comment: ready for an edenprobe case, with the steps. The ctest `game_reports_workflow` runs the
+  report gets one comment: ready for an Amberlith case, with the steps. The ctest `game_reports_workflow` runs the
   workflow's build step on the files its sparse checkout lists alone, so a file the log summary comes to include fails a
   pull request until the list has it.
 
@@ -506,7 +506,7 @@ itself: `scripts/check-docs.py --bans` writes those rows from the table after a 
 while they differ.
 `vulkan_ban_ignore` ([Settings](../user/settings.md#graphics)) goes over the bans of the keys it lists for one run, to test a
 driver again: `--vulkan-ban-ignore=VK_KHR_present_id2` on the command line, `--setting vulkan_ban_ignore=...` to
-`scripts/edenprobe.py`, the row in a phone's `.ini`. Each key is said, as a warning with the ban it goes over where
+`scripts/amberlith.py`, the row in a phone's `.ini`. Each key is said, as a warning with the ban it goes over where
 one holds; a key the table has not stops the game with the nearest ones it has. A case that passes with the ban gone
 over, held against the console's or Eden's, is what lifts it. To see which lines hold for this machine's drivers, or
 for a driver given by hand:

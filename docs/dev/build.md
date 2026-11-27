@@ -522,8 +522,9 @@ it:
 - `-DSNX_TEST_ONLINE_LIVE=ON`: add `online_presets_live`, which asks each WFC service's DNS server over the
   internet (labels `external` and `network`): how a service that stopped answering is found
   ([src/common/online](../../src/common/online/README.md)).
-- `-DSNX_TEST_EDENPROBE=/path/to/edenprobe.nro`: add `edenprobe_vk_memory_1` and `edenprobe_vk_memory_2`, which run
-  edenprobe as CI does against its baseline, with guest buffers copied and read in place (docs/dev/edenprobe.md).
+- `-DSNX_TEST_AMBERLITH=/path/to/amberlith.nro` (`SNX_TEST_EDENPROBE` before 1.0.0, still read as it, and said):
+  add `amberlith_vk_memory_1` and `amberlith_vk_memory_2`, which run Amberlith as CI does against its baseline, with
+  guest buffers copied and read in place (docs/dev/amberlith.md).
 - `-DSNX_TEST_SDM=ON`: download the Intel SDM into `CPM_SOURCE_CACHE` once and have `sailgen_sdm_isel` make the x86-64
   back end's instruction selection again from it, which must be the tree's (needs `pdftotext`, poppler's). The test is
   skipped without the PDF, which `-DSNX_SDM_PDF=` also names. CI's Linux x86-64 job runs it on a run by hand, a

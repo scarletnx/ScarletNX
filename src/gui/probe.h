@@ -3,7 +3,7 @@
 /* Settings > App > GPU Drivers' Run Amberlith: Amberlith (github.com/scarletnx/amberlith; edenprobe before 1.0.0), a
    homebrew program of hardware probes, played as a game from probe/ of the state folder. Its data folder there is a portable one
    (SNX_PORTABLE_DIR), so the run finds none of the player's settings, saves or users. What the menu needs of it,
-   without SDL: the paths, the card made ready for a press, and the report read (docs/dev/edenprobe.md) */
+   without SDL: the paths, the card made ready for a press, and the report read (docs/dev/amberlith.md) */
 #ifndef SNX_GUI_PROBE_H
 #define SNX_GUI_PROBE_H
 #include <stddef.h>
@@ -26,7 +26,7 @@
 #define GUI_PROBE_OLD_NRO    "edenprobe.nro"
 
 typedef struct {
-    char name[16];  /* the first note's name, Amberlith or edenprobe, "" without it */
+    char name[16];  /* the first note's name, Amberlith or Amberlith, "" without it */
     char build[64]; /* the first note's: "1.0.0 (v1.0.0)" from "Amberlith 1.0.0 (v1.0.0) starting" */
     int cases, summary;
     long passed, failed, skipped, crashed; /* the summary's */
@@ -47,7 +47,7 @@ char* gui_probe_nro(const char* folder);
 char* gui_probe_report(const char* folder);
 /* a new run's mode file words, full or quick, into words: with machine=scarletnx@<commit> after them when folder's NRO
    knows the word (it carries "machine="), so the probe's ban list skips as banned the cases that end ScarletNX every
-   time, as scripts/edenprobe.py writes it; commit is the build's (snx_build_commit), left out when it is "unknown" or
+   time, as scripts/amberlith.py writes it; commit is the build's (snx_build_commit), left out when it is "unknown" or
    no version the probe takes (1 to 32 letters, digits, dots, dashes and underscores). 0, or -1 with why when the NRO
    cannot be read */
 int gui_probe_words(const char* folder, int full, const char* commit, char* words, size_t size, char* why,

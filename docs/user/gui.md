@@ -238,7 +238,7 @@ built in, drawn at the window's size ([lunasvg](https://github.com/sammycage/lun
   game whose package does not load stops, saying why, and so does one whose package lists no Vulkan device, a driver
   for another GPU. Under them, **Amberlith Mode** (Quick, the default:
   `notime cpu graphics hooks`; Full adds `fs video audio kernel display`) and **Run Amberlith**, which plays
-  [Amberlith](../dev/edenprobe.md)'s probes as a game with the GPU driver picked here, from `probe/amberlith.nro` of the
+  [Amberlith](../dev/amberlith.md)'s probes as a game with the GPU driver picked here, from `probe/amberlith.nro` of the
   Logs folder (a release's `amberlith-<version>.nro` saved under that name; an older `probe/edenprobe.nro` when only
   that one is there), in a data folder of its own there (`probe/.scarletnx`: none of your settings, saves or users)
   with the default settings, and the build as the probe's machine (`machine=scarletnx@<commit>`), whose ban list then

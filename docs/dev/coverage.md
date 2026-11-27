@@ -9,7 +9,7 @@
   * [Why continuous mode](#why-continuous-mode)
   * [Configure and build](#configure-and-build)
 * [Collecting a profile](#collecting-a-profile)
-  * [From edenprobe](#from-edenprobe)
+  * [From Amberlith](#from-amberlith)
   * [From the tests](#from-the-tests)
   * [From a game or a homebrew program](#from-a-game-or-a-homebrew-program)
 * [Reading the profile](#reading-the-profile)
@@ -26,9 +26,9 @@
 * [Other hosts](#other-hosts)
 * [Pitfalls](#pitfalls)
 
-[Development](development.md) · [edenprobe](edenprobe.md) · [build](build.md) · [profiling](profiling.md).
+[Development](development.md) · [Amberlith](amberlith.md) · [build](build.md) · [profiling](profiling.md).
 
-This page is a guide to measuring which of ScarletNX's own code a workload runs: edenprobe's suites, the tests, a
+This page is a guide to measuring which of ScarletNX's own code a workload runs: Amberlith's suites, the tests, a
 game. The goal is the project's surface area: which services, SVCs, renderer paths and loader branches anything
 exercises, and which nothing does. Those last are the *unaccounted-for* paths: code that has never run under any
 check, so a bug in it shows up first in a player's game.
@@ -52,7 +52,7 @@ Two processes contribute to a game's run:
 
 | Process | What it covers |
 |---|---|
-| The driver (`scarletnx -r`, or the first step of `scripts/edenprobe.py`) | `nx/loader`, `common/cpu` (decoder, function discovery, LLVM IR emission, the linker), `nx/runtime/driver` |
+| The driver (`scarletnx -r`, or the first step of `scripts/amberlith.py`) | `nx/loader`, `common/cpu` (decoder, function discovery, LLVM IR emission, the linker), `nx/runtime/driver` |
 | The game's runtime (`recompiled/<id>/<id>`, a copy of the same `scarletnx`) | everything the game asks for at run time |
 
 Both are the same binary, so one `llvm-cov` call reads both profiles against `build/cov/scarletnx`.
@@ -64,7 +64,7 @@ Both are the same binary, so one `llvm-cov` call reads both profiles against `bu
 The runtime leaves through `plat_exit_now()` (`src/nx/runtime/platform/plat_posix.c`), which calls `_exit` on
 purpose, so that no atexit handler runs against threads that are still going. Both LLVM's profile runtime and gcov
 write their counters from an atexit handler, so an instrumented runtime that ends normally writes an **empty**
-profile. edenprobe's launcher also kills a launch that hangs, which writes nothing either.
+profile. Amberlith's launcher also kills a launch that hangs, which writes nothing either.
 
 LLVM's *continuous mode* solves both. The counters live in a memory-mapped file from the program's start, so what
 ran is on disk however the process ends: `_exit`, a crash, `SIGKILL`. It takes `%c` in `LLVM_PROFILE_FILE`, and on
@@ -107,22 +107,22 @@ cmake --build build/cov --target scarletnx          # the runtime and driver; ad
 `LLVM_PROFILE_FILE` names where each process writes. Use `%p` (the process ID) so the driver and every launch get
 files of their own, and `%c` for continuous mode. Use an absolute path, since the runtime changes folder.
 
-### From edenprobe
+### From Amberlith
 
-[edenprobe](edenprobe.md) is the broadest single workload: hundreds of cases over the CPU, the kernel's scheduler,
-the filesystem, video, display, audio and the SDK hooks, each judged against the console. `scripts/edenprobe.py`
+[Amberlith](amberlith.md) is the broadest single workload: hundreds of cases over the CPU, the kernel's scheduler,
+the filesystem, video, display, audio and the SDK hooks, each judged against the console. `scripts/amberlith.py`
 passes its environment to the recompile and to each launch, so the variable is all it takes (`REFS`, the baselines'
-package, as [edenprobe.md](edenprobe.md) finds it):
+package, as [amberlith.md](amberlith.md) finds it):
 
 ```sh
 mkdir -p work/cov/prof
 LLVM_PROFILE_FILE="$PWD/work/cov/prof/%c%p.profraw" \
-python3 scripts/edenprobe.py run --runtime build/cov/scarletnx --nro work/cov/edenprobe.nro --out work/cov/ep \
+python3 scripts/amberlith.py run --runtime build/cov/scarletnx --nro work/cov/amberlith.nro --out work/cov/ep \
     --mode "quick notime cpu fs video display kernel audio hooks" \
     --baseline "$REFS/amberlith/linux-x86_64.txt" --timeout 1200
 ```
 
-Use the release CI pins (`EDENPROBE_VERSION` and `EDENPROBE_SHA256` in `.github/workflows/build.yml`), so the
+Use the release CI pins (`AMBERLITH_VERSION` and `AMBERLITH_SHA256` in `.github/workflows/build.yml`), so the
 baseline holds. A build older than 0.13.0 opens `time:u` itself and stops in `sm` at its first launch. With CI's
 words, v0.16.1 passed its 826 cases (2 `skip (banned)`) on the instrumented runtime, in a 12-second launch after a
 28-second recompile. It left two `.profraw` files, one from the recompile and one from the launch.
@@ -143,12 +143,12 @@ What the words reach, by folder (lines run, of the lines in that folder):
 | `nx/gpu/nvn` | 9617 | 0.3% |
 | `nx/gpu/shader` | 20440 | 0.3% |
 
-The last two rows follow from the words. CI's words leave out `graphics`, edenprobe's drawing suites
-([The mode words](edenprobe.md#the-mode-words)), so the shader translator and NVN are barely touched. Each
+The last two rows follow from the words. CI's words leave out `graphics`, Amberlith's drawing suites
+([The mode words](amberlith.md#the-mode-words)), so the shader translator and NVN are barely touched. Each
 word is a lever on the surface. A run per word set, merged, shows what each adds; `--setting KEY=VALUE` runs the
 same cases through another path of the runtime (`vk_memory=2`, `auto_stub_ipc=0`, `nce=0`, ...).
 
-The Android build of edenprobe (`--apk`) runs the same way on `scarletnx-android` and covers `src/android`.
+The Android build of Amberlith (`--apk`) runs the same way on `scarletnx-android` and covers `src/android`.
 
 ### From the tests
 
@@ -169,8 +169,8 @@ objs=$(find build/cov -type f -perm -u+x \( -name 'snx-*' -o -name 'scarletnx*' 
 llvm-cov report $objs -instr-profile=work/cov/tests.profdata
 ```
 
-The tests reach what edenprobe cannot (the shader translator through its corpora, the Vulkan renderer through
-`vulkan_headless`, the 3DS, Vita and NDS drivers, the GUI's logic), and edenprobe reaches what the tests do not
+The tests reach what Amberlith cannot (the shader translator through its corpora, the Vulkan renderer through
+`vulkan_headless`, the 3DS, Vita and NDS drivers, the GUI's logic), and Amberlith reaches what the tests do not
 (whole SVC and service sequences as a program makes them). Their union is the project's checked surface.
 
 ### From a game or a homebrew program
@@ -219,7 +219,7 @@ awk 'NR>2 && NF>=10 && $1 ~ /\// { n = split($1, p, "/"); d = p[1]; if (n > 2) d
 ```
 
 A folder at 0% with many lines is a part the workload never enters: the GUI, the other drivers (`3ds`, `vita`,
-`nds`, `android`), `glslc`. That is expected for an edenprobe run; it is the tests' job.
+`nds`, `android`), `glslc`. That is expected for an Amberlith run; it is the tests' job.
 
 ### Line by line
 
@@ -257,7 +257,7 @@ for name, n in cold.most_common(): print(f'{n:4d}/{total[name]:4d} {name}  {", "
 EOF
 ```
 
-From the edenprobe run above, part of what it printed:
+From the Amberlith run above, part of what it printed:
 
 ```
  219/ 231 misc.c  apm_configuration, apm_set_configuration, apm_cpu_boost, ...
@@ -271,7 +271,7 @@ From the edenprobe run above, part of what it printed:
 
 Read each in three ways:
 
-- **Whole services never opened** (`acc.c`, `ssl.c`): edenprobe never asks for them. A game does (`acc` is the user
+- **Whole services never opened** (`acc.c`, `ssl.c`): Amberlith never asks for them. A game does (`acc` is the user
   account), so a game's profile covers them, but nothing *checks* them.
 - **Services opened, most commands not** (`am.c`, `misc.c`): the handlers the generated dispatcher calls
   (`nn_<service>_sf_<interface>_<command>`) for commands no case sends. Each is a command whose answer nobody holds
@@ -306,7 +306,7 @@ python3 work/cov/covdiff.py work/cov/checks.json work/cov/game.json /src/nx/   #
 python3 work/cov/covdiff.py work/cov/before.json work/cov/after.json            # what a new case or word added
 ```
 
-For example, an edenprobe run with the words `quick notime kernel hooks` against the full CI words: the CI words
+For example, an Amberlith run with the words `quick notime kernel hooks` against the full CI words: the CI words
 add the VP9 decoder (`nx/gpu/video/vp9_rebuild.cpp`, 55 functions), nvdrv's control device (`nvdrv.c`, 38), the
 audio renderer's DSP (`audren_dsp.c`, 34), Vulkan command recording (`vk/cmd.c`, `vk/record.c`) and the GPU's hold on
 guest memory (`vk/owned.c`, `memory/own.c`). That is how to tell which mode word or which case pays for which part
@@ -316,7 +316,7 @@ The useful pairs:
 
 | A | B | What B minus A is |
 |---|---|---|
-| edenprobe and the tests | a game, or several merged | runtime paths a game depends on that no check holds: candidates for new edenprobe cases or tests |
+| Amberlith and the tests | a game, or several merged | runtime paths a game depends on that no check holds: candidates for new Amberlith cases or tests |
 | a game, before a fix | the same game, after it | what the fix made the game reach (a service it now gets past, a renderer path it now takes) |
 | one setting's value | another's (`--setting`) | the code that setting switches, which the baseline runs only one side of |
 | `origin/main` | a branch | new code the branch's checks do not run |
@@ -343,7 +343,7 @@ makes the call instead of later. `--log=2` adds the `ipc:` lines, the service co
 grep -hE '\[(undeclared|unknown)\]|not implemented|doesn.t implement' work/cov/ep/launch-*.log | sort | uniq -c
 ```
 
-The CI edenprobe run logs none of these: its cases only ask for what the runtime has. A game's log is where they
+The CI Amberlith run logs none of these: its cases only ask for what the runtime has. A game's log is where they
 appear.
 
 ### The static censuses
@@ -364,9 +364,9 @@ candidate for a check.
 
 ### Closing a gap
 
-- **An edenprobe case**, when the question has an answer the console gives: a service command, an SVC's error, a
-  scheduler behaviour. [A case from a game report](edenprobe.md#a-case-from-a-game-report) has the MCP tools
-  (`edenprobe_scaffold`, `edenprobe_check`, `edenprobe_run`, `edenprobe_finding`). Rerun the coverage
+- **An Amberlith case**, when the question has an answer the console gives: a service command, an SVC's error, a
+  scheduler behaviour. [A case from a game report](amberlith.md#a-case-from-a-game-report) has the MCP tools
+  (`amberlith_scaffold`, `amberlith_check`, `amberlith_run`, `amberlith_finding`). Rerun the coverage
   afterwards: the diff against the run before says the case reaches what it was meant to.
 - **A ctest**, when the code is the runtime's own (the renderer, a cache, a decoder): `tests/CMakeLists.txt`.
 - **A word or a setting** in an existing run, when the code is already checked by cases that are not in the run
@@ -409,7 +409,7 @@ cmake -S . -B build/gcov -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_C_CO
     -DSNX_DEPLOY=OFF -DSNX_JEMALLOC=OFF -DCMAKE_C_FLAGS=--coverage -DCMAKE_CXX_FLAGS=--coverage \
     "-DCMAKE_EXE_LINKER_FLAGS=--coverage -rdynamic"
 cmake --build build/gcov --target scarletnx
-LD_PRELOAD=$PWD/dump_on_exit.so python3 scripts/edenprobe.py run --runtime build/gcov/scarletnx ...
+LD_PRELOAD=$PWD/dump_on_exit.so python3 scripts/amberlith.py run --runtime build/gcov/scarletnx ...
 gcovr -r . build/gcov --exclude '.cache/' --html-details work/cov/gcov/index.html
 lcov -c -d build/gcov -o work/cov/gcov.info && genhtml work/cov/gcov.info -o work/cov/gcov-html
 ```
@@ -427,7 +427,7 @@ file.
   Windows; otherwise only the processes that return from `main` write a profile. Not tried here.
 - **Android.** The app's process writes only where it may, so `LLVM_PROFILE_FILE` must name a folder of the app's
   own, and the `.profraw` files come back with `adb`. Not tried here. `scarletnx-android` on a desktop host
-  (edenprobe's `--apk`) collects as the desktop does.
+  (Amberlith's `--apk`) collects as the desktop does.
 - **The 3DS, Vita, NDS and GBA drivers** are binaries of their own (`scarletnx-3ds`, ...) built in the same folder
   and instrumented by the same flags: run them with the variable and pass each binary as an `-object`.
 
@@ -437,7 +437,7 @@ file.
   build is slower, so never time it ([Profiling](profiling.md)).
 - **Counts race.** The counters are not atomic by default, so concurrent threads lose increments. Whether a line
   ran is exact; how many times is approximate. `-fprofile-update=atomic` makes the counts exact, at a cost.
-- **Timeouts.** The instrumented runtime is slower; raise `--timeout` in `scripts/edenprobe.py` and
+- **Timeouts.** The instrumented runtime is slower; raise `--timeout` in `scripts/amberlith.py` and
   `--seconds` budgets if launches start to be killed.
 - **Mixed versions.** A `.profraw` from one LLVM version is unreadable by another's `llvm-profdata`.
 - **A stale binary.** `llvm-cov` maps counts through the binary's coverage mapping. A profile from one build read

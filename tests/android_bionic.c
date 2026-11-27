@@ -360,7 +360,7 @@ static void test_getline(void) {
     remove(path);
 }
 
-/* ---- the ones edenprobe's library imports that the HLE once lacked ---- */
+/* ---- the ones Amberlith's library imports that the HLE once lacked ---- */
 
 /* name called with two doubles or two floats: the result's bits */
 static uint64_t call_dd(const char* name, double a, double b) {

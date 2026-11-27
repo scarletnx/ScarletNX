@@ -8,7 +8,7 @@
    the renderer's blit asked once, and the render target over the destination reloaded once. Between float formats:
    half floats to floats and back for every half and the rounding of floats to halves (half.c, the reference
    texconv.glsl's TC_BLIT_FLOAT is held to), and a pitch linear RGBA32F source into a block linear RGBA16F window, the
-   renderer's blit asked with the conversion. Between other color formats, as edenprobe's copy suite blits them:
+   renderer's blit asked with the conversion. Between other color formats, as Amberlith's copy suite blits them:
    RGBA8 into BGRA8, RGB565 and RGBA16F and RGBA16F into RGBA8, channels of nought and full, the blit asked with the
    pixel conversion and run through its shader's CPU build (blit_convert_cpu.cpp), each pixel held to what the format
    holds: red and blue swapped, red in the top five bits of the 565 word, one as 0x3c00. They copied the bytes (RGBA8
@@ -275,7 +275,7 @@ static void convert(void) {
 
 /* ------------------------------------------------ between other color formats */
 /* pixel (x, y) of a 4x4 RGBA8 source: red full in odd columns, green in columns 2 and 3, blue in odd rows, alpha in
-   rows 2 and 3, as edenprobe's CopyFullTexel */
+   rows 2 and 3, as Amberlith's CopyFullTexel */
 static int full(u32 x, u32 y, u32 k) { return k == 0 ? x & 1 : k == 1 ? x & 2 : k == 2 ? y & 1 : y & 2; }
 /* the 4x4 source of format sf, pitch linear, blitted 1:1 into a pitch linear destination of format df */
 static void formats_blit(u32 sf, u32 sb, u32 df, u32 db) {

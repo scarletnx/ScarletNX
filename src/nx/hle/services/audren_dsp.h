@@ -2,7 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* the audio renderer: the state its updates leave (audren_update) and one frame of the DSP over it (audren_frame).
    The update's layout, the order of a frame and the resampler follow the console's renderer as Eden's audio_core
-   reads it; edenprobe's audio family writes the same layout field by field */
+   reads it; Amberlith's audio family writes the same layout field by field */
 #ifndef SNX_AUDREN_DSP_H
 #define SNX_AUDREN_DSP_H
 #include "nx/memory/mem.h"

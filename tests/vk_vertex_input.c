@@ -143,7 +143,7 @@ static void check_choices(void) {
           VK_DRIVER_ID_QUALCOMM_PROPRIETARY, VK_MAKE_VERSION(512u, 800u, 48u), 2, 1, NULL},
          "512.800.48",
          1,
-         "Qualcomm's driver on Android draws edenprobe's coherence suite wrong with dynamic vertex input ("},
+         "Qualcomm's driver on Android draws Amberlith's coherence suite wrong with dynamic vertex input ("},
         {{"Turnip Adreno (TM) 830", "turnip Mesa driver", "Mesa 26.0.0", VK_DRIVER_ID_MESA_TURNIP,
           VK_MAKE_VERSION(26u, 0u, 0u), 2, 1, NULL},
          "26.0.0",

@@ -23,7 +23,7 @@ int vk_vi_choose(int mode, const VkViDevice* d, char* line, size_t n, int* warn)
                                       : NULL;
     char version[32], device[400];
     /* auto is off on Android whatever the driver, as Eden and rEden have it (settings.h, vertex_input_dynamic_state):
-       Qualcomm's driver 512.800.48 drew draws of edenprobe's coherence suite wrong with it */
+       Qualcomm's driver 512.800.48 drew draws of Amberlith's coherence suite wrong with it */
     int android = mode == SNX_VK_VI_AUTO && d->android;
     int dynamic = mode != SNX_VK_VI_OFF && !lacks && (mode == SNX_VK_VI_ON || (!ban && !android));
     vk_driver_version_text(d->driver_id, d->driver_version, version, sizeof version);

@@ -6142,7 +6142,7 @@ static int flush_parts_case(u64 gva, u64 cpu, u32 width_reg, u32 h, u32 layout, 
 }
 /* A target over what one owner may hold, published (a watched page touched by the CPU): an owner a band of rows of
    blocks over its span, each landing when the CPU touches it, rather than a write-back that let the span's pages go
-   before writing them over a second later (a 512 MiB RGBA16F one, edenprobe's tex8k, read on another thread
+   before writing them over a second later (a 512 MiB RGBA16F one, Amberlith's tex8k, read on another thread
    meanwhile: #2094). A block linear RGBA16F target of 256x128, 256 KiB, loaded from guest memory holding a pattern,
    its red cleared to 0.25 alone, and published under a cap of 64 KiB: the publish takes it, owners hold its bytes in
    more than one band, and every byte read from guest memory is where the guest's layout has it, red 0.25 and the
@@ -7264,7 +7264,7 @@ static int check_rt_watch_linear(void) {
     free(ch);
     return 0;
 }
-/* Depth targets the 3D engine clears and the CPU then reads from memory, as edenprobe's zeta and msaa suites do after a
+/* Depth targets the 3D engine clears and the CPU then reads from memory, as Amberlith's zeta and msaa suites do after a
    barrier and a wait for idle: a release watches them as it does color ones, and the CPU's first read publishes them
    and lands them in their format's layout (S8's a byte a texel, its stencil). Each format a 80x40 block linear target
    (2 rows of blocks of 4 GOBs), cleared to depth 0.25 and stencil 0x5A, then its scissor's rectangle to depth 0.75 and

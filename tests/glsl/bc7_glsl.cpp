@@ -88,7 +88,7 @@ static bool known_modes(const std::vector<glsl::leuvec4>& blocks, const char* wh
     return true;
 }
 
-// the edenprobe astcimage suite's picture (tools/astc-images.py there), integer arithmetic, so the regions are the
+// the Amberlith astcimage suite's picture (tools/astc-images.py there), integer arithmetic, so the regions are the
 // same content an emulator meets in that suite
 static uint32_t clamp255(int v) { return uint32_t(v < 0 ? 0 : v > 255 ? 255 : v); }
 static uint32_t rgba_of(uint32_t r, uint32_t g, uint32_t b, uint32_t a) { return r | g << 8 | b << 16 | a << 24; }

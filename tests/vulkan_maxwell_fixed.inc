@@ -100,7 +100,7 @@ static int check_maxwell_point_size(void) {
 
 /* SET_DEPTH_BOUNDS_TEST (0x66F) and its bounds (0x3E7, 0x3E8) keep a pixel whose depth buffer holds a value inside
    them, both ends in, whatever the fragment's depth: the 3D engine's draws tested no bounds. A triangle over the
-   target at depth 0.25 over a buffer of 0.5, the depth test on, always passing and writing nothing, as edenprobe's
+   target at depth 0.25 over a buffer of 0.5, the depth test on, always passing and writing nothing, as Amberlith's
    fixed suite draws it: bounds around the fragment's depth but not the buffer's reject every pixel */
 static int check_maxwell_depth_bounds(void) {
     static const struct {

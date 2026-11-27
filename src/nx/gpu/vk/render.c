@@ -3579,7 +3579,7 @@ static int tex_tables_set(const DsState* ds, int stage, const VkSh* s, const int
     u16 handle_slots[2 * SNX_TEX_ARRAY] = {0};
     u32 funcs[SNX_TEX_ARRAY] = {0};
     /* each element's entry: the null texture is given an entry only when an element needs it, so a table of
-       SNX_TEX_ARRAY real handles fits (edenprobe's bindless suite samples 256) */
+       SNX_TEX_ARRAY real handles fits (Amberlith's bindless suite samples 256) */
     u32 map[SH_INDEXED_TABLES * SNX_TEX_ARRAY]; /* every active table entry is assigned below */
     u32 used = 0;
     for (int table = 0; table < count; table++) {
@@ -3597,7 +3597,7 @@ static int tex_tables_set(const DsState* ds, int stage, const VkSh* s, const int
         for (u32 k = 0; k < elements; k++) {
             u32 at = st->cbuf_off * 4 + k * stride;
             /* past the constant buffer: the null texture. A handle of 0 is header 0 with sampler 0, a texture like any
-               other (edenprobe's bindless case samples it) */
+               other (Amberlith's bindless case samples it) */
             if ((!cba && !in.bytes) || at + 4 > size) {
                 if (tk->id == TEX_NO_ENTRY) {
                     if (used == g_spirv_translate.tex_array) {

@@ -2467,7 +2467,7 @@ static void issue126_shader_modes(void) {
         0xdeb8000000070004ull | (2ull << 28) | (1ull << 37) | (6ull << 20) | (1ull << 31),
         0xdeb8000000070008ull | (2ull << 28) | (1ull << 37) | (6ull << 20),
     };
-    /* edenprobe's indexed handle: the table index from an attribute, shifted to a 16-byte stride, then LDC */
+    /* Amberlith's indexed handle: the table index from an attribute, shifted to a 16-byte stride, then LDC */
     const u64 indexed_table[] = {
         0xe003ff870ff7ff00ull, /* IPA R0, a[0x70] */
         0x5cb0118000070a00ull, /* F2I.U32 R0, R0 */
@@ -2876,7 +2876,7 @@ static u32* translate_stage(const u64* instructions, int count, int stage, const
     return result;
 }
 
-/* edenprobe's tessellated patch: a control program passing its 4 vertices through and writing every level from
+/* Amberlith's tessellated patch: a control program passing its 4 vertices through and writing every level from
    vertex 0's attribute, and an evaluation program mixing the corners by the tessellation coordinate and reading
    the outer level back. Then a geometry program passing a triangle's first vertex on as a strip of one. */
 static void between_stages(void) {
@@ -6956,7 +6956,7 @@ static void tex_b_handle_writes(void) {
 
 /* A multisample TLD.B takes its handle in Rb and the sample after it, the order of Mesa's compilers since f9d385d77716
    ("nouveau/codegen: Handle/indirect goes before sample index"). uam's codegen predates it and puts the sample first:
-   edenprobe's fetch through a table of four sample handles comes with the sample in R4 and the handle in R5 */
+   Amberlith's fetch through a table of four sample handles comes with the sample in R4 and the handle in R5 */
 static void bindless_multisample_order(void) {
     u64 fetch[] = {
         0xe003ff870ff7ff00ull, /* IPA R0, a[0x70] */
