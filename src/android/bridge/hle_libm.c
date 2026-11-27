@@ -7,6 +7,7 @@
 #include "android/bridge/hle_impl.h"
 #include "common/utilities/ascii.h"
 #include "common/utilities/bits.h"
+#include <complex.h>
 #include <errno.h>
 #include <limits.h>
 #include <math.h>
@@ -116,7 +117,7 @@ static void f_id(CPU* c, void* fn) {
     const float x = hle_f(c, 0);
     put_f(c, (float)((double (*)(int, double))fn)(arg_int(c, 0), x), isnan(x), kept);
 }
-/* sincos's two results into the guest's doubles or floats */
+/* a result the host made, as put_d gives it: the default NaN for one made from numbers */
 static double made_d(double r, bool nan_given) { return isnan(r) && !nan_given ? (double)NAN : r; }
 static void sincos_d(CPU* c, void* fn) {
     (void)fn;
@@ -133,6 +134,83 @@ static void sincos_f(CPU* c, void* fn) {
     errno = kept;
     memcpy(PTR(0), &s, sizeof s);
     memcpy(PTR(1), &co, sizeof co);
+}
+
+/* ---- complex numbers ----
+   A complex argument is two floating registers, its real part first, as AAPCS64 passes a homogeneous pair, and so is
+   its result: z for a double complex, c for a float complex. A part the host made a NaN from numbers is the default
+   NaN, as a real function's (put_d) */
+static double complex arg_z(const CPU* c, unsigned n) {
+    const double parts[2] = {hle_d(c, n), hle_d(c, n + 1)};
+    double complex z;
+    memcpy(&z, parts, sizeof z);
+    return z;
+}
+static float complex arg_c(const CPU* c, unsigned n) {
+    const float parts[2] = {hle_f(c, n), hle_f(c, n + 1)};
+    float complex z;
+    memcpy(&z, parts, sizeof z);
+    return z;
+}
+static bool nan_z(double complex z) { return isnan(creal(z)) || isnan(cimag(z)); }
+static void put_z(CPU* c, double complex z, bool nan_given, int kept) {
+    errno = kept;
+    const double parts[2] = {made_d(creal(z), nan_given), made_d(cimag(z), nan_given)};
+    c->v[0] = (V128){0};
+    c->v[1] = (V128){0};
+    memcpy(&c->v[0].df[0], &parts[0], sizeof parts[0]);
+    memcpy(&c->v[1].df[0], &parts[1], sizeof parts[1]);
+}
+static void put_c(CPU* c, float complex z, bool nan_given, int kept) {
+    errno = kept;
+    const float parts[2] = {(float)made_d(crealf(z), nan_given), (float)made_d(cimagf(z), nan_given)};
+    c->v[0] = (V128){0};
+    c->v[1] = (V128){0};
+    memcpy(&c->v[0].f[0], &parts[0], sizeof parts[0]);
+    memcpy(&c->v[1].f[0], &parts[1], sizeof parts[1]);
+}
+static void z_z(CPU* c, void* fn) {
+    const int kept = errno;
+    const double complex z = arg_z(c, 0);
+    put_z(c, ((double complex (*)(double complex))fn)(z), nan_z(z), kept);
+}
+static void z_zz(CPU* c, void* fn) {
+    const int kept = errno;
+    const double complex z = arg_z(c, 0), w = arg_z(c, 2);
+    put_z(c, ((double complex (*)(double complex, double complex))fn)(z, w), nan_z(z) || nan_z(w), kept);
+}
+static void d_z(CPU* c, void* fn) {
+    const int kept = errno;
+    const double complex z = arg_z(c, 0);
+    put_d(c, ((double (*)(double complex))fn)(z), nan_z(z), kept);
+}
+static void c_c(CPU* c, void* fn) {
+    const int kept = errno;
+    const float complex z = arg_c(c, 0);
+    put_c(c, ((float complex (*)(float complex))fn)(z), nan_z(z), kept);
+}
+static void c_cc(CPU* c, void* fn) {
+    const int kept = errno;
+    const float complex z = arg_c(c, 0), w = arg_c(c, 2);
+    put_c(c, ((float complex (*)(float complex, float complex))fn)(z, w), nan_z(z) || nan_z(w), kept);
+}
+static void f_c(CPU* c, void* fn) {
+    const int kept = errno;
+    const float complex z = arg_c(c, 0);
+    put_f(c, ((float (*)(float complex))fn)(z), nan_z(z), kept);
+}
+/* cabs and cabsf, msun's: the hypotenuse of the two parts (Windows' C library marks its cabs deprecated) */
+static void cabs_d(CPU* c, void* fn) {
+    (void)fn;
+    const int kept = errno;
+    const double x = hle_d(c, 0), y = hle_d(c, 1);
+    put_d(c, hypot(x, y), isnan(x) || isnan(y), kept);
+}
+static void cabs_f(CPU* c, void* fn) {
+    (void)fn;
+    const int kept = errno;
+    const float x = hle_f(c, 0), y = hle_f(c, 1);
+    put_f(c, hypotf(x, y), isnan(x) || isnan(y), kept);
 }
 
 /* ---- bionic's own ----
@@ -640,6 +718,51 @@ const HleSymbol hle_libm[] = {
     TH(y0f, f_d, BESSEL(y0)),
     TH(y1f, f_d, BESSEL(y1)),
     TH(ynf, f_id, BESSEL(yn)),
+    /* the host's, of complex numbers */
+    T(cacos, z_z),
+    T(cacosh, z_z),
+    T(casin, z_z),
+    T(casinh, z_z),
+    T(catan, z_z),
+    T(catanh, z_z),
+    T(ccos, z_z),
+    T(ccosh, z_z),
+    T(csin, z_z),
+    T(csinh, z_z),
+    T(ctan, z_z),
+    T(ctanh, z_z),
+    T(cexp, z_z),
+    T(clog, z_z),
+    T(csqrt, z_z),
+    T(cproj, z_z),
+    T(conj, z_z),
+    T(cpow, z_zz),
+    T(carg, d_z),
+    T(creal, d_z),
+    T(cimag, d_z),
+    T(cacosf, c_c),
+    T(cacoshf, c_c),
+    T(casinf, c_c),
+    T(casinhf, c_c),
+    T(catanf, c_c),
+    T(catanhf, c_c),
+    T(ccosf, c_c),
+    T(ccoshf, c_c),
+    T(csinf, c_c),
+    T(csinhf, c_c),
+    T(ctanf, c_c),
+    T(ctanhf, c_c),
+    T(cexpf, c_c),
+    T(clogf, c_c),
+    T(csqrtf, c_c),
+    T(cprojf, c_c),
+    T(conjf, c_c),
+    T(cpowf, c_cc),
+    T(cargf, f_c),
+    T(crealf, f_c),
+    T(cimagf, f_c),
+    H(cabs, cabs_d),
+    H(cabsf, cabs_f),
     /* bionic's own */
     H(sincos, sincos_d),
     H(sincosf, sincos_f),
