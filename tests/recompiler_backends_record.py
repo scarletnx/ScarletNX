@@ -35,6 +35,7 @@ GENERATOR = {
     '--words': -1,
     '--programs': 0,
     '--calls': 0,
+    '--calls-back': 0,
 }
 
 
