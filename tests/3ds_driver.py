@@ -113,7 +113,9 @@ def main():
     # stopping the run with it, and none where nothing is compiled
     assert '\n  -O, --opt LEVEL        LLVM' in help_text and '\n  --jobs N' in help_text
     assert '\n  --jit-only' in help_text and '\n  -q, --quiet' in help_text
-    assert 'On the 3DS, -O is the level' in help_text
+    # the paragraph of the 3DS's own: -O and --keep-ir said as gone, no level of blocks LLVM compiles
+    assert 'On the 3DS, --chunk N puts N instructions' in help_text and "-O and --keep-ir, LLVM's, went" in help_text
+    assert 'LLVM compiles' not in help_text
     run(['--board-info', '-O9'], 0, "-O 9, LLVM's level, went with LLVM")
     run(['--board-info', '--jobs', 'x'], 2, 'scarletnx-3ds: --jobs x: not a whole number from 0 (Auto) to 1024')
     run(['--board-info', '--chunk=0'], 2, 'scarletnx-3ds: --chunk 0: not a whole number of instructions from 1')
