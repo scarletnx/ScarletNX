@@ -1224,9 +1224,9 @@ static u32 gbuf_pointer(Ctx* c, u32 buffer, u32 index, u32 type) {
 /* ---- a vertex program's own attribute fetch (ShCaps.vertex_fetch) ---- */
 
 /* An SM86 vertex program of the record reads its generic attributes from the vertex streams by device address, where
-   the draw bound vertex buffers and set a vertex input state before. Attribute i's 4 words in the record
-   (SH_RECORD_ATTR + 4 i) give the address of its first element, the bytes from there to its stream's end, and its
-   format in the SH_ATTR_ fields (vk/render.c's fetch_plan). The element is the vertex's (VertexIndex holds the draw's
+   the draw bound vertex buffers and set a vertex input state before. The words of each attribute it reads, in the
+   record (SH_RECORD_ATTR, in the order of the attributes' numbers), give the address of its first element, the bytes
+   from there to its stream's end, its format in the SH_ATTR_ fields (vk/render.c's fetch_plan) and its divisor. The element is the vertex's (VertexIndex holds the draw's
    first vertex and vertex offset), or for an attribute stepped per instance firstInstance + (InstanceIndex -
    firstInstance) / divisor, as Vulkan's fetch has it, BaseInstance being firstInstance */
 static int vertex_fetches(const Ctx* c) {
@@ -1349,6 +1349,7 @@ static void vertex_fetch_prologue(Ctx* c) {
         for (u32 k = 0; k < comps; k++)
             if (addr + 4 * k >= 0x80 && addr + 4 * k < 0x280) mask |= 1u << ((addr + 4 * k - 0x80) >> 4);
     }
+    c->si->fetch_attrs = mask; /* their words in the record, and where the texture words start after them */
     if (!mask) return;
     /* the Function variables the cases write, before the first block's other instructions */
     const u32 ptr = spv_emit_type_function_pointer(&c->e, c->t_u32);
@@ -1365,7 +1366,7 @@ static void vertex_fetch_prologue(Ctx* c) {
     u32 since = op2(c, SPV_OP_I_SUB, c->t_u32, builtin_u32(c, &c->instance_index, SPV_BUILT_IN_INSTANCE_INDEX), first);
     for (u32 i = 0; i < 32; i++) {
         if (!(mask >> i & 1)) continue;
-        const u32 rec = SH_RECORD_ATTR + 4 * i;
+        const u32 rec = SH_RECORD_FETCH_TEX(__builtin_popcount(mask & ((1u << i) - 1)));
         u32 addr = pair64(c, record_word(c, rec), record_word(c, rec + 1));
         u32 lim = op2(c, SPV_OP_I_ADD, t64, addr, to64(c, record_word(c, rec + 2)));
         u32 info = record_word(c, rec + 3);
@@ -1377,7 +1378,7 @@ static void vertex_fetch_prologue(Ctx* c) {
         for (u32 f = 0; f < 3; f++)
             flag[f] = spv_emit_binary(&c->e, SPV_OP_I_NOT_EQUAL, c->t_bool,
                                       op2(c, SPV_OP_BITWISE_AND, c->t_u32, info, cu(c, bits[f])), c->zero);
-        u32 divisor = record_word(c, SH_RECORD_DIVISOR + i);
+        u32 divisor = record_word(c, rec + 4);
         divisor = u_select(c, u_equal(c, divisor, c->zero), cu(c, 1), divisor);
         u32 element =
             u_select(c, flag[0],
@@ -3170,7 +3171,7 @@ static void table_element(Ctx* c, int slot) {
     /* after the attributes in a vertex program that fetches them, else after the global buffers, as render.c's
        stage_set_ writes them: by the stage too, as a ShaderInfo that a vertex program's translation set vertex_fetch on
        keeps it */
-    const u32 at = c->stage == ST_VS && c->si->vertex_fetch ? SH_RECORD_TEX_FETCH
+    const u32 at = c->stage == ST_VS && c->si->vertex_fetch ? SH_RECORD_FETCH_TEX(__builtin_popcount(c->si->fetch_attrs))
                    : g_spirv_translate.gbuf_address         ? SH_RECORD_GBUF
                                                             : 0;
     u32 word = record_word(c, at + (u32)slot);

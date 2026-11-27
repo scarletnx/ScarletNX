@@ -870,13 +870,14 @@ void vk_pipeline_init(void) {
                                         : why);
     }
     /* SM86 programs' global memory by device address, in the texture table's records: where the device gives
-       addresses (has_gbuf_address) and the buffers come from the GPU mirror or the ring, not memory shared with the
-       CPU */
+       addresses (has_gbuf_address) and has memory of its own. The buffers come from the GPU mirror, the ring, or the
+       imports of guest memory that a discrete GPU reads in place (vk_uma_choose), which take addresses
+       (guest_addresses in uma.c) */
     g_spirv_translate.gbuf_address = 0;
     if (g_shader_sm86) {
         const char* no = !g_spirv_translate.tex_table ? "no texture table"
                          : !g_vk.has_gbuf_address     ? "the device has no buffer device address or 64-bit integers"
-                         : vk_uma()                   ? "guest memory is shared with the CPU"
+                         : g_vk.mem_model == VK_MEM_UMA ? "the device shares the system's memory"
                          : !vk_table_scratch_init()   ? "no scratch memory"
                                                       : NULL;
         g_spirv_translate.gbuf_address = !no;
