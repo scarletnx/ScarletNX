@@ -1,13 +1,13 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The MCP server's edenprobe tools (mcp_int.h): from a confirmed game report to an edenprobe case that asks the
-   hardware the question the failure narrowed down to, as RFC #347 has it. edenprobe (scarletnx/edenprobe) is a
-   homebrew program of such cases; ScarletNX's CI holds every build to the cases that passed before.
+/* The MCP server's Amberlith tools (mcp_int.h): from a confirmed game report to an Amberlith case that asks the
+   hardware the question the failure narrowed down to, as RFC #347 has it. Amberlith (scarletnx/amberlith; edenprobe
+   before 1.0.0) is a homebrew program of such cases; ScarletNX's CI holds every build to the cases that passed before.
 
    A service case is a row and an enum entry (source/serviceref.[ch]), a judge (there too) that holds what the case saw
    to what the console answers, the judge's reference check with answers made by hand (source/tests/t_serviceref.c),
    the device side that asks the service (source/tests/t_service.c), and its suite's row in source/ui.c. The scaffold
-   writes the parts that follow from the case's suite, name and tier, which edenprobe's layout fixes; what the case
+   writes the parts that follow from the case's suite, name and tier, which Amberlith's layout fixes; what the case
    asks and expects is the agent's to write, from what the console or the reference (reden, Eden) answers. The tools
    that run something run it through snx_run: no shell, the output kept off the protocol's stdout */
 #include "nx/runtime/driver/mcp_int.h"
@@ -19,7 +19,7 @@
 
 #define SCAFFOLD_FILES 5
 #define MAX_LAUNCHES   6
-#define RUN_SECONDS    "--seconds=900" /* a launch's limit: edenprobe ends itself after its summary */
+#define RUN_SECONDS    "--seconds=900" /* a launch's limit: Amberlith ends itself after its summary */
 
 /* ============================================================ text */
 /* key's string in the report line's object o, NULL when it has none or another type */
@@ -64,7 +64,7 @@ static void cell(Text* t, const char* text) {
     mcp_put(t, "`");
 }
 
-/* ============================================================ edenprobe_scaffold */
+/* ============================================================ amberlith_scaffold */
 /* A clone on Windows has CRLF lines (git's autocrlf): its text is read with LF ones, which the anchors are written
    with, and written back with the ending it had. 1 when it had CRLF */
 static int lf_lines(char* text) {
@@ -101,7 +101,7 @@ static const char* tier_constant(const char* tier) {
     return NULL;
 }
 
-char* mcp_edenprobe_scaffold(const char* checkout, const char* suite, const char* id, const char* name,
+char* mcp_amberlith_scaffold(const char* checkout, const char* suite, const char* id, const char* name,
                              const char* tier, long issue, Text* err) {
     static const char* const files[SCAFFOLD_FILES] = {"source/serviceref.h", "source/serviceref.c",
                                                       "source/tests/t_service.c", "source/tests/t_serviceref.c",
@@ -113,7 +113,7 @@ char* mcp_edenprobe_scaffold(const char* checkout, const char* suite, const char
     int i, k, new_suite;
     size_t c = 0;
     if (!all_of(suite, "abcdefghijklmnopqrstuvwxyz0123456789-", 32)) {
-        mcp_put(err, "suite: the service's name in lower case, letters, digits and -, as edenprobe's suites are");
+        mcp_put(err, "suite: the service's name in lower case, letters, digits and -, as Amberlith's suites are");
         return NULL;
     }
     if (!all_of(id, "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_", 40) || !isupper((unsigned char)id[0])) {
@@ -128,7 +128,7 @@ char* mcp_edenprobe_scaffold(const char* checkout, const char* suite, const char
         return NULL;
     }
     if (!constant) {
-        mcp_put(err, "tier: none, exact, ulp, position or level (edenprobe's docs/Design.md)");
+        mcp_put(err, "tier: none, exact, ulp, position or level (Amberlith's docs/Design.md)");
         return NULL;
     }
     if (issue <= 0) {
@@ -150,7 +150,7 @@ char* mcp_edenprobe_scaffold(const char* checkout, const char* suite, const char
     }
     for (i = 0; i < SCAFFOLD_FILES && text[i]; i++) {}
     if (i < SCAFFOLD_FILES) {
-        mcp_put(err, "not an edenprobe checkout: no ");
+        mcp_put(err, "not an Amberlith checkout: no ");
         mcp_put(err, files[i]);
         goto done;
     }
@@ -161,7 +161,7 @@ char* mcp_edenprobe_scaffold(const char* checkout, const char* suite, const char
     k |= strstr(text[2], snippet) != NULL;
     free(snippet);
     if (k) {
-        mcp_put(err, "edenprobe has that case already: its id, its name or its functions");
+        mcp_put(err, "Amberlith has that case already: its id, its name or its functions");
         goto done;
     }
     snippet = snx_format("{ \"%s\", UI_FAMILY_", suite);
@@ -291,12 +291,12 @@ char* mcp_edenprobe_scaffold(const char* checkout, const char* suite, const char
                   "more reference case), and an open question in Service.md while no console has answered.\n");
     mcp_put(&out, "5. Nothing of the game: no code, disassembly, assets or values only that game uses. The case "
                   "asks the hardware.\n");
-    mcp_put(&out, "\nThen edenprobe_check runs the judges on the host, the NRO built from the checkout "
-                  "(devkitPro's image, or the pull request's CI artifact) goes to edenprobe_run, and "
-                  "edenprobe_finding writes the pull request's text.\n");
+    mcp_put(&out, "\nThen amberlith_check runs the judges on the host, the NRO built from the checkout "
+                  "(devkitPro's image, or the pull request's CI artifact) goes to amberlith_run, and "
+                  "amberlith_finding writes the pull request's text.\n");
     goto done;
 layout:
-    mcp_put(err, "edenprobe's layout is not the one the scaffold knows (an anchor is missing): nothing was written, "
+    mcp_put(err, "Amberlith's layout is not the one the scaffold knows (an anchor is missing): nothing was written, "
                  "write the case by hand");
 done:
     for (i = 0; i < SCAFFOLD_FILES; i++) {
@@ -310,7 +310,7 @@ done:
     return out.p;
 }
 
-/* ============================================================ edenprobe_check */
+/* ============================================================ amberlith_check */
 /* A line of a run's output worth keeping: about suite, a failure or the summary; not a compile command */
 static int worth(const char* line, const char* suite) {
     if (!strncmp(line, "cc ", 3) || !strncmp(line, "gcc ", 4) || !strncmp(line, "c++ ", 4) ||
@@ -343,14 +343,14 @@ static void keep_lines(Text* t, const char* output, const char* suite) {
     }
 }
 
-char* mcp_edenprobe_check(const char* checkout, const char* suite, Text* err) {
+char* mcp_amberlith_check(const char* checkout, const char* suite, Text* err) {
     static const char* const argv[] = {"make", "-f", "host.mk", "host-run", NULL};
     char *host = snx_path_join(checkout, "host.mk"), *output = NULL;
     Text out = {0};
     int rc;
     if (!snx_is_file(host)) {
         free(host);
-        mcp_put(err, "not an edenprobe checkout: no host.mk");
+        mcp_put(err, "not an Amberlith checkout: no host.mk");
         return NULL;
     }
     free(host);
@@ -364,7 +364,7 @@ char* mcp_edenprobe_check(const char* checkout, const char* suite, Text* err) {
     return out.p;
 }
 
-/* ============================================================ edenprobe_run */
+/* ============================================================ amberlith_run */
 /* FNV-1a of the NRO: whether the recompiled one is still its */
 static unsigned long fingerprint(const unsigned char* data, size_t size) {
     unsigned long h = 2166136261UL;
@@ -439,14 +439,14 @@ static void report_lines(Text* t, const char* report, const char* filter) {
     }
 }
 
-char* mcp_edenprobe_run(const char* self, const char* cache, const char* nro, const char* mode, const char* filter,
+char* mcp_amberlith_run(const char* self, const char* cache, const char* nro, const char* mode, const char* filter,
                         Text* err) {
 #ifdef _WIN32
     static const char exe[] = "edenprobe.exe";
 #else
     static const char exe[] = "edenprobe";
 #endif
-    char *work = snx_path_join(cache, "edenprobe-run"), *games = snx_path_join(work, "games"),
+    char *work = snx_path_join(cache, "amberlith-run"), *games = snx_path_join(work, "games"),
          *folder = snx_path_join(games, "edenprobe"), *game = snx_path_join(folder, exe),
          *stamp_path = snx_path_join(work, "nro.stamp"), *data = snx_path_join(folder, "edenprobe_data"),
          *sdmc = snx_path_join(data, "sdmc/edenprobe"), *mode_path = snx_path_join(sdmc, "mode"),
@@ -520,7 +520,7 @@ char* mcp_edenprobe_run(const char* self, const char* cache, const char* nro, co
         if (now <= cases) break; /* it would only end the same way again */
         cases = now;
     }
-    mcp_put(&out, "edenprobe in mode \"");
+    mcp_put(&out, "Amberlith in mode \"");
     mcp_put(&out, mode);
     mcp_put(&out, "\", ");
     mcp_put_num(&out, (unsigned long)(launch > MAX_LAUNCHES ? MAX_LAUNCHES : launch));
@@ -529,7 +529,7 @@ char* mcp_edenprobe_run(const char* self, const char* cache, const char* nro, co
     mcp_put(&out, " and its summary:\n");
     report_lines(&out, report, filter);
     if (!strstr(report, "summary")) mcp_put(&out, "(no summary: the run ended before it)\n");
-    mcp_put(&out, "The report, for edenprobe_finding: ");
+    mcp_put(&out, "The report, for amberlith_finding: ");
     mcp_put(&out, report_path);
     mcp_put(&out, "\n");
 done:
@@ -554,7 +554,7 @@ done:
     return out.p;
 }
 
-/* ============================================================ edenprobe_finding */
+/* ============================================================ amberlith_finding */
 typedef struct {
     char *build, *result, *detail;
 } Line;
@@ -607,12 +607,12 @@ static void row(Text* t, const char* machine, const Line* l) {
     mcp_put(t, " |\n");
 }
 
-char* mcp_edenprobe_finding(long issue, const char* suite, const char* name, const char* ours, const char* theirs,
+char* mcp_amberlith_finding(long issue, const char* suite, const char* name, const char* ours, const char* theirs,
                             const char* source, Text* err) {
     Line us = {0}, them = {0};
     Text out = {0};
     if (issue <= 0 || !suite || !name || !ours) {
-        mcp_put(err, "issue, suite, name and scarletnx_report (the report.jsonl of edenprobe_run's run) are needed");
+        mcp_put(err, "issue, suite, name and scarletnx_report (the report.jsonl of amberlith_run's run) are needed");
         return NULL;
     }
     if (find_case(ours, suite, name, &us) || (theirs && find_case(theirs, suite, name, &them))) {
@@ -620,15 +620,15 @@ char* mcp_edenprobe_finding(long issue, const char* suite, const char* name, con
         goto done;
     }
     if (!us.result) {
-        mcp_put(err, "the case is not in ScarletNX's report: run it (edenprobe_run) with its family in the mode");
+        mcp_put(err, "the case is not in ScarletNX's report: run it (amberlith_run) with its family in the mode");
         goto done;
     }
     {
-        char* subject = snx_format("edenprobe: %s, %s", suite, name);
+        char* subject = snx_format("amberlith: %s, %s", suite, name);
         size_t n = strlen(subject);
         mcp_put(&out, "Commit subject: ");
         mcp_put(&out, subject);
-        mcp_put(&out, n > 72 ? "\n(edenprobe's subjects are 72 characters at most, this one is " : "\n(");
+        mcp_put(&out, n > 72 ? "\n(Amberlith's subjects are 72 characters at most, this one is " : "\n(");
         if (n > 72) {
             mcp_put_num(&out, (unsigned long)n);
             mcp_put(&out, ": shorten it. ");
@@ -657,8 +657,8 @@ char* mcp_edenprobe_finding(long issue, const char* suite, const char* name, con
     row(&out, "ScarletNX", &us);
     if (them.result) row(&out, "reference", &them);
     mcp_put(&out,
-            "\nTesting: TODO from edenprobe_check (`make -f host.mk host-run`: its summary, and the judge's wrong "
-            "answers, ScarletNX's among them, failing in its reference check) and edenprobe_run (the mode it ran "
+            "\nTesting: TODO from amberlith_check (`make -f host.mk host-run`: its summary, and the judge's wrong "
+            "answers, ScarletNX's among them, failing in its reference check) and amberlith_run (the mode it ran "
             "the NRO in on ScarletNX");
     mcp_put(&out, them.result ? ", and the reference's run above).\n" : "; TODO: the reference's run).\n");
     mcp_put(&out, "\nBefore opening it:\n"
