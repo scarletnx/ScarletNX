@@ -588,7 +588,24 @@ static int link_elf(const SnxLinkInput* inputs, size_t count, const char* const*
                     d.r_addend = (int64_t)(toc_relocation(&l, type) ? l.toc : S + (uint64_t)A);
                     snx_link_append(&rela, &d, sizeof(d));
                 }
-                if (written == SNX_LINK_RANGE)
+                if (written == SNX_LINK_RANGE && snx_elf_call_relocation(l.machine, type) &&
+                    (l.machine == EM_AARCH64 || l.machine == EM_PPC64)) {
+                    /* a call with no veneer in its reach either: how far it is from its target, what it reaches
+                       and how much code its object is, whose island comes after it */
+                    const uint64_t target = l.machine == EM_PPC64 ? entry : S + (uint64_t)A;
+                    const uint64_t away = target > P ? target - P : P - target;
+                    uint64_t code = 0;
+                    for (size_t t = 0; t < o->eh->e_shnum; ++t)
+                        if (o->kind[t] == SNX_ELF_TEXT) code += o->sh[t].sh_size;
+                    snprintf(error, error_size,
+                             "%s: relocation %u (%s) out of range: the call is %.1f MiB from its target and reaches "
+                             "%u MiB; the object's code is %.1f MiB",
+                             o->input->name, type,
+                             type == SNX_A64_CALL26   ? "R_AARCH64_CALL26"
+                             : type == SNX_A64_JUMP26 ? "R_AARCH64_JUMP26"
+                                                      : "R_PPC64_REL24",
+                             (double)away / 1048576.0, l.machine == EM_AARCH64 ? 128u : 32u, (double)code / 1048576.0);
+                } else if (written == SNX_LINK_RANGE)
                     snprintf(error, error_size, "%s: relocation %u out of range (the module is too large)",
                              o->input->name, type);
                 else if (written == SNX_LINK_MISALIGNED)

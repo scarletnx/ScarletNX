@@ -89,6 +89,18 @@ int nobj_definitions(unsigned machine, int coff, unsigned char** out, size_t* si
     return end(o, "definitions", out, size, error, error_size);
 }
 
+int nobj_a64_reach(const char* callee, size_t bytes, unsigned char** out, size_t* size, char* error,
+                   size_t error_size) {
+    static const uint32_t code[] = {0x94000000u, 0xd65f03c0u}; /* bl callee; ret */
+    SnxXElf* o = begin(EM_A64, 0, error, error_size);
+    if (!o) return -1;
+    const size_t at = put_words(o, code, sizeof code / sizeof *code, 0);
+    snx_xelf_symbol(o, "reach", SNX_ELF_TEXT, at, sizeof code, SNX_ELF_GLOBAL | SNX_ELF_FUNC);
+    snx_xelf_reloc(o, SNX_ELF_TEXT, at, callee, A64_CALL26, 0);
+    snx_xelf_put(o, SNX_ELF_TEXT, NULL, bytes, 16);
+    return end(o, "reach", out, size, error, error_size);
+}
+
 int nobj_filler(unsigned machine, int coff, size_t bytes, unsigned char** out, size_t* size, char* error,
                 size_t error_size) {
     SnxXElf* o = begin(machine, coff, error, error_size);
