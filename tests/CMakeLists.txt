@@ -2919,6 +2919,8 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME run_game COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run_game_test.py")
     # the tag a game goes by in place of its title and title ID (tools/game_tag.py): the HMAC, the key, which and scan
     add_test(NAME game_tag COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/game_tag_test.py")
+    # the SDK functions that ask a service, by SDK version (tools/ipc_reach.py), over module dumps made by the test
+    add_test(NAME ipc_reach COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ipc_reach_test.py")
     # the nightly release's title and notes (scripts/nightly-notes.py)
     add_test(NAME nightly_notes COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/nightly_notes_test.py")
     # the builds published as releases and on Discord (scripts/publish-builds.py), against fakes. Where publish.yml
