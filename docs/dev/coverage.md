@@ -119,7 +119,7 @@ mkdir -p work/cov/prof
 LLVM_PROFILE_FILE="$PWD/work/cov/prof/%c%p.profraw" \
 python3 scripts/edenprobe.py run --runtime build/cov/scarletnx --nro work/cov/edenprobe.nro --out work/cov/ep \
     --mode "quick notime cpu fs video display kernel audio hooks" \
-    --baseline "$REFS/edenprobe/linux-x86_64.txt" --timeout 1200
+    --baseline "$REFS/amberlith/linux-x86_64.txt" --timeout 1200
 ```
 
 Use the release CI pins (`EDENPROBE_VERSION` and `EDENPROBE_SHA256` in `.github/workflows/build.yml`), so the

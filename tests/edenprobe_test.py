@@ -614,9 +614,9 @@ with tempfile.TemporaryDirectory() as temporary, tempfile.TemporaryDirectory(dir
     first.write_text('# build: abc1234\n# mode: quick cpu\ncpu: adds\ncpu: flaky\ncpu: multiplies\n')
     second.write_text('# build: abc1234\n# mode: cpu quick\ncpu: multiplies\ncpu: adds\n')
     other.write_text('# build: fed4321\n# mode: quick cpu\ncpu: adds\n')
-    (root / '.git').mkdir()  # a test-references clone, whose edenprobe folder baseline writes to
-    (root / 'edenprobe').mkdir()
-    written = root / 'edenprobe' / 'written.txt'
+    (root / '.git').mkdir()  # a test-references clone, whose amberlith folder baseline writes to
+    (root / 'amberlith').mkdir()
+    written = root / 'amberlith' / 'written.txt'
 
     def baseline(*files):
         command = [sys.executable, str(SCRIPT), 'baseline', *map(str, files), '-o', str(written)]
@@ -653,7 +653,7 @@ with tempfile.TemporaryDirectory() as temporary, tempfile.TemporaryDirectory(dir
         text,
     )
     written.unlink()
-    copied = root / 'cpm' / 'edenprobe'
+    copied = root / 'cpm' / 'amberlith'
     copied.mkdir(parents=True)
     done = subprocess.run(
         [sys.executable, str(SCRIPT), 'baseline', str(first), '-o', str(copied / 'written.txt')],
