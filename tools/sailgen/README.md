@@ -9,12 +9,12 @@ where from and how to update them). Strict C23 with no dependency, built and run
 
 ```sh
 sailgen --extract ROOTS -o OUT INPUT...
-sailgen --generate ROOTS --backend bits.h --backend core.h --backend llvm.h [--profile PROFILE] -o OUT INPUT...
+sailgen --generate ROOTS --backend bits.h --backend FILE... [--profile PROFILE] -o OUT INPUT...
         [--overlay FILE]...
 ```
 
 `--extract` copies the definitions of sail-arm's files that the roots reach (`extract.c`). `--generate` writes one C
-function per decode function the roots name, which emits that instruction as LLVM IR, and a dispatcher that picks one
+function per decode function the roots name, which emits that instruction as a machine's code, and a dispatcher that picks one
 by the decode clauses' fixed bits in their order (`gen.c`): `sg_decode` for every clause, or, for each `decoder NAME
 FAMILY...` line of the roots, NAME for the clauses of those scattered decode functions alone (AArch32's
 `sg_decode_t16`, the `__DecodeT16` clauses of a T16 halfword's 16 bits, apart from A32's and T32's words). A clause
@@ -26,10 +26,9 @@ overlay's definitions take the place of the inputs' of the same name: a system's
 `--profile`, a feature the profile names in none of its `feature` lines is one no guest has, and a root its `since
 VERSION ROOT...` lines name (`a32.profile`) is tried only where the back end's `sg_ArchVersion` is that version or
 later. The back end's files are copied at the top of the output in their order: `bits.h` (the values known while it
-recompiles, which every back end shares), `core.h`, then a machine's
-(`llvm.h` for A64, which the back end's `sg_emit` wraps the dispatcher with and
-`src/common/cpu/recompiler/llvm/ir_sail.c` includes; `llvm_arm.h` for AArch32, its `sg_emit_t16` and `sg_emit_a32`,
-which `src/common/cpu/arm/llvm_thumb.inc` includes).
+recompiles, which every back end shares), then a machine's, as `snx_sailgen_machine_backends` in `cmake/sailgen.cmake`
+lists them ([The x86-64 back end](#the-x86-64-back-end), [the RISC back ends](#the-risc-back-ends-rv64h-ppc64h-mips64h-la64h-s390xh-over-risch),
+[the arm64 back end](#the-arm64-back-end-arm64h-arm64_asmh-arm64_a64h)).
 
 ## How a decode function becomes C
 
@@ -66,75 +65,34 @@ A value of a Sail struct (a load's `AccessDescriptor`) is STATIC: a C struct of 
 the helpers), which a field's assignment and read reach as C. Anything outside this part of Sail stops sailgen with the
 file, the line and why.
 
-A SIMD instruction's element loop, `foreach (e from 0 to elements - 1)` reading and setting element `e` of its operands
-(`Elem_read`, `Elem_set`), is one vector operation, as the hand-written emitters build it: the body is walked once
-with `e` standing for every lane, so each value it makes per element is a **LANE** value, a vector of one per lane
-(`llvm.h`'s `SgL`), and an operation on lanes is that operation on the vector (`sg_l_add`, `sg_l_cmp`, a select for an
-`if` per lane). Integers per lane keep their signedness and widen as an exact result needs, and the slice back to
-bits narrows them, which LLVM folds to the element's own width. A register the instruction read whole becomes its
-lanes as one load, and lanes written to a register one store (`ir_vec_read`, `ir_vec_write`).
-
-An element other than `e` of a `let` that concatenates two values, `Elem_read(concat, 2 * e + 1, esize)` of the pairwise
-ops' `operand2 @ operand1`, is a shuffle of the two values' lanes (`sg_l_permute`) whose mask is that index for each
-lane, made when the recompiler runs; the concatenation, wider than the back end's 128 bits, is never made whole. A loop
-from 1 that folds each element into a local, `sum = sum + x` or `maxmin = Max(maxmin, x)`, the local declared as `x`
-for `e` 0 (the same tree with 0 for `e`, every other name bound before it to a value nothing sets), is that fold of
-every lane from 0: `llvm.vector.reduce` of `x`'s lanes, an integer's sum exact at the narrowest power of two of bits
-that holds it, the result one lane (`sg_l_reduce_add`, `sg_l_reduce_minmax`).
-
 A function that calls itself on bits of the guest's is read in one shape, ADDV's `Reduce__1`: it gives its bits where
 they are one element wide (`if 'N == esize then return(input[esize - 1 .. 0])`), and elsewhere calls itself on each
 half of them (`input['N - 1 .. half]` and `input[half - 1 .. 0]`, `half` being `DIV('N, 2)`, every other argument
 passed on as it came) and gives the two results' `+`. That is the sum of the bits' elements, whatever the order (`+` of
-bits is associative and commutative), so it is the same `llvm.vector.reduce.add` of the lanes, found when sailgen
-runs: the shape is read on the Sail's tree, and what joins the two results is walked as any Sail, each result a value
+bits is associative and commutative), the back end's `sg_d_reduce_add`, found when sailgen runs: the shape is read on
+the Sail's tree, and what joins the two results is walked as any Sail, each result a value
 that only their `+` may take; a `match` there on a value known when sailgen runs keeps the case it picks, so
-`ReduceOp_ADD` picks the `+` and the other ops' cases are not walked. Such a function that joins them any other way (a
-floating-point op, whose result depends on the order), gives other than that sum, or changes state where it joins them
-is refused, and so is any other function that calls itself there (`sailgen_halves`, `sailgen_refused_halves_*`).
+`ReduceOp_ADD` picks the `+` and the other ops' cases are not walked. Such a function that gives other than that sum,
+or changes state where it joins them, is refused, and so is any other function that calls itself there
+(`sailgen_refused_halves_*`).
 
-The body may only set locals per lane: one that sets state (a register, an action), carries a local from one element to
-the next (REV's container loop), holds another loop (PMUL's polynomial product), reads an element other than `e` but
-of a concatenation, uses a value per lane where one is wanted, folds into a local other than as above, sets an element
-in a loop from 1, or leaves the loop with an element's value rather than the vector `Elem_set` built, is walked again
-as the loop it is, every element its own IR, which `tests/llvm_sail_ir.c` shows as longer than the hand-written
-emitter's (`sailgen_lanes` holds each outcome).
-
-On a back end without lanes (a machine's, below) every element loop is the loop it is, and so are the shapes that only
+Every element loop is the loop it is, and so are the shapes that only
 run element by element: an integer of the guest's shifted by an amount it or the recompiler knows, negated, made its
 magnitude, or the smaller or larger of two, bits plus such an integer, `BitCount` of bits of the guest's, an element
 whose number only the guest knows (TBL's), and the two names of `(y @ x) = v` set at once. A function that calls itself
 on each half of its bits and joins them otherwise than by `+` (the floating-point reductions) is the C loop that joins
-each two elements next to each other until one is left, as its calls would. A bit field of a register of bits set
+each two elements next to each other until one is left, as its calls would (`sailgen_halves` holds both). A bit field of a register of bits set
 (`FPSR[QC] = 0b1`) is the back end's `sg_REG_field_write(g, path, SG_REG_FIELD, value)`, under the run-time condition
 the code is under.
 
-## The back end (`bits.h`, `core.h`, then `llvm.h` or `llvm_arm.h`)
+## The back end's files
 
-`llvm.h` is copied at the top of the output. It holds the lowering to LLVM of Sail's builtins and of the shared
-functions sailgen does not inline, and the bit map: a DYN bits value is, until something computes with it, which
-bit of which source each of its bits is. Slices, concatenations, extensions, constant shifts and rotations, masks
-and `Replicate` cost no IR, and `sg_d_make` builds the cheapest IR for the map: a field (`lshr`, `and`, `shl`), a
-sign extended field (`ashr` of `shl`), a rotation or a funnel shift (`fshr`), a byte or bit reversal (`bswap`,
-`bitreverse`), or the OR of each source's bits that move by one distance. That is what turns the Sail's bitfield,
-extract, reverse and move-wide (masks, `ROR`, loops over bits) into the IR the hand-written emitters made.
-
-Builtins, lowered by the back end rather than from Sail:
-
-| Sail | lowered as |
-|---|---|
-| `UInt`, `SInt`, `asl_Int`, `+ - *` on integers | an integer of the width it needs (an add one bit more than its operands), which slicing truncates; LLVM narrows it |
-| `AddWithCarry(x, NOT(y), '1')`, `(x, y, '0')`, with a carry flag | `x - y`, `x + y`, `x + y + c`, the NZCV formulas of `ir_state.c`, and the flags' origin (below) |
-| `ConditionHolds(cond)` | the compare the flags came from, when one made them in this block; else its own Sail |
-| `RoundTowardsZero(Real(a) / Real(b))` | `udiv`/`sdiv` with the divisor 1 where it is 0 or -1 under the most negative value (the caller's select gives 0 for the first) |
-| `CountLeadingZeroBits`, `CountLeadingSignBits` | `llvm.ctlz` |
-| `BitReverse(Poly32Mod2(BitReverse(acc) @ Zeros(n) EOR BitReverse(val) @ Zeros(32), poly))` | the reflected CRC update: SSE4.2's CRC32C, AArch64's CRC32, or the sliced tables |
-| `LSL`, `LSR`, `ASR`, `ROR`, `Extend`, `ZeroExtend`, `SignExtend`, `Replicate`, `Zeros`, `Ones`, `IsZero`, `IsZeroBit`, `Bit`, `EOR`, `MOD`, `DIV`, `Min`, `Max`, `HighestSetBit`, `Slice`, `Elem_set` | the map, or C when the value is STATIC |
-| `LSL_C`, `LSR_C`, `ASR_C`, `ROR_C` (AArch32's shifter and its carry) | the map for an amount known when it recompiles; for a register's, 0 to 255, the AArch32 block compiler's `shift` (every LLVM shift kept below the width) |
-| `BitCount`, `LowestSetBit`, `Align` | C of a register list or a pc; `Align` of bits known only at run time the map |
-| `IsFeatureImplemented(FEAT_X)` | the guest's feature bit (`SNX_A64_FEAT_X` of `a64.profile`); false, a CONST, for a feature `--profile` names nowhere |
-| `EndOfInstruction()` | the end of the instruction: nothing more is emitted |
-| `BranchTo(target, type, conditional)`, `BranchNotTaken(type, conditional)` | the branch's operand for the recompiler's flow (`ir_codegen.c`): the target, and the run-time condition it is under; their profiling, branch records and address tagging do nothing at the NX's EL0 |
+`bits.h` holds the values known while the code is made, which every machine shares, and the bit map: a DYN bits value
+is, until something computes with it, which bit of which source each of its bits is, so slices, concatenations,
+extensions, constant shifts and rotations, masks and `Replicate` cost nothing until a value is needed. A machine's
+files lower Sail's builtins (`UInt`, `AddWithCarry`, `ConditionHolds`, the divisions, `CountLeadingZeroBits`, the CRC
+update, the shifts and the rest), the shared functions sailgen does not inline and the guest's state, through
+`mach.h`, which every machine's code shares, and the machine's own assembly (sections below).
 
 A function with no Sail definition that the back end defines as `sg_NAME` is lowered by it: one of the machine's
 actions, or a function whose Sail `a64.roots` leaves out with `lower`, keeping its `val` (the floating-point
@@ -144,7 +102,7 @@ call under one of a function that takes none stops sailgen), then the call's arg
 (bits as the back end's maps whatever their time, the rest as they come). Its result is its `val`'s: none, bits or a
 bool (nx.sail's guest memory: `GuestMemRead`, the exclusives', the atomics'), an enum known when it recompiles
 (`FPRoundingMode`'s is the back end's own "the mode FPCR holds when the guest runs") or a tuple of bits, its parts
-through pointers after the arguments (bits, or a bool). `llvm.h` gives the hints (`Hint_Yield` the host's spin-wait
+through pointers after the arguments (bits, or a bool). The back end gives the hints (`Hint_Yield` the host's spin-wait
 hint, `Hint_WFE`
 the runtime's `rt_wfe`, `SendEvent` its `rt_sev`), the barriers (`DataMemoryBarrier` and `DataSynchronizationBarrier`
 a fence by the accesses they order, `InstructionSynchronizationBarrier` a full one) and the exclusive monitor
@@ -152,7 +110,7 @@ a fence by the accesses they order, `InstructionSynchronizationBarrier` a full o
 
 The floating-point functions (`FPAdd`, `FPSub`, `FPMul`, `FPDiv`, `FPMulAdd`, `FPSqrt`, `FPMax`, `FPMin`, `FPMaxNum`,
 `FPMinNum`, `FPCompare`, `FPRoundInt`, `FPRoundIntN`, `FPConvert`, `FixedToFP`, `FPToFixed`, `FPToFixedJS`,
-`FPConvertBF`) are lowered as the recompiler's scalar emitters made them: the host's IEEE arithmetic behind a guard that
+`FPConvertBF`) are lowered as the host's IEEE arithmetic behind a guard that
 proves it gives the console's result and FPSR flags for the FPCR the Sail hands them (round to nearest, the operands
 FZ would flush, a result that can't underflow; IXC exact where cheap, else only once it is set), and cpu.h's
 soft-float helpers otherwise, which raise their FPSR flags as `FPProcessException` does. `FPAbs`, `FPNeg`,
@@ -173,57 +131,17 @@ stops at the line that reaches one it does not. The pc is the one register sailg
 top-level `let` named for a register's field holds that field fixed (`PSTATE_EL`, `PSTATE.EL`): a read of the field is
 the `let`'s value, and a write to it stops sailgen.
 
-`llvm.h` keeps them where the CPU does (`cpu.h`: `x[32]`, the flags `n`, `z`, `cf` and `vf`, each the i32 0 or 1, `v[32]`
-and `fpcr`). `_V` goes through `ir.h`'s vector accessors and their per-block cache of each register's low lanes, every
-emitter's; a write stores both doublewords but one that holds the value the register already does (Vpart_set's).
-Each write is stored at once, and the values are cached for the basic block in `ir->state`, with what the four flags
-came from. That cache is every emitter's: its functions over the IR builder are also `ir.h`'s accessors (`ir_x`,
-`ir_set_x`, `ir_flag_read`, `ir_flags_commit`, `ir_flags_origin` and the invalidations, which `ir_sail.c` gives) for the
-emitters still written by hand, so a block that mixes the two loads a register once and reads a write back as the value
-written, and the alias tags and the promotion of registers (`ir_promote.c`) see one kind of load and store. When the
-four flags are written from `AddWithCarry(x, NOT(y), '1')` they keep the compare `x - y` as their origin, from
-`AddWithCarry(x, y, '0')` the sum, and from `[r[N-1]] @ IsZeroBit(r) @ 0b00` the logical result `r`; `ConditionHolds`
-then reads a condition on them as one `icmp` of the operands, by the laws of `sg_origin_cond`, which `ir_state.c`'s
-`ir_flags_cond` uses too for B.cond and the other emitters written by hand. Flags written alone (CFINV, RMIF, SETF8) are
-stored with the others at the end of the instruction. FCCMP's four come from both ways of its condition, the compare
-where it holds and the immediate where it does not: each is a phi of the two, stored at the end of each way, as the
-emitter written by hand stored them, and cached as the phi (`sg_flags_on_each_way`).
-
+A machine's back end keeps them where the CPU does (`cpu.h`: `x[32]`, the flags `n`, `z`, `cf` and `vf`, `v[32]` and
+`fpcr`), the ones a function uses most held in the host's registers ([At run time](#at-run-time-x64h-machh-x64_asmh-x64_a64h)).
 Guest memory is nx.sail's actions (above), on which its `Mem_read`, `Mem_set`, `MemAtomic` and the exclusive monitor's
-functions are written: `llvm.h` makes them with `ir.h`'s accessors, as the emitters written by hand did: a plain access
-`ir_rd` and `ir_wr` (CPU.mem plus the address, unaligned, volatile with `volatile_memory`; a pair of doublewords two),
-an acquire load or a release store a sequentially consistent host atomic (`ir_ldacq`, `ir_strel`), the exclusives
-`cpu.h`'s value-based monitor through its helpers (the load-exclusive's values kept for the exclusive reads after it,
-the store-exclusive's status for `ExclusiveMonitorsStatus`), and the LSE atomics an `atomicrmw` or a `cmpxchg` of the
-access size (a compare-and-swap loop where the host's byte order or PowerPC64's partword compares need one,
-`snx_cas128` for CASP's 16 bytes). An instruction's two word accesses of adjacent addresses (LDPSW's loads, STNP's
-stores, two in their Sail) become one 8-byte access as it ends (`sg_accesses_combine`), as a pair of words always was.
-
-## AArch32 (`llvm_arm.h`)
-
-The AArch32 block compiler (`src/common/cpu/arm/llvm.c`) builds its IR with its own builder (`ArmIR`), which the file
-sailgen writes is compiled with (`llvm_thumb.inc` includes it), so `llvm_arm.h` builds on its helpers as `llvm.h` does
-on `ir.h`'s: `GPR[n]` is a load or a store of `SnxArmCPU.r[n]`, PSTATE's N, Z, C, V, T and E are CPSR's bits, written
-together in one store of CPSR as the instruction ends (`sg_flags_flush`, as `nz` wrote them), guest memory is `readmem`
-and `writemem` after `transfer_begin` (flat, checked or hosted, with the ARM7TDMI's and the ARM946E-S's bus rules), a
-multiple transfer's whole range checked first (`GuestTransfer`), and UNDEFINED, SVC and BKPT the block's exits
-(`trap`). What the block compiler decides when it compiles a block the back end answers as values the recompiler
-knows: a back end function whose result is `SgS`, `int` or `long long` gives a STATIC value (bits, a bool or an enum,
-an integer), not IR: `CurrentInstrSet`, `ITSTATE`, `AArch32_CurrentCond` (the instruction's condition: an A32 word's, a
-B<c>'s own, else the IT block's) and `ArchVersion`. `LSL_C`, `LSR_C`, `ASR_C` and `ROR_C`, AArch32's shifter with its
-carry, are the map for an amount known when it recompiles, and `llvm.c`'s `shift` for a register's (0 to 255);
-`BitCount`, `LowestSetBit` and `Align` are C of what the recompiler knows, or the map. `sg_emit_t16` runs a T16
-halfword and `sg_emit_a32` an A32 word, each under the condition its decode's `ConditionPassed()` gives (`sg_when`);
-`sg_emit_a32` hands back a word none of its clauses takes, which llvm.c's emitters run. `CurrentInstrSet` is the
-block's until an instruction selects the other (`SetInstrSet`: BLX's target is aligned as the set it goes to).
+functions are written: the host's accesses at CPU.mem plus the address, an acquire load or a release store a
+sequentially consistent host atomic, the exclusives `cpu.h`'s value-based monitor, and CASP's 16 bytes `snx_cas128`.
 
 ## Another back end
 
-The front (the parse, the inlining, the times) and the Sail don't depend on LLVM. Another back end is another
-`llvm.h`, with the same functions over its own values, keeping the registers its own way behind the same
-`sg_NAME_read` and `sg_NAME_write`, and the guest's memory behind the same actions. `core.h` holds what every machine's
-shares (the bits, the map, the integers, AddWithCarry's flags) and asks the machine's file for its builder, its LLVM
-context and its intrinsics (`sg_builder`, `sg_llvm_context`, `sg_intrinsic`, `sg_select_phi`).
+The front (the parse, the inlining, the times) and the Sail don't depend on a machine. Another back end is another
+machine's files in `snx_sailgen_machine_backends`, with the same functions over its own values, keeping the registers
+its own way behind the same `sg_NAME_read` and `sg_NAME_write`, and the guest's memory behind the same actions.
 
 ## Tests
 
@@ -232,16 +150,9 @@ lowers the `val` and the types it names alone; `--generate` refuses a throw it h
 run-time condition, an `Error_Unpredictable` with no overlay's `UnpredictableEncoding()`, a write to a field a `let`
 holds fixed, a register or a field the back end does not keep, the back end's function that takes no `path` under a
 run-time condition, one whose `val` gives an integer and a function that calls itself other than as the sum of its
-bits' elements, naming its line; `sailgen_lanes` says which element loops become lanes and `sailgen_halves` that such
-a function is one reduction; `sailgen_a64` generates the in-tree A64 subsets whole, and `sailgen_a32` the AArch32
-ones.
-
-`tests/llvm_sail_ir.c` holds the generated emitters to the hand-written ones they replaced
-(`tests/support/ir_int_reference.c`, `tests/support/ir_fpu_reference.c`), word by word on three paths: the same
-optimized IR, or the same instructions in another order, or another IR no longer than theirs; and the same results
-when both run, the floating point from FPCRs and operands chosen for its paths. `tests/arm_sail_ir.c` does the same for
-AArch32's T16 halfwords against the emitters written by hand (`snx_thumb_llvm_block_t16_reference`), on every profile
-and memory mode, alone and in an IT block.
+bits' elements, naming its line, all with the x86-64 back end's files; `sailgen_halves` says what such a function
+becomes on it; `sailgen_a64` generates the whole of `a64.roots`, and `sailgen_roots_subset` holds the back ends' A64
+roots (`a64_x64.roots`, `a64_risc.roots`) to it.
 
 ## GPU mode (`--gpu`)
 
@@ -251,7 +162,7 @@ sailgen --gpu ROOTS --backend spirv.h --backend ISA_spirv.h [--backend ISA_FAMIL
 
 The shader translators' instruction emitters, from Sail written for a GPU's ISA (`src/nx/gpu/shader/sail/`): a mode of
 its own, `gpu.c`, which shares the parse with the CPUs' generator and nothing else. No CPU specification is read in it,
-and none of the GPU's in `--generate`: `gen.c`'s decode clauses, PSTATE, element loops and LLVM back ends are the
+and none of the GPU's in `--generate`: `gen.c`'s decode clauses, PSTATE, element loops and machine back ends are the
 CPUs', `gpu.c`'s roots, times and SPIR-V back end the GPUs'. Every instruction of SM86 (`sm86.sail`) and of SM53
 (`sm53.sail` and its families' `sm53_<family>.sail`) is emitted so: `sm86_translate.c`'s `emit_insn` and
 `spirv_translate.c`'s to_spirv run the generated dispatcher, and refuse an opcode no root takes. So is every
@@ -366,7 +277,7 @@ instruction, under the guest's FPCR only where a clause with the word's bits has
 
 ## The x86-64 back end
 
-A back end that writes x86-64 machine code itself, without LLVM: its instruction selection is derived from the
+A back end that writes x86-64 machine code itself: its instruction selection is derived from the
 pseudocode of Intel's manual and kept in the tree (`sdm/x64_isel.inc`), so choosing instructions costs the recompiler
 nothing and it does little more than write their bytes at run time.
 
@@ -487,8 +398,8 @@ makes, the XMM registers' forms, the constant pool, the cold paths, the frame), 
 (`sgx_mov_rr`, `sgx_mov_mem`, `sgx_imm_ok`, `sgx_xdown`...). Another host's back end is its own pair of files around
 the same `mach.h`.
 
-The same generator (`gen.c`), with the x86-64 back end at the output's top in place of LLVM's: the CONST and STATIC
-times are folded when sailgen runs and when the emitter runs as for LLVM, and what is DYN is appended to a short SSA
+The same generator (`gen.c`), with the x86-64 back end at the output's top: the CONST and STATIC times are folded
+when sailgen runs and when the emitter runs, and what is DYN is appended to a short SSA
 of the block's x86 instructions (`SgXIns`: a selected candidate, virtual registers for its operands, an immediate),
 the assembly itself. The emitter does what costs little as it appends: constants fold, an operand that is a constant
 picks the candidate whose immediate it fits (`imm8` sign extended before `imm32`), a candidate needing a feature the
@@ -548,8 +459,8 @@ CLS and RBIT are compositions (CLZ of `(x XOR x << 1) OR 1`; BSWAP and three swa
 (CCMP's choice) is four SETcc.
 
 The code's calling convention is the host C's: System V's, or where the features have `SGX_F_WIN64` (not CPUID's: a
-Windows host's, or a test's) Microsoft's x64 one, so a guest function is called the same way by the runtime's C, by LLVM's
-units, through the dispatch table and by the code itself. Values are in the registers a call changes there too
+Windows host's, or a test's) Microsoft's x64 one, so a guest function is called the same way by the runtime's C,
+through the dispatch table and by the code itself. Values are in the registers a call changes there too
 (`sgx_pool_win64`: RAX, RCX, RDX and R8 to R11, XMM0 to XMM5), so a function saves RBX and what it pins: RDI and RSI,
 its callee's there, hold the pins R11 and R10 hold elsewhere, and the XMM registers it pins are saved in its frame, XMM6
 and XMM7 with them for values. The frame's lowest 48 bytes are its callees' (`SGX_WIN64_ARGS`: the four arguments'
@@ -628,7 +539,7 @@ for code that never writes it, which nothing here can. A field for it is for whe
 4. svcGetThreadContext3 has the console's layout, which has no FPMR, and the hooks' verify compares what is before
    `mem`: neither would see it;
 5. a guest without FP8 pays 8 bytes a thread and not an instruction;
-6. MSR and MRS of it are the system registers' of each machine's `sys` and LLVM's read_sysreg and write_sysreg;
+6. MSR and MRS of it are the system registers' of each machine's `sys`;
 7. the host's own FP8 is used by no back end, so the host changes nothing: the 17 operations are exact helpers', which
    would read the field.
 
@@ -696,10 +607,9 @@ sailgen --generate a32.roots --backend bits.h --backend machdef.h --backend x64.
         --backend x64_asm.h --backend x64_a32.h --profile a32.profile -o a32_x64.inc a32.sail arm.sail
 ```
 
-The same roots as LLVM's AArch32 (`snx_sailgen_a32_x64` in `cmake/sdm.cmake`), for the block compiler
-`src/common/cpu/recompiler/x64/x64_arm.c`, which makes what `cpu/arm/llvm.c` and `llvm_thumb.inc` make of an A32 or
-Thumb block, for any profile and memory mode of its options (`cpu/arm/codegen.h`: "The profiles and the memory modes",
-below); a block with an instruction it doesn't make stays LLVM's. (On Windows its blocks save RBX alone too: the state
+The roots of `a32.roots` (`snx_sailgen_a32_x64` in `cmake/sdm.cmake`), for the block compiler
+`src/common/cpu/recompiler/x64/x64_arm.c`, which makes an A32 or Thumb block for any profile and memory mode of its
+options (`cpu/arm/codegen.h`: "The profiles and the memory modes", below). (On Windows its blocks save RBX alone too: the state
 comes in RCX.) `x64_a32.h` keeps the state where `arm.h`'s SnxArmCPU
 does (`r[16]`, `cpsr`), reads a register once a region and stores each write at once (the dead-store pass drops the
 overwritten ones), and keeps NZCV as the flags of the instruction that made them: the four condition codes are packed
@@ -707,7 +617,7 @@ into one store of CPSR at the instruction's end, and a condition read before ano
 the condition code itself (`sg_condition_origin`). An instruction's condition is a jump past it to a label, made at its
 first side effect (`sgx_a32_commit`; `sgx_flags_begin` in `sg_add_with_carry` makes it before the flags it keeps), so a
 clause that only reads and hands the word on (`sg_see`) emits nothing. Memory is `CPU.mem` plus the zero-extended
-address, each access checked first as `llvm.c`'s are: misaligned (where it must be) an ALIGNMENT exit, its last byte
+address, each access checked first: misaligned (where it must be) an ALIGNMENT exit, its last byte
 past `min(mem_size, 2^32)` a DATA_ABORT one, both with the address as the syndrome, on stubs after the block's code; a
 store's range against the exclusive reservation in one check (a cold path clears it where they overlap); STREX a LOCK
 CMPXCHG of the value LDREX read. The instructions the Sail has no clause for (loads and stores, LDM and STM, the
@@ -717,13 +627,13 @@ Thumb block's 16-bit instructions are the Sail's (`sg_decode_t16`), whose condit
 known as the block is made; its 32-bit ones are the shapes `thumb.c` decodes, written in `mach_thumb.inc`, or the A32
 instruction of the same meaning whose emitter reads Thumb's PC. `sg_ITSTATE` and `sg_ITSTATE_set` carry it (IT sets the
 ones after it; an SVC, a BKPT and a block that ends inside an IT block leave it in CPSR). The VFP's scalar instructions keep their values in XMM
-registers, and the arithmetic and the compares take the host's SSE instruction where `llvm_vector.inc`'s `fp_call`
-takes the host's: FPSCR's rounding to nearest, no trap enabled and IXC already set (for the arithmetic), operands
+registers, and the arithmetic and the compares take the host's SSE instruction where IEEE 754 gives the console's
+bits: FPSCR's rounding to nearest, no trap enabled and IXC already set (for the arithmetic), operands
 finite and normal or zero, a result normal or an exact zero the operation allows; anything else calls
 `snx_arm_fp_x64` on a cold path, which is `snx_arm_fp`. FZ on or off does not change the choice.
 
 **The profiles and the memory modes** (`snx_x64_arm_options`, every machine's `_arm_options`: the options of the next
-blocks) are the same emitters, what differs asked where LLVM's ask it. `sg_ArchVersion` is the profile's, for the Sail;
+blocks) are the same emitters, what differs asked where it matters. `sg_ArchVersion` is the profile's, for the Sail;
 the hand-written emitters decode with `snx_a32_decode_profile` and `snx_thumb_decode_profile`, and before Thumb-2 (the
 ARM11, the ARM946E-S and the ARM7TDMI) every Thumb halfword is the Sail's. Guest memory goes through four functions of
 `mach_a32.h`: `sgx_a32_transfer` begins an instruction's transfer (its alignment and range, a trace's slot, a checked
@@ -749,19 +659,18 @@ shared stub of the object; its end goes on to the block after it with a jump to 
 `nx/loader/module_arm.c` names it a successor (after the poll a backward one takes), past the entry's checks where
 nothing in the block can have changed them, and through them after an MSR that may set E. Both ways of a CBZ are such
 jumps. Each block is
-`void A_xxxxxxxx(SnxArmCPU*)` of one ELF object (a COFF one on Windows), global and hidden as LLVM's are, so the two back
-ends' blocks call each other; a block LLVM makes gets an entry here that stores R15 and jumps to it. `module_arm.c` makes every A32
-block it can this way as it discovers it, on all the build's threads, and leaves LLVM's units only the blocks the
-x86-64 back end refused; `nx/loader/module_x64.c` writes the module's descriptor without LLVM. The recompile prints
-`x86-64 back end: N of M AArch32 blocks` and why the others were left to LLVM. The 3DS's, the DS's and the GBA's
+`void A_xxxxxxxx(SnxArmCPU*)` of one ELF object (a COFF one on Windows), global and hidden. `module_arm.c` makes every
+A32 block this way as it discovers it, on all the build's threads, and `nx/loader/module_x64.c` writes the module's
+descriptor. The recompile prints `x86-64 back end: N of M AArch32 blocks`, and why one was refused. The 3DS's, the DS's and the GBA's
 compilers make their blocks the same way through `cpu/arm/aot.h`, and the Vita's as it discovers them; each writes its
 module's index as data (`snx_native_data`).
 
 **The test** (`tests/arm_x64.c`, `arm_x64`): random blocks of one to six words of 42 A32 and VFP classes made by
-both back ends and run from random states (registers in and out of memory, the flags, the monitor, FPSCR with FZ, DN,
+the back end and run from random states (registers in and out of memory, the flags, the monitor, FPSCR with FZ, DN,
 a rounding mode and a trap, denormals, zeros and NaNs): every register, CPSR, the exit and its syndrome, the monitor,
-FPSCR, the D registers and memory must match, and so must the words each block covers. Witnesses count the calls of
-`snx_arm_fp_x64` each VFP case makes (the hot path is taken exactly where `fp_call`'s is), the entry's checks are run
+FPSCR, the D registers and memory must match the recorded results (test-references' `arm/`, LLVM -O0's, recorded
+while the build had it), and so must the words each block covers. Witnesses count the calls of
+`snx_arm_fp_x64` each VFP case makes (the hot path is taken exactly where IEEE 754 allows it), the entry's checks are run
 with each of their failures, and an MSR of E is run into the next block. Thumb blocks (`--thumb N`) are made the same
 way from random halfwords: 16-bit ones of every form, 32-bit ones of every family and one IT in four blocks, with the
 instructions of its block after it; their witnesses are the entry's checks (R15, T, ITSTATE, E, in their order) and
@@ -769,6 +678,6 @@ TBB's and TBH's reads past memory. `arm_x64_spill` does it with three host
 registers, `arm_x64_plain` without BMI1, BMI2 and LZCNT; `arm_win64` and `arm_arm64win` run the same with the code a
 Windows host's. `--profile` and `--memory` run the other profiles and modes
 (`arm_x64_a9`, `arm_x64_arm7tdmi_trace`, `arm_x64_arm11_checked`, ... and the same on each other machine), against
-LLVM's blocks of the same options: their words are what the profile decodes, hosted memory and the hook's two run on a
+the recorded results of the same options: their words are what the profile decodes, hosted memory and the hook's two run on a
 window of 4 GiB, and every call of the hook or the checked callback is logged with the state it saw. The hosted modes run
 the chained blocks' cases as well, each end against the state, the poll and the calls it must leave.

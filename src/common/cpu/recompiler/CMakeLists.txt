@@ -63,7 +63,7 @@ else()
     list(APPEND snx_rtlib_flags -fPIC)
 endif()
 # The object is the JIT loader's (code_loader.c), which reads ELF: on macOS and iOS too, where the triple's object format
-# says so and the code stays Darwin's (ir.c's host_triple). The bitcode keeps the Mach-O triple of the AOT modules
+# says so and the code stays Darwin's
 set(snx_rtlib_object_flags "")
 set(snx_rtlib_object_base ${snx_rtlib_flags})
 if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")

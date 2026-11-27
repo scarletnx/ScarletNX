@@ -34,8 +34,8 @@ Every call to a hooked function goes through its slot in the dispatch table, `g_
   stub bound to a function whose symbol a hook names keeps calling through the slot;
 - a call through a function pointer or a virtual call (`BLR`), NVN's procedure table among them;
 - a direct call (`BL`, or a tail call's `B`) within a module to a function whose symbol a hook names: the recompiler
-  compiles it as a call through the slot (`snx_codegen_routed`, `ir_codegen.c`'s `call`), so LLVM never inlines that
-  function into its callers either;
+  compiles it as a call through the slot (`snx_codegen_routed`), so the function is never inlined into its callers
+  either;
 - a call from the runtime JIT's code, which calls an AOT function directly only while its slot still holds it
   (`jit_service.c`'s `direct`).
 

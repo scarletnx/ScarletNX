@@ -361,16 +361,15 @@ Implemented:
   callbacks connecting statically generated integer instructions to the page
   controller, including aliases, R/W/X, whole-range multiword RAM validation and
   ordinary MMIO. Every instruction checks execute permission and code identity.
-  Static O0/O2 native witnesses execute against this adapter without LLVM/JIT
-  linked into their executables.
+  Static native witnesses execute against this adapter without the JIT linked into their executables.
 - Stage 2b2: raw ExHeader/expanded `.code` revalidation, RX/R/RW process mappings,
   zeroed page-appended BSS, guarded stack and one private initial TLS page.
   `TPIDRURO` points at this page. Initial 3b adds per-thread zeroed TLS slots
   and serialized native context scheduling, not a host-thread/multicore scheduler.
 - The offline compiler and native host linker, part of `scarletnx-3ds`:
   private staging/publication, versioned module ABI and exact image
-  identity. The host's native back end makes the blocks (`src/common/cpu/arm/aot.h`), and LLVM the ones it refuses,
-  or all of them on a host without one or with `--keep-ir`; the recompile says how many each made, and why. Images up to 4096 bytes retain exhaustive one-instruction ARM/Thumb
+  identity. The host's native back end makes the blocks (`src/common/cpu/arm/aot.h`); the recompile says how many it
+  made, and why it refused one. Images up to 4096 bytes retain exhaustive one-instruction ARM/Thumb
   entries. Stage 2b3 adds conservative static CFG discovery for larger images:
   direct branches/calls, conditional continuations, literal/ADR code pointers,
   initialized RO/data pointer candidates, legacy Thumb BL pairs and a bounded
@@ -378,7 +377,7 @@ Implemented:
   CMP / LDRLS PC-indexed tables with at most 256 entries; no unbounded sweep.
   Blocks contain at most 32 guest instructions;
   bounded chunks of them are objects, then statically linked.
-  The link is the LLVM backend's own (`src/common/cpu/recompiler/object/link.c`),
+  The link is the recompiler's own (`src/common/cpu/recompiler/object/link.c`),
   with the helpers the blocks call (`armlib.c`), as the Switch's 32-bit modules
   are: an ELF shared object, a PE DLL or a Mach-O dylib, without a C compiler.
   A block the static discovery misses compiles at run time through the ARM JIT; with `--jit-only` every block does.
@@ -388,7 +387,6 @@ Implemented:
 - Native loader/dispatcher checks ABI, ISA, memory mode, CPU sizes, table counts
   and image identity. It dispatches on PC + CPSR.T, enforces execution permission
   and a block budget, and reports missing entries, faults and unsupported SVCs.
-  The static module does not link LLVM; the run-time compiler does, when a block needs it.
 
 ### Kernel-bootstrap subset (2b4)
 
@@ -956,14 +954,12 @@ code the static graph lacks does. The static graph is bounded by the text itself
 (each instruction slot is visited once in each instruction set). Objects together
 are capped at 1 GiB and the linked module at 1 GiB, and only the module is kept,
 beside the game as `<title ID>_code.so`. The chunks are of 512 blocks, compiled on the
-`aot_threads` threads (75% of the physical cores by default); the setting `opt` (`-O`,
-2) is the level of the blocks LLVM compiles.
+`aot_threads` threads (75% of the physical cores by default).
 
 ### Build and test
 
-`scarletnx-3ds` holds the AOT compiler, so it links LLVM, and its presenter and
-audio output use SDL3 and Vulkan headers, which CMake fetches as for the Switch
-runtime. With the normal Clang, CMake and LLVM SDK prerequisites:
+`scarletnx-3ds` holds the AOT compiler, and its presenter and audio output use SDL3 and Vulkan headers, which CMake
+fetches as for the Switch runtime. With the normal Clang and CMake prerequisites:
 
 ```sh
 cmake -S . -B build/3ds -DSNX_BUILD_NX=OFF -DSNX_BUILD_GNUABI=OFF -DSNX_BUILD_GUI=OFF
@@ -977,8 +973,7 @@ The 3DS tests are named `3ds_*` and `ctr_*` (`ctest -R "3ds|ctr"`, `3ds_cci` the
 cartridge images' and bare NCCHs'), and the ARM
 CPU tests the 3DS shares with the Switch's 32-bit games `arm_*`. Use `-DSNX_BUILD_GUI=ON` to include the launcher and its
 regression tests. `-DSNX_BUILD_3DS=OFF` omits the driver with its compiler and
-runtime (the GUI diagnoses its absence). The profile decoder test needs no LLVM.
-Additional static AOT tests are explicitly opt-in:
+runtime (the GUI diagnoses its absence). Additional static AOT tests are explicitly opt-in:
 
 ```sh
 cmake -S . -B build/arm11 -DSNX_BUILD_NX=OFF -DSNX_BUILD_GNUABI=OFF \
@@ -987,17 +982,16 @@ cmake --build build/arm11
 ctest --test-dir build/arm11 --output-on-failure
 ```
 
-This requires a native LLVM SDK (select with `SNX_LLVM_CONFIG` if needed).
 `SNX_TEST_ARM_DIFF=ON` additionally requires Python `unicorn==2.1.4`, and enables
 ARM11 MPCore plus shared A57 integer/VFP/NEON/Thumb regressions of the native back
-ends' blocks and LLVM's. See
+ends' blocks. See
 `src/common/cpu/arm/README.md` for the codegen contract and exact limitations.
-The compiler links its objects with the LLVM backend's linker, so a game compiles
-on a machine without a C compiler. The compiled modules need no LLVM library. On Windows `scarletnx-3ds` carries the runtime's
+The compiler links its objects with the recompiler's own linker, so a game compiles
+on a machine without a C compiler. On Windows `scarletnx-3ds` carries the runtime's
 application manifest (long paths, UTF-8 code page), and the module is a DLL linked
 with DEP and ASLR compatibility, exporting only its descriptor.
 Add `SNX_TEST_ARM_AOT=ON` for the CPU tests as well as the pipeline's.
-The bounded CFG unit test needs no LLVM. To run the optional external SuperTux
+To run the optional external SuperTux
 bootstrap gate, set `SNX_TEST_3DS_SUPERTUX=/absolute/path/to/Supertux.cia`.
 `SNX_TEST_ARM_DIFF=ON` additionally compares its first-SVC GPR/CPSR and complete
 data/stack/TLS snapshots against pinned Unicorn ARM11 MPCore. A second CPU
@@ -1134,8 +1128,8 @@ dispatch, the update overlay) reads `ncch_container.cpp`'s `AutoOpenNCCHNCSD`,
 partition layout and the base/update semantics; the C implementation is new, as
 the CIA one is. Initial 2b CPU/profile and bus code is new project C code using ARMv6K/legacy
 Thumb architectural semantics; it does not copy an Azahar CPU engine. The
-shared emitter retains its existing notices. LLVM's `mpcore` assembler model
-and Unicorn 2.1.4's ARM11 MPCore model are test references, not runtime engines.
+shared emitter retains its existing notices. Unicorn 2.1.4's ARM11 MPCore model is a test reference, not a runtime
+engine.
 Stage 2b2 process mappings/BSS policy refer to Azahar `src/core/loader/ncch.cpp`
 and kernel process layout at the same revision; the new image/module/compiler/
 dispatch implementation is project C code, not an adapted Azahar CPU engine.

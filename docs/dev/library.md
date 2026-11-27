@@ -39,7 +39,7 @@ target_link_libraries(my_emulator PRIVATE ScarletNX::recompiler)
 A project can also build the library in its own tree, fetched with
 [CPM.cmake](https://github.com/cpm-cmake/CPM.cmake) (or added with `add_subdirectory`), with CMake 3.28 or newer,
 which CPMUtil, the build's own package fetcher, needs.
-With every driver off, the configure needs LLVM and nothing else: no third-party
+With every driver off, the configure needs the compiler and nothing else: no third-party
 package is downloaded and no font or other asset of the runtimes is fetched. ScarletNX's
 tests are left out when another project includes it (`SNX_BUILD_TESTING`, on only at the
 top level), without changing that project's `BUILD_TESTING`:
@@ -55,18 +55,15 @@ CPMAddPackage(NAME ScarletNX
 target_link_libraries(my_emulator PRIVATE ScarletNX::recompiler)
 ```
 
-`EXCLUDE_FROM_ALL` builds only what the project links. The project builds with Clang,
-as ScarletNX does, and finds LLVM the same way (`llvm-config` on the PATH,
-`SNX_LLVM_CONFIG` or `LLVM_DIR`, `cmake/llvm.cmake`).
+`EXCLUDE_FROM_ALL` builds only what the project links. The project builds with Clang, as ScarletNX does.
 
 The archive holds the recompiler and nothing else of this tree: the native back ends,
 the linkers, the code loader and the prebuilt runtime library every module gets
-(`snx_recompiler_core`), the LLVM backend, the JIT, the AArch32 block compiler with its decoders and helpers, and what they take from
+(`snx_recompiler_core`), the JIT, the AArch32 block compiler with its decoders and helpers, and what they take from
 `src/common` (`snx_recompiler_base`): the A64 decoder, the function discovery, and the
 host calls under them (allocation, the error line, files and folders, the clocks, the
-address space). Its one other library is LLVM, linked as the rest of the build links it
-(`cmake/llvm.cmake`), with the system libraries LLVM and the core need: threads, `dl` and
-`m` (`advapi32` on Windows). The package records them. The test `recompiler_symbols`
+address space). It takes no other library but the system's that the core needs: threads, `dl` and `m`
+(`advapi32` on Windows). The package records them. The test `recompiler_symbols`
 links every object of the archive with those alone, so a call into another library of
 this tree, or a new external library, fails it. The backend generates code for the machine it runs on, as
 the `scarletnx` command does: build the library on the machine that will use it, or one
@@ -134,8 +131,8 @@ decide what the decoder (`tools/decodetree`, from QEMU's `a64.decode`) accepts: 
 encoding needing a feature the target lacks is an undefined instruction, as on that
 CPU. `SNX_RECOMPILER_A64_SWITCH`, the default, is the Switch's Cortex-A57 (Armv8.0
 with CRC32 and the Cryptographic Extension). `SNX_RECOMPILER_A64_MAX` takes every
-feature the decoder knows; `llvm_qemu_differential` and `native_qemu_differential` check
-the LLVM emitters and the host's native code against QEMU for it, and the native back
+feature the decoder knows; `native_qemu_differential` checks the host's native code against QEMU for it, and the
+native back
 ends' tests check theirs (FEAT_FP8's as FPMR zero has them, which is all code can do
 here: an `MSR` or `MRS` of FPMR is undefined). An instruction a native back end has no
 code for is said at the recompile, once a function: its address, the instruction, its
@@ -200,7 +197,7 @@ folder that keeps linked modules by a hash of everything they are made from (the
 back end, the host's features it uses and its code's version among them): a module found there is loaded instead of compiled. The
 units its lazy JIT compiles on a miss are kept in `library-jit.cache` in the same folder,
 and a later miss loads a unit instead of compiling it when its code is the same, byte for
-byte, and the file was made with the same settings, LLVM and host CPU. The modules of one
+byte, and the file was made with the same settings, native back end and host features. The modules of one
 program and other programs may share the file. A damaged file is made again, and a folder
 that can't be written to leaves the JIT working without the file.
 `snx_recompiled_invalidate` clears dispatch entries for compiled functions overlapping
@@ -216,7 +213,7 @@ atomically while they compile. Concurrent updates to one module are serialized, 
 reads when the image generation changes; callers still invalidate changed functions after updating the bytes.
 
 For A32 and Thumb, `snx_recompile32` prepares an address range whose blocks are compiled
-on first use by the LLVM block compiler (`src/common/cpu/arm/`), and
+on first use by the AArch32 block compiler, the host's native back end's (`src/common/cpu/arm/`), and
 `snx_recompiled32_run` runs an `SnxArmCPU` (`cpu/arm/arm.h`) from `r[15]` until an exit.
 The SVC hook is an `snx_svc_call32`: it sees `r7` as the number and `r0` to `r5`
 zero-extended, the console's 64-bit SVC surface, and returns non-zero to end the run.

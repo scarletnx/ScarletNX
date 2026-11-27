@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The JIT's loader (code_loader.h): a code arena, and the LLVM backend's ELF objects linked into it (COFF objects:
+/* The JIT's loader (code_loader.h): a code arena, and the native back ends' ELF objects linked into it (COFF objects:
    code_loader_coff.c) */
 #ifdef __linux__
 #define _GNU_SOURCE /* memfd_create, syscall */
@@ -67,8 +67,8 @@
 typedef char snx_code_loader_needs_64_bits[sizeof(size_t) >= 8 ? 1 : -1];
 
 /* the machine whose code this process runs, as an ELF e_machine: x86-64's 62, AArch64's 183; Windows' x86-64 or ARM64
-   COFF. macOS on Apple silicon loads ELF objects as well: the IR backend writes them for the loader with Darwin's
-   calling convention (snx_ir_new_jit), and so does iOS, with a debugger attached (ios_arena), and the iOS simulator on
+   COFF. macOS on Apple silicon loads ELF objects as well: the arm64 back end writes them for the loader with Darwin's
+   calling convention, and so does iOS, with a debugger attached (ios_arena), and the iOS simulator on
    Apple silicon as macOS does. 0 where the loader cannot run what it loads: Intel Macs, never tried */
 #if defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))
 #define HOST_MACHINE SNX_CODE_COFF_X64
@@ -524,7 +524,7 @@ static SnxCodeLoader* new_loader(size_t reserve, const size_t* sizes, unsigned m
 #endif
     /* PowerPC64: every load's code keeps the arena's one TOC in r2, so a call or a jump from one load to another needs
        no r2 of its own. A call out of the arena would (the runtime's functions have their TOC): loaded code reaches
-       the runtime through pointers only (RtAPI), which LLVM calls with r2 saved around them. The arena's middle
+       the runtime through pointers only (RtAPI), called with r2 saved around them. The arena's middle
        reaches all of it; a shared TOC is the AOT module's, whose functions loads then call directly */
     loader->toc = toc ? toc : (uint64_t)(size_t)loader->base + reserve / 2;
     loader->toc_shared = shared;

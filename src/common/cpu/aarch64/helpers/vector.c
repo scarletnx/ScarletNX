@@ -7,7 +7,7 @@
    The SM4 S-box is GB/T 32907-2016's, as OpenSSL's crypto/sm4/sm4.c tabulates it (Apache-2.0):
    Copyright 2017-2024 The OpenSSL Project Authors. All Rights Reserved.
    Copyright 2017 Ribose Inc. All Rights Reserved. */
-/* The AdvSIMD operations the LLVM backend (llvm/ir_vec.c, ir_vec_crypto.c) calls out of line: the shifts by register
+/* The AdvSIMD operations the generated code calls out of line: the shifts by register
    that round or saturate, and the SHA-512, SM3 and SM4 rounds. Registers by number in c->v, read and written as
    numbers through SNX_V* (cpu.h), so a big-endian host sees the guest's lanes. */
 

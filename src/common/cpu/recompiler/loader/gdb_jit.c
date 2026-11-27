@@ -7,8 +7,8 @@
    ET_REL symbol is its section's address plus st_value) and applies the object's relocations to .eh_frame itself. On
    Linux the same objects also name their code for perf: one line per load in /tmp/perf-<pid>.map, with the address and
    size of the load's executable section */
-/* O_NOFOLLOW and O_CLOEXEC need this before any system header: the snx_llvm target builds this file with strict
-   -std=c23, which hides those constants otherwise */
+/* O_NOFOLLOW and O_CLOEXEC need this before any system header: a strict -std=c23 build hides those constants
+   otherwise */
 #if !defined(_WIN32) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE
 #endif
@@ -54,9 +54,8 @@ void snx_gdb_jit_perf_map_snapshot(void) {}
 #include <unistd.h>
 #endif
 
-/* Weak, so a program that also links a strong definition (a static LLVM's GDB listener, ExecutionEngine's) builds, the
-   descriptor then being that one. A shared libLLVM defines both too, and its references to the descriptor bind to the
-   executable's (exported for GDB: src/nx/CMakeLists.txt). Either way another JIT in the process may link its entries
+/* Weak, so a program that also links a strong definition (another JIT's GDB listener) builds, the descriptor then
+   being that one (exported for GDB: src/nx/CMakeLists.txt). Either way another JIT in the process may link its entries
    into the same list, under its own lock: this file keeps its entries on a list of its own as well and only ever
    unlinks those. The breakpoint's call must stay, out of line, for GDB to stop at, and the clobber keeps the
    descriptor's stores before it */

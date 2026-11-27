@@ -128,11 +128,7 @@ check(linux-loongarch64-cross DEFINE ${linux_cross} CMAKE_SYSTEM_PROCESSOR=loong
       CMAKE_C_COMPILER_TARGET=loongarch64-linux-gnu CMAKE_C_BYTE_ORDER=LITTLE_ENDIAN
       WANT_ARGS "--cross-file=@WORK@/linux-loongarch64-cross.ini" WANT_TARGET "linux loongarch64, little-endian"
       WANT_FILE "${cross_text}cpu_family = 'loongarch64'\ncpu = 'loongarch64'\nendian = 'little'\n")
-# Debian ports' ELFv1 links with GNU ld, and mips64el is the little-endian MIPS64
-check(linux-ppc64-cross DEFINE ${linux_cross} CMAKE_SYSTEM_PROCESSOR=ppc64 SNX_PPC64_ELFV2=OFF
-      CMAKE_C_COMPILER_TARGET=powerpc64-linux-gnu CMAKE_C_BYTE_ORDER=BIG_ENDIAN
-      WANT_ARGS "--cross-file=@WORK@/linux-ppc64-cross.ini" WANT_TARGET "linux ppc64, big-endian"
-      WANT_FILE "${cross_text}cpu_family = 'ppc64'\ncpu = 'ppc64'\nendian = 'big'\n")
+# mips64el is the little-endian MIPS64
 check(linux-mips64el-cross DEFINE ${linux_cross} CMAKE_SYSTEM_PROCESSOR=mips64el
       CMAKE_C_COMPILER_TARGET=mips64el-unknown-linux-gnu CMAKE_C_BYTE_ORDER=LITTLE_ENDIAN
       WANT_ARGS "--cross-file=@WORK@/linux-mips64el-cross.ini" WANT_TARGET "linux mips64el, little-endian"

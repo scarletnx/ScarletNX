@@ -23,7 +23,7 @@ and change the commit above. Today the subset is Thumb's 16-bit instructions, ev
 (halting debug is off) and UDF's: with no clause their halfwords stay UNDEFINED, UDF's whatever an IT block's
 condition, as the Thumb decoder has them. A32's data processing (immediate, register, register-shifted register),
 B, BL, BLX, BX, MOVW and MOVT come next (`decoder sg_decode_a32`): an A32 word none of their clauses takes stays the
-block compiler's (llvm.c). The rest of A32, and T32, are the next.
+block compiler's emitters written by hand (`mach_arm.inc`, `x64_arm.c`). The rest of A32, and T32, are the next.
 
 The guests differ in two ways, each said once here:
 
@@ -39,8 +39,7 @@ The guests differ in two ways, each said once here:
   that differs from one architecture to the next asks, as the ARMv7 ARM's ASL does: `LoadWritePC`, the ARM7TDMI's
   `STM`).
 
-`tools/sailgen --generate` makes the LLVM emitters from them (`snx_sailgen_a32` of `cmake/sailgen.cmake`), with
-`tools/sailgen/core.h` and the AArch32 back end `tools/sailgen/llvm_arm.h`, into `a32_sail.inc`, which the block
-compiler includes (`llvm_thumb.inc`). The generated code is derived from `a32.sail` and carries its license.
-`tools/sailgen/README.md` describes the generator; `tests/arm_sail_ir.c` holds the generated emitters to the ones
-written by hand they replaced.
+`tools/sailgen --generate` makes each machine's emitters from them (`snx_sailgen_a32_x64` of `cmake/sdm.cmake`,
+`snx_sailgen_a32_arm64` and `snx_sailgen_a32_risc` of `cmake/sailgen.cmake`), with the machine's back end files, into
+`a32_<machine>.inc`, which its block compiler includes. The generated code is derived from `a32.sail` and carries its
+license. `tools/sailgen/README.md` describes the generator.

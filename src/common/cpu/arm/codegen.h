@@ -1,8 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* What an AArch32 block is made for, whichever compiler makes it (llvm.h's, the native back ends' of
-   recompiler/mach/mach_arm.inc): the guest's CPU (arm.h's profiles), how its code reaches guest memory, and what it
-   records as it runs */
+/* What an AArch32 block is made for, by the native back ends (recompiler/mach/mach_arm.inc): the guest's CPU (arm.h's
+   profiles), how its code reaches guest memory, and what it records as it runs */
 #ifndef SNX_ARM_CODEGEN_H
 #define SNX_ARM_CODEGEN_H
 #include "common/cpu/arm/arm.h"
@@ -21,7 +20,7 @@
    - the mapping covers all 2^32 guest addresses and is followed by pages that fault on the host (at least 256 bytes
      of them), so an access that leaves the mapping is a host fault and gets no range check;
    - while a block runs, the SnxArmCPU is reached only through the pointer the block got, so the compiler keeps
-     registers and flags in host registers across guest loads and stores (LLVM's cpu argument is noalias);
+     registers and flags in host registers across guest loads and stores;
    - the dispatch loop has seen to the entry state: r15 is the block's address, CPSR.T is its instruction set, ITSTATE
      is clear (snx_arm_itstate), and exit is SNX_ARM_OK. The block checks and clears none of these.
    CPSR.E is never set by a hosted block: SETEND BE and an MSR that sets E stop with SNX_ARM_ENDIAN_UNSUPPORTED

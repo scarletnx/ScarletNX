@@ -33,7 +33,7 @@ SIMD&FP registers as 128 bits each (`_V`) and FPCR as the CPU keeps them, floati
 a scalar result without FEAT_AFP, AArch64 alone, and FEAT_FP16 as the guest's. Another system's fixups (the 3DS's,
 the NDS's) go in a file of their own the same way.
 
-`tools/sailgen --generate` makes the LLVM emitters from them (`snx_sailgen_a64` of `cmake/sailgen.cmake`), with the
-features the decoder's `a64.profile` names: a feature it names nowhere is one no guest has, and the code behind it
+`tools/sailgen --generate` makes each machine's emitters from them (`snx_sailgen_a64_x64` of `cmake/sdm.cmake`,
+`snx_sailgen_a64_arm64` and `snx_sailgen_a64_risc` of `cmake/sailgen.cmake`), with the features the decoder's `a64.profile` names: a feature it names nowhere is one no guest has, and the code behind it
 folds away (TME, the Branch Record Buffer, BTI). The generated code is derived from `a64.sail` and carries its
 license. `tools/sailgen/README.md` describes the generator.

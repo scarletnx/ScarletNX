@@ -19,7 +19,6 @@
   * [pmcstat and DTrace (FreeBSD)](#pmcstat-and-dtrace-freebsd)
   * [Windows, macOS and Android](#windows-macos-and-android)
   * [The JIT](#the-jit)
-  * [Feeding a profile back to the recompiler](#feeding-a-profile-back-to-the-recompiler)
   * [Micro-benchmarks for CPU work](#micro-benchmarks-for-cpu-work)
 * [GPU profiling](#gpu-profiling)
   * [CPU-bound or GPU-bound](#cpu-bound-or-gpu-bound)
@@ -458,26 +457,6 @@ The recompile compiles what its analysis finds; a function it missed is compiled
    a debugger can name and unwind them; it stops the game at every compile, so it is for inspection, not timing.
 
 A profile in which `[unknown]` is large is usually JIT code: check its share before reading the rest.
-
-### Feeding a profile back to the recompiler
-
-Two settings take a profile as input. Both change how the code is laid out or optimized, not what it does:
-
-- **Function order** (`-r --layout`). `tools/layout.py` records a scene's taken branches with LBR
-  (`perf record -j any,u`; Intel LBR, AMD BRS or LBRv2), clusters each function after its most frequent caller (C3, as
-  lld's `CallGraphSort.cpp`) and writes an order the recompile puts the hot code in. ELF modules for this host only.
-
-  ```sh
-  python3 tools/layout.py record PID 30 work/prof/branches.data      # in the scene to make fast
-  python3 tools/layout.py order work/prof/branches.data "$games/<id>/<id>_code.so" work/prof/game.layout
-  build/scarletnx -r work/Game --layout work/prof/game.layout
-  ```
-
-- **Branch odds** (`ir_branch_profile`): a file of branch counts, a line each (the branch's address and instruction
-  word in hex, then taken and not taken). The recompiler gives LLVM those odds for each branch whose address and word
-  match; the next recompile and the JIT's next run take it ([Settings](../user/settings.md)).
-
-Measure either with [`tools/bench_nvn_game.py`](#comparing-two-builds-or-two-settings) against the same game without it.
 
 ### Micro-benchmarks for CPU work
 

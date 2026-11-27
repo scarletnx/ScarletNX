@@ -29,10 +29,9 @@ class PlanTests(unittest.TestCase):
     def test_all_items_have_explicit_status(self):
         items = plan.read_plan(ROOT / 'docs/layers/cpu/plan.md')
         status = json.loads((ROOT / 'docs/layers/cpu/plan-status.json').read_text())
-        self.assertEqual(len(items), 41)
+        self.assertEqual(len(items), 37)
         self.assertEqual(set(items), set(status['items']))
         self.assertEqual(status['items']['L1']['status'], 'retired')
-        self.assertEqual(status['items']['J1']['status'], 'deferred')
         self.assertIn('T5', items['I3']['dependencies'])
 
     def test_item_body_stops_at_unnumbered_peer(self):

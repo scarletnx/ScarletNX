@@ -3,7 +3,7 @@
    Ported in part from QEMU (target/arm/tcg/helper-a64.c, translate-a64.c), LGPL-2.1-or-later:
    Copyright (c) 2013 Alexander Graf <agraf@suse.de> */
 /* The integer helpers every generated-code module keeps: the 16-byte compare-and-swap and the system registers EL0
-   reaches. The compiler evaluates logical immediates itself, and CRC32 is emitted as IR. */
+   reaches. The back ends evaluate logical immediates themselves, and make CRC32 inline. */
 
 /* STXP of two doublewords: one atomic compare-and-swap of all 16 bytes. Swapping the halves one at a time let
    an open world game's lock-free lists pair one thread's pointer with another's counter. Clang emits

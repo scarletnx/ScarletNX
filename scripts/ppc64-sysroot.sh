@@ -7,9 +7,8 @@
 #   scripts/ppc64-sysroot.sh ARCH DIR [--desktop]
 #   scripts/ppc64-sysroot.sh musl DIR ROOTFS.tar.*
 #
-# ARCH is ppc64el (Debian trixie, linux-ppc64le-cross) or ppc64 (big-endian ELFv1, Debian ports' unstable,
-# linux-ppc64-cross; needs debian-ports-archive-keyring). musl unpacks a big-endian ELFv2 root file system with LLVM
-# installed (Chimera's or Adélie's, linux-ppc64-musl-cross). --desktop adds the X11, Wayland and audio headers SDL3's
+# ARCH is ppc64el (Debian trixie, linux-ppc64le-cross). musl unpacks a big-endian ELFv2 root file system (Chimera's or
+# Adélie's, linux-ppc64-musl-cross). --desktop adds the X11, Wayland and audio headers SDL3's
 # source build needs for a window and sound; without them (CI) it builds the headless backends only. Then
 # `export SNX_SYSROOT=DIR` and configure with the preset.
 set -eu
@@ -19,10 +18,9 @@ shift 2
 desktop=
 [ "${1:-}" = --desktop ] && desktop=1
 
-# the libraries the runtime links, and LLVM's (llvm-config names its system libraries: zstd, zlib, ffi, xml2);
-# unicorn for the A64 differential tests; Vulkan's loader and lavapipe, Mesa's CPU driver, to run a game under qemu
-packages="libc6-dev libstdc++-14-dev libgcc-14-dev llvm-dev libzstd-dev zlib1g-dev libffi-dev libxml2-dev
-libunicorn-dev libvulkan1 mesa-vulkan-drivers"
+# the libraries the runtime links; unicorn for the A64 differential tests; Vulkan's loader and lavapipe, Mesa's CPU
+# driver, to run a game under qemu
+packages="libc6-dev libstdc++-14-dev libgcc-14-dev libzstd-dev zlib1g-dev libunicorn-dev libvulkan1 mesa-vulkan-drivers"
 if [ -n "$desktop" ]; then
     packages="$packages libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxss-dev
 libxkbcommon-dev libwayland-dev wayland-protocols libdecor-0-dev libpulse-dev libasound2-dev libpipewire-0.3-dev"
@@ -42,16 +40,11 @@ case $arch in
         mmdebstrap --mode=auto --variant=extract --architectures=ppc64el --include="$include" \
             trixie "$tarball" http://deb.debian.org/debian
         ;;
-    ppc64)
-        mmdebstrap --mode=auto --variant=extract --architectures=ppc64 --include="$include" \
-            --keyring=/usr/share/keyrings/debian-ports-archive-keyring.gpg \
-            unstable "$tarball" http://deb.debian.org/debian-ports
-        ;;
     musl)
         tarball=${1:?musl needs the root file system tarball}
         ;;
     *)
-        echo "unknown ARCH $arch: ppc64el, ppc64 or musl" >&2
+        echo "unknown ARCH $arch: ppc64el or musl" >&2
         exit 2
         ;;
 esac

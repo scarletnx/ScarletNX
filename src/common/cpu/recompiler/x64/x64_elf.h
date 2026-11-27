@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* A relocatable object built in memory, ELF or Windows' COFF, for what the native back ends write without LLVM: an AOT
+/* A relocatable object built in memory, ELF or Windows' COFF, for what the native back ends write: an AOT
    module's descriptor (nx/loader/module_x64.c), AArch32 blocks (mach/mach_arm.inc) and, as COFF, the guest's functions
    (x64_codegen.c; mach/mach_codegen.inc writes their ELF objects itself). Four sections of bytes (.text, .rodata,
    .data.rel.ro, .data) and .bss of a size, symbols at their offsets, relocations by symbol name (a name no symbol
@@ -17,7 +17,7 @@ SnxXElf* snx_xelf_new(void);
 void snx_xelf_free(SnxXElf* o);
 /* the object's ELF machine (EM_X86_64 by default, EM_AARCH64...), whose relocation numbers snx_xelf_reloc takes */
 void snx_xelf_set_machine(SnxXElf* o, unsigned machine);
-/* the object's e_flags (0 by default): the ABI the host's LLVM objects say (RISC-V's float ABI, PowerPC's ELFv2) */
+/* the object's e_flags (0 by default): the host's ABI (RISC-V's float ABI, PowerPC's ELFv2) */
 void snx_xelf_set_flags(SnxXElf* o, unsigned flags);
 /* the object a big-endian machine's (1): its tables in that order wherever it's written */
 void snx_xelf_set_big(SnxXElf* o, int big);

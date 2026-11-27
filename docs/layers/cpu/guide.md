@@ -15,9 +15,8 @@
 * [First milestone: one measured SIMD improvement](#first-milestone-one-measured-simd-improvement)
   * [Performance hypothesis](#performance-hypothesis)
   * [1. Find the cost](#1-find-the-cost)
-  * [2. Check LLVM before changing the emitter](#2-check-llvm-before-changing-the-emitter)
-  * [3. Replace one group exactly](#3-replace-one-group-exactly)
-  * [4. Prove results and measure the same scene](#4-prove-results-and-measure-the-same-scene)
+  * [2. Replace one group exactly](#2-replace-one-group-exactly)
+  * [3. Prove results and measure the same scene](#3-prove-results-and-measure-the-same-scene)
   * [Acceptance and handoff](#acceptance-and-handoff)
 * [Questions](#questions)
 
@@ -46,19 +45,18 @@ Read the plan's "OS cooperation and the Horizon boundary" section before changin
 ScarletNX must provide Horizon's observable behavior through its HLE runtime and the planned SDK translation layer.
 SVC argument declarations alone do not prove a reduced state-save contract safe.
 
-Maintainer feedback settles A1 through A5: implement A1 and normal A2 coverage, measure A3's optimization tradeoff,
-keep A4 temporary pending the linked SDK layer, and leave A5 profile collection and use opt-in. Today's final linker
-consumes native objects. Adding LTO requires retained IR and an IR link/import stage, with dependency-aware cache keys.
+Maintainer feedback settles A1, A2, A3 and A5: implement A1 and normal A2 coverage, measure A3's tradeoff, and leave
+A5 profile collection and use opt-in. The linker consumes native objects.
 A2 also searches validated custom RTTI and associated method tables for otherwise-unreferenced functions. Reuse and
 deduplicate existing relocation seeds. Confirm the custom layout before treating a table entry as a method address.
 
-Tiered compilation (J1) is deferred. Standalone PLT binding (L1) is retired from active work because the maintainer plans
+Standalone PLT binding (L1) is retired from active work because the maintainer plans
 to expand hooking by Saturday, 2026-10-31. Coordinate SDK entry replacement with that system instead of adding another
 binder. Preserve hook precedence in direct calls, JIT publication and invalidation. Unhooked calls keep normal dispatch.
 The date records the maintainer's plan, not a verified delivery or a claim of complete import coverage.
 
-For vector work, I7 only reduces register synchronization. Follow I15 to remove serial lane calls. First inspect LLVM's
-optimized IR and host assembly to establish what it already vectorizes. Prove guest results and FPSR independently
+For vector work, follow I15 to remove serial lane calls. First inspect the
+host assembly the native back end makes to establish what it already vectorizes. Prove guest results and FPSR independently
 of the instruction counts. The compiler experiments in I15 establish a lowering gap, not an end-to-end speedup.
 The first milestone includes a conditional performance estimate. Treat its 5 to 18 percent scenario as arithmetic
 under explicit assumptions, not a promised gain. Keep Rosetta observations distinct from proposed ScarletNX mechanisms.
@@ -67,8 +65,8 @@ under explicit assumptions, not a promised gain. Keep Rosetta observations disti
 
 * **A Linux x86-64 machine** for most of the work. An AArch64 Linux machine helps for I12, M1 and R2. PowerPC64,
   RISC-V and LoongArch items can be proven under QEMU where no hardware is at hand.
-* **The toolchain** from the "Prerequisites" of [Build](../../dev/build.md): Clang (CI uses 23), LLVM's development files
-  (`llvm-config`), CMake 3.25 or newer, Ninja, Python 3, nasm and pkg-config. The configure step stops on any compiler
+* **The toolchain** from the "Prerequisites" of [Build](../../dev/build.md): Clang (CI uses 23), CMake 3.25 or newer,
+  Ninja, Python 3, nasm and pkg-config. The configure step stops on any compiler
   other than Clang.
 * **For the QEMU differential tests:** `qemu-aarch64`, Clang's `aarch64-linux-gnu` target and `ld.lld`.
   `cmake/qemu_ref.cmake` turns the QEMU reference on only when all three are present. Another host runs them against a
@@ -100,8 +98,7 @@ The commands you will use most, from the table in `CLAUDE.md`:
 | Run a game unattended | `cd ~/.local/share/scarletnx/recompiled/<id> && ./<id> --seconds=60 --shot=/path/out --script=...` |
 | Name addresses, disassemble one function | `tools/symbols.py work/Game ADDR...`, `tools/disasm.py work/Game FUNC` |
 | All tests | `ctest --test-dir build --output-on-failure` |
-| The QEMU differential test, of the LLVM back end and of the host's native one | `ctest --test-dir build -R 'llvm_qemu_differential|native_qemu_differential'` |
-| What each SIMD, FP and crypto op becomes, per emitter path | `ctest --test-dir build -R llvm_lowering` |
+| The QEMU differential test of the host's native back end | `ctest --test-dir build -R native_qemu_differential` |
 | The module contract test | `ctest --test-dir build -R module_contract` |
 
 `tools/run_game.py` wraps an unattended run with scripted input and screenshots. The procedure is in
@@ -136,25 +133,18 @@ and at the plan.
 | Area | Files |
 | --- | --- |
 | Finding functions | `src/common/cpu/recompiler/codegen.c`, `src/nx/loader/loader.c`, `src/nx/loader/codegen_view.c` |
-| The instruction emitters, ported from QEMU's `translate-a64.c` | `ir_int.c`, `ir_ldst.c`, `ir_vec.c`, `ir_vec_fp.c`, `ir_vec_crypto.c` in `src/common/cpu/recompiler/llvm/` |
-| The integer data-processing, hint, barrier, general-purpose load and store, scalar floating-point and SIMD integer (one element per lane, pairwise and across lanes) emitters and the branch operands, generated from the Arm architecture's Sail | `ir_sail.c` (`tools/sailgen`'s output; `ir_fpu.c` sends it the scalar floating point, `ir_vec.c` the SIMD ops whose element loop is one vector operation, a shuffle or a reduction), the Sail and the NX's fixups in `src/common/cpu/aarch64/sail/`; the floating-point arithmetic's lowering, fast paths and helper calls, in `tools/sailgen/llvm.h` |
-| A guest function's IR: calls, returns, polls, stale checks | `ir_codegen.c` |
-| Guest registers' and flags' per-block cache, for every emitter | `tools/sailgen/llvm.h` (the back end), whose functions are `ir.h`'s accessors in `ir_sail.c` |
-| The flags' helpers, the vectors' cache and memory accesses | `ir_state.c` |
-| Guest registers as locals, and the call sites | `ir_promote.c` |
-| Helpers, `snx_lookup`, calls into the runtime | `ir_helpers.c`, `ir_emit.c` |
-| The pass pipeline and the target CPU | `ir.c` |
-| The branch profile | `ir_profile.c` |
-| Units, the units held in memory, the module descriptor | `src/nx/loader/module_llvm.c`, `module_x64.c`, `module_fallback_llvm.c`, `src/common/cpu/recompiler/x64/x64_cache.c`, `src/nx/loader/module_abi.h` |
+| The native back ends: what every machine shares, and each machine's | `src/common/cpu/recompiler/mach/` (`mach_codegen.inc`, `mach_arm.inc`, `native.c`), `x64/`, `arm64/`, `rv64/`, `ppc64/`, `mips64/`, `la64/`, `s390x/` |
+| The instruction emitters, generated from the Arm architecture's Sail | `tools/sailgen` and each machine's back end files in it ([sailgen](../../../tools/sailgen/README.md)), from `src/common/cpu/aarch64/sail/` |
+| Units, the units held in memory, the module descriptor | `src/nx/loader/module_llvm.c`, `module_x64.c`, `src/common/cpu/recompiler/x64/x64_cache.c`, `src/nx/loader/module_abi.h` |
 | Linkers and the code loader | `link_elf.c`, `link_coff.c`, `link_macho.c`, `code_loader.c`, `elf_object.c` |
 | The runtime JIT and its cache | `jit_service.c`, `jit_cache.c`, `src/nx/runtime/guest_jit.c`, `src/nx/runtime/rtapi.c` |
-| The contract with generated code | `src/common/cpu/aarch64/cpu.h` (`SNX_ABI`, `CPU`, `snx_lookup`), `cpu_helpers.c`, `helpers/`, `rtlib.c` |
+| The contract with generated code | `src/common/cpu/aarch64/cpu.h` (`SNX_ABI`, `CPU`, `snx_lookup`), `cpu_helpers.c`, `helpers/`, `rtlib/rtlib.c` |
 | The decoder | `src/common/cpu/aarch64/decode/` (`a64.decode`, `a64.profile`), generated by `tools/decodetree` |
 | SVCs | `src/nx/hle/svc/hos.svc`, `tools/svcgen` |
 | Guest memory | `src/nx/memory/mem.c`, `src/nx/memory/own.c` |
 | Guest threads | `src/nx/hle/kernel/thread.c` |
 | The GNU ABI runtime | `src/gnuabi/` |
-| Translator tests | `tests/llvm_qemu_differential.c`, `tests/llvm_qemu_expected.txt`, `tests/native_qemu_expected.txt`, `tests/llvm_steps.c`, `tests/native_steps.c`, `tests/llvm_lowering.c`, `tests/llvm_lowering_expected.txt`, `tests/a64_ported.c`, `tests/llvm_module.c`, `tests/llvm_bench.c`, `tests/module_contract.c`, `tests/qemu_ref/` |
+| Translator tests | `tests/llvm_qemu_differential.c`, `tests/native_qemu_expected.txt`, `tests/native_steps.c`, `tests/a64_ported.c`, `tests/llvm_module.c`, `tests/llvm_bench.c`, `tests/module_contract.c`, `tests/recompiler_backends.c`, `tests/qemu_ref/` |
 
 ## Rules that apply to this work
 
@@ -186,42 +176,32 @@ about an intermittent crash.
   else is static. The build enforces this with `-Werror=missing-prototypes`.
 * Code only tests use goes in `tests/`, and CPU references for tests go in `tests/support/`.
 
-**The contract with generated code.** A change to `codegen.c`, the decoder, `loader.c`, the LLVM backend or anything in
+**The contract with generated code.** A change to `codegen.c`, the decoder, `loader.c`, a native back end or anything in
 `src/common/cpu/aarch64/` means games must be recompiled to get it. A change to the contract itself raises `SNX_ABI` in
 `cpu.h`, updates `tests/module_contract.c` and adds a row to the table in `docs/dev/architecture.md`. Every bump forces a
 full recompile of every game, so group bumps where the plan allows it, such as I3 with I4.
 
-**Emitters.** Check every emitter or decoder change against QEMU with `ctest -R llvm_qemu_differential`, and give the
-test binary `--sweep` for more words and states. A group that newly differs fails the test, and so does a group in
-`tests/llvm_qemu_expected.txt` that no longer differs. Update that file in the same change. A change that moves an op
-between inline, guarded and helper on an emitter path fails `llvm_lowering` until
-`build/tests/snx-test-llvm-lowering tests/llvm_lowering_expected.txt --update` rewrites its summary in the same change.
-`--objects DIR --counts FILE` adds each op's target object counts, which `--path NAME --triple TRIPLE` narrows to one
-path on another target: instructions, calls, vector instructions, shuffles and GPR to vector moves, static code with
-the cold paths included, which is code inspection and never a speed claim. An emitter that chooses by a host feature
-runs both ways on one machine: `llvm_qemu_differential_avx2` (`--without-avx512`) compiles for the host as one
-without AVX-512, and the choices table in `tests/llvm_lowering.c` checks the instruction each x86 path picks where
-the class does not show it.
+**Emitters.** Check every emitter or decoder change against QEMU with `ctest -R native_qemu_differential`, and give
+the test binary `--sweep` for more words and states. A group that newly differs fails the test, and so does a group in
+`tests/native_qemu_expected.txt` that no longer differs. Update that file in the same change.
 
-**The native back ends.** `native_qemu_differential` holds the host's own native back end to QEMU by the same words and
-states, with the groups known to differ in `tests/native_qemu_expected.txt`. `native_qemu_differential_jit` loads the
+**The native back ends.** `native_qemu_differential` holds the host's own native back end to QEMU, with the groups
+known to differ in `tests/native_qemu_expected.txt`. `native_qemu_differential_jit` loads the
 code with the JIT's loader, and `native_qemu_differential_portable` makes it without the host's optional features. A word
-the back end has no code for is listed in the run's `native_qemu_coverage.txt`, as the LLVM one's is. The programs that
-compare a word's result with a value (the `llvm_*` ones, `a64_ported_cases` and `crc32_helper`) run twice, on the LLVM
-steps and on the native ones (`native_*`). `tests/steps.h` gives both one set of names, so a check is written once.
+the back end has no code for is listed in the run's `native_qemu_coverage.txt`. The programs that compare a word's
+result with a value (`native_*`, `a64_ported_cases` and `crc32_helper`) run on the native steps (`tests/steps.h`).
 
 **The recorded QEMU reference.** The hosts with no `qemu-aarch64` beside the test run the differential against a file
-that a Linux host recorded: Windows, macOS, and the cross-built PowerPC64, RISC-V and LoongArch. One file serves both
-back ends on any of them. CI's `qemu-reference` job records it for each run and hands it over as the artifact
+that a Linux host recorded: Windows, macOS, and the cross-built PowerPC64, RISC-V and LoongArch. CI's `qemu-reference` job records it for each run and hands it over as the artifact
 `ScarletNX-llvm-qemu-reference-<commit>`. No file is kept in the repository, because one is bound to the commit that
 made it. Record another when one of these changes: the rows of the generated decoder, `directed()`, `scalar_words()`
 or `kept[]` in `tests/llvm_qemu_differential.c`, the random states, the runner in `tests/qemu_ref/`, or the QEMU
 version. By hand, on a Linux host with the tools named above, the job's command takes about 20 seconds and 56 MB:
 
 ```sh
-cmake --build build --target snx-test-llvm-qemu-differential snx_qemu_ref_runner
-build/tests/snx-test-llvm-qemu-differential qemu-aarch64 build/qemu_ref_runner build/record \
-    tests/llvm_qemu_expected.txt --quiet --record qemu_reference.bin
+cmake --build build --target snx-test-llvm-qemu-differential-native snx_qemu_ref_runner
+build/tests/snx-test-llvm-qemu-differential-native qemu-aarch64 build/qemu_ref_runner build/record \
+    tests/native_qemu_expected.txt --quiet --record qemu_reference.bin
 ```
 
 On the other host, configure with `-DSNX_QEMU_REFERENCE=/path/qemu_reference.bin` and run `native_qemu_differential`. It
@@ -263,7 +243,7 @@ For the first milestone, use its acceptance table and record actual host coverag
 without runtime validation. The broader host requirements below apply as later backlog items are implemented.
 
 * The item's proof passes on x86-64 Linux, and on every other host the item names (under QEMU where no hardware exists).
-* `ctest --test-dir build` passes, with no new group in `tests/llvm_qemu_expected.txt`.
+* `ctest --test-dir build` passes, with no new group in `tests/native_qemu_expected.txt`.
 * No guest-visible result changes, unless it sits behind a setting whose default keeps the exact behavior.
 * `SNX_ABI` rose if and only if the contract changed, and `tests/module_contract.c` and `docs/dev/architecture.md` follow
   it.
@@ -293,12 +273,12 @@ Percentages here describe throughput, not time saved. Removing four calls does n
 
 ### 1. Find the cost
 
-Use a runnable game, a fixed input script and the same scene duration. Record the host CPU, LLVM version, revision and
-recompile settings. Warm shader preparation and code compilation before timing. Keep dumps and profiles local.
+Use a runnable game, a fixed input script and the same scene duration. Record the host CPU, revision and recompile
+settings. Warm shader preparation and code compilation before timing. Keep dumps and profiles local.
 
 Sample CPU execution first. Add diagnostic counters only where needed to distinguish instruction groups or guard
-failures. Start at `map`, `binary`, `split_begin` and `split_end` in
-`src/common/cpu/recompiler/llvm/ir_vec_fp.c`, and `ir_vec_call` in `ir_vec.c` beside it.
+failures. Start at the native back end's vector code (`src/common/cpu/recompiler/x64/x64_vec.c` on x86-64) and the
+helpers it calls.
 
 Rank groups by their contribution to CPU time, with call counts and fast/slow entries as supporting evidence. Shared
 helper names alone do not identify a guest operation: correlate sites with the guest PC and instruction word locally.
@@ -306,28 +286,10 @@ Measure whether one exceptional lane sends the whole vector to scalar helpers. `
 candidates, not predetermined winners. If no material cost appears, profile another relevant scene. If no game can be
 profiled, record that blocker rather than claiming a synthetic benchmark completes this milestone.
 
-### 2. Check LLVM before changing the emitter
-
-Save real emitter IR before and after its actual optimization pipeline and inspect host assembly with the same target
-features. Count helper calls, lane moves, state synchronization and spills. Model controls explain the result, but do
-not substitute for checking the real emitted function.
-
-LLVM 23.1.4 model checks already found:
-
-| Input | Result |
-| --- | --- |
-| Opaque per-lane FP helpers | Four float-lane calls or two double-lane calls remain, with SLP off and on. |
-| Scalar `fadd` lanes | LLVM already combines them into vector additions, even with SLP off. |
-| Four scalar `llvm.fma.f32` operations | They combine with SLP on, but remain scalar with it off. |
-| Vector saturating float-to-int intrinsic | The checked x86 lowering still uses scalar conversions. Cortex-A57 gets a vector conversion. |
-
-Keep code LLVM already lowers well. Use a target-specific intrinsic only for a demonstrated gap in portable vector IR.
-Do not enable SLP globally while its compiler issue remains unresolved. See I15 for the detailed compiler evidence.
-
-### 3. Replace one group exactly
+### 2. Replace one group exactly
 
 Apply Rosetta's documented SIMD-to-SIMD principle: translate the guest vector operation into a short host-vector
-sequence. Prefer whole-vector LLVM IR, with proven lane masks and selects for guest semantic differences. Apple FP
+sequence. Prefer whole-vector host code, with proven lane masks and selects for guest semantic differences. Apple FP
 hardware modes cannot be assumed on another host.
 
 Use the main plan's [Rosetta evidence and adaptations](plan.md#i15-whole-vector-operations-instead-of-serial-lane-helpers)
@@ -339,24 +301,23 @@ these sources. The proposed masks, FPSR reductions and batched fallback must pas
 Define the selected group's result bits and FPSR effects from Arm semantics and the existing exact helper. Preserve
 NaN payload selection, signed zero, rounding and flush behavior where relevant. Reduce exception masks across lanes
 and combine them with sticky FPSR state once. Sanitize unsafe shift counts and conversion inputs before evaluation:
-a select does not suppress operand evaluation or remove LLVM poison. Keep the default exact FPSR mode.
+a select does not suppress operand evaluation. Keep the default exact FPSR mode.
 
 Keep an exact fallback for cases not proven. Prefer one audited helper entry per vector instruction where software
 remains necessary. A scalar loop inside it is an intermediate gain, not completion of the vector path. Retain the old
 exact path on unsupported hosts. Inspect assembly to establish that the intended path uses vector instructions.
 
-If I7's helper-state classification is needed, measure it separately: original baseline, I7 alone, then vector code.
-Do not attribute fewer state saves to vectorization. Audit helper effects before changing attributes. Review `SNX_ABI`
-and cache invalidation if the generated-code or helper contract changes.
+Do not attribute fewer state saves to vectorization. Audit helper effects before changing them. Review `SNX_ABI` and
+cache invalidation if the generated-code or helper contract changes.
 
-### 4. Prove results and measure the same scene
+### 3. Prove results and measure the same scene
 
 Add focused tests under `tests/` and a kernel in `tests/llvm_bench.c` where needed. Run the QEMU differential test,
 including `--sweep` with its required runner arguments, plus directed cases. Compare full result bits and relevant
 flags for ordinary lanes, each position of one exceptional lane, multiple exceptional lanes, relevant FPCR modes and
 initial sticky FPSR states. Include short consuming instruction sequences where needed to expose dependencies.
 Verify affected big-endian lane order, or retain its old path until tested. Run affected module tests and the relevant
-suite. Do not hide a new mismatch in `tests/llvm_qemu_expected.txt`.
+suite. Do not hide a new mismatch in `tests/native_qemu_expected.txt`.
 
 Recompile guest modules for each emitter version. Time the focused benchmark and the same game scene with the same
 hook configuration, settings and cache preparation. Keep diagnostic counters out of timed builds unless their cost

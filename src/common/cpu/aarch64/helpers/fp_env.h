@@ -2,8 +2,7 @@
    Copyright 2026 the ScarletNX contributors */
 /* The host FP environment the generated code's FP fast paths assume, which both runtime libraries' entries put back
    (cpu.h's snx_fp_env for A64, simd.h's snx_arm_fp_env for A32): round to nearest, no flush to zero and no
-   denormals-are-zero, every exception masked. Inlined, so the A64 helper stays one body LLVM can take into a function
-   (ir.c) */
+   denormals-are-zero, every exception masked. Inlined, so the A64 helper stays one small body */
 #ifndef SNX_CPU_HELPERS_FP_ENV_H
 #define SNX_CPU_HELPERS_FP_ENV_H
 
@@ -33,7 +32,7 @@
         __asm__ volatile("mtfsf 0xff, %0" : : "f"(fpscr.d));
     }
 #elif defined(__riscv) && defined(__riscv_flen)
-    /* frm, the dynamic rounding mode every FP instruction LLVM emits uses; RISC-V has no traps and no flush */
+    /* frm, the dynamic rounding mode the FP instructions use; RISC-V has no traps and no flush */
     unsigned long frm;
     __asm__ volatile("frrm %0" : "=r"(frm));
     if (frm) __asm__ volatile("fsrm zero");

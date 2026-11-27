@@ -24,19 +24,17 @@ Run from checkout root. [Extract/AOT/run](../user/usage.md) · [Tests/diagnostic
 
 ## Prerequisites
 
-- **Linux / FreeBSD:** Clang (CI: 23; FreeBSD's system Clang also works), LLVM's development files
-  (`llvm-config`, required by the recompiler), CMake ≥3.28, Ninja, POSIX shell, GNU make (`gmake` on FreeBSD),
+- **Linux / FreeBSD:** Clang (CI: 23; FreeBSD's system Clang also works), LLVM's tools (`llvm-ar` and the like, which
+  the cross presets use, and `llvm-objdump`, which a test reads an object with), CMake ≥3.28, Ninja, POSIX shell, GNU
+  make (`gmake` on FreeBSD),
   NASM on x86-64, Perl, Python 3 (the menu's languages, SPIRV-Tools' build), Git, pkg-config, `patch` and meson
   (dav1d's build). Use a system SDL3 development package, or X11/Wayland and audio development libraries for the
   bundled SDL3 build.
 - **macOS:** Apple silicon, macOS 13 or newer, Xcode (its Clang and SDKs), CMake ≥3.28, Ninja, meson, Python 3 and
-  Git.
-  LLVM's libraries come from `scripts/apple-llvm.sh` or Homebrew ([steps](#macos)).
+  Git ([steps](#macos)).
 - **Windows:** Win10/11 x64, or Windows 11 on Arm. CI builds in MSYS2's CLANG64 environment, and on Arm in its
-  CLANGARM64 one, which have LLVM's development files ([steps](#windows--msys2-clang64)). Bootstrap stages
-  SHA-256-checked llvm-mingw/Clang, CMake, Ninja, NASM, Strawberry Perl and w64devkit in `deps/tools`. llvm-mingw has
-  no LLVM libraries, so that route also needs a MinGW LLVM's `llvm-config` set with
-  `-DSNX_LLVM_CONFIG=/path/to/llvm-config`. CMake fails without it.
+  CLANGARM64 one ([steps](#windows--msys2-clang64)). Bootstrap stages SHA-256-checked llvm-mingw/Clang, CMake, Ninja,
+  NASM, Strawberry Perl and w64devkit in `deps/tools`.
 - **Shaders:** glslang's `glslangValidator` compiles them at build time (CMake fetches its pinned release on Linux
   x86-64, Windows x86-64 and macOS; elsewhere it takes the system's `glslang`), and SPIRV-Tools' `spirv-opt` and
   `spirv-val` optimize and validate them (`cmake/glsl.cmake`). Those two are the SPIRV-Tools release CMake pins, built
@@ -68,7 +66,7 @@ system include; Fedora lists it below.
 
 ```sh
 sudo apt update
-sudo apt install build-essential git cmake ninja-build meson clang llvm-dev nasm pkg-config python3 \
+sudo apt install build-essential git cmake ninja-build meson clang llvm nasm pkg-config python3 \
   libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxss-dev libxtst-dev \
   libasound2-dev libpulse-dev libpipewire-0.3-dev
 ```
@@ -102,14 +100,13 @@ Vulkan-capable NVIDIA driver.
 ### Fedora
 
 ```sh
-sudo dnf install clang cmake ninja-build meson nasm make perl git pkgconf-pkg-config patch llvm-devel python3 \
+sudo dnf install clang cmake ninja-build meson nasm make perl git pkgconf-pkg-config patch llvm python3 \
   libX11-devel libXext-devel libXrandr-devel libXcursor-devel libXi-devel libXfixes-devel \
   libXScrnSaver-devel libXtst-devel alsa-lib-devel pulseaudio-libs-devel pipewire-devel
 ```
 
-These are the Debian/Ubuntu packages above under Fedora's names. `llvm-devel` (`llvm-dev` on
-Debian/Ubuntu) is the recompiler's code generator, which the configure requires. Fedora 44
-provides SDL3 3.4; install `SDL3-devel` to use it instead of the source fallback:
+These are the Debian/Ubuntu packages above under Fedora's names. Fedora 44 provides SDL3 3.4; install `SDL3-devel` to
+use it instead of the source fallback:
 
 ```sh
 sudo dnf install SDL3-devel
@@ -141,11 +138,6 @@ sudo pkg install git cmake ninja meson gmake nasm perl5 pkgconf python3 sdl3 llv
 
 The build uses that `sdl3` package by default (`SNX_SYSTEM_SDL3`, see [SDL3 troubleshooting](#sdl3-troubleshooting));
 pass `-DSNX_SYSTEM_SDL3=OFF` for the pinned SDL3 source build instead.
-
-The `llvm` package is LLVM 19, which the Switch, 3DS and Vita drivers build with. The Android driver
-([Android apps](../platforms/android-apps/README.md)) compiles an app's native code at run time with the same LLVM, and LLVM 19's
-code generator crashes on some of it (a trap in its DAG combiner at an engine's login). Build it with LLVM 22: install
-`llvm22` and pass `-DSNX_LLVM_CONFIG=/usr/local/llvm22/bin/llvm-config` to the configure step.
 
 ### Configure and build
 
@@ -210,20 +202,10 @@ xcode-select --install
 brew install cmake ninja meson
 ```
 
-1. **LLVM's libraries**, once (about 10 minutes on an M1). The script builds the AArch64 code generator alone,
-   which is the one the recompiler uses:
+1. **Configure and build:**
 
    ```sh
-   scripts/apple-llvm.sh macos ~/apple-llvm/macos
-   ```
-
-   Homebrew's LLVM also works (`brew install llvm`). Pass `-DSNX_LLVM_CONFIG="$(brew --prefix llvm)/bin/llvm-config"`
-   to the configure step below in place of `-DLLVM_DIR`.
-
-2. **Configure and build:**
-
-   ```sh
-   cmake --preset macos -DLLVM_DIR=$HOME/apple-llvm/macos/lib/cmake/llvm
+   cmake --preset macos
    cmake --build --preset macos
    # -> build/macos/{scarletnx,snx-shaderc}
    ```
@@ -231,7 +213,7 @@ brew install cmake ninja meson
    `build/macos/scarletnx` runs from the terminal as on Linux ([Usage](../user/usage.md)). It loads the system's Vulkan
    loader, so it needs Homebrew's `molten-vk` and `vulkan-loader`.
 
-3. **The app** (optional), for a double-clickable `ScarletNX.app` that carries its own MoltenVK:
+2. **The app** (optional), for a double-clickable `ScarletNX.app` that carries its own MoltenVK:
 
    ```sh
    cmake build/macos -DSNX_MOLTENVK=<moltenvk>
@@ -285,9 +267,9 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 ## Windows / MSYS2 CLANG64
 
-The `windows` job in [build.yml](../../.github/workflows/build.yml) builds this way. Clang, LLVM and the FFmpeg and
-OpenSSL build tools come from MSYS2, not from `bootstrap.ps1`. Keep `env.ps1` out of this shell: llvm-mingw's C++
-runtime must not mix with another LLVM build.
+The `windows` job in [build.yml](../../.github/workflows/build.yml) builds this way. Clang, LLVM's tools and the
+FFmpeg and OpenSSL build tools come from MSYS2, not from `bootstrap.ps1`. Keep `env.ps1` out of this shell:
+llvm-mingw's C++ runtime must not mix with MSYS2's.
 
 1. Install MSYS2 from [msys2.org](https://www.msys2.org/) and open the **MSYS2 CLANG64** shell. Run every step below
    in it.
@@ -318,7 +300,6 @@ runtime must not mix with another LLVM build.
 
    ```sh
    cmake --preset default \
-     -DSNX_LLVM_CONFIG="$(cygpath -m "$(command -v llvm-config)")" \
      -DSNX_FFMPEG_SH="$(cygpath -m /usr/bin/sh.exe)" \
      -DSNX_FFMPEG_MAKE="$(cygpath -m /usr/bin/make.exe)" \
      -DPERL_EXECUTABLE="$(cygpath -m /usr/bin/perl.exe)" \
@@ -470,8 +451,7 @@ cmake --preset default -B build -DSNX_FFMPEG_ASM=OFF && cmake --build build
 - `-DSNX_DEPLOY=OFF`: disable runtime deployment.
 - `-DSNX_JEMALLOC=OFF`: keep the C library's malloc in `scarletnx` instead of the pinned jemalloc (default ON on Linux,
   FreeBSD, macOS and Android, where it goes into the driver's executable `libscarletnx-run.so` that runs recompiles;
-  refused elsewhere and with `SNX_TEST_SANITIZERS`). A recompile's LLVM threads spend less time in malloc with
-  jemalloc.
+  refused elsewhere and with `SNX_TEST_SANITIZERS`). A recompile's threads spend less time in malloc with jemalloc.
 - `-DSNX_TRACY=ON`: build the runtime with the pinned Tracy profiler client (default OFF). For development builds
   only; not available on iOS. It turns `SNX_DEPLOY` off, since the profiling runtime must not be copied over a
   game; the `tracy` preset sets both. See [profiling](development.md#profiling).
@@ -496,12 +476,9 @@ cmake --preset default -B build -DSNX_FFMPEG_ASM=OFF && cmake --build build
 - `-DSNX_TOOLS_ONLY=ON`: build the extraction/recompilation driver without the runtime, see below (default OFF).
 - `-DSNX_RECOMPILER_SHARED=ON`, `-DSNX_RECOMPILER_INSTALL=ON`: also build the recompiler as a shared library, and
   install the library, see [Library](library.md) (defaults OFF and the value of `SNX_TOOLS_ONLY`).
-- `-DSNX_WITH_LLVM=OFF`: build the recompiler's core alone, without LLVM: its own back ends, and what links and loads
-  their objects (`snx_recompiler_core`), with the tests of it. Every driver needs LLVM, so the configure stops and names
-  the ones that are on (default ON).
-- `-DSNX_SAIL_X64=OFF`: build without the x86-64 back end, and LLVM makes every function. The default is ON on x86-64,
-  Android's included; a tree keeps the value it was first configured with, which the configure's log says. Its
-  instruction selection is in the tree (`tools/sailgen/sdm/x64_isel.inc`,
+- `-DSNX_SAIL_X64`: the x86-64 back end, ON on x86-64, Android's included, where it is the only code generator:
+  OFF there stops the configure, naming the value. The configure's log says whether it is built. Its instruction
+  selection is in the tree (`tools/sailgen/sdm/x64_isel.inc`,
   [sailgen](../../tools/sailgen/README.md#the-x86-64-back-end)). Its code needs SSE2 alone, which every x86-64
   processor has. Without SSSE3, SSE4.1, SSE4.2 or PCLMULQDQ (a processor from before 2008, or an Android x86_64 device
   without PCLMULQDQ: its ABI promises the others) the back end does their instructions by SSE2's or calls helpers of its
@@ -538,11 +515,12 @@ it:
 - `-DSNX_TEST_A64_FP_DIFF=ON`: add the AArch64 FP differential test, which needs Python unicorn 2.1.4 and a native
   Linux host.
 - `-DSNX_TEST_ARM_AOT=ON`, `-DSNX_TEST_ARM_DIFF=ON`: the 3DS ARM11 and checked memory witnesses, and the comparisons of
-  the native back ends' and LLVM's A32 and Thumb blocks with Python's Unicorn, see [3DS](../platforms/3ds/README.md).
+  the native back ends' A32 and Thumb blocks with Python's Unicorn, see [3DS](../platforms/3ds/README.md).
 
 With Unicorn (its header and library, found or given with `-DSNX_UNICORN_INCLUDE_DIR` and `-DSNX_UNICORN_LIBRARY`; Python's
 wheel of unicorn 2.1.4 has both, in its `include` and `lib/libunicorn.so.2`), the tests labelled `unicorn` run the code
-that the native back ends make for the other machines against LLVM's, and their A32 and Thumb blocks (`arm_<machine>_vector`
+that the native back ends make for the other machines against the recorded ends (test-references'
+`recompiler_backends/`), and their A32 and Thumb blocks (`arm_<machine>_vector`
 and its like, with `SNX_TEST_ARM_DIFF`) against Unicorn's own ARM core (`ctest -L unicorn`, `ctest -L rv64` for one
 machine).
 CI's job `Linux (x86_64, other machines under Unicorn)` runs them in every pull request, run by hand and version's tag,
@@ -559,7 +537,7 @@ to how `arm_x64.c` draws its blocks bumps its `FROZEN_GENERATOR`, and the files 
 The tests labelled `census` (`ctest -L census -V`) recompile five whole programs that they make: a Switch game of a word of
 each A64 instruction, the same with a Switch 2's NPDM, an NRO of it, a 32-bit Switch game of each A32 and Thumb
 instruction, and a 3DS game of the ARM11's. Each prints how many of its functions or blocks this machine's native back
-end made, and fails where any was left to LLVM, naming its address and its word. On a machine with no native back end
+end made, and fails where it left any, naming its address and its word. On a machine with no native back end
 they are skipped, saying so. CI's Linux, Windows and macOS jobs and its cross builds print the five counts, and fail
 where one is missing (`scripts/recompile-census.py`).
 
@@ -593,10 +571,8 @@ readback hashes and PPM contents without WSI. Validation requires the Khronos va
 It takes the runtime's settings as `--KEY=VALUE` (`--vk-memory=2`, `--memory-traps=2`) and stops on any
 other argument. `SNX_TEST_VULKAN` is off by default so ordinary unit tests do not require an ICD.
 
-A cross-built driver extracts too: hactool is part of it. The recompiler still requires LLVM development
-files for the target. `SNX_LLVM_CONFIG` must run on the build machine and describe that target installation,
-not the build machine's LLVM libraries. Running the `snx-rtlib-gen` build helper also requires a suitable
-`CMAKE_CROSSCOMPILING_EMULATOR`.
+A cross-built driver extracts too: hactool is part of it. The tools the build runs (sailgen and the other
+generators) are built for the build machine, with its C compiler (`SNX_HOST_CC`).
 
 Host tools only, without SDL/Vulkan/FFmpeg or Python:
 
@@ -606,10 +582,8 @@ build/tools/scarletnx -r -h
 ctest --test-dir build/tools --output-on-failure
 ```
 
-The recompiler generates game code with LLVM, its only backend. LLVM's
-development files are required: `llvm-config` finds them (`-DSNX_LLVM_CONFIG=/path/to/llvm-config` picks one), and
-the configure stops without them on every platform, including Windows and cross-builds. No driver builds without LLVM:
-`-DSNX_WITH_LLVM=OFF` builds the recompiler's core alone. Modules are built for the machine that builds them, with its instruction set
+The recompiler makes game code with the host's native back end: x86-64's, arm64's, or one of the RISC machines'
+([sailgen](../../tools/sailgen/README.md)). Modules are built for the machine that builds them, with its instruction set
 extensions (build == host == target); nothing is detected at run time. Whole functions are batched into units of 90000
 instructions (20000 on Android; `--chunk`), with a progress line per compiled unit.
 
@@ -635,26 +609,16 @@ AppImage: run inside pkgforge's Arch container with `quick-sharun` ([CI setup](.
 documentation:
 
 ```sh
-scripts/linux-llvm.sh "$(uname -m)" ~/linux-llvm &&
-cmake --preset default -B build/appimage -DSNX_DEPLOY=OFF -DCMAKE_INSTALL_PREFIX=/usr \
-  -DLLVM_DIR="$HOME/linux-llvm/lib/cmake/llvm" &&
+cmake --preset default -B build/appimage -DSNX_DEPLOY=OFF -DCMAKE_INSTALL_PREFIX=/usr &&
 cmake --build build/appimage &&
 cmake --install build/appimage &&
 GITHUB_REPOSITORY=scarletnx/ScarletNX scripts/make-appimage.sh
 # -> dist/ScarletNX-linux-<arch>.AppImage
 ```
 
-The AppImage links LLVM statically: `scripts/linux-llvm.sh ARCH PREFIX` builds the libraries the recompiler links and
-nothing else, with one code generator, the host's (a distribution's libLLVM is one library with every target). It
-takes the version in `LLVM_VERSION` (CI gives it the container's, whose `opt` prints the LLVM settings' pipelines),
-and with `SNX_SYSROOT` set it cross-builds for another architecture. `scripts/llvm-source.sh` downloads that version's
-source for it, as for the Android and Apple LLVM scripts, and checks it against the SHA-256 `scripts/llvm-source.sha256`
-pins: a version without a line there is refused, so a new LLVM in CI's image needs its line first, the hash taken from
-the digest on the release's page.
-
 `scarletnx` is every driver the build has (`src/multicall`): each driver is a library with no `main` of its own,
-and the program, whichever drivers are on (`SNX_BUILD_NX` among them), runs the one its name says, so LLVM, SDL and
-the code the drivers share are in it once. `scarletnx-switch`, `scarletnx-3ds`, `scarletnx-vita`, `scarletnx-gnuabi`,
+and the program, whichever drivers are on (`SNX_BUILD_NX` among them), runs the one its name says, so the recompiler,
+SDL and the code the drivers share are in it once. `scarletnx-switch`, `scarletnx-3ds`, `scarletnx-vita`, `scarletnx-gnuabi`,
 `scarletnx-agb` and `scarletnx-nds` are links to it on Linux and macOS, made in the build folder and installed. Windows,
 whose zips keep no links, installs `scarletnx.exe` alone, which takes a driver's name as its first argument
 (`scarletnx.exe scarletnx-3ds ...`, how the launcher runs them); its build folder has hard links of those names, for

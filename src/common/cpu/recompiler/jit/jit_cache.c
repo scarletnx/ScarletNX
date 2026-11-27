@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The cache file read (jit_cache.h): no LLVM, which its key alone names (jit_cache_key.c; jit_cache_key_none.c in a
-   build without it) */
+/* The cache file read (jit_cache.h); its key is jit_cache_key.c's */
 #include "common/cpu/recompiler/jit/jit_cache.h"
 #include "common/utilities/bits.h"
 #include "common/utilities/endian.h"

@@ -1,11 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The s390x back end's AArch32 blocks (s390x_arm.c): what the block compiler cpu/arm/llvm.h makes of an A32 block on
-   any of its profiles and memory modes (snx_arm_llvm_block_ex, the options' below), made without LLVM in the s390x
-   host's own code: mach/mach_arm.inc and mach/risc_arm.inc over sailgen's s390x emitters of the AArch32 Sail
-   (a32_s390x.inc), each block a function void name(SnxArmCPU*) of an ELF s390x object, global and hidden as LLVM's
-   blocks are. It builds on any host (its code is s390x's: a test runs it under Unicorn). A block with an instruction it
-   doesn't make is refused: LLVM makes it */
+/* The s390x back end's AArch32 blocks (s390x_arm.c): an A32 or Thumb block on any of its profiles and memory modes (the
+   options below), in the s390x host's own code: mach/mach_arm.inc and mach/risc_arm.inc over sailgen's s390x emitters
+   of the AArch32 Sail (a32_s390x.inc), each block a function void name(SnxArmCPU*) of an ELF s390x object, global and
+   hidden. It builds on any host (its code is s390x's: a test runs it under Unicorn). A block with an instruction it
+   doesn't make is refused, saying why */
 #ifndef SNX_RECOMPILER_S390X_ARM_H
 #define SNX_RECOMPILER_S390X_ARM_H
 

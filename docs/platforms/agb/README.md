@@ -181,10 +181,8 @@ own table has them, and BgAffineSet's start point comes from that matrix.
 ## The recompiled ROM
 
 `cpu/recomp.c` takes the ROM's ARM and Thumb code through the host's native back
-end, block by block, and LLVM for the blocks it refuses, or all of them on a host
-without one or with `--keep-ir` (`src/common/cpu/arm/aot.h`; the recompile says how
-many each made, and why). It links the objects with the helpers they call
-(`armlib.c`) into a native module with the LLVM backend's own linker
+end, block by block (`src/common/cpu/arm/aot.h`; the recompile says how many it made, and why it refused one). It
+links the objects with the helpers they call (`armlib.c`) into a native module with the recompiler's own linker
 (`src/common/cpu/recompiler/object/link.c`), as the Switch's 32-bit modules are: no C
 compiler is needed. Loading a ROM does this
 automatically and caches the module in the game's folder as `<name>_code.so`,

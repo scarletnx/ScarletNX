@@ -115,7 +115,7 @@ function(snx_sailgen_a64_x64 target)
     target_include_directories(${target} PRIVATE "${out}" "${PROJECT_SOURCE_DIR}/tools/sailgen/sdm")
 endfunction()
 
-# snx_sailgen_a32_x64(<target>): generates a32_x64.inc (the AArch32 emitters of a32.roots, LLVM's own, with sailgen's
+# snx_sailgen_a32_x64(<target>): generates a32_x64.inc (the AArch32 emitters of a32.roots, with sailgen's
 # x86-64 back end at its top: snx_sailgen_machine_backends' files) into the build folder, and gives <target> its include
 # root and that of the instruction selection it includes (x64_isel.inc)
 function(snx_sailgen_a32_x64 target)

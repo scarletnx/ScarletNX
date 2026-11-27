@@ -101,7 +101,7 @@ uint64_t snx_arm_io_write(SnxArmCPU* cpu, uint64_t address, uint64_t size, uint6
 /* Checked memory (checked.h; cpu is a SnxArmCheckedCPU's) for the native back ends' blocks: the instruction of bytes
    at pc fetched through the bus, 0 where it is word, else the exit it stops with (PREFETCH_ABORT, CODE_CHANGED); and
    one transfer of bytes, its data in the state's words (a word's bytes guest order, a narrower one's in the low bits),
-   0 or the bus's fault. The store-exclusive does llvm.c's checked_exclusive: 0 where it took, 1 where it
+   0 or the bus's fault. The store-exclusive is the bus's (checked.h): 0 where it took, 1 where it
    lost, 2 a fault */
 uint64_t snx_arm_checked_fetch(SnxArmCPU* cpu, uint64_t pc, uint64_t word, uint64_t bytes);
 uint64_t snx_arm_checked_access(SnxArmCPU* cpu, uint64_t operation, uint64_t address, uint64_t bytes);
@@ -159,7 +159,7 @@ typedef enum {
 } SnxA32Kind;
 
 /* Reserved, privileged and unpredictable encodings are rejected.
-   Decode is independent of LLVM and does not execute an instruction. */
+   Decode does not execute an instruction. */
 SnxA32Kind snx_a32_decode(uint32_t word);
 
 /* Opt-in ISA profiles. Existing decode/emission APIs remain Cortex-A57.

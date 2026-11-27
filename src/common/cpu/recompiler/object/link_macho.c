@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
 /* Mach-O: arm64 objects into an MH_DYLIB for macOS and iOS, without imports, initializers or unwind info. The objects
-   are Mach-O, as LLVM writes them, or AArch64 ELF, as the native back ends and the runtime library's embedded object
+   are Mach-O, as Clang writes them, or AArch64 ELF, as the native back ends and the runtime library's embedded object
    are: what the JIT loader takes on Darwin (code_loader.c), read and relocated by the same elf_object.c, their code
    Darwin's whatever the container. A module may have both.
    Segments: [__TEXT: headers, __text, __const (every read-only input section)] [__DATA: __data, __got, __bss]
@@ -247,7 +247,7 @@ static Symbol symbol_at(const Obj* o, uint32_t index) {
     return y;
 }
 
-/* the platform and oldest version the objects were compiled for (LLVM writes them from the triple) */
+/* the platform and oldest version the objects were compiled for (Clang writes them from the triple) */
 static int version(Link* l, const char* name, uint32_t platform, uint32_t minos, uint32_t sdk) {
     if (l->platform && l->platform != platform) return fail(l, "%s: an object for another Apple platform%s", name, "");
     l->platform = platform;

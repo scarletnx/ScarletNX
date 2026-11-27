@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* ELF64 x86-64, AArch64, PowerPC64, RISC-V, LoongArch, MIPS64 and s390x relocatable objects, as LLVM and Clang write
-   them: what the AOT linker (link_elf.c) and the JIT loader (code_loader.c) both do with one. Both take the same
+/* ELF64 x86-64, AArch64, PowerPC64, RISC-V, LoongArch, MIPS64 and s390x relocatable objects, as the back ends and Clang
+   write them: what the AOT linker (link_elf.c) and the JIT loader (code_loader.c) both do with one. Both take the same
    sections, resolve symbols by the same rules and write every relocation through snx_elf_relocate (and an AArch64
    branch beyond B's reach through snx_elf_veneer), so code loaded into the process runs as the same code linked into a
    module. One set of objects is one machine: the machines' relocation numbers mean different things (AArch64's ILP32
@@ -98,7 +98,7 @@ enum {
 #ifndef EM_LOONGARCH
 #define EM_LOONGARCH 258
 #endif
-/* RISC-V's, by number (the RISC-V ELF psABI). The objects are made without linker relaxation (ir.c), so a RELAX or an
+/* RISC-V's, by number (the RISC-V ELF psABI). The objects are made without linker relaxation, so a RELAX or an
    ALIGN never asks for code to move */
 enum {
     SNX_RV_NONE = 0,
@@ -172,8 +172,8 @@ enum {
 #endif
 /* MIPS64's (n64), by number (the MIPS ELF64 ABI, the MIPSpro 64-bit supplement). An n64 relocation applies up to three
    types in turn, each taking the one before's value as its addend: snx_elf_type gives them as one number, the first
-   type in the low byte (glibc's ELF64_MIPS_R_TYPE), and these name the ones LLVM writes. The objects are made for a
-   32-bit GOT offset (+xgot, ir.c) and without code the linker moves */
+   type in the low byte (glibc's ELF64_MIPS_R_TYPE), and these name the ones Clang and the back ends write. The objects
+   are made without code the linker moves */
 enum {
     SNX_MIPS_NONE = 0,
     SNX_MIPS_32 = 2,
@@ -204,8 +204,9 @@ enum {
 };
 /* MIPS's section types (glibc's SHT_MIPS_*): allocated, read by a linker that merges them, and left out of a module */
 enum { SNX_SHT_MIPS_REGINFO = 0x70000006, SNX_SHT_MIPS_OPTIONS = 0x7000000d, SNX_SHT_MIPS_ABIFLAGS = 0x7000002a };
-/* e_flags' noreorder: the assembler kept the instructions' order, delay slots its own. LLVM marks an object with code
-   so, and an object of data alone (an index of functions) not: the objects' ABI (snx_elf_parse) leaves it out */
+/* e_flags' noreorder: the assembler kept the instructions' order, delay slots its own. An object with code has it
+   (Clang's, the mips64 back end's), and an object of data alone (an index of functions) not: the objects' ABI
+   (snx_elf_parse) leaves it out */
 #define SNX_EF_MIPS_NOREORDER  1u
 /* gp, which MIPS code reaches its GOT through: the GOT's address plus this, so a signed 16-bit offset from it reaches
    the GOT's first 64 KiB (the ABI's, which glibc assumes) */

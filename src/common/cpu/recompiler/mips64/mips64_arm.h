@@ -1,11 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* The mips64 back end's AArch32 blocks (mips64_arm.c): what the block compiler cpu/arm/llvm.h makes of an A32 block on
-   any of its profiles and memory modes (snx_arm_llvm_block_ex, the options' below), made without LLVM in the mips64
-   host's own code: mach/mach_arm.inc and mach/risc_arm.inc over sailgen's mips64 emitters of the AArch32 Sail
-   (a32_mips64.inc), each block a function void name(SnxArmCPU*) of an ELF MIPS64 (n64) object, global and hidden as LLVM's
-   blocks are. It builds on any host (its code is mips64's: a test runs it under Unicorn). A block with an instruction it
-   doesn't make is refused: LLVM makes it */
+/* The mips64 back end's AArch32 blocks (mips64_arm.c): an A32 or Thumb block on any of its profiles and memory modes
+   (the options below), in the mips64 host's own code: mach/mach_arm.inc and mach/risc_arm.inc over sailgen's mips64
+   emitters of the AArch32 Sail (a32_mips64.inc), each block a function void name(SnxArmCPU*) of an ELF MIPS64 (n64)
+   object, global and hidden. It builds on any host (its code is mips64's: a test runs it under Unicorn). A block with
+   an instruction it doesn't make is refused, saying why */
 #ifndef SNX_RECOMPILER_MIPS64_ARM_H
 #define SNX_RECOMPILER_MIPS64_ARM_H
 

@@ -4,12 +4,12 @@
 if(TARGET snx_arm_rt)
     return()
 endif()
-# Kept separate from the A64 state ABI and emitters. Host-target LLVM modules can
-# contain either backend, but their guest function signatures are not interchangeable.
+# Kept separate from the A64 state ABI and emitters: a module can hold either's code, but their guest function
+# signatures are not interchangeable.
 add_library(snx_arm_rt STATIC fp_helpers.c crypto_helpers.c rt_helpers.c)
 set_target_properties(snx_arm_rt PROPERTIES C_STANDARD 23 C_STANDARD_REQUIRED ON POSITION_INDEPENDENT_CODE ON)
 target_compile_options(snx_arm_rt PRIVATE -Wall -Wextra -Werror=missing-prototypes)
-# the decoders, the profile rules and the blocks' successors, which need no LLVM: a runtime that executes a word itself
+# the decoders, the profile rules and the blocks' successors: a runtime that executes a word itself
 # links these alone.
 # a32.c and thumb.c include the decoders tools/decodetree makes from QEMU's .decode files (decode/), as QEMU's
 # translate.c includes them: t32.decode and t16.decode name a32.decode's and a32-uncond.decode's argument sets
