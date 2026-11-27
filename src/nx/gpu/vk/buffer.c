@@ -1287,6 +1287,13 @@ static void mem_need_reason(u64 gva, u64 len, int reason) {
 }
 void vk_buf_mem_need(u64 gva, u64 len) { mem_need_reason(gva, len, WB_READ); }
 int vk_buf_pending_any(void) { return atomic_load_explicit(&g_gfx_any, memory_order_relaxed); }
+int vk_buf_mem_need_may(u64 gva, u64 len) {
+    if (!atomic_load_explicit(&g_gfx_any, memory_order_relaxed) || !len) return 0;
+    pend_lock(); /* the table's own lock for a lookup (pending_pages.h), not the share lock */
+    const int hit = pend_hit(&g_out_pages, gva, len);
+    pend_unlock();
+    return hit;
+}
 u64 vk_buf_adds(void) { return atomic_load_explicit(&g_out_pages.adds, memory_order_relaxed); }
 int vk_buf_pending_unsubmitted(void) {
     for (GfxOut* o = g_out; o; o = o->next)

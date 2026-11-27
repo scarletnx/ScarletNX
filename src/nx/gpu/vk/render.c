@@ -191,6 +191,12 @@ void vk_render_end_at(const char* file, int line) {
 /* the load op of an attachment s: its contents don't matter when they are undefined (never drawn, or new memory
    over it: surface.c vk_rt_reload) or discarded with nothing written since. undefined: s's layout before the pass */
 static VkAttachmentLoadOp load_op(Surf* s, int undefined) {
+    /* the split's worker (draw_batches=2): always a load, and the discard left to the renderer thread. Its view of a
+       target's layout and discard comes from the shared surface while the renderer thread's half still changes them,
+       and its pass comes after that half's draws. A load is always right: DONT_CARE only saves the read. Chosen from
+       a layout read as undefined before the renderer thread's barrier, it threw that half's draws away (one game's
+       shadow map lost half of its casters, and the town had no sunlight) */
+    if (t_rc) return VK_ATTACHMENT_LOAD_OP_LOAD;
     int discarded = s->discarded && s->discard_wseq == s->wseq;
     s->discarded = 0;
     return undefined || discarded ? VK_ATTACHMENT_LOAD_OP_DONT_CARE : VK_ATTACHMENT_LOAD_OP_LOAD;
