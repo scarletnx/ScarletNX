@@ -3602,7 +3602,7 @@ target_link_libraries(snx_recompiler_test PRIVATE snx_driver ${CMAKE_DL_LIBS})
 add_test(NAME native_recompiler COMMAND snx_recompiler_test
     $<TARGET_FILE:scarletnx> "${PROJECT_SOURCE_DIR}" "${SNX_TARGET_C_COMPILER}")
 # the whole-encoding sweep (native_qemu_differential_sweep): opt in, it costs minutes
-option(SNX_TEST_LLVM_SWEEP "Run the whole-encoding QEMU differential sweep (slow)" OFF)
+option(SNX_TEST_QEMU_SWEEP "Run the whole-encoding QEMU differential sweep (slow)" OFF)
 # The host's native back end's, on every host: against QEMU here (SNX_QEMU_REF), or against what another host recorded
 # (SNX_QEMU_REFERENCE: build.yml's qemu-reference job, which the Windows and macOS jobs download), or skipped saying why.
 # The groups known to differ are in native_qemu_expected.txt. Its forms are the host's (linked as a module), the JIT's
@@ -3644,7 +3644,7 @@ foreach(mode IN ITEMS "" ${snx_nqd_modes})
 endforeach()
 if(SNX_QEMU_REF)
     add_dependencies(snx-test-llvm-qemu-differential-native snx_qemu_ref_runner)
-    if(SNX_TEST_LLVM_SWEEP)
+    if(SNX_TEST_QEMU_SWEEP)
         add_test(NAME native_qemu_differential_sweep COMMAND snx-test-llvm-qemu-differential-native "${SNX_QEMU_AARCH64}"
                  "${SNX_QEMU_REF_RUNNER}" "${CMAKE_CURRENT_BINARY_DIR}/native_qemu_sweep" "${snx_nqd_expected}"
                  --quiet --sweep)
