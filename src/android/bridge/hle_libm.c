@@ -19,38 +19,18 @@ static struct {
 } g_hle_libm;
 
 /* ---- the adapters ----
-   By type: d for double, f for float, i for int, p for a pointer. bionic's libm never sets errno (its
-   math_errhandling is MATH_ERREXCEPT), where the host's does (glibc's log(0) sets ERANGE): each call keeps the
-   guest's */
-#define KEEP_ERRNO(call)                                                                                               \
-    do {                                                                                                               \
-        const int kept = errno;                                                                                        \
-        call;                                                                                                          \
-        errno = kept;                                                                                                  \
-    } while (0)
-
-static void d_d(CPU* c, void* fn) { KEEP_ERRNO(hle_set_d(c, ((double (*)(double))fn)(hle_d(c, 0)))); }
-static void d_dd(CPU* c, void* fn) {
-    KEEP_ERRNO(hle_set_d(c, ((double (*)(double, double))fn)(hle_d(c, 0), hle_d(c, 1))));
+   By type: d for double, f for float, i for int, l for long, p for a pointer. Each gives the host's result as bionic's
+   would be. bionic's libm never sets errno (its math_errhandling is MATH_ERREXCEPT), where the host's does (glibc's
+   log(0) sets ERANGE): each call keeps the guest's. A NaN the host made from numbers (sqrt(-1), log(-1)) is AArch64's
+   default NaN, whose sign is clear, where x86's is set: an app's printf says "nan", not "-nan". A NaN given goes
+   through as the host's arithmetic took it */
+static void put_d(CPU* c, double r, bool nan_given, int kept) {
+    errno = kept;
+    hle_set_d(c, isnan(r) && !nan_given ? (double)NAN : r);
 }
-static void f_f(CPU* c, void* fn) { KEEP_ERRNO(hle_set_f(c, ((float (*)(float))fn)(hle_f(c, 0)))); }
-static void f_ff(CPU* c, void* fn) {
-    KEEP_ERRNO(hle_set_f(c, ((float (*)(float, float))fn)(hle_f(c, 0), hle_f(c, 1))));
-}
-static void d_ddd(CPU* c, void* fn) {
-    KEEP_ERRNO(hle_set_d(c, ((double (*)(double, double, double))fn)(hle_d(c, 0), hle_d(c, 1), hle_d(c, 2))));
-}
-static void f_fff(CPU* c, void* fn) {
-    KEEP_ERRNO(hle_set_f(c, ((float (*)(float, float, float))fn)(hle_f(c, 0), hle_f(c, 1), hle_f(c, 2))));
-}
-/* lround and llround: bionic's long is 64 bits as long long is, which Windows' long is not */
-static void l_d(CPU* c, void* fn) {
-    (void)fn;
-    KEEP_ERRNO(X(0) = (uint64_t)llround(hle_d(c, 0)));
-}
-static void l_f(CPU* c, void* fn) {
-    (void)fn;
-    KEEP_ERRNO(X(0) = (uint64_t)llroundf(hle_f(c, 0)));
+static void put_f(CPU* c, float r, bool nan_given, int kept) {
+    errno = kept;
+    hle_set_f(c, isnan(r) && !nan_given ? NAN : r);
 }
 /* an int argument, w as the guest passes it */
 static int arg_int(const CPU* c, unsigned n) { return snx_sext32((uint32_t)c->x[n], 32); }
@@ -60,32 +40,89 @@ static int arg_long_int(const CPU* c, unsigned n) {
     const int64_t v = snx_sext64(c->x[n], 64);
     return v < INT_MIN ? INT_MIN : v > INT_MAX ? INT_MAX : (int)v;
 }
-static void d_di(CPU* c, void* fn) {
-    KEEP_ERRNO(hle_set_d(c, ((double (*)(double, int))fn)(hle_d(c, 0), arg_int(c, 0))));
+
+static void d_d(CPU* c, void* fn) {
+    const int kept = errno;
+    const double x = hle_d(c, 0);
+    put_d(c, ((double (*)(double))fn)(x), isnan(x), kept);
 }
-static void f_fi(CPU* c, void* fn) {
-    KEEP_ERRNO(hle_set_f(c, ((float (*)(float, int))fn)(hle_f(c, 0), arg_int(c, 0))));
+static void d_dd(CPU* c, void* fn) {
+    const int kept = errno;
+    const double x = hle_d(c, 0), y = hle_d(c, 1);
+    put_d(c, ((double (*)(double, double))fn)(x, y), isnan(x) || isnan(y), kept);
+}
+static void d_ddd(CPU* c, void* fn) {
+    const int kept = errno;
+    const double x = hle_d(c, 0), y = hle_d(c, 1), z = hle_d(c, 2);
+    put_d(c, ((double (*)(double, double, double))fn)(x, y, z), isnan(x) || isnan(y) || isnan(z), kept);
+}
+static void d_di(CPU* c, void* fn) {
+    const int kept = errno;
+    const double x = hle_d(c, 0);
+    put_d(c, ((double (*)(double, int))fn)(x, arg_int(c, 0)), isnan(x), kept);
 }
 static void d_dl(CPU* c, void* fn) {
-    KEEP_ERRNO(hle_set_d(c, ((double (*)(double, int))fn)(hle_d(c, 0), arg_long_int(c, 0))));
-}
-static void f_fl(CPU* c, void* fn) {
-    KEEP_ERRNO(hle_set_f(c, ((float (*)(float, int))fn)(hle_f(c, 0), arg_long_int(c, 0))));
+    const int kept = errno;
+    const double x = hle_d(c, 0);
+    put_d(c, ((double (*)(double, int))fn)(x, arg_long_int(c, 0)), isnan(x), kept);
 }
 static void d_id(CPU* c, void* fn) {
-    KEEP_ERRNO(hle_set_d(c, ((double (*)(int, double))fn)(arg_int(c, 0), hle_d(c, 0))));
+    const int kept = errno;
+    const double x = hle_d(c, 0);
+    put_d(c, ((double (*)(int, double))fn)(arg_int(c, 0), x), isnan(x), kept);
+}
+static void d_dp(CPU* c, void* fn) {
+    const int kept = errno;
+    const double x = hle_d(c, 0);
+    put_d(c, ((double (*)(double, void*))fn)(x, PTR(0)), isnan(x), kept);
+}
+static void f_f(CPU* c, void* fn) {
+    const int kept = errno;
+    const float x = hle_f(c, 0);
+    put_f(c, ((float (*)(float))fn)(x), isnan(x), kept);
+}
+static void f_ff(CPU* c, void* fn) {
+    const int kept = errno;
+    const float x = hle_f(c, 0), y = hle_f(c, 1);
+    put_f(c, ((float (*)(float, float))fn)(x, y), isnan(x) || isnan(y), kept);
+}
+static void f_fff(CPU* c, void* fn) {
+    const int kept = errno;
+    const float x = hle_f(c, 0), y = hle_f(c, 1), z = hle_f(c, 2);
+    put_f(c, ((float (*)(float, float, float))fn)(x, y, z), isnan(x) || isnan(y) || isnan(z), kept);
+}
+static void f_fi(CPU* c, void* fn) {
+    const int kept = errno;
+    const float x = hle_f(c, 0);
+    put_f(c, ((float (*)(float, int))fn)(x, arg_int(c, 0)), isnan(x), kept);
+}
+static void f_fl(CPU* c, void* fn) {
+    const int kept = errno;
+    const float x = hle_f(c, 0);
+    put_f(c, ((float (*)(float, int))fn)(x, arg_long_int(c, 0)), isnan(x), kept);
+}
+static void f_fp(CPU* c, void* fn) {
+    const int kept = errno;
+    const float x = hle_f(c, 0);
+    put_f(c, ((float (*)(float, void*))fn)(x, PTR(0)), isnan(x), kept);
 }
 /* a float through the host's function of double: the float Bessel functions, which not every host's libm has */
-static void f_d(CPU* c, void* fn) { KEEP_ERRNO(hle_set_f(c, (float)((double (*)(double))fn)(hle_f(c, 0)))); }
-static void f_id(CPU* c, void* fn) {
-    KEEP_ERRNO(hle_set_f(c, (float)((double (*)(int, double))fn)(arg_int(c, 0), hle_f(c, 0))));
+static void f_d(CPU* c, void* fn) {
+    const int kept = errno;
+    const float x = hle_f(c, 0);
+    put_f(c, (float)((double (*)(double))fn)(x), isnan(x), kept);
 }
-static void d_dp(CPU* c, void* fn) { KEEP_ERRNO(hle_set_d(c, ((double (*)(double, void*))fn)(hle_d(c, 0), PTR(0)))); }
-static void f_fp(CPU* c, void* fn) { KEEP_ERRNO(hle_set_f(c, ((float (*)(float, void*))fn)(hle_f(c, 0), PTR(0)))); }
+static void f_id(CPU* c, void* fn) {
+    const int kept = errno;
+    const float x = hle_f(c, 0);
+    put_f(c, (float)((double (*)(int, double))fn)(arg_int(c, 0), x), isnan(x), kept);
+}
+/* sincos's two results into the guest's doubles or floats */
+static double made_d(double r, bool nan_given) { return isnan(r) && !nan_given ? (double)NAN : r; }
 static void sincos_d(CPU* c, void* fn) {
     (void)fn;
     const int kept = errno;
-    double x = hle_d(c, 0), s = sin(x), co = cos(x);
+    const double x = hle_d(c, 0), s = made_d(sin(x), isnan(x)), co = made_d(cos(x), isnan(x));
     errno = kept;
     memcpy(PTR(0), &s, sizeof s);
     memcpy(PTR(1), &co, sizeof co);
@@ -93,7 +130,7 @@ static void sincos_d(CPU* c, void* fn) {
 static void sincos_f(CPU* c, void* fn) {
     (void)fn;
     const int kept = errno;
-    float x = hle_f(c, 0), s = sinf(x), co = cosf(x);
+    const float x = hle_f(c, 0), s = (float)made_d(sinf(x), isnan(x)), co = (float)made_d(cosf(x), isnan(x));
     errno = kept;
     memcpy(PTR(0), &s, sizeof s);
     memcpy(PTR(1), &co, sizeof co);
@@ -148,22 +185,28 @@ static double scalb_of(double x, double n) {
 }
 static void scalb_d(CPU* c, void* fn) {
     (void)fn;
-    KEEP_ERRNO(hle_set_d(c, scalb_of(hle_d(c, 0), hle_d(c, 1))));
+    const int kept = errno;
+    const double x = hle_d(c, 0), n = hle_d(c, 1);
+    put_d(c, scalb_of(x, n), isnan(x) || isnan(n), kept);
 }
 static void scalb_f(CPU* c, void* fn) {
     (void)fn;
-    KEEP_ERRNO(hle_set_f(c, (float)scalb_of(hle_f(c, 0), hle_f(c, 1))));
+    const int kept = errno;
+    const float x = hle_f(c, 0), n = hle_f(c, 1);
+    put_f(c, (float)scalb_of(x, n), isnan(x) || isnan(n), kept);
 }
 /* significand, x scaled into [1, 2): msun's scalb of x by its ilogb, so 0, infinity and NaN stay */
 static void significand_d(CPU* c, void* fn) {
     (void)fn;
+    const int kept = errno;
     const double x = hle_d(c, 0);
-    KEEP_ERRNO(hle_set_d(c, scalb_of(x, -(double)ilogb_of(x))));
+    put_d(c, scalb_of(x, -(double)ilogb_of(x)), isnan(x), kept);
 }
 static void significand_f(CPU* c, void* fn) {
     (void)fn;
-    const double x = hle_f(c, 0);
-    KEEP_ERRNO(hle_set_f(c, (float)scalb_of(x, -(double)ilogb_of(x))));
+    const int kept = errno;
+    const float x = hle_f(c, 0);
+    put_f(c, (float)scalb_of(x, -(double)ilogb_of(x)), isnan(x), kept);
 }
 
 /* remquo's quotient as bionic gives it, the sign of x / y and the low 31 bits of the integer nearest to it, ties to
@@ -185,8 +228,7 @@ static void remquo_d(CPU* c, void* fn) {
         const int32_t q = remquo_bits(x, y);
         memcpy(PTR(0), &q, sizeof q);
     }
-    errno = kept;
-    hle_set_d(c, r);
+    put_d(c, r, isnan(x) || isnan(y), kept);
 }
 static void remquo_f(CPU* c, void* fn) {
     (void)fn;
@@ -196,8 +238,7 @@ static void remquo_f(CPU* c, void* fn) {
         const int32_t q = remquo_bits(x, y);
         memcpy(PTR(0), &q, sizeof q);
     }
-    errno = kept;
-    hle_set_f(c, r);
+    put_f(c, r, isnan(x) || isnan(y), kept);
 }
 
 /* lgamma_r's sign of gamma(x), as msun gives it: 1 for a NaN, the infinities, a positive x and a pole at a negative
@@ -210,29 +251,33 @@ static int32_t gamma_sign(double x) {
 /* lgamma_r and gamma_r: the sign into the guest's int; lgamma and gamma: into signgam, bionic's object */
 static void lgamma_r_d(CPU* c, void* fn) {
     (void)fn;
+    const int kept = errno;
     const double x = hle_d(c, 0);
     const int32_t sign = gamma_sign(x);
-    KEEP_ERRNO(hle_set_d(c, lgamma(x)));
     memcpy(PTR(0), &sign, sizeof sign);
+    put_d(c, lgamma(x), isnan(x), kept);
 }
 static void lgamma_r_f(CPU* c, void* fn) {
     (void)fn;
+    const int kept = errno;
     const float x = hle_f(c, 0);
     const int32_t sign = gamma_sign(x);
-    KEEP_ERRNO(hle_set_f(c, lgammaf(x)));
     memcpy(PTR(0), &sign, sizeof sign);
+    put_f(c, lgammaf(x), isnan(x), kept);
 }
 static void lgamma_d(CPU* c, void* fn) {
     (void)fn;
+    const int kept = errno;
     const double x = hle_d(c, 0);
     g_hle_libm.signgam = gamma_sign(x);
-    KEEP_ERRNO(hle_set_d(c, lgamma(x)));
+    put_d(c, lgamma(x), isnan(x), kept);
 }
 static void lgamma_f(CPU* c, void* fn) {
     (void)fn;
+    const int kept = errno;
     const float x = hle_f(c, 0);
     g_hle_libm.signgam = gamma_sign(x);
-    KEEP_ERRNO(hle_set_f(c, lgammaf(x)));
+    put_f(c, lgammaf(x), isnan(x), kept);
 }
 
 /* nan and nanf as msun's: the hexadecimal digits of the tag, after a 0x, fill the low bits from its last digit up,
@@ -327,6 +372,54 @@ static void lrint_f(CPU* c, void* fn) {
     const double x = hle_f(c, 0);
     X(0) = fcvt64(c, x, integral(x, c->fpcr));
 }
+/* lround and llround, FCVTAS: to nearest with ties away from zero */
+static void lround_d(CPU* c, void* fn) {
+    (void)fn;
+    const double x = hle_d(c, 0);
+    X(0) = fcvt64(c, x, round(x));
+}
+static void lround_f(CPU* c, void* fn) {
+    (void)fn;
+    const double x = hle_f(c, 0);
+    X(0) = fcvt64(c, x, round(x));
+}
+
+/* fmax and fmin, FMAXNM and FMINNM: a quiet NaN gives way to a number, a signaling one is the result, quiet, with
+   Invalid Operation, and +0 is above -0, where the host's may give either zero */
+static double max_min(CPU* c, double x, double y, bool snan_x, bool snan_y, bool max) {
+    if (snan_x || snan_y) {
+        c->fpsr |= FPSR_IOC;
+        uint64_t bits;
+        memcpy(&bits, snan_x ? &x : &y, sizeof bits);
+        bits |= 1ull << 51; /* quiet: a float's came here quiet already */
+        double r;
+        memcpy(&r, &bits, sizeof r);
+        return r;
+    }
+    if (isnan(x) || isnan(y)) return isnan(y) ? x : y; /* of two quiet NaNs the first */
+    if (x == y) return (signbit(x) != 0) == max ? y : x;
+    return (x > y) == max ? x : y;
+}
+static void fmax_d(CPU* c, void* fn) {
+    (void)fn;
+    const double x = hle_d(c, 0), y = hle_d(c, 1);
+    hle_set_d(c, max_min(c, x, y, signaling(x), signaling(y), true));
+}
+static void fmin_d(CPU* c, void* fn) {
+    (void)fn;
+    const double x = hle_d(c, 0), y = hle_d(c, 1);
+    hle_set_d(c, max_min(c, x, y, signaling(x), signaling(y), false));
+}
+static void fmax_f(CPU* c, void* fn) {
+    (void)fn;
+    const float x = hle_f(c, 0), y = hle_f(c, 1);
+    hle_set_f(c, (float)max_min(c, x, y, signaling_f(x), signaling_f(y), true));
+}
+static void fmin_f(CPU* c, void* fn) {
+    (void)fn;
+    const float x = hle_f(c, 0), y = hle_f(c, 1);
+    hle_set_f(c, (float)max_min(c, x, y, signaling_f(x), signaling_f(y), false));
+}
 
 /* a host function through an adapter (TH: the host's of another name), a handler of its own, an object, and the
    table's end */
@@ -381,8 +474,8 @@ const HleSymbol hle_libm[] = {
     T(hypot, d_dd),
     T(pow, d_dd),
     T(nextafter, d_dd),
-    T(fmax, d_dd),
-    T(fmin, d_dd),
+    H(fmax, fmax_d),
+    H(fmin, fmin_d),
     T(copysign, d_dd),
     T(fdim, d_dd),
     T(remainder, d_dd),
@@ -393,8 +486,8 @@ const HleSymbol hle_libm[] = {
     TH(scalbln, d_dl, scalbn),
     T(frexp, d_dp),
     T(modf, d_dp),
-    T(lround, l_d),
-    T(llround, l_d),
+    H(lround, lround_d),
+    H(llround, lround_d),
     TH(j0, d_d, BESSEL(j0)),
     TH(j1, d_d, BESSEL(j1)),
     TH(jn, d_id, BESSEL(jn)),
@@ -437,8 +530,8 @@ const HleSymbol hle_libm[] = {
     T(hypotf, f_ff),
     T(powf, f_ff),
     T(nextafterf, f_ff),
-    T(fmaxf, f_ff),
-    T(fminf, f_ff),
+    H(fmaxf, fmax_f),
+    H(fminf, fmin_f),
     T(copysignf, f_ff),
     T(fdimf, f_ff),
     T(remainderf, f_ff),
@@ -449,8 +542,8 @@ const HleSymbol hle_libm[] = {
     TH(scalblnf, f_fl, scalbnf),
     T(frexpf, f_fp),
     T(modff, f_fp),
-    T(lroundf, l_f),
-    T(llroundf, l_f),
+    H(lroundf, lround_f),
+    H(llroundf, lround_f),
     TH(j0f, f_d, BESSEL(j0)),
     TH(j1f, f_d, BESSEL(j1)),
     TH(jnf, f_id, BESSEL(jn)),

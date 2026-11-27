@@ -300,8 +300,10 @@ builds for FreeBSD, macOS and Windows x64, where they differ:
   they differ or the host lacks one. `ilogb` gives bionic's `FP_ILOGB0` and `FP_ILOGBNAN` (-INT_MAX and INT_MAX,
   where glibc's on x86 are INT_MIN), `remquo` 31 bits of the quotient (glibc's 3), `nan` the tag's digits as msun reads
   them, `lgamma` its sign in bionic's `signgam`; `rint`, `nearbyint`, `lrint` and `llrint` round as the guest's FPCR
-  says, and a conversion out of range saturates as `FCVTZS` does, with FPSR's flags. bionic's functions of long
-  double, IEEE's quadruple precision on AArch64, are not there: no host type holds one.
+  says, and a conversion out of range saturates as `FCVTZS` does, with FPSR's flags. `lround`, `fmax` and `fmin` are
+  AArch64's `FCVTAS`, `FMAXNM` and `FMINNM` (+0 above -0), and a NaN made from numbers (`sqrt(-1)`) is AArch64's
+  default NaN, whose sign is clear where x86's is set. bionic's functions of long double, IEEE's quadruple precision
+  on AArch64, are not there: no host type holds one.
 - **The locale**: bionic's C library has the C locale alone, its multibyte characters UTF-8 whatever the name.
   `setlocale`, `newlocale` and `uselocale` are bionic's (`hle_libc.c`): a name only sets `MB_CUR_MAX`, 4 or 1, a
   `locale_t` is bionic's struct of it, and the host's locale is never set. The host's is the user's, which the JVM
