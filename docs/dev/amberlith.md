@@ -23,7 +23,7 @@ fails. `scripts/edenprobe.py`, its name before 1.0.0, says the new one and runs 
 ## Running it
 
 ```sh
-python3 scripts/amberlith.py run --runtime build/scarletnx --nro amberlith-1.1.0.nro --out /tmp/amberlith \
+python3 scripts/amberlith.py run --runtime build/scarletnx --nro amberlith-1.2.0.nro --out /tmp/amberlith \
     --mode "quick notime cpu fs video display kernel audio hooks" \
     [--baseline "$REFS/amberlith/linux-x86_64.txt"]
 ```
@@ -151,7 +151,7 @@ on Android 16. `--apk` runs it on `scarletnx-android` ([Android apps](../platfor
 nothing recompiled:
 
 ```sh
-python3 scripts/amberlith.py run --runtime build/scarletnx --apk amberlith-1.1.0.apk --mode quick --out /tmp/amberlith-apk \
+python3 scripts/amberlith.py run --runtime build/scarletnx --apk amberlith-1.2.0.apk --mode quick --out /tmp/amberlith-apk \
     [--java-home DIR] [--baseline "$REFS/amberlith/android-x86_64.txt"]
 ```
 
