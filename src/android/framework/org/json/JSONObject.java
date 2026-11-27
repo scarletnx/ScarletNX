@@ -208,7 +208,7 @@ public class JSONObject {
         if (number.equals(-0.0d)) return "-0";
         long longValue = number.longValue();
         if (d == (double) longValue) return Long.toString(longValue);
-        return number.toString();
+        return snx.dalvik.Digits.valueOf(number);
     }
     public static String quote(String data) {
         if (data == null) return "\"\"";

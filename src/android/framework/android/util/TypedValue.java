@@ -158,14 +158,16 @@ public class TypedValue {
             case TYPE_NULL: return null;
             case TYPE_REFERENCE: return "@" + data;
             case TYPE_ATTRIBUTE: return "?" + data;
-            case TYPE_FLOAT: return Float.toString(Float.intBitsToFloat(data));
+            case TYPE_FLOAT: return snx.dalvik.Digits.toString(Float.intBitsToFloat(data));
             case TYPE_DIMENSION: {
                 int unit = (data >> COMPLEX_UNIT_SHIFT) & COMPLEX_UNIT_MASK;
-                return complexToFloat(data) + (unit < DIMENSION_UNITS.length ? DIMENSION_UNITS[unit] : "");
+                return snx.dalvik.Digits.toString(complexToFloat(data))
+                    + (unit < DIMENSION_UNITS.length ? DIMENSION_UNITS[unit] : "");
             }
             case TYPE_FRACTION: {
                 int unit = (data >> COMPLEX_UNIT_SHIFT) & COMPLEX_UNIT_MASK;
-                return complexToFloat(data) * 100 + (unit < FRACTION_UNITS.length ? FRACTION_UNITS[unit] : "");
+                return snx.dalvik.Digits.toString(complexToFloat(data) * 100)
+                    + (unit < FRACTION_UNITS.length ? FRACTION_UNITS[unit] : "");
             }
             case TYPE_INT_HEX: return "0x" + Integer.toHexString(data);
             case TYPE_INT_BOOLEAN: return data != 0 ? "true" : "false";

@@ -76,13 +76,13 @@ public final class JsonWriter implements java.io.Closeable {
     public JsonWriter value(double value) throws IOException {
         if (!lenient && (Double.isNaN(value) || Double.isInfinite(value))) throw new IllegalArgumentException("Numeric values must be finite, but was " + value);
         beforeValue(false);
-        out.append(Double.toString(value));
+        out.append(snx.dalvik.Digits.toString(value));
         return this;
     }
     public JsonWriter value(long value) throws IOException { beforeValue(false); out.write(Long.toString(value)); return this; }
     public JsonWriter value(Number value) throws IOException {
         if (value == null) return nullValue();
-        String string = value.toString();
+        String string = snx.dalvik.Digits.valueOf(value);
         if (!lenient && (string.equals("-Infinity") || string.equals("Infinity") || string.equals("NaN")))
             throw new IllegalArgumentException("Numeric values must be finite, but was " + value);
         beforeValue(false);

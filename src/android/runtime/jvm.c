@@ -60,7 +60,7 @@ bool android_jvm_start(AndroidJvm* jvm, const char* class_path, const char* cons
         return false;
     }
     char* class_option = snx_format("-Djava.class.path=%s", class_path);
-    JavaVMOption* list = calloc(option_count + 3, sizeof *list);
+    JavaVMOption* list = calloc(option_count + 4, sizeof *list);
     if (!class_option || !list) {
         free(class_option);
         free(list);
@@ -71,6 +71,8 @@ bool android_jvm_start(AndroidJvm* jvm, const char* class_path, const char* cons
     list[count++].optionString = class_option;
     /* the natives this program registers, without the JVM's warning for each module that binds natives */
     list[count++].optionString = (char*)"--enable-native-access=ALL-UNNAMED";
+    /* ART's digits of a double, which the JDK keeps in jdk.internal.math.FloatingDecimal (snx.dalvik.Digits) */
+    list[count++].optionString = (char*)"--add-exports=java.base/jdk.internal.math=ALL-UNNAMED";
     for (size_t i = 0; i < option_count; ++i) list[count++].optionString = (char*)options[i];
     JavaVMInitArgs args = {0};
     args.version = JNI_VERSION_21;

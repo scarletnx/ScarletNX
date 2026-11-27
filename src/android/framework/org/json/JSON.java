@@ -47,7 +47,7 @@ final class JSON {
     }
     static String toString(Object value) {
         if (value instanceof String s) return s;
-        return value != null ? String.valueOf(value) : null;
+        return value != null ? snx.dalvik.Digits.valueOf(value) : null;
     }
     static JSONException typeMismatch(Object indexOrName, Object actual, String requiredType) throws JSONException {
         if (actual == null) throw new JSONException("Value at " + indexOrName + " is null.");

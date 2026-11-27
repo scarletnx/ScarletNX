@@ -228,9 +228,11 @@ if(BUILD_TESTING)
     # the framework's members as an app's code links to them (a Java source-file program over the jar)
     add_test(NAME android_framework_api COMMAND "${Java_JAVA_EXECUTABLE}"
              "${PROJECT_SOURCE_DIR}/tests/android_framework_api.java" $<TARGET_PROPERTY:snx_android_framework,JAR_FILE>)
-    # the framework's behaviour as an app sees it on Android 16, where it needs none of the driver's natives
-    add_test(NAME android_framework COMMAND "${Java_JAVA_EXECUTABLE}" -cp
-             $<TARGET_PROPERTY:snx_android_framework,JAR_FILE> "${PROJECT_SOURCE_DIR}/tests/android_framework.java")
+    # the framework's behaviour as an app sees it on Android 16, where it needs none of the driver's natives; with the
+    # export the driver gives it (runtime/jvm.c)
+    add_test(NAME android_framework COMMAND "${Java_JAVA_EXECUTABLE}"
+             --add-exports=java.base/jdk.internal.math=ALL-UNNAMED -cp $<TARGET_PROPERTY:snx_android_framework,JAR_FILE>
+             "${PROJECT_SOURCE_DIR}/tests/android_framework.java")
     # GLES 2 and 3 over Vulkan (bridge/gles2*.c): draws on the host's Vulkan (lavapipe) read back and compared, and
     # again under Khronos validation
     add_executable(snx-test-android-gles2 "${PROJECT_SOURCE_DIR}/tests/android_gles2.c" "${volk_SOURCE_DIR}/volk.c")
