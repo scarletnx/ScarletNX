@@ -317,11 +317,9 @@ int snx_build_module_llvm(SnxProgram* loaded, const SnxCodegenOptions* options, 
     memset(&q, 0, sizeof(q));
     memset(&linked, 0, sizeof(linked));
     if (!loaded->module_count) return snx_error("no modules to generate");
-    /* what LLVM's code alone had: its IR, and its functions' own sections */
-    if (build->keep_ir) return snx_error("--keep-ir %s: the native back end keeps no IR to put there", build->keep_ir);
+    /* a function order (tools/layout.py's), which the native back end does not take yet */
     if (build->layout_count)
-        return snx_error("--layout: the native back end has no section of its own for each function to put in the "
-                         "order of its %zu addresses",
+        return snx_error("--layout of %zu addresses: the native back end does not order its functions yet",
                          build->layout_count);
     if (options->jit_cache && build->triple) {
         snx_error("--jit-cache cannot go with --target %s: a JIT cache is this host's", build->triple);

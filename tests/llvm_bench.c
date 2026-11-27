@@ -1,9 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
    Copyright 2026 the ScarletNX contributors */
-/* Speed of the generated code. Each kernel is AArch64 assembly (assembled with CLANG's aarch64 target), recompiled by
-   the CLI, and run AOT with x19 iterations.
-     llvm_bench SCARLETNX REPO CLANG [--iterations N] [--kernel NAME] [-O LEVEL] [--abi-contract]
-                [--unit-instructions N] [--stats]
+/* Speed of the code the host's native back end makes. Each kernel is AArch64 assembly (assembled with CLANG's aarch64
+   target), recompiled by the CLI, and run AOT with x19 iterations.
+     llvm_bench SCARLETNX REPO CLANG [--iterations N] [--kernel NAME] [--unit-instructions N]
    Prints one line per kernel: seconds and ns per iteration. */
 #include "common/utilities/common.h"
 #include "common/cpu/aarch64/cpu.h"
@@ -85,8 +84,7 @@ static const Kernel kernels[] = {
                    " eor x10, x10, x9\n add x11, x11, x10\n eor x12, x12, x11\n add x13, x13, x12\n"
                    " eor x14, x14, x13\n add x15, x15, x14\n subs x19, x19, #1\n b.ne loop\n"
                    " mov x30, x21\n str x15, [x3]\n ret\nleaf:\n add x1, x1, #1\n ret\n", one_per_pass},
-    /* the callee saves and restores two callee-saved registers, which the caller keeps live across the call: under
-       abi_contract the caller reloads neither, without it it reloads both after every call */
+    /* the callee saves and restores two callee-saved registers, which the caller keeps live across the call */
     {"calls-saved", "main:\n mov x21, x30\n mov x20, #0\n mov x22, #0\nloop:\n bl f\n"
                     " eor x20, x20, x19\n add x22, x22, x20\n eor x20, x20, x22, ror #7\n"
                     " add x22, x22, x19, lsl #2\n eor x20, x20, x22, lsr #3\n add x22, x22, x20\n"
@@ -200,25 +198,19 @@ static int run(const char* path, const unsigned char* image, size_t image_size, 
 }
 
 int main(int argc, char** argv) {
-    const char *only = NULL, *opt = NULL, *unit = NULL;
+    const char *only = NULL, *unit = NULL;
     size_t k;
     u64 iterations = 2000000;
     char *root, *text = NULL;
-    int a, abi_contract = 0, stats = 0;
+    int a;
     if (argc < 4) return 2;
     for (a = 4; a < argc; ++a) {
         if (a + 1 < argc && !strcmp(argv[a], "--iterations"))
             iterations = strtoull(argv[++a], NULL, 10);
         else if (a + 1 < argc && !strcmp(argv[a], "--kernel"))
             only = argv[++a];
-        else if (a + 1 < argc && !strcmp(argv[a], "-O"))
-            opt = argv[++a];
         else if (a + 1 < argc && !strcmp(argv[a], "--unit-instructions"))
             unit = argv[++a];
-        else if (!strcmp(argv[a], "--abi-contract"))
-            abi_contract = 1;
-        else if (!strcmp(argv[a], "--stats"))
-            stats = 1;
         else
             return snx_error("unknown argument %s", argv[a]);
     }
@@ -280,12 +272,7 @@ int main(int argc, char** argv) {
             rargs[n++] = out;
             rargs[n++] = "--runtime";
             rargs[n++] = argv[1];
-            rargs[n++] = stats ? "--ir_stats=1" : "-q";
-            if (opt) {
-                rargs[n++] = "-O";
-                rargs[n++] = opt;
-            }
-            if (abi_contract) rargs[n++] = "--abi_contract=1";
+            rargs[n++] = "-q";
             if (unit) {
                 rargs[n++] = "--chunk";
                 rargs[n++] = unit;
@@ -301,15 +288,6 @@ int main(int argc, char** argv) {
                     ++failures;
                 }
                 printf("%-8s %8.3f s %8.2f ns/iteration\n", kernels[k].name, seconds, seconds * 1e9 / (double)iterations);
-            }
-            if (stats && text) {
-                char* line = text;
-                while (line && *line) {
-                    char* end = strchr(line, '\n');
-                    size_t len = end ? (size_t)(end - line) : strlen(line);
-                    if (len > 8 && strstr(line, "IR stats")) printf("  %.*s\n", (int)len, line);
-                    line = end ? end + 1 : NULL;
-                }
             }
             fflush(stdout);
             free(text);

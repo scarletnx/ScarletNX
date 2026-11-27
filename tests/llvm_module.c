@@ -327,7 +327,7 @@ static void expected(Run* want, const unsigned char* image, u64 base) {
 }
 
 #if !defined(_WIN32) && !defined(__APPLE__)
-/* --layout: said and not done, the native back end having no section of its own for each function: the module is
+/* --layout: said, with its file, and not done, as the native back end does not order its functions yet: the module is
    made and runs the same */
 static void layout(const char* scarletnx, const char* repo, const char* root, const char* input, const char* self,
                    const unsigned char* image, const Run* plain) {
@@ -340,7 +340,10 @@ static void layout(const char* scarletnx, const char* repo, const char* root, co
     order = snx_format("%llx\n0x%llX\n", (unsigned long long)(plain->base + 0xE8), (unsigned long long)plain->base);
     check(!snx_write_file(file, order, strlen(order)), "write the layout file");
     if (snx_run(args, root, NULL, &text)) fprintf(stderr, "%s\n", text ? text : "");
-    snprintf(said, sizeof said, "--layout %s went with LLVM: the native back ends keep the code in its order", file);
+    snprintf(said, sizeof said,
+             "--layout %s: the native back end does not order its functions yet, so the file has no "
+             "effect",
+             file);
     check(text && strstr(text, said), "--layout is said");
     check(!run(module, image, 0, 0, 0, &laid), "the run of the laid-out module");
     if (!same(plain, &laid)) differences(plain, &laid, "layout");

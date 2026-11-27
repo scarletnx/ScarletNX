@@ -218,7 +218,6 @@ SnxCliRecompile snx_cli_recompile(const SnxCli* cli) {
     SnxCliRecompile r = {cli->chunk,
                          cli->value[SNX_CLI_JIT_CACHE],
                          !!(cli->flags & SNX_CLI_BIT(SNX_CLI_JIT_ONLY)),
-                         !!(cli->flags & SNX_CLI_BIT(SNX_CLI_KEEP_IR)),
                          !!(cli->flags & SNX_CLI_BIT(SNX_CLI_QUIET)),
                          NULL};
     /* -O and --keep-ir, gone with LLVM, are said and choose nothing: none of the recompile's */
