@@ -1853,7 +1853,9 @@ static int query_target_case(GpuChannel* channel, u64 target, u64 address) {
    through a header that swaps red and green, which the program swaps back: every pixel ends as its own, as a draw
    drawn two times (render.c predraw_run) has it only when its save draw copies the texels without the swizzle. Each
    round writes the target's texels anew and puts a texture barrier before its draw, as the console's texture reads
-   see those writes only after one */
+   see those writes only after one. Where the device also has dynamicRenderingLocalRead, the rounds that read other
+   pixels sample in place too, after a barrier in the pass (render.c's stage_set_), and each pixel must still read
+   the texel that the round wrote before its draw */
 #define OWN_FFMA(d, a, c, scale, negc)                                                                                 \
     (0x32a0000000070000ull | (u64)((scale) >> 12 & 0x7ffff) << 20 | (u64)((scale) >> 31) << 56 | (u64)(c) << 39 |      \
      (u64)(negc) << 49 | (u64)(a) << 8 | (u64)(d))
@@ -1940,7 +1942,8 @@ static int own_target_case(GpuChannel* channel, u64 target, u64 address, int cli
     int ok = 1;
     for (u32 round = 0; ok && round < (clip ? 5u : 6u); round++) {
         float transform[6];
-        int down = round == 2 || round == 4, in_place = (round == 0 || round == 4) && g_vk.has_feedback;
+        int down = round == 2 || round == 4,
+            in_place = g_vk.has_feedback && (round == 0 || round == 4 || g_vk.has_local_read);
         u64 program = programs + round * 0x200;
         if (round == 5) { /* the header swaps red and green, which the program swaps back: every pixel its own */
             u8 header[32];
@@ -2035,9 +2038,10 @@ static int own_target_case(GpuChannel* channel, u64 target, u64 address, int cli
     CHECK(ok);
     printf("own target: a draw that samples its target at a generic %s reads it %s\n",
            clip ? "written as its position, mapped from clip space," : "its position is written from",
-           !g_vk.has_feedback ? "through a copy (no attachment feedback loops)"
-           : clip             ? "in place, and through a copy under another viewport, sign or generic"
-                              : "in place, and through a copy under another viewport, sign or w");
+           !g_vk.has_feedback   ? "through a copy (no attachment feedback loops)"
+           : g_vk.has_local_read ? "in place, also under another viewport, sign or w (a barrier in the pass)"
+           : clip                ? "in place, and through a copy under another viewport, sign or generic"
+                                 : "in place, and through a copy under another viewport, sign or w");
     return 0;
 }
 
