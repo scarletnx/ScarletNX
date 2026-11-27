@@ -195,6 +195,10 @@ void rec_CmdClearDepthStencilImage(VkCommandBuffer cb, VkImage img, VkImageLayou
 /* ------------------------------------------------ what texture.c reaches otherwise, unused here */
 VkState g_vk;
 _Atomic u64 g_vk_texture_epoch; /* release.c's: render target snapshots, which no upload takes */
+/* draw_batches=2 (render.c): no run is split here, so the share lock is never taken and every thread draws as slot 0 */
+_Atomic int g_vk_share_on;
+_Thread_local u32 g_vk_slot;
+u32 vk_share_serial(void) { return 0; }
 /* Uploading into the fixture's existing image never creates views or samplers. Keep the registry boundary
    explicit, and fail if an upload unexpectedly starts exercising object creation. */
 VkResult vk_image_view_create(VkDevice device, const VkImageViewCreateInfo* info,
