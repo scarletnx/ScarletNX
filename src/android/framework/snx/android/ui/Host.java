@@ -58,7 +58,51 @@ public final class Host {
         synchronized (Host.class) { all = roots.toArray(new ViewRootImpl[0]); }
         for (ViewRootImpl r : all) r.resize(width, height);
     }
-    public static synchronized ViewRootImpl top() { return roots.isEmpty() ? null : roots.get(roots.size() - 1); }
+    /* the window a touch's down went to: its moves and its up go there too, as Android's input dispatcher keeps a
+       gesture on the window that took it */
+    private static ViewRootImpl touched;
+    /**
+     * The window a touch at (x, y) of the display goes to, as Android's input dispatcher picks it: from the top, the
+     * first whose frame holds the point and takes touches, or the first touch-modal one, which takes every touch (a
+     * dialog's). A window that does not take focus (FLAG_NOT_FOCUSABLE) or sets FLAG_NOT_TOUCH_MODAL lets the touches
+     * outside it through to the windows below (a popup's). The windows above it that watch outside touches
+     * (FLAG_WATCH_OUTSIDE_TOUCH) get an ACTION_OUTSIDE of the down, which outside.
+     */
+    public static ViewRootImpl touchTarget(float x, float y, int action, java.util.List<ViewRootImpl> outside) {
+        synchronized (Host.class) {
+            if (action != android.view.MotionEvent.ACTION_DOWN && touched != null && roots.contains(touched))
+                return touched;
+            touched = null;
+            for (int i = roots.size() - 1; i >= 0 && touched == null; --i) {
+                ViewRootImpl r = roots.get(i);
+                int flags = r.windowFlags();
+                boolean takes = (flags & WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) == 0;
+                boolean modal = (flags & (WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                                          | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL)) == 0;
+                if (takes && (r.frameContains(x, y) || modal)) touched = r;
+                else if (action == android.view.MotionEvent.ACTION_DOWN
+                         && (flags & WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH) != 0) outside.add(r);
+            }
+            return touched;
+        }
+    }
+    /** The window a key goes to: the top one that takes focus */
+    public static synchronized ViewRootImpl keyTarget() {
+        for (int i = roots.size() - 1; i >= 0; --i)
+            if ((roots.get(i).windowFlags() & WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE) == 0) return roots.get(i);
+        return null;
+    }
+    /** A touch of the host window or the script given to the window it goes to (touchTarget), on the main thread */
+    static void touch(android.view.MotionEvent e) {
+        java.util.ArrayList<ViewRootImpl> outside = new java.util.ArrayList<>();
+        ViewRootImpl root = touchTarget(e.getX(), e.getY(), e.getActionMasked(), outside);
+        for (ViewRootImpl r : outside) {
+            android.view.MotionEvent o = android.view.MotionEvent.obtain(e);
+            o.setAction(android.view.MotionEvent.ACTION_OUTSIDE);
+            r.dispatchInputEvent(o);
+        }
+        if (root != null) root.dispatchInputEvent(e);
+    }
     public static long frames() { return frames; }
 
     /** A root's frame: drawn over the roots below it, and under the roots above it. */

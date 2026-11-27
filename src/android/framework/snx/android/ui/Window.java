@@ -197,13 +197,11 @@ public final class Window {
             if (action < 0) continue;
             float x = tapPoints[i][0], y = tapPoints[i][1];
             new android.os.Handler(Looper.getMainLooper()).post(() -> {
-                ViewRootImpl root = Host.top();
-                if (root == null) return;
                 long now = SystemClock.uptimeMillis();
                 if (action == MotionEvent.ACTION_DOWN) downTime = now;
                 MotionEvent e = MotionEvent.obtain(downTime, now, action, x, y, 0);
                 e.setSource(android.view.InputDevice.SOURCE_TOUCHSCREEN);
-                root.dispatchInputEvent(e);
+                Host.touch(e);
             });
         }
     }
@@ -229,7 +227,7 @@ public final class Window {
             char c = keyTexts[i].charAt((int) (k / keyPace));
             new android.os.Handler(Looper.getMainLooper()).post(() -> {
                 int[] key = keyOf(c);
-                ViewRootImpl root = Host.top();
+                ViewRootImpl root = Host.keyTarget();
                 if (key == null || root == null) return;
                 long now = SystemClock.uptimeMillis();
                 root.dispatchInputEvent(new KeyEvent(now, now, KeyEvent.ACTION_DOWN, key[0], 0, key[1]));
@@ -238,21 +236,20 @@ public final class Window {
         }
     }
 
-    /** The window's events, each dispatched to the top window's root on the main thread. */
+    /** The window's events, each dispatched to the root of the window it goes to (Host) on the main thread. */
     static void poll() {
         int n = nativePoll(events);
         for (int i = 0; i < n; ++i) {
             int o = 8 * i, kind = (int) events[o], action = (int) events[o + 1];
-            ViewRootImpl root = Host.top();
+            ViewRootImpl root = Host.keyTarget();
             long now = SystemClock.uptimeMillis();
             switch (kind) {
                 case 1 -> {
-                    if (root == null) break;
                     int a = action == 0 ? MotionEvent.ACTION_DOWN : action == 1 ? MotionEvent.ACTION_UP : MotionEvent.ACTION_MOVE;
                     if (a == MotionEvent.ACTION_DOWN) downTime = now;
                     MotionEvent e = MotionEvent.obtain(downTime, now, a, events[o + 2], events[o + 3], 0);
                     e.setSource(android.view.InputDevice.SOURCE_TOUCHSCREEN);
-                    root.dispatchInputEvent(e);
+                    Host.touch(e);
                 }
                 case 2 -> {
                     if (root == null || action > 1) break;
