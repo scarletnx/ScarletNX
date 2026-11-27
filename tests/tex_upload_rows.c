@@ -720,6 +720,19 @@ u64 vk_rt_reclaim_superseded(u32 before, u64 want) {
     (void)before, (void)want;
     return 0;
 }
+u64 vk_rt_copies_reclaim(u32 before, u64 want) {
+    (void)before, (void)want;
+    return 0;
+}
+/* surface.c's: a copy's views and image go when the frames are done, and its bytes with them */
+void vk_rt_copy_free(Surf* x) {
+    for (int i = 0; i < x->nsv; i++) vk_defer_image(VK_NULL_HANDLE, 0, x->sv[i].v, VK_NULL_HANDLE);
+    if (x->att) vk_defer_image(VK_NULL_HANDLE, 0, x->att, VK_NULL_HANDLE);
+    if (x->att_linear) vk_defer_image(VK_NULL_HANDLE, 0, x->att_linear, VK_NULL_HANDLE);
+    vk_defer_image(x->img, x->mem, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    vk_defer_bytes(x->bytes);
+    free(x);
+}
 u64 vk_tex_reclaim_superseded(u32 before, u64 want) {
     (void)before, (void)want;
     return 0;
