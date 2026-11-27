@@ -28,7 +28,7 @@ on:
 permissions:
   contents: write # a release, and the "nightly" prerelease's link
   actions: read # the Build run's artifacts and jobs
-  checks: read # edenprobe's notice, for the comment of builds
+  checks: read # Amberlith's notice, for the comment of builds
   pull-requests: write # a fork's label, taken off at its push, and the comment of builds
 
 jobs:

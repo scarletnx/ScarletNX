@@ -92,17 +92,17 @@ jobs:
         arch: [x86_64, aarch64]
     container: ghcr.io/pkgforge-dev/archlinux:latest
     # Amberlith's NRO and APK, pinned releases run against test-references' amberlith/{linux,android}-x86_64.txt
-    # (docs/dev/edenprobe.md); another release or other words want those files written again
+    # (docs/dev/amberlith.md); another release or other words want those files written again
     env:
-      EDENPROBE_VERSION: v1.0.4
-      EDENPROBE_NRO: amberlith-1.0.4.nro
-      EDENPROBE_SHA256: 3271c4af392cd21e842e1ea89b370eb376da154f039dbe9e7f5c5a2193a2bed0
-      # every family that needs no person or network, but graphics (docs/dev/edenprobe.md)
-      EDENPROBE_MODE: quick notime cpu fs video display kernel audio hooks
-      EDENPROBE_APK_VERSION: v1.0.0
-      EDENPROBE_APK: amberlith-1.0.0.apk
-      EDENPROBE_APK_SHA256: 192cc7750bac972d0f4d850eea7bbada7a84b3c5b6b24d25d4d8ba7f7b6933d8
-      EDENPROBE_APK_MODE: quick
+      AMBERLITH_VERSION: v1.0.4
+      AMBERLITH_NRO: amberlith-1.0.4.nro
+      AMBERLITH_SHA256: 3271c4af392cd21e842e1ea89b370eb376da154f039dbe9e7f5c5a2193a2bed0
+      # every family that needs no person or network, but graphics (docs/dev/amberlith.md)
+      AMBERLITH_MODE: quick notime cpu fs video display kernel audio hooks
+      AMBERLITH_APK_VERSION: v1.0.0
+      AMBERLITH_APK: amberlith-1.0.0.apk
+      AMBERLITH_APK_SHA256: 192cc7750bac972d0f4d850eea7bbada7a84b3c5b6b24d25d4d8ba7f7b6933d8
+      AMBERLITH_APK_MODE: quick
     steps:
       # the commit the artifacts are named after: a pull request's head, else the one pushed
       - &commit
@@ -328,14 +328,14 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() && (steps.amberlith.outcome == 'success' || steps.amberlith.outcome == 'failure') }}
         with:
-          name: edenprobe-${{ steps.commit.outputs.short }}-${{ github.run_attempt }}
+          name: amberlith-${{ steps.commit.outputs.short }}-${{ github.run_attempt }}
           path: |
-            edenprobe
-            !edenprobe/work
-            edenprobe-main
-            !edenprobe-main/work
-            edenprobe-android
-            !edenprobe-android/work
+            amberlith
+            !amberlith/work
+            amberlith-main
+            !amberlith-main/work
+            amberlith-android
+            !amberlith-android/work
             *.log
             times.txt
           if-no-files-found: ignore

@@ -126,18 +126,18 @@ amberlith_fetch() {
     done
     echo "$3  $2" | sha256sum -c -
   }
-  if [ -z "$EDENPROBE_SHA256" ]; then
-    echo "EDENPROBE_SHA256 is empty: pin the sha256 of $EDENPROBE_NRO" >&2
+  if [ -z "$AMBERLITH_SHA256" ]; then
+    echo "AMBERLITH_SHA256 is empty: pin the sha256 of $AMBERLITH_NRO" >&2
     exit 1
   fi
-  fetch "$EDENPROBE_VERSION" "$EDENPROBE_NRO" "$EDENPROBE_SHA256" || exit 1
-  fetch "$EDENPROBE_APK_VERSION" "$EDENPROBE_APK" "$EDENPROBE_APK_SHA256" || exit 1
-  mkdir -p edenprobe-nightly
-  if gh release download nightly -R scarletnx/amberlith -D edenprobe-nightly -p 'amberlith-*.nro' \
+  fetch "$AMBERLITH_VERSION" "$AMBERLITH_NRO" "$AMBERLITH_SHA256" || exit 1
+  fetch "$AMBERLITH_APK_VERSION" "$AMBERLITH_APK" "$AMBERLITH_APK_SHA256" || exit 1
+  mkdir -p amberlith-nightly
+  if gh release download nightly -R scarletnx/amberlith -D amberlith-nightly -p 'amberlith-*.nro' \
       -p 'amberlith-*.nro.sha256' &&
-    mv edenprobe-nightly/amberlith-*.nro edenprobe-main.nro &&
-    mv edenprobe-nightly/amberlith-*.nro.sha256 edenprobe-main.nro.sha256 &&
-    echo "$(cut -d ' ' -f 1 edenprobe-main.nro.sha256)  edenprobe-main.nro" | sha256sum -c -; then
+    mv amberlith-nightly/amberlith-*.nro amberlith-main.nro &&
+    mv amberlith-nightly/amberlith-*.nro.sha256 amberlith-main.nro.sha256 &&
+    echo "$(cut -d ' ' -f 1 amberlith-main.nro.sha256)  amberlith-main.nro" | sha256sum -c -; then
     echo "main=true" >> "$GITHUB_OUTPUT"
   else
     echo "::warning title=Amberlith main::Amberlith's nightly could not be fetched or checked"
@@ -162,30 +162,30 @@ amberlith_run() {
     local name=$1
     shift
     local began=$(date +%s) code=0
-    python3 scripts/edenprobe.py run --runtime stage/bin/scarletnx "$@" --summary "$name.md" \
+    python3 scripts/amberlith.py run --runtime stage/bin/scarletnx "$@" --summary "$name.md" \
       > "$name.log" 2>&1 || code=$?
     echo "$code" > "$name.status"
     echo "$name: $(($(date +%s) - began)) s" >> times.txt
   }
   began=$(date +%s)
   : > times.txt
-  probe edenprobe --nro "$EDENPROBE_NRO" --mode "$EDENPROBE_MODE" --out edenprobe \
+  probe amberlith --nro "$AMBERLITH_NRO" --mode "$AMBERLITH_MODE" --out amberlith \
     --baseline "$refs/amberlith/linux-x86_64.txt" --setting fps-limit=0
-  probe edenprobe-android --apk "$EDENPROBE_APK" --mode "$EDENPROBE_APK_MODE" \
-    --out edenprobe-android --baseline "$refs/amberlith/android-x86_64.txt"
-  [ "$MAIN" = true ] && probe edenprobe-main --nro edenprobe-main.nro --mode "$EDENPROBE_MODE" \
-    --out edenprobe-main --advisory-baseline "$refs/amberlith/linux-x86_64.txt" --setting fps-limit=0
+  probe amberlith-android --apk "$AMBERLITH_APK" --mode "$AMBERLITH_APK_MODE" \
+    --out amberlith-android --baseline "$refs/amberlith/android-x86_64.txt"
+  [ "$MAIN" = true ] && probe amberlith-main --nro amberlith-main.nro --mode "$AMBERLITH_MODE" \
+    --out amberlith-main --advisory-baseline "$refs/amberlith/linux-x86_64.txt" --setting fps-limit=0
   status=0
-  for name in edenprobe edenprobe-android edenprobe-main; do
+  for name in amberlith amberlith-android amberlith-main; do
     [ -f "$name.status" ] || continue
     echo "::group::$name, exit $(cat "$name.status")"
     cat "$name.log"
     echo "::endgroup::"
     [ -f "$name.md" ] && cat "$name.md" >> "$GITHUB_STEP_SUMMARY"
-    if [ "$name" != edenprobe-main ]; then
+    if [ "$name" != amberlith-main ]; then
       if [ -f "$name/summary.md" ]; then
         result=$(head -n 1 "$name/summary.md" | cut -c5-)
-        echo "::notice title=edenprobe::${result//%/%25}"
+        echo "::notice title=amberlith::${result//%/%25}"
       fi
       [ "$(cat "$name.status")" = 0 ] || status=1
     fi

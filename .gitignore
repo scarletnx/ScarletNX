@@ -87,4 +87,5 @@ __pycache__/
 # OpenCode's MCP config for this checkout, with local absolute paths
 /opencode.json
 
+amberlith-run/
 edenprobe-run/

@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright 2026 the ScarletNX contributors
 """scripts/pr-builds.sh --print against a fake gh that has a run's artifacts and jobs: the builds linked, the APK's
-halves, the A64 differential's QEMU reference and edenprobe's report left out, the jobs that did not succeed named by their id in build.yml, the A64
-differential's QEMU reference and Nightly due never among them, and edenprobe's line, its notice linked to the run:
+halves, the A64 differential's QEMU reference and Amberlith's report left out, the jobs that did not succeed named by their id in build.yml, the A64
+differential's QEMU reference and Nightly due never among them, and Amberlith's line, its notice linked to the run:
 Amberlith's step in the Linux x86-64 job, whose failure alone leaves that job out of the jobs not built, and an older
 build.yml's runs, with a job of its own, the checks as installed, the sanitizers' build and the linux job a pull
 request's run skipped. Then the pull request found from the commit when none is given, and the workflow that runs it:
@@ -26,7 +26,7 @@ ARTIFACTS = {
          'expires_at': '2026-11-01T00:00:00Z'},
         {'id': 1, 'name': 'ScarletNX-android-arm64-v8a-abc1234-stage', 'size_in_bytes': 1 << 20, 'expired': False,
          'expires_at': '2026-11-01T00:00:00Z'},
-        {'id': 3, 'name': 'edenprobe-abc1234-1', 'size_in_bytes': 1 << 20, 'expired': False,
+        {'id': 3, 'name': 'amberlith-abc1234-1', 'size_in_bytes': 1 << 20, 'expired': False,
          'expires_at': '2026-11-01T00:00:00Z'},
         {'id': 4, 'name': 'fail-fast-1', 'size_in_bytes': 1 << 10, 'expired': False,
          'expires_at': '2026-11-01T00:00:00Z'},
@@ -143,15 +143,15 @@ with tempfile.TemporaryDirectory() as temporary:
 
     # NEEDS given, in the shape of toJSON(needs)
     built = {'linux': {'result': 'success', 'outputs': {}}, 'windows': {'result': 'success', 'outputs': {}}}
-    text = comment(built | {'edenprobe': {'result': 'success', 'outputs': {'result': TITLE}}})
+    text = comment(built | {'amberlith': {'result': 'success', 'outputs': {'result': TITLE}}})
     check(
         "the builds linked, the halves of the APK, an older build.yml's install tree, the A64 differential's QEMU"
-        " reference, edenprobe's report and a failed job's mark left out",
+        " reference, Amberlith's report and a failed job's mark left out",
         f'- [ScarletNX-windows-x86_64-abc1234]({RUN}/artifacts/2), 3 MiB' in text
         and '-stage' not in text
         and '-install' not in text
         and 'qemu-reference' not in text
-        and 'edenprobe-abc1234' not in text
+        and 'amberlith-abc1234' not in text
         and 'fail-fast' not in text,
         text,
     )
@@ -161,23 +161,23 @@ with tempfile.TemporaryDirectory() as temporary:
         text,
     )
     check(
-        "edenprobe's result linked to the run",
+        "Amberlith's result linked to the run",
         f'\n\n[{TITLE}]({RUN}): every case of the baseline passes\n' in text and 'Not built' not in text,
         text,
     )
     text = comment(
-        built | {'windows': {'result': 'failure', 'outputs': {}}, 'edenprobe': {'result': 'failure', 'outputs': {}}}
+        built | {'windows': {'result': 'failure', 'outputs': {}}, 'amberlith': {'result': 'failure', 'outputs': {}}}
     )
     check(
-        'a failed edenprobe says so, without a result of its own',
+        'a failed Amberlith says so, without a result of its own',
         f'[Amberlith]({RUN}): failed, see its summary' in text,
     )
-    check('a failed build named, edenprobe not among them', text.endswith('\n\nNot built: windows (failure)\n'), text)
-    text = comment(built | {'edenprobe': {'result': 'skipped', 'outputs': {}}})
-    check('a skipped edenprobe', text.endswith(f'\n\n[Amberlith]({RUN}): skipped\n') and 'Not built' not in text)
+    check('a failed build named, Amberlith not among them', text.endswith('\n\nNot built: windows (failure)\n'), text)
+    text = comment(built | {'amberlith': {'result': 'skipped', 'outputs': {}}})
+    check('a skipped Amberlith', text.endswith(f'\n\n[Amberlith]({RUN}): skipped\n') and 'Not built' not in text)
 
     # the run's jobs, as publish.yml finds them once the Build ends
-    notice = [{'title': 'something else', 'message': 'no'}, {'title': 'edenprobe', 'message': TITLE}]
+    notice = [{'title': 'something else', 'message': 'no'}, {'title': 'amberlith', 'message': TITLE}]
     text = comment(run_jobs=jobs(*WHOLE), notice=notice)
     check(
         "a leg's failure under its job's id, the checks as installed and the sanitizers' build never named",
@@ -187,15 +187,15 @@ with tempfile.TemporaryDirectory() as temporary:
         text,
     )
     apk = "edenprobe v0.11.0's APK: 640 passed, 13 failed, 0 skipped, 0 crashed"
-    text = comment(run_jobs=jobs(*WHOLE), notice=[{'title': 'edenprobe', 'message': apk}] + notice)
+    text = comment(run_jobs=jobs(*WHOLE), notice=[{'title': 'amberlith', 'message': apk}] + notice)
     check(
-        "the NRO's and the APK's notices on edenprobe's line, the NRO's first whatever order the API gives",
+        "the NRO's and the APK's notices on Amberlith's line, the NRO's first whatever order the API gives",
         f'\n\n[{TITLE}; {apk}]({RUN}): every case of the baseline passes\n' in text,
         text,
     )
-    text = comment(run_jobs=jobs(*DRAFT), notice=[{'title': 'edenprobe', 'message': TITLE}])
+    text = comment(run_jobs=jobs(*DRAFT), notice=[{'title': 'edenprobe', 'message': TITLE}])  # an older run's title
     check(
-        "a draft's: the jobs skipped whole named in build.yml's order, edenprobe's failure with its notice",
+        "a draft's: the jobs skipped whole named in build.yml's order, Amberlith's failure with its notice",
         text.endswith(
             f'\n\n[{TITLE}]({RUN}): failed, see its summary\n\nNot built: appimage-cross (skipped), windows (failure), '
             'apple (skipped)\n'
@@ -235,7 +235,7 @@ with tempfile.TemporaryDirectory() as temporary:
     why = 'not run, none of the 3 files changed is one the NRO or the APK loads'
     text = comment(
         run_jobs=jobs(('Amberlith (Linux x86_64, lavapipe)', 'success')),
-        notice=[{'title': 'edenprobe', 'message': f'Amberlith: {why}'}],
+        notice=[{'title': 'amberlith', 'message': f'Amberlith: {why}'}],
     )
     check(
         'Amberlith not run: the line says why, and nothing about a baseline',
@@ -244,7 +244,7 @@ with tempfile.TemporaryDirectory() as temporary:
     )
 
     # build.yml as it is: Amberlith a step of the Linux x86-64 job, whose notices are that job's
-    text = comment(run_jobs=jobs(*NOW), notice=[{'title': 'edenprobe', 'message': TITLE}])
+    text = comment(run_jobs=jobs(*NOW), notice=[{'title': 'amberlith', 'message': TITLE}])
     check(
         "Amberlith's step passed: its notice linked, AArch64's skipped step taken for no result of it",
         text.endswith(f'\n\n[{TITLE}]({RUN}): every case of the baseline passes\n') and 'Not built' not in text,
@@ -253,7 +253,7 @@ with tempfile.TemporaryDirectory() as temporary:
     failed = PASSED | {'Run Amberlith': 'failure', 'Mark the run failed': 'success'}
     text = comment(
         run_jobs=jobs(('Linux AppImage (x86_64)', 'failure', failed), *NOW[1:]),
-        notice=[{'title': 'edenprobe', 'message': TITLE}],
+        notice=[{'title': 'amberlith', 'message': TITLE}],
     )
     check(
         'Amberlith failed alone: its line says so, and its job built its package, so it is not named',
@@ -269,7 +269,7 @@ with tempfile.TemporaryDirectory() as temporary:
     )
     text = comment(
         run_jobs=jobs(('Linux AppImage (x86_64)', 'success', PASSED | {'Run Amberlith': 'skipped'}), *NOW[1:]),
-        notice=[{'title': 'edenprobe', 'message': f'Amberlith: {why}'}],
+        notice=[{'title': 'amberlith', 'message': f'Amberlith: {why}'}],
     )
     check(
         "Amberlith's step not called for: the line says why",
