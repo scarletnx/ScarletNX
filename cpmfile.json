@@ -495,9 +495,9 @@
         "version": "v2.14.16"
     },
     "test-references": {
-        "hash": "56647cede6218c6e22f5d454dd4f77d7d6bea8bfcfd329d3f2774ac0799b528d1de68272f0581475113e20d8dd9d7187124d30c40d4772531f51b58023471713",
+        "hash": "18a80009cbe13153ed2f03a57c1b9c0e083ba033f27d8d7dab3e2c1ff15335376164a8f8845298314bc31c33aedb55b72846f9364d91276e86738d54c0a9c5c4",
         "repo": "scarletnx/test-references",
-        "version": "466e397e5c79228d4752e7341c30a362efbfa4d1"
+        "version": "33065d6b3bc40eebffb4f188c6726d3b678709f8"
     },
     "tracy": {
         "hash": "a274fbb62ec25ab9b6025eeeb6e0458ba282fe61509dcd0daf824bdbcf3215c25eb992271d33cc88544068f83e00d791833e980eed7c8f4a1cd3ef71841cf38e",

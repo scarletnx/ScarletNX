@@ -33,7 +33,7 @@ of its report: its cases are the ones the release ends as it says on this machin
 the release's run before it.
 
 baseline writes the cases that end the same way in every BASELINE given (baseline.txt of runs of one build and one
-mode): a case that passes only now and then stays out. FILE is in the edenprobe folder of a test-references clone, where
+mode): a case that passes only now and then stays out. FILE is in the amberlith folder of a test-references clone, where
 the tests' baselines are: another folder is refused, CPM's copy among them.
 """
 

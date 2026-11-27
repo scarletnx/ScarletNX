@@ -25,10 +25,10 @@ fails.
 ```sh
 python3 scripts/edenprobe.py run --runtime build/scarletnx --nro amberlith-1.0.4.nro --out /tmp/edenprobe \
     --mode "quick notime cpu fs video display kernel audio hooks" \
-    [--baseline "$REFS/edenprobe/linux-x86_64.txt"]
+    [--baseline "$REFS/amberlith/linux-x86_64.txt"]
 ```
 
-The baselines are the `edenprobe/` folder of test-references, the package of the tests' reference values that
+The baselines are the `amberlith/` folder of test-references, the package of the tests' reference values that
 `cpmfile.json` pins (`docs/dev/build.md`); a build with its tests has it where its `CMakeCache.txt` says:
 
 ```sh
@@ -57,7 +57,7 @@ without installing it, point `VK_DRIVER_FILES` at its ICD file. CI's runs of the
 
 With `-DSNX_TEST_EDENPROBE=/path/to/edenprobe.nro`, ctest runs it as `edenprobe_vk_memory_1` (copied) and
 `edenprobe_vk_memory_2` (in place) against the baseline, and as `edenprobe_compute_readback`, the wimsy suite's heavy
-level after the reference suite, against `edenprobe/compute-readback.txt`: #2442's case, a compute texture's
+level after the reference suite, against `amberlith/compute-readback.txt`: #2442's case, a compute texture's
 level read back after each judged frame holds that frame's texels.
 
 ## From the launcher
@@ -104,7 +104,7 @@ their submissions drew nothing and each case waited for memory that the GPU woul
 The Linux x86-64 job of `.github/workflows/build.yml` (`Linux AppImage (x86_64)`), once its tests pass, installs the
 AppImage's runtime apart and runs the NRO `EDENPROBE_NRO` of Amberlith's release `EDENPROBE_VERSION`,
 pinned by `EDENPROBE_SHA256`, on lavapipe with the words of `EDENPROBE_MODE`, against
-`edenprobe/linux-x86_64.txt`. The result goes in the run's
+`amberlith/linux-x86_64.txt`. The result goes in the run's
 summary and in the pull request's comment of builds; the artifact `edenprobe-<commit>-<attempt>` holds the report,
 pictures, logs and `baseline.txt`.
 
@@ -117,7 +117,7 @@ kernel family times its threads, each with its own output, summary and exit (`sc
 the job fails when the NRO's or the APK's does.
 
 The job also runs Amberlith's main, the NRO of its `nightly` release (checked by its
-`.sha256`), with `scripts/edenprobe.py run --advisory-baseline "$REFS/edenprobe/linux-x86_64.txt"`: beside the pinned
+`.sha256`), with `scripts/edenprobe.py run --advisory-baseline "$REFS/amberlith/linux-x86_64.txt"`: beside the pinned
 release's baseline it never fails. A case the release has not got that does not pass, a case the
 release passes that does not pass here, a run that ends early, or a nightly that cannot be fetched is a warning on the
 run, and the summary has a section of its own. A case new in main becomes binding when a release that has it is pinned
@@ -125,7 +125,7 @@ and the baseline written again.
 
 ## The baseline
 
-`edenprobe/<platform>.txt` names the probe's build and the mode words it was written with, then one case a line:
+`amberlith/<platform>.txt` names the probe's build and the mode words it was written with, then one case a line:
 `suite: name` for a case that passes, `[RESULT] suite: name` for one that ends as RESULT, the result as the summary
 lists it (`skip (crashed)`, `fail: DETAIL`; no `]` in it). That second form is for a case that ends the program on the
 console too, as an instruction the console refuses, and for one the probe's ban list skips on ScarletNX
@@ -138,7 +138,7 @@ they come through. It is written into a clone of test-references, and goes up as
 `cpmfile.json`, in the pull request that pins the release:
 
 ```sh
-python3 scripts/edenprobe.py baseline run1/baseline.txt run2/baseline.txt -o test-references/edenprobe/linux-x86_64.txt
+python3 scripts/edenprobe.py baseline run1/baseline.txt run2/baseline.txt -o test-references/amberlith/linux-x86_64.txt
 ```
 
 ## On the Android layer
@@ -151,7 +151,7 @@ nothing recompiled:
 
 ```sh
 python3 scripts/edenprobe.py run --runtime build/scarletnx --apk amberlith-1.0.0.apk --mode quick --out /tmp/edenprobe-apk \
-    [--java-home DIR] [--baseline "$REFS/edenprobe/android-x86_64.txt"]
+    [--java-home DIR] [--baseline "$REFS/amberlith/android-x86_64.txt"]
 ```
 
 The runtime runs it as `scarletnx-android --headless`, on the JDK the build found or `--java-home`'s, with the
@@ -164,7 +164,7 @@ launches, the report and the baseline are the NRO's.
 
 In CI the Linux x86-64 job runs it after the NRO, on the same install with the JVM of the build's JDK, as
 `EDENPROBE_APK` of the release `EDENPROBE_APK_VERSION`, pinned by `EDENPROBE_APK_SHA256`, with the words of
-`EDENPROBE_APK_MODE`, against `edenprobe/android-x86_64.txt`, written as the NRO's is. Its notice follows the
+`EDENPROBE_APK_MODE`, against `amberlith/android-x86_64.txt`, written as the NRO's is. Its notice follows the
 NRO's on the probe's line of the pull request's comment, and its files are under `edenprobe-android/` in the job's
 artifact.
 

@@ -156,8 +156,8 @@ amberlith_fetch() {
 # env: MAIN
 amberlith_run() {
   refs=$(sed -n 's/^CPM_PACKAGE_test-references_SOURCE_DIR:INTERNAL=//p' build/default/CMakeCache.txt)
-  if [ ! -d "$refs/edenprobe" ]; then
-    echo "no edenprobe/ in the test-references that build/default's CMakeCache.txt names (\"$refs\")" >&2
+  if [ ! -d "$refs/amberlith" ]; then
+    echo "no amberlith/ in the test-references that build/default's CMakeCache.txt names (\"$refs\")" >&2
     exit 1
   fi
   # NAME ARGS...: one run, its output in NAME.log, its status in NAME.status
@@ -173,11 +173,11 @@ amberlith_run() {
   began=$(date +%s)
   : > times.txt
   probe edenprobe --nro "$EDENPROBE_NRO" --mode "$EDENPROBE_MODE" --out edenprobe \
-    --baseline "$refs/edenprobe/linux-x86_64.txt" --setting fps-limit=0
+    --baseline "$refs/amberlith/linux-x86_64.txt" --setting fps-limit=0
   probe edenprobe-android --apk "$EDENPROBE_APK" --mode "$EDENPROBE_APK_MODE" \
-    --out edenprobe-android --baseline "$refs/edenprobe/android-x86_64.txt"
+    --out edenprobe-android --baseline "$refs/amberlith/android-x86_64.txt"
   [ "$MAIN" = true ] && probe edenprobe-main --nro edenprobe-main.nro --mode "$EDENPROBE_MODE" \
-    --out edenprobe-main --advisory-baseline "$refs/edenprobe/linux-x86_64.txt" --setting fps-limit=0
+    --out edenprobe-main --advisory-baseline "$refs/amberlith/linux-x86_64.txt" --setting fps-limit=0
   status=0
   for name in edenprobe edenprobe-android edenprobe-main; do
     [ -f "$name.status" ] || continue
