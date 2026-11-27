@@ -9,39 +9,55 @@
 #include <string.h>
 
 /* ---- the adapters ----
-   By type: d for double, f for float, i for int, p for a pointer */
+   By type: d for double, f for float, i for int, p for a pointer. bionic's libm never sets errno (its
+   math_errhandling is MATH_ERREXCEPT), where the host's does (glibc's log(0) sets ERANGE): each call keeps the
+   guest's */
+#define KEEP_ERRNO(call)                                                                                               \
+    do {                                                                                                               \
+        const int kept = errno;                                                                                        \
+        call;                                                                                                          \
+        errno = kept;                                                                                                  \
+    } while (0)
 
-static void d_d(CPU* c, void* fn) { hle_set_d(c, ((double (*)(double))fn)(hle_d(c, 0))); }
-static void d_dd(CPU* c, void* fn) { hle_set_d(c, ((double (*)(double, double))fn)(hle_d(c, 0), hle_d(c, 1))); }
-static void f_f(CPU* c, void* fn) { hle_set_f(c, ((float (*)(float))fn)(hle_f(c, 0))); }
-static void f_ff(CPU* c, void* fn) { hle_set_f(c, ((float (*)(float, float))fn)(hle_f(c, 0), hle_f(c, 1))); }
+static void d_d(CPU* c, void* fn) { KEEP_ERRNO(hle_set_d(c, ((double (*)(double))fn)(hle_d(c, 0)))); }
+static void d_dd(CPU* c, void* fn) {
+    KEEP_ERRNO(hle_set_d(c, ((double (*)(double, double))fn)(hle_d(c, 0), hle_d(c, 1))));
+}
+static void f_f(CPU* c, void* fn) { KEEP_ERRNO(hle_set_f(c, ((float (*)(float))fn)(hle_f(c, 0)))); }
+static void f_ff(CPU* c, void* fn) {
+    KEEP_ERRNO(hle_set_f(c, ((float (*)(float, float))fn)(hle_f(c, 0), hle_f(c, 1))));
+}
 static void d_ddd(CPU* c, void* fn) {
-    hle_set_d(c, ((double (*)(double, double, double))fn)(hle_d(c, 0), hle_d(c, 1), hle_d(c, 2)));
+    KEEP_ERRNO(hle_set_d(c, ((double (*)(double, double, double))fn)(hle_d(c, 0), hle_d(c, 1), hle_d(c, 2))));
 }
 static void f_fff(CPU* c, void* fn) {
-    hle_set_f(c, ((float (*)(float, float, float))fn)(hle_f(c, 0), hle_f(c, 1), hle_f(c, 2)));
+    KEEP_ERRNO(hle_set_f(c, ((float (*)(float, float, float))fn)(hle_f(c, 0), hle_f(c, 1), hle_f(c, 2))));
 }
 /* lround and llround: bionic's long is 64 bits as long long is, which Windows' long is not */
 static void l_d(CPU* c, void* fn) {
     (void)fn;
-    X(0) = (uint64_t)llround(hle_d(c, 0));
+    KEEP_ERRNO(X(0) = (uint64_t)llround(hle_d(c, 0)));
 }
 static void l_f(CPU* c, void* fn) {
     (void)fn;
-    X(0) = (uint64_t)llroundf(hle_f(c, 0));
+    KEEP_ERRNO(X(0) = (uint64_t)llroundf(hle_f(c, 0)));
 }
-static void d_di(CPU* c, void* fn) { hle_set_d(c, ((double (*)(double, int))fn)(hle_d(c, 0), (int)X(0))); }
-static void d_dp(CPU* c, void* fn) { hle_set_d(c, ((double (*)(double, void*))fn)(hle_d(c, 0), PTR(0))); }
-static void f_fp(CPU* c, void* fn) { hle_set_f(c, ((float (*)(float, void*))fn)(hle_f(c, 0), PTR(0))); }
+static void d_di(CPU* c, void* fn) { KEEP_ERRNO(hle_set_d(c, ((double (*)(double, int))fn)(hle_d(c, 0), (int)X(0)))); }
+static void d_dp(CPU* c, void* fn) { KEEP_ERRNO(hle_set_d(c, ((double (*)(double, void*))fn)(hle_d(c, 0), PTR(0)))); }
+static void f_fp(CPU* c, void* fn) { KEEP_ERRNO(hle_set_f(c, ((float (*)(float, void*))fn)(hle_f(c, 0), PTR(0)))); }
 static void sincos_d(CPU* c, void* fn) {
     (void)fn;
+    const int kept = errno;
     double x = hle_d(c, 0), s = sin(x), co = cos(x);
+    errno = kept;
     memcpy(PTR(0), &s, sizeof s);
     memcpy(PTR(1), &co, sizeof co);
 }
 static void sincos_f(CPU* c, void* fn) {
     (void)fn;
+    const int kept = errno;
     float x = hle_f(c, 0), s = sinf(x), co = cosf(x);
+    errno = kept;
     memcpy(PTR(0), &s, sizeof s);
     memcpy(PTR(1), &co, sizeof co);
 }

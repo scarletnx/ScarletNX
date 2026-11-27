@@ -328,6 +328,14 @@ static void test_libm(void) {
     expect_mathf("cbrtf", 2.0f, cbrtf);
     expect_mathf("expm1f", 1e-5f, expm1f);
     expect_mathf("log1pf", 1e-5f, log1pf);
+
+    /* bionic's libm leaves errno as it was, where glibc's sets ERANGE for log(0) and EDOM for sqrt(-1) */
+    *hle_errno_location() = 7;
+    CALLD("log", 0.0, 0);
+    expect_int("log(0) keeps errno", *hle_errno_location(), 7);
+    CALLD("sqrt", -1.0, 0);
+    expect_int("sqrt(-1) keeps errno", *hle_errno_location(), 7);
+    *hle_errno_location() = 0;
 }
 
 /* ---- files ---- */
