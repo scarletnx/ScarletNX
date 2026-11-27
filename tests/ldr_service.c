@@ -164,8 +164,8 @@ u32 own_lookup(u64 addr, u64 size, OwnRange* out, u32 max) { /* nothing is the G
     (void)addr, (void)size, (void)out, (void)max;
     return 0;
 }
-int plat_vm_share(u8* p, int fd, u64 size) {
-    (void)p, (void)fd, (void)size;
+int plat_vm_share(u8* p, int fd, u64 off, u64 size) {
+    (void)p, (void)fd, (void)off, (void)size;
     return -1;
 }
 int plat_vm_unshare(u8* p, u64 size) {
