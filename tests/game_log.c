@@ -300,6 +300,14 @@ static void runs(const char* root) {
 int main(int argc, char** argv) {
     if (argc == 3) return run_case(argv[1], argv[2]);
     g_self = snx_executable(argv[0]);
+#if defined(__SANITIZE_ADDRESS__) && !defined(_WIN32)
+    /* the crash case's handler hands the signal on to the one before it, which ASan's would be, and its report would
+       follow the crash's line: without it the default ends the case, as in a build without ASan */
+    const char* asan = getenv("ASAN_OPTIONS");
+    char options[512];
+    snprintf(options, sizeof options, "%s%shandle_segv=0", asan ? asan : "", asan && *asan ? ":" : "");
+    setenv("ASAN_OPTIONS", options, 1);
+#endif
     char *root = snx_temp_root(), *dir = root ? snx_temp_dir(root) : NULL;
     CHECK(g_self && dir, "no folder for the cases");
     if (!g_self || !dir) return 1;
