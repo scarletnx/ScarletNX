@@ -3772,7 +3772,8 @@ void vk_rt_copy_free(Surf* x) {
 }
 /* rt_copy lets a target's old copies go only when a bind asks it for another copy, and a game at a dynamic resolution
    that samples its targets whole again at full size asks for none: the copies of its corners at the 15 to 20 sizes
-   it went through stayed until the targets went, 270 of them and 848 MB where three were in use each frame */
+   it went through stayed until the targets went, 270 of them and 848 MB where three were in use each frame. A trim
+   under pressure lets go of those no bind asked for in VK_RT_COPY_TRIM_PRESENTS, as a lossless step */
 static u64 rt_copies_reclaim(u32 before, u64 want) {
     u64 freed = 0;
     for (int lru = VK_LRU_RT; lru <= VK_LRU_RT + LRU_AGED && freed < want; lru += LRU_AGED)
@@ -3789,12 +3790,6 @@ static u64 rt_copies_reclaim(u32 before, u64 want) {
                 g_copies_gone_bytes += x->bytes;
                 vk_rt_copy_free(x);
             }
-    return freed;
-}
-u64 vk_rt_copies_reclaim(u32 before, u64 want) {
-    VkResourceScope scope = vk_resource_begin();
-    u64 freed = rt_copies_reclaim(before, want);
-    vk_resource_end(VK_RESOURCE_SURFACE_RECLAIM, scope);
     return freed;
 }
 u64 vk_rt_reclaim_superseded(u32 before, u64 want) {
@@ -4226,7 +4221,7 @@ void vk_mem_trim(u64 extra, int force) {
             g_heap_swept = g_vk_present + 1;
             g_trimmed += vk_rt_reclaim_superseded(vk_present_before(0, 2), ~0ull);
             g_trimmed += vk_tex_reclaim_superseded(vk_present_before(0, 2), ~0ull);
-            g_trimmed += vk_rt_copies_reclaim(vk_present_before(0, VK_RT_COPY_PRESENTS), ~0ull);
+            g_trimmed += rt_copies_reclaim(vk_present_before(0, VK_RT_COPY_TRIM_PRESENTS), ~0ull);
         }
         return;
     }
@@ -4258,7 +4253,7 @@ void vk_mem_trim(u64 extra, int force) {
                                                                : vk_present_before(0, 2);
     /* the copies of targets no bind asked for lately go with them: made again from their targets */
     u64 superseded = vk_rt_reclaim_superseded(superseded_before, ~0ull) +
-                     vk_rt_copies_reclaim(vk_present_before(0, VK_RT_COPY_PRESENTS), ~0ull);
+                     rt_copies_reclaim(vk_present_before(0, VK_RT_COPY_TRIM_PRESENTS), ~0ull);
     const u64 tex_superseded_bytes = vk_tex_reclaim_superseded(superseded_before, ~0ull);
     static const struct {
         u32 ms, presents;
@@ -4404,7 +4399,6 @@ void vk_mem_release_run(void) {
     u32 before = vk_present_before(0, 2);
     g_release.blocks = vk_memory_blocks();
     g_release.by[2] = vk_rt_reclaim_superseded(before, ~0ull);
-    g_release.by[2] += vk_rt_copies_reclaim(vk_present_before(0, VK_RT_COPY_PRESENTS), ~0ull);
     g_release.by[0] = vk_tex_reclaim_superseded(before, ~0ull);
     g_release.by[0] += vk_surf_reclaim(VK_LRU_TEX, before, ~0ull, VK_RECLAIM_LOSSLESS);
     g_release.by[1] = vk_buf_reclaim(before, ~0ull);

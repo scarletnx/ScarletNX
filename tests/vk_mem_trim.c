@@ -10,8 +10,8 @@
    target whose pixels exist only on the GPU and can't move into system memory stays for its age and goes under the
    pressure; one set aside reads its memory again where its bytes changed; targets in system memory go while the
    system heap is short (surface.c rt_give_way, rt_aside, vk_rt_sys_frame). A parked target's storage result lands
-   nowhere (flush_land). The copies of a live target that no bind asked for lately go at the trims and the sweep
-   (rt_copies_reclaim). No Vulkan loader, device or GPU is used:
+   nowhere (flush_land). The copies of a live target that no bind asked for in VK_RT_COPY_TRIM_PRESENTS go under the
+   trims' pressure, and stay with none (rt_copies_reclaim). No Vulkan loader, device or GPU is used:
    the rest of the renderer is stubs, and a call that the trim must not make aborts */
 #include <stdarg.h>
 #include <stdio.h>
@@ -358,13 +358,14 @@ static int heap_full_takes(int heap_full, u32 ago) {
 }
 
 /* A live target that the game samples whole again holds the copies rt_copy made of its corners at sizes it went
-   through, which rt_copy lets go only when a bind asks it for another copy. Those no bind asked for in
-   VK_RT_COPY_PRESENTS presents go, with their bytes: at the sweep every 30 presents and the release (how 0,
-   vk_rt_copies_reclaim, which they call as it is: the release takes a lock this test stubs out), a trim for headroom
-   (1), and a trim while the heap is at its budget though the caches count room in the blocks (2). The copy a bind
-   asked for lately, a feedback draw's save copy (predraw) and the target stay */
+   through, which rt_copy lets go only when a bind asks it for another copy. A trim under pressure lets go of those no
+   bind asked for in VK_RT_COPY_TRIM_PRESENTS presents, with their bytes: a trim for headroom (how 1), and a trim while
+   the heap is at its budget though the caches count room in the blocks (2). The copy a bind asked for 100 presents
+   ago, a feedback draw's save copy (predraw) and the target stay. With no pressure (0) none goes: a game at a dynamic
+   resolution asks again for the copies of the sizes it goes back to. 1 when it went so */
 static int copies_go(int how) {
-    static const u32 ago[] = {VK_RT_COPY_PRESENTS + 1, VK_RT_COPY_PRESENTS + 40, 600, 10, 600};
+    static const u32 ago[] = {VK_RT_COPY_TRIM_PRESENTS + 100, VK_RT_COPY_TRIM_PRESENTS + 200,
+                              VK_RT_COPY_TRIM_PRESENTS + 400, 100, VK_RT_COPY_TRIM_PRESENTS + 100};
     g_vk_present += 1000;
     g_vk.has_pageable = 0;
     Surf* rt = target(0x60000000, 8 << 20, 1);
@@ -385,7 +386,12 @@ static int copies_go(int how) {
     VkRtKinds was, now;
     vk_rt_kinds(&was);
     g_deferred = 0;
-    if (how == 0) CHECK(vk_rt_copies_reclaim(vk_present_before(0, VK_RT_COPY_PRESENTS), ~0ull) == 6 << 20);
+    if (how == 0) {
+        g_use = vk_mem_trim_start(g_budget) - trim_head(g_budget);
+        g_heap_use = g_use;
+        vk_mem_trim(0, 0);
+        g_heap_use = 0;
+    }
     if (how == 1) {
         g_use = g_budget - trim_head(g_budget) * 3 / 4;
         vk_mem_trim(0, 0);
@@ -399,17 +405,18 @@ static int copies_go(int how) {
     u32 left = 0;
     for (const Surf* x = rt->crop; x; x = x->next) left++;
     vk_rt_kinds(&now); /* the report's counts: the copies held, and those let go */
-    const int went = left == 2 && rt->crop == kept[1] && kept[1]->next == kept[0] && g_deferred == 6 << 20 &&
-                     targets_held() == 1 && now.copies == 2 && now.copy_bytes == 9 << 20 &&
-                     now.copies_gone - was.copies_gone == 3 && now.copies_gone_bytes - was.copies_gone_bytes == 6 << 20;
-    if (!went)
+    const u64 gone = now.copies_gone - was.copies_gone, gone_bytes = now.copies_gone_bytes - was.copies_gone_bytes;
+    const int went = how ? left == 2 && rt->crop == kept[1] && kept[1]->next == kept[0] && g_deferred == 6 << 20 &&
+                               now.copies == 2 && now.copy_bytes == 9 << 20 && gone == 3 && gone_bytes == 6 << 20
+                         : left == 5 && !g_deferred && now.copies == 5 && !gone;
+    if (!went || targets_held() != 1)
         fprintf(stderr,
                 "copies_go(%d): %u copies left, %llu bytes deferred, %u targets; the report: %u held, %llu let go\n",
-                how, left, (unsigned long long)g_deferred, targets_held(), now.copies,
-                (unsigned long long)(now.copies_gone - was.copies_gone));
+                how, left, (unsigned long long)g_deferred, targets_held(), now.copies, (unsigned long long)gone);
+    const int target_stays = targets_held() == 1;
     surf_evict(rt);
     CHECK(targets_held() == 0);
-    return went;
+    return went && target_stays;
 }
 
 /* A texture of 1 MB at 0x50000000 that took pixels from targets when the surfaces' write count was 10, last used
@@ -573,8 +580,8 @@ int main(void) {
         "whose memory targets drew all over after their take and left the others; a target with pixels memory "
         "lacks stayed for its age and went under the pressure where it can't move, loaded memory again where its bytes "
         "changed meanwhile, targets in system memory went oldest first while the system heap was short, and a parked "
-        "target's storage result landed nothing; the copies of a live target that no bind asked for in 60 presents "
-        "went at the sweep and the trims, and the others stayed\n");
+        "target's storage result landed nothing; the copies of a live target that no bind asked for in 600 presents "
+        "went under the trims' pressure, the others stayed, and none went with no pressure\n");
     return 0;
 }
 /* the pool map's views of a texture whose image changed (vk_rt_host): this test makes no pool map */
