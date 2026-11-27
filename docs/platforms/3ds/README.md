@@ -61,10 +61,9 @@ first time it is played, its module and hints renamed.
 `scarletnx-3ds` takes the [common options](../../user/usage.md#common-options), each value as `--option VALUE` or
 `--option=VALUE`. Its `--script` is the setting `ctr_script`, `-f` the setting `fullscreen`, `--frames N` ends the run
 after N decoded frames and `--shot PATH` writes the last frame of both screens as one PPM to exactly PATH. `-H`
-(`--headless`) starts no SDL video, audio or gamepad subsystem and opens no window, whatever display the host has. Of the recompile's, `-O` is the level of
-the static blocks and their helpers (the setting `opt`, 2), `--chunk N` puts N instructions in a chunk (512 blocks
-without it), `--jit-cache` names another game folder's `<title ID>.hints`, `--jit-only` makes a module of no blocks
-and `--keep-ir` keeps each chunk's IR in `<title ID>_build`. A recompile says a line for each chunk, as the Switch's
+(`--headless`) starts no SDL video, audio or gamepad subsystem and opens no window, whatever display the host has. Of the recompile's, `--chunk N` puts
+N instructions in a chunk (512 blocks without it), `--jit-cache` names another game folder's `<title ID>.hints`,
+`--jit-only` makes a module of no blocks, and `-O` and `--keep-ir`, LLVM's, are said and do nothing. A recompile says a line for each chunk, as the Switch's
 says one for each code unit.
 
 What a file holds is read from its own header, not its name: a CIA's magic at 0, an
