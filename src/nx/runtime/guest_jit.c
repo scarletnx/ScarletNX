@@ -324,17 +324,12 @@ void jit_init(void) {
         WARN("jit: the AOT module has no runtime code variants; the JIT handles the misses and writes a cache\n");
     }
     memset(&config, 0, sizeof(config));
+    /* the native back end has no levels: the cache's key keeps the one each cache was made with, a phone's 0 and
+       jit_opt's default elsewhere, so no cache is made again for it */
 #if defined(__ANDROID__) || defined(SNX_IOS)
-    /* a phone compiles at O0: any other level breaks the JIT there, so settings.txt has no setting for it, and the ini
-       has no key */
     opt = '0';
 #else
-    opt = g_settings.jit_optimization[0];
-    /* ini_read takes any text that fits, as a hand-edited .ini has it; strchr finds an empty one's NUL */
-    if (!opt || !strchr("0123sz", opt)) {
-        opt = '2'; /* settings.txt's default, as a setting keeps its earlier value for one it does not take */
-        WARN("jit: jit_opt=%s is not 0, 1, 2, 3, s or z: it compiles at O%c\n", g_settings.jit_optimization, opt);
-    }
+    opt = '2';
 #endif
     /* the game's CPU (loader/ounce.h), as the recompiler's module_llvm.c gives it from the same NPDM */
     config.features = snx_guest_features(g_ounce, g_settings.cpu_extensions);

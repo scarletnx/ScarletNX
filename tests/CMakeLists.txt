@@ -3977,10 +3977,7 @@ target_include_directories(snx-test-nro-module PRIVATE "${PROJECT_SOURCE_DIR}/sr
 snx_test_sanitize(snx-test-nro-module) # loaded into the test's process, which is built with them
 add_dependencies(snx-test-runtime-variants snx-test-nro-module)
 add_test(NAME runtime_variants COMMAND snx-test-runtime-variants --nro-module=$<TARGET_FILE:snx-test-nro-module>)
-# a hand-edited jit_opt the JIT does not take, a letter and an empty value
-add_test(NAME runtime_variants_jit_opt_letter COMMAND snx-test-runtime-variants --jit-opt=x)
-add_test(NAME runtime_variants_jit_opt_empty COMMAND snx-test-runtime-variants --jit-opt=)
-# and the JIT on a host below its native back end's floor (recompiler/mach/native.h)
+# the JIT on a host below its native back end's floor (recompiler/mach/native.h)
 add_test(NAME runtime_variants_below COMMAND snx-test-runtime-variants --below)
 # and on one that lacks what its fallback does
 add_test(NAME runtime_variants_done COMMAND snx-test-runtime-variants --done)

@@ -206,7 +206,7 @@ def main():
         if not os.path.isfile(rtlib):
             print(f"the runtime deleted {rtlib}")
             failures += 1
-        run(["-L", root, *jit, "-O5"], {}, 2, "scarletnx-gnuabi: -O 5: not 0, 1, 2, 3, s or z")
+        run(["-L", root, *jit, "-O5"], {}, 42, "-O 5, LLVM's level, went with LLVM")
         run(["-L", root, *jit, "--jobs", "2"], {}, 2, "scarletnx-gnuabi does not take --jobs")
         run(["-L", root, *jit, "--keep-ir"], {}, 2, "scarletnx-gnuabi does not take --keep-ir")
         # the variables an older version read (docs/user/deprecations.md), still read

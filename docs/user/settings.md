@@ -25,7 +25,6 @@
 * [Android driver](#android-driver)
 * [DS driver](#ds-driver)
 * [Launch](#launch)
-  * [LLVM Internals](#llvm-internals)
 * [GBA](#gba)
 
 A game keeps its settings in its `.ini` (`recompiled/<id>/<id>.ini`), a section each as below, and the launcher's
@@ -57,7 +56,7 @@ changes how fast the game runs where nothing on the screen shows it, so a choice
 `vulkan_driver`, `vertex_input_dynamic_state`, `vulkan_ban_ignore`, `astc_mode`, `texture_shed`, `texture_half_res`,
 `astc_lines_bc1`, `texture_sysmem`, `bc7_queue`, `astc_compute_queue`, `astc_quick_mtexels`, `astc_background`, every
 `vk_ext_*`, every Performance setting, `gpu_driver`, `freedreno_env`, `microphone`, `mic_noise_reduction`, and how the
-game's code was made: `opt`, `llvm_batch`, `unit_instructions` and LLVM Internals, as its stamp's made line says them
+game's code was made: `unit_instructions`, as its stamp's made line says it
 ([Usage](usage.md)). The screen shows the others by itself (`stats`, `showcase`, `fullscreen`, `controls`, `shadows`,
 `upscaler`, `anti_aliasing`, `hdr_game`), and the `[Debug]` settings are named at the top of the picture the whole
 run. The notification gives their keys alone, a line each: after a gamepad the game's own (its picks, its `.ini`),
@@ -327,7 +326,6 @@ The settings, each with its extension and, where one took it in, the Vulkan vers
 | `jit_threads` | `0` | Threads compiling the game code the recompiler missed, which a thread waits for when it reaches it. `0` uses every CPU the game may run on but two, at most 4; `1` to `16` is that many. They run below the game's threads; one more thread, at the game's priority, compiles only what a game thread is waiting for |
 | `jit_region_instructions` | `0` | The most instructions one branch graph of missed code may hold when the JIT compiles it, so a huge function cannot stall the game for seconds; branches out of it resume through the dispatch table. `0` is up to 4096, a larger graph cut into regions of 64 |
 | `jit_live_budget` | `0` | The instructions beyond the missed code itself (its callees) that a miss the game waits on discovers. The background queue keeps its larger budget. `0` is 64 |
-| `jit_opt` | `2` | LLVM's optimization of the code the JIT compiles: `0` none, `3` the most, `s` or `z` the smallest, as `opt` takes them; another value, or none, is said in the log and compiles at `2`. An [AOT pack](aot-packs.md) built from the JIT cache needs it to match the recompile's. The next run compiles its JIT code again with it |
 
 ## On-screen controls
 
@@ -440,13 +438,6 @@ The profiler rows whose keys start with `tracy_` only do something in a build wi
 | `bcn_astc` | `1` | On a GPU that samples ASTC and not BCn (most phone and tablet ones): `1` (Auto) encodes BC1, BC2, BC3 and BC7 textures again as ASTC 4x4 as they load, several times faster than as ETC2 and closer to the game's blocks ([BCn without BCn](../layers/gpu/bcn.md)). ASTC 4x4 is twice BC1's bytes, so once the GPU's memory runs short the BC1 textures loaded from then on are encoded as ETC2 (`native_etc2`) again, half the bytes and slower to load. `2` (Always) keeps BC1 as ASTC whatever the memory. `0` encodes all of them as ETC2. BC4 and BC5 are encoded as EAC either way |
 | `native_etc2` | `1` | `1` samples ETC2 and EAC textures as the game's blocks where the GPU samples ETC2 (most phone and tablet GPUs), in a quarter to an eighth of the memory, and so are the BCn textures a GPU without BCn gets encoded again as ETC2 (`native_bc`). `0` decodes them on the GPU, as on GPUs without ETC2 (most desktop ones), and BCn too there, to compare the two. On such a GPU `1` is a warning at start |
 | `cpu_extensions` | `0` | `1` decodes LSE atomics, RCpc loads, and PAuth branches and signing with authentication off, for a Switch game. An Ounce game takes its Cortex-A78C's instructions without it ([Ounce](../platforms/nx/ounce.md#the-platform)). It gives no pointer authentication protection. Recompile the game with the same value as each run |
-| `slp_vectorizer` | `0` | `1` runs LLVM's SLP vectorizer, which packs scalar instructions into SIMD ones, in the recompile and the JIT; the next recompile and the JIT's next run take it. Off while LLVM 23 can break a module with it and stop the recompile (llvm-project issue 231525). LLVM Internals' `llvm_slp_vectorization` leaves it running |
-| `fpsr_flags` | `1` | `1` keeps FPSR's cumulative flags (IOC, DZC, OFC, UFC, IXC and QC) as the console raises them, which costs every floating-point or saturating operation a test of its result. `0` keeps only the results exact; a game that never reads FPSR (few do) runs floating-point and saturating code faster. The next recompile and the JIT's next run take it |
-| `abi_contract` | `0` | `1` reads the game's calls as following the AArch64 procedure call standard: the recompiler keeps the callee-saved registers in their host locations across a call and does not store the caller-saved ones that are dead after it. A checking mode in tests reports a function that does not preserve them. The next recompile and the JIT's next run take it |
-| `volatile_memory` | `0` | `1` makes every load and store of the game's code happen exactly where the game has it. `0` lets LLVM merge two loads of one address, or a store and a load, between the game's barriers, as the console's memory model allows, which is faster. `1` finds whether a bug is one of those. The next recompile and the JIT's next run take it |
-| `ir_stats` | `0` | `1` has a recompile's log (one not run with `-q`) count each code unit's IR as the recompiler emits it: functions and those whose registers were promoted, calls by kind, register stores and reloads around calls, lookups, polls and code checks, before LLVM's passes |
-| `ir_dump_pc` | empty | The address in hex (`100000`) of a function the recompiler found: the recompile prints its leaders, where its flags come from, the registers it promoted and its IR before and after the promotion |
-| `ir_branch_profile` | empty | A file of branch counts, a line each: the branch's address and instruction word in hex, then how many times it was taken and not taken. The recompiler gives LLVM those odds for each branch whose address and word match. The next recompile and the JIT's next run take it |
 | `gdb_jit` | `0` | `1`, with the GDB stub (`-S` or `-s`), hands the code the JIT compiles to GDB ([GDB](usage.md#gdb-linux)). GDB stops the game for each compile while it is attached, and each compile's object stays in memory for the run |
 | `alias_pool` | `1` | `1` has a view of guest memory (MapMemory, MapProcessMemory, code memory's owner and slave) share its source's host pages, as the console's do, where the host's pages are 4 KiB (Linux and Android). `0` makes every view a copy, which reaches the source at its unmap or at a flushed line after the write, as hosts without a pool run (Windows among them): for tests of that path, and a diagnosis |
 | `guest_files` | `0` (iOS `1`) | `1` puts the game's memory in unlinked files of 1 GiB (larger for a large address space) in the temporary folder (Apple), so the system counts its pages as file pages, which it can write to the disk, and not against the app's memory limit (iOS ends an app past it). The system writes the changed memory to the disk from time to time and under memory pressure, up to the game's memory: it needs that much free disk and 2 GiB more, or the game keeps anonymous memory. The files go away when the game ends. `0` is anonymous memory. macOS and iOS only |
@@ -606,7 +597,6 @@ program's run, before its name. Each is what the option of its own is (`--strace
 | `linux_isolated` | `0` | `1` is no host files and no variables of the host's: `/tmp` in memory, the program alone as `/program`, and `PATH` and `LANG` in its environment (`--isolated`) |
 | `linux_root` | empty | The guest's root (`-L DIR`, `--sysroot=DIR`): a guest path names its file when it has one, the host's otherwise, as with QEMU's `-L`. Empty: `linux/` in the data folder. `linux_isolated` takes none |
 | `linux_jit_cache` | `1` | `0` keeps no compiled code between runs (`--no-jit-cache`) |
-| `linux_jit_opt` | `2` | The JIT's LLVM optimization level, `0`, `1`, `2`, `3`, `s` or `z` (`--jit-opt=`, `-O`): `0` compiles several times faster |
 | `linux_host_page` | `0` | Works as a host whose pages have that many bytes, a power of two from the host's page to 1048576 (`--host-page=`); `0` the host's. Not on Windows, which works in 4096-byte pages and refuses another |
 | `linux_strace` | `0` | `1` writes each system call, its arguments and its result to stderr, with the process id (`--strace`) |
 | `linux_sample_pc` | `0` | `1` writes the guest's program counter to stderr once a second, which shows a loop with no system call (`--sample-pc`). Not on Windows |
@@ -620,14 +610,12 @@ run. Each is what the option of its own is, and the last given counts; the JDK i
 
 | Key | Default | Effect |
 | --- | --- | --- |
-| `android_jit_opt` | `2` | LLVM's optimization of the native code the JIT compiles, `0`, `1`, `2`, `3`, `s` or `z` (`--jit-opt=`, `-O`): `0` compiles several times faster, to test the JIT itself |
 | `android_java_options` | empty | Options for the JVM, a space between two, as `-J` gives one: `-Xmx2g` |
 | `android_log_level` | `D` | The least `android.util.Log` level printed, `V`, `D`, `I`, `W`, `E` or `A` (`--log-level=`); the least `Log.isLoggable` is true for too |
 | `android_trace_frames` | `0` | `1` writes each frame the app's windows make to stderr (`--trace-frames`) |
 | `android_log_signals` | `0` | `1` logs each guest signal action, send and delivery (`--log-signals`) |
 | `android_sample` | `0` | `1` writes, every 5 seconds, each guest thread's pc, x30 and HLE call, and the count of Vulkan presents (`--sample`) |
 | `android_jit_verbose` | `0` | `1` says each unit the JIT compiles, before and after, with its time (`--jit-verbose`) |
-| `android_jit_keep_ir` | empty | A folder that keeps the LLVM IR of each unit the JIT compiles, so one LLVM fails on can be compiled again by itself (`--jit-keep-ir=`) |
 | `android_linker_verbose` | `0` | `1` says each native library and its load address (`--linker-verbose`) |
 
 ## DS driver
@@ -655,37 +643,10 @@ The launcher's own settings, and the recompiler's, which the launcher and the dr
 | `tmpfs` | `off` | `on` extracts to tmpfs, in memory (the temporary folder's `scarletnx/work/<title ID>`), which the game reads its RomFS from (`--tmpfs`); on Linux and FreeBSD, a temporary folder that is not a tmpfs reads the dump in place instead |
 | `extract` | `off` | `on` extracts a dump's ExeFS and RomFS into its game's folder (`--extract-container`). Off, the game reads them from the dump |
 | `java_home` | empty | The JDK, 21 or later, that Android apps run on: the folder that holds its `lib/server` (`bin/server` on Windows). Empty is the one the build found; set, the launcher gives it to `scarletnx-android` as `--java-home` |
-| `opt` | `2` | LLVM's optimization of the game's code when it is recompiled (`-O`): `0` none, `3` the most, `s` or `z` the smallest. A game made already keeps its code until it is recompiled |
-| `llvm_batch` | `full` | What LLVM runs over each code unit once its functions are cleaned, when the game is recompiled: `full`, the passes of the optimization level; `ipo`, only inlining and a cleanup after it, which recompiles in about two thirds of the time for slightly bigger code, up to a third faster or slower than `full`'s. Not at `-O0` |
 | `aot_threads` | `0` | The threads compiling the game's code when it is recompiled (`--jobs`): `0` (Auto) starts on 1 and opens one more each second while the memory the code units are seen to take leaves room for it and the system reports no memory pressure, up to the computer's cores with a quarter left free (`aot_threads_most`); `N` is that many, whatever the memory |
 | `aot_threads_most` | `0` | The most threads `aot_threads`' Auto opens: `0` (Auto) the computer's cores with a quarter left free; `N` that many at most, whatever the cores. Only Auto takes it: beside `aot_threads=N` the recompile runs on `N`, and says so |
 | `unit_instructions` | `90000` (Android `20000`, iOS `20000`) | The instructions a code unit takes, whole functions at a time, when the game is recompiled (`--chunk`). Each is compiled on its own, and a smaller one takes less memory at once, which a phone needs |
 | `unit_cache_ceil_mb` | `512` | The most memory, in MB, the x86-64 back end's code units are held in while ScarletNX runs, so that a unit made again (an NRO a game loads again, the launcher's next recompile) is copied rather than made. They take 1% of the machine's memory at most, and this ceiling over that; the ones used longest ago go first. `0` holds none. Nothing is kept on the disk |
-
-### LLVM Internals
-
-Every pass of LLVM's pipelines can be turned off for the game's code, `llvm_pass_<pass>=0`, and each option LLVM's C
-API sets on the pass builder and the target machine set, `llvm_<option>=N`. `scarletnx --settings=recompile` lists
-them all, as the launcher's LLVM Internals page shows them: the passes are those the build's LLVM prints for each
-level. These have names of their own in the launcher:
-
-| Key | Default | Effect |
-| --- | --- | --- |
-| `llvm_pass_instcombine` | `1` | Instruction combining: combines instructions into fewer, simpler ones |
-| `llvm_pass_inline` | `1` | Inlining: inlines calls into their callers |
-| `llvm_pass_sroa` | `1` | Scalar replacement of aggregates: splits stack objects into values kept in registers |
-| `llvm_pass_gvn` | `1` | Global value numbering: removes redundant computations and loads |
-| `llvm_pass_simplifycfg` | `1` | Control flow simplification: merges, removes and simplifies basic blocks |
-| `llvm_pass_loop_unroll` | `1` | Loop unrolling pass: unrolls loops with known trip counts |
-| `llvm_pass_loop_vectorize` | `1` | Loop vectorization pass: vectorizes loops with SIMD instructions |
-| `llvm_pass_slp_vectorizer` | `1` | SLP vectorization pass: packs independent scalar instructions into SIMD ones |
-| `llvm_pass_licm` | `1` | Loop invariant code motion: hoists computations that do not change across a loop out of it |
-| `llvm_loop_vectorization` | LLVM's own | Whether the pipeline vectorizes loops (`LLVMPassBuilderOptionsSetLoopVectorization`) |
-| `llvm_slp_vectorization` | LLVM's own | Whether the pipeline packs scalar instructions into SIMD ones (`LLVMPassBuilderOptionsSetSLPVectorization`) |
-| `llvm_loop_unrolling` | LLVM's own | Whether the pipeline unrolls loops (`LLVMPassBuilderOptionsSetLoopUnrolling`) |
-| `llvm_fast_isel` | LLVM's own | Whether code generation selects instructions with FastISel, quicker and worse (`LLVMSetTargetMachineFastISel`) |
-| `llvm_global_isel` | LLVM's own | Whether code generation selects instructions with GlobalISel (`LLVMSetTargetMachineGlobalISel`) |
-| `llvm_inliner_threshold` | LLVM's own | How large a function the inliner inlines; LLVM picks one for the level until it is set (`LLVMPassBuilderOptionsSetInlinerThreshold`) |
 
 ## GBA
 

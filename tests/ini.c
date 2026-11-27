@@ -326,11 +326,9 @@ int main(void) {
     {
         const IniOpt* o;
         assert((o = ini_find(g_graphics_ini, "resolution")) && (o->flags & INI_PERF));
-        assert((o = ini_find(g_recompile_ini, "llvm_batch")) && (o->flags & INI_PERF));
         assert((o = ini_find(g_graphics_ini, "shadows")) && !(o->flags & INI_PERF));
         assert((o = ini_find(g_recompile_ini, "aot_threads")) && !(o->flags & INI_PERF));
         for (o = g_vk_extensions_ini; o->key; ++o) assert(o->flags & INI_PERF);
-        for (o = g_llvm_ini; o->key; ++o) assert(o->flags & INI_PERF); /* the passes the build's LLVM has */
     }
     /* a setting of some systems alone (settings.txt's only): where it does something as a greyed row says it, said on
        every system but those and listed last on its line for the launcher; one of every system says nothing */

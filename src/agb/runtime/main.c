@@ -66,12 +66,10 @@ static void usage(FILE* out) {
           "once.\n"
           "\n"
           "On the GBA, a ROM's code is one module, compiled on 1 thread as one unit: --jobs and --chunk change\n"
-          "nothing, which the recompile says. -O is the level of the blocks LLVM compiles (default 2, the setting\n"
-          "opt's): those this computer's native back end does not make, and every one with --keep-ir. --jit-cache\n"
-          "FILE is the map of the blocks runs reached that the recompile starts from, another game folder's\n"
-          "<name>_code.map (default: the game's own), --jit-only plays with no module, every block compiled as the\n"
-          "run reaches it, and --keep-ir has LLVM compile them all and keeps their IR in <name>_build of the game's\n"
-          "folder.\n"
+          "nothing, which the recompile says. --jit-cache FILE is the map of the blocks runs reached that the\n"
+          "recompile starts from, another game folder's <name>_code.map (default: the game's own), and --jit-only\n"
+          "plays with no module, every block compiled as the run reaches it. -O and --keep-ir, LLVM's, went with it:\n"
+          "said, and nothing done.\n"
           "\n"
           "F2, or Android's Back, edits the on-screen controls' layout: a control dragged moves, and one tapped is\n"
           "sized from the bar; Done, Esc, F2 or Back ends it, and <name>.ini keeps it. Back twice quits.\n"
@@ -215,7 +213,6 @@ int snx_agb_main(int argc, char** argv) {
     const char* path = NULL;
     long press_len = 300;
     const char *threads = NULL, *most = NULL; /* the values of aot_threads and aot_threads_most, as given */
-    char opt = '2';             /* the setting opt's default, or -O's */
     int registers = 0;
     int lcd = 1; /* --gba-color: the original GBA's screen colours, raw the game's (settings.txt's gba_color) */
     SnxCli cli;
@@ -233,7 +230,6 @@ int snx_agb_main(int argc, char** argv) {
             snx_cli_free(&cli);
             return common < 0 ? 2 : 0;
         }
-        if (common == SNX_CLI_OPT) opt = cli.value[SNX_CLI_OPT][0];
         if (common) continue;
         /* the on-screen controls' settings, read with the game's own once its folder is known (vpad_settings) */
         int controls = vpad_arg(argv[i], error, sizeof error);
@@ -425,14 +421,6 @@ int snx_agb_main(int argc, char** argv) {
             if (jobs >= 0) printf("--jobs %d: a ROM's code is one module, compiled on 1 thread\n", jobs);
             if (asked.chunk) printf("--chunk %d: a ROM's code is one module, compiled as one unit\n", asked.chunk);
             error[0] = 0;
-            /* the native back end makes the blocks: it has no levels, and no IR to keep */
-            if (opt != '2')
-                fprintf(stderr, "scarletnx-agb: -O%c: the native back end has no optimization levels: it makes the "
-                                "blocks as at any\n",
-                        opt);
-            if (asked.keep_ir)
-                fputs("scarletnx-agb: --keep-ir: the native back end keeps no IR: the module is made without one\n",
-                      stderr);
             if (agb_recomp_build(&recomp, &board, error, sizeof error)) {
                 fprintf(stderr, "scarletnx-agb: %s\n", error);
                 goto done;
