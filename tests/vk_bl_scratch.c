@@ -152,15 +152,16 @@ int main(void) {
     CHECK(g_t.warnings == 4 && strstr(g_t.last, "the one of 32.0 MB stays"));
 
     /* the trim, with the heap past four fifths: refused asks of 64 MiB weigh nothing, the 32 MiB scratch served 6 MiB
-       at most since it last looked, so it goes; a refusal after it keeps none, and says so again */
+       at most since it last looked, so it goes; the size refused before it, refused after it, keeps none and is said
+       again */
     vk_bl_scratch_trim(); /* what the scratch served so far counts from here */
     CHECK(vk_bl_scratch(6 * MIB, &cap) == second && cap == 32 * MIB);
     CHECK(vk_bl_scratch(60 * MIB, &cap) == VK_NULL_HANDLE);
     g_t.usage = 900;
     vk_bl_scratch_trim();
     CHECK(g_t.deferred == 2 && g_t.last_deferred == second);
-    CHECK(vk_bl_scratch(20 * MIB, &cap) == VK_NULL_HANDLE && cap == 0);
-    CHECK(g_t.warnings == 5 && strstr(g_t.last, "32.0 MB (20971520 bytes asked)") && strstr(g_t.last, "none stays"));
+    CHECK(vk_bl_scratch(60 * MIB, &cap) == VK_NULL_HANDLE && cap == 0);
+    CHECK(g_t.warnings == 5 && strstr(g_t.last, "64.0 MB (62914560 bytes asked)") && strstr(g_t.last, "none stays"));
 
     /* past the allocation cap, and past the scratch: no buffer and no room, nothing made or let go, nothing said */
     g_t.refuse_from = 0;
