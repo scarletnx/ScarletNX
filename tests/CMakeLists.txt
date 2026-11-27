@@ -91,6 +91,8 @@ if(SNX_TEST_SANITIZERS)
         snx_vpad snx_vpad_consoles snx_vpad_sdl snx_console_settings
         # the save states' file, every console's
         snx_state_file
+        # a renderer's file of what it made, kept for the next run
+        snx_prepared
         # the shader corpus translator, which shaderc_sm86 runs
         snx-shaderc
         # GLSL ES into SPIR-V
