@@ -81,7 +81,7 @@ if(SNX_TEST_SANITIZERS)
         snx_switch_program
         # the menu, its splash, icon and pads
         scarletnx-gui snx_gui_support snx_gui_ui snx_i18n snx_gui_languages snx_gui_languages_test snx_splash snx-test-splash
-        snx_window_icon snx-test-window-icon snx_pad_sdl snx_gui_pad
+        snx_window_icon snx-test-window-icon snx-test-window-fullscreen snx_pad_sdl snx_gui_pad
         # the notice of the 3DS's, the Vita's and the GBA's windows
         snx_notice
         # the on-screen controls, their consoles' tables and their side of an SDL window, and the settings each
