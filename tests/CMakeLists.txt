@@ -93,6 +93,8 @@ if(SNX_TEST_SANITIZERS)
         snx_state_file
         # a renderer's file of what it made, kept for the next run
         snx_prepared
+        # every console's game menu and F1's text, Tracy's client and F10's captures, RenderDoc's captures
+        snx_menu snx_tracy_client snx_vk_renderdoc
         # the shader corpus translator, which shaderc_sm86 runs
         snx-shaderc
         # GLSL ES into SPIR-V
