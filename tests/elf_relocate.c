@@ -21,6 +21,9 @@
 #include <dlfcn.h>
 #include <unistd.h>
 #endif
+#ifndef __APPLE__
+#include <sys/resource.h> /* the process's peak (far_module) */
+#endif
 
 static int failures;
 
@@ -812,6 +815,11 @@ typedef struct {
     SnxLinkInput given[3];
     unsigned back[3];
 } FarInputs;
+/* the peak of the process's resident set, in bytes (ru_maxrss is KiB where this runs: not on macOS) */
+static SnxU64 peak_now(void) {
+    struct rusage usage;
+    return getrusage(RUSAGE_SELF, &usage) || usage.ru_maxrss <= 0 ? 0 : (SnxU64)usage.ru_maxrss << 10;
+}
 static void far_back(void* arg, size_t index) {
     FarInputs* f = (FarInputs*)arg;
     ++f->back[index];
@@ -830,7 +838,8 @@ static int far_module(void) {
     SnxLinkInput inputs[3];
     SnxLinkOutput linked = {0};
     FarInputs far = {0};
-    char error[1024], *folder = snx_temp_dir(NULL), *path = folder ? snx_path_join(folder, "far.so") : NULL;
+    char error[1024], what[160], *folder = snx_temp_dir(NULL), *path = folder ? snx_path_join(folder, "far.so") : NULL;
+    SnxU64 peak, grown;
     int rc = 1;
     if (!path) {
         snx_error("far module: no temporary folder");
@@ -855,13 +864,21 @@ static int far_module(void) {
         }
         memcpy(copy, data[i], size[i]);
     }
-    if (snx_link(inputs, 3, exports, 1, "far.so", &linked, error, sizeof(error))) {
-        snx_error("far module: %s", error);
-        goto done;
-    }
+    /* into the file first: the link holds no part of the module that grows with its code, so the process's peak
+       stays where the inputs put it (the module is 140 MiB; its tables are far under the 64 MiB allowed) */
+    peak = peak_now();
     if (snx_link_to_file(far.given, 3, exports, 1, "far.so", path, owned, far_back, &far, &written, error,
                          sizeof(error))) {
         snx_error("far module into a file: %s", error);
+        goto done;
+    }
+    grown = peak_now() - peak;
+    snprintf(what, sizeof what,
+             "a module of 140 MiB linked into a file raises the process's peak by %llu MiB, under 64",
+             (unsigned long long)(grown >> 20));
+    check(grown < ((SnxU64)64 << 20), what);
+    if (snx_link(inputs, 3, exports, 1, "far.so", &linked, error, sizeof(error))) {
+        snx_error("far module: %s", error);
         goto done;
     }
     file = snx_read_file(path, &file_size);
