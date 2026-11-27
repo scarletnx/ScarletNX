@@ -282,17 +282,11 @@ static void* list_push(RecFn fn, u64 size) {
     return h + 1;
 }
 /* room for a packet of size bytes of arguments, filled in and then made known by rec_commit */
-static void rendering_run(const void* p);   /* TEMPDBG */
-static void CmdEndRendering_run(const void* p); /* TEMPDBG */
-static int g_ring_pass_open; /* TEMPDBG */
-int vk_rec_ring_pass_open(void) { return g_ring_pass_open; } /* TEMPDBG */
 static void* rec_push(RecFn fn, u64 size) {
     if (t_list) {
         if (fn != barrier_run) barrier_flush();
         return list_push(fn, size);
     }
-    if (fn == rendering_run) g_ring_pass_open = 1; /* TEMPDBG */
-    if (fn == CmdEndRendering_run) g_ring_pass_open = 0; /* TEMPDBG */
     if (fn != barrier_run) barrier_flush(); /* a pending batch of barriers ends before any other command */
     u64 need = (sizeof(RecHdr) + size + 15) & ~15ull, at = g_pending & (REC_CAP - 1);
     /* one that could never fit would wait for room forever, with vk_lock held and every thread that takes it behind */
@@ -409,7 +403,6 @@ static void list_rename(VkRecList* l, u8* args, u64 n) {
 void vk_rec_list_splice(VkRecList* l) {
     barrier_flush(); /* this thread's batch of barriers comes before the list's commands */
     const int rename = l->named && vk_submit_number() != l->named_submit;
-    if (rename) LOG("TEMPDBG rename %p/%p to %p/%p\n", (void*)l->named, (void*)l->named_up, (void*)vk_cmd(), (void*)vk_cmd_upload(1));
     for (u64 at = 0; at < l->used;) {
         const RecHdr* h = (const RecHdr*)(const void*)(l->buf + at);
         const u64 args = h->size - sizeof(RecHdr);
@@ -621,7 +614,6 @@ static void begin_run(const void* p) {
     VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
     VK_OK(vkBeginCommandBuffer(*(const VkCommandBuffer*)p, &bi));
-    LOG_LIMIT(40000, "TEMPDBG begin %p\n", (void*)*(const VkCommandBuffer*)p);
 }
 static void vk_rec_begin_ring(VkCommandBuffer cb) {
     g_rec_cb = cb;
@@ -675,7 +667,6 @@ static void submit_run(const void* p) {
     VkCommandBufferSubmitInfo c[2] = {{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = x->up},
                                       {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = x->cb}};
     u64 t = plat_ns();
-    LOG_LIMIT(40000, "TEMPDBG submit up %p cb %p\n", (void*)x->up, (void*)x->cb);
     if (x->up) VK_OK(vkEndCommandBuffer(x->up));
     VK_OK(vkEndCommandBuffer(x->cb));
     g_submit_end_ns += plat_ns() - t;
