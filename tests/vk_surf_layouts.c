@@ -120,6 +120,7 @@ void vk_rec_list_flush(void) {}
 void vk_share_lock(void) {}
 void vk_share_unlock(void) {}
 _Thread_local u32 g_vk_slot; /* render.c's: every thread uses slot 0 here */
+_Atomic int g_vk_share_on; /* device.c's: no split here */
 u64 gpu_textures_added(void) { STUB(); }
 u32 gpu_textures_ended(u64* out, u32 cap) { STUB(); }
 int mem_lock_held(void) { STUB(); }

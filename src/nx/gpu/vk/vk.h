@@ -1870,6 +1870,13 @@ VkImageAspectFlags vk_aspect(const VkFmt* f);
 u64 vk_surf_reclaim(int kind, u32 before, u64 want, int lossy);
 /* the render targets later ones drew all over (no pixels to lose), last used before `before`, up to `want` bytes */
 u64 vk_rt_reclaim_superseded(u32 before, u64 want);
+/* the presents a copy of a render target (texture.c rt_copy) stays with no bind asking for it */
+#define VK_RT_COPY_PRESENTS 60u
+/* the copies of live render targets no bind asked for since `before`, up to `want` bytes, but a feedback draw's save
+   copy: made again from their target when asked, so lossless. Their bytes */
+u64 vk_rt_copies_reclaim(u32 before, u64 want);
+/* a copy of a render target, already off its target's list: its image and views go when the frames are done */
+void vk_rt_copy_free(Surf* x);
 /* the textures that took pixels from targets and whose memory later targets drew all over since, last used before
    `before`, up to `want` bytes */
 u64 vk_tex_reclaim_superseded(u32 before, u64 want);

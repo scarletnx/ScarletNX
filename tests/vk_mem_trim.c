@@ -10,7 +10,8 @@
    target whose pixels exist only on the GPU and can't move into system memory stays for its age and goes under the
    pressure; one set aside reads its memory again where its bytes changed; targets in system memory go while the
    system heap is short (surface.c rt_give_way, rt_aside, vk_rt_sys_frame). A parked target's storage result lands
-   nowhere (flush_land). No Vulkan loader, device or GPU is used:
+   nowhere (flush_land). The copies of a live target that no bind asked for lately go at the trims and the sweep
+   (rt_copies_reclaim). No Vulkan loader, device or GPU is used:
    the rest of the renderer is stubs, and a call that the trim must not make aborts */
 #include <stdarg.h>
 #include <stdio.h>
@@ -75,6 +76,7 @@ void vk_rec_list_flush(void) {}
 void vk_share_lock(void) {}
 void vk_share_unlock(void) {}
 _Thread_local u32 g_vk_slot; /* render.c's: every thread uses slot 0 here */
+_Atomic int g_vk_share_on; /* device.c's: no split here */
 u64 gpu_textures_added(void) { stub_hit("gpu_textures_added"); }
 int own_covered(u64 addr, u64 size) { stub_hit("own_covered"); }
 int own_hash(u64 addr, u64 size, u64* h) {
@@ -356,6 +358,55 @@ static int heap_full_takes(int heap_full, u32 ago) {
     return held == 1;
 }
 
+/* A live target that the game samples whole again holds the copies rt_copy made of its corners at sizes it went
+   through, which rt_copy lets go only when a bind asks it for another copy. Those no bind asked for in
+   VK_RT_COPY_PRESENTS presents go, with their bytes: at the sweep every 30 presents and the release (how 0,
+   vk_rt_copies_reclaim, which they call as it is: the release takes a lock this test stubs out), a trim for headroom
+   (1), and a trim while the heap is at its budget though the caches count room in the blocks (2). The copy a bind
+   asked for lately, a feedback draw's save copy (predraw) and the target stay */
+static int copies_go(int how) {
+    static const u32 ago[] = {VK_RT_COPY_PRESENTS + 1, VK_RT_COPY_PRESENTS + 40, 600, 10, 600};
+    g_vk_present += 1000;
+    g_vk.has_pageable = 0;
+    Surf* rt = target(0x60000000, 8 << 20, 1);
+    rt->last_used = g_vk_present;
+    Surf* kept[2] = {NULL, NULL};
+    for (int i = 0; i < 5; i++) {
+        Surf* c = calloc(1, sizeof *c);
+        CHECK(c);
+        c->is_rt = 1;
+        c->gva = rt->gva;
+        c->bytes = (u64)(i + 1) << 20;
+        c->last_used = g_vk_present - ago[i];
+        c->predraw = i == 4;
+        c->next = rt->crop;
+        rt->crop = c;
+        if (i >= 3) kept[i - 3] = c;
+    }
+    g_deferred = 0;
+    if (how == 0) CHECK(vk_rt_copies_reclaim(vk_present_before(0, VK_RT_COPY_PRESENTS), ~0ull) == 6 << 20);
+    if (how == 1) {
+        g_use = g_budget - trim_head(g_budget) * 3 / 4;
+        vk_mem_trim(0, 0);
+    }
+    if (how == 2) {
+        g_use = vk_mem_trim_start(g_budget) - trim_head(g_budget);
+        g_heap_use = g_budget;
+        vk_mem_trim(0, 0);
+        g_heap_use = 0;
+    }
+    u32 left = 0;
+    for (const Surf* x = rt->crop; x; x = x->next) left++;
+    const int went =
+        left == 2 && rt->crop == kept[1] && kept[1]->next == kept[0] && g_deferred == 6 << 20 && targets_held() == 1;
+    if (!went)
+        fprintf(stderr, "copies_go(%d): %u copies left, %llu bytes deferred, %u targets\n", how, left,
+                (unsigned long long)g_deferred, targets_held());
+    surf_evict(rt);
+    CHECK(targets_held() == 0);
+    return went;
+}
+
 /* A texture of 1 MB at 0x50000000 that took pixels from targets when the surfaces' write count was 10, last used
    five presents ago, and targets drawn over its memory: (over_from, over_size, over_wseq) each. 1 when it is no one's
    (tex_superseded) and the sweep (vk_tex_reclaim_superseded) let it go, 0 when it stayed, -1 when the two disagree */
@@ -511,12 +562,14 @@ int main(void) {
     CHECK(aside_hash());
     CHECK(parked_lands_nothing());
     CHECK(sys_heap_short());
+    CHECK(copies_go(0) && copies_go(1) && copies_go(2));
     printf(
         "vk_mem_trim: the trims kept and took the targets drawn over as they should, and the sweep took the textures "
         "whose memory targets drew all over after their take and left the others; a target with pixels memory "
         "lacks stayed for its age and went under the pressure where it can't move, loaded memory again where its bytes "
         "changed meanwhile, targets in system memory went oldest first while the system heap was short, and a parked "
-        "target's storage result landed nothing\n");
+        "target's storage result landed nothing; the copies of a live target that no bind asked for in 60 presents "
+        "went at the sweep and the trims, and the others stayed\n");
     return 0;
 }
 /* the pool map's views of a texture whose image changed (vk_rt_host): this test makes no pool map */

@@ -3761,6 +3761,43 @@ static u64 rt_reclaim_superseded(u32 before, u64 want) {
         }
     return freed;
 }
+void vk_rt_copy_free(Surf* x) {
+    vk_surf_changed(x->gva); /* the table's epoch at its address moves: no texture memo keeps the copy after this */
+    for (int i = 0; i < x->nsv; i++) vk_defer_image(VK_NULL_HANDLE, 0, x->sv[i].v, VK_NULL_HANDLE);
+    if (x->att) vk_defer_image(VK_NULL_HANDLE, 0, x->att, VK_NULL_HANDLE);
+    if (x->att_linear) vk_defer_image(VK_NULL_HANDLE, 0, x->att_linear, VK_NULL_HANDLE);
+    vk_defer_image(x->img, x->mem, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    vk_defer_bytes(x->bytes);
+    SNX_MEM_FREE_D(x, "render targets"); /* rt_copy allocated it with this kind */
+    free(x);
+}
+/* rt_copy lets a target's old copies go only when a bind asks it for another copy, and a game at a dynamic resolution
+   that samples its targets whole again at full size asks for none: the copies of its corners at the 15 to 20 sizes
+   it went through stayed until the targets went, 270 of them and 848 MB where three were in use each frame */
+static u64 rt_copies_reclaim(u32 before, u64 want) {
+    u64 freed = 0;
+    for (int lru = VK_LRU_RT; lru <= VK_LRU_RT + LRU_AGED && freed < want; lru += LRU_AGED)
+        for (u32 r = g_rows.lists[lru].head; r && freed < want; r = g_rows.lru[r].next)
+            for (Surf** pp = &g_rows.surf[r]->crop; *pp && freed < want;) {
+                Surf* x = *pp;
+                /* nor another draw thread's in a split: its texture memo reads it with no lock (rt_copy) */
+                if (x->predraw || (i32)((u32)x->last_used - before) >= 0 ||
+                    (vk_share_on() && x->crop_thread != (u8)vk_render_slot())) {
+                    pp = &x->next;
+                    continue;
+                }
+                *pp = x->next;
+                freed += x->bytes;
+                vk_rt_copy_free(x);
+            }
+    return freed;
+}
+u64 vk_rt_copies_reclaim(u32 before, u64 want) {
+    VkResourceScope scope = vk_resource_begin();
+    u64 freed = rt_copies_reclaim(before, want);
+    vk_resource_end(VK_RESOURCE_SURFACE_RECLAIM, scope);
+    return freed;
+}
 u64 vk_rt_reclaim_superseded(u32 before, u64 want) {
     VkResourceScope scope = vk_resource_begin();
     u64 freed = rt_reclaim_superseded(before, want);
@@ -4190,6 +4227,7 @@ void vk_mem_trim(u64 extra, int force) {
             g_heap_swept = g_vk_present + 1;
             g_trimmed += vk_rt_reclaim_superseded(vk_present_before(0, 2), ~0ull);
             g_trimmed += vk_tex_reclaim_superseded(vk_present_before(0, 2), ~0ull);
+            g_trimmed += vk_rt_copies_reclaim(vk_present_before(0, VK_RT_COPY_PRESENTS), ~0ull);
         }
         return;
     }
@@ -4219,7 +4257,9 @@ void vk_mem_trim(u64 extra, int force) {
        where it doesn't. A trim for an allocation (force) still takes them after two presents */
     const u32 superseded_before = g_vk.has_pageable && !force ? vk_present_before(1000000000ull, 8)
                                                                : vk_present_before(0, 2);
-    u64 superseded = vk_rt_reclaim_superseded(superseded_before, ~0ull);
+    /* the copies of targets no bind asked for lately go with them: made again from their targets */
+    u64 superseded = vk_rt_reclaim_superseded(superseded_before, ~0ull) +
+                     vk_rt_copies_reclaim(vk_present_before(0, VK_RT_COPY_PRESENTS), ~0ull);
     const u64 tex_superseded_bytes = vk_tex_reclaim_superseded(superseded_before, ~0ull);
     static const struct {
         u32 ms, presents;
@@ -4365,6 +4405,7 @@ void vk_mem_release_run(void) {
     u32 before = vk_present_before(0, 2);
     g_release.blocks = vk_memory_blocks();
     g_release.by[2] = vk_rt_reclaim_superseded(before, ~0ull);
+    g_release.by[2] += vk_rt_copies_reclaim(vk_present_before(0, VK_RT_COPY_PRESENTS), ~0ull);
     g_release.by[0] = vk_tex_reclaim_superseded(before, ~0ull);
     g_release.by[0] += vk_surf_reclaim(VK_LRU_TEX, before, ~0ull, VK_RECLAIM_LOSSLESS);
     g_release.by[1] = vk_buf_reclaim(before, ~0ull);
