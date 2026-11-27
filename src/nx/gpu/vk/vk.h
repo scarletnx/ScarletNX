@@ -2629,6 +2629,8 @@ static inline u32 vk_sb_round(u32 bytes) {
 /* the sampler for a TSC: raise lets anisotropy= raise its filtering (a 2D texture with mipmaps), integer gives its
    border color as integers (an integer texture) */
 VkSampler vk_sampler(const u32* tsc, int raise, int integer);
+/* the sampler vk_sampler made for these already, found with no lock, or VK_NULL_HANDLE (then ask vk_sampler) */
+VkSampler vk_sampler_kept(const u32* tsc, int raise, int integer);
 extern int g_vk_anisotropy; /* anisotropy=, read once at start: the sampler table keeps the samplers it made */
 void vk_tex_frame(void);    /* a frame was presented: evicts what wasn't used for a while */
 /* After a frame's present, its own submission: the BC7 encoder makes the BC7 images of ASTC textures held as BC7 from
@@ -2924,6 +2926,9 @@ u32 vk_buf_kind(void);                /* where the last range buf_get bound came
 u32 vk_tex_tags(void);                /* and what the textures looked up since then were (texture.c) */
 u64 vk_buf_adds(void);                /* graphics results committed so far: as vk_compute_adds */
 int vk_buf_pending_any(void);         /* any graphics result is pending */
+/* whether vk_buf_mem_need(gva, len) can have work: a graphics result pending over a page of the range, asked under
+   pend_lock alone (draw_batches=2 asks it before the share lock). 0 says it has none, asked again under the lock */
+int vk_buf_mem_need_may(u64 gva, u64 len);
 int vk_buf_pending_unsubmitted(void); /* one is in the commands recorded since the last submit */
 /* graphics results that searches for the ones over a range gave their callers to compare so far: each search looks at
    the results on the range's pages alone (tests count them) */

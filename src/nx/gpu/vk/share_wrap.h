@@ -97,6 +97,8 @@ static inline void sh_vk_buf_mem_need(u64 gva, u64 len) {
         vk_buf_mem_need(gva, len);
         return;
     }
+    /* most find no graphics result pending over the range: asked under pend_lock, no share lock */
+    if (!vk_buf_mem_need_may(gva, len)) return;
     vk_share_lock_at(13);
     vk_buf_mem_need(gva, len);
     vk_share_unlock();
@@ -727,6 +729,11 @@ static inline Surf* sh_vk_rt_snapshot(Surf* rt, int pixels) {
     return r;
 }
 static inline VkSampler sh_vk_sampler(const u32* tsc, int raise, int integer) {
+    /* a sampler made before: found with no share lock (texture.c vk_sampler_kept) */
+    if (vk_share_on()) {
+        const VkSampler kept = vk_sampler_kept(tsc, raise, integer);
+        if (kept) return kept;
+    }
     if (!vk_share_on()) return vk_sampler(tsc, raise, integer);
     vk_share_lock_at(96);
     VkSampler const r = vk_sampler(tsc, raise, integer);
