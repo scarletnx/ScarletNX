@@ -64,7 +64,6 @@
         "CMAKE_EXE_LINKER_FLAGS": "-fuse-ld=lld",
         "CMAKE_SHARED_LINKER_FLAGS": "-fuse-ld=lld",
         "CMAKE_MODULE_LINKER_FLAGS": "-fuse-ld=lld",
-        "SNX_LLVM_CONFIG": "${sourceDir}/scripts/cross-llvm-config.sh",
         "SNX_DEPLOY": "OFF"
       }
     },
@@ -122,12 +121,8 @@
     },
     {
       "name": "linux-ppc64-g5-cross",
-      "displayName": "Linux ppc64 big-endian with glibc (ELFv2), for the PowerPC 970 (PowerMac G5) and POWER4 on, cross-built with Clang, linking the LLVM of scripts/linux-llvm.sh ppc64 (the system root's is built for POWER8)",
-      "inherits": "linux-ppc64-elfv2-cross",
-      "cacheVariables": {
-        "LLVM_DIR": "${sourceDir}/.cache/llvm/ppc64/lib/cmake/llvm",
-        "SNX_LLVM_CONFIG": ""
-      }
+      "displayName": "Linux ppc64 big-endian with glibc (ELFv2), for the PowerPC 970 (PowerMac G5) and POWER4 on, cross-built with Clang: the ELFv2 build, named for the G5",
+      "inherits": "linux-ppc64-elfv2-cross"
     },
     {
       "name": "linux-ppc64-musl-cross",
@@ -266,7 +261,6 @@
         "CMAKE_EXE_LINKER_FLAGS": "-fuse-ld=lld",
         "CMAKE_SHARED_LINKER_FLAGS": "-fuse-ld=lld",
         "CMAKE_MODULE_LINKER_FLAGS": "-fuse-ld=lld",
-        "LLVM_DIR": "$env{SNX_SYSROOT}/usr/pkg/lib/cmake/llvm",
         "SNX_DEPLOY": "OFF"
       }
     },
@@ -286,7 +280,7 @@
     },
     {
       "name": "ios",
-      "displayName": "iOS, cross-built on a Mac with Xcode (docs/hosts/apple.md); LLVM_DIR names scripts/apple-llvm.sh's",
+      "displayName": "iOS, cross-built on a Mac with Xcode (docs/hosts/apple.md)",
       "inherits": "base",
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
       "cacheVariables": {
@@ -309,7 +303,7 @@
     },
     {
       "name": "ios-simulator",
-      "displayName": "The iOS simulator on Apple silicon, built like the ios preset; LLVM_DIR names scripts/apple-llvm.sh iossim's",
+      "displayName": "The iOS simulator on Apple silicon, built like the ios preset",
       "inherits": "ios",
       "cacheVariables": {
         "CMAKE_OSX_SYSROOT": "iphonesimulator",
